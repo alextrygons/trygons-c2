@@ -458,10 +458,223 @@ static void phase3(void)
     }
 }
 
+/* ------------------------------------------------------------ phase 4 -- */
+
+/* Watch a CRUISE run. Set speed / sea state follow a schedule. */
+typedef struct {
+    const float *at_s;          /* schedule times (s after t0) */
+    const float *speed;         /* set speed from that time (<0 = keep) */
+    const float *sea;           /* sea state from that time */
+    int      n;
+    uint32_t t0;
+    int      seg;               /* current schedule entry */
+    /* per segment */
+    float seg_err_sum[16]; int seg_err_n[16];
+    float seg_over[16], seg_hold[16], seg_vmin[16], seg_vmax[16];
+    /* whole run */
+    float limit_excess;         /* commanded steering beyond the table limit */
+    float true_excess;          /* true outboard beyond limit + 3 deg (settled) */
+    float hold_max;
+    int   gear_changes;
+    gear_t last_gear;
+    uint32_t last_transition_ms, min_gap_ms;
+    uint32_t transitions_seen;
+} cruise_watch_t;
+
+static void cruise_hook(sbsim_t *x, void *ctx)
+{
+    cruise_watch_t *c = (cruise_watch_t *)ctx;
+    float ts = (float)(x->t - c->t0) * 0.001f;
+    while (c->seg + 1 < c->n && ts >= c->at_s[c->seg + 1]) {
+        c->seg++;
+        if (c->speed[c->seg] >= 0.0f) sb_set_cruise_speed(&x->sb, c->speed[c->seg]);
+        x->w.sea_state = c->sea[c->seg];
+    }
+    int g = c->seg;
+    float seg_t = ts - c->at_s[g];
+    float sog = world_sog_kn(&x->w);
+    float set = x->sb.cruise.target_kn;
+    if (seg_t > 40.0f) {                    /* settled part of the segment */
+        c->seg_err_sum[g] += fabsf(sog - set);
+        c->seg_err_n[g]++;
+        float he = fabsf(hdg_err(x->w.heading_deg, x->sb.ap.target_heading));
+        if (he > c->seg_hold[g]) c->seg_hold[g] = he;
+        if (he > c->hold_max) c->hold_max = he;
+    }
+    if (sog - x->sb.cruise.set_kn > c->seg_over[g]) c->seg_over[g] = sog - x->sb.cruise.set_kn;
+    if (seg_t > 40.0f && (c->seg_vmin[g] == 0.0f || sog < c->seg_vmin[g])) c->seg_vmin[g] = sog;
+    if (seg_t > 40.0f && sog > c->seg_vmax[g]) c->seg_vmax[g] = sog;
+
+    if (sb_mode(&x->sb) == MODE_CRUISE && x->sb.ap.steer_limit_deg > 0.0f) {
+        float ex = fabsf(x->sb.ap.rudder_target) - x->sb.ap.steer_limit_deg;
+        if (ex > c->limit_excess) c->limit_excess = ex;
+        float lim_true = sb_steer_limit_for(&x->sb.cfg, sog) + 3.0f;
+        if (seg_t > 20.0f && fabsf(x->w.rud.angle_deg) - lim_true > c->true_excess)
+            c->true_excess = fabsf(x->w.rud.angle_deg) - lim_true;
+    }
+    if (x->w.engaged != c->last_gear) { c->gear_changes++; c->last_gear = x->w.engaged; }
+    if (x->sb.nerv.transitions != c->transitions_seen) {
+        uint32_t gap = x->t - c->last_transition_ms;
+        if (c->transitions_seen > 0u && (c->min_gap_ms == 0u || gap < c->min_gap_ms)) c->min_gap_ms = gap;
+        c->transitions_seen = x->sb.nerv.transitions;
+        c->last_transition_ms = x->t;
+    }
+}
+
+static void cruise_run(sbsim_t *x, cruise_watch_t *c, uint32_t seed, const float *at, const float *spd,
+                       const float *sea, int n, uint32_t dur_ms)
+{
+    sbsim_init(x, seed, 90.0f, 0.0f, NULL);
+    x->w.sea_state = sea[0];
+    sbsim_run(x, 1000u, NULL, NULL);
+    sb_set_cruise_speed(&x->sb, spd[0]);
+    sb_request_mode(&x->sb, MODE_CRUISE, WHY_USER);
+    memset(c, 0, sizeof *c);
+    c->at_s = at; c->speed = spd; c->sea = sea; c->n = n;
+    c->t0 = x->t;
+    c->last_gear = x->w.engaged;
+    sbsim_run(x, x->t + dur_ms, cruise_hook, c);
+}
+
+static void phase4(void)
+{
+    char d[400];
+    printf("\n=== Phase 4: CRUISE ===\n");
+
+    /* 4.1 speed ramp 3 -> 20 kn, sea state 1 */
+    {
+        static const float at[]  = { 0, 60, 120, 180, 240 };
+        static const float spd[] = { 3, 6, 10, 15, 20 };
+        static const float sea[] = { 1, 1, 1, 1, 1 };
+        sbsim_t x;
+        cruise_watch_t c;
+        cruise_run(&x, &c, 41u, at, spd, sea, 5, 300000u);
+        bool ok = true;
+        int len = 0;
+        len += snprintf(d + len, sizeof d - (size_t)len, "set/err/overshoot/hold:");
+        for (int i = 0; i < 5; i++) {
+            float err = c.seg_err_n[i] ? c.seg_err_sum[i] / (float)c.seg_err_n[i] : 99.0f;
+            len += snprintf(d + len, sizeof d - (size_t)len, " %.0fkn %.2f/%.2f/%.1f", spd[i], err,
+                            c.seg_over[i], c.seg_hold[i]);
+            if (err > 0.5f || c.seg_over[i] > 1.5f || c.seg_hold[i] > 10.0f) ok = false;
+        }
+        snprintf(d + len, sizeof d - (size_t)len, "; steering beyond limit: cmd %.2f, true %.2f deg; "
+                 "throttle rate max %.0f %%/s; gear changes after F %d",
+                 c.limit_excess, c.true_excess, x.w.max_thr_rate, c.gear_changes - 1);
+        ok = ok && c.limit_excess <= 0.01f && c.true_excess <= 0.0f && x.w.max_thr_rate <= 40.5f &&
+             c.gear_changes == 1 && x.w.shift_under_load == 0;
+        test_report("P4 speed ramp 3->20 kn: speed control, steering limit by speed", ok, d);
+    }
+
+    /* 4.2 sea state 1 -> 4 at 18 kn, then calm again */
+    {
+        static const float at[]  = { 0, 180, 360, 540, 1140 };
+        static const float spd[] = { 18, -1, -1, -1, -1 };
+        static const float sea[] = { 1, 2, 3, 4, 1 };
+        sbsim_t x;
+        cruise_watch_t c;
+        cruise_run(&x, &c, 42u, at, spd, sea, 5, 2100000u);
+        snprintf(d, sizeof d, "speed by sea state: ss1 %.1f-%.1f, ss2 %.1f-%.1f, ss3 %.1f-%.1f, ss4 %.1f-%.1f, "
+                 "calm again %.1f-%.1f kn (end %.1f); course error max ss3 %.1f, ss4 %.1f deg; "
+                 "rough-water episodes %u, changes %u, shortest gap %.0f s",
+                 c.seg_vmin[0], c.seg_vmax[0], c.seg_vmin[1], c.seg_vmax[1], c.seg_vmin[2], c.seg_vmax[2],
+                 c.seg_vmin[3], c.seg_vmax[3], c.seg_vmin[4], c.seg_vmax[4], world_sog_kn(&x.w),
+                 c.seg_hold[2], c.seg_hold[3], x.sb.nerv.episodes, x.sb.nerv.transitions,
+                 c.min_gap_ms * 0.001f);
+        bool ok = c.seg_vmin[0] > 17.0f && c.seg_vmin[1] > 17.0f &&         /* no reaction in ss1-2 */
+                  x.sb.nerv.episodes >= 1u && c.seg_vmin[3] <= 14.5f &&     /* slowed down in ss4 */
+                  world_sog_kn(&x.w) > 17.0f &&                               /* recovered */
+                  x.sb.nerv.transitions <= 4u && sb_mode(&x.sb) == MODE_CRUISE;
+        test_report("P4 sea state 1->4->1: slows down when rough, recovers when calm", ok, d);
+    }
+
+    /* 4.3 no oscillation: 30 min at a borderline sea state */
+    {
+        static const float at[]  = { 0 };
+        static const float spd[] = { 18 };
+        static const float sea[] = { 3.5f };
+        sbsim_t x;
+        cruise_watch_t c;
+        cruise_run(&x, &c, 43u, at, spd, sea, 1, 1800000u);
+        snprintf(d, sizeof d, "30 min at sea state 3.5, 18 kn set: episodes %u, nervous/calm changes %u, "
+                 "shortest time between changes %.0f s, speed %.1f-%.1f kn",
+                 x.sb.nerv.episodes, x.sb.nerv.transitions, c.min_gap_ms * 0.001f, c.seg_vmin[0], c.seg_vmax[0]);
+        bool ok = x.sb.nerv.transitions <= 6u &&
+                  (x.sb.nerv.transitions < 2u || c.min_gap_ms >= 30000u);
+        test_report("P4 no oscillation between nervous and calm", ok, d);
+    }
+
+    /* 4.4 forward only: reverse selector and lever ignored in CRUISE */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 44u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 1000u, NULL, NULL);
+        sb_set_cruise_speed(&x.sb, 10.0f);
+        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+        sbsim_run(&x, 40000u, NULL, NULL);
+        sim_hal_set_controls(-1.0f, 1.0f, HAL_SEL_R);
+        sbsim_run(&x, 80000u, NULL, NULL);
+        snprintf(d, sizeof d, "selector R + steer lever: gear %s, speed %.1f kn, steering motor manual? %s",
+                 gear_name(x.w.engaged), world_sog_kn(&x.w), x.sb.ap.mode == AP_MODE_AUTO ? "no (AUTO)" : "YES");
+        test_report("P4 CRUISE is forward only (operator reverse ignored)",
+                    x.w.engaged == GEAR_F && world_sog_kn(&x.w) > 9.0f && x.sb.ap.mode == AP_MODE_AUTO &&
+                    x.w.max_thr_rev == 0.0f, d);
+    }
+
+    /* 4.5 GPS loss in CRUISE: reduced throttle held, alarm, heading still held */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 45u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 1000u, NULL, NULL);
+        sb_set_cruise_speed(&x.sb, 15.0f);
+        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+        sbsim_run(&x, 80000u, NULL, NULL);
+        float thr0 = sim_hal_throttle(), v0 = world_sog_kn(&x.w);
+        x.w.gps_fail = true;
+        float thr_max = 0.0f, hold = 0.0f;
+        while (x.t < 200000u) {
+            sbsim_run(&x, x.t + 50u, NULL, NULL);
+            if (x.t > 90000u && sim_hal_throttle() > thr_max) thr_max = sim_hal_throttle();
+            float he = fabsf(hdg_err(x.w.heading_deg, x.sb.ap.target_heading));
+            if (x.t > 110000u && he > hold) hold = he;
+        }
+        snprintf(d, sizeof d, "before: %.1f %% at %.1f kn; after GPS loss: throttle <= %.1f %%, speed %.1f kn, "
+                 "alarm %s, mode %s, course error max %.1f deg",
+                 thr0, v0, thr_max, world_sog_kn(&x.w), sim_hal_alarm() ? "on" : "OFF",
+                 mode_name(sb_mode(&x.sb)), hold);
+        test_report("P4 GPS loss in CRUISE: reduced throttle, alarm, still steering",
+                    thr_max <= thr0 * 0.61f && sim_hal_alarm() && sb_mode(&x.sb) == MODE_CRUISE &&
+                    world_sog_kn(&x.w) < v0 && hold < 10.0f, d);
+    }
+
+    /* 4.6 compass failure in CRUISE at 20 kn: safe stop */
+    {
+        sbsim_t x;
+        events_t ev;
+        memset(&ev, 0, sizeof ev);
+        sbsim_init(&x, 46u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 1000u, NULL, NULL);
+        sb_set_cruise_speed(&x.sb, 20.0f);
+        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+        sbsim_run(&x, 120000u, NULL, NULL);
+        float v0 = world_sog_kn(&x.w);
+        sim_hal_fail_heading(true);
+        ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_n_us);
+        sbsim_run(&x, x.t + 30000u, ev_watch, &ev);
+        snprintf(d, sizeof d, "at %.1f kn: throttle down after %.2f s, idle %.2f s, neutral %.2f s, alarm %s, "
+                 "under-load %d", v0, ev.t_thr_down, ev.t_idle, ev.t_neutral, sim_hal_alarm() ? "on" : "OFF",
+                 x.w.shift_under_load);
+        test_report("P4 compass failure in CRUISE: STANDBY, idle + neutral first, alarm",
+                    sb_mode(&x.sb) == MODE_STANDBY && ev.t_thr_down >= 0.0f && ev.t_thr_down <= 2.1f &&
+                    ev.t_neutral > ev.t_idle && sim_hal_alarm() && x.w.shift_under_load == 0, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
     phase2();
     phase3();
+    phase4();
 }

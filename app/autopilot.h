@@ -145,6 +145,10 @@ typedef struct {
 
     uint32_t off_course_ms; /* how long we have been far off course */
 
+    /* Set by the small-boat controller (speed dependent); neutral = 0 / 1 */
+    float    steer_limit_deg; /* extra steering angle limit, 0 = none */
+    float    gain_scale;      /* multiplies kp, ki, kd (1 = as configured) */
+
     /* Gyro (optional) and training */
     float    gyro_dps;      /* last gyro yaw rate (raw) */
     bool     gyro_valid;

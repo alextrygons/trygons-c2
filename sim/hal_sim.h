@@ -44,4 +44,7 @@ void     sim_hal_reset_engine(void);
 /* Operator controls (MANEUVER). */
 void     sim_hal_set_controls(float steer, float throttle, hal_gear_sel_t gear);
 
+/* Optional roll-rate sensor. */
+void     sim_hal_set_roll(bool fitted, float roll_dps);
+
 #endif /* HAL_SIM_H */

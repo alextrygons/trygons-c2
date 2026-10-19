@@ -61,6 +61,10 @@ bool hal_read_rudder_angle(float *rudder_deg);
  */
 bool hal_read_yaw_rate(float *yaw_dps);
 
+/* Gyro roll rate, deg/s (optional sensor). Same rule as above; returns
+ * false always if not available. */
+bool hal_read_roll_rate(float *roll_dps);
+
 /* Rudder motor command, -1.0 .. +1.0 (clamped by the HAL). 0 = off. */
 void hal_set_rudder_motor(float command);
 

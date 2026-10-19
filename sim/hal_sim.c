@@ -198,3 +198,19 @@ void sim_hal_set_controls(float steer, float throttle, hal_gear_sel_t gear)
     s_controls.throttle = throttle;
     s_controls.gear = gear;
 }
+
+static bool  s_roll_fitted = false;
+static float s_true_roll_rate;
+
+bool hal_read_roll_rate(float *roll_dps)
+{
+    if (!s_roll_fitted) return false;
+    *roll_dps = s_true_roll_rate;
+    return true;
+}
+
+void sim_hal_set_roll(bool fitted, float roll_dps)
+{
+    s_roll_fitted = fitted;
+    s_true_roll_rate = roll_dps;
+}

@@ -187,6 +187,8 @@ void autopilot_init(autopilot_t *ap, const ap_config_t *cfg)
     ap->heading_new = false;
     memset(&ap->train, 0, sizeof ap->train);
     ap->calibrated = false;
+    ap->steer_limit_deg = 0.0f;
+    ap->gain_scale = 1.0f;
 }
 
 /* --- sensors ------------------------------------------------------------ */
@@ -306,8 +308,9 @@ static void handle_buttons(autopilot_t *ap, uint32_t presses)
 
 static float rudder_limit(const autopilot_t *ap)
 {
-    if (is_outboard(ap)) return ap->cfg.outboard.max_angle_deg;
-    return AP_RUDDER_LIMIT_DEG;
+    float lim = is_outboard(ap) ? ap->cfg.outboard.max_angle_deg : AP_RUDDER_LIMIT_DEG;
+    if (ap->steer_limit_deg > 0.0f && ap->steer_limit_deg < lim) lim = ap->steer_limit_deg;
+    return lim;
 }
 
 /* Outer loop: heading -> rudder target (deg). */
@@ -338,8 +341,8 @@ static void heading_loop(autopilot_t *ap)
         ap->off_course_ms = 0u;
     }
 
-    float p = c->kp * e;
-    float d = -c->kd * (ap->yaw_rate - ap->ref_rate);  /* damp vs. intended turn rate */
+    float p = c->kp * ap->gain_scale * e;
+    float d = -c->kd * ap->gain_scale * (ap->yaw_rate - ap->ref_rate);  /* damp vs. intended turn rate */
     float unsat = p + ap->integrator + d;
 
     /* Anti-windup: integrate only near the course, and never further
@@ -347,7 +350,7 @@ static void heading_loop(autopilot_t *ap)
     bool sat_hi = unsat >=  limit && e > 0.0f;
     bool sat_lo = unsat <= -limit && e < 0.0f;
     if (fabsf(e) < c->i_zone_deg && !sat_hi && !sat_lo) {
-        ap->integrator += c->ki * e * AP_DT_S;
+        ap->integrator += c->ki * ap->gain_scale * e * AP_DT_S;
         ap->integrator = clampf(ap->integrator, -c->i_limit_deg, c->i_limit_deg);
     }
 

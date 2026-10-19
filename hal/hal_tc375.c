@@ -82,6 +82,12 @@ bool hal_read_yaw_rate(float *yaw_dps)
     return false;    /* TODO: gyro (e.g. IMU on QSPI/I2C) */
 }
 
+bool hal_read_roll_rate(float *roll_dps)
+{
+    (void)roll_dps;
+    return false;    /* TODO: roll axis of the IMU, if fitted */
+}
+
 bool hal_calib_save(const void *data, uint32_t size)
 {
     (void)data;
