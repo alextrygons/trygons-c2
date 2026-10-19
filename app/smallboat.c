@@ -22,6 +22,7 @@ void sb_default_config(sb_config_t *cfg)
     gear_default_config(&cfg->gear);
     throttle_default_config(&cfg->throttle);
     cfg->gps_timeout_ms = 3000u;
+    cfg->fault_steer = SB_FAULT_STEER_GYRO;
 
     cfg->maneuver_throttle_pct = 30.0f;
     cfg->steer_deadzone = 0.3f;
@@ -78,6 +79,7 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     s->now_ms = s->last_ms = hal_millis();
     mode_init(&s->modes, s->now_ms);
     autopilot_init(&s->ap, &cfg->steer);
+    s->ap.gyro_assist = (cfg->fault_steer == SB_FAULT_STEER_GYRO);
     gear_init(&s->gear, &cfg->gear);
     throttle_init(&s->thr, &cfg->throttle);
     s->gear_demand = GEAR_N;
@@ -146,19 +148,45 @@ static void cruise_start(sb_t *s)
     memset(&s->nerv, 0, sizeof s->nerv);
 }
 
+/* Compass lost while moving: gyro hold (zero yaw rate); no gyro either:
+ * outboard to its estimated centre. */
+static void start_fault_steer(sb_t *s)
+{
+    if (autopilot_gyro_ok(&s->ap)) {
+        autopilot_gyro_hold(&s->ap);
+        s->stop_steer = STOP_STEER_GYRO;
+    } else {
+        autopilot_center(&s->ap);
+        s->stop_steer = STOP_STEER_CENTER;
+    }
+}
+
 static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
 {
-    /* speed dependent steering only in the auto-steering modes */
-    s->ap.steer_limit_deg = 0.0f;
-    s->ap.gain_scale = 1.0f;
+    /* speed dependent steering only in the auto-steering modes (a safe
+     * stop keeps the values: gyro hold uses the speed-scaled gain) */
+    if (to != MODE_STANDBY) {
+        s->ap.steer_limit_deg = 0.0f;
+        s->ap.gain_scale = 1.0f;
+    }
 
     switch (to) {
-    case MODE_STANDBY:
+    case MODE_STANDBY: {
         /* safe stop: throttle idle + neutral first (below), steering last */
+        bool moving = s->thr.out_pct > s->cfg.gear.idle_max_pct || !gear_is(&s->gear, GEAR_N);
+        bool was_auto = (from == MODE_CRUISE || from == MODE_NAV || from == MODE_TRAINING);
+        s->stop_from_auto = was_auto;
         s->stopping = true;
-        s->hold_while_stopping = (s->ap.mode == AP_MODE_AUTO) && sb_compass_ok(s);
-        if (s->hold_while_stopping) autopilot_set_target(&s->ap, s->ap.heading);
+        s->stop_steer = STOP_STEER_NONE;
+        if (s->ap.mode == AP_MODE_AUTO && sb_compass_ok(s)) {
+            s->stop_steer = STOP_STEER_HEADING;
+            autopilot_set_target(&s->ap, s->ap.heading);
+        } else if (!sb_compass_ok(s) && moving && was_auto &&
+                   s->cfg.fault_steer == SB_FAULT_STEER_GYRO) {
+            start_fault_steer(s);
+        }
         break;
+    }
     case MODE_CRUISE:
     case MODE_NAV:
         s->stopping = false;
@@ -535,10 +563,35 @@ void sb_step(sb_t *s)
         s->gear_demand = GEAR_N;
         if (s->stopping) {
             bool safe = s->thr.out_pct <= s->cfg.gear.idle_max_pct && gear_is(&s->gear, GEAR_N);
-            if (!s->hold_while_stopping || !sb_compass_ok(s) || safe) {
-                if (s->ap.mode != AP_MODE_STANDBY) autopilot_disengage(&s->ap);
+
+            /* compass lost during the stop of an auto-steering mode */
+            if ((s->stop_steer == STOP_STEER_HEADING || s->stop_steer == STOP_STEER_NONE) &&
+                !sb_compass_ok(s) && !safe && s->stop_from_auto &&
+                s->cfg.fault_steer == SB_FAULT_STEER_GYRO) {
+                start_fault_steer(s);
             }
-            if (safe) s->stopping = false;
+
+            switch (s->stop_steer) {
+            case STOP_STEER_HEADING:
+                if (safe) s->stop_steer = STOP_STEER_NONE;
+                break;
+            case STOP_STEER_GYRO:
+                if (!autopilot_gyro_ok(&s->ap)) {       /* gyro lost too */
+                    autopilot_center(&s->ap);
+                    s->stop_steer = STOP_STEER_CENTER;
+                } else if (safe) {
+                    s->stop_steer = STOP_STEER_NONE;
+                }
+                break;
+            case STOP_STEER_CENTER:
+                if (autopilot_centered(&s->ap)) s->stop_steer = STOP_STEER_NONE;
+                break;
+            default:
+                break;
+            }
+            if (s->stop_steer == STOP_STEER_NONE && s->ap.mode != AP_MODE_STANDBY)
+                autopilot_disengage(&s->ap);                 /* steering off */
+            if (safe && s->stop_steer == STOP_STEER_NONE) s->stopping = false;
         } else if (s->ap.mode != AP_MODE_STANDBY && s->ap.mode != AP_MODE_TRAINING) {
             autopilot_disengage(&s->ap);
         }

@@ -38,6 +38,11 @@
  * estimate can't drift away (e.g. motor faster one way than the other). */
 #define AP_OUTBOARD_RECENTER_TAU_S  60.0f
 
+/* Gyro hold (compass lost while moving): rudder = start - KP * yaw rate
+ * - KI * integral(yaw rate), i.e. steer for zero turn rate. */
+#define AP_GYRO_HOLD_KP   2.0f    /* deg rudder per deg/s */
+#define AP_GYRO_HOLD_KI   1.0f    /* deg rudder per deg of heading change */
+
 /* Calibration -> settings. The outboard gains were tuned on a reference
  * boat (sim at 6 kn) that turns K_REF deg/s per degree of outboard. A
  * calibrated boat gets all gains scaled by K_REF / its own K (same loop
@@ -62,7 +67,9 @@ typedef enum {
     AP_MODE_STANDBY = 0,
     AP_MODE_AUTO,
     AP_MODE_TRAINING,       /* outboard calibration, see training.h */
-    AP_MODE_MANUAL          /* steering motor follows the operator (MANEUVER) */
+    AP_MODE_MANUAL,         /* steering motor follows the operator (MANEUVER) */
+    AP_MODE_GYRO_HOLD,      /* no compass: steer for zero yaw rate (gyro) */
+    AP_MODE_CENTER          /* no compass, no gyro: drive the outboard to centre */
 } ap_mode_t;
 
 typedef enum {
@@ -149,6 +156,11 @@ typedef struct {
     float    steer_limit_deg; /* extra steering angle limit, 0 = none */
     float    gain_scale;      /* multiplies kp, ki, kd (1 = as configured) */
 
+    float    gyro_base;       /* gyro hold: rudder at the start, deg */
+    float    gyro_integ;      /* gyro hold: integral part, deg */
+    bool     stale_gyro;      /* AUTO with stale compass: steering on the gyro */
+    bool     gyro_assist;     /* allowed to steer on the gyro when the compass is stale (set by smallboat.c) */
+
     /* Gyro (optional) and training */
     float    gyro_dps;      /* last gyro yaw rate (raw) */
     bool     gyro_valid;
@@ -228,6 +240,18 @@ bool autopilot_engage(autopilot_t *ap, bool keep_estimate);
  * held, never past max_angle (estimate), pulses >= min_pulse_ms.
  * keep_estimate: false = the outboard was centred by hand. */
 void autopilot_manual(autopilot_t *ap, bool keep_estimate);
+
+/* Compass lost while moving: steer for zero yaw rate with the gyro
+ * (AP_MODE_GYRO_HOLD), starting from where the rudder / outboard is. */
+void autopilot_gyro_hold(autopilot_t *ap);
+
+/* No compass and no gyro: drive the outboard to its estimated centre
+ * (AP_MODE_CENTER). autopilot_centered() tells when it is there. */
+void autopilot_center(autopilot_t *ap);
+bool autopilot_centered(const autopilot_t *ap);
+
+/* Gyro data fresh (last sample < AP_SENSOR_STALE_MS old)? */
+bool autopilot_gyro_ok(const autopilot_t *ap);
 
 /* STANDBY: steering motor off. */
 void autopilot_disengage(autopilot_t *ap);

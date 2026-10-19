@@ -3,6 +3,7 @@
  */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "hal_sim.h"
@@ -1179,10 +1180,119 @@ static void phase6(void)
     }
 }
 
+/* -------------------------------------------------------------- fixes -- */
+
+static bool g_stop_trace;
+
+/* Compass lost at 20 kn with the outboard turned 15 deg. */
+typedef struct {
+    uint32_t t0;
+    float hdg_prev, hdg_unwrap, hdg_abs_max;
+    float t_fault, t_idle, t_neutral, t_off;
+    float angle_at_fault, angle_end;
+    int   motor_after_off;
+    bool  done;
+} stopturn_t;
+
+static void stopturn_hook(sbsim_t *x, void *ctx)
+{
+    stopturn_t *s = (stopturn_t *)ctx;
+    float ts = (float)(x->t - s->t0) * 0.001f;
+    s->hdg_unwrap += hdg_err(x->w.heading_deg, s->hdg_prev);
+    s->hdg_prev = x->w.heading_deg;
+    if (fabsf(s->hdg_unwrap) > s->hdg_abs_max) s->hdg_abs_max = fabsf(s->hdg_unwrap);
+    if (s->t_fault < 0.0f && sb_mode(&x->sb) == MODE_STANDBY) {
+        s->t_fault = ts;
+        s->angle_at_fault = x->w.rud.angle_deg;
+    }
+    if (s->t_fault >= 0.0f) {
+        if (s->t_idle < 0.0f && sim_hal_throttle() <= 1.0f) s->t_idle = ts;
+        if (s->t_neutral < 0.0f && sim_hal_gear_pwm() == x->sb.cfg.gear.pwm_n_us) s->t_neutral = ts;
+        if (s->t_off < 0.0f && ts > s->t_fault + 0.1f && x->sb.stop_steer == STOP_STEER_NONE &&
+            x->sb.ap.mode == AP_MODE_STANDBY) s->t_off = ts;
+        if (s->t_off >= 0.0f && sim_hal_motor_command() != 0.0f) s->motor_after_off++;
+    }
+    s->angle_end = x->w.rud.angle_deg;
+    if (g_stop_trace && ((x->t - s->t0) / 50u) % 5u == 0u)
+        printf("ST %5.2f mode %s ap %d stop %d est %6.2f slack %5.2f true %6.2f tgt %6.2f mot %+.0f "
+               "yaw %6.2f thr %5.1f spd %5.1f\n", ts,
+               mode_name(sb_mode(&x->sb)), x->sb.ap.mode, x->sb.stop_steer, x->sb.ap.est_angle, x->sb.ap.slack_deg,
+               x->w.rud.angle_deg, x->sb.ap.rudder_target, sim_hal_motor_command(), x->w.yaw_dps, sim_hal_throttle(), x->w.speed_kn);
+}
+
+static stopturn_t stop_turn(uint8_t fault_steer, bool gyro_fails, uint32_t seed)
+{
+    sbsim_t x;
+    sb_config_t c;
+    stopturn_t s;
+    memset(&s, 0, sizeof s);
+    s.t_fault = s.t_idle = s.t_neutral = s.t_off = -1.0f;
+    sb_default_config(&c);
+    c.fault_steer = fault_steer;
+    sbsim_init(&x, seed, 90.0f, 0.0f, &c);
+    x.w.sea_state = 1.0f;
+    sbsim_run(&x, 1000u, NULL, NULL);
+    sb_set_cruise_speed(&x.sb, 20.0f);
+    sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+    sbsim_run(&x, 120000u, NULL, NULL);
+
+    /* the boat is in a hard turn: outboard at 15 deg right ... */
+    x.w.rud.angle_deg = 15.0f;
+    x.w.rud.drive_deg = 15.0f + 0.5f * x.w.rud.gap_deg;
+    x.sb.ap.est_angle = 15.0f;
+    x.sb.ap.slack_deg = 0.5f * x.sb.ap.cfg.outboard.gap_deg;
+    x.sb.ap.rudder_target = 15.0f;
+    /* ... when the compass (and maybe the gyro) fails */
+    sim_hal_fail_heading(true);
+    if (gyro_fails) sim_hal_set_gyro(false, 0.0f, 0.0f);
+    s.t0 = x.t;
+    s.hdg_prev = x.w.heading_deg;
+    while (x.t < s.t0 + 90000u) {
+        sbsim_run(&x, x.t + 50u, stopturn_hook, &s);
+        if (s.t_off >= 0.0f && fabsf(x.w.speed_kn) < 0.5f) break;
+    }
+    return s;
+}
+
+static void fixes(void)
+{
+    char d[400];
+    printf("\n=== Fixes ===\n");
+
+    /* Fix 1: compass lost while moving -> gyro hold / centre during the stop */
+    {
+        stopturn_t b = stop_turn(SB_FAULT_STEER_OFF, false, 81u);
+        stopturn_t g = stop_turn(SB_FAULT_STEER_GYRO, false, 81u);
+        g_stop_trace = getenv("STOPTRACE") != NULL;
+        stopturn_t c = stop_turn(SB_FAULT_STEER_GYRO, true, 81u);
+        g_stop_trace = false;
+        printf("Compass lost at 20 kn, outboard 15 deg (heading change until the boat stops):\n");
+        printf("  before (steering off at once): %6.0f deg   outboard at fault %.1f, at end %.1f deg\n",
+               b.hdg_unwrap, b.angle_at_fault, b.angle_end);
+        printf("  after, gyro hold:              %6.0f deg   idle %.1f s, neutral %.1f s, steering off %.1f s, outboard at end %.1f deg\n",
+               g.hdg_unwrap, g.t_idle, g.t_neutral, g.t_off, g.angle_end);
+        printf("  after, gyro failed too:        %6.0f deg   centred and off at %.1f s, outboard at end %.1f deg\n",
+               c.hdg_unwrap, c.t_off, c.angle_end);
+        snprintf(d, sizeof d, "heading change before %.0f deg -> gyro hold %.0f deg; steering off at %.1f s "
+                 "(neutral %.1f s); motor after off %d",
+                 b.hdg_unwrap, g.hdg_unwrap, g.t_off, g.t_neutral, g.motor_after_off);
+        test_report("F1 compass lost at 20 kn: gyro hold until idle + neutral, then off",
+                    fabsf(g.hdg_unwrap) < 0.5f * fabsf(b.hdg_unwrap) && g.t_off >= g.t_neutral &&
+                    g.t_neutral > g.t_idle && g.motor_after_off == 0, d);
+        snprintf(d, sizeof d, "heading change before %.0f deg -> centring %.0f deg; outboard at end %.1f deg "
+                 "(before %.1f); steering off at %.1f s; motor after off %d",
+                 b.hdg_unwrap, c.hdg_unwrap, c.angle_end, b.angle_end, c.t_off, c.motor_after_off);
+        test_report("F1 compass and gyro lost at 20 kn: outboard to centre, then off",
+                    fabsf(c.hdg_unwrap) < fabsf(b.hdg_unwrap) && fabsf(c.angle_end) < 3.0f &&
+                    c.t_off > 0.0f && c.motor_after_off == 0, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
+    fixes();
     phase2();
     phase3();
     phase4();

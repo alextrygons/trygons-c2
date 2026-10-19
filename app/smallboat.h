@@ -41,11 +41,28 @@
 
 #define SB_LIMIT_N 4        /* points in the steering-limit-by-speed table */
 
+#define SB_FAULT_STEER_OFF   0u
+#define SB_FAULT_STEER_GYRO  1u
+
+/* How the steering behaves during a safe stop (STANDBY). */
+typedef enum {
+    STOP_STEER_NONE = 0,    /* off */
+    STOP_STEER_HEADING,     /* compass OK: hold the heading */
+    STOP_STEER_GYRO,        /* compass lost: zero yaw rate with the gyro */
+    STOP_STEER_CENTER       /* compass and gyro lost: outboard to centre */
+} sb_stop_steer_t;
+
 typedef struct {
     ap_config_t       steer;            /* steering (outboard autopilot core) */
     gear_config_t     gear;
     throttle_config_t throttle;
     uint32_t          gps_timeout_ms;   /* no GPS fix this long = GPS lost (3000) */
+
+    /* Compass lost while moving: how to steer during the safe stop.
+     * SB_FAULT_STEER_GYRO (default): gyro hold (zero yaw rate) until idle +
+     * neutral, then off; no gyro -> outboard to centre, then off.
+     * SB_FAULT_STEER_OFF: steering stops at once (old behaviour). */
+    uint8_t           fault_steer;
 
     /* MANEUVER */
     float maneuver_throttle_pct;        /* lever full = this much throttle, F and R (30) */
@@ -161,7 +178,8 @@ typedef struct {
 
     uint32_t now_ms, last_ms;
     bool     stopping;          /* safe stop running (idle + neutral first) */
-    bool     hold_while_stopping;
+    sb_stop_steer_t stop_steer; /* steering during the safe stop */
+    bool     stop_from_auto;    /* the stop started in CRUISE / NAV / TRAINING */
     bool     alarm;             /* small-boat alarms (the autopilot has its own) */
     bool     compass_fault_seen;
 

@@ -189,6 +189,8 @@ void autopilot_init(autopilot_t *ap, const ap_config_t *cfg)
     ap->calibrated = false;
     ap->steer_limit_deg = 0.0f;
     ap->gain_scale = 1.0f;
+    ap->stale_gyro = false;
+    ap->gyro_assist = false;
 }
 
 /* --- sensors ------------------------------------------------------------ */
@@ -364,7 +366,11 @@ static void heading_loop(autopilot_t *ap)
         float shift = ap->integrator * (AP_DT_S / AP_OUTBOARD_RECENTER_TAU_S);
         ap->integrator -= shift;
         ap->rudder_target -= shift;
-        ap->est_angle = clampf(ap->est_angle - shift, -limit, limit);
+        /* clamp to the outboard's real range, NOT the (speed dependent)
+         * steering limit: the outboard can be outside the current limit,
+         * e.g. right after speeding up in a turn */
+        float amax = ap->cfg.outboard.max_angle_deg;
+        ap->est_angle = clampf(ap->est_angle - shift, -amax, amax);
     }
 
     float cmd = clampf(p + ap->integrator + d, -limit, limit);
@@ -630,6 +636,59 @@ static float manual_loop(autopilot_t *ap, int8_t want)
     return (float)ap->motor_dir;
 }
 
+bool autopilot_gyro_ok(const autopilot_t *ap)
+{
+    return ap->gyro_valid && (ap->last_step_ms - ap->last_gyro_ms) < AP_SENSOR_STALE_MS;
+}
+
+void autopilot_gyro_hold(autopilot_t *ap)
+{
+    if (ap->mode == AP_MODE_TRAINING) training_abort(&ap->train, TR_ABORT_SENSOR);
+    ap->motor_moving = false;
+    outboard_stop(ap);
+    if (!ap->stale_gyro) {
+        /* fresh start (otherwise carry on from the stale-compass phase) */
+        ap->gyro_base = is_outboard(ap) ? ap->est_angle : ap->rudder_angle;
+        ap->gyro_integ = 0.0f;
+        ap->rudder_target = ap->gyro_base;
+    }
+    ap->stale_gyro = false;
+    ap->mode = AP_MODE_GYRO_HOLD;
+}
+
+void autopilot_center(autopilot_t *ap)
+{
+    if (ap->mode == AP_MODE_TRAINING) training_abort(&ap->train, TR_ABORT_SENSOR);
+    ap->motor_moving = false;
+    outboard_stop(ap);
+    ap->rudder_target = 0.0f;
+    ap->mode = AP_MODE_CENTER;
+}
+
+bool autopilot_centered(const autopilot_t *ap)
+{
+    if (ap->mode != AP_MODE_CENTER) return false;
+    if (!is_outboard(ap)) return fabsf(ap->rudder_angle) <= sea(ap)->deadband_on_deg && !ap->motor_moving;
+    /* inside the deadband the motor won't move any more */
+    return ap->motor_dir == 0 && fabsf(ap->est_angle) <= sea(ap)->ob_deadband_on_deg;
+}
+
+/* Gyro hold: steer for zero turn rate (no compass). */
+static float gyro_hold_loop(autopilot_t *ap)
+{
+    if (!autopilot_gyro_ok(ap)) {               /* gyro gone too: hold still */
+        ap->motor_moving = false;
+        outboard_stop(ap);
+        return 0.0f;
+    }
+    float r = ap->gyro_dps;
+    float lim = rudder_limit(ap);
+    float gs = ap->gain_scale;
+    ap->gyro_integ = clampf(ap->gyro_integ + AP_GYRO_HOLD_KI * gs * r * AP_DT_S, -2.0f * lim, 2.0f * lim);
+    ap->rudder_target = clampf(ap->gyro_base - AP_GYRO_HOLD_KP * gs * r - ap->gyro_integ, -lim, lim);
+    return is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
+}
+
 void autopilot_disengage(autopilot_t *ap)
 {
     enter_standby(ap);
@@ -668,13 +727,30 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
 
     if (ap->mode == AP_MODE_TRAINING) {
         ap->motor_cmd = training_mode_step(ap, now, stale);
+    } else if (ap->mode == AP_MODE_GYRO_HOLD) {
+        ap->motor_cmd = gyro_hold_loop(ap);             /* no compass needed */
+    } else if (ap->mode == AP_MODE_CENTER) {
+        ap->rudder_target = 0.0f;
+        ap->motor_cmd = is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
     } else if (ap->mode == AP_MODE_MANUAL) {
         ap->motor_cmd = manual_loop(ap, in->manual_steer);     /* no compass needed */
     } else if (ap->mode == AP_MODE_AUTO && stale) {
-        ap->motor_moving = false;
-        outboard_stop(ap);
-        ap->motor_cmd = 0.0f;
+        if (is_outboard(ap) && ap->gyro_assist && autopilot_gyro_ok(ap)) {
+            /* compass data stale: steer for zero yaw rate on the gyro
+             * instead of freezing (outboard with a gyro only) */
+            if (!ap->stale_gyro) {
+                ap->stale_gyro = true;
+                ap->gyro_base = ap->est_angle;
+                ap->gyro_integ = 0.0f;
+            }
+            ap->motor_cmd = gyro_hold_loop(ap);
+        } else {
+            ap->motor_moving = false;
+            outboard_stop(ap);
+            ap->motor_cmd = 0.0f;
+        }
     } else if (ap->mode == AP_MODE_AUTO) {
+        ap->stale_gyro = false;
         heading_loop(ap);
         ap->motor_cmd = is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
     } else {
