@@ -20,6 +20,9 @@
  *   MANEUVER  operator steers (full angle), F/N/R, throttle <= 30 %
  *   CRUISE    forward only, heading hold, set speed on GPS SOG, steering
  *             limit and gains by speed, slows down in rough water
+ *   NAV       follow the start -> waypoint line (cross-track error), slow
+ *             down and stop (idle + neutral + alarm) on arrival; GPS lost ->
+ *             CRUISE on the current heading at reduced speed + alarm
  */
 #ifndef SMALLBOAT_H
 #define SMALLBOAT_H
@@ -31,6 +34,7 @@
 #include "gear.h"
 #include "hal.h"
 #include "modes.h"
+#include "nav.h"
 #include "throttle.h"
 
 #define SB_LIMIT_N 4        /* points in the steering-limit-by-speed table */
@@ -73,6 +77,15 @@ typedef struct {
     uint32_t nerv_recover_ms;           /* ... every this long (30 s) */
     uint32_t nerv_memory_ms;            /* after an episode, stay below that speed this long (300 s) */
     float    nerv_min_kn;               /* never slower than this (5) */
+
+    /* NAV */
+    float    arrival_radius_m;          /* waypoint reached within this (25) */
+    float    slow_radius_m;             /* start slowing down here (150) */
+    float    approach_kn;               /* speed at the arrival radius (4) */
+    bool     arrive_stop;               /* arrived: true = idle + neutral (STANDBY), false = CRUISE on (true) */
+    float    lookahead_min_m;           /* aim this far ahead on the line, at least (40) */
+    float    lookahead_s;               /* ... or this many seconds of travel (6) */
+    float    crab_tau_s;                /* drift (current) estimate filter (20) */
 } sb_config_t;
 
 typedef struct {
@@ -105,6 +118,17 @@ typedef struct {
 } sb_nerv_t;
 
 typedef struct {
+    bool      wp_set;
+    double    wp_lat, wp_lon;
+    float     speed_kn;         /* travel speed */
+    nav_leg_t leg;
+    float     crab_deg;         /* heading - course over ground (current / wind) */
+    float     course_deg;       /* course over ground wanted */
+    uint32_t  last_fix_ms;
+    bool      arrived;
+} sb_nav_t;
+
+typedef struct {
     sb_config_t cfg;
     mode_mgr_t  modes;
     autopilot_t ap;
@@ -113,6 +137,7 @@ typedef struct {
     sb_gps_t    gps;
     sb_cruise_t cruise;
     sb_nerv_t   nerv;
+    sb_nav_t    nav;
 
     uint32_t now_ms, last_ms;
     bool     stopping;          /* safe stop running (idle + neutral first) */
@@ -147,6 +172,9 @@ bool sb_gps_ok(const sb_t *s);
 
 /* CRUISE set speed (kn), clamped to 0 .. cruise_max_kn. */
 void sb_set_cruise_speed(sb_t *s, float kn);
+
+/* NAV target: waypoint and speed. Needed before NAV can start. */
+void sb_set_waypoint(sb_t *s, double lat, double lon, float speed_kn);
 
 /* Steering angle limit for a speed (from the table). */
 float sb_steer_limit_for(const sb_config_t *cfg, float sog_kn);

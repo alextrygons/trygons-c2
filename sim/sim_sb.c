@@ -670,6 +670,144 @@ static void phase4(void)
     }
 }
 
+/* ------------------------------------------------------------ phase 5 -- */
+
+typedef struct {
+    double wp_n, wp_e;          /* waypoint, world metres */
+    float  track_deg, length;
+    float  settle_m;            /* xte measured after this far along */
+    float  xte_max, xte_sq;
+    int    xte_n;
+    float  crab_seen;           /* largest |heading - COG| estimate */
+    float  hdg_min_seen, hdg_max_seen;
+    bool   crossed_north;
+    float  t_arrive;            /* mode left NAV (s), -1 */
+    mode_reason_t why;
+    sb_mode_t mode_after;
+    float  stop_dist;           /* distance to the waypoint when stopped */
+    uint32_t t0;
+    float  prev_hdg;
+} nav_watch_t;
+
+static void nav_hook(sbsim_t *x, void *ctx)
+{
+    nav_watch_t *w = (nav_watch_t *)ctx;
+    float tn = (float)(w->wp_n / w->length), te = (float)(w->wp_e / w->length);
+    float n = (float)x->w.north_m, e = (float)x->w.east_m;
+    float along = n * tn + e * te;
+    float xte = e * tn - n * te;
+    if (sb_mode(&x->sb) == MODE_NAV) {
+        if (along > w->settle_m && along < w->length - 150.0f) {
+            if (fabsf(xte) > w->xte_max) w->xte_max = fabsf(xte);
+            w->xte_sq += xte * xte;
+            w->xte_n++;
+        }
+        if (fabsf(x->sb.nav.crab_deg) > w->crab_seen) w->crab_seen = fabsf(x->sb.nav.crab_deg);
+        float h = x->w.heading_deg;
+        if ((w->prev_hdg > 300.0f && h < 60.0f) || (w->prev_hdg < 60.0f && h > 300.0f)) w->crossed_north = true;
+        w->prev_hdg = h;
+    } else if (w->t_arrive < 0.0f) {
+        w->t_arrive = (float)(x->t - w->t0) * 0.001f;
+        const mode_log_entry_t *le = mode_log_get(&x->sb.modes, mode_log_size(&x->sb.modes) - 1u);
+        w->why = le->why;
+        w->mode_after = sb_mode(&x->sb);
+    }
+    double dn = w->wp_n - x->w.north_m, de = w->wp_e - x->w.east_m;
+    w->stop_dist = (float)sqrt(dn * dn + de * de);
+}
+
+/* NAV run: start at the world origin on `heading`, waypoint at dist/bearing. */
+static void nav_run(sbsim_t *x, nav_watch_t *w, uint32_t seed, float heading, float dist, float bearing,
+                    float speed, float sea, float cur_e, float cur_n, uint32_t gps_fail_after_m)
+{
+    sbsim_init(x, seed, heading, 0.0f, NULL);
+    x->w.sea_state = sea;
+    x->w.current_e = cur_e;
+    x->w.current_n = cur_n;
+    sbsim_run(x, 3000u, NULL, NULL);
+    memset(w, 0, sizeof *w);
+    w->wp_n = dist * cos(bearing * 3.14159265358979 / 180.0);
+    w->wp_e = dist * sin(bearing * 3.14159265358979 / 180.0);
+    w->track_deg = bearing;
+    w->length = dist;
+    w->settle_m = fmaxf(250.0f, 0.15f * dist);
+    w->t_arrive = -1.0f;
+    w->prev_hdg = heading;
+    double lat, lon, n0 = x->w.north_m, e0 = x->w.east_m;
+    world_t tmp = x->w;
+    tmp.north_m = n0 + w->wp_n;
+    tmp.east_m = e0 + w->wp_e;
+    w->wp_n += n0;
+    w->wp_e += e0;
+    world_latlon(&tmp, &lat, &lon);
+    sb_set_waypoint(&x->sb, lat, lon, speed);
+    sb_request_mode(&x->sb, MODE_NAV, WHY_USER);
+    w->t0 = x->t;
+    uint32_t t_end = x->t + (uint32_t)(dist / (speed * 0.5144f) * 1000.0f * 2.0f) + 120000u;
+    while (x->t < t_end) {
+        sbsim_run(x, x->t + 50u, nav_hook, w);
+        if (gps_fail_after_m && !x->w.gps_fail) {
+            double dn = x->w.north_m - n0, de = x->w.east_m - e0;
+            if (sqrt(dn * dn + de * de) >= gps_fail_after_m) x->w.gps_fail = true;
+        }
+        if (w->t_arrive >= 0.0f && x->t > w->t0 + (uint32_t)(w->t_arrive * 1000.0f) + 40000u) break;
+    }
+}
+
+static void phase5(void)
+{
+    char d[400];
+    printf("\n=== Phase 5: NAV ===\n");
+
+    struct { const char *name; float hdg, dist, brg, spd, sea, ce, cn, xmax; } cases[] = {
+        { "P5 NAV 500 m waypoint (12 kn, sea 1)",               90.0f,  500.0f,  45.0f, 12.0f, 1.0f, 0.0f,  0.0f, 15.0f },
+        { "P5 NAV 2 km waypoint (18 kn, sea 2)",               180.0f, 2000.0f, 200.0f, 18.0f, 2.0f, 0.0f,  0.0f, 15.0f },
+        { "P5 NAV 2 km with 1 m/s side current (10 kn)",        90.0f, 2000.0f,  90.0f, 10.0f, 1.0f, 0.0f, -1.0f, 20.0f },
+        { "P5 NAV crossing north (track 2 deg, current from E)", 330.0f, 1000.0f,   2.0f, 10.0f, 1.0f, -0.8f, 0.0f, 20.0f },
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        sbsim_t x;
+        nav_watch_t w;
+        nav_run(&x, &w, 51u + i, cases[i].hdg, cases[i].dist, cases[i].brg, cases[i].spd, cases[i].sea,
+                cases[i].ce, cases[i].cn, 0u);
+        float rms = w.xte_n ? sqrtf(w.xte_sq / (float)w.xte_n) : 0.0f;
+        snprintf(d, sizeof d, "cross-track (true) max %.1f m, rms %.1f m; drift angle %.1f deg; "
+                 "arrived after %.0f s (%s -> %s), stopped %.0f m from the waypoint; alarm %s, gear %s, throttle %.1f %%%s",
+                 w.xte_max, rms, w.crab_seen, w.t_arrive, mode_reason_name(w.why), mode_name(w.mode_after),
+                 w.stop_dist, sim_hal_alarm() ? "on" : "OFF", gear_name(x.w.engaged), sim_hal_throttle(),
+                 i == 3 ? (w.crossed_north ? ", heading crossed north" : ", heading did NOT cross north") : "");
+        bool ok = w.xte_n > 0 && w.xte_max <= cases[i].xmax && rms <= 6.0f &&
+                  w.why == WHY_ARRIVED && w.mode_after == MODE_STANDBY && w.stop_dist < 60.0f &&
+                  sim_hal_alarm() && x.w.engaged == GEAR_N && sim_hal_throttle() <= 0.0f &&
+                  x.w.shift_under_load == 0 && (i != 3 || w.crossed_north);
+        test_report(cases[i].name, ok, d);
+    }
+
+    /* GPS loss halfway */
+    {
+        sbsim_t x;
+        nav_watch_t w;
+        nav_run(&x, &w, 56u, 120.0f, 2000.0f, 120.0f, 14.0f, 1.0f, 0.0f, 0.0f, 1000u);
+        snprintf(d, sizeof d, "GPS lost at 1 km: NAV left after %.0f s (%s -> %s), alarm %s, gear %s, "
+                 "throttle now %.1f %%, speed %.1f kn, heading %.0f (track 120)",
+                 w.t_arrive, mode_reason_name(w.why), mode_name(sb_mode(&x.sb)), sim_hal_alarm() ? "on" : "OFF",
+                 gear_name(x.w.engaged), sim_hal_throttle(), world_sog_kn(&x.w), x.w.heading_deg);
+        test_report("P5 NAV GPS loss halfway: CRUISE on current heading, reduced speed, alarm",
+                    w.why == WHY_GPS_LOST && sb_mode(&x.sb) == MODE_CRUISE && sim_hal_alarm() &&
+                    x.w.engaged == GEAR_F && world_sog_kn(&x.w) < 11.0f &&
+                    fabsf(hdg_err(x.w.heading_deg, 120.0f)) < 15.0f, d);
+    }
+
+    /* NAV needs a waypoint */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 57u, 0.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bool ok = !sb_request_mode(&x.sb, MODE_NAV, WHY_USER);
+        test_report("P5 NAV refused without a waypoint", ok, "");
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
@@ -677,4 +815,5 @@ void sb_tests(void)
     phase2();
     phase3();
     phase4();
+    phase5();
 }

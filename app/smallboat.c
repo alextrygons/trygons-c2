@@ -50,6 +50,22 @@ void sb_default_config(sb_config_t *cfg)
     cfg->nerv_recover_ms = 30000u;
     cfg->nerv_memory_ms = 300000u;
     cfg->nerv_min_kn = 5.0f;
+
+    cfg->arrival_radius_m = 25.0f;
+    cfg->slow_radius_m = 150.0f;
+    cfg->approach_kn = 4.0f;
+    cfg->arrive_stop = true;
+    cfg->lookahead_min_m = 40.0f;
+    cfg->lookahead_s = 6.0f;
+    cfg->crab_tau_s = 20.0f;
+}
+
+void sb_set_waypoint(sb_t *s, double lat, double lon, float speed_kn)
+{
+    s->nav.wp_set = true;
+    s->nav.wp_lat = lat;
+    s->nav.wp_lon = lon;
+    s->nav.speed_kn = clampf(speed_kn, 0.0f, s->cfg.cruise_max_kn);
 }
 
 void sb_init(sb_t *s, const sb_config_t *cfg)
@@ -112,7 +128,7 @@ static bool precondition(const sb_t *s, sb_mode_t to)
     case MODE_STANDBY:  return true;
     case MODE_MANEUVER: return true;
     case MODE_CRUISE:   return sb_compass_ok(s);
-    case MODE_NAV:      return sb_compass_ok(s) && sb_gps_ok(s);
+    case MODE_NAV:      return sb_compass_ok(s) && sb_gps_ok(s) && s->nav.wp_set;
     case MODE_TRAINING: return false;               /* not implemented yet */
     default:            return false;
     }
@@ -146,6 +162,17 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         if (s->ap.mode != AP_MODE_AUTO)
             autopilot_engage(&s->ap, from == MODE_MANEUVER);
         if (from != MODE_CRUISE && from != MODE_NAV) cruise_start(s);
+        if (to == MODE_NAV) {
+            /* the line starts where the boat is now */
+            nav_leg_init(&s->nav.leg, s->gps.last.lat_deg, s->gps.last.lon_deg,
+                         s->nav.wp_lat, s->nav.wp_lon);
+            s->nav.crab_deg = 0.0f;
+            s->nav.arrived = false;
+            s->nav.last_fix_ms = s->gps.last_ms;
+            s->nav.course_deg = s->nav.leg.track_deg;
+            autopilot_set_target(&s->ap, s->nav.leg.track_deg);
+            sb_set_cruise_speed(s, s->nav.speed_kn);
+        }
         break;
     case MODE_MANEUVER:
         /* from STANDBY the outboard is assumed centred by hand */
@@ -329,6 +356,66 @@ static void cruise(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float roll_
     s->ap.gain_scale = clampf(c->gain_ref_kn / fmaxf(v, 0.5f), c->gain_scale_min, c->gain_scale_max);
 }
 
+/* --- NAV ----------------------------------------------------------------------- */
+
+/* Follow the start -> waypoint line. On each GPS fix: cross-track error ->
+ * wanted course over ground; plus the drift angle (heading - COG, from
+ * current / wind) -> heading for the steering core. Speed: travel speed,
+ * slowing to approach_kn inside slow_radius. Speed control, steering
+ * limit and rough-water handling are the same as CRUISE. */
+static void nav_mode(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float roll)
+{
+    const sb_config_t *c = &s->cfg;
+    sb_nav_t *n = &s->nav;
+
+    if (!sb_gps_ok(s)) {
+        /* GPS lost: CRUISE on the current heading, reduced speed, alarm */
+        s->alarm = true;
+        autopilot_set_target(&s->ap, s->ap.heading);
+        sb_request_mode(s, MODE_CRUISE, WHY_GPS_LOST);
+        cruise(s, dt, dt_ms, roll_new, roll);
+        return;
+    }
+
+    if (s->gps.last_ms != n->last_fix_ms) {
+        float fix_dt = (float)(s->gps.last_ms - n->last_fix_ms) * 0.001f;
+        n->last_fix_ms = s->gps.last_ms;
+        nav_leg_update(&n->leg, s->gps.last.lat_deg, s->gps.last.lon_deg);
+
+        float sog = s->gps.last.sog_kn;
+        if (sog > 2.0f) {
+            float drift = autopilot_heading_error(s->ap.heading, s->gps.last.cog_deg);
+            float a = clampf(fix_dt / c->crab_tau_s, 0.0f, 1.0f);
+            n->crab_deg += a * (drift - n->crab_deg);
+            n->crab_deg = clampf(n->crab_deg, -45.0f, 45.0f);
+        }
+        float look = fmaxf(c->lookahead_min_m, c->lookahead_s * sog * 0.514444f);
+        n->course_deg = nav_leg_course(&n->leg, look);
+        autopilot_set_target(&s->ap, n->course_deg + n->crab_deg);
+
+        float v = n->speed_kn;
+        if (n->leg.dist_m < c->slow_radius_m) {
+            float f = clampf((n->leg.dist_m - c->arrival_radius_m) /
+                             (c->slow_radius_m - c->arrival_radius_m), 0.0f, 1.0f);
+            v = c->approach_kn + (v - c->approach_kn) * f;
+        }
+        sb_set_cruise_speed(s, fminf(v, n->speed_kn));
+
+        if (n->leg.dist_m <= c->arrival_radius_m || n->leg.along_m >= n->leg.length_m) {
+            n->arrived = true;
+            s->alarm = true;
+            if (c->arrive_stop) {
+                sb_request_mode(s, MODE_STANDBY, WHY_ARRIVED);      /* idle + neutral */
+            } else {
+                autopilot_set_target(&s->ap, s->ap.heading);
+                sb_request_mode(s, MODE_CRUISE, WHY_ARRIVED);
+            }
+            return;
+        }
+    }
+    cruise(s, dt, dt_ms, roll_new, roll);
+}
+
 /* --- step ------------------------------------------------------------------ */
 
 void sb_step(sb_t *s)
@@ -370,6 +457,7 @@ void sb_step(sb_t *s)
     s->gear_demand = GEAR_N;
     if (sb_mode(s) == MODE_MANEUVER) maneuver(s);
     if (sb_mode(s) == MODE_CRUISE) cruise(s, dt, dt_ms, roll_new, roll);
+    else if (sb_mode(s) == MODE_NAV) nav_mode(s, dt, dt_ms, roll_new, roll);
     if (sb_mode(s) != MODE_STANDBY && s->test_drive.on) {
         s->gear_demand = s->test_drive.gear;
         s->throttle_demand = s->test_drive.throttle_pct;
