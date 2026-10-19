@@ -4,3 +4,5 @@ TASKING*/
 *.elf
 *.o
 *.hex
+sim/*.exe
+sim/sim_output.csv
