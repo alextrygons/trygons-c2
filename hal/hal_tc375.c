@@ -112,6 +112,12 @@ bool hal_read_gps(hal_gps_t *gps)
     return false;    /* TODO: NMEA parser on ASCLIN UART */
 }
 
+bool hal_read_controls(hal_controls_t *c)
+{
+    (void)c;
+    return false;    /* TODO: control panel (ADC levers / buttons) */
+}
+
 uint32_t hal_get_button_presses(void)
 {
     return 0u;       /* TODO: read and debounce the buttons */

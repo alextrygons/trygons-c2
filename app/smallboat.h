@@ -32,6 +32,10 @@ typedef struct {
     gear_config_t     gear;
     throttle_config_t throttle;
     uint32_t          gps_timeout_ms;   /* no GPS fix this long = GPS lost (3000) */
+
+    /* MANEUVER */
+    float             maneuver_throttle_pct; /* lever full = this much throttle, F and R (30) */
+    float             steer_deadzone;        /* lever below this = no steering (0.3) */
 } sb_config_t;
 
 typedef struct {
@@ -56,6 +60,9 @@ typedef struct {
 
     float    throttle_demand;   /* this step, before limits */
     gear_t   gear_demand;
+
+    hal_controls_t ctl;         /* operator controls (MANEUVER) */
+    bool     ctl_ok;
 
     /* sim tests only: raw gear/throttle demand in the driving modes */
     struct { bool on; gear_t gear; float throttle_pct; } test_drive;

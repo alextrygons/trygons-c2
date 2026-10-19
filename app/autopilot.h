@@ -61,7 +61,8 @@
 typedef enum {
     AP_MODE_STANDBY = 0,
     AP_MODE_AUTO,
-    AP_MODE_TRAINING        /* outboard calibration, see training.h */
+    AP_MODE_TRAINING,       /* outboard calibration, see training.h */
+    AP_MODE_MANUAL          /* steering motor follows the operator (MANEUVER) */
 } ap_mode_t;
 
 typedef enum {
@@ -206,6 +207,7 @@ typedef struct {
     bool     heading_new; float heading_deg;   /* new compass sample? */
     bool     rudder_new;  float rudder_deg;    /* new rudder sample? (big boat) */
     uint32_t buttons;                          /* HAL_BTN_BIT() presses */
+    int8_t   manual_steer;                     /* -1 / 0 / +1, used in AP_MODE_MANUAL */
 } ap_inputs_t;
 
 /* The same cycle without any HAL access: the caller supplies the inputs
@@ -217,6 +219,11 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in);
  * angle estimate is kept (outboard not centred by hand). Returns false if
  * the sensors aren't OK. */
 bool autopilot_engage(autopilot_t *ap, bool keep_estimate);
+
+/* Manual steering (AP_MODE_MANUAL): the motor runs while manual_steer is
+ * held, never past max_angle (estimate), pulses >= min_pulse_ms.
+ * keep_estimate: false = the outboard was centred by hand. */
+void autopilot_manual(autopilot_t *ap, bool keep_estimate);
 
 /* STANDBY: steering motor off. */
 void autopilot_disengage(autopilot_t *ap);

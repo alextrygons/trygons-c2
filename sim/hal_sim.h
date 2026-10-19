@@ -41,4 +41,7 @@ uint16_t sim_hal_gear_pwm(void);
 void     sim_hal_gps_message(const hal_gps_t *g);
 void     sim_hal_reset_engine(void);
 
+/* Operator controls (MANEUVER). */
+void     sim_hal_set_controls(float steer, float throttle, hal_gear_sel_t gear);
+
 #endif /* HAL_SIM_H */

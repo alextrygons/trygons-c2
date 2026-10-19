@@ -273,9 +273,195 @@ static void phase2(void)
     }
 }
 
+/* ------------------------------------------------------------ phase 3 -- */
+
+/* A scripted operator: control positions from time t (s after start). */
+typedef struct {
+    float          t;
+    float          steer, thr;
+    hal_gear_sel_t gear;
+} ctl_step_t;
+
+typedef struct {
+    const ctl_step_t *steps;
+    int      n;
+    uint32_t t0;
+    /* watch */
+    float est_max, est_min, ang_max, ang_min, v_max, v_min;
+    float thr_in_neutral;       /* worst throttle while selector is N */
+    float hdg_min, hdg_max, hdg_unwrap, hdg_prev;
+} script_t;
+
+static void script_hook(sbsim_t *x, void *ctx)
+{
+    script_t *s = (script_t *)ctx;
+    float ts = (float)(x->t - s->t0) * 0.001f;
+    int k = -1;
+    for (int i = 0; i < s->n; i++) if (ts >= s->steps[i].t) k = i;
+    if (k >= 0) sim_hal_set_controls(s->steps[k].steer, s->steps[k].thr, s->steps[k].gear);
+
+    float est = x->sb.ap.est_angle, ang = x->w.rud.angle_deg;
+    if (est > s->est_max) s->est_max = est;
+    if (est < s->est_min) s->est_min = est;
+    if (ang > s->ang_max) s->ang_max = ang;
+    if (ang < s->ang_min) s->ang_min = ang;
+    if (x->w.speed_kn > s->v_max) s->v_max = x->w.speed_kn;
+    if (x->w.speed_kn < s->v_min) s->v_min = x->w.speed_kn;
+    if (k >= 0 && s->steps[k].gear == HAL_SEL_N && gear_is(&x->sb.gear, GEAR_N) &&
+        sim_hal_throttle() > s->thr_in_neutral)
+        s->thr_in_neutral = sim_hal_throttle();
+    s->hdg_unwrap += hdg_err(x->w.heading_deg, s->hdg_prev);
+    s->hdg_prev = x->w.heading_deg;
+    if (s->hdg_unwrap > s->hdg_max) s->hdg_max = s->hdg_unwrap;
+    if (s->hdg_unwrap < s->hdg_min) s->hdg_min = s->hdg_unwrap;
+}
+
+static void script_start(script_t *s, sbsim_t *x, const ctl_step_t *steps, int n)
+{
+    memset(s, 0, sizeof *s);
+    s->steps = steps;
+    s->n = n;
+    s->t0 = x->t;
+    s->hdg_prev = x->w.heading_deg;
+}
+
+static void phase3(void)
+{
+    char d[300];
+    printf("\n=== Phase 3: MANEUVER ===\n");
+
+    /* 3.1 docking-style sequence */
+    {
+        static const ctl_step_t dock[] = {
+            {  0.0f,  0.0f, 1.0f, HAL_SEL_F },   /* ahead, lever full (-> 30 %) */
+            { 15.0f,  1.0f, 1.0f, HAL_SEL_F },   /* full right */
+            { 27.0f, -1.0f, 1.0f, HAL_SEL_F },   /* back left */
+            { 37.0f,  0.0f, 0.5f, HAL_SEL_N },   /* neutral, lever left half open */
+            { 45.0f,  0.0f, 1.0f, HAL_SEL_R },   /* astern, lever full */
+            { 50.0f, -1.0f, 1.0f, HAL_SEL_R },   /* full left while reversing */
+            { 62.0f,  1.0f, 1.0f, HAL_SEL_R },   /* back right */
+            { 72.0f,  0.0f, 0.0f, HAL_SEL_N },
+            { 80.0f,  0.0f, 0.3f, HAL_SEL_F },
+        };
+        sbsim_t x;
+        script_t s;
+        sbsim_init(&x, 21u, 45.0f, 0.0f, NULL);
+        sbsim_run(&x, 1000u, NULL, NULL);
+        bool ok_mode = sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
+        script_start(&s, &x, dock, (int)(sizeof dock / sizeof dock[0]));
+        sbsim_run(&x, 91000u, script_hook, &s);
+        sim_hal_press(HAL_BTN_STANDBY_AUTO);
+        sbsim_run(&x, 105000u, script_hook, &s);
+        float lim = x.sb.cfg.steer.outboard.max_angle_deg;
+        snprintf(d, sizeof d, "max throttle fwd %.1f %% / rev %.1f %% (limit %.0f), speed %+.1f..%+.1f kn, "
+                 "outboard est %+.1f..%+.1f deg, true %+.1f..%+.1f deg (stops +-35), end-stop push %.1f s, "
+                 "heading swing %+.0f..%+.0f deg, throttle in N %.1f %%, under-load %d, F/R w/o N %d",
+                 x.w.max_thr_fwd, x.w.max_thr_rev, x.sb.cfg.maneuver_throttle_pct, s.v_min, s.v_max,
+                 s.est_min, s.est_max, s.ang_min, s.ang_max, x.w.rud.stall_s, s.hdg_min, s.hdg_max,
+                 s.thr_in_neutral, x.w.shift_under_load, x.w.fr_without_neutral);
+        bool ok = ok_mode && x.w.max_thr_fwd <= x.sb.cfg.maneuver_throttle_pct + 0.01f &&
+                  x.w.max_thr_rev <= x.sb.cfg.maneuver_throttle_pct + 0.01f &&
+                  s.v_max > 3.0f && s.v_min < -1.5f &&
+                  s.est_max >= lim - 0.01f && s.est_min <= -lim + 0.01f &&
+                  s.est_max <= lim + 0.01f && s.est_min >= -lim - 0.01f &&
+                  x.w.rud.stall_s == 0.0f && s.thr_in_neutral <= 0.0f &&
+                  x.w.shift_under_load == 0 && x.w.fr_without_neutral == 0 &&
+                  (s.hdg_max - s.hdg_min) > 30.0f &&
+                  sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f &&
+                  gear_is(&x.sb.gear, GEAR_N) && sim_hal_motor_command() == 0.0f;
+        test_report("P3 docking sequence: fwd, neutral, rev, full-angle turns, throttle <= 30 %", ok, d);
+    }
+
+    /* 3.2 fast gear toggling by the user (every 200 ms, lever full) */
+    {
+        static ctl_step_t tog[52];
+        static const hal_gear_sel_t seq[3] = { HAL_SEL_F, HAL_SEL_R, HAL_SEL_N };
+        for (int i = 0; i < 50; i++) {
+            tog[i].t = 0.2f * (float)i;
+            tog[i].steer = 0.0f;
+            tog[i].thr = 1.0f;
+            tog[i].gear = seq[i % 3];
+        }
+        tog[50].t = 10.0f; tog[50].steer = 0.0f; tog[50].thr = 1.0f; tog[50].gear = HAL_SEL_R;
+        tog[51].t = 30.0f; tog[51].steer = 0.0f; tog[51].thr = 1.0f; tog[51].gear = HAL_SEL_R;
+        sbsim_t x;
+        script_t s;
+        sbsim_init(&x, 22u, 0.0f, 0.0f, NULL);
+        sbsim_run(&x, 1000u, NULL, NULL);
+        sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
+        script_start(&s, &x, tog, 52);
+        float thr_toggling = 0.0f;
+        int engage_changes = 0;
+        gear_t last = x.w.engaged;
+        while (x.t < s.t0 + 10000u) {
+            sbsim_run(&x, x.t + 50u, script_hook, &s);
+            if (sim_hal_throttle() > thr_toggling) thr_toggling = sim_hal_throttle();
+            if (x.w.engaged != last) { engage_changes++; last = x.w.engaged; }
+        }
+        sbsim_run(&x, s.t0 + 25000u, script_hook, &s);
+        snprintf(d, sizeof d, "50 changes in 10 s: max throttle while toggling %.1f %%, gearbox engagements %d, "
+                 "under-load %d, F/R w/o N %d; afterwards gear %s, throttle %.1f %%, speed %+.1f kn",
+                 thr_toggling, engage_changes, x.w.shift_under_load, x.w.fr_without_neutral,
+                 gear_name(x.w.engaged), sim_hal_throttle(), x.w.speed_kn);
+        test_report("P3 fast gear toggling: always via neutral at idle, ends in last request",
+                    thr_toggling <= 1.0f && x.w.shift_under_load == 0 && x.w.fr_without_neutral == 0 &&
+                    x.w.engaged == GEAR_R && gear_is(&x.sb.gear, GEAR_R) &&
+                    sim_hal_throttle() <= 30.01f && x.w.speed_kn < -1.0f, d);
+    }
+
+    /* 3.3 STANDBY while reversing with full lever: idle + neutral, steering off */
+    {
+        static const ctl_step_t rev[] = { { 0.0f, -1.0f, 1.0f, HAL_SEL_R } };
+        sbsim_t x;
+        script_t s;
+        events_t ev;
+        memset(&ev, 0, sizeof ev);
+        sbsim_init(&x, 23u, 0.0f, 0.0f, NULL);
+        sbsim_run(&x, 1000u, NULL, NULL);
+        sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
+        script_start(&s, &x, rev, 1);
+        sbsim_run(&x, 20000u, script_hook, &s);
+        ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_n_us);
+        sim_hal_press(HAL_BTN_STANDBY_AUTO);
+        sbsim_run(&x, 40000u, ev_watch, &ev);        /* operator still holds the controls */
+        snprintf(d, sizeof d, "throttle down after %.2f s, idle %.2f s, neutral %.2f s, steering off %.2f s, "
+                 "motor after off %d, under-load %d, speed now %+.1f kn",
+                 ev.t_thr_down, ev.t_idle, ev.t_neutral, ev.t_steer_off, ev.steer_after_off,
+                 x.w.shift_under_load, x.w.speed_kn);
+        test_report("P3 STANDBY while reversing: idle + neutral, steering off, controls ignored",
+                    ev.t_thr_down >= 0.0f && ev.t_thr_down <= 0.1f && ev.t_neutral > ev.t_idle &&
+                    ev.steer_after_off == 0 && x.w.shift_under_load == 0 &&
+                    sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f, d);
+    }
+
+    /* 3.4 compass failure in MANEUVER -> STANDBY (every fault -> STANDBY) */
+    {
+        static const ctl_step_t fwd[] = { { 0.0f, 0.0f, 1.0f, HAL_SEL_F } };
+        sbsim_t x;
+        script_t s;
+        sbsim_init(&x, 24u, 0.0f, 0.0f, NULL);
+        sbsim_run(&x, 1000u, NULL, NULL);
+        sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
+        script_start(&s, &x, fwd, 1);
+        sbsim_run(&x, 20000u, script_hook, &s);
+        sim_hal_fail_heading(true);
+        sbsim_run(&x, 35000u, script_hook, &s);
+        sb_mode_t after = sb_mode(&x.sb);
+        bool back = sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);   /* manual still possible */
+        snprintf(d, sizeof d, "mode after fault %s, throttle %.1f %%, gear %s, alarm %s, under-load %d; "
+                 "MANEUVER again without compass: %s",
+                 mode_name(after), sim_hal_throttle(), gear_name(x.w.engaged),
+                 sim_hal_alarm() ? "on" : "OFF", x.w.shift_under_load, back ? "allowed" : "refused");
+        test_report("P3 compass failure in MANEUVER: STANDBY, idle + neutral, alarm",
+                    after == MODE_STANDBY && x.w.engaged == GEAR_N && sim_hal_alarm() &&
+                    x.w.shift_under_load == 0 && back, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
     phase2();
+    phase3();
 }

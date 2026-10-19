@@ -96,6 +96,22 @@ typedef struct {
 /* true + new data only when a new GPS message arrived since the last call. */
 bool hal_read_gps(hal_gps_t *gps);
 
+/* Operator controls for MANEUVER (helm lever / joystick / buttons). */
+typedef enum {
+    HAL_SEL_N = 0,
+    HAL_SEL_F,
+    HAL_SEL_R
+} hal_gear_sel_t;
+
+typedef struct {
+    float          steer;       /* -1 (left) .. +1 (right), 0 = centre */
+    float          throttle;    /* 0 .. 1 lever position */
+    hal_gear_sel_t gear;        /* gear selector */
+} hal_controls_t;
+
+/* Current control positions. Returns false if no control panel. */
+bool hal_read_controls(hal_controls_t *c);
+
 /*
  * Non-volatile storage for the calibration record (an opaque block of
  * bytes; the app adds its own version and checksum). Save returns true

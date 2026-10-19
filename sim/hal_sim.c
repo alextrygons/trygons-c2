@@ -174,4 +174,27 @@ bool hal_read_gps(hal_gps_t *gps)
 float    sim_hal_throttle(void)  { return s_throttle; }
 uint16_t sim_hal_gear_pwm(void)  { return s_gear_pwm; }
 void     sim_hal_gps_message(const hal_gps_t *g) { s_gps = *g; s_gps_new = true; }
-void     sim_hal_reset_engine(void) { s_throttle = 0.0f; s_gear_pwm = 1500u; s_gps_new = false; }
+void     sim_hal_reset_engine(void)
+{
+    s_throttle = 0.0f;
+    s_gear_pwm = 1500u;
+    s_gps_new = false;
+    sim_hal_set_controls(0.0f, 0.0f, HAL_SEL_N);
+}
+
+static hal_controls_t s_controls;
+static bool           s_controls_fitted = true;
+
+bool hal_read_controls(hal_controls_t *c)
+{
+    if (!s_controls_fitted) return false;
+    *c = s_controls;
+    return true;
+}
+
+void sim_hal_set_controls(float steer, float throttle, hal_gear_sel_t gear)
+{
+    s_controls.steer = steer;
+    s_controls.throttle = throttle;
+    s_controls.gear = gear;
+}

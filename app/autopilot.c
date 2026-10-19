@@ -586,6 +586,47 @@ bool autopilot_engage(autopilot_t *ap, bool keep_estimate)
     return true;
 }
 
+void autopilot_manual(autopilot_t *ap, bool keep_estimate)
+{
+    if (ap->mode == AP_MODE_TRAINING) return;
+    float est = ap->est_angle, slack = ap->slack_deg;
+    enter_standby(ap);
+    if (is_outboard(ap)) {
+        if (keep_estimate) {
+            ap->est_angle = est;
+            ap->slack_deg = slack;
+        } else {
+            outboard_reset(ap);     /* centred by hand */
+        }
+    }
+    ap->mode = AP_MODE_MANUAL;
+}
+
+/* Manual steering: run while held, stop at the angle limit. */
+static float manual_loop(autopilot_t *ap, int8_t want)
+{
+    if (!is_outboard(ap)) {
+        /* big boat: rudder sensor gives the limit */
+        if (want > 0 && ap->rudder_angle >=  AP_RUDDER_LIMIT_DEG) want = 0;
+        if (want < 0 && ap->rudder_angle <= -AP_RUDDER_LIMIT_DEG) want = 0;
+        return (float)want;
+    }
+    const ap_outboard_config_t *ob = &ap->cfg.outboard;
+    float lim = ob->max_angle_deg;
+    if (ap->motor_dir != 0) {
+        int8_t d = ap->motor_dir;
+        bool at_limit = (d > 0) ? ap->est_angle >= lim : ap->est_angle <= -lim;
+        if (at_limit || (want != d && ap->pulse_ms >= ob->min_pulse_ms)) outboard_stop(ap);
+    } else if (want != 0 && ap->pause_ms >= ob->min_pulse_ms) {
+        bool at_limit = (want > 0) ? ap->est_angle >= lim : ap->est_angle <= -lim;
+        if (!at_limit) {
+            ap->motor_dir = want;
+            ap->pulse_ms = 0u;
+        }
+    }
+    return (float)ap->motor_dir;
+}
+
 void autopilot_disengage(autopilot_t *ap)
 {
     enter_standby(ap);
@@ -624,6 +665,8 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
 
     if (ap->mode == AP_MODE_TRAINING) {
         ap->motor_cmd = training_mode_step(ap, now, stale);
+    } else if (ap->mode == AP_MODE_MANUAL) {
+        ap->motor_cmd = manual_loop(ap, in->manual_steer);     /* no compass needed */
     } else if (ap->mode == AP_MODE_AUTO && stale) {
         ap->motor_moving = false;
         outboard_stop(ap);

@@ -12,6 +12,8 @@ void sb_default_config(sb_config_t *cfg)
     gear_default_config(&cfg->gear);
     throttle_default_config(&cfg->throttle);
     cfg->gps_timeout_ms = 3000u;
+    cfg->maneuver_throttle_pct = 30.0f;
+    cfg->steer_deadzone = 0.3f;
 }
 
 void sb_init(sb_t *s, const sb_config_t *cfg)
@@ -73,6 +75,11 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         if (s->ap.mode != AP_MODE_AUTO)
             autopilot_engage(&s->ap, from == MODE_MANEUVER);
         break;
+    case MODE_MANEUVER:
+        /* from STANDBY the outboard is assumed centred by hand */
+        s->stopping = false;
+        autopilot_manual(&s->ap, from != MODE_STANDBY);
+        break;
     default:
         s->stopping = false;
         autopilot_disengage(&s->ap);
@@ -106,6 +113,25 @@ static void read_inputs(sb_t *s, ap_inputs_t *in)
         s->gps.valid = true;
         if (g.fix) s->gps.last_ms = s->now_ms;
     }
+
+    s->ctl_ok = hal_read_controls(&s->ctl);
+    if (s->ctl_ok && sb_mode(s) == MODE_MANEUVER) {
+        if (s->ctl.steer > s->cfg.steer_deadzone) in->manual_steer = 1;
+        else if (s->ctl.steer < -s->cfg.steer_deadzone) in->manual_steer = -1;
+    }
+}
+
+/* MANEUVER: operator gear (through the gear state machine) and throttle,
+ * limited in both directions. No controls = neutral, idle. */
+static void maneuver(sb_t *s)
+{
+    if (!s->ctl_ok) return;
+    float lever = s->ctl.throttle;
+    if (lever < 0.0f) lever = 0.0f;
+    if (lever > 1.0f) lever = 1.0f;
+    s->gear_demand = (s->ctl.gear == HAL_SEL_F) ? GEAR_F
+                   : (s->ctl.gear == HAL_SEL_R) ? GEAR_R : GEAR_N;
+    s->throttle_demand = lever * s->cfg.maneuver_throttle_pct;
 }
 
 void sb_step(sb_t *s)
@@ -131,13 +157,19 @@ void sb_step(sb_t *s)
         if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_COMPASS_FAULT);
     }
     if (!s->ap.sensor_fault) s->compass_fault_seen = false;
-    if ((buttons & HAL_BTN_BIT(HAL_BTN_STANDBY_AUTO)) && sb_mode(s) != MODE_STANDBY) {
-        sb_request_mode(s, MODE_STANDBY, WHY_STANDBY_BUTTON);
+    if (buttons & HAL_BTN_BIT(HAL_BTN_STANDBY_AUTO)) {
+        if (sb_mode(s) != MODE_STANDBY) {
+            sb_request_mode(s, MODE_STANDBY, WHY_STANDBY_BUTTON);
+        } else {
+            s->alarm = false;           /* in STANDBY the button acknowledges */
+            s->ap.alarm = false;
+        }
     }
 
     /* 3. what the mode wants */
     s->throttle_demand = 0.0f;
     s->gear_demand = GEAR_N;
+    if (sb_mode(s) == MODE_MANEUVER) maneuver(s);
     if (sb_mode(s) != MODE_STANDBY && s->test_drive.on) {
         s->gear_demand = s->test_drive.gear;
         s->throttle_demand = s->test_drive.throttle_pct;
