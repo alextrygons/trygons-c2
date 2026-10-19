@@ -1,0 +1,6 @@
+Debug/
+TriCore*/
+TASKING*/
+*.elf
+*.o
+*.hex
