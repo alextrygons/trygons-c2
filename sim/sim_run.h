@@ -65,4 +65,10 @@ results_t run(const scenario_t *sc);
 int training_tests(uint32_t seed);
 int training_trace(uint32_t seed, int set, int ss);
 
+/* PASS/FAIL line for the "all" run (sim_main.c). */
+void test_report(const char *name, bool ok, const char *detail);
+
+/* Small-boat tests, all phases (sim_sb.c). */
+void sb_tests(void);
+
 #endif /* SIM_RUN_H */

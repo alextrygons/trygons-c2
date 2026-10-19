@@ -4,6 +4,7 @@
  * Usage:
  *   autopilot_sim [sea_state 1..5 [wave_seed]]   big boat, rudder feedback
  *                                                (defaults 3, 2024)
+ *   autopilot_sim all                            every test, PASS/FAIL list
  *   autopilot_sim train [seed]                   outboard TRAINING tests
  *   autopilot_sim train SEED BOAT SS             trace one training (BOAT 1..5, SS 1..2)
  *   autopilot_sim outboard [wave_seed]           small boat test table,
@@ -357,9 +358,56 @@ static int outboard(uint32_t seed)
     return unsafe_total ? 2 : 0;
 }
 
+/* ---------------------------------------------------------------- all -- */
+
+static int g_pass, g_fail;
+
+void test_report(const char *name, bool ok, const char *detail)
+{
+    printf("[%s] %s%s%s\n", ok ? "PASS" : "FAIL", name,
+           (detail && detail[0]) ? " - " : "", detail ? detail : "");
+    if (ok) g_pass++; else g_fail++;
+}
+
+/* Every test of every phase. Exit code 0 only if all pass. */
+static int run_all(void)
+{
+    char d[200];
+    g_pass = g_fail = 0;
+
+    /* Big boat: must stay exactly as before (regression) */
+    scenario_t m_sc = { 3, 2024u, 90.0f, 300000u, 60000u, 240000u, 0u, 0u,
+                        false, 0.0f, 0.0f, 0.0f, NULL,
+                        0.0f, 0.0f, false, 0.0f, 0.0f, 0.0f, NULL };
+    results_t m = run(&m_sc);
+    scenario_t d_sc = m_sc;
+    d_sc.end_ms = 70000u; d_sc.fail_at_ms = 0u; d_sc.dropout_at_ms = 61000u; d_sc.dropout_len_ms = 1200u;
+    results_t dr = run(&d_sc);
+    snprintf(d, sizeof d, "switches %d, hold max %.2f, overshoot %.2f", m.motor_switches, m.hold_max, m.overshoot);
+    test_report("big boat: results unchanged (50 switches, 3.77 deg)",
+                m.motor_switches == 50 && fabsf(m.hold_max - 3.77f) < 0.01f, d);
+    snprintf(d, sizeof d, "STANDBY after %.2f s, motor on while stale %d", m.standby_s, m.motor_while_stale);
+    test_report("big boat: compass failure -> STANDBY + alarm, motor off",
+                m.standby_s > 0.0f && m.standby_s <= 2.1f && m.motor_while_stale == 0, d);
+    test_report("big boat: compass dropout -> rudder frozen, AUTO resumes",
+                dr.motor_while_stale == 0 && dr.auto_at_end, "");
+
+    /* Outboard table and TRAINING (earlier work) */
+    test_report("outboard: no unsafe case in the test table", outboard(2024u) == 0, "");
+    test_report("training: all trainings OK, all safety tests OK", training_tests(2024u) == 0, "");
+
+    /* Small-boat phases */
+    sb_tests();
+
+    printf("\nTOTAL: %d passed, %d failed\n", g_pass, g_fail);
+    return g_fail ? 2 : 0;
+}
+
 int main(int argc, char **argv)
 {
     if (self_test() != 0) return 1;
+
+    if (argc > 1 && strcmp(argv[1], "all") == 0) return run_all();
 
     if (argc > 1 && strcmp(argv[1], "train") == 0) {
         uint32_t seed = (argc > 2) ? (uint32_t)strtoul(argv[2], NULL, 10) : 2024u;

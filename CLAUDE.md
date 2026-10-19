@@ -13,5 +13,28 @@
 - Floats OK (TC375 has FPU). No malloc. Fixed control loop rate (e.g. 20 Hz).
 - Safety first: rudder angle limits, rate limits, sensor-timeout -> standby + alarm.
 
+## Small-boat features
+Outboard boat (small-boat variant, `AP_STEER_OUTBOARD`). The big-boat variant (rudder feedback) must keep working unchanged.
+
+Actuators
+- Steering motor without angle feedback (angle estimated from motor run time, backlash compensated).
+- Throttle servo (0–100 %).
+- Gear servo F / N / R, positioned by PWM pulse width (configurable positions).
+
+Sensors
+- Compass (heading), gyro (yaw rate; roll rate if available).
+- GPS via UART: lat, lon, SOG, COG, fix, timestamp.
+
+Modes
+- STANDBY, MANEUVER, CRUISE, NAV, TRAINING.
+- One mode manager owns all transitions (explicit allowed-transition table, every transition logged). Nothing else changes the mode.
+
+Safety rules — never break them
+- Gear change only at idle: throttle idle → wait → neutral → wait → new gear → wait → throttle.
+- Every fault / timeout / STANDBY → throttle idle + neutral FIRST, then steering off.
+- Throttle changes are rate-limited.
+- Reverse power is limited.
+- Every feature has sim tests for its failure cases.
+
 ## About me
 - I know programming but I'm new to VS Code, git and AURIX. Explain steps simply.
