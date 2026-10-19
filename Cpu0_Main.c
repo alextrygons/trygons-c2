@@ -29,7 +29,12 @@
 #include "IfxScuWdt.h"
 #include "Ifx_Cfg_Ssw.h"
 
+#include "hal.h"
+#include "autopilot.h"
+
 IFX_ALIGN(4) IfxCpu_syncEvent cpuSyncEvent = 0;
+
+static autopilot_t g_autopilot;
 
 void core0_main(void)
 {
@@ -44,9 +49,28 @@ void core0_main(void)
     /* Wait for CPU sync event */
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
-    
-    
+
+    ap_config_t cfg;
+    hal_init();
+    autopilot_default_config(&cfg);
+    autopilot_init(&g_autopilot, &cfg);
+
+    /* Fixed-rate loop: one autopilot step every AP_PERIOD_MS (20 Hz). */
+    uint32_t next_step_ms = hal_millis();
     while(1)
     {
+        uint32_t now = hal_millis();
+        if ((int32_t)(now - next_step_ms) >= 0)
+        {
+            autopilot_step(&g_autopilot);
+            next_step_ms += AP_PERIOD_MS;
+
+            /* If we ever fall far behind (e.g. debugger halt), resync
+             * instead of running a burst of catch-up steps. */
+            if ((int32_t)(now - next_step_ms) >= (int32_t)AP_PERIOD_MS)
+            {
+                next_step_ms = now + AP_PERIOD_MS;
+            }
+        }
     }
 }
