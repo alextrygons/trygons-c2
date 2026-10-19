@@ -91,6 +91,8 @@ typedef struct {
     bool     heading_new;   /* a new compass sample arrived this step */
     float    yaw_dps;       /* gyro (raw) if from_gyro, else compass-derived */
     bool     from_gyro;
+    int8_t   end_stop_hit;  /* +1 / -1: end stop detected (current / switch), 0 none */
+    uint32_t end_stop_lag_ms; /* motor time at the stop before it was noticed */
 } tr_input_t;
 
 typedef struct {
@@ -105,6 +107,8 @@ typedef struct {
     float    max_heading_change;/* worst |heading - phase start| */
     float    max_yaw;
     int8_t   motor;             /* current output -1/0/+1 */
+    int8_t   hit;               /* end stop detected this step (from tr_input_t) */
+    uint32_t hit_lag_ms;
 
     /* motor actions */
     int8_t   pulse_dir;         /* single pulse */

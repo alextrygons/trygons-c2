@@ -559,6 +559,21 @@ static void phase_end(training_t *t, int8_t dir)
         t->sub = 1;
         return;
     }
+    /* end stop sensed directly (motor current / limit switch): stop now,
+     * no need to wait for the yaw response */
+    if (t->hit == dir) {
+        float run = (float)t->move_done_ms - (float)t->hit_lag_ms;   /* motor time while moving */
+        stop_move(t);
+        if (dir > 0) {
+            t->travel_r = t->r_before + run;
+            enter_phase(t, TR_END_LEFT);
+        } else {
+            t->travel_l = run - t->gap_fit - t->travel_r;
+            enter_phase(t, TR_SWEEP);
+        }
+        return;
+    }
+
     /* check every 500 ms of motor run; right: engaged after GAP,
      * left: the gap must be crossed first */
     uint32_t ignore = (dir > 0) ? 1000u : (uint32_t)t->gap_fit + 1000u;
@@ -606,9 +621,9 @@ static void phase_sweep(training_t *t)
         break;
     default: {
         /* stop once the model sees the right end stop again (or at the cap) */
-        bool found = false;
+        bool found = (t->hit == +1);        /* sensed directly */
         float where;
-        if (t->move_done_ms >= (uint32_t)(0.8f * t->travel_r) &&
+        if (!found && t->move_done_ms >= (uint32_t)(0.8f * t->travel_r) &&
             t->move_done_ms - t->on_at_best >= 500u) {
             t->on_at_best = t->move_done_ms;
             found = end_stop_check(t, true, 0.5f * t->travel_r, (float)t->move_done_ms, &where);
@@ -779,7 +794,6 @@ void training_start(training_t *t, uint32_t now_ms, float heading_deg)
     t->last_ms = now_ms;
     t->start_ms = now_ms;
     t->heading = heading_deg;
-    t->c_prev_heading = heading_deg;
     t->tconst = 4.0f;           /* guess until STEP measures it */
     enter_phase(t, TR_CENTER);
 }
@@ -795,6 +809,8 @@ int8_t training_step(training_t *t, const tr_input_t *in)
     account(t, elapsed);
     t->last_ms = in->now_ms;
     t->heading = in->heading_deg;
+    t->hit = in->end_stop_hit;
+    t->hit_lag_ms = in->end_stop_lag_ms;
     measure(t, in, elapsed);
 
     /* Safety limits while the boat is being steered */

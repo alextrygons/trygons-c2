@@ -101,6 +101,13 @@ typedef struct {
      * never shorter, and the pause between pulses is at least this long
      * too, so the motor never buzzes. Default 100. */
     uint32_t min_pulse_ms;
+
+    /* End stop by motor current (optional current sense): above this
+     * current for stall_ms = pushing against the stop -> stop at once.
+     * 0 = not used. Default 5 A, 150 ms. Limit switches (optional) always
+     * stop the motor at once. */
+    float    stall_current_a;
+    uint32_t stall_ms;
 } ap_outboard_config_t;
 
 typedef struct {
@@ -160,6 +167,11 @@ typedef struct {
     float    gyro_integ;      /* gyro hold: integral part, deg */
     bool     stale_gyro;      /* AUTO with stale compass: steering on the gyro */
     bool     gyro_assist;     /* allowed to steer on the gyro when the compass is stale (set by smallboat.c) */
+
+    /* End-stop detection (current sense / limit switches) */
+    uint32_t stall_timer_ms;
+    int8_t   stop_block;      /* +1 / -1: at that end stop, motor blocked that way */
+    uint32_t stops_hit;       /* how often an end stop was detected (info) */
 
     /* Gyro (optional) and training */
     float    gyro_dps;      /* last gyro yaw rate (raw) */
@@ -224,6 +236,9 @@ typedef struct {
     bool     rudder_new;  float rudder_deg;    /* new rudder sample? (big boat) */
     uint32_t buttons;                          /* HAL_BTN_BIT() presses */
     int8_t   manual_steer;                     /* -1 / 0 / +1, used in AP_MODE_MANUAL */
+    bool     current_ok;  float current_a;     /* steering motor current (optional) */
+    bool     limits_ok;                        /* limit switches fitted? */
+    bool     limit_left, limit_right;          /* at the end stop */
 } ap_inputs_t;
 
 /* The same cycle without any HAL access: the caller supplies the inputs

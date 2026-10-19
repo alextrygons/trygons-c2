@@ -242,6 +242,8 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
     in->now_ms = s->now_ms;
     in->gyro_new = hal_read_yaw_rate(&in->gyro_dps);
     in->heading_new = hal_read_heading(&in->heading_deg);
+    in->current_ok = hal_read_motor_current(&in->current_a);
+    in->limits_ok = hal_read_limit_switches(&in->limit_left, &in->limit_right);
 
     /* course buttons go to the steering core in the auto-steering modes;
      * Standby/Auto is handled here (mode manager), never in the core */

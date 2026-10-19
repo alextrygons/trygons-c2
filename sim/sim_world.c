@@ -25,6 +25,7 @@ void world_init(world_t *w, uint32_t seed, float heading_deg, float speed_kn)
     w->speed_kn = speed_kn;
     w->rng = seed ? seed : 1u;
     w->gps_rng = (seed * 7919u) | 1u;
+    w->cur_rng = (seed * 104729u) | 1u;
     rudder_init_outboard(&w->rud, 3.0f, 3.0f, 2.0f);
     w->gear_pos_us = 1500.0f;
     w->engaged = GEAR_N;
@@ -139,6 +140,13 @@ void world_publish(world_t *w, uint32_t t_ms)
     sim_hal_set_yaw_truth(w->yaw_dps);
     sim_hal_set_neutral_switch(w->neutral_switch,
                                w->gear_pos_us > 1200.0f && w->gear_pos_us < 1800.0f);
+    /* steering motor: ~2 A running, ~8 A pushing against an end stop */
+    float mot = fabsf(sim_hal_motor_command());
+    float amps = mot * (w->rud.stall_run_s > 0.0f ? 8.0f : 2.0f) + 0.1f * boat_rand_gauss(&w->cur_rng);
+    sim_hal_set_motor_current(w->current_sensor, fmaxf(0.0f, amps));
+    sim_hal_set_limit_switches(w->limit_switches,
+                               w->rud.angle_deg <= -w->rud.max_angle_neg_deg + 0.05f,
+                               w->rud.angle_deg >= w->rud.max_angle_deg - 0.05f);
 
     if (t_ms % 1000u == 0u && !w->gps_fail) {
         hal_gps_t g;

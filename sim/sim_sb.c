@@ -825,6 +825,7 @@ typedef struct {
 } tset_t;
 
 static uint32_t s6_rng;
+static unsigned g_world_sensors;    /* 1 = motor current sense, 2 = limit switches */
 static float u6(float lo, float hi)
 {
     s6_rng ^= s6_rng << 13; s6_rng ^= s6_rng >> 17; s6_rng ^= s6_rng << 5;
@@ -904,6 +905,8 @@ static void sb_training(const tset_t *ts, uint8_t ss, uint32_t seed, uint32_t ab
     sbsim_init(&x, seed, 90.0f, 0.0f, &cfg);
     x.w.sea_state = ss;
     world_tset(&x.w, ts);
+    x.w.current_sensor = (g_world_sensors & 1u) != 0u;
+    x.w.limit_switches = (g_world_sensors & 2u) != 0u;
     sbsim_run(&x, 3000u, NULL, NULL);
     sb_request_mode(&x.sb, MODE_TRAINING, WHY_USER);
     uint32_t t0 = x.t, stopped_at = 0u;
@@ -1309,10 +1312,76 @@ static stuck_t stuck_servo(bool switch_fitted, uint32_t seed)
     return r;
 }
 
+/* MANEUVER, operator holds full right; the true motor is faster than
+ * configured, so the outboard reaches the end stop before the estimate
+ * says so. */
+typedef struct { float push_s, est_end, true_end; uint32_t hits; } push_t;
+
+static push_t maneuver_push(bool current_sensor, uint32_t seed)
+{
+    static const ctl_step_t right[] = { { 0.0f, 1.0f, 0.5f, HAL_SEL_F } };
+    sbsim_t x;
+    script_t s;
+    push_t r;
+    sbsim_init(&x, seed, 0.0f, 0.0f, NULL);
+    rudder_init_outboard(&x.w.rud, 4.5f, 4.5f, 2.0f);      /* config says 3 deg/s */
+    x.w.rud.max_angle_deg = x.w.rud.max_angle_neg_deg = 30.0f;
+    x.w.current_sensor = current_sensor;
+    sbsim_run(&x, 1000u, NULL, NULL);
+    sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
+    script_start(&s, &x, right, 1);
+    sbsim_run(&x, 20000u, script_hook, &s);
+    r.push_s = x.w.rud.stall_s;
+    r.est_end = x.sb.ap.est_angle;
+    r.true_end = x.w.rud.angle_deg;
+    r.hits = x.sb.ap.stops_hit;
+    return r;
+}
+
 static void fixes(void)
 {
     char d[400];
     printf("\n=== Fixes ===\n");
+
+    /* Fix 4: motor current / limit switches stop the push at the end stop */
+    {
+        s6_rng = 2024u;
+        tset_t boat1 = tset_random();               /* boat 1 of the phase 6 table */
+        train6_t t0, tc, tl;
+        g_world_sensors = 0u; sb_training(&boat1, 1, 601u, 0u, 0u, 1, &t0);
+        g_world_sensors = 1u; sb_training(&boat1, 1, 601u, 0u, 0u, 1, &tc);
+        g_world_sensors = 2u; sb_training(&boat1, 1, 601u, 0u, 0u, 1, &tl);
+        g_world_sensors = 0u;
+        calib_data_t tv = tset_calib(&boat1);
+        printf("Training, boat 1, sea state 1: end-stop push total / longest, travel R / L error:\n");
+        const train6_t *rr[3] = { &t0, &tc, &tl };
+        const char *nm[3] = { "before (yaw only)   ", "after, motor current", "after, limit switch " };
+        for (int k = 0; k < 3; k++)
+            printf("  %s %5.1f s / %.2f s, travel %+5.1f %% / %+5.1f %%, accepted %s\n", nm[k],
+                   rr[k]->stall_total, rr[k]->stall_longest,
+                   pct6(rr[k]->calib.travel_right_ms, tv.travel_right_ms),
+                   pct6(rr[k]->calib.travel_left_ms, tv.travel_left_ms), rr[k]->accepted ? "yes" : "NO");
+        snprintf(d, sizeof d, "push before %.1f s -> current %.1f s, limit switch %.1f s; travel errors with "
+                 "current %+.1f/%+.1f %%, with switch %+.1f/%+.1f %%",
+                 t0.stall_total, tc.stall_total, tl.stall_total,
+                 pct6(tc.calib.travel_right_ms, tv.travel_right_ms), pct6(tc.calib.travel_left_ms, tv.travel_left_ms),
+                 pct6(tl.calib.travel_right_ms, tv.travel_right_ms), pct6(tl.calib.travel_left_ms, tv.travel_left_ms));
+        test_report("F4 training: end-stop push time well below before (current / switch)",
+                    tc.accepted && tl.accepted && tc.stall_total < 0.25f * t0.stall_total &&
+                    tl.stall_total < 0.25f * t0.stall_total &&
+                    fabsf(pct6(tc.calib.travel_right_ms, tv.travel_right_ms)) < 15.0f &&
+                    fabsf(pct6(tc.calib.travel_left_ms, tv.travel_left_ms)) < 15.0f, d);
+
+        push_t pb = maneuver_push(false, 85u), pa = maneuver_push(true, 85u);
+        printf("MANEUVER full right, motor 50 %% faster than configured (end stop at 30 deg):\n");
+        printf("  before: pushed %.1f s, estimate %.1f deg (true %.1f)\n", pb.push_s, pb.est_end, pb.true_end);
+        printf("  after:  pushed %.1f s, estimate %.1f deg (true %.1f), end stop detected %u x\n",
+               pa.push_s, pa.est_end, pa.true_end, pa.hits);
+        snprintf(d, sizeof d, "push before %.1f s -> after %.2f s; estimate after %.1f deg (true %.1f)",
+                 pb.push_s, pa.push_s, pa.est_end, pa.true_end);
+        test_report("F4 normal steering: stops pushing as soon as the current rises",
+                    pa.push_s < 0.5f && pa.push_s < 0.25f * pb.push_s && pa.hits >= 1u, d);
+    }
 
     /* Fix 3: neutral switch catches a stuck gear servo */
     {

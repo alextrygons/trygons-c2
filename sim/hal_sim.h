@@ -50,4 +50,8 @@ void     sim_hal_set_roll(bool fitted, float roll_dps);
 /* Optional neutral switch. */
 void     sim_hal_set_neutral_switch(bool fitted, bool in_neutral);
 
+/* Optional steering motor current sense and limit switches. */
+void     sim_hal_set_motor_current(bool fitted, float amps);
+void     sim_hal_set_limit_switches(bool fitted, bool left, bool right);
+
 #endif /* HAL_SIM_H */

@@ -30,6 +30,8 @@ typedef struct {
     float gps_pos_noise_m;      /* 1.5 */
     bool  neutral_switch;       /* a neutral switch is fitted */
     bool  servo_stuck;          /* gear servo does not move any more */
+    bool  current_sensor;       /* steering motor current sense fitted */
+    bool  limit_switches;       /* steering end-stop switches fitted */
 
     /* state */
     float heading_deg, yaw_dps, wave_filt;
@@ -40,7 +42,7 @@ typedef struct {
     gear_t engaged;             /* gear the gearbox is in */
     uint32_t neutral_since_ms;
     float throttle;             /* servo % */
-    uint32_t rng, gps_rng;
+    uint32_t rng, gps_rng, cur_rng;
 
     /* safety watch */
     int   shift_under_load;     /* gear engaged / left with throttle open */

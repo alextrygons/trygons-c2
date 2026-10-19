@@ -82,6 +82,19 @@ bool hal_read_yaw_rate(float *yaw_dps)
     return false;    /* TODO: gyro (e.g. IMU on QSPI/I2C) */
 }
 
+bool hal_read_motor_current(float *amps)
+{
+    (void)amps;
+    return false;    /* TODO: motor driver current sense on EVADC */
+}
+
+bool hal_read_limit_switches(bool *left, bool *right)
+{
+    (void)left;
+    (void)right;
+    return false;    /* TODO: digital inputs, if limit switches are fitted */
+}
+
 bool hal_read_roll_rate(float *roll_dps)
 {
     (void)roll_dps;

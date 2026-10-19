@@ -230,3 +230,36 @@ void sim_hal_set_neutral_switch(bool fitted, bool in_neutral)
     s_neutral_fitted = fitted;
     s_neutral_state = in_neutral;
 }
+
+static bool  s_current_fitted = false;
+static float s_current_a;
+static bool  s_limits_fitted = false;
+static bool  s_limit_left, s_limit_right;
+
+bool hal_read_motor_current(float *amps)
+{
+    if (!s_current_fitted) return false;
+    *amps = s_current_a;
+    return true;
+}
+
+bool hal_read_limit_switches(bool *left, bool *right)
+{
+    if (!s_limits_fitted) return false;
+    *left = s_limit_left;
+    *right = s_limit_right;
+    return true;
+}
+
+void sim_hal_set_motor_current(bool fitted, float amps)
+{
+    s_current_fitted = fitted;
+    s_current_a = amps;
+}
+
+void sim_hal_set_limit_switches(bool fitted, bool left, bool right)
+{
+    s_limits_fitted = fitted;
+    s_limit_left = left;
+    s_limit_right = right;
+}

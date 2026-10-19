@@ -65,6 +65,14 @@ bool hal_read_yaw_rate(float *yaw_dps);
  * false always if not available. */
 bool hal_read_roll_rate(float *roll_dps);
 
+/* Steering motor current, amps (optional current sense). Rises sharply
+ * when the motor pushes against an end stop. false if not fitted. */
+bool hal_read_motor_current(float *amps);
+
+/* Optional end-stop (limit) switches of the steering, true = at the stop.
+ * Returns false if not fitted. */
+bool hal_read_limit_switches(bool *left, bool *right);
+
 /* Rudder motor command, -1.0 .. +1.0 (clamped by the HAL). 0 = off. */
 void hal_set_rudder_motor(float command);
 

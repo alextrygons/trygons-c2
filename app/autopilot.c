@@ -77,7 +77,9 @@ static const ap_outboard_config_t k_outboard_default = {
     30.0f,  /* max_angle_deg    */
     3.0f,   /* turn_speed_deg_s */
     2.0f,   /* gap_deg          */
-    100u    /* min_pulse_ms     */
+    100u,   /* min_pulse_ms     */
+    5.0f,   /* stall_current_a  */
+    150u    /* stall_ms         */
 };
 
 void autopilot_default_config(ap_config_t *cfg)
@@ -113,7 +115,9 @@ static bool outboard_config_valid(const ap_outboard_config_t *ob)
     return ob->max_angle_deg    >= 5.0f  && ob->max_angle_deg    <= 45.0f
         && ob->turn_speed_deg_s >= 0.5f  && ob->turn_speed_deg_s <= 60.0f
         && ob->gap_deg          >= 0.0f  && ob->gap_deg          <= 15.0f
-        && ob->min_pulse_ms     <= 2000u;
+        && ob->min_pulse_ms     <= 2000u
+        && ob->stall_current_a  >= 0.0f  && ob->stall_current_a  <= 50.0f
+        && ob->stall_ms         <= 2000u;
 }
 
 static uint8_t clamp_sea_state(uint8_t s)
@@ -191,6 +195,9 @@ void autopilot_init(autopilot_t *ap, const ap_config_t *cfg)
     ap->gain_scale = 1.0f;
     ap->stale_gyro = false;
     ap->gyro_assist = false;
+    ap->stall_timer_ms = 0u;
+    ap->stop_block = 0;
+    ap->stops_hit = 0u;
 }
 
 /* --- sensors ------------------------------------------------------------ */
@@ -450,8 +457,8 @@ static float outboard_loop(autopilot_t *ap)
 
     if (ap->motor_dir != 0) {
         int8_t d = ap->motor_dir;
-        bool at_limit = (d > 0) ? ap->est_angle >= ob->max_angle_deg
-                                : ap->est_angle <= -ob->max_angle_deg;
+        bool at_limit = ap->stop_block == d ||
+                        ((d > 0) ? ap->est_angle >= ob->max_angle_deg : ap->est_angle <= -ob->max_angle_deg);
         bool reached = slack_to_go(ap, d) <= 1e-4f &&   /* gap taken up */
                        (float)d * err <= sp->deadband_off_deg;
         /* At the angle limit: stop at once (safety beats the min pulse).
@@ -463,8 +470,8 @@ static float outboard_loop(autopilot_t *ap)
     } else if (ap->pause_ms >= ob->min_pulse_ms &&
                fabsf(err) > sp->ob_deadband_on_deg) {
         int8_t d = (err > 0.0f) ? 1 : -1;
-        bool at_limit = (d > 0) ? ap->est_angle >= ob->max_angle_deg
-                                : ap->est_angle <= -ob->max_angle_deg;
+        bool at_limit = ap->stop_block == d ||
+                        ((d > 0) ? ap->est_angle >= ob->max_angle_deg : ap->est_angle <= -ob->max_angle_deg);
         if (!at_limit) {
             ap->motor_dir = d;   /* backlash is handled in outboard_account */
             ap->pulse_ms = 0u;
@@ -477,7 +484,48 @@ static float outboard_loop(autopilot_t *ap)
 
 /* One TRAINING step. Returns the motor command. On abort: motor off,
  * STANDBY, alarm (unless the user aborted). */
-static float training_mode_step(autopilot_t *ap, uint32_t now, bool stale)
+/* End stop reached? (outboard; optional current sense / limit switches)
+ * Returns the direction (+1 right, -1 left) the motor was pushing, or 0.
+ * *lag_ms = motor time spent at the stop before it was noticed. */
+static int8_t end_stop_hit(autopilot_t *ap, const ap_inputs_t *in, uint32_t dt_ms, uint32_t *lag_ms)
+{
+    const ap_outboard_config_t *ob = &ap->cfg.outboard;
+    int8_t d = (ap->motor_cmd > 0.0f) ? 1 : (ap->motor_cmd < 0.0f) ? -1 : 0;
+    *lag_ms = 0u;
+    if (d == 0) {
+        ap->stall_timer_ms = 0u;
+        return 0;
+    }
+    if (in->limits_ok && ((d > 0 && in->limit_right) || (d < 0 && in->limit_left))) return d;
+    if (in->current_ok && ob->stall_current_a > 0.0f) {
+        if (in->current_a > ob->stall_current_a) {
+            ap->stall_timer_ms += dt_ms;
+            if (ap->stall_timer_ms >= ob->stall_ms) {
+                *lag_ms = ap->stall_timer_ms;
+                ap->stall_timer_ms = 0u;
+                return d;
+            }
+        } else {
+            ap->stall_timer_ms = 0u;
+        }
+    }
+    return 0;
+}
+
+/* Normal steering at an end stop: stop, block that way, and correct the
+ * estimate (the outboard is at least at max_angle on that side). */
+static void end_stop_react(autopilot_t *ap, int8_t d)
+{
+    const ap_outboard_config_t *ob = &ap->cfg.outboard;
+    if (ap->motor_dir == d) outboard_stop(ap);
+    ap->stop_block = d;
+    ap->stops_hit++;
+    if ((float)d * ap->est_angle < ob->max_angle_deg) ap->est_angle = (float)d * ob->max_angle_deg;
+    ap->slack_deg = (float)d * 0.5f * ob->gap_deg;
+}
+
+static float training_mode_step(autopilot_t *ap, uint32_t now, bool stale,
+                                int8_t stop_hit, uint32_t stop_lag_ms)
 {
     training_t *t = &ap->train;
 
@@ -491,6 +539,8 @@ static float training_mode_step(autopilot_t *ap, uint32_t now, bool stale)
         in.heading_new = ap->heading_new;
         in.from_gyro = ap->gyro_valid && (now - ap->last_gyro_ms) < AP_SENSOR_STALE_MS;
         in.yaw_dps = in.from_gyro ? ap->gyro_dps : ap->yaw_rate;  /* compass = backup */
+        in.end_stop_hit = stop_hit;
+        in.end_stop_lag_ms = stop_lag_ms;
         int8_t m = training_step(t, &in);
         if (t->phase != TR_ABORTED) return (float)m;
     }
@@ -624,10 +674,12 @@ static float manual_loop(autopilot_t *ap, int8_t want)
     float lim = ob->max_angle_deg;
     if (ap->motor_dir != 0) {
         int8_t d = ap->motor_dir;
-        bool at_limit = (d > 0) ? ap->est_angle >= lim : ap->est_angle <= -lim;
+        bool at_limit = ap->stop_block == d ||
+                        ((d > 0) ? ap->est_angle >= lim : ap->est_angle <= -lim);
         if (at_limit || (want != d && ap->pulse_ms >= ob->min_pulse_ms)) outboard_stop(ap);
     } else if (want != 0 && ap->pause_ms >= ob->min_pulse_ms) {
-        bool at_limit = (want > 0) ? ap->est_angle >= lim : ap->est_angle <= -lim;
+        bool at_limit = ap->stop_block == want ||
+                        ((want > 0) ? ap->est_angle >= lim : ap->est_angle <= -lim);
         if (!at_limit) {
             ap->motor_dir = want;
             ap->pulse_ms = 0u;
@@ -704,7 +756,14 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
 {
     uint32_t now = in->now_ms;
 
-    if (is_outboard(ap)) outboard_account(ap, now);
+    int8_t hit = 0;
+    uint32_t hit_lag = 0u;
+    if (is_outboard(ap)) {
+        outboard_account(ap, now);
+        hit = end_stop_hit(ap, in, now - ap->last_step_ms, &hit_lag);
+        if (hit != 0 && ap->mode != AP_MODE_TRAINING) end_stop_react(ap, hit);
+        if (ap->stop_block != 0 && ap->motor_dir == -ap->stop_block) ap->stop_block = 0;  /* moving away */
+    }
     ap->last_step_ms = now;
 
     read_sensors(ap, in);
@@ -728,7 +787,7 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
     bool stale = sensors_older_than(ap, now, AP_SENSOR_STALE_MS);
 
     if (ap->mode == AP_MODE_TRAINING) {
-        ap->motor_cmd = training_mode_step(ap, now, stale);
+        ap->motor_cmd = training_mode_step(ap, now, stale, hit, hit_lag);
     } else if (ap->mode == AP_MODE_GYRO_HOLD) {
         ap->motor_cmd = gyro_hold_loop(ap);             /* no compass needed */
     } else if (ap->mode == AP_MODE_CENTER) {
