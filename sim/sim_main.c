@@ -5,6 +5,7 @@
  *   autopilot_sim [sea_state 1..5 [wave_seed]]   big boat, rudder feedback
  *                                                (defaults 3, 2024)
  *   autopilot_sim train [seed]                   outboard TRAINING tests
+ *   autopilot_sim train SEED BOAT SS             trace one training (BOAT 1..5, SS 1..2)
  *   autopilot_sim outboard [wave_seed]           small boat test table,
  *                                                sea state 3
  *
