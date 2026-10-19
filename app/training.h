@@ -37,7 +37,7 @@
 #define TR_MAX_YAW_DPS           15.0f
 #define TR_MAX_GAP_FRACTION      0.20f    /* gap > 20 % of lock-to-lock travel: implausible */
 #define TR_MAX_TRIM_DPS          3.0f     /* outboard clearly not centred */
-#define TR_MIN_FIT_R2            0.5f
+#define TR_MIN_FIT_R2            0.98f    /* good trainings reach 0.996+ in sim */
 
 /* Timing */
 #define TR_CENTER_MS         20000u

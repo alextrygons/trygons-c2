@@ -537,6 +537,11 @@ static bool end_stop_check(training_t *t, bool right, float lo, float hi, float 
     float shortfall = (hi - best_l) * t->gain;          /* deg/s */
     bool seen = (free_cost - best) > need && shortfall >= fmaxf(0.3f, 6.0f * t->noise);
 
+    /* A best fit right at the lower edge of the search is a model mismatch
+     * (e.g. gap estimate off in waves), not a stop: keep moving, the real
+     * stop will show up clearly further on. */
+    if (best_l < lo + 0.1f * (hi - lo)) seen = false;
+
     /* A real stop stays where it is as more data comes in; a wrong one
      * (noise, small model errors) moves. Need two checks that agree. */
     bool confirmed = seen && t->pred_best > 0.0f &&
@@ -567,7 +572,9 @@ static void phase_end(training_t *t, int8_t dir)
             if (found) t->travel_r = where;
         } else {
             float hi = run - t->gap_fit - t->travel_r;  /* past centre, to the left */
-            found = end_stop_check(t, false, 0.25f * t->travel_r, hi, &where);
+            /* the two sides can't differ by more than 2x (see plausibility):
+             * an "end stop" earlier than half the right travel is not real */
+            found = end_stop_check(t, false, 0.5f * t->travel_r, hi, &where);
             if (found) { t->travel_l = where; t->travel_r = t->q[2]; }
         }
         if (found) {

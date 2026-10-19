@@ -23,6 +23,8 @@
  *   NAV       follow the start -> waypoint line (cross-track error), slow
  *             down and stop (idle + neutral + alarm) on arrival; GPS lost ->
  *             CRUISE on the current heading at reduced speed + alarm
+ *   TRAINING  outboard calibration (training.c) at a fixed slow throttle in
+ *             forward gear; finished -> idle + neutral, wait for confirmation
  */
 #ifndef SMALLBOAT_H
 #define SMALLBOAT_H
@@ -86,6 +88,10 @@ typedef struct {
     float    lookahead_min_m;           /* aim this far ahead on the line, at least (40) */
     float    lookahead_s;               /* ... or this many seconds of travel (6) */
     float    crab_tau_s;                /* drift (current) estimate filter (20) */
+
+    /* TRAINING */
+    float    training_throttle_pct;     /* fixed slow throttle, forward gear (20) */
+    uint32_t training_spinup_ms;        /* at that throttle this long before calibrating (30 s) */
 } sb_config_t;
 
 typedef struct {
@@ -128,6 +134,19 @@ typedef struct {
     bool      arrived;
 } sb_nav_t;
 
+typedef enum {
+    TS_SPINUP = 0,          /* forward gear, slow throttle, settle */
+    TS_RUN,                 /* calibration running (training.c) */
+    TS_RESULT               /* finished: idle + neutral, waiting for accept / reject */
+} sb_train_stage_t;
+
+typedef struct {
+    sb_train_stage_t stage;
+    uint32_t timer_ms;
+    double   sog_sum;           /* average speed during the run */
+    uint32_t sog_n;
+} sb_train_t;
+
 typedef struct {
     sb_config_t cfg;
     mode_mgr_t  modes;
@@ -138,6 +157,7 @@ typedef struct {
     sb_cruise_t cruise;
     sb_nerv_t   nerv;
     sb_nav_t    nav;
+    sb_train_t  train;
 
     uint32_t now_ms, last_ms;
     bool     stopping;          /* safe stop running (idle + neutral first) */
@@ -175,6 +195,11 @@ void sb_set_cruise_speed(sb_t *s, float kn);
 
 /* NAV target: waypoint and speed. Needed before NAV can start. */
 void sb_set_waypoint(sb_t *s, double lat, double lon, float speed_kn);
+
+/* TRAINING finished (stage TS_RESULT): accept (apply + save) or reject.
+ * full_angle_deg = measured lock-to-lock angle, 0 if unknown. Goes to
+ * STANDBY either way. Returns true if accepted and applied. */
+bool sb_confirm_training(sb_t *s, bool accept, float full_angle_deg);
 
 /* Steering angle limit for a speed (from the table). */
 float sb_steer_limit_for(const sb_config_t *cfg, float sog_kn);

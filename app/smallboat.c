@@ -58,6 +58,9 @@ void sb_default_config(sb_config_t *cfg)
     cfg->lookahead_min_m = 40.0f;
     cfg->lookahead_s = 6.0f;
     cfg->crab_tau_s = 20.0f;
+
+    cfg->training_throttle_pct = 20.0f;
+    cfg->training_spinup_ms = 30000u;
 }
 
 void sb_set_waypoint(sb_t *s, double lat, double lon, float speed_kn)
@@ -129,7 +132,7 @@ static bool precondition(const sb_t *s, sb_mode_t to)
     case MODE_MANEUVER: return true;
     case MODE_CRUISE:   return sb_compass_ok(s);
     case MODE_NAV:      return sb_compass_ok(s) && sb_gps_ok(s) && s->nav.wp_set;
-    case MODE_TRAINING: return false;               /* not implemented yet */
+    case MODE_TRAINING: return sb_compass_ok(s) && s->ap.mode != AP_MODE_TRAINING;
     default:            return false;
     }
 }
@@ -178,6 +181,12 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         /* from STANDBY the outboard is assumed centred by hand */
         s->stopping = false;
         autopilot_manual(&s->ap, from != MODE_STANDBY);
+        break;
+    case MODE_TRAINING:
+        /* outboard centred by hand; steering off until calibration starts */
+        s->stopping = false;
+        autopilot_disengage(&s->ap);
+        memset(&s->train, 0, sizeof s->train);
         break;
     default:
         s->stopping = false;
@@ -416,6 +425,62 @@ static void nav_mode(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float rol
     cruise(s, dt, dt_ms, roll_new, roll);
 }
 
+/* --- TRAINING ------------------------------------------------------------------ */
+
+/* Forward gear and a fixed slow throttle; once settled, the calibration
+ * (training.c, inside the steering core) runs. Finished -> idle + neutral,
+ * wait for sb_confirm_training(). Any abort -> STANDBY (safe stop). */
+static void training_mode(sb_t *s, uint32_t dt_ms)
+{
+    sb_train_t *t = &s->train;
+
+    switch (t->stage) {
+    case TS_SPINUP:
+        s->gear_demand = GEAR_F;
+        s->throttle_demand = s->cfg.training_throttle_pct;
+        if (gear_is(&s->gear, GEAR_F)) t->timer_ms += dt_ms;
+        if (t->timer_ms >= s->cfg.training_spinup_ms) {
+            if (autopilot_start_training(&s->ap)) {
+                t->stage = TS_RUN;
+            } else {
+                s->alarm = true;
+                sb_request_mode(s, MODE_STANDBY, WHY_TRAINING_ABORT);
+            }
+        }
+        break;
+
+    case TS_RUN:
+        s->gear_demand = GEAR_F;
+        s->throttle_demand = s->cfg.training_throttle_pct;
+        if (sb_gps_ok(s)) { t->sog_sum += s->gps.last.sog_kn; t->sog_n++; }
+        if (s->ap.mode == AP_MODE_TRAINING && s->ap.train.phase == TR_RESULT) {
+            t->stage = TS_RESULT;               /* engine to idle + neutral below */
+        } else if (s->ap.mode != AP_MODE_TRAINING) {
+            /* the calibration stopped itself (limit, plausibility, sensor) */
+            s->alarm = true;
+            sb_request_mode(s, MODE_STANDBY, WHY_TRAINING_ABORT);
+        }
+        break;
+
+    case TS_RESULT:
+        s->gear_demand = GEAR_N;
+        s->throttle_demand = 0.0f;
+        break;
+    }
+}
+
+bool sb_confirm_training(sb_t *s, bool accept, float full_angle_deg)
+{
+    if (sb_mode(s) != MODE_TRAINING || s->train.stage != TS_RESULT) return false;
+    bool ok = autopilot_confirm_training(&s->ap, accept, full_angle_deg);
+    if (ok && s->train.sog_n > 0u) {
+        /* the scaled gains fit the training speed: CRUISE scales from there */
+        s->cfg.gain_ref_kn = (float)(s->train.sog_sum / (double)s->train.sog_n);
+    }
+    sb_request_mode(s, MODE_STANDBY, ok ? WHY_TRAINING_DONE : WHY_TRAINING_ABORT);
+    return ok;
+}
+
 /* --- step ------------------------------------------------------------------ */
 
 void sb_step(sb_t *s)
@@ -458,6 +523,7 @@ void sb_step(sb_t *s)
     if (sb_mode(s) == MODE_MANEUVER) maneuver(s);
     if (sb_mode(s) == MODE_CRUISE) cruise(s, dt, dt_ms, roll_new, roll);
     else if (sb_mode(s) == MODE_NAV) nav_mode(s, dt, dt_ms, roll_new, roll);
+    else if (sb_mode(s) == MODE_TRAINING) training_mode(s, dt_ms);
     if (sb_mode(s) != MODE_STANDBY && s->test_drive.on) {
         s->gear_demand = s->test_drive.gear;
         s->throttle_demand = s->test_drive.throttle_pct;

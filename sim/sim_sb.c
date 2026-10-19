@@ -808,6 +808,377 @@ static void phase5(void)
     }
 }
 
+/* ------------------------------------------------------------ phase 6 -- */
+
+/* A "true" boat for training tests (values at the slow training speed). */
+typedef struct {
+    float speed, gap, travel_r, travel_l, K, T, trim_deg;
+    bool  start_left;
+} tset_t;
+
+static uint32_t s6_rng;
+static float u6(float lo, float hi)
+{
+    s6_rng ^= s6_rng << 13; s6_rng ^= s6_rng >> 17; s6_rng ^= s6_rng << 5;
+    return lo + (hi - lo) * (float)(s6_rng >> 8) / 16777216.0f;
+}
+
+static tset_t tset_random(void)
+{
+    tset_t s;
+    s.speed = u6(1.5f, 5.0f);
+    s.gap = u6(0.5f, 3.5f);
+    s.travel_r = u6(25.0f, 38.0f);
+    s.travel_l = s.travel_r + u6(-4.0f, 4.0f);
+    s.K = u6(0.08f, 0.20f);
+    s.T = u6(1.5f, 6.0f);
+    s.trim_deg = u6(-2.0f, 2.0f);
+    s.start_left = u6(0.0f, 1.0f) < 0.5f;
+    return s;
+}
+
+static calib_data_t tset_calib(const tset_t *s)
+{
+    calib_data_t c;
+    memset(&c, 0, sizeof c);
+    float sp = fabsf(s->speed);
+    c.gain_dps_per_ms = s->K * sp / 1000.0f;
+    c.time_const_s = s->T;
+    c.gap_ms = c.gap_rl_ms = c.gap_lr_ms = s->gap / sp * 1000.0f;
+    c.travel_right_ms = s->travel_r / sp * 1000.0f;
+    c.travel_left_ms = s->travel_l / sp * 1000.0f;
+    c.trim_dps = s->K * s->trim_deg;
+    c.fit_r2 = c.confidence = 1.0f;
+    c.full_angle_deg = s->travel_r + s->travel_l;
+    calib_seal(&c);
+    return c;
+}
+
+static void world_tset(world_t *w, const tset_t *s)
+{
+    rudder_init_outboard(&w->rud, s->speed, s->speed, s->gap);
+    w->rud.max_angle_deg = s->travel_r;
+    w->rud.max_angle_neg_deg = s->travel_l;
+    if (s->start_left) w->rud.drive_deg = -0.5f * s->gap;
+    w->K_override = s->K;
+    w->T_override = s->T;
+    w->trim_deg = s->trim_deg;
+}
+
+typedef struct {
+    bool         reached_result, accepted;
+    tr_result_t  result;
+    sb_mode_t    mode_end;
+    mode_reason_t why_end;
+    calib_data_t calib;
+    sb_config_t  cfg_after;     /* sb config incl. calibrated steering */
+    float        duration_s, max_hdg_phase, stall_total, stall_longest;
+    float        thr_run_min, thr_run_max;  /* throttle while calibrating */
+    bool         gear_f_whole_run;
+    float        v_train;
+    int          motor_after_stop;
+    float        t_thr_down, t_neutral;     /* after an abort request */
+    int          under_load;
+    bool         alarm;
+    training_t   dbg_train;     /* diagnostics */
+} train6_t;
+
+static void sb_training(const tset_t *ts, uint8_t ss, uint32_t seed, uint32_t abort_at_s,
+                        uint32_t compass_fail_at_s, int confirm /* 1 accept, 0 reject */, train6_t *o)
+{
+    sbsim_t x;
+    sb_config_t cfg;
+    events_t ev;
+    memset(o, 0, sizeof *o);
+    memset(&ev, 0, sizeof ev);
+    sb_default_config(&cfg);
+    cfg.steer.sea_state = ss;
+    sbsim_init(&x, seed, 90.0f, 0.0f, &cfg);
+    x.w.sea_state = ss;
+    world_tset(&x.w, ts);
+    sbsim_run(&x, 3000u, NULL, NULL);
+    sb_request_mode(&x.sb, MODE_TRAINING, WHY_USER);
+    uint32_t t0 = x.t, stopped_at = 0u;
+    o->thr_run_min = 100.0f;
+    o->gear_f_whole_run = true;
+    bool req_sent = false;
+    while (x.t < t0 + 25u * 60u * 1000u) {
+        sbsim_run(&x, x.t + 50u, req_sent ? ev_watch : NULL, &ev);
+        uint32_t ts_s = (x.t - t0) / 1000u;
+        if (!req_sent && ((abort_at_s && ts_s >= abort_at_s) || (compass_fail_at_s && ts_s >= compass_fail_at_s))) {
+            ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_n_us);
+            if (abort_at_s) sim_hal_press(HAL_BTN_STANDBY_AUTO); else sim_hal_fail_heading(true);
+            req_sent = true;
+        }
+        if (sb_mode(&x.sb) == MODE_TRAINING && x.sb.train.stage == TS_RUN) {
+            float thr = sim_hal_throttle();
+            if (thr < o->thr_run_min) o->thr_run_min = thr;
+            if (thr > o->thr_run_max) o->thr_run_max = thr;
+            if (x.w.engaged != GEAR_F) o->gear_f_whole_run = false;
+        }
+        if (sb_mode(&x.sb) == MODE_TRAINING && x.sb.train.stage == TS_RESULT && !o->reached_result) {
+            o->reached_result = true;
+            sbsim_run(&x, x.t + 5000u, NULL, NULL);      /* engine settles to idle + neutral */
+            o->calib = x.sb.ap.train.calib;
+            o->v_train = x.sb.train.sog_n ? (float)(x.sb.train.sog_sum / x.sb.train.sog_n) : 0.0f;
+            if (confirm >= 0) o->accepted = sb_confirm_training(&x.sb, confirm == 1, ts->travel_r + ts->travel_l);
+            o->calib = x.sb.ap.train.calib;
+        }
+        if (sb_mode(&x.sb) == MODE_STANDBY) {
+            if (!stopped_at) stopped_at = x.t;
+            if (sim_hal_motor_command() != 0.0f && x.sb.ap.mode == AP_MODE_STANDBY) o->motor_after_stop++;
+            if (x.t - stopped_at > 20000u) break;
+        }
+    }
+    o->result = x.sb.ap.train.result;
+    o->mode_end = sb_mode(&x.sb);
+    const mode_log_entry_t *le = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
+    o->why_end = le->why;
+    o->cfg_after = x.sb.cfg;
+    o->cfg_after.steer = x.sb.ap.cfg;
+    o->duration_s = (float)((stopped_at ? stopped_at : x.t) - t0) * 0.001f;
+    o->max_hdg_phase = x.sb.ap.train.max_heading_change;
+    o->stall_total = x.w.rud.stall_s;
+    o->stall_longest = x.w.rud.stall_max_s;
+    o->t_thr_down = ev.t_thr_down;
+    o->t_neutral = ev.t_neutral;
+    o->under_load = x.w.shift_under_load;
+    o->alarm = sim_hal_alarm();
+    o->dbg_train = x.sb.ap.train;
+}
+
+/* sb config with a calibration applied (as accepting it would). */
+static sb_config_t cfg_with_calib(const calib_data_t *c, uint8_t ss, float v_train)
+{
+    sb_config_t cfg;
+    autopilot_t tmp;
+    sb_default_config(&cfg);
+    cfg.steer.sea_state = ss;
+    autopilot_init(&tmp, &cfg.steer);
+    autopilot_apply_calibration(&tmp, c);
+    cfg.steer = tmp.cfg;
+    if (v_train > 0.5f) cfg.gain_ref_kn = v_train;
+    return cfg;
+}
+
+typedef struct { float hold_max, hold_sq; int n; float over; uint32_t t0; float target; } course6_t;
+
+static void course6_hook(sbsim_t *x, void *ctx)
+{
+    course6_t *c = (course6_t *)ctx;
+    float ts = (float)(x->t - c->t0) * 0.001f;
+    if (ts >= 60.0f && ts < 60.1f) {
+        sim_hal_press(HAL_BTN_PLUS_10);
+    }
+    if (ts >= 60.3f && ts < 60.4f) sim_hal_press(HAL_BTN_PLUS_10);
+    if (ts >= 60.6f && ts < 60.7f) sim_hal_press(HAL_BTN_PLUS_10);
+    float e = hdg_err(x->w.heading_deg, x->sb.ap.target_heading);
+    if ((ts > 20.0f && ts < 60.0f) || ts > 180.0f) {    /* weak boats turn slowly: hold measured from 180 s */
+        if (fabsf(e) > c->hold_max) c->hold_max = fabsf(e);
+        c->hold_sq += e * e;
+        c->n++;
+    }
+    if (ts > 60.0f && ts < 180.0f && e > c->over) c->over = e;
+}
+
+static course6_t course6(const tset_t *ts, uint8_t ss, uint32_t seed, const sb_config_t *cfg, float speed)
+{
+    sbsim_t x;
+    course6_t c;
+    memset(&c, 0, sizeof c);
+    sbsim_init(&x, seed, 90.0f, 0.0f, cfg);
+    x.w.sea_state = ss;
+    world_tset(&x.w, ts);
+    sbsim_run(&x, 3000u, NULL, NULL);
+    sb_set_cruise_speed(&x.sb, speed);
+    sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+    c.t0 = x.t;
+    sbsim_run(&x, x.t + 300000u, course6_hook, &c);
+    return c;
+}
+
+static float pct6(float a, float b) { return (b != 0.0f) ? 100.0f * (a - b) / b : 0.0f; }
+
+static void phase6(void)
+{
+    char d[500];
+    printf("\n=== Phase 6: TRAINING (in the mode manager, throttle fixed, forward gear) ===\n");
+    printf("%-9s | %7s %7s %7s %7s %7s %7s %7s %8s | %5s %4s %4s %5s\n", "boat/sea", "gain%", "T%",
+           "gap%", "travR%", "travL%", "speed%", "gapdeg%", "trim d/s", "R2", "hdg", "push", "time");
+
+    s6_rng = 2024u;
+    tset_t sets[5];
+    for (int i = 0; i < 5; i++) sets[i] = tset_random();
+
+    int trained = 0, accurate = 0, total = 0, worse = 0, gap_off = 0, beyond_stop = 0;
+    float worst_gain = 0, worst_travel = 0, worst_speed = 0, worst_gapdeg = 0, worst_T = 0;
+    float hold_l_max = 0, hold_t_max = 0, over_l_max = 0, over_t_max = 0, push_max = 0, hdg_max = 0;
+    bool throttle_fixed = true, gear_ok = true;
+    char course_lines[10][160];
+
+    for (int i = 0; i < 5; i++) {
+        for (uint8_t ss = 1; ss <= 2; ss++) {
+            const tset_t *s = &sets[i];
+            train6_t o;
+            total++;
+            sb_training(s, ss, 600u + (uint32_t)i * 10u + ss, 0u, 0u, 1, &o);
+            if (!o.accepted) {
+                const training_t *tt = &o.dbg_train;
+                printf("%d / %u     | TRAINING FAILED: %s (mode %s, %s) - phase est: gain %.3f T %.2f "
+                       "gap %.0f trav %.0f/%.0f; fit: T %.2f gap %.0f trav %.0f/%.0f R2 %.3f\n", i + 1, ss,
+                       training_result_text(o.result), mode_name(o.mode_end), mode_reason_name(o.why_end),
+                       tt->gain * 1000.0f, tt->tconst, tt->gap_fit, tt->travel_r, tt->travel_l, tt->q[0], tt->q[1],
+                       tt->q[2], tt->q[3], tt->sst > 0.0 ? 1.0 - tt->best_cost / tt->sst : 0.0);
+                snprintf(course_lines[total - 1], sizeof course_lines[0], "%d / %u  | (no calibration)", i + 1, ss);
+                continue;
+            }
+            trained++;
+            calib_data_t tc = tset_calib(s);
+            const calib_data_t *c = &o.calib;
+            sb_config_t lc = o.cfg_after;
+            sb_config_t tcfg = cfg_with_calib(&tc, ss, o.v_train);
+            float e_gain = pct6(c->gain_dps_per_ms, tc.gain_dps_per_ms);
+            float e_T = pct6(c->time_const_s, tc.time_const_s);
+            float e_gap = pct6(c->gap_ms, tc.gap_ms);
+            float e_tr = pct6(c->travel_right_ms, tc.travel_right_ms);
+            float e_tl = pct6(c->travel_left_ms, tc.travel_left_ms);
+            float e_sp = pct6(lc.steer.outboard.turn_speed_deg_s, tcfg.steer.outboard.turn_speed_deg_s);
+            float e_gd = pct6(lc.steer.outboard.gap_deg, tcfg.steer.outboard.gap_deg);
+            float gap_abs = fabsf(lc.steer.outboard.gap_deg - tcfg.steer.outboard.gap_deg);
+            printf("%d / %u     | %+6.1f %+6.1f %+6.1f %+6.1f %+6.1f %+6.1f %+6.1f %+8.3f | %5.3f %3.0f %4.1f %4.0fs\n",
+                   i + 1, ss, e_gain, e_T, e_gap, e_tr, e_tl, e_sp, e_gd, c->trim_dps - tc.trim_dps,
+                   c->fit_r2, o.max_hdg_phase, o.stall_total, o.duration_s);
+            /* safety relevant: gain, travel (max angle), turn speed (estimate) */
+            if (fabsf(e_gain) <= 15 && fabsf(e_tr) <= 15 && fabsf(e_tl) <= 15 && fabsf(e_sp) <= 15) accurate++;
+            /* gap: reported, not failed (wave-limited, see report) */
+            if (fabsf(e_gd) > 15 && gap_abs > 0.5f) gap_off++;
+            if (lc.steer.outboard.max_angle_deg >= fminf(s->travel_r, s->travel_l)) beyond_stop++;
+            worst_gain = fmaxf(worst_gain, fabsf(e_gain));
+            worst_T = fmaxf(worst_T, fabsf(e_T));
+            worst_travel = fmaxf(worst_travel, fmaxf(fabsf(e_tr), fabsf(e_tl)));
+            worst_speed = fmaxf(worst_speed, fabsf(e_sp));
+            worst_gapdeg = fmaxf(worst_gapdeg, gap_abs);
+            push_max = fmaxf(push_max, o.stall_total);
+            hdg_max = fmaxf(hdg_max, o.max_hdg_phase);
+            if (o.thr_run_max - o.thr_run_min > 0.01f ||
+                fabsf(o.thr_run_max - lc.training_throttle_pct) > 0.01f) throttle_fixed = false;
+            if (!o.gear_f_whole_run) gear_ok = false;
+
+            /* course keeping at the training speed: learned vs true values */
+            uint32_t cs = 700u + (uint32_t)i * 10u + ss;
+            sb_config_t dc;
+            sb_default_config(&dc);
+            dc.steer.sea_state = ss;
+            course6_t cd = course6(s, ss, cs, &dc, o.v_train);
+            course6_t cl = course6(s, ss, cs, &lc, o.v_train);
+            course6_t ct = course6(s, ss, cs, &tcfg, o.v_train);
+            float rl = cl.n ? sqrtf(cl.hold_sq / cl.n) : 0, rt = ct.n ? sqrtf(ct.hold_sq / ct.n) : 0;
+            float rd = cd.n ? sqrtf(cd.hold_sq / cd.n) : 0;
+            snprintf(course_lines[total - 1], sizeof course_lines[0],
+                     "%d / %u  | %4.1f kn | default %5.2f/%4.2f/%4.1f | learned %5.2f/%4.2f/%4.1f | true %5.2f/%4.2f/%4.1f",
+                     i + 1, ss, o.v_train, cd.hold_max, rd, cd.over, cl.hold_max, rl, cl.over,
+                     ct.hold_max, rt, ct.over);
+            hold_l_max = fmaxf(hold_l_max, cl.hold_max);
+            hold_t_max = fmaxf(hold_t_max, ct.hold_max);
+            over_l_max = fmaxf(over_l_max, cl.over);
+            over_t_max = fmaxf(over_t_max, ct.over);
+            if (cl.hold_max > ct.hold_max * 1.3f + 1.0f || cl.over > ct.over * 1.3f + 2.0f) worse++;
+        }
+    }
+    printf("\nCourse keeping in CRUISE at the training speed (hold max / rms / overshoot of a 30 deg turn, deg):\n");
+    for (int k = 0; k < total; k++) printf("  %s\n", course_lines[k]);
+
+    snprintf(d, sizeof d, "%d/%d trained and accepted; gain/travel/turn speed within 15 %%: %d/%d; "
+             "max angle beyond the real end stop: %d; gap off by > 15 %% and > 0.5 deg: %d (not failed); worst errors: "
+             "gain %.1f %%, time const %.1f %%, travel %.1f %%, turn speed %.1f %%, gap %.2f deg",
+             trained, total, accurate, total, beyond_stop, gap_off, worst_gain, worst_T, worst_travel, worst_speed,
+             worst_gapdeg);
+    test_report("P6 training 5 random boats x sea state 1 + 2: learned vs true", trained == total &&
+                accurate == total && beyond_stop == 0, d);
+    snprintf(d, sizeof d, "worst course error learned %.1f deg vs true-value %.1f; overshoot %.1f vs %.1f; "
+             "learned clearly worse in %d of %d", hold_l_max, hold_t_max, over_l_max, over_t_max, worse, trained);
+    test_report("P6 course keeping with learned values as good as with true values",
+                trained == total && worse == 0 && over_l_max < 10.0f, d);
+    snprintf(d, sizeof d, "throttle constant at %.0f %% while calibrating: %s, forward gear the whole time: %s, "
+             "max heading change in a phase %.0f deg (limit %.0f), end-stop push max %.1f s total",
+             sets[0].speed > 0 ? 20.0f : 0.0f, throttle_fixed ? "yes" : "NO", gear_ok ? "yes" : "NO",
+             hdg_max, TR_MAX_PHASE_HEADING_DEG, push_max);
+    test_report("P6 training runs at fixed slow throttle in forward gear, within limits",
+                throttle_fixed && gear_ok && hdg_max <= TR_MAX_PHASE_HEADING_DEG, d);
+
+    /* safety: Standby during training */
+    {
+        train6_t o;
+        sb_training(&sets[0], 2, 650u, 120u, 0u, -1, &o);
+        snprintf(d, sizeof d, "%s, mode %s (%s), throttle down after %.2f s, neutral %.2f s, "
+                 "steering motor after stop %d, under-load %d, alarm %s",
+                 training_result_text(o.result), mode_name(o.mode_end), mode_reason_name(o.why_end),
+                 o.t_thr_down, o.t_neutral, o.motor_after_stop, o.under_load, o.alarm ? "on" : "off");
+        test_report("P6 Standby during training: abort, idle + neutral, steering off",
+                    o.result == TR_ABORT_USER && o.mode_end == MODE_STANDBY && o.t_thr_down >= 0.0f &&
+                    o.t_thr_down <= 0.1f && o.t_neutral > 0.0f && o.motor_after_stop == 0 && o.under_load == 0, d);
+    }
+    /* safety: compass failure during training */
+    {
+        train6_t o;
+        sb_training(&sets[0], 2, 651u, 0u, 150u, -1, &o);
+        snprintf(d, sizeof d, "%s, mode %s (%s), throttle down after %.2f s, neutral %.2f s, alarm %s, under-load %d",
+                 training_result_text(o.result), mode_name(o.mode_end), mode_reason_name(o.why_end),
+                 o.t_thr_down, o.t_neutral, o.alarm ? "on" : "OFF", o.under_load);
+        test_report("P6 compass failure during training: abort, STANDBY, idle + neutral, alarm",
+                    o.result == TR_ABORT_SENSOR && o.mode_end == MODE_STANDBY && o.alarm &&
+                    o.t_neutral > 0.0f && o.under_load == 0, d);
+    }
+    /* safety: training's own limits and plausibility end in a safe stop */
+    {
+        tset_t fast = sets[0], gap = sets[0];
+        fast.K = 0.7f; fast.speed = 6.0f; fast.T = 1.5f;
+        gap.travel_r = gap.travel_l = 15.0f; gap.gap = 8.0f;
+        train6_t a, b;
+        sb_training(&fast, 1, 652u, 0u, 0u, -1, &a);
+        sb_training(&gap, 1, 653u, 0u, 0u, -1, &b);
+        snprintf(d, sizeof d, "boat turning 20 deg/s at lock: %s -> %s (%s); gap 27 %% of travel: %s -> %s (%s); "
+                 "under-load %d/%d", training_result_text(a.result), mode_name(a.mode_end),
+                 mode_reason_name(a.why_end), training_result_text(b.result), mode_name(b.mode_end),
+                 mode_reason_name(b.why_end), a.under_load, b.under_load);
+        test_report("P6 limits / implausible results: training aborts into a safe stop",
+                    a.result != TR_OK && a.mode_end == MODE_STANDBY && a.why_end == WHY_TRAINING_ABORT &&
+                    b.result != TR_OK && b.mode_end == MODE_STANDBY && b.why_end == WHY_TRAINING_ABORT &&
+                    a.under_load == 0 && b.under_load == 0, d);
+    }
+    /* reject keeps the old settings; accept applies + saves (checksum) */
+    {
+        train6_t r;
+        sb_training(&sets[1], 1, 611u, 0u, 0u, 0, &r);     /* same run as boat 2 / sea 1 above */
+        sb_config_t def;
+        sb_default_config(&def);
+        bool unchanged = r.reached_result && !r.accepted &&
+                         r.cfg_after.steer.kp == def.steer.kp &&
+                         r.cfg_after.steer.outboard.turn_speed_deg_s == def.steer.outboard.turn_speed_deg_s;
+        calib_data_t back;
+        train6_t a;
+        sb_training(&sets[1], 1, 611u, 0u, 0u, 1, &a);
+        bool saved = a.accepted && calib_load(&back) && back.checksum == a.calib.checksum;
+        snprintf(d, sizeof d, "reject (training %s): settings unchanged %s, mode %s; accept: applied %s, saved + checksum OK %s, mode %s",
+                 training_result_text(r.result),
+                 unchanged ? "yes" : "NO", mode_name(r.mode_end), a.accepted ? "yes" : "NO",
+                 saved ? "yes" : "NO", mode_name(a.mode_end));
+        test_report("P6 confirmation: reject keeps settings, accept applies + saves",
+                    unchanged && saved && r.mode_end == MODE_STANDBY && a.mode_end == MODE_STANDBY, d);
+    }
+    /* training only from STANDBY */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 656u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+        bool from_cruise = sb_request_mode(&x.sb, MODE_TRAINING, WHY_USER);
+        const mode_log_entry_t *le = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
+        test_report("P6 TRAINING refused unless in STANDBY (table), and logged",
+                    !from_cruise && le->verdict == MODE_REJECT_TABLE && le->to == MODE_TRAINING, "");
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
@@ -816,4 +1187,5 @@ void sb_tests(void)
     phase3();
     phase4();
     phase5();
+    phase6();
 }
