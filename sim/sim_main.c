@@ -4,6 +4,7 @@
  * Usage:
  *   autopilot_sim [sea_state 1..5 [wave_seed]]   big boat, rudder feedback
  *                                                (defaults 3, 2024)
+ *   autopilot_sim train [seed]                   outboard TRAINING tests
  *   autopilot_sim outboard [wave_seed]           small boat test table,
  *                                                sea state 3
  *
@@ -28,45 +29,8 @@
 #include "autopilot.h"
 #include "boat_model.h"
 #include "hal_sim.h"
+#include "sim_run.h"
 
-#define PHYSICS_DT_MS   10u         /* boat model runs at 100 Hz */
-#define TURN_WINDOW_MS  40000u      /* turn metrics: 40 s after the course change */
-#define BOAT_SPEED_KN   6.0f
-
-typedef struct {
-    uint8_t  sea_state;
-    uint32_t seed;              /* wave pattern */
-    float    start_heading;
-    uint32_t end_ms;
-    uint32_t turn_at_ms;        /* +30 deg (three +10 presses), 0 = no turn */
-    uint32_t fail_at_ms;        /* compass dies for good (0 = never) */
-    uint32_t dropout_at_ms;     /* short compass dropout (0 = none)  */
-    uint32_t dropout_len_ms;
-    bool     outboard;          /* small boat, no rudder feedback */
-    float    true_speed_pos;    /* outboard only: TRUE actuator values */
-    float    true_speed_neg;
-    float    true_gap;
-    FILE    *csv;               /* NULL = no CSV */
-} scenario_t;
-
-typedef struct {
-    int   motor_switches;       /* motor on<->off changes, whole run */
-    int   pulses;               /* motor starts (or reversals), whole run */
-    float hold_max, hold_rms;   /* course error while holding (outside turn/failure) */
-    float hold_max_last5;       /* same, last 5 minutes only */
-    float reach_s, overshoot;   /* course change */
-    float frozen_after_s;       /* fail -> motor stopped for good */
-    float standby_s;            /* fail -> STANDBY + alarm */
-    int   motor_while_stale;    /* steps with motor on while compass stale */
-    bool  auto_at_end;          /* still AUTO, no alarm at the end */
-    float est_err_max;          /* outboard: worst |estimate - true angle| */
-    float est_err_max_first5;   /* ... first 5 minutes */
-    float est_err_max_last5;    /* ... last 5 minutes */
-    float est_err_end;          /* ... at the end (signed) */
-    float stall_s;              /* motor pushing against the mechanical stop */
-    float integrator_end;
-    float alarm_s;              /* first time the alarm came on in AUTO (-1 = never) */
-} results_t;
 
 static int self_test(void)
 {
@@ -90,7 +54,7 @@ static int self_test(void)
     return fails;
 }
 
-static results_t run(const scenario_t *sc)
+results_t run(const scenario_t *sc)
 {
     results_t r;
     memset(&r, 0, sizeof r);
@@ -106,18 +70,25 @@ static results_t run(const scenario_t *sc)
 
     boat_init(&boat, sc->start_heading, BOAT_SPEED_KN, sc->seed);
     boat.wave_amp_deg = (float)sc->sea_state;   /* simulated sea matches the setting */
+    if (sc->boat_K > 0.0f) boat.K_override = sc->boat_K;
+    if (sc->boat_T > 0.0f) boat.T_override = sc->boat_T;
+    if (sc->set_current)   boat.current_deg = sc->current_deg;
     if (sc->outboard)
         rudder_init_outboard(&rudder, sc->true_speed_pos, sc->true_speed_neg, sc->true_gap);
     else
         rudder_init(&rudder);
+    if (sc->stop_right > 0.0f) rudder.max_angle_deg = sc->stop_right;
+    if (sc->stop_left > 0.0f)  rudder.max_angle_neg_deg = sc->stop_left;
 
     sim_hal_set_time_ms(0);
     sim_hal_set_truth(boat.heading_deg, rudder.angle_deg);
     sim_hal_fail_heading(false);
     sim_hal_set_rudder_feedback(!sc->outboard);
+    sim_hal_set_gyro(false, 0.0f, 0.0f);
     hal_init();
     if (sc->outboard) autopilot_default_config_outboard(&cfg);
     else              autopilot_default_config(&cfg);
+    if (sc->cfg) cfg = *sc->cfg;
     cfg.sea_state = sc->sea_state;
     autopilot_init(&ap, &cfg);
 
@@ -231,13 +202,15 @@ static int big_boat(int ss, uint32_t seed)
         return 1;
     }
     scenario_t main_sc = { (uint8_t)ss, seed, 90.0f, 300000u, 60000u, 240000u, 0u, 0u,
-                           false, 0.0f, 0.0f, 0.0f, csv };
+                           false, 0.0f, 0.0f, 0.0f, csv,
+                          0.0f, 0.0f, false, 0.0f, 0.0f, 0.0f, NULL };
     results_t m = run(&main_sc);
     fclose(csv);
 
     /* Short dropout during the turn, while the motor is working hard */
     scenario_t drop_sc = { (uint8_t)ss, seed, 90.0f, 70000u, 60000u, 0u, 61000u, 1200u,
-                           false, 0.0f, 0.0f, 0.0f, NULL };
+                           false, 0.0f, 0.0f, 0.0f, NULL,
+                          0.0f, 0.0f, false, 0.0f, 0.0f, 0.0f, NULL };
     results_t d = run(&drop_sc);
 
     printf("\n=== Sea state %d, simulated waves %d deg (true boat heading) ===\n", ss, ss);
@@ -297,7 +270,8 @@ static int outboard(uint32_t seed)
     for (int i = 0; i < n; i++) {
         FILE *csv = (i == 0) ? fopen("sim_outboard.csv", "w") : NULL;
         scenario_t sc = { ss, seed, 90.0f, 300000u, 60000u, 240000u, 0u, 0u,
-                          true, cases[i].speed_pos, cases[i].speed_neg, cases[i].gap, csv };
+                          true, cases[i].speed_pos, cases[i].speed_neg, cases[i].gap, csv,
+                          0.0f, 0.0f, false, 0.0f, 0.0f, 0.0f, NULL };
         results_t r = run(&sc);
         if (csv) fclose(csv);
         main_r[i] = r;
@@ -311,7 +285,8 @@ static int outboard(uint32_t seed)
     results_t north_r[8];
     for (int i = 0; i < n; i++) {
         scenario_t sc = { ss, seed, 350.0f, 120000u, 60000u, 0u, 0u, 0u,
-                          true, cases[i].speed_pos, cases[i].speed_neg, cases[i].gap, NULL };
+                          true, cases[i].speed_pos, cases[i].speed_neg, cases[i].gap, NULL,
+                          0.0f, 0.0f, false, 0.0f, 0.0f, 0.0f, NULL };
         results_t r = run(&sc);
         north_r[i] = r;
         printf("%-27s %6.1fs %7.2f %7.2f %8.1f\n",
@@ -324,7 +299,8 @@ static int outboard(uint32_t seed)
     results_t long_r[8];
     for (int i = 0; i < n; i++) {
         scenario_t sc = { ss, seed, 90.0f, 600000u, 0u, 0u, 0u, 0u,
-                          true, cases[i].speed_pos, cases[i].speed_neg, cases[i].gap, NULL };
+                          true, cases[i].speed_pos, cases[i].speed_neg, cases[i].gap, NULL,
+                          0.0f, 0.0f, false, 0.0f, 0.0f, 0.0f, NULL };
         results_t r = run(&sc);
         long_r[i] = r;
         printf("%-27s %11.2f %12.2f %+9.2f %13.2f %9.0f %+9.2f %s\n",
@@ -336,7 +312,8 @@ static int outboard(uint32_t seed)
     printf("\nSafety checks and flags\n");
     for (int i = 0; i < n; i++) {
         scenario_t sc = { ss, seed, 90.0f, 70000u, 60000u, 0u, 61000u, 1200u,
-                          true, cases[i].speed_pos, cases[i].speed_neg, cases[i].gap, NULL };
+                          true, cases[i].speed_pos, cases[i].speed_neg, cases[i].gap, NULL,
+                          0.0f, 0.0f, false, 0.0f, 0.0f, 0.0f, NULL };
         results_t d = run(&sc);
         const results_t *m = &main_r[i], *no = &north_r[i], *lo = &long_r[i];
 
@@ -365,7 +342,8 @@ static int outboard(uint32_t seed)
     /* Steering failure: motor runs but the outboard never moves. Without
      * angle feedback only the off-course alarm can notice this. */
     scenario_t dead = { ss, seed, 90.0f, 180000u, 0u, 0u, 0u, 0u,
-                        true, 0.0f, 0.0f, 2.0f, NULL };
+                        true, 0.0f, 0.0f, 2.0f, NULL,
+                          0.0f, 0.0f, false, 0.0f, 0.0f, 0.0f, NULL };
     results_t dr = run(&dead);
     if (dr.alarm_s >= 0.0f) {
         printf("Steering failure (outboard never moves): off-course alarm at %.1f s\n",
@@ -382,6 +360,11 @@ int main(int argc, char **argv)
 {
     if (self_test() != 0) return 1;
 
+    if (argc > 1 && strcmp(argv[1], "train") == 0) {
+        uint32_t seed = (argc > 2) ? (uint32_t)strtoul(argv[2], NULL, 10) : 2024u;
+        if (argc > 4) return training_trace(seed, atoi(argv[3]), atoi(argv[4]));
+        return training_tests(seed);
+    }
     if (argc > 1 && strcmp(argv[1], "outboard") == 0) {
         uint32_t seed = (argc > 2) ? (uint32_t)strtoul(argv[2], NULL, 10) : 2024u;
         return outboard(seed);

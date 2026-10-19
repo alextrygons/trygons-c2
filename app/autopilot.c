@@ -11,6 +11,7 @@
 #include "hal.h"
 
 #include <math.h>
+#include <string.h>
 
 /* Per sea state: wave filter on the yaw rate (D term) and rudder deadband.
  *
@@ -180,16 +181,31 @@ void autopilot_init(autopilot_t *ap, const ap_config_t *cfg)
     ap->last_heading_ms = now;
     ap->last_rudder_ms = now;
     ap->sensor_fault = false;
+    ap->gyro_dps = 0.0f;
+    ap->gyro_valid = false;
+    ap->last_gyro_ms = now;
+    ap->heading_new = false;
+    memset(&ap->train, 0, sizeof ap->train);
+    ap->calibrated = false;
 }
 
 /* --- sensors ------------------------------------------------------------ */
 
 static void read_sensors(autopilot_t *ap, uint32_t now)
 {
-    float h, r;
+    float h, r, g;
+
+    /* Gyro (optional): used by TRAINING, compass is the backup. */
+    if (hal_read_yaw_rate(&g) && fabsf(g) < 200.0f) {
+        ap->gyro_dps = g;
+        ap->gyro_valid = true;
+        ap->last_gyro_ms = now;
+    }
 
     /* A reading that is out of range counts as "no new data". */
+    ap->heading_new = false;
     if (hal_read_heading(&h) && h >= 0.0f && h < 360.0f) {
+        ap->heading_new = true;
         if (ap->heading_valid) {
             float dt = (float)(now - ap->last_heading_ms) * 0.001f;
             if (dt > 0.0f) {
@@ -226,6 +242,10 @@ static bool sensors_older_than(const autopilot_t *ap, uint32_t now, uint32_t lim
 
 static void enter_standby(autopilot_t *ap)
 {
+    if (ap->mode == AP_MODE_TRAINING &&
+        ap->train.phase > TR_IDLE && ap->train.phase < TR_RESULT) {
+        training_abort(&ap->train, TR_ABORT_USER);   /* still running: stop it */
+    }
     ap->mode = AP_MODE_STANDBY;
     ap->motor_moving = false;
     outboard_stop(ap);
@@ -257,7 +277,12 @@ static void handle_buttons(autopilot_t *ap)
                       (is_outboard(ap) || ap->rudder_valid);
 
     if (presses & HAL_BTN_BIT(HAL_BTN_STANDBY_AUTO)) {
-        if (ap->mode == AP_MODE_AUTO) {
+        if (ap->mode == AP_MODE_TRAINING) {
+            /* abort training (or reject a finished result): motor off */
+            training_abort(&ap->train, ap->train.phase == TR_RESULT
+                                       ? TR_ABORT_REJECTED : TR_ABORT_USER);
+            enter_standby(ap);
+        } else if (ap->mode == AP_MODE_AUTO) {
             enter_standby(ap);
         } else {
             ap->alarm = false;            /* pressing also acknowledges alarm */
@@ -439,6 +464,111 @@ static float outboard_loop(autopilot_t *ap)
     return (float)ap->motor_dir;
 }
 
+/* --- training / calibration ---------------------------------------------- */
+
+/* One TRAINING step. Returns the motor command. On abort: motor off,
+ * STANDBY, alarm (unless the user aborted). */
+static float training_mode_step(autopilot_t *ap, uint32_t now, bool stale)
+{
+    training_t *t = &ap->train;
+
+    if (t->phase == TR_RESULT) return 0.0f;      /* waiting for accept / reject */
+    if (stale) training_abort(t, TR_ABORT_SENSOR);
+
+    if (t->phase != TR_ABORTED) {
+        tr_input_t in;
+        in.now_ms = now;
+        in.heading_deg = ap->heading;
+        in.heading_new = ap->heading_new;
+        in.from_gyro = ap->gyro_valid && (now - ap->last_gyro_ms) < AP_SENSOR_STALE_MS;
+        in.yaw_dps = in.from_gyro ? ap->gyro_dps : ap->yaw_rate;  /* compass = backup */
+        int8_t m = training_step(t, &in);
+        if (t->phase != TR_ABORTED) return (float)m;
+    }
+    if (t->result != TR_ABORT_USER) ap->alarm = true;
+    enter_standby(ap);
+    return 0.0f;
+}
+
+bool autopilot_start_training(autopilot_t *ap)
+{
+    if (!is_outboard(ap) || ap->mode != AP_MODE_STANDBY ||
+        !ap->heading_valid || ap->sensor_fault) {
+        return false;
+    }
+    training_start(&ap->train, hal_millis(), ap->heading);
+    outboard_stop(ap);
+    ap->alarm = false;
+    ap->mode = AP_MODE_TRAINING;
+    return true;
+}
+
+bool autopilot_confirm_training(autopilot_t *ap, bool accept, float full_angle_deg)
+{
+    if (ap->mode != AP_MODE_TRAINING || ap->train.phase != TR_RESULT) return false;
+
+    if (accept) {
+        calib_data_t c = ap->train.calib;
+        c.full_angle_deg = (full_angle_deg >= 10.0f && full_angle_deg <= 120.0f)
+                         ? full_angle_deg : 0.0f;
+        calib_seal(&c);
+        accept = calib_valid(&c);
+        if (accept) {
+            ap->train.calib = c;
+            (void)calib_save(&c);   /* no storage yet on the board: still use it */
+            autopilot_apply_calibration(ap, &c);
+            accept = ap->calibrated;
+        }
+    }
+    if (!accept) training_abort(&ap->train, TR_ABORT_REJECTED);
+    enter_standby(ap);
+    return accept;
+}
+
+void autopilot_apply_calibration(autopilot_t *ap, const calib_data_t *c)
+{
+    ap_config_t d;
+    autopilot_default_config_outboard(&d);
+
+    /* Degrees per ms of motor run: only known if the user measured the
+     * lock-to-lock angle. Otherwise keep the configured (nominal) speed;
+     * the loop gain is still right because the gains are scaled below. */
+    float travel_ms = c->travel_left_ms + c->travel_right_ms;
+    float speed = (c->full_angle_deg > 0.0f) ? c->full_angle_deg / (travel_ms * 0.001f)
+                                             : ap->cfg.outboard.turn_speed_deg_s;
+
+    ap_outboard_config_t ob = ap->cfg.outboard;
+    ob.turn_speed_deg_s = speed;
+    ob.gap_deg = c->gap_ms * speed * 0.001f;
+    ob.max_angle_deg = clampf(fminf(c->travel_left_ms, c->travel_right_ms) * speed * 0.001f
+                              - AP_CALIB_MARGIN_DEG, 5.0f, 45.0f);
+    if (!outboard_config_valid(&ob)) {
+        ap->calibrated = false;
+        return;
+    }
+
+    /* Gain scheduling (see AP_CALIB_REF_K): same loop gain as the boat the
+     * gains were tuned on, and a turn rate this boat can actually follow. */
+    float k = c->gain_dps_per_ms * 1000.0f / speed;     /* deg/s yaw per deg */
+    float scale = clampf(AP_CALIB_REF_K / k, 0.25f, 4.0f);
+    float turn = fminf(d.turn_rate_dps, AP_CALIB_TURN_FRACTION * k * ob.max_angle_deg);
+
+    ap->cfg.outboard = ob;
+    ap->cfg.kp = d.kp * scale;
+    ap->cfg.ki = d.ki * scale;
+    ap->cfg.kd = d.kd * scale;
+    ap->cfg.turn_rate_dps = fmaxf(0.5f, turn);
+    ap->calibrated = true;
+}
+
+bool autopilot_load_calibration(autopilot_t *ap)
+{
+    calib_data_t c;
+    if (!is_outboard(ap) || !calib_load(&c)) return false;
+    autopilot_apply_calibration(ap, &c);
+    return ap->calibrated;
+}
+
 void autopilot_step(autopilot_t *ap)
 {
     uint32_t now = hal_millis();
@@ -451,6 +581,7 @@ void autopilot_step(autopilot_t *ap)
     /* Sensor timeout: STANDBY + alarm, once at the moment it happens. */
     bool fault = sensors_older_than(ap, now, AP_SENSOR_TIMEOUT_MS);
     if (fault && !ap->sensor_fault) {
+        if (ap->mode == AP_MODE_TRAINING) training_abort(&ap->train, TR_ABORT_SENSOR);
         enter_standby(ap);
         ap->alarm = true;
     }
@@ -463,7 +594,9 @@ void autopilot_step(autopilot_t *ap)
      * 2 s timeout above drops us to STANDBY. */
     bool stale = sensors_older_than(ap, now, AP_SENSOR_STALE_MS);
 
-    if (ap->mode == AP_MODE_AUTO && stale) {
+    if (ap->mode == AP_MODE_TRAINING) {
+        ap->motor_cmd = training_mode_step(ap, now, stale);
+    } else if (ap->mode == AP_MODE_AUTO && stale) {
         ap->motor_moving = false;
         outboard_stop(ap);
         ap->motor_cmd = 0.0f;

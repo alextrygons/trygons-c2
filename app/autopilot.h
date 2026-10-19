@@ -20,6 +20,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "calib.h"
+#include "training.h"
+
 /* Fixed control loop rate: 20 Hz. */
 #define AP_RATE_HZ          20u
 #define AP_PERIOD_MS        (1000u / AP_RATE_HZ)
@@ -35,6 +38,16 @@
  * estimate can't drift away (e.g. motor faster one way than the other). */
 #define AP_OUTBOARD_RECENTER_TAU_S  60.0f
 
+/* Calibration -> settings. The outboard gains were tuned on a reference
+ * boat (sim at 6 kn) that turns K_REF deg/s per degree of outboard. A
+ * calibrated boat gets all gains scaled by K_REF / its own K (same loop
+ * gain), and its turn rate is limited to what a quarter of its outboard
+ * angle can do. (Tested in sim against other rules: this one held course
+ * best; using the time constant too made it worse.) */
+#define AP_CALIB_REF_K          0.3f
+#define AP_CALIB_TURN_FRACTION  0.25f
+#define AP_CALIB_MARGIN_DEG     3.0f    /* keep max_angle this far from the end stop */
+
 /* Sea state 1 (calm) .. 5 (rough). Higher = more wave filtering and a
  * wider rudder deadband: less motor wear, slightly looser course. */
 #define AP_SEA_STATE_MIN      1u
@@ -47,7 +60,8 @@
 
 typedef enum {
     AP_MODE_STANDBY = 0,
-    AP_MODE_AUTO
+    AP_MODE_AUTO,
+    AP_MODE_TRAINING        /* outboard calibration, see training.h */
 } ap_mode_t;
 
 typedef enum {
@@ -130,6 +144,14 @@ typedef struct {
 
     uint32_t off_course_ms; /* how long we have been far off course */
 
+    /* Gyro (optional) and training */
+    float    gyro_dps;      /* last gyro yaw rate (raw) */
+    bool     gyro_valid;
+    uint32_t last_gyro_ms;
+    bool     heading_new;   /* new compass sample this step */
+    training_t train;
+    bool     calibrated;    /* outboard settings come from a calibration */
+
     bool     sensor_fault;  /* a sensor is currently timed out */
     bool     heading_valid;
     bool     rudder_valid;
@@ -153,6 +175,24 @@ void autopilot_set_sea_state(autopilot_t *ap, uint8_t sea_state);
 /* Change outboard settings while running. Returns false (and keeps the
  * old settings) if a value is out of range. */
 bool autopilot_set_outboard_config(autopilot_t *ap, const ap_outboard_config_t *ob);
+
+/* Start TRAINING (outboard only, from STANDBY, compass working).
+ * Conditions: flat water, no current, slow constant speed, outboard
+ * centred by hand. Standby/Auto aborts at any time. Returns false if
+ * training is not allowed now. */
+bool autopilot_start_training(autopilot_t *ap);
+
+/* After training reaches TR_RESULT: accept (save + use) or reject.
+ * full_angle_deg = measured lock-to-lock outboard angle, 0 if unknown
+ * (then degrees are nominal, based on the configured turn speed).
+ * Returns true if the calibration was accepted and applied. */
+bool autopilot_confirm_training(autopilot_t *ap, bool accept, float full_angle_deg);
+
+/* Turn a calibration into outboard settings + scaled gains. */
+void autopilot_apply_calibration(autopilot_t *ap, const calib_data_t *c);
+
+/* Load a saved calibration (if valid) and apply it. */
+bool autopilot_load_calibration(autopilot_t *ap);
 
 /* Run one control cycle. Call exactly every AP_PERIOD_MS. */
 void autopilot_step(autopilot_t *ap);

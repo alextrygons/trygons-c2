@@ -54,6 +54,13 @@ bool hal_read_heading(float *heading_deg);
  */
 bool hal_read_rudder_angle(float *rudder_deg);
 
+/*
+ * Gyro yaw rate, deg/s, positive = turning to starboard (heading
+ * increasing). Same rule: true + new value only when a new sample has
+ * arrived. Returns false always if no gyro is fitted.
+ */
+bool hal_read_yaw_rate(float *yaw_dps);
+
 /* Rudder motor command, -1.0 .. +1.0 (clamped by the HAL). 0 = off. */
 void hal_set_rudder_motor(float command);
 
@@ -65,5 +72,14 @@ uint32_t hal_get_button_presses(void);
 
 /* Alarm output (buzzer / LED). */
 void hal_set_alarm(bool on);
+
+/*
+ * Non-volatile storage for the calibration record (an opaque block of
+ * bytes; the app adds its own version and checksum). Save returns true
+ * when written. Load returns true when exactly `size` bytes were read;
+ * the caller must still check version and checksum.
+ */
+bool hal_calib_save(const void *data, uint32_t size);
+bool hal_calib_load(void *data, uint32_t size);
 
 #endif /* HAL_H */

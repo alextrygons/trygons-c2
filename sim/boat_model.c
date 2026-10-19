@@ -38,6 +38,8 @@ void boat_init(boat_t *b, float heading_deg, float speed_kn, uint32_t seed)
     b->wave_amp_deg = 3.0f;
     b->wave_filt = 0.0f;
     b->rng = seed ? seed : 1u;
+    b->K_override = 0.0f;
+    b->T_override = 0.0f;
 }
 
 void boat_step(boat_t *b, float rudder_deg, float t_s, float dt_s)
@@ -45,8 +47,8 @@ void boat_step(boat_t *b, float rudder_deg, float t_s, float dt_s)
     /* Faster boat = turns harder (K up) and responds quicker (T down).
      * At 6 kn: K = 0.3 1/s  (10 deg rudder -> 3 deg/s turn), T = 2 s. */
     float v = b->speed_kn > 0.5f ? b->speed_kn : 0.5f;
-    float K = 0.05f * v;
-    float T = 12.0f / v;
+    float K = (b->K_override > 0.0f) ? b->K_override : 0.05f * v;
+    float T = (b->T_override > 0.0f) ? b->T_override : 12.0f / v;
 
     /* Waves: a regular swell (period 7 s) + filtered random chop. */
     float tau = 1.5f;
@@ -73,7 +75,10 @@ void rudder_init(rudder_actuator_t *r)
     r->rate_neg_dps = 6.0f;
     r->gap_deg = 0.0f;
     r->max_angle_deg = 35.0f;
+    r->max_angle_neg_deg = 35.0f;
     r->stall_s = 0.0f;
+    r->stall_run_s = 0.0f;
+    r->stall_max_s = 0.0f;
 }
 
 void rudder_init_outboard(rudder_actuator_t *r, float speed_pos_dps,
@@ -102,15 +107,23 @@ void rudder_step(rudder_actuator_t *r, float motor_cmd, float dt_s)
     if (r->drive_deg - r->angle_deg > half) r->angle_deg = r->drive_deg - half;
     else if (r->angle_deg - r->drive_deg > half) r->angle_deg = r->drive_deg + half;
 
-    /* Mechanical stops */
+    /* Mechanical stops (and how long the motor pushes against them) */
+    bool pushing = false;
     if (r->angle_deg > r->max_angle_deg) {
         r->angle_deg = r->max_angle_deg;
         if (r->drive_deg > r->max_angle_deg + half) r->drive_deg = r->max_angle_deg + half;
-        if (motor_cmd > 0.0f) r->stall_s += dt_s;
+        if (motor_cmd > 0.0f) pushing = true;
     }
-    if (r->angle_deg < -r->max_angle_deg) {
-        r->angle_deg = -r->max_angle_deg;
-        if (r->drive_deg < -r->max_angle_deg - half) r->drive_deg = -r->max_angle_deg - half;
-        if (motor_cmd < 0.0f) r->stall_s += dt_s;
+    if (r->angle_deg < -r->max_angle_neg_deg) {
+        r->angle_deg = -r->max_angle_neg_deg;
+        if (r->drive_deg < -r->max_angle_neg_deg - half) r->drive_deg = -r->max_angle_neg_deg - half;
+        if (motor_cmd < 0.0f) pushing = true;
+    }
+    if (pushing) {
+        r->stall_s += dt_s;
+        r->stall_run_s += dt_s;
+        if (r->stall_run_s > r->stall_max_s) r->stall_max_s = r->stall_run_s;
+    } else {
+        r->stall_run_s = 0.0f;
     }
 }

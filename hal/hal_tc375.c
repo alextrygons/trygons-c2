@@ -76,6 +76,26 @@ void hal_set_rudder_motor(float command)
     (void)command;   /* TODO: PWM + direction to the motor driver */
 }
 
+bool hal_read_yaw_rate(float *yaw_dps)
+{
+    (void)yaw_dps;
+    return false;    /* TODO: gyro (e.g. IMU on QSPI/I2C) */
+}
+
+bool hal_calib_save(const void *data, uint32_t size)
+{
+    (void)data;
+    (void)size;
+    return false;    /* TODO: write to data flash (DFLASH0, IfxFlash) */
+}
+
+bool hal_calib_load(void *data, uint32_t size)
+{
+    (void)data;
+    (void)size;
+    return false;    /* TODO: read from data flash */
+}
+
 uint32_t hal_get_button_presses(void)
 {
     return 0u;       /* TODO: read and debounce the buttons */

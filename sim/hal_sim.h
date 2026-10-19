@@ -16,6 +16,12 @@ void sim_hal_set_time_ms(uint32_t t_ms);
  * at their own rate (compass 10 Hz, rudder sensor 20 Hz) and add noise. */
 void sim_hal_set_truth(float heading_deg, float rudder_deg);
 
+/* True yaw rate for the simulated gyro, deg/s. */
+void sim_hal_set_yaw_truth(float yaw_dps);
+
+/* Fit a gyro (default: none) with a constant bias and random noise. */
+void sim_hal_set_gyro(bool fitted, float bias_dps, float noise_dps);
+
 /* Simulate a dead compass (no new samples while true). */
 void sim_hal_fail_heading(bool failed);
 
