@@ -96,6 +96,22 @@ bool hal_calib_load(void *data, uint32_t size)
     return false;    /* TODO: read from data flash */
 }
 
+void hal_set_throttle(float percent)
+{
+    (void)percent;   /* TODO: throttle servo PWM (GTM TOM) */
+}
+
+void hal_set_gear_pwm(uint16_t pulse_us)
+{
+    (void)pulse_us;  /* TODO: gear servo PWM (GTM TOM, 50 Hz) */
+}
+
+bool hal_read_gps(hal_gps_t *gps)
+{
+    (void)gps;
+    return false;    /* TODO: NMEA parser on ASCLIN UART */
+}
+
 uint32_t hal_get_button_presses(void)
 {
     return 0u;       /* TODO: read and debounce the buttons */

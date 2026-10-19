@@ -35,4 +35,10 @@ void sim_hal_press(hal_button_t button);
 float sim_hal_motor_command(void);
 bool  sim_hal_alarm(void);
 
+/* Small boat: what the controller commanded, and GPS messages. */
+float    sim_hal_throttle(void);
+uint16_t sim_hal_gear_pwm(void);
+void     sim_hal_gps_message(const hal_gps_t *g);
+void     sim_hal_reset_engine(void);
+
 #endif /* HAL_SIM_H */

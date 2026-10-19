@@ -146,3 +146,32 @@ void sim_hal_press(hal_button_t button)  { s_buttons |= HAL_BTN_BIT(button); }
 float sim_hal_motor_command(void)        { return s_motor; }
 bool  sim_hal_alarm(void)                { return s_alarm; }
 void sim_hal_set_rudder_feedback(bool fitted) { s_rudder_feedback = fitted; }
+
+/* ---- small boat: engine and GPS ---------------------------------------- */
+
+static float     s_throttle;
+static uint16_t  s_gear_pwm = 1500u;
+static hal_gps_t s_gps;
+static bool      s_gps_new;
+
+void hal_set_throttle(float percent)
+{
+    if (percent < 0.0f) percent = 0.0f;
+    if (percent > 100.0f) percent = 100.0f;
+    s_throttle = percent;
+}
+
+void hal_set_gear_pwm(uint16_t pulse_us) { s_gear_pwm = pulse_us; }
+
+bool hal_read_gps(hal_gps_t *gps)
+{
+    if (!s_gps_new) return false;
+    *gps = s_gps;
+    s_gps_new = false;
+    return true;
+}
+
+float    sim_hal_throttle(void)  { return s_throttle; }
+uint16_t sim_hal_gear_pwm(void)  { return s_gear_pwm; }
+void     sim_hal_gps_message(const hal_gps_t *g) { s_gps = *g; s_gps_new = true; }
+void     sim_hal_reset_engine(void) { s_throttle = 0.0f; s_gear_pwm = 1500u; s_gps_new = false; }

@@ -73,6 +73,29 @@ uint32_t hal_get_button_presses(void);
 /* Alarm output (buzzer / LED). */
 void hal_set_alarm(bool on);
 
+/* ---- Small boat: engine and GPS ---------------------------------------- */
+
+/* Throttle servo, 0 (idle) .. 100 % (full). Clamped by the HAL. */
+void hal_set_throttle(float percent);
+
+/* Gear servo position as an RC-style PWM pulse width in microseconds
+ * (e.g. 1100 = R, 1500 = N, 1900 = F; the positions are configured in the
+ * app, see gear.h). */
+void hal_set_gear_pwm(uint16_t pulse_us);
+
+/* One GPS fix (from NMEA RMC/GGA on a UART). */
+typedef struct {
+    double   lat_deg;       /* + north */
+    double   lon_deg;       /* + east */
+    float    sog_kn;        /* speed over ground */
+    float    cog_deg;       /* course over ground, 0..360 */
+    bool     fix;           /* position valid */
+    uint32_t time_ms;       /* receiver timestamp (ms of the day) */
+} hal_gps_t;
+
+/* true + new data only when a new GPS message arrived since the last call. */
+bool hal_read_gps(hal_gps_t *gps);
+
 /*
  * Non-volatile storage for the calibration record (an opaque block of
  * bytes; the app adds its own version and checksum). Save returns true

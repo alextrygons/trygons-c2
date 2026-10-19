@@ -191,12 +191,13 @@ void autopilot_init(autopilot_t *ap, const ap_config_t *cfg)
 
 /* --- sensors ------------------------------------------------------------ */
 
-static void read_sensors(autopilot_t *ap, uint32_t now)
+static void read_sensors(autopilot_t *ap, const ap_inputs_t *in)
 {
-    float h, r, g;
+    uint32_t now = in->now_ms;
+    float h = in->heading_deg, r = in->rudder_deg, g = in->gyro_dps;
 
     /* Gyro (optional): used by TRAINING, compass is the backup. */
-    if (hal_read_yaw_rate(&g) && fabsf(g) < 200.0f) {
+    if (in->gyro_new && fabsf(g) < 200.0f) {
         ap->gyro_dps = g;
         ap->gyro_valid = true;
         ap->last_gyro_ms = now;
@@ -204,7 +205,7 @@ static void read_sensors(autopilot_t *ap, uint32_t now)
 
     /* A reading that is out of range counts as "no new data". */
     ap->heading_new = false;
-    if (hal_read_heading(&h) && h >= 0.0f && h < 360.0f) {
+    if (in->heading_new && h >= 0.0f && h < 360.0f) {
         ap->heading_new = true;
         if (ap->heading_valid) {
             float dt = (float)(now - ap->last_heading_ms) * 0.001f;
@@ -223,7 +224,7 @@ static void read_sensors(autopilot_t *ap, uint32_t now)
 
     /* The outboard has no angle sensor: don't read or supervise it. */
     if (!is_outboard(ap) &&
-        hal_read_rudder_angle(&r) && fabsf(r) <= HAL_RUDDER_MAX_DEG + 5.0f) {
+        in->rudder_new && fabsf(r) <= HAL_RUDDER_MAX_DEG + 5.0f) {
         ap->rudder_angle = r;
         ap->rudder_valid = true;
         ap->last_rudder_ms = now;
@@ -270,9 +271,8 @@ static void enter_auto(autopilot_t *ap)
     }
 }
 
-static void handle_buttons(autopilot_t *ap)
+static void handle_buttons(autopilot_t *ap, uint32_t presses)
 {
-    uint32_t presses = hal_get_button_presses();
     bool sensors_ok = ap->heading_valid && !ap->sensor_fault &&
                       (is_outboard(ap) || ap->rudder_valid);
 
@@ -496,7 +496,7 @@ bool autopilot_start_training(autopilot_t *ap)
         !ap->heading_valid || ap->sensor_fault) {
         return false;
     }
-    training_start(&ap->train, hal_millis(), ap->heading);
+    training_start(&ap->train, ap->last_step_ms, ap->heading);
     outboard_stop(ap);
     ap->alarm = false;
     ap->mode = AP_MODE_TRAINING;
@@ -569,14 +569,42 @@ bool autopilot_load_calibration(autopilot_t *ap)
     return ap->calibrated;
 }
 
-void autopilot_step(autopilot_t *ap)
+bool autopilot_engage(autopilot_t *ap, bool keep_estimate)
 {
-    uint32_t now = hal_millis();
+    bool sensors_ok = ap->heading_valid && !ap->sensor_fault &&
+                      (is_outboard(ap) || ap->rudder_valid);
+    if (!sensors_ok) return false;
+    if (ap->mode == AP_MODE_TRAINING) return false;
+    float est = ap->est_angle, slack = ap->slack_deg;
+    enter_auto(ap);
+    if (keep_estimate && is_outboard(ap)) {
+        /* outboard not centred by hand (e.g. coming from manual steering) */
+        ap->est_angle = est;
+        ap->slack_deg = slack;
+        ap->rudder_target = est;
+    }
+    return true;
+}
+
+void autopilot_disengage(autopilot_t *ap)
+{
+    enter_standby(ap);
+    ap->motor_cmd = 0.0f;
+}
+
+void autopilot_set_target(autopilot_t *ap, float heading_deg)
+{
+    ap->target_heading = autopilot_wrap360(heading_deg);
+}
+
+void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
+{
+    uint32_t now = in->now_ms;
 
     if (is_outboard(ap)) outboard_account(ap, now);
     ap->last_step_ms = now;
 
-    read_sensors(ap, now);
+    read_sensors(ap, in);
 
     /* Sensor timeout: STANDBY + alarm, once at the moment it happens. */
     bool fault = sensors_older_than(ap, now, AP_SENSOR_TIMEOUT_MS);
@@ -587,7 +615,7 @@ void autopilot_step(autopilot_t *ap)
     }
     ap->sensor_fault = fault;
 
-    handle_buttons(ap);
+    handle_buttons(ap, in->buttons);
 
     /* Stale data (0.5 s): stop the motor so the rudder holds where it is,
      * and don't touch the PID state, until fresh data arrives or the
@@ -607,6 +635,20 @@ void autopilot_step(autopilot_t *ap)
         outboard_stop(ap);
         ap->motor_cmd = 0.0f;
     }
+}
+
+void autopilot_step(autopilot_t *ap)
+{
+    /* Read the hardware (same order as always), compute, write outputs. */
+    ap_inputs_t in;
+    memset(&in, 0, sizeof in);
+    in.now_ms = hal_millis();
+    in.gyro_new = hal_read_yaw_rate(&in.gyro_dps);
+    in.heading_new = hal_read_heading(&in.heading_deg);
+    if (!is_outboard(ap)) in.rudder_new = hal_read_rudder_angle(&in.rudder_deg);
+    in.buttons = hal_get_button_presses();
+
+    autopilot_update(ap, &in);
 
     hal_set_rudder_motor(ap->motor_cmd);
     hal_set_alarm(ap->alarm);

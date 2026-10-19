@@ -194,8 +194,35 @@ void autopilot_apply_calibration(autopilot_t *ap, const calib_data_t *c);
 /* Load a saved calibration (if valid) and apply it. */
 bool autopilot_load_calibration(autopilot_t *ap);
 
-/* Run one control cycle. Call exactly every AP_PERIOD_MS. */
+/* Run one control cycle. Call exactly every AP_PERIOD_MS.
+ * Reads the sensors and buttons through the HAL, computes, and writes the
+ * steering motor and alarm through the HAL. */
 void autopilot_step(autopilot_t *ap);
+
+/* Everything the autopilot reads in one cycle. */
+typedef struct {
+    uint32_t now_ms;
+    bool     gyro_new;    float gyro_dps;      /* new gyro sample? */
+    bool     heading_new; float heading_deg;   /* new compass sample? */
+    bool     rudder_new;  float rudder_deg;    /* new rudder sample? (big boat) */
+    uint32_t buttons;                          /* HAL_BTN_BIT() presses */
+} ap_inputs_t;
+
+/* The same cycle without any HAL access: the caller supplies the inputs
+ * and sends ap->motor_cmd / ap->alarm itself. Used by the small-boat
+ * controller (smallboat.c), which owns all outputs. */
+void autopilot_update(autopilot_t *ap, const ap_inputs_t *in);
+
+/* Heading hold on the current heading (AUTO). keep_estimate: the outboard
+ * angle estimate is kept (outboard not centred by hand). Returns false if
+ * the sensors aren't OK. */
+bool autopilot_engage(autopilot_t *ap, bool keep_estimate);
+
+/* STANDBY: steering motor off. */
+void autopilot_disengage(autopilot_t *ap);
+
+/* New course to steer (AUTO); reached at the configured turn rate. */
+void autopilot_set_target(autopilot_t *ap, float heading_deg);
 
 /* Shortest signed angle from heading to target, in -180..+180 deg.
  * Positive = target is to starboard (turn right). */

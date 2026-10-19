@@ -1,0 +1,159 @@
+/*
+ * sim_world.c - Simulated small boat. See sim_world.h.
+ */
+#include "sim_world.h"
+#include "hal_sim.h"
+
+#include <math.h>
+#include <string.h>
+
+#define PI_F        3.14159265f
+#define KN_TO_MS    0.514444f
+#define LAT0        60.0
+#define LON0        25.0
+#define M_PER_DEG   111320.0
+
+void world_init(world_t *w, uint32_t seed, float heading_deg, float speed_kn)
+{
+    memset(w, 0, sizeof *w);
+    w->vmax_fwd_kn = 20.0f;
+    w->vmax_rev_kn = 8.0f;
+    w->idle_fwd_kn = 1.5f;
+    w->speed_tau_s = 6.0f;
+    w->gps_pos_noise_m = 1.5f;
+    w->heading_deg = heading_deg;
+    w->speed_kn = speed_kn;
+    w->rng = seed ? seed : 1u;
+    w->gps_rng = (seed * 7919u) | 1u;
+    rudder_init_outboard(&w->rud, 3.0f, 3.0f, 2.0f);
+    w->gear_pos_us = 1500.0f;
+    w->engaged = GEAR_N;
+}
+
+static float wrap360(float d)
+{
+    d = fmodf(d, 360.0f);
+    return (d < 0.0f) ? d + 360.0f : d;
+}
+
+float world_sog_kn(const world_t *w)
+{
+    float h = w->heading_deg * PI_F / 180.0f;
+    float ve = w->speed_kn * KN_TO_MS * sinf(h) + w->current_e;
+    float vn = w->speed_kn * KN_TO_MS * cosf(h) + w->current_n;
+    return sqrtf(ve * ve + vn * vn) / KN_TO_MS;
+}
+
+float world_cog_deg(const world_t *w)
+{
+    float h = w->heading_deg * PI_F / 180.0f;
+    float ve = w->speed_kn * KN_TO_MS * sinf(h) + w->current_e;
+    float vn = w->speed_kn * KN_TO_MS * cosf(h) + w->current_n;
+    return wrap360(atan2f(ve, vn) * 180.0f / PI_F);
+}
+
+void world_latlon(const world_t *w, double *lat, double *lon)
+{
+    *lat = LAT0 + w->north_m / M_PER_DEG;
+    *lon = LON0 + w->east_m / (M_PER_DEG * cos(LAT0 * 3.14159265358979 / 180.0));
+}
+
+void world_from_latlon(double lat, double lon, double *north_m, double *east_m)
+{
+    *north_m = (lat - LAT0) * M_PER_DEG;
+    *east_m = (lon - LON0) * M_PER_DEG * cos(LAT0 * 3.14159265358979 / 180.0);
+}
+
+/* Gear servo: moves at 2000 us/s; the gearbox engages near the ends. */
+static void gear_model(world_t *w, float dt_s)
+{
+    float cmd = (float)sim_hal_gear_pwm();
+    float step = 2000.0f * dt_s;
+    if (cmd > w->gear_pos_us + step) w->gear_pos_us += step;
+    else if (cmd < w->gear_pos_us - step) w->gear_pos_us -= step;
+    else w->gear_pos_us = cmd;
+
+    gear_t now = (w->gear_pos_us >= 1800.0f) ? GEAR_F
+               : (w->gear_pos_us <= 1200.0f) ? GEAR_R : GEAR_N;
+    if (now != w->engaged) {
+        if (w->throttle > 5.0f) w->shift_under_load++;
+        if (now != GEAR_N && (w->t_ms - w->neutral_since_ms) < 500u) w->fr_without_neutral++;
+        if (now == GEAR_N) w->neutral_since_ms = w->t_ms;
+        w->engaged = now;
+    }
+}
+
+void world_step(world_t *w, float dt_s)
+{
+    w->t_ms += (uint32_t)lrintf(dt_s * 1000.0f);
+
+    /* throttle servo + watch */
+    float thr = sim_hal_throttle();
+    if (w->t_ms % 50u == 0u) {          /* the controller updates every 50 ms */
+        float rate = fabsf(thr - w->last_throttle) / 0.05f;
+        if (rate > w->max_thr_rate) w->max_thr_rate = rate;
+        w->last_throttle = thr;
+    }
+    w->throttle = thr;
+    gear_model(w, dt_s);
+    if (w->engaged == GEAR_F && thr > w->max_thr_fwd) w->max_thr_fwd = thr;
+    if (w->engaged == GEAR_R && thr > w->max_thr_rev) w->max_thr_rev = thr;
+
+    /* speed through water */
+    float vss = 0.0f;
+    if (w->engaged == GEAR_F) vss = w->idle_fwd_kn + (w->vmax_fwd_kn - w->idle_fwd_kn) * thr / 100.0f;
+    if (w->engaged == GEAR_R) vss = -(0.8f + (w->vmax_rev_kn - 0.8f) * thr / 100.0f);
+    w->speed_kn += (vss - w->speed_kn) * dt_s / w->speed_tau_s;
+
+    /* steering actuator */
+    rudder_step(&w->rud, sim_hal_motor_command(), dt_s);
+
+    /* yaw: turn gain and time constant follow speed; reversed in reverse */
+    float v = w->speed_kn;
+    float av = fabsf(v) > 0.3f ? fabsf(v) : 0.3f;
+    float K = (w->K_override > 0.0f) ? w->K_override : 0.05f * av;
+    float T = (w->T_override > 0.0f) ? w->T_override : 12.0f / av;
+    if (T < 0.4f) T = 0.4f;
+    if (v < 0.0f) K = -K;
+    if (fabsf(v) < 0.3f) K *= fabsf(v) / 0.3f;      /* no steering at rest */
+
+    float tau = 1.5f;
+    w->wave_filt += (dt_s / tau) *
+        (boat_rand_gauss(&w->rng) * sqrtf(2.0f * tau / dt_s) - w->wave_filt);
+    float waves = w->sea_state * (0.6f * sinf(2.0f * PI_F * (float)w->t_ms * 0.001f / 7.0f)
+                                  + 0.6f * w->wave_filt);
+    float input = w->rud.angle_deg + w->trim_deg + waves;
+    w->yaw_dps += (K * input - w->yaw_dps) * (dt_s / T);
+    w->heading_deg = wrap360(w->heading_deg + w->yaw_dps * dt_s);
+
+    /* position */
+    float h = w->heading_deg * PI_F / 180.0f;
+    w->east_m += (double)((v * KN_TO_MS * sinf(h) + w->current_e) * dt_s);
+    w->north_m += (double)((v * KN_TO_MS * cosf(h) + w->current_n) * dt_s);
+}
+
+void world_publish(world_t *w, uint32_t t_ms)
+{
+    sim_hal_set_time_ms(t_ms);
+    sim_hal_set_truth(w->heading_deg, w->rud.angle_deg);
+    sim_hal_set_yaw_truth(w->yaw_dps);
+
+    if (t_ms % 1000u == 0u && !w->gps_fail) {
+        hal_gps_t g;
+        double n = w->north_m + w->gps_pos_noise_m * boat_rand_gauss(&w->gps_rng);
+        double e = w->east_m + w->gps_pos_noise_m * boat_rand_gauss(&w->gps_rng);
+        double lat, lon;
+        world_t tmp = *w;
+        tmp.north_m = n; tmp.east_m = e;
+        world_latlon(&tmp, &lat, &lon);
+        float sog = world_sog_kn(w);
+        g.lat_deg = lat;
+        g.lon_deg = lon;
+        g.sog_kn = fmaxf(0.0f, sog + 0.1f * boat_rand_gauss(&w->gps_rng));
+        g.cog_deg = wrap360(world_cog_deg(w) +
+                    (0.1f / fmaxf(sog, 0.2f)) * 57.3f * boat_rand_gauss(&w->gps_rng));
+        g.fix = true;
+        g.time_ms = t_ms;
+        sim_hal_gps_message(&g);
+    }
+}
