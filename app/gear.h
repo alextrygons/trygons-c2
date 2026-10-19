@@ -8,6 +8,9 @@
  *
  * Requests can come at any time and as fast as the user likes; the
  * machine always finishes the safe sequence and ends in the last request.
+ *
+ * With a neutral switch fitted, neutral must be confirmed by the switch
+ * within neutral_confirm_ms; otherwise GS_FAULT (stuck servo / linkage).
  */
 #ifndef GEAR_H
 #define GEAR_H
@@ -29,13 +32,16 @@ typedef struct {
     uint32_t idle_wait_ms;      /* at idle this long before leaving a gear (1000) */
     uint32_t neutral_wait_ms;   /* in neutral this long before a new gear (1000) */
     uint32_t engage_wait_ms;    /* after engaging, before throttle is allowed (800) */
+    uint32_t neutral_confirm_ms;/* neutral switch must confirm within this (2000) */
 } gear_config_t;
 
 typedef enum {
     GS_STEADY = 0,      /* in `current`, nothing to do */
     GS_WAIT_IDLE,       /* throttle going to idle / staying idle */
     GS_TO_NEUTRAL,      /* servo moving to neutral */
-    GS_TO_GEAR          /* servo moving to the new gear */
+    GS_TO_GEAR,         /* servo moving to the new gear */
+    GS_FAULT            /* neutral not confirmed: no more gear commands,
+                           throttle idle, alarm (until power cycle) */
 } gear_phase_t;
 
 typedef struct {
@@ -56,8 +62,12 @@ void gear_init(gear_sm_t *g, const gear_config_t *cfg);
 void gear_request(gear_sm_t *g, gear_t gear);
 
 /* One step. throttle_out_pct = what is actually being sent to the throttle
- * servo now (the machine waits for it to be at idle). */
-void gear_step(gear_sm_t *g, uint32_t dt_ms, float throttle_out_pct);
+ * servo now (the machine waits for it to be at idle). neutral_sw: -1 = no
+ * neutral switch fitted, 0 = switch says in gear, 1 = switch says neutral. */
+void gear_step(gear_sm_t *g, uint32_t dt_ms, float throttle_out_pct, int8_t neutral_sw);
+
+/* Neutral was commanded but the switch did not confirm it: fault. */
+bool gear_fault(const gear_sm_t *g);
 
 /* May the throttle be opened? Only when settled in F or R. */
 bool gear_throttle_allowed(const gear_sm_t *g);

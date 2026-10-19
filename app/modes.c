@@ -76,7 +76,7 @@ const char *mode_reason_name(mode_reason_t r)
 {
     static const char *const n[] = {
         "user", "standby button", "compass fault", "GPS lost", "arrived",
-        "training done", "training aborted", "test"
+        "training done", "training aborted", "test", "gear fault"
     };
     return ((unsigned)r < WHY_COUNT) ? n[r] : "?";
 }

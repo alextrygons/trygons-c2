@@ -214,3 +214,19 @@ void sim_hal_set_roll(bool fitted, float roll_dps)
     s_roll_fitted = fitted;
     s_true_roll_rate = roll_dps;
 }
+
+static bool s_neutral_fitted = false;
+static bool s_neutral_state;
+
+bool hal_read_neutral_switch(bool *in_neutral)
+{
+    if (!s_neutral_fitted) return false;
+    *in_neutral = s_neutral_state;
+    return true;
+}
+
+void sim_hal_set_neutral_switch(bool fitted, bool in_neutral)
+{
+    s_neutral_fitted = fitted;
+    s_neutral_state = in_neutral;
+}

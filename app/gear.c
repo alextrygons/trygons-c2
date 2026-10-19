@@ -12,6 +12,7 @@ void gear_default_config(gear_config_t *cfg)
     cfg->idle_wait_ms = 1000u;
     cfg->neutral_wait_ms = 1000u;
     cfg->engage_wait_ms = 800u;
+    cfg->neutral_confirm_ms = 2000u;
 }
 
 static uint16_t pwm_for(const gear_sm_t *g, gear_t gear)
@@ -37,6 +38,7 @@ void gear_init(gear_sm_t *g, const gear_config_t *cfg)
 
 void gear_request(gear_sm_t *g, gear_t gear)
 {
+    if (g->phase == GS_FAULT) return;          /* no further gear commands */
     if (gear == g->target) return;
     g->target = gear;
 
@@ -57,10 +59,12 @@ void gear_request(gear_sm_t *g, gear_t gear)
         g->phase = GS_WAIT_IDLE;
         g->timer_ms = 0u;
         break;
+    case GS_FAULT:
+        break;
     }
 }
 
-void gear_step(gear_sm_t *g, uint32_t dt_ms, float throttle_out_pct)
+void gear_step(gear_sm_t *g, uint32_t dt_ms, float throttle_out_pct, int8_t neutral_sw)
 {
     switch (g->phase) {
     case GS_STEADY:
@@ -83,6 +87,13 @@ void gear_step(gear_sm_t *g, uint32_t dt_ms, float throttle_out_pct)
 
     case GS_TO_NEUTRAL:
         g->timer_ms += dt_ms;
+        if (neutral_sw >= 0 && neutral_sw != 1) {
+            /* switch fitted but not (yet) in neutral */
+            if (g->timer_ms >= g->cfg.neutral_confirm_ms) {
+                g->phase = GS_FAULT;            /* stuck: stop commanding the gear */
+            }
+            break;
+        }
         if (g->timer_ms >= g->cfg.neutral_wait_ms) {
             if (g->target == GEAR_N) {
                 g->phase = GS_STEADY;
@@ -108,6 +119,9 @@ void gear_step(gear_sm_t *g, uint32_t dt_ms, float throttle_out_pct)
             }
         }
         break;
+
+    case GS_FAULT:
+        break;                                  /* servo output stays as it is */
     }
 }
 
@@ -124,4 +138,9 @@ bool gear_is(const gear_sm_t *g, gear_t gear)
 const char *gear_name(gear_t g)
 {
     return (g == GEAR_F) ? "F" : (g == GEAR_R) ? "R" : "N";
+}
+
+bool gear_fault(const gear_sm_t *g)
+{
+    return g->phase == GS_FAULT;
 }

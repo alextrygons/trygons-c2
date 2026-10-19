@@ -28,6 +28,8 @@ typedef struct {
     float speed_tau_s;          /* speed response (6 s) */
     bool  gps_fail;             /* no GPS messages */
     float gps_pos_noise_m;      /* 1.5 */
+    bool  neutral_switch;       /* a neutral switch is fitted */
+    bool  servo_stuck;          /* gear servo does not move any more */
 
     /* state */
     float heading_deg, yaw_dps, wave_filt;

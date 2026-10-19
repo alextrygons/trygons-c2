@@ -131,10 +131,10 @@ static bool precondition(const sb_t *s, sb_mode_t to)
 {
     switch (to) {
     case MODE_STANDBY:  return true;
-    case MODE_MANEUVER: return true;
-    case MODE_CRUISE:   return sb_compass_ok(s);
-    case MODE_NAV:      return sb_compass_ok(s) && sb_gps_ok(s) && s->nav.wp_set;
-    case MODE_TRAINING: return sb_compass_ok(s) && s->ap.mode != AP_MODE_TRAINING;
+    case MODE_MANEUVER: return !gear_fault(&s->gear);
+    case MODE_CRUISE:   return sb_compass_ok(s) && !gear_fault(&s->gear);
+    case MODE_NAV:      return sb_compass_ok(s) && sb_gps_ok(s) && s->nav.wp_set && !gear_fault(&s->gear);
+    case MODE_TRAINING: return sb_compass_ok(s) && s->ap.mode != AP_MODE_TRAINING && !gear_fault(&s->gear);
     default:            return false;
     }
 }
@@ -524,6 +524,8 @@ void sb_step(sb_t *s)
     uint32_t buttons = hal_get_button_presses();
     read_inputs(s, &in, buttons);
     bool roll_new = hal_read_roll_rate(&roll);
+    bool nsw;
+    int8_t neutral_sw = hal_read_neutral_switch(&nsw) ? (nsw ? 1 : 0) : -1;
 
     /* 1. steering core (also detects compass timeout) */
     autopilot_update(&s->ap, &in);
@@ -564,7 +566,10 @@ void sb_step(sb_t *s)
         s->throttle_demand = 0.0f;
         s->gear_demand = GEAR_N;
         if (s->stopping) {
-            bool safe = s->thr.out_pct <= s->cfg.gear.idle_max_pct && gear_is(&s->gear, GEAR_N);
+            /* a gear fault (neutral not confirmed) also ends the stop: the
+             * engine is held at idle and the gear can't be commanded */
+            bool safe = s->thr.out_pct <= s->cfg.gear.idle_max_pct &&
+                        (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear));
 
             /* compass lost during the stop of an auto-steering mode */
             if ((s->stop_steer == STOP_STEER_HEADING || s->stop_steer == STOP_STEER_NONE) &&
@@ -603,7 +608,13 @@ void sb_step(sb_t *s)
     gear_request(&s->gear, s->gear_demand);
     float thr = throttle_step(&s->thr, s->throttle_demand, s->gear.current,
                               gear_throttle_allowed(&s->gear), dt);
-    gear_step(&s->gear, dt_ms, thr);
+    gear_step(&s->gear, dt_ms, thr, neutral_sw);
+    if (gear_fault(&s->gear)) {
+        /* neutral not confirmed: alarm; driving modes are refused, a
+         * running one ends in STANDBY (throttle stays idle) */
+        s->alarm = true;
+        if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_GEAR_FAULT);
+    }
 
     /* 6. outputs: engine first, steering last */
     hal_set_throttle(s->thr.out_pct);

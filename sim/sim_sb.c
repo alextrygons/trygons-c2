@@ -1261,10 +1261,99 @@ static stopturn_t stop_turn(uint8_t fault_steer, bool gyro_fails, uint32_t seed)
     return s;
 }
 
+/* Gear servo sticks in F while the operator asks for reverse. */
+typedef struct {
+    float thr_max_after;        /* throttle after the stick */
+    float v_end;                /* boat speed at the end (+ = forward) */
+    bool  alarm, fault, cmds_frozen, refused;
+    float t_fault;              /* s after the reverse request */
+    sb_mode_t mode_end;
+    mode_reason_t why_end;
+} stuck_t;
+
+static stuck_t stuck_servo(bool switch_fitted, uint32_t seed)
+{
+    static const ctl_step_t fwd[] = { { 0.0f, 0.0f, 1.0f, HAL_SEL_F } };
+    sbsim_t x;
+    script_t s;
+    stuck_t r;
+    memset(&r, 0, sizeof r);
+    r.t_fault = -1.0f;
+    sbsim_init(&x, seed, 0.0f, 0.0f, NULL);
+    x.w.neutral_switch = switch_fitted;
+    sbsim_run(&x, 1000u, NULL, NULL);
+    sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
+    script_start(&s, &x, fwd, 1);
+    sbsim_run(&x, 20000u, script_hook, &s);
+    x.w.servo_stuck = true;                         /* servo dies in forward */
+    sim_hal_set_controls(0.0f, 1.0f, HAL_SEL_R);    /* operator wants reverse */
+    uint32_t t0 = x.t;
+    uint16_t pwm_at_fault = 0u;
+    r.cmds_frozen = true;
+    while (x.t < t0 + 40000u) {
+        sbsim_run(&x, x.t + 50u, NULL, NULL);
+        if (sim_hal_throttle() > r.thr_max_after && x.t > t0 + 2000u) r.thr_max_after = sim_hal_throttle();
+        if (gear_fault(&x.sb.gear) && r.t_fault < 0.0f) {
+            r.t_fault = (float)(x.t - t0) * 0.001f;
+            pwm_at_fault = sim_hal_gear_pwm();
+        }
+        if (r.t_fault >= 0.0f && sim_hal_gear_pwm() != pwm_at_fault) r.cmds_frozen = false;
+        if (x.t == t0 + 20000u) sim_hal_set_controls(0.0f, 1.0f, HAL_SEL_F);   /* tries again */
+    }
+    r.refused = !sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
+    r.v_end = x.w.speed_kn;
+    r.alarm = sim_hal_alarm();
+    r.fault = gear_fault(&x.sb.gear);
+    r.mode_end = sb_mode(&x.sb);
+    r.why_end = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 2u)->why;
+    return r;
+}
+
 static void fixes(void)
 {
     char d[400];
     printf("\n=== Fixes ===\n");
+
+    /* Fix 3: neutral switch catches a stuck gear servo */
+    {
+        stuck_t b = stuck_servo(false, 83u);
+        stuck_t a = stuck_servo(true, 83u);
+        printf("Gear servo stuck in F, operator selects R:\n");
+        printf("  before (no switch): throttle up to %.1f %% while still in F, boat %+.1f kn, alarm %s\n",
+               b.thr_max_after, b.v_end, b.alarm ? "on" : "off");
+        printf("  after (switch):     fault after %.1f s, throttle up to %.1f %%, boat %+.1f kn, alarm %s, "
+               "gear commands frozen %s, mode %s (%s), MANEUVER refused %s\n",
+               a.t_fault, a.thr_max_after, a.v_end, a.alarm ? "on" : "off", a.cmds_frozen ? "yes" : "NO",
+               mode_name(a.mode_end), mode_reason_name(a.why_end), a.refused ? "yes" : "NO");
+        snprintf(d, sizeof d, "before: throttle %.1f %% in the wrong gear, no alarm; after: fault %.1f s after "
+                 "neutral was asked, throttle %.1f %%, alarm %s, gear commands frozen %s, driving modes refused %s",
+                 b.thr_max_after, a.t_fault, a.thr_max_after, a.alarm ? "on" : "OFF",
+                 a.cmds_frozen ? "yes" : "NO", a.refused ? "yes" : "NO");
+        test_report("F3 stuck gear servo: neutral not confirmed -> alarm, idle, no gear commands",
+                    a.fault && a.alarm && a.thr_max_after <= 0.0f && a.cmds_frozen && a.refused &&
+                    a.t_fault > 0.0f && a.t_fault < 5.0f && a.mode_end == MODE_STANDBY, d);
+
+        /* with a working servo the switch must not cause false alarms */
+        sbsim_t x;
+        events_t ev;
+        memset(&ev, 0, sizeof ev);
+        sbsim_init(&x, 84u, 90.0f, 0.0f, NULL);
+        x.w.neutral_switch = true;
+        sbsim_run(&x, 1000u, NULL, NULL);
+        sb_request_mode(&x.sb, MODE_CRUISE, WHY_TEST);
+        sb_test_drive(&x.sb, true, GEAR_F, 80.0f);
+        sbsim_run(&x, 40000u, NULL, NULL);
+        ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_r_us);
+        sb_test_drive(&x.sb, true, GEAR_R, 80.0f);
+        sbsim_run(&x, 80000u, ev_watch, &ev);
+        snprintf(d, sizeof d, "F 80 %% -> R with switch: idle %.2f s, neutral %.2f s, reverse %.2f s, throttle %.2f s, "
+                 "fault %s, alarm %s, speed %+.1f kn",
+                 ev.t_idle, ev.t_neutral, ev.t_gear, ev.t_thr_open, gear_fault(&x.sb.gear) ? "YES" : "no",
+                 sim_hal_alarm() ? "ON" : "off", x.w.speed_kn);
+        test_report("F3 neutral switch fitted, servo OK: normal shifting, no false alarm",
+                    !gear_fault(&x.sb.gear) && !sim_hal_alarm() && ev.t_thr_open > 0.0f && x.w.speed_kn < -1.0f &&
+                    x.w.shift_under_load == 0, d);
+    }
 
     /* Fix 1: compass lost while moving -> gyro hold / centre during the stop */
     {

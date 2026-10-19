@@ -38,6 +38,7 @@ typedef enum {
     WHY_TRAINING_DONE,
     WHY_TRAINING_ABORT,
     WHY_TEST,               /* sim test setup */
+    WHY_GEAR_FAULT,         /* neutral switch did not confirm */
     WHY_COUNT
 } mode_reason_t;
 

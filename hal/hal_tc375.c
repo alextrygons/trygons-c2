@@ -112,6 +112,12 @@ void hal_set_gear_pwm(uint16_t pulse_us)
     (void)pulse_us;  /* TODO: gear servo PWM (GTM TOM, 50 Hz) */
 }
 
+bool hal_read_neutral_switch(bool *in_neutral)
+{
+    (void)in_neutral;
+    return false;    /* TODO: digital input, if a neutral switch is fitted */
+}
+
 bool hal_read_gps(hal_gps_t *gps)
 {
     (void)gps;

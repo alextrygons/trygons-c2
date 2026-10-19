@@ -87,6 +87,10 @@ void hal_set_throttle(float percent);
  * app, see gear.h). */
 void hal_set_gear_pwm(uint16_t pulse_us);
 
+/* Optional neutral switch on the gearbox / shift linkage. Writes true if
+ * the gear is in neutral. Returns false if no switch is fitted. */
+bool hal_read_neutral_switch(bool *in_neutral);
+
 /* One GPS fix (from NMEA RMC/GGA on a UART). */
 typedef struct {
     double   lat_deg;       /* + north */

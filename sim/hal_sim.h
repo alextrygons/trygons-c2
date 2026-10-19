@@ -47,4 +47,7 @@ void     sim_hal_set_controls(float steer, float throttle, hal_gear_sel_t gear);
 /* Optional roll-rate sensor. */
 void     sim_hal_set_roll(bool fitted, float roll_dps);
 
+/* Optional neutral switch. */
+void     sim_hal_set_neutral_switch(bool fitted, bool in_neutral);
+
 #endif /* HAL_SIM_H */
