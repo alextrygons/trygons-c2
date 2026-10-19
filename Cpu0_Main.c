@@ -31,10 +31,21 @@
 
 #include "hal.h"
 #include "autopilot.h"
+#include "smallboat.h"
+
+/* Which boat this build is for:
+ *   default            small boat (outboard): smallboat.c controller
+ *   BOAT_VARIANT_BIG   big boat (rudder angle sensor): autopilot.c only
+ * Uncomment the next line (or add -DBOAT_VARIANT_BIG) for the big boat. */
+/* #define BOAT_VARIANT_BIG */
 
 IFX_ALIGN(4) IfxCpu_syncEvent cpuSyncEvent = 0;
 
+#ifdef BOAT_VARIANT_BIG
 static autopilot_t g_autopilot;
+#else
+static sb_t g_boat;
+#endif
 
 void core0_main(void)
 {
@@ -50,19 +61,30 @@ void core0_main(void)
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
 
-    ap_config_t cfg;
     hal_init();
+#ifdef BOAT_VARIANT_BIG
+    ap_config_t cfg;
     autopilot_default_config(&cfg);
     autopilot_init(&g_autopilot, &cfg);
+#else
+    sb_config_t cfg;
+    sb_default_config(&cfg);
+    sb_init(&g_boat, &cfg);
+    (void)autopilot_load_calibration(&g_boat.ap);   /* saved TRAINING result, if any */
+#endif
 
-    /* Fixed-rate loop: one autopilot step every AP_PERIOD_MS (20 Hz). */
+    /* Fixed-rate loop: one step every AP_PERIOD_MS (20 Hz). */
     uint32_t next_step_ms = hal_millis();
     while(1)
     {
         uint32_t now = hal_millis();
         if ((int32_t)(now - next_step_ms) >= 0)
         {
+#ifdef BOAT_VARIANT_BIG
             autopilot_step(&g_autopilot);
+#else
+            sb_step(&g_boat);
+#endif
             next_step_ms += AP_PERIOD_MS;
 
             /* If we ever fall far behind (e.g. debugger halt), resync
