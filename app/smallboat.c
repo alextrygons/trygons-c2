@@ -532,7 +532,9 @@ void sb_step(sb_t *s)
     if (s->ap.sensor_fault && !s->compass_fault_seen) {
         s->compass_fault_seen = true;
         s->alarm = true;
-        if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_COMPASS_FAULT);
+        /* MANEUVER: manual steering doesn't need the compass -> alarm only */
+        if (sb_mode(s) != MODE_STANDBY && sb_mode(s) != MODE_MANEUVER)
+            sb_request_mode(s, MODE_STANDBY, WHY_COMPASS_FAULT);
     }
     if (!s->ap.sensor_fault) s->compass_fault_seen = false;
     if (buttons & HAL_BTN_BIT(HAL_BTN_STANDBY_AUTO)) {

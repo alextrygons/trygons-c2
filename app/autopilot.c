@@ -713,7 +713,9 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
     bool fault = sensors_older_than(ap, now, AP_SENSOR_TIMEOUT_MS);
     if (fault && !ap->sensor_fault) {
         if (ap->mode == AP_MODE_TRAINING) training_abort(&ap->train, TR_ABORT_SENSOR);
-        enter_standby(ap);
+        /* manual steering, gyro hold and centring don't need the compass */
+        if (ap->mode != AP_MODE_MANUAL && ap->mode != AP_MODE_GYRO_HOLD && ap->mode != AP_MODE_CENTER)
+            enter_standby(ap);
         ap->alarm = true;
     }
     ap->sensor_fault = fault;

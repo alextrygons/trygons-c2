@@ -32,6 +32,8 @@ Modes
 Safety rules — never break them
 - Gear change only at idle: throttle idle → wait → neutral → wait → new gear → wait → throttle.
 - Every fault / timeout / STANDBY → throttle idle + neutral FIRST, then steering off.
+  - Compass lost while moving (CRUISE / NAV / TRAINING): keep steering on the gyro (target yaw rate 0) until throttle is idle and gear is neutral, then steering off. If the gyro fails too: drive the outboard to its estimated centre, then off.
+  - Exception: compass lost in MANEUVER → alarm only, stay in MANEUVER (manual steering doesn't need the compass).
 - Throttle changes are rate-limited.
 - Reverse power is limited.
 - Every feature has sim tests for its failure cases.

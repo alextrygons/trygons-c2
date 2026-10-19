@@ -435,27 +435,34 @@ static void phase3(void)
                     sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f, d);
     }
 
-    /* 3.4 compass failure in MANEUVER -> STANDBY (every fault -> STANDBY) */
+    /* 3.4 compass failure in MANEUVER -> alarm only, stay in MANEUVER
+     *     (manual steering doesn't need the compass) */
     {
-        static const ctl_step_t fwd[] = { { 0.0f, 0.0f, 1.0f, HAL_SEL_F } };
+        static const ctl_step_t seq[] = {
+            {  0.0f, 0.0f, 1.0f, HAL_SEL_F },
+            { 25.0f, 1.0f, 1.0f, HAL_SEL_F },     /* after the fault: steer right */
+            { 30.0f, 0.0f, 1.0f, HAL_SEL_F },
+        };
         sbsim_t x;
         script_t s;
         sbsim_init(&x, 24u, 0.0f, 0.0f, NULL);
         sbsim_run(&x, 1000u, NULL, NULL);
         sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
-        script_start(&s, &x, fwd, 1);
+        script_start(&s, &x, seq, 3);
         sbsim_run(&x, 20000u, script_hook, &s);
         sim_hal_fail_heading(true);
-        sbsim_run(&x, 35000u, script_hook, &s);
+        sbsim_run(&x, 24000u, script_hook, &s);
+        float est_before = x.sb.ap.est_angle;
+        sbsim_run(&x, 40000u, script_hook, &s);
         sb_mode_t after = sb_mode(&x.sb);
-        bool back = sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);   /* manual still possible */
-        snprintf(d, sizeof d, "mode after fault %s, throttle %.1f %%, gear %s, alarm %s, under-load %d; "
-                 "MANEUVER again without compass: %s",
-                 mode_name(after), sim_hal_throttle(), gear_name(x.w.engaged),
-                 sim_hal_alarm() ? "on" : "OFF", x.w.shift_under_load, back ? "allowed" : "refused");
-        test_report("P3 compass failure in MANEUVER: STANDBY, idle + neutral, alarm",
-                    after == MODE_STANDBY && x.w.engaged == GEAR_N && sim_hal_alarm() &&
-                    x.w.shift_under_load == 0 && back, d);
+        snprintf(d, sizeof d, "mode after fault %s, alarm %s, throttle %.1f %%, gear %s, "
+                 "manual steering after the fault: estimate %+.1f -> %+.1f deg, true %+.1f deg",
+                 mode_name(after), sim_hal_alarm() ? "on" : "OFF", sim_hal_throttle(), gear_name(x.w.engaged),
+                 est_before, x.sb.ap.est_angle, x.w.rud.angle_deg);
+        test_report("P3 compass failure in MANEUVER: alarm only, manual control keeps working",
+                    after == MODE_MANEUVER && sim_hal_alarm() && x.w.engaged == GEAR_F &&
+                    sim_hal_throttle() > 29.0f && x.sb.ap.est_angle > est_before + 10.0f &&
+                    x.w.rud.angle_deg > 10.0f && x.w.shift_under_load == 0, d);
     }
 }
 
