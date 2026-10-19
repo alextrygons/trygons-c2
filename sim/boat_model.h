@@ -21,10 +21,16 @@ typedef struct {
     uint32_t rng;           /* internal: random generator state */
 } boat_t;
 
+/* Rudder / outboard actuator. These are the TRUE values; the autopilot
+ * only knows its own config (and, for the outboard, gets no angle). */
 typedef struct {
-    float angle_deg;        /* actual rudder angle */
-    float max_rate_dps;     /* rudder speed at full motor command */
+    float angle_deg;        /* true rudder / outboard angle */
+    float drive_deg;        /* motor-side position (differs by the backlash) */
+    float rate_pos_dps;     /* true speed at full command, turning right */
+    float rate_neg_dps;     /* true speed at full command, turning left */
+    float gap_deg;          /* true backlash (0 = none) */
     float max_angle_deg;    /* mechanical stop */
+    float stall_s;          /* time the motor pushed against a mechanical stop */
 } rudder_actuator_t;
 
 void boat_init(boat_t *b, float heading_deg, float speed_kn, uint32_t seed);
@@ -33,7 +39,9 @@ void boat_step(boat_t *b, float rudder_deg, float t_s, float dt_s);
 /* Small random number helpers (deterministic, so runs are repeatable). */
 float boat_rand_gauss(uint32_t *state);
 
-void rudder_init(rudder_actuator_t *r);
+void rudder_init(rudder_actuator_t *r);          /* big boat: 6 deg/s, no gap */
+void rudder_init_outboard(rudder_actuator_t *r, float speed_pos_dps,
+                          float speed_neg_dps, float gap_deg);
 void rudder_step(rudder_actuator_t *r, float motor_cmd, float dt_s);
 
 #endif /* BOAT_MODEL_H */

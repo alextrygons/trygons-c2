@@ -13,6 +13,7 @@ static uint32_t s_time_ms;
 static float    s_true_heading;
 static float    s_true_rudder;
 static bool     s_heading_failed;
+static bool     s_rudder_feedback = true;  /* false = no angle sensor fitted */
 
 static uint32_t s_next_compass_ms;
 static uint32_t s_next_rudder_ms;
@@ -30,6 +31,7 @@ void hal_init(void)
     s_buttons = 0;
     s_motor = 0.0f;
     s_alarm = false;
+    s_rng = 12345u;         /* same sensor noise every run */
 }
 
 uint32_t hal_millis(void)
@@ -53,7 +55,7 @@ bool hal_read_heading(float *heading_deg)
 
 bool hal_read_rudder_angle(float *rudder_deg)
 {
-    if ((int32_t)(s_time_ms - s_next_rudder_ms) < 0) {
+    if (!s_rudder_feedback || (int32_t)(s_time_ms - s_next_rudder_ms) < 0) {
         return false;
     }
     s_next_rudder_ms += RUDDER_PERIOD_MS;
@@ -94,3 +96,4 @@ void sim_hal_fail_heading(bool failed)   { s_heading_failed = failed; }
 void sim_hal_press(hal_button_t button)  { s_buttons |= HAL_BTN_BIT(button); }
 float sim_hal_motor_command(void)        { return s_motor; }
 bool  sim_hal_alarm(void)                { return s_alarm; }
+void sim_hal_set_rudder_feedback(bool fitted) { s_rudder_feedback = fitted; }

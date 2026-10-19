@@ -68,8 +68,25 @@ void boat_step(boat_t *b, float rudder_deg, float t_s, float dt_s)
 void rudder_init(rudder_actuator_t *r)
 {
     r->angle_deg = 0.0f;
-    r->max_rate_dps = 6.0f;     /* hard over to hard over (70 deg) in ~12 s */
+    r->drive_deg = 0.0f;
+    r->rate_pos_dps = 6.0f;     /* hard over to hard over (70 deg) in ~12 s */
+    r->rate_neg_dps = 6.0f;
+    r->gap_deg = 0.0f;
     r->max_angle_deg = 35.0f;
+    r->stall_s = 0.0f;
+}
+
+void rudder_init_outboard(rudder_actuator_t *r, float speed_pos_dps,
+                          float speed_neg_dps, float gap_deg)
+{
+    rudder_init(r);
+    r->rate_pos_dps = speed_pos_dps;
+    r->rate_neg_dps = speed_neg_dps;
+    r->gap_deg = gap_deg;
+    /* Outboard centred by hand, but the gearbox was last pushed to the
+     * right: the first move left must take up the whole gap. The autopilot
+     * doesn't know this (it assumes the middle of the gap). */
+    r->drive_deg = 0.5f * gap_deg;
 }
 
 void rudder_step(rudder_actuator_t *r, float motor_cmd, float dt_s)
@@ -77,7 +94,23 @@ void rudder_step(rudder_actuator_t *r, float motor_cmd, float dt_s)
     if (motor_cmd > 1.0f) motor_cmd = 1.0f;
     if (motor_cmd < -1.0f) motor_cmd = -1.0f;
 
-    r->angle_deg += motor_cmd * r->max_rate_dps * dt_s;
-    if (r->angle_deg > r->max_angle_deg) r->angle_deg = r->max_angle_deg;
-    if (r->angle_deg < -r->max_angle_deg) r->angle_deg = -r->max_angle_deg;
+    float rate = (motor_cmd >= 0.0f) ? r->rate_pos_dps : r->rate_neg_dps;
+    float half = 0.5f * r->gap_deg;
+    r->drive_deg += motor_cmd * rate * dt_s;
+
+    /* Backlash: the angle only follows once the drive has crossed the gap. */
+    if (r->drive_deg - r->angle_deg > half) r->angle_deg = r->drive_deg - half;
+    else if (r->angle_deg - r->drive_deg > half) r->angle_deg = r->drive_deg + half;
+
+    /* Mechanical stops */
+    if (r->angle_deg > r->max_angle_deg) {
+        r->angle_deg = r->max_angle_deg;
+        if (r->drive_deg > r->max_angle_deg + half) r->drive_deg = r->max_angle_deg + half;
+        if (motor_cmd > 0.0f) r->stall_s += dt_s;
+    }
+    if (r->angle_deg < -r->max_angle_deg) {
+        r->angle_deg = -r->max_angle_deg;
+        if (r->drive_deg < -r->max_angle_deg - half) r->drive_deg = -r->max_angle_deg - half;
+        if (motor_cmd < 0.0f) r->stall_s += dt_s;
+    }
 }

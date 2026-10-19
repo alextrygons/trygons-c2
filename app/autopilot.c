@@ -2,8 +2,10 @@
  * autopilot.c - Heading-hold autopilot logic.
  *
  * Two cascaded loops, both run at AP_RATE_HZ:
- *   outer: heading error  -> rudder target   (PID, limited to +/-30 deg)
- *   inner: rudder error   -> rudder motor    (P with deadband hysteresis)
+ *   outer: heading error  -> rudder target   (PID, limited)
+ *   inner, big boat:  rudder error (sensor)   -> motor (P with deadband)
+ *   inner, outboard:  rudder error (estimate) -> motor on/off pulses,
+ *                     with backlash compensation
  */
 #include "autopilot.h"
 #include "hal.h"
@@ -16,25 +18,33 @@
  * that straight into rudder movement. Filtering it (rather than the heading
  * itself - that adds lag and overshoot, tested in sim) plus a wider
  * deadband lets the rudder ignore waves the boat can't fight anyway.
+ * The outboard (no angle feedback, slow motor) needs a narrower deadband:
+ * its own estimate error is the only thing it can react to.
  * Sea state 3 was tuned in the simulation; 2, 4 and 5 are scaled from it. */
 typedef struct {
     float rate_tau_s;       /* low-pass on yaw rate (D term) */
     float deadband_on_deg;  /* motor starts when |rudder error| above this */
     float deadband_off_deg; /* motor stops when |rudder error| below this */
+    float ob_deadband_on_deg; /* outboard: start a pulse when |estimate error| above this */
 } sea_params_t;
 
 static const sea_params_t k_sea[AP_SEA_STATE_MAX] = {
-    /* tau_r  db_on  db_off */
-    {  0.5f,  1.0f,  0.3f },   /* 1 calm     */
-    {  1.0f,  2.0f,  0.3f },   /* 2          */
-    {  2.0f,  4.0f,  0.3f },   /* 3 moderate */
-    {  2.5f,  5.0f,  0.3f },   /* 4          */
-    {  3.0f,  6.0f,  0.3f },   /* 5 rough    */
+    /* tau_r  db_on  db_off  outboard db_on */
+    {  0.5f,  1.0f,  0.3f,  1.0f },   /* 1 calm     */
+    {  1.0f,  2.0f,  0.3f,  1.5f },   /* 2          */
+    {  2.0f,  4.0f,  0.3f,  2.0f },   /* 3 moderate */
+    {  2.5f,  5.0f,  0.3f,  2.5f },   /* 4          */
+    {  3.0f,  6.0f,  0.3f,  3.0f },   /* 5 rough    */
 };
 
 static const sea_params_t *sea(const autopilot_t *ap)
 {
     return &k_sea[ap->cfg.sea_state - 1u];
+}
+
+static bool is_outboard(const autopilot_t *ap)
+{
+    return ap->cfg.steering == AP_STEER_OUTBOARD;
 }
 
 static float clampf(float x, float lo, float hi)
@@ -60,6 +70,15 @@ float autopilot_heading_error(float target_deg, float heading_deg)
     return e;
 }
 
+/* --- configuration ------------------------------------------------------ */
+
+static const ap_outboard_config_t k_outboard_default = {
+    30.0f,  /* max_angle_deg    */
+    3.0f,   /* turn_speed_deg_s */
+    2.0f,   /* gap_deg          */
+    100u    /* min_pulse_ms     */
+};
+
 void autopilot_default_config(ap_config_t *cfg)
 {
     cfg->kp                = 1.2f;
@@ -67,10 +86,33 @@ void autopilot_default_config(ap_config_t *cfg)
     cfg->kd                = 1.2f;
     cfg->i_limit_deg       = 10.0f;
     cfg->i_zone_deg        = 10.0f;
+    cfg->turn_rate_dps     = 4.0f;
 
     cfg->motor_gain        = 0.25f;  /* full speed at 4 deg rudder error */
 
     cfg->sea_state         = AP_SEA_STATE_DEFAULT;
+
+    cfg->steering          = AP_STEER_RUDDER_FEEDBACK;
+    cfg->outboard          = k_outboard_default;
+}
+
+void autopilot_default_config_outboard(ap_config_t *cfg)
+{
+    autopilot_default_config(cfg);
+    cfg->steering = AP_STEER_OUTBOARD;
+    /* Slower steering motor: gentler gains, slower course changes. */
+    cfg->kp            = 0.8f;
+    cfg->kd            = 2.5f;
+    cfg->ki            = 0.05f;
+    cfg->turn_rate_dps = 2.0f;
+}
+
+static bool outboard_config_valid(const ap_outboard_config_t *ob)
+{
+    return ob->max_angle_deg    >= 5.0f  && ob->max_angle_deg    <= 45.0f
+        && ob->turn_speed_deg_s >= 0.5f  && ob->turn_speed_deg_s <= 60.0f
+        && ob->gap_deg          >= 0.0f  && ob->gap_deg          <= 15.0f
+        && ob->min_pulse_ms     <= 2000u;
 }
 
 static uint8_t clamp_sea_state(uint8_t s)
@@ -85,12 +127,38 @@ void autopilot_set_sea_state(autopilot_t *ap, uint8_t sea_state)
     ap->cfg.sea_state = clamp_sea_state(sea_state);
 }
 
+bool autopilot_set_outboard_config(autopilot_t *ap, const ap_outboard_config_t *ob)
+{
+    if (!outboard_config_valid(ob)) return false;
+    ap->cfg.outboard = *ob;
+    return true;
+}
+
+static void outboard_reset(autopilot_t *ap)
+{
+    ap->est_angle = 0.0f;
+    ap->slack_deg = 0.0f;   /* unknown side of the gap: assume the middle */
+    ap->motor_dir = 0;
+    ap->pulse_ms = 0u;
+    ap->pause_ms = 0u;
+}
+
+/* Stop the outboard motor (the pause counter restarts). */
+static void outboard_stop(autopilot_t *ap)
+{
+    ap->motor_dir = 0;
+    ap->pause_ms = 0u;
+}
+
 void autopilot_init(autopilot_t *ap, const ap_config_t *cfg)
 {
     uint32_t now = hal_millis();
 
     ap->cfg = *cfg;
     ap->cfg.sea_state = clamp_sea_state(cfg->sea_state);
+    if (!outboard_config_valid(&ap->cfg.outboard)) {
+        ap->cfg.outboard = k_outboard_default;
+    }
     ap->mode = AP_MODE_STANDBY;
     ap->alarm = false;
     ap->target_heading = 0.0f;
@@ -103,6 +171,9 @@ void autopilot_init(autopilot_t *ap, const ap_config_t *cfg)
     ap->rudder_target = 0.0f;
     ap->motor_cmd = 0.0f;
     ap->motor_moving = false;
+    outboard_reset(ap);
+    ap->last_step_ms = now;
+    ap->off_course_ms = 0u;
     ap->heading_valid = false;
     ap->rudder_valid = false;
     /* Timeouts count from startup: no data within 2 s -> alarm. */
@@ -134,19 +205,21 @@ static void read_sensors(autopilot_t *ap, uint32_t now)
         ap->last_heading_ms = now;
     }
 
-    if (hal_read_rudder_angle(&r) && fabsf(r) <= HAL_RUDDER_MAX_DEG + 5.0f) {
+    /* The outboard has no angle sensor: don't read or supervise it. */
+    if (!is_outboard(ap) &&
+        hal_read_rudder_angle(&r) && fabsf(r) <= HAL_RUDDER_MAX_DEG + 5.0f) {
         ap->rudder_angle = r;
         ap->rudder_valid = true;
         ap->last_rudder_ms = now;
     }
 }
 
-/* True if either sensor has had no new data for at least limit_ms.
- * Unsigned subtraction is correct even when hal_millis() wraps. */
+/* True if a sensor we depend on has had no new data for at least
+ * limit_ms. Unsigned subtraction is correct even when hal_millis() wraps. */
 static bool sensors_older_than(const autopilot_t *ap, uint32_t now, uint32_t limit_ms)
 {
-    return (now - ap->last_heading_ms) >= limit_ms
-        || (now - ap->last_rudder_ms)  >= limit_ms;
+    if ((now - ap->last_heading_ms) >= limit_ms) return true;
+    return !is_outboard(ap) && (now - ap->last_rudder_ms) >= limit_ms;
 }
 
 /* --- modes -------------------------------------------------------------- */
@@ -155,6 +228,7 @@ static void enter_standby(autopilot_t *ap)
 {
     ap->mode = AP_MODE_STANDBY;
     ap->motor_moving = false;
+    outboard_stop(ap);
     ap->motor_cmd = 0.0f;
 }
 
@@ -165,14 +239,22 @@ static void enter_auto(autopilot_t *ap)
     ap->ref_heading = ap->target_heading;
     ap->ref_rate = 0.0f;
     ap->integrator = 0.0f;
-    ap->rudder_target = ap->rudder_angle; /* bumpless: start from where it is */
+    ap->off_course_ms = 0u;
     ap->motor_moving = false;
+    if (is_outboard(ap)) {
+        /* The user has centred the outboard by hand. */
+        outboard_reset(ap);
+        ap->rudder_target = 0.0f;
+    } else {
+        ap->rudder_target = ap->rudder_angle; /* bumpless: start where it is */
+    }
 }
 
 static void handle_buttons(autopilot_t *ap)
 {
     uint32_t presses = hal_get_button_presses();
-    bool sensors_ok = ap->heading_valid && ap->rudder_valid && !ap->sensor_fault;
+    bool sensors_ok = ap->heading_valid && !ap->sensor_fault &&
+                      (is_outboard(ap) || ap->rudder_valid);
 
     if (presses & HAL_BTN_BIT(HAL_BTN_STANDBY_AUTO)) {
         if (ap->mode == AP_MODE_AUTO) {
@@ -197,24 +279,39 @@ static void handle_buttons(autopilot_t *ap)
 
 /* --- control loops ------------------------------------------------------ */
 
+static float rudder_limit(const autopilot_t *ap)
+{
+    if (is_outboard(ap)) return ap->cfg.outboard.max_angle_deg;
+    return AP_RUDDER_LIMIT_DEG;
+}
+
 /* Outer loop: heading -> rudder target (deg). */
 static void heading_loop(autopilot_t *ap)
 {
     const ap_config_t *c = &ap->cfg;
+    float limit = rudder_limit(ap);
 
     /* Course changes: steer to a reference heading that swings toward the
      * new course at a limited turn rate, instead of jumping there. */
     float to_go = autopilot_heading_error(ap->target_heading, ap->ref_heading);
-    float max_turn = AP_TURN_RATE_DPS * AP_DT_S;
+    float max_turn = c->turn_rate_dps * AP_DT_S;
     if (fabsf(to_go) <= max_turn) {
         ap->ref_heading = ap->target_heading;
         ap->ref_rate = 0.0f;
     } else {
         ap->ref_heading = autopilot_wrap360(ap->ref_heading + copysignf(max_turn, to_go));
-        ap->ref_rate = copysignf(AP_TURN_RATE_DPS, to_go);
+        ap->ref_rate = copysignf(c->turn_rate_dps, to_go);
     }
 
     float e = autopilot_heading_error(ap->ref_heading, ap->heading);
+
+    /* Off-course alarm: steering isn't keeping up (or doesn't work). */
+    if (fabsf(e) > AP_OFF_COURSE_DEG) {
+        ap->off_course_ms += AP_PERIOD_MS;
+        if (ap->off_course_ms >= AP_OFF_COURSE_MS) ap->alarm = true;
+    } else {
+        ap->off_course_ms = 0u;
+    }
 
     float p = c->kp * e;
     float d = -c->kd * (ap->yaw_rate - ap->ref_rate);  /* damp vs. intended turn rate */
@@ -222,22 +319,35 @@ static void heading_loop(autopilot_t *ap)
 
     /* Anti-windup: integrate only near the course, and never further
      * into saturation. Integrator itself is clamped as well. */
-    bool sat_hi = unsat >=  AP_RUDDER_LIMIT_DEG && e > 0.0f;
-    bool sat_lo = unsat <= -AP_RUDDER_LIMIT_DEG && e < 0.0f;
+    bool sat_hi = unsat >=  limit && e > 0.0f;
+    bool sat_lo = unsat <= -limit && e < 0.0f;
     if (fabsf(e) < c->i_zone_deg && !sat_hi && !sat_lo) {
         ap->integrator += c->ki * e * AP_DT_S;
         ap->integrator = clampf(ap->integrator, -c->i_limit_deg, c->i_limit_deg);
     }
 
-    float cmd = clampf(p + ap->integrator + d,
-                       -AP_RUDDER_LIMIT_DEG, AP_RUDDER_LIMIT_DEG);
+    /* Outboard re-centring: move a little of the integrator into the angle
+     * estimate. The motor command doesn't change (target and estimate both
+     * shift by the same amount); it just stops the estimate drifting away
+     * from the true angle. Assumes the boat needs ~0 rudder on average, so
+     * the estimate ends up off by the real weather helm - bounded, unlike
+     * drift. */
+    if (is_outboard(ap)) {
+        float shift = ap->integrator * (AP_DT_S / AP_OUTBOARD_RECENTER_TAU_S);
+        ap->integrator -= shift;
+        ap->rudder_target -= shift;
+        ap->est_angle = clampf(ap->est_angle - shift, -limit, limit);
+    }
+
+    float cmd = clampf(p + ap->integrator + d, -limit, limit);
 
     /* Rate limit the rudder target. */
     float max_step = AP_RUDDER_RATE_DPS * AP_DT_S;
     ap->rudder_target += clampf(cmd - ap->rudder_target, -max_step, max_step);
+    ap->rudder_target = clampf(ap->rudder_target, -limit, limit);
 }
 
-/* Inner loop: rudder target -> motor command. */
+/* Inner loop, big boat: rudder target -> motor command (sensor feedback). */
 static float rudder_loop(autopilot_t *ap)
 {
     const ap_config_t *c = &ap->cfg;
@@ -259,9 +369,82 @@ static float rudder_loop(autopilot_t *ap)
     return m;
 }
 
+/* How much of the backlash gap is still to take up before the outboard
+ * moves in direction d, in degrees. */
+static float slack_to_go(const autopilot_t *ap, int8_t d)
+{
+    float half = 0.5f * ap->cfg.outboard.gap_deg;
+    return (d > 0) ? half - ap->slack_deg : ap->slack_deg + half;
+}
+
+/*
+ * Outboard: account for what the motor did since the last step.
+ * Motor travel = run time x turn_speed. It first takes up the backlash gap
+ * (no movement of the outboard), the rest moves the angle estimate.
+ * On a full reversal that is exactly gap/turn_speed of extra run time.
+ * Called every step, in every mode.
+ */
+static void outboard_account(autopilot_t *ap, uint32_t now)
+{
+    const ap_outboard_config_t *ob = &ap->cfg.outboard;
+    uint32_t elapsed = now - ap->last_step_ms;
+    float half = 0.5f * ob->gap_deg;
+
+    /* gap_deg may have been changed at runtime */
+    ap->slack_deg = clampf(ap->slack_deg, -half, half);
+
+    if (ap->motor_dir == 0) {
+        ap->pause_ms += elapsed;
+        return;
+    }
+    int8_t d = ap->motor_dir;
+    float travel = ob->turn_speed_deg_s * (float)elapsed * 0.001f;
+    float take = fminf(travel, slack_to_go(ap, d));
+
+    ap->slack_deg += (float)d * take;
+    ap->est_angle += (float)d * (travel - take);
+    ap->est_angle = clampf(ap->est_angle, -ob->max_angle_deg, ob->max_angle_deg);
+    ap->pulse_ms += elapsed;
+}
+
+/* Inner loop, outboard: rudder target -> motor pulses (no feedback). */
+static float outboard_loop(autopilot_t *ap)
+{
+    const ap_outboard_config_t *ob = &ap->cfg.outboard;
+    const sea_params_t *sp = sea(ap);
+    float err = ap->rudder_target - ap->est_angle;
+
+    if (ap->motor_dir != 0) {
+        int8_t d = ap->motor_dir;
+        bool at_limit = (d > 0) ? ap->est_angle >= ob->max_angle_deg
+                                : ap->est_angle <= -ob->max_angle_deg;
+        bool reached = slack_to_go(ap, d) <= 1e-4f &&   /* gap taken up */
+                       (float)d * err <= sp->deadband_off_deg;
+        /* At the angle limit: stop at once (safety beats the min pulse).
+         * Otherwise stop once the target is reached and the pulse is long
+         * enough to have really moved the motor. */
+        if (at_limit || (reached && ap->pulse_ms >= ob->min_pulse_ms)) {
+            outboard_stop(ap);
+        }
+    } else if (ap->pause_ms >= ob->min_pulse_ms &&
+               fabsf(err) > sp->ob_deadband_on_deg) {
+        int8_t d = (err > 0.0f) ? 1 : -1;
+        bool at_limit = (d > 0) ? ap->est_angle >= ob->max_angle_deg
+                                : ap->est_angle <= -ob->max_angle_deg;
+        if (!at_limit) {
+            ap->motor_dir = d;   /* backlash is handled in outboard_account */
+            ap->pulse_ms = 0u;
+        }
+    }
+    return (float)ap->motor_dir;
+}
+
 void autopilot_step(autopilot_t *ap)
 {
     uint32_t now = hal_millis();
+
+    if (is_outboard(ap)) outboard_account(ap, now);
+    ap->last_step_ms = now;
 
     read_sensors(ap, now);
 
@@ -282,11 +465,13 @@ void autopilot_step(autopilot_t *ap)
 
     if (ap->mode == AP_MODE_AUTO && stale) {
         ap->motor_moving = false;
+        outboard_stop(ap);
         ap->motor_cmd = 0.0f;
     } else if (ap->mode == AP_MODE_AUTO) {
         heading_loop(ap);
-        ap->motor_cmd = rudder_loop(ap);
+        ap->motor_cmd = is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
     } else {
+        outboard_stop(ap);
         ap->motor_cmd = 0.0f;
     }
 

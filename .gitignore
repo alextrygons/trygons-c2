@@ -6,3 +6,4 @@ TASKING*/
 *.hex
 sim/*.exe
 sim/sim_output.csv
+sim/sim_outboard.csv

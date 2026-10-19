@@ -19,6 +19,9 @@ void sim_hal_set_truth(float heading_deg, float rudder_deg);
 /* Simulate a dead compass (no new samples while true). */
 void sim_hal_fail_heading(bool failed);
 
+/* Is there a rudder angle sensor? (false = outboard, no feedback) */
+void sim_hal_set_rudder_feedback(bool fitted);
+
 /* Queue a button press; the autopilot sees it on its next cycle. */
 void sim_hal_press(hal_button_t button);
 
