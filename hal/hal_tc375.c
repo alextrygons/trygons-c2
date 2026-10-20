@@ -19,6 +19,7 @@
 #include "IfxPort.h"      /* the counter directly - same as IfxStm_get())  */
 #include "IfxScuWdt.h"
 #include "IfxScuRcu.h"
+#include "IfxCpu.h"        /* __dsync() */
 
 /* LED1 on the Lite Kit. The LEDs are active LOW: pin low = LED on. */
 #define ALARM_LED_PORT  (&MODULE_P00)
@@ -91,6 +92,52 @@ uint32_t hal_millis(void)
     /* 64-bit STM counter / ticks per ms; the result wraps at 2^32 ms like
      * the HAL contract says. */
     return (uint32_t)(stm0_ticks() / s_stm_ticks_per_ms);
+}
+
+void hal_mem_barrier(void)
+{
+    __dsync();      /* TriCore: all data writes done before going on */
+}
+
+bool hal_read_supply_voltage(float *volts)
+{
+    (void)volts;
+    return false;    /* TODO: battery voltage divider on EVADC (A2, AN37) */
+}
+
+/* microSD on the mikroBUS socket (microSD click): QSPI2, FatFs. */
+bool hal_sd_present(void)
+{
+    return false;    /* TODO: card detect (mikroBUS INT, P10.7) + f_mount() */
+}
+
+int hal_sd_open(const char *name)
+{
+    (void)name;
+    return -1;       /* TODO: f_open(FA_CREATE_ALWAYS | FA_WRITE) */
+}
+
+bool hal_sd_write(int h, const void *data, uint32_t len)
+{
+    (void)h; (void)data; (void)len;
+    return false;    /* TODO: f_write */
+}
+
+bool hal_sd_sync(int h)
+{
+    (void)h;
+    return false;    /* TODO: f_sync */
+}
+
+bool hal_sd_close(int h)
+{
+    (void)h;
+    return false;    /* TODO: f_close */
+}
+
+uint32_t hal_sd_free_kb(void)
+{
+    return 0u;       /* TODO: f_getfree */
 }
 
 uint32_t hal_micros(void)

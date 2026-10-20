@@ -7,6 +7,7 @@
 
 #include "monitor.h"
 #include "timing.h"
+#include "logger.h"
 #include <string.h>
 
 static float clampf(float x, float lo, float hi)
@@ -435,6 +436,7 @@ bool sb_joystick_cal_finish(sb_t *s)
 {
     joy_cal_t cal;
     if (sb_mode(s) != MODE_STANDBY || !joy_cal_finish(&s->joy, &cal)) return false;
+    s->cfg_version++;
     return hal_nv_save(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal);
 }
 
@@ -865,6 +867,7 @@ sb_result_t sb_program_set(sb_t *s, const program_t *p, prog_error_t *err, uint8
     s->autop.suspended = false;
     s->autop.finished = false;
     s->autop.legs_done = 0u;
+    s->cfg_version++;
     if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME) s->confirm.kind = CONF_NONE;
     (void)hal_nv_save(HAL_NV_SLOT_PROGRAM, p, (uint32_t)sizeof *p);
     return SB_OK;
@@ -1080,6 +1083,7 @@ bool sb_confirm_training(sb_t *s, bool accept, float full_angle_deg)
         /* the scaled gains fit the training speed: steering scales from there */
         s->cfg.gain_ref_kn = (float)(s->train.sog_sum / (double)s->train.sog_n);
     }
+    if (ok) s->cfg_version++;
     sb_request_mode(s, MODE_STANDBY, ok ? WHY_TRAINING_DONE : WHY_TRAINING_ABORT);
     return ok;
 }
@@ -1107,6 +1111,10 @@ static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
 
 static void events_step(sb_t *s, uint32_t buttons)
 {
+    /* the logger (core 2) can't write: alarm; control goes on as normal */
+    if (g_logstat.failure && !s->log_fail_seen) alarm_on(s, SB_ALM_LOG);
+    s->log_fail_seen = g_logstat.failure != 0u;
+
     /* a control cycle overran its period (measured by the loop, timing.c) */
     if (g_timing.core0.overruns != s->overruns_seen) {
         s->overruns_seen = g_timing.core0.overruns;
@@ -1228,6 +1236,12 @@ void sb_step(sb_t *s)
     bool roll_new = hal_read_roll_rate(&roll);
     bool nsw;
     int8_t neutral_sw = hal_read_neutral_switch(&nsw) ? (nsw ? 1 : 0) : -1;
+    s->buttons_now = buttons;
+    s->roll_ok = roll_new;
+    if (roll_new) s->roll_dps = roll;
+    s->motor_a = in.current_ok ? in.current_a : -1.0f;
+    s->limit_bits = in.limits_ok ? (uint8_t)((in.limit_left ? 1u : 0u) | (in.limit_right ? 2u : 0u)) : 0x80u;
+    s->neutral_sw = neutral_sw;
 
     /* 1. steering core (also detects compass timeout) */
     autopilot_update(&s->ap, &in);
@@ -1330,10 +1344,11 @@ void sb_step(sb_t *s)
 
     /* 5. gear and throttle (order: throttle limited by the gear state),
      *    demand limited by the power limit of its direction */
+    s->throttle_mode = s->throttle_demand;
     float lim_dir = (s->gear_demand == GEAR_F) ? s->plim.fwd_pct : s->plim.rev_pct;
     if (s->throttle_demand > lim_dir) s->throttle_demand = lim_dir;
     gear_request(&s->gear, s->gear_demand);
-    (void)throttle_step(&s->thr, s->throttle_demand, s->gear.current, gear_throttle_allowed(&s->gear), dt);
+    s->throttle_rate = throttle_step(&s->thr, s->throttle_demand, s->gear.current, gear_throttle_allowed(&s->gear), dt);
 
     /* 6. outputs: engine first, steering last. The servo module clamps to
      *    the power limit once more (lowest layer); the rate limiter goes on

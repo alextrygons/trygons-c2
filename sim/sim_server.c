@@ -42,6 +42,9 @@ typedef int sock_t;
 #include "link.h"
 #include "monitor.h"
 #include "timing.h"
+#include "logq.h"
+#include "logcore0.h"
+#include "logger.h"
 #include "sim_run.h"
 #include "sim_world.h"
 #include "smallboat.h"
@@ -55,6 +58,7 @@ typedef struct {
 } server_t;
 
 static server_t g_srv;      /* large: keep it off the stack */
+static logger_t g_lg;       /* core 2 logger: writes TLG files into ./sdcard */
 
 /* --- platform helpers ------------------------------------------------------ */
 
@@ -172,6 +176,19 @@ static void sim_init(server_t *x, uint32_t seed)
     sb_init(&x->sb, &c);
     monitor_init(&x->mon, 0u);
     link_init(&x->link, &x->sb);
+    /* logging like the board: boot counter, queues, logger into ./sdcard */
+    {
+        uint32_t boot = 0u;
+        if (!hal_nv_load(HAL_NV_SLOT_BOOT, &boot, sizeof boot)) boot = 0u;
+        boot++;
+        (void)hal_nv_save(HAL_NV_SLOT_BOOT, &boot, sizeof boot);
+        (void)system("mkdir sdcard 2>nul");
+        sim_hal_sd_setup("sdcard", true, 4000000u, false);
+        logq_init_all();
+        g_logstat.boot = boot;
+        logger_init(&g_lg, 0u);
+        logcore0_init(&x->sb, boot);
+    }
     x->link.sim_fn = sim_cmd;
     x->link.sim_ctx = x;
 }
@@ -185,7 +202,13 @@ static void sim_advance(server_t *x, uint32_t until_ms)
             uint32_t t0 = hal_micros();
             sb_step(&x->sb);
             link_step(&x->link, &x->sb);
+            logcore0_step(&x->sb);
             (void)cyc_record(&g_timing.core0, hal_micros() - t0);
+        }
+        if (x->t % 10u == 0u) {                     /* the logger (core 2) */
+            uint32_t t2 = hal_micros();
+            logger_step(&g_lg, x->t);
+            (void)cyc_record(&g_timing.logger, hal_micros() - t2);
         }
         uint32_t t1 = hal_micros();
         monitor_step(&x->mon, &g_mon, x->t);        /* separate check step */

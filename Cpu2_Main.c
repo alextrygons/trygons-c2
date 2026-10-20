@@ -30,10 +30,16 @@
 #include "IfxScuCcu.h"
 #include "Ifx_Cfg_Ssw.h"
 
+#include "hal.h"
+#include "logger.h"
+#include "timing.h"
+
 extern IfxCpu_syncEvent cpuSyncEvent;
 
-/* CPU2: the logger runs here (section F). Its watchdog is ON and serviced
- * by its loop. */
+/* CPU2: the logger (app/logger.c): queues -> SD card. Its watchdog is ON
+ * and serviced by its loop. Nothing it does can slow the control loop. */
+static logger_t g_logger;
+
 void core2_main(void)
 {
     IfxCpu_enableInterrupts();
@@ -49,8 +55,18 @@ void core2_main(void)
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
 
+    logger_init(&g_logger, hal_millis());
+    uint32_t next = hal_millis();
     while(1)
     {
+        uint32_t now = hal_millis();
+        if ((int32_t)(now - next) >= 0)
+        {
+            next = now + TIMING_LOGGER_PERIOD_US / 1000u;
+            uint32_t t0 = hal_micros();
+            logger_step(&g_logger, now);
+            (void)cyc_record(&g_timing.logger, hal_micros() - t0);
+        }
         IfxScuWdt_serviceCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
     }
 }

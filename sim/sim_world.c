@@ -185,7 +185,9 @@ void world_publish(world_t *w, uint32_t t_ms)
         g.cog_deg = wrap360(cog + (0.1f / fmaxf(sog, 0.2f)) * 57.3f * boat_rand_gauss(&w->gps_rng));
         g.fix = true;
         g.jam_spoof = w->gps_flag;
-        g.time_ms = t_ms;
+        g.time_ms = (36000000u + t_ms) % 86400000u;     /* the sim starts at 10:00 UTC ... */
+        g.date = 20261020u;                             /* ... on 20 Oct 2026 */
+        g.sats = 11u;
         sim_hal_gps_message(&g);
     }
 }

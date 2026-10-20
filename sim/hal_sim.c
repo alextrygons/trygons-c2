@@ -5,6 +5,7 @@
 #include "boat_model.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define COMPASS_PERIOD_MS   100u    /* 10 Hz */
 #define RUDDER_PERIOD_MS     50u    /* 20 Hz */
@@ -452,4 +453,99 @@ uint64_t sim_hal_real_ns(void)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 #endif
+}
+
+/* --- memory barrier, supply voltage ----------------------------------------- */
+void hal_mem_barrier(void) { __sync_synchronize(); }
+
+bool hal_read_supply_voltage(float *volts)
+{
+    *volts = 12.6f;
+    return true;
+}
+
+/* --- microSD card: files in the folder "sdcard" ------------------------------
+ * Written data is kept in RAM until hal_sd_sync / hal_sd_close, like the
+ * card's cache: sim_hal_sd_power_cut() throws away what was not synced.
+ * Faults: card missing, card full (free space), every write failing. */
+#define SD_PENDING_MAX (256u * 1024u)
+typedef struct { FILE *f; uint8_t pend[SD_PENDING_MAX]; uint32_t n; bool open; } sd_file_t;
+static sd_file_t s_sd[HAL_SD_FILES];
+static bool     s_sd_present = true, s_sd_fail;
+static uint32_t s_sd_free_kb = 4000000u;     /* 4 GB */
+static char     s_sd_dir[260] = "sdcard";
+
+static bool sd_flush(sd_file_t *f)
+{
+    if (!f->open) return false;
+    if (f->n) {
+        if (fwrite(f->pend, 1, f->n, f->f) != f->n) return false;
+        s_sd_free_kb -= (f->n / 1024u < s_sd_free_kb) ? f->n / 1024u : s_sd_free_kb;
+        f->n = 0u;
+    }
+    return fflush(f->f) == 0;
+}
+
+bool hal_sd_present(void) { return s_sd_present; }
+
+int hal_sd_open(const char *name)
+{
+    char path[400];
+    if (!s_sd_present || s_sd_fail || s_sd_free_kb < 64u) return -1;
+    for (int h = 0; h < HAL_SD_FILES; h++) {
+        if (s_sd[h].open) continue;
+        snprintf(path, sizeof path, "%s/%s", s_sd_dir, name);
+        s_sd[h].f = fopen(path, "wb");
+        if (!s_sd[h].f) return -1;
+        s_sd[h].n = 0u;
+        s_sd[h].open = true;
+        return h;
+    }
+    return -1;
+}
+
+bool hal_sd_write(int h, const void *data, uint32_t len)
+{
+    if (h < 0 || h >= HAL_SD_FILES || !s_sd[h].open || !s_sd_present || s_sd_fail) return false;
+    if (s_sd_free_kb * 1024ull < (uint64_t)s_sd[h].n + len + 4096u) return false;     /* full */
+    if (s_sd[h].n + len > SD_PENDING_MAX && !sd_flush(&s_sd[h])) return false;
+    memcpy(s_sd[h].pend + s_sd[h].n, data, len);
+    s_sd[h].n += len;
+    return true;
+}
+
+bool hal_sd_sync(int h)
+{
+    if (h < 0 || h >= HAL_SD_FILES || !s_sd_present || s_sd_fail) return false;
+    return sd_flush(&s_sd[h]);
+}
+
+bool hal_sd_close(int h)
+{
+    if (h < 0 || h >= HAL_SD_FILES || !s_sd[h].open) return false;
+    bool ok = s_sd_present && !s_sd_fail && sd_flush(&s_sd[h]);
+    fclose(s_sd[h].f);
+    s_sd[h].open = false;
+    return ok;
+}
+
+uint32_t hal_sd_free_kb(void) { return s_sd_present ? s_sd_free_kb : 0u; }
+
+void sim_hal_sd_setup(const char *dir, bool present, uint32_t free_kb, bool fail_writes)
+{
+    if (dir) snprintf(s_sd_dir, sizeof s_sd_dir, "%s", dir);
+    s_sd_present = present;
+    s_sd_free_kb = free_kb;
+    s_sd_fail = fail_writes;
+}
+
+/* Power cut: unsynced data is gone, the files stay as they were on the card. */
+void sim_hal_sd_power_cut(void)
+{
+    for (int h = 0; h < HAL_SD_FILES; h++) {
+        if (!s_sd[h].open) continue;
+        s_sd[h].n = 0u;
+        fclose(s_sd[h].f);
+        s_sd[h].open = false;
+    }
 }

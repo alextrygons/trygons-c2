@@ -8,6 +8,9 @@
 
 #include "hal.h"
 #include "timing.h"
+#include "logcore0.h"
+#include "logger.h"
+#include "logq.h"
 
 #define TELEM_PERIOD_MS 100u
 #define PI_F 3.14159265f
@@ -150,6 +153,7 @@ static void send_prog_wp(link_t *l, const program_t *p, uint8_t i)
  *     b1 limit raised) | f32 throttle_demand (before the limits)
  *   u16 core0 avg us | u16 core0 max us | u16 monitor avg | u16 monitor max | u16 logger avg |
  *     u16 logger max | u16 core0 overruns | u8 monitor overruns | u8 logger overruns   (us capped at 65535)
+ *   u8 log_flags (b0 LOG FAILURE, b1 card present) | u16 log files | u16 log records dropped
  */
 static void telemetry(link_t *l, sb_t *s)
 {
@@ -254,6 +258,10 @@ static void telemetry(link_t *l, sb_t *s)
     proto_wr_u16(&w, (uint16_t)(g_timing.core0.overruns > 65535u ? 65535u : g_timing.core0.overruns));
     proto_wr_u8(&w, (uint8_t)(g_timing.monitor.overruns > 255u ? 255u : g_timing.monitor.overruns));
     proto_wr_u8(&w, (uint8_t)(g_timing.logger.overruns > 255u ? 255u : g_timing.logger.overruns));
+    proto_wr_u8(&w, (uint8_t)((g_logstat.failure ? 1u : 0u) | (g_logstat.card ? 2u : 0u)));
+    proto_wr_u16(&w, (uint16_t)(g_logstat.files > 65535u ? 65535u : g_logstat.files));
+    uint32_t drops = g_logq0.dropped + g_logq1.dropped;
+    proto_wr_u16(&w, (uint16_t)(drops > 65535u ? 65535u : drops));
 
     if (!w.overflow) send(l, PROTO_T_TELEMETRY, l->tx_seq++, buf, w.n);
 }
@@ -378,7 +386,9 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         if (id >= P_COUNT) return PROTO_R_BAD_PARAM;
         if (sb_mode(s) != MODE_STANDBY) return PROTO_R_STANDBY_ONLY;
         if (!(v >= s_params[id].min && v <= s_params[id].max)) return PROTO_R_BAD_VALUE;
+        logcore0_param(s, id, *param_ptr(l, s, id), v);
         *param_ptr(l, s, id) = v;
+        s->cfg_version++;
         if (id == P_CRUISE_MAX) s->cfg.prog.max_speed_kn = v;   /* program validation uses it too */
         send_param(l, s, id);
         return PROTO_R_OK;
@@ -492,14 +502,14 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
     if (f->type == PROTO_T_HEARTBEAT && f->len == 0u) return;   /* no ACK for heartbeats */
     l->commands++;
 
-    if (f->type >= PROTO_T_SIM_FIRST && f->type <= PROTO_T_SIM_LAST) {
-        send_ack(l, f, l->sim_fn ? l->sim_fn(l->sim_ctx, f) : PROTO_R_UNKNOWN);
-        return;
-    }
+    uint8_t r;
     int want = cmd_len(f->type);
-    if (want < 0) { send_ack(l, f, PROTO_R_UNKNOWN); return; }
-    if ((int)f->len != want) { send_ack(l, f, PROTO_R_BAD_LENGTH); return; }
-    send_ack(l, f, do_command(l, s, f));
+    if (f->type >= PROTO_T_SIM_FIRST && f->type <= PROTO_T_SIM_LAST) r = l->sim_fn ? l->sim_fn(l->sim_ctx, f) : PROTO_R_UNKNOWN;
+    else if (want < 0) r = PROTO_R_UNKNOWN;
+    else if ((int)f->len != want) r = PROTO_R_BAD_LENGTH;
+    else r = do_command(l, s, f);
+    send_ack(l, f, r);
+    logcore0_pc(s->now_ms, f->type, f->seq, r, f->payload, f->len);     /* every command + answer */
 }
 
 /* --- public --------------------------------------------------------------- */

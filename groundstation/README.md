@@ -97,7 +97,21 @@ python replay.py logs\log_....jsonl --sim          # re-send the commands to the
 python replay.py logs\log_....jsonl --view         # play the telemetry back, then connect app.py to tcp:127.0.0.1:5761
 ```
 
-## 5. Test
+## 5. Boat logs (SD card) and the log tools
+
+The boat logs everything on its microSD card (`.TLG` files; the simulator
+writes them to `sim/sdcard`). The ground station also saves its own copy of
+the telemetry as `.TLG` next to the `.jsonl` file.
+
+```
+python logview.py B00012_001.TLG                 # plots, map, events (click = jump)
+python log2csv.py B00012_001.TLG                 # -> CSV (all fields), Excel
+python log2csv.py B00012_001.TLG -f heading,target,thr_out --events
+python log2csv.py B00012_001.TLG --list          # the field names
+python tlgreplay.py B00012_001.TLG               # replay the drive in the simulator
+```
+
+## 6. Test
 
 ```
 python test_e2e.py
@@ -113,5 +127,7 @@ joystick take over, checks that the PC is refused, and checks the log.
 * `link.py`: serial / TCP connection, heartbeat, logger.
 * `app.py`: the window.
 * `program.py`: AUTO programs (upload, download, save / load).
-* `replay.py`: log replay.
+* `replay.py`: replay of the ground station's .jsonl logs.
 * `test_e2e.py`: end-to-end test.
+* `tlg.py`: read / write .TLG logs; `log2csv.py`, `logview.py`, `tlgreplay.py`: the log tools;
+  `test_logs.py`: their tests.

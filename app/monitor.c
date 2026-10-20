@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "hal.h"
+#include "logrec.h"
 
 mon_shared_t g_mon;
 
@@ -24,6 +25,9 @@ static void trip(mon_t *m, mon_shared_t *sh, mon_reason_t r, uint32_t now_ms)
         m->trip_ms = now_ms;
         sh->reason = (uint8_t)r;
         sh->tripped = 1u;
+        float lim = sh->fwd_engaged ? sh->fwd_limit : sh->rev_limit;
+        (void)logrec_event(&g_logq1, now_ms, EV_MONITOR, (int32_t)r, (int32_t)(sh->throttle_pct * 10.0f),
+                           (int32_t)(lim * 10.0f), 0);          /* CPU1's own log queue */
     }
 }
 

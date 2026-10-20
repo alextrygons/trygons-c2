@@ -29,6 +29,7 @@ bool cyc_record(cyc_t *c, uint32_t exec_us)
     c->w_sum += exec_us;
     c->w_n++;
     c->cycles = c->cycles + 1u;
+    c->last_us = exec_us;
     if (exec_us > c->max_us) c->max_us = exec_us;
     if (c->w_n >= c->window) {
         c->pub_min_us = c->w_min;

@@ -174,7 +174,34 @@ fail-safe** (one or more of these):
 
 Recommended: 1 + 2 (servo power through the relay) + 3.
 
-## 4. Ground-station link (PC)
+## 4. microSD card (log)
+
+A **microSD click** board (MikroElektronika MIKROE-924, 3.3 V) plugged into the
+board's **mikroBUS socket** is easiest. A 3.3 V microSD breakout board wired
+to the same pins works too. **Never use a 5 V module.**
+
+| microSD signal | mikroBUS pin | TC375 pin | Function |
+|----------------|--------------|-----------|----------|
+| CS             | 3 (CS)       | P14.7     | chip select |
+| SCK            | 4 (SCK)      | P15.8     | QSPI2 clock |
+| MISO (DO)      | 5 (MISO)     | P15.7     | QSPI2 MRST (data from the card) |
+| MOSI (DI)      | 6 (MOSI)     | P15.6     | QSPI2 MTSR (data to the card) |
+| card detect    | 15 (INT)     | P10.7     | low = card inserted (on the click) |
+| 3.3 V          | 7 (3.3V)     | -         | |
+| GND            | 8 / 9 (GND)  | -         | |
+
+* Card: a good-brand **industrial / high-endurance microSD, 8-32 GB**,
+  formatted **FAT32**. Read it on the PC with a normal card reader.
+* About 20 MB per hour of logging. A 16 GB card holds weeks.
+* Files: `Bbbbbb_fff.TLG` (boot number, file number; with the date and time
+  once GPS time is known), a new file every 10 min. `BB..._nnn.TLG` are the
+  black-box files (the 60 s before an alarm / fault and 30 s after).
+* Pull the card only in STANDBY. At most the last ~2 s are lost; older files
+  are never damaged.
+* Check the pin functions against the TC37x data sheet before you wire
+  (QSPI2 alternate functions on P15.6/7/8 and P14.7).
+
+## 5. Ground-station link (PC)
 
 Nothing to wire. Use the board's **USB cable**: the on-board debugger
 (miniWiggler) also provides a **virtual COM port**, connected to ASCLIN0

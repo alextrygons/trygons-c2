@@ -10,8 +10,13 @@
 #include "sim_run.h"
 #include "sim_world.h"
 #include "link.h"
+#include "proto.h"
 #include "monitor.h"
 #include "timing.h"
+#include "logq.h"
+#include "logcore0.h"
+#include "logrec.h"
+#include "logger.h"
 #include "smallboat.h"
 
 /* ------------------------------------------------------------ harness -- */
@@ -34,7 +39,10 @@ struct sbsim {
     uint32_t resets;
     uint32_t t_reset;       /* time of the last watchdog reset */
     uint32_t inject_us;     /* tests: extra execution time of the next control steps */
+    bool     log_on;        /* core 0 log producer + logger step (off unless a test needs it) */
 };
+
+static logger_t s_logger;   /* core 2 logger (sim: a separate step) */
 
 /* Joystick position (-1..+1, default calibration) -> raw ADC. */
 static uint16_t joy_raw(float v)
@@ -72,6 +80,8 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     if (cfg) c = *cfg; else sb_default_config(&c);
     x->cfg = c;
     timing_init_all();
+    logq_init_all();
+    memset((void *)&g_logstat, 0, sizeof g_logstat);
     sb_init(&x->sb, &c);
     monitor_init(&x->mon, 0u);
     x->mon_on = true;
@@ -99,6 +109,7 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
             if (!x->frozen) {
                 uint32_t t0 = hal_micros();
                 sb_step(&x->sb);
+                if (x->log_on) logcore0_step(&x->sb);
                 (void)cyc_record(&g_timing.core0, hal_micros() - t0 + x->inject_us);
                 x->last_kick = x->t;                /* hal_watchdog_kick() in the loop */
                 if (hook) hook(x, ctx);
@@ -112,6 +123,11 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
             x->boot_until = x->t + 200u;
         }
         /* the independent monitor (CPU1): its own check step */
+        if (x->log_on && x->t % 10u == 0u) {        /* the logger (core 2): its own step */
+            uint32_t t0 = hal_micros();
+            logger_step(&s_logger, x->t);
+            (void)cyc_record(&g_timing.logger, hal_micros() - t0);
+        }
         if (x->mon_on && !x->boot_until) {
             uint32_t t0 = hal_micros();
             monitor_step(&x->mon, &g_mon, x->t);
@@ -120,6 +136,19 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
         world_step(&x->w, PHYSICS_DT_MS * 0.001f);
         x->t += PHYSICS_DT_MS;
     }
+}
+
+/* Logging on: SD card in folder `dir` (created / emptied), boot number. */
+static void sbsim_log_start(sbsim_t *x, const char *dir, uint32_t boot)
+{
+    char cmd[300];
+    snprintf(cmd, sizeof cmd, "mkdir %s 2>nul & del /q %s\\*.TLG 2>nul", dir, dir);
+    (void)system(cmd);
+    sim_hal_sd_setup(dir, true, 4000000u, false);
+    g_logstat.boot = boot;
+    logger_init(&s_logger, x->t);
+    logcore0_init(&x->sb, boot);
+    x->log_on = true;
 }
 
 /* Press a panel button and let the controller see it. */
@@ -3400,10 +3429,400 @@ int sb_timing_report(void)
     return 0;
 }
 
+/* ------------------------------------------------------- section F: logging -- */
+
+/* A minimal .TLG reader for the tests (the PC tools are in groundstation/). */
+typedef struct {
+    int      ok;                /* file opened, magic right */
+    uint32_t records, data, events, headers, configs, crc_bad, tail_bytes;
+    uint32_t t_first_data, t_last_data, t_last;
+    char     fields[2048];      /* "name:type:scale,..." from the header */
+} tlg_info_t;
+
+typedef void (*tlg_cb)(void *ctx, uint8_t type, uint32_t t, const uint8_t *p, uint16_t len);
+
+static void tlg_read(const char *path, tlg_info_t *in, tlg_cb cb, void *ctx)
+{
+    static uint8_t buf[32u * 1024u * 1024u];
+    memset(in, 0, sizeof *in);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    if (n < 4 || memcmp(buf, "TLG1", 4) != 0) return;
+    in->ok = 1;
+    size_t i = 4;
+    while (i + LOGR_OVERHEAD <= n) {
+        if (buf[i] != LOGR_SYNC) { in->crc_bad++; i++; continue; }
+        uint16_t len = (uint16_t)(buf[i + 2] | (buf[i + 3] << 8));
+        if (i + LOGR_OVERHEAD + len > n) break;                 /* cut off at the end */
+        uint16_t crc = proto_crc16(&buf[i + 1], (size_t)len + 7u);
+        if ((uint8_t)crc != buf[i + LOGR_HDR + len] || (uint8_t)(crc >> 8) != buf[i + LOGR_HDR + len + 1]) {
+            in->crc_bad++;
+            i++;
+            continue;
+        }
+        uint8_t type = buf[i + 1];
+        uint32_t t = (uint32_t)buf[i + 4] | ((uint32_t)buf[i + 5] << 8) | ((uint32_t)buf[i + 6] << 16) |
+                     ((uint32_t)buf[i + 7] << 24);
+        in->records++;
+        if (type == LOGR_DATA) {
+            if (!in->data) in->t_first_data = t;
+            in->data++;
+            in->t_last_data = t;
+        }
+        if (type == LOGR_EVENT) in->events++;
+        if (type == LOGR_CONFIG) in->configs++;
+        if (type == LOGR_HEADER) {
+            in->headers++;
+            const char *h = (const char *)&buf[i + LOGR_HDR];
+            const char *fs = strstr(h, "fields=");
+            if (fs && fs < h + len) {
+                const char *e = memchr(fs, '\n', (size_t)(h + len - fs));
+                size_t k = (size_t)((e ? e : h + len) - fs - 7);
+                if (k >= sizeof in->fields) k = sizeof in->fields - 1;
+                memcpy(in->fields, fs + 7, k);
+                in->fields[k] = 0;
+            }
+        }
+        in->t_last = t;
+        if (cb) cb(ctx, type, t, &buf[i + LOGR_HDR], len);
+        i += LOGR_OVERHEAD + len;
+    }
+    in->tail_bytes = (uint32_t)(n - i);
+}
+
+/* Value of field `name` in a DATA payload, decoded with the header's list. */
+static bool tlg_field(const char *fields, const uint8_t *p, const char *name, double *out)
+{
+    char nm[48], ty;
+    double sc;
+    const char *s = fields;
+    size_t off = 0;
+    while (*s) {
+        int used = 0;
+        if (sscanf(s, "%47[^:]:%c:%lf%n", nm, &ty, &sc, &used) != 3) return false;
+        size_t sz = (ty == 'B' || ty == 'c') ? 1u : (ty == 'H' || ty == 'h') ? 2u : 4u;
+        if (strcmp(nm, name) == 0) {
+            const uint8_t *q = p + off;
+            uint32_t u = q[0] | (sz > 1 ? (uint32_t)q[1] << 8 : 0u) | (sz > 2 ? (uint32_t)q[2] << 16 | (uint32_t)q[3] << 24 : 0u);
+            double v;
+            switch (ty) {
+            case 'B': v = (double)(uint8_t)u; break;
+            case 'c': v = (double)(int8_t)u; break;
+            case 'H': v = (double)(uint16_t)u; break;
+            case 'h': v = (double)(int16_t)u; break;
+            case 'I': v = (double)u; break;
+            case 'i': v = (double)(int32_t)u; break;
+            default: { float fl; memcpy(&fl, &u, 4); *out = fl; return true; }
+            }
+            *out = v / sc;
+            return true;
+        }
+        off += sz;
+        s += used;
+        if (*s == ',') s++;
+    }
+    return false;
+}
+
+/* All files in a folder that start with `prefix`, sorted by name. */
+static int tlg_list(const char *dir, const char *prefix, char names[][128], int max)
+{
+    char cmd[300];
+    snprintf(cmd, sizeof cmd, "dir /b /on %s\\%s*.TLG 2>nul", dir, prefix);
+    FILE *p = popen(cmd, "r");
+    int n = 0;
+    if (!p) return 0;
+    while (n < max && fgets(names[n], 128, p)) {
+        names[n][strcspn(names[n], "\r\n")] = 0;
+        if (names[n][0]) n++;
+    }
+    pclose(p);
+    return n;
+}
+
+/* Round trip: values captured from the sim at given steps vs decoded. */
+typedef struct {
+    uint32_t t[8];
+    double   heading[8], thr[8], est_lat[8], unc[8], joy_x[8];
+    int      n;
+    int      checked, worst_field;
+    double   worst;             /* worst |difference| in units of the field's resolution */
+} rt_t;
+
+static void rt_cb(void *ctx, uint8_t type, uint32_t t, const uint8_t *p, uint16_t len)
+{
+    (void)len;
+    struct { rt_t *r; const char *fields; } *c = ctx;
+    if (type != LOGR_DATA) return;
+    for (int i = 0; i < c->r->n; i++) {
+        if (c->r->t[i] != t) continue;
+        double v[5];
+        const char *nm[5] = { "heading", "thr_out", "est_lat", "unc", "joy_x" };
+        const double ref[5] = { c->r->heading[i], c->r->thr[i], c->r->est_lat[i], c->r->unc[i], c->r->joy_x[i] };
+        const double res[5] = { 0.01, 0.01, 1e-7, 0.1, 0.001 };
+        for (int k = 0; k < 5; k++) {
+            if (!tlg_field(c->fields, p, nm[k], &v[k])) { c->r->worst = 1e9; continue; }
+            double e = fabs(v[k] - ref[k]) / res[k];
+            if (e > c->r->worst) { c->r->worst = e; c->r->worst_field = k; }
+        }
+        c->r->checked++;
+    }
+}
+
+static void logging_tests(void)
+{
+    char d[600];
+    static char names[64][128];
+    static uint8_t drain[LOGR_MAX + 64];
+    char path[512];
+    printf("\n=== Section F: logging ===\n");
+
+    /* F1 2 hours at full rate: nothing dropped, timing unchanged */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 601u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        sbsim_log_start(&x, "sd_f1", 1u);
+        hdg_lock(&x);
+        joy_set(0.0f, 0.5f, false, false);
+        x.w.sea_state = 2.0f;
+        uint32_t steps0 = x.sb.modes.log_count;
+        (void)steps0;
+        uint32_t t_start = x.t;
+        sbsim_run(&x, x.t + 2u * 3600u * 1000u, NULL, NULL);
+        uint32_t t_end = x.t;
+        logger_close(&s_logger);
+        x.log_on = false;
+        int nf = tlg_list("sd_f1", "B", names, 64);
+        uint32_t data = 0u, bad = 0u, events = 0u;
+        bool all_headers = true;
+        for (int i = 0; i < nf; i++) {
+            tlg_info_t in;
+            snprintf(path, sizeof path, "sd_f1/%.120s", names[i]);
+            tlg_read(path, &in, NULL, NULL);
+            data += in.data;
+            bad += in.crc_bad;
+            events += in.events;
+            if (!in.ok || in.headers != 1u || in.configs < 1u) all_headers = false;
+        }
+        uint32_t expect = (t_end - t_start) / AP_PERIOD_MS;
+        /* control step time on this PC with and without the log producer */
+        uint64_t with = 0, without = 0, mx_with = 0;
+        sbsim_t y;
+        sbsim_init(&y, 602u, 90.0f, 0.0f, NULL);
+        sbsim_run(&y, 3000u, NULL, NULL);
+        hdg_lock(&y);
+        logq_init_all();
+        for (int k = 0; k < 4000; k++) {
+            world_publish(&y.w, y.t);
+            uint64_t a = sim_hal_real_ns();
+            sb_step(&y.sb);
+            uint64_t b = sim_hal_real_ns();
+            logcore0_step(&y.sb);
+            uint64_t c = sim_hal_real_ns();
+            without += b - a;
+            with += c - a;
+            if (c - a > mx_with) mx_with = c - a;
+            while (logq_pop(&g_logq0, drain, sizeof drain)) {}     /* keep the queue moving */
+            for (int q = 0; q < 5; q++) { world_step(&y.w, PHYSICS_DT_MS * 0.001f); y.t += PHYSICS_DT_MS; }
+        }
+        snprintf(d, sizeof d, "2 h at 20 Hz: %u files (new every 10 min), %u data records written (2 h = %u, + the setup), "
+                 "%u events, records dropped %u + %u, CRC errors %u, every file self-contained %s; "
+                 "step time on this PC: %.2f us without, %.2f us with the log producer (max %.1f us)",
+                 nf, data, expect, events, (unsigned)g_logq0.dropped, (unsigned)g_logq1.dropped, bad,
+                 all_headers ? "yes" : "NO", without / 4000.0 / 1000.0, with / 4000.0 / 1000.0, mx_with / 1000.0);
+        test_report("F1 2 h of full-rate logging: no dropped records, control timing unchanged",
+                    nf >= 12 && nf <= 13 && data >= expect && data <= expect + 60u && bad == 0u &&
+                    all_headers && g_logq0.dropped == 0u && g_logq1.dropped == 0u &&
+                    with / 4000.0 / 1000.0 < 100.0, d);
+    }
+
+    /* F2 power cut while writing */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 603u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        sbsim_log_start(&x, "sd_f2", 2u);
+        hdg_lock(&x);
+        joy_set(0.0f, 0.4f, false, false);
+        sbsim_run(&x, x.t + 25u * 60u * 1000u + 1300u, NULL, NULL);     /* 2 files closed, 3rd being written */
+        uint32_t t_cut = x.t;
+        sim_hal_sd_power_cut();                     /* power gone: unsynced data lost */
+        x.log_on = false;
+        int nf = tlg_list("sd_f2", "B", names, 64);
+        bool older_ok = nf >= 3;
+        uint32_t bad = 0u;
+        tlg_info_t last;
+        memset(&last, 0, sizeof last);
+        for (int i = 0; i < nf; i++) {
+            tlg_info_t in;
+            snprintf(path, sizeof path, "sd_f2/%.120s", names[i]);
+            tlg_read(path, &in, NULL, NULL);
+            bad += in.crc_bad;
+            if (i < nf - 1 && (!in.ok || in.tail_bytes != 0u || in.data < 11900u)) older_ok = false;
+            if (i == nf - 1) last = in;
+        }
+        float lost_s = (float)(t_cut - last.t_last_data) * 0.001f;
+        snprintf(d, sizeof d, "power cut at %.1f s: %d files; older files complete %s; latest file readable %s, "
+                 "%u data records, last one %.1f s before the cut (sync every 2 s), CRC errors %u",
+                 t_cut * 0.001f, nf, older_ok ? "yes" : "NO", last.ok ? "yes" : "NO", last.data, lost_s, bad);
+        test_report("F2 power cut while writing: older files intact, latest readable up to the last sync",
+                    older_ok && last.ok && last.data > 0u && lost_s <= 2.1f && bad == 0u, d);
+    }
+
+    /* F3 card missing / full / write errors: alarm, control keeps working */
+    {
+        int ok_n = 0;
+        int len = snprintf(d, sizeof d, "LOG FAILURE alarm and AUTO still running with:");
+        for (int c = 0; c < 3; c++) {
+            sbsim_t x;
+            prog_wp_t w[5];
+            sbsim_init(&x, 610u + (uint32_t)c, 90.0f, 0.0f, NULL);
+            sbsim_run(&x, 2000u, NULL, NULL);
+            sbsim_log_start(&x, "sd_f3", 3u);
+            if (c == 0) sim_hal_sd_setup("sd_f3", false, 4000000u, false);     /* no card */
+            if (c == 1) sim_hal_sd_setup("sd_f3", true, 300u, false);          /* 300 KB left */
+            sbsim_run(&x, x.t + 500u, NULL, NULL);
+            bool alarm_start = (x.sb.alarm_bits & SB_ALM_LOG) != 0u;
+            x.sb.alarm_bits &= ~SB_ALM_LOG;         /* acknowledged (a raise needs no active alarm) */
+            x.sb.alarm = false;
+            prog5(&x, w);
+            auto_go(&x, w, 5, PROG_END_STOP);
+            if (c == 2) {
+                sbsim_run(&x, x.t + 30000u, NULL, NULL);
+                sim_hal_sd_setup("sd_f3", true, 4000000u, true);              /* every write fails */
+            }
+            sbsim_run(&x, x.t + 120000u, NULL, NULL);
+            bool alarm = (c == 0) ? alarm_start && g_logstat.failure : (x.sb.alarm_bits & SB_ALM_LOG) && g_logstat.failure;
+            bool running = auto_running(&x) && world_sog_kn(&x.w) > 5.0f;
+            /* the card comes back: logging goes on (retry), the alarm cause is gone */
+            sim_hal_sd_setup("sd_f3", true, 4000000u, false);
+            uint32_t files0 = g_logstat.files;
+            sbsim_run(&x, x.t + 15000u, NULL, NULL);
+            bool back = !g_logstat.failure && g_logstat.files > files0;
+            logger_close(&s_logger);
+            x.log_on = false;
+            bool good = alarm && running && back;
+            if (good) ok_n++;
+            len += snprintf(d + len, sizeof d - (size_t)len, " %s: alarm %s, AUTO %s, card back -> logging again %s;",
+                            c == 0 ? "no card" : c == 1 ? "card full" : "write errors", alarm ? "yes" : "NO",
+                            running ? "running" : "STOPPED", back ? "yes" : "NO");
+        }
+        test_report("F3 card missing / full / write errors: LOG FAILURE alarm, control keeps working", ok_n == 3, d);
+    }
+
+    /* F4 black box on an injected fault (+ F5 round trip on the same run) */
+    {
+        sbsim_t x;
+        prog_wp_t w[5];
+        rt_t rt;
+        memset(&rt, 0, sizeof rt);
+        sbsim_init(&x, 620u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        sbsim_log_start(&x, "sd_f4", 4u);
+        prog5(&x, w);
+        auto_go(&x, w, 5, PROG_END_STOP);
+        sbsim_run(&x, x.t + 240000u, NULL, NULL);
+        /* capture a few samples exactly as the sim has them (for the round trip) */
+        for (int i = 0; i < 8; i++) {
+            sbsim_run(&x, x.t + 7000u, NULL, NULL);
+            double lat, lon;
+            dr_latlon(&x.sb.dr, &lat, &lon);
+            rt.t[i] = x.sb.now_ms;
+            rt.heading[i] = x.sb.ap.heading;
+            rt.thr[i] = x.sb.servo.out_pct;
+            rt.est_lat[i] = lat;
+            rt.unc[i] = x.sb.dr.unc_m;
+            rt.joy_x[i] = x.sb.joy.x;
+            rt.n++;
+        }
+        sbsim_run(&x, x.t + 20000u, NULL, NULL);
+        uint32_t t_fault = x.t;
+        sim_hal_fail_heading(true);                 /* compass dies in AUTO */
+        while (!(x.sb.alarm_bits & SB_ALM_COMPASS) && x.t < t_fault + 10000u) sbsim_run(&x, x.t + 10u, NULL, NULL);
+        uint32_t t_det = x.t;                       /* detected after the 2 s compass timeout */
+        sbsim_run(&x, x.t + 45000u, NULL, NULL);
+        logger_close(&s_logger);
+        x.log_on = false;
+        int nb = tlg_list("sd_f4", "BB", names, 64);
+        tlg_info_t bb;
+        memset(&bb, 0, sizeof bb);
+        if (nb > 0) {
+            snprintf(path, sizeof path, "sd_f4/%.120s", names[0]);
+            tlg_read(path, &bb, NULL, NULL);
+        }
+        float before = (float)(t_det - bb.t_first_data) * 0.001f;
+        float after = (float)(bb.t_last_data - t_det) * 0.001f;
+        snprintf(d, sizeof d, "compass fails at %.0f s, detected %.1f s later: %d black-box file(s), first one from "
+                 "%.1f s before to %.1f s after the detection, %u data records, %u events, header + config %s, CRC errors %u",
+                 t_fault * 0.001f, (t_det - t_fault) * 0.001f, nb, before, after, bb.data, bb.events,
+                 (bb.headers == 1u && bb.configs >= 1u) ? "yes" : "NO", bb.crc_bad);
+        test_report("F4 black box: fault -> separate file with the 60 s before (and 30 s after)",
+                    nb >= 1 && before >= 59.0f && before <= 61.0f && after >= 29.0f && bb.crc_bad == 0u &&
+                    bb.headers == 1u && bb.data >= 1750u, d);
+
+        /* F5 round trip: the main log decoded with its own header vs the sim's values */
+        int nf = tlg_list("sd_f4", "B0", names, 64);
+        struct { rt_t *r; const char *fields; } ctx;
+        for (int i = 0; i < nf; i++) {
+            tlg_info_t in;
+            snprintf(path, sizeof path, "sd_f4/%.120s", names[i]);
+            tlg_read(path, &in, NULL, NULL);            /* first pass: the field list */
+            static char fields[2048];
+            memcpy(fields, in.fields, sizeof fields);
+            ctx.r = &rt;
+            ctx.fields = fields;
+            tlg_read(path, &in, rt_cb, &ctx);
+        }
+        static const char *fn[5] = { "heading", "thr_out", "est_lat", "unc", "joy_x" };
+        snprintf(d, sizeof d, "%d of %d captured samples found and decoded; worst difference %.2f x the field's "
+                 "resolution (%s); i.e. exact to the stored resolution (heading 0.01 deg, throttle 0.01 %%, "
+                 "lat 1e-7 deg, uncertainty 0.1 m, stick 0.001)",
+                 rt.checked, rt.n, rt.worst, fn[rt.worst_field]);
+        test_report("F5 round trip: log -> decoded values match the sim (to the stored resolution)",
+                    rt.checked == rt.n && rt.worst <= 0.5001, d);
+    }
+}
+
+/* Python round-trip test: a 5 min AUTO run logged into `dir`, plus
+ * ref.csv with the sim's own (unrounded) values once a second. */
+int sb_logtest(const char *dir)
+{
+    static char path[600];
+    sbsim_t x;
+    prog_wp_t w[5];
+    sbsim_init(&x, 640u, 90.0f, 0.0f, NULL);
+    sbsim_run(&x, 2000u, NULL, NULL);
+    sbsim_log_start(&x, dir, 7u);
+    prog5(&x, w);
+    auto_go(&x, w, 5, PROG_END_STOP);
+    snprintf(path, sizeof path, "%s/ref.csv", dir);
+    FILE *f = fopen(path, "w");
+    if (!f) return 1;
+    fprintf(f, "t_ms,mode,heading,thr_out,est_lat,est_lon,unc,speed_target,gps_sog,alarm_bits\n");
+    uint32_t t_end = x.t + 300000u;
+    while (x.t < t_end) {
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        double lat, lon;
+        dr_latlon(&x.sb.dr, &lat, &lon);
+        fprintf(f, "%lu,%d,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%lu\n", (unsigned long)x.sb.now_ms,
+                (int)sb_mode(&x.sb), x.sb.ap.heading, x.sb.servo.out_pct, lat, lon, x.sb.dr.unc_m,
+                x.sb.cruise.target_kn, x.sb.gps.last.sog_kn, (unsigned long)x.sb.alarm_bits);
+    }
+    fclose(f);
+    logger_close(&s_logger);
+    x.log_on = false;
+    printf("log + ref.csv written to %s\n", dir);
+    return 0;
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
+    logging_tests();
     timing_tests();
     hardening_tests();
     powerlim_tests();

@@ -1,0 +1,303 @@
+/*
+ * logger.c - The logger (core 2). See logger.h.
+ */
+#include "logger.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include "hal.h"
+#include "logq.h"
+#include "logrec.h"
+#include "modes.h"
+
+log_status_t g_logstat;
+
+/* The black box ring (~210 KB) does not fit next to core 0's data: on the
+ * board it goes into CPU1's data RAM (DSPR1, otherwise almost empty),
+ * which core 2 can read and write. */
+#if defined(__TASKING__)
+#pragma section farbss .bss_cpu1
+#elif defined(__tricore__)
+#pragma section .bss_cpu1 aw 4
+#endif
+static uint8_t s_bb[LOG_BB_RECORDS][LOG_BB_SLOT];
+static uint8_t s_bb_ev[LOG_BB_EVENTS][LOG_BB_EV_SLOT];
+#if defined(__TASKING__)
+#pragma section farbss align restore
+#pragma section farbss
+#elif defined(__tricore__)
+#pragma section
+#endif
+
+static uint8_t s_rec[4096 + 64];
+
+/* --- file helpers ------------------------------------------------------------- */
+
+static void fail(logger_t *lg)
+{
+    if (lg->h >= 0) (void)hal_sd_close(lg->h);
+    lg->h = -1;
+    lg->buf_n = 0u;
+    lg->failed = true;
+    lg->retry_at = lg->now + LOG_RETRY_MS;
+    g_logstat.failure = 1u;
+}
+
+static bool raw_write(int h, uint8_t *buf, uint32_t *n, const void *data, uint32_t len)
+{
+    const uint8_t *p = (const uint8_t *)data;
+    while (len) {
+        uint32_t room = LOG_BUF_BYTES - *n;
+        uint32_t k = len < room ? len : room;
+        memcpy(buf + *n, p, k);
+        *n += k;
+        p += k;
+        len -= k;
+        if (*n == LOG_BUF_BYTES) {                  /* full block -> card */
+            if (!hal_sd_write(h, buf, LOG_BUF_BYTES)) return false;
+            *n = 0u;
+        }
+    }
+    return true;
+}
+
+static bool flush(int h, uint8_t *buf, uint32_t *n)
+{
+    if (*n && !hal_sd_write(h, buf, *n)) return false;
+    *n = 0u;
+    return hal_sd_sync(h);
+}
+
+static void file_name(const logger_t *lg, char *out, size_t max, const char *prefix, uint32_t no)
+{
+    if (lg->gps_date) {
+        uint32_t m = lg->gps_tod_ms / 60000u;
+        snprintf(out, max, "%s%05lu_%03lu_%08lu-%02lu%02lu.TLG", prefix, (unsigned long)g_logstat.boot,
+                 (unsigned long)no, (unsigned long)lg->gps_date, (unsigned long)(m / 60u), (unsigned long)(m % 60u));
+    } else {
+        snprintf(out, max, "%s%05lu_%03lu.TLG", prefix, (unsigned long)g_logstat.boot, (unsigned long)no);
+    }
+}
+
+/* magic, header, boot event, config: every file can be read on its own */
+static bool file_start(logger_t *lg, int h, uint8_t *buf, uint32_t *n, uint32_t no)
+{
+    static char txt[3072];
+    uint16_t tl = logrec_header_text(txt, sizeof txt, g_logstat.boot, no);
+    uint16_t rl = logrec_make(s_rec, LOGR_HEADER, lg->now, txt, tl);
+    bool ok = raw_write(h, buf, n, "TLG1", 4u) && raw_write(h, buf, n, s_rec, rl);
+    if (ok && lg->boot_len) ok = raw_write(h, buf, n, lg->boot_rec, lg->boot_len);
+    if (ok && lg->config_len) ok = raw_write(h, buf, n, lg->config_rec, lg->config_len);
+    return ok;
+}
+
+static void open_next(logger_t *lg)
+{
+    char name[64];
+    if (!hal_sd_present()) {
+        g_logstat.card = 0u;
+        fail(lg);
+        return;
+    }
+    g_logstat.card = 1u;
+    lg->file_no++;
+    file_name(lg, name, sizeof name, "B", lg->file_no);
+    lg->h = hal_sd_open(name);
+    lg->buf_n = 0u;
+    if (lg->h < 0 || !file_start(lg, lg->h, lg->buf, &lg->buf_n, lg->file_no)) {
+        fail(lg);
+        return;
+    }
+    lg->file_t0 = lg->now;
+    lg->file_bytes = 0u;
+    lg->last_sync = lg->now;
+    lg->failed = false;
+    g_logstat.failure = 0u;
+    g_logstat.files = g_logstat.files + 1u;
+}
+
+/* --- black box ----------------------------------------------------------------- */
+
+static void bb_store(logger_t *lg, const uint8_t *rec, uint16_t len)
+{
+    if (!lg->bb_ok) return;
+    if (rec[1] == LOGR_DATA && len <= LOG_BB_SLOT) {
+        memcpy(s_bb[lg->bb_head % LOG_BB_RECORDS], rec, len);
+        lg->bb_head++;
+        if (lg->bb_count < LOG_BB_RECORDS) lg->bb_count++;
+    } else if (rec[1] == LOGR_EVENT && len <= LOG_BB_EV_SLOT) {
+        memcpy(s_bb_ev[lg->ev_head % LOG_BB_EVENTS], rec, len);
+        lg->ev_head++;
+        if (lg->ev_count < LOG_BB_EVENTS) lg->ev_count++;
+    }
+}
+
+static uint16_t rec_len(const uint8_t *r)
+{
+    return (uint16_t)((r[2] | (r[3] << 8)) + LOGR_OVERHEAD);
+}
+
+static uint32_t rec_t(const uint8_t *r)
+{
+    return (uint32_t)r[4] | ((uint32_t)r[5] << 8) | ((uint32_t)r[6] << 16) | ((uint32_t)r[7] << 24);
+}
+
+static void bb_start(logger_t *lg)
+{
+    char name[64];
+    if (lg->bb_active || !lg->bb_ok || !hal_sd_present()) return;
+    lg->bb_no++;
+    file_name(lg, name, sizeof name, "BB", lg->bb_no);
+    lg->bbh = hal_sd_open(name);
+    lg->bb_buf_n = 0u;
+    if (lg->bbh < 0 || !file_start(lg, lg->bbh, lg->bb_buf, &lg->bb_buf_n, lg->bb_no)) {
+        if (lg->bbh >= 0) (void)hal_sd_close(lg->bbh);
+        lg->bbh = -1;
+        return;
+    }
+    /* the last 60 s: data and events merged in time order */
+    uint32_t di = lg->bb_head - lg->bb_count, ei = lg->ev_head - lg->ev_count;
+    bool ok = true;
+    while (ok && (di != lg->bb_head || ei != lg->ev_head)) {
+        const uint8_t *d = (di != lg->bb_head) ? s_bb[di % LOG_BB_RECORDS] : 0;
+        const uint8_t *e = (ei != lg->ev_head) ? s_bb_ev[ei % LOG_BB_EVENTS] : 0;
+        if (d && (!e || rec_t(d) <= rec_t(e))) { ok = raw_write(lg->bbh, lg->bb_buf, &lg->bb_buf_n, d, rec_len(d)); di++; }
+        else { ok = raw_write(lg->bbh, lg->bb_buf, &lg->bb_buf_n, e, rec_len(e)); ei++; }
+    }
+    if (!ok) {
+        (void)hal_sd_close(lg->bbh);
+        lg->bbh = -1;
+        return;
+    }
+    lg->bb_active = true;
+    lg->bb_until = lg->now + LOG_BB_AFTER_MS;
+    g_logstat.blackboxes = g_logstat.blackboxes + 1u;
+}
+
+static void bb_end(logger_t *lg)
+{
+    if (!lg->bb_active) return;
+    (void)flush(lg->bbh, lg->bb_buf, &lg->bb_buf_n);
+    (void)hal_sd_close(lg->bbh);
+    lg->bbh = -1;
+    lg->bb_active = false;
+}
+
+/* An alarm, a fault, a monitor trip or STANDBY because of a fault. */
+static bool bb_trigger(const uint8_t *rec)
+{
+    if (rec[1] != LOGR_EVENT) return false;
+    uint16_t code = (uint16_t)(rec[LOGR_HDR] | (rec[LOGR_HDR + 1] << 8));
+    if (code == EV_ALARM_ON || code == EV_FAULT || code == EV_MONITOR) return true;
+    if (code == EV_MODE) {
+        int32_t to = (int32_t)((uint32_t)rec[LOGR_HDR + 6] | ((uint32_t)rec[LOGR_HDR + 7] << 8));
+        int32_t why = (int32_t)((uint32_t)rec[LOGR_HDR + 10] | ((uint32_t)rec[LOGR_HDR + 11] << 8));
+        int32_t verdict = (int32_t)rec[LOGR_HDR + 14];
+        return to == MODE_STANDBY && verdict == 0 &&
+               (why == WHY_COMPASS_FAULT || why == WHY_GEAR_FAULT || why == WHY_JOY_FAULT ||
+                why == WHY_MONITOR || why == WHY_TRAINING_ABORT || why == WHY_GPS_LOST);
+    }
+    return false;
+}
+
+/* --- one record ---------------------------------------------------------------- */
+
+static void handle(logger_t *lg, const uint8_t *rec, uint16_t len)
+{
+    uint8_t type = rec[1];
+    g_logstat.records = g_logstat.records + 1u;
+    if (type == LOGR_CONFIG && len <= sizeof lg->config_rec) {
+        memcpy(lg->config_rec, rec, len);
+        lg->config_len = len;
+    }
+    if (type == LOGR_EVENT && len <= sizeof lg->boot_rec &&
+        (uint16_t)(rec[LOGR_HDR] | (rec[LOGR_HDR + 1] << 8)) == EV_BOOT) {
+        memcpy(lg->boot_rec, rec, len);
+        lg->boot_len = len;
+    }
+    if (type == LOGR_EVENT && (uint16_t)(rec[LOGR_HDR] | (rec[LOGR_HDR + 1] << 8)) == EV_TIME) {
+        /* GPS date / time (core 0, once a minute): used in the file names */
+        memcpy(&lg->gps_date, &rec[LOGR_HDR + 2], 4);
+        memcpy(&lg->gps_tod_ms, &rec[LOGR_HDR + 6], 4);
+    }
+    bb_store(lg, rec, len);
+    bool trig = bb_trigger(rec);
+    if (lg->h >= 0) {
+        if (!raw_write(lg->h, lg->buf, &lg->buf_n, rec, len)) fail(lg);
+        else lg->file_bytes += len;
+    }
+    if (lg->bb_active && !raw_write(lg->bbh, lg->bb_buf, &lg->bb_buf_n, rec, len)) bb_end(lg);
+    if (trig) bb_start(lg);
+    g_logstat.bytes = g_logstat.bytes + len;
+}
+
+/* --- public -------------------------------------------------------------------- */
+
+void logger_init(logger_t *lg, uint32_t now_ms)
+{
+    memset(lg, 0, sizeof *lg);
+    lg->h = -1;
+    lg->bbh = -1;
+    lg->now = now_ms;
+    lg->bb_ok = (uint32_t)logrec_data_size() + LOGR_OVERHEAD <= LOG_BB_SLOT;
+    g_logstat.failure = 0u;
+    g_logstat.files = 0u;
+    g_logstat.blackboxes = 0u;
+    g_logstat.bytes = 0u;
+    g_logstat.records = 0u;
+}
+
+void logger_step(logger_t *lg, uint32_t now_ms)
+{
+    lg->now = now_ms;
+    if (lg->h < 0 && (!lg->failed || (int32_t)(now_ms - lg->retry_at) >= 0)) open_next(lg);
+
+    /* drain: bounded work per step */
+    for (uint32_t k = 0; k < LOG_STEP_RECORDS; k++) {
+        uint16_t len = logq_pop(&g_logq0, s_rec, sizeof s_rec);
+        if (!len) len = logq_pop(&g_logq1, s_rec, sizeof s_rec);
+        if (!len) break;
+        if (s_rec[0] != LOGR_SYNC || len < LOGR_OVERHEAD) continue;
+        handle(lg, s_rec, len);
+    }
+
+    /* records dropped by a full queue: counted, and the count logged */
+    if (g_logq0.dropped != lg->drop0 || g_logq1.dropped != lg->drop1) {
+        lg->drop0 = g_logq0.dropped;
+        lg->drop1 = g_logq1.dropped;
+        uint8_t ev[18 + LOGR_OVERHEAD];
+        uint8_t pl[18];
+        memset(pl, 0, sizeof pl);
+        pl[0] = (uint8_t)EV_LOG;
+        pl[2] = 6u;
+        memcpy(&pl[6], &lg->drop0, 4);
+        memcpy(&pl[10], &lg->drop1, 4);
+        uint16_t n = logrec_make(ev, LOGR_EVENT, now_ms, pl, sizeof pl);
+        handle(lg, ev, n);
+    }
+
+    if (lg->h >= 0 && (int32_t)(now_ms - lg->last_sync) >= (int32_t)LOG_SYNC_MS) {
+        lg->last_sync = now_ms;
+        if (!flush(lg->h, lg->buf, &lg->buf_n)) fail(lg);
+        if (lg->bb_active && !flush(lg->bbh, lg->bb_buf, &lg->bb_buf_n)) bb_end(lg);
+    }
+    if (lg->bb_active && (int32_t)(now_ms - lg->bb_until) >= 0) bb_end(lg);
+    if (lg->h >= 0 && ((now_ms - lg->file_t0) >= LOG_ROTATE_MS || lg->file_bytes >= LOG_ROTATE_BYTES)) {
+        if (!flush(lg->h, lg->buf, &lg->buf_n)) fail(lg);
+        if (lg->h >= 0) (void)hal_sd_close(lg->h);
+        lg->h = -1;
+        lg->failed = false;
+        open_next(lg);
+    }
+}
+
+void logger_close(logger_t *lg)
+{
+    bb_end(lg);
+    if (lg->h >= 0) {
+        (void)flush(lg->h, lg->buf, &lg->buf_n);
+        (void)hal_sd_close(lg->h);
+        lg->h = -1;
+    }
+}

@@ -73,4 +73,8 @@ void     sim_hal_unforce(void);
 void     sim_hal_real_micros(bool on);
 uint64_t sim_hal_real_ns(void);                  /* PC clock in ns (timing report) */
 
+/* microSD card in a folder: card present, free space, every write failing. */
+void     sim_hal_sd_setup(const char *dir, bool present, uint32_t free_kb, bool fail_writes);
+void     sim_hal_sd_power_cut(void);               /* unsynced data is lost */
+
 #endif /* HAL_SIM_H */

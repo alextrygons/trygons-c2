@@ -34,6 +34,9 @@
 #include "smallboat.h"
 #include "link.h"
 #include "timing.h"
+#include "logq.h"
+#include "logcore0.h"
+#include "logger.h"
 
 /* Which boat this build is for:
  *   default            small boat (outboard): smallboat.c controller
@@ -64,6 +67,14 @@ void core0_main(void)
      * A frozen loop -> chip reset -> outputs back to their reset state. */
     hal_watchdog_init(WATCHDOG_MS);
     timing_init_all();
+    logq_init_all();
+    {   /* boot counter (log file names) */
+        uint32_t boot = 0u;
+        if (!hal_nv_load(HAL_NV_SLOT_BOOT, &boot, sizeof boot)) boot = 0u;
+        boot++;
+        (void)hal_nv_save(HAL_NV_SLOT_BOOT, &boot, sizeof boot);
+        g_logstat.boot = boot;
+    }
 
     /* Wait for CPU sync event */
     IfxCpu_emitEvent(&cpuSyncEvent);
@@ -78,6 +89,7 @@ void core0_main(void)
     sb_init(&g_boat, &cfg);
     (void)autopilot_load_calibration(&g_boat.ap);   /* saved TRAINING result, if any */
     link_init(&g_link, &g_boat);
+    logcore0_init(&g_boat, g_logstat.boot);
 #endif
 
     /* Fixed-rate loop: one step every AP_PERIOD_MS (20 Hz). */
@@ -93,6 +105,7 @@ void core0_main(void)
             uint32_t t0 = hal_micros();
             sb_step(&g_boat);
             link_step(&g_link, &g_boat);
+            logcore0_step(&g_boat);                                 /* into the queue, never waits */
             (void)cyc_record(&g_timing.core0, hal_micros() - t0);    /* overrun -> alarm next step */
 #endif
             hal_watchdog_kick();

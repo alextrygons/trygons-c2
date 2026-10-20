@@ -120,7 +120,9 @@ typedef struct {
     bool     fix;           /* position valid */
     bool     jam_spoof;     /* receiver reports jamming / spoofing (e.g. u-blox
                                spoofDetState / jamInd); false if not supported */
-    uint32_t time_ms;       /* receiver timestamp (ms of the day) */
+    uint32_t time_ms;       /* receiver timestamp (ms of the day, UTC) */
+    uint32_t date;          /* UTC date as YYYYMMDD, 0 = not known yet */
+    uint8_t  sats;          /* satellites used */
 } hal_gps_t;
 
 /* true + new data only when a new GPS message arrived since the last call. */
@@ -144,6 +146,7 @@ bool hal_read_joystick(hal_joystick_t *j);
  * The app adds its own version + checksum. */
 #define HAL_NV_SLOT_JOYSTICK  1u
 #define HAL_NV_SLOT_PROGRAM   2u     /* AUTO waypoint program */
+#define HAL_NV_SLOT_BOOT      3u     /* boot counter (log file names) */
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size);
 bool hal_nv_load(uint8_t slot, void *data, uint32_t size);
 
@@ -199,5 +202,24 @@ typedef enum {
     HAL_RESET_OTHER
 } hal_reset_t;
 hal_reset_t hal_reset_reason(uint32_t *raw);
+
+/* Memory barrier: everything written before is visible to the other
+ * cores before anything written after (lock-free log queues). */
+void hal_mem_barrier(void);
+
+/* Supply voltage (battery), V. false if not measured. */
+bool hal_read_supply_voltage(float *volts);
+
+/* ---- microSD card (FAT32, logger on core 2 only) --------------------------
+ * Simple file API (FatFs on the board, a folder on the PC in the sim).
+ * open = create / overwrite; handles 0..HAL_SD_FILES-1, -1 = error.
+ * Data is only safe on the card after hal_sd_sync / hal_sd_close. */
+#define HAL_SD_FILES 2
+bool     hal_sd_present(void);
+int      hal_sd_open(const char *name);
+bool     hal_sd_write(int h, const void *data, uint32_t len);
+bool     hal_sd_sync(int h);
+bool     hal_sd_close(int h);
+uint32_t hal_sd_free_kb(void);
 
 #endif /* HAL_H */

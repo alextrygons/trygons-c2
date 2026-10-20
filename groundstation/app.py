@@ -737,6 +737,9 @@ class App:
             lines.append("%-22s %8d %8d %6.1f%% %9d" % (name, d[ka], d[km], 100.0 * d[km] / p, d[ko]))
         lines.append("")
         lines.append("link: %d frames received, %d CRC errors" % (d["rx_frames"], d["rx_crc_errors"]))
+        lines.append("log:  SD card %s, %s, %d files, %d records dropped" % (
+            "present" if d["log_flags"] & 2 else "MISSING", "LOG FAILURE" if d["log_flags"] & 1 else "writing",
+            d["log_files"], d["log_dropped"]))
         self.sys_lbl.configure(text="
 ".join(lines))
 

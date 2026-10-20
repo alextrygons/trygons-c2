@@ -71,6 +71,9 @@ void test_report(const char *name, bool ok, const char *detail);
 /* Small-boat tests, all phases (sim_sb.c). */
 void sb_tests(void);
 
+/* Python log round-trip test data (sim_sb.c) */
+int sb_logtest(const char *dir);
+
 /* PC timing reference (sim_sb.c) */
 int sb_timing_report(void);
 

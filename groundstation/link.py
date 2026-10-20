@@ -17,6 +17,7 @@ import threading
 import time
 
 import proto
+import tlg
 
 BAUD = 921600
 HEARTBEAT_S = 0.5    # boat alarms after 3 s without a frame
@@ -45,6 +46,12 @@ class Logger:
         self.f = open(self.path, "w", encoding="utf-8")
         self.lock = threading.Lock()
         self.count = 0
+        # the same telemetry in the boat's log format (.TLG): the log
+        # viewer / CSV tools read both
+        self.tlg_path = self.path[:-6] + ".TLG"
+        self.tlg = tlg.Writer(self.tlg_path)
+        self.t_boat = 0
+        self.sent = {}                  # seq -> (type, payload) for the TLG command records
 
     def write(self, direction, frame, extra=None):
         rec = {"t": round(time.time(), 3), "dir": direction, "type": frame.type,
@@ -54,12 +61,23 @@ class Logger:
         with self.lock:
             self.f.write(json.dumps(rec) + "\n")
             self.count += 1
+            if direction == "tx":
+                self.sent[frame.seq] = (frame.type, frame.payload)
+            elif extra and "telemetry" in extra:
+                self.t_boat = extra["telemetry"]["t_ms"]
+                self.tlg.telemetry(frame.payload, extra["telemetry"])
+            elif extra and "ack" in extra:
+                a = extra["ack"]
+                _t, p = self.sent.pop(a["seq"], (a["cmd"], b""))
+                self.tlg.pc_command(self.t_boat, a["cmd"], a["seq"], a["result"], p)
             if self.count % 50 == 0:
                 self.f.flush()
+                self.tlg.flush()
 
     def close(self):
         with self.lock:
             self.f.close()
+            self.tlg.close()
 
 
 class Link:

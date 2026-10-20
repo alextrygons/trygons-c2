@@ -24,6 +24,7 @@ typedef struct {
     /* published (last full window) */
     volatile uint32_t pub_min_us, pub_avg_us, pub_max_us;
     volatile uint32_t max_us;       /* all-time max */
+    volatile uint32_t last_us;      /* the last cycle */
     volatile uint32_t overruns;     /* cycles longer than period_us */
     volatile uint32_t cycles;
 } cyc_t;

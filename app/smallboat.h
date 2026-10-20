@@ -90,6 +90,7 @@
 #define SB_ALM_NOT_ARMED          0x1000u /* outputs not armed at start: gear not neutral / stick not centred */
 #define SB_ALM_MONITOR            0x2000u /* independent safety monitor (CPU1) tripped */
 #define SB_ALM_OVERRUN            0x4000u /* a control cycle took longer than its period */
+#define SB_ALM_LOG                0x8000u /* LOG FAILURE: SD card missing / full / failing */
 
 #define SB_FAULT_STEER_OFF   0u
 #define SB_FAULT_STEER_GYRO  1u
@@ -293,6 +294,7 @@ typedef struct {
     uint32_t    arm_ok_ms, unarmed_ms;
     bool        mon_tripped;   /* the safety monitor tripped (until reset) */
     uint32_t    overruns_seen; /* g_timing.core0.overruns already alarmed */
+    bool        log_fail_seen;
     dr_t        dr;            /* position estimate (GPS / dead reckoning) */
     bool        gps_new_msg;   /* a GPS message arrived this step */
     uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */
@@ -315,9 +317,20 @@ typedef struct {
     bool     gps_was_ok;        /* GPS trusted last step (loss detection) */
     uint32_t gps_losses;        /* trusted GPS lost (events) */
 
-    float    throttle_demand;   /* this step, before limits */
+    float    throttle_mode;     /* what the mode asked for (before any limit; for the log) */
+    float    throttle_rate;     /* after the rate limiter, before the servo clamp (log) */
+    float    throttle_demand;   /* this step, after the power-limit clamp */
     float    throttle_demand_prev;
     gear_t   gear_demand;
+
+    /* last raw inputs (for the log) */
+    uint32_t buttons_now;       /* panel buttons pressed this step */
+    float    roll_dps;
+    bool     roll_ok;
+    float    motor_a;           /* steering motor current, -1 = no sensor */
+    uint8_t  limit_bits;        /* bit0 left, bit1 right, 0x80 = no switches */
+    int8_t   neutral_sw;        /* -1 none, 0 not neutral, 1 neutral */
+    uint32_t cfg_version;       /* +1 when the config / calibration / program changes */
 
     /* sim tests only: raw gear/throttle demand in the driving modes */
     struct { bool on; gear_t gear; float throttle_pct; } test_drive;
