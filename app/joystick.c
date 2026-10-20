@@ -150,11 +150,11 @@ void joy_step(joy_t *j, const hal_joystick_t *in, uint32_t dt_ms)
 void joy_update(joy_t *j, const joy_input_t *in, uint32_t dt_ms)
 {
     const joy_config_t *c = &j->cfg;
-    bool was_take = j->take, was_auto = j->autob, was_confirm = j->confirm;
+    bool was_take = j->take, was_auto = j->autob, was_confirm = j->confirm, was_save = j->save;
     uint32_t was_buttons = j->buttons;
 
     j->engage_x = j->engage_y = false;
-    j->take_edge = j->auto_edge = j->confirm_edge = false;
+    j->take_edge = j->auto_edge = j->confirm_edge = j->save_edge = false;
     j->buttons_edge = 0u;
     j->lever_moved = false;
     j->present = in->present;
@@ -166,7 +166,7 @@ void joy_update(joy_t *j, const joy_input_t *in, uint32_t dt_ms)
         j->x = j->y = 0.0f;
         j->lever = nz_mid(j);
         j->lever_in = in->has_lever ? in->lever : nz_mid(j);
-        j->take = j->autob = j->confirm = false;
+        j->take = j->autob = j->confirm = j->save = false;
         j->buttons = 0u;
         j->deflect_x_ms = j->deflect_y_ms = j->deflect_l_ms = 0u;
         return;
@@ -177,6 +177,8 @@ void joy_update(joy_t *j, const joy_input_t *in, uint32_t dt_ms)
     j->take = in->take;
     j->autob = in->autob;
     j->confirm = in->confirm;
+    j->save = in->save;
+    j->save_edge = j->save && !was_save;
     j->buttons = in->buttons;
     j->take_edge = j->take && !was_take;
     j->auto_edge = j->autob && !was_auto;

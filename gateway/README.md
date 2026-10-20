@@ -38,7 +38,7 @@ python test_gateway.py                   (all gateway tests)
 
 See MANUAL.txt "Wiring and what to buy". In short: Raspberry Pi 5 (8 GB),
 official active cooler, 12 V → 5.1 V **5 A** USB-C supply, a **USB 3 SSD
-256-512 GB** (with its own USB-C/A cable, not a stick), a 32 GB microSD
+512 GB - 1 TB** (with its own USB-C/A cable, not a stick; video ~3-4 GB/h), a 32 GB microSD
 card (A2 class) for the system only, a small IP65 box.
 
 ## 2. Install the operating system (on your PC)
@@ -401,6 +401,22 @@ starts / restarts it itself. Why MediaMTX:
 
 Every viewer is checked by the gateway: a station only gets the streams its
 camera preset allows; on STARLINK / data saver only the front camera, LOW.
+
+### Recording on the SSD (ring buffer, SAVE)
+
+The gateway records the four main streams itself (one `ffmpeg` per camera,
+no re-encoding) - install it: `sudo apt install -y ffmpeg`.
+* `<ssd>/video/ring/<CAMERA>/YYYYMMDD-HHMMSS.ts`: 1-minute files, UTC
+  names (the Pi's clock is GPS time). Older than the ring length (5-60
+  min) = deleted.
+* `<ssd>/video/events/<id>/`: SAVEs (hard links to the ring files + `event.json`).
+* Settings: `recording` in gateway.json (segment_s, ring_min, post_s,
+  pre_s, ring_sync, stall_s); `storage.low_free_gb` / `full_free_gb` /
+  `quota_gb`.
+* Space policy and STORAGE FULL: MANUAL.txt chapter 9 part F.
+* Bitrate: in the Tapo app keep the main stream at 1080p / 15 fps (about
+  2 Mbit/s): 4 cameras = ~3.6 GB per hour. The Cameras tab shows the real
+  "GB/h".
 
 ## 15. The shore PC (ground station, remote driving)
 

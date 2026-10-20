@@ -77,6 +77,7 @@ typedef struct {
     bool     has_lever;
     float    lever;             /* 0 (full back) .. 1 (full forward) */
     bool     take, autob, confirm;
+    bool     save;              /* video SAVE button (USB joystick only) */
     uint32_t buttons;           /* panel-button functions held on the joystick (HAL_BTN_BIT mask) */
 } joy_input_t;
 
@@ -92,6 +93,7 @@ typedef struct {
     uint16_t raw[2];
     bool     take, autob, confirm;              /* buttons now */
     bool     take_edge, auto_edge, confirm_edge; /* pressed this step */
+    bool     save, save_edge;   /* video SAVE button (never changes the mode) */
     bool     engage_x, engage_y;    /* axis deflected beyond the deadband for engage_ms */
     uint32_t deflect_x_ms, deflect_y_ms, centered_ms, valid_ms;
     bool     has_lever;         /* throttle is a non-returning lever (USB) */

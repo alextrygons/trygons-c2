@@ -1010,6 +1010,9 @@ def section_d():
 
 from simcam import SimCamera, decode_ts, latency_ms  # noqa: E402
 from video import VideoStream, FrontSelector  # noqa: E402
+from simcam import ffmpeg_bin  # noqa: E402
+from recorder import seg_time  # noqa: E402
+import tlg  # noqa: E402
 
 MTX_BIN = os.environ.get("MEDIAMTX_BIN") or shutil.which("mediamtx") or os.path.join(
     tempfile.gettempdir(), "claude", "c--trygons-TRYGONS-C2", "800448bc-0615-4bb2-9260-80ce21ee6535",
@@ -1022,6 +1025,7 @@ class CamRig:
     """Simulator + gateway with MediaMTX + 4 simulated cameras."""
 
     def __init__(self, tmp, speed=1.0, **extra):
+        extra.setdefault("recording", {"enabled": False})       # only section F records
         self.sim = Sim(speed)
         self.rtsp, api, web, wu = free_port(), free_port(), free_port(), free_port()
         cams = [{"name": n, "role": r, "url_main": "rtsp://127.0.0.1:%d/simcam_%d" % (self.rtsp, i),
@@ -1247,7 +1251,261 @@ def section_e():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-SECTIONS = {"A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e}
+# ------------------------------------------------------------------- section F --
+
+def frame_code(path, w=320, h=240):
+    """Time code of the first picture in a recorded file (simulated camera)."""
+    r = subprocess.run([ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-i", path, "-frames:v", "1",
+                        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, timeout=20)
+    return decode_ts(r.stdout, w, h) if len(r.stdout) >= w * h * 3 else None
+
+
+def code_offset_ms(code, t):
+    """Picture time code - expected code for Unix time t, in ms (wrap-safe)."""
+    m = 1 << 26
+    d = (code - (int(t * 1000) & (m - 1))) % m
+    return d - m if d > m // 2 else d
+
+
+def save_ack(client, timeout=4.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            k, d = client.l.events.get(timeout=0.1)
+        except Exception:
+            continue
+        if k == "save_ack":
+            return d
+    return None
+
+
+def send_wait(client, **msg):
+    while True:
+        try:
+            client.l.events.get_nowait()
+        except Exception:
+            break
+    client.l.send_msg(msg)
+    return save_ack(client)
+
+
+def event_json(rec, eid):
+    try:
+        with open(os.path.join(rec.events_dir(), eid, "event.json"), encoding="utf-8") as f:
+            return _json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def section_f():
+    print("\n=== Section F: video recording (ring buffer, SAVE, storage) ===", flush=True)
+    if not os.path.exists(MTX_BIN):
+        report("F0 MediaMTX available for the recording tests", False, "not found: %s" % MTX_BIN)
+        return
+    tmp = tempfile.mkdtemp(prefix="gwtest_f_")
+    rig = None
+    SEG, POST = 2, 4
+    try:
+        rig = CamRig(tmp, recording={"enabled": True, "segment_s": SEG, "ring_choices_min": [0.1, 0.2, 5, 10],
+                                     "ring_min": 0.2, "post_s": POST, "house_s": 1.0, "stall_s": 4.0})
+        g, rec = rig.g, rig.g.rec
+        port = rig.cfg["stations"]["port"]
+        alice = Client(port, "alice", PW["alice"])
+        bob = Client(port, "bob", PW["bob"])
+        vic = Client(port, "vic", PW["vic"])
+        onboard = Client(port, "kiosk", key=KIOSK_KEY, local=True, name="captain")
+
+        # F1 all 4 cameras recorded in segments; the file name time matches the picture
+        ok_seg = wait_for(lambda: all(len(c.segments()) >= 4 for c in rec.cams.values()), 40)
+        states = {n: c.state for n, c in rec.cams.items()}
+        segs = rec.cams["FRONT-1"].segments()
+        steps = [b[0] - a[0] for a, b in zip(segs, segs[1:])]
+        offs = []
+        for t, p in segs[1:-1]:
+            c = frame_code(p)
+            if c is not None:
+                offs.append(code_offset_ms(c, t))
+        playable = all(frame_code(c.segments()[-2][1]) is not None for c in rec.cams.values())
+        report("F1 ring recording: 4 cameras, %d s files (1 min on the boat), playable, file time = picture time" % SEG,
+               ok_seg and all(s == "REC" for s in states.values()) and playable and len(steps) >= 2 and
+               all(s == SEG for s in steps[1:]) and offs and all(-300 <= o <= 1500 for o in offs),
+               "states %s; FRONT-1 files every %s s (the first one after the start is shorter); picture time - file name time: %s ms (keyframe after the "
+               "boundary + relay); every camera's file plays: %s" % (states, sorted(set(steps)), offs,
+                                                                    "yes" if playable else "NO"))
+
+        # F2 ring length: set by the captain (on board) or HELM; old files deleted; VIEWER refused
+        r_vic = send_wait(vic, t="rec", ring_min=0.1)
+        r_bad = send_wait(onboard, t="rec", ring_min=7)
+        r_ok = send_wait(onboard, t="rec", ring_min=0.1)
+        time.sleep(12)
+        now = time.time()
+        oldest = {n: (now - c.segments()[0][0]) if c.segments() else None for n, c in rec.cams.items()}
+        counts = {n: len(c.segments()) for n, c in rec.cams.items()}
+        report("F2 ring length set on board (5/10/20/30/60 min on the boat); older files deleted; VIEWER refused",
+               r_vic and not r_vic["ok"] and r_bad and not r_bad["ok"] and r_ok and r_ok["ok"] and rec.ring_min == 0.1 and
+               all(o is not None and o <= 6 + 2 * SEG + 2.5 for o in oldest.values()) and
+               all(n <= 7 for n in counts.values()),
+               "viewer: %s; 7 min: %s; 0.1 min (6 s): %s; oldest file per camera %s s, files %s" % (
+                   r_vic and r_vic["text"], r_bad and r_bad["text"], r_ok and r_ok["text"],
+                   {k: round(v, 1) for k, v in oldest.items()}, counts))
+        send_wait(onboard, t="rec", ring_min=0.2)
+        time.sleep(14)                                      # the ring fills to 12 s again
+
+        # F3 SAVE from a station: ring window before + post-time after, metadata, hard links
+        r_v = send_wait(vic, t="save")
+        t0 = time.time()
+        a = send_wait(alice, t="save", source="captain")
+        eid = a and a.get("id")
+        wait_for(lambda: (event_json(rec, eid) or {}).get("state") in ("complete", "incomplete"), POST + 3 * SEG + 10)
+        ev = event_json(rec, eid) or {}
+        cov = {}
+        for n, files in ev.get("cameras", {}).items():
+            ts = [seg_time(f) for f in files]
+            cov[n] = (round(min(ts) - t0, 1), round(max(ts) + SEG - t0, 1), len(ts)) if ts else None
+        b = ev.get("boat", {})
+        f1 = os.path.join(rec.events_dir(), eid or "x", "FRONT-1", (ev.get("cameras", {}).get("FRONT-1") or ["x"])[-1])
+        links = os.stat(f1).st_nlink if os.path.exists(f1) else 0
+        report("F3 SAVE: the ring window before + post-time after, all 4 cameras, metadata, log link; VIEWER refused",
+               r_v and not r_v["ok"] and a and a["ok"] and ev.get("state") == "complete" and len(cov) == 4 and
+               all(c and c[0] <= -12 + SEG + 0.5 and c[1] >= POST - 0.5 for c in cov.values()) and
+               "lat" in b and b.get("mode") == "STANDBY" and b.get("log", {}).get("file") and
+               ev["triggers"][0]["kind"] == "button" and ev["triggers"][0].get("who") == "alice",
+               "viewer: %s; %s -> %s; covered per camera (from s, to s, files): %s; position %s %s, mode %s, "
+               "alarms %s, log %s record %s; trigger %s; hard links on a file: %d" % (
+                   r_v and r_v["text"], a and a["text"], ev.get("state"), cov, b.get("lat"), b.get("lon"), b.get("mode"),
+                   b.get("alarms"), b.get("log", {}).get("file"), b.get("log", {}).get("aurix_record"),
+                   ev.get("triggers", [{}])[0].get("text"), links))
+
+        # F4 triggers merge: a second SAVE while the first is open extends it
+        a1 = send_wait(alice, t="save", source="driver")
+        time.sleep(2)
+        a2 = send_wait(bob, t="save", source="shore joystick")
+        e1 = a1 and a1.get("id")
+        wait_for(lambda: (event_json(rec, e1) or {}).get("state") == "complete", POST + 3 * SEG + 12)
+        ev = event_json(rec, e1) or {}
+        span = ev.get("end_t", 0) - ev.get("triggers", [{"t": 0}])[0]["t"]
+        report("F4 triggers merge: a SAVE during the post-time joins the open event and extends it",
+               a1 and a2 and a1["ok"] and a2["ok"] and a2.get("id") == e1 and len(ev.get("triggers", [])) == 2 and
+               POST + 1.5 <= span <= POST + 3.0 and ev.get("state") == "complete",
+               "first %s; second: %s; triggers %s; end - first trigger %.1f s (post %d s + 2 s)" % (
+                   a1 and a1["text"], a2 and a2["text"], [t_["text"] for t_ in ev.get("triggers", [])], span, POST))
+
+        # F5 automatic SAVE from the AURIX: joystick takeover of HDG LOCK (TELEM2 SAVE request)
+        link, w = rig.sim.station()
+        n0 = rec.saves
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK))
+        hdg = w.until(lambda d: d["mode"] == 2, 5)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.6, 0.0))
+        man = w.until(lambda d: d["mode"] == 1, 5)
+        wait_for(lambda: rec.saves > n0, 5)
+        ae = [e for _t, _f, e in rec.list_events() if e["triggers"][0].get("who") == "AURIX"]
+        txt = ae[-1]["triggers"][0]["text"] if ae else None
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        report("F5 automatic SAVE from the boat: joystick takeover (TELEM2 SAVE request) -> event",
+               hdg is not None and man is not None and ae and ae[-1]["triggers"][0]["kind"] == "takeover" and
+               "HDG_LOCK" in (txt or ""),
+               "HDG LOCK %s, joystick -> MANUAL %s; event %s: \"%s\"" % (
+                   "yes" if hdg else "NO", "yes" if man else "NO", ae[-1]["id"] if ae else None, txt))
+        link.stop()
+        wait_for(lambda: not rec.events, POST + 3 * SEG + 12)
+
+        # F6 storage policy: oldest ring first, then synced events; never un-synced events; STORAGE FULL
+        rec.cfg["house_s"] = 1e9                            # this test runs the housekeeping itself
+        st = g.storage
+        made = []
+        for i in range(5):
+            eid_ = "20200101-00000%d_test" % i
+            p = os.path.join(rec.events_dir(), eid_)
+            os.makedirs(os.path.join(p, "FRONT-1"), exist_ok=True)
+            with open(os.path.join(p, "FRONT-1", "x.ts"), "wb") as f:
+                f.write(os.urandom(4_000_000))
+            with open(os.path.join(p, "event.json"), "w") as f:
+                _json.dump({"id": eid_, "start_t": 1577836800 + i, "synced": i < 3, "triggers": [{"text": "t"}]}, f)
+            made.append(eid_)
+        used = st.used_now()
+        ring_del = sum(os.path.getsize(p) for c in rec.cams.values() for _t, p in c.segments()[:-1])
+        st.quota_b = used + 1_000_000
+        st.low_b = 1_000_000 + ring_del + 6_000_000
+        st.full_b = 0
+        rec.housekeeping()
+        left = [e for e in made if os.path.exists(os.path.join(rec.events_dir(), e))]
+        ring_left = {n: len(c.segments()) for n, c in rec.cams.items()}
+        step1 = left == made[2:] and all(v <= 2 for v in ring_left.values())
+        # nothing synced left to delete -> STORAGE FULL: SAVE refused, GATEWAY STORAGE alarm on the boat
+        st.low_b = st.full_b = st.free_now() + 50_000_000
+        rec.housekeeping()
+        left2 = [e for e in made if os.path.exists(os.path.join(rec.events_dir(), e))]
+        r_full = send_wait(alice, t="save")
+        alice.pump(0.2)
+        alarm = wait_for(lambda: (alice.pump(0.1) or True) and alice.telem and alice.telem["alarm_bits"] & 0x20000, 8)
+        st.quota_b, st.low_b, st.full_b = None, 0, 0
+        st.check(force=True)
+        rec.housekeeping()
+        r_ok2 = send_wait(alice, t="save")
+        report("F6 storage: oldest ring files first, then SYNCED events (oldest first), never un-synced; STORAGE FULL",
+               step1 and left2 == made[3:] and rec.deleted["events"] >= 3 and r_full and not r_full["ok"] and
+               "STORAGE FULL" in r_full["text"] and alarm and r_ok2 and r_ok2["ok"],
+               "after the first pass: events left %s (2 oldest synced deleted), ring files left %s; nothing synced left: "
+               "events left %s (only un-synced), SAVE -> \"%s\", GATEWAY STORAGE alarm on the boat %s; space back -> "
+               "SAVE %s" % ([e[-6:] for e in left], ring_left, [e[-6:] for e in left2], r_full and r_full["text"],
+                            "yes" if alarm else "NO", "ok" if r_ok2 and r_ok2["ok"] else "NO"))
+        rec.cfg["house_s"] = 1.0
+
+        # F7 a camera unplugged: its recorder notices and restarts, the others keep recording
+        n_before = {n: len(os.listdir(rec.ring_dir(n))) for n in rec.cams}
+        last_before = {n: c.segments()[-1][0] for n, c in rec.cams.items()}
+        rig.cams[2].unplug()
+        down = wait_for(lambda: rec.cams["REAR-LEFT"].state in ("DOWN", "STALLED"), 20)
+        time.sleep(3 * SEG)
+        others = all(rec.cams[n].segments()[-1][0] > last_before[n] and rec.cams[n].state == "REC"
+                     for n in ("FRONT-1", "FRONT-2", "REAR-RIGHT"))
+        rig.cams[2] = SimCamera("rtsp://127.0.0.1:%d/simcam_2" % rig.rtsp).start()
+        back = wait_for(lambda: rec.cams["REAR-LEFT"].state == "REC" and
+                        rec.cams["REAR-LEFT"].segments()[-1][0] > time.time() - 3 * SEG, 40)
+        report("F7 camera unplugged: its recording restarts by itself when it is back; the others never stop",
+               down and others and back,
+               "REAR-LEFT %s; other cameras kept recording %s; REAR-LEFT recording again %s (restarts %d)" % (
+                   "DOWN/STALLED" if down else "NOT noticed", "yes" if others else "NO", "yes" if back else "NO",
+                   rec.cams["REAR-LEFT"].restarts))
+        # F8 log viewer: the saved event's video at a log moment (boat time -> GPS time -> file + offset)
+        import videolog
+        vi = videolog.VideoIndex(os.path.join(rec.events_dir(), eid))
+        lg = tlg.read(g.logs.path) if g.logs.path else None
+        to_utc = videolog.log_utc(lg) if lg else None
+        errs, found = [], 0
+        for dt in (-9.0, -5.0, -1.0, 2.0):
+            u = t0 + dt
+            loc = vi.locate("FRONT-1", u)
+            if loc:
+                found += 1
+                fr = videolog.frame_rgb(*loc)
+                c = decode_ts(fr, 320, 240)
+                if c is not None:
+                    errs.append(code_offset_ms(c, u))
+                else:
+                    errs.append("no picture in %s at +%.1f s (%d bytes)" % (os.path.basename(loc[0]), loc[1], len(fr)))
+        utc_err = None
+        if to_utc and lg.samples:
+            last = lg.samples[-1]["t_ms"]
+            utc_err = to_utc(last) - (g.clock.now() - (g.telem["t_ms"] - last) / 1000.0) if g.telem else None
+        report("F8 log viewer: video of a saved event at a moment of the log, within 1 s; boat time -> GPS time",
+               vi.names() == CAM_NAMES and found == 4 and len(errs) == 4 and all(isinstance(e, int) and abs(e) <= 1000 for e in errs) and
+               utc_err is not None and abs(utc_err) < 1.5,
+               "cameras in the event %s; picture time - wanted time at -9/-5/-1/+2 s: %s ms; boat log time -> UTC "
+               "(TIME events) vs the gateway's GPS clock: %s s" % (
+                   vi.names(), errs, None if utc_err is None else round(utc_err, 2)))
+        s = rec.status()
+        print("    recording status: ring %s MB over %s min (%s GB/h for the simple simulated pictures)" % (
+            s["ring_mb"], s["ring_have_min"], s["gb_per_hour"]), flush=True)
+        for c in (alice, bob, vic, onboard):
+            c.close()
+    finally:
+        if rig:
+            rig.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f}
 
 
 def main():

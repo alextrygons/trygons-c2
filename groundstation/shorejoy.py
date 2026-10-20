@@ -7,7 +7,9 @@ joystick API (winmm, nothing to install). Linux: /dev/input/js*.
 shore_joystick.json (next to app.py, written by the ground station):
   {"steer": {"dev": 0, "axis": "X", "invert": false},
    "thr":   {"dev": 1, "axis": "Z", "invert": true, "lever": true},
-   "release_button": {"dev": 0, "button": 1}}
+   "release_button": {"dev": 0, "button": 1},
+   "save_button": {"dev": 0, "button": 3}}
+"save_button": video SAVE on the gateway (works any time, not only while driving).
 "lever": true = non-returning throttle lever (TWCS, 0 back .. 1 forward);
 false = spring-centred stick Y (-1 .. +1).
 
@@ -26,7 +28,8 @@ AXES = ["X", "Y", "Z", "R", "U", "V"]
 CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shore_joystick.json")
 DEFAULT = {"steer": {"dev": 0, "axis": "X", "invert": False},
            "thr": {"dev": 1, "axis": "Z", "invert": True, "lever": True},
-           "release_button": {"dev": 0, "button": 1}}
+           "release_button": {"dev": 0, "button": 1},
+           "save_button": {"dev": 0, "button": 3}}
 
 
 # --- reading ---------------------------------------------------------------------------
@@ -166,6 +169,15 @@ def to_remote(js, cfg):
         r = js.read(rb["dev"])
         out["release"] = bool(r["ok"] and r["buttons"] & (1 << (rb["button"] - 1)))
     return out
+
+
+def save_pressed(js, cfg):
+    """The video SAVE button is held (False if not configured / not connected)."""
+    sb = cfg.get("save_button")
+    if not sb:
+        return False
+    r = js.read(sb["dev"])
+    return bool(r["ok"] and r["buttons"] & (1 << (sb["button"] - 1)))
 
 
 # --- sending -----------------------------------------------------------------------------

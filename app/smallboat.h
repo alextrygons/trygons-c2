@@ -125,6 +125,27 @@ typedef struct {
     uint32_t log_skipped;       /* records not sent: no gateway connected */
 } sb_gw_t;
 
+/* Video SAVE requests for the gateway (section F). The AURIX only numbers
+ * them; the Pi records. Carried in TELEM2 group E as the LATEST request
+ * (seq counts all of them, so a lost frame loses no SAVE). Never changes
+ * anything on the boat. */
+#define SB_SAVE_BUTTON          1u  /* SAVE button on the USB joystick (arg 0) */
+#define SB_SAVE_ALARM           2u  /* a new alarm (arg = bit number) */
+#define SB_SAVE_FAULT           3u  /* a fault (arg = EV_FAULT kind) */
+#define SB_SAVE_TAKEOVER        4u  /* joystick took over an automatic / remote mode (arg = from mode) */
+#define SB_SAVE_STANDBY_FAULT   5u  /* STANDBY because of a fault (arg = why) */
+#define SB_SAVE_SLAM            6u  /* slamming over the red limit (section H) */
+typedef struct {
+    uint16_t seq;               /* +1 per request (0 = none since power-up) */
+    uint8_t  trig, arg;         /* the latest request */
+    uint32_t t_ms;              /* when */
+    uint8_t  kinds;             /* bit per trigger kind of every request in the last 2 s (several in one step) */
+    uint32_t k_alarms;          /* what was already seen */
+    uint32_t k_modes;
+    uint32_t k_overruns;
+    bool     k_gear, k_compass, k_joy, k_mon, init;
+} sb_save_t;
+
 #define SB_FAULT_STEER_OFF   0u
 #define SB_FAULT_STEER_GYRO  1u
 
@@ -386,6 +407,7 @@ typedef struct {
     jb_t        jb;            /* USB joystick bridge input */
     sb_lever_t  lev;           /* USB throttle lever: mapping and pickup */
     sb_remote_t remote;        /* REMOTE MANUAL: the shore joystick */
+    sb_save_t   save;          /* video SAVE requests for the gateway */
     sb_mode_t   manual_from;   /* mode the joystick took over from */
     bool        joy_fault_seen, joy_nc_seen;
     uint32_t    chirp_ms;      /* short alarm chirp still to sound */

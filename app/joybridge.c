@@ -129,6 +129,7 @@ void jb_step(jb_t *b, const joymap_t *m, uint32_t now_ms, joy_input_t *out)
         out->take = jsf_code_pressed(L, m->btn[JM_TAKE]);
         out->autob = jsf_code_pressed(L, m->btn[JM_AUTO]);
         out->confirm = jsf_code_pressed(L, m->btn[JM_CONFIRM]);
+        out->save = jsf_code_pressed(L, m->btn[JM_SAVE]);
         out->buttons = panel_buttons(L, m);
     }
 }

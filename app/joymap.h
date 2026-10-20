@@ -29,6 +29,7 @@ typedef enum { JOY_THR_STICK_Y = 0, JOY_THR_LEVER = 1 } joy_thr_input_t;
 typedef enum {
     JM_TAKE, JM_AUTO, JM_CONFIRM, JM_HDG_LOCK, JM_STANDBY,
     JM_MINUS_1, JM_PLUS_1, JM_MINUS_10, JM_PLUS_10,
+    JM_SAVE,                    /* video SAVE on the gateway (optional; took the old pad byte) */
     JM_COUNT
 } jm_button_t;
 
@@ -39,8 +40,7 @@ typedef struct {
     uint8_t  axis_steer;        /* axis code: steering (stick X) */
     uint8_t  axis_thr;          /* axis code: lever or stick Y */
     uint8_t  inv_steer, inv_thr;
-    uint8_t  btn[JM_COUNT];     /* control codes, 0 = not mapped */
-    uint8_t  pad;
+    uint8_t  btn[JM_COUNT];     /* control codes, 0 = not mapped (a stored v1 map: SAVE = 0) */
     float    nz_lo, nz_hi;      /* lever neutral zone, 0..1 of travel (0.45 / 0.55) */
     float    lever_delta;       /* lever moved this far from its hand-back position = override (0.10) */
     float    pickup_win;        /* throttle pickup window around the target (0.03) */

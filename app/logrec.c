@@ -83,7 +83,8 @@ static const char k_events[] =
     "14:MONITOR:reason,throttle*10,limit*10,-;"
     "15:LOG:what,a,b,c;"
     "16:TIME:date,time_of_day_ms,t_ms,-;"
-    "17:HELM:station,action(0 take 1 release 2 lost 3 auto 4 gw lost),refused,holder;";
+    "17:HELM:station,action(0 take 1 release 2 lost 3 auto 4 gw lost),refused,holder;"
+    "18:SAVE:trigger(1 button 2 alarm 3 fault 4 takeover 5 standby fault 6 slam),arg,seq,-;";
 
 static const char k_alarms[] =
     "1:COMPASS,2:GPS_LOST,4:GPS_SUSPECT,8:DR_LIMIT,16:ARRIVAL_UNCERTAIN,32:ARRIVED,64:GEAR,128:TRAINING,"

@@ -10,17 +10,25 @@ station's own copy).
   - events: click one to jump to that moment (cursor in plots and map)
   - click / drag in the plots to move the cursor; the values at the cursor
     are shown at the bottom
+  - video (section F): "Video folder..." (a saved event, the ring buffer or
+    the whole synced video folder) or "Open event..." (event.json: its video
+    + its log, cursor at the trigger). The picture of the chosen camera at
+    the cursor time; Play runs the cursor (and the video) in real time.
 """
 import bisect
 import math
 import os
+import json
 import sys
+import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import tlg  # noqa: E402
+import videolog  # noqa: E402
 
 BG = "#ffffff"
 F_TXT = ("Segoe UI", 11)
@@ -56,12 +64,32 @@ class Viewer:
         top = tk.Frame(root, bg=BG)
         top.pack(fill="x")
         tk.Button(top, text="Open log...", font=F_MED, command=self.open).pack(side="left", padx=4, pady=4)
+        tk.Button(top, text="Video folder...", font=F_MED, command=self.open_video).pack(side="left", padx=4)
+        tk.Button(top, text="Open event...", font=F_MED, command=self.open_event).pack(side="left", padx=4)
         self.title = tk.Label(top, text="", font=F_MED, bg=BG)
         self.title.pack(side="left", padx=8)
+        self.vidx = None
+        self.utc = None
+        self.vphoto = None
+        self.vbusy = False
+        self.vwant = None
+        self.playing = False
         body = tk.PanedWindow(root, orient="horizontal")
         body.pack(fill="both", expand=True)
         left = tk.Frame(body, bg=BG)
         body.add(left, width=430)
+        vf = tk.Frame(left, bg=BG)
+        vf.pack(fill="x")
+        self.vcam = tk.StringVar(value="FRONT-1")
+        self.vcam_cb = ttk.Combobox(vf, textvariable=self.vcam, values=[], width=12, state="readonly")
+        self.vcam_cb.pack(side="left", padx=2)
+        self.vcam_cb.bind("<<ComboboxSelected>>", lambda e: self.show_video())
+        self.play_btn = tk.Button(vf, text="Play", font=F_TXT, command=self.play)
+        self.play_btn.pack(side="left", padx=4)
+        self.vinfo = tk.Label(vf, text="no video", font=F_TXT, bg=BG)
+        self.vinfo.pack(side="left", padx=4)
+        self.vcv = tk.Canvas(left, width=420, height=236, bg="#202020", highlightthickness=0)
+        self.vcv.pack(pady=2)
         tk.Label(left, text="Events (click = jump there)", font=F_MED, bg=BG).pack(anchor="w")
         self.ev = tk.Listbox(left, font=("Consolas", 10))
         self.ev.pack(fill="both", expand=True)
@@ -108,7 +136,96 @@ class Viewer:
         for t, text, _c, _a in self.events:
             self.ev.insert("end", "%8.1f  %s" % (t / 1000.0, text))
         self.cursor = 0
+        self.utc = videolog.log_utc(self.log)
         self.draw()
+
+    # --- video (section F) ----------------------------------------------------------
+    def open_video(self, folder=None):
+        folder = folder or filedialog.askdirectory(title="Video folder (event, ring or the synced video folder)")
+        if not folder:
+            return
+        self.vidx = videolog.VideoIndex(folder)
+        names = self.vidx.names()
+        self.vcam_cb.configure(values=names)
+        if names and self.vcam.get() not in names:
+            self.vcam.set(names[0])
+        self.show_video()
+
+    def open_event(self):
+        p = filedialog.askopenfilename(filetypes=[("saved event", "event.json")])
+        if not p:
+            return
+        with open(p, encoding="utf-8") as f:
+            ev = json.load(f)
+        folder = os.path.dirname(p)
+        self.open_video(folder)
+        lf = (ev.get("boat", {}).get("log") or {}).get("file")
+        root = os.path.dirname(os.path.dirname(os.path.dirname(folder)))   # <root>/video/events/<id>
+        if lf and os.path.exists(os.path.join(root, lf)):
+            self.load(os.path.join(root, lf))
+        t_trig = ev.get("triggers", [{}])[0].get("t")
+        if t_trig and self.utc and self.t:
+            ts = [self.utc(x * 1000.0) for x in self.t]
+            self.cursor = min(max(bisect.bisect_left(ts, t_trig), 0), len(self.t) - 1)
+            self.draw()
+
+    def cursor_utc(self):
+        if not self.t or not self.utc:
+            return None
+        return self.utc(self.t[self.cursor] * 1000.0)
+
+    def show_video(self):
+        """Picture at the cursor (ffmpeg in a thread: the window never waits)."""
+        if not self.vidx:
+            return
+        utc = self.cursor_utc()
+        loc = self.vidx.locate(self.vcam.get(), utc)
+        if loc is None:
+            self.vcv.delete("all")
+            self.vcv.create_text(210, 118, text="no video at this time" if utc else "log has no GPS time",
+                                 fill="#ffffff", font=F_MED)
+            self.vinfo.configure(text="")
+            return
+        self.vwant = loc
+        if not self.vbusy:
+            self.vbusy = True
+            threading.Thread(target=self._grab, daemon=True).start()
+
+    def _grab(self):
+        while True:
+            loc = self.vwant
+            data = videolog.frame_ppm(loc[0], loc[1], 420)
+            if self.vwant == loc:
+                break
+        self.root.after(0, self._shown, loc, data)
+
+    def _shown(self, loc, data):
+        self.vbusy = False
+        self.vcv.delete("all")
+        if data:
+            self.vphoto = tk.PhotoImage(data=data, format="ppm")
+            self.vcv.create_image(0, 0, image=self.vphoto, anchor="nw")
+        self.vinfo.configure(text="%s +%.1f s" % (os.path.basename(loc[0]), loc[1]))
+        if self.vwant != loc:
+            self.show_video()
+
+    def play(self):
+        self.playing = not self.playing
+        self.play_btn.configure(text="Pause" if self.playing else "Play")
+        if self.playing:
+            self._t_play = (time.time(), self.t[self.cursor] if self.t else 0.0)
+            self._play_step()
+
+    def _play_step(self):
+        if not self.playing or not self.t:
+            return
+        w0, t0 = self._t_play
+        want = t0 + (time.time() - w0)
+        self.cursor = min(bisect.bisect_left(self.t, want), len(self.t) - 1)
+        self.draw()
+        if self.cursor >= len(self.t) - 1:
+            return self.play()
+        self.root.after(200, self._play_step)
 
     def at(self, key, i):
         c = self.col.get(key)
@@ -137,6 +254,7 @@ class Viewer:
         self.draw_plots()
         self.draw_map()
         self.draw_info()
+        self.show_video()
 
     def draw_plots(self):
         c = self.plot

@@ -106,6 +106,8 @@ class Log:
         if name == "GPS":
             src = POS_SOURCES[a[0]] if 0 <= a[0] < 4 else a[0]
             return "GPS position source %s (reason %d), uncertainty %.1f m, losses %d" % (src, a[1], a[2] / 10, a[3])
+        if name == "SAVE":
+            return "VIDEO SAVE request %d: %s" % (a[2], proto.save_trigger_text(a[0], a[1]))
         parts = ["%s=%d" % (n, v) for n, v in zip(args, a) if n != "-"]
         return name + " " + " ".join(parts)
 

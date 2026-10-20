@@ -110,7 +110,7 @@ static void send_ack(link_t *l, const proto_frame_t *cmd, uint8_t result)
  *   u8 inv_steer | u8 inv_thr | u8 btn[9] (TAKE, AUTO, CONFIRM, HDG LOCK, STANDBY, -1, +1, -10, +10;
  *   codes app/jsframe.h) | f32 nz_lo | f32 nz_hi | f32 lever_delta | f32 pickup_win
  */
-#define JOYMAP_BODY 31u
+#define JOYMAP_BODY 32u
 
 static void wr_joymap(proto_wr_t *w, const joymap_t *m)
 {
@@ -785,6 +785,8 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      u16 latency ms | i16 x*1000 | u16 lever*1000 | u8 flags (b0 lever, b1 pickup pending, b2 confirm
  *      pending) | u16 pickup target*1000 (0xFFFF neutral zone) | u8 cap fwd % | u8 cap rev % |
  *      u32 packets | u8 lost_why
+ *   E: u16 save_seq (video SAVE requests, 0 none) | u8 trigger (SB_SAVE_) | u8 arg | u32 age ms |
+ *      u8 kinds (bit per trigger of every request in the 2 s before the latest)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -819,6 +821,11 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u8(&w, (uint8_t)lroundf(fminf(s->cfg.remote_cap_rev_pct, s->plim.rev_pct)));
     proto_wr_u32(&w, r->packets);
     proto_wr_u8(&w, r->lost_why);
+    proto_wr_u16(&w, s->save.seq);
+    proto_wr_u8(&w, s->save.trig);
+    proto_wr_u8(&w, s->save.arg);
+    proto_wr_u32(&w, s->save.seq ? s->now_ms - s->save.t_ms : 0u);
+    proto_wr_u8(&w, s->save.kinds);
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
 }
 

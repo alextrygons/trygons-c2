@@ -84,8 +84,8 @@ class SimCamera:
 
 def decode_ts(frame, w, h):
     """The time code from an RGB frame (w x h x 3), or None."""
-    if frame is None:
-        return None
+    if frame is None or len(frame) < w * h * 3:
+        return None                                            # no picture at all
     code = 0
     yc = Y0 + SQ // 2
     for i in range(BITS):

@@ -315,6 +315,20 @@ class App:
                        bg=BG).pack(side="left", padx=8)
         btn(top, "Camera internet 30 min (firmware)", lambda: self.cam_internet(True), font=F_TXT).pack(side="left")
         btn(top, "Camera internet OFF", lambda: self.cam_internet(False), font=F_TXT).pack(side="left", padx=2)
+        rec = tk.Frame(ct, bg=BG)
+        rec.pack(fill="x", pady=2)
+        tk.Button(rec, text="SAVE", font=F_BIG, bg="#d00000", fg="white", width=8,
+                  command=lambda: self.video_save("captain")).pack(side="left", padx=4)
+        tk.Label(rec, text="ring buffer (min):", font=F_TXT, bg=BG).pack(side="left", padx=(12, 2))
+        self.ring_var = tk.StringVar(value="10")
+        cb = ttk.Combobox(rec, textvariable=self.ring_var, values=["5", "10", "20", "30", "60"], width=4,
+                          state="readonly", font=F_TXT)
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>", lambda e: (self.ring_set(), self.root.focus_set()))
+        self.ring_cb = cb
+        self.rec_lbl = tk.Label(rec, text="", font=F_TXT, bg=BG, justify="left", anchor="w")
+        self.rec_lbl.pack(side="left", padx=10)
+        self.sj_save_was = False
         mid = tk.Frame(ct, bg=BG)
         mid.pack(fill="both", expand=True)
         self.cam_cv = tk.Canvas(mid, width=640, height=360, bg="#202020", highlightthickness=0)
@@ -332,6 +346,30 @@ class App:
     def cam_internet(self, on):
         if isinstance(self.link, GatewayLink):
             self.link.send_msg({"t": "cam_internet", "on": on, "minutes": 30})
+
+    def video_save(self, source):
+        """SAVE: the gateway keeps the ring window + 2 min after (all cameras)."""
+        if not isinstance(self.link, GatewayLink):
+            return self.say("SAVE: only through the gateway", RED)
+        self.link.send_msg({"t": "save", "source": source})
+
+    def ring_set(self):
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "rec", "ring_min": int(self.ring_var.get())})
+
+    def on_save_ack(self, d):
+        self.say(d.get("text", ""), GREEN if d.get("ok") else RED)
+        self.event("video: %s" % d.get("text", ""))
+
+    def shore_save_poll(self):
+        """The SAVE button on this PC's USB joystick (any time, not only while driving)."""
+        try:
+            now = shorejoy.save_pressed(self.sj, self.sj_cfg)
+        except Exception:
+            now = False
+        if now and not self.sj_save_was and isinstance(self.link, GatewayLink):
+            self.video_save("shore joystick")
+        self.sj_save_was = now
 
     def on_cams_ack(self, d):
         if "streams" not in d:
@@ -376,6 +414,24 @@ class App:
                     cam["name"], cam["state"], cam["for_s"], cam["kbps_in"], cam["kbps_out"]["HIGH"],
                     cam["kbps_out"]["LOW"], mine.get(cam["name"], "-")))
             self.cam_lbl.configure(text="\n".join(lines))
+        r = (self.gw_status or {}).get("rec")
+        if r and r.get("enabled"):
+            rec = [c for c in r["cameras"] if c["state"] == "REC"]
+            txt = "REC %d/%d cameras, ring %s of %s min (%s MB%s)" % (
+                len(rec), len(r["cameras"]), r["ring_have_min"], r["ring_min"], r["ring_mb"],
+                ", %.1f GB/h" % r["gb_per_hour"] if r.get("gb_per_hour") else "")
+            if r["open"]:
+                txt += "   SAVING until %s" % r["open"][0]["until"]
+            if r["full"]:
+                txt += "   STORAGE FULL - SAVE not possible"
+            bad = [c["name"] + " " + c["state"] for c in r["cameras"] if c["state"] != "REC"]
+            if bad:
+                txt += "   not recording: " + ", ".join(bad)
+            self.rec_lbl.configure(text=txt, fg=RED if (r["full"] or bad) else "#202020")
+            if self.ring_var.get() != str(r["ring_min"]) and self.root.focus_get() is not self.ring_cb:
+                self.ring_var.set(str(r["ring_min"]))
+        if getattr(self, "sj", None) is not None:
+            self.shore_save_poll()
         self.root.after(100, self.cam_tick)
 
     def _build_remote(self, rt):
@@ -1048,6 +1104,8 @@ class App:
                     self.on_channel_ack(d)
                 elif kind == "cams_ack":
                     self.on_cams_ack(d)
+                elif kind == "save_ack":
+                    self.on_save_ack(d)
                 elif kind == "status":
                     self.say(d, RED if "DISCONNECTED" in d else "#202020")
                     self.event(d)
@@ -1393,7 +1451,7 @@ class App:
     }
     HINTS = ["stick trigger", "a TWCS button", "a different TWCS button, clearly apart from AUTO",
              "a TWCS button", "an extra stick button", "throttle hat LEFT", "throttle hat RIGHT",
-             "throttle hat DOWN", "throttle hat UP"]
+             "throttle hat DOWN", "throttle hat UP", "an extra stick button (video SAVE, optional - skip = not used)"]
 
     def wiz_start(self, steps):
         if not self.t or not self.t["usb"]:

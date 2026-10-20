@@ -60,6 +60,18 @@ DEFAULTS = {
         "frozen_s": 1.0,                # no new frames this long = FROZEN
         "internet_cmd": None,           # e.g. ["sudo", ".../gateway/tools/camera_internet.sh"]
     },
+    "recording": {
+        "enabled": True,                # ring buffer of all cameras (main streams) on the SSD
+        "segment_s": 60,                # 1-minute files
+        "ring_min": 10,                 # ring length (the captain picks one of ring_choices_min)
+        "ring_choices_min": [5, 10, 20, 30, 60],
+        "post_s": 120,                  # SAVE keeps this long after the (last) trigger
+        "pre_s": None,                  # SAVE keeps this long before it; None = the whole ring
+        "ring_sync": False,             # section G: ring video to the shore PC too (off: data!)
+        "ffmpeg_bin": None,             # None = "ffmpeg" on the PATH
+        "stall_s": 10.0,                # no new video this long -> restart that camera's recorder
+        "house_s": 5.0,                 # ring length + storage policy interval
+    },
     "audit_fallback": "/var/lib/trygons/audit",   # when the SSD is missing
     "web_port": 8080,                   # the iPhone page (VPN only)
     "web_helm": False,                  # HELM from the web page: OFF unless you switch it on
@@ -69,6 +81,7 @@ DEFAULTS = {
         "check_s": 30,                  # free space / write test interval
         "low_free_gb": 20.0,            # below this: delete old synced data (section F)
         "full_free_gb": 2.0,            # below this: STORAGE FULL, only the ring buffer runs
+        "quota_gb": None,               # optional: use at most this much of the drive
     },
 }
 

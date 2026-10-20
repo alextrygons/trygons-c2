@@ -213,6 +213,69 @@ static void alarm_on(sb_t *s, uint32_t bits)
     s->alarm_bits |= bits;
 }
 
+/* --- video SAVE requests (gateway, section F) ------------------------------ */
+
+static void save_req(sb_t *s, uint8_t trig, uint8_t arg)
+{
+    sb_save_t *v = &s->save;
+    if (v->seq == 0u || s->now_ms - v->t_ms >= 2000u) v->kinds = 0u;
+    v->kinds |= (uint8_t)(1u << trig);
+    v->seq = (uint16_t)(v->seq + 1u);
+    if (v->seq == 0u) v->seq = 1u;
+    v->trig = trig;
+    v->arg = arg;
+    v->t_ms = s->now_ms;
+}
+
+static bool fault_why(mode_reason_t w)
+{
+    return w == WHY_COMPASS_FAULT || w == WHY_GPS_LOST || w == WHY_GEAR_FAULT || w == WHY_DR_LIMIT ||
+           w == WHY_JOY_FAULT || w == WHY_NOT_ARMED || w == WHY_MONITOR || w == WHY_REMOTE_LOST ||
+           w == WHY_TRAINING_ABORT;
+}
+
+/* Rising edges only; the AURIX never waits for the Pi. */
+static void save_triggers(sb_t *s)
+{
+    sb_save_t *v = &s->save;
+    bool gf = gear_fault(&s->gear), cf = s->ap.sensor_fault, jf = s->joy.fault, mf = s->mon_tripped;
+    if (!v->init) {
+        v->init = true;
+        v->k_alarms = s->alarm_bits;
+        v->k_modes = s->modes.log_count;
+        v->k_overruns = g_timing.core0.overruns;
+        v->k_gear = gf; v->k_compass = cf; v->k_joy = jf; v->k_mon = mf;
+        return;
+    }
+    if (s->joy.save_edge) save_req(s, SB_SAVE_BUTTON, 0u);
+    uint32_t on = s->alarm_bits & ~v->k_alarms & ~SB_ALM_ARRIVED;    /* arriving is no incident */
+    if (on) {
+        uint8_t bit = 0u;
+        while (!(on & (1u << bit))) bit++;
+        save_req(s, SB_SAVE_ALARM, bit);
+    }
+    v->k_alarms = s->alarm_bits;
+    if (gf && !v->k_gear) save_req(s, SB_SAVE_FAULT, 1u);
+    if (cf && !v->k_compass) save_req(s, SB_SAVE_FAULT, 2u);
+    if (jf && !v->k_joy) save_req(s, SB_SAVE_FAULT, 3u);
+    if (mf && !v->k_mon) save_req(s, SB_SAVE_FAULT, 4u);
+    if (g_timing.core0.overruns != v->k_overruns) save_req(s, SB_SAVE_FAULT, 5u);
+    v->k_gear = gf; v->k_compass = cf; v->k_joy = jf; v->k_mon = mf;
+    v->k_overruns = g_timing.core0.overruns;
+    if (s->modes.log_count - v->k_modes > MODE_LOG_N) v->k_modes = s->modes.log_count - MODE_LOG_N;
+    while (v->k_modes < s->modes.log_count) {
+        const mode_log_entry_t *e = &s->modes.log[v->k_modes % MODE_LOG_N];
+        v->k_modes++;
+        if (e->verdict != MODE_OK) continue;
+        if (e->to == MODE_STANDBY && fault_why((mode_reason_t)e->why))
+            save_req(s, SB_SAVE_STANDBY_FAULT, (uint8_t)e->why);
+        else if (e->to == MODE_MANUAL && e->why == WHY_JOYSTICK &&
+                 (e->from == MODE_HDG_LOCK || e->from == MODE_AUTO || e->from == MODE_REMOTE ||
+                  e->from == MODE_TRAINING))
+            save_req(s, SB_SAVE_TAKEOVER, (uint8_t)e->from);
+    }
+}
+
 /* --- modes ---------------------------------------------------------------- */
 
 static bool joy_ready(const sb_t *s)
@@ -1716,6 +1779,9 @@ void sb_step(sb_t *s)
     g_mon.thr_idle_us = s->cfg.servo.idle_us;
     g_mon.gear_n_us = s->cfg.gear.pwm_n_us;
     g_mon.heartbeat = g_mon.heartbeat + 1u;
+
+    /* 8. video SAVE requests for the gateway */
+    save_triggers(s);
 }
 
 sb_status_t sb_status(const sb_t *s)

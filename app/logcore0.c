@@ -16,6 +16,7 @@
 static struct {
     bool     init;
     uint32_t mode_log_count;
+    uint16_t save_seq;
     uint32_t alarm_bits;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -242,6 +243,9 @@ static void changes(const sb_t *s)
     if (off) ev(s, EV_ALARM_OFF, (int32_t)off, (int32_t)s->alarm_bits, 0, 0);
     k.alarm_bits = s->alarm_bits;
     k.ap_alarm = s->ap.alarm;
+    /* video SAVE requests */
+    if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
+    k.save_seq = s->save.seq;
     /* buttons */
     if (s->buttons_now) ev(s, EV_BUTTON, (int32_t)s->buttons_now, 0, 0, 0);
     if (s->joy.take_edge || s->joy.auto_edge || s->joy.confirm_edge)

@@ -141,16 +141,16 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 124 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 126 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
     autopilot_sim.exe all --bridge
   The same tests again, but every joystick move goes through the simulated
-  USB bridge. Ends with "123 passed, 0 failed, 1 not applicable" (the analog
+  USB bridge. Ends with "125 passed, 0 failed, 1 not applicable" (the analog
   calibration test does not apply to the USB joystick).
     autopilot_sim.exe usb
   Only the 17 USB joystick tests (U1..U16), quick.
     autopilot_sim.exe gw
-  Only the gateway link tests (GA1..), quick.
+  Only the gateway link tests (GA1.., HELM, REMOTE, SAVE requests), quick.
   The gateway (Raspberry Pi) tests, with the simulator, on the PC:
     cd ..\gateway
     C:\msys64\ucrt64\bin\python.exe test_gateway.py
@@ -347,6 +347,7 @@ DEFAULT BUTTONS (change them with "Map buttons", below)
      HDG LOCK   TWCS button 3
      -1 / +1    TWCS hat left / right
      -10 / +10  TWCS hat down / up
+     SAVE       stick button 3  (video SAVE on the gateway; optional)
   Which physical button is "TWCS button 1/3/4" depends on the TWCS: check
   with learn mode or the "now" column of the Joystick tab and map them where
   your thumb finds them. The panel STANDBY button stays and always wins.
@@ -591,6 +592,43 @@ E. CAMERAS (4 x TP-Link Tapo C310)
   only from a station on board), wiring: gateway\README.md section 14,
   WIRING.md section 8.
 
+F. VIDEO RECORDING: RING BUFFER AND SAVE
+  The Pi records all 4 cameras (full quality) all the time, in 1-minute
+  files on its SSD. Only the last 5 / 10 / 20 / 30 / 60 minutes are kept
+  (the "ring buffer"; Cameras tab -> ring buffer, HELM or a station on board).
+  Recording never uses the internet and never affects driving.
+
+  SAVE keeps the whole ring window before it + 2 minutes after it (all
+  cameras), with: time, position, speed, heading, mode, alarms, what
+  triggered it, and the name of the AURIX log file (record number) of that
+  moment. A SAVE starts by:
+    * the SAVE button (Cameras tab; the big driver screen in part I),
+    * the SAVE button on the boat's USB joystick (default: stick button 3;
+      "Map buttons" in the Joystick tab) or on the shore PC's joystick
+      (shore_joystick.json "save_button", default button 3),
+    * automatically: a new alarm (not "arrived"), a fault, the joystick
+      taking over from HDG LOCK / AUTO / REMOTE / TRAINING, STANDBY because
+      of a fault, slamming over the red limit (part H).
+  Several triggers close together are one SAVE (it gets longer). VIEWERs
+  can't SAVE.
+  Where: <SSD>\video\events\YYYYMMDD-HHMMSS_<trigger>\<CAMERA>\*.ts and
+  event.json. The files play in VLC.
+  Watch it next to the log: python logview.py -> "Open event..." (choose
+  event.json: video + its log, cursor at the trigger) or "Video folder...";
+  choose the camera, click in the plots or press Play. Accuracy about 1 s.
+
+  SSD space (1 hour of video from 4 Tapo C310 at full quality is about
+  3-4 GB, 4 x ~2 Mbit/s - check "GB/h" in the Cameras tab with the real
+  cameras): when the SSD runs low the Pi deletes, in this order:
+    1. the oldest ring buffer files,
+    2. the oldest SAVEs that are already copied to the shore PC (part G),
+  but NEVER a SAVE that is not on the shore PC yet. If that is not enough:
+  STORAGE FULL (alarm GATEWAY STORAGE on the boat): new SAVEs are refused,
+  the ring buffer keeps running. Free space: sync to the shore PC, or copy
+  the events away and delete them.
+  A camera that stops recording (cable, power) is restarted every few
+  seconds; the others keep recording. "not recording: ..." shows it.
+
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
@@ -625,7 +663,8 @@ E. CAMERAS (4 x TP-Link Tapo C310)
   CONTROL LOOP OVERRUN   a control cycle took longer than 50 ms
   LOG FAILURE            SD card missing / full / failing (control goes on)
   GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)
-  GATEWAY STORAGE        the Pi's USB SSD is missing / failing (no mode change)
+  GATEWAY STORAGE        the Pi's USB SSD is missing / failing, or STORAGE FULL
+                         (no mode change; SAVE refused while full)
   REMOTE LINK LOST       the remote station holding HELM disappeared; HELM
                          goes back to nobody (no mode change)
   CHANNEL FALLBACK       the internet channel you chose (MANUAL) failed; the
@@ -731,7 +770,8 @@ The ground station saves its own copy of the telemetry in the same format
   [ ] Raspberry Pi 5, 8 GB, with the official active cooler.
   [ ] 12 V -> 5.1 V 5 A USB-C supply for the Pi (car/marine grade; 5 A is
       needed so the Pi can power the SSD), 5 A fuse on the 12 V side.
-  [ ] USB 3 SSD 256-512 GB (e.g. Samsung T7) - logs and video.
+  [ ] USB 3 SSD 512 GB - 1 TB (e.g. Samsung T7) - logs and video (4 cameras
+      ~3-4 GB per hour; 1 TB if you use the 60-minute ring buffer and SAVE often).
   [ ] microSD card 32 GB (A2) - only the Pi's operating system.
   [ ] UART cable AURIX <-> Pi: 3 wires (TX, RX, GND), shielded, < 1 m,
       2 x 100 Ohm resistors.
@@ -914,7 +954,9 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
   "GATEWAY LOST"                 Pi off / crashed / UART cable. On the Pi:
                                  systemctl status trygons-gateway
   "GATEWAY STORAGE"              the Pi's SSD: is it plugged in, mounted
-                                 (df -h /mnt/ssd), not full?
+                                 (df -h /mnt/ssd), not full? STORAGE FULL:
+                                 sync the SAVEs to the shore PC (only synced
+                                 ones are deleted automatically).
   "NOT HELM: take HELM first"    press "Take HELM" (another station may hold
                                  it - only a station on the boat can take it
                                  from a remote one).

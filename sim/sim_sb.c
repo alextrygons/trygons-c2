@@ -4568,7 +4568,7 @@ static void usb_joystick_tests(void)
      * live telemetry (link status, lever, buttons), raw frame for the mapping routine */
     {
         static pcsim_t p;
-        uint8_t body[32];
+        uint8_t body[33];                                   /* JOYMAP_BODY (32) + save flag */
         joymap_t m;
         pcsim_init(&p, 830u);
         sim_hal_bridge_mode(true);
@@ -4626,7 +4626,7 @@ static void usb_joystick_tests(void)
         body[6 + JM_AUTO] = body[6 + JM_TAKE];
         uint8_t r_dup = pc_cmd(&p, PROTO_T_JOYMAP_SET, body, (uint8_t)w.n);
         uint8_t r_get = pc_cmd(&p, PROTO_T_JOYMAP_GET, NULL, 0u);
-        bool unchanged = p.jm_len == 31u && p.jm[0] == 1u && p.jm[6 + JM_AUTO] == JSF_CODE_BTN(1u, 0u);
+        bool unchanged = p.jm_len == 32u && p.jm[0] == 1u && p.jm[6 + JM_AUTO] == JSF_CODE_BTN(1u, 0u);
         snprintf(d, sizeof d, "switch to USB %s; telemetry %u bytes: source %u, stick+throttle connected %s, %u frames/s, "
                  "lever %.1f %%, neutral zone %u-%u %%; TAKE seen in telemetry + raw frame %s; in MANUAL: result %u (9 = STANDBY only); "
                  "TAKE=AUTO map: result %u (18 = shared button), map unchanged %s",
@@ -4659,6 +4659,10 @@ typedef struct {
     int        acks;
     uint8_t    ack_station, ack_result;
     uint16_t   ack_seq;
+    uint16_t   save_seq;        /* TELEM2 group E: latest video SAVE request */
+    uint32_t   save_mask;       /* bit per trigger seen */
+    uint32_t   save_changes;
+    uint8_t    save_last_arg_take;
 } pisim_t;
 
 static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
@@ -4671,6 +4675,16 @@ static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
         p->telem++;
     } else if (f->type == PROTO_T_TELEM2) {
         p->telem2++;
+        if (f->len >= 59u) {                        /* group E at byte 50 */
+            uint16_t sq = (uint16_t)(f->payload[50] | (f->payload[51] << 8));
+            if (sq != p->save_seq) {
+                p->save_seq = sq;
+                p->save_changes++;
+                p->save_mask |= 1u << f->payload[52];
+                p->save_mask |= f->payload[58];             /* every kind of the last 2 s */
+                if (f->payload[52] == SB_SAVE_TAKEOVER) p->save_last_arg_take = f->payload[53];
+            }
+        }
     } else if (f->type == PROTO_T_GW_ACK && f->len == 5u) {
         p->ack_station = f->payload[0];
         p->ack_seq = (uint16_t)(f->payload[1] | (f->payload[2] << 8));
@@ -5318,6 +5332,75 @@ static void remote_tests(void)
     }
 }
 
+/* ------------------------------------------ video SAVE requests (section F) -- */
+
+static void save_tests(void)
+{
+    char d[700];
+    printf("\n=== Section F: video SAVE requests to the gateway ===\n");
+
+    /* GF1 joystick takeover, compass loss (alarm / fault / STANDBY by fault)
+     * -> numbered SAVE requests in TELEM2; the Pi sees every one; the mode
+     * is never touched by a SAVE */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        sbsim_init(&x, 951u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        uint16_t s0 = x.sb.save.seq;
+        hdg_lock(&x);
+        sbsim_run(&x, x.t + 3000u, pi_hook, &p);
+        joy_set(0.6f, 0.0f, false, false);                   /* the hand takes over */
+        sbsim_run(&x, x.t + 1000u, pi_hook, &p);
+        bool take = (p.save_mask & (1u << SB_SAVE_TAKEOVER)) != 0u && p.save_last_arg_take == MODE_HDG_LOCK;
+        bool manual = sb_mode(&x.sb) == MODE_MANUAL;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 1000u, pi_hook, &p);
+        hdg_lock(&x);
+        sbsim_run(&x, x.t + 2000u, pi_hook, &p);
+        sim_hal_fail_heading(true);                          /* compass dies in HDG LOCK */
+        sbsim_run(&x, x.t + 20000u, pi_hook, &p);
+        bool alarm = (p.save_mask & (1u << SB_SAVE_ALARM)) != 0u;
+        bool fault = (p.save_mask & (1u << SB_SAVE_FAULT)) != 0u;
+        bool sbf = (p.save_mask & (1u << SB_SAVE_STANDBY_FAULT)) != 0u;
+        uint16_t n = (uint16_t)(x.sb.save.seq - s0);
+        snprintf(d, sizeof d, "takeover from HDG LOCK -> SAVE \"takeover\" %s (mode %s); compass lost -> alarm %s, fault %s, "
+                 "STANDBY by fault %s (mode now %s); %u requests on the boat, the Pi saw seq %u (%u changes seen)",
+                 take ? "yes" : "NO", manual ? "MANUAL" : "?", alarm ? "yes" : "NO", fault ? "yes" : "NO",
+                 sbf ? "yes" : "NO", mode_name(sb_mode(&x.sb)), n, p.save_seq, p.save_changes);
+        test_report("GF1 SAVE requests: joystick takeover, alarm, fault, STANDBY by fault -> Pi sees every request number",
+                    take && manual && alarm && fault && sbf && sb_mode(&x.sb) == MODE_STANDBY && n >= 4u &&
+                    p.save_seq == x.sb.save.seq, d);
+        sim_hal_fail_heading(false);
+    }
+
+    /* GF2 the SAVE button on the USB joystick: a request, nothing else;
+     * arriving at a waypoint is no incident (no request) */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        usb_init(&x, 952u, 0.0f);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, x.t + 1000u, pi_hook, &p);
+        uint16_t s0 = x.sb.save.seq;
+        sb_mode_t m0 = sb_mode(&x.sb);
+        usb_press(&x, JSF_CODE_BTN(0u, 2u));
+        sbsim_run(&x, x.t + 500u, pi_hook, &p);
+        bool btn = x.sb.save.seq == (uint16_t)(s0 + 1u) && x.sb.save.trig == SB_SAVE_BUTTON &&
+                   p.save_seq == x.sb.save.seq && sb_mode(&x.sb) == m0;
+        uint16_t s1 = x.sb.save.seq;
+        x.sb.alarm_bits |= SB_ALM_ARRIVED;
+        sbsim_run(&x, x.t + 500u, pi_hook, &p);
+        bool arr = x.sb.save.seq == s1;
+        snprintf(d, sizeof d, "SAVE button (stick button 3) -> request %u trigger %u, the Pi saw %u, mode unchanged %s; "
+                 "ARRIVED alarm -> no request %s", x.sb.save.seq, s1 ? x.sb.save.trig : 0u, p.save_seq,
+                 sb_mode(&x.sb) == m0 ? "yes" : "NO", arr ? "yes" : "NO");
+        test_report("GF2 USB joystick SAVE button -> one SAVE request, no mode change; ARRIVED is no SAVE trigger",
+                    btn && arr, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -5330,6 +5413,7 @@ void sb_gateway_tests(void)
     gateway_tests();
     helm_tests();
     remote_tests();
+    save_tests();
 }
 
 void sb_tests(void)
@@ -5337,6 +5421,7 @@ void sb_tests(void)
     gateway_tests();
     helm_tests();
     remote_tests();
+    save_tests();
     logging_tests();
     timing_tests();
     hardening_tests();

@@ -105,6 +105,10 @@ RESULTS = {
 }
 
 MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL"]
+# mode change reasons (app/modes.h mode_reason_t)
+WHY = ["user", "STANDBY button", "compass fault", "GPS lost", "arrived", "training done", "training abort",
+       "test", "gear fault", "DR limit", "arrival uncertain", "joystick", "joystick hand-back", "joystick fault",
+       "PC", "HDG LOCK button", "CONFIRM", "not armed", "safety monitor", "remote", "remote end", "remote lost"]
 MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE = range(6)
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
 CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING"]
@@ -407,13 +411,13 @@ def decode_param(payload: bytes) -> dict:
 # --- USB joystick: button map, raw frames ---------------------------------------
 
 # Function order in the map (app/joymap.h jm_button_t)
-JM_BUTTONS = ["TAKE", "AUTO", "CONFIRM", "HDG LOCK", "STANDBY", "-1", "+1", "-10", "+10"]
+JM_BUTTONS = ["TAKE", "AUTO", "CONFIRM", "HDG LOCK", "STANDBY", "-1", "+1", "-10", "+10", "SAVE"]
 JM_TAKE, JM_AUTO, JM_CONFIRM, JM_HDG_LOCK, JM_STANDBY = range(5)
 THR_INPUTS = ["stick Y (spring-centred)", "lever (non-returning)"]
 HAT_DIRS = ["UP", "RIGHT", "DOWN", "LEFT"]
 DEV_NAMES = ["stick", "throttle"]
 AXIS_NAMES = ["X", "Y", "Z", "Rx", "Ry", "Rz", "Slider", "Dial"]
-_JOYMAP = struct.Struct("<BBBBBB9Bffff")       # 31 bytes, link.c wr_joymap()
+_JOYMAP = struct.Struct("<BBBBBB10Bffff")      # 32 bytes, link.c wr_joymap()
 
 
 def code_btn(dev, index):
@@ -448,7 +452,7 @@ def default_joymap(source=0):
     """Same as app/joymap.c joymap_default(): T.16000M + TWCS."""
     return {"source": source, "thr_input": 1, "axis_steer": 0, "axis_thr": 8 + 2, "inv_steer": 0, "inv_thr": 1,
             "btn": [code_btn(0, 0), code_btn(1, 0), code_btn(1, 3), code_btn(1, 2), code_btn(0, 1),
-                    code_hat(1, 0, 3), code_hat(1, 0, 1), code_hat(1, 0, 2), code_hat(1, 0, 0)],
+                    code_hat(1, 0, 3), code_hat(1, 0, 1), code_hat(1, 0, 2), code_hat(1, 0, 0), code_btn(0, 2)],
             "nz_lo": 0.45, "nz_hi": 0.55, "lever_delta": 0.10, "pickup_win": 0.03}
 
 
@@ -477,8 +481,8 @@ def p_joymap_set(m, save=True):
 def decode_joymap(payload: bytes) -> dict:
     v = _JOYMAP.unpack_from(payload)
     return {"source": v[0], "thr_input": v[1], "axis_steer": v[2], "axis_thr": v[3], "inv_steer": v[4],
-            "inv_thr": v[5], "btn": list(v[6:15]), "nz_lo": v[15], "nz_hi": v[16], "lever_delta": v[17],
-            "pickup_win": v[18]}
+            "inv_thr": v[5], "btn": list(v[6:16]), "nz_lo": v[16], "nz_hi": v[17], "lever_delta": v[18],
+            "pickup_win": v[19]}
 
 
 def decode_joy_raw(payload: bytes) -> dict:
@@ -572,7 +576,27 @@ _T2_GROUPS = [
     (struct.Struct("<BBHHhHBHBBIB"), "remote_state remote_station rjoy_age_ms rjoy_lat_ms rjoy_x1000 rjoy_lever1000 "
                                      "rjoy_flags rjoy_pickup1000 remote_cap_f remote_cap_r rjoy_packets "
                                      "remote_lost_why".split()),
+    (struct.Struct("<HBBIB"), "save_seq save_trig save_arg save_age_ms save_kinds".split()),
 ]
+
+# video SAVE triggers (app/smallboat.h SB_SAVE_)
+SAVE_TRIGGERS = {1: "SAVE button (joystick)", 2: "alarm", 3: "fault", 4: "joystick takeover",
+                 5: "STANDBY by fault", 6: "slamming"}
+FAULT_KINDS = {1: "gear", 2: "compass", 3: "joystick", 4: "safety monitor", 5: "overrun", 6: "log"}
+
+
+def save_trigger_text(trig, arg):
+    t = SAVE_TRIGGERS.get(trig, "trigger %d" % trig)
+    if trig == 2:
+        names = dict(ALARMS)
+        t += " " + names.get(1 << arg, "bit %d" % arg)
+    elif trig == 3:
+        t += " " + FAULT_KINDS.get(arg, str(arg))
+    elif trig == 4:
+        t += " (from %s)" % (MODES[arg] if arg < len(MODES) else arg)
+    elif trig == 5:
+        t += " (%s)" % (WHY[arg] if arg < len(WHY) else arg)
+    return t
 
 
 def decode_telem2(payload: bytes) -> dict:

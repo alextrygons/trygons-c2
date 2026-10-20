@@ -22,10 +22,11 @@ import time
 
 from common import Clock, load_config, log, proto, setup_logging
 from audit import Audit
-from cameras import CameraManager
+from cameras import CameraManager, path_name
 from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAULT_CHANNELS
 from aurix import AurixLink
 from logstore import LogStore
+from recorder import Recorder
 from stations import StationServer
 from storage import Storage
 from timesync import TimeSync
@@ -75,6 +76,9 @@ class Gateway:
         self._saver_was = False
         self.stations.ext["channel"] = self._channel_msg
         self.stations.ext["channel_keep"] = self._channel_keep
+        self.rec = Recorder(cfg["recording"], self)
+        self.stations.ext["save"] = self._save_msg
+        self.stations.ext["rec"] = self._rec_msg
 
     def _on_telem(self, f):
         try:
@@ -86,6 +90,36 @@ class Gateway:
 
     def _on_telem2(self, f):
         self.telem2 = proto.decode_telem2(f.payload)
+        self.rec.on_telem2(self.telem2)
+
+    # --- recording (section F) ------------------------------------------------------
+    def _save_msg(self, st, m):
+        """SAVE button of a station (captain / driver / shore joystick): never a VIEWER."""
+        if st.role == "VIEWER":
+            return st.send({"t": "save_ack", "ok": False, "text": "VIEWER: no SAVE"})
+        src = str(m.get("source", "button"))[:20]
+        ok, text, eid = self.rec.trigger("button", "SAVE %s (%s)" % (src, st.user), who=st.user)
+        st.send({"t": "save_ack", "ok": ok, "text": text, "id": eid})
+
+    def _rec_msg(self, st, m):
+        if not self.may_change(st):
+            return st.send({"t": "save_ack", "ok": False, "text": "ring length: HELM or a station on the boat"})
+        try:
+            minutes = float(m.get("ring_min"))
+            minutes = int(minutes) if minutes == int(minutes) else minutes
+        except (TypeError, ValueError):
+            minutes = None
+        ok, text = self.rec.set_ring(minutes, st.user)
+        st.send({"t": "save_ack", "ok": ok, "text": text, "id": None})
+
+    async def recorder_loop(self):
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                await loop.run_in_executor(None, self.rec.tick)
+            except Exception as e:                          # never let recording stop the gateway
+                log.warning("recorder: %s", e)
+            await asyncio.sleep(1.0)
 
     # --- the 1 Hz status to the AURIX (also its "gateway alive" heartbeat) ---------
     # --- internet channels (section C) ---------------------------------------------
@@ -178,7 +212,7 @@ class Gateway:
                 "storage": self.storage.status(), "logs": self.logs.status(),
                 "clock": {"gps_valid": self.clock.gps_valid, "offset_s": round(self.clock.offset, 3),
                           "utc": self.clock.stamp()},
-                "net": self.net.info(), "cameras": self.cams.status()}
+                "net": self.net.info(), "cameras": self.cams.status(), "rec": self.rec.status()}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -190,6 +224,10 @@ class Gateway:
         tasks = [asyncio.create_task(self.aurix.run()), asyncio.create_task(self.status_loop())]
         if self.cfg["cameras"].get("enabled", True):
             tasks.append(asyncio.create_task(self.camera_loop()))
+            if self.rec.enabled:
+                self.rec.start(self.cfg["cameras"]["rtsp_port"],
+                               {n: path_name(n, "HIGH") for n in self.cams.cams})
+                tasks.append(asyncio.create_task(self.recorder_loop()))
         tasks += self.extra_tasks()
         try:
             await self._stop.wait()
@@ -199,6 +237,7 @@ class Gateway:
             await asyncio.gather(*tasks, return_exceptions=True)
             await self.stations.stop()
             await self.web.stop()
+            self.rec.stop()
             self.cams.stop()
             self.logs.close()
 

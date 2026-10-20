@@ -26,6 +26,7 @@ void joymap_default(joymap_t *m)
     m->btn[JM_PLUS_1]   = JSF_CODE_HAT(1u, 0u, JSF_HAT_RIGHT);
     m->btn[JM_MINUS_10] = JSF_CODE_HAT(1u, 0u, JSF_HAT_DOWN);
     m->btn[JM_PLUS_10]  = JSF_CODE_HAT(1u, 0u, JSF_HAT_UP);
+    m->btn[JM_SAVE]     = JSF_CODE_BTN(0u, 2u);                 /* stick button 3 (left of the thumb) */
     m->nz_lo = 0.45f;
     m->nz_hi = 0.55f;
     m->lever_delta = 0.10f;
@@ -92,7 +93,7 @@ const char *joymap_error_name(jm_error_t e)
 const char *joymap_button_name(jm_button_t b)
 {
     static const char *const n[JM_COUNT] = { "TAKE", "AUTO", "CONFIRM", "HDG LOCK", "STANDBY",
-                                             "-1", "+1", "-10", "+10" };
+                                             "-1", "+1", "-10", "+10", "SAVE" };
     return (b < JM_COUNT) ? n[b] : "?";
 }
 
