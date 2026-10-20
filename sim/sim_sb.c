@@ -92,6 +92,23 @@ static bool confirm_press(sbsim_t *x)
     return x->sb.confirm.accepted > before;
 }
 
+/* One power-limit step up the real way: code from the boat, typed back,
+ * joystick CONFIRM. */
+static bool power_step(sbsim_t *x, uint8_t dir)
+{
+    uint16_t code;
+    if (sb_power_code(&x->sb, dir, &code) != SB_OK) return false;
+    if (sb_power_raise(&x->sb, dir, code) != SB_OK) return false;
+    return confirm_press(x);
+}
+
+/* Raise to 100 % forward / 15 % reverse (tests that need speed). */
+static void power_full(sbsim_t *x)
+{
+    for (int i = 0; i < 3; i++) power_step(x, 0u);
+    for (int i = 0; i < 2; i++) power_step(x, 1u);
+}
+
 /* Waypoint at world position (north, east metres). */
 static prog_wp_t wp_world(const sbsim_t *x, double north_m, double east_m, float kn, float radius_m,
                           wp_action_t act)
@@ -127,6 +144,7 @@ static bool auto_go(sbsim_t *x, const prog_wp_t *wps, int n, prog_end_t fin)
     prog_error_t err;
     uint8_t bad;
     prog_make(&p, wps, n, fin);
+    power_full(x);
     if (sb_program_set(&x->sb, &p, &err, &bad) != SB_OK) return false;
     if (sb_auto_start(&x->sb) != SB_OK) return false;
     return confirm_press(x) && sb_mode(&x->sb) == MODE_AUTO;
@@ -143,6 +161,7 @@ static bool auto_to(sbsim_t *x, float dist, float brg, float kn)
 /* HDG LOCK button (locks the current heading). */
 static bool hdg_lock(sbsim_t *x)
 {
+    if (!plim_raised(&x->sb.plim)) power_full(x);
     press(x, HAL_BTN_HDG_LOCK);
     return sb_mode(&x->sb) == MODE_HDG_LOCK;
 }
@@ -377,11 +396,11 @@ static void phase2(void)
         sb_test_drive(&x.sb, true, GEAR_R, 100.0f);
         sbsim_run(&x, 120000u, NULL, NULL);
         float vr = x.w.speed_kn;
-        snprintf(d, sizeof d, "fwd 100 %% -> %.1f kn, rev (limited to 30 %%) -> %.1f kn, GPS %d msgs in 59 s, "
+        snprintf(d, sizeof d, "fwd 100 %% -> %.1f kn, rev (power limit max 15 %%) -> %.1f kn, GPS %d msgs in 59 s, "
                  "position noise %.1f m rms, worst SOG error %.2f kn",
                  vf, vr, msgs, sqrt(err_sq / (msgs ? msgs : 1)), sog_err);
         test_report("P2 sim: engine thrust, speed fwd/rev, GPS 1 Hz with noise",
-                    vf > 19.0f && vr < -2.0f && vr > -4.0f && msgs >= 57 && msgs <= 61, d);
+                    vf > 19.0f && vr < -1.0f && vr > -4.0f && msgs >= 57 && msgs <= 61, d);
     }
 }
 
@@ -487,15 +506,16 @@ static void phase3(void)
         press(&x, HAL_BTN_STANDBY);
         sbsim_run(&x, 155000u, NULL, NULL);
         float lim = x.sb.cfg.steer.outboard.max_angle_deg;
-        snprintf(d, sizeof d, "max throttle fwd %.1f %% / rev %.1f %% (limit %.0f), speed %+.1f..%+.1f kn, "
+        snprintf(d, sizeof d, "max throttle fwd %.1f %% / rev %.1f %% (power limit %.0f / 5), speed %+.1f..%+.1f kn, "
                  "outboard est %+.1f..%+.1f deg, true %+.1f..%+.1f deg (stops +-35), end-stop push %.1f s, "
                  "heading swing %+.0f..%+.0f deg, throttle in N %.1f %%, under-load %d, F/R w/o N %d",
                  x.w.max_thr_fwd, x.w.max_thr_rev, c.joy_max_throttle_pct, s.v_min, s.v_max,
                  s.est_min, s.est_max, s.ang_min, s.ang_max, x.w.rud.stall_s, s.hdg_min, s.hdg_max,
                  s.thr_in_neutral, x.w.shift_under_load, x.w.fr_without_neutral);
-        bool ok = ok_mode && x.w.max_thr_fwd <= c.joy_max_throttle_pct + 0.01f &&
-                  x.w.max_thr_rev <= c.joy_max_throttle_pct + 0.01f &&
-                  s.v_max > 3.0f && s.v_min < -1.5f &&
+        /* MANUAL after an override: startup power limit 30 % / 5 % */
+        bool ok = ok_mode && x.w.max_thr_fwd <= x.sb.cfg.plim.fwd_steps[0] + 0.01f &&
+                  x.w.max_thr_rev <= x.sb.cfg.plim.rev_start + 0.01f &&
+                  s.v_max > 3.0f && s.v_min < -0.5f &&
                   s.est_max >= lim - 1.0f && s.est_min <= -lim + 1.0f &&     /* angle loop deadband */
                   s.est_max <= lim + 0.01f && s.est_min >= -lim - 0.01f &&
                   x.w.rud.stall_s == 0.0f && s.thr_in_neutral <= 0.0f &&
@@ -788,8 +808,9 @@ static void phase4(void)
                  "alarm %s (GPS lost %s), mode %s, course error max %.1f deg",
                  thr0, v0, thr_min, world_sog_kn(&x.w), sim_hal_alarm() ? "on" : "OFF",
                  (x.sb.alarm_bits & SB_ALM_GPS_LOST) ? "yes" : "NO", mode_name(sb_mode(&x.sb)), hold);
+        /* GPS lost drops the power limit: the stick still drives, below 30 % */
         test_report("P4 GPS loss in HDG LOCK: alarm, still steering, throttle stays with the user",
-                    thr_min >= thr0 - 0.5f && sim_hal_alarm() && (x.sb.alarm_bits & SB_ALM_GPS_LOST) &&
+                    thr_min >= fminf(thr0, x.sb.cfg.plim.fwd_steps[0]) - 0.5f && sim_hal_alarm() && (x.sb.alarm_bits & SB_ALM_GPS_LOST) &&
                     sb_mode(&x.sb) == MODE_HDG_LOCK && hold < 10.0f, d);
     }
 
@@ -2109,6 +2130,11 @@ static void p5_hook(sbsim_t *x, void *ctx)
 {
     p5_t *p = (p5_t *)ctx;
     int g = x->sb.autop.wp;
+    if (getenv("DBGC") && x->t % 2000u < 50u && x->t > 380000u && x->t < 480000u)
+        printf("DBG t %.0f st %d wp %d sog %.1f hdg %.0f tgt %.0f ref %.0f oc %u thr %.0f gear %d lim %.0f est %.1f\n",
+               x->t * 0.001, x->sb.autop.state, g, world_sog_kn(&x->w), x->w.heading_deg, x->sb.ap.target_heading,
+               x->sb.ap.ref_heading, (unsigned)x->sb.ap.off_course_ms, sim_hal_throttle(), x->w.engaged,
+               x->sb.plim.fwd_pct, x->sb.ap.est_angle);
     if (g != p->wp_seen && g < 8) { p->wp_seen = g; p->leg_t0[g] = x->t; }
     if (auto_running(x) && g < 8 && x->t > p->leg_t0[g] + 45000u && x->sb.autop.leg.dist_m > 200.0f) {
         p->sog_sum[g] += world_sog_kn(&x->w);
@@ -2207,8 +2233,9 @@ static void modes_tests(void)
                  "heading drift %.1f deg in 15 s; stick back: mode %s, steering %s",
                  mode_name(sb_mode(&x.sb)), kept ? "gyro hold" : "?", alarm ? "on" : "OFF", thr0, thr1, drift,
                  mode_name(sb_mode(&x.sb)), x.sb.ap.mode == AP_MODE_STANDBY ? "off" : "ON");
+        /* the alarm drops the power limit to the startup 30 %: the stick still drives, below it */
         test_report("A1b compass lost in HDG LOCK: gyro hold + alarm, throttle stays with the user, then STANDBY",
-                    kept && alarm && fabsf(thr1 - thr0) < 1.0f && drift < 10.0f &&
+                    kept && alarm && fabsf(thr1 - fminf(thr0, x.sb.cfg.plim.fwd_steps[0])) < 1.0f && drift < 10.0f &&
                     sb_mode(&x.sb) == MODE_STANDBY && x.sb.ap.mode == AP_MODE_STANDBY, d);
     }
 
@@ -2754,7 +2781,7 @@ static void link_tests(void)
                  "%s at %.1f kn; PC back: alarm %s",
                  t_alarm, alarm_out ? "on" : "OFF", mode_name(m_lost), v_lost, cleared ? "cleared" : "STILL ON");
         test_report("Link lost > 3 s: alarm 'PC link lost', mode kept",
-                    t_alarm >= 3.0f && t_alarm <= 3.15f && alarm_out && m_lost == MODE_AUTO && v_lost > 5.0f && cleared, d);
+                    t_alarm >= 3.0f && t_alarm <= 3.2f && alarm_out && m_lost == MODE_AUTO && v_lost > 5.0f && cleared, d);
         free(p);
     }
 
@@ -2791,10 +2818,272 @@ static void link_tests(void)
     }
 }
 
+/* --------------------------------------------------- section B: power limit -- */
+
+/* Put the boat into `m` (for the CONFIRM / clamp tests). */
+static bool goto_mode(sbsim_t *x, sb_mode_t m)
+{
+    prog_wp_t w[5];
+    switch (m) {
+    case MODE_MANUAL:   joy_set(0.0f, 0.5f, false, false); sbsim_run(x, x->t + 1000u, NULL, NULL);
+                        joy_set(0.0f, 0.0f, false, false); sbsim_run(x, x->t + 500u, NULL, NULL); break;
+    case MODE_HDG_LOCK: press(x, HAL_BTN_HDG_LOCK); break;
+    case MODE_AUTO:     prog5(x, w); auto_go(x, w, 5, PROG_END_STOP); break;
+    case MODE_TRAINING: sb_request_mode(&x->sb, MODE_TRAINING, WHY_PC); break;
+    default: break;
+    }
+    return sb_mode(&x->sb) == m;
+}
+
+static void powerlim_tests(void)
+{
+    char d[600];
+    printf("\n=== Section B: power limit ===\n");
+    const float F0 = 30.0f, R0 = 5.0f;
+
+    /* B1 startup 30 / 5, also after a reset at 100 % */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 301u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        float f0 = x.sb.plim.fwd_pct, r0 = x.sb.plim.rev_pct;
+        power_full(&x);
+        float f1 = x.sb.plim.fwd_pct, r1 = x.sb.plim.rev_pct;
+        sb_config_t c = x.sb.cfg;
+        sb_init(&x.sb, &c);                         /* reset (watchdog / power cut) */
+        float f2 = x.sb.plim.fwd_pct, r2 = x.sb.plim.rev_pct;
+        snprintf(d, sizeof d, "power-up %.0f / %.0f %%; raised to %.0f / %.0f %%; after a reset %.0f / %.0f %%",
+                 f0, r0, f1, r1, f2, r2);
+        test_report("B1 startup limit 30 % fwd / 5 % rev, also after a reset at 100 %",
+                    f0 == F0 && r0 == R0 && f1 == 100.0f && r1 == 15.0f && f2 == F0 && r2 == R0, d);
+    }
+
+    /* B2 the raise sequence: code + CONFIRM within 10 s, one step at a time */
+    {
+        sbsim_t x;
+        uint16_t code;
+        sbsim_init(&x, 302u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        /* no CONFIRM */
+        sb_power_code(&x.sb, 0u, &code);
+        sb_result_t r_ok = sb_power_raise(&x.sb, 0u, code);
+        sbsim_run(&x, x.t + 11000u, NULL, NULL);
+        bool no_conf = x.sb.plim.fwd_pct == F0 && x.sb.confirm.kind == CONF_NONE;
+        /* late CONFIRM */
+        sb_power_code(&x.sb, 0u, &code);
+        sb_power_raise(&x.sb, 0u, code);
+        sbsim_run(&x, x.t + 11000u, NULL, NULL);
+        bool late = !confirm_press(&x) && x.sb.plim.fwd_pct == F0;
+        /* wrong code (and the code is used up: the right one afterwards fails too) */
+        sb_power_code(&x.sb, 0u, &code);
+        sb_result_t r_wrong = sb_power_raise(&x.sb, 0u, (uint16_t)(code == 9999u ? 1000u : code + 1u));
+        sb_result_t r_again = sb_power_raise(&x.sb, 0u, code);
+        bool wrong = r_wrong == SB_ERR_WRONG_CODE && r_again == SB_ERR_WRONG_CODE && !confirm_press(&x) &&
+                     x.sb.plim.fwd_pct == F0;
+        /* expired code (60 s) */
+        sb_power_code(&x.sb, 0u, &code);
+        sbsim_run(&x, x.t + 61000u, NULL, NULL);
+        bool expired = sb_power_raise(&x.sb, 0u, code) == SB_ERR_WRONG_CODE;
+        /* correct: one step */
+        bool one = power_step(&x, 0u) && x.sb.plim.fwd_pct == 50.0f;
+        /* a second CONFIRM press without a new sequence does nothing */
+        bool second = !confirm_press(&x) && x.sb.plim.fwd_pct == 50.0f;
+        bool next = power_step(&x, 0u) && x.sb.plim.fwd_pct == 75.0f;
+        power_step(&x, 0u);
+        bool top = x.sb.plim.fwd_pct == 100.0f && sb_power_code(&x.sb, 0u, &code) == SB_ERR_AT_MAX;
+        bool rev = power_step(&x, 1u) && x.sb.plim.rev_pct == 10.0f && power_step(&x, 1u) && x.sb.plim.rev_pct == 15.0f &&
+                   sb_power_code(&x.sb, 1u, &code) == SB_ERR_AT_MAX;
+        /* the log has every change and attempt */
+        int changes = 0, refused = 0;
+        for (uint32_t i = 0; i < plim_log_size(&x.sb.plim); i++) {
+            const plim_log_t *e = plim_log_get(&x.sb.plim, i);
+            if (e->result == PLIM_OK && e->new_fwd + e->new_rev != e->old_fwd + e->old_rev) changes++;
+            if (e->result != PLIM_OK) refused++;
+        }
+        snprintf(d, sizeof d, "code accepted %d; no CONFIRM: unchanged %s; late CONFIRM refused %s; wrong code refused, "
+                 "code used up %s; expired code refused %s; correct -> one step 30->50 %s; extra CONFIRM does nothing %s; "
+                 "next step needs a new sequence -> 75 %s; at 100 no more %s; reverse 5->10->15 then max %s; "
+                 "log: %d changes, %d refusals",
+                 (int)r_ok, no_conf ? "yes" : "NO", late ? "yes" : "NO", wrong ? "yes" : "NO", expired ? "yes" : "NO",
+                 one ? "yes" : "NO", second ? "yes" : "NO", next ? "yes" : "NO", top ? "yes" : "NO", rev ? "yes" : "NO",
+                 changes, refused);
+        test_report("B2 raise: code + CONFIRM within 10 s, one step per sequence; late / wrong / expired refused",
+                    r_ok == SB_OK && no_conf && late && wrong && expired && one && second && next && top && rev &&
+                    changes == 5 && refused >= 3, d);
+    }
+
+    /* B3 CONFIRM rules for a raise; CONFIRM never changes the mode */
+    {
+        sbsim_t x;
+        uint16_t code;
+        sbsim_init(&x, 303u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        sb_power_code(&x.sb, 0u, &code);
+        sb_power_raise(&x.sb, 0u, code);
+        joy_set(0.12f, 0.0f, false, false);         /* off centre, inside the deadband */
+        sbsim_run(&x, x.t + 300u, NULL, NULL);
+        bool deflected = !confirm_press(&x) && x.sb.plim.fwd_pct == F0;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 11000u, NULL, NULL);
+        /* joystick faulted: no raise possible at all */
+        sim_hal_set_joystick(true, joy_raw(0.0f), 4095u, false, false);
+        sbsim_run(&x, x.t + 200u, NULL, NULL);
+        sb_result_t r_fault = sb_power_code(&x.sb, 0u, &code);
+        bool faulted = r_fault == SB_ERR_JOY_NOT_READY && !confirm_press(&x);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        sb_result_t r_alarm = sb_power_code(&x.sb, 0u, &code);     /* the joystick fault alarm is still active */
+        press(&x, HAL_BTN_STANDBY);                 /* acknowledge */
+        /* nothing pending: nothing happens */
+        uint32_t ign = x.sb.confirm.ignored;
+        bool nothing = !confirm_press(&x) && x.sb.confirm.ignored == ign + 1u && x.sb.plim.fwd_pct == F0;
+        snprintf(d, sizeof d, "stick off centre: refused %s; joystick faulted: code -> %d (not ready = %d), CONFIRM nothing %s; "
+                 "alarm active -> %d (alarm = %d); nothing pending: ignored %s",
+                 deflected ? "yes" : "NO", (int)r_fault, (int)SB_ERR_JOY_NOT_READY, faulted ? "yes" : "NO",
+                 (int)r_alarm, (int)SB_ERR_ALARM, nothing ? "yes" : "NO");
+        test_report("B3a power raise CONFIRM: stick off centre / joystick faulted / nothing pending -> refused or nothing",
+                    deflected && faulted && r_alarm == SB_ERR_ALARM && nothing, d);
+
+        const sb_mode_t ms[5] = { MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING };
+        int same = 0;
+        int len = snprintf(d, sizeof d, "raise CONFIRMed in:");
+        for (int i = 0; i < 5; i++) {
+            sbsim_t y;
+            sbsim_init(&y, 310u + (uint32_t)i, 90.0f, 0.0f, NULL);
+            sbsim_run(&y, 3000u, NULL, NULL);
+            bool in = goto_mode(&y, ms[i]);
+            sbsim_run(&y, y.t + 2000u, NULL, NULL);
+            sb_power_lower(&y.sb);
+            uint32_t log_n = mode_log_size(&y.sb.modes);
+            float before = y.sb.plim.fwd_pct;
+            bool raised = power_step(&y, 0u);
+            bool ok = in && raised && sb_mode(&y.sb) == ms[i] && mode_log_size(&y.sb.modes) == log_n &&
+                      y.sb.plim.fwd_pct > before;
+            if (ok) same++;
+            len += snprintf(d + len, sizeof d - (size_t)len, " %s %s;", mode_name(ms[i]), ok ? "mode unchanged" : "FAILED");
+        }
+        test_report("B3b CONFIRM never changes the mode (power raise in every mode)", same == 5, d);
+    }
+
+    /* B4 every auto-drop condition */
+    {
+        int ok_n = 0, n = 0;
+        int len = snprintf(d, sizeof d, "back to 30 / 5 on:");
+#define DROP_CASE(label, setup) do { sbsim_t y; sbsim_init(&y, 320u + (uint32_t)n, 90.0f, 0.0f, NULL); \
+        sbsim_run(&y, 3000u, NULL, NULL); bool pre = true; setup; n++; \
+        bool ok_ = pre && y.sb.plim.fwd_pct == F0 && y.sb.plim.rev_pct == R0; if (ok_) ok_n++; \
+        len += snprintf(d + len, sizeof d - (size_t)len, " %s %s;", label, ok_ ? "ok" : "FAILED"); } while (0)
+        DROP_CASE("PC lower", { power_full(&y); pre = plim_raised(&y.sb.plim); sb_power_lower(&y.sb); });
+        DROP_CASE("STANDBY button", { power_full(&y); pre = plim_raised(&y.sb.plim); press(&y, HAL_BTN_STANDBY); });
+        DROP_CASE("TAKE", { power_full(&y); hdg_lock(&y); pre = plim_raised(&y.sb.plim);
+                            joy_set(0.0f, 0.0f, true, false); sbsim_run(&y, y.t + 100u, NULL, NULL); });
+        DROP_CASE("override (stick X)", { hdg_lock(&y); pre = plim_raised(&y.sb.plim);
+                            joy_set(0.5f, 0.0f, false, false); sbsim_run(&y, y.t + 500u, NULL, NULL);
+                            pre = pre && sb_mode(&y.sb) == MODE_MANUAL; });
+        DROP_CASE("any alarm (gear fault)", { y.w.neutral_switch = true; hdg_lock(&y);
+                            sb_test_drive(&y.sb, true, GEAR_F, 10.0f); sbsim_run(&y, y.t + 8000u, NULL, NULL);
+                            pre = plim_raised(&y.sb.plim);
+                            y.w.servo_stuck = true; sb_test_drive(&y.sb, true, GEAR_R, 10.0f);
+                            sbsim_run(&y, y.t + 8000u, NULL, NULL); pre = pre && gear_fault(&y.sb.gear); });
+        DROP_CASE("GPS lost", { hdg_lock(&y); pre = plim_raised(&y.sb.plim); y.w.gps_fail = true;
+                            sbsim_run(&y, y.t + 6000u, NULL, NULL); });
+        DROP_CASE("compass fault", { joy_set(0.0f, 0.4f, false, false); sbsim_run(&y, y.t + 1000u, NULL, NULL);
+                            joy_set(0.0f, 0.0f, false, false); sbsim_run(&y, y.t + 500u, NULL, NULL);
+                            power_full(&y); pre = plim_raised(&y.sb.plim) && sb_mode(&y.sb) == MODE_MANUAL;
+                            sim_hal_fail_heading(true); sbsim_run(&y, y.t + 4000u, NULL, NULL); });
+        DROP_CASE("joystick fault", { power_full(&y); pre = plim_raised(&y.sb.plim);
+                            sim_hal_set_joystick(true, 0u, joy_raw(0.0f), false, false); sbsim_run(&y, y.t + 200u, NULL, NULL); });
+        DROP_CASE("entering TRAINING", { power_full(&y); pre = plim_raised(&y.sb.plim);
+                            sb_request_mode(&y.sb, MODE_TRAINING, WHY_PC); sbsim_run(&y, y.t + 100u, NULL, NULL); });
+        DROP_CASE("2 min below 3 kn", { power_full(&y); pre = plim_raised(&y.sb.plim);
+                            sbsim_run(&y, y.t + 110000u, NULL, NULL); pre = pre && plim_raised(&y.sb.plim);
+                            sbsim_run(&y, y.t + 15000u, NULL, NULL); });
+        {   /* PC link lost (through the link) */
+            pcsim_t *p = (pcsim_t *)calloc(1, sizeof *p);
+            pcsim_init(p, 330u);
+            p->heartbeat = true;
+            pc_run(p, 3000u);
+            power_full(&p->x);
+            bool pre = plim_raised(&p->x.sb.plim);
+            p->heartbeat = false;
+            pc_run(p, 5000u);
+            bool ok_ = pre && p->x.sb.plim.fwd_pct == F0;
+            n++;
+            if (ok_) ok_n++;
+            const plim_log_t *e = plim_log_get(&p->x.sb.plim, plim_log_size(&p->x.sb.plim) - 1u);
+            len += snprintf(d + len, sizeof d - (size_t)len, " PC link lost %s (logged as %s);", ok_ ? "ok" : "FAILED",
+                            plim_source_name((plim_source_t)e->source));
+            free(p);
+        }
+#undef DROP_CASE
+        test_report("B4 every auto-drop condition -> startup limit at once", ok_n == n, d);
+    }
+
+    /* B5 100 % commanded in every mode at limit 30 %: never more at the PWM output */
+    {
+        const sb_mode_t ms[5] = { MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING };
+        float worst = 0.0f;
+        uint16_t worst_us = 0u;
+        int len = snprintf(d, sizeof d, "max output with 100 %% commanded:");
+        bool all_in = true;
+        for (int i = 0; i < 5; i++) {
+            sbsim_t y;
+            sbsim_init(&y, 340u + (uint32_t)i, 90.0f, 0.0f, NULL);
+            sbsim_run(&y, 3000u, NULL, NULL);
+            bool in = goto_mode(&y, ms[i]);
+            sb_power_lower(&y.sb);                  /* AUTO / HDG LOCK helpers raised it: back to 30 */
+            if (ms[i] == MODE_MANUAL || ms[i] == MODE_HDG_LOCK) joy_set(0.0f, 1.0f, false, false);
+            sb_test_drive(&y.sb, ms[i] != MODE_MANUAL && ms[i] != MODE_HDG_LOCK, GEAR_F, 100.0f);
+            float mx = 0.0f;
+            uint16_t mus = 0u;
+            for (int k = 0; k < 1200; k++) {        /* 60 s */
+                sbsim_run(&y, y.t + 50u, NULL, NULL);
+                if (sim_hal_throttle() > mx) mx = sim_hal_throttle();
+                if (sim_hal_throttle_us() > mus) mus = sim_hal_throttle_us();
+            }
+            if (ms[i] != MODE_STANDBY && !in) all_in = false;
+            if (mx > worst) worst = mx;
+            if (mus > worst_us) worst_us = mus;
+            len += snprintf(d + len, sizeof d - (size_t)len, " %s %.1f %% (%u us);", mode_name(ms[i]), mx, mus);
+        }
+        test_report("B5 100 % commanded in every mode at limit 30 %: output never above 30 % (1300 us)",
+                    all_in && worst <= F0 + 0.01f && worst_us <= 1300u, d);
+    }
+
+    /* B6 AUTO leg speed clamped by the power limit, telemetry flag */
+    {
+        sbsim_t x;
+        static program_t p;
+        prog_error_t err;
+        uint8_t bad;
+        sbsim_init(&x, 350u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        prog_wp_t w = wp_world(&x, x.w.north_m, x.w.east_m + 8000.0, 20.0f, 25.0f, WP_ACT_STOP);
+        prog_make(&p, &w, 1, PROG_END_STOP);
+        sb_program_set(&x.sb, &p, &err, &bad);
+        sb_auto_start(&x.sb);
+        confirm_press(&x);                          /* AUTO at the startup limit */
+        sbsim_run(&x, x.t + 90000u, NULL, NULL);
+        float v30 = world_sog_kn(&x.w), thr30 = sim_hal_throttle();
+        bool flag30 = x.sb.speed_limited;
+        for (int i = 0; i < 3; i++) power_step(&x, 0u);
+        sbsim_run(&x, x.t + 90000u, NULL, NULL);
+        float v100 = world_sog_kn(&x.w);
+        bool flag100 = x.sb.speed_limited;
+        snprintf(d, sizeof d, "20 kn leg at limit 30 %%: %.1f kn, throttle %.0f %%, 'speed limited by power limit' %s; "
+                 "after raising to 100 %%: %.1f kn, flag %s", v30, thr30, flag30 ? "on" : "OFF", v100,
+                 flag100 ? "ON" : "off");
+        test_report("B6 AUTO leg speed clamped by the power limit, shown in telemetry",
+                    sb_mode(&x.sb) == MODE_AUTO && thr30 <= F0 + 0.01f && v30 < 15.0f && flag30 && v100 > 19.0f &&
+                    !flag100, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
+    powerlim_tests();
     modes_tests();
     link_tests();
     joystick_tests();

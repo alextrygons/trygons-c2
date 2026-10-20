@@ -115,9 +115,11 @@ bool hal_calib_load(void *data, uint32_t size)
     return false;    /* TODO: read from data flash */
 }
 
-void hal_set_throttle(float percent)
+void hal_set_throttle_pwm(uint16_t pulse_us)
 {
-    (void)percent;   /* TODO: throttle servo PWM (GTM TOM) */
+    if (pulse_us < HAL_THROTTLE_PWM_MIN) pulse_us = HAL_THROTTLE_PWM_MIN;
+    if (pulse_us > HAL_THROTTLE_PWM_MAX) pulse_us = HAL_THROTTLE_PWM_MAX;
+    (void)pulse_us;  /* TODO: throttle servo PWM, 50 Hz (GTM TOM, D9 = P02.7, see WIRING.md) */
 }
 
 void hal_set_gear_pwm(uint16_t pulse_us)

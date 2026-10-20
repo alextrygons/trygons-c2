@@ -82,11 +82,30 @@ def main():
         if t is None:
             return 1
 
-        # 1. AUTO program: a bad upload is refused, a good one runs to the end
         def confirm():
             w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
             time.sleep(0.15 / SPEED * 10)
             w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+
+        # 0. power limit: 30 % at start; wrong code refused; code + CONFIRM -> 50 %
+        p0 = w.telem["power_fwd"]
+        w.command(proto.T_POWER_CODE, proto.p_power_code(0))
+        tc = w.until(lambda d: d["power_code"] != 0, 3)
+        wrong = w.command(proto.T_POWER_RAISE, proto.p_power_raise(0, (tc["power_code"] % 9000) + 1000
+                                                                    if tc else 1234))
+        w.command(proto.T_POWER_CODE, proto.p_power_code(0))
+        tc = w.until(lambda d: d["power_code"] != 0, 3)
+        good = w.command(proto.T_POWER_RAISE, proto.p_power_raise(0, tc["power_code"])) if tc else None
+        asking = w.until(lambda d: d["confirm_kind"] == 3, 3)
+        confirm()
+        up = w.until(lambda d: d["power_fwd"] == 50.0, 3)
+        report("Power limit from the ground station: code + joystick CONFIRM, one step",
+               bool(p0 == 30.0 and wrong and wrong["result"] == 15 and good and good["ok"] and asking and up),
+               "start %.0f %%; wrong code: %s; right code: %s, CONFIRM asked %s; now %s"
+               % (p0, wrong and wrong["text"], good and good["text"], "yes" if asking else "NO",
+                  "%.0f %%" % up["power_fwd"] if up else "unchanged"))
+
+        # 1. AUTO program: a bad upload is refused, a good one runs to the end
 
         lat0, lon0 = t["est_lat"], t["est_lon"]
         wp1 = offset(lat0, lon0, 0.0, 300.0)
@@ -137,7 +156,7 @@ def main():
         still = w.until(lambda d: d["mode"] == proto.MODE_MANUAL, 1)
         w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, -0.5))
         w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, -1.0))      # full astern
-        rev = w.until(lambda d: d["gear"] == 2 and d["throttle"] > 20.0, 5)
+        rev = w.until(lambda d: d["gear"] == 2 and d["throttle"] > 3.0, 5)      # reverse limit 5 % after a takeover
         w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, -0.5))
         w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))       # centre
         idle = w.until(lambda d: d["gear"] == 0 and d["throttle"] < 1.0, 5)
@@ -146,7 +165,7 @@ def main():
         sb = w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 3)
         report("PC refused while the joystick is in control, hand-back only centred",
                bool(r1 and r1["result"] == 4 and r2 and r2["result"] == 4 and still
-                    and rev and rev["throttle"] <= 30.01 and idle and sb),
+                    and rev and rev["throttle"] <= rev["power_rev"] + 0.01 and idle and sb),
                "PC STANDBY: %s; PC pause: %s; joystick AUTO deflected: %s; astern throttle %.0f %%; "
                "centred AUTO -> %s"
                % (r1 and r1["text"], r2 and r2["text"], "stays MANUAL" if still else "LEFT MANUAL",

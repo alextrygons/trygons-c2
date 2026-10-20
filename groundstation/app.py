@@ -63,6 +63,7 @@ class App:
         self.params = {}
         self.pending = {}               # seq -> description
         self.prog = program.new_program()   # program in the editor
+        self.pdlg = None                # power raise dialog
         self.prog_dl = []               # PROG_WP_VALUE frames being downloaded
         self.last_beep = 0.0
 
@@ -130,7 +131,15 @@ class App:
         f = tk.Frame(body, bg=BG, bd=2, relief="groove")
         f.pack(side="left", fill="y", padx=4, pady=4)
         self.mode_lbl = tk.Label(f, text="---", font=F_HUGE, bg="#606060", fg="#ffffff", width=10)
-        self.mode_lbl.pack(fill="x", pady=(0, 6))
+        self.mode_lbl.pack(fill="x", pady=(0, 2))
+        self.power_lbl = tk.Label(f, text="POWER LIMIT --", font=F_BIG, bg="#d0ffd0", fg=FG)
+        self.power_lbl.pack(fill="x")
+        pw = tk.Frame(f, bg=BG)
+        pw.pack(fill="x", pady=(0, 6))
+        btn(pw, "Raise fwd", lambda: self.power_dialog(0), font=F_TXT).pack(side="left", expand=True, fill="x")
+        btn(pw, "Raise rev", lambda: self.power_dialog(1), font=F_TXT).pack(side="left", expand=True, fill="x")
+        btn(pw, "Lower now", lambda: self.cmd(proto.T_POWER_LOWER, b"", "power lower"), bg="#b0ffb0",
+            font=F_TXT).pack(side="left", expand=True, fill="x")
         self.vals = {}
         rows = [("heading", "Heading"), ("target", "Target"), ("yaw", "Yaw rate"), ("outboard", "Outboard"),
                 ("throttle", "Throttle"), ("gear", "Gear"), ("gps", "GPS"), ("pos", "Position"),
@@ -457,6 +466,50 @@ class App:
     def mode(self, m):
         self.cmd(proto.T_SET_MODE, proto.p_set_mode(m), "mode " + proto.MODES[m])
 
+    # --- power limit raise ------------------------------------------------------
+    def power_dialog(self, direction):
+        """Ask the boat for a code, show it, the user types it back, then the
+        joystick CONFIRM within 10 s does one step up."""
+        if not self.link:
+            return self.say("Not connected", RED)
+        if self.pdlg is not None:
+            self.pdlg.destroy()
+        self.cmd(proto.T_POWER_CODE, proto.p_power_code(direction), "power code (%s)" % ("fwd", "rev")[direction])
+        d = tk.Toplevel(self.root, bg=BG)
+        d.title("Raise the power limit")
+        d.transient(self.root)
+        self.pdlg = d
+        self.pdlg_dir = direction
+        tk.Label(d, text="Raise the %s power limit ONE step" % ("FORWARD", "REVERSE")[direction], font=F_BIG,
+                 bg=BG).pack(padx=20, pady=(14, 4))
+        tk.Label(d, text="1. Type the code shown by the boat:", font=F_MED, bg=BG).pack(anchor="w", padx=20)
+        self.pdlg_code = tk.Label(d, text="....", font=("Consolas", 40, "bold"), bg="#ffffe0")
+        self.pdlg_code.pack(padx=20, pady=6)
+        self.pdlg_var = tk.StringVar()
+        e = tk.Entry(d, textvariable=self.pdlg_var, font=("Consolas", 32, "bold"), width=6, justify="center")
+        e.pack(pady=4)
+        e.focus_set()
+        tk.Label(d, text="2. Then press CONFIRM on the joystick within 10 s (stick centred).", font=F_MED,
+                 bg=BG).pack(anchor="w", padx=20, pady=(8, 4))
+        b = tk.Frame(d, bg=BG)
+        b.pack(pady=12)
+        btn(b, "Send code", self.power_send, bg="#ffd000").pack(side="left", padx=6)
+        btn(b, "Cancel", self.power_close).pack(side="left", padx=6)
+        e.bind("<Return>", lambda _ev: self.power_send())
+
+    def power_send(self):
+        try:
+            code = int(self.pdlg_var.get())
+        except ValueError:
+            return self.say("Type the 4-digit code", RED)
+        self.cmd(proto.T_POWER_RAISE, proto.p_power_raise(self.pdlg_dir, code), "power raise (code %d)" % code)
+        self.power_close()
+
+    def power_close(self):
+        if self.pdlg is not None:
+            self.pdlg.destroy()
+            self.pdlg = None
+
     def info_manual(self):
         self.say("MANUAL: move the joystick or press TAKE (the PC can't select it)")
 
@@ -607,7 +660,13 @@ class App:
         v["target"].configure(text="%05.1f°" % d["target"])
         v["yaw"].configure(text="%+.1f °/s" % d["yaw_rate"])
         v["outboard"].configure(text="%+.1f°" % d["outboard"])
-        v["throttle"].configure(text="%.0f %%" % d["throttle"])
+        v["throttle"].configure(text="%.0f %%" % d["throttle"] if d["throttle_demand"] <= d["throttle"] + 0.5
+                                else "%.0f %% (asked %.0f)" % (d["throttle"], d["throttle_demand"]))
+        self.power_lbl.configure(text="POWER LIMIT %.0f %% / R %.0f %%" % (d["power_fwd"], d["power_rev"]),
+                                 bg="#ffc080" if d["power_raised"] else "#d0ffd0")
+        if self.pdlg is not None:
+            ok = d["power_code"] and d["power_code_dir"] == self.pdlg_dir
+            self.pdlg_code.configure(text="%04d" % d["power_code"] if ok else "....")
         v["gear"].configure(text=proto.GEARS[d["gear"]] if d["gear"] < 3 else "?",
                             fg={0: FG, 1: GREEN, 2: RED}.get(d["gear"], FG))
         v["gps"].configure(text="FIX" if d["gps_fix"] else "NO FIX", fg=GREEN if d["gps_fix"] else RED)
@@ -631,6 +690,8 @@ class App:
             txt = "no program on the boat"
         elif d["mode"] == proto.MODE_AUTO:
             txt = "waypoint %d of %d, %s" % (d["auto_wp"] + 1, d["prog_n"], st)
+            if d["speed_limited"]:
+                txt += "\nSPEED LIMITED BY POWER LIMIT"
         elif d["prog_suspended"]:
             txt = "program interrupted at waypoint %d: Resume + CONFIRM" % (d["auto_wp"] + 1)
         elif d["prog_finished"]:

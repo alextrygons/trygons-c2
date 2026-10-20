@@ -144,6 +144,9 @@ static void send_prog_wp(link_t *l, const program_t *p, uint8_t i)
  *   u16 rx_frames | u16 rx_crc_errors
  *   u8 prog_n | u8 auto_wp | u8 auto_state (auto_state_t) | u8 auto_flags (b0 program ok,
  *     b1 suspended, b2 finished) | u8 confirm_kind (confirm_kind_t) | u16 confirm_left (0.1 s)
+ *   f32 power_fwd_pct | f32 power_rev_pct | u16 power_code (0 = none) | u8 power_code_dir |
+ *     u16 power_code_left (0.1 s) | u8 power_flags (b0 speed limited by the power limit,
+ *     b1 limit raised) | f32 throttle_demand (before the limits)
  */
 static void telemetry(link_t *l, sb_t *s)
 {
@@ -232,6 +235,14 @@ static void telemetry(link_t *l, sb_t *s)
     proto_wr_u8(&w, (uint8_t)s->confirm.kind);
     proto_wr_u16(&w, (uint16_t)(sb_confirm_left_s(s) * 10.0f + 0.5f));
 
+    proto_wr_f32(&w, s->plim.fwd_pct);
+    proto_wr_f32(&w, s->plim.rev_pct);
+    proto_wr_u16(&w, s->plim.code);
+    proto_wr_u8(&w, s->plim.code_dir);
+    proto_wr_u16(&w, (uint16_t)(plim_code_left_s(&s->plim, s->now_ms) * 10.0f + 0.5f));
+    proto_wr_u8(&w, (uint8_t)((s->speed_limited ? 1u : 0u) | (plim_raised(&s->plim) ? 2u : 0u)));
+    proto_wr_f32(&w, s->throttle_demand);
+
     if (!w.overflow) send(l, PROTO_T_TELEMETRY, l->tx_seq++, buf, w.n);
 }
 
@@ -258,6 +269,9 @@ static int cmd_len(uint8_t type)
     case PROTO_T_AUTO_PAUSE:   return 0;
     case PROTO_T_AUTO_RESUME:  return 0;
     case PROTO_T_AUTO_SKIP:    return 0;
+    case PROTO_T_POWER_CODE:   return 1;
+    case PROTO_T_POWER_RAISE:  return 3;
+    case PROTO_T_POWER_LOWER:  return 0;
     default:                   return -1;
     }
 }
@@ -272,6 +286,9 @@ static uint8_t sb_result_to_proto(sb_result_t r)
     case SB_ERR_PRECOND:       return PROTO_R_PRECOND;
     case SB_ERR_WRONG_MODE:    return PROTO_R_WRONG_MODE;
     case SB_ERR_BAD_PROGRAM:   return PROTO_R_BAD_PROGRAM;
+    case SB_ERR_WRONG_CODE:    return PROTO_R_WRONG_CODE;
+    case SB_ERR_AT_MAX:        return PROTO_R_AT_MAX;
+    case SB_ERR_ALARM:         return PROTO_R_ALARM_ACTIVE;
     default:                   return PROTO_R_REFUSED;
     }
 }
@@ -361,8 +378,7 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         bool ok = (act == 0u) ? sb_joystick_cal_start(s) : sb_joystick_cal_finish(s);
         return ok ? PROTO_R_OK : PROTO_R_REFUSED;
     }
-    case PROTO_T_ALARM_ACK:
-        if (sb_mode(s) != MODE_STANDBY) return PROTO_R_STANDBY_ONLY;
+    case PROTO_T_ALARM_ACK:             /* any mode (the panel STANDBY button: in STANDBY) */
         s->alarm = false;
         s->alarm_bits = 0u;
         s->ap.alarm = false;
@@ -429,6 +445,23 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         return sb_result_to_proto(sb_auto_pause(s));
     case PROTO_T_AUTO_SKIP:
         return sb_result_to_proto(sb_auto_skip(s));
+
+    /* --- power limit --- */
+    case PROTO_T_POWER_CODE: {
+        uint8_t dir = proto_rd_u8(&r);
+        uint16_t code;
+        if (dir > 1u) return PROTO_R_BAD_VALUE;
+        return sb_result_to_proto(sb_power_code(s, dir, &code));
+    }
+    case PROTO_T_POWER_RAISE: {
+        uint8_t dir = proto_rd_u8(&r);
+        uint16_t code = (uint16_t)(proto_rd_u8(&r) | ((uint16_t)proto_rd_u8(&r) << 8));
+        if (dir > 1u) return PROTO_R_BAD_VALUE;
+        return sb_result_to_proto(sb_power_raise(s, dir, code));
+    }
+    case PROTO_T_POWER_LOWER:
+        sb_power_lower(s);
+        return PROTO_R_OK;
     default:
         return PROTO_R_UNKNOWN;
     }

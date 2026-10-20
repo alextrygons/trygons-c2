@@ -92,8 +92,12 @@ void hal_set_alarm(bool on);
 
 /* ---- Small boat: engine and GPS ---------------------------------------- */
 
-/* Throttle servo, 0 (idle) .. 100 % (full). Clamped by the HAL. */
-void hal_set_throttle(float percent);
+/* Throttle servo pulse width, us. ONLY app/servo.c may call this (it applies
+ * the power limit and the calibrated endpoints first). The HAL clamps to
+ * HAL_THROTTLE_PWM_MIN..MAX as a last guard. */
+#define HAL_THROTTLE_PWM_MIN  800u
+#define HAL_THROTTLE_PWM_MAX  2200u
+void hal_set_throttle_pwm(uint16_t pulse_us);
 
 /* Gear servo position as an RC-style PWM pulse width in microseconds
  * (e.g. 1100 = R, 1500 = N, 1900 = F; the positions are configured in the

@@ -27,6 +27,9 @@ T_AUTO_START = 0x24        # then joystick CONFIRM within 10 s
 T_AUTO_PAUSE = 0x25
 T_AUTO_RESUME = 0x26       # then joystick CONFIRM within 10 s
 T_AUTO_SKIP = 0x27
+T_POWER_CODE = 0x28        # u8 dir (0 fwd, 1 rev): the boat shows a code
+T_POWER_RAISE = 0x29       # u8 dir, u16 typed code; then joystick CONFIRM within 10 s
+T_POWER_LOWER = 0x2A       # back to 30 % / 5 % at once
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
@@ -44,6 +47,7 @@ TYPE_NAMES = {
     T_PROG_BEGIN: "program begin", T_PROG_WP: "program waypoint", T_PROG_COMMIT: "program upload",
     T_PROG_GET: "program read", T_AUTO_START: "AUTO start", T_AUTO_PAUSE: "AUTO pause",
     T_AUTO_RESUME: "AUTO resume", T_AUTO_SKIP: "AUTO skip",
+    T_POWER_CODE: "power code", T_POWER_RAISE: "power raise", T_POWER_LOWER: "power lower",
     T_SIM_JOYSTICK: "sim joystick", T_SIM_GPS: "sim GPS", T_SIM_BUTTON: "sim button",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
@@ -65,6 +69,9 @@ RESULTS = {
     12: "program refused",
     13: "no program stored",
     14: "joystick not ready (missing / fault / not armed): no CONFIRM possible",
+    15: "wrong or expired code (ask for a new one)",
+    16: "already at the highest step",
+    17: "acknowledge the alarm first",
 }
 
 MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING"]
@@ -249,6 +256,14 @@ def p_sim_joystick(fitted, x, y, take=False, autob=False, confirm=False):
                        1 if confirm else 0)
 
 
+def p_power_code(direction):
+    return struct.pack("<B", direction)
+
+
+def p_power_raise(direction, code):
+    return struct.pack("<BH", direction, code)
+
+
 def p_sim_button(button):
     return struct.pack("<B", button)
 
@@ -260,7 +275,7 @@ def p_sim_gps(fail):
 # --- decoders (boat -> PC) ---------------------------------------------------
 
 _TELEM = struct.Struct(
-    "<I BBBB fffff BB iiff BB ffiiff fff I f ff BBB BBB f iif HH BBBBBH")
+    "<I BBBB fffff BB iiff BB ffiiff fff I f ff BBB BBB f iif HH BBBBBH ffHBHBf")
 TELEM_FIELDS = (
     "t_ms mode ap_mode sea_state flags "
     "heading target yaw_rate outboard throttle "
@@ -270,7 +285,8 @@ TELEM_FIELDS = (
     "joy_x joy_y joy_buttons joy_status joy_fault_axis "
     "train_stage train_phase train_result "
     "speed_set_kn wp_lat wp_lon wp_kn rx_frames rx_crc_errors "
-    "prog_n auto_wp auto_state auto_flags confirm_kind confirm_left_ds").split()
+    "prog_n auto_wp auto_state auto_flags confirm_kind confirm_left_ds "
+    "power_fwd power_rev power_code power_code_dir power_code_left_ds power_flags throttle_demand").split()
 TELEM_SIZE = _TELEM.size
 
 
@@ -294,6 +310,9 @@ def decode_telemetry(payload: bytes) -> dict:
     d["prog_suspended"] = bool(d["auto_flags"] & 2)
     d["prog_finished"] = bool(d["auto_flags"] & 4)
     d["confirm_left_s"] = d["confirm_left_ds"] / 10.0
+    d["power_code_left_s"] = d["power_code_left_ds"] / 10.0
+    d["speed_limited"] = bool(d["power_flags"] & 1)
+    d["power_raised"] = bool(d["power_flags"] & 2)
     d["mode_name"] = MODES[d["mode"]] if d["mode"] < len(MODES) else "?"
     return d
 

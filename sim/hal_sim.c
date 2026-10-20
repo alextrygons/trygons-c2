@@ -149,16 +149,16 @@ void sim_hal_set_rudder_feedback(bool fitted) { s_rudder_feedback = fitted; }
 
 /* ---- small boat: engine and GPS ---------------------------------------- */
 
-static float     s_throttle;
+static uint16_t  s_throttle_us = 1000u;
 static uint16_t  s_gear_pwm = 1500u;
 static hal_gps_t s_gps;
 static bool      s_gps_new;
 
-void hal_set_throttle(float percent)
+void hal_set_throttle_pwm(uint16_t pulse_us)
 {
-    if (percent < 0.0f) percent = 0.0f;
-    if (percent > 100.0f) percent = 100.0f;
-    s_throttle = percent;
+    if (pulse_us < HAL_THROTTLE_PWM_MIN) pulse_us = HAL_THROTTLE_PWM_MIN;
+    if (pulse_us > HAL_THROTTLE_PWM_MAX) pulse_us = HAL_THROTTLE_PWM_MAX;
+    s_throttle_us = pulse_us;
 }
 
 void hal_set_gear_pwm(uint16_t pulse_us) { s_gear_pwm = pulse_us; }
@@ -171,12 +171,19 @@ bool hal_read_gps(hal_gps_t *gps)
     return true;
 }
 
-float    sim_hal_throttle(void)  { return s_throttle; }
+/* The simulated throttle servo: 1000 us = idle, 2000 us = full (the
+ * default calibration), beyond that the servo is at its mechanical end. */
+float sim_hal_throttle(void)
+{
+    float pct = ((float)s_throttle_us - 1000.0f) * 0.1f;
+    return pct < 0.0f ? 0.0f : (pct > 100.0f ? 100.0f : pct);
+}
+uint16_t sim_hal_throttle_us(void) { return s_throttle_us; }
 uint16_t sim_hal_gear_pwm(void)  { return s_gear_pwm; }
 void     sim_hal_gps_message(const hal_gps_t *g) { s_gps = *g; s_gps_new = true; }
 void     sim_hal_reset_engine(void)
 {
-    s_throttle = 0.0f;
+    s_throttle_us = 1000u;
     s_gear_pwm = 1500u;
     s_gps_new = false;
 }

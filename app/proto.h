@@ -41,7 +41,7 @@
 #define PROTO_T_PARAM_GET     0x17u   /* u8 id                                */
 #define PROTO_T_PARAM_SET     0x18u   /* u8 id, f32 value                     */
 #define PROTO_T_JOY_CAL       0x19u   /* u8 0 start / 1 finish                */
-#define PROTO_T_ALARM_ACK     0x1Au   /* -  (STANDBY only, like the button)   */
+#define PROTO_T_ALARM_ACK     0x1Au   /* -  acknowledge alarms (any mode)      */
 #define PROTO_T_PROG_BEGIN    0x20u   /* u8 n (1..50), u8 final action        */
 #define PROTO_T_PROG_WP       0x21u   /* u8 index, i32 lat, i32 lon, f32 kn, f32 radius m, u8 action */
 #define PROTO_T_PROG_COMMIT   0x22u   /* -  validate + store; NACK -> PROG_ERROR frame too */
@@ -50,6 +50,9 @@
 #define PROTO_T_AUTO_PAUSE    0x25u   /* -                                    */
 #define PROTO_T_AUTO_RESUME   0x26u   /* -  then joystick CONFIRM within 10 s */
 #define PROTO_T_AUTO_SKIP     0x27u   /* -                                    */
+#define PROTO_T_POWER_CODE    0x28u   /* u8 dir (0 fwd, 1 rev): boat makes a code (telemetry) */
+#define PROTO_T_POWER_RAISE   0x29u   /* u8 dir, u16 typed code; then joystick CONFIRM within 10 s */
+#define PROTO_T_POWER_LOWER   0x2Au   /* -  back to 30 % / 5 % at once        */
 #define PROTO_T_SIM_FIRST     0x70u   /* 0x70..0x7F: simulator control only   */
 #define PROTO_T_SIM_JOYSTICK  0x70u   /* u8 fitted, f32 x, f32 y, u8 take, u8 auto, u8 confirm */
 #define PROTO_T_SIM_GPS       0x71u   /* u8 1 = GPS fails, 0 = GPS back       */
@@ -79,6 +82,9 @@
 #define PROTO_R_BAD_PROGRAM   12u     /* program refused (details in PROG_ERROR) */
 #define PROTO_R_NO_PROGRAM    13u     /* no valid program stored              */
 #define PROTO_R_JOY_NOT_READY 14u     /* joystick missing / faulted / not armed: CONFIRM impossible */
+#define PROTO_R_WRONG_CODE    15u     /* power raise: code wrong / expired (ask for a new one) */
+#define PROTO_R_AT_MAX        16u     /* power raise: already at the top step */
+#define PROTO_R_ALARM_ACTIVE  17u     /* power raise: acknowledge the alarm first */
 
 typedef struct {
     uint8_t type;

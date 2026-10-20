@@ -41,6 +41,10 @@
  *     steering off (compass lost while moving: gyro hold, or outboard to
  *     centre, until idle + neutral)
  *   - throttle rate-limited, reverse power limited (throttle.c)
+ *   - power limit (powerlim.c): 30 % forward / 5 % reverse after every
+ *     reset; raised one step at a time by PC + typed code + joystick
+ *     CONFIRM; dropped at once on any fault / alarm / override / STANDBY.
+ *     Enforced in the lowest layer (servo.c writes the throttle servo).
  *   - the joystick always wins over the autopilot and the PC; the STANDBY
  *     button always wins over the PC
  */
@@ -57,7 +61,9 @@
 #include "dr.h"
 #include "modes.h"
 #include "nav.h"
+#include "powerlim.h"
 #include "program.h"
+#include "servo.h"
 #include "throttle.h"
 
 #define SB_LIMIT_N 4        /* points in the steering-limit-by-speed table */
@@ -92,6 +98,8 @@ typedef struct {
     ap_config_t       steer;            /* steering (outboard autopilot core) */
     gear_config_t     gear;
     throttle_config_t throttle;
+    plim_config_t     plim;             /* power limit */
+    servo_config_t    servo;            /* throttle servo calibration */
     uint32_t          gps_timeout_ms;   /* no GPS fix this long = GPS lost (3000) */
 
     /* Compass lost while moving: how to steer during the safe stop.
@@ -246,7 +254,10 @@ typedef enum {
     SB_ERR_NO_PROGRAM,      /* no valid program */
     SB_ERR_PRECOND,         /* compass / GPS / gear / first leg not OK */
     SB_ERR_WRONG_MODE,      /* not possible in this mode / state */
-    SB_ERR_BAD_PROGRAM      /* program refused by the validation */
+    SB_ERR_BAD_PROGRAM,     /* program refused by the validation */
+    SB_ERR_WRONG_CODE,      /* power raise: code wrong / expired */
+    SB_ERR_AT_MAX,          /* power raise: already at the top */
+    SB_ERR_ALARM            /* power raise: an alarm is active (acknowledge first) */
 } sb_result_t;
 
 typedef struct {
@@ -261,6 +272,12 @@ typedef struct {
     sb_auto_t   autop;
     sb_train_t  train;
     sb_confirm_t confirm;
+    plim_t      plim;          /* power limit (RAM only) */
+    servo_t     servo;         /* throttle servo output (the only writer) */
+    uint32_t    alarm_bits_seen;   /* for "new alarm" detection */
+    bool        alarm_seen;
+    bool        speed_limited; /* AUTO: speed limited by the power limit */
+    uint32_t    sat_ms;        /* how long the speed loop has been at the limit */
     dr_t        dr;            /* position estimate (GPS / dead reckoning) */
     bool        gps_new_msg;   /* a GPS message arrived this step */
     uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */
@@ -275,8 +292,9 @@ typedef struct {
     sb_stop_steer_t stop_steer; /* steering during the safe stop / HDG_LOCK compass loss */
     bool     stop_from_auto;    /* the stop started in HDG_LOCK / AUTO / TRAINING */
     bool     hdg_compass_lost;  /* HDG_LOCK: compass failed, fault steering until stopped */
-    bool     hdg_reverse;       /* HDG_LOCK in reverse: outboard held centred */
-    float    hdg_target;        /* locked heading kept while in reverse */
+    bool     hdg_reverse;       /* heading hold paused (reverse / no propulsion): outboard held at hold_angle */
+    float    hdg_target;        /* heading kept while paused */
+    float    hold_angle;        /* outboard angle held while paused (0 = centre in reverse) */
     bool     alarm;             /* small-boat alarms (the autopilot has its own) */
     bool     compass_fault_seen;
     bool     gps_was_ok;        /* GPS trusted last step (loss detection) */
@@ -315,6 +333,14 @@ sb_result_t sb_auto_pause(sb_t *s);     /* idle + neutral, heading held, stays i
 sb_result_t sb_auto_skip(sb_t *s);      /* go on to the next waypoint */
 /* Seconds left for the pending CONFIRM, 0 if none. */
 float sb_confirm_left_s(const sb_t *s);
+
+/* --- power limit (PC) --- */
+/* 1. a new 4-digit code for a raise (dir 0 forward, 1 reverse) */
+sb_result_t sb_power_code(sb_t *s, uint8_t dir, uint16_t *code);
+/* 2. the typed code: OK = waiting for the joystick CONFIRM (confirm_ms) */
+sb_result_t sb_power_raise(sb_t *s, uint8_t dir, uint16_t code);
+/* lower to the startup limits at once */
+void sb_power_lower(sb_t *s);
 
 /* TRAINING finished (stage TS_RESULT): accept (apply + save) or reject.
  * full_angle_deg = measured lock-to-lock angle, 0 if unknown. Goes to

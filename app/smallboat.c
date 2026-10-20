@@ -21,6 +21,8 @@ void sb_default_config(sb_config_t *cfg)
     autopilot_default_config_outboard(&cfg->steer);
     gear_default_config(&cfg->gear);
     throttle_default_config(&cfg->throttle);
+    plim_default_config(&cfg->plim);
+    servo_default_config(&cfg->servo);
     cfg->gps_timeout_ms = 3000u;
     cfg->fault_steer = SB_FAULT_STEER_GYRO;
 
@@ -87,6 +89,8 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     s->ap.gyro_assist = (cfg->fault_steer == SB_FAULT_STEER_GYRO);
     gear_init(&s->gear, &cfg->gear);
     throttle_init(&s->thr, &cfg->throttle);
+    plim_init(&s->plim, &cfg->plim, s->now_ms * 2654435761u + 12345u);     /* always 30 / 5 */
+    servo_init(&s->servo, &cfg->servo);
     s->gear_demand = GEAR_N;
     dr_init(&s->dr, &cfg->dr);
     s->dr.cfg.gps_timeout_ms = cfg->gps_timeout_ms;
@@ -305,6 +309,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
          * training is aborted, chirp */
         s->stopping = false;
         s->manual_from = from;
+        plim_drop(&s->plim, PLIM_SRC_OVERRIDE, s->now_ms);
         autopilot_angle(&s->ap);
         s->chirp_ms = 300u;
         if (from == MODE_HDG_LOCK || from == MODE_AUTO || from == MODE_TRAINING)
@@ -313,6 +318,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
     case MODE_TRAINING:
         /* outboard centred by hand; steering off until calibration starts */
         s->stopping = false;
+        plim_drop(&s->plim, PLIM_SRC_TRAINING, s->now_ms);
         autopilot_disengage(&s->ap);
         memset(&s->train, 0, sizeof s->train);
         break;
@@ -363,6 +369,17 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
     hal_joystick_t js;
     bool js_ok = hal_read_joystick(&js);
     joy_step(&s->joy, js_ok ? &js : NULL, s->now_ms - s->last_ms);
+    if (sb_mode(s) != MODE_MANUAL && s->hdg_reverse) in->angle_cmd_deg = s->hold_angle;   /* hold still */
+    if (sb_mode(s) == MODE_HDG_LOCK && s->hdg_reverse && !s->hdg_compass_lost) {
+        /* heading hold paused: the course buttons still move the locked heading */
+        float dlt = 0.0f;
+        if (buttons & HAL_BTN_BIT(HAL_BTN_MINUS_1))  dlt -= 1.0f;
+        if (buttons & HAL_BTN_BIT(HAL_BTN_PLUS_1))   dlt += 1.0f;
+        if (buttons & HAL_BTN_BIT(HAL_BTN_MINUS_10)) dlt -= 10.0f;
+        if (buttons & HAL_BTN_BIT(HAL_BTN_PLUS_10))  dlt += 10.0f;
+        s->hdg_target = autopilot_wrap360(s->hdg_target + dlt);
+        autopilot_set_target(&s->ap, s->hdg_target);         /* shown as the target */
+    }
     if (sb_mode(s) == MODE_MANUAL) {
         /* X -> outboard angle over the full range (deadband around centre) */
         float x = s->joy.x, db = s->joy.cfg.deadband;
@@ -414,6 +431,36 @@ bool sb_joystick_cal_finish(sb_t *s)
     return hal_nv_save(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal);
 }
 
+/* --- heading hold paused ------------------------------------------------------- */
+
+/* Water flowing past the outboard: in forward gear (or engaging it) and
+ * not just idling in neutral. Without it the heading can't be steered. */
+static bool propulsion(const sb_t *s)
+{
+    return gear_is(&s->gear, GEAR_F) ||
+           (s->gear_demand == GEAR_F && s->gear.target == GEAR_F && s->thr.out_pct > s->cfg.gear.idle_max_pct);
+}
+
+/* Pause the heading hold (reverse, or no propulsion): the outboard is held
+ * at `angle` and the motor rests, so the angle estimate doesn't wander by
+ * hunting without steerage. Resume: heading hold again, same target. */
+static void steer_pause(sb_t *s, bool pause, float angle)
+{
+    if (pause) {
+        if (!s->hdg_reverse) {
+            s->hdg_reverse = true;
+            s->hdg_target = s->ap.target_heading;
+            autopilot_angle(&s->ap);
+        }
+        s->hold_angle = angle;
+    } else if (s->hdg_reverse) {
+        s->hdg_reverse = false;
+        float t = (sb_mode(s) == MODE_AUTO) ? s->ap.target_heading : s->hdg_target;
+        autopilot_engage(&s->ap, true);
+        autopilot_set_target(&s->ap, t);
+    }
+}
+
 /* --- HDG_LOCK ------------------------------------------------------------------ */
 
 /* Steering holds the locked heading; throttle on joystick Y. In reverse the
@@ -443,15 +490,9 @@ static void hdg_lock_mode(sb_t *s)
 
     bool reverse = s->gear_demand == GEAR_R || s->gear.current == GEAR_R ||
                    (s->gear.phase == GS_TO_GEAR && s->gear.engaging == GEAR_R);
-    if (reverse && !s->hdg_reverse) {
-        s->hdg_reverse = true;
-        s->hdg_target = s->ap.target_heading;
-        autopilot_angle(&s->ap);                    /* angle command 0 = centre */
-    } else if (!reverse && s->hdg_reverse) {
-        s->hdg_reverse = false;
-        autopilot_engage(&s->ap, true);
-        autopilot_set_target(&s->ap, s->hdg_target);
-    }
+    if (reverse) steer_pause(s, true, 0.0f);                    /* reverse: outboard centred */
+    else if (!propulsion(s)) steer_pause(s, true, s->hdg_reverse ? s->hold_angle : s->ap.est_angle);
+    else steer_pause(s, false, 0.0f);
     if (!s->hdg_reverse) steer_by_speed(s, speed_now(s));
 }
 
@@ -548,17 +589,23 @@ static void cruise(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float roll_
         k->gps_lost = false;
     }
 
+    float top = fminf(c->throttle.max_fwd_pct, s->plim.fwd_pct);     /* power limit */
     if (!gear_is(&s->gear, GEAR_F)) {
         s->throttle_demand = 0.0f;          /* wait for forward gear */
     } else if (gps) {
         float e = k->target_kn - k->sog_kn;
         float u = c->spd_kp * e + k->integ;
-        bool sat_hi = u >= c->throttle.max_fwd_pct && e > 0.0f;
+        bool sat_hi = u >= top && e > 0.0f;
         bool sat_lo = u <= 0.0f && e < 0.0f;
         bool lagging = fabsf(s->throttle_demand_prev - s->thr.out_pct) > 3.0f;   /* rate-limited */
         if (!sat_hi && !sat_lo && !lagging)
-            k->integ = clampf(k->integ + c->spd_ki * e * dt, 0.0f, c->throttle.max_fwd_pct);
-        s->throttle_demand = clampf(c->spd_kp * e + k->integ, 0.0f, c->throttle.max_fwd_pct);
+            k->integ = clampf(k->integ + c->spd_ki * e * dt, 0.0f, top);
+        if (k->integ > top) k->integ = top;
+        s->throttle_demand = clampf(c->spd_kp * e + k->integ, 0.0f, top);
+        /* "speed limited by the power limit": at the limit and still too slow */
+        s->sat_ms = (s->throttle_demand >= top - 0.01f && top < c->throttle.max_fwd_pct &&
+                     e > 0.5f) ? s->sat_ms + dt_ms : 0u;
+        s->speed_limited = s->sat_ms >= 3000u;
     } else {
         if (!k->gps_lost) {
             k->gps_lost = true;
@@ -662,8 +709,8 @@ static void nav_update(sb_t *s, float fix_dt)
         }
         a->wp++;
         if (w->action == (uint8_t)WP_ACT_STOP) {
-            /* stop in neutral here; the next leg starts at resume */
-            alarm_on(s, SB_ALM_ARRIVED);
+            /* stop in neutral here (chirp, not an alarm); the next leg starts at resume */
+            s->chirp_ms = 600u;
             autopilot_set_target(&s->ap, s->ap.heading);
             a->state = AUTO_WP_STOP;
             return;
@@ -697,7 +744,17 @@ static void dr_speed(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float rol
         s->throttle_demand = dr_throttle_for(&s->dr, k->target_kn);
         k->integ = s->throttle_demand;
     }
+    if (s->throttle_demand > s->plim.fwd_pct) {             /* power limit */
+        s->throttle_demand = s->plim.fwd_pct;
+        if (k->integ > s->plim.fwd_pct) k->integ = s->plim.fwd_pct;
+    }
     steer_by_speed(s, dr_sog_kn(&s->dr));
+}
+
+/* AUTO running a leg / holding: heading hold on (after a pause). */
+static void auto_steer_when_moving(sb_t *s)
+{
+    steer_pause(s, false, 0.0f);
 }
 
 static bool auto_running(const sb_t *s)
@@ -713,14 +770,17 @@ static void auto_mode(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float ro
     switch (a->state) {
     case AUTO_PAUSED:
     case AUTO_WP_STOP:
-        /* idle + neutral, the heading is held (gear / throttle default) */
+        /* idle + neutral (gear / throttle default); no steerage: outboard held still */
+        steer_pause(s, true, s->hdg_reverse ? s->hold_angle : s->ap.est_angle);
         return;
     case AUTO_HOLD:
+        auto_steer_when_moving(s);
         cruise(s, dt, dt_ms, roll_new, roll);
         return;
     default:
         break;
     }
+    auto_steer_when_moving(s);
 
     if (!sb_gps_ok(s)) {
         if (!dr_have_position(&s->dr)) {
@@ -884,15 +944,62 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
             return true;
         }
         return sb_request_mode(s, MODE_AUTO, WHY_CONFIRM);
+    case CONF_RAISE_FWD:
+    case CONF_RAISE_REV:
+        /* one step up; never changes the mode */
+        return plim_step_up(&s->plim, kind == CONF_RAISE_REV ? 1u : 0u, s->now_ms) == PLIM_OK;
     default:
         return false;
     }
 }
 
+static bool is_raise(confirm_kind_t k)
+{
+    return k == CONF_RAISE_FWD || k == CONF_RAISE_REV;
+}
+
+sb_result_t sb_power_code(sb_t *s, uint8_t dir, uint16_t *code)
+{
+    *code = 0u;
+    if (!joy_ready(s)) return SB_ERR_JOY_NOT_READY;
+    if (s->alarm || s->ap.alarm) return SB_ERR_ALARM;
+    if (dir == 0u ? s->plim.fwd_step + 1u >= PLIM_FWD_STEPS
+                  : s->plim.rev_pct >= s->plim.cfg.rev_max - 0.01f) return SB_ERR_AT_MAX;
+    *code = plim_code_request(&s->plim, dir ? 1u : 0u, s->now_ms);
+    return SB_OK;
+}
+
+sb_result_t sb_power_raise(sb_t *s, uint8_t dir, uint16_t code)
+{
+    dir = dir ? 1u : 0u;
+    if (!joy_ready(s)) {
+        plim_log_attempt(&s->plim, dir, PLIM_ERR_JOY_NOT_READY, s->now_ms);
+        return SB_ERR_JOY_NOT_READY;
+    }
+    if (s->alarm || s->ap.alarm) {
+        plim_log_attempt(&s->plim, dir, PLIM_ERR_ALARM, s->now_ms);
+        return SB_ERR_ALARM;
+    }
+    plim_result_t r = plim_code_check(&s->plim, dir, code, s->now_ms);
+    if (r == PLIM_ERR_WRONG_CODE) return SB_ERR_WRONG_CODE;
+    if (r == PLIM_ERR_AT_MAX) return SB_ERR_AT_MAX;
+    confirm_arm(s, dir ? CONF_RAISE_REV : CONF_RAISE_FWD);
+    return SB_OK;
+}
+
+void sb_power_lower(sb_t *s)
+{
+    if (is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;
+    plim_drop(&s->plim, PLIM_SRC_PC, s->now_ms);
+}
+
 static void confirm_step(sb_t *s)
 {
     sb_confirm_t *c = &s->confirm;
-    if (c->kind != CONF_NONE && (int32_t)(s->now_ms - c->deadline_ms) >= 0) c->kind = CONF_NONE;   /* too late */
+    if (c->kind != CONF_NONE && (int32_t)(s->now_ms - c->deadline_ms) >= 0) {
+        if (is_raise(c->kind)) plim_log_attempt(&s->plim, c->kind == CONF_RAISE_REV, PLIM_ERR_LATE, s->now_ms);
+        c->kind = CONF_NONE;            /* too late */
+    }
     if (!s->joy.confirm_edge) return;
     if (c->kind == CONF_NONE) {
         c->ignored++;                   /* nothing pending: does nothing */
@@ -900,6 +1007,7 @@ static void confirm_step(sb_t *s)
     }
     if (!joy_confirm(&s->joy)) {
         c->refused++;                   /* stick not centred / not armed / faulted */
+        if (is_raise(c->kind)) plim_log_attempt(&s->plim, c->kind == CONF_RAISE_REV, PLIM_ERR_NOT_CENTRED, s->now_ms);
         s->chirp_ms = 300u;
         return;
     }
@@ -978,6 +1086,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     if (s->ap.sensor_fault && !s->compass_fault_seen) {
         s->compass_fault_seen = true;
         alarm_on(s, SB_ALM_COMPASS);
+        plim_drop(&s->plim, PLIM_SRC_COMPASS, s->now_ms);
         if (sb_mode(s) == MODE_AUTO || sb_mode(s) == MODE_TRAINING) {
             sb_request_mode(s, MODE_STANDBY, WHY_COMPASS_FAULT);
         } else if (sb_mode(s) == MODE_HDG_LOCK) {
@@ -1002,6 +1111,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     bool gps = sb_gps_ok(s);
     if (s->gps_was_ok && !gps) {
         s->gps_losses++;
+        plim_drop(&s->plim, PLIM_SRC_GPS_LOST, s->now_ms);
         if (sb_mode(s) == MODE_HDG_LOCK)
             alarm_on(s, (s->dr.state == DR_GPS || s->dr.why == DR_WHY_LOST) ? SB_ALM_GPS_LOST : SB_ALM_GPS_SUSPECT);
     }
@@ -1011,6 +1121,8 @@ static void events_step(sb_t *s, uint32_t buttons)
     if (s->joy.fault && !s->joy_fault_seen) {
         s->joy_fault_seen = true;
         alarm_on(s, SB_ALM_JOY_FAULT);
+        plim_drop(&s->plim, PLIM_SRC_JOYSTICK, s->now_ms);
+        if (is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;
         if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK)
             sb_request_mode(s, MODE_STANDBY, WHY_JOY_FAULT);
     }
@@ -1023,6 +1135,7 @@ static void events_step(sb_t *s, uint32_t buttons)
 
     /* override: it always wins (Y is the throttle in HDG_LOCK) */
     bool grab = s->joy.take_edge || s->joy.engage_x || (s->joy.engage_y && sb_mode(s) != MODE_HDG_LOCK);
+    if (s->joy.take_edge) plim_drop(&s->plim, PLIM_SRC_OVERRIDE, s->now_ms);      /* TAKE always lowers */
     if (grab && sb_mode(s) != MODE_MANUAL) {
         if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME) s->confirm.kind = CONF_NONE;
         sb_request_mode(s, MODE_MANUAL, WHY_JOYSTICK);
@@ -1034,6 +1147,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     /* STANDBY button: works in every mode, the PC can't override it */
     if (buttons & HAL_BTN_BIT(HAL_BTN_STANDBY)) {
         s->confirm.kind = CONF_NONE;
+        plim_drop(&s->plim, PLIM_SRC_STANDBY_BUTTON, s->now_ms);
         if (sb_mode(s) != MODE_STANDBY) {
             if (!joy_centered(&s->joy)) joy_disarm(&s->joy);   /* can't grab control right back */
             sb_request_mode(s, MODE_STANDBY, WHY_STANDBY_BUTTON);
@@ -1045,8 +1159,10 @@ static void events_step(sb_t *s, uint32_t buttons)
     }
     if (buttons & HAL_BTN_BIT(HAL_BTN_HDG_LOCK)) {
         if (sb_mode(s) == MODE_HDG_LOCK) {
-            if (!s->hdg_reverse && !s->hdg_compass_lost)
-                autopilot_set_target(&s->ap, s->ap.heading);       /* lock again, here */
+            if (!s->hdg_compass_lost) {                             /* lock again, here */
+                s->hdg_target = s->ap.heading;
+                autopilot_set_target(&s->ap, s->ap.heading);
+            }
         } else if (sb_mode(s) == MODE_MANUAL && !joy_centered(&s->joy)) {
             mode_request(&s->modes, MODE_HDG_LOCK, WHY_HDG_BUTTON, false, s->now_ms);   /* refused, logged */
             s->chirp_ms = 300u;
@@ -1076,6 +1192,9 @@ void sb_step(sb_t *s)
 
     /* 1. steering core (also detects compass timeout) */
     autopilot_update(&s->ap, &in);
+    /* no propulsion (idle / not in forward): the heading can't be held, so
+     * "off course" means nothing - don't let it build up to an alarm */
+    if (!gear_is(&s->gear, GEAR_F) || s->thr.out_pct <= s->cfg.gear.idle_max_pct) s->ap.off_course_ms = 0u;
 
     /* position estimate: GPS when trusted, dead reckoning otherwise */
     {
@@ -1153,11 +1272,34 @@ void sb_step(sb_t *s)
         }
     }
 
-    /* 5. gear and throttle (order: throttle limited by the gear state) */
+    /* power limit: any new alarm (also from the PC link) -> startup limit
+     * at once (the throttle then comes down at its normal rate, servo.c);
+     * a long time at low speed too */
+    if (gear_fault(&s->gear)) alarm_on(s, SB_ALM_GEAR);
+    {
+        uint32_t fresh = s->alarm_bits & ~s->alarm_bits_seen;
+        bool any = s->alarm || s->ap.alarm;
+        if (fresh & SB_ALM_PC_LINK) plim_drop(&s->plim, PLIM_SRC_PC_LINK, s->now_ms);
+        else if (fresh || (any && !s->alarm_seen)) plim_drop(&s->plim, PLIM_SRC_ALARM, s->now_ms);
+        if ((fresh || (any && !s->alarm_seen)) && is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;
+        s->alarm_bits_seen = s->alarm_bits;
+        s->alarm_seen = any;
+        plim_step(&s->plim, speed_now(s), dt_ms, s->now_ms);
+    }
+    if (sb_mode(s) != MODE_AUTO) { s->speed_limited = false; s->sat_ms = 0u; }
+
+    /* 5. gear and throttle (order: throttle limited by the gear state),
+     *    demand limited by the power limit of its direction */
+    float lim_dir = (s->gear_demand == GEAR_F) ? s->plim.fwd_pct : s->plim.rev_pct;
+    if (s->throttle_demand > lim_dir) s->throttle_demand = lim_dir;
     gear_request(&s->gear, s->gear_demand);
-    float thr = throttle_step(&s->thr, s->throttle_demand, s->gear.current,
-                              gear_throttle_allowed(&s->gear), dt);
-    gear_step(&s->gear, dt_ms, thr, neutral_sw);
+    (void)throttle_step(&s->thr, s->throttle_demand, s->gear.current, gear_throttle_allowed(&s->gear), dt);
+
+    /* 6. outputs: engine first, steering last. The servo module clamps to
+     *    the power limit once more (lowest layer); the rate limiter goes on
+     *    from what was really sent. */
+    s->thr.out_pct = servo_throttle_write(&s->servo, &s->plim, gear_is(&s->gear, GEAR_F), s->thr.out_pct, dt);
+    gear_step(&s->gear, dt_ms, s->thr.out_pct, neutral_sw);
     if (gear_fault(&s->gear)) {
         alarm_on(s, SB_ALM_GEAR);
         /* neutral not confirmed: driving modes end in STANDBY (throttle
@@ -1165,9 +1307,6 @@ void sb_step(sb_t *s)
         if (sb_mode(s) != MODE_STANDBY && sb_mode(s) != MODE_MANUAL)
             sb_request_mode(s, MODE_STANDBY, WHY_GEAR_FAULT);
     }
-
-    /* 6. outputs: engine first, steering last */
-    hal_set_throttle(s->thr.out_pct);
     hal_set_gear_pwm(s->gear.pwm_us);
     hal_set_rudder_motor(s->ap.motor_cmd);
     if (s->chirp_ms > 0u) s->chirp_ms = (s->chirp_ms > dt_ms) ? s->chirp_ms - dt_ms : 0u;
