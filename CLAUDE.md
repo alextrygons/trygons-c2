@@ -13,6 +13,8 @@
 - Cpu0_Main.c — core 0: starts the small-boat controller (smallboat.c) by default; `#define BOAT_VARIANT_BIG` selects the big-boat autopilot.
 - Cpu1_Main.c — CPU1: the independent safety monitor (app/monitor.c), nothing else.
 - Cpu2_Main.c — CPU2: the logger (SD card).
+- bridge/ — Teensy 4.1 USB joystick bridge firmware (PlatformIO, C++). Excluded from the ADS build. Frame format app/jsframe.c/.h is shared (compiled into both).
+- Joystick sources: app/joystick.c is the one joystick interface; analog (joy_step) or USB bridge (app/joybridge.c) fill the same joy_input_t. Source + button/axis map: app/joymap.c (NV slot 4, CRC, STANDBY only).
 - app/servo.c — the ONLY code that writes the throttle servo (power-limit clamp). app/powerlim.c — power limit.
 - Logging: app/logcore0.c (core 0 producer, fields in app/logfields.h) → app/logq.c (lock-free queues) → app/logger.c (core 2, SD card, black box). File format app/logrec.h; PC tools groundstation/tlg.py, log2csv.py, logview.py, tlgreplay.py.
 - tools/mapreport.py — memory report from the ADS map file.
@@ -23,7 +25,8 @@
 - Safety first: rudder angle limits, rate limits, sensor-timeout -> standby + alarm.
 - The joystick always wins over the autopilot and the PC. Only a centered joystick (+ AUTO / HDG LOCK button, or PC + CONFIRM) leaves MANUAL.
 - The STANDBY panel button always wins (every mode; the PC can never override it).
-- Joystick, panel buttons and link wiring: see WIRING.md.
+- Joystick, panel buttons and link wiring: see WIRING.md (section 6: USB bridge).
+- Tests run with BOTH joystick sources: `autopilot_sim all` and `autopilot_sim all --bridge` must both pass.
 
 ## Small-boat features
 Outboard boat (small-boat variant, `AP_STEER_OUTBOARD`). The big-boat variant (rudder feedback) must keep working unchanged.
@@ -32,6 +35,7 @@ Actuators
 - Steering motor without angle feedback (angle estimated from motor run time, backlash compensated).
 - Throttle servo (0–100 %).
 - Controls: joystick (X steering, Y throttle, TAKE / AUTO / CONFIRM), panel buttons STANDBY, HDG LOCK, -1, +1, -10, +10.
+- Or USB joystick (Thrustmaster T.16000M stick + TWCS throttle via the Teensy bridge): non-returning lever, neutral zone 45–55 %, maps to the CURRENT power limit (a raised limit never makes the throttle jump), throttle pickup on takeover, lever override (10 % from the hand-back position), button map with no shared TAKE/AUTO/CONFIRM.
 - Gear servo F / N / R, positioned by PWM pulse width (configurable positions).
 
 Sensors
@@ -65,7 +69,8 @@ Safety rules — never break them
   - The clamp lives only in the servo output function (app/servo.c); no other code may write the throttle servo (the build check greps for it).
 - Watchdogs are enabled on all cores; a frozen loop resets the chip.
 - CPU1 runs an independent safety monitor (throttle vs limit, gear change at throttle, core-0 heartbeat > 200 ms) that forces idle + neutral + steering stop + alarm, latched in the HAL.
-- Neutral-start interlock: outputs only arm at power-up with throttle idle, neutral confirmed and the joystick centred.
+- Neutral-start interlock: outputs only arm at power-up with throttle idle, neutral confirmed and the joystick centred (USB: stick centred AND lever in the neutral zone).
+- USB bridge: no valid frame 150 ms / > 5 CRC errors per s / stuck counter / device unplugged / invalid axis / learn mode = JOYSTICK FAULT (same as a wire break). Hand-back needs stick centred AND lever neutral.
 - Logging must never block or slow control: core 0 / CPU1 only push into lock-free queues; full queue → drop + count.
 - Every feature has sim tests for its failure cases.
 

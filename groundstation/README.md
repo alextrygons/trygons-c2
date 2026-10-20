@@ -69,16 +69,18 @@ drop-down list and press **Connect**.
 | Top bar | connection, link status, name of the log file |
 | Orange banner | **JOYSTICK IN CONTROL** (MANUAL). The PC can't change the mode now; centre the stick and press joystick AUTO or panel HDG LOCK |
 | Yellow banner | **PRESS JOYSTICK CONFIRM** with a countdown: the boat waits for the joystick CONFIRM button (AUTO start / resume) |
+| Yellow banner (USB lever) | **MOVE THROTTLE TO PICK UP: lever to xx %** - after a takeover the lever does nothing until it reaches that point (or the neutral zone) |
 | Red banner + beep | active alarms (also "NO DATA FROM THE BOAT" if the link drops). "ACK ALARM" works in STANDBY |
 | Left column | mode, heading, target, yaw rate, outboard angle, throttle, gear, GPS, position source, uncertainty, current, active waypoint ... |
 | Middle column | **STANDBY**, the three driving modes (the active one is lit; MANUAL = joystick, HDG LOCK = panel button, AUTO START = PC + CONFIRM), AUTO pause / resume / skip, heading ±1/±10 (HDG LOCK), sea state, training |
-| Joystick strip | live stick position, TAKE / AUTO / CONFIRM, status, calibration |
+| Joystick strip | live stick position, lever bar (neutral zone grey, pickup point yellow), TAKE / AUTO / CONFIRM, status + fault reason, source and USB link (frames/s, CRC errors, stick / throttle connected), analog calibration |
+| Joystick tab | source (analog / USB bridge), throttle input (stick Y / lever), neutral zone, lever override, pickup window, the button map with live "now pressed", **Map buttons (guided)** (a button already used is refused), **SAVE TO BOAT** (STANDBY only) |
 | Map tab | boat, track, the program (numbered), active waypoint, uncertainty circle, drift arrow. Tick "Click adds a program waypoint" to build a program by clicking. Offline |
 | Program tab | the AUTO program editor: add / change / delete / reorder waypoints (lat, lon, leg speed, arrival radius, action continue / slow / stop), final action, Upload to boat, Download, Save / Load file. The boat checks the program again and says what is wrong |
 | Plot tab | heading vs target and the outboard angle, last 2 minutes |
 | Config tab | "Read all" shows the settings. Select one, type a value and press "Write selected" (STANDBY only, range-checked, lost at power-off) |
 | Events tab | every command, answer, mode change and alarm |
-| Simulator box | (only with the simulator) panel HDG LOCK / STANDBY and joystick CONFIRM buttons |
+| Simulator box | (only with the simulator) panel HDG LOCK / STANDBY and joystick CONFIRM buttons; USB joystick lever, stick, buttons, unplug and link-fault controls (used when the source is the USB bridge; or start the simulator with `server 5760 1 usb`) |
 
 **Starting AUTO:** make a program, "Upload to boat", press **AUTO START**, then
 press **CONFIRM** on the joystick within 10 s (stick centred).
@@ -120,6 +122,9 @@ python test_e2e.py
 This starts the simulator, uploads an AUTO program from the ground station
 (and checks a bad one is refused), starts it with CONFIRM, lets a simulated
 joystick take over, checks that the PC is refused, and checks the log.
+Then, with a second simulator: switches to the USB joystick, checks a map
+with TAKE = AUTO is refused, takes over with the lever (throttle pickup) and
+unplugs the throttle (JOYSTICK FAULT). 10 tests.
 
 ## Files
 

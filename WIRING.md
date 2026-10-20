@@ -1,4 +1,4 @@
-# Wiring: joystick, control panel and ground-station link (KIT_A2G_TC375_LITE)
+# Wiring: joysticks (analog and USB), control panel and ground-station link (KIT_A2G_TC375_LITE)
 
 Source: *AURIX TC375 lite Kit V2 user manual*, Figure 7 "Mapping of Arduino
 Functions to AURIX Pin Functions". **Always check the pin labels printed on
@@ -211,3 +211,71 @@ it shows as "USB Serial Port (COMx)".
 Later, a Raspberry Pi or an ESP32 can use the same protocol over a 3.3 V UART.
 Do not use D0/D1 (P15.3/P15.2) at the same time, because they are an
 alternative pin pair of the same ASCLIN0.
+
+## 6. USB joystick bridge (Thrustmaster T.16000M FCS HOTAS)
+
+The USB joystick is read by a separate small board, a **Teensy 4.1**. Its
+only job is to read the joystick and forward it (firmware and setup:
+`bridge/README.md`). The Teensy sends a checked frame (CRC, counter) to the
+AURIX 100 times a second. The AURIX sends nothing safety-critical back.
+The hard-wired analog joystick (section 1) stays possible: the source is
+chosen in the ground station (**Joystick** tab).
+
+```
+ 12 V boat ──fuse 2 A──► 5 V DC-DC converter (3 A) ──┬──► powered USB hub (DC in)
+                                                     └──► Teensy 4.1 VIN
+ T.16000M stick ──USB──┐
+                       ├── powered USB hub ──USB──► Teensy 4.1 USB host header (5-pin, with the host cable)
+ TWCS throttle ───USB──┘
+ Teensy pin 1 (TX1) ──[100 Ω]──────────────────────► AURIX P20.3 (ASCLIN3 RX)
+ Teensy GND ────────────────────────────────────────► AURIX GND   (common ground, same wire bundle)
+```
+
+| Signal | Teensy 4.1 | AURIX board | TC375 pin | Notes |
+|--------|------------|-------------|-----------|-------|
+| bridge data (Teensy -> AURIX) | pin 1 (TX1) | Shield2Go 2 connector, RX pin | P20.3 (ASCLIN3 RXC) | 230400 baud 8N1, 3.3 V; 100 Ω series resistor at the Teensy end |
+| (spare, not used) | pin 0 (RX1) | Shield2Go 2 connector, TX pin | P20.0 (ASCLIN3 TX) | leave unconnected |
+| ground | GND | GND (Shield2Go pin 6) | - | **must** be connected |
+| power | VIN (5 V) | - | - | from the 5 V converter, not from the AURIX |
+
+* **Pins:** P20.3 / P20.0 are free in this pin plan. Shield2Go 1 (P33.8 / P33.9,
+  ASCLIN2) stays reserved for the GPS. The iLLD pin map confirms
+  `IfxAsclin3_RXC_P20_3_IN` and `IfxAsclin3_TX_P20_0_OUT`. Check on the
+  board's silk screen / user manual which Shield2Go 2 pin carries P20.3
+  before you solder.
+* **Both boards are 3.3 V logic**, so no level shifter is needed. Never
+  connect a 5 V signal to the AURIX.
+* **Power:**
+  * Supply the hub and the Teensy from one **12 V → 5 V DC-DC converter**
+    rated at least **3 A**, with a 2 A fuse on its 12 V side.
+  * Typical draw: Teensy 0.1 A + T.16000M 0.1 A + TWCS 0.1 A + hub
+    0.1 A = about 0.5 A. The rest is margin for plug-in surges.
+  * A separate 5 V supply (e.g. a marine USB socket) works too, if it gives
+    at least 2 A.
+  * The hub must have its **own** power input. The Teensy's USB host port
+    can't power two joysticks.
+* **Teensy on the PC for setup:** if the Teensy gets 5 V on VIN *and* you
+  plug it into the PC by USB, the two 5 V sources meet. Either cut the
+  VIN-VUSB pad on the Teensy (see the PJRC "external power" page), or
+  disconnect the 5 V converter while it is plugged into the PC.
+* **Common ground:** run the TX wire and a GND wire together (twisted, or a
+  shielded 2-core cable), as short as possible (< 1 m). The AURIX, the
+  Teensy and the 5 V converter must share one ground.
+* **Strain relief:**
+  * Clamp every USB cable (P-clips or cable ties to a fixed point) within
+    10 cm of each plug, so a pull on the joystick cable never pulls a plug.
+  * Glue or clip the USB host cable to the Teensy header.
+  * Leave a drip loop below each cable entry.
+* **Mounting:** the T.16000M, the TWCS, the hub and the Teensy are **not
+  waterproof**.
+  * Mount them in a **dry console** under a cover. Put the hub and the
+    Teensy in a closed box with cable glands, the glands facing down, with a
+    desiccant bag inside.
+  * Spray or wet hands on the joystick are fine. Standing water or rain on
+    it is not.
+* **What happens when something breaks:**
+  * USB unplugged, hub without power, Teensy crashed, UART wire broken: the
+    AURIX sees no valid frames for 150 ms (or a device flag goes off). That
+    is a JOYSTICK FAULT.
+  * If the joystick was in control: throttle idle + neutral, steering
+    stop, STANDBY, alarm.

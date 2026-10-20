@@ -1,6 +1,6 @@
 ===============================================================================
   TRYGONS C2 BOAT AUTOPILOT - USER MANUAL
-  State: 2026-10-20 (after "Section F: Full logging")
+  State: 2026-10-20 (after the Thrustmaster USB joystick work)
 ===============================================================================
 
 CONTENTS
@@ -11,15 +11,16 @@ CONTENTS
   5.  The ground station (PC program)
   6.  The board (AURIX TC375 Lite Kit)
   7.  How the boat behaves: modes, buttons, joystick
-  8.  The power limit
-  9.  Alarms
-  10. Safety rules built into the software (incl. watchdogs, CPU1 monitor)
-  11. Logging (SD card) and the log tools
-  12. Wiring and what to buy
-  13. Settings and default values
-  14. Git: saving and uploading your work
-  15. WHAT IS STILL MISSING
-  16. Troubleshooting
+  8.  The USB joystick (Thrustmaster T.16000M + TWCS)
+  9.  The power limit
+  10. Alarms
+  11. Safety rules built into the software (incl. watchdogs, CPU1 monitor)
+  12. Logging (SD card) and the log tools
+  13. Wiring and what to buy
+  14. Settings and default values
+  15. Git: saving and uploading your work
+  16. WHAT IS STILL MISSING
+  17. Troubleshooting
 
 
 -------------------------------------------------------------------------------
@@ -39,7 +40,7 @@ An autopilot for a boat, running on the Infineon KIT_A2G_TC375_LITE board
 
 The board has not arrived yet. All of the logic is written and tested in a
 PC simulation with a simulated boat. The parts that talk to the real
-hardware are mostly empty "stubs" for now (see chapter 15).
+hardware are mostly empty "stubs" for now (see chapter 16).
 
 The three cores:
   core 0  the control loop (20 Hz): modes, steering, engine, PC link
@@ -48,6 +49,10 @@ The three cores:
 
 A PC ground station shows the boat live and sends commands, over the
 board's USB cable or to the simulator.
+
+Two kinds of joystick can drive the boat (chosen in the ground station):
+the hard-wired analog joystick, or a USB Thrustmaster T.16000M stick +
+TWCS throttle, read by a small Teensy 4.1 "bridge" board (chapter 8).
 
 
 -------------------------------------------------------------------------------
@@ -62,7 +67,11 @@ board's USB cable or to the simulator.
      powerlim.c     power limit (30 % / 5 % at start, raise / drop)
      servo.c        the ONLY code that writes the throttle servo
      monitor.c      the independent safety monitor (runs on CPU1)
-     gear.c, throttle.c, nav.c, dr.c, training.c, calib.c, joystick.c
+     joystick.c     the joystick, whatever its source (analog or USB)
+     joybridge.c    USB joystick: frames from the bridge, fault checks
+     joymap.c       joystick source + USB button map (saved with checksum)
+     jsframe.c      the bridge frame format (also compiled into the bridge)
+     gear.c, throttle.c, nav.c, dr.c, training.c, calib.c
      proto.c, link.c       PC link (frames, telemetry, commands)
      timing.c              CPU time per cycle, overruns
      logq.c, logrec.c, logcore0.c, logfields.h, logger.c   logging
@@ -75,8 +84,11 @@ board's USB cable or to the simulator.
   sim/            PC simulation, all tests, simulated boat for the ground
                   station. NOT part of the board build.
   groundstation/  PC ground station and log tools (Python).
+  bridge/         Teensy 4.1 firmware for the USB joystick (PlatformIO).
+                  Setup step by step: bridge/README.md.
   tools/          mapreport.py: memory report from the ADS build.
-  WIRING.md       Wiring: joystick, panel buttons, servos, SD card, USB.
+  WIRING.md       Wiring: joysticks (analog and USB bridge), panel buttons,
+                  servos, SD card, USB.
   CLAUDE.md       The project rules (also read by Claude).
   MANUAL.txt      This file.
   Libraries/, Configurations/
@@ -107,6 +119,10 @@ On a new PC, install:
   c) Git (https://git-scm.com) and VS Code. The project is on GitHub:
        https://github.com/alextrygons/trygons-c2.git
 
+  d) Only for the USB joystick bridge: in VS Code, Extensions -> install
+     "PlatformIO IDE". It downloads the Teensy compiler by itself the first
+     time you build bridge/ (details: bridge/README.md).
+
   Check in a terminal (VS Code: Terminal -> New Terminal):
        gcc --version
        C:\msys64\ucrt64\bin\python.exe --version
@@ -121,11 +137,17 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 91 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 108 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
+    autopilot_sim.exe all --bridge
+  The same tests again, but every joystick move goes through the simulated
+  USB bridge. Ends with "107 passed, 0 failed, 1 not applicable" (the analog
+  calibration test does not apply to the USB joystick).
+    autopilot_sim.exe usb
+  Only the 17 USB joystick tests (U1..U16), quick.
   The Python tests (ground station + log tools):
     cd ..\groundstation
-    C:\msys64\ucrt64\bin\python.exe test_e2e.py      (6 tests)
+    C:\msys64\ucrt64\bin\python.exe test_e2e.py      (10 tests)
     C:\msys64\ucrt64\bin\python.exe test_logs.py     (3 tests)
 
 OTHER COMMANDS:
@@ -136,6 +158,9 @@ OTHER COMMANDS:
     autopilot_sim.exe logtest DIR  a logged run + reference values
     autopilot_sim.exe server       simulated small boat for the ground
                                    station (TCP 5760); logs to sim\sdcard
+    autopilot_sim.exe server 5760 1 usb
+                                   the same, starting with the USB joystick
+                                   (T.16000M + TWCS) as the source
 
 
 -------------------------------------------------------------------------------
@@ -147,7 +172,7 @@ START WITH THE SIMULATOR. Two terminals:
   2:  cd C:\trygons\TRYGONS_C2\groundstation
       C:\msys64\ucrt64\bin\python.exe app.py tcp:127.0.0.1:5760
 
-START WITH THE BOARD (once the USB link is written, chapter 15):
+START WITH THE BOARD (once the USB link is written, chapter 16):
   plug in the USB cable, find the COM port in Device Manager, then
       C:\msys64\ucrt64\bin\python.exe app.py COM5
 
@@ -156,6 +181,7 @@ THE WINDOW:
   Orange banner  JOYSTICK IN CONTROL (MANUAL) - the PC can't change the mode
   Yellow banner  PRESS JOYSTICK CONFIRM - <what> - <seconds left>
   Red banner     alarms (flashing + beep); "ACK ALARM" acknowledges
+  Yellow banner  MOVE THROTTLE TO PICK UP: lever to <position> (chapter 8)
   Left column    mode, POWER LIMIT (big; orange = raised) with "Raise fwd",
                  "Raise rev", "Lower now"; heading, target, outboard,
                  throttle ("asked" if more was asked than allowed), gear, GPS,
@@ -165,13 +191,20 @@ THE WINDOW:
                  START = PC + CONFIRM), AUTO pause / resume / skip, heading
                  -10/-1/+1/+10 (HDG LOCK), sea state, training. With the
                  simulator also: panel HDG LOCK / STANDBY, joystick CONFIRM.
-  Joystick strip stick position, TAKE / AUTO / CONFIRM, status, calibration
+  Joystick strip stick position, lever bar (green = forward, red = reverse,
+                 grey = neutral zone, yellow mark = pickup point), TAKE /
+                 AUTO / CONFIRM, status and fault reason, source and USB
+                 link (frames/s, CRC errors, stick / throttle connected),
+                 analog calibration
   Map tab        boat, track, the program, uncertainty circle, drift arrow;
                  tick "Click adds a program waypoint" to build a program
   Program tab    the AUTO program editor (see chapter 7), upload / download,
                  save / load file
   Plot tab       heading vs target, outboard angle (2 minutes)
   Config tab     settings (STANDBY only, lost at power-off)
+  Joystick tab   source (analog / USB), throttle input (stick Y / lever),
+                 neutral zone, lever override, pickup window, the button map
+                 with "now pressed", "Map buttons (guided)", SAVE TO BOAT
   System tab     CPU time per cycle of the three cores, overruns, link, SD card
   Events tab     every command, answer, mode change, alarm
 
@@ -192,9 +225,9 @@ limit) but never stops or starts anything.
      (the free TASKING licence only runs inside ADS: build there first.)
 
   Memory today (all code, TriCore GCC build -O0; TASKING is similar):
-     program flash 174 KB of 6.3 MB (2.7 %)
-     core 0 RAM  95 KB of 240 KB (40 %)
-     CPU1 RAM   216 KB of 240 KB (90 %: the 60 s black box, 197 KB)
+     program flash 186 KB of 6.3 MB (2.9 %)
+     core 0 RAM  96 KB of 240 KB (40 %)
+     CPU1 RAM   221 KB of 240 KB (92 %: the 60 s black box, 202 KB)
      core 2 RAM  11 KB of  96 KB (11 %)
 
   Watchdogs are ON. When you stop the program in the debugger the
@@ -237,9 +270,10 @@ MODES
   Extra rules: only the joystick enters MANUAL; MANUAL is left only with
   the stick centred; AUTO needs compass, GPS, a valid program and CONFIRM;
   TRAINING only from STANDBY by the PC; nothing but STANDBY until the
-  outputs are armed (chapter 10).
+  outputs are armed (chapter 11).
 
-THE JOYSTICK ALWAYS WINS
+THE JOYSTICK ALWAYS WINS (analog or USB - the rules are the same; the
+USB lever has a few extra ones, chapter 8)
   * Take over from ANY mode: stick sideways past 15 % for 0.1 s, forward /
     back (not in HDG LOCK, where that is the throttle), or TAKE. Chirp.
     An AUTO program is suspended (resume later: PC + CONFIRM).
@@ -264,12 +298,128 @@ AUTO PROGRAM - HOW TO
   2. "Upload to boat". The boat checks it (coordinates, number <= 50, leg
      length 10 m .. 50 km, speeds within the maximum, radius 5..500 m) and
      stores it with a checksum (kept after power-off).
-  3. Raise the power limit if you want more than ~7 kn (chapter 8).
+  3. Raise the power limit if you want more than ~7 kn (chapter 9).
   4. AUTO START, then CONFIRM on the joystick within 10 s.
 
 
 -------------------------------------------------------------------------------
-8. THE POWER LIMIT
+8. THE USB JOYSTICK (THRUSTMASTER T.16000M + TWCS)
+-------------------------------------------------------------------------------
+WHAT IT IS
+  The T.16000M stick steers (left / right = outboard angle). The TWCS
+  throttle has a lever that STAYS where you leave it (it has no spring),
+  with a NEUTRAL ZONE in the middle (45-55 % of its travel):
+      above the neutral zone  = forward      (further = more throttle)
+      inside the neutral zone = idle + neutral
+      below the neutral zone  = reverse
+  Gear changes always go idle -> neutral -> gear, however fast you move it.
+  Both plug into a small powered USB hub, the hub into the Teensy bridge,
+  the bridge into the AURIX (WIRING.md section 6). If anything in that chain
+  fails - a plug, the hub, the Teensy, the wire - the boat sees JOYSTICK
+  FAULT within 0.15-0.2 s, exactly like a broken wire on the analog stick:
+  if the joystick was driving: throttle idle + neutral, steering stop,
+  STANDBY, alarm.
+
+  The T.16000M and the TWCS are NOT waterproof: dry console only.
+
+SWITCH THE BOAT TO THE USB JOYSTICK (once)
+  1. Ground station, Joystick tab: Source = "USB bridge", Throttle = "lever".
+  2. "Factory default (T.16000M + TWCS)" fills in the default buttons.
+  3. Boat in STANDBY -> SAVE TO BOAT. It is stored with a checksum and used
+     at every power-up. (Back to the wired joystick the same way.)
+
+DEFAULT BUTTONS (change them with "Map buttons", below)
+     TAKE       stick trigger                  (stick button 1)
+     STANDBY    stick thumb button             (stick button 2)
+     AUTO       TWCS button 1
+     CONFIRM    TWCS button 4  (clearly apart from AUTO)
+     HDG LOCK   TWCS button 3
+     -1 / +1    TWCS hat left / right
+     -10 / +10  TWCS hat down / up
+  Which physical button is "TWCS button 1/3/4" depends on the TWCS: check
+  with learn mode or the "now" column of the Joystick tab and map them where
+  your thumb finds them. The panel STANDBY button stays and always wins.
+
+POWER-UP
+  The lever must be IN THE NEUTRAL ZONE and the stick centred. Otherwise:
+  alarm "JOYSTICK NOT CENTRED" (= not in neutral), the joystick is ignored
+  and the outputs stay off. Put the lever in neutral, let go of the stick.
+
+TAKING OVER (any mode)
+  * stick sideways (past 15 % for 0.1 s), or
+  * the TAKE button, or
+  * moving the lever more than 10 % away from where it was at the last
+    hand-back (it was in neutral then, so: leaving the neutral zone).
+    In HDG LOCK the lever IS the throttle, so there it does not take over.
+
+THROTTLE PICKUP (no surprise jump)
+  When the lever gets the throttle (MANUAL or HDG LOCK entered from STANDBY,
+  AUTO or TRAINING), it first does NOTHING. The yellow banner says
+  "MOVE THROTTLE TO PICK UP: lever to xx %" and the lever bar shows a yellow
+  mark. Move the lever to that mark (within 3 %), or through it, or into the
+  neutral zone: from then on the lever drives, starting from the throttle
+  the engine has now.
+    * Coming from AUTO: the engine keeps its throttle (lowered to the
+      30 % power limit that every takeover sets) until you pick it up.
+    * Coming from STANDBY: the engine stays at idle + neutral; the pickup
+      point is the neutral zone.
+  Example: the lever was left at 80 % and you take over: nothing happens
+  until you bring the lever to the mark (or neutral).
+
+LEVER AND POWER LIMIT
+  Full lever forward = the CURRENT power limit (30 % at start), full lever
+  back = the reverse limit (5 % at start). Raising the limit never makes the
+  boat speed up by itself: if the lever is fully forward when you raise from
+  30 to 50 %, the throttle stays at 30 %. Pull the lever back a little and
+  push it forward again - now full lever is 50 %.
+
+HAND-BACK
+  Stick centred AND lever in the neutral zone, then AUTO (or panel HDG
+  LOCK). Otherwise refused + chirp. (This means the engine is at idle when
+  you hand back.)
+
+CONFIRM (power raise, AUTO start / resume) on the USB button follows the
+  same rules as before: only with the stick centred and the joystick armed,
+  only for a pending PC request. The lever position does not matter here.
+
+MAP BUTTONS (ground station, Joystick tab, boat in STANDBY)
+  1. "Map buttons (guided)". Let go of everything, click Next.
+  2. Move the stick fully right, hold, Next (steering axis found).
+  3. Push the lever fully forward, hold, Next (throttle axis + direction).
+  4. For each function press the button you want. A button already used
+     for another function is refused at once ("already TAKE - press a
+     different button"). TAKE, AUTO and CONFIRM must be mapped; the others
+     can be skipped.
+  5. SAVE TO BOAT. The boat checks again: TAKE, AUTO and CONFIRM on the same
+     button -> refused ("two functions share a button").
+  Note: the buttons keep their OLD job while you map them - pressing the
+  TAKE button switches to MANUAL. That is on purpose (the joystick is never
+  switched off). Press the panel STANDBY before saving.
+  One function only: the "Map" button in its row.
+
+LEARN MODE (on the Teensy, to see what is what)
+  Teensy on the PC USB, VS Code -> PlatformIO -> Monitor, type  l  + Enter.
+  Every button / hat / axis you move is printed with its code number.
+  While learn mode is on the boat keeps the USB joystick disarmed.
+  Other joysticks than the Thrustmaster: calibrate first ( c ), see
+  bridge/README.md.
+
+STATUS TO WATCH (Joystick strip / tab)
+  "USB bridge: 100 frames/s, CRC errors 0, stick OK, throttle OK" is normal.
+  Fewer frames/s, growing CRC errors: bad wire / interference. More than 5
+  CRC errors per second, a frozen counter, an unplugged device, an invalid
+  axis or no frame for 0.15 s = JOYSTICK FAULT (the reason is shown).
+  For the first 5 s after power-up the bridge may still be starting (USB):
+  no alarm then, the joystick is just not armed yet.
+
+MEASURED IN THE SIMULATION (bridge + hub modelled)
+  TAKE pressed -> mode change on the AURIX: average 34 ms, worst 60 ms
+  (200 presses; target < 100 ms). Worst case by design: USB + hub 2 ms +
+  frame period 10 ms + UART 3 ms + control loop 50 ms = 65 ms.
+
+
+-------------------------------------------------------------------------------
+9. THE POWER LIMIT
 -------------------------------------------------------------------------------
   * After EVERY power-up or reset: 30 % forward, 5 % reverse (of the full
     throttle travel). Never saved.
@@ -290,14 +440,14 @@ AUTO PROGRAM - HOW TO
 
 
 -------------------------------------------------------------------------------
-9. ALARMS
+10. ALARMS
 -------------------------------------------------------------------------------
   COMPASS LOST, GPS LOST, GPS SUSPECT, DEAD RECKONING LIMIT,
   ARRIVAL UNCERTAIN, ARRIVED, GEAR FAULT, TRAINING,
   JOYSTICK FAULT, JOYSTICK NOT CENTRED, JOYSTICK TOOK CONTROL,
   PC LINK LOST
   NOT NEUTRAL AT START   outputs not armed: gear not in neutral / stick held
-  SAFETY MONITOR TRIPPED CPU1 forced idle + neutral (see chapter 10)
+  SAFETY MONITOR TRIPPED CPU1 forced idle + neutral (see chapter 11)
   CONTROL LOOP OVERRUN   a control cycle took longer than 50 ms
   LOG FAILURE            SD card missing / full / failing (control goes on)
 
@@ -306,7 +456,7 @@ AUTO PROGRAM - HOW TO
 
 
 -------------------------------------------------------------------------------
-10. SAFETY RULES BUILT INTO THE SOFTWARE
+11. SAFETY RULES BUILT INTO THE SOFTWARE
 -------------------------------------------------------------------------------
   * Gear changes only at idle: idle -> wait -> neutral -> wait -> gear.
   * Every fault / STANDBY: idle + neutral FIRST, then steering off.
@@ -314,7 +464,7 @@ AUTO PROGRAM - HOW TO
     stopped (or outboard to centre if the gyro is gone too). In HDG LOCK:
     gyro hold, the throttle stays with you; STANDBY once you have stopped.
     In MANUAL: alarm only.
-  * Throttle rate limits; reverse limited; the power limit (chapter 8).
+  * Throttle rate limits; reverse limited; the power limit (chapter 9).
   * The joystick always wins; the STANDBY button always wins.
   * NEUTRAL-START INTERLOCK: after power-up the outputs only arm when the
     throttle is idle, neutral is confirmed (neutral switch if fitted) and
@@ -329,11 +479,11 @@ AUTO PROGRAM - HOW TO
     simulator: 10-20 ms (one check), 220 ms for a frozen core 0.
   * Heading hold pauses (outboard held still) when there is no propulsion,
     so the angle estimate can't drift while you are stopped.
-  * Logging can never block control (chapter 11).
+  * Logging can never block control (chapter 12).
 
 
 -------------------------------------------------------------------------------
-11. LOGGING (SD CARD) AND THE LOG TOOLS
+12. LOGGING (SD CARD) AND THE LOG TOOLS
 -------------------------------------------------------------------------------
 WHAT IS LOGGED: 20 times a second 86 values (mode, all sensors raw and
 filtered, GPS with satellites and spoof flag, PID terms, outboard estimate,
@@ -364,7 +514,7 @@ The ground station saves its own copy of the telemetry in the same format
 
 
 -------------------------------------------------------------------------------
-12. WIRING AND WHAT TO BUY
+13. WIRING AND WHAT TO BUY
 -------------------------------------------------------------------------------
   Full details and pin tables: WIRING.md. Everything is 3.3 V - NEVER 5 V.
 
@@ -372,7 +522,8 @@ The ground station saves its own copy of the telemetry in the same format
   Shield2Go connectors (STANDBY P00.4, HDG LOCK P10.8, -1 P23.4, +1 P23.5,
   -10 P32.2, +10 P32.3), throttle servo D9, gear servo D8, steering motor
   driver D6 / D7, safety relay D10, neutral switch D5, microSD click in the
-  mikroBUS socket, PC on the USB cable.
+  mikroBUS socket, PC on the USB cable. USB joystick bridge: Teensy pin 1
+  (TX) -> P20.3 (Shield2Go 2, ASCLIN3 RX), GND to GND, own 5 V supply.
 
   SHOPPING LIST
   [ ] Joystick with 2 potentiometer axes (10 k) and THREE buttons (TAKE,
@@ -393,9 +544,20 @@ The ground station saves its own copy of the telemetry in the same format
       voltage divider for A2.
   [ ] Keep the engine kill cord fitted and worn.
 
+  USB JOYSTICK (instead of, or as well as, the analog joystick)
+  [ ] Thrustmaster T.16000M FCS HOTAS (stick + TWCS throttle). NOT
+      waterproof: dry console.
+  [ ] Teensy 4.1 (PJRC) + its USB host cable (5-pin header to USB-A socket).
+  [ ] Small powered USB 2.0 hub (4 ports, with its own 5 V input).
+  [ ] 12 V -> 5 V DC-DC converter, at least 3 A (marine / automotive grade),
+      2 A fuse; or a separate 5 V supply of at least 2 A.
+  [ ] Shielded 2-core cable (TX + GND) to the AURIX, 100 Ohm resistor.
+  [ ] Closed box with cable glands + desiccant for the hub and Teensy,
+      P-clips for cable strain relief.
+
 
 -------------------------------------------------------------------------------
-13. SETTINGS AND DEFAULT VALUES
+14. SETTINGS AND DEFAULT VALUES
 -------------------------------------------------------------------------------
   Defaults: sb_default_config() in app/smallboat.c (+ gear.c, throttle.c,
   joystick.c, powerlim.c, servo.c). (PC) = also in the Config tab.
@@ -408,6 +570,10 @@ The ground station saves its own copy of the telemetry in the same format
   Throttle                 +15 %/s up, -40 %/s down, reverse max 30 %
   Joystick                 deadband 15 % (PC), engage 0.1 s, full stick =
                            100 % demand (PC; the power limit applies)
+  USB joystick             neutral zone 45-55 %, lever override 10 %,
+                           pickup window 3 % (Joystick tab, saved);
+                           frame timeout 150 ms, > 5 CRC errors / s,
+                           counter stuck 3 frames, start-up grace 5 s
   CONFIRM window           10 s
   AUTO                     max leg speed 25 kn (PC), slow from 150 m (PC),
                            approach 4 kn (PC), leg 10 m .. 50 km
@@ -423,7 +589,7 @@ The ground station saves its own copy of the telemetry in the same format
 
 
 -------------------------------------------------------------------------------
-14. GIT: SAVING AND UPLOADING YOUR WORK
+15. GIT: SAVING AND UPLOADING YOUR WORK
 -------------------------------------------------------------------------------
   In C:\trygons\TRYGONS_C2:
     git status                       what has changed
@@ -435,7 +601,7 @@ The ground station saves its own copy of the telemetry in the same format
 
 
 -------------------------------------------------------------------------------
-15. WHAT IS STILL MISSING
+16. WHAT IS STILL MISSING
 -------------------------------------------------------------------------------
 A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c)
    Written: timer (ms / us), alarm LED, safe pin states at start-up,
@@ -451,6 +617,9 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c)
      [ ] flash storage (TRAINING result, joystick calibration, AUTO
          program, boot counter)
      [ ] USB link to the PC (ASCLIN0, 921600 baud)
+     [ ] USB joystick bridge UART: ASCLIN3 RX on P20.3, 230400 baud, with
+         an interrupt-filled ring buffer (hal_bridge_read is a stub)
+     [ ] flash storage also for the joystick map (NV slot 4)
      [ ] microSD card: QSPI2 driver + FatFs (with long file names)
      [ ] rudder angle sensor (big boat only)
 
@@ -463,6 +632,24 @@ B) TO CHECK ON THE BOARD
          the TC375 with a -O0 debug build will need much more; the budget
          is 50 ms.
      [ ] The QSPI2 / mikroBUS pin functions and the SD card speed.
+     [ ] Which Shield2Go 2 pin carries P20.3 (the iLLD pin map says P20.3
+         can be ASCLIN3 RX; the board routing must be checked).
+
+E) USB JOYSTICK - TO CHECK WITH THE REAL HARDWARE
+     [ ] The bridge firmware builds (done on this PC) but has NEVER run on
+         a Teensy: try it with learn mode first, on the bench.
+     [ ] The TWCS axis ranges and which axis is the main lever are NOT
+         verified (bridge/src/devices.h). Run the bridge calibration ( c ),
+         then "Map buttons" in the ground station. Check the lever direction
+         (full forward must show near 100 % on the lever bar).
+     [ ] The TWCS button numbers of the default map (AUTO = 1, HDG LOCK = 3,
+         CONFIRM = 4) are guesses: put them where they make sense by hand.
+     [ ] A joystick that freezes INSIDE (still enumerated, still "connected")
+         sends its last values forever: the bridge can't see that. Only
+         the TAKE / stick / lever behaviour would show it.
+     [ ] The USB hub and the Teensy at sea: power dips when the engine
+         starts (keep them on the converter, not straight on the battery).
+     [ ] ESP32-S3 as a bridge: not written (only the Teensy).
 
 C) TO DECIDE / CHECK ON THE BOAT
      [ ] Pin plan for compass, GPS, IMU (only the joystick, panel, servos,
@@ -486,10 +673,19 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
      * A new program can't be uploaded while AUTO runs.
      * Joystick hand-back in a running AUTO goes to STANDBY (resume = PC +
        CONFIRM).
+     * USB lever: hand-back (and HDG LOCK from MANUAL) needs the lever in
+       the neutral zone, so the engine is at idle at the hand-back.
+     * USB lever: CONFIRM only needs the stick centred, not the lever.
+     * USB joystick fault while driving: the steering stops at once (the
+       stick that steered is gone), the throttle comes down at its normal
+       rate, then neutral - same as a broken wire on the analog stick.
+     * While mapping buttons, the old map still works (TAKE takes over).
+     * CPU1 RAM is 92 % full (the 60 s black box). New log fields cost
+       1.2 KB each per byte: shorten the black box if more are needed.
 
 
 -------------------------------------------------------------------------------
-16. TROUBLESHOOTING
+17. TROUBLESHOOTING
 -------------------------------------------------------------------------------
   "gcc is not recognized"        C:\msys64\ucrt64\bin is not in PATH.
   "python" opens the Store       use C:\msys64\ucrt64\bin\python.exe
@@ -502,9 +698,20 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
                                  (stick centred); is a program uploaded?
   Power raise refused            acknowledge alarms first; type the code
                                  shown now; then CONFIRM within 10 s.
-  The boat is slow in AUTO       the power limit: raise it (chapter 8).
+  The boat is slow in AUTO       the power limit: raise it (chapter 9).
   "NOT NEUTRAL AT START"         put the gear in neutral / let go of the
                                  stick; check the neutral switch.
   "LOG FAILURE"                  SD card missing, full or broken. Control
                                  is not affected.
+  JOYSTICK FAULT: no frames      bridge not powered / TX wire / Teensy not
+                                 running. Check the 5 V and the GND wire.
+  JOYSTICK FAULT: STICK (or      plug, hub power. Is the hub powered by
+    THROTTLE) UNPLUGGED          its own supply?
+  JOYSTICK FAULT: learn mode     type  l  in the Teensy monitor again.
+  JOYSTICK FAULT: axis invalid   the bridge doesn't know that axis range:
+                                 calibrate ( c ) in the Teensy monitor.
+  Lever does nothing             MOVE THROTTLE TO PICK UP: bring it to the
+                                 yellow mark or to neutral.
+  Map refused                    two functions on one button, or not in
+                                 STANDBY.
 ===============================================================================
