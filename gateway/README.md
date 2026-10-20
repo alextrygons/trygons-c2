@@ -428,3 +428,34 @@ no re-encoding) - install it: `sudo apt install -y ffmpeg`.
    the shore PC, Remote tab -> Find joysticks -> choose the axes -> Save.
    The settings are in `groundstation/shore_joystick.json`.
 4. Somebody must be on board and press the joystick CONFIRM to start it.
+
+## 16. Sync to the shore PC
+
+The Pi connects OUT to the shore PC over Tailscale (nothing listens on the
+boat). On the shore PC a small receiver listens on TCP 5770.
+
+1. Make a long random key (on any PC):
+   `python -c "import secrets; print(secrets.token_hex(24))"`
+2. On the Pi, `/etc/trygons/secrets.json`: add `"sync_key": "<key>"`.
+   `/etc/trygons/gateway.json`: `"sync": {"shore": "<shore PC Tailscale name>:5770"}`.
+   Restart: `sudo systemctl restart trygons-gateway`.
+3. On the shore PC, next to app.py, make `groundstation\sync_receiver.json`
+   (it is in .gitignore - never commit it):
+   ```
+   {"root": "D:\\trygons_sync", "port": 5770, "listen": "0.0.0.0",
+    "boats": {"trygons-c2": "<the same key>"}}
+   ```
+   The ground station starts the receiver by itself when this file exists
+   (or run `python syncrecv.py` alone, e.g. on a home server).
+4. Windows firewall on the shore PC: allow TCP 5770 **only** from the
+   Tailscale network (100.64.0.0/10), e.g. in an admin PowerShell:
+   `New-NetFirewallRule -DisplayName "Trygons sync" -Direction Inbound -Protocol TCP -LocalPort 5770 -RemoteAddress 100.64.0.0/10 -Action Allow`
+   And in the Tailscale admin ACLs allow only the Pi -> shore PC:5770.
+5. Network tab: "SYNC to the shore PC: SYNCING / IDLE"; on the shore PC
+   also "THIS PC receives: ...".
+
+Settings (`sync` in gateway.json): `max_kbps` (8000), `target_delay_ms`
+(100 - how much extra delay the sync may cause before it slows down),
+`settle_s` (60 - a file is sent when it has not changed this long).
+Per channel `sync_budget_kbps` (channels list): upload the sync may share with
+the cameras. STARLINK has `sync_allowed: false` - keep it that way.

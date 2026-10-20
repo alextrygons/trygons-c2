@@ -1505,7 +1505,245 @@ def section_f():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-SECTIONS = {"A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f}
+# ------------------------------------------------------------------- section G --
+
+from syncrecv import SyncReceiver, sha256_file  # noqa: E402
+from sync import marker  # noqa: E402
+from netsim import Uplink  # noqa: E402
+
+SYNC_KEY = "test-sync-key-0123456789"
+
+
+def tlg_file(path, incident, pad=20000):
+    """A small AURIX-style log file; with an ALARM_ON event if incident."""
+    def rec(rtype, t, payload):
+        body = bytes([rtype]) + struct.pack("<HI", len(payload), t) + payload
+        c = proto.crc16(body)
+        return bytes([0xA5]) + body + bytes([c & 0xFF, c >> 8])
+    out = b"TLG1" + b"".join(rec(0x10, 1, os.urandom(min(60000, pad - k))) for k in range(0, pad, 60000))
+    if incident:
+        out += rec(0x20, 2, struct.pack("<Hiiii", 3, 1, 1, 0, 0))
+    out += rec(0x10, 3, os.urandom(64))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(out)
+
+
+def old(path, age=3600):
+    t = time.time() - age
+    os.utime(path, (t, t))
+
+
+def put(path, size=None, data=None, age=3600):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data if data is not None else os.urandom(size))
+    old(path, age)
+
+
+def section_g():
+    print("\n=== Section G: sync to the shore PC ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_g_")
+    sim = gw = recv = net_s = net_st = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        shore = os.path.join(tmp, "shore")
+        os.makedirs(root)
+        recv = SyncReceiver(shore, {"trygons-c2": SYNC_KEY}, port=free_port(), listen="127.0.0.1").start()
+        up = Uplink(2000)                                   # the boat's upload: 2 Mbit/s, shared
+        sp = free_port()
+        net_s = NetSim(sp, recv.port, PROFILES["lan"], seed=5, uplink=up, up="c2s").start()
+        cfg = gw_cfg_b(sim, root, sync={"shore": "127.0.0.1:%d" % sp, "settle_s": 0.5, "scan_s": 0.5,
+                                        "max_kbps": 8000},
+                       channels={"driver": "sim", "check_s": 0.2, "stable_s": 1.0, "starlink_status": False})
+        cfg["secrets"] = {"sync_key": SYNC_KEY}
+        cfg["sync"]["enabled"] = False                     # start with sync off: the files first
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sc = g.sync
+        stp = cfg["stations"]["port"]
+        time.sleep(2.0)
+
+        # G1 priority: black box / alarms -> event logs -> telemetry logs -> saved events; no ring video
+        F = {
+            "ev_json": ("video/events/20261020-100000_alarm/event.json", 1),
+            "tlg_alarm": ("aurix_logs/20261020/P00001_001.TLG", 1),
+            "audit": ("audit/20261019.jsonl", 2),
+            "gaps": ("aurix_logs/20261020/gaps.csv", 2),
+            "tlg_plain": ("aurix_logs/20261020/P00001_002.TLG", 3),
+            "ev_video": ("video/events/20261020-100000_alarm/FRONT-1/20261020-095000.ts", 4),
+            "ring": ("video/ring/FRONT-1/20261020-101000.ts", 5),
+        }
+        P = lambda k: os.path.join(root, *F[k][0].split("/"))
+        put(P("ev_json"), data=_json.dumps({"id": "20261020-100000_alarm", "state": "complete"}).encode())
+        tlg_file(P("tlg_alarm"), True, 200000); old(P("tlg_alarm"))
+        put(P("audit"), data=b'{"kind":"test"}\n' * 2000)
+        put(P("gaps"), data=b"utc,boot,first_record,last_record,count\n")
+        tlg_file(P("tlg_plain"), False, 300000); old(P("tlg_plain"))
+        put(P("ev_video"), 1_500_000)
+        put(P("ring"), 500_000)
+        files_before = sum(len(f) for _d, _s, f in os.walk(root))
+        sc.enabled = True
+        mine = {F[k][0]: F[k][1] for k in F if k != "ring"}
+        ok1 = wait_for(lambda: all(r in sc.done_list for r in mine), 60)
+        order = [r for r in sc.done_list if r in mine]
+        classes = [mine[r] for r in order]
+        same = all(os.path.exists(os.path.join(shore, "trygons-c2", *r.split("/"))) and
+                   sha256_file(os.path.join(shore, "trygons-c2", *r.split("/"))) == sha256_file(
+                       os.path.join(root, *r.split("/"))) for r in mine)
+        ring_sent = os.path.exists(os.path.join(shore, "trygons-c2", *F["ring"][0].split("/")))
+        report("G1 sync order: black box / alarms, event logs, telemetry logs, saved events; ring video not sent (off)",
+               ok1 and classes == sorted(classes) and same and not ring_sent,
+               "confirmed in this order (class): %s; identical on shore (SHA-256) %s; ring video sent: %s" % (
+                   ["%s(%d)" % (r.split("/")[-1], mine[r]) for r in order], "yes" if same else "NO",
+                   "YES" if ring_sent else "no"))
+
+        # G2 resumable: the connection breaks in the middle -> continues where the shore copy ends
+        big = "video/events/20261020-110000_button/FRONT-1/20261020-105000.ts"
+        put(os.path.join(root, *big.split("/")), 3_000_000)
+        put(os.path.join(root, "video/events/20261020-110000_button/event.json"),
+            data=_json.dumps({"id": "x", "state": "complete"}).encode())
+        b0 = sc.sent_b
+        sc.cut_after = b0 + 1_200_000
+        ok2 = wait_for(lambda: big in sc.done_list, 60)
+        sent = sc.sent_b - b0
+        report("G2 resumable: connection cut after 1.2 of 3 MB -> continues from the shore copy, SHA-256 checked",
+               ok2 and sc.resumed >= 1 and sent < 3_000_000 * 1.2 and
+               sha256_file(os.path.join(shore, "trygons-c2", *big.split("/"))) ==
+               sha256_file(os.path.join(root, *big.split("/"))),
+               "confirmed %s; resumed %d time(s); %.2f MB sent for a 3 MB file (+ event.json)" % (
+                   "yes" if ok2 else "NO", sc.resumed, sent / 1e6))
+
+        # G3 a damaged shore copy is found (checksum) and sent again; "synced" only after the shore's OK
+        big2 = "video/events/20261020-120000_button/FRONT-1/20261020-115000.ts"
+        lp = os.path.join(root, *big2.split("/"))
+        put(lp, 2_000_000)
+        put(os.path.join(root, "video/events/20261020-120000_button/event.json"),
+            data=_json.dumps({"id": "y", "state": "complete"}).encode())
+        r0 = sc.restarted
+        sc.hold_after_cut = True
+        sc.cut_after = sc.sent_b + 800_000
+        held = wait_for(lambda: sc.hold, 30)
+        part = os.path.join(shore, "trygons-c2", *big2.split("/")) + ".part"
+        wait_for(lambda: os.path.exists(part), 5)
+        with open(part, "r+b") as f:                        # a bit flips on the shore disk
+            f.seek(1000)
+            b = f.read(1)
+            f.seek(1000)
+            f.write(bytes([b[0] ^ 0xFF]))
+        no_marker = not os.path.exists(lp + ".synced")
+        recv.fail_done = True                               # and the first "done" is answered "bad"
+        sc.hold_after_cut = False
+        sc.hold = False
+        ok3 = wait_for(lambda: big2 in sc.done_list, 60)
+        m = marker(lp) or {}
+        files_after = sum(1 for _d, _s, f in os.walk(root) for n in f if not n.endswith(".synced"))
+        report("G3 damaged shore copy detected (SHA-256) and sent again; synced only after the shore's OK; nothing deleted",
+               held and no_marker and ok3 and sc.restarted >= r0 + 1 and m.get("sha") == sha256_file(lp) and
+               files_after >= files_before + 4,
+               "no 'synced' mark while the shore had only part: %s; restarts %d; final mark %s (matches %s); files on "
+               "the boat before %d, after %d (only new ones added: sync deletes nothing)" % (
+                   no_marker, sc.restarted - r0, (m.get("sha") or "-")[:12],
+                   "yes" if m.get("sha") == sha256_file(lp) else "NO", files_before, files_after))
+
+        # G4 channel: STARLINK (emergency, metered) -> no sync; back on 4G -> continues
+        gw.call(g.net.request, "MANUAL", "STARLINK", "test", True, True, True, True)
+        gw.call(g.net.tick)
+        paused = wait_for(lambda: sc.state == "PAUSED", 5)
+        put(os.path.join(root, "audit/20261018.jsonl"), data=b'{"kind":"x"}\n' * 500)
+        b1 = sc.sent_b
+        time.sleep(3)
+        none_sent = sc.sent_b == b1 and "audit/20261018.jsonl" not in sc.done_list
+        why = sc.reason
+        gw.call(g.net.request, "AUTO", None, "test", True, True, False, True)
+        gw.call(g.net.tick)
+        ok4 = wait_for(lambda: "audit/20261018.jsonl" in sc.done_list, 20)
+        report("G4 STARLINK (emergency link): sync paused, nothing sent; back on 4G: sync continues",
+               paused and none_sent and ok4,
+               "on STARLINK: %s (\"%s\"), bytes sent in 3 s: %d; back on %s: synced %s" % (
+                   sc.state if not ok4 else "PAUSED", why, sc.sent_b - b1, g.net.active, "yes" if ok4 else "NO"))
+
+        # G5 spare bandwidth only: a shore station's commands over the SAME 2 Mbit/s uplink
+        net_st = NetSim(free_port(), stp, PROFILES["4g"], seed=6, uplink=up, up="s2c").start()
+        alice = Client(net_st.listen_port, "alice", PW["alice"])
+        alice.pump(1.0)
+
+        def rtts(seconds):
+            out = []
+            end = time.time() + seconds
+            while time.time() < end:
+                t0 = time.time()
+                if alice.cmd(proto.T_PARAM_GET, bytes([0]), timeout=5) is not None:
+                    out.append((time.time() - t0) * 1000)
+                time.sleep(0.2)
+            return sorted(out)
+
+        quiet = rtts(4)
+        for k in range(3):
+            put(os.path.join(root, "video/events/20261020-13000%d_button/FRONT-1/20261020-125000.ts" % k), 4_000_000)
+            put(os.path.join(root, "video/events/20261020-13000%d_button/event.json" % k),
+                data=_json.dumps({"id": "z", "state": "complete"}).encode())
+        wait_for(lambda: sc.state == "SYNCING", 10)
+        b2, t2 = sc.sent_b, time.time()
+        busy = rtts(10)
+        thr = (sc.sent_b - b2) * 8 / (time.time() - t2) / 1000
+        med = lambda v: v[len(v) // 2] if v else -1
+        # for comparison: a sender that ignores the delay (fixed 8 Mbit/s)
+        sc.target, sc.min_rate, sc.rate = 100.0, 8000 * 125.0, 8000 * 125.0
+        naive = rtts(5)
+        sc.target, sc.min_rate, sc.rate = 0.1, 32 * 125.0, 256 * 125.0
+        report("G5 sync uses spare bandwidth only: station command round trip stays low on a shared 2 Mbit/s uplink",
+               quiet and busy and med(busy) < med(quiet) + 250 and thr > 600,
+               "station round trip (4G): without sync median %d ms; while syncing median %d ms, 95 %% %d ms, sync "
+               "%.0f kbit/s of 2000; a sender ignoring the delay would give median %d ms" % (
+                   med(quiet), med(busy), busy[int(len(busy) * 0.95) - 1] if busy else -1, thr, med(naive)))
+        LATENCY["sync_station_rtt"] = {"without": med(quiet), "with": med(busy), "naive": med(naive), "kbps": thr}
+
+        # G6 REMOTE MANUAL: sync pauses (the link belongs to the driver); afterwards it continues
+        link, w = sim.station()
+        stick = {"x": 0.0, "lever": 0.5}
+        snd = RemoteSender(alice.l, lambda: dict(stick))
+        snd.start()
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        alice.cmd(proto.T_REMOTE, proto.p_remote(0))
+        time.sleep(1.0)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
+        time.sleep(0.2)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        on = w.until(lambda d: d["mode"] == proto.MODE_REMOTE, 3)
+        p6 = wait_for(lambda: sc.state == "PAUSED" and "REMOTE" in sc.reason, 5)
+        why6 = sc.reason
+        b3 = sc.sent_b
+        time.sleep(2)
+        quiet6 = sc.sent_b - b3 < 64 * 1024
+        alice.cmd(proto.T_REMOTE, proto.p_remote(1))
+        snd.stop()
+        off = w.until(lambda d: d["mode"] != proto.MODE_REMOTE, 3)
+        again = wait_for(lambda: sc.state in ("SYNCING", "IDLE", "CONNECTING"), 8)
+        report("G6 REMOTE MANUAL driving: sync pauses; when it ends sync continues",
+               on is not None and p6 and quiet6 and off is not None and again,
+               "remote driving %s -> sync %s (\"%s\"), bytes in 2 s %d; driving ended -> sync %s" % (
+                   "on" if on else "NOT on", "PAUSED" if p6 else sc.state, why6, sc.sent_b - b3,
+                   sc.state))
+        link.stop()
+        alice.close()
+        s = sc.status()
+        print("    sync status: %s; %d files confirmed, %.1f MB sent, %d resumed, %d restarted" % (
+            s["state"], s["confirmed"], s["sent_mb"], s["resumed"], s["restarted"]), flush=True)
+    finally:
+        for x in (net_st, net_s, recv):
+            if x:
+                x.stop()
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
+            "G": section_g}
 
 
 def main():

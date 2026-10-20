@@ -629,6 +629,28 @@ F. VIDEO RECORDING: RING BUFFER AND SAVE
   A camera that stops recording (cable, power) is restarted every few
   seconds; the others keep recording. "not recording: ..." shows it.
 
+G. SYNC TO THE SHORE PC
+  The Pi copies its SSD to the shore PC by itself, over the VPN, whenever
+  the boat is on 4G / 4G SIM 2 / RF (NEVER on STARLINK). In this order:
+    1. black box / alarms   AURIX logs with an alarm, fault or SAVE in them,
+                            and every SAVE's description (event.json)
+    2. event logs           the audit log (who did what), log gaps
+    3. telemetry logs       all other AURIX logs
+    4. saved events         the SAVE video
+    5. ring video           only if switched on (recording.ring_sync) - OFF
+  * It only uses spare bandwidth: it measures its own ping to the shore and
+    slows down at once when the link starts to queue (video, telemetry and
+    commands stay fast). During REMOTE MANUAL it stops completely.
+  * A broken connection continues where it stopped (checked with SHA-256).
+  * A file counts as "synced" only after the shore PC has checked it. Sync
+    never deletes anything; only when the SSD runs low does the Pi delete
+    SYNCED data (part F).
+  Network tab: SYNC state, speed, ping, what is waiting per class, the last
+  confirmed file; on the shore PC also what it has received.
+  The files arrive on the shore PC in <folder>\trygons-c2\ (same layout:
+  aurix_logs, audit, video\events) - open them with logview.py.
+  Setup: gateway\README.md section 16.
+
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT

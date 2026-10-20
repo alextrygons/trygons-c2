@@ -27,6 +27,7 @@ from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAU
 from aurix import AurixLink
 from logstore import LogStore
 from recorder import Recorder
+from sync import SyncClient
 from stations import StationServer
 from storage import Storage
 from timesync import TimeSync
@@ -79,6 +80,7 @@ class Gateway:
         self.rec = Recorder(cfg["recording"], self)
         self.stations.ext["save"] = self._save_msg
         self.stations.ext["rec"] = self._rec_msg
+        self.sync = SyncClient(cfg["sync"], self)
 
     def _on_telem(self, f):
         try:
@@ -212,7 +214,8 @@ class Gateway:
                 "storage": self.storage.status(), "logs": self.logs.status(),
                 "clock": {"gps_valid": self.clock.gps_valid, "offset_s": round(self.clock.offset, 3),
                           "utc": self.clock.stamp()},
-                "net": self.net.info(), "cameras": self.cams.status(), "rec": self.rec.status()}
+                "net": self.net.info(), "cameras": self.cams.status(), "rec": self.rec.status(),
+                "sync": self.sync.status()}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -228,6 +231,7 @@ class Gateway:
                 self.rec.start(self.cfg["cameras"]["rtsp_port"],
                                {n: path_name(n, "HIGH") for n in self.cams.cams})
                 tasks.append(asyncio.create_task(self.recorder_loop()))
+        tasks.append(asyncio.create_task(self.sync.run()))
         tasks += self.extra_tasks()
         try:
             await self._stop.wait()
@@ -237,6 +241,7 @@ class Gateway:
             await asyncio.gather(*tasks, return_exceptions=True)
             await self.stations.stop()
             await self.web.stop()
+            self.sync._close()
             self.rec.stop()
             self.cams.stop()
             self.logs.close()

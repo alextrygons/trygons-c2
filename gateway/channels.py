@@ -43,12 +43,13 @@ AUTO, MANUAL, STRICT = "AUTO", "MANUAL", "MANUAL_STRICT"
 
 DEFAULT_CHANNELS = [
     # name, label, router interface (RutOS) / Pi interface (policy), priority, metered, sync, emergency
+    # sync_budget_kbps: upload the sync may share with the video (section G; cameras first)
     {"name": "4G", "label": "4G (SIM 1)", "wan": "mob1s1a1", "priority": 1, "metered": False,
-     "sync_allowed": True, "emergency_only": False},
+     "sync_allowed": True, "emergency_only": False, "sync_budget_kbps": 4000},
     {"name": "4G2", "label": "4G SIM 2", "wan": "mob1s2a1", "priority": 2, "metered": False,
-     "sync_allowed": True, "emergency_only": False},
+     "sync_allowed": True, "emergency_only": False, "sync_budget_kbps": 4000},
     {"name": "RF", "label": "RF link", "wan": "rf", "priority": 3, "metered": False,
-     "sync_allowed": True, "emergency_only": False},
+     "sync_allowed": True, "emergency_only": False, "sync_budget_kbps": 1500},
     {"name": "STARLINK", "label": "STARLINK (emergency)", "wan": "wan", "priority": 9, "metered": True,
      "sync_allowed": False, "emergency_only": True, "monthly_warn_gb": 20.0},
 ]

@@ -16,3 +16,4 @@ sim/sim_output.csv
 sim/gwtest_sd/
 gateway/*.key
 gateway/*.crt
+groundstation/sync_receiver.json

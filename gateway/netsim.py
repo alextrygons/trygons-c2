@@ -24,8 +24,24 @@ PROFILES = {
 }
 
 
+class Uplink:
+    """A shared, limited upload (the boat's 4G uplink): every connection that
+    uses it queues behind the others (first in, first out)."""
+
+    def __init__(self, kbps):
+        self.rate = kbps * 125.0                # bytes / s
+        self.free_at = 0.0
+        self.lock = threading.Lock()
+
+    def reserve(self, n, now):
+        with self.lock:
+            start = max(now, self.free_at)
+            self.free_at = start + n / self.rate
+            return self.free_at
+
+
 class NetSim:
-    def __init__(self, listen_port, target_port, profile, seed=1, host="127.0.0.1"):
+    def __init__(self, listen_port, target_port, profile, seed=1, host="127.0.0.1", uplink=None, up="s2c"):
         self.listen_port = listen_port
         self.target_port = target_port
         self.host = host
@@ -39,6 +55,8 @@ class NetSim:
         self.forced_down = False         # tests: cut the link completely
         self.udp_dropped = 0
         self.udp_passed = 0
+        self.uplink = uplink             # shared Uplink: the boat -> shore direction queues on it
+        self.up = up                     # which direction is boat -> shore: "s2c" (station) / "c2s" (sync)
 
     # --- link state -------------------------------------------------------------------
     def _plan_outages(self, t0, span=3600.0):
@@ -58,14 +76,16 @@ class NetSim:
                 break
         return now
 
-    def deliver_time(self, now):
+    def deliver_time(self, now, n=0, up=False):
         d = self.p["delay_ms"] + self.rng.uniform(-1, 1) * self.p.get("jitter_ms", 0)
         if self.rng.random() < self.p.get("loss", 0.0):
             d += self.rng.uniform(200, 600)                 # TCP retransmission
+        if up and self.uplink:
+            now = self.uplink.reserve(n, now)               # wait for the shared upload
         return self.link_back_at(now) + max(0.0, d) / 1000.0
 
     # --- proxy ----------------------------------------------------------------------------
-    async def _pipe(self, reader, writer):
+    async def _pipe(self, reader, writer, up=False):
         q = asyncio.Queue()
         last = [0.0]
 
@@ -76,7 +96,7 @@ class NetSim:
                     await q.put(None)
                     return
                 now = time.time()
-                at = max(last[0], self.deliver_time(now))
+                at = max(last[0], self.deliver_time(now, len(data), up))
                 last[0] = at
                 await q.put((at, data))
 
@@ -107,7 +127,8 @@ class NetSim:
         except OSError:
             cwriter.close()
             return
-        await asyncio.gather(self._pipe(creader, swriter), self._pipe(sreader, cwriter), return_exceptions=True)
+        await asyncio.gather(self._pipe(creader, swriter, self.up == "c2s"),
+                             self._pipe(sreader, cwriter, self.up == "s2c"), return_exceptions=True)
 
     async def _serve(self):
         self._plan_outages(time.time())

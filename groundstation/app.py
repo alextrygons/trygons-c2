@@ -9,6 +9,7 @@ Big, high-contrast layout for use in sunlight. Everything is drawn locally
 (no internet needed): map, track, plot.
 """
 import math
+import os
 import queue
 import struct
 import sys
@@ -22,6 +23,7 @@ import proto
 from link import Link, list_ports
 from gwclient import GatewayLink
 import shorejoy
+import syncrecv
 import video
 from tkinter import messagebox, simpledialog
 
@@ -73,6 +75,15 @@ class App:
         self.prog_dl = []               # PROG_WP_VALUE frames being downloaded
         self.last_beep = 0.0
         self.gw_status = None           # gateway status (when connected through the gateway)
+        self.sync_rx = None             # shore PC: the boat's sync arrives here (sync_receiver.json)
+        rc = syncrecv.load_config()
+        if rc and rc.get("root") and rc.get("boats"):
+            try:
+                os.makedirs(rc["root"], exist_ok=True)
+                self.sync_rx = syncrecv.SyncReceiver(rc["root"], rc["boats"], rc.get("port", 5770),
+                                                     rc.get("listen", "0.0.0.0")).start()
+            except OSError as e:
+                print("sync receiver not started: %s" % e)
         self.jmap = None                # joystick map as stored on the boat
         self.jm_edit = proto.default_joymap()   # map in the editor (Joystick tab)
         self.jm_load = True             # next JOYMAP_VALUE goes into the editor
@@ -610,6 +621,25 @@ class App:
             dish = sl.get("dish") or {}
             if dish:
                 lines.append("dish: " + ", ".join("%s %s" % kv for kv in dish.items()))
+        sy = (g or {}).get("sync")
+        if sy:
+            lines.append("")
+            cur = sy.get("current")
+            lines.append("SYNC to the shore PC: %s (%s)   %d kbit/s, ping %s ms (base %s)   %d files confirmed, "
+                         "%.1f MB sent%s" % (sy["state"], sy["reason"], sy["rate_kbps"], sy["rtt_ms"], sy["base_ms"],
+                                             sy["confirmed"], sy["sent_mb"],
+                                             "   errors %d: %s" % (sy["errors"], sy["last_error"][:40])
+                                             if sy["errors"] else ""))
+            if cur:
+                lines.append("  now: %s  %d %%" % (cur["path"][-60:], 100 * cur["done"] // max(1, cur["size"])))
+            for k, v in sy["queue"].items():
+                lines.append("  waiting: %-20s %4d files %8.1f MB" % (k, v["files"], v["mb"]))
+            if sy.get("last"):
+                lines.append("  last confirmed: %s" % sy["last"][-70:])
+        if self.sync_rx:
+            r = self.sync_rx.status()
+            lines.append("THIS PC receives: %d files, %.1f MB, %d bad, connected: %s, into %s (%s GB free)" % (
+                r["files"], r["mb"], r["bad"], ", ".join(r["boats_connected"]) or "-", r["root"], r["free_gb"]))
         self.net_lbl.configure(text="\n".join(lines), fg=RED if n.get("fallback") or n["emergency"] else FG)
         if n["emergency"]:
             self.sl_banner.configure(text="STARLINK - EMERGENCY LINK  (metered: %.1f MB this session, %.2f GB month)%s" % (

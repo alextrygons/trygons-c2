@@ -58,6 +58,19 @@ def is_synced(path):
     return os.path.exists(path + ".synced")
 
 
+def event_synced(folder):
+    """Every file of a saved event confirmed by the shore PC."""
+    n = 0
+    for dirpath, _dirs, files in os.walk(folder):
+        for f in files:
+            if f.endswith((".synced", ".tmp")):
+                continue
+            if not is_synced(os.path.join(dirpath, f)):
+                return False
+            n += 1
+    return n > 0
+
+
 def slug(text):
     return re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-")[:40] or "save"
 
@@ -444,7 +457,7 @@ class Recorder:
         for t, folder, ev in self.list_events():
             if free >= self.storage.low_b:
                 break
-            if not ev.get("synced") or ev.get("id") in open_ids:
+            if not (ev.get("synced") or event_synced(folder)) or ev.get("id") in open_ids:
                 continue                                # 3. never an event that is not on shore yet
             shutil.rmtree(folder, ignore_errors=True)
             self.deleted["events"] += 1

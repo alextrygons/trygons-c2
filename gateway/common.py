@@ -72,6 +72,16 @@ DEFAULTS = {
         "stall_s": 10.0,                # no new video this long -> restart that camera's recorder
         "house_s": 5.0,                 # ring length + storage policy interval
     },
+    "sync": {
+        "enabled": True,
+        "shore": None,                  # "shore-pc:5770" (the shore PC's Tailscale name); key: secrets.json sync_key
+        "max_kbps": 8000,               # never faster than this
+        "start_kbps": 256, "min_kbps": 32,
+        "target_delay_ms": 100,         # our ping to the shore rises more than this -> slower (spare bandwidth only)
+        "settle_s": 60.0,               # a file is sent when it has not changed this long
+        "scan_s": 10.0,
+        "chunk": 16384,
+    },
     "audit_fallback": "/var/lib/trygons/audit",   # when the SSD is missing
     "web_port": 8080,                   # the iPhone page (VPN only)
     "web_helm": False,                  # HELM from the web page: OFF unless you switch it on
