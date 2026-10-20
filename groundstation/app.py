@@ -740,8 +740,7 @@ class App:
         lines.append("log:  SD card %s, %s, %d files, %d records dropped" % (
             "present" if d["log_flags"] & 2 else "MISSING", "LOG FAILURE" if d["log_flags"] & 1 else "writing",
             d["log_files"], d["log_dropped"]))
-        self.sys_lbl.configure(text="
-".join(lines))
+        self.sys_lbl.configure(text="\n".join(lines))
 
         self.draw_joystick(d)
         self.draw_plot()
