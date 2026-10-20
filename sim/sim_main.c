@@ -364,7 +364,7 @@ static int outboard(uint32_t seed)
 
 /* ---------------------------------------------------------------- all -- */
 
-static int g_pass, g_fail;
+static int g_pass, g_fail, g_na;
 
 void test_report(const char *name, bool ok, const char *detail)
 {
@@ -373,11 +373,18 @@ void test_report(const char *name, bool ok, const char *detail)
     if (ok) g_pass++; else g_fail++;
 }
 
+/* Test that does not apply to this configuration (shown, not counted). */
+void test_na(const char *name, const char *why)
+{
+    printf("[N/A ] %s - %s\n", name, why);
+    g_na++;
+}
+
 /* Every test of every phase. Exit code 0 only if all pass. */
 static int run_all(void)
 {
     char d[200];
-    g_pass = g_fail = 0;
+    g_pass = g_fail = g_na = 0;
 
     /* Big boat: must stay exactly as before (regression) */
     scenario_t m_sc = { 3, 2024u, 90.0f, 300000u, 60000u, 240000u, 0u, 0u,
@@ -403,7 +410,9 @@ static int run_all(void)
     /* Small-boat phases */
     sb_tests();
 
-    printf("\nTOTAL: %d passed, %d failed\n", g_pass, g_fail);
+    printf("\nTOTAL: %d passed, %d failed", g_pass, g_fail);
+    if (g_na) printf(", %d not applicable", g_na);
+    printf("\n");
     return g_fail ? 2 : 0;
 }
 
@@ -412,8 +421,15 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);     /* no lost output if a test crashes */
     if (self_test() != 0) return 1;
 
-    if (argc > 1 && strcmp(argv[1], "all") == 0) return run_all();
+    if (argc > 1 && strcmp(argv[1], "all") == 0) {
+        if (argc > 2 && strcmp(argv[2], "--bridge") == 0) {
+            sb_set_bridge(true);
+            printf("JOYSTICK SOURCE: USB bridge (all tests through bridge frames)\n");
+        }
+        return run_all();
+    }
 
+    if (argc > 1 && strcmp(argv[1], "usb") == 0) { sb_usb_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "timing") == 0) return sb_timing_report();
     if (argc > 2 && strcmp(argv[1], "logtest") == 0) return sb_logtest(argv[2]);
 
@@ -421,10 +437,11 @@ int main(int argc, char **argv)
         int port = (argc > 2) ? atoi(argv[2]) : 5760;
         double speed = (argc > 3) ? atof(argv[3]) : 1.0;
         if (port <= 0 || port > 65535 || !(speed > 0.0 && speed <= 50.0)) {
-            printf("usage: autopilot_sim server [port 1..65535] [speed 0..50]\n");
+            printf("usage: autopilot_sim server [port 1..65535] [speed 0..50] [usb]\n");
             return 1;
         }
-        return sim_server(port, speed);
+        bool usb = argc > 4 && strcmp(argv[4], "usb") == 0;    /* start with the USB joystick map */
+        return sim_server(port, speed, usb);
     }
 
     if (argc > 1 && strcmp(argv[1], "train") == 0) {

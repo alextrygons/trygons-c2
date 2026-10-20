@@ -296,6 +296,14 @@ bool hal_read_joystick(hal_joystick_t *j)
                         pressed = low. See WIRING.md. */
 }
 
+uint32_t hal_bridge_read(uint8_t *buf, uint32_t max)
+{
+    (void)buf; (void)max;
+    return 0u;       /* TODO: ASCLIN3, RX = P20.3 (IfxAsclin3_RXC_P20_3_IN, Shield2Go 2 RX),
+                        230400 8N1, RX FIFO / ring filled by interrupt; TX P20.0 unused.
+                        See WIRING.md section 6. */
+}
+
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size)
 {
     (void)slot; (void)data; (void)size;

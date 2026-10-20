@@ -80,6 +80,31 @@ void sb_default_config(sb_config_t *cfg)
 
     joy_default_config(&cfg->joy);
     cfg->joy_max_throttle_pct = 100.0f;
+    jb_default_config(&cfg->jb);
+}
+
+static bool lever_has_throttle(sb_mode_t m);
+static void lever_pickup_start(sb_t *s, sb_mode_t from);
+
+static void lever_standard(sb_t *s)
+{
+    s->lev.pickup = false;
+    s->lev.have_prev = false;
+    s->lev.fwd.u = s->lev.rev.u = 1.0f;
+    s->lev.fwd.d = s->lev.fwd.lim = s->plim.fwd_pct;
+    s->lev.rev.d = s->lev.rev.lim = s->plim.rev_pct;
+}
+
+/* Use the joystick map: lever settings into the joystick, bridge input
+ * restarted, joystick disarmed until it is centred again. */
+static void joymap_apply(sb_t *s)
+{
+    s->joy.cfg.nz_lo = s->jmap.nz_lo;
+    s->joy.cfg.nz_hi = s->jmap.nz_hi;
+    s->joy.cfg.lever_delta = s->jmap.lever_delta;
+    jb_init(&s->jb, &s->cfg.jb, s->now_ms);
+    joy_disarm(&s->joy);
+    lever_standard(s);
 }
 
 void sb_init(sb_t *s, const sb_config_t *cfg)
@@ -106,6 +131,9 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         bool have = hal_nv_load(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal) && joy_cal_valid(&cal);
         joy_init(&s->joy, &cfg->joy, have ? &cal : NULL);
     }
+    if (!(hal_nv_load(HAL_NV_SLOT_JOYMAP, &s->jmap, (uint32_t)sizeof s->jmap) && joymap_valid(&s->jmap)))
+        joymap_default(&s->jmap);
+    joymap_apply(s);
     if (hal_nv_load(HAL_NV_SLOT_PROGRAM, &p, (uint32_t)sizeof p) &&
         program_validate(&p, &s->cfg.prog, &bad) == PROG_OK) {
         s->autop.prog = p;
@@ -281,6 +309,10 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
                            (s->stop_steer == STOP_STEER_GYRO || s->stop_steer == STOP_STEER_CENTER);
     s->hdg_compass_lost = false;
     s->hdg_reverse = false;
+    if (s->joy.has_lever) {
+        if (lever_has_throttle(to) && !lever_has_throttle(from)) lever_pickup_start(s, from);
+        if (!lever_has_throttle(to) && lever_has_throttle(from)) joy_lever_ref_here(&s->joy);   /* hand-back position */
+    }
 
     switch (to) {
     case MODE_STANDBY: {
@@ -348,6 +380,21 @@ bool sb_request_mode(sb_t *s, sb_mode_t to, mode_reason_t why)
 
 /* --- inputs ---------------------------------------------------------------- */
 
+/* Joystick, from its source (always read: it must be able to take over
+ * from any mode). Analog: wires + ADC; USB: bridge frames + map. */
+static void joystick_read(sb_t *s, uint32_t dt_ms)
+{
+    if (s->jmap.source == JOY_SRC_BRIDGE) {
+        joy_input_t u;
+        jb_step(&s->jb, &s->jmap, s->now_ms, &u);
+        joy_update(&s->joy, &u, dt_ms);
+    } else {
+        hal_joystick_t js;
+        bool ok = hal_read_joystick(&js);
+        joy_step(&s->joy, ok ? &js : NULL, dt_ms);
+    }
+}
+
 static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
 {
     hal_gps_t g;
@@ -373,10 +420,6 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
         if (g.fix) s->gps.last_ms = s->now_ms;
     }
 
-    /* joystick (always read: it must be able to take over from any mode) */
-    hal_joystick_t js;
-    bool js_ok = hal_read_joystick(&js);
-    joy_step(&s->joy, js_ok ? &js : NULL, s->now_ms - s->last_ms);
     if (sb_mode(s) != MODE_MANUAL && s->hdg_reverse) in->angle_cmd_deg = s->hold_angle;   /* hold still */
     if (sb_mode(s) == MODE_HDG_LOCK && s->hdg_reverse && !s->hdg_compass_lost) {
         /* heading hold paused: the course buttons still move the locked heading */
@@ -401,14 +444,119 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
 /* Y -> throttle: up = forward, down = reverse, centre = idle + neutral.
  * Direction changes go through the gear state machine; reverse limit and
  * rate limits apply as everywhere (throttle.c). */
+static void lever_throttle(sb_t *s);
+
 static void joystick_throttle(sb_t *s)
 {
+    if (s->joy.has_lever) {
+        lever_throttle(s);
+        return;
+    }
     float y = s->joy.y, db = s->joy.cfg.deadband;
     float mag = (fabsf(y) <= db) ? 0.0f : (fabsf(y) - db) / (1.0f - db);
     if (y > db)       s->gear_demand = GEAR_F;
     else if (y < -db) s->gear_demand = GEAR_R;
     else              s->gear_demand = GEAR_N;
     s->throttle_demand = mag * s->cfg.joy_max_throttle_pct;
+}
+
+/* --- USB throttle lever (non-returning) ---------------------------------------- */
+
+/* Throttle for travel u on one side: 0 -> 0, anchor u -> anchor d, 1 -> lim. */
+static float lever_side(const sb_lever_side_t *a, float u)
+{
+    if (u <= 0.0f) return 0.0f;
+    if (u <= a->u) return (a->u > 1e-4f) ? a->d * u / a->u : a->d;
+    return (a->u < 1.0f) ? a->d + (a->lim - a->d) * (u - a->u) / (1.0f - a->u) : a->d;
+}
+
+/* Full lever = the CURRENT power limit, but a raised limit never makes the
+ * throttle jump: the anchor keeps today's throttle where the lever is now,
+ * and more power only comes as the lever moves further forward. */
+static void lever_side_track(sb_lever_side_t *a, float u, float lim)
+{
+    if (u <= 0.0f || lim < a->lim - 1e-3f) {        /* neutral / limit lowered: standard */
+        a->u = 1.0f;
+        a->d = a->lim = lim;
+    } else if (lim > a->lim + 1e-3f) {              /* limit raised: hold here */
+        a->d = lever_side(a, u);
+        a->u = u;
+        a->lim = lim;
+    } else if (u < a->u) {                          /* moved back: anchor follows */
+        a->d = lever_side(a, u);
+        a->u = u;
+    }
+}
+
+static bool lever_has_throttle(sb_mode_t m)
+{
+    return m == MODE_MANUAL || m == MODE_HDG_LOCK;
+}
+
+/* Throttle authority passes to the lever (MANUAL / HDG LOCK entered from
+ * STANDBY, AUTO or TRAINING): the lever does nothing until it matches what
+ * the engine does now (or is in the neutral zone). From AUTO / TRAINING the
+ * current throttle is held meanwhile; from STANDBY the stop goes on. */
+static void lever_pickup_start(sb_t *s, sb_mode_t from)
+{
+    sb_lever_t *v = &s->lev;
+    bool moving = from != MODE_STANDBY && s->gear.current != GEAR_N &&
+                  s->thr.out_pct > s->cfg.gear.idle_max_pct;
+    v->pickup = true;
+    v->have_prev = false;
+    v->hold_gear = moving ? s->gear.current : GEAR_N;
+    v->hold_pct = moving ? s->thr.out_pct : 0.0f;
+    v->target = -1.0f;
+}
+
+/* Lever -> gear + throttle. Neutral zone (45..55 %) = idle + neutral, above
+ * = forward, below = reverse; gear changes go through the gear state
+ * machine, the power limit applies as everywhere. */
+static void lever_throttle(sb_t *s)
+{
+    sb_lever_t *v = &s->lev;
+    const joy_t *j = &s->joy;
+    float L = j->lever, lo = j->cfg.nz_lo, hi = j->cfg.nz_hi;
+    float uf = (L > hi) ? (L - hi) / (1.0f - hi) : 0.0f;
+    float ur = (L < lo) ? (lo - L) / lo : 0.0f;
+
+    if (v->pickup) {
+        float lim = (v->hold_gear == GEAR_R) ? s->plim.rev_pct : s->plim.fwd_pct;
+        if (v->hold_pct > lim) v->hold_pct = lim;           /* follows a lowered limit */
+        bool moving = v->hold_gear != GEAR_N && v->hold_pct > s->cfg.gear.idle_max_pct;
+        float f = v->hold_pct / fmaxf(lim, 1.0f);
+        v->target = !moving ? -1.0f : (v->hold_gear == GEAR_F) ? hi + f * (1.0f - hi) : lo - f * lo;
+        bool hit = joy_lever_neutral(j, L) ||
+                   (v->target >= 0.0f && (fabsf(L - v->target) <= s->jmap.pickup_win ||
+                                          (v->have_prev && (v->prev - v->target) * (L - v->target) < 0.0f)));
+        v->prev = L;
+        v->have_prev = true;
+        if (!hit) {
+            s->gear_demand = moving ? v->hold_gear : GEAR_N;
+            s->throttle_demand = moving ? v->hold_pct : 0.0f;
+            return;
+        }
+        /* picked up: go on from the held throttle, no step */
+        v->pickup = false;
+        v->fwd.u = v->rev.u = 1.0f;
+        v->fwd.d = v->fwd.lim = s->plim.fwd_pct;
+        v->rev.d = v->rev.lim = s->plim.rev_pct;
+        if (moving && v->hold_gear == GEAR_F && uf > 0.0f) { v->fwd.u = uf; v->fwd.d = v->hold_pct; }
+        if (moving && v->hold_gear == GEAR_R && ur > 0.0f) { v->rev.u = ur; v->rev.d = v->hold_pct; }
+    }
+
+    lever_side_track(&v->fwd, uf, s->plim.fwd_pct);
+    lever_side_track(&v->rev, ur, s->plim.rev_pct);
+    if (uf > 0.0f) {
+        s->gear_demand = GEAR_F;
+        s->throttle_demand = lever_side(&v->fwd, uf);
+    } else if (ur > 0.0f) {
+        s->gear_demand = GEAR_R;
+        s->throttle_demand = lever_side(&v->rev, ur);
+    } else {
+        s->gear_demand = GEAR_N;
+        s->throttle_demand = 0.0f;
+    }
 }
 
 /* Joystick AUTO button in MANUAL, stick centred: back to HDG_LOCK if that
@@ -438,6 +586,18 @@ bool sb_joystick_cal_finish(sb_t *s)
     if (sb_mode(s) != MODE_STANDBY || !joy_cal_finish(&s->joy, &cal)) return false;
     s->cfg_version++;
     return hal_nv_save(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal);
+}
+
+bool sb_joymap_set(sb_t *s, const joymap_t *m, bool save, jm_error_t *err)
+{
+    joymap_t n = *m;
+    joymap_seal(&n);
+    *err = joymap_check(&n);
+    if (sb_mode(s) != MODE_STANDBY || *err != JM_OK) return false;
+    s->jmap = n;
+    joymap_apply(s);
+    s->cfg_version++;
+    return !save || hal_nv_save(HAL_NV_SLOT_JOYMAP, &n, (uint32_t)sizeof n);
 }
 
 /* --- heading hold paused ------------------------------------------------------- */
@@ -1180,8 +1340,9 @@ static void events_step(sb_t *s, uint32_t buttons)
     }
     if (s->joy.armed) s->joy_nc_seen = false;
 
-    /* override: it always wins (Y is the throttle in HDG_LOCK) */
-    bool grab = s->joy.take_edge || s->joy.engage_x || (s->joy.engage_y && sb_mode(s) != MODE_HDG_LOCK);
+    /* override: it always wins (Y / the lever is the throttle in HDG_LOCK) */
+    bool grab = s->joy.take_edge || s->joy.engage_x || (s->joy.engage_y && sb_mode(s) != MODE_HDG_LOCK) ||
+                (s->joy.lever_moved && !lever_has_throttle(sb_mode(s)));
     if (s->joy.take_edge) plim_drop(&s->plim, PLIM_SRC_OVERRIDE, s->now_ms);      /* TAKE always lowers */
     if (grab && sb_mode(s) != MODE_MANUAL) {
         if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME) s->confirm.kind = CONF_NONE;
@@ -1230,7 +1391,9 @@ void sb_step(sb_t *s)
     uint32_t dt_ms = s->now_ms - s->last_ms;
     float dt = (float)dt_ms * 0.001f;
 
-    uint32_t buttons = hal_get_button_presses() | s->ext_buttons;   /* + course buttons from the PC */
+    joystick_read(s, dt_ms);
+    /* panel buttons + course buttons from the PC + the same functions on a USB joystick */
+    uint32_t buttons = hal_get_button_presses() | s->ext_buttons | s->joy.buttons_edge;
     s->ext_buttons = 0u;
     read_inputs(s, &in, buttons);
     bool roll_new = hal_read_roll_rate(&roll);

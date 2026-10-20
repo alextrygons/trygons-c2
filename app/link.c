@@ -96,6 +96,72 @@ static void send_ack(link_t *l, const proto_frame_t *cmd, uint8_t result)
     send(l, PROTO_T_ACK, cmd->seq, p, sizeof p);
 }
 
+/*
+ * Joystick map body (JOYMAP_VALUE, JOYMAP_SET), 31 bytes:
+ *   u8 source (0 analog, 1 USB) | u8 thr_input (0 stick Y, 1 lever) | u8 axis_steer | u8 axis_thr |
+ *   u8 inv_steer | u8 inv_thr | u8 btn[9] (TAKE, AUTO, CONFIRM, HDG LOCK, STANDBY, -1, +1, -10, +10;
+ *   codes app/jsframe.h) | f32 nz_lo | f32 nz_hi | f32 lever_delta | f32 pickup_win
+ */
+#define JOYMAP_BODY 31u
+
+static void wr_joymap(proto_wr_t *w, const joymap_t *m)
+{
+    proto_wr_u8(w, m->source);
+    proto_wr_u8(w, m->thr_input);
+    proto_wr_u8(w, m->axis_steer);
+    proto_wr_u8(w, m->axis_thr);
+    proto_wr_u8(w, m->inv_steer);
+    proto_wr_u8(w, m->inv_thr);
+    for (int i = 0; i < JM_COUNT; i++) proto_wr_u8(w, m->btn[i]);
+    proto_wr_f32(w, m->nz_lo);
+    proto_wr_f32(w, m->nz_hi);
+    proto_wr_f32(w, m->lever_delta);
+    proto_wr_f32(w, m->pickup_win);
+}
+
+static void rd_joymap(proto_rd_t *r, joymap_t *m)
+{
+    memset(m, 0, sizeof *m);
+    m->source = proto_rd_u8(r);
+    m->thr_input = proto_rd_u8(r);
+    m->axis_steer = proto_rd_u8(r);
+    m->axis_thr = proto_rd_u8(r);
+    m->inv_steer = proto_rd_u8(r);
+    m->inv_thr = proto_rd_u8(r);
+    for (int i = 0; i < JM_COUNT; i++) m->btn[i] = proto_rd_u8(r);
+    m->nz_lo = proto_rd_f32(r);
+    m->nz_hi = proto_rd_f32(r);
+    m->lever_delta = proto_rd_f32(r);
+    m->pickup_win = proto_rd_f32(r);
+}
+
+static void send_joymap(link_t *l, const sb_t *s)
+{
+    uint8_t buf[JOYMAP_BODY];
+    proto_wr_t w;
+    proto_wr_init(&w, buf, sizeof buf);
+    wr_joymap(&w, &s->jmap);
+    send(l, PROTO_T_JOYMAP_VALUE, l->tx_seq++, buf, w.n);
+}
+
+/* Last bridge frame as received (all axes / buttons / hats of both
+ * devices) - the ground station's button-mapping routine reads it. */
+static void send_joy_raw(link_t *l, const sb_t *s)
+{
+    uint8_t buf[2 + JSF_DEVS * (JSF_AXES * 2 + 5)];
+    proto_wr_t w;
+    const jsf_t *f = &s->jb.last;
+    proto_wr_init(&w, buf, sizeof buf);
+    proto_wr_u8(&w, s->jb.have ? f->flags : 0u);
+    proto_wr_u8(&w, f->seq);
+    for (int d = 0; d < JSF_DEVS; d++) {
+        for (int a = 0; a < JSF_AXES; a++) proto_wr_u16(&w, (uint16_t)f->dev[d].axis[a]);
+        proto_wr_u32(&w, f->dev[d].buttons);
+        proto_wr_u8(&w, f->dev[d].hats);
+    }
+    send(l, PROTO_T_JOY_RAW, l->tx_seq++, buf, w.n);
+}
+
 static void send_param(link_t *l, sb_t *s, uint8_t id)
 {
     uint8_t buf[32];
@@ -154,6 +220,12 @@ static void send_prog_wp(link_t *l, const program_t *p, uint8_t i)
  *   u16 core0 avg us | u16 core0 max us | u16 monitor avg | u16 monitor max | u16 logger avg |
  *     u16 logger max | u16 core0 overruns | u8 monitor overruns | u8 logger overruns   (us capped at 65535)
  *   u8 log_flags (b0 LOG FAILURE, b1 card present) | u16 log files | u16 log records dropped
+ *   u8 joy_source (0 analog, 1 USB bridge) | u8 usb_flags (b0 stick connected, b1 throttle
+ *     connected, b2 learn mode, b3 hub, b4 lever throttle, b5 pickup pending, b6 bridge starting)
+ *     | u8 usb_frames_per_s | u16 usb_crc_errors | u8 joy_why (fault reason / current problem, JOY_WHY_*)
+ *     | u16 lever x1000 (0xFFFF = no lever) | u16 pickup target x1000 (0xFFFF = neutral zone)
+ *     | u32 usb buttons stick | u32 usb buttons throttle | u8 hats (low: stick hat, high: throttle hat)
+ *     | u8 neutral zone low % | u8 neutral zone high %
  */
 static void telemetry(link_t *l, sb_t *s)
 {
@@ -263,6 +335,22 @@ static void telemetry(link_t *l, sb_t *s)
     uint32_t drops = g_logq0.dropped + g_logq1.dropped;
     proto_wr_u16(&w, (uint16_t)(drops > 65535u ? 65535u : drops));
 
+    const jsf_t *jf = &s->jb.last;
+    bool usb = s->jmap.source == JOY_SRC_BRIDGE;
+    proto_wr_u8(&w, s->jmap.source);
+    proto_wr_u8(&w, (uint8_t)((usb && s->jb.have ? (jf->flags & 0x0Fu) : 0u) | (j->has_lever ? 0x10u : 0u) |
+                              (s->lev.pickup ? 0x20u : 0u) | (usb && s->jb.grace ? 0x40u : 0u)));
+    proto_wr_u8(&w, (uint8_t)(s->jb.fps > 255u ? 255u : s->jb.fps));
+    proto_wr_u16(&w, (uint16_t)(s->jb.rx.crc_errors > 65535u ? 65535u : s->jb.rx.crc_errors));
+    proto_wr_u8(&w, j->fault ? j->fault_axis : (usb ? s->jb.why : 0u));
+    proto_wr_u16(&w, j->has_lever ? (uint16_t)(j->lever_in * 1000.0f + 0.5f) : 0xFFFFu);
+    proto_wr_u16(&w, (s->lev.pickup && s->lev.target >= 0.0f) ? (uint16_t)(s->lev.target * 1000.0f + 0.5f) : 0xFFFFu);
+    proto_wr_u32(&w, usb ? jf->dev[0].buttons : 0u);
+    proto_wr_u32(&w, usb ? jf->dev[1].buttons : 0u);
+    proto_wr_u8(&w, usb ? (uint8_t)((jf->dev[0].hats & 0x0Fu) | (uint8_t)(jf->dev[1].hats << 4)) : 0xFFu);
+    proto_wr_u8(&w, (uint8_t)(s->jmap.nz_lo * 100.0f + 0.5f));
+    proto_wr_u8(&w, (uint8_t)(s->jmap.nz_hi * 100.0f + 0.5f));
+
     if (!w.overflow) send(l, PROTO_T_TELEMETRY, l->tx_seq++, buf, w.n);
 }
 
@@ -281,6 +369,9 @@ static int cmd_len(uint8_t type)
     case PROTO_T_PARAM_SET:    return 5;
     case PROTO_T_JOY_CAL:      return 1;
     case PROTO_T_ALARM_ACK:    return 0;
+    case PROTO_T_JOYMAP_GET:   return 0;
+    case PROTO_T_JOYMAP_SET:   return (int)JOYMAP_BODY + 1;
+    case PROTO_T_JOY_RAW_GET:  return 0;
     case PROTO_T_PROG_BEGIN:   return 2;
     case PROTO_T_PROG_WP:      return 18;
     case PROTO_T_PROG_COMMIT:  return 0;
@@ -400,6 +491,26 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         bool ok = (act == 0u) ? sb_joystick_cal_start(s) : sb_joystick_cal_finish(s);
         return ok ? PROTO_R_OK : PROTO_R_REFUSED;
     }
+    case PROTO_T_JOYMAP_GET:
+        send_joymap(l, s);
+        return PROTO_R_OK;
+    case PROTO_T_JOYMAP_SET: {
+        joymap_t m;
+        jm_error_t e;
+        rd_joymap(&r, &m);
+        uint8_t save = proto_rd_u8(&r);
+        if (save > 1u) return PROTO_R_BAD_VALUE;
+        if (sb_mode(s) != MODE_STANDBY) return PROTO_R_STANDBY_ONLY;
+        bool ok = sb_joymap_set(s, &m, save != 0u, &e);
+        send_joymap(l, s);
+        if (e == JM_ERR_DUPLICATE) return PROTO_R_MAP_DUPLICATE;
+        if (e == JM_ERR_MISSING) return PROTO_R_MAP_MISSING;
+        if (e != JM_OK) return PROTO_R_MAP_BAD;
+        return ok ? PROTO_R_OK : PROTO_R_REFUSED;
+    }
+    case PROTO_T_JOY_RAW_GET:
+        send_joy_raw(l, s);
+        return PROTO_R_OK;
     case PROTO_T_ALARM_ACK:             /* any mode (the panel STANDBY button: in STANDBY) */
         s->alarm = false;
         s->alarm_bits = 0u;

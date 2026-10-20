@@ -44,6 +44,23 @@ struct sbsim {
 
 static logger_t s_logger;   /* core 2 logger (sim: a separate step) */
 
+/* "all --bridge": every test drives the boat through the USB joystick
+ * bridge (simulated Teensy frames) instead of the analog joystick. */
+static bool s_bridge;
+void sb_set_bridge(bool on) { s_bridge = on; }
+
+/* Map used for the old tests in bridge mode: throttle on stick Y
+ * (spring-centred, like the analog joystick), default buttons. */
+static void bridge_test_map(joymap_t *m)
+{
+    joymap_default(m);
+    m->source = JOY_SRC_BRIDGE;
+    m->thr_input = JOY_THR_STICK_Y;
+    m->axis_thr = JSF_AXIS_CODE(0u, 1u);
+    m->inv_thr = 0u;
+    joymap_seal(m);
+}
+
 /* Joystick position (-1..+1, default calibration) -> raw ADC. */
 static uint16_t joy_raw(float v)
 {
@@ -54,8 +71,58 @@ static uint16_t joy_raw(float v)
     return (uint16_t)lrintf(r);
 }
 
+/* USB joystick state for the USB tests: the tests drive the simulated
+ * bridge directly (T.16000M stick X/Y, TWCS lever, buttons, hat, plugged). */
+typedef struct {
+    bool     on;
+    float    x, y, lever;       /* lever 0 (back) .. 1 (forward) */
+    uint32_t b0, b1;            /* buttons: stick, throttle */
+    uint8_t  hat1;              /* TWCS hat 0: 0..7, 15 = centred */
+    uint8_t  flags;             /* JSF_F_DEV0 | JSF_F_DEV1 | ... */
+} usb_js_t;
+static usb_js_t s_usb;
+
+static int16_t usb_ax(float v)
+{
+    if (v > 1.0f) v = 1.0f;
+    if (v < -1.0f) v = -1.0f;
+    return (int16_t)lrintf(v * 32767.0f);
+}
+
+static void usb_send(void)
+{
+    jsf_t f;
+    memset(&f, 0, sizeof f);
+    jsf_dev_clear(&f.dev[0]);
+    jsf_dev_clear(&f.dev[1]);
+    f.flags = s_usb.flags;
+    if (s_usb.flags & JSF_F_DEV0) {
+        f.dev[0].axis[0] = usb_ax(s_usb.x);
+        f.dev[0].axis[1] = usb_ax(s_usb.y);
+        f.dev[0].buttons = s_usb.b0;
+        f.dev[0].vid = 0x044Fu;
+        f.dev[0].pid = 0xB10Au;
+    }
+    if (s_usb.flags & JSF_F_DEV1) {
+        f.dev[1].axis[2] = usb_ax(1.0f - 2.0f * s_usb.lever);     /* TWCS: forward = low (map inverts) */
+        f.dev[1].buttons = s_usb.b1;
+        f.dev[1].hats = (uint8_t)(0xF0u | (s_usb.hat1 & 0x0Fu));
+        f.dev[1].vid = 0x044Fu;
+        f.dev[1].pid = 0xB687u;
+    }
+    sim_hal_bridge_set(&f);
+}
+
 static void joy_set(float x, float y, bool take, bool autob)
 {
+    if (s_usb.on) {             /* USB tests: same stick / buttons through the bridge */
+        s_usb.x = x;
+        s_usb.y = y;
+        s_usb.b0 = take ? (s_usb.b0 | 1u) : (s_usb.b0 & ~1u);
+        s_usb.b1 = autob ? (s_usb.b1 | 1u) : (s_usb.b1 & ~1u);
+        usb_send();
+        return;
+    }
     sim_hal_set_joystick(true, joy_raw(x), joy_raw(y), take, autob);
 }
 
@@ -64,6 +131,7 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
 {
     sb_config_t c;
     memset(x, 0, sizeof *x);
+    memset(&s_usb, 0, sizeof s_usb);
     world_init(&x->w, seed, heading, speed_kn);
     sim_hal_fail_heading(false);
     sim_hal_set_rudder_feedback(false);
@@ -73,10 +141,17 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     sim_hal_joystick_confirm(false);
     remove("nv1.bin");                              /* default joystick calibration */
     remove("nv2.bin");                              /* no stored AUTO program */
+    remove("nv4.bin");                              /* default joystick map (analog) */
     sim_hal_unforce();
     memset((void *)&g_mon, 0, sizeof g_mon);
     world_publish(&x->w, 0);
     hal_init();
+    sim_hal_bridge_mode(s_bridge);
+    if (s_bridge) {
+        joymap_t m;
+        bridge_test_map(&m);
+        (void)hal_nv_save(HAL_NV_SLOT_JOYMAP, &m, (uint32_t)sizeof m);
+    }
     if (cfg) c = *cfg; else sb_default_config(&c);
     x->cfg = c;
     timing_init_all();
@@ -162,9 +237,11 @@ static void press(sbsim_t *x, hal_button_t b)
 static bool confirm_press(sbsim_t *x)
 {
     uint32_t before = x->sb.confirm.accepted;
-    sim_hal_joystick_confirm(true);
+    if (s_usb.on) { s_usb.b1 |= 8u; usb_send(); }          /* USB: TWCS button 4 */
+    else sim_hal_joystick_confirm(true);
     sbsim_run(x, x->t + 100u, NULL, NULL);
-    sim_hal_joystick_confirm(false);
+    if (s_usb.on) { s_usb.b1 &= ~8u; usb_send(); }
+    else sim_hal_joystick_confirm(false);
     sbsim_run(x, x->t + 60u, NULL, NULL);
     return x->sb.confirm.accepted > before;
 }
@@ -2114,7 +2191,9 @@ static void joystick_tests(void)
             if (a == 0) sim_hal_set_joystick(true, 0u, joy_raw(0.0f), false, false);       /* X wiper broken */
             else        sim_hal_set_joystick(true, joy_raw(0.0f), 4095u, false, false);    /* Y ground broken */
             sbsim_run(&x, 4000u, NULL, NULL);
-            ok_axis[a] = x.sb.joy.fault && x.sb.joy.fault_axis == a + 1 &&
+            /* USB bridge: the broken axis arrives as an invalid value */
+            uint8_t why = s_bridge ? JOY_WHY_RANGE : (uint8_t)(a + 1);
+            ok_axis[a] = x.sb.joy.fault && x.sb.joy.fault_axis == why &&
                          (x.sb.alarm_bits & SB_ALM_JOY_FAULT) && sb_mode(&x.sb) == MODE_STANDBY;
         }
         snprintf(d, sizeof d, "X wire break (ADC 0): %s; Y wire break (ADC 4095): %s",
@@ -2147,7 +2226,8 @@ static void joystick_tests(void)
     }
 
     /* calibration routine: stored with checksum */
-    {
+    if (s_bridge) test_na("Joystick calibration stored with checksum", "analog joystick only (the USB bridge calibrates itself)");
+    else {
         sbsim_t x;
         remove("nv1.bin");
         sbsim_init(&x, 125u, 90.0f, 0.0f, NULL);
@@ -2596,6 +2676,11 @@ typedef struct {
     float       param_value;
     bool        heartbeat;      /* PC sends a heartbeat every second */
     uint32_t    next_hb;
+    uint8_t     tm[PROTO_MAX_PAYLOAD];  /* last telemetry payload */
+    uint8_t     tm_len;
+    int         joymaps, raws;
+    uint8_t     jm[PROTO_MAX_PAYLOAD], jm_len;      /* last JOYMAP_VALUE */
+    uint8_t     raw[PROTO_MAX_PAYLOAD], raw_len;    /* last JOY_RAW */
 } pcsim_t;
 
 static void pc_send(pcsim_t *p, uint8_t type, const uint8_t *payload, uint8_t len)
@@ -2629,8 +2714,18 @@ static void pc_hook(sbsim_t *x, void *ctx)
             (void)proto_rd_u32(&r);
             p->telem_mode = proto_rd_u8(&r);
             p->telem++;
+            memcpy(p->tm, f.payload, f.len);
+            p->tm_len = f.len;
             r.n = 4u + 4u + 20u + 2u + 16u + 2u + 24u + 12u;      /* alarm_bits offset */
             p->telem_alarms = proto_rd_u32(&r);
+        } else if (f.type == PROTO_T_JOYMAP_VALUE) {
+            memcpy(p->jm, f.payload, f.len);
+            p->jm_len = f.len;
+            p->joymaps++;
+        } else if (f.type == PROTO_T_JOY_RAW) {
+            memcpy(p->raw, f.payload, f.len);
+            p->raw_len = f.len;
+            p->raws++;
         } else if (f.type == PROTO_T_PARAM_VALUE) {
             proto_rd_t r;
             proto_rd_init(&r, f.payload, f.len);
@@ -3818,7 +3913,738 @@ int sb_logtest(const char *dir)
     return 0;
 }
 
+/* ---------------------------------------------- USB joystick (bridge) -- */
+
+#define USB_TAKE     JSF_CODE_BTN(0u, 0u)
+#define USB_STANDBY  JSF_CODE_BTN(0u, 1u)
+#define USB_AUTO     JSF_CODE_BTN(1u, 0u)
+#define USB_HDG      JSF_CODE_BTN(1u, 2u)
+#define USB_CONFIRM  JSF_CODE_BTN(1u, 3u)
+
+/* Boat with the T.16000M + TWCS on the bridge (default map, lever
+ * throttle), stick at x0, lever at lever0 from power-up; runs 1.5 s. */
+static void usb_init_at(sbsim_t *x, uint32_t seed, float speed_kn, float x0, float lever0)
+{
+    joymap_t m;
+    jm_error_t err;
+    sbsim_init(x, seed, 90.0f, speed_kn, NULL);
+    sim_hal_bridge_mode(true);
+    s_usb.on = true;
+    s_usb.x = x0;
+    s_usb.lever = lever0;
+    s_usb.hat1 = 15u;
+    s_usb.flags = JSF_F_DEV0 | JSF_F_DEV1 | JSF_F_HUB;
+    usb_send();
+    joymap_default(&m);
+    m.source = JOY_SRC_BRIDGE;
+    (void)sb_joymap_set(&x->sb, &m, true, &err);    /* saved: survives a simulated reset */
+    sbsim_run(x, 1500u, NULL, NULL);
+}
+
+static void usb_init(sbsim_t *x, uint32_t seed, float speed_kn)
+{
+    usb_init_at(x, seed, speed_kn, 0.0f, 0.5f);
+}
+
+static void usb_code(uint8_t code, bool down)
+{
+    if (code >= 1u && code <= 32u) {
+        uint32_t b = 1u << (code - 1u);
+        s_usb.b0 = down ? (s_usb.b0 | b) : (s_usb.b0 & ~b);
+    } else if (code >= 33u && code <= 64u) {
+        uint32_t b = 1u << (code - 33u);
+        s_usb.b1 = down ? (s_usb.b1 | b) : (s_usb.b1 & ~b);
+    } else if (code >= 73u && code <= 76u) {
+        s_usb.hat1 = down ? (uint8_t)((code - 73u) * 2u) : 15u;
+    }
+    usb_send();
+}
+
+/* Press a USB button / hat direction for 150 ms. */
+static void usb_press(sbsim_t *x, uint8_t code)
+{
+    usb_code(code, true);
+    sbsim_run(x, x->t + 150u, NULL, NULL);
+    usb_code(code, false);
+    sbsim_run(x, x->t + 100u, NULL, NULL);
+}
+
+/* Move the lever to `to` at `rate` per second (a hand on the lever). */
+static void usb_lever(sbsim_t *x, float to, float rate, sb_hook_t hook, void *ctx)
+{
+    while (fabsf(s_usb.lever - to) > 1e-4f) {
+        float step = rate * 0.01f;
+        s_usb.lever = (to > s_usb.lever) ? fminf(to, s_usb.lever + step) : fmaxf(to, s_usb.lever - step);
+        usb_send();
+        sbsim_run(x, x->t + 10u, hook, ctx);
+    }
+}
+
+static void usb_stick(sbsim_t *x, float v, uint32_t ms)
+{
+    s_usb.x = v;
+    usb_send();
+    sbsim_run(x, x->t + ms, NULL, NULL);
+}
+
+/* MANUAL by TAKE, lever forward to `lever`, run `ms`. */
+static void usb_drive(sbsim_t *x, float lever, uint32_t ms)
+{
+    usb_press(x, USB_TAKE);
+    usb_lever(x, lever, 0.5f, NULL, NULL);
+    sbsim_run(x, x->t + ms, NULL, NULL);
+}
+
+typedef struct {
+    float thr_max, thr_min;
+    float max_rate;             /* %/s between control steps */
+    float last;
+    bool  have;
+} thr_watch_t;
+
+static void thr_watch(sbsim_t *x, void *ctx)
+{
+    thr_watch_t *w = (thr_watch_t *)ctx;
+    float t = sim_hal_throttle();
+    if (t > w->thr_max) w->thr_max = t;
+    if (t < w->thr_min) w->thr_min = t;
+    if (w->have) {
+        float r = fabsf(t - w->last) / (AP_PERIOD_MS * 0.001f);
+        if (r > w->max_rate) w->max_rate = r;
+    }
+    w->last = t;
+    w->have = true;
+    (void)x;
+}
+
+static void thr_watch_reset(thr_watch_t *w)
+{
+    w->thr_max = -1.0f;
+    w->thr_min = 1000.0f;
+    w->max_rate = 0.0f;
+    w->have = false;
+}
+
+typedef struct {
+    uint32_t t0;
+    int32_t  t_fault, t_standby;
+} det_t;
+
+static void det_watch(sbsim_t *x, void *ctx)
+{
+    det_t *d = (det_t *)ctx;
+    if (d->t_fault < 0 && x->sb.joy.fault) d->t_fault = (int32_t)(x->t - d->t0);
+    if (d->t_standby < 0 && sb_mode(&x->sb) == MODE_STANDBY) d->t_standby = (int32_t)(x->t - d->t0);
+}
+
+enum { UF_LOST, UF_CORRUPT, UF_FROZEN, UF_STICK, UF_THROTTLE, UF_COUNT };
+static const char *const UF_NAME[UF_COUNT] = { "frames lost", "frames corrupted", "counter frozen",
+                                               "stick unplugged", "throttle unplugged" };
+static const uint8_t UF_WHY[UF_COUNT] = { JOY_WHY_TIMEOUT, JOY_WHY_CRC, JOY_WHY_SEQ, JOY_WHY_DEV0, JOY_WHY_DEV1 };
+
+static void usb_fault_inject(int k)
+{
+    switch (k) {
+    case UF_LOST:     sim_hal_bridge_fault(SIM_BR_STOP); break;
+    case UF_CORRUPT:  sim_hal_bridge_fault(SIM_BR_CORRUPT); break;
+    case UF_FROZEN:   sim_hal_bridge_fault(SIM_BR_FREEZE); break;
+    case UF_STICK:    s_usb.flags &= (uint8_t)~JSF_F_DEV0; usb_send(); break;
+    case UF_THROTTLE: s_usb.flags &= (uint8_t)~JSF_F_DEV1; usb_send(); break;
+    default: break;
+    }
+}
+
+/* Latency: TAKE pressed on the joystick -> MANUAL on the AURIX. */
+typedef struct {
+    uint32_t t_press;
+    int32_t  lat;
+} lat_t;
+
+static void lat_watch(sbsim_t *x, void *ctx)
+{
+    lat_t *l = (lat_t *)ctx;
+    if (l->lat < 0 && x->t >= l->t_press && sb_mode(&x->sb) == MODE_MANUAL) l->lat = (int32_t)(x->t - l->t_press);
+}
+
+static void usb_joystick_tests(void)
+{
+    char d[900];
+    printf("\n=== USB joystick (T.16000M + TWCS through the Teensy bridge) ===\n");
+
+    /* U1 frame format: CRC, junk, rescan, codes */
+    {
+        jsf_t f, g;
+        uint8_t b[3 * JSF_FRAME_LEN + 7];
+        jsf_rx_t r;
+        memset(&f, 0, sizeof f);
+        jsf_dev_clear(&f.dev[0]);
+        jsf_dev_clear(&f.dev[1]);
+        f.seq = 9u;
+        f.flags = JSF_F_DEV0 | JSF_F_DEV1;
+        f.dev[0].axis[0] = -12345;
+        f.dev[0].buttons = 0x80000001u;
+        f.dev[1].hats = 0xF6u;                      /* hat 0 = left */
+        size_t n = jsf_encode(&f, b + 3);
+        b[0] = 0xA5u; b[1] = 0x5Au; b[2] = 0x11u;   /* junk that looks like a start */
+        memcpy(b + 3 + n, b + 3, n);
+        b[3 + n + 20] ^= 0x10u;                     /* second copy corrupted */
+        memcpy(b + 3 + 2 * n, b + 3, n);
+        jsf_rx_init(&r);
+        jsf_rx_push(&r, b, 3 + 3 * n);
+        int good = 0;
+        bool same = true;
+        while (jsf_rx_next(&r, &g)) {
+            good++;
+            same = same && g.seq == 9u && g.dev[0].axis[0] == -12345 && g.dev[0].buttons == 0x80000001u &&
+                   jsf_code_pressed(&g, JSF_CODE_HAT(1u, 0u, JSF_HAT_LEFT)) && jsf_code_pressed(&g, 32u) &&
+                   !jsf_code_pressed(&g, JSF_CODE_HAT(1u, 0u, JSF_HAT_UP));
+        }
+        snprintf(d, sizeof d, "frame %u bytes, good frames %d of 2, CRC errors %lu, values and codes %s",
+                 (unsigned)n, good, (unsigned long)r.crc_errors, same ? "OK" : "WRONG");
+        test_report("U1 bridge frame: CRC, junk and rescan, button / hat codes", n == JSF_FRAME_LEN && good == 2 &&
+                    r.crc_errors == 1u && same, d);
+    }
+
+    /* U2 / U3 link faults -> JOYSTICK FAULT, not in control / in control */
+    {
+        int ok_idle = 0, ok_drive = 0;
+        char t1[400] = "", t2[500] = "";
+        for (int k = 0; k < UF_COUNT; k++) {
+            sbsim_t x;
+            det_t dt = { 0u, -1, -1 };
+            usb_init(&x, 700u + (uint32_t)k, 0.0f);
+            sbsim_run(&x, 3000u, NULL, NULL);
+            bool armed = x.sb.joy.armed;
+            dt.t0 = x.t;
+            usb_fault_inject(k);
+            sbsim_run(&x, x.t + 1000u, det_watch, &dt);
+            bool ok = armed && x.sb.joy.fault && x.sb.joy.fault_axis == UF_WHY[k] &&
+                      (x.sb.alarm_bits & SB_ALM_JOY_FAULT) && sb_mode(&x.sb) == MODE_STANDBY && dt.t_fault <= 200;
+            ok_idle += ok;
+            snprintf(t1 + strlen(t1), sizeof t1 - strlen(t1), "%s%s %s %d ms", k ? ", " : "", UF_NAME[k],
+                     ok ? "fault in" : "NOT DETECTED /", (int)dt.t_fault);
+        }
+        snprintf(d, sizeof d, "not in control: %s", t1);
+        test_report("U2 bridge lost / corrupted / frozen / stick or throttle unplugged -> JOYSTICK FAULT",
+                    ok_idle == UF_COUNT, d);
+
+        for (int k = 0; k < UF_COUNT; k++) {
+            sbsim_t x;
+            events_t ev;
+            det_t dt = { 0u, -1, -1 };
+            memset(&ev, 0, sizeof ev);
+            usb_init(&x, 710u + (uint32_t)k, 0.0f);
+            usb_drive(&x, 0.9f, 15000u);
+            float thr = sim_hal_throttle();
+            bool driving = sb_mode(&x.sb) == MODE_MANUAL && thr > 5.0f && gear_is(&x.sb.gear, GEAR_F);
+            dt.t0 = x.t;
+            ev_reset(&ev, x.t, thr, 0u);
+            usb_fault_inject(k);
+            /* det_watch and ev_watch both */
+            for (int i = 0; i < 300; i++) {
+                sbsim_run(&x, x.t + AP_PERIOD_MS, ev_watch, &ev);
+                det_watch(&x, &dt);
+            }
+            /* as the analog wire break: throttle down and steering stopped at once (the
+             * stick that steered is gone), neutral after idle, no steering afterwards */
+            bool order = ev.t_thr_down >= 0.0f && ev.t_thr_down <= 0.3f && ev.t_steer_off >= 0.0f &&
+                         ev.t_steer_off <= 0.3f && ev.t_idle >= 0.0f && ev.t_neutral >= ev.t_idle &&
+                         ev.steer_after_off == 0 && x.w.shift_under_load == 0;
+            bool ok = driving && x.sb.joy.fault && dt.t_standby >= 0 && dt.t_standby <= 250 && order &&
+                      sim_hal_throttle() <= 1.0f && sim_hal_gear_pwm() == x.sb.cfg.gear.pwm_n_us &&
+                      x.sb.ap.mode == AP_MODE_STANDBY;
+            ok_drive += ok;
+                snprintf(t2 + strlen(t2), sizeof t2 - strlen(t2), "%s%s: STANDBY %d ms, throttle down %.2f s, steering stop %.2f s, idle %.1f s, N %.1f s%s",
+                     k ? "; " : "", UF_NAME[k], (int)dt.t_standby, ev.t_thr_down, ev.t_steer_off, ev.t_idle, ev.t_neutral, ok ? "" : " FAIL");
+        }
+        snprintf(d, sizeof d, "driving at 90 %% lever: %s", t2);
+        test_report("U3 same faults while the joystick drives -> idle + neutral + steering stop + STANDBY",
+                    ok_drive == UF_COUNT, d);
+    }
+
+    /* U4 a few CRC errors (1 frame in 50) are tolerated */
+    {
+        sbsim_t x;
+        usb_init(&x, 720u, 0.0f);
+        sim_hal_bridge_fault(SIM_BR_CORRUPT_SOME);
+        sbsim_run(&x, x.t + 10000u, NULL, NULL);
+        snprintf(d, sizeof d, "10 s with 2 bad frames/s: CRC errors %lu, fault %s, armed %s",
+                 (unsigned long)x.sb.jb.rx.crc_errors, x.sb.joy.fault ? "YES" : "no", x.sb.joy.armed ? "yes" : "NO");
+        test_report("U4 occasional CRC errors below the threshold: no fault", !x.sb.joy.fault && x.sb.joy.armed &&
+                    x.sb.jb.rx.crc_errors >= 15u, d);
+    }
+
+    /* U5 override from every mode: stick X, TAKE, lever */
+    {
+        static const sb_mode_t MODES[4] = { MODE_STANDBY, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING };
+        int good = 0, total = 0;
+        char t[600] = "";
+        for (int trig = 0; trig < 3; trig++) {
+            for (int mi = 0; mi < 4; mi++) {
+                sbsim_t x;
+                usb_init(&x, 730u + (uint32_t)(trig * 4 + mi), 0.0f);
+                if (MODES[mi] != MODE_STANDBY) {
+                    power_full(&x);
+                    goto_mode(&x, MODES[mi]);
+                    sbsim_run(&x, x.t + 3000u, NULL, NULL);
+                }
+                bool in = sb_mode(&x.sb) == MODES[mi];
+                if (trig == 0) { usb_stick(&x, 0.6f, 400u); usb_stick(&x, 0.0f, 100u); }
+                else if (trig == 1) usb_press(&x, USB_TAKE);
+                else { usb_lever(&x, 0.66f, 1.0f, NULL, NULL); sbsim_run(&x, x.t + 300u, NULL, NULL); }
+                /* in HDG LOCK the lever IS the throttle: no override, HDG LOCK goes on */
+                bool want_manual = !(trig == 2 && MODES[mi] == MODE_HDG_LOCK);
+                bool ok = in && (want_manual ? sb_mode(&x.sb) == MODE_MANUAL : sb_mode(&x.sb) == MODE_HDG_LOCK);
+                good += ok;
+                total++;
+                if (!ok) snprintf(t + strlen(t), sizeof t - strlen(t), " FAIL(%s from %s: %s)",
+                                  trig == 0 ? "stick" : trig == 1 ? "TAKE" : "lever", mode_name(MODES[mi]),
+                                  mode_name(sb_mode(&x.sb)));
+            }
+        }
+        snprintf(d, sizeof d, "%d/%d: stick X, TAKE and lever (+16 %%) from STANDBY / HDG LOCK / AUTO / TRAINING -> MANUAL "
+                 "(lever in HDG LOCK = throttle, stays HDG LOCK)%s", good, total, t);
+        test_report("U5 override from every mode by stick, TAKE button and lever movement", good == total, d);
+    }
+
+    /* U6 throttle pickup: takeover with the lever left at 80 % */
+    {
+        sbsim_t x;
+        thr_watch_t w;
+        prog_wp_t wp[5];
+        usb_init(&x, 740u, 0.0f);
+        prog5(&x, wp);
+        auto_go(&x, wp, 5, PROG_END_STOP);
+        sbsim_run(&x, x.t + 30000u, NULL, NULL);
+        float thr_auto = sim_hal_throttle();
+        bool in_auto = sb_mode(&x.sb) == MODE_AUTO;
+        /* shove the lever to 80 % within one step: override, lever not picked up */
+        s_usb.lever = 0.8f;
+        usb_send();
+        thr_watch_reset(&w);
+        sbsim_run(&x, x.t + 200u, NULL, NULL);
+        bool manual = sb_mode(&x.sb) == MODE_MANUAL, pend = x.sb.lev.pickup;
+        float target = x.sb.lev.target;
+        sbsim_run(&x, x.t + 5000u, thr_watch, &w);
+        /* lever moved, but away from the pickup point (and not into neutral): still nothing */
+        float away = (target > 0.8f) ? 0.62f : fminf(1.0f, target + 0.15f);
+        usb_lever(&x, away, 0.2f, thr_watch, &w);
+        sbsim_run(&x, x.t + 2000u, thr_watch, &w);
+        float held_max = w.thr_max;
+        bool still = x.sb.lev.pickup;
+        float held = sim_hal_throttle();
+        /* slowly to the pickup point: picked up there, then the lever drives */
+        thr_watch_reset(&w);
+        usb_lever(&x, x.sb.lev.target, 0.05f, thr_watch, &w);
+        bool picked = !x.sb.lev.pickup;
+        float at_pick = sim_hal_throttle();
+        usb_lever(&x, 0.7f, 0.1f, thr_watch, &w);
+        sbsim_run(&x, x.t + 3000u, thr_watch, &w);
+        bool follows = sim_hal_throttle() < at_pick - 3.0f;
+        snprintf(d, sizeof d, "AUTO %s at %.1f %%; lever shoved to 80 %%: MANUAL %s, pickup pending %s (target lever %.0f %% = "
+                 "held %.0f %% at the 30 %% limit after the override); lever moved away to %.0f %%: throttle max %.1f %%, "
+                 "held %.1f %%, still pending %s; lever to the target: picked up %s at %.1f %%, lever back to 70 %% -> %.1f %% "
+                 "(fastest change %.1f %%/s)",
+                 in_auto ? "yes" : "NO", thr_auto, manual ? "yes" : "NO", pend ? "yes" : "NO", target * 100.0f,
+                 x.sb.plim.fwd_pct, away * 100.0f, held_max, held, still ? "yes" : "NO", picked ? "yes" : "NO", at_pick,
+                 sim_hal_throttle(), w.max_rate);
+        test_report("U6 throttle pickup: lever left at 80 % has no effect until it reaches the pickup point",
+                    in_auto && manual && pend && held_max <= fmaxf(thr_auto, x.sb.plim.fwd_pct) + 0.5f && still && picked &&
+                    fabsf(at_pick - held) < 1.0f && follows && w.max_rate <= x.sb.cfg.throttle.rate_down_pct_s + 1.0f, d);
+
+        /* from STANDBY: lever at 80 % -> nothing until it was in the neutral zone */
+        sbsim_t y;
+        thr_watch_t w2;
+        usb_init(&y, 741u, 0.0f);
+        s_usb.lever = 0.8f;
+        usb_send();
+        thr_watch_reset(&w2);
+        sbsim_run(&y, y.t + 5000u, thr_watch, &w2);
+        bool m2 = sb_mode(&y.sb) == MODE_MANUAL, idle = w2.thr_max <= 1.0f && sim_hal_gear_pwm() == y.sb.cfg.gear.pwm_n_us;
+        usb_lever(&y, 0.5f, 0.5f, NULL, NULL);
+        usb_lever(&y, 0.8f, 0.5f, NULL, NULL);
+        sbsim_run(&y, y.t + 8000u, NULL, NULL);
+        snprintf(d, sizeof d, "STANDBY, lever pushed to 80 %%: MANUAL %s, throttle max %.1f %% and neutral %s; "
+                 "via neutral and forward again: throttle %.1f %% gear %s",
+                 m2 ? "yes" : "NO", w2.thr_max, idle ? "yes" : "NO", sim_hal_throttle(),
+                 gear_is(&y.sb.gear, GEAR_F) ? "F" : "?");
+        test_report("U6b pickup from STANDBY: lever at 80 % -> idle + neutral until it passed the neutral zone",
+                    m2 && idle && sim_hal_throttle() > 5.0f && gear_is(&y.sb.gear, GEAR_F), d);
+    }
+
+    /* U7 power limit raised while the lever is at full forward */
+    {
+        sbsim_t x;
+        thr_watch_t w;
+        usb_init(&x, 750u, 0.0f);
+        usb_drive(&x, 1.0f, 15000u);
+        float before = sim_hal_throttle();
+        bool raised = power_step(&x, 0u);           /* 30 -> 50 %: code + USB CONFIRM */
+        thr_watch_reset(&w);
+        sbsim_run(&x, x.t + 5000u, thr_watch, &w);
+        float after5 = w.thr_max;
+        usb_lever(&x, 0.85f, 0.5f, NULL, NULL);
+        thr_watch_reset(&w);
+        usb_lever(&x, 1.0f, 0.2f, thr_watch, &w);
+        sbsim_run(&x, x.t + 10000u, thr_watch, &w);
+        snprintf(d, sizeof d, "full lever: %.1f %% (limit 30); raised to %.0f %% %s; next 5 s max %.1f %%; "
+                 "lever back to 85 %% and forward again: %.1f %% (fastest %.1f %%/s)",
+                 before, x.sb.plim.fwd_pct, raised ? "yes" : "NO", after5, sim_hal_throttle(), w.max_rate);
+        test_report("U7 power limit raised at full lever: no throttle jump, more only after the lever moves",
+                    raised && before >= 29.0f && before <= 30.5f && after5 <= before + 0.5f &&
+                    sim_hal_throttle() >= 49.0f && w.max_rate <= x.sb.cfg.throttle.rate_up_pct_s + 1.0f, d);
+    }
+
+    /* U8 power-up with the lever outside the neutral zone / stick not centred */
+    {
+        int ok = 0;
+        char t[400] = "";
+        for (int k = 0; k < 2; k++) {
+            sbsim_t x;
+            usb_init_at(&x, 760u + (uint32_t)k, 0.0f, k ? 0.4f : 0.0f, k ? 0.5f : 0.8f);
+            sbsim_run(&x, 5000u, NULL, NULL);
+            bool dis = !x.sb.joy.armed && (x.sb.alarm_bits & SB_ALM_JOY_NOT_CENTERED) && !x.sb.armed;
+            usb_press(&x, USB_TAKE);
+            bool ignored = sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 1.0f;
+            if (k) usb_stick(&x, 0.0f, 100u); else usb_lever(&x, 0.5f, 0.5f, NULL, NULL);
+            sbsim_run(&x, x.t + 1500u, NULL, NULL);
+            bool armed = x.sb.joy.armed && x.sb.armed;
+            ok += dis && ignored && armed;
+            snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s: disarmed + JOYSTICK NOT IN NEUTRAL %s, TAKE ignored %s, "
+                     "armed after neutral %s", k ? "; " : "", k ? "stick at 40 %" : "lever at 80 %",
+                     dis ? "yes" : "NO", ignored ? "yes" : "NO", armed ? "yes" : "NO");
+        }
+        test_report("U8 power-up with lever out of neutral or stick not centred -> disarmed + alarm", ok == 2, t);
+    }
+
+    /* U9 lever through the neutral zone, forward -> reverse: safe gear sequence */
+    {
+        sbsim_t x;
+        events_t ev;
+        memset(&ev, 0, sizeof ev);
+        usb_init(&x, 770u, 0.0f);
+        usb_drive(&x, 1.0f, 30000u);
+        float v = x.w.speed_kn;
+        ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_r_us);
+        usb_lever(&x, 0.0f, 2.0f, ev_watch, &ev);            /* full forward -> full reverse in 0.5 s */
+        sbsim_run(&x, x.t + 20000u, ev_watch, &ev);
+        const gear_config_t *g = &x.sb.cfg.gear;
+        bool order = ev.t_idle >= 0.0f && ev.t_neutral >= ev.t_idle + g->idle_wait_ms * 0.001f - 0.06f &&
+                     ev.t_gear >= ev.t_neutral + g->neutral_wait_ms * 0.001f - 0.06f &&
+                     ev.t_thr_open >= ev.t_gear + g->engage_wait_ms * 0.001f - 0.06f;
+        snprintf(d, sizeof d, "at %.1f kn: idle %.2f s, neutral %.2f s, reverse %.2f s, throttle %.2f s; under-load shifts %d, "
+                 "F/R without neutral %d, max reverse throttle %.1f %% (limit %.0f %%)", v, ev.t_idle, ev.t_neutral, ev.t_gear,
+                 ev.t_thr_open, x.w.shift_under_load, x.w.fr_without_neutral, x.w.max_thr_rev, x.sb.plim.rev_pct);
+        test_report("U9 lever forward -> reverse through the neutral zone: idle, wait, N, wait, R, wait, throttle",
+                    order && x.w.shift_under_load == 0 && x.w.fr_without_neutral == 0 &&
+                    x.w.max_thr_rev <= x.sb.plim.rev_pct + 0.01f, d);
+    }
+
+    /* U10 hand-back refused unless stick centred AND lever in the neutral zone */
+    {
+        sbsim_t x;
+        usb_init(&x, 780u, 0.0f);
+        power_full(&x);
+        press(&x, HAL_BTN_HDG_LOCK);
+        usb_press(&x, USB_TAKE);                     /* MANUAL from HDG LOCK */
+        bool manual = sb_mode(&x.sb) == MODE_MANUAL;
+        s_usb.x = 0.3f;
+        usb_send();
+        usb_press(&x, USB_AUTO);
+        bool r1 = sb_mode(&x.sb) == MODE_MANUAL;
+        s_usb.x = 0.0f;
+        usb_send();
+        usb_lever(&x, 0.7f, 0.5f, NULL, NULL);
+        usb_press(&x, USB_AUTO);
+        bool r2 = sb_mode(&x.sb) == MODE_MANUAL;
+        usb_press(&x, USB_HDG);
+        bool r3 = sb_mode(&x.sb) == MODE_MANUAL;
+        usb_lever(&x, 0.5f, 0.5f, NULL, NULL);
+        sbsim_run(&x, x.t + 300u, NULL, NULL);
+        usb_press(&x, USB_AUTO);
+        bool back = sb_mode(&x.sb) == MODE_HDG_LOCK;
+        snprintf(d, sizeof d, "MANUAL from HDG LOCK %s; AUTO with stick at 30 %%: %s; AUTO with lever at 70 %%: %s; "
+                 "HDG LOCK button with lever at 70 %%: %s; both neutral: back to HDG LOCK %s",
+                 manual ? "yes" : "NO", r1 ? "refused" : "ACCEPTED", r2 ? "refused" : "ACCEPTED",
+                 r3 ? "refused" : "ACCEPTED", back ? "yes" : "NO");
+        test_report("U10 hand-back refused when the stick is not centred or the lever not in neutral",
+                    manual && r1 && r2 && r3 && back, d);
+    }
+
+    /* U11 CONFIRM on the USB button: raise + AUTO start work, refusals still refused */
+    {
+        sbsim_t x;
+        uint16_t code;
+        prog_wp_t wp[5];
+        usb_init(&x, 790u, 0.0f);
+        bool raise = power_step(&x, 0u) && x.sb.plim.fwd_pct == 50.0f;
+        prog5(&x, wp);
+        bool aut = auto_go(&x, wp, 5, PROG_END_STOP);
+        sbsim_t y;
+        usb_init(&y, 791u, 0.0f);
+        /* nothing pending: ignored */
+        uint32_t ign = y.sb.confirm.ignored;
+        usb_press(&y, USB_CONFIRM);
+        bool r_none = y.sb.confirm.ignored == ign + 1u && y.sb.plim.fwd_pct == 30.0f;
+        /* stick not centred (12 %, inside the deadband): refused */
+        sb_power_code(&y.sb, 0u, &code);
+        sb_power_raise(&y.sb, 0u, code);
+        usb_stick(&y, 0.12f, 300u);
+        usb_press(&y, USB_CONFIRM);
+        bool r_stick = y.sb.plim.fwd_pct == 30.0f;
+        usb_stick(&y, 0.0f, 300u);
+        /* too late (> 10 s) */
+        sb_power_code(&y.sb, 0u, &code);
+        sb_power_raise(&y.sb, 0u, code);
+        sbsim_run(&y, y.t + 10500u, NULL, NULL);
+        usb_press(&y, USB_CONFIRM);
+        bool r_late = y.sb.plim.fwd_pct == 30.0f;
+        /* wrong code */
+        sb_power_code(&y.sb, 0u, &code);
+        bool r_code = sb_power_raise(&y.sb, 0u, (uint16_t)(code ^ 0x55u)) != SB_OK;
+        usb_press(&y, USB_CONFIRM);
+        r_code = r_code && y.sb.plim.fwd_pct == 30.0f;
+        /* joystick faulted (throttle unplugged): no CONFIRM possible */
+        s_usb.flags &= (uint8_t)~JSF_F_DEV1;
+        usb_send();
+        sbsim_run(&y, y.t + 500u, NULL, NULL);
+        sb_power_code(&y.sb, 0u, &code);
+        bool r_fault = sb_power_raise(&y.sb, 0u, code) == SB_ERR_JOY_NOT_READY;
+        snprintf(d, sizeof d, "raise 30->50 with USB CONFIRM %s, AUTO start %s; refused: nothing pending %s, stick not centred %s, "
+                 "late %s, wrong code %s, joystick faulted %s",
+                 raise ? "OK" : "FAILED", aut ? "OK" : "FAILED", r_none ? "yes" : "NO", r_stick ? "yes" : "NO",
+                 r_late ? "yes" : "NO", r_code ? "yes" : "NO", r_fault ? "yes" : "NO");
+        test_report("U11 CONFIRM via the USB button: power raise and AUTO start; every refusal case still refused",
+                    raise && aut && r_none && r_stick && r_late && r_code && r_fault, d);
+    }
+
+    /* U12 USB panel functions: STANDBY, HDG LOCK, hat +-1 / +-10; the panel STANDBY still wins */
+    {
+        sbsim_t x;
+        usb_init(&x, 800u, 0.0f);
+        power_full(&x);
+        usb_press(&x, USB_HDG);
+        bool hdg = sb_mode(&x.sb) == MODE_HDG_LOCK;
+        float t0 = x.sb.ap.target_heading;
+        usb_press(&x, JSF_CODE_HAT(1u, 0u, JSF_HAT_RIGHT));
+        usb_press(&x, JSF_CODE_HAT(1u, 0u, JSF_HAT_UP));
+        usb_press(&x, JSF_CODE_HAT(1u, 0u, JSF_HAT_LEFT));
+        usb_press(&x, JSF_CODE_HAT(1u, 0u, JSF_HAT_LEFT));
+        float dh = hdg_err(x.sb.ap.target_heading, t0);
+        usb_press(&x, USB_STANDBY);
+        bool sb_usb = sb_mode(&x.sb) == MODE_STANDBY;
+        usb_press(&x, USB_TAKE);
+        bool man = sb_mode(&x.sb) == MODE_MANUAL;
+        usb_code(USB_TAKE, true);                   /* TAKE held, stick deflected ... */
+        s_usb.x = 0.8f;
+        usb_send();
+        sbsim_run(&x, x.t + 300u, NULL, NULL);
+        sim_hal_press(HAL_BTN_STANDBY);             /* ... panel STANDBY */
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool panel = sb_mode(&x.sb) == MODE_STANDBY;
+        usb_code(USB_TAKE, false);
+        s_usb.x = 0.0f;
+        usb_send();
+        snprintf(d, sizeof d, "USB HDG LOCK %s; hat +1 +10 -1 -1 -> %+.0f deg; USB STANDBY %s; panel STANDBY with stick "
+                 "deflected and TAKE held %s", hdg ? "OK" : "FAILED", dh, sb_usb ? "OK" : "FAILED",
+                 panel ? "wins" : "LOST");
+        test_report("U12 USB HDG LOCK / STANDBY / hat course buttons; the panel STANDBY button always wins",
+                    hdg && fabsf(dh - 9.0f) < 0.01f && sb_usb && man && panel, d);
+    }
+
+    /* U13 button map: duplicates refused, saved with checksum, corrupted copy -> default */
+    {
+        sbsim_t x;
+        joymap_t m;
+        jm_error_t e1, e2, e3, e4, e5;
+        usb_init(&x, 810u, 0.0f);
+        joymap_default(&m);
+        m.source = JOY_SRC_BRIDGE;
+        m.btn[JM_AUTO] = m.btn[JM_TAKE];
+        bool d1 = !sb_joymap_set(&x.sb, &m, true, &e1) && e1 == JM_ERR_DUPLICATE;
+        joymap_default(&m); m.source = JOY_SRC_BRIDGE; m.btn[JM_CONFIRM] = m.btn[JM_AUTO];
+        bool d2 = !sb_joymap_set(&x.sb, &m, true, &e2) && e2 == JM_ERR_DUPLICATE;
+        joymap_default(&m); m.source = JOY_SRC_BRIDGE; m.btn[JM_CONFIRM] = m.btn[JM_TAKE];
+        bool d3 = !sb_joymap_set(&x.sb, &m, true, &e3) && e3 == JM_ERR_DUPLICATE;
+        joymap_default(&m); m.source = JOY_SRC_BRIDGE; m.btn[JM_TAKE] = 0u;
+        bool d4 = !sb_joymap_set(&x.sb, &m, true, &e4) && e4 == JM_ERR_MISSING;
+        /* a good new map: CONFIRM moved to TWCS button 5 */
+        joymap_default(&m); m.source = JOY_SRC_BRIDGE; m.btn[JM_CONFIRM] = JSF_CODE_BTN(1u, 4u);
+        bool good = sb_joymap_set(&x.sb, &m, true, &e5);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);       /* joystick re-arms (centred) */
+        usb_press(&x, USB_TAKE);                     /* not in STANDBY now */
+        jm_error_t e6;
+        bool not_sb = !sb_joymap_set(&x.sb, &m, true, &e6) && e6 == JM_OK;
+        sb_config_t c = x.sb.cfg;
+        sb_init(&x.sb, &c);                          /* power cycle: map loaded back */
+        bool kept = x.sb.jmap.btn[JM_CONFIRM] == JSF_CODE_BTN(1u, 4u) && x.sb.jmap.source == JOY_SRC_BRIDGE;
+        FILE *f = fopen("nv4.bin", "r+b");
+        if (f) { fseek(f, 20, SEEK_SET); fputc(0x77, f); fclose(f); }
+        sb_init(&x.sb, &c);
+        bool deflt = x.sb.jmap.source == JOY_SRC_ANALOG;
+        snprintf(d, sizeof d, "refused: TAKE=AUTO %s, AUTO=CONFIRM %s, TAKE=CONFIRM %s, TAKE missing %s, outside STANDBY %s; "
+                 "good map %s and kept after power cycle %s; corrupted copy -> factory default %s",
+                 d1 ? "yes" : "NO", d2 ? "yes" : "NO", d3 ? "yes" : "NO", d4 ? "yes" : "NO", not_sb ? "yes" : "NO",
+                 good ? "accepted" : "REFUSED", kept ? "yes" : "NO", deflt ? "yes" : "NO");
+        test_report("U13 button map: shared TAKE / AUTO / CONFIRM refused, stored with checksum",
+                    d1 && d2 && d3 && d4 && good && not_sb && kept && deflt, d);
+        remove("nv4.bin");
+    }
+
+    /* U14 bridge still starting after power-up: not ready, no alarm; never seen -> fault */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 820u, 90.0f, 0.0f, NULL);
+        joymap_t m;
+        jm_error_t e;
+        joymap_default(&m);
+        m.source = JOY_SRC_BRIDGE;
+        sim_hal_bridge_mode(true);
+        s_usb.on = true;
+        s_usb.lever = 0.5f;
+        s_usb.hat1 = 15u;
+        s_usb.flags = JSF_F_HUB;                     /* hub up, joysticks still enumerating */
+        usb_send();
+        (void)sb_joymap_set(&x.sb, &m, false, &e);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bool quiet = !x.sb.joy.fault && !(x.sb.alarm_bits & SB_ALM_JOY_FAULT) && !x.sb.joy.armed;
+        s_usb.flags = JSF_F_DEV0 | JSF_F_DEV1 | JSF_F_HUB;
+        usb_send();
+        sbsim_run(&x, 4500u, NULL, NULL);
+        bool up = x.sb.joy.armed && x.sb.armed;
+        sbsim_t y;
+        sbsim_init(&y, 821u, 90.0f, 0.0f, NULL);
+        sim_hal_bridge_mode(true);
+        sim_hal_bridge_fault(SIM_BR_STOP);           /* bridge never sends */
+        (void)sb_joymap_set(&y.sb, &m, false, &e);
+        sbsim_run(&y, 7000u, NULL, NULL);
+        bool dead = y.sb.joy.fault && (y.sb.alarm_bits & SB_ALM_JOY_FAULT) && y.sb.joy.fault_axis == JOY_WHY_TIMEOUT;
+        snprintf(d, sizeof d, "USB enumeration (3 s): no fault, no alarm, not armed %s; joysticks up: armed %s; "
+                 "bridge silent 5 s after power-up: JOYSTICK FAULT %s", quiet ? "yes" : "NO", up ? "yes" : "NO",
+                 dead ? "yes" : "NO");
+        test_report("U14 bridge start-up: quiet while USB enumerates, fault if it never comes", quiet && up && dead, d);
+    }
+
+    /* U15 latency: TAKE on the joystick -> MANUAL on the AURIX, simulated
+     * bridge (USB poll 1 ms + hub 1 ms, 10 ms frames, 2.5 ms UART), random
+     * phases of the press, the bridge frame tick and the 20 Hz loop */
+    {
+        uint32_t rng = 12345u, n = 0u;
+        int32_t lmin = 100000, lmax = -1;
+        double sum = 0.0;
+        int32_t hist[200];
+        int bad = 0;
+        for (int k = 0; k < 200; k++) {
+            sbsim_t x;
+            lat_t l;
+            usb_init(&x, 900u + (uint32_t)k, 0.0f);
+            rng = rng * 1103515245u + 12345u;
+            sim_hal_bridge_timing(2u, 3u, (rng >> 16) % JSF_PERIOD_MS);
+            rng = rng * 1103515245u + 12345u;
+            sbsim_run(&x, x.t + 200u + (rng >> 16) % AP_PERIOD_MS, NULL, NULL);
+            l.t_press = x.t;
+            l.lat = -1;
+            sim_hal_set_time_ms(x.t);               /* the press happens now (not at the last physics step) */
+            usb_code(USB_TAKE, true);
+            for (int i = 0; i < 400 && l.lat < 0; i++) sbsim_run(&x, x.t + 1u, lat_watch, &l);
+            usb_code(USB_TAKE, false);
+            if (l.lat < 0) { bad++; continue; }
+            hist[n++] = l.lat;
+            sum += l.lat;
+            if (l.lat < lmin) lmin = l.lat;
+            if (l.lat > lmax) lmax = l.lat;
+        }
+        /* 95th percentile */
+        for (uint32_t i = 1; i < n; i++)
+            for (uint32_t k = i; k > 0 && hist[k - 1] > hist[k]; k--) { int32_t t = hist[k]; hist[k] = hist[k - 1]; hist[k - 1] = t; }
+        int32_t p95 = n ? hist[(n * 95u) / 100u] : -1;
+        snprintf(d, sizeof d, "%lu presses: min %ld ms, average %.1f ms, 95 %% %ld ms, max %ld ms (target < 100 ms; "
+                 "worst case by design 2 + 10 + 3 + 50 = 65 ms), missed %d",
+                 (unsigned long)n, (long)lmin, n ? sum / n : 0.0, (long)p95, (long)lmax, bad);
+        test_report("U15 latency TAKE button -> mode change, through the bridge and hub", bad == 0 && n == 200u && lmax < 100, d);
+    }
+
+    /* U16 ground-station link: source switch, map get / set / duplicate refused,
+     * live telemetry (link status, lever, buttons), raw frame for the mapping routine */
+    {
+        static pcsim_t p;
+        uint8_t body[32];
+        joymap_t m;
+        pcsim_init(&p, 830u);
+        sim_hal_bridge_mode(true);
+        s_usb.on = true;
+        s_usb.lever = 0.5f;
+        s_usb.hat1 = 15u;
+        s_usb.flags = JSF_F_DEV0 | JSF_F_DEV1 | JSF_F_HUB;
+        usb_send();
+        pc_run(&p, 500u);
+        /* switch to the USB bridge (default T.16000M + TWCS map), saved */
+        joymap_default(&m);
+        m.source = JOY_SRC_BRIDGE;
+        proto_wr_t w;
+        proto_wr_init(&w, body, sizeof body);
+        proto_wr_u8(&w, m.source); proto_wr_u8(&w, m.thr_input); proto_wr_u8(&w, m.axis_steer); proto_wr_u8(&w, m.axis_thr);
+        proto_wr_u8(&w, m.inv_steer); proto_wr_u8(&w, m.inv_thr);
+        for (int i = 0; i < JM_COUNT; i++) proto_wr_u8(&w, m.btn[i]);
+        proto_wr_f32(&w, m.nz_lo); proto_wr_f32(&w, m.nz_hi); proto_wr_f32(&w, m.lever_delta); proto_wr_f32(&w, m.pickup_win);
+        proto_wr_u8(&w, 1u);
+        uint8_t r_set = pc_cmd(&p, PROTO_T_JOYMAP_SET, body, (uint8_t)w.n);
+        pc_run(&p, 1500u);
+        /* telemetry tail (after the 172 bytes before this feature) */
+        proto_rd_t r;
+        proto_rd_init(&r, p.tm, p.tm_len);
+        r.n = 172u;
+        uint8_t src = proto_rd_u8(&r), fl = proto_rd_u8(&r), fps = proto_rd_u8(&r);
+        (void)proto_rd_u16(&r);
+        uint8_t why = proto_rd_u8(&r);
+        uint16_t lever = proto_rd_u16(&r);
+        (void)proto_rd_u16(&r);
+        uint32_t b0 = proto_rd_u32(&r);
+        (void)proto_rd_u32(&r);
+        (void)proto_rd_u8(&r);
+        uint8_t nzl = proto_rd_u8(&r), nzh = proto_rd_u8(&r);
+        bool tel = p.tm_len == 193u && src == 1u && (fl & 0x13u) == 0x13u && fps >= 95u && why == 0u &&
+                   lever == 500u && nzl == 45u && nzh == 55u;
+        /* TAKE held: telemetry + raw frame show stick button 1 */
+        usb_code(USB_TAKE, true);
+        pc_run(&p, 200u);
+        uint8_t r_raw = pc_cmd(&p, PROTO_T_JOY_RAW_GET, NULL, 0u);
+        proto_rd_init(&r, p.tm, p.tm_len);
+        r.n = 172u + 10u;
+        b0 = proto_rd_u32(&r);
+        proto_rd_init(&r, p.raw, p.raw_len);
+        r.n = 2u + 16u;
+        uint32_t raw_b0 = proto_rd_u32(&r);
+        usb_code(USB_TAKE, false);
+        pc_run(&p, 300u);
+        bool live = r_raw == PROTO_R_OK && p.raw_len == 44u && (b0 & 1u) && (raw_b0 & 1u);
+        /* map change outside STANDBY refused (TAKE made it MANUAL) */
+        uint8_t r_nsb = pc_cmd(&p, PROTO_T_JOYMAP_SET, body, (uint8_t)w.n);
+        sim_hal_press(HAL_BTN_STANDBY);
+        pc_run(&p, 500u);
+        /* duplicate TAKE = AUTO refused through the link, map unchanged */
+        body[6 + JM_AUTO] = body[6 + JM_TAKE];
+        uint8_t r_dup = pc_cmd(&p, PROTO_T_JOYMAP_SET, body, (uint8_t)w.n);
+        uint8_t r_get = pc_cmd(&p, PROTO_T_JOYMAP_GET, NULL, 0u);
+        bool unchanged = p.jm_len == 31u && p.jm[0] == 1u && p.jm[6 + JM_AUTO] == JSF_CODE_BTN(1u, 0u);
+        snprintf(d, sizeof d, "switch to USB %s; telemetry %u bytes: source %u, stick+throttle connected %s, %u frames/s, "
+                 "lever %.1f %%, neutral zone %u-%u %%; TAKE seen in telemetry + raw frame %s; in MANUAL: result %u (9 = STANDBY only); "
+                 "TAKE=AUTO map: result %u (18 = shared button), map unchanged %s",
+                 r_set == PROTO_R_OK ? "OK" : "FAILED", (unsigned)p.tm_len, (unsigned)src, (fl & 3u) == 3u ? "yes" : "NO",
+                 (unsigned)fps, lever / 10.0f, (unsigned)nzl, (unsigned)nzh, live ? "yes" : "NO", (unsigned)r_nsb, (unsigned)r_dup,
+                 unchanged && r_get == PROTO_R_OK ? "yes" : "NO");
+        test_report("U16 ground-station link: source, map get/set, shared button refused, live joystick status",
+                    r_set == PROTO_R_OK && tel && live && r_nsb == PROTO_R_STANDBY_ONLY && r_dup == PROTO_R_MAP_DUPLICATE && r_get == PROTO_R_OK && unchanged, d);
+        remove("nv4.bin");
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
+
+void sb_usb_tests(void)
+{
+    usb_joystick_tests();
+}
 
 void sb_tests(void)
 {
@@ -3829,6 +4655,7 @@ void sb_tests(void)
     modes_tests();
     link_tests();
     joystick_tests();
+    usb_joystick_tests();
     gps_denied();
     fixes();
     phase2();

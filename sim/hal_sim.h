@@ -59,6 +59,22 @@ void     sim_hal_set_water_speed(bool fitted, float kn);
 void     sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob);
 void     sim_hal_joystick_confirm(bool pressed);     /* CONFIRM button held */
 
+/* USB joystick bridge. Bridge mode: no analog joystick; the joystick state
+ * above is sent as bridge frames (100 Hz) - or a state set directly. */
+#include "jsframe.h"
+#define SIM_BR_STOP    0x1u     /* no frames (cable cut / bridge dead) */
+#define SIM_BR_CORRUPT 0x2u     /* every frame has a flipped bit (CRC error) */
+#define SIM_BR_FREEZE  0x4u     /* sequence counter stuck (bridge repeating) */
+#define SIM_BR_CORRUPT_SOME 0x8u /* one frame in 50 corrupted */
+void     sim_hal_bridge_mode(bool on);
+bool     sim_hal_bridge_on(void);
+void     sim_hal_bridge_set(const jsf_t *f);          /* direct state (seq ignored) */
+void     sim_hal_bridge_analog(void);                 /* back to the analog joystick state */
+void     sim_hal_bridge_fault(uint32_t bits);
+/* USB poll + hub delay, UART transfer time, phase of the next frame tick */
+void     sim_hal_bridge_timing(uint32_t usb_ms, uint32_t xfer_ms, uint32_t phase_ms);
+uint32_t sim_hal_bridge_frames(void);
+
 /* Ground-station link byte streams (PC side of hal_link_read / write). */
 uint32_t sim_hal_link_rx_push(const uint8_t *buf, uint32_t len);   /* PC -> boat */
 uint32_t sim_hal_link_tx_pop(uint8_t *buf, uint32_t max);          /* boat -> PC */

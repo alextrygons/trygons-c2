@@ -67,7 +67,7 @@ typedef struct {
 } jsf_t;
 
 typedef struct {
-    uint8_t  buf[256];
+    uint8_t  buf[512];
     uint32_t head, tail;
     uint32_t frames, crc_errors, junk;
 } jsf_rx_t;

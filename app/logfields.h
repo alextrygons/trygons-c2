@@ -98,7 +98,7 @@
     X(joy_raw_x,     H, 1,     s->joy.raw[0]) \
     X(joy_raw_y,     H, 1,     s->joy.raw[1]) \
     X(joy_buttons,   B, 1,     v.joy_buttons) \
-    X(joy_status,    B, 1,     v.joy_status) \
+    X(joy_status,    B, 1,     v.joy_status)     X(joy_lever,     H, 1000,  s->joy.lever_in)     X(joy_src,       B, 1,     v.joy_src)     X(joy_why,       B, 1,     s->joy.fault ? s->joy.fault_axis : s->jb.why) \
     X(panel_buttons, B, 1,     s->buttons_now) \
     X(confirm_kind,  B, 1,     s->confirm.kind) \
     /* timing, logging */ \

@@ -62,6 +62,8 @@
 
 #include "autopilot.h"
 #include "gear.h"
+#include "joybridge.h"
+#include "joymap.h"
 #include "joystick.h"
 #include "hal.h"
 #include "dr.h"
@@ -172,7 +174,25 @@ typedef struct {
     joy_config_t joy;
     float    joy_max_throttle_pct;      /* stick full = this much throttle demand, F and R (100;
                                            the power limit and the reverse limit still apply) */
+    jb_config_t jb;                     /* USB joystick bridge checks (joybridge.c) */
 } sb_config_t;
+
+/* One side (forward / reverse) of the non-returning throttle lever:
+ * travel u 0 (edge of the neutral zone) .. 1 (end) -> throttle, piecewise
+ * linear through the anchor (u, d), ending at lim. Standard = anchor (1, lim). */
+typedef struct {
+    float u, d, lim;
+} sb_lever_side_t;
+
+typedef struct {
+    bool     pickup;            /* waiting for the lever to match the throttle */
+    float    hold_pct;          /* throttle held meanwhile */
+    gear_t   hold_gear;
+    float    target;            /* lever position to pick up at, -1 = neutral zone */
+    float    prev;              /* lever last step (crossing detection) */
+    bool     have_prev;
+    sb_lever_side_t fwd, rev;
+} sb_lever_t;
 
 typedef struct {
     hal_gps_t last;         /* last message */
@@ -298,7 +318,10 @@ typedef struct {
     dr_t        dr;            /* position estimate (GPS / dead reckoning) */
     bool        gps_new_msg;   /* a GPS message arrived this step */
     uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */
-    joy_t       joy;           /* hard-wired joystick */
+    joy_t       joy;           /* joystick (analog or USB, same interface) */
+    joymap_t    jmap;          /* joystick source + USB button map (NV slot 4) */
+    jb_t        jb;            /* USB joystick bridge input */
+    sb_lever_t  lev;           /* USB throttle lever: mapping and pickup */
     sb_mode_t   manual_from;   /* mode the joystick took over from */
     bool        joy_fault_seen, joy_nc_seen;
     uint32_t    chirp_ms;      /* short alarm chirp still to sound */
@@ -401,5 +424,11 @@ sb_status_t sb_status(const sb_t *s);
  * corners, release, finish -> stored with checksum. */
 bool sb_joystick_cal_start(sb_t *s);
 bool sb_joystick_cal_finish(sb_t *s);
+
+/* Joystick source + USB button map: STANDBY only, checked (TAKE / AUTO /
+ * CONFIRM mapped, no shared buttons ...), then used at once (joystick
+ * disarmed until centred) and, if save, stored with checksum (NV slot 4).
+ * False with *err = JM_OK: not in STANDBY. */
+bool sb_joymap_set(sb_t *s, const joymap_t *m, bool save, jm_error_t *err);
 
 #endif /* SMALLBOAT_H */

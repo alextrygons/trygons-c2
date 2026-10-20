@@ -67,9 +67,12 @@ int training_trace(uint32_t seed, int set, int ss);
 
 /* PASS/FAIL line for the "all" run (sim_main.c). */
 void test_report(const char *name, bool ok, const char *detail);
+void test_na(const char *name, const char *why);
 
 /* Small-boat tests, all phases (sim_sb.c). */
 void sb_tests(void);
+void sb_usb_tests(void);          /* only the USB joystick tests */
+void sb_set_bridge(bool on);      /* all tests through the USB joystick bridge */
 
 /* Python log round-trip test data (sim_sb.c) */
 int sb_logtest(const char *dir);
@@ -78,6 +81,6 @@ int sb_logtest(const char *dir);
 int sb_timing_report(void);
 
 /* sim_server.c: simulated boat behind TCP for the ground station */
-int sim_server(int port, double speed);
+int sim_server(int port, double speed, bool usb);
 
 #endif /* SIM_RUN_H */

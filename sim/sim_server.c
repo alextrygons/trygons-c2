@@ -143,6 +143,23 @@ static uint8_t sim_cmd(void *ctx, const proto_frame_t *f)
         sim_hal_press((hal_button_t)b);
         return PROTO_R_OK;
     }
+    case PROTO_T_SIM_BRIDGE: {
+        /* the USB joysticks behind the simulated bridge (used when the boat's
+         * joystick source is "USB bridge") */
+        if (f->len != 1u + 2u * (JSF_AXES * 2u + 5u) + 1u) return PROTO_R_BAD_LENGTH;
+        jsf_t j;
+        memset(&j, 0, sizeof j);
+        j.flags = proto_rd_u8(&r);
+        for (int d = 0; d < JSF_DEVS; d++) {
+            for (int a = 0; a < JSF_AXES; a++) j.dev[d].axis[a] = (int16_t)proto_rd_u16(&r);
+            j.dev[d].buttons = proto_rd_u32(&r);
+            j.dev[d].hats = proto_rd_u8(&r);
+        }
+        uint8_t fault = proto_rd_u8(&r);
+        sim_hal_bridge_set(&j);
+        sim_hal_bridge_fault(fault);
+        return PROTO_R_OK;
+    }
     case PROTO_T_SIM_GPS:
         if (f->len != 1u) return PROTO_R_BAD_LENGTH;
         x->w.gps_fail = proto_rd_u8(&r) != 0u;
@@ -154,11 +171,19 @@ static uint8_t sim_cmd(void *ctx, const proto_frame_t *f)
 
 /* --- main loop ------------------------------------------------------------- */
 
-static void sim_init(server_t *x, uint32_t seed)
+static void sim_init(server_t *x, uint32_t seed, bool usb)
 {
     sb_config_t c;
     memset(x, 0, sizeof *x);
     remove("nv1.bin");                          /* default joystick calibration */
+    remove("nv4.bin");                          /* factory joystick map ... */
+    if (usb) {                                  /* ... or the USB T.16000M + TWCS */
+        joymap_t m;
+        joymap_default(&m);
+        m.source = JOY_SRC_BRIDGE;
+        joymap_seal(&m);
+        (void)hal_nv_save(HAL_NV_SLOT_JOYMAP, &m, (uint32_t)sizeof m);
+    }
     world_init(&x->w, seed, 90.0f, 0.0f);
     sim_hal_fail_heading(false);
     sim_hal_set_rudder_feedback(false);
@@ -197,6 +222,9 @@ static void sim_advance(server_t *x, uint32_t until_ms)
 {
     while (x->t < until_ms) {
         world_publish(&x->w, x->t);
+        /* the simulated bridge sends frames while the boat uses the USB source */
+        bool usb = x->sb.jmap.source == JOY_SRC_BRIDGE;
+        if (usb != sim_hal_bridge_on()) sim_hal_bridge_mode(usb);
         if (x->t >= x->next_ctrl) {
             x->next_ctrl += AP_PERIOD_MS;
             uint32_t t0 = hal_micros();
@@ -218,7 +246,7 @@ static void sim_advance(server_t *x, uint32_t until_ms)
     }
 }
 
-int sim_server(int port, double speed)
+int sim_server(int port, double speed, bool usb)
 {
     server_t *x = &g_srv;
 #ifdef _WIN32
@@ -241,7 +269,7 @@ int sim_server(int port, double speed)
     }
     set_nonblocking(ls);
 
-    sim_init(x, 4242u);
+    sim_init(x, 4242u, usb);
     printf("Simulated boat: listening on 127.0.0.1:%d, speed x%.1f. Ctrl+C to stop.\n", port, speed);
     fflush(stdout);
 

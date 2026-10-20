@@ -142,11 +142,18 @@ typedef struct {
 
 bool hal_read_joystick(hal_joystick_t *j);
 
+/* USB joystick bridge (Teensy 4.1, bridge/): UART 230400 8N1, 3.3 V,
+ * frames in app/jsframe.h, ~100 frames/s. Copies up to max bytes received
+ * since the last call into buf and returns how many (0 = nothing new).
+ * Only used when the joystick source is "USB bridge" (joymap.h). */
+uint32_t hal_bridge_read(uint8_t *buf, uint32_t max);
+
 /* Small non-volatile storage slots (e.g. slot 1 = joystick calibration).
  * The app adds its own version + checksum. */
 #define HAL_NV_SLOT_JOYSTICK  1u
 #define HAL_NV_SLOT_PROGRAM   2u     /* AUTO waypoint program */
 #define HAL_NV_SLOT_BOOT      3u     /* boot counter (log file names) */
+#define HAL_NV_SLOT_JOYMAP    4u     /* joystick source + button map (joymap.c) */
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size);
 bool hal_nv_load(uint8_t slot, void *data, uint32_t size);
 

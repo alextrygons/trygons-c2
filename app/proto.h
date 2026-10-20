@@ -42,6 +42,9 @@
 #define PROTO_T_PARAM_SET     0x18u   /* u8 id, f32 value                     */
 #define PROTO_T_JOY_CAL       0x19u   /* u8 0 start / 1 finish                */
 #define PROTO_T_ALARM_ACK     0x1Au   /* -  acknowledge alarms (any mode)      */
+#define PROTO_T_JOYMAP_GET    0x1Bu   /* -  -> JOYMAP_VALUE                     */
+#define PROTO_T_JOYMAP_SET    0x1Cu   /* joymap body (see link.c), u8 save; STANDBY only */
+#define PROTO_T_JOY_RAW_GET   0x1Du   /* -  -> JOY_RAW (USB bridge, for the button mapping) */
 #define PROTO_T_PROG_BEGIN    0x20u   /* u8 n (1..50), u8 final action        */
 #define PROTO_T_PROG_WP       0x21u   /* u8 index, i32 lat, i32 lon, f32 kn, f32 radius m, u8 action */
 #define PROTO_T_PROG_COMMIT   0x22u   /* -  validate + store; NACK -> PROG_ERROR frame too */
@@ -57,6 +60,7 @@
 #define PROTO_T_SIM_JOYSTICK  0x70u   /* u8 fitted, f32 x, f32 y, u8 take, u8 auto, u8 confirm */
 #define PROTO_T_SIM_GPS       0x71u   /* u8 1 = GPS fails, 0 = GPS back       */
 #define PROTO_T_SIM_BUTTON    0x72u   /* u8 panel button (hal_button_t)       */
+#define PROTO_T_SIM_BRIDGE    0x73u   /* u8 flags, 2 x (i16 axis[8], u32 buttons, u8 hats), u8 fault bits */
 #define PROTO_T_SIM_LAST      0x7Fu
 
 /* boat -> PC */
@@ -65,6 +69,8 @@
 #define PROTO_T_PARAM_VALUE   0x82u   /* u8 id, f32 value, f32 min, f32 max, char name[16] */
 #define PROTO_T_PROG_WP_VALUE 0x83u   /* u8 index, u8 n, u8 final, i32 lat, i32 lon, f32 kn, f32 radius, u8 action */
 #define PROTO_T_PROG_ERROR    0x84u   /* u8 prog_error_t, u8 waypoint index (0xFF = none) */
+#define PROTO_T_JOYMAP_VALUE  0x85u   /* joymap body (see link.c)             */
+#define PROTO_T_JOY_RAW       0x86u   /* u8 flags, u8 seq, 2 x (i16 axis[8], u32 buttons, u8 hats) */
 
 /* ACK result: 0 = accepted, else why refused (NACK) */
 #define PROTO_R_OK            0u
@@ -85,6 +91,9 @@
 #define PROTO_R_WRONG_CODE    15u     /* power raise: code wrong / expired (ask for a new one) */
 #define PROTO_R_AT_MAX        16u     /* power raise: already at the top step */
 #define PROTO_R_ALARM_ACTIVE  17u     /* power raise: acknowledge the alarm first */
+#define PROTO_R_MAP_DUPLICATE 18u     /* button map: two functions share a button */
+#define PROTO_R_MAP_MISSING   19u     /* button map: TAKE, AUTO and CONFIRM must be mapped */
+#define PROTO_R_MAP_BAD       20u     /* button map: bad code / neutral zone */
 
 typedef struct {
     uint8_t type;
@@ -143,6 +152,7 @@ void proto_wr_latlon(proto_wr_t *w, double deg);     /* int32, 1e-7 deg */
 void     proto_rd_init(proto_rd_t *r, const uint8_t *buf, size_t len);
 uint8_t  proto_rd_u8(proto_rd_t *r);
 int8_t   proto_rd_i8(proto_rd_t *r);
+uint16_t proto_rd_u16(proto_rd_t *r);
 uint32_t proto_rd_u32(proto_rd_t *r);
 int32_t  proto_rd_i32(proto_rd_t *r);
 float    proto_rd_f32(proto_rd_t *r);

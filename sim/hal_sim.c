@@ -278,9 +278,144 @@ void sim_hal_set_water_speed(bool fitted, float kn)
 static bool           s_joy_fitted = false;
 static hal_joystick_t s_joy;
 
+/* --- USB joystick bridge (simulated Teensy + hub) ---
+ * Bridge mode: the analog joystick state (sim_hal_set_joystick) is sent as
+ * USB bridge frames instead (stick X/Y -> device 0 axes 0/1, TAKE -> stick
+ * button 1, AUTO -> throttle button 1, CONFIRM -> throttle button 4), or a
+ * state set directly with sim_hal_bridge_set. Timing model:
+ *   joystick change -> USB poll (1 ms) + hub (1 ms) -> bridge samples at its
+ *   10 ms frame tick -> UART transfer 57 bytes at 230400 baud (2.5 ms, 3 ms
+ *   here) -> hal_bridge_read. */
+#define BR_HIST 16
+static bool     s_br_on, s_br_direct;
+static struct { uint32_t t_ms; jsf_t f; } s_br_hist[BR_HIST];   /* state changes, newest last */
+static int      s_br_n;
+static uint32_t s_br_next_ms;           /* next frame tick */
+static uint8_t  s_br_seq;
+static uint32_t s_br_fault;
+static uint32_t s_br_usb_ms = 2u, s_br_xfer_ms = 3u, s_br_period_ms = JSF_PERIOD_MS;
+static uint8_t  s_br_out[2048];
+static uint32_t s_br_head, s_br_tail;
+static uint32_t s_br_frames;
+
+static int16_t br_axis(uint16_t raw)
+{
+    if (raw < 100u || raw > 3995u) return JSF_AXIS_NONE;        /* wire break -> invalid value */
+    float v = ((float)raw - 2048.0f) / (raw >= 2048u ? (3754.0f - 2048.0f) : (2048.0f - 341.0f));
+    if (v > 1.0f) v = 1.0f;
+    if (v < -1.0f) v = -1.0f;
+    return (int16_t)(v * 32767.0f);
+}
+
+static void br_record(const jsf_t *f)
+{
+    if (s_br_n == BR_HIST) {
+        memmove(&s_br_hist[0], &s_br_hist[1], sizeof s_br_hist[0] * (BR_HIST - 1));
+        s_br_n--;
+    }
+    s_br_hist[s_br_n].t_ms = s_time_ms;
+    s_br_hist[s_br_n].f = *f;
+    s_br_n++;
+}
+
+static void br_from_analog(void)
+{
+    if (!s_br_on || s_br_direct) return;
+    jsf_t f;
+    memset(&f, 0, sizeof f);
+    jsf_dev_clear(&f.dev[0]);
+    jsf_dev_clear(&f.dev[1]);
+    if (s_joy_fitted) {
+        f.flags = JSF_F_DEV0 | JSF_F_DEV1 | JSF_F_HUB;
+        f.dev[0].axis[0] = br_axis(s_joy.x_raw);
+        f.dev[0].axis[1] = br_axis(s_joy.y_raw);
+        f.dev[0].buttons = s_joy.take ? 1u : 0u;
+        f.dev[1].axis[2] = 0;
+        f.dev[1].buttons = (s_joy.autob ? 1u : 0u) | (s_joy.confirm ? 8u : 0u);
+        f.dev[0].vid = f.dev[1].vid = 0x044Fu;
+        f.dev[0].pid = 0xB10Au;
+        f.dev[1].pid = 0xB687u;
+    }
+    br_record(&f);
+}
+
+void sim_hal_bridge_mode(bool on)
+{
+    s_br_on = on;
+    s_br_direct = false;
+    s_br_n = 0;
+    s_br_fault = 0u;
+    s_br_head = s_br_tail = 0u;
+    s_br_next_ms = s_time_ms;
+    s_br_frames = 0u;
+    br_from_analog();
+}
+
+bool sim_hal_bridge_on(void) { return s_br_on; }
+
+void sim_hal_bridge_set(const jsf_t *f)
+{
+    s_br_direct = true;
+    br_record(f);
+}
+
+void sim_hal_bridge_analog(void)
+{
+    s_br_direct = false;
+    br_from_analog();
+}
+
+void sim_hal_bridge_fault(uint32_t bits) { s_br_fault = bits; }
+
+void sim_hal_bridge_timing(uint32_t usb_ms, uint32_t xfer_ms, uint32_t phase_ms)
+{
+    s_br_usb_ms = usb_ms;
+    s_br_xfer_ms = xfer_ms;
+    s_br_next_ms = s_time_ms + phase_ms;
+}
+
+uint32_t sim_hal_bridge_frames(void) { return s_br_frames; }
+
+static const jsf_t *br_state_at(uint32_t t_ms)
+{
+    static jsf_t none;
+    for (int i = s_br_n - 1; i >= 0; i--)
+        if ((int32_t)(t_ms - s_br_hist[i].t_ms) >= 0) return &s_br_hist[i].f;
+    if (s_br_n > 0) return &s_br_hist[0].f;
+    memset(&none, 0, sizeof none);
+    jsf_dev_clear(&none.dev[0]);
+    jsf_dev_clear(&none.dev[1]);
+    return &none;
+}
+
+uint32_t hal_bridge_read(uint8_t *buf, uint32_t max)
+{
+    if (!s_br_on) return 0u;
+    /* frames whose last byte has arrived by now */
+    while ((int32_t)(s_time_ms - (s_br_next_ms + s_br_xfer_ms)) >= 0) {
+        uint32_t tick = s_br_next_ms;
+        s_br_next_ms += s_br_period_ms;
+        jsf_t f = *br_state_at(tick - s_br_usb_ms);     /* what the bridge had read over USB */
+        if (!(s_br_fault & SIM_BR_FREEZE)) s_br_seq++;
+        f.seq = s_br_seq;
+        if (s_br_fault & SIM_BR_STOP) continue;
+        uint8_t b[JSF_FRAME_LEN];
+        size_t n = jsf_encode(&f, b);
+        if ((s_br_fault & SIM_BR_CORRUPT) || ((s_br_fault & SIM_BR_CORRUPT_SOME) && s_br_seq % 50u == 0u)) b[10] ^= 0x40u;
+        for (size_t i = 0; i < n; i++) {
+            if (s_br_head - s_br_tail >= sizeof s_br_out) s_br_tail++;
+            s_br_out[s_br_head++ % sizeof s_br_out] = b[i];
+        }
+        s_br_frames++;
+    }
+    uint32_t k = 0u;
+    while (k < max && s_br_tail != s_br_head) buf[k++] = s_br_out[s_br_tail++ % sizeof s_br_out];
+    return k;
+}
+
 bool hal_read_joystick(hal_joystick_t *j)
 {
-    if (!s_joy_fitted) return false;
+    if (!s_joy_fitted || s_br_on) return false;     /* bridge mode: no analog joystick */
     *j = s_joy;
     return true;
 }
@@ -292,13 +427,14 @@ void sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take
     s_joy.y_raw = y_raw;
     s_joy.take = take;
     s_joy.autob = autob;
+    br_from_analog();
 }
 
 void sim_hal_joystick_confirm(bool pressed)
 {
     s_joy.confirm = pressed;
+    br_from_analog();
 }
-
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size)
 {
     char name[32];

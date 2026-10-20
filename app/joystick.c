@@ -1,5 +1,6 @@
 /*
- * joystick.c - Hard-wired joystick: calibration, faults, arming, engage.
+ * joystick.c - Joystick: analog source (calibration, wire break), and the
+ * common part for every source (faults, arming, engage, lever, buttons).
  * See joystick.h.
  */
 #include "joystick.h"
@@ -19,6 +20,9 @@ void joy_default_config(joy_config_t *c)
     c->fault_high = 3995u;
     c->jump_max = 2600u;
     c->fault_clear_ms = 2000u;
+    c->nz_lo = 0.45f;
+    c->nz_hi = 0.55f;
+    c->lever_delta = 0.10f;
 }
 
 static uint32_t crc32(const uint8_t *p, size_t n)
@@ -79,54 +83,110 @@ static float norm_axis(const joy_cal_t *cal, int a, uint16_t raw)
     return (v > 1.0f) ? 1.0f : (v < -1.0f) ? -1.0f : v;
 }
 
-bool joy_centered(const joy_t *j)
+static float nz_mid(const joy_t *j)
+{
+    return 0.5f * (j->cfg.nz_lo + j->cfg.nz_hi);
+}
+
+bool joy_lever_neutral(const joy_t *j, float lever)
+{
+    return lever >= j->cfg.nz_lo && lever <= j->cfg.nz_hi;
+}
+
+bool joy_stick_centered(const joy_t *j)
 {
     return j->present && !j->fault &&
            fabsf(j->x) < j->cfg.center_tol && fabsf(j->y) < j->cfg.center_tol;
 }
 
+bool joy_centered(const joy_t *j)
+{
+    return joy_stick_centered(j) && (!j->has_lever || joy_lever_neutral(j, j->lever));
+}
+
+void joy_lever_ref_here(joy_t *j)
+{
+    j->lever_ref = j->lever_in;
+    j->deflect_l_ms = 0u;
+    j->lever_moved = false;
+}
+
+/* Analog source: wire break / short (raw at the rails), impossible jump
+ * between steps, calibration -> joy_update. */
 void joy_step(joy_t *j, const hal_joystick_t *in, uint32_t dt_ms)
 {
     const joy_config_t *c = &j->cfg;
+    joy_input_t u;
+
+    memset(&u, 0, sizeof u);
+    u.present = (in != NULL);
+    u.ready = true;
+    if (in) {
+        uint16_t raw[2] = { in->x_raw, in->y_raw };
+        for (int a = 0; a < 2; a++) {
+            bool out = raw[a] < c->fault_low || raw[a] > c->fault_high;
+            bool jump = j->have_last && (uint16_t)abs((int)raw[a] - (int)j->raw[a]) > c->jump_max;
+            if ((out || jump) && !u.bad) {
+                u.bad = true;
+                u.why = (uint8_t)(a == 0 ? JOY_WHY_X : JOY_WHY_Y);
+            }
+            if (j->cal_active) {
+                if (raw[a] < j->cal_min[a]) j->cal_min[a] = raw[a];
+                if (raw[a] > j->cal_max[a]) j->cal_max[a] = raw[a];
+            }
+        }
+        j->raw[0] = raw[0];
+        j->raw[1] = raw[1];
+        j->have_last = true;
+        u.x = norm_axis(&j->cal, 0, raw[0]);
+        u.y = norm_axis(&j->cal, 1, raw[1]);
+        u.take = in->take;
+        u.autob = in->autob;
+        u.confirm = in->confirm;
+    }
+    joy_update(j, &u, dt_ms);
+}
+
+void joy_update(joy_t *j, const joy_input_t *in, uint32_t dt_ms)
+{
+    const joy_config_t *c = &j->cfg;
     bool was_take = j->take, was_auto = j->autob, was_confirm = j->confirm;
+    uint32_t was_buttons = j->buttons;
 
     j->engage_x = j->engage_y = false;
     j->take_edge = j->auto_edge = j->confirm_edge = false;
-    j->present = (in != NULL);
-    if (!in) {
+    j->buttons_edge = 0u;
+    j->lever_moved = false;
+    j->present = in->present;
+    j->has_lever = in->present && in->has_lever;
+    if (!in->present || !in->ready) {
+        /* not fitted / still starting: not usable, no fault (yet) */
         j->armed = false;
+        j->centered_ms = 0u;
         j->x = j->y = 0.0f;
+        j->lever = nz_mid(j);
+        j->lever_in = in->has_lever ? in->lever : nz_mid(j);
+        j->take = j->autob = j->confirm = false;
+        j->buttons = 0u;
+        j->deflect_x_ms = j->deflect_y_ms = j->deflect_l_ms = 0u;
         return;
     }
 
-    /* wire break / short: raw at the rails; impossible jump between steps */
-    bool bad = false;
-    uint16_t raw[2] = { in->x_raw, in->y_raw };
-    for (int a = 0; a < 2; a++) {
-        bool out = raw[a] < c->fault_low || raw[a] > c->fault_high;
-        bool jump = j->have_last && (uint16_t)abs((int)raw[a] - (int)j->raw[a]) > c->jump_max;
-        if (out || jump) {
-            bad = true;
-            if (!j->fault) j->fault_axis = (uint8_t)(a + 1);
-        }
-        if (j->cal_active) {
-            if (raw[a] < j->cal_min[a]) j->cal_min[a] = raw[a];
-            if (raw[a] > j->cal_max[a]) j->cal_max[a] = raw[a];
-        }
-    }
-    j->raw[0] = raw[0];
-    j->raw[1] = raw[1];
-    j->have_last = true;
+    bool bad = in->bad;
+    if (bad && !j->fault) j->fault_axis = in->why;
     j->take = in->take;
     j->autob = in->autob;
     j->confirm = in->confirm;
-    j->take_edge = in->take && !was_take;
-    j->auto_edge = in->autob && !was_auto;
-    j->confirm_edge = in->confirm && !was_confirm;
+    j->buttons = in->buttons;
+    j->take_edge = j->take && !was_take;
+    j->auto_edge = j->autob && !was_auto;
+    j->confirm_edge = j->confirm && !was_confirm;
+    j->buttons_edge = j->buttons & ~was_buttons;
+    if (!bad) j->lever_in = j->has_lever ? in->lever : nz_mid(j);
 
-    float x = norm_axis(&j->cal, 0, raw[0]);
-    float y = norm_axis(&j->cal, 1, raw[1]);
-    bool centered_now = !bad && fabsf(x) < c->center_tol && fabsf(y) < c->center_tol;
+    float x = in->x, y = in->y;
+    bool centered_now = !bad && fabsf(x) < c->center_tol && fabsf(y) < c->center_tol &&
+                        (!j->has_lever || joy_lever_neutral(j, in->lever));
 
     if (bad) {
         j->fault = true;
@@ -144,38 +204,45 @@ void joy_step(joy_t *j, const hal_joystick_t *in, uint32_t dt_ms)
             if (j->centered_ms >= c->center_ms) {
                 j->armed = true;
                 j->not_centered = false;
+                joy_lever_ref_here(j);
             } else if (!centered_now) {
-                j->not_centered = true;     /* power-up / re-arm: stick not centred */
+                j->not_centered = true;     /* power-up / re-arm: stick / lever not in neutral */
             }
         }
     }
 
     if (j->fault || !j->armed) {
         j->x = j->y = 0.0f;
-        j->deflect_x_ms = j->deflect_y_ms = 0u;
-        j->take_edge = false;                   /* buttons only count when armed */
+        j->lever = nz_mid(j);
+        j->deflect_x_ms = j->deflect_y_ms = j->deflect_l_ms = 0u;
+        j->take_edge = false;                   /* buttons only count when armed ... */
+        j->buttons_edge &= HAL_BTN_BIT(HAL_BTN_STANDBY);   /* ... except STANDBY (always safe) */
         return;
     }
     j->x = x;
     j->y = y;
+    j->lever = j->has_lever ? in->lever : nz_mid(j);
 
     j->deflect_x_ms = (fabsf(x) > c->deadband) ? j->deflect_x_ms + dt_ms : 0u;
     j->deflect_y_ms = (fabsf(y) > c->deadband) ? j->deflect_y_ms + dt_ms : 0u;
     j->engage_x = j->deflect_x_ms >= c->engage_ms;
     j->engage_y = j->deflect_y_ms >= c->engage_ms;
+    j->deflect_l_ms = (j->has_lever && fabsf(j->lever - j->lever_ref) > c->lever_delta) ? j->deflect_l_ms + dt_ms : 0u;
+    j->lever_moved = j->deflect_l_ms >= c->engage_ms;
 }
 
 bool joy_confirm(const joy_t *j)
 {
-    return j->confirm_edge && j->armed && joy_centered(j);
+    return j->confirm_edge && j->armed && joy_stick_centered(j);
 }
-
 void joy_disarm(joy_t *j)
 {
     j->armed = false;
     j->centered_ms = 0u;
     j->x = j->y = 0.0f;
-    j->deflect_x_ms = j->deflect_y_ms = 0u;
+    j->deflect_x_ms = j->deflect_y_ms = j->deflect_l_ms = 0u;
+    j->lever = 0.5f * (j->cfg.nz_lo + j->cfg.nz_hi);
+    j->lever_moved = false;
 }
 
 void joy_cal_start(joy_t *j)

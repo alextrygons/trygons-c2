@@ -164,6 +164,12 @@ uint32_t proto_rd_u32(proto_rd_t *r)
     return v;
 }
 
+uint16_t proto_rd_u16(proto_rd_t *r)
+{
+    uint16_t v = proto_rd_u8(r);
+    return (uint16_t)(v | ((uint16_t)proto_rd_u8(r) << 8));
+}
+
 int32_t proto_rd_i32(proto_rd_t *r)
 {
     return (int32_t)proto_rd_u32(r);

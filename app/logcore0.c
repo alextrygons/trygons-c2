@@ -42,7 +42,7 @@ typedef struct {
     double est_lat, est_lon;
     float  est_sog, est_cog, cur_conf;
     float  water_kn, motor_a, supply_v;
-    uint8_t joy_buttons, joy_status;
+    uint8_t joy_buttons, joy_status, joy_src;
     uint32_t t_core0, t_mon, t_log;
 } derived_t;
 
@@ -92,6 +92,10 @@ static uint16_t data_sample(const sb_t *s, uint8_t *out)
     if (!hal_read_supply_voltage(&v.supply_v)) v.supply_v = 0.0f;
     v.joy_buttons = (uint8_t)((s->joy.take ? 1u : 0u) | (s->joy.autob ? 2u : 0u) | (s->joy.confirm ? 4u : 0u));
     v.joy_status = (uint8_t)(!s->joy.present ? 0u : s->joy.fault ? 3u : s->joy.armed ? 2u : 1u);
+    /* b0 USB source, b1 lever, b2 pickup pending, b3/b4 USB stick/throttle connected, b5 learn */
+    v.joy_src = (uint8_t)((s->jmap.source == JOY_SRC_BRIDGE ? 1u : 0u) | (s->joy.has_lever ? 2u : 0u) |
+                          (s->lev.pickup ? 4u : 0u) | ((s->jb.last.flags & JSF_F_DEV0) ? 8u : 0u) |
+                          ((s->jb.last.flags & JSF_F_DEV1) ? 16u : 0u) | ((s->jb.last.flags & JSF_F_LEARN) ? 32u : 0u));
     v.t_core0 = g_timing.core0.last_us;
     v.t_mon = g_timing.monitor.pub_max_us;
     v.t_log = g_timing.logger.pub_max_us;
@@ -130,6 +134,18 @@ uint16_t logcore0_config_text(const sb_t *s, char *out, uint16_t max)
         (unsigned)s->joy.cal.min[0], (unsigned)s->joy.cal.min[1], (unsigned)s->joy.cal.max[0],
         (unsigned)s->joy.cal.max[1], (unsigned long)c->confirm_ms, (unsigned long)c->arm_ms,
         (unsigned)c->fault_steer);
+    if (n > 0 && n < (int)max) {
+        const joymap_t *m = &s->jmap;
+        n += snprintf(out + n, (size_t)(max - n),
+                      "joy.source=%s\njoy.thr_input=%s\njoy.axis_steer=%u\njoy.axis_thr=%u\njoy.invert=%u,%u\n"
+                      "joy.buttons=%u,%u,%u,%u,%u,%u,%u,%u,%u\njoy.neutral_zone=%g,%g\njoy.lever_delta=%g\n"
+                      "joy.pickup_win=%g\n",
+                      m->source == JOY_SRC_BRIDGE ? "usb" : "analog", m->thr_input == JOY_THR_LEVER ? "lever" : "stick_y",
+                      (unsigned)m->axis_steer, (unsigned)m->axis_thr, (unsigned)m->inv_steer, (unsigned)m->inv_thr,
+                      (unsigned)m->btn[0], (unsigned)m->btn[1], (unsigned)m->btn[2], (unsigned)m->btn[3],
+                      (unsigned)m->btn[4], (unsigned)m->btn[5], (unsigned)m->btn[6], (unsigned)m->btn[7],
+                      (unsigned)m->btn[8], m->nz_lo, m->nz_hi, m->lever_delta, m->pickup_win);
+    }
     if (n > 0 && n < (int)max) {
         const sb_auto_t *p = &s->autop;
         n += snprintf(out + n, (size_t)(max - n), "program.n=%u\nprogram.final=%u\n",
