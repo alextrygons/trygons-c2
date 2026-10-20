@@ -405,6 +405,7 @@ static int run_all(void)
 
 int main(int argc, char **argv)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);     /* no lost output if a test crashes */
     if (self_test() != 0) return 1;
 
     if (argc > 1 && strcmp(argv[1], "all") == 0) return run_all();

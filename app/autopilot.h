@@ -69,7 +69,8 @@ typedef enum {
     AP_MODE_TRAINING,       /* outboard calibration, see training.h */
     AP_MODE_MANUAL,         /* steering motor follows the operator (MANEUVER) */
     AP_MODE_GYRO_HOLD,      /* no compass: steer for zero yaw rate (gyro) */
-    AP_MODE_CENTER          /* no compass, no gyro: drive the outboard to centre */
+    AP_MODE_CENTER,         /* no compass, no gyro: drive the outboard to centre */
+    AP_MODE_ANGLE           /* outboard to a commanded angle (joystick X) */
 } ap_mode_t;
 
 typedef enum {
@@ -239,6 +240,7 @@ typedef struct {
     bool     current_ok;  float current_a;     /* steering motor current (optional) */
     bool     limits_ok;                        /* limit switches fitted? */
     bool     limit_left, limit_right;          /* at the end stop */
+    float    angle_cmd_deg;                    /* AP_MODE_ANGLE: wanted outboard angle */
 } ap_inputs_t;
 
 /* The same cycle without any HAL access: the caller supplies the inputs
@@ -267,6 +269,11 @@ bool autopilot_centered(const autopilot_t *ap);
 
 /* Gyro data fresh (last sample < AP_SENSOR_STALE_MS old)? */
 bool autopilot_gyro_ok(const autopilot_t *ap);
+
+/* Joystick: the outboard follows angle_cmd_deg (ap_inputs_t), full
+ * range, rate-limited to the motor speed. Keeps the angle estimate;
+ * aborts a running training. */
+void autopilot_angle(autopilot_t *ap);
 
 /* STANDBY: steering motor off. */
 void autopilot_disengage(autopilot_t *ap);

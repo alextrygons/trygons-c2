@@ -33,6 +33,7 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     sim_hal_set_rudder_feedback(false);
     sim_hal_set_gyro(true, 0.05f, 0.02f);
     sim_hal_reset_engine();
+    sim_hal_set_joystick(false, 2048u, 2048u, false, false);   /* no joystick unless a test fits one */
     world_publish(&x->w, 0);
     hal_init();
     if (cfg) c = *cfg; else sb_default_config(&c);
@@ -128,10 +129,10 @@ static void phase2(void)
                     (e->verdict == MODE_OK) == expect) logged_ok++;
             }
         }
-        snprintf(d, sizeof d, "%d pairs, %d illegal rejected, %d wrong, %d/25 logged correctly",
-                 MODE_COUNT * MODE_COUNT, illegal, wrong, logged_ok);
+        snprintf(d, sizeof d, "%d pairs, %d illegal rejected, %d wrong, %d/%d logged correctly",
+                 MODE_COUNT * MODE_COUNT, illegal, wrong, logged_ok, MODE_COUNT * MODE_COUNT);
         test_report("P2 mode table: every illegal transition rejected and logged",
-                    wrong == 0 && logged_ok == 25, d);
+                    wrong == 0 && logged_ok == MODE_COUNT * MODE_COUNT, d);
     }
 
     /* 2.2 preconditions: CRUISE without compass, NAV without GPS */
@@ -1655,10 +1656,282 @@ static void gps_denied(void)
     }
 }
 
+/* ------------------------------------------------------------ joystick -- */
+
+/* Joystick position (-1..+1, default calibration) -> raw ADC. */
+static uint16_t joy_raw(float v)
+{
+    joy_cal_t c;
+    joy_default_cal(&c);
+    float r = (v >= 0.0f) ? c.center[0] + v * (float)(c.max[0] - c.center[0])
+                          : c.center[0] + v * (float)(c.center[0] - c.min[0]);
+    return (uint16_t)lrintf(r);
+}
+
+static void joy_set(float x, float y, bool take, bool autob)
+{
+    sim_hal_set_joystick(true, joy_raw(x), joy_raw(y), take, autob);
+}
+
+typedef struct {
+    float t_switch;             /* deflection -> JOYSTICK mode, s (-1 never) */
+    sb_mode_t from;
+    float v_before;
+    float thr_fwd_max, thr_rev_max;
+    int   under_load, fr_no_n;
+    float est_at_x, true_at_x;  /* outboard with X = 0.6 */
+    float v_fwd, v_rev;         /* boat speed after full forward / full reverse */
+    tr_result_t train_result;
+} override_t;
+
+/* Put the boat in `mode`, then a person grabs the stick: X right 0.6,
+ * then Y full forward, then straight to full reverse. */
+static override_t joystick_override(sb_mode_t mode, uint32_t seed)
+{
+    sbsim_t x;
+    override_t r;
+    memset(&r, 0, sizeof r);
+    r.t_switch = -1.0f;
+    r.from = mode;
+    remove("nv1.bin");
+    sbsim_init(&x, seed, 90.0f, 0.0f, NULL);
+    joy_set(0.0f, 0.0f, false, false);              /* centred at power-up -> armed */
+    sbsim_run(&x, 3000u, NULL, NULL);
+
+    switch (mode) {
+    case MODE_MANEUVER:
+        sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
+        sim_hal_set_controls(0.0f, 1.0f, HAL_SEL_F);
+        sbsim_run(&x, 30000u, NULL, NULL);
+        break;
+    case MODE_CRUISE:
+        sb_set_cruise_speed(&x.sb, 20.0f);
+        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+        sbsim_run(&x, 120000u, NULL, NULL);
+        break;
+    case MODE_NAV: {
+        double lat, lon;
+        world_t tmp = x.w;
+        tmp.east_m += 3000.0;
+        world_latlon(&tmp, &lat, &lon);
+        sb_set_waypoint(&x.sb, lat, lon, 12.0f);
+        sb_request_mode(&x.sb, MODE_NAV, WHY_USER);
+        sbsim_run(&x, 90000u, NULL, NULL);
+        break;
+    }
+    case MODE_TRAINING:
+        sb_request_mode(&x.sb, MODE_TRAINING, WHY_USER);
+        sbsim_run(&x, 120000u, NULL, NULL);         /* spin-up + calibration running */
+        break;
+    default:
+        break;
+    }
+    r.v_before = x.w.speed_kn;
+
+    /* grab the stick */
+    uint32_t t0 = x.t;
+    joy_set(0.6f, 0.0f, false, false);
+    while (x.t < t0 + 2000u) {
+        sbsim_run(&x, x.t + 10u, NULL, NULL);
+        if (r.t_switch < 0.0f && sb_mode(&x.sb) == MODE_JOYSTICK) r.t_switch = (float)(x.t - t0) * 0.001f;
+    }
+    r.train_result = x.sb.ap.train.result;
+    sbsim_run(&x, x.t + 8000u, NULL, NULL);
+    r.est_at_x = x.sb.ap.est_angle;
+    r.true_at_x = x.w.rud.angle_deg;
+
+    /* the throttle limits only count from here (the autopilot mode before may use more) */
+    x.w.max_thr_fwd = x.w.max_thr_rev = 0.0f;
+    joy_set(0.6f, 1.0f, false, false);              /* full forward (centre -> end in one step) */
+    sbsim_run(&x, x.t + 20000u, NULL, NULL);
+    r.v_fwd = x.w.speed_kn;
+    for (int k = 1; k <= 6; k++) {                  /* straight to full reverse, a hand takes ~0.3 s */
+        joy_set(0.6f, 1.0f - 2.0f * (float)k / 6.0f, false, false);
+        sbsim_run(&x, x.t + 50u, NULL, NULL);
+    }
+    sbsim_run(&x, x.t + 25000u, NULL, NULL);
+    r.v_rev = x.w.speed_kn;
+    r.thr_fwd_max = x.w.max_thr_fwd;
+    r.thr_rev_max = x.w.max_thr_rev;
+    r.under_load = x.w.shift_under_load;
+    r.fr_no_n = x.w.fr_without_neutral;
+    return r;
+}
+
+static void joystick_tests(void)
+{
+    char d[400];
+    printf("\n=== Joystick override ===\n");
+    sb_config_t defc;
+    sb_default_config(&defc);
+    float expect = (0.6f - defc.joy.deadband) / (1.0f - defc.joy.deadband) * defc.steer.outboard.max_angle_deg;
+
+    const sb_mode_t modes[5] = { MODE_STANDBY, MODE_MANEUVER, MODE_CRUISE, MODE_NAV, MODE_TRAINING };
+    for (int i = 0; i < 5; i++) {
+        override_t r = joystick_override(modes[i], 110u + (uint32_t)i);
+        char name[96];
+        snprintf(name, sizeof name, "Joystick override from %s", mode_name(modes[i]));
+        snprintf(d, sizeof d, "at %.1f kn: control switched after %.2f s; outboard %.1f deg (est %.1f, wanted %.1f); "
+                 "full fwd %.1f kn, full rev %.1f kn; throttle max fwd %.0f %% / rev %.0f %%; under-load %d, "
+                 "F/R w/o N %d%s%s",
+                 r.v_before, r.t_switch, r.true_at_x, r.est_at_x, expect, r.v_fwd, r.v_rev, r.thr_fwd_max,
+                 r.thr_rev_max, r.under_load, r.fr_no_n, modes[i] == MODE_TRAINING ? "; training: " : "",
+                 modes[i] == MODE_TRAINING ? training_result_text(r.train_result) : "");
+        bool ok = r.t_switch >= 0.0f && r.t_switch <= 0.2f &&
+                  fabsf(r.est_at_x - expect) < 3.0f && fabsf(r.true_at_x - expect) < 4.0f &&
+                  r.v_fwd > 3.0f && r.v_rev < -1.0f &&
+                  r.thr_fwd_max <= defc.joy_max_throttle_pct + 0.01f &&
+                  r.thr_rev_max <= defc.throttle.max_rev_pct + 0.01f &&
+                  r.under_load == 0 && r.fr_no_n == 0 &&
+                  (modes[i] != MODE_TRAINING || r.train_result == TR_ABORT_USER);
+        test_report(name, ok, d);
+    }
+
+    /* PC / Standby button during the override; hand-back not centred / centred */
+    {
+        sbsim_t x;
+        remove("nv1.bin");
+        sbsim_init(&x, 120u, 90.0f, 0.0f, NULL);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        joy_set(0.0f, 0.5f, false, false);
+        sbsim_run(&x, 5000u, NULL, NULL);
+        bool in_joy = sb_mode(&x.sb) == MODE_JOYSTICK;
+        bool pc = sb_request_mode(&x.sb, MODE_CRUISE, WHY_PC);
+        bool pc_sb = sb_request_mode(&x.sb, MODE_STANDBY, WHY_PC);
+        sim_hal_press(HAL_BTN_STANDBY_AUTO);
+        sbsim_run(&x, 5200u, NULL, NULL);
+        bool still = sb_mode(&x.sb) == MODE_JOYSTICK;
+        const mode_log_entry_t *le = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
+        snprintf(d, sizeof d, "in JOYSTICK %s; PC -> CRUISE %s, PC -> STANDBY %s, Standby button %s; last log %s -> %s (%s, %s)",
+                 in_joy ? "yes" : "NO", pc ? "ACCEPTED" : "refused", pc_sb ? "ACCEPTED" : "refused",
+                 still ? "ignored" : "TOOK OVER", mode_name(le->from), mode_name(le->to), mode_reason_name(le->why),
+                 le->verdict == MODE_OK ? "ok" : "rejected");
+        test_report("Joystick wins: PC and Standby button can't take control during the override",
+                    in_joy && !pc && !pc_sb && still && le->verdict != MODE_OK, d);
+
+        joy_set(0.0f, 0.5f, false, true);           /* AUTO with the stick still forward */
+        sbsim_run(&x, 5400u, NULL, NULL);
+        joy_set(0.0f, 0.5f, false, false);
+        sbsim_run(&x, 5600u, NULL, NULL);
+        bool refused = sb_mode(&x.sb) == MODE_JOYSTICK;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, 6000u, NULL, NULL);
+        joy_set(0.0f, 0.0f, false, true);           /* centred + AUTO */
+        sbsim_run(&x, 6200u, NULL, NULL);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, 9000u, NULL, NULL);
+        bool back = sb_mode(&x.sb) == MODE_STANDBY;
+        snprintf(d, sizeof d, "AUTO with stick forward: %s; centred + AUTO: %s; gear now %s, throttle %.1f %%",
+                 refused ? "refused, stays JOYSTICK" : "HANDED BACK", back ? "STANDBY" : mode_name(sb_mode(&x.sb)),
+                 gear_name(x.w.engaged), sim_hal_throttle());
+        test_report("Joystick hand-back only with the stick centred", refused && back, d);
+    }
+
+    /* not centred at power-up */
+    {
+        sbsim_t x;
+        remove("nv1.bin");
+        sbsim_init(&x, 121u, 90.0f, 0.0f, NULL);
+        joy_set(0.5f, 0.0f, false, false);          /* someone leans on the stick */
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bool not_armed = !x.sb.joy.armed && (x.sb.alarm_bits & SB_ALM_JOY_NOT_CENTERED) && sim_hal_alarm();
+        bool no_takeover = sb_mode(&x.sb) == MODE_STANDBY;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, 4000u, NULL, NULL);
+        bool armed = x.sb.joy.armed;
+        joy_set(0.5f, 0.0f, false, false);
+        sbsim_run(&x, 5000u, NULL, NULL);
+        snprintf(d, sizeof d, "not centred: armed %s, alarm %s, took control %s; after centring: armed %s, "
+                 "deflection then takes control %s",
+                 x.sb.joy.armed && !armed ? "?" : (not_armed ? "no" : "YES"), not_armed ? "on" : "OFF",
+                 no_takeover ? "no" : "YES", armed ? "yes" : "NO", sb_mode(&x.sb) == MODE_JOYSTICK ? "yes" : "NO");
+        test_report("Joystick not centred at power-up: ignored + alarm until centred",
+                    not_armed && no_takeover && armed && sb_mode(&x.sb) == MODE_JOYSTICK, d);
+    }
+
+    /* wire breaks: X, Y (not in control), and while in control */
+    {
+        bool ok_axis[2];
+        for (int a = 0; a < 2; a++) {
+            sbsim_t x;
+            remove("nv1.bin");
+            sbsim_init(&x, 122u + (uint32_t)a, 90.0f, 0.0f, NULL);
+            joy_set(0.0f, 0.0f, false, false);
+            sbsim_run(&x, 2000u, NULL, NULL);
+            if (a == 0) sim_hal_set_joystick(true, 0u, joy_raw(0.0f), false, false);       /* X wiper broken */
+            else        sim_hal_set_joystick(true, joy_raw(0.0f), 4095u, false, false);    /* Y ground broken */
+            sbsim_run(&x, 4000u, NULL, NULL);
+            ok_axis[a] = x.sb.joy.fault && x.sb.joy.fault_axis == a + 1 &&
+                         (x.sb.alarm_bits & SB_ALM_JOY_FAULT) && sb_mode(&x.sb) == MODE_STANDBY;
+        }
+        snprintf(d, sizeof d, "X wire break (ADC 0): %s; Y wire break (ADC 4095): %s",
+                 ok_axis[0] ? "fault + alarm, ignored" : "NOT DETECTED", ok_axis[1] ? "fault + alarm, ignored" : "NOT DETECTED");
+        test_report("Joystick wire break in X and in Y detected", ok_axis[0] && ok_axis[1], d);
+
+        sbsim_t x;
+        events_t ev;
+        memset(&ev, 0, sizeof ev);
+        remove("nv1.bin");
+        sbsim_init(&x, 124u, 90.0f, 0.0f, NULL);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        joy_set(0.5f, 1.0f, false, false);          /* driving on the stick */
+        sbsim_run(&x, 30000u, NULL, NULL);
+        ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_n_us);
+        sim_hal_set_joystick(true, joy_raw(0.5f), 0u, false, false);   /* Y wire breaks */
+        sbsim_run(&x, x.t + 15000u, ev_watch, &ev);
+        const mode_log_entry_t *le = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
+        static const mode_log_entry_t none = { 0u, MODE_STANDBY, MODE_STANDBY, WHY_TEST, MODE_OK };
+        if (!le) le = &none;
+        snprintf(d, sizeof d, "mode %s (%s); throttle down after %.2f s, neutral %.2f s, steering off %.2f s, "
+                 "motor after %d; alarm %s; under-load %d",
+                 mode_name(sb_mode(&x.sb)), mode_reason_name(le->why), ev.t_thr_down, ev.t_neutral, ev.t_steer_off,
+                 ev.steer_after_off, sim_hal_alarm() ? "on" : "OFF", x.w.shift_under_load);
+        test_report("Joystick wire break while in control: idle + neutral, steering stop, STANDBY",
+                    sb_mode(&x.sb) == MODE_STANDBY && le->why == WHY_JOY_FAULT && ev.t_thr_down >= 0.0f &&
+                    ev.t_thr_down <= 0.1f && ev.t_neutral > 0.0f && ev.t_steer_off >= 0.0f && ev.t_steer_off <= 0.1f &&
+                    ev.steer_after_off == 0 && sim_hal_alarm() && x.w.shift_under_load == 0, d);
+    }
+
+    /* calibration routine: stored with checksum */
+    {
+        sbsim_t x;
+        remove("nv1.bin");
+        sbsim_init(&x, 125u, 90.0f, 0.0f, NULL);
+        sim_hal_set_joystick(true, 2000u, 2100u, false, false);
+        sbsim_run(&x, 1000u, NULL, NULL);
+        bool started = sb_joystick_cal_start(&x.sb);
+        uint16_t path[6][2] = { {2000, 2100}, {500, 2100}, {3600, 2100}, {2000, 450}, {2000, 3700}, {2000, 2100} };
+        for (int k = 0; k < 6; k++) {
+            sim_hal_set_joystick(true, path[k][0], path[k][1], false, false);
+            sbsim_run(&x, x.t + 300u, NULL, NULL);
+        }
+        bool saved = sb_joystick_cal_finish(&x.sb);
+        joy_cal_t back;
+        bool loaded = hal_nv_load(HAL_NV_SLOT_JOYSTICK, &back, (uint32_t)sizeof back) && joy_cal_valid(&back);
+        bool values = loaded && back.center[0] == 2000u && back.min[0] == 500u && back.max[0] == 3600u &&
+                      back.center[1] == 2100u && back.min[1] == 450u && back.max[1] == 3700u;
+        back.max[1] ^= 1u;
+        bool corrupt_caught = !joy_cal_valid(&back);
+        /* a "calibration" without moving the stick is refused */
+        bool started2 = sb_joystick_cal_start(&x.sb);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool refused = started2 && !sb_joystick_cal_finish(&x.sb);
+        remove("nv1.bin");
+        snprintf(d, sizeof d, "calibrate: started %s, saved %s, values %s, corrupted copy rejected %s, "
+                 "no-movement calibration refused %s",
+                 started ? "yes" : "NO", saved ? "yes" : "NO", values ? "correct" : "WRONG",
+                 corrupt_caught ? "yes" : "NO", refused ? "yes" : "NO");
+        test_report("Joystick calibration stored with checksum", started && saved && values && corrupt_caught && refused, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
+    joystick_tests();
     gps_denied();
     fixes();
     phase2();

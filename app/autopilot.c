@@ -717,6 +717,27 @@ void autopilot_center(autopilot_t *ap)
     ap->mode = AP_MODE_CENTER;
 }
 
+void autopilot_angle(autopilot_t *ap)
+{
+    if (ap->mode == AP_MODE_TRAINING) training_abort(&ap->train, TR_ABORT_USER);
+    ap->motor_moving = false;
+    outboard_stop(ap);
+    ap->rudder_target = is_outboard(ap) ? ap->est_angle : ap->rudder_angle;
+    ap->mode = AP_MODE_ANGLE;
+}
+
+/* Joystick: commanded angle, slewed at the motor's speed (so the
+ * estimate can follow), full range. */
+static float angle_loop(autopilot_t *ap, float cmd)
+{
+    float lim = is_outboard(ap) ? ap->cfg.outboard.max_angle_deg : AP_RUDDER_LIMIT_DEG;
+    float rate = is_outboard(ap) ? ap->cfg.outboard.turn_speed_deg_s : AP_RUDDER_RATE_DPS;
+    float step = rate * AP_DT_S;
+    cmd = clampf(cmd, -lim, lim);
+    ap->rudder_target += clampf(cmd - ap->rudder_target, -step, step);
+    return is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
+}
+
 bool autopilot_centered(const autopilot_t *ap)
 {
     if (ap->mode != AP_MODE_CENTER) return false;
@@ -773,7 +794,8 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
     if (fault && !ap->sensor_fault) {
         if (ap->mode == AP_MODE_TRAINING) training_abort(&ap->train, TR_ABORT_SENSOR);
         /* manual steering, gyro hold and centring don't need the compass */
-        if (ap->mode != AP_MODE_MANUAL && ap->mode != AP_MODE_GYRO_HOLD && ap->mode != AP_MODE_CENTER)
+        if (ap->mode != AP_MODE_MANUAL && ap->mode != AP_MODE_GYRO_HOLD &&
+            ap->mode != AP_MODE_CENTER && ap->mode != AP_MODE_ANGLE)
             enter_standby(ap);
         ap->alarm = true;
     }
@@ -788,6 +810,8 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
 
     if (ap->mode == AP_MODE_TRAINING) {
         ap->motor_cmd = training_mode_step(ap, now, stale, hit, hit_lag);
+    } else if (ap->mode == AP_MODE_ANGLE) {
+        ap->motor_cmd = angle_loop(ap, in->angle_cmd_deg);       /* no compass needed */
     } else if (ap->mode == AP_MODE_GYRO_HOLD) {
         ap->motor_cmd = gyro_hold_loop(ap);             /* no compass needed */
     } else if (ap->mode == AP_MODE_CENTER) {

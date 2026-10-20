@@ -13,6 +13,8 @@
 ## Rules
 - Floats OK (TC375 has FPU). No malloc. Fixed control loop rate (e.g. 20 Hz).
 - Safety first: rudder angle limits, rate limits, sensor-timeout -> standby + alarm.
+- The joystick always wins over the autopilot and the PC. Only a centered joystick + AUTO button hands control back.
+- Joystick and link wiring: see WIRING.md.
 
 ## Small-boat features
 Outboard boat (small-boat variant, `AP_STEER_OUTBOARD`). The big-boat variant (rudder feedback) must keep working unchanged.

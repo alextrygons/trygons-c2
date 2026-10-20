@@ -279,3 +279,43 @@ void sim_hal_set_water_speed(bool fitted, float kn)
     s_water_fitted = fitted;
     s_water_kn = kn;
 }
+
+static bool           s_joy_fitted = false;
+static hal_joystick_t s_joy;
+
+bool hal_read_joystick(hal_joystick_t *j)
+{
+    if (!s_joy_fitted) return false;
+    *j = s_joy;
+    return true;
+}
+
+void sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob)
+{
+    s_joy_fitted = fitted;
+    s_joy.x_raw = x_raw;
+    s_joy.y_raw = y_raw;
+    s_joy.take = take;
+    s_joy.autob = autob;
+}
+
+bool hal_nv_save(uint8_t slot, const void *data, uint32_t size)
+{
+    char name[32];
+    snprintf(name, sizeof name, "nv%u.bin", (unsigned)slot);
+    FILE *f = fopen(name, "wb");
+    if (!f) return false;
+    bool ok = fwrite(data, 1, size, f) == size;
+    return (fclose(f) == 0) && ok;
+}
+
+bool hal_nv_load(uint8_t slot, void *data, uint32_t size)
+{
+    char name[32];
+    snprintf(name, sizeof name, "nv%u.bin", (unsigned)slot);
+    FILE *f = fopen(name, "rb");
+    if (!f) return false;
+    bool ok = fread(data, 1, size, f) == size;
+    fclose(f);
+    return ok;
+}

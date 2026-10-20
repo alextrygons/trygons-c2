@@ -130,6 +130,25 @@ typedef struct {
 /* Current control positions. Returns false if no control panel. */
 bool hal_read_controls(hal_controls_t *c);
 
+/* Joystick wired directly to the board (see WIRING.md): X and Y as raw
+ * 12-bit ADC values (0..4095 = 0..VAREF 3.3 V; the app calibrates and
+ * checks them for wire breaks), plus the TAKE and AUTO buttons
+ * (true = pressed). Returns false if no joystick is fitted. */
+typedef struct {
+    uint16_t x_raw;
+    uint16_t y_raw;
+    bool     take;
+    bool     autob;
+} hal_joystick_t;
+
+bool hal_read_joystick(hal_joystick_t *j);
+
+/* Small non-volatile storage slots (e.g. slot 1 = joystick calibration).
+ * The app adds its own version + checksum. */
+#define HAL_NV_SLOT_JOYSTICK  1u
+bool hal_nv_save(uint8_t slot, const void *data, uint32_t size);
+bool hal_nv_load(uint8_t slot, void *data, uint32_t size);
+
 /* Optional speed sensor (paddlewheel): speed through water, kn.
  * Returns false if not fitted. */
 bool hal_read_water_speed(float *kn);

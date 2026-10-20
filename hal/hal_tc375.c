@@ -137,6 +137,26 @@ bool hal_read_gps(hal_gps_t *gps)
     return false;    /* TODO: NMEA parser on ASCLIN UART */
 }
 
+bool hal_read_joystick(hal_joystick_t *j)
+{
+    (void)j;
+    return false;    /* TODO: EVADC AN39 (P40.9, Arduino A0) = X, AN38 (P40.8, A1) = Y;
+                        P02.0 (D2) = TAKE, P02.1 (D3) = AUTO, inputs with pull-up,
+                        pressed = low. See WIRING.md. */
+}
+
+bool hal_nv_save(uint8_t slot, const void *data, uint32_t size)
+{
+    (void)slot; (void)data; (void)size;
+    return false;    /* TODO: data flash (DFLASH0), one sector per slot */
+}
+
+bool hal_nv_load(uint8_t slot, void *data, uint32_t size)
+{
+    (void)slot; (void)data; (void)size;
+    return false;    /* TODO: data flash */
+}
+
 bool hal_read_water_speed(float *kn)
 {
     (void)kn;

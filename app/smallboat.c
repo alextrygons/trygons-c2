@@ -68,6 +68,10 @@ void sb_default_config(sb_config_t *cfg)
     cfg->dr_max_unc_m = 200.0f;
     cfg->dr_max_ms = 600000u;
     cfg->dr_slow_kn = 4.0f;
+
+    joy_default_config(&cfg->joy);
+    cfg->joy_max_throttle_pct = 40.0f;
+    cfg->joy_resume_prev = false;
 }
 
 void sb_set_waypoint(sb_t *s, double lat, double lon, float speed_kn)
@@ -93,6 +97,11 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     s->cruise.target_kn = cfg->cruise_speed_kn;
     dr_init(&s->dr, &cfg->dr);
     s->dr.cfg.gps_timeout_ms = cfg->gps_timeout_ms;
+    {
+        joy_cal_t cal;
+        bool have = hal_nv_load(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal) && joy_cal_valid(&cal);
+        joy_init(&s->joy, &cfg->joy, have ? &cal : NULL);
+    }
 }
 
 bool sb_compass_ok(const sb_t *s)
@@ -137,8 +146,14 @@ float sb_steer_limit_for(const sb_config_t *cfg, float sog_kn)
 
 /* --- modes ---------------------------------------------------------------- */
 
-static bool precondition(const sb_t *s, sb_mode_t to)
+static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
 {
+    /* The joystick always wins: only the hand-back (centred stick + AUTO
+     * or PC) or a fault may leave JOYSTICK; only the joystick enters it. */
+    if (sb_mode(s) == MODE_JOYSTICK &&
+        why != WHY_JOY_HANDBACK && why != WHY_JOY_FAULT && why != WHY_GEAR_FAULT) return false;
+    if (to == MODE_JOYSTICK) return why == WHY_JOYSTICK;
+
     switch (to) {
     case MODE_STANDBY:  return true;
     case MODE_MANEUVER: return !gear_fault(&s->gear);
@@ -201,7 +216,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
     case MODE_NAV:
         s->stopping = false;
         if (s->ap.mode != AP_MODE_AUTO)
-            autopilot_engage(&s->ap, from == MODE_MANEUVER);
+            autopilot_engage(&s->ap, from == MODE_MANEUVER || from == MODE_JOYSTICK);
         if (from != MODE_CRUISE && from != MODE_NAV) cruise_start(s);
         if (to == MODE_NAV) {
             /* the line starts where the boat is now */
@@ -228,6 +243,15 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         autopilot_disengage(&s->ap);
         memset(&s->train, 0, sizeof s->train);
         break;
+    case MODE_JOYSTICK:
+        /* override: steering follows the stick (estimate kept), a running
+         * training is aborted, chirp */
+        s->stopping = false;
+        s->joy_prev = from;
+        autopilot_angle(&s->ap);
+        s->chirp_ms = 300u;
+        s->alarm_bits |= SB_ALM_JOYSTICK;
+        break;
     default:
         s->stopping = false;
         autopilot_disengage(&s->ap);
@@ -238,7 +262,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
 bool sb_request_mode(sb_t *s, sb_mode_t to, mode_reason_t why)
 {
     sb_mode_t from = s->modes.mode;
-    mode_verdict_t v = mode_request(&s->modes, to, why, precondition(s, to), s->now_ms);
+    mode_verdict_t v = mode_request(&s->modes, to, why, precondition(s, to, why), s->now_ms);
     if (v != MODE_OK) return false;
     on_enter(s, from, to);
     return true;
@@ -275,6 +299,65 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
         if (s->ctl.steer > s->cfg.steer_deadzone) in->manual_steer = 1;
         else if (s->ctl.steer < -s->cfg.steer_deadzone) in->manual_steer = -1;
     }
+
+    /* joystick (always read: it must be able to take over from any mode) */
+    hal_joystick_t js;
+    bool js_ok = hal_read_joystick(&js);
+    joy_step(&s->joy, js_ok ? &js : NULL, s->now_ms - s->last_ms);
+    if (sb_mode(s) == MODE_JOYSTICK) {
+        /* X -> outboard angle over the full range (deadband around centre) */
+        float x = s->joy.x, db = s->cfg.joy.deadband;
+        float xs = (fabsf(x) <= db) ? 0.0f : (x - copysignf(db, x)) / (1.0f - db);
+        in->angle_cmd_deg = xs * s->ap.cfg.outboard.max_angle_deg;
+    }
+}
+
+/* --- JOYSTICK ----------------------------------------------------------------- */
+
+/* Y -> throttle: up = forward, down = reverse, centre = idle + neutral.
+ * Direction changes go through the gear state machine; reverse limit and
+ * rate limits apply as everywhere (throttle.c). */
+static void joystick_mode(sb_t *s)
+{
+    float y = s->joy.y, db = s->cfg.joy.deadband;
+    float mag = (fabsf(y) <= db) ? 0.0f : (fabsf(y) - db) / (1.0f - db);
+    if (y > db)       s->gear_demand = GEAR_F;
+    else if (y < -db) s->gear_demand = GEAR_R;
+    else              s->gear_demand = GEAR_N;
+    s->throttle_demand = mag * s->cfg.joy_max_throttle_pct;
+}
+
+bool sb_joystick_handback(sb_t *s, mode_reason_t why)
+{
+    if (sb_mode(s) != MODE_JOYSTICK) return false;
+    if (!joy_centered(&s->joy)) {
+        /* refused (logged): the stick has to be centred first */
+        mode_request(&s->modes, MODE_STANDBY, why, false, s->now_ms);
+        s->chirp_ms = 300u;
+        return false;
+    }
+    sb_mode_t to = MODE_STANDBY;
+    if (s->cfg.joy_resume_prev &&
+        (s->joy_prev == MODE_MANEUVER || s->joy_prev == MODE_CRUISE || s->joy_prev == MODE_NAV) &&
+        precondition(s, s->joy_prev, WHY_JOY_HANDBACK)) {
+        to = s->joy_prev;
+    }
+    s->alarm_bits &= ~SB_ALM_JOYSTICK;
+    return sb_request_mode(s, to, WHY_JOY_HANDBACK);
+}
+
+bool sb_joystick_cal_start(sb_t *s)
+{
+    if (sb_mode(s) != MODE_STANDBY || !s->joy.present) return false;
+    joy_cal_start(&s->joy);
+    return true;
+}
+
+bool sb_joystick_cal_finish(sb_t *s)
+{
+    joy_cal_t cal;
+    if (sb_mode(s) != MODE_STANDBY || !joy_cal_finish(&s->joy, &cal)) return false;
+    return hal_nv_save(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal);
 }
 
 /* --- MANEUVER ---------------------------------------------------------------- */
@@ -661,11 +744,28 @@ void sb_step(sb_t *s)
         s->compass_fault_seen = true;
         s->alarm_bits |= SB_ALM_COMPASS;
         s->alarm = true;
-        /* MANEUVER: manual steering doesn't need the compass -> alarm only */
-        if (sb_mode(s) != MODE_STANDBY && sb_mode(s) != MODE_MANEUVER)
+        /* MANEUVER / JOYSTICK: manual steering doesn't need the compass -> alarm only */
+        if (sb_mode(s) != MODE_STANDBY && sb_mode(s) != MODE_MANEUVER && sb_mode(s) != MODE_JOYSTICK)
             sb_request_mode(s, MODE_STANDBY, WHY_COMPASS_FAULT);
     }
     if (!s->ap.sensor_fault) s->compass_fault_seen = false;
+    /* joystick: fault, override, hand-back (it always wins) */
+    if (s->joy.fault && !s->joy_fault_seen) {
+        s->joy_fault_seen = true;
+        s->alarm = true;
+        s->alarm_bits |= SB_ALM_JOY_FAULT;
+        if (sb_mode(s) == MODE_JOYSTICK) sb_request_mode(s, MODE_STANDBY, WHY_JOY_FAULT);
+    }
+    if (!s->joy.fault) s->joy_fault_seen = false;
+    if (s->joy.not_centered && !s->joy_nc_seen) {
+        s->joy_nc_seen = true;
+        s->alarm = true;
+        s->alarm_bits |= SB_ALM_JOY_NOT_CENTERED;
+    }
+    if (s->joy.armed) s->joy_nc_seen = false;
+    if (s->joy.engage && sb_mode(s) != MODE_JOYSTICK) sb_request_mode(s, MODE_JOYSTICK, WHY_JOYSTICK);
+    if (sb_mode(s) == MODE_JOYSTICK && s->joy.auto_edge) sb_joystick_handback(s, WHY_JOY_HANDBACK);
+
     if (buttons & HAL_BTN_BIT(HAL_BTN_STANDBY_AUTO)) {
         if (sb_mode(s) != MODE_STANDBY) {
             sb_request_mode(s, MODE_STANDBY, WHY_STANDBY_BUTTON);
@@ -684,6 +784,7 @@ void sb_step(sb_t *s)
     if (sb_mode(s) == MODE_CRUISE) cruise(s, dt, dt_ms, roll_new, roll);
     else if (sb_mode(s) == MODE_NAV) nav_mode(s, dt, dt_ms, roll_new, roll);
     else if (sb_mode(s) == MODE_TRAINING) training_mode(s, dt_ms);
+    else if (sb_mode(s) == MODE_JOYSTICK) joystick_mode(s);
     if (sb_mode(s) != MODE_STANDBY && s->test_drive.on) {
         s->gear_demand = s->test_drive.gear;
         s->throttle_demand = s->test_drive.throttle_pct;
@@ -749,7 +850,8 @@ void sb_step(sb_t *s)
     hal_set_throttle(s->thr.out_pct);
     hal_set_gear_pwm(s->gear.pwm_us);
     hal_set_rudder_motor(s->ap.motor_cmd);
-    hal_set_alarm(s->alarm || s->ap.alarm);
+    if (s->chirp_ms > 0u) s->chirp_ms = (s->chirp_ms > dt_ms) ? s->chirp_ms - dt_ms : 0u;
+    hal_set_alarm(s->alarm || s->ap.alarm || s->chirp_ms > 0u);
 }
 
 sb_status_t sb_status(const sb_t *s)

@@ -5,14 +5,17 @@
  * an explicit allowed-transition table (and preconditions given by the
  * caller), and every request - accepted or rejected - is logged.
  *
- *   from \ to   STANDBY MANEUVER CRUISE NAV TRAINING
- *   STANDBY        -       yes     yes   yes   yes
- *   MANEUVER      yes       -      yes   yes   no
- *   CRUISE        yes      yes      -    yes   no
- *   NAV           yes      yes     yes    -    no
- *   TRAINING      yes      no      no    no     -
+ *   from \ to   STANDBY MANEUVER CRUISE NAV TRAINING JOYSTICK
+ *   STANDBY        -       yes     yes   yes   yes      yes
+ *   MANEUVER      yes       -      yes   yes   no       yes
+ *   CRUISE        yes      yes      -    yes   no       yes
+ *   NAV           yes      yes     yes    -    no       yes
+ *   TRAINING      yes      no      no    no     -       yes
+ *   JOYSTICK      yes      yes     yes   yes   no        -
  *
- * Going to STANDBY is always allowed (safety).
+ * Going to STANDBY and to JOYSTICK is always allowed by the table (safety);
+ * smallboat.c additionally only lets the hand-back / a fault leave
+ * JOYSTICK (the joystick always wins over the autopilot and the PC).
  */
 #ifndef MODES_H
 #define MODES_H
@@ -26,6 +29,7 @@ typedef enum {
     MODE_CRUISE,
     MODE_NAV,
     MODE_TRAINING,
+    MODE_JOYSTICK,          /* hard-wired joystick override */
     MODE_COUNT
 } sb_mode_t;
 
@@ -41,6 +45,10 @@ typedef enum {
     WHY_GEAR_FAULT,         /* neutral switch did not confirm */
     WHY_DR_LIMIT,           /* dead reckoning too uncertain / too long */
     WHY_ARRIVAL_UNCERTAIN,  /* at the waypoint by DR, but not sure enough */
+    WHY_JOYSTICK,           /* joystick deflected / TAKE pressed */
+    WHY_JOY_HANDBACK,       /* AUTO pressed (or PC) with the stick centred */
+    WHY_JOY_FAULT,          /* joystick wire break / out of range */
+    WHY_PC,                 /* ground station command */
     WHY_COUNT
 } mode_reason_t;
 

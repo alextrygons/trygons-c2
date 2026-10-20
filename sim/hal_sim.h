@@ -57,4 +57,7 @@ void     sim_hal_set_limit_switches(bool fitted, bool left, bool right);
 /* Optional paddlewheel (speed through water). */
 void     sim_hal_set_water_speed(bool fitted, float kn);
 
+/* Joystick (raw 12-bit ADC values and buttons). */
+void     sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob);
+
 #endif /* HAL_SIM_H */

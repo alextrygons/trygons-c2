@@ -34,6 +34,7 @@
 
 #include "autopilot.h"
 #include "gear.h"
+#include "joystick.h"
 #include "hal.h"
 #include "dr.h"
 #include "modes.h"
@@ -51,6 +52,10 @@
 #define SB_ALM_ARRIVED            0x20u
 #define SB_ALM_GEAR               0x40u
 #define SB_ALM_TRAINING           0x80u
+#define SB_ALM_JOY_FAULT          0x100u  /* joystick wire break / out of range */
+#define SB_ALM_JOY_NOT_CENTERED   0x200u  /* joystick not centred at power-up */
+#define SB_ALM_JOYSTICK           0x400u  /* joystick took control */
+#define SB_ALM_PC_LINK            0x800u  /* ground station link lost */
 
 #define SB_FAULT_STEER_OFF   0u
 #define SB_FAULT_STEER_GYRO  1u
@@ -127,6 +132,11 @@ typedef struct {
     float    dr_max_unc_m;              /* uncertainty above this ... (200) */
     uint32_t dr_max_ms;                 /* ... or DR longer than this (10 min) -> CRUISE (600000) */
     float    dr_slow_kn;                /* CRUISE speed after that (4) */
+
+    /* Joystick override (joystick.c) */
+    joy_config_t joy;
+    float    joy_max_throttle_pct;      /* stick full = this much throttle, F and R (40) */
+    bool     joy_resume_prev;           /* hand-back resumes the previous mode if safe (false = STANDBY) */
 } sb_config_t;
 
 typedef struct {
@@ -199,6 +209,10 @@ typedef struct {
     dr_t        dr;            /* position estimate (GPS / dead reckoning) */
     bool        gps_new_msg;   /* a GPS message arrived this step */
     uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */
+    joy_t       joy;           /* hard-wired joystick */
+    sb_mode_t   joy_prev;      /* mode before the override */
+    bool        joy_fault_seen, joy_nc_seen;
+    uint32_t    chirp_ms;      /* short alarm chirp still to sound */
 
     uint32_t now_ms, last_ms;
     bool     stopping;          /* safe stop running (idle + neutral first) */
@@ -264,5 +278,15 @@ typedef struct {
 } sb_status_t;
 
 sb_status_t sb_status(const sb_t *s);
+
+/* Joystick hand-back (AUTO button or PC): only with the stick centred.
+ * Goes to STANDBY (or the previous mode if joy_resume_prev and safe).
+ * Returns false (logged) if refused. */
+bool sb_joystick_handback(sb_t *s, mode_reason_t why);
+
+/* Joystick calibration (STANDBY only): start, move the stick to all
+ * corners, release, finish -> stored with checksum. */
+bool sb_joystick_cal_start(sb_t *s);
+bool sb_joystick_cal_finish(sb_t *s);
 
 #endif /* SMALLBOAT_H */
