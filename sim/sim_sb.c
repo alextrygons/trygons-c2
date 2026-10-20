@@ -5023,6 +5023,301 @@ static void helm_tests(void)
     }
 }
 
+/* --------------------------------------- REMOTE MANUAL driving (section D) -- */
+
+/* The remote joystick through the "gateway": one GW_RJOY per control step
+ * while rj_on, with the age / latency the gateway would measure. */
+typedef struct {
+    pisim_t  p;
+    bool     rj_on;
+    uint8_t  st;
+    uint16_t seq;
+    float    x, y, lever;
+    bool     has_lever;
+    uint16_t age_ms, lat_ms;
+    float    max_thr, max_rate, last_cmd;
+    bool     have_cmd;
+} rjsim_t;
+
+static void rj_send(rjsim_t *r, uint8_t flags)
+{
+    uint8_t pl[15], fr[PROTO_MAX_FRAME];
+    int16_t xi = (int16_t)lrintf(r->x * 1000.0f), yi = (int16_t)lrintf(r->y * 1000.0f);
+    uint16_t li = (uint16_t)lrintf(r->lever * 1000.0f);
+    r->seq++;
+    pl[0] = r->st;
+    pl[1] = (uint8_t)r->seq; pl[2] = (uint8_t)(r->seq >> 8);
+    pl[3] = (uint8_t)r->age_ms; pl[4] = (uint8_t)(r->age_ms >> 8);
+    pl[5] = (uint8_t)r->lat_ms; pl[6] = (uint8_t)(r->lat_ms >> 8);
+    pl[7] = (uint8_t)xi; pl[8] = (uint8_t)((uint16_t)xi >> 8);
+    pl[9] = (uint8_t)yi; pl[10] = (uint8_t)((uint16_t)yi >> 8);
+    pl[11] = (uint8_t)li; pl[12] = (uint8_t)(li >> 8);
+    pl[13] = 0u;
+    pl[14] = (uint8_t)((r->has_lever ? 1u : 0u) | flags);
+    size_t n = proto_encode(fr, PROTO_T_GW_RJOY, 0u, pl, sizeof pl);
+    sim_hal_gw_rx_push(fr, (uint32_t)n);
+}
+
+static void rj_hook(sbsim_t *x, void *ctx)
+{
+    rjsim_t *r = (rjsim_t *)ctx;
+    if (r->rj_on) rj_send(r, 0u);
+    pi_hook(x, &r->p);
+    if (sb_mode(&x->sb) == MODE_REMOTE) {
+        float t = sim_hal_throttle();
+        if (t > r->max_thr) r->max_thr = t;
+        float c = x->sb.remote.steer_cmd;
+        if (r->have_cmd) {
+            float rate = fabsf(c - r->last_cmd) / (AP_PERIOD_MS * 0.001f);
+            if (rate > r->max_rate) r->max_rate = rate;
+        }
+        r->last_cmd = c;
+        r->have_cmd = true;
+    } else {
+        r->have_cmd = false;
+    }
+}
+
+static void rjsim_init(rjsim_t *r, sbsim_t *x, uint32_t seed)
+{
+    memset(r, 0, sizeof *r);
+    sbsim_init(x, seed, 90.0f, 0.0f, NULL);
+    pisim_init(&r->p, x, 921600u);
+    r->st = 2u;
+    r->lever = 0.5f;
+    r->has_lever = true;
+    r->age_ms = 60u;
+    r->lat_ms = 40u;
+    sbsim_run(x, 2000u, rj_hook, r);
+}
+
+/* HELM for station 2, ask for remote driving, CONFIRM on board -> REMOTE. */
+static bool rj_enable(sbsim_t *x, rjsim_t *r)
+{
+    const uint8_t TAKE = 0u, ASK = 0u;
+    pi_cmd(x, &r->p, r->st, false, PROTO_T_HELM, &TAKE, 1u);
+    if (pi_cmd(x, &r->p, r->st, false, PROTO_T_REMOTE, &ASK, 1u) != PROTO_R_OK) return false;
+    r->rj_on = true;
+    confirm_press(x);
+    sbsim_run(x, x->t + 300u, rj_hook, r);
+    return sb_mode(&x->sb) == MODE_REMOTE;
+}
+
+static void rj_lever(sbsim_t *x, rjsim_t *r, float to, float rate)
+{
+    while (fabsf(r->lever - to) > 1e-4f) {
+        float step = rate * AP_PERIOD_MS * 0.001f;
+        r->lever = (to > r->lever) ? fminf(to, r->lever + step) : fmaxf(to, r->lever - step);
+        sbsim_run(x, x->t + AP_PERIOD_MS, rj_hook, r);
+    }
+}
+
+static void remote_tests(void)
+{
+    char d[800];
+    const uint8_t TAKE = 0u, ASK = 0u;
+    printf("\n=== Section D: REMOTE MANUAL (shore joystick) ===\n");
+
+    /* RD1 enabling needs the HELM request AND the joystick CONFIRM on board */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        rjsim_init(&r, &x, 921u);
+        uint8_t r_usb = 0xFFu;
+        {
+            static link_t usb;
+            link_init(&usb, &x.sb);
+            r_usb = usb_cmd(&x, &usb, PROTO_T_REMOTE, &ASK, 1u);              /* the USB laptop: no */
+        }
+        uint8_t r_nohelm = pi_cmd(&x, &r.p, 3u, false, PROTO_T_REMOTE, &ASK, 1u);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        uint8_t r_ask = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        r.rj_on = true;
+        sbsim_run(&x, x.t + 11000u, rj_hook, &r);                            /* nobody confirms */
+        bool still = sb_mode(&x.sb) == MODE_STANDBY;
+        uint8_t r_ask2 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool conf = confirm_press(&x);
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        bool on = sb_mode(&x.sb) == MODE_REMOTE;
+        /* not from MANUAL: the onboard joystick has it */
+        static sbsim_t y;
+        static rjsim_t q;
+        rjsim_init(&q, &y, 922u);
+        joy_set(0.0f, 0.5f, false, false);
+        sbsim_run(&y, y.t + 1000u, rj_hook, &q);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&y, y.t + 500u, rj_hook, &q);
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        uint8_t r_man = pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        snprintf(d, sizeof d, "USB laptop asks: %u (5 = not allowed); station without HELM: %u (21); HELM station asks: %u, "
+                 "no CONFIRM for 11 s -> still STANDBY %s; asks again %u + joystick CONFIRM on board %s -> %s; "
+                 "asked in MANUAL (onboard joystick driving): %u (4 = joystick in control)",
+                 r_usb, r_nohelm, r_ask, still ? "yes" : "NO", r_ask2, conf ? "accepted" : "NO",
+                 mode_name(sb_mode(&x.sb)), r_man);
+        test_report("RD1 remote driving starts only with the HELM request AND the joystick CONFIRM on board",
+                    r_usb == PROTO_R_NOT_ALLOWED && r_nohelm == PROTO_R_NOT_HELM && r_ask == PROTO_R_OK && still &&
+                    r_ask2 == PROTO_R_OK && conf && on && r_man == PROTO_R_JOYSTICK, d);
+    }
+
+    /* RD2 cap 20 % / 5 % (never above the power limit), steering rate limit, pickup from STANDBY */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        rjsim_init(&r, &x, 923u);
+        power_full(&x);
+        r.lever = 0.9f;                              /* lever left forward: nothing until neutral */
+        bool on = rj_enable(&x, &r);
+        sbsim_run(&x, x.t + 3000u, rj_hook, &r);
+        float before = r.max_thr;
+        rj_lever(&x, &r, 0.5f, 0.5f);
+        rj_lever(&x, &r, 1.0f, 0.5f);               /* full forward */
+        sbsim_run(&x, x.t + 15000u, rj_hook, &r);
+        float full = sim_hal_throttle();
+        r.x = 1.0f;                                  /* full steering at once */
+        sbsim_run(&x, x.t + 4000u, rj_hook, &r);
+        rj_lever(&x, &r, 0.5f, 0.5f);
+        rj_lever(&x, &r, 0.0f, 0.5f);               /* full reverse */
+        sbsim_run(&x, x.t + 10000u, rj_hook, &r);
+        float rev = x.w.max_thr_rev;
+        snprintf(d, sizeof d, "REMOTE %s; lever left at 90 %%: throttle max %.1f %% until it passed neutral; full lever: "
+                 "%.1f %% (cap 20, power limit %.0f %%); full reverse: max %.1f %% (cap 5); steering command rate max "
+                 "%.1f deg/s (limit 20); highest throttle %.1f %%",
+                 on ? "yes" : "NO", before, full, x.sb.plim.fwd_pct, rev, r.max_rate, r.max_thr);
+        test_report("RD2 remote cap 20 % fwd / 5 % rev never exceeded, steering rate-limited, lever pickup",
+                    on && before <= 1.0f && full >= 19.0f && full <= 20.01f && r.max_thr <= 20.01f &&
+                    rev <= 5.01f && r.max_rate <= 20.5f && x.sb.plim.fwd_pct == 100.0f, d);
+    }
+
+    /* RD3 the onboard joystick takes over at once */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        rjsim_init(&r, &x, 924u);
+        rj_enable(&x, &r);
+        rj_lever(&x, &r, 0.8f, 0.5f);
+        sbsim_run(&x, x.t + 5000u, rj_hook, &r);
+        uint32_t t0 = x.t;
+        joy_set(0.6f, 0.0f, false, false);          /* someone on board moves the stick */
+        while (sb_mode(&x.sb) == MODE_REMOTE && x.t < t0 + 1000u) sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);
+        uint32_t dt = x.t - t0;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 2000u, rj_hook, &r);
+        bool stays = sb_mode(&x.sb) == MODE_MANUAL;
+        /* TAKE too */
+        static sbsim_t y;
+        static rjsim_t q;
+        rjsim_init(&q, &y, 925u);
+        rj_enable(&y, &q);
+        joy_set(0.0f, 0.0f, true, false);
+        sbsim_run(&y, y.t + 100u, rj_hook, &q);
+        joy_set(0.0f, 0.0f, false, false);
+        bool take = sb_mode(&y.sb) == MODE_MANUAL;
+        snprintf(d, sizeof d, "stick moved on board: MANUAL after %lu ms; remote packets afterwards ignored, stays MANUAL %s; "
+                 "TAKE on board: %s", (unsigned long)dt, stays ? "yes" : "NO", take ? "MANUAL" : "NO");
+        test_report("RD3 any onboard joystick movement or TAKE takes control from the remote driver at once",
+                    dt <= 200u && stays && take, d);
+    }
+
+    /* RD4 packets stop (gap > 300 ms): idle + neutral, gyro hold, alarm; STANDBY after 5 s; no resume */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        events_t ev;
+        memset(&ev, 0, sizeof ev);
+        rjsim_init(&r, &x, 926u);
+        rj_enable(&x, &r);
+        rj_lever(&x, &r, 1.0f, 0.5f);
+        sbsim_run(&x, x.t + 10000u, rj_hook, &r);
+        float thr0 = sim_hal_throttle();
+        uint32_t t0 = x.t;
+        r.rj_on = false;                            /* the link dies */
+        ev_reset(&ev, x.t, thr0, x.sb.cfg.gear.pwm_n_us);
+        uint32_t t_lost = 0u;
+        bool resumed = false;
+        while (x.t < t0 + 7000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);
+            ev_watch(&x, &ev);
+            if (!t_lost && x.sb.remote.state == SB_REMOTE_LOST) t_lost = x.t - t0;
+            if (x.t > t0 + 2000u && x.t < t0 + 2100u) r.rj_on = true;     /* data comes back after 2 s */
+            if (x.t > t0 + 2500u && sb_mode(&x.sb) == MODE_REMOTE && x.sb.remote.state == SB_REMOTE_DRIVING) resumed = true;
+        }
+        snprintf(d, sizeof d, "throttle %.1f %%; link dead: LOST after %lu ms (alarm %s, steering %s), idle %.2f s, neutral "
+                 "%.2f s; data back after 2 s: driving again %s; STANDBY %s (why: %s)",
+                 thr0, (unsigned long)t_lost, (x.sb.alarm_bits & SB_ALM_REMOTE_DRIVE) ? "yes" : "NO",
+                 x.sb.remote.losses ? "gyro hold" : "?", ev.t_idle, ev.t_neutral, resumed ? "YES" : "no",
+                 sb_mode(&x.sb) == MODE_STANDBY ? "after 5 s" : "NO", mode_reason_name(auto_end_why(&x)));
+        test_report("RD4 remote data gap > 300 ms -> idle + neutral + gyro hold + alarm, STANDBY after 5 s, never resumes",
+                    t_lost >= 300u && t_lost <= 400u && (x.sb.alarm_bits & SB_ALM_REMOTE_DRIVE) && ev.t_idle >= 0.0f &&
+                    ev.t_idle <= 1.5f && ev.t_neutral > 0.0f && !resumed && sb_mode(&x.sb) == MODE_STANDBY &&
+                    auto_end_why(&x) == WHY_REMOTE_LOST, d);
+    }
+
+    /* RD5 data too old / latency too high -> the same */
+    {
+        int ok = 0;
+        char t[300] = "";
+        for (int k = 0; k < 2; k++) {
+            static sbsim_t x;
+            static rjsim_t r;
+            rjsim_init(&r, &x, 927u + (uint32_t)k);
+            rj_enable(&x, &r);
+            sbsim_run(&x, x.t + 2000u, rj_hook, &r);
+            if (k == 0) r.age_ms = 350u; else r.lat_ms = 450u;
+            sbsim_run(&x, x.t + 300u, rj_hook, &r);
+            bool lost = x.sb.remote.state == SB_REMOTE_LOST && x.sb.remote.lost_why == (k == 0 ? 2u : 3u);
+            ok += lost;
+            snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s -> %s", k ? "; " : "",
+                     k ? "latency 450 ms (limit 400)" : "data 350 ms old (limit 300)", lost ? "LOST" : "still driving");
+        }
+        test_report("RD5 remote data too old or link latency too high -> link lost", ok == 2, t);
+    }
+
+    /* RD6 taking over from AUTO: the throttle is held until the remote lever picks it up */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        rjsim_init(&r, &x, 929u);
+        auto_to(&x, 2000.0f, 90.0f, 4.0f);
+        sbsim_run(&x, x.t + 30000u, rj_hook, &r);
+        float thr_auto = sim_hal_throttle();
+        r.lever = 0.62f;                            /* forward, but far from the pickup point */
+        bool on = rj_enable(&x, &r);
+        r.max_thr = 0.0f;
+        sbsim_run(&x, x.t + 3000u, rj_hook, &r);
+        bool pend = x.sb.remote.lev.pickup;
+        float held = r.max_thr;
+        rj_lever(&x, &r, x.sb.remote.lev.target > 0.0f ? x.sb.remote.lev.target : 0.5f, 0.05f);
+        bool picked = !x.sb.remote.lev.pickup;
+        snprintf(d, sizeof d, "AUTO at %.1f %%, remote lever at 62 %%: REMOTE %s, pickup pending %s, throttle max %.1f %% "
+                 "(cap %.0f %%), lever to the pickup point: picked up %s",
+                 thr_auto, on ? "yes" : "NO", pend ? "yes" : "NO", held, fminf(20.0f, x.sb.plim.fwd_pct), picked ? "yes" : "NO");
+        test_report("RD6 throttle pickup and neutral zone apply to the remote lever (no drop, no jump)",
+                    on && pend && held <= fmaxf(thr_auto, 20.0f) + 0.5f && held >= thr_auto - 1.0f && picked, d);
+    }
+
+    /* RD7 release / STANDBY button / a station on board takes HELM -> STANDBY */
+    {
+        int ok = 0;
+        char t[400] = "";
+        for (int k = 0; k < 3; k++) {
+            static sbsim_t x;
+            static rjsim_t r;
+            rjsim_init(&r, &x, 930u + (uint32_t)k);
+            rj_enable(&x, &r);
+            if (k == 0) { rj_send(&r, 2u); sbsim_run(&x, x.t + 200u, rj_hook, &r); }
+            else if (k == 1) press(&x, HAL_BTN_STANDBY);
+            else pi_cmd(&x, &r.p, 9u, true, PROTO_T_HELM, &TAKE, 1u);
+            sbsim_run(&x, x.t + 200u, rj_hook, &r);
+            bool sb = sb_mode(&x.sb) == MODE_STANDBY;
+            ok += sb;
+            snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s -> %s", k ? "; " : "",
+                     k == 0 ? "remote driver releases" : k == 1 ? "STANDBY button" : "station on board takes HELM",
+                     mode_name(sb_mode(&x.sb)));
+        }
+        test_report("RD7 remote driving ends: released, STANDBY button, HELM taken on board -> STANDBY", ok == 3, t);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -5034,12 +5329,14 @@ void sb_gateway_tests(void)
 {
     gateway_tests();
     helm_tests();
+    remote_tests();
 }
 
 void sb_tests(void)
 {
     gateway_tests();
     helm_tests();
+    remote_tests();
     logging_tests();
     timing_tests();
     hardening_tests();

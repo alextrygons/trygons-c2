@@ -21,6 +21,7 @@ import program
 import proto
 from link import Link, list_ports
 from gwclient import GatewayLink
+import shorejoy
 from tkinter import messagebox, simpledialog
 
 try:
@@ -41,7 +42,7 @@ F_BIG = ("Segoe UI", 20, "bold")
 F_MED = ("Segoe UI", 14, "bold")
 F_TXT = ("Segoe UI", 12)
 MODE_COLORS = {"STANDBY": "#606060", "MANUAL": ORANGE, "HDG_LOCK": GREEN, "AUTO": "#7a00a0",
-               "TRAINING": "#a06000"}
+               "TRAINING": "#a06000", "REMOTE_MANUAL": BLUE}
 PLOT_S = 120.0              # seconds shown in the plot
 
 
@@ -298,6 +299,103 @@ class App:
         btn(jb, "Calibrate finish", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(1), "calibration finish"),
             font=F_TXT).pack(fill="x")
 
+    def _build_remote(self, rt):
+        """REMOTE MANUAL from this (shore) PC: its USB joystick, request / release."""
+        self.sj = shorejoy.Joysticks()
+        self.sj_cfg = shorejoy.load_config()
+        self.rsender = None
+        top = tk.Frame(rt, bg=BG)
+        top.pack(fill="x", pady=4)
+        tk.Label(top, text="Shore joystick", font=F_MED, bg=BG).pack(side="left", padx=4)
+        btn(top, "Find joysticks", self.remote_scan, font=F_TXT).pack(side="left")
+        self.rsend_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(top, text="send my joystick (30 Hz)", variable=self.rsend_var, font=F_MED, bg=BG,
+                       command=self.remote_send_toggle).pack(side="left", padx=10)
+        m = tk.Frame(rt, bg=BG)
+        m.pack(fill="x", padx=6)
+        self.sj_vars = {}
+        for r, (key, label) in enumerate((("steer", "steering axis"), ("thr", "throttle axis"))):
+            tk.Label(m, text=label, font=F_TXT, bg=BG).grid(row=r, column=0, sticky="w")
+            dv = tk.IntVar(value=self.sj_cfg[key]["dev"])
+            av = tk.StringVar(value=self.sj_cfg[key]["axis"])
+            iv = tk.BooleanVar(value=self.sj_cfg[key].get("invert", False))
+            tk.Label(m, text="device", font=F_TXT, bg=BG).grid(row=r, column=1)
+            tk.Spinbox(m, from_=0, to=15, textvariable=dv, width=3, font=F_MED).grid(row=r, column=2)
+            ttk.Combobox(m, textvariable=av, values=shorejoy.AXES, width=4, state="readonly",
+                         font=F_MED).grid(row=r, column=3, padx=4)
+            tk.Checkbutton(m, text="invert", variable=iv, font=F_TXT, bg=BG).grid(row=r, column=4)
+            self.sj_vars[key] = (dv, av, iv)
+        self.sj_lever = tk.BooleanVar(value=self.sj_cfg["thr"].get("lever", True))
+        tk.Checkbutton(m, text="throttle is a lever (TWCS), not a spring stick", variable=self.sj_lever, font=F_TXT,
+                       bg=BG).grid(row=1, column=5, padx=8)
+        btn(m, "Save", self.remote_save_cfg, font=F_TXT).grid(row=0, column=5, sticky="w", padx=8)
+        b = tk.Frame(rt, bg=BG)
+        b.pack(fill="x", pady=6)
+        btn(b, "REQUEST REMOTE DRIVING", lambda: self.cmd(proto.T_REMOTE, proto.p_remote(0), "request remote driving"),
+            bg="#c0d8ff", font=F_BIG).pack(side="left", padx=4)
+        btn(b, "RELEASE", self.remote_release, bg="#ffb0b0", font=F_BIG).pack(side="left", padx=4)
+        tk.Label(rt, text="Remote driving needs: HELM on this station, the request above, and the joystick CONFIRM "
+                          "pressed by the person on board within 10 s. The onboard joystick and STANDBY always win.",
+                 font=F_TXT, bg=BG, wraplength=900, justify="left").pack(anchor="w", padx=6)
+        self.remote_lbl = tk.Label(rt, text="-", font=("Consolas", 13), bg=BG, justify="left", anchor="w")
+        self.remote_lbl.pack(fill="x", padx=6, pady=4)
+
+    def remote_scan(self):
+        found = self.sj.list()
+        self.say("joysticks: " + (", ".join("%d %s" % (j["dev"], j["name"]) for j in found) or "none found"),
+                 GREEN if found else RED)
+
+    def remote_save_cfg(self):
+        for key, (dv, av, iv) in self.sj_vars.items():
+            self.sj_cfg[key].update({"dev": dv.get(), "axis": av.get(), "invert": iv.get()})
+        self.sj_cfg["thr"]["lever"] = self.sj_lever.get()
+        shorejoy.save_config(self.sj_cfg)
+        self.say("shore joystick settings saved", GREEN)
+
+    def remote_send_toggle(self):
+        if self.rsend_var.get():
+            if not isinstance(self.link, GatewayLink):
+                self.rsend_var.set(False)
+                return self.say("Remote driving only through the gateway (gw:...)", RED)
+            self.remote_save_cfg()
+            self.rsender = shorejoy.RemoteSender(self.link, lambda: shorejoy.to_remote(self.sj, self.sj_cfg))
+            self.rsender.start()
+        elif self.rsender:
+            self.rsender.stop()
+            self.rsender = None
+
+    def remote_release(self):
+        self.cmd(proto.T_REMOTE, proto.p_remote(1), "release remote driving")
+        if self.rsender and self.link:
+            self.link.send_rjoy({"t": "rjoy", "seq": (self.rsender.seq + 1) & 0xFFFF, "ts": self.link.now(),
+                                 "x": 0.0, "release": True})
+
+    def draw_remote(self, d):
+        if "remote_state" not in d:
+            return
+        s = self.rsender
+        lines = ["boat: %s, remote %s%s" % (d["mode_name"], proto.REMOTE_STATES[min(d["remote_state"], 2)],
+                                           "  (" + proto.REMOTE_LOST_WHY[min(d["remote_lost_why"], 3)] + ")"
+                                           if d["remote_state"] == 2 else "")]
+        lines.append("data age %d ms, one-way latency %d ms, packets %d" % (d["rjoy_age_ms"], d["rjoy_lat_ms"],
+                                                                         d["rjoy_packets"]))
+        lines.append("boat sees: steering %+.2f, lever %.0f %%   cap %d %% fwd / %d %% rev" % (
+            d["rjoy_x1000"] / 1000.0, d["rjoy_lever1000"] / 10.0, d["remote_cap_f"], d["remote_cap_r"]))
+        if d["rjoy_flags"] & 2:
+            tgt = d["rjoy_pickup1000"]
+            lines.append("MOVE THROTTLE TO PICK UP: lever to %s" % ("NEUTRAL" if tgt == 0xFFFF else "%.0f %%" % (tgt / 10)))
+        if d["rjoy_flags"] & 4:
+            lines.append("WAITING FOR THE JOYSTICK CONFIRM ON BOARD (%.0f s)" % d["confirm_left_s"])
+        if s:
+            v = s.last or {}
+            lines.append("sending: %d packets%s   x %+.2f  lever %s" % (
+                s.sent, "   JOYSTICK NOT FOUND" if s.missing else "", v.get("x", 0.0),
+                "%.0f %%" % (100 * v["lever"]) if "lever" in v else "-"))
+        cams = (self.gw_status or {}).get("cameras") or {}
+        if d["mode"] == proto.MODE_REMOTE and cams and not cams.get("front_live", True):
+            lines.append("WARNING: NO FRONT CAMERA LIVE")
+        self.remote_lbl.configure(text="\n".join(lines), fg=RED if d["remote_state"] == 2 else FG)
+
     def _build_network(self, nt):
         """Internet channels (through the gateway): status, mode, Keep."""
         top = tk.Frame(nt, bg=BG)
@@ -506,6 +604,10 @@ class App:
         nb.add(jt, text="Joystick")
         self.joytab = jt
         self._build_joytab(jt)
+
+        rt = tk.Frame(nb, bg=BG)
+        nb.add(rt, text="Remote")
+        self._build_remote(rt)
 
         nt = tk.Frame(nb, bg=BG)
         nb.add(nt, text="Network")
@@ -965,10 +1067,16 @@ class App:
         # banners
         if d["confirm_kind"]:
             self.joy_banner.configure(text="PRESS JOYSTICK CONFIRM - %s - %.0f s" % (
-                proto.CONFIRM_KINDS[min(d["confirm_kind"], 4)], d["confirm_left_s"]), bg="#ffd000")
+                proto.CONFIRM_KINDS[min(d["confirm_kind"], len(proto.CONFIRM_KINDS) - 1)],
+                d["confirm_left_s"]), bg="#ffd000")
+        elif d["mode"] == proto.MODE_REMOTE:
+            st = d.get("remote_state", 1)
+            self.joy_banner.configure(
+                text="REMOTE DRIVING LINK LOST - idle, neutral, holding heading" if st == 2 else
+                "REMOTE DRIVING (shore joystick) - onboard joystick / STANDBY take over", bg=RED if st == 2 else BLUE)
         else:
             self.joy_banner.configure(text="JOYSTICK IN CONTROL", bg=ORANGE)
-        self.show(self.joy_banner, d["mode"] == proto.MODE_MANUAL or d["confirm_kind"] != 0,
+        self.show(self.joy_banner, d["mode"] in (proto.MODE_MANUAL, proto.MODE_REMOTE) or d["confirm_kind"] != 0,
                   row=0, column=0, columnspan=2, sticky="ew")
         alarms = proto.alarm_texts(d["alarm_bits"])
         on = d["alarm"] or bool(alarms)
@@ -1021,6 +1129,7 @@ class App:
         self.sys_lbl.configure(text="\n".join(lines))
 
         self.draw_joystick(d)
+        self.draw_remote(d)
         self.draw_plot()
         self.draw_map(d)
 

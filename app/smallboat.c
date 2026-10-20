@@ -81,10 +81,18 @@ void sb_default_config(sb_config_t *cfg)
     joy_default_config(&cfg->joy);
     cfg->joy_max_throttle_pct = 100.0f;
     jb_default_config(&cfg->jb);
+    cfg->remote_cap_fwd_pct = 20.0f;
+    cfg->remote_cap_rev_pct = 5.0f;
+    cfg->remote_steer_rate_dps = 20.0f;
+    cfg->remote_max_age_ms = 300u;
+    cfg->remote_max_lat_ms = 400u;
+    cfg->remote_lost_ms = 5000u;
 }
 
 static bool lever_has_throttle(sb_mode_t m);
 static void lever_pickup_start(sb_t *s, sb_mode_t from);
+static void remote_enter(sb_t *s, sb_mode_t from);
+static float remote_steer(sb_t *s, float dt);
 
 static void lever_standard(sb_t *s)
 {
@@ -237,6 +245,7 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
     }
     if ((!s->armed || s->mon_tripped) && to != MODE_STANDBY) return false;   /* interlock / monitor */
     if (to == MODE_MANUAL) return why == WHY_JOYSTICK;      /* only the joystick enters it */
+    if (to == MODE_REMOTE) return why == WHY_REMOTE && !gear_fault(&s->gear);   /* HELM request + CONFIRM */
 
     switch (to) {
     case MODE_STANDBY:
@@ -305,6 +314,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         s->ap.gain_scale = 1.0f;
     }
     if (from == MODE_AUTO && !s->autop.finished) s->autop.suspended = true;   /* resume: PC + CONFIRM */
+    if (from == MODE_REMOTE) s->remote.state = SB_REMOTE_OFF;
     bool hdg_fault_steer = s->hdg_compass_lost &&
                            (s->stop_steer == STOP_STEER_GYRO || s->stop_steer == STOP_STEER_CENTER);
     s->hdg_compass_lost = false;
@@ -318,7 +328,8 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
     case MODE_STANDBY: {
         /* safe stop: throttle idle + neutral first (below), steering last */
         bool moving = s->thr.out_pct > s->cfg.gear.idle_max_pct || !gear_is(&s->gear, GEAR_N);
-        bool was_auto = (from == MODE_HDG_LOCK || from == MODE_AUTO || from == MODE_TRAINING);
+        bool was_auto = (from == MODE_HDG_LOCK || from == MODE_AUTO || from == MODE_TRAINING ||
+                         from == MODE_REMOTE);
         s->stop_from_auto = was_auto;
         s->stopping = true;
         if (hdg_fault_steer) break;                 /* keep the gyro hold / centring running */
@@ -354,6 +365,13 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         s->chirp_ms = 300u;
         if (from == MODE_HDG_LOCK || from == MODE_AUTO || from == MODE_TRAINING)
             s->alarm_bits |= SB_ALM_JOYSTICK;
+        break;
+    case MODE_REMOTE:
+        /* the shore joystick: angle steering like MANUAL, its own lever / caps */
+        s->stopping = false;
+        s->manual_from = from;
+        autopilot_angle(&s->ap);
+        remote_enter(s, from);
         break;
     case MODE_TRAINING:
         /* outboard centred by hand; steering off until calibration starts */
@@ -431,6 +449,7 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
         s->hdg_target = autopilot_wrap360(s->hdg_target + dlt);
         autopilot_set_target(&s->ap, s->hdg_target);         /* shown as the target */
     }
+    if (sb_mode(s) == MODE_REMOTE) in->angle_cmd_deg = remote_steer(s, (float)(s->now_ms - s->last_ms) * 0.001f);
     if (sb_mode(s) == MODE_MANUAL) {
         /* X -> outboard angle over the full range (deadband around centre) */
         float x = s->joy.x, db = s->joy.cfg.deadband;
@@ -493,13 +512,13 @@ static bool lever_has_throttle(sb_mode_t m)
     return m == MODE_MANUAL || m == MODE_HDG_LOCK;
 }
 
-/* Throttle authority passes to the lever (MANUAL / HDG LOCK entered from
- * STANDBY, AUTO or TRAINING): the lever does nothing until it matches what
- * the engine does now (or is in the neutral zone). From AUTO / TRAINING the
- * current throttle is held meanwhile; from STANDBY the stop goes on. */
-static void lever_pickup_start(sb_t *s, sb_mode_t from)
+/* Throttle authority passes to a lever (MANUAL / HDG LOCK entered from
+ * STANDBY, AUTO or TRAINING; REMOTE MANUAL): the lever does nothing until it
+ * matches what the engine does now (or is in the neutral zone). From AUTO /
+ * TRAINING / HDG LOCK the current throttle is held meanwhile; from STANDBY
+ * the stop goes on. */
+static void lever_pickup_start_v(sb_t *s, sb_lever_t *v, sb_mode_t from)
 {
-    sb_lever_t *v = &s->lev;
     bool moving = from != MODE_STANDBY && s->gear.current != GEAR_N &&
                   s->thr.out_pct > s->cfg.gear.idle_max_pct;
     v->pickup = true;
@@ -509,24 +528,28 @@ static void lever_pickup_start(sb_t *s, sb_mode_t from)
     v->target = -1.0f;
 }
 
-/* Lever -> gear + throttle. Neutral zone (45..55 %) = idle + neutral, above
- * = forward, below = reverse; gear changes go through the gear state
- * machine, the power limit applies as everywhere. */
-static void lever_throttle(sb_t *s)
+static void lever_pickup_start(sb_t *s, sb_mode_t from)
 {
-    sb_lever_t *v = &s->lev;
-    const joy_t *j = &s->joy;
-    float L = j->lever, lo = j->cfg.nz_lo, hi = j->cfg.nz_hi;
+    lever_pickup_start_v(s, &s->lev, from);
+}
+
+/* Lever L (0 back .. 1 forward) -> gear + throttle. Neutral zone (45..55 %)
+ * = idle + neutral, above = forward, below = reverse; full lever = lim_f /
+ * lim_r (the power limit, or less: the remote cap). Gear changes go through
+ * the gear state machine. */
+static void lever_drive(sb_t *s, sb_lever_t *v, float L, float lim_f, float lim_r)
+{
+    float lo = s->joy.cfg.nz_lo, hi = s->joy.cfg.nz_hi;
     float uf = (L > hi) ? (L - hi) / (1.0f - hi) : 0.0f;
     float ur = (L < lo) ? (lo - L) / lo : 0.0f;
 
     if (v->pickup) {
-        float lim = (v->hold_gear == GEAR_R) ? s->plim.rev_pct : s->plim.fwd_pct;
+        float lim = (v->hold_gear == GEAR_R) ? lim_r : lim_f;
         if (v->hold_pct > lim) v->hold_pct = lim;           /* follows a lowered limit */
         bool moving = v->hold_gear != GEAR_N && v->hold_pct > s->cfg.gear.idle_max_pct;
         float f = v->hold_pct / fmaxf(lim, 1.0f);
         v->target = !moving ? -1.0f : (v->hold_gear == GEAR_F) ? hi + f * (1.0f - hi) : lo - f * lo;
-        bool hit = joy_lever_neutral(j, L) ||
+        bool hit = (L >= lo && L <= hi) ||
                    (v->target >= 0.0f && (fabsf(L - v->target) <= s->jmap.pickup_win ||
                                           (v->have_prev && (v->prev - v->target) * (L - v->target) < 0.0f)));
         v->prev = L;
@@ -539,14 +562,14 @@ static void lever_throttle(sb_t *s)
         /* picked up: go on from the held throttle, no step */
         v->pickup = false;
         v->fwd.u = v->rev.u = 1.0f;
-        v->fwd.d = v->fwd.lim = s->plim.fwd_pct;
-        v->rev.d = v->rev.lim = s->plim.rev_pct;
+        v->fwd.d = v->fwd.lim = lim_f;
+        v->rev.d = v->rev.lim = lim_r;
         if (moving && v->hold_gear == GEAR_F && uf > 0.0f) { v->fwd.u = uf; v->fwd.d = v->hold_pct; }
         if (moving && v->hold_gear == GEAR_R && ur > 0.0f) { v->rev.u = ur; v->rev.d = v->hold_pct; }
     }
 
-    lever_side_track(&v->fwd, uf, s->plim.fwd_pct);
-    lever_side_track(&v->rev, ur, s->plim.rev_pct);
+    lever_side_track(&v->fwd, uf, lim_f);
+    lever_side_track(&v->rev, ur, lim_r);
     if (uf > 0.0f) {
         s->gear_demand = GEAR_F;
         s->throttle_demand = lever_side(&v->fwd, uf);
@@ -556,6 +579,150 @@ static void lever_throttle(sb_t *s)
     } else {
         s->gear_demand = GEAR_N;
         s->throttle_demand = 0.0f;
+    }
+}
+
+static void lever_throttle(sb_t *s)
+{
+    lever_drive(s, &s->lev, s->joy.lever, s->plim.fwd_pct, s->plim.rev_pct);
+}
+
+/* --- REMOTE MANUAL (section D): the shore joystick drives ------------------------
+ *
+ * Priority, always: STANDBY button > onboard joystick > remote joystick >
+ * autopilot modes. Someone is always on board. Enabled only by the HELM
+ * station's request AND the joystick CONFIRM on board; ends when the remote
+ * driver releases it, the onboard joystick takes over (MANUAL), STANDBY,
+ * or any fault. Throttle capped (20 % fwd / 5 % rev, never above the power
+ * limit), steering rate-limited. Data too old / missing / too slow: idle +
+ * neutral at once, gyro heading hold, alarm; after 5 s STANDBY. It never
+ * comes back by itself. */
+
+static float remote_cap_f(const sb_t *s)
+{
+    return fminf(s->cfg.remote_cap_fwd_pct, s->plim.fwd_pct);
+}
+
+static float remote_cap_r(const sb_t *s)
+{
+    return fminf(s->cfg.remote_cap_rev_pct, s->plim.rev_pct);
+}
+
+sb_result_t sb_remote_request(sb_t *s, uint8_t station)
+{
+    if (sb_mode(s) == MODE_MANUAL) return SB_ERR_JOYSTICK;        /* the onboard joystick has it */
+    if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_TRAINING) return SB_ERR_WRONG_MODE;
+    if (!s->armed || s->mon_tripped) return SB_ERR_PRECOND;
+    if (!joy_ready(s)) return SB_ERR_JOY_NOT_READY;              /* nobody could press CONFIRM */
+    s->remote.station = station;
+    s->confirm.kind = CONF_REMOTE;
+    s->confirm.deadline_ms = s->now_ms + s->cfg.confirm_ms;
+    s->remote.requests++;
+    return SB_OK;
+}
+
+sb_result_t sb_remote_release(sb_t *s, uint8_t station)
+{
+    if (s->confirm.kind == CONF_REMOTE && s->remote.station == station) s->confirm.kind = CONF_NONE;
+    if (sb_mode(s) != MODE_REMOTE) return SB_OK;
+    if (station != s->remote.station) return SB_ERR_WRONG_MODE;
+    return sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_END) ? SB_OK : SB_ERR_PRECOND;
+}
+
+void sb_remote_input(sb_t *s, uint8_t station, uint16_t seq, uint16_t age_ms, uint16_t lat_ms,
+                     float x, float y, float lever, bool has_lever)
+{
+    sb_remote_t *r = &s->remote;
+    if (sb_mode(s) != MODE_REMOTE || station != r->station) {
+        r->ignored++;
+        return;
+    }
+    if (r->have && (int16_t)(seq - r->seq) <= 0) {                /* old / repeated packet */
+        r->ignored++;
+        return;
+    }
+    r->have = true;
+    r->seq = seq;
+    r->rx_ms = s->now_ms;
+    r->age_ms = age_ms;
+    r->lat_ms = lat_ms;
+    r->x = clampf(x, -1.0f, 1.0f);
+    r->y = clampf(y, -1.0f, 1.0f);
+    r->lever = clampf(lever, 0.0f, 1.0f);
+    r->has_lever = has_lever;
+    r->packets++;
+}
+
+static void remote_enter(sb_t *s, sb_mode_t from)
+{
+    sb_remote_t *r = &s->remote;
+    r->state = SB_REMOTE_DRIVING;
+    r->entered_ms = s->now_ms;
+    r->have = false;
+    r->steer_cmd = s->ap.est_angle;                   /* no steering jump */
+    lever_pickup_start_v(s, &r->lev, from);
+    r->lev.fwd.u = r->lev.rev.u = 1.0f;
+    r->lev.fwd.d = r->lev.fwd.lim = remote_cap_f(s);
+    r->lev.rev.d = r->lev.rev.lim = remote_cap_r(s);
+}
+
+/* Steering for REMOTE (read_inputs): stick X -> outboard angle, rate-limited. */
+static float remote_steer(sb_t *s, float dt)
+{
+    sb_remote_t *r = &s->remote;
+    if (r->state != SB_REMOTE_DRIVING) return r->steer_cmd;
+    float x = r->x, db = s->joy.cfg.deadband;
+    float xs = (fabsf(x) <= db) ? 0.0f : (x - copysignf(db, x)) / (1.0f - db);
+    float want = xs * s->ap.cfg.outboard.max_angle_deg;
+    float step = s->cfg.remote_steer_rate_dps * dt;
+    r->steer_cmd += clampf(want - r->steer_cmd, -step, step);
+    return r->steer_cmd;
+}
+
+/* The freshness watchdog + throttle, every step in REMOTE. */
+static void remote_mode(sb_t *s)
+{
+    sb_remote_t *r = &s->remote;
+    const sb_config_t *c = &s->cfg;
+    if (r->state == SB_REMOTE_DRIVING) {
+        uint32_t since = s->now_ms - (r->have ? r->rx_ms : r->entered_ms);
+        bool stale = since > c->remote_max_age_ms + (r->have ? 0u : 200u);   /* first packet: a little grace */
+        bool old = r->have && r->age_ms > c->remote_max_age_ms;
+        bool slow = r->have && r->lat_ms > c->remote_max_lat_ms;
+        if (stale || old || slow) {
+            r->state = SB_REMOTE_LOST;
+            r->lost_ms = s->now_ms;
+            r->lost_why = stale ? 1u : old ? 2u : 3u;
+            r->losses++;
+            alarm_on(s, SB_ALM_REMOTE_DRIVE);
+            /* idle + neutral at once; hold the heading on the gyro */
+            if (autopilot_gyro_ok(&s->ap)) autopilot_gyro_hold(&s->ap);
+            else autopilot_center(&s->ap);
+        }
+    }
+    if (r->state == SB_REMOTE_LOST) {
+        s->gear_demand = GEAR_N;
+        s->throttle_demand = 0.0f;
+        if (s->now_ms - r->lost_ms >= c->remote_lost_ms)
+            sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_LOST);
+        return;
+    }
+    if (!r->have) {
+        /* no remote data yet: keep what the engine does now (like a pickup) - a
+         * neutral demand here would start a gear change for nothing */
+        bool moving = r->lev.hold_gear != GEAR_N && r->lev.hold_pct > c->gear.idle_max_pct;
+        float lim = (r->lev.hold_gear == GEAR_R) ? remote_cap_r(s) : remote_cap_f(s);
+        s->gear_demand = moving ? r->lev.hold_gear : GEAR_N;
+        s->throttle_demand = moving ? fminf(r->lev.hold_pct, lim) : 0.0f;
+        return;
+    }
+    if (r->has_lever) {
+        lever_drive(s, &r->lev, r->lever, remote_cap_f(s), remote_cap_r(s));
+    } else {
+        float y = r->y, db = s->joy.cfg.deadband;
+        float mag = (fabsf(y) <= db) ? 0.0f : (fabsf(y) - db) / (1.0f - db);
+        s->gear_demand = (y > db) ? GEAR_F : (y < -db) ? GEAR_R : GEAR_N;
+        s->throttle_demand = mag * ((y > 0.0f) ? remote_cap_f(s) : remote_cap_r(s));
     }
 }
 
@@ -1114,6 +1281,10 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
             return true;
         }
         return sb_request_mode(s, MODE_AUTO, WHY_CONFIRM);
+    case CONF_REMOTE:
+        /* the HELM station must still be the one that asked */
+        if (s->helm != s->remote.station) return false;
+        return sb_request_mode(s, MODE_REMOTE, WHY_REMOTE);
     case CONF_RAISE_FWD:
     case CONF_RAISE_REV:
         /* one step up; never changes the mode */
@@ -1294,7 +1465,7 @@ static void events_step(sb_t *s, uint32_t buttons)
         s->compass_fault_seen = true;
         alarm_on(s, SB_ALM_COMPASS);
         plim_drop(&s->plim, PLIM_SRC_COMPASS, s->now_ms);
-        if (sb_mode(s) == MODE_AUTO || sb_mode(s) == MODE_TRAINING) {
+        if (sb_mode(s) == MODE_AUTO || sb_mode(s) == MODE_TRAINING || sb_mode(s) == MODE_REMOTE) {
             sb_request_mode(s, MODE_STANDBY, WHY_COMPASS_FAULT);
         } else if (sb_mode(s) == MODE_HDG_LOCK) {
             /* throttle stays with the user: gyro hold / centring until stopped */
@@ -1330,7 +1501,7 @@ static void events_step(sb_t *s, uint32_t buttons)
         alarm_on(s, SB_ALM_JOY_FAULT);
         plim_drop(&s->plim, PLIM_SRC_JOYSTICK, s->now_ms);
         if (is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;
-        if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK)
+        if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK || sb_mode(s) == MODE_REMOTE)
             sb_request_mode(s, MODE_STANDBY, WHY_JOY_FAULT);
     }
     if (!s->joy.fault) s->joy_fault_seen = false;
@@ -1340,12 +1511,16 @@ static void events_step(sb_t *s, uint32_t buttons)
     }
     if (s->joy.armed) s->joy_nc_seen = false;
 
+    /* REMOTE MANUAL needs its station to hold HELM (a station on board took command) */
+    if (sb_mode(s) == MODE_REMOTE && s->helm != s->remote.station) sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_END);
+
     /* override: it always wins (Y / the lever is the throttle in HDG_LOCK) */
     bool grab = s->joy.take_edge || s->joy.engage_x || (s->joy.engage_y && sb_mode(s) != MODE_HDG_LOCK) ||
                 (s->joy.lever_moved && !lever_has_throttle(sb_mode(s)));
     if (s->joy.take_edge) plim_drop(&s->plim, PLIM_SRC_OVERRIDE, s->now_ms);      /* TAKE always lowers */
     if (grab && sb_mode(s) != MODE_MANUAL) {
-        if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME) s->confirm.kind = CONF_NONE;
+        if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
+            s->confirm.kind == CONF_REMOTE) s->confirm.kind = CONF_NONE;
         sb_request_mode(s, MODE_MANUAL, WHY_JOYSTICK);
     }
     if (sb_mode(s) == MODE_MANUAL && s->joy.auto_edge) joystick_handback(s);
@@ -1439,6 +1614,7 @@ void sb_step(sb_t *s)
     else if (sb_mode(s) == MODE_HDG_LOCK) hdg_lock_mode(s);
     else if (sb_mode(s) == MODE_AUTO) auto_mode(s, dt, dt_ms, roll_new, roll);
     else if (sb_mode(s) == MODE_TRAINING) training_mode(s, dt_ms);
+    else if (sb_mode(s) == MODE_REMOTE) remote_mode(s);
     if (sb_mode(s) == MODE_STANDBY) {
         s->throttle_demand = 0.0f;
         s->gear_demand = GEAR_N;

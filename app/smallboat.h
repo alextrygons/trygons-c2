@@ -97,6 +97,7 @@
 #define SB_ALM_GW_STORAGE         0x20000u /* GATEWAY STORAGE: the Pi's USB SSD missing / failing */
 #define SB_ALM_REMOTE_LINK        0x40000u /* REMOTE LINK LOST: the remote HELM station disappeared */
 #define SB_ALM_CHANNEL            0x80000u /* CHANNEL FALLBACK: the chosen internet channel failed (gateway) */
+#define SB_ALM_REMOTE_DRIVE       0x100000u /* REMOTE DRIVING LINK LOST: remote joystick data old / missing */
 
 /* HELM: the one station whose commands are accepted (section B). */
 #define SB_HELM_NONE   0u
@@ -205,6 +206,14 @@ typedef struct {
     float    joy_max_throttle_pct;      /* stick full = this much throttle demand, F and R (100;
                                            the power limit and the reverse limit still apply) */
     jb_config_t jb;                     /* USB joystick bridge checks (joybridge.c) */
+
+    /* REMOTE MANUAL (section D) */
+    float    remote_cap_fwd_pct;        /* remote throttle cap forward (20; never above the power limit) */
+    float    remote_cap_rev_pct;        /* ... reverse (5) */
+    float    remote_steer_rate_dps;     /* outboard angle command rate limit (20 deg/s) */
+    uint32_t remote_max_age_ms;         /* data older / gap longer than this -> link lost (300) */
+    uint32_t remote_max_lat_ms;         /* one-way latency above this -> link lost (400) */
+    uint32_t remote_lost_ms;            /* lost this long -> STANDBY (5000) */
 } sb_config_t;
 
 /* One side (forward / reverse) of the non-returning throttle lever:
@@ -223,6 +232,25 @@ typedef struct {
     bool     have_prev;
     sb_lever_side_t fwd, rev;
 } sb_lever_t;
+
+/* REMOTE MANUAL: the shore joystick (section D) */
+#define SB_REMOTE_OFF      0u
+#define SB_REMOTE_DRIVING  1u
+#define SB_REMOTE_LOST     2u       /* data too old: idle + neutral, gyro hold, STANDBY after 5 s */
+typedef struct {
+    uint8_t  state;             /* SB_REMOTE_ (in MODE_REMOTE) */
+    uint8_t  station;           /* the gateway station that drives */
+    bool     have;              /* a packet since entering */
+    uint16_t seq;
+    uint32_t rx_ms, entered_ms, lost_ms;
+    uint16_t age_ms, lat_ms;    /* data age / one-way latency (gateway's measurement) */
+    uint8_t  lost_why;          /* 1 gap, 2 old data, 3 latency */
+    float    x, y, lever;       /* stick X, stick Y (no lever), lever 0..1 */
+    bool     has_lever;
+    float    steer_cmd;         /* rate-limited outboard angle command */
+    sb_lever_t lev;             /* the remote lever: neutral zone + pickup */
+    uint32_t packets, ignored, requests, losses;
+} sb_remote_t;
 
 typedef struct {
     hal_gps_t last;         /* last message */
@@ -286,7 +314,8 @@ typedef enum {
     CONF_AUTO_START,        /* start the program at waypoint 1 */
     CONF_AUTO_RESUME,       /* resume at the active waypoint */
     CONF_RAISE_FWD,         /* raise the forward power limit one step */
-    CONF_RAISE_REV          /* raise the reverse power limit one step */
+    CONF_RAISE_REV,         /* raise the reverse power limit one step */
+    CONF_REMOTE             /* start REMOTE MANUAL (the shore joystick drives) */
 } confirm_kind_t;
 
 typedef struct {
@@ -356,6 +385,7 @@ typedef struct {
     joymap_t    jmap;          /* joystick source + USB button map (NV slot 4) */
     jb_t        jb;            /* USB joystick bridge input */
     sb_lever_t  lev;           /* USB throttle lever: mapping and pickup */
+    sb_remote_t remote;        /* REMOTE MANUAL: the shore joystick */
     sb_mode_t   manual_from;   /* mode the joystick took over from */
     bool        joy_fault_seen, joy_nc_seen;
     uint32_t    chirp_ms;      /* short alarm chirp still to sound */
@@ -464,5 +494,13 @@ bool sb_joystick_cal_finish(sb_t *s);
  * disarmed until centred) and, if save, stored with checksum (NV slot 4).
  * False with *err = JM_OK: not in STANDBY. */
 bool sb_joymap_set(sb_t *s, const joymap_t *m, bool save, jm_error_t *err);
+
+/* REMOTE MANUAL (section D). request: the HELM gateway station asks; the
+ * joystick CONFIRM on board within confirm_ms starts it. release: back to
+ * STANDBY. input: one remote joystick packet (gateway, 30 Hz). */
+sb_result_t sb_remote_request(sb_t *s, uint8_t station);
+sb_result_t sb_remote_release(sb_t *s, uint8_t station);
+void sb_remote_input(sb_t *s, uint8_t station, uint16_t seq, uint16_t age_ms, uint16_t lat_ms,
+                     float x, float y, float lever, bool has_lever);
 
 #endif /* SMALLBOAT_H */

@@ -141,11 +141,11 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 117 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 124 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
     autopilot_sim.exe all --bridge
   The same tests again, but every joystick move goes through the simulated
-  USB bridge. Ends with "116 passed, 0 failed, 1 not applicable" (the analog
+  USB bridge. Ends with "123 passed, 0 failed, 1 not applicable" (the analog
   calibration test does not apply to the USB joystick).
     autopilot_sim.exe usb
   Only the 17 USB joystick tests (U1..U16), quick.
@@ -270,12 +270,14 @@ MODES
   TRAINING   outboard calibration, started from STANDBY by the PC.
 
   Mode changes allowed (all others are refused and logged):
-     from \ to   STANDBY MANUAL HDG_LOCK AUTO TRAINING
-     STANDBY        -      yes     yes    yes    yes
-     MANUAL        yes      -      yes    yes    no
-     HDG_LOCK      yes     yes      -     yes    no
-     AUTO          yes     yes     yes     -     no
-     TRAINING      yes     yes     no     no      -
+     from \ to   STANDBY MANUAL HDG_LOCK AUTO TRAINING REMOTE
+     STANDBY        -      yes     yes    yes    yes     yes
+     MANUAL        yes      -      yes    yes    no      no
+     HDG_LOCK      yes     yes      -     yes    no      yes
+     AUTO          yes     yes     yes     -     no      yes
+     TRAINING      yes     yes     no     no      -      no
+     REMOTE        yes     yes     no     no     no       -
+  (REMOTE = REMOTE MANUAL, the shore joystick, chapter 9 part D)
   Extra rules: only the joystick enters MANUAL; MANUAL is left only with
   the stick centred; AUTO needs compass, GPS, a valid program and CONFIRM;
   TRAINING only from STANDBY by the PC; nothing but STANDBY until the
@@ -527,6 +529,43 @@ C. INTERNET CHANNELS (router Teltonika RUT901)
   range 10.42.0.x FIRST, then Starlink in bypass mode on the WAN port,
   failover with health checks, SSH key for the Pi).
 
+D. REMOTE JOYSTICK DRIVING FROM A SHORE PC (mode REMOTE MANUAL)
+  RULE: somebody is ALWAYS on board while the boat is driven remotely.
+  Priority, always: STANDBY button > onboard joystick > remote joystick >
+  autopilot modes.
+
+  On the shore PC: plug in a USB joystick (e.g. T.16000M + TWCS; any
+  standard joystick works). Ground station connected through the gateway
+  (gw:...), Remote tab:
+    1. "Find joysticks" shows the devices with their numbers. Choose the
+       device + axis for steering and for the throttle, "invert" if it goes
+       the wrong way, "lever" for the TWCS. Save.
+    2. Take HELM. Tick "send my joystick (30 Hz)".
+    3. REQUEST REMOTE DRIVING. The boat shows "PRESS JOYSTICK CONFIRM -
+       REMOTE DRIVING": the person ON BOARD presses CONFIRM within 10 s.
+       The mode becomes REMOTE MANUAL (blue).
+    4. Drive: stick X = outboard angle (rate-limited, 20 deg/s), lever =
+       throttle with the neutral zone and THROTTLE PICKUP like on board
+       (chapter 8). Maximum 20 % forward / 5 % reverse (and never above the
+       power limit). Slamming reduction applies (part H).
+    5. RELEASE when done (-> STANDBY: idle, neutral, steering off).
+  It also ends when: the onboard joystick moves or TAKE is pressed
+  (-> MANUAL at once), STANDBY is pressed, any fault, a station on board
+  takes HELM, the remote driver's link fails.
+
+  LINK PROBLEMS: joystick data older than 0.3 s, a gap of 0.3 s, or a link
+  latency over 0.4 s -> at once: throttle to idle, neutral, the outboard
+  holds the heading on the gyro, alarm REMOTE DRIVING LINK LOST. After 5 s
+  without the link: STANDBY. It NEVER starts again by itself - the request
+  + CONFIRM on board is needed again.
+  The joystick packets travel by UDP (signed with a key the gateway gives
+  at login): a lost packet is simply replaced by the next one 33 ms later.
+  (By TCP, one lost packet would hold everything for 0.2-0.6 s and the boat
+  would declare LINK LOST every few seconds on 4G.)
+  Measured in the simulation (4G, ~80 ms round trip, 1 % packet loss):
+  stick move on shore -> visible in the boat's telemetry: median ~185 ms,
+  max ~230 ms; 60 s of driving without a single LINK LOST.
+
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
@@ -566,6 +605,8 @@ C. INTERNET CHANNELS (router Teltonika RUT901)
                          goes back to nobody (no mode change)
   CHANNEL FALLBACK       the internet channel you chose (MANUAL) failed; the
                          gateway uses the next working one (no mode change)
+  REMOTE DRIVING LINK LOST  remote joystick data too old / missing: idle,
+                         neutral, gyro heading hold; STANDBY after 5 s
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file. Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
@@ -843,6 +884,11 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
   "stale command"                the link was too slow / interrupted: the
                                  command was older than 2 s, not carried out.
   Login refused, "too many..."   wait a minute (5 wrong passwords lock out).
+  Remote driving won't start     HELM on your station? Did the person on
+                                 board press CONFIRM within 10 s? Not from
+                                 MANUAL (onboard joystick driving).
+  "REMOTE DRIVING LINK LOST"     the link was too slow / broken; request
+                                 again (+ CONFIRM on board) when it is good.
   Channel switched back by itself you did not press KEEP within 60 s.
   STARLINK banner                all 4G / RF channels are down (AUTO), or you
                                  chose it; it costs data - go back to AUTO.

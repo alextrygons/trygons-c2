@@ -36,6 +36,8 @@ Answers to commands that didn't come from 0..100 are AURIX results
 """
 import asyncio
 import collections
+import hashlib
+import hmac
 import ipaddress
 import json
 import secrets
@@ -64,6 +66,7 @@ class Station:
         self.name = name or user
         self.writer = writer
         self.session = secrets.token_hex(8)
+        self.udp_key = secrets.token_bytes(16)     # authenticates its UDP joystick packets
         self.last_seq = None
         self.rtt_ms = None
         self.offsets = collections.deque(maxlen=15)
@@ -126,6 +129,7 @@ class StationServer:
         self.ext = {}                       # message type -> handler(station, msg) (later sections)
         self.helm_seen = None
         self.server = None
+        self.ext["rjoy"] = self._rjoy
         a = gw.aurix
         a.on(proto.T_GW_ACK, self._on_gw_ack)
         a.on(proto.T_TELEMETRY, self._on_telem)
@@ -138,11 +142,19 @@ class StationServer:
     async def start(self):
         self.server = await asyncio.start_server(self._client, self.cfg.get("listen", "0.0.0.0"),
                                                  self.cfg.get("port", 5761), limit=65536)
+        # the remote joystick also on UDP (same port number): a lost packet is
+        # just gone, the next one comes 33 ms later - TCP would stall everything
+        # behind a lost packet for 200-600 ms (retransmission)
+        loop = asyncio.get_running_loop()
+        self.udp, _ = await loop.create_datagram_endpoint(
+            lambda: _Udp(self), local_addr=(self.cfg.get("listen", "0.0.0.0"), self.cfg.get("port", 5761)))
         log.info("stations: listening on %s:%d", self.cfg.get("listen", "0.0.0.0"), self.cfg.get("port", 5761))
 
     async def stop(self):
         if self.server:
             self.server.close()
+        if getattr(self, "udp", None):
+            self.udp.close()
         for st in list(self.stations.values()):
             st.writer.close()
 
@@ -183,7 +195,7 @@ class StationServer:
             self.stations[sid] = st
             st.tokens = self.burst
             st.send({"t": "welcome", "id": sid, "role": role, "local": st.local, "sid": st.session,
-                     "max_age_s": self.max_age, "boat": self.gw.cfg.get("boat")})
+                     "max_age_s": self.max_age, "boat": self.gw.cfg.get("boat"), "udp_key": st.udp_key.hex()})
             self.gw.aurix.send(proto.T_GW_STATION, struct.pack("<BBB", sid, 0, 1 if st.local else 0))
             self.gw.audit("connect", station=sid, user=st.user, name=st.name, role=role, local=st.local, ip=ip)
             log.info("station %d (%s, %s, %s) connected from %s", sid, st.user, role,
@@ -247,6 +259,51 @@ class StationServer:
                 self.ext[t](st, m)
             except Exception:
                 log.exception("station message %s", t)
+
+    def _rjoy(self, st, m):
+        """Remote joystick (section D), 30 Hz from the HELM station: forwarded with
+        the data age and one-way latency measured here; the AURIX decides
+        (older than 300 ms / latency over 400 ms = link lost)."""
+        if st.role == "VIEWER" or self.gw.telem2.get("helm") != st.id:
+            st.rjoy_dropped = getattr(st, "rjoy_dropped", 0) + 1
+            return
+        try:
+            seq = int(m["seq"]) & 0xFFFF
+            age = self.age(st, float(m["ts"]))
+            x, y = float(m.get("x", 0.0)), float(m.get("y", 0.0))
+            lever = m.get("lever")
+        except (KeyError, ValueError, TypeError):
+            return
+        last = getattr(st, "rjoy_seq", None)
+        if last is not None and ((seq - last) & 0xFFFF) >= 0x8000 or seq == last:
+            return                                          # old / repeated packet
+        st.rjoy_seq = seq
+        age_ms = int(min(65535, max(0, age * 1000)))
+        lat_ms = int(min(65535, (st.rtt_ms or 0) / 2))
+        flags = (1 if lever is not None else 0) | (2 if m.get("release") else 0)
+        lv = int(min(1000, max(0, float(lever if lever is not None else 0.5) * 1000)))
+        self.gw.aurix.send(proto.T_GW_RJOY, struct.pack(
+            "<BHHHhhHBB", st.id, seq, age_ms, lat_ms, int(max(-1000, min(1000, x * 1000))),
+            int(max(-1000, min(1000, y * 1000))), lv, 0, flags))
+        st.rjoy_fwd = getattr(st, "rjoy_fwd", 0) + 1
+
+    def udp_packet(self, data):
+        """body|mac: body = JSON {"sid", "t":"rjoy", ...}, mac = HMAC-SHA256(udp_key, body)[:16] hex."""
+        try:
+            body, _, mac = data.rpartition(b"|")
+            m = json.loads(body)
+        except ValueError:
+            return
+        st = next((s for s in self.stations.values() if s.session == m.get("sid")), None)
+        if st is None:
+            return
+        want = hmac.new(st.udp_key, body, hashlib.sha256).hexdigest()[:32].encode()
+        if not hmac.compare_digest(want, mac):
+            st.udp_bad = getattr(st, "udp_bad", 0) + 1
+            return
+        st.udp_ok = getattr(st, "udp_ok", 0) + 1
+        if m.get("t") == "rjoy":
+            self._rjoy(st, m)
 
     def age(self, st, ts):
         """How old a station time stamp is on the gateway's clock (s)."""
@@ -384,3 +441,11 @@ class StationServer:
         for st in list(self.stations.values()):
             status["you"] = st.id
             st.send(status)
+
+
+class _Udp(asyncio.DatagramProtocol):
+    def __init__(self, server):
+        self.server = server
+
+    def datagram_received(self, data, addr):
+        self.server.udp_packet(data)

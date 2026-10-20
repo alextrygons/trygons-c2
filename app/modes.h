@@ -35,6 +35,7 @@ typedef enum {
     MODE_HDG_LOCK,          /* autopilot holds the heading, throttle on joystick Y */
     MODE_AUTO,              /* waypoint program */
     MODE_TRAINING,          /* outboard calibration */
+    MODE_REMOTE,            /* REMOTE MANUAL: the shore joystick drives (someone always on board) */
     MODE_COUNT
 } sb_mode_t;
 
@@ -58,6 +59,9 @@ typedef enum {
     WHY_CONFIRM,            /* PC request + joystick CONFIRM */
     WHY_NOT_ARMED,          /* outputs not armed (neutral-start interlock) */
     WHY_MONITOR,            /* independent safety monitor tripped */
+    WHY_REMOTE,             /* remote driving: HELM station request + joystick CONFIRM on board */
+    WHY_REMOTE_END,         /* the remote driver released it */
+    WHY_REMOTE_LOST,        /* remote joystick data too old / missing for 5 s */
     WHY_COUNT
 } mode_reason_t;
 

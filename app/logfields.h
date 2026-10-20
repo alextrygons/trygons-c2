@@ -102,6 +102,8 @@
     X(joy_lever,     H, 1000,  s->joy.lever_in) \
     X(joy_src,       B, 1,     v.joy_src) \
     X(joy_why,       B, 1,     s->joy.fault ? s->joy.fault_axis : s->jb.why) \
+    X(remote,        B, 1,     (sb_mode(s) == MODE_REMOTE) ? s->remote.state : 0u) \
+    X(remote_age,    B, 0.1,   s->remote.age_ms) \
     X(panel_buttons, B, 1,     s->buttons_now) \
     X(confirm_kind,  B, 1,     s->confirm.kind) \
     /* timing, logging */ \

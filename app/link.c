@@ -610,6 +610,24 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
 
 static void gw_status(sb_t *s, const proto_frame_t *f);
 
+/* GW_RJOY, 15 bytes: u8 station | u16 seq | u16 data age ms | u16 one-way latency ms |
+ * i16 x*1000 | i16 y*1000 | u16 lever*1000 | u8 flags (b0 lever, b1 release) */
+static void gw_rjoy(sb_t *s, const proto_frame_t *f)
+{
+    const uint8_t *p = f->payload;
+    uint8_t st = p[0];
+    uint16_t seq = (uint16_t)(p[1] | (p[2] << 8)), age = (uint16_t)(p[3] | (p[4] << 8));
+    uint16_t lat = (uint16_t)(p[5] | (p[6] << 8));
+    int16_t x = (int16_t)(p[7] | (p[8] << 8)), y = (int16_t)(p[9] | (p[10] << 8));
+    uint16_t lev = (uint16_t)(p[11] | (p[12] << 8));
+    uint8_t flags = p[14];
+    if (flags & 2u) {
+        (void)sb_remote_release(s, st);
+        return;
+    }
+    sb_remote_input(s, st, seq, age, lat, x * 0.001f, y * 0.001f, lev * 0.001f, (flags & 1u) != 0u);
+}
+
 /* --- HELM (section B): only the HELM station's commands are accepted ------ */
 
 /* Commands every station may send without HELM: they change nothing. */
@@ -677,6 +695,13 @@ static void command(link_t *l, sb_t *s, const proto_frame_t *f, uint8_t station,
         r = l->sim_fn ? l->sim_fn(l->sim_ctx, f) : PROTO_R_UNKNOWN;
     } else if (f->type == PROTO_T_HELM) {
         r = (f->len == 1u) ? helm_cmd(s, station, local, f->payload[0]) : PROTO_R_BAD_LENGTH;
+    } else if (f->type == PROTO_T_REMOTE) {
+        /* remote driving: only a gateway station, only the HELM station */
+        if (f->len != 1u || f->payload[0] > 1u) r = PROTO_R_BAD_VALUE;
+        else if (station < 2u) r = PROTO_R_NOT_ALLOWED;
+        else if (s->helm != station) r = PROTO_R_NOT_HELM;
+        else r = sb_result_to_proto(f->payload[0] == 0u ? sb_remote_request(s, station)
+                                                          : sb_remote_release(s, station));
     } else if (want < 0) {
         r = PROTO_R_UNKNOWN;
     } else if ((int)f->len != want) {
@@ -724,6 +749,10 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
         if (f->len == 12u) gw_status(s, f);
         return;
     }
+    if (f->type == PROTO_T_GW_RJOY) {                            /* remote joystick, 30 Hz */
+        if (f->len == 15u) gw_rjoy(s, f);
+        return;
+    }
     if (f->type == PROTO_T_GW_STATION) {                         /* a station joined / left */
         if (f->len == 3u && f->payload[1] == 1u) helm_lost(s, f->payload[0], 2u);
         return;
@@ -752,6 +781,10 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      u16 pi_log_gaps | u32 log_skipped (no gateway)
  *   B: u8 helm (0 nobody, 1 USB laptop, 2.. gateway station) | u8 helm_flags (b0 local) |
  *      u16 helm_changes
+ *   D: u8 remote_state (0 off, 1 driving, 2 LINK LOST) | u8 remote_station | u16 data age ms |
+ *      u16 latency ms | i16 x*1000 | u16 lever*1000 | u8 flags (b0 lever, b1 pickup pending, b2 confirm
+ *      pending) | u16 pickup target*1000 (0xFFFF neutral zone) | u8 cap fwd % | u8 cap rev % |
+ *      u32 packets | u8 lost_why
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -772,6 +805,20 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u8(&w, s->helm);
     proto_wr_u8(&w, s->helm_local ? 1u : 0u);
     proto_wr_u16(&w, s->helm_changes);
+    const sb_remote_t *r = &s->remote;
+    proto_wr_u8(&w, (sb_mode(s) == MODE_REMOTE) ? r->state : SB_REMOTE_OFF);
+    proto_wr_u8(&w, r->station);
+    proto_wr_u16(&w, r->age_ms);
+    proto_wr_u16(&w, r->lat_ms);
+    proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(r->x * 1000.0f));
+    proto_wr_u16(&w, (uint16_t)lroundf(r->lever * 1000.0f));
+    proto_wr_u8(&w, (uint8_t)((r->has_lever ? 1u : 0u) | (r->lev.pickup ? 2u : 0u) |
+                              (s->confirm.kind == CONF_REMOTE ? 4u : 0u)));
+    proto_wr_u16(&w, (r->lev.pickup && r->lev.target >= 0.0f) ? (uint16_t)lroundf(r->lev.target * 1000.0f) : 0xFFFFu);
+    proto_wr_u8(&w, (uint8_t)lroundf(fminf(s->cfg.remote_cap_fwd_pct, s->plim.fwd_pct)));
+    proto_wr_u8(&w, (uint8_t)lroundf(fminf(s->cfg.remote_cap_rev_pct, s->plim.rev_pct)));
+    proto_wr_u32(&w, r->packets);
+    proto_wr_u8(&w, r->lost_why);
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
 }
 

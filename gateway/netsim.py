@@ -37,6 +37,8 @@ class NetSim:
         self.down_until = 0.0
         self.bytes = 0
         self.forced_down = False         # tests: cut the link completely
+        self.udp_dropped = 0
+        self.udp_passed = 0
 
     # --- link state -------------------------------------------------------------------
     def _plan_outages(self, t0, span=3600.0):
@@ -109,6 +111,23 @@ class NetSim:
 
     async def _serve(self):
         self._plan_outages(time.time())
+        loop = asyncio.get_running_loop()
+        sim = self
+
+        class Udp(asyncio.DatagramProtocol):
+            def connection_made(self, tr):
+                self.tr = tr
+
+            def datagram_received(self, data, addr):
+                now = time.time()
+                if sim.forced_down or sim.link_back_at(now) > now or sim.rng.random() < sim.p.get("loss", 0.0):
+                    sim.udp_dropped += 1
+                    return                              # UDP: lost is lost
+                d = sim.p["delay_ms"] + sim.rng.uniform(-1, 1) * sim.p.get("jitter_ms", 0)
+                loop.call_later(max(0.0, d) / 1000.0, self.tr.sendto, data, (sim.host, sim.target_port))
+                sim.udp_passed += 1
+
+        self.udp_tr, _ = await loop.create_datagram_endpoint(Udp, local_addr=(self.host, self.listen_port))
         self.server = await asyncio.start_server(self._client, self.host, self.listen_port)
         async with self.server:
             await self.server.serve_forever()

@@ -8,6 +8,8 @@ cable. Protocol: gateway/stations.py (JSON lines on TCP 5761).
     gw.start()                       # logs in; gw.welcome / gw.error tell how it went
     seq = gw.send(proto.T_HELM, proto.p_helm(0))
 """
+import hashlib
+import hmac
 import json
 import queue
 import socket
@@ -54,6 +56,8 @@ class GatewayLink:
         self.logger = Logger(log_folder) if log else None
         self.bytes_in = 0
         self._th = None
+        self.udp = None                         # remote joystick packets (UDP, same host / port)
+        self.use_udp = True
 
     def now(self):
         return time.time() + self.clock_offset
@@ -121,6 +125,22 @@ class GatewayLink:
     def send_msg(self, obj):
         """Gateway-only messages (channel, cameras, save, ...)."""
         self._send_obj(obj)
+
+    def send_rjoy(self, obj):
+        """The remote joystick packet: UDP (no stalls on a lossy link), signed
+        with this session's key; TCP if UDP is switched off."""
+        if not (self.use_udp and self.welcome and self.welcome.get("udp_key")):
+            return self._send_obj(obj)
+        if self.udp is None:
+            self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            if self.local_addr:
+                self.udp.bind((self.local_addr, 0))
+        body = json.dumps(dict(obj, sid=self.welcome["sid"]), separators=(",", ":")).encode()
+        mac = hmac.new(bytes.fromhex(self.welcome["udp_key"]), body, hashlib.sha256).hexdigest()[:32].encode()
+        try:
+            self.udp.sendto(body + b"|" + mac, (self.host, self.port))
+        except OSError:
+            pass
 
     # --- receiving ------------------------------------------------------------------------
     def _rx_loop(self):

@@ -51,6 +51,8 @@ Modes — three driving modes + STANDBY + TRAINING
 - HDG LOCK: panel button locks the current heading, ±1/±10 adjust (buttons or PC); throttle stays on joystick Y; joystick X → MANUAL.
 - AUTO: waypoint program (app/program.c, ≤ 50 waypoints, validated, stored with checksum) from the PC; start / resume = PC command + joystick CONFIRM within 10 s; pause / resume / skip from the PC; joystick → MANUAL, program suspended.
 - TRAINING: outboard calibration, only from STANDBY by the PC.
+- REMOTE MANUAL (MODE_REMOTE): the shore PC's joystick through the gateway (someone always on board). Enabled only by the HELM station's request + joystick CONFIRM on board; from STANDBY / HDG LOCK / AUTO, never from MANUAL. Priority: STANDBY button > onboard joystick > remote joystick > autopilot. Cap 20 % fwd / 5 % rev (never above the power limit), steering rate-limited, lever neutral zone + pickup. Data older than 300 ms / gap > 300 ms / latency > 400 ms → idle + neutral + gyro hold + alarm, STANDBY after 5 s, never resumes by itself. Ends on release, onboard joystick, STANDBY, any fault, HELM taken on board.
+- HELM (section B): only the HELM station's commands are carried out (AURIX checks it, link.c); a station on the boat can always take HELM; remote HELM lost → REMOTE LINK LOST, HELM to nobody, no mode change.
 - CONFIRM (joystick) only answers a pending PC request, only with the stick centred and the joystick armed; it never changes the mode on its own.
 - One mode manager owns all transitions (explicit allowed-transition table, every transition logged). Nothing else changes the mode.
 

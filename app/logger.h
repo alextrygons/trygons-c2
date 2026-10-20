@@ -28,7 +28,7 @@
 #define LOG_ROTATE_BYTES    (20u * 1024u * 1024u)
 #define LOG_RETRY_MS        10000u
 #define LOG_BB_RECORDS      1200u       /* 60 s at 20 Hz */
-#define LOG_BB_SLOT         174u        /* one DATA record (checked at init) */
+#define LOG_BB_SLOT         176u        /* one DATA record (checked at init) */
 #define LOG_BB_EVENTS       128u
 #define LOG_BB_EV_SLOT      64u
 #define LOG_BB_AFTER_MS     30000u

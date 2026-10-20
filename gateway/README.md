@@ -138,7 +138,7 @@ version - same client.)
    (a boat at sea must not lose its VPN after 180 days).
 4. Access controls (admin console → Access controls), example:
    ```
-   {"acls": [{"action": "accept", "src": ["autogroup:admin"], "dst": ["trygons-gw:5761,8080,8889,22"]}]}
+   {"acls": [{"action": "accept", "src": ["autogroup:admin"], "dst": ["trygons-gw:5761,8080,8554,8889,8189,22"]}]}
    ```
 5. On the shore PC and the iPhone: install Tailscale, log in with the same account.
    The ground station then connects to `trygons-gw:5761`.
@@ -151,7 +151,8 @@ sudo cp ~/trygons-c2/gateway/systemd/nftables.conf /etc/nftables.conf
 sudo nano /etc/nftables.conf             # check "boat_lan" (default 10.42.0.0/24)
 sudo systemctl enable --now nftables
 ```
-The gateway ports: 5761 stations, 8080 web page (iPhone), 8554 / 8889 video.
+The gateway ports: 5761 stations (TCP, and UDP for the remote joystick),
+8080 web page (iPhone), 8554 / 8889 video.
 
 ## 9. Updates
 
@@ -307,3 +308,14 @@ Ports on the RUT901: WAN = Starlink, LAN1 = the Pi, LAN2 = the TSW101
 switch (cameras, see section 14), LAN3 = spare (a laptop on board).
 Crew / guest devices: the router's Wi-Fi on its own guest network, never
 on the control network (section 12).
+
+## 15. The shore PC (ground station, remote driving)
+
+1. Install the ground station like on the boat laptop (MANUAL.txt chapter 3)
+   and **Tailscale**, logged in to the same account as the Pi.
+2. Start it through the gateway: `python app.py gw:trygons-gw:5761` and log
+   in with your gateway user.
+3. Remote driving (MANUAL.txt chapter 9 part D): plug the USB joystick into
+   the shore PC, Remote tab -> Find joysticks -> choose the axes -> Save.
+   The settings are in `groundstation/shore_joystick.json`.
+4. Somebody must be on board and press the joystick CONFIRM to start it.

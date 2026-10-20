@@ -7,6 +7,7 @@ AURIX, the real gateway code runs here like on the Pi.
 Exit code 0 = all passed.
 """
 import glob
+import math
 import os
 import shutil
 import socket
@@ -827,7 +828,184 @@ def section_c():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-SECTIONS = {"A": section_a, "B": section_b, "C": section_c}
+# ------------------------------------------------------------------- section D --
+
+from shorejoy import RemoteSender  # noqa: E402
+
+LATENCY = {}                        # for the final report
+
+
+def section_d():
+    print("\n=== Section D: remote joystick driving (shore PC) ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_d_")
+    try:
+        sim = Sim(1.0)                                  # real time: latencies are real
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        cfg = gw_cfg_b(sim, root)
+        gw = GwRunner(cfg)
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()                          # the laptop on board (USB): CONFIRM, observing
+        pp = free_port()
+        net = NetSim(pp, sp, PROFILES["4g"], seed=3).start()
+        alice = Client(pp, "alice", PW["alice"], name="alice shore PC (4G)")
+        alice.pump(2.0)
+        stick = {"x": 0.0, "lever": 0.5}
+        snd = RemoteSender(alice.l, lambda: dict(stick))
+        snd.start()
+        r_helm = alice.result(alice.cmd(proto.T_HELM, proto.p_helm(0)))
+        r_ask = alice.result(alice.cmd(proto.T_REMOTE, proto.p_remote(0)))
+        time.sleep(1.5)
+        w.pump(0.1)
+        not_yet = w.telem and w.telem["mode"] == proto.MODE_STANDBY and w.telem["confirm_kind"] == 5
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))   # the person on board
+        time.sleep(0.2)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        on = w.until(lambda d: d["mode"] == proto.MODE_REMOTE, 3)
+        report("D1 remote driving from the shore PC: HELM + request + joystick CONFIRM on board",
+               r_helm == 0 and r_ask == 0 and not_yet and on is not None,
+               "HELM %s, request %s; waiting for CONFIRM (banner REMOTE DRIVING) %s; after CONFIRM on board: %s" % (
+                   r_helm, r_ask, not_yet, on and on["mode_name"]))
+
+        # control latency: stick moves on shore -> seen in the boat's telemetry
+        one_way, round_trip = [], []
+        for k in range(12):
+            target = 0.8 if k % 2 == 0 else -0.8
+            t0 = time.time()
+            stick["x"] = target
+            got = w.until(lambda d: abs(d.get("rjoy_x1000", 0) / 1000.0 - target) < 0.05, 3)
+            if got:
+                one_way.append((time.time() - t0) * 1000)
+            got2 = None
+            end = time.time() + 3
+            while time.time() < end:
+                alice.pump(0.01)
+                if alice.telem and abs(alice.telem.get("rjoy_x1000", 0) / 1000.0 - target) < 0.05:
+                    got2 = True
+                    break
+            if got2:
+                round_trip.append((time.time() - t0) * 1000)
+            time.sleep(0.3)
+        stick["x"] = 0.0
+        LATENCY["control_one_way"] = one_way
+        LATENCY["control_round_trip"] = round_trip
+        ow = sorted(one_way)
+        report("D2 control latency shore joystick -> boat (4G simulated: ~80 ms round trip, 1 % loss)",
+               len(one_way) >= 10 and ow[len(ow) // 2] < 250 and max(one_way) < 400,
+               "stick move -> boat telemetry: median %.0f ms, max %.0f ms; -> back on the shore screen: median %.0f ms "
+               "(includes the 30 Hz send period, the 20 Hz boat loop and the 10 Hz telemetry)" % (
+                   ow[len(ow) // 2] if ow else -1, max(one_way) if one_way else -1,
+                   sorted(round_trip)[len(round_trip) // 2] if round_trip else -1))
+
+        # the cap, through the whole chain
+        for lv in (0.6, 0.8, 1.0):
+            stick["lever"] = lv
+            time.sleep(0.5)
+        top = 0.0
+        t0 = time.time()
+        while time.time() - t0 < 8:
+            w.pump(0.1)
+            if w.telem:
+                top = max(top, w.telem["throttle"])
+        report("D3 remote cap through the gateway: full lever -> at most 20 %",
+               15.0 <= top <= 20.01, "full remote lever: throttle up to %.1f %% (cap 20 %%, power limit %.0f %%)" % (
+                   top, w.telem["power_fwd"] if w.telem else -1))
+
+        # a station without HELM sends joystick packets: dropped by the gateway
+        bob = Client(sp, "bob", PW["bob"], name="bob")
+        bsnd = RemoteSender(bob.l, lambda: {"x": -1.0, "lever": 0.0})
+        bsnd.start()
+        time.sleep(1.5)
+        bsnd.stop()
+        w.pump(0.2)
+        bob_st = [s for s in gw.gw.stations.stations.values() if s.name == "bob"]
+        dropped = getattr(bob_st[0], "rjoy_dropped", 0) if bob_st else 0
+        report("D4 joystick packets from a station without HELM are ignored",
+               dropped > 20 and w.telem["mode"] == proto.MODE_REMOTE and w.telem.get("rjoy_x1000", 0) > -500,
+               "bob sent %d packets: %d dropped by the gateway; boat still driven by alice (x %.2f)" % (
+                   bsnd.sent, dropped, w.telem.get("rjoy_x1000", 0) / 1000.0))
+        bob.close()
+
+        # D6 a long drive over 4G with 1 % packet loss: no spurious LINK LOST
+        n_lost = 0
+        prev = None
+        t0 = time.time()
+        k = 0
+        while time.time() - t0 < 60.0:
+            stick["x"] = 0.5 * math.sin(k / 15.0)
+            k += 1
+            w.pump(0.033)
+            st_now = w.telem.get("remote_state") if w.telem else None
+            if st_now == 2 and prev != 2:
+                n_lost += 1
+            prev = st_now
+        stick["x"] = 0.0
+        report("D6 60 s of remote driving over 4G with 1 % packet loss: no spurious LINK LOST (UDP joystick)",
+               n_lost == 0 and w.telem["mode"] == proto.MODE_REMOTE,
+               "LINK LOST events %d; UDP packets passed %d, lost on the way %d; still %s" % (
+                   n_lost, net.udp_passed, net.udp_dropped, w.telem["mode_name"]))
+
+        # D7 forged UDP packets (wrong key) and replayed old packets are ignored
+        import socket as _so
+        import hmac as _hm
+        import hashlib as _hl
+        st_obj = [x for x in gw.gw.stations.stations.values() if x.user == "alice"][0]
+        bad0 = getattr(st_obj, "udp_bad", 0)
+        u = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        for i in range(20):                                 # forged: right session id, wrong key
+            body = _json.dumps({"t": "rjoy", "sid": alice.l.welcome["sid"], "seq": snd.seq + 1000 + i,
+                                "ts": alice.l.now(), "x": -1.0, "lever": 1.0}).encode()
+            u.sendto(body + b"|" + _hm.new(b"wrong key 123456", body, _hl.sha256).hexdigest()[:32].encode(),
+                     ("127.0.0.1", sp))
+        old = dict(snd.last or {})                          # a recorded genuine packet, sent again later
+        time.sleep(0.5)
+        for i in range(10):
+            body = _json.dumps(dict(old, sid=alice.l.welcome["sid"], x=-1.0), separators=(",", ":")).encode()
+            u.sendto(body + b"|" + _hm.new(bytes.fromhex(alice.l.welcome["udp_key"]), body, _hl.sha256)
+                     .hexdigest()[:32].encode(), ("127.0.0.1", sp))
+        time.sleep(0.5)
+        w.pump(0.3)
+        report("D7 forged (wrong key) and replayed UDP joystick packets are ignored",
+               getattr(st_obj, "udp_bad", 0) - bad0 >= 20 and w.telem.get("rjoy_x1000", 0) > -500,
+               "forged packets refused %d; replayed old packets with x = -1: boat x stays %.2f" % (
+                   getattr(st_obj, "udp_bad", 0) - bad0, w.telem.get("rjoy_x1000", 0) / 1000.0))
+
+        # the 4G link breaks for 1 s: LINK LOST at once, STANDBY after 5 s, never resumes
+        t0 = time.time()
+        net.forced_down = True
+        lost = w.until(lambda d: d.get("remote_state") == 2, 2)
+        t_lost = (time.time() - t0) * 1000
+        time.sleep(max(0.0, 1.0 - (time.time() - t0)))
+        net.forced_down = False
+        t_back = time.time()
+        sb = w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 7)
+        t_sb = time.time() - t0
+        resumed = False
+        end = time.time() + 2
+        while time.time() < end:
+            w.pump(0.1)
+            if w.telem and w.telem["mode"] == proto.MODE_REMOTE:
+                resumed = True
+        report("D5 4G link breaks during remote driving: LINK LOST (idle + neutral + gyro hold), STANDBY after 5 s, "
+               "no automatic resume",
+               lost is not None and t_lost < 800 and lost["alarm_bits"] & 0x100000 and sb is not None and
+               4.5 <= t_sb <= 7.0 and not resumed,
+               "LINK LOST after %.0f ms (%s), throttle %.1f %%; link back after 1 s; STANDBY after %.1f s; "
+               "driving again by itself: %s" % (
+                   t_lost, lost and proto.REMOTE_LOST_WHY[min(lost.get("remote_lost_why", 0), 3)],
+                   lost["throttle"] if lost else -1, t_sb, resumed))
+        _ = t_back
+        snd.stop()
+        alice.close()
+        net.stop()
+        link.stop()
+        gw.stop()
+        sim.stop()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"A": section_a, "B": section_b, "C": section_c, "D": section_d}
 
 
 def main():
@@ -836,8 +1014,22 @@ def main():
         print("build the simulator first: sim\\build_sim.bat")
         return 2
     want = [a.upper() for a in sys.argv[1:]] or list(SECTIONS)
-    for k in want:
-        SECTIONS[k]()
+    if len(want) == 1:
+        SECTIONS[want[0]]()
+    else:
+        # every section in its own process: timing tests must not feel the
+        # threads / proxies of the sections before them
+        for k in want:
+            r = subprocess.run([sys.executable, os.path.abspath(__file__), k], capture_output=True, text=True)
+            for line in r.stdout.splitlines():
+                if line.startswith("[PASS] ") or line.startswith("[FAIL] "):
+                    print(line, flush=True)
+                    results.append((line[7:], line.startswith("[PASS]")))
+                elif line.startswith("==="):
+                    print("\n" + line, flush=True)
+            if r.returncode not in (0, 1):
+                print("section %s crashed:\n%s" % (k, r.stderr[-2000:]))
+                results.append(("section %s ran" % k, False))
     bad = [n for n, ok in results if not ok]
     print("\nGATEWAY TESTS: %d passed, %d failed" % (len(results) - len(bad), len(bad)))
     return 1 if bad else 0

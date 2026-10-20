@@ -26,6 +26,8 @@ T_GW_STATUS = 0x31         # gateway -> AURIX, 1 Hz (also the gateway heartbeat)
 T_GW_CMD = 0x32            # gateway -> AURIX: a station's command in an envelope
 T_HELM = 0x33              # u8 0 take / 1 release
 T_GW_STATION = 0x34        # gateway -> AURIX: station joined / left
+T_GW_RJOY = 0x36           # gateway -> AURIX: remote joystick packet (30 Hz, no answer)
+T_REMOTE = 0x37            # u8 0 ask for remote driving (then CONFIRM on board) / 1 release
 T_PROG_BEGIN = 0x20
 T_PROG_WP = 0x21
 T_PROG_COMMIT = 0x22
@@ -67,6 +69,7 @@ TYPE_NAMES = {
     T_SIM_BRIDGE: "sim USB joystick", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
+    T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -101,10 +104,12 @@ RESULTS = {
     108: "bad command",
 }
 
-MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING"]
-MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING = range(5)
+MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL"]
+MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE = range(6)
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
-CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV"]
+CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING"]
+REMOTE_STATES = ["off", "DRIVING", "LINK LOST"]
+REMOTE_LOST_WHY = ["", "no data (gap > 300 ms)", "data too old", "latency too high"]
 WP_ACTIONS = ["continue", "slow", "stop"]
 PROG_END = ["stop + alarm", "hold heading slow"]
 PROG_ERRORS = ["ok", "bad number of waypoints", "bad coordinates", "leg speed out of range",
@@ -149,6 +154,7 @@ ALARMS = [
     (0x20000, "GATEWAY STORAGE"),
     (0x40000, "REMOTE LINK LOST"),
     (0x80000, "CHANNEL FALLBACK"),
+    (0x100000, "REMOTE DRIVING LINK LOST"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -525,6 +531,11 @@ GWF_STORAGE, GWF_STORAGE_FULL, GWF_FALLBACK, GWF_STARLINK, GWF_SAVER = 0x01, 0x0
 GW_STATES = ["never connected", "OK", "LOST"]
 
 
+def p_remote(action):
+    """0 ask for remote driving (then the joystick CONFIRM on board), 1 release."""
+    return struct.pack("<B", action)
+
+
 def p_helm(action):
     """0 take, 1 release."""
     return struct.pack("<B", action)
@@ -558,6 +569,9 @@ _T2_GROUPS = [
     (struct.Struct("<IBBBBIIIHI"), "t2_ms gw_state gw_flags gw_channel gw_stations log_sent_seq "
                                    "log_dropped_pi pi_log_seq pi_log_gaps log_skipped".split()),
     (struct.Struct("<BBH"), "helm helm_flags helm_changes".split()),
+    (struct.Struct("<BBHHhHBHBBIB"), "remote_state remote_station rjoy_age_ms rjoy_lat_ms rjoy_x1000 rjoy_lever1000 "
+                                     "rjoy_flags rjoy_pickup1000 remote_cap_f remote_cap_r rjoy_packets "
+                                     "remote_lost_why".split()),
 ]
 
 
