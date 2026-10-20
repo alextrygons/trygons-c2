@@ -19,6 +19,9 @@ T_PARAM_GET = 0x17
 T_PARAM_SET = 0x18
 T_JOY_CAL = 0x19
 T_ALARM_ACK = 0x1A
+T_JOYMAP_GET = 0x1B        # -> JOYMAP_VALUE
+T_JOYMAP_SET = 0x1C        # joymap body + u8 save; STANDBY only
+T_JOY_RAW_GET = 0x1D       # -> JOY_RAW (USB bridge frame, for the button mapping)
 T_PROG_BEGIN = 0x20
 T_PROG_WP = 0x21
 T_PROG_COMMIT = 0x22
@@ -33,12 +36,15 @@ T_POWER_LOWER = 0x2A       # back to 30 % / 5 % at once
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
+T_SIM_BRIDGE = 0x73     # simulator only: the USB joysticks behind the simulated bridge
 # boat -> PC
 T_TELEMETRY = 0x80
 T_ACK = 0x81
 T_PARAM_VALUE = 0x82
 T_PROG_WP_VALUE = 0x83
 T_PROG_ERROR = 0x84
+T_JOYMAP_VALUE = 0x85
+T_JOY_RAW = 0x86
 
 TYPE_NAMES = {
     T_HEARTBEAT: "heartbeat", T_SET_MODE: "set mode",
@@ -49,6 +55,8 @@ TYPE_NAMES = {
     T_AUTO_RESUME: "AUTO resume", T_AUTO_SKIP: "AUTO skip",
     T_POWER_CODE: "power code", T_POWER_RAISE: "power raise", T_POWER_LOWER: "power lower",
     T_SIM_JOYSTICK: "sim joystick", T_SIM_GPS: "sim GPS", T_SIM_BUTTON: "sim button",
+    T_JOYMAP_GET: "joystick map read", T_JOYMAP_SET: "joystick map write", T_JOY_RAW_GET: "joystick raw read",
+    T_SIM_BRIDGE: "sim USB joystick", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -72,6 +80,9 @@ RESULTS = {
     15: "wrong or expired code (ask for a new one)",
     16: "already at the highest step",
     17: "acknowledge the alarm first",
+    18: "button map refused: two functions share a button",
+    19: "button map refused: TAKE, AUTO and CONFIRM must be mapped",
+    20: "button map refused: bad code or neutral zone",
 }
 
 MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING"]
@@ -89,6 +100,11 @@ POS_SOURCES = ["NO FIX", "GPS", "DEAD RECKONING", "RECOVERING"]
 DR_REASONS = ["-", "GPS lost", "spoof/jam flag", "position jump", "impossible speed",
               "course mismatch", "slow drag"]
 JOY_STATUS = ["not fitted", "NOT CENTRED / not armed", "armed", "FAULT"]
+JOY_SOURCES = ["analog (wired)", "USB bridge"]
+# joystick fault / problem reasons (joystick.h JOY_WHY_*)
+JOY_WHY = {0: "", 1: "X wire break / jump", 2: "Y wire break / jump", 3: "no frames from the bridge (>150 ms)",
+           4: "too many CRC errors", 5: "bridge counter stuck", 6: "STICK UNPLUGGED", 7: "THROTTLE UNPLUGGED",
+           8: "axis invalid / out of range", 9: "bridge in learn mode"}
 TRAIN_STAGES = ["spin-up", "running", "result ready"]
 TRAIN_PHASES = ["idle", "center", "step", "gap", "end right", "end left", "sweep",
                 "return", "fit", "result", "aborted"]
@@ -279,7 +295,7 @@ def p_sim_gps(fail):
 # --- decoders (boat -> PC) ---------------------------------------------------
 
 _TELEM = struct.Struct(
-    "<I BBBB fffff BB iiff BB ffiiff fff I f ff BBB BBB f iif HH BBBBBH ffHBHBf HHHHHHHBB BHH")
+    "<I BBBB fffff BB iiff BB ffiiff fff I f ff BBB BBB f iif HH BBBBBH ffHBHBf HHHHHHHBB BHH BBBHBHHIIBBB")
 TELEM_FIELDS = (
     "t_ms mode ap_mode sea_state flags "
     "heading target yaw_rate outboard throttle "
@@ -292,7 +308,9 @@ TELEM_FIELDS = (
     "prog_n auto_wp auto_state auto_flags confirm_kind confirm_left_ds "
     "power_fwd power_rev power_code power_code_dir power_code_left_ds power_flags throttle_demand "
     "t_core0_avg t_core0_max t_mon_avg t_mon_max t_log_avg t_log_max ovr_core0 ovr_mon ovr_log "
-    "log_flags log_files log_dropped").split()
+    "log_flags log_files log_dropped "
+    "joy_source usb_flags usb_fps usb_crc joy_why lever_x1000 pickup_x1000 usb_btn0 usb_btn1 usb_hats "
+    "nz_lo_pc nz_hi_pc").split()
 TELEM_SIZE = _TELEM.size
 
 
@@ -320,6 +338,20 @@ def decode_telemetry(payload: bytes) -> dict:
     d["speed_limited"] = bool(d["power_flags"] & 1)
     d["power_raised"] = bool(d["power_flags"] & 2)
     d["mode_name"] = MODES[d["mode"]] if d["mode"] < len(MODES) else "?"
+    u = d["usb_flags"]
+    d["usb"] = d["joy_source"] == 1
+    d["usb_dev0"] = bool(u & 0x01)
+    d["usb_dev1"] = bool(u & 0x02)
+    d["usb_learn"] = bool(u & 0x04)
+    d["usb_hub"] = bool(u & 0x08)
+    d["has_lever"] = bool(u & 0x10)
+    d["pickup"] = bool(u & 0x20)
+    d["usb_starting"] = bool(u & 0x40)
+    d["lever"] = None if d["lever_x1000"] == 0xFFFF else d["lever_x1000"] / 1000.0
+    d["pickup_target"] = None if d["pickup_x1000"] == 0xFFFF else d["pickup_x1000"] / 1000.0
+    d["nz_lo"] = d["nz_lo_pc"] / 100.0
+    d["nz_hi"] = d["nz_hi_pc"] / 100.0
+    d["joy_why_text"] = JOY_WHY.get(d["joy_why"], "reason %d" % d["joy_why"])
     return d
 
 
@@ -344,3 +376,124 @@ def decode_param(payload: bytes) -> dict:
     pid, v, lo, hi = struct.unpack_from("<Bfff", payload)
     name = payload[13:29].split(b"\0", 1)[0].decode("ascii", "replace")
     return {"id": pid, "value": v, "min": lo, "max": hi, "name": name}
+
+
+# --- USB joystick: button map, raw frames ---------------------------------------
+
+# Function order in the map (app/joymap.h jm_button_t)
+JM_BUTTONS = ["TAKE", "AUTO", "CONFIRM", "HDG LOCK", "STANDBY", "-1", "+1", "-10", "+10"]
+JM_TAKE, JM_AUTO, JM_CONFIRM, JM_HDG_LOCK, JM_STANDBY = range(5)
+THR_INPUTS = ["stick Y (spring-centred)", "lever (non-returning)"]
+HAT_DIRS = ["UP", "RIGHT", "DOWN", "LEFT"]
+DEV_NAMES = ["stick", "throttle"]
+AXIS_NAMES = ["X", "Y", "Z", "Rx", "Ry", "Rz", "Slider", "Dial"]
+_JOYMAP = struct.Struct("<BBBBBB9Bffff")       # 31 bytes, link.c wr_joymap()
+
+
+def code_btn(dev, index):
+    """Control code of USB button `index` (0 = "button 1") on device dev."""
+    return 1 + dev * 32 + index
+
+
+def code_hat(dev, hat, direction):
+    return 65 + dev * 8 + hat * 4 + direction
+
+
+def code_name(code):
+    """Readable name of a control code (app/jsframe.h)."""
+    if code == 0:
+        return "-"
+    if 1 <= code <= 64:
+        c = code - 1
+        return "%s button %d" % (DEV_NAMES[c // 32], c % 32 + 1)
+    if 65 <= code <= 80:
+        c = code - 65
+        return "%s hat %s" % (DEV_NAMES[c // 8], HAT_DIRS[c % 4])
+    return "code %d" % code
+
+
+def axis_name(code):
+    if code >= 16:
+        return "-"
+    return "%s axis %d (%s)" % (DEV_NAMES[code // 8], code % 8, AXIS_NAMES[code % 8])
+
+
+def default_joymap(source=0):
+    """Same as app/joymap.c joymap_default(): T.16000M + TWCS."""
+    return {"source": source, "thr_input": 1, "axis_steer": 0, "axis_thr": 8 + 2, "inv_steer": 0, "inv_thr": 1,
+            "btn": [code_btn(0, 0), code_btn(1, 0), code_btn(1, 3), code_btn(1, 2), code_btn(0, 1),
+                    code_hat(1, 0, 3), code_hat(1, 0, 1), code_hat(1, 0, 2), code_hat(1, 0, 0)],
+            "nz_lo": 0.45, "nz_hi": 0.55, "lever_delta": 0.10, "pickup_win": 0.03}
+
+
+def check_joymap(m):
+    """Same rules as app/joymap.c joymap_check(); returns an error text, empty if OK."""
+    b = m["btn"]
+    if not (b[JM_TAKE] and b[JM_AUTO] and b[JM_CONFIRM]):
+        return "TAKE, AUTO and CONFIRM must be mapped"
+    used = [c for c in b if c]
+    if len(used) != len(set(used)):
+        dup = sorted({c for c in used if used.count(c) > 1})
+        names = [JM_BUTTONS[i] for i, c in enumerate(b) if c in dup]
+        return "two functions share a button: " + ", ".join(names)
+    if m["axis_steer"] == m["axis_thr"]:
+        return "steering and throttle use the same axis"
+    if not (0.2 <= m["nz_lo"] and m["nz_hi"] <= 0.8 and m["nz_hi"] - m["nz_lo"] >= 0.04):
+        return "neutral zone must be inside 20..80 % and at least 4 % wide"
+    return ""
+
+
+def p_joymap_set(m, save=True):
+    return _JOYMAP.pack(m["source"], m["thr_input"], m["axis_steer"], m["axis_thr"], m["inv_steer"], m["inv_thr"],
+                        *m["btn"], m["nz_lo"], m["nz_hi"], m["lever_delta"], m["pickup_win"]) + bytes([1 if save else 0])
+
+
+def decode_joymap(payload: bytes) -> dict:
+    v = _JOYMAP.unpack_from(payload)
+    return {"source": v[0], "thr_input": v[1], "axis_steer": v[2], "axis_thr": v[3], "inv_steer": v[4],
+            "inv_thr": v[5], "btn": list(v[6:15]), "nz_lo": v[15], "nz_hi": v[16], "lever_delta": v[17],
+            "pickup_win": v[18]}
+
+
+def decode_joy_raw(payload: bytes) -> dict:
+    flags, seq = struct.unpack_from("<BB", payload)
+    devs = []
+    for d in range(2):
+        v = struct.unpack_from("<8hIB", payload, 2 + d * 21)
+        devs.append({"axes": [None if a == -32768 else a / 32767.0 for a in v[:8]], "buttons": v[8],
+                     "hats": [v[9] & 0x0F, v[9] >> 4]})
+    return {"flags": flags, "seq": seq, "dev": devs, "connected": [bool(flags & 1), bool(flags & 2)],
+            "learn": bool(flags & 4)}
+
+
+def pressed_codes(raw):
+    """Every control code pressed in a raw frame (buttons and exact hat directions)."""
+    out = []
+    for d in range(2):
+        b = raw["dev"][d]["buttons"]
+        out += [code_btn(d, i) for i in range(32) if b & (1 << i)]
+        for h in range(2):
+            v = raw["dev"][d]["hats"][h]
+            if v in (0, 2, 4, 6):
+                out.append(code_hat(d, h, v // 2))
+    return out
+
+
+def p_sim_bridge(stick_x=0.0, stick_y=0.0, lever=0.5, b0=0, b1=0, hat0=15, hat1=15,
+                 stick=True, throttle=True, learn=False, fault=0):
+    """Simulated T.16000M (dev 0) + TWCS (dev 1). lever 0..1; fault bits:
+    1 no frames, 2 corrupt every frame, 4 counter stuck, 8 corrupt 1 in 50."""
+    def ax(v):
+        return int(round(max(-1.0, min(1.0, v)) * 32767))
+    none = [-32768] * 8
+    a0 = none[:]
+    a1 = none[:]
+    if stick:
+        a0[0], a0[1] = ax(stick_x), ax(stick_y)
+    if throttle:
+        a1[2] = ax(1.0 - 2.0 * lever)          # TWCS: forward = low raw value
+    flags = (1 if stick else 0) | (2 if throttle else 0) | (4 if learn else 0) | 8
+    out = struct.pack("<B", flags)
+    out += struct.pack("<8hIB", *a0, b0 if stick else 0, 0xF0 | (hat0 & 0x0F))
+    out += struct.pack("<8hIB", *a1, b1 if throttle else 0, 0xF0 | (hat1 & 0x0F))
+    return out + struct.pack("<B", fault)

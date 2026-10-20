@@ -5,6 +5,8 @@ Starts  sim/autopilot_sim server <port> 10  (10x real time), then:
   2. AUTO again, and while it runs a simulated joystick takes over
   3. the PC is refused during the override, hand-back only with the stick centred
   4. every frame was logged
+  5. USB joystick (simulated bridge): source switch, shared button refused,
+     lever takeover with throttle pickup, throttle unplugged -> fault
 
 Run:  python test_e2e.py        (exit code 0 = all passed)
 """
@@ -193,8 +195,87 @@ def main():
             sim.kill()
         for old in sorted(glob.glob(os.path.join(log_dir, "*.jsonl")))[:-3]:
             os.remove(old)                         # keep the last 3 e2e logs
+    usb_part(exe, sim_dir, log_dir)
     print("E2E: %d passed, %d failed" % (sum(results), len(results) - sum(results)))
     return 0 if all(results) else 1
+
+
+def usb_part(exe, sim_dir, log_dir):
+    """5. USB joystick through the simulated bridge: switch the source from the
+    ground station, live status, a shared button refused, lever takeover with
+    throttle pickup, unplugged throttle -> JOYSTICK FAULT."""
+    port = free_port()
+    sim = subprocess.Popen([exe, "server", str(port), str(SPEED)], cwd=sim_dir,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    link = None
+    try:
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        time.sleep(0.2)
+        link = Link("tcp:127.0.0.1:%d" % port, log_folder=log_dir, heartbeat_s=0.5 / SPEED)
+        link.start()
+        w = Waiter(link)
+        w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 5)
+
+        # source -> USB bridge (T.16000M + TWCS), saved
+        link.send(proto.T_SIM_BRIDGE, proto.p_sim_bridge())
+        m = proto.default_joymap(1)
+        a = w.command(proto.T_JOYMAP_SET, proto.p_joymap_set(m))
+        t = w.until(lambda d: d["usb"] and d["usb_dev0"] and d["usb_dev1"] and d["joy_status"] == 2 and
+                    d["usb_fps"] >= 90, 10)
+        report("USB joystick: source switched from the ground station, live link status",
+               a is not None and a["ok"] and t is not None,
+               "set: %s; frames/s %s, stick %s, throttle %s, lever %s, neutral zone %s-%s %%" % (
+                   a and a["text"], t and t["usb_fps"], t and t["usb_dev0"], t and t["usb_dev1"],
+                   t and t["lever"], t and t["nz_lo_pc"], t and t["nz_hi_pc"]))
+
+        # a map with AUTO on the TAKE button is refused, the boat keeps its map
+        bad = proto.default_joymap(1)
+        bad["btn"][proto.JM_AUTO] = bad["btn"][proto.JM_TAKE]
+        a2 = w.command(proto.T_JOYMAP_SET, proto.p_joymap_set(bad))
+        w.joymap = None
+        w.command(proto.T_JOYMAP_GET)
+        end = time.time() + 2
+        while w.joymap is None and time.time() < end:
+            w.pump()
+        kept = w.joymap is not None and w.joymap["btn"] == m["btn"]
+        report("USB joystick: map with a shared TAKE / AUTO button refused",
+               a2 is not None and a2["result"] == 18 and kept,
+               "answer: %s; boat map unchanged %s" % (a2 and a2["text"], kept))
+
+        # lever shoved to 80 % from STANDBY: MANUAL, but no throttle until it was in neutral
+        link.send(proto.T_SIM_BRIDGE, proto.p_sim_bridge(lever=0.8))
+        t1 = w.until(lambda d: d["mode"] == proto.MODE_MANUAL, 5)
+        t2 = w.until(lambda d: False, 2.0) or w.telem
+        held = t1 is not None and t1["pickup"] and t2["throttle"] <= 1.0 and t2["pickup"]
+        for lv in (0.65, 0.5, 0.65, 0.8):                  # through neutral and forward again
+            link.send(proto.T_SIM_BRIDGE, proto.p_sim_bridge(lever=lv))
+            w.until(lambda d: False, 0.3)
+        t3 = w.until(lambda d: d["throttle"] > 5.0 and d["gear"] == 1, 10)
+        report("USB joystick: lever takeover, MOVE THROTTLE TO PICK UP, then the lever drives",
+               held and t3 is not None,
+               "MANUAL %s, pickup pending %s, throttle while pending %.1f %%; after neutral: throttle %s %% gear %s" % (
+                   t1 is not None, t2["pickup"], t2["throttle"], t3 and round(t3["throttle"], 1),
+                   t3 and proto.GEARS[t3["gear"]]))
+
+        # throttle unplugged while driving: JOYSTICK FAULT, STANDBY
+        link.send(proto.T_SIM_BRIDGE, proto.p_sim_bridge(lever=0.8, throttle=False))
+        t4 = w.until(lambda d: d["mode"] == proto.MODE_STANDBY and d["joy_status"] == 3, 5)
+        report("USB joystick: throttle unplugged while driving -> JOYSTICK FAULT, STANDBY",
+               t4 is not None and "JOYSTICK FAULT" in proto.alarm_texts(t4["alarm_bits"]),
+               "mode %s, reason: %s" % (t4 and t4["mode_name"], t4 and t4["joy_why_text"]))
+    finally:
+        if link:
+            link.stop()
+        sim.terminate()
+        try:
+            sim.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            sim.kill()
 
 
 if __name__ == "__main__":

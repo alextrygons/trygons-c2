@@ -218,6 +218,14 @@ class Link:
                 if self.logger:
                     self.logger.write("rx", f, {"prog_wp": d})
                 self.events.put(("prog_wp", d))
+            elif f.type == proto.T_JOYMAP_VALUE:
+                d = proto.decode_joymap(f.payload)
+                if self.logger:
+                    self.logger.write("rx", f, {"joymap": d})
+                self.events.put(("joymap", d))
+            elif f.type == proto.T_JOY_RAW:
+                d = proto.decode_joy_raw(f.payload)       # polled often: not logged
+                self.events.put(("joy_raw", d))
             elif f.type == proto.T_PROG_ERROR:
                 d = proto.decode_prog_error(f.payload)
                 if self.logger:
@@ -239,6 +247,8 @@ class Waiter:
         self.params = {}
         self.prog = {}
         self.prog_error = None
+        self.joymap = None
+        self.joy_raw = None
 
     def pump(self, timeout=0.05):
         try:
@@ -258,6 +268,10 @@ class Waiter:
                 self.prog[d["index"]] = d
             elif kind == "prog_error":
                 self.prog_error = d
+            elif kind == "joymap":
+                self.joymap = d
+            elif kind == "joy_raw":
+                self.joy_raw = d
             try:
                 item = self.link.events.get_nowait()
             except queue.Empty:

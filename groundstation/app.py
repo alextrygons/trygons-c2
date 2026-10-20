@@ -66,6 +66,12 @@ class App:
         self.pdlg = None                # power raise dialog
         self.prog_dl = []               # PROG_WP_VALUE frames being downloaded
         self.last_beep = 0.0
+        self.jmap = None                # joystick map as stored on the boat
+        self.jm_edit = proto.default_joymap()   # map in the editor (Joystick tab)
+        self.jm_load = True             # next JOYMAP_VALUE goes into the editor
+        self.raw = None                 # last USB bridge frame (JOY_RAW)
+        self.wiz = None                 # guided button-mapping routine
+        self.sim_usb = {"x": 0.0, "lever": 0.5, "stick": True, "throttle": True, "fault": 0}
 
         root.title("Trygons C2 ground station")
         root.configure(bg=BG)
@@ -118,6 +124,7 @@ class App:
         self.banners.columnconfigure(0, weight=1)
         self.joy_banner = tk.Label(self.banners, text="JOYSTICK IN CONTROL", font=F_HUGE, bg=ORANGE, fg=FG)
         self.alarm_banner = tk.Label(self.banners, text="", font=F_MED, bg=RED, fg="#ffffff")
+        self.pick_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#ffd000", fg=FG)
         self.alarm_ack = btn(self.banners, "ACK ALARM\n(STANDBY)",
                              lambda: self.cmd(proto.T_ALARM_ACK, b"", "alarm ack"), font=F_TXT)
 
@@ -222,6 +229,36 @@ class App:
         btn(sf, "STANDBY", lambda: self.cmd(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY),
                                             "sim STANDBY button"), font=F_TXT).pack(side="left", padx=2)
         btn(sf, "CONFIRM", self.sim_confirm, font=F_TXT).pack(side="left")
+        Y = "#fff4c0"
+        tk.Label(self.sim_frame, text="Simulator: USB joystick (source = USB bridge)", font=F_TXT, bg=Y).pack(
+            anchor="w", pady=(4, 0))
+        su = tk.Frame(self.sim_frame, bg=Y)
+        su.pack(fill="x")
+        tk.Label(su, text="lever", font=F_TXT, bg=Y).grid(row=0, column=0)
+        self.sim_lever = tk.Scale(su, from_=100, to=0, orient="vertical", length=110, bg=Y, showvalue=True,
+                                  command=lambda v: self.sim_usb_set("lever", float(v) / 100.0))
+        self.sim_lever.set(50)
+        self.sim_lever.grid(row=1, column=0, rowspan=3)
+        tk.Label(su, text="stick X", font=F_TXT, bg=Y).grid(row=0, column=1, columnspan=3)
+        self.sim_sx = tk.Scale(su, from_=-100, to=100, orient="horizontal", length=170, bg=Y,
+                               command=lambda v: self.sim_usb_set("x", float(v) / 100.0))
+        self.sim_sx.grid(row=1, column=1, columnspan=3)
+        for i, (name, k) in enumerate((("TAKE", proto.JM_TAKE), ("AUTO", proto.JM_AUTO), ("HDG", proto.JM_HDG_LOCK))):
+            btn(su, name, lambda k=k: self.sim_usb_press(k), font=F_TXT).grid(row=2, column=1 + i, sticky="ew")
+        for i, (name, k) in enumerate((("STBY", proto.JM_STANDBY), ("-1", 5), ("+1", 6))):
+            btn(su, name, lambda k=k: self.sim_usb_press(k), font=F_TXT).grid(row=3, column=1 + i, sticky="ew")
+        uf = tk.Frame(self.sim_frame, bg=Y)
+        uf.pack(fill="x")
+        self.sim_stick_on = tk.BooleanVar(value=True)
+        self.sim_thr_on = tk.BooleanVar(value=True)
+        tk.Checkbutton(uf, text="stick plugged", variable=self.sim_stick_on, bg=Y, font=F_TXT,
+                       command=lambda: self.sim_usb_set("stick", self.sim_stick_on.get())).pack(side="left")
+        tk.Checkbutton(uf, text="throttle plugged", variable=self.sim_thr_on, bg=Y, font=F_TXT,
+                       command=lambda: self.sim_usb_set("throttle", self.sim_thr_on.get())).pack(side="left")
+        self.sim_fault = tk.StringVar(value="link OK")
+        faults = {"link OK": 0, "no frames": 1, "corrupt frames": 2, "counter stuck": 4}
+        tk.OptionMenu(uf, self.sim_fault, *faults.keys(),
+                      command=lambda v: self.sim_usb_set("fault", faults[v])).pack(side="left")
 
     def _build_joystick(self, parent):
         j = tk.Frame(parent, bg=BG, bd=2, relief="groove")
@@ -230,18 +267,91 @@ class App:
         self.joy_cv = tk.Canvas(j, width=130, height=130, bg="#f8f8f8", highlightthickness=2,
                                 highlightbackground=FG)
         self.joy_cv.pack(side="left", pady=2)
+        self.lever_cv = tk.Canvas(j, width=54, height=130, bg="#f8f8f8", highlightthickness=2,
+                                  highlightbackground=FG)
+        self.lever_cv.pack(side="left", pady=2, padx=(4, 0))
         jr = tk.Frame(j, bg=BG)
         jr.pack(side="left", padx=8, fill="y")
+        self.joy_src = tk.Label(jr, text="-", font=F_TXT, bg=BG, justify="left")
+        self.joy_src.pack(anchor="w")
         self.joy_status = tk.Label(jr, text="-", font=F_MED, bg=BG, justify="left")
         self.joy_status.pack(anchor="w")
         self.joy_btns = tk.Label(jr, text="TAKE  AUTO", font=F_MED, bg=BG)
         self.joy_btns.pack(anchor="w")
         jb = tk.Frame(j, bg=BG)
         jb.pack(side="left", padx=4)
+        tk.Label(jb, text="analog joystick:", font=F_TXT, bg=BG).pack(anchor="w")
         btn(jb, "Calibrate start", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(0), "calibration start"),
             font=F_TXT).pack(fill="x")
         btn(jb, "Calibrate finish", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(1), "calibration finish"),
             font=F_TXT).pack(fill="x")
+
+    def _build_joytab(self, jt):
+        """Joystick tab: source, link status, button map, guided mapping."""
+        top = tk.Frame(jt, bg=BG)
+        top.pack(fill="x", pady=4)
+        tk.Label(top, text="Source", font=F_MED, bg=BG).grid(row=0, column=0, sticky="w", padx=4)
+        self.jm_src = tk.IntVar(value=0)
+        for i, name in enumerate(proto.JOY_SOURCES):
+            tk.Radiobutton(top, text=name, variable=self.jm_src, value=i, font=F_TXT, bg=BG,
+                           command=self.jm_from_widgets).grid(row=0, column=1 + i, sticky="w")
+        tk.Label(top, text="Throttle", font=F_MED, bg=BG).grid(row=1, column=0, sticky="w", padx=4)
+        self.jm_thr = tk.IntVar(value=1)
+        for i, name in enumerate(proto.THR_INPUTS):
+            tk.Radiobutton(top, text=name, variable=self.jm_thr, value=i, font=F_TXT, bg=BG,
+                           command=self.jm_from_widgets).grid(row=1, column=1 + i, sticky="w")
+        z = tk.Frame(top, bg=BG)
+        z.grid(row=2, column=0, columnspan=4, sticky="w", pady=2)
+        self.jm_vars = {}
+        for k, text in (("nz_lo", "neutral zone from %"), ("nz_hi", "to %"), ("lever_delta", "lever override %"),
+                        ("pickup_win", "pickup window %")):
+            tk.Label(z, text=text, font=F_TXT, bg=BG).pack(side="left", padx=(6, 2))
+            v = tk.StringVar()
+            tk.Entry(z, textvariable=v, font=F_MED, width=4).pack(side="left")
+            self.jm_vars[k] = v
+        bb = tk.Frame(jt, bg=BG)
+        bb.pack(fill="x", pady=2)
+        btn(bb, "Read from boat", self.jm_read, font=F_TXT).pack(side="left")
+        btn(bb, "Factory default (T.16000M + TWCS)", self.jm_default, font=F_TXT).pack(side="left", padx=4)
+        btn(bb, "Map buttons (guided)", lambda: self.wiz_start(None), bg="#c0d8ff", font=F_TXT).pack(side="left")
+        btn(bb, "SAVE TO BOAT\n(STANDBY only)", self.jm_save, bg="#b0ffb0", font=F_TXT).pack(side="left", padx=4)
+
+        self.jl_lbl = tk.Label(jt, text="-", font=("Consolas", 13), bg=BG, justify="left", anchor="w")
+        self.jl_lbl.pack(fill="x", padx=6, pady=4)
+
+        g = tk.Frame(jt, bg=BG)
+        g.pack(fill="x", padx=6)
+        self.jm_rows = []
+        names = ["steering axis", "throttle axis"] + proto.JM_BUTTONS
+        half = 6                                    # two columns: fits a laptop screen
+        for i, name in enumerate(names):
+            r, c0 = (i % half) + 1, (i // half) * 4
+            if i % half == 0:
+                for c, h in enumerate(("function", "joystick control", "now")):
+                    tk.Label(g, text=h, font=F_MED, bg=BG).grid(row=0, column=c0 + c, sticky="w", padx=4)
+            tk.Label(g, text=name, font=F_TXT, bg=BG).grid(row=r, column=c0, sticky="w", padx=4)
+            code = tk.Label(g, text="-", font=F_TXT, bg=BG, width=24, anchor="w")
+            code.grid(row=r, column=c0 + 1, sticky="w", padx=4)
+            now = tk.Label(g, text="", font=F_TXT, bg=BG, width=9)
+            now.grid(row=r, column=c0 + 2)
+            step = ("axis_steer", "axis_thr")[i] if i < 2 else i - 2
+            tk.Button(g, text="Map", command=lambda st=step: self.wiz_start([st]), font=("Segoe UI", 10),
+                      pady=0).grid(row=r, column=c0 + 3, pady=1, padx=(0, 16))
+            self.jm_rows.append((code, now))
+
+        self.wiz_frame = tk.Frame(jt, bg="#e0ecff", bd=2, relief="groove")
+        self.wiz_lbl = tk.Label(self.wiz_frame, text="", font=F_BIG, bg="#e0ecff", justify="left", wraplength=900)
+        self.wiz_lbl.pack(anchor="w", padx=6, pady=4)
+        self.wiz_info = tk.Label(self.wiz_frame, text="", font=F_MED, bg="#e0ecff", justify="left")
+        self.wiz_info.pack(anchor="w", padx=6)
+        wb = tk.Frame(self.wiz_frame, bg="#e0ecff")
+        wb.pack(anchor="w", padx=6, pady=4)
+        self.wiz_next = btn(wb, "Next", self.wiz_next_click, bg="#b0ffb0")
+        self.wiz_next.pack(side="left")
+        self.wiz_skip = btn(wb, "Skip (not used)", self.wiz_skip_click)
+        self.wiz_skip.pack(side="left", padx=4)
+        btn(wb, "Cancel", self.wiz_cancel, bg="#ffb0b0").pack(side="left")
+        self.jm_to_widgets()
 
     def _build_tabs(self, body):
         right = tk.Frame(body, bg=BG)
@@ -249,6 +359,7 @@ class App:
         self._build_joystick(right)
         nb = ttk.Notebook(right)
         nb.pack(fill="both", expand=True)
+        self.nb = nb
 
         mp = tk.Frame(nb, bg=BG)
         nb.add(mp, text="Map")
@@ -291,6 +402,11 @@ class App:
         for c in ("value", "min", "max"):
             self.ptree.heading(c, text=c)
         self.ptree.pack(fill="both", expand=True)
+
+        jt = tk.Frame(nb, bg=BG)
+        nb.add(jt, text="Joystick")
+        self.joytab = jt
+        self._build_joytab(jt)
 
         sy = tk.Frame(nb, bg=BG)
         nb.add(sy, text="System")
@@ -461,6 +577,9 @@ class App:
             self.sim_frame.pack_forget()
         self.log_lbl.configure(text="log: " + self.link.logger.path)
         self.root.after(500, self.read_params)
+        self.jm_load = True
+        self.root.after(700, lambda: self.link and self.link.send(proto.T_JOYMAP_GET))
+        self.root.after(200, self.raw_tick)
 
     def cmd(self, ftype, payload, what):
         if not self.link:
@@ -530,6 +649,8 @@ class App:
         """Simulator: press and release the joystick CONFIRM (stick centred)."""
         if not self.link:
             return
+        if self.t and self.t["usb"]:
+            return self.sim_usb_press(proto.JM_CONFIRM)
         self.link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
         self.root.after(150, lambda: self.link and self.link.send(
             proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0)))
@@ -613,6 +734,10 @@ class App:
                     where = "" if d["index"] == 255 else " at waypoint %d" % (d["index"] + 1)
                     self.say("PROGRAM REFUSED: %s%s" % (d["text"], where), RED)
                     self.event("program refused: %s%s" % (d["text"], where))
+                elif kind == "joymap":
+                    self.on_joymap(d)
+                elif kind == "joy_raw":
+                    self.on_raw(d)
                 elif kind == "status":
                     self.say(d, RED if "DISCONNECTED" in d else "#202020")
                     self.event(d)
@@ -728,6 +853,14 @@ class App:
             self.alarm_banner.configure(text="ALARM: " + (", ".join(alarms) if alarms else "autopilot"))
         self.show(self.alarm_banner, on, row=1, column=0, sticky="ew")
         self.show(self.alarm_ack, on, row=1, column=1, sticky="ns")
+        pick = d["pickup"] and d["mode"] in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK)
+        if pick:
+            tgt = d["pickup_target"]
+            self.pick_banner.configure(text="MOVE THROTTLE TO PICK UP:  lever to %s   (now %.0f %%)" % (
+                "%.0f %%" % (100 * tgt) if tgt is not None else
+                "NEUTRAL (%.0f-%.0f %%)" % (100 * d["nz_lo"], 100 * d["nz_hi"]),
+                100 * (d["lever"] or 0.0)))
+        self.show(self.pick_banner, pick, row=2, column=0, columnspan=2, sticky="ew")
 
         per = ((50000, "core 0  control 20 Hz"), (1000, "CPU1    monitor 1 kHz"), (10000, "core 2  logger"))
         keys = (("t_core0_avg", "t_core0_max", "ovr_core0"), ("t_mon_avg", "t_mon_max", "ovr_mon"),
@@ -749,7 +882,7 @@ class App:
     def draw_joystick(self, d):
         c = self.joy_cv
         c.delete("all")
-        s = 150
+        s = 130
         c.create_line(s / 2, 0, s / 2, s, fill="#a0a0a0")
         c.create_line(0, s / 2, s, s / 2, fill="#a0a0a0")
         db = 0.15 * s / 2
@@ -761,13 +894,316 @@ class App:
         x = s / 2 + d["joy_x"] * (s / 2 - 8)
         y = s / 2 - d["joy_y"] * (s / 2 - 8)
         c.create_oval(x - 9, y - 9, x + 9, y + 9, fill=col, outline=FG, width=2)
+        self.draw_lever(d)
         txt = proto.JOY_STATUS[st] if st < 4 else "?"
-        if st == 3:
-            txt += " (%s axis)" % ("X" if d["joy_fault_axis"] == 1 else "Y")
+        if st == 3 or (st == 1 and d["joy_why"]):
+            txt += "\n" + d["joy_why_text"]
+        elif st == 1:
+            txt = "NOT IN NEUTRAL / not armed" if d["has_lever"] else txt
         self.joy_status.configure(text="%s\nX %+.2f  Y %+.2f" % (txt, d["joy_x"], d["joy_y"]),
                                   fg=RED if st in (1, 3) else FG)
+        if d["usb"]:
+            ok = lambda b: "OK" if b else "UNPLUGGED"
+            src = "USB bridge: %d frames/s, CRC errors %d\nstick %s, throttle %s%s" % (
+                d["usb_fps"], d["usb_crc"], ok(d["usb_dev0"]), ok(d["usb_dev1"]),
+                ", LEARN MODE" if d["usb_learn"] else ", starting" if d["usb_starting"] else "")
+        else:
+            src = "analog joystick (wired)"
+        self.joy_src.configure(text=src, fg=RED if d["usb"] and not (d["usb_dev0"] and d["usb_dev1"]) else FG)
         self.joy_btns.configure(text="TAKE %s  AUTO %s  CONFIRM %s" % (
             "■" if d["joy_take"] else "□", "■" if d["joy_auto"] else "□", "■" if d["joy_confirm"] else "□"))
+        self.draw_joytab(d)
+
+    def draw_lever(self, d):
+        """Lever bar: forward up, reverse down, the neutral zone in grey, the
+        pickup target as a yellow mark."""
+        c = self.lever_cv
+        c.delete("all")
+        h, w = 130, 54
+        if d["lever"] is None:
+            c.create_text(w / 2, h / 2, text="no\nlever", font=F_TXT, justify="center")
+            return
+        top, bot = 12, h - 12
+
+        def Y(v):
+            return bot - v * (bot - top)
+        c.create_rectangle(16, Y(1.0), w - 16, Y(d["nz_hi"]), fill="#c8f0c8", outline="")
+        c.create_rectangle(16, Y(d["nz_lo"]), w - 16, Y(0.0), fill="#f8c8c8", outline="")
+        pick = d["pickup"] and d["mode"] in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK)
+        nz_col = "#ffd000" if pick and d["pickup_target"] is None else "#a0a0a0"
+        c.create_rectangle(16, Y(d["nz_hi"]), w - 16, Y(d["nz_lo"]), fill=nz_col, outline="")
+        c.create_text(w / 2, 6, text="F", font=F_TXT)
+        c.create_text(w / 2, h - 5, text="R", font=F_TXT)
+        if pick and d["pickup_target"] is not None:
+            ty = Y(d["pickup_target"])
+            c.create_polygon(w - 14, ty, w - 2, ty - 7, w - 2, ty + 7, fill="#ffd000", outline=FG)
+        ly = Y(d["lever"])
+        c.create_rectangle(6, ly - 4, w - 16, ly + 4, fill=ORANGE if pick else BLUE, outline=FG)
+
+    # --- Joystick tab ---------------------------------------------------------------
+    def jm_to_widgets(self):
+        m = self.jm_edit
+        self.jm_src.set(m["source"])
+        self.jm_thr.set(m["thr_input"])
+        for k in ("nz_lo", "nz_hi", "lever_delta", "pickup_win"):
+            self.jm_vars[k].set("%g" % round(100 * m[k], 1))
+        names = [proto.axis_name(m["axis_steer"]) + (" inverted" if m["inv_steer"] else ""),
+                 proto.axis_name(m["axis_thr"]) + (" inverted" if m["inv_thr"] else "")]
+        names += [proto.code_name(cd) for cd in m["btn"]]
+        for (lbl, _), n in zip(self.jm_rows, names):
+            lbl.configure(text=n)
+
+    def jm_from_widgets(self):
+        m = self.jm_edit
+        m["source"] = self.jm_src.get()
+        m["thr_input"] = self.jm_thr.get()
+        for k in ("nz_lo", "nz_hi", "lever_delta", "pickup_win"):
+            try:
+                m[k] = float(self.jm_vars[k].get()) / 100.0
+            except ValueError:
+                pass
+        return m
+
+    def jm_read(self):
+        self.jm_load = True
+        self.cmd(proto.T_JOYMAP_GET, b"", "joystick map read")
+
+    def jm_default(self):
+        self.jm_edit = proto.default_joymap(self.jm_src.get())
+        self.jm_to_widgets()
+        self.say("Factory map in the editor (T.16000M + TWCS) - SAVE TO BOAT to use it")
+
+    def jm_save(self):
+        m = self.jm_from_widgets()
+        err = proto.check_joymap(m)
+        if err:
+            return self.say("Map not sent: " + err, RED)
+        if self.t and self.t["mode"] != proto.MODE_STANDBY:
+            return self.say("Map not sent: the boat must be in STANDBY", RED)
+        self.cmd(proto.T_JOYMAP_SET, proto.p_joymap_set(m, True), "joystick map save")
+
+    def on_joymap(self, d):
+        self.jmap = d
+        if self.jm_load:
+            self.jm_load = False
+            self.jm_edit = dict(d, btn=list(d["btn"]))
+            self.jm_to_widgets()
+
+    def raw_tick(self):
+        """Poll the raw USB frame (5 Hz) while the Joystick tab is open or the
+        mapping routine runs."""
+        if not self.link:
+            return
+        try:
+            on_tab = self.nb.select() == str(self.joytab)
+        except tk.TclError:
+            on_tab = False
+        if self.t and self.t["usb"] and (on_tab or self.wiz):
+            self.link.send(proto.T_JOY_RAW_GET)
+        self.root.after(200, self.raw_tick)
+
+    def on_raw(self, d):
+        self.raw = d
+        if self.wiz:
+            self.wiz_raw(d)
+
+    @staticmethod
+    def code_now(d, code):
+        """Is control `code` pressed now (telemetry)?"""
+        if 1 <= code <= 64:
+            c = code - 1
+            return bool((d["usb_btn1"] if c >= 32 else d["usb_btn0"]) >> (c % 32) & 1)
+        if 65 <= code <= 80:
+            c = code - 65
+            dev, hat, dr = c // 8, (c // 4) % 2, c % 4
+            if hat:
+                return False                     # only hat 0 is in the telemetry
+            v = (d["usb_hats"] >> 4) if dev else (d["usb_hats"] & 0x0F)
+            return v == 2 * dr
+        return False
+
+    def draw_joytab(self, d):
+        if d["usb"]:
+            lines = ["source: USB bridge (Teensy)     frames/s %3d     CRC errors %d" % (d["usb_fps"], d["usb_crc"]),
+                     "stick %-10s throttle %-10s hub %-4s %s" % (
+                         "connected" if d["usb_dev0"] else "UNPLUGGED", "connected" if d["usb_dev1"] else "UNPLUGGED",
+                         "yes" if d["usb_hub"] else "no", "LEARN MODE (joystick disarmed)" if d["usb_learn"] else "")]
+        else:
+            lines = ["source: analog joystick (wired)", ""]
+        st = d["joy_status"]
+        lines.append("joystick: %s %s" % (proto.JOY_STATUS[st] if st < 4 else "?", d["joy_why_text"]))
+        if d["lever"] is not None:
+            lines.append("lever %.0f %%   neutral zone %.0f-%.0f %%   %s" % (
+                100 * d["lever"], 100 * d["nz_lo"], 100 * d["nz_hi"],
+                "PICKUP PENDING" if d["pickup"] else ""))
+        self.jl_lbl.configure(text="\n".join(lines), fg=RED if st in (1, 3) else FG)
+        m = self.jm_edit
+        for i, (_, now) in enumerate(self.jm_rows):
+            if i < 2:
+                now.configure(text="")
+                continue
+            code = m["btn"][i - 2]
+            on = d["usb"] and code and self.code_now(d, code)
+            now.configure(text="■ PRESSED" if on else "", fg=GREEN)
+
+    # --- guided button mapping ------------------------------------------------------
+    PROMPTS = {
+        "axis_steer": "Move the STICK fully to the RIGHT and hold it there, then click Next.",
+        "axis_thr_lever": "Push the THROTTLE LEVER fully FORWARD and hold it there, then click Next.",
+        "axis_thr_y": "Push the STICK fully FORWARD and hold it there, then click Next.",
+    }
+    HINTS = ["stick trigger", "a TWCS button", "a different TWCS button, clearly apart from AUTO",
+             "a TWCS button", "an extra stick button", "throttle hat LEFT", "throttle hat RIGHT",
+             "throttle hat DOWN", "throttle hat UP"]
+
+    def wiz_start(self, steps):
+        if not self.t or not self.t["usb"]:
+            return self.say("Mapping needs the USB bridge as the source (save the source first)", RED)
+        if self.t["mode"] != proto.MODE_STANDBY:
+            return self.say("Mapping only in STANDBY", RED)
+        self.jm_from_widgets()
+        full = steps is None
+        if full:
+            steps = ["axis_steer", "axis_thr"] + list(range(len(proto.JM_BUTTONS)))
+        self.wiz = {"steps": ["base"] + steps, "i": 0, "base": None, "release": False, "full": full}
+        self.wiz_frame.pack(fill="x", padx=6, pady=6, before=self.jl_lbl)    # at the top: always visible
+        self.wiz_show()
+
+    def wiz_step(self):
+        w = self.wiz
+        return w["steps"][w["i"]] if w and w["i"] < len(w["steps"]) else None
+
+    def wiz_show(self, info=""):
+        st = self.wiz_step()
+        if st is None:
+            err = proto.check_joymap(self.jm_edit)
+            self.wiz_lbl.configure(text="Mapping finished. Check the table, press STANDBY (panel) if a button took control, then SAVE TO BOAT." if not err
+                                   else "Mapping finished, but: " + err)
+            self.wiz_info.configure(text="")
+            self.wiz_next.configure(text="Close", command=self.wiz_cancel)
+            self.wiz_skip.pack_forget()
+            self.jm_to_widgets()
+            self.wiz = None
+            return
+        self.wiz_next.configure(text="Next", command=self.wiz_next_click)
+        if st == "base":
+            txt = ("Let go of everything: stick centred, lever in neutral, no button pressed. Then click Next.  "
+                   "(The buttons keep their old job while you map them - TAKE will switch to MANUAL. "
+                   "That is intended: the joystick is never switched off.)")
+        elif st == "axis_steer":
+            txt = self.PROMPTS["axis_steer"]
+        elif st == "axis_thr":
+            txt = self.PROMPTS["axis_thr_lever" if self.jm_thr.get() == 1 else "axis_thr_y"]
+        else:
+            txt = "Press the button for  %s   (suggested: %s)" % (proto.JM_BUTTONS[st], self.HINTS[st])
+        optional = isinstance(st, int) and st not in (proto.JM_TAKE, proto.JM_AUTO, proto.JM_CONFIRM)
+        if optional:
+            self.wiz_skip.pack(side="left", padx=4)
+        else:
+            self.wiz_skip.pack_forget()
+        self.wiz_lbl.configure(text=txt)
+        self.wiz_info.configure(text=info)
+
+    def wiz_cancel(self):
+        self.wiz = None
+        self.wiz_frame.pack_forget()
+        self.jm_to_widgets()
+
+    def wiz_advance(self, info=""):
+        self.wiz["i"] += 1
+        self.jm_to_widgets()
+        self.wiz_show(info)
+
+    def wiz_skip_click(self):
+        st = self.wiz_step()
+        if isinstance(st, int):
+            self.jm_edit["btn"][st] = 0
+            self.wiz_advance("%s: not used" % proto.JM_BUTTONS[st])
+
+    def wiz_next_click(self):
+        w, st, raw = self.wiz, self.wiz_step(), self.raw
+        if w is None or st is None:
+            return
+        if raw is None:
+            return self.wiz_info.configure(text="No data from the bridge yet - is it connected?")
+        if st == "base":
+            w["base"] = raw
+            return self.wiz_advance()
+        if st in ("axis_steer", "axis_thr"):
+            best, code = 0.0, None
+            for dv in range(2):
+                for a in range(8):
+                    v, b = raw["dev"][dv]["axes"][a], w["base"]["dev"][dv]["axes"][a]
+                    cd = dv * 8 + a
+                    if v is None or b is None or (st == "axis_thr" and cd == self.jm_edit["axis_steer"]):
+                        continue
+                    if abs(v - b) > abs(best):
+                        best, code = v - b, cd
+            if code is None or abs(best) < 0.5:
+                return self.wiz_info.configure(text="No axis moved far enough - move it all the way and hold.")
+            key = "steer" if st == "axis_steer" else "thr"
+            self.jm_edit["axis_" + key] = code
+            self.jm_edit["inv_" + key] = 1 if best < 0 else 0
+            return self.wiz_advance("%s = %s%s" % ("steering" if key == "steer" else "throttle",
+                                                   proto.axis_name(code), " (inverted)" if best < 0 else ""))
+        # buttons are detected automatically (wiz_raw); Next does nothing here
+        self.wiz_info.configure(text="Press the joystick button itself (or Skip if not used).")
+
+    def wiz_raw(self, raw):
+        """Button steps: the first newly pressed button / hat direction is taken.
+        A control already used by another function is refused."""
+        w, st = self.wiz, self.wiz_step()
+        if not isinstance(st, int) or w["base"] is None:
+            return
+        base = set(proto.pressed_codes(w["base"]))
+        now = [c for c in proto.pressed_codes(raw) if c not in base]
+        if w["release"]:
+            if not now:
+                w["release"] = False
+            return
+        if not now:
+            return
+        code = now[0]
+        for i, other in enumerate(self.jm_edit["btn"]):
+            if other == code and i != st:
+                self.wiz_info.configure(text="%s is already %s - press a different button" % (
+                    proto.code_name(code), proto.JM_BUTTONS[i]), fg=RED)
+                w["release"] = True
+                return
+        self.wiz_info.configure(fg=FG)
+        self.jm_edit["btn"][st] = code
+        w["release"] = True
+        self.wiz_advance("%s = %s" % (proto.JM_BUTTONS[st], proto.code_name(code)))
+
+    # --- simulator: USB joystick ---------------------------------------------------
+    def sim_usb_set(self, key, value):
+        self.sim_usb[key] = value
+        self.sim_usb_send()
+
+    def sim_usb_send(self, codes=()):
+        if not self.link:
+            return
+        b = [0, 0]
+        hats = [15, 15]
+        for c in codes:
+            if 1 <= c <= 64:
+                b[(c - 1) // 32] |= 1 << ((c - 1) % 32)
+            elif 65 <= c <= 80:
+                k = c - 65
+                if (k // 4) % 2 == 0:
+                    hats[k // 8] = 2 * (k % 4)
+        u = self.sim_usb
+        self.link.send(proto.T_SIM_BRIDGE, proto.p_sim_bridge(
+            u["x"], 0.0, u["lever"], b[0], b[1], hats[0], hats[1], u["stick"], u["throttle"], False, u["fault"]))
+
+    def sim_usb_press(self, func):
+        """Press and release the USB button mapped to function `func`."""
+        m = self.jmap or proto.default_joymap(1)
+        code = m["btn"][func]
+        if not code:
+            return self.say("%s is not mapped" % proto.JM_BUTTONS[func], RED)
+        self.sim_usb_send([code])
+        self.root.after(200, self.sim_usb_send)
 
     def draw_plot(self):
         c = self.plot
