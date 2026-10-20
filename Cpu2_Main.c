@@ -27,24 +27,30 @@
 #include "Ifx_Types.h"
 #include "IfxCpu.h"
 #include "IfxScuWdt.h"
+#include "IfxScuCcu.h"
 #include "Ifx_Cfg_Ssw.h"
 
 extern IfxCpu_syncEvent cpuSyncEvent;
 
+/* CPU2: the logger runs here (section F). Its watchdog is ON and serviced
+ * by its loop. */
 void core2_main(void)
 {
     IfxCpu_enableInterrupts();
-    
-    /* !!WATCHDOG2 IS DISABLED HERE!!
-     * Enable the watchdog and service it periodically if it is required
-     */
-    IfxScuWdt_disableCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
-    
+
+    {
+        uint16 pw = IfxScuWdt_getCpuWatchdogPassword();
+        uint16 reload = (uint16)(0x10000u - (uint32)(0.5f * IfxScuCcu_getSpbFrequency() / 16384.0f));
+        IfxScuWdt_changeCpuWatchdogReload(pw, reload);           /* 500 ms (SD writes can be slow) */
+        IfxScuWdt_enableCpuWatchdog(pw);
+    }
+
     /* Wait for CPU sync event */
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
-    
+
     while(1)
     {
+        IfxScuWdt_serviceCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
     }
 }

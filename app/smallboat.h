@@ -47,6 +47,12 @@
  *     Enforced in the lowest layer (servo.c writes the throttle servo).
  *   - the joystick always wins over the autopilot and the PC; the STANDBY
  *     button always wins over the PC
+ *   - neutral-start interlock: after power-up the outputs only arm when the
+ *     throttle is idle, neutral is confirmed (neutral switch if fitted,
+ *     otherwise neutral commanded for arm_ms) and the joystick is centred;
+ *     until then STANDBY only, safety relay open, alarm after 3 s
+ *   - publishes its outputs + heartbeat for the independent monitor
+ *     (monitor.c, CPU1); a monitor trip -> STANDBY + alarm, locked
  */
 #ifndef SMALLBOAT_H
 #define SMALLBOAT_H
@@ -81,6 +87,8 @@
 #define SB_ALM_JOY_NOT_CENTERED   0x200u  /* joystick not centred at power-up */
 #define SB_ALM_JOYSTICK           0x400u  /* joystick took control from an automatic mode */
 #define SB_ALM_PC_LINK            0x800u  /* ground station link lost */
+#define SB_ALM_NOT_ARMED          0x1000u /* outputs not armed at start: gear not neutral / stick not centred */
+#define SB_ALM_MONITOR            0x2000u /* independent safety monitor (CPU1) tripped */
 
 #define SB_FAULT_STEER_OFF   0u
 #define SB_FAULT_STEER_GYRO  1u
@@ -144,6 +152,8 @@ typedef struct {
     float    crab_tau_s;                /* drift (current) estimate filter (20) */
     prog_limits_t prog;                 /* program validation limits */
     uint32_t confirm_ms;                /* PC request -> joystick CONFIRM window (10 s) */
+    uint32_t arm_ms;                    /* neutral-start: conditions OK this long to arm (500 ms) */
+    uint32_t arm_alarm_ms;              /* not armed this long -> alarm (3 s) */
 
     /* TRAINING */
     float    training_throttle_pct;     /* fixed slow throttle, forward gear (20) */
@@ -278,6 +288,9 @@ typedef struct {
     bool        alarm_seen;
     bool        speed_limited; /* AUTO: speed limited by the power limit */
     uint32_t    sat_ms;        /* how long the speed loop has been at the limit */
+    bool        armed;         /* neutral-start interlock passed (until reset) */
+    uint32_t    arm_ok_ms, unarmed_ms;
+    bool        mon_tripped;   /* the safety monitor tripped (until reset) */
     dr_t        dr;            /* position estimate (GPS / dead reckoning) */
     bool        gps_new_msg;   /* a GPS message arrived this step */
     uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */

@@ -4,6 +4,8 @@
 #include "smallboat.h"
 
 #include <math.h>
+
+#include "monitor.h"
 #include <string.h>
 
 static float clampf(float x, float lo, float hi)
@@ -62,6 +64,8 @@ void sb_default_config(sb_config_t *cfg)
     cfg->prog.min_leg_m = 10.0f;
     cfg->prog.max_leg_m = 50000.0f;
     cfg->confirm_ms = 10000u;
+    cfg->arm_ms = 500u;
+    cfg->arm_alarm_ms = 3000u;
 
     cfg->training_throttle_pct = 20.0f;
     cfg->training_spinup_ms = 30000u;
@@ -90,6 +94,7 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     gear_init(&s->gear, &cfg->gear);
     throttle_init(&s->thr, &cfg->throttle);
     plim_init(&s->plim, &cfg->plim, s->now_ms * 2654435761u + 12345u);     /* always 30 / 5 */
+    hal_set_safety_relay(false);                /* closed once armed (interlock) */
     servo_init(&s->servo, &cfg->servo);
     s->gear_demand = GEAR_N;
     dr_init(&s->dr, &cfg->dr);
@@ -200,6 +205,7 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
         if (why != WHY_JOY_HANDBACK && why != WHY_HDG_BUTTON && why != WHY_CONFIRM) return false;
         if (!joy_centered(&s->joy)) return false;
     }
+    if ((!s->armed || s->mon_tripped) && to != MODE_STANDBY) return false;   /* interlock / monitor */
     if (to == MODE_MANUAL) return why == WHY_JOYSTICK;      /* only the joystick enters it */
 
     switch (to) {
@@ -1080,8 +1086,34 @@ bool sb_confirm_training(sb_t *s, bool accept, float full_angle_deg)
 /* --- step ------------------------------------------------------------------ */
 
 /* Faults, joystick and buttons (in this order of priority). */
+/* Neutral-start interlock (power-up): throttle idle, neutral confirmed,
+ * joystick centred (if fitted) for arm_ms -> outputs armed until reset. */
+static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
+{
+    if (s->armed) return;
+    bool neutral = (neutral_sw >= 0) ? (neutral_sw == 1 && gear_is(&s->gear, GEAR_N)) : gear_is(&s->gear, GEAR_N);
+    bool stick = !s->joy.present || (s->joy.armed && joy_centered(&s->joy));
+    bool idle = s->thr.out_pct <= s->cfg.gear.idle_max_pct;
+    s->arm_ok_ms = (neutral && stick && idle) ? s->arm_ok_ms + dt_ms : 0u;
+    s->unarmed_ms += dt_ms;
+    if (s->arm_ok_ms >= s->cfg.arm_ms && !s->mon_tripped) {
+        s->armed = true;
+        hal_set_safety_relay(true);
+        return;
+    }
+    if (s->unarmed_ms >= s->cfg.arm_alarm_ms && !(s->alarm_bits & SB_ALM_NOT_ARMED)) alarm_on(s, SB_ALM_NOT_ARMED);
+}
+
 static void events_step(sb_t *s, uint32_t buttons)
 {
+    /* independent safety monitor tripped: outputs are forced safe by the HAL */
+    if (g_mon.tripped && !s->mon_tripped) {
+        s->mon_tripped = true;
+        alarm_on(s, SB_ALM_MONITOR);
+        plim_drop(&s->plim, PLIM_SRC_FAULT, s->now_ms);
+        sb_request_mode(s, MODE_STANDBY, WHY_MONITOR);
+    }
+
     /* compass */
     if (s->ap.sensor_fault && !s->compass_fault_seen) {
         s->compass_fault_seen = true;
@@ -1211,7 +1243,8 @@ void sb_step(sb_t *s)
         dr_step(&s->dr, &di);
     }
 
-    /* 2. faults, joystick, buttons */
+    /* 2. interlock, faults, joystick, buttons */
+    interlock_step(s, neutral_sw, dt_ms);
     events_step(s, buttons);
 
     /* 3. what the mode wants */
@@ -1311,6 +1344,17 @@ void sb_step(sb_t *s)
     hal_set_rudder_motor(s->ap.motor_cmd);
     if (s->chirp_ms > 0u) s->chirp_ms = (s->chirp_ms > dt_ms) ? s->chirp_ms - dt_ms : 0u;
     hal_set_alarm(s->alarm || s->ap.alarm || s->chirp_ms > 0u);
+
+    /* 7. publish for the independent safety monitor (CPU1) */
+    g_mon.throttle_pct = s->servo.out_pct;
+    g_mon.fwd_limit = s->plim.fwd_pct;
+    g_mon.rev_limit = s->plim.rev_pct;
+    g_mon.fwd_engaged = gear_is(&s->gear, GEAR_F) ? 1u : 0u;
+    g_mon.gear_pwm_us = s->gear.pwm_us;
+    g_mon.idle_max_pct = s->cfg.gear.idle_max_pct;
+    g_mon.thr_idle_us = s->cfg.servo.idle_us;
+    g_mon.gear_n_us = s->cfg.gear.pwm_n_us;
+    g_mon.heartbeat = g_mon.heartbeat + 1u;
 }
 
 sb_status_t sb_status(const sb_t *s)

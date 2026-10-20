@@ -40,6 +40,7 @@ typedef int sock_t;
 #include "hal_sim.h"
 #include "joystick.h"
 #include "link.h"
+#include "monitor.h"
 #include "sim_run.h"
 #include "sim_world.h"
 #include "smallboat.h"
@@ -48,6 +49,7 @@ typedef struct {
     world_t w;
     sb_t    sb;
     link_t  link;
+    mon_t   mon;            /* independent safety monitor (CPU1 on the board) */
     uint32_t t, next_ctrl;
 } server_t;
 
@@ -162,7 +164,10 @@ static void sim_init(server_t *x, uint32_t seed)
     world_publish(&x->w, 0);
     hal_init();
     sb_default_config(&c);
+    sim_hal_unforce();
+    memset((void *)&g_mon, 0, sizeof g_mon);
     sb_init(&x->sb, &c);
+    monitor_init(&x->mon, 0u);
     link_init(&x->link, &x->sb);
     x->link.sim_fn = sim_cmd;
     x->link.sim_ctx = x;
@@ -177,6 +182,7 @@ static void sim_advance(server_t *x, uint32_t until_ms)
             sb_step(&x->sb);
             link_step(&x->link, &x->sb);
         }
+        monitor_step(&x->mon, &g_mon, x->t);        /* separate check step */
         world_step(&x->w, PHYSICS_DT_MS * 0.001f);
         x->t += PHYSICS_DT_MS;
     }

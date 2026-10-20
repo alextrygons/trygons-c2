@@ -168,4 +168,33 @@ bool hal_calib_load(void *data, uint32_t size);
 uint32_t hal_link_read(uint8_t *buf, uint32_t max);
 bool     hal_link_write(const uint8_t *buf, uint32_t len);
 
+/* ---- Hardening ----------------------------------------------------------- */
+
+/* Safety monitor (CPU1) trip: throttle servo to idle_us, gear servo to
+ * neutral_us, steering motor off, alarm on, safety relay open. LATCHED
+ * until reset: after this the normal output functions can't change these
+ * outputs any more (core 0 can't override the monitor). */
+void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us);
+bool hal_outputs_forced(void);
+
+/* Safety relay: closed = actuators may be powered (engine kill / servo
+ * power, see WIRING.md). Opened by the monitor trip; closed by core 0 once
+ * the outputs are armed (neutral-start interlock). */
+void hal_set_safety_relay(bool closed);
+
+/* Watchdogs (CPU0 + safety watchdog). Not kicked within timeout_ms -> chip
+ * reset (outputs to their reset state, see WIRING.md). */
+void hal_watchdog_init(uint32_t timeout_ms);
+void hal_watchdog_kick(void);
+
+/* Why the chip started (for the log). raw = chip reset status register. */
+typedef enum {
+    HAL_RESET_POWER_ON = 0,     /* cold / warm power-on */
+    HAL_RESET_SYSTEM,           /* system reset (e.g. watchdog / SMU alarm) */
+    HAL_RESET_APPLICATION,      /* application / software reset */
+    HAL_RESET_DEBUG,            /* debugger */
+    HAL_RESET_OTHER
+} hal_reset_t;
+hal_reset_t hal_reset_reason(uint32_t *raw);
+
 #endif /* HAL_H */

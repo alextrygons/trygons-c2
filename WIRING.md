@@ -119,7 +119,62 @@ connectors, which nothing else in this project uses.
   ignition and the motor cables.
 * The software debounces the buttons (TODO in hal_tc375.c).
 
-## 3. Ground-station link (PC)
+## 3. Actuators, reset behaviour and fail-safe
+
+### Pin plan (outputs and the neutral switch)
+
+| Signal | Board pin | Connector / pin | TC375 pin | Notes |
+|--------|-----------|-----------------|-----------|-------|
+| Throttle servo signal | D9 | X303 pin 2 | P02.7 (GTM TOUT7) | 50 Hz, 1000 us = idle, 2000 us = full (calibrated) |
+| Gear servo signal | D8 | X303 pin 1 | P02.6 (GTM TOUT6) | 1900 F / 1500 N / 1100 R us (configurable) |
+| Steering motor driver PWM | D6 | X304 pin 7 | P02.5 (GTM TOUT3) | to the H-bridge (motor driver) |
+| Steering motor direction | D7 | X304 pin 8 | P02.4 | |
+| Safety relay driver | D10 | X303 pin 3 | P10.5 | high = relay closed (actuators allowed); through a transistor / relay driver, never the coil directly |
+| Neutral switch | D5 | X304 pin 6 | P02.3 (input, pull-up) | switch to GND, CLOSED when the gearbox is in neutral |
+
+(The Arduino SPI pins D11-D13 stay free; the SD card uses the mikroBUS socket.)
+
+### What happens at reset and before the software runs
+
+* `hal_init()` is the very first thing the software does: all actuator pins
+  become outputs driven LOW (no servo pulses, steering motor off, safety relay
+  open), before the other cores start.
+* **During a reset and the ~0.3 s boot** the pins are inputs. Put a
+  **10 kOhm pull-down resistor** from each servo signal, the motor PWM and the
+  relay driver input to GND, so they are a defined LOW, not floating.
+* A watchdog reset (frozen software, 100 ms) restarts everything: the power
+  limit is back to 30 % / 5 %, the mode is STANDBY, and the outputs only arm
+  again when the gear is confirmed in neutral and the stick is centred.
+
+### What each actuator does when its signal stops (IMPORTANT)
+
+| Actuator | No signal (reset, broken wire, board dead) | Risk |
+|----------|---------------------------------------------|------|
+| Throttle servo | a normal analog servo goes limp (stays where it is or follows the throttle spring); **many digital servos HOLD the last position** | the engine may stay at speed |
+| Gear servo | stays where it is | the boat may stay in gear |
+| Steering motor | stops (driver off) | the outboard stays at its angle |
+
+The software can't do anything when it is not running, so **use a hardware
+fail-safe** (one or more of these):
+
+1. **Throttle return spring** on the throttle linkage, strong enough to pull
+   the throttle to idle when the servo is limp, plus an **analog servo** (or a
+   digital servo with **"fail-safe = idle" programmed**, which goes to idle on
+   signal loss).
+2. **Safety relay** (driven by D10): it is open at power-up, closes only when
+   the outputs are armed (neutral-start check passed), and opens when the CPU1
+   safety monitor trips. Wire it so that "open" is safe:
+   * it cuts the **servo power** (then the throttle spring pulls to idle), and/or
+   * it is in series with the **engine kill-cord circuit** (open = engine
+     stops). Strongest action; decide with your engine dealer.
+   Because the relay is open whenever the board is in reset or dead, a crashed
+   board also ends up safe.
+3. The normal **kill cord (lanyard)** must stay fitted and worn. It works
+   without any electronics.
+
+Recommended: 1 + 2 (servo power through the relay) + 3.
+
+## 4. Ground-station link (PC)
 
 Nothing to wire. Use the board's **USB cable**: the on-board debugger
 (miniWiggler) also provides a **virtual COM port**, connected to ASCLIN0

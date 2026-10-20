@@ -13,6 +13,10 @@
 #define RUDDER_NOISE_DEG    0.1f
 #define CALIB_FILE          "calib.bin"
 
+/* safety monitor trip latch (hal_safe_outputs) */
+static bool     s_forced;
+static uint16_t s_safe_thr_us = 1000u, s_safe_gear_us = 1500u;
+
 static uint32_t s_time_ms;
 static float    s_true_heading;
 static float    s_true_rudder;
@@ -90,7 +94,7 @@ void hal_set_rudder_motor(float command)
 {
     if (command > 1.0f) command = 1.0f;
     if (command < -1.0f) command = -1.0f;
-    s_motor = command;
+    s_motor = s_forced ? 0.0f : command;
 }
 
 uint32_t hal_get_button_presses(void)
@@ -102,7 +106,7 @@ uint32_t hal_get_button_presses(void)
 
 void hal_set_alarm(bool on)
 {
-    s_alarm = on;
+    s_alarm = on || s_forced;
 }
 
 bool hal_calib_save(const void *data, uint32_t size)
@@ -156,12 +160,13 @@ static bool      s_gps_new;
 
 void hal_set_throttle_pwm(uint16_t pulse_us)
 {
+    if (s_forced) pulse_us = s_safe_thr_us;     /* monitor tripped: latched */
     if (pulse_us < HAL_THROTTLE_PWM_MIN) pulse_us = HAL_THROTTLE_PWM_MIN;
     if (pulse_us > HAL_THROTTLE_PWM_MAX) pulse_us = HAL_THROTTLE_PWM_MAX;
     s_throttle_us = pulse_us;
 }
 
-void hal_set_gear_pwm(uint16_t pulse_us) { s_gear_pwm = pulse_us; }
+void hal_set_gear_pwm(uint16_t pulse_us) { s_gear_pwm = s_forced ? s_safe_gear_us : pulse_us; }
 
 bool hal_read_gps(hal_gps_t *gps)
 {
@@ -354,4 +359,52 @@ void sim_hal_link_reset(void)
 {
     s_link_rx.head = s_link_rx.tail = 0u;
     s_link_tx.head = s_link_tx.tail = 0u;
+}
+
+/* --- hardening: monitor latch, safety relay, watchdog, reset reason --- */
+static bool     s_relay;
+static hal_reset_t s_reset_reason = HAL_RESET_POWER_ON;
+
+void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
+{
+    s_forced = true;
+    s_safe_thr_us = throttle_idle_us;
+    s_safe_gear_us = gear_neutral_us;
+    s_throttle_us = throttle_idle_us;
+    s_gear_pwm = gear_neutral_us;
+    s_motor = 0.0f;
+    s_alarm = true;
+    s_relay = false;
+}
+
+bool hal_outputs_forced(void) { return s_forced; }
+void hal_set_safety_relay(bool closed) { s_relay = closed && !s_forced; }
+bool sim_hal_safety_relay(void) { return s_relay; }
+
+/* The simulator's watchdog is modelled by the test harness (sim_sb.c). */
+void hal_watchdog_init(uint32_t timeout_ms) { (void)timeout_ms; }
+void hal_watchdog_kick(void) {}
+
+hal_reset_t hal_reset_reason(uint32_t *raw)
+{
+    if (raw) *raw = (uint32_t)s_reset_reason;
+    return s_reset_reason;
+}
+
+/* Simulated chip reset: the monitor latch goes, outputs stop (no pulses:
+ * the servos hold where they are), the next start reports `why`. */
+void sim_hal_chip_reset(hal_reset_t why)
+{
+    s_forced = false;
+    s_relay = false;
+    s_throttle_us = 0u;
+    s_gear_pwm = 0u;
+    s_motor = 0.0f;
+    s_reset_reason = why;
+}
+
+void sim_hal_unforce(void)
+{
+    s_forced = false;
+    s_reset_reason = HAL_RESET_POWER_ON;
 }

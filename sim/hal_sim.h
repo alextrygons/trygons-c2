@@ -64,4 +64,9 @@ uint32_t sim_hal_link_rx_push(const uint8_t *buf, uint32_t len);   /* PC -> boat
 uint32_t sim_hal_link_tx_pop(uint8_t *buf, uint32_t max);          /* boat -> PC */
 void     sim_hal_link_reset(void);
 
+/* Hardening: safety relay state, simulated chip reset, clear the monitor latch. */
+bool     sim_hal_safety_relay(void);
+void     sim_hal_chip_reset(hal_reset_t why);
+void     sim_hal_unforce(void);
+
 #endif /* HAL_SIM_H */

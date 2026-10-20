@@ -70,7 +70,8 @@ void world_from_latlon(double lat, double lon, double *north_m, double *east_m)
 /* Gear servo: moves at 2000 us/s; the gearbox engages near the ends. */
 static void gear_model(world_t *w, float dt_s)
 {
-    float cmd = w->servo_stuck ? w->gear_pos_us : (float)sim_hal_gear_pwm();
+    /* no pulses (chip in reset): a normal RC servo holds where it is */
+    float cmd = (w->servo_stuck || sim_hal_gear_pwm() == 0u) ? w->gear_pos_us : (float)sim_hal_gear_pwm();
     float step = 2000.0f * dt_s;
     if (cmd > w->gear_pos_us + step) w->gear_pos_us += step;
     else if (cmd < w->gear_pos_us - step) w->gear_pos_us -= step;

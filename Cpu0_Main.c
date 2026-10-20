@@ -42,6 +42,8 @@
 
 IFX_ALIGN(4) IfxCpu_syncEvent cpuSyncEvent = 0;
 
+#define WATCHDOG_MS 100u        /* > 2 control periods (50 ms) */
+
 #ifdef BOAT_VARIANT_BIG
 static autopilot_t g_autopilot;
 #else
@@ -52,18 +54,18 @@ static link_t g_link;       /* ground station (USB virtual COM) */
 void core0_main(void)
 {
     IfxCpu_enableInterrupts();
-    
-    /* !!WATCHDOG0 AND SAFETY WATCHDOG ARE DISABLED HERE!!
-     * Enable the watchdogs and service them periodically if it is required
-     */
-    IfxScuWdt_disableCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
-    IfxScuWdt_disableSafetyWatchdog(IfxScuWdt_getSafetyWatchdogPassword());
-    
+
+    /* Outputs to their safe state first (servo pins low, relay open), then
+     * let the other cores start (CPU1 = safety monitor needs the HAL). */
+    hal_init();
+
+    /* CPU0 + safety watchdog ON (100 ms; the loop kicks every 50 ms).
+     * A frozen loop -> chip reset -> outputs back to their reset state. */
+    hal_watchdog_init(WATCHDOG_MS);
+
     /* Wait for CPU sync event */
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
-
-    hal_init();
 #ifdef BOAT_VARIANT_BIG
     ap_config_t cfg;
     autopilot_default_config(&cfg);
@@ -89,6 +91,7 @@ void core0_main(void)
             sb_step(&g_boat);
             link_step(&g_link, &g_boat);
 #endif
+            hal_watchdog_kick();
             next_step_ms += AP_PERIOD_MS;
 
             /* If we ever fall far behind (e.g. debugger halt), resync

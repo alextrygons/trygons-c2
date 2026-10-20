@@ -27,24 +27,47 @@
 #include "Ifx_Types.h"
 #include "IfxCpu.h"
 #include "IfxScuWdt.h"
+#include "IfxScuCcu.h"
 #include "Ifx_Cfg_Ssw.h"
 
+#include "hal.h"
+#include "monitor.h"
+
 extern IfxCpu_syncEvent cpuSyncEvent;
+
+/*
+ * CPU1: independent safety monitor (app/monitor.c). Reads what core 0
+ * publishes (g_mon) every 1 ms with its own clock and forces the safe
+ * outputs if core 0 misbehaves or stops. Kept small: nothing else runs here.
+ */
+static mon_t g_monitor;
 
 void core1_main(void)
 {
     IfxCpu_enableInterrupts();
-    
-    /* !!WATCHDOG1 IS DISABLED HERE!!
-     * Enable the watchdog and service it periodically if it is required
-     */
-    IfxScuWdt_disableCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
-    
-    /* Wait for CPU sync event */
+
+    /* CPU1 watchdog ON (100 ms), serviced by the monitor loop below. */
+    {
+        uint16 pw = IfxScuWdt_getCpuWatchdogPassword();
+        uint16 reload = (uint16)(0x10000u - (uint32)(0.1f * IfxScuCcu_getSpbFrequency() / 16384.0f));
+        IfxScuWdt_changeCpuWatchdogReload(pw, reload);
+        IfxScuWdt_enableCpuWatchdog(pw);
+    }
+
+    /* Wait for CPU sync event (core 0 has initialised the HAL) */
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
-    
+
+    monitor_init(&g_monitor, hal_millis());
+    uint32_t next = hal_millis();
     while(1)
     {
+        uint32_t now = hal_millis();
+        if ((int32_t)(now - next) >= 0)
+        {
+            next = now + 1u;
+            (void)monitor_step(&g_monitor, &g_mon, now);
+            IfxScuWdt_serviceCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
+        }
     }
 }

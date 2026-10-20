@@ -10,6 +10,7 @@
 #include "sim_run.h"
 #include "sim_world.h"
 #include "link.h"
+#include "monitor.h"
 #include "smallboat.h"
 
 /* ------------------------------------------------------------ harness -- */
@@ -22,6 +23,15 @@ struct sbsim {
     sb_t     sb;
     uint32_t t;             /* ms */
     uint32_t next_ctrl;
+    sb_config_t cfg;        /* for a simulated reset */
+    mon_t    mon;           /* independent safety monitor (CPU1 on the board) */
+    bool     mon_on;
+    bool     frozen;        /* core 0 hangs: no control steps, no watchdog kicks */
+    uint32_t wdt_ms;        /* watchdog timeout, 0 = off */
+    uint32_t last_kick;
+    uint32_t boot_until;    /* after a reset: chip boots until then */
+    uint32_t resets;
+    uint32_t t_reset;       /* time of the last watchdog reset */
 };
 
 /* Joystick position (-1..+1, default calibration) -> raw ADC. */
@@ -53,10 +63,16 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     sim_hal_joystick_confirm(false);
     remove("nv1.bin");                              /* default joystick calibration */
     remove("nv2.bin");                              /* no stored AUTO program */
+    sim_hal_unforce();
+    memset((void *)&g_mon, 0, sizeof g_mon);
     world_publish(&x->w, 0);
     hal_init();
     if (cfg) c = *cfg; else sb_default_config(&c);
+    x->cfg = c;
     sb_init(&x->sb, &c);
+    monitor_init(&x->mon, 0u);
+    x->mon_on = true;
+    x->wdt_ms = 100u;
 }
 
 /* Run until absolute time until_ms; hook after every control step. */
@@ -64,11 +80,34 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
 {
     while (x->t <= until_ms) {
         world_publish(&x->w, x->t);
-        if (x->t >= x->next_ctrl) {
-            x->next_ctrl += AP_PERIOD_MS;
-            sb_step(&x->sb);
-            if (hook) hook(x, ctx);
+        if (x->boot_until && x->t >= x->boot_until) {
+            /* chip has rebooted after the watchdog reset */
+            x->boot_until = 0u;
+            x->frozen = false;
+            memset((void *)&g_mon, 0, sizeof g_mon);
+            hal_init();
+            sb_init(&x->sb, &x->cfg);
+            monitor_init(&x->mon, x->t);
+            x->next_ctrl = x->t;
+            x->last_kick = x->t;
         }
+        if (!x->boot_until && x->t >= x->next_ctrl) {
+            x->next_ctrl += AP_PERIOD_MS;
+            if (!x->frozen) {
+                sb_step(&x->sb);
+                x->last_kick = x->t;                /* hal_watchdog_kick() in the loop */
+                if (hook) hook(x, ctx);
+            }
+        }
+        /* watchdog: not kicked in time -> chip reset, outputs stop */
+        if (x->wdt_ms && !x->boot_until && x->t - x->last_kick > x->wdt_ms) {
+            x->resets++;
+            x->t_reset = x->t;
+            sim_hal_chip_reset(HAL_RESET_SYSTEM);
+            x->boot_until = x->t + 200u;
+        }
+        /* the independent monitor (CPU1): its own check step */
+        if (x->mon_on && !x->boot_until) monitor_step(&x->mon, &g_mon, x->t);
         world_step(&x->w, PHYSICS_DT_MS * 0.001f);
         x->t += PHYSICS_DT_MS;
     }
@@ -3079,10 +3118,199 @@ static void powerlim_tests(void)
     }
 }
 
+/* ------------------------------------------------------ section C: hardening -- */
+
+typedef struct {
+    int      kind;              /* 1 = throttle 90 %, 2 = gear to R at throttle */
+    uint32_t at_ms;             /* inject from this time */
+    bool     injected;
+    uint32_t t_inj;
+} inject_t;
+
+/* A bug in core 0: after its normal step it commands something unsafe. */
+static void inject_hook(sbsim_t *x, void *ctx)
+{
+    inject_t *j = (inject_t *)ctx;
+    if (x->t < j->at_ms) return;
+    if (!j->injected) { j->injected = true; j->t_inj = x->t; }
+    if (j->kind == 1) {
+        hal_set_throttle_pwm(1900u);                    /* 90 % past every limit */
+        g_mon.throttle_pct = 90.0f;
+    } else {
+        hal_set_gear_pwm(x->sb.cfg.gear.pwm_r_us);      /* F -> R with the throttle open */
+        g_mon.gear_pwm_us = x->sb.cfg.gear.pwm_r_us;
+    }
+}
+
+typedef struct { float t_react; float thr_after; uint16_t gear_after; bool alarm, standby, relay_open; mon_reason_t why; } react_t;
+
+static react_t watch_reaction(sbsim_t *x, uint32_t t0, sb_hook_t hook, void *ctx, uint32_t dur)
+{
+    react_t r;
+    memset(&r, 0, sizeof r);
+    r.t_react = -1.0f;
+    while (x->t < t0 + dur) {
+        sbsim_run(x, x->t + 10u, hook, ctx);
+        if (r.t_react < 0.0f && hal_outputs_forced()) r.t_react = (float)(x->t - t0);
+    }
+    r.thr_after = sim_hal_throttle();
+    r.gear_after = sim_hal_gear_pwm();
+    r.alarm = sim_hal_alarm();
+    r.standby = sb_mode(&x->sb) == MODE_STANDBY && (x->sb.alarm_bits & SB_ALM_MONITOR);
+    r.relay_open = !sim_hal_safety_relay();
+    r.why = x->mon.reason;
+    return r;
+}
+
+static void hardening_tests(void)
+{
+    char d[500];
+    printf("\n=== Section C: hardening (watchdog, CPU1 monitor, neutral-start) ===\n");
+
+    /* C1 injected 90 % throttle at limit 30 % */
+    {
+        sbsim_t x;
+        inject_t j = { 1, 0u, false, 0u };
+        sbsim_init(&x, 401u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        joy_set(0.0f, 0.6f, false, false);          /* MANUAL, ahead at the 30 % limit */
+        sbsim_run(&x, 20000u, NULL, NULL);
+        float before = sim_hal_throttle();
+        j.at_ms = x.t + 1u;
+        react_t r = watch_reaction(&x, x.t, inject_hook, &j, 5000u);
+        r.t_react -= (float)(j.t_inj - (j.at_ms - 1u));     /* from the moment it was injected */
+        snprintf(d, sizeof d, "throttle %.0f %% at limit %.0f %%; injected 90 %%: monitor (%s) forced idle after %.0f ms "
+                 "(sim check every 10 ms; board 1 ms), throttle now %.0f %%, gear %u us, alarm %s, core 0 -> STANDBY %s, "
+                 "safety relay open %s",
+                 before, x.sb.plim.fwd_pct, monitor_reason_name(r.why), r.t_react, r.thr_after, r.gear_after,
+                 r.alarm ? "on" : "OFF", r.standby ? "yes" : "NO", r.relay_open ? "yes" : "NO");
+        test_report("C1 monitor catches 90 % throttle at limit 30 %: idle + neutral + alarm",
+                    r.why == MON_TRIP_THROTTLE && r.t_react >= 0.0f && r.t_react <= 20.0f && r.thr_after <= 0.0f &&
+                    r.gear_after == x.sb.cfg.gear.pwm_n_us && r.alarm && r.standby && r.relay_open, d);
+    }
+
+    /* C2 gear change at high throttle */
+    {
+        sbsim_t x;
+        inject_t j = { 2, 0u, false, 0u };
+        sbsim_init(&x, 402u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        hdg_lock(&x);
+        sb_test_drive(&x.sb, true, GEAR_F, 60.0f);
+        sbsim_run(&x, x.t + 20000u, NULL, NULL);
+        float before = sim_hal_throttle();
+        j.at_ms = x.t + 1u;
+        react_t r = watch_reaction(&x, x.t, inject_hook, &j, 5000u);
+        r.t_react -= (float)(j.t_inj - (j.at_ms - 1u));
+        snprintf(d, sizeof d, "throttle %.0f %%, gear servo commanded to R: monitor (%s) after %.0f ms, throttle %.0f %%, "
+                 "gear %u us (neutral %u), alarm %s, STANDBY %s, gearbox shifted under load %d",
+                 before, monitor_reason_name(r.why), r.t_react, r.thr_after, r.gear_after, x.sb.cfg.gear.pwm_n_us,
+                 r.alarm ? "on" : "OFF", r.standby ? "yes" : "NO", x.w.shift_under_load);
+        test_report("C2 monitor catches a gear change at high throttle",
+                    r.why == MON_TRIP_GEAR && r.t_react >= 0.0f && r.t_react <= 20.0f && r.thr_after <= 0.0f &&
+                    r.gear_after == x.sb.cfg.gear.pwm_n_us && r.alarm && r.standby, d);
+    }
+
+    /* C3 core 0 freezes (watchdog off): the monitor's heartbeat check */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 403u, 90.0f, 0.0f, NULL);
+        x.wdt_ms = 0u;
+        sbsim_run(&x, 3000u, NULL, NULL);
+        hdg_lock(&x);
+        sb_test_drive(&x.sb, true, GEAR_F, 70.0f);
+        sbsim_run(&x, x.t + 20000u, NULL, NULL);
+        float before = sim_hal_throttle();
+        x.frozen = true;                            /* the control loop hangs, outputs stay as they were */
+        uint32_t t0 = x.last_kick;                  /* the last heartbeat */
+        react_t r = watch_reaction(&x, t0, NULL, NULL, 3000u);
+        snprintf(d, sizeof d, "core 0 frozen at %.0f %% throttle: monitor (%s) forced idle + neutral after %.0f ms "
+                 "(heartbeat limit %u ms), throttle %.0f %%, gear %u us, alarm %s",
+                 before, monitor_reason_name(r.why), r.t_react, MON_HB_MS, r.thr_after, r.gear_after,
+                 r.alarm ? "on" : "OFF");
+        test_report("C3 frozen core 0 (no watchdog): monitor heartbeat trip -> idle + neutral + alarm",
+                    r.why == MON_TRIP_HEARTBEAT && r.t_react >= (float)MON_HB_MS && r.t_react <= (float)MON_HB_MS + 30.0f &&
+                    r.thr_after <= 0.0f && r.gear_after == x.sb.cfg.gear.pwm_n_us && r.alarm, d);
+    }
+
+    /* C4 core 0 freezes with the watchdog on: reset, safe start again */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 404u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        hdg_lock(&x);
+        sb_test_drive(&x.sb, true, GEAR_F, 70.0f);
+        sbsim_run(&x, x.t + 20000u, NULL, NULL);
+        float v0 = x.w.speed_kn;
+        x.frozen = true;
+        uint32_t t0 = x.last_kick;                  /* the last watchdog kick */
+        float thr_reset = -1.0f;
+        while (x.t < t0 + 15000u) {
+            sbsim_run(&x, x.t + 10u, NULL, NULL);
+            if (x.resets && thr_reset < 0.0f) thr_reset = sim_hal_throttle();
+        }
+        uint32_t raw;
+        hal_reset_t why = hal_reset_reason(&raw);
+        snprintf(d, sizeof d, "frozen at %.1f kn, 70 %%: watchdog reset after %.0f ms (timeout %u ms), throttle at reset "
+                 "%.0f %%; after the reboot: reset reason %s, mode %s, power limit %.0f %%, gear %s, speed %.1f kn, armed %s",
+                 v0, x.resets ? (float)(x.t_reset - t0) : -1.0f, 100u, thr_reset,
+                 why == HAL_RESET_SYSTEM ? "system (watchdog)" : "?", mode_name(sb_mode(&x.sb)), x.sb.plim.fwd_pct,
+                 gear_name(x.w.engaged), x.w.speed_kn, x.sb.armed ? "yes" : "no");
+        test_report("C4 frozen core 0 with watchdog: reset, outputs stop, restarts in STANDBY at 30 %",
+                    x.resets == 1u && x.t_reset - t0 >= 100u && x.t_reset - t0 <= 120u && thr_reset <= 0.0f &&
+                    why == HAL_RESET_SYSTEM &&
+                    sb_mode(&x.sb) == MODE_STANDBY && x.sb.plim.fwd_pct == 30.0f && x.w.engaged == GEAR_N &&
+                    sim_hal_throttle() <= 0.0f, d);
+    }
+
+    /* C5 neutral-start interlock: gear not in neutral at power-up */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 405u, 90.0f, 0.0f, NULL);
+        x.w.neutral_switch = true;
+        x.w.engaged = GEAR_F;                       /* gear servo jammed in forward */
+        x.w.gear_pos_us = 1900.0f;
+        x.w.servo_stuck = true;
+        sbsim_run(&x, 4000u, NULL, NULL);
+        bool disarmed = !x.sb.armed && !sim_hal_safety_relay() && (x.sb.alarm_bits & SB_ALM_NOT_ARMED) &&
+                        sim_hal_alarm();
+        joy_set(0.0f, 0.6f, false, false);          /* try to drive */
+        sbsim_run(&x, 6000u, NULL, NULL);
+        bool refused = sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f && !hdg_lock(&x);
+        joy_set(0.0f, 0.0f, false, false);
+        x.w.servo_stuck = false;                    /* fixed: the servo goes to neutral */
+        sbsim_run(&x, 9000u, NULL, NULL);
+        bool armed = x.sb.armed && sim_hal_safety_relay();
+        snprintf(d, sizeof d, "gear stuck in F at power-up: outputs disarmed + alarm %s; stick / HDG LOCK refused %s; "
+                 "servo free -> neutral confirmed -> armed %s",
+                 disarmed ? "yes" : "NO", refused ? "yes" : "NO", armed ? "yes" : "NO");
+        test_report("C5 neutral-start: gear not neutral at power-up -> outputs disarmed + alarm",
+                    disarmed && refused && armed, d);
+    }
+
+    /* C6 neutral-start interlock: joystick not centred at power-up */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 406u, 90.0f, 0.0f, NULL);
+        joy_set(0.0f, 0.7f, false, false);          /* someone leans on the stick */
+        sbsim_run(&x, 4000u, NULL, NULL);
+        bool disarmed = !x.sb.armed && (x.sb.alarm_bits & SB_ALM_NOT_ARMED) && sb_mode(&x.sb) == MODE_STANDBY &&
+                        sim_hal_throttle() <= 0.0f && !sim_hal_safety_relay();
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, 5500u, NULL, NULL);
+        bool armed = x.sb.armed;
+        snprintf(d, sizeof d, "stick held at power-up: disarmed + alarm %s; centred -> armed %s",
+                 disarmed ? "yes" : "NO", armed ? "yes" : "NO");
+        test_report("C6 neutral-start: joystick not centred at power-up -> outputs disarmed + alarm",
+                    disarmed && armed, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
+    hardening_tests();
     powerlim_tests();
     modes_tests();
     link_tests();
