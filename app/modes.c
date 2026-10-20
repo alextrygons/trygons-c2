@@ -4,13 +4,12 @@
 #include "modes.h"
 
 static const bool k_allowed[MODE_COUNT][MODE_COUNT] = {
-    /* to:       STANDBY MANEUVER CRUISE NAV    TRAINING JOYSTICK */
-    /* STANDBY  */ { false, true,  true,  true,  true,  true  },
-    /* MANEUVER */ { true,  false, true,  true,  false, true  },
-    /* CRUISE   */ { true,  true,  false, true,  false, true  },
-    /* NAV      */ { true,  true,  true,  false, false, true  },
-    /* TRAINING */ { true,  false, false, false, false, true  },
-    /* JOYSTICK */ { true,  true,  true,  true,  false, false },
+    /* to:          STANDBY MANUAL HDG_LOCK AUTO  TRAINING */
+    /* STANDBY  */ { false, true,  true,    true,  true  },
+    /* MANUAL   */ { true,  false, true,    true,  false },
+    /* HDG_LOCK */ { true,  true,  false,   true,  false },
+    /* AUTO     */ { true,  true,  true,    false, false },
+    /* TRAINING */ { true,  true,  false,   false, false },
 };
 
 void mode_init(mode_mgr_t *m, uint32_t now_ms)
@@ -69,7 +68,7 @@ const mode_log_entry_t *mode_log_get(const mode_mgr_t *m, uint32_t i)
 
 const char *mode_name(sb_mode_t m)
 {
-    static const char *const n[] = { "STANDBY", "MANEUVER", "CRUISE", "NAV", "TRAINING", "JOYSTICK" };
+    static const char *const n[] = { "STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING" };
     return ((unsigned)m < MODE_COUNT) ? n[m] : "?";
 }
 
@@ -78,7 +77,8 @@ const char *mode_reason_name(mode_reason_t r)
     static const char *const n[] = {
         "user", "standby button", "compass fault", "GPS lost", "arrived",
         "training done", "training aborted", "test", "gear fault", "DR limit",
-        "arrival uncertain", "joystick", "joystick hand-back", "joystick fault", "PC"
+        "arrival uncertain", "joystick", "joystick hand-back", "joystick fault", "PC",
+        "HDG LOCK button", "PC + CONFIRM", "outputs not armed", "safety monitor"
     };
     return ((unsigned)r < WHY_COUNT) ? n[r] : "?";
 }

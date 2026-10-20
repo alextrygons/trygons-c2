@@ -11,31 +11,42 @@ OVERHEAD = 7
 
 # PC -> boat
 T_HEARTBEAT = 0x01
-T_SET_MODE = 0x10
-T_JOY_HANDBACK = 0x11
-T_HEADING_ADJ = 0x12
-T_WAYPOINT = 0x13
-T_CRUISE_SPEED = 0x14
+T_SET_MODE = 0x10          # only STANDBY and TRAINING
+T_HEADING_ADJ = 0x12       # HDG_LOCK only
 T_SEA_STATE = 0x15
 T_TRAINING = 0x16
 T_PARAM_GET = 0x17
 T_PARAM_SET = 0x18
 T_JOY_CAL = 0x19
 T_ALARM_ACK = 0x1A
+T_PROG_BEGIN = 0x20
+T_PROG_WP = 0x21
+T_PROG_COMMIT = 0x22
+T_PROG_GET = 0x23
+T_AUTO_START = 0x24        # then joystick CONFIRM within 10 s
+T_AUTO_PAUSE = 0x25
+T_AUTO_RESUME = 0x26       # then joystick CONFIRM within 10 s
+T_AUTO_SKIP = 0x27
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
+T_SIM_BUTTON = 0x72     # simulator only: panel button
 # boat -> PC
 T_TELEMETRY = 0x80
 T_ACK = 0x81
 T_PARAM_VALUE = 0x82
+T_PROG_WP_VALUE = 0x83
+T_PROG_ERROR = 0x84
 
 TYPE_NAMES = {
-    T_HEARTBEAT: "heartbeat", T_SET_MODE: "set mode", T_JOY_HANDBACK: "joystick hand-back",
-    T_HEADING_ADJ: "heading", T_WAYPOINT: "waypoint", T_CRUISE_SPEED: "cruise speed",
-    T_SEA_STATE: "sea state", T_TRAINING: "training", T_PARAM_GET: "param read",
+    T_HEARTBEAT: "heartbeat", T_SET_MODE: "set mode",
+    T_HEADING_ADJ: "heading", T_SEA_STATE: "sea state", T_TRAINING: "training", T_PARAM_GET: "param read",
     T_PARAM_SET: "param write", T_JOY_CAL: "joystick calibration", T_ALARM_ACK: "alarm ack",
-    T_SIM_JOYSTICK: "sim joystick", T_SIM_GPS: "sim GPS", T_TELEMETRY: "telemetry",
-    T_ACK: "ack", T_PARAM_VALUE: "param value",
+    T_PROG_BEGIN: "program begin", T_PROG_WP: "program waypoint", T_PROG_COMMIT: "program upload",
+    T_PROG_GET: "program read", T_AUTO_START: "AUTO start", T_AUTO_PAUSE: "AUTO pause",
+    T_AUTO_RESUME: "AUTO resume", T_AUTO_SKIP: "AUTO skip",
+    T_SIM_JOYSTICK: "sim joystick", T_SIM_GPS: "sim GPS", T_SIM_BUTTON: "sim button",
+    T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
+    T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
 
 RESULTS = {
@@ -51,10 +62,20 @@ RESULTS = {
     9: "only in STANDBY",
     10: "no such parameter",
     11: "refused",
+    12: "program refused",
+    13: "no program stored",
+    14: "joystick not ready (missing / fault / not armed): no CONFIRM possible",
 }
 
-MODES = ["STANDBY", "MANEUVER", "CRUISE", "NAV", "TRAINING", "JOYSTICK"]
-MODE_STANDBY, MODE_MANEUVER, MODE_CRUISE, MODE_NAV, MODE_TRAINING, MODE_JOYSTICK = range(6)
+MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING"]
+MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING = range(5)
+AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
+CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV"]
+WP_ACTIONS = ["continue", "slow", "stop"]
+PROG_END = ["stop + alarm", "hold heading slow"]
+PROG_ERRORS = ["ok", "bad number of waypoints", "bad coordinates", "leg speed out of range",
+               "arrival radius out of range", "bad action", "leg too short", "leg too long", "bad checksum"]
+BTN_STANDBY, BTN_MINUS_1, BTN_PLUS_1, BTN_MINUS_10, BTN_PLUS_10, BTN_HDG_LOCK = range(6)
 AP_MODES = ["STANDBY", "AUTO", "TRAINING", "MANUAL", "GYRO HOLD", "CENTER", "ANGLE"]
 GEARS = ["N", "F", "R"]
 POS_SOURCES = ["NO FIX", "GPS", "DEAD RECKONING", "RECOVERING"]
@@ -193,14 +214,6 @@ def p_heading(delta):
     return struct.pack("<b", delta)
 
 
-def p_waypoint(lat, lon, kn):
-    return struct.pack("<iif", round(lat * 1e7), round(lon * 1e7), kn)
-
-
-def p_cruise_speed(kn):
-    return struct.pack("<f", kn)
-
-
 def p_sea_state(ss):
     return struct.pack("<B", ss)
 
@@ -223,8 +236,21 @@ def p_joy_cal(action):
     return struct.pack("<B", action)
 
 
-def p_sim_joystick(fitted, x, y, take=False, autob=False):
-    return struct.pack("<BffBB", 1 if fitted else 0, x, y, 1 if take else 0, 1 if autob else 0)
+def p_prog_begin(n, final_action=0):
+    return struct.pack("<BB", n, final_action)
+
+
+def p_prog_wp(index, lat, lon, kn, radius_m, action):
+    return struct.pack("<BiiffB", index, round(lat * 1e7), round(lon * 1e7), kn, radius_m, action)
+
+
+def p_sim_joystick(fitted, x, y, take=False, autob=False, confirm=False):
+    return struct.pack("<BffBBB", 1 if fitted else 0, x, y, 1 if take else 0, 1 if autob else 0,
+                       1 if confirm else 0)
+
+
+def p_sim_button(button):
+    return struct.pack("<B", button)
 
 
 def p_sim_gps(fail):
@@ -234,7 +260,7 @@ def p_sim_gps(fail):
 # --- decoders (boat -> PC) ---------------------------------------------------
 
 _TELEM = struct.Struct(
-    "<I BBBB fffff BB iiff BB ffiiff fff I f ff BBB BBB f iif HH")
+    "<I BBBB fffff BB iiff BB ffiiff fff I f ff BBB BBB f iif HH BBBBBH")
 TELEM_FIELDS = (
     "t_ms mode ap_mode sea_state flags "
     "heading target yaw_rate outboard throttle "
@@ -243,7 +269,8 @@ TELEM_FIELDS = (
     "set_deg drift_kn current_conf alarm_bits motor_current "
     "joy_x joy_y joy_buttons joy_status joy_fault_axis "
     "train_stage train_phase train_result "
-    "cruise_set_kn wp_lat wp_lon wp_kn rx_frames rx_crc_errors").split()
+    "speed_set_kn wp_lat wp_lon wp_kn rx_frames rx_crc_errors "
+    "prog_n auto_wp auto_state auto_flags confirm_kind confirm_left_ds").split()
 TELEM_SIZE = _TELEM.size
 
 
@@ -257,11 +284,16 @@ def decode_telemetry(payload: bytes) -> dict:
     d["compass_ok"] = bool(f & 0x01)
     d["gps_ok"] = bool(f & 0x02)
     d["alarm"] = bool(f & 0x04)
-    d["wp_set"] = bool(f & 0x08)
+    d["prog_ok"] = bool(f & 0x08)
+    d["wp_set"] = d["prog_ok"] and d["wp_lat"] != 0.0
     d["pc_link_alarm"] = bool(f & 0x10)
     d["stopping"] = bool(f & 0x20)
     d["joy_take"] = bool(d["joy_buttons"] & 1)
     d["joy_auto"] = bool(d["joy_buttons"] & 2)
+    d["joy_confirm"] = bool(d["joy_buttons"] & 4)
+    d["prog_suspended"] = bool(d["auto_flags"] & 2)
+    d["prog_finished"] = bool(d["auto_flags"] & 4)
+    d["confirm_left_s"] = d["confirm_left_ds"] / 10.0
     d["mode_name"] = MODES[d["mode"]] if d["mode"] < len(MODES) else "?"
     return d
 
@@ -270,6 +302,17 @@ def decode_ack(payload: bytes) -> dict:
     t, s, r = struct.unpack_from("<BBB", payload)
     return {"cmd": t, "seq": s, "result": r, "ok": r == 0,
             "text": RESULTS.get(r, "error %d" % r), "cmd_name": TYPE_NAMES.get(t, hex(t))}
+
+
+def decode_prog_wp(payload: bytes) -> dict:
+    i, n, fin, lat, lon, kn, r, act = struct.unpack_from("<BBBiiffB", payload)
+    return {"index": i, "n": n, "final": fin, "lat": lat * 1e-7, "lon": lon * 1e-7, "kn": kn,
+            "radius": r, "action": act}
+
+
+def decode_prog_error(payload: bytes) -> dict:
+    e, idx = struct.unpack_from("<BB", payload)
+    return {"error": e, "index": idx, "text": PROG_ERRORS[e] if e < len(PROG_ERRORS) else "?"}
 
 
 def decode_param(payload: bytes) -> dict:

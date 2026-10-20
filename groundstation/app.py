@@ -9,12 +9,14 @@ Big, high-contrast layout for use in sunlight. Everything is drawn locally
 """
 import math
 import queue
+import struct
 import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk
 
+import program
 import proto
 from link import Link, list_ports
 
@@ -35,8 +37,8 @@ F_HUGE = ("Segoe UI", 26, "bold")
 F_BIG = ("Segoe UI", 20, "bold")
 F_MED = ("Segoe UI", 14, "bold")
 F_TXT = ("Segoe UI", 12)
-MODE_COLORS = {"STANDBY": "#606060", "MANEUVER": BLUE, "CRUISE": GREEN, "NAV": "#7a00a0",
-               "TRAINING": "#a06000", "JOYSTICK": ORANGE}
+MODE_COLORS = {"STANDBY": "#606060", "MANUAL": ORANGE, "HDG_LOCK": GREEN, "AUTO": "#7a00a0",
+               "TRAINING": "#a06000"}
 PLOT_S = 120.0              # seconds shown in the plot
 
 
@@ -60,6 +62,8 @@ class App:
         self.map_m_per_px = 2.0
         self.params = {}
         self.pending = {}               # seq -> description
+        self.prog = program.new_program()   # program in the editor
+        self.prog_dl = []               # PROG_WP_VALUE frames being downloaded
         self.last_beep = 0.0
 
         root.title("Trygons C2 ground station")
@@ -131,7 +135,7 @@ class App:
         rows = [("heading", "Heading"), ("target", "Target"), ("yaw", "Yaw rate"), ("outboard", "Outboard"),
                 ("throttle", "Throttle"), ("gear", "Gear"), ("gps", "GPS"), ("pos", "Position"),
                 ("sog", "SOG / COG"), ("src", "Pos. source"), ("unc", "Uncertainty"), ("drift", "Set / drift"),
-                ("current", "Motor current"), ("cruise", "Cruise set"), ("wp", "Waypoint"), ("train", "Training")]
+                ("current", "Motor current"), ("cruise", "Speed set"), ("wp", "Waypoint"), ("train", "Training")]
         grid = tk.Frame(f, bg=BG)
         grid.pack(fill="x")
         for i, (k, name) in enumerate(rows):
@@ -146,47 +150,46 @@ class App:
         f = tk.Frame(body, bg=BG, bd=2, relief="groove")
         f.pack(side="left", fill="y", padx=4, pady=4)
 
-        tk.Label(f, text="Mode", font=F_TXT, bg=BG).pack(anchor="w")
+        tk.Label(f, text="Mode (lit = active)", font=F_TXT, bg=BG).pack(anchor="w")
         m = tk.Frame(f, bg=BG)
         m.pack(fill="x")
         btn(m, "STANDBY", lambda: self.mode(proto.MODE_STANDBY), bg=RED, fg="#ffffff", font=F_BIG).grid(
-            row=0, column=0, columnspan=2, sticky="ew", pady=2)
-        for i, (name, mm) in enumerate([("MANEUVER", proto.MODE_MANEUVER), ("CRUISE", proto.MODE_CRUISE),
-                                        ("NAV", proto.MODE_NAV), ("TRAINING", proto.MODE_TRAINING)]):
-            btn(m, name, lambda mm=mm: self.mode(mm), bg=MODE_COLORS[name], fg="#ffffff").grid(
-                row=1 + i // 2, column=i % 2, sticky="ew", padx=1, pady=1)
+            row=0, column=0, columnspan=3, sticky="ew", pady=2)
+        self.mode_btns = {}
+        for i, (name, cmd) in enumerate([("MANUAL", self.info_manual), ("HDG_LOCK", self.info_hdg),
+                                         ("AUTO", self.auto_start)]):
+            b = btn(m, name.replace("_", " ") if name != "AUTO" else "AUTO\nSTART", cmd, bg=PANEL, font=F_MED)
+            b.grid(row=1, column=i, sticky="nsew", padx=1, pady=1)
+            self.mode_btns[name] = b
+        for i in range(3):
+            m.columnconfigure(i, weight=1)
 
-        tk.Label(f, text="Heading (CRUISE)", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
+        tk.Label(f, text="AUTO program (start / resume need joystick CONFIRM)", font=F_TXT, bg=BG).pack(
+            anchor="w", pady=(6, 0))
+        a = tk.Frame(f, bg=BG)
+        a.pack(fill="x")
+        btn(a, "Pause", lambda: self.cmd(proto.T_AUTO_PAUSE, b"", "AUTO pause"), font=F_TXT).pack(side="left")
+        btn(a, "Resume", lambda: self.cmd(proto.T_AUTO_RESUME, b"", "AUTO resume"), font=F_TXT).pack(side="left",
+                                                                                                    padx=2)
+        btn(a, "Skip waypoint", lambda: self.cmd(proto.T_AUTO_SKIP, b"", "AUTO skip"), font=F_TXT).pack(side="left")
+        self.auto_lbl = tk.Label(f, text="-", font=F_TXT, bg=BG, justify="left", anchor="w")
+        self.auto_lbl.pack(fill="x")
+
+        tk.Label(f, text="Heading (HDG LOCK)", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
         h = tk.Frame(f, bg=BG)
         h.pack()
         for d in (-10, -1, 1, 10):
             btn(h, "%+d" % d, lambda d=d: self.cmd(proto.T_HEADING_ADJ, proto.p_heading(d), "heading %+d" % d),
                 font=F_BIG, width=3).pack(side="left", padx=2)
 
-        tk.Label(f, text="Cruise speed / sea state", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
+        tk.Label(f, text="Sea state", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
         cs = tk.Frame(f, bg=BG)
         cs.pack(fill="x")
-        self.cruise_var = tk.StringVar(value="8")
-        tk.Entry(cs, textvariable=self.cruise_var, font=F_MED, width=5).pack(side="left")
-        tk.Label(cs, text="kn", font=F_TXT, bg=BG).pack(side="left")
-        btn(cs, "Set", self.set_cruise, font=F_TXT).pack(side="left", padx=4)
         self.sea_var = tk.IntVar(value=2)
-        for s in range(1, 6):
-            tk.Radiobutton(cs, text=str(s), variable=self.sea_var, value=s, font=F_MED, bg=BG, indicatoron=False,
+        for sv in range(1, 6):
+            tk.Radiobutton(cs, text=str(sv), variable=self.sea_var, value=sv, font=F_MED, bg=BG, indicatoron=False,
                            width=2, command=lambda: self.cmd(proto.T_SEA_STATE, proto.p_sea_state(self.sea_var.get()),
                                                              "sea state %d" % self.sea_var.get())).pack(side="left")
-
-        tk.Label(f, text="Waypoint (or click the map)", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
-        wp = tk.Frame(f, bg=BG)
-        wp.pack(fill="x")
-        self.lat_var, self.lon_var, self.wpkn_var = tk.StringVar(), tk.StringVar(), tk.StringVar(value="8")
-        tk.Label(wp, text="lat", font=F_TXT, bg=BG).grid(row=0, column=0)
-        tk.Entry(wp, textvariable=self.lat_var, font=F_MED, width=10).grid(row=0, column=1)
-        tk.Label(wp, text="lon", font=F_TXT, bg=BG).grid(row=0, column=2)
-        tk.Entry(wp, textvariable=self.lon_var, font=F_MED, width=10).grid(row=0, column=3)
-        tk.Label(wp, text="kn", font=F_TXT, bg=BG).grid(row=1, column=0)
-        tk.Entry(wp, textvariable=self.wpkn_var, font=F_MED, width=5).grid(row=1, column=1, sticky="w")
-        btn(wp, "Send waypoint", self.set_wp, font=F_TXT).grid(row=1, column=2, columnspan=2, sticky="ew", pady=2)
 
         tk.Label(f, text="Training", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
         tr = tk.Frame(f, bg=BG)
@@ -199,6 +202,17 @@ class App:
         btn(tr, "Accept", self.train_accept, bg="#b0ffb0", font=F_TXT).pack(side="left", padx=2)
         btn(tr, "Reject", lambda: self.cmd(proto.T_TRAINING, proto.p_training(2), "training reject"),
             bg="#ffb0b0", font=F_TXT).pack(side="left")
+
+        # simulator only: the panel buttons and the joystick CONFIRM
+        self.sim_frame = tk.Frame(f, bg="#fff4c0")
+        tk.Label(self.sim_frame, text="Simulator: panel / joystick", font=F_TXT, bg="#fff4c0").pack(anchor="w")
+        sf = tk.Frame(self.sim_frame, bg="#fff4c0")
+        sf.pack(fill="x")
+        btn(sf, "HDG LOCK", lambda: self.cmd(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK),
+                                             "sim HDG LOCK button"), font=F_TXT).pack(side="left")
+        btn(sf, "STANDBY", lambda: self.cmd(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY),
+                                            "sim STANDBY button"), font=F_TXT).pack(side="left", padx=2)
+        btn(sf, "CONFIRM", self.sim_confirm, font=F_TXT).pack(side="left")
 
     def _build_joystick(self, parent):
         j = tk.Frame(parent, bg=BG, bd=2, relief="groove")
@@ -215,8 +229,6 @@ class App:
         self.joy_btns.pack(anchor="w")
         jb = tk.Frame(j, bg=BG)
         jb.pack(side="left", padx=4)
-        btn(jb, "Hand back (stick centred)", lambda: self.cmd(proto.T_JOY_HANDBACK, b"", "joystick hand-back"),
-            font=F_TXT).pack(fill="x", pady=2)
         btn(jb, "Calibrate start", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(0), "calibration start"),
             font=F_TXT).pack(fill="x")
         btn(jb, "Calibrate finish", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(1), "calibration finish"),
@@ -236,11 +248,17 @@ class App:
         btn(mt, "Zoom +", lambda: self.zoom(0.5), font=F_TXT).pack(side="left")
         btn(mt, "Zoom -", lambda: self.zoom(2.0), font=F_TXT).pack(side="left")
         btn(mt, "Clear track", lambda: self.track.clear(), font=F_TXT).pack(side="left")
-        tk.Label(mt, text="Map is centred on the boat, north up. Click = waypoint.", font=F_TXT,
-                 bg=BG).pack(side="left", padx=8)
+        self.add_on_click = tk.BooleanVar(value=False)
+        tk.Checkbutton(mt, text="Click adds a program waypoint", variable=self.add_on_click, font=F_TXT,
+                       bg=BG).pack(side="left", padx=8)
+        tk.Label(mt, text="(north up, centred on the boat)", font=F_TXT, bg=BG).pack(side="left")
         self.map = tk.Canvas(mp, bg="#d8ecff", highlightthickness=0)
         self.map.pack(fill="both", expand=True)
         self.map.bind("<Button-1>", self.map_click)
+
+        pg = tk.Frame(nb, bg=BG)
+        nb.add(pg, text="Program")
+        self._build_program(pg)
 
         pl = tk.Frame(nb, bg=BG)
         nb.add(pl, text="Plot")
@@ -270,6 +288,141 @@ class App:
         self.events = tk.Listbox(lg, font=F_TXT)
         self.events.pack(fill="both", expand=True)
 
+    def _build_program(self, pg):
+        top = tk.Frame(pg, bg=BG)
+        top.pack(fill="x")
+        for text, fn in (("Upload to boat", self.prog_upload), ("Download", self.prog_download),
+                         ("Save file", self.prog_save), ("Load file", self.prog_load)):
+            btn(top, text, fn, font=F_TXT).pack(side="left", padx=1)
+        tk.Label(top, text="  at the end:", font=F_TXT, bg=BG).pack(side="left")
+        self.final_var = tk.StringVar(value=proto.PROG_END[0])
+        ttk.Combobox(top, textvariable=self.final_var, values=proto.PROG_END, width=18, state="readonly",
+                     font=F_TXT).pack(side="left")
+        self.pg_tree = ttk.Treeview(pg, columns=("lat", "lon", "kn", "radius", "action"), height=10)
+        for c, w in (("#0", 50), ("lat", 140), ("lon", 140), ("kn", 70), ("radius", 80), ("action", 100)):
+            self.pg_tree.column(c, width=w)
+            self.pg_tree.heading(c, text="#" if c == "#0" else c)
+        self.pg_tree.pack(fill="both", expand=True)
+        self.pg_tree.bind("<<TreeviewSelect>>", self.prog_select)
+        ed = tk.Frame(pg, bg=BG)
+        ed.pack(fill="x")
+        self.pg_vars = {}
+        for k, w in (("lat", 11), ("lon", 11), ("kn", 5), ("radius", 5)):
+            tk.Label(ed, text=k, font=F_TXT, bg=BG).pack(side="left")
+            v = tk.StringVar()
+            tk.Entry(ed, textvariable=v, font=F_MED, width=w).pack(side="left", padx=(0, 4))
+            self.pg_vars[k] = v
+        self.pg_vars["radius"].set("25")
+        self.pg_vars["kn"].set("8")
+        self.pg_act = tk.StringVar(value=proto.WP_ACTIONS[0])
+        ttk.Combobox(ed, textvariable=self.pg_act, values=proto.WP_ACTIONS, width=8, state="readonly",
+                     font=F_TXT).pack(side="left")
+        bt = tk.Frame(pg, bg=BG)
+        bt.pack(fill="x")
+        for text, fn in (("Add", self.prog_add), ("Change selected", self.prog_change), ("Delete", self.prog_delete),
+                         ("Up", lambda: self.prog_move(-1)), ("Down", lambda: self.prog_move(1)),
+                         ("Clear", self.prog_clear)):
+            btn(bt, text, fn, font=F_TXT).pack(side="left", padx=1)
+
+    # --- program editor ----------------------------------------------------------
+    def prog_refresh(self):
+        self.pg_tree.delete(*self.pg_tree.get_children())
+        for i, w in enumerate(self.prog["wps"]):
+            self.pg_tree.insert("", "end", iid=str(i), text=str(i + 1),
+                                values=("%.6f" % w["lat"], "%.6f" % w["lon"], "%.1f" % w["kn"], "%.0f" % w["radius"],
+                                        proto.WP_ACTIONS[w["action"]]))
+        self.final_var.set(proto.PROG_END[self.prog["final"]])
+
+    def prog_entry(self):
+        try:
+            return {"lat": float(self.pg_vars["lat"].get()), "lon": float(self.pg_vars["lon"].get()),
+                    "kn": float(self.pg_vars["kn"].get()), "radius": float(self.pg_vars["radius"].get()),
+                    "action": proto.WP_ACTIONS.index(self.pg_act.get())}
+        except ValueError:
+            self.say("Waypoint: lat, lon, kn and radius must be numbers", RED)
+            return None
+
+    def prog_selected(self):
+        sel = self.pg_tree.selection()
+        return int(sel[0]) if sel else None
+
+    def prog_select(self, _ev=None):
+        i = self.prog_selected()
+        if i is None:
+            return
+        w = self.prog["wps"][i]
+        for k in ("lat", "lon"):
+            self.pg_vars[k].set("%.6f" % w[k])
+        self.pg_vars["kn"].set("%.1f" % w["kn"])
+        self.pg_vars["radius"].set("%.0f" % w["radius"])
+        self.pg_act.set(proto.WP_ACTIONS[w["action"]])
+
+    def prog_add(self):
+        w = self.prog_entry()
+        if w and len(self.prog["wps"]) < program.MAX_WP:
+            self.prog["wps"].append(w)
+            self.prog_refresh()
+
+    def prog_change(self):
+        i, w = self.prog_selected(), self.prog_entry()
+        if i is not None and w:
+            self.prog["wps"][i] = w
+            self.prog_refresh()
+
+    def prog_delete(self):
+        i = self.prog_selected()
+        if i is not None:
+            del self.prog["wps"][i]
+            self.prog_refresh()
+
+    def prog_move(self, d):
+        i = self.prog_selected()
+        if i is None or not 0 <= i + d < len(self.prog["wps"]):
+            return
+        w = self.prog["wps"]
+        w[i], w[i + d] = w[i + d], w[i]
+        self.prog_refresh()
+        self.pg_tree.selection_set(str(i + d))
+
+    def prog_clear(self):
+        self.prog = program.new_program()
+        self.prog_refresh()
+
+    def prog_upload(self):
+        self.prog["final"] = proto.PROG_END.index(self.final_var.get())
+        problems = program.check(self.prog)
+        if problems:
+            return self.say("Program: " + "; ".join(problems[:3]), RED)
+        if not self.link:
+            return self.say("Not connected", RED)
+        frames = program.upload_frames(self.prog)
+        for t, p in frames[:-1]:
+            self.link.send(t, p)
+        self.cmd(frames[-1][0], frames[-1][1], "program upload (%d waypoints)" % len(self.prog["wps"]))
+
+    def prog_download(self):
+        n = self.t["prog_n"] if self.t else 0
+        if not self.link or n == 0:
+            return self.say("No program on the boat", RED)
+        self.prog_dl = []
+        for i in range(n):
+            self.link.send(proto.T_PROG_GET, struct.pack("<B", i))
+
+    def prog_save(self):
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("program", "*.json")])
+        if path:
+            self.prog["final"] = proto.PROG_END.index(self.final_var.get())
+            program.save(self.prog, path)
+            self.say("Program saved: " + path)
+
+    def prog_load(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(filetypes=[("program", "*.json")])
+        if path:
+            self.prog = program.load(path)
+            self.prog_refresh()
+
     # --- actions -----------------------------------------------------------------
     def connect(self):
         if self.link:
@@ -286,6 +439,10 @@ class App:
             self.say("Cannot connect: %s" % e, RED)
             return
         self.conn_btn.configure(text="Disconnect", bg="#ffb0b0")
+        if self.port_var.get().startswith("tcp:"):
+            self.sim_frame.pack(fill="x", pady=(8, 0))
+        else:
+            self.sim_frame.pack_forget()
         self.log_lbl.configure(text="log: " + self.link.logger.path)
         self.root.after(500, self.read_params)
 
@@ -300,19 +457,22 @@ class App:
     def mode(self, m):
         self.cmd(proto.T_SET_MODE, proto.p_set_mode(m), "mode " + proto.MODES[m])
 
-    def set_cruise(self):
-        try:
-            kn = float(self.cruise_var.get())
-        except ValueError:
-            return self.say("Cruise speed: enter a number", RED)
-        self.cmd(proto.T_CRUISE_SPEED, proto.p_cruise_speed(kn), "cruise %.1f kn" % kn)
+    def info_manual(self):
+        self.say("MANUAL: move the joystick or press TAKE (the PC can't select it)")
 
-    def set_wp(self):
-        try:
-            lat, lon, kn = float(self.lat_var.get()), float(self.lon_var.get()), float(self.wpkn_var.get())
-        except ValueError:
-            return self.say("Waypoint: enter lat, lon and speed as numbers", RED)
-        self.cmd(proto.T_WAYPOINT, proto.p_waypoint(lat, lon, kn), "waypoint %.6f %.6f %.1f kn" % (lat, lon, kn))
+    def info_hdg(self):
+        self.say("HDG LOCK: press the HDG LOCK button on the panel (the PC can't select it)")
+
+    def auto_start(self):
+        self.cmd(proto.T_AUTO_START, b"", "AUTO start")
+
+    def sim_confirm(self):
+        """Simulator: press and release the joystick CONFIRM (stick centred)."""
+        if not self.link:
+            return
+        self.link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
+        self.root.after(150, lambda: self.link and self.link.send(
+            proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0)))
 
     def train_accept(self):
         try:
@@ -341,16 +501,17 @@ class App:
         self.map_m_per_px = min(50.0, max(0.1, self.map_m_per_px * k))
 
     def map_click(self, ev):
-        if not self.t:
+        if not self.t or not self.add_on_click.get():
             return
         w, h = self.map.winfo_width(), self.map.winfo_height()
         e = (ev.x - w / 2) * self.map_m_per_px
         n = (h / 2 - ev.y) * self.map_m_per_px
         lat = self.t["est_lat"] + n / 111320.0
         lon = self.t["est_lon"] + e / (111320.0 * math.cos(math.radians(self.t["est_lat"])))
-        self.lat_var.set("%.6f" % lat)
-        self.lon_var.set("%.6f" % lon)
-        self.say("Waypoint filled in from the map: press 'Send waypoint'")
+        self.pg_vars["lat"].set("%.6f" % lat)
+        self.pg_vars["lon"].set("%.6f" % lon)
+        self.prog_add()
+        self.say("Waypoint %d added (Program tab), not uploaded yet" % len(self.prog["wps"]))
 
     # --- feedback ----------------------------------------------------------------
     def say(self, text, color="#202020"):
@@ -382,6 +543,16 @@ class App:
                         self.event(("OK   " if d["ok"] else "NACK ") + txt)
                 elif kind == "param":
                     self.on_param(d)
+                elif kind == "prog_wp":
+                    self.prog_dl.append(d)
+                    if len(self.prog_dl) >= d["n"]:
+                        self.prog = program.from_wp_values(self.prog_dl)
+                        self.prog_refresh()
+                        self.say("Program downloaded (%d waypoints)" % len(self.prog["wps"]), GREEN)
+                elif kind == "prog_error":
+                    where = "" if d["index"] == 255 else " at waypoint %d" % (d["index"] + 1)
+                    self.say("PROGRAM REFUSED: %s%s" % (d["text"], where), RED)
+                    self.event("program refused: %s%s" % (d["text"], where))
                 elif kind == "status":
                     self.say(d, RED if "DISCONNECTED" in d else "#202020")
                     self.event(d)
@@ -449,8 +620,24 @@ class App:
         v["unc"].configure(text="± %.0f m" % d["unc_m"])
         v["drift"].configure(text="%03.0f° %.2f kn (%.0f %%)" % (d["set_deg"], d["drift_kn"], 100 * d["current_conf"]))
         v["current"].configure(text="%.1f A" % d["motor_current"] if d["motor_current"] >= 0 else "no sensor")
-        v["cruise"].configure(text="%.1f kn" % d["cruise_set_kn"])
-        v["wp"].configure(text="%.5f %.5f  %.1f kn" % (d["wp_lat"], d["wp_lon"], d["wp_kn"]) if d["wp_set"] else "none")
+        v["cruise"].configure(text="%.1f kn" % d["speed_set_kn"] if d["mode"] == proto.MODE_AUTO else "-")
+        v["wp"].configure(text="%d/%d  %.1f kn" % (d["auto_wp"] + 1, d["prog_n"], d["wp_kn"]) if d["prog_ok"]
+                          else "no program")
+        for name, b in self.mode_btns.items():
+            on = mode == name
+            b.configure(bg=MODE_COLORS[name] if on else PANEL, fg="#ffffff" if on else FG)
+        st = proto.AUTO_STATES[d["auto_state"]] if d["auto_state"] < 4 else "?"
+        if not d["prog_ok"]:
+            txt = "no program on the boat"
+        elif d["mode"] == proto.MODE_AUTO:
+            txt = "waypoint %d of %d, %s" % (d["auto_wp"] + 1, d["prog_n"], st)
+        elif d["prog_suspended"]:
+            txt = "program interrupted at waypoint %d: Resume + CONFIRM" % (d["auto_wp"] + 1)
+        elif d["prog_finished"]:
+            txt = "program finished"
+        else:
+            txt = "%d waypoints stored" % d["prog_n"]
+        self.auto_lbl.configure(text=txt)
         if d["mode"] == proto.MODE_TRAINING:
             tr = proto.TRAIN_STAGES[min(d["train_stage"], 2)]
             if d["train_stage"] >= 1:
@@ -460,7 +647,13 @@ class App:
         v["train"].configure(text=tr)
 
         # banners
-        self.show(self.joy_banner, d["mode"] == proto.MODE_JOYSTICK, row=0, column=0, columnspan=2, sticky="ew")
+        if d["confirm_kind"]:
+            self.joy_banner.configure(text="PRESS JOYSTICK CONFIRM - %s - %.0f s" % (
+                proto.CONFIRM_KINDS[min(d["confirm_kind"], 4)], d["confirm_left_s"]), bg="#ffd000")
+        else:
+            self.joy_banner.configure(text="JOYSTICK IN CONTROL", bg=ORANGE)
+        self.show(self.joy_banner, d["mode"] == proto.MODE_MANUAL or d["confirm_kind"] != 0,
+                  row=0, column=0, columnspan=2, sticky="ew")
         alarms = proto.alarm_texts(d["alarm_bits"])
         on = d["alarm"] or bool(alarms)
         if on:
@@ -482,7 +675,7 @@ class App:
         c.create_rectangle(s / 2 - db, s / 2 - db, s / 2 + db, s / 2 + db, outline="#a0a0a0", dash=(2, 2))
         st = d["joy_status"]
         col = {0: "#a0a0a0", 1: ORANGE, 2: BLUE, 3: RED}.get(st, FG)
-        if d["mode"] == proto.MODE_JOYSTICK:
+        if d["mode"] == proto.MODE_MANUAL:
             col = ORANGE
         x = s / 2 + d["joy_x"] * (s / 2 - 8)
         y = s / 2 - d["joy_y"] * (s / 2 - 8)
@@ -492,8 +685,8 @@ class App:
             txt += " (%s axis)" % ("X" if d["joy_fault_axis"] == 1 else "Y")
         self.joy_status.configure(text="%s\nX %+.2f  Y %+.2f" % (txt, d["joy_x"], d["joy_y"]),
                                   fg=RED if st in (1, 3) else FG)
-        self.joy_btns.configure(text="TAKE %s   AUTO %s" % ("■" if d["joy_take"] else "□",
-                                                           "■" if d["joy_auto"] else "□"))
+        self.joy_btns.configure(text="TAKE %s  AUTO %s  CONFIRM %s" % (
+            "■" if d["joy_take"] else "□", "■" if d["joy_auto"] else "□", "■" if d["joy_confirm"] else "□"))
 
     def draw_plot(self):
         c = self.plot
@@ -560,12 +753,17 @@ class App:
             for la, lo in self.track[-2000:]:
                 pts += P(la, lo)
             c.create_line(*pts, fill="#404040", width=2)
-        # waypoint
+        # program (editor copy) and the active waypoint (from the boat)
+        pts = [P(wp["lat"], wp["lon"]) for wp in self.prog["wps"]]
+        if len(pts) >= 2:
+            c.create_line(*[v for p in pts for v in p], fill="#b080c0", width=2)
+        for i, (x, y) in enumerate(pts):
+            c.create_oval(x - 6, y - 6, x + 6, y + 6, outline="#7a00a0", width=2)
+            c.create_text(x + 9, y, text=str(i + 1), anchor="w", font=F_TXT, fill="#7a00a0")
         if d["wp_set"]:
             x, y = P(d["wp_lat"], d["wp_lon"])
             c.create_line(w / 2, h / 2, x, y, fill="#7a00a0", dash=(6, 4), width=2)
-            c.create_oval(x - 10, y - 10, x + 10, y + 10, outline="#7a00a0", width=4)
-            c.create_text(x + 14, y, text="WP", anchor="w", font=F_MED, fill="#7a00a0")
+            c.create_oval(x - 11, y - 11, x + 11, y + 11, outline="#7a00a0", width=4)
         # uncertainty circle
         r = d["unc_m"] / m
         c.create_oval(w / 2 - r, h / 2 - r, w / 2 + r, h / 2 + r,
@@ -601,7 +799,7 @@ class App:
             if time.time() - self.last_beep > 1.0:
                 self.last_beep = time.time()
                 if winsound:     # in a thread: Beep blocks while it sounds
-                    f = 2000 if (d and d["mode"] == proto.MODE_JOYSTICK) else 1500
+                    f = 2000 if (d and d["mode"] == proto.MODE_MANUAL) else 1500
                     threading.Thread(target=self._beep, args=(f,), daemon=True).start()
                 else:
                     self.root.bell()

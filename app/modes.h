@@ -5,17 +5,23 @@
  * an explicit allowed-transition table (and preconditions given by the
  * caller), and every request - accepted or rejected - is logged.
  *
- *   from \ to   STANDBY MANEUVER CRUISE NAV TRAINING JOYSTICK
- *   STANDBY        -       yes     yes   yes   yes      yes
- *   MANEUVER      yes       -      yes   yes   no       yes
- *   CRUISE        yes      yes      -    yes   no       yes
- *   NAV           yes      yes     yes    -    no       yes
- *   TRAINING      yes      no      no    no     -       yes
- *   JOYSTICK      yes      yes     yes   yes   no        -
+ *   Driving modes: MANUAL (joystick), HDG_LOCK (heading lock, throttle on
+ *   the joystick), AUTO (waypoint program). Plus STANDBY (safe state) and
+ *   TRAINING (setup).
  *
- * Going to STANDBY and to JOYSTICK is always allowed by the table (safety);
- * smallboat.c additionally only lets the hand-back / a fault leave
- * JOYSTICK (the joystick always wins over the autopilot and the PC).
+ *   from \ to   STANDBY MANUAL HDG_LOCK AUTO TRAINING
+ *   STANDBY        -      yes     yes    yes    yes
+ *   MANUAL        yes      -      yes    yes    no
+ *   HDG_LOCK      yes     yes      -     yes    no
+ *   AUTO          yes     yes     yes     -     no
+ *   TRAINING      yes     yes     no     no      -
+ *
+ * smallboat.c adds the rules on top (preconditions):
+ *   - only the joystick enters MANUAL (it always wins);
+ *   - MANUAL is left only with the stick centred (AUTO / HDG LOCK button,
+ *     PC + CONFIRM), by the STANDBY button, or by a fault;
+ *   - AUTO starts only with a PC command + joystick CONFIRM;
+ *   - TRAINING only from STANDBY by the PC.
  */
 #ifndef MODES_H
 #define MODES_H
@@ -24,12 +30,11 @@
 #include <stdint.h>
 
 typedef enum {
-    MODE_STANDBY = 0,
-    MODE_MANEUVER,
-    MODE_CRUISE,
-    MODE_NAV,
-    MODE_TRAINING,
-    MODE_JOYSTICK,          /* hard-wired joystick override */
+    MODE_STANDBY = 0,       /* idle, neutral, steering off */
+    MODE_MANUAL,            /* joystick: X steers, Y throttle */
+    MODE_HDG_LOCK,          /* autopilot holds the heading, throttle on joystick Y */
+    MODE_AUTO,              /* waypoint program */
+    MODE_TRAINING,          /* outboard calibration */
     MODE_COUNT
 } sb_mode_t;
 
@@ -46,9 +51,13 @@ typedef enum {
     WHY_DR_LIMIT,           /* dead reckoning too uncertain / too long */
     WHY_ARRIVAL_UNCERTAIN,  /* at the waypoint by DR, but not sure enough */
     WHY_JOYSTICK,           /* joystick deflected / TAKE pressed */
-    WHY_JOY_HANDBACK,       /* AUTO pressed (or PC) with the stick centred */
+    WHY_JOY_HANDBACK,       /* AUTO / HDG LOCK button with the stick centred */
     WHY_JOY_FAULT,          /* joystick wire break / out of range */
     WHY_PC,                 /* ground station command */
+    WHY_HDG_BUTTON,         /* HDG LOCK button */
+    WHY_CONFIRM,            /* PC request + joystick CONFIRM */
+    WHY_NOT_ARMED,          /* outputs not armed (neutral-start interlock) */
+    WHY_MONITOR,            /* independent safety monitor tripped */
     WHY_COUNT
 } mode_reason_t;
 

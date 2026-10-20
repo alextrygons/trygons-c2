@@ -16,8 +16,8 @@
 ## Rules
 - Floats OK (TC375 has FPU). No malloc. Fixed control loop rate (e.g. 20 Hz).
 - Safety first: rudder angle limits, rate limits, sensor-timeout -> standby + alarm.
-- The joystick always wins over the autopilot and the PC. Only a centered joystick + AUTO button hands control back.
-- Joystick and link wiring: see WIRING.md.
+- The joystick always wins over the autopilot and the PC. Only a centered joystick (+ AUTO / HDG LOCK button, or PC + CONFIRM) leaves MANUAL; the STANDBY panel button always wins.
+- Joystick, panel buttons and link wiring: see WIRING.md.
 
 ## Small-boat features
 Outboard boat (small-boat variant, `AP_STEER_OUTBOARD`). The big-boat variant (rudder feedback) must keep working unchanged.
@@ -25,6 +25,7 @@ Outboard boat (small-boat variant, `AP_STEER_OUTBOARD`). The big-boat variant (r
 Actuators
 - Steering motor without angle feedback (angle estimated from motor run time, backlash compensated).
 - Throttle servo (0–100 %).
+- Controls: joystick (X steering, Y throttle, TAKE / AUTO / CONFIRM), panel buttons STANDBY, HDG LOCK, -1, +1, -10, +10.
 - Gear servo F / N / R, positioned by PWM pulse width (configurable positions).
 
 Sensors
@@ -33,16 +34,22 @@ Sensors
 - Optional: speed sensor (paddlewheel), neutral switch, steering motor current, steering limit switches.
 - app/dr.c: position estimate — GPS when trusted, dead reckoning otherwise (learned current + throttle→speed table, uncertainty). Every fix passes an integrity check (spoof flag, jump, speed, course, slow drag); a rejected fix counts as GPS failure.
 
-Modes
-- STANDBY, MANEUVER, CRUISE, NAV, TRAINING.
+Modes — three driving modes + STANDBY + TRAINING
+- STANDBY: idle, neutral, steering off. Power-up and after every fault.
+- MANUAL (joystick): X = outboard angle, Y = throttle fwd/rev via the gear state machine. Entered from ANY mode by X deflection (> 100 ms), Y deflection (not in HDG LOCK) or TAKE. Left only with the stick centred.
+- HDG LOCK: panel button locks the current heading, ±1/±10 adjust (buttons or PC); throttle stays on joystick Y; joystick X → MANUAL.
+- AUTO: waypoint program (app/program.c, ≤ 50 waypoints, validated, stored with checksum) from the PC; start / resume = PC command + joystick CONFIRM within 10 s; pause / resume / skip from the PC; joystick → MANUAL, program suspended.
+- TRAINING: outboard calibration, only from STANDBY by the PC.
+- CONFIRM (joystick) only answers a pending PC request, only with the stick centred and the joystick armed; it never changes the mode on its own.
 - One mode manager owns all transitions (explicit allowed-transition table, every transition logged). Nothing else changes the mode.
 
 Safety rules — never break them
 - Gear change only at idle: throttle idle → wait → neutral → wait → new gear → wait → throttle.
 - Every fault / timeout / STANDBY → throttle idle + neutral FIRST, then steering off.
-  - Compass lost while moving (CRUISE / NAV / TRAINING): keep steering on the gyro (target yaw rate 0) until throttle is idle and gear is neutral, then steering off. If the gyro fails too: drive the outboard to its estimated centre, then off.
-  - Exception: compass lost in MANEUVER → alarm only, stay in MANEUVER (manual steering doesn't need the compass).
-- GPS lost / suspect in NAV: alarm, continue by dead reckoning at reduced speed; uncertainty > limit (200 m) or DR > 10 min → CRUISE on current heading, slow, alarm. Never declare arrival while the uncertainty is larger than the arrival radius.
+  - Compass lost while moving (AUTO / TRAINING): keep steering on the gyro (target yaw rate 0) until throttle is idle and gear is neutral, then steering off. If the gyro fails too: drive the outboard to its estimated centre, then off.
+  - Compass lost in HDG LOCK: gyro hold + alarm, throttle stays with the user; once idle + neutral: steering off, STANDBY.
+  - Compass lost in MANUAL → alarm only, stay in MANUAL (manual steering doesn't need the compass).
+- GPS lost / suspect in AUTO: alarm, continue by dead reckoning at reduced speed; uncertainty > limit (200 m) or DR > 10 min → AUTO holds the current heading, slow, alarm. Never declare arrival while the uncertainty is larger than the arrival radius.
 - After an integrity alarm, GPS is trusted again only after N consistent fixes that agree with dead reckoning; then blend smoothly (no steering jump).
 - Throttle changes are rate-limited.
 - Reverse power is limited.

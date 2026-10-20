@@ -88,10 +88,10 @@ bool joy_centered(const joy_t *j)
 void joy_step(joy_t *j, const hal_joystick_t *in, uint32_t dt_ms)
 {
     const joy_config_t *c = &j->cfg;
-    bool was_take = j->take, was_auto = j->autob;
+    bool was_take = j->take, was_auto = j->autob, was_confirm = j->confirm;
 
-    j->engage = false;
-    j->take_edge = j->auto_edge = false;
+    j->engage_x = j->engage_y = false;
+    j->take_edge = j->auto_edge = j->confirm_edge = false;
     j->present = (in != NULL);
     if (!in) {
         j->armed = false;
@@ -119,8 +119,10 @@ void joy_step(joy_t *j, const hal_joystick_t *in, uint32_t dt_ms)
     j->have_last = true;
     j->take = in->take;
     j->autob = in->autob;
+    j->confirm = in->confirm;
     j->take_edge = in->take && !was_take;
     j->auto_edge = in->autob && !was_auto;
+    j->confirm_edge = in->confirm && !was_confirm;
 
     float x = norm_axis(&j->cal, 0, raw[0]);
     float y = norm_axis(&j->cal, 1, raw[1]);
@@ -150,15 +152,30 @@ void joy_step(joy_t *j, const hal_joystick_t *in, uint32_t dt_ms)
 
     if (j->fault || !j->armed) {
         j->x = j->y = 0.0f;
-        j->deflect_ms = 0u;
+        j->deflect_x_ms = j->deflect_y_ms = 0u;
+        j->take_edge = false;                   /* buttons only count when armed */
         return;
     }
     j->x = x;
     j->y = y;
 
-    bool deflected = fabsf(x) > c->deadband || fabsf(y) > c->deadband;
-    j->deflect_ms = deflected ? j->deflect_ms + dt_ms : 0u;
-    j->engage = (j->deflect_ms >= c->engage_ms) || j->take_edge;
+    j->deflect_x_ms = (fabsf(x) > c->deadband) ? j->deflect_x_ms + dt_ms : 0u;
+    j->deflect_y_ms = (fabsf(y) > c->deadband) ? j->deflect_y_ms + dt_ms : 0u;
+    j->engage_x = j->deflect_x_ms >= c->engage_ms;
+    j->engage_y = j->deflect_y_ms >= c->engage_ms;
+}
+
+bool joy_confirm(const joy_t *j)
+{
+    return j->confirm_edge && j->armed && joy_centered(j);
+}
+
+void joy_disarm(joy_t *j)
+{
+    j->armed = false;
+    j->centered_ms = 0u;
+    j->x = j->y = 0.0f;
+    j->deflect_x_ms = j->deflect_y_ms = 0u;
 }
 
 void joy_cal_start(joy_t *j)

@@ -15,8 +15,8 @@
 
 typedef enum {
     P_STEER_KP = 0, P_STEER_KI, P_STEER_KD, P_TURN_RATE,
-    P_MANEUVER_THR, P_CRUISE_MAX, P_SPD_KP, P_SPD_KI,
-    P_ARRIVAL_R, P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
+    P_CRUISE_MAX, P_SPD_KP, P_SPD_KI,
+    P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
     P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT,
     P_COUNT
@@ -27,11 +27,9 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "steer_ki",        0.0f,    5.0f },
     { "steer_kd",        0.0f,   20.0f },
     { "turn_rate_dps",   1.0f,   30.0f },
-    { "maneuver_thr_pc", 5.0f,   60.0f },
-    { "cruise_max_kn",   3.0f,   35.0f },
+    { "max_leg_kn",      3.0f,   35.0f },
     { "spd_kp",          0.0f,   20.0f },
     { "spd_ki",          0.0f,    5.0f },
-    { "arrival_r_m",     5.0f,  500.0f },
     { "slow_r_m",       20.0f, 2000.0f },
     { "approach_kn",     1.0f,   15.0f },
     { "training_thr_pc", 5.0f,   40.0f },
@@ -61,11 +59,9 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_STEER_KI:     return &s->ap.cfg.ki;
     case P_STEER_KD:     return &s->ap.cfg.kd;
     case P_TURN_RATE:    return &s->ap.cfg.turn_rate_dps;
-    case P_MANEUVER_THR: return &s->cfg.maneuver_throttle_pct;
     case P_CRUISE_MAX:   return &s->cfg.cruise_max_kn;
     case P_SPD_KP:       return &s->cfg.spd_kp;
     case P_SPD_KI:       return &s->cfg.spd_ki;
-    case P_ARRIVAL_R:    return &s->cfg.arrival_radius_m;
     case P_SLOW_R:       return &s->cfg.slow_radius_m;
     case P_APPROACH_KN:  return &s->cfg.approach_kn;
     case P_TRAINING_THR: return &s->cfg.training_throttle_pct;
@@ -112,10 +108,27 @@ static void send_param(link_t *l, sb_t *s, uint8_t id)
     send(l, PROTO_T_PARAM_VALUE, l->tx_seq++, buf, w.n);
 }
 
+static void send_prog_wp(link_t *l, const program_t *p, uint8_t i)
+{
+    uint8_t buf[32];
+    proto_wr_t w;
+    const prog_wp_t *wp = &p->wp[i];
+    proto_wr_init(&w, buf, sizeof buf);
+    proto_wr_u8(&w, i);
+    proto_wr_u8(&w, (uint8_t)p->n);
+    proto_wr_u8(&w, p->final_action);
+    proto_wr_i32(&w, wp->lat_e7);
+    proto_wr_i32(&w, wp->lon_e7);
+    proto_wr_f32(&w, wp->speed_kn);
+    proto_wr_f32(&w, wp->radius_m);
+    proto_wr_u8(&w, wp->action);
+    send(l, PROTO_T_PROG_WP_VALUE, l->tx_seq++, buf, w.n);
+}
+
 /*
  * Telemetry payload (little-endian), groundstation/proto.py must match:
  *   u32 t_ms | u8 mode | u8 ap_mode | u8 sea_state | u8 flags
- *     flags: b0 compass ok, b1 GPS ok, b2 alarm output, b3 waypoint set,
+ *     flags: b0 compass ok, b1 GPS ok, b2 alarm output, b3 program loaded,
  *            b4 PC link was lost (still latched), b5 stopping
  *   f32 heading | f32 target | f32 yaw_rate | f32 outboard_est | f32 throttle_pct
  *   u8 gear (0 N, 1 F, 2 R) | u8 gps_fix
@@ -124,24 +137,27 @@ static void send_param(link_t *l, sb_t *s, uint8_t id)
  *   f32 unc_m | f32 dr_time_s | i32 est_lat | i32 est_lon | f32 est_sog | f32 est_cog
  *   f32 set_deg (current flows toward) | f32 drift_kn | f32 current_conf (0..1)
  *   u32 alarm_bits | f32 motor_current_a (-1 = no sensor)
- *   f32 joy_x | f32 joy_y | u8 joy_buttons (b0 TAKE, b1 AUTO)
+ *   f32 joy_x | f32 joy_y | u8 joy_buttons (b0 TAKE, b1 AUTO, b2 CONFIRM)
  *   u8 joy_status (0 none, 1 not armed / not centred, 2 armed, 3 fault) | u8 joy_fault_axis
  *   u8 train_stage | u8 train_phase | u8 train_result
- *   f32 cruise_set_kn | i32 wp_lat | i32 wp_lon | f32 wp_kn
+ *   f32 speed_set_kn (AUTO) | i32 wp_lat | i32 wp_lon | f32 wp_kn  (active waypoint)
  *   u16 rx_frames | u16 rx_crc_errors
+ *   u8 prog_n | u8 auto_wp | u8 auto_state (auto_state_t) | u8 auto_flags (b0 program ok,
+ *     b1 suspended, b2 finished) | u8 confirm_kind (confirm_kind_t) | u16 confirm_left (0.1 s)
  */
 static void telemetry(link_t *l, sb_t *s)
 {
     uint8_t buf[PROTO_MAX_PAYLOAD];
     proto_wr_t w;
     sb_status_t st = sb_status(s);
+    const sb_auto_t *a = &s->autop;
     proto_wr_init(&w, buf, sizeof buf);
 
     uint8_t flags = 0u;
     if (sb_compass_ok(s)) flags |= 0x01u;
     if (sb_gps_ok(s)) flags |= 0x02u;
     if (s->alarm || s->ap.alarm || s->chirp_ms > 0u) flags |= 0x04u;
-    if (s->nav.wp_set) flags |= 0x08u;
+    if (a->prog_ok) flags |= 0x08u;
     if (s->alarm_bits & SB_ALM_PC_LINK) flags |= 0x10u;
     if (s->stopping) flags |= 0x20u;
 
@@ -188,7 +204,7 @@ static void telemetry(link_t *l, sb_t *s)
     const joy_t *j = &s->joy;
     proto_wr_f32(&w, j->present ? j->x : 0.0f);
     proto_wr_f32(&w, j->present ? j->y : 0.0f);
-    proto_wr_u8(&w, (uint8_t)((j->take ? 1u : 0u) | (j->autob ? 2u : 0u)));
+    proto_wr_u8(&w, (uint8_t)((j->take ? 1u : 0u) | (j->autob ? 2u : 0u) | (j->confirm ? 4u : 0u)));
     proto_wr_u8(&w, (uint8_t)(!j->present ? 0u : j->fault ? 3u : j->armed ? 2u : 1u));
     proto_wr_u8(&w, j->fault ? j->fault_axis : 0u);
 
@@ -196,12 +212,25 @@ static void telemetry(link_t *l, sb_t *s)
     proto_wr_u8(&w, (uint8_t)s->ap.train.phase);
     proto_wr_u8(&w, (uint8_t)s->ap.train.result);
 
-    proto_wr_f32(&w, s->cruise.set_kn);
-    proto_wr_latlon(&w, s->nav.wp_lat);
-    proto_wr_latlon(&w, s->nav.wp_lon);
-    proto_wr_f32(&w, s->nav.speed_kn);
+    proto_wr_f32(&w, s->cruise.target_kn);
+    if (a->prog_ok && a->wp < a->prog.n) {
+        proto_wr_i32(&w, a->prog.wp[a->wp].lat_e7);
+        proto_wr_i32(&w, a->prog.wp[a->wp].lon_e7);
+        proto_wr_f32(&w, a->prog.wp[a->wp].speed_kn);
+    } else {
+        proto_wr_i32(&w, 0);
+        proto_wr_i32(&w, 0);
+        proto_wr_f32(&w, 0.0f);
+    }
     proto_wr_u16(&w, (uint16_t)(l->rx.frames & 0xFFFFu));
     proto_wr_u16(&w, (uint16_t)(l->rx.crc_errors & 0xFFFFu));
+
+    proto_wr_u8(&w, a->prog_ok ? (uint8_t)a->prog.n : 0u);
+    proto_wr_u8(&w, a->wp);
+    proto_wr_u8(&w, (uint8_t)a->state);
+    proto_wr_u8(&w, (uint8_t)((a->prog_ok ? 1u : 0u) | (a->suspended ? 2u : 0u) | (a->finished ? 4u : 0u)));
+    proto_wr_u8(&w, (uint8_t)s->confirm.kind);
+    proto_wr_u16(&w, (uint16_t)(sb_confirm_left_s(s) * 10.0f + 0.5f));
 
     if (!w.overflow) send(l, PROTO_T_TELEMETRY, l->tx_seq++, buf, w.n);
 }
@@ -214,30 +243,50 @@ static int cmd_len(uint8_t type)
     switch (type) {
     case PROTO_T_HEARTBEAT:    return 0;
     case PROTO_T_SET_MODE:     return 1;
-    case PROTO_T_JOY_HANDBACK: return 0;
     case PROTO_T_HEADING_ADJ:  return 1;
-    case PROTO_T_WAYPOINT:     return 12;
-    case PROTO_T_CRUISE_SPEED: return 4;
     case PROTO_T_SEA_STATE:    return 1;
     case PROTO_T_TRAINING:     return 5;
     case PROTO_T_PARAM_GET:    return 1;
     case PROTO_T_PARAM_SET:    return 5;
     case PROTO_T_JOY_CAL:      return 1;
     case PROTO_T_ALARM_ACK:    return 0;
+    case PROTO_T_PROG_BEGIN:   return 2;
+    case PROTO_T_PROG_WP:      return 18;
+    case PROTO_T_PROG_COMMIT:  return 0;
+    case PROTO_T_PROG_GET:     return 1;
+    case PROTO_T_AUTO_START:   return 0;
+    case PROTO_T_AUTO_PAUSE:   return 0;
+    case PROTO_T_AUTO_RESUME:  return 0;
+    case PROTO_T_AUTO_SKIP:    return 0;
     default:                   return -1;
     }
 }
 
-/* Mode change through the mode manager; the result says why if refused. */
+static uint8_t sb_result_to_proto(sb_result_t r)
+{
+    switch (r) {
+    case SB_OK:                return PROTO_R_OK;
+    case SB_ERR_JOYSTICK:      return PROTO_R_JOYSTICK;
+    case SB_ERR_JOY_NOT_READY: return PROTO_R_JOY_NOT_READY;
+    case SB_ERR_NO_PROGRAM:    return PROTO_R_NO_PROGRAM;
+    case SB_ERR_PRECOND:       return PROTO_R_PRECOND;
+    case SB_ERR_WRONG_MODE:    return PROTO_R_WRONG_MODE;
+    case SB_ERR_BAD_PROGRAM:   return PROTO_R_BAD_PROGRAM;
+    default:                   return PROTO_R_REFUSED;
+    }
+}
+
+/* Mode change through the mode manager; the result says why if refused.
+ * The PC may only ask for STANDBY and TRAINING. */
 static uint8_t pc_mode(sb_t *s, sb_mode_t to)
 {
-    if (to == MODE_JOYSTICK) {                                  /* only the stick takes control */
-        (void)sb_request_mode(s, to, WHY_PC);                    /* refused + logged */
-        return PROTO_R_NOT_ALLOWED;
-    }
-    if (sb_mode(s) == MODE_JOYSTICK) {
+    if (sb_mode(s) == MODE_MANUAL) {
         (void)sb_request_mode(s, to, WHY_PC);                    /* refused + logged */
         return PROTO_R_JOYSTICK;
+    }
+    if (to != MODE_STANDBY && to != MODE_TRAINING) {
+        (void)sb_request_mode(s, to, WHY_PC);                    /* refused + logged */
+        return PROTO_R_NOT_ALLOWED;
     }
     if (sb_mode(s) == to) return PROTO_R_OK;                    /* already there */
     if (sb_request_mode(s, to, WHY_PC)) return PROTO_R_OK;
@@ -249,7 +298,7 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
 {
     proto_rd_t r;
     proto_rd_init(&r, f->payload, f->len);
-    bool joy = (sb_mode(s) == MODE_JOYSTICK);
+    bool joy = (sb_mode(s) == MODE_MANUAL);
 
     switch (f->type) {
     case PROTO_T_SET_MODE: {
@@ -257,10 +306,6 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         if (m >= (uint8_t)MODE_COUNT) return PROTO_R_BAD_VALUE;
         return pc_mode(s, (sb_mode_t)m);
     }
-    case PROTO_T_JOY_HANDBACK:
-        if (!joy) return PROTO_R_WRONG_MODE;
-        return sb_joystick_handback(s, WHY_JOY_HANDBACK) ? PROTO_R_OK : PROTO_R_NOT_CENTERED;
-
     case PROTO_T_HEADING_ADJ: {
         int8_t d = proto_rd_i8(&r);
         uint32_t bit;
@@ -270,23 +315,8 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         else if (d == 10) bit = HAL_BTN_BIT(HAL_BTN_PLUS_10);
         else return PROTO_R_BAD_VALUE;
         if (joy) return PROTO_R_JOYSTICK;
-        if (sb_mode(s) != MODE_CRUISE) return PROTO_R_WRONG_MODE;   /* same as the buttons */
+        if (sb_mode(s) != MODE_HDG_LOCK) return PROTO_R_WRONG_MODE;   /* same as the buttons */
         s->ext_buttons |= bit;
-        return PROTO_R_OK;
-    }
-    case PROTO_T_WAYPOINT: {
-        double lat = proto_rd_latlon(&r), lon = proto_rd_latlon(&r);
-        float kn = proto_rd_f32(&r);
-        if (!(fabs(lat) <= 90.0) || !(fabs(lon) <= 180.0) || !(kn > 0.0f && kn <= s->cfg.cruise_max_kn))
-            return PROTO_R_BAD_VALUE;
-        if (sb_mode(s) == MODE_NAV) return PROTO_R_WRONG_MODE;      /* the leg is fixed while NAV runs */
-        sb_set_waypoint(s, lat, lon, kn);
-        return PROTO_R_OK;
-    }
-    case PROTO_T_CRUISE_SPEED: {
-        float kn = proto_rd_f32(&r);
-        if (!(kn >= 0.0f && kn <= s->cfg.cruise_max_kn)) return PROTO_R_BAD_VALUE;
-        sb_set_cruise_speed(s, kn);
         return PROTO_R_OK;
     }
     case PROTO_T_SEA_STATE: {
@@ -319,9 +349,8 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         if (id >= P_COUNT) return PROTO_R_BAD_PARAM;
         if (sb_mode(s) != MODE_STANDBY) return PROTO_R_STANDBY_ONLY;
         if (!(v >= s_params[id].min && v <= s_params[id].max)) return PROTO_R_BAD_VALUE;
-        if (id == P_SLOW_R && v < s->cfg.arrival_radius_m) return PROTO_R_BAD_VALUE;
-        if (id == P_ARRIVAL_R && v > s->cfg.slow_radius_m) return PROTO_R_BAD_VALUE;
         *param_ptr(l, s, id) = v;
+        if (id == P_CRUISE_MAX) s->cfg.prog.max_speed_kn = v;   /* program validation uses it too */
         send_param(l, s, id);
         return PROTO_R_OK;
     }
@@ -338,6 +367,68 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         s->alarm_bits = 0u;
         s->ap.alarm = false;
         return PROTO_R_OK;
+
+    /* --- AUTO program upload --- */
+    case PROTO_T_PROG_BEGIN: {
+        uint8_t n = proto_rd_u8(&r), fin = proto_rd_u8(&r);
+        if (n == 0u || n > PROG_MAX_WP || fin > (uint8_t)PROG_END_HOLD) return PROTO_R_BAD_VALUE;
+        program_clear(&l->staging);
+        l->staging.n = n;
+        l->staging.final_action = fin;
+        l->staging_n = n;
+        l->staging_have = 0u;
+        return PROTO_R_OK;
+    }
+    case PROTO_T_PROG_WP: {
+        uint8_t i = proto_rd_u8(&r);
+        if (l->staging_n == 0u || i >= l->staging_n) return PROTO_R_BAD_VALUE;
+        prog_wp_t *wp = &l->staging.wp[i];
+        wp->lat_e7 = proto_rd_i32(&r);
+        wp->lon_e7 = proto_rd_i32(&r);
+        wp->speed_kn = proto_rd_f32(&r);
+        wp->radius_m = proto_rd_f32(&r);
+        wp->action = proto_rd_u8(&r);
+        l->staging_have |= (uint64_t)1u << i;
+        return PROTO_R_OK;
+    }
+    case PROTO_T_PROG_COMMIT: {
+        if (l->staging_n == 0u) return PROTO_R_BAD_VALUE;
+        uint64_t all = (l->staging_n >= 64u) ? ~(uint64_t)0u : (((uint64_t)1u << l->staging_n) - 1u);
+        prog_error_t err = PROG_OK;
+        uint8_t bad = 0xFFu;
+        sb_result_t res;
+        if ((l->staging_have & all) != all) {
+            err = PROG_BAD_COUNT;               /* waypoints missing */
+            res = SB_ERR_BAD_PROGRAM;
+        } else {
+            program_seal(&l->staging);
+            res = sb_program_set(s, &l->staging, &err, &bad);
+        }
+        if (res == SB_ERR_BAD_PROGRAM) {
+            uint8_t p[2] = { (uint8_t)err, bad };
+            send(l, PROTO_T_PROG_ERROR, f->seq, p, sizeof p);
+        }
+        if (res == SB_OK) l->staging_n = 0u;
+        return sb_result_to_proto(res);
+    }
+    case PROTO_T_PROG_GET: {
+        uint8_t i = proto_rd_u8(&r);
+        if (!s->autop.prog_ok) return PROTO_R_NO_PROGRAM;
+        if (i >= s->autop.prog.n) return PROTO_R_BAD_VALUE;
+        send_prog_wp(l, &s->autop.prog, i);
+        return PROTO_R_OK;
+    }
+
+    /* --- AUTO control --- */
+    case PROTO_T_AUTO_START:
+        return sb_result_to_proto(sb_auto_start(s));
+    case PROTO_T_AUTO_RESUME:
+        return sb_result_to_proto(sb_auto_resume(s));
+    case PROTO_T_AUTO_PAUSE:
+        if (joy) return PROTO_R_JOYSTICK;
+        return sb_result_to_proto(sb_auto_pause(s));
+    case PROTO_T_AUTO_SKIP:
+        return sb_result_to_proto(sb_auto_skip(s));
     default:
         return PROTO_R_UNKNOWN;
     }

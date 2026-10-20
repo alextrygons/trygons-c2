@@ -5,12 +5,14 @@
  *   - armed only after it has been seen centred (power-up check)
  *   - wire break / out of range / impossible jump -> fault (latched until
  *     the stick is valid and centred again for fault_clear_ms)
- *   - "engage" request: deflection beyond the deadband for engage_ms, or
- *     the TAKE button
+ *   - "engage" requests per axis: deflection beyond the deadband for
+ *     engage_ms (engage_x / engage_y), and the TAKE button
+ *   - CONFIRM button: counts only when armed, not faulted and centred while
+ *     pressed (joy_confirm). It never takes or hands back control.
  *   - calibration routine (centre, min, max per axis) stored with checksum
  *
  * The joystick always wins over the autopilot and the PC; only a centred
- * stick + AUTO hands control back (smallboat.c).
+ * stick + AUTO / HDG LOCK / STANDBY leaves MANUAL (smallboat.c).
  */
 #ifndef JOYSTICK_H
 #define JOYSTICK_H
@@ -53,10 +55,10 @@ typedef struct {
     bool     not_centered;      /* power-up: stick was not centred */
     float    x, y;              /* calibrated -1..+1 (0 while not usable) */
     uint16_t raw[2];
-    bool     take, autob;       /* buttons now */
-    bool     take_edge, auto_edge;  /* pressed this step */
-    bool     engage;            /* wants to take control (this step) */
-    uint32_t deflect_ms, centered_ms, valid_ms;
+    bool     take, autob, confirm;              /* buttons now */
+    bool     take_edge, auto_edge, confirm_edge; /* pressed this step */
+    bool     engage_x, engage_y;    /* axis deflected beyond the deadband for engage_ms */
+    uint32_t deflect_x_ms, deflect_y_ms, centered_ms, valid_ms;
     bool     have_last;
     bool     cal_active;
     uint16_t cal_min[2], cal_max[2];
@@ -71,6 +73,13 @@ void joy_step(joy_t *j, const hal_joystick_t *in, uint32_t dt_ms);
 
 /* Stick inside centre_tol on both axes (and usable). */
 bool joy_centered(const joy_t *j);
+
+/* CONFIRM pressed this step AND joystick armed, not faulted, centred. */
+bool joy_confirm(const joy_t *j);
+
+/* Not usable until it has been seen centred again (e.g. after STANDBY was
+ * pressed with the stick deflected, so it can't grab control right back). */
+void joy_disarm(joy_t *j);
 
 /* Calibration: start (move the stick to all corners), then finish with
  * the stick released -> new calibration in *out (sealed). False if the

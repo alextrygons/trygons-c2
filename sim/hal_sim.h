@@ -41,9 +41,6 @@ uint16_t sim_hal_gear_pwm(void);
 void     sim_hal_gps_message(const hal_gps_t *g);
 void     sim_hal_reset_engine(void);
 
-/* Operator controls (MANEUVER). */
-void     sim_hal_set_controls(float steer, float throttle, hal_gear_sel_t gear);
-
 /* Optional roll-rate sensor. */
 void     sim_hal_set_roll(bool fitted, float roll_dps);
 
@@ -59,6 +56,7 @@ void     sim_hal_set_water_speed(bool fitted, float kn);
 
 /* Joystick (raw 12-bit ADC values and buttons). */
 void     sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob);
+void     sim_hal_joystick_confirm(bool pressed);     /* CONFIRM button held */
 
 /* Ground-station link byte streams (PC side of hal_link_read / write). */
 uint32_t sim_hal_link_rx_push(const uint8_t *buf, uint32_t len);   /* PC -> boat */

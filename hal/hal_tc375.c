@@ -141,7 +141,7 @@ bool hal_read_joystick(hal_joystick_t *j)
 {
     (void)j;
     return false;    /* TODO: EVADC AN39 (P40.9, Arduino A0) = X, AN38 (P40.8, A1) = Y;
-                        P02.0 (D2) = TAKE, P02.1 (D3) = AUTO, inputs with pull-up,
+                        P02.0 (D2) = TAKE, P02.1 (D3) = AUTO, P10.4 (D4) = CONFIRM, inputs with pull-up,
                         pressed = low. See WIRING.md. */
 }
 
@@ -161,12 +161,6 @@ bool hal_read_water_speed(float *kn)
 {
     (void)kn;
     return false;    /* TODO: paddlewheel pulse input (GPT12 / GTM TIM), if fitted */
-}
-
-bool hal_read_controls(hal_controls_t *c)
-{
-    (void)c;
-    return false;    /* TODO: control panel (ADC levers / buttons) */
 }
 
 uint32_t hal_get_button_presses(void)

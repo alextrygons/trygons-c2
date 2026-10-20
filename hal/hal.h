@@ -22,15 +22,20 @@
 /* Mechanical rudder limit reported by the rudder angle sensor. */
 #define HAL_RUDDER_MAX_DEG  35.0f
 
-/* Buttons on the control head. */
+/* Buttons on the control panel (see WIRING.md).
+ * Small boat: STANDBY (works in every mode, the PC can't override it),
+ * HDG LOCK, -1, +1, -10, +10.
+ * Big boat: button 0 toggles STANDBY <-> AUTO; HDG LOCK is not used. */
 typedef enum {
-    HAL_BTN_STANDBY_AUTO = 0,   /* toggles STANDBY <-> AUTO */
+    HAL_BTN_STANDBY_AUTO = 0,   /* small boat: STANDBY; big boat: STANDBY <-> AUTO */
     HAL_BTN_MINUS_1,            /* course -1 deg  */
     HAL_BTN_PLUS_1,             /* course +1 deg  */
     HAL_BTN_MINUS_10,           /* course -10 deg */
     HAL_BTN_PLUS_10,            /* course +10 deg */
+    HAL_BTN_HDG_LOCK,           /* small boat: lock the current heading */
     HAL_BTN_COUNT
 } hal_button_t;
+#define HAL_BTN_STANDBY HAL_BTN_STANDBY_AUTO
 
 /* Bit for a button in the mask returned by hal_get_button_presses(). */
 #define HAL_BTN_BIT(b)  (1u << (unsigned)(b))
@@ -114,31 +119,16 @@ typedef struct {
 /* true + new data only when a new GPS message arrived since the last call. */
 bool hal_read_gps(hal_gps_t *gps);
 
-/* Operator controls for MANEUVER (helm lever / joystick / buttons). */
-typedef enum {
-    HAL_SEL_N = 0,
-    HAL_SEL_F,
-    HAL_SEL_R
-} hal_gear_sel_t;
-
-typedef struct {
-    float          steer;       /* -1 (left) .. +1 (right), 0 = centre */
-    float          throttle;    /* 0 .. 1 lever position */
-    hal_gear_sel_t gear;        /* gear selector */
-} hal_controls_t;
-
-/* Current control positions. Returns false if no control panel. */
-bool hal_read_controls(hal_controls_t *c);
-
 /* Joystick wired directly to the board (see WIRING.md): X and Y as raw
  * 12-bit ADC values (0..4095 = 0..VAREF 3.3 V; the app calibrates and
- * checks them for wire breaks), plus the TAKE and AUTO buttons
+ * checks them for wire breaks), plus the TAKE, AUTO and CONFIRM buttons
  * (true = pressed). Returns false if no joystick is fitted. */
 typedef struct {
     uint16_t x_raw;
     uint16_t y_raw;
     bool     take;
     bool     autob;
+    bool     confirm;
 } hal_joystick_t;
 
 bool hal_read_joystick(hal_joystick_t *j);
@@ -146,6 +136,7 @@ bool hal_read_joystick(hal_joystick_t *j);
 /* Small non-volatile storage slots (e.g. slot 1 = joystick calibration).
  * The app adds its own version + checksum. */
 #define HAL_NV_SLOT_JOYSTICK  1u
+#define HAL_NV_SLOT_PROGRAM   2u     /* AUTO waypoint program */
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size);
 bool hal_nv_load(uint8_t slot, void *data, uint32_t size);
 

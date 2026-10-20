@@ -1,8 +1,8 @@
 """End-to-end test: ground-station link <-> simulator over TCP.
 
 Starts  sim/autopilot_sim server <port> 10  (10x real time), then:
-  1. NAV mission to a waypoint 500 m east -> arrival -> STANDBY
-  2. second NAV leg, and while it runs a simulated joystick takes over
+  1. AUTO program upload (a bad one is refused), start + joystick CONFIRM, arrival
+  2. AUTO again, and while it runs a simulated joystick takes over
   3. the PC is refused during the override, hand-back only with the stick centred
   4. every frame was logged
 
@@ -19,6 +19,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import program  # noqa: E402
 import proto  # noqa: E402
 from link import Link, Waiter  # noqa: E402
 
@@ -81,55 +82,75 @@ def main():
         if t is None:
             return 1
 
-        # 1. NAV mission
-        wp = offset(t["est_lat"], t["est_lon"], 0.0, 500.0)
-        a1 = w.command(proto.T_WAYPOINT, proto.p_waypoint(wp[0], wp[1], 8.0))
-        a2 = w.command(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_NAV))
-        nav = w.until(lambda d: d["mode"] == proto.MODE_NAV, 3)
+        # 1. AUTO program: a bad upload is refused, a good one runs to the end
+        def confirm():
+            w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
+            time.sleep(0.15 / SPEED * 10)
+            w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+
+        lat0, lon0 = t["est_lat"], t["est_lon"]
+        wp1 = offset(lat0, lon0, 0.0, 300.0)
+        wp2 = offset(lat0, lon0, 0.0, 600.0)
+        bad = {"final": 0, "wps": [{"lat": wp1[0], "lon": wp1[1], "kn": 40.0, "radius": 25.0, "action": 0}]}
+        ok_bad, txt_bad = program.upload(w, bad)
+        prog = {"final": 0, "wps": [{"lat": wp1[0], "lon": wp1[1], "kn": 8.0, "radius": 25.0, "action": 0},
+                                    {"lat": wp2[0], "lon": wp2[1], "kn": 6.0, "radius": 25.0, "action": 0}]}
+        ok_up, txt_up = program.upload(w, prog)
+        a2 = w.command(proto.T_AUTO_START)
+        waiting = w.until(lambda d: d["confirm_kind"] == 1, 3)
+        confirm()
+        aut = w.until(lambda d: d["mode"] == proto.MODE_AUTO, 3)
         t0 = time.time()
         arr = w.until(lambda d: d["mode"] == proto.MODE_STANDBY and d["alarm_bits"] & 0x20, 60)
         dt = (time.time() - t0) * SPEED
-        miss = dist_m(arr["est_lat"], arr["est_lon"], wp[0], wp[1]) if arr else -1
-        report("NAV mission from the ground station: 500 m leg, arrival -> STANDBY",
-               bool(a1 and a1["ok"] and a2 and a2["ok"] and nav and arr and miss < 30),
-               "waypoint %s, NAV %s, arrived after %.0f s sim, %.1f m from the waypoint, alarms %s"
-               % (a1 and a1["text"], a2 and a2["text"], dt, miss, arr and proto.alarm_texts(arr["alarm_bits"])))
+        miss = dist_m(arr["est_lat"], arr["est_lon"], wp2[0], wp2[1]) if arr else -1
+        report("AUTO program from the ground station: bad one refused, 2 legs, CONFIRM, arrival -> STANDBY",
+               bool(not ok_bad and ok_up and a2 and a2["ok"] and waiting and aut and arr and miss < 30),
+               "bad upload: %s; good: %s; start %s, CONFIRM asked %s, AUTO %s, arrived after %.0f s sim, "
+               "%.1f m from the last waypoint, alarms %s"
+               % (txt_bad, txt_up, a2 and a2["text"], "yes" if waiting else "NO", "yes" if aut else "NO", dt,
+                  miss, arr and proto.alarm_texts(arr["alarm_bits"])))
 
-        # 2. second leg, joystick takes over half way
+        # 2. again, and while it runs a simulated joystick takes over
         w.command(proto.T_ALARM_ACK)
         t = w.telem
-        wp2 = offset(t["est_lat"], t["est_lon"], 600.0, 0.0)
-        w.command(proto.T_WAYPOINT, proto.p_waypoint(wp2[0], wp2[1], 10.0))
-        a3 = w.command(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_NAV))
-        moving = w.until(lambda d: d["mode"] == proto.MODE_NAV and d["est_sog"] > 6.0, 10)
+        wp3 = offset(t["est_lat"], t["est_lon"], 600.0, 0.0)
+        program.upload(w, {"final": 0, "wps": [{"lat": wp3[0], "lon": wp3[1], "kn": 10.0, "radius": 25.0,
+                                               "action": 0}]})
+        a3 = w.command(proto.T_AUTO_START)
+        confirm()
+        moving = w.until(lambda d: d["mode"] == proto.MODE_AUTO and d["est_sog"] > 6.0, 10)
         before = w.telem
         a4 = w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.5, 0.0))
-        joy = w.until(lambda d: d["mode"] == proto.MODE_JOYSTICK, 3)
+        joy = w.until(lambda d: d["mode"] == proto.MODE_MANUAL, 3)
         sw = (joy["t_ms"] - before["t_ms"]) / 1000.0 if joy and before else -1
-        report("Simulated joystick takes over during NAV",
-               bool(a3 and a3["ok"] and moving and a4 and a4["ok"] and joy and sw <= 0.4),
-               "NAV at %.1f kn, JOYSTICK %.2f s (sim) after the deflection, banner data: status %s, x %.2f"
-               % (moving["est_sog"] if moving else -1, sw, joy and proto.JOY_STATUS[joy["joy_status"]],
-                  joy["joy_x"] if joy else 0))
+        report("Simulated joystick takes over during AUTO",
+               bool(a3 and a3["ok"] and moving and a4 and a4["ok"] and joy and sw <= 0.4 and joy["prog_suspended"]),
+               "AUTO at %.1f kn, MANUAL %.2f s (sim) after the deflection, program suspended %s, x %.2f"
+               % (moving["est_sog"] if moving else -1, sw, joy and joy["prog_suspended"], joy["joy_x"] if joy else 0))
 
-        # 3. PC refused during the override; hand-back rules
-        r1 = w.command(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_NAV))
-        r2 = w.command(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY))
-        r3 = w.command(proto.T_JOY_HANDBACK)
+        # 3. PC refused during the override; hand-back rules (joystick AUTO button)
+        r1 = w.command(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY))
+        r2 = w.command(proto.T_AUTO_PAUSE)
+        w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.5, 0.0, autob=True))    # AUTO, not centred
+        w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.5, 0.0))
+        still = w.until(lambda d: d["mode"] == proto.MODE_MANUAL, 1)
+        w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, -0.5))
         w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, -1.0))      # full astern
         rev = w.until(lambda d: d["gear"] == 2 and d["throttle"] > 20.0, 5)
+        w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, -0.5))
         w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))       # centre
         idle = w.until(lambda d: d["gear"] == 0 and d["throttle"] < 1.0, 5)
-        time.sleep(0.1)
-        r4 = w.command(proto.T_JOY_HANDBACK)
+        w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, autob=True))    # AUTO, centred
+        w.command(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
         sb = w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 3)
         report("PC refused while the joystick is in control, hand-back only centred",
-               bool(r1 and r1["result"] == 4 and r2 and r2["result"] == 4 and r3 and r3["result"] == 8
-                    and rev and rev["throttle"] <= 30.01 and idle and r4 and r4["ok"] and sb),
-               "PC NAV: %s; PC STANDBY: %s; hand-back deflected: %s; astern throttle %.0f %%; "
-               "centred hand-back: %s -> %s"
-               % (r1 and r1["text"], r2 and r2["text"], r3 and r3["text"], rev["throttle"] if rev else -1,
-                  r4 and r4["text"], sb and sb["mode_name"]))
+               bool(r1 and r1["result"] == 4 and r2 and r2["result"] == 4 and still
+                    and rev and rev["throttle"] <= 30.01 and idle and sb),
+               "PC STANDBY: %s; PC pause: %s; joystick AUTO deflected: %s; astern throttle %.0f %%; "
+               "centred AUTO -> %s"
+               % (r1 and r1["text"], r2 and r2["text"], "stays MANUAL" if still else "LEFT MANUAL",
+                  rev["throttle"] if rev else -1, sb and sb["mode_name"]))
 
         # 4. log
         link.stop()

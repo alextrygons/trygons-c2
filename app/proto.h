@@ -34,26 +34,34 @@
 
 /* PC -> boat */
 #define PROTO_T_HEARTBEAT     0x01u   /* -                                    */
-#define PROTO_T_SET_MODE      0x10u   /* u8 mode (sb_mode_t)                  */
-#define PROTO_T_JOY_HANDBACK  0x11u   /* -  (only with the stick centred)     */
-#define PROTO_T_HEADING_ADJ   0x12u   /* i8 delta: -10, -1, +1, +10 (CRUISE)  */
-#define PROTO_T_WAYPOINT      0x13u   /* i32 lat, i32 lon (1e-7 deg), f32 kn  */
-#define PROTO_T_CRUISE_SPEED  0x14u   /* f32 kn                               */
+#define PROTO_T_SET_MODE      0x10u   /* u8 mode: only STANDBY and TRAINING   */
+#define PROTO_T_HEADING_ADJ   0x12u   /* i8 delta: -10, -1, +1, +10 (HDG_LOCK) */
 #define PROTO_T_SEA_STATE     0x15u   /* u8 1..5                              */
 #define PROTO_T_TRAINING      0x16u   /* u8 0 start / 1 accept / 2 reject, f32 full angle (0 = unknown) */
 #define PROTO_T_PARAM_GET     0x17u   /* u8 id                                */
 #define PROTO_T_PARAM_SET     0x18u   /* u8 id, f32 value                     */
 #define PROTO_T_JOY_CAL       0x19u   /* u8 0 start / 1 finish                */
 #define PROTO_T_ALARM_ACK     0x1Au   /* -  (STANDBY only, like the button)   */
+#define PROTO_T_PROG_BEGIN    0x20u   /* u8 n (1..50), u8 final action        */
+#define PROTO_T_PROG_WP       0x21u   /* u8 index, i32 lat, i32 lon, f32 kn, f32 radius m, u8 action */
+#define PROTO_T_PROG_COMMIT   0x22u   /* -  validate + store; NACK -> PROG_ERROR frame too */
+#define PROTO_T_PROG_GET      0x23u   /* u8 index -> PROG_WP_VALUE            */
+#define PROTO_T_AUTO_START    0x24u   /* -  then joystick CONFIRM within 10 s */
+#define PROTO_T_AUTO_PAUSE    0x25u   /* -                                    */
+#define PROTO_T_AUTO_RESUME   0x26u   /* -  then joystick CONFIRM within 10 s */
+#define PROTO_T_AUTO_SKIP     0x27u   /* -                                    */
 #define PROTO_T_SIM_FIRST     0x70u   /* 0x70..0x7F: simulator control only   */
-#define PROTO_T_SIM_JOYSTICK  0x70u   /* u8 fitted, f32 x, f32 y, u8 take, u8 auto */
+#define PROTO_T_SIM_JOYSTICK  0x70u   /* u8 fitted, f32 x, f32 y, u8 take, u8 auto, u8 confirm */
 #define PROTO_T_SIM_GPS       0x71u   /* u8 1 = GPS fails, 0 = GPS back       */
+#define PROTO_T_SIM_BUTTON    0x72u   /* u8 panel button (hal_button_t)       */
 #define PROTO_T_SIM_LAST      0x7Fu
 
 /* boat -> PC */
 #define PROTO_T_TELEMETRY     0x80u   /* see link.c telemetry()                */
 #define PROTO_T_ACK           0x81u   /* u8 cmd type, u8 cmd seq, u8 result (PROTO_R_...) */
 #define PROTO_T_PARAM_VALUE   0x82u   /* u8 id, f32 value, f32 min, f32 max, char name[16] */
+#define PROTO_T_PROG_WP_VALUE 0x83u   /* u8 index, u8 n, u8 final, i32 lat, i32 lon, f32 kn, f32 radius, u8 action */
+#define PROTO_T_PROG_ERROR    0x84u   /* u8 prog_error_t, u8 waypoint index (0xFF = none) */
 
 /* ACK result: 0 = accepted, else why refused (NACK) */
 #define PROTO_R_OK            0u
@@ -68,6 +76,9 @@
 #define PROTO_R_STANDBY_ONLY  9u      /* only in STANDBY                      */
 #define PROTO_R_BAD_PARAM     10u     /* no such parameter                    */
 #define PROTO_R_REFUSED       11u     /* refused by the function (e.g. implausible calibration) */
+#define PROTO_R_BAD_PROGRAM   12u     /* program refused (details in PROG_ERROR) */
+#define PROTO_R_NO_PROGRAM    13u     /* no valid program stored              */
+#define PROTO_R_JOY_NOT_READY 14u     /* joystick missing / faulted / not armed: CONFIRM impossible */
 
 typedef struct {
     uint8_t type;

@@ -117,14 +117,23 @@ static uint8_t sim_cmd(void *ctx, const proto_frame_t *f)
     proto_rd_init(&r, f->payload, f->len);
     switch (f->type) {
     case PROTO_T_SIM_JOYSTICK: {
-        if (f->len != 11u) return PROTO_R_BAD_LENGTH;
+        if (f->len != 11u && f->len != 12u) return PROTO_R_BAD_LENGTH;
         uint8_t fitted = proto_rd_u8(&r);
         float jx = proto_rd_f32(&r), jy = proto_rd_f32(&r);
         uint8_t take = proto_rd_u8(&r), autob = proto_rd_u8(&r);
+        uint8_t confirm = (f->len == 12u) ? proto_rd_u8(&r) : 0u;
         if (!(jx >= -1.0f && jx <= 1.0f && jy >= -1.0f && jy <= 1.0f)) return PROTO_R_BAD_VALUE;
         joy_cal_t c;
         joy_default_cal(&c);        /* the sim stick matches the default calibration */
         sim_hal_set_joystick(fitted != 0u, joy_raw(&c, 0, jx), joy_raw(&c, 1, jy), take != 0u, autob != 0u);
+        sim_hal_joystick_confirm(confirm != 0u);
+        return PROTO_R_OK;
+    }
+    case PROTO_T_SIM_BUTTON: {
+        if (f->len != 1u) return PROTO_R_BAD_LENGTH;
+        uint8_t b = proto_rd_u8(&r);
+        if (b >= (uint8_t)HAL_BTN_COUNT) return PROTO_R_BAD_VALUE;
+        sim_hal_press((hal_button_t)b);
         return PROTO_R_OK;
     }
     case PROTO_T_SIM_GPS:

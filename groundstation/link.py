@@ -5,8 +5,9 @@ heartbeat, frame decoding and a log of every frame.
     link = Link("tcp:127.0.0.1:5760")  # simulator (autopilot_sim server)
     link.start()
     ...  link.events.get() -> ("telemetry", dict) / ("ack", dict) /
-                              ("param", dict) / ("status", text)
-    link.send(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_CRUISE))
+                              ("param", dict) / ("prog_wp", dict) /
+                              ("prog_error", dict) / ("status", text)
+    link.send(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY))
 """
 import json
 import os
@@ -194,6 +195,16 @@ class Link:
                 if self.logger:
                     self.logger.write("rx", f, {"param": d})
                 self.events.put(("param", d))
+            elif f.type == proto.T_PROG_WP_VALUE:
+                d = proto.decode_prog_wp(f.payload)
+                if self.logger:
+                    self.logger.write("rx", f, {"prog_wp": d})
+                self.events.put(("prog_wp", d))
+            elif f.type == proto.T_PROG_ERROR:
+                d = proto.decode_prog_error(f.payload)
+                if self.logger:
+                    self.logger.write("rx", f, {"prog_error": d})
+                self.events.put(("prog_error", d))
             elif self.logger:
                 self.logger.write("rx", f)
         except (ValueError, IndexError) as e:
@@ -208,6 +219,8 @@ class Waiter:
         self.telem = None
         self.acks = {}
         self.params = {}
+        self.prog = {}
+        self.prog_error = None
 
     def pump(self, timeout=0.05):
         try:
@@ -223,6 +236,10 @@ class Waiter:
                 self.acks[d["seq"]] = d
             elif kind == "param":
                 self.params[d["id"]] = d
+            elif kind == "prog_wp":
+                self.prog[d["index"]] = d
+            elif kind == "prog_error":
+                self.prog_error = d
             try:
                 item = self.link.events.get_nowait()
             except queue.Empty:

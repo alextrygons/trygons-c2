@@ -6,9 +6,13 @@
  *   - 10 Hz telemetry frame (PROTO_T_TELEMETRY)
  *   - every command is checked by the same rules as the buttons (mode
  *     manager, logged as WHY_PC) and answered with ACK or NACK + reason
- *   - the PC can never take control from the joystick: while JOYSTICK is
- *     active, mode commands are refused (PROTO_R_JOYSTICK); only the
- *     hand-back command, with the stick centred, ends the override
+ *   - the PC can never take control from the joystick: in MANUAL every mode
+ *     command is refused (PROTO_R_JOYSTICK). The PC can only request
+ *     STANDBY (from HDG_LOCK / AUTO / TRAINING) and TRAINING (from
+ *     STANDBY); AUTO needs PROTO_T_AUTO_START + the joystick CONFIRM.
+ *     HDG_LOCK is engaged with the panel button only.
+ *   - AUTO program upload: PROG_BEGIN, PROG_WP x n, PROG_COMMIT (validated
+ *     and stored by the boat; a refusal also sends PROG_ERROR)
  *   - heartbeat: no good frame from the PC for pc_timeout_s (3 s) after it
  *     was connected -> alarm "PC link lost" (SB_ALM_PC_LINK). The mode is
  *     NOT changed: the boat carries on as before.
@@ -41,6 +45,9 @@ typedef struct {
     uint8_t     last_result;    /* last ACK result sent (tests) */
     link_sim_fn sim_fn;         /* NULL on the boat */
     void       *sim_ctx;
+    program_t   staging;        /* program being uploaded */
+    uint8_t     staging_n;      /* waypoints announced by PROG_BEGIN (0 = none) */
+    uint64_t    staging_have;   /* bit per waypoint received */
 } link_t;
 
 void link_init(link_t *l, sb_t *s);

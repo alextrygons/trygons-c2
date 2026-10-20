@@ -24,6 +24,21 @@ struct sbsim {
     uint32_t next_ctrl;
 };
 
+/* Joystick position (-1..+1, default calibration) -> raw ADC. */
+static uint16_t joy_raw(float v)
+{
+    joy_cal_t c;
+    joy_default_cal(&c);
+    float r = (v >= 0.0f) ? c.center[0] + v * (float)(c.max[0] - c.center[0])
+                          : c.center[0] + v * (float)(c.center[0] - c.min[0]);
+    return (uint16_t)lrintf(r);
+}
+
+static void joy_set(float x, float y, bool take, bool autob)
+{
+    sim_hal_set_joystick(true, joy_raw(x), joy_raw(y), take, autob);
+}
+
 static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
                        const sb_config_t *cfg)
 {
@@ -34,7 +49,10 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     sim_hal_set_rudder_feedback(false);
     sim_hal_set_gyro(true, 0.05f, 0.02f);
     sim_hal_reset_engine();
-    sim_hal_set_joystick(false, 2048u, 2048u, false, false);   /* no joystick unless a test fits one */
+    joy_set(0.0f, 0.0f, false, false);              /* joystick fitted, centred */
+    sim_hal_joystick_confirm(false);
+    remove("nv1.bin");                              /* default joystick calibration */
+    remove("nv2.bin");                              /* no stored AUTO program */
     world_publish(&x->w, 0);
     hal_init();
     if (cfg) c = *cfg; else sb_default_config(&c);
@@ -54,6 +72,97 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
         world_step(&x->w, PHYSICS_DT_MS * 0.001f);
         x->t += PHYSICS_DT_MS;
     }
+}
+
+/* Press a panel button and let the controller see it. */
+static void press(sbsim_t *x, hal_button_t b)
+{
+    sim_hal_press(b);
+    sbsim_run(x, x->t + 60u, NULL, NULL);
+}
+
+/* Press the joystick CONFIRM button (0.1 s). True if it was accepted. */
+static bool confirm_press(sbsim_t *x)
+{
+    uint32_t before = x->sb.confirm.accepted;
+    sim_hal_joystick_confirm(true);
+    sbsim_run(x, x->t + 100u, NULL, NULL);
+    sim_hal_joystick_confirm(false);
+    sbsim_run(x, x->t + 60u, NULL, NULL);
+    return x->sb.confirm.accepted > before;
+}
+
+/* Waypoint at world position (north, east metres). */
+static prog_wp_t wp_world(const sbsim_t *x, double north_m, double east_m, float kn, float radius_m,
+                          wp_action_t act)
+{
+    prog_wp_t w;
+    double lat, lon;
+    world_t tmp = x->w;
+    memset(&w, 0, sizeof w);
+    tmp.north_m = north_m;
+    tmp.east_m = east_m;
+    world_latlon(&tmp, &lat, &lon);
+    w.lat_e7 = (int32_t)lround(lat * 1e7);
+    w.lon_e7 = (int32_t)lround(lon * 1e7);
+    w.speed_kn = kn;
+    w.radius_m = radius_m;
+    w.action = (uint8_t)act;
+    return w;
+}
+
+static void prog_make(program_t *p, const prog_wp_t *wps, int n, prog_end_t fin)
+{
+    program_clear(p);
+    p->n = (uint16_t)n;
+    p->final_action = (uint8_t)fin;
+    for (int i = 0; i < n && i < (int)PROG_MAX_WP; i++) p->wp[i] = wps[i];
+    program_seal(p);
+}
+
+/* Upload a program and start AUTO (PC start + joystick CONFIRM). */
+static bool auto_go(sbsim_t *x, const prog_wp_t *wps, int n, prog_end_t fin)
+{
+    static program_t p;
+    prog_error_t err;
+    uint8_t bad;
+    prog_make(&p, wps, n, fin);
+    if (sb_program_set(&x->sb, &p, &err, &bad) != SB_OK) return false;
+    if (sb_auto_start(&x->sb) != SB_OK) return false;
+    return confirm_press(x) && sb_mode(&x->sb) == MODE_AUTO;
+}
+
+/* One waypoint `dist` m away on bearing `brg`, radius 25 m, stop there. */
+static bool auto_to(sbsim_t *x, float dist, float brg, float kn)
+{
+    double r = brg * 3.14159265358979 / 180.0;
+    prog_wp_t w = wp_world(x, x->w.north_m + dist * cos(r), x->w.east_m + dist * sin(r), kn, 25.0f, WP_ACT_STOP);
+    return auto_go(x, &w, 1, PROG_END_STOP);
+}
+
+/* HDG LOCK button (locks the current heading). */
+static bool hdg_lock(sbsim_t *x)
+{
+    press(x, HAL_BTN_HDG_LOCK);
+    return sb_mode(&x->sb) == MODE_HDG_LOCK;
+}
+
+/* AUTO no longer running a leg: why (arrival, or the fallback hold). */
+static bool auto_running(const sbsim_t *x)
+{
+    return sb_mode(&x->sb) == MODE_AUTO && x->sb.autop.state == AUTO_RUN;
+}
+
+static mode_reason_t auto_end_why(const sbsim_t *x)
+{
+    if (sb_mode(&x->sb) == MODE_AUTO && x->sb.autop.state == AUTO_HOLD) {
+        uint32_t a = x->sb.alarm_bits;
+        if (a & SB_ALM_ARRIVAL_UNCERTAIN) return WHY_ARRIVAL_UNCERTAIN;
+        if (a & SB_ALM_DR_LIMIT) return WHY_DR_LIMIT;
+        if (a & SB_ALM_ARRIVED) return WHY_ARRIVED;
+        return WHY_GPS_LOST;
+    }
+    return mode_log_get(&x->sb.modes, mode_log_size(&x->sb.modes) - 1u)->why;
 }
 
 static float hdg_err(float a, float b)
@@ -136,22 +245,22 @@ static void phase2(void)
                     wrong == 0 && logged_ok == MODE_COUNT * MODE_COUNT, d);
     }
 
-    /* 2.2 preconditions: CRUISE without compass, NAV without GPS */
+    /* 2.2 preconditions: AUTO without GPS, HDG LOCK without compass */
     {
         sbsim_t x;
         sbsim_init(&x, 11u, 90.0f, 0.0f, NULL);
         x.w.gps_fail = true;
         sbsim_run(&x, 3000u, NULL, NULL);
-        bool nav = sb_request_mode(&x.sb, MODE_NAV, WHY_USER);
+        bool aut = sb_request_mode(&x.sb, MODE_AUTO, WHY_CONFIRM);
         sim_hal_fail_heading(true);
         sbsim_run(&x, 6000u, NULL, NULL);
-        bool cruise = sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+        bool hdg = hdg_lock(&x);
         const mode_log_entry_t *e = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
-        snprintf(d, sizeof d, "NAV without GPS %s, CRUISE without compass %s, last log: %s->%s %s",
-                 nav ? "ACCEPTED" : "rejected", cruise ? "ACCEPTED" : "rejected",
+        snprintf(d, sizeof d, "AUTO without GPS %s, HDG LOCK without compass %s, last log: %s->%s %s",
+                 aut ? "ACCEPTED" : "rejected", hdg ? "ACCEPTED" : "rejected",
                  mode_name(e->from), mode_name(e->to), e->verdict == MODE_REJECT_PRECOND ? "precondition" : "?");
         test_report("P2 mode preconditions (sensors) enforced and logged",
-                    !nav && !cruise && e->verdict == MODE_REJECT_PRECOND, d);
+                    !aut && !hdg && e->verdict == MODE_REJECT_PRECOND, d);
     }
 
     /* 2.3 gear shift request at high throttle (F 80 % -> R) */
@@ -161,7 +270,7 @@ static void phase2(void)
         memset(&ev, 0, sizeof ev);
         sbsim_init(&x, 12u, 90.0f, 0.0f, NULL);
         sbsim_run(&x, 1000u, NULL, NULL);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_TEST);
+        hdg_lock(&x);
         sb_test_drive(&x.sb, true, GEAR_F, 80.0f);
         sbsim_run(&x, 40000u, NULL, NULL);
         float v_fwd = x.w.speed_kn;
@@ -193,12 +302,12 @@ static void phase2(void)
         memset(&ev, 0, sizeof ev);
         sbsim_init(&x, 13u, 90.0f, 0.0f, NULL);
         sbsim_run(&x, 1000u, NULL, NULL);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_TEST);
+        hdg_lock(&x);
         sb_test_drive(&x.sb, true, GEAR_F, 100.0f);
         sbsim_run(&x, 60000u, NULL, NULL);
         float v0 = x.w.speed_kn, h0 = x.w.heading_deg, hmax = 0.0f;
         ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_n_us);
-        sim_hal_press(HAL_BTN_STANDBY_AUTO);
+        sim_hal_press(HAL_BTN_STANDBY);
         uint32_t t_end = x.t + 30000u;
         while (x.t < t_end) {
             sbsim_run(&x, x.t + 50u, ev_watch, &ev);
@@ -223,8 +332,8 @@ static void phase2(void)
         events_t ev;
         memset(&ev, 0, sizeof ev);
         sbsim_init(&x, 14u, 90.0f, 0.0f, NULL);
-        sbsim_run(&x, 1000u, NULL, NULL);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_TEST);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        auto_to(&x, 5000.0f, 90.0f, 20.0f);              /* AUTO, raw full throttle */
         sb_test_drive(&x.sb, true, GEAR_F, 100.0f);
         sbsim_run(&x, 60000u, NULL, NULL);
         sim_hal_fail_heading(true);
@@ -235,7 +344,7 @@ static void phase2(void)
                  "steering off %.2f s, alarm %s, under-load shifts %d",
                  mode_reason_name(le->why), ev.t_thr_down, ev.t_idle, ev.t_neutral, ev.t_steer_off,
                  sim_hal_alarm() ? "on" : "OFF", x.w.shift_under_load);
-        test_report("P2 compass failure at full throttle: STANDBY, idle + neutral, alarm",
+        test_report("P2 compass failure at full throttle (AUTO): STANDBY, idle + neutral, alarm",
                     le->why == WHY_COMPASS_FAULT && sb_mode(&x.sb) == MODE_STANDBY && sim_hal_alarm() &&
                     ev.t_thr_down >= 0.0f && ev.t_thr_down <= 2.1f && ev.t_neutral > ev.t_idle &&
                     x.w.shift_under_load == 0 && sim_hal_throttle() <= 0.0f, d);
@@ -249,7 +358,7 @@ static void phase2(void)
         float sog_err = 0.0f;
         sbsim_init(&x, 15u, 0.0f, 0.0f, NULL);
         sbsim_run(&x, 1000u, NULL, NULL);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_TEST);
+        hdg_lock(&x);
         sb_test_drive(&x.sb, true, GEAR_F, 100.0f);
         uint32_t last_gps = 0;
         while (x.t < 60000u) {
@@ -278,11 +387,15 @@ static void phase2(void)
 
 /* ------------------------------------------------------------ phase 3 -- */
 
-/* A scripted operator: control positions from time t (s after start). */
+/* A scripted operator on the joystick (MANUAL): from time t (s after
+ * start) steer = X (-1..+1 = full angle), thr + gear = Y (F: +thr,
+ * R: -thr, N: centre). */
+typedef enum { SEL_N = 0, SEL_F, SEL_R } sel_t;
+
 typedef struct {
-    float          t;
-    float          steer, thr;
-    hal_gear_sel_t gear;
+    float t;
+    float steer, thr;
+    sel_t gear;
 } ctl_step_t;
 
 typedef struct {
@@ -291,9 +404,14 @@ typedef struct {
     uint32_t t0;
     /* watch */
     float est_max, est_min, ang_max, ang_min, v_max, v_min;
-    float thr_in_neutral;       /* worst throttle while selector is N */
+    float thr_in_neutral;       /* worst throttle while the stick is centred in Y */
     float hdg_min, hdg_max, hdg_unwrap, hdg_prev;
 } script_t;
+
+static float ctl_y(const ctl_step_t *c)
+{
+    return (c->gear == SEL_F) ? c->thr : (c->gear == SEL_R) ? -c->thr : 0.0f;
+}
 
 static void script_hook(sbsim_t *x, void *ctx)
 {
@@ -301,7 +419,7 @@ static void script_hook(sbsim_t *x, void *ctx)
     float ts = (float)(x->t - s->t0) * 0.001f;
     int k = -1;
     for (int i = 0; i < s->n; i++) if (ts >= s->steps[i].t) k = i;
-    if (k >= 0) sim_hal_set_controls(s->steps[k].steer, s->steps[k].thr, s->steps[k].gear);
+    if (k >= 0) joy_set(s->steps[k].steer, ctl_y(&s->steps[k]), false, false);
 
     float est = x->sb.ap.est_angle, ang = x->w.rud.angle_deg;
     if (est > s->est_max) s->est_max = est;
@@ -310,7 +428,7 @@ static void script_hook(sbsim_t *x, void *ctx)
     if (ang < s->ang_min) s->ang_min = ang;
     if (x->w.speed_kn > s->v_max) s->v_max = x->w.speed_kn;
     if (x->w.speed_kn < s->v_min) s->v_min = x->w.speed_kn;
-    if (k >= 0 && s->steps[k].gear == HAL_SEL_N && gear_is(&x->sb.gear, GEAR_N) &&
+    if (k >= 0 && s->steps[k].gear == SEL_N && gear_is(&x->sb.gear, GEAR_N) &&
         sim_hal_throttle() > s->thr_in_neutral)
         s->thr_in_neutral = sim_hal_throttle();
     s->hdg_unwrap += hdg_err(x->w.heading_deg, s->hdg_prev);
@@ -328,70 +446,83 @@ static void script_start(script_t *s, sbsim_t *x, const ctl_step_t *steps, int n
     s->hdg_prev = x->w.heading_deg;
 }
 
+/* MANUAL with a joystick limited to `max_pct` throttle (old MANEUVER: 30 %). */
+static sb_config_t cfg_manual(float max_pct)
+{
+    sb_config_t c;
+    sb_default_config(&c);
+    c.joy_max_throttle_pct = max_pct;
+    return c;
+}
+
 static void phase3(void)
 {
     char d[300];
-    printf("\n=== Phase 3: MANEUVER ===\n");
+    printf("\n=== Phase 3: MANUAL (joystick) ===\n");
 
     /* 3.1 docking-style sequence */
     {
         static const ctl_step_t dock[] = {
-            {  0.0f,  0.0f, 1.0f, HAL_SEL_F },   /* ahead, lever full (-> 30 %) */
-            { 15.0f,  1.0f, 1.0f, HAL_SEL_F },   /* full right */
-            { 27.0f, -1.0f, 1.0f, HAL_SEL_F },   /* back left */
-            { 37.0f,  0.0f, 0.5f, HAL_SEL_N },   /* neutral, lever left half open */
-            { 45.0f,  0.0f, 1.0f, HAL_SEL_R },   /* astern, lever full */
-            { 50.0f, -1.0f, 1.0f, HAL_SEL_R },   /* full left while reversing */
-            { 62.0f,  1.0f, 1.0f, HAL_SEL_R },   /* back right */
-            { 72.0f,  0.0f, 0.0f, HAL_SEL_N },
-            { 80.0f,  0.0f, 0.3f, HAL_SEL_F },
+            {   0.0f,  0.0f, 1.0f, SEL_F },  /* ahead, stick full (-> 30 %) */
+            {  15.0f,  1.0f, 1.0f, SEL_F },  /* full right */
+            {  35.0f, -1.0f, 1.0f, SEL_F },  /* back left */
+            {  60.0f,  0.0f, 0.0f, SEL_N },  /* neutral */
+            {  70.0f,  0.0f, 1.0f, SEL_R },  /* astern, stick full */
+            {  75.0f, -1.0f, 1.0f, SEL_R },  /* full left while reversing */
+            {  97.0f,  1.0f, 1.0f, SEL_R },  /* back right */
+            { 122.0f,  0.0f, 0.0f, SEL_N },
+            { 130.0f,  0.0f, 0.3f, SEL_F },
         };
         sbsim_t x;
         script_t s;
-        sbsim_init(&x, 21u, 45.0f, 0.0f, NULL);
+        sb_config_t c = cfg_manual(30.0f);
+        sbsim_init(&x, 21u, 45.0f, 0.0f, &c);
         sbsim_run(&x, 1000u, NULL, NULL);
-        bool ok_mode = sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
         script_start(&s, &x, dock, (int)(sizeof dock / sizeof dock[0]));
-        sbsim_run(&x, 91000u, script_hook, &s);
-        sim_hal_press(HAL_BTN_STANDBY_AUTO);
-        sbsim_run(&x, 105000u, script_hook, &s);
+        sbsim_run(&x, 2000u, script_hook, &s);
+        bool ok_mode = sb_mode(&x.sb) == MODE_MANUAL;       /* the stick took control */
+        sbsim_run(&x, 141000u, script_hook, &s);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, 142000u, NULL, NULL);
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, 155000u, NULL, NULL);
         float lim = x.sb.cfg.steer.outboard.max_angle_deg;
         snprintf(d, sizeof d, "max throttle fwd %.1f %% / rev %.1f %% (limit %.0f), speed %+.1f..%+.1f kn, "
                  "outboard est %+.1f..%+.1f deg, true %+.1f..%+.1f deg (stops +-35), end-stop push %.1f s, "
                  "heading swing %+.0f..%+.0f deg, throttle in N %.1f %%, under-load %d, F/R w/o N %d",
-                 x.w.max_thr_fwd, x.w.max_thr_rev, x.sb.cfg.maneuver_throttle_pct, s.v_min, s.v_max,
+                 x.w.max_thr_fwd, x.w.max_thr_rev, c.joy_max_throttle_pct, s.v_min, s.v_max,
                  s.est_min, s.est_max, s.ang_min, s.ang_max, x.w.rud.stall_s, s.hdg_min, s.hdg_max,
                  s.thr_in_neutral, x.w.shift_under_load, x.w.fr_without_neutral);
-        bool ok = ok_mode && x.w.max_thr_fwd <= x.sb.cfg.maneuver_throttle_pct + 0.01f &&
-                  x.w.max_thr_rev <= x.sb.cfg.maneuver_throttle_pct + 0.01f &&
+        bool ok = ok_mode && x.w.max_thr_fwd <= c.joy_max_throttle_pct + 0.01f &&
+                  x.w.max_thr_rev <= c.joy_max_throttle_pct + 0.01f &&
                   s.v_max > 3.0f && s.v_min < -1.5f &&
-                  s.est_max >= lim - 0.01f && s.est_min <= -lim + 0.01f &&
+                  s.est_max >= lim - 1.0f && s.est_min <= -lim + 1.0f &&     /* angle loop deadband */
                   s.est_max <= lim + 0.01f && s.est_min >= -lim - 0.01f &&
                   x.w.rud.stall_s == 0.0f && s.thr_in_neutral <= 0.0f &&
                   x.w.shift_under_load == 0 && x.w.fr_without_neutral == 0 &&
                   (s.hdg_max - s.hdg_min) > 30.0f &&
                   sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f &&
                   gear_is(&x.sb.gear, GEAR_N) && sim_hal_motor_command() == 0.0f;
-        test_report("P3 docking sequence: fwd, neutral, rev, full-angle turns, throttle <= 30 %", ok, d);
+        test_report("P3 docking sequence: fwd, neutral, rev, full-angle turns, throttle <= limit", ok, d);
     }
 
-    /* 3.2 fast gear toggling by the user (every 200 ms, lever full) */
+    /* 3.2 fast gear toggling by the user (every 200 ms, half stick) */
     {
         static ctl_step_t tog[52];
-        static const hal_gear_sel_t seq[3] = { HAL_SEL_F, HAL_SEL_R, HAL_SEL_N };
+        static const sel_t seq[3] = { SEL_F, SEL_R, SEL_N };
         for (int i = 0; i < 50; i++) {
             tog[i].t = 0.2f * (float)i;
             tog[i].steer = 0.0f;
-            tog[i].thr = 1.0f;
+            tog[i].thr = 0.5f;
             tog[i].gear = seq[i % 3];
         }
-        tog[50].t = 10.0f; tog[50].steer = 0.0f; tog[50].thr = 1.0f; tog[50].gear = HAL_SEL_R;
-        tog[51].t = 30.0f; tog[51].steer = 0.0f; tog[51].thr = 1.0f; tog[51].gear = HAL_SEL_R;
+        tog[50].t = 10.0f; tog[50].steer = 0.0f; tog[50].thr = 1.0f; tog[50].gear = SEL_R;
+        tog[51].t = 30.0f; tog[51].steer = 0.0f; tog[51].thr = 1.0f; tog[51].gear = SEL_R;
         sbsim_t x;
         script_t s;
-        sbsim_init(&x, 22u, 0.0f, 0.0f, NULL);
+        sb_config_t c = cfg_manual(30.0f);
+        sbsim_init(&x, 22u, 0.0f, 0.0f, &c);
         sbsim_run(&x, 1000u, NULL, NULL);
-        sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
         script_start(&s, &x, tog, 52);
         float thr_toggling = 0.0f;
         int engage_changes = 0;
@@ -403,81 +534,85 @@ static void phase3(void)
         }
         sbsim_run(&x, s.t0 + 25000u, script_hook, &s);
         snprintf(d, sizeof d, "50 changes in 10 s: max throttle while toggling %.1f %%, gearbox engagements %d, "
-                 "under-load %d, F/R w/o N %d; afterwards gear %s, throttle %.1f %%, speed %+.1f kn",
+                 "under-load %d, F/R w/o N %d; afterwards mode %s, gear %s, throttle %.1f %%, speed %+.1f kn",
                  thr_toggling, engage_changes, x.w.shift_under_load, x.w.fr_without_neutral,
-                 gear_name(x.w.engaged), sim_hal_throttle(), x.w.speed_kn);
+                 mode_name(sb_mode(&x.sb)), gear_name(x.w.engaged), sim_hal_throttle(), x.w.speed_kn);
         test_report("P3 fast gear toggling: always via neutral at idle, ends in last request",
                     thr_toggling <= 1.0f && x.w.shift_under_load == 0 && x.w.fr_without_neutral == 0 &&
-                    x.w.engaged == GEAR_R && gear_is(&x.sb.gear, GEAR_R) &&
-                    sim_hal_throttle() <= 30.01f && x.w.speed_kn < -1.0f, d);
+                    x.w.engaged == GEAR_R && gear_is(&x.sb.gear, GEAR_R) && sb_mode(&x.sb) == MODE_MANUAL &&
+                    sim_hal_throttle() <= x.sb.cfg.throttle.max_rev_pct + 0.01f && x.w.speed_kn < -1.0f, d);
     }
 
-    /* 3.3 STANDBY while reversing with full lever: idle + neutral, steering off */
+    /* 3.3 STANDBY while reversing with the stick full astern: idle +
+     *     neutral, steering off, the held stick is ignored (disarmed) */
     {
-        static const ctl_step_t rev[] = { { 0.0f, -1.0f, 1.0f, HAL_SEL_R } };
+        static const ctl_step_t rev[] = { { 0.0f, -1.0f, 1.0f, SEL_R } };
         sbsim_t x;
         script_t s;
         events_t ev;
         memset(&ev, 0, sizeof ev);
         sbsim_init(&x, 23u, 0.0f, 0.0f, NULL);
         sbsim_run(&x, 1000u, NULL, NULL);
-        sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
         script_start(&s, &x, rev, 1);
         sbsim_run(&x, 20000u, script_hook, &s);
+        bool was_manual = sb_mode(&x.sb) == MODE_MANUAL;
         ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_n_us);
-        sim_hal_press(HAL_BTN_STANDBY_AUTO);
-        sbsim_run(&x, 40000u, ev_watch, &ev);        /* operator still holds the controls */
+        sim_hal_press(HAL_BTN_STANDBY);
+        sbsim_run(&x, 40000u, ev_watch, &ev);        /* operator still holds the stick */
         snprintf(d, sizeof d, "throttle down after %.2f s, idle %.2f s, neutral %.2f s, steering off %.2f s, "
-                 "motor after off %d, under-load %d, speed now %+.1f kn",
+                 "motor after off %d, under-load %d, mode now %s (stick still held), speed %+.1f kn",
                  ev.t_thr_down, ev.t_idle, ev.t_neutral, ev.t_steer_off, ev.steer_after_off,
-                 x.w.shift_under_load, x.w.speed_kn);
-        test_report("P3 STANDBY while reversing: idle + neutral, steering off, controls ignored",
-                    ev.t_thr_down >= 0.0f && ev.t_thr_down <= 0.1f && ev.t_neutral > ev.t_idle &&
+                 x.w.shift_under_load, mode_name(sb_mode(&x.sb)), x.w.speed_kn);
+        test_report("P3 STANDBY while reversing: idle + neutral, steering off, held stick ignored",
+                    was_manual && ev.t_thr_down >= 0.0f && ev.t_thr_down <= 0.1f && ev.t_neutral > ev.t_idle &&
                     ev.steer_after_off == 0 && x.w.shift_under_load == 0 &&
                     sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f, d);
     }
 
-    /* 3.4 compass failure in MANEUVER -> alarm only, stay in MANEUVER
+    /* 3.4 compass failure in MANUAL -> alarm only, stay in MANUAL
      *     (manual steering doesn't need the compass) */
     {
         static const ctl_step_t seq[] = {
-            {  0.0f, 0.0f, 1.0f, HAL_SEL_F },
-            { 25.0f, 1.0f, 1.0f, HAL_SEL_F },     /* after the fault: steer right */
-            { 30.0f, 0.0f, 1.0f, HAL_SEL_F },
+            {  0.0f, 0.0f, 1.0f, SEL_F },
+            { 25.0f, 1.0f, 1.0f, SEL_F },     /* after the fault: steer right */
+            { 30.0f, 0.0f, 1.0f, SEL_F },
         };
         sbsim_t x;
         script_t s;
-        sbsim_init(&x, 24u, 0.0f, 0.0f, NULL);
+        sb_config_t c = cfg_manual(30.0f);
+        sbsim_init(&x, 24u, 0.0f, 0.0f, &c);
         sbsim_run(&x, 1000u, NULL, NULL);
-        sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
         script_start(&s, &x, seq, 3);
         sbsim_run(&x, 20000u, script_hook, &s);
         sim_hal_fail_heading(true);
         sbsim_run(&x, 24000u, script_hook, &s);
         float est_before = x.sb.ap.est_angle;
+        s.est_max = s.ang_max = -99.0f;               /* watch from here */
         sbsim_run(&x, 40000u, script_hook, &s);
         sb_mode_t after = sb_mode(&x.sb);
         snprintf(d, sizeof d, "mode after fault %s, alarm %s, throttle %.1f %%, gear %s, "
-                 "manual steering after the fault: estimate %+.1f -> %+.1f deg, true %+.1f deg",
+                 "stick right after the fault: estimate %+.1f -> up to %+.1f deg, true up to %+.1f deg",
                  mode_name(after), sim_hal_alarm() ? "on" : "OFF", sim_hal_throttle(), gear_name(x.w.engaged),
-                 est_before, x.sb.ap.est_angle, x.w.rud.angle_deg);
-        test_report("P3 compass failure in MANEUVER: alarm only, manual control keeps working",
-                    after == MODE_MANEUVER && sim_hal_alarm() && x.w.engaged == GEAR_F &&
-                    sim_hal_throttle() > 29.0f && x.sb.ap.est_angle > est_before + 10.0f &&
-                    x.w.rud.angle_deg > 10.0f && x.w.shift_under_load == 0, d);
+                 est_before, s.est_max, s.ang_max);
+        test_report("P3 compass failure in MANUAL: alarm only, manual control keeps working",
+                    after == MODE_MANUAL && sim_hal_alarm() && x.w.engaged == GEAR_F &&
+                    sim_hal_throttle() > 29.0f && s.est_max > est_before + 10.0f &&
+                    s.ang_max > 10.0f && x.w.shift_under_load == 0, d);
     }
 }
 
 /* ------------------------------------------------------------ phase 4 -- */
 
-/* Watch a CRUISE run. Set speed / sea state follow a schedule. */
+/* Watch an AUTO run along a straight line. Segments are the program legs
+ * (several legs), or a sea-state schedule in time (one long leg). */
 typedef struct {
-    const float *at_s;          /* schedule times (s after t0) */
-    const float *speed;         /* set speed from that time (<0 = keep) */
+    const float *at_s;          /* sea schedule times (s after t0) */
     const float *sea;           /* sea state from that time */
-    int      n;
+    int      n_sea;
+    int      n_legs;
     uint32_t t0;
-    int      seg;               /* current schedule entry */
+    int      seg;               /* current segment */
+    uint32_t seg_t0;            /* when it started */
     /* per segment */
     float seg_err_sum[16]; int seg_err_n[16];
     float seg_over[16], seg_hold[16], seg_vmin[16], seg_vmax[16];
@@ -495,15 +630,23 @@ static void cruise_hook(sbsim_t *x, void *ctx)
 {
     cruise_watch_t *c = (cruise_watch_t *)ctx;
     float ts = (float)(x->t - c->t0) * 0.001f;
-    while (c->seg + 1 < c->n && ts >= c->at_s[c->seg + 1]) {
-        c->seg++;
-        if (c->speed[c->seg] >= 0.0f) sb_set_cruise_speed(&x->sb, c->speed[c->seg]);
-        x->w.sea_state = c->sea[c->seg];
+    if (c->n_legs > 1) {
+        int g = x->sb.autop.wp;
+        if (g != c->seg && g < 16) { c->seg = g; c->seg_t0 = x->t; }
+    } else {
+        while (c->seg + 1 < c->n_sea && ts >= c->at_s[c->seg + 1]) {
+            c->seg++;
+            c->seg_t0 = x->t;
+            x->w.sea_state = c->sea[c->seg];
+        }
     }
     int g = c->seg;
-    float seg_t = ts - c->at_s[g];
+    float seg_t = (float)(x->t - c->seg_t0) * 0.001f;
     float sog = world_sog_kn(&x->w);
     float set = x->sb.cruise.target_kn;
+    if (!auto_running(x)) return;
+    bool last = (uint16_t)(x->sb.autop.wp + 1u) >= x->sb.autop.prog.n;
+    if (last && x->sb.autop.leg.dist_m < x->sb.cfg.slow_radius_m + 150.0f) return;   /* final approach */
     if (seg_t > 40.0f) {                    /* settled part of the segment */
         c->seg_err_sum[g] += fabsf(sog - set);
         c->seg_err_n[g]++;
@@ -511,11 +654,11 @@ static void cruise_hook(sbsim_t *x, void *ctx)
         if (he > c->seg_hold[g]) c->seg_hold[g] = he;
         if (he > c->hold_max) c->hold_max = he;
     }
-    if (sog - x->sb.cruise.set_kn > c->seg_over[g]) c->seg_over[g] = sog - x->sb.cruise.set_kn;
+    if (seg_t > 5.0f && sog - x->sb.cruise.set_kn > c->seg_over[g]) c->seg_over[g] = sog - x->sb.cruise.set_kn;
     if (seg_t > 40.0f && (c->seg_vmin[g] == 0.0f || sog < c->seg_vmin[g])) c->seg_vmin[g] = sog;
     if (seg_t > 40.0f && sog > c->seg_vmax[g]) c->seg_vmax[g] = sog;
 
-    if (sb_mode(&x->sb) == MODE_CRUISE && x->sb.ap.steer_limit_deg > 0.0f) {
+    if (x->sb.ap.steer_limit_deg > 0.0f) {
         float ex = fabsf(x->sb.ap.rudder_target) - x->sb.ap.steer_limit_deg;
         if (ex > c->limit_excess) c->limit_excess = ex;
         float lim_true = sb_steer_limit_for(&x->sb.cfg, sog) + 3.0f;
@@ -531,17 +674,26 @@ static void cruise_hook(sbsim_t *x, void *ctx)
     }
 }
 
-static void cruise_run(sbsim_t *x, cruise_watch_t *c, uint32_t seed, const float *at, const float *spd,
-                       const float *sea, int n, uint32_t dur_ms)
+/* AUTO due east: legs of `leg_s` seconds at each speed in spd[] (all
+ * CONTINUE, straight line), or one long leg at spd[0] (n_legs = 1) with the
+ * sea schedule. */
+static void cruise_run(sbsim_t *x, cruise_watch_t *c, uint32_t seed, const float *spd, int n_legs, float leg_s,
+                       const float *at, const float *sea, int n_sea, uint32_t dur_ms)
 {
+    prog_wp_t wps[16];
     sbsim_init(x, seed, 90.0f, 0.0f, NULL);
     x->w.sea_state = sea[0];
-    sbsim_run(x, 1000u, NULL, NULL);
-    sb_set_cruise_speed(&x->sb, spd[0]);
-    sb_request_mode(&x->sb, MODE_CRUISE, WHY_USER);
+    sbsim_run(x, 3000u, NULL, NULL);
+    double e = x->w.east_m;
+    for (int i = 0; i < n_legs; i++) {
+        float len = (n_legs > 1) ? spd[i] * 0.514444f * leg_s : spd[0] * 0.514444f * (dur_ms * 0.001f) + 2000.0f;
+        e += len;
+        wps[i] = wp_world(x, x->w.north_m, e, spd[i], 25.0f, WP_ACT_CONTINUE);
+    }
     memset(c, 0, sizeof *c);
-    c->at_s = at; c->speed = spd; c->sea = sea; c->n = n;
-    c->t0 = x->t;
+    c->at_s = at; c->sea = sea; c->n_sea = n_sea; c->n_legs = n_legs;
+    auto_go(x, wps, n_legs, PROG_END_STOP);
+    c->t0 = c->seg_t0 = x->t;
     c->last_gear = x->w.engaged;
     sbsim_run(x, x->t + dur_ms, cruise_hook, c);
 }
@@ -549,41 +701,42 @@ static void cruise_run(sbsim_t *x, cruise_watch_t *c, uint32_t seed, const float
 static void phase4(void)
 {
     char d[400];
-    printf("\n=== Phase 4: CRUISE ===\n");
+    printf("\n=== Phase 4: AUTO speed control, steering by speed ===\n");
 
-    /* 4.1 speed ramp 3 -> 20 kn, sea state 1 */
+    /* 4.1 legs at 3 -> 20 kn, sea state 1 */
     {
-        static const float at[]  = { 0, 60, 120, 180, 240 };
         static const float spd[] = { 3, 6, 10, 15, 20 };
-        static const float sea[] = { 1, 1, 1, 1, 1 };
+        static const float at[]  = { 0 };
+        static const float sea[] = { 1 };
         sbsim_t x;
         cruise_watch_t c;
-        cruise_run(&x, &c, 41u, at, spd, sea, 5, 300000u);
+        cruise_run(&x, &c, 41u, spd, 5, 90.0f, at, sea, 1, 470000u);
         bool ok = true;
         int len = 0;
-        len += snprintf(d + len, sizeof d - (size_t)len, "set/err/overshoot/hold:");
+        len += snprintf(d + len, sizeof d - (size_t)len, "leg speed/err/overshoot/hold:");
         for (int i = 0; i < 5; i++) {
             float err = c.seg_err_n[i] ? c.seg_err_sum[i] / (float)c.seg_err_n[i] : 99.0f;
             len += snprintf(d + len, sizeof d - (size_t)len, " %.0fkn %.2f/%.2f/%.1f", spd[i], err,
                             c.seg_over[i], c.seg_hold[i]);
-            if (err > 0.5f || c.seg_over[i] > 1.5f || c.seg_hold[i] > 10.0f) ok = false;
+            /* (in AUTO the target itself moves with the cross-track correction) */
+            if (err > 0.5f || c.seg_over[i] > 1.5f || c.seg_hold[i] > 12.0f) ok = false;
         }
         snprintf(d + len, sizeof d - (size_t)len, "; steering beyond limit: cmd %.2f, true %.2f deg; "
-                 "throttle rate max %.0f %%/s; gear changes after F %d",
-                 c.limit_excess, c.true_excess, x.w.max_thr_rate, c.gear_changes - 1);
+                 "throttle rate max %.0f %%/s; gear changes after F %d; legs done %u",
+                 c.limit_excess, c.true_excess, x.w.max_thr_rate, c.gear_changes - 1, x.sb.autop.legs_done);
         ok = ok && c.limit_excess <= 0.01f && c.true_excess <= 0.0f && x.w.max_thr_rate <= 40.5f &&
-             c.gear_changes == 1 && x.w.shift_under_load == 0;
-        test_report("P4 speed ramp 3->20 kn: speed control, steering limit by speed", ok, d);
+             c.gear_changes == 1 && x.w.shift_under_load == 0 && x.sb.autop.legs_done >= 4u;
+        test_report("P4 AUTO legs 3->20 kn: speed control per leg, steering limit by speed", ok, d);
     }
 
     /* 4.2 sea state 1 -> 4 at 18 kn, then calm again */
     {
         static const float at[]  = { 0, 180, 360, 540, 1140 };
-        static const float spd[] = { 18, -1, -1, -1, -1 };
+        static const float spd[] = { 18 };
         static const float sea[] = { 1, 2, 3, 4, 1 };
         sbsim_t x;
         cruise_watch_t c;
-        cruise_run(&x, &c, 42u, at, spd, sea, 5, 2100000u);
+        cruise_run(&x, &c, 42u, spd, 1, 0.0f, at, sea, 5, 2100000u);
         snprintf(d, sizeof d, "speed by sea state: ss1 %.1f-%.1f, ss2 %.1f-%.1f, ss3 %.1f-%.1f, ss4 %.1f-%.1f, "
                  "calm again %.1f-%.1f kn (end %.1f); course error max ss3 %.1f, ss4 %.1f deg; "
                  "rough-water episodes %u, changes %u, shortest gap %.0f s",
@@ -594,7 +747,7 @@ static void phase4(void)
         bool ok = c.seg_vmin[0] > 17.0f && c.seg_vmin[1] > 17.0f &&         /* no reaction in ss1-2 */
                   x.sb.nerv.episodes >= 1u && c.seg_vmin[3] <= 14.5f &&     /* slowed down in ss4 */
                   world_sog_kn(&x.w) > 17.0f &&                               /* recovered */
-                  x.sb.nerv.transitions <= 4u && sb_mode(&x.sb) == MODE_CRUISE;
+                  x.sb.nerv.transitions <= 4u && auto_running(&x);
         test_report("P4 sea state 1->4->1: slows down when rough, recovers when calm", ok, d);
     }
 
@@ -605,8 +758,8 @@ static void phase4(void)
         static const float sea[] = { 3.5f };
         sbsim_t x;
         cruise_watch_t c;
-        cruise_run(&x, &c, 43u, at, spd, sea, 1, 1800000u);
-        snprintf(d, sizeof d, "30 min at sea state 3.5, 18 kn set: episodes %u, nervous/calm changes %u, "
+        cruise_run(&x, &c, 43u, spd, 1, 0.0f, at, sea, 1, 1800000u);
+        snprintf(d, sizeof d, "30 min at sea state 3.5, 18 kn leg: episodes %u, nervous/calm changes %u, "
                  "shortest time between changes %.0f s, speed %.1f-%.1f kn",
                  x.sb.nerv.episodes, x.sb.nerv.transitions, c.min_gap_ms * 0.001f, c.seg_vmin[0], c.seg_vmax[0]);
         bool ok = x.sb.nerv.transitions <= 6u &&
@@ -614,58 +767,40 @@ static void phase4(void)
         test_report("P4 no oscillation between nervous and calm", ok, d);
     }
 
-    /* 4.4 forward only: reverse selector and lever ignored in CRUISE */
-    {
-        sbsim_t x;
-        sbsim_init(&x, 44u, 90.0f, 0.0f, NULL);
-        sbsim_run(&x, 1000u, NULL, NULL);
-        sb_set_cruise_speed(&x.sb, 10.0f);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
-        sbsim_run(&x, 40000u, NULL, NULL);
-        sim_hal_set_controls(-1.0f, 1.0f, HAL_SEL_R);
-        sbsim_run(&x, 80000u, NULL, NULL);
-        snprintf(d, sizeof d, "selector R + steer lever: gear %s, speed %.1f kn, steering motor manual? %s",
-                 gear_name(x.w.engaged), world_sog_kn(&x.w), x.sb.ap.mode == AP_MODE_AUTO ? "no (AUTO)" : "YES");
-        test_report("P4 CRUISE is forward only (operator reverse ignored)",
-                    x.w.engaged == GEAR_F && world_sog_kn(&x.w) > 9.0f && x.sb.ap.mode == AP_MODE_AUTO &&
-                    x.w.max_thr_rev == 0.0f, d);
-    }
-
-    /* 4.5 GPS loss in CRUISE: reduced throttle held, alarm, heading still held */
+    /* 4.5 GPS loss in HDG LOCK: alarm, still steering, throttle stays with the user */
     {
         sbsim_t x;
         sbsim_init(&x, 45u, 90.0f, 0.0f, NULL);
-        sbsim_run(&x, 1000u, NULL, NULL);
-        sb_set_cruise_speed(&x.sb, 15.0f);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        hdg_lock(&x);
+        joy_set(0.0f, 0.6f, false, false);          /* throttle on the stick */
         sbsim_run(&x, 80000u, NULL, NULL);
         float thr0 = sim_hal_throttle(), v0 = world_sog_kn(&x.w);
         x.w.gps_fail = true;
-        float thr_max = 0.0f, hold = 0.0f;
+        float thr_min = 100.0f, hold = 0.0f;
         while (x.t < 200000u) {
             sbsim_run(&x, x.t + 50u, NULL, NULL);
-            if (x.t > 90000u && sim_hal_throttle() > thr_max) thr_max = sim_hal_throttle();
+            if (x.t > 90000u && sim_hal_throttle() < thr_min) thr_min = sim_hal_throttle();
             float he = fabsf(hdg_err(x.w.heading_deg, x.sb.ap.target_heading));
             if (x.t > 110000u && he > hold) hold = he;
         }
-        snprintf(d, sizeof d, "before: %.1f %% at %.1f kn; after GPS loss: throttle <= %.1f %%, speed %.1f kn, "
-                 "alarm %s, mode %s, course error max %.1f deg",
-                 thr0, v0, thr_max, world_sog_kn(&x.w), sim_hal_alarm() ? "on" : "OFF",
-                 mode_name(sb_mode(&x.sb)), hold);
-        test_report("P4 GPS loss in CRUISE: reduced throttle, alarm, still steering",
-                    thr_max <= thr0 * 0.61f && sim_hal_alarm() && sb_mode(&x.sb) == MODE_CRUISE &&
-                    world_sog_kn(&x.w) < v0 && hold < 10.0f, d);
+        snprintf(d, sizeof d, "before: %.1f %% at %.1f kn; after GPS loss: throttle >= %.1f %% (stick), speed %.1f kn, "
+                 "alarm %s (GPS lost %s), mode %s, course error max %.1f deg",
+                 thr0, v0, thr_min, world_sog_kn(&x.w), sim_hal_alarm() ? "on" : "OFF",
+                 (x.sb.alarm_bits & SB_ALM_GPS_LOST) ? "yes" : "NO", mode_name(sb_mode(&x.sb)), hold);
+        test_report("P4 GPS loss in HDG LOCK: alarm, still steering, throttle stays with the user",
+                    thr_min >= thr0 - 0.5f && sim_hal_alarm() && (x.sb.alarm_bits & SB_ALM_GPS_LOST) &&
+                    sb_mode(&x.sb) == MODE_HDG_LOCK && hold < 10.0f, d);
     }
 
-    /* 4.6 compass failure in CRUISE at 20 kn: safe stop */
+    /* 4.6 compass failure in AUTO at 20 kn: safe stop */
     {
         sbsim_t x;
         events_t ev;
         memset(&ev, 0, sizeof ev);
         sbsim_init(&x, 46u, 90.0f, 0.0f, NULL);
-        sbsim_run(&x, 1000u, NULL, NULL);
-        sb_set_cruise_speed(&x.sb, 20.0f);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        auto_to(&x, 6000.0f, 90.0f, 20.0f);
         sbsim_run(&x, 120000u, NULL, NULL);
         float v0 = world_sog_kn(&x.w);
         sim_hal_fail_heading(true);
@@ -674,8 +809,8 @@ static void phase4(void)
         snprintf(d, sizeof d, "at %.1f kn: throttle down after %.2f s, idle %.2f s, neutral %.2f s, alarm %s, "
                  "under-load %d", v0, ev.t_thr_down, ev.t_idle, ev.t_neutral, sim_hal_alarm() ? "on" : "OFF",
                  x.w.shift_under_load);
-        test_report("P4 compass failure in CRUISE: STANDBY, idle + neutral first, alarm",
-                    sb_mode(&x.sb) == MODE_STANDBY && ev.t_thr_down >= 0.0f && ev.t_thr_down <= 2.1f &&
+        test_report("P4 compass failure in AUTO: STANDBY, idle + neutral first, alarm",
+                    v0 > 18.0f && sb_mode(&x.sb) == MODE_STANDBY && ev.t_thr_down >= 0.0f && ev.t_thr_down <= 2.1f &&
                     ev.t_neutral > ev.t_idle && sim_hal_alarm() && x.w.shift_under_load == 0, d);
     }
 }
@@ -691,7 +826,7 @@ typedef struct {
     float  crab_seen;           /* largest |heading - COG| estimate */
     float  hdg_min_seen, hdg_max_seen;
     bool   crossed_north;
-    float  t_arrive;            /* mode left NAV (s), -1 */
+    float  t_arrive;            /* AUTO stopped running the leg (s), -1 */
     mode_reason_t why;
     sb_mode_t mode_after;
     float  stop_dist;           /* distance to the waypoint when stopped */
@@ -706,27 +841,27 @@ static void nav_hook(sbsim_t *x, void *ctx)
     float n = (float)x->w.north_m, e = (float)x->w.east_m;
     float along = n * tn + e * te;
     float xte = e * tn - n * te;
-    if (sb_mode(&x->sb) == MODE_NAV) {
+    if (auto_running(x)) {
         if (along > w->settle_m && along < w->length - 150.0f) {
             if (fabsf(xte) > w->xte_max) w->xte_max = fabsf(xte);
             w->xte_sq += xte * xte;
             w->xte_n++;
         }
-        if (fabsf(x->sb.nav.crab_deg) > w->crab_seen) w->crab_seen = fabsf(x->sb.nav.crab_deg);
+        if (fabsf(x->sb.autop.crab_deg) > w->crab_seen) w->crab_seen = fabsf(x->sb.autop.crab_deg);
         float h = x->w.heading_deg;
         if ((w->prev_hdg > 300.0f && h < 60.0f) || (w->prev_hdg < 60.0f && h > 300.0f)) w->crossed_north = true;
         w->prev_hdg = h;
     } else if (w->t_arrive < 0.0f) {
         w->t_arrive = (float)(x->t - w->t0) * 0.001f;
-        const mode_log_entry_t *le = mode_log_get(&x->sb.modes, mode_log_size(&x->sb.modes) - 1u);
-        w->why = le->why;
+        w->why = auto_end_why(x);
         w->mode_after = sb_mode(&x->sb);
     }
     double dn = w->wp_n - x->w.north_m, de = w->wp_e - x->w.east_m;
     w->stop_dist = (float)sqrt(dn * dn + de * de);
 }
 
-/* NAV run: start at the world origin on `heading`, waypoint at dist/bearing. */
+/* AUTO run with one waypoint: start at the world origin on `heading`,
+ * waypoint at dist/bearing, radius 25 m, stop there. */
 static void nav_run(sbsim_t *x, nav_watch_t *w, uint32_t seed, float heading, float dist, float bearing,
                     float speed, float sea, float cur_e, float cur_n, uint32_t gps_fail_after_m)
 {
@@ -750,8 +885,9 @@ static void nav_run(sbsim_t *x, nav_watch_t *w, uint32_t seed, float heading, fl
     w->wp_n += n0;
     w->wp_e += e0;
     world_latlon(&tmp, &lat, &lon);
-    sb_set_waypoint(&x->sb, lat, lon, speed);
-    sb_request_mode(&x->sb, MODE_NAV, WHY_USER);
+    (void)lat; (void)lon;
+    prog_wp_t wp = wp_world(x, w->wp_n, w->wp_e, speed, 25.0f, WP_ACT_STOP);
+    auto_go(x, &wp, 1, PROG_END_STOP);
     w->t0 = x->t;
     uint32_t t_end = x->t + (uint32_t)(dist / (speed * 0.5144f) * 1000.0f * 2.0f) + 120000u;
     while (x->t < t_end) {
@@ -767,13 +903,13 @@ static void nav_run(sbsim_t *x, nav_watch_t *w, uint32_t seed, float heading, fl
 static void phase5(void)
 {
     char d[400];
-    printf("\n=== Phase 5: NAV ===\n");
+    printf("\n=== Phase 5: AUTO line following (one waypoint) ===\n");
 
     struct { const char *name; float hdg, dist, brg, spd, sea, ce, cn, xmax; } cases[] = {
-        { "P5 NAV 500 m waypoint (12 kn, sea 1)",               90.0f,  500.0f,  45.0f, 12.0f, 1.0f, 0.0f,  0.0f, 15.0f },
-        { "P5 NAV 2 km waypoint (18 kn, sea 2)",               180.0f, 2000.0f, 200.0f, 18.0f, 2.0f, 0.0f,  0.0f, 15.0f },
-        { "P5 NAV 2 km with 1 m/s side current (10 kn)",        90.0f, 2000.0f,  90.0f, 10.0f, 1.0f, 0.0f, -1.0f, 20.0f },
-        { "P5 NAV crossing north (track 2 deg, current from E)", 330.0f, 1000.0f,   2.0f, 10.0f, 1.0f, -0.8f, 0.0f, 20.0f },
+        { "P5 AUTO 500 m waypoint (12 kn, sea 1)",               90.0f,  500.0f,  45.0f, 12.0f, 1.0f, 0.0f,  0.0f, 15.0f },
+        { "P5 AUTO 2 km waypoint (18 kn, sea 2)",               180.0f, 2000.0f, 200.0f, 18.0f, 2.0f, 0.0f,  0.0f, 15.0f },
+        { "P5 AUTO 2 km with 1 m/s side current (10 kn)",        90.0f, 2000.0f,  90.0f, 10.0f, 1.0f, 0.0f, -1.0f, 20.0f },
+        { "P5 AUTO crossing north (track 2 deg, current from E)", 330.0f, 1000.0f,   2.0f, 10.0f, 1.0f, -0.8f, 0.0f, 20.0f },
     };
     for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         sbsim_t x;
@@ -798,25 +934,29 @@ static void phase5(void)
         sbsim_t x;
         nav_watch_t w;
         nav_run(&x, &w, 56u, 120.0f, 2000.0f, 120.0f, 14.0f, 1.0f, 0.0f, 0.0f, 1000u);
-        snprintf(d, sizeof d, "GPS lost at 1 km: NAV left after %.0f s (%s -> %s), alarm %s, gear %s, "
+        snprintf(d, sizeof d, "GPS lost at 1 km: leg ended after %.0f s (%s, %s), alarm %s, gear %s, "
                  "throttle now %.1f %%, speed %.1f kn, heading %.0f (track 120)",
                  w.t_arrive, mode_reason_name(w.why), mode_name(sb_mode(&x.sb)), sim_hal_alarm() ? "on" : "OFF",
                  gear_name(x.w.engaged), sim_hal_throttle(), world_sog_kn(&x.w), x.w.heading_deg);
-        /* since GPS-denied navigation: NAV carries on by dead reckoning,
-         * then (uncertain at the waypoint) slow CRUISE - not straight to CRUISE */
-        test_report("P5 NAV GPS loss halfway: continues by dead reckoning, alarm",
+        /* AUTO carries on by dead reckoning, then (uncertain at the
+         * waypoint) holds the heading slowly - not straight to a hold */
+        test_report("P5 AUTO GPS loss halfway: continues by dead reckoning, alarm",
                     w.why != WHY_GPS_LOST && w.t_arrive > 60.0f && sim_hal_alarm() &&
                     (x.sb.alarm_bits & SB_ALM_GPS_LOST) && x.w.engaged == GEAR_F &&
                     fabsf(hdg_err(x.w.heading_deg, 120.0f)) < 15.0f, d);
     }
 
-    /* NAV needs a waypoint */
+    /* AUTO needs a program */
     {
         sbsim_t x;
         sbsim_init(&x, 57u, 0.0f, 0.0f, NULL);
         sbsim_run(&x, 3000u, NULL, NULL);
-        bool ok = !sb_request_mode(&x.sb, MODE_NAV, WHY_USER);
-        test_report("P5 NAV refused without a waypoint", ok, "");
+        sb_result_t r = sb_auto_start(&x.sb);
+        bool cf = confirm_press(&x);
+        snprintf(d, sizeof d, "start without a program -> %d (no program = %d), CONFIRM accepted %s, mode %s",
+                 (int)r, (int)SB_ERR_NO_PROGRAM, cf ? "YES" : "no", mode_name(sb_mode(&x.sb)));
+        test_report("P5 AUTO refused without a program", r == SB_ERR_NO_PROGRAM && !cf &&
+                    sb_mode(&x.sb) == MODE_STANDBY, d);
     }
 }
 
@@ -1005,8 +1145,9 @@ static course6_t course6(const tset_t *ts, uint8_t ss, uint32_t seed, const sb_c
     x.w.sea_state = ss;
     world_tset(&x.w, ts);
     sbsim_run(&x, 3000u, NULL, NULL);
-    sb_set_cruise_speed(&x.sb, speed);
-    sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+    (void)speed;                                    /* the training throttle gives the training speed */
+    hdg_lock(&x);
+    sb_test_drive(&x.sb, true, GEAR_F, x.sb.cfg.training_throttle_pct);
     c.t0 = x.t;
     sbsim_run(&x, x.t + 300000u, course6_hook, &c);
     return c;
@@ -1100,7 +1241,7 @@ static void phase6(void)
             if (cl.hold_max > ct.hold_max * 1.3f + 1.0f || cl.over > ct.over * 1.3f + 2.0f) worse++;
         }
     }
-    printf("\nCourse keeping in CRUISE at the training speed (hold max / rms / overshoot of a 30 deg turn, deg):\n");
+    printf("\nCourse keeping in HDG LOCK at the training speed (hold max / rms / overshoot of a 30 deg turn, deg):\n");
     for (int k = 0; k < total; k++) printf("  %s\n", course_lines[k]);
 
     snprintf(d, sizeof d, "%d/%d trained and accepted; gain/travel/turn speed within 15 %%: %d/%d; "
@@ -1186,11 +1327,12 @@ static void phase6(void)
         sbsim_t x;
         sbsim_init(&x, 656u, 90.0f, 0.0f, NULL);
         sbsim_run(&x, 3000u, NULL, NULL);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
-        bool from_cruise = sb_request_mode(&x.sb, MODE_TRAINING, WHY_USER);
+        hdg_lock(&x);
+        bool from_hdg = sb_request_mode(&x.sb, MODE_TRAINING, WHY_PC);
         const mode_log_entry_t *le = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
         test_report("P6 TRAINING refused unless in STANDBY (table), and logged",
-                    !from_cruise && le->verdict == MODE_REJECT_TABLE && le->to == MODE_TRAINING, "");
+                    sb_mode(&x.sb) == MODE_HDG_LOCK && !from_hdg && le->verdict == MODE_REJECT_TABLE &&
+                    le->to == MODE_TRAINING, "");
     }
 }
 
@@ -1245,9 +1387,8 @@ static stopturn_t stop_turn(uint8_t fault_steer, bool gyro_fails, uint32_t seed)
     c.fault_steer = fault_steer;
     sbsim_init(&x, seed, 90.0f, 0.0f, &c);
     x.w.sea_state = 1.0f;
-    sbsim_run(&x, 1000u, NULL, NULL);
-    sb_set_cruise_speed(&x.sb, 20.0f);
-    sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+    sbsim_run(&x, 3000u, NULL, NULL);
+    auto_to(&x, 8000.0f, 90.0f, 20.0f);
     sbsim_run(&x, 120000u, NULL, NULL);
 
     /* the boat is in a hard turn: outboard at 15 deg right ... */
@@ -1280,20 +1421,22 @@ typedef struct {
 
 static stuck_t stuck_servo(bool switch_fitted, uint32_t seed)
 {
-    static const ctl_step_t fwd[] = { { 0.0f, 0.0f, 1.0f, HAL_SEL_F } };
+    static const ctl_step_t fwd[] = { { 0.0f, 0.0f, 1.0f, SEL_F } };
     sbsim_t x;
     script_t s;
     stuck_t r;
     memset(&r, 0, sizeof r);
     r.t_fault = -1.0f;
-    sbsim_init(&x, seed, 0.0f, 0.0f, NULL);
+    sb_config_t c = cfg_manual(30.0f);
+    sbsim_init(&x, seed, 0.0f, 0.0f, &c);
     x.w.neutral_switch = switch_fitted;
     sbsim_run(&x, 1000u, NULL, NULL);
-    sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
     script_start(&s, &x, fwd, 1);
     sbsim_run(&x, 20000u, script_hook, &s);
     x.w.servo_stuck = true;                         /* servo dies in forward */
-    sim_hal_set_controls(0.0f, 1.0f, HAL_SEL_R);    /* operator wants reverse */
+    joy_set(0.0f, 0.0f, false, false);              /* operator wants reverse (via centre) */
+    sbsim_run(&x, x.t + 50u, NULL, NULL);
+    joy_set(0.0f, -1.0f, false, false);
     uint32_t t0 = x.t;
     uint16_t pwm_at_fault = 0u;
     r.cmds_frozen = true;
@@ -1305,25 +1448,28 @@ static stuck_t stuck_servo(bool switch_fitted, uint32_t seed)
             pwm_at_fault = sim_hal_gear_pwm();
         }
         if (r.t_fault >= 0.0f && sim_hal_gear_pwm() != pwm_at_fault) r.cmds_frozen = false;
-        if (x.t == t0 + 20000u) sim_hal_set_controls(0.0f, 1.0f, HAL_SEL_F);   /* tries again */
+        if (x.t == t0 + 20000u) joy_set(0.0f, 0.0f, false, false);
+        if (x.t == t0 + 20050u) joy_set(0.0f, 1.0f, false, false);   /* tries again */
     }
-    r.refused = !sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
+    joy_set(0.0f, 0.0f, false, false);
+    sbsim_run(&x, x.t + 500u, NULL, NULL);
+    r.refused = !hdg_lock(&x);                      /* driving modes refused */
     r.v_end = x.w.speed_kn;
     r.alarm = sim_hal_alarm();
     r.fault = gear_fault(&x.sb.gear);
     r.mode_end = sb_mode(&x.sb);
-    r.why_end = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 2u)->why;
+    r.why_end = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u)->why;
     return r;
 }
 
-/* MANEUVER, operator holds full right; the true motor is faster than
+/* MANUAL, operator holds full right; the true motor is faster than
  * configured, so the outboard reaches the end stop before the estimate
  * says so. */
 typedef struct { float push_s, est_end, true_end; uint32_t hits; } push_t;
 
 static push_t maneuver_push(bool current_sensor, uint32_t seed)
 {
-    static const ctl_step_t right[] = { { 0.0f, 1.0f, 0.5f, HAL_SEL_F } };
+    static const ctl_step_t right[] = { { 0.0f, 1.0f, 0.5f, SEL_F } };
     sbsim_t x;
     script_t s;
     push_t r;
@@ -1332,7 +1478,6 @@ static push_t maneuver_push(bool current_sensor, uint32_t seed)
     x.w.rud.max_angle_deg = x.w.rud.max_angle_neg_deg = 30.0f;
     x.w.current_sensor = current_sensor;
     sbsim_run(&x, 1000u, NULL, NULL);
-    sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
     script_start(&s, &x, right, 1);
     sbsim_run(&x, 20000u, script_hook, &s);
     r.push_s = x.w.rud.stall_s;
@@ -1377,7 +1522,7 @@ static void fixes(void)
                     fabsf(pct6(tc.calib.travel_left_ms, tv.travel_left_ms)) < 15.0f, d);
 
         push_t pb = maneuver_push(false, 85u), pa = maneuver_push(true, 85u);
-        printf("MANEUVER full right, motor 50 %% faster than configured (end stop at 30 deg):\n");
+        printf("MANUAL full right, motor 50 %% faster than configured (end stop at 30 deg):\n");
         printf("  before: pushed %.1f s, estimate %.1f deg (true %.1f)\n", pb.push_s, pb.est_end, pb.true_end);
         printf("  after:  pushed %.1f s, estimate %.1f deg (true %.1f), end stop detected %u x\n",
                pa.push_s, pa.est_end, pa.true_end, pa.hits);
@@ -1395,7 +1540,7 @@ static void fixes(void)
         printf("  before (no switch): throttle up to %.1f %% while still in F, boat %+.1f kn, alarm %s\n",
                b.thr_max_after, b.v_end, b.alarm ? "on" : "off");
         printf("  after (switch):     fault after %.1f s, throttle up to %.1f %%, boat %+.1f kn, alarm %s, "
-               "gear commands frozen %s, mode %s (%s), MANEUVER refused %s\n",
+               "gear commands frozen %s, mode %s (%s), HDG LOCK refused %s\n",
                a.t_fault, a.thr_max_after, a.v_end, a.alarm ? "on" : "off", a.cmds_frozen ? "yes" : "NO",
                mode_name(a.mode_end), mode_reason_name(a.why_end), a.refused ? "yes" : "NO");
         snprintf(d, sizeof d, "before: throttle %.1f %% in the wrong gear, no alarm; after: fault %.1f s after "
@@ -1404,7 +1549,7 @@ static void fixes(void)
                  a.cmds_frozen ? "yes" : "NO", a.refused ? "yes" : "NO");
         test_report("F3 stuck gear servo: neutral not confirmed -> alarm, idle, no gear commands",
                     a.fault && a.alarm && a.thr_max_after <= 0.0f && a.cmds_frozen && a.refused &&
-                    a.t_fault > 0.0f && a.t_fault < 5.0f && a.mode_end == MODE_STANDBY, d);
+                    a.t_fault > 0.0f && a.t_fault < 5.0f && a.mode_end == MODE_MANUAL, d);
 
         /* with a working servo the switch must not cause false alarms */
         sbsim_t x;
@@ -1413,7 +1558,7 @@ static void fixes(void)
         sbsim_init(&x, 84u, 90.0f, 0.0f, NULL);
         x.w.neutral_switch = true;
         sbsim_run(&x, 1000u, NULL, NULL);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_TEST);
+        hdg_lock(&x);
         sb_test_drive(&x.sb, true, GEAR_F, 80.0f);
         sbsim_run(&x, 40000u, NULL, NULL);
         ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_r_us);
@@ -1468,7 +1613,7 @@ typedef struct {
     uint32_t suspects_before;   /* integrity alarms before the fault (false alarms) */
     float est_err_fault;        /* worst |estimate - true| while the fault was on */
     float xte_true_max;         /* worst true cross-track error after 300 m */
-    float end_err, end_unc;     /* estimate error / uncertainty when NAV ended */
+    float end_err, end_unc;     /* estimate error / uncertainty when the leg ended */
     float ratio_max;            /* worst error / uncertainty while in DR */
     mode_reason_t end_why;
     float end_t;
@@ -1500,9 +1645,8 @@ static mission_t gps_mission(gfault_t fault, float cur_e, float cur_n, bool padd
     world_t tmp = x.w;
     tmp.north_m = n0 + dist * tn;
     tmp.east_m = e0 + dist * te;
-    world_latlon(&tmp, &lat, &lon);
-    sb_set_waypoint(&x.sb, lat, lon, speed);
-    sb_request_mode(&x.sb, MODE_NAV, WHY_USER);
+    prog_wp_t wp = wp_world(&x, tmp.north_m, tmp.east_m, speed, 25.0f, WP_ACT_STOP);
+    auto_go(&x, &wp, 1, PROG_END_STOP);
 
     uint32_t t_fault = 0u, t_clear = 0u, t_rec = 0u;
     float prev_target = x.sb.ap.target_heading;
@@ -1514,7 +1658,7 @@ static mission_t gps_mission(gfault_t fault, float cur_e, float cur_n, bool padd
         dr_latlon(&x.sb.dr, &lat, &lon);
         world_from_latlon(lat, lon, &en, &ee);
         float err = (float)sqrt((en - x.w.north_m) * (en - x.w.north_m) + (ee - x.w.east_m) * (ee - x.w.east_m));
-        bool nav = sb_mode(&x.sb) == MODE_NAV;
+        bool nav = auto_running(&x);
 
         if (nav && along > 300.0f && fabsf(xte) > m.xte_true_max) m.xte_true_max = fabsf(xte);
         float step = fabsf(hdg_err(x.sb.ap.target_heading, prev_target));
@@ -1567,7 +1711,7 @@ static mission_t gps_mission(gfault_t fault, float cur_e, float cur_n, bool padd
             m.end_t = (float)x.t * 0.001f;
             m.end_err = err;
             m.end_unc = x.sb.dr.unc_m;
-            m.end_why = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u)->why;
+            m.end_why = auto_end_why(&x);
             break;
         }
     }
@@ -1578,7 +1722,7 @@ static mission_t gps_mission(gfault_t fault, float cur_e, float cur_n, bool padd
 static void gps_denied(void)
 {
     char d[500];
-    printf("\n=== GPS-denied NAV (3 km mission at 12 kn, fault at 1 km) ===\n");
+    printf("\n=== GPS-denied AUTO (3 km leg at 12 kn, fault at 1 km) ===\n");
 
     /* GPS loss: with / without current, with / without paddlewheel */
     struct { const char *name; float ce, cn; bool pw; } loss[] = {
@@ -1659,23 +1803,8 @@ static void gps_denied(void)
 
 /* ------------------------------------------------------------ joystick -- */
 
-/* Joystick position (-1..+1, default calibration) -> raw ADC. */
-static uint16_t joy_raw(float v)
-{
-    joy_cal_t c;
-    joy_default_cal(&c);
-    float r = (v >= 0.0f) ? c.center[0] + v * (float)(c.max[0] - c.center[0])
-                          : c.center[0] + v * (float)(c.center[0] - c.min[0]);
-    return (uint16_t)lrintf(r);
-}
-
-static void joy_set(float x, float y, bool take, bool autob)
-{
-    sim_hal_set_joystick(true, joy_raw(x), joy_raw(y), take, autob);
-}
-
 typedef struct {
-    float t_switch;             /* deflection -> JOYSTICK mode, s (-1 never) */
+    float t_switch;             /* deflection -> MANUAL, s (-1 never) */
     sb_mode_t from;
     float v_before;
     float thr_fwd_max, thr_rev_max;
@@ -1683,6 +1812,7 @@ typedef struct {
     float est_at_x, true_at_x;  /* outboard with X = 0.6 */
     float v_fwd, v_rev;         /* boat speed after full forward / full reverse */
     tr_result_t train_result;
+    bool  prog_suspended;
 } override_t;
 
 /* Put the boat in `mode`, then a person grabs the stick: X right 0.6,
@@ -1694,50 +1824,45 @@ static override_t joystick_override(sb_mode_t mode, uint32_t seed)
     memset(&r, 0, sizeof r);
     r.t_switch = -1.0f;
     r.from = mode;
-    remove("nv1.bin");
     sbsim_init(&x, seed, 90.0f, 0.0f, NULL);
-    joy_set(0.0f, 0.0f, false, false);              /* centred at power-up -> armed */
     sbsim_run(&x, 3000u, NULL, NULL);
 
     switch (mode) {
-    case MODE_MANEUVER:
-        sb_request_mode(&x.sb, MODE_MANEUVER, WHY_USER);
-        sim_hal_set_controls(0.0f, 1.0f, HAL_SEL_F);
-        sbsim_run(&x, 30000u, NULL, NULL);
-        break;
-    case MODE_CRUISE:
-        sb_set_cruise_speed(&x.sb, 20.0f);
-        sb_request_mode(&x.sb, MODE_CRUISE, WHY_USER);
+    case MODE_HDG_LOCK:
+        hdg_lock(&x);
+        joy_set(0.0f, 1.0f, false, false);          /* full throttle on the stick, heading held */
         sbsim_run(&x, 120000u, NULL, NULL);
         break;
-    case MODE_NAV: {
-        double lat, lon;
-        world_t tmp = x.w;
-        tmp.east_m += 3000.0;
-        world_latlon(&tmp, &lat, &lon);
-        sb_set_waypoint(&x.sb, lat, lon, 12.0f);
-        sb_request_mode(&x.sb, MODE_NAV, WHY_USER);
-        sbsim_run(&x, 90000u, NULL, NULL);
+    case MODE_AUTO:
+        auto_to(&x, 6000.0f, 90.0f, 20.0f);
+        sbsim_run(&x, 120000u, NULL, NULL);
         break;
-    }
     case MODE_TRAINING:
-        sb_request_mode(&x.sb, MODE_TRAINING, WHY_USER);
+        sb_request_mode(&x.sb, MODE_TRAINING, WHY_PC);
         sbsim_run(&x, 120000u, NULL, NULL);         /* spin-up + calibration running */
         break;
     default:
         break;
     }
     r.v_before = x.w.speed_kn;
+    bool was = sb_mode(&x.sb) == mode;
 
-    /* grab the stick */
+    /* grab the stick (from HDG LOCK the Y stays where it is) */
     uint32_t t0 = x.t;
-    joy_set(0.6f, 0.0f, false, false);
+    joy_set(0.6f, mode == MODE_HDG_LOCK ? 1.0f : 0.0f, false, false);
     while (x.t < t0 + 2000u) {
         sbsim_run(&x, x.t + 10u, NULL, NULL);
-        if (r.t_switch < 0.0f && sb_mode(&x.sb) == MODE_JOYSTICK) r.t_switch = (float)(x.t - t0) * 0.001f;
+        if (r.t_switch < 0.0f && sb_mode(&x.sb) == MODE_MANUAL) r.t_switch = (float)(x.t - t0) * 0.001f;
     }
+    if (!was) r.t_switch = -1.0f;
     r.train_result = x.sb.ap.train.result;
-    sbsim_run(&x, x.t + 8000u, NULL, NULL);
+    r.prog_suspended = x.sb.autop.suspended;
+    if (mode == MODE_HDG_LOCK) {                    /* back to centre in Y first */
+        joy_set(0.6f, 0.5f, false, false);
+        sbsim_run(&x, x.t + 50u, NULL, NULL);
+        joy_set(0.6f, 0.0f, false, false);
+    }
+    sbsim_run(&x, x.t + 15000u, NULL, NULL);
     r.est_at_x = x.sb.ap.est_angle;
     r.true_at_x = x.w.rud.angle_deg;
 
@@ -1762,60 +1887,74 @@ static override_t joystick_override(sb_mode_t mode, uint32_t seed)
 static void joystick_tests(void)
 {
     char d[400];
-    printf("\n=== Joystick override ===\n");
+    printf("\n=== Joystick override (MANUAL) ===\n");
     sb_config_t defc;
     sb_default_config(&defc);
     float expect = (0.6f - defc.joy.deadband) / (1.0f - defc.joy.deadband) * defc.steer.outboard.max_angle_deg;
 
-    const sb_mode_t modes[5] = { MODE_STANDBY, MODE_MANEUVER, MODE_CRUISE, MODE_NAV, MODE_TRAINING };
-    for (int i = 0; i < 5; i++) {
+    const sb_mode_t modes[4] = { MODE_STANDBY, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING };
+    for (int i = 0; i < 4; i++) {
         override_t r = joystick_override(modes[i], 110u + (uint32_t)i);
         char name[96];
         snprintf(name, sizeof name, "Joystick override from %s", mode_name(modes[i]));
         snprintf(d, sizeof d, "at %.1f kn: control switched after %.2f s; outboard %.1f deg (est %.1f, wanted %.1f); "
                  "full fwd %.1f kn, full rev %.1f kn; throttle max fwd %.0f %% / rev %.0f %%; under-load %d, "
-                 "F/R w/o N %d%s%s",
+                 "F/R w/o N %d%s%s%s",
                  r.v_before, r.t_switch, r.true_at_x, r.est_at_x, expect, r.v_fwd, r.v_rev, r.thr_fwd_max,
                  r.thr_rev_max, r.under_load, r.fr_no_n, modes[i] == MODE_TRAINING ? "; training: " : "",
-                 modes[i] == MODE_TRAINING ? training_result_text(r.train_result) : "");
+                 modes[i] == MODE_TRAINING ? training_result_text(r.train_result) : "",
+                 modes[i] == MODE_AUTO ? (r.prog_suspended ? "; program suspended" : "; program NOT suspended") : "");
         bool ok = r.t_switch >= 0.0f && r.t_switch <= 0.2f &&
                   fabsf(r.est_at_x - expect) < 3.0f && fabsf(r.true_at_x - expect) < 4.0f &&
                   r.v_fwd > 3.0f && r.v_rev < -1.0f &&
                   r.thr_fwd_max <= defc.joy_max_throttle_pct + 0.01f &&
                   r.thr_rev_max <= defc.throttle.max_rev_pct + 0.01f &&
                   r.under_load == 0 && r.fr_no_n == 0 &&
-                  (modes[i] != MODE_TRAINING || r.train_result == TR_ABORT_USER);
+                  (modes[i] != MODE_TRAINING || r.train_result == TR_ABORT_USER) &&
+                  (modes[i] != MODE_AUTO || r.prog_suspended) &&
+                  (modes[i] == MODE_STANDBY || r.v_before > 4.0f || modes[i] == MODE_TRAINING);
         test_report(name, ok, d);
     }
 
-    /* PC / Standby button during the override; hand-back not centred / centred */
+    /* PC can't leave MANUAL; the STANDBY button can (and disarms a held stick) */
     {
         sbsim_t x;
-        remove("nv1.bin");
         sbsim_init(&x, 120u, 90.0f, 0.0f, NULL);
-        joy_set(0.0f, 0.0f, false, false);
         sbsim_run(&x, 2000u, NULL, NULL);
         joy_set(0.0f, 0.5f, false, false);
         sbsim_run(&x, 5000u, NULL, NULL);
-        bool in_joy = sb_mode(&x.sb) == MODE_JOYSTICK;
-        bool pc = sb_request_mode(&x.sb, MODE_CRUISE, WHY_PC);
+        bool in_man = sb_mode(&x.sb) == MODE_MANUAL;
         bool pc_sb = sb_request_mode(&x.sb, MODE_STANDBY, WHY_PC);
-        sim_hal_press(HAL_BTN_STANDBY_AUTO);
-        sbsim_run(&x, 5200u, NULL, NULL);
-        bool still = sb_mode(&x.sb) == MODE_JOYSTICK;
+        bool pc_tr = sb_request_mode(&x.sb, MODE_TRAINING, WHY_PC);
         const mode_log_entry_t *le = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
-        snprintf(d, sizeof d, "in JOYSTICK %s; PC -> CRUISE %s, PC -> STANDBY %s, Standby button %s; last log %s -> %s (%s, %s)",
-                 in_joy ? "yes" : "NO", pc ? "ACCEPTED" : "refused", pc_sb ? "ACCEPTED" : "refused",
-                 still ? "ignored" : "TOOK OVER", mode_name(le->from), mode_name(le->to), mode_reason_name(le->why),
-                 le->verdict == MODE_OK ? "ok" : "rejected");
-        test_report("Joystick wins: PC and Standby button can't take control during the override",
-                    in_joy && !pc && !pc_sb && still && le->verdict != MODE_OK, d);
+        bool pc_logged = le->why == WHY_PC && le->verdict != MODE_OK;
+        press(&x, HAL_BTN_STANDBY);                 /* stick still held forward */
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool sb_now = sb_mode(&x.sb) == MODE_STANDBY, disarmed = !x.sb.joy.armed;
+        joy_set(0.0f, 0.0f, false, false);          /* let go */
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool rearmed = x.sb.joy.armed;
+        snprintf(d, sizeof d, "in MANUAL %s; PC -> STANDBY %s, PC -> TRAINING %s (logged %s); STANDBY button -> %s, "
+                 "held stick disarmed %s (no grab back), re-armed after centring %s",
+                 in_man ? "yes" : "NO", pc_sb ? "ACCEPTED" : "refused", pc_tr ? "ACCEPTED" : "refused",
+                 pc_logged ? "yes" : "NO", sb_now ? "STANDBY" : mode_name(sb_mode(&x.sb)),
+                 disarmed ? "yes" : "NO", rearmed ? "yes" : "NO");
+        test_report("Joystick wins over the PC; the STANDBY button always works",
+                    in_man && !pc_sb && !pc_tr && pc_logged && sb_now && disarmed && rearmed, d);
+    }
 
-        joy_set(0.0f, 0.5f, false, true);           /* AUTO with the stick still forward */
-        sbsim_run(&x, 5400u, NULL, NULL);
+    /* hand-back only with the stick centred: AUTO button -> STANDBY, or back to HDG LOCK */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 121u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
         joy_set(0.0f, 0.5f, false, false);
-        sbsim_run(&x, 5600u, NULL, NULL);
-        bool refused = sb_mode(&x.sb) == MODE_JOYSTICK;
+        sbsim_run(&x, 5000u, NULL, NULL);
+        joy_set(0.0f, 0.5f, false, true);           /* AUTO with the stick still forward */
+        sbsim_run(&x, 5200u, NULL, NULL);
+        joy_set(0.0f, 0.5f, false, false);
+        sbsim_run(&x, 5400u, NULL, NULL);
+        bool refused = sb_mode(&x.sb) == MODE_MANUAL;
         joy_set(0.0f, 0.0f, false, false);
         sbsim_run(&x, 6000u, NULL, NULL);
         joy_set(0.0f, 0.0f, false, true);           /* centred + AUTO */
@@ -1823,10 +1962,24 @@ static void joystick_tests(void)
         joy_set(0.0f, 0.0f, false, false);
         sbsim_run(&x, 9000u, NULL, NULL);
         bool back = sb_mode(&x.sb) == MODE_STANDBY;
-        snprintf(d, sizeof d, "AUTO with stick forward: %s; centred + AUTO: %s; gear now %s, throttle %.1f %%",
-                 refused ? "refused, stays JOYSTICK" : "HANDED BACK", back ? "STANDBY" : mode_name(sb_mode(&x.sb)),
-                 gear_name(x.w.engaged), sim_hal_throttle());
-        test_report("Joystick hand-back only with the stick centred", refused && back, d);
+
+        /* from HDG LOCK: X takes over, AUTO (centred) goes back to HDG LOCK */
+        hdg_lock(&x);
+        joy_set(0.5f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool man2 = sb_mode(&x.sb) == MODE_MANUAL;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        joy_set(0.0f, 0.0f, false, true);
+        sbsim_run(&x, x.t + 200u, NULL, NULL);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool hdg2 = sb_mode(&x.sb) == MODE_HDG_LOCK;
+        snprintf(d, sizeof d, "AUTO with stick forward: %s; centred + AUTO: %s; from HDG LOCK: X -> %s, "
+                 "centred AUTO -> %s",
+                 refused ? "refused, stays MANUAL" : "HANDED BACK", back ? "STANDBY" : mode_name(sb_mode(&x.sb)),
+                 man2 ? "MANUAL" : "?", hdg2 ? "HDG_LOCK" : mode_name(sb_mode(&x.sb)));
+        test_report("Joystick hand-back only with the stick centred", refused && back && man2 && hdg2, d);
     }
 
     /* not centred at power-up */
@@ -1846,9 +1999,9 @@ static void joystick_tests(void)
         snprintf(d, sizeof d, "not centred: armed %s, alarm %s, took control %s; after centring: armed %s, "
                  "deflection then takes control %s",
                  x.sb.joy.armed && !armed ? "?" : (not_armed ? "no" : "YES"), not_armed ? "on" : "OFF",
-                 no_takeover ? "no" : "YES", armed ? "yes" : "NO", sb_mode(&x.sb) == MODE_JOYSTICK ? "yes" : "NO");
+                 no_takeover ? "no" : "YES", armed ? "yes" : "NO", sb_mode(&x.sb) == MODE_MANUAL ? "yes" : "NO");
         test_report("Joystick not centred at power-up: ignored + alarm until centred",
-                    not_armed && no_takeover && armed && sb_mode(&x.sb) == MODE_JOYSTICK, d);
+                    not_armed && no_takeover && armed && sb_mode(&x.sb) == MODE_MANUAL, d);
     }
 
     /* wire breaks: X, Y (not in control), and while in control */
@@ -1925,6 +2078,401 @@ static void joystick_tests(void)
                  started ? "yes" : "NO", saved ? "yes" : "NO", values ? "correct" : "WRONG",
                  corrupt_caught ? "yes" : "NO", refused ? "yes" : "NO");
         test_report("Joystick calibration stored with checksum", started && saved && values && corrupt_caught && refused, d);
+    }
+}
+
+/* ------------------------------------------------------- section A: modes -- */
+
+/* 5-waypoint program from the boat, roughly east, with different speeds
+ * and actions. */
+static int prog5(const sbsim_t *x, prog_wp_t *w)
+{
+    double n = x->w.north_m, e = x->w.east_m;
+    w[0] = wp_world(x, n + 100.0, e +  600.0,  8.0f, 25.0f, WP_ACT_CONTINUE);
+    w[1] = wp_world(x, n - 100.0, e + 1400.0, 14.0f, 25.0f, WP_ACT_SLOW);
+    w[2] = wp_world(x, n +   0.0, e + 2000.0, 10.0f, 25.0f, WP_ACT_STOP);
+    w[3] = wp_world(x, n + 300.0, e + 3300.0, 16.0f, 30.0f, WP_ACT_CONTINUE);
+    w[4] = wp_world(x, n + 300.0, e + 3900.0,  6.0f, 20.0f, WP_ACT_CONTINUE);
+    return 5;
+}
+
+typedef struct {
+    int    wp_seen;
+    float  sog_sum[8]; int sog_n[8];      /* settled speed per leg */
+    uint32_t leg_t0[8];
+    float  v_at_stop;                     /* speed when stopped at the STOP waypoint */
+    bool   stopped_ok;                    /* idle + neutral at the STOP waypoint */
+    float  v_near_slow;                   /* speed passing the SLOW waypoint */
+} p5_t;
+
+static void p5_hook(sbsim_t *x, void *ctx)
+{
+    p5_t *p = (p5_t *)ctx;
+    int g = x->sb.autop.wp;
+    if (g != p->wp_seen && g < 8) { p->wp_seen = g; p->leg_t0[g] = x->t; }
+    if (auto_running(x) && g < 8 && x->t > p->leg_t0[g] + 45000u && x->sb.autop.leg.dist_m > 200.0f) {
+        p->sog_sum[g] += world_sog_kn(&x->w);
+        p->sog_n[g]++;
+    }
+    if (g == 1 && x->sb.autop.leg.dist_m < 30.0f) p->v_near_slow = world_sog_kn(&x->w);
+    if (x->sb.autop.state == AUTO_WP_STOP) {
+        p->v_at_stop = world_sog_kn(&x->w);
+        if (gear_is(&x->sb.gear, GEAR_N) && sim_hal_throttle() <= 0.0f) p->stopped_ok = true;
+    }
+}
+
+static void modes_tests(void)
+{
+    char d[500];
+    printf("\n=== Section A: MANUAL / HDG LOCK / AUTO ===\n");
+
+    /* A1 HDG LOCK: lock, +-1/+-10, throttle on the stick incl. reverse, X -> MANUAL */
+    {
+        sbsim_t x;
+        events_t ev;
+        memset(&ev, 0, sizeof ev);
+        sbsim_init(&x, 201u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        x.w.heading_deg = 73.0f;                    /* boat drifted round a bit */
+        sbsim_run(&x, 6000u, NULL, NULL);
+        float h_press = x.sb.ap.heading;
+        bool locked = hdg_lock(&x);
+        float t_lock = x.sb.ap.target_heading;
+        press(&x, HAL_BTN_PLUS_10);
+        press(&x, HAL_BTN_PLUS_1);
+        press(&x, HAL_BTN_PLUS_1);
+        press(&x, HAL_BTN_MINUS_10);
+        press(&x, HAL_BTN_MINUS_1);
+        float t_adj = x.sb.ap.target_heading;       /* +10 +1 +1 -10 -1 = +1 */
+        joy_set(0.0f, 0.7f, false, false);          /* throttle ahead on the stick */
+        sbsim_run(&x, x.t + 60000u, NULL, NULL);
+        bool still_hdg = sb_mode(&x.sb) == MODE_HDG_LOCK;
+        float v_ahead = world_sog_kn(&x.w);
+        float hold = fabsf(hdg_err(x.w.heading_deg, x.sb.ap.target_heading));
+        float tgt_before_rev = x.sb.ap.target_heading;
+        ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_r_us);
+        for (int k = 1; k <= 6; k++) {              /* stick forward -> back */
+            joy_set(0.0f, 0.7f - 1.4f * (float)k / 6.0f, false, false);
+            sbsim_run(&x, x.t + 50u, ev_watch, &ev);
+        }
+        sbsim_run(&x, x.t + 30000u, ev_watch, &ev);
+        bool hdg_in_rev = sb_mode(&x.sb) == MODE_HDG_LOCK;
+        float v_rev = x.w.speed_kn, ang_rev = x.w.rud.angle_deg;
+        const gear_config_t *g = &x.sb.cfg.gear;
+        bool order = ev.t_idle >= 0.0f && ev.t_neutral >= ev.t_idle + g->idle_wait_ms * 0.001f - 0.06f &&
+                     ev.t_gear >= ev.t_neutral + g->neutral_wait_ms * 0.001f - 0.06f &&
+                     ev.t_thr_open >= ev.t_gear + g->engage_wait_ms * 0.001f - 0.06f;
+        for (int k = 1; k <= 6; k++) {              /* and ahead again */
+            joy_set(0.0f, -0.7f + 1.4f * (float)k / 6.0f, false, false);
+            sbsim_run(&x, x.t + 50u, NULL, NULL);
+        }
+        sbsim_run(&x, x.t + 60000u, NULL, NULL);
+        float hold2 = fabsf(hdg_err(x.w.heading_deg, x.sb.ap.target_heading));
+        bool target_kept = fabsf(hdg_err(x.sb.ap.target_heading, tgt_before_rev)) < 0.01f;
+        joy_set(0.6f, 0.7f, false, false);          /* X -> MANUAL */
+        sbsim_run(&x, x.t + 300u, NULL, NULL);
+        bool manual = sb_mode(&x.sb) == MODE_MANUAL;
+        snprintf(d, sizeof d, "locked %s at %.1f (heading %.1f); after +10 +1 +1 -10 -1: %+.1f deg; ahead %.1f kn "
+                 "still HDG LOCK %s, course error %.1f; reverse: stays HDG LOCK %s, %.1f kn, outboard %.1f deg, "
+                 "gear order idle %.2f / N %.2f / R %.2f / throttle %.2f s, under-load %d, F/R w/o N %d; "
+                 "ahead again: target kept %s, course error %.1f; X -> %s",
+                 locked ? "yes" : "NO", t_lock, h_press, hdg_err(t_adj, t_lock), v_ahead, still_hdg ? "yes" : "NO",
+                 hold, hdg_in_rev ? "yes" : "NO", v_rev, ang_rev, ev.t_idle, ev.t_neutral, ev.t_gear, ev.t_thr_open,
+                 x.w.shift_under_load, x.w.fr_without_neutral, target_kept ? "yes" : "NO", hold2,
+                 manual ? "MANUAL" : mode_name(sb_mode(&x.sb)));
+        test_report("A1 HDG LOCK: locks heading, +-1/+-10, stick throttle fwd/rev in HDG LOCK, X -> MANUAL",
+                    locked && fabsf(hdg_err(t_lock, h_press)) < 0.5f && fabsf(hdg_err(t_adj, t_lock) - 1.0f) < 0.01f &&
+                    still_hdg && v_ahead > 5.0f && hold < 5.0f && hdg_in_rev && v_rev < -1.0f &&
+                    fabsf(ang_rev) < 3.0f && order && x.w.shift_under_load == 0 && x.w.fr_without_neutral == 0 &&
+                    target_kept && hold2 < 5.0f && manual, d);
+    }
+
+    /* A1b compass lost in HDG LOCK: gyro hold, alarm, throttle stays with the user, STANDBY when stopped */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 202u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        hdg_lock(&x);
+        joy_set(0.0f, 0.8f, false, false);
+        sbsim_run(&x, 60000u, NULL, NULL);
+        float thr0 = sim_hal_throttle(), h0 = x.w.heading_deg;
+        sim_hal_fail_heading(true);
+        sbsim_run(&x, 75000u, NULL, NULL);
+        bool kept = sb_mode(&x.sb) == MODE_HDG_LOCK && x.sb.ap.mode == AP_MODE_GYRO_HOLD;
+        float thr1 = sim_hal_throttle(), drift = fabsf(hdg_err(x.w.heading_deg, h0));
+        bool alarm = sim_hal_alarm() && (x.sb.alarm_bits & SB_ALM_COMPASS);
+        joy_set(0.0f, 0.0f, false, false);          /* user brings it back */
+        sbsim_run(&x, 95000u, NULL, NULL);
+        snprintf(d, sizeof d, "after the fault: mode %s steering %s, alarm %s, throttle %.0f -> %.0f %% (user), "
+                 "heading drift %.1f deg in 15 s; stick back: mode %s, steering %s",
+                 mode_name(sb_mode(&x.sb)), kept ? "gyro hold" : "?", alarm ? "on" : "OFF", thr0, thr1, drift,
+                 mode_name(sb_mode(&x.sb)), x.sb.ap.mode == AP_MODE_STANDBY ? "off" : "ON");
+        test_report("A1b compass lost in HDG LOCK: gyro hold + alarm, throttle stays with the user, then STANDBY",
+                    kept && alarm && fabsf(thr1 - thr0) < 1.0f && drift < 10.0f &&
+                    sb_mode(&x.sb) == MODE_STANDBY && x.sb.ap.mode == AP_MODE_STANDBY, d);
+    }
+
+    /* A2 AUTO: 5-waypoint program, different leg speeds and actions */
+    {
+        sbsim_t x;
+        p5_t p;
+        prog_wp_t w[5];
+        memset(&p, 0, sizeof p);
+        sbsim_init(&x, 203u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        int n = prog5(&x, w);
+        bool started = auto_go(&x, w, n, PROG_END_STOP);
+        p.leg_t0[0] = x.t;
+        uint32_t t_end = x.t + 1500000u;
+        bool resumed = false;
+        while (x.t < t_end && sb_mode(&x.sb) == MODE_AUTO) {
+            sbsim_run(&x, x.t + 50u, p5_hook, &p);
+            if (x.sb.autop.state == AUTO_WP_STOP && !resumed && world_sog_kn(&x.w) < 0.5f) {
+                sbsim_run(&x, x.t + 5000u, p5_hook, &p);
+                resumed = sb_auto_resume(&x.sb) == SB_OK && confirm_press(&x);
+            }
+        }
+        double fn, fe;
+        world_from_latlon(program_lat(&w[4]), program_lon(&w[4]), &fn, &fe);
+        float miss = (float)sqrt((fn - x.w.north_m) * (fn - x.w.north_m) + (fe - x.w.east_m) * (fe - x.w.east_m));
+        const mode_log_entry_t *le = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
+        int len = snprintf(d, sizeof d, "started %s; leg speeds (set/measured):", started ? "yes" : "NO");
+        bool speeds_ok = true;
+        for (int i = 0; i < 5; i++) {
+            float v = p.sog_n[i] ? p.sog_sum[i] / (float)p.sog_n[i] : -1.0f;
+            len += snprintf(d + len, sizeof d - (size_t)len, " %.0f/%.1f", w[i].speed_kn, v);
+            if (p.sog_n[i] > 20 && fabsf(v - w[i].speed_kn) > 1.0f) speeds_ok = false;
+        }
+        snprintf(d + len, sizeof d - (size_t)len, "; passing SLOW wp at %.1f kn; STOP wp: idle + neutral %s; "
+                 "resumed with PC + CONFIRM %s; end: %s (%s), %.0f m from the last waypoint, alarm %s",
+                 p.v_near_slow, p.stopped_ok ? "yes" : "NO", resumed ? "yes" : "NO", mode_name(sb_mode(&x.sb)),
+                 mode_reason_name(le->why), miss, sim_hal_alarm() ? "on" : "OFF");
+        test_report("A2 AUTO 5-waypoint program: leg speeds, SLOW / STOP actions, final stop + alarm",
+                    started && speeds_ok && p.v_near_slow < 8.0f && p.stopped_ok && resumed &&
+                    sb_mode(&x.sb) == MODE_STANDBY && le->why == WHY_ARRIVED && miss < 40.0f && sim_hal_alarm() &&
+                    x.w.shift_under_load == 0, d);
+    }
+
+    /* A3 program validation */
+    {
+        sbsim_t x;
+        static program_t p;
+        prog_wp_t w[5];
+        prog_error_t err;
+        uint8_t bad;
+        sbsim_init(&x, 204u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        int n = prog5(&x, w);
+        char why[300] = "";
+        int wrong = 0;
+#define TRYP(label, want_err) do { sb_result_t r_ = sb_program_set(&x.sb, &p, &err, &bad); \
+        if ((want_err) == PROG_OK ? r_ != SB_OK : (r_ != SB_ERR_BAD_PROGRAM || err != (want_err))) wrong++; \
+        snprintf(why + strlen(why), sizeof why - strlen(why), " %s:%s", label, program_error_text(err)); } while (0)
+        prog_make(&p, w, n, PROG_END_STOP);
+        p.wp[2].lat_e7 = 950000000;  program_seal(&p); TRYP("lat95", PROG_BAD_COORD);
+        prog_make(&p, w, n, PROG_END_STOP);
+        p.wp[1].speed_kn = 30.0f;    program_seal(&p); TRYP("30kn", PROG_BAD_SPEED);
+        prog_make(&p, w, n, PROG_END_STOP);
+        p.n = 51;                    program_seal(&p); TRYP("51wp", PROG_BAD_COUNT);
+        prog_make(&p, w, n, PROG_END_STOP);
+        p.wp[3] = p.wp[2]; p.wp[3].lat_e7 += 10; program_seal(&p); TRYP("leg 0 m", PROG_LEG_SHORT);
+        prog_make(&p, w, n, PROG_END_STOP);
+        p.wp[4].lat_e7 += 9000000;   program_seal(&p); TRYP("leg 100 km", PROG_LEG_LONG);
+        prog_make(&p, w, n, PROG_END_STOP);
+        p.wp[0].radius_m = 1.0f;     program_seal(&p); TRYP("radius 1", PROG_BAD_RADIUS);
+        prog_make(&p, w, n, PROG_END_STOP);
+        p.wp[1].speed_kn = 9.0f;     /* changed after sealing */ TRYP("checksum", PROG_BAD_CHECKSUM);
+        bool none_loaded = !x.sb.autop.prog_ok;
+        prog_make(&p, w, n, PROG_END_STOP);
+        TRYP("valid", PROG_OK);
+#undef TRYP
+        /* stored with checksum: survives a restart, a corrupted copy is not loaded */
+        sbsim_t y;
+        sb_config_t c;
+        sb_default_config(&c);
+        memset(&y, 0, sizeof y);
+        world_init(&y.w, 205u, 90.0f, 0.0f);
+        sb_init(&y.sb, &c);
+        bool survived = y.sb.autop.prog_ok && y.sb.autop.prog.n == 5u;
+        FILE *f = fopen("nv2.bin", "r+b");
+        if (f) { fseek(f, 40, SEEK_SET); fputc(0x5A, f); fclose(f); }
+        sb_init(&y.sb, &c);
+        bool corrupt_refused = !y.sb.autop.prog_ok;
+        remove("nv2.bin");
+        snprintf(d, sizeof d, "refused (reason):%s; nothing loaded by bad uploads %s; after power-off: %s; corrupted "
+                 "flash copy ignored %s", why, none_loaded ? "yes" : "NO", survived ? "program kept" : "LOST",
+                 corrupt_refused ? "yes" : "NO");
+        test_report("A3 AUTO program validation: bad coordinates, too many, speed > max, leg length, radius, checksum",
+                    wrong == 0 && none_loaded && survived && corrupt_refused, d);
+    }
+
+    /* A4 CONFIRM rules */
+    {
+        sbsim_t x;
+        prog_wp_t w[5];
+        static program_t p;
+        prog_error_t err;
+        uint8_t bad;
+        sbsim_init(&x, 206u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        int n = prog5(&x, w);
+        prog_make(&p, w, n, PROG_END_STOP);
+        sb_program_set(&x.sb, &p, &err, &bad);
+        /* no CONFIRM: nothing happens, the request expires */
+        sb_result_t r1 = sb_auto_start(&x.sb);
+        sbsim_run(&x, x.t + 11000u, NULL, NULL);
+        bool expired = x.sb.confirm.kind == CONF_NONE && sb_mode(&x.sb) == MODE_STANDBY;
+        /* late CONFIRM (11 s) */
+        sb_auto_start(&x.sb);
+        sbsim_run(&x, x.t + 11000u, NULL, NULL);
+        bool late = !confirm_press(&x) && sb_mode(&x.sb) == MODE_STANDBY;
+        /* CONFIRM with the stick off centre (inside the deadband: no override) */
+        sb_auto_start(&x.sb);
+        joy_set(0.12f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 300u, NULL, NULL);
+        bool off_centre = !confirm_press(&x) && sb_mode(&x.sb) == MODE_STANDBY;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 11000u, NULL, NULL);
+        /* CONFIRM with no request pending: nothing, in every mode */
+        uint32_t ign0 = x.sb.confirm.ignored;
+        bool nothing = true;
+        nothing &= !confirm_press(&x) && sb_mode(&x.sb) == MODE_STANDBY;
+        hdg_lock(&x);
+        nothing &= !confirm_press(&x) && sb_mode(&x.sb) == MODE_HDG_LOCK;
+        joy_set(0.0f, 0.5f, false, false); sbsim_run(&x, x.t + 300u, NULL, NULL);    /* Y in HDG LOCK = throttle */
+        joy_set(0.5f, 0.5f, false, false); sbsim_run(&x, x.t + 300u, NULL, NULL);    /* X -> MANUAL */
+        nothing &= !confirm_press(&x) && sb_mode(&x.sb) == MODE_MANUAL;
+        joy_set(0.0f, 0.0f, false, false); sbsim_run(&x, x.t + 500u, NULL, NULL);
+        press(&x, HAL_BTN_STANDBY);
+        uint32_t ignored = x.sb.confirm.ignored - ign0;
+        /* joystick faulted: start refused */
+        sim_hal_set_joystick(true, 0u, joy_raw(0.0f), false, false);
+        sbsim_run(&x, x.t + 200u, NULL, NULL);
+        sb_result_t r_fault = sb_auto_start(&x.sb);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        /* and finally a correct one */
+        sb_auto_start(&x.sb);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool ok = confirm_press(&x) && sb_mode(&x.sb) == MODE_AUTO;
+        snprintf(d, sizeof d, "start -> %d; no CONFIRM: expired %s; late CONFIRM refused %s; stick off centre refused %s; "
+                 "CONFIRM with nothing pending does nothing in STANDBY/HDG LOCK/MANUAL %s (%u ignored); "
+                 "joystick faulted -> start %d (not ready = %d); correct CONFIRM -> %s",
+                 (int)r1, expired ? "yes" : "NO", late ? "yes" : "NO", off_centre ? "yes" : "NO",
+                 nothing ? "yes" : "NO", ignored, (int)r_fault, (int)SB_ERR_JOY_NOT_READY,
+                 ok ? "AUTO" : mode_name(sb_mode(&x.sb)));
+        test_report("A4 AUTO start needs PC + CONFIRM within 10 s, stick centred; CONFIRM alone never changes mode",
+                    r1 == SB_OK && expired && late && off_centre && nothing && ignored == 3u &&
+                    r_fault == SB_ERR_JOY_NOT_READY && ok, d);
+    }
+
+    /* A5 pause / resume / skip, A6 joystick override mid-program and resume */
+    {
+        sbsim_t x;
+        prog_wp_t w[5];
+        sbsim_init(&x, 207u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        int n = prog5(&x, w);
+        auto_go(&x, w, n, PROG_END_STOP);
+        sbsim_run(&x, x.t + 40000u, NULL, NULL);
+        sb_result_t rp = sb_auto_pause(&x.sb);
+        sbsim_run(&x, x.t + 30000u, NULL, NULL);
+        bool paused = sb_mode(&x.sb) == MODE_AUTO && x.sb.autop.state == AUTO_PAUSED &&
+                      gear_is(&x.sb.gear, GEAR_N) && sim_hal_throttle() <= 0.0f;
+        sb_auto_resume(&x.sb);
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool no_conf_still_paused = x.sb.autop.state == AUTO_PAUSED;
+        bool resumed = confirm_press(&x) && x.sb.autop.state == AUTO_RUN;
+        uint8_t wp_before = x.sb.autop.wp;
+        sb_result_t rs = sb_auto_skip(&x.sb);
+        bool skipped = x.sb.autop.wp == wp_before + 1u && auto_running(&x);
+        sbsim_run(&x, x.t + 30000u, NULL, NULL);
+        /* override mid-program */
+        uint8_t wp_at_override = x.sb.autop.wp;
+        joy_set(-0.5f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 300u, NULL, NULL);
+        bool manual = sb_mode(&x.sb) == MODE_MANUAL && x.sb.autop.suspended;
+        sbsim_run(&x, x.t + 10000u, NULL, NULL);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        sb_auto_resume(&x.sb);
+        bool back = confirm_press(&x) && sb_mode(&x.sb) == MODE_AUTO && x.sb.autop.wp == wp_at_override;
+        sbsim_run(&x, x.t + 60000u, NULL, NULL);
+        snprintf(d, sizeof d, "pause -> %d: idle + neutral, still AUTO %s; resume without CONFIRM stays paused %s, "
+                 "with CONFIRM runs %s; skip -> %d: next waypoint %s; stick mid-program -> MANUAL, program suspended %s; "
+                 "PC resume + CONFIRM -> AUTO at the same waypoint %s; running after 60 s %s",
+                 (int)rp, paused ? "yes" : "NO", no_conf_still_paused ? "yes" : "NO", resumed ? "yes" : "NO",
+                 (int)rs, skipped ? "yes" : "NO", manual ? "yes" : "NO", back ? "yes" : "NO",
+                 auto_running(&x) ? "yes" : "NO");
+        test_report("A5/A6 AUTO pause / resume / skip; joystick override mid-program, resume with PC + CONFIRM",
+                    rp == SB_OK && paused && no_conf_still_paused && resumed && rs == SB_OK && skipped && manual &&
+                    back && auto_running(&x) && x.w.shift_under_load == 0, d);
+    }
+
+    /* A7 GPS loss mid-program: dead reckoning with the learned current, on to the next waypoints */
+    {
+        sbsim_t x;
+        prog_wp_t w[5];
+        sbsim_init(&x, 208u, 90.0f, 0.0f, NULL);
+        x.w.current_e = 0.3f;
+        x.w.current_n = -0.5f;
+        sbsim_run(&x, 3000u, NULL, NULL);
+        int n = prog5(&x, w);
+        w[2].action = WP_ACT_CONTINUE;              /* no stop on the way */
+        for (int i = 0; i < n; i++) w[i].radius_m = 60.0f;
+        auto_go(&x, w, n, PROG_END_STOP);
+        bool failed = false, in_dr = false;
+        uint8_t wp_at_fail = 0;
+        float cur_conf = 0.0f, xte_max = 0.0f;
+        while (x.t < 1500000u && sb_mode(&x.sb) == MODE_AUTO && x.sb.autop.state == AUTO_RUN) {
+            sbsim_run(&x, x.t + 50u, NULL, NULL);
+            if (!failed && x.sb.autop.wp == 1u && x.sb.autop.leg.along_m > 200.0f) {
+                failed = true;
+                x.w.gps_fail = true;
+                wp_at_fail = x.sb.autop.wp;
+                cur_conf = x.sb.dr.cur_learn_s;
+            }
+            if (failed && x.sb.autop.in_dr) in_dr = true;
+            if (failed && fabsf(x.sb.autop.leg.xte_m) > xte_max) xte_max = fabsf(x.sb.autop.leg.xte_m);
+        }
+        snprintf(d, sizeof d, "GPS lost on leg %u (current learned for %.0f s): dead reckoning %s, waypoints reached "
+                 "%u of 5, ended %s (%s), uncertainty %.0f m, alarm %s",
+                 (unsigned)wp_at_fail + 1u, cur_conf, in_dr ? "yes" : "NO", x.sb.autop.legs_done,
+                 mode_name(sb_mode(&x.sb)), mode_reason_name(auto_end_why(&x)), x.sb.dr.unc_m,
+                 sim_hal_alarm() ? "on" : "OFF");
+        test_report("A7 GPS loss mid-program: dead reckoning with the learned drift, carries on, alarm",
+                    failed && in_dr && cur_conf > 60.0f && x.sb.autop.legs_done >= 2u && sim_hal_alarm() &&
+                    (x.sb.alarm_bits & SB_ALM_GPS_LOST), d);
+    }
+
+    /* A9 STANDBY button from every mode; the PC can't override STANDBY */
+    {
+        const sb_mode_t ms[5] = { MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING };
+        int ok_n = 0;
+        int len = snprintf(d, sizeof d, "STANDBY button:");
+        for (int i = 0; i < 5; i++) {
+            sbsim_t x;
+            prog_wp_t w[5];
+            sbsim_init(&x, 210u + (uint32_t)i, 90.0f, 0.0f, NULL);
+            sbsim_run(&x, 3000u, NULL, NULL);
+            if (ms[i] == MODE_MANUAL) { joy_set(0.0f, 0.6f, false, false); sbsim_run(&x, x.t + 20000u, NULL, NULL); }
+            if (ms[i] == MODE_HDG_LOCK) { hdg_lock(&x); joy_set(0.0f, 0.6f, false, false); sbsim_run(&x, x.t + 20000u, NULL, NULL); }
+            if (ms[i] == MODE_AUTO) { prog5(&x, w); auto_go(&x, w, 5, PROG_END_STOP); sbsim_run(&x, x.t + 20000u, NULL, NULL); }
+            if (ms[i] == MODE_TRAINING) { sb_request_mode(&x.sb, MODE_TRAINING, WHY_PC); sbsim_run(&x, x.t + 20000u, NULL, NULL); }
+            bool was = sb_mode(&x.sb) == ms[i];
+            press(&x, HAL_BTN_STANDBY);
+            sbsim_run(&x, x.t + 15000u, NULL, NULL);
+            /* the PC tries to get going again without the operator */
+            bool pc1 = sb_request_mode(&x.sb, MODE_HDG_LOCK, WHY_PC);
+            bool pc2 = sb_request_mode(&x.sb, MODE_AUTO, WHY_PC);
+            bool pc3 = sb_request_mode(&x.sb, MODE_MANUAL, WHY_PC);
+            bool good = was && sb_mode(&x.sb) == MODE_STANDBY && !pc1 && !pc2 && !pc3 &&
+                        gear_is(&x.sb.gear, GEAR_N) && sim_hal_throttle() <= 0.0f && x.w.shift_under_load == 0;
+            if (good) ok_n++;
+            len += snprintf(d + len, sizeof d - (size_t)len, " %s %s;", mode_name(ms[i]), good ? "ok" : "FAILED");
+        }
+        snprintf(d + len, sizeof d - (size_t)len, " PC requests afterwards refused");
+        test_report("A9 STANDBY button works from every mode; the PC can't override it", ok_n == 5, d);
     }
 }
 
@@ -2095,63 +2643,88 @@ static void link_tests(void)
         int bad = 0;
         char why[300] = "";
         uint8_t two[2] = { 1u, 1u }, b;
+        const uint8_t P_JOYTHR = 13u;               /* "joy_max_thr_pc" */
 #define EXPECT(label, got, want) do { uint8_t g_ = (got); \
         if (g_ != (want)) { bad++; snprintf(why + strlen(why), sizeof why - strlen(why), " %s=%u", label, g_); } \
-        if (sb_mode(&p->x.sb) == MODE_JOYSTICK) bad++; } while (0)
+        if (sb_mode(&p->x.sb) == MODE_MANUAL) bad++; } while (0)
         EXPECT("unknown", pc_cmd(p, 0x55u, NULL, 0u), PROTO_R_UNKNOWN);
         EXPECT("len", pc_cmd(p, PROTO_T_SET_MODE, two, 2u), PROTO_R_BAD_LENGTH);
         b = 9u;  EXPECT("mode9", pc_cmd(p, PROTO_T_SET_MODE, &b, 1u), PROTO_R_BAD_VALUE);
-        EXPECT("to_joy", pc_mode_cmd(p, MODE_JOYSTICK), PROTO_R_NOT_ALLOWED);
-        EXPECT("nav_no_wp", pc_mode_cmd(p, MODE_NAV), PROTO_R_PRECOND);
+        EXPECT("to_manual", pc_mode_cmd(p, MODE_MANUAL), PROTO_R_NOT_ALLOWED);
+        EXPECT("to_hdg", pc_mode_cmd(p, MODE_HDG_LOCK), PROTO_R_NOT_ALLOWED);
+        EXPECT("to_auto", pc_mode_cmd(p, MODE_AUTO), PROTO_R_NOT_ALLOWED);
+        EXPECT("auto_no_prog", pc_cmd(p, PROTO_T_AUTO_START, NULL, 0u), PROTO_R_NO_PROGRAM);
         b = 5u;  EXPECT("hdg+5", pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u), PROTO_R_BAD_VALUE);
         b = 10u; EXPECT("hdg_standby", pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u), PROTO_R_WRONG_MODE);
         b = 7u;  EXPECT("sea7", pc_cmd(p, PROTO_T_SEA_STATE, &b, 1u), PROTO_R_BAD_VALUE);
         b = 99u; EXPECT("param99", pc_cmd(p, PROTO_T_PARAM_GET, &b, 1u), PROTO_R_BAD_PARAM);
         {
-            uint8_t pl[12]; proto_wr_t w; proto_wr_init(&w, pl, sizeof pl);
-            proto_wr_latlon(&w, 95.0); proto_wr_latlon(&w, 10.0); proto_wr_f32(&w, 6.0f);
-            EXPECT("lat95", pc_cmd(p, PROTO_T_WAYPOINT, pl, 12u), PROTO_R_BAD_VALUE);
-            uint8_t ps[5]; proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, 15u); proto_wr_f32(&w, 500.0f);
+            uint8_t ps[5]; proto_wr_t w;
+            proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, P_JOYTHR); proto_wr_f32(&w, 500.0f);
             EXPECT("joythr500", pc_cmd(p, PROTO_T_PARAM_SET, ps, 5u), PROTO_R_BAD_VALUE);
-            proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, 15u); proto_wr_f32(&w, 30.0f);
+            proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, P_JOYTHR); proto_wr_f32(&w, 30.0f);
             EXPECT("joythr30", pc_cmd(p, PROTO_T_PARAM_SET, ps, 5u), PROTO_R_OK);
             bool param_set = fabsf(p->x.sb.cfg.joy_max_throttle_pct - 30.0f) < 1e-4f && fabsf(p->param_value - 30.0f) < 1e-4f;
             if (!param_set) { bad++; strcat(why, " param_not_applied"); }
-            p->x.sb.cfg.joy_max_throttle_pct = 40.0f;
+            p->x.sb.cfg.joy_max_throttle_pct = 100.0f;
+        }
+        /* program upload: a bad one (speed 40 kn), then a good one */
+        {
+            prog_wp_t w5[5];
+            prog5(&p->x, w5);
+            uint8_t pb[2] = { 5u, (uint8_t)PROG_END_STOP };
+            for (int pass = 0; pass < 2; pass++) {
+                EXPECT("prog_begin", pc_cmd(p, PROTO_T_PROG_BEGIN, pb, 2u), PROTO_R_OK);
+                for (uint8_t i = 0; i < 5u; i++) {
+                    uint8_t pw[18]; proto_wr_t w; proto_wr_init(&w, pw, sizeof pw);
+                    proto_wr_u8(&w, i); proto_wr_i32(&w, w5[i].lat_e7); proto_wr_i32(&w, w5[i].lon_e7);
+                    proto_wr_f32(&w, (pass == 0 && i == 2u) ? 40.0f : w5[i].speed_kn);
+                    proto_wr_f32(&w, w5[i].radius_m); proto_wr_u8(&w, w5[i].action);
+                    EXPECT("prog_wp", pc_cmd(p, PROTO_T_PROG_WP, pw, 18u), PROTO_R_OK);
+                }
+                EXPECT(pass == 0 ? "prog_bad" : "prog_good", pc_cmd(p, PROTO_T_PROG_COMMIT, NULL, 0u),
+                       pass == 0 ? PROTO_R_BAD_PROGRAM : PROTO_R_OK);
+            }
+            if (!p->x.sb.autop.prog_ok || p->x.sb.autop.prog.n != 5u) { bad++; strcat(why, " prog_not_stored"); }
         }
         bool still_standby = sb_mode(&p->x.sb) == MODE_STANDBY;
         EXPECT("training", pc_mode_cmd(p, MODE_TRAINING), PROTO_R_OK);
-        EXPECT("train->cruise", pc_mode_cmd(p, MODE_CRUISE), PROTO_R_NOT_ALLOWED);
+        EXPECT("train->hdg", pc_mode_cmd(p, MODE_HDG_LOCK), PROTO_R_NOT_ALLOWED);
         bool still_training = sb_mode(&p->x.sb) == MODE_TRAINING;
         EXPECT("standby", pc_mode_cmd(p, MODE_STANDBY), PROTO_R_OK);
         pc_run(p, 5000u);
-        EXPECT("cruise", pc_mode_cmd(p, MODE_CRUISE), PROTO_R_OK);
+        sim_hal_press(HAL_BTN_HDG_LOCK);            /* HDG LOCK on the panel */
+        pc_run(p, 200u);
         {
-            uint8_t ps[5]; proto_wr_t w; proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, 15u); proto_wr_f32(&w, 30.0f);
-            EXPECT("param_in_cruise", pc_cmd(p, PROTO_T_PARAM_SET, ps, 5u), PROTO_R_STANDBY_ONLY);
+            uint8_t ps[5]; proto_wr_t w; proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, P_JOYTHR); proto_wr_f32(&w, 30.0f);
+            EXPECT("param_in_hdg", pc_cmd(p, PROTO_T_PARAM_SET, ps, 5u), PROTO_R_STANDBY_ONLY);
         }
         float tgt0 = p->x.sb.ap.target_heading;
         b = 10u; EXPECT("hdg+10", pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u), PROTO_R_OK);
         b = (uint8_t)(int8_t)-1; EXPECT("hdg-1", pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u), PROTO_R_OK);
         float dtgt = hdg_err(p->x.sb.ap.target_heading, tgt0);
-        const mode_log_entry_t *le = NULL;
+        /* AUTO from the PC: start + joystick CONFIRM */
+        EXPECT("auto_start", pc_cmd(p, PROTO_T_AUTO_START, NULL, 0u), PROTO_R_OK);
+        sim_hal_joystick_confirm(true);
+        pc_run(p, 100u);
+        sim_hal_joystick_confirm(false);
+        pc_run(p, 300u);
+        bool in_auto = sb_mode(&p->x.sb) == MODE_AUTO;
         int pc_logged = 0;
-        for (uint32_t i = 0; i < mode_log_size(&p->x.sb.modes); i++) {
-            le = mode_log_get(&p->x.sb.modes, i);
-            if (le->why == WHY_PC) pc_logged++;
-        }
+        for (uint32_t i = 0; i < mode_log_size(&p->x.sb.modes); i++)
+            if (mode_log_get(&p->x.sb.modes, i)->why == WHY_PC) pc_logged++;
 #undef EXPECT
         pc_run(p, 10000u);
         int t0 = p->telem;
         pc_run(p, 10000u);
         int telem10 = p->telem - t0;
         snprintf(d, sizeof d, "wrong answers %d%s; refused commands changed nothing: %s/%s; heading +10 -1 -> target %+.0f deg; "
-                 "PC mode requests logged %d; telemetry %d frames in 10 s, shows %s; NACKs sent %u",
-                 bad, why, still_standby ? "yes" : "NO", still_training ? "yes" : "NO", dtgt, pc_logged, telem10,
-                 mode_name((sb_mode_t)p->telem_mode), (unsigned)p->link.nacks);
+                 "AUTO via PC + CONFIRM %s; PC mode requests logged %d; telemetry %d frames in 10 s, shows %s; NACKs sent %u",
+                 bad, why, still_standby ? "yes" : "NO", still_training ? "yes" : "NO", dtgt,
+                 in_auto ? "yes" : "NO", pc_logged, telem10, mode_name((sb_mode_t)p->telem_mode), (unsigned)p->link.nacks);
         test_report("Link: illegal commands refused with a reason, legal ones accepted",
-                    bad == 0 && still_standby && still_training && fabsf(dtgt - 9.0f) < 0.01f && pc_logged >= 6 && 
-                    telem10 >= 99 && telem10 <= 101 && p->telem_mode == MODE_CRUISE, d);
+                    bad == 0 && still_standby && still_training && fabsf(dtgt - 9.0f) < 0.01f && in_auto &&
+                    pc_logged >= 6 && telem10 >= 99 && telem10 <= 101 && p->telem_mode == MODE_AUTO, d);
         free(p);
     }
 
@@ -2161,8 +2734,8 @@ static void link_tests(void)
         pcsim_init(p, 131u);
         p->heartbeat = true;
         pc_run(p, 3000u);
-        pc_mode_cmd(p, MODE_CRUISE);
-        pc_run(p, 20000u);
+        auto_to(&p->x, 6000.0f, 90.0f, 12.0f);
+        pc_run(p, 30000u);
         p->heartbeat = false;               /* cable pulled */
         uint32_t t_off = p->next_hb - 1000u;    /* last heartbeat */
         float t_alarm = -1.0f;
@@ -2181,7 +2754,7 @@ static void link_tests(void)
                  "%s at %.1f kn; PC back: alarm %s",
                  t_alarm, alarm_out ? "on" : "OFF", mode_name(m_lost), v_lost, cleared ? "cleared" : "STILL ON");
         test_report("Link lost > 3 s: alarm 'PC link lost', mode kept",
-                    t_alarm >= 3.0f && t_alarm <= 3.15f && alarm_out && m_lost == MODE_CRUISE && v_lost > 5.0f && cleared, d);
+                    t_alarm >= 3.0f && t_alarm <= 3.15f && alarm_out && m_lost == MODE_AUTO && v_lost > 5.0f && cleared, d);
         free(p);
     }
 
@@ -2190,30 +2763,30 @@ static void link_tests(void)
         pcsim_t *p = (pcsim_t *)calloc(1, sizeof *p);
         pcsim_init(p, 132u);
         p->heartbeat = true;
-        joy_set(0.0f, 0.0f, false, false);
         pc_run(p, 3000u);
-        pc_mode_cmd(p, MODE_CRUISE);
+        auto_to(&p->x, 6000.0f, 90.0f, 12.0f);
         pc_run(p, 30000u);
         joy_set(-0.5f, 0.3f, false, false); /* grab the stick */
         pc_run(p, 1000u);
-        bool in_joy = sb_mode(&p->x.sb) == MODE_JOYSTICK;
+        bool in_man = sb_mode(&p->x.sb) == MODE_MANUAL;
         uint8_t r_sb = pc_mode_cmd(p, MODE_STANDBY);
-        uint8_t r_cr = pc_mode_cmd(p, MODE_CRUISE);
+        uint8_t r_tr = pc_mode_cmd(p, MODE_TRAINING);
         uint8_t b = 10u;
         uint8_t r_hd = pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u);
-        uint8_t r_hb1 = pc_cmd(p, PROTO_T_JOY_HANDBACK, NULL, 0u);
-        bool still = sb_mode(&p->x.sb) == MODE_JOYSTICK;
-        joy_set(0.0f, 0.0f, false, false);
-        pc_run(p, 500u);
-        uint8_t r_hb2 = pc_cmd(p, PROTO_T_JOY_HANDBACK, NULL, 0u);
+        uint8_t r_pa = pc_cmd(p, PROTO_T_AUTO_PAUSE, NULL, 0u);
+        uint8_t r_rs = pc_cmd(p, PROTO_T_AUTO_RESUME, NULL, 0u);    /* armed, but needs the stick centred + CONFIRM */
+        sim_hal_joystick_confirm(true);
+        pc_run(p, 100u);
+        sim_hal_joystick_confirm(false);
         pc_run(p, 300u);
-        bool back = sb_mode(&p->x.sb) == MODE_STANDBY;
-        snprintf(d, sizeof d, "in JOYSTICK %s; PC STANDBY -> %u, CRUISE -> %u, heading -> %u (4 = joystick in control); "
-                 "hand-back with stick deflected -> %u (8 = not centred), still JOYSTICK %s; centred hand-back -> %u, now %s",
-                 in_joy ? "yes" : "NO", r_sb, r_cr, r_hd, r_hb1, still ? "yes" : "NO", r_hb2, mode_name(sb_mode(&p->x.sb)));
+        bool still = sb_mode(&p->x.sb) == MODE_MANUAL;
+        snprintf(d, sizeof d, "in MANUAL %s; PC STANDBY -> %u, TRAINING -> %u, heading -> %u, pause -> %u "
+                 "(4 = joystick in control); resume request -> %u but CONFIRM with the stick deflected refused, "
+                 "still MANUAL %s",
+                 in_man ? "yes" : "NO", r_sb, r_tr, r_hd, r_pa, r_rs, still ? "yes" : "NO");
         test_report("Link: PC refused while the joystick is in control",
-                    in_joy && r_sb == PROTO_R_JOYSTICK && r_cr == PROTO_R_JOYSTICK && r_hd == PROTO_R_JOYSTICK &&
-                    r_hb1 == PROTO_R_NOT_CENTERED && still && r_hb2 == PROTO_R_OK && back, d);
+                    in_man && r_sb == PROTO_R_JOYSTICK && r_tr == PROTO_R_JOYSTICK && r_hd == PROTO_R_JOYSTICK &&
+                    r_pa == PROTO_R_JOYSTICK && still, d);
         free(p);
     }
 }
@@ -2222,6 +2795,7 @@ static void link_tests(void)
 
 void sb_tests(void)
 {
+    modes_tests();
     link_tests();
     joystick_tests();
     gps_denied();

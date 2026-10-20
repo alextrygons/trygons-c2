@@ -179,24 +179,6 @@ void     sim_hal_reset_engine(void)
     s_throttle = 0.0f;
     s_gear_pwm = 1500u;
     s_gps_new = false;
-    sim_hal_set_controls(0.0f, 0.0f, HAL_SEL_N);
-}
-
-static hal_controls_t s_controls;
-static bool           s_controls_fitted = true;
-
-bool hal_read_controls(hal_controls_t *c)
-{
-    if (!s_controls_fitted) return false;
-    *c = s_controls;
-    return true;
-}
-
-void sim_hal_set_controls(float steer, float throttle, hal_gear_sel_t gear)
-{
-    s_controls.steer = steer;
-    s_controls.throttle = throttle;
-    s_controls.gear = gear;
 }
 
 static bool  s_roll_fitted = false;
@@ -297,6 +279,11 @@ void sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take
     s_joy.y_raw = y_raw;
     s_joy.take = take;
     s_joy.autob = autob;
+}
+
+void sim_hal_joystick_confirm(bool pressed)
+{
+    s_joy.confirm = pressed;
 }
 
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size)
