@@ -32,6 +32,7 @@
 #include "hal.h"
 #include "autopilot.h"
 #include "smallboat.h"
+#include "link.h"
 
 /* Which boat this build is for:
  *   default            small boat (outboard): smallboat.c controller
@@ -45,6 +46,7 @@ IFX_ALIGN(4) IfxCpu_syncEvent cpuSyncEvent = 0;
 static autopilot_t g_autopilot;
 #else
 static sb_t g_boat;
+static link_t g_link;       /* ground station (USB virtual COM) */
 #endif
 
 void core0_main(void)
@@ -71,6 +73,7 @@ void core0_main(void)
     sb_default_config(&cfg);
     sb_init(&g_boat, &cfg);
     (void)autopilot_load_calibration(&g_boat.ap);   /* saved TRAINING result, if any */
+    link_init(&g_link, &g_boat);
 #endif
 
     /* Fixed-rate loop: one step every AP_PERIOD_MS (20 Hz). */
@@ -84,6 +87,7 @@ void core0_main(void)
             autopilot_step(&g_autopilot);
 #else
             sb_step(&g_boat);
+            link_step(&g_link, &g_boat);
 #endif
             next_step_ms += AP_PERIOD_MS;
 

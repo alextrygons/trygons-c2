@@ -162,4 +162,15 @@ bool hal_read_water_speed(float *kn);
 bool hal_calib_save(const void *data, uint32_t size);
 bool hal_calib_load(void *data, uint32_t size);
 
+/*
+ * Ground-station link: a plain byte stream (board: USB virtual COM =
+ * ASCLIN0 at 921600 baud; sim: TCP socket). Framing is done by the app
+ * (proto.c).
+ * read:  non-blocking, copies up to `max` received bytes, returns the count.
+ * write: queues all `len` bytes and returns true, or queues nothing and
+ *        returns false if there is not enough room (frame dropped).
+ */
+uint32_t hal_link_read(uint8_t *buf, uint32_t max);
+bool     hal_link_write(const uint8_t *buf, uint32_t len);
+
 #endif /* HAL_H */

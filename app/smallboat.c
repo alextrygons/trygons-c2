@@ -306,7 +306,7 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
     joy_step(&s->joy, js_ok ? &js : NULL, s->now_ms - s->last_ms);
     if (sb_mode(s) == MODE_JOYSTICK) {
         /* X -> outboard angle over the full range (deadband around centre) */
-        float x = s->joy.x, db = s->cfg.joy.deadband;
+        float x = s->joy.x, db = s->joy.cfg.deadband;
         float xs = (fabsf(x) <= db) ? 0.0f : (x - copysignf(db, x)) / (1.0f - db);
         in->angle_cmd_deg = xs * s->ap.cfg.outboard.max_angle_deg;
     }
@@ -319,7 +319,7 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
  * rate limits apply as everywhere (throttle.c). */
 static void joystick_mode(sb_t *s)
 {
-    float y = s->joy.y, db = s->cfg.joy.deadband;
+    float y = s->joy.y, db = s->joy.cfg.deadband;
     float mag = (fabsf(y) <= db) ? 0.0f : (fabsf(y) - db) / (1.0f - db);
     if (y > db)       s->gear_demand = GEAR_F;
     else if (y < -db) s->gear_demand = GEAR_R;
@@ -715,7 +715,8 @@ void sb_step(sb_t *s)
     uint32_t dt_ms = s->now_ms - s->last_ms;
     float dt = (float)dt_ms * 0.001f;
 
-    uint32_t buttons = hal_get_button_presses();
+    uint32_t buttons = hal_get_button_presses() | s->ext_buttons;   /* + course buttons from the PC */
+    s->ext_buttons = 0u;
     read_inputs(s, &in, buttons);
     bool roll_new = hal_read_roll_rate(&roll);
     bool nsw;

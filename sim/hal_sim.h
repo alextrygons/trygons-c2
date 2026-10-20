@@ -60,4 +60,9 @@ void     sim_hal_set_water_speed(bool fitted, float kn);
 /* Joystick (raw 12-bit ADC values and buttons). */
 void     sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob);
 
+/* Ground-station link byte streams (PC side of hal_link_read / write). */
+uint32_t sim_hal_link_rx_push(const uint8_t *buf, uint32_t len);   /* PC -> boat */
+uint32_t sim_hal_link_tx_pop(uint8_t *buf, uint32_t max);          /* boat -> PC */
+void     sim_hal_link_reset(void);
+
 #endif /* HAL_SIM_H */

@@ -319,3 +319,45 @@ bool hal_nv_load(uint8_t slot, void *data, uint32_t size)
     fclose(f);
     return ok;
 }
+
+/* --- ground-station link: two byte rings, filled / emptied by the sim
+ *     TCP server (sim_server.c) or directly by the tests --- */
+#define LINK_BUF 8192u
+typedef struct { uint8_t b[LINK_BUF]; uint32_t head, tail; } link_ring_t;
+static link_ring_t s_link_rx, s_link_tx;   /* rx: PC -> boat, tx: boat -> PC */
+
+static uint32_t ring_used(const link_ring_t *r) { return r->head - r->tail; }
+
+uint32_t hal_link_read(uint8_t *buf, uint32_t max)
+{
+    uint32_t n = 0u;
+    while (n < max && ring_used(&s_link_rx) > 0u) buf[n++] = s_link_rx.b[s_link_rx.tail++ % LINK_BUF];
+    return n;
+}
+
+bool hal_link_write(const uint8_t *buf, uint32_t len)
+{
+    if (LINK_BUF - ring_used(&s_link_tx) < len) return false;
+    for (uint32_t i = 0u; i < len; i++) s_link_tx.b[s_link_tx.head++ % LINK_BUF] = buf[i];
+    return true;
+}
+
+uint32_t sim_hal_link_rx_push(const uint8_t *buf, uint32_t len)
+{
+    uint32_t n = 0u;
+    while (n < len && ring_used(&s_link_rx) < LINK_BUF) s_link_rx.b[s_link_rx.head++ % LINK_BUF] = buf[n++];
+    return n;
+}
+
+uint32_t sim_hal_link_tx_pop(uint8_t *buf, uint32_t max)
+{
+    uint32_t n = 0u;
+    while (n < max && ring_used(&s_link_tx) > 0u) buf[n++] = s_link_tx.b[s_link_tx.tail++ % LINK_BUF];
+    return n;
+}
+
+void sim_hal_link_reset(void)
+{
+    s_link_rx.head = s_link_rx.tail = 0u;
+    s_link_tx.head = s_link_tx.tail = 0u;
+}

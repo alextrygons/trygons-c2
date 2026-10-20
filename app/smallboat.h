@@ -213,6 +213,7 @@ typedef struct {
     sb_mode_t   joy_prev;      /* mode before the override */
     bool        joy_fault_seen, joy_nc_seen;
     uint32_t    chirp_ms;      /* short alarm chirp still to sound */
+    uint32_t    ext_buttons;   /* course buttons from the ground station (HAL_BTN_BIT), used by the next step */
 
     uint32_t now_ms, last_ms;
     bool     stopping;          /* safe stop running (idle + neutral first) */

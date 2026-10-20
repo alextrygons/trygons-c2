@@ -182,3 +182,17 @@ void hal_set_alarm(bool on)
         IfxPort_setPinHigh(ALARM_LED_PORT, ALARM_LED_PIN);   /* LED off */
     }
 }
+
+uint32_t hal_link_read(uint8_t *buf, uint32_t max)
+{
+    (void)buf; (void)max;
+    return 0u;       /* TODO: ASCLIN0 (P14.0 TX / P14.1 RX = USB virtual COM via the
+                        on-board miniWiggler), 921600 8N1, RX FIFO / interrupt
+                        ring buffer (IfxAsclin_Asc_read, non-blocking) */
+}
+
+bool hal_link_write(const uint8_t *buf, uint32_t len)
+{
+    (void)buf; (void)len;
+    return false;    /* TODO: IfxAsclin_Asc_write into the TX ring buffer; all or nothing */
+}

@@ -7,6 +7,8 @@
  *   autopilot_sim all                            every test, PASS/FAIL list
  *   autopilot_sim train [seed]                   outboard TRAINING tests
  *   autopilot_sim train SEED BOAT SS             trace one training (BOAT 1..5, SS 1..2)
+ *   autopilot_sim server [port [speed]]          simulated boat for the ground
+ *                                                station (TCP 5760, speed 1)
  *   autopilot_sim outboard [wave_seed]           small boat test table,
  *                                                sea state 3
  *
@@ -409,6 +411,16 @@ int main(int argc, char **argv)
     if (self_test() != 0) return 1;
 
     if (argc > 1 && strcmp(argv[1], "all") == 0) return run_all();
+
+    if (argc > 1 && strcmp(argv[1], "server") == 0) {
+        int port = (argc > 2) ? atoi(argv[2]) : 5760;
+        double speed = (argc > 3) ? atof(argv[3]) : 1.0;
+        if (port <= 0 || port > 65535 || !(speed > 0.0 && speed <= 50.0)) {
+            printf("usage: autopilot_sim server [port 1..65535] [speed 0..50]\n");
+            return 1;
+        }
+        return sim_server(port, speed);
+    }
 
     if (argc > 1 && strcmp(argv[1], "train") == 0) {
         uint32_t seed = (argc > 2) ? (uint32_t)strtoul(argv[2], NULL, 10) : 2024u;

@@ -9,3 +9,5 @@ sim/sim_output.csv
 sim/sim_outboard.csv
 sim/calib.bin
 sim/nv*.bin
+groundstation/logs/
+__pycache__/

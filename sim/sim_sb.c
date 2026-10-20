@@ -9,6 +9,7 @@
 #include "hal_sim.h"
 #include "sim_run.h"
 #include "sim_world.h"
+#include "link.h"
 #include "smallboat.h"
 
 /* ------------------------------------------------------------ harness -- */
@@ -1927,10 +1928,301 @@ static void joystick_tests(void)
     }
 }
 
+/* -------------------------------------------------------- ground link -- */
+
+typedef struct {
+    sbsim_t     x;
+    link_t      link;
+    proto_rx_t  pc_rx;          /* PC side receiver */
+    uint8_t     seq;
+    int         acks;           /* ACK frames seen */
+    uint8_t     ack_type, ack_seq, ack_result;
+    int         telem;          /* telemetry frames seen */
+    uint8_t     telem_mode;
+    uint32_t    telem_alarms;
+    int         params;
+    float       param_value;
+    bool        heartbeat;      /* PC sends a heartbeat every second */
+    uint32_t    next_hb;
+} pcsim_t;
+
+static void pc_send(pcsim_t *p, uint8_t type, const uint8_t *payload, uint8_t len)
+{
+    uint8_t fr[PROTO_MAX_FRAME];
+    size_t n = proto_encode(fr, type, ++p->seq, payload, len);
+    sim_hal_link_rx_push(fr, (uint32_t)n);
+}
+
+static void pc_hook(sbsim_t *x, void *ctx)
+{
+    pcsim_t *p = (pcsim_t *)ctx;
+    link_step(&p->link, &x->sb);
+    if (p->heartbeat && x->t >= p->next_hb) {
+        p->next_hb = x->t + 1000u;
+        pc_send(p, PROTO_T_HEARTBEAT, NULL, 0u);
+    }
+    uint8_t buf[512];
+    uint32_t n;
+    proto_frame_t f;
+    while ((n = sim_hal_link_tx_pop(buf, sizeof buf)) > 0u) proto_rx_push(&p->pc_rx, buf, n);
+    while (proto_rx_next(&p->pc_rx, &f)) {
+        if (f.type == PROTO_T_ACK && f.len == 3u) {
+            p->acks++;
+            p->ack_type = f.payload[0];
+            p->ack_seq = f.payload[1];
+            p->ack_result = f.payload[2];
+        } else if (f.type == PROTO_T_TELEMETRY) {
+            proto_rd_t r;
+            proto_rd_init(&r, f.payload, f.len);
+            (void)proto_rd_u32(&r);
+            p->telem_mode = proto_rd_u8(&r);
+            p->telem++;
+            r.n = 4u + 4u + 20u + 2u + 16u + 2u + 24u + 12u;      /* alarm_bits offset */
+            p->telem_alarms = proto_rd_u32(&r);
+        } else if (f.type == PROTO_T_PARAM_VALUE) {
+            proto_rd_t r;
+            proto_rd_init(&r, f.payload, f.len);
+            (void)proto_rd_u8(&r);
+            p->param_value = proto_rd_f32(&r);
+            p->params++;
+        }
+    }
+}
+
+static void pcsim_init(pcsim_t *p, uint32_t seed)
+{
+    memset(p, 0, sizeof *p);
+    remove("nv1.bin");
+    sbsim_init(&p->x, seed, 90.0f, 0.0f, NULL);
+    sim_hal_link_reset();
+    link_init(&p->link, &p->x.sb);
+    proto_rx_init(&p->pc_rx);
+}
+
+static void pc_run(pcsim_t *p, uint32_t ms)
+{
+    sbsim_run(&p->x, p->x.t + ms, pc_hook, p);
+}
+
+/* Send a command, run 200 ms, return the ACK result (0xFF = no ACK). */
+static uint8_t pc_cmd(pcsim_t *p, uint8_t type, const uint8_t *payload, uint8_t len)
+{
+    int before = p->acks;
+    pc_send(p, type, payload, len);
+    uint8_t seq = p->seq;
+    pc_run(p, 200u);
+    return (p->acks > before && p->ack_seq == seq && p->ack_type == type) ? p->ack_result : 0xFFu;
+}
+
+static uint8_t pc_mode_cmd(pcsim_t *p, sb_mode_t m)
+{
+    uint8_t b = (uint8_t)m;
+    return pc_cmd(p, PROTO_T_SET_MODE, &b, 1u);
+}
+
+static void link_tests(void)
+{
+    char d[400];
+    printf("\n=== Ground-station link ===\n");
+
+    /* protocol: corrupted frames are never accepted, good ones always found */
+    {
+        uint8_t pl[40], fr[PROTO_MAX_FRAME], stream[4096];
+        for (int i = 0; i < 40; i++) pl[i] = (uint8_t)(i * 7 + 3);
+        size_t n = proto_encode(fr, 0x42u, 9u, pl, 40u);
+        proto_rx_t r;
+        proto_frame_t f;
+        int wrong_accepted = 0, good_lost = 0;
+
+        /* every single-bit flip in every byte, each followed by a good frame */
+        for (size_t byte = 0; byte < n; byte++) {
+            for (int bit = 0; bit < 8; bit++) {
+                proto_rx_init(&r);
+                memcpy(stream, fr, n);
+                stream[byte] ^= (uint8_t)(1u << bit);
+                memcpy(stream + n, fr, n);
+                proto_rx_push(&r, stream, 2u * n);
+                int got = 0;
+                for (;;) {      /* like link.c: if bytes wait with nothing new, rescan */
+                    while (proto_rx_next(&r, &f)) {
+                        if (f.type != 0x42u || f.seq != 9u || f.len != 40u || memcmp(f.payload, pl, 40u) != 0)
+                            wrong_accepted++;
+                        got++;
+                    }
+                    if (proto_rx_pending(&r) == 0u) break;
+                    proto_rx_stale(&r);
+                }
+                if (got != 1) good_lost++;
+            }
+        }
+        /* truncated frame, then a good one */
+        proto_rx_init(&r);
+        memcpy(stream, fr, n / 2u);
+        memcpy(stream + n / 2u, fr, n);
+        proto_rx_push(&r, stream, n / 2u + n);
+        int trunc_ok = 0;
+        while (proto_rx_next(&r, &f)) trunc_ok += (f.type == 0x42u && memcmp(f.payload, pl, 40u) == 0);
+        /* random noise with good frames mixed in */
+        uint32_t rng = 99u;
+        int noise_frames = 0, noise_good = 0;
+        proto_rx_init(&r);
+        for (int k = 0; k < 200; k++) {
+            uint8_t junk[300];
+            for (int i = 0; i < 300; i++) { rng = rng * 1103515245u + 12345u; junk[i] = (uint8_t)(rng >> 16); }
+            if (k % 3 == 0) { junk[10] = PROTO_SYNC1; junk[11] = PROTO_SYNC2; junk[12] = 30u; }   /* fake starts */
+            proto_rx_push(&r, junk, sizeof junk);
+            while (proto_rx_next(&r, &f)) noise_frames++;
+            proto_rx_push(&r, fr, n);
+            while (proto_rx_next(&r, &f)) {
+                if (f.type == 0x42u && memcmp(f.payload, pl, 40u) == 0) noise_good++;
+                else noise_frames++;
+            }
+        }
+        snprintf(d, sizeof d, "%u single-bit errors: %d wrong frames accepted, %d following good frames lost; "
+                 "truncated frame then good: %d found; 60 kB noise + 200 good frames: %d false frames, %d/200 good found "
+                 "(CRC errors counted %u)",
+                 (unsigned)(n * 8u), wrong_accepted, good_lost, trunc_ok, noise_frames, noise_good, (unsigned)r.crc_errors);
+        test_report("Protocol: corrupted frames rejected, good frames still found",
+                    wrong_accepted == 0 && good_lost == 0 && trunc_ok == 1 && noise_frames == 0 && noise_good == 200, d);
+    }
+
+    /* illegal / impossible commands are refused with the right reason */
+    {
+        pcsim_t *p = (pcsim_t *)calloc(1, sizeof *p);
+        pcsim_init(p, 130u);
+        p->heartbeat = true;
+        pc_run(p, 3000u);
+        int bad = 0;
+        char why[300] = "";
+        uint8_t two[2] = { 1u, 1u }, b;
+#define EXPECT(label, got, want) do { uint8_t g_ = (got); \
+        if (g_ != (want)) { bad++; snprintf(why + strlen(why), sizeof why - strlen(why), " %s=%u", label, g_); } \
+        if (sb_mode(&p->x.sb) == MODE_JOYSTICK) bad++; } while (0)
+        EXPECT("unknown", pc_cmd(p, 0x55u, NULL, 0u), PROTO_R_UNKNOWN);
+        EXPECT("len", pc_cmd(p, PROTO_T_SET_MODE, two, 2u), PROTO_R_BAD_LENGTH);
+        b = 9u;  EXPECT("mode9", pc_cmd(p, PROTO_T_SET_MODE, &b, 1u), PROTO_R_BAD_VALUE);
+        EXPECT("to_joy", pc_mode_cmd(p, MODE_JOYSTICK), PROTO_R_NOT_ALLOWED);
+        EXPECT("nav_no_wp", pc_mode_cmd(p, MODE_NAV), PROTO_R_PRECOND);
+        b = 5u;  EXPECT("hdg+5", pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u), PROTO_R_BAD_VALUE);
+        b = 10u; EXPECT("hdg_standby", pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u), PROTO_R_WRONG_MODE);
+        b = 7u;  EXPECT("sea7", pc_cmd(p, PROTO_T_SEA_STATE, &b, 1u), PROTO_R_BAD_VALUE);
+        b = 99u; EXPECT("param99", pc_cmd(p, PROTO_T_PARAM_GET, &b, 1u), PROTO_R_BAD_PARAM);
+        {
+            uint8_t pl[12]; proto_wr_t w; proto_wr_init(&w, pl, sizeof pl);
+            proto_wr_latlon(&w, 95.0); proto_wr_latlon(&w, 10.0); proto_wr_f32(&w, 6.0f);
+            EXPECT("lat95", pc_cmd(p, PROTO_T_WAYPOINT, pl, 12u), PROTO_R_BAD_VALUE);
+            uint8_t ps[5]; proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, 15u); proto_wr_f32(&w, 500.0f);
+            EXPECT("joythr500", pc_cmd(p, PROTO_T_PARAM_SET, ps, 5u), PROTO_R_BAD_VALUE);
+            proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, 15u); proto_wr_f32(&w, 30.0f);
+            EXPECT("joythr30", pc_cmd(p, PROTO_T_PARAM_SET, ps, 5u), PROTO_R_OK);
+            bool param_set = fabsf(p->x.sb.cfg.joy_max_throttle_pct - 30.0f) < 1e-4f && fabsf(p->param_value - 30.0f) < 1e-4f;
+            if (!param_set) { bad++; strcat(why, " param_not_applied"); }
+            p->x.sb.cfg.joy_max_throttle_pct = 40.0f;
+        }
+        bool still_standby = sb_mode(&p->x.sb) == MODE_STANDBY;
+        EXPECT("training", pc_mode_cmd(p, MODE_TRAINING), PROTO_R_OK);
+        EXPECT("train->cruise", pc_mode_cmd(p, MODE_CRUISE), PROTO_R_NOT_ALLOWED);
+        bool still_training = sb_mode(&p->x.sb) == MODE_TRAINING;
+        EXPECT("standby", pc_mode_cmd(p, MODE_STANDBY), PROTO_R_OK);
+        pc_run(p, 5000u);
+        EXPECT("cruise", pc_mode_cmd(p, MODE_CRUISE), PROTO_R_OK);
+        {
+            uint8_t ps[5]; proto_wr_t w; proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, 15u); proto_wr_f32(&w, 30.0f);
+            EXPECT("param_in_cruise", pc_cmd(p, PROTO_T_PARAM_SET, ps, 5u), PROTO_R_STANDBY_ONLY);
+        }
+        float tgt0 = p->x.sb.ap.target_heading;
+        b = 10u; EXPECT("hdg+10", pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u), PROTO_R_OK);
+        b = (uint8_t)(int8_t)-1; EXPECT("hdg-1", pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u), PROTO_R_OK);
+        float dtgt = hdg_err(p->x.sb.ap.target_heading, tgt0);
+        const mode_log_entry_t *le = NULL;
+        int pc_logged = 0;
+        for (uint32_t i = 0; i < mode_log_size(&p->x.sb.modes); i++) {
+            le = mode_log_get(&p->x.sb.modes, i);
+            if (le->why == WHY_PC) pc_logged++;
+        }
+#undef EXPECT
+        pc_run(p, 10000u);
+        int t0 = p->telem;
+        pc_run(p, 10000u);
+        int telem10 = p->telem - t0;
+        snprintf(d, sizeof d, "wrong answers %d%s; refused commands changed nothing: %s/%s; heading +10 -1 -> target %+.0f deg; "
+                 "PC mode requests logged %d; telemetry %d frames in 10 s, shows %s; NACKs sent %u",
+                 bad, why, still_standby ? "yes" : "NO", still_training ? "yes" : "NO", dtgt, pc_logged, telem10,
+                 mode_name((sb_mode_t)p->telem_mode), (unsigned)p->link.nacks);
+        test_report("Link: illegal commands refused with a reason, legal ones accepted",
+                    bad == 0 && still_standby && still_training && fabsf(dtgt - 9.0f) < 0.01f && pc_logged >= 6 && 
+                    telem10 >= 99 && telem10 <= 101 && p->telem_mode == MODE_CRUISE, d);
+        free(p);
+    }
+
+    /* PC link lost: alarm after 3 s, mode stays */
+    {
+        pcsim_t *p = (pcsim_t *)calloc(1, sizeof *p);
+        pcsim_init(p, 131u);
+        p->heartbeat = true;
+        pc_run(p, 3000u);
+        pc_mode_cmd(p, MODE_CRUISE);
+        pc_run(p, 20000u);
+        p->heartbeat = false;               /* cable pulled */
+        uint32_t t_off = p->next_hb - 1000u;    /* last heartbeat */
+        float t_alarm = -1.0f;
+        for (int k = 0; k < 400; k++) {
+            pc_run(p, 50u);
+            if (t_alarm < 0.0f && (p->x.sb.alarm_bits & SB_ALM_PC_LINK)) t_alarm = (float)(p->x.t - t_off) * 0.001f;
+        }
+        bool alarm_out = sim_hal_alarm();
+        sb_mode_t m_lost = sb_mode(&p->x.sb);
+        float v_lost = p->x.w.speed_kn;
+        p->heartbeat = true;
+        p->next_hb = p->x.t;
+        pc_run(p, 2000u);
+        bool cleared = !(p->x.sb.alarm_bits & SB_ALM_PC_LINK);
+        snprintf(d, sizeof d, "alarm %.2f s after the last heartbeat (limit 3 s), alarm output %s; mode after 20 s without PC: "
+                 "%s at %.1f kn; PC back: alarm %s",
+                 t_alarm, alarm_out ? "on" : "OFF", mode_name(m_lost), v_lost, cleared ? "cleared" : "STILL ON");
+        test_report("Link lost > 3 s: alarm 'PC link lost', mode kept",
+                    t_alarm >= 3.0f && t_alarm <= 3.15f && alarm_out && m_lost == MODE_CRUISE && v_lost > 5.0f && cleared, d);
+        free(p);
+    }
+
+    /* PC during the joystick override */
+    {
+        pcsim_t *p = (pcsim_t *)calloc(1, sizeof *p);
+        pcsim_init(p, 132u);
+        p->heartbeat = true;
+        joy_set(0.0f, 0.0f, false, false);
+        pc_run(p, 3000u);
+        pc_mode_cmd(p, MODE_CRUISE);
+        pc_run(p, 30000u);
+        joy_set(-0.5f, 0.3f, false, false); /* grab the stick */
+        pc_run(p, 1000u);
+        bool in_joy = sb_mode(&p->x.sb) == MODE_JOYSTICK;
+        uint8_t r_sb = pc_mode_cmd(p, MODE_STANDBY);
+        uint8_t r_cr = pc_mode_cmd(p, MODE_CRUISE);
+        uint8_t b = 10u;
+        uint8_t r_hd = pc_cmd(p, PROTO_T_HEADING_ADJ, &b, 1u);
+        uint8_t r_hb1 = pc_cmd(p, PROTO_T_JOY_HANDBACK, NULL, 0u);
+        bool still = sb_mode(&p->x.sb) == MODE_JOYSTICK;
+        joy_set(0.0f, 0.0f, false, false);
+        pc_run(p, 500u);
+        uint8_t r_hb2 = pc_cmd(p, PROTO_T_JOY_HANDBACK, NULL, 0u);
+        pc_run(p, 300u);
+        bool back = sb_mode(&p->x.sb) == MODE_STANDBY;
+        snprintf(d, sizeof d, "in JOYSTICK %s; PC STANDBY -> %u, CRUISE -> %u, heading -> %u (4 = joystick in control); "
+                 "hand-back with stick deflected -> %u (8 = not centred), still JOYSTICK %s; centred hand-back -> %u, now %s",
+                 in_joy ? "yes" : "NO", r_sb, r_cr, r_hd, r_hb1, still ? "yes" : "NO", r_hb2, mode_name(sb_mode(&p->x.sb)));
+        test_report("Link: PC refused while the joystick is in control",
+                    in_joy && r_sb == PROTO_R_JOYSTICK && r_cr == PROTO_R_JOYSTICK && r_hd == PROTO_R_JOYSTICK &&
+                    r_hb1 == PROTO_R_NOT_CENTERED && still && r_hb2 == PROTO_R_OK && back, d);
+        free(p);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
+    link_tests();
     joystick_tests();
     gps_denied();
     fixes();

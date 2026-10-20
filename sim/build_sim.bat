@@ -10,7 +10,7 @@ set SRCS=
 for %%f in (app\*.c sim\*.c) do set SRCS=!SRCS! %%f
 
 echo Compiling:%SRCS%
-gcc -std=c99 -O2 -Wall -Wextra -Iapp -Ihal %SRCS% -o sim\autopilot_sim.exe -lm
+gcc -std=c99 -O2 -Wall -Wextra -Iapp -Ihal %SRCS% -o sim\autopilot_sim.exe -lm -lws2_32
 if errorlevel 1 (
     echo BUILD FAILED
     exit /b 1
