@@ -71,7 +71,8 @@ void test_na(const char *name, const char *why);
 
 /* Small-boat tests, all phases (sim_sb.c). */
 void sb_tests(void);
-void sb_usb_tests(void);          /* only the USB joystick tests */
+void sb_usb_tests(void);
+void sb_gateway_tests(void);      /* only section A (gateway link) tests */          /* only the USB joystick tests */
 void sb_set_bridge(bool on);      /* all tests through the USB joystick bridge */
 
 /* Python log round-trip test data (sim_sb.c) */
@@ -81,6 +82,6 @@ int sb_logtest(const char *dir);
 int sb_timing_report(void);
 
 /* sim_server.c: simulated boat behind TCP for the ground station */
-int sim_server(int port, double speed, bool usb);
+int sim_server(int port, double speed, bool usb, uint32_t gw_baud);   /* gateway UART on port + 2 */
 
 #endif /* SIM_RUN_H */

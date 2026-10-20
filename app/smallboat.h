@@ -93,6 +93,29 @@
 #define SB_ALM_MONITOR            0x2000u /* independent safety monitor (CPU1) tripped */
 #define SB_ALM_OVERRUN            0x4000u /* a control cycle took longer than its period */
 #define SB_ALM_LOG                0x8000u /* LOG FAILURE: SD card missing / full / failing */
+#define SB_ALM_GATEWAY            0x10000u /* GATEWAY LOST: no frame from the Raspberry Pi for 3 s */
+#define SB_ALM_GW_STORAGE         0x20000u /* GATEWAY STORAGE: the Pi's USB SSD missing / failing */
+
+/* Gateway (Raspberry Pi) as seen by the AURIX - written by link.c (gateway
+ * port), shown in TELEM2 on every link. */
+#define SB_GW_NEVER  0u
+#define SB_GW_OK     1u
+#define SB_GW_LOST   2u
+#define SB_GWF_STORAGE      0x01u   /* SSD missing / failing / read-only */
+#define SB_GWF_STORAGE_FULL 0x02u   /* SSD (nearly) full: only the ring buffer runs */
+#define SB_GWF_FALLBACK     0x04u   /* internet channel fell back (section C) */
+#define SB_GWF_STARLINK     0x08u   /* Starlink (emergency link) active */
+#define SB_GWF_SAVER        0x10u   /* data saver on */
+typedef struct {
+    uint8_t  state;             /* SB_GW_NEVER / OK / LOST */
+    uint8_t  flags;             /* SB_GWF_ from the Pi's GW_STATUS */
+    uint8_t  channel;           /* active internet channel id (section C) */
+    uint8_t  stations;          /* stations connected to the gateway */
+    uint32_t pi_log_seq;        /* last log record the Pi has */
+    uint16_t pi_log_gaps;       /* gaps the Pi noted */
+    uint32_t log_sent_seq;      /* last log record sent to the Pi */
+    uint32_t log_skipped;       /* records not sent: no gateway connected */
+} sb_gw_t;
 
 #define SB_FAULT_STEER_OFF   0u
 #define SB_FAULT_STEER_GYRO  1u
@@ -318,6 +341,7 @@ typedef struct {
     dr_t        dr;            /* position estimate (GPS / dead reckoning) */
     bool        gps_new_msg;   /* a GPS message arrived this step */
     uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */
+    sb_gw_t     gw;            /* gateway (Raspberry Pi) link status */
     joy_t       joy;           /* joystick (analog or USB, same interface) */
     joymap_t    jmap;          /* joystick source + USB button map (NV slot 4) */
     jb_t        jb;            /* USB joystick bridge input */

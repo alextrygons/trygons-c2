@@ -22,7 +22,6 @@ log_status_t g_logstat;
 #pragma section .bss_cpu1 aw 4
 #endif
 static uint8_t s_bb[LOG_BB_RECORDS][LOG_BB_SLOT];
-static uint8_t s_bb_ev[LOG_BB_EVENTS][LOG_BB_EV_SLOT];
 #if defined(__TASKING__)
 #pragma section farbss align restore
 #pragma section farbss
@@ -30,7 +29,23 @@ static uint8_t s_bb_ev[LOG_BB_EVENTS][LOG_BB_EV_SLOT];
 #pragma section
 #endif
 
+static uint8_t s_bb_ev[LOG_BB_EVENTS][LOG_BB_EV_SLOT];      /* events: logger's own RAM */
 static uint8_t s_rec[4096 + 64];
+static uint8_t s_gw[4096 + 64 + 4];
+
+/* Copy for the Raspberry Pi (core 0 forwards it, link.c): u32 number +
+ * the record. Never waits: a full queue drops the record (counted). */
+static void gw_push(logger_t *lg, const uint8_t *rec, uint16_t len)
+{
+    uint32_t seq = lg->gw_seq++;
+    if ((uint32_t)len + 4u > sizeof s_gw) return;
+    s_gw[0] = (uint8_t)seq;
+    s_gw[1] = (uint8_t)(seq >> 8);
+    s_gw[2] = (uint8_t)(seq >> 16);
+    s_gw[3] = (uint8_t)(seq >> 24);
+    memcpy(&s_gw[4], rec, len);
+    (void)logq_push(&g_logq_gw, s_gw, (uint16_t)(len + 4u));
+}
 
 /* --- file helpers ------------------------------------------------------------- */
 
@@ -86,6 +101,7 @@ static bool file_start(logger_t *lg, int h, uint8_t *buf, uint32_t *n, uint32_t 
     static char txt[3072];
     uint16_t tl = logrec_header_text(txt, sizeof txt, g_logstat.boot, no);
     uint16_t rl = logrec_make(s_rec, LOGR_HEADER, lg->now, txt, tl);
+    if (h == lg->h) gw_push(lg, s_rec, rl);         /* the Pi starts a file too */
     bool ok = raw_write(h, buf, n, "TLG1", 4u) && raw_write(h, buf, n, s_rec, rl);
     if (ok && lg->boot_len) ok = raw_write(h, buf, n, lg->boot_rec, lg->boot_len);
     if (ok && lg->config_len) ok = raw_write(h, buf, n, lg->config_rec, lg->config_len);
@@ -221,6 +237,7 @@ static void handle(logger_t *lg, const uint8_t *rec, uint16_t len)
         memcpy(&lg->gps_date, &rec[LOGR_HDR + 2], 4);
         memcpy(&lg->gps_tod_ms, &rec[LOGR_HDR + 6], 4);
     }
+    gw_push(lg, rec, len);
     bb_store(lg, rec, len);
     bool trig = bb_trigger(rec);
     if (lg->h >= 0) {
@@ -246,11 +263,26 @@ void logger_init(logger_t *lg, uint32_t now_ms)
     g_logstat.blackboxes = 0u;
     g_logstat.bytes = 0u;
     g_logstat.records = 0u;
+    {
+        /* the Pi copy starts with the field description even without an SD card */
+        static char txt[3072];
+        uint16_t tl = logrec_header_text(txt, sizeof txt, g_logstat.boot, 0u);
+        gw_push(lg, s_rec, logrec_make(s_rec, LOGR_HEADER, now_ms, txt, tl));
+    }
 }
 
 void logger_step(logger_t *lg, uint32_t now_ms)
 {
     lg->now = now_ms;
+    if (g_logstat.gw_resend) {
+        /* the Pi (re)connected: give its copy a fresh start it can read on its own */
+        static char txt[3072];
+        g_logstat.gw_resend = 0u;
+        uint16_t tl = logrec_header_text(txt, sizeof txt, g_logstat.boot, lg->file_no);
+        gw_push(lg, s_rec, logrec_make(s_rec, LOGR_HEADER, now_ms, txt, tl));
+        if (lg->boot_len) gw_push(lg, lg->boot_rec, lg->boot_len);
+        if (lg->config_len) gw_push(lg, lg->config_rec, lg->config_len);
+    }
     if (lg->h < 0 && (!lg->failed || (int32_t)(now_ms - lg->retry_at) >= 0)) open_next(lg);
 
     /* drain: bounded work per step */

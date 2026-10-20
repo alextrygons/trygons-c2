@@ -53,6 +53,7 @@ typedef struct {
     world_t w;
     sb_t    sb;
     link_t  link;
+    link_t  gwlink;         /* the Raspberry Pi gateway UART */
     mon_t   mon;            /* independent safety monitor (CPU1 on the board) */
     uint32_t t, next_ctrl;
 } server_t;
@@ -171,7 +172,7 @@ static uint8_t sim_cmd(void *ctx, const proto_frame_t *f)
 
 /* --- main loop ------------------------------------------------------------- */
 
-static void sim_init(server_t *x, uint32_t seed, bool usb)
+static void sim_init(server_t *x, uint32_t seed, bool usb, uint32_t gw_baud)
 {
     sb_config_t c;
     memset(x, 0, sizeof *x);
@@ -190,6 +191,7 @@ static void sim_init(server_t *x, uint32_t seed, bool usb)
     sim_hal_set_gyro(true, 0.05f, 0.02f);
     sim_hal_reset_engine();
     sim_hal_link_reset();
+    sim_hal_gw_reset(gw_baud);
     sim_hal_set_joystick(true, 2048u, 2048u, false, false);    /* fitted, centred */
     world_publish(&x->w, 0);
     hal_init();
@@ -201,6 +203,7 @@ static void sim_init(server_t *x, uint32_t seed, bool usb)
     sb_init(&x->sb, &c);
     monitor_init(&x->mon, 0u);
     link_init(&x->link, &x->sb);
+    link_init_port(&x->gwlink, &x->sb, LINK_PORT_GW);
     /* logging like the board: boot counter, queues, logger into ./sdcard */
     {
         uint32_t boot = 0u;
@@ -230,6 +233,7 @@ static void sim_advance(server_t *x, uint32_t until_ms)
             uint32_t t0 = hal_micros();
             sb_step(&x->sb);
             link_step(&x->link, &x->sb);
+            link_step(&x->gwlink, &x->sb);
             logcore0_step(&x->sb);
             (void)cyc_record(&g_timing.core0, hal_micros() - t0);
         }
@@ -246,83 +250,113 @@ static void sim_advance(server_t *x, uint32_t until_ms)
     }
 }
 
-int sim_server(int port, double speed, bool usb)
+/* One TCP endpoint: the ground station (USB link) or the gateway (the Pi's
+ * UART). Each takes one client at a time. */
+typedef struct {
+    const char *name;
+    sock_t ls, cs;
+    uint32_t (*push)(const uint8_t *buf, uint32_t len);     /* client -> boat */
+    uint32_t (*pop)(uint8_t *buf, uint32_t max);            /* boat -> client */
+} endpoint_t;
+
+static bool ep_listen(endpoint_t *e, int port)
+{
+    int yes = 1;
+    e->cs = SOCK_BAD;
+    e->ls = socket(AF_INET, SOCK_STREAM, 0);
+    if (e->ls == SOCK_BAD) return false;
+    setsockopt(e->ls, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof yes);
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((unsigned short)port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(e->ls, (struct sockaddr *)&a, sizeof a) != 0 || listen(e->ls, 1) != 0) {
+        printf("cannot listen on 127.0.0.1:%d (already in use?)\n", port);
+        sock_close(e->ls);
+        return false;
+    }
+    set_nonblocking(e->ls);
+    return true;
+}
+
+static void ep_poll_in(endpoint_t *e, const server_t *x)
+{
+    int yes = 1;
+    if (e->cs == SOCK_BAD) {
+        e->cs = accept(e->ls, NULL, NULL);
+        if (e->cs != SOCK_BAD) {
+            set_nonblocking(e->cs);
+            setsockopt(e->cs, IPPROTO_TCP, TCP_NODELAY, (const char *)&yes, sizeof yes);
+            printf("[%7.1f s] %s connected\n", x->t * 0.001, e->name);
+            fflush(stdout);
+        }
+    }
+    if (e->cs == SOCK_BAD) return;
+    char buf[1024];
+    for (;;) {
+        int n = (int)recv(e->cs, buf, sizeof buf, 0);
+        if (n > 0) { e->push((const uint8_t *)buf, (uint32_t)n); continue; }
+        if (n == 0 || !would_block()) {
+            printf("[%7.1f s] %s disconnected\n", x->t * 0.001, e->name);
+            fflush(stdout);
+            sock_close(e->cs);
+            e->cs = SOCK_BAD;
+        }
+        break;
+    }
+}
+
+static void ep_flush_out(endpoint_t *e)
+{
+    uint8_t out[4096];
+    uint32_t n;
+    while ((n = e->pop(out, sizeof out)) > 0u) {
+        if (e->cs == SOCK_BAD) continue;            /* nobody listening: drop */
+        uint32_t sent = 0u;
+        while (sent < n) {
+            int k = (int)send(e->cs, (const char *)out + sent, (int)(n - sent), 0);
+            if (k > 0) { sent += (uint32_t)k; continue; }
+            if (k < 0 && would_block()) { sleep_ms(1); continue; }
+            break;
+        }
+    }
+}
+
+int sim_server(int port, double speed, bool usb, uint32_t gw_baud)
 {
     server_t *x = &g_srv;
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { printf("WSAStartup failed\n"); return 1; }
 #endif
-    sock_t ls = socket(AF_INET, SOCK_STREAM, 0);
-    if (ls == SOCK_BAD) { printf("socket() failed\n"); return 1; }
-    int yes = 1;
-    setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof yes);
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_port = htons((unsigned short)port);
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(ls, (struct sockaddr *)&a, sizeof a) != 0 || listen(ls, 1) != 0) {
-        printf("cannot listen on 127.0.0.1:%d (already in use?)\n", port);
-        sock_close(ls);
-        return 1;
-    }
-    set_nonblocking(ls);
+    endpoint_t gs = { "ground station", SOCK_BAD, SOCK_BAD, sim_hal_link_rx_push, sim_hal_link_tx_pop };
+    endpoint_t gw = { "gateway (Pi UART)", SOCK_BAD, SOCK_BAD, sim_hal_gw_rx_push, sim_hal_gw_tx_pop };
+    if (!ep_listen(&gs, port) || !ep_listen(&gw, port + 2)) return 1;
 
-    sim_init(x, 4242u, usb);
-    printf("Simulated boat: listening on 127.0.0.1:%d, speed x%.1f. Ctrl+C to stop.\n", port, speed);
+    sim_init(x, 4242u, usb, gw_baud);
+    printf("Simulated boat: ground station on 127.0.0.1:%d, gateway UART on 127.0.0.1:%d (%lu baud), "
+           "speed x%.1f. Ctrl+C to stop.\n", port, port + 2, (unsigned long)gw_baud, speed);
     fflush(stdout);
 
-    sock_t cs = SOCK_BAD;
     double t0 = wall_s();
     uint32_t next_print = 0u;
     for (;;) {
-        if (cs == SOCK_BAD) {
-            cs = accept(ls, NULL, NULL);
-            if (cs != SOCK_BAD) {
-                set_nonblocking(cs);
-                setsockopt(cs, IPPROTO_TCP, TCP_NODELAY, (const char *)&yes, sizeof yes);
-                printf("[%7.1f s] ground station connected\n", x->t * 0.001);
-                fflush(stdout);
-            }
-        }
-        if (cs != SOCK_BAD) {
-            char buf[1024];
-            for (;;) {
-                int n = (int)recv(cs, buf, sizeof buf, 0);
-                if (n > 0) { sim_hal_link_rx_push((const uint8_t *)buf, (uint32_t)n); continue; }
-                if (n == 0 || !would_block()) {
-                    printf("[%7.1f s] ground station disconnected\n", x->t * 0.001);
-                    fflush(stdout);
-                    sock_close(cs);
-                    cs = SOCK_BAD;
-                }
-                break;
-            }
-        }
+        ep_poll_in(&gs, x);
+        ep_poll_in(&gw, x);
 
         /* advance the boat to "now" (at most 1 s of catch-up) */
         uint32_t target = (uint32_t)((wall_s() - t0) * speed * 1000.0);
         if (target > x->t + 1000u) { t0 += (double)(target - x->t - 1000u) / (speed * 1000.0); target = x->t + 1000u; }
         sim_advance(x, target);
 
-        uint8_t out[4096];
-        uint32_t n;
-        while ((n = sim_hal_link_tx_pop(out, sizeof out)) > 0u) {
-            if (cs == SOCK_BAD) continue;              /* nobody listening: drop */
-            uint32_t sent = 0u;
-            while (sent < n) {
-                int k = (int)send(cs, (const char *)out + sent, (int)(n - sent), 0);
-                if (k > 0) { sent += (uint32_t)k; continue; }
-                if (k < 0 && would_block()) { sleep_ms(1); continue; }
-                break;
-            }
-        }
+        ep_flush_out(&gs);
+        ep_flush_out(&gw);
 
         if (x->t >= next_print) {
             next_print = x->t + 10000u;
             sb_status_t st = sb_status(&x->sb);
-            printf("[%7.1f s] %-8s hdg %5.1f  %4.1f kn  thr %4.1f %%  alarms 0x%03x\n", x->t * 0.001,
+            printf("[%7.1f s] %-8s hdg %5.1f  %4.1f kn  thr %4.1f %%  alarms 0x%05x\n", x->t * 0.001,
                    mode_name(sb_mode(&x->sb)), x->sb.ap.heading, x->w.speed_kn, x->sb.thr.out_pct,
                    (unsigned)st.alarm_bits);
             fflush(stdout);

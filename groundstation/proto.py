@@ -22,6 +22,7 @@ T_ALARM_ACK = 0x1A
 T_JOYMAP_GET = 0x1B        # -> JOYMAP_VALUE
 T_JOYMAP_SET = 0x1C        # joymap body + u8 save; STANDBY only
 T_JOY_RAW_GET = 0x1D       # -> JOY_RAW (USB bridge frame, for the button mapping)
+T_GW_STATUS = 0x31         # gateway -> AURIX, 1 Hz (also the gateway heartbeat)
 T_PROG_BEGIN = 0x20
 T_PROG_WP = 0x21
 T_PROG_COMMIT = 0x22
@@ -45,6 +46,9 @@ T_PROG_WP_VALUE = 0x83
 T_PROG_ERROR = 0x84
 T_JOYMAP_VALUE = 0x85
 T_JOY_RAW = 0x86
+T_LOG_CHUNK = 0x89         # AURIX -> gateway: the full log copy
+T_TIME = 0x8A              # AURIX -> gateway: GPS time, 1 Hz
+T_TELEM2 = 0x8B            # with every telemetry: gateway / helm / remote / slamming
 
 TYPE_NAMES = {
     T_HEARTBEAT: "heartbeat", T_SET_MODE: "set mode",
@@ -57,6 +61,7 @@ TYPE_NAMES = {
     T_SIM_JOYSTICK: "sim joystick", T_SIM_GPS: "sim GPS", T_SIM_BUTTON: "sim button",
     T_JOYMAP_GET: "joystick map read", T_JOYMAP_SET: "joystick map write", T_JOY_RAW_GET: "joystick raw read",
     T_SIM_BRIDGE: "sim USB joystick", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
+    T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -129,6 +134,8 @@ ALARMS = [
     (0x2000, "SAFETY MONITOR TRIPPED"),
     (0x4000, "CONTROL LOOP OVERRUN"),
     (0x8000, "LOG FAILURE (SD card)"),
+    (0x10000, "GATEWAY LOST"),
+    (0x20000, "GATEWAY STORAGE"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -497,3 +504,51 @@ def p_sim_bridge(stick_x=0.0, stick_y=0.0, lever=0.5, b0=0, b1=0, hat0=15, hat1=
     out += struct.pack("<8hIB", *a0, b0 if stick else 0, 0xF0 | (hat0 & 0x0F))
     out += struct.pack("<8hIB", *a1, b1 if throttle else 0, 0xF0 | (hat1 & 0x0F))
     return out + struct.pack("<B", fault)
+
+
+# --- gateway (Raspberry Pi) ---------------------------------------------------------
+
+GWF_STORAGE, GWF_STORAGE_FULL, GWF_FALLBACK, GWF_STARLINK, GWF_SAVER = 0x01, 0x02, 0x04, 0x08, 0x10
+GW_STATES = ["never connected", "OK", "LOST"]
+
+
+def p_gw_status(flags, channel=0, stations=0, pi_log_seq=0, pi_log_gaps=0):
+    """GW_STATUS (gateway -> AURIX, 1 Hz): link.c gw_status()."""
+    return struct.pack("<BBBBIHH", 1, flags & 0xFF, channel & 0xFF, stations & 0xFF,
+                       pi_log_seq & 0xFFFFFFFF, min(pi_log_gaps, 0xFFFF), 0)
+
+
+def decode_time(payload: bytes) -> dict:
+    valid, date, tod, t_ms = struct.unpack_from("<BIII", payload)
+    return {"valid": bool(valid), "date": date, "tod_ms": tod, "t_ms": t_ms}
+
+
+def gps_epoch(date, tod_ms):
+    """YYYYMMDD + UTC ms of the day -> Unix time (s)."""
+    import calendar
+    y, m, d = date // 10000, (date // 100) % 100, date % 100
+    return calendar.timegm((y, m, d, 0, 0, 0, 0, 0, 0)) + tod_ms / 1000.0
+
+
+def decode_log_chunk(payload: bytes):
+    seq, off, ln = struct.unpack_from("<IHH", payload)
+    return seq, off, ln, payload[8:]
+
+
+# TELEM2 groups (link.c telemetry2); each group only if the frame is long enough
+_T2_GROUPS = [
+    (struct.Struct("<IBBBBIIIHI"), "t2_ms gw_state gw_flags gw_channel gw_stations log_sent_seq "
+                                   "log_dropped_pi pi_log_seq pi_log_gaps log_skipped".split()),
+]
+
+
+def decode_telem2(payload: bytes) -> dict:
+    d, off = {}, 0
+    for st, names in _T2_GROUPS:
+        if len(payload) < off + st.size:
+            break
+        d.update(zip(names, st.unpack_from(payload, off)))
+        off += st.size
+    if "gw_state" in d:
+        d["gw_state_name"] = GW_STATES[d["gw_state"]] if d["gw_state"] < 3 else "?"
+    return d

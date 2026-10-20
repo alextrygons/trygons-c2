@@ -1,0 +1,4 @@
+gw_data/
+secrets.json
+__pycache__/
+*.pyc

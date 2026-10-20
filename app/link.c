@@ -11,6 +11,7 @@
 #include "logcore0.h"
 #include "logger.h"
 #include "logq.h"
+#include "logrec.h"
 
 #define TELEM_PERIOD_MS 100u
 #define PI_F 3.14159265f
@@ -81,11 +82,18 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
 
 /* --- sending -------------------------------------------------------------- */
 
+static uint32_t port_read(const link_t *l, uint8_t *buf, uint32_t max)
+{
+    return (l->port == LINK_PORT_GW) ? hal_gw_read(buf, max) : hal_link_read(buf, max);
+}
+
 static void send(link_t *l, uint8_t type, uint8_t seq, const uint8_t *payload, size_t len)
 {
     uint8_t frame[PROTO_MAX_FRAME];
     size_t n = proto_encode(frame, type, seq, payload, (uint8_t)len);
-    if (n == 0u || !hal_link_write(frame, (uint32_t)n)) l->tx_dropped++;
+    bool ok = n != 0u && ((l->port == LINK_PORT_GW) ? hal_gw_write(frame, (uint32_t)n)
+                                                     : hal_link_write(frame, (uint32_t)n));
+    if (!ok) l->tx_dropped++;
 }
 
 static void send_ack(link_t *l, const proto_frame_t *cmd, uint8_t result)
@@ -600,17 +608,28 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
     }
 }
 
+static void gw_status(sb_t *s, const proto_frame_t *f);
+
 static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
 {
     l->last_rx_ms = s->now_ms;
+    uint32_t lost_bit = (l->port == LINK_PORT_GW) ? SB_ALM_GATEWAY : SB_ALM_PC_LINK;
     if (!l->connected || l->lost) {
-        /* PC (back) online: its own alarm cause is gone */
+        /* PC / gateway (back) online: its own alarm cause is gone */
         l->connected = true;
         l->lost = false;
-        s->alarm_bits &= ~SB_ALM_PC_LINK;
+        s->alarm_bits &= ~lost_bit;
         if (s->alarm_bits == 0u && !s->ap.alarm) s->alarm = false;
+        if (l->port == LINK_PORT_GW) {
+            s->gw.state = SB_GW_OK;
+            g_logstat.gw_resend = 1u;               /* the Pi's copy restarts with a header */
+        }
     }
     if (f->type == PROTO_T_HEARTBEAT && f->len == 0u) return;   /* no ACK for heartbeats */
+    if (f->type == PROTO_T_GW_STATUS) {                          /* the Pi's heartbeat: no ACK */
+        if (l->port == LINK_PORT_GW && f->len == 12u) gw_status(s, f);
+        return;
+    }
     l->commands++;
 
     uint8_t r;
@@ -623,14 +642,144 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
     logcore0_pc(s->now_ms, f->type, f->seq, r, f->payload, f->len);     /* every command + answer */
 }
 
+/* --- gateway (Raspberry Pi) ---------------------------------------------------- */
+
+/*
+ * TELEM2 (both ports, with every telemetry frame), groundstation/proto.py
+ * must match. Groups are only ever appended:
+ *   A: u32 t_ms | u8 gw_state (0 never, 1 ok, 2 LOST) | u8 gw_flags | u8 gw_channel |
+ *      u8 gw_stations | u32 log_sent_seq | u32 log_dropped_for_pi | u32 pi_log_seq |
+ *      u16 pi_log_gaps | u32 log_skipped (no gateway)
+ */
+static void telemetry2(link_t *l, sb_t *s)
+{
+    uint8_t buf[PROTO_MAX_PAYLOAD];
+    proto_wr_t w;
+    const sb_gw_t *g = &s->gw;
+    proto_wr_init(&w, buf, sizeof buf);
+    proto_wr_u32(&w, s->now_ms);
+    proto_wr_u8(&w, g->state);
+    proto_wr_u8(&w, g->flags);
+    proto_wr_u8(&w, g->channel);
+    proto_wr_u8(&w, g->stations);
+    proto_wr_u32(&w, g->log_sent_seq);
+    proto_wr_u32(&w, g_logq_gw.dropped);
+    proto_wr_u32(&w, g->pi_log_seq);
+    proto_wr_u16(&w, g->pi_log_gaps);
+    proto_wr_u32(&w, g->log_skipped);
+    if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
+}
+
+/* GW_STATUS from the Pi (1 Hz, also its heartbeat), 12 bytes:
+ *   u8 version | u8 flags (SB_GWF_) | u8 channel | u8 stations |
+ *   u32 last log record the Pi has | u16 log gaps | u16 reserved */
+static void gw_status(sb_t *s, const proto_frame_t *f)
+{
+    proto_rd_t r;
+    proto_rd_init(&r, f->payload, f->len);
+    (void)proto_rd_u8(&r);
+    uint8_t flags = proto_rd_u8(&r);
+    sb_gw_t *g = &s->gw;
+    if ((flags & (SB_GWF_STORAGE | SB_GWF_STORAGE_FULL)) & ~g->flags) {
+        s->alarm = true;
+        s->alarm_bits |= SB_ALM_GW_STORAGE;
+    }
+    g->flags = flags;
+    g->channel = proto_rd_u8(&r);
+    g->stations = proto_rd_u8(&r);
+    g->pi_log_seq = proto_rd_u32(&r);
+    g->pi_log_gaps = proto_rd_u16(&r);
+}
+
+/* GPS time for the Pi (it sets its clock from it, so logs and video agree),
+ * 13 bytes: u8 valid | u32 date YYYYMMDD | u32 UTC ms of the day | u32 boat t_ms */
+static void gw_time(link_t *l, sb_t *s)
+{
+    uint8_t buf[13];
+    proto_wr_t w;
+    const hal_gps_t *g = &s->gps.last;
+    bool valid = s->gps.valid && g->fix && g->date != 0u && (s->now_ms - s->gps.last_ms) < 5000u;
+    uint32_t tod = valid ? (g->time_ms + (s->now_ms - s->gps.last_ms)) % 86400000u : 0u;
+    proto_wr_init(&w, buf, sizeof buf);
+    proto_wr_u8(&w, valid ? 1u : 0u);
+    proto_wr_u32(&w, valid ? g->date : 0u);
+    proto_wr_u32(&w, tod);
+    proto_wr_u32(&w, s->now_ms);
+    send(l, PROTO_T_TIME, l->tx_seq++, buf, w.n);
+}
+
+/* The full log copy for the Pi: every record the logger handles, cut into
+ * LOG_CHUNK frames, ONLY into the room the UART has left after a reserve for
+ * control frames. If the UART is too slow the logger's queue fills and
+ * records are dropped there (counted; the Pi sees the gap in the numbers).
+ * Without a gateway the records are discarded (log_skipped). The SD card
+ * copy is never affected.
+ *   LOG_CHUNK: u32 record number | u16 offset | u16 record length | bytes */
+#define GW_LOG_CHUNK     180u
+#define GW_CTRL_RESERVE  1024u
+#define GW_LOG_BUDGET    4096u      /* bytes per control step (bounded time) */
+#define GW_LOG_MIN_INFLIGHT 256u
+#define GW_LOG_MAX_INFLIGHT 4096u
+
+static uint8_t s_gwrec[4096 + 64 + 4];
+
+static void gw_log_pump(link_t *l, sb_t *s)
+{
+    uint32_t sent = 0u;
+    bool up = l->connected && !l->lost;
+    while (sent < GW_LOG_BUDGET) {
+        if (l->log_len == 0u) {
+            uint16_t n = logq_pop(&g_logq_gw, s_gwrec, (uint16_t)sizeof s_gwrec);
+            if (n == 0u) break;
+            if (n < 4u + LOGR_OVERHEAD) continue;
+            if (!up) {
+                s->gw.log_skipped++;
+                continue;
+            }
+            l->log_len = n;
+            l->log_off = 4u;
+        }
+        uint32_t chunk = l->log_len - l->log_off;
+        if (chunk > GW_LOG_CHUNK) chunk = GW_LOG_CHUNK;
+        /* never more log bytes waiting in the UART than it sent during the last
+         * step: control frames queue behind them (FIFO), so they stay fast */
+        uint32_t used = HAL_GW_TX_RING - hal_gw_tx_free();
+        if (used + chunk + 8u + PROTO_OVERHEAD > l->gw_room ||
+            hal_gw_tx_free() < chunk + 8u + PROTO_OVERHEAD + GW_CTRL_RESERVE) break;   /* UART busy */
+        uint8_t p[GW_LOG_CHUNK + 8u];
+        memcpy(p, s_gwrec, 4u);                                  /* record number */
+        p[4] = (uint8_t)(l->log_off - 4u);
+        p[5] = (uint8_t)((l->log_off - 4u) >> 8);
+        p[6] = (uint8_t)(l->log_len - 4u);
+        p[7] = (uint8_t)((l->log_len - 4u) >> 8);
+        memcpy(&p[8], &s_gwrec[l->log_off], chunk);
+        send(l, PROTO_T_LOG_CHUNK, l->tx_seq++, p, chunk + 8u);
+        l->log_chunks++;
+        l->log_off += chunk;
+        sent += chunk + 8u + PROTO_OVERHEAD;
+        if (l->log_off >= l->log_len) {
+            s->gw.log_sent_seq = (uint32_t)s_gwrec[0] | ((uint32_t)s_gwrec[1] << 8) |
+                                 ((uint32_t)s_gwrec[2] << 16) | ((uint32_t)s_gwrec[3] << 24);
+            l->log_len = 0u;
+        }
+    }
+}
+
 /* --- public --------------------------------------------------------------- */
 
-void link_init(link_t *l, sb_t *s)
+void link_init_port(link_t *l, sb_t *s, uint8_t port)
 {
     memset(l, 0, sizeof *l);
+    l->port = port;
     proto_rx_init(&l->rx);
     l->pc_timeout_s = 3.0f;
     l->next_telem_ms = s->now_ms;
+    l->next_time_ms = s->now_ms;
+}
+
+void link_init(link_t *l, sb_t *s)
+{
+    link_init_port(l, s, LINK_PORT_USB);
 }
 
 void link_step(link_t *l, sb_t *s)
@@ -641,11 +790,22 @@ void link_step(link_t *l, sb_t *s)
 
     /* bounded work per step: at most 4 kB in */
     uint32_t got = 0u;
-    for (int k = 0; k < 32 && (n = hal_link_read(buf, sizeof buf)) > 0u; k++) {
-        proto_rx_push(&l->rx, buf, n);
-        got += n;
+    int frames = 0;
+    if (l->port == LINK_PORT_GW) {
+        /* how fast is the UART really? Emptied completely: allow twice as much
+         * next time; otherwise half of what it sent (log bytes never pile up
+         * in front of control frames) */
+        uint32_t used_now = HAL_GW_TX_RING - hal_gw_tx_free();
+        uint32_t drained = l->gw_used_after - used_now;
+        l->gw_room = (used_now == 0u) ? 2u * (l->gw_room > drained ? l->gw_room : drained) : drained / 2u;
+        if (l->gw_room < GW_LOG_MIN_INFLIGHT) l->gw_room = GW_LOG_MIN_INFLIGHT;
+        if (l->gw_room > GW_LOG_MAX_INFLIGHT) l->gw_room = GW_LOG_MAX_INFLIGHT;
     }
-    for (int k = 0; k < 64 && proto_rx_next(&l->rx, &f); k++) handle(l, s, &f);
+    for (int k = 0; k < 32 && (n = port_read(l, buf, sizeof buf)) > 0u; k++) {
+        proto_rx_push(&l->rx, buf, n);          /* parse after every read: the ring holds 512 bytes */
+        got += n;
+        while (frames < 64 && proto_rx_next(&l->rx, &f)) { handle(l, s, &f); frames++; }
+    }
 
     /* bytes stuck in an incomplete frame with nothing new for 2 steps
      * (100 ms; a real frame takes ~2 ms): rescan from the next byte, so a
@@ -667,11 +827,25 @@ void link_step(link_t *l, sb_t *s)
         (float)(uint32_t)(s->now_ms - l->last_rx_ms) > l->pc_timeout_s * 1000.0f) {
         l->lost = true;
         s->alarm = true;
-        s->alarm_bits |= SB_ALM_PC_LINK;
+        if (l->port == LINK_PORT_GW) {
+            s->alarm_bits |= SB_ALM_GATEWAY;            /* GATEWAY LOST: alarm only, no mode change */
+            s->gw.state = SB_GW_LOST;
+        } else {
+            s->alarm_bits |= SB_ALM_PC_LINK;
+        }
     }
 
     if ((int32_t)(s->now_ms - l->next_telem_ms) >= 0) {
         l->next_telem_ms = s->now_ms + TELEM_PERIOD_MS;
+        telemetry2(l, s);                               /* first: the PC merges it into the next telemetry */
         telemetry(l, s);
+    }
+    if (l->port == LINK_PORT_GW) {
+        if ((int32_t)(s->now_ms - l->next_time_ms) >= 0) {
+            l->next_time_ms = s->now_ms + 1000u;
+            gw_time(l, s);
+        }
+        gw_log_pump(l, s);                              /* last: only the room left */
+        l->gw_used_after = HAL_GW_TX_RING - hal_gw_tx_free();
     }
 }

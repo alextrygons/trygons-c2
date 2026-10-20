@@ -42,6 +42,7 @@
 #define PROTO_T_PARAM_SET     0x18u   /* u8 id, f32 value                     */
 #define PROTO_T_JOY_CAL       0x19u   /* u8 0 start / 1 finish                */
 #define PROTO_T_ALARM_ACK     0x1Au   /* -  acknowledge alarms (any mode)      */
+#define PROTO_T_GW_STATUS     0x31u   /* gateway only, 1 Hz heartbeat, 12 bytes (link.c gw_status) */
 #define PROTO_T_JOYMAP_GET    0x1Bu   /* -  -> JOYMAP_VALUE                     */
 #define PROTO_T_JOYMAP_SET    0x1Cu   /* joymap body (see link.c), u8 save; STANDBY only */
 #define PROTO_T_JOY_RAW_GET   0x1Du   /* -  -> JOY_RAW (USB bridge, for the button mapping) */
@@ -71,6 +72,9 @@
 #define PROTO_T_PROG_ERROR    0x84u   /* u8 prog_error_t, u8 waypoint index (0xFF = none) */
 #define PROTO_T_JOYMAP_VALUE  0x85u   /* joymap body (see link.c)             */
 #define PROTO_T_JOY_RAW       0x86u   /* u8 flags, u8 seq, 2 x (i16 axis[8], u32 buttons, u8 hats) */
+#define PROTO_T_LOG_CHUNK     0x89u   /* gateway only: u32 record no, u16 offset, u16 length, bytes */
+#define PROTO_T_TIME          0x8Au   /* gateway only, 1 Hz: u8 valid, u32 date, u32 UTC ms of day, u32 t_ms */
+#define PROTO_T_TELEM2        0x8Bu   /* with every telemetry: gateway / helm / remote / slamming (link.c) */
 
 /* ACK result: 0 = accepted, else why refused (NACK) */
 #define PROTO_R_OK            0u

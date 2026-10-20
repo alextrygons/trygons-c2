@@ -350,3 +350,23 @@ bool hal_link_write(const uint8_t *buf, uint32_t len)
     (void)buf; (void)len;
     return false;    /* TODO: IfxAsclin_Asc_write into the TX ring buffer; all or nothing */
 }
+
+uint32_t hal_gw_read(uint8_t *buf, uint32_t max)
+{
+    (void)buf; (void)max;
+    return 0u;       /* TODO: ASCLIN1, RX = P15.1 (IfxAsclin1_RXA_P15_1_IN), TX = P15.0
+                        (IfxAsclin1_TX_P15_0_OUT), 921600 8N1, interrupt-filled rings
+                        (RX 2 KB, TX 8 KB). To the Raspberry Pi 5 UART0 (GPIO14/15).
+                        See WIRING.md section 7. */
+}
+
+bool hal_gw_write(const uint8_t *buf, uint32_t len)
+{
+    (void)buf; (void)len;
+    return false;    /* TODO: into the ASCLIN1 TX ring; all or nothing */
+}
+
+uint32_t hal_gw_tx_free(void)
+{
+    return 0u;       /* TODO: free bytes in the ASCLIN1 TX ring */
+}

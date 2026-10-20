@@ -1,0 +1,24 @@
+[Unit]
+Description=Trygons C2 gateway (AURIX <-> boat LAN / VPN)
+After=network-online.target mnt-ssd.mount
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trygons
+ExecStart=/usr/bin/python3 /home/trygons/trygons-c2/gateway/gateway.py --config /etc/trygons/gateway.json
+Restart=always
+RestartSec=2
+# setting the clock from GPS is the only privileged thing it does
+AmbientCapabilities=CAP_SYS_TIME
+CapabilityBoundingSet=CAP_SYS_TIME
+NoNewPrivileges=yes
+# the UART
+SupplementaryGroups=dialout
+ProtectSystem=strict
+ReadWritePaths=/mnt/ssd /etc/trygons /var/lib/trygons
+StateDirectory=trygons
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

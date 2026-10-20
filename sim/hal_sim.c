@@ -498,6 +498,63 @@ void sim_hal_link_reset(void)
     s_link_tx.head = s_link_tx.tail = 0u;
 }
 
+/* --- gateway UART (Raspberry Pi): two rings like the PC link, plus a
+ *     baud-rate model: the boat -> Pi side only moves as many bytes as the
+ *     UART could have sent since the last pop (921600 baud = 92 bytes/ms) --- */
+static link_ring_t s_gw_rx, s_gw_tx;
+static uint32_t s_gw_bytes_per_s = 92160u;
+static uint32_t s_gw_last_ms;
+static uint64_t s_gw_credit_mb;            /* milli-bytes the UART may still send */
+
+uint32_t hal_gw_read(uint8_t *buf, uint32_t max)
+{
+    uint32_t n = 0u;
+    while (n < max && ring_used(&s_gw_rx) > 0u) buf[n++] = s_gw_rx.b[s_gw_rx.tail++ % LINK_BUF];
+    return n;
+}
+
+bool hal_gw_write(const uint8_t *buf, uint32_t len)
+{
+    if (LINK_BUF - ring_used(&s_gw_tx) < len) return false;
+    for (uint32_t i = 0u; i < len; i++) s_gw_tx.b[s_gw_tx.head++ % LINK_BUF] = buf[i];
+    return true;
+}
+
+uint32_t hal_gw_tx_free(void)
+{
+    return LINK_BUF - ring_used(&s_gw_tx);
+}
+
+uint32_t sim_hal_gw_rx_push(const uint8_t *buf, uint32_t len)
+{
+    uint32_t n = 0u;
+    while (n < len && ring_used(&s_gw_rx) < LINK_BUF) s_gw_rx.b[s_gw_rx.head++ % LINK_BUF] = buf[n++];
+    return n;
+}
+
+uint32_t sim_hal_gw_tx_pop(uint8_t *buf, uint32_t max)
+{
+    uint32_t dt = s_time_ms - s_gw_last_ms;
+    s_gw_last_ms = s_time_ms;
+    s_gw_credit_mb += (uint64_t)dt * s_gw_bytes_per_s;
+    if (s_gw_credit_mb > (uint64_t)LINK_BUF * 1000u) s_gw_credit_mb = (uint64_t)LINK_BUF * 1000u;
+    uint32_t n = 0u;
+    while (n < max && ring_used(&s_gw_tx) > 0u && s_gw_credit_mb >= 1000u) {
+        buf[n++] = s_gw_tx.b[s_gw_tx.tail++ % LINK_BUF];
+        s_gw_credit_mb -= 1000u;
+    }
+    return n;
+}
+
+void sim_hal_gw_reset(uint32_t baud)
+{
+    s_gw_rx.head = s_gw_rx.tail = 0u;
+    s_gw_tx.head = s_gw_tx.tail = 0u;
+    s_gw_bytes_per_s = baud / 10u;
+    s_gw_last_ms = s_time_ms;
+    s_gw_credit_mb = 0u;
+}
+
 /* --- hardening: monitor latch, safety relay, watchdog, reset reason --- */
 static bool     s_relay;
 static hal_reset_t s_reset_reason = HAL_RESET_POWER_ON;

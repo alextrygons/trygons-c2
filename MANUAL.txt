@@ -1,6 +1,6 @@
 ===============================================================================
   TRYGONS C2 BOAT AUTOPILOT - USER MANUAL
-  State: 2026-10-20 (after the Thrustmaster USB joystick work)
+  State: 2026-10-20 (gateway / remote access work)
 ===============================================================================
 
 CONTENTS
@@ -12,15 +12,16 @@ CONTENTS
   6.  The board (AURIX TC375 Lite Kit)
   7.  How the boat behaves: modes, buttons, joystick
   8.  The USB joystick (Thrustmaster T.16000M + TWCS)
-  9.  The power limit
-  10. Alarms
-  11. Safety rules built into the software (incl. watchdogs, CPU1 monitor)
-  12. Logging (SD card) and the log tools
-  13. Wiring and what to buy
-  14. Settings and default values
-  15. Git: saving and uploading your work
-  16. WHAT IS STILL MISSING
-  17. Troubleshooting
+  9.  The gateway (Raspberry Pi) and remote access
+  10. The power limit
+  11. Alarms
+  12. Safety rules built into the software (incl. watchdogs, CPU1 monitor)
+  13. Logging (SD card) and the log tools
+  14. Wiring and what to buy
+  15. Settings and default values
+  16. Git: saving and uploading your work
+  17. WHAT IS STILL MISSING
+  18. Troubleshooting
 
 
 -------------------------------------------------------------------------------
@@ -40,7 +41,7 @@ An autopilot for a boat, running on the Infineon KIT_A2G_TC375_LITE board
 
 The board has not arrived yet. All of the logic is written and tested in a
 PC simulation with a simulated boat. The parts that talk to the real
-hardware are mostly empty "stubs" for now (see chapter 16).
+hardware are mostly empty "stubs" for now (see chapter 17).
 
 The three cores:
   core 0  the control loop (20 Hz): modes, steering, engine, PC link
@@ -84,6 +85,9 @@ TWCS throttle, read by a small Teensy 4.1 "bridge" board (chapter 8).
   sim/            PC simulation, all tests, simulated boat for the ground
                   station. NOT part of the board build.
   groundstation/  PC ground station and log tools (Python).
+  gateway/        Raspberry Pi 5 gateway software (Python): remote access,
+                  log copy, cameras, sync. Setup step by step:
+                  gateway/README.md.
   bridge/         Teensy 4.1 firmware for the USB joystick (PlatformIO).
                   Setup step by step: bridge/README.md.
   tools/          mapreport.py: memory report from the ADS build.
@@ -137,14 +141,19 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 108 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 113 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
     autopilot_sim.exe all --bridge
   The same tests again, but every joystick move goes through the simulated
-  USB bridge. Ends with "107 passed, 0 failed, 1 not applicable" (the analog
+  USB bridge. Ends with "112 passed, 0 failed, 1 not applicable" (the analog
   calibration test does not apply to the USB joystick).
     autopilot_sim.exe usb
   Only the 17 USB joystick tests (U1..U16), quick.
+    autopilot_sim.exe gw
+  Only the gateway link tests (GA1..), quick.
+  The gateway (Raspberry Pi) tests, with the simulator, on the PC:
+    cd ..\gateway
+    C:\msys64\ucrt64\bin\python.exe test_gateway.py
   The Python tests (ground station + log tools):
     cd ..\groundstation
     C:\msys64\ucrt64\bin\python.exe test_e2e.py      (10 tests)
@@ -172,7 +181,7 @@ START WITH THE SIMULATOR. Two terminals:
   2:  cd C:\trygons\TRYGONS_C2\groundstation
       C:\msys64\ucrt64\bin\python.exe app.py tcp:127.0.0.1:5760
 
-START WITH THE BOARD (once the USB link is written, chapter 16):
+START WITH THE BOARD (once the USB link is written, chapter 17):
   plug in the USB cable, find the COM port in Device Manager, then
       C:\msys64\ucrt64\bin\python.exe app.py COM5
 
@@ -270,7 +279,7 @@ MODES
   Extra rules: only the joystick enters MANUAL; MANUAL is left only with
   the stick centred; AUTO needs compass, GPS, a valid program and CONFIRM;
   TRAINING only from STANDBY by the PC; nothing but STANDBY until the
-  outputs are armed (chapter 11).
+  outputs are armed (chapter 12).
 
 THE JOYSTICK ALWAYS WINS (analog or USB - the rules are the same; the
 USB lever has a few extra ones, chapter 8)
@@ -298,7 +307,7 @@ AUTO PROGRAM - HOW TO
   2. "Upload to boat". The boat checks it (coordinates, number <= 50, leg
      length 10 m .. 50 km, speeds within the maximum, radius 5..500 m) and
      stores it with a checksum (kept after power-off).
-  3. Raise the power limit if you want more than ~7 kn (chapter 9).
+  3. Raise the power limit if you want more than ~7 kn (chapter 10).
   4. AUTO START, then CONFIRM on the joystick within 10 s.
 
 
@@ -419,7 +428,44 @@ MEASURED IN THE SIMULATION (bridge + hub modelled)
 
 
 -------------------------------------------------------------------------------
-9. THE POWER LIMIT
+9. THE GATEWAY (RASPBERRY PI) AND REMOTE ACCESS
+-------------------------------------------------------------------------------
+THE IDEA
+  A Raspberry Pi 5 on the boat is the only way in from the internet. The
+  AURIX is NEVER on the network: it talks only to the Pi, over a cable
+  (UART, the same frames with checksum as the USB laptop link). The Pi sits
+  on the boat LAN behind the Teltonika router; shore PCs and the iPhone
+  reach it only through a VPN (Tailscale) that the boat opens itself -
+  no open ports, works behind the 4G operator's CGNAT.
+  The USB laptop, the onboard joystick and the STANDBY button work exactly
+  as before, with or without the Pi.
+  Setup step by step: gateway\README.md.
+
+A. THE GATEWAY LINK (AURIX <-> Pi)
+  * UART 921600 baud (AURIX ASCLIN1: P15.0 -> Pi GPIO15, P15.1 <- Pi GPIO14),
+    WIRING.md section 7.
+  * The AURIX sends the Pi: telemetry, and a COMPLETE COPY of its log (every
+    record it writes to its SD card, numbered). The Pi writes it to its USB
+    SSD as .TLG files (aurix_logs\YYYYMMDD\P<boot>_<file>.TLG) - readable with
+    logview.py / log2csv.py like the SD card files.
+  * If the cable is too slow at some moment, the AURIX drops records for the
+    Pi FIRST - never control traffic. The Pi notes the missing numbers in
+    gaps.csv. The AURIX SD card is always complete: it stays the independent
+    black box.
+  * The Pi sends a status once a second (its "I'm alive"). Silent for 3 s:
+    alarm GATEWAY LOST. Nothing else changes (no mode change) - unless you
+    are driving remotely (part D).
+  * The Pi's SSD missing / failing: alarm GATEWAY STORAGE; everything else
+    keeps running. The Pi's own SD card holds only the operating system.
+  * TIME: the AURIX sends GPS time to the Pi once a second; the Pi sets its
+    clock from it, so the boat log, the gateway logs and the video all have
+    the same time.
+  * Ground station, System tab: "gateway (Pi): OK / LOST, Pi log copy up to
+    record N, gaps".
+
+
+-------------------------------------------------------------------------------
+10. THE POWER LIMIT
 -------------------------------------------------------------------------------
   * After EVERY power-up or reset: 30 % forward, 5 % reverse (of the full
     throttle travel). Never saved.
@@ -440,23 +486,25 @@ MEASURED IN THE SIMULATION (bridge + hub modelled)
 
 
 -------------------------------------------------------------------------------
-10. ALARMS
+11. ALARMS
 -------------------------------------------------------------------------------
   COMPASS LOST, GPS LOST, GPS SUSPECT, DEAD RECKONING LIMIT,
   ARRIVAL UNCERTAIN, ARRIVED, GEAR FAULT, TRAINING,
   JOYSTICK FAULT, JOYSTICK NOT CENTRED, JOYSTICK TOOK CONTROL,
   PC LINK LOST
   NOT NEUTRAL AT START   outputs not armed: gear not in neutral / stick held
-  SAFETY MONITOR TRIPPED CPU1 forced idle + neutral (see chapter 11)
+  SAFETY MONITOR TRIPPED CPU1 forced idle + neutral (see chapter 12)
   CONTROL LOOP OVERRUN   a control cycle took longer than 50 ms
   LOG FAILURE            SD card missing / full / failing (control goes on)
+  GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)
+  GATEWAY STORAGE        the Pi's USB SSD is missing / failing (no mode change)
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file. Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
 
 
 -------------------------------------------------------------------------------
-11. SAFETY RULES BUILT INTO THE SOFTWARE
+12. SAFETY RULES BUILT INTO THE SOFTWARE
 -------------------------------------------------------------------------------
   * Gear changes only at idle: idle -> wait -> neutral -> wait -> gear.
   * Every fault / STANDBY: idle + neutral FIRST, then steering off.
@@ -464,7 +512,7 @@ MEASURED IN THE SIMULATION (bridge + hub modelled)
     stopped (or outboard to centre if the gyro is gone too). In HDG LOCK:
     gyro hold, the throttle stays with you; STANDBY once you have stopped.
     In MANUAL: alarm only.
-  * Throttle rate limits; reverse limited; the power limit (chapter 9).
+  * Throttle rate limits; reverse limited; the power limit (chapter 10).
   * The joystick always wins; the STANDBY button always wins.
   * NEUTRAL-START INTERLOCK: after power-up the outputs only arm when the
     throttle is idle, neutral is confirmed (neutral switch if fitted) and
@@ -479,11 +527,11 @@ MEASURED IN THE SIMULATION (bridge + hub modelled)
     simulator: 10-20 ms (one check), 220 ms for a frozen core 0.
   * Heading hold pauses (outboard held still) when there is no propulsion,
     so the angle estimate can't drift while you are stopped.
-  * Logging can never block control (chapter 12).
+  * Logging can never block control (chapter 13).
 
 
 -------------------------------------------------------------------------------
-12. LOGGING (SD CARD) AND THE LOG TOOLS
+13. LOGGING (SD CARD) AND THE LOG TOOLS
 -------------------------------------------------------------------------------
 WHAT IS LOGGED: 20 times a second 86 values (mode, all sensors raw and
 filtered, GPS with satellites and spoof flag, PID terms, outboard estimate,
@@ -514,7 +562,7 @@ The ground station saves its own copy of the telemetry in the same format
 
 
 -------------------------------------------------------------------------------
-13. WIRING AND WHAT TO BUY
+14. WIRING AND WHAT TO BUY
 -------------------------------------------------------------------------------
   Full details and pin tables: WIRING.md. Everything is 3.3 V - NEVER 5 V.
 
@@ -522,7 +570,8 @@ The ground station saves its own copy of the telemetry in the same format
   Shield2Go connectors (STANDBY P00.4, HDG LOCK P10.8, -1 P23.4, +1 P23.5,
   -10 P32.2, +10 P32.3), throttle servo D9, gear servo D8, steering motor
   driver D6 / D7, safety relay D10, neutral switch D5, microSD click in the
-  mikroBUS socket, PC on the USB cable. USB joystick bridge: Teensy pin 1
+  mikroBUS socket, PC on the USB cable. Raspberry Pi gateway: P15.0 (TX) ->
+  Pi GPIO15 (pin 10), P15.1 (RX) <- Pi GPIO14 (pin 8), GND. USB joystick bridge: Teensy pin 1
   (TX) -> P20.3 (Shield2Go 2, ASCLIN3 RX), GND to GND, own 5 V supply.
 
   SHOPPING LIST
@@ -544,6 +593,16 @@ The ground station saves its own copy of the telemetry in the same format
       voltage divider for A2.
   [ ] Keep the engine kill cord fitted and worn.
 
+  GATEWAY (remote access)
+  [ ] Raspberry Pi 5, 8 GB, with the official active cooler.
+  [ ] 12 V -> 5.1 V 5 A USB-C supply for the Pi (car/marine grade; 5 A is
+      needed so the Pi can power the SSD), 5 A fuse on the 12 V side.
+  [ ] USB 3 SSD 256-512 GB (e.g. Samsung T7) - logs and video.
+  [ ] microSD card 32 GB (A2) - only the Pi's operating system.
+  [ ] UART cable AURIX <-> Pi: 3 wires (TX, RX, GND), shielded, < 1 m,
+      2 x 100 Ohm resistors.
+  [ ] IP65 box with cable glands for the Pi + SSD, ventilated / heat sink.
+
   USB JOYSTICK (instead of, or as well as, the analog joystick)
   [ ] Thrustmaster T.16000M FCS HOTAS (stick + TWCS throttle). NOT
       waterproof: dry console.
@@ -557,7 +616,7 @@ The ground station saves its own copy of the telemetry in the same format
 
 
 -------------------------------------------------------------------------------
-14. SETTINGS AND DEFAULT VALUES
+15. SETTINGS AND DEFAULT VALUES
 -------------------------------------------------------------------------------
   Defaults: sb_default_config() in app/smallboat.c (+ gear.c, throttle.c,
   joystick.c, powerlim.c, servo.c). (PC) = also in the Config tab.
@@ -589,7 +648,7 @@ The ground station saves its own copy of the telemetry in the same format
 
 
 -------------------------------------------------------------------------------
-15. GIT: SAVING AND UPLOADING YOUR WORK
+16. GIT: SAVING AND UPLOADING YOUR WORK
 -------------------------------------------------------------------------------
   In C:\trygons\TRYGONS_C2:
     git status                       what has changed
@@ -601,7 +660,7 @@ The ground station saves its own copy of the telemetry in the same format
 
 
 -------------------------------------------------------------------------------
-16. WHAT IS STILL MISSING
+17. WHAT IS STILL MISSING
 -------------------------------------------------------------------------------
 A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c)
    Written: timer (ms / us), alarm LED, safe pin states at start-up,
@@ -617,6 +676,9 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c)
      [ ] flash storage (TRAINING result, joystick calibration, AUTO
          program, boot counter)
      [ ] USB link to the PC (ASCLIN0, 921600 baud)
+     [ ] Gateway UART: ASCLIN1 TX P15.0 / RX P15.1, 921600 baud, interrupt
+         rings (RX 2 KB, TX 8 KB = HAL_GW_TX_RING); check which header of the
+         board carries P15.0 / P15.1 (expansion header X1/X2).
      [ ] USB joystick bridge UART: ASCLIN3 RX on P20.3, 230400 baud, with
          an interrupt-filled ring buffer (hal_bridge_read is a stub)
      [ ] flash storage also for the joystick map (NV slot 4)
@@ -685,7 +747,7 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
 
 
 -------------------------------------------------------------------------------
-17. TROUBLESHOOTING
+18. TROUBLESHOOTING
 -------------------------------------------------------------------------------
   "gcc is not recognized"        C:\msys64\ucrt64\bin is not in PATH.
   "python" opens the Store       use C:\msys64\ucrt64\bin\python.exe
@@ -698,11 +760,15 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
                                  (stick centred); is a program uploaded?
   Power raise refused            acknowledge alarms first; type the code
                                  shown now; then CONFIRM within 10 s.
-  The boat is slow in AUTO       the power limit: raise it (chapter 9).
+  The boat is slow in AUTO       the power limit: raise it (chapter 10).
   "NOT NEUTRAL AT START"         put the gear in neutral / let go of the
                                  stick; check the neutral switch.
   "LOG FAILURE"                  SD card missing, full or broken. Control
                                  is not affected.
+  "GATEWAY LOST"                 Pi off / crashed / UART cable. On the Pi:
+                                 systemctl status trygons-gateway
+  "GATEWAY STORAGE"              the Pi's SSD: is it plugged in, mounted
+                                 (df -h /mnt/ssd), not full?
   JOYSTICK FAULT: no frames      bridge not powered / TX wire / Teensy not
                                  running. Check the 5 V and the GND wire.
   JOYSTICK FAULT: STICK (or      plug, hub power. Is the hub powered by

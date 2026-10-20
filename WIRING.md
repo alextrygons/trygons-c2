@@ -279,3 +279,43 @@ chosen in the ground station (**Joystick** tab).
     is a JOYSTICK FAULT.
   * If the joystick was in control: throttle idle + neutral, steering
     stop, STANDBY, alarm.
+
+## 7. Raspberry Pi 5 gateway (remote access)
+
+The Pi is the only device on the network; the AURIX talks to it over a UART
+(same framed protocol with CRC as the USB link). Software and setup:
+`gateway/README.md`.
+
+| Signal | AURIX | TC375 pin | Raspberry Pi 5 | Notes |
+|--------|-------|-----------|----------------|-------|
+| AURIX → Pi | ASCLIN1 TX | P15.0 (`IfxAsclin1_TX_P15_0_OUT`) | GPIO15 = RXD, header pin 10 | 921600 baud 8N1, 100 Ω in series at the AURIX end |
+| Pi → AURIX | ASCLIN1 RX | P15.1 (`IfxAsclin1_RXA_P15_1_IN`) | GPIO14 = TXD, header pin 8 | 100 Ω in series at the Pi end |
+| ground | GND | - | GND, header pin 6 | **must** be connected |
+
+* **Pins:** P15.0 / P15.1 are not used by anything else in this pin plan.
+  The iLLD pin map confirms the ASCLIN1 functions. The board manual says
+  "most pins are on the expansion headers X1/X2". **Check which X1/X2
+  pins carry P15.0 / P15.1 before you solder.** Not P15.2 / P15.3 (D0/D1):
+  those belong to ASCLIN0, the USB laptop link.
+* **Both sides are 3.3 V.** Never connect a 5 V UART (no USB-serial
+  adapters at 5 V).
+* Cable: shielded 3-core, **< 1 m**, AURIX box to Pi box. If the Pi must be
+  further away or on a different supply, use a digital isolator (e.g.
+  ISO7721) or RS-485 transceivers at both ends.
+* **Power for the Pi:**
+  * 12 V → 5.1 V **5 A** USB-C converter (car/marine grade), 5 A fuse on
+    the 12 V side, from the same battery as the AURIX.
+  * The Pi 5 needs 5 A to give its USB ports enough current for the SSD.
+  * With a 3 A supply the Pi limits USB to 600 mA and the SSD can drop
+    out (= GATEWAY STORAGE alarm).
+* **USB SSD** directly on a blue USB 3 port of the Pi, cable tied down
+  (vibration). The Pi's own microSD card holds only the operating system.
+* Ethernet from the Pi to the Teltonika router (LAN port). The router
+  setup, VLANs and the cameras: sections C/E of the manual and
+  `gateway/README.md`.
+* Mount the Pi in a closed box with a heat sink / the active cooler, cable
+  glands facing down, away from the compass (> 50 cm).
+* **If the Pi fails** (crash, power, cable): the AURIX sees no status for
+  3 s and shows **GATEWAY LOST**. There is no mode change (unless remote
+  driving was active). The USB laptop, joystick and STANDBY button are
+  unaffected.

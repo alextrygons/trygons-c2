@@ -53,6 +53,7 @@ static autopilot_t g_autopilot;
 #else
 static sb_t g_boat;
 static link_t g_link;       /* ground station (USB virtual COM) */
+static link_t g_gwlink;     /* Raspberry Pi gateway (UART ASCLIN1) */
 #endif
 
 void core0_main(void)
@@ -89,6 +90,7 @@ void core0_main(void)
     sb_init(&g_boat, &cfg);
     (void)autopilot_load_calibration(&g_boat.ap);   /* saved TRAINING result, if any */
     link_init(&g_link, &g_boat);
+    link_init_port(&g_gwlink, &g_boat, LINK_PORT_GW);
     logcore0_init(&g_boat, g_logstat.boot);
 #endif
 
@@ -105,6 +107,7 @@ void core0_main(void)
             uint32_t t0 = hal_micros();
             sb_step(&g_boat);
             link_step(&g_link, &g_boat);
+            link_step(&g_gwlink, &g_boat);
             logcore0_step(&g_boat);                                 /* into the queue, never waits */
             (void)cyc_record(&g_timing.core0, hal_micros() - t0);    /* overrun -> alarm next step */
 #endif

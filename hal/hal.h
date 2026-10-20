@@ -181,6 +181,18 @@ bool hal_calib_load(void *data, uint32_t size);
 uint32_t hal_link_read(uint8_t *buf, uint32_t max);
 bool     hal_link_write(const uint8_t *buf, uint32_t len);
 
+/*
+ * Gateway link (Raspberry Pi 5 on the boat LAN): the same frames as the
+ * ground-station link, on a UART (board: ASCLIN1, TX P15.0 / RX P15.1,
+ * 921600 8N1, 3.3 V; sim: TCP socket with a baud-rate model).
+ * tx_free: bytes that fit in the transmit buffer now (the app sends its
+ * log copy only into the room left after control frames).
+ */
+#define HAL_GW_TX_RING 8192u    /* size of the gateway UART transmit buffer */
+uint32_t hal_gw_read(uint8_t *buf, uint32_t max);
+bool     hal_gw_write(const uint8_t *buf, uint32_t len);
+uint32_t hal_gw_tx_free(void);
+
 /* ---- Hardening ----------------------------------------------------------- */
 
 /* Safety monitor (CPU1) trip: throttle servo to idle_us, gear servo to

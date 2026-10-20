@@ -4639,6 +4639,228 @@ static void usb_joystick_tests(void)
     }
 }
 
+/* ------------------------------------------------- gateway (section A) -- */
+
+/* The Raspberry Pi side, in C: reads the gateway UART, rebuilds the log
+ * records, counts frames, sends GW_STATUS like the real gateway. */
+typedef struct {
+    link_t     link;            /* the AURIX's gateway port */
+    proto_rx_t rx;
+    bool       pi_on;           /* the Pi sends its 1 Hz status */
+    uint8_t    flags;           /* GW_STATUS flags it sends */
+    uint32_t   next_status;
+    int        telem, telem2, times, chunks;
+    uint32_t   recs, gaps, first_seq, last_seq, bad;
+    bool       have_seq;
+    uint32_t   cur_seq, cur_len, cur_got;
+    uint8_t    cur[4200];
+    uint32_t   time_date, time_tod, time_valid;
+    uint32_t   max_telem_gap_ms, last_telem_ms;
+} pisim_t;
+
+static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
+{
+    proto_rd_t r;
+    proto_rd_init(&r, f->payload, f->len);
+    if (f->type == PROTO_T_TELEMETRY) {
+        if (p->telem && x->t - p->last_telem_ms > p->max_telem_gap_ms) p->max_telem_gap_ms = x->t - p->last_telem_ms;
+        p->last_telem_ms = x->t;
+        p->telem++;
+    } else if (f->type == PROTO_T_TELEM2) {
+        p->telem2++;
+    } else if (f->type == PROTO_T_TIME) {
+        p->time_valid = proto_rd_u8(&r);
+        p->time_date = proto_rd_u32(&r);
+        p->time_tod = proto_rd_u32(&r);
+        p->times++;
+    } else if (f->type == PROTO_T_LOG_CHUNK) {
+        uint32_t seq = proto_rd_u32(&r);
+        uint16_t off = proto_rd_u16(&r), len = proto_rd_u16(&r);
+        uint32_t n = f->len - 8u;
+        p->chunks++;
+        if (off == 0u) {
+            if (p->have_seq && seq != p->last_seq + 1u) p->gaps++;
+            if (!p->have_seq) p->first_seq = seq;
+            p->cur_seq = seq;
+            p->cur_len = len;
+            p->cur_got = 0u;
+        }
+        if (seq != p->cur_seq || off != p->cur_got || p->cur_got + n > sizeof p->cur) { p->bad++; return; }
+        memcpy(&p->cur[p->cur_got], &f->payload[8], n);
+        p->cur_got += n;
+        if (p->cur_got == p->cur_len) {
+            /* a whole record: sync byte + CRC as written to the SD card */
+            uint32_t L = p->cur_len;
+            uint16_t crc = (uint16_t)(p->cur[L - 2u] | (p->cur[L - 1u] << 8));
+            if (p->cur[0] != LOGR_SYNC || proto_crc16(&p->cur[1], L - 3u) != crc) p->bad++;
+            p->recs++;
+            p->last_seq = seq;
+            p->have_seq = true;
+        }
+    }
+}
+
+static void pi_hook(sbsim_t *x, void *ctx)
+{
+    pisim_t *p = (pisim_t *)ctx;
+    link_step(&p->link, &x->sb);
+    if (p->pi_on && x->t >= p->next_status) {
+        p->next_status = x->t + 1000u;
+        uint8_t pl[12] = { 1u, p->flags, 1u, 1u };
+        memcpy(&pl[4], &p->last_seq, 4);
+        uint8_t fr[PROTO_MAX_FRAME];
+        size_t n = proto_encode(fr, PROTO_T_GW_STATUS, 0u, pl, sizeof pl);
+        sim_hal_gw_rx_push(fr, (uint32_t)n);
+    }
+    uint8_t buf[2048];
+    uint32_t n;
+    proto_frame_t f;
+    while ((n = sim_hal_gw_tx_pop(buf, 256u)) > 0u) {         /* like the real Pi: parse as it comes */
+        proto_rx_push(&p->rx, buf, n);
+        while (proto_rx_next(&p->rx, &f)) pi_frame(p, x, &f);
+    }
+}
+
+static void pisim_init(pisim_t *p, sbsim_t *x, uint32_t baud)
+{
+    memset(p, 0, sizeof *p);
+    sim_hal_gw_reset(baud);
+    link_init_port(&p->link, &x->sb, LINK_PORT_GW);
+    proto_rx_init(&p->rx);
+    p->pi_on = true;
+    p->next_status = x->t;
+}
+
+static void gateway_tests(void)
+{
+    char d[600];
+    printf("\n=== Section A: gateway (Raspberry Pi) link ===\n");
+
+    /* GA1 full log copy at 921600 baud: every record, in order, CRC good */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        sbsim_init(&x, 901u, 90.0f, 0.0f, NULL);
+        sbsim_log_start(&x, "gwtest_sd", 7u);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        hdg_lock(&x);
+        sbsim_run(&x, 120000u, pi_hook, &p);
+        uint32_t made = x.sb.gw.log_sent_seq;
+        snprintf(d, sizeof d, "%lu records rebuilt on the Pi (numbers %lu..%lu, logger handled %lu), gaps %lu, "
+                 "bad records %lu, dropped for the Pi %lu; telemetry %d, TELEM2 %d, TIME %d; SD card ok %s",
+                 (unsigned long)p.recs, (unsigned long)p.first_seq, (unsigned long)p.last_seq,
+                 (unsigned long)g_logstat.records, (unsigned long)p.gaps, (unsigned long)p.bad,
+                 (unsigned long)g_logq_gw.dropped, p.telem, p.telem2, p.times, g_logstat.failure ? "NO" : "yes");
+        test_report("GA1 full log copy to the Pi over the UART: every record, in order, CRC good",
+                    p.recs > 2000u && p.gaps == 0u && p.bad == 0u && g_logq_gw.dropped == 0u &&
+                    p.last_seq + 2u >= made && x.sb.gw.state == SB_GW_OK && !g_logstat.failure, d);
+        logger_close(&s_logger);
+        x.log_on = false;
+    }
+
+    /* GA2 UART too slow (19200 baud): control frames keep their rate, log
+     * records are dropped for the Pi (gap noted), the SD card stays complete */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        sbsim_init(&x, 902u, 90.0f, 0.0f, NULL);
+        sbsim_log_start(&x, "gwtest_sd", 8u);
+        pisim_init(&p, &x, 57600u);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        hdg_lock(&x);
+        sbsim_run(&x, x.t + 500u, pi_hook, &p);
+        p.max_telem_gap_ms = 0u;
+        p.last_telem_ms = x.t;
+        sbsim_run(&x, 60000u, pi_hook, &p);
+        bool sd_ok = !g_logstat.failure && g_logq0.dropped == 0u;
+        snprintf(d, sizeof d, "57600 baud: telemetry frames %d of 600, none lost (max gap %lu ms: 10 Hz + at most one 50 ms step late), TIME %d; log records to the Pi %lu, "
+                 "dropped for the Pi %lu, gaps the Pi noticed %lu, bad %lu; SD: %lu records, none dropped %s",
+                 p.telem, (unsigned long)p.max_telem_gap_ms, p.times, (unsigned long)p.recs,
+                 (unsigned long)g_logq_gw.dropped, (unsigned long)p.gaps, (unsigned long)p.bad,
+                 (unsigned long)g_logstat.records, sd_ok ? "yes" : "NO");
+        test_report("GA2 slow UART: log copy dropped first (gap noted), control traffic and SD card unaffected",
+                    p.telem >= 590 && p.max_telem_gap_ms <= 250u && p.times >= 56 && g_logq_gw.dropped > 0u &&
+                    p.gaps > 0u && p.bad == 0u && sd_ok, d);
+        logger_close(&s_logger);
+        x.log_on = false;
+    }
+
+    /* GA3 Pi unplugged: GATEWAY LOST after 3 s, no mode change, USB link fine;
+     * back: state OK again */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        sbsim_init(&x, 903u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        bool ok0 = x.sb.gw.state == SB_GW_OK;
+        hdg_lock(&x);
+        sb_mode_t m0 = sb_mode(&x.sb);
+        p.pi_on = false;
+        uint32_t t_off = x.t;
+        uint32_t t_alarm = 0u;
+        while (x.t < t_off + 6000u) {
+            sbsim_run(&x, x.t + 50u, pi_hook, &p);
+            if (!t_alarm && (x.sb.alarm_bits & SB_ALM_GATEWAY)) t_alarm = x.t - t_off;
+        }
+        bool same = sb_mode(&x.sb) == m0;
+        uint8_t st = x.sb.gw.state;
+        /* the USB laptop link still answers */
+        sim_hal_link_reset();
+        static link_t usb;
+        link_init(&usb, &x.sb);
+        uint8_t fr[PROTO_MAX_FRAME], b = 3u;
+        size_t n = proto_encode(fr, PROTO_T_SEA_STATE, 5u, &b, 1u);
+        sim_hal_link_rx_push(fr, (uint32_t)n);
+        link_step(&usb, &x.sb);
+        p.pi_on = true;
+        p.next_status = x.t;
+        sbsim_run(&x, x.t + 3000u, pi_hook, &p);
+        snprintf(d, sizeof d, "Pi OK %s; unplugged in HDG LOCK: GATEWAY LOST after %.1f s, mode still %s, state %s; "
+                 "USB laptop command answered %s; Pi back: state %s",
+                 ok0 ? "yes" : "NO", t_alarm * 0.001, mode_name(sb_mode(&x.sb)), st == SB_GW_LOST ? "LOST" : "?",
+                 usb.last_result == PROTO_R_OK ? "OK" : "NO", x.sb.gw.state == SB_GW_OK ? "OK" : "NO");
+        test_report("GA3 gateway lost: alarm GATEWAY LOST, no mode change, USB link still works",
+                    ok0 && t_alarm >= 3000u && t_alarm <= 3600u && same && st == SB_GW_LOST &&
+                    usb.last_result == PROTO_R_OK && x.sb.gw.state == SB_GW_OK, d);
+    }
+
+    /* GA4 Pi storage problem -> alarm GATEWAY STORAGE, nothing else changes */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        sbsim_init(&x, 904u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        hdg_lock(&x);
+        sb_mode_t m0 = sb_mode(&x.sb);
+        p.flags = SB_GWF_STORAGE;
+        sbsim_run(&x, x.t + 2000u, pi_hook, &p);
+        snprintf(d, sizeof d, "SSD missing: alarm GATEWAY STORAGE %s, mode %s -> %s",
+                 (x.sb.alarm_bits & SB_ALM_GW_STORAGE) ? "yes" : "NO", mode_name(m0), mode_name(sb_mode(&x.sb)));
+        test_report("GA4 gateway storage problem -> alarm GATEWAY STORAGE, no mode change",
+                    (x.sb.alarm_bits & SB_ALM_GW_STORAGE) && sb_mode(&x.sb) == m0, d);
+    }
+
+    /* GA5 GPS time for the Pi */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        sbsim_init(&x, 905u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, 5000u, pi_hook, &p);
+        uint32_t want = (36000000u + x.sb.now_ms) % 86400000u;
+        int32_t diff = (int32_t)(p.time_tod - want);
+        snprintf(d, sizeof d, "%d TIME frames in 5 s, valid %lu, date %lu, UTC %02lu:%02lu:%02lu.%03lu (sim GPS - %ld ms)",
+                 p.times, (unsigned long)p.time_valid, (unsigned long)p.time_date,
+                 (unsigned long)(p.time_tod / 3600000u), (unsigned long)(p.time_tod / 60000u % 60u),
+                 (unsigned long)(p.time_tod / 1000u % 60u), (unsigned long)(p.time_tod % 1000u), (long)-diff);
+        test_report("GA5 GPS time sent to the Pi once a second", p.times >= 4 && p.time_valid == 1u &&
+                    p.time_date == 20261020u && diff > -1500 && diff <= 0, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -4646,8 +4868,14 @@ void sb_usb_tests(void)
     usb_joystick_tests();
 }
 
+void sb_gateway_tests(void)
+{
+    gateway_tests();
+}
+
 void sb_tests(void)
 {
+    gateway_tests();
     logging_tests();
     timing_tests();
     hardening_tests();

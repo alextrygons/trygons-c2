@@ -873,6 +873,11 @@ class App:
         lines.append("log:  SD card %s, %s, %d files, %d records dropped" % (
             "present" if d["log_flags"] & 2 else "MISSING", "LOG FAILURE" if d["log_flags"] & 1 else "writing",
             d["log_files"], d["log_dropped"]))
+        if "gw_state" in d:
+            lines.append("gateway (Pi): %s, %d station(s); Pi log copy up to record %d, %d gaps; "
+                         "dropped for the Pi %d, not sent (no Pi) %d" % (
+                             d["gw_state_name"], d["gw_stations"], d["pi_log_seq"], d["pi_log_gaps"],
+                             d["log_dropped_pi"], d["log_skipped"]))
         self.sys_lbl.configure(text="\n".join(lines))
 
         self.draw_joystick(d)

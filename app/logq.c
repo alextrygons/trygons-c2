@@ -5,9 +5,10 @@
 
 #include "hal.h"
 
-logq_t g_logq0, g_logq1;
+logq_t g_logq0, g_logq1, g_logq_gw;
 static uint8_t s_q0[LOGQ0_SIZE];
 static uint8_t s_q1[LOGQ1_SIZE];
+static uint8_t s_qgw[LOGQGW_SIZE];
 
 void logq_init(logq_t *q, uint8_t *buf, uint32_t size)
 {
@@ -23,6 +24,7 @@ void logq_init_all(void)
 {
     logq_init(&g_logq0, s_q0, LOGQ0_SIZE);
     logq_init(&g_logq1, s_q1, LOGQ1_SIZE);
+    logq_init(&g_logq_gw, s_qgw, LOGQGW_SIZE);
 }
 
 uint32_t logq_used(const logq_t *q)

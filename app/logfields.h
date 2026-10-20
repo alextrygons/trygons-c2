@@ -17,7 +17,7 @@
     X(auto_state,    B, 1,     s->autop.state) \
     X(auto_wp,       B, 1,     s->autop.wp) \
     X(armed,         B, 1,     s->armed) \
-    X(alarm_bits,    H, 1,     s->alarm_bits) \
+    X(alarm_bits,    I, 1,     s->alarm_bits) \
     X(alarm_out,     B, 1,     (s->alarm || s->ap.alarm)) \
     /* heading, sensors */ \
     X(heading,       H, 100,   s->ap.heading) \

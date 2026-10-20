@@ -18,6 +18,7 @@
 
 #define LOGQ0_SIZE  16384u      /* core 0 queue (~2.5 s of 20 Hz data) */
 #define LOGQ1_SIZE  1024u       /* CPU1 (monitor events) */
+#define LOGQGW_SIZE 16384u      /* logger (core 2) -> gateway link (core 0): the log copy for the Pi */
 
 typedef struct {
     uint8_t          *buf;
@@ -29,9 +30,13 @@ typedef struct {
 } logq_t;
 
 extern logq_t g_logq0, g_logq1;
+/* Every record the logger handles, prefixed with its u32 sequence number;
+ * core 0 forwards it to the Raspberry Pi (link.c). Full -> dropped and
+ * counted (the Pi sees the gap in the numbers); the SD card is unaffected. */
+extern logq_t g_logq_gw;
 
 void logq_init(logq_t *q, uint8_t *buf, uint32_t size);
-void logq_init_all(void);       /* g_logq0 + g_logq1 with their buffers */
+void logq_init_all(void);       /* g_logq0, g_logq1, g_logq_gw with their buffers */
 /* Producer: whole record or nothing. Returns false if dropped. */
 bool logq_push(logq_t *q, const void *rec, uint16_t len);
 /* Consumer: next record into out (max bytes). Returns its length, 0 if empty. */

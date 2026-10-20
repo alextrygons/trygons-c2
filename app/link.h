@@ -32,7 +32,11 @@
 /* Simulator control frames (0x70..0x7F); returns a PROTO_R_ result. */
 typedef uint8_t (*link_sim_fn)(void *ctx, const proto_frame_t *f);
 
+#define LINK_PORT_USB 0u      /* ground station on the USB cable (local laptop) */
+#define LINK_PORT_GW  1u      /* Raspberry Pi gateway UART */
+
 typedef struct {
+    uint8_t     port;           /* LINK_PORT_USB / LINK_PORT_GW */
     proto_rx_t  rx;
     uint8_t     tx_seq;
     bool        connected;      /* a good frame was received at least once */
@@ -48,9 +52,16 @@ typedef struct {
     program_t   staging;        /* program being uploaded */
     uint8_t     staging_n;      /* waypoints announced by PROG_BEGIN (0 = none) */
     uint64_t    staging_have;   /* bit per waypoint received */
+    /* gateway port only */
+    uint32_t    next_time_ms;   /* GPS time to the Pi, 1 Hz */
+    uint32_t    log_len, log_off;   /* log record being sent to the Pi (bytes incl. the u32 number) */
+    uint32_t    log_chunks;
+    uint32_t    gw_used_after;  /* UART TX bytes waiting after the last step */
+    uint32_t    gw_room;        /* bytes allowed to wait in the UART (follows its real speed) */
 } link_t;
 
-void link_init(link_t *l, sb_t *s);
+void link_init(link_t *l, sb_t *s);                         /* USB port */
+void link_init_port(link_t *l, sb_t *s, uint8_t port);
 void link_step(link_t *l, sb_t *s);
 
 /* Parameter table (config editor). */

@@ -28,7 +28,7 @@
 #define LOG_ROTATE_BYTES    (20u * 1024u * 1024u)
 #define LOG_RETRY_MS        10000u
 #define LOG_BB_RECORDS      1200u       /* 60 s at 20 Hz */
-#define LOG_BB_SLOT         172u        /* one DATA record (checked at init) */
+#define LOG_BB_SLOT         174u        /* one DATA record (checked at init) */
 #define LOG_BB_EVENTS       128u
 #define LOG_BB_EV_SLOT      64u
 #define LOG_BB_AFTER_MS     30000u
@@ -43,6 +43,8 @@ typedef struct {
     volatile uint32_t bytes;            /* bytes written since boot */
     volatile uint32_t records;
     volatile uint32_t boot;             /* boot number (set by core 0 before the logger starts) */
+    volatile uint8_t  gw_resend;        /* core 0: the gateway (re)connected -> resend header,
+                                           boot event and config into its copy */
 } log_status_t;
 
 extern log_status_t g_logstat;
@@ -58,6 +60,7 @@ typedef struct {
     /* copies written at the start of every file */
     uint8_t  config_rec[4096 + 16];
     uint16_t config_len;
+    uint32_t gw_seq;                    /* next record number for the Pi copy (g_logq_gw) */
     uint8_t  boot_rec[32];
     uint16_t boot_len;
     /* GPS time for file names */

@@ -1,0 +1,15 @@
+{
+  "_help": "Copy to /etc/trygons/gateway.json. Passwords go into secrets.json (never into git).",
+  "boat": "trygons-c2",
+  "aurix": "/dev/ttyAMA0",
+  "baud": 921600,
+  "set_clock": true,
+  "status_s": 1.0,
+  "storage": {
+    "root": "/mnt/ssd/trygons",
+    "require_mount": true,
+    "check_s": 30,
+    "low_free_gb": 20.0,
+    "full_free_gb": 2.0
+  }
+}
