@@ -192,13 +192,20 @@ void logcore0_init(const sb_t *s, uint32_t boot_no)
     k.cfg_version = s->cfg_version;
 }
 
-void logcore0_pc(uint32_t t_ms, uint8_t type, uint8_t seq, uint8_t result, const uint8_t *payload, uint8_t len)
+void logcore0_pc(uint32_t t_ms, uint8_t type, uint8_t seq, uint8_t result, const uint8_t *payload, uint8_t len,
+                 uint8_t station)
 {
-    uint8_t pl[4 + 200];
+    uint8_t pl[4 + 200 + 1];
     pl[0] = type; pl[1] = seq; pl[2] = result; pl[3] = len;
     if (len) memcpy(&pl[4], payload, len);
-    uint16_t n = logrec_make(s_rec, LOGR_PCCMD, t_ms, pl, (uint16_t)(4u + len));
+    pl[4 + len] = station;                      /* after the command: older readers ignore it */
+    uint16_t n = logrec_make(s_rec, LOGR_PCCMD, t_ms, pl, (uint16_t)(5u + len));
     (void)logq_push(&g_logq0, s_rec, n);
+}
+
+void logcore0_helm(uint32_t t_ms, uint8_t station, uint8_t action, uint8_t refused, uint8_t holder)
+{
+    (void)logrec_event(&g_logq0, t_ms, EV_HELM, station, action, refused, holder);
 }
 
 void logcore0_param(const sb_t *s, uint8_t id, float old_v, float new_v)

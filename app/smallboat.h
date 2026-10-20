@@ -95,6 +95,12 @@
 #define SB_ALM_LOG                0x8000u /* LOG FAILURE: SD card missing / full / failing */
 #define SB_ALM_GATEWAY            0x10000u /* GATEWAY LOST: no frame from the Raspberry Pi for 3 s */
 #define SB_ALM_GW_STORAGE         0x20000u /* GATEWAY STORAGE: the Pi's USB SSD missing / failing */
+#define SB_ALM_REMOTE_LINK        0x40000u /* REMOTE LINK LOST: the remote HELM station disappeared */
+
+/* HELM: the one station whose commands are accepted (section B). */
+#define SB_HELM_NONE   0u
+#define SB_HELM_USB    1u       /* the laptop on the USB cable (always local) */
+                                /* 2..254: stations through the gateway (ids from the Pi) */
 
 /* Gateway (Raspberry Pi) as seen by the AURIX - written by link.c (gateway
  * port), shown in TELEM2 on every link. */
@@ -342,6 +348,9 @@ typedef struct {
     bool        gps_new_msg;   /* a GPS message arrived this step */
     uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */
     sb_gw_t     gw;            /* gateway (Raspberry Pi) link status */
+    uint8_t     helm;          /* HELM holder: SB_HELM_NONE / SB_HELM_USB / gateway station id */
+    bool        helm_local;    /* the holder is on the boat (USB or boat LAN) */
+    uint16_t    helm_changes;
     joy_t       joy;           /* joystick (analog or USB, same interface) */
     joymap_t    jmap;          /* joystick source + USB button map (NV slot 4) */
     jb_t        jb;            /* USB joystick bridge input */

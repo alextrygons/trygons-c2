@@ -3,6 +3,7 @@
     python app.py                      choose the port in the window
     python app.py tcp:127.0.0.1:5760   connect to the simulator at once
     python app.py COM5                 connect to the board at once
+    python app.py gw:trygons-gw:5761   through the gateway (Raspberry Pi), asks for the login
 
 Big, high-contrast layout for use in sunlight. Everything is drawn locally
 (no internet needed): map, track, plot.
@@ -19,6 +20,8 @@ from tkinter import ttk
 import program
 import proto
 from link import Link, list_ports
+from gwclient import GatewayLink
+from tkinter import simpledialog
 
 try:
     import winsound
@@ -51,8 +54,9 @@ def btn(parent, text, cmd, bg=PANEL, fg=FG, font=F_MED, width=None):
 
 
 class App:
-    def __init__(self, root, address=None):
+    def __init__(self, root, address=None, login=None):
         self.root = root
+        self.login = login              # (user, password) for "gw:" without asking (tests)
         self.link = None
         self.t = None                   # latest telemetry
         self.t_rx = 0.0
@@ -66,6 +70,7 @@ class App:
         self.pdlg = None                # power raise dialog
         self.prog_dl = []               # PROG_WP_VALUE frames being downloaded
         self.last_beep = 0.0
+        self.gw_status = None           # gateway status (when connected through the gateway)
         self.jmap = None                # joystick map as stored on the boat
         self.jm_edit = proto.default_joymap()   # map in the editor (Joystick tab)
         self.jm_load = True             # next JOYMAP_VALUE goes into the editor
@@ -115,6 +120,12 @@ class App:
         self.conn_btn.pack(side="left", padx=6)
         self.link_lbl = tk.Label(top, text="link: -", font=F_MED, bg=PANEL)
         self.link_lbl.pack(side="left", padx=12)
+        self.helm_lbl = tk.Label(top, text="HELM: -", font=F_MED, bg=PANEL)
+        self.helm_lbl.pack(side="left", padx=8)
+        btn(top, "Take HELM", lambda: self.cmd(proto.T_HELM, proto.p_helm(0), "take HELM"),
+            font=F_TXT).pack(side="left")
+        btn(top, "Release", lambda: self.cmd(proto.T_HELM, proto.p_helm(1), "release HELM"),
+            font=F_TXT).pack(side="left", padx=2)
         self.log_lbl = tk.Label(top, text="", font=F_TXT, bg=PANEL)
         self.log_lbl.pack(side="right", padx=8)
 
@@ -563,9 +574,24 @@ class App:
             self.conn_btn.configure(text="Connect", bg="#b0ffb0")
             self.say("Disconnected")
             return
+        addr = self.port_var.get().strip()
         try:
-            self.link = Link(self.port_var.get().strip())
-            self.link.start()
+            if addr.startswith("gw:"):
+                # through the gateway (VPN / boat LAN): user name + password
+                if self.login:
+                    user, pw = self.login
+                else:
+                    user = simpledialog.askstring("Gateway login", "User name:", parent=self.root)
+                    pw = simpledialog.askstring("Gateway login", "Password:", show="*", parent=self.root) if user else None
+                if not user or pw is None:
+                    return
+                self.link = GatewayLink(addr[3:], user, password=pw, station="ground station (%s)" % user, log=True)
+                w = self.link.start()
+                self.say("Logged in to the gateway as %s (%s, %s)" % (user, w["role"],
+                                                                      "on board" if w["local"] else "remote"), GREEN)
+            else:
+                self.link = Link(addr)
+                self.link.start()
         except Exception as e:
             self.link = None
             self.say("Cannot connect: %s" % e, RED)
@@ -738,6 +764,8 @@ class App:
                     self.on_joymap(d)
                 elif kind == "joy_raw":
                     self.on_raw(d)
+                elif kind == "gw_status":
+                    self.gw_status = d
                 elif kind == "status":
                     self.say(d, RED if "DISCONNECTED" in d else "#202020")
                     self.event(d)
@@ -873,6 +901,23 @@ class App:
         lines.append("log:  SD card %s, %s, %d files, %d records dropped" % (
             "present" if d["log_flags"] & 2 else "MISSING", "LOG FAILURE" if d["log_flags"] & 1 else "writing",
             d["log_files"], d["log_dropped"]))
+        hid = d.get("helm")
+        if hid is not None:
+            name = {0: "nobody", 1: "USB laptop (on board)"}.get(hid, "station %d" % hid)
+            if self.gw_status and self.gw_status.get("helm"):
+                name = self.gw_status["helm"]["name"]
+            mine = (self.gw_status or {}).get("you")
+            me = (hid == mine) if mine else (hid == 1 and isinstance(self.link, Link))
+            self.helm_lbl.configure(text="HELM: %s%s" % ("YOU - " if me else "", name),
+                                    bg="#b0ffb0" if me else ("#ffd080" if hid else PANEL))
+        if self.gw_status:
+            lines.append("")
+            lines.append("stations on the gateway (latency = round trip):")
+            for st in self.gw_status.get("stations", []):
+                lines.append("  %-3d %-24s %-7s %-7s %6s ms  telemetry %s%s" % (
+                    st["id"], st["name"][:24], st["role"], "on board" if st["local"] else "remote",
+                    st["rtt_ms"] if st["rtt_ms"] is not None else "-", st["tmode"],
+                    "   <- you" if st["id"] == self.gw_status.get("you") else ""))
         if "gw_state" in d:
             lines.append("gateway (Pi): %s, %d station(s); Pi log copy up to record %d, %d gaps; "
                          "dropped for the Pi %d, not sent (no Pi) %d" % (

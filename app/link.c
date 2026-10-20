@@ -610,6 +610,95 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
 
 static void gw_status(sb_t *s, const proto_frame_t *f);
 
+/* --- HELM (section B): only the HELM station's commands are accepted ------ */
+
+/* Commands every station may send without HELM: they change nothing. */
+static bool read_only(uint8_t type)
+{
+    return type == PROTO_T_PARAM_GET || type == PROTO_T_PROG_GET || type == PROTO_T_JOYMAP_GET ||
+           type == PROTO_T_JOY_RAW_GET;
+}
+
+static void helm_set(sb_t *s, uint8_t holder, bool local)
+{
+    s->helm = holder;
+    s->helm_local = local;
+    s->helm_changes++;
+}
+
+/* HELM take (0) / release (1). A local station (USB laptop, boat LAN) can
+ * always take HELM - also from a remote one; a remote station only when
+ * nobody holds it. */
+static uint8_t helm_cmd(sb_t *s, uint8_t station, bool local, uint8_t action)
+{
+    if (action == 0u) {
+        if (s->helm != station && s->helm != SB_HELM_NONE && !local) {
+            logcore0_helm(s->now_ms, station, 0u, 1u, s->helm);
+            return PROTO_R_HELM_TAKEN;
+        }
+        if (s->helm != station) {
+            helm_set(s, station, local);
+            if (local) s->alarm_bits &= ~SB_ALM_REMOTE_LINK;
+        }
+        logcore0_helm(s->now_ms, station, 0u, 0u, station);
+        return PROTO_R_OK;
+    }
+    if (action == 1u) {
+        if (s->helm != station) return PROTO_R_NOT_HELM;
+        helm_set(s, SB_HELM_NONE, false);
+        logcore0_helm(s->now_ms, station, 1u, 0u, SB_HELM_NONE);
+        return PROTO_R_OK;
+    }
+    return PROTO_R_BAD_VALUE;
+}
+
+/* The HELM station is gone (left / link lost / gateway lost): HELM back to
+ * nobody; a remote one also gives REMOTE LINK LOST. No mode change. */
+static void helm_lost(sb_t *s, uint8_t station, uint8_t action)
+{
+    if (s->helm != station || station == SB_HELM_NONE) return;
+    bool remote = !s->helm_local;
+    helm_set(s, SB_HELM_NONE, false);
+    logcore0_helm(s->now_ms, station, action, 0u, SB_HELM_NONE);
+    if (remote) {
+        s->alarm = true;
+        s->alarm_bits |= SB_ALM_REMOTE_LINK;
+    }
+}
+
+/* One command from a station (USB laptop = SB_HELM_USB, or through the
+ * gateway); answered with ACK (USB) or GW_ACK (gateway). */
+static void command(link_t *l, sb_t *s, const proto_frame_t *f, uint8_t station, bool local, uint16_t gw_seq)
+{
+    uint8_t r;
+    int want = cmd_len(f->type);
+    l->commands++;
+    if (f->type >= PROTO_T_SIM_FIRST && f->type <= PROTO_T_SIM_LAST) {
+        r = l->sim_fn ? l->sim_fn(l->sim_ctx, f) : PROTO_R_UNKNOWN;
+    } else if (f->type == PROTO_T_HELM) {
+        r = (f->len == 1u) ? helm_cmd(s, station, local, f->payload[0]) : PROTO_R_BAD_LENGTH;
+    } else if (want < 0) {
+        r = PROTO_R_UNKNOWN;
+    } else if ((int)f->len != want) {
+        r = PROTO_R_BAD_LENGTH;
+    } else {
+        if (!read_only(f->type) && s->helm == SB_HELM_NONE && station == SB_HELM_USB) {
+            helm_set(s, SB_HELM_USB, true);             /* the USB laptop takes a free HELM by itself */
+            logcore0_helm(s->now_ms, station, 3u, 0u, station);
+        }
+        r = (read_only(f->type) || s->helm == station) ? do_command(l, s, f) : PROTO_R_NOT_HELM;
+    }
+    if (l->port == LINK_PORT_GW) {
+        uint8_t p[5] = { station, (uint8_t)gw_seq, (uint8_t)(gw_seq >> 8), f->type, r };
+        l->last_result = r;
+        if (r != PROTO_R_OK) l->nacks++;
+        send(l, PROTO_T_GW_ACK, l->tx_seq++, p, sizeof p);
+    } else {
+        send_ack(l, f, r);
+    }
+    logcore0_pc(s->now_ms, f->type, f->seq, r, f->payload, f->len, station);    /* every command + answer */
+}
+
 static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
 {
     l->last_rx_ms = s->now_ms;
@@ -626,22 +715,33 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
         }
     }
     if (f->type == PROTO_T_HEARTBEAT && f->len == 0u) return;   /* no ACK for heartbeats */
-    if (f->type == PROTO_T_GW_STATUS) {                          /* the Pi's heartbeat: no ACK */
-        if (l->port == LINK_PORT_GW && f->len == 12u) gw_status(s, f);
+    if (l->port != LINK_PORT_GW) {
+        command(l, s, f, SB_HELM_USB, true, 0u);        /* the USB laptop: a local station */
         return;
     }
-    l->commands++;
-
-    uint8_t r;
-    int want = cmd_len(f->type);
-    if (f->type >= PROTO_T_SIM_FIRST && f->type <= PROTO_T_SIM_LAST) r = l->sim_fn ? l->sim_fn(l->sim_ctx, f) : PROTO_R_UNKNOWN;
-    else if (want < 0) r = PROTO_R_UNKNOWN;
-    else if ((int)f->len != want) r = PROTO_R_BAD_LENGTH;
-    else r = do_command(l, s, f);
-    send_ack(l, f, r);
-    logcore0_pc(s->now_ms, f->type, f->seq, r, f->payload, f->len);     /* every command + answer */
+    /* gateway port: everything comes from the Pi */
+    if (f->type == PROTO_T_GW_STATUS) {                          /* its heartbeat: no ACK */
+        if (f->len == 12u) gw_status(s, f);
+        return;
+    }
+    if (f->type == PROTO_T_GW_STATION) {                         /* a station joined / left */
+        if (f->len == 3u && f->payload[1] == 1u) helm_lost(s, f->payload[0], 2u);
+        return;
+    }
+    if (f->type == PROTO_T_GW_CMD && f->len >= 5u && f->payload[0] >= 2u && f->payload[0] != 0xFFu) {
+        /* u8 station | u8 flags (b0 local) | u16 command seq | u8 type | payload */
+        proto_frame_t in;
+        in.type = f->payload[4];
+        in.seq = f->payload[2];
+        in.len = (uint8_t)(f->len - 5u);
+        memcpy(in.payload, &f->payload[5], in.len);
+        command(l, s, &in, f->payload[0], (f->payload[1] & 1u) != 0u,
+                (uint16_t)(f->payload[2] | (f->payload[3] << 8)));
+        return;
+    }
+    /* anything else from the Pi without an envelope is refused */
+    send_ack(l, f, PROTO_R_UNKNOWN);
 }
-
 /* --- gateway (Raspberry Pi) ---------------------------------------------------- */
 
 /*
@@ -650,6 +750,8 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *   A: u32 t_ms | u8 gw_state (0 never, 1 ok, 2 LOST) | u8 gw_flags | u8 gw_channel |
  *      u8 gw_stations | u32 log_sent_seq | u32 log_dropped_for_pi | u32 pi_log_seq |
  *      u16 pi_log_gaps | u32 log_skipped (no gateway)
+ *   B: u8 helm (0 nobody, 1 USB laptop, 2.. gateway station) | u8 helm_flags (b0 local) |
+ *      u16 helm_changes
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -667,6 +769,9 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u32(&w, g->pi_log_seq);
     proto_wr_u16(&w, g->pi_log_gaps);
     proto_wr_u32(&w, g->log_skipped);
+    proto_wr_u8(&w, s->helm);
+    proto_wr_u8(&w, s->helm_local ? 1u : 0u);
+    proto_wr_u16(&w, s->helm_changes);
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
 }
 
@@ -830,6 +935,7 @@ void link_step(link_t *l, sb_t *s)
         if (l->port == LINK_PORT_GW) {
             s->alarm_bits |= SB_ALM_GATEWAY;            /* GATEWAY LOST: alarm only, no mode change */
             s->gw.state = SB_GW_LOST;
+            if (s->helm >= 2u) helm_lost(s, s->helm, 4u);   /* its stations are gone too */
         } else {
             s->alarm_bits |= SB_ALM_PC_LINK;
         }

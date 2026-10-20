@@ -43,6 +43,9 @@
 #define PROTO_T_JOY_CAL       0x19u   /* u8 0 start / 1 finish                */
 #define PROTO_T_ALARM_ACK     0x1Au   /* -  acknowledge alarms (any mode)      */
 #define PROTO_T_GW_STATUS     0x31u   /* gateway only, 1 Hz heartbeat, 12 bytes (link.c gw_status) */
+#define PROTO_T_GW_CMD        0x32u   /* gateway only: u8 station, u8 flags (b0 local), u16 seq, u8 type, payload */
+#define PROTO_T_HELM          0x33u   /* u8 0 take / 1 release (any station; local always wins) */
+#define PROTO_T_GW_STATION    0x34u   /* gateway only: u8 station, u8 event (0 joined, 1 left / lost), u8 local */
 #define PROTO_T_JOYMAP_GET    0x1Bu   /* -  -> JOYMAP_VALUE                     */
 #define PROTO_T_JOYMAP_SET    0x1Cu   /* joymap body (see link.c), u8 save; STANDBY only */
 #define PROTO_T_JOY_RAW_GET   0x1Du   /* -  -> JOY_RAW (USB bridge, for the button mapping) */
@@ -75,6 +78,7 @@
 #define PROTO_T_LOG_CHUNK     0x89u   /* gateway only: u32 record no, u16 offset, u16 length, bytes */
 #define PROTO_T_TIME          0x8Au   /* gateway only, 1 Hz: u8 valid, u32 date, u32 UTC ms of day, u32 t_ms */
 #define PROTO_T_TELEM2        0x8Bu   /* with every telemetry: gateway / helm / remote / slamming (link.c) */
+#define PROTO_T_GW_ACK        0x8Cu   /* gateway only: u8 station, u16 command seq, u8 type, u8 result */
 
 /* ACK result: 0 = accepted, else why refused (NACK) */
 #define PROTO_R_OK            0u
@@ -98,6 +102,8 @@
 #define PROTO_R_MAP_DUPLICATE 18u     /* button map: two functions share a button */
 #define PROTO_R_MAP_MISSING   19u     /* button map: TAKE, AUTO and CONFIRM must be mapped */
 #define PROTO_R_MAP_BAD       20u     /* button map: bad code / neutral zone */
+#define PROTO_R_NOT_HELM      21u     /* this station does not hold HELM */
+#define PROTO_R_HELM_TAKEN    22u     /* another station holds HELM (only a local station can take it) */
 
 typedef struct {
     uint8_t type;

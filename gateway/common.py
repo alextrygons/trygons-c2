@@ -30,6 +30,20 @@ DEFAULTS = {
     "set_clock": True,
     # GW_STATUS to the AURIX (its "gateway alive" heartbeat; the AURIX alarms after 3 s)
     "status_s": 1.0,
+    "stations": {
+        "listen": "0.0.0.0",            # the firewall lets in only the VPN and the boat LAN
+        "port": 5761,
+        "local_nets": ["10.42.0.0/24"], # the boat LAN: stations here are LOCAL (can always take HELM)
+        "max_age_s": 2.0,               # older commands are refused (stale)
+        "rate_per_s": 10.0,
+        "rate_burst": 20.0,
+        "lite_rtt_ms": 400.0,           # slower link -> reduced telemetry (2 Hz, essentials)
+        "lite_hz": 2.0,
+        "lost_s": 5.0,                  # no answer this long -> station lost
+    },
+    "audit_fallback": "/var/lib/trygons/audit",   # when the SSD is missing
+    "web_port": 8080,                   # the iPhone page (VPN only)
+    "web_helm": False,                  # HELM from the web page: OFF unless you switch it on
     "storage": {
         "root": "/mnt/ssd/trygons",     # the USB SSD; the SD card holds only the OS
         "require_mount": True,          # root must be a mounted drive (not the SD card)

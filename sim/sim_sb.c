@@ -4656,6 +4656,9 @@ typedef struct {
     uint8_t    cur[4200];
     uint32_t   time_date, time_tod, time_valid;
     uint32_t   max_telem_gap_ms, last_telem_ms;
+    int        acks;
+    uint8_t    ack_station, ack_result;
+    uint16_t   ack_seq;
 } pisim_t;
 
 static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
@@ -4668,6 +4671,11 @@ static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
         p->telem++;
     } else if (f->type == PROTO_T_TELEM2) {
         p->telem2++;
+    } else if (f->type == PROTO_T_GW_ACK && f->len == 5u) {
+        p->ack_station = f->payload[0];
+        p->ack_seq = (uint16_t)(f->payload[1] | (f->payload[2] << 8));
+        p->ack_result = f->payload[4];
+        p->acks++;
     } else if (f->type == PROTO_T_TIME) {
         p->time_valid = proto_rd_u8(&r);
         p->time_date = proto_rd_u32(&r);
@@ -4861,6 +4869,160 @@ static void gateway_tests(void)
     }
 }
 
+/* ------------------------------------------- HELM / stations (section B) -- */
+
+/* A command from gateway station `st` (GW_CMD envelope); runs 200 ms and
+ * returns the GW_ACK result (0xFF = no answer). */
+static uint8_t pi_cmd(sbsim_t *x, pisim_t *p, uint8_t st, bool local, uint8_t type, const uint8_t *pl, uint8_t len)
+{
+    uint8_t buf[PROTO_MAX_PAYLOAD], fr[PROTO_MAX_FRAME];
+    static uint16_t seq = 100u;
+    seq++;
+    buf[0] = st;
+    buf[1] = local ? 1u : 0u;
+    buf[2] = (uint8_t)seq;
+    buf[3] = (uint8_t)(seq >> 8);
+    buf[4] = type;
+    if (len) memcpy(&buf[5], pl, len);
+    size_t n = proto_encode(fr, PROTO_T_GW_CMD, 0u, buf, (uint8_t)(5u + len));
+    int before = p->acks;
+    sim_hal_gw_rx_push(fr, (uint32_t)n);
+    sbsim_run(x, x->t + 200u, pi_hook, p);
+    return (p->acks > before && p->ack_seq == seq && p->ack_station == st) ? p->ack_result : 0xFFu;
+}
+
+static void pi_station_left(uint8_t st)
+{
+    uint8_t pl[3] = { st, 1u, 0u }, fr[PROTO_MAX_FRAME];
+    size_t n = proto_encode(fr, PROTO_T_GW_STATION, 0u, pl, 3u);
+    sim_hal_gw_rx_push(fr, (uint32_t)n);
+}
+
+/* The USB laptop (local station 1): one command, the ACK result. */
+static uint8_t usb_cmd(sbsim_t *x, link_t *usb, uint8_t type, const uint8_t *pl, uint8_t len)
+{
+    uint8_t fr[PROTO_MAX_FRAME], out[1024];
+    sim_hal_link_reset();
+    size_t n = proto_encode(fr, type, 7u, pl, len);
+    sim_hal_link_rx_push(fr, (uint32_t)n);
+    usb->last_result = 0xFFu;
+    link_step(usb, &x->sb);
+    while (sim_hal_link_tx_pop(out, sizeof out) > 0u) {}
+    return usb->last_result;
+}
+
+static void helm_tests(void)
+{
+    char d[700];
+    const uint8_t TAKE = 0u, RELEASE = 1u, SEA3 = 3u;
+    printf("\n=== Section B: HELM (one station commands) ===\n");
+
+    /* GB1 the HELM rules */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        static link_t usb;
+        sbsim_init(&x, 911u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        link_init(&usb, &x.sb);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        uint8_t r_nohelm = pi_cmd(&x, &p, 2u, false, PROTO_T_SEA_STATE, &SEA3, 1u);        /* remote, no HELM */
+        uint8_t r_read = pi_cmd(&x, &p, 2u, false, PROTO_T_JOYMAP_GET, NULL, 0u);         /* read-only: fine */
+        uint8_t r_take = pi_cmd(&x, &p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        uint8_t r_cmd = pi_cmd(&x, &p, 2u, false, PROTO_T_SEA_STATE, &SEA3, 1u);
+        uint8_t r_take3 = pi_cmd(&x, &p, 3u, false, PROTO_T_HELM, &TAKE, 1u);            /* 2nd remote: no */
+        uint8_t r_usb1 = usb_cmd(&x, &usb, PROTO_T_SEA_STATE, &SEA3, 1u);                 /* laptop, no HELM */
+        uint8_t r_local = pi_cmd(&x, &p, 4u, true, PROTO_T_HELM, &TAKE, 1u);             /* boat LAN station */
+        uint8_t r_old = pi_cmd(&x, &p, 2u, false, PROTO_T_SEA_STATE, &SEA3, 1u);          /* remote lost it */
+        uint8_t r_usbt = usb_cmd(&x, &usb, PROTO_T_HELM, &TAKE, 1u);                       /* laptop takes */
+        uint8_t r_usb2 = usb_cmd(&x, &usb, PROTO_T_SEA_STATE, &SEA3, 1u);
+        uint8_t r_rel = usb_cmd(&x, &usb, PROTO_T_HELM, &RELEASE, 1u);
+        uint8_t holder = x.sb.helm;
+        snprintf(d, sizeof d, "remote without HELM: %u (21 = not helm), read-only: %u, remote takes: %u, then command: %u; "
+                 "2nd remote takes: %u (22 = taken); laptop without HELM: %u; local LAN station takes from remote: %u; "
+                 "old remote: %u; laptop takes from it: %u, command %u, releases %u -> holder %u",
+                 r_nohelm, r_read, r_take, r_cmd, r_take3, r_usb1, r_local, r_old, r_usbt, r_usb2, r_rel, holder);
+        test_report("GB1 only the HELM station commands; a local station always takes HELM from a remote one",
+                    r_nohelm == PROTO_R_NOT_HELM && r_read == PROTO_R_OK && r_take == PROTO_R_OK && r_cmd == PROTO_R_OK &&
+                    r_take3 == PROTO_R_HELM_TAKEN && r_usb1 == PROTO_R_NOT_HELM && r_local == PROTO_R_OK &&
+                    r_old == PROTO_R_NOT_HELM && r_usbt == PROTO_R_OK && r_usb2 == PROTO_R_OK && r_rel == PROTO_R_OK &&
+                    holder == SB_HELM_NONE, d);
+    }
+
+    /* GB2 remote HELM station lost -> REMOTE LINK LOST, HELM to nobody, no mode change */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        sbsim_init(&x, 912u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        hdg_lock(&x);
+        pi_cmd(&x, &p, 5u, false, PROTO_T_HELM, &TAKE, 1u);
+        bool held = x.sb.helm == 5u;
+        pi_station_left(5u);
+        sbsim_run(&x, x.t + 500u, pi_hook, &p);
+        snprintf(d, sizeof d, "remote station 5 held HELM %s; it left: alarm REMOTE LINK LOST %s, HELM -> %u, mode %s",
+                 held ? "yes" : "NO", (x.sb.alarm_bits & SB_ALM_REMOTE_LINK) ? "yes" : "NO", x.sb.helm,
+                 mode_name(sb_mode(&x.sb)));
+        test_report("GB2 remote HELM station lost -> REMOTE LINK LOST, HELM to nobody, no mode change",
+                    held && (x.sb.alarm_bits & SB_ALM_REMOTE_LINK) && x.sb.helm == SB_HELM_NONE &&
+                    sb_mode(&x.sb) == MODE_HDG_LOCK, d);
+    }
+
+    /* GB3 gateway lost while a remote station holds HELM */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        sbsim_init(&x, 913u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        hdg_lock(&x);
+        pi_cmd(&x, &p, 6u, false, PROTO_T_HELM, &TAKE, 1u);
+        p.pi_on = false;
+        sbsim_run(&x, x.t + 4000u, pi_hook, &p);
+        snprintf(d, sizeof d, "GATEWAY LOST %s, REMOTE LINK LOST %s, HELM -> %u, mode %s",
+                 (x.sb.alarm_bits & SB_ALM_GATEWAY) ? "yes" : "NO", (x.sb.alarm_bits & SB_ALM_REMOTE_LINK) ? "yes" : "NO",
+                 x.sb.helm, mode_name(sb_mode(&x.sb)));
+        test_report("GB3 gateway lost with a remote HELM -> both alarms, HELM to nobody, no mode change",
+                    (x.sb.alarm_bits & SB_ALM_GATEWAY) && (x.sb.alarm_bits & SB_ALM_REMOTE_LINK) &&
+                    x.sb.helm == SB_HELM_NONE && sb_mode(&x.sb) == MODE_HDG_LOCK, d);
+    }
+
+    /* GB4 CONFIRM-protected actions from a remote HELM still need the joystick CONFIRM on board */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        prog_wp_t wp[5];
+        static program_t prog;
+        prog_error_t err;
+        uint8_t bad;
+        sbsim_init(&x, 914u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        pi_cmd(&x, &p, 7u, false, PROTO_T_HELM, &TAKE, 1u);
+        prog5(&x, wp);
+        prog_make(&prog, wp, 5, PROG_END_STOP);
+        (void)sb_program_set(&x.sb, &prog, &err, &bad);
+        uint8_t dir = 0u;
+        uint8_t r_code = pi_cmd(&x, &p, 7u, false, PROTO_T_POWER_CODE, &dir, 1u);
+        uint8_t raise[3] = { 0u, (uint8_t)x.sb.plim.code, (uint8_t)(x.sb.plim.code >> 8) };
+        uint8_t r_raise = pi_cmd(&x, &p, 7u, false, PROTO_T_POWER_RAISE, raise, 3u);
+        sbsim_run(&x, x.t + 11000u, pi_hook, &p);                  /* nobody presses CONFIRM */
+        float lim1 = x.sb.plim.fwd_pct;
+        uint8_t r_auto = pi_cmd(&x, &p, 7u, false, PROTO_T_AUTO_START, NULL, 0u);
+        sbsim_run(&x, x.t + 2000u, pi_hook, &p);
+        bool no_auto = sb_mode(&x.sb) != MODE_AUTO;
+        bool conf = confirm_press(&x);                              /* the person on board */
+        sbsim_run(&x, x.t + 500u, pi_hook, &p);
+        snprintf(d, sizeof d, "remote HELM: power code %u, raise %u -> without CONFIRM still %.0f %%; AUTO START %u -> "
+                 "still not AUTO %s; joystick CONFIRM on board -> %s",
+                 r_code, r_raise, lim1, r_auto, no_auto ? "yes" : "NO", sb_mode(&x.sb) == MODE_AUTO && conf ? "AUTO" : "NO");
+        test_report("GB4 remote HELM can't raise power or start AUTO alone: the joystick CONFIRM on board is needed",
+                    r_code == PROTO_R_OK && r_raise == PROTO_R_OK && lim1 == 30.0f && r_auto == PROTO_R_OK && no_auto &&
+                    conf && sb_mode(&x.sb) == MODE_AUTO, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -4871,11 +5033,13 @@ void sb_usb_tests(void)
 void sb_gateway_tests(void)
 {
     gateway_tests();
+    helm_tests();
 }
 
 void sb_tests(void)
 {
     gateway_tests();
+    helm_tests();
     logging_tests();
     timing_tests();
     hardening_tests();

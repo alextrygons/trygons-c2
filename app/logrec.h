@@ -58,6 +58,8 @@ typedef enum {
     EV_LOG,             /* what (1 file, 2 sync, 3 black box start, 4 black box end, 5 failure, 6 drops),
                            a, b, c */
     EV_TIME,            /* GPS date YYYYMMDD, GPS time of day ms, local t_ms, 0 (once a minute) */
+    EV_HELM,            /* station, action (0 take, 1 release, 2 station lost, 3 automatic take by the
+                           USB laptop, 4 gateway lost), result (0 granted, 1 refused), new holder */
     EV_COUNT
 } log_event_t;
 

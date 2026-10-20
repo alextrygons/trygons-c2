@@ -141,11 +141,11 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 113 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 117 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
     autopilot_sim.exe all --bridge
   The same tests again, but every joystick move goes through the simulated
-  USB bridge. Ends with "112 passed, 0 failed, 1 not applicable" (the analog
+  USB bridge. Ends with "116 passed, 0 failed, 1 not applicable" (the analog
   calibration test does not apply to the USB joystick).
     autopilot_sim.exe usb
   Only the 17 USB joystick tests (U1..U16), quick.
@@ -463,6 +463,36 @@ A. THE GATEWAY LINK (AURIX <-> Pi)
   * Ground station, System tab: "gateway (Pi): OK / LOST, Pi log copy up to
     record N, gaps".
 
+B. USERS, ROLES AND HELM
+  * Every station logs in to the gateway (user + password, or a key).
+    VIEWER = watch only. HELM = may hold HELM.
+  * Only ONE station holds HELM; only its commands are carried out (the
+    AURIX checks it; others get "NOT HELM"). The top bar of the ground
+    station shows "HELM: YOU - ..." or who has it; buttons "Take HELM" /
+    "Release".
+  * A station ON THE BOAT (USB laptop, boat LAN) can always take HELM, also
+    from a remote one. A remote station only when nobody has it. The USB
+    laptop takes a free HELM by itself.
+  * The onboard joystick and the STANDBY button still beat everything.
+    Power raise, AUTO start / resume and remote driving still need the
+    joystick CONFIRM on the boat - remote can never do them alone.
+  * Every command carries station, number and time; the gateway refuses
+    duplicates, old ones (more than 2 s), out-of-order and too many. A PC
+    with a wrong clock is fine (the gateway measures the difference).
+  * Slow or far links get reduced telemetry (2 times a second, the
+    essentials) automatically; the System tab shows every station's
+    latency.
+  * Remote HELM station lost: alarm REMOTE LINK LOST, HELM back to nobody,
+    no mode change (remote driving: part D).
+  * iPhone: http://trygons-gw:8080 over the VPN, view only (HELM from the
+    web page only if switched on in the gateway config).
+  * Audit log on the Pi: who connected, who held HELM, every command and
+    its answer. Security rules: gateway\README.md section 12 - please do
+    all of them (change ALL default passwords, VPN only, cameras without
+    internet, separate networks).
+  * Connect the ground station through the gateway:
+      python app.py gw:trygons-gw:5761     (asks for user + password)
+
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
@@ -498,6 +528,8 @@ A. THE GATEWAY LINK (AURIX <-> Pi)
   LOG FAILURE            SD card missing / full / failing (control goes on)
   GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)
   GATEWAY STORAGE        the Pi's USB SSD is missing / failing (no mode change)
+  REMOTE LINK LOST       the remote station holding HELM disappeared; HELM
+                         goes back to nobody (no mode change)
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file. Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
@@ -769,6 +801,12 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
                                  systemctl status trygons-gateway
   "GATEWAY STORAGE"              the Pi's SSD: is it plugged in, mounted
                                  (df -h /mnt/ssd), not full?
+  "NOT HELM: take HELM first"    press "Take HELM" (another station may hold
+                                 it - only a station on the boat can take it
+                                 from a remote one).
+  "stale command"                the link was too slow / interrupted: the
+                                 command was older than 2 s, not carried out.
+  Login refused, "too many..."   wait a minute (5 wrong passwords lock out).
   JOYSTICK FAULT: no frames      bridge not powered / TX wire / Teensy not
                                  running. Check the 5 V and the GND wire.
   JOYSTICK FAULT: STICK (or      plug, hub power. Is the hub powered by

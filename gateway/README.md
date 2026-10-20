@@ -168,3 +168,71 @@ passed on the PC with the same version.
 * Ground station (USB laptop): System tab shows "gateway OK", the Pi's copy
   of the log grows, no GATEWAY alarm.
 * Pull the Pi's power: within 3 s the boat shows **GATEWAY LOST**, nothing else changes.
+
+## 11. Users, roles and HELM
+
+Every station logs in. Roles:
+
+| Role | can |
+|------|-----|
+| VIEWER | watch everything (telemetry, cameras, status). Never commands. |
+| HELM | may **hold HELM**. Only one station holds HELM at a time; only its commands are carried out (the AURIX checks it). |
+
+* A station **on the boat** (boat LAN, or the USB laptop) can always take
+  HELM, also from a remote one. A remote station only gets HELM when
+  nobody has it.
+* The laptop on the AURIX's USB cable gets HELM by itself when nobody has it.
+* If the remote HELM station's link is lost: alarm **REMOTE LINK LOST** on
+  the boat, HELM goes back to nobody, nothing else changes.
+* Power raise, AUTO start / resume and remote driving still need the
+  **joystick CONFIRM on the boat**. Remote can never do them alone.
+
+Add users (on the Pi):
+```
+cd ~/trygons-c2/gateway
+python3 users.py add alex HELM              # asks for a password (at least 10 characters)
+python3 users.py add guest VIEWER
+python3 users.py key iphone VIEWER          # a random key instead of a password
+```
+Each prints a line; paste it into `"users": { ... }` in
+`/etc/trygons/secrets.json`, then `sudo systemctl restart trygons-gateway`.
+Passwords are stored only as salted hashes. Five wrong logins from one
+address lock it out for a minute. Everything is in the audit log
+(`/mnt/ssd/trygons/audit/YYYYMMDD.jsonl`): connections, failed logins,
+HELM changes, every command with its result.
+
+Every command carries the station's id, a sequence number and a time
+stamp. The gateway refuses duplicates, out-of-order, stale (older than
+2 s, `max_age_s`) and too many (rate limit) commands **before** they reach
+the AURIX. A wrong PC clock doesn't matter: the gateway measures each
+station's clock offset with its latency pings.
+
+**iPhone:** `http://trygons-gw:8080` (over Tailscale), log in with a
+gateway user. View only. HELM from the web page only if you set
+`"web_helm": true` in gateway.json (off by default).
+
+## 12. Security rules - please follow all of them
+
+1. **VPN only.** Nothing on the boat is reachable from the internet: no
+   port forwarding on the router, no "remote access" features of the
+   router, cameras or Starlink. The Pi firewall (section 8) allows only
+   Tailscale and the boat LAN.
+2. **Change every default password** before the boat goes to sea:
+   * Teltonika router: admin password, and turn off RMS / remote
+     management unless you need it.
+   * Raspberry Pi: your user's password (SSH is key-only).
+   * Starlink app: the account, and the Wi-Fi password if you use its Wi-Fi.
+   * Each camera: the TP-Link account and the "Camera Account".
+   * Tailscale: two-factor login on the account.
+3. **Separate networks:**
+   * control network (Pi, AURIX side, cameras) on its own VLAN or switch
+     port;
+   * guest / crew Wi-Fi on another VLAN, with no access to the control
+     VLAN.
+4. **Cameras have NO internet access** (router firewall rule, section E).
+   Allow it only briefly for a firmware update, then block it again.
+5. **Keep software updated:** Pi automatic security updates (section 3),
+   router firmware, camera firmware - in harbour, after testing.
+6. Give users the smallest role they need (VIEWER for guests and phones).
+   Remove users who don't need access any more.
+7. Look at the audit log after every trip with remote access.

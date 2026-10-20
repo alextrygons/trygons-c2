@@ -19,7 +19,10 @@
 void logcore0_init(const sb_t *s, uint32_t boot_no);
 void logcore0_step(const sb_t *s);
 /* The ground station sent a command (link.c). */
-void logcore0_pc(uint32_t t_ms, uint8_t type, uint8_t seq, uint8_t result, const uint8_t *payload, uint8_t len);
+/* Every PC / station command with its answer; station: 1 = USB laptop, 2.. = via the gateway. */
+void logcore0_pc(uint32_t t_ms, uint8_t type, uint8_t seq, uint8_t result, const uint8_t *payload, uint8_t len,
+                 uint8_t station);
+void logcore0_helm(uint32_t t_ms, uint8_t station, uint8_t action, uint8_t refused, uint8_t holder);
 /* A parameter changed (link.c, before it is written). */
 void logcore0_param(const sb_t *s, uint8_t id, float old_v, float new_v);
 /* The config / calibration as text (key=value lines). */

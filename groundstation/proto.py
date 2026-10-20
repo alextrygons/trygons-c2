@@ -23,6 +23,9 @@ T_JOYMAP_GET = 0x1B        # -> JOYMAP_VALUE
 T_JOYMAP_SET = 0x1C        # joymap body + u8 save; STANDBY only
 T_JOY_RAW_GET = 0x1D       # -> JOY_RAW (USB bridge frame, for the button mapping)
 T_GW_STATUS = 0x31         # gateway -> AURIX, 1 Hz (also the gateway heartbeat)
+T_GW_CMD = 0x32            # gateway -> AURIX: a station's command in an envelope
+T_HELM = 0x33              # u8 0 take / 1 release
+T_GW_STATION = 0x34        # gateway -> AURIX: station joined / left
 T_PROG_BEGIN = 0x20
 T_PROG_WP = 0x21
 T_PROG_COMMIT = 0x22
@@ -49,6 +52,7 @@ T_JOY_RAW = 0x86
 T_LOG_CHUNK = 0x89         # AURIX -> gateway: the full log copy
 T_TIME = 0x8A              # AURIX -> gateway: GPS time, 1 Hz
 T_TELEM2 = 0x8B            # with every telemetry: gateway / helm / remote / slamming
+T_GW_ACK = 0x8C            # AURIX -> gateway: the answer to a station's command
 
 TYPE_NAMES = {
     T_HEARTBEAT: "heartbeat", T_SET_MODE: "set mode",
@@ -62,6 +66,7 @@ TYPE_NAMES = {
     T_JOYMAP_GET: "joystick map read", T_JOYMAP_SET: "joystick map write", T_JOY_RAW_GET: "joystick raw read",
     T_SIM_BRIDGE: "sim USB joystick", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
+    T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -88,6 +93,12 @@ RESULTS = {
     18: "button map refused: two functions share a button",
     19: "button map refused: TAKE, AUTO and CONFIRM must be mapped",
     20: "button map refused: bad code or neutral zone",
+    21: "NOT HELM: take HELM first",
+    22: "another station holds HELM (only a station on the boat can take it)",
+    # gateway refusals (gateway/stations.py)
+    100: "VIEWER: watch only", 101: "duplicate command", 102: "command out of order", 103: "stale command",
+    104: "timestamp in the future", 105: "rate limited", 106: "AURIX not connected", 107: "wrong session",
+    108: "bad command",
 }
 
 MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING"]
@@ -136,6 +147,7 @@ ALARMS = [
     (0x8000, "LOG FAILURE (SD card)"),
     (0x10000, "GATEWAY LOST"),
     (0x20000, "GATEWAY STORAGE"),
+    (0x40000, "REMOTE LINK LOST"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -512,6 +524,11 @@ GWF_STORAGE, GWF_STORAGE_FULL, GWF_FALLBACK, GWF_STARLINK, GWF_SAVER = 0x01, 0x0
 GW_STATES = ["never connected", "OK", "LOST"]
 
 
+def p_helm(action):
+    """0 take, 1 release."""
+    return struct.pack("<B", action)
+
+
 def p_gw_status(flags, channel=0, stations=0, pi_log_seq=0, pi_log_gaps=0):
     """GW_STATUS (gateway -> AURIX, 1 Hz): link.c gw_status()."""
     return struct.pack("<BBBBIHH", 1, flags & 0xFF, channel & 0xFF, stations & 0xFF,
@@ -539,6 +556,7 @@ def decode_log_chunk(payload: bytes):
 _T2_GROUPS = [
     (struct.Struct("<IBBBBIIIHI"), "t2_ms gw_state gw_flags gw_channel gw_stations log_sent_seq "
                                    "log_dropped_pi pi_log_seq pi_log_gaps log_skipped".split()),
+    (struct.Struct("<BBH"), "helm helm_flags helm_changes".split()),
 ]
 
 

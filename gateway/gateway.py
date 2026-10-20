@@ -21,10 +21,14 @@ import sys
 import time
 
 from common import Clock, load_config, log, proto, setup_logging
+from audit import Audit
 from aurix import AurixLink
 from logstore import LogStore
+from stations import StationServer
 from storage import Storage
 from timesync import TimeSync
+from users import Users
+from web import WebServer
 
 
 class Gateway:
@@ -47,6 +51,11 @@ class Gateway:
         self.station_count = 0
         self.started = time.time()
         self._stop = None
+        sec = cfg.get("secrets", {})
+        self.users = Users(sec.get("users") or cfg.get("users", {}))
+        self.audit = Audit(self.storage, self.clock, cfg.get("audit_fallback"))
+        self.stations = StationServer(self, cfg["stations"])
+        self.web = WebServer(self, cfg)
 
     def _on_telem(self, f):
         try:
@@ -73,9 +82,11 @@ class Gateway:
         while True:
             self.storage.check()
             self.logs.flush()
+            self.station_count = len(self.stations.stations)
             self.aurix.send(proto.T_GW_STATUS, proto.p_gw_status(
                 self.status_flags(), self.channel_id, self.station_count,
                 self.logs.last_seq or 0, self.logs.gaps))
+            self.stations.tick()
             await asyncio.sleep(self.cfg.get("status_s", 1.0))
 
     def status(self):
@@ -87,6 +98,9 @@ class Gateway:
 
     async def run(self):
         self._stop = asyncio.Event()
+        await self.stations.start()
+        await self.web.start()
+        self.audit("gateway_start", boat=self.cfg.get("boat"))
         tasks = [asyncio.create_task(self.aurix.run()), asyncio.create_task(self.status_loop())]
         tasks += self.extra_tasks()
         try:
@@ -95,6 +109,8 @@ class Gateway:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await self.stations.stop()
+            await self.web.stop()
             self.logs.close()
 
     def extra_tasks(self):
@@ -116,6 +132,8 @@ def main():
     extra = {}
     if a.sim:
         extra = {"aurix": "tcp:127.0.0.1:5762", "set_clock": False,
+                 "stations": {"listen": "127.0.0.1", "local_nets": ["127.0.0.1/32"]},
+                 "audit_fallback": os.path.abspath("gw_data/audit_fallback"),
                  "storage": {"root": os.path.abspath("gw_data"), "require_mount": False}}
         os.makedirs("gw_data", exist_ok=True)
     cfg = load_config(a.config, extra)

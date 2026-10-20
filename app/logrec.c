@@ -82,12 +82,13 @@ static const char k_events[] =
     "13:CONFIRM:kind,result,count,-;"
     "14:MONITOR:reason,throttle*10,limit*10,-;"
     "15:LOG:what,a,b,c;"
-    "16:TIME:date,time_of_day_ms,t_ms,-;";
+    "16:TIME:date,time_of_day_ms,t_ms,-;"
+    "17:HELM:station,action(0 take 1 release 2 lost 3 auto 4 gw lost),refused,holder;";
 
 static const char k_alarms[] =
     "1:COMPASS,2:GPS_LOST,4:GPS_SUSPECT,8:DR_LIMIT,16:ARRIVAL_UNCERTAIN,32:ARRIVED,64:GEAR,128:TRAINING,"
     "256:JOY_FAULT,512:JOY_NOT_CENTERED,1024:JOYSTICK,2048:PC_LINK,4096:NOT_ARMED,8192:MONITOR,"
-    "16384:OVERRUN,32768:LOG_FAILURE";
+    "16384:OVERRUN,32768:LOG_FAILURE,65536:GATEWAY_LOST,131072:GATEWAY_STORAGE,262144:REMOTE_LINK_LOST";
 
 uint16_t logrec_header_text(char *out, uint16_t max, uint32_t boot, uint32_t file_no)
 {
