@@ -566,6 +566,31 @@ D. REMOTE JOYSTICK DRIVING FROM A SHORE PC (mode REMOTE MANUAL)
   stick move on shore -> visible in the boat's telemetry: median ~185 ms,
   max ~230 ms; 60 s of driving without a single LINK LOST.
 
+E. CAMERAS (4 x TP-Link Tapo C310)
+  FRONT-1 (main), FRONT-2 (backup), REAR-LEFT, REAR-RIGHT. Cable (Ethernet),
+  on their own camera network behind the Pi; they have NO internet (the
+  cloud is not used). The Pi relays the video (MediaMTX, no re-encoding).
+  Video is never needed for safety: a camera problem never changes the mode.
+
+  Ground station, Cameras tab (the big driver screen comes in part I):
+    Full          front HIGH, mirrors LOW
+    Front only    front LOW, mirrors off
+    Mirrors only  rear cameras LOW
+    All off       no video (no data used)
+  Only what you asked for is sent over the internet. On STARLINK (or with
+  data saver) only the front camera LOW is allowed - "override" works with
+  data saver on 4G, never on STARLINK. Per camera: state (OK / FROZEN /
+  DOWN), bitrate in and out, total.
+  FRONT-1 frozen or gone (no new picture for 1 s) -> the front view switches
+  to FRONT-2 by itself ("FRONT-1 LOST - showing FRONT-2"), and back when
+  FRONT-1 has worked again for 2 s. A frozen picture always shows
+  VIDEO FROZEN within 1 s. Remote driving warns if no front camera is live.
+  Measured in the simulation: about 135 ms on the boat LAN, ~190 ms over 4G
+  (plus the camera's own delay, about 0.3-1 s for a Tapo - not measured).
+  Camera setup, firmware updates (the "Camera internet 30 min" button,
+  only from a station on board), wiring: gateway\README.md section 14,
+  WIRING.md section 8.
+
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
@@ -711,6 +736,18 @@ The ground station saves its own copy of the telemetry in the same format
   [ ] UART cable AURIX <-> Pi: 3 wires (TX, RX, GND), shielded, < 1 m,
       2 x 100 Ohm resistors.
   [ ] IP65 box with cable glands for the Pi + SSD, ventilated / heat sink.
+
+  CAMERAS (you have: RUT901 router, TSW101 PoE switch)
+  [ ] 4 x TP-Link Tapo C310 (FRONT-1, FRONT-2, REAR-LEFT, REAR-RIGHT).
+  [ ] 3 x 802.3af PoE splitter with 9 V output (for FRONT-1 and the two rear
+      cameras; check the C310 plug size).
+  [ ] 1 x 12 V -> 9 V DC-DC converter >= 1 A (FRONT-2, its own power).
+  [ ] Fuses + holders: 5 A (TSW101), 2 A (FRONT-2 converter).
+  [ ] USB 3 Gigabit Ethernet adapter for the Pi (camera network eth1).
+  [ ] Outdoor / UV-resistant Cat6 cable, IP68 cable glands, waterproof RJ45
+      couplers or self-amalgamating tape, a closed box for splitters.
+  [ ] 4 x high-endurance microSD 64-128 GB (the cameras' own loop recording).
+  [ ] Microfibre cloths (lens care).
 
   USB JOYSTICK (instead of, or as well as, the analog joystick)
   [ ] Thrustmaster T.16000M FCS HOTAS (stick + TWCS throttle). NOT
@@ -892,6 +929,9 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
   Channel switched back by itself you did not press KEEP within 60 s.
   STARLINK banner                all 4G / RF channels are down (AUTO), or you
                                  chose it; it costs data - go back to AUTO.
+  Camera DOWN / FROZEN           its power (PoE port / fuse), cable, or the
+                                 Pi's eth1 adapter; FRONT-2 takes over for
+                                 the front view.
   JOYSTICK FAULT: no frames      bridge not powered / TX wire / Teensy not
                                  running. Check the 5 V and the GND wire.
   JOYSTICK FAULT: STICK (or      plug, hub power. Is the hub powered by

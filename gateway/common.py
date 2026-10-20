@@ -51,6 +51,15 @@ DEFAULTS = {
         "trial_s": 60.0,                # a switch must be confirmed (Keep) within this
         "list": None,                   # None = channels.DEFAULT_CHANNELS (4G, 4G SIM 2, RF, STARLINK)
     },
+    "cameras": {
+        "enabled": True,
+        "list": None,                   # None = cameras.DEFAULT_CAMERAS (FRONT-1, FRONT-2, REAR-LEFT, REAR-RIGHT)
+        "mediamtx_bin": None,           # None = "mediamtx" on the PATH or /usr/local/bin/mediamtx
+        "mediamtx_conf": "/var/lib/trygons/mediamtx.yml",
+        "api_port": 9997, "rtsp_port": 8554, "webrtc_port": 8889, "webrtc_udp_port": 8189,
+        "frozen_s": 1.0,                # no new frames this long = FROZEN
+        "internet_cmd": None,           # e.g. ["sudo", ".../gateway/tools/camera_internet.sh"]
+    },
     "audit_fallback": "/var/lib/trygons/audit",   # when the SSD is missing
     "web_port": 8080,                   # the iPhone page (VPN only)
     "web_helm": False,                  # HELM from the web page: OFF unless you switch it on

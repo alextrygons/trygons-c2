@@ -67,6 +67,7 @@ class Station:
         self.writer = writer
         self.session = secrets.token_hex(8)
         self.udp_key = secrets.token_bytes(16)     # authenticates its UDP joystick packets
+        self.video_key = secrets.token_hex(12)     # its password for the video relay (MediaMTX)
         self.last_seq = None
         self.rtt_ms = None
         self.offsets = collections.deque(maxlen=15)
@@ -74,6 +75,8 @@ class Station:
         self.last_pong = time.time()
         self.tokens = 0.0
         self.refill = time.time()
+        self.rtokens = 60.0                 # read-only requests (parameter / program reads): their own allowance
+        self.rrefill = time.time()
         self.tmode_pref = "auto"
         self.tmode = "full"
         self.tmode_why = ""
@@ -336,11 +339,18 @@ class StationServer:
         if age < -1.0:
             return self.refuse(st, seq, ftype, 104)
         now = time.time()
-        st.tokens = min(self.burst, st.tokens + (now - st.refill) * self.rate)
-        st.refill = now
-        if st.tokens < 1.0:
-            return self.refuse(st, seq, ftype, 105)
-        st.tokens -= 1.0
+        if ftype in READ_ONLY:                      # reads change nothing: 30 / s, bursts of 60
+            st.rtokens = min(60.0, st.rtokens + (now - st.rrefill) * 30.0)
+            st.rrefill = now
+            if st.rtokens < 1.0:
+                return self.refuse(st, seq, ftype, 105)
+            st.rtokens -= 1.0
+        else:
+            st.tokens = min(self.burst, st.tokens + (now - st.refill) * self.rate)
+            st.refill = now
+            if st.tokens < 1.0:
+                return self.refuse(st, seq, ftype, 105)
+            st.tokens -= 1.0
         st.last_seq = seq
         if not self.gw.aurix.connected or len(payload) > 194:
             return self.refuse(st, seq, ftype, 106 if not self.gw.aurix.connected else 108)

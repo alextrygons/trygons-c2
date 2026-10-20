@@ -319,3 +319,43 @@ The Pi is the only device on the network; the AURIX talks to it over a UART
   3 s and shows **GATEWAY LOST**. There is no mode change (unless remote
   driving was active). The USB laptop, joystick and STANDBY button are
   unaffected.
+
+## 8. Cameras (4 x Tapo C310) and the camera switch (Teltonika TSW101)
+
+The Tapo C310 runs on **9 V DC, 0.6 A** (its adapter says "9.0V ⎓ 0.6A";
+check the label of yours and the plug size before buying splitters). No
+camera is ever needed for a safety function.
+
+| Camera | Power | Network |
+|--------|-------|---------|
+| FRONT-1 (main) | TSW101 PoE+ port 1 → 802.3af PoE splitter **9 V** at the camera | TSW101 → Pi eth1 (camera network) |
+| REAR-LEFT | TSW101 PoE+ port 2 → PoE splitter 9 V | TSW101 → Pi eth1 |
+| REAR-RIGHT | TSW101 PoE+ port 3 → PoE splitter 9 V | TSW101 → Pi eth1 |
+| FRONT-2 (backup) | its **own** 12 V → 9 V DC-DC converter (≥ 1 A) with its **own 2 A fuse**, separate cable run | its own cable to RUT901 LAN3 (network cam2) |
+
+* **TSW101:** 9-30 V DC terminal block, from 12 V through a **5 A fuse**.
+  * PoE+ ports give up to 30 W each, 60 W in total; four cameras need
+    about 4 × 5.4 W.
+  * Each PoE port is current-limited: a short on one camera cable doesn't
+    take the others down.
+  * TSW101 port 5 (no PoE) → the Pi's USB 3 Gigabit Ethernet adapter (eth1).
+* **FRONT-1 and FRONT-2 never share anything:** separate cables, separate
+  power (PoE port vs. own converter + fuse), separate switch port / router
+  port, separate cable entries. One failure can take out only one of them.
+* If you prefer DC-DC converters for all cameras (no PoE): one 12 V → 9 V
+  converter per camera, each with its own 2 A fuse, and plain Ethernet into
+  the TSW101.
+* Cable entries: IP68 cable glands, glands facing down, drip loops. Seal
+  the RJ45 plugs at the cameras with waterproof RJ45 couplers or
+  self-amalgamating tape. The PoE splitters and DC-DC converters go inside
+  a closed box, not on deck.
+* Outdoor cable: Cat6 outdoor / UV-resistant, at least 20 cm away from VHF
+  and engine cables, never across the compass (> 50 cm).
+* Mount FRONT-1 and FRONT-2 a little apart (spray / one dirty lens doesn't
+  blind both).
+* **Lens care against salt:**
+  * rinse with fresh water and wipe with a soft microfibre cloth after
+    every trip;
+  * never wipe dry salt (scratches);
+  * a little hydrophobic glass coating helps;
+  * check the seals every season.

@@ -22,6 +22,7 @@ import time
 
 from common import Clock, load_config, log, proto, setup_logging
 from audit import Audit
+from cameras import CameraManager
 from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAULT_CHANNELS
 from aurix import AurixLink
 from logstore import LogStore
@@ -68,6 +69,10 @@ class Gateway:
             state = os.path.join(self.storage.folder("state"), "channels.json")
         self.net = ChannelManager(cc, drv, audit=self.audit, state_path=state)
         self.next_net = 0.0
+        self.cams = CameraManager(cfg["cameras"], self)
+        self.stations.ext["cams"] = self.cams.request
+        self.stations.ext["cam_internet"] = self._cam_internet
+        self._saver_was = False
         self.stations.ext["channel"] = self._channel_msg
         self.stations.ext["channel_keep"] = self._channel_keep
 
@@ -104,6 +109,28 @@ class Gateway:
 
     def data_saver(self):
         return self.net.data_saver()
+
+    def _cam_internet(self, st, m):
+        """Camera internet for a firmware update: only from a station on the boat."""
+        if not st.local or st.role == "VIEWER":
+            return st.send({"t": "cams_ack", "ok": False, "text": "camera internet only from a station on the boat"})
+        minutes = max(0.0, min(120.0, float(m.get("minutes", 30))))
+        self.cams.internet(bool(m.get("on")), minutes)
+        st.send({"t": "cams_ack", "ok": True, "text": "camera internet %s" % (
+            "ON for %g min (then it closes by itself)" % minutes if m.get("on") else "OFF")})
+
+    async def camera_loop(self):
+        loop = asyncio.get_running_loop()
+        while True:
+            await loop.run_in_executor(None, self.cams.poll)
+            saver = self.data_saver()
+            if saver != self._saver_was:            # data saver on / off: new stream lists
+                self._saver_was = saver
+                self.cams.kick_disallowed()
+                for st in list(self.stations.stations.values()):
+                    if st.id in self.cams.station_cams:
+                        st.send(self.cams.streams_msg(st))
+            await asyncio.sleep(0.25)
 
     def channel_text(self):
         n = self.net
@@ -151,14 +178,18 @@ class Gateway:
                 "storage": self.storage.status(), "logs": self.logs.status(),
                 "clock": {"gps_valid": self.clock.gps_valid, "offset_s": round(self.clock.offset, 3),
                           "utc": self.clock.stamp()},
-                "net": self.net.info()}
+                "net": self.net.info(), "cameras": self.cams.status()}
 
     async def run(self):
         self._stop = asyncio.Event()
         await self.stations.start()
         await self.web.start()
+        if self.cfg["cameras"].get("enabled", True):
+            self.cams.start("http://127.0.0.1:%d/mtxauth" % self.cfg.get("web_port", 8080))
         self.audit("gateway_start", boat=self.cfg.get("boat"))
         tasks = [asyncio.create_task(self.aurix.run()), asyncio.create_task(self.status_loop())]
+        if self.cfg["cameras"].get("enabled", True):
+            tasks.append(asyncio.create_task(self.camera_loop()))
         tasks += self.extra_tasks()
         try:
             await self._stop.wait()
@@ -168,6 +199,7 @@ class Gateway:
             await asyncio.gather(*tasks, return_exceptions=True)
             await self.stations.stop()
             await self.web.stop()
+            self.cams.stop()
             self.logs.close()
 
     def extra_tasks(self):
@@ -190,7 +222,7 @@ def main():
     if a.sim:
         extra = {"aurix": "tcp:127.0.0.1:5762", "set_clock": False,
                  "stations": {"listen": "127.0.0.1", "local_nets": ["127.0.0.1/32"]},
-                 "channels": {"driver": "sim"},
+                 "channels": {"driver": "sim"}, "cameras": {"enabled": False},
                  "audit_fallback": os.path.abspath("gw_data/audit_fallback"),
                  "storage": {"root": os.path.abspath("gw_data"), "require_mount": False}}
         os.makedirs("gw_data", exist_ok=True)

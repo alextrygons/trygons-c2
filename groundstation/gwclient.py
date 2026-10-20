@@ -122,6 +122,14 @@ class GatewayLink:
             self.logger.write("tx", proto.Frame(ftype, self.seq, bytes(payload)))
         return self.seq
 
+    def video_url(self, ack, cam):
+        """RTSP address of a camera stream from a cams_ack answer (None if OFF)."""
+        path = (ack or {}).get("streams", {}).get(cam)
+        if not path:
+            return None
+        return "rtsp://%s:%s@%s:%d/%s?%s" % (ack["user"], ack["password"], self.host, ack["rtsp_port"], path,
+                                             ack["query"])
+
     def send_msg(self, obj):
         """Gateway-only messages (channel, cameras, save, ...)."""
         self._send_obj(obj)

@@ -14,3 +14,5 @@ sim/sdcard/
 sim/sim_outboard.csv
 sim/sim_output.csv
 sim/gwtest_sd/
+gateway/*.key
+gateway/*.crt

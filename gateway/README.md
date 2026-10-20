@@ -309,6 +309,99 @@ switch (cameras, see section 14), LAN3 = spare (a laptop on board).
 Crew / guest devices: the router's Wi-Fi on its own guest network, never
 on the control network (section 12).
 
+## 14. Cameras: 4 x Tapo C310, camera network, video relay
+
+### The camera network (cameras never reach the internet)
+
+Your switch, the **TSW101**, is **unmanaged** (no VLANs). So the cameras get
+their own *physical* network:
+
+```
+ TSW101 (12 V in, 4 x PoE+)                       Raspberry Pi 5
+  port 1 PoE --> FRONT-1     (PoE splitter 9 V)     eth1 = USB 3 Gigabit adapter  10.43.0.1
+  port 2 PoE --> REAR-LEFT   (PoE splitter 9 V)       |  DHCP + time server for the cameras,
+  port 3 PoE --> REAR-RIGHT  (PoE splitter 9 V)       |  NOTHING is forwarded (no internet)
+  port 5     ------------------------------------------+
+                                                    eth0 -> RUT901 LAN1 (boat LAN 10.42.0.x)
+ FRONT-2 (backup, its own path):
+  own 12 V -> 9 V converter + own fuse, cable to RUT901 LAN3 = network "cam2" 10.43.1.x,
+  router firewall: cam2 may NOT go to the internet; the Pi may reach it.
+```
+
+Why FRONT-2 is separate: if the TSW101, its power or the Pi's USB adapter
+fails, FRONT-2 still works (redundancy). The gateway switches to it by itself.
+
+**On the Pi (camera network on eth1):**
+```
+sudo nmcli con add type ethernet ifname eth1 con-name camnet ipv4.method manual ipv4.addresses 10.43.0.1/24 ipv6.method disabled
+sudo apt install -y dnsmasq chrony
+sudo tee /etc/dnsmasq.d/camnet.conf <<'EOT'
+interface=eth1
+bind-interfaces
+dhcp-range=10.43.0.100,10.43.0.150,12h
+dhcp-option=3                  # no default gateway: the cameras can't route anywhere
+dhcp-option=6                  # no DNS
+dhcp-option=42,10.43.0.1       # time from the Pi
+# fixed addresses (MAC from the camera's label / the Tapo app):
+dhcp-host=AA:BB:CC:DD:EE:01,10.43.0.11,front1
+dhcp-host=AA:BB:CC:DD:EE:03,10.43.0.13,rearleft
+dhcp-host=AA:BB:CC:DD:EE:04,10.43.0.14,rearright
+EOT
+echo "allow 10.43.0.0/16" | sudo tee /etc/chrony/conf.d/cameras.conf
+sudo systemctl restart dnsmasq chrony
+```
+The Pi's firewall (section 8) never forwards eth1, so the cameras have no
+internet. (The Pi's clock comes from GPS, so the cameras get GPS time too.)
+
+**On the RUT901 (FRONT-2):** Network → Interfaces → Add `cam2`, static
+`10.43.1.1/24`, bound to the LAN3 port (port-based VLAN: take LAN3 out of the
+LAN bridge). Network → LAN → static lease FRONT-2 → `10.43.1.12`.
+Network → Firewall → zone `cam2`: input accept, output accept, forward
+REJECT, and **no** forwarding to `wan`/mobile. Allow forwarding `lan → cam2`
+(the Pi reaches the camera). Add a route on the Pi:
+`sudo nmcli con mod "Wired connection 1" +ipv4.routes "10.43.1.0/24 10.42.0.1"`.
+
+### Each Tapo C310 (do this with the camera at home, on your Wi-Fi, once)
+
+1. Tapo app: add the camera, **update the firmware** now (later it has no
+   internet).
+2. Camera → Settings → **Advanced Settings → Camera Account**: make a user
+   name + password (this is the RTSP login, not your TP-Link account). Put it
+   into `/etc/trygons/secrets.json`:
+   `"cameras": {"FRONT-1": {"user": "...", "password": "..."}, ...}`
+3. Settings → Video quality: main stream 1080p (or 3MP), sub stream 360p.
+   Frame rate 15 fps is fine. Turn the camera's audio off (not needed).
+4. Insert a **microSD card** (high-endurance, 64-128 GB) and turn on
+   **continuous recording / loop recording** in the app: an independent
+   backup if the Pi fails.
+5. Change the TP-Link account password to a strong one; turn off "remote
+   access / cloud" features you don't need.
+6. Use the camera with the **Ethernet cable** on the boat (not Wi-Fi).
+7. Test the stream on a PC: `ffplay rtsp://USER:PASS@IP:554/stream2`.
+
+**Firmware update later:** ground station (on board) → Cameras → "Camera
+internet 30 min": the Pi lets the cameras out for 30 minutes, then closes it
+by itself. Update in the Tapo app, then press "Camera internet OFF".
+(FRONT-2 on the router: allow its zone to `wan` for the update, then remove
+it again.)
+
+### The video relay (MediaMTX) on the Pi
+
+```
+cd /tmp && wget https://github.com/bluenviron/mediamtx/releases/download/v1.21.2/mediamtx_v1.21.2_linux_arm64.tar.gz
+tar xzf mediamtx_v1.21.2_linux_arm64.tar.gz && sudo mv mediamtx /usr/local/bin/
+```
+The gateway writes its configuration (`/var/lib/trygons/mediamtx.yml`) and
+starts / restarts it itself. Why MediaMTX:
+* one program, ARM64;
+* RTSP in from the cameras, RTSP / WebRTC (iPhone) out;
+* **no transcoding** (low CPU, lowest delay);
+* streams pulled only when someone watches (an OFF stream costs nothing);
+* a local API for health and bitrates.
+
+Every viewer is checked by the gateway: a station only gets the streams its
+camera preset allows; on STARLINK / data saver only the front camera, LOW.
+
 ## 15. The shore PC (ground station, remote driving)
 
 1. Install the ground station like on the boat laptop (MANUAL.txt chapter 3)

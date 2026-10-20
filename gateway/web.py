@@ -132,6 +132,11 @@ class WebServer:
             n = int(headers.get("content-length", "0") or 0)
             if 0 < n < 10000:
                 body = await reader.readexactly(n)
+            if method == "POST" and path == "/mtxauth":
+                # the video relay asks: only from the Pi itself
+                ok = ip in ("127.0.0.1", "::1") and hasattr(self.gw, "cams") and self.gw.cams.auth(json.loads(body or b"{}"))
+                await self._send(writer, 200 if ok else 401, b"", "text/plain")
+                return
             user, role = self._auth(headers, ip)
             if role is None:
                 await self._send(writer, 401, b"login needed", "text/plain",

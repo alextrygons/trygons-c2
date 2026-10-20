@@ -22,6 +22,7 @@ import proto
 from link import Link, list_ports
 from gwclient import GatewayLink
 import shorejoy
+import video
 from tkinter import messagebox, simpledialog
 
 try:
@@ -298,6 +299,84 @@ class App:
             font=F_TXT).pack(fill="x")
         btn(jb, "Calibrate finish", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(1), "calibration finish"),
             font=F_TXT).pack(fill="x")
+
+    def _build_cameras(self, ct):
+        """Camera presets, health / bitrate, front preview (FRONT-1, automatic FRONT-2)."""
+        self.cam_ack = None
+        self.vstreams = {}
+        self.front_sel = video.FrontSelector()
+        self.cam_photo = None
+        top = tk.Frame(ct, bg=BG)
+        top.pack(fill="x", pady=4)
+        for pr in ("Full", "Front only", "Mirrors only", "All off"):
+            btn(top, pr, lambda pr=pr: self.cam_preset(pr), font=F_TXT).pack(side="left", padx=2)
+        self.cam_override = tk.BooleanVar(value=False)
+        tk.Checkbutton(top, text="override data saver (not on STARLINK)", variable=self.cam_override, font=F_TXT,
+                       bg=BG).pack(side="left", padx=8)
+        btn(top, "Camera internet 30 min (firmware)", lambda: self.cam_internet(True), font=F_TXT).pack(side="left")
+        btn(top, "Camera internet OFF", lambda: self.cam_internet(False), font=F_TXT).pack(side="left", padx=2)
+        mid = tk.Frame(ct, bg=BG)
+        mid.pack(fill="both", expand=True)
+        self.cam_cv = tk.Canvas(mid, width=640, height=360, bg="#202020", highlightthickness=0)
+        self.cam_cv.pack(side="top", anchor="w", padx=4, pady=4)
+        self.cam_lbl = tk.Label(mid, text="(cameras: connect through the gateway)", font=("Consolas", 12), bg=BG,
+                                justify="left", anchor="nw")
+        self.cam_lbl.pack(side="top", fill="x", padx=6)
+        self.root.after(100, self.cam_tick)
+
+    def cam_preset(self, preset):
+        if not isinstance(self.link, GatewayLink):
+            return self.say("Cameras: only through the gateway", RED)
+        self.link.send_msg({"t": "cams", "preset": preset, "override": self.cam_override.get()})
+
+    def cam_internet(self, on):
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "cam_internet", "on": on, "minutes": 30})
+
+    def on_cams_ack(self, d):
+        if "streams" not in d:
+            self.say("cameras: %s" % d.get("text", ""), GREEN if d.get("ok") else RED)
+            return
+        self.cam_ack = d
+        for name in list(self.vstreams):
+            self.vstreams.pop(name).stop()
+        for name in ("FRONT-1", "FRONT-2"):
+            url = self.link.video_url(d, name)
+            if url:
+                self.vstreams[name] = video.VideoStream(url, 640, 360, name).start()
+        if d.get("notice"):
+            self.say(d["notice"], ORANGE)
+
+    def cam_tick(self):
+        """10 times a second: the front picture (or VIDEO FROZEN)."""
+        f1, f2 = self.vstreams.get("FRONT-1"), self.vstreams.get("FRONT-2")
+        c = self.cam_cv
+        if f1 or f2:
+            use = self.front_sel.update(f1, f2)
+            vs = self.vstreams.get(use)
+            c.delete("all")
+            data = vs.ppm() if vs else None
+            if data:
+                self.cam_photo = tk.PhotoImage(data=data, format="ppm")
+                c.create_image(0, 0, image=self.cam_photo, anchor="nw")
+            c.create_text(8, 8, text=use, anchor="nw", fill="#ffffff", font=F_MED)
+            if self.front_sel.notice:
+                c.create_text(320, 340, text=self.front_sel.notice, fill="#ffd000", font=F_MED)
+            if vs is None or vs.frozen():
+                c.create_rectangle(120, 140, 520, 220, fill="#d00000", outline="")
+                c.create_text(320, 180, text="VIDEO FROZEN", fill="#ffffff", font=F_HUGE)
+        g = (self.gw_status or {}).get("cameras")
+        if g:
+            lines = ["relay %s   total to stations %d kbit/s%s%s" % (
+                "OK" if g["relay"] else "DOWN", g["total_kbps"], "   DATA SAVER (front LOW)" if g["forced_low"] else "",
+                "   CAMERA INTERNET OPEN" if g["internet"] else ""), ""]
+            mine = (self.cam_ack or {}).get("levels", {})
+            for cam in g["cameras"]:
+                lines.append("%-11s %-7s %4d s  in %5d kbit/s  out HIGH %4d LOW %4d   you: %s" % (
+                    cam["name"], cam["state"], cam["for_s"], cam["kbps_in"], cam["kbps_out"]["HIGH"],
+                    cam["kbps_out"]["LOW"], mine.get(cam["name"], "-")))
+            self.cam_lbl.configure(text="\n".join(lines))
+        self.root.after(100, self.cam_tick)
 
     def _build_remote(self, rt):
         """REMOTE MANUAL from this (shore) PC: its USB joystick, request / release."""
@@ -604,6 +683,10 @@ class App:
         nb.add(jt, text="Joystick")
         self.joytab = jt
         self._build_joytab(jt)
+
+        ct = tk.Frame(nb, bg=BG)
+        nb.add(ct, text="Cameras")
+        self._build_cameras(ct)
 
         rt = tk.Frame(nb, bg=BG)
         nb.add(rt, text="Remote")
@@ -963,6 +1046,8 @@ class App:
                     self.draw_network()
                 elif kind == "channel_ack":
                     self.on_channel_ack(d)
+                elif kind == "cams_ack":
+                    self.on_cams_ack(d)
                 elif kind == "status":
                     self.say(d, RED if "DISCONNECTED" in d else "#202020")
                     self.event(d)

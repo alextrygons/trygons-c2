@@ -120,6 +120,7 @@ class GwRunner:
 def gw_cfg(sim, root, **extra):
     base = {"aurix": sim.gw_addr, "set_clock": False, "status_s": 1.0 / sim.speed,   # 1 Hz boat time
             "channels": {"driver": "sim", "starlink_status": False},
+            "cameras": {"enabled": False},
             "storage": {"root": root, "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                         "full_free_gb": 0.0}}
     from common import deep_merge
@@ -1005,7 +1006,248 @@ def section_d():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-SECTIONS = {"A": section_a, "B": section_b, "C": section_c, "D": section_d}
+# ------------------------------------------------------------------- section E --
+
+from simcam import SimCamera, decode_ts, latency_ms  # noqa: E402
+from video import VideoStream, FrontSelector  # noqa: E402
+
+MTX_BIN = os.environ.get("MEDIAMTX_BIN") or shutil.which("mediamtx") or os.path.join(
+    tempfile.gettempdir(), "claude", "c--trygons-TRYGONS-C2", "800448bc-0615-4bb2-9260-80ce21ee6535",
+    "scratchpad", "mediamtx", "mediamtx.exe")
+CAM_NAMES = ["FRONT-1", "FRONT-2", "REAR-LEFT", "REAR-RIGHT"]
+CAM_ROLES = ["front_main", "front_backup", "rear_left", "rear_right"]
+
+
+class CamRig:
+    """Simulator + gateway with MediaMTX + 4 simulated cameras."""
+
+    def __init__(self, tmp, speed=1.0, **extra):
+        self.sim = Sim(speed)
+        self.rtsp, api, web, wu = free_port(), free_port(), free_port(), free_port()
+        cams = [{"name": n, "role": r, "url_main": "rtsp://127.0.0.1:%d/simcam_%d" % (self.rtsp, i),
+                 "url_sub": "rtsp://127.0.0.1:%d/simcam_%d" % (self.rtsp, i)}
+                for i, (n, r) in enumerate(zip(CAM_NAMES, CAM_ROLES))]
+        from common import deep_merge
+        ccfg = {"enabled": True, "list": cams, "mediamtx_bin": MTX_BIN, "mediamtx_conf": os.path.join(tmp, "mtx.yml"),
+                "rtsp_port": self.rtsp, "api_port": api, "webrtc_port": web, "webrtc_udp_port": wu,
+                "extra_paths": ["simcam_%d" % i for i in range(4)], "mediamtx_log": os.path.join(tmp, "mtx.log"),
+                "log_level": "info"}
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root, exist_ok=True)
+        self.cfg = gw_cfg_b(self.sim, root, **deep_merge({"cameras": ccfg, "channels": {"driver": "sim", "check_s": 0.2,
+                                                                                         "stable_s": 1.0,
+                                                                                         "starlink_status": False}},
+                                                         extra))
+        self.gw = GwRunner(self.cfg)
+        time.sleep(1.0)
+        self.cams = [SimCamera("rtsp://127.0.0.1:%d/simcam_%d" % (self.rtsp, i)).start() for i in range(4)]
+        self.g = self.gw.gw
+        wait_for(lambda: all(c.state == "OK" for c in self.g.cams.cams.values()), 20)
+
+    def ask(self, client, **msg):
+        """Camera request -> the cams_ack answer (older, pushed answers are dropped first)."""
+        while True:
+            try:
+                client.l.events.get_nowait()
+            except Exception:
+                break
+        client.l.send_msg(dict({"t": "cams"}, **msg))
+        return self.wait_ack(client)
+
+    @staticmethod
+    def wait_ack(client, timeout=3.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                k, d = client.l.events.get(timeout=0.1)
+            except Exception:
+                continue
+            if k == "cams_ack":
+                return d
+        return None
+
+    def url(self, ack, name, port=None, path=None):
+        return "rtsp://%s:%s@127.0.0.1:%d/%s?%s" % (ack["user"], ack["password"], port or self.rtsp,
+                                                    path or ack["streams"][name], ack["query"])
+
+    def stop(self):
+        for c in self.cams:
+            c.stop()
+        self.gw.stop()
+        self.sim.stop()
+
+
+def section_e():
+    print("\n=== Section E: cameras (4 x Tapo C310, simulated) ===", flush=True)
+    if not os.path.exists(MTX_BIN):
+        report("E0 MediaMTX available for the camera tests", False, "not found: %s (set MEDIAMTX_BIN)" % MTX_BIN)
+        return
+    tmp = tempfile.mkdtemp(prefix="gwtest_e_")
+    rig = None
+    try:
+        rig = CamRig(tmp)
+        g = rig.g
+        states = {c.name: c.state for c in g.cams.cams.values()}
+        alice = Client(rig.cfg["stations"]["port"], "alice", PW["alice"])
+
+        # E1 presets -> the streams a station gets; anything else is refused by the relay
+        got = {}
+        for pr in ("Full", "Front only", "Mirrors only", "All off"):
+            a = rig.ask(alice, preset=pr)
+            got[pr] = a["streams"] if a else None
+        a = rig.ask(alice, preset="Front only")
+        ok_vs = VideoStream(rig.url(a, "FRONT-1"), 320, 240).start()
+        bad_vs = VideoStream(rig.url(a, "REAR-LEFT", path="cam_rearleft_hi"), 320, 240).start()
+        time.sleep(4)
+        report("E1 camera presets: each station gets only its streams; other streams are refused by the relay",
+               all(s == "OK" for s in states.values()) and got["Full"] == {
+                   "FRONT-1": "cam_front1_hi", "FRONT-2": "cam_front2_hi", "REAR-LEFT": "cam_rearleft_lo",
+                   "REAR-RIGHT": "cam_rearright_lo"} and set(got["Front only"]) == {"FRONT-1", "FRONT-2"} and
+               set(got["Mirrors only"]) == {"REAR-LEFT", "REAR-RIGHT"} and got["All off"] == {} and
+               ok_vs.frames >= 10 and bad_vs.frames == 0,
+               "cameras %s; Full %s; Front only %s; Mirrors only %s; All off %s; allowed stream %d frames, "
+               "not allowed: %d frames (%s)" % (states, got["Full"], got["Front only"], got["Mirrors only"],
+                                                 got["All off"], ok_vs.frames, bad_vs.frames, bad_vs.error[:40]))
+        bad_vs.stop()
+
+        # E2 OFF streams use no uplink; per-stream and total bitrate shown
+        time.sleep(2)
+        st = g.cams.status()
+        out = {c["name"]: c["kbps_out"] for c in st["cameras"]}
+        report("E2 streams that are OFF use no uplink; per-stream and total video bitrate shown",
+               out["FRONT-1"]["LOW"] > 10 and out["REAR-LEFT"] == {"HIGH": 0, "LOW": 0} and
+               out["REAR-RIGHT"] == {"HIGH": 0, "LOW": 0} and st["total_kbps"] == out["FRONT-1"]["LOW"],
+               "kbit/s to the stations per camera %s, total %d; station %s" % (out, st["total_kbps"],
+                                                                                st["station_kbps"]))
+        ok_vs.stop()
+
+        # E3 FRONT-1 frozen -> FRONT-2 within 1 s, VIDEO FROZEN, back when FRONT-1 is good; camera failure: no mode change
+        a = rig.ask(alice, preset="Front only")
+        f1 = VideoStream(rig.url(a, "FRONT-1"), 320, 240).start()
+        f2 = VideoStream(rig.url(a, "FRONT-2"), 320, 240).start()
+        sel = FrontSelector()
+        link, w = rig.sim.station()
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK))
+        w.until(lambda d: d["mode"] == proto.MODE_HDG_LOCK, 3)
+        wait_for(lambda: f1.frames > 10 and f2.frames > 10, 8)
+        sel.update(f1, f2)
+        t0 = time.time()
+        rig.cams[0].freeze(True)
+        switched = frozen_seen = None
+        while time.time() - t0 < 4:
+            if sel.update(f1, f2) == "FRONT-2" and switched is None:
+                switched = time.time() - t0
+            if f1.frozen() and frozen_seen is None:
+                frozen_seen = time.time() - t0
+            time.sleep(0.02)
+        gw_state = g.cams.cams["FRONT-1"].state
+        rig.cams[0].freeze(False)
+        t1 = time.time()
+        back = None
+        while time.time() - t1 < 8:
+            if sel.update(f1, f2) == "FRONT-1":
+                back = time.time() - t1
+                break
+            time.sleep(0.05)
+        # unplugged
+        rig.cams[0].unplug()
+        t2 = time.time()
+        sw2 = None
+        while time.time() - t2 < 4:
+            if sel.update(f1, f2) == "FRONT-2":
+                sw2 = time.time() - t2
+                break
+            time.sleep(0.02)
+        mode_ok = w.until(lambda d: True, 1) and w.telem["mode"] == proto.MODE_HDG_LOCK
+        report("E3 FRONT-1 frozen / unplugged -> FRONT-2 shown within 1 s, VIDEO FROZEN, back to FRONT-1; "
+               "camera failure never changes the mode",
+               switched is not None and switched <= 1.2 and frozen_seen is not None and frozen_seen <= 1.2 and
+               gw_state == "FROZEN" and back is not None and sw2 is not None and sw2 <= 1.2 and mode_ok,
+               "frozen: VIDEO FROZEN after %.2f s, FRONT-2 after %.2f s (gateway: %s); unfrozen: FRONT-1 again after "
+               "%.1f s; unplugged: FRONT-2 after %.2f s; boat mode still %s" % (
+                   frozen_seen or -1, switched or -1, gw_state, back or -1, sw2 or -1, w.telem["mode_name"]))
+        f1.stop()
+        f2.stop()
+        rig.cams[0] = SimCamera("rtsp://127.0.0.1:%d/simcam_0" % rig.rtsp).start()
+
+        # E4 data saver / STARLINK: front only LOW, no override on STARLINK; HIGH readers closed
+        a = rig.ask(alice, preset="Full")
+        hi = VideoStream(rig.url(a, "FRONT-1"), 320, 240).start()
+        wait_for(lambda: hi.frames > 10, 8)
+        drv = g.net.driver
+        for n in ("4G", "4G2", "RF"):
+            drv.state[n]["internet"] = False
+        push = rig.wait_ack(alice, 5)                       # the gateway sends the new list by itself
+        n0 = hi.frames
+        time.sleep(3)
+        hi_stopped = hi.frames - n0 < 5
+        ov = rig.ask(alice, preset="Full", override=True)
+        for n in ("4G", "RF"):
+            drv.state[n]["internet"] = True
+        wait_for(lambda: not g.net.on_emergency, 8)
+        g.net.saver_manual = True                           # data saver by hand (not STARLINK)
+        ov2 = rig.ask(alice, preset="Full", override=True)
+        g.net.saver_manual = False
+        report("E4 STARLINK / data saver: front camera LOW only (override refused on STARLINK); HIGH streams closed",
+               push is not None and push["streams"] == {"FRONT-1": "cam_front1_lo", "FRONT-2": "cam_front2_lo"} and
+               "DATA SAVER" in push["notice"] and hi_stopped and ov["streams"] == push["streams"] and
+               ov2["streams"].get("FRONT-1") == "cam_front1_hi",
+               "on STARLINK: %s (%s); FRONT-1 HIGH reader closed %s; override on STARLINK: %s; "
+               "override with data saver on 4G: %s" % (push and push["streams"], push and push["notice"], hi_stopped,
+                                                       ov["streams"], ov2["streams"]))
+        hi.stop()
+
+        # E5 camera internet: blocked by default; only from a station on board; closes by itself
+        r_remote = rig.wait_ack(alice) if alice.l.send_msg({"t": "cam_internet", "on": True}) is None else None
+        boat = Client(rig.cfg["stations"]["port"], "bob", PW["bob"], local=True, name="bob on board")
+        blocked = not g.cams.internet_allowed()
+        boat.l.send_msg({"t": "cam_internet", "on": True, "minutes": 0.05})
+        r_boat = rig.wait_ack(boat)
+        on = g.cams.internet_allowed()
+        time.sleep(3.5)
+        off = not g.cams.internet_allowed()
+        report("E5 cameras have no internet; a station on board can open it briefly (firmware update), it closes "
+               "by itself", blocked and r_remote and not r_remote["ok"] and r_boat and r_boat["ok"] and on and off,
+               "default blocked %s; remote asks: %s; on board asks 3 s: %s -> open %s, after 3.5 s closed %s" % (
+                   blocked, r_remote and r_remote["text"], r_boat and r_boat["text"], on, off))
+        boat.close()
+
+        # E6 video latency: LAN and over the 4G link simulation
+        a = rig.ask(alice, preset="Front only")
+        res = {}
+        for label, prof in (("LAN", None), ("4G", "4g")):
+            port = None
+            net = None
+            if prof:
+                port = free_port()
+                net = NetSim(port, rig.rtsp, PROFILES[prof], seed=5).start()
+            lats = []
+            vs = VideoStream(rig.url(a, "FRONT-1", port=port), 320, 240)
+            vs.on_frame = lambda f, lats=lats: lats.append(latency_ms(decode_ts(f, 320, 240)))
+            vs.start()
+            time.sleep(10)
+            vs.stop()
+            if net:
+                net.stop()
+            good = sorted(x for x in lats if x is not None)
+            res[label] = (good[len(good) // 2], good[int(len(good) * 0.95)], len(good)) if good else (None, None, 0)
+            if not good:
+                print("E6 %s: no frames, decoder error: %s; url %s" % (label, vs.error, vs.url.split("@")[-1]))
+                print(open(os.path.join(tmp, "mtx.log")).read()[-1500:])
+        LATENCY["video"] = res
+        report("E6 video latency (simulated camera -> gateway relay -> station decoder)",
+               res["LAN"][0] is not None and res["4G"][0] is not None and res["LAN"][0] < 400 and res["4G"][0] < 800,
+               "LAN: median %s ms, 95 %% %s ms (%d frames); 4G simulated: median %s ms, 95 %% %s ms (%d frames). "
+               "Add the Tapo's own encoder delay (not simulated)" % (res["LAN"] + res["4G"]))
+        alice.close()
+        link.stop()
+    finally:
+        if rig:
+            rig.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e}
 
 
 def main():
