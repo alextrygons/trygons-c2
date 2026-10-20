@@ -11,6 +11,7 @@
 #include "sim_world.h"
 #include "link.h"
 #include "monitor.h"
+#include "timing.h"
 #include "smallboat.h"
 
 /* ------------------------------------------------------------ harness -- */
@@ -32,6 +33,7 @@ struct sbsim {
     uint32_t boot_until;    /* after a reset: chip boots until then */
     uint32_t resets;
     uint32_t t_reset;       /* time of the last watchdog reset */
+    uint32_t inject_us;     /* tests: extra execution time of the next control steps */
 };
 
 /* Joystick position (-1..+1, default calibration) -> raw ADC. */
@@ -69,6 +71,7 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     hal_init();
     if (cfg) c = *cfg; else sb_default_config(&c);
     x->cfg = c;
+    timing_init_all();
     sb_init(&x->sb, &c);
     monitor_init(&x->mon, 0u);
     x->mon_on = true;
@@ -94,7 +97,9 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
         if (!x->boot_until && x->t >= x->next_ctrl) {
             x->next_ctrl += AP_PERIOD_MS;
             if (!x->frozen) {
+                uint32_t t0 = hal_micros();
                 sb_step(&x->sb);
+                (void)cyc_record(&g_timing.core0, hal_micros() - t0 + x->inject_us);
                 x->last_kick = x->t;                /* hal_watchdog_kick() in the loop */
                 if (hook) hook(x, ctx);
             }
@@ -107,7 +112,11 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
             x->boot_until = x->t + 200u;
         }
         /* the independent monitor (CPU1): its own check step */
-        if (x->mon_on && !x->boot_until) monitor_step(&x->mon, &g_mon, x->t);
+        if (x->mon_on && !x->boot_until) {
+            uint32_t t0 = hal_micros();
+            monitor_step(&x->mon, &g_mon, x->t);
+            (void)cyc_record(&g_timing.monitor, hal_micros() - t0);
+        }
         world_step(&x->w, PHYSICS_DT_MS * 0.001f);
         x->t += PHYSICS_DT_MS;
     }
@@ -3306,10 +3315,96 @@ static void hardening_tests(void)
     }
 }
 
+/* --------------------------------------------------------- section E: timing -- */
+
+static void timing_tests(void)
+{
+    char d[400];
+    printf("\n=== Section E: cycle timing ===\n");
+
+    /* E1 a control cycle longer than its period: counted + alarm */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 501u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        uint32_t ov0 = g_timing.core0.overruns;
+        bool alarm0 = (x.sb.alarm_bits & SB_ALM_OVERRUN) != 0u;
+        x.inject_us = 62000u;                       /* one step takes 62 ms (period 50 ms) */
+        sbsim_run(&x, x.t + 50u, NULL, NULL);
+        x.inject_us = 0u;
+        sbsim_run(&x, x.t + 200u, NULL, NULL);
+        uint32_t ov1 = g_timing.core0.overruns;
+        bool alarm1 = (x.sb.alarm_bits & SB_ALM_OVERRUN) != 0u && sim_hal_alarm();
+        snprintf(d, sizeof d, "normal steps: %u overruns, alarm %s; one 62 ms step: overruns %u, alarm %s, "
+                 "all-time max %u us", ov0, alarm0 ? "ON" : "off", ov1, alarm1 ? "on" : "OFF",
+                 (unsigned)g_timing.core0.max_us);
+        test_report("E1 loop overrun (cycle longer than its period) counted + alarm",
+                    ov0 == 0u && !alarm0 && ov1 == 1u && alarm1, d);
+    }
+}
+
+/* PC reference: real execution time of each part (not the TC375!). */
+typedef struct { uint64_t min, max, sum, n; } ns_stat_t;
+
+static void ns_add(ns_stat_t *a, uint64_t v)
+{
+    if (a->n == 0u || v < a->min) a->min = v;
+    if (v > a->max) a->max = v;
+    a->sum += v;
+    a->n++;
+}
+
+static void ns_print(const char *name, const ns_stat_t *a, double period_us)
+{
+    double avg = a->n ? (double)a->sum / (double)a->n * 1e-3 : 0.0;
+    printf("  %-34s %9.2f %9.2f %9.2f %8u %9.4f%%\n", name, (double)a->min * 1e-3, avg, (double)a->max * 1e-3,
+           (unsigned)a->n, 100.0 * avg / period_us);
+}
+
+int sb_timing_report(void)
+{
+    pcsim_t *p = (pcsim_t *)calloc(1, sizeof *p);
+    prog_wp_t w[5];
+    ns_stat_t c0, mon;
+    memset(&c0, 0, sizeof c0);
+    memset(&mon, 0, sizeof mon);
+    pcsim_init(p, 520u);
+    p->heartbeat = true;
+    pc_run(p, 3000u);
+    prog5(&p->x, w);
+    auto_go(&p->x, w, 5, PROG_END_STOP);
+    p->x.mon_on = false;                        /* timed by hand below */
+    uint32_t until = p->x.t + 600000u;          /* 10 min of AUTO with the PC link */
+    while (p->x.t < until) {
+        world_publish(&p->x.w, p->x.t);
+        if (p->x.t >= p->x.next_ctrl) {
+            p->x.next_ctrl += AP_PERIOD_MS;
+            uint64_t t0 = sim_hal_real_ns();
+            sb_step(&p->x.sb);
+            link_step(&p->link, &p->x.sb);
+            ns_add(&c0, sim_hal_real_ns() - t0);
+            pc_hook(&p->x, p);
+        }
+        uint64_t t1 = sim_hal_real_ns();
+        monitor_step(&p->x.mon, &g_mon, p->x.t);
+        ns_add(&mon, sim_hal_real_ns() - t1);
+        world_step(&p->x.w, PHYSICS_DT_MS * 0.001f);
+        p->x.t += PHYSICS_DT_MS;
+    }
+    printf("\nPC timing reference (this PC, gcc -O2; NOT the TC375):\n");
+    printf("  %-34s %9s %9s %9s %8s %10s\n", "part", "min us", "avg us", "max us", "cycles", "avg of per.");
+    ns_print("core 0: sb_step + link_step", &c0, (double)TIMING_CORE0_PERIOD_US);
+    ns_print("CPU1: monitor_step", &mon, (double)TIMING_MONITOR_PERIOD_US);
+    printf("  (AUTO mission + ground-station link, 10 min simulated; max includes Windows interruptions)\n");
+    free(p);
+    return 0;
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
+    timing_tests();
     hardening_tests();
     powerlim_tests();
     modes_tests();

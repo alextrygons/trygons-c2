@@ -408,3 +408,48 @@ void sim_hal_unforce(void)
     s_forced = false;
     s_reset_reason = HAL_RESET_POWER_ON;
 }
+
+/* --- microseconds: simulated time, or the real PC clock (timing report) --- */
+static bool s_real_us;
+
+#ifdef _WIN32
+#include <windows.h>
+static uint32_t real_us(void)
+{
+    static LARGE_INTEGER f;
+    LARGE_INTEGER c;
+    if (f.QuadPart == 0) QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (uint32_t)(c.QuadPart * 1000000ULL / (unsigned long long)f.QuadPart);
+}
+#else
+#include <time.h>
+static uint32_t real_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000000ULL + (unsigned long long)ts.tv_nsec / 1000ULL);
+}
+#endif
+
+uint32_t hal_micros(void)
+{
+    return s_real_us ? real_us() : s_time_ms * 1000u;
+}
+
+void sim_hal_real_micros(bool on) { s_real_us = on; }
+
+uint64_t sim_hal_real_ns(void)
+{
+#ifdef _WIN32
+    static LARGE_INTEGER f;
+    LARGE_INTEGER c;
+    if (f.QuadPart == 0) QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (uint64_t)((double)c.QuadPart * 1e9 / (double)f.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+#endif
+}

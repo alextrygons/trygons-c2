@@ -41,6 +41,7 @@ typedef int sock_t;
 #include "joystick.h"
 #include "link.h"
 #include "monitor.h"
+#include "timing.h"
 #include "sim_run.h"
 #include "sim_world.h"
 #include "smallboat.h"
@@ -165,6 +166,8 @@ static void sim_init(server_t *x, uint32_t seed)
     hal_init();
     sb_default_config(&c);
     sim_hal_unforce();
+    sim_hal_real_micros(true);                  /* timing: the real PC clock */
+    timing_init_all();
     memset((void *)&g_mon, 0, sizeof g_mon);
     sb_init(&x->sb, &c);
     monitor_init(&x->mon, 0u);
@@ -179,10 +182,14 @@ static void sim_advance(server_t *x, uint32_t until_ms)
         world_publish(&x->w, x->t);
         if (x->t >= x->next_ctrl) {
             x->next_ctrl += AP_PERIOD_MS;
+            uint32_t t0 = hal_micros();
             sb_step(&x->sb);
             link_step(&x->link, &x->sb);
+            (void)cyc_record(&g_timing.core0, hal_micros() - t0);
         }
+        uint32_t t1 = hal_micros();
         monitor_step(&x->mon, &g_mon, x->t);        /* separate check step */
+        (void)cyc_record(&g_timing.monitor, hal_micros() - t1);
         world_step(&x->w, PHYSICS_DT_MS * 0.001f);
         x->t += PHYSICS_DT_MS;
     }

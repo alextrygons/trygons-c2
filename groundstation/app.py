@@ -292,6 +292,13 @@ class App:
             self.ptree.heading(c, text=c)
         self.ptree.pack(fill="both", expand=True)
 
+        sy = tk.Frame(nb, bg=BG)
+        nb.add(sy, text="System")
+        tk.Label(sy, text="CPU time per cycle (min / average / max of the last window) and overruns",
+                 font=F_MED, bg=BG).pack(anchor="w", pady=6)
+        self.sys_lbl = tk.Label(sy, text="-", font=("Consolas", 14), bg=BG, justify="left", anchor="w")
+        self.sys_lbl.pack(anchor="w", padx=8)
+
         lg = tk.Frame(nb, bg=BG)
         nb.add(lg, text="Events")
         self.events = tk.Listbox(lg, font=F_TXT)
@@ -721,6 +728,17 @@ class App:
             self.alarm_banner.configure(text="ALARM: " + (", ".join(alarms) if alarms else "autopilot"))
         self.show(self.alarm_banner, on, row=1, column=0, sticky="ew")
         self.show(self.alarm_ack, on, row=1, column=1, sticky="ns")
+
+        per = ((50000, "core 0  control 20 Hz"), (1000, "CPU1    monitor 1 kHz"), (10000, "core 2  logger"))
+        keys = (("t_core0_avg", "t_core0_max", "ovr_core0"), ("t_mon_avg", "t_mon_max", "ovr_mon"),
+                ("t_log_avg", "t_log_max", "ovr_log"))
+        lines = ["%-22s %8s %8s %7s %9s" % ("", "avg us", "max us", "max %", "overruns")]
+        for (p, name), (ka, km, ko) in zip(per, keys):
+            lines.append("%-22s %8d %8d %6.1f%% %9d" % (name, d[ka], d[km], 100.0 * d[km] / p, d[ko]))
+        lines.append("")
+        lines.append("link: %d frames received, %d CRC errors" % (d["rx_frames"], d["rx_crc_errors"]))
+        self.sys_lbl.configure(text="
+".join(lines))
 
         self.draw_joystick(d)
         self.draw_plot()

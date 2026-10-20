@@ -7,6 +7,7 @@
  *   autopilot_sim all                            every test, PASS/FAIL list
  *   autopilot_sim train [seed]                   outboard TRAINING tests
  *   autopilot_sim train SEED BOAT SS             trace one training (BOAT 1..5, SS 1..2)
+ *   autopilot_sim timing                         PC timing reference of each part
  *   autopilot_sim server [port [speed]]          simulated boat for the ground
  *                                                station (TCP 5760, speed 1)
  *   autopilot_sim outboard [wave_seed]           small boat test table,
@@ -411,6 +412,8 @@ int main(int argc, char **argv)
     if (self_test() != 0) return 1;
 
     if (argc > 1 && strcmp(argv[1], "all") == 0) return run_all();
+
+    if (argc > 1 && strcmp(argv[1], "timing") == 0) return sb_timing_report();
 
     if (argc > 1 && strcmp(argv[1], "server") == 0) {
         int port = (argc > 2) ? atoi(argv[2]) : 5760;

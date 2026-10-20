@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "hal.h"
+#include "timing.h"
 
 #define TELEM_PERIOD_MS 100u
 #define PI_F 3.14159265f
@@ -147,6 +148,8 @@ static void send_prog_wp(link_t *l, const program_t *p, uint8_t i)
  *   f32 power_fwd_pct | f32 power_rev_pct | u16 power_code (0 = none) | u8 power_code_dir |
  *     u16 power_code_left (0.1 s) | u8 power_flags (b0 speed limited by the power limit,
  *     b1 limit raised) | f32 throttle_demand (before the limits)
+ *   u16 core0 avg us | u16 core0 max us | u16 monitor avg | u16 monitor max | u16 logger avg |
+ *     u16 logger max | u16 core0 overruns | u8 monitor overruns | u8 logger overruns   (us capped at 65535)
  */
 static void telemetry(link_t *l, sb_t *s)
 {
@@ -242,6 +245,15 @@ static void telemetry(link_t *l, sb_t *s)
     proto_wr_u16(&w, (uint16_t)(plim_code_left_s(&s->plim, s->now_ms) * 10.0f + 0.5f));
     proto_wr_u8(&w, (uint8_t)((s->speed_limited ? 1u : 0u) | (plim_raised(&s->plim) ? 2u : 0u)));
     proto_wr_f32(&w, s->throttle_demand);
+
+    const cyc_t *cy[3] = { &g_timing.core0, &g_timing.monitor, &g_timing.logger };
+    for (int i = 0; i < 3; i++) {
+        proto_wr_u16(&w, (uint16_t)(cy[i]->pub_avg_us > 65535u ? 65535u : cy[i]->pub_avg_us));
+        proto_wr_u16(&w, (uint16_t)(cy[i]->pub_max_us > 65535u ? 65535u : cy[i]->pub_max_us));
+    }
+    proto_wr_u16(&w, (uint16_t)(g_timing.core0.overruns > 65535u ? 65535u : g_timing.core0.overruns));
+    proto_wr_u8(&w, (uint8_t)(g_timing.monitor.overruns > 255u ? 255u : g_timing.monitor.overruns));
+    proto_wr_u8(&w, (uint8_t)(g_timing.logger.overruns > 255u ? 255u : g_timing.logger.overruns));
 
     if (!w.overflow) send(l, PROTO_T_TELEMETRY, l->tx_seq++, buf, w.n);
 }

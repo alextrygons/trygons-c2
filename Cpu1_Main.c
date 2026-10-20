@@ -32,6 +32,7 @@
 
 #include "hal.h"
 #include "monitor.h"
+#include "timing.h"
 
 extern IfxCpu_syncEvent cpuSyncEvent;
 
@@ -66,7 +67,9 @@ void core1_main(void)
         if ((int32_t)(now - next) >= 0)
         {
             next = now + 1u;
+            uint32_t t0 = hal_micros();
             (void)monitor_step(&g_monitor, &g_mon, now);
+            (void)cyc_record(&g_timing.monitor, hal_micros() - t0);
             IfxScuWdt_serviceCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
         }
     }

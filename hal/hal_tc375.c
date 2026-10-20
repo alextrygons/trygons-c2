@@ -93,6 +93,12 @@ uint32_t hal_millis(void)
     return (uint32_t)(stm0_ticks() / s_stm_ticks_per_ms);
 }
 
+uint32_t hal_micros(void)
+{
+    if (s_stm_ticks_per_ms < 1000u) return 0u;
+    return (uint32_t)(stm0_ticks() / (s_stm_ticks_per_ms / 1000u));
+}
+
 bool hal_read_heading(float *heading_deg)
 {
     (void)heading_deg;

@@ -40,6 +40,9 @@ typedef enum {
 /* Bit for a button in the mask returned by hal_get_button_presses(). */
 #define HAL_BTN_BIT(b)  (1u << (unsigned)(b))
 
+/* Microseconds from the STM timer (wraps after ~71 min; use differences). */
+uint32_t hal_micros(void);
+
 /* Initialise all hardware. Call once at startup. */
 void hal_init(void);
 

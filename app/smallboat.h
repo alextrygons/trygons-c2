@@ -89,6 +89,7 @@
 #define SB_ALM_PC_LINK            0x800u  /* ground station link lost */
 #define SB_ALM_NOT_ARMED          0x1000u /* outputs not armed at start: gear not neutral / stick not centred */
 #define SB_ALM_MONITOR            0x2000u /* independent safety monitor (CPU1) tripped */
+#define SB_ALM_OVERRUN            0x4000u /* a control cycle took longer than its period */
 
 #define SB_FAULT_STEER_OFF   0u
 #define SB_FAULT_STEER_GYRO  1u
@@ -291,6 +292,7 @@ typedef struct {
     bool        armed;         /* neutral-start interlock passed (until reset) */
     uint32_t    arm_ok_ms, unarmed_ms;
     bool        mon_tripped;   /* the safety monitor tripped (until reset) */
+    uint32_t    overruns_seen; /* g_timing.core0.overruns already alarmed */
     dr_t        dr;            /* position estimate (GPS / dead reckoning) */
     bool        gps_new_msg;   /* a GPS message arrived this step */
     uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */

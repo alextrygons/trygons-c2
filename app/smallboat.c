@@ -6,6 +6,7 @@
 #include <math.h>
 
 #include "monitor.h"
+#include "timing.h"
 #include <string.h>
 
 static float clampf(float x, float lo, float hi)
@@ -1106,6 +1107,12 @@ static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
 
 static void events_step(sb_t *s, uint32_t buttons)
 {
+    /* a control cycle overran its period (measured by the loop, timing.c) */
+    if (g_timing.core0.overruns != s->overruns_seen) {
+        s->overruns_seen = g_timing.core0.overruns;
+        alarm_on(s, SB_ALM_OVERRUN);
+    }
+
     /* independent safety monitor tripped: outputs are forced safe by the HAL */
     if (g_mon.tripped && !s->mon_tripped) {
         s->mon_tripped = true;

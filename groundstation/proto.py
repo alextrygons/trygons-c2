@@ -111,6 +111,7 @@ ALARMS = [
     (0x800, "PC LINK LOST"),
     (0x1000, "NOT NEUTRAL AT START (outputs not armed)"),
     (0x2000, "SAFETY MONITOR TRIPPED"),
+    (0x4000, "CONTROL LOOP OVERRUN"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -277,7 +278,7 @@ def p_sim_gps(fail):
 # --- decoders (boat -> PC) ---------------------------------------------------
 
 _TELEM = struct.Struct(
-    "<I BBBB fffff BB iiff BB ffiiff fff I f ff BBB BBB f iif HH BBBBBH ffHBHBf")
+    "<I BBBB fffff BB iiff BB ffiiff fff I f ff BBB BBB f iif HH BBBBBH ffHBHBf HHHHHHHBB")
 TELEM_FIELDS = (
     "t_ms mode ap_mode sea_state flags "
     "heading target yaw_rate outboard throttle "
@@ -288,7 +289,8 @@ TELEM_FIELDS = (
     "train_stage train_phase train_result "
     "speed_set_kn wp_lat wp_lon wp_kn rx_frames rx_crc_errors "
     "prog_n auto_wp auto_state auto_flags confirm_kind confirm_left_ds "
-    "power_fwd power_rev power_code power_code_dir power_code_left_ds power_flags throttle_demand").split()
+    "power_fwd power_rev power_code power_code_dir power_code_left_ds power_flags throttle_demand "
+    "t_core0_avg t_core0_max t_mon_avg t_mon_max t_log_avg t_log_max ovr_core0 ovr_mon ovr_log").split()
 TELEM_SIZE = _TELEM.size
 
 

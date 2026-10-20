@@ -69,4 +69,8 @@ bool     sim_hal_safety_relay(void);
 void     sim_hal_chip_reset(hal_reset_t why);
 void     sim_hal_unforce(void);
 
+/* hal_micros(): false = simulated time (tests), true = the real PC clock. */
+void     sim_hal_real_micros(bool on);
+uint64_t sim_hal_real_ns(void);                  /* PC clock in ns (timing report) */
+
 #endif /* HAL_SIM_H */

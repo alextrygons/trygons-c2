@@ -33,6 +33,7 @@
 #include "autopilot.h"
 #include "smallboat.h"
 #include "link.h"
+#include "timing.h"
 
 /* Which boat this build is for:
  *   default            small boat (outboard): smallboat.c controller
@@ -62,6 +63,7 @@ void core0_main(void)
     /* CPU0 + safety watchdog ON (100 ms; the loop kicks every 50 ms).
      * A frozen loop -> chip reset -> outputs back to their reset state. */
     hal_watchdog_init(WATCHDOG_MS);
+    timing_init_all();
 
     /* Wait for CPU sync event */
     IfxCpu_emitEvent(&cpuSyncEvent);
@@ -88,8 +90,10 @@ void core0_main(void)
 #ifdef BOAT_VARIANT_BIG
             autopilot_step(&g_autopilot);
 #else
+            uint32_t t0 = hal_micros();
             sb_step(&g_boat);
             link_step(&g_link, &g_boat);
+            (void)cyc_record(&g_timing.core0, hal_micros() - t0);    /* overrun -> alarm next step */
 #endif
             hal_watchdog_kick();
             next_step_ms += AP_PERIOD_MS;

@@ -71,6 +71,9 @@ void test_report(const char *name, bool ok, const char *detail);
 /* Small-boat tests, all phases (sim_sb.c). */
 void sb_tests(void);
 
+/* PC timing reference (sim_sb.c) */
+int sb_timing_report(void);
+
 /* sim_server.c: simulated boat behind TCP for the ground station */
 int sim_server(int port, double speed);
 
