@@ -40,6 +40,15 @@ typedef struct {
     float gps_drag_n, gps_drag_e, gps_drag_max_m;
     bool  gps_dragging;
     bool  gps_flag;             /* receiver spoof/jam flag */
+    /* slamming: impacts (Poisson) above ~8 kn, more and harder with speed
+     * and sea state; slam_scale 0 = smooth water */
+    float slam_scale;           /* 1.0 */
+    float slam_extra_g;         /* tests: add this to every impact */
+    uint32_t slam_rng;
+    float slam_left[4];         /* impact pulse still to play out (samples) */
+    uint32_t slam_impacts;      /* impacts of 1 g or more made (truth) */
+    float slam_dead;            /* s until the next impact can come */
+    float slam_last_g;
 
     /* state */
     float heading_deg, yaw_dps, wave_filt;

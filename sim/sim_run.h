@@ -72,7 +72,8 @@ void test_na(const char *name, const char *why);
 /* Small-boat tests, all phases (sim_sb.c). */
 void sb_tests(void);
 void sb_usb_tests(void);
-void sb_gateway_tests(void);      /* only section A (gateway link) tests */          /* only the USB joystick tests */
+void sb_gateway_tests(void);      /* gateway link, HELM, REMOTE, SAVE requests */
+void sb_slam_tests(void);         /* only the slamming tests (section H) */
 void sb_set_bridge(bool on);      /* all tests through the USB joystick bridge */
 
 /* Python log round-trip test data (sim_sb.c) */

@@ -359,3 +359,30 @@ camera is ever needed for a safety function.
   * never wipe dry salt (scratches);
   * a little hydrophobic glass coating helps;
   * check the seals every season.
+
+## 9. Slamming sensor (BNO085)
+
+Vertical acceleration for the slamming measurement (MANUAL chapter 9 part H).
+UNVERIFIED until the board arrives: the TC375 pins (one QSPI channel on the
+Lite Kit's Arduino header) are chosen then, and hal_tc375.c
+`hal_read_accel_z()` gets the BNO085 driver (now it returns "no samples":
+no reduction, nothing else changes).
+
+| BNO085 | TC375 Lite Kit | Notes |
+|--------|----------------|-------|
+| VIN | 3.3 V | not 5 V |
+| GND | GND | |
+| SCL/SCK | QSPI SCLK | SPI mode: PS0 = PS1 = 3.3 V on the breakout |
+| SDA/MISO | QSPI MRST | |
+| DI/MOSI | QSPI MTSR | |
+| CS | QSPI SLSO | |
+| INT | any GPIO input (interrupt) | sample ready |
+| RST | any GPIO output | reset at start-up |
+
+* Mount it **rigidly** to the hull structure (not on a panel that vibrates),
+  near the driver's seat / slightly forward of the centre of gravity, with
+  its Z axis vertical. Glue / screw - no foam.
+* Cable max ~1 m, shielded, away from the steering motor and ignition
+  cables. Keep it > 50 cm from the compass (it contains a magnet sensor, but
+  the steel of a mount can disturb the compass).
+* Use the "linear acceleration" report (gravity removed) at 200 Hz.

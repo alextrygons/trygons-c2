@@ -141,16 +141,18 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 126 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 133 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
     autopilot_sim.exe all --bridge
   The same tests again, but every joystick move goes through the simulated
-  USB bridge. Ends with "125 passed, 0 failed, 1 not applicable" (the analog
+  USB bridge. Ends with "132 passed, 0 failed, 1 not applicable" (the analog
   calibration test does not apply to the USB joystick).
     autopilot_sim.exe usb
   Only the 17 USB joystick tests (U1..U16), quick.
     autopilot_sim.exe gw
   Only the gateway link tests (GA1.., HELM, REMOTE, SAVE requests), quick.
+    autopilot_sim.exe slam
+  Only the slamming tests (SL1..SL7).
   The gateway (Raspberry Pi) tests, with the simulator, on the PC:
     cd ..\gateway
     C:\msys64\ucrt64\bin\python.exe test_gateway.py
@@ -651,6 +653,33 @@ G. SYNC TO THE SHORE PC
   aurix_logs, audit, video\events) - open them with logview.py.
   Setup: gateway\README.md section 16.
 
+H. SLAMMING (hull impacts) AND AUTOMATIC THROTTLE REDUCTION
+  A BNO085 motion sensor measures the vertical acceleration about 200 times
+  a second. Shown and logged: the hardest impact (g), impacts per minute,
+  and the "level" (running average of the impacts; it falls again when the
+  water gets smooth).
+    CALM     nothing happens
+    YELLOW   level above 70 % of the limit: warning beep; the forward
+             throttle is reduced one step (10 %) at once and again every 5 s
+             while it stays yellow (never below 30 %)
+    RED      one impact harder than the limit (default 3.0 g): alarm
+             SLAMMING, the power limit drops to 30 % (like every alarm), one
+             more step down, and a video SAVE is made
+  It only ever REDUCES the throttle, in every mode (MANUAL, HDG LOCK, AUTO,
+  REMOTE). The throttle comes down at its normal rate. After 30 s of calm
+  water the reduction goes back slowly (+5 % every 10 s). In AUTO, slamming
+  also counts as rough water (the boat slows its target speed, chapter 7).
+  OVERRIDE (only with the joystick on board, never the remote driver):
+  "kick-down" - ease the throttle off (below 85 %), then push it to full
+  and hold 1 s. The reduction is lifted (warning beep, "OVERRIDE" shown)
+  until you go below the reduced value again. The power limit still applies.
+  Staying at full throttle all the time never overrides.
+  The limit: parameter slam_limit_g (1-8 g). The captain proposes it, the
+  driver confirms it on the driver screen (part I).
+  Sensor not working: "slamming sensor lost" warning, no reduction, the
+  boat drives on normally.
+  In the log: every impact as a SLAM event (peak, level, rate, reduction).
+
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
@@ -685,6 +714,8 @@ G. SYNC TO THE SHORE PC
   CONTROL LOOP OVERRUN   a control cycle took longer than 50 ms
   LOG FAILURE            SD card missing / full / failing (control goes on)
   GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)
+  SLAMMING               an impact harder than slam_limit_g: power limit 30 %,
+                         throttle reduced, video SAVE (part H)
   GATEWAY STORAGE        the Pi's USB SSD is missing / failing, or STORAGE FULL
                          (no mode change; SAVE refused while full)
   REMOTE LINK LOST       the remote station holding HELM disappeared; HELM
@@ -810,6 +841,12 @@ The ground station saves its own copy of the telemetry in the same format
       couplers or self-amalgamating tape, a closed box for splitters.
   [ ] 4 x high-endurance microSD 64-128 GB (the cameras' own loop recording).
   [ ] Microfibre cloths (lens care).
+
+  SLAMMING SENSOR
+  [ ] BNO085 breakout board, 3.3 V, SPI (e.g. Adafruit 4754 or SparkFun
+      SEN-22857).
+  [ ] 4-pair shielded cable (SPI + INT + RST), max ~1 m to the AURIX box,
+      a small IP67 box, M3 nylon standoffs.
 
   USB JOYSTICK (instead of, or as well as, the analog joystick)
   [ ] Thrustmaster T.16000M FCS HOTAS (stick + TWCS throttle). NOT

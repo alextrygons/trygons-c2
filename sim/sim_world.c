@@ -21,6 +21,8 @@ void world_init(world_t *w, uint32_t seed, float heading_deg, float speed_kn)
     w->idle_fwd_kn = 1.5f;
     w->speed_tau_s = 6.0f;
     w->gps_pos_noise_m = 1.5f;
+    w->slam_scale = 1.0f;
+    w->slam_rng = seed * 2654435761u + 12345u;
     w->heading_deg = heading_deg;
     w->speed_kn = speed_kn;
     w->rng = seed ? seed : 1u;
@@ -144,8 +146,49 @@ void world_step(world_t *w, float dt_s)
     w->north_m += (double)((v * KN_TO_MS * cosf(h) + w->current_n) * dt_s);
 }
 
+/* One 100 Hz BNO085 sample: heave + noise + hull impacts. Above ~8 kn the
+ * hull starts to slam: impacts per second ~ sea^1.5 x (v - 8) / 10, peak
+ * ~ 0.4 g x sea x (v / 15)^1.5 x (0.6 .. 1.4). Sea 3 at 25 kn: ~2.5 g. */
+static float urand(uint32_t *st)
+{
+    *st = *st * 1664525u + 1013904223u;
+    return (float)(*st >> 8) / 16777216.0f;
+}
+
+static void slam_sample(world_t *w, float dt_s)
+{
+    float v = fabsf(w->speed_kn), sea = w->sea_state;
+    float heave = 0.04f * sea * sinf(2.0f * PI_F * (float)w->t_ms * 0.001f / 3.0f);
+    float noise = 0.02f * boat_rand_gauss(&w->slam_rng);
+    float a = heave + noise;
+    if (w->slam_left[0] > 0.0f || w->slam_left[1] > 0.0f) {
+        a += w->slam_left[0];
+        w->slam_left[0] = w->slam_left[1];
+        w->slam_left[1] = w->slam_left[2];
+        w->slam_left[2] = w->slam_left[3];
+        w->slam_left[3] = 0.0f;
+    } else if (w->slam_scale > 0.0f && v > 8.0f && sea > 0.0f) {
+        float lambda = powf(sea, 1.5f) * (v - 8.0f) / 40.0f;   /* sea 3, 18 kn: ~1.3 / s */
+        if (w->slam_dead > 0.0f) {
+            w->slam_dead -= dt_s;                   /* the next wave comes later */
+        } else if (urand(&w->slam_rng) < lambda * dt_s) {
+            w->slam_dead = 0.3f;
+            float k = urand(&w->slam_rng);
+            float peak = w->slam_scale * 0.4f * sea * powf(v / 15.0f, 1.5f) * (0.6f + 0.8f * k) + w->slam_extra_g;
+            w->slam_last_g = peak;
+            if (peak >= 1.0f) w->slam_impacts++;
+            a += 0.6f * peak;               /* 40 ms pulse: 0.6, 1.0, 0.5, 0.2 x peak */
+            w->slam_left[0] = peak;
+            w->slam_left[1] = 0.5f * peak;
+            w->slam_left[2] = 0.2f * peak;
+        }
+    }
+    sim_hal_push_accel(a);
+}
+
 void world_publish(world_t *w, uint32_t t_ms)
 {
+    if (t_ms % 10u == 0u) slam_sample(w, 0.01f);
     sim_hal_set_time_ms(t_ms);
     sim_hal_set_truth(w->heading_deg, w->rud.angle_deg);
     sim_hal_set_yaw_truth(w->yaw_dps);

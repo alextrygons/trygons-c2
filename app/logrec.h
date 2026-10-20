@@ -61,6 +61,8 @@ typedef enum {
     EV_HELM,            /* station, action (0 take, 1 release, 2 station lost, 3 automatic take by the
                            USB laptop, 4 gateway lost), result (0 granted, 1 refused), new holder */
     EV_SAVE,            /* video SAVE request: trigger (SB_SAVE_), arg, seq, 0 */
+    EV_SLAM,            /* impact / slamming change: peak g*100 (0 = no impact), level g*100, impacts per min,
+                           cap %*10 | state<<16 | override<<20 */
     EV_COUNT
 } log_event_t;
 

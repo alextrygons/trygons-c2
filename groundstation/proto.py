@@ -159,6 +159,7 @@ ALARMS = [
     (0x40000, "REMOTE LINK LOST"),
     (0x80000, "CHANNEL FALLBACK"),
     (0x100000, "REMOTE DRIVING LINK LOST"),
+    (0x200000, "SLAMMING"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -577,6 +578,8 @@ _T2_GROUPS = [
                                      "rjoy_flags rjoy_pickup1000 remote_cap_f remote_cap_r rjoy_packets "
                                      "remote_lost_why".split()),
     (struct.Struct("<HBBIB"), "save_seq save_trig save_arg save_age_ms save_kinds".split()),
+    (struct.Struct("<HHHBBHIB"), "slam_peak100 slam_level100 slam_rate slam_cap slam_flags slam_limit100 "
+                                 "slam_impacts slam_yellow_pc".split()),
 ]
 
 # video SAVE triggers (app/smallboat.h SB_SAVE_)
@@ -608,4 +611,13 @@ def decode_telem2(payload: bytes) -> dict:
         off += st.size
     if "gw_state" in d:
         d["gw_state_name"] = GW_STATES[d["gw_state"]] if d["gw_state"] < 3 else "?"
+    if "slam_flags" in d:
+        f = d["slam_flags"]
+        d["slam_peak"] = d["slam_peak100"] / 100.0
+        d["slam_level"] = d["slam_level100"] / 100.0
+        d["slam_limit"] = d["slam_limit100"] / 100.0
+        d["slam_state"] = ["CALM", "YELLOW", "RED"][f & 3] if f & 3 < 3 else "?"
+        d["slam_override"] = bool(f & 0x10)
+        d["slam_lost"] = bool(f & 0x20)
+        d["slam_sensor"] = bool(f & 0x40)
     return d

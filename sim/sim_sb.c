@@ -136,6 +136,7 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     sim_hal_fail_heading(false);
     sim_hal_set_rudder_feedback(false);
     sim_hal_set_gyro(true, 0.05f, 0.02f);
+    sim_hal_set_accel(true);
     sim_hal_reset_engine();
     joy_set(0.0f, 0.0f, false, false);              /* joystick fitted, centred */
     sim_hal_joystick_confirm(false);
@@ -5401,6 +5402,243 @@ static void save_tests(void)
     }
 }
 
+/* ------------------------------------------------------ slamming (section H) -- */
+
+/* Watches the rule "slamming only ever reduces": the throttle never rises
+ * while it is above the slamming cap (unless the onboard driver overrides). */
+typedef struct {
+    float last_out;
+    int   rise_over_cap;        /* steps where the throttle went UP above the cap */
+    float max_over_plim;        /* never above the power limit */
+    float min_cap;
+    int   steps_down, steps_up;
+    float last_cap;
+    float max_cap_jump;         /* biggest cap increase in one step */
+    uint32_t last_rough_t;      /* last time slamming was not calm */
+    uint32_t first_up_gap;      /* calm time before the first raise */
+    bool  init;
+} slamwatch_t;
+
+static void slam_hook(sbsim_t *x, void *ctx)
+{
+    slamwatch_t *w = (slamwatch_t *)ctx;
+    const sb_t *s = &x->sb;
+    float out = s->servo.out_pct, cap = slam_cap(&s->slam);
+    if (!w->init) { w->init = true; w->last_out = out; w->last_cap = cap; w->min_cap = cap; }
+    if (out > w->last_out + 0.01f && out > cap + 0.5f && !s->slam.override) w->rise_over_cap++;
+    if (gear_is(&s->gear, GEAR_F) && out - s->plim.fwd_pct > w->max_over_plim) w->max_over_plim = out - s->plim.fwd_pct;
+    if (cap < w->last_cap - 0.01f) w->steps_down++;
+    if (s->slam.state != SLAM_CALM) w->last_rough_t = x->t;
+    if (cap > w->last_cap + 0.01f) {
+        if (!w->steps_up) w->first_up_gap = x->t - w->last_rough_t;
+        w->steps_up++;
+        if (cap - w->last_cap > w->max_cap_jump) w->max_cap_jump = cap - w->last_cap;
+    }
+    if (cap < w->min_cap) w->min_cap = cap;
+    w->last_cap = cap;
+    w->last_out = out;
+}
+
+/* MANUAL, full power limit, stick full ahead (throttle 100 %). */
+static void slam_go(sbsim_t *x, uint32_t seed, float sea)
+{
+    sbsim_init(x, seed, 90.0f, 0.0f, NULL);
+    x->w.sea_state = sea;
+    sbsim_run(x, 2000u, NULL, NULL);
+    joy_set(0.0f, 0.3f, false, false);                     /* into MANUAL (the takeover lowers the limit) */
+    sbsim_run(x, x->t + 1000u, NULL, NULL);
+    joy_set(0.0f, 0.0f, false, false);
+    sbsim_run(x, x->t + 500u, NULL, NULL);
+    power_full(x);                                          /* then raise it, stick centred */
+    joy_set(0.0f, 1.0f, false, false);
+}
+
+static void slam_tests(void)
+{
+    char d[800];
+    printf("\n=== Section H: slamming (BNO085 vertical acceleration) ===\n");
+
+    /* SL1 measurement: impacts counted like the boat made them, peak, rate,
+     * level; smooth water: nothing; every impact in the log (EV_SLAM) */
+    {
+        static sbsim_t x;
+        slam_go(&x, 961u, 3.0f);
+        x.cfg.slam.limit_g = 9.0f;                         /* measure only: no reduction */
+        x.sb.slam.cfg.limit_g = 9.0f;
+        x.sb.slam.cfg.yellow_frac = 0.9f;
+        sbsim_run(&x, 30000u, NULL, NULL);
+        uint32_t w0 = x.w.slam_impacts, s0 = x.sb.slam.impacts;
+        float kn = x.w.speed_kn;
+        sbsim_run(&x, 90000u, NULL, NULL);
+        uint32_t made = x.w.slam_impacts - w0, seen = x.sb.slam.impacts - s0;
+        float level = x.sb.slam.level;
+        uint16_t rate = x.sb.slam.rate_pm;
+        static sbsim_t y;
+        slam_go(&y, 962u, 0.0f);
+        sbsim_run(&y, 60000u, NULL, NULL);
+        snprintf(d, sizeof d, "sea 3 at %.1f kn: %lu impacts made by the boat model in 60 s, %lu counted; level %.2f g, "
+                 "%u per min (impacts of 1 g or more); smooth water at %.1f kn: %lu counted, peak %.2f g",
+                 kn, (unsigned long)made, (unsigned long)seen, level, rate, y.w.speed_kn,
+                 (unsigned long)y.sb.slam.impacts, y.sb.slam.peak);
+        test_report("SL1 slamming measured: impacts, rate, level (sea 3, ~20 kn); smooth water: none",
+                    made > 20u && seen + 3u >= made && seen <= made + 3u && level > 1.0f && rate > 15u &&
+                    y.sb.slam.impacts == 0u, d);
+    }
+
+    /* SL2 an impact over the limit (red): SLAMMING alarm, power limit down
+     * at once, throttle cap one step down, SAVE request "slamming" */
+    {
+        static sbsim_t x;
+        static slamwatch_t wt;
+        memset(&wt, 0, sizeof wt);
+        slam_go(&x, 963u, 3.0f);
+        sbsim_run(&x, 20000u, slam_hook, &wt);
+        float plim0 = x.sb.plim.fwd_pct;
+        uint16_t save0 = x.sb.save.seq;
+        x.w.slam_extra_g = 2.0f;                            /* the next impacts are hard */
+        uint32_t r0 = x.sb.slam.reds;
+        while (x.sb.slam.reds == r0 && x.t < 60000u) sbsim_run(&x, x.t + 50u, slam_hook, &wt);
+        bool red = x.sb.slam.reds > r0;
+        uint32_t t_red = x.t;
+        sbsim_run(&x, x.t + 100u, slam_hook, &wt);
+        bool alarm = (x.sb.alarm_bits & SB_ALM_SLAM) != 0u;
+        float plim1 = x.sb.plim.fwd_pct, cap = slam_cap(&x.sb.slam);
+        bool save = x.sb.save.seq != save0 && (x.sb.save.kinds & (1u << SB_SAVE_SLAM));
+        sbsim_run(&x, t_red + 8000u, slam_hook, &wt);
+        snprintf(d, sizeof d, "red impact %s (%.2f g); alarm SLAMMING %s; power limit %.0f -> %.0f %%; cap %.0f %%; "
+                 "SAVE request \"slamming\" %s; throttle 8 s later %.0f %% (never rose above the cap: %d), mode %s",
+                 red ? "yes" : "NO", x.w.slam_last_g, alarm ? "yes" : "NO", plim0, plim1, cap, save ? "yes" : "NO",
+                 x.sb.servo.out_pct, wt.rise_over_cap, mode_name(sb_mode(&x.sb)));
+        test_report("SL2 red impact: SLAMMING alarm, power limit down at once, cap down a step, SAVE request",
+                    red && alarm && plim0 >= 99.0f && plim1 <= 30.5f && cap < 100.0f && save &&
+                    x.sb.servo.out_pct <= 31.0f && wt.rise_over_cap == 0 && sb_mode(&x.sb) == MODE_MANUAL, d);
+    }
+
+    /* SL3 yellow (high level, no single hard impact): warning only, the cap
+     * steps down every 5 s, never below 30 %; the power limit stays */
+    {
+        static sbsim_t x;
+        static slamwatch_t wt;
+        memset(&wt, 0, sizeof wt);
+        slam_go(&x, 964u, 3.0f);
+        x.sb.slam.cfg.limit_g = 9.0f;                       /* yellow at 0.12 x 9 = 1.1 g level, red never */
+        x.sb.slam.cfg.yellow_frac = 0.12f;
+        sbsim_run(&x, 70000u, slam_hook, &wt);
+        bool yellow = x.sb.slam.steps > 0u;
+        snprintf(d, sizeof d, "state %s, level %.2f g; cap steps down %d (lowest %.0f %%, floor 30); power limit %.0f %% "
+                 "(unchanged), alarm bits 0x%lx; throttle %.0f %% (rose above the cap: %d); nervous %s",
+                 x.sb.slam.state == SLAM_YELLOW ? "YELLOW" : x.sb.slam.state == SLAM_RED ? "RED" : "calm",
+                 x.sb.slam.level, wt.steps_down, wt.min_cap, x.sb.plim.fwd_pct, (unsigned long)x.sb.alarm_bits,
+                 x.sb.servo.out_pct, wt.rise_over_cap, x.sb.nerv.nervous ? "yes" : "no");
+        test_report("SL3 yellow: warning, stepwise throttle reduction (5 s steps, floor 30 %), power limit kept",
+                    yellow && wt.steps_down >= 3 && wt.min_cap >= 29.9f && x.sb.plim.fwd_pct >= 99.0f &&
+                    !(x.sb.alarm_bits & SB_ALM_SLAM) && wt.rise_over_cap == 0 &&
+                    x.sb.servo.out_pct <= slam_cap(&x.sb.slam) + 0.5f, d);
+
+        /* SL4 calm water: after 30 s calm the cap comes back slowly (+5 % / 10 s) */
+        x.w.sea_state = 0.0f;
+        wt.steps_up = 0; wt.max_cap_jump = 0.0f; wt.rise_over_cap = 0;
+        float cap0 = slam_cap(&x.sb.slam);
+        uint32_t t0 = x.t, t_first = 0u;
+        while (x.t < t0 + 400000u && slam_cap(&x.sb.slam) < 100.0f) {
+            sbsim_run(&x, x.t + 500u, slam_hook, &wt);
+            if (!t_first && wt.steps_up) t_first = x.t;
+        }
+        float rate_max = 0.0f;
+        snprintf(d, sizeof d, "cap %.0f %% -> first raise after %.0f s of calm water, back to 100 %% %.0f s after the sea "
+                 "went flat; biggest single raise %.1f %%; throttle rose above the cap: %d %s",
+                 cap0, wt.first_up_gap / 1000.0, (x.t - t0) / 1000.0,
+                 wt.max_cap_jump, wt.rise_over_cap, rate_max > 0.0f ? "" : "");
+        test_report("SL4 recovery: only after a calm time, slowly (+5 % every 10 s), throttle at its normal rate",
+                    t_first && wt.first_up_gap >= 30000u && slam_cap(&x.sb.slam) >= 100.0f && wt.max_cap_jump <= 5.01f &&
+                    wt.rise_over_cap == 0, d);
+    }
+
+    /* SL5 every driving mode: HDG LOCK and AUTO are capped the same way */
+    {
+        int ok = 0;
+        char t[500] = "";
+        for (int k = 0; k < 2; k++) {
+            static sbsim_t x;
+            static slamwatch_t wt;
+            memset(&wt, 0, sizeof wt);
+            sbsim_init(&x, 965u + (uint32_t)k, 90.0f, 0.0f, NULL);
+            x.w.sea_state = 3.0f;
+            sbsim_run(&x, 2000u, NULL, NULL);
+            if (k == 0) {
+                hdg_lock(&x);
+                joy_set(0.0f, 1.0f, false, false);            /* throttle on the stick in HDG LOCK */
+            } else {
+                auto_to(&x, 20000.0f, 90.0f, 25.0f);
+            }
+            x.sb.slam.cfg.limit_g = 9.0f;
+            x.sb.slam.cfg.yellow_frac = 0.12f;
+            sbsim_run(&x, 70000u, slam_hook, &wt);
+            bool g = sb_mode(&x.sb) == (k == 0 ? MODE_HDG_LOCK : MODE_AUTO) && wt.steps_down >= 2 &&
+                     wt.rise_over_cap == 0 && x.sb.servo.out_pct <= slam_cap(&x.sb.slam) + 0.5f;
+            ok += g;
+            snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s: cap %.0f %%, throttle %.0f %%, steps %d%s",
+                     k ? "; " : "", mode_name(sb_mode(&x.sb)), slam_cap(&x.sb.slam), x.sb.servo.out_pct,
+                     wt.steps_down, k == 1 ? (x.sb.nerv.nervous ? ", nervous (AUTO slows too)" : ", NOT nervous") : "");
+            if (k == 1 && !x.sb.nerv.nervous) ok = 0;
+        }
+        test_report("SL5 works in every mode: HDG LOCK and AUTO capped; AUTO also counts it as rough water (nervous)",
+                    ok == 2, t);
+    }
+
+    /* SL6 override: the onboard driver holds the stick above the cap for 1 s
+     * -> cap lifted (warning), never above the power limit; back below the
+     * cap -> the cap applies again */
+    {
+        static sbsim_t x;
+        static slamwatch_t wt;
+        memset(&wt, 0, sizeof wt);
+        slam_go(&x, 967u, 3.0f);
+        x.sb.slam.cfg.limit_g = 9.0f;
+        x.sb.slam.cfg.yellow_frac = 0.12f;
+        sbsim_run(&x, 40000u, slam_hook, &wt);              /* full throttle all the time: no override */
+        float cap = slam_cap(&x.sb.slam);
+        bool no_over = !x.sb.slam.override && cap < 100.0f;
+        joy_set(0.0f, 0.6f, false, false);                   /* kick-down: ease off ... */
+        sbsim_run(&x, x.t + 500u, slam_hook, &wt);
+        joy_set(0.0f, 1.0f, false, false);                   /* ... and push to full */
+        sbsim_run(&x, x.t + 600u, slam_hook, &wt);
+        bool not_yet = !x.sb.slam.override;
+        sbsim_run(&x, x.t + 3000u, slam_hook, &wt);
+        bool over = x.sb.slam.override;
+        float out_over = x.sb.servo.out_pct;
+        joy_set(0.0f, 0.2f, false, false);
+        sbsim_run(&x, x.t + 3000u, slam_hook, &wt);
+        bool back = !x.sb.slam.override;
+        snprintf(d, sizeof d, "cap %.0f %% while at full throttle all along: no override %s; kick-down (60 %% -> full): after 0.6 s %s, "
+                 "after 3.6 s %s (throttle %.0f %%, power limit %.0f %%, overrides %lu); stick back: override off %s",
+                 cap, no_over ? "yes" : "NO", not_yet ? "not yet" : "TOO EARLY", over ? "ON" : "NO", out_over,
+                 x.sb.plim.fwd_pct, (unsigned long)x.sb.slam.overrides, back ? "yes" : "NO");
+        test_report("SL6 onboard override by kick-down (ease off, full for 1 s): cap lifted, power limit still applies",
+                    cap < 100.0f && no_over && not_yet && over && out_over > cap + 5.0f &&
+                    out_over <= x.sb.plim.fwd_pct + 0.5f && back, d);
+    }
+
+    /* SL7 BNO085 stops sending: warning (sensor lost), no new reduction, no mode change */
+    {
+        static sbsim_t x;
+        slam_go(&x, 968u, 3.0f);
+        sbsim_run(&x, 20000u, NULL, NULL);
+        sim_hal_set_accel(false);
+        sbsim_run(&x, 30000u, NULL, NULL);
+        bool lost = x.sb.slam.lost;
+        uint32_t steps = x.sb.slam.steps;
+        x.w.sea_state = 5.0f;
+        sbsim_run(&x, 50000u, NULL, NULL);
+        snprintf(d, sizeof d, "sensor lost %s; mode %s; steps while blind %lu; alarm bits 0x%lx",
+                 lost ? "yes" : "NO", mode_name(sb_mode(&x.sb)), (unsigned long)(x.sb.slam.steps - steps),
+                 (unsigned long)x.sb.alarm_bits);
+        test_report("SL7 slamming sensor lost: shown as a warning, nothing else changes", lost &&
+                    sb_mode(&x.sb) == MODE_MANUAL && x.sb.slam.steps == steps && !(x.sb.alarm_bits & SB_ALM_SLAM), d);
+        sim_hal_set_accel(true);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -5416,12 +5654,18 @@ void sb_gateway_tests(void)
     save_tests();
 }
 
+void sb_slam_tests(void)
+{
+    slam_tests();
+}
+
 void sb_tests(void)
 {
     gateway_tests();
     helm_tests();
     remote_tests();
     save_tests();
+    slam_tests();
     logging_tests();
     timing_tests();
     hardening_tests();

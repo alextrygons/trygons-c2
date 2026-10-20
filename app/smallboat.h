@@ -64,6 +64,7 @@
 #include "gear.h"
 #include "joybridge.h"
 #include "joymap.h"
+#include "slam.h"
 #include "joystick.h"
 #include "hal.h"
 #include "dr.h"
@@ -98,6 +99,7 @@
 #define SB_ALM_REMOTE_LINK        0x40000u /* REMOTE LINK LOST: the remote HELM station disappeared */
 #define SB_ALM_CHANNEL            0x80000u /* CHANNEL FALLBACK: the chosen internet channel failed (gateway) */
 #define SB_ALM_REMOTE_DRIVE       0x100000u /* REMOTE DRIVING LINK LOST: remote joystick data old / missing */
+#define SB_ALM_SLAM               0x200000u /* SLAMMING: an impact over the limit (red) */
 
 /* HELM: the one station whose commands are accepted (section B). */
 #define SB_HELM_NONE   0u
@@ -224,6 +226,7 @@ typedef struct {
 
     /* Joystick (joystick.c) */
     joy_config_t joy;
+    slam_config_t slam;                 /* slamming (BNO085): limit, steps, recovery */
     float    joy_max_throttle_pct;      /* stick full = this much throttle demand, F and R (100;
                                            the power limit and the reverse limit still apply) */
     jb_config_t jb;                     /* USB joystick bridge checks (joybridge.c) */
@@ -408,6 +411,7 @@ typedef struct {
     sb_lever_t  lev;           /* USB throttle lever: mapping and pickup */
     sb_remote_t remote;        /* REMOTE MANUAL: the shore joystick */
     sb_save_t   save;          /* video SAVE requests for the gateway */
+    slam_t      slam;          /* slamming measurement + throttle cap */
     sb_mode_t   manual_from;   /* mode the joystick took over from */
     bool        joy_fault_seen, joy_nc_seen;
     uint32_t    chirp_ms;      /* short alarm chirp still to sound */

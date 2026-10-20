@@ -23,7 +23,7 @@ typedef enum {
     P_CRUISE_MAX, P_SPD_KP, P_SPD_KI,
     P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
-    P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT,
+    P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT,
     P_COUNT
 } param_id_t;
 
@@ -44,6 +44,7 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "joy_max_thr_pc",  5.0f,  100.0f },
     { "joy_deadband",    0.05f,   0.5f },
     { "pc_timeout_s",    1.0f,   30.0f },
+    { "slam_limit_g",    1.0f,    8.0f },     /* captain sets, driver confirms (ground station) */
 };
 
 uint8_t link_param_count(void)
@@ -76,6 +77,7 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_JOY_MAX_THR:  return &s->cfg.joy_max_throttle_pct;
     case P_JOY_DEADBAND: return &s->joy.cfg.deadband;
     case P_PC_TIMEOUT:   return &l->pc_timeout_s;
+    case P_SLAM_LIMIT:   return &s->slam.cfg.limit_g;
     default:             return NULL;
     }
 }
@@ -787,6 +789,9 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      u32 packets | u8 lost_why
  *   E: u16 save_seq (video SAVE requests, 0 none) | u8 trigger (SB_SAVE_) | u8 arg | u32 age ms |
  *      u8 kinds (bit per trigger of every request in the 2 s before the latest)
+ *   F: u16 slam peak since the last telemetry g*100 | u16 level g*100 | u16 impacts / min |
+ *      u8 forward cap % (100 = none) | u8 state (0 calm 1 yellow 2 red) | b4 override | b5 sensor lost |
+ *      b6 sensor seen) | u16 limit g*100 | u32 impacts | u8 yellow part of the limit %
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -826,6 +831,17 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u8(&w, s->save.arg);
     proto_wr_u32(&w, s->save.seq ? s->now_ms - s->save.t_ms : 0u);
     proto_wr_u8(&w, s->save.kinds);
+    const slam_t *sl = &s->slam;
+    proto_wr_u16(&w, (uint16_t)lroundf(fminf(655.0f, l->slam_peak) * 100.0f));
+    l->slam_peak = 0.0f;
+    proto_wr_u16(&w, (uint16_t)lroundf(fminf(655.0f, sl->level) * 100.0f));
+    proto_wr_u16(&w, sl->rate_pm);
+    proto_wr_u8(&w, (uint8_t)lroundf(slam_cap(sl)));
+    proto_wr_u8(&w, (uint8_t)(sl->state | (sl->override ? 0x10u : 0u) | (sl->lost ? 0x20u : 0u) |
+                              (sl->seen ? 0x40u : 0u)));
+    proto_wr_u16(&w, (uint16_t)lroundf(sl->cfg.limit_g * 100.0f));
+    proto_wr_u32(&w, sl->impacts);
+    proto_wr_u8(&w, (uint8_t)lroundf(sl->cfg.yellow_frac * 100.0f));
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
 }
 
@@ -999,6 +1015,7 @@ void link_step(link_t *l, sb_t *s)
         }
     }
 
+    if (s->slam.peak > l->slam_peak) l->slam_peak = s->slam.peak;     /* the hardest since the last telemetry */
     if ((int32_t)(s->now_ms - l->next_telem_ms) >= 0) {
         l->next_telem_ms = s->now_ms + TELEM_PERIOD_MS;
         telemetry2(l, s);                               /* first: the PC merges it into the next telemetry */

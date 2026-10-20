@@ -73,6 +73,12 @@ bool hal_read_yaw_rate(float *yaw_dps);
  * false always if not available. */
 bool hal_read_roll_rate(float *roll_dps);
 
+/* Vertical linear acceleration (gravity removed), g, + up, from the BNO085
+ * (slamming, app/slam.c). Copies the samples that arrived since the last
+ * call (the sensor runs at 100-400 Hz) into g[0..max-1], oldest first, and
+ * returns how many. 0 if not fitted / nothing new. */
+uint32_t hal_read_accel_z(float *g, uint32_t max);
+
 /* Steering motor current, amps (optional current sense). Rises sharply
  * when the motor pushes against an end stop. false if not fitted. */
 bool hal_read_motor_current(float *amps);

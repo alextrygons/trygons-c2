@@ -58,6 +58,7 @@ typedef struct {
     uint32_t    log_chunks;
     uint32_t    gw_used_after;  /* UART TX bytes waiting after the last step */
     uint32_t    gw_room;        /* bytes allowed to wait in the UART (follows its real speed) */
+    float       slam_peak;      /* slamming peak since this link's last telemetry */
 } link_t;
 
 void link_init(link_t *l, sb_t *s);                         /* USB port */

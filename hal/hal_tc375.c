@@ -248,6 +248,13 @@ bool hal_read_roll_rate(float *roll_dps)
     return false;    /* TODO: roll axis of the IMU, if fitted */
 }
 
+uint32_t hal_read_accel_z(float *g, uint32_t max)
+{
+    (void)g;
+    (void)max;
+    return 0u;       /* TODO: BNO085 (SPI, linear acceleration report at 200 Hz) into a ring buffer */
+}
+
 bool hal_calib_save(const void *data, uint32_t size)
 {
     (void)data;

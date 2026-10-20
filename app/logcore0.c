@@ -17,6 +17,7 @@ static struct {
     bool     init;
     uint32_t mode_log_count;
     uint16_t save_seq;
+    uint32_t slam_impacts, slam_code;
     uint32_t alarm_bits;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -243,6 +244,19 @@ static void changes(const sb_t *s)
     if (off) ev(s, EV_ALARM_OFF, (int32_t)off, (int32_t)s->alarm_bits, 0, 0);
     k.alarm_bits = s->alarm_bits;
     k.ap_alarm = s->ap.alarm;
+    /* slamming: every impact, and every change of state / cap / override (not
+     * in the 20 Hz sample: the black box has no room left) */
+    {
+        const slam_t *sl = &s->slam;
+        uint32_t code = (uint32_t)lroundf(slam_cap(sl) * 10.0f) | ((uint32_t)sl->state << 16) |
+                        ((sl->override ? 1u : 0u) << 20);
+        bool hit = sl->impacts != k.slam_impacts;
+        if (hit || code != k.slam_code)
+            ev(s, EV_SLAM, hit ? (int32_t)lroundf(sl->peak * 100.0f) : 0, (int32_t)lroundf(sl->level * 100.0f),
+               (int32_t)sl->rate_pm, (int32_t)code);
+        k.slam_impacts = sl->impacts;
+        k.slam_code = code;
+    }
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
     k.save_seq = s->save.seq;

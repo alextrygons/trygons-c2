@@ -106,6 +106,11 @@ class Log:
         if name == "GPS":
             src = POS_SOURCES[a[0]] if 0 <= a[0] < 4 else a[0]
             return "GPS position source %s (reason %d), uncertainty %.1f m, losses %d" % (src, a[1], a[2] / 10, a[3])
+        if name == "SLAM":
+            st = ["calm", "YELLOW", "RED"][(a[3] >> 16) & 3] if ((a[3] >> 16) & 3) < 3 else "?"
+            return "SLAM %s level %.2f g, %d/min, cap %.0f %%%s, %s" % (
+                "impact %.2f g" % (a[0] / 100) if a[0] else "change", a[1] / 100, a[2], (a[3] & 0xFFFF) / 10,
+                " OVERRIDE" if (a[3] >> 20) & 1 else "", st)
         if name == "SAVE":
             return "VIDEO SAVE request %d: %s" % (a[2], proto.save_trigger_text(a[0], a[1]))
         parts = ["%s=%d" % (n, v) for n, v in zip(args, a) if n != "-"]

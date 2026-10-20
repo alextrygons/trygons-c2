@@ -44,6 +44,8 @@ void     sim_hal_reset_engine(void);
 
 /* Optional roll-rate sensor. */
 void     sim_hal_set_roll(bool fitted, float roll_dps);
+void sim_hal_push_accel(float g);               /* one BNO085 vertical acceleration sample */
+void sim_hal_set_accel(bool fitted);            /* the BNO085 is fitted / works */
 
 /* Optional neutral switch. */
 void     sim_hal_set_neutral_switch(bool fitted, bool in_neutral);

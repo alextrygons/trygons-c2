@@ -210,6 +210,37 @@ void sim_hal_set_roll(bool fitted, float roll_dps)
     s_true_roll_rate = roll_dps;
 }
 
+/* BNO085 vertical acceleration: the boat model pushes one sample per
+ * physics step (100 Hz); the controller takes them in batches. */
+#define ACC_RING 256u
+static float    s_acc[ACC_RING];
+static uint32_t s_acc_head, s_acc_tail;
+static bool     s_acc_fitted = true;
+
+uint32_t hal_read_accel_z(float *g, uint32_t max)
+{
+    uint32_t n = 0u;
+    while (s_acc_tail != s_acc_head && n < max) {
+        g[n++] = s_acc[s_acc_tail % ACC_RING];
+        s_acc_tail++;
+    }
+    return n;
+}
+
+void sim_hal_push_accel(float g)
+{
+    if (!s_acc_fitted) return;
+    s_acc[s_acc_head % ACC_RING] = g;
+    s_acc_head++;
+    if (s_acc_head - s_acc_tail > ACC_RING) s_acc_tail = s_acc_head - ACC_RING;
+}
+
+void sim_hal_set_accel(bool fitted)
+{
+    s_acc_fitted = fitted;
+    s_acc_tail = s_acc_head;
+}
+
 static bool s_neutral_fitted = false;
 static bool s_neutral_state;
 

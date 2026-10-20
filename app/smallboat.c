@@ -80,6 +80,7 @@ void sb_default_config(sb_config_t *cfg)
 
     joy_default_config(&cfg->joy);
     cfg->joy_max_throttle_pct = 100.0f;
+    slam_default_config(&cfg->slam);
     jb_default_config(&cfg->jb);
     cfg->remote_cap_fwd_pct = 20.0f;
     cfg->remote_cap_rev_pct = 5.0f;
@@ -128,6 +129,7 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     s->ap.gyro_assist = (cfg->fault_steer == SB_FAULT_STEER_GYRO);
     gear_init(&s->gear, &cfg->gear);
     throttle_init(&s->thr, &cfg->throttle);
+    slam_init(&s->slam, &cfg->slam);
     plim_init(&s->plim, &cfg->plim, s->now_ms * 2654435761u + 12345u);     /* always 30 / 5 */
     hal_set_safety_relay(false);                /* closed once armed (interlock) */
     servo_init(&s->servo, &cfg->servo);
@@ -248,7 +250,8 @@ static void save_triggers(sb_t *s)
         return;
     }
     if (s->joy.save_edge) save_req(s, SB_SAVE_BUTTON, 0u);
-    uint32_t on = s->alarm_bits & ~v->k_alarms & ~SB_ALM_ARRIVED;    /* arriving is no incident */
+    if (s->slam.red_edge) save_req(s, SB_SAVE_SLAM, 0u);
+    uint32_t on = s->alarm_bits & ~v->k_alarms & ~SB_ALM_ARRIVED & ~SB_ALM_SLAM;   /* arriving is no incident */
     if (on) {
         uint8_t bit = 0u;
         while (!(on & (1u << bit))) bit++;
@@ -922,8 +925,11 @@ static void nervousness(sb_t *s, uint32_t dt_ms, bool roll_new, float roll_dps)
         n->roll_std = sqrtf(n->roll_var);
     }
 
-    bool rough = n->yaw_std > c->nerv_on_dps || (n->roll_ok && n->roll_std > c->nerv_roll_on_dps);
-    bool calm = n->yaw_std < c->nerv_off_dps && (!n->roll_ok || n->roll_std < c->nerv_roll_off_dps);
+    /* slamming counts too (yellow / red = rough; calm only when it is calm) */
+    bool rough = n->yaw_std > c->nerv_on_dps || (n->roll_ok && n->roll_std > c->nerv_roll_on_dps) ||
+                 s->slam.state != SLAM_CALM;
+    bool calm = n->yaw_std < c->nerv_off_dps && (!n->roll_ok || n->roll_std < c->nerv_roll_off_dps) &&
+                s->slam.state == SLAM_CALM;
 
     if (!n->nervous) {
         n->above_ms = rough ? n->above_ms + dt_ms : 0u;
@@ -949,7 +955,7 @@ static void nervousness(sb_t *s, uint32_t dt_ms, bool roll_new, float roll_dps)
          * middle of the hysteresis band): the wobble measurement and the
          * boat speed both react slowly, so stepping on would overshoot */
         float mid = 0.5f * (c->nerv_on_dps + c->nerv_off_dps);
-        bool still_rough = n->yaw_std > mid ||
+        bool still_rough = n->yaw_std > mid || s->slam.state != SLAM_CALM ||
                            (n->roll_ok && n->roll_std > 0.5f * (c->nerv_roll_on_dps + c->nerv_roll_off_dps));
         if (still_rough) n->step_timer_ms += dt_ms;
         if (n->step_timer_ms >= c->nerv_step_ms) {
@@ -1635,6 +1641,8 @@ void sb_step(sb_t *s)
     s->ext_buttons = 0u;
     read_inputs(s, &in, buttons);
     bool roll_new = hal_read_roll_rate(&roll);
+    float acc[96];
+    uint32_t n_acc = hal_read_accel_z(acc, 96u);
     bool nsw;
     int8_t neutral_sw = hal_read_neutral_switch(&nsw) ? (nsw ? 1 : 0) : -1;
     s->buttons_now = buttons;
@@ -1728,6 +1736,17 @@ void sb_step(sb_t *s)
         }
     }
 
+    /* slamming: measure; reduce the forward throttle (never raise). A red
+     * impact is an alarm (-> power limit down below, SAVE); yellow warns. */
+    {
+        bool was_over = s->slam.override;
+        sb_mode_t m = sb_mode(s);
+        slam_step(&s->slam, acc, n_acc, s->now_ms, dt_ms, (s->gear_demand == GEAR_F) ? s->throttle_demand : 0.0f,
+                  m == MODE_MANUAL || m == MODE_HDG_LOCK);
+        if (s->slam.red_edge) alarm_on(s, SB_ALM_SLAM);
+        if ((s->slam.yellow_edge || (s->slam.override && !was_over)) && s->chirp_ms < 300u) s->chirp_ms = 300u;
+    }
+
     /* power limit: any new alarm (also from the PC link) -> startup limit
      * at once (the throttle then comes down at its normal rate, servo.c);
      * a long time at low speed too */
@@ -1747,7 +1766,7 @@ void sb_step(sb_t *s)
     /* 5. gear and throttle (order: throttle limited by the gear state),
      *    demand limited by the power limit of its direction */
     s->throttle_mode = s->throttle_demand;
-    float lim_dir = (s->gear_demand == GEAR_F) ? s->plim.fwd_pct : s->plim.rev_pct;
+    float lim_dir = (s->gear_demand == GEAR_F) ? fminf(s->plim.fwd_pct, slam_cap(&s->slam)) : s->plim.rev_pct;
     if (s->throttle_demand > lim_dir) s->throttle_demand = lim_dir;
     gear_request(&s->gear, s->gear_demand);
     s->throttle_rate = throttle_step(&s->thr, s->throttle_demand, s->gear.current, gear_throttle_allowed(&s->gear), dt);
