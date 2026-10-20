@@ -137,6 +137,12 @@ bool hal_read_gps(hal_gps_t *gps)
     return false;    /* TODO: NMEA parser on ASCLIN UART */
 }
 
+bool hal_read_water_speed(float *kn)
+{
+    (void)kn;
+    return false;    /* TODO: paddlewheel pulse input (GPT12 / GTM TIM), if fitted */
+}
+
 bool hal_read_controls(hal_controls_t *c)
 {
     (void)c;

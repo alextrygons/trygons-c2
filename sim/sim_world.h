@@ -32,6 +32,14 @@ typedef struct {
     bool  servo_stuck;          /* gear servo does not move any more */
     bool  current_sensor;       /* steering motor current sense fitted */
     bool  limit_switches;       /* steering end-stop switches fitted */
+    bool  speed_sensor;         /* paddlewheel fitted */
+    float speed_sensor_scale;   /* its calibration error (1.02 = reads 2 % high) */
+    /* GPS faults: offset added to the reported position; a drag grows the
+     * offset at gps_drag_n/e m/s up to gps_drag_max_m (spoofer) */
+    double gps_off_n, gps_off_e;
+    float gps_drag_n, gps_drag_e, gps_drag_max_m;
+    bool  gps_dragging;
+    bool  gps_flag;             /* receiver spoof/jam flag */
 
     /* state */
     float heading_deg, yaw_dps, wave_filt;
@@ -42,7 +50,7 @@ typedef struct {
     gear_t engaged;             /* gear the gearbox is in */
     uint32_t neutral_since_ms;
     float throttle;             /* servo % */
-    uint32_t rng, gps_rng, cur_rng;
+    uint32_t rng, gps_rng, cur_rng, pw_rng;
 
     /* safety watch */
     int   shift_under_load;     /* gear engaged / left with throttle open */

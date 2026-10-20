@@ -35,11 +35,22 @@
 #include "autopilot.h"
 #include "gear.h"
 #include "hal.h"
+#include "dr.h"
 #include "modes.h"
 #include "nav.h"
 #include "throttle.h"
 
 #define SB_LIMIT_N 4        /* points in the steering-limit-by-speed table */
+
+/* What an alarm is about (sb_t.alarm_bits, status page). */
+#define SB_ALM_COMPASS            0x01u
+#define SB_ALM_GPS_LOST           0x02u
+#define SB_ALM_GPS_SUSPECT        0x04u   /* fix rejected by the integrity check */
+#define SB_ALM_DR_LIMIT           0x08u   /* DR too uncertain / too long -> CRUISE */
+#define SB_ALM_ARRIVAL_UNCERTAIN  0x10u
+#define SB_ALM_ARRIVED            0x20u
+#define SB_ALM_GEAR               0x40u
+#define SB_ALM_TRAINING           0x80u
 
 #define SB_FAULT_STEER_OFF   0u
 #define SB_FAULT_STEER_GYRO  1u
@@ -109,6 +120,13 @@ typedef struct {
     /* TRAINING */
     float    training_throttle_pct;     /* fixed slow throttle, forward gear (20) */
     uint32_t training_spinup_ms;        /* at that throttle this long before calibrating (30 s) */
+
+    /* GPS-denied navigation (dead reckoning, dr.c) */
+    dr_config_t dr;
+    float    dr_speed_factor;           /* NAV in DR: speed x this (0.7) */
+    float    dr_max_unc_m;              /* uncertainty above this ... (200) */
+    uint32_t dr_max_ms;                 /* ... or DR longer than this (10 min) -> CRUISE (600000) */
+    float    dr_slow_kn;                /* CRUISE speed after that (4) */
 } sb_config_t;
 
 typedef struct {
@@ -149,6 +167,9 @@ typedef struct {
     float     course_deg;       /* course over ground wanted */
     uint32_t  last_fix_ms;
     bool      arrived;
+    bool      in_dr;            /* navigating on dead reckoning */
+    uint32_t  next_dr_ms;       /* 1 Hz updates in DR */
+    bool      arrival_uncertain;
 } sb_nav_t;
 
 typedef enum {
@@ -175,6 +196,9 @@ typedef struct {
     sb_nerv_t   nerv;
     sb_nav_t    nav;
     sb_train_t  train;
+    dr_t        dr;            /* position estimate (GPS / dead reckoning) */
+    bool        gps_new_msg;   /* a GPS message arrived this step */
+    uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */
 
     uint32_t now_ms, last_ms;
     bool     stopping;          /* safe stop running (idle + neutral first) */
@@ -224,5 +248,21 @@ float sb_steer_limit_for(const sb_config_t *cfg, float sog_kn);
 
 /* Sim tests only: drive with a raw gear / throttle demand. */
 void sb_test_drive(sb_t *s, bool on, gear_t gear, float throttle_pct);
+
+/* Status for displays (e.g. the future iPhone page). */
+typedef struct {
+    sb_mode_t   mode;
+    dr_state_t  pos_source;     /* GPS / dead reckoning / recovering / no fix */
+    dr_reason_t dr_reason;      /* why dead reckoning started (last time) */
+    float       unc_m;          /* position uncertainty radius */
+    float       since_fix_s;    /* time since the last trusted GPS fix */
+    float       dr_time_s;      /* time in dead reckoning, 0 on GPS */
+    double      lat, lon;       /* estimated position */
+    float       sog_kn, cog_deg;/* estimated */
+    uint32_t    alarm_bits;     /* SB_ALM_... */
+    uint32_t    gps_suspects;   /* fixes rejected by the integrity check (events) */
+} sb_status_t;
+
+sb_status_t sb_status(const sb_t *s);
 
 #endif /* SMALLBOAT_H */

@@ -62,6 +62,12 @@ void sb_default_config(sb_config_t *cfg)
 
     cfg->training_throttle_pct = 20.0f;
     cfg->training_spinup_ms = 30000u;
+
+    dr_default_config(&cfg->dr);
+    cfg->dr_speed_factor = 0.7f;
+    cfg->dr_max_unc_m = 200.0f;
+    cfg->dr_max_ms = 600000u;
+    cfg->dr_slow_kn = 4.0f;
 }
 
 void sb_set_waypoint(sb_t *s, double lat, double lon, float speed_kn)
@@ -85,6 +91,8 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     s->gear_demand = GEAR_N;
     s->cruise.set_kn = cfg->cruise_speed_kn;
     s->cruise.target_kn = cfg->cruise_speed_kn;
+    dr_init(&s->dr, &cfg->dr);
+    s->dr.cfg.gps_timeout_ms = cfg->gps_timeout_ms;
 }
 
 bool sb_compass_ok(const sb_t *s)
@@ -92,10 +100,12 @@ bool sb_compass_ok(const sb_t *s)
     return s->ap.heading_valid && !s->ap.sensor_fault;
 }
 
+/* GPS usable = fresh fix AND the integrity check trusts it (dr.c). */
 bool sb_gps_ok(const sb_t *s)
 {
     return s->gps.valid && s->gps.last.fix &&
-           (s->now_ms - s->gps.last_ms) < s->cfg.gps_timeout_ms;
+           (s->now_ms - s->gps.last_ms) < s->cfg.gps_timeout_ms &&
+           s->dr.state == DR_GPS;
 }
 
 void sb_test_drive(sb_t *s, bool on, gear_t gear, float throttle_pct)
@@ -199,6 +209,8 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
                          s->nav.wp_lat, s->nav.wp_lon);
             s->nav.crab_deg = 0.0f;
             s->nav.arrived = false;
+            s->nav.in_dr = false;
+            s->nav.arrival_uncertain = false;
             s->nav.last_fix_ms = s->gps.last_ms;
             s->nav.course_deg = s->nav.leg.track_deg;
             autopilot_set_target(&s->ap, s->nav.leg.track_deg);
@@ -250,7 +262,9 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
     if (sb_mode(s) == MODE_CRUISE)
         in->buttons = buttons & ~HAL_BTN_BIT(HAL_BTN_STANDBY_AUTO);
 
+    s->gps_new_msg = false;
     if (hal_read_gps(&g)) {
+        s->gps_new_msg = true;
         s->gps.last = g;
         s->gps.valid = true;
         if (g.fix) s->gps.last_ms = s->now_ms;
@@ -386,6 +400,8 @@ static void cruise(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float roll_
             k->open_loop_pct = s->thr.out_pct * c->gps_loss_throttle_factor;
             k->integ = k->open_loop_pct;
             s->alarm = true;
+            s->alarm_bits |= (s->dr.why == DR_WHY_LOST || s->dr.state == DR_NO_FIX || s->dr.state == DR_GPS)
+                             ? SB_ALM_GPS_LOST : SB_ALM_GPS_SUSPECT;
         }
         s->throttle_demand = k->open_loop_pct;
     }
@@ -397,60 +413,153 @@ static void cruise(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float roll_
 
 /* --- NAV ----------------------------------------------------------------------- */
 
-/* Follow the start -> waypoint line. On each GPS fix: cross-track error ->
- * wanted course over ground; plus the drift angle (heading - COG, from
- * current / wind) -> heading for the steering core. Speed: travel speed,
- * slowing to approach_kn inside slow_radius. Speed control, steering
- * limit and rough-water handling are the same as CRUISE. */
+/* Follow the start -> waypoint line from the position estimate (GPS, or
+ * dead reckoning when GPS is lost / not trusted): cross-track error ->
+ * wanted course over ground; plus the drift angle (heading - course over
+ * ground: measured COG on GPS, predicted from the learned current in DR)
+ * -> heading for the steering core. Speed: travel speed (x dr_speed_factor
+ * in DR), slowing to approach_kn inside slow_radius. */
+static void nav_update(sb_t *s, float fix_dt)
+{
+    const sb_config_t *c = &s->cfg;
+    sb_nav_t *n = &s->nav;
+    double lat, lon;
+
+    dr_latlon(&s->dr, &lat, &lon);
+    nav_leg_update(&n->leg, lat, lon);
+
+    float sog = n->in_dr ? dr_sog_kn(&s->dr) : s->gps.last.sog_kn;
+    float cog = n->in_dr ? dr_cog_deg(&s->dr) : s->gps.last.cog_deg;
+    if (sog > 2.0f) {
+        float drift = autopilot_heading_error(s->ap.heading, cog);
+        float a = clampf(fix_dt / c->crab_tau_s, 0.0f, 1.0f);
+        n->crab_deg += a * (drift - n->crab_deg);
+        n->crab_deg = clampf(n->crab_deg, -45.0f, 45.0f);
+    }
+    float look = fmaxf(c->lookahead_min_m, c->lookahead_s * sog * 0.514444f);
+    n->course_deg = nav_leg_course(&n->leg, look);
+    autopilot_set_target(&s->ap, n->course_deg + n->crab_deg);
+
+    /* in DR the waypoint may be anywhere within the uncertainty */
+    float unc = n->in_dr ? s->dr.unc_m : 0.0f;
+    bool uncertain = unc > c->arrival_radius_m;
+    float v = n->speed_kn * (n->in_dr ? c->dr_speed_factor : 1.0f);
+    if (n->leg.dist_m < c->slow_radius_m + unc) {
+        float f = clampf((n->leg.dist_m - c->arrival_radius_m - unc) /
+                         (c->slow_radius_m - c->arrival_radius_m), 0.0f, 1.0f);
+        v = c->approach_kn + (v - c->approach_kn) * f;
+        if (uncertain && !n->arrival_uncertain) {
+            n->arrival_uncertain = true;            /* early warning */
+            s->alarm = true;
+            s->alarm_bits |= SB_ALM_ARRIVAL_UNCERTAIN;
+        }
+    }
+    sb_set_cruise_speed(s, fminf(v, n->speed_kn));
+
+    if (n->leg.dist_m <= c->arrival_radius_m || n->leg.along_m >= n->leg.length_m) {
+        s->alarm = true;
+        if (uncertain) {
+            /* don't declare arrival: slow CRUISE, the skipper takes over */
+            s->alarm_bits |= SB_ALM_ARRIVAL_UNCERTAIN;
+            autopilot_set_target(&s->ap, s->ap.heading);
+            sb_request_mode(s, MODE_CRUISE, WHY_ARRIVAL_UNCERTAIN);
+            s->cruise.gps_lost = true;
+            s->cruise.open_loop_pct = dr_throttle_for(&s->dr, c->approach_kn);
+            sb_set_cruise_speed(s, c->approach_kn);
+            return;
+        }
+        n->arrived = true;
+        s->alarm_bits |= SB_ALM_ARRIVED;
+        if (c->arrive_stop) {
+            sb_request_mode(s, MODE_STANDBY, WHY_ARRIVED);      /* idle + neutral */
+        } else {
+            autopilot_set_target(&s->ap, s->ap.heading);
+            sb_request_mode(s, MODE_CRUISE, WHY_ARRIVED);
+        }
+    }
+}
+
+/* Speed in DR without GPS: PI on the paddlewheel if fitted, otherwise the
+ * learned throttle -> speed table (open loop). Same steering limit / gain
+ * scaling by speed as CRUISE. */
+static void dr_speed(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float roll)
+{
+    const sb_config_t *c = &s->cfg;
+    sb_cruise_t *k = &s->cruise;
+    s->gear_demand = GEAR_F;
+    nervousness(s, dt_ms, roll_new, roll);
+    if (!gear_is(&s->gear, GEAR_F)) {
+        s->throttle_demand = 0.0f;
+    } else if (s->dr.speed_sensor) {
+        float e = k->target_kn - s->dr.water_kn;
+        bool sat = (c->spd_kp * e + k->integ >= c->throttle.max_fwd_pct && e > 0.0f) ||
+                   (c->spd_kp * e + k->integ <= 0.0f && e < 0.0f);
+        if (!sat) k->integ = clampf(k->integ + c->spd_ki * e * dt, 0.0f, c->throttle.max_fwd_pct);
+        s->throttle_demand = clampf(c->spd_kp * e + k->integ, 0.0f, c->throttle.max_fwd_pct);
+    } else {
+        s->throttle_demand = dr_throttle_for(&s->dr, k->target_kn);
+        k->integ = s->throttle_demand;
+    }
+    float v = dr_sog_kn(&s->dr);
+    s->ap.steer_limit_deg = sb_steer_limit_for(c, v);
+    s->ap.gain_scale = clampf(c->gain_ref_kn / fmaxf(v, 0.5f), c->gain_scale_min, c->gain_scale_max);
+}
+
 static void nav_mode(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float roll)
 {
     const sb_config_t *c = &s->cfg;
     sb_nav_t *n = &s->nav;
 
     if (!sb_gps_ok(s)) {
-        /* GPS lost: CRUISE on the current heading, reduced speed, alarm */
-        s->alarm = true;
-        autopilot_set_target(&s->ap, s->ap.heading);
-        sb_request_mode(s, MODE_CRUISE, WHY_GPS_LOST);
-        cruise(s, dt, dt_ms, roll_new, roll);
+        if (!dr_have_position(&s->dr)) {
+            /* no position at all: CRUISE on the current heading, alarm */
+            s->alarm = true;
+            s->alarm_bits |= SB_ALM_GPS_LOST;
+            autopilot_set_target(&s->ap, s->ap.heading);
+            sb_request_mode(s, MODE_CRUISE, WHY_GPS_LOST);
+            cruise(s, dt, dt_ms, roll_new, roll);
+            return;
+        }
+        if (!n->in_dr) {
+            /* GPS lost or not trusted: carry on by dead reckoning */
+            n->in_dr = true;
+            n->next_dr_ms = s->now_ms;
+            s->alarm = true;
+            /* (the estimate may notice the plain loss one step later) */
+            s->alarm_bits |= (s->dr.state == DR_GPS || s->dr.why == DR_WHY_LOST) ? SB_ALM_GPS_LOST : SB_ALM_GPS_SUSPECT;
+        }
+        if (s->dr.unc_m > c->dr_max_unc_m ||
+            dr_dr_time_s(&s->dr, s->now_ms) * 1000.0f > (float)c->dr_max_ms) {
+            /* too uncertain / too long: CRUISE on the current heading, slow */
+            s->alarm = true;
+            s->alarm_bits |= SB_ALM_DR_LIMIT;
+            autopilot_set_target(&s->ap, s->ap.heading);
+            sb_request_mode(s, MODE_CRUISE, WHY_DR_LIMIT);
+            s->cruise.gps_lost = true;
+            s->cruise.open_loop_pct = dr_throttle_for(&s->dr, c->dr_slow_kn);
+            sb_set_cruise_speed(s, c->dr_slow_kn);
+            cruise(s, dt, dt_ms, roll_new, roll);
+            return;
+        }
+        if ((int32_t)(s->now_ms - n->next_dr_ms) >= 0) {
+            n->next_dr_ms += 1000u;
+            nav_update(s, 1.0f);
+            if (sb_mode(s) != MODE_NAV) { cruise(s, dt, dt_ms, roll_new, roll); return; }
+        }
+        dr_speed(s, dt, dt_ms, roll_new, roll);
         return;
     }
 
+    if (n->in_dr) {
+        /* GPS trusted again (dr.c blends the position over smoothly) */
+        n->in_dr = false;
+        s->cruise.integ = s->thr.out_pct;           /* bumpless speed loop */
+    }
     if (s->gps.last_ms != n->last_fix_ms) {
         float fix_dt = (float)(s->gps.last_ms - n->last_fix_ms) * 0.001f;
         n->last_fix_ms = s->gps.last_ms;
-        nav_leg_update(&n->leg, s->gps.last.lat_deg, s->gps.last.lon_deg);
-
-        float sog = s->gps.last.sog_kn;
-        if (sog > 2.0f) {
-            float drift = autopilot_heading_error(s->ap.heading, s->gps.last.cog_deg);
-            float a = clampf(fix_dt / c->crab_tau_s, 0.0f, 1.0f);
-            n->crab_deg += a * (drift - n->crab_deg);
-            n->crab_deg = clampf(n->crab_deg, -45.0f, 45.0f);
-        }
-        float look = fmaxf(c->lookahead_min_m, c->lookahead_s * sog * 0.514444f);
-        n->course_deg = nav_leg_course(&n->leg, look);
-        autopilot_set_target(&s->ap, n->course_deg + n->crab_deg);
-
-        float v = n->speed_kn;
-        if (n->leg.dist_m < c->slow_radius_m) {
-            float f = clampf((n->leg.dist_m - c->arrival_radius_m) /
-                             (c->slow_radius_m - c->arrival_radius_m), 0.0f, 1.0f);
-            v = c->approach_kn + (v - c->approach_kn) * f;
-        }
-        sb_set_cruise_speed(s, fminf(v, n->speed_kn));
-
-        if (n->leg.dist_m <= c->arrival_radius_m || n->leg.along_m >= n->leg.length_m) {
-            n->arrived = true;
-            s->alarm = true;
-            if (c->arrive_stop) {
-                sb_request_mode(s, MODE_STANDBY, WHY_ARRIVED);      /* idle + neutral */
-            } else {
-                autopilot_set_target(&s->ap, s->ap.heading);
-                sb_request_mode(s, MODE_CRUISE, WHY_ARRIVED);
-            }
-            return;
-        }
+        nav_update(s, fix_dt);
+        if (sb_mode(s) != MODE_NAV) return;
     }
     cruise(s, dt, dt_ms, roll_new, roll);
 }
@@ -532,9 +641,25 @@ void sb_step(sb_t *s)
     /* 1. steering core (also detects compass timeout) */
     autopilot_update(&s->ap, &in);
 
+    /* position estimate: GPS when trusted, dead reckoning otherwise */
+    {
+        dr_input_t di;
+        di.now_ms = s->now_ms;
+        di.heading_deg = s->ap.heading;
+        di.heading_ok = sb_compass_ok(s);
+        di.yaw_dps = s->ap.gyro_valid ? s->ap.gyro_dps : s->ap.yaw_rate;
+        di.throttle_pct = s->thr.out_pct;           /* what the engine got */
+        di.gear = (s->gear.current == GEAR_F) ? 1 : (s->gear.current == GEAR_R) ? -1 : 0;
+        di.water_ok = hal_read_water_speed(&di.water_kn);
+        di.gps_new = s->gps_new_msg;
+        di.gps = s->gps.last;
+        dr_step(&s->dr, &di);
+    }
+
     /* 2. faults and the Standby button -> STANDBY (always allowed) */
     if (s->ap.sensor_fault && !s->compass_fault_seen) {
         s->compass_fault_seen = true;
+        s->alarm_bits |= SB_ALM_COMPASS;
         s->alarm = true;
         /* MANEUVER: manual steering doesn't need the compass -> alarm only */
         if (sb_mode(s) != MODE_STANDBY && sb_mode(s) != MODE_MANEUVER)
@@ -546,6 +671,7 @@ void sb_step(sb_t *s)
             sb_request_mode(s, MODE_STANDBY, WHY_STANDBY_BUTTON);
         } else {
             s->alarm = false;           /* in STANDBY the button acknowledges */
+            s->alarm_bits = 0u;
             s->ap.alarm = false;
         }
     }
@@ -612,6 +738,7 @@ void sb_step(sb_t *s)
                               gear_throttle_allowed(&s->gear), dt);
     gear_step(&s->gear, dt_ms, thr, neutral_sw);
     if (gear_fault(&s->gear)) {
+        s->alarm_bits |= SB_ALM_GEAR;
         /* neutral not confirmed: alarm; driving modes are refused, a
          * running one ends in STANDBY (throttle stays idle) */
         s->alarm = true;
@@ -623,4 +750,22 @@ void sb_step(sb_t *s)
     hal_set_gear_pwm(s->gear.pwm_us);
     hal_set_rudder_motor(s->ap.motor_cmd);
     hal_set_alarm(s->alarm || s->ap.alarm);
+}
+
+sb_status_t sb_status(const sb_t *s)
+{
+    sb_status_t st;
+    st.mode = sb_mode(s);
+    st.pos_source = s->dr.state;
+    st.dr_reason = s->dr.why;
+    st.unc_m = s->dr.unc_m;
+    st.since_fix_s = dr_time_since_fix_s(&s->dr, s->now_ms);
+    st.dr_time_s = dr_dr_time_s(&s->dr, s->now_ms);
+    if (dr_have_position(&s->dr)) dr_latlon(&s->dr, &st.lat, &st.lon);
+    else { st.lat = 0.0; st.lon = 0.0; }
+    st.sog_kn = dr_sog_kn(&s->dr);
+    st.cog_deg = dr_cog_deg(&s->dr);
+    st.alarm_bits = s->alarm_bits | (s->ap.alarm ? SB_ALM_COMPASS : 0u);
+    st.gps_suspects = s->dr.suspects;
+    return st;
 }

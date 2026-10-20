@@ -54,4 +54,7 @@ void     sim_hal_set_neutral_switch(bool fitted, bool in_neutral);
 void     sim_hal_set_motor_current(bool fitted, float amps);
 void     sim_hal_set_limit_switches(bool fitted, bool left, bool right);
 
+/* Optional paddlewheel (speed through water). */
+void     sim_hal_set_water_speed(bool fitted, float kn);
+
 #endif /* HAL_SIM_H */

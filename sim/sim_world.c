@@ -26,6 +26,8 @@ void world_init(world_t *w, uint32_t seed, float heading_deg, float speed_kn)
     w->rng = seed ? seed : 1u;
     w->gps_rng = (seed * 7919u) | 1u;
     w->cur_rng = (seed * 104729u) | 1u;
+    w->pw_rng = (seed * 1299709u) | 1u;
+    w->speed_sensor_scale = 1.02f;
     rudder_init_outboard(&w->rud, 3.0f, 3.0f, 2.0f);
     w->gear_pos_us = 1500.0f;
     w->engaged = GEAR_N;
@@ -127,6 +129,14 @@ void world_step(world_t *w, float dt_s)
     w->yaw_dps += (K * input - w->yaw_dps) * (dt_s / T);
     w->heading_deg = wrap360(w->heading_deg + w->yaw_dps * dt_s);
 
+    /* GPS drag (spoofer): offset grows until the maximum */
+    if (w->gps_dragging) {
+        w->gps_off_n += (double)(w->gps_drag_n * dt_s);
+        w->gps_off_e += (double)(w->gps_drag_e * dt_s);
+        if (sqrt(w->gps_off_n * w->gps_off_n + w->gps_off_e * w->gps_off_e) >= w->gps_drag_max_m)
+            w->gps_dragging = false;
+    }
+
     /* position */
     float h = w->heading_deg * PI_F / 180.0f;
     w->east_m += (double)((v * KN_TO_MS * sinf(h) + w->current_e) * dt_s);
@@ -148,21 +158,32 @@ void world_publish(world_t *w, uint32_t t_ms)
                                w->rud.angle_deg <= -w->rud.max_angle_neg_deg + 0.05f,
                                w->rud.angle_deg >= w->rud.max_angle_deg - 0.05f);
 
+    sim_hal_set_water_speed(w->speed_sensor,
+                            w->speed_kn * w->speed_sensor_scale + 0.05f * boat_rand_gauss(&w->pw_rng));
+
     if (t_ms % 1000u == 0u && !w->gps_fail) {
         hal_gps_t g;
-        double n = w->north_m + w->gps_pos_noise_m * boat_rand_gauss(&w->gps_rng);
-        double e = w->east_m + w->gps_pos_noise_m * boat_rand_gauss(&w->gps_rng);
+        double n = w->north_m + w->gps_pos_noise_m * boat_rand_gauss(&w->gps_rng) + w->gps_off_n;
+        double e = w->east_m + w->gps_pos_noise_m * boat_rand_gauss(&w->gps_rng) + w->gps_off_e;
         double lat, lon;
         world_t tmp = *w;
         tmp.north_m = n; tmp.east_m = e;
         world_latlon(&tmp, &lat, &lon);
-        float sog = world_sog_kn(w);
+        float sog = world_sog_kn(w), cog = world_cog_deg(w);
+        if (w->gps_dragging) {
+            /* a spoofer makes speed and course match its fake track */
+            float h = w->heading_deg * PI_F / 180.0f;
+            float vn = w->speed_kn * KN_TO_MS * cosf(h) + w->current_n + w->gps_drag_n;
+            float ve = w->speed_kn * KN_TO_MS * sinf(h) + w->current_e + w->gps_drag_e;
+            sog = sqrtf(vn * vn + ve * ve) / KN_TO_MS;
+            cog = wrap360(atan2f(ve, vn) * 180.0f / PI_F);
+        }
         g.lat_deg = lat;
         g.lon_deg = lon;
         g.sog_kn = fmaxf(0.0f, sog + 0.1f * boat_rand_gauss(&w->gps_rng));
-        g.cog_deg = wrap360(world_cog_deg(w) +
-                    (0.1f / fmaxf(sog, 0.2f)) * 57.3f * boat_rand_gauss(&w->gps_rng));
+        g.cog_deg = wrap360(cog + (0.1f / fmaxf(sog, 0.2f)) * 57.3f * boat_rand_gauss(&w->gps_rng));
         g.fix = true;
+        g.jam_spoof = w->gps_flag;
         g.time_ms = t_ms;
         sim_hal_gps_message(&g);
     }

@@ -24,7 +24,9 @@ Actuators
 
 Sensors
 - Compass (heading), gyro (yaw rate; roll rate if available).
-- GPS via UART: lat, lon, SOG, COG, fix, timestamp.
+- GPS via UART: lat, lon, SOG, COG, fix, timestamp, receiver spoof/jam flag.
+- Optional: speed sensor (paddlewheel), neutral switch, steering motor current, steering limit switches.
+- app/dr.c: position estimate — GPS when trusted, dead reckoning otherwise (learned current + throttle→speed table, uncertainty). Every fix passes an integrity check (spoof flag, jump, speed, course, slow drag); a rejected fix counts as GPS failure.
 
 Modes
 - STANDBY, MANEUVER, CRUISE, NAV, TRAINING.
@@ -35,6 +37,8 @@ Safety rules — never break them
 - Every fault / timeout / STANDBY → throttle idle + neutral FIRST, then steering off.
   - Compass lost while moving (CRUISE / NAV / TRAINING): keep steering on the gyro (target yaw rate 0) until throttle is idle and gear is neutral, then steering off. If the gyro fails too: drive the outboard to its estimated centre, then off.
   - Exception: compass lost in MANEUVER → alarm only, stay in MANEUVER (manual steering doesn't need the compass).
+- GPS lost / suspect in NAV: alarm, continue by dead reckoning at reduced speed; uncertainty > limit (200 m) or DR > 10 min → CRUISE on current heading, slow, alarm. Never declare arrival while the uncertainty is larger than the arrival radius.
+- After an integrity alarm, GPS is trusted again only after N consistent fixes that agree with dead reckoning; then blend smoothly (no steering jump).
 - Throttle changes are rate-limited.
 - Reverse power is limited.
 - Every feature has sim tests for its failure cases.

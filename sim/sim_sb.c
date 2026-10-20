@@ -800,9 +800,11 @@ static void phase5(void)
                  "throttle now %.1f %%, speed %.1f kn, heading %.0f (track 120)",
                  w.t_arrive, mode_reason_name(w.why), mode_name(sb_mode(&x.sb)), sim_hal_alarm() ? "on" : "OFF",
                  gear_name(x.w.engaged), sim_hal_throttle(), world_sog_kn(&x.w), x.w.heading_deg);
-        test_report("P5 NAV GPS loss halfway: CRUISE on current heading, reduced speed, alarm",
-                    w.why == WHY_GPS_LOST && sb_mode(&x.sb) == MODE_CRUISE && sim_hal_alarm() &&
-                    x.w.engaged == GEAR_F && world_sog_kn(&x.w) < 11.0f &&
+        /* since GPS-denied navigation: NAV carries on by dead reckoning,
+         * then (uncertain at the waypoint) slow CRUISE - not straight to CRUISE */
+        test_report("P5 NAV GPS loss halfway: continues by dead reckoning, alarm",
+                    w.why != WHY_GPS_LOST && w.t_arrive > 60.0f && sim_hal_alarm() &&
+                    (x.sb.alarm_bits & SB_ALM_GPS_LOST) && x.w.engaged == GEAR_F &&
                     fabsf(hdg_err(x.w.heading_deg, 120.0f)) < 15.0f, d);
     }
 
@@ -1453,10 +1455,211 @@ static void fixes(void)
     }
 }
 
+/* --------------------------------------------------- GPS-denied NAV -- */
+
+typedef enum { GF_NONE = 0, GF_LOSS, GF_DRAG, GF_JUMP, GF_FLAG, GF_RETURN } gfault_t;
+
+typedef struct {
+    /* results */
+    float t_detect;             /* fault start -> GPS no longer trusted, s (-1 = never) */
+    dr_reason_t why;
+    uint32_t suspects_before;   /* integrity alarms before the fault (false alarms) */
+    float est_err_fault;        /* worst |estimate - true| while the fault was on */
+    float xte_true_max;         /* worst true cross-track error after 300 m */
+    float end_err, end_unc;     /* estimate error / uncertainty when NAV ended */
+    float ratio_max;            /* worst error / uncertainty while in DR */
+    mode_reason_t end_why;
+    float end_t;
+    float t_recover;            /* fault cleared -> GPS trusted again, s (-1 = never) */
+    float steer_step_max;       /* largest course-to-steer change in one 50 ms step after recovery */
+    float steer_step_normal;    /* same, normal GPS navigation before the fault */
+    float err_after_recover;    /* estimate error 30 s after recovery */
+    uint32_t suspects_total;
+} mission_t;
+
+static mission_t gps_mission(gfault_t fault, float cur_e, float cur_n, bool paddlewheel, uint32_t seed)
+{
+    const float brg = 60.0f, dist = 3000.0f, speed = 12.0f;
+    sbsim_t x;
+    mission_t m;
+    memset(&m, 0, sizeof m);
+    m.t_detect = m.t_recover = -1.0f;
+    m.end_t = -1.0f;
+
+    sbsim_init(&x, seed, brg, 0.0f, NULL);
+    x.w.sea_state = 1.0f;
+    x.w.current_e = cur_e;
+    x.w.current_n = cur_n;
+    x.w.speed_sensor = paddlewheel;
+    sbsim_run(&x, 3000u, NULL, NULL);
+
+    double n0 = x.w.north_m, e0 = x.w.east_m, lat, lon;
+    float tn = cosf(brg * 0.0174533f), te = sinf(brg * 0.0174533f);
+    world_t tmp = x.w;
+    tmp.north_m = n0 + dist * tn;
+    tmp.east_m = e0 + dist * te;
+    world_latlon(&tmp, &lat, &lon);
+    sb_set_waypoint(&x.sb, lat, lon, speed);
+    sb_request_mode(&x.sb, MODE_NAV, WHY_USER);
+
+    uint32_t t_fault = 0u, t_clear = 0u, t_rec = 0u;
+    float prev_target = x.sb.ap.target_heading;
+    while (x.t < 1500000u) {
+        sbsim_run(&x, x.t + 50u, NULL, NULL);
+        float rn = (float)(x.w.north_m - n0), re = (float)(x.w.east_m - e0);
+        float along = rn * tn + re * te, xte = re * tn - rn * te;
+        double en, ee;
+        dr_latlon(&x.sb.dr, &lat, &lon);
+        world_from_latlon(lat, lon, &en, &ee);
+        float err = (float)sqrt((en - x.w.north_m) * (en - x.w.north_m) + (ee - x.w.east_m) * (ee - x.w.east_m));
+        bool nav = sb_mode(&x.sb) == MODE_NAV;
+
+        if (nav && along > 300.0f && fabsf(xte) > m.xte_true_max) m.xte_true_max = fabsf(xte);
+        float step = fabsf(hdg_err(x.sb.ap.target_heading, prev_target));
+        prev_target = x.sb.ap.target_heading;
+
+        /* start the fault at 1 km */
+        if (fault != GF_NONE && t_fault == 0u && along >= 1000.0f) {
+            t_fault = x.t;
+            m.suspects_before = x.sb.dr.suspects;
+            switch (fault) {
+            case GF_LOSS: case GF_RETURN: x.w.gps_fail = true; break;
+            case GF_DRAG:   /* drag 300 m to the right of the track at 0.5 m/s */
+                x.w.gps_dragging = true;
+                x.w.gps_drag_n = -te * 0.5f; x.w.gps_drag_e = tn * 0.5f;
+                x.w.gps_drag_max_m = 300.0f;
+                break;
+            case GF_JUMP:   /* 500 m to the left, for 2 minutes */
+                x.w.gps_off_n = 500.0 * te; x.w.gps_off_e = -500.0 * tn;
+                break;
+            case GF_FLAG: x.w.gps_flag = true; break;
+            default: break;
+            }
+        }
+        if (t_fault) {
+            float since = (float)(x.t - t_fault) * 0.001f;
+            if (m.t_detect < 0.0f && x.sb.dr.state != DR_GPS) { m.t_detect = since; m.why = x.sb.dr.why; }
+            /* clear the fault */
+            if (!t_clear && ((fault == GF_RETURN && since >= 300.0f) || (fault == GF_JUMP && since >= 120.0f) ||
+                             (fault == GF_FLAG && since >= 60.0f))) {
+                t_clear = x.t;
+                x.w.gps_fail = false;
+                x.w.gps_off_n = x.w.gps_off_e = 0.0;
+                x.w.gps_flag = false;
+            }
+            if (!t_clear && err > m.est_err_fault) m.est_err_fault = err;
+            if (x.sb.dr.state == DR_DEAD || x.sb.dr.state == DR_RECOVER) {
+                float r = err / fmaxf(x.sb.dr.unc_m, 1.0f);
+                if (r > m.ratio_max) m.ratio_max = r;
+            }
+            if (t_clear && !t_rec && x.sb.dr.state == DR_GPS) {
+                t_rec = x.t;
+                m.t_recover = (float)(x.t - t_clear) * 0.001f;
+            }
+            if (t_rec && x.t <= t_rec + 60000u && nav && step > m.steer_step_max) m.steer_step_max = step;
+            if (t_rec && x.t >= t_rec + 30000u && m.err_after_recover == 0.0f) m.err_after_recover = err + 1e-3f;
+        } else if (nav && along > 300.0f && step > m.steer_step_normal) {
+            m.steer_step_normal = step;
+        }
+        if (!nav && m.end_t < 0.0f) {
+            m.end_t = (float)x.t * 0.001f;
+            m.end_err = err;
+            m.end_unc = x.sb.dr.unc_m;
+            m.end_why = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u)->why;
+            break;
+        }
+    }
+    m.suspects_total = x.sb.dr.suspects;
+    return m;
+}
+
+static void gps_denied(void)
+{
+    char d[500];
+    printf("\n=== GPS-denied NAV (3 km mission at 12 kn, fault at 1 km) ===\n");
+
+    /* GPS loss: with / without current, with / without paddlewheel */
+    struct { const char *name; float ce, cn; bool pw; } loss[] = {
+        { "GPS loss at 1 km, no current, no speed sensor",       0.0f,  0.0f, false },
+        { "GPS loss at 1 km, 0.8 m/s side current, no sensor",   0.4f, -0.7f, false },
+        { "GPS loss at 1 km, no current, paddlewheel",           0.0f,  0.0f, true  },
+        { "GPS loss at 1 km, 0.8 m/s side current, paddlewheel", 0.4f, -0.7f, true  },
+    };
+    printf("%-52s | %8s %8s %6s | %-18s\n", "case", "err end", "unc end", "ratio", "ended");
+    for (unsigned i = 0; i < sizeof loss / sizeof loss[0]; i++) {
+        mission_t m = gps_mission(GF_LOSS, loss[i].ce, loss[i].cn, loss[i].pw, 91u + i);
+        printf("%-52s | %7.1f m %7.1f m %6.2f | %s after %.0f s\n", loss[i].name, m.end_err, m.end_unc,
+               m.ratio_max, mode_reason_name(m.end_why), m.end_t);
+        snprintf(d, sizeof d, "position error at the end %.1f m vs uncertainty %.1f m (worst ratio in DR %.2f); "
+                 "true cross-track max %.0f m; ended: %s; false integrity alarms before the loss %u",
+                 m.end_err, m.end_unc, m.ratio_max, m.xte_true_max, mode_reason_name(m.end_why), m.suspects_before);
+        char name[96];
+        snprintf(name, sizeof name, "DR %s", loss[i].name);
+        test_report(name, m.t_detect >= 0.0f && m.why == DR_WHY_LOST && m.ratio_max <= 1.0f &&
+                    m.suspects_before == 0u &&
+                    (m.end_why == WHY_ARRIVAL_UNCERTAIN || m.end_why == WHY_ARRIVED || m.end_why == WHY_DR_LIMIT), d);
+    }
+
+    /* spoofer drags the position 300 m sideways */
+    {
+        mission_t m = gps_mission(GF_DRAG, 0.0f, 0.0f, false, 95u);
+        snprintf(d, sizeof d, "caught after %.0f s (%s); estimate error while spoofed max %.0f m; boat pulled off "
+                 "the line max %.0f m (spoofer: 300 m); ended %s with error %.0f m vs uncertainty %.0f m",
+                 m.t_detect, dr_reason_name(m.why), m.est_err_fault, m.xte_true_max,
+                 mode_reason_name(m.end_why), m.end_err, m.end_unc);
+        test_report("GPS spoof dragging 300 m sideways: caught, boat not led away",
+                    m.t_detect >= 0.0f && m.why != DR_WHY_LOST && m.t_detect < 180.0f &&
+                    m.est_err_fault < 100.0f && m.xte_true_max < 100.0f && m.suspects_before == 0u, d);
+    }
+    /* sudden 500 m jump (2 min), then the GPS is right again */
+    {
+        mission_t m = gps_mission(GF_JUMP, 0.0f, 0.0f, false, 96u);
+        snprintf(d, sizeof d, "caught after %.0f s (%s); estimate error during the jump max %.0f m; GPS trusted again "
+                 "%.0f s after it was right; steering step after recovery %.1f deg (normal %.1f); ended %s",
+                 m.t_detect, dr_reason_name(m.why), m.est_err_fault, m.t_recover, m.steer_step_max,
+                 m.steer_step_normal, mode_reason_name(m.end_why));
+        test_report("GPS jump of 500 m: caught at once, recovered smoothly",
+                    m.t_detect >= 0.0f && m.t_detect <= 2.0f && m.why == DR_WHY_JUMP && m.est_err_fault < 30.0f &&
+                    m.t_recover > 0.0f && m.steer_step_max <= fmaxf(5.0f, 1.5f * m.steer_step_normal) &&
+                    m.end_why == WHY_ARRIVED, d);
+    }
+    /* receiver reports spoofing / jamming */
+    {
+        mission_t m = gps_mission(GF_FLAG, 0.0f, 0.0f, false, 97u);
+        snprintf(d, sizeof d, "caught after %.0f s (%s), GPS trusted again %.0f s after the flag cleared, ended %s",
+                 m.t_detect, dr_reason_name(m.why), m.t_recover, mode_reason_name(m.end_why));
+        test_report("GPS receiver spoof/jam flag: treated as GPS failure",
+                    m.t_detect >= 0.0f && m.t_detect <= 2.0f && m.why == DR_WHY_FLAG && m.t_recover > 0.0f, d);
+    }
+    /* GPS back after 5 minutes */
+    {
+        mission_t m = gps_mission(GF_RETURN, 0.0f, 0.0f, false, 98u);
+        snprintf(d, sizeof d, "DR for 300 s, GPS trusted again %.0f s after it returned; steering step %.1f deg "
+                 "(normal %.1f); estimate error 30 s later %.1f m; ended %s, error %.1f m",
+                 m.t_recover, m.steer_step_max, m.steer_step_normal, m.err_after_recover,
+                 mode_reason_name(m.end_why), m.end_err);
+        test_report("GPS returning after 5 min: N consistent fixes, smooth blend, no steering jump",
+                    m.t_recover > 0.0f && m.t_recover < 20.0f &&
+                    m.steer_step_max <= fmaxf(5.0f, 1.5f * m.steer_step_normal) &&
+                    m.err_after_recover < 30.0f && m.end_why == WHY_ARRIVED, d);
+    }
+    /* no false alarms with a good GPS (with current, turns at the start) */
+    {
+        mission_t a = gps_mission(GF_NONE, 0.0f, 0.0f, false, 99u);
+        mission_t b = gps_mission(GF_NONE, 0.4f, -0.7f, false, 100u);
+        snprintf(d, sizeof d, "integrity alarms with a good GPS: %u (no current), %u (side current); both %s / %s",
+                 a.suspects_total, b.suspects_total, mode_reason_name(a.end_why), mode_reason_name(b.end_why));
+        test_report("GPS integrity: no false alarms with a good GPS",
+                    a.suspects_total == 0u && b.suspects_total == 0u &&
+                    a.end_why == WHY_ARRIVED && b.end_why == WHY_ARRIVED, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_tests(void)
 {
+    gps_denied();
     fixes();
     phase2();
     phase3();

@@ -39,6 +39,8 @@ typedef enum {
     WHY_TRAINING_ABORT,
     WHY_TEST,               /* sim test setup */
     WHY_GEAR_FAULT,         /* neutral switch did not confirm */
+    WHY_DR_LIMIT,           /* dead reckoning too uncertain / too long */
+    WHY_ARRIVAL_UNCERTAIN,  /* at the waypoint by DR, but not sure enough */
     WHY_COUNT
 } mode_reason_t;
 

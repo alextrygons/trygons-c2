@@ -263,3 +263,19 @@ void sim_hal_set_limit_switches(bool fitted, bool left, bool right)
     s_limit_left = left;
     s_limit_right = right;
 }
+
+static bool  s_water_fitted = false;
+static float s_water_kn;
+
+bool hal_read_water_speed(float *kn)
+{
+    if (!s_water_fitted) return false;
+    *kn = s_water_kn;
+    return true;
+}
+
+void sim_hal_set_water_speed(bool fitted, float kn)
+{
+    s_water_fitted = fitted;
+    s_water_kn = kn;
+}

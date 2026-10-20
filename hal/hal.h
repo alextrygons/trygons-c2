@@ -106,6 +106,8 @@ typedef struct {
     float    sog_kn;        /* speed over ground */
     float    cog_deg;       /* course over ground, 0..360 */
     bool     fix;           /* position valid */
+    bool     jam_spoof;     /* receiver reports jamming / spoofing (e.g. u-blox
+                               spoofDetState / jamInd); false if not supported */
     uint32_t time_ms;       /* receiver timestamp (ms of the day) */
 } hal_gps_t;
 
@@ -127,6 +129,10 @@ typedef struct {
 
 /* Current control positions. Returns false if no control panel. */
 bool hal_read_controls(hal_controls_t *c);
+
+/* Optional speed sensor (paddlewheel): speed through water, kn.
+ * Returns false if not fitted. */
+bool hal_read_water_speed(float *kn);
 
 /*
  * Non-volatile storage for the calibration record (an opaque block of
