@@ -789,6 +789,10 @@ static void gw_status(sb_t *s, const proto_frame_t *f)
         s->alarm = true;
         s->alarm_bits |= SB_ALM_GW_STORAGE;
     }
+    if ((flags & SB_GWF_FALLBACK) & ~g->flags) {
+        s->alarm = true;
+        s->alarm_bits |= SB_ALM_CHANNEL;                 /* alarm only, no mode change */
+    }
     g->flags = flags;
     g->channel = proto_rd_u8(&r);
     g->stations = proto_rd_u8(&r);

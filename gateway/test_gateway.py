@@ -118,6 +118,7 @@ class GwRunner:
 
 def gw_cfg(sim, root, **extra):
     base = {"aurix": sim.gw_addr, "set_clock": False, "status_s": 1.0 / sim.speed,   # 1 Hz boat time
+            "channels": {"driver": "sim", "starlink_status": False},
             "storage": {"root": root, "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                         "full_free_gb": 0.0}}
     from common import deep_merge
@@ -585,7 +586,248 @@ def section_b():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-SECTIONS = {"A": section_a, "B": section_b}
+# ------------------------------------------------------------------- section C --
+
+class ChannelNet:
+    """One network-simulator proxy per internet channel; only the channel
+    the gateway made active carries traffic (like the real boat)."""
+
+    def __init__(self, gw, station_port):
+        self.gw = gw
+        self.drv = gw.net.driver
+        self.proxies = {}
+        prof = {"4G": "4g", "4G2": "4g", "RF": "rf", "STARLINK": "starlink"}
+        for i, n in enumerate(gw.net.order):
+            p = PROFILES[prof.get(n, "4g")].copy()
+            p.pop("outage_every_s", None)                      # outages come from the test here
+            self.proxies[n] = (free_port(), NetSim(0, station_port, p, seed=i))
+        for n, (port, ns) in self.proxies.items():
+            ns.listen_port = port
+            ns.start()
+        self.run = True
+        threading.Thread(target=self._follow, daemon=True).start()
+
+    def _follow(self):
+        while self.run:
+            for n, (_, ns) in self.proxies.items():
+                ns.forced_down = (self.drv.active != n) or not self.drv.state[n]["internet"]
+            time.sleep(0.05)
+
+    def port(self, n=None):
+        return self.proxies[n or self.drv.active][0]
+
+    def stop(self):
+        self.run = False
+        for _, ns in self.proxies.values():
+            ns.stop()
+
+
+def wait_for(cond, t):
+    end = time.time() + t
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def section_c():
+    print("\n=== Section C: internet channels (4G, RF, STARLINK = emergency only) ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_c_")
+    try:
+        sim = Sim(2.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        cfg = gw_cfg_b(sim, root, channels={"driver": "sim", "check_s": 0.2, "stable_s": 3.0, "fail_s": 3.0,
+                                            "trial_s": 6.0, "starlink_status": False})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        net = g.net
+        drv = net.driver
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()
+        st = drv.state
+        st["4G2"]["internet"] = False                          # only one SIM card in the router
+        time.sleep(1.0)
+        cn = ChannelNet(g, sp)
+
+        def used(n):
+            return any(a == n for _, a in drv.switches)
+
+        # C1 AUTO: 4G -> RF when 4G fails; never STARLINK while a normal channel works
+        a0 = net.active
+        st["4G"]["internet"] = False
+        to_rf = wait_for(lambda: net.active == "RF", 3)
+        report("C1 AUTO: 4G down -> RF; STARLINK never used while 4G or RF works",
+               a0 == "4G" and to_rf and not used("STARLINK"),
+               "start %s; 4G down -> %s; STARLINK used: %s" % (a0, net.active, used("STARLINK")))
+
+        # C2 every normal channel down -> STARLINK + banner flag + data saver + no sync
+        st["RF"]["internet"] = False
+        on_sl = wait_for(lambda: net.active == "STARLINK", 3)
+        tel = w.until(lambda d: d.get("gw_flags", 0) & proto.GWF_STARLINK, 5)
+        viewer = Client(cn.port(), "vic", PW["vic"], name="vic over starlink")
+        viewer.pump(3.0)
+        lite_ok = viewer.l.tmode == "lite"
+        report("C2 all normal channels down -> STARLINK, emergency banner flag, data saver on, sync stopped",
+               on_sl and tel is not None and tel["gw_flags"] & proto.GWF_SAVER and lite_ok and not net.sync_allowed(),
+               "active %s; boat telemetry flags STARLINK %s SAVER %s; station telemetry %s; sync allowed %s" % (
+                   net.active, bool(tel and tel["gw_flags"] & proto.GWF_STARLINK),
+                   bool(tel and tel["gw_flags"] & proto.GWF_SAVER), viewer.l.tmode, net.sync_allowed()))
+        viewer.close()
+
+        # C3 4G back -> stays on STARLINK until 4G is stable (3 s here, 60 s default), then back
+        t0 = time.time()
+        st["4G"]["internet"] = True
+        time.sleep(1.0)
+        still = net.active == "STARLINK"
+        back = wait_for(lambda: net.active == "4G", 6)
+        report("C3 4G back -> automatic return once it has been stable",
+               still and back and 2.5 <= time.time() - t0 <= 5.0,
+               "1 s after 4G came back: still %s; back on %s after %.1f s (stable time 3 s)" % (
+                   "STARLINK" if still else "?", net.active, time.time() - t0))
+        st["RF"]["internet"] = True
+
+        # C4 VIEWER can't change; a HELM user without HELM (remote) can't; STRICT only on board
+        vic = Client(cn.port(), "vic", PW["vic"])
+        alice = Client(cn.port(), "alice", PW["alice"])
+        boat = Client(sp, "bob", PW["bob"], local=True, name="bob on board")
+
+        def chan(c, mode, ch=None, confirm=False, keep=False):
+            c.acks.clear()
+            c.l.send_msg({"t": "channel_keep"} if keep else {"t": "channel", "mode": mode, "channel": ch,
+                                                             "confirm": confirm})
+            end = time.time() + 3
+            while time.time() < end:
+                try:
+                    kind, d = c.l.events.get(timeout=0.1)
+                except Exception:
+                    continue
+                if kind == "channel_ack":
+                    return d
+            return None
+
+        r_v = chan(vic, "MANUAL", "RF")
+        r_a = chan(alice, "MANUAL", "RF")
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        r_strict = chan(alice, "MANUAL_STRICT", "RF")
+        r_sl = chan(alice, "MANUAL", "STARLINK")
+        report("C4 VIEWER and non-HELM remote can't change the channel; STRICT only on board; STARLINK needs confirm",
+               r_v and not r_v["ok"] and r_a and not r_a["ok"] and r_strict and not r_strict["ok"] and
+               r_sl and not r_sl["ok"] and r_sl["needs_confirm"],
+               "viewer: %s | remote without HELM: %s | STRICT from remote: %s | STARLINK without confirm: %s" % (
+                   r_v and r_v["text"], r_a and r_a["text"], r_strict and r_strict["text"], r_sl and r_sl["text"]))
+
+        # C5 remote manual switch to a WORKING channel: reconnect over it, Keep -> kept
+        r_rf = chan(alice, "MANUAL", "RF")
+        switched = wait_for(lambda: net.active == "RF", 2)
+        alice.close()                                           # the old link (4G) is gone for her
+        alice = Client(cn.port("RF"), "alice", PW["alice"], name="alice over RF")
+        r_keep = chan(alice, None, keep=True)
+        time.sleep(7.0)                                         # longer than the 6 s trial
+        report("C5 remote switch to a working channel: reconnect over it, KEEP -> kept",
+               r_rf and r_rf["ok"] and switched and r_keep and r_keep["ok"] and net.active == "RF" and net.mode == "MANUAL",
+               "ask MANUAL RF: %s; switched %s; reconnected over RF and kept: %s; after the trial time: %s %s" % (
+                   r_rf and r_rf["ok"], switched, r_keep and r_keep["text"], net.mode, net.active))
+
+        # C6 remote manual switch to a DEAD channel: can't reconnect, no Keep -> revert, logged
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        st["4G2"]["internet"] = False
+        st["4G2"]["up"] = True
+        r_dead = chan(alice, "MANUAL", "4G2")
+        t0 = time.time()
+        reverted = wait_for(lambda: net.active == "RF" and net.mode == "MANUAL" and net.manual == "RF" and
+                            time.time() - t0 > 2, 12)
+        dt = time.time() - t0
+        rev = [e for e in g.audit.recent if e["kind"] == "channel_trial_reverted"]
+        report("C6 remote switch to a dead channel: no KEEP possible -> back to the last working channel",
+               r_dead and r_dead["ok"] and reverted and 5.0 <= dt <= 9.0 and rev,
+               "ask MANUAL 4G SIM 2 (dead): %s; back to %s %s after %.1f s (trial 6 s); audit: %s" % (
+                   r_dead and r_dead["ok"], net.mode, net.active, dt, rev[-1] if rev else None))
+        alice.close()
+
+        # C7 MANUAL STRICT from on board: allowed with a warning; never switches
+        r_st = chan(boat, "MANUAL_STRICT", "RF", confirm=True)
+        chan(boat, None, keep=True)
+        st["RF"]["internet"] = False
+        time.sleep(5.0)
+        strict_stays = net.active == "RF"
+        st["RF"]["internet"] = True
+        report("C7 MANUAL STRICT (on board only, with warning) never switches, even when the channel fails",
+               r_st and r_st["ok"] and "WARNING" in r_st["text"] and strict_stays,
+               "%s | RF failed 5 s: still on %s" % (r_st and r_st["text"][:80], net.active))
+
+        # C8 MANUAL channel fails -> fallback + CHANNEL FALLBACK alarm on the boat; back when stable
+        r_m = chan(boat, "MANUAL", "RF")
+        chan(boat, None, keep=True)
+        st["RF"]["internet"] = False
+        fb = wait_for(lambda: net.fallback and net.active == "4G", 6)
+        al = w.until(lambda d: d["alarm_bits"] & 0x80000, 5)
+        st["RF"]["internet"] = True
+        back = wait_for(lambda: net.active == "RF" and not net.fallback, 8)
+        report("C8 MANUAL channel fails -> next working channel + alarm CHANNEL FALLBACK; back when it is stable",
+               r_m and r_m["ok"] and fb and al is not None and al["mode"] == 0 and back,
+               "RF failed -> %s (fallback %s); boat alarm %s, mode %s; RF back -> %s" % (
+                   "4G" if fb else net.active, fb, al is not None, al and al["mode_name"], net.active))
+
+        # C9 data counters, STARLINK session / month and the monthly warning
+        chan(boat, "AUTO")
+        chan(boat, None, keep=True)
+        net.channels["STARLINK"]["monthly_warn_gb"] = 0.001             # 1 MB for the test
+        for n in ("4G", "4G2", "RF"):
+            st[n]["internet"] = False
+        wait_for(lambda: net.active == "STARLINK", 3)
+        for _ in range(10):
+            drv.bytes["STARLINK"] += 300000
+            drv.bytes["4G"] += 100000
+            time.sleep(0.25)
+        info = net.info()
+        sl = info["starlink"]
+        c4 = [c for c in info["channels"] if c["name"] == "STARLINK"][0]
+        report("C9 data used today / this month per channel; STARLINK session counter and monthly warning",
+               c4["today_mb"] >= 2.0 and sl["session_mb"] >= 2.0 and sl["warning"],
+               "STARLINK today %.1f MB, month %.1f MB, this session %.1f MB, warning (limit %s GB) %s" % (
+                   c4["today_mb"], c4["month_mb"], sl["session_mb"], sl["warn_gb"], sl["warning"]))
+        for n in ("4G", "RF"):
+            st[n]["internet"] = True
+        # C10 the RUT901 driver: mwan3 metrics it sets, router answers it reads
+        from channels import RutosDriver, DEFAULT_CHANNELS
+        sent = []
+        mwan_out = (" interface mob1s1a1 is online and tracking is active\n"
+                    " interface mob1s2a1 is offline and tracking is down\n"
+                    " interface wan is offline and tracking is down\n---\n-71\nLTE\nVodafone GR\n")
+        rd = RutosDriver({}, {c["name"]: c for c in DEFAULT_CHANNELS})
+
+        def fake_ssh(cmd, timeout=8):
+            sent.append(cmd)
+            if cmd.startswith("mwan3"):
+                return mwan_out
+            if cmd.startswith("ping"):
+                return ("3 packets transmitted, 3 packets received, 0% packet loss\n"
+                        "round-trip min/avg/max = 40.1/52.3/70.2 ms")
+            return ""
+        rd._ssh = fake_ssh
+        rd.apply("STARLINK", ["4G", "4G2", "RF", "STARLINK"])
+        s4 = rd.status()
+        set_cmd = sent[0]
+        report("C10 RUT901 driver: sets mwan3 metrics (wanted = 1), reads online state, latency, 4G signal",
+               "mwan3.member_wan.metric=1" in set_cmd and "mwan3.member_mob1s1a1.metric=10" in set_cmd and
+               "mwan3 reload" in set_cmd and s4["4G"]["internet"] and s4["4G"]["latency_ms"] == 52.3 and
+               s4["4G"]["signal"]["rssi_dbm"] == "-71" and not s4["STARLINK"]["internet"] and "standby" in s4["4G2"]["note"],
+               "commands: %s | 4G: online %s, %.1f ms, %s dBm %s %s | SIM 2: %s" % (
+                   set_cmd[:110] + "...", s4["4G"]["internet"], s4["4G"]["latency_ms"], s4["4G"]["signal"]["rssi_dbm"],
+                   s4["4G"]["signal"]["type"], s4["4G"]["signal"]["operator"], s4["4G2"].get("note")))
+        for c in (vic, boat):
+            c.close()
+        cn.stop()
+        link.stop()
+        gw.stop()
+        sim.stop()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"A": section_a, "B": section_b, "C": section_c}
 
 
 def main():

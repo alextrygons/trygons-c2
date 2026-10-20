@@ -41,6 +41,16 @@ DEFAULTS = {
         "lite_hz": 2.0,
         "lost_s": 5.0,                  # no answer this long -> station lost
     },
+    "channels": {
+        "driver": "rutos",              # "rutos" (Teltonika RUT901), "policy" (the Pi routes), "sim"
+        "router": {"host": "10.42.0.1", "ssh_user": "root", "ssh_key": "/home/trygons/.ssh/id_ed25519",
+                   "ping_host": "1.1.1.1"},
+        "check_s": 10.0,                # health / status of every channel
+        "stable_s": 60.0,               # a channel back this long -> used again (AUTO)
+        "fail_s": 30.0,                 # MANUAL: no internet this long -> fall back
+        "trial_s": 60.0,                # a switch must be confirmed (Keep) within this
+        "list": None,                   # None = channels.DEFAULT_CHANNELS (4G, 4G SIM 2, RF, STARLINK)
+    },
     "audit_fallback": "/var/lib/trygons/audit",   # when the SSD is missing
     "web_port": 8080,                   # the iPhone page (VPN only)
     "web_helm": False,                  # HELM from the web page: OFF unless you switch it on

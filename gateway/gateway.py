@@ -22,6 +22,7 @@ import time
 
 from common import Clock, load_config, log, proto, setup_logging
 from audit import Audit
+from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAULT_CHANNELS
 from aurix import AurixLink
 from logstore import LogStore
 from stations import StationServer
@@ -56,6 +57,19 @@ class Gateway:
         self.audit = Audit(self.storage, self.clock, cfg.get("audit_fallback"))
         self.stations = StationServer(self, cfg["stations"])
         self.web = WebServer(self, cfg)
+        cc = cfg["channels"]
+        lst = cc.get("list") or DEFAULT_CHANNELS
+        chans = {c["name"]: c for c in lst}
+        drv = {"rutos": lambda: RutosDriver(cc.get("router", {}), chans),
+               "policy": lambda: PolicyDriver(cc.get("router", {}), chans),
+               "sim": lambda: SimDriver(list(chans))}[cc.get("driver", "rutos")]()
+        state = None
+        if self.storage.usable:
+            state = os.path.join(self.storage.folder("state"), "channels.json")
+        self.net = ChannelManager(cc, drv, audit=self.audit, state_path=state)
+        self.next_net = 0.0
+        self.stations.ext["channel"] = self._channel_msg
+        self.stations.ext["channel_keep"] = self._channel_keep
 
     def _on_telem(self, f):
         try:
@@ -69,9 +83,44 @@ class Gateway:
         self.telem2 = proto.decode_telem2(f.payload)
 
     # --- the 1 Hz status to the AURIX (also its "gateway alive" heartbeat) ---------
+    # --- internet channels (section C) ---------------------------------------------
+    def may_change(self, st):
+        """The HELM station or a station on the boat; never a VIEWER."""
+        if st.role == "VIEWER":
+            return False
+        return st.local or self.telem2.get("helm") == st.id
+
+    def _channel_msg(self, st, m):
+        ok, text, conf = self.net.request(m.get("mode"), m.get("channel"), user=st.user, local=st.local,
+                                          may=self.may_change(st), confirm_emergency=bool(m.get("confirm")),
+                                          switch_now=False)
+        st.send({"t": "channel_ack", "ok": ok, "text": text, "needs_confirm": conf})
+        if ok:      # answer first (the station's link may change), switch 1 s later
+            self.next_net = time.time() + 1.0
+
+    def _channel_keep(self, st, m):
+        ok, text = self.net.keep(st.user)
+        st.send({"t": "channel_ack", "ok": ok, "text": text, "needs_confirm": False})
+
+    def data_saver(self):
+        return self.net.data_saver()
+
+    def channel_text(self):
+        n = self.net
+        if not n.active:
+            return "no internet"
+        t = n.channels[n.active].get("label", n.active)
+        return ("STARLINK - EMERGENCY LINK" if n.on_emergency else t) + " (%s)" % n.mode
+
     def status_flags(self):
         st = self.storage.state
         flags = self.extra_flags
+        if self.net.fallback:
+            flags |= proto.GWF_FALLBACK
+        if self.net.on_emergency:
+            flags |= proto.GWF_STARLINK
+        if self.net.data_saver():
+            flags |= proto.GWF_SAVER
         if self.storage.alarm:
             flags |= proto.GWF_STORAGE
         if st == "FULL":
@@ -80,6 +129,13 @@ class Gateway:
 
     async def status_loop(self):
         while True:
+            if time.time() >= self.next_net:
+                self.next_net = time.time() + self.cfg["channels"].get("check_s", 10.0)
+                if isinstance(self.net.driver, SimDriver):
+                    self.net.tick()
+                else:                                   # SSH / ping take seconds: not in the event loop
+                    await asyncio.get_running_loop().run_in_executor(None, self.net.tick)
+                self.channel_id = self.net.channel_id()
             self.storage.check()
             self.logs.flush()
             self.station_count = len(self.stations.stations)
@@ -94,7 +150,8 @@ class Gateway:
         return {"uptime_s": int(time.time() - self.started), "aurix": self.aurix.connected,
                 "storage": self.storage.status(), "logs": self.logs.status(),
                 "clock": {"gps_valid": self.clock.gps_valid, "offset_s": round(self.clock.offset, 3),
-                          "utc": self.clock.stamp()}}
+                          "utc": self.clock.stamp()},
+                "net": self.net.info()}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -133,6 +190,7 @@ def main():
     if a.sim:
         extra = {"aurix": "tcp:127.0.0.1:5762", "set_clock": False,
                  "stations": {"listen": "127.0.0.1", "local_nets": ["127.0.0.1/32"]},
+                 "channels": {"driver": "sim"},
                  "audit_fallback": os.path.abspath("gw_data/audit_fallback"),
                  "storage": {"root": os.path.abspath("gw_data"), "require_mount": False}}
         os.makedirs("gw_data", exist_ok=True)

@@ -96,6 +96,7 @@
 #define SB_ALM_GATEWAY            0x10000u /* GATEWAY LOST: no frame from the Raspberry Pi for 3 s */
 #define SB_ALM_GW_STORAGE         0x20000u /* GATEWAY STORAGE: the Pi's USB SSD missing / failing */
 #define SB_ALM_REMOTE_LINK        0x40000u /* REMOTE LINK LOST: the remote HELM station disappeared */
+#define SB_ALM_CHANNEL            0x80000u /* CHANNEL FALLBACK: the chosen internet channel failed (gateway) */
 
 /* HELM: the one station whose commands are accepted (section B). */
 #define SB_HELM_NONE   0u

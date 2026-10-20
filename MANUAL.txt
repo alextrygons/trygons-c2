@@ -493,6 +493,40 @@ B. USERS, ROLES AND HELM
   * Connect the ground station through the gateway:
       python app.py gw:trygons-gw:5761     (asks for user + password)
 
+C. INTERNET CHANNELS (router Teltonika RUT901)
+  Channels: 4G (SIM 1), 4G SIM 2, RF (future), STARLINK.
+  STARLINK = EMERGENCY ONLY: metered, never used for sync, and in AUTO
+  only when every other channel is down.
+  The RUT901 has two SIM slots but one modem: only one SIM works at a time
+  (switching takes 30-90 s; SIM 2 shows "standby").
+
+  Ground station, Network tab: every channel with up/down, internet,
+  latency, loss, signal (4G), data used today / this month; the active one
+  marked ">". Buttons:
+    AUTO           failover by priority (4G, 4G SIM 2, RF); STARLINK only when
+                   all are down; back to a normal channel when it has been
+                   stable for 60 s.
+    MANUAL <ch>    use this channel; if it has no internet for 30 s ->
+                   the next working one + alarm CHANNEL FALLBACK; back when
+                   it is stable again. STARLINK asks "EMERGENCY LINK -
+                   metered data" first.
+    MANUAL STRICT  only this channel, never switch. Only from a station on
+                   the boat, with a warning.
+    KEEP           every switch you ask for is a TRIAL: press KEEP within
+                   60 s (over the new link). If you can't (the new link is
+                   dead), the gateway goes back to what worked - you can
+                   never lock yourself out from shore.
+  Only the HELM station or a station on the boat may change the channel.
+
+  While STARLINK is active: big "STARLINK - EMERGENCY LINK" banner, data
+  saver ON (reduced telemetry, cameras front only, low - part E), sync
+  stopped (part G), data counter for this session and the month, warning
+  at the monthly limit you set (gateway.json, monthly_warn_gb, 20 GB).
+
+  Setup of the RUT901 and Starlink: gateway\README.md section 13 (LAN
+  range 10.42.0.x FIRST, then Starlink in bypass mode on the WAN port,
+  failover with health checks, SSH key for the Pi).
+
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
@@ -530,6 +564,8 @@ B. USERS, ROLES AND HELM
   GATEWAY STORAGE        the Pi's USB SSD is missing / failing (no mode change)
   REMOTE LINK LOST       the remote station holding HELM disappeared; HELM
                          goes back to nobody (no mode change)
+  CHANNEL FALLBACK       the internet channel you chose (MANUAL) failed; the
+                         gateway uses the next working one (no mode change)
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file. Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
@@ -807,6 +843,9 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
   "stale command"                the link was too slow / interrupted: the
                                  command was older than 2 s, not carried out.
   Login refused, "too many..."   wait a minute (5 wrong passwords lock out).
+  Channel switched back by itself you did not press KEEP within 60 s.
+  STARLINK banner                all 4G / RF channels are down (AUTO), or you
+                                 chose it; it costs data - go back to AUTO.
   JOYSTICK FAULT: no frames      bridge not powered / TX wire / Teensy not
                                  running. Check the 5 V and the GND wire.
   JOYSTICK FAULT: STICK (or      plug, hub power. Is the hub powered by

@@ -21,7 +21,7 @@ import program
 import proto
 from link import Link, list_ports
 from gwclient import GatewayLink
-from tkinter import simpledialog
+from tkinter import messagebox, simpledialog
 
 try:
     import winsound
@@ -136,6 +136,7 @@ class App:
         self.joy_banner = tk.Label(self.banners, text="JOYSTICK IN CONTROL", font=F_HUGE, bg=ORANGE, fg=FG)
         self.alarm_banner = tk.Label(self.banners, text="", font=F_MED, bg=RED, fg="#ffffff")
         self.pick_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#ffd000", fg=FG)
+        self.sl_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#b00060", fg="#ffffff")
         self.alarm_ack = btn(self.banners, "ACK ALARM\n(STANDBY)",
                              lambda: self.cmd(proto.T_ALARM_ACK, b"", "alarm ack"), font=F_TXT)
 
@@ -297,6 +298,93 @@ class App:
         btn(jb, "Calibrate finish", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(1), "calibration finish"),
             font=F_TXT).pack(fill="x")
 
+    def _build_network(self, nt):
+        """Internet channels (through the gateway): status, mode, Keep."""
+        top = tk.Frame(nt, bg=BG)
+        top.pack(fill="x", pady=4)
+        btn(top, "AUTO", lambda: self.chan_req("AUTO"), font=F_MED).pack(side="left")
+        tk.Label(top, text="   channel", font=F_TXT, bg=BG).pack(side="left")
+        self.chan_var = tk.StringVar(value="4G")
+        self.chan_box = ttk.Combobox(top, textvariable=self.chan_var, values=["4G", "4G2", "RF", "STARLINK"],
+                                     width=10, font=F_MED, state="readonly")
+        self.chan_box.pack(side="left", padx=4)
+        btn(top, "MANUAL", lambda: self.chan_req("MANUAL", self.chan_var.get()), font=F_MED).pack(side="left")
+        btn(top, "MANUAL STRICT", lambda: self.chan_req("MANUAL_STRICT", self.chan_var.get()),
+            font=F_TXT).pack(side="left", padx=4)
+        self.keep_btn = btn(top, "KEEP", self.chan_keep, bg="#b0ffb0", font=F_BIG)
+        self.keep_btn.pack(side="left", padx=12)
+        self.net_lbl = tk.Label(nt, text="(only through the gateway: connect with gw:host:5761)",
+                                font=("Consolas", 13), bg=BG, justify="left", anchor="w")
+        self.net_lbl.pack(fill="x", padx=6, pady=4)
+
+    def chan_req(self, mode, channel=None, confirm=False):
+        if not isinstance(self.link, GatewayLink):
+            return self.say("Internet channels: only through the gateway", RED)
+        if mode == "MANUAL_STRICT" and not messagebox.askyesno(
+                "MANUAL STRICT", "MANUAL STRICT never switches - not even if %s fails.\n"
+                                 "Only possible from a station on the boat. Continue?" % channel):
+            return
+        self.link.send_msg({"t": "channel", "mode": mode, "channel": channel, "confirm": confirm})
+        self.chan_last = (mode, channel)
+        self.event("> channel %s %s" % (mode, channel or ""))
+
+    def chan_keep(self):
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "channel_keep"})
+
+    def on_channel_ack(self, d):
+        if d.get("needs_confirm"):
+            if messagebox.askyesno("EMERGENCY LINK", "STARLINK - EMERGENCY LINK - metered data.\n\n"
+                                                     "Use STARLINK now?"):
+                mode, ch = getattr(self, "chan_last", ("MANUAL", "STARLINK"))
+                self.chan_req(mode, ch, confirm=True)
+            return
+        self.say("channel: " + d.get("text", ""), GREEN if d.get("ok") else RED)
+        self.event(("OK   " if d.get("ok") else "NACK ") + "channel: " + d.get("text", ""))
+
+    def draw_network(self):
+        g = self.gw_status
+        n = (g or {}).get("net")
+        if not n:
+            self.show(self.sl_banner, False, row=3, column=0, columnspan=2, sticky="ew")
+            return
+        lines = ["mode %s%s   active: %s   data saver %s   sync %s" % (
+            n["mode"], " " + n["manual"] if n.get("manual") else "", n["active"] or "NONE",
+            "ON" if n["saver"] else "off", "allowed" if n["sync_allowed"] else "STOPPED")]
+        if n.get("fallback"):
+            lines.append("CHANNEL FALLBACK: the chosen channel failed - using %s" % n["active"])
+        if n.get("trial"):
+            lines.append("TRIAL: %s - press KEEP within %d s (%s), otherwise it goes back" % (
+                n["trial"]["to"], n["trial"]["left_s"], n["trial"]["user"]))
+        lines.append("")
+        lines.append("%-22s %-6s %-8s %8s %5s %9s %9s  %s" % ("channel", "state", "internet", "latency",
+                                                            "loss", "today MB", "month MB", "signal"))
+        for c in n["channels"]:
+            sig = c.get("signal") or {}
+            stxt = " ".join(str(v) for v in (sig.get("rssi_dbm"), sig.get("type"), sig.get("operator")) if v)
+            if c.get("note"):
+                stxt = c["note"][:30]
+            lines.append("%-22s %-6s %-8s %8s %5s %9.1f %9.1f  %s%s" % (
+                ("> " if c["active"] else "  ") + c["label"][:20], "up" if c["up"] else "DOWN",
+                "yes" if c["internet"] else "NO", "%.0f ms" % c["latency_ms"] if c.get("latency_ms") is not None else "-",
+                "%.0f%%" % c["loss_pct"] if c.get("loss_pct") is not None else "-",
+                c["today_mb"], c["month_mb"], stxt[:34], "  (metered)" if c["metered"] else ""))
+        sl = n.get("starlink") or {}
+        if sl:
+            lines.append("")
+            lines.append("STARLINK: this session %.1f MB, this month %.2f GB (warning at %s GB)%s" % (
+                sl["session_mb"], sl["month_gb"], sl["warn_gb"], "  -- MONTHLY DATA WARNING" if sl["warning"] else ""))
+            dish = sl.get("dish") or {}
+            if dish:
+                lines.append("dish: " + ", ".join("%s %s" % kv for kv in dish.items()))
+        self.net_lbl.configure(text="\n".join(lines), fg=RED if n.get("fallback") or n["emergency"] else FG)
+        if n["emergency"]:
+            self.sl_banner.configure(text="STARLINK - EMERGENCY LINK  (metered: %.1f MB this session, %.2f GB month)%s" % (
+                sl.get("session_mb", 0), sl.get("month_gb", 0), "  DATA WARNING" if sl.get("warning") else ""))
+        self.show(self.sl_banner, bool(n["emergency"]), row=3, column=0, columnspan=2, sticky="ew")
+        self.keep_btn.configure(text="KEEP (%d s)" % n["trial"]["left_s"] if n.get("trial") else "KEEP",
+                                bg="#ffd000" if n.get("trial") else "#b0ffb0")
+
     def _build_joytab(self, jt):
         """Joystick tab: source, link status, button map, guided mapping."""
         top = tk.Frame(jt, bg=BG)
@@ -418,6 +506,10 @@ class App:
         nb.add(jt, text="Joystick")
         self.joytab = jt
         self._build_joytab(jt)
+
+        nt = tk.Frame(nb, bg=BG)
+        nb.add(nt, text="Network")
+        self._build_network(nt)
 
         sy = tk.Frame(nb, bg=BG)
         nb.add(sy, text="System")
@@ -766,6 +858,9 @@ class App:
                     self.on_raw(d)
                 elif kind == "gw_status":
                     self.gw_status = d
+                    self.draw_network()
+                elif kind == "channel_ack":
+                    self.on_channel_ack(d)
                 elif kind == "status":
                     self.say(d, RED if "DISCONNECTED" in d else "#202020")
                     self.event(d)

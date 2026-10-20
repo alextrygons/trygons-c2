@@ -236,3 +236,74 @@ gateway user. View only. HELM from the web page only if you set
 6. Give users the smallest role they need (VIEWER for guests and phones).
    Remove users who don't need access any more.
 7. Look at the audit log after every trip with remote access.
+
+## 13. Router: Teltonika RUT901 (internet channels)
+
+Your router: **RUT901** (4G LTE Cat 4, **dual SIM with ONE modem**, 4 Ethernet
+ports: 1 WAN + 3 LAN, Wi-Fi 2.4 GHz). Channels:
+
+| Channel | RUT901 interface | metered | sync | emergency only |
+|---------|------------------|---------|------|----------------|
+| 4G (SIM 1) | `mob1s1a1` | no | yes | no |
+| 4G SIM 2 | `mob1s2a1` | no | yes | no |
+| RF (future) | e.g. `rf` (a LAN port set as WAN, or Wi-Fi client) | no | yes | no |
+| STARLINK | `wan` (the WAN port) | **yes** | **never** | **yes** |
+
+**One modem, two SIMs:** only the active SIM works at a time. Switching SIM
+takes 30-90 s, and SIM 2's signal can't be measured while SIM 1 is in use
+(the ground station shows "SIM 2 standby").
+
+**Please tell me your RutOS version** (WebUI → Status → System → Firmware,
+e.g. `RUT9M_R_00.07.10`). The web API needs **07.06 or newer**; the gateway
+itself uses SSH + mwan3, which works on all RutOS 7 versions.
+
+Do these steps **in this order**:
+
+1. **Firmware:** WebUI → System → Firmware → update to the newest stable
+   version (in harbour). Note the version.
+2. **Change the LAN range FIRST** (before Starlink is connected - Starlink
+   also uses 192.168.1.x and the two would clash): Network → LAN →
+   IP address `10.42.0.1`, netmask `255.255.255.0`. Save, reconnect your PC
+   (it gets a new 10.42.0.x address).
+3. **Passwords:** System → Administration → change the admin password.
+   Turn off remote management (RMS) unless you really use it.
+4. **SIM cards:** Network → Mobile → SIM 1 / SIM 2: PIN, APN. Mobile →
+   Data limit: set the limits your contract has (the router itself then
+   stops at the limit).
+5. **Starlink in bypass mode:** in the Starlink app → Settings → Router →
+   **Bypass mode** (the Starlink router's Wi-Fi switches off). Cable from the
+   Starlink (router's Ethernet port, or the Starlink Ethernet Adapter for
+   the Gen 3 "Standard" kit) to the RUT901 **WAN** port.
+   If your Starlink has no Ethernet: Network → Wireless → scan → join the
+   Starlink Wi-Fi as a client, and use that interface (e.g. `wwan`) as
+   "wan" in the channel list.
+6. **Failover with health checks:** Network → Failover (RutOS = mwan3):
+   * enable `mob1s1a1`, `mob1s2a1`, `wan` (and RF later);
+   * priority 4G, 4G SIM 2, RF, then wan (Starlink) **last**;
+   * for each: tracking = ping, hosts `1.1.1.1` and `8.8.8.8`, interval 5 s,
+     "down" after 3 failures, "up" after 3 replies.
+   The gateway then moves the priorities itself (AUTO / MANUAL / STRICT).
+7. **DHCP reservations:** Network → LAN → Static leases: the Pi
+   (`trygons-gw`) → `10.42.0.2`. (Cameras: section 14.)
+8. **SSH for the Pi** (it reads status and sets the priority):
+   * System → Administration → Access control: SSH enabled, **LAN only**,
+     key authentication.
+   * On the Pi: `ssh-keygen -t ed25519` (no passphrase), then
+     `ssh-copy-id root@10.42.0.1` (or paste `~/.ssh/id_ed25519.pub` into the
+     router's `/etc/dropbear/authorized_keys`).
+   * Test: `ssh root@10.42.0.1 mwan3 interfaces`.
+9. Check the names of the failover members:
+   `ssh root@10.42.0.1 "uci show mwan3 | grep =member"`. If they are not
+   `member_mob1s1a1` etc., put the real names as `"mwan3_member"` into
+   each channel of `"channels": {"list": [...]}` in gateway.json (copy the
+   list from `channels.py` DEFAULT_CHANNELS).
+10. Starlink dish status (obstruction, outages) on the ground station:
+    `pip install starlink-grpc-tools` on the Pi (optional). The dish answers
+    at 192.168.100.1. In bypass mode, add a route on the RUT901 if needed:
+    Network → Routing → static route 192.168.100.1/32 via the wan interface.
+
+What the gateway does with the channels: see MANUAL.txt chapter 9 part C.
+Ports on the RUT901: WAN = Starlink, LAN1 = the Pi, LAN2 = the TSW101
+switch (cameras, see section 14), LAN3 = spare (a laptop on board).
+Crew / guest devices: the router's Wi-Fi on its own guest network, never
+on the control network (section 12).
