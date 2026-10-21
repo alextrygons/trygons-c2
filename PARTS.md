@@ -1,0 +1,58 @@
+# Trygons C2 - parts to buy
+
+One list for everything. Tick in your own copy. Details and wiring: WIRING.md;
+why each part is needed: MANUAL.txt.
+
+## Boat: controller and actuators
+
+- [ ] Joystick with 2 potentiometer axes (10 k) and THREE buttons (TAKE, AUTO, CONFIRM - CONFIRM clearly separate from TAKE), marine grade; 4 x 1 kOhm (end resistors), 2 x 100 kOhm (pull-downs), 2 x 100 nF.
+- [ ] Panel: 6 x IP67 push buttons (one big red STANDBY, one HDG LOCK, -1, +1, -10, +10), cable.
+- [ ] Neutral switch on the gearbox / shift linkage (closes in neutral).
+- [ ] microSD click (MIKROE-924) + industrial microSD card 8-32 GB.
+- [ ] Throttle servo (analog, or digital with "fail-safe = idle") + a throttle return spring; gear servo.
+- [ ] Steering motor driver (H-bridge) with current sense output.
+- [ ] Safety relay module (3.3 V input via transistor driver) for the servo power and/or the engine kill circuit.
+- [ ] 10 kOhm pull-down resistors for the servo / driver / relay signals.
+- [ ] Compass, gyro / IMU, GPS receiver (with spoof/jam flag if possible).
+- [ ] Optional: paddlewheel speed sensor, steering limit switches, supply voltage divider for A2.
+- [ ] Keep the engine kill cord fitted and worn.
+
+## Gateway (remote access)
+
+- [ ] Raspberry Pi 5, 8 GB, with the official active cooler.
+- [ ] 12 V -> 5.1 V 5 A USB-C supply for the Pi (car/marine grade; 5 A is needed so the Pi can power the SSD), 5 A fuse on the 12 V side.
+- [ ] USB 3 SSD 512 GB - 1 TB (e.g. Samsung T7) - logs and video (4 cameras ~3-4 GB per hour; 1 TB if you use the 60-minute ring buffer and SAVE often).
+- [ ] microSD card 32 GB (A2) - only the Pi's operating system.
+- [ ] UART cable AURIX <-> Pi: 3 wires (TX, RX, GND), shielded, < 1 m, 2 x 100 Ohm resistors.
+- [ ] IP65 box with cable glands for the Pi + SSD, ventilated / heat sink.
+
+## Cameras (you already have the RUT901 router and the TSW101 PoE switch)
+
+- [ ] 4 x TP-Link Tapo C310 (FRONT-1, FRONT-2, REAR-LEFT, REAR-RIGHT).
+- [ ] 3 x 802.3af PoE splitter with 9 V output (for FRONT-1 and the two rear cameras; check the C310 plug size).
+- [ ] 1 x 12 V -> 9 V DC-DC converter >= 1 A (FRONT-2, its own power).
+- [ ] Fuses + holders: 5 A (TSW101), 2 A (FRONT-2 converter).
+- [ ] USB 3 Gigabit Ethernet adapter for the Pi (camera network eth1).
+- [ ] Outdoor / UV-resistant Cat6 cable, IP68 cable glands, waterproof RJ45 couplers or self-amalgamating tape, a closed box for splitters.
+- [ ] 4 x high-endurance microSD 64-128 GB (the cameras' own loop recording).
+- [ ] Microfibre cloths (lens care).
+
+## Slamming sensor
+
+- [ ] BNO085 breakout board, 3.3 V, SPI (e.g. Adafruit 4754 or SparkFun SEN-22857).
+- [ ] 4-pair shielded cable (SPI + INT + RST), max ~1 m to the AURIX box, a small IP67 box, M3 nylon standoffs.
+
+## USB joystick (instead of, or as well as, the analog joystick)
+
+- [ ] Thrustmaster T.16000M FCS HOTAS (stick + TWCS throttle). NOT waterproof: dry console.
+- [ ] Teensy 4.1 (PJRC) + its USB host cable (5-pin header to USB-A socket).
+- [ ] Small powered USB 2.0 hub (4 ports, with its own 5 V input).
+- [ ] 12 V -> 5 V DC-DC converter, at least 3 A (marine / automotive grade), 2 A fuse; or a separate 5 V supply of at least 2 A.
+- [ ] Shielded 2-core cable (TX + GND) to the AURIX, 100 Ohm resistor.
+- [ ] Closed box with cable glands + desiccant for the hub and Teensy, P-clips for cable strain relief.
+
+## Shore PC
+
+- [ ] A second monitor for the DRIVER screen (MANUAL chapter 9 part I).
+- [ ] USB joystick for remote driving (Thrustmaster T.16000M + TWCS recommended).
+- [ ] Tailscale account (free) for the VPN.

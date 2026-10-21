@@ -56,6 +56,19 @@ T_TIME = 0x8A              # AURIX -> gateway: GPS time, 1 Hz
 T_TELEM2 = 0x8B            # with every telemetry: gateway / helm / remote / slamming
 T_GW_ACK = 0x8C            # AURIX -> gateway: the answer to a station's command
 
+# Commands that change how the boat is driven: with a gateway they are only
+# sent to the AURIX after the DRIVER screen accepted them (or in
+# SINGLE-OPERATOR mode after the captain's own confirmation). Never STANDBY.
+DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_HEADING_ADJ, T_SEA_STATE,
+                T_TRAINING, T_PARAM_SET, T_POWER_CODE}
+
+
+def is_driving_cmd(ftype, payload=b""):
+    if ftype not in DRIVING_CMDS:
+        return False
+    return not (ftype == T_SET_MODE and payload[:1] == bytes([MODE_STANDBY]))
+
+
 TYPE_NAMES = {
     T_HEARTBEAT: "heartbeat", T_SET_MODE: "set mode",
     T_HEADING_ADJ: "heading", T_SEA_STATE: "sea state", T_TRAINING: "training", T_PARAM_GET: "param read",

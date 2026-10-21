@@ -91,6 +91,14 @@ class GatewayLink:
         self.connected = False
         try:
             if self.sock:
+                # shutdown first: close() alone leaves the connection open while the
+                # reader thread still uses it (the gateway would keep the station - and
+                # its HELM - and the reader would even answer its pings)
+                self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            if self.sock:
                 self.sock.close()
         except OSError:
             pass
@@ -112,12 +120,19 @@ class GatewayLink:
         self.running = False
 
     # --- sending (same as Link.send) ----------------------------------------------------
-    def send(self, ftype, payload=b""):
+    def send(self, ftype, payload=b"", what=None, confirm=None):
+        """what: text for the driver's ACCEPT question; confirm="self" in
+        SINGLE-OPERATOR mode after the captain's own confirmation."""
         if not self.welcome:
             return None
         self.seq += 1
-        self._send_obj({"t": "cmd", "sid": self.welcome["sid"], "seq": self.seq, "ts": self.now(),
-                        "type": ftype, "p": bytes(payload).hex()})
+        obj = {"t": "cmd", "sid": self.welcome["sid"], "seq": self.seq, "ts": self.now(),
+               "type": ftype, "p": bytes(payload).hex()}
+        if what:
+            obj["what"] = what
+        if confirm:
+            obj["confirm"] = confirm
+        self._send_obj(obj)
         if self.logger and ftype != proto.T_HEARTBEAT:
             self.logger.write("tx", proto.Frame(ftype, self.seq, bytes(payload)))
         return self.seq

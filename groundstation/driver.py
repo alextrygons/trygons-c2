@@ -185,14 +185,20 @@ class DriverScreen:
         self.w.destroy()
 
     # --- captain -> driver questions ----------------------------------------------------
-    def ask(self, text, on_yes, on_no, timeout_s):
+    def ask(self, text, on_yes, on_no, timeout_s, tag=None):
         if self.question:                       # one at a time: the older one is rejected
             self.answer(False, why="replaced by a newer request")
         self.question = (text, on_yes, on_no, time.time() + timeout_s)
+        self.qtag = tag
         self.qtext.configure(text="CAPTAIN asks:\n" + text)
         self.qbox.place(relx=0.5, rely=0.45, anchor="center")
         self.qbox.lift()
         self.w.bell()
+
+    def cancel(self, tag):
+        """The gateway closed the question (answered elsewhere / timed out there)."""
+        if self.question and tag is not None and getattr(self, "qtag", None) == tag:
+            self.answer(False, why="done elsewhere")
 
     def answer(self, yes, why=None):
         if not self.question:
@@ -274,6 +280,9 @@ class DriverScreen:
             return
         mode = d["mode_name"].replace("_", " ")
         c.create_text(w / 2, 32, text=mode, fill=FG, font=F_BIG, tags="mode")
+        if a.single_op:
+            c.create_text(w / 2, 214, text="SINGLE-OPERATOR MODE - the captain confirms alone", fill="#e080ff",
+                          font=F_HUD, tags="singleop")
         al = proto.alarm_texts(d["alarm_bits"])
         y = 72
         if al:

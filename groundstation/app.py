@@ -52,11 +52,12 @@ MODE_COLORS = {"STANDBY": "#606060", "MANUAL": ORANGE, "HDG_LOCK": GREEN, "AUTO"
 PLOT_S = 120.0              # seconds shown in the plot
 LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
 
-# Captain actions that change how the boat is driven: with the DRIVER screen
-# open the driver must accept them there (no answer = rejected). Never for
-# STANDBY, lowering the power limit, alarm ack, HELM (safety / no driving change).
-DRIVING_CMDS = {proto.T_SET_MODE, proto.T_AUTO_START, proto.T_AUTO_PAUSE, proto.T_AUTO_RESUME, proto.T_AUTO_SKIP,
-                proto.T_HEADING_ADJ, proto.T_SEA_STATE, proto.T_TRAINING, proto.T_PARAM_SET, proto.T_POWER_CODE}
+# Captain actions that change how the boat is driven (proto.DRIVING_CMDS).
+# Through the gateway the GATEWAY enforces it (section F1): sent only after the
+# driver screen's ACCEPT, refused when no driver screen is open, or - in
+# SINGLE-OPERATOR mode - after the captain's own confirmation. On the direct
+# USB laptop link the local driver window asks when it is open.
+DRIVING_CMDS = proto.DRIVING_CMDS
 
 
 def btn(parent, text, cmd, bg=PANEL, fg=FG, font=F_MED, width=None):
@@ -101,6 +102,9 @@ class App:
         self.wiz = None                 # guided button-mapping routine
         self.sim_usb = {"x": 0.0, "lever": 0.5, "stick": True, "throttle": True, "fault": 0}
         self.driver = None              # the DRIVER screen (second monitor), section I
+        self.single_op = False          # SINGLE-OPERATOR mode as the GATEWAY has it (section F1)
+        self.gw_asks = {}               # driver questions from the gateway: id -> text
+        self.cconf = None               # captain's own confirmation (single-operator mode)
         self.confirm_timeout_s = 10.0   # the driver must accept a captain action within this
         self.slam_hist = collections.deque(maxlen=300)   # (t, slamming peak g) from the telemetry
         self.layout = {}
@@ -141,6 +145,7 @@ class App:
             root.after(200, self.connect)
         root.after(50, self.poll)
         root.after(500, self.alarm_tick)
+        root.after(1000, self.driver_beat)
         root.protocol("WM_DELETE_WINDOW", self.quit)
         for k in ("<F12>", "<Control-Tab>"):
             root.bind(k, lambda e: self.swap_screens())
@@ -169,6 +174,8 @@ class App:
             font=F_TXT).pack(side="left", padx=2)
         btn(top, "Driver screen", lambda: self.close_driver() if self.driver else self.open_driver(),
             font=F_TXT, bg="#c0d8ff").pack(side="left", padx=8)
+        self.so_btn = btn(top, "Single operator", self.single_op_toggle, font=F_TXT)
+        self.so_btn.pack(side="left", padx=2)
         tk.Label(top, text="F12 swaps the screens", font=F_TXT, bg=PANEL, fg="#606060").pack(side="left")
         self.log_lbl = tk.Label(top, text="", font=F_TXT, bg=PANEL)
         self.log_lbl.pack(side="right", padx=8)
@@ -181,6 +188,8 @@ class App:
         self.alarm_banner = tk.Label(self.banners, text="", font=F_MED, bg=RED, fg="#ffffff")
         self.pick_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#ffd000", fg=FG)
         self.sl_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#b00060", fg="#ffffff")
+        self.so_banner = tk.Label(self.banners, text="SINGLE-OPERATOR MODE - you confirm your own driving actions",
+                                  font=F_BIG, bg="#7000a0", fg="#ffffff")
         self.alarm_ack = btn(self.banners, "ACK ALARM\n(STANDBY)",
                              lambda: self.cmd(proto.T_ALARM_ACK, b"", "alarm ack"), font=F_TXT)
 
@@ -1040,11 +1049,103 @@ class App:
         except (OSError, tk.TclError):
             pass
 
+    # --- driver confirmation through the gateway / single operator (section F1) ------
+    def driver_beat(self):
+        """Once a second: tell the gateway whether this station shows the driver screen."""
+        if isinstance(self.link, GatewayLink) and self.link.connected:
+            self.link.send_msg({"t": "driver", "open": self.driver is not None})
+        self.root.after(1000, self.driver_beat)
+
+    def single_op_toggle(self, confirmed=None):
+        if not isinstance(self.link, GatewayLink):
+            return self.say("Single-operator mode: only through the gateway", RED)
+        if self.single_op:
+            return self.link.send_msg({"t": "single_op", "on": False})
+        if confirmed is None:
+            confirmed = messagebox.askyesno(
+                "SINGLE-OPERATOR MODE", "Nobody watches the driver screen?\n\nIn single-operator mode YOU confirm "
+                "every driving action yourself, on this screen. There is no second person checking it.\n\n"
+                "It switches off by itself when this station disconnects.\n\nSwitch it ON?", icon="warning")
+        if confirmed:
+            self.link.send_msg({"t": "single_op", "on": True})
+
+    def on_single_op(self, on):
+        if on != self.single_op:
+            self.event("SINGLE-OPERATOR mode %s" % ("ON" if on else "off"))
+        self.single_op = on
+        self.so_btn.configure(text="Single operator: ON" if on else "Single operator",
+                              bg="#d080ff" if on else PANEL)
+        self.show(self.so_banner, on, row=5, column=0, columnspan=2, sticky="ew")
+
+    def on_driver_ask(self, d):
+        """The gateway asks this station's driver screen to accept a captain action."""
+        if not self.driver:
+            return
+        i = d["id"]
+        self.gw_asks[i] = d["text"]
+        send = lambda yes: isinstance(self.link, GatewayLink) and self.link.send_msg(
+            {"t": "driver_answer", "id": i, "yes": yes})
+        self.driver.ask("%s\n(from %s)" % (d["text"], d.get("from", "?")), lambda why: send(True),
+                        lambda why: send(False) if "closed" not in why and "done" not in why else None,
+                        d.get("timeout_s", 10.0), tag=i)
+
+    def on_driver_ask_done(self, d):
+        self.gw_asks.pop(d.get("id"), None)
+        if self.driver:
+            self.driver.cancel(d.get("id"))
+
+    def captain_confirm(self, what, on_yes):
+        """Single-operator mode: the captain confirms his own driving action."""
+        if self.cconf is not None:
+            self.cconf.destroy()
+        w = tk.Toplevel(self.root, bg="#f0e0ff")
+        w.title("Confirm driving action")
+        w.transient(self.root)
+        self.cconf = w
+        tk.Label(w, text="SINGLE-OPERATOR MODE\nSend this driving action?", font=F_BIG, bg="#f0e0ff").pack(padx=20,
+                                                                                                      pady=10)
+        tk.Label(w, text=what, font=F_BIG, bg="#f0e0ff", fg="#7000a0").pack(padx=20, pady=6)
+        left = tk.Label(w, text="", font=F_MED, bg="#f0e0ff")
+        left.pack()
+        b = tk.Frame(w, bg="#f0e0ff")
+        b.pack(pady=12)
+        deadline = time.time() + self.confirm_timeout_s
+
+        def done(yes):
+            if self.cconf is w:
+                self.cconf = None
+            w.destroy()
+            if yes:
+                on_yes()
+            else:
+                self.say("NOT SENT (not confirmed): " + what, RED)
+
+        btn(b, "SEND", lambda: done(True), bg="#b0ffb0").pack(side="left", padx=8)
+        btn(b, "Cancel", lambda: done(False)).pack(side="left", padx=8)
+
+        def tick():
+            if self.cconf is not w:
+                return
+            s = deadline - time.time()
+            if s <= 0:
+                return done(False)
+            left.configure(text="%.0f s - no answer = not sent" % s)
+            w.after(250, tick)
+        tick()
+        self.cconf_send = lambda: done(True)            # tests
+
     def cmd(self, ftype, payload, what):
         if not self.link:
             self.say("Not connected", RED)
             return
         standby = ftype == proto.T_SET_MODE and payload[:1] == bytes([proto.MODE_STANDBY])
+        if isinstance(self.link, GatewayLink) and proto.is_driving_cmd(ftype, payload):
+            if self.single_op:
+                return self.captain_confirm(what, lambda: self._send_cmd(ftype, payload, what, confirm="self"))
+            if self.driver:
+                self.say("waiting for the driver: " + what, ORANGE)
+            self.event("? driver asked: " + what)
+            return self._send_cmd(ftype, payload, what)          # the gateway asks the driver screen
         if self.driver and ftype in DRIVING_CMDS and not standby:
             self.say("waiting for the driver: " + what, ORANGE)
             self.event("? driver asked: " + what)
@@ -1054,10 +1155,13 @@ class App:
             return
         self._send_cmd(ftype, payload, what)
 
-    def _send_cmd(self, ftype, payload, what):
+    def _send_cmd(self, ftype, payload, what, confirm=None):
         if not self.link:
             return self.say("Not connected", RED)
-        seq = self.link.send(ftype, payload)
+        if isinstance(self.link, GatewayLink):
+            seq = self.link.send(ftype, payload, what=what, confirm=confirm)
+        else:
+            seq = self.link.send(ftype, payload)
         self.pending[seq] = what
         self.event("> " + what)
 
@@ -1168,9 +1272,15 @@ class App:
 
     # --- feedback ----------------------------------------------------------------
     def say(self, text, color="#202020"):
+        self._evlog = (getattr(self, "_evlog", []) + [text])[-200:]
         self.msg.configure(text=text, bg=color)
 
+    def ev_texts(self):
+        """Recent event / message texts (tests)."""
+        return list(getattr(self, "_evlog", []))
+
     def event(self, text):
+        self._evlog = (getattr(self, "_evlog", []) + [text])[-200:]
         self.events.insert(0, time.strftime("%H:%M:%S  ") + text)
         if self.events.size() > 500:
             self.events.delete(500, "end")
@@ -1212,6 +1322,8 @@ class App:
                     self.on_raw(d)
                 elif kind == "gw_status":
                     self.gw_status = d
+                    me = [s for s in d.get("stations", []) if s.get("id") == d.get("you")]
+                    self.on_single_op(bool(me and me[0].get("single_op")))
                     self.draw_network()
                 elif kind == "channel_ack":
                     self.on_channel_ack(d)
@@ -1219,6 +1331,12 @@ class App:
                     self.on_cams_ack(d)
                 elif kind == "save_ack":
                     self.on_save_ack(d)
+                elif kind == "driver_ask":
+                    self.on_driver_ask(d)
+                elif kind == "driver_ask_done":
+                    self.on_driver_ask_done(d)
+                elif kind == "single_op_ack":
+                    self.on_single_op(bool(d.get("on")))
                 elif kind == "status":
                     self.say(d, RED if "DISCONNECTED" in d else "#202020")
                     self.event(d)

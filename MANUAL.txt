@@ -700,10 +700,23 @@ I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN
   CAPTAIN ACTIONS THAT CHANGE THE DRIVING (mode, AUTO start / pause /
   resume / skip, heading +-1/10, sea state, training, parameters such as
   slam_limit_g, power-limit code) are only sent when the driver presses
-  ACCEPT on the driver screen. No answer within 10 s = REJECTED, nothing is
-  sent ("NOT SENT - no answer from the driver" on the captain screen).
-  STANDBY, "Lower now", alarm ack and HELM never wait. With only one window
-  open (one monitor) nothing needs the driver's ACCEPT.
+  ACCEPT on the driver screen. THE GATEWAY ENFORCES THIS (not only the
+  screen): it holds the action and asks the driver screen itself.
+    no driver screen open           REFUSED "driver screen not open"
+    driver presses REJECT           REFUSED "rejected by the driver"
+    no answer within 10 s           REFUSED "no answer from the driver"
+    driver screen closed / crashed  REFUSED "driver screen lost"
+                                    (the driver screen tells the gateway
+                                    every second that it is open)
+  STANDBY, "Lower now", alarm ack and HELM never wait.
+  SINGLE-OPERATOR MODE (one person alone at the station): button "Single
+  operator" on the captain screen -> a warning -> ON. A purple banner on
+  both screens shows it; the gateway logs it. Every driving action then
+  needs YOUR confirmation in a small window (SEND / Cancel, 10 s). It
+  switches OFF by itself when this station disconnects (also after a
+  crash); press the button again to switch it off.
+  The USB laptop on the boat (no gateway) is the service link: there the
+  driver window asks when it is open, otherwise the action goes directly.
   Both window places (monitor, size) are remembered (gs_layout.json) and
   come back at the next start. F12 (or Ctrl+Tab) swaps the two windows
   between the monitors.
@@ -828,65 +841,8 @@ The ground station saves its own copy of the telemetry in the same format
   Pi GPIO15 (pin 10), P15.1 (RX) <- Pi GPIO14 (pin 8), GND. USB joystick bridge: Teensy pin 1
   (TX) -> P20.3 (Shield2Go 2, ASCLIN3 RX), GND to GND, own 5 V supply.
 
-  SHOPPING LIST
-  [ ] Joystick with 2 potentiometer axes (10 k) and THREE buttons (TAKE,
-      AUTO, CONFIRM - CONFIRM clearly separate from TAKE), marine grade;
-      4 x 1 kOhm (end resistors), 2 x 100 kOhm (pull-downs), 2 x 100 nF.
-  [ ] Panel: 6 x IP67 push buttons (one big red STANDBY, one HDG LOCK,
-      -1, +1, -10, +10), cable.
-  [ ] Neutral switch on the gearbox / shift linkage (closes in neutral).
-  [ ] microSD click (MIKROE-924) + industrial microSD card 8-32 GB.
-  [ ] Throttle servo (analog, or digital with "fail-safe = idle") + a
-      throttle return spring; gear servo.
-  [ ] Steering motor driver (H-bridge) with current sense output.
-  [ ] Safety relay module (3.3 V input via transistor driver) for the servo
-      power and/or the engine kill circuit.
-  [ ] 10 kOhm pull-down resistors for the servo / driver / relay signals.
-  [ ] Compass, gyro / IMU, GPS receiver (with spoof/jam flag if possible).
-  [ ] Optional: paddlewheel speed sensor, steering limit switches, supply
-      voltage divider for A2.
-  [ ] Keep the engine kill cord fitted and worn.
-
-  GATEWAY (remote access)
-  [ ] Raspberry Pi 5, 8 GB, with the official active cooler.
-  [ ] 12 V -> 5.1 V 5 A USB-C supply for the Pi (car/marine grade; 5 A is
-      needed so the Pi can power the SSD), 5 A fuse on the 12 V side.
-  [ ] USB 3 SSD 512 GB - 1 TB (e.g. Samsung T7) - logs and video (4 cameras
-      ~3-4 GB per hour; 1 TB if you use the 60-minute ring buffer and SAVE often).
-  [ ] microSD card 32 GB (A2) - only the Pi's operating system.
-  [ ] UART cable AURIX <-> Pi: 3 wires (TX, RX, GND), shielded, < 1 m,
-      2 x 100 Ohm resistors.
-  [ ] IP65 box with cable glands for the Pi + SSD, ventilated / heat sink.
-
-  CAMERAS (you have: RUT901 router, TSW101 PoE switch)
-  [ ] 4 x TP-Link Tapo C310 (FRONT-1, FRONT-2, REAR-LEFT, REAR-RIGHT).
-  [ ] 3 x 802.3af PoE splitter with 9 V output (for FRONT-1 and the two rear
-      cameras; check the C310 plug size).
-  [ ] 1 x 12 V -> 9 V DC-DC converter >= 1 A (FRONT-2, its own power).
-  [ ] Fuses + holders: 5 A (TSW101), 2 A (FRONT-2 converter).
-  [ ] USB 3 Gigabit Ethernet adapter for the Pi (camera network eth1).
-  [ ] Outdoor / UV-resistant Cat6 cable, IP68 cable glands, waterproof RJ45
-      couplers or self-amalgamating tape, a closed box for splitters.
-  [ ] 4 x high-endurance microSD 64-128 GB (the cameras' own loop recording).
-  [ ] Microfibre cloths (lens care).
-
-  SLAMMING SENSOR
-  [ ] BNO085 breakout board, 3.3 V, SPI (e.g. Adafruit 4754 or SparkFun
-      SEN-22857).
-  [ ] 4-pair shielded cable (SPI + INT + RST), max ~1 m to the AURIX box,
-      a small IP67 box, M3 nylon standoffs.
-
-  USB JOYSTICK (instead of, or as well as, the analog joystick)
-  [ ] Thrustmaster T.16000M FCS HOTAS (stick + TWCS throttle). NOT
-      waterproof: dry console.
-  [ ] Teensy 4.1 (PJRC) + its USB host cable (5-pin header to USB-A socket).
-  [ ] Small powered USB 2.0 hub (4 ports, with its own 5 V input).
-  [ ] 12 V -> 5 V DC-DC converter, at least 3 A (marine / automotive grade),
-      2 A fuse; or a separate 5 V supply of at least 2 A.
-  [ ] Shielded 2-core cable (TX + GND) to the AURIX, 100 Ohm resistor.
-  [ ] Closed box with cable glands + desiccant for the hub and Teensy,
-      P-clips for cable strain relief.
-
+  SHOPPING LIST: PARTS.md (one list for everything: boat electronics,
+  gateway, cameras, sensors, USB joystick, AIS, shore PC).
 
 -------------------------------------------------------------------------------
 15. SETTINGS AND DEFAULT VALUES
@@ -1040,6 +996,9 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
                                  is not affected.
   "GATEWAY LOST"                 Pi off / crashed / UART cable. On the Pi:
                                  systemctl status trygons-gateway
+  "driver screen not open"       open the driver screen (Driver screen
+                                 button), or switch on Single operator if
+                                 you are alone at the station
   "GATEWAY STORAGE"              the Pi's SSD: is it plugged in, mounted
                                  (df -h /mnt/ssd), not full? STORAGE FULL:
                                  sync the SAVEs to the shore PC (only synced

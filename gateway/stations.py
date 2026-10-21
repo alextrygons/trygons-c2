@@ -49,7 +49,9 @@ from common import log, proto
 
 GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command out of order",
               103: "stale command", 104: "timestamp in the future", 105: "rate limited",
-              106: "AURIX not connected", 107: "wrong session", 108: "bad command"}
+              106: "AURIX not connected", 107: "wrong session", 108: "bad command",
+              109: "driver screen not open", 110: "rejected by the driver", 111: "no answer from the driver (timeout)",
+              112: "driver screen lost", 113: "single-operator mode: confirm on the captain screen first"}
 READ_ONLY = (proto.T_PARAM_GET, proto.T_PROG_GET, proto.T_JOYMAP_GET, proto.T_JOY_RAW_GET)
 LITE_FIELDS = ("t_ms", "mode", "mode_name", "heading", "target", "throttle", "gear", "gps_fix", "compass_ok",
                "est_lat", "est_lon", "est_sog", "est_cog", "unc_m", "pos_source", "alarm_bits", "power_fwd",
@@ -86,6 +88,9 @@ class Station:
         self.refused = 0
         self.joined = time.time()
         self.closed = False
+        self.driver_open = False            # this station shows the DRIVER screen (heartbeat, section F1)
+        self.driver_seen = 0.0
+        self.single_op = False              # SINGLE-OPERATOR mode (off again when it disconnects)
 
     def send(self, obj):
         if self.closed:
@@ -111,7 +116,8 @@ class Station:
         return {"id": self.id, "user": self.user, "name": self.name, "role": self.role, "local": self.local,
                 "ip": self.ip, "rtt_ms": None if self.rtt_ms is None else round(self.rtt_ms),
                 "tmode": self.tmode, "connected_s": int(time.time() - self.joined), "cmds": self.cmds,
-                "refused": self.refused, "kb_out": round(self.bytes_out / 1024)}
+                "refused": self.refused, "kb_out": round(self.bytes_out / 1024),
+                "driver": self.driver_open, "single_op": self.single_op}
 
 
 class StationServer:
@@ -133,6 +139,13 @@ class StationServer:
         self.helm_seen = None
         self.server = None
         self.ext["rjoy"] = self._rjoy
+        self.ext["driver"] = self._driver_beat
+        self.ext["driver_answer"] = self._driver_answer
+        self.ext["single_op"] = self._single_op
+        self.asks = {}                      # id -> waiting captain command (driver ACCEPT, section F1)
+        self.ask_id = 0
+        self.driver_timeout = cfg.get("driver_timeout_s", 10.0)
+        self.driver_beat_s = cfg.get("driver_beat_s", 2.5)
         a = gw.aurix
         a.on(proto.T_GW_ACK, self._on_gw_ack)
         a.on(proto.T_TELEMETRY, self._on_telem)
@@ -235,6 +248,9 @@ class StationServer:
             # the AURIX: HELM back to nobody if it held it (REMOTE LINK LOST if remote)
             self.gw.aurix.send(proto.T_GW_STATION, struct.pack("<BBB", st.id, 1, 1 if st.local else 0))
             self.gw.audit("disconnect", station=st.id, user=st.user, why=why)
+            if st.single_op:
+                self.gw.audit("single_operator", station=st.id, user=st.user, on=False, why="disconnected")
+            self._check_asks()
             log.info("station %d (%s) %s", st.id, st.user, why)
             try:
                 st.writer.close()
@@ -354,6 +370,83 @@ class StationServer:
         st.last_seq = seq
         if not self.gw.aurix.connected or len(payload) > 194:
             return self.refuse(st, seq, ftype, 106 if not self.gw.aurix.connected else 108)
+        if proto.is_driving_cmd(ftype, payload):
+            what = str(m.get("what") or proto.TYPE_NAMES.get(ftype, "command %d" % ftype))[:80]
+            if st.single_op:
+                if m.get("confirm") != "self":
+                    return self.refuse(st, seq, ftype, 113)
+                self.gw.audit("single_op_cmd", station=st.id, user=st.user, type=ftype, what=what)
+            else:
+                return self._ask_driver(st, seq, ftype, payload, age, what)
+        self._forward(st, seq, ftype, payload, age)
+
+    # --- driver ACCEPT for captain actions (section F1) ------------------------------
+    def drivers(self):
+        now = time.time()
+        return [s for s in self.stations.values() if s.driver_open and now - s.driver_seen <= self.driver_beat_s]
+
+    def _ask_driver(self, st, seq, ftype, payload, age, what):
+        drv = self.drivers()
+        if not drv:
+            return self.refuse(st, seq, ftype, 109)
+        self.ask_id += 1
+        a = {"id": self.ask_id, "st": st.id, "seq": seq, "type": ftype, "payload": payload, "age": age,
+             "what": what, "deadline": time.time() + self.driver_timeout}
+        self.asks[a["id"]] = a
+        self.gw.audit("driver_ask", station=st.id, user=st.user, what=what, id=a["id"])
+        for d in drv:
+            d.send({"t": "driver_ask", "id": a["id"], "text": what, "from": st.name, "timeout_s": self.driver_timeout})
+
+    def _driver_beat(self, st, m):
+        was = st.driver_open
+        st.driver_open = bool(m.get("open")) and st.role != "VIEWER"
+        st.driver_seen = time.time()
+        if st.driver_open != was:
+            self.gw.audit("driver_screen", station=st.id, user=st.user, open=st.driver_open)
+            self._check_asks()
+
+    def _driver_answer(self, st, m):
+        a = self.asks.get(m.get("id"))
+        if a is None or st not in self.drivers():
+            return
+        del self.asks[a["id"]]
+        cap = self.stations.get(a["st"])
+        for d in self.drivers():
+            d.send({"t": "driver_ask_done", "id": a["id"]})
+        self.gw.audit("driver_answer", station=st.id, user=st.user, id=a["id"], yes=bool(m.get("yes")),
+                      what=a["what"])
+        if cap is None:
+            return
+        if m.get("yes"):
+            self._forward(cap, a["seq"], a["type"], a["payload"], a["age"])
+        else:
+            self.refuse(cap, a["seq"], a["type"], 110)
+
+    def _check_asks(self):
+        """Waiting captain actions: timed out, or no driver screen any more -> rejected."""
+        now = time.time()
+        have = bool(self.drivers())
+        for a in list(self.asks.values()):
+            code = 112 if not have else (111 if now > a["deadline"] else None)
+            if code is None:
+                continue
+            del self.asks[a["id"]]
+            for d in self.drivers():
+                d.send({"t": "driver_ask_done", "id": a["id"]})
+            cap = self.stations.get(a["st"])
+            if cap:
+                self.refuse(cap, a["seq"], a["type"], code)
+
+    def _single_op(self, st, m):
+        on = bool(m.get("on")) and st.role != "VIEWER"
+        if on != st.single_op:
+            st.single_op = on
+            self.gw.audit("single_operator", station=st.id, user=st.user, on=on)
+            log.warning("station %d (%s): SINGLE-OPERATOR mode %s", st.id, st.user, "ON" if on else "off")
+        st.send({"t": "single_op_ack", "on": st.single_op})
+
+    def _forward(self, st, seq, ftype, payload, age):
+        now = time.time()
         self.gw_seq = (self.gw_seq + 1) & 0xFFFF
         self.pending[self.gw_seq] = (st.id, seq, ftype, now, age)
         st.cmds += 1
@@ -416,6 +509,7 @@ class StationServer:
     # --- every second ------------------------------------------------------------------
     def tick(self):
         now = time.time()
+        self._check_asks()
         saver = self.gw.data_saver() if hasattr(self.gw, "data_saver") else False
         self.ping_id += 1
         for st in list(self.stations.values()):
