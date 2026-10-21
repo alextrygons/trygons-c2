@@ -160,6 +160,7 @@ RUN ALL TESTS (before every commit):
     cd ..\groundstation
     C:\msys64\ucrt64\bin\python.exe test_e2e.py      (10 tests)
     C:\msys64\ucrt64\bin\python.exe test_logs.py     (3 tests)
+    C:\msys64\ucrt64\bin\python.exe test_driver.py   (6 tests, opens windows)
 
 OTHER COMMANDS:
     autopilot_sim.exe              big boat, 5 minutes -> sim_output.csv
@@ -679,6 +680,33 @@ H. SLAMMING (hull impacts) AND AUTOMATIC THROTTLE REDUCTION
   Sensor not working: "slamming sensor lost" warning, no reduction, the
   boat drives on normally.
   In the log: every impact as a SLAM event (peak, level, rate, reduction).
+
+I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN
+  The normal ground-station window is the CAPTAIN screen (everything). The
+  button "Driver screen" (top bar) opens the DRIVER screen - drag it to the
+  second monitor (or the driver's PC monitor) and make it full size:
+    top        rear cameras as mirrors (REAR-LEFT left, REAR-RIGHT right,
+               flipped like a mirror), MODE, alarms, internet channel
+               (STARLINK in yellow), latency, REC, joystick / remote status
+    middle     the FRONT camera big (FRONT-2 by itself if FRONT-1 is lost;
+               VIDEO FROZEN within 1 s; "NO FRONT CAMERA" warning while
+               driving remotely without a live front camera)
+    left       throttle bar: green = throttle now, red line = power limit,
+               shaded "SLAM" part = cut by the slamming reduction
+    right      speed, slamming graph (bars around the running average, red
+               dashed line = limit; click it for absolute g), small map
+    bottom     compass tape (heading in the middle, blue mark = target
+               heading in HDG LOCK / AUTO), big SAVE button
+  CAPTAIN ACTIONS THAT CHANGE THE DRIVING (mode, AUTO start / pause /
+  resume / skip, heading +-1/10, sea state, training, parameters such as
+  slam_limit_g, power-limit code) are only sent when the driver presses
+  ACCEPT on the driver screen. No answer within 10 s = REJECTED, nothing is
+  sent ("NOT SENT - no answer from the driver" on the captain screen).
+  STANDBY, "Lower now", alarm ack and HELM never wait. With only one window
+  open (one monitor) nothing needs the driver's ACCEPT.
+  Both window places (monitor, size) are remembered (gs_layout.json) and
+  come back at the next start. F12 (or Ctrl+Tab) swaps the two windows
+  between the monitors.
 
 
 -------------------------------------------------------------------------------

@@ -25,6 +25,9 @@ from gwclient import GatewayLink
 import shorejoy
 import syncrecv
 import video
+import driver
+import collections
+import json
 from tkinter import messagebox, simpledialog
 
 try:
@@ -47,6 +50,13 @@ F_TXT = ("Segoe UI", 12)
 MODE_COLORS = {"STANDBY": "#606060", "MANUAL": ORANGE, "HDG_LOCK": GREEN, "AUTO": "#7a00a0",
                "TRAINING": "#a06000", "REMOTE_MANUAL": BLUE}
 PLOT_S = 120.0              # seconds shown in the plot
+LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
+
+# Captain actions that change how the boat is driven: with the DRIVER screen
+# open the driver must accept them there (no answer = rejected). Never for
+# STANDBY, lowering the power limit, alarm ack, HELM (safety / no driving change).
+DRIVING_CMDS = {proto.T_SET_MODE, proto.T_AUTO_START, proto.T_AUTO_PAUSE, proto.T_AUTO_RESUME, proto.T_AUTO_SKIP,
+                proto.T_HEADING_ADJ, proto.T_SEA_STATE, proto.T_TRAINING, proto.T_PARAM_SET, proto.T_POWER_CODE}
 
 
 def btn(parent, text, cmd, bg=PANEL, fg=FG, font=F_MED, width=None):
@@ -90,14 +100,27 @@ class App:
         self.raw = None                 # last USB bridge frame (JOY_RAW)
         self.wiz = None                 # guided button-mapping routine
         self.sim_usb = {"x": 0.0, "lever": 0.5, "stick": True, "throttle": True, "fault": 0}
+        self.driver = None              # the DRIVER screen (second monitor), section I
+        self.confirm_timeout_s = 10.0   # the driver must accept a captain action within this
+        self.slam_hist = collections.deque(maxlen=300)   # (t, slamming peak g) from the telemetry
+        self.layout = {}
+        try:
+            with open(LAYOUT, encoding="utf-8") as f:
+                self.layout = json.load(f)
+        except (OSError, ValueError):
+            pass
+        self._layout_job = None
 
         root.title("Trygons C2 ground station")
         root.configure(bg=BG)
-        root.geometry("1500x900")
-        try:
-            root.state("zoomed")        # maximised (Windows)
-        except tk.TclError:
-            pass
+        if self.layout.get("captain"):
+            root.geometry(self.layout["captain"])       # where it was last time (which monitor)
+        else:
+            root.geometry("1500x900")
+            try:
+                root.state("zoomed")    # maximised (Windows)
+            except tk.TclError:
+                pass
         style = ttk.Style()
         style.configure("Treeview", font=F_TXT, rowheight=26)
         style.configure("Treeview.Heading", font=F_MED)
@@ -119,6 +142,11 @@ class App:
         root.after(50, self.poll)
         root.after(500, self.alarm_tick)
         root.protocol("WM_DELETE_WINDOW", self.quit)
+        for k in ("<F12>", "<Control-Tab>"):
+            root.bind(k, lambda e: self.swap_screens())
+        root.bind("<Configure>", lambda e: self.layout_changed())
+        if self.layout.get("driver_open"):
+            root.after(600, self.open_driver)
 
     # --- layout ------------------------------------------------------------------
     def _build_top(self):
@@ -139,6 +167,9 @@ class App:
             font=F_TXT).pack(side="left")
         btn(top, "Release", lambda: self.cmd(proto.T_HELM, proto.p_helm(1), "release HELM"),
             font=F_TXT).pack(side="left", padx=2)
+        btn(top, "Driver screen", lambda: self.close_driver() if self.driver else self.open_driver(),
+            font=F_TXT, bg="#c0d8ff").pack(side="left", padx=8)
+        tk.Label(top, text="F12 swaps the screens", font=F_TXT, bg=PANEL, fg="#606060").pack(side="left")
         self.log_lbl = tk.Label(top, text="", font=F_TXT, bg=PANEL)
         self.log_lbl.pack(side="right", padx=8)
 
@@ -389,10 +420,11 @@ class App:
         self.cam_ack = d
         for name in list(self.vstreams):
             self.vstreams.pop(name).stop()
-        for name in ("FRONT-1", "FRONT-2"):
+        for name, (w, h) in (("FRONT-1", (640, 360)), ("FRONT-2", (640, 360)), ("REAR-LEFT", (400, 225)),
+                             ("REAR-RIGHT", (400, 225))):
             url = self.link.video_url(d, name)
             if url:
-                self.vstreams[name] = video.VideoStream(url, 640, 360, name).start()
+                self.vstreams[name] = video.VideoStream(url, w, h, name).start()
         if d.get("notice"):
             self.say(d["notice"], ORANGE)
 
@@ -970,10 +1002,61 @@ class App:
         self.root.after(700, lambda: self.link and self.link.send(proto.T_JOYMAP_GET))
         self.root.after(200, self.raw_tick)
 
+    # --- two screens (section I) ----------------------------------------------------
+    def open_driver(self):
+        if self.driver:
+            return
+        self.driver = driver.DriverScreen(self, self.layout.get("driver"))
+        self.layout_changed()
+
+    def close_driver(self):
+        if self.driver:
+            d, self.driver = self.driver, None
+            d.destroy()
+            self.layout_changed()
+
+    def swap_screens(self):
+        """F12: captain and driver windows change places (monitors)."""
+        if not self.driver:
+            return
+        self.root.state("normal")
+        g1, g2 = self.root.geometry(), self.driver.w.geometry()
+        self.root.geometry(g2)
+        self.driver.w.geometry(g1)
+        self.layout_changed()
+
+    def layout_changed(self):
+        if self._layout_job:
+            self.root.after_cancel(self._layout_job)
+        self._layout_job = self.root.after(800, self.save_layout)
+
+    def save_layout(self):
+        self._layout_job = None
+        try:
+            self.layout = {"captain": self.root.geometry(), "driver_open": self.driver is not None,
+                           "driver": self.driver.w.geometry() if self.driver else self.layout.get("driver")}
+            with open(LAYOUT, "w", encoding="utf-8") as f:
+                json.dump(self.layout, f)
+        except (OSError, tk.TclError):
+            pass
+
     def cmd(self, ftype, payload, what):
         if not self.link:
             self.say("Not connected", RED)
             return
+        standby = ftype == proto.T_SET_MODE and payload[:1] == bytes([proto.MODE_STANDBY])
+        if self.driver and ftype in DRIVING_CMDS and not standby:
+            self.say("waiting for the driver: " + what, ORANGE)
+            self.event("? driver asked: " + what)
+            self.driver.ask(what, lambda why: self._send_cmd(ftype, payload, what),
+                            lambda why: (self.say("NOT SENT - %s: %s" % (why, what), RED),
+                                         self.event("x %s: %s" % (why, what))), self.confirm_timeout_s)
+            return
+        self._send_cmd(ftype, payload, what)
+
+    def _send_cmd(self, ftype, payload, what):
+        if not self.link:
+            return self.say("Not connected", RED)
         seq = self.link.send(ftype, payload)
         self.pending[seq] = what
         self.event("> " + what)
@@ -1157,6 +1240,8 @@ class App:
         prev = self.t
         self.t = d
         self.t_rx = time.time()
+        if "slam_peak" in d:
+            self.slam_hist.append((d["t_ms"], d["slam_peak"]))
         ts = d["t_ms"] / 1000.0
         if self.hist and ts < self.hist[-1][0]:
             self.hist.clear()               # boat restarted
@@ -1757,6 +1842,12 @@ class App:
             pass
 
     def quit(self):
+        if self._layout_job:
+            self.root.after_cancel(self._layout_job)
+        self.save_layout()
+        if self.driver:
+            self.driver.destroy()
+            self.driver = None
         if self.link:
             self.link.stop()
         self.root.destroy()

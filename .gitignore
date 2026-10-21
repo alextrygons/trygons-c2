@@ -17,3 +17,4 @@ sim/gwtest_sd/
 gateway/*.key
 gateway/*.crt
 groundstation/sync_receiver.json
+groundstation/gs_layout.json

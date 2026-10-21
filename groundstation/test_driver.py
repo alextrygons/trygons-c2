@@ -1,0 +1,246 @@
+"""Two-monitor ground station tests (section I): the DRIVER screen.
+
+Starts  sim/autopilot_sim server <port> 1  and the real ground station
+(app.App) on it, opens the driver screen and checks:
+  I1 HUD: mode, speed, compass tape centred on the heading, throttle bar with
+     the power limit, slamming graph, mini map - from the live telemetry
+  I2 a driving-affecting captain action waits for the driver: no answer ->
+     rejected (nothing sent); ACCEPT -> sent; STANDBY never waits
+  I3 slamming bar graph: centred on the running average, limit line; absolute
+  I4 rear cameras shown as mirrors (picture flipped left <-> right)
+  I5 VIDEO FROZEN on the driver screen within 1 s; FRONT-1 lost -> FRONT-2;
+     remote driving without a live front camera -> warning
+  I6 window places remembered (both monitors); F12 swaps the screens
+
+Run:  python test_driver.py        (exit code 0 = all passed)
+"""
+import os
+import socket
+import subprocess
+import sys
+import time
+import tkinter as tk
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import app as A  # noqa: E402
+import driver  # noqa: E402
+import proto  # noqa: E402
+
+results = []
+
+
+def report(name, ok, detail):
+    results.append(ok)
+    print("[%s] %s - %s" % ("PASS" if ok else "FAIL", name, detail), flush=True)
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+class FakeStream:
+    """A video stream stand-in: a test picture, or frozen."""
+
+    def __init__(self, w=64, h=36, frozen=False, colour=(200, 40, 40)):
+        self.w, self.h, self.is_frozen = w, h, frozen
+        px = bytearray()
+        for _y in range(h):
+            for x in range(w):
+                px += bytes(colour) if x < w // 2 else b"\x10\x10\x10"     # left half coloured
+        self.data = b"P6\n%d %d\n255\n" % (w, h) + bytes(px)
+
+    def ppm(self):
+        return self.data
+
+    def frozen(self):
+        return self.is_frozen
+
+    def stop(self):
+        pass
+
+
+def items_with_tag(canvas, tag):
+    return canvas.find_withtag(tag)
+
+
+def main():
+    sim_dir = os.path.join(HERE, "..", "sim")
+    exe = os.path.join(sim_dir, "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
+    if not os.path.exists(exe):
+        print("build the simulator first: sim\\build_sim.bat")
+        return 2
+    saved_layout = None
+    if os.path.exists(A.LAYOUT):
+        with open(A.LAYOUT, "rb") as f:
+            saved_layout = f.read()
+        os.remove(A.LAYOUT)
+    port = free_port()
+    sim = subprocess.Popen([exe, "server", str(port), "1"], cwd=sim_dir, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+    root = None
+    try:
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        time.sleep(0.3)
+        root = tk.Tk()
+        errors = []
+        root.report_callback_exception = lambda *a: errors.append(repr(a[1]))
+        app = A.App(root, "tcp:127.0.0.1:%d" % port)
+
+        def pump(seconds, until=None):
+            end = time.time() + seconds
+            while time.time() < end:
+                root.update()
+                if until and until():
+                    return True
+                time.sleep(0.02)
+            return bool(until and until())
+
+        pump(10, lambda: app.t is not None and app.link and app.link.connected)
+        root.state("normal")
+        root.geometry("1200x800+40+40")
+        app.open_driver()
+        dv = app.driver
+        dv.w.geometry("1600x900+100+60")
+        pump(2.0)
+        d = app.t
+
+        # I1 the HUD from live telemetry
+        mode_items = items_with_tag(dv.status, "mode")
+        mode_txt = dv.status.itemcget(mode_items[0], "text") if mode_items else None
+        tw = dv.tape.winfo_width()
+        hdg = dv.tape.coords(items_with_tag(dv.tape, "hdg")[0]) if items_with_tag(dv.tape, "hdg") else []
+        plim = dv.thr.coords(items_with_tag(dv.thr, "plim")[0]) if items_with_tag(dv.thr, "plim") else []
+        h_thr = max(50, dv.thr.winfo_height()) - 40
+        plim_ok = bool(plim) and abs(plim[1] - (20 + h_thr * (1 - d["power_fwd"] / 100.0))) < 2
+        report("I1 driver HUD: mode, speed, compass tape, throttle bar with the power limit, slamming graph, map",
+               mode_txt == d["mode_name"].replace("_", " ") and bool(hdg) and abs(hdg[4] - tw / 2) < 1 and plim_ok and
+               dv.speed.cget("text").endswith("kn") and items_with_tag(dv.slam, "limit") != () and not errors,
+               "mode \"%s\"; tape heading mark at x=%s of %d (centre); power limit line at %.0f %% %s; speed \"%s\"; "
+               "slamming graph %s; errors %d" % (mode_txt, hdg[4] if hdg else None, tw, d["power_fwd"],
+                                                 "OK" if plim_ok else "WRONG", dv.speed.cget("text"),
+                                                 "drawn" if items_with_tag(dv.slam, "limit") else "MISSING", len(errors)))
+
+        # I2 captain actions that change the driving wait for the driver
+        app.confirm_timeout_s = 3.0
+        sea0 = app.t["sea_state"]
+        new_sea = 3 if sea0 != 3 else 2
+        n0 = len(app.pending)
+        app.cmd(proto.T_SEA_STATE, proto.p_sea_state(new_sea), "sea state %d" % new_sea)
+        waiting = dv.question is not None and len(app.pending) == n0
+        pump(4.0)
+        rejected = dv.question is None and dv.answers and "timeout" in dv.answers[-1][1] and len(app.pending) == n0
+        pump(1.0)
+        unchanged = app.t["sea_state"] == sea0
+        app.cmd(proto.T_SEA_STATE, proto.p_sea_state(new_sea), "sea state %d" % new_sea)
+        pump(0.3)
+        dv.answer(True)
+        changed = pump(5.0, lambda: app.t["sea_state"] == new_sea)
+        app.cmd(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY), "mode STANDBY")
+        sb_direct = dv.question is None
+        report("I2 captain action needs the driver's ACCEPT (no answer in time = rejected); STANDBY never waits",
+               waiting and rejected and unchanged and changed and sb_direct,
+               "sea state request waiting on the driver screen %s; after the timeout: %s, nothing sent %s; "
+               "ACCEPT -> boat sea state %s; STANDBY sent at once %s" % (
+                   waiting, dv.answers[0][1] if dv.answers else "-", unchanged, app.t["sea_state"], sb_direct))
+
+        # I3 slamming bar graph: around the running average, limit line, absolute
+        bars, ly, base = driver.slam_geom([1.0, 1.5, 2.0, 3.5], 1.5, 3.0, 200)
+        abars, aly, abase = driver.slam_geom([1.0, 1.5, 2.0, 3.5], 1.5, 3.0, 200, absolute=True)
+        avg_bar = [b for b in bars if b[0] == 1][0]
+        report("I3 slamming graph: bars around the running average, limit line, colours; absolute mode",
+               base == 100 and abs(avg_bar[2] - 100) < 0.01 and bars[0][2] > 100 and bars[2][2] < 100 and
+               ly < bars[2][2] and bars[3][3] == driver.RED and bars[2][3] == driver.GRN and abase == 200 and
+               abars[0][2] < 200 and abs(aly - (200 - 3.0 / 3.675 * 200)) < 1,
+               "centre line y=%d (average 1.5 g: bar of length %.1f); 1.0 g below, 2.0 g above; limit 3 g at y=%.0f; "
+               "3.5 g red, 2.0 g green; absolute: base y=%d, limit y=%.0f" % (
+                   base, abs(avg_bar[2] - avg_bar[1]), ly, abase, aly))
+
+        # I4 mirrors: rear pictures flipped left <-> right
+        fs = FakeStream()
+        fl = driver.flip_ppm(fs.data)
+        hdr = len(b"P6\n64 36\n255\n")
+        left_px, right_px = fl[hdr:hdr + 3], fl[hdr + 63 * 3:hdr + 64 * 3]
+        report("I4 rear cameras shown as mirrors (flipped left <-> right)",
+               fs.data[hdr:hdr + 3] == bytes((200, 40, 40)) and left_px == b"\x10\x10\x10" and
+               right_px == bytes((200, 40, 40)) and len(fl) == len(fs.data),
+               "first pixel before %s, after %s; last pixel after %s" % (
+                   tuple(fs.data[hdr:hdr + 3]), tuple(left_px), tuple(right_px)))
+
+        # I5 VIDEO FROZEN within 1 s; FRONT-1 lost -> FRONT-2; remote without front camera -> warning
+        app.vstreams = {"FRONT-1": FakeStream(), "FRONT-2": FakeStream(colour=(40, 40, 200)),
+                        "REAR-LEFT": FakeStream(), "REAR-RIGHT": FakeStream()}
+        app.front_sel = A.video.FrontSelector()
+        pump(0.5)
+        ok_live = not items_with_tag(dv.front, "frozen")
+        app.vstreams["REAR-LEFT"].is_frozen = True
+        t0 = time.time()
+        fr = pump(2.0, lambda: bool(items_with_tag(dv.mirror_l, "frozen")))
+        t_fr = time.time() - t0
+        app.vstreams["FRONT-1"].is_frozen = True
+        sw = pump(3.0, lambda: app.front_sel.use == "FRONT-2")
+        notice = app.front_sel.notice
+        app.vstreams["FRONT-2"].is_frozen = True
+        orig = app.on_telem                                 # the boat says REMOTE MANUAL from now on
+        app.on_telem = lambda d: orig(dict(d, mode=proto.MODE_REMOTE))
+        warn = pump(1.0, lambda: bool(items_with_tag(dv.front, "nofront")))
+        report("I5 driver video: VIDEO FROZEN within 1 s, FRONT-1 lost -> FRONT-2, remote without front camera -> warning",
+               ok_live and fr and t_fr < 1.0 and sw and warn,
+               "live picture without warning %s; mirror frozen -> VIDEO FROZEN after %.2f s; front switched to %s (\"%s\"); "
+               "REMOTE without a front camera -> warning %s" % (ok_live, t_fr, app.front_sel.use, notice,
+                                                                 "shown" if warn else "MISSING"))
+        app.vstreams = {}
+        app.on_telem = orig
+
+        # I6 window places remembered; F12 swaps the screens
+        g_cap, g_drv = root.geometry(), dv.w.geometry()
+        app.save_layout()
+        with open(A.LAYOUT, encoding="utf-8") as f:
+            lay = A.json.load(f)
+        app.swap_screens()
+        pump(1.0)
+        swapped = root.geometry().split("+")[1:] == g_drv.split("+")[1:] and \
+            dv.w.geometry().split("+")[1:] == g_cap.split("+")[1:]
+        app.swap_screens()
+        pump(1.5)
+        app.quit()
+        root = tk.Tk()
+        app2 = A.App(root)
+        pump(1.5)
+        restored = app2.driver is not None and root.geometry().split("+")[1:] == g_cap.split("+")[1:] and \
+            app2.driver.w.geometry().split("+")[1:] == g_drv.split("+")[1:]
+        report("I6 both window places remembered (monitors) and restored; F12 swaps captain and driver screens",
+               lay.get("driver_open") and swapped and restored,
+               "saved %s; after F12 captain at %s, driver at %s (swapped %s); after a restart: captain %s, driver %s" % (
+                   lay, root.geometry(), app2.driver.w.geometry() if app2.driver else None, swapped,
+                   root.geometry(), app2.driver.w.geometry() if app2.driver else "NOT OPEN"))
+        app2.quit()
+        root = None
+    finally:
+        if root:
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass
+        sim.terminate()
+        if saved_layout is not None:
+            with open(A.LAYOUT, "wb") as f:
+                f.write(saved_layout)
+        elif os.path.exists(A.LAYOUT):
+            os.remove(A.LAYOUT)
+    bad = results.count(False)
+    print("DRIVER SCREEN TESTS: %d passed, %d failed" % (len(results) - bad, bad))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
