@@ -141,11 +141,11 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 133 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 134 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
     autopilot_sim.exe all --bridge
   The same tests again, but every joystick move goes through the simulated
-  USB bridge. Ends with "132 passed, 0 failed, 1 not applicable" (the analog
+  USB bridge. Ends with "133 passed, 0 failed, 1 not applicable" (the analog
   calibration test does not apply to the USB joystick).
     autopilot_sim.exe usb
   Only the 17 USB joystick tests (U1..U16), quick.
@@ -663,9 +663,13 @@ H. SLAMMING (hull impacts) AND AUTOMATIC THROTTLE REDUCTION
     YELLOW   level above 70 % of the limit: warning beep; the forward
              throttle is reduced one step (10 %) at once and again every 5 s
              while it stays yellow (never below 30 %)
-    RED      one impact harder than the limit (default 3.0 g): alarm
-             SLAMMING, the power limit drops to 30 % (like every alarm), one
-             more step down, and a video SAVE is made
+    RED      one impact harder than the limit (default 3.0 g): red alarm
+             SLAMMING, one more step down at once, and a video SAVE.
+             The power limit STAYS (setting slam_red_reset = 0, "STEP",
+             the default): a sudden drop to 30 % can be dangerous in a
+             following sea (a wave from behind). slam_red_reset = 1
+             ("LIMIT_RESET") brings back the old behaviour: the power
+             limit also drops to 30 %, like for every other alarm.
   It only ever REDUCES the throttle, in every mode (MANUAL, HDG LOCK, AUTO,
   REMOTE). The throttle comes down at its normal rate. After 30 s of calm
   water the reduction goes back slowly (+5 % every 10 s). In AUTO, slamming
@@ -675,8 +679,9 @@ H. SLAMMING (hull impacts) AND AUTOMATIC THROTTLE REDUCTION
   and hold 1 s. The reduction is lifted (warning beep, "OVERRIDE" shown)
   until you go below the reduced value again. The power limit still applies.
   Staying at full throttle all the time never overrides.
-  The limit: parameter slam_limit_g (1-8 g). The captain proposes it, the
-  driver confirms it on the driver screen (part I).
+  The limit: parameter slam_limit_g (1-8 g); the RED action: parameter
+  slam_red_reset (0 = STEP, 1 = LIMIT_RESET). The captain proposes, the
+  driver confirms on the driver screen (part I).
   Sensor not working: "slamming sensor lost" warning, no reduction, the
   boat drives on normally.
   In the log: every impact as a SLAM event (peak, level, rate, reduction).
@@ -755,8 +760,9 @@ I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN
   CONTROL LOOP OVERRUN   a control cycle took longer than 50 ms
   LOG FAILURE            SD card missing / full / failing (control goes on)
   GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)
-  SLAMMING               an impact harder than slam_limit_g: power limit 30 %,
-                         throttle reduced, video SAVE (part H)
+  SLAMMING               an impact harder than slam_limit_g: throttle reduced
+                         one step, video SAVE; the power limit stays (only
+                         with slam_red_reset = 1 it drops to 30 %) (part H)
   GATEWAY STORAGE        the Pi's USB SSD is missing / failing, or STORAGE FULL
                          (no mode change; SAVE refused while full)
   REMOTE LINK LOST       the remote station holding HELM disappeared; HELM

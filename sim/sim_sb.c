@@ -5485,13 +5485,56 @@ static void slam_tests(void)
                     y.sb.slam.impacts == 0u, d);
     }
 
-    /* SL2 an impact over the limit (red): SLAMMING alarm, power limit down
-     * at once, throttle cap one step down, SAVE request "slamming" */
+    /* SL2 an impact over the limit (red), default STEP: red alarm, cap one
+     * step down at once, SAVE request "slamming" - the power limit STAYS, the
+     * throttle comes down at its normal rate (no sudden drop to 30 %) */
     {
         static sbsim_t x;
         static slamwatch_t wt;
         memset(&wt, 0, sizeof wt);
         slam_go(&x, 963u, 3.0f);
+        sbsim_run(&x, 20000u, slam_hook, &wt);
+        float plim0 = x.sb.plim.fwd_pct;
+        uint16_t save0 = x.sb.save.seq;
+        x.w.slam_extra_g = 2.0f;
+        uint32_t r0 = x.sb.slam.reds;
+        float out0 = x.sb.servo.out_pct;
+        while (x.sb.slam.reds == r0 && x.t < 60000u) {
+            out0 = x.sb.servo.out_pct;
+            sbsim_run(&x, x.t + 50u, slam_hook, &wt);
+        }
+        bool red = x.sb.slam.reds > r0;
+        x.w.slam_extra_g = 0.0f;
+        float drop_max = 0.0f, prev = x.sb.servo.out_pct;      /* fastest fall, %/s */
+        uint32_t t_red = x.t, prev_t = x.t;
+        while (x.t < t_red + 1000u) {
+            sbsim_run(&x, x.t + 200u, slam_hook, &wt);
+            drop_max = fmaxf(drop_max, (prev - x.sb.servo.out_pct) * 1000.0f / (float)(x.t - prev_t));
+            prev = x.sb.servo.out_pct;
+            prev_t = x.t;
+        }
+        bool alarm = (x.sb.alarm_bits & SB_ALM_SLAM) != 0u;
+        float plim1 = x.sb.plim.fwd_pct, cap = slam_cap(&x.sb.slam), out1 = x.sb.servo.out_pct;
+        bool save = x.sb.save.seq != save0 && (x.sb.save.kinds & (1u << SB_SAVE_SLAM));
+        snprintf(d, sizeof d, "STEP (default): red impact %s; alarm SLAMMING %s; power limit %.0f -> %.0f %% (stays); "
+                 "cap %.0f %%; throttle %.0f -> %.0f %% after 1 s, falling at most %.0f %%/s (normal rate %.0f); "
+                 "SAVE %s; throttle rose above the cap %d times",
+                 red ? "yes" : "NO", alarm ? "yes" : "NO", plim0, plim1, cap, out0, out1, drop_max,
+                 x.cfg.throttle.rate_down_pct_s,
+                 save ? "yes" : "NO", wt.rise_over_cap);
+        test_report("SL2 red impact, STEP (default): red alarm + cap step + SAVE, power limit kept, no sudden drop",
+                    red && alarm && plim0 >= 99.0f && plim1 >= 99.0f && cap < 100.0f && save && out1 <= cap + 0.5f &&
+                    out1 > 31.0f && drop_max <= x.cfg.throttle.rate_down_pct_s + 1.0f &&
+                    wt.rise_over_cap == 0, d);
+    }
+
+    /* SL2b the old behaviour, selectable: LIMIT_RESET -> power limit down at once */
+    {
+        static sbsim_t x;
+        static slamwatch_t wt;
+        memset(&wt, 0, sizeof wt);
+        slam_go(&x, 963u, 3.0f);
+        x.sb.slam.cfg.red_reset = 1.0f;
         sbsim_run(&x, 20000u, slam_hook, &wt);
         float plim0 = x.sb.plim.fwd_pct;
         uint16_t save0 = x.sb.save.seq;
@@ -5509,7 +5552,7 @@ static void slam_tests(void)
                  "SAVE request \"slamming\" %s; throttle 8 s later %.0f %% (never rose above the cap: %d), mode %s",
                  red ? "yes" : "NO", x.w.slam_last_g, alarm ? "yes" : "NO", plim0, plim1, cap, save ? "yes" : "NO",
                  x.sb.servo.out_pct, wt.rise_over_cap, mode_name(sb_mode(&x.sb)));
-        test_report("SL2 red impact: SLAMMING alarm, power limit down at once, cap down a step, SAVE request",
+        test_report("SL2b red impact, LIMIT_RESET selected: SLAMMING alarm, power limit down at once, cap step, SAVE",
                     red && alarm && plim0 >= 99.0f && plim1 <= 30.5f && cap < 100.0f && save &&
                     x.sb.servo.out_pct <= 31.0f && wt.rise_over_cap == 0 && sb_mode(&x.sb) == MODE_MANUAL, d);
     }

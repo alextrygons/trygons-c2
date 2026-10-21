@@ -14,8 +14,11 @@
  *            (+recover_pct every recover_ms) until it is gone
  *   YELLOW   level >= yellow_frac x limit: warning; the forward throttle
  *            cap steps down (step_pct) every step_ms while it stays yellow
- *   RED      one impact >= limit: alarm (smallboat.c: power limit drops,
- *            SAVE); the cap steps down at once
+ *   RED      one impact >= limit: red alarm + SAVE + the cap steps down at
+ *            once. red_reset = 0 (STEP, default): that is all - the power
+ *            limit stays (a sudden drop to 30 % can be dangerous in a
+ *            following sea). red_reset = 1 (LIMIT_RESET): the power limit
+ *            also drops to its start value like for every other alarm.
  * The cap never goes below min_cap_pct (the boat must stay controllable).
  * Override ("kick-down"): after a reduction the onboard driver eases off
  * (below 85 %) and then pushes to full (>= 95 %) for override_ms: the cap
@@ -37,6 +40,7 @@
 
 typedef struct {
     float    limit_g;           /* red: one impact this hard (3.0 g); settable (captain + driver) */
+    float    red_reset;         /* RED action: 0 = STEP (default), 1 = LIMIT_RESET (power limit to 30 %) */
     float    yellow_frac;       /* yellow: level above this part of the limit (0.7) */
     float    impact_g;          /* a pulse above this counts as an impact (1.0 g) */
     uint32_t refractory_ms;     /* one impact per pulse (150 ms) */

@@ -9,6 +9,7 @@
 void slam_default_config(slam_config_t *c)
 {
     c->limit_g = 3.0f;
+    c->red_reset = 0.0f;                /* STEP */
     c->yellow_frac = 0.7f;
     c->impact_g = 1.0f;
     c->refractory_ms = 150u;

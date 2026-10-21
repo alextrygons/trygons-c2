@@ -71,6 +71,7 @@ Safety rules — never break them
 - Power limit: every power-up / reset starts at 30 % forward / 5 % reverse; the raised limit is RAM only, NEVER saved.
   - Raising needs ALL of: PC request + the code typed by the user + joystick CONFIRM within 10 s. One step at a time (30 → 50 → 75 → 100; reverse up to 15 %).
   - Lowering is always instant (PC, TAKE / override, STANDBY button, any alarm / fault, PC link lost, GPS lost, TRAINING, long low speed); the throttle then comes down at its normal rate, never up.
+  - The ONE exception: the slamming RED alarm when "slamming RED action" = STEP (parameter slam_red_reset = 0, the default) does NOT lower the power limit (a sudden drop can be dangerous in a following sea); it reduces the throttle one step (app/slam.c), warns red and SAVEs. LIMIT_RESET (slam_red_reset = 1) = the normal alarm rule. Slamming never raises the throttle.
   - The clamp lives only in the servo output function (app/servo.c); no other code may write the throttle servo (the build check greps for it).
 - Watchdogs are enabled on all cores; a frozen loop resets the chip.
 - CPU1 runs an independent safety monitor (throttle vs limit, gear change at throttle, core-0 heartbeat > 200 ms) that forces idle + neutral + steering stop + alarm, latched in the HAL.

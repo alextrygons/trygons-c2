@@ -23,7 +23,7 @@ typedef enum {
     P_CRUISE_MAX, P_SPD_KP, P_SPD_KI,
     P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
-    P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT,
+    P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET,
     P_COUNT
 } param_id_t;
 
@@ -45,6 +45,7 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "joy_deadband",    0.05f,   0.5f },
     { "pc_timeout_s",    1.0f,   30.0f },
     { "slam_limit_g",    1.0f,    8.0f },     /* captain sets, driver confirms (ground station) */
+    { "slam_red_reset",  0.0f,    1.0f },     /* slamming RED: 0 = STEP (default), 1 = LIMIT_RESET */
 };
 
 uint8_t link_param_count(void)
@@ -78,6 +79,7 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_JOY_DEADBAND: return &s->joy.cfg.deadband;
     case P_PC_TIMEOUT:   return &l->pc_timeout_s;
     case P_SLAM_LIMIT:   return &s->slam.cfg.limit_g;
+    case P_SLAM_RED_RESET: return &s->slam.cfg.red_reset;
     default:             return NULL;
     }
 }

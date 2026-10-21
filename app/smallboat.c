@@ -1754,6 +1754,12 @@ void sb_step(sb_t *s)
     {
         uint32_t fresh = s->alarm_bits & ~s->alarm_bits_seen;
         bool any = s->alarm || s->ap.alarm;
+        /* the one exception: slamming RED in STEP mode reduces in steps (slam.c),
+         * the power limit stays - a sudden drop can be dangerous in a following sea */
+        if (s->slam.cfg.red_reset < 0.5f) {
+            fresh &= ~SB_ALM_SLAM;
+            if ((s->alarm_bits & ~SB_ALM_SLAM) == 0u && !s->ap.alarm) any = false;
+        }
         if (fresh & SB_ALM_PC_LINK) plim_drop(&s->plim, PLIM_SRC_PC_LINK, s->now_ms);
         else if (fresh || (any && !s->alarm_seen)) plim_drop(&s->plim, PLIM_SRC_ALARM, s->now_ms);
         if ((fresh || (any && !s->alarm_seen)) && is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;
