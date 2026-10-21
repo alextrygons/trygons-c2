@@ -4656,7 +4656,7 @@ typedef struct {
     uint32_t   cur_seq, cur_len, cur_got;
     uint8_t    cur[4200];
     uint32_t   time_date, time_tod, time_valid;
-    uint32_t   max_telem_gap_ms, last_telem_ms;
+    uint32_t   max_telem_gap_ms, last_telem_ms, max_gap_at;
     int        acks;
     uint8_t    ack_station, ack_result;
     uint16_t   ack_seq;
@@ -4671,7 +4671,10 @@ static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
     proto_rd_t r;
     proto_rd_init(&r, f->payload, f->len);
     if (f->type == PROTO_T_TELEMETRY) {
-        if (p->telem && x->t - p->last_telem_ms > p->max_telem_gap_ms) p->max_telem_gap_ms = x->t - p->last_telem_ms;
+        if (p->telem && x->t - p->last_telem_ms > p->max_telem_gap_ms) {
+            p->max_telem_gap_ms = x->t - p->last_telem_ms;
+            p->max_gap_at = x->t;
+        }
         p->last_telem_ms = x->t;
         p->telem++;
     } else if (f->type == PROTO_T_TELEM2) {
@@ -4797,9 +4800,9 @@ static void gateway_tests(void)
         p.last_telem_ms = x.t;
         sbsim_run(&x, 60000u, pi_hook, &p);
         bool sd_ok = !g_logstat.failure && g_logq0.dropped == 0u;
-        snprintf(d, sizeof d, "57600 baud: telemetry frames %d of 600, none lost (max gap %lu ms: 10 Hz + at most one 50 ms step late), TIME %d; log records to the Pi %lu, "
+        snprintf(d, sizeof d, "57600 baud: telemetry frames %d of 600, none lost (max gap %lu ms at %.1f s: 10 Hz + at most one 50 ms step late), TIME %d; log records to the Pi %lu, "
                  "dropped for the Pi %lu, gaps the Pi noticed %lu, bad %lu; SD: %lu records, none dropped %s",
-                 p.telem, (unsigned long)p.max_telem_gap_ms, p.times, (unsigned long)p.recs,
+                 p.telem, (unsigned long)p.max_telem_gap_ms, p.max_gap_at * 0.001, p.times, (unsigned long)p.recs,
                  (unsigned long)g_logq_gw.dropped, (unsigned long)p.gaps, (unsigned long)p.bad,
                  (unsigned long)g_logstat.records, sd_ok ? "yes" : "NO");
         test_report("GA2 slow UART: log copy dropped first (gap noted), control traffic and SD card unaffected",
@@ -5453,6 +5456,32 @@ static void slam_go(sbsim_t *x, uint32_t seed, float sea)
     joy_set(0.0f, 1.0f, false, false);
 }
 
+/* slamming fields read back from a log (SL8) */
+typedef struct {
+    char  fields[2048];
+    bool  have, yellow;
+    float peak, level, cap;
+    unsigned rate;
+} slamlog_t;
+
+static void slamlog_cb(void *ctx, uint8_t type, uint32_t t, const uint8_t *p, uint16_t len)
+{
+    (void)t; (void)len;
+    slamlog_t *s = (slamlog_t *)ctx;
+    double pk, lv, rt, cp, st;
+    if (type != LOGR_DATA) return;
+    if (!tlg_field(s->fields, p, "slam_peak", &pk) || !tlg_field(s->fields, p, "slam_level", &lv) ||
+        !tlg_field(s->fields, p, "slam_rate", &rt) || !tlg_field(s->fields, p, "slam_cap", &cp) ||
+        !tlg_field(s->fields, p, "slam_state", &st)) return;
+    if (!s->have) s->cap = 100.0f;
+    s->have = true;
+    if (pk > s->peak) s->peak = (float)pk;
+    if (lv > s->level) s->level = (float)lv;
+    if (rt > s->rate) s->rate = (unsigned)rt;
+    if (cp < s->cap) s->cap = (float)cp;
+    if (((int)st & 3) == SLAM_YELLOW) s->yellow = true;
+}
+
 static void slam_tests(void)
 {
     char d[800];
@@ -5679,6 +5708,41 @@ static void slam_tests(void)
         test_report("SL7 slamming sensor lost: shown as a warning, nothing else changes", lost &&
                     sb_mode(&x.sb) == MODE_MANUAL && x.sb.slam.steps == steps && !(x.sb.alarm_bits & SB_ALM_SLAM), d);
         sim_hal_set_accel(true);
+    }
+
+    /* SL8 slamming in the 20 Hz log record and in the black box (CPU1 RAM free) */
+    {
+        static sbsim_t x;
+        static char names[16][128];
+        char path[512];
+        slam_go(&x, 969u, 3.0f);
+        sbsim_log_start(&x, "sd_sl8", 9u);
+        x.sb.slam.cfg.limit_g = 9.0f;
+        x.sb.slam.cfg.yellow_frac = 0.12f;
+        sbsim_run(&x, 70000u, NULL, NULL);
+        sim_hal_fail_heading(true);                         /* a fault -> black box */
+        sbsim_run(&x, x.t + 35000u, NULL, NULL);
+        sim_hal_fail_heading(false);
+        logger_close(&s_logger);
+        x.log_on = false;
+        int nb = tlg_list("sd_sl8", "BB", names, 16);
+        tlg_info_t bb;
+        memset(&bb, 0, sizeof bb);
+        static slamlog_t sl;
+        memset(&sl, 0, sizeof sl);
+        if (nb > 0) {
+            snprintf(path, sizeof path, "sd_sl8/%.120s", names[0]);
+            tlg_read(path, &bb, NULL, NULL);
+            memcpy(sl.fields, bb.fields, sizeof sl.fields);
+            tlg_read(path, &bb, slamlog_cb, &sl);
+        }
+        snprintf(d, sizeof d, "black box %d file(s), %u data records (%.0f s); fields slam_peak/level/rate/cap/state %s; "
+                 "in the records: max peak %.2f g, max level %.2f g, max rate %u/min, lowest cap %.0f %%, yellow seen %s",
+                 nb, bb.data, bb.data / 20.0, sl.have ? "present" : "MISSING", sl.peak, sl.level, sl.rate, sl.cap,
+                 sl.yellow ? "yes" : "no");
+        test_report("SL8 slamming values in the 20 Hz log record (and the black box)",
+                    nb >= 1 && bb.data >= 1750u && sl.have && sl.peak > 1.0f && sl.level > 1.0f && sl.rate > 10u &&
+                    sl.cap < 100.0f && sl.yellow, d);
     }
 }
 

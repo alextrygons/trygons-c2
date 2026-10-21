@@ -13,21 +13,47 @@
 
 log_status_t g_logstat;
 
-/* The black box ring (~210 KB) does not fit next to core 0's data: on the
- * board it goes into CPU1's data RAM (DSPR1, otherwise almost empty),
- * which core 2 can read and write. */
+/* The black box ring (1200 x 184 B = 216 KB) is too big for any one RAM
+ * block that is free. It is NOT in CPU1's RAM (CPU1 keeps only the small
+ * safety monitor): it is split into 4 chunks of 300 records (54 KB each):
+ *   chunk 0  core 2's own data RAM (DSPR2, where the logger runs)
+ *   chunk 1  LMU block 0 (cpu0_dlmu)    shared RAM, core 2 reads / writes it
+ *   chunk 2  LMU block 1 (cpu1_dlmu)    (only the logger ever touches these,
+ *   chunk 3  LMU block 2 (cpu2_dlmu)     so no cache coherency issue)
+ * Section names: Lcf_Tasking_Tricore_Tc.lsl / Lcf_Gnuc_Tricore_Tc.lsl.
+ * The TASKING pragma spelling is UNVERIFIED until the first ADS build:
+ * check with tools/mapreport.py that DSPR1 stays below 60 %. */
+#define BB_CHUNK (LOG_BB_RECORDS / LOG_BB_CHUNKS)
 #if defined(__TASKING__)
-#pragma section farbss .bss_cpu1
+#define BB_SECTION(tasking, gnu) _Pragma(tasking)
+#define BB_END() _Pragma("section farbss restore")
 #elif defined(__tricore__)
-#pragma section .bss_cpu1 aw 4
+#define BB_SECTION(tasking, gnu) _Pragma(gnu)
+#define BB_END() _Pragma("section")
+#else
+#define BB_SECTION(tasking, gnu)
+#define BB_END()
 #endif
-static uint8_t s_bb[LOG_BB_RECORDS][LOG_BB_SLOT];
-#if defined(__TASKING__)
-#pragma section farbss align restore
-#pragma section farbss
-#elif defined(__tricore__)
-#pragma section
-#endif
+BB_SECTION("section farbss bss_cpu2", "section .bss_cpu2 aw 4")
+static uint8_t s_bb0[BB_CHUNK][LOG_BB_SLOT];
+BB_END()
+BB_SECTION("section farbss lmubss_cpu0", "section .lmubss_cpu0 aw 4")
+static uint8_t s_bb1[BB_CHUNK][LOG_BB_SLOT];
+BB_END()
+BB_SECTION("section farbss lmubss_cpu1", "section .lmubss_cpu1 aw 4")
+static uint8_t s_bb2[BB_CHUNK][LOG_BB_SLOT];
+BB_END()
+BB_SECTION("section farbss lmubss_cpu2", "section .lmubss_cpu2 aw 4")
+static uint8_t s_bb3[BB_CHUNK][LOG_BB_SLOT];
+BB_END()
+
+/* Black-box record i (0 .. LOG_BB_RECORDS-1), whatever chunk it lives in. */
+static uint8_t *bb_slot(uint32_t i)
+{
+    static uint8_t (*const chunk[LOG_BB_CHUNKS])[LOG_BB_SLOT] = { s_bb0, s_bb1, s_bb2, s_bb3 };
+    i %= LOG_BB_RECORDS;
+    return chunk[i / BB_CHUNK][i % BB_CHUNK];
+}
 
 static uint8_t s_bb_ev[LOG_BB_EVENTS][LOG_BB_EV_SLOT];      /* events: logger's own RAM */
 static uint8_t s_rec[4096 + 64];
@@ -139,7 +165,7 @@ static void bb_store(logger_t *lg, const uint8_t *rec, uint16_t len)
 {
     if (!lg->bb_ok) return;
     if (rec[1] == LOGR_DATA && len <= LOG_BB_SLOT) {
-        memcpy(s_bb[lg->bb_head % LOG_BB_RECORDS], rec, len);
+        memcpy(bb_slot(lg->bb_head), rec, len);
         lg->bb_head++;
         if (lg->bb_count < LOG_BB_RECORDS) lg->bb_count++;
     } else if (rec[1] == LOGR_EVENT && len <= LOG_BB_EV_SLOT) {
@@ -176,7 +202,7 @@ static void bb_start(logger_t *lg)
     uint32_t di = lg->bb_head - lg->bb_count, ei = lg->ev_head - lg->ev_count;
     bool ok = true;
     while (ok && (di != lg->bb_head || ei != lg->ev_head)) {
-        const uint8_t *d = (di != lg->bb_head) ? s_bb[di % LOG_BB_RECORDS] : 0;
+        const uint8_t *d = (di != lg->bb_head) ? bb_slot(di) : 0;
         const uint8_t *e = (ei != lg->ev_head) ? s_bb_ev[ei % LOG_BB_EVENTS] : 0;
         if (d && (!e || rec_t(d) <= rec_t(e))) { ok = raw_write(lg->bbh, lg->bb_buf, &lg->bb_buf_n, d, rec_len(d)); di++; }
         else { ok = raw_write(lg->bbh, lg->bb_buf, &lg->bb_buf_n, e, rec_len(e)); ei++; }

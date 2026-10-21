@@ -141,18 +141,18 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 134 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 135 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
     autopilot_sim.exe all --bridge
   The same tests again, but every joystick move goes through the simulated
-  USB bridge. Ends with "133 passed, 0 failed, 1 not applicable" (the analog
+  USB bridge. Ends with "134 passed, 0 failed, 1 not applicable" (the analog
   calibration test does not apply to the USB joystick).
     autopilot_sim.exe usb
   Only the 17 USB joystick tests (U1..U16), quick.
     autopilot_sim.exe gw
   Only the gateway link tests (GA1.., HELM, REMOTE, SAVE requests), quick.
     autopilot_sim.exe slam
-  Only the slamming tests (SL1..SL7).
+  Only the slamming tests (SL1..SL8).
   The gateway (Raspberry Pi) tests, with the simulator, on the PC:
     cd ..\gateway
     C:\msys64\ucrt64\bin\python.exe test_gateway.py
@@ -236,11 +236,16 @@ limit) but never stops or starts anything.
        C:\msys64\ucrt64\bin\python.exe tools\mapreport.py "TriCore Debug (TASKING)\TRYGONS_C2.map"
      (the free TASKING licence only runs inside ADS: build there first.)
 
-  Memory today (all code, TriCore GCC build -O0; TASKING is similar):
-     program flash 186 KB of 6.3 MB (2.9 %)
-     core 0 RAM  96 KB of 240 KB (40 %)
-     CPU1 RAM   221 KB of 240 KB (92 %: the 60 s black box, 202 KB)
-     core 2 RAM  11 KB of  96 KB (11 %)
+  Expected memory (before the first ADS build; from the compiled objects
+  + each core's stacks / CSA; iLLD + start-up code add a few KB on core 0):
+       sh tools/check.sh      (or: python tools\mapreport.py --objects <folder with .o>)
+     core 0 RAM        119 KB of 240 KB (50 %)
+     CPU1 RAM           12 KB of 240 KB ( 5 %: only the safety monitor + stacks)
+     core 2 RAM         78 KB of  96 KB (81 %: logger + 1/4 of the black box)
+     LMU blocks 0/1/2   54 KB of  64 KB each (84 %: 3/4 of the black box)
+  The 60 s black box (1200 records x 184 B = 216 KB) is split in 4 chunks:
+  core 2's RAM + the three LMU blocks. CPU1's RAM must stay below 60 %:
+  mapreport.py says FAIL (and the gate fails) above that.
 
   Watchdogs are ON. When you stop the program in the debugger the
   watchdogs are paused too (normal for AURIX). If the board keeps
@@ -923,8 +928,9 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c)
 B) TO CHECK ON THE BOARD
      [ ] The watchdog timeout (100 ms) and that a watchdog timeout really
          resets the chip (SMU alarm configuration).
-     [ ] That the black box ends up in CPU1's RAM with TASKING (the pragma
-         is there; check the map with tools\mapreport.py).
+     [ ] That the black box chunks end up in DSPR2 + the 3 LMU blocks with
+         TASKING (the pragmas are there, spelling UNVERIFIED): run
+         tools\mapreport.py on the map - "CPU1 RAM check: OK".
      [ ] Real CPU times (System tab): the PC needs 0.5 us per control step,
          the TC375 with a -O0 debug build will need much more; the budget
          is 50 ms.
@@ -977,8 +983,10 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
        stick that steered is gone), the throttle comes down at its normal
        rate, then neutral - same as a broken wire on the analog stick.
      * While mapping buttons, the old map still works (TAKE takes over).
-     * CPU1 RAM is 92 % full (the 60 s black box). New log fields cost
-       1.2 KB each per byte: shorten the black box if more are needed.
+     * Core 2 RAM and the LMU blocks are 81-84 % full (the black box). Each
+       new byte in the 20 Hz log record costs 1.2 KB of black box: the slot
+       is 184 B (182 used) - a bigger record needs LOG_BB_SLOT raised and
+       mapreport.py checked (or a shorter black box).
 
 
 -------------------------------------------------------------------------------

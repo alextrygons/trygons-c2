@@ -87,6 +87,12 @@
     X(speed_target,  H, 100,   s->cruise.target_kn) \
     X(nervous,       B, 1,     s->nerv.nervous) \
     X(yaw_std,       H, 100,   s->nerv.yaw_std) \
+    /* slamming (app/slam.c; also every impact as an EV_SLAM event) */ \
+    X(slam_peak,     H, 100,   s->slam.peak) \
+    X(slam_level,    H, 100,   s->slam.level) \
+    X(slam_rate,     B, 1,     s->slam.rate_pm) \
+    X(slam_cap,      B, 1,     slam_cap(&s->slam)) \
+    X(slam_state,    B, 1,     (uint8_t)(s->slam.state | (s->slam.override ? 0x10u : 0u) | (s->slam.lost ? 0x20u : 0u))) \
     /* other sensors */ \
     X(water_kn,      H, 100,   v.water_kn) \
     X(motor_a,       H, 100,   v.motor_a) \

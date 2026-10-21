@@ -973,12 +973,14 @@ void link_step(link_t *l, sb_t *s)
     uint32_t got = 0u;
     int frames = 0;
     if (l->port == LINK_PORT_GW) {
-        /* how fast is the UART really? Emptied completely: allow twice as much
-         * next time; otherwise half of what it sent (log bytes never pile up
-         * in front of control frames) */
+        /* how fast is the UART really? Emptied completely: allow twice what it
+         * really sent in the last step (it grows only while the UART keeps up -
+         * never by itself during quiet times, so a burst after a pause can't
+         * queue more than ~2 steps of data in front of control frames);
+         * otherwise half of what it sent */
         uint32_t used_now = HAL_GW_TX_RING - hal_gw_tx_free();
         uint32_t drained = l->gw_used_after - used_now;
-        l->gw_room = (used_now == 0u) ? 2u * (l->gw_room > drained ? l->gw_room : drained) : drained / 2u;
+        l->gw_room = (used_now == 0u) ? (l->gw_room > 2u * drained ? l->gw_room : 2u * drained) : drained / 2u;
         if (l->gw_room < GW_LOG_MIN_INFLIGHT) l->gw_room = GW_LOG_MIN_INFLIGHT;
         if (l->gw_room > GW_LOG_MAX_INFLIGHT) l->gw_room = GW_LOG_MAX_INFLIGHT;
     }
