@@ -23,6 +23,7 @@ import time
 import tkinter as tk
 
 import proto
+import mapview
 
 BG = "#000000"
 FG = "#ffffff"
@@ -377,7 +378,12 @@ class DriverScreen:
             return
         la0, lo0 = tr[-1]
         k = math.cos(math.radians(la0)) * 111320.0
-        m = 4.0                                         # m per pixel
+        m = 10.0                                        # m per pixel: 3 km wide
+        if not hasattr(self, "chartview"):
+            self.chartview = mapview.ChartView(self.app.charts)
+        av = (self.app.gw_status or {}).get("avoid") or {}
+        self.chartview.draw(c, la0, lo0, m, 300, 220, opacity=0.8, ais=self.app.ais_list(), threats=av.get("threats"),
+                            route=av.get("route"), shallow=av.get("shallow"), small=True)
         P = lambda la, lo: (150 + (lo - lo0) * k / m, 110 - (la - la0) * 111320.0 / m)
         pts = []
         for la, lo in tr[::max(1, len(tr) // 300)]:
@@ -392,4 +398,4 @@ class DriverScreen:
         c.create_polygon(150 + 10 * math.sin(h), 110 - 10 * math.cos(h), 150 + 6 * math.sin(h + 2.4),
                          110 - 6 * math.cos(h + 2.4), 150 + 6 * math.sin(h - 2.4), 110 - 6 * math.cos(h - 2.4),
                          fill=FG)
-        c.create_text(6, 210, text="400 m wide", anchor="sw", fill="#a0a0a0", font=F_SM)
+        c.create_text(296, 4, text="3 km", anchor="ne", fill="#404040", font=F_SM)

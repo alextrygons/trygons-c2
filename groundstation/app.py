@@ -26,6 +26,8 @@ import shorejoy
 import syncrecv
 import video
 import driver
+import chart
+import mapview
 import collections
 import json
 from tkinter import messagebox, simpledialog
@@ -102,6 +104,8 @@ class App:
         self.wiz = None                 # guided button-mapping routine
         self.sim_usb = {"x": 0.0, "lever": 0.5, "stick": True, "throttle": True, "fault": 0}
         self.driver = None              # the DRIVER screen (second monitor), section I
+        self.charts = chart.Charts()    # offline depth charts (tools/chartprep.py -> charts/), section B
+        self.chartview = mapview.ChartView(self.charts)
         self.single_op = False          # SINGLE-OPERATOR mode as the GATEWAY has it (section F1)
         self.gw_asks = {}               # driver questions from the gateway: id -> text
         self.cconf = None               # captain's own confirmation (single-operator mode)
@@ -397,6 +401,10 @@ class App:
     def cam_internet(self, on):
         if isinstance(self.link, GatewayLink):
             self.link.send_msg({"t": "cam_internet", "on": on, "minutes": 30})
+
+    def ais_list(self):
+        """AIS targets from the gateway (section A), [] without one."""
+        return ((self.gw_status or {}).get("ais") or {}).get("list") or []
 
     def video_save(self, source):
         """SAVE: the gateway keeps the ring window + 2 min after (all cameras)."""
@@ -775,6 +783,19 @@ class App:
         tk.Checkbutton(mt, text="Click adds a program waypoint", variable=self.add_on_click, font=F_TXT,
                        bg=BG).pack(side="left", padx=8)
         tk.Label(mt, text="(north up, centred on the boat)", font=F_TXT, bg=BG).pack(side="left")
+        ml = tk.Frame(mp, bg=BG)
+        ml.pack(fill="x")
+        self.map_layers = {}
+        for key, txt in (("depth", "Depth"), ("contours", "Contours"), ("marks", "Sea marks"), ("ais", "AIS ships")):
+            v = tk.BooleanVar(value=True)
+            self.map_layers[key] = v
+            tk.Checkbutton(ml, text=txt, variable=v, font=F_TXT, bg=BG).pack(side="left", padx=4)
+        tk.Label(ml, text="depth shading:", font=F_TXT, bg=BG).pack(side="left", padx=(12, 2))
+        self.depth_opacity = tk.DoubleVar(value=0.8)
+        tk.Scale(ml, from_=0.2, to=1.0, resolution=0.1, orient="horizontal", variable=self.depth_opacity, length=140,
+                 showvalue=False, bg=BG, highlightthickness=0).pack(side="left")
+        self.chart_lbl = tk.Label(ml, text="", font=F_TXT, bg=BG, fg="#a00000")
+        self.chart_lbl.pack(side="left", padx=10)
         self.map = tk.Canvas(mp, bg="#d8ecff", highlightthickness=0)
         self.map.pack(fill="both", expand=True)
         self.map.bind("<Button-1>", self.map_click)
@@ -1255,7 +1276,7 @@ class App:
         self.cmd(proto.T_PARAM_SET, proto.p_param_set(pid, v), "set %s = %g" % (self.params[pid]["name"], v))
 
     def zoom(self, k):
-        self.map_m_per_px = min(50.0, max(0.1, self.map_m_per_px * k))
+        self.map_m_per_px = min(400.0, max(0.1, self.map_m_per_px * k))
 
     def map_click(self, ev):
         if not self.t or not self.add_on_click.get():
@@ -1889,6 +1910,12 @@ class App:
         def P(lat, lon):
             return w / 2 + (lon - lon0) * k / m, h / 2 - (lat - lat0) * 111320.0 / m
 
+        # charts, sea marks, AIS ships, avoidance route, shallow water (offline layers)
+        av = (self.gw_status or {}).get("avoid") or {}
+        self.chartview.draw(c, lat0, lon0, m, w, h, layers={k_: v.get() for k_, v in self.map_layers.items()},
+                            opacity=self.depth_opacity.get(), ais=self.ais_list(), threats=av.get("threats"),
+                            route=av.get("route"), shallow=av.get("shallow"))
+        self.chart_lbl.configure(text="" if self.charts else "no chart files: python tools/chartprep.py")
         # scale bar
         bar_m = 10 ** math.floor(math.log10(max(1.0, m * 150)))
         c.create_line(20, h - 20, 20 + bar_m / m, h - 20, width=4)

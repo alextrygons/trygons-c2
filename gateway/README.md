@@ -476,3 +476,15 @@ receiver feed) → `"ais": {"online": {"enabled": true, "url": "http://data.aish
 It is only used on 4G / RF, never on STARLINK.
 Second GPS (optional, OFF): `"ais": {"second_gps": true}` on the Pi AND
 parameter `gps2_check_m` = 30 on the boat (Parameters tab).
+
+## 18. Depth charts on the Pi (offline)
+
+Make them on a PC with internet (MANUAL.txt chapter 9 part K):
+`python tools/chartprep.py` -> `charts/attica/`. Copy to the Pi:
+```
+scp -r charts/attica trygons@trygons-gw:/home/trygons/trygons-c2/charts/
+```
+The gateway loads every area under `charts/` at start (restart the service
+after copying). Without charts the shallow-water checks can't work: the
+gateway then refuses AUTO programs ("no depth data") and the map shows
+"no chart files".
