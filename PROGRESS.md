@@ -12,9 +12,9 @@ step that is not DONE below, without redoing finished work.
 |---|---|---|---|
 | 0 | PROGRESS.md + CLAUDE.md rule | DONE | a27f492 |
 | 1 | START_DEMO.bat / STOP_DEMO.bat, tool check, MANUAL "Demo", fresh-terminal test | DONE | 7ba8d9c |
-| 2 | eWaSR: license OK (Apache-2.0 code + weights, MaSTr1325 CC BY 4.0); vision process, stages, display, tests, docs | DONE | (this commit) |
-| 3 | MANUAL "Future ideas" | next | |
-| 4.1 | fresh clone from GitHub, build + all suites + demo | open | |
+| 2 | eWaSR: license OK (Apache-2.0 code + weights, MaSTr1325 CC BY 4.0); vision process, stages, display, tests, docs | DONE | b25ada4 |
+| 3 | MANUAL "Future ideas" (chapter 17 = "What is still missing" in this MANUAL) | DONE | (this commit) |
+| 4.1 | fresh clone from GitHub, build + all suites + demo | next | |
 | 4.2 | "a day at sea" scenario | open | |
 | 4.3 | 24 h soak + 32-bit time wraparound | open | |
 | 4.4 | random fault storm, invariants I1-I21 | open | |

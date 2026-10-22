@@ -1260,6 +1260,21 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
        is 184 B (182 used) - a bigger record needs LOG_BB_SLOT raised and
        mapreport.py checked (or a shorter black box).
 
+FUTURE IDEAS
+   (ideas only - nothing of this is built)
+   * Low-bandwidth video:
+       (a) smart blurring without AI - use the IMU horizon to flatten the
+           sky and lower the quality away from the path, re-encoding one
+           low-resolution front stream on the Pi;
+       (b) with the eWaSR segmentation: an ultra-low-bandwidth synthetic
+           view (sea / sky / land in flat colours, sea coloured by the
+           IMU-measured roughness, obstacles as sharp cut-outs).
+       Never the default view: fallback only on very weak links, with a
+       clear SYNTHETIC VIEW banner and a lower remote-driving speed cap.
+   * Vision hardware upgrade: Raspberry Pi AI HAT+ or OAK-D camera for a
+     faster eWaSR; fine-tuning on my own Saronic recordings (the vision
+     samples, chapter 9 part N).
+
 
 -------------------------------------------------------------------------------
 18. TROUBLESHOOTING
