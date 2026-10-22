@@ -64,6 +64,9 @@ echo "python files parse"
 echo "== chart tests"
 ( cd groundstation && /c/msys64/ucrt64/bin/python.exe test_charts.py > "$TEMP/chart_tests.txt" 2>&1 ) || { echo "CHART TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"
+echo "== avoidance planner tests"
+( cd gateway && /c/msys64/ucrt64/bin/python.exe test_avoid.py > "$TEMP/avoid_tests.txt" 2>&1 ) || { echo "AVOIDANCE TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|AVOIDANCE TESTS" "$TEMP/avoid_tests.txt"
 echo "== gateway tests"
 ( cd gateway && /c/msys64/ucrt64/bin/python.exe test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS" "$TEMP/gw_tests.txt"

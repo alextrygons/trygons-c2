@@ -157,6 +157,8 @@ RUN ALL TESTS (before every commit):
   The gateway (Raspberry Pi) tests, with the simulator, on the PC:
     cd ..\gateway
     C:\msys64\ucrt64\bin\python.exe test_gateway.py
+    C:\msys64\ucrt64\bin\python.exe test_avoid.py    (collision avoidance
+                                     planner, 12 tests)
   The Python tests (ground station + log tools):
     cd ..\groundstation
     C:\msys64\ucrt64\bin\python.exe test_e2e.py      (10 tests)
@@ -810,6 +812,49 @@ L. SHALLOW WATER
   heading, slows to 4 kn (parameter nav_lost_kn) and sounds COLLISION RISK -
   DRIVER DECISION. Joystick and STANDBY always win.
 
+M. COLLISION AVOIDANCE (AIS SHIPS)
+  AIS DOES NOT SHOW small boats, jet skis, swimmers, kayaks, divers or
+  anything without a transponder, and a ship's AIS can be wrong, late or
+  switched off. Collision avoidance helps with BIG ships only. KEEP A
+  LOOKOUT. A radar reflector on the boat helps big ships see YOU.
+  The Pi computes for every AIS ship the CPA (how close it will pass) and
+  the TCPA (in how many minutes):
+    WARNING  CPA under 0.5 nm within 10 min   (yellow on the maps)
+    DANGER   CPA under 0.25 nm within 6 min   (red on the maps + the
+             driver screen; alarm COLLISION RISK, video SAVE)
+  (Pi settings /etc/trygons/gateway.json "avoid": warn_nm, warn_min,
+  danger_nm, danger_min, safe_nm, clear_nm, min_kn ...)
+  WHAT HAPPENS IN EACH MODE:
+    AUTO       automatic, step by step, already at the WARNING level (early,
+               while there is still room):
+               1. slow down (half speed, at least 4 kn) and re-check after
+                  20 s;
+               2. still too close -> a route that passes ASTERN of the ship
+                  (starboard turns first, then port; it never crosses ahead
+                  of a ship's bow, keeps 0.5 nm, and passes the depth check
+                  of part L). The route is drawn on both maps.
+               3. clear (going back is safe) -> the boat rejoins its leg.
+               Every decision is written to the Pi's audit log.
+    HDG LOCK   at the WARNING level too: the same route as a PROPOSAL on the
+               driver screen ("Steer
+               074 and slow to 4 kn?") - ACCEPT changes the locked heading,
+               REJECT keeps it (no new proposal for 60 s, the alarm stays).
+               When clear: "Back to heading 344?" (ACCEPT / REJECT). The
+               throttle stays with you. Only the driver screen (or the
+               captain in SINGLE-OPERATOR mode) can answer.
+    MANUAL / REMOTE MANUAL   alarm only: you steer.
+    STANDBY / TRAINING       nothing.
+  COLLISION RISK - DRIVER DECISION: the situation can't be solved safely by
+  the Pi (two or more dangerous ships, a ship that is turning, old / stale
+  AIS data, no safe route): in AUTO the boat slows to 4 kn and KEEPS ITS
+  COURSE (never an unchecked route). YOU decide: take the joystick.
+  The boat only applies what the Pi asks in AUTO (or after your ACCEPT in
+  HDG LOCK), and only within all its own rules (power limit, joystick
+  wins, STANDBY wins). If the Pi goes silent during an avoidance, the boat
+  holds its heading, slows to 4 kn and sounds DRIVER DECISION.
+  Collision and shallow-water alarms do NOT lower the power limit (slowing
+  down is done by the speed request itself).
+
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
 -------------------------------------------------------------------------------
@@ -845,6 +890,11 @@ L. SHALLOW WATER
   GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)
   SHALLOW WATER          AUTO: shallow water ahead (charts); the boat slows to
                          4 kn (part L)
+  COLLISION RISK         an AIS ship will pass closer than 0.25 nm within
+                         6 min (part M); AUTO avoids it, HDG LOCK proposes
+  COLLISION RISK - DRIVER DECISION  the Pi can't solve it safely (or went
+                         silent during an avoidance): slow, keep course - YOU
+                         decide (part M)
   AIS RECEIVER SILENT    no AIS message for 5 min at sea: antenna / receiver
                          (warning only, part J)
   SLAMMING               an impact harder than slam_limit_g: throttle reduced
@@ -860,7 +910,8 @@ L. SHALLOW WATER
                          neutral, gyro heading hold; STANDBY after 5 s
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
-  file. Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
+  file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
+  DECISION and AIS RECEIVER SILENT: they never change the power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
 
 
 -------------------------------------------------------------------------------

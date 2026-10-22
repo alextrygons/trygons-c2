@@ -2166,14 +2166,14 @@ SIM_LAT, SIM_LON = 60.0, 25.0                   # the simulator's origin (sim/si
 SHOAL = (60.0, 25.0 + 2000.0 / (111320.0 * math.cos(math.radians(60.0))))   # 2 km east of the start
 
 
-def sim_chart(folder, shoal_m=1.5, radius_m=250.0):
+def sim_chart(folder, shoal_m=1.5, radius_m=250.0, n_lat=160, n_lon=220):
     """20 m water around the simulator origin, a round shoal 2 km east of the boat."""
     dlat, dlon = 0.0005, 0.001
     lat0, lon0 = 59.97, 24.94
     rows = []
-    for i in range(160):
+    for i in range(n_lat):
         r = []
-        for j in range(220):
+        for j in range(n_lon):
             la, lo = lat0 + i * dlat, lon0 + j * dlon
             d = chartmod.dist_m(la, lo, SHOAL[0], SHOAL[1])
             r.append(shoal_m if d < radius_m else 20.0)
@@ -2301,7 +2301,245 @@ def section_sh():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-SECTIONS = {"F1": section_f1, "AIS": section_ais, "SH": section_sh, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
+# ------------------------------------------------------------------ section CA --
+
+# smaller distances / times than at sea, so that an encounter plays out in a few minutes
+CA_AVOID = {"warn_nm": 0.3, "warn_min": 4.0, "danger_nm": 0.2, "danger_min": 3.0, "recheck_s": 6.0, "safe_nm": 0.3,
+            "clear_nm": 0.5, "horizon_min": 6.0, "data_max_age_s": 40.0, "min_kn": 3.0, "repropose_s": 10.0}
+COLL_BIT, DECIS_BIT = 0x800000, 0x1000000
+
+
+def crossing_ship(d, mmsi, kn, t_s, name, from_side=90.0):
+    """A ship from starboard (from_side 90) that reaches the boat's position in t_s seconds
+    (the boat keeping its course and speed): CPA ~ 0."""
+    lat, lon, cog, sog = d["est_lat"], d["est_lon"], d["est_cog"], d["est_sog"]
+    x_lat, x_lon = aismod.move(lat, lon, cog, sog, t_s)
+    s_cog = (cog - from_side) % 360.0
+    s_lat, s_lon = aismod.move(x_lat, x_lon, (s_cog + 180.0) % 360.0, kn, t_s)
+    return Ship(mmsi, s_lat, s_lon, kn, s_cog, cls="A", name=name)
+
+
+def ship_dist_nm(d, ship):
+    return aismod.dist_m(d["est_lat"], d["est_lon"], ship.lat, ship.lon) / 1852.0
+
+
+def avoid_log(g, since=0):
+    return [e.get("text", "") for e in list(g.audit.recent)[since:] if e["kind"] == "avoid"]
+
+
+def section_ca():
+    print("\n=== Section D: collision avoidance (gateway + boat) ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_ca_")
+    sim = gw = asim = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        charts = os.path.join(tmp, "charts")
+        sim_chart(charts, n_lat=400, n_lon=400)
+        aport = free_port()
+        asim = AisSim(aport, seed=5, noise_m=5.0, start_offset=0.2).start()
+        cfg = gw_cfg_b(sim, root, charts_dir=charts, avoid=CA_AVOID, stations={"driver_timeout_s": 5.0},
+                       ais={"enabled": True, "source": "tcp:127.0.0.1:%d" % aport, "silent_s": 600.0, "tick_s": 0.25})
+        gw = GwRunner(cfg)
+        g = gw.gw
+
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+        alice.pump(1.0)
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        bob = Client(sp, "bob", PW["bob"], name="driver screen")
+        beat = DriverBeat(bob)
+
+        def joy(x=0.0, y=0.0, **kw):
+            link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, x, y, **kw))
+
+        def answer(client, yes):
+            p = g.nav_state.get("proposal")
+            client.l.send_msg({"t": "avoid_answer", "id": p and p["id"], "yes": yes})
+            return p, next_event(client, ("avoid_ack",), 3.0)[1]
+
+        # CA-M MANUAL: a ship on a collision course -> COLLISION alarm only (no request applied, nothing proposed)
+        w.until(lambda d: d.get("pos_source", 0) != 0, 10)
+        joy(0.5, 0.0)
+        w.until(lambda d: d["mode"] == proto.MODE_MANUAL, 4)
+        joy(0.0, 0.0)
+        d = w.telem
+        lat, lon = aismod.move(d["est_lat"], d["est_lon"], 90.0, 0.0, 0)
+        s_lat, s_lon = aismod.move(lat, lon, 90.0, 15.0, 100.0)           # 0.4 nm east, coming at us at 15 kn
+        asim.add(Ship(239400001, s_lat, s_lon, 15.0, 270.0, name="FERRY WEST"))
+        al = w.until(lambda d: d["alarm_bits"] & COLL_BIT, 25)
+        st_m, prop_m = g.nav_state.get("state"), g.nav_state.get("proposal")
+        time.sleep(1.0)
+        w.pump(0.3)
+        d_m = w.telem
+        asim.remove(239400001)
+        g.ais.targets.pop(239400001, None)
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY))
+        w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 6)
+        report("CA-M MANUAL: ship on a collision course -> COLLISION RISK alarm only (no steering, no speed request)",
+               al is not None and st_m == "ALARM ONLY" and prop_m is None and d_m["mode"] == proto.MODE_MANUAL and
+               not d_m.get("nav_applied"),
+               "alarm %s; planner %s, proposal %s; mode %s, request applied by the boat %s" % (
+                   "yes" if al else "NO", st_m, prop_m, d_m["mode_name"], d_m.get("nav_applied")))
+
+        # CA-A AUTO: crossing ship from starboard -> slow down, route astern (starboard), alarm + SAVE, rejoin
+        wp = east_of(0, 9000)                                             # due north, deep water all the way
+        upload(alice, [wp], kn=10.0)
+        seq = alice.l.send(proto.T_AUTO_START, b"", what="AUTO start")
+        k_, ask = next_event(bob, ("driver_ask",), 4.0)
+        if ask:
+            bob.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": True})
+        alice.wait_ack(seq)
+        joy(confirm=True)
+        time.sleep(0.2)
+        joy()
+        auto = w.until(lambda d: d["mode"] == proto.MODE_AUTO, 4)
+        # (at the 30 % power limit the boat makes about 7 kn)
+        steady = w.until(lambda d: d.get("est_sog", 0) > 5.5 and abs(((d["est_cog"] + 180) % 360) - 180) < 10, 120)
+        d0 = w.telem
+        leg = d0["est_cog"]
+        n_log = len(g.audit.recent)
+        save0 = d0.get("save_seq")
+        ship = asim.add(crossing_ship(d0, 239400002, 12.0, 180.0, "BLUE STAR CROSSING"))
+        t0 = time.time()
+        slow = w.until(lambda d: d.get("nav_applied") and d.get("nav_cap_kn") is not None and
+                       d.get("nav_kind") == proto.NAV_CAP, 30)
+        avoid = w.until(lambda d: d.get("nav_applied") and d.get("nav_kind") == proto.NAV_HEADING, 40)
+        hdg_rel = ((avoid["nav_heading"] - leg + 180) % 360 - 180) if avoid else 0
+        route_st = None
+        for _ in range(30):
+            alice.pump(0.2)
+            route_st = (alice.status or {}).get("avoid", {}).get("route")
+            if route_st:
+                break
+        coll = w.until(lambda d: d["alarm_bits"] & COLL_BIT, 60)
+        saved = w.until(lambda d: d.get("save_seq") != save0 and d.get("save_trig") == 2, 10)
+        dmin, rejoin = 99.0, None
+        end = time.time() + 300
+        while time.time() < end:
+            w.pump(0.5)
+            dd = w.telem
+            dmin = min(dmin, ship_dist_nm(dd, ship))
+            if not dd.get("nav_applied") and g.nav_state.get("state") == "CLEAR" and time.time() - t0 > 60:
+                rejoin = dd
+                break
+        back = None
+        if rejoin:
+            def xt(d):                                    # metres from the leg line (due north)
+                return abs(d["est_lon"] - wp[1]) * 111320.0 * math.cos(math.radians(d["est_lat"]))
+            xt0 = xt(w.telem)
+            back = w.until(lambda d: xt(d) < max(60.0, 0.5 * xt0) and d["est_sog"] > 5.0, 240)
+        texts = avoid_log(g, n_log)
+        report("CA-A AUTO crossing ship: slow down, re-check, route astern (starboard), alarm + video SAVE, rejoin",
+               auto is not None and steady is not None and slow is not None and avoid is not None and
+               0 < hdg_rel <= 120 and route_st and coll is not None and saved is not None and
+               saved["save_arg"] in (23, 24) and dmin >= 0.15 and rejoin is not None and back is not None and
+               any("step 1" in t for t in texts) and any("step 2" in t for t in texts) and
+               any("back to the track" in t or "clear" in t for t in texts),
+               "step 1 speed cap %s kn after %.0f s; step 2 heading %03.0f (%+.0f deg from the leg, starboard), route "
+               "on the screens %s points; COLLISION alarm %s, SAVE request %s (%s); closest %.2f nm; request ended "
+               "%s, back on the leg to the waypoint %s (%.0f m off it -> %.0f m); %d decisions logged, e.g. \"%s\"" % (
+                   slow and slow.get("nav_cap_kn"), (time.time() - t0) if not slow else 0,
+                   avoid["nav_heading"] if avoid else -1, hdg_rel, len(route_st or []), "yes" if coll else "NO",
+                   "yes" if saved else "NO", saved and proto.save_trigger_text(saved["save_trig"], saved["save_arg"]),
+                   dmin, "yes" if rejoin else "NO", "yes" if back else "NO", xt0 if rejoin else -1,
+                   xt(back) if back else -1, len(texts),
+                   texts[1][:120] if len(texts) > 1 else texts))
+        asim.remove(239400002)
+        g.ais.targets.pop(239400002, None)
+
+        # CA-L gateway lost while avoiding in AUTO is the last test (it stops the gateway); first HDG LOCK:
+        # CA-H HEADING LOCK: proposal on the driver screen; REJECT -> unchanged; ACCEPT -> new heading; return
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK))
+        w.until(lambda d: d["mode"] == proto.MODE_HDG_LOCK, 4)
+        joy(0.0, 0.5)                                                     # the throttle stays with the driver
+        w.until(lambda d: d.get("est_sog", 0) > 5.0, 60)
+        d1 = w.telem
+        h0 = d1["target"]
+        ship = asim.add(crossing_ship(d1, 239400003, 12.0, 200.0, "FLYING CAT"))
+        prop = wait_for(lambda: (g.nav_state.get("proposal") or {}).get("kind") == "avoid", 60)
+        why_h = "%s: %s" % (g.avoider.state, g.avoider.why)
+        p_cap, a_cap = answer(alice, True)                                # the captain screen can't answer it
+        p1, a_rej = answer(bob, False)
+        # (Waiter.pump returns at the first frame: wait on the clock / on the gateway's state)
+        gone = wait_for(lambda: g.nav_state.get("proposal") is None, 3)
+        time.sleep(5.0)                                   # inside the 10 s hold-off
+        w.pump(0.3)
+        h_after_rej = w.telem["target"]
+        quiet = gone and g.nav_state.get("proposal") is None
+        again = wait_for(lambda: (g.nav_state.get("proposal") or {}).get("kind") == "avoid" and
+                         g.nav_state["proposal"]["id"] != (p1 or {}).get("id"), 25)
+        p2, a_acc = answer(bob, True)
+        turned = w.until(lambda d: p2 and abs((d["target"] - p2["heading"] + 180) % 360 - 180) < 1.5, 6)
+        report("CA-H HEADING LOCK: proposal on the driver screen; REJECT keeps the heading; ACCEPT changes it",
+               prop and a_cap and not a_cap["ok"] and a_rej and a_rej["ok"] and
+               abs((h_after_rej - h0 + 180) % 360 - 180) < 1.5 and quiet and again and a_acc and a_acc["ok"] and
+               turned is not None and turned["mode"] == proto.MODE_HDG_LOCK,
+               "planner %s; proposal \"%s\"; from the captain screen: %s; REJECT -> heading %03.0f -> %03.0f, no new proposal "
+               "for 10 s %s; proposed again %s; ACCEPT -> locked heading %s (proposal %s)" % (
+                   why_h[:80], p1 and p1["text"], a_cap and a_cap["text"], h0, h_after_rej, quiet, again,
+                   "%03.0f" % turned["target"] if turned else "NOT changed", p2 and p2["heading"]))
+        ret = wait_for(lambda: (g.nav_state.get("proposal") or {}).get("kind") == "return", 240)
+        p3, a_ret = answer(bob, True)
+        home = w.until(lambda d: abs((d["target"] - h0 + 180) % 360 - 180) < 1.5, 6)
+        report("CA-H2 HEADING LOCK: when clear, the way back is proposed too (ACCEPT -> the old heading)",
+               ret and p3 and p3["heading"] == round(h0) and a_ret and a_ret["ok"] and home is not None,
+               "return proposal \"%s\"; ACCEPT -> heading %s" % (
+                   p3 and p3["text"], "%03.0f" % home["target"] if home else "NOT back"))
+        asim.remove(239400003)
+        g.ais.targets.pop(239400003, None)
+
+        # CA-L AUTO, avoiding, gateway lost -> the boat holds its heading, slows to nav_lost_kn, DRIVER DECISION
+        joy()
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY))
+        w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 6)
+        seq = alice.l.send(proto.T_AUTO_START, b"", what="AUTO start")
+        k_, ask = next_event(bob, ("driver_ask",), 4.0)
+        if ask:
+            bob.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": True})
+        alice.wait_ack(seq)
+        joy(confirm=True)
+        time.sleep(0.2)
+        joy()
+        w.until(lambda d: d["mode"] == proto.MODE_AUTO, 4)
+        brg_l = aismod.bearing(w.telem["est_lat"], w.telem["est_lon"], wp[0], wp[1])
+        w.until(lambda d: d.get("est_sog", 0) > 5.5 and abs((d["est_cog"] - brg_l + 180) % 360 - 180) < 10, 120)
+        asim.add(crossing_ship(w.telem, 239400004, 16.0, 120.0, "LATE FERRY"))
+        steer = w.until(lambda d: d.get("nav_applied") and d.get("nav_kind") in (proto.NAV_CAP, proto.NAV_HEADING),
+                        40)
+        h_l = w.telem["target"]
+        t_l = time.time()
+        gw.stop()
+        gw = None
+        lost = w.until(lambda d: d.get("nav_lost") and d["alarm_bits"] & DECIS_BIT, 8)
+        dt_l = time.time() - t_l
+        slow_l = w.until(lambda d: d.get("est_sog", 99) < 5.0, 60)
+        report("CA-L gateway lost during an avoidance in AUTO -> the boat holds its heading, slows, DRIVER DECISION",
+               steer is not None and lost is not None and dt_l < 5.0 and lost["mode"] == proto.MODE_AUTO and
+               slow_l is not None and abs((slow_l["target"] - lost["target"] + 180) % 360 - 180) < 2.0,
+               "request applied %s; gateway stopped -> lease lost + alarm after %.1f s (lease 3 s), mode %s; "
+               "speed %.1f kn, held heading %03.0f (at the loss %03.0f; requested before %03.0f)" % (
+                   "yes" if steer else "NO", dt_l, lost and lost["mode_name"],
+                   slow_l["est_sog"] if slow_l else -1, slow_l["target"] if slow_l else -1,
+                   lost["target"] if lost else -1, h_l))
+
+        beat.stop()
+        for c in (alice, bob):
+            c.close()
+        link.stop()
+    finally:
+        if asim:
+            asim.stop()
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"F1": section_f1, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
             "G": section_g}
 
 

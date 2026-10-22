@@ -25,6 +25,7 @@ from common import Clock, load_config, log, proto, setup_logging
 from audit import Audit
 from ais import AisTargets, OnlineFeed
 from shallow import Shallow
+from avoid import Avoider
 import chart
 from cameras import CameraManager, path_name
 from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAULT_CHANNELS
@@ -103,6 +104,11 @@ class Gateway:
         self.nav_sent = 0
         self.nav_state = {"shallow": None, "threats": [], "route": [], "state": "CLEAR", "why": ""}
         self.stations.prog_check = self.check_prog
+        # collision avoidance (section D): every decision into the audit log
+        self.avoider = Avoider(cfg.get("avoid"), self.shallow,
+                               log=lambda text, **kw: self.audit("avoid", text=text, **kw))
+        self.hdg_set_until = 0.0
+        self.stations.ext["avoid_answer"] = self._avoid_answer
 
     def _on_telem(self, f):
         try:
@@ -206,14 +212,46 @@ class Gateway:
         return None
 
     def nav_compose(self):
-        """The navigation request for the AURIX (section C; collision avoidance adds to it, section D)."""
+        """The navigation request for the AURIX: collision avoidance (section D) + shallow water
+        (section C). Heading from the avoidance, the LOWER speed cap, all alarms."""
         o = self.own()
-        req = {"kind": proto.NAV_NONE, "heading": None, "cap_kn": None, "reason": 0, "alarm": 0}
+        now = time.time()
+        if o.get("mode") != proto.MODE_HDG_LOCK and self.avoider.hdg_set is not None:
+            self.avoider.hdg_set_sent()                     # left HDG LOCK: an accepted heading is dropped
+            self.hdg_set_until = 0.0
+        req = self.avoider.update(now, o, self.ais.list(), o.get("mode"))
+        if req["kind"] == proto.NAV_HDG_SET:
+            if not self.hdg_set_until:
+                self.hdg_set_until = now + 3.0              # repeated for 3 s (same number: applied once)
+            elif now > self.hdg_set_until:
+                self.avoider.hdg_set_sent()
+                self.hdg_set_until = 0.0
         sh = self.shallow.watch(o) if o["lat"] is not None else None
-        self.nav_state["shallow"] = sh
         if sh and o.get("mode") == proto.MODE_AUTO:
-            req.update(kind=proto.NAV_CAP, cap_kn=self.shallow.cfg["slow_kn"], reason=2, alarm=4)
+            req["cap_kn"] = min(req["cap_kn"] if req["cap_kn"] is not None else 1e9, self.shallow.cfg["slow_kn"])
+            if req["kind"] == proto.NAV_NONE:
+                req["kind"] = proto.NAV_CAP
+            req["reason"] |= 2
+            req["alarm"] |= 4
+        self.nav_state = dict(self.avoider.status(), shallow=sh)
         return req
+
+    def _avoid_answer(self, st, m):
+        """The driver's ACCEPT / REJECT of a HEADING LOCK proposal: only from a station that
+        shows the DRIVER screen, or the captain in SINGLE-OPERATOR mode."""
+        if st not in self.stations.drivers() and not st.single_op:
+            return st.send({"t": "avoid_ack", "ok": False, "text": "only the driver screen answers proposals"})
+        pid = m.get("id")
+        if m.get("yes"):
+            # the way back = the heading the driver had LOCKED (not the momentary compass heading)
+            d = self.telem or {}
+            back = d.get("target") if d.get("mode") == proto.MODE_HDG_LOCK and d.get("target") is not None \
+                else d.get("heading", 0.0)
+            ok, text = self.avoider.accept(pid, back)
+        else:
+            ok, text = self.avoider.reject(pid, time.time()), "rejected - heading unchanged"
+        self.audit("avoid_answer", station=st.id, user=st.user, id=pid, yes=bool(m.get("yes")), ok=ok, text=text)
+        st.send({"t": "avoid_ack", "ok": ok, "text": text})
 
     def nav_send(self, req):
         key = (req["kind"], req["heading"] and round(req["heading"], 1), req["cap_kn"], req["reason"], req["alarm"])

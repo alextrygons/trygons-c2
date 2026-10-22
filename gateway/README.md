@@ -488,3 +488,21 @@ The gateway loads every area under `charts/` at start (restart the service
 after copying). Without charts the shallow-water checks can't work: the
 gateway then refuses AUTO programs ("no depth data") and the map shows
 "no chart files".
+
+## 19. Shallow water and collision avoidance settings
+
+In `/etc/trygons/gateway.json` (restart the service after a change):
+```
+"shallow": {"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0},
+"avoid":   {"warn_nm": 0.5, "warn_min": 10, "danger_nm": 0.25, "danger_min": 6,
+            "safe_nm": 0.5, "clear_nm": 1.0, "min_kn": 4.0, "recheck_s": 20}
+```
+- `draft_m`: measure it (water line to the lowest point of the outboard,
+  leg down). The limit is the larger of `shallow_m` and draft + margin.
+- `avoid`: the defaults are the ones in the MANUAL (chapter 9 part M);
+  smaller numbers = later reactions. Don't make them smaller without a
+  reason.
+Every avoidance decision is in the audit log (`kind: "avoid"`), every
+driver answer to a proposal as `avoid_answer`, every request sent to the
+boat as `navreq`. AIS does NOT show small boats, jet skis, swimmers or
+kayaks: keep a lookout.
