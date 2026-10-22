@@ -86,5 +86,8 @@ Safety rules — never break them
 - Logging must never block or slow control: core 0 / CPU1 only push into lock-free queues; full queue → drop + count.
 - Every feature has sim tests for its failure cases.
 
+## Working rules
+- For long multi-part tasks, keep PROGRESS.md updated after every step so the work can resume in a new session.
+
 ## About me
 - I know programming but I'm new to VS Code, git and AURIX. Explain steps simply.
