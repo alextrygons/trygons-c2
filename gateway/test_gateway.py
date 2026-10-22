@@ -8,6 +8,7 @@ Exit code 0 = all passed.
 """
 import glob
 import math
+import re
 import os
 import shutil
 import socket
@@ -2156,7 +2157,151 @@ def section_ais():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-SECTIONS = {"F1": section_f1, "AIS": section_ais, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
+# ------------------------------------------------------------------ section SH --
+
+import chart as chartmod  # noqa: E402
+import program as progmod  # noqa: E402
+
+SIM_LAT, SIM_LON = 60.0, 25.0                   # the simulator's origin (sim/sim_world.c)
+SHOAL = (60.0, 25.0 + 2000.0 / (111320.0 * math.cos(math.radians(60.0))))   # 2 km east of the start
+
+
+def sim_chart(folder, shoal_m=1.5, radius_m=250.0):
+    """20 m water around the simulator origin, a round shoal 2 km east of the boat."""
+    dlat, dlon = 0.0005, 0.001
+    lat0, lon0 = 59.97, 24.94
+    rows = []
+    for i in range(160):
+        r = []
+        for j in range(220):
+            la, lo = lat0 + i * dlat, lon0 + j * dlon
+            d = chartmod.dist_m(la, lo, SHOAL[0], SHOAL[1])
+            r.append(shoal_m if d < radius_m else 20.0)
+        rows.append(r)
+    chartmod.write_area(os.path.join(folder, "simarea"), "simarea", lat0, lon0, dlat, dlon, rows, ["synthetic"],
+                        "Synthetic test chart. NOT FOR NAVIGATION")
+
+
+def east_of(m, north_m=0.0):
+    return (SIM_LAT + north_m / 111320.0, SIM_LON + m / (111320.0 * math.cos(math.radians(SIM_LAT))))
+
+
+def upload(client, wps, kn=10.0):
+    prog = {"final": 0, "wps": [{"lat": a, "lon": b, "kn": kn, "radius": 30, "action": 0} for a, b in wps]}
+    frames = progmod.upload_frames(prog)
+    for t, p in frames[:-1]:
+        client.l.send(t, p)
+    client.pump(0.3)
+    a = client.cmd(frames[-1][0], frames[-1][1])
+    return a
+
+
+def section_sh():
+    print("\n=== Section C: shallow-water checks ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_sh_")
+    sim = gw = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        charts = os.path.join(tmp, "charts")
+        sim_chart(charts)
+        cfg = gw_cfg_b(sim, root, charts_dir=charts, stations={"driver_timeout_s": 5.0},
+                       shallow={"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0, "clearance_m": 50.0})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+        alice.pump(1.0)
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        bob = Client(sp, "bob", PW["bob"], name="driver screen")
+        beat = DriverBeat(bob)
+
+        # SH4 MANUAL heading for the shoal: warning on both screens only - no alarm, no speed cap
+        g.shallow.cfg["look_s"] = 900.0              # look far ahead (the boat is slow at the start)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.4))
+        w.until(lambda d: d["mode"] == proto.MODE_MANUAL, 4)
+        warn4 = wait_for(lambda: g.nav_state.get("shallow") is not None, 30)
+        w.pump(2.0)
+        d4 = w.telem
+        sh4 = g.nav_state.get("shallow")
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY))
+        w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 6)
+        g.shallow.cfg["look_s"] = 30.0
+        report("SH4 MANUAL heading for shallow water: warning on both screens only (no alarm, no speed change)",
+               warn4 and d4["mode"] == proto.MODE_MANUAL and not d4.get("nav_applied") and
+               not (d4["alarm_bits"] & 0x2000000),
+               "warning %s (%s m water %.0f s ahead); mode %s, speed cap applied %s, SHALLOW alarm %s" % (
+                   warn4, sh4 and sh4["depth"], sh4["in_s"] if sh4 else -1, d4["mode_name"], d4.get("nav_applied"),
+                   bool(d4["alarm_bits"] & 0x2000000)))
+
+        # SH1 program across a 1.5 m shoal refused (leg + depth + position); around it accepted
+        a_bad = upload(alice, [east_of(500), east_of(4000)])
+        a_near = upload(alice, [east_of(500, 0), east_of(4000, 290)])           # passes 40 m from the shoal edge
+        detour = [east_of(1000, 700), east_of(3000, 700)]
+        a_ok = upload(alice, detour)
+        report("SH1 AUTO program across water shallower than the limit (or closer than 50 m) refused with the position",
+               a_bad and a_bad["result"] == 114 and "1.5 m" in a_bad["text"] and "WP1 -> WP2" in a_bad["text"] and
+               a_near and a_near["result"] == 114 and "closer" in a_near["text"] and a_ok and a_ok["result"] == 0,
+               "through the shoal: %s \"%s\"; 40 m from it: %s \"%s\"; around it: %s" % (
+                   a_bad and a_bad["result"], a_bad and a_bad["text"][:110], a_near and a_near["result"],
+                   a_near and a_near["text"][27:95], a_ok and a_ok["result"]))
+
+        # SH2 AUTO start: the leg from the boat to the waypoint is checked too
+        a_one = upload(alice, [east_of(3500)])                                  # one waypoint behind the shoal
+        seq = alice.l.send(proto.T_AUTO_START, b"", what="AUTO start")
+        k_, ask = next_event(bob, ("driver_ask",), 2.0)
+        r_start = alice.result(alice.wait_ack(seq))
+        a_ok2 = upload(alice, detour)
+        seq = alice.l.send(proto.T_AUTO_START, b"", what="AUTO start")
+        k_, ask2 = next_event(bob, ("driver_ask",), 4.0)
+        if ask2:
+            bob.l.send_msg({"t": "driver_answer", "id": ask2["id"], "yes": True})
+        r_start2 = alice.result(alice.wait_ack(seq))
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
+        time.sleep(0.2)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        auto = w.until(lambda d: d["mode"] == proto.MODE_AUTO, 4)
+        report("SH2 AUTO start refused when the leg from the boat to the waypoint crosses shallow water",
+               a_one and a_one["result"] == 0 and r_start == 114 and ask is None and a_ok2["result"] == 0 and
+               r_start2 == 0 and auto is not None,
+               "one waypoint behind the shoal: upload %s, AUTO start %s (refused before the driver is even asked: %s); "
+               "detour: AUTO start %s after the driver's ACCEPT, AUTO %s" % (
+                   a_one and a_one["result"], r_start, "yes" if ask is None else "NO", r_start2,
+                   "running" if auto else "NOT running"))
+
+        # SH3 AUTO: shallow water predicted ahead -> warning, slow down, SHALLOW alarm (power limit kept)
+        w.until(lambda d: d.get("est_sog", 0) > 6.0, 40)
+        p0 = w.telem["power_fwd"]
+        g.shallow.cfg["shallow_m"] = 25.0           # e.g. a deeper draft entered: everything ahead is "too shallow"
+        warn = wait_for(lambda: g.nav_state.get("shallow") is not None, 5)
+        al = w.until(lambda d: d["alarm_bits"] & 0x2000000 and d.get("nav_applied"), 6)
+        slow = w.until(lambda d: d.get("est_sog", 99) < 5.0, 45)
+        g.shallow.cfg["shallow_m"] = 3.0
+        gone = w.until(lambda d: not d.get("nav_applied"), 6)
+        report("SH3 AUTO: shallow water predicted ahead -> warning on the screens, slows down, SHALLOW WATER alarm",
+               warn and al is not None and slow is not None and slow["power_fwd"] == p0 and gone is not None and
+               al["mode"] == proto.MODE_AUTO,
+               "warning %s; alarm + speed cap %s kn applied %s; speed %.1f kn after slowing; power limit %s -> %s; "
+               "clear again -> request removed %s" % (
+                   warn, al and al.get("nav_cap_kn"), "yes" if al else "NO", slow["est_sog"] if slow else -1, p0,
+                   slow and slow["power_fwd"], "yes" if gone else "NO"))
+
+        beat.stop()
+        for c in (alice, bob):
+            c.close()
+        link.stop()
+    finally:
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"F1": section_f1, "AIS": section_ais, "SH": section_sh, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
             "G": section_g}
 
 
@@ -2181,7 +2326,8 @@ def main():
                     print("\n" + line, flush=True)
             # a Python error ends a section with exit code 1 too (like a failed test):
             # look for its traceback (not the harmless "Exception ignored" noise at exit)
-            real_tb = "Traceback (most recent call last)" in r.stderr.split("Exception ignored")[0]
+            # (only a traceback through the script's top level: background tasks log harmless ones)
+            real_tb = re.search(r'File ".*test_gateway\.py", line \d+, in <module>', r.stderr) is not None
             if r.returncode not in (0, 1) or real_tb:
                 print("section %s CRASHED (the tests after the error did not run):\n%s" % (k, r.stderr[-1500:]))
                 results.append(("section %s ran to the end" % k, False))

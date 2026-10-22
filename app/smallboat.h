@@ -101,9 +101,36 @@
 #define SB_ALM_REMOTE_DRIVE       0x100000u /* REMOTE DRIVING LINK LOST: remote joystick data old / missing */
 #define SB_ALM_SLAM               0x200000u /* SLAMMING: an impact over the limit (red) */
 #define SB_ALM_AIS_SILENT         0x400000u /* AIS RECEIVER SILENT (gateway): no AIS message for a while at sea */
+#define SB_ALM_COLLISION          0x800000u /* COLLISION RISK: an AIS target's CPA / TCPA in the danger zone (gateway) */
+#define SB_ALM_DECISION           0x1000000u /* COLLISION RISK - DRIVER DECISION (or the avoidance request was lost) */
+#define SB_ALM_SHALLOW            0x2000000u /* SHALLOW WATER ahead (AUTO; gateway depth check) */
 /* navigation advisories: alarm (sound, shown, logged) but they never lower the
- * power limit - their reaction is defined explicitly */
-#define SB_NAV_ADVISORY           (SB_ALM_AIS_SILENT)
+ * power limit - their reaction is defined explicitly (AUTO: the gateway's
+ * navreq slows down / steers; MANUAL / REMOTE: alarm only) */
+#define SB_NAV_ADVISORY           (SB_ALM_AIS_SILENT | SB_ALM_COLLISION | SB_ALM_DECISION | SB_ALM_SHALLOW)
+
+/* Navigation request from the gateway (collision avoidance, shallow water;
+ * section D). Validated here, applied ONLY in AUTO (heading + speed cap) or,
+ * after the driver's ACCEPT, as a one-shot heading in HEADING LOCK. A request
+ * is a lease: not refreshed within lease_ms while it steers / slows in AUTO
+ * -> hold the current heading, slow to nav_lost_kn, alarm DRIVER DECISION.
+ * The joystick and STANDBY win as always (they leave AUTO / HDG LOCK). */
+#define SB_NAV_NONE      0u
+#define SB_NAV_CAP       1u     /* AUTO: speed cap only */
+#define SB_NAV_HEADING   2u     /* AUTO: steer this heading (avoidance) + speed cap */
+#define SB_NAV_HDG_SET   3u     /* HDG LOCK: set the locked heading once (driver ACCEPTED) */
+typedef struct {
+    uint8_t  seq, kind, reason, alarm;  /* alarm: 1 collision, 2 driver decision, 4 shallow */
+    float    heading;
+    float    cap_kn;                    /* < 0 = no cap */
+    uint32_t rx_ms;                     /* 0 = never */
+    uint16_t lease_ms;
+    bool     lost;                      /* lease expired while steering / slowing in AUTO */
+    float    lost_heading;
+    uint8_t  hdg_seq_done;              /* the HDG_SET already applied */
+    bool     hdg_any;
+    uint32_t count, applied_hdg, losses, rejected;
+} sb_navreq_t;
 
 /* HELM: the one station whose commands are accepted (section B). */
 #define SB_HELM_NONE   0u
@@ -232,6 +259,7 @@ typedef struct {
     /* Joystick (joystick.c) */
     joy_config_t joy;
     slam_config_t slam;                 /* slamming (BNO085): limit, steps, recovery */
+    float    nav_lost_kn;               /* avoidance request lost (gateway gone): slow to this (4) */
     float    joy_max_throttle_pct;      /* stick full = this much throttle demand, F and R (100;
                                            the power limit and the reverse limit still apply) */
     jb_config_t jb;                     /* USB joystick bridge checks (joybridge.c) */
@@ -423,6 +451,7 @@ typedef struct {
         uint32_t count;
     } gps2;
     slam_t      slam;          /* slamming measurement + throttle cap */
+    sb_navreq_t nav;           /* gateway navigation request (collision avoidance / shallow water) */
     sb_mode_t   manual_from;   /* mode the joystick took over from */
     bool        joy_fault_seen, joy_nc_seen;
     uint32_t    chirp_ms;      /* short alarm chirp still to sound */

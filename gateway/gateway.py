@@ -24,6 +24,8 @@ import time
 from common import Clock, load_config, log, proto, setup_logging
 from audit import Audit
 from ais import AisTargets, OnlineFeed
+from shallow import Shallow
+import chart
 from cameras import CameraManager, path_name
 from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAULT_CHANNELS
 from aurix import AurixLink
@@ -92,6 +94,15 @@ class Gateway:
         self.ais_silent = False
         self.at_sea_until = 0.0
         self.gps2_sent = 0
+        # depth charts + shallow-water checks (section C), navigation requests to the AURIX
+        self.charts = chart.Charts(cfg.get("charts_dir"))
+        self.shallow = Shallow(cfg.get("shallow"), self.charts)
+        self.prog_wps = None            # the last AUTO program accepted through the gateway: [(lat, lon)]
+        self.nav_seq = 0
+        self.nav_last = None
+        self.nav_sent = 0
+        self.nav_state = {"shallow": None, "threats": [], "route": [], "state": "CLEAR", "why": ""}
+        self.stations.prog_check = self.check_prog
 
     def _on_telem(self, f):
         try:
@@ -155,6 +166,73 @@ class Gateway:
             lst.sort(key=lambda t: t["dist_nm"])
         st["list"] = lst[:15 if saver else self.cfg["ais"].get("max_listed", 40)]
         return st
+
+    # --- shallow water (section C) + navigation requests ------------------------------
+    def own(self):
+        d = self.telem or {}
+        if not d or d.get("pos_source", 0) == 0:
+            return {"lat": None}
+        return {"lat": d.get("est_lat"), "lon": d.get("est_lon"), "sog": d.get("est_sog"), "cog": d.get("est_cog"),
+                "heading": d.get("heading"), "mode": d.get("mode")}
+
+    def check_prog(self, st, ftype, payload):
+        """Program upload / AUTO start through the gateway: refused across shallow water.
+        -> None (fine) or the refusal text."""
+        import struct as _st
+        if ftype == proto.T_PROG_BEGIN and len(payload) >= 2:
+            st.prog_up = {"n": payload[0], "wps": {}}
+        elif ftype == proto.T_PROG_WP and len(payload) >= 18 and getattr(st, "prog_up", None):
+            i, la, lo = _st.unpack_from("<Bii", payload)
+            st.prog_up["wps"][i] = (la / 1e7, lo / 1e7)
+        elif ftype == proto.T_PROG_COMMIT and getattr(st, "prog_up", None):
+            up = st.prog_up
+            wps = [up["wps"][k] for k in sorted(up["wps"])]
+            bad = self.shallow.check_program(wps)
+            if bad:
+                self.audit("program_refused", station=st.id, user=st.user, why=bad[0])
+                return bad[0]
+            self.prog_wps = wps
+        elif ftype in (proto.T_AUTO_START, proto.T_AUTO_RESUME):
+            o, d = self.own(), self.telem or {}
+            if o["lat"] is None:
+                return None                                 # the AURIX refuses without a position anyway
+            wps = self.prog_wps or []
+            k = d.get("auto_wp", 0) or 0
+            rest = wps[k:] if wps and k < len(wps) else ([(d["wp_lat"], d["wp_lon"])] if d.get("wp_set") else [])
+            bad = self.shallow.check_program(rest, start=(o["lat"], o["lon"])) if rest else None
+            if bad:
+                self.audit("auto_refused", station=st.id, user=st.user, why=bad[0])
+                return bad[0]
+        return None
+
+    def nav_compose(self):
+        """The navigation request for the AURIX (section C; collision avoidance adds to it, section D)."""
+        o = self.own()
+        req = {"kind": proto.NAV_NONE, "heading": None, "cap_kn": None, "reason": 0, "alarm": 0}
+        sh = self.shallow.watch(o) if o["lat"] is not None else None
+        self.nav_state["shallow"] = sh
+        if sh and o.get("mode") == proto.MODE_AUTO:
+            req.update(kind=proto.NAV_CAP, cap_kn=self.shallow.cfg["slow_kn"], reason=2, alarm=4)
+        return req
+
+    def nav_send(self, req):
+        key = (req["kind"], req["heading"] and round(req["heading"], 1), req["cap_kn"], req["reason"], req["alarm"])
+        if key != self.nav_last:
+            self.nav_seq = (self.nav_seq + 1) & 0xFF
+            self.nav_last = key
+            self.audit("navreq", seq=self.nav_seq, nav_kind=req["kind"], heading=req["heading"], cap_kn=req["cap_kn"],
+                       reason=req["reason"], alarm=req["alarm"])
+        self.aurix.send(proto.T_GW_NAVREQ, proto.p_gw_navreq(self.nav_seq, req["kind"], req["reason"], req["alarm"],
+                                                             req["heading"], req["cap_kn"], 3000))
+        self.nav_sent += 1
+
+    async def nav_loop(self):
+        while True:
+            try:
+                self.nav_send(self.nav_compose())
+            except Exception:
+                log.exception("navigation request")
+            await asyncio.sleep(self.cfg.get("nav_s", 0.5))
 
     def _on_telem2(self, f):
         self.telem2 = proto.decode_telem2(f.payload)
@@ -283,7 +361,8 @@ class Gateway:
                 "clock": {"gps_valid": self.clock.gps_valid, "offset_s": round(self.clock.offset, 3),
                           "utc": self.clock.stamp()},
                 "net": self.net.info(), "cameras": self.cams.status(), "rec": self.rec.status(),
-                "sync": self.sync.status(), "ais": self.ais_status(self.net.data_saver())}
+                "sync": self.sync.status(), "ais": self.ais_status(self.net.data_saver()),
+                "avoid": dict(self.nav_state, shallow_limit_m=self.shallow.limit(), charts=bool(self.charts))}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -301,6 +380,7 @@ class Gateway:
                 tasks.append(asyncio.create_task(self.recorder_loop()))
         tasks.append(asyncio.create_task(self.sync.run()))
         tasks.append(asyncio.create_task(self.ais_loop()))
+        tasks.append(asyncio.create_task(self.nav_loop()))
         if self.ais_reader:
             tasks.append(asyncio.create_task(self.ais_reader.run()))
         tasks += self.extra_tasks()

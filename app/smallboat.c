@@ -81,6 +81,7 @@ void sb_default_config(sb_config_t *cfg)
     joy_default_config(&cfg->joy);
     cfg->joy_max_throttle_pct = 100.0f;
     slam_default_config(&cfg->slam);
+    cfg->nav_lost_kn = 4.0f;
     jb_default_config(&cfg->jb);
     cfg->remote_cap_fwd_pct = 20.0f;
     cfg->remote_cap_rev_pct = 5.0f;
@@ -213,6 +214,64 @@ static void alarm_on(sb_t *s, uint32_t bits)
 {
     s->alarm = true;
     s->alarm_bits |= bits;
+}
+
+/* --- gateway navigation request (section D) --------------------------------- */
+
+static bool nav_fresh(const sb_t *s)
+{
+    return s->nav.rx_ms != 0u && s->now_ms - s->nav.rx_ms <= s->nav.lease_ms;
+}
+
+/* Speed cap (kn) the navigation request puts on AUTO; < 0 = none. */
+static float nav_cap(const sb_t *s)
+{
+    if (sb_mode(s) != MODE_AUTO) return -1.0f;
+    if (s->nav.lost) return s->cfg.nav_lost_kn;
+    if (nav_fresh(s) && (s->nav.kind == SB_NAV_CAP || s->nav.kind == SB_NAV_HEADING)) return s->nav.cap_kn;
+    return -1.0f;
+}
+
+/* AUTO: the avoidance heading (or the held heading when the request was lost). */
+static void nav_steer(sb_t *s)
+{
+    if (sb_mode(s) != MODE_AUTO) return;
+    if (s->nav.lost) autopilot_set_target(&s->ap, s->nav.lost_heading);
+    else if (nav_fresh(s) && s->nav.kind == SB_NAV_HEADING) autopilot_set_target(&s->ap, s->nav.heading);
+}
+
+static float auto_target_kn(const sb_t *s)
+{
+    float cap = nav_cap(s);
+    return (cap >= 0.0f && cap < s->cruise.target_kn) ? cap : s->cruise.target_kn;
+}
+
+static void nav_step(sb_t *s)
+{
+    sb_navreq_t *n = &s->nav;
+    bool fresh = nav_fresh(s);
+    if (sb_mode(s) != MODE_AUTO) n->lost = false;
+    if (fresh) {
+        n->lost = false;
+        if (n->alarm & 1u) alarm_on(s, SB_ALM_COLLISION);
+        if (n->alarm & 2u) alarm_on(s, SB_ALM_DECISION);
+        if ((n->alarm & 4u) && sb_mode(s) == MODE_AUTO) alarm_on(s, SB_ALM_SHALLOW);
+        if (n->kind == SB_NAV_HDG_SET && (!n->hdg_any || n->seq != n->hdg_seq_done) && sb_mode(s) == MODE_HDG_LOCK &&
+            !s->hdg_compass_lost) {
+            n->hdg_seq_done = n->seq;
+            n->hdg_any = true;
+            n->applied_hdg++;
+            s->hdg_target = n->heading;
+            autopilot_set_target(&s->ap, n->heading);
+        }
+    } else if (sb_mode(s) == MODE_AUTO && !n->lost && n->rx_ms != 0u &&
+               (n->kind == SB_NAV_CAP || n->kind == SB_NAV_HEADING)) {
+        /* the gateway went quiet in the middle of an avoidance: don't carry on blindly */
+        n->lost = true;
+        n->losses++;
+        n->lost_heading = s->ap.heading;
+        alarm_on(s, SB_ALM_DECISION);
+    }
 }
 
 /* --- video SAVE requests (gateway, section F) ------------------------------ */
@@ -988,6 +1047,7 @@ static void cruise(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float roll_
 
     s->gear_demand = GEAR_F;
     nervousness(s, dt_ms, roll_new, roll_dps);
+    nav_steer(s);
 
     bool gps = sb_gps_ok(s);
     if (gps) {
@@ -999,7 +1059,7 @@ static void cruise(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float roll_
     if (!gear_is(&s->gear, GEAR_F)) {
         s->throttle_demand = 0.0f;          /* wait for forward gear */
     } else if (gps) {
-        float e = k->target_kn - k->sog_kn;
+        float e = auto_target_kn(s) - k->sog_kn;
         float u = c->spd_kp * e + k->integ;
         bool sat_hi = u >= top && e > 0.0f;
         bool sat_lo = u <= 0.0f && e < 0.0f;
@@ -1138,16 +1198,17 @@ static void dr_speed(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float rol
     sb_cruise_t *k = &s->cruise;
     s->gear_demand = GEAR_F;
     nervousness(s, dt_ms, roll_new, roll);
+    nav_steer(s);
     if (!gear_is(&s->gear, GEAR_F)) {
         s->throttle_demand = 0.0f;
     } else if (s->dr.speed_sensor) {
-        float e = k->target_kn - s->dr.water_kn;
+        float e = auto_target_kn(s) - s->dr.water_kn;
         bool sat = (c->spd_kp * e + k->integ >= c->throttle.max_fwd_pct && e > 0.0f) ||
                    (c->spd_kp * e + k->integ <= 0.0f && e < 0.0f);
         if (!sat) k->integ = clampf(k->integ + c->spd_ki * e * dt, 0.0f, c->throttle.max_fwd_pct);
         s->throttle_demand = clampf(c->spd_kp * e + k->integ, 0.0f, c->throttle.max_fwd_pct);
     } else {
-        s->throttle_demand = dr_throttle_for(&s->dr, k->target_kn);
+        s->throttle_demand = dr_throttle_for(&s->dr, auto_target_kn(s));
         k->integ = s->throttle_demand;
     }
     if (s->throttle_demand > s->plim.fwd_pct) {             /* power limit */
@@ -1680,6 +1741,9 @@ void sb_step(sb_t *s)
     /* 2. interlock, faults, joystick, buttons */
     interlock_step(s, neutral_sw, dt_ms);
     events_step(s, buttons);
+
+    /* gateway navigation request: alarms, lease, HDG LOCK one-shot heading */
+    nav_step(s);
 
     /* 3. what the mode wants */
     s->throttle_demand_prev = s->throttle_demand;

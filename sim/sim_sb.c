@@ -5886,6 +5886,233 @@ static void ais_tests(void)
     }
 }
 
+/* ------------------------------------- gateway navigation request (section D) -- */
+
+typedef struct {
+    pisim_t  p;
+    bool     on;                /* the "gateway" refreshes the request at 2 Hz */
+    uint8_t  seq, kind, reason, alarm;
+    float    heading, cap;      /* cap < 0 = none */
+    uint16_t lease;
+    uint32_t next;
+    float    max_kn, min_hdg_err;
+} navsim_t;
+
+static void nav_push(navsim_t *n, uint8_t kind, uint8_t reason, uint8_t alarm, float hdg, float cap, uint16_t lease)
+{
+    uint8_t pl[10], fr[PROTO_MAX_FRAME];
+    proto_wr_t w;
+    proto_wr_init(&w, pl, sizeof pl);
+    proto_wr_u8(&w, n->seq);
+    proto_wr_u8(&w, kind);
+    proto_wr_u8(&w, reason);
+    proto_wr_u8(&w, alarm);
+    proto_wr_u16(&w, (uint16_t)lroundf(hdg * 100.0f));
+    proto_wr_u16(&w, cap < 0.0f ? 0xFFFFu : (uint16_t)lroundf(cap * 10.0f));
+    proto_wr_u16(&w, lease);
+    size_t len = proto_encode(fr, PROTO_T_GW_NAVREQ, 0u, pl, (uint8_t)w.n);
+    sim_hal_gw_rx_push(fr, (uint32_t)len);
+}
+
+static void navreq_hook(sbsim_t *x, void *ctx)
+{
+    navsim_t *n = (navsim_t *)ctx;
+    pi_hook(x, &n->p);
+    if (n->on && x->t >= n->next) {
+        n->next = x->t + 500u;
+        nav_push(n, n->kind, n->reason, n->alarm, n->heading, n->cap, n->lease);
+    }
+}
+
+static void navsim_init(navsim_t *n, sbsim_t *x)
+{
+    memset(n, 0, sizeof *n);
+    pisim_init(&n->p, x, 921600u);
+    n->lease = 3000u;
+    n->cap = -1.0f;
+}
+
+static void nav_tests(void)
+{
+    char d[700];
+    printf("\n=== Section D: gateway navigation request (collision avoidance, shallow water) ===\n");
+
+    /* NV1 AUTO: the avoidance heading + speed cap are steered; request ends -> back to the leg */
+    {
+        static sbsim_t x;
+        static navsim_t n;
+        sbsim_init(&x, 981u, 0.0f, 0.0f, NULL);
+        navsim_init(&n, &x);
+        sbsim_run(&x, 2000u, navreq_hook, &n);
+        auto_to(&x, 8000.0f, 0.0f, 14.0f);
+        sbsim_run(&x, x.t + 60000u, navreq_hook, &n);
+        float kn0 = x.w.speed_kn;
+        n.on = true; n.seq = 1; n.kind = SB_NAV_HEADING; n.reason = 1; n.alarm = 1; n.heading = 60.0f; n.cap = 7.0f;
+        sbsim_run(&x, x.t + 60000u, navreq_hook, &n);
+        float hdg = x.w.heading_deg, kn = x.w.speed_kn;
+        bool alarm = (x.sb.alarm_bits & SB_ALM_COLLISION) != 0u;
+        float plim = x.sb.plim.fwd_pct;
+        n.kind = SB_NAV_NONE; n.alarm = 0;
+        sbsim_run(&x, x.t + 60000u, navreq_hook, &n);
+        double lat, lon;
+        dr_latlon(&x.sb.dr, &lat, &lon);
+        float back = x.sb.ap.target_heading;
+        snprintf(d, sizeof d, "before %.1f kn; request heading 060 / 7 kn -> heading %.0f, %.1f kn, alarm COLLISION %s, "
+                 "power limit %.0f %% (unchanged); request ended -> target heading %.0f (back towards the waypoint "
+                 "north), mode %s, %lu requests received",
+                 kn0, hdg, kn, alarm ? "yes" : "NO", plim, back, mode_name(sb_mode(&x.sb)), (unsigned long)x.sb.nav.count);
+        test_report("NV1 AUTO applies the avoidance heading + speed cap; when it ends the boat goes back to its leg",
+                    fabsf(hdg_err(hdg, 60.0f)) < 6.0f && kn < 7.6f && kn0 > 12.0f && alarm && plim >= 99.0f &&
+                    sb_mode(&x.sb) == MODE_AUTO && fabsf(hdg_err(back, 60.0f)) > 40.0f, d);
+    }
+
+    /* NV2 gateway lost during the avoidance: slow down, hold the heading, DRIVER DECISION alarm */
+    {
+        static sbsim_t x;
+        static navsim_t n;
+        sbsim_init(&x, 982u, 0.0f, 0.0f, NULL);
+        navsim_init(&n, &x);
+        sbsim_run(&x, 2000u, navreq_hook, &n);
+        auto_to(&x, 8000.0f, 0.0f, 14.0f);
+        sbsim_run(&x, x.t + 40000u, navreq_hook, &n);
+        n.on = true; n.seq = 1; n.kind = SB_NAV_HEADING; n.reason = 1; n.alarm = 1; n.heading = 45.0f; n.cap = 9.0f;
+        sbsim_run(&x, x.t + 40000u, navreq_hook, &n);
+        n.on = false;                                       /* the Pi is gone */
+        n.p.pi_on = false;
+        uint32_t t0 = x.t;
+        while (!x.sb.nav.lost && x.t < t0 + 10000u) sbsim_run(&x, x.t + 100u, navreq_hook, &n);
+        float t_lost = (x.t - t0) * 0.001f;
+        float held = x.sb.nav.lost_heading;
+        sbsim_run(&x, x.t + 40000u, navreq_hook, &n);
+        bool dec = (x.sb.alarm_bits & SB_ALM_DECISION) != 0u;
+        snprintf(d, sizeof d, "request stopped -> LOST after %.1f s (lease 3 s); speed %.1f kn (target %.0f), heading "
+                 "%.0f (held %.0f, not back to the old leg), alarm DRIVER DECISION %s, mode %s",
+                 t_lost, x.w.speed_kn, x.cfg.nav_lost_kn, x.w.heading_deg, held, dec ? "yes" : "NO",
+                 mode_name(sb_mode(&x.sb)));
+        test_report("NV2 gateway lost during an avoidance: AURIX slows down, holds the heading, alarms (no blind plan)",
+                    x.sb.nav.lost && t_lost >= 2.9f && t_lost < 3.6f && x.w.speed_kn < x.cfg.nav_lost_kn + 0.8f &&
+                    fabsf(hdg_err(x.w.heading_deg, held)) < 6.0f && dec && sb_mode(&x.sb) == MODE_AUTO, d);
+    }
+
+    /* NV3 joystick takeover during the avoidance -> MANUAL at once; STANDBY button wins */
+    {
+        int ok = 0;
+        char t[400] = "";
+        for (int k = 0; k < 2; k++) {
+            static sbsim_t x;
+            static navsim_t n;
+            sbsim_init(&x, 983u + (uint32_t)k, 0.0f, 0.0f, NULL);
+            navsim_init(&n, &x);
+            sbsim_run(&x, 2000u, navreq_hook, &n);
+            auto_to(&x, 8000.0f, 0.0f, 14.0f);
+            sbsim_run(&x, x.t + 30000u, navreq_hook, &n);
+            n.on = true; n.seq = 1; n.kind = SB_NAV_HEADING; n.alarm = 1; n.heading = 80.0f; n.cap = 8.0f;
+            sbsim_run(&x, x.t + 10000u, navreq_hook, &n);
+            uint32_t t0 = x.t;
+            if (k == 0) joy_set(-0.7f, 0.0f, false, false);
+            else press(&x, HAL_BTN_STANDBY);
+            while (sb_mode(&x.sb) == MODE_AUTO && x.t < t0 + 2000u) sbsim_run(&x, x.t + 10u, navreq_hook, &n);
+            float dt = (x.t - t0) * 0.001f;
+            sbsim_run(&x, x.t + 5000u, navreq_hook, &n);
+            bool g = (k == 0) ? (sb_mode(&x.sb) == MODE_MANUAL && dt < 0.3f + 0.1f) : sb_mode(&x.sb) == MODE_STANDBY;
+            ok += g;
+            snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s -> %s after %.2f s (request still sent: ignored)",
+                     k ? "; " : "", k ? "STANDBY button" : "joystick", mode_name(sb_mode(&x.sb)), dt);
+            joy_set(0.0f, 0.0f, false, false);
+        }
+        test_report("NV3 during an avoidance the joystick takes over instantly; STANDBY wins", ok == 2, t);
+    }
+
+    /* NV4 MANUAL and REMOTE MANUAL: alarm only - no steering, throttle or power-limit change */
+    {
+        static sbsim_t x, y;
+        static navsim_t n, m;
+        float out[2], rud[2];
+        for (int k = 0; k < 2; k++) {
+            sbsim_t *z = k ? &y : &x;
+            navsim_t *nn = k ? &m : &n;
+            sbsim_init(z, 985u, 0.0f, 0.0f, NULL);
+            navsim_init(nn, z);
+            sbsim_run(z, 2000u, navreq_hook, nn);
+            joy_set(0.0f, 0.3f, false, false);
+            sbsim_run(z, z->t + 1000u, navreq_hook, nn);
+            joy_set(0.0f, 0.0f, false, false);
+            sbsim_run(z, z->t + 500u, navreq_hook, nn);
+            power_full(z);
+            joy_set(0.2f, 0.8f, false, false);
+            if (k) {                                        /* with the request (alarm + heading + cap) */
+                nn->on = true; nn->seq = 1; nn->kind = SB_NAV_HEADING; nn->alarm = 3; nn->heading = 200.0f;
+                nn->cap = 3.0f;
+            }
+            sbsim_run(z, z->t + 30000u, navreq_hook, nn);
+            out[k] = z->sb.servo.out_pct;
+            rud[k] = z->sb.ap.motor_cmd;
+            joy_set(0.0f, 0.0f, false, false);
+        }
+        bool alarm = (y.sb.alarm_bits & SB_ALM_COLLISION) && (y.sb.alarm_bits & SB_ALM_DECISION);
+        snprintf(d, sizeof d, "MANUAL without / with a request (heading 200, cap 3 kn, alarms): throttle %.1f / %.1f %%, "
+                 "power limit %.0f / %.0f %%, alarms COLLISION + DECISION %s, mode %s; requests are never applied "
+                 "outside AUTO (applied flag %s)",
+                 out[0], out[1], x.sb.plim.fwd_pct, y.sb.plim.fwd_pct, alarm ? "yes" : "NO",
+                 mode_name(sb_mode(&y.sb)), (sb_mode(&y.sb) == MODE_AUTO) ? "?" : "no");
+        test_report("NV4 MANUAL: collision alarm only - steering, throttle and power limit unchanged",
+                    fabsf(out[0] - out[1]) < 0.5f && y.sb.plim.fwd_pct == x.sb.plim.fwd_pct && alarm &&
+                    sb_mode(&y.sb) == MODE_MANUAL, d);
+        (void)rud;
+    }
+
+    /* NV5 HEADING LOCK: the accepted heading is set once (same number again: not again);
+     * an AUTO-type request does nothing in HDG LOCK */
+    {
+        static sbsim_t x;
+        static navsim_t n;
+        sbsim_init(&x, 986u, 90.0f, 0.0f, NULL);
+        navsim_init(&n, &x);
+        sbsim_run(&x, 2000u, navreq_hook, &n);
+        hdg_lock(&x);
+        joy_set(0.0f, 0.5f, false, false);
+        sbsim_run(&x, x.t + 20000u, navreq_hook, &n);
+        n.on = true; n.seq = 7; n.kind = SB_NAV_HEADING; n.heading = 10.0f; n.cap = 3.0f;
+        sbsim_run(&x, x.t + 5000u, navreq_hook, &n);
+        float t_auto = x.sb.ap.target_heading;
+        n.kind = SB_NAV_HDG_SET; n.seq = 8; n.heading = 130.0f;
+        sbsim_run(&x, x.t + 3000u, navreq_hook, &n);
+        float t_set = x.sb.ap.target_heading;
+        press(&x, HAL_BTN_PLUS_10);                         /* the driver adjusts afterwards */
+        sbsim_run(&x, x.t + 3000u, navreq_hook, &n);
+        float t_adj = x.sb.ap.target_heading;
+        n.seq = 9; n.heading = 90.0f;                       /* return proposal accepted */
+        sbsim_run(&x, x.t + 2000u, navreq_hook, &n);
+        float t_ret = x.sb.ap.target_heading;
+        snprintf(d, sizeof d, "AUTO-type request in HDG LOCK -> target %.0f (unchanged 090); accepted 130 -> %.0f; "
+                 "driver +10 -> %.0f (the repeated request does not undo it); accepted return 090 -> %.0f; applied %lu",
+                 t_auto, t_set, t_adj, t_ret, (unsigned long)x.sb.nav.applied_hdg);
+        test_report("NV5 HEADING LOCK: accepted avoidance heading set once, return heading after ACCEPT, driver keeps "
+                    "the buttons",
+                    fabsf(hdg_err(t_auto, 90.0f)) < 1.0f && fabsf(hdg_err(t_set, 130.0f)) < 0.6f &&
+                    fabsf(hdg_err(t_adj, 140.0f)) < 0.6f && fabsf(hdg_err(t_ret, 90.0f)) < 0.6f &&
+                    x.sb.nav.applied_hdg == 2u, d);
+        joy_set(0.0f, 0.0f, false, false);
+    }
+
+    /* NV6 invalid requests are ignored */
+    {
+        static sbsim_t x;
+        static navsim_t n;
+        sbsim_init(&x, 987u, 0.0f, 0.0f, NULL);
+        navsim_init(&n, &x);
+        sbsim_run(&x, 2000u, navreq_hook, &n);
+        nav_push(&n, 9u, 1u, 0u, 10.0f, 5.0f, 3000u);       /* unknown kind */
+        nav_push(&n, SB_NAV_HEADING, 1u, 0u, 10.0f, 70.0f, 3000u);   /* 70 kn cap */
+        nav_push(&n, SB_NAV_CAP, 1u, 0u, 0.0f, 5.0f, 60000u);  /* 60 s lease */
+        sbsim_run(&x, x.t + 500u, navreq_hook, &n);
+        snprintf(d, sizeof d, "3 invalid requests -> rejected %lu, accepted %lu",
+                 (unsigned long)x.sb.nav.rejected, (unsigned long)x.sb.nav.count);
+        test_report("NV6 invalid navigation requests (kind, speed, lease) are ignored", x.sb.nav.rejected == 3u &&
+                    x.sb.nav.count == 0u, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -5900,6 +6127,7 @@ void sb_gateway_tests(void)
     remote_tests();
     save_tests();
     ais_tests();
+    nav_tests();
 }
 
 void sb_slam_tests(void)
@@ -5914,6 +6142,7 @@ void sb_tests(void)
     remote_tests();
     save_tests();
     ais_tests();
+    nav_tests();
     slam_tests();
     logging_tests();
     timing_tests();

@@ -174,6 +174,9 @@ ALARMS = [
     (0x100000, "REMOTE DRIVING LINK LOST"),
     (0x200000, "SLAMMING"),
     (0x400000, "AIS RECEIVER SILENT"),
+    (0x800000, "COLLISION RISK"),
+    (0x1000000, "COLLISION RISK - DRIVER DECISION"),
+    (0x2000000, "SHALLOW WATER"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -549,6 +552,15 @@ def p_sim_bridge(stick_x=0.0, stick_y=0.0, lever=0.5, b0=0, b1=0, hat0=15, hat1=
 GWF_STORAGE, GWF_STORAGE_FULL, GWF_FALLBACK, GWF_STARLINK, GWF_SAVER = 0x01, 0x02, 0x04, 0x08, 0x10
 GWF_AIS_SILENT = 0x20
 T_GW_GPS2 = 0x39
+T_GW_NAVREQ = 0x3A
+NAV_NONE, NAV_CAP, NAV_HEADING, NAV_HDG_SET = 0, 1, 2, 3
+
+
+def p_gw_navreq(seq, kind, reason=0, alarm=0, heading=None, cap_kn=None, lease_ms=3000):
+    """Navigation request for the AURIX (collision avoidance / shallow water), link.c gw_navreq()."""
+    return struct.pack("<BBBBHHH", seq & 0xFF, kind, reason, alarm,
+                       0 if heading is None else int(round((heading % 360.0) * 100)) % 36000,
+                       0xFFFF if cap_kn is None else max(0, min(600, int(round(cap_kn * 10)))), lease_ms)
 
 
 def p_gw_gps2(lat, lon, age_ms):
@@ -601,6 +613,8 @@ _T2_GROUPS = [
     (struct.Struct("<HBBIB"), "save_seq save_trig save_arg save_age_ms save_kinds".split()),
     (struct.Struct("<HHHBBHIB"), "slam_peak100 slam_level100 slam_rate slam_cap slam_flags slam_limit100 "
                                  "slam_impacts slam_yellow_pc".split()),
+    (struct.Struct("<BBBBHHBH"), "nav_kind nav_flags nav_reason nav_alarm nav_hdg100 nav_cap10 nav_seq "
+                                 "nav_age_ms".split()),
 ]
 
 # video SAVE triggers (app/smallboat.h SB_SAVE_)
@@ -632,6 +646,12 @@ def decode_telem2(payload: bytes) -> dict:
         off += st.size
     if "gw_state" in d:
         d["gw_state_name"] = GW_STATES[d["gw_state"]] if d["gw_state"] < 3 else "?"
+    if "nav_flags" in d:
+        d["nav_fresh"] = bool(d["nav_flags"] & 1)
+        d["nav_lost"] = bool(d["nav_flags"] & 2)
+        d["nav_applied"] = bool(d["nav_flags"] & 4)
+        d["nav_heading"] = d["nav_hdg100"] / 100.0
+        d["nav_cap_kn"] = None if d["nav_cap10"] == 0xFFFF else d["nav_cap10"] / 10.0
     if "slam_flags" in d:
         f = d["slam_flags"]
         d["slam_peak"] = d["slam_peak100"] / 100.0

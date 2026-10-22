@@ -18,6 +18,7 @@ static struct {
     uint32_t mode_log_count;
     uint16_t save_seq;
     uint32_t slam_impacts, slam_code;
+    uint32_t nav_code, nav_hdg;
     uint32_t alarm_bits;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -256,6 +257,21 @@ static void changes(const sb_t *s)
                (int32_t)sl->rate_pm, (int32_t)code);
         k.slam_impacts = sl->impacts;
         k.slam_code = code;
+    }
+    /* gateway navigation requests: every change (what was asked, what is applied) */
+    {
+        const sb_navreq_t *nv = &s->nav;
+        bool fresh = nv->rx_ms != 0u && s->now_ms - nv->rx_ms <= nv->lease_ms;
+        bool applied = sb_mode(s) == MODE_AUTO && (nv->lost || (fresh && (nv->kind == SB_NAV_CAP ||
+                                                                          nv->kind == SB_NAV_HEADING)));
+        uint32_t code = (uint32_t)(fresh ? nv->kind : 0u) | ((uint32_t)nv->reason << 8) | ((uint32_t)nv->alarm << 16) |
+                        ((nv->lost ? 1u : 0u) << 24) | ((applied ? 1u : 0u) << 25);
+        uint32_t hd = (uint32_t)lroundf(nv->heading * 10.0f) + nv->applied_hdg * 4000u;
+        if (code != k.nav_code || (fresh && hd != k.nav_hdg))
+            ev(s, EV_NAV, (int32_t)code, (int32_t)lroundf(nv->heading * 100.0f),
+               nv->cap_kn < 0.0f ? -1 : (int32_t)lroundf(nv->cap_kn * 10.0f), nv->seq);
+        k.nav_code = code;
+        k.nav_hdg = hd;
     }
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);

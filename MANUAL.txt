@@ -141,11 +141,11 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 138 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 144 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
     autopilot_sim.exe all --bridge
   The same tests again, but every joystick move goes through the simulated
-  USB bridge. Ends with "137 passed, 0 failed, 1 not applicable" (the analog
+  USB bridge. Ends with "143 passed, 0 failed, 1 not applicable" (the analog
   calibration test does not apply to the USB joystick).
     autopilot_sim.exe usb
   Only the 17 USB joystick tests (U1..U16), quick.
@@ -162,7 +162,7 @@ RUN ALL TESTS (before every commit):
     C:\msys64\ucrt64\bin\python.exe test_e2e.py      (10 tests)
     C:\msys64\ucrt64\bin\python.exe test_logs.py     (3 tests)
     C:\msys64\ucrt64\bin\python.exe test_driver.py   (6 tests, opens windows)
-    C:\msys64\ucrt64\bin\python.exe test_charts.py   (5 tests, no internet needed)
+    C:\msys64\ucrt64\bin\python.exe test_charts.py   (6 tests, no internet needed)
 
 OTHER COMMANDS:
     autopilot_sim.exe              big boat, 5 minutes -> sim_output.csv
@@ -782,6 +782,34 @@ K. DEPTH CHARTS AND SEA MARKS (OFFLINE)
   On the map, everywhere the data has no depth (land, harbours, very close
   to the coast) counts as SHALLOW for every check (part L).
 
+L. SHALLOW WATER
+  Limit = the larger of 3.0 m and (draft + margin). SET THEM ON THE PI
+  (/etc/trygons/gateway.json "shallow"): draft_m = from the water line to
+  the lowest point of the outboard with the leg DOWN (measure it!), margin_m
+  = how much water you want under it (1 m), shallow_m = at least this (3 m).
+  The ground station shows the limit (Program tab profile, red line).
+  AUTO PROGRAMS (Program tab):
+    * "Check depth": every leg must stay over water deeper than the limit
+      and not pass closer than 50 m to shallower water. A bad leg is shown:
+      the message gives the leg and the position, a red X on the map, the
+      depth profile (red = too shallow).
+    * Upload and AUTO start / resume through the gateway are REFUSED the same
+      way by the Pi ("shallow water on the route: leg ... at lat lon"), also
+      the leg from the boat to the waypoint at AUTO start. Without charts on
+      the Pi AUTO is refused ("no depth charts").
+  WHILE DRIVING (any mode): if the boat will be over shallow water within
+  the next 30 s (at least 200 m ahead) -> "SHALLOW WATER AHEAD" on both
+  screens. In AUTO the boat also slows to 4 kn and the SHALLOW WATER alarm
+  sounds. In MANUAL / HDG LOCK / REMOTE it is a warning only: you steer.
+  Every collision-avoidance route (part M) passes the same depth check.
+  The charts are free data and NOT FOR NAVIGATION: near the coast, in
+  harbours and where there is no data, "no data" counts as shallow.
+  How AUTO is slowed: the Pi sends a "navigation request" twice a second
+  (speed cap, avoidance heading, alarms) that the boat applies only in AUTO.
+  If the Pi goes quiet in the middle of such a request, the boat holds its
+  heading, slows to 4 kn (parameter nav_lost_kn) and sounds COLLISION RISK -
+  DRIVER DECISION. Joystick and STANDBY always win.
+
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
 -------------------------------------------------------------------------------
@@ -815,6 +843,8 @@ K. DEPTH CHARTS AND SEA MARKS (OFFLINE)
   CONTROL LOOP OVERRUN   a control cycle took longer than 50 ms
   LOG FAILURE            SD card missing / full / failing (control goes on)
   GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)
+  SHALLOW WATER          AUTO: shallow water ahead (charts); the boat slows to
+                         4 kn (part L)
   AIS RECEIVER SILENT    no AIS message for 5 min at sea: antenna / receiver
                          (warning only, part J)
   SLAMMING               an impact harder than slam_limit_g: throttle reduced
@@ -1062,6 +1092,9 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
                                  is not affected.
   "GATEWAY LOST"                 Pi off / crashed / UART cable. On the Pi:
                                  systemctl status trygons-gateway
+  "shallow water on the route"   a leg (or boat -> waypoint) over / near water
+                                 shallower than the limit: move the waypoint
+                                 (Program tab, Check depth, red X on the map)
   "driver screen not open"       open the driver screen (Driver screen
                                  button), or switch on Single operator if
                                  you are alone at the station

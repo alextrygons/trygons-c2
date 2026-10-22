@@ -311,6 +311,11 @@ class DriverScreen:
         js.append("joystick %s" % ("FAULT" if d.get("joy_fault_axis") else ("armed" if d.get("joy_status", 0) & 1 else "-")))
         if d.get("slam_override"):
             js.append("SLAM OVERRIDE")
+        sh = ((a.gw_status or {}).get("avoid") or {}).get("shallow")
+        if sh:
+            c.create_text(w / 2, 186, text="SHALLOW WATER AHEAD in %.0f s (%s)" % (
+                sh["in_s"], "no data" if sh["depth"] is None else "%.1f m" % sh["depth"]), fill=RED, font=F_MID,
+                tags="shallow")
         if d.get("slam_lost"):
             js.append("slamming sensor lost")
         c.create_text(w / 2, y + 36, text="   ".join(js), fill=FG, font=F_HUD, tags="joy")

@@ -891,6 +891,12 @@ class App:
                          ("Up", lambda: self.prog_move(-1)), ("Down", lambda: self.prog_move(1)),
                          ("Clear", self.prog_clear)):
             btn(bt, text, fn, font=F_TXT).pack(side="left", padx=1)
+        btn(bt, "Check depth", self.prog_depth_check, font=F_TXT, bg="#c0e0ff").pack(side="left", padx=8)
+        tk.Label(pg, text="Depth along the leg from the selected waypoint to the next (red = shallower than the limit)",
+                 font=F_TXT, bg=BG).pack(anchor="w")
+        self.pg_prof = tk.Canvas(pg, height=150, bg="#ffffff", highlightthickness=0)
+        self.pg_prof.pack(fill="x", padx=4, pady=2)
+        self.map_mark = None                 # a refused position, shown on the map
 
     # --- program editor ----------------------------------------------------------
     def prog_refresh(self):
@@ -924,6 +930,60 @@ class App:
         self.pg_vars["kn"].set("%.1f" % w["kn"])
         self.pg_vars["radius"].set("%.0f" % w["radius"])
         self.pg_act.set(proto.WP_ACTIONS[w["action"]])
+        self.draw_profile(i)
+
+    # --- depth (section C) --------------------------------------------------------
+    def shallow_limit(self):
+        """The gateway's limit (draft + margin, at least 3 m) or 3.0 m without a gateway."""
+        return ((self.gw_status or {}).get("avoid") or {}).get("shallow_limit_m") or 3.0
+
+    def draw_profile(self, i):
+        c = self.pg_prof
+        c.delete("all")
+        wps = self.prog["wps"]
+        w, h = max(200, c.winfo_width()), 150
+        if not self.charts:
+            return c.create_text(10, 70, anchor="w", text="no chart files (python tools/chartprep.py)", font=F_TXT)
+        if i is None or i + 1 >= len(wps):
+            return c.create_text(10, 70, anchor="w", text="select a waypoint that has a next one", font=F_TXT)
+        a, b = wps[i], wps[i + 1]
+        prof = self.charts.profile(a["lat"], a["lon"], b["lat"], b["lon"], 25.0)
+        lim = self.shallow_limit()
+        deps = [p[3] for p in prof if p[3] is not None]
+        dmax = max([lim * 2] + deps)
+        L = prof[-1][0] or 1.0
+        X = lambda dist: 40 + dist / L * (w - 50)
+        Y = lambda dep: 10 + min(dep, dmax) / dmax * (h - 30)
+        c.create_line(40, Y(lim), w - 10, Y(lim), fill="#e00000", dash=(5, 3))
+        c.create_text(38, Y(lim), text="%.1f m" % lim, anchor="e", fill="#e00000", font=F_TXT)
+        for (d1, _a, _b, z1), (d2, _c, _d, z2) in zip(prof, prof[1:]):
+            bad = z1 is None or z2 is None or z1 < lim or z2 < lim
+            z1 = 0.0 if z1 is None else max(0.0, z1)
+            z2 = 0.0 if z2 is None else max(0.0, z2)
+            c.create_polygon(X(d1), 10, X(d2), 10, X(d2), Y(z2), X(d1), Y(z1),
+                             fill="#ffb0b0" if bad else "#b0d8f0", outline="")
+        c.create_text(w - 10, h - 4, anchor="se", font=F_TXT,
+                      text="WP%d -> WP%d: %.0f m, shallowest %s" % (i + 1, i + 2, L, "%.1f m" % min(deps) if deps
+                                                                     else "no data"))
+
+    def prog_depth_check(self):
+        """Every leg against the charts (the gateway checks the same before AUTO)."""
+        if not self.charts:
+            return self.say("No chart files: python tools/chartprep.py (the gateway refuses AUTO without)", RED)
+        wps = self.prog["wps"]
+        lim = self.shallow_limit()
+        for k in range(len(wps) - 1):
+            bad = self.charts.check_leg(wps[k]["lat"], wps[k]["lon"], wps[k + 1]["lat"], wps[k + 1]["lon"], lim, 50.0,
+                                        step_m=40.0)
+            if bad:
+                self.map_mark = (bad[1], bad[2])
+                self.draw_profile(k)
+                self.say("Leg WP%d -> WP%d: %s at %.5f %.5f - shown on the map (red X)" % (
+                    k + 1, k + 2, bad[4], bad[1], bad[2]), RED)
+                return False
+        self.map_mark = None
+        self.say("Depth check OK: every leg deeper than %.1f m and 50 m from shallower water" % lim, GREEN)
+        return True
 
     def prog_add(self):
         w = self.prog_entry()
@@ -963,6 +1023,8 @@ class App:
             return self.say("Program: " + "; ".join(problems[:3]), RED)
         if not self.link:
             return self.say("Not connected", RED)
+        if self.charts and not self.prog_depth_check():
+            return                                          # refused here already (the gateway would too)
         frames = program.upload_frames(self.prog)
         for t, p in frames[:-1]:
             self.link.send(t, p)
@@ -1916,6 +1978,16 @@ class App:
                             opacity=self.depth_opacity.get(), ais=self.ais_list(), threats=av.get("threats"),
                             route=av.get("route"), shallow=av.get("shallow"))
         self.chart_lbl.configure(text="" if self.charts else "no chart files: python tools/chartprep.py")
+        if self.map_mark:
+            x, y = P(*self.map_mark)
+            c.create_line(x - 12, y - 12, x + 12, y + 12, fill=RED, width=4)
+            c.create_line(x - 12, y + 12, x + 12, y - 12, fill=RED, width=4)
+            c.create_text(x + 14, y, anchor="w", text="refused leg: shallow", fill=RED, font=F_TXT)
+        sh = av.get("shallow")
+        if sh:
+            c.create_text(w / 2, 40, text="SHALLOW WATER AHEAD in %.0f s (%s, limit %.1f m)" % (
+                sh["in_s"], "no data" if sh["depth"] is None else "%.1f m" % sh["depth"], sh["limit"]),
+                fill=RED, font=F_BIG)
         # scale bar
         bar_m = 10 ** math.floor(math.log10(max(1.0, m * 150)))
         c.create_line(20, h - 20, 20 + bar_m / m, h - 20, width=4)

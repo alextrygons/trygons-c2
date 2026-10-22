@@ -51,7 +51,8 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               103: "stale command", 104: "timestamp in the future", 105: "rate limited",
               106: "AURIX not connected", 107: "wrong session", 108: "bad command",
               109: "driver screen not open", 110: "rejected by the driver", 111: "no answer from the driver (timeout)",
-              112: "driver screen lost", 113: "single-operator mode: confirm on the captain screen first"}
+              112: "driver screen lost", 113: "single-operator mode: confirm on the captain screen first",
+              114: "shallow water on the route"}
 READ_ONLY = (proto.T_PARAM_GET, proto.T_PROG_GET, proto.T_JOYMAP_GET, proto.T_JOY_RAW_GET)
 LITE_FIELDS = ("t_ms", "mode", "mode_name", "heading", "target", "throttle", "gear", "gps_fix", "compass_ok",
                "est_lat", "est_lon", "est_sog", "est_cog", "unc_m", "pos_source", "alarm_bits", "power_fwd",
@@ -143,6 +144,7 @@ class StationServer:
         self.ext["driver_answer"] = self._driver_answer
         self.ext["single_op"] = self._single_op
         self.asks = {}                      # id -> waiting captain command (driver ACCEPT, section F1)
+        self.prog_check = None              # (station, type, payload) -> refusal text (section C)
         self.ask_id = 0
         self.driver_timeout = cfg.get("driver_timeout_s", 10.0)
         self.driver_beat_s = cfg.get("driver_beat_s", 2.5)
@@ -370,6 +372,11 @@ class StationServer:
         st.last_seq = seq
         if not self.gw.aurix.connected or len(payload) > 194:
             return self.refuse(st, seq, ftype, 106 if not self.gw.aurix.connected else 108)
+        if self.prog_check and ftype in (proto.T_PROG_BEGIN, proto.T_PROG_WP, proto.T_PROG_COMMIT,
+                                         proto.T_AUTO_START, proto.T_AUTO_RESUME):
+            why = self.prog_check(st, ftype, payload)
+            if why:
+                return self.refuse(st, seq, ftype, 114, ": " + why)
         if proto.is_driving_cmd(ftype, payload):
             what = str(m.get("what") or proto.TYPE_NAMES.get(ftype, "command %d" % ftype))[:80]
             if st.single_op:

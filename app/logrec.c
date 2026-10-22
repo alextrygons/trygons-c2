@@ -85,12 +85,13 @@ static const char k_events[] =
     "16:TIME:date,time_of_day_ms,t_ms,-;"
     "17:HELM:station,action(0 take 1 release 2 lost 3 auto 4 gw lost),refused,holder;"
     "18:SAVE:trigger(1 button 2 alarm 3 fault 4 takeover 5 standby fault 6 slam),arg,seq,-;"
-    "19:SLAM:peak_g*100,level_g*100,impacts_per_min,cap%*10|state<<16|override<<20;";
+    "19:SLAM:peak_g*100,level_g*100,impacts_per_min,cap%*10|state<<16|override<<20;"
+    "20:NAV:kind|reason<<8|alarm<<16|lost<<24|applied<<25,heading*100,cap_kn*10,seq;";
 
 static const char k_alarms[] =
     "1:COMPASS,2:GPS_LOST,4:GPS_SUSPECT,8:DR_LIMIT,16:ARRIVAL_UNCERTAIN,32:ARRIVED,64:GEAR,128:TRAINING,"
     "256:JOY_FAULT,512:JOY_NOT_CENTERED,1024:JOYSTICK,2048:PC_LINK,4096:NOT_ARMED,8192:MONITOR,"
-    "16384:OVERRUN,32768:LOG_FAILURE,65536:GATEWAY_LOST,131072:GATEWAY_STORAGE,262144:REMOTE_LINK_LOST,524288:CHANNEL_FALLBACK,1048576:REMOTE_DRIVING_LINK_LOST,2097152:SLAMMING,4194304:AIS_RECEIVER_SILENT";
+    "16384:OVERRUN,32768:LOG_FAILURE,65536:GATEWAY_LOST,131072:GATEWAY_STORAGE,262144:REMOTE_LINK_LOST,524288:CHANNEL_FALLBACK,1048576:REMOTE_DRIVING_LINK_LOST,2097152:SLAMMING,4194304:AIS_RECEIVER_SILENT,8388608:COLLISION_RISK,16777216:DRIVER_DECISION,33554432:SHALLOW_WATER";
 
 uint16_t logrec_header_text(char *out, uint16_t max, uint32_t boot, uint32_t file_no)
 {

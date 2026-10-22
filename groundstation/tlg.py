@@ -111,6 +111,12 @@ class Log:
             return "SLAM %s level %.2f g, %d/min, cap %.0f %%%s, %s" % (
                 "impact %.2f g" % (a[0] / 100) if a[0] else "change", a[1] / 100, a[2], (a[3] & 0xFFFF) / 10,
                 " OVERRIDE" if (a[3] >> 20) & 1 else "", st)
+        if name == "NAV":
+            kinds = {0: "none", 1: "speed cap", 2: "avoidance heading", 3: "HDG LOCK heading (accepted)"}
+            return "NAV %s%s heading %.0f, cap %s, alarm %d, reason %d%s" % (
+                kinds.get(a[0] & 0xFF, a[0] & 0xFF), " APPLIED" if (a[0] >> 25) & 1 else "", a[1] / 100.0,
+                "-" if a[2] < 0 else "%.1f kn" % (a[2] / 10.0), (a[0] >> 16) & 0xFF, (a[0] >> 8) & 0xFF,
+                " LOST (gateway quiet: slow + hold heading)" if (a[0] >> 24) & 1 else "")
         if name == "SAVE":
             return "VIDEO SAVE request %d: %s" % (a[2], proto.save_trigger_text(a[0], a[1]))
         parts = ["%s=%d" % (n, v) for n, v in zip(args, a) if n != "-"]

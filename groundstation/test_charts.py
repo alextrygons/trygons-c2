@@ -8,6 +8,7 @@
   B4 map layers: shading, contours, sea marks, AIS, avoidance route, the "Not for
      navigation" note and the attribution - drawn with the network blocked
   B5 the real Attica chart (if prepared with tools/chartprep.py): known depths
+  C6 program editor: depth check (refused leg + its position) and the depth profile
 """
 import http.server
 import json
@@ -171,6 +172,28 @@ def main():
                "#e00000" in fills and "#909090" in fills and not tried,
                "items %s; note \"%s\"; AIS colours %s; network attempts %d" % (tags, note[0] if note else None, fills,
                                                                               len(tried)))
+
+        # C6 program editor: depth check refuses a leg over the shoal (position on the map), profile drawn
+        import app as A
+        root = tk.Tk()
+        ap = A.App(root)
+        root.update()
+        ap.charts = chart.Charts(tmp)
+        c0 = (LAT0 + 0.02, LON0 + 0.005)
+        ap.prog["wps"] = [{"lat": c0[0], "lon": c0[1], "kn": 8, "radius": 25, "action": 0},
+                          {"lat": LAT0 + 0.02, "lon": LON0 + 0.035, "kn": 8, "radius": 25, "action": 0}]
+        refused = ap.prog_depth_check() is False
+        mark = ap.map_mark
+        root.update()
+        reds = [i for i in ap.pg_prof.find_all() if ap.pg_prof.type(i) == "polygon" and
+                ap.pg_prof.itemcget(i, "fill") == "#ffb0b0"]
+        ap.prog["wps"][1] = {"lat": LAT0 + 0.002, "lon": LON0 + 0.005, "kn": 8, "radius": 25, "action": 0}
+        ok_leg = ap.prog_depth_check() is True
+        ap.quit()
+        report("C6 program editor: a leg over shallow water refused with its position on the map; depth profile",
+               refused and mark is not None and abs(mark[0] - (LAT0 + 0.02)) < 0.001 and reds and ok_leg,
+               "leg over the shoal refused %s at %s, %d red (too shallow) parts in the profile; a deep leg accepted %s" % (
+                   refused, mark and (round(mark[0], 5), round(mark[1], 5)), len(reds), ok_leg))
 
         # B5 the real Attica chart, if it has been prepared on this PC
         real = chart.Charts()

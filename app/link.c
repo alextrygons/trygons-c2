@@ -23,7 +23,7 @@ typedef enum {
     P_CRUISE_MAX, P_SPD_KP, P_SPD_KI,
     P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
-    P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET, P_GPS2_CHECK,
+    P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET, P_GPS2_CHECK, P_NAV_LOST_KN,
     P_COUNT
 } param_id_t;
 
@@ -47,6 +47,7 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "slam_limit_g",    1.0f,    8.0f },     /* captain sets, driver confirms (ground station) */
     { "slam_red_reset",  0.0f,    1.0f },     /* slamming RED: 0 = STEP (default), 1 = LIMIT_RESET */
     { "gps2_check_m",    0.0f, 2000.0f },     /* GPS fix vs the second GPS (AIS device); 0 = off */
+    { "nav_lost_kn",     2.0f,   10.0f },     /* avoidance request lost (gateway gone): slow to this */
 };
 
 uint8_t link_param_count(void)
@@ -82,6 +83,7 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_SLAM_LIMIT:   return &s->slam.cfg.limit_g;
     case P_SLAM_RED_RESET: return &s->slam.cfg.red_reset;
     case P_GPS2_CHECK:   return &s->dr.cfg.gps2_max_m;
+    case P_NAV_LOST_KN:  return &s->cfg.nav_lost_kn;
     default:             return NULL;
     }
 }
@@ -637,6 +639,34 @@ static void gw_rjoy(sb_t *s, const proto_frame_t *f)
 /* --- HELM (section B): only the HELM station's commands are accepted ------ */
 
 /* Commands every station may send without HELM: they change nothing. */
+/* GW_NAVREQ (2 Hz while it matters), 10 bytes:
+ *   u8 seq | u8 kind (SB_NAV_) | u8 reason (1 collision, 2 shallow, 4 decision) |
+ *   u8 alarm (1 collision, 2 driver decision, 4 shallow) | u16 heading*100 |
+ *   u16 speed cap kn*10 (0xFFFF none) | u16 lease ms
+ * Checked here; applied by smallboat.c only in AUTO / after ACCEPT in HDG LOCK. */
+static void gw_navreq(sb_t *s, const proto_frame_t *f)
+{
+    proto_rd_t r;
+    proto_rd_init(&r, f->payload, f->len);
+    uint8_t seq = proto_rd_u8(&r), kind = proto_rd_u8(&r), reason = proto_rd_u8(&r), alarm = proto_rd_u8(&r);
+    uint16_t hdg = proto_rd_u16(&r), cap = proto_rd_u16(&r), lease = proto_rd_u16(&r);
+    if (kind > SB_NAV_HDG_SET || (kind != SB_NAV_NONE && kind != SB_NAV_CAP && hdg >= 36000u) ||
+        (cap != 0xFFFFu && cap > 600u) || lease < 500u || lease > 10000u) {
+        s->nav.rejected++;
+        return;                                                  /* not valid: ignored */
+    }
+    sb_navreq_t *n = &s->nav;
+    n->seq = seq;
+    n->kind = kind;
+    n->reason = reason;
+    n->alarm = alarm;
+    n->heading = (float)hdg * 0.01f;
+    n->cap_kn = (cap == 0xFFFFu) ? -1.0f : (float)cap * 0.1f;
+    n->lease_ms = lease;
+    n->rx_ms = s->now_ms ? s->now_ms : 1u;
+    n->count++;
+}
+
 static bool read_only(uint8_t type)
 {
     return type == PROTO_T_PARAM_GET || type == PROTO_T_PROG_GET || type == PROTO_T_JOYMAP_GET ||
@@ -769,6 +799,10 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
         s->gps2.count++;
         return;
     }
+    if (f->type == PROTO_T_GW_NAVREQ && f->len >= 10u) {         /* collision avoidance / shallow water */
+        gw_navreq(s, f);
+        return;
+    }
     if (f->type == PROTO_T_GW_STATION) {                         /* a station joined / left */
         if (f->len == 3u && f->payload[1] == 1u) helm_lost(s, f->payload[0], 2u);
         return;
@@ -856,6 +890,21 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u16(&w, (uint16_t)lroundf(sl->cfg.limit_g * 100.0f));
     proto_wr_u32(&w, sl->impacts);
     proto_wr_u8(&w, (uint8_t)lroundf(sl->cfg.yellow_frac * 100.0f));
+    /* G: u8 nav kind | u8 flags (b0 fresh, b1 LOST, b2 applied now) | u8 reason | u8 alarm |
+     *    u16 heading*100 | u16 cap kn*10 (0xFFFF none) | u8 seq | u16 age ms (0xFFFF never) */
+    const sb_navreq_t *nv = &s->nav;
+    bool fresh = nv->rx_ms != 0u && s->now_ms - nv->rx_ms <= nv->lease_ms;
+    bool applied = (sb_mode(s) == MODE_AUTO && (nv->lost || (fresh && (nv->kind == SB_NAV_CAP ||
+                                                                       nv->kind == SB_NAV_HEADING))));
+    proto_wr_u8(&w, nv->kind);
+    proto_wr_u8(&w, (uint8_t)((fresh ? 1u : 0u) | (nv->lost ? 2u : 0u) | (applied ? 4u : 0u)));
+    proto_wr_u8(&w, nv->reason);
+    proto_wr_u8(&w, nv->alarm);
+    proto_wr_u16(&w, (uint16_t)lroundf(nv->heading * 100.0f));
+    proto_wr_u16(&w, nv->cap_kn < 0.0f ? 0xFFFFu : (uint16_t)lroundf(nv->cap_kn * 10.0f));
+    proto_wr_u8(&w, nv->seq);
+    proto_wr_u16(&w, nv->rx_ms ? (uint16_t)((s->now_ms - nv->rx_ms) > 65534u ? 65534u : s->now_ms - nv->rx_ms)
+                               : 0xFFFFu);
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
 }
 

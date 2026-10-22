@@ -99,6 +99,17 @@ DEFAULTS = {
             "period_s": 60.0, "radius_deg": 0.5,
         },
     },
+    "charts_dir": None,                 # None = <repo>/charts (tools/chartprep.py)
+    "shallow": {                        # section C
+        "draft_m": 0.8,                 # MEASURE IT: outboard leg DOWN, lowest point below the water line
+        "margin_m": 1.0,                # safety margin under the leg
+        "shallow_m": 3.0,               # limit = max(shallow_m, draft_m + margin_m)
+        "clearance_m": 50.0,            # AUTO legs: not closer than this to shallower water
+        "look_s": 30.0, "look_min_m": 200.0,   # predicted position: this far ahead
+        "slow_kn": 4.0,                 # AUTO slows to this towards shallow water
+        "require_charts": True,         # no charts = AUTO programs refused
+    },
+    "nav_s": 0.5,                       # navigation request to the AURIX every 0.5 s (lease 3 s)
     "audit_fallback": "/var/lib/trygons/audit",   # when the SSD is missing
     "web_port": 8080,                   # the iPhone page (VPN only)
     "web_helm": False,                  # HELM from the web page: OFF unless you switch it on
