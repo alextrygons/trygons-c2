@@ -82,6 +82,23 @@ DEFAULTS = {
         "scan_s": 10.0,
         "chunk": 16384,
     },
+    "ais": {
+        "enabled": True,                # RECEIVE ONLY (no transponder): dAISy HAT / USB receiver
+        "source": "/dev/serial0",       # dAISy HAT; USB receiver: "/dev/ttyACM0"; network: "tcp:host:port"
+        "baud": 38400,
+        "stale_a_s": 180.0,             # Class A target stale after 3 min without a position
+        "stale_b_s": 360.0,             # Class B after 6 min
+        "remove_s": 900.0,              # removed after 15 min
+        "silent_s": 300.0,              # no AIS message this long while at sea -> AIS RECEIVER SILENT
+        "at_sea_kn": 2.0,               # "at sea" = faster than this or in a driving mode (last 5 min)
+        "second_gps": False,            # AIVDO / GNSS of the AIS device -> second GPS for the AURIX check
+        "max_listed": 40,               # targets sent to the stations (15 with data saver)
+        "online": {                     # wider area from the internet: OFF; only on sync channels
+            "enabled": False,
+            "url": None,                # e.g. AISHub: "http://data.aishub.net/ws.php?username=YOU&format=1&output=json&compress=0&latmin={lat0}&latmax={lat1}&lonmin={lon0}&lonmax={lon1}"
+            "period_s": 60.0, "radius_deg": 0.5,
+        },
+    },
     "audit_fallback": "/var/lib/trygons/audit",   # when the SSD is missing
     "web_port": 8080,                   # the iPhone page (VPN only)
     "web_helm": False,                  # HELM from the web page: OFF unless you switch it on

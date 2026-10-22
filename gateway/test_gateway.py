@@ -120,7 +120,7 @@ class GwRunner:
 def gw_cfg(sim, root, **extra):
     base = {"aurix": sim.gw_addr, "set_clock": False, "status_s": 1.0 / sim.speed,   # 1 Hz boat time
             "channels": {"driver": "sim", "starlink_status": False},
-            "cameras": {"enabled": False},
+            "cameras": {"enabled": False}, "ais": {"enabled": False},
             "storage": {"root": root, "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                         "full_free_gb": 0.0}}
     from common import deep_merge
@@ -1475,10 +1475,10 @@ def section_f():
         errs, found = [], 0
         for dt in (-9.0, -5.0, -1.0, 2.0):
             u = t0 + dt
-            loc = vi.locate("FRONT-1", u)
+            fr, loc = vi.frame("FRONT-1", u, videolog.frame_rgb)
+            fr = fr or b""
             if loc:
                 found += 1
-                fr = videolog.frame_rgb(*loc)
                 c = decode_ts(fr, 320, 240)
                 if c is not None:
                     errs.append(code_offset_ms(c, u))
@@ -1959,7 +1959,204 @@ def section_f1():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-SECTIONS = {"F1": section_f1, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
+# ----------------------------------------------------------------- section AIS --
+
+import ais as aismod  # noqa: E402
+from simais import AisSim, Ship  # noqa: E402
+import http.server as httpsrv  # noqa: E402  (not "http": section B has an http() helper)
+
+# published test sentences (gpsd / pyais test data) and their published decode
+VEC_A = "!AIVDM,1,1,,B,177KQJ5000G?tO`K>RA1wUbN0TKH,0*5C"           # type 1: MMSI 477553000, 47.58283 N 122.34583 W
+VEC_5 = ["!AIVDM,2,1,1,A,55?MbV02;H;s<HtKR20EHE:0@T4@Dn2222222216L961O5Gf0NSQEp6ClRp8,0*1C",
+         "!AIVDM,2,2,1,A,88888888880,2*25"]                           # type 5: EVER DIADEM, 3FOF8, NEW YORK
+VEC_18 = "!AIVDM,1,1,,B,B5NJ;PP005l4ot5Isbl03wsUkP06,0*75"         # type 18: MMSI 367430530, 37.785035 N 122.26732 W
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def section_ais():
+    print("\n=== Section A: AIS receiver (receive only) ===", flush=True)
+
+    # AIS1 decoding: standard test sentences (Class A, Class B, static), 2-part messages, bad checksum
+    T = aismod.AisTargets({})
+    a = T.feed_line(VEC_A)
+    p1 = T.feed_line(VEC_5[0])
+    s5 = T.feed_line(VEC_5[1])
+    b = T.feed_line(VEC_18)
+    bad = T.feed_line(VEC_A.replace("*5C", "*5D"))
+    m19 = {"type": 24, "mmsi": 239555000, "part": 0, "name": "KAYAK TOUR"}
+    r24a = T.feed_line(aismod.sentences(m19)[0])
+    r24b = T.feed_line(aismod.sentences({"type": 24, "mmsi": 239555000, "part": 1, "ship_type": 37, "callsign": "SV1AB",
+                                         "to_bow": 5, "to_stern": 5, "to_port": 1, "to_starboard": 1})[0])
+    ok_a = a and a["mmsi"] == 477553000 and abs(a["lat"] - 47.582833) < 1e-5 and abs(a["lon"] + 122.345833) < 1e-5 \
+        and a["nav_status"] == 5 and a["cog"] == 51.0 and a["heading"] == 181
+    ok_5 = p1 is None and s5 and s5["name"] == "EVER DIADEM" and s5["callsign"] == "3FOF8" and \
+        s5["destination"] == "NEW YORK" and s5["draught"] == 12.2 and s5["to_bow"] + s5["to_stern"] == 295
+    ok_18 = b and b["mmsi"] == 367430530 and abs(b["lat"] - 37.785035) < 1e-5 and abs(b["lon"] + 122.26732) < 1e-5
+    t24 = T.targets[239555000]
+    report("AIS1 decoding: standard Class A / Class B / static (2-part) sentences, Class B static, bad checksum",
+           ok_a and ok_5 and ok_18 and bad is None and T.bad_crc == 1 and t24.name == "KAYAK TOUR" and
+           t24.length == 10 and t24.ship_type == 37,
+           "type 1: %s %.5f %.5f status %s; type 5 (2 parts): %s / %s / %s / draught %s; type 18: %s %.5f %.5f; "
+           "bad checksum refused (%d); type 24 A+B: %s, %s m, type %s" % (
+               a["mmsi"], a["lat"], a["lon"], a["nav_status"], s5["name"], s5["callsign"], s5["destination"],
+               s5["draught"], b["mmsi"], b["lat"], b["lon"], T.bad_crc, t24.name, t24.length, t24.ship_type))
+
+    # AIS2 targets: prediction, stale (A 3 min, B 6 min), removal, invalid data, messages / minute
+    clk = FakeClock()
+    T = aismod.AisTargets({"stale_a_s": 180, "stale_b_s": 360, "remove_s": 600}, clock=clk)
+    for line in aismod.sentences({"type": 1, "mmsi": 239100001, "lat": 37.8, "lon": 23.7, "sog": 10.0, "cog": 90.0}):
+        T.feed_line(line)
+    for line in aismod.sentences({"type": 18, "mmsi": 239100002, "lat": 37.81, "lon": 23.71, "sog": 5.0, "cog": 0.0}):
+        T.feed_line(line)
+    clk.t += 60
+    lat_p, lon_p = T.targets[239100001].predict(clk.t)
+    moved = aismod.dist_m(37.8, 23.7, lat_p, lon_p)
+    clk.t += 130                                          # 190 s after the reports
+    st1 = {m: T.is_stale(t) for m, t in T.targets.items()}
+    clk.t += 200                                          # 390 s
+    st2 = {m: T.is_stale(t) for m, t in T.targets.items()}
+    n_before = T.invalid
+    T.feed_line(aismod.sentences({"type": 1, "mmsi": 12345, "lat": 37.8, "lon": 23.7, "sog": 1, "cog": 0})[0])
+    T.feed_line(aismod.sentences({"type": 1, "mmsi": 239100001, "lat": 38.5, "lon": 23.7, "sog": 10, "cog": 90})[0])
+    T.feed_line(aismod.sentences({"type": 1, "mmsi": 239100003, "lat": None, "lon": None, "sog": 3, "cog": 0})[0])
+    jumped = T.targets[239100001].lat
+    clk.t += 700
+    T.tick()
+    gone = 239100001 not in T.targets and 239100002 not in T.targets
+    report("AIS2 targets: predicted between reports, stale after 3 min (A) / 6 min (B), removed later, bad data ignored",
+           abs(moved - 10 * aismod.KN * 60) < 1.0 and st1 == {239100001: True, 239100002: False} and
+           st2 == {239100001: True, 239100002: True} and T.invalid - n_before == 2 and jumped == 37.8 and gone,
+           "predicted %.0f m after 60 s at 10 kn (expected %.0f); stale at 190 s: %s; at 390 s: %s; invalid MMSI + "
+           "70 km jump refused (%d), no-position report kept out; removed after 15 min: %s" % (
+               moved, 10 * aismod.KN * 60, st1, st2, T.invalid - n_before, gone))
+
+    # AIS3 the gateway with simulated traffic: list, names, rate; RECEIVER SILENT alarm on the boat
+    tmp = tempfile.mkdtemp(prefix="gwtest_ais_")
+    sim = gw = asim = http_srv = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        aport, hport = free_port(), free_port()
+        asim = AisSim(aport, seed=3, noise_m=8.0, drop=0.1, bad=0.03, start_offset=0.5).start()
+        for i, (cls, name) in enumerate((("A", "BLUE STAR DELOS"), ("A", "AEGEAN SPIRIT"), ("B", "SAILING ELENI"))):
+            asim.add(Ship(239200001 + i, 37.83 + 0.01 * i, 23.62 + 0.01 * i, 12.0 - 3 * i, 45.0 * i, cls=cls,
+                          name=name))
+        asim.add(Ship(239200009, 37.90, 23.55, 26.0, 270.0, cls="A", name="FLYING CAT"))   # 26 kn: every 2 s
+
+        class Hub(httpsrv.BaseHTTPRequestHandler):
+            hits = 0
+
+            def do_GET(self):
+                Hub.hits += 1
+                body = _json.dumps([{"ERROR": False}, [
+                    {"MMSI": 239300001, "TIME_UNIX": int(time.time()) - 20, "LATITUDE": 37.70, "LONGITUDE": 23.80,
+                     "COG": 200.0, "SOG": 15.0, "HEADING": 199, "NAME": "ONLINE ONLY", "TYPE": 60, "A": 100, "B": 30},
+                    {"MMSI": 239200001, "TIME_UNIX": int(time.time()) - 600, "LATITUDE": 37.50, "LONGITUDE": 23.50,
+                     "COG": 0.0, "SOG": 5.0, "HEADING": 0, "NAME": "OLD ONLINE COPY", "TYPE": 60}]]).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        http_srv = httpsrv.HTTPServer(("127.0.0.1", hport), Hub)
+        threading.Thread(target=http_srv.serve_forever, daemon=True).start()
+        cfg = gw_cfg_b(sim, root, ais={"enabled": True, "source": "tcp:127.0.0.1:%d" % aport, "silent_s": 8.0,
+                                       "tick_s": 0.25, "second_gps": True,
+                                       "online": {"enabled": True, "period_s": 1.0, "radius_deg": 0.5,
+                                                  "url": "http://127.0.0.1:%d/ws?lat0={lat0}&lat1={lat1}" % hport}},
+                       channels={"driver": "sim", "check_s": 0.2, "stable_s": 1.0, "starlink_status": False})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        link, w = sim.station()
+        time.sleep(1.0)
+        got = wait_for(lambda: len(g.ais.targets) >= 5 and all(
+            g.ais.targets.get(239200001 + i) and g.ais.targets[239200001 + i].name for i in range(3)), 25)
+        names = sorted(t.name for t in g.ais.targets.values())
+        st = g.ais_status()
+        report("AIS3 gateway: simulated traffic (Class A + B, noise, 10 % lost, 3 % broken) -> target list with names",
+               got and st["msgs_per_min"] > 3 and st["bad_crc"] >= 0 and g.ais_reader.connected,
+               "targets %s; %d messages / min, %d broken lines refused, %d sent by the simulator (%d lost)" % (
+                   names, st["msgs_per_min"], st["bad_crc"], asim.sent, asim.dropped))
+
+        # AIS4 online feed: merged by MMSI, local wins when newer; never on STARLINK
+        on_only = g.ais.targets.get(239300001)
+        loc = g.ais.targets.get(239200001)
+        polls0 = g.ais_online.polls
+        gw.call(g.net.request, "MANUAL", "STARLINK", "test", True, True, True, True)
+        gw.call(g.net.tick)
+        time.sleep(3.0)
+        polls_sl = g.ais_online.polls - polls0
+        state_sl = g.ais_online.state
+        gw.call(g.net.request, "AUTO", None, "test", True, True, False, True)
+        gw.call(g.net.tick)
+        back = wait_for(lambda: g.ais_online.polls > polls0 + polls_sl, 6)
+        report("AIS4 online AIS feed: merged by MMSI (local data wins when newer); never used on STARLINK",
+               on_only is not None and on_only.src == "online" and loc is not None and loc.src == "local" and
+               abs(loc.lat - 37.83) < 0.01 and polls0 > 0 and polls_sl == 0 and "STARLINK" in state_sl and back,
+               "online-only ship: %s (%s); our own receiver's copy of 239200001 kept (%s, %.4f N) against an older "
+               "online one; polls on 4G %d, on STARLINK %d (%s); back on 4G: polling again %s" % (
+                   on_only and on_only.name, on_only and on_only.src, loc and loc.src, loc.lat if loc else 0,
+                   polls0, polls_sl, state_sl, back))
+
+        # AIS5 second GPS from the AIS device (AIVDO / RMC) -> forwarded to the AURIX only when switched on
+        s0 = g.gps2_sent
+        for k in range(3):
+            asim.send_raw("$GPRMC,120000.00,A,3750.000,N,02337.000,E,6.2,045.0,211026,,,A*%s" % aismod.nmea_checksum(
+                "GPRMC,120000.00,A,3750.000,N,02337.000,E,6.2,045.0,211026,,,A"))
+            time.sleep(0.4)
+        sent_on = g.gps2_sent - s0
+        g2 = g.ais.gps2
+        g.cfg["ais"]["second_gps"] = False
+        s1 = g.gps2_sent
+        asim.send_raw("$GPRMC,120001.00,A,3750.000,N,02337.000,E,6.2,045.0,211026,,,A*%s" % aismod.nmea_checksum(
+            "GPRMC,120001.00,A,3750.000,N,02337.000,E,6.2,045.0,211026,,,A"))
+        time.sleep(1.5)
+        report("AIS5 GNSS of the AIS device = second GPS for the AURIX check (only when switched on)",
+               sent_on >= 2 and g2 and abs(g2["lat"] - (37 + 50 / 60.0)) < 1e-6 and g.gps2_sent == s1,
+               "RMC from the AIS device: %.5f N %.5f E -> %d second-GPS frames to the AURIX; switched off -> %d" % (
+                   g2["lat"] if g2 else 0, g2["lon"] if g2 else 0, sent_on, g.gps2_sent - s1))
+
+        # AIS6 receiver silent while at sea -> AIS RECEIVER SILENT on the boat (alarm only)
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK))
+        w.until(lambda d: d["mode"] == proto.MODE_HDG_LOCK, 4)
+        p0 = w.telem["power_fwd"] if w.telem else None
+        asim.silent = True
+        t0 = time.time()
+        al = w.until(lambda d: d["alarm_bits"] & 0x400000, 15)
+        dt = time.time() - t0
+        flag_on = g.ais_silent
+        asim.silent = False
+        cleared = wait_for(lambda: not g.ais_silent, 15)
+        report("AIS6 AIS RECEIVER SILENT at sea: alarm on the boat after the set time, no mode / power change; clears",
+               al is not None and 7.0 <= dt <= 14.0 and al["mode"] == proto.MODE_HDG_LOCK and
+               al["power_fwd"] == p0 and flag_on and cleared,
+               "silent for %.1f s (limit 8 s) -> alarm %s, mode %s, power limit %s -> %s; messages again -> cleared %s" % (
+                   dt, "yes" if al else "NO", al and al["mode_name"], p0, al and al["power_fwd"], cleared))
+        link.stop()
+    finally:
+        for x in (asim,):
+            if x:
+                x.stop()
+        if http_srv:
+            http_srv.shutdown()
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"F1": section_f1, "AIS": section_ais, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
             "G": section_g}
 
 
@@ -1982,9 +2179,12 @@ def main():
                     results.append((line[7:], line.startswith("[PASS]")))
                 elif line.startswith("==="):
                     print("\n" + line, flush=True)
-            if r.returncode not in (0, 1):
-                print("section %s crashed:\n%s" % (k, r.stderr[-2000:]))
-                results.append(("section %s ran" % k, False))
+            # a Python error ends a section with exit code 1 too (like a failed test):
+            # look for its traceback (not the harmless "Exception ignored" noise at exit)
+            real_tb = "Traceback (most recent call last)" in r.stderr.split("Exception ignored")[0]
+            if r.returncode not in (0, 1) or real_tb:
+                print("section %s CRASHED (the tests after the error did not run):\n%s" % (k, r.stderr[-1500:]))
+                results.append(("section %s ran to the end" % k, False))
     bad = [n for n, ok in results if not ok]
     print("\nGATEWAY TESTS: %d passed, %d failed" % (len(results) - len(bad), len(bad)))
     return 1 if bad else 0

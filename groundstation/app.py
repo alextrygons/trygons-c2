@@ -1407,7 +1407,7 @@ class App:
         v["sog"].configure(text="%.1f kn  %03.0f°" % (d["est_sog"], d["est_cog"]))
         src = proto.POS_SOURCES[d["pos_source"]] if d["pos_source"] < 4 else "?"
         if d["pos_source"] in (2, 3):
-            src += " (%s, %.0f s)" % (proto.DR_REASONS[min(d["dr_reason"], 6)], d["dr_time_s"])
+            src += " (%s, %.0f s)" % (proto.DR_REASONS[min(d["dr_reason"], 7)], d["dr_time_s"])
         v["src"].configure(text=src, fg=FG if d["pos_source"] == 1 else RED)
         v["unc"].configure(text="± %.0f m" % d["unc_m"])
         v["drift"].configure(text="%03.0f° %.2f kn (%.0f %%)" % (d["set_deg"], d["drift_kn"], 100 * d["current_conf"]))

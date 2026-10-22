@@ -39,7 +39,8 @@ typedef enum {
     DR_WHY_JUMP,            /* fix too far from the prediction */
     DR_WHY_SPEED,           /* impossible speed */
     DR_WHY_COURSE,          /* COG disagrees with heading + drift */
-    DR_WHY_DRAG             /* GPS slowly drifting away from DR */
+    DR_WHY_DRAG,            /* GPS slowly drifting away from DR */
+    DR_WHY_GPS2             /* disagrees with the second GPS (AIS device; off unless configured) */
 } dr_reason_t;
 
 typedef struct {
@@ -58,6 +59,7 @@ typedef struct {
     float default_kn_per_pct;   /* (0.15) */
     /* integrity */
     float jump_m;               /* fix more than this + 3 x uncertainty from the prediction (40) */
+    float gps2_max_m;           /* fix more than this from the second GPS = suspect; 0 = check off (default) */
     float max_sog_kn;           /* impossible speed (40) */
     float course_tol_deg;       /* COG vs heading + drift (30) */
     float drag_window_s;        /* shadow DR windows (60 / 300 s) ... */
@@ -90,6 +92,8 @@ typedef struct {
     float    water_kn;
     bool     gps_new;           /* a GPS message arrived this step */
     hal_gps_t gps;
+    bool     gps2_ok;           /* a fresh position from the second GPS (gateway, AIS device) */
+    double   gps2_lat, gps2_lon;
 } dr_input_t;
 
 typedef struct {

@@ -100,6 +100,10 @@
 #define SB_ALM_CHANNEL            0x80000u /* CHANNEL FALLBACK: the chosen internet channel failed (gateway) */
 #define SB_ALM_REMOTE_DRIVE       0x100000u /* REMOTE DRIVING LINK LOST: remote joystick data old / missing */
 #define SB_ALM_SLAM               0x200000u /* SLAMMING: an impact over the limit (red) */
+#define SB_ALM_AIS_SILENT         0x400000u /* AIS RECEIVER SILENT (gateway): no AIS message for a while at sea */
+/* navigation advisories: alarm (sound, shown, logged) but they never lower the
+ * power limit - their reaction is defined explicitly */
+#define SB_NAV_ADVISORY           (SB_ALM_AIS_SILENT)
 
 /* HELM: the one station whose commands are accepted (section B). */
 #define SB_HELM_NONE   0u
@@ -116,6 +120,7 @@
 #define SB_GWF_FALLBACK     0x04u   /* internet channel fell back (section C) */
 #define SB_GWF_STARLINK     0x08u   /* Starlink (emergency link) active */
 #define SB_GWF_SAVER        0x10u   /* data saver on */
+#define SB_GWF_AIS_SILENT   0x20u   /* AIS receiver silent at sea (section A) */
 typedef struct {
     uint8_t  state;             /* SB_GW_NEVER / OK / LOST */
     uint8_t  flags;             /* SB_GWF_ from the Pi's GW_STATUS */
@@ -411,6 +416,12 @@ typedef struct {
     sb_lever_t  lev;           /* USB throttle lever: mapping and pickup */
     sb_remote_t remote;        /* REMOTE MANUAL: the shore joystick */
     sb_save_t   save;          /* video SAVE requests for the gateway */
+    struct {                   /* second GPS from the gateway (AIS device), section A */
+        double   lat, lon;
+        uint32_t rx_ms;        /* when it arrived (0 = never) */
+        uint16_t age_ms;       /* its age on the Pi when sent */
+        uint32_t count;
+    } gps2;
     slam_t      slam;          /* slamming measurement + throttle cap */
     sb_mode_t   manual_from;   /* mode the joystick took over from */
     bool        joy_fault_seen, joy_nc_seen;

@@ -386,3 +386,26 @@ no reduction, nothing else changes).
   cables. Keep it > 50 cm from the compass (it contains a magnet sensor, but
   the steel of a mount can disturb the compass).
 * Use the "linear acceleration" report (gravity removed) at 200 Hz.
+
+## 10. AIS receiver (receive only) and antenna
+
+| Part | Connection | Notes |
+|------|------------|-------|
+| dAISy HAT (Wegmatt) | sits on the Pi's 40-pin header | NMEA on the Pi's serial port `/dev/serial0` (38400 baud): enable the serial port, disable the serial console (`sudo raspi-config` → Interface → Serial: login shell NO, hardware YES) |
+| or a USB AIS receiver | Pi USB | appears as `/dev/ttyACM0` / `/dev/ttyUSB0`: set `ais.source` in gateway.json |
+| AIS / VHF antenna | BNC / SMA on the receiver | its own antenna (best), or a passive VHF/AIS splitter on the existing VHF antenna |
+
+* The Pi's UART pins GPIO14/15 are already used for the AURIX (section 3).
+  The dAISy HAT also uses `/dev/serial0` - so with the HAT, move the AURIX
+  link to a USB-UART adapter (`aurix: "/dev/ttyUSB0"` in gateway.json) or
+  use a USB AIS receiver instead. UNVERIFIED until the parts are here:
+  check which serial port each one gets (`ls -l /dev/serial*`).
+* Antenna: as high as possible, vertical, at least 1 m from the VHF
+  antenna if it is a separate one; good-quality coax (RG-58 up to 5 m,
+  RG-8X / LMR-240 longer), weatherproof the connectors (self-amalgamating
+  tape), drip loop.
+* A passive splitter must be a real AIS/VHF splitter (it protects the
+  receiver while the VHF transmits) - never a plain T-piece.
+* Radar reflector: AIS receive-only does not make us visible to ships.
+  Mount a good radar reflector (e.g. an Echomax / Tri-Lens, as high as
+  possible) so ships' radars see us.

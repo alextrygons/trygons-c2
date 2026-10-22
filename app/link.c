@@ -23,7 +23,7 @@ typedef enum {
     P_CRUISE_MAX, P_SPD_KP, P_SPD_KI,
     P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
-    P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET,
+    P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET, P_GPS2_CHECK,
     P_COUNT
 } param_id_t;
 
@@ -46,6 +46,7 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "pc_timeout_s",    1.0f,   30.0f },
     { "slam_limit_g",    1.0f,    8.0f },     /* captain sets, driver confirms (ground station) */
     { "slam_red_reset",  0.0f,    1.0f },     /* slamming RED: 0 = STEP (default), 1 = LIMIT_RESET */
+    { "gps2_check_m",    0.0f, 2000.0f },     /* GPS fix vs the second GPS (AIS device); 0 = off */
 };
 
 uint8_t link_param_count(void)
@@ -80,6 +81,7 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_PC_TIMEOUT:   return &l->pc_timeout_s;
     case P_SLAM_LIMIT:   return &s->slam.cfg.limit_g;
     case P_SLAM_RED_RESET: return &s->slam.cfg.red_reset;
+    case P_GPS2_CHECK:   return &s->dr.cfg.gps2_max_m;
     default:             return NULL;
     }
 }
@@ -757,6 +759,16 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
         if (f->len == 15u) gw_rjoy(s, f);
         return;
     }
+    if (f->type == PROTO_T_GW_GPS2 && f->len >= 10u) {           /* second GPS (AIS device) */
+        proto_rd_t r;
+        proto_rd_init(&r, f->payload, f->len);
+        s->gps2.lat = (double)(int32_t)proto_rd_u32(&r) * 1e-7;
+        s->gps2.lon = (double)(int32_t)proto_rd_u32(&r) * 1e-7;
+        s->gps2.age_ms = proto_rd_u16(&r);
+        s->gps2.rx_ms = s->now_ms ? s->now_ms : 1u;
+        s->gps2.count++;
+        return;
+    }
     if (f->type == PROTO_T_GW_STATION) {                         /* a station joined / left */
         if (f->len == 3u && f->payload[1] == 1u) helm_lost(s, f->payload[0], 2u);
         return;
@@ -860,6 +872,10 @@ static void gw_status(sb_t *s, const proto_frame_t *f)
     if ((flags & (SB_GWF_STORAGE | SB_GWF_STORAGE_FULL)) & ~g->flags) {
         s->alarm = true;
         s->alarm_bits |= SB_ALM_GW_STORAGE;
+    }
+    if ((flags & SB_GWF_AIS_SILENT) & ~g->flags) {
+        s->alarm = true;
+        s->alarm_bits |= SB_ALM_AIS_SILENT;              /* warning only: no mode / power change */
     }
     if ((flags & SB_GWF_FALLBACK) & ~g->flags) {
         s->alarm = true;

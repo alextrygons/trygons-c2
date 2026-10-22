@@ -141,11 +141,11 @@ BUILD (after every code change):
 
 RUN ALL TESTS (before every commit):
     autopilot_sim.exe all
-  Ends with  "TOTAL: 135 passed, 0 failed". Takes a few minutes. If anything
+  Ends with  "TOTAL: 138 passed, 0 failed". Takes a few minutes. If anything
   says FAIL, don't commit: find out why first.
     autopilot_sim.exe all --bridge
   The same tests again, but every joystick move goes through the simulated
-  USB bridge. Ends with "134 passed, 0 failed, 1 not applicable" (the analog
+  USB bridge. Ends with "137 passed, 0 failed, 1 not applicable" (the analog
   calibration test does not apply to the USB joystick).
     autopilot_sim.exe usb
   Only the 17 USB joystick tests (U1..U16), quick.
@@ -153,6 +153,7 @@ RUN ALL TESTS (before every commit):
   Only the gateway link tests (GA1.., HELM, REMOTE, SAVE requests), quick.
     autopilot_sim.exe slam
   Only the slamming tests (SL1..SL8).
+  The gateway tests of one part only, e.g.:  test_gateway.py AIS
   The gateway (Raspberry Pi) tests, with the simulator, on the PC:
     cd ..\gateway
     C:\msys64\ucrt64\bin\python.exe test_gateway.py
@@ -732,6 +733,32 @@ I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN
   between the monitors.
 
 
+J. AIS: OTHER SHIPS (RECEIVE ONLY)
+  The Pi listens to AIS (no transponder: other ships do NOT see us on AIS).
+  Receiver: a dAISy HAT on the Pi (or a USB AIS receiver) with its own
+  VHF/AIS antenna. The AURIX never sees AIS - the Pi decodes it:
+    * position reports Class A (big ships) and Class B (small craft),
+    * name, size, type, destination (static data).
+  Each ship shows its age; with no new position it becomes STALE after
+  3 min (Class A) / 6 min (Class B) and disappears after 15 min. Between
+  reports the position is predicted from speed and course. Wrong data is
+  ignored (bad checksum, impossible jumps).
+  AIS RECEIVER SILENT (alarm, warning only): no AIS message for 5 minutes
+  while at sea (moving or in a driving mode). Check the antenna cable and
+  the receiver. It never changes the mode or the power limit.
+  ONLINE AIS (AISHub, wider area): OFF by default; only on 4G / RF, NEVER
+  on STARLINK. Ships seen by our own receiver keep our data when it is
+  newer.
+  SECOND GPS: if the AIS device has its own GPS (a future Class B
+  transponder, or $GPRMC from the receiver), the Pi can send it to the
+  AURIX as a second, independent GPS: setting ais.second_gps = true on the
+  Pi AND parameter gps2_check_m (e.g. 30) on the boat. A main GPS more than
+  that far from the second one is not trusted (spoofing). Tested: drags of
+  0.2 m/s and slower are NOT found by the other checks within 10 minutes,
+  the second GPS finds them at 30 m. Both OFF by default.
+  AIS DOES NOT SHOW small boats, jet skis, swimmers, kayaks or anything
+  without a transponder. The lookout on board and the cameras stay essential.
+
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
 -------------------------------------------------------------------------------
@@ -765,6 +792,8 @@ I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN
   CONTROL LOOP OVERRUN   a control cycle took longer than 50 ms
   LOG FAILURE            SD card missing / full / failing (control goes on)
   GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)
+  AIS RECEIVER SILENT    no AIS message for 5 min at sea: antenna / receiver
+                         (warning only, part J)
   SLAMMING               an impact harder than slam_limit_g: throttle reduced
                          one step, video SAVE; the power limit stays (only
                          with slam_red_reset = 1 it drops to 30 %) (part H)

@@ -18,10 +18,12 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 
 from common import Clock, load_config, log, proto, setup_logging
 from audit import Audit
+from ais import AisTargets, OnlineFeed
 from cameras import CameraManager, path_name
 from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAULT_CHANNELS
 from aurix import AurixLink
@@ -81,6 +83,15 @@ class Gateway:
         self.stations.ext["save"] = self._save_msg
         self.stations.ext["rec"] = self._rec_msg
         self.sync = SyncClient(cfg["sync"], self)
+        # AIS (section A): receive only; the AURIX never parses AIS
+        ac = cfg["ais"]
+        self.ais = AisTargets(ac)
+        self.ais_reader = AisReader(ac["source"], ac.get("baud", 38400), self.ais) if ac.get("enabled") else None
+        self.ais_online = OnlineFeed(ac.get("online", {}), self.ais, self._ais_online_allowed)
+        self.ais_started = time.time()
+        self.ais_silent = False
+        self.at_sea_until = 0.0
+        self.gps2_sent = 0
 
     def _on_telem(self, f):
         try:
@@ -89,6 +100,61 @@ class Gateway:
             return
         d.update(self.telem2)
         self.telem = d
+
+    # --- AIS (section A) ---------------------------------------------------------------
+    def _ais_online_allowed(self):
+        if not self.net.sync_allowed():
+            return False, "channel %s (metered / emergency)" % (self.net.active or "none")
+        return True, ""
+
+    def at_sea(self):
+        """Moving or in a driving mode now, or within the last 5 minutes."""
+        d = self.telem or {}
+        now = time.time()
+        if d and ((d.get("est_sog") or 0.0) > self.cfg["ais"].get("at_sea_kn", 2.0) or
+                  d.get("mode") in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK, proto.MODE_AUTO, proto.MODE_REMOTE)):
+            self.at_sea_until = now + 300.0
+        return now < self.at_sea_until
+
+    def ais_tick(self):
+        ac = self.cfg["ais"]
+        self.ais.tick()
+        silent = bool(self.ais_reader) and self.at_sea() and \
+            self.ais.silent_for(self.ais_started) > ac.get("silent_s", 300.0)
+        if silent != self.ais_silent:
+            self.ais_silent = silent
+            self.audit("ais_silent", on=silent, silent_s=round(self.ais.silent_for(self.ais_started)))
+            log.warning("AIS receiver %s", "SILENT" if silent else "receiving again")
+        g = self.ais.gps2
+        if ac.get("second_gps") and g and time.time() - g["t"] < 2.0:
+            self.aurix.send(proto.T_GW_GPS2, proto.p_gw_gps2(g["lat"], g["lon"], (time.time() - g["t"]) * 1000))
+            self.gps2_sent += 1
+
+    async def ais_loop(self):
+        loop = asyncio.get_running_loop()
+        while True:
+            self.ais_tick()
+            d = self.telem or {}
+            if self.ais_online.cfg.get("enabled"):
+                await loop.run_in_executor(None, self.ais_online.tick, d.get("est_lat"), d.get("est_lon"))
+            await asyncio.sleep(self.cfg["ais"].get("tick_s", 1.0))
+
+    def ais_status(self, saver=False):
+        """For the stations: receiver state + the nearest targets (compact)."""
+        st = self.ais.status()
+        st["receiver"] = {"enabled": bool(self.ais_reader), "connected": bool(self.ais_reader and self.ais_reader.connected),
+                          "source": self.cfg["ais"]["source"], "error": self.ais_reader.error if self.ais_reader else "",
+                          "silent": self.ais_silent}
+        st["online"] = self.ais_online.status()
+        d = self.telem or {}
+        lst = self.ais.list()
+        if d.get("est_lat") is not None:
+            from ais import dist_m
+            for t in lst:
+                t["dist_nm"] = round(dist_m(d["est_lat"], d["est_lon"], t["lat"], t["lon"]) / 1852.0, 2)
+            lst.sort(key=lambda t: t["dist_nm"])
+        st["list"] = lst[:15 if saver else self.cfg["ais"].get("max_listed", 40)]
+        return st
 
     def _on_telem2(self, f):
         self.telem2 = proto.decode_telem2(f.payload)
@@ -186,6 +252,8 @@ class Gateway:
             flags |= proto.GWF_SAVER
         if self.storage.alarm:
             flags |= proto.GWF_STORAGE
+        if self.ais_silent:
+            flags |= proto.GWF_AIS_SILENT
         if st == "FULL":
             flags |= proto.GWF_STORAGE_FULL
         return flags
@@ -215,7 +283,7 @@ class Gateway:
                 "clock": {"gps_valid": self.clock.gps_valid, "offset_s": round(self.clock.offset, 3),
                           "utc": self.clock.stamp()},
                 "net": self.net.info(), "cameras": self.cams.status(), "rec": self.rec.status(),
-                "sync": self.sync.status()}
+                "sync": self.sync.status(), "ais": self.ais_status(self.net.data_saver())}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -232,6 +300,9 @@ class Gateway:
                                {n: path_name(n, "HIGH") for n in self.cams.cams})
                 tasks.append(asyncio.create_task(self.recorder_loop()))
         tasks.append(asyncio.create_task(self.sync.run()))
+        tasks.append(asyncio.create_task(self.ais_loop()))
+        if self.ais_reader:
+            tasks.append(asyncio.create_task(self.ais_reader.run()))
         tasks += self.extra_tasks()
         try:
             await self._stop.wait()
@@ -254,6 +325,70 @@ class Gateway:
             self._stop.set()
 
 
+# --- the AIS receiver (section A) ------------------------------------------------------------
+
+class AisReader:
+    """NMEA lines from the AIS receiver: "/dev/serial0" (dAISy HAT, 38400),
+    "/dev/ttyUSB0" (USB receiver), or "tcp:host:port" (network receiver,
+    tests). Reconnects by itself; every line goes to AisTargets.feed_line."""
+
+    def __init__(self, source, baud, targets):
+        self.source = source
+        self.baud = baud
+        self.targets = targets
+        self.connected = False
+        self.lines = 0
+        self.error = ""
+
+    async def run(self):
+        while True:
+            try:
+                if self.source.startswith("tcp:"):
+                    _, host, port = self.source.split(":")
+                    reader, writer = await asyncio.open_connection(host, int(port))
+                    self.connected, self.error = True, ""
+                    try:
+                        while True:
+                            line = await reader.readline()
+                            if not line:
+                                raise ConnectionError("AIS source closed")
+                            self.lines += 1
+                            self.targets.feed_line(line.decode("ascii", "replace"))
+                    finally:
+                        writer.close()
+                else:
+                    await self._serial()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.error = str(e)[:80]
+            self.connected = False
+            await asyncio.sleep(2.0)
+
+    async def _serial(self):
+        import serial                                   # pyserial
+        loop = asyncio.get_running_loop()
+        port = serial.Serial(self.source, self.baud, timeout=0.5)
+        self.connected, self.error = True, ""
+        dead = asyncio.Event()
+
+        def reader():
+            try:
+                while True:
+                    line = port.readline()
+                    if line:
+                        self.lines += 1
+                        loop.call_soon_threadsafe(self.targets.feed_line, line.decode("ascii", "replace"))
+            except Exception as e:
+                self.error = str(e)[:80]
+            loop.call_soon_threadsafe(dead.set)
+        threading.Thread(target=reader, daemon=True).start()
+        try:
+            await dead.wait()
+        finally:
+            port.close()
+
+
 def main():
     ap = argparse.ArgumentParser(description="Trygons C2 gateway")
     ap.add_argument("--config", help="gateway.json")
@@ -266,7 +401,7 @@ def main():
     if a.sim:
         extra = {"aurix": "tcp:127.0.0.1:5762", "set_clock": False,
                  "stations": {"listen": "127.0.0.1", "local_nets": ["127.0.0.1/32"]},
-                 "channels": {"driver": "sim"}, "cameras": {"enabled": False},
+                 "channels": {"driver": "sim"}, "cameras": {"enabled": False}, "ais": {"enabled": False},
                  "audit_fallback": os.path.abspath("gw_data/audit_fallback"),
                  "storage": {"root": os.path.abspath("gw_data"), "require_mount": False}}
         os.makedirs("gw_data", exist_ok=True)

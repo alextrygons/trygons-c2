@@ -33,11 +33,23 @@ const char *dr_state_name(dr_state_t s)
     return ((unsigned)s < 4u) ? n[s] : "?";
 }
 
+/* Distance (m) between a fix (grid fn / fe) and the second GPS; -1 when the
+ * check is off or there is no fresh second-GPS position. */
+static void to_grid(const dr_t *d, double lat, double lon, float *n, float *e);
+static float gps2_off(const dr_t *d, const dr_input_t *in, float fn, float fe)
+{
+    if (d->cfg.gps2_max_m <= 0.0f || !in->gps2_ok) return -1.0f;
+    float gn, ge;
+    to_grid(d, in->gps2_lat, in->gps2_lon, &gn, &ge);
+    return sqrtf((fn - gn) * (fn - gn) + (fe - ge) * (fe - ge));
+}
+
 const char *dr_reason_name(dr_reason_t r)
 {
     static const char *const n[] = { "-", "GPS lost", "receiver spoof/jam flag", "position jump",
-                                     "impossible speed", "course disagrees", "slow drag" };
-    return ((unsigned)r < 7u) ? n[r] : "?";
+                                     "impossible speed", "course disagrees", "slow drag",
+                                     "second GPS disagrees" };
+    return ((unsigned)r < 8u) ? n[r] : "?";
 }
 
 void dr_default_config(dr_config_t *c)
@@ -53,6 +65,7 @@ void dr_default_config(dr_config_t *c)
     c->default_v0_kn = 1.0f;
     c->default_kn_per_pct = 0.15f;
     c->jump_m = 40.0f;
+    c->gps2_max_m = 0.0f;               /* second GPS check off until configured */
     c->max_sog_kn = 40.0f;
     c->course_tol_deg = 30.0f;
     c->drag_window_s = 60.0f;
@@ -296,6 +309,7 @@ void dr_step(dr_t *d, const dr_input_t *in)
         if (in->gps.jam_spoof) bad = DR_WHY_FLAG;
         else if (sog > c->max_sog_kn) bad = DR_WHY_SPEED;
         else if (jump > c->jump_m + 3.0f * d->unc_m) bad = DR_WHY_JUMP;
+        else if (gps2_off(d, in, fn, fe) > c->gps2_max_m) bad = DR_WHY_GPS2;
         else if (sog > 3.0f && in->gear > 0 && in->heading_ok && d->cur_learn_s > 4.0f * c->current_tau_s &&
                  d->water_kn > 2.0f && fabsf(in->yaw_dps) < 5.0f &&
                  fabsf(wrap180(in->gps.cog_deg - dr_cog_deg(d))) > c->course_tol_deg) bad = DR_WHY_COURSE;
@@ -390,7 +404,8 @@ void dr_step(dr_t *d, const dr_input_t *in)
     float gate = fmaxf(c->recover_gate_m, (after_suspect ? 1.0f : 3.0f) * d->unc_m);
     uint8_t need = after_suspect ? c->recover_fixes_suspect : c->recover_fixes;
     float off = sqrtf((fn - d->n) * (fn - d->n) + (fe - d->e) * (fe - d->e));
-    bool ok = !in->gps.jam_spoof && in->gps.sog_kn <= c->max_sog_kn && off <= gate;
+    bool ok = !in->gps.jam_spoof && in->gps.sog_kn <= c->max_sog_kn && off <= gate &&
+              gps2_off(d, in, fn, fe) <= c->gps2_max_m;      /* the second GPS must agree too */
     if (ok && d->have_prev) {
         float mn = fn - d->prev_n - d->pred_since_prev_n, me = fe - d->prev_e - d->pred_since_prev_e;
         ok = sqrtf(mn * mn + me * me) <= c->recover_step_m;

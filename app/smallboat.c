@@ -251,7 +251,8 @@ static void save_triggers(sb_t *s)
     }
     if (s->joy.save_edge) save_req(s, SB_SAVE_BUTTON, 0u);
     if (s->slam.red_edge) save_req(s, SB_SAVE_SLAM, 0u);
-    uint32_t on = s->alarm_bits & ~v->k_alarms & ~SB_ALM_ARRIVED & ~SB_ALM_SLAM;   /* arriving is no incident */
+    uint32_t on = s->alarm_bits & ~v->k_alarms & ~SB_ALM_ARRIVED & ~SB_ALM_SLAM &
+                  ~SB_ALM_AIS_SILENT;                         /* arriving / AIS silent are no incidents */
     if (on) {
         uint8_t bit = 0u;
         while (!(on & (1u << bit))) bit++;
@@ -1670,6 +1671,9 @@ void sb_step(sb_t *s)
         di.water_ok = hal_read_water_speed(&di.water_kn);
         di.gps_new = s->gps_new_msg;
         di.gps = s->gps.last;
+        di.gps2_ok = s->gps2.rx_ms != 0u && s->now_ms - s->gps2.rx_ms < 3000u && s->gps2.age_ms < 2000u;
+        di.gps2_lat = s->gps2.lat;
+        di.gps2_lon = s->gps2.lon;
         dr_step(&s->dr, &di);
     }
 
@@ -1760,6 +1764,11 @@ void sb_step(sb_t *s)
             fresh &= ~SB_ALM_SLAM;
             if ((s->alarm_bits & ~SB_ALM_SLAM) == 0u && !s->ap.alarm) any = false;
         }
+        /* navigation advisories never touch the power limit (their reaction is
+         * defined explicitly: AIS silent = warning only) */
+        fresh &= ~SB_NAV_ADVISORY;
+        if ((s->alarm_bits & ~(SB_NAV_ADVISORY | (s->slam.cfg.red_reset < 0.5f ? SB_ALM_SLAM : 0u))) == 0u &&
+            !s->ap.alarm) any = false;
         if (fresh & SB_ALM_PC_LINK) plim_drop(&s->plim, PLIM_SRC_PC_LINK, s->now_ms);
         else if (fresh || (any && !s->alarm_seen)) plim_drop(&s->plim, PLIM_SRC_ALARM, s->now_ms);
         if ((fresh || (any && !s->alarm_seen)) && is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;

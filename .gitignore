@@ -18,3 +18,5 @@ gateway/*.key
 gateway/*.crt
 groundstation/sync_receiver.json
 groundstation/gs_layout.json
+charts/*/
+!charts/areas.json

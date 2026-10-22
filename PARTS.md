@@ -51,6 +51,14 @@ why each part is needed: MANUAL.txt.
 - [ ] Shielded 2-core cable (TX + GND) to the AURIX, 100 Ohm resistor.
 - [ ] Closed box with cable glands + desiccant for the hub and Teensy, P-clips for cable strain relief.
 
+## AIS (receive only)
+
+- [ ] dAISy HAT AIS receiver for the Raspberry Pi (Wegmatt) - or a USB AIS receiver (e.g. dAISy USB, Quark-Elec QK-A026).
+- [ ] VHF/AIS antenna (marine, 162 MHz, e.g. a 1 m stainless whip) + mount, or a passive AIS/VHF splitter (e.g. Digital Yacht SPL1500) for the existing VHF antenna.
+- [ ] Coax: RG-58 (up to 5 m) or RG-8X / LMR-240 (longer) with the right connectors (BNC / SMA / PL-259), self-amalgamating tape.
+- [ ] If the dAISy HAT takes the Pi's serial port: a USB-UART adapter (3.3 V, FTDI / CP2102) for the AURIX link.
+- [ ] Radar reflector (we are NOT visible on AIS): e.g. Echomax EM230 or Tri-Lens, mounted high.
+
 ## Shore PC
 
 - [ ] A second monitor for the DRIVER screen (MANUAL chapter 9 part I).

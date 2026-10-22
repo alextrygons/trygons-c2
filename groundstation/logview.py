@@ -186,27 +186,27 @@ class Viewer:
                                  fill="#ffffff", font=F_MED)
             self.vinfo.configure(text="")
             return
-        self.vwant = loc
+        self.vwant = (self.vcam.get(), utc, loc)
         if not self.vbusy:
             self.vbusy = True
             threading.Thread(target=self._grab, daemon=True).start()
 
     def _grab(self):
         while True:
-            loc = self.vwant
-            data = videolog.frame_ppm(loc[0], loc[1], 420)
-            if self.vwant == loc:
+            want = self.vwant
+            data, loc = self.vidx.frame(want[0], want[1], lambda p, o: videolog.frame_ppm(p, o, 420))
+            if self.vwant == want:
                 break
-        self.root.after(0, self._shown, loc, data)
+        self.root.after(0, self._shown, want, data, loc or want[2])
 
-    def _shown(self, loc, data):
+    def _shown(self, want, data, loc):
         self.vbusy = False
         self.vcv.delete("all")
         if data:
             self.vphoto = tk.PhotoImage(data=data, format="ppm")
             self.vcv.create_image(0, 0, image=self.vphoto, anchor="nw")
         self.vinfo.configure(text="%s +%.1f s" % (os.path.basename(loc[0]), loc[1]))
-        if self.vwant != loc:
+        if self.vwant != want:
             self.show_video()
 
     def play(self):

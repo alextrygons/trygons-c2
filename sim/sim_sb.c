@@ -5746,6 +5746,146 @@ static void slam_tests(void)
     }
 }
 
+/* ------------------------------------------- AIS device: second GPS, silent (section A) -- */
+
+typedef struct {
+    pisim_t  p;
+    bool     send_gps2;
+    uint32_t next_gps2;
+    uint32_t sent;
+} gps2sim_t;
+
+static void gps2_hook(sbsim_t *x, void *ctx)
+{
+    gps2sim_t *g = (gps2sim_t *)ctx;
+    pi_hook(x, &g->p);
+    if (g->send_gps2 && x->t >= g->next_gps2) {
+        g->next_gps2 = x->t + 1000u;
+        double lat, lon;
+        world_latlon(&x->w, &lat, &lon);                    /* the AIS device's own GPS: the truth */
+        uint8_t pl[10], fr[PROTO_MAX_FRAME];
+        proto_wr_t w;
+        proto_wr_init(&w, pl, sizeof pl);
+        proto_wr_u32(&w, (uint32_t)(int32_t)lround(lat * 1e7));
+        proto_wr_u32(&w, (uint32_t)(int32_t)lround(lon * 1e7));
+        proto_wr_u16(&w, 200u);
+        size_t n = proto_encode(fr, PROTO_T_GW_GPS2, 0u, pl, (uint8_t)w.n);
+        sim_hal_gw_rx_push(fr, (uint32_t)n);
+        g->sent++;
+    }
+}
+
+/* AUTO 3 km north; from 1 km the main GPS is dragged sideways at 0.5 m/s.
+ * Returns the detection time (s, -1 = not within 4 min) and the reason. */
+static float gps2_drag_run(uint32_t seed, float check_m, bool feed, float drag_ms, uint32_t window_ms,
+                           dr_reason_t *why, uint32_t *rx)
+{
+    static sbsim_t x;
+    static gps2sim_t g;
+    memset(&g, 0, sizeof g);
+    sbsim_init(&x, seed, 0.0f, 0.0f, NULL);
+    pisim_init(&g.p, &x, 921600u);
+    g.send_gps2 = feed;
+    sbsim_run(&x, 2000u, gps2_hook, &g);
+    x.sb.dr.cfg.gps2_max_m = check_m;
+    auto_to(&x, 9000.0f, 0.0f, 12.0f);
+    double n0 = x.w.north_m;
+    while (x.w.north_m - n0 < 1000.0 && x.t < 400000u) sbsim_run(&x, x.t + 100u, gps2_hook, &g);
+    x.w.gps_dragging = true;
+    x.w.gps_drag_n = 0.0f; x.w.gps_drag_e = drag_ms;
+    x.w.gps_drag_max_m = 300.0f;
+    uint32_t t0 = x.t;
+    float found = -1.0f;
+    *why = DR_WHY_NONE;
+    while (x.t < t0 + window_ms) {
+        sbsim_run(&x, x.t + 100u, gps2_hook, &g);
+        if (x.sb.dr.state != DR_GPS) {
+            found = (float)(x.t - t0) * 0.001f;
+            *why = x.sb.dr.why;
+            break;
+        }
+    }
+    *rx = x.sb.gps2.count;
+    return found;
+}
+
+static void ais_tests(void)
+{
+    char d[900];
+    printf("\n=== Section A: AIS device (second GPS, receiver silent) ===\n");
+
+    /* GP1 a slow GPS drag (spoofer) is caught by the second GPS (30 m) - the
+     * existing checks miss drags of 0.2 m/s and slower; the check is off by default */
+    {
+        static const float sp[4] = { 0.05f, 0.1f, 0.2f, 0.3f };
+        float on[4], off[4];
+        dr_reason_t won[4], woff[4];
+        uint32_t rx[4], rx2;
+        int len = 0;
+        for (int k = 0; k < 4; k++) {
+            on[k] = gps2_drag_run(971u, 30.0f, true, sp[k], 600000u, &won[k], &rx[k]);
+            off[k] = gps2_drag_run(971u, 0.0f, true, sp[k], 600000u, &woff[k], &rx2);
+            char wo[64];
+            if (off[k] < 0.0f) snprintf(wo, sizeof wo, "NOT caught in 10 min");
+            else snprintf(wo, sizeof wo, "%.0f s (%s)", off[k], dr_reason_name(woff[k]));
+            len += snprintf(d + len, sizeof d - (size_t)len, "%s%.2f m/s: with %.0f s (%s), without %s; ",
+                            k ? "" : "drag ", sp[k], on[k], dr_reason_name(won[k]), wo);
+        }
+        dr_config_t defc;
+        dr_default_config(&defc);
+        snprintf(d + len, sizeof d - (size_t)len, "default check %.0f m = off", defc.gps2_max_m);
+        bool ok = defc.gps2_max_m == 0.0f && rx[1] > 100u;
+        for (int k = 0; k < 4; k++)
+            ok = ok && on[k] > 0.0f && (off[k] < 0.0f ? won[k] == DR_WHY_GPS2 : on[k] <= off[k] + 1.0f);
+        ok = ok && off[0] < 0.0f && off[1] < 0.0f && won[1] == DR_WHY_GPS2;
+        test_report("GP1 second GPS (AIS device) catches slow GPS drags the other checks miss; off by default", ok, d);
+    }
+
+    /* GP2 second GPS missing / stale with the check on: no false rejection */
+    {
+        static sbsim_t x;
+        static gps2sim_t g;
+        memset(&g, 0, sizeof g);
+        sbsim_init(&x, 972u, 0.0f, 0.0f, NULL);
+        pisim_init(&g.p, &x, 921600u);
+        g.send_gps2 = true;
+        sbsim_run(&x, 2000u, gps2_hook, &g);
+        x.sb.dr.cfg.gps2_max_m = 30.0f;
+        auto_to(&x, 3000.0f, 0.0f, 12.0f);
+        sbsim_run(&x, x.t + 30000u, gps2_hook, &g);
+        g.send_gps2 = false;                                /* the AIS device stops */
+        uint32_t s0 = x.sb.dr.suspects;
+        sbsim_run(&x, x.t + 120000u, gps2_hook, &g);
+        snprintf(d, sizeof d, "second GPS stopped for 120 s: position source %s, integrity rejections %lu",
+                 dr_state_name(x.sb.dr.state), (unsigned long)(x.sb.dr.suspects - s0));
+        test_report("GP2 second GPS stops: no false rejection (only a fresh second GPS is compared)",
+                    x.sb.dr.state == DR_GPS && x.sb.dr.suspects == s0, d);
+    }
+
+    /* GP3 AIS RECEIVER SILENT from the gateway: alarm only - power limit, mode
+     * unchanged, no video SAVE */
+    {
+        static sbsim_t x;
+        static pisim_t p;
+        sbsim_init(&x, 973u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        sbsim_run(&x, 2000u, pi_hook, &p);
+        hdg_lock(&x);
+        sbsim_run(&x, x.t + 2000u, pi_hook, &p);
+        float plim0 = x.sb.plim.fwd_pct;
+        uint16_t save0 = x.sb.save.seq;
+        p.flags = SB_GWF_AIS_SILENT;
+        sbsim_run(&x, x.t + 3000u, pi_hook, &p);
+        bool alarm = (x.sb.alarm_bits & SB_ALM_AIS_SILENT) != 0u;
+        snprintf(d, sizeof d, "alarm AIS RECEIVER SILENT %s; power limit %.0f -> %.0f %%; mode %s; SAVE requests %u",
+                 alarm ? "yes" : "NO", plim0, x.sb.plim.fwd_pct, mode_name(sb_mode(&x.sb)),
+                 (unsigned)(x.sb.save.seq - save0));
+        test_report("GP3 AIS RECEIVER SILENT: alarm only (power limit, mode unchanged, no SAVE)",
+                    alarm && x.sb.plim.fwd_pct == plim0 && plim0 > 30.0f && sb_mode(&x.sb) == MODE_HDG_LOCK &&
+                    x.sb.save.seq == save0, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -5759,6 +5899,7 @@ void sb_gateway_tests(void)
     helm_tests();
     remote_tests();
     save_tests();
+    ais_tests();
 }
 
 void sb_slam_tests(void)
@@ -5772,6 +5913,7 @@ void sb_tests(void)
     helm_tests();
     remote_tests();
     save_tests();
+    ais_tests();
     slam_tests();
     logging_tests();
     timing_tests();

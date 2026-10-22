@@ -136,7 +136,7 @@ AP_MODES = ["STANDBY", "AUTO", "TRAINING", "MANUAL", "GYRO HOLD", "CENTER", "ANG
 GEARS = ["N", "F", "R"]
 POS_SOURCES = ["NO FIX", "GPS", "DEAD RECKONING", "RECOVERING"]
 DR_REASONS = ["-", "GPS lost", "spoof/jam flag", "position jump", "impossible speed",
-              "course mismatch", "slow drag"]
+              "course mismatch", "slow drag", "second GPS disagrees"]
 JOY_STATUS = ["not fitted", "NOT CENTRED / not armed", "armed", "FAULT"]
 JOY_SOURCES = ["analog (wired)", "USB bridge"]
 # joystick fault / problem reasons (joystick.h JOY_WHY_*)
@@ -173,6 +173,7 @@ ALARMS = [
     (0x80000, "CHANNEL FALLBACK"),
     (0x100000, "REMOTE DRIVING LINK LOST"),
     (0x200000, "SLAMMING"),
+    (0x400000, "AIS RECEIVER SILENT"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -546,6 +547,13 @@ def p_sim_bridge(stick_x=0.0, stick_y=0.0, lever=0.5, b0=0, b1=0, hat0=15, hat1=
 # --- gateway (Raspberry Pi) ---------------------------------------------------------
 
 GWF_STORAGE, GWF_STORAGE_FULL, GWF_FALLBACK, GWF_STARLINK, GWF_SAVER = 0x01, 0x02, 0x04, 0x08, 0x10
+GWF_AIS_SILENT = 0x20
+T_GW_GPS2 = 0x39
+
+
+def p_gw_gps2(lat, lon, age_ms):
+    """Second GPS (AIS device) for the AURIX's GPS integrity check."""
+    return struct.pack("<iiH", int(round(lat * 1e7)), int(round(lon * 1e7)), max(0, min(65535, int(age_ms))))
 GW_STATES = ["never connected", "OK", "LOST"]
 
 

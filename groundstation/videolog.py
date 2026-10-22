@@ -89,6 +89,26 @@ class VideoIndex:
             return None                                 # a gap: no video at that moment
         return p, utc - t
 
+    def frame(self, cam, utc, fn):
+        """fn(path, offset) at the moment utc. A file starts with the first key
+        frame after its name time (up to ~1 s later), so a moment near the end of
+        one file can be in the next one: then that one is used."""
+        loc = self.locate(cam, utc)
+        if loc is None:
+            return None, None
+        data = fn(*loc)
+        if data:
+            return data, loc
+        lst = self.cams.get(cam) or []
+        starts = [t for t, _p in lst]
+        i = bisect.bisect_right(starts, utc) - 1
+        if 0 <= i < len(lst) - 1:
+            nxt = (lst[i + 1][1], max(0.0, utc - lst[i + 1][0]))
+            data = fn(*nxt)
+            if data:
+                return data, nxt
+        return None, loc
+
 
 def ffmpeg_bin():
     return shutil.which("ffmpeg") or r"C:\msys64\ucrt64\bin\ffmpeg.exe"

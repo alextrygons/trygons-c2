@@ -48,6 +48,7 @@
 #define PROTO_T_GW_STATION    0x34u   /* gateway only: u8 station, u8 event (0 joined, 1 left / lost), u8 local */
 #define PROTO_T_GW_RJOY       0x36u   /* gateway only, 30 Hz, no ACK: remote joystick (link.c gw_rjoy) */
 #define PROTO_T_REMOTE        0x37u   /* u8 0 ask for remote driving (then joystick CONFIRM on board) / 1 release */
+#define PROTO_T_GW_GPS2       0x39u   /* gateway only: i32 lat*1e7, i32 lon*1e7, u16 age ms (second GPS, AIS device) */
 #define PROTO_T_JOYMAP_GET    0x1Bu   /* -  -> JOYMAP_VALUE                     */
 #define PROTO_T_JOYMAP_SET    0x1Cu   /* joymap body (see link.c), u8 save; STANDBY only */
 #define PROTO_T_JOY_RAW_GET   0x1Du   /* -  -> JOY_RAW (USB bridge, for the button mapping) */

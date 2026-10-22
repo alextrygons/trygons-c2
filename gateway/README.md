@@ -459,3 +459,20 @@ Settings (`sync` in gateway.json): `max_kbps` (8000), `target_delay_ms`
 `settle_s` (60 - a file is sent when it has not changed this long).
 Per channel `sync_budget_kbps` (channels list): upload the sync may share with
 the cameras. STARLINK has `sync_allowed: false` - keep it that way.
+
+## 17. AIS receiver (receive only)
+
+1. dAISy HAT: `sudo raspi-config` → Interface Options → Serial Port: login
+   shell **No**, serial hardware **Yes**; reboot. (The HAT uses
+   `/dev/serial0`: the AURIX link then goes over a USB-UART adapter,
+   `"aurix": "/dev/ttyUSB0"` - WIRING.md section 10.)
+   USB receiver instead: `ls /dev/ttyACM* /dev/ttyUSB*` to find it.
+2. `/etc/trygons/gateway.json`: `"ais": {"source": "/dev/serial0", "baud": 38400}`.
+3. Test: `cat /dev/serial0` shows `!AIVDM,...` lines when ships are around
+   (stop the gateway first: `sudo systemctl stop trygons-gateway`).
+4. Ground station: map / AIS list (MANUAL chapter 9 part J).
+Online AIS (optional, OFF): an AISHub account (they ask you to share a
+receiver feed) → `"ais": {"online": {"enabled": true, "url": "http://data.aishub.net/ws.php?username=YOUR_NAME&format=1&output=json&compress=0&latmin={lat0}&latmax={lat1}&lonmin={lon0}&lonmax={lon1}"}}`.
+It is only used on 4G / RF, never on STARLINK.
+Second GPS (optional, OFF): `"ais": {"second_gps": true}` on the Pi AND
+parameter `gps2_check_m` = 30 on the boat (Parameters tab).
