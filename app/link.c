@@ -840,6 +840,9 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *   F: u16 slam peak since the last telemetry g*100 | u16 level g*100 | u16 impacts / min |
  *      u8 forward cap % (100 = none) | u8 state (0 calm 1 yellow 2 red) | b4 override | b5 sensor lost |
  *      b6 sensor seen) | u16 limit g*100 | u32 impacts | u8 yellow part of the limit %
+ *   G: navigation request (below)
+ *   H: i16 roll deg*100 | i16 pitch deg*100 | u16 age ms (0xFFFF never) - BNO085 attitude for the
+ *      camera horizon (gateway vision), never used for control
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -905,6 +908,10 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u8(&w, nv->seq);
     proto_wr_u16(&w, nv->rx_ms ? (uint16_t)((s->now_ms - nv->rx_ms) > 65534u ? 65534u : s->now_ms - nv->rx_ms)
                                : 0xFFFFu);
+    uint32_t att_age = s->att_ms ? s->now_ms - s->att_ms : 0xFFFFu;
+    proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(fmaxf(-180.0f, fminf(180.0f, s->att_roll_deg)) * 100.0f));
+    proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(fmaxf(-90.0f, fminf(90.0f, s->att_pitch_deg)) * 100.0f));
+    proto_wr_u16(&w, (uint16_t)(att_age > 65534u ? (s->att_ms ? 65534u : 0xFFFFu) : att_age));
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
 }
 

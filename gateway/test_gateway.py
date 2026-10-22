@@ -121,7 +121,7 @@ class GwRunner:
 def gw_cfg(sim, root, **extra):
     base = {"aurix": sim.gw_addr, "set_clock": False, "status_s": 1.0 / sim.speed,   # 1 Hz boat time
             "channels": {"driver": "sim", "starlink_status": False},
-            "cameras": {"enabled": False}, "ais": {"enabled": False},
+            "cameras": {"enabled": False}, "ais": {"enabled": False}, "vision": {"enabled": False},
             "storage": {"root": root, "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                         "full_free_gb": 0.0}}
     from common import deep_merge
@@ -2537,8 +2537,371 @@ def section_ca():
             sim.stop()
         shutil.rmtree(tmp, ignore_errors=True)
 
+# ------------------------------------------------------------------ section VI --
 
-SECTIONS = {"F1": section_f1, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
+OBST_BIT = 0x4000000                            # OBSTACLE AHEAD (app/smallboat.h SB_ALM_OBSTACLE)
+
+
+def section_vi():
+    print("\n=== Part 2: camera obstacle detection (vision stages, gateway + boat) ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_vi_")
+    sim = gw = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        charts = os.path.join(tmp, "charts")
+        sim_chart(charts, n_lat=400, n_lon=400)
+        cfg = gw_cfg_b(sim, root, charts_dir=charts, stations={"driver_timeout_s": 5.0},
+                       vision={"enabled": True, "source": "fake", "allow_inject": True, "max_fps": 4.0,
+                               "stage1": True, "stage2": False, "stage3": False, "clear_s": 4.0})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        v = g.vision
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+        alice.pump(1.0)
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        bob = Client(sp, "bob", PW["bob"], name="driver screen")
+        beat = DriverBeat(bob)
+
+        def joy(x=0.0, y=0.0, **kw):
+            link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, x, y, **kw))
+
+        def navs_since(n0):
+            return [e for e in list(g.audit.recent)[n0:] if e["kind"] == "navreq"]
+
+        def stage(client, name, on, confirm=None):
+            msg = {"t": "vision_stage", "stage": name, "on": on}
+            if confirm:
+                msg["confirm"] = confirm
+            client.l.send_msg(msg)
+
+        def ack(client, timeout=8.0):
+            return next_event(client, ("vision_ack",), timeout)[1]
+
+        # MANUAL, moving slowly ahead (the corridor needs a direction)
+        w.until(lambda d: d.get("pos_source", 0) != 0, 10)
+        joy(0.0, 0.3)
+        w.until(lambda d: d["mode"] == proto.MODE_MANUAL, 4)
+        w.until(lambda d: d.get("est_sog", 0) > 2.0, 30)
+
+        # VI1 STAGE 1 only: overlay + log, nothing reaches the boat
+        n0 = len(g.audit.recent)
+        thr0 = w.telem["throttle"]
+        v.inject(0.0, 90.0, seconds=4.0)
+        conf1 = wait_for(lambda: any(o["confirmed"] and o["in_corridor"] for o in v.obstacles), 4)
+        time.sleep(1.0)
+        st1 = g.status()["vision"]
+        d1 = w.telem
+        alarm1 = any(e.get("alarm", 0) & 8 for e in navs_since(n0))
+        dets = glob.glob(os.path.join(root, "vision", "detections-*.jsonl"))
+        report("VI1 STAGE 1 (overlay + logging only): obstacle shown and logged, no alarm, no effect on the boat",
+               conf1 and st1["obstacles"] and not alarm1 and not (d1["alarm_bits"] & OBST_BIT) and
+               abs(d1["throttle"] - thr0) < 2.0 and d1["mode"] == proto.MODE_MANUAL and bool(dets),
+               "confirmed in the corridor %s (%s m, bearing %s); request alarm %s; boat alarm %s; throttle %.1f -> %.1f %%;"
+               " detection log %s" % (conf1, st1["obstacles"][0]["dist"] if st1["obstacles"] else "-",
+                                     st1["obstacles"][0]["bearing"] if st1["obstacles"] else "-", alarm1,
+                                     bool(d1["alarm_bits"] & OBST_BIT), thr0, d1["throttle"],
+                                     os.path.basename(dets[0]) if dets else "MISSING"))
+        wait_for(lambda: not v.obstacles, 6)
+
+        # VI2 persistence: a one-frame blip (wake, foam, glare) never counts
+        c0 = v.counts["confirmed"]
+        stage(alice, "stage2", True)
+        a2 = ack(alice)
+        n0 = len(g.audit.recent)
+        for _ in range(3):
+            v.inject(-10.0, 60.0, seconds=5.0, frames=1)        # seen in ONE frame only
+            time.sleep(1.5)
+        time.sleep(1.0)
+        report("VI2 persistence filter: single-frame blips never become obstacles (no alarm)",
+               a2 and a2["ok"] and v.counts["confirmed"] == c0 and
+               not any(e.get("alarm", 0) & 8 for e in navs_since(n0)) and not (w.telem["alarm_bits"] & OBST_BIT),
+               "3 blips -> confirmed %d (before %d), candidates seen %d, alarm %s" % (
+                   v.counts["confirmed"], c0, v.counts["candidates"], bool(w.telem["alarm_bits"] & OBST_BIT)))
+
+        # VI3 STAGE 2: OBSTACLE AHEAD on the boat (+ the AURIX's SAVE request); throttle / mode unchanged
+        save0 = w.telem.get("save_seq")
+        thr0 = w.telem["throttle"]
+        v.inject(5.0, 70.0, seconds=6.0)
+        al = w.until(lambda d: d["alarm_bits"] & OBST_BIT, 8)
+        saved = w.until(lambda d: d.get("save_seq") != save0 and d.get("save_trig") == 2, 6)
+        d3 = w.telem
+        report("VI3 STAGE 2: alarm OBSTACLE AHEAD on the boat + automatic video SAVE; no effect on the driving",
+               al is not None and saved is not None and saved["save_arg"] == 26 and
+               d3["mode"] == proto.MODE_MANUAL and abs(d3["throttle"] - thr0) < 2.0 and not d3.get("nav_applied"),
+               "alarm %s; SAVE request %s (%s); mode %s, throttle %.1f -> %.1f %%, request applied %s" % (
+                   "yes" if al else "NO", "yes" if saved else "NO",
+                   saved and proto.save_trigger_text(saved["save_trig"], saved["save_arg"]), d3["mode_name"], thr0,
+                   d3["throttle"], d3.get("nav_applied")))
+        wait_for(lambda: not v.threats, 10)
+        alice.cmd(proto.T_ALARM_ACK)
+
+        # VI4 STAGE 3 ON needs the driver's ACCEPT (no driver screen / REJECT -> refused)
+        beat.stop()
+        time.sleep(3.0)                                    # the driver screen is gone (no heartbeat)
+        stage(alice, "stage3", True)
+        a_none = ack(alice)
+        beat = DriverBeat(bob)
+        time.sleep(1.0)
+        stage(alice, "stage3", True)
+        k_, q = next_event(bob, ("driver_ask",), 4.0)
+        if q:
+            bob.l.send_msg({"t": "driver_answer", "id": q["id"], "yes": False})
+        a_rej = ack(alice)
+        on_after_rej = v.cfg["stage3"]
+        stage(alice, "stage3", True)
+        k_, q2 = next_event(bob, ("driver_ask",), 4.0)
+        if q2:
+            bob.l.send_msg({"t": "driver_answer", "id": q2["id"], "yes": True})
+        a_acc = ack(alice)
+        logged = [e for e in g.audit.recent if e["kind"] == "vision_stage" and e.get("stage") == "stage3"]
+        report("VI4 STAGE 3 (affects the driving) is switched on only with the driver screen's ACCEPT; logged",
+               a_none and not a_none["ok"] and "driver screen not open" in a_none["text"] and q and
+               a_rej and not a_rej["ok"] and not on_after_rej and q2 and a_acc and a_acc["ok"] and
+               v.cfg["stage3"] and logged,
+               "no driver screen: \"%s\"; REJECT: \"%s\" (stage 3 %s); ACCEPT: \"%s\"; audit %d entries" % (
+                   a_none and a_none["text"], a_rej and a_rej["text"], on_after_rej, a_acc and a_acc["text"],
+                   len(logged)))
+
+        # VI5 MANUAL with STAGE 3: alarm only - throttle unchanged, no cap applied
+        thr0 = w.telem["throttle"]
+        n0 = len(g.audit.recent)
+        v.inject(0.0, 30.0, seconds=4.0)
+        al5 = w.until(lambda d: d["alarm_bits"] & OBST_BIT, 8)
+        time.sleep(1.0)
+        d5 = w.telem
+        report("VI5 STAGE 3 in MANUAL: alarm only (no speed cap applied, throttle unchanged)",
+               al5 is not None and not d5.get("nav_applied") and abs(d5["throttle"] - thr0) < 2.0 and
+               d5["mode"] == proto.MODE_MANUAL,
+               "alarm %s; cap applied by the boat %s; throttle %.1f -> %.1f %%; mode %s" % (
+                   "yes" if al5 else "NO", d5.get("nav_applied"), thr0, d5["throttle"], d5["mode_name"]))
+        wait_for(lambda: not v.threats, 10)
+        joy()
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY))
+        w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 8)
+        alice.cmd(proto.T_ALARM_ACK)
+
+        # VI6 HEADING LOCK with STAGE 3: a slow-down PROPOSAL for the driver; the throttle stays manual
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK))
+        w.until(lambda d: d["mode"] == proto.MODE_HDG_LOCK, 4)
+        joy(0.0, 0.4)
+        w.until(lambda d: d.get("est_sog", 0) > 3.0, 40)
+        thr0 = w.telem["throttle"]
+        v.inject(0.0, 60.0, seconds=5.0)
+        prop = wait_for(lambda: v.proposal is not None, 6)
+        p6 = v.proposal
+        bob.l.send_msg({"t": "vision_ack", "id": p6 and p6["id"]})
+        time.sleep(1.0)
+        d6 = w.telem
+        report("VI6 STAGE 3 in HEADING LOCK: slow-down proposal on the driver screen, throttle unchanged",
+               prop and p6 and "slow down" in p6["text"] and (v.proposal or {}).get("acked") and
+               not d6.get("nav_applied") and abs(d6["throttle"] - thr0) < 2.0 and d6["mode"] == proto.MODE_HDG_LOCK,
+               "proposal \"%s\", acknowledged %s; cap applied %s; throttle %.1f -> %.1f %%" % (
+                   p6 and p6["text"], (v.proposal or {}).get("acked"), d6.get("nav_applied"), thr0, d6["throttle"]))
+        wait_for(lambda: not v.threats, 10)
+        joy()
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY))
+        w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 8)
+        alice.cmd(proto.T_ALARM_ACK)
+
+        # VI7 AUTO with STAGE 3: a confirmed obstacle 30 m ahead -> cap 0 = idle; only a cap, never a heading,
+        # never more throttle; then vision CRASHES: no mode change, the cap is HELD until the driver clears it
+        wp = east_of(0, 9000)
+        upload(alice, [wp], kn=10.0)
+        seq = alice.l.send(proto.T_AUTO_START, b"", what="AUTO start")
+        k_, q = next_event(bob, ("driver_ask",), 4.0)
+        if q:
+            bob.l.send_msg({"t": "driver_answer", "id": q["id"], "yes": True})
+        alice.wait_ack(seq)
+        joy(confirm=True)
+        time.sleep(0.2)
+        joy()
+        w.until(lambda d: d["mode"] == proto.MODE_AUTO, 4)
+        w.until(lambda d: d.get("est_sog", 0) > 5.5, 90)
+        n0 = len(g.audit.recent)
+        thr0 = w.telem["throttle"]
+        v.inject(0.0, 30.0, seconds=8.0)
+        cap = w.until(lambda d: d.get("nav_applied") and d.get("nav_cap_kn") == 0.0, 8)
+        thr_max, t_end = 0.0, time.time() + 6.0
+        while time.time() < t_end:
+            w.pump(0.2)
+            thr_max = max(thr_max, w.telem["throttle"])
+        v.fail("crash: model process died (test)")
+        time.sleep(1.5)
+        held = v.cap_held and v.cap_kn == 0.0
+        time.sleep(8.0)                                   # the obstacle is gone, vision is down: still held
+        d7 = w.telem
+        still = d7.get("nav_applied") and d7.get("nav_cap_kn") == 0.0 and d7["mode"] == proto.MODE_AUTO
+        st7 = g.status()["vision"]
+        alice.l.send_msg({"t": "vision_clear"})
+        a_cap = ack(alice, 3.0)
+        bob.l.send_msg({"t": "vision_clear"})
+        a_drv = ack(bob, 3.0)
+        released = w.until(lambda d: not d.get("nav_applied"), 6)
+        kinds = {e.get("nav_kind") for e in navs_since(n0)}
+        v.fail(None)
+        report("VI7 STAGE 3 in AUTO: slows to idle for a confirmed obstacle (cap only, never steering / more throttle);"
+               " vision crash -> OFFLINE, no mode change, the slowdown HELD until the driver clears it",
+               cap is not None and thr_max <= thr0 + 0.5 and kinds <= {proto.NAV_NONE, proto.NAV_CAP} and held and
+               still and st7["state"] == "OFFLINE" and a_cap and not a_cap["ok"] and a_drv and a_drv["ok"] and
+               released is not None,
+               "cap 0 kn applied %s; throttle %.1f %% -> max %.1f %% after; request kinds %s (1 = cap only); crash -> "
+               "%s, cap held %s, still applied after 8 s %s (mode %s); captain clear: \"%s\"; driver clear: \"%s\" -> "
+               "released %s" % ("yes" if cap else "NO", thr0, thr_max, sorted(kinds), st7["state"], held, still,
+                                d7["mode_name"], a_cap and a_cap["text"], a_drv and a_drv["text"],
+                                "yes" if released else "NO"))
+
+        # VI8 the joystick and STANDBY still win during a vision slowdown
+        v.inject(0.0, 30.0, seconds=30.0)
+        w.until(lambda d: d.get("nav_applied"), 8)
+        t0 = time.time()
+        joy(-0.6, 0.0)
+        man = w.until(lambda d: d["mode"] == proto.MODE_MANUAL, 2)
+        dt = time.time() - t0
+        joy()
+        time.sleep(0.5)
+        t1 = time.time()
+        link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY))
+        sb = w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 3)
+        report("VI8 during a vision slowdown the joystick takes over at once; STANDBY wins",
+               man is not None and dt < 1.0 and sb is not None,
+               "joystick -> %s after %.2f s; STANDBY -> %s after %.2f s" % (
+                   man and man["mode_name"], dt, sb and sb["mode_name"], time.time() - t1))
+
+        beat.stop()
+        for c in (alice, bob):
+            c.close()
+        link.stop()
+    finally:
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def section_vr():
+    """The real worker (model + ffmpeg): low priority, thread / core limit, newest frame only, fps,
+    crash -> restart; the gateway's main timing with and without it (THIS PC; the Pi must be measured)."""
+    print("\n=== Part 2: the vision worker process (real model, CPU limits) ===", flush=True)
+    import toolpaths
+    model = os.path.join(HERE, "vision", "models", "ewasr_resnet18.onnx")
+    py = toolpaths.vision_python()
+    ok_py = py and subprocess.run([py, "-c", "import onnxruntime, numpy"], capture_output=True).returncode == 0
+    if not (os.path.exists(model) and ok_py):
+        print("[SKIP] VR: no model (tools/get_vision_model.py) or no onnxruntime Python (tools/get_vision_python.py)")
+        return
+    tmp = tempfile.mkdtemp(prefix="gwtest_vr_")
+    sim = gw = None
+    try:
+        video = os.path.join(tmp, "sea.mp4")
+        subprocess.run([toolpaths.ffmpeg(), "-loglevel", "error", "-f", "lavfi", "-i",
+                        "testsrc2=size=640x360:rate=15", "-t", "20", "-pix_fmt", "yuv420p", video], check=True)
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        cfg = gw_cfg_b(sim, root, vision={"enabled": False})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+
+        def timing(seconds):
+            """telemetry gaps at the station + how late the gateway's loop runs."""
+            alice.pump(0.5)
+            n0, gaps, last = alice.n_tel, [], None
+            end = time.time() + seconds
+            while time.time() < end:
+                try:
+                    k, d = alice.l.events.get(timeout=0.2)
+                except Exception:
+                    continue
+                if k == "telemetry":
+                    now = time.time()
+                    if last:
+                        gaps.append(now - last)
+                    last = now
+                    alice.n_tel += 1
+            gaps.sort()
+            return {"frames": alice.n_tel - n0, "gap_max_ms": round(gaps[-1] * 1000) if gaps else None,
+                    "gap_p99_ms": round(gaps[int(0.99 * (len(gaps) - 1))] * 1000) if gaps else None}
+        base = timing(20)
+        # (stage 2 off: the test picture can look like obstacles - here only the worker mechanics count)
+        g.vision.cfg.update({"enabled": True, "source": "camera", "threads": 2, "max_fps": 2.0, "min_fps": 1.0,
+                             "stage2": False,
+                             "warmup_s": 5.0})
+        g.vision._front_url = lambda: video               # the test video instead of the front camera
+        up = wait_for(lambda: g.vision.hello.get("pid") and g.vision.frames >= 3, 40)
+        pid = g.vision.hello.get("pid")
+        prio, aff = None, None
+        if os.name == "nt" and pid:
+            import ctypes
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
+            prio = k.GetPriorityClass(h)
+            pm, sm = ctypes.c_size_t(), ctypes.c_size_t()
+            k.GetProcessAffinityMask(h, ctypes.byref(pm), ctypes.byref(sm))
+            aff = bin(pm.value).count("1")
+            k.CloseHandle(h)
+        elif pid:
+            prio = os.getpriority(os.PRIO_PROCESS, pid)
+            aff = len(os.sched_getaffinity(pid))
+        busy = timing(20)
+        st = g.vision.status()
+        report("VR1 the vision worker runs in its own process at the lowest priority on 2 cores / 2 threads",
+               up and pid and pid != os.getpid() and (prio in (0x40,) if os.name == "nt" else prio >= 19) and
+               aff == 2 and st["threads"] == 2,
+               "worker pid %s (gateway %d), priority %s (%s), cores %s, threads %d, %s fps, inference %s ms, "
+               "state %s" % (pid, os.getpid(), hex(prio) if os.name == "nt" and prio else prio,
+                             "IDLE" if prio == 0x40 else "?", aff, st["threads"], st["fps"], st["infer_ms"],
+                             st["state"]))
+        report("VR2 the gateway's main job timing is unchanged with vision running (measured on THIS PC; "
+               "the Pi must be measured on the Pi)",
+               busy["frames"] >= 0.9 * base["frames"] and (busy["gap_max_ms"] or 0) <= max(250, 1.5 * (
+                   base["gap_max_ms"] or 0)),
+               "without vision: %s; with vision: %s" % (base, busy))
+        n_fr = g.vision.frames
+        time.sleep(3.0)
+        rate = (g.vision.frames - n_fr) / 3.0
+        report("VR3 newest frame only: the worker never falls behind the camera (frame age small, fps <= max)",
+               rate <= 2.6 and st["state"] in ("ACTIVE", "DEGRADED"),
+               "%.1f results / s (max 2), the camera sends 15 fps (the rest is skipped, never queued)" % rate)
+        # VR5 samples (frame + mask) for a later own dataset: saved on request, inside the storage quota
+        g.vision.cfg["samples"].update({"enabled": True, "max_mb": 1.0})
+        folder = os.path.join(root, "vision", "samples")
+        for _ in range(4):
+            g.vision._sample("random")
+            time.sleep(1.2)
+        files = sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+        size = sum(os.path.getsize(os.path.join(folder, f)) for f in files)
+        g.vision._sample("random")                           # the quota check runs before every new sample
+        time.sleep(1.2)
+        size2 = sum(os.path.getsize(os.path.join(folder, f)) for f in os.listdir(folder))
+        report("VR5 samples (frame + mask) saved for an own dataset, the oldest deleted above the quota",
+               any(f.endswith(".ppm") for f in files) and any(f.endswith("_mask.pgm") for f in files) and
+               size2 <= 1.0e6 + 600e3,
+               "%d files (%.0f kB) after 4 samples; quota 1 MB -> %.0f kB after the next one" % (
+                   len(files), size / 1e3, size2 / 1e3))
+        g.vision.kill_worker()
+        off = wait_for(lambda: g.vision.state == "OFFLINE", 5)
+        back = wait_for(lambda: g.vision.state in ("ACTIVE", "DEGRADED") and g.vision.restarts >= 2, 40)
+        report("VR4 worker crash -> VISION OFFLINE notice (no alarm, no mode change), restarted by itself",
+               off and back and g.telem["mode"] == proto.MODE_STANDBY and not (g.telem["alarm_bits"] & 0x4000000),
+               "OFFLINE %s, back %s (restarts %d), mode %s, notices %s" % (
+                   off, back, g.vision.restarts, g.telem["mode_name"], [n["text"] for n in g.vision.notices]))
+        alice.close()
+    finally:
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"F1": section_f1, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
             "G": section_g}
 
 

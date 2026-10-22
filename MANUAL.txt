@@ -174,7 +174,7 @@ RUN ALL TESTS (before every commit):
     cd ..\groundstation
     C:\msys64\ucrt64\bin\python.exe test_e2e.py      (10 tests)
     C:\msys64\ucrt64\bin\python.exe test_logs.py     (3 tests)
-    C:\msys64\ucrt64\bin\python.exe test_driver.py   (7 tests, opens windows)
+    C:\msys64\ucrt64\bin\python.exe test_driver.py   (8 tests, opens windows)
     C:\msys64\ucrt64\bin\python.exe test_charts.py   (6 tests, no internet needed)
 
 OTHER COMMANDS:
@@ -242,6 +242,14 @@ WHAT TO TRY
        ACCEPT; then ON BOARD: CONFIRM within 10 s. The boat drives the program (map tab).
        To go faster than 30 %: Raise fwd, type the code, Send code, ON BOARD
        CONFIRM - one step at a time.
+  5a. A kayak WITHOUT AIS (only the camera can see it)
+       Double-click DEMO_KAYAK.bat while driving (HDG LOCK or AUTO): an
+       obstacle 120 m ahead for 40 s. Driver screen / maps: the orange
+       sector, OBSTACLE AHEAD + SAVE (STAGE 2). With STAGE 3 switched on
+       (Cameras tab, driver ACCEPT) AUTO slows down. The front camera of the
+       demo shows a sea video with the AI colours (when the model is
+       installed: tools\get_vision_python.py, get_vision_model.py,
+       get_vision_samples.py; else only these injected detections).
   5. An AIS collision situation
        While AUTO runs (or in HDG LOCK): double-click DEMO_SHIP.bat. A ferry
        comes from starboard. Captain screen, AIS tab: the ship turns yellow,
@@ -259,9 +267,9 @@ WHAT TO TRY
        During AUTO move the ON BOARD stick X slider or press TAKE: MANUAL at
        once, and an automatic SAVE. Resume the program: AUTO resume (captain)
        + ON BOARD CONFIRM.
-The demo cameras show test pictures (a grey picture with a moving bar and a
-time code), not a sea: the obstacle detection (chapter 9 part N) needs a
-real sea video for its overlay.
+The REAR and FRONT-2 demo cameras show test pictures (grey, a moving bar, a
+time code); FRONT-1 shows a sea video (MaSTr1325 pictures, CC BY 4.0) when
+tools\get_vision_samples.py was run.
 
 -------------------------------------------------------------------------------
 5. THE GROUND STATION (PC PROGRAM)
@@ -941,6 +949,48 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
   Captain screen, tab "AIS": the ship list (name, distance, bearing, CPA,
   TCPA, age), click a ship for its details.
 
+N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
+  The Pi looks at the front camera (FRONT-1, FRONT-2 after a switch-over)
+  with a small AI model (eWaSR) that colours every part of the picture as
+  WATER, SKY or OBSTACLE. Things sitting on the water (boats, buoys,
+  swimmers, rocks) become obstacles with a bearing and a ROUGH distance.
+  IT NEVER STEERS THE BOAT AND NEVER GIVES MORE THROTTLE. It does not see
+  everything (night, fog, glare, small things far away): keep a lookout.
+  Licence: model and code Apache-2.0, test pictures MaSTr1325 CC BY 4.0 -
+  both allowed for this project (gateway\vision\README.md).
+  STAGES (captain screen, Cameras tab; every change is logged):
+    1 overlay + log    (ON)  colours over the front camera on the driver
+                             screen, boxes with bearing + "~120 m (rough)",
+                             orange sectors on the maps, a log file
+    2 alarm + SAVE     (ON)  an obstacle in the path ahead (only while
+                             driving, not moored in STANDBY): alarm
+                             OBSTACLE AHEAD + video SAVE. No effect on the
+                             boat.
+    3 slows AUTO       (OFF) AUTO slows to 3 kn (idle when nearer than
+                             40 m); HDG LOCK: "slow down" on the driver
+                             screen (the throttle stays yours); MANUAL /
+                             REMOTE: alarm only. Switch it on ONLY after
+                             sea trials; the driver screen must ACCEPT it.
+  An obstacle must be seen in 3 pictures in a row before it counts (wakes,
+  foam and glare flicker and are filtered). The bottom of the picture (own
+  bow, own wake) is ignored.
+  DRIVER SCREEN: "VISION ACTIVE 2.0 fps" in the top line; buttons "overlay
+  ON/OFF" and "opacity" under the small map; "CLEAR SLOWDOWN" while a STAGE 3
+  slowdown is active.
+  STATUS (a notice, never an alarm, never a mode change):
+    ACTIVE     working
+    PAUSED     the Pi's main jobs need the CPU, or the Pi is hot / throttling
+    DEGRADED   too slow (below 1 picture / s) or the camera gives no pictures
+    OFFLINE    switched off, model missing, crashed (it restarts by itself)
+  If vision stops working while it slows AUTO down, the slowdown STAYS until
+  the driver presses CLEAR SLOWDOWN (it is never released by itself).
+  The Pi needs its ACTIVE COOLER (PARTS.md). Setup and the model file:
+  gateway\vision\README.md. Your own recordings can be tested on the PC:
+     tools\bin\vision-python\python.exe gateway\vision\evaluate.py FILE.ts
+  -> test_results\vision_eval\report.md (speed, detections, pictures).
+  Samples for an own Saronic dataset (picture + mask) can be switched on
+  (vision.samples on the Pi); they use at most 500 MB.
+
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
 -------------------------------------------------------------------------------
@@ -978,6 +1028,8 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
                          4 kn (part L)
   COLLISION RISK         an AIS ship will pass closer than 0.25 nm within
                          6 min (part M); AUTO avoids it, HDG LOCK proposes
+  OBSTACLE AHEAD         the front camera sees an obstacle in the path (part N,
+                         STAGE 2 / 3); a warning - only STAGE 3 slows AUTO
   COLLISION RISK - DRIVER DECISION  the Pi can't solve it safely (or went
                          silent during an avoidance): slow, keep course - YOU
                          decide (part M)
@@ -997,7 +1049,8 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
-  DECISION and AIS RECEIVER SILENT: they never change the power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
+  DECISION, OBSTACLE AHEAD and AIS RECEIVER SILENT: they never change the
+  power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
 
 
 -------------------------------------------------------------------------------

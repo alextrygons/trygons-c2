@@ -506,3 +506,12 @@ Every avoidance decision is in the audit log (`kind: "avoid"`), every
 driver answer to a proposal as `avoid_answer`, every request sent to the
 boat as `navreq`. AIS does NOT show small boats, jet skis, swimmers or
 kayaks: keep a lookout.
+
+## 20. Camera obstacle detection (vision)
+
+Everything is in `gateway/vision/README.md`. In short, on the Pi:
+`pip install onnxruntime==1.20.1 numpy==2.1.3`, `python3 tools/get_vision_model.py`,
+the active cooler fitted, restart the service; check "VISION ACTIVE x fps" on the
+captain screen (Cameras tab) and measure the fps. STAGE 3 (slows AUTO) stays OFF
+until after the sea trials. Settings: `"vision": {...}` in gateway.json
+(defaults in gateway/vision/manager.py).

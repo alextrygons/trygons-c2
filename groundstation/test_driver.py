@@ -14,6 +14,9 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
   I7 AIS list (name, distance, bearing, CPA, TCPA, age; danger first, details
      on click), collision line on the driver HUD, HEADING LOCK proposal as
      ACCEPT / REJECT on the driver screen (gone at the gateway -> closed)
+  I8 obstacle detection (vision): mask overlay on the front camera (toggle),
+     boxes with bearing + rough distance, status, map sectors, the HEADING
+     LOCK slow-down proposal on the driver screen
 
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
@@ -261,6 +264,63 @@ def main():
                    detail.replace("\n", " / ")[:120], hud[0] if hud else "MISSING", asked, acc, rej, closed))
         app.gw_status = None
         del app.avoid_answer
+
+        # I8 vision on the driver screen (gateway status injected)
+        import base64
+        cells = [2] * (64 * 20) + [0] * (64 * 4) + [1] * (64 * 24)          # sky, a band of obstacle, water
+        packed = bytes(cells[i] | (cells[i + 1] << 2) | (cells[i + 2] << 4) | (cells[i + 3] << 6)
+                       for i in range(0, len(cells), 4))
+        vis = {"state": "ACTIVE", "reason": "2.0 fps", "fps": 2.0, "stages": {"stage1": True, "stage2": True,
+                                                                         "stage3": True},
+               "horizon": "IMU", "obstacles": [{"id": 3, "rel": 2.0, "bearing": 92.0, "dist": 120, "range": [80, 260],
+                                                "conf": 0.9, "confirmed": True, "box": [0.45, 0.4, 0.55, 0.55],
+                                                "in_corridor": True, "ais": None, "synthetic": False}],
+               "threats": 1, "cap_kn": 3.0, "cap_held": True, "proposal": {"id": 5, "text": "OBSTACLE AHEAD ~120 m "
+                                                                           "(rough), bearing 092: slow down"},
+               "mask": {"w": 64, "h": 48, "b64": base64.b64encode(packed).decode()}, "restarts": 1, "model": "x"}
+        sent = []
+        app.vision_send = lambda m: sent.append(m)
+        app.gw_status = {"vision": vis, "avoid": {}}
+
+        class Pic:
+            def __init__(s, w, h):
+                s.w, s.h = w, h
+
+            def width(s):
+                return s.w
+
+            def height(s):
+                return s.h
+        dv.front.delete("all")
+        dv.draw_vision(dv.front, 640, 360, 640, 360)
+        n_mask = len(items_with_tag(dv.front, "vmask"))
+        box_txt = [dv.front.itemcget(i, "text") for i in items_with_tag(dv.front, "vbox")
+                   if dv.front.type(i) == "text"]
+        dv.toggle_overlay()
+        dv.front.delete("all")
+        dv.draw_vision(dv.front, 640, 360, 640, 360)
+        n_off = len(items_with_tag(dv.front, "vmask"))
+        dv.toggle_overlay()
+        dv.draw_status(app.t)
+        hud = " ".join(dv.status.itemcget(i, "text") for i in items_with_tag(dv.status, "joy"))
+        clear_shown = dv.vis_clear_btn.winfo_manager() == "pack"
+        dv.vis_clear_btn.invoke()
+        dv.draw_map(app.t)
+        n_sector = len(items_with_tag(dv.map, "vision"))
+        app.drv_vision()
+        asked = dv.question is not None and "OBSTACLE DETECTION" in dv.qtext.cget("text")
+        dv.answer(True)
+        acked = {"t": "vision_ack", "id": 5} in sent
+        report("I8 obstacle detection on the driver screen: mask overlay (toggle), box with bearing + rough distance, "
+               "status, CLEAR SLOWDOWN, map sector, HDG LOCK slow-down proposal",
+               n_mask > 0 and n_off == 0 and box_txt and "092" in box_txt[0] and "rough" in box_txt[0] and
+               "VISION ACTIVE" in hud and "HELD" in hud and clear_shown and {"t": "vision_clear"} in sent and
+               n_sector > 0 and asked and acked and not errors,
+               "overlay %d items (off: %d); box \"%s\"; HUD \"%s\"; clear button %s, sent %s; map sector items %d; "
+               "proposal asked %s, acknowledged %s" % (n_mask, n_off, box_txt[0] if box_txt else "MISSING",
+                                                       hud[-90:], clear_shown, sent[:1], n_sector, asked, acked))
+        app.gw_status = None
+        del app.vision_send
 
         # I6 window places remembered; F12 swaps the screens
         g_cap, g_drv = root.geometry(), dv.w.geometry()

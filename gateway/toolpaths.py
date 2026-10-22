@@ -31,6 +31,16 @@ def ffmpeg():
                   "/usr/bin/ffmpeg")
 
 
+def vision_python():
+    """The Python that runs the obstacle detection worker (needs numpy + onnxruntime):
+    $VISION_PYTHON, <repo>/tools/bin/vision-python/ (tools/get_vision_python.py, Windows),
+    else this Python (the Pi: pip install onnxruntime numpy)."""
+    import sys
+    return _first(os.environ.get("VISION_PYTHON"), os.path.join(REPO, "tools", "bin", "vision-python", "python" + EXE),
+                  sys.executable)
+
+
 if __name__ == "__main__":
     print("MediaMTX:", mediamtx() or "MISSING (python tools/get_mediamtx.py)")
     print("ffmpeg:  ", ffmpeg() or "MISSING (MSYS2: pacman -S mingw-w64-ucrt-x86_64-ffmpeg)")
+    print("vision Python:", vision_python())

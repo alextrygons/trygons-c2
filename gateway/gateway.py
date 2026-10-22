@@ -26,6 +26,7 @@ from audit import Audit
 from ais import AisTargets, OnlineFeed
 from shallow import Shallow
 from avoid import Avoider
+from vision.manager import VisionManager
 import chart
 from cameras import CameraManager, path_name
 from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAULT_CHANNELS
@@ -109,6 +110,11 @@ class Gateway:
                                log=lambda text, **kw: self.audit("avoid", text=text, **kw))
         self.hdg_set_until = 0.0
         self.stations.ext["avoid_answer"] = self._avoid_answer
+        # camera obstacle detection (Part 2): its own process, never steers, only a speed cap
+        self.vision = VisionManager(cfg.get("vision"), self)
+        for k, fn in (("vision_stage", self._vision_stage), ("vision_clear", self._vision_clear),
+                      ("vision_ack", self._vision_ack), ("vision_inject", self._vision_inject)):
+            self.stations.ext[k] = fn
 
     def _on_telem(self, f):
         try:
@@ -233,8 +239,64 @@ class Gateway:
                 req["kind"] = proto.NAV_CAP
             req["reason"] |= 2
             req["alarm"] |= 4
+        # camera obstacle detection: only a speed cap (the lower one wins) + the OBSTACLE AHEAD alarm
+        v_cap, v_alarm, v_why = self.vision.nav(o.get("mode"))
+        if v_cap is not None:
+            req["cap_kn"] = min(req["cap_kn"] if req["cap_kn"] is not None else 1e9, v_cap)
+            if req["kind"] == proto.NAV_NONE:
+                req["kind"] = proto.NAV_CAP
+        req["alarm"] |= v_alarm
+        req["reason"] |= v_why
         self.nav_state = dict(self.avoider.status(), shallow=sh)
         return req
+
+    # --- camera obstacle detection (Part 2) -------------------------------------------
+    async def vision_loop(self):
+        last = time.time()
+        while True:
+            await asyncio.sleep(0.25)
+            now = time.time()
+            lag = max(0.0, (now - last - 0.25) * 1000.0)   # how late the event loop is (the main jobs)
+            last = now
+            try:
+                self.vision.tick(now, lag)
+            except Exception:
+                log.exception("vision")
+
+    def _vision_driver(self, st):
+        return st in self.stations.drivers() or st.single_op
+
+    def _vision_stage(self, st, m):
+        """Stage on / off from a station. STAGE 3 ON (it slows AUTO) needs the driver's ACCEPT."""
+        name, on = m.get("stage"), bool(m.get("on"))
+        if st.role == "VIEWER":
+            return st.send({"t": "vision_ack", "ok": False, "text": "VIEWER: no settings"})
+
+        def done(ok, code):
+            if ok:
+                ok2, text = self.vision.set_stage(name, on, st.user)
+            else:
+                from stations import GW_RESULTS
+                ok2, text = False, "refused: %s" % GW_RESULTS.get(code, proto.RESULTS.get(code, code))
+            st.send({"t": "vision_ack", "ok": ok2, "text": text})
+        if name == "stage3" and on:
+            return self.stations.ask_local(st, m, "vision STAGE 3 ON (obstacles slow AUTO down)", done)
+        done(True, 0)
+
+    def _vision_clear(self, st, m):
+        if not self._vision_driver(st):
+            return st.send({"t": "vision_ack", "ok": False, "text": "only the driver screen clears a slowdown"})
+        ok, text = self.vision.clear(st.user)
+        st.send({"t": "vision_ack", "ok": ok, "text": text})
+
+    def _vision_ack(self, st, m):
+        if self._vision_driver(st):
+            self.vision.ack_proposal(m.get("id"), st.user)
+
+    def _vision_inject(self, st, m):
+        ok = self.vision.inject(m.get("rel", 0.0), m.get("dist", 100.0), m.get("seconds", 10.0),
+                                m.get("conf", 0.9), m.get("frames"))
+        st.send({"t": "vision_ack", "ok": ok, "text": "injected" if ok else "injection not allowed (vision.allow_inject)"})
 
     def _avoid_answer(self, st, m):
         """The driver's ACCEPT / REJECT of a HEADING LOCK proposal: only from a station that
@@ -400,7 +462,8 @@ class Gateway:
                           "utc": self.clock.stamp()},
                 "net": self.net.info(), "cameras": self.cams.status(), "rec": self.rec.status(),
                 "sync": self.sync.status(), "ais": self.ais_status(self.net.data_saver()),
-                "avoid": dict(self.nav_state, shallow_limit_m=self.shallow.limit(), charts=bool(self.charts))}
+                "avoid": dict(self.nav_state, shallow_limit_m=self.shallow.limit(), charts=bool(self.charts)),
+                "vision": self.vision.status(self.net.data_saver())}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -419,6 +482,7 @@ class Gateway:
         tasks.append(asyncio.create_task(self.sync.run()))
         tasks.append(asyncio.create_task(self.ais_loop()))
         tasks.append(asyncio.create_task(self.nav_loop()))
+        tasks.append(asyncio.create_task(self.vision_loop()))
         if self.ais_reader:
             tasks.append(asyncio.create_task(self.ais_reader.run()))
         tasks += self.extra_tasks()
@@ -428,6 +492,7 @@ class Gateway:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            self.vision.stop()
             await self.stations.stop()
             await self.web.stop()
             self.sync._close()

@@ -177,6 +177,7 @@ ALARMS = [
     (0x800000, "COLLISION RISK"),
     (0x1000000, "COLLISION RISK - DRIVER DECISION"),
     (0x2000000, "SHALLOW WATER"),
+    (0x4000000, "OBSTACLE AHEAD"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -615,6 +616,7 @@ _T2_GROUPS = [
                                  "slam_impacts slam_yellow_pc".split()),
     (struct.Struct("<BBBBHHBH"), "nav_kind nav_flags nav_reason nav_alarm nav_hdg100 nav_cap10 nav_seq "
                                  "nav_age_ms".split()),
+    (struct.Struct("<hhH"), "att_roll100 att_pitch100 att_age_ms".split()),
 ]
 
 # video SAVE triggers (app/smallboat.h SB_SAVE_)
@@ -652,6 +654,10 @@ def decode_telem2(payload: bytes) -> dict:
         d["nav_applied"] = bool(d["nav_flags"] & 4)
         d["nav_heading"] = d["nav_hdg100"] / 100.0
         d["nav_cap_kn"] = None if d["nav_cap10"] == 0xFFFF else d["nav_cap10"] / 10.0
+    if "att_age_ms" in d:
+        ok = d["att_age_ms"] < 1000
+        d["att_roll"] = d["att_roll100"] / 100.0 if ok else None
+        d["att_pitch"] = d["att_pitch100"] / 100.0 if ok else None
     if "slam_flags" in d:
         f = d["slam_flags"]
         d["slam_peak"] = d["slam_peak100"] / 100.0

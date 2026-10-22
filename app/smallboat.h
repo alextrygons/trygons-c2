@@ -104,29 +104,35 @@
 #define SB_ALM_COLLISION          0x800000u /* COLLISION RISK: an AIS target's CPA / TCPA in the danger zone (gateway) */
 #define SB_ALM_DECISION           0x1000000u /* COLLISION RISK - DRIVER DECISION (or the avoidance request was lost) */
 #define SB_ALM_SHALLOW            0x2000000u /* SHALLOW WATER ahead (AUTO; gateway depth check) */
+#define SB_ALM_OBSTACLE           0x4000000u /* OBSTACLE AHEAD: camera obstacle detection (gateway vision) */
 /* navigation advisories: alarm (sound, shown, logged) but they never lower the
  * power limit - their reaction is defined explicitly (AUTO: the gateway's
  * navreq slows down / steers; MANUAL / REMOTE: alarm only) */
-#define SB_NAV_ADVISORY           (SB_ALM_AIS_SILENT | SB_ALM_COLLISION | SB_ALM_DECISION | SB_ALM_SHALLOW)
+#define SB_NAV_ADVISORY           (SB_ALM_AIS_SILENT | SB_ALM_COLLISION | SB_ALM_DECISION | SB_ALM_SHALLOW | \
+                                   SB_ALM_OBSTACLE)
 
 /* Navigation request from the gateway (collision avoidance, shallow water;
  * section D). Validated here, applied ONLY in AUTO (heading + speed cap) or,
  * after the driver's ACCEPT, as a one-shot heading in HEADING LOCK. A request
  * is a lease: not refreshed within lease_ms while it steers / slows in AUTO
- * -> hold the current heading, slow to nav_lost_kn, alarm DRIVER DECISION.
+ * -> hold the current heading, slow to nav_lost_kn (or the last cap if that
+ * was lower: a slowdown is never released by losing the gateway), alarm
+ * DRIVER DECISION. The camera obstacle detection (vision) only ever sends a
+ * speed cap (never a heading), reason 8, alarm 8 = OBSTACLE AHEAD.
  * The joystick and STANDBY win as always (they leave AUTO / HDG LOCK). */
 #define SB_NAV_NONE      0u
 #define SB_NAV_CAP       1u     /* AUTO: speed cap only */
 #define SB_NAV_HEADING   2u     /* AUTO: steer this heading (avoidance) + speed cap */
 #define SB_NAV_HDG_SET   3u     /* HDG LOCK: set the locked heading once (driver ACCEPTED) */
 typedef struct {
-    uint8_t  seq, kind, reason, alarm;  /* alarm: 1 collision, 2 driver decision, 4 shallow */
+    uint8_t  seq, kind, reason, alarm;  /* alarm: 1 collision, 2 driver decision, 4 shallow, 8 obstacle */
     float    heading;
     float    cap_kn;                    /* < 0 = no cap */
     uint32_t rx_ms;                     /* 0 = never */
     uint16_t lease_ms;
     bool     lost;                      /* lease expired while steering / slowing in AUTO */
     float    lost_heading;
+    float    lost_cap_kn;               /* the cap when the lease was lost (< 0 = none) */
     uint8_t  hdg_seq_done;              /* the HDG_SET already applied */
     bool     hdg_any;
     uint32_t count, applied_hdg, losses, rejected;
@@ -480,6 +486,8 @@ typedef struct {
     uint32_t buttons_now;       /* panel buttons pressed this step */
     float    roll_dps;
     bool     roll_ok;
+    float    att_roll_deg, att_pitch_deg;   /* BNO085 attitude (only passed on to the gateway) */
+    uint32_t att_ms;                        /* when it last came (0 = never) */
     float    motor_a;           /* steering motor current, -1 = no sensor */
     uint8_t  limit_bits;        /* bit0 left, bit1 right, 0x80 = no switches */
     int8_t   neutral_sw;        /* -1 none, 0 not neutral, 1 neutral */

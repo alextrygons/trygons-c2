@@ -235,6 +235,31 @@ void sim_hal_push_accel(float g)
     if (s_acc_head - s_acc_tail > ACC_RING) s_acc_tail = s_acc_head - ACC_RING;
 }
 
+/* BNO085 attitude: the boat model's wave roll / pitch */
+static bool  s_att_fitted = true, s_att_new;
+static float s_roll_deg, s_pitch_deg;
+
+bool hal_read_attitude(float *roll_deg, float *pitch_deg)
+{
+    if (!s_att_fitted || !s_att_new) return false;
+    *roll_deg = s_roll_deg;
+    *pitch_deg = s_pitch_deg;
+    s_att_new = false;
+    return true;
+}
+
+void sim_hal_push_attitude(float roll_deg, float pitch_deg)
+{
+    s_roll_deg = roll_deg;
+    s_pitch_deg = pitch_deg;
+    s_att_new = true;
+}
+
+void sim_hal_set_attitude(bool fitted)
+{
+    s_att_fitted = fitted;
+}
+
 void sim_hal_set_accel(bool fitted)
 {
     s_acc_fitted = fitted;

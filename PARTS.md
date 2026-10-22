@@ -19,7 +19,10 @@ why each part is needed: MANUAL.txt.
 
 ## Gateway (remote access)
 
-- [ ] Raspberry Pi 5, 8 GB, with the official active cooler.
+- [ ] Raspberry Pi 5, 8 GB, with the official active cooler - REQUIRED for the camera obstacle
+      detection (eWaSR on the CPU; without the cooler the Pi throttles and vision pauses).
+- [ ] Later, optional (not implemented): Raspberry Pi AI HAT+ (Hailo NPU) or a Luxonis OAK-D camera
+      to run the obstacle detection many times faster (gateway/vision/README.md).
 - [ ] 12 V -> 5.1 V 5 A USB-C supply for the Pi (car/marine grade; 5 A is needed so the Pi can power the SSD), 5 A fuse on the 12 V side.
 - [ ] USB 3 SSD 512 GB - 1 TB (e.g. Samsung T7) - logs and video (4 cameras ~3-4 GB per hour; 1 TB if you use the 60-minute ring buffer and SAVE often).
 - [ ] microSD card 32 GB (A2) - only the Pi's operating system.

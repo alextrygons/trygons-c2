@@ -395,7 +395,72 @@ class App:
         self.cam_lbl = tk.Label(mid, text="(cameras: connect through the gateway)", font=("Consolas", 12), bg=BG,
                                 justify="left", anchor="nw")
         self.cam_lbl.pack(side="top", fill="x", padx=6)
+        # obstacle detection (eWaSR on the Pi): stages + status
+        vf = tk.Frame(ct, bg=BG, bd=2, relief="groove")
+        vf.pack(fill="x", padx=4, pady=4)
+        tk.Label(vf, text="Obstacle detection (camera, NOT for navigation):", font=F_MED, bg=BG).pack(
+            side="left", padx=4)
+        self.vis_vars = {}
+        for k, txt in (("stage1", "1 overlay + log"), ("stage2", "2 alarm + SAVE"),
+                       ("stage3", "3 slows AUTO (needs the driver's ACCEPT)")):
+            var = tk.BooleanVar(value=k != "stage3")
+            self.vis_vars[k] = var
+            tk.Checkbutton(vf, text=txt, variable=var, font=F_TXT, bg=BG,
+                           command=lambda k=k: self.vision_stage(k)).pack(side="left", padx=4)
+        btn(vf, "Clear slowdown", lambda: self.vision_send({"t": "vision_clear"}), font=F_TXT).pack(side="left")
+        self.vis_lbl = tk.Label(ct, text="", font=F_TXT, bg=BG, anchor="w", justify="left")
+        self.vis_lbl.pack(fill="x", padx=6)
         self.root.after(100, self.cam_tick)
+
+    def vision_send(self, msg):
+        if not isinstance(self.link, GatewayLink):
+            return self.say("Obstacle detection: only through the gateway", RED)
+        self.link.send_msg(msg)
+
+    def vision_stage(self, k):
+        on = self.vis_vars[k].get()
+        msg = {"t": "vision_stage", "stage": k, "on": on}
+        if k == "stage3" and on and self.single_op:          # single operator: the own confirmation
+            self.vis_vars[k].set(False)
+            return self.captain_confirm("vision STAGE 3 ON (obstacles slow AUTO down)",
+                                        lambda: self.vision_send(dict(msg, confirm="self")))
+        self.vision_send(msg)
+
+    def draw_vision(self):
+        v = (self.gw_status or {}).get("vision")
+        if not v or not hasattr(self, "vis_lbl"):
+            return
+        for k, var in self.vis_vars.items():                # show the gateway's real setting
+            if var.get() != v["stages"].get(k):
+                var.set(v["stages"].get(k))
+        txt = "VISION %s (%s)  %.1f fps  model %s  horizon: %s  restarts %d" % (
+            v["state"], v["reason"], v["fps"], v.get("model") or "-", v.get("horizon"), v.get("restarts", 0))
+        if v.get("cap_kn") is not None:
+            txt += "\nSPEED CAP %.0f kn%s" % (v["cap_kn"], " - HELD (vision not working): the driver clears it"
+                                                if v.get("cap_held") else "")
+        obs = [o for o in v.get("obstacles") or [] if o.get("confirmed")]
+        if obs:
+            txt += "\n" + "   ".join("%03.0f ~%s m%s%s" % (o["bearing"], o["dist"] or "far",
+                                                          " IN PATH" if o["in_corridor"] else "",
+                                                          " =" + o["ais"] if o.get("ais") else "") for o in obs[:6])
+        self.vis_lbl.configure(text=txt, fg=RED if v["state"] in ("OFFLINE", "DEGRADED") or v.get("cap_held")
+                               else "black")
+
+    def drv_vision(self):
+        """HEADING LOCK + STAGE 3: the slow-down proposal on the driver screen (an acknowledgement:
+        the throttle stays with the driver)."""
+        p = ((self.gw_status or {}).get("vision") or {}).get("proposal")
+        tag = ("vision", p["id"]) if p and not p.get("acked") else None
+        old = getattr(self, "vprop_tag", None)
+        if old and old != tag and self.driver:
+            self.driver.cancel(old)
+        self.vprop_tag = tag
+        if not tag or old == tag or not self.driver:
+            return
+        self.event("vision: %s" % p["text"])
+        ack = lambda why: self.vision_send({"t": "vision_ack", "id": p["id"]})       # noqa: E731
+        self.driver.ask(p["text"] + "\n(the throttle is yours)", ack, ack, 60.0, tag=tag,
+                        head="OBSTACLE DETECTION (camera):")
 
     def cam_preset(self, preset):
         if not isinstance(self.link, GatewayLink):
@@ -1547,6 +1612,8 @@ class App:
                     if self.auto_cams:
                         self.cam_preset(self.auto_cams)
                         self.auto_cams = None
+                    self.draw_vision()
+                    self.drv_vision()
                     self.drv_proposal()
                 elif kind == "channel_ack":
                     self.on_channel_ack(d)
@@ -1554,6 +1621,9 @@ class App:
                     self.on_cams_ack(d)
                 elif kind == "save_ack":
                     self.on_save_ack(d)
+                elif kind == "vision_ack":
+                    self.say("Vision: %s" % d.get("text", ""), GREEN if d.get("ok") else RED)
+                    self.event("vision: %s" % d.get("text", ""))
                 elif kind == "avoid_ack":
                     self.say("Proposal: %s" % d.get("text", ""), GREEN if d.get("ok") else RED)
                     self.event("avoidance proposal: %s" % d.get("text", ""))
@@ -2119,7 +2189,8 @@ class App:
         av = (self.gw_status or {}).get("avoid") or {}
         self.chartview.draw(c, lat0, lon0, m, w, h, layers={k_: v.get() for k_, v in self.map_layers.items()},
                             opacity=self.depth_opacity.get(), ais=self.ais_list(), threats=av.get("threats"),
-                            route=av.get("route"), shallow=av.get("shallow"))
+                            route=av.get("route"), shallow=av.get("shallow"),
+                            vision=((self.gw_status or {}).get("vision") or {}).get("obstacles"))
         self.chart_lbl.configure(text="" if self.charts else "no chart files: python tools/chartprep.py")
         if self.map_mark:
             x, y = P(*self.map_mark)

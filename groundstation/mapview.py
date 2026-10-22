@@ -67,7 +67,7 @@ class ChartView:
         return img.zoom(step, step) if step > 1 else img
 
     def draw(self, c, lat0, lon0, m, w, h, layers=None, opacity=0.8, ais=None, threats=None, route=None,
-             shallow=None, small=False):
+             shallow=None, small=False, vision=None):
         layers = layers or {"depth": True, "contours": True, "marks": True, "ais": True}
         P, _ = self.projection(lat0, lon0, m, w, h)
         if self.charts and layers.get("depth"):
@@ -130,6 +130,25 @@ class ChartView:
                     c.create_text(x + r + 3, y - r, text=lab, anchor="w", fill=col,
                                   font=("Segoe UI", 8 if small else 9, "bold" if th.get("level") else "normal"),
                                   tags="ais")
+        # camera obstacles (vision): UNCERTAIN - a dashed sector bearing +-4 deg over the rough distance range,
+        # drawn from the boat (the map centre); "=AIS name" when it matches an AIS ship
+        for o in vision or []:
+            if not o.get("confirmed") or o.get("dist") is None:
+                continue
+            d0 = max(5.0, (o.get("range") or [None])[0] or o["dist"] * 0.7)
+            d1 = (o.get("range") or [None, None])[1] or o["dist"] * 2.0
+            pts = []
+            for dd, bs in ((d0, (-4, 4)), (d1, (4, -4))):
+                for db in range(bs[0], bs[1] + (1 if bs[1] > bs[0] else -1), 2 if bs[1] > bs[0] else -2):
+                    b = math.radians(o["bearing"] + db)
+                    pts += [w / 2 + dd * math.sin(b) / m, h / 2 - dd * math.cos(b) / m]
+            col = "#ff6000" if o.get("in_corridor") else "#c08000"
+            c.create_polygon(*pts, outline=col, fill=col, stipple="gray25", dash=(4, 3), width=2, tags="vision")
+            b = math.radians(o["bearing"])
+            x, y = w / 2 + o["dist"] * math.sin(b) / m, h / 2 - o["dist"] * math.cos(b) / m
+            lab = "? ~%d m" % o["dist"] + ("  =%s" % o["ais"] if o.get("ais") else "")
+            c.create_text(x + 6, y, text=lab, anchor="w", fill=col, font=("Segoe UI", 8 if small else 9, "bold"),
+                          tags="vision")
         # the note - always
         c.create_rectangle(0, h - (16 if small else 34), w, h, fill="#fff8d0", outline="", tags="note")
         c.create_text(4, h - (8 if small else 25), anchor="w", text=NOTE, fill="#a00000",

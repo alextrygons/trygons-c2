@@ -110,6 +110,9 @@ DEFAULTS = {
         "require_charts": True,         # no charts = AUTO programs refused
     },
     "nav_s": 0.5,                       # navigation request to the AURIX every 0.5 s (lease 3 s)
+    "vision": {                         # camera obstacle detection (eWaSR); all settings: gateway/vision/manager.py
+        "enabled": True,                # STAGE 1 + 2 on, STAGE 3 (slows AUTO) OFF until after the sea trials
+    },
     "avoid": {                          # collision avoidance (section D); see gateway/avoid.py
         "warn_nm": 0.5, "warn_min": 10.0, "danger_nm": 0.25, "danger_min": 6.0,
         "slow_factor": 0.5, "min_kn": 4.0, "recheck_s": 20.0, "safe_nm": 0.5, "clear_nm": 1.0,

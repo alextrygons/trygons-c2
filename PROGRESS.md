@@ -11,9 +11,9 @@ step that is not DONE below, without redoing finished work.
 | Step | What | State | Commit |
 |---|---|---|---|
 | 0 | PROGRESS.md + CLAUDE.md rule | DONE | a27f492 |
-| 1 | START_DEMO.bat / STOP_DEMO.bat, tool check, MANUAL "Demo", fresh-terminal test | DONE | (this commit) |
-| 2 | eWaSR: license check first; then vision process, stages, display, tests, docs | next | |
-| 3 | MANUAL "Future ideas" | open | |
+| 1 | START_DEMO.bat / STOP_DEMO.bat, tool check, MANUAL "Demo", fresh-terminal test | DONE | 7ba8d9c |
+| 2 | eWaSR: license OK (Apache-2.0 code + weights, MaSTr1325 CC BY 4.0); vision process, stages, display, tests, docs | DONE | (this commit) |
+| 3 | MANUAL "Future ideas" | next | |
 | 4.1 | fresh clone from GitHub, build + all suites + demo | open | |
 | 4.2 | "a day at sea" scenario | open | |
 | 4.3 | 24 h soak + 32-bit time wraparound | open | |
@@ -30,6 +30,12 @@ step that is not DONE below, without redoing finished work.
 - Fixed in Part 1 (tooling): test_gateway.py looked for MediaMTX in a temp folder of one session;
   tools/check.sh had `cd /c/trygons/TRYGONS_C2` and one ADS version path hard-coded; MANUAL chapter 3
   did not list ffmpeg / MediaMTX.
+
+- Part 2 found + fixed: on gateway loss the AURIX went to nav_lost_kn (4 kn) even when a lower cap
+  (e.g. an obstacle stop) was active -> now the lower of the two (NV7).
+- Vision on the Pi 5 is NOT measured yet (PC: ~120-330 ms per picture, 2 fps reached).
+- Part 4 notes so far: the storm runner (tests/acceptance/storm) needs the run() stub (sim_main.c is
+  not linked); a 32-bit wrap needs wrap-safe loops in the harness.
 
 ## Previous task (done)
 

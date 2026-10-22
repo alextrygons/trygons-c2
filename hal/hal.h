@@ -79,6 +79,12 @@ bool hal_read_roll_rate(float *roll_dps);
  * returns how many. 0 if not fitted / nothing new. */
 uint32_t hal_read_accel_z(float *g, uint32_t max);
 
+/* Boat attitude from the BNO085 (game rotation vector, no magnetometer):
+ * roll deg (+ = starboard side down), pitch deg (+ = bow up). Only passed on
+ * to the gateway (camera horizon for the obstacle detection), never used for
+ * control. Returns false if not fitted / no fresh value. */
+bool hal_read_attitude(float *roll_deg, float *pitch_deg);
+
 /* Steering motor current, amps (optional current sense). Rises sharply
  * when the motor pushes against an end stop. false if not fitted. */
 bool hal_read_motor_current(float *amps);

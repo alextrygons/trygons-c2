@@ -255,6 +255,13 @@ uint32_t hal_read_accel_z(float *g, uint32_t max)
     return 0u;       /* TODO: BNO085 (SPI, linear acceleration report at 200 Hz) into a ring buffer */
 }
 
+bool hal_read_attitude(float *roll_deg, float *pitch_deg)
+{
+    (void)roll_deg;
+    (void)pitch_deg;
+    return false;    /* TODO: BNO085 game rotation vector report (50 Hz) -> roll / pitch */
+}
+
 bool hal_calib_save(const void *data, uint32_t size)
 {
     (void)data;

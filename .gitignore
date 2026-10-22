@@ -23,3 +23,6 @@ charts/*/
 tools/bin/
 demo_run/
 test_results/
+gateway/vision/models/
+gateway/vision/data/
+demo/media/

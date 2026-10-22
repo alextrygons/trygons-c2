@@ -386,6 +386,12 @@ no reduction, nothing else changes).
   cables. Keep it > 50 cm from the compass (it contains a magnet sensor, but
   the steel of a mount can disturb the compass).
 * Use the "linear acceleration" report (gravity removed) at 200 Hz.
+* Also enable the "game rotation vector" report at 50 Hz: hal_read_attitude()
+  turns it into roll / pitch for the camera horizon of the obstacle detection
+  (TELEM2 group H to the Pi; never used for control; now a stub = "no data",
+  the Pi then uses the horizon in the picture). Mount the BNO085 with its X
+  axis forward so roll / pitch match the boat (+ roll = starboard down, + pitch
+  = bow up).
 
 ## 10. AIS receiver (receive only) and antenna
 

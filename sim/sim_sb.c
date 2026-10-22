@@ -6111,6 +6111,83 @@ static void nav_tests(void)
         test_report("NV6 invalid navigation requests (kind, speed, lease) are ignored", x.sb.nav.rejected == 3u &&
                     x.sb.nav.count == 0u, d);
     }
+
+    /* NV7 camera obstacle (vision stage 3) in AUTO: speed cap 0 = slow to idle (never more throttle);
+     * the gateway lost during it -> the lower cap stays (not the 4 kn of nav_lost_kn) */
+    {
+        static sbsim_t x;
+        static navsim_t n;
+        sbsim_init(&x, 988u, 0.0f, 0.0f, NULL);
+        navsim_init(&n, &x);
+        sbsim_run(&x, 2000u, navreq_hook, &n);
+        auto_to(&x, 8000.0f, 0.0f, 14.0f);
+        sbsim_run(&x, x.t + 60000u, navreq_hook, &n);
+        float kn0 = x.w.speed_kn, thr0 = x.sb.servo.out_pct, hdg0 = x.sb.ap.target_heading;
+        n.on = true; n.seq = 1; n.kind = SB_NAV_CAP; n.reason = 8; n.alarm = 8; n.cap = 0.0f;
+        float thr_max = 0.0f, hdg_dev = 0.0f;
+        uint32_t t1 = x.t;
+        while (x.t < t1 + 60000u) {
+            sbsim_run(&x, x.t + 100u, navreq_hook, &n);
+            thr_max = fmaxf(thr_max, x.sb.servo.out_pct);
+            hdg_dev = fmaxf(hdg_dev, fabsf(hdg_err(x.sb.ap.target_heading, hdg0)));
+        }
+        float kn1 = x.w.speed_kn;
+        bool obst = (x.sb.alarm_bits & SB_ALM_OBSTACLE) != 0u;
+        float plim = x.sb.plim.fwd_pct;
+        n.on = false;                                       /* the Pi is gone while the boat is slowed down */
+        n.p.pi_on = false;
+        float thr_lost = 0.0f;
+        uint32_t t2 = x.t;
+        while (x.t < t2 + 40000u) {
+            sbsim_run(&x, x.t + 100u, navreq_hook, &n);
+            thr_lost = fmaxf(thr_lost, x.sb.servo.out_pct);
+        }
+        snprintf(d, sizeof d, "AUTO %.1f kn, throttle %.1f %%; obstacle cap 0 kn -> %.1f kn after 60 s, throttle max "
+                 "%.1f %% (never above the start), target heading within %.1f deg of its leg (a cap only, no heading), OBSTACLE "
+                 "AHEAD %s, power limit %.0f %%; gateway lost -> LOST %s, speed %.1f kn, throttle max %.1f %% "
+                 "(the 0 kn cap stays, not %.0f kn), mode %s",
+                 kn0, thr0, kn1, thr_max, hdg_dev, obst ? "yes" : "NO", plim, x.sb.nav.lost ? "yes" : "NO",
+                 x.w.speed_kn, thr_lost, x.cfg.nav_lost_kn, mode_name(sb_mode(&x.sb)));
+        test_report("NV7 vision speed cap in AUTO slows to idle, never raises the throttle; gateway lost keeps the "
+                    "lower cap", kn0 > 12.0f && kn1 < 3.0f && thr_max <= thr0 + 0.5f && hdg_dev < 10.0f && obst &&
+                    plim >= 99.0f && x.sb.nav.lost && thr_lost <= thr_max + 0.5f && x.w.speed_kn < 3.0f &&
+                    sb_mode(&x.sb) == MODE_AUTO, d);
+    }
+
+    /* NV8 OBSTACLE AHEAD in MANUAL (stage 2 / 3): alarm only - throttle, steering, power limit unchanged */
+    {
+        static sbsim_t x, y;
+        static navsim_t n, m;
+        float out[2], rud[2], plim[2];
+        for (int k = 0; k < 2; k++) {
+            sbsim_t *z = k ? &y : &x;
+            navsim_t *nn = k ? &m : &n;
+            sbsim_init(z, 989u, 0.0f, 0.0f, NULL);
+            navsim_init(nn, z);
+            sbsim_run(z, 2000u, navreq_hook, nn);
+            joy_set(0.0f, 0.3f, false, false);
+            sbsim_run(z, z->t + 1000u, navreq_hook, nn);
+            joy_set(0.0f, 0.0f, false, false);
+            sbsim_run(z, z->t + 500u, navreq_hook, nn);
+            power_full(z);
+            joy_set(0.1f, 0.6f, false, false);
+            if (k) {
+                nn->on = true; nn->seq = 1; nn->kind = SB_NAV_CAP; nn->reason = 8; nn->alarm = 8; nn->cap = 0.0f;
+            }
+            sbsim_run(z, z->t + 30000u, navreq_hook, nn);
+            out[k] = z->sb.servo.out_pct;
+            rud[k] = z->sb.ap.motor_cmd;
+            plim[k] = z->sb.plim.fwd_pct;
+            joy_set(0.0f, 0.0f, false, false);
+        }
+        bool obst = (y.sb.alarm_bits & SB_ALM_OBSTACLE) != 0u;
+        snprintf(d, sizeof d, "MANUAL without / with an obstacle request (cap 0 kn, alarm): throttle %.1f / %.1f %%, "
+                 "steering %.2f / %.2f, power limit %.0f / %.0f %%, OBSTACLE AHEAD %s, mode %s",
+                 out[0], out[1], rud[0], rud[1], plim[0], plim[1], obst ? "yes" : "NO", mode_name(sb_mode(&y.sb)));
+        test_report("NV8 OBSTACLE AHEAD in MANUAL: alarm only, throttle / steering / power limit unchanged",
+                    fabsf(out[0] - out[1]) < 0.5f && fabsf(rud[0] - rud[1]) < 0.05f && plim[0] == plim[1] && obst &&
+                    sb_mode(&y.sb) == MODE_MANUAL, d);
+    }
 }
 
 /* ---------------------------------------------------------------- all -- */

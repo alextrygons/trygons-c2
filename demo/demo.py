@@ -4,6 +4,7 @@
     python demo/demo.py stop      (STOP_DEMO.bat)
     python demo/demo.py check     only check the tools
     python demo/demo.py ship      a ferry on a collision course with the boat (DEMO_SHIP.bat)
+    python demo/demo.py kayak     a kayak without AIS ahead, seen only by the camera (DEMO_KAYAK.bat)
 
 Starts, each in the background with a log in demo_run/logs/:
   1. the AURIX simulator   sim/autopilot_sim.exe server 5760 1 origin=<Saronic Gulf>
@@ -133,6 +134,17 @@ def demo_charts():
     return folder
 
 
+def vision_config():
+    import toolpaths
+    model = os.path.join(REPO, "gateway", "vision", "models", "ewasr_resnet18.onnx")
+    py = toolpaths.vision_python()
+    ok = os.path.exists(model) and os.path.exists(os.path.join(HERE, "media", "sea.mp4")) and py and         subprocess.run([py, "-c", "import onnxruntime, numpy"], capture_output=True).returncode == 0
+    say("vision   %s" % ("eWaSR on the sea video (FRONT-1)" if ok else
+                         "synthetic detections only (for the real model: tools\\get_vision_python.py, "
+                         "get_vision_model.py, get_vision_samples.py)"))
+    return {"enabled": True, "source": "camera" if ok else "fake", "allow_inject": True}
+
+
 def gateway_config(mtx, charts):
     from users import hash_pw
     names = ["FRONT-1", "FRONT-2", "REAR-LEFT", "REAR-RIGHT"]
@@ -156,6 +168,9 @@ def gateway_config(mtx, charts):
         "sync": {"enabled": False},
         "ais": {"enabled": True, "source": "tcp:127.0.0.1:5790", "silent_s": 120.0},
         "charts_dir": charts,
+        # obstacle detection: the real model on the sea video when both exist, else synthetic detections only;
+        # DEMO_KAYAK.bat injects a kayak without AIS ahead
+        "vision": vision_config(),
         "audit_fallback": os.path.join(RUN, "audit_fallback"),
         "storage": {"root": os.path.join(RUN, "ssd"), "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                     "full_free_gb": 0.0},
@@ -294,6 +309,27 @@ def ship():
     return 0
 
 
+def kayak():
+    """A kayak WITHOUT AIS 120 m straight ahead for 40 s - only the camera obstacle detection sees it
+    (injected as a detection: the demo cameras show no real kayak)."""
+    from gwclient import GatewayLink
+    link = GatewayLink("127.0.0.1:5761", "tool", password=PASSWORD, station="demo tool")
+    link.start()
+    link.send_msg({"t": "vision_inject", "rel": 0.0, "dist": 120.0, "seconds": 40.0, "conf": 0.85})
+    ans = None
+    end = time.time() + 5
+    while time.time() < end and ans is None:
+        try:
+            k, v = link.events.get(timeout=0.5)
+        except Exception:
+            continue
+        if k == "vision_ack":
+            ans = v
+    link.stop()
+    say("KAYAK (no AIS) 120 m ahead for 40 s: %s" % (ans and ans.get("text") or "no answer (demo running?)"))
+    return 0 if ans and ans.get("ok") else 1
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "start"
     if cmd == "start":
@@ -304,6 +340,8 @@ def main():
         return 0 if check_tools(interactive=False)[0] else 1
     if cmd == "ship":
         return ship()
+    if cmd == "kayak":
+        return kayak()
     say(__doc__)
     return 2
 

@@ -392,17 +392,33 @@ class StationServer:
         now = time.time()
         return [s for s in self.stations.values() if s.driver_open and now - s.driver_seen <= self.driver_beat_s]
 
-    def _ask_driver(self, st, seq, ftype, payload, age, what):
+    def _ask_driver(self, st, seq, ftype, payload, age, what, action=None):
         drv = self.drivers()
         if not drv:
+            if action:
+                return action(False, 109)
             return self.refuse(st, seq, ftype, 109)
         self.ask_id += 1
         a = {"id": self.ask_id, "st": st.id, "seq": seq, "type": ftype, "payload": payload, "age": age,
-             "what": what, "deadline": time.time() + self.driver_timeout}
+             "what": what, "deadline": time.time() + self.driver_timeout, "action": action}
         self.asks[a["id"]] = a
         self.gw.audit("driver_ask", station=st.id, user=st.user, what=what, id=a["id"])
         for d in drv:
             d.send({"t": "driver_ask", "id": a["id"], "text": what, "from": st.name, "timeout_s": self.driver_timeout})
+
+    def ask_local(self, st, m, what, action):
+        """A GATEWAY setting that affects the driving (e.g. vision STAGE 3 on): the same rule as the
+        captain's driving commands - the driver screen's ACCEPT, or single-operator with its own
+        confirmation (m["confirm"] == "self"). action(ok, code) runs with the answer
+        (codes as for commands: 109 no driver screen, 110 rejected, 111 timeout, 112 lost, 113)."""
+        if st.role == "VIEWER":
+            return action(False, 21)
+        if st.single_op:
+            if m.get("confirm") != "self":
+                return action(False, 113)
+            self.gw.audit("single_op_cmd", station=st.id, user=st.user, what=what)
+            return action(True, 0)
+        self._ask_driver(st, None, None, b"", 0.0, what, action=action)
 
     def _driver_beat(self, st, m):
         was = st.driver_open
@@ -422,6 +438,8 @@ class StationServer:
             d.send({"t": "driver_ask_done", "id": a["id"]})
         self.gw.audit("driver_answer", station=st.id, user=st.user, id=a["id"], yes=bool(m.get("yes")),
                       what=a["what"])
+        if a.get("action"):
+            return a["action"](bool(m.get("yes")), 0 if m.get("yes") else 110)
         if cap is None:
             return
         if m.get("yes"):
@@ -440,6 +458,9 @@ class StationServer:
             del self.asks[a["id"]]
             for d in self.drivers():
                 d.send({"t": "driver_ask_done", "id": a["id"]})
+            if a.get("action"):
+                a["action"](False, code)
+                continue
             cap = self.stations.get(a["st"])
             if cap:
                 self.refuse(cap, a["seq"], a["type"], code)

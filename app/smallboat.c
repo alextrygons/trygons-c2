@@ -227,7 +227,10 @@ static bool nav_fresh(const sb_t *s)
 static float nav_cap(const sb_t *s)
 {
     if (sb_mode(s) != MODE_AUTO) return -1.0f;
-    if (s->nav.lost) return s->cfg.nav_lost_kn;
+    if (s->nav.lost) {                  /* never faster than the last cap: a slowdown stays */
+        float c = s->cfg.nav_lost_kn;
+        return (s->nav.lost_cap_kn >= 0.0f && s->nav.lost_cap_kn < c) ? s->nav.lost_cap_kn : c;
+    }
     if (nav_fresh(s) && (s->nav.kind == SB_NAV_CAP || s->nav.kind == SB_NAV_HEADING)) return s->nav.cap_kn;
     return -1.0f;
 }
@@ -256,6 +259,7 @@ static void nav_step(sb_t *s)
         if (n->alarm & 1u) alarm_on(s, SB_ALM_COLLISION);
         if (n->alarm & 2u) alarm_on(s, SB_ALM_DECISION);
         if ((n->alarm & 4u) && sb_mode(s) == MODE_AUTO) alarm_on(s, SB_ALM_SHALLOW);
+        if (n->alarm & 8u) alarm_on(s, SB_ALM_OBSTACLE);
         if (n->kind == SB_NAV_HDG_SET && (!n->hdg_any || n->seq != n->hdg_seq_done) && sb_mode(s) == MODE_HDG_LOCK &&
             !s->hdg_compass_lost) {
             n->hdg_seq_done = n->seq;
@@ -270,6 +274,7 @@ static void nav_step(sb_t *s)
         n->lost = true;
         n->losses++;
         n->lost_heading = s->ap.heading;
+        n->lost_cap_kn = n->cap_kn;
         alarm_on(s, SB_ALM_DECISION);
     }
 }
@@ -1710,6 +1715,12 @@ void sb_step(sb_t *s)
     s->buttons_now = buttons;
     s->roll_ok = roll_new;
     if (roll_new) s->roll_dps = roll;
+    float att_r, att_p;
+    if (hal_read_attitude(&att_r, &att_p) && isfinite(att_r) && isfinite(att_p)) {
+        s->att_roll_deg = att_r;
+        s->att_pitch_deg = att_p;
+        s->att_ms = s->now_ms ? s->now_ms : 1u;
+    }
     s->motor_a = in.current_ok ? in.current_a : -1.0f;
     s->limit_bits = in.limits_ok ? (uint8_t)((in.limit_left ? 1u : 0u) | (in.limit_right ? 2u : 0u)) : 0x80u;
     s->neutral_sw = neutral_sw;

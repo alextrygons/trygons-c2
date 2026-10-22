@@ -68,6 +68,16 @@ def flip_ppm(data):
     return head + bytes(out)
 
 
+def decode_mask(b64, w, h):
+    """The obstacle detection mask (2 bits per cell: 0 obstacle, 1 water, 2 sky) -> list of w*h classes."""
+    import base64
+    raw = base64.b64decode(b64)
+    out = []
+    for byte in raw:
+        out += [byte & 3, (byte >> 2) & 3, (byte >> 4) & 3, (byte >> 6) & 3]
+    return out[:w * h]
+
+
 def angdiff(a, b):
     """a - b in -180..180."""
     return (a - b + 540.0) % 360.0 - 180.0
@@ -157,6 +167,18 @@ class DriverScreen:
         self.slam.bind("<Button-1>", lambda e: self.toggle_absolute())
         self.map = tk.Canvas(side, width=300, height=220, bg="#0a2a40", highlightthickness=0)
         self.map.pack(pady=4)
+        # obstacle detection: the overlay (mask on the front camera) on / off and how strong
+        vb = tk.Frame(side, bg=BG)
+        vb.pack(fill="x")
+        self.vis_overlay, self.vis_opacity = True, 1               # opacity steps: STIPPLE below
+        self.vis_btn = tk.Button(vb, text="overlay ON", font=F_SM, bg="#303030", fg=FG,
+                                 command=self.toggle_overlay)
+        self.vis_btn.pack(side="left", padx=2)
+        self.vis_op_btn = tk.Button(vb, text="opacity 50 %", font=F_SM, bg="#303030", fg=FG,
+                                    command=self.next_opacity)
+        self.vis_op_btn.pack(side="left", padx=2)
+        self.vis_clear_btn = tk.Button(vb, text="CLEAR SLOWDOWN", font=F_SM, bg="#a06000", fg=FG,
+                                       command=lambda: app.vision_send({"t": "vision_clear"}))
         self.tape = tk.Canvas(w, height=80, bg="#101010", highlightthickness=0)
         self.tape.grid(row=2, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
         tk.Button(w, text="SAVE", font=F_BIG, bg="#d00000", fg=FG, activebackground="#ff4040",
@@ -179,6 +201,50 @@ class DriverScreen:
 
     def toggle_absolute(self):
         self.absolute = not self.absolute
+
+    STIPPLE = (("gray25", "25 %"), ("gray50", "50 %"), ("gray75", "75 %"))
+
+    def toggle_overlay(self):
+        self.vis_overlay = not self.vis_overlay
+        self.vis_btn.configure(text="overlay %s" % ("ON" if self.vis_overlay else "OFF"))
+
+    def next_opacity(self):
+        self.vis_opacity = (self.vis_opacity + 1) % len(self.STIPPLE)
+        self.vis_op_btn.configure(text="opacity %s" % self.STIPPLE[self.vis_opacity][1])
+
+    def draw_vision(self, cv, w, h, iw, ih):
+        """The obstacle mask over the front picture (yellow = obstacle, blue = water; sky not drawn) and
+        boxes with bearing + ROUGH distance. iw x ih = the picture size on the canvas."""
+        v = (self.app.gw_status or {}).get("vision") or {}
+        x0, y0 = w / 2 - iw / 2, h / 2 - ih / 2
+        mk = v.get("mask")
+        if self.vis_overlay and mk and mk.get("b64") and v.get("state") in ("ACTIVE", "DEGRADED"):
+            cells = decode_mask(mk["b64"], mk["w"], mk["h"])
+            cw, ch = iw / mk["w"], ih / mk["h"]
+            st = self.STIPPLE[self.vis_opacity][0]
+            for r in range(mk["h"]):
+                row = cells[r * mk["w"]:(r + 1) * mk["w"]]
+                c0 = 0
+                while c0 < mk["w"]:                         # runs of one class per row: few canvas items
+                    k = row[c0]
+                    c1 = c0
+                    while c1 < mk["w"] and row[c1] == k:
+                        c1 += 1
+                    if k in (0, 1):
+                        cv.create_rectangle(x0 + c0 * cw, y0 + r * ch, x0 + c1 * cw, y0 + (r + 1) * ch,
+                                            fill="#f7c325" if k == 0 else "#29a7e0", outline="", stipple=st,
+                                            tags="vmask")
+                    c0 = c1
+        for o in v.get("obstacles") or []:
+            if not o.get("confirmed") or not o.get("box"):
+                continue
+            bx = o["box"]
+            col = "#ff3030" if o.get("in_corridor") else "#ffd000"
+            cv.create_rectangle(x0 + bx[0] * iw, y0 + bx[1] * ih, x0 + bx[2] * iw, y0 + bx[3] * ih, outline=col,
+                                width=3, tags="vbox")
+            cv.create_text(x0 + bx[0] * iw, y0 + bx[1] * ih - 4, anchor="sw", fill=col, font=F_SM, tags="vbox",
+                           text="%03.0f  %s (rough)" % (o["bearing"], "~%d m" % o["dist"] if o.get("dist") else
+                                                       "far") + ("  =%s" % o["ais"] if o.get("ais") else ""))
 
     def destroy(self):
         if self.question:
@@ -261,6 +327,9 @@ class DriverScreen:
         f1, f2 = vs.get("FRONT-1"), vs.get("FRONT-2")
         use = a.front_sel.update(f1, f2) if (f1 or f2) else "FRONT-1"
         frozen = self._video(self.front, vs.get(use), use, fw, fh)
+        ph = self.photos.get(use)
+        if ph is not None and not frozen:
+            self.draw_vision(self.front, fw, fh, ph.width(), ph.height())
         if a.front_sel.notice:
             self.front.create_text(fw / 2, fh - 30, text=a.front_sel.notice, fill=YEL, font=F_HUD)
         d = a.t or {}
@@ -327,6 +396,16 @@ class DriverScreen:
             elif av.get("state") == "AVOID" and av.get("heading") is not None:
                 txt += "   AVOIDING: heading %03.0f" % av["heading"]
             c.create_text(w / 2, 214, text=txt, fill=RED, font=F_MID, tags="collision")
+        v = g.get("vision")
+        if v:                                               # obstacle detection: a status, never an alarm here
+            txt = "VISION %s%s" % (v["state"], " %.1f fps" % v["fps"] if v["state"] in ("ACTIVE", "DEGRADED") else "")
+            if v.get("cap_kn") is not None:
+                txt += "   SLOWDOWN %.0f kn%s" % (v["cap_kn"], " HELD - vision not working" if v.get("cap_held") else "")
+            js.append(txt)
+            if v.get("cap_kn") is not None:
+                self.vis_clear_btn.pack(side="left", padx=2)
+            else:
+                self.vis_clear_btn.pack_forget()
         if d.get("slam_lost"):
             js.append("slamming sensor lost")
         c.create_text(w / 2, y + 36, text="   ".join(js), fill=FG, font=F_HUD, tags="joy")
@@ -399,7 +478,8 @@ class DriverScreen:
             self.chartview = mapview.ChartView(self.app.charts)
         av = (self.app.gw_status or {}).get("avoid") or {}
         self.chartview.draw(c, la0, lo0, m, 300, 220, opacity=0.8, ais=self.app.ais_list(), threats=av.get("threats"),
-                            route=av.get("route"), shallow=av.get("shallow"), small=True)
+                            route=av.get("route"), shallow=av.get("shallow"), small=True,
+                            vision=((self.app.gw_status or {}).get("vision") or {}).get("obstacles"))
         P = lambda la, lo: (150 + (lo - lo0) * k / m, 110 - (la - la0) * 111320.0 / m)
         pts = []
         for la, lo in tr[::max(1, len(tr) // 300)]:

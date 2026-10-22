@@ -193,6 +193,11 @@ static void slam_sample(world_t *w, float dt_s)
         }
     }
     sim_hal_push_accel(a);
+    /* roll / pitch from the same waves (camera horizon for the gateway's obstacle detection) */
+    float t_s = (float)w->t_ms * 0.001f;
+    if (w->t_ms % 20u == 0u)
+        sim_hal_push_attitude(1.2f * sea * sinf(2.0f * PI_F * t_s / 6.0f),
+                              0.8f * sea * sinf(2.0f * PI_F * t_s / 4.5f + 1.0f) + 0.15f * v / 10.0f);
 }
 
 void world_publish(world_t *w, uint32_t t_ms)
