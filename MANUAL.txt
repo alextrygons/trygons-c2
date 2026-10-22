@@ -8,6 +8,7 @@ CONTENTS
   2.  What is in which folder
   3.  What to install
   4.  The PC simulation: build, test, try it out
+  4A. The demo (one click, no boat)
   5.  The ground station (PC program)
   6.  The board (AURIX TC375 Lite Kit)
   7.  How the boat behaves: modes, buttons, joystick
@@ -111,6 +112,7 @@ On a new PC, install:
        pacman -S mingw-w64-ucrt-x86_64-gcc
        pacman -S mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-tk
        pacman -S mingw-w64-ucrt-x86_64-python-pyserial
+       pacman -S mingw-w64-ucrt-x86_64-ffmpeg     (video, recording, tests)
 
      Then add  C:\msys64\ucrt64\bin  to the Windows PATH (Start -> "Edit
      environment variables" -> Path -> New).
@@ -126,6 +128,12 @@ On a new PC, install:
   d) Only for the USB joystick bridge: in VS Code, Extensions -> install
      "PlatformIO IDE". It downloads the Teensy compiler by itself the first
      time you build bridge/ (details: bridge/README.md).
+
+  e) MediaMTX (video relay, for the camera tests and the demo), into
+     tools\bin\ of the project (not in git):
+       C:\msys64\ucrt64\bin\python.exe tools\get_mediamtx.py
+     (The demo asks to do it when it's missing. Check: python
+      gateway\toolpaths.py shows where ffmpeg and MediaMTX are.)
 
   Check in a terminal (VS Code: Terminal -> New Terminal):
        gcc --version
@@ -181,6 +189,79 @@ OTHER COMMANDS:
                                    the same, starting with the USB joystick
                                    (T.16000M + TWCS) as the source
 
+
+-------------------------------------------------------------------------------
+4A. THE DEMO (ONE CLICK, NO BOAT)
+-------------------------------------------------------------------------------
+Double-click START_DEMO.bat (project folder) in Windows Explorer. It starts
+the whole C2 on this PC, in the Saronic Gulf (37.82 N 23.60 E, between
+Piraeus and Aegina):
+  * the AURIX simulator (the boat), with the USB joystick as joystick source
+  * the gateway (Raspberry Pi software) in PC mode, with MediaMTX
+  * 4 camera test streams: FRONT-1, FRONT-2, REAR-LEFT, REAR-RIGHT
+  * simulated AIS traffic (10 ships: ferries, cargo, yachts, fishing boats)
+  * two ground station windows:
+      SHORE (captain)  through the gateway (user captain, password demo),
+                       with the DRIVER screen; this is the shore station
+      ON BOARD         straight on the simulator: the boat's panel buttons
+                       (HDG LOCK, STANDBY, CONFIRM) and the simulated USB
+                       joystick (yellow box: lever, stick X, TAKE, AUTO,
+                       HDG, STBY)
+STOP_DEMO.bat closes all of it. DEMO_SHIP.bat sends a ferry on a collision
+course. Everything the demo makes is in demo_run\ (logs in demo_run\logs\,
+recordings in demo_run\ssd\); delete that folder any time.
+
+FIRST TIME
+  * Python + ffmpeg as in chapter 3 (MSYS2). Missing -> the window says what
+    to install.
+  * MediaMTX (the video relay): if missing, the window asks to download it
+    (about 20 MB, into tools\bin\). Or: python tools\get_mediamtx.py
+  * Depth charts: with charts\attica\ (tools\chartprep.py, chapter 9 part K)
+    the maps show the real depths. Without them the demo uses a SYNTHETIC
+    chart (40 m everywhere, one 2 m shoal 2.9 km SE) - not real depths.
+  * The ports 5760-5762, 5790, 8554, 9997, 8080 must be free (no other
+    simulator running).
+
+WHAT TO TRY
+  1. HDG LOCK with the throttle
+       ON BOARD: HDG LOCK (panel). Move the "lever" slider up a little (above
+       55 %) -> the boat moves; -1 / +1 change the heading. Lever back to 50,
+       STBY or STANDBY -> stop.
+  2. A SAVE
+       DRIVER screen: the big SAVE button (or a SAVE button on a joystick).
+       Captain screen, Cameras tab: "SAVING until ..." and the event in
+       demo_run\ssd\video\events\.
+  3. A channel switch
+       Captain screen, Network tab: channel RF -> MANUAL -> within 60 s KEEP.
+       The top line of the driver screen shows the channel. STARLINK is the
+       emergency channel: data saver, no sync, a yellow banner.
+  4. An AUTO mission
+       Captain screen, Program tab: Load file -> demo\demo_mission.json
+       (6 waypoints, 6-12 kn) -> Check depth -> Upload to boat. Then Take
+       HELM and press the mode button AUTO: the DRIVER screen asks ->
+       ACCEPT; then ON BOARD: CONFIRM within 10 s. The boat drives the program (map tab).
+       To go faster than 30 %: Raise fwd, type the code, Send code, ON BOARD
+       CONFIRM - one step at a time.
+  5. An AIS collision situation
+       While AUTO runs (or in HDG LOCK): double-click DEMO_SHIP.bat. A ferry
+       comes from starboard. Captain screen, AIS tab: the ship turns yellow,
+       then red (CPA / TCPA). AUTO slows down, then passes astern of the
+       ferry (route on the map) and goes back to the leg; the driver screen
+       shows the ship line; COLLISION RISK starts a SAVE. In HDG LOCK the
+       driver screen PROPOSES a heading: ACCEPT / REJECT.
+  6. Remote driving with a USB joystick
+       Plug the joystick into this PC. Captain screen, Remote tab: Find
+       joysticks, choose it, Take HELM, REQUEST REMOTE DRIVING, then ON BOARD:
+       CONFIRM within 10 s. Mode REMOTE MANUAL: the shore joystick drives
+       (max 20 % / 5 %). Any move of the ON BOARD stick or lever, or STANDBY,
+       takes control back at once; RELEASE ends it.
+  7. The joystick always wins
+       During AUTO move the ON BOARD stick X slider or press TAKE: MANUAL at
+       once, and an automatic SAVE. Resume the program: AUTO resume (captain)
+       + ON BOARD CONFIRM.
+The demo cameras show test pictures (a grey picture with a moving bar and a
+time code), not a sea: the obstacle detection (chapter 9 part N) needs a
+real sea video for its overlay.
 
 -------------------------------------------------------------------------------
 5. THE GROUND STATION (PC PROGRAM)

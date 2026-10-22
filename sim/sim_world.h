@@ -85,5 +85,7 @@ float world_cog_deg(const world_t *w);
 /* Position as lat/lon (origin 60 N, 25 E). */
 void world_latlon(const world_t *w, double *lat, double *lon);
 void world_from_latlon(double lat, double lon, double *north_m, double *east_m);
+/* Start position (default 60 N 25 E); call before the server starts. */
+void world_set_origin(double lat, double lon);
 
 #endif /* SIM_WORLD_H */

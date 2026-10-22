@@ -1,0 +1,11 @@
+{
+ "final": 0,
+ "wps": [
+  {"lat": 37.84, "lon": 23.58, "kn": 8.0, "radius": 30.0, "action": 0},
+  {"lat": 37.855, "lon": 23.62, "kn": 10.0, "radius": 30.0, "action": 0},
+  {"lat": 37.835, "lon": 23.66, "kn": 12.0, "radius": 30.0, "action": 0},
+  {"lat": 37.80, "lon": 23.655, "kn": 10.0, "radius": 30.0, "action": 0},
+  {"lat": 37.79, "lon": 23.61, "kn": 8.0, "radius": 30.0, "action": 0},
+  {"lat": 37.812, "lon": 23.592, "kn": 6.0, "radius": 30.0, "action": 0}
+ ]
+}

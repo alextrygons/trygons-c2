@@ -6,7 +6,6 @@ made here (H.264, like the camera) and sends them by RTSP to MediaMTX.
 The picture carries a time code (26 black / white squares = the send time in
 ms), so a viewer can measure the real video latency: decode_ts(frame).
 """
-import shutil
 import subprocess
 import threading
 import time
@@ -15,7 +14,8 @@ BITS, SQ, X0, Y0 = 26, 12, 4, 8
 
 
 def ffmpeg_bin():
-    return shutil.which("ffmpeg") or r"C:\msys64\ucrt64\bin\ffmpeg.exe"
+    import toolpaths
+    return toolpaths.ffmpeg() or "ffmpeg"
 
 
 def now_code():

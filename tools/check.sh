@@ -5,7 +5,10 @@
 # compile of app/ + hal/ + Cpu*_Main.c, HAL / throttle-writer checks, the
 # expected memory per core (CPU1 RAM must stay below 60 %), Python syntax,
 # the gateway tests. Ends with "GATE: OK" or "GATE: FAILED".
-cd /c/trygons/TRYGONS_C2 || exit 1
+cd "$(dirname "$0")/.." || exit 1
+# Python: $PYTHON, else MSYS2's (MANUAL chapter 3), else "python" on the PATH
+PY=${PYTHON:-/c/msys64/ucrt64/bin/python.exe}
+[ -x "$PY" ] || PY=python
 fail=0
 
 echo "== sim build"
@@ -34,7 +37,9 @@ cd ..
 echo "== TriCore compile"
 OUT="$TEMP/tricore_obj"; mkdir -p "$OUT"
 INC=$(sed -n 23,75p .cproject | grep -o 'ProjName}/[^&]*' | sed 's#}$##; s#ProjName}/#-I#; s#^-I$#-I.#' | tr '\n' ' ')
-B=/c/Infineon/AURIX-Studio-1.10.40/tools/Compilers/tricore-gcc11/bin
+# the TriCore gcc of AURIX Development Studio: $TRICORE_BIN, else the newest ADS under C:\Infineon
+B=${TRICORE_BIN:-$(ls -d /c/Infineon/AURIX-Studio-*/tools/Compilers/tricore-gcc*/bin 2>/dev/null | sort -V | tail -1)}
+[ -x "$B/tricore-elf-gcc.exe" ] || { echo "TriCore gcc NOT FOUND (install ADS or set TRICORE_BIN)"; fail=1; }
 for f in app/*.c hal/hal_tc375.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c; do
     msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -I. $INC -c "$f" -o "$OUT/$(basename "$f" .c).o" 2>&1)
     if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN $f"; echo "$msg" | head -20; fail=1; else echo "TriCore OK $f"; fi
@@ -51,24 +56,24 @@ if [ -n "$writers" ]; then echo "THROTTLE SERVO WRITTEN OUTSIDE servo.c: $writer
 
 # expected memory per core from the TriCore objects (CPU1 = safety monitor: max 60 %)
 echo "== memory per core (expected, from the objects)"
-/c/msys64/ucrt64/bin/python.exe tools/mapreport.py --objects "$OUT" > "$TEMP/mem_report.txt" 2>&1
+"$PY" tools/mapreport.py --objects "$OUT" > "$TEMP/mem_report.txt" 2>&1
 mrc=$?
 sed -n '/RAM PER CORE/,$p' "$TEMP/mem_report.txt"
 [ $mrc -ne 0 ] && { echo "MEMORY CHECK FAILED"; fail=1; }
 
 # every Python file of the ground station / tools must at least parse
 for f in groundstation/*.py tools/*.py; do
-    /c/msys64/ucrt64/bin/python.exe -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$f" 2>/dev/null || { echo "PYTHON SYNTAX ERROR: $f"; fail=1; }
+    "$PY" -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$f" 2>/dev/null || { echo "PYTHON SYNTAX ERROR: $f"; fail=1; }
 done
 echo "python files parse"
 echo "== chart tests"
-( cd groundstation && /c/msys64/ucrt64/bin/python.exe test_charts.py > "$TEMP/chart_tests.txt" 2>&1 ) || { echo "CHART TESTS FAILED"; fail=1; }
+( cd groundstation && "$PY" test_charts.py > "$TEMP/chart_tests.txt" 2>&1 ) || { echo "CHART TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"
 echo "== avoidance planner tests"
-( cd gateway && /c/msys64/ucrt64/bin/python.exe test_avoid.py > "$TEMP/avoid_tests.txt" 2>&1 ) || { echo "AVOIDANCE TESTS FAILED"; fail=1; }
+( cd gateway && "$PY" test_avoid.py > "$TEMP/avoid_tests.txt" 2>&1 ) || { echo "AVOIDANCE TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|AVOIDANCE TESTS" "$TEMP/avoid_tests.txt"
 echo "== gateway tests"
-( cd gateway && /c/msys64/ucrt64/bin/python.exe test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
+( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS" "$TEMP/gw_tests.txt"
 [ $fail -eq 0 ] && echo "GATE: OK" || echo "GATE: FAILED"
 exit $fail

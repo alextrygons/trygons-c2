@@ -9,9 +9,18 @@
 
 #define PI_F        3.14159265f
 #define KN_TO_MS    0.514444f
-#define LAT0        60.0
-#define LON0        25.0
 #define M_PER_DEG   111320.0
+
+/* Start position of the simulated world (the tests use 60 N 25 E; the demo
+   can move it, e.g. into the Saronic Gulf: "autopilot_sim server ... origin=lat,lon"). */
+static double LAT0 = 60.0;
+static double LON0 = 25.0;
+
+void world_set_origin(double lat, double lon)
+{
+    LAT0 = lat;
+    LON0 = lon;
+}
 
 void world_init(world_t *w, uint32_t seed, float heading_deg, float speed_kn)
 {

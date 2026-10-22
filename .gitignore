@@ -20,3 +20,6 @@ groundstation/sync_receiver.json
 groundstation/gs_layout.json
 charts/*/
 !charts/areas.json
+tools/bin/
+demo_run/
+test_results/

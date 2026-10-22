@@ -10,9 +10,9 @@ step that is not DONE below, without redoing finished work.
 
 | Step | What | State | Commit |
 |---|---|---|---|
-| 0 | PROGRESS.md + CLAUDE.md rule | DONE | (this commit) |
-| 1 | START_DEMO.bat / STOP_DEMO.bat, tool check, MANUAL "Demo", fresh-terminal test | next | |
-| 2 | eWaSR: license check first; then vision process, stages, display, tests, docs | open | |
+| 0 | PROGRESS.md + CLAUDE.md rule | DONE | a27f492 |
+| 1 | START_DEMO.bat / STOP_DEMO.bat, tool check, MANUAL "Demo", fresh-terminal test | DONE | (this commit) |
+| 2 | eWaSR: license check first; then vision process, stages, display, tests, docs | next | |
 | 3 | MANUAL "Future ideas" | open | |
 | 4.1 | fresh clone from GitHub, build + all suites + demo | open | |
 | 4.2 | "a day at sea" scenario | open | |
@@ -23,9 +23,13 @@ step that is not DONE below, without redoing finished work.
 | 4.7 | RUN_ACCEPTANCE.bat quick / full, MANUAL "Testing" | open | |
 | R | TEST_REPORT.md, final PROGRESS.md, git push | open | |
 
-## Open problems
+## Open problems (for TEST_REPORT.md)
 
-- none yet
+- Recorder stall check (file growth within stall_s 10 s) restarts recording on very low-bitrate streams
+  (the nearly static demo test pictures); the demo uses stall_s 60. LOW.
+- Fixed in Part 1 (tooling): test_gateway.py looked for MediaMTX in a temp folder of one session;
+  tools/check.sh had `cd /c/trygons/TRYGONS_C2` and one ADS version path hard-coded; MANUAL chapter 3
+  did not list ffmpeg / MediaMTX.
 
 ## Previous task (done)
 

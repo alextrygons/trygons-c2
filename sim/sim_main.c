@@ -36,6 +36,7 @@
 #include "boat_model.h"
 #include "hal_sim.h"
 #include "sim_run.h"
+#include "sim_world.h"
 
 
 static int self_test(void)
@@ -439,7 +440,7 @@ int main(int argc, char **argv)
         int port = (argc > 2) ? atoi(argv[2]) : 5760;
         double speed = (argc > 3) ? atof(argv[3]) : 1.0;
         if (port <= 0 || port > 65535 || !(speed > 0.0 && speed <= 50.0)) {
-            printf("usage: autopilot_sim server [port 1..65535] [speed 0..50] [usb] [gwbaud=N]\n"
+            printf("usage: autopilot_sim server [port 1..65535] [speed 0..50] [usb] [gwbaud=N] [origin=lat,lon]\n"
                    "       (the gateway UART for the Raspberry Pi software is on port + 2)\n");
             return 1;
         }
@@ -448,6 +449,16 @@ int main(int argc, char **argv)
         for (int i = 4; i < argc; i++) {
             if (strcmp(argv[i], "usb") == 0) usb = true;
             else if (strncmp(argv[i], "gwbaud=", 7) == 0) gw_baud = (uint32_t)strtoul(argv[i] + 7, NULL, 10);
+            else if (strncmp(argv[i], "origin=", 7) == 0) {     /* "origin=37.75,23.70": start position */
+                double la = 0.0, lo = 0.0;
+                if (sscanf(argv[i] + 7, "%lf,%lf", &la, &lo) == 2 && la > -80.0 && la < 80.0 &&
+                    lo >= -180.0 && lo <= 180.0) {
+                    world_set_origin(la, lo);
+                } else {
+                    printf("origin=lat,lon: bad value \"%s\"\n", argv[i] + 7);
+                    return 1;
+                }
+            }
         }
         return sim_server(port, speed, usb, gw_baud);
     }

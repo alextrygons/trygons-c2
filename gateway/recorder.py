@@ -80,7 +80,8 @@ def dur(s):
 
 
 def ffmpeg_bin():
-    return shutil.which("ffmpeg") or r"C:\msys64\ucrt64\bin\ffmpeg.exe"
+    import toolpaths
+    return toolpaths.ffmpeg() or "ffmpeg"
 
 
 class CamRecorder:

@@ -25,7 +25,6 @@ safety: a camera problem never changes the mode (it is only shown).
 """
 import json
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -131,7 +130,8 @@ class CameraManager:
         return "\n".join(lines) + "\n"
 
     def start(self, auth_url):
-        binary = self.cfg.get("mediamtx_bin") or shutil.which("mediamtx") or "/usr/local/bin/mediamtx"
+        import toolpaths
+        binary = self.cfg.get("mediamtx_bin") or toolpaths.mediamtx() or "/usr/local/bin/mediamtx"
         conf = self.cfg.get("mediamtx_conf") or "/var/lib/trygons/mediamtx.yml"
         os.makedirs(os.path.dirname(conf), exist_ok=True)
         with open(conf, "w", encoding="utf-8") as f:

@@ -4,6 +4,8 @@
     python app.py tcp:127.0.0.1:5760   connect to the simulator at once
     python app.py COM5                 connect to the board at once
     python app.py gw:trygons-gw:5761   through the gateway (Raspberry Pi), asks for the login
+Options (the demo uses them): --login user:password (no login window),
+--driver (open the DRIVER screen too), --charts FOLDER (other chart files).
 
 Big, high-contrast layout for use in sunlight. Everything is drawn locally
 (no internet needed): map, track, plot.
@@ -71,7 +73,9 @@ def btn(parent, text, cmd, bg=PANEL, fg=FG, font=F_MED, width=None):
 
 
 class App:
-    def __init__(self, root, address=None, login=None):
+    def __init__(self, root, address=None, login=None, charts_dir=None, open_driver=False, layout=None, cams=None):
+        self.layout_path = layout or LAYOUT    # window places (gs_layout.json)
+        self.auto_cams = cams           # camera preset to ask for once connected through the gateway (demo)
         self.root = root
         self.login = login              # (user, password) for "gw:" without asking (tests)
         self.link = None
@@ -104,7 +108,7 @@ class App:
         self.wiz = None                 # guided button-mapping routine
         self.sim_usb = {"x": 0.0, "lever": 0.5, "stick": True, "throttle": True, "fault": 0}
         self.driver = None              # the DRIVER screen (second monitor), section I
-        self.charts = chart.Charts()    # offline depth charts (tools/chartprep.py -> charts/), section B
+        self.charts = chart.Charts(charts_dir)  # offline depth charts (tools/chartprep.py -> charts/), section B
         self.chartview = mapview.ChartView(self.charts)
         self.single_op = False          # SINGLE-OPERATOR mode as the GATEWAY has it (section F1)
         self.gw_asks = {}               # driver questions from the gateway: id -> text
@@ -113,7 +117,7 @@ class App:
         self.slam_hist = collections.deque(maxlen=300)   # (t, slamming peak g) from the telemetry
         self.layout = {}
         try:
-            with open(LAYOUT, encoding="utf-8") as f:
+            with open(self.layout_path, encoding="utf-8") as f:
                 self.layout = json.load(f)
         except (OSError, ValueError):
             pass
@@ -154,7 +158,7 @@ class App:
         for k in ("<F12>", "<Control-Tab>"):
             root.bind(k, lambda e: self.swap_screens())
         root.bind("<Configure>", lambda e: self.layout_changed())
-        if self.layout.get("driver_open"):
+        if self.layout.get("driver_open") or open_driver:
             root.after(600, self.open_driver)
 
     # --- layout ------------------------------------------------------------------
@@ -1233,7 +1237,7 @@ class App:
         try:
             self.layout = {"captain": self.root.geometry(), "driver_open": self.driver is not None,
                            "driver": self.driver.w.geometry() if self.driver else self.layout.get("driver")}
-            with open(LAYOUT, "w", encoding="utf-8") as f:
+            with open(self.layout_path, "w", encoding="utf-8") as f:
                 json.dump(self.layout, f)
         except (OSError, tk.TclError):
             pass
@@ -1540,6 +1544,9 @@ class App:
                     self.on_single_op(bool(me and me[0].get("single_op")))
                     self.draw_network()
                     self.draw_ais()
+                    if self.auto_cams:
+                        self.cam_preset(self.auto_cams)
+                        self.auto_cams = None
                     self.drv_proposal()
                 elif kind == "channel_ack":
                     self.on_channel_ack(d)
@@ -2207,8 +2214,22 @@ class App:
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="Trygons C2 ground station")
+    ap.add_argument("address", nargs="?", help="tcp:host:port, COM5 or gw:host:port")
+    ap.add_argument("--login", help="user:password for the gateway (else a login window)")
+    ap.add_argument("--driver", action="store_true", help="open the DRIVER screen too")
+    ap.add_argument("--charts", help="chart folder (default: <repo>/charts)")
+    ap.add_argument("--layout", help="window-place file (default: gs_layout.json here)")
+    ap.add_argument("--title", help="window title (e.g. ON BOARD)")
+    ap.add_argument("--cams", help="camera preset to start with (e.g. Full)")
+    a = ap.parse_args()
+    login = tuple(a.login.split(":", 1)) if a.login and ":" in a.login else None
     root = tk.Tk()
-    App(root, sys.argv[1] if len(sys.argv) > 1 else None)
+    App(root, a.address, login=login, charts_dir=a.charts, open_driver=a.driver, layout=a.layout,
+        cams=a.cams)
+    if a.title:
+        root.title("%s - %s" % (a.title, root.title()))
     root.mainloop()
 
 

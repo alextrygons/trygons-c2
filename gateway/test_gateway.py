@@ -1015,9 +1015,8 @@ from simcam import ffmpeg_bin  # noqa: E402
 from recorder import seg_time  # noqa: E402
 import tlg  # noqa: E402
 
-MTX_BIN = os.environ.get("MEDIAMTX_BIN") or shutil.which("mediamtx") or os.path.join(
-    tempfile.gettempdir(), "claude", "c--trygons-TRYGONS-C2", "800448bc-0615-4bb2-9260-80ce21ee6535",
-    "scratchpad", "mediamtx", "mediamtx.exe")
+import toolpaths  # noqa: E402
+MTX_BIN = toolpaths.mediamtx() or "mediamtx (missing: python tools/get_mediamtx.py)"
 CAM_NAMES = ["FRONT-1", "FRONT-2", "REAR-LEFT", "REAR-RIGHT"]
 CAM_ROLES = ["front_main", "front_backup", "rear_left", "rear_right"]
 
