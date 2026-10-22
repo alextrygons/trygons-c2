@@ -17,6 +17,10 @@ otherwise). No simulator needed, fast and repeatable.
   CA9 HEADING LOCK: proposal, ACCEPT changes the locked heading, REJECT keeps
      it (no new proposal for a while), return-to-course proposal after clear
   CA10 MANUAL / REMOTE MANUAL: alarm only (no heading, no speed request)
+  E1  simulated AIS traffic (simais.traffic + AisSim): Class A / B mix,
+      realistic speeds, report intervals per class, lost messages and broken
+      lines; then random traffic through the planner (soak): no crash, every
+      steering request has a checked route, DRIVER DECISION never steers
 """
 import math
 import os
@@ -120,6 +124,92 @@ def run(boat, ships, seconds=2500, av=None, mode=None):
     ahead = any(A.crosses_ahead(boat.track, s.track, s.cog, ahead_m=0.5 * NM) for s in ships if s.sog > 1)
     return {"kinds": kinds, "states": states, "headings": headings, "first_cap": first_cap_t,
             "first_hdg": first_hdg_t, "dmin": dmin, "ahead": ahead, "end_kind": kinds[-1], "av": av}
+
+
+def e1_traffic():
+    import socket
+    import time
+    import simais
+    from ais import AisTargets
+    ships = simais.traffic(LAT0, LON0, 40, seed=4)
+    a = [x for x in ships if x.cls == "A" and x.sog >= 0.5]
+    b = [x for x in ships if x.cls == "B"]
+    kinds_ok = len(a) >= 8 and len(b) >= 8 and all(0 <= x.sog <= 32 for x in ships) and \
+        any(x.turn_dpm for x in ships) and len({x.mmsi for x in ships}) == len(ships)
+    # 10 x faster: Class A every 1 / 0.6 / 0.2 s, Class B every 3 s, static data every 36 s
+    srv_port = None
+    for port in range(5791, 5800):
+        try:
+            sim = simais.AisSim(port, seed=4, noise_m=8.0, drop=0.1, bad=0.05, speed=10.0, start_offset=0.1).start()
+            srv_port = port
+            break
+        except OSError:
+            continue
+    for x in ships[:12]:
+        sim.add(x)
+    c = socket.create_connection(("127.0.0.1", srv_port))
+    c.settimeout(0.2)
+    T = AisTargets({})
+    buf, end = b"", time.time() + 8.0
+    while time.time() < end:
+        try:
+            buf += c.recv(65536)
+        except socket.timeout:
+            pass
+        *lines, buf = buf.split(b"\n")
+        for ln in lines:
+            T.feed_line(ln.decode(errors="replace").strip())
+    sim.stop()
+    c.close()
+    per = {m: t for m, t in T.targets.items()}
+    fast = [x for x in ships[:12] if x.cls == "A" and x.sog > 23]
+    slow_b = [x for x in ships[:12] if x.cls == "B"]
+    cnt = {x.mmsi: x.sent for x in ships[:12]}
+    ratio_ok = (not fast or not slow_b) or min(cnt[x.mmsi] for x in fast) > 3 * max(cnt[x.mmsi] for x in slow_b)
+    named = sum(1 for t in per.values() if t.name)
+    lost = sim.dropped / max(1, sim.dropped + sum(cnt.values()))
+    report("E1 simulated AIS traffic: Class A / B mix with realistic speeds, report intervals, lost / broken messages",
+           kinds_ok and len(per) == 12 and ratio_ok and T.bad_crc > 0 and named >= 8 and 0.03 < lost < 0.25,
+           "%d ships: %d Class A moving, %d Class B, speeds %.1f..%.1f kn; received %d of 12 (named %d), "
+           "reports fast ferry %s vs Class B %s; lost %.0f %%, broken lines refused %d" % (
+               len(ships), len(a), len(b), min(x.sog for x in ships), max(x.sog for x in ships), len(per), named,
+               [cnt[x.mmsi] for x in fast], [cnt[x.mmsi] for x in slow_b], 100 * lost, T.bad_crc))
+
+    # soak: random traffic around a boat in AUTO, 15 min each
+    errors, unchecked, dd_steer, decisions, closest = [], 0, 0, 0, 99.0
+    for seed in range(1, 7):
+        tr = simais.traffic(LAT0, LON0, 14, seed=seed, radius_nm=3.0)
+        sh = []
+        for x in tr:
+            px, py = to_xy(x.lat, x.lon, LAT0, LON0)
+            if math.hypot(px, py) < 600:
+                continue                                # not on top of us at the start
+            sh.append(Ship(x.mmsi, px, py, x.sog, x.cog, name=x.name, turn=x.turn_dpm))
+        boat = Boat(0, 0, 0.0, 14.0, (0, 30000))
+        av = A.Avoider({"recheck_s": 20.0})
+        t = 0.0
+        try:
+            while t < 900:
+                req = av.update(t, boat.own(), [x.info() for x in sh], A.MODE_AUTO)
+                if req["kind"] == A.KIND_HEADING and (not av.route or av.state != "AVOID"):
+                    unchecked += 1
+                if av.state == "DRIVER DECISION" and req["kind"] == A.KIND_HEADING:
+                    dd_steer += 1
+                boat.req = req
+                boat.step(1.0)
+                for x in sh:
+                    x.step(1.0)
+                t += 1.0
+        except Exception as e:                          # noqa: BLE001
+            errors.append("seed %d: %r" % (seed, e))
+        decisions += av.decisions
+        for x in sh:
+            closest = min(closest, min(math.hypot(p[0] - q[0], p[1] - q[1]) for p, q in zip(boat.track, x.track)) / NM)
+    report("E1 random traffic soak (6 x 15 min, 14 ships): no crash, never an unchecked route, DRIVER DECISION "
+           "never steers",
+           not errors and unchecked == 0 and dd_steer == 0 and decisions > 0,
+           "errors %s; steering without a checked route %d; steering in DRIVER DECISION %d; %d decisions; "
+           "closest ship %.2f nm" % (errors or "none", unchecked, dd_steer, decisions, closest))
 
 
 def collision_course(t_cpa, own_sog, tgt_sog, tgt_cog, offset_m=0.0):
@@ -312,6 +402,8 @@ def main():
     report("CA10 MANUAL / REMOTE MANUAL: collision alarm only - no heading or speed request",
            all(a and n for a, n in rr), "MANUAL: alarm %s, requests only 'none' %s; REMOTE: alarm %s, %s" % (
                rr[0][0], rr[0][1], rr[1][0], rr[1][1]))
+
+    e1_traffic()
 
     bad = results.count(False)
     print("AVOIDANCE TESTS: %d passed, %d failed" % (len(results) - bad, bad))

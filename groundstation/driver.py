@@ -186,12 +186,12 @@ class DriverScreen:
         self.w.destroy()
 
     # --- captain -> driver questions ----------------------------------------------------
-    def ask(self, text, on_yes, on_no, timeout_s, tag=None):
+    def ask(self, text, on_yes, on_no, timeout_s, tag=None, head="CAPTAIN asks:"):
         if self.question:                       # one at a time: the older one is rejected
             self.answer(False, why="replaced by a newer request")
         self.question = (text, on_yes, on_no, time.time() + timeout_s)
         self.qtag = tag
-        self.qtext.configure(text="CAPTAIN asks:\n" + text)
+        self.qtext.configure(text=head + "\n" + text)
         self.qbox.place(relx=0.5, rely=0.45, anchor="center")
         self.qbox.lift()
         self.w.bell()
@@ -316,6 +316,17 @@ class DriverScreen:
             c.create_text(w / 2, 186, text="SHALLOW WATER AHEAD in %.0f s (%s)" % (
                 sh["in_s"], "no data" if sh["depth"] is None else "%.1f m" % sh["depth"]), fill=RED, font=F_MID,
                 tags="shallow")
+        av = (a.gw_status or {}).get("avoid") or {}
+        danger = [t for t in av.get("threats") or [] if t.get("level") == "danger"]
+        if danger or av.get("state") == "DRIVER DECISION":
+            t = danger[0] if danger else None
+            txt = ("SHIP %s: CPA %.2f nm in %.1f min, bearing %03.0f" % (t["name"], t["cpa_nm"], t["tcpa_min"],
+                                                                     t["bearing"])) if t else ""
+            if av.get("state") == "DRIVER DECISION":
+                txt = ("COLLISION RISK - DRIVER DECISION   " + txt).strip()
+            elif av.get("state") == "AVOID" and av.get("heading") is not None:
+                txt += "   AVOIDING: heading %03.0f" % av["heading"]
+            c.create_text(w / 2, 214, text=txt, fill=RED, font=F_MID, tags="collision")
         if d.get("slam_lost"):
             js.append("slamming sensor lost")
         c.create_text(w / 2, y + 36, text="   ".join(js), fill=FG, font=F_HUD, tags="joy")

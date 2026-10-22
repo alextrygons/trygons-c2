@@ -158,12 +158,15 @@ RUN ALL TESTS (before every commit):
     cd ..\gateway
     C:\msys64\ucrt64\bin\python.exe test_gateway.py
     C:\msys64\ucrt64\bin\python.exe test_avoid.py    (collision avoidance
-                                     planner, 12 tests)
+                                     planner + simulated traffic, 14 tests)
+  Simulated AIS ships to try it out (with "autopilot_sim server"):
+    C:\msys64\ucrt64\bin\python.exe simais.py --ships 12
+    (gateway config: "ais": {"enabled": true, "source": "tcp:127.0.0.1:5790"})
   The Python tests (ground station + log tools):
     cd ..\groundstation
     C:\msys64\ucrt64\bin\python.exe test_e2e.py      (10 tests)
     C:\msys64\ucrt64\bin\python.exe test_logs.py     (3 tests)
-    C:\msys64\ucrt64\bin\python.exe test_driver.py   (6 tests, opens windows)
+    C:\msys64\ucrt64\bin\python.exe test_driver.py   (7 tests, opens windows)
     C:\msys64\ucrt64\bin\python.exe test_charts.py   (6 tests, no internet needed)
 
 OTHER COMMANDS:
@@ -854,6 +857,8 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
   holds its heading, slows to 4 kn and sounds DRIVER DECISION.
   Collision and shallow-water alarms do NOT lower the power limit (slowing
   down is done by the speed request itself).
+  Captain screen, tab "AIS": the ship list (name, distance, bearing, CPA,
+  TCPA, age), click a ship for its details.
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT

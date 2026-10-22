@@ -11,6 +11,9 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
   I5 VIDEO FROZEN on the driver screen within 1 s; FRONT-1 lost -> FRONT-2;
      remote driving without a live front camera -> warning
   I6 window places remembered (both monitors); F12 swaps the screens
+  I7 AIS list (name, distance, bearing, CPA, TCPA, age; danger first, details
+     on click), collision line on the driver HUD, HEADING LOCK proposal as
+     ACCEPT / REJECT on the driver screen (gone at the gateway -> closed)
 
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
@@ -200,6 +203,64 @@ def main():
                                                                  "shown" if warn else "MISSING"))
         app.vstreams = {}
         app.on_telem = orig
+
+        # I7 AIS list + collision avoidance on both screens (gateway status injected)
+        d = app.t
+        lat0, lon0 = d["est_lat"], d["est_lon"]
+        ships = [{"mmsi": 239000001, "cls": "A", "name": "FAR AWAY", "lat": lat0 + 0.05, "lon": lon0, "sog": 12.0,
+                  "cog": 90.0, "heading": 90, "age_s": 4.0, "stale": False, "dist_nm": 3.0, "type": 70, "length": 120,
+                  "beam": 20, "draught": 6.0, "dest": "PIRAEUS", "callsign": "SVAB1", "src": "local", "turn_dpm": 0.0},
+                 {"mmsi": 239000002, "cls": "A", "name": "BLUE STAR", "lat": lat0, "lon": lon0 + 0.02, "sog": 18.0,
+                  "cog": 270.0, "heading": 270, "age_s": 2.0, "stale": False, "dist_nm": 0.6, "type": 60,
+                  "length": 140, "beam": 22, "draught": 5.5, "dest": "SYROS", "callsign": "SVXY2", "src": "local",
+                  "turn_dpm": 0.0},
+                 {"mmsi": 239000003, "cls": "B", "name": "ELENI", "lat": lat0 - 0.01, "lon": lon0, "sog": 6.0,
+                  "cog": 0.0, "heading": None, "age_s": 400.0, "stale": True, "dist_nm": 0.9, "src": "local",
+                  "turn_dpm": 0.0}]
+        threats = [{"mmsi": 239000002, "name": "BLUE STAR", "cpa_nm": 0.05, "tcpa_min": 1.8, "dist_nm": 0.6,
+                    "bearing": 90.0, "level": "danger", "stale": False},
+                   {"mmsi": 239000003, "name": "ELENI", "cpa_nm": 0.4, "tcpa_min": 5.0, "dist_nm": 0.9,
+                    "bearing": 180.0, "level": "warn", "stale": True}]
+        prop = {"id": 7, "kind": "avoid", "heading": 74, "speed_kn": 4.0,
+                "text": "BLUE STAR: CPA 0.05 nm in 1.8 min. Steer 074 and slow to 4 kn?"}
+        answers = []
+        app.avoid_answer = lambda pid, yes: answers.append((pid, yes))
+        app.gw_status = {"ais": {"list": ships}, "avoid": {"state": "PROPOSE", "why": "proposal", "threats": threats,
+                                                           "proposal": prop, "route": []}}
+        app.draw_ais()
+        app.drv_proposal()
+        rows = app.ais_tree.get_children()
+        first = app.ais_tree.item(rows[0]) if rows else {}
+        app.ais_tree.selection_set(rows[0])
+        pump(0.3)
+        detail = app.ais_detail.cget("text")
+        dv.draw_status(app.t)
+        hud = [dv.status.itemcget(i, "text") for i in items_with_tag(dv.status, "collision")]
+        asked = dv.question is not None and "COLLISION AVOIDANCE" in dv.qtext.cget("text")
+        dv.answer(True)
+        acc = answers[-1:] == [(7, True)]
+        prop2 = dict(prop, id=8)
+        app.gw_status["avoid"]["proposal"] = prop2
+        app.drv_proposal()
+        asked2 = dv.question is not None
+        dv.answer(False)
+        rej = answers[-1:] == [(8, False)]
+        app.gw_status["avoid"]["proposal"] = dict(prop, id=9)
+        app.drv_proposal()
+        app.gw_status["avoid"]["proposal"] = None
+        app.drv_proposal()
+        closed = dv.question is None and answers[-1:] == [(8, False)]
+        report("I7 AIS list (danger first, CPA / TCPA / age, details on click), collision line on the driver HUD, "
+               "HEADING LOCK proposal ACCEPT / REJECT on the driver screen",
+               len(rows) == 3 and first.get("text") == "BLUE STAR" and "danger" in first.get("tags", []) and
+               first["values"][3] == "0.05" and first["values"][4] == "1.8" and "SYROS" in detail and
+               "SVXY2" in detail and hud and "BLUE STAR" in hud[0] and asked and acc and asked2 and rej and closed,
+               "rows %s; first %s %s; details \"%s\"; HUD \"%s\"; proposal asked %s -> ACCEPT sent %s; next one "
+               "REJECT sent %s; withdrawn at the gateway -> closed without an answer %s" % (
+                   [app.ais_tree.item(r)["text"] for r in rows], first.get("text"), first.get("values"),
+                   detail.replace("\n", " / ")[:120], hud[0] if hud else "MISSING", asked, acc, rej, closed))
+        app.gw_status = None
+        del app.avoid_answer
 
         # I6 window places remembered; F12 swaps the screens
         g_cap, g_drv = root.geometry(), dv.w.geometry()

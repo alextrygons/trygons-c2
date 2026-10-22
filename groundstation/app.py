@@ -800,6 +800,10 @@ class App:
         self.map.pack(fill="both", expand=True)
         self.map.bind("<Button-1>", self.map_click)
 
+        at = tk.Frame(nb, bg=BG)
+        nb.add(at, text="AIS")
+        self._build_ais(at)
+
         pg = tk.Frame(nb, bg=BG)
         nb.add(pg, text="Program")
         self._build_program(pg)
@@ -855,6 +859,108 @@ class App:
         nb.add(lg, text="Events")
         self.events = tk.Listbox(lg, font=F_TXT)
         self.events.pack(fill="both", expand=True)
+
+    # --- AIS ship list + collision avoidance (sections A / D / E2) ------------------
+    AIS_COLS = (("name", "ship", 200), ("cls", "class", 50), ("dist", "distance nm", 95), ("brg", "bearing", 70),
+                ("cpa", "CPA nm", 70), ("tcpa", "TCPA min", 80), ("age", "age s", 60), ("state", "", 110))
+
+    def _build_ais(self, at):
+        self.ais_state_lbl = tk.Label(at, text="collision avoidance: -", font=F_MED, bg=BG, anchor="w",
+                                      justify="left")
+        self.ais_state_lbl.pack(fill="x", padx=6, pady=(4, 0))
+        tk.Label(at, text="AIS does NOT show small boats, jet skis, swimmers or kayaks - keep a lookout.",
+                 font=F_TXT, bg=BG, fg="#a00000").pack(anchor="w", padx=6)
+        self.ais_tree = ttk.Treeview(at, columns=[c for c, _t, _w in self.AIS_COLS[1:]], height=12)
+        for i, (c, t, w) in enumerate(self.AIS_COLS):
+            col = "#0" if i == 0 else c
+            self.ais_tree.column(col, width=w, anchor="w" if i == 0 else "e")
+            self.ais_tree.heading(col, text=t)
+        self.ais_tree.tag_configure("danger", background="#ffb0b0")
+        self.ais_tree.tag_configure("warn", background="#fff0a0")
+        self.ais_tree.tag_configure("stale", foreground="#888888")
+        self.ais_tree.pack(fill="both", expand=True, padx=6, pady=4)
+        self.ais_tree.bind("<<TreeviewSelect>>", lambda e: self.ais_details())
+        self.ais_detail = tk.Label(at, text="click a ship for its details", font=F_TXT, bg=BG, anchor="w",
+                                   justify="left")
+        self.ais_detail.pack(fill="x", padx=6, pady=(0, 6))
+        bb = tk.Frame(at, bg=BG)
+        bb.pack(anchor="w", padx=6, pady=(0, 6))
+        tk.Label(bb, text="proposal (SINGLE-OPERATOR mode only; normally the driver screen answers):",
+                 font=F_TXT, bg=BG).pack(side="left")
+        btn(bb, "ACCEPT", lambda: self.avoid_answer(None, True), font=F_TXT, bg="#b0ffb0").pack(side="left", padx=4)
+        btn(bb, "REJECT", lambda: self.avoid_answer(None, False), font=F_TXT, bg="#ffb0b0").pack(side="left")
+        self.ais_rows = {}
+
+    def ais_rows_now(self):
+        """The AIS list joined with the collision threats (CPA / TCPA) by MMSI, most dangerous first."""
+        av = (self.gw_status or {}).get("avoid") or {}
+        th = {t["mmsi"]: t for t in av.get("threats") or []}
+        d = self.t or {}
+        rows = []
+        for t in self.ais_list():
+            r = dict(t)
+            x = th.get(t["mmsi"], {})
+            r["cpa_nm"], r["tcpa_min"], r["level"] = x.get("cpa_nm"), x.get("tcpa_min"), x.get("level")
+            r["bearing"] = x.get("bearing")
+            if r["bearing"] is None and d.get("pos_source") and t.get("lat") is not None:
+                k = math.cos(math.radians(d["est_lat"]))
+                r["bearing"] = math.degrees(math.atan2((t["lon"] - d["est_lon"]) * k, t["lat"] - d["est_lat"])) % 360
+            rows.append(r)
+        order = {"danger": 0, "warn": 1}
+        rows.sort(key=lambda r: (order.get(r["level"], 2), r.get("dist_nm") if r.get("dist_nm") is not None else 1e9))
+        return rows
+
+    def draw_ais(self):
+        if not hasattr(self, "ais_tree"):
+            return
+        av = (self.gw_status or {}).get("avoid") or {}
+        st = av.get("state") or "-"
+        txt = "collision avoidance: %s" % st
+        if av.get("why"):
+            txt += " - %s" % av["why"]
+        if av.get("proposal"):
+            txt += "\nPROPOSAL on the driver screen: %s" % av["proposal"].get("text", "")
+        self.ais_state_lbl.configure(text=txt, fg=RED if st in ("AVOID", "DRIVER DECISION", "ALARM ONLY", "PROPOSE")
+                                     else "black")
+        rows = self.ais_rows_now()
+        self.ais_rows = {str(r["mmsi"]): r for r in rows}
+        sel = self.ais_tree.selection()
+        self.ais_tree.delete(*self.ais_tree.get_children())
+
+        def f(v, fmt):
+            return "-" if v is None else fmt % v
+        for r in rows:
+            state = {"danger": "DANGER", "warn": "warning"}.get(r["level"], "")
+            if r.get("stale"):
+                state = (state + " STALE").strip()
+            tag = "danger" if r["level"] == "danger" else "warn" if r["level"] == "warn" else \
+                "stale" if r.get("stale") else ""
+            self.ais_tree.insert("", "end", iid=str(r["mmsi"]), text=r.get("name") or str(r["mmsi"]), tags=(tag,),
+                                 values=(r.get("cls", "?"), f(r.get("dist_nm"), "%.2f"), f(r.get("bearing"), "%03.0f"),
+                                         f(r["cpa_nm"], "%.2f"),
+                                         f(r["tcpa_min"] if (r["tcpa_min"] or 0) >= 0 else None, "%.1f"),
+                                         f(r.get("age_s"), "%.0f"), state))
+        keep = [i for i in sel if i in self.ais_rows]
+        if keep:
+            self.ais_tree.selection_set(keep)
+
+    def ais_details(self):
+        sel = self.ais_tree.selection()
+        r = self.ais_rows.get(sel[0]) if sel else None
+        if not r:
+            return
+        bits = ["%s  MMSI %s  class %s%s" % (r.get("name") or "?", r["mmsi"], r.get("cls", "?"),
+                                              "  (online AIS)" if r.get("src") == "online" else "")]
+        bits.append("speed %s kn, course %s, heading %s, turning %s deg/min" % (
+            r.get("sog"), r.get("cog"), r.get("heading"), r.get("turn_dpm")))
+        if r.get("length") or r.get("type"):
+            bits.append("type %s, %s x %s m, draught %s m, call sign %s" % (
+                r.get("type"), r.get("length"), r.get("beam"), r.get("draught"), r.get("callsign") or "-"))
+        if r.get("dest"):
+            bits.append("destination %s" % r["dest"])
+        bits.append("position %.5f %.5f, last report %s s ago%s" % (
+            r["lat"], r["lon"], r.get("age_s"), " (STALE)" if r.get("stale") else ""))
+        self.ais_detail.configure(text="\n".join(bits))
 
     def _build_program(self, pg):
         top = tk.Frame(pg, bg=BG)
@@ -1172,13 +1278,38 @@ class App:
                         lambda why: send(False) if "closed" not in why and "done" not in why else None,
                         d.get("timeout_s", 10.0), tag=i)
 
+    def drv_proposal(self):
+        """A HEADING LOCK collision-avoidance proposal of the gateway -> ACCEPT / REJECT on the driver screen."""
+        p = ((self.gw_status or {}).get("avoid") or {}).get("proposal")
+        tag = ("avoid", p["id"]) if p else None
+        old = getattr(self, "prop_tag", None)
+        if old and old != tag and self.driver:
+            self.driver.cancel(old)                 # gone or replaced at the gateway
+        self.prop_tag = tag
+        if not p or old == tag or not self.driver:
+            return
+        self.event("avoidance proposal: %s" % p["text"])
+        self.driver.ask(p["text"], lambda why: self.avoid_answer(p["id"], True),
+                        lambda why: self.avoid_answer(p["id"], False) if "closed" not in why and "done" not in why
+                        else None, 60.0, tag=tag, head="COLLISION AVOIDANCE proposes:")
+
+    def avoid_answer(self, pid, yes):
+        """ACCEPT / REJECT of the proposal (the gateway takes it only from a driver screen or single-operator)."""
+        if pid is None:
+            p = ((self.gw_status or {}).get("avoid") or {}).get("proposal")
+            if not p:
+                return self.say("No avoidance proposal", RED)
+            pid = p["id"]
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "avoid_answer", "id": pid, "yes": yes})
+
     def on_driver_ask_done(self, d):
         self.gw_asks.pop(d.get("id"), None)
         if self.driver:
             self.driver.cancel(d.get("id"))
 
     def captain_confirm(self, what, on_yes):
-        """Single-operator mode: the captain confirms his own driving action."""
+        """Single-operator mode: the captain confirms their own driving action."""
         if self.cconf is not None:
             self.cconf.destroy()
         w = tk.Toplevel(self.root, bg="#f0e0ff")
@@ -1408,12 +1539,17 @@ class App:
                     me = [s for s in d.get("stations", []) if s.get("id") == d.get("you")]
                     self.on_single_op(bool(me and me[0].get("single_op")))
                     self.draw_network()
+                    self.draw_ais()
+                    self.drv_proposal()
                 elif kind == "channel_ack":
                     self.on_channel_ack(d)
                 elif kind == "cams_ack":
                     self.on_cams_ack(d)
                 elif kind == "save_ack":
                     self.on_save_ack(d)
+                elif kind == "avoid_ack":
+                    self.say("Proposal: %s" % d.get("text", ""), GREEN if d.get("ok") else RED)
+                    self.event("avoidance proposal: %s" % d.get("text", ""))
                 elif kind == "driver_ask":
                     self.on_driver_ask(d)
                 elif kind == "driver_ask_done":
