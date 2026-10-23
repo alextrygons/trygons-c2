@@ -271,6 +271,14 @@ def section_a():
         sim.stop()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    # GA5 (R20): "AURIX alive" only from a frame that passed the CRC, never from line noise
+    import aurix
+    a = aurix.AurixLink("tcp:127.0.0.1:1")
+    a._feed(os.urandom(4000))
+    noise = a.last_rx
+    a._feed(proto.encode(proto.T_HEARTBEAT, 1, b""))
+    report("GA5 AURIX alive only on a valid frame (line noise doesn't count)", noise == 0.0 and a.last_rx > 0.0,
+           "4000 noise bytes: alive time %s; one good frame: alive %s" % (noise, a.last_rx > 0.0))
 
 
 # ------------------------------------------------------------------- section B --

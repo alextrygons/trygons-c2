@@ -55,9 +55,9 @@ class AurixLink:
     # --- receiving ------------------------------------------------------------------
     def _feed(self, data):
         self.bytes_in += len(data)
-        self.last_rx = time.time()
         for f in self.rx.frames_from(data):
             self.frames_in += 1
+            self.last_rx = time.time()          # "AURIX alive": only a frame that passed the CRC, never noise
             for cb in self.handlers.get(f.type, ()):
                 try:
                     cb(f)
