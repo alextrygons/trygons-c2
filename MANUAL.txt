@@ -608,6 +608,12 @@ B. USERS, ROLES AND HELM
     latency.
   * Remote HELM station lost: alarm REMOTE LINK LOST, HELM back to nobody,
     no mode change (remote driving: part D).
+  * TRUST: which station is "on the boat" is decided by the Pi (where it
+    connects from); the AURIX can't check it. A faulty or hacked Pi could
+    therefore claim to be a station on the boat. What it still can't do:
+    leave MANUAL against the joystick, override STANDBY, start AUTO /
+    remote driving or raise the power without the joystick CONFIRM on
+    board, steer outside AUTO, or go faster than the power limit.
   * iPhone: http://trygons-gw:8080 over the VPN, view only (HELM from the
     web page only if switched on in the gateway config).
   * Audit log on the Pi: who connected, who held HELM, every command and

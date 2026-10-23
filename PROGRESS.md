@@ -21,7 +21,7 @@ step that is not DONE below, without redoing finished work.
 | 9 | T3 faster GPS re-trust after a spoof at speed | DONE (~60 s with 2nd GPS / paddlewheel; old rule without - explained; test T3) | affa89f |
 | 9a | (user request) ADS build: .cproject excludes every non-firmware folder, check_ads_excludes.py, CLAUDE.md rule | DONE | 2da572a |
 | 10 | T4 START_DEMO builds the simulator if missing | DONE (tested on a fresh checkout) | 8b9e68a |
-| 11 | review points (section 5 order): R6, R9, R11, R10, R8, T5, R20, R21, R7, R12, LOW (R13 R14 R16 R17 R18 R19 R22 T7 T12) | IN PROGRESS: R6 d8381b5, R9 147642c, R11 6b47fae, R10 c2873db, R8 f6bf7df, T5 e180125, R20 5dd443b, R21 (this commit) | |
+| 11 | review points (section 5 order): R6, R9, R11, R10, R8, T5, R20, R21, R7, R12, LOW (R13 R14 R16 R17 R18 R19 R22 T7 T12) | IN PROGRESS: R6 d8381b5, R9 147642c, R11 6b47fae, R10 c2873db, R8 f6bf7df, T5 e180125, R20 5dd443b, R21 8c97be9, R7 (this commit) | |
 | 12 | RUN_ACCEPTANCE quick, report, push | open | |
 
 ## Notes (fix task)
