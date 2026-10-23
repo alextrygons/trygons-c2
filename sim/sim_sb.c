@@ -475,12 +475,13 @@ static void phase2(void)
         events_t ev;
         memset(&ev, 0, sizeof ev);
         sbsim_init(&x, 13u, 90.0f, 0.0f, NULL);
-        sbsim_run(&x, 1000u, NULL, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        power_full(&x);                             /* really full throttle (R1: STANDBY closing rate) */
         hdg_lock(&x);
         sb_test_drive(&x.sb, true, GEAR_F, 100.0f);
         sbsim_run(&x, 60000u, NULL, NULL);
-        float v0 = x.w.speed_kn, h0 = x.w.heading_deg, hmax = 0.0f;
-        ev_reset(&ev, x.t, sim_hal_throttle(), x.sb.cfg.gear.pwm_n_us);
+        float v0 = x.w.speed_kn, h0 = x.w.heading_deg, hmax = 0.0f, thr0 = sim_hal_throttle();
+        ev_reset(&ev, x.t, thr0, x.sb.cfg.gear.pwm_n_us);
         sim_hal_press(HAL_BTN_STANDBY);
         uint32_t t_end = x.t + 30000u;
         while (x.t < t_end) {
@@ -491,12 +492,14 @@ static void phase2(void)
         const mode_log_entry_t *le = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
         bool order = ev.t_thr_down >= 0.0f && ev.t_thr_down <= 0.1f &&
                      ev.t_idle >= 0.0f && ev.t_neutral > ev.t_idle && ev.t_steer_off >= ev.t_neutral;
-        snprintf(d, sizeof d, "at %.1f kn: throttle down after %.2f s, idle %.2f s, neutral %.2f s, "
-                 "steering off %.2f s (held heading within %.1f deg); under-load shifts %d; log: %s->%s (%s)",
-                 v0, ev.t_thr_down, ev.t_idle, ev.t_neutral, ev.t_steer_off, hmax,
+        snprintf(d, sizeof d, "at %.1f kn, throttle %.0f %%: throttle down after %.2f s, idle %.2f s (STANDBY rate "
+                 "%.0f %%/s), neutral %.2f s, steering off %.2f s (held heading within %.1f deg); under-load shifts %d; "
+                 "log: %s->%s (%s)",
+                 v0, thr0, ev.t_thr_down, ev.t_idle, x.sb.thr.cfg.rate_stop_pct_s, ev.t_neutral, ev.t_steer_off, hmax,
                  x.w.shift_under_load, mode_name(le->from), mode_name(le->to), mode_reason_name(le->why));
-        test_report("P2 STANDBY at full throttle: idle + neutral first, then steering off",
-                    order && x.w.shift_under_load == 0 && ev.steer_after_off == 0 &&
+        test_report("P2 STANDBY at full throttle: idle within about 1 s, neutral, then steering off",
+                    order && thr0 > 90.0f && ev.t_idle <= thr0 / x.sb.thr.cfg.rate_stop_pct_s + 0.1f &&
+                    x.w.shift_under_load == 0 && ev.steer_after_off == 0 &&
                     le->to == MODE_STANDBY && le->why == WHY_STANDBY_BUTTON, d);
     }
 
@@ -742,6 +745,52 @@ static void phase3(void)
                     was_manual && ev.t_thr_down >= 0.0f && ev.t_thr_down <= 0.1f && ev.t_neutral > ev.t_idle &&
                     ev.steer_after_off == 0 && x.w.shift_under_load == 0 &&
                     sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f, d);
+    }
+
+    /* 3.3b R1: STANDBY in MANUAL in a turn - the onboard stick keeps steering
+     *      until idle + neutral (here it swings to the other side during the
+     *      stop, still held), then steering off; the held stick never takes
+     *      control back */
+    {
+        static const ctl_step_t seq[] = {
+            {  0.0f,  0.5f, 1.0f, SEL_F },
+            { 25.4f, -0.5f, 1.0f, SEL_F },    /* 0.4 s after STANDBY: stick to the left, still held */
+        };
+        sbsim_t x;
+        script_t s;
+        events_t ev;
+        memset(&ev, 0, sizeof ev);
+        sbsim_init(&x, 233u, 0.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        script_start(&s, &x, seq, 2);
+        sbsim_run(&x, s.t0 + 25000u, script_hook, &s);
+        bool was_manual = sb_mode(&x.sb) == MODE_MANUAL;
+        float thr0 = sim_hal_throttle(), tgt_press = x.sb.ap.rudder_target;
+        ev_reset(&ev, x.t, thr0, x.sb.cfg.gear.pwm_n_us);
+        sim_hal_press(HAL_BTN_STANDBY);
+        float tgt_min = tgt_press;
+        int motor_left = 0;
+        bool steer_on_at_neutral = false, manual_again = false;
+        while (x.t < s.t0 + 40000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, script_hook, &s);
+            ev_watch(&x, &ev);
+            if (x.sb.ap.mode == AP_MODE_ANGLE) {
+                if (x.sb.ap.rudder_target < tgt_min) tgt_min = x.sb.ap.rudder_target;
+                if (sim_hal_motor_command() < 0.0f) motor_left++;
+            }
+            if (ev.t_neutral >= 0.0f && ev.t_steer_off < 0.0f) steer_on_at_neutral = true;
+            if (sb_mode(&x.sb) == MODE_MANUAL) manual_again = true;
+        }
+        snprintf(d, sizeof d, "throttle %.0f %% -> idle after %.2f s (STANDBY rate %.0f %%/s), neutral %.2f s, "
+                 "steering off %.2f s; outboard command at STANDBY %+.1f deg, followed the stick to %+.1f deg "
+                 "during the stop (motor %d steps left); motor after off %d, under-load %d, held stick took control %s",
+                 thr0, ev.t_idle, x.sb.thr.cfg.rate_stop_pct_s, ev.t_neutral, ev.t_steer_off, tgt_press, tgt_min,
+                 motor_left, ev.steer_after_off, x.w.shift_under_load, manual_again ? "YES" : "no");
+        test_report("P3 R1 STANDBY in MANUAL: the stick steers until idle + neutral, then steering off",
+                    was_manual && thr0 > 20.0f && ev.t_idle >= 0.0f && ev.t_idle <= thr0 / 100.0f + 0.1f &&
+                    ev.t_neutral > ev.t_idle && ev.t_steer_off >= ev.t_neutral && steer_on_at_neutral &&
+                    tgt_press > 5.0f && tgt_min < tgt_press - 3.0f && motor_left > 0 && ev.steer_after_off == 0 &&
+                    x.w.shift_under_load == 0 && !manual_again && sb_mode(&x.sb) == MODE_STANDBY, d);
     }
 
     /* 3.4 compass failure in MANUAL -> alarm only, stay in MANUAL
@@ -2220,9 +2269,10 @@ static void joystick_tests(void)
                  "motor after %d; alarm %s; under-load %d",
                  mode_name(sb_mode(&x.sb)), mode_reason_name(le->why), ev.t_thr_down, ev.t_neutral, ev.t_steer_off,
                  ev.steer_after_off, sim_hal_alarm() ? "on" : "OFF", x.w.shift_under_load);
-        test_report("Joystick wire break while in control: idle + neutral, steering stop, STANDBY",
+        /* the stick that steered is gone: gyro hold until idle + neutral, then steering off */
+        test_report("Joystick wire break while in control: idle + neutral, gyro hold, then steering off, STANDBY",
                     sb_mode(&x.sb) == MODE_STANDBY && le->why == WHY_JOY_FAULT && ev.t_thr_down >= 0.0f &&
-                    ev.t_thr_down <= 0.1f && ev.t_neutral > 0.0f && ev.t_steer_off >= 0.0f && ev.t_steer_off <= 0.1f &&
+                    ev.t_thr_down <= 0.1f && ev.t_neutral > 0.0f && ev.t_steer_off >= ev.t_neutral &&
                     ev.steer_after_off == 0 && sim_hal_alarm() && x.w.shift_under_load == 0, d);
     }
 
@@ -4146,10 +4196,10 @@ static void usb_joystick_tests(void)
                 sbsim_run(&x, x.t + AP_PERIOD_MS, ev_watch, &ev);
                 det_watch(&x, &dt);
             }
-            /* as the analog wire break: throttle down and steering stopped at once (the
-             * stick that steered is gone), neutral after idle, no steering afterwards */
-            bool order = ev.t_thr_down >= 0.0f && ev.t_thr_down <= 0.3f && ev.t_steer_off >= 0.0f &&
-                         ev.t_steer_off <= 0.3f && ev.t_idle >= 0.0f && ev.t_neutral >= ev.t_idle &&
+            /* as the analog wire break: throttle down at once, the stick that steered is
+             * gone -> gyro hold until idle + neutral, then steering off, no steering afterwards */
+            bool order = ev.t_thr_down >= 0.0f && ev.t_thr_down <= 0.3f && ev.t_idle >= 0.0f &&
+                         ev.t_neutral >= ev.t_idle && ev.t_steer_off >= ev.t_neutral &&
                          ev.steer_after_off == 0 && x.w.shift_under_load == 0;
             bool ok = driving && x.sb.joy.fault && dt.t_standby >= 0 && dt.t_standby <= 250 && order &&
                       sim_hal_throttle() <= 1.0f && sim_hal_gear_pwm() == x.sb.cfg.gear.pwm_n_us &&
@@ -4159,7 +4209,7 @@ static void usb_joystick_tests(void)
                      k ? "; " : "", UF_NAME[k], (int)dt.t_standby, ev.t_thr_down, ev.t_steer_off, ev.t_idle, ev.t_neutral, ok ? "" : " FAIL");
         }
         snprintf(d, sizeof d, "driving at 90 %% lever: %s", t2);
-        test_report("U3 same faults while the joystick drives -> idle + neutral + steering stop + STANDBY",
+        test_report("U3 same faults while the joystick drives -> idle + neutral (gyro hold), then steering off, STANDBY",
                     ok_drive == UF_COUNT, d);
     }
 
@@ -5234,6 +5284,41 @@ static void remote_tests(void)
                  "TAKE on board: %s", (unsigned long)dt, stays ? "yes" : "NO", take ? "MANUAL" : "NO");
         test_report("RD3 any onboard joystick movement or TAKE takes control from the remote driver at once",
                     dt <= 200u && stays && take, d);
+    }
+
+    /* RD3b R1: STANDBY while driving remotely - the remote stick is ignored at
+     *      once, the gyro holds the heading until idle + neutral, then steering off */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        rjsim_init(&r, &x, 926u);
+        bool on = rj_enable(&x, &r);
+        rj_lever(&x, &r, 1.0f, 0.5f);
+        sbsim_run(&x, x.t + 15000u, rj_hook, &r);
+        float thr0 = sim_hal_throttle();
+        events_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev_reset(&ev, x.t, thr0, x.sb.cfg.gear.pwm_n_us);
+        sim_hal_press(HAL_BTN_STANDBY);
+        r.x = 1.0f;                                  /* the remote driver steers hard right after STANDBY */
+        bool gyro_whole_stop = true, remote_again = false;
+        float h0 = x.w.heading_deg, hmax = 0.0f;
+        for (int i = 0; i < 200; i++) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);
+            ev_watch(&x, &ev);
+            if (ev.t_steer_off < 0.0f && i > 0 && x.sb.ap.mode != AP_MODE_GYRO_HOLD) gyro_whole_stop = false;
+            if (ev.t_steer_off < 0.0f) hmax = fmaxf(hmax, fabsf(hdg_err(x.w.heading_deg, h0)));
+            if (sb_mode(&x.sb) == MODE_REMOTE) remote_again = true;
+        }
+        snprintf(d, sizeof d, "REMOTE %s, throttle %.1f %% -> idle %.2f s, neutral %.2f s, steering off %.2f s; "
+                 "gyro hold the whole stop %s; heading moved %.1f deg although the remote stick was full right; "
+                 "back to REMOTE %s; motor after off %d",
+                 on ? "yes" : "NO", thr0, ev.t_idle, ev.t_neutral, ev.t_steer_off, gyro_whole_stop ? "yes" : "NO",
+                 hmax, remote_again ? "YES" : "no", ev.steer_after_off);
+        test_report("RD3b R1 STANDBY in REMOTE: remote stick ignored, gyro hold until idle + neutral, then off",
+                    on && thr0 > 15.0f && ev.t_idle >= 0.0f && ev.t_idle <= 0.4f && ev.t_neutral > ev.t_idle &&
+                    ev.t_steer_off >= ev.t_neutral && gyro_whole_stop && hmax < 10.0f && !remote_again &&
+                    ev.steer_after_off == 0 && sb_mode(&x.sb) == MODE_STANDBY, d);
     }
 
     /* RD4 packets stop (gap > 300 ms): idle + neutral, gyro hold, alarm; STANDBY after 5 s; no resume */

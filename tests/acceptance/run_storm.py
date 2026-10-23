@@ -64,11 +64,12 @@ def main():
         with open(os.path.join(OUT, "storm_worker_%d.txt" % w)) as f:
             for line in f:
                 if line.startswith("DATA "):
-                    _, i, c, fl, wst, seed = line.split()
-                    d = inv.setdefault(int(i), [0, 0, 0.0, 0])
+                    _, i, c, fl, wst, seed, wseed = line.split()
+                    d = inv.setdefault(int(i), [0, 0, 0.0, 0, 0])
                     d[0] += int(c)
                     d[1] += int(fl)
-                    d[2] = max(d[2], float(wst))
+                    if float(wst) > d[2]:
+                        d[2], d[4] = float(wst), int(wseed)
                     if int(fl) and not d[3]:
                         d[3] = int(seed)
                 elif line.startswith("DATA_RUN "):
@@ -93,11 +94,11 @@ def main():
     for i in sorted(inv):
         if i in gateway_side:
             continue
-        c, fl, wst, seed = inv[i]
+        c, fl, wst, seed, wseed = inv[i]
         name = next((v for k, v in NAMES.items() if k == "I%d" % i), "I%d" % i)
         bad += fl
         lines.append("| %s %s | %d | %d | %s | %s |" % ("FAIL" if fl else "PASS", name, c, fl,
-                                                       "%.2f s" % wst if i in (4, 5, 12, 19) else "-",
+                                                       "%.2f s (seed %d)" % (wst, wseed) if i in (4, 5, 12, 19) else "-",
                                                        seed or "-"))
     lines += ["", "AUTO entries: %d by PC + CONFIRM, %d by the joystick AUTO button; REMOTE entries %d" % (
         run[2], run[3], run[4]),

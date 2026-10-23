@@ -1,12 +1,33 @@
 # PROGRESS
 
-Current task: "Five parts: (0) progress protocol, (1) one-click demo,
-(2) eWaSR AI obstacle detection, (3) future-ideas notes, (4) full system
-acceptance test" (+ TEST_REPORT.md, git push).
+Current task: "Fix the TEST_REPORT.md findings in order, one commit per item"
+(T11, R1, T2, R3, R5, R4, R2, T1, T3, T4, then the code-review points of
+TEST_REPORT.md section 5), then RUN_ACCEPTANCE.bat quick, short report, git push.
 If interrupted: say "continue from PROGRESS.md" - continue with the first
 step that is not DONE below, without redoing finished work.
 
-## Steps
+## Steps (fix task)
+
+| Step | What | State | Commit |
+|---|---|---|---|
+| 1 | T11 .gitignore /TriCore*/, commit Libraries/iLLD + .cproject, fresh-clone TriCore check | DONE (fresh clone: 1002 library files, 30/30 TriCore OK) | 6a35b25 |
+| 2 | R1 STANDBY: steering held (joystick in MANUAL, gyro in REMOTE) until idle + neutral; fast STANDBY ramp | DONE (storm worst STANDBY 2.16 -> 1.43 s) | (this commit) |
+| 3 | T2 HDG LOCK / AUTO refused unless the joystick is centred; held stick always takes over | open | |
+| 4 | R3 hal_safe_outputs drives the PWM (board path) | open | |
+| 5 | R5 GPS NaN / inf / range rejected in every GPS path | open | |
+| 6 | R4 CPU1 monitor: start after core 0 "running", boot timeout | open | |
+| 7 | R2 big-boat CPU1 heartbeat | open | |
+| 8 | T1 STARLINK never auto-selected while a normal channel works | open | |
+| 9 | T3 faster GPS re-trust after a spoof at speed | open | |
+| 10 | T4 START_DEMO builds the simulator if missing | open | |
+| 11 | review points (section 5 order): R6, R9, R11, R10, R8, T5, R20, R21, R7, R12, LOW (R13 R14 R16 R17 R18 R19 R22 T7 T12) | open | |
+| 12 | RUN_ACCEPTANCE quick, report, push | open | |
+
+## Notes (fix task)
+
+# Previous task: Parts 0-4 (done, last commit 6936f9d)
+
+## Steps (Parts 0-4)
 
 | Step | What | State | Commit |
 |---|---|---|---|

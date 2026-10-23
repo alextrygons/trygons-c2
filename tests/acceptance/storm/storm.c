@@ -400,6 +400,7 @@ static const char *INV_NAMES[NINV] = { "",
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
     float    worst[NINV];           /* reaction times (s) */
+    uint32_t worst_seed[NINV];      /* the episode with the worst reaction (--replay it) */
     uint32_t first_fail_seed[NINV];
     char     first_fail_text[NINV][400];
     uint32_t auto_by_button, auto_by_confirm;
@@ -436,6 +437,7 @@ typedef struct {
     uint32_t gear_change_t;
     uint32_t standby_press_t;       /* 0 = none pending */
     float    standby_thr;
+    bool     standby_safe;          /* outputs were already idle + neutral at the press */
     uint32_t defl_t;                /* joystick deflection from centre: when */
     bool     defl_pending;
     bool     centred_prev;
@@ -483,7 +485,10 @@ static int gear_pos(uint16_t us)
 
 static void worst(int inv, float v)
 {
-    if (v > ST.worst[inv]) ST.worst[inv] = v;
+    if (v > ST.worst[inv]) {
+        ST.worst[inv] = v;
+        ST.worst_seed[inv] = S.sched_seed;
+    }
 }
 
 /* after every control step */
@@ -565,7 +570,7 @@ static void check_step(void)
         if (el > 0.15f && m != MODE_STANDBY && !forced) fail(4, "%.2f s after STANDBY still mode %.0f", el, (double)m);
         if (thr <= 0.6f && (gp == 0 || gp == -1)) {
             ok(4);
-            worst(4, el);
+            worst(4, C.standby_safe ? 0.0f : el);
             C.standby_press_t = 0u;
         } else if (el > bound) {
             fail(4, "%.2f s after STANDBY: not yet idle + neutral (limit %.2f s)", el, bound);
@@ -751,7 +756,14 @@ static void apply(const ev_t *e)
                                           HAL_BTN_PLUS_10, HAL_BTN_MINUS_10 };
         hal_button_t b = B[e->a < 350 ? 0 : 1 + e->a % 5];
         sim_hal_press(b);
-        if (b == HAL_BTN_STANDBY) { C.standby_press_t = S.t + 1u; C.standby_thr = sim_hal_throttle(); }
+        if (b == HAL_BTN_STANDBY) {
+            int g = gear_pos(sim_hal_gear_pwm());
+            C.standby_press_t = S.t + 1u;
+            C.standby_thr = sim_hal_throttle();
+            /* already idle + neutral (e.g. the CPU1 monitor holds the safe state while core 0
+             * is frozen / rebooting): nothing to wait for, reaction time 0 */
+            C.standby_safe = C.standby_thr <= 0.6f && (g == 0 || g == -1);
+        }
         break;
     }
     case E_TAKE: S.take_held = true; S.btn_release = S.t + 150u; joy_apply(); break;
@@ -1003,14 +1015,15 @@ static void report(int episodes, double hours)
         if (i == 18) continue;
         printf("%-4s %-96s checks %9lu  fails %lu%s", ST.fails[i] ? "FAIL" : "PASS", INV_NAMES[i],
                (unsigned long)ST.checks[i], (unsigned long)ST.fails[i], "");
-        if (i == 4 || i == 5 || i == 12 || i == 19) printf("  worst %.2f s", ST.worst[i]);
+        if (i == 4 || i == 5 || i == 12 || i == 19)
+            printf("  worst %.2f s (seed %lu)", ST.worst[i], (unsigned long)ST.worst_seed[i]);
         printf("\n");
         if (ST.fails[i]) printf("     first failing seed %lu: %s\n", (unsigned long)ST.first_fail_seed[i],
                                 ST.first_fail_text[i]);
     }
     for (int i = 1; i < NINV; i++)                      /* for run_storm.py (several processes merged) */
-        printf("DATA %d %lu %lu %.3f %lu\n", i, (unsigned long)ST.checks[i], (unsigned long)ST.fails[i], ST.worst[i],
-               (unsigned long)ST.first_fail_seed[i]);
+        printf("DATA %d %lu %lu %.3f %lu %lu\n", i, (unsigned long)ST.checks[i], (unsigned long)ST.fails[i], ST.worst[i],
+               (unsigned long)ST.first_fail_seed[i], (unsigned long)ST.worst_seed[i]);
     printf("DATA_RUN %d %.3f %lu %lu %lu %lu %lu\n", episodes, hours, (unsigned long)ST.auto_by_confirm,
            (unsigned long)ST.auto_by_button, (unsigned long)ST.remote_entries, (unsigned long)ST.engaged_ignored,
            (unsigned long)ST.engaged_ignored_seed);

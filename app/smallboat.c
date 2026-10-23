@@ -465,7 +465,15 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         s->stopping = true;
         if (hdg_fault_steer) break;                 /* keep the gyro hold / centring running */
         s->stop_steer = STOP_STEER_NONE;
-        if (s->ap.mode == AP_MODE_AUTO && sb_compass_ok(s)) {
+        if (from == MODE_MANUAL && moving) {
+            /* the onboard stick keeps steering until idle + neutral (a held
+             * stick is disarmed for taking control, not for this); stick
+             * gone (fault): gyro hold / centring */
+            if (s->joy.steer_ok) s->stop_steer = STOP_STEER_STICK;
+            else start_fault_steer(s);
+        } else if (from == MODE_REMOTE && moving) {
+            start_fault_steer(s);                   /* remote stick ignored from now: gyro holds */
+        } else if (s->ap.mode == AP_MODE_AUTO && sb_compass_ok(s)) {
             s->stop_steer = STOP_STEER_HEADING;
             autopilot_set_target(&s->ap, s->ap.heading);
         } else if (!sb_compass_ok(s) && moving && was_auto &&
@@ -523,6 +531,7 @@ bool sb_request_mode(sb_t *s, sb_mode_t to, mode_reason_t why)
     sb_mode_t from = s->modes.mode;
     mode_verdict_t v = mode_request(&s->modes, to, why, precondition(s, to, why), s->now_ms);
     if (v != MODE_OK) return false;
+    if (to == MODE_STANDBY) s->stop_planned = (why == WHY_ARRIVED);   /* arrival: the normal closing rate */
     on_enter(s, from, to);
     return true;
 }
@@ -542,6 +551,14 @@ static void joystick_read(sb_t *s, uint32_t dt_ms)
         bool ok = hal_read_joystick(&js);
         joy_step(&s->joy, ok ? &js : NULL, dt_ms);
     }
+}
+
+/* X -> outboard angle over the full range (deadband around centre) */
+static float stick_angle(const sb_t *s, float x)
+{
+    float db = s->joy.cfg.deadband;
+    float xs = (fabsf(x) <= db) ? 0.0f : (x - copysignf(db, x)) / (1.0f - db);
+    return xs * s->ap.cfg.outboard.max_angle_deg;
 }
 
 static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
@@ -581,12 +598,9 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
         autopilot_set_target(&s->ap, s->hdg_target);         /* shown as the target */
     }
     if (sb_mode(s) == MODE_REMOTE) in->angle_cmd_deg = remote_steer(s, (float)(s->now_ms - s->last_ms) * 0.001f);
-    if (sb_mode(s) == MODE_MANUAL) {
-        /* X -> outboard angle over the full range (deadband around centre) */
-        float x = s->joy.x, db = s->joy.cfg.deadband;
-        float xs = (fabsf(x) <= db) ? 0.0f : (x - copysignf(db, x)) / (1.0f - db);
-        in->angle_cmd_deg = xs * s->ap.cfg.outboard.max_angle_deg;
-    }
+    if (sb_mode(s) == MODE_MANUAL) in->angle_cmd_deg = stick_angle(s, s->joy.x);
+    if (sb_mode(s) == MODE_STANDBY && s->stop_steer == STOP_STEER_STICK && s->joy.steer_ok)
+        in->angle_cmd_deg = stick_angle(s, s->joy.steer_x);     /* safe stop from MANUAL */
 }
 
 /* --- joystick throttle (MANUAL and HDG_LOCK) ---------------------------------- */
@@ -1793,6 +1807,10 @@ void sb_step(sb_t *s)
             case STOP_STEER_HEADING:
                 if (safe) s->stop_steer = STOP_STEER_NONE;
                 break;
+            case STOP_STEER_STICK:
+                if (safe) s->stop_steer = STOP_STEER_NONE;
+                else if (!s->joy.steer_ok) start_fault_steer(s);   /* stick failed during the stop */
+                break;
             case STOP_STEER_GYRO:
                 if (!autopilot_gyro_ok(&s->ap)) {       /* gyro lost too */
                     autopilot_center(&s->ap);
@@ -1859,6 +1877,9 @@ void sb_step(sb_t *s)
     float lim_dir = (s->gear_demand == GEAR_F) ? fminf(s->plim.fwd_pct, slam_cap(&s->slam)) : s->plim.rev_pct;
     if (s->throttle_demand > lim_dir) s->throttle_demand = lim_dir;
     gear_request(&s->gear, s->gear_demand);
+    /* STANDBY (button, fault, alarm ...): the faster closing rate; a planned
+     * arrival stop and normal driving keep the normal one */
+    s->thr.stop = sb_mode(s) == MODE_STANDBY && !s->stop_planned;
     s->throttle_rate = throttle_step(&s->thr, s->throttle_demand, s->gear.current, gear_throttle_allowed(&s->gear), dt);
 
     /* 6. outputs: engine first, steering last. The servo module clamps to

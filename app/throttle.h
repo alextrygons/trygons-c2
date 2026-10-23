@@ -2,8 +2,9 @@
  * throttle.h - Throttle output: limits and rate limiting.
  *
  * Every throttle change goes through here: the demand is clamped (reverse
- * power limit, gear interlock) and then rate-limited. A separate, faster
- * (but still limited) rate is used to go down, e.g. for a safe stop.
+ * power limit, gear interlock) and then rate-limited. A faster (but still
+ * limited) rate is used to go down; the STANDBY safe stop has its own,
+ * faster closing rate (idle within about 1 s) - normal driving never uses it.
  */
 #ifndef THROTTLE_H
 #define THROTTLE_H
@@ -16,12 +17,14 @@ typedef struct {
     float max_fwd_pct;      /* forward limit (100) */
     float max_rev_pct;      /* reverse power limit (30) */
     float rate_up_pct_s;    /* opening rate (15 %/s) */
-    float rate_down_pct_s;  /* closing rate (40 %/s), also for a safe stop */
+    float rate_down_pct_s;  /* closing rate while driving (40 %/s) */
+    float rate_stop_pct_s;  /* closing rate in STANDBY (safe stop) (100 %/s = idle within 1 s) */
 } throttle_config_t;
 
 typedef struct {
     throttle_config_t cfg;
     float out_pct;          /* what goes to the throttle servo */
+    bool  stop;             /* safe stop (STANDBY): close at rate_stop_pct_s */
 } throttle_t;
 
 void  throttle_default_config(throttle_config_t *cfg);

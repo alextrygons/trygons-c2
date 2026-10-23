@@ -195,7 +195,8 @@ typedef enum {
     STOP_STEER_NONE = 0,    /* off */
     STOP_STEER_HEADING,     /* compass OK: hold the heading */
     STOP_STEER_GYRO,        /* compass lost: zero yaw rate with the gyro */
-    STOP_STEER_CENTER       /* compass and gyro lost: outboard to centre */
+    STOP_STEER_CENTER,      /* compass and gyro lost: outboard to centre */
+    STOP_STEER_STICK        /* STANDBY from MANUAL: the onboard stick keeps steering */
 } sb_stop_steer_t;
 
 typedef struct {
@@ -467,6 +468,7 @@ typedef struct {
     bool     stopping;          /* safe stop running (idle + neutral first) */
     sb_stop_steer_t stop_steer; /* steering during the safe stop / HDG_LOCK compass loss */
     bool     stop_from_auto;    /* the stop started in HDG_LOCK / AUTO / TRAINING */
+    bool     stop_planned;      /* STANDBY at the end of a program (arrival): normal closing rate */
     bool     hdg_compass_lost;  /* HDG_LOCK: compass failed, fault steering until stopped */
     bool     hdg_reverse;       /* heading hold paused (reverse / no propulsion): outboard held at hold_angle */
     float    hdg_target;        /* heading kept while paused */

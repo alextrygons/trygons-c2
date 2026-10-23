@@ -159,6 +159,8 @@ void joy_update(joy_t *j, const joy_input_t *in, uint32_t dt_ms)
     j->lever_moved = false;
     j->present = in->present;
     j->has_lever = in->present && in->has_lever;
+    j->steer_ok = false;
+    j->steer_x = 0.0f;
     if (!in->present || !in->ready) {
         /* not fitted / still starting: not usable, no fault (yet) */
         j->armed = false;
@@ -213,6 +215,10 @@ void joy_update(joy_t *j, const joy_input_t *in, uint32_t dt_ms)
         }
     }
 
+    if (!j->fault && isfinite(x)) {
+        j->steer_ok = true;
+        j->steer_x = x;
+    }
     if (j->fault || !j->armed) {
         j->x = j->y = 0.0f;
         j->lever = nz_mid(j);

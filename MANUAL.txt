@@ -401,12 +401,24 @@ USB lever has a few extra ones, chapter 8)
     Nothing pending: nothing happens. It never changes the mode by itself.
   * At power-up the stick must be centred, otherwise it is ignored and the
     outputs stay off (alarm) until you let go.
-  * Broken wire while it drives: idle, neutral, steering stops, STANDBY.
+  * Broken wire while it drives: idle, neutral, STANDBY; the gyro holds
+    the course until idle + neutral, then the steering stops.
 
 THE STANDBY BUTTON ALWAYS WINS
-  Every mode -> STANDBY (idle + neutral first, then steering off). If the
-  stick is still held, it is ignored until centred. The PC can't override
-  it. In STANDBY the button acknowledges alarms.
+  Every mode -> STANDBY (idle + neutral first, then steering off). The
+  throttle closes fast in STANDBY: idle within about 1 s from full
+  (parameter stop_rate_pc_s, 100 %/s; normal driving and a planned arrival
+  stop keep 40 %/s). Until idle + neutral is reached the boat is still
+  steered:
+    * from MANUAL: your stick keeps steering the outboard (even if you
+      still hold it), then the steering stops;
+    * from REMOTE MANUAL: the shore stick is ignored at once, the gyro
+      holds the course;
+    * from HDG LOCK / AUTO: the heading is held (gyro if the compass is
+      gone).
+  A stick that is still held can't take control back until it was centred.
+  The PC can't override the button. In STANDBY the button acknowledges
+  alarms.
 
 AUTO PROGRAM - HOW TO
   1. Program tab: add waypoints (or tick "click adds" and click the map),
@@ -433,8 +445,8 @@ WHAT IT IS
   the bridge into the AURIX (WIRING.md section 6). If anything in that chain
   fails - a plug, the hub, the Teensy, the wire - the boat sees JOYSTICK
   FAULT within 0.15-0.2 s, exactly like a broken wire on the analog stick:
-  if the joystick was driving: throttle idle + neutral, steering stop,
-  STANDBY, alarm.
+  if the joystick was driving: throttle idle + neutral, STANDBY, alarm;
+  the gyro holds the course until idle + neutral, then the steering stops.
 
   The T.16000M and the TWCS are NOT waterproof: dry console only.
 
@@ -655,6 +667,8 @@ D. REMOTE JOYSTICK DRIVING FROM A SHORE PC (mode REMOTE MANUAL)
        (chapter 8). Maximum 20 % forward / 5 % reverse (and never above the
        power limit). Slamming reduction applies (part H).
     5. RELEASE when done (-> STANDBY: idle, neutral, steering off).
+  STANDBY button while driving remotely: the shore stick is ignored at
+  once; the gyro holds the course until idle + neutral, then steering off.
   It also ends when: the onboard joystick moves or TAKE is pressed
   (-> MANUAL at once), STANDBY is pressed, any fault, a station on board
   takes HELM, the remote driver's link fails.
@@ -1058,7 +1072,10 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
 12. SAFETY RULES BUILT INTO THE SOFTWARE
 -------------------------------------------------------------------------------
   * Gear changes only at idle: idle -> wait -> neutral -> wait -> gear.
-  * Every fault / STANDBY: idle + neutral FIRST, then steering off.
+  * Every fault / STANDBY: idle + neutral FIRST, then steering off. In
+    STANDBY the throttle closes at 100 %/s (idle within 1 s); until idle +
+    neutral the onboard stick (from MANUAL) or the gyro (from REMOTE, or a
+    joystick fault) keeps steering.
     Compass lost while moving (AUTO / TRAINING): gyro steering until
     stopped (or outboard to centre if the gyro is gone too). In HDG LOCK:
     gyro hold, the throttle stays with you; STANDBY once you have stopped.
@@ -1139,7 +1156,8 @@ The ground station saves its own copy of the telemetry in the same format
   Throttle servo           1000 us = idle, 2000 us = full (calibrate!)
   Gear servo pulses        F 1900 us, N 1500 us, R 1100 us
   Gear waits               idle 1.0 s, neutral 1.0 s, engage 0.8 s
-  Throttle                 +15 %/s up, -40 %/s down, reverse max 30 %
+  Throttle                 +15 %/s up, -40 %/s down, reverse max 30 %;
+                           STANDBY -100 %/s (stop_rate_pc_s, 40..300)
   Joystick                 deadband 15 % (PC), engage 0.1 s, full stick =
                            100 % demand (PC; the power limit applies)
   USB joystick             neutral zone 45-55 %, lever override 10 %,
@@ -1252,9 +1270,10 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
      * USB lever: hand-back (and HDG LOCK from MANUAL) needs the lever in
        the neutral zone, so the engine is at idle at the hand-back.
      * USB lever: CONFIRM only needs the stick centred, not the lever.
-     * USB joystick fault while driving: the steering stops at once (the
-       stick that steered is gone), the throttle comes down at its normal
-       rate, then neutral - same as a broken wire on the analog stick.
+     * USB joystick fault while driving: the stick that steered is gone,
+       so the gyro holds the course while the throttle comes down at the
+       STANDBY rate, then neutral, then steering off - same as a broken
+       wire on the analog stick.
      * While mapping buttons, the old map still works (TAKE takes over).
      * Core 2 RAM and the LMU blocks are 81-84 % full (the black box). Each
        new byte in the 20 Hz log record costs 1.2 KB of black box: the slot

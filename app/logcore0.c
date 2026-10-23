@@ -118,7 +118,7 @@ uint16_t logcore0_config_text(const sb_t *s, char *out, uint16_t max)
         "steer.kp=%g\nsteer.ki=%g\nsteer.kd=%g\nsteer.turn_rate_dps=%g\nsteer.sea_state=%u\n"
         "outboard.max_angle_deg=%g\noutboard.turn_speed_deg_s=%g\noutboard.gap_deg=%g\ncalibrated=%u\n"
         "gear.pwm_f_us=%u\ngear.pwm_n_us=%u\ngear.pwm_r_us=%u\ngear.idle_wait_ms=%lu\ngear.neutral_wait_ms=%lu\n"
-        "gear.engage_wait_ms=%lu\nthrottle.max_rev_pct=%g\nthrottle.rate_up=%g\nthrottle.rate_down=%g\n"
+        "gear.engage_wait_ms=%lu\nthrottle.max_rev_pct=%g\nthrottle.rate_up=%g\nthrottle.rate_down=%g\nthrottle.rate_stop=%g\n"
         "servo.idle_us=%u\nservo.full_us=%u\nplim.fwd_start=%g\nplim.rev_start=%g\nplim.rev_max=%g\n"
         "cruise_max_kn=%g\nspd_kp=%g\nspd_ki=%g\ngain_ref_kn=%g\nslow_radius_m=%g\napproach_kn=%g\n"
         "dr_max_unc_m=%g\ndr_max_ms=%lu\ndr_speed_factor=%g\ndr_slow_kn=%g\ntraining_throttle_pct=%g\n"
@@ -129,7 +129,7 @@ uint16_t logcore0_config_text(const sb_t *s, char *out, uint16_t max)
         (unsigned)c->gear.pwm_f_us, (unsigned)c->gear.pwm_n_us, (unsigned)c->gear.pwm_r_us,
         (unsigned long)c->gear.idle_wait_ms, (unsigned long)c->gear.neutral_wait_ms,
         (unsigned long)c->gear.engage_wait_ms, c->throttle.max_rev_pct, c->throttle.rate_up_pct_s,
-        c->throttle.rate_down_pct_s, (unsigned)c->servo.idle_us, (unsigned)c->servo.full_us,
+        c->throttle.rate_down_pct_s, s->thr.cfg.rate_stop_pct_s, (unsigned)c->servo.idle_us, (unsigned)c->servo.full_us,
         c->plim.fwd_steps[0], c->plim.rev_start, c->plim.rev_max,
         c->cruise_max_kn, c->spd_kp, c->spd_ki, c->gain_ref_kn, c->slow_radius_m, c->approach_kn,
         c->dr_max_unc_m, (unsigned long)c->dr_max_ms, c->dr_speed_factor, c->dr_slow_kn, c->training_throttle_pct,

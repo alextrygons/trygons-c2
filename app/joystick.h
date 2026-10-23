@@ -90,6 +90,9 @@ typedef struct {
     uint8_t  fault_axis;        /* fault reason JOY_WHY_* (1 = X, 2 = Y, ...) */
     bool     not_centered;      /* power-up: stick was not centred */
     float    x, y;              /* calibrated -1..+1 (0 while not usable) */
+    bool     steer_ok;          /* X is a valid reading (no fault), also while not armed */
+    float    steer_x;           /* that X: only for steering during the STANDBY safe stop
+                                 * (a disarmed stick still steers until idle + neutral) */
     uint16_t raw[2];
     bool     take, autob, confirm;              /* buttons now */
     bool     take_edge, auto_edge, confirm_edge; /* pressed this step */

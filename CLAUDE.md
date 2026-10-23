@@ -70,6 +70,8 @@ Modes — three driving modes + STANDBY + TRAINING
 Safety rules — never break them
 - Gear change only at idle: throttle idle → wait → neutral → wait → new gear → wait → throttle.
 - Every fault / timeout / STANDBY → throttle idle + neutral FIRST, then steering off.
+  - Until idle + neutral the boat is still steered: from MANUAL the onboard stick keeps steering (also a held, disarmed stick: joy.steer_x, STOP_STEER_STICK); from REMOTE the remote stick is ignored at once and the gyro holds; joystick fault → gyro hold (no gyro: centre). AUTO / HDG LOCK: heading hold (gyro if the compass is gone).
+  - STANDBY has its own, faster throttle closing rate (throttle.rate_stop_pct_s, parameter stop_rate_pc_s, default 100 %/s = idle within 1 s); normal driving and a planned arrival stop (WHY_ARRIVED) keep rate_down (40 %/s).
   - Compass lost while moving (AUTO / TRAINING): keep steering on the gyro (target yaw rate 0) until throttle is idle and gear is neutral, then steering off. If the gyro fails too: drive the outboard to its estimated centre, then off.
   - Compass lost in HDG LOCK: gyro hold + alarm, throttle stays with the user; once idle + neutral: steering off, STANDBY.
   - Compass lost in MANUAL → alarm only, stay in MANUAL (manual steering doesn't need the compass).
