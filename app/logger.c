@@ -7,6 +7,14 @@
 #include <string.h>
 
 #include "hal.h"
+
+/* Every SD card call, then CPU2's own watchdog: one slow call is bounded by
+ * the HAL (HAL_SD_MAX_MS), several in one step can't add up to a reset. */
+static int sd_open(const char *name) { int h = hal_sd_open(name); hal_watchdog_kick_core(); return h; }
+static bool sd_write(int h, const void *d, uint32_t n) { bool ok = hal_sd_write(h, d, n); hal_watchdog_kick_core(); return ok; }
+static bool sd_sync(int h) { bool ok = hal_sd_sync(h); hal_watchdog_kick_core(); return ok; }
+static bool sd_close(int h) { bool ok = hal_sd_close(h); hal_watchdog_kick_core(); return ok; }
+
 #include "logq.h"
 #include "logrec.h"
 #include "modes.h"
@@ -77,7 +85,7 @@ static void gw_push(logger_t *lg, const uint8_t *rec, uint16_t len)
 
 static void fail(logger_t *lg)
 {
-    if (lg->h >= 0) (void)hal_sd_close(lg->h);
+    if (lg->h >= 0) (void)sd_close(lg->h);
     lg->h = -1;
     lg->buf_n = 0u;
     lg->failed = true;
@@ -96,7 +104,7 @@ static bool raw_write(int h, uint8_t *buf, uint32_t *n, const void *data, uint32
         p += k;
         len -= k;
         if (*n == LOG_BUF_BYTES) {                  /* full block -> card */
-            if (!hal_sd_write(h, buf, LOG_BUF_BYTES)) return false;
+            if (!sd_write(h, buf, LOG_BUF_BYTES)) return false;
             *n = 0u;
         }
     }
@@ -105,9 +113,9 @@ static bool raw_write(int h, uint8_t *buf, uint32_t *n, const void *data, uint32
 
 static bool flush(int h, uint8_t *buf, uint32_t *n)
 {
-    if (*n && !hal_sd_write(h, buf, *n)) return false;
+    if (*n && !sd_write(h, buf, *n)) return false;
     *n = 0u;
-    return hal_sd_sync(h);
+    return sd_sync(h);
 }
 
 static void file_name(const logger_t *lg, char *out, size_t max, const char *prefix, uint32_t no)
@@ -145,7 +153,7 @@ static void open_next(logger_t *lg)
     g_logstat.card = 1u;
     lg->file_no++;
     file_name(lg, name, sizeof name, "B", lg->file_no);
-    lg->h = hal_sd_open(name);
+    lg->h = sd_open(name);
     lg->buf_n = 0u;
     if (lg->h < 0 || !file_start(lg, lg->h, lg->buf, &lg->buf_n, lg->file_no)) {
         fail(lg);
@@ -191,10 +199,10 @@ static void bb_start(logger_t *lg)
     if (lg->bb_active || !lg->bb_ok || !hal_sd_present()) return;
     lg->bb_no++;
     file_name(lg, name, sizeof name, "BB", lg->bb_no);
-    lg->bbh = hal_sd_open(name);
+    lg->bbh = sd_open(name);
     lg->bb_buf_n = 0u;
     if (lg->bbh < 0 || !file_start(lg, lg->bbh, lg->bb_buf, &lg->bb_buf_n, lg->bb_no)) {
-        if (lg->bbh >= 0) (void)hal_sd_close(lg->bbh);
+        if (lg->bbh >= 0) (void)sd_close(lg->bbh);
         lg->bbh = -1;
         return;
     }
@@ -208,7 +216,7 @@ static void bb_start(logger_t *lg)
         else { ok = raw_write(lg->bbh, lg->bb_buf, &lg->bb_buf_n, e, rec_len(e)); ei++; }
     }
     if (!ok) {
-        (void)hal_sd_close(lg->bbh);
+        (void)sd_close(lg->bbh);
         lg->bbh = -1;
         return;
     }
@@ -221,7 +229,7 @@ static void bb_end(logger_t *lg)
 {
     if (!lg->bb_active) return;
     (void)flush(lg->bbh, lg->bb_buf, &lg->bb_buf_n);
-    (void)hal_sd_close(lg->bbh);
+    (void)sd_close(lg->bbh);
     lg->bbh = -1;
     lg->bb_active = false;
 }
@@ -343,7 +351,7 @@ void logger_step(logger_t *lg, uint32_t now_ms)
     if (lg->bb_active && (int32_t)(now_ms - lg->bb_until) >= 0) bb_end(lg);
     if (lg->h >= 0 && ((now_ms - lg->file_t0) >= LOG_ROTATE_MS || lg->file_bytes >= LOG_ROTATE_BYTES)) {
         if (!flush(lg->h, lg->buf, &lg->buf_n)) fail(lg);
-        if (lg->h >= 0) (void)hal_sd_close(lg->h);
+        if (lg->h >= 0) (void)sd_close(lg->h);
         lg->h = -1;
         lg->failed = false;
         open_next(lg);
@@ -355,7 +363,7 @@ void logger_close(logger_t *lg)
     bb_end(lg);
     if (lg->h >= 0) {
         (void)flush(lg->h, lg->buf, &lg->buf_n);
-        (void)hal_sd_close(lg->h);
+        (void)sd_close(lg->h);
         lg->h = -1;
     }
 }

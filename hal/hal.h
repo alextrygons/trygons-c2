@@ -223,6 +223,10 @@ void hal_set_safety_relay(bool closed);
  * reset (outputs to their reset state, see WIRING.md). */
 void hal_watchdog_init(uint32_t timeout_ms);
 void hal_watchdog_kick(void);
+/* Service only the CALLING core's own watchdog (CPU2's logger: between SD
+ * card operations, so several slow ones in one step can't add up to a
+ * watchdog reset of the whole chip). */
+void hal_watchdog_kick_core(void);
 
 /* Why the chip started (for the log). raw = chip reset status register. */
 typedef enum {
@@ -244,7 +248,11 @@ bool hal_read_supply_voltage(float *volts);
 /* ---- microSD card (FAT32, logger on core 2 only) --------------------------
  * Simple file API (FatFs on the board, a folder on the PC in the sim).
  * open = create / overwrite; handles 0..HAL_SD_FILES-1, -1 = error.
- * Data is only safe on the card after hal_sd_sync / hal_sd_close. */
+ * Data is only safe on the card after hal_sd_sync / hal_sd_close.
+ * TIME BOUND: every hal_sd_* call returns within HAL_SD_MAX_MS - a card or
+ * driver that is slower returns false (-> LOG FAILURE, control goes on);
+ * it must never block longer (the CPU2 watchdog is 500 ms). */
+#define HAL_SD_MAX_MS 200u
 #define HAL_SD_FILES 2
 bool     hal_sd_present(void);
 int      hal_sd_open(const char *name);

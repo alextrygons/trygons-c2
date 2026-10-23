@@ -3818,6 +3818,26 @@ static void logging_tests(void)
     char path[512];
     printf("\n=== Section F: logging ===\n");
 
+    /* F1b R10: the logger services CPU2's own watchdog after every SD card call
+     *     (several slow calls in one step can't add up to a chip reset) */
+    {
+        sbsim_t x;
+        sbsim_init(&x, 609u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        uint32_t ops0 = sim_hal_sd_ops(), kicks0 = sim_hal_core_kicks();
+        sbsim_log_start(&x, "sd_f1b", 1u);
+        hdg_lock(&x);
+        sim_hal_fail_heading(true);                     /* a fault -> black box file too (more SD calls) */
+        sbsim_run(&x, x.t + 120000u, NULL, NULL);
+        sim_hal_fail_heading(false);
+        logger_close(&s_logger);
+        x.log_on = false;
+        uint32_t ops = sim_hal_sd_ops() - ops0, kicks = sim_hal_core_kicks() - kicks0;
+        snprintf(d, sizeof d, "2 min of logging with a black-box file: %lu SD card calls, CPU2 watchdog serviced after "
+                 "%lu of them (HAL contract: each call <= %u ms)", (unsigned long)ops, (unsigned long)kicks, HAL_SD_MAX_MS);
+        test_report("F1b logger services the CPU2 watchdog after every SD card call", ops > 100u && kicks == ops, d);
+    }
+
     /* F1 2 hours at full rate: nothing dropped, timing unchanged */
     {
         sbsim_t x;

@@ -301,6 +301,11 @@ void hal_watchdog_init(uint32_t timeout_ms)
     IfxScuWdt_enableSafetyWatchdog(spw);
 }
 
+void hal_watchdog_kick_core(void)
+{
+    IfxScuWdt_serviceCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());   /* the calling CPU's watchdog */
+}
+
 void hal_watchdog_kick(void)
 {
     IfxScuWdt_serviceCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());

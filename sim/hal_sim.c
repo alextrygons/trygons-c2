@@ -634,6 +634,9 @@ bool sim_hal_safety_relay(void) { return s_relay; }
 /* The simulator's watchdog is modelled by the test harness (sim_sb.c). */
 void hal_watchdog_init(uint32_t timeout_ms) { (void)timeout_ms; }
 void hal_watchdog_kick(void) {}
+static uint32_t s_core_kicks;
+void hal_watchdog_kick_core(void) { s_core_kicks++; }
+uint32_t sim_hal_core_kicks(void) { return s_core_kicks; }
 
 hal_reset_t hal_reset_reason(uint32_t *raw)
 {
@@ -737,8 +740,12 @@ static bool sd_flush(sd_file_t *f)
 
 bool hal_sd_present(void) { return s_sd_present; }
 
+static uint32_t s_sd_ops;
+uint32_t sim_hal_sd_ops(void) { return s_sd_ops; }
+
 int hal_sd_open(const char *name)
 {
+    s_sd_ops++;
     char path[400];
     if (!s_sd_present || s_sd_fail || s_sd_free_kb < 64u) return -1;
     for (int h = 0; h < HAL_SD_FILES; h++) {
@@ -755,6 +762,7 @@ int hal_sd_open(const char *name)
 
 bool hal_sd_write(int h, const void *data, uint32_t len)
 {
+    s_sd_ops++;
     if (h < 0 || h >= HAL_SD_FILES || !s_sd[h].open || !s_sd_present || s_sd_fail) return false;
     if (s_sd_free_kb * 1024ull < (uint64_t)s_sd[h].n + len + 4096u) return false;     /* full */
     if (s_sd[h].n + len > SD_PENDING_MAX && !sd_flush(&s_sd[h])) return false;
@@ -765,12 +773,14 @@ bool hal_sd_write(int h, const void *data, uint32_t len)
 
 bool hal_sd_sync(int h)
 {
+    s_sd_ops++;
     if (h < 0 || h >= HAL_SD_FILES || !s_sd_present || s_sd_fail) return false;
     return sd_flush(&s_sd[h]);
 }
 
 bool hal_sd_close(int h)
 {
+    s_sd_ops++;
     if (h < 0 || h >= HAL_SD_FILES || !s_sd[h].open) return false;
     bool ok = s_sd_present && !s_sd_fail && sd_flush(&s_sd[h]);
     fclose(s_sd[h].f);

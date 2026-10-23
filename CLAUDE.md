@@ -97,6 +97,7 @@ Safety rules — never break them
 - Neutral-start interlock: outputs only arm at power-up with throttle idle, neutral confirmed and the joystick centred (USB: stick centred AND lever in the neutral zone). The joystick must be SEEN (not detected yet / USB bridge still starting = not armed, NOT ARMED alarm); only a boat configured without a joystick (cfg.joy_optional, analog source) arms without it.
 - USB bridge: no valid frame 150 ms / > 5 CRC errors per s / stuck counter / device unplugged / invalid axis / learn mode = JOYSTICK FAULT (same as a wire break). Hand-back needs stick centred AND lever neutral.
 - Alarm acknowledge (PC ALARM_ACK from any station, panel STANDBY in STANDBY) = sb_alarm_ack(): clears only alarms whose cause is gone; active conditions stay (link-lost bits are raised again every step while lost).
+- CPU2 watchdog (500 ms): the logger calls hal_watchdog_kick_core() after every SD card call (wrappers sd_* in logger.c); HAL contract: each hal_sd_* call returns within HAL_SD_MAX_MS (200 ms) or fails (LOG FAILURE) - the board's FatFs driver must keep it.
 - Logging must never block or slow control: core 0 / CPU1 only push into lock-free queues; full queue → drop + count.
 - Every feature has sim tests for its failure cases.
 
