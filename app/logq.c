@@ -21,6 +21,7 @@ void logq_init(logq_t *q, uint8_t *buf, uint32_t size)
     q->tail = 0u;
     q->dropped = 0u;
     q->pushed = 0u;
+    q->resyncs = 0u;
 }
 
 void logq_init_all(void)
@@ -59,6 +60,14 @@ uint16_t logq_pop(logq_t *q, void *out, uint16_t max)
     if (q->head == tail) return 0u;
     hal_mem_barrier();
     uint16_t len = (uint16_t)(q->buf[tail % q->size] | ((uint16_t)q->buf[(tail + 1u) % q->size] << 8));
+    if ((uint32_t)len + 2u > q->head - tail) {
+        /* corrupted length (more than is queued): moving the tail by it would
+         * break the queue for good - drop what is queued and go on (only the
+         * consumer writes the tail) */
+        q->tail = q->head;
+        q->resyncs = q->resyncs + 1u;
+        return 0u;
+    }
     uint8_t *p = (uint8_t *)out;
     for (uint16_t i = 0; i < len; i++) {
         uint8_t b = q->buf[(tail + 2u + i) % q->size];

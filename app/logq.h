@@ -27,6 +27,7 @@ typedef struct {
     volatile uint32_t tail;     /* written by the consumer only */
     volatile uint32_t dropped;  /* records that didn't fit (producer) */
     volatile uint32_t pushed;
+    volatile uint32_t resyncs;  /* corrupted length seen: queue emptied (consumer), keeps working */
 } logq_t;
 
 extern logq_t g_logq0, g_logq1;

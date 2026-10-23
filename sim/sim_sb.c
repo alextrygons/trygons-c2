@@ -3818,6 +3818,29 @@ static void logging_tests(void)
     char path[512];
     printf("\n=== Section F: logging ===\n");
 
+    /* F0 R16: a corrupted record length in a log queue: the consumer resyncs,
+     *     the queue goes on working (it was broken for good before) */
+    {
+        static uint8_t qb[1024], rec[64], out[256];
+        logq_t q;
+        logq_init(&q, qb, sizeof qb);
+        for (int i = 0; i < 64; i++) rec[i] = (uint8_t)i;
+        for (int i = 0; i < 5; i++) logq_push(&q, rec, 40u);
+        qb[(q.tail + 1u) % q.size] = 0x7Fu;              /* length of the oldest record -> 32 K */
+        uint16_t got = logq_pop(&q, out, sizeof out);
+        bool resynced = got == 0u && q.resyncs == 1u && logq_used(&q) == 0u;
+        int ok_after = 0;
+        for (int i = 0; i < 100; i++) {                  /* 100 more records through a 1 KB queue */
+            if (logq_push(&q, rec, 40u) && logq_pop(&q, out, sizeof out) == 40u && out[39] == 39u) ok_after++;
+        }
+        snprintf(d, sizeof d, "length byte corrupted: pop returned %u, resyncs %lu, queue empty %s; afterwards %d of "
+                 "100 records pushed + popped correctly, dropped %lu",
+                 (unsigned)got, (unsigned long)q.resyncs, logq_used(&q) == 0u ? "yes" : "NO", ok_after,
+                 (unsigned long)q.dropped);
+        test_report("F0 log queue: a corrupted record length is resynced, the queue keeps working",
+                    resynced && ok_after == 100 && q.dropped == 0u, d);
+    }
+
     /* F1b R10: the logger services CPU2's own watchdog after every SD card call
      *     (several slow calls in one step can't add up to a chip reset) */
     {
