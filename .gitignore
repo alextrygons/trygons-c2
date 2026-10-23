@@ -1,9 +1,9 @@
 *.elf
 *.hex
 *.o
-Debug/
-TASKING*/
-TriCore*/
+/Debug/
+/TASKING*/
+/TriCore*/
 __pycache__/
 groundstation/logs/
 sim/*.exe
