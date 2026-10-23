@@ -1178,7 +1178,8 @@ The ground station saves its own copy of the telemetry in the same format
   TRAINING                 throttle 20 % (PC), 30 s spin-up
   Neutral-start            conditions OK 0.5 s to arm, alarm after 3 s
   Watchdog                 100 ms (core 0), 100 ms (CPU1), 500 ms (core 2)
-  Monitor                  heartbeat 200 ms, limit margin 1 %, 2.5 s ramp
+  Monitor                  heartbeat 200 ms (watched once core 0 runs; it
+                           must start within 3 s), limit margin 1 %, 2.5 s ramp
   PC link timeout          3 s (PC)
   Logging                  sync 2 s, new file 10 min / 20 MB, black box
                            60 s + 30 s

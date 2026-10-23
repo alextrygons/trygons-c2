@@ -1925,6 +1925,7 @@ void sb_step(sb_t *s)
     g_mon.thr_idle_us = s->cfg.servo.idle_us;
     g_mon.gear_n_us = s->cfg.gear.pwm_n_us;
     g_mon.heartbeat = g_mon.heartbeat + 1u;
+    g_mon.running = MON_RUNNING;                    /* the control loop runs (monitor watches from now) */
 
     /* 8. video SAVE requests for the gateway */
     save_triggers(s);

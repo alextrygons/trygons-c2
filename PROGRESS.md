@@ -14,8 +14,8 @@ step that is not DONE below, without redoing finished work.
 | 2 | R1 STANDBY: steering held (joystick in MANUAL, gyro in REMOTE) until idle + neutral; fast STANDBY ramp | DONE (storm worst STANDBY 2.16 -> 1.43 s) | 5768d2e |
 | 3 | T2 HDG LOCK / AUTO refused unless the joystick is centred; held stick always takes over | DONE (storm NOTE 97 -> 0) | d90d6ac |
 | 4 | R3 hal_safe_outputs drives the PWM (board path) | DONE (GTM TOM servo PWM written; TriCore compile + symbols checked; needs the bench test) | 5449c11 |
-| 5 | R5 GPS NaN / inf / range rejected in every GPS path | DONE (8/8 kinds rejected, GPS2 range, DR inputs) | (this commit) |
-| 6 | R4 CPU1 monitor: start after core 0 "running", boot timeout | open | |
+| 5 | R5 GPS NaN / inf / range rejected in every GPS path | DONE (8/8 kinds rejected, GPS2 range, DR inputs) | cf896af |
+| 6 | R4 CPU1 monitor: start after core 0 "running", boot timeout | DONE (boot 3 s, test C3b) | (this commit) |
 | 7 | R2 big-boat CPU1 heartbeat | open | |
 | 8 | T1 STARLINK never auto-selected while a normal channel works | open | |
 | 9 | T3 faster GPS re-trust after a spoof at speed | open | |

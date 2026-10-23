@@ -159,6 +159,7 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     logq_init_all();
     memset((void *)&g_logstat, 0, sizeof g_logstat);
     sb_init(&x->sb, &c);
+    memset((void *)&g_mon, 0, sizeof g_mon);         /* CPU1 starts: "running" only from core 0's loop */
     monitor_init(&x->mon, 0u);
     x->mon_on = true;
     x->wdt_ms = 100u;
@@ -3415,6 +3416,58 @@ static void hardening_tests(void)
         test_report("C3 frozen core 0 (no watchdog): monitor heartbeat trip -> idle + neutral + alarm",
                     r.why == MON_TRIP_HEARTBEAT && r.t_react >= (float)MON_HB_MS && r.t_react <= (float)MON_HB_MS + 30.0f &&
                     r.thr_after <= 0.0f && r.gear_after == x.sb.cfg.gear.pwm_n_us && r.alarm, d);
+    }
+
+    /* C3b R4: slow boot - before core 0 says "running" only the boot timeout
+     *     counts (no heartbeat trip during a slow start); afterwards the
+     *     heartbeat; core 0 that never starts trips after MON_BOOT_MS */
+    {
+        static mon_shared_t sh;
+        mon_t m;
+        memset((void *)&sh, 0, sizeof sh);
+        sh.thr_idle_us = 1000u;
+        sh.gear_n_us = 1500u;
+        sh.fwd_limit = 30.0f;
+        sh.rev_limit = 5.0f;
+        monitor_init(&m, 0u);
+        bool trip_boot = false;
+        uint32_t t = 0u;
+        for (; t <= 2500u; t++) trip_boot |= monitor_step(&m, &sh, t);        /* slow start, no heartbeat */
+        sh.running = MON_RUNNING;
+        bool trip_run = false;
+        for (; t <= 5000u; t++) {
+            if (t % 50u == 0u) sh.heartbeat++;
+            trip_run |= monitor_step(&m, &sh, t);
+        }
+        uint32_t t_stop = 5000u, t_trip = 0u;                    /* the last heartbeat */
+        for (; t <= 6000u && !m.tripped; t++) monitor_step(&m, &sh, t);     /* heartbeat stops */
+        if (m.tripped) t_trip = m.trip_ms - t_stop;
+        mon_reason_t r_hb = m.reason;
+        /* core 0 never starts */
+        mon_t n;
+        memset((void *)&sh, 0, sizeof sh);
+        monitor_init(&n, 0u);
+        for (t = 0u; t <= 4000u && !n.tripped; t++) monitor_step(&n, &sh, t);
+        /* the whole simulator: core 0 starts its loop 2.5 s late */
+        sbsim_t x;
+        sbsim_init(&x, 404u, 90.0f, 0.0f, NULL);
+        x.wdt_ms = 0u;
+        x.frozen = true;
+        sbsim_run(&x, 2500u, NULL, NULL);
+        bool sim_quiet = !x.mon.tripped;
+        x.frozen = false;
+        sbsim_run(&x, 6000u, NULL, NULL);
+        bool sim_ok = !x.mon.tripped && x.mon.started;
+        snprintf(d, sizeof d, "2.5 s without \"running\": trip %s; running + heartbeat 2.5 s: trip %s; heartbeat stops: "
+                 "%s after %lu ms; core 0 never starts: %s after %lu ms (limit %u); simulator with core 0 2.5 s "
+                 "late: no trip %s, watched afterwards %s",
+                 trip_boot ? "YES" : "no", trip_run ? "YES" : "no", monitor_reason_name(r_hb), (unsigned long)t_trip,
+                 monitor_reason_name(n.reason), (unsigned long)n.trip_ms, MON_BOOT_MS, sim_quiet ? "yes" : "NO",
+                 sim_ok ? "yes" : "NO");
+        test_report("C3b slow boot: no monitor trip before core 0 runs; never starting trips after 3 s",
+                    !trip_boot && !trip_run && r_hb == MON_TRIP_HEARTBEAT && t_trip > MON_HB_MS &&
+                    t_trip <= MON_HB_MS + 2u && n.tripped && n.reason == MON_TRIP_BOOT &&
+                    n.trip_ms > MON_BOOT_MS && n.trip_ms <= MON_BOOT_MS + 2u && sim_quiet && sim_ok, d);
     }
 
     /* C4 core 0 freezes with the watchdog on: reset, safe start again */

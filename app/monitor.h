@@ -10,6 +10,9 @@
  *     coming down after a limit drop) -> trip
  *   - gear servo moved while the throttle is not idle -> trip
  *   - heartbeat missing for more than HB_MS (200 ms) -> trip (core 0 frozen)
+ *     - only once core 0 says "running" (MON_RUNNING, written by its control
+ *       loop): a slow boot (flash, calibration, links) can't trip it; core 0
+ *       that never starts trips after BOOT_MS (3 s)
  * Trip: hal_safe_outputs() forces throttle idle + gear neutral + steering
  * motor off + alarm + safety relay open, latched in the HAL until reset
  * (core 0 can't override it), and g_mon.tripped tells core 0 (-> STANDBY).
@@ -24,6 +27,8 @@
 #include <stdint.h>
 
 #define MON_HB_MS        200u     /* heartbeat missing this long -> trip */
+#define MON_BOOT_MS      3000u    /* core 0 not "running" this long after the monitor started -> trip */
+#define MON_RUNNING      0xC0DE0A11u   /* g_mon.running: core 0's control loop runs */
 #define MON_OVER_MS      2500u    /* above the limit (coming down) at most this long */
 #define MON_MARGIN_PCT   1.0f     /* tolerance on the limit */
 #define MON_GEAR_DELTA   20u      /* gear pulse change that counts as "gear moved", us */
@@ -32,12 +37,14 @@ typedef enum {
     MON_OK = 0,
     MON_TRIP_THROTTLE,          /* throttle above the power limit */
     MON_TRIP_GEAR,              /* gear moved with the throttle open */
-    MON_TRIP_HEARTBEAT          /* core 0 stopped */
+    MON_TRIP_HEARTBEAT,         /* core 0 stopped */
+    MON_TRIP_BOOT               /* core 0 never started its control loop */
 } mon_reason_t;
 
 /* Shared memory core 0 -> CPU1 (and the trip flag back). On the TC375
  * this lives in core 0's DSPR, which other cores read uncached. */
 typedef struct {
+    volatile uint32_t running;          /* MON_RUNNING once core 0's control loop runs (CPU1 clears it at start) */
     volatile uint32_t heartbeat;        /* +1 every control step */
     volatile float    throttle_pct;     /* throttle sent to the servo */
     volatile float    fwd_limit, rev_limit;
@@ -59,7 +66,8 @@ typedef struct {
     uint16_t     last_gear;
     uint32_t     over_ms;
     uint32_t     last_ms;
-    bool         started;       /* core 0 has published at least once */
+    bool         started;       /* core 0 said "running" (heartbeat watched from then) */
+    uint32_t     init_ms;       /* monitor start (boot timeout) */
     bool         tripped;
     mon_reason_t reason;
     uint32_t     trip_ms;

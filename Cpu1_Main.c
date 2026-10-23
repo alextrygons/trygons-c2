@@ -59,6 +59,10 @@ void core1_main(void)
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
 
+    /* "running" comes only from core 0's control loop: a value left in RAM
+     * from before a reset doesn't count (the boot timeout applies until then) */
+    g_mon.running = 0u;
+    hal_mem_barrier();
     monitor_init(&g_monitor, hal_millis());
     uint32_t next = hal_millis();
     while(1)
