@@ -79,4 +79,10 @@ void monitor_init(mon_t *m, uint32_t now_ms);
 bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms);
 const char *monitor_reason_name(mon_reason_t r);
 
+/* Core 0 of the big boat (rudder only, no throttle / gear servo): publish
+ * after every control step - heartbeat + "running", throttle 0, limits
+ * 100 %, gear pulse unchanged. The monitor then watches for a frozen core 0
+ * (a trip stops the rudder motor). */
+void monitor_publish_steering_only(mon_shared_t *sh, uint16_t thr_idle_us, uint16_t gear_n_us);
+
 #endif /* MONITOR_H */

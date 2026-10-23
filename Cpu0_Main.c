@@ -37,6 +37,7 @@
 #include "logq.h"
 #include "logcore0.h"
 #include "logger.h"
+#include "monitor.h"
 
 /* Which boat this build is for:
  *   default            small boat (outboard): smallboat.c controller
@@ -103,6 +104,8 @@ void core0_main(void)
         {
 #ifdef BOAT_VARIANT_BIG
             autopilot_step(&g_autopilot);
+            /* CPU1 monitor: heartbeat (no throttle / gear on this boat) */
+            monitor_publish_steering_only(&g_mon, 1000u, 1500u);
 #else
             uint32_t t0 = hal_micros();
             sb_step(&g_boat);

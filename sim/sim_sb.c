@@ -3470,6 +3470,46 @@ static void hardening_tests(void)
                     n.trip_ms > MON_BOOT_MS && n.trip_ms <= MON_BOOT_MS + 2u && sim_quiet && sim_ok, d);
     }
 
+    /* C3c R2: the big boat (rudder only) feeds the CPU1 monitor too: no trip
+     *     while its loop runs, a frozen loop trips it and the rudder motor stops */
+    {
+        static autopilot_t ap;
+        static mon_shared_t sh;
+        mon_t m;
+        ap_config_t c;
+        hal_init();
+        autopilot_default_config(&c);
+        autopilot_init(&ap, &c);
+        memset((void *)&sh, 0, sizeof sh);
+        monitor_init(&m, 0u);
+        bool trip_run = false;
+        uint32_t t = 0u, last_step = 0u;
+        for (; t <= 30000u; t++) {
+            sim_hal_set_time_ms(t);
+            if (t % AP_PERIOD_MS == 0u) {
+                autopilot_step(&ap);
+                monitor_publish_steering_only(&sh, 1000u, 1500u);
+                last_step = t;
+            }
+            trip_run |= monitor_step(&m, &sh, t);
+        }
+        hal_set_rudder_motor(1.0f);                  /* the loop freezes with the motor running */
+        for (; t <= 32000u && !m.tripped; t++) {
+            sim_hal_set_time_ms(t);
+            monitor_step(&m, &sh, t);
+        }
+        hal_set_rudder_motor(1.0f);                  /* (a late write can't start it again) */
+        float motor = sim_hal_motor_command();
+        uint32_t react = m.tripped ? m.trip_ms - last_step : 0u;
+        snprintf(d, sizeof d, "big boat 30 s: monitor trip %s; loop frozen: %s after %lu ms, rudder motor %.0f, "
+                 "outputs latched %s", trip_run ? "YES" : "no", monitor_reason_name(m.reason), (unsigned long)react,
+                 motor, hal_outputs_forced() ? "yes" : "NO");
+        test_report("C3c big boat: CPU1 monitor fed (no trip), frozen loop trips it, rudder motor stops",
+                    !trip_run && m.tripped && m.reason == MON_TRIP_HEARTBEAT && react > MON_HB_MS &&
+                    react <= MON_HB_MS + 2u && motor == 0.0f && hal_outputs_forced(), d);
+        hal_init();                                 /* reset the latch for the next tests */
+    }
+
     /* C4 core 0 freezes with the watchdog on: reset, safe start again */
     {
         sbsim_t x;

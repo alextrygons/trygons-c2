@@ -86,6 +86,20 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
     return m->tripped;
 }
 
+void monitor_publish_steering_only(mon_shared_t *sh, uint16_t thr_idle_us, uint16_t gear_n_us)
+{
+    sh->throttle_pct = 0.0f;
+    sh->fwd_limit = 100.0f;
+    sh->rev_limit = 100.0f;
+    sh->fwd_engaged = 0u;
+    sh->gear_pwm_us = gear_n_us;
+    sh->idle_max_pct = 1.0f;
+    sh->thr_idle_us = thr_idle_us;
+    sh->gear_n_us = gear_n_us;
+    sh->heartbeat = sh->heartbeat + 1u;
+    sh->running = MON_RUNNING;
+}
+
 const char *monitor_reason_name(mon_reason_t r)
 {
     static const char *const n[] = { "ok", "throttle above the power limit", "gear moved with throttle open",
