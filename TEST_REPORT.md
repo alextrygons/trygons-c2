@@ -5,6 +5,61 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 0. Status after the fixes (2026-10-23, commits 6a35b25 .. 8054948)
+
+Every finding of section 2 was worked on, in the order of section 5 (one commit each, with a sim /
+gateway test that fails without the fix where that is possible). The rest of this report (sections
+1-5) is the ORIGINAL test result, kept as it was.
+
+| ID | Status | Commit | What was done |
+|---|---|---|---|
+| T11 | fixed | 6a35b25 | iLLD library + .cproject in git (.gitignore rule anchored); fresh clone compiles for TriCore |
+| R1 | fixed (rule kept) | 5768d2e | STANDBY: stick (MANUAL) / gyro (REMOTE) steers until idle + neutral; STANDBY closing rate 100 %/s |
+| T2 | fixed | d90d6ac | HDG LOCK / AUTO / REMOTE / TRAINING refused while the stick is held ("centre the joystick") |
+| R3 | fixed (bench test open) | 5449c11 | GTM TOM servo PWM written; hal_safe_outputs drives idle / neutral itself |
+| R5 | fixed | cf896af | NaN / inf / out-of-range GPS fix = rejected fix (also the second GPS, DR inputs) |
+| R4 | fixed | 9d6ab75 | monitor watches the heartbeat only after core 0 runs; 3 s boot timeout |
+| R2 | fixed | 1312250 | big-boat build feeds the CPU1 monitor |
+| T1 | fixed | a38afbc | STARLINK never auto-selected while a normal channel works (0 in 500 storm runs) |
+| (ADS) | fixed | 2da572a | ADS build excludes every non-firmware folder; check in check.sh + RUN_ACCEPTANCE |
+| T3 | fixed where safe | affa89f | ~60 s re-trust with a second GPS or paddlewheel; without: old rule (a slow along-course drag can't be told from a speed error) |
+| T4 | fixed | 8b9e68a | START_DEMO builds the simulator on a fresh copy |
+| R6 | fixed | d8381b5 | navreq heading needs a cap, max 150 deg off the leg, no stale HDG LOCK heading |
+| R9 | fixed | 147642c | outputs arm only with the joystick seen and centred |
+| R11 | fixed | 6b47fae | alarm ACK clears only alarms whose cause is gone |
+| R10 | fixed (driver contract) | c2873db | CPU2 watchdog serviced after every SD call; hal_sd_* <= 200 ms contract |
+| R8 | fixed (verify map) | f6bf7df | shared data explicitly in core 0's DSPR; mapreport checks it |
+| T5 | fixed | e180125 | recording writes every packet: no false stall on slow streams |
+| R20 | fixed | 5dd443b | "AURIX alive" only from a valid frame |
+| R21 | fixed | 8c97be9 | camera config checked; NaN distance counts as in the path |
+| R7 | documented (design) | 88ebc43 | trust boundary written down: driving changes always need on-board checks |
+| R12 | fixed | (with each fix) | tests C3b, C3c, C3d, R5, NV9, R11, F0, F1b, R17, R18 |
+| R13 | fixed | 4b1fb6f | sim test hook not in the firmware (checked by the gate) |
+| R14 | fixed | e50c722 | no fault-steer setting turns the steering off at once (OFF = centre) |
+| R15 | not a finding | - | - |
+| R16 | fixed | d76338e | corrupted log queue length resynced |
+| R17 | fixed | 99067b5 | oversized telemetry counted, test shows the headroom (7 bytes) |
+| R18 | fixed | bed41fe | link stops reading after 64 frames per step |
+| R19 | fixed | cf896af | second GPS range check (with R5) |
+| R22 | fixed | 6f43185 | monitor seqlock |
+| T7 | fixed | 6440a2d | dead "synced" flag removed |
+| T12 | fixed | 4a7536b | secrets.json / *.key / *.pem git-ignored |
+| coverage servo.c | fixed | 8054948 | clamp corner-case test; found + fixed: NaN pulse was FULL on a reversed servo |
+| T6 | open (watch) | - | MediaMTX handle trend: check in a long soak on the Pi |
+| T8, T9, T10 | info | - | unchanged (spec wording / operation notes) |
+
+New worst reaction times (fault storm, 2000 episodes): STANDBY -> idle + neutral **1.41 s** (was 2.16 s;
+the 2.88 s below was a press during a core-0 reboot with the outputs already safe), onboard joystick
+**0.09 s**, remote data loss **0.55 s**, CPU1 monitor **0.21 s**. Still open without hardware: everything in
+section 4 (board, Pi, boat) - including the bench test of the new servo PWM (R3) and the FatFs driver
+that must keep the SD time bound (R10).
+
+**Acceptance test after the fixes** (`RUN_ACCEPTANCE.bat quick`, commit f44f237, cloned locally because
+the fixes were not pushed yet): **6 / 6 PASS** - ADS build excludes; fresh build 13 / 13 (simulator
+162 + 161 tests, charts, avoidance, gateway F1 / SH / VI, driver screen, START_DEMO from the clone);
+fault storm 200 episodes (all invariants, held-stick NOTE 0); 32-bit time wrap; day at sea (AURIX part)
+15 / 15; gateway storm (I14, I15 0 STARLINK switches, I17, I20, I21).
+
 ## 1. Summary (10 lines)
 
 1. **The control software (AURIX) is in good shape in the simulator.** 2000 random "bad days"
