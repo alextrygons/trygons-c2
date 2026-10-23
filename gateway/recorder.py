@@ -299,7 +299,7 @@ class Recorder:
               "start_utc": self.gw.clock.stamp(now - pre), "end_utc": self.gw.clock.stamp(now + self.post_s),
               "ring_min": self.ring_min, "pre_s": pre, "post_s": self.post_s, "segment_s": self.seg_s,
               "triggers": [trig], "boat": self.snapshot(), "cameras": {n: [] for n in self.cams},
-              "synced": False, "bytes": 0}
+              "bytes": 0}
         self.events.append(ev)
         self.saves += 1
         self._link(ev)
@@ -461,8 +461,9 @@ class Recorder:
         for t, folder, ev in self.list_events():
             if free >= self.storage.low_b:
                 break
-            if not (ev.get("synced") or event_synced(folder)) or ev.get("id") in open_ids:
+            if not event_synced(folder) or ev.get("id") in open_ids:
                 continue                                # 3. never an event that is not on shore yet
+                                                        #    (every file confirmed by the shore: <file>.synced)
             shutil.rmtree(folder, ignore_errors=True)
             self.deleted["events"] += 1
             self.gw.audit("event_deleted", id=ev.get("id"), reason="SSD space (synced)")

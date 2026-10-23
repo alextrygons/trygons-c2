@@ -1484,7 +1484,10 @@ def section_f():
             with open(os.path.join(p, "FRONT-1", "x.ts"), "wb") as f:
                 f.write(os.urandom(4_000_000))
             with open(os.path.join(p, "event.json"), "w") as f:
-                _json.dump({"id": eid_, "start_t": 1577836800 + i, "synced": i < 3, "triggers": [{"text": "t"}]}, f)
+                _json.dump({"id": eid_, "start_t": 1577836800 + i, "triggers": [{"text": "t"}]}, f)
+            if i < 3:                               # confirmed by the shore: <file>.synced for every file
+                for fn in (os.path.join(p, "FRONT-1", "x.ts"), os.path.join(p, "event.json")):
+                    open(fn + ".synced", "w").close()
             made.append(eid_)
         used = st.used_now()
         ring_del = sum(os.path.getsize(p) for c in rec.cams.values() for _t, p in c.segments()[:-1])
