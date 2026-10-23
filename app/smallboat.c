@@ -82,6 +82,7 @@ void sb_default_config(sb_config_t *cfg)
     cfg->joy_max_throttle_pct = 100.0f;
     slam_default_config(&cfg->slam);
     cfg->nav_lost_kn = 4.0f;
+    cfg->nav_max_dev_deg = 150.0f;
     jb_default_config(&cfg->jb);
     cfg->remote_cap_fwd_pct = 20.0f;
     cfg->remote_cap_rev_pct = 5.0f;
@@ -239,8 +240,19 @@ static float nav_cap(const sb_t *s)
 static void nav_steer(sb_t *s)
 {
     if (sb_mode(s) != MODE_AUTO) return;
-    if (s->nav.lost) autopilot_set_target(&s->ap, s->nav.lost_heading);
-    else if (nav_fresh(s) && s->nav.kind == SB_NAV_HEADING) autopilot_set_target(&s->ap, s->nav.heading);
+    if (s->nav.lost) {
+        autopilot_set_target(&s->ap, s->nav.lost_heading);
+    } else if (nav_fresh(s) && s->nav.kind == SB_NAV_HEADING) {
+        /* the Pi may turn the boat away from the leg, but not anywhere: too far
+         * off the track -> not steered (the cap still slows), DRIVER DECISION */
+        if (fabsf(autopilot_heading_error(s->autop.leg.track_deg, s->nav.heading)) <= s->cfg.nav_max_dev_deg) {
+            autopilot_set_target(&s->ap, s->nav.heading);
+        } else {
+            if (s->nav.too_far_seq != s->nav.seq || !s->nav.too_far) s->nav.too_far++;
+            s->nav.too_far_seq = s->nav.seq;
+            alarm_on(s, SB_ALM_DECISION);
+        }
+    }
 }
 
 static float auto_target_kn(const sb_t *s)
@@ -261,7 +273,7 @@ static void nav_step(sb_t *s)
         if ((n->alarm & 4u) && sb_mode(s) == MODE_AUTO) alarm_on(s, SB_ALM_SHALLOW);
         if (n->alarm & 8u) alarm_on(s, SB_ALM_OBSTACLE);
         if (n->kind == SB_NAV_HDG_SET && (!n->hdg_any || n->seq != n->hdg_seq_done) && sb_mode(s) == MODE_HDG_LOCK &&
-            !s->hdg_compass_lost) {
+            n->rx_mode == (uint8_t)MODE_HDG_LOCK && !s->hdg_compass_lost) {
             n->hdg_seq_done = n->seq;
             n->hdg_any = true;
             n->applied_hdg++;

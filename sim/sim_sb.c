@@ -6273,6 +6273,48 @@ static void nav_tests(void)
         joy_set(0.0f, 0.0f, false, false);
     }
 
+    /* NV9 R6: the AURIX limits what the Pi may ask: an AUTO heading far off the
+     *     leg track is not steered (cap still slows, DRIVER DECISION); a heading
+     *     without a speed cap is refused; a HDG LOCK heading that arrived before
+     *     HDG LOCK was entered is not applied */
+    {
+        static sbsim_t x;
+        static navsim_t n;
+        sbsim_init(&x, 991u, 0.0f, 0.0f, NULL);
+        navsim_init(&n, &x);
+        sbsim_run(&x, 2000u, navreq_hook, &n);
+        auto_to(&x, 8000.0f, 0.0f, 14.0f);
+        sbsim_run(&x, x.t + 60000u, navreq_hook, &n);
+        n.on = true; n.seq = 1; n.kind = SB_NAV_HEADING; n.reason = 1; n.alarm = 0; n.heading = 170.0f; n.cap = 7.0f;
+        sbsim_run(&x, x.t + 40000u, navreq_hook, &n);
+        float tgt = x.sb.ap.target_heading, kn = x.w.speed_kn;
+        bool dec = (x.sb.alarm_bits & SB_ALM_DECISION) != 0u;
+        uint32_t far = x.sb.nav.too_far;
+        n.on = false;
+        uint32_t rej0 = x.sb.nav.rejected;
+        nav_push(&n, SB_NAV_HEADING, 1u, 0u, 20.0f, -1.0f, 3000u);    /* heading without a cap */
+        sbsim_run(&x, x.t + 200u, navreq_hook, &n);
+        bool nocap_rej = x.sb.nav.rejected == rej0 + 1u;
+        /* HDG_SET sent while still in AUTO, then the driver presses HDG LOCK within the lease */
+        n.seq = 5;
+        nav_push(&n, SB_NAV_HDG_SET, 1u, 0u, 250.0f, -1.0f, 3000u);
+        sbsim_run(&x, x.t + 300u, navreq_hook, &n);
+        press(&x, HAL_BTN_HDG_LOCK);
+        float locked = x.sb.ap.heading;
+        sbsim_run(&x, x.t + 2000u, navreq_hook, &n);
+        bool hdg = sb_mode(&x.sb) == MODE_HDG_LOCK;
+        float t_hdg = x.sb.ap.target_heading;
+        snprintf(d, sizeof d, "AUTO leg north, request heading 170 (limit %.0f deg off the track) / 7 kn -> target %.0f, "
+                 "%.1f kn, DRIVER DECISION %s, ignored %lu; heading without a cap: refused %s; HDG_SET 250 that arrived in "
+                 "AUTO, then HDG LOCK -> target %.0f (locked %.0f, not 250), mode %s",
+                 x.sb.cfg.nav_max_dev_deg, tgt, kn, dec ? "yes" : "NO", (unsigned long)far, nocap_rej ? "yes" : "NO",
+                 t_hdg, locked, mode_name(sb_mode(&x.sb)));
+        test_report("NV9 navigation request limits: heading far off the track not steered, heading needs a cap, "
+                    "no stale HDG LOCK heading",
+                    fabsf(hdg_err(tgt, 0.0f)) < 20.0f && kn < 7.6f && dec && far >= 1u && nocap_rej && hdg &&
+                    fabsf(hdg_err(t_hdg, locked)) < 2.0f && fabsf(hdg_err(t_hdg, 250.0f)) > 30.0f, d);
+    }
+
     /* NV6 invalid requests are ignored */
     {
         static sbsim_t x;

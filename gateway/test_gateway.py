@@ -29,7 +29,8 @@ sys.path.insert(0, os.path.join(HERE, "..", "groundstation"))
 from link import Link, Waiter  # noqa: E402
 
 SIM_DIR = os.path.join(HERE, "..", "sim")
-EXE = os.path.join(SIM_DIR, "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
+# AUTOPILOT_SIM: another simulator build (e.g. while the demo runs from sim/)
+EXE = os.environ.get("AUTOPILOT_SIM") or os.path.join(SIM_DIR, "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
 results = []
 
 

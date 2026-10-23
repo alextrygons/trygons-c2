@@ -135,7 +135,10 @@ typedef struct {
     float    lost_cap_kn;               /* the cap when the lease was lost (< 0 = none) */
     uint8_t  hdg_seq_done;              /* the HDG_SET already applied */
     bool     hdg_any;
+    uint8_t  rx_mode;                   /* mode when the request arrived (HDG_SET only in HDG LOCK) */
     uint32_t count, applied_hdg, losses, rejected;
+    uint32_t too_far;                   /* AUTO headings ignored: too far off the leg track */
+    uint8_t  too_far_seq;
 } sb_navreq_t;
 
 /* HELM: the one station whose commands are accepted (section B). */
@@ -267,6 +270,7 @@ typedef struct {
     joy_config_t joy;
     slam_config_t slam;                 /* slamming (BNO085): limit, steps, recovery */
     float    nav_lost_kn;               /* avoidance request lost (gateway gone): slow to this (4) */
+    float    nav_max_dev_deg;           /* avoidance heading at most this far off the leg track (150; the planner re-plans from the course, up to ~130 seen) */
     float    joy_max_throttle_pct;      /* stick full = this much throttle demand, F and R (100;
                                            the power limit and the reverse limit still apply) */
     jb_config_t jb;                     /* USB joystick bridge checks (joybridge.c) */

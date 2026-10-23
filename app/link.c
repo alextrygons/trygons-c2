@@ -24,7 +24,7 @@ typedef enum {
     P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
     P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET, P_GPS2_CHECK, P_NAV_LOST_KN,
-    P_STOP_RATE,
+    P_STOP_RATE, P_NAV_MAX_DEV,
     P_COUNT
 } param_id_t;
 
@@ -50,6 +50,7 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "gps2_check_m",    0.0f, 2000.0f },     /* GPS fix vs the second GPS (AIS device); 0 = off */
     { "nav_lost_kn",     2.0f,   10.0f },     /* avoidance request lost (gateway gone): slow to this */
     { "stop_rate_pc_s", 40.0f,  300.0f },     /* STANDBY safe stop: throttle closing rate (100 = idle in 1 s) */
+    { "nav_max_dev",    30.0f,  180.0f },     /* avoidance heading: max deg off the leg track (150) */
 };
 
 uint8_t link_param_count(void)
@@ -87,6 +88,7 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_GPS2_CHECK:   return &s->dr.cfg.gps2_max_m;
     case P_NAV_LOST_KN:  return &s->cfg.nav_lost_kn;
     case P_STOP_RATE:    return &s->thr.cfg.rate_stop_pct_s;
+    case P_NAV_MAX_DEV:  return &s->cfg.nav_max_dev_deg;
     default:             return NULL;
     }
 }
@@ -659,6 +661,7 @@ static void gw_navreq(sb_t *s, const proto_frame_t *f)
     uint8_t seq = proto_rd_u8(&r), kind = proto_rd_u8(&r), reason = proto_rd_u8(&r), alarm = proto_rd_u8(&r);
     uint16_t hdg = proto_rd_u16(&r), cap = proto_rd_u16(&r), lease = proto_rd_u16(&r);
     if (kind > SB_NAV_HDG_SET || (kind != SB_NAV_NONE && kind != SB_NAV_CAP && hdg >= 36000u) ||
+        (kind == SB_NAV_HEADING && cap == 0xFFFFu) ||               /* an avoidance heading always slows too */
         (cap != 0xFFFFu && cap > 600u) || lease < 500u || lease > 10000u) {
         s->nav.rejected++;
         return;                                                  /* not valid: ignored */
@@ -672,6 +675,7 @@ static void gw_navreq(sb_t *s, const proto_frame_t *f)
     n->cap_kn = (cap == 0xFFFFu) ? -1.0f : (float)cap * 0.1f;
     n->lease_ms = lease;
     n->rx_ms = s->now_ms ? s->now_ms : 1u;
+    n->rx_mode = (uint8_t)sb_mode(s);                            /* HDG_SET: only if it came in HDG LOCK */
     n->count++;
 }
 

@@ -979,6 +979,10 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
   HDG LOCK), and only within all its own rules (power limit, joystick
   wins, STANDBY wins). If the Pi goes silent during an avoidance, the boat
   holds its heading, slows to 4 kn and sounds DRIVER DECISION.
+  The boat also checks the Pi's request itself: an avoidance heading must
+  come with a speed reduction, and one more than 150 deg off the leg
+  (parameter nav_max_dev) is not steered (the boat slows, DRIVER DECISION);
+  an accepted HDG LOCK heading counts only if it came while HDG LOCK was on.
   Collision and shallow-water alarms do NOT lower the power limit (slowing
   down is done by the speed request itself).
   Captain screen, tab "AIS": the ship list (name, distance, bearing, CPA,
