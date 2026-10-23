@@ -1,12 +1,29 @@
 # PROGRESS
 
-Current task: "Fix the TEST_REPORT.md findings in order, one commit per item"
-(T11, R1, T2, R3, R5, R4, R2, T1, T3, T4, then the code-review points of
-TEST_REPORT.md section 5), then RUN_ACCEPTANCE.bat quick, short report, git push.
+Current task: "First test preparation": (1) generated certificates in .gitignore,
+(2) .cproject excludes checked, (3) FIRST TEST configuration (steering only),
+(4) real hal_tc375.c Stage 1 drivers (BNO085, MAX-M10S, Pololu G2, limit
+switches, buttons, buzzer, microSD, USB link), (5) BENCH TEST mode,
+(6) FIRST_TEST.md checklist. One commit per item, all tests pass, git push.
 If interrupted: say "continue from PROGRESS.md" - continue with the first
 step that is not DONE below, without redoing finished work.
 
-## Steps (fix task)
+## Steps (first test preparation)
+
+| Step | What | State | Commit |
+|---|---|---|---|
+| 1 | auto.crt + generated certs / keys in .gitignore | DONE | (this commit) |
+| 2 | .cproject: only board sources compiled (check + fix) | next | |
+| 3 | FIRST TEST configuration (steering only), telemetry + ground station | open | |
+| 4 | hal_tc375.c Stage 1 drivers (WIRING.md), timeouts / no-data detection | open | |
+| 5 | BENCH TEST mode (ground station, dock) | open | |
+| 6 | FIRST_TEST.md checklist | open | |
+
+## Notes (first test preparation)
+
+# Previous task: TEST_REPORT fixes (done, last commit 65e9eb2)
+
+## Steps (fix task, done)
 
 | Step | What | State | Commit |
 |---|---|---|---|
