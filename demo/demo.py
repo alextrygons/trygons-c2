@@ -100,8 +100,9 @@ def build_sim():
             return True
     say("building the simulator (sim\\build_sim.bat) ...")
     if os.name == "nt":
-        r = subprocess.run(["cmd", "/c", os.path.join("sim", "build_sim.bat")], cwd=REPO, capture_output=True,
-                           text=True)
+        # cmd needs backslashes (MSYS2's Python joins paths with "/")
+        bat = os.path.join(REPO, "sim", "build_sim.bat").replace("/", "\\")
+        r = subprocess.run(["cmd", "/c", bat], cwd=REPO, capture_output=True, text=True)
     else:
         r = subprocess.run(["sh", os.path.join("sim", "build_sim.sh")], cwd=REPO, capture_output=True, text=True)
     if not os.path.exists(EXE) or "BUILD OK" not in r.stdout:
