@@ -9,6 +9,8 @@ quick: fresh clone from GitHub + the main suites (fresh_build.py --quick), the
 full:  fresh clone + every suite (tools/check.sh), 2000 storm episodes, the
        24 h AURIX soak with logging, a 60 min system soak, the day at sea
        (both parts), the gateway + station storms, coverage.
+ACCEPT_CLONE_URL (environment): where the fresh build clones from (default:
+the GitHub remote) - e.g. this folder, to test commits that are not pushed yet.
 Every random part prints its seed. Big outputs go to test_results/ (not in
 git). Summary: test_results/acceptance_summary.txt (and on the screen).
 How to read it: MANUAL.txt chapter "TESTING".
@@ -27,9 +29,10 @@ STORM = os.path.join(OUT, "storm.exe")
 
 def plan(mode):
     t = os.path.join(HERE, "%s")
+    url = ["--url", os.environ["ACCEPT_CLONE_URL"]] if os.environ.get("ACCEPT_CLONE_URL") else []
     ads = ("ADS build excludes every non-firmware folder", [PY, t % "check_ads_excludes.py"], 60)
     q = [ads,
-         ("fresh build from GitHub (quick)", [PY, t % "fresh_build.py", "--quick"], 3600),
+         ("fresh build from GitHub (quick)", [PY, t % "fresh_build.py", "--quick"] + url, 3600),
          ("fault storm: 200 episodes", [PY, t % "run_storm.py", "--episodes", "200"], 1800),
          ("32-bit time wraparound", [STORM, "--wrap"], 600),
          ("day at sea, AURIX part", [STORM, "--dayatsea"], 900),
@@ -37,7 +40,7 @@ def plan(mode):
     if mode == "quick":
         return q
     return [ads,
-            ("fresh build from GitHub (full)", [PY, t % "fresh_build.py"], 14400),
+            ("fresh build from GitHub (full)", [PY, t % "fresh_build.py"] + url, 14400),
             ("fault storm: 2000 episodes", [PY, t % "run_storm.py", "--episodes", "2000"], 7200),
             ("32-bit time wraparound", [STORM, "--wrap"], 600),
             ("24 h AURIX soak with logging", [STORM, "--soak", "24", "24", "--log"], 7200),
