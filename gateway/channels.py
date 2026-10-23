@@ -11,12 +11,15 @@ Modes
                 the next working normal channel by priority (STARLINK last) +
                 alarm CHANNEL FALLBACK; back to the chosen one when it is
                 stable again. Choosing STARLINK needs an extra confirmation.
+                STARLINK is never chosen automatically while a normal channel
+                works - the chosen one (not yet stable) is preferred to it.
   MANUAL_STRICT only the chosen channel, never switch. Only from a station on
                 the boat (a remote user could lock himself out).
 
 Every switch a user asks for is a TRIAL (trial_s = 60 s): it is kept only if
 that user, over the new channel, confirms "Keep". Otherwise the gateway goes
-back to the previous mode / channel. A remote user can never lock himself
+back to the previous mode / channel (to STARLINK only if the user had chosen
+it - one that AUTO / a fallback had picked is decided again). A remote user can never lock himself
 out.
 
 Who may change it: the HELM station or a station on the boat. VIEWERs only
@@ -270,19 +273,24 @@ class ChannelManager:
         """No internet for fail_s."""
         return not self.healthy(n) and now - self.bad_since.get(n, now) >= self.fail_s
 
-    def first_working(self, now, exclude=()):
+    def first_working(self, now, exclude=(), normal_only=False):
         for n in self.normal:
             if n not in exclude and self.healthy(n):
                 return n
+        if normal_only:
+            return None
         for n in self.emergency:                        # the last resort
             if n not in exclude and self.healthy(n):
                 return n
         return None
 
     # --- decisions -------------------------------------------------------------------
-    def decide(self, now):
+    def decide(self, now, fresh=False):
+        """The channel to use now. fresh=True: ignore the current one (after a
+        trial that was not kept: its STARLINK is no reason to stay there)."""
         if self.mode == STRICT:
             return self.manual
+        cur = None if fresh else self.active
         if self.mode == MANUAL:
             want = self.manual
             if self.healthy(want) and (not self.fallback or self.stable(want, now)):
@@ -293,12 +301,14 @@ class ChannelManager:
                     self.fallback = True
                     self.audit("channel_fallback", chosen=want)
                     log.warning("channel %s failed: falling back", want)
-                if self.active and self.active != want and self.healthy(self.active):
-                    return self.active
-                return self.first_working(now, exclude=(want,)) or want
+                if cur and cur != want and self.healthy(cur):
+                    return cur                           # (STARLINK: until the chosen one is stable)
+                # STARLINK only if no normal channel works - the chosen one either
+                return (self.first_working(now, exclude=(want,), normal_only=True) or
+                        (want if self.healthy(want) else None) or
+                        self.first_working(now, exclude=(want,)) or want)
             return want                                  # not failed long enough yet
         # AUTO
-        cur = self.active
         best = None
         for n in self.normal:                            # best normal channel that is up
             if self.healthy(n):
@@ -338,7 +348,15 @@ class ChannelManager:
             log.warning("channel trial %s not confirmed: back to %s", self.trial["to"], prev[2])
             self.mode, self.manual = prev[0], prev[1]
             self.trial = None
-            self._switch(prev[2] if self.healthy(prev[2]) else self.decide(now), "trial not confirmed")
+            # back to the channel that worked before - but STARLINK only if the
+            # user had chosen it (MANUAL + confirmed); one that AUTO / a fallback
+            # had picked is decided again (a normal channel may work by now)
+            back = prev[2]
+            chosen_emergency = prev[0] in (MANUAL, STRICT) and prev[1] in self.emergency
+            if back in self.emergency and not chosen_emergency:
+                back = None
+            self._switch(back if back and self.healthy(back) else self.decide(now, fresh=True),
+                         "trial not confirmed")
         want = self.decide(now)
         if want != self.active:
             self._switch(want, "%s mode" % self.mode)

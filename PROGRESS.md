@@ -16,8 +16,8 @@ step that is not DONE below, without redoing finished work.
 | 4 | R3 hal_safe_outputs drives the PWM (board path) | DONE (GTM TOM servo PWM written; TriCore compile + symbols checked; needs the bench test) | 5449c11 |
 | 5 | R5 GPS NaN / inf / range rejected in every GPS path | DONE (8/8 kinds rejected, GPS2 range, DR inputs) | cf896af |
 | 6 | R4 CPU1 monitor: start after core 0 "running", boot timeout | DONE (boot 3 s, test C3b) | 9d6ab75 |
-| 7 | R2 big-boat CPU1 heartbeat | DONE (test C3c, gate compiles the big variant) | (this commit) |
-| 8 | T1 STARLINK never auto-selected while a normal channel works | open | |
+| 7 | R2 big-boat CPU1 heartbeat | DONE (test C3c, gate compiles the big variant) | 1312250 |
+| 8 | T1 STARLINK never auto-selected while a normal channel works | DONE (channel storm 500 runs: 0; test C11) | (this commit) |
 | 9 | T3 faster GPS re-trust after a spoof at speed | open | |
 | 10 | T4 START_DEMO builds the simulator if missing | open | |
 | 11 | review points (section 5 order): R6, R9, R11, R10, R8, T5, R20, R21, R7, R12, LOW (R13 R14 R16 R17 R18 R19 R22 T7 T12) | open | |

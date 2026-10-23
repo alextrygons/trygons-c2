@@ -633,13 +633,16 @@ C. INTERNET CHANNELS (router Teltonika RUT901)
     MANUAL <ch>    use this channel; if it has no internet for 30 s ->
                    the next working one + alarm CHANNEL FALLBACK; back when
                    it is stable again. STARLINK asks "EMERGENCY LINK -
-                   metered data" first.
+                   metered data" first. The fallback is STARLINK only if no
+                   normal channel works (your chosen one included).
     MANUAL STRICT  only this channel, never switch. Only from a station on
                    the boat, with a warning.
     KEEP           every switch you ask for is a TRIAL: press KEEP within
                    60 s (over the new link). If you can't (the new link is
                    dead), the gateway goes back to what worked - you can
-                   never lock yourself out from shore.
+                   never lock yourself out from shore. It goes back to
+                   STARLINK only if you had chosen STARLINK yourself;
+                   otherwise it picks again (a normal channel first).
   Only the HELM station or a station on the boat may change the channel.
 
   While STARLINK is active: big "STARLINK - EMERGENCY LINK" banner, data

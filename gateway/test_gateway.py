@@ -828,6 +828,61 @@ def section_c():
         sim.stop()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    section_c11()
+
+
+def section_c11():
+    """T1: STARLINK never chosen automatically while a normal channel works -
+    the two cases the gateway storm found (trial revert, MANUAL fallback)."""
+    from channels import ChannelManager, SimDriver, DEFAULT_CHANNELS
+    clk = [1.8e9]
+
+    def mk():
+        drv = SimDriver([c["name"] for c in DEFAULT_CHANNELS])
+        net = ChannelManager({"stable_s": 60.0, "fail_s": 30.0, "trial_s": 60.0, "starlink_status": False},
+                             driver=drv, clock=lambda: clk[0])
+        return drv, net
+
+    def run(net, s):
+        for _ in range(int(s)):
+            clk[0] += 1.0
+            net.tick()
+
+    def link(drv, n, ok):
+        drv.state[n]["up"] = drv.state[n]["internet"] = ok
+
+    # a) AUTO on STARLINK (every normal channel down); RF comes back; a user tries a
+    #    dead channel and doesn't keep it -> the revert must not go back to STARLINK
+    drv, net = mk()
+    for n in ("4G", "4G2", "RF"):
+        link(drv, n, False)
+    run(net, 40)
+    on_star = net.active
+    net.request("MANUAL", "4G2", user="u1", may=True)
+    run(net, 40)
+    link(drv, "RF", True)                           # back 20 s before the trial runs out (not stable yet)
+    run(net, 25)
+    back_a = net.active
+    # b) MANUAL RF fails -> fallback 4G; RF works again (not stable yet); then 4G dies
+    #    -> RF, not STARLINK
+    drv, net = mk()
+    net.request("MANUAL", "RF", user="u1", may=True)
+    net.keep("u1")
+    run(net, 5)
+    link(drv, "RF", False)
+    run(net, 35)
+    fb = net.active
+    link(drv, "RF", True)
+    run(net, 5)
+    link(drv, "4G", False)
+    link(drv, "4G2", False)
+    run(net, 3)
+    back_b = net.active
+    report("C11 STARLINK never chosen automatically while a normal channel works (trial revert, MANUAL fallback)",
+           on_star == "STARLINK" and back_a == "RF" and fb == "4G" and back_b == "RF",
+           "a) all normal down: %s; RF back, trial of a dead channel not kept -> %s (want RF); "
+           "b) MANUAL RF fails -> %s; RF works again, then the fallback dies -> %s (want RF)" % (
+               on_star, back_a, fb, back_b))
 
 
 # ------------------------------------------------------------------- section D --
