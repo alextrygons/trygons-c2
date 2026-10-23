@@ -102,7 +102,8 @@ uint64_t sim_hal_real_ns(void);                  /* PC clock in ns (timing repor
 /* microSD card in a folder: card present, free space, every write failing. */
 void     sim_hal_sd_setup(const char *dir, bool present, uint32_t free_kb, bool fail_writes);
 void     sim_hal_sd_power_cut(void);               /* unsynced data is lost */
-uint32_t sim_hal_core_kicks(void);                 /* hal_watchdog_kick_core() calls (logger between SD ops) */
+uint32_t sim_hal_core_kicks(void);
+void     sim_hal_set_estop(bool fitted, bool pressed);    /* emergency stop input */                 /* hal_watchdog_kick_core() calls (logger between SD ops) */
 uint32_t sim_hal_sd_ops(void);                     /* hal_sd_open / write / sync / close calls */
 
 #endif /* HAL_SIM_H */

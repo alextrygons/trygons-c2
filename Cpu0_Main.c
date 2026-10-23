@@ -45,6 +45,13 @@
  * Uncomment the next line (or add -DBOAT_VARIANT_BIG) for the big boat. */
 /* #define BOAT_VARIANT_BIG */
 
+/* FIRST TEST (small boat): steering only - throttle and gear outputs held at
+ * idle / neutral, no joystick / neutral switch / gateway needed to arm, only
+ * STANDBY, TRAINING and HDG LOCK (someone drives the throttle by hand; take
+ * over with the STANDBY button or the emergency stop). FIRST_TEST.md.
+ * Uncomment for the first tests on the water; comment out again afterwards. */
+/* #define FIRST_TEST */
+
 IFX_ALIGN(4) IfxCpu_syncEvent cpuSyncEvent = 0;
 
 #define WATCHDOG_MS 100u        /* > 2 control periods (50 ms) */
@@ -88,6 +95,9 @@ void core0_main(void)
 #else
     sb_config_t cfg;
     sb_default_config(&cfg);
+#ifdef FIRST_TEST
+    cfg.first_test = true;
+#endif
     sb_init(&g_boat, &cfg);
     (void)autopilot_load_calibration(&g_boat.ap);   /* saved TRAINING result, if any */
     link_init(&g_link, &g_boat);

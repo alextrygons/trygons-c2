@@ -121,7 +121,8 @@ MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL"]
 # mode change reasons (app/modes.h mode_reason_t)
 WHY = ["user", "STANDBY button", "compass fault", "GPS lost", "arrived", "training done", "training abort",
        "test", "gear fault", "DR limit", "arrival uncertain", "joystick", "joystick hand-back", "joystick fault",
-       "PC", "HDG LOCK button", "CONFIRM", "not armed", "safety monitor", "remote", "remote end", "remote lost"]
+       "PC", "HDG LOCK button", "CONFIRM", "not armed", "safety monitor", "remote", "remote end", "remote lost",
+       "emergency stop"]
 MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE = range(6)
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
 CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING"]
@@ -178,6 +179,7 @@ ALARMS = [
     (0x1000000, "COLLISION RISK - DRIVER DECISION"),
     (0x2000000, "SHALLOW WATER"),
     (0x4000000, "OBSTACLE AHEAD"),
+    (0x8000000, "EMERGENCY STOP"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -617,6 +619,7 @@ _T2_GROUPS = [
     (struct.Struct("<BBBBHHBH"), "nav_kind nav_flags nav_reason nav_alarm nav_hdg100 nav_cap10 nav_seq "
                                  "nav_age_ms".split()),
     (struct.Struct("<hhH"), "att_roll100 att_pitch100 att_age_ms".split()),
+    (struct.Struct("<BBB"), "cfg_flags estop_state moving_ahead".split()),
 ]
 
 # video SAVE triggers (app/smallboat.h SB_SAVE_)
@@ -654,6 +657,9 @@ def decode_telem2(payload: bytes) -> dict:
         d["nav_applied"] = bool(d["nav_flags"] & 4)
         d["nav_heading"] = d["nav_hdg100"] / 100.0
         d["nav_cap_kn"] = None if d["nav_cap10"] == 0xFFFF else d["nav_cap10"] / 10.0
+    if "cfg_flags" in d:
+        d["first_test"] = bool(d["cfg_flags"] & 1)
+        d["estop_name"] = ["not fitted", "released", "PRESSED"][d["estop_state"]] if d["estop_state"] < 3 else "?"
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

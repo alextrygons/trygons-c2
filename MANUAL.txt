@@ -11,6 +11,7 @@ CONTENTS
   4A. The demo (one click, no boat)
   5.  The ground station (PC program)
   6.  The board (AURIX TC375 Lite Kit)
+  6A. FIRST TEST: steering only (compile-time switch)
   7.  How the boat behaves: modes, buttons, joystick
   8.  The USB joystick (Thrustmaster T.16000M + TWCS)
   9.  The gateway (Raspberry Pi) and remote access
@@ -349,6 +350,40 @@ limit) but never stops or starts anything.
   resetting, the loop is too slow or stuck: look at the System tab and the
   log (EV_BOOT shows the reset reason).
 
+
+-------------------------------------------------------------------------------
+6A. FIRST TEST: STEERING ONLY (compile-time switch)
+-------------------------------------------------------------------------------
+For the first tests on the water the board steers, nothing else. The throttle
+and the gear stay with a person at the engine (by hand). Step-by-step
+checklist: FIRST_TEST.md.
+
+SWITCH IT ON
+  In Cpu0_Main.c remove the comment marks around   #define FIRST_TEST
+  build (hammer) and flash. Put the comment back after the first tests.
+  It can't be switched on or off from the PC (on purpose).
+
+WHAT IS DIFFERENT
+  * Throttle and gear outputs are held safe: throttle servo = idle pulse,
+    gear servo = neutral pulse, whatever happens (the servos may also be
+    disconnected).
+  * Power-up needs NO joystick, NO neutral switch and NO gateway.
+  * Only STANDBY, TRAINING and HEADING LOCK. MANUAL (joystick), AUTO and
+    remote driving are refused ("not possible in this mode").
+  * HEADING LOCK and TRAINING steer only while the GPS says the boat moves
+    AHEAD (at least 2 kn, course within 60 deg of the heading). Stopped or
+    going astern: the steering rests.
+  * TRAINING: drive slowly by hand (like its own 20 % throttle, ~4-5 kn).
+    Faster, the boat turns too far and TRAINING stops itself.
+  * Take over: the STANDBY button or the EMERGENCY STOP (and the person at
+    the throttle). Every other safety rule stays active.
+  * Shown: a big magenta banner on the ground station "FIRST TEST - STEERING
+    ONLY", and in the telemetry (TELEM2 group I).
+
+EMERGENCY STOP (every configuration, not only the first test)
+  A mushroom switch that cuts the steering motor / actuator power itself;
+  its second contact tells the board (WIRING.md). Pressed: STANDBY at once,
+  alarm EMERGENCY STOP, nothing can leave STANDBY until it is released.
 
 -------------------------------------------------------------------------------
 7. HOW THE BOAT BEHAVES: MODES, BUTTONS, JOYSTICK
@@ -1068,6 +1103,8 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   PC LINK LOST
   NOT NEUTRAL AT START   outputs not armed: gear not in neutral / stick held
   SAFETY MONITOR TRIPPED CPU1 forced idle + neutral (see chapter 12)
+  EMERGENCY STOP         the e-stop switch is pressed: STANDBY, nothing else
+                         until it is released (chapter 6A)
   CONTROL LOOP OVERRUN   a control cycle took longer than 50 ms
   LOG FAILURE            SD card missing / full / failing (control goes on)
   GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)

@@ -47,6 +47,9 @@ done
 # the big-boat build of core 0 (not linked with the rest, only compiled)
 msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -DBOAT_VARIANT_BIG -I. $INC -c Cpu0_Main.c -o "$TEMP/cpu0_big.o" 2>&1)
 if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (big boat)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK Cpu0_Main.c (big boat)"; fi
+# the FIRST TEST build (steering only)
+msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -DFIRST_TEST -I. $INC -c Cpu0_Main.c -o "$TEMP/cpu0_ft.o" 2>&1)
+if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (FIRST TEST)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK Cpu0_Main.c (FIRST TEST)"; fi
 # all HAL functions used by app/ must exist in hal_tc375.c (link check)
 "$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^hal_/ {print $2}' | sort -u > "$TEMP/hal_used.txt"
 "$B/tricore-elf-nm.exe" "$OUT/hal_tc375.o" | grep ' T hal_' | grep -o 'hal_[a-z_0-9]*' | sort -u > "$TEMP/hal_def.txt"

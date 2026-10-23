@@ -6893,6 +6893,186 @@ static void servo_clamp_tests(void)
     test_report("servo.c clamp corner cases (the only throttle writer)", fails == 0, d);
 }
 
+/* --------------------------------------- FIRST TEST (steering only) config -- */
+
+static sb_config_t cfg_first_test(void)
+{
+    sb_config_t c;
+    sb_default_config(&c);
+    c.first_test = true;
+    return c;
+}
+
+typedef struct {
+    float thr_max;              /* throttle servo, highest seen (%) */
+    uint16_t gear_min, gear_max;
+    int motor_steps;            /* steering motor commands */
+} ftwatch_t;
+
+static void ft_hook(sbsim_t *x, void *ctx)
+{
+    ftwatch_t *f = (ftwatch_t *)ctx;
+    if (sim_hal_throttle() > f->thr_max) f->thr_max = sim_hal_throttle();
+    uint16_t g = sim_hal_gear_pwm();
+    if (g < f->gear_min) f->gear_min = g;
+    if (g > f->gear_max) f->gear_max = g;
+    if (sim_hal_motor_command() != 0.0f) f->motor_steps++;
+    (void)x;
+}
+
+static void first_test_tests(void)
+{
+    char d[900];
+    printf("\n=== FIRST TEST configuration (steering only) ===\n");
+    sb_config_t c = cfg_first_test();
+
+    /* FT1 power-up without joystick, neutral switch or gateway: arms; throttle / gear held safe */
+    {
+        static sbsim_t x;
+        ftwatch_t f = { 0.0f, 0xFFFFu, 0u, 0 };
+        sbsim_init(&x, 321u, 0.0f, 0.0f, &c);
+        sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);
+        x.w.neutral_switch = true;
+        x.w.servo_stuck = true;                         /* gear servo not connected: "not neutral" possible */
+        x.w.gear_pos_us = 1900.0f;                      /* the switch reports NOT neutral */
+        sbsim_run(&x, 2000u, ft_hook, &f);
+        bool armed = x.sb.armed;
+        bool not_armed_alarm = (x.sb.alarm_bits & SB_ALM_NOT_ARMED) != 0u;
+        bool gear_alarm = (x.sb.alarm_bits & SB_ALM_GEAR) != 0u;
+        snprintf(d, sizeof d, "no joystick, neutral switch says NOT neutral, no gateway: armed %s after 2 s, NOT ARMED alarm %s, "
+                 "GEAR alarm %s; throttle servo max %.1f %%, gear pulse %u..%u us (neutral %u)",
+                 armed ? "yes" : "NO", not_armed_alarm ? "YES" : "no", gear_alarm ? "YES" : "no", f.thr_max,
+                 f.gear_min, f.gear_max, x.sb.cfg.gear.pwm_n_us);
+        test_report("FT1 FIRST TEST: arms without joystick / neutral switch / gateway; throttle + gear held safe",
+                    armed && !not_armed_alarm && !gear_alarm && f.thr_max <= 0.0f && f.gear_min == x.sb.cfg.gear.pwm_n_us &&
+                    f.gear_max == x.sb.cfg.gear.pwm_n_us, d);
+    }
+
+    /* FT2 allowed modes: STANDBY, TRAINING, HDG LOCK; MANUAL / AUTO / REMOTE refused */
+    {
+        static sbsim_t x;
+        static program_t p;
+        prog_error_t e;
+        uint8_t bad;
+        sbsim_init(&x, 322u, 0.0f, 0.0f, &c);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        joy_set(0.8f, 0.0f, false, false);              /* a joystick that happens to be connected: deflected */
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool no_manual = sb_mode(&x.sb) == MODE_STANDBY;
+        joy_set(0.0f, 0.0f, false, false);
+        prog_wp_t w = wp_world(&x, x.w.north_m + 600.0, x.w.east_m, 5.0f, 25.0f, WP_ACT_STOP);
+        prog_make(&p, &w, 1, PROG_END_STOP);
+        sb_program_set(&x.sb, &p, &e, &bad);
+        sb_result_t r_auto = sb_auto_start(&x.sb);
+        sb_result_t r_rem = sb_remote_request(&x.sb, 2u);
+        press(&x, HAL_BTN_HDG_LOCK);
+        bool hdg = sb_mode(&x.sb) == MODE_HDG_LOCK;
+        press(&x, HAL_BTN_STANDBY);
+        bool train = sb_request_mode(&x.sb, MODE_TRAINING, WHY_PC);
+        snprintf(d, sizeof d, "joystick deflected -> stays STANDBY %s; AUTO start %d, remote request %d (refused = %d); "
+                 "HDG LOCK button %s; TRAINING from the PC %s",
+                 no_manual ? "yes" : "NO", (int)r_auto, (int)r_rem, (int)SB_ERR_WRONG_MODE, hdg ? "yes" : "NO",
+                 train ? "yes" : "NO");
+        test_report("FT2 FIRST TEST modes: STANDBY / TRAINING / HDG LOCK only (no MANUAL, AUTO, REMOTE)",
+                    no_manual && r_auto == SB_ERR_WRONG_MODE && r_rem == SB_ERR_WRONG_MODE && hdg && train, d);
+    }
+
+    /* FT3 HDG LOCK steers while the boat moves ahead (someone at the throttle), pauses when it stops */
+    {
+        static sbsim_t x;
+        ftwatch_t f = { 0.0f, 0xFFFFu, 0u, 0 };
+        sbsim_init(&x, 323u, 90.0f, 0.0f, &c);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        x.w.hand_drive = true; x.w.hand_gear = GEAR_F; x.w.hand_throttle = 35.0f;
+        sbsim_run(&x, x.t + 30000u, ft_hook, &f);
+        press(&x, HAL_BTN_HDG_LOCK);
+        float locked = x.sb.ap.target_heading;
+        press(&x, HAL_BTN_PLUS_10);
+        sbsim_run(&x, x.t + 60000u, ft_hook, &f);
+        float err = fabsf(hdg_err(x.w.heading_deg, locked + 10.0f));
+        bool moving = x.sb.moving_ahead;
+        x.w.hand_throttle = 0.0f; x.w.hand_gear = GEAR_N;   /* stops */
+        sbsim_run(&x, x.t + 60000u, NULL, NULL);
+        ftwatch_t g = { 0.0f, 0xFFFFu, 0u, 0 };
+        sbsim_run(&x, x.t + 20000u, ft_hook, &g);
+        snprintf(d, sizeof d, "hand throttle 35 %%: %.1f kn, moving ahead %s; HDG LOCK +10 -> heading error %.1f deg after 60 s; "
+                 "throttle servo max %.1f %%; stopped: moving ahead %s, steering motor steps in 20 s %d, mode %s",
+                 x.w.speed_kn, moving ? "yes" : "NO", err, f.thr_max, x.sb.moving_ahead ? "YES" : "no", g.motor_steps,
+                 mode_name(sb_mode(&x.sb)));
+        test_report("FT3 FIRST TEST HDG LOCK: steers while moving ahead (throttle by hand), rests when stopped",
+                    moving && err < 3.0f && f.thr_max <= 0.0f && !x.sb.moving_ahead && g.motor_steps == 0 &&
+                    sb_mode(&x.sb) == MODE_HDG_LOCK, d);
+    }
+
+    /* FT4 emergency stop: STANDBY at once, alarm, nothing leaves STANDBY while pressed (also the normal config) */
+    {
+        static sbsim_t x;
+        sbsim_init(&x, 324u, 90.0f, 0.0f, &c);
+        sim_hal_set_estop(true, false);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        x.w.hand_drive = true; x.w.hand_gear = GEAR_F; x.w.hand_throttle = 35.0f;
+        sbsim_run(&x, x.t + 20000u, NULL, NULL);
+        press(&x, HAL_BTN_HDG_LOCK);
+        bool hdg = sb_mode(&x.sb) == MODE_HDG_LOCK;
+        uint32_t t0 = x.t;
+        sim_hal_set_estop(true, true);
+        while (sb_mode(&x.sb) != MODE_STANDBY && x.t < t0 + 1000u) sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+        uint32_t react = x.t - t0;
+        bool alarm = (x.sb.alarm_bits & SB_ALM_ESTOP) != 0u;
+        press(&x, HAL_BTN_HDG_LOCK);
+        bool refused = sb_mode(&x.sb) == MODE_STANDBY;
+        press(&x, HAL_BTN_STANDBY);                       /* acknowledge while still pressed: alarm stays */
+        bool kept = (x.sb.alarm_bits & SB_ALM_ESTOP) != 0u;
+        sim_hal_set_estop(true, false);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        press(&x, HAL_BTN_HDG_LOCK);
+        bool again = sb_mode(&x.sb) == MODE_HDG_LOCK;
+        /* the normal configuration too: MANUAL -> STANDBY */
+        static sbsim_t y;
+        sbsim_init(&y, 325u, 0.0f, 0.0f, NULL);
+        sim_hal_set_estop(true, false);
+        sbsim_run(&y, 2000u, NULL, NULL);
+        joy_set(0.5f, 0.5f, false, false);
+        sbsim_run(&y, y.t + 3000u, NULL, NULL);
+        bool man = sb_mode(&y.sb) == MODE_MANUAL;
+        sim_hal_set_estop(true, true);
+        sbsim_run(&y, y.t + 200u, NULL, NULL);
+        bool norm = sb_mode(&y.sb) == MODE_STANDBY && (y.sb.alarm_bits & SB_ALM_ESTOP);
+        sim_hal_set_estop(false, false);
+        joy_set(0.0f, 0.0f, false, false);
+        snprintf(d, sizeof d, "HDG LOCK %s; e-stop -> STANDBY after %lu ms, alarm %s; HDG LOCK while pressed refused %s; "
+                 "acknowledged while pressed: alarm kept %s; released -> HDG LOCK again %s; normal config MANUAL %s -> "
+                 "STANDBY + alarm %s",
+                 hdg ? "yes" : "NO", (unsigned long)react, alarm ? "yes" : "NO", refused ? "yes" : "NO", kept ? "yes" : "NO",
+                 again ? "yes" : "NO", man ? "yes" : "NO", norm ? "yes" : "NO");
+        test_report("FT4 emergency stop: STANDBY at once + alarm; nothing leaves STANDBY while pressed (every config)",
+                    hdg && react <= 100u && alarm && refused && kept && again && man && norm, d);
+    }
+
+    /* FT5 TRAINING with the throttle by hand: starts once the boat moves ahead, throttle servo stays idle */
+    {
+        static sbsim_t x;
+        ftwatch_t f = { 0.0f, 0xFFFFu, 0u, 0 };
+        sbsim_init(&x, 326u, 0.0f, 0.0f, &c);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bool req = sb_request_mode(&x.sb, MODE_TRAINING, WHY_PC);
+        sbsim_run(&x, x.t + 40000u, ft_hook, &f);
+        bool waiting = x.sb.train.stage == TS_SPINUP;      /* not moving yet: waits */
+        x.w.hand_drive = true; x.w.hand_gear = GEAR_F; x.w.hand_throttle = 20.0f;   /* slow, like TRAINING itself */
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 600000u && sb_mode(&x.sb) == MODE_TRAINING && x.sb.train.stage != TS_RESULT)
+            sbsim_run(&x, x.t + 1000u, ft_hook, &f);
+        bool result = x.sb.train.stage == TS_RESULT && sb_mode(&x.sb) == MODE_TRAINING;
+        snprintf(d, sizeof d, "TRAINING requested %s; not moving for 40 s: still spinning up %s; throttle by hand 20 %% -> "
+                 "result after %.0f s %s (mode %s, training: %s, %.1f kn); throttle servo max %.1f %%, gear pulse %u..%u",
+                 req ? "yes" : "NO", waiting ? "yes" : "NO", (x.t - t0) * 0.001f, result ? "yes" : "NO",
+                 mode_name(sb_mode(&x.sb)), training_result_text(x.sb.ap.train.result), x.w.speed_kn, f.thr_max,
+                 f.gear_min, f.gear_max);
+        test_report("FT5 FIRST TEST TRAINING: waits until moving ahead (throttle by hand), reaches the result; servo idle",
+                    req && waiting && result && f.thr_max <= 0.0f && f.gear_max == x.sb.cfg.gear.pwm_n_us, d);
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -6944,6 +7124,7 @@ void sb_tests(void)
     telem_size_tests();
     link_burst_tests();
     servo_clamp_tests();
+    first_test_tests();
     phase4();
     phase5();
     phase6();

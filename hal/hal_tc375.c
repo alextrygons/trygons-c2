@@ -273,6 +273,12 @@ void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
     IfxPort_setPinLow(ALARM_LED_PORT, ALARM_LED_PIN);    /* LED on */
 }
 
+bool hal_read_estop(bool *pressed)
+{
+    (void)pressed;
+    return false;       /* the input is added with the Stage 1 drivers (WIRING.md) */
+}
+
 bool hal_outputs_forced(void)
 {
     return s_forced != FALSE;

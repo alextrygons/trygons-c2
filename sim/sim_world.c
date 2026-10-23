@@ -114,10 +114,12 @@ void world_step(world_t *w, float dt_s)
     if (w->engaged == GEAR_F && thr > w->max_thr_fwd) w->max_thr_fwd = thr;
     if (w->engaged == GEAR_R && thr > w->max_thr_rev) w->max_thr_rev = thr;
 
-    /* speed through water */
+    /* speed through water (FIRST TEST: someone drives the engine by hand) */
+    gear_t eng = w->hand_drive ? w->hand_gear : w->engaged;
+    float t_eff = w->hand_drive ? w->hand_throttle : thr;
     float vss = 0.0f;
-    if (w->engaged == GEAR_F) vss = w->idle_fwd_kn + (w->vmax_fwd_kn - w->idle_fwd_kn) * thr / 100.0f;
-    if (w->engaged == GEAR_R) vss = -(0.8f + (w->vmax_rev_kn - 0.8f) * thr / 100.0f);
+    if (eng == GEAR_F) vss = w->idle_fwd_kn + (w->vmax_fwd_kn - w->idle_fwd_kn) * t_eff / 100.0f;
+    if (eng == GEAR_R) vss = -(0.8f + (w->vmax_rev_kn - 0.8f) * t_eff / 100.0f);
     w->speed_kn += (vss - w->speed_kn) * dt_s / w->speed_tau_s;
 
     /* steering actuator */

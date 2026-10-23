@@ -198,6 +198,9 @@ class App:
         self.sl_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#b00060", fg="#ffffff")
         self.so_banner = tk.Label(self.banners, text="SINGLE-OPERATOR MODE - you confirm your own driving actions",
                                   font=F_BIG, bg="#7000a0", fg="#ffffff")
+        self.ft_banner = tk.Label(self.banners, text="FIRST TEST - STEERING ONLY: throttle and gear disabled (drive the "
+                                  "throttle by hand) - take over: STANDBY button or EMERGENCY STOP",
+                                  font=F_BIG, bg="#ff00ff", fg="#ffffff", wraplength=1100)
         self.alarm_ack = btn(self.banners, "ACK ALARM\n(STANDBY)",
                              lambda: self.cmd(proto.T_ALARM_ACK, b"", "alarm ack"), font=F_TXT)
 
@@ -1764,6 +1767,7 @@ class App:
                 "NEUTRAL (%.0f-%.0f %%)" % (100 * d["nz_lo"], 100 * d["nz_hi"]),
                 100 * (d["lever"] or 0.0)))
         self.show(self.pick_banner, pick, row=2, column=0, columnspan=2, sticky="ew")
+        self.show(self.ft_banner, bool(d.get("first_test")), row=6, column=0, columnspan=2, sticky="ew")
 
         per = ((50000, "core 0  control 20 Hz"), (1000, "CPU1    monitor 1 kHz"), (10000, "core 2  logger"))
         keys = (("t_core0_avg", "t_core0_max", "ovr_core0"), ("t_mon_avg", "t_mon_max", "ovr_mon"),

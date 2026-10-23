@@ -62,6 +62,7 @@ typedef enum {
     WHY_REMOTE,             /* remote driving: HELM station request + joystick CONFIRM on board */
     WHY_REMOTE_END,         /* the remote driver released it */
     WHY_REMOTE_LOST,        /* remote joystick data too old / missing for 5 s */
+    WHY_ESTOP,              /* emergency stop pressed */
     WHY_COUNT
 } mode_reason_t;
 

@@ -862,6 +862,8 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *   G: navigation request (below)
  *   H: i16 roll deg*100 | i16 pitch deg*100 | u16 age ms (0xFFFF never) - BNO085 attitude for the
  *      camera horizon (gateway vision), never used for control
+ *   I: u8 config flags (b0 FIRST TEST: steering only) | u8 e-stop (0 not fitted, 1 released,
+ *      2 pressed) | u8 moving ahead (FIRST TEST: steering allowed)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -931,6 +933,10 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(fmaxf(-180.0f, fminf(180.0f, s->att_roll_deg)) * 100.0f));
     proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(fmaxf(-90.0f, fminf(90.0f, s->att_pitch_deg)) * 100.0f));
     proto_wr_u16(&w, (uint16_t)(att_age > 65534u ? (s->att_ms ? 65534u : 0xFFFFu) : att_age));
+    /* I */
+    proto_wr_u8(&w, (uint8_t)(s->cfg.first_test ? 1u : 0u));
+    proto_wr_u8(&w, s->estop_state);
+    proto_wr_u8(&w, (uint8_t)(s->moving_ahead ? 1u : 0u));
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
     else l->telem_overflows++;

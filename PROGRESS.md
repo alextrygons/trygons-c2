@@ -13,8 +13,8 @@ step that is not DONE below, without redoing finished work.
 | Step | What | State | Commit |
 |---|---|---|---|
 | 1 | auto.crt + generated certs / keys in .gitignore | DONE | 24404ce |
-| 2 | .cproject: only board sources compiled (check + fix) | DONE (was already right; check now also catches stray sources) | (this commit) |
-| 3 | FIRST TEST configuration (steering only), telemetry + ground station | open | |
+| 2 | .cproject: only board sources compiled (check + fix) | DONE (was already right; check now also catches stray sources) | ce2ad44 |
+| 3 | FIRST TEST configuration (steering only), telemetry + ground station | DONE (tests FT1-FT5, e-stop in every config) | (this commit) |
 | 4 | hal_tc375.c Stage 1 drivers (WIRING.md), timeouts / no-data detection | open | |
 | 5 | BENCH TEST mode (ground station, dock) | open | |
 | 6 | FIRST_TEST.md checklist | open | |

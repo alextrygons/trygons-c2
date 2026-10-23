@@ -105,6 +105,7 @@
 #define SB_ALM_DECISION           0x1000000u /* COLLISION RISK - DRIVER DECISION (or the avoidance request was lost) */
 #define SB_ALM_SHALLOW            0x2000000u /* SHALLOW WATER ahead (AUTO; gateway depth check) */
 #define SB_ALM_OBSTACLE           0x4000000u /* OBSTACLE AHEAD: camera obstacle detection (gateway vision) */
+#define SB_ALM_ESTOP              0x8000000u /* EMERGENCY STOP pressed (its contact; the switch also cuts power) */
 /* navigation advisories: alarm (sound, shown, logged) but they never lower the
  * power limit - their reaction is defined explicitly (AUTO: the gateway's
  * navreq slows down / steers; MANUAL / REMOTE: alarm only) */
@@ -258,6 +259,14 @@ typedef struct {
     uint32_t arm_alarm_ms;              /* not armed this long -> alarm (3 s) */
     bool     joy_optional;              /* boat really without a joystick: arm without it (false: the
                                          * joystick must be seen, armed and centred - R9) */
+    /* FIRST TEST (steering only; set only by the compile-time switch FIRST_TEST in
+     * Cpu0_Main.c, never from the PC): throttle and gear outputs held at idle /
+     * neutral, no joystick / neutral switch / gateway needed to arm, only STANDBY,
+     * TRAINING and HDG LOCK; HDG LOCK / TRAINING steer while the GPS says the boat
+     * moves ahead (someone drives the throttle by hand). */
+    bool     first_test;
+    float    first_test_min_kn;         /* "moving ahead": GPS SOG at least this (2 kn) ... */
+    float    first_test_cog_deg;        /* ... and COG within this of the heading (60 deg, not astern) */
 
     /* TRAINING */
     float    training_throttle_pct;     /* fixed slow throttle, forward gear (20) */
@@ -477,6 +486,9 @@ typedef struct {
 
     uint32_t now_ms, last_ms;
     bool     gps_bad_msg;       /* this step's GPS message was a fix with invalid values */
+    uint8_t  estop_state;       /* 0 no e-stop input, 1 released, 2 pressed */
+    bool     estop_seen;
+    bool     moving_ahead;      /* FIRST TEST: the GPS says the boat moves ahead (steering allowed) */
     bool     stopping;          /* safe stop running (idle + neutral first) */
     sb_stop_steer_t stop_steer; /* steering during the safe stop / HDG_LOCK compass loss */
     bool     stop_from_auto;    /* the stop started in HDG_LOCK / AUTO / TRAINING */

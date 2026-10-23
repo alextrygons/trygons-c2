@@ -219,6 +219,11 @@ bool hal_outputs_forced(void);
  * the outputs are armed (neutral-start interlock). */
 void hal_set_safety_relay(bool closed);
 
+/* Emergency stop: the mushroom switch cuts the actuator power itself; its
+ * second (normally closed) contact goes to an input so the software knows.
+ * Returns false if no e-stop input is fitted / configured. */
+bool hal_read_estop(bool *pressed);
+
 /* Watchdogs (CPU0 + safety watchdog). Not kicked within timeout_ms -> chip
  * reset (outputs to their reset state, see WIRING.md). */
 void hal_watchdog_init(uint32_t timeout_ms);

@@ -69,6 +69,9 @@ void sb_default_config(sb_config_t *cfg)
     cfg->arm_ms = 500u;
     cfg->arm_alarm_ms = 3000u;
     cfg->joy_optional = false;
+    cfg->first_test = false;
+    cfg->first_test_min_kn = 2.0f;
+    cfg->first_test_cog_deg = 60.0f;
 
     cfg->training_throttle_pct = 20.0f;
     cfg->training_spinup_ms = 30000u;
@@ -183,6 +186,7 @@ void sb_alarm_ack(sb_t *s)
     if (s->gw.flags & SB_GWF_FALLBACK) keep |= SB_ALM_CHANNEL;
     if (s->gw.state == SB_GW_LOST) keep |= SB_ALM_GATEWAY;
     if (s->nav.lost) keep |= SB_ALM_DECISION;
+    if (s->estop_state == 2u) keep |= SB_ALM_ESTOP;
     s->alarm_bits &= keep;              /* (the link-lost bits are raised again while lost, link.c) */
     s->alarm = s->alarm_bits != 0u;
     if (!s->ap.sensor_fault) s->ap.alarm = false;
@@ -402,7 +406,10 @@ static bool auto_leg_ok(const sb_t *s)
 static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
 {
     bool forced = why == WHY_STANDBY_BUTTON || why == WHY_JOY_FAULT || why == WHY_GEAR_FAULT ||
-                  why == WHY_NOT_ARMED || why == WHY_MONITOR;
+                  why == WHY_NOT_ARMED || why == WHY_MONITOR || why == WHY_ESTOP;
+    if (s->estop_state == 2u && to != MODE_STANDBY) return false;     /* emergency stop pressed */
+    /* FIRST TEST: steering only - STANDBY, TRAINING, HDG LOCK */
+    if (s->cfg.first_test && (to == MODE_MANUAL || to == MODE_AUTO || to == MODE_REMOTE)) return false;
 
     /* The joystick always wins: MANUAL is left only with the stick centred
      * (AUTO / HDG LOCK button, PC + CONFIRM), the STANDBY button or a fault. */
@@ -813,6 +820,7 @@ static float remote_cap_r(const sb_t *s)
 
 sb_result_t sb_remote_request(sb_t *s, uint8_t station)
 {
+    if (s->cfg.first_test) return SB_ERR_WRONG_MODE;              /* FIRST TEST: steering only */
     if (sb_mode(s) == MODE_MANUAL) return SB_ERR_JOYSTICK;        /* the onboard joystick has it */
     if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_TRAINING) return SB_ERR_WRONG_MODE;
     if (!s->armed || s->mon_tripped) return SB_ERR_PRECOND;
@@ -977,6 +985,7 @@ bool sb_joymap_set(sb_t *s, const joymap_t *m, bool save, jm_error_t *err)
  * not just idling in neutral. Without it the heading can't be steered. */
 static bool propulsion(const sb_t *s)
 {
+    if (s->cfg.first_test) return s->moving_ahead;      /* the throttle is driven by hand */
     return gear_is(&s->gear, GEAR_F) ||
            (s->gear_demand == GEAR_F && s->gear.target == GEAR_F && s->thr.out_pct > s->cfg.gear.idle_max_pct);
 }
@@ -1008,7 +1017,7 @@ static void steer_pause(sb_t *s, bool pause, float angle)
  * lost: gyro hold / centring until the user has stopped, then STANDBY. */
 static void hdg_lock_mode(sb_t *s)
 {
-    joystick_throttle(s);
+    if (!s->cfg.first_test) joystick_throttle(s);       /* FIRST TEST: throttle by hand */
 
     if (s->hdg_compass_lost) {
         bool safe = s->thr.out_pct <= s->cfg.gear.idle_max_pct &&
@@ -1378,6 +1387,7 @@ static void auto_mode(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float ro
 
 static sb_result_t auto_common_checks(const sb_t *s)
 {
+    if (s->cfg.first_test) return SB_ERR_WRONG_MODE;              /* FIRST TEST: no AUTO */
     if (!s->autop.prog_ok) return SB_ERR_NO_PROGRAM;
     if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
     if (!joy_ready(s)) return SB_ERR_JOY_NOT_READY;
@@ -1585,7 +1595,8 @@ static void training_mode(sb_t *s, uint32_t dt_ms)
     case TS_SPINUP:
         s->gear_demand = GEAR_F;
         s->throttle_demand = s->cfg.training_throttle_pct;
-        if (gear_is(&s->gear, GEAR_F)) t->timer_ms += dt_ms;
+        /* FIRST TEST: someone at the throttle - the boat moving ahead counts */
+        if (s->cfg.first_test ? s->moving_ahead : gear_is(&s->gear, GEAR_F)) t->timer_ms += dt_ms;
         if (t->timer_ms >= s->cfg.training_spinup_ms) {
             if (autopilot_start_training(&s->ap)) {
                 t->stage = TS_RUN;
@@ -1639,10 +1650,12 @@ static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
 {
     if (s->armed) return;
     bool neutral = (neutral_sw >= 0) ? (neutral_sw == 1 && gear_is(&s->gear, GEAR_N)) : gear_is(&s->gear, GEAR_N);
+    if (s->cfg.first_test) neutral = gear_is(&s->gear, GEAR_N);      /* no neutral switch needed (gear held N) */
     /* the joystick must be there (a USB bridge still starting or an analog
      * stick not detected is no reason to skip the check) - unless the boat is
      * configured without one */
     bool stick = s->joy.present ? (s->joy.armed && joy_centered(&s->joy)) : s->cfg.joy_optional;
+    if (s->cfg.first_test) stick = true;                              /* no joystick needed (no MANUAL) */
     bool idle = s->thr.out_pct <= s->cfg.gear.idle_max_pct;
     s->arm_ok_ms = (neutral && stick && idle) ? s->arm_ok_ms + dt_ms : 0u;
     s->unarmed_ms += dt_ms;
@@ -1656,6 +1669,24 @@ static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
 
 static void events_step(sb_t *s, uint32_t buttons)
 {
+    /* EMERGENCY STOP (its contact; the switch itself cuts the actuator power):
+     * every mode -> STANDBY + alarm, nothing leaves STANDBY while pressed */
+    {
+        bool pressed;
+        s->estop_state = hal_read_estop(&pressed) ? (pressed ? 2u : 1u) : 0u;
+        if (s->estop_state == 2u) {
+            if (!s->estop_seen) {
+                s->estop_seen = true;
+                alarm_on(s, SB_ALM_ESTOP);
+                plim_drop(&s->plim, PLIM_SRC_FAULT, s->now_ms);
+                s->confirm.kind = CONF_NONE;
+            }
+            if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_ESTOP);
+        } else {
+            s->estop_seen = false;
+        }
+    }
+
     /* the logger (core 2) can't write: alarm; control goes on as normal */
     if (g_logstat.failure && !s->log_fail_seen) alarm_on(s, SB_ALM_LOG);
     s->log_fail_seen = g_logstat.failure != 0u;
@@ -1729,7 +1760,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     bool grab = s->joy.take_edge || s->joy.engage_x || (s->joy.engage_y && sb_mode(s) != MODE_HDG_LOCK) ||
                 (s->joy.lever_moved && !lever_has_throttle(sb_mode(s)));
     if (s->joy.take_edge) plim_drop(&s->plim, PLIM_SRC_OVERRIDE, s->now_ms);      /* TAKE always lowers */
-    if (grab && sb_mode(s) != MODE_MANUAL) {
+    if (grab && sb_mode(s) != MODE_MANUAL && !s->cfg.first_test) {     /* FIRST TEST: no MANUAL */
         if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
             s->confirm.kind == CONF_REMOTE) s->confirm.kind = CONF_NONE;
         sb_request_mode(s, MODE_MANUAL, WHY_JOYSTICK);
@@ -1825,6 +1856,15 @@ void sb_step(sb_t *s)
         dr_step(&s->dr, &di);
     }
 
+    /* FIRST TEST: the boat moves ahead (GPS) = steering allowed in HDG LOCK / TRAINING */
+    if (s->cfg.first_test) {
+        s->moving_ahead = sb_gps_ok(s) && s->gps.last.sog_kn >= s->cfg.first_test_min_kn &&
+                          fabsf(autopilot_heading_error(s->ap.heading, s->gps.last.cog_deg)) <= s->cfg.first_test_cog_deg;
+        neutral_sw = -1;                            /* gearbox not connected: the switch is ignored */
+    } else {
+        s->moving_ahead = false;
+    }
+
     /* 2. interlock, faults, joystick, buttons */
     interlock_step(s, neutral_sw, dt_ms);
     events_step(s, buttons);
@@ -1842,6 +1882,10 @@ void sb_step(sb_t *s)
     else if (sb_mode(s) == MODE_TRAINING) training_mode(s, dt_ms);
     else if (sb_mode(s) == MODE_REMOTE) remote_mode(s);
     if (sb_mode(s) == MODE_STANDBY) {
+        s->throttle_demand = 0.0f;
+        s->gear_demand = GEAR_N;
+    }
+    if (s->cfg.first_test) {                       /* FIRST TEST: throttle / gear outputs held safe */
         s->throttle_demand = 0.0f;
         s->gear_demand = GEAR_N;
     }

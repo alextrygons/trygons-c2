@@ -80,7 +80,8 @@ const char *mode_reason_name(mode_reason_t r)
         "training done", "training aborted", "test", "gear fault", "DR limit",
         "arrival uncertain", "joystick", "joystick hand-back", "joystick fault", "PC",
         "HDG LOCK button", "PC + CONFIRM", "outputs not armed", "safety monitor",
-        "remote driving (HELM + CONFIRM)", "remote driver released", "remote driving link lost"
+        "remote driving (HELM + CONFIRM)", "remote driver released", "remote driving link lost",
+        "emergency stop"
     };
     return ((unsigned)r < WHY_COUNT) ? n[r] : "?";
 }

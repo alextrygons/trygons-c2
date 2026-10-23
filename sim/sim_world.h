@@ -49,6 +49,10 @@ typedef struct {
     uint32_t slam_impacts;      /* impacts of 1 g or more made (truth) */
     float slam_dead;            /* s until the next impact can come */
     float slam_last_g;
+    /* FIRST TEST: the engine is driven by hand (throttle / gear servos not connected) */
+    bool  hand_drive;
+    gear_t hand_gear;
+    float hand_throttle;        /* % */
 
     /* state */
     float heading_deg, yaw_dps, wave_filt;

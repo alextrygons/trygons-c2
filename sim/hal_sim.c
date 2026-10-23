@@ -628,6 +628,14 @@ void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
 }
 
 bool hal_outputs_forced(void) { return s_forced; }
+static bool s_estop_fitted, s_estop_pressed;
+void sim_hal_set_estop(bool fitted, bool pressed) { s_estop_fitted = fitted; s_estop_pressed = pressed; }
+bool hal_read_estop(bool *pressed)
+{
+    if (!s_estop_fitted) return false;
+    *pressed = s_estop_pressed;
+    return true;
+}
 void hal_set_safety_relay(bool closed) { s_relay = closed && !s_forced; }
 bool sim_hal_safety_relay(void) { return s_relay; }
 
