@@ -96,6 +96,7 @@ Safety rules — never break them
   - Board (hal_tc375.c): hal_safe_outputs sets the latch FIRST, then writes idle / neutral itself into the GTM TOM shadow registers (taken at the next 20 ms period end, never a cut pulse), steering motor pin low, relay open - so it works with core 0 frozen. Every core-0 output call re-checks the latch after its write (no race). Servo PWM: TOM0 ch 15 throttle (P02.7), ch 14 gear (P02.6), 50 Hz from CMU FXCLK2; low-level Gtm/Std driver (the Gtm/Tom/Pwm driver is not in the ADS build).
 - Neutral-start interlock: outputs only arm at power-up with throttle idle, neutral confirmed and the joystick centred (USB: stick centred AND lever in the neutral zone). The joystick must be SEEN (not detected yet / USB bridge still starting = not armed, NOT ARMED alarm); only a boat configured without a joystick (cfg.joy_optional, analog source) arms without it.
 - USB bridge: no valid frame 150 ms / > 5 CRC errors per s / stuck counter / device unplugged / invalid axis / learn mode = JOYSTICK FAULT (same as a wire break). Hand-back needs stick centred AND lever neutral.
+- Alarm acknowledge (PC ALARM_ACK from any station, panel STANDBY in STANDBY) = sb_alarm_ack(): clears only alarms whose cause is gone; active conditions stay (link-lost bits are raised again every step while lost).
 - Logging must never block or slow control: core 0 / CPU1 only push into lock-free queues; full queue → drop + count.
 - Every feature has sim tests for its failure cases.
 

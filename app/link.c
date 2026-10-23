@@ -538,9 +538,7 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         send_joy_raw(l, s);
         return PROTO_R_OK;
     case PROTO_T_ALARM_ACK:             /* any mode (the panel STANDBY button: in STANDBY) */
-        s->alarm = false;
-        s->alarm_bits = 0u;
-        s->ap.alarm = false;
+        sb_alarm_ack(s);                /* only alarms whose cause is gone - also from a remote station */
         return PROTO_R_OK;
 
     /* --- AUTO program upload --- */
@@ -1107,6 +1105,13 @@ void link_step(link_t *l, sb_t *s)
             if (s->helm >= 2u) helm_lost(s, s->helm, 4u);   /* its stations are gone too */
         } else {
             s->alarm_bits |= SB_ALM_PC_LINK;
+        }
+    } else if (l->lost) {
+        /* still lost: an acknowledge can't make the alarm disappear */
+        uint32_t bit = (l->port == LINK_PORT_GW) ? SB_ALM_GATEWAY : SB_ALM_PC_LINK;
+        if (!(s->alarm_bits & bit)) {
+            s->alarm_bits |= bit;
+            s->alarm = true;
         }
     }
 

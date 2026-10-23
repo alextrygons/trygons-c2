@@ -523,6 +523,12 @@ static inline sb_mode_t sb_mode(const sb_t *s) { return s->modes.mode; }
 bool sb_compass_ok(const sb_t *s);
 bool sb_gps_ok(const sb_t *s);
 
+/* Acknowledge alarms (PC ALARM_ACK, panel STANDBY button in STANDBY): clears
+ * only the alarms whose cause is gone - a condition that is still there
+ * (compass / GPS / joystick fault, not armed, monitor, log, gear, gateway
+ * storage / channel / AIS silent, link lost ...) stays on. */
+void sb_alarm_ack(sb_t *s);
+
 /* --- AUTO program (PC) --- */
 /* Validate and store (non-volatile, checksum). Refused while AUTO runs it. */
 sb_result_t sb_program_set(sb_t *s, const program_t *p, prog_error_t *err, uint8_t *bad_index);

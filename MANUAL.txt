@@ -1092,6 +1092,9 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
   DECISION, OBSTACLE AHEAD and AIS RECEIVER SILENT: they never change the
   power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
+  An acknowledge clears only the alarms whose cause is gone: a compass /
+  GPS / joystick fault, a lost link, a tripped monitor, a gateway problem
+  ... that is still there stays on (from any station, also from shore).
 
 
 -------------------------------------------------------------------------------

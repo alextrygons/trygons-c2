@@ -6658,6 +6658,52 @@ static void arm_joystick_tests(void)
                 unarmed && alarm && armed_with && (armed_opt || s_bridge), d);
 }
 
+/* ----------------------- R11: an acknowledge never hides an active condition -- */
+
+static void usb_link_hook(sbsim_t *x, void *ctx)
+{
+    link_step((link_t *)ctx, &x->sb);
+    uint8_t out[1024];
+    while (sim_hal_link_tx_pop(out, sizeof out) > 0u) {}
+}
+
+static void alarm_ack_tests(void)
+{
+    char d[700];
+    const uint8_t TAKE = 0u;
+    printf("\n=== R11: alarm acknowledge clears only what is gone ===\n");
+    static sbsim_t x;
+    static link_t usb;
+    sbsim_init(&x, 291u, 0.0f, 0.0f, NULL);
+    sbsim_run(&x, 2000u, NULL, NULL);
+    link_init(&usb, &x.sb);
+    usb_cmd(&x, &usb, PROTO_T_HELM, &TAKE, 1u);           /* the laptop is connected ... */
+    sbsim_run(&x, x.t + 5000u, usb_link_hook, &usb);       /* ... and goes silent: PC LINK LOST */
+    bool lost = (x.sb.alarm_bits & SB_ALM_PC_LINK) != 0u;
+    sim_hal_fail_heading(true);                            /* compass fails too */
+    sbsim_run(&x, x.t + 3000u, usb_link_hook, &usb);
+    bool comp = (x.sb.alarm_bits & SB_ALM_COMPASS) != 0u;
+    press(&x, HAL_BTN_STANDBY);                           /* STANDBY: the button acknowledges */
+    sbsim_run(&x, x.t + 300u, usb_link_hook, &usb);
+    bool both_kept = (x.sb.alarm_bits & SB_ALM_PC_LINK) && (x.sb.alarm_bits & SB_ALM_COMPASS) && sim_hal_alarm();
+    sim_hal_fail_heading(false);                           /* compass back */
+    sbsim_run(&x, x.t + 2000u, usb_link_hook, &usb);
+    press(&x, HAL_BTN_STANDBY);
+    sbsim_run(&x, x.t + 300u, usb_link_hook, &usb);
+    uint32_t after_comp = x.sb.alarm_bits;
+    usb_cmd(&x, &usb, PROTO_T_HELM, &TAKE, 1u);            /* the laptop is back */
+    sbsim_run(&x, x.t + 300u, usb_link_hook, &usb);
+    usb_cmd(&x, &usb, PROTO_T_ALARM_ACK, NULL, 0u);
+    sbsim_run(&x, x.t + 300u, usb_link_hook, &usb);
+    uint32_t end = x.sb.alarm_bits;
+    snprintf(d, sizeof d, "PC link lost %s, compass failed %s; acknowledged while both still wrong -> both still on %s; "
+             "compass back, acknowledged -> alarms 0x%lx (only PC LINK left: %s); link back + ACK -> 0x%lx",
+             lost ? "yes" : "NO", comp ? "yes" : "NO", both_kept ? "yes" : "NO", (unsigned long)after_comp,
+             after_comp == SB_ALM_PC_LINK ? "yes" : "NO", (unsigned long)end);
+    test_report("R11 alarm ACK clears only alarms whose cause is gone (link lost / compass stay while wrong)",
+                lost && comp && both_kept && after_comp == SB_ALM_PC_LINK && end == 0u, d);
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -6705,6 +6751,7 @@ void sb_tests(void)
     gps_invalid_tests();
     gps_retrust_tests();
     arm_joystick_tests();
+    alarm_ack_tests();
     phase4();
     phase5();
     phase6();

@@ -167,6 +167,27 @@ bool sb_gps_ok(const sb_t *s)
            s->dr.state == DR_GPS;
 }
 
+void sb_alarm_ack(sb_t *s)
+{
+    uint32_t keep = 0u;
+    if (s->ap.sensor_fault) keep |= SB_ALM_COMPASS;
+    if (!sb_gps_ok(s)) keep |= SB_ALM_GPS_LOST | SB_ALM_GPS_SUSPECT;
+    if (s->joy.fault) keep |= SB_ALM_JOY_FAULT;
+    if (s->joy.not_centered && !s->joy.armed) keep |= SB_ALM_JOY_NOT_CENTERED;
+    if (!s->armed) keep |= SB_ALM_NOT_ARMED;
+    if (s->mon_tripped) keep |= SB_ALM_MONITOR;
+    if (g_logstat.failure) keep |= SB_ALM_LOG;
+    if (gear_fault(&s->gear)) keep |= SB_ALM_GEAR;
+    if (s->gw.flags & (SB_GWF_STORAGE | SB_GWF_STORAGE_FULL)) keep |= SB_ALM_GW_STORAGE;
+    if (s->gw.flags & SB_GWF_AIS_SILENT) keep |= SB_ALM_AIS_SILENT;
+    if (s->gw.flags & SB_GWF_FALLBACK) keep |= SB_ALM_CHANNEL;
+    if (s->gw.state == SB_GW_LOST) keep |= SB_ALM_GATEWAY;
+    if (s->nav.lost) keep |= SB_ALM_DECISION;
+    s->alarm_bits &= keep;              /* (the link-lost bits are raised again while lost, link.c) */
+    s->alarm = s->alarm_bits != 0u;
+    if (!s->ap.sensor_fault) s->ap.alarm = false;
+}
+
 void sb_test_drive(sb_t *s, bool on, gear_t gear, float throttle_pct)
 {
     s->test_drive.on = on;
@@ -1715,9 +1736,7 @@ static void events_step(sb_t *s, uint32_t buttons)
             if (!joy_centered(&s->joy)) joy_disarm(&s->joy);   /* can't grab control right back */
             sb_request_mode(s, MODE_STANDBY, WHY_STANDBY_BUTTON);
         } else {
-            s->alarm = false;           /* in STANDBY the button acknowledges */
-            s->alarm_bits = 0u;
-            s->ap.alarm = false;
+            sb_alarm_ack(s);            /* in STANDBY the button acknowledges (what is still wrong stays) */
         }
     }
     if (buttons & HAL_BTN_BIT(HAL_BTN_HDG_LOCK)) {
