@@ -456,6 +456,18 @@ static void start_fault_steer(sb_t *s)
     }
 }
 
+/* Compass lost while moving, as configured: gyro hold (default), or the
+ * outboard to its centre (SB_FAULT_STEER_CENTER) - never just off. */
+static void fault_steer_start(sb_t *s)
+{
+    if (s->cfg.fault_steer == SB_FAULT_STEER_GYRO) {
+        start_fault_steer(s);
+    } else {
+        autopilot_center(&s->ap);
+        s->stop_steer = STOP_STEER_CENTER;
+    }
+}
+
 /* New leg from where the boat is now to the active waypoint. */
 static void auto_begin_leg(sb_t *s)
 {
@@ -515,9 +527,8 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         } else if (s->ap.mode == AP_MODE_AUTO && sb_compass_ok(s)) {
             s->stop_steer = STOP_STEER_HEADING;
             autopilot_set_target(&s->ap, s->ap.heading);
-        } else if (!sb_compass_ok(s) && moving && was_auto &&
-                   s->cfg.fault_steer == SB_FAULT_STEER_GYRO) {
-            start_fault_steer(s);
+        } else if (!sb_compass_ok(s) && moving && was_auto) {
+            fault_steer_start(s);
         }
         break;
     }
@@ -1677,11 +1688,8 @@ static void events_step(sb_t *s, uint32_t buttons)
                 s->hdg_reverse = false;
                 autopilot_center(&s->ap);
                 s->stop_steer = STOP_STEER_CENTER;
-            } else if (s->cfg.fault_steer == SB_FAULT_STEER_GYRO) {
-                start_fault_steer(s);
             } else {
-                autopilot_disengage(&s->ap);
-                s->stop_steer = STOP_STEER_NONE;
+                fault_steer_start(s);
             }
         }
         /* MANUAL / STANDBY: manual steering doesn't need the compass -> alarm only */
@@ -1854,9 +1862,8 @@ void sb_step(sb_t *s)
 
             /* compass lost during the stop of an auto-steering mode */
             if ((s->stop_steer == STOP_STEER_HEADING || s->stop_steer == STOP_STEER_NONE) &&
-                !sb_compass_ok(s) && !safe && s->stop_from_auto &&
-                s->cfg.fault_steer == SB_FAULT_STEER_GYRO) {
-                start_fault_steer(s);
+                !sb_compass_ok(s) && !safe && s->stop_from_auto && s->stop_steer != STOP_STEER_CENTER) {
+                fault_steer_start(s);
             }
 
             switch (s->stop_steer) {

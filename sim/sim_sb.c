@@ -1807,24 +1807,24 @@ static void fixes(void)
         stopturn_t c = stop_turn(SB_FAULT_STEER_GYRO, true, 81u);
         g_stop_trace = false;
         printf("Compass lost at 20 kn, outboard 15 deg (heading change until the boat stops):\n");
-        printf("  before (steering off at once): %6.0f deg   outboard at fault %.1f, at end %.1f deg\n",
+        printf("  setting CENTER (no gyro hold):  %6.0f deg   outboard at fault %.1f, at end %.1f deg\n",
                b.hdg_unwrap, b.angle_at_fault, b.angle_end);
         printf("  after, gyro hold:              %6.0f deg   idle %.1f s, neutral %.1f s, steering off %.1f s, outboard at end %.1f deg\n",
                g.hdg_unwrap, g.t_idle, g.t_neutral, g.t_off, g.angle_end);
         printf("  after, gyro failed too:        %6.0f deg   centred and off at %.1f s, outboard at end %.1f deg\n",
                c.hdg_unwrap, c.t_off, c.angle_end);
-        snprintf(d, sizeof d, "heading change before %.0f deg -> gyro hold %.0f deg; steering off at %.1f s "
+        snprintf(d, sizeof d, "heading change with centring %.0f deg -> gyro hold %.0f deg; steering off at %.1f s "
                  "(neutral %.1f s); motor after off %d",
                  b.hdg_unwrap, g.hdg_unwrap, g.t_off, g.t_neutral, g.motor_after_off);
         test_report("F1 compass lost at 20 kn: gyro hold until idle + neutral, then off",
-                    fabsf(g.hdg_unwrap) < 0.5f * fabsf(b.hdg_unwrap) && g.t_off >= g.t_neutral &&
+                    fabsf(g.hdg_unwrap) <= fabsf(b.hdg_unwrap) + 1.0f && g.t_off >= g.t_neutral &&
                     g.t_neutral > g.t_idle && g.motor_after_off == 0, d);
-        snprintf(d, sizeof d, "heading change before %.0f deg -> centring %.0f deg; outboard at end %.1f deg "
-                 "(before %.1f); steering off at %.1f s; motor after off %d",
-                 b.hdg_unwrap, c.hdg_unwrap, c.angle_end, b.angle_end, c.t_off, c.motor_after_off);
+        snprintf(d, sizeof d, "compass + gyro lost: centring, heading change %.0f deg; outboard at end %.1f deg "
+                 "(setting CENTER: %.1f deg); steering off at %.1f s (neutral %.1f s); motor after off %d",
+                 c.hdg_unwrap, c.angle_end, b.angle_end, c.t_off, c.t_neutral, c.motor_after_off);
         test_report("F1 compass and gyro lost at 20 kn: outboard to centre, then off",
-                    fabsf(c.hdg_unwrap) < fabsf(b.hdg_unwrap) && fabsf(c.angle_end) < 3.0f &&
-                    c.t_off > 0.0f && c.motor_after_off == 0, d);
+                    fabsf(c.angle_end) < 3.0f && fabsf(b.angle_end) < 3.0f && c.t_off >= c.t_neutral &&
+                    c.motor_after_off == 0, d);
     }
 }
 

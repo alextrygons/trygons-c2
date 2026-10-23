@@ -189,7 +189,8 @@ typedef struct {
     bool     k_gear, k_compass, k_joy, k_mon, init;
 } sb_save_t;
 
-#define SB_FAULT_STEER_OFF   0u
+#define SB_FAULT_STEER_CENTER 0u
+#define SB_FAULT_STEER_OFF   SB_FAULT_STEER_CENTER   /* old name: steering never just stops any more */
 #define SB_FAULT_STEER_GYRO  1u
 
 /* How the steering behaves during a safe stop (STANDBY), or in HDG_LOCK
@@ -213,7 +214,8 @@ typedef struct {
     /* Compass lost while moving: how to steer during the safe stop.
      * SB_FAULT_STEER_GYRO (default): gyro hold (zero yaw rate) until idle +
      * neutral, then off; no gyro -> outboard to centre, then off.
-     * SB_FAULT_STEER_OFF: steering stops at once (old behaviour). */
+     * SB_FAULT_STEER_CENTER: no gyro hold - outboard to its estimated centre,
+     * then off (never "steering off at once": idle + neutral first). */
     uint8_t           fault_steer;
 
     /* AUTO: speed */
