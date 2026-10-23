@@ -93,6 +93,9 @@ typedef struct {
     bool     steer_ok;          /* X is a valid reading (no fault), also while not armed */
     float    steer_x;           /* that X: only for steering during the STANDBY safe stop
                                  * (a disarmed stick still steers until idle + neutral) */
+    bool     off_centre;        /* valid reading, stick not centred (X; Y when Y is the throttle) -
+                                 * also while not armed: HDG LOCK / AUTO / REMOTE / TRAINING are
+                                 * refused then (a held stick must always be able to take over) */
     uint16_t raw[2];
     bool     take, autob, confirm;              /* buttons now */
     bool     take_edge, auto_edge, confirm_edge; /* pressed this step */

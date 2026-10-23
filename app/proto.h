@@ -93,7 +93,7 @@
 #define PROTO_R_NOT_ALLOWED   5u      /* mode change not in the table         */
 #define PROTO_R_PRECOND       6u      /* conditions not met (GPS, waypoint, sensors ...) */
 #define PROTO_R_WRONG_MODE    7u      /* command not possible in this mode    */
-#define PROTO_R_NOT_CENTERED  8u      /* hand-back refused: stick not centred */
+#define PROTO_R_NOT_CENTERED  8u      /* centre the joystick: stick held (hand-back, HDG LOCK, AUTO, REMOTE, TRAINING) */
 #define PROTO_R_STANDBY_ONLY  9u      /* only in STANDBY                      */
 #define PROTO_R_BAD_PARAM     10u     /* no such parameter                    */
 #define PROTO_R_REFUSED       11u     /* refused by the function (e.g. implausible calibration) */

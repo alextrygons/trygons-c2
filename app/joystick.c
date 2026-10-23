@@ -161,6 +161,7 @@ void joy_update(joy_t *j, const joy_input_t *in, uint32_t dt_ms)
     j->has_lever = in->present && in->has_lever;
     j->steer_ok = false;
     j->steer_x = 0.0f;
+    j->off_centre = false;
     if (!in->present || !in->ready) {
         /* not fitted / still starting: not usable, no fault (yet) */
         j->armed = false;
@@ -219,6 +220,8 @@ void joy_update(joy_t *j, const joy_input_t *in, uint32_t dt_ms)
         j->steer_ok = true;
         j->steer_x = x;
     }
+    /* the lever (no spring) is not "held": its pickup keeps the throttle idle */
+    j->off_centre = !bad && (!(fabsf(x) < c->center_tol) || (!j->has_lever && !(fabsf(y) < c->center_tol)));
     if (j->fault || !j->armed) {
         j->x = j->y = 0.0f;
         j->lever = nz_mid(j);

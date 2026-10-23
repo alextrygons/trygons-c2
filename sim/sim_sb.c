@@ -6275,6 +6275,69 @@ static void nav_tests(void)
     }
 }
 
+/* ------------------------------------------- T2: held stick always wins -- */
+
+/* STANDBY pressed while the stick is held: the stick is ignored until
+ * centred - so nothing it could no longer take over from may be engaged:
+ * HDG LOCK button, AUTO start, remote driving, TRAINING are refused
+ * ("centre the joystick"); centred: HDG LOCK works and the stick takes over. */
+static void centre_tests(void)
+{
+    char d[600];
+    const uint8_t TAKE = 0u;
+    printf("\n=== T2: autopilot modes only with the joystick centred ===\n");
+    static sbsim_t x;
+    static program_t p;
+    static link_t usb;
+    prog_error_t err;
+    uint8_t bad, tr[5] = { 0u, 0u, 0u, 0u, 0u };
+    sbsim_init(&x, 241u, 0.0f, 0.0f, NULL);
+    sbsim_run(&x, 2000u, NULL, NULL);
+    link_init(&usb, &x.sb);
+    usb_cmd(&x, &usb, PROTO_T_HELM, &TAKE, 1u);
+    prog_error_t e2;
+    prog_wp_t w = wp_world(&x, x.w.north_m + 600.0, x.w.east_m, 5.0f, 25.0f, WP_ACT_STOP);
+    prog_make(&p, &w, 1, PROG_END_STOP);
+    bool prog = sb_program_set(&x.sb, &p, &e2, &bad) == SB_OK;
+    (void)err;
+    joy_set(0.6f, 0.5f, false, false);                  /* driving on the stick */
+    sbsim_run(&x, x.t + 8000u, NULL, NULL);
+    bool manual = sb_mode(&x.sb) == MODE_MANUAL;
+    sim_hal_press(HAL_BTN_STANDBY);                     /* stick still held */
+    sbsim_run(&x, x.t + 4000u, NULL, NULL);
+    bool standby = sb_mode(&x.sb) == MODE_STANDBY;
+    uint32_t ref0 = x.sb.refused_centre;
+    sim_hal_press(HAL_BTN_HDG_LOCK);
+    sbsim_run(&x, x.t + 200u, NULL, NULL);
+    bool hdg_refused = sb_mode(&x.sb) == MODE_STANDBY && x.sb.refused_centre == ref0 + 1u;
+    sb_result_t r_auto = sb_auto_start(&x.sb);
+    sb_result_t r_rem = sb_remote_request(&x.sb, 1u);
+    uint8_t r_tr = usb_cmd(&x, &usb, PROTO_T_TRAINING, tr, sizeof tr);
+    sbsim_run(&x, x.t + 500u, NULL, NULL);
+    bool still = sb_mode(&x.sb) == MODE_STANDBY;
+    /* centred: everything works again, and a deflection takes over */
+    joy_set(0.0f, 0.0f, false, false);
+    sbsim_run(&x, x.t + 1500u, NULL, NULL);
+    sim_hal_press(HAL_BTN_HDG_LOCK);
+    sbsim_run(&x, x.t + 200u, NULL, NULL);
+    bool hdg_ok = sb_mode(&x.sb) == MODE_HDG_LOCK;
+    uint32_t t0 = x.t;
+    joy_set(0.6f, 0.0f, false, false);
+    while (sb_mode(&x.sb) != MODE_MANUAL && x.t < t0 + 1000u) sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+    uint32_t take_ms = x.t - t0;
+    joy_set(0.0f, 0.0f, false, false);
+    snprintf(d, sizeof d, "MANUAL %s, STANDBY with the stick held %s; then: HDG LOCK button %s (chirp), AUTO start "
+             "result %d (want %d), remote request %d (want %d), TRAINING from the PC %u (want %u = centre the "
+             "joystick), still STANDBY %s; stick centred: HDG LOCK %s, stick moved -> MANUAL after %lu ms",
+             manual ? "yes" : "NO", standby ? "yes" : "NO", hdg_refused ? "refused" : "NOT REFUSED", (int)r_auto,
+             (int)SB_ERR_NOT_CENTERED, (int)r_rem, (int)SB_ERR_NOT_CENTERED, r_tr, PROTO_R_NOT_CENTERED,
+             still ? "yes" : "NO", hdg_ok ? "yes" : "NO", (unsigned long)take_ms);
+    test_report("T2 HDG LOCK / AUTO / REMOTE / TRAINING refused while the stick is held; centred: it takes over",
+                prog && manual && standby && hdg_refused && r_auto == SB_ERR_NOT_CENTERED &&
+                r_rem == SB_ERR_NOT_CENTERED && r_tr == PROTO_R_NOT_CENTERED && still && hdg_ok &&
+                sb_mode(&x.sb) == MODE_MANUAL && take_ms <= 200u, d);
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -6318,6 +6381,7 @@ void sb_tests(void)
     fixes();
     phase2();
     phase3();
+    centre_tests();
     phase4();
     phase5();
     phase6();

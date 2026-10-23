@@ -96,7 +96,7 @@ RESULTS = {
     5: "not allowed (mode table)",
     6: "conditions not met (GPS / waypoint / sensors)",
     7: "not possible in this mode",
-    8: "stick not centred",
+    8: "centre the joystick (stick not centred)",
     9: "only in STANDBY",
     10: "no such parameter",
     11: "refused",

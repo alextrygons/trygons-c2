@@ -419,6 +419,7 @@ static uint8_t sb_result_to_proto(sb_result_t r)
     case SB_ERR_WRONG_CODE:    return PROTO_R_WRONG_CODE;
     case SB_ERR_AT_MAX:        return PROTO_R_AT_MAX;
     case SB_ERR_ALARM:         return PROTO_R_ALARM_ACTIVE;
+    case SB_ERR_NOT_CENTERED:  return PROTO_R_NOT_CENTERED;
     default:                   return PROTO_R_REFUSED;
     }
 }
@@ -436,6 +437,10 @@ static uint8_t pc_mode(sb_t *s, sb_mode_t to)
         return PROTO_R_NOT_ALLOWED;
     }
     if (sb_mode(s) == to) return PROTO_R_OK;                    /* already there */
+    if (to != MODE_STANDBY && s->joy.off_centre) {
+        (void)sb_request_mode(s, to, WHY_PC);                    /* refused + logged */
+        return PROTO_R_NOT_CENTERED;                             /* centre the joystick */
+    }
     if (sb_request_mode(s, to, WHY_PC)) return PROTO_R_OK;
     const mode_log_entry_t *e = mode_log_get(&s->modes, mode_log_size(&s->modes) - 1u);
     return (e && e->verdict == MODE_REJECT_TABLE) ? PROTO_R_NOT_ALLOWED : PROTO_R_PRECOND;

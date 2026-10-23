@@ -417,6 +417,10 @@ THE STANDBY BUTTON ALWAYS WINS
     * from HDG LOCK / AUTO: the heading is held (gyro if the compass is
       gone).
   A stick that is still held can't take control back until it was centred.
+  While the stick is held, nothing else can be engaged either: the HDG
+  LOCK button is refused (short chirp), AUTO start / resume, remote
+  driving and TRAINING are refused with "centre the joystick". Let go of
+  the stick (centre), then engage.
   The PC can't override the button. In STANDBY the button acknowledges
   alarms.
 

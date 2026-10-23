@@ -11,8 +11,8 @@ step that is not DONE below, without redoing finished work.
 | Step | What | State | Commit |
 |---|---|---|---|
 | 1 | T11 .gitignore /TriCore*/, commit Libraries/iLLD + .cproject, fresh-clone TriCore check | DONE (fresh clone: 1002 library files, 30/30 TriCore OK) | 6a35b25 |
-| 2 | R1 STANDBY: steering held (joystick in MANUAL, gyro in REMOTE) until idle + neutral; fast STANDBY ramp | DONE (storm worst STANDBY 2.16 -> 1.43 s) | (this commit) |
-| 3 | T2 HDG LOCK / AUTO refused unless the joystick is centred; held stick always takes over | open | |
+| 2 | R1 STANDBY: steering held (joystick in MANUAL, gyro in REMOTE) until idle + neutral; fast STANDBY ramp | DONE (storm worst STANDBY 2.16 -> 1.43 s) | 5768d2e |
+| 3 | T2 HDG LOCK / AUTO refused unless the joystick is centred; held stick always takes over | DONE (storm NOTE 97 -> 0) | (this commit) |
 | 4 | R3 hal_safe_outputs drives the PWM (board path) | open | |
 | 5 | R5 GPS NaN / inf / range rejected in every GPS path | open | |
 | 6 | R4 CPU1 monitor: start after core 0 "running", boot timeout | open | |

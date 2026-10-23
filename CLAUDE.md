@@ -35,6 +35,7 @@
 - Floats OK (TC375 has FPU). No malloc. Fixed control loop rate (e.g. 20 Hz).
 - Safety first: rudder angle limits, rate limits, sensor-timeout -> standby + alarm.
 - The joystick always wins over the autopilot and the PC. Only a centered joystick (+ AUTO / HDG LOCK button, or PC + CONFIRM) leaves MANUAL.
+- A held stick must always be able to take over: HDG LOCK, AUTO start / resume, REMOTE and TRAINING are refused while the onboard stick is not centred (joy.off_centre, also while it is ignored after STANDBY; the USB lever doesn't count - its pickup keeps the throttle idle) → PC NACK 8 "centre the joystick", HDG LOCK button: refused + chirp.
 - The STANDBY panel button always wins (every mode; the PC can never override it).
 - Joystick, panel buttons and link wiring: see WIRING.md (section 6: USB bridge).
 - Tests run with BOTH joystick sources: `autopilot_sim all` and `autopilot_sim all --bridge` must both pass.

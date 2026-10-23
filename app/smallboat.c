@@ -376,6 +376,9 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
     }
     if ((!s->armed || s->mon_tripped) && to != MODE_STANDBY) return false;   /* interlock / monitor */
     if (to == MODE_MANUAL) return why == WHY_JOYSTICK;      /* only the joystick enters it */
+    /* a held stick (also one ignored since STANDBY) must always be able to
+     * take over: no autopilot / remote / training mode while it is held */
+    if (to != MODE_STANDBY && s->joy.off_centre) return false;
     if (to == MODE_REMOTE) return why == WHY_REMOTE && !gear_fault(&s->gear);   /* HELM request + CONFIRM */
 
     switch (to) {
@@ -758,6 +761,7 @@ sb_result_t sb_remote_request(sb_t *s, uint8_t station)
     if (sb_mode(s) == MODE_MANUAL) return SB_ERR_JOYSTICK;        /* the onboard joystick has it */
     if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_TRAINING) return SB_ERR_WRONG_MODE;
     if (!s->armed || s->mon_tripped) return SB_ERR_PRECOND;
+    if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
     if (!joy_ready(s)) return SB_ERR_JOY_NOT_READY;              /* nobody could press CONFIRM */
     s->remote.station = station;
     s->confirm.kind = CONF_REMOTE;
@@ -1320,6 +1324,7 @@ static void auto_mode(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float ro
 static sb_result_t auto_common_checks(const sb_t *s)
 {
     if (!s->autop.prog_ok) return SB_ERR_NO_PROGRAM;
+    if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
     if (!joy_ready(s)) return SB_ERR_JOY_NOT_READY;
     if (!sb_compass_ok(s) || !sb_gps_ok(s) || gear_fault(&s->gear)) return SB_ERR_PRECOND;
     return SB_OK;
@@ -1696,8 +1701,10 @@ static void events_step(sb_t *s, uint32_t buttons)
                 s->hdg_target = s->ap.heading;
                 autopilot_set_target(&s->ap, s->ap.heading);
             }
-        } else if (sb_mode(s) == MODE_MANUAL && !joy_centered(&s->joy)) {
-            mode_request(&s->modes, MODE_HDG_LOCK, WHY_HDG_BUTTON, false, s->now_ms);   /* refused, logged */
+        } else if ((sb_mode(s) == MODE_MANUAL && !joy_centered(&s->joy)) || s->joy.off_centre) {
+            /* centre the joystick first: refused, logged, chirp */
+            mode_request(&s->modes, MODE_HDG_LOCK, WHY_HDG_BUTTON, false, s->now_ms);
+            s->refused_centre++;
             s->chirp_ms = 300u;
         } else {
             if (sb_mode(s) == MODE_MANUAL) s->alarm_bits &= ~SB_ALM_JOYSTICK;

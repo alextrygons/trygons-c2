@@ -412,7 +412,8 @@ typedef enum {
     SB_ERR_BAD_PROGRAM,     /* program refused by the validation */
     SB_ERR_WRONG_CODE,      /* power raise: code wrong / expired */
     SB_ERR_AT_MAX,          /* power raise: already at the top */
-    SB_ERR_ALARM            /* power raise: an alarm is active (acknowledge first) */
+    SB_ERR_ALARM,           /* power raise: an alarm is active (acknowledge first) */
+    SB_ERR_NOT_CENTERED     /* the onboard stick is held (not centred): centre the joystick */
 } sb_result_t;
 
 typedef struct {
@@ -462,6 +463,7 @@ typedef struct {
     sb_mode_t   manual_from;   /* mode the joystick took over from */
     bool        joy_fault_seen, joy_nc_seen;
     uint32_t    chirp_ms;      /* short alarm chirp still to sound */
+    uint32_t    refused_centre; /* HDG LOCK button refused: the joystick was not centred */
     uint32_t    ext_buttons;   /* course buttons from the ground station (HAL_BTN_BIT), used by the next step */
 
     uint32_t now_ms, last_ms;
