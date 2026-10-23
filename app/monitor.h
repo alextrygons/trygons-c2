@@ -44,6 +44,7 @@ typedef enum {
 /* Shared memory core 0 -> CPU1 (and the trip flag back). On the TC375
  * this lives in core 0's DSPR (memplace.h), which other cores read uncached. */
 typedef struct {
+    volatile uint32_t seq;              /* seqlock: odd while core 0 writes the values below (monitor_begin/end) */
     volatile uint32_t running;          /* MON_RUNNING once core 0's control loop runs (CPU1 clears it at start) */
     volatile uint32_t heartbeat;        /* +1 every control step */
     volatile float    throttle_pct;     /* throttle sent to the servo */
@@ -72,12 +73,18 @@ typedef struct {
     mon_reason_t reason;
     uint32_t     trip_ms;
     uint32_t     checks;
+    uint32_t     torn;          /* checks skipped: core 0 was writing (seqlock) */
 } mon_t;
 
 void monitor_init(mon_t *m, uint32_t now_ms);
 /* One check (CPU1: every 1 ms; sim: every 10 ms). Returns true once tripped. */
 bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms);
 const char *monitor_reason_name(mon_reason_t r);
+
+/* Core 0: around writing the values (seqlock): the monitor never checks a
+ * half-written set (a new throttle with the old limit = false trip). */
+void monitor_write_begin(mon_shared_t *sh);
+void monitor_write_end(mon_shared_t *sh);
 
 /* Core 0 of the big boat (rudder only, no throttle / gear servo): publish
  * after every control step - heartbeat + "running", throttle 0, limits

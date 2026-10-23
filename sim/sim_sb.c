@@ -3510,6 +3510,33 @@ static void hardening_tests(void)
         hal_init();                                 /* reset the latch for the next tests */
     }
 
+    /* C3d R22: the monitor never checks a half-written set (seqlock): a throttle
+     *     above the limit while core 0 is writing is not judged; once the set is
+     *     complete and still wrong, it trips */
+    {
+        static mon_shared_t sh;
+        mon_t m;
+        memset((void *)&sh, 0, sizeof sh);
+        sh.thr_idle_us = 1000u; sh.gear_n_us = 1500u; sh.gear_pwm_us = 1500u;
+        sh.fwd_limit = 30.0f; sh.rev_limit = 5.0f; sh.fwd_engaged = 1u; sh.idle_max_pct = 1.0f;
+        sh.running = MON_RUNNING;
+        monitor_init(&m, 0u);
+        uint32_t t = 0u;
+        for (; t < 100u; t++) { if (t % 50u == 0u) sh.heartbeat++; monitor_step(&m, &sh, t); }
+        monitor_write_begin(&sh);                       /* core 0 in the middle of writing ... */
+        sh.throttle_pct = 80.0f;                        /* ... the new throttle, the limit not yet */
+        for (; t < 120u; t++) monitor_step(&m, &sh, t);
+        bool no_trip_torn = !m.tripped && m.torn >= 20u;
+        monitor_write_end(&sh);                         /* complete - and really above the limit */
+        for (; t < 140u && !m.tripped; t++) monitor_step(&m, &sh, t);
+        snprintf(d, sizeof d, "throttle 80 %% over a 30 %% limit while core 0 writes: tripped %s (skipped %lu checks); "
+                 "set complete: %s after %lu ms", no_trip_torn ? "no" : "YES", (unsigned long)m.torn,
+                 m.tripped ? monitor_reason_name(m.reason) : "NO TRIP", (unsigned long)(t - 120u));
+        test_report("C3d monitor checks only complete sets (seqlock): no false trip while core 0 writes",
+                    no_trip_torn && m.tripped && m.reason == MON_TRIP_THROTTLE, d);
+        hal_init();
+    }
+
     /* C4 core 0 freezes with the watchdog on: reset, safe start again */
     {
         sbsim_t x;

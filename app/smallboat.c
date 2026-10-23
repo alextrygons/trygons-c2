@@ -1962,7 +1962,8 @@ void sb_step(sb_t *s)
     if (s->chirp_ms > 0u) s->chirp_ms = (s->chirp_ms > dt_ms) ? s->chirp_ms - dt_ms : 0u;
     hal_set_alarm(s->alarm || s->ap.alarm || s->chirp_ms > 0u);
 
-    /* 7. publish for the independent safety monitor (CPU1) */
+    /* 7. publish for the independent safety monitor (CPU1), as one set (seqlock) */
+    monitor_write_begin(&g_mon);
     g_mon.throttle_pct = s->servo.out_pct;
     g_mon.fwd_limit = s->plim.fwd_pct;
     g_mon.rev_limit = s->plim.rev_pct;
@@ -1971,6 +1972,7 @@ void sb_step(sb_t *s)
     g_mon.idle_max_pct = s->cfg.gear.idle_max_pct;
     g_mon.thr_idle_us = s->cfg.servo.idle_us;
     g_mon.gear_n_us = s->cfg.gear.pwm_n_us;
+    monitor_write_end(&g_mon);
     g_mon.heartbeat = g_mon.heartbeat + 1u;
     g_mon.running = MON_RUNNING;                    /* the control loop runs (monitor watches from now) */
 

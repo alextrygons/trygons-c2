@@ -35,6 +35,18 @@ static void trip(mon_t *m, mon_shared_t *sh, mon_reason_t r, uint32_t now_ms)
     }
 }
 
+void monitor_write_begin(mon_shared_t *sh)
+{
+    sh->seq = sh->seq + 1u;             /* odd: writing */
+    hal_mem_barrier();
+}
+
+void monitor_write_end(mon_shared_t *sh)
+{
+    hal_mem_barrier();
+    sh->seq = sh->seq + 1u;             /* even: a consistent set */
+}
+
 bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
 {
     uint32_t dt = now_ms - m->last_ms;
@@ -42,10 +54,18 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
     m->checks++;
 
     if (!m->tripped) {
+        /* a consistent snapshot (seqlock): core 0 writing right now -> no
+         * throttle / gear check this time (1 ms later again), heartbeat as always */
+        uint32_t s1 = sh->seq;
+        hal_mem_barrier();
         uint32_t hb = sh->heartbeat;
         float thr = sh->throttle_pct;
         uint16_t gear = sh->gear_pwm_us;
         float lim = sh->fwd_engaged ? sh->fwd_limit : sh->rev_limit;
+        float idle_max = sh->idle_max_pct;
+        hal_mem_barrier();
+        bool consistent = (s1 & 1u) == 0u && sh->seq == s1;
+        if (!consistent) m->torn++;
 
         /* 1. core 0 alive? Before its control loop runs only the boot
          *    timeout counts (a slow start must not trip), then the heartbeat */
@@ -66,7 +86,7 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
             trip(m, sh, MON_TRIP_HEARTBEAT, now_ms);
         }
 
-        if (m->started && !m->tripped) {
+        if (m->started && !m->tripped && consistent) {
             /* 2. throttle inside the power limit (may only come down to it) */
             if (thr > lim + MON_MARGIN_PCT) {
                 if (thr > m->last_thr + 0.5f) trip(m, sh, MON_TRIP_THROTTLE, now_ms);     /* going up: never */
@@ -78,7 +98,7 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
             /* 3. gear only moves at idle */
             int32_t dg = (int32_t)gear - (int32_t)m->last_gear;
             if ((dg > (int32_t)MON_GEAR_DELTA || dg < -(int32_t)MON_GEAR_DELTA) &&
-                thr > sh->idle_max_pct + 0.5f) trip(m, sh, MON_TRIP_GEAR, now_ms);
+                thr > idle_max + 0.5f) trip(m, sh, MON_TRIP_GEAR, now_ms);
             m->last_thr = thr;
             m->last_gear = gear;
         }
@@ -91,6 +111,7 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
 
 void monitor_publish_steering_only(mon_shared_t *sh, uint16_t thr_idle_us, uint16_t gear_n_us)
 {
+    monitor_write_begin(sh);
     sh->throttle_pct = 0.0f;
     sh->fwd_limit = 100.0f;
     sh->rev_limit = 100.0f;
@@ -99,6 +120,7 @@ void monitor_publish_steering_only(mon_shared_t *sh, uint16_t thr_idle_us, uint1
     sh->idle_max_pct = 1.0f;
     sh->thr_idle_us = thr_idle_us;
     sh->gear_n_us = gear_n_us;
+    monitor_write_end(sh);
     sh->heartbeat = sh->heartbeat + 1u;
     sh->running = MON_RUNNING;
 }
