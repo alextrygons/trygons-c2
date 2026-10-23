@@ -125,9 +125,9 @@ connectors, which nothing else in this project uses.
 
 | Signal | Board pin | Connector / pin | TC375 pin | Notes |
 |--------|-----------|-----------------|-----------|-------|
-| Throttle servo signal | D9 | X303 pin 2 | P02.7 (GTM TOUT7) | 50 Hz, 1000 us = idle, 2000 us = full (calibrated) |
-| Gear servo signal | D8 | X303 pin 1 | P02.6 (GTM TOUT6) | 1900 F / 1500 N / 1100 R us (configurable) |
-| Steering motor driver PWM | D6 | X304 pin 7 | P02.5 (GTM TOUT3) | to the H-bridge (motor driver) |
+| Throttle servo signal | D9 | X303 pin 2 | P02.7 (GTM TOM0 ch 15, TOUT7) | 50 Hz, 1000 us = idle, 2000 us = full (calibrated) |
+| Gear servo signal | D8 | X303 pin 1 | P02.6 (GTM TOM0 ch 14, TOUT6) | 1900 F / 1500 N / 1100 R us (configurable) |
+| Steering motor enable | D6 | X304 pin 7 | P02.5 | high = motor runs (on / off, the angle is estimated from the run time); to the H-bridge (motor driver) |
 | Steering motor direction | D7 | X304 pin 8 | P02.4 | |
 | Safety relay driver | D10 | X303 pin 3 | P10.5 | high = relay closed (actuators allowed); through a transistor / relay driver, never the coil directly |
 | Neutral switch | D5 | X304 pin 6 | P02.3 (input, pull-up) | switch to GND, CLOSED when the gearbox is in neutral |

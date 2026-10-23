@@ -5,7 +5,8 @@
  *   - hal_millis()        : real time from STM0
  *   - sensors             : always "no new data"  -> autopilot raises the
  *                           sensor-timeout alarm 2 s after startup
- *   - motor               : not connected (TODO)
+ *   - throttle / gear     : 50 Hz servo PWM on GTM TOM0 ch 15 / 14 (P02.7 / P02.6)
+ *   - steering motor      : on / off (P02.5) + direction (P02.4) to the H-bridge
  *   - buttons             : no presses (TODO)
  *   - alarm               : LED1 (P00.5), lit = alarm
  *
@@ -20,6 +21,10 @@
 #include "IfxScuWdt.h"
 #include "IfxScuRcu.h"
 #include "IfxCpu.h"        /* __dsync() */
+#include "IfxGtm.h"        /* servo PWM: GTM TOM (low-level driver in Gtm/Std) */
+#include "IfxGtm_Cmu.h"
+#include "IfxGtm_Tom.h"
+#include "IfxGtm_PinMap.h"
 
 /* LED1 on the Lite Kit. The LEDs are active LOW: pin low = LED on. */
 #define ALARM_LED_PORT  (&MODULE_P00)
@@ -44,6 +49,83 @@ static uint32 s_stm_ticks_per_ms = 0u;
 /* Monitor trip latch (written by CPU1): normal output calls can't undo it. */
 static volatile boolean s_forced = FALSE;
 static volatile uint16  s_safe_thr_us = 1000u, s_safe_gear_us = 1500u;
+
+/* --- servo PWM (GTM TOM0, 50 Hz) --------------------------------------------
+ * Each channel counts up to CM0 (period) and its output is high until CM1
+ * (pulse width). New pulse widths go into the shadow register SR1 and the
+ * hardware takes them over at the end of the period, so a pulse is never cut
+ * short (a short pulse could look like "full throttle" to a reversed servo).
+ * The pins are routed to the TOM only at the first hal_set_*_pwm(): until
+ * then they stay LOW (no pulses = servo fail-safe), as hal_init() set them. */
+#define SERVO_TOM         IfxGtm_Tom_0
+#define THROTTLE_TOM_CH   IfxGtm_Tom_Ch_15   /* P02.7 = TOM0_15 TOUT7 */
+#define GEAR_TOM_CH       IfxGtm_Tom_Ch_14   /* P02.6 = TOM0_14 TOUT6 */
+#define SERVO_PERIOD_US   20000.0f
+#define SERVO_PULSE_MIN   500u              /* any servo pulse is limited to this range */
+#define SERVO_PULSE_MAX   2500u
+
+static Ifx_GTM_TOM     *s_tom = NULL;
+static Ifx_GTM_TOM_TGC *s_tgc = NULL;
+static float32          s_tom_ticks_per_us = 0.0f;
+static volatile boolean s_thr_routed = FALSE, s_gear_routed = FALSE;
+
+static uint16 servo_ticks(uint16 pulse_us)
+{
+    if (pulse_us < SERVO_PULSE_MIN) pulse_us = SERVO_PULSE_MIN;
+    if (pulse_us > SERVO_PULSE_MAX) pulse_us = SERVO_PULSE_MAX;
+    return (uint16)((float32)pulse_us * s_tom_ticks_per_us + 0.5f);
+}
+
+static void servo_channel_init(IfxGtm_Tom_Ch ch, uint16 period, uint16 pulse)
+{
+    IfxGtm_Tom_Tgc_enableChannelUpdate(s_tgc, ch, FALSE);
+    IfxGtm_Tom_Ch_setClockSource(s_tom, ch, IfxGtm_Tom_Ch_ClkSrc_cmuFxclk2);
+    IfxGtm_Tom_Ch_setSignalLevel(s_tom, ch, Ifx_ActiveState_high);
+    IfxGtm_Tom_Ch_setResetSource(s_tom, ch, IfxGtm_Tom_Ch_ResetEvent_onCm0);
+    IfxGtm_Tom_Ch_setCompareZero(s_tom, ch, period);
+    IfxGtm_Tom_Ch_setCompareOne(s_tom, ch, pulse);
+    IfxGtm_Tom_Ch_setCompareZeroShadow(s_tom, ch, period);
+    IfxGtm_Tom_Ch_setCompareOneShadow(s_tom, ch, pulse);
+    IfxGtm_Tom_Tgc_enableChannelUpdate(s_tgc, ch, TRUE);           /* SR -> CM at each period end */
+    IfxGtm_Tom_Tgc_enableChannel(s_tgc, ch, TRUE, FALSE);
+    IfxGtm_Tom_Tgc_enableChannelOutput(s_tgc, ch, TRUE, FALSE);
+}
+
+static void servo_pwm_init(void)
+{
+    IfxGtm_enable(&MODULE_GTM);
+    IfxGtm_Cmu_setGclkFrequency(&MODULE_GTM, IfxGtm_Cmu_getModuleFrequency(&MODULE_GTM));
+    IfxGtm_Cmu_enableClocks(&MODULE_GTM, IFXGTM_CMU_CLKEN_FXCLK);
+    float32 f = IfxGtm_Cmu_getFxClkFrequency(&MODULE_GTM, IfxGtm_Cmu_Fxclk_2, TRUE);   /* GTM clock / 256 */
+    float32 period = SERVO_PERIOD_US * f / 1e6f;
+    if (!(period > 1000.0f && period < 65535.0f)) return;   /* clock not as expected: no PWM, pins stay low */
+    s_tom_ticks_per_us = f / 1e6f;
+    s_tom = &MODULE_GTM.TOM[SERVO_TOM];
+    s_tgc = IfxGtm_Tom_Ch_getTgcPointer(s_tom, (uint32)THROTTLE_TOM_CH / 8u);   /* ch 8..15: TGC1 */
+    servo_channel_init(THROTTLE_TOM_CH, (uint16)period, servo_ticks(s_safe_thr_us));
+    servo_channel_init(GEAR_TOM_CH, (uint16)period, servo_ticks(s_safe_gear_us));
+    IfxGtm_Tom_Tgc_trigger(s_tgc);                                  /* start both, in step */
+}
+
+/* Write one pulse width (shadow register, taken at the period end). */
+static void servo_write(IfxGtm_Tom_Ch ch, uint16 pulse_us)
+{
+    if (s_tom == NULL) return;
+    IfxGtm_Tom_Ch_setCompareOneShadow(s_tom, ch, servo_ticks(pulse_us));
+}
+
+static void servo_route(IfxGtm_Tom_Ch ch, volatile boolean *routed)
+{
+    if (*routed || s_tom == NULL) return;
+    *routed = TRUE;
+    IfxGtm_PinMap_setTomTout(ch == THROTTLE_TOM_CH ? &IfxGtm_TOM0_15_TOUT7_P02_7_OUT : &IfxGtm_TOM0_14_TOUT6_P02_6_OUT,
+                             IfxPort_OutputMode_pushPull, IfxPort_PadDriver_cmosAutomotiveSpeed1);
+}
+
+static void motor_off(void)
+{
+    IfxPort_setPinLow(MOTOR_PWM_PORT, MOTOR_PWM_PIN);
+}
 
 static void pin_low_output(Ifx_P *port, uint8 pin)
 {
@@ -78,7 +160,9 @@ void hal_init(void)
     IfxPort_setPinModeOutput(ALARM_LED_PORT, ALARM_LED_PIN,
                              IfxPort_OutputMode_pushPull, IfxPort_OutputIdx_general);
 
-    /* TODO: rudder motor driver - make sure it is OFF here. */
+    /* servo PWM generators running (idle / neutral pulses), pins not yet routed */
+    servo_pwm_init();
+
     /* TODO: compass interface (e.g. NMEA 0183 on ASCLIN UART). */
     /* TODO: rudder angle sensor (e.g. potentiometer on EVADC). */
     /* TODO: button inputs with debounce. */
@@ -160,17 +244,31 @@ bool hal_read_rudder_angle(float *rudder_deg)
 
 void hal_set_rudder_motor(float command)
 {
-    if (s_forced) command = 0.0f;   /* monitor tripped: motor stays off */
-    (void)command;   /* TODO: PWM (D6 = P02.5) + direction (D7 = P02.4) to the motor driver */
+    /* the outboard steering runs as -1 / 0 / +1 (estimate from the run time) */
+    if (s_forced || !(command > 0.5f || command < -0.5f)) {    /* also NaN -> off */
+        motor_off();
+    } else {
+        if (command > 0.0f) IfxPort_setPinHigh(MOTOR_DIR_PORT, MOTOR_DIR_PIN);
+        else IfxPort_setPinLow(MOTOR_DIR_PORT, MOTOR_DIR_PIN);
+        IfxPort_setPinHigh(MOTOR_PWM_PORT, MOTOR_PWM_PIN);
+    }
+    __dsync();
+    if (s_forced) motor_off();      /* tripped meanwhile (CPU1): off again */
 }
 
+/* Called by CPU1 (monitor trip): flag FIRST, then the hardware. A core-0
+ * output call that slipped in between sees the flag after its own write and
+ * writes the safe value again, so the safe state always ends up in the
+ * hardware - also when core 0 is frozen and never writes again. */
 void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
 {
     s_safe_thr_us = throttle_idle_us;
     s_safe_gear_us = gear_neutral_us;
     s_forced = TRUE;
-    /* TODO (with the GTM PWM): write the idle / neutral pulses directly here */
-    IfxPort_setPinLow(MOTOR_PWM_PORT, MOTOR_PWM_PIN);
+    __dsync();
+    motor_off();
+    servo_write(THROTTLE_TOM_CH, throttle_idle_us);     /* idle, from the next period (<= 20 ms) */
+    servo_write(GEAR_TOM_CH, gear_neutral_us);          /* neutral */
     IfxPort_setPinLow(RELAY_PORT, RELAY_PIN);            /* relay open */
     IfxPort_setPinLow(ALARM_LED_PORT, ALARM_LED_PIN);    /* LED on */
 }
@@ -281,13 +379,19 @@ void hal_set_throttle_pwm(uint16_t pulse_us)
     if (s_forced) pulse_us = s_safe_thr_us;     /* monitor tripped: idle, latched */
     if (pulse_us < HAL_THROTTLE_PWM_MIN) pulse_us = HAL_THROTTLE_PWM_MIN;
     if (pulse_us > HAL_THROTTLE_PWM_MAX) pulse_us = HAL_THROTTLE_PWM_MAX;
-    (void)pulse_us;  /* TODO: throttle servo PWM, 50 Hz (GTM TOM, D9 = P02.7, see WIRING.md) */
+    servo_write(THROTTLE_TOM_CH, pulse_us);
+    servo_route(THROTTLE_TOM_CH, &s_thr_routed);
+    __dsync();
+    if (s_forced) servo_write(THROTTLE_TOM_CH, s_safe_thr_us);   /* tripped meanwhile: idle again */
 }
 
 void hal_set_gear_pwm(uint16_t pulse_us)
 {
     if (s_forced) pulse_us = s_safe_gear_us;    /* monitor tripped: neutral, latched */
-    (void)pulse_us;  /* TODO: gear servo PWM, 50 Hz (GTM TOM, D8 = P02.6) */
+    servo_write(GEAR_TOM_CH, pulse_us);
+    servo_route(GEAR_TOM_CH, &s_gear_routed);
+    __dsync();
+    if (s_forced) servo_write(GEAR_TOM_CH, s_safe_gear_us);      /* tripped meanwhile: neutral again */
 }
 
 bool hal_read_neutral_switch(bool *in_neutral)
