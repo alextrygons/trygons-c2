@@ -6826,6 +6826,73 @@ static void link_burst_tests(void)
                 pushed == 150u && got == 150u && usb.rx.overflows == 0u, d);
 }
 
+/* ------------------------- coverage gap: the throttle servo clamp (servo.c) -- */
+
+static void servo_clamp_tests(void)
+{
+    char d[700];
+    printf("\n=== servo.c: power-limit clamp corner cases ===\n");
+    servo_config_t c;
+    servo_t sv;
+    plim_t lim;
+    memset(&lim, 0, sizeof lim);
+    servo_default_config(&c);
+    servo_init(&sv, &c);
+    const float dt = 0.05f;
+    int fails = 0;
+    char why[300] = "";
+#define CHK(cond, txt) do { if (!(cond)) { fails++; snprintf(why + strlen(why), sizeof why - strlen(why), "%s; ", txt); } } while (0)
+    /* forward 30 %: above it -> clamped */
+    lim.fwd_pct = 30.0f; lim.rev_pct = 5.0f;
+    float o = servo_throttle_write(&sv, &lim, true, 80.0f, dt);
+    CHK(o <= 30.0f && sv.clamped, "fwd 80 over 30 not clamped");
+    /* reverse uses the reverse limit, also at exactly the limit */
+    o = servo_throttle_write(&sv, &lim, false, 5.0f, dt);
+    CHK(o <= 5.0f + 1e-4f, "reverse at its limit");
+    o = servo_throttle_write(&sv, &lim, false, 12.0f, dt);
+    CHK(o <= 5.0f + 1e-4f && sv.clamped, "reverse 12 over 5 not clamped");
+    /* limit lowered while above it: only comes down, at most rate_down per step */
+    servo_init(&sv, &c);
+    lim.fwd_pct = 100.0f;
+    for (int i = 0; i < 60; i++) servo_throttle_write(&sv, &lim, true, 90.0f, dt);
+    float before = sv.out_pct;
+    lim.fwd_pct = 30.0f;
+    o = servo_throttle_write(&sv, &lim, true, 90.0f, dt);
+    CHK(o < before && o >= before - c.rate_down_pct_s * dt - 1e-3f, "limit drop: not coming down at the closing rate");
+    for (int i = 0; i < 100; i++) o = servo_throttle_write(&sv, &lim, true, 90.0f, dt);
+    CHK(o <= 30.0f + 1e-4f, "never reached the lowered limit");
+    /* limit dropped during reverse */
+    servo_init(&sv, &c);
+    lim.rev_pct = 15.0f;
+    for (int i = 0; i < 40; i++) servo_throttle_write(&sv, &lim, false, 15.0f, dt);
+    lim.rev_pct = 5.0f;
+    for (int i = 0; i < 40; i++) o = servo_throttle_write(&sv, &lim, false, 15.0f, dt);
+    CHK(o <= 5.0f + 1e-4f, "reverse limit drop not followed");
+    /* NaN / negative / limits out of range */
+    o = servo_throttle_write(&sv, &lim, true, NAN, dt);
+    CHK(o == 0.0f && sv.out_us == c.idle_us, "NaN demand not idle");
+    o = servo_throttle_write(&sv, &lim, true, -20.0f, dt);
+    CHK(o == 0.0f, "negative demand not idle");
+    lim.fwd_pct = 250.0f;
+    servo_init(&sv, &c);
+    for (int i = 0; i < 400; i++) o = servo_throttle_write(&sv, &lim, true, 100.0f, dt);
+    CHK(o <= 100.0f && sv.out_us <= c.full_us, "limit above 100 not capped");
+    lim.fwd_pct = -5.0f;
+    o = servo_throttle_write(&sv, &lim, true, 50.0f, dt);
+    CHK(o <= sv.out_pct + 1e-4f && sv.limit_pct == 0.0f, "negative limit not 0");
+    /* reversed servo (full < idle): pulses stay inside its calibrated range */
+    servo_config_t r = c;
+    r.idle_us = 2000u; r.full_us = 1000u;
+    uint16_t p0 = servo_pulse_for(&r, 0.0f), p100 = servo_pulse_for(&r, 100.0f), pnan = servo_pulse_for(&r, NAN),
+             pover = servo_pulse_for(&r, 150.0f);
+    CHK(p0 == 2000u && p100 == 1000u && pnan == 2000u && pover == 1000u, "reversed servo pulses (NaN must be idle)");
+#undef CHK
+    snprintf(d, sizeof d, "fwd / rev clamp, limit drop (closing rate, fwd and rev), NaN / negative demand, limit out of "
+             "range, reversed servo (idle 2000 us, full 1000 us: 0 %% -> %u, 100 %% -> %u, NaN -> %u, 150 %% -> %u): %d "
+             "problem(s) %s", p0, p100, pnan, pover, fails, why);
+    test_report("servo.c clamp corner cases (the only throttle writer)", fails == 0, d);
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -6876,6 +6943,7 @@ void sb_tests(void)
     alarm_ack_tests();
     telem_size_tests();
     link_burst_tests();
+    servo_clamp_tests();
     phase4();
     phase5();
     phase6();

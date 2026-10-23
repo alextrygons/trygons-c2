@@ -25,8 +25,11 @@ uint16_t servo_pulse_for(const servo_config_t *c, float pct)
 {
     float lo = (float)((c->idle_us < c->full_us) ? c->idle_us : c->full_us);
     float hi = (float)((c->idle_us < c->full_us) ? c->full_us : c->idle_us);
+    if (!(pct >= 0.0f)) pct = 0.0f;     /* NaN / negative -> IDLE (not the lower pulse: on a reversed
+                                         * servo, full_us < idle_us, that would be full throttle) */
+    if (pct > 100.0f) pct = 100.0f;
     float us = (float)c->idle_us + pct * 0.01f * ((float)c->full_us - (float)c->idle_us);
-    if (!(us >= lo)) us = lo;           /* also catches NaN */
+    if (!(us >= lo)) us = lo;
     if (us > hi) us = hi;
     return (uint16_t)(us + 0.5f);
 }
