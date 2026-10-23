@@ -15,7 +15,10 @@
 
 Every mode ends with RAM per core and the CPU1 check: CPU1's data RAM (DSPR1,
 only the safety monitor lives there) must stay below 60 % - above it the
-report says FAIL and exits with code 2.
+report says FAIL and exits with code 2. The data shared between cores
+(app/memplace.h: g_mon, the log queues, g_logstat, g_timing) must be in core
+0's DSPR (never cached): --objects checks their section, an ADS map that
+none of them is at a cached LMU address (0x9...) - else FAIL, exit 2.
 
 Build the project in ADS first (hammer icon) so the map is up to date.
 """
@@ -60,6 +63,39 @@ def table(rows, top):
     print("  %-50s %10s  %s" % ("item", "size", "kind"))
     for name, size, kind in top[:10]:
         print("  %-50s %10s  %s" % (name[:50], "%d B" % size, kind))
+
+
+SHARED = ["g_mon", "g_logq0", "g_logq1", "g_logq_gw", "s_q0", "s_q1", "s_qgw", "g_logstat", "g_timing"]
+
+
+def shared_objects(folder):
+    """Every shared symbol defined in the objects sits in core 0's DSPR section."""
+    out = subprocess.run([os.path.join(BINDIR, "tricore-elf-objdump.exe"), "-t"] +
+                         sorted(glob.glob(os.path.join(folder, "*.o"))), capture_output=True, text=True).stdout
+    found, bad = set(), []
+    for line in out.splitlines():
+        p = line.split()
+        if len(p) >= 5 and p[-1] in SHARED and "*UND*" not in line:
+            found.add(p[-1])
+            sec = p[-3]
+            if not re.match(r"\.z?bss_cpu0$", sec):
+                bad.append("%s in %s" % (p[-1], sec))
+    missing = [s for s in SHARED if s not in found]
+    ok = not bad and not missing
+    print("\nSHARED DATA (core to core, must not be cached): %s" % (
+        "OK - all %d in core 0's DSPR (.bss_cpu0)" % len(found) if ok else
+        "FAIL - %s" % "; ".join(bad + ["%s not found" % m for m in missing])))
+    return ok
+
+
+def shared_map(txt):
+    """ADS map: no shared symbol at a cached LMU address (0x9...)."""
+    bad = []
+    for s in SHARED:
+        for m in re.finditer(r"\b%s\b[^\n]*?0x(9[0-9a-f]{7})\b" % re.escape(s), txt):
+            bad.append("%s at 0x%s" % (s, m.group(1)))
+    print("\nSHARED DATA (core to core, must not be cached): %s" % ("FAIL - " + "; ".join(bad) if bad else "OK"))
+    return not bad
 
 
 def per_core(rows):
@@ -130,7 +166,8 @@ def objects(folder):
     rows = [(a, used[a], SIZES[a]) for a in SIZES]
     print("EXPECTED memory from the objects in %s (+ stacks / CSA; iLLD and start-up code not included)" % folder)
     table(rows, sorted(top, key=lambda t: -t[1]))
-    return per_core(rows)
+    ok = per_core(rows)
+    return shared_objects(folder) and ok
 
 
 def tasking(path):
@@ -156,7 +193,8 @@ def tasking(path):
     st = re.search(r"\* Estimated stack usage.*?\n(.*?)\n\n", txt, re.S)
     if st:
         print("\nStack (linker estimate):\n" + "\n".join("  " + l for l in st.group(1).splitlines()[:8]))
-    return per_core(rows)
+    ok = per_core(rows)
+    return shared_map(txt) and ok
 
 
 def gcc(elf):

@@ -7,8 +7,11 @@
 
 #include "hal.h"
 #include "logrec.h"
+#include "memplace.h"
 
+SHARED_BEGIN()          /* core 0 writes, CPU1 reads: not cached (memplace.h) */
 mon_shared_t g_mon;
+SHARED_END()
 
 void monitor_init(mon_t *m, uint32_t now_ms)
 {

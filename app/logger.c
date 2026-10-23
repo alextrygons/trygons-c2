@@ -18,8 +18,11 @@ static bool sd_close(int h) { bool ok = hal_sd_close(h); hal_watchdog_kick_core(
 #include "logq.h"
 #include "logrec.h"
 #include "modes.h"
+#include "memplace.h"
 
+SHARED_BEGIN()          /* the logger (core 2) writes, core 0 reads: not cached (memplace.h) */
 log_status_t g_logstat;
+SHARED_END()
 
 /* The black box ring (1200 x 184 B = 216 KB) is too big for any one RAM
  * block that is free. It is NOT in CPU1's RAM (CPU1 keeps only the small

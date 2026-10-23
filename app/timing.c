@@ -5,7 +5,11 @@
 
 #include <string.h>
 
+#include "memplace.h"
+
+SHARED_BEGIN()          /* every core writes its part, core 0 reads all: not cached (memplace.h) */
 timing_t g_timing;
+SHARED_END()
 
 void cyc_init(cyc_t *c, uint32_t period_us, uint32_t window)
 {

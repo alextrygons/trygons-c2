@@ -42,7 +42,7 @@ typedef enum {
 } mon_reason_t;
 
 /* Shared memory core 0 -> CPU1 (and the trip flag back). On the TC375
- * this lives in core 0's DSPR, which other cores read uncached. */
+ * this lives in core 0's DSPR (memplace.h), which other cores read uncached. */
 typedef struct {
     volatile uint32_t running;          /* MON_RUNNING once core 0's control loop runs (CPU1 clears it at start) */
     volatile uint32_t heartbeat;        /* +1 every control step */

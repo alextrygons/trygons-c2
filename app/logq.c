@@ -4,11 +4,14 @@
 #include "logq.h"
 
 #include "hal.h"
+#include "memplace.h"
 
+SHARED_BEGIN()          /* written by one core, read by another: not cached (memplace.h) */
 logq_t g_logq0, g_logq1, g_logq_gw;
 static uint8_t s_q0[LOGQ0_SIZE];
 static uint8_t s_q1[LOGQ1_SIZE];
 static uint8_t s_qgw[LOGQGW_SIZE];
+SHARED_END()
 
 void logq_init(logq_t *q, uint8_t *buf, uint32_t size)
 {
