@@ -105,6 +105,9 @@ class CamRecorder:
                "-timeout", "5000000", "-i", self.url, "-map", "0:v", "-c", "copy",
                "-f", "segment", "-segment_time", str(self.seg_s), "-segment_atclocktime", "1",
                "-strftime", "1", "-reset_timestamps", "1", "-segment_format", "mpegts",
+               # every packet into the file at once (the inner muxer's buffer is 32 KB = 16 s of a
+               # nearly still picture): a slow stream still grows, the stall check sees it
+               "-segment_format_options", "flush_packets=1",
                os.path.join(self.folder, "%Y%m%d-%H%M%S.ts")]
         try:
             self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
