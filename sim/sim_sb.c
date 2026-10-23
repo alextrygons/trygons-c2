@@ -6747,6 +6747,31 @@ static void alarm_ack_tests(void)
                 lost && comp && both_kept && after_comp == SB_ALM_PC_LINK && end == 0u, d);
 }
 
+/* --------------------------------- R17: telemetry frames fit their payload -- */
+
+static void telem_size_tests(void)
+{
+    char d[400];
+    const uint8_t TAKE = 0u;
+    printf("\n=== R17: telemetry sizes ===\n");
+    static sbsim_t x;
+    static link_t usb;
+    sbsim_init(&x, 301u, 0.0f, 0.0f, NULL);
+    sbsim_run(&x, 2000u, NULL, NULL);
+    link_init(&usb, &x.sb);
+    usb_cmd(&x, &usb, PROTO_T_HELM, &TAKE, 1u);
+    for (int i = 0; i < 40; i++) {                       /* keep the link alive, telemetry at 10 Hz */
+        usb_cmd(&x, &usb, PROTO_T_HEARTBEAT, NULL, 0u);
+        sbsim_run(&x, x.t + 500u, usb_link_hook, &usb);
+    }
+    snprintf(d, sizeof d, "TELEMETRY %u of %u bytes (%u free), TELEM2 %u of %u (%u free); frames that did not fit %lu",
+             usb.telem_len, PROTO_MAX_PAYLOAD, PROTO_MAX_PAYLOAD - usb.telem_len, usb.telem2_len, PROTO_MAX_PAYLOAD,
+             PROTO_MAX_PAYLOAD - usb.telem2_len, (unsigned long)usb.telem_overflows);
+    test_report("R17 telemetry frames fit (a new field that doesn't fit fails here, never silently)",
+                usb.telem_len > 0u && usb.telem2_len > 0u && usb.telem_len <= PROTO_MAX_PAYLOAD &&
+                usb.telem2_len <= PROTO_MAX_PAYLOAD && usb.telem_overflows == 0u, d);
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -6795,6 +6820,7 @@ void sb_tests(void)
     gps_retrust_tests();
     arm_joystick_tests();
     alarm_ack_tests();
+    telem_size_tests();
     phase4();
     phase5();
     phase6();

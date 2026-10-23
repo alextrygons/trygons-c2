@@ -372,7 +372,9 @@ static void telemetry(link_t *l, sb_t *s)
     proto_wr_u8(&w, (uint8_t)(s->jmap.nz_lo * 100.0f + 0.5f));
     proto_wr_u8(&w, (uint8_t)(s->jmap.nz_hi * 100.0f + 0.5f));
 
+    l->telem_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEMETRY, l->tx_seq++, buf, w.n);
+    else l->telem_overflows++;          /* never silently: counted (a test fails on it) */
 }
 
 /* --- commands ------------------------------------------------------------- */
@@ -929,7 +931,9 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(fmaxf(-180.0f, fminf(180.0f, s->att_roll_deg)) * 100.0f));
     proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(fmaxf(-90.0f, fminf(90.0f, s->att_pitch_deg)) * 100.0f));
     proto_wr_u16(&w, (uint16_t)(att_age > 65534u ? (s->att_ms ? 65534u : 0xFFFFu) : att_age));
+    l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
+    else l->telem_overflows++;
 }
 
 /* GW_STATUS from the Pi (1 Hz, also its heartbeat), 12 bytes:
