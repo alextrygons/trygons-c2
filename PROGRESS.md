@@ -18,8 +18,8 @@ step that is not DONE below, without redoing finished work.
 | 6 | R4 CPU1 monitor: start after core 0 "running", boot timeout | DONE (boot 3 s, test C3b) | 9d6ab75 |
 | 7 | R2 big-boat CPU1 heartbeat | DONE (test C3c, gate compiles the big variant) | 1312250 |
 | 8 | T1 STARLINK never auto-selected while a normal channel works | DONE (channel storm 500 runs: 0; test C11) | a38afbc |
-| 9 | T3 faster GPS re-trust after a spoof at speed | IN PROGRESS (along-track allowance in dr.c recovery; test T3 written; open: slow along-track drag after re-trust not caught again - decide) | |
-| 9a | (user request) ADS build: .cproject excludes every non-firmware folder, check_ads_excludes.py, CLAUDE.md rule | DONE | (this commit) |
+| 9 | T3 faster GPS re-trust after a spoof at speed | DONE (~60 s with 2nd GPS / paddlewheel; old rule without - explained; test T3) | (this commit) |
+| 9a | (user request) ADS build: .cproject excludes every non-firmware folder, check_ads_excludes.py, CLAUDE.md rule | DONE | 2da572a |
 | 10 | T4 START_DEMO builds the simulator if missing | open | |
 | 11 | review points (section 5 order): R6, R9, R11, R10, R8, T5, R20, R21, R7, R12, LOW (R13 R14 R16 R17 R18 R19 R22 T7 T12) | open | |
 | 12 | RUN_ACCEPTANCE quick, report, push | open | |

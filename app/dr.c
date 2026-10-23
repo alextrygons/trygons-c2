@@ -80,6 +80,8 @@ void dr_default_config(dr_config_t *c)
     c->recover_step_m = 8.0f;
     c->recover_drift_m = 5.0f;
     c->recover_drift_rate = 0.3f;
+    c->recover_along_frac = 0.25f;
+    c->recover_along_frac_pw = 0.05f;
     c->recover_fixes_suspect = 60u;
     c->blend_tau_s = 15.0f;
 }
@@ -441,7 +443,21 @@ void dr_step(dr_t *d, const dr_input_t *in_raw)
     float gate = fmaxf(c->recover_gate_m, (after_suspect ? 1.0f : 3.0f) * d->unc_m);
     uint8_t need = after_suspect ? c->recover_fixes_suspect : c->recover_fixes;
     float off = sqrtf((fn - d->n) * (fn - d->n) + (fe - d->e) * (fe - d->e));
-    bool ok = !in->gps.jam_spoof && in->gps.sog_kn <= c->max_sog_kn && off <= gate &&
+    /* GPS - DR offset split along / across the heading. Across: the gate as
+     * always. Along: DR's speed estimate can be off, so that much of the
+     * distance run is allowed on top - but only with an independent check:
+     * the second GPS agrees (a spoofer must fool both receivers), or a
+     * paddlewheel measures the speed. Without one, a slow drag along the
+     * course can't be told from a speed-table error: the old rules apply. */
+    float hr = d->heading_now * DEG2RAD_F, hc = cosf(hr), hs = sinf(hr);
+    float g2 = gps2_off(d, in, fn, fe);
+    bool gps2_agrees = g2 >= 0.0f && g2 <= c->gps2_max_m;
+    float along_frac = gps2_agrees ? c->recover_along_frac : d->speed_sensor ? c->recover_along_frac_pw : 0.0f;
+    float off_along = (fn - d->n) * hc + (fe - d->e) * hs;
+    float off_cross = -(fn - d->n) * hs + (fe - d->e) * hc;
+    bool in_gate = off <= gate ||
+                   (fabsf(off_cross) <= gate && fabsf(off_along) <= gate + along_frac * d->dr_dist_m);
+    bool ok = !in->gps.jam_spoof && in->gps.sog_kn <= c->max_sog_kn && in_gate &&
               gps2_off(d, in, fn, fe) <= c->gps2_max_m;      /* the second GPS must agree too */
     if (ok && d->have_prev) {
         float mn = fn - d->prev_n - d->pred_since_prev_n, me = fe - d->prev_e - d->pred_since_prev_e;
@@ -455,8 +471,13 @@ void dr_step(dr_t *d, const dr_input_t *in_raw)
             d->rec_t0_ms = in->now_ms;
         } else {
             float dn = fn - d->n - d->rec_off_n, de = fe - d->e - d->rec_off_e;
-            float allow = c->recover_drift_m + c->recover_drift_rate * (float)(in->now_ms - d->rec_t0_ms) * 0.001f;
-            ok = sqrtf(dn * dn + de * de) <= allow;
+            float t = (float)(in->now_ms - d->rec_t0_ms) * 0.001f;
+            float allow = c->recover_drift_m + c->recover_drift_rate * t;
+            /* along the heading the drift may also be DR's speed error */
+            float allow_along = allow + along_frac * fabsf(d->water_kn) * KN_MS * t;
+            float drift_along = dn * hc + de * hs, drift_cross = -dn * hs + de * hc;
+            ok = sqrtf(dn * dn + de * de) <= allow ||
+                 (fabsf(drift_cross) <= allow && fabsf(drift_along) <= allow_along);
         }
     }
     d->prev_n = fn;

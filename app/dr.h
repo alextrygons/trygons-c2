@@ -77,6 +77,14 @@ typedef struct {
     float recover_step_m;       /* fix-to-fix motion vs prediction (8) */
     float recover_drift_m;      /* GPS - DR offset may change at most this + rate x time */
     float recover_drift_rate;   /* while recovering (5 m + 0.3 m/s; a drag is faster) */
+    float recover_along_frac;   /* ALONG the heading only, after a suspect fix: DR's own speed error
+                                 * may add up to this fraction of the distance run (gate) / of the
+                                 * water speed (drift) - ONLY when something independent backs it:
+                                 * the second GPS agrees (0.25), or a paddlewheel measures the speed
+                                 * (recover_along_frac_pw 0.05). Without either: 0 (the old rules - a
+                                 * slow drag along the course looks exactly like a speed-table error).
+                                 * Across the track nothing changes. */
+    float recover_along_frac_pw;
     uint8_t recover_fixes_suspect; /* after an integrity alarm: fixes needed (60), and the
                                    gate is 1 x uncertainty instead of 3 x */
     float blend_tau_s;          /* estimate -> GPS blend time after recovery (15) */

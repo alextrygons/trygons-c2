@@ -81,6 +81,7 @@ Safety rules — never break them
   - Compass lost in MANUAL → alarm only, stay in MANUAL (manual steering doesn't need the compass).
 - GPS lost / suspect in AUTO: alarm, continue by dead reckoning at reduced speed; uncertainty > limit (200 m) or DR > 10 min → AUTO holds the current heading, slow, alarm. Never declare arrival while the uncertainty is larger than the arrival radius.
 - After an integrity alarm, GPS is trusted again only after N consistent fixes that agree with dead reckoning; then blend smoothly (no steering jump).
+  - Along the heading only (never across), DR's speed error may be allowed during that recovery - but ONLY with an independent check: the second GPS agrees (recover_along_frac 25 % of the distance run / water speed) or a paddlewheel (5 %). Then ~60 s after a spoof at speed; without either the old rule (can take minutes at speed: a slow along-course drag can't be told from a speed-table error). Test T3.
 - Throttle changes are rate-limited.
 - Reverse power is limited.
 - Power limit: every power-up / reset starts at 30 % forward / 5 % reverse; the raised limit is RAM only, NEVER saved.

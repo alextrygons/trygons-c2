@@ -873,6 +873,19 @@ J. AIS: OTHER SHIPS (RECEIVE ONLY)
   that far from the second one is not trusted (spoofing). Tested: drags of
   0.2 m/s and slower are NOT found by the other checks within 10 minutes,
   the second GPS finds them at 30 m. Both OFF by default.
+  GPS TRUSTED AGAIN AFTER A SPOOF: 60 good fixes in a row (1 per second)
+  that agree with dead reckoning. At speed the dead reckoning speed can be
+  off (e.g. 15 % with fouling or a head sea, no paddlewheel); then:
+    * with the second GPS switched on, or with a paddlewheel: the GPS may
+      differ from dead reckoning ALONG the course by DR's speed error ->
+      trusted again after about 60 s;
+    * with neither: only when GPS and dead reckoning agree - this can take
+      several minutes at speed (AUTO goes on by dead reckoning, slower,
+      and holds the heading at the DR limit). It can't safely be faster:
+      a spoofer dragging the position slowly along the course looks
+      exactly like a wrong speed estimate.
+  Across the course nothing is relaxed: a GPS pulled sideways is never
+  trusted again.
   AIS DOES NOT SHOW small boats, jet skis, swimmers, kayaks or anything
   without a transponder. The lookout on board and the cameras stay essential.
 

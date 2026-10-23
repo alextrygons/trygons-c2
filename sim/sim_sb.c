@@ -6515,6 +6515,74 @@ static void gps_invalid_tests(void)
                 autog && rejected == NK && finite_all && auto_kept && back == NK && gps2_ign, d);
 }
 
+/* ------------------------------ T3: GPS trusted again after a spoof at speed -- */
+
+/* AUTO north at 12 kn; at the spoof the boat becomes 15 % slower than the
+ * learned speed table (fouling, head sea), so DR's speed is too high. A
+ * spoofer jumps the GPS 800 m east for 20 s; afterwards the GPS is right
+ * again, or the spoofer drags it (drag_n along the course, drag_e sideways).
+ * setup 0: nothing independent; 1: second GPS (AIS device) check on and fed;
+ * 2: paddlewheel. Returns the time from the end of the jump to "trusted"
+ * (s), -1 = not within 10 min. *off_line = worst distance off the course line. */
+static float gps_retrust_run(uint32_t seed, int setup, float drag_n, float drag_e, float *off_line)
+{
+    static sbsim_t x;
+    static gps2sim_t g;
+    memset(&g, 0, sizeof g);
+    sbsim_init(&x, seed, 0.0f, 0.0f, NULL);
+    if (setup == 2) x.w.speed_sensor = true;
+    pisim_init(&g.p, &x, 921600u);
+    g.send_gps2 = (setup == 1);
+    sbsim_run(&x, 2000u, gps2_hook, &g);
+    if (setup == 1) x.sb.dr.cfg.gps2_max_m = 60.0f;
+    auto_to(&x, 30000.0f, 0.0f, 12.0f);
+    sbsim_run(&x, x.t + 180000u, gps2_hook, &g);        /* the speed table learns this speed */
+    x.w.vmax_fwd_kn *= 0.85f;                            /* now 15 % slower than the table says */
+    x.w.gps_off_e = 800.0;
+    sbsim_run(&x, x.t + 20000u, gps2_hook, &g);
+    x.w.gps_off_e = 0.0;
+    if (drag_n != 0.0f || drag_e != 0.0f) {
+        x.w.gps_dragging = true;
+        x.w.gps_drag_n = drag_n;
+        x.w.gps_drag_e = drag_e;
+        x.w.gps_drag_max_m = 2000.0f;
+    }
+    uint32_t t0 = x.t;
+    float found = -1.0f;
+    *off_line = 0.0f;
+    while (x.t < t0 + 600000u) {
+        sbsim_run(&x, x.t + 100u, gps2_hook, &g);
+        if (fabs(x.w.east_m) > *off_line) *off_line = (float)fabs(x.w.east_m);
+        if (x.sb.dr.state == DR_GPS) { found = (float)(x.t - t0) * 0.001f; break; }
+    }
+    return found;
+}
+
+static void gps_retrust_tests(void)
+{
+    char d[900];
+    printf("\n=== T3: GPS trusted again after a spoof at speed ===\n");
+    float o[7], om = 0.0f;
+    float n_ok = gps_retrust_run(261u, 0, 0.0f, 0.0f, &o[0]);
+    float n_side = gps_retrust_run(262u, 0, 0.0f, 0.6f, &o[1]);
+    float n_along = gps_retrust_run(263u, 0, 1.5f, 0.0f, &o[2]);
+    float g_ok = gps_retrust_run(264u, 1, 0.0f, 0.0f, &o[3]);
+    float g_side = gps_retrust_run(265u, 1, 0.0f, 0.6f, &o[4]);
+    float g_along = gps_retrust_run(266u, 1, 1.5f, 0.0f, &o[5]);
+    float p_ok = gps_retrust_run(267u, 2, 0.0f, 0.0f, &o[6]);
+    for (int i = 0; i < 7; i++) om = fmaxf(om, o[i]);
+#define TS(v) ((v) < 0.0f ? -1.0f : (v))
+    snprintf(d, sizeof d, "spoof at 12 kn, DR speed 15 %% too high. Nothing independent: GPS right -> trusted after %.0f s "
+             "(-1 = >10 min: until GPS and DR agree), sideways drag 0.6 m/s %s, along drag 1.5 m/s %s. Second GPS: right "
+             "-> %.0f s, sideways %s, along %s. Paddlewheel: right -> %.0f s. Boat off its line max %.0f m",
+             TS(n_ok), n_side < 0.0f ? "never" : "TRUSTED", n_along < 0.0f ? "never" : "TRUSTED", TS(g_ok),
+             g_side < 0.0f ? "never" : "TRUSTED", g_along < 0.0f ? "never" : "TRUSTED", TS(p_ok), om);
+#undef TS
+    test_report("T3 GPS re-trust after a spoof at speed: ~60 s with a 2nd GPS / paddlewheel; drags never trusted",
+                n_side < 0.0f && n_along < 0.0f && g_ok >= 59.0f && g_ok <= 75.0f && g_side < 0.0f && g_along < 0.0f &&
+                p_ok >= 59.0f && p_ok <= 75.0f && om < 30.0f, d);
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -6560,6 +6628,7 @@ void sb_tests(void)
     phase3();
     centre_tests();
     gps_invalid_tests();
+    gps_retrust_tests();
     phase4();
     phase5();
     phase6();
