@@ -6772,6 +6772,33 @@ static void telem_size_tests(void)
                 usb.telem2_len <= PROTO_MAX_PAYLOAD && usb.telem_overflows == 0u, d);
 }
 
+/* ---------------------------- R18: a burst of frames is parsed, none lost -- */
+
+static void link_burst_tests(void)
+{
+    char d[300];
+    printf("\n=== R18: frame burst on a link ===\n");
+    static sbsim_t x;
+    static link_t usb;
+    uint8_t fr[PROTO_MAX_FRAME];
+    sbsim_init(&x, 311u, 0.0f, 0.0f, NULL);
+    sbsim_run(&x, 1000u, NULL, NULL);
+    link_init(&usb, &x.sb);
+    sim_hal_link_reset();
+    uint32_t pushed = 0u, bytes = 0u;
+    for (int i = 0; i < 150; i++) {                      /* 150 frames arrive at once */
+        size_t n = proto_encode(fr, PROTO_T_HEARTBEAT, (uint8_t)i, NULL, 0u);
+        if (sim_hal_link_rx_push(fr, (uint32_t)n) == n) { pushed++; bytes += (uint32_t)n; }
+    }
+    uint32_t f0 = usb.rx.frames;
+    sbsim_run(&x, x.t + 500u, usb_link_hook, &usb);       /* ~10 steps */
+    uint32_t got = usb.rx.frames - f0;
+    snprintf(d, sizeof d, "%lu frames (%lu bytes) in one burst: parsed %lu, ring overflows %lu",
+             (unsigned long)pushed, (unsigned long)bytes, (unsigned long)got, (unsigned long)usb.rx.overflows);
+    test_report("R18 a burst of 150 frames: all parsed over a few steps, none overwritten",
+                pushed == 150u && got == 150u && usb.rx.overflows == 0u, d);
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -6821,6 +6848,7 @@ void sb_tests(void)
     arm_joystick_tests();
     alarm_ack_tests();
     telem_size_tests();
+    link_burst_tests();
     phase4();
     phase5();
     phase6();

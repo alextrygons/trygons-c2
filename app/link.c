@@ -1077,7 +1077,10 @@ void link_step(link_t *l, sb_t *s)
         if (l->gw_room < GW_LOG_MIN_INFLIGHT) l->gw_room = GW_LOG_MIN_INFLIGHT;
         if (l->gw_room > GW_LOG_MAX_INFLIGHT) l->gw_room = GW_LOG_MAX_INFLIGHT;
     }
-    for (int k = 0; k < 32 && (n = port_read(l, buf, sizeof buf)) > 0u; k++) {
+    /* stop reading after 64 frames: more bytes would overwrite frames in the
+     * 512-byte ring that are not parsed yet - the rest waits in the port's
+     * buffer for the next step */
+    for (int k = 0; k < 32 && frames < 64 && (n = port_read(l, buf, sizeof buf)) > 0u; k++) {
         proto_rx_push(&l->rx, buf, n);          /* parse after every read: the ring holds 512 bytes */
         got += n;
         while (frames < 64 && proto_rx_next(&l->rx, &f)) { handle(l, s, &f); frames++; }
