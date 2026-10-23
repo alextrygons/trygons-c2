@@ -7,7 +7,9 @@ Cpu*_Main.c (top level), app/, hal/ (hal_tc375.c), Libraries/, Configurations/.
 FAILS (exit 1) if, in any build configuration of .cproject, a top-level
 folder that is not board firmware is not excluded - e.g. a new folder that
 was added without excluding it (CLAUDE.md: "Any new top-level folder must be
-excluded from the ADS build in .cproject").
+excluded from the ADS build in .cproject") - or if, walking the project the
+way ADS does, any C / C++ / assembler source outside the board firmware
+would be compiled (e.g. a stray .c file in the project root).
 """
 import os
 import sys
@@ -16,6 +18,29 @@ import xml.etree.ElementTree as ET
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 FIRMWARE = {"app", "hal", "Libraries", "Configurations"}
+ROOT_SOURCES = {"Cpu0_Main.c", "Cpu1_Main.c", "Cpu2_Main.c"}
+SOURCE_EXT = (".c", ".cpp", ".cc", ".cxx", ".s", ".S", ".asm")
+
+
+def compiled_sources(excl, outputs):
+    """Sources ADS would compile with these exclusions that are NOT board firmware."""
+    bad = []
+    for d, ds, fs in os.walk(REPO):
+        rel = os.path.relpath(d, REPO).replace("\\", "/")
+        top = rel.split("/")[0]
+        if rel != "." and (top.startswith(".") or top in outputs or
+                           any(rel == e or rel.startswith(e + "/") for e in excl)):
+            ds[:] = []
+            continue
+        for f in fs:
+            if not f.endswith(SOURCE_EXT):
+                continue
+            if rel == "." and f in ROOT_SOURCES:
+                continue
+            if top in FIRMWARE:
+                continue
+            bad.append(f if rel == "." else rel + "/" + f)
+    return bad
 
 
 def main():
@@ -42,13 +67,16 @@ def main():
         missing = [d for d in folders if d not in excl]
         if missing:
             bad.append("%s: not excluded: %s" % (name, ", ".join(missing)))
+        stray = compiled_sources(excl, outputs)
+        if stray:
+            bad.append("%s: would compile non-firmware sources: %s" % (name, ", ".join(stray[:8])))
     if not configs:
         bad.append("no build configuration found in .cproject")
     for b in bad:
         print("ADS EXCLUDES FAIL  " + b)
     if not bad:
-        print("ADS excludes OK: %d configurations exclude every non-firmware folder (%s)" % (
-            len(configs), ", ".join(folders)))
+        print("ADS excludes OK: %d configurations exclude every non-firmware folder (%s); only "
+              "Cpu*_Main.c, app/, hal/, Libraries/, Configurations/ are compiled" % (len(configs), ", ".join(folders)))
     return 1 if bad else 0
 
 
