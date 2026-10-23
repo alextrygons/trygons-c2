@@ -15,6 +15,10 @@ sim/sim_outboard.csv
 sim/sim_output.csv
 sim/gwtest_sd/
 gateway/*.key
+# secrets never in git (the example file is: gateway/secrets.example.json)
+gateway/secrets.json
+*.key
+*.pem
 gateway/*.crt
 groundstation/sync_receiver.json
 groundstation/gs_layout.json
