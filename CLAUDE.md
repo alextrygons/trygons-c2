@@ -55,6 +55,7 @@ Sensors
 - GPS via UART: lat, lon, SOG, COG, fix, timestamp, receiver spoof/jam flag.
 - Optional: speed sensor (paddlewheel), neutral switch, steering motor current, steering limit switches.
 - app/dr.c: position estimate — GPS when trusted, dead reckoning otherwise (learned current + throttle→speed table, uncertainty). Every fix passes an integrity check (spoof flag, jump, speed, course, slow drag); a rejected fix counts as GPS failure.
+  - A fix with NaN / infinite / out-of-range numbers (dr_fix_valid: lat ±90, lon ±180, SOG 0..100 kn, COG 0..360) is a rejected fix too (DR_WHY_INVALID, recovers like after a suspect fix) and its numbers are never used (sb gps.last keeps the previous values). Second GPS frames out of range are ignored (gps2.bad); non-finite DR inputs (heading, yaw, water speed, throttle) are not used.
 
 Modes — three driving modes + STANDBY + TRAINING
 - STANDBY: idle, neutral, steering off. Power-up and after every fault.

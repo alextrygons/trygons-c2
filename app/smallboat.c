@@ -582,11 +582,19 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
                                  HAL_BTN_BIT(HAL_BTN_MINUS_10) | HAL_BTN_BIT(HAL_BTN_PLUS_10));
 
     s->gps_new_msg = false;
+    s->gps_bad_msg = false;
     if (hal_read_gps(&g)) {
         s->gps_new_msg = true;
-        s->gps.last = g;
-        s->gps.valid = true;
-        if (g.fix) s->gps.last_ms = s->now_ms;
+        if (g.fix && !dr_fix_valid(&g)) {
+            /* NaN / impossible numbers: a bad fix (dr.c rejects it, GPS
+             * failure); the numbers are never used anywhere */
+            s->gps_bad_msg = true;
+            s->gps.last.fix = false;
+        } else {
+            s->gps.last = g;
+            s->gps.valid = true;
+            if (g.fix) s->gps.last_ms = s->now_ms;
+        }
     }
 
     if (sb_mode(s) != MODE_MANUAL && s->hdg_reverse) in->angle_cmd_deg = s->hold_angle;   /* hold still */
@@ -1763,6 +1771,7 @@ void sb_step(sb_t *s)
         di.gear = (s->gear.current == GEAR_F) ? 1 : (s->gear.current == GEAR_R) ? -1 : 0;
         di.water_ok = hal_read_water_speed(&di.water_kn);
         di.gps_new = s->gps_new_msg;
+        di.gps_bad = s->gps_bad_msg;
         di.gps = s->gps.last;
         di.gps2_ok = s->gps2.rx_ms != 0u && s->now_ms - s->gps2.rx_ms < 3000u && s->gps2.age_ms < 2000u;
         di.gps2_lat = s->gps2.lat;

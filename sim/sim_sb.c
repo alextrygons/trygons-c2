@@ -6338,6 +6338,90 @@ static void centre_tests(void)
                 sb_mode(&x.sb) == MODE_MANUAL && take_ms <= 200u, d);
 }
 
+/* ------------------------------------ R5: GPS fixes with impossible values -- */
+
+/* In AUTO with a trusted GPS, single fixes with NaN / infinite / out-of-
+ * range numbers arrive: each one is a rejected fix (GPS failure, dead
+ * reckoning "invalid fix values"), nothing in the estimate or telemetry
+ * becomes NaN, AUTO goes on by DR and the real GPS is trusted again after
+ * the consistent fixes. A second GPS (gateway) with an impossible position
+ * is ignored. */
+static void gps_invalid_tests(void)
+{
+    char d[900];
+    printf("\n=== R5: GPS fixes with NaN / impossible values ===\n");
+    static sbsim_t x;
+    static gps2sim_t g;
+    static const char *const what[] = { "lat NaN", "lon +inf", "lat 95", "lon -200", "SOG NaN", "SOG 500 kn",
+                                        "COG -10", "COG inf" };
+    const int NK = 8;
+    memset(&g, 0, sizeof g);
+    sbsim_init(&x, 251u, 0.0f, 0.0f, NULL);
+    pisim_init(&g.p, &x, 921600u);
+    sbsim_run(&x, 2000u, gps2_hook, &g);
+    bool autog = auto_to(&x, 20000.0f, 0.0f, 8.0f);
+    sbsim_run(&x, x.t + 60000u, gps2_hook, &g);
+    int rejected = 0, finite_all = 1, auto_kept = 1, back = 0;
+    float worst_back = 0.0f;
+    char per[400] = "";
+    for (int k = 0; k < NK; k++) {
+        bool trusted = x.sb.dr.state == DR_GPS;
+        hal_gps_t b = x.sb.gps.last;
+        b.fix = true;
+        switch (k) {
+        case 0: b.lat_deg = NAN; break;
+        case 1: b.lon_deg = INFINITY; break;
+        case 2: b.lat_deg = 95.0; break;
+        case 3: b.lon_deg = -200.0; break;
+        case 4: b.sog_kn = NAN; break;
+        case 5: b.sog_kn = 500.0f; break;
+        case 6: b.cog_deg = -10.0f; break;
+        default: b.cog_deg = INFINITY; break;
+        }
+        uint32_t inv0 = x.sb.dr.invalid_fixes;
+        sim_hal_gps_message(&b);
+        sbsim_run(&x, x.t + AP_PERIOD_MS, gps2_hook, &g);
+        bool rej = trusted && x.sb.dr.state != DR_GPS && x.sb.dr.why == DR_WHY_INVALID &&
+                   x.sb.dr.invalid_fixes == inv0 + 1u;
+        rejected += rej;
+        double lat, lon;
+        dr_latlon(&x.sb.dr, &lat, &lon);
+        if (!isfinite(lat) || !isfinite(lon) || !isfinite(x.sb.dr.unc_m) || !isfinite(x.sb.gps.last.lat_deg) ||
+            !isfinite(x.sb.gps.last.sog_kn) || !isfinite(x.sb.gps.last.cog_deg) || !isfinite(dr_sog_kn(&x.sb.dr)))
+            finite_all = 0;
+        /* the real GPS goes on: trusted again after the consistent fixes */
+        uint32_t t0 = x.t;
+        while (x.sb.dr.state != DR_GPS && x.t < t0 + 180000u) {
+            sbsim_run(&x, x.t + 100u, gps2_hook, &g);
+            if (sb_mode(&x.sb) != MODE_AUTO) auto_kept = 0;
+        }
+        float tb = (float)(x.t - t0) * 0.001f;
+        if (x.sb.dr.state == DR_GPS) { back++; if (tb > worst_back) worst_back = tb; }
+        snprintf(per + strlen(per), sizeof per - strlen(per), "%s%s %s", k ? ", " : "", what[k], rej ? "rejected" : "NOT");
+    }
+    /* second GPS from the gateway: impossible position ignored */
+    uint32_t bad0 = x.sb.gps2.bad, cnt0 = x.sb.gps2.count;
+    double lat2 = x.sb.gps2.lat;
+    {
+        uint8_t pl[10], fr[PROTO_MAX_FRAME];
+        proto_wr_t w;
+        proto_wr_init(&w, pl, sizeof pl);
+        proto_wr_u32(&w, (uint32_t)(int32_t)950000000);          /* 95 deg */
+        proto_wr_u32(&w, (uint32_t)(int32_t)230000000);
+        proto_wr_u16(&w, 100u);
+        size_t n = proto_encode(fr, PROTO_T_GW_GPS2, 0u, pl, (uint8_t)w.n);
+        sim_hal_gw_rx_push(fr, (uint32_t)n);
+        sbsim_run(&x, x.t + 200u, gps2_hook, &g);
+    }
+    bool gps2_ign = x.sb.gps2.bad == bad0 + 1u && x.sb.gps2.count == cnt0 && x.sb.gps2.lat == lat2;
+    snprintf(d, sizeof d, "AUTO %s; %d of %d bad fixes rejected (%s); estimate / telemetry values all finite %s; "
+             "AUTO kept on DR %s; GPS trusted again %d/%d (slowest %.0f s); second GPS at 95 deg: ignored %s",
+             autog ? "yes" : "NO", rejected, NK, per, finite_all ? "yes" : "NO", auto_kept ? "yes" : "NO", back, NK,
+             worst_back, gps2_ign ? "yes" : "NO");
+    test_report("R5 GPS fixes with NaN / inf / out-of-range values: rejected (GPS failure), nothing becomes NaN",
+                autog && rejected == NK && finite_all && auto_kept && back == NK && gps2_ign, d);
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -6382,6 +6466,7 @@ void sb_tests(void)
     phase2();
     phase3();
     centre_tests();
+    gps_invalid_tests();
     phase4();
     phase5();
     phase6();

@@ -457,6 +457,7 @@ typedef struct {
         uint32_t rx_ms;        /* when it arrived (0 = never) */
         uint16_t age_ms;       /* its age on the Pi when sent */
         uint32_t count;
+        uint32_t bad;          /* frames with an impossible position (ignored) */
     } gps2;
     slam_t      slam;          /* slamming measurement + throttle cap */
     sb_navreq_t nav;           /* gateway navigation request (collision avoidance / shallow water) */
@@ -467,6 +468,7 @@ typedef struct {
     uint32_t    ext_buttons;   /* course buttons from the ground station (HAL_BTN_BIT), used by the next step */
 
     uint32_t now_ms, last_ms;
+    bool     gps_bad_msg;       /* this step's GPS message was a fix with invalid values */
     bool     stopping;          /* safe stop running (idle + neutral first) */
     sb_stop_steer_t stop_steer; /* steering during the safe stop / HDG_LOCK compass loss */
     bool     stop_from_auto;    /* the stop started in HDG_LOCK / AUTO / TRAINING */

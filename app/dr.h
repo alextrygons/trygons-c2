@@ -40,7 +40,8 @@ typedef enum {
     DR_WHY_SPEED,           /* impossible speed */
     DR_WHY_COURSE,          /* COG disagrees with heading + drift */
     DR_WHY_DRAG,            /* GPS slowly drifting away from DR */
-    DR_WHY_GPS2             /* disagrees with the second GPS (AIS device; off unless configured) */
+    DR_WHY_GPS2,            /* disagrees with the second GPS (AIS device; off unless configured) */
+    DR_WHY_INVALID          /* fix with NaN / infinite / impossible values (lat, lon, SOG, COG) */
 } dr_reason_t;
 
 typedef struct {
@@ -91,6 +92,7 @@ typedef struct {
     bool     water_ok;          /* paddlewheel fitted and read */
     float    water_kn;
     bool     gps_new;           /* a GPS message arrived this step */
+    bool     gps_bad;           /* ... and it was a fix with invalid values (counts as a rejected fix) */
     hal_gps_t gps;
     bool     gps2_ok;           /* a fresh position from the second GPS (gateway, AIS device) */
     double   gps2_lat, gps2_lon;
@@ -132,6 +134,7 @@ typedef struct {
 
     /* integrity / recovery */
     uint32_t suspects;          /* integrity rejections (events) */
+    uint32_t invalid_fixes;     /* fixes with NaN / impossible values (rejected) */
     uint8_t  good_count;
     bool     have_prev;
     float    prev_n, prev_e;    /* previous raw fix (recovery consistency) */
@@ -163,5 +166,10 @@ float dr_throttle_for(const dr_t *d, float water_kn);
 
 const char *dr_state_name(dr_state_t s);
 const char *dr_reason_name(dr_reason_t r);
+
+/* A fix whose numbers can be used at all: finite, latitude -90..90,
+ * longitude -180..180, SOG 0..100 kn, COG 0..360. Anything else is a bad
+ * fix (DR_WHY_INVALID), never a position. */
+bool dr_fix_valid(const hal_gps_t *g);
 
 #endif /* DR_H */

@@ -1034,7 +1034,9 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
 -------------------------------------------------------------------------------
 11. ALARMS
 -------------------------------------------------------------------------------
-  COMPASS LOST, GPS LOST, GPS SUSPECT, DEAD RECKONING LIMIT,
+  COMPASS LOST, GPS LOST, GPS SUSPECT (spoof flag, jump, speed, course,
+  slow drag, second GPS, or a fix with impossible numbers - NaN, latitude
+  beyond 90, ...), DEAD RECKONING LIMIT,
   ARRIVAL UNCERTAIN, ARRIVED, GEAR FAULT, TRAINING,
   JOYSTICK FAULT, JOYSTICK NOT CENTRED, JOYSTICK TOOK CONTROL,
   PC LINK LOST

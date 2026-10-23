@@ -48,7 +48,7 @@ const char *dr_reason_name(dr_reason_t r)
 {
     static const char *const n[] = { "-", "GPS lost", "receiver spoof/jam flag", "position jump",
                                      "impossible speed", "course disagrees", "slow drag",
-                                     "second GPS disagrees" };
+                                     "second GPS disagrees", "invalid fix values" };
     return ((unsigned)r < 8u) ? n[r] : "?";
 }
 
@@ -219,11 +219,43 @@ static void enter_dr(dr_t *d, dr_reason_t why, uint32_t now)
     if (why != DR_WHY_LOST) d->suspects++;
 }
 
+bool dr_fix_valid(const hal_gps_t *g)
+{
+    /* written so that NaN fails every comparison */
+    return g->lat_deg >= -90.0 && g->lat_deg <= 90.0 && g->lon_deg >= -180.0 && g->lon_deg <= 180.0 &&
+           g->sog_kn >= 0.0f && g->sog_kn <= 100.0f && g->cog_deg >= 0.0f && g->cog_deg <= 360.0f;
+}
+
+/* A fix with unusable numbers: a GPS failure like an integrity rejection
+ * (GPS trusted again only after the consistent fixes of a suspect GPS). */
+static void reject_invalid(dr_t *d, uint32_t now)
+{
+    if (d->state == DR_GPS) {
+        enter_dr(d, DR_WHY_INVALID, now);
+    } else if (d->state != DR_NO_FIX) {
+        if (d->why == DR_WHY_LOST) d->why = DR_WHY_INVALID;     /* recover like after a suspect fix */
+        d->suspects++;
+        d->good_count = 0u;
+        d->have_prev = false;
+        d->state = DR_DEAD;
+    }
+    d->invalid_fixes++;
+}
+
 /* --- step ----------------------------------------------------------------------- */
 
-void dr_step(dr_t *d, const dr_input_t *in)
+void dr_step(dr_t *d, const dr_input_t *in_raw)
 {
     const dr_config_t *c = &d->cfg;
+    /* inputs that are not finite are not used (never NaN in the estimate) */
+    dr_input_t v = *in_raw;
+    const dr_input_t *in = &v;
+    if (!isfinite(v.heading_deg)) { v.heading_deg = d->heading_now; v.heading_ok = false; }
+    if (!isfinite(v.yaw_dps)) v.yaw_dps = 0.0f;
+    if (!isfinite(v.throttle_pct)) v.throttle_pct = 0.0f;
+    if (v.water_ok && !(v.water_kn >= -50.0f && v.water_kn <= 100.0f)) v.water_ok = false;
+    if (v.gps2_ok && !(v.gps2_lat >= -90.0 && v.gps2_lat <= 90.0 && v.gps2_lon >= -180.0 && v.gps2_lon <= 180.0))
+        v.gps2_ok = false;
     float dt = (d->last_ms == 0u) ? 0.05f : (float)(in->now_ms - d->last_ms) * 0.001f;
     d->last_ms = in->now_ms;
     dt = clampf(dt, 0.0f, 1.0f);
@@ -274,7 +306,12 @@ void dr_step(dr_t *d, const dr_input_t *in)
         enter_dr(d, DR_WHY_LOST, in->now_ms);
     }
 
-    if (!in->gps_new || !in->gps.fix) return;
+    if (!in->gps_new) return;
+    if (in->gps_bad || (in->gps.fix && !dr_fix_valid(&in->gps))) {
+        reject_invalid(d, in->now_ms);
+        return;
+    }
+    if (!in->gps.fix) return;
 
     /* --- a GPS fix --- */
     if (!d->origin_set) {

@@ -136,7 +136,7 @@ AP_MODES = ["STANDBY", "AUTO", "TRAINING", "MANUAL", "GYRO HOLD", "CENTER", "ANG
 GEARS = ["N", "F", "R"]
 POS_SOURCES = ["NO FIX", "GPS", "DEAD RECKONING", "RECOVERING"]
 DR_REASONS = ["-", "GPS lost", "spoof/jam flag", "position jump", "impossible speed",
-              "course mismatch", "slow drag", "second GPS disagrees"]
+              "course mismatch", "slow drag", "second GPS disagrees", "invalid fix values"]
 JOY_STATUS = ["not fitted", "NOT CENTRED / not armed", "armed", "FAULT"]
 JOY_SOURCES = ["analog (wired)", "USB bridge"]
 # joystick fault / problem reasons (joystick.h JOY_WHY_*)

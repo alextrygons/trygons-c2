@@ -800,11 +800,18 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
     if (f->type == PROTO_T_GW_GPS2 && f->len >= 10u) {           /* second GPS (AIS device) */
         proto_rd_t r;
         proto_rd_init(&r, f->payload, f->len);
-        s->gps2.lat = (double)(int32_t)proto_rd_u32(&r) * 1e-7;
-        s->gps2.lon = (double)(int32_t)proto_rd_u32(&r) * 1e-7;
-        s->gps2.age_ms = proto_rd_u16(&r);
-        s->gps2.rx_ms = s->now_ms ? s->now_ms : 1u;
-        s->gps2.count++;
+        double lat = (double)(int32_t)proto_rd_u32(&r) * 1e-7;
+        double lon = (double)(int32_t)proto_rd_u32(&r) * 1e-7;
+        uint16_t age = proto_rd_u16(&r);
+        if (lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0) {
+            s->gps2.lat = lat;
+            s->gps2.lon = lon;
+            s->gps2.age_ms = age;
+            s->gps2.rx_ms = s->now_ms ? s->now_ms : 1u;
+            s->gps2.count++;
+        } else {
+            s->gps2.bad++;                                       /* impossible position: ignored */
+        }
         return;
     }
     if (f->type == PROTO_T_GW_NAVREQ && f->len >= 10u) {         /* collision avoidance / shallow water */
