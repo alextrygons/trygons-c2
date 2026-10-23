@@ -27,14 +27,17 @@ STORM = os.path.join(OUT, "storm.exe")
 
 def plan(mode):
     t = os.path.join(HERE, "%s")
-    q = [("fresh build from GitHub (quick)", [PY, t % "fresh_build.py", "--quick"], 3600),
+    ads = ("ADS build excludes every non-firmware folder", [PY, t % "check_ads_excludes.py"], 60)
+    q = [ads,
+         ("fresh build from GitHub (quick)", [PY, t % "fresh_build.py", "--quick"], 3600),
          ("fault storm: 200 episodes", [PY, t % "run_storm.py", "--episodes", "200"], 1800),
          ("32-bit time wraparound", [STORM, "--wrap"], 600),
          ("day at sea, AURIX part", [STORM, "--dayatsea"], 900),
          ("gateway storm (I14, I15, I17, I20, I21)", [PY, t % "storm_gateway.py", "--episodes", "10"], 1800)]
     if mode == "quick":
         return q
-    return [("fresh build from GitHub (full)", [PY, t % "fresh_build.py"], 14400),
+    return [ads,
+            ("fresh build from GitHub (full)", [PY, t % "fresh_build.py"], 14400),
             ("fault storm: 2000 episodes", [PY, t % "run_storm.py", "--episodes", "2000"], 7200),
             ("32-bit time wraparound", [STORM, "--wrap"], 600),
             ("24 h AURIX soak with logging", [STORM, "--soak", "24", "24", "--log"], 7200),

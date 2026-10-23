@@ -57,6 +57,10 @@ if [ -n "$missing" ]; then echo "MISSING in hal_tc375.c: $missing"; fail=1; else
 writers=$(grep -rln --include=*.c "hal_set_throttle_pwm *(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/servo.c$")
 if [ -n "$writers" ]; then echo "THROTTLE SERVO WRITTEN OUTSIDE servo.c: $writers"; fail=1; else echo "throttle servo written only by app/servo.c"; fi
 
+# ADS compiles every C/C++ file in the project folder: every top-level folder
+# that is not board firmware must be excluded in .cproject (all configurations)
+"$PY" tests/acceptance/check_ads_excludes.py || fail=1
+
 # the board's monitor trip drives the outputs itself (works with core 0 frozen)
 safe=$(sed -n '/^void hal_safe_outputs/,/^}/p' hal/hal_tc375.c)
 if echo "$safe" | grep -q "servo_write(THROTTLE_TOM_CH" && echo "$safe" | grep -q "servo_write(GEAR_TOM_CH" &&
