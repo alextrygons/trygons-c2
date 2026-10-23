@@ -2608,6 +2608,15 @@ OBST_BIT = 0x4000000                            # OBSTACLE AHEAD (app/smallboat.
 
 def section_vi():
     print("\n=== Part 2: camera obstacle detection (vision stages, gateway + boat) ===", flush=True)
+    # VI0 (R21): an unusable camera config is replaced per entry; an unknown distance counts as IN the path
+    from vision import geometry as geo
+    cam, bad = geo.check_camera({"hfov_deg": 0, "vfov_deg": "x", "height_m": 1.2})
+    nan_in = geo.in_corridor(0.0, float("nan"), 5.0, 0.0, {})
+    loc = geo.locate(cam, 0.5, 0.8, geo.horizon_default(cam))
+    report("VI0 camera config checked (fov 0 / not a number -> default); NaN distance = in the path, not ignored",
+           cam["hfov_deg"] == 80.0 and cam["vfov_deg"] == 45.0 and cam["height_m"] == 1.2 and len(bad) == 2 and
+           nan_in and math.isfinite(loc[1]),
+           "problems %s; NaN distance in the corridor %s; distance with the fixed config %.1f m" % (bad, nan_in, loc[1]))
     tmp = tempfile.mkdtemp(prefix="gwtest_vi_")
     sim = gw = None
     try:

@@ -14,6 +14,26 @@ lot, the more the further away. It is always given as a range.
 import math
 
 DEFAULT_CAMERA = {"height_m": 1.6, "tilt_down_deg": 5.0, "hfov_deg": 80.0, "vfov_deg": 45.0, "yaw_deg": 0.0}
+CAMERA_LIMITS = {"height_m": (0.2, 20.0), "tilt_down_deg": (-30.0, 60.0), "hfov_deg": (5.0, 170.0),
+                 "vfov_deg": (5.0, 170.0), "yaw_deg": (-180.0, 180.0)}
+
+
+def check_camera(cam):
+    """A camera config that can't be used (missing, not a number, out of range,
+    e.g. a field of view of 0 = division by zero) -> the default value for that
+    entry. Returns (camera, [problems])."""
+    out, bad = dict(DEFAULT_CAMERA), []
+    for k, (lo, hi) in CAMERA_LIMITS.items():
+        v = (cam or {}).get(k, DEFAULT_CAMERA[k])
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            v = float("nan")
+        if math.isfinite(v) and lo <= v <= hi:
+            out[k] = v
+        else:
+            bad.append("%s=%r (allowed %g..%g, using %g)" % (k, (cam or {}).get(k), lo, hi, DEFAULT_CAMERA[k]))
+    return out, bad
 
 
 def horizon_from_imu(cam, roll_deg, pitch_deg):
@@ -56,9 +76,13 @@ def locate(cam, u, v, horizon, pitch_unc_deg=1.0, pix_unc=1.5 / 96.0, max_range_
 
 def in_corridor(rel_deg, dist_m, sog_kn, yaw_rate_dps, cfg):
     """Is the obstacle inside the path ahead (current heading + turn rate)?
-    A band of +-half_width_m around the curved path, length max(min_len_m, speed x look_s)."""
+    A band of +-half_width_m around the curved path, length max(min_len_m, speed x look_s).
+    A distance / bearing that is not a number counts as IN the path (unknown must
+    never mean "no obstacle")."""
     if dist_m is None:
         return False
+    if not (math.isfinite(dist_m) and math.isfinite(rel_deg)):
+        return True
     x = dist_m * math.sin(math.radians(rel_deg))                    # right of the bow
     y = dist_m * math.cos(math.radians(rel_deg))                    # ahead
     v = max(sog_kn or 0.0, 1.0) * 0.514444

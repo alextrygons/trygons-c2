@@ -131,6 +131,9 @@ class VisionManager:
     def __init__(self, cfg, gw):
         from common import deep_merge
         self.cfg = deep_merge(DEFAULTS, cfg or {})
+        self.cfg["camera"], bad = geo.check_camera(self.cfg.get("camera"))
+        for b in bad:
+            log.warning("vision camera config not usable: %s", b)
         self.gw = gw
         self.state, self.reason = OFFLINE, "starting"
         self.proc, self.reader = None, None
