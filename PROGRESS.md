@@ -21,7 +21,7 @@ step that is not DONE below, without redoing finished work.
 | 4.5 | independent code review (separate subagent) | DONE (report in test_results) | |
 | 4.6 | coverage (gcov / coverage.py) | DONE (TEST_REPORT 3.7) | |
 | 4.7 | RUN_ACCEPTANCE.bat quick / full, MANUAL "Testing" | DONE (MANUAL chapter 19) | |
-| R | TEST_REPORT.md, final PROGRESS.md, git push | DONE when the Part 4 commit is pushed | |
+| R | TEST_REPORT.md, final PROGRESS.md, git push | DONE | 09b6e0d |
 
 ## Open problems (for TEST_REPORT.md)
 
