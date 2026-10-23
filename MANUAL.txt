@@ -23,6 +23,7 @@ CONTENTS
   16. Git: saving and uploading your work
   17. WHAT IS STILL MISSING
   18. Troubleshooting
+  19. Testing (the acceptance test)
 
 
 -------------------------------------------------------------------------------
@@ -1335,4 +1336,59 @@ FUTURE IDEAS
                                  yellow mark or to neutral.
   Map refused                    two functions on one button, or not in
                                  STANDBY.
+
+-------------------------------------------------------------------------------
+19. TESTING (THE ACCEPTANCE TEST)
+-------------------------------------------------------------------------------
+Besides the normal tests (chapter 4 and tools\check.sh before every commit)
+there is a big acceptance test that checks the WHOLE system. Run it before
+sea trials and after big changes:
+
+    tests\acceptance\RUN_ACCEPTANCE.bat          quick: about 10-15 minutes
+    tests\acceptance\RUN_ACCEPTANCE.bat full     everything: several hours
+
+(or: C:\msys64\ucrt64\bin\python.exe tests\acceptance\run_acceptance.py quick)
+Extra install for the coverage part only:
+    pacman -S mingw-w64-ucrt-x86_64-python-coverage
+
+WHAT IT DOES
+  fresh build        clones the project from GitHub into an empty folder and
+                     builds / tests it there, following only this manual -
+                     finds files or steps that only exist on this PC
+  fault storm        2000 (quick: 200) random "bad days" of 5-30 min each in
+                     the simulator, much faster than real time: sensor
+                     failures, broken frames on every link, random joystick
+                     and buttons, random PC commands, resets, a frozen core 0
+                     ... After EVERY control step 21 safety rules (I1..I21,
+                     e.g. "STANDBY always wins") are checked. It first proves
+                     that the checks work (it plants 3 violations and they must
+                     be caught).
+  time wrap          the boat's millisecond clock runs over 49.7 days
+  soak               24 h of boat time (AURIX, with logging) + a real-time
+                     run of the gateway with cameras, recording, vision, AIS,
+                     sync: memory, files, sockets, timing over time (a leak
+                     shows as a growing line)
+  day at sea         one long mission through everything (two parts: the
+                     AURIX with its faults in simulated time, and the whole
+                     system in real time) - a timeline table
+  gateway storms     random traffic / channels / storage / vision / stations
+                     against the gateway's own rules (I14-I17, I20, I21)
+  coverage           which code the tests run at all (full only)
+
+HOW TO READ THE RESULT
+  test_results\acceptance_summary.txt: one line per part, PASS / FAIL, and
+  the name of its log file next to it. In a log:
+    PASS / FAIL lines   one per rule or step; FAIL = look closer
+    "seed N"            a random run can be repeated exactly:
+                          test_results\storm.exe --replay N
+                        prints every event of that run; "minimal N events"
+                        = the shortest list of events that still fails
+    worst reaction      e.g. "worst 2.88 s" for STANDBY = the slowest the boat
+                        took (idle + neutral) in all the runs
+  A FAIL is not always a bug in the boat: it can be the test itself. The last
+  full result, every finding and what to fix first: TEST_REPORT.md (project
+  folder). The large outputs (logs, coverage pages, soak data) stay in
+  test_results\ - not in git; delete it any time.
+  What the PC can't test (real board timing, the Pi's speed, the sensors,
+  the sea): TEST_REPORT.md section 4.
 ===============================================================================
