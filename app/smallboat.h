@@ -557,8 +557,12 @@ bool sb_confirm_training(sb_t *s, bool accept, float full_angle_deg);
 /* Steering angle limit for a speed (from the table). */
 float sb_steer_limit_for(const sb_config_t *cfg, float sog_kn);
 
-/* Sim tests only: drive with a raw gear / throttle demand. */
+/* Sim tests only: drive with a raw gear / throttle demand. Not in the board
+ * firmware (TriCore builds): nothing there can bypass the driving modes. */
+#if !defined(__TASKING__) && !defined(__tricore__)
+#define SB_TEST_HOOKS 1
 void sb_test_drive(sb_t *s, bool on, gear_t gear, float throttle_pct);
+#endif
 
 /* Status for displays (e.g. the ground station). */
 typedef struct {

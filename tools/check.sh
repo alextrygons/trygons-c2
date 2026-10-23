@@ -61,6 +61,13 @@ if [ -n "$writers" ]; then echo "THROTTLE SERVO WRITTEN OUTSIDE servo.c: $writer
 # that is not board firmware must be excluded in .cproject (all configurations)
 "$PY" tests/acceptance/check_ads_excludes.py || fail=1
 
+# the sim's test hooks (raw gear / throttle) never in the board firmware
+if "$B/tricore-elf-nm.exe" "$OUT/smallboat.o" 2>/dev/null | grep -q "sb_test_drive"; then
+    echo "sb_test_drive (sim test hook) IS IN THE FIRMWARE"; fail=1
+else
+    echo "no sim test hooks in the firmware"
+fi
+
 # the board's monitor trip drives the outputs itself (works with core 0 frozen)
 safe=$(sed -n '/^void hal_safe_outputs/,/^}/p' hal/hal_tc375.c)
 if echo "$safe" | grep -q "servo_write(THROTTLE_TOM_CH" && echo "$safe" | grep -q "servo_write(GEAR_TOM_CH" &&

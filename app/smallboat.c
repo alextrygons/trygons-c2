@@ -188,12 +188,14 @@ void sb_alarm_ack(sb_t *s)
     if (!s->ap.sensor_fault) s->ap.alarm = false;
 }
 
+#ifdef SB_TEST_HOOKS
 void sb_test_drive(sb_t *s, bool on, gear_t gear, float throttle_pct)
 {
     s->test_drive.on = on;
     s->test_drive.gear = gear;
     s->test_drive.throttle_pct = throttle_pct;
 }
+#endif
 
 /* AUTO speed wanted (leg speed, slow-downs); rough water may lower it. */
 static void set_speed(sb_t *s, float kn)
@@ -1835,10 +1837,12 @@ void sb_step(sb_t *s)
         s->throttle_demand = 0.0f;
         s->gear_demand = GEAR_N;
     }
+#ifdef SB_TEST_HOOKS
     if (sb_mode(s) != MODE_STANDBY && s->test_drive.on) {
         s->gear_demand = s->test_drive.gear;
         s->throttle_demand = s->test_drive.throttle_pct;
     }
+#endif
 
     /* 4. safe stop: idle + neutral first, then steering off */
     if (sb_mode(s) == MODE_STANDBY) {
