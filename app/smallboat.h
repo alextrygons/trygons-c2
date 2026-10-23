@@ -254,6 +254,8 @@ typedef struct {
     uint32_t confirm_ms;                /* PC request -> joystick CONFIRM window (10 s) */
     uint32_t arm_ms;                    /* neutral-start: conditions OK this long to arm (500 ms) */
     uint32_t arm_alarm_ms;              /* not armed this long -> alarm (3 s) */
+    bool     joy_optional;              /* boat really without a joystick: arm without it (false: the
+                                         * joystick must be seen, armed and centred - R9) */
 
     /* TRAINING */
     float    training_throttle_pct;     /* fixed slow throttle, forward gear (20) */

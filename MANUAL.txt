@@ -1110,7 +1110,9 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   * The joystick always wins; the STANDBY button always wins.
   * NEUTRAL-START INTERLOCK: after power-up the outputs only arm when the
     throttle is idle, neutral is confirmed (neutral switch if fitted) and
-    the stick is centred. Until then: STANDBY only, safety relay open,
+    the stick is centred - and the joystick must be there: no joystick
+    seen (not plugged in, USB bridge not sending yet) = not armed, alarm
+    NOT NEUTRAL AT START. Until then: STANDBY only, safety relay open,
     alarm after 3 s.
   * WATCHDOGS on all three cores (100 ms on core 0). A stuck loop resets
     the chip: everything starts again in STANDBY at 30 %.

@@ -68,6 +68,7 @@ void sb_default_config(sb_config_t *cfg)
     cfg->confirm_ms = 10000u;
     cfg->arm_ms = 500u;
     cfg->arm_alarm_ms = 3000u;
+    cfg->joy_optional = false;
 
     cfg->training_throttle_pct = 20.0f;
     cfg->training_spinup_ms = 30000u;
@@ -1598,12 +1599,16 @@ bool sb_confirm_training(sb_t *s, bool accept, float full_angle_deg)
 
 /* Faults, joystick and buttons (in this order of priority). */
 /* Neutral-start interlock (power-up): throttle idle, neutral confirmed,
- * joystick centred (if fitted) for arm_ms -> outputs armed until reset. */
+ * joystick seen and centred (cfg.joy_optional: a boat without one) for
+ * arm_ms -> outputs armed until reset. */
 static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
 {
     if (s->armed) return;
     bool neutral = (neutral_sw >= 0) ? (neutral_sw == 1 && gear_is(&s->gear, GEAR_N)) : gear_is(&s->gear, GEAR_N);
-    bool stick = !s->joy.present || (s->joy.armed && joy_centered(&s->joy));
+    /* the joystick must be there (a USB bridge still starting or an analog
+     * stick not detected is no reason to skip the check) - unless the boat is
+     * configured without one */
+    bool stick = s->joy.present ? (s->joy.armed && joy_centered(&s->joy)) : s->cfg.joy_optional;
     bool idle = s->thr.out_pct <= s->cfg.gear.idle_max_pct;
     s->arm_ok_ms = (neutral && stick && idle) ? s->arm_ok_ms + dt_ms : 0u;
     s->unarmed_ms += dt_ms;

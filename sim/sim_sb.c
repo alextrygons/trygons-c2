@@ -6625,6 +6625,39 @@ static void gps_retrust_tests(void)
                 p_ok >= 59.0f && p_ok <= 75.0f && om < 30.0f, d);
 }
 
+/* ------------------------------------ R9: arming needs the joystick seen -- */
+
+/* Power-up with no joystick seen (analog not detected / USB bridge not yet
+ * sending): the outputs stay unarmed (NOT ARMED alarm after 3 s) until the
+ * joystick appears centred. A boat configured without a joystick
+ * (cfg.joy_optional) arms without it. */
+static void arm_joystick_tests(void)
+{
+    char d[500];
+    printf("\n=== R9: outputs arm only with the joystick seen ===\n");
+    static sbsim_t x;
+    sbsim_init(&x, 281u, 0.0f, 0.0f, NULL);
+    sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);   /* (bridge: no device frames) */
+    sbsim_run(&x, 5000u, NULL, NULL);
+    bool unarmed = !x.sb.armed, alarm = (x.sb.alarm_bits & SB_ALM_NOT_ARMED) != 0u;
+    sbsim_init(&x, 282u, 0.0f, 0.0f, NULL);              /* joystick fitted and centred from the start */
+    sbsim_run(&x, 3000u, NULL, NULL);
+    bool armed_with = x.sb.armed;
+    sb_config_t c;
+    sb_default_config(&c);
+    c.joy_optional = true;
+    sbsim_init(&x, 283u, 0.0f, 0.0f, &c);
+    sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);
+    sbsim_run(&x, 3000u, NULL, NULL);
+    bool armed_opt = x.sb.armed;
+    snprintf(d, sizeof d, "no joystick seen for 5 s: armed %s, NOT ARMED alarm %s; joystick fitted + centred: armed %s; "
+             "boat configured without a joystick: armed %s%s",
+             unarmed ? "no" : "YES", alarm ? "yes" : "NO", armed_with ? "yes" : "NO", armed_opt ? "yes" : "NO",
+             s_bridge ? " (USB bridge source: a missing stick is a JOYSTICK FAULT, joy_optional does not apply)" : "");
+    test_report("R9 outputs arm only with the joystick seen and centred (unless configured without one)",
+                unarmed && alarm && armed_with && (armed_opt || s_bridge), d);
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -6671,6 +6704,7 @@ void sb_tests(void)
     centre_tests();
     gps_invalid_tests();
     gps_retrust_tests();
+    arm_joystick_tests();
     phase4();
     phase5();
     phase6();
