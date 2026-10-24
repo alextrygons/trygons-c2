@@ -1,4 +1,7 @@
-# Wiring: joysticks (analog and USB), control panel and ground-station link (KIT_A2G_TC375_LITE)
+# Wiring: joysticks, control panel, sensors, actuators and links (KIT_A2G_TC375_LITE)
+
+Every pin the software uses is also in hal/hal_pins.h (one table, the same
+names). Stage 1 (first steering test) parts: sections 2, 3, 4, 9 and 11.
 
 Source: *AURIX TC375 lite Kit V2 user manual*, Figure 7 "Mapping of Arduino
 Functions to AURIX Pin Functions". **Always check the pin labels printed on
@@ -117,7 +120,9 @@ connectors, which nothing else in this project uses.
   missing" in MANUAL.txt.)
 * Use marine-grade (IP67) buttons; keep the wires short and away from the
   ignition and the motor cables.
-* The software debounces the buttons (TODO in hal_tc375.c).
+* The software debounces the buttons: a level must be the same in two samples
+  50 ms apart (hal_tc375.c `hal_get_button_presses`). A press is reported
+  once, so a button held down does not repeat.
 
 ## 3. Actuators, reset behaviour and fail-safe
 
@@ -127,12 +132,16 @@ connectors, which nothing else in this project uses.
 |--------|-----------|-----------------|-----------|-------|
 | Throttle servo signal | D9 | X303 pin 2 | P02.7 (GTM TOM0 ch 15, TOUT7) | 50 Hz, 1000 us = idle, 2000 us = full (calibrated) |
 | Gear servo signal | D8 | X303 pin 1 | P02.6 (GTM TOM0 ch 14, TOUT6) | 1900 F / 1500 N / 1100 R us (configurable) |
-| Steering motor enable | D6 | X304 pin 7 | P02.5 | high = motor runs (on / off, the angle is estimated from the run time); to the H-bridge (motor driver) |
-| Steering motor direction | D7 | X304 pin 8 | P02.4 | |
+| Steering motor PWM | D6 | X304 pin 7 | P02.5 | to the Pololu G2 **PWM**: high = motor runs at full speed (on / off; the angle is estimated from the run time), low = brake |
+| Steering motor direction | D7 | X304 pin 8 | P02.4 | to the G2 **DIR** |
+| Steering motor driver sleep | X1/X2 header | CHECK | P33.7 | to the G2 **SLP**: high = driver awake; low = asleep, outputs open (power-up, monitor trip). The G2 pulls SLP low itself |
+| Steering motor current | A3 | X301 pin 4 | P40.6 = AN36 (EVADC group 8 ch 4) | from the G2 **CS** (about 20 mV per amp + 50 mV) |
 | Safety relay driver | D10 | X303 pin 3 | P10.5 | high = relay closed (actuators allowed); through a transistor / relay driver, never the coil directly |
 | Neutral switch | D5 | X304 pin 6 | P02.3 (input, pull-up) | switch to GND, CLOSED when the gearbox is in neutral |
 
-(The Arduino SPI pins D11-D13 stay free; the SD card uses the mikroBUS socket.)
+The Arduino SPI pins D11-D13 are used by the BNO085 (section 9); the SD card
+uses the mikroBUS socket. The steering end stops, the emergency stop contact
+and the buzzer are in section 11 (Stage 1 parts).
 
 ### What happens at reset and before the software runs
 
@@ -360,38 +369,44 @@ camera is ever needed for a safety function.
   * a little hydrophobic glass coating helps;
   * check the seals every season.
 
-## 9. Slamming sensor (BNO085)
+## 9. IMU = compass + gyro + attitude + slamming sensor (BNO085)
 
-Vertical acceleration for the slamming measurement (MANUAL chapter 9 part H).
-UNVERIFIED until the board arrives: the TC375 pins (one QSPI channel on the
-Lite Kit's Arduino header) are chosen then, and hal_tc375.c
-`hal_read_accel_z()` gets the BNO085 driver (now it returns "no samples":
-no reduction, nothing else changes).
+The BNO085 is the boat's **compass** (heading from its rotation vector, with
+the magnetometer), its **gyro** (yaw rate), the roll / pitch for the camera
+horizon and the vertical acceleration for the slamming measurement (MANUAL
+chapter 9 part H). Driver: hal/tc_bno085.c (SPI, SHTP protocol). It runs on
+QSPI1 = the Arduino SPI pins; the control loop (core 0) reads it.
 
-| BNO085 | TC375 Lite Kit | Notes |
-|--------|----------------|-------|
-| VIN | 3.3 V | not 5 V |
-| GND | GND | |
-| SCL/SCK | QSPI SCLK | SPI mode: PS0 = PS1 = 3.3 V on the breakout |
-| SDA/MISO | QSPI MRST | |
-| DI/MOSI | QSPI MTSR | |
-| CS | QSPI SLSO | |
-| INT | any GPIO input (interrupt) | sample ready |
-| RST | any GPIO output | reset at start-up |
+| BNO085 breakout | Board pin | TC375 pin | Notes |
+|-----------------|-----------|-----------|-------|
+| VIN | 3.3 V | - | **not 5 V** |
+| GND | GND | - | |
+| SCL / SCK | D13 | P10.2 (QSPI1 SCLK) | CHECK on the board |
+| SDA / MISO | D12 | P10.1 (QSPI1 MRST A) | CHECK |
+| DI / MOSI | D11 | P10.3 (QSPI1 MTSR) | CHECK |
+| CS | X1/X2 header | P10.0 | CHECK; software chip select |
+| INT (H_INTN) | X1/X2 header | P33.5 | CHECK; low = data ready |
+| RST (NRST) | X1/X2 header | P33.4 | CHECK; low = reset |
+| PS0 / WAKE | X1/X2 header | P33.6 | CHECK; in SPI mode PS0 is the WAKE input |
+| PS1 | 3.3 V | - | PS1 = 1 and PS0 = 1 at reset = SPI mode |
 
+* Reports used: rotation vector 50 Hz (heading), calibrated gyro 50 Hz (yaw
+  rate), game rotation vector 50 Hz (roll / pitch), linear acceleration 200 Hz
+  (slamming). No report for 0.5 s = "no data": the heading / gyro timeout
+  alarms of the app follow, and the driver resets the sensor (at most every 2 s).
 * Mount it **rigidly** to the hull structure (not on a panel that vibrates),
-  near the driver's seat / slightly forward of the centre of gravity, with
-  its Z axis vertical. Glue / screw - no foam.
-* Cable max ~1 m, shielded, away from the steering motor and ignition
-  cables. Keep it > 50 cm from the compass (it contains a magnet sensor, but
-  the steel of a mount can disturb the compass).
-* Use the "linear acceleration" report (gravity removed) at 200 Hz.
-* Also enable the "game rotation vector" report at 50 Hz: hal_read_attitude()
-  turns it into roll / pitch for the camera horizon of the obstacle detection
-  (TELEM2 group H to the Pi; never used for control; now a stub = "no data",
-  the Pi then uses the horizon in the picture). Mount the BNO085 with its X
-  axis forward so roll / pitch match the boat (+ roll = starboard down, + pitch
-  = bow up).
+  near the driver's seat / slightly forward of the centre of gravity, flat,
+  with its **X axis pointing forward** (+ roll = starboard down, + pitch =
+  bow up). Glue / screw - no foam.
+* It is a **magnetic compass**: keep it **> 50 cm from steel, the outboard,
+  the steering motor, speakers and current-carrying cables** (the motor and
+  battery cables especially). Calibrate it by turning the boat slowly through
+  two full circles (FIRST_TEST.md); the bench test shows its accuracy (0-3).
+* Directions are checked in the bench test (FIRST_TEST.md): turn it clockwise
+  seen from above -> the heading goes up and the yaw rate is positive. If one is
+  the wrong way, flip the sign in hal/hal_pins.h (`BNO_..._SIGN`); a heading
+  error from the mounting goes into `BNO_HEADING_OFFSET`.
+* Cable max ~1 m, shielded, away from the steering motor and ignition cables.
 
 ## 10. AIS receiver (receive only) and antenna
 
@@ -415,3 +430,87 @@ no reduction, nothing else changes).
 * Radar reflector: AIS receive-only does not make us visible to ships.
   Mount a good radar reflector (e.g. an Echomax / Tri-Lens, as high as
   possible) so ships' radars see us.
+
+## 11. Stage 1 parts: GPS, steering motor driver, end stops, emergency stop, buzzer
+
+Everything for the first steering test (FIRST_TEST.md). Pins marked CHECK are
+on the X1 / X2 expansion headers: find the port pin on the board's silk
+screen / the Lite Kit user manual BEFORE you wire it, and change hal/hal_pins.h
+if needed. The bench test shows each input live, so a wrong pin is found at
+once.
+
+### GPS: u-blox MAX-M10S breakout (3.3 V)
+
+| GPS breakout | TC375 pin | Notes |
+|--------------|-----------|-------|
+| VCC (3V3) | 3.3 V | not 5 V unless the breakout has its own regulator |
+| GND | GND | |
+| TXD (from the GPS) | P33.8 (ASCLIN2 RX E) | Shield2Go 1 UART pins, CHECK |
+| RXD (to the GPS) | P33.9 (ASCLIN2 TX) | CHECK |
+| antenna | - | active patch antenna with a clear view of the sky, away from the cameras' and the Pi's cables |
+
+* The module starts at 9600 baud. The software switches it to 38400 and turns
+  on the u-blox binary messages NAV-PVT (the fix, 1 Hz), NAV-STATUS
+  (**spoofing** detection) and MON-RF (**jamming**) - in its RAM only, so it is
+  done again at every power-up and whenever the module stops sending them.
+  If the module ignores the setup, the standard NMEA RMC sentence is used
+  (no spoofing / jamming flag then).
+* No message for 3 s = "no data": GPS LOST in the app (dead reckoning, see
+  MANUAL). The first fix after a cold start can take ~30 s outdoors.
+
+### Steering motor driver: Pololu G2 High-Power Motor Driver 18v17
+
+| G2 pin | Connect to | Notes |
+|--------|------------|-------|
+| VIN / GND (big pads) | 12 V battery through the **emergency stop relay** and a **20 A fuse** | thick wires (2.5 mm2), short |
+| OUTA / OUTB | steering motor | swap them if the motor runs the wrong way (or flip the direction in the TRAINING calibration) |
+| PWM | D6 = P02.5 | |
+| DIR | D7 = P02.4 | |
+| SLP | P33.7 (CHECK) | 10 kOhm pull-down to GND is on the G2 already |
+| CS | A3 = P40.6 | max 3.3 V: at 17 A it is ~0.4 V |
+| GND (logic) | board GND | one common ground point |
+
+* The G2's logic inputs work with 3.3 V. Never connect the motor supply to the
+  board.
+* Put a 100 uF / 35 V low-ESR capacitor across VIN near the G2 if the wires
+  to the battery are longer than ~50 cm.
+
+### Steering end stops (limit switches)
+
+Two **normally closed** micro switches (IP67), one at each steering end, each
+from its input to GND. **Open = at the end stop or the wire is broken**: the
+software treats both the same (the motor stops in that direction).
+
+| Switch | TC375 pin | Notes |
+|--------|-----------|-------|
+| LEFT end (port) | P33.1 (CHECK) | internal pull-up; add 4.7 kOhm to 3.3 V + 100 nF to GND at the board for noise |
+| RIGHT end (starboard) | P33.2 (CHECK) | same |
+
+### Emergency stop
+
+A red **mushroom switch with two normally closed contacts** (twist to release):
+
+1. **Power contact** - in series with the coil of a 30 A automotive relay that
+   feeds the **steering motor driver** and the **servo power** (VIN of the G2,
+   the servos' 5-6 V supply). Pressed = the relay drops = no actuator power,
+   whatever the software does. (Engine kill: see section 3.)
+2. **Signal contact** - from P33.0 (CHECK) to GND, so the software knows:
+   open (high) = pressed, or the wire is broken. 4.7 kOhm to 3.3 V + 100 nF to
+   GND at the board.
+
+The software sees "pressed" at once and STANDBY follows (throttle idle +
+neutral first, then steering off) with the EMERGENCY STOP alarm; every
+command except STANDBY is refused while it is pressed. After releasing: press
+STANDBY to acknowledge. `HAL_ESTOP_FITTED 0` in hal/hal_pins.h only for a
+bench without the switch.
+
+### Buzzer
+
+| Part | Connect to | Notes |
+|------|------------|-------|
+| 12 V active piezo buzzer (loud, > 85 dB) | + to 12 V (fused 1 A), - to the transistor's collector / drain | |
+| NPN transistor (BC337) or logic-level MOSFET (2N7000 / AO3400) | base through 1 kOhm (MOSFET gate through 100 Ohm + 100 kOhm to GND) from P33.3 (CHECK) | high = buzzer on |
+| diode 1N4148 across the buzzer | cathode to + | only needed for a magnetic (not piezo) buzzer |
+
+The buzzer sounds with LED1 whenever an alarm is active, and stays on after a
+safety monitor trip. The bench test switches it on and off by itself.

@@ -1,0 +1,135 @@
+/*
+ * tc_uart.c - The board's UARTs. See tc_uart.h. Board only (ADS build).
+ *
+ * The iLLD ASC driver moves bytes between the ASCLIN hardware FIFOs and a
+ * software FIFO in its interrupts; uart_read / uart_write only touch the
+ * software FIFOs, so they never wait.
+ */
+#include "tc_uart.h"
+
+#include "Ifx_Types.h"
+#include "Asclin/Asc/IfxAsclin_Asc.h"
+#include "IfxCpu_Irq.h"
+
+#include "hal.h"
+#include "hal_pins.h"
+
+/* software FIFO sizes per port; the gateway's TX must be HAL_GW_TX_RING (link.c
+ * computes the backlog as HAL_GW_TX_RING - hal_gw_tx_free()) */
+#define FIFO_BYTES(n) ((n) + sizeof(Ifx_Fifo) + 8u)
+static uint8 s_link_rx[FIFO_BYTES(2048u)], s_link_tx[FIFO_BYTES(4096u)];
+static uint8 s_gw_rx[FIFO_BYTES(2048u)],   s_gw_tx[FIFO_BYTES(HAL_GW_TX_RING)];
+static uint8 s_gps_rx[FIFO_BYTES(1024u)],  s_gps_tx[FIFO_BYTES(256u)];
+static uint8 s_br_rx[FIFO_BYTES(1024u)],   s_br_tx[FIFO_BYTES(64u)];
+
+typedef struct {
+    IfxAsclin_Asc asc;
+    uart_stat_t st;
+    float baud;
+} uart_t;
+
+static uart_t s_u[UART_COUNT];
+
+typedef struct {
+    Ifx_ASCLIN *mod;
+    IfxAsclin_Tx_Out *tx;
+    IfxAsclin_Rx_In *rx;
+    uint16 prio_tx, prio_rx, prio_er;
+    uint8 *rxbuf, *txbuf;
+    uint16 rx_size, tx_size;
+} uart_hw_t;
+
+static const uart_hw_t k_hw[UART_COUNT] = {
+    { &LINK_ASC,   &LINK_TX,   &LINK_RX,   PRIO_LINK_TX, PRIO_LINK_RX, PRIO_LINK_ER, s_link_rx, s_link_tx, 2048u, 4096u },
+    { &GW_ASC,     &GW_TX,     &GW_RX,     PRIO_GW_TX,   PRIO_GW_RX,   PRIO_GW_ER,   s_gw_rx,   s_gw_tx,   2048u, HAL_GW_TX_RING },
+    { &GPS_ASC,    &GPS_TX,    &GPS_RX,    PRIO_GPS_TX,  PRIO_GPS_RX,  PRIO_GPS_ER,  s_gps_rx,  s_gps_tx,  1024u, 256u },
+    { &BRIDGE_ASC, &BRIDGE_TX, &BRIDGE_RX, PRIO_BR_TX,   PRIO_BR_RX,   PRIO_BR_ER,   s_br_rx,   s_br_tx,   1024u, 64u },
+};
+
+/* --- interrupts (CPU0) ------------------------------------------------------------ */
+#define UART_ISRS(n, id, ptx, prx, per)                                                   \
+    IFX_INTERRUPT(uart##n##_tx_isr, 0, ptx) { IfxAsclin_Asc_isrTransmit(&s_u[id].asc); }   \
+    IFX_INTERRUPT(uart##n##_rx_isr, 0, prx) { IfxAsclin_Asc_isrReceive(&s_u[id].asc); }    \
+    IFX_INTERRUPT(uart##n##_er_isr, 0, per) { IfxAsclin_Asc_isrError(&s_u[id].asc); s_u[id].st.errors++; }
+
+UART_ISRS(0, UART_LINK,   PRIO_LINK_TX, PRIO_LINK_RX, PRIO_LINK_ER)
+UART_ISRS(1, UART_GW,     PRIO_GW_TX,   PRIO_GW_RX,   PRIO_GW_ER)
+UART_ISRS(2, UART_GPS,    PRIO_GPS_TX,  PRIO_GPS_RX,  PRIO_GPS_ER)
+UART_ISRS(3, UART_BRIDGE, PRIO_BR_TX,   PRIO_BR_RX,   PRIO_BR_ER)
+
+void uart_init(uart_id_t id, float baud)
+{
+    uart_t *u = &s_u[id];
+    const uart_hw_t *h = &k_hw[id];
+    IfxAsclin_Asc_Config c;
+    IfxAsclin_Asc_initModuleConfig(&c, h->mod);
+    c.baudrate.baudrate = baud;
+    c.interrupt.txPriority = h->prio_tx;
+    c.interrupt.rxPriority = h->prio_rx;
+    c.interrupt.erPriority = h->prio_er;
+    c.interrupt.typeOfService = IfxSrc_Tos_cpu0;
+    IfxAsclin_Asc_Pins pins = {
+        NULL_PTR, IfxPort_InputMode_pullUp,             /* no CTS */
+        h->rx, IfxPort_InputMode_pullUp,                /* RX (idle high) */
+        NULL_PTR, IfxPort_OutputMode_pushPull,          /* no RTS */
+        h->tx, IfxPort_OutputMode_pushPull,             /* TX */
+        IfxPort_PadDriver_cmosAutomotiveSpeed1
+    };
+    c.pins = &pins;
+    c.rxBuffer = h->rxbuf;
+    c.rxBufferSize = h->rx_size;
+    c.txBuffer = h->txbuf;
+    c.txBufferSize = h->tx_size;
+    IfxAsclin_Asc_initModule(&u->asc, &c);
+    u->baud = baud;
+    u->st.up = TRUE;
+}
+
+void uart_set_baud(uart_id_t id, float baud)
+{
+    if (s_u[id].st.up && s_u[id].baud == baud) return;
+    if (s_u[id].st.up) IfxAsclin_Asc_disableModule(&s_u[id].asc);
+    uart_init(id, baud);
+}
+
+uint32_t uart_read(uart_id_t id, uint8_t *buf, uint32_t max)
+{
+    uart_t *u = &s_u[id];
+    if (!u->st.up || max == 0u) return 0u;
+    sint32 avail = IfxAsclin_Asc_getReadCount(&u->asc);
+    if (avail <= 0) return 0u;
+    Ifx_SizeT n = (Ifx_SizeT)((uint32_t)avail < max ? (uint32_t)avail : max);
+    (void)IfxAsclin_Asc_read(&u->asc, buf, &n, 0);                     /* no waiting */
+    if (n > 0) {
+        u->st.rx_bytes += (uint32_t)n;
+        u->st.last_rx_ms = hal_millis() ? hal_millis() : 1u;
+    }
+    return (uint32_t)n;
+}
+
+uint32_t uart_tx_free(uart_id_t id)
+{
+    uart_t *u = &s_u[id];
+    if (!u->st.up) return 0u;
+    sint32 f = IfxAsclin_Asc_getWriteCount(&u->asc);
+    return f > 0 ? (uint32_t)f : 0u;
+}
+
+bool uart_write(uart_id_t id, const uint8_t *buf, uint32_t len)
+{
+    uart_t *u = &s_u[id];
+    if (!u->st.up) return false;
+    if (uart_tx_free(id) < len) {                       /* whole frames only: a cut frame is garbage */
+        u->st.tx_dropped += len;
+        return false;
+    }
+    Ifx_SizeT n = (Ifx_SizeT)len;
+    (void)IfxAsclin_Asc_write(&u->asc, buf, &n, 0);
+    u->st.tx_bytes += (uint32_t)n;
+    return n == (Ifx_SizeT)len;
+}
+
+const uart_stat_t *uart_stat(uart_id_t id)
+{
+    return &s_u[id].st;
+}

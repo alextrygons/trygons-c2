@@ -32,6 +32,7 @@
 
 #include "hal.h"
 #include "logger.h"
+#include "tc_sd.h"
 #include "timing.h"
 
 extern IfxCpu_syncEvent cpuSyncEvent;
@@ -54,6 +55,14 @@ void core2_main(void)
     /* Wait for CPU sync event */
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
+
+    /* start the SD card now (up to 2 s, the logger itself only retries every
+     * 10 s): card start-up + FAT32 mount in bounded steps, watchdog kicked */
+    {
+        uint32_t t0 = hal_millis();
+        while (!hal_sd_present() && sd_stat()->card && (uint32_t)(hal_millis() - t0) < 2000u)
+            IfxScuWdt_serviceCpuWatchdog(IfxScuWdt_getCpuWatchdogPassword());
+    }
 
     logger_init(&g_logger, hal_millis());
     uint32_t next = hal_millis();

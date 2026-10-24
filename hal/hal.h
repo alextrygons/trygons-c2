@@ -4,7 +4,8 @@
  * The autopilot logic (app/) talks to the hardware ONLY through these
  * functions. There are two implementations:
  *   - sim/hal_sim.c     : PC simulation (boat model)
- *   - hal/hal_tc375.c   : real AURIX TC375 board (written later)
+ *   - hal/hal_tc375.c   : real AURIX TC375 board (drivers hal/tc_*.c, pins
+ *                         hal/hal_pins.h)
  *
  * Conventions (important, used everywhere):
  *   - Heading: degrees, 0 <= h < 360, 0 = North, increases clockwise.
@@ -251,8 +252,10 @@ void hal_mem_barrier(void);
 bool hal_read_supply_voltage(float *volts);
 
 /* ---- microSD card (FAT32, logger on core 2 only) --------------------------
- * Simple file API (FatFs on the board, a folder on the PC in the sim).
- * open = create / overwrite; handles 0..HAL_SD_FILES-1, -1 = error.
+ * Simple file API (board: own FAT32 writer hal/tc_fat32.c; sim: a folder).
+ * open = create; handles 0..HAL_SD_FILES-1, -1 = error. The board never
+ * overwrites: a name already on the card gets "-2", "-3", ... (the sim
+ * overwrites).
  * Data is only safe on the card after hal_sd_sync / hal_sd_close.
  * TIME BOUND: every hal_sd_* call returns within HAL_SD_MAX_MS - a card or
  * driver that is slower returns false (-> LOG FAILURE, control goes on);

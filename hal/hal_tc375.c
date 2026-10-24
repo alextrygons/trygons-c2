@@ -1,23 +1,33 @@
 /*
  * hal_tc375.c - hal.h implemented for the KIT_A2G_TC375_LITE board (iLLD).
+ * Every pin is in hal_pins.h (and in WIRING.md).
  *
- * Status: first version, no sensors or motor connected yet.
- *   - hal_millis()        : real time from STM0
- *   - sensors             : always "no new data"  -> autopilot raises the
- *                           sensor-timeout alarm 2 s after startup
- *   - throttle / gear     : 50 Hz servo PWM on GTM TOM0 ch 15 / 14 (P02.7 / P02.6)
- *   - steering motor      : on / off (P02.5) + direction (P02.4) to the H-bridge
- *   - buttons             : no presses (TODO)
- *   - alarm               : LED1 (P00.5), lit = alarm
+ * Stage 1 parts (FIRST_TEST.md):
+ *   - BNO085 IMU (SPI)          : heading, yaw rate, roll / pitch, vertical
+ *                                 acceleration (tc_bno085.c)
+ *   - u-blox MAX-M10S GPS (UART): fix, SOG / COG, spoofing / jamming (tc_gps.c)
+ *   - Pololu G2 18v17           : steering motor PWM (on / off) + DIR + SLP,
+ *                                 current sense on the ADC (tc_adc.c)
+ *   - 2 limit switches, e-stop contact, panel buttons (debounced)
+ *   - buzzer + LED1             : alarm
+ *   - microSD click             : log files, FAT32 (tc_sd.c, CPU2 only)
+ *   - USB link (ASCLIN0), gateway UART (ASCLIN1), USB joystick bridge (ASCLIN3)
+ *     (tc_uart.c)
+ *   - throttle / gear           : 50 Hz servo PWM on GTM TOM0 ch 15 / 14
+ * Each driver has a time limit and "no data" detection: a sensor that stops
+ * answering simply returns no new data, and the app raises its timeout alarm.
+ *
+ * Not yet: analog joystick, data flash (NV / calibration), paddlewheel,
+ * supply voltage, roll rate - they return "not fitted" / "not saved".
  *
  * This file is only built by ADS. The PC simulation uses sim/hal_sim.c.
  */
 #include "hal.h"
 
 #include "Ifx_Types.h"
-#include "IfxStm_reg.h"   /* STM0 registers (the IfxStm driver module is   */
-#include "IfxScuCcu.h"    /* not enabled in this ADS project, so we read   */
-#include "IfxPort.h"      /* the counter directly - same as IfxStm_get())  */
+#include "IfxStm_reg.h"   /* STM0 counter, read directly (same as IfxStm_get()) */
+#include "IfxScuCcu.h"
+#include "IfxPort.h"
 #include "IfxScuWdt.h"
 #include "IfxScuRcu.h"
 #include "IfxCpu.h"        /* __dsync() */
@@ -26,23 +36,17 @@
 #include "IfxGtm_Tom.h"
 #include "IfxGtm_PinMap.h"
 
-/* LED1 on the Lite Kit. The LEDs are active LOW: pin low = LED on. */
-#define ALARM_LED_PORT  (&MODULE_P00)
-#define ALARM_LED_PIN   5u
+#include "hal_pins.h"
+#include "tc_adc.h"
+#include "tc_bno085.h"
+#include "tc_gps.h"
+#include "tc_sd.h"
+#include "tc_uart.h"
 
-/* Actuator outputs (WIRING.md). Driven LOW = no servo pulses / motor off
- * as the very first thing in hal_init(); before that (during reset) the
- * pins are inputs and the external pull-down resistors keep them low. */
-#define THROTTLE_PWM_PORT (&MODULE_P02)
-#define THROTTLE_PWM_PIN  7u        /* D9  */
-#define GEAR_PWM_PORT     (&MODULE_P02)
-#define GEAR_PWM_PIN      6u        /* D8  */
-#define MOTOR_PWM_PORT    (&MODULE_P02)
-#define MOTOR_PWM_PIN     5u        /* D6  */
-#define MOTOR_DIR_PORT    (&MODULE_P02)
-#define MOTOR_DIR_PIN     4u        /* D7  */
-#define RELAY_PORT        (&MODULE_P10)
-#define RELAY_PIN         5u        /* D10: safety relay, high = closed (actuators powered) */
+#define LINK_BAUD    921600.0f
+#define GW_BAUD      921600.0f
+#define BRIDGE_BAUD  230400.0f
+#define CURRENT_FRESH_MS 100u      /* a motor current sample older than this = no data */
 
 static uint32 s_stm_ticks_per_ms = 0u;
 
@@ -122,15 +126,27 @@ static void servo_route(IfxGtm_Tom_Ch ch, volatile boolean *routed)
                              IfxPort_OutputMode_pushPull, IfxPort_PadDriver_cmosAutomotiveSpeed1);
 }
 
+/* G2 PWM low with SLP high = both low-side switches on = motor braked (holds
+ * the outboard); SLP low = driver asleep, outputs open (monitor trip). */
 static void motor_off(void)
 {
-    IfxPort_setPinLow(MOTOR_PWM_PORT, MOTOR_PWM_PIN);
+    IfxPort_setPinLow(PIN_MOTOR_PWM);
 }
 
 static void pin_low_output(Ifx_P *port, uint8 pin)
 {
     IfxPort_setPinLow(port, pin);
     IfxPort_setPinModeOutput(port, pin, IfxPort_OutputMode_pushPull, IfxPort_OutputIdx_general);
+}
+
+static void pin_input_pullup(Ifx_P *port, uint8 pin)
+{
+    IfxPort_setPinModeInput(port, pin, IfxPort_InputMode_pullUp);
+}
+
+static boolean pin_high(Ifx_P *port, uint8 pin)
+{
+    return IfxPort_getPinState(port, pin);
 }
 
 /* 64-bit STM0 counter. Reading TIM0 latches the upper 32 bits into CAP,
@@ -145,27 +161,46 @@ static uint64 stm0_ticks(void)
 void hal_init(void)
 {
     /* FIRST: actuator pins to a defined safe state (no pulses, motor off,
-     * safety relay open) - before anything else can go wrong. */
-    pin_low_output(THROTTLE_PWM_PORT, THROTTLE_PWM_PIN);
-    pin_low_output(GEAR_PWM_PORT, GEAR_PWM_PIN);
-    pin_low_output(MOTOR_PWM_PORT, MOTOR_PWM_PIN);
-    pin_low_output(MOTOR_DIR_PORT, MOTOR_DIR_PIN);
-    pin_low_output(RELAY_PORT, RELAY_PIN);
+     * motor driver asleep, safety relay open, buzzer off) - before anything
+     * else can go wrong. */
+    pin_low_output(PIN_THROTTLE_PWM);
+    pin_low_output(PIN_GEAR_PWM);
+    pin_low_output(PIN_MOTOR_PWM);
+    pin_low_output(PIN_MOTOR_DIR);
+    pin_low_output(PIN_MOTOR_SLP);
+    pin_low_output(PIN_RELAY);
+    pin_low_output(PIN_BUZZER);
 
     /* STM0 runs from reset; we only need its frequency (100 MHz by default). */
     s_stm_ticks_per_ms = (uint32)(IfxScuCcu_getStmFrequency() / 1000.0f);
 
     /* Alarm LED: push-pull output, start OFF (high). */
-    IfxPort_setPinHigh(ALARM_LED_PORT, ALARM_LED_PIN);
-    IfxPort_setPinModeOutput(ALARM_LED_PORT, ALARM_LED_PIN,
-                             IfxPort_OutputMode_pushPull, IfxPort_OutputIdx_general);
+    IfxPort_setPinHigh(PIN_ALARM_LED);
+    IfxPort_setPinModeOutput(PIN_ALARM_LED, IfxPort_OutputMode_pushPull, IfxPort_OutputIdx_general);
+
+    /* inputs: buttons (to GND = pressed), limit switches + e-stop contact
+     * (normally closed to GND: high = at the stop / pressed / wire broken) */
+    pin_input_pullup(PIN_BTN_STANDBY);
+    pin_input_pullup(PIN_BTN_HDG_LOCK);
+    pin_input_pullup(PIN_BTN_MINUS_1);
+    pin_input_pullup(PIN_BTN_PLUS_1);
+    pin_input_pullup(PIN_BTN_MINUS_10);
+    pin_input_pullup(PIN_BTN_PLUS_10);
+    pin_input_pullup(PIN_LIMIT_LEFT);
+    pin_input_pullup(PIN_LIMIT_RIGHT);
+    pin_input_pullup(PIN_ESTOP);
+    pin_input_pullup(PIN_NEUTRAL_SW);
 
     /* servo PWM generators running (idle / neutral pulses), pins not yet routed */
     servo_pwm_init();
 
-    /* TODO: compass interface (e.g. NMEA 0183 on ASCLIN UART). */
-    /* TODO: rudder angle sensor (e.g. potentiometer on EVADC). */
-    /* TODO: button inputs with debounce. */
+    adc_init();                                 /* motor current sense */
+    uart_init(UART_LINK, LINK_BAUD);
+    uart_init(UART_GW, GW_BAUD);
+    uart_init(UART_BRIDGE, BRIDGE_BAUD);
+    gps_init();                                 /* its UART + configuration (state machine) */
+    bno_init();                                 /* SPI + reset pulse (state machine) */
+    /* the SD card is started by CPU2 (hal_sd_present), the only core that uses it */
 }
 
 uint32_t hal_millis(void)
@@ -189,39 +224,36 @@ bool hal_read_supply_voltage(float *volts)
     return false;    /* TODO: battery voltage divider on EVADC (A2, AN37) */
 }
 
-/* microSD on the mikroBUS socket (microSD click): QSPI2, FatFs. */
+/* microSD on the mikroBUS socket (microSD click): QSPI2, FAT32 (tc_sd.c, tc_fat32.c).
+ * CPU2 only. Every call does bounded work (HAL_SD_MAX_MS). */
 bool hal_sd_present(void)
 {
-    return false;    /* TODO: card detect (mikroBUS INT, P10.7) + f_mount() */
+    return sd_present();
 }
 
 int hal_sd_open(const char *name)
 {
-    (void)name;
-    return -1;       /* TODO: f_open(FA_CREATE_ALWAYS | FA_WRITE) */
+    return sd_open(name);
 }
 
 bool hal_sd_write(int h, const void *data, uint32_t len)
 {
-    (void)h; (void)data; (void)len;
-    return false;    /* TODO: f_write */
+    return sd_write(h, data, len);
 }
 
 bool hal_sd_sync(int h)
 {
-    (void)h;
-    return false;    /* TODO: f_sync */
+    return sd_sync(h);
 }
 
 bool hal_sd_close(int h)
 {
-    (void)h;
-    return false;    /* TODO: f_close */
+    return sd_close(h);
 }
 
 uint32_t hal_sd_free_kb(void)
 {
-    return 0u;       /* TODO: f_getfree */
+    return sd_free_kb();
 }
 
 uint32_t hal_micros(void)
@@ -230,16 +262,34 @@ uint32_t hal_micros(void)
     return (uint32_t)(stm0_ticks() / (s_stm_ticks_per_ms / 1000u));
 }
 
+/* --- BNO085: serviced at most once per control step, by whichever read comes first */
+static void imu_service(void)
+{
+    static uint32_t last_ms;
+    static boolean once = FALSE;
+    uint32_t now = hal_millis();
+    if (once && (uint32_t)(now - last_ms) < 10u) return;
+    once = TRUE;
+    last_ms = now;
+    bno_service();
+}
+
 bool hal_read_heading(float *heading_deg)
 {
-    (void)heading_deg;
-    return false;    /* TODO: real compass */
+    imu_service();
+    return bno_heading(heading_deg);
+}
+
+bool hal_read_yaw_rate(float *yaw_dps)
+{
+    imu_service();
+    return bno_yaw_rate(yaw_dps);
 }
 
 bool hal_read_rudder_angle(float *rudder_deg)
 {
     (void)rudder_deg;
-    return false;    /* TODO: real rudder angle sensor */
+    return false;    /* big boat only: rudder angle sensor (not fitted on the small boat) */
 }
 
 void hal_set_rudder_motor(float command)
@@ -248,12 +298,16 @@ void hal_set_rudder_motor(float command)
     if (s_forced || !(command > 0.5f || command < -0.5f)) {    /* also NaN -> off */
         motor_off();
     } else {
-        if (command > 0.0f) IfxPort_setPinHigh(MOTOR_DIR_PORT, MOTOR_DIR_PIN);
-        else IfxPort_setPinLow(MOTOR_DIR_PORT, MOTOR_DIR_PIN);
-        IfxPort_setPinHigh(MOTOR_PWM_PORT, MOTOR_PWM_PIN);
+        IfxPort_setPinHigh(PIN_MOTOR_SLP);                      /* driver awake */
+        if (command > 0.0f) IfxPort_setPinHigh(PIN_MOTOR_DIR);
+        else IfxPort_setPinLow(PIN_MOTOR_DIR);
+        IfxPort_setPinHigh(PIN_MOTOR_PWM);
     }
     __dsync();
-    if (s_forced) motor_off();      /* tripped meanwhile (CPU1): off again */
+    if (s_forced) {                                             /* tripped meanwhile (CPU1): off again */
+        motor_off();
+        IfxPort_setPinLow(PIN_MOTOR_SLP);
+    }
 }
 
 /* Called by CPU1 (monitor trip): flag FIRST, then the hardware. A core-0
@@ -267,16 +321,34 @@ void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
     s_forced = TRUE;
     __dsync();
     motor_off();
+    IfxPort_setPinLow(PIN_MOTOR_SLP);                   /* motor driver asleep */
     servo_write(THROTTLE_TOM_CH, throttle_idle_us);     /* idle, from the next period (<= 20 ms) */
     servo_write(GEAR_TOM_CH, gear_neutral_us);          /* neutral */
-    IfxPort_setPinLow(RELAY_PORT, RELAY_PIN);            /* relay open */
-    IfxPort_setPinLow(ALARM_LED_PORT, ALARM_LED_PIN);    /* LED on */
+    IfxPort_setPinLow(PIN_RELAY);                       /* relay open */
+    IfxPort_setPinLow(PIN_ALARM_LED);                   /* LED on */
+    IfxPort_setPinHigh(PIN_BUZZER);                     /* buzzer on */
 }
 
+/* E-stop contact: normally closed to GND, so high = pressed (or the wire is
+ * broken - also "pressed"). Pressed counts at once; released only after 3
+ * calls (~150 ms) in a row, so contact bounce can't "release" it. */
 bool hal_read_estop(bool *pressed)
 {
+#if HAL_ESTOP_FITTED
+    static uint8_t released_n = 0u;
+    static bool state = false;                          /* pressed at power-up: seen at the first read */
+    if (pin_high(PIN_ESTOP)) {
+        state = true;
+        released_n = 0u;
+    } else if (state && ++released_n >= 3u) {
+        state = false;
+    }
+    *pressed = state;
+    return true;
+#else
     (void)pressed;
-    return false;       /* the input is added with the Stage 1 drivers (WIRING.md) */
+    return false;
+#endif
 }
 
 bool hal_outputs_forced(void)
@@ -286,8 +358,8 @@ bool hal_outputs_forced(void)
 
 void hal_set_safety_relay(bool closed)
 {
-    if (closed && !s_forced) IfxPort_setPinHigh(RELAY_PORT, RELAY_PIN);
-    else IfxPort_setPinLow(RELAY_PORT, RELAY_PIN);
+    if (closed && !s_forced) IfxPort_setPinHigh(PIN_RELAY);
+    else IfxPort_setPinLow(PIN_RELAY);
 }
 
 /* WDT counts from RELOAD up to 0xFFFF at fSPB / 16384 (default input
@@ -332,43 +404,57 @@ hal_reset_t hal_reset_reason(uint32_t *raw)
     }
 }
 
-bool hal_read_yaw_rate(float *yaw_dps)
-{
-    (void)yaw_dps;
-    return false;    /* TODO: gyro (e.g. IMU on QSPI/I2C) */
-}
-
+/* G2 current sense: V = offset + 20 mV/A. The newest ADC result, as long as
+ * it is fresh (the link reads it too, so "new since the last call" would
+ * starve one of the readers). */
 bool hal_read_motor_current(float *amps)
 {
-    (void)amps;
-    return false;    /* TODO: motor driver current sense on EVADC */
+    static float last_a = 0.0f;
+    static uint32_t last_ms = 0u;
+    static boolean have = FALSE;
+    uint16_t raw;
+    uint32_t now = hal_millis();
+    if (adc_read(ADC_MOTOR_CS, &raw)) {
+        float a = (adc_volts(raw) - MOTOR_CS_OFFSET_V) / MOTOR_CS_V_PER_A;
+        last_a = a > 0.0f ? a : 0.0f;
+        last_ms = now;
+        have = TRUE;
+    }
+    if (!have || (uint32_t)(now - last_ms) > CURRENT_FRESH_MS) return false;
+    *amps = last_a;
+    return true;
 }
 
+/* Steering end stops: normally closed to GND, high = at the stop (or wire broken). */
 bool hal_read_limit_switches(bool *left, bool *right)
 {
+#if HAL_LIMITS_FITTED
+    *left = pin_high(PIN_LIMIT_LEFT) != FALSE;
+    *right = pin_high(PIN_LIMIT_RIGHT) != FALSE;
+    return true;
+#else
     (void)left;
     (void)right;
-    return false;    /* TODO: digital inputs, if limit switches are fitted */
+    return false;
+#endif
 }
 
 bool hal_read_roll_rate(float *roll_dps)
 {
     (void)roll_dps;
-    return false;    /* TODO: roll axis of the IMU, if fitted */
+    return false;    /* not used: the BNO085 gives the attitude (hal_read_attitude) */
 }
 
 uint32_t hal_read_accel_z(float *g, uint32_t max)
 {
-    (void)g;
-    (void)max;
-    return 0u;       /* TODO: BNO085 (SPI, linear acceleration report at 200 Hz) into a ring buffer */
+    imu_service();
+    return bno_accel_z(g, max);
 }
 
 bool hal_read_attitude(float *roll_deg, float *pitch_deg)
 {
-    (void)roll_deg;
-    (void)pitch_deg;
-    return false;    /* TODO: BNO085 game rotation vector report (50 Hz) -> roll / pitch */
+    imu_service();
+    return bno_attitude(roll_deg, pitch_deg);
 }
 
 bool hal_calib_save(const void *data, uint32_t size)
@@ -407,14 +493,18 @@ void hal_set_gear_pwm(uint16_t pulse_us)
 
 bool hal_read_neutral_switch(bool *in_neutral)
 {
+#if HAL_NEUTRAL_SW_FITTED
+    *in_neutral = pin_high(PIN_NEUTRAL_SW) == FALSE;    /* closed to GND in neutral */
+    return true;
+#else
     (void)in_neutral;
-    return false;    /* TODO: digital input, if a neutral switch is fitted */
+    return false;
+#endif
 }
 
 bool hal_read_gps(hal_gps_t *gps)
 {
-    (void)gps;
-    return false;    /* TODO: NMEA parser on ASCLIN UART */
+    return gps_poll(gps);
 }
 
 bool hal_read_joystick(hal_joystick_t *j)
@@ -427,10 +517,7 @@ bool hal_read_joystick(hal_joystick_t *j)
 
 uint32_t hal_bridge_read(uint8_t *buf, uint32_t max)
 {
-    (void)buf; (void)max;
-    return 0u;       /* TODO: ASCLIN3, RX = P20.3 (IfxAsclin3_RXC_P20_3_IN, Shield2Go 2 RX),
-                        230400 8N1, RX FIFO / ring filled by interrupt; TX P20.0 unused.
-                        See WIRING.md section 6. */
+    return uart_read(UART_BRIDGE, buf, max);     /* ASCLIN3, RX P20.3, 230400 (WIRING.md section 6) */
 }
 
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size)
@@ -451,51 +538,61 @@ bool hal_read_water_speed(float *kn)
     return false;    /* TODO: paddlewheel pulse input (GPT12 / GTM TIM), if fitted */
 }
 
+/* Panel buttons, sampled once per control step (50 ms): a level that is the
+ * same in two samples in a row is the debounced state; a press = its edge. */
 uint32_t hal_get_button_presses(void)
 {
-    return 0u;       /* TODO: read and debounce the buttons */
+    static uint32_t prev_raw = 0u, stable = 0u;
+    uint32_t raw = 0u;
+    if (!pin_high(PIN_BTN_STANDBY))  raw |= HAL_BTN_BIT(HAL_BTN_STANDBY);
+    if (!pin_high(PIN_BTN_HDG_LOCK)) raw |= HAL_BTN_BIT(HAL_BTN_HDG_LOCK);
+    if (!pin_high(PIN_BTN_MINUS_1))  raw |= HAL_BTN_BIT(HAL_BTN_MINUS_1);
+    if (!pin_high(PIN_BTN_PLUS_1))   raw |= HAL_BTN_BIT(HAL_BTN_PLUS_1);
+    if (!pin_high(PIN_BTN_MINUS_10)) raw |= HAL_BTN_BIT(HAL_BTN_MINUS_10);
+    if (!pin_high(PIN_BTN_PLUS_10))  raw |= HAL_BTN_BIT(HAL_BTN_PLUS_10);
+    uint32_t agree = ~(raw ^ prev_raw);                 /* bits equal in both samples */
+    uint32_t next = (stable & ~agree) | (raw & agree);
+    uint32_t pressed = next & ~stable;
+    stable = next;
+    prev_raw = raw;
+    return pressed;
 }
 
 void hal_set_alarm(bool on)
 {
     if (s_forced) on = true;                    /* monitor tripped: alarm stays on */
     if (on) {
-        IfxPort_setPinLow(ALARM_LED_PORT, ALARM_LED_PIN);    /* LED on  */
+        IfxPort_setPinLow(PIN_ALARM_LED);       /* LED on  */
+        IfxPort_setPinHigh(PIN_BUZZER);
     } else {
-        IfxPort_setPinHigh(ALARM_LED_PORT, ALARM_LED_PIN);   /* LED off */
+        IfxPort_setPinHigh(PIN_ALARM_LED);      /* LED off */
+        IfxPort_setPinLow(PIN_BUZZER);
     }
 }
 
+/* Ground station: ASCLIN0 = USB virtual COM of the on-board debugger, 921600. */
 uint32_t hal_link_read(uint8_t *buf, uint32_t max)
 {
-    (void)buf; (void)max;
-    return 0u;       /* TODO: ASCLIN0 (P14.0 TX / P14.1 RX = USB virtual COM via the
-                        on-board miniWiggler), 921600 8N1, RX FIFO / interrupt
-                        ring buffer (IfxAsclin_Asc_read, non-blocking) */
+    return uart_read(UART_LINK, buf, max);
 }
 
 bool hal_link_write(const uint8_t *buf, uint32_t len)
 {
-    (void)buf; (void)len;
-    return false;    /* TODO: IfxAsclin_Asc_write into the TX ring buffer; all or nothing */
+    return uart_write(UART_LINK, buf, len);
 }
 
+/* Gateway (Raspberry Pi 5): ASCLIN1, TX P15.0 / RX P15.1, 921600, TX FIFO = HAL_GW_TX_RING. */
 uint32_t hal_gw_read(uint8_t *buf, uint32_t max)
 {
-    (void)buf; (void)max;
-    return 0u;       /* TODO: ASCLIN1, RX = P15.1 (IfxAsclin1_RXA_P15_1_IN), TX = P15.0
-                        (IfxAsclin1_TX_P15_0_OUT), 921600 8N1, interrupt-filled rings
-                        (RX 2 KB, TX 8 KB). To the Raspberry Pi 5 UART0 (GPIO14/15).
-                        See WIRING.md section 7. */
+    return uart_read(UART_GW, buf, max);
 }
 
 bool hal_gw_write(const uint8_t *buf, uint32_t len)
 {
-    (void)buf; (void)len;
-    return false;    /* TODO: into the ASCLIN1 TX ring; all or nothing */
+    return uart_write(UART_GW, buf, len);
 }
 
 uint32_t hal_gw_tx_free(void)
 {
-    return 0u;       /* TODO: free bytes in the ASCLIN1 TX ring */
+    return uart_tx_free(UART_GW);
 }

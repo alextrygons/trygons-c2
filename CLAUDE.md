@@ -5,7 +5,7 @@
 ## Architecture
 - app/  — autopilot logic, pure C99, NO hardware or iLLD includes. Uses only hal.h.
 - hal/hal.h — hardware interface (heading, rudder angle, rudder motor, buttons, time).
-- hal/hal_tc375.c — real implementation with iLLD (written later, when the board arrives).
+- hal/hal_tc375.c — real implementation with iLLD. Pins / priorities ONLY in hal/hal_pins.h (= WIRING.md). Drivers hal/tc_*.c (board only): tc_uart (ASCLIN, FIFOs; gateway TX = HAL_GW_TX_RING), tc_spi (QSPI1 = BNO085 on CPU0, QSPI2 = SD on CPU2; one bus per core), tc_bno085 (SHTP), tc_gps (UBX + NMEA fallback), tc_adc (EVADC), tc_sd + tc_fat32 (pure C, PC-tested by tests/hal_pc/fat32_check.py). Every driver: no blocking waits in the control loop (state machines), time limits, "no data" detection. Unfinished: data flash (NV / calibration), analog joystick, paddlewheel, supply voltage.
 - sim/  — PC simulation: boat model + hal_sim.c + main. Excluded from the ADS build.
   `autopilot_sim server` = simulated boat on TCP 5760 for the ground station.
 - groundstation/ — PC ground station (Python + tkinter). Frame format in app/proto.h,
@@ -102,7 +102,7 @@ Safety rules — never break them
 - Neutral-start interlock: outputs only arm at power-up with throttle idle, neutral confirmed and the joystick centred (USB: stick centred AND lever in the neutral zone). The joystick must be SEEN (not detected yet / USB bridge still starting = not armed, NOT ARMED alarm); only a boat configured without a joystick (cfg.joy_optional, analog source) arms without it.
 - USB bridge: no valid frame 150 ms / > 5 CRC errors per s / stuck counter / device unplugged / invalid axis / learn mode = JOYSTICK FAULT (same as a wire break). Hand-back needs stick centred AND lever neutral.
 - Alarm acknowledge (PC ALARM_ACK from any station, panel STANDBY in STANDBY) = sb_alarm_ack(): clears only alarms whose cause is gone; active conditions stay (link-lost bits are raised again every step while lost).
-- CPU2 watchdog (500 ms): the logger calls hal_watchdog_kick_core() after every SD card call (wrappers sd_* in logger.c); HAL contract: each hal_sd_* call returns within HAL_SD_MAX_MS (200 ms) or fails (LOG FAILURE) - the board's FatFs driver must keep it.
+- CPU2 watchdog (500 ms): the logger calls hal_watchdog_kick_core() after every SD card call (wrappers sd_* in logger.c); HAL contract: each hal_sd_* call returns within HAL_SD_MAX_MS (200 ms) or fails (LOG FAILURE) - the board's SD driver (tc_sd.c: bounded state machine, time limits) keeps it.
 - Logging must never block or slow control: core 0 / CPU1 only push into lock-free queues; full queue → drop + count.
 - Every feature has sim tests for its failure cases.
 

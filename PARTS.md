@@ -10,11 +10,15 @@ why each part is needed: MANUAL.txt.
 - [ ] Neutral switch on the gearbox / shift linkage (closes in neutral).
 - [ ] microSD click (MIKROE-924) + industrial microSD card 8-32 GB.
 - [ ] Throttle servo (analog, or digital with "fail-safe = idle") + a throttle return spring; gear servo.
-- [ ] Steering motor driver (H-bridge) with current sense output.
+- [ ] Steering motor driver: Pololu G2 High-Power Motor Driver 18v17 (#2991), 20 A blade fuse + holder, 100 uF / 35 V low-ESR capacitor, 2.5 mm2 wire.
 - [ ] Safety relay module (3.3 V input via transistor driver) for the servo power and/or the engine kill circuit.
 - [ ] 10 kOhm pull-down resistors for the servo / driver / relay signals.
-- [ ] Compass, gyro / IMU, GPS receiver (with spoof/jam flag if possible).
-- [ ] Optional: paddlewheel speed sensor, steering limit switches, supply voltage divider for A2.
+- [ ] GPS: u-blox MAX-M10S breakout, 3.3 V (e.g. SparkFun GPS-18037 or a similar MAX-M10S board) + active GPS patch antenna (SMA / u.FL as the board needs) - spoofing / jamming flags (WIRING.md section 11).
+- [ ] Compass + gyro: the BNO085 (see "IMU" below).
+- [ ] 2 x normally closed IP67 micro limit switches (steering end stops), 2 x 4.7 kOhm, 2 x 100 nF.
+- [ ] Emergency stop: red mushroom switch with TWO normally closed contacts (twist release), IP65 enclosure; 30 A automotive relay (12 V coil) + socket for the actuator power; 4.7 kOhm + 100 nF.
+- [ ] Buzzer: 12 V active piezo buzzer > 85 dB, BC337 (or 2N7000 / AO3400), 1 kOhm, 1 A fuse.
+- [ ] Optional: paddlewheel speed sensor, supply voltage divider for A2.
 - [ ] Keep the engine kill cord fitted and worn.
 
 ## Gateway (remote access)
@@ -40,9 +44,9 @@ why each part is needed: MANUAL.txt.
 - [ ] 4 x high-endurance microSD 64-128 GB (the cameras' own loop recording).
 - [ ] Microfibre cloths (lens care).
 
-## Slamming sensor
+## IMU (compass, gyro, attitude, slamming)
 
-- [ ] BNO085 breakout board, 3.3 V, SPI (e.g. Adafruit 4754 or SparkFun SEN-22857).
+- [ ] BNO085 breakout board, 3.3 V, SPI (e.g. Adafruit 4754 or SparkFun SEN-22857) - Stage 1: it is the compass and the gyro.
 - [ ] 4-pair shielded cable (SPI + INT + RST), max ~1 m to the AURIX box, a small IP67 box, M3 nylon standoffs.
 
 ## USB joystick (instead of, or as well as, the analog joystick)

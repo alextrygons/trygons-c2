@@ -43,8 +43,11 @@ An autopilot for a boat, running on the Infineon KIT_A2G_TC375_LITE board
   * BIG BOAT: rudder with an angle sensor, heading hold only.
 
 The board has not arrived yet. All of the logic is written and tested in a
-PC simulation with a simulated boat. The parts that talk to the real
-hardware are mostly empty "stubs" for now (see chapter 17).
+PC simulation with a simulated boat. The drivers for the Stage 1 parts
+(IMU, GPS, steering motor driver, buttons, end stops, emergency stop, buzzer,
+microSD, USB link) are written but not yet tried on the real board; a few
+parts are still empty "stubs" (see chapter 17). FIRST_TEST.md is the
+checklist for the first power-up and the first steering test.
 
 The three cores:
   core 0  the control loop (20 Hz): modes, steering, engine, PC link
@@ -80,7 +83,9 @@ TWCS throttle, read by a small Teensy 4.1 "bridge" board (chapter 8).
      timing.c              CPU time per cycle, overruns
      logq.c, logrec.c, logcore0.c, logfields.h, logger.c   logging
   hal/hal.h       The list of hardware functions the app may use.
-  hal/hal_tc375.c The real board versions of those functions (mostly stubs).
+  hal/hal_tc375.c The real board versions of those functions.
+  hal/hal_pins.h  Every pin of the board in one table (= WIRING.md).
+  hal/tc_*.c      The board drivers (UART, SPI, IMU, GPS, ADC, SD card).
   Cpu0_Main.c     core 0: start-up, watchdog, the 20 Hz loop.
                   "#define BOAT_VARIANT_BIG" at the top selects the big boat.
   Cpu1_Main.c     CPU1: the safety monitor loop (1 kHz).
@@ -1268,27 +1273,30 @@ The ground station saves its own copy of the telemetry in the same format
 -------------------------------------------------------------------------------
 17. WHAT IS STILL MISSING
 -------------------------------------------------------------------------------
-A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c)
-   Written: timer (ms / us), alarm LED, safe pin states at start-up,
-   watchdogs, reset reason, monitor latch, memory barrier.
+A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c, drivers hal/tc_*.c)
+   Written (compiled, NOT yet tried on the board - FIRST_TEST.md):
+     [x] timer (ms / us), alarm LED + buzzer, safe pin states at start-up,
+         watchdogs, reset reason, monitor latch, memory barrier
+     [x] throttle / gear servo PWM (GTM, 50 Hz) incl. the direct idle /
+         neutral pulses in hal_safe_outputs()
+     [x] BNO085 IMU (SPI): heading, yaw rate, roll / pitch, vertical
+         acceleration; reset + "no data" after 0.5 s
+     [x] u-blox MAX-M10S GPS (UART): UBX fix + spoofing / jamming flags,
+         NMEA RMC fallback; "no data" after 3 s
+     [x] Pololu G2 steering motor driver (PWM, DIR, SLP) + current (ADC)
+     [x] limit switches, emergency stop contact, panel buttons (debounced)
+     [x] USB link (ASCLIN0, 921600), gateway UART (ASCLIN1, 921600, TX
+         buffer 8 KB = HAL_GW_TX_RING), USB joystick bridge (ASCLIN3, 230400)
+     [x] microSD card: QSPI2 + own FAT32 writer (long file names; tested on
+         PC disk images: tests/hal_pc/fat32_check.py)
    Still stubs:
-     [ ] compass, gyro / IMU (+ roll), GPS (NMEA + date + satellites)
-     [ ] steering motor driver PWM + direction, motor current (ADC)
-     [ ] throttle servo PWM and gear servo PWM (GTM, 50 Hz) - including the
-         direct idle / neutral pulses in hal_safe_outputs()
-     [ ] safety relay output (pin done, relay hardware missing)
-     [ ] neutral switch, limit switches, paddlewheel, supply voltage
-     [ ] panel buttons (6 inputs + debounce), joystick ADC + 3 buttons
-     [ ] flash storage (TRAINING result, joystick calibration, AUTO
-         program, boot counter)
-     [ ] USB link to the PC (ASCLIN0, 921600 baud)
-     [ ] Gateway UART: ASCLIN1 TX P15.0 / RX P15.1, 921600 baud, interrupt
-         rings (RX 2 KB, TX 8 KB = HAL_GW_TX_RING); check which header of the
-         board carries P15.0 / P15.1 (expansion header X1/X2).
-     [ ] USB joystick bridge UART: ASCLIN3 RX on P20.3, 230400 baud, with
-         an interrupt-filled ring buffer (hal_bridge_read is a stub)
-     [ ] flash storage also for the joystick map (NV slot 4)
-     [ ] microSD card: QSPI2 driver + FatFs (with long file names)
+     [ ] flash storage (TRAINING result, joystick calibration, joystick map,
+         AUTO program, boot counter). Until then: a TRAINING result is lost
+         at power-off (do TRAINING again after every power-up), the boot
+         number is always 1 (the SD card adds -2, -3 ... to repeated names)
+     [ ] joystick ADC + 3 buttons (the USB bridge works), neutral switch
+         (input done, HAL_NEUTRAL_SW_FITTED 0), paddlewheel, supply voltage
+     [ ] safety relay hardware (pin done)
      [ ] rudder angle sensor (big boat only)
 
 B) TO CHECK ON THE BOARD
