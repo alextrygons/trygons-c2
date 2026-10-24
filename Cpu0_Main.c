@@ -50,7 +50,7 @@
  * STANDBY, TRAINING and HDG LOCK (someone drives the throttle by hand; take
  * over with the STANDBY button or the emergency stop). FIRST_TEST.md.
  * Uncomment for the first tests on the water; comment out again afterwards. */
-/* #define FIRST_TEST */
+#define FIRST_TEST
 
 IFX_ALIGN(4) IfxCpu_syncEvent cpuSyncEvent = 0;
 

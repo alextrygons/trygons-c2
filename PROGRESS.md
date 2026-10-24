@@ -26,6 +26,9 @@ step that is not DONE below, without redoing finished work.
 - No data flash yet: boot number always 1 -> tc_fat32 adds -2, -3 to names already on the card
   (hash table of the long names from the boot scan). TRAINING result lost at power-off (FIRST_TEST.md).
 - P40.6 (A3, motor current) = iLLD EVADC group 8 ch 4 (the board manual's "G4").
+- FIRST_TEST is ON in git until the first boat tests are done - switch it off before testing throttle/gear.
+- .cproject: ADS added 16 iLLD include folders (ADS build clean); tools/check.sh now reads the include
+  folders from the whole .cproject (each once) instead of only lines 23-75.
 
 # Previous task: TEST_REPORT fixes (done, last commit 65e9eb2)
 

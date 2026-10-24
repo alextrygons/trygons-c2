@@ -37,7 +37,8 @@ cd ..
 
 echo "== TriCore compile"
 OUT="$TEMP/tricore_obj"; mkdir -p "$OUT"
-INC=$(sed -n 23,75p .cproject | grep -o 'ProjName}/[^&]*' | sed 's#}$##; s#ProjName}/#-I#; s#^-I$#-I.#' | tr '\n' ' ')
+# every include folder of .cproject (all configurations, each folder once, in ADS order)
+INC=$(grep -o 'ProjName}/[^&]*' .cproject | sed 's#}$##; s#ProjName}/#-I#; s#^-I$#-I.#' | awk '!seen[$0]++' | tr '\n' ' ')
 # the TriCore gcc of AURIX Development Studio: $TRICORE_BIN, else the newest ADS under C:\Infineon
 B=${TRICORE_BIN:-$(ls -d /c/Infineon/AURIX-Studio-*/tools/Compilers/tricore-gcc*/bin 2>/dev/null | sort -V | tail -1)}
 [ -x "$B/tricore-elf-gcc.exe" ] || { echo "TriCore gcc NOT FOUND (install ADS or set TRICORE_BIN)"; fail=1; }
@@ -48,8 +49,8 @@ done
 # the big-boat build of core 0 (not linked with the rest, only compiled)
 msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -DBOAT_VARIANT_BIG -I. $INC -c Cpu0_Main.c -o "$TEMP/cpu0_big.o" 2>&1)
 if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (big boat)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK Cpu0_Main.c (big boat)"; fi
-# the FIRST TEST build (steering only)
-msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -DFIRST_TEST -I. $INC -c Cpu0_Main.c -o "$TEMP/cpu0_ft.o" 2>&1)
+# the FIRST TEST build (steering only; empty value = same as "#define FIRST_TEST" in Cpu0_Main.c, no redefinition warning)
+msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -DFIRST_TEST= -I. $INC -c Cpu0_Main.c -o "$TEMP/cpu0_ft.o" 2>&1)
 if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (FIRST TEST)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK Cpu0_Main.c (FIRST TEST)"; fi
 # all HAL functions used by app/ must exist in hal_tc375.c (link check)
 "$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^hal_/ {print $2}' | sort -u > "$TEMP/hal_used.txt"

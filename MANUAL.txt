@@ -368,6 +368,8 @@ SWITCH IT ON
   In Cpu0_Main.c remove the comment marks around   #define FIRST_TEST
   build (hammer) and flash. Put the comment back after the first tests.
   It can't be switched on or off from the PC (on purpose).
+  FIRST_TEST is ON in git until the first boat tests are done - switch it off
+  before testing throttle/gear.
 
 WHAT IS DIFFERENT
   * Throttle and gear outputs are held safe: throttle servo = idle pulse,
