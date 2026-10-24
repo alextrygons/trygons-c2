@@ -748,6 +748,23 @@ static bool sd_flush(sd_file_t *f)
 
 bool hal_sd_present(void) { return s_sd_present; }
 
+/* BENCH TEST screen: the simulated drivers */
+bool hal_get_diag(hal_diag_t *d)
+{
+    memset(d, 0, sizeof *d);
+    d->imu_ok = !s_heading_failed;
+    d->imu_accuracy = s_heading_failed ? 0u : 3u;
+    d->gps_ok = s_gps.fix;
+    d->gps_fix_type = s_gps.fix ? 3u : 0u;
+    d->gps_spoof = s_gps.jam_spoof ? 2u : 1u;
+    d->gps_jam = 1u;
+    d->sd_card = s_sd_present;
+    d->sd_mounted = s_sd_present;
+    d->sd_state = s_sd_present ? 8u : 0u;
+    d->sd_free_kb = s_sd_present ? 1000000u : 0xFFFFFFFFu;
+    return true;
+}
+
 static uint32_t s_sd_ops;
 uint32_t sim_hal_sd_ops(void) { return s_sd_ops; }
 

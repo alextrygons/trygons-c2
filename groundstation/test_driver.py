@@ -322,6 +322,32 @@ def main():
         app.gw_status = None
         del app.vision_send
 
+        # I9 BENCH TEST tab (USB-style link): enter, live sensors, a steering pulse, a button, leave
+        app.bench(A.proto.BENCH_ENTER, 0, "bench test: enter")
+        in_bench = pump(3.0, lambda: app.t and app.t.get("mode") == A.proto.MODE_BENCH and app.bench_d is not None)
+        sens = app.bench_sens.cget("text")
+        app.bench_ms.set(200)
+        app.bench(A.proto.BENCH_RIGHT, app.bench_ms.get(), "pulse RIGHT 200 ms")
+        pulsed = pump(3.0, lambda: app.bench_d and app.bench_d["pulses"] >= 1)
+        app.link.send(A.proto.T_SIM_BUTTON, A.proto.p_sim_button(5))          # HDG LOCK on the panel
+        seen = pump(3.0, lambda: app.bench_d and app.bench_d["button_counts"][5] >= 1)
+        hdg_lbl = [lb for b, lb in app.bench_btn if b == 5][0]
+        btn_green = hdg_lbl.cget("bg") == "#7de07d"
+        servo = app.bench_servo.cget("text")
+        state = app.bench_state.cget("text")
+        still = app.t.get("mode") == A.proto.MODE_BENCH
+        app.bench(A.proto.BENCH_LEAVE, 0, "bench test: leave")
+        left = pump(3.0, lambda: app.t.get("mode") == A.proto.MODE_STANDBY)
+        pump(0.5)
+        off_txt = app.bench_state.cget("text")
+        report("I9 BENCH TEST tab: enter, every sensor live, a steering pulse, a panel button shown (no mode change), leave",
+               in_bench and "IMU" in sens and "GPS" in sens and "SD card" in sens and pulsed and seen and btn_green and
+               still and "us" in servo and "BENCH TEST" in state and left and "not in the bench test" in off_txt and
+               not errors,
+               "in bench %s; sensors \"%s ...\"; pulse counted %s; HDG LOCK shown %s (green %s), mode still BENCH %s; "
+               "servo \"%s\"; state \"%s\"; left %s -> \"%s\"" % (in_bench, sens[:60].replace("\n", " | "), pulsed, seen,
+                                                                  btn_green, still, servo, state[:50], left, off_txt))
+
         # I6 window places remembered; F12 swaps the screens
         g_cap, g_drv = root.geometry(), dv.w.geometry()
         app.save_layout()

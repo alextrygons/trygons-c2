@@ -248,6 +248,25 @@ hal_reset_t hal_reset_reason(uint32_t *raw);
  * cores before anything written after (lock-free log queues). */
 void hal_mem_barrier(void);
 
+/* Driver diagnostics for the BENCH TEST screen (never used for control):
+ * what only the drivers know. Returns false if not available. */
+typedef struct {
+    bool     imu_ok;            /* IMU reports arriving (< 0.5 s) */
+    uint8_t  imu_accuracy;      /* magnetometer calibration 0 (unreliable) .. 3 (high) */
+    uint32_t imu_reports, imu_resets;
+    float    accel_z_g;         /* newest vertical acceleration */
+    bool     gps_ok;            /* a GPS message within 3 s */
+    bool     gps_ubx;           /* u-blox binary messages (configured), else NMEA */
+    uint8_t  gps_fix_type;      /* 0 none, 2 2D, 3 3D */
+    uint8_t  gps_spoof;         /* spoofing: 0 unknown, 1 none, 2 indicated, 3 multiple */
+    uint8_t  gps_jam;           /* jamming: 0 unknown, 1 ok, 2 warning, 3 critical */
+    bool     sd_card, sd_mounted;
+    uint8_t  sd_state;          /* card start-up state (board: 0 no card .. 8 ready, 9 failed) */
+    uint32_t sd_free_kb;        /* 0xFFFFFFFF = not known */
+    uint32_t uart_errors;       /* all UARTs: parity / frame / overflow */
+} hal_diag_t;
+bool hal_get_diag(hal_diag_t *d);
+
 /* Supply voltage (battery), V. false if not measured. */
 bool hal_read_supply_voltage(float *volts);
 

@@ -52,7 +52,7 @@ F_BIG = ("Segoe UI", 20, "bold")
 F_MED = ("Segoe UI", 14, "bold")
 F_TXT = ("Segoe UI", 12)
 MODE_COLORS = {"STANDBY": "#606060", "MANUAL": ORANGE, "HDG_LOCK": GREEN, "AUTO": "#7a00a0",
-               "TRAINING": "#a06000", "REMOTE_MANUAL": BLUE}
+               "TRAINING": "#a06000", "REMOTE_MANUAL": BLUE, "BENCH_TEST": "#008080"}
 PLOT_S = 120.0              # seconds shown in the plot
 LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
 
@@ -927,10 +927,150 @@ class App:
         self.sys_lbl = tk.Label(sy, text="-", font=("Consolas", 14), bg=BG, justify="left", anchor="w")
         self.sys_lbl.pack(anchor="w", padx=8)
 
+        bt = tk.Frame(nb, bg=BG)
+        nb.add(bt, text="Bench")
+        self._build_bench(bt)
+
         lg = tk.Frame(nb, bg=BG)
         nb.add(lg, text="Events")
         self.events = tk.Listbox(lg, font=F_TXT)
         self.events.pack(fill="both", expand=True)
+
+    # --- BENCH TEST (dock, USB laptop only): FIRST_TEST.md part 3 -----------------------------
+    def _build_bench(self, bt):
+        top = tk.Frame(bt, bg=BG)
+        top.pack(fill="x", pady=4)
+        btn(top, "Enter BENCH TEST", lambda: self.bench(proto.BENCH_ENTER, 0, "bench test: enter"),
+            bg="#9be0e0", font=F_TXT).pack(side="left", padx=4)
+        btn(top, "Leave", lambda: self.bench(proto.BENCH_LEAVE, 0, "bench test: leave"), font=F_TXT).pack(side="left")
+        tk.Label(top, text="boat on the dock, engine OFF; only the laptop on the USB cable; throttle idle + gear "
+                 "neutral all the time", font=F_TXT, bg=BG).pack(side="left", padx=10)
+        self.bench_state = tk.Label(bt, text="not in the bench test", font=F_MED, bg=BG, anchor="w")
+        self.bench_state.pack(fill="x", padx=6)
+        body = tk.Frame(bt, bg=BG)
+        body.pack(fill="both", expand=True)
+        left = tk.Frame(body, bg=BG)
+        left.pack(side="left", fill="both", expand=True, padx=6)
+        tk.Label(left, text="Sensors (live)", font=F_MED, bg=BG).pack(anchor="w")
+        self.bench_sens = tk.Label(left, text="-", font=("Consolas", 12), bg=BG, justify="left", anchor="nw")
+        self.bench_sens.pack(anchor="w", fill="x")
+        right = tk.Frame(body, bg=BG)
+        right.pack(side="left", fill="both", expand=True, padx=6)
+
+        tk.Label(right, text="Steering motor pulses", font=F_MED, bg=BG).pack(anchor="w")
+        pr = tk.Frame(right, bg=BG)
+        pr.pack(anchor="w")
+        self.bench_ms = tk.IntVar(value=100)
+        for ms in (100, 200, 300):
+            tk.Radiobutton(pr, text="%d ms" % ms, variable=self.bench_ms, value=ms, font=F_TXT, bg=BG).pack(side="left")
+        btn(pr, "<< LEFT", lambda: self.bench(proto.BENCH_LEFT, self.bench_ms.get(),
+                                              "pulse LEFT %d ms" % self.bench_ms.get()), font=F_TXT).pack(side="left", padx=6)
+        btn(pr, "RIGHT >>", lambda: self.bench(proto.BENCH_RIGHT, self.bench_ms.get(),
+                                               "pulse RIGHT %d ms" % self.bench_ms.get()), font=F_TXT).pack(side="left")
+        self.bench_pulse = tk.Label(right, text="-", font=F_TXT, bg=BG, anchor="w", justify="left")
+        self.bench_pulse.pack(anchor="w")
+
+        tk.Label(right, text="Limit switches / emergency stop", font=F_MED, bg=BG).pack(anchor="w", pady=(8, 0))
+        lr = tk.Frame(right, bg=BG)
+        lr.pack(anchor="w")
+        self.bench_lim = []
+        for txt in ("LIMIT L", "LIMIT R", "E-STOP"):
+            lb = tk.Label(lr, text=txt, font=F_MED, bg=PANEL, width=9, relief="ridge")
+            lb.pack(side="left", padx=3)
+            self.bench_lim.append(lb)
+
+        tk.Label(right, text="Panel buttons (press each; STANDBY last - it ends the bench test)", font=F_MED,
+                 bg=BG).pack(anchor="w", pady=(8, 0))
+        br = tk.Frame(right, bg=BG)
+        br.pack(anchor="w")
+        self.bench_btn = []
+        for b in (5, 1, 2, 3, 4, 0):                    # HDG LOCK, -1, +1, -10, +10, STANDBY
+            lb = tk.Label(br, text=proto.BTN_NAMES[b], font=F_TXT, bg=PANEL, width=10, relief="ridge")
+            lb.pack(side="left", padx=2)
+            self.bench_btn.append((b, lb))
+
+        tk.Label(right, text="Buzzer", font=F_MED, bg=BG).pack(anchor="w", pady=(8, 0))
+        btn(right, "Buzzer test 1 s", lambda: self.bench(proto.BENCH_BUZZER, 1000, "buzzer test 1 s"),
+            font=F_TXT).pack(anchor="w")
+
+        tk.Label(right, text="Servo PWM outputs (scope / servo tester, FIRST_TEST.md 3g)", font=F_MED,
+                 bg=BG).pack(anchor="w", pady=(8, 0))
+        self.bench_servo = tk.Label(right, text="-", font=("Consolas", 12), bg=BG, justify="left", anchor="w")
+        self.bench_servo.pack(anchor="w")
+        btn(right, "Monitor trip test ...", self.bench_trip, bg="#ffb0b0", font=F_TXT).pack(anchor="w", pady=4)
+        self.bench_d = None
+
+    def bench(self, action, arg, what):
+        if isinstance(self.link, GatewayLink):
+            return self.say("BENCH TEST: only from the laptop on the USB cable", RED)
+        self.cmd(proto.T_BENCH, proto.p_bench(action, arg), what)
+
+    def bench_trip(self):
+        from tkinter import messagebox
+        if not messagebox.askyesno("Monitor trip test",
+                                   "This makes the safety monitor (CPU1) trip for real:\n\n"
+                                   "throttle idle + gear neutral forced, steering motor driver asleep, relay open, "
+                                   "buzzer on, STANDBY.\n\nIt stays like that until you POWER THE BOARD OFF AND ON.\n\n"
+                                   "Measure the servo outputs with the scope while it is tripped. Go on?"):
+            return
+        self.bench(proto.BENCH_TRIP, proto.BENCH_TRIP_CODE, "monitor trip test")
+
+    def on_bench(self, d):
+        self.bench_d = d
+        self.bench_d_rx = time.time()
+        self.draw_bench()
+
+    def draw_bench(self):
+        if not hasattr(self, "bench_state"):
+            return
+        d = self.bench_d
+        fresh = d is not None and time.time() - getattr(self, "bench_d_rx", 0) < 1.0
+        in_bench = bool(self.t and self.t.get("mode") == proto.MODE_BENCH)
+        if not (fresh and in_bench):
+            self.bench_state.configure(text="not in the bench test (STANDBY -> Enter BENCH TEST)", fg="#606060")
+            return
+        self.bench_state.configure(text="BENCH TEST - back to STANDBY by itself in %d s without a command%s" % (
+            d["idle_left_s"], "   MONITOR TRIPPED: power the board off and on" if d["mon_tripped"] else ""),
+            fg=RED if d["mon_tripped"] else "#008080")
+        def yn(v):
+            return "yes" if v else "NO"
+        acc = proto.IMU_ACC[d["imu_accuracy"]] if d["imu_accuracy"] < 4 else "?"
+        lines = [
+            "IMU      ok %-3s  reports %-8d resets %d  accuracy %s" % (yn(d["imu_ok"]), d["imu_reports"],
+                                                                     d["imu_resets"], acc),
+            "heading  %6.1f deg  (compass ok %s)" % (d["heading"], yn(d["compass_ok"])),
+            "yaw rate %+6.1f deg/s  (gyro ok %s)" % (d["yaw"], yn(d["gyro_ok"])),
+            "roll     %+6.1f deg   pitch %+6.1f deg" % (d["roll"], d["pitch"]),
+            "accel z  %+6.2f g" % d["accel_z"],
+            "GPS      ok %-3s  UBX %-3s  fix %s (%dD)  sats %d" % (yn(d["gps_ok"]), yn(d["gps_ubx"]), yn(d["fix"]),
+                                                              d["gps_fix_type"], d["sats"]),
+            "         SOG %.1f kn  COG %.0f deg" % (d["sog"], d["cog"]),
+            "         spoofing %s  jamming %s" % (proto.GPS_SPOOF[d["spoof"]] if d["spoof"] < 4 else "?",
+                                                 proto.GPS_JAM[d["jam"]] if d["jam"] < 4 else "?"),
+            "motor    %s" % ("no current sensor" if d["current"] < 0 else "%.2f A" % d["current"]),
+            "SD card  card %-3s mounted %-3s  %s  free %s" % (
+                yn(d["sd_card"]), yn(d["sd_mounted"]),
+                proto.SD_STATES[d["sd_state"]] if d["sd_state"] < len(proto.SD_STATES) else "?",
+                "?" if d["sd_free_kb"] is None else "%.1f GB" % (d["sd_free_kb"] / 1048576.0)),
+            "UART errors %d" % d["uart_errors"],
+        ]
+        self.bench_sens.configure(text="\n".join(lines))
+        run = {-1: "running LEFT", 1: "running RIGHT"}.get(d["pulse"], "stopped")
+        self.bench_pulse.configure(text="motor %s, outboard estimate %+.1f deg; pulses %d, refused %d%s" % (
+            run, d["estimate"], d["pulses"], d["refused"],
+            (" (last: %s)" % proto.BENCH_REFUSE[d["last_refuse"]]) if 0 < d["last_refuse"] < len(proto.BENCH_REFUSE)
+            else ""))
+        for lb, on, fitted in ((self.bench_lim[0], d["limit_left"], d["limits_fitted"]),
+                               (self.bench_lim[1], d["limit_right"], d["limits_fitted"]),
+                               (self.bench_lim[2], d["estop"] == 2, d["estop"] != 0)):
+            lb.configure(bg=(ORANGE if on else "#b0ffb0") if fitted else PANEL,
+                         fg=FG if fitted else "#909090")
+        for b, lb in self.bench_btn:
+            n = d["button_counts"][b]
+            lb.configure(bg="#7de07d" if n else PANEL,
+                         text="%s%s" % (proto.BTN_NAMES[b], (" x%d" % n) if n else ""))
+        self.bench_servo.configure(text="throttle D9: %4d us (idle %d)   gear D8: %4d us (neutral %d)   50 Hz" % (
+            d["thr_us"], d["thr_idle_us"], d["gear_us"], d["gear_n_us"]))
 
     # --- AIS ship list + collision avoidance (sections A / D / E2) ------------------
     AIS_COLS = (("name", "ship", 200), ("cls", "class", 50), ("dist", "distance nm", 95), ("brg", "bearing", 70),
@@ -1606,6 +1746,8 @@ class App:
                     self.on_joymap(d)
                 elif kind == "joy_raw":
                     self.on_raw(d)
+                elif kind == "bench":
+                    self.on_bench(d)
                 elif kind == "gw_status":
                     self.gw_status = d
                     me = [s for s in d.get("stations", []) if s.get("id") == d.get("you")]
@@ -1657,6 +1799,8 @@ class App:
         prev = self.t
         self.t = d
         self.t_rx = time.time()
+        if (prev or {}).get("mode") != d.get("mode"):
+            self.draw_bench()                   # entered / left the bench test
         if "slam_peak" in d:
             self.slam_hist.append((d["t_ms"], d["slam_peak"]))
         ts = d["t_ms"] / 1000.0

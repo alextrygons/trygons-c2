@@ -570,6 +570,32 @@ void hal_set_alarm(bool on)
     }
 }
 
+/* BENCH TEST screen: what the drivers know (read from CPU0; the SD numbers
+ * are written by CPU2 - plain words, a torn value only shows wrong once). */
+bool hal_get_diag(hal_diag_t *d)
+{
+    const bno_stat_t *b = bno_stat();
+    const gps_stat_t *g = gps_stat();
+    const sd_stat_t *c = sd_stat();
+    d->imu_ok = b->ok;
+    d->imu_accuracy = b->heading_accuracy;
+    d->imu_reports = b->reports;
+    d->imu_resets = b->resets;
+    d->accel_z_g = b->accel_z_g;
+    d->gps_ok = g->ok;
+    d->gps_ubx = g->ubx;
+    d->gps_fix_type = g->fix_type;
+    d->gps_spoof = g->spoof_state;
+    d->gps_jam = g->jam_state;
+    d->sd_card = c->card;
+    d->sd_mounted = c->mounted;
+    d->sd_state = c->state;
+    d->sd_free_kb = c->mounted ? (uint32_t)(((uint64_t)c->free_clusters * c->cluster_bytes) / 1024u) : 0xFFFFFFFFu;
+    d->uart_errors = 0u;
+    for (unsigned i = 0; i < (unsigned)UART_COUNT; i++) d->uart_errors += uart_stat((uart_id_t)i)->errors;
+    return true;
+}
+
 /* Ground station: ASCLIN0 = USB virtual COM of the on-board debugger, 921600. */
 uint32_t hal_link_read(uint8_t *buf, uint32_t max)
 {

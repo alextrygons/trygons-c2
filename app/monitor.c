@@ -85,6 +85,7 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
         } else if (now_ms - m->last_hb_ms > MON_HB_MS) {
             trip(m, sh, MON_TRIP_HEARTBEAT, now_ms);
         }
+        if (!m->tripped && sh->test_trip == MON_TEST_TRIP) trip(m, sh, MON_TRIP_TEST, now_ms);
 
         if (m->started && !m->tripped && consistent) {
             /* 2. throttle inside the power limit (may only come down to it) */
@@ -128,6 +129,6 @@ void monitor_publish_steering_only(mon_shared_t *sh, uint16_t thr_idle_us, uint1
 const char *monitor_reason_name(mon_reason_t r)
 {
     static const char *const n[] = { "ok", "throttle above the power limit", "gear moved with throttle open",
-                                     "core 0 heartbeat missing", "core 0 never started" };
-    return ((unsigned)r <= (unsigned)MON_TRIP_BOOT) ? n[r] : "?";
+                                     "core 0 heartbeat missing", "core 0 never started", "bench trip test" };
+    return ((unsigned)r <= (unsigned)MON_TRIP_TEST) ? n[r] : "?";
 }

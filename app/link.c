@@ -406,6 +406,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_POWER_CODE:   return 1;
     case PROTO_T_POWER_RAISE:  return 3;
     case PROTO_T_POWER_LOWER:  return 0;
+    case PROTO_T_BENCH:        return 3;
     default:                   return -1;
     }
 }
@@ -621,6 +622,12 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
     case PROTO_T_POWER_LOWER:
         sb_power_lower(s);
         return PROTO_R_OK;
+    case PROTO_T_BENCH: {
+        uint8_t act = proto_rd_u8(&r);
+        uint16_t arg = proto_rd_u16(&r);
+        if (act > SB_BENCH_TRIP) return PROTO_R_BAD_VALUE;
+        return sb_result_to_proto(sb_bench(s, act, arg));
+    }
     default:
         return PROTO_R_UNKNOWN;
     }
@@ -750,6 +757,8 @@ static void command(link_t *l, sb_t *s, const proto_frame_t *f, uint8_t station,
         else if (s->helm != station) r = PROTO_R_NOT_HELM;
         else r = sb_result_to_proto(f->payload[0] == 0u ? sb_remote_request(s, station)
                                                           : sb_remote_release(s, station));
+    } else if (f->type == PROTO_T_BENCH && station != SB_HELM_USB) {
+        r = PROTO_R_NOT_ALLOWED;                         /* BENCH TEST: only the laptop on the USB cable */
     } else if (want < 0) {
         r = PROTO_R_UNKNOWN;
     } else if ((int)f->len != want) {
@@ -942,6 +951,67 @@ static void telemetry2(link_t *l, sb_t *s)
     else l->telem_overflows++;
 }
 
+/* BENCH_DIAG (USB, BENCH TEST only), every sensor for the bench screen:
+ *   u8 flags (b0 IMU ok, b1 GPS ok, b2 GPS UBX, b3 SD card, b4 SD mounted, b5 diag from the HAL,
+ *             b6 compass ok, b7 gyro ok) |
+ *   u8 IMU accuracy (0..3, 255 unknown) | u32 IMU reports | u16 IMU resets |
+ *   f32 heading | f32 yaw rate | f32 roll | f32 pitch | f32 vertical accel g |
+ *   u8 GPS fix type | u8 sats | u8 spoof state | u8 jam state | u8 fix | f32 SOG | f32 COG |
+ *   f32 motor current A (-1 none) | u8 limits (b0 L, b1 R, 0x80 none) | u8 e-stop (0 none, 1 off, 2 pressed) |
+ *   u8 SD state | u32 SD free kB | u32 UART errors |
+ *   u16 throttle pulse us | u16 gear pulse us | u16 throttle idle us | u16 gear neutral us |
+ *   u8 buttons seen | 6 x u8 count per button (hal_button_t) | u16 pulses | u16 refused | u8 last refuse |
+ *   i8 pulse running | f32 outboard estimate deg | u8 monitor tripped | u32 idle ms left */
+static void bench_diag(link_t *l, sb_t *s)
+{
+    uint8_t buf[PROTO_MAX_PAYLOAD];
+    proto_wr_t w;
+    hal_diag_t d;
+    memset(&d, 0, sizeof d);
+    bool hd = hal_get_diag(&d);
+    proto_wr_init(&w, buf, sizeof buf);
+    proto_wr_u8(&w, (uint8_t)((d.imu_ok ? 1u : 0u) | (d.gps_ok ? 2u : 0u) | (d.gps_ubx ? 4u : 0u) |
+                              (d.sd_card ? 8u : 0u) | (d.sd_mounted ? 16u : 0u) | (hd ? 32u : 0u) |
+                              (sb_compass_ok(s) ? 64u : 0u) | (autopilot_gyro_ok(&s->ap) ? 128u : 0u)));
+    proto_wr_u8(&w, hd ? d.imu_accuracy : 255u);
+    proto_wr_u32(&w, d.imu_reports);
+    proto_wr_u16(&w, (uint16_t)(d.imu_resets > 65535u ? 65535u : d.imu_resets));
+    proto_wr_f32(&w, s->ap.heading);
+    proto_wr_f32(&w, s->ap.gyro_dps);
+    proto_wr_f32(&w, s->att_roll_deg);
+    proto_wr_f32(&w, s->att_pitch_deg);
+    proto_wr_f32(&w, d.accel_z_g);
+    proto_wr_u8(&w, d.gps_fix_type);
+    proto_wr_u8(&w, s->gps.last.sats);
+    proto_wr_u8(&w, d.gps_spoof);
+    proto_wr_u8(&w, d.gps_jam);
+    proto_wr_u8(&w, (uint8_t)((s->gps.last.fix ? 1u : 0u) | (s->gps.last.jam_spoof ? 2u : 0u)));
+    proto_wr_f32(&w, s->gps.last.sog_kn);
+    proto_wr_f32(&w, s->gps.last.cog_deg);
+    proto_wr_f32(&w, s->motor_a);
+    proto_wr_u8(&w, s->limit_bits);
+    proto_wr_u8(&w, s->estop_state);
+    proto_wr_u8(&w, d.sd_state);
+    proto_wr_u32(&w, d.sd_free_kb);
+    proto_wr_u32(&w, d.uart_errors);
+    proto_wr_u16(&w, s->servo.out_us);
+    proto_wr_u16(&w, s->gear.pwm_us);
+    proto_wr_u16(&w, s->cfg.servo.idle_us);
+    proto_wr_u16(&w, s->cfg.gear.pwm_n_us);
+    proto_wr_u8(&w, s->bench.buttons_seen);
+    for (unsigned b = 0; b < (unsigned)HAL_BTN_COUNT; b++) proto_wr_u8(&w, s->bench.button_count[b]);
+    proto_wr_u16(&w, s->bench.pulses);
+    proto_wr_u16(&w, s->bench.refused);
+    proto_wr_u8(&w, s->bench.last_refuse);
+    proto_wr_u8(&w, (uint8_t)s->bench.pulse_dir);
+    proto_wr_f32(&w, s->ap.est_angle);
+    proto_wr_u8(&w, s->mon_tripped ? 1u : 0u);
+    uint32_t idle = s->now_ms - s->bench.last_cmd_ms;
+    proto_wr_u32(&w, idle < s->cfg.bench_idle_ms ? s->cfg.bench_idle_ms - idle : 0u);
+    if (!w.overflow) send(l, PROTO_T_BENCH_DIAG, l->tx_seq++, buf, w.n);
+    else l->telem_overflows++;
+}
+
 /* GW_STATUS from the Pi (1 Hz, also its heartbeat), 12 bytes:
  *   u8 version | u8 flags (SB_GWF_) | u8 channel | u8 stations |
  *   u32 last log record the Pi has | u16 log gaps | u16 reserved */
@@ -1118,6 +1188,7 @@ void link_step(link_t *l, sb_t *s)
             if (s->helm >= 2u) helm_lost(s, s->helm, 4u);   /* its stations are gone too */
         } else {
             s->alarm_bits |= SB_ALM_PC_LINK;
+            if (sb_mode(s) == MODE_BENCH) sb_request_mode(s, MODE_STANDBY, WHY_BENCH_END);   /* laptop gone */
         }
     } else if (l->lost) {
         /* still lost: an acknowledge can't make the alarm disappear */
@@ -1133,6 +1204,7 @@ void link_step(link_t *l, sb_t *s)
         l->next_telem_ms = s->now_ms + TELEM_PERIOD_MS;
         telemetry2(l, s);                               /* first: the PC merges it into the next telemetry */
         telemetry(l, s);
+        if (l->port != LINK_PORT_GW && sb_mode(s) == MODE_BENCH) bench_diag(l, s);
     }
     if (l->port == LINK_PORT_GW) {
         if ((int32_t)(s->now_ms - l->next_time_ms) >= 0) {

@@ -39,6 +39,7 @@ T_AUTO_SKIP = 0x27
 T_POWER_CODE = 0x28        # u8 dir (0 fwd, 1 rev): the boat shows a code
 T_POWER_RAISE = 0x29       # u8 dir, u16 typed code; then joystick CONFIRM within 10 s
 T_POWER_LOWER = 0x2A       # back to 30 % / 5 % at once
+T_BENCH = 0x2B             # u8 action, u16 arg - BENCH TEST, only from the laptop on the USB cable
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
@@ -55,6 +56,7 @@ T_LOG_CHUNK = 0x89         # AURIX -> gateway: the full log copy
 T_TIME = 0x8A              # AURIX -> gateway: GPS time, 1 Hz
 T_TELEM2 = 0x8B            # with every telemetry: gateway / helm / remote / slamming
 T_GW_ACK = 0x8C            # AURIX -> gateway: the answer to a station's command
+T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor (link.c bench_diag)
 
 # Commands that change how the boat is driven: with a gateway they are only
 # sent to the AURIX after the DRIVER screen accepted them (or in
@@ -82,7 +84,7 @@ TYPE_NAMES = {
     T_SIM_BRIDGE: "sim USB joystick", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
-    T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving",
+    T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_BENCH: "bench test", T_BENCH_DIAG: "bench data",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -117,13 +119,54 @@ RESULTS = {
     108: "bad command",
 }
 
-MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL"]
+MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL", "BENCH_TEST"]
 # mode change reasons (app/modes.h mode_reason_t)
 WHY = ["user", "STANDBY button", "compass fault", "GPS lost", "arrived", "training done", "training abort",
        "test", "gear fault", "DR limit", "arrival uncertain", "joystick", "joystick hand-back", "joystick fault",
        "PC", "HDG LOCK button", "CONFIRM", "not armed", "safety monitor", "remote", "remote end", "remote lost",
-       "emergency stop"]
-MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE = range(6)
+       "emergency stop", "bench test ended (idle / link / moving / HELM)"]
+MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE, MODE_BENCH = range(7)
+
+# BENCH TEST (app/smallboat.h SB_BENCH_)
+BENCH_ENTER, BENCH_LEAVE, BENCH_LEFT, BENCH_RIGHT, BENCH_BUZZER, BENCH_TRIP = range(6)
+BENCH_TRIP_CODE = 0xB3E7
+BENCH_REFUSE = ["", "at the end stop in that direction", "a pulse is running / too soon", "time out of range"]
+BTN_NAMES = ["STANDBY", "-1", "+1", "-10", "+10", "HDG LOCK"]         # hal_button_t order
+IMU_ACC = ["unreliable", "low", "medium", "high"]
+GPS_SPOOF = ["unknown", "none", "INDICATED", "MULTIPLE"]
+GPS_JAM = ["unknown", "ok", "WARNING", "CRITICAL"]
+SD_STATES = ["no card", "power", "reset", "check", "init", "OCR", "file system", "folder scan", "ready", "FAILED"]
+
+
+def p_bench(action, arg=0):
+    return struct.pack("<BH", action, arg)
+
+
+_BENCH = struct.Struct("<BBIH5f5B2ffBBBII4HB6B2HBbfBI")      # 86 bytes, link.c bench_diag()
+
+
+def decode_bench_diag(payload: bytes) -> dict:
+    v = _BENCH.unpack_from(payload)
+    (flags, acc, reports, resets, heading, yaw, roll, pitch, accz, fix_type, sats, spoof, jam, fixf, sog, cog,
+     current, limits, estop, sd_state, sd_free, uart_err, thr_us, gear_us, thr_idle_us, gear_n_us,
+     seen) = v[:27]
+    counts = list(v[27:33])
+    pulses, refused, last_refuse, pulse, est, mon, idle_left = v[33:]
+    return {
+        "imu_ok": bool(flags & 1), "gps_ok": bool(flags & 2), "gps_ubx": bool(flags & 4), "sd_card": bool(flags & 8),
+        "sd_mounted": bool(flags & 16), "hal_diag": bool(flags & 32), "compass_ok": bool(flags & 64),
+        "gyro_ok": bool(flags & 128), "imu_accuracy": acc, "imu_reports": reports, "imu_resets": resets,
+        "heading": heading, "yaw": yaw, "roll": roll, "pitch": pitch, "accel_z": accz,
+        "gps_fix_type": fix_type, "sats": sats, "spoof": spoof, "jam": jam, "fix": bool(fixf & 1),
+        "jam_spoof": bool(fixf & 2), "sog": sog, "cog": cog, "current": current,
+        "limits_fitted": limits != 0x80, "limit_left": limits != 0x80 and bool(limits & 1),
+        "limit_right": limits != 0x80 and bool(limits & 2), "estop": estop, "sd_state": sd_state,
+        "sd_free_kb": None if sd_free == 0xFFFFFFFF else sd_free, "uart_errors": uart_err,
+        "thr_us": thr_us, "gear_us": gear_us, "thr_idle_us": thr_idle_us, "gear_n_us": gear_n_us,
+        "buttons_seen": seen, "button_counts": counts, "pulses": pulses, "refused": refused,
+        "last_refuse": last_refuse, "pulse": pulse, "estimate": est, "mon_tripped": bool(mon),
+        "idle_left_s": idle_left / 1000.0,
+    }
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
 CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING"]
 REMOTE_STATES = ["off", "DRIVING", "LINK LOST"]

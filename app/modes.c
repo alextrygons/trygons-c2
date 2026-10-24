@@ -4,13 +4,14 @@
 #include "modes.h"
 
 static const bool k_allowed[MODE_COUNT][MODE_COUNT] = {
-    /* to:          STANDBY MANUAL HDG_LOCK AUTO  TRAINING REMOTE */
-    /* STANDBY  */ { false, true,  true,    true,  true,    true  },
-    /* MANUAL   */ { true,  false, true,    true,  false,   false },   /* the onboard joystick has it */
-    /* HDG_LOCK */ { true,  true,  false,   true,  false,   true  },
-    /* AUTO     */ { true,  true,  true,    false, false,   true  },
-    /* TRAINING */ { true,  true,  false,   false, false,   false },
-    /* REMOTE   */ { true,  true,  false,   false, false,   false },   /* onboard joystick takes over */
+    /* to:          STANDBY MANUAL HDG_LOCK AUTO  TRAINING REMOTE BENCH */
+    /* STANDBY  */ { false, true,  true,    true,  true,    true,  true  },
+    /* MANUAL   */ { true,  false, true,    true,  false,   false, false },   /* the onboard joystick has it */
+    /* HDG_LOCK */ { true,  true,  false,   true,  false,   true,  false },
+    /* AUTO     */ { true,  true,  true,    false, false,   true,  false },
+    /* TRAINING */ { true,  true,  false,   false, false,   false, false },
+    /* REMOTE   */ { true,  true,  false,   false, false,   false, false },   /* onboard joystick takes over */
+    /* BENCH    */ { true,  true,  false,   false, false,   false, false },   /* dock test: back to STANDBY */
 };
 
 void mode_init(mode_mgr_t *m, uint32_t now_ms)
@@ -69,7 +70,8 @@ const mode_log_entry_t *mode_log_get(const mode_mgr_t *m, uint32_t i)
 
 const char *mode_name(sb_mode_t m)
 {
-    static const char *const n[] = { "STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL" };
+    static const char *const n[] = { "STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL",
+                                     "BENCH_TEST" };
     return ((unsigned)m < MODE_COUNT) ? n[m] : "?";
 }
 
@@ -81,7 +83,7 @@ const char *mode_reason_name(mode_reason_t r)
         "arrival uncertain", "joystick", "joystick hand-back", "joystick fault", "PC",
         "HDG LOCK button", "PC + CONFIRM", "outputs not armed", "safety monitor",
         "remote driving (HELM + CONFIRM)", "remote driver released", "remote driving link lost",
-        "emergency stop"
+        "emergency stop", "bench test ended (idle / link / moving / HELM)"
     };
     return ((unsigned)r < WHY_COUNT) ? n[r] : "?";
 }

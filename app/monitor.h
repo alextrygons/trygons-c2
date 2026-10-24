@@ -13,6 +13,9 @@
  *     - only once core 0 says "running" (MON_RUNNING, written by its control
  *       loop): a slow boot (flash, calibration, links) can't trip it; core 0
  *       that never starts trips after BOOT_MS (3 s)
+ *   - bench trip test: core 0 writes MON_TEST_TRIP into test_trip (BENCH TEST
+ *     mode, operator confirmed) -> a real trip, latched like any other, so the
+ *     safe outputs can be checked with a scope (FIRST_TEST.md 3g)
  * Trip: hal_safe_outputs() forces throttle idle + gear neutral + steering
  * motor off + alarm + safety relay open, latched in the HAL until reset
  * (core 0 can't override it), and g_mon.tripped tells core 0 (-> STANDBY).
@@ -32,13 +35,15 @@
 #define MON_OVER_MS      2500u    /* above the limit (coming down) at most this long */
 #define MON_MARGIN_PCT   1.0f     /* tolerance on the limit */
 #define MON_GEAR_DELTA   20u      /* gear pulse change that counts as "gear moved", us */
+#define MON_TEST_TRIP    0x7E57B3C1u   /* g_mon.test_trip: bench trip test requested */
 
 typedef enum {
     MON_OK = 0,
     MON_TRIP_THROTTLE,          /* throttle above the power limit */
     MON_TRIP_GEAR,              /* gear moved with the throttle open */
     MON_TRIP_HEARTBEAT,         /* core 0 stopped */
-    MON_TRIP_BOOT               /* core 0 never started its control loop */
+    MON_TRIP_BOOT,              /* core 0 never started its control loop */
+    MON_TRIP_TEST               /* bench trip test (operator request in BENCH TEST) */
 } mon_reason_t;
 
 /* Shared memory core 0 -> CPU1 (and the trip flag back). On the TC375
@@ -56,6 +61,7 @@ typedef struct {
     volatile uint16_t gear_n_us;
     volatile uint8_t  tripped;          /* monitor -> core 0 */
     volatile uint8_t  reason;           /* mon_reason_t */
+    volatile uint32_t test_trip;        /* MON_TEST_TRIP = bench trip test (core 0 -> monitor) */
 } mon_shared_t;
 
 extern mon_shared_t g_mon;

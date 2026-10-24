@@ -15,13 +15,17 @@
  *   HDG_LOCK      yes     yes      -     yes    no
  *   AUTO          yes     yes     yes     -     no
  *   TRAINING      yes     yes     no     no      -
+ *   (REMOTE: -> STANDBY / MANUAL. BENCH: from STANDBY only, -> STANDBY / MANUAL)
  *
  * smallboat.c adds the rules on top (preconditions):
  *   - only the joystick enters MANUAL (it always wins);
  *   - MANUAL is left only with the stick centred (AUTO / HDG LOCK button,
  *     PC + CONFIRM), by the STANDBY button, or by a fault;
  *   - AUTO starts only with a PC command + joystick CONFIRM;
- *   - TRAINING only from STANDBY by the PC.
+ *   - TRAINING only from STANDBY by the PC;
+ *   - BENCH TEST only from STANDBY by the USB laptop (dock test, link.c):
+ *     throttle idle + gear neutral all the time, the steering motor only
+ *     in short pulses on command (smallboat.c sb_bench).
  */
 #ifndef MODES_H
 #define MODES_H
@@ -36,6 +40,7 @@ typedef enum {
     MODE_AUTO,              /* waypoint program */
     MODE_TRAINING,          /* outboard calibration */
     MODE_REMOTE,            /* REMOTE MANUAL: the shore joystick drives (someone always on board) */
+    MODE_BENCH,             /* BENCH TEST (dock): sensors live, steering pulses, buttons / buzzer / e-stop checks */
     MODE_COUNT
 } sb_mode_t;
 
@@ -63,6 +68,7 @@ typedef enum {
     WHY_REMOTE_END,         /* the remote driver released it */
     WHY_REMOTE_LOST,        /* remote joystick data too old / missing for 5 s */
     WHY_ESTOP,              /* emergency stop pressed */
+    WHY_BENCH_END,          /* bench test ended by itself: no command / USB link lost / moving / HELM elsewhere */
     WHY_COUNT
 } mode_reason_t;
 

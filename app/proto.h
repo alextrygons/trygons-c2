@@ -64,6 +64,7 @@
 #define PROTO_T_POWER_CODE    0x28u   /* u8 dir (0 fwd, 1 rev): boat makes a code (telemetry) */
 #define PROTO_T_POWER_RAISE   0x29u   /* u8 dir, u16 typed code; then joystick CONFIRM within 10 s */
 #define PROTO_T_POWER_LOWER   0x2Au   /* -  back to 30 % / 5 % at once        */
+#define PROTO_T_BENCH         0x2Bu   /* u8 action (SB_BENCH_), u16 arg (ms / trip code); USB laptop ONLY */
 #define PROTO_T_SIM_FIRST     0x70u   /* 0x70..0x7F: simulator control only   */
 #define PROTO_T_SIM_JOYSTICK  0x70u   /* u8 fitted, f32 x, f32 y, u8 take, u8 auto, u8 confirm */
 #define PROTO_T_SIM_GPS       0x71u   /* u8 1 = GPS fails, 0 = GPS back       */
@@ -83,6 +84,7 @@
 #define PROTO_T_TIME          0x8Au   /* gateway only, 1 Hz: u8 valid, u32 date, u32 UTC ms of day, u32 t_ms */
 #define PROTO_T_TELEM2        0x8Bu   /* with every telemetry: gateway / helm / remote / slamming (link.c) */
 #define PROTO_T_GW_ACK        0x8Cu   /* gateway only: u8 station, u16 command seq, u8 type, u8 result */
+#define PROTO_T_BENCH_DIAG    0x8Du   /* USB only, with every telemetry in BENCH TEST: every sensor (link.c bench_diag) */
 
 /* ACK result: 0 = accepted, else why refused (NACK) */
 #define PROTO_R_OK            0u

@@ -7073,6 +7073,309 @@ static void first_test_tests(void)
     }
 }
 
+
+/* ---------------------------------------------------------- BENCH TEST -- */
+
+typedef struct {
+    link_t  *usb;
+    int      diag_frames;       /* BENCH_DIAG frames the laptop got */
+    bool     silent;            /* the laptop is unplugged: nothing comes in */
+    proto_rx_t rx;
+    float    thr_max;
+    uint16_t gear_min, gear_max;
+    int      left_steps, right_steps;
+    int      alarm_steps;
+} btwatch_t;
+
+static void bt_hook(sbsim_t *x, void *ctx)
+{
+    btwatch_t *b = (btwatch_t *)ctx;
+    if (!b->silent) {                                   /* the ground station's 1 Hz heartbeat */
+        if (x->t % 1000u < AP_PERIOD_MS) {
+            uint8_t fr[PROTO_MAX_FRAME];
+            size_t n = proto_encode(fr, PROTO_T_HEARTBEAT, 1u, NULL, 0u);
+            sim_hal_link_rx_push(fr, (uint32_t)n);
+        }
+    }
+    link_step(b->usb, &x->sb);
+    uint8_t out[1024];
+    uint32_t n;
+    while ((n = sim_hal_link_tx_pop(out, sizeof out)) > 0u) {
+        proto_frame_t f;
+        proto_rx_push(&b->rx, out, n);
+        while (proto_rx_next(&b->rx, &f)) if (f.type == PROTO_T_BENCH_DIAG) b->diag_frames++;
+    }
+    if (sim_hal_throttle() > b->thr_max) b->thr_max = sim_hal_throttle();
+    uint16_t g = sim_hal_gear_pwm();
+    if (g < b->gear_min) b->gear_min = g;
+    if (g > b->gear_max) b->gear_max = g;
+    if (sim_hal_motor_command() < 0.0f) b->left_steps++;
+    if (sim_hal_motor_command() > 0.0f) b->right_steps++;
+    if (sim_hal_alarm()) b->alarm_steps++;
+}
+
+static void bt_watch_init(btwatch_t *b, link_t *usb)
+{
+    memset(b, 0, sizeof *b);
+    b->usb = usb;
+    b->gear_min = 0xFFFFu;
+    proto_rx_init(&b->rx);
+}
+
+static uint8_t bench_cmd(sbsim_t *x, link_t *usb, uint8_t action, uint16_t arg)
+{
+    uint8_t p[3] = { action, (uint8_t)arg, (uint8_t)(arg >> 8) };
+    return usb_cmd(x, usb, PROTO_T_BENCH, p, 3u);
+}
+
+static void bench_tests(void)
+{
+    char d[900];
+    printf("\n=== BENCH TEST (dock: sensors, steering pulses, buttons, buzzer, e-stop, monitor trip) ===\n");
+
+    /* BT1 who / when: only the USB laptop, only from STANDBY, not moving, not with the e-stop
+     * pressed; also in the FIRST TEST build; BENCH_DIAG frames only in BENCH TEST */
+    {
+        static sbsim_t x, y;
+        static pisim_t p;
+        static link_t usb, usb2;
+        btwatch_t b;
+        sbsim_init(&x, 951u, 90.0f, 0.0f, NULL);
+        pisim_init(&p, &x, 921600u);
+        link_init(&usb, &x.sb);
+        sim_hal_set_estop(true, false);
+        sbsim_run(&x, 3000u, pi_hook, &p);
+        uint8_t pl[3] = { SB_BENCH_ENTER, 0u, 0u };
+        uint8_t r_gw = pi_cmd(&x, &p, 4u, true, PROTO_T_BENCH, pl, 3u);       /* boat LAN station: no */
+        bt_watch_init(&b, &usb);
+        sbsim_run(&x, x.t + 2000u, bt_hook, &b);
+        int diag_standby = b.diag_frames;
+        uint8_t r_usb = bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        bool in_bench = sb_mode(&x.sb) == MODE_BENCH;
+        b.diag_frames = 0;
+        sbsim_run(&x, x.t + 2000u, bt_hook, &b);
+        int diag_bench = b.diag_frames;
+        bench_cmd(&x, &usb, SB_BENCH_LEAVE, 0u);
+        bool left = sb_mode(&x.sb) == MODE_STANDBY;
+        uint8_t r_mode = 0xFF;
+        press(&x, HAL_BTN_HDG_LOCK);                                      /* HDG LOCK -> not from there */
+        r_mode = bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        press(&x, HAL_BTN_STANDBY);
+        sim_hal_set_estop(true, true);
+        sbsim_run(&x, x.t + 200u, bt_hook, &b);
+        uint8_t r_estop = bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        sim_hal_set_estop(true, false);
+        press(&x, HAL_BTN_STANDBY);
+        uint8_t r_cmd_out = bench_cmd(&x, &usb, SB_BENCH_LEFT, 100u);     /* not in BENCH TEST */
+        /* moving (someone drives by hand): not on the dock */
+        x.w.hand_drive = true; x.w.hand_gear = GEAR_F; x.w.hand_throttle = 30.0f;
+        sbsim_run(&x, x.t + 30000u, bt_hook, &b);
+        uint8_t r_moving = bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        float kn = x.w.speed_kn;
+        sim_hal_set_estop(false, false);
+        /* the FIRST TEST build */
+        sb_config_t c = cfg_first_test();
+        sbsim_init(&y, 952u, 0.0f, 0.0f, &c);
+        link_init(&usb2, &y.sb);
+        sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);
+        sbsim_run(&y, 3000u, NULL, NULL);
+        uint8_t r_ft = bench_cmd(&y, &usb2, SB_BENCH_ENTER, 0u);
+        bool ft = sb_mode(&y.sb) == MODE_BENCH;
+        sim_hal_set_joystick(true, joy_raw(0.0f), joy_raw(0.0f), false, false);
+        snprintf(d, sizeof d, "boat LAN station: %u (5 = not allowed); USB laptop: %u -> BENCH %s; BENCH_DIAG frames in 2 s: "
+                 "STANDBY %d, BENCH %d; leave -> STANDBY %s; from HDG LOCK: %u (7 = wrong mode); e-stop pressed: %u "
+                 "(6 = conditions); pulse outside BENCH: %u; moving %.1f kn: %u; FIRST TEST build: %u -> BENCH %s",
+                 r_gw, r_usb, in_bench ? "yes" : "NO", diag_standby, diag_bench, left ? "yes" : "NO", r_mode, r_estop,
+                 r_cmd_out, kn, r_moving, r_ft, ft ? "yes" : "NO");
+        test_report("BT1 BENCH TEST: USB laptop only, from STANDBY, not moving, not with the e-stop; diag frames; FIRST TEST too",
+                    r_gw == PROTO_R_NOT_ALLOWED && r_usb == PROTO_R_OK && in_bench && diag_standby == 0 &&
+                    diag_bench >= 15 && left && r_mode == PROTO_R_WRONG_MODE && r_estop == PROTO_R_PRECOND &&
+                    r_cmd_out == PROTO_R_WRONG_MODE && kn > 2.0f && r_moving == PROTO_R_PRECOND && r_ft == PROTO_R_OK && ft, d);
+    }
+
+    /* BT2 steering pulses: left / right for the commanded time, estimate follows; too long, too soon,
+     * toward an active end stop: refused; throttle idle + neutral the whole time */
+    {
+        static sbsim_t x;
+        static link_t usb;
+        btwatch_t b;
+        sbsim_init(&x, 953u, 0.0f, 0.0f, NULL);
+        link_init(&usb, &x.sb);
+        x.w.limit_switches = true;
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bt_watch_init(&b, &usb);
+        uint8_t r_in = bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        uint8_t r_l = bench_cmd(&x, &usb, SB_BENCH_LEFT, 200u);
+        uint8_t r_soon = bench_cmd(&x, &usb, SB_BENCH_RIGHT, 100u);       /* the left one still runs */
+        sbsim_run(&x, x.t + 1000u, bt_hook, &b);
+        int l_steps = b.left_steps, r_steps0 = b.right_steps;
+        float est_l = x.sb.ap.est_angle + x.sb.ap.slack_deg;       /* motor position: backlash first */
+        uint8_t r_r = bench_cmd(&x, &usb, SB_BENCH_RIGHT, 200u);
+        sbsim_run(&x, x.t + 1000u, bt_hook, &b);
+        int r_steps = b.right_steps;
+        float est_r = x.sb.ap.est_angle + x.sb.ap.slack_deg;
+        uint8_t r_long = bench_cmd(&x, &usb, SB_BENCH_LEFT, 400u);
+        uint8_t r_short = bench_cmd(&x, &usb, SB_BENCH_LEFT, 50u);
+        x.w.rud.angle_deg = x.w.rud.drive_deg = -x.w.rud.max_angle_neg_deg;   /* at the left end stop (by hand) */
+        sbsim_run(&x, x.t + 300u, bt_hook, &b);
+        uint8_t r_lim = bench_cmd(&x, &usb, SB_BENCH_LEFT, 100u);
+        uint8_t why = x.sb.bench.last_refuse;
+        int l_before = b.left_steps;
+        sbsim_run(&x, x.t + 500u, bt_hook, &b);
+        uint8_t r_away = bench_cmd(&x, &usb, SB_BENCH_RIGHT, 100u);
+        sbsim_run(&x, x.t + 1000u, bt_hook, &b);
+        x.w.limit_switches = false;
+        snprintf(d, sizeof d, "enter %u; left 200 ms: %u, motor left %d steps, right %d, motor position (estimate + backlash) %.2f deg; "
+                 "right while it runs: %u; right 200 ms: %u, %d steps, position %.2f; 400 ms: %u, 50 ms: %u; at the left end stop: left %u "
+                 "(refuse %u = end stop, no motor %s), right %u; throttle max %.1f %%, gear %u..%u (N %u)",
+                 r_in, r_l, l_steps, r_steps0, est_l, r_soon, r_r, r_steps, est_r, r_long, r_short, r_lim, why,
+                 b.left_steps == l_before ? "yes" : "NO", r_away, b.thr_max, b.gear_min, b.gear_max,
+                 x.sb.cfg.gear.pwm_n_us);
+        test_report("BT2 BENCH TEST steering pulses: as commanded, estimate follows; too long / too soon / toward an end stop refused",
+                    r_in == PROTO_R_OK && r_l == PROTO_R_OK && l_steps >= 3 && l_steps <= 5 && r_steps0 == 0 && est_l < -0.2f &&
+                    r_soon == PROTO_R_PRECOND && r_r == PROTO_R_OK && r_steps >= 3 && r_steps <= 5 && est_r > est_l + 0.2f &&
+                    r_long == PROTO_R_PRECOND && r_short == PROTO_R_PRECOND && r_lim == PROTO_R_PRECOND &&
+                    why == SB_BENCH_R_LIMIT && b.left_steps == l_before && r_away == PROTO_R_OK && b.thr_max <= 0.0f &&
+                    b.gear_min == x.sb.cfg.gear.pwm_n_us && b.gear_max == x.sb.cfg.gear.pwm_n_us, d);
+    }
+
+    /* BT3 panel buttons: each one is shown, none changes the mode - except STANDBY, which always wins */
+    {
+        static sbsim_t x;
+        static link_t usb;
+        sbsim_init(&x, 954u, 0.0f, 0.0f, NULL);
+        link_init(&usb, &x.sb);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        uint32_t log0 = x.sb.modes.log_count;
+        press(&x, HAL_BTN_HDG_LOCK);
+        press(&x, HAL_BTN_MINUS_1);
+        press(&x, HAL_BTN_PLUS_1);
+        press(&x, HAL_BTN_MINUS_10);
+        press(&x, HAL_BTN_PLUS_10);
+        press(&x, HAL_BTN_PLUS_10);
+        bool still = sb_mode(&x.sb) == MODE_BENCH;
+        uint8_t seen = x.sb.bench.buttons_seen;
+        uint8_t n10 = x.sb.bench.button_count[HAL_BTN_PLUS_10];
+        uint32_t logged = x.sb.modes.log_count - log0;
+        press(&x, HAL_BTN_STANDBY);
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY;
+        uint8_t want = (uint8_t)(HAL_BTN_BIT(HAL_BTN_HDG_LOCK) | HAL_BTN_BIT(HAL_BTN_MINUS_1) | HAL_BTN_BIT(HAL_BTN_PLUS_1) |
+                                 HAL_BTN_BIT(HAL_BTN_MINUS_10) | HAL_BTN_BIT(HAL_BTN_PLUS_10));
+        snprintf(d, sizeof d, "after HDG LOCK, -1, +1, -10, +10 x2: mode BENCH %s, seen 0x%02X (want 0x%02X), +10 count %u, "
+                 "mode requests logged meanwhile %lu (want 0); STANDBY -> STANDBY %s",
+                 still ? "yes" : "NO", seen, want, n10, (unsigned long)logged, sb ? "yes" : "NO");
+        test_report("BT3 BENCH TEST buttons: each one shown, none changes the mode; STANDBY always wins",
+                    still && seen == want && n10 == 2u && logged == 0u && sb, d);
+    }
+
+    /* BT4 it ends by itself: 10 min without a command, the USB laptop unplugged, the e-stop;
+     * the joystick takes over (normal build) */
+    {
+        static sbsim_t x;
+        static link_t usb;
+        btwatch_t b;
+        sbsim_init(&x, 955u, 0.0f, 0.0f, NULL);
+        link_init(&usb, &x.sb);
+        sim_hal_set_estop(true, false);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bt_watch_init(&b, &usb);
+        bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        uint32_t t0 = x.t;
+        while (sb_mode(&x.sb) == MODE_BENCH && x.t < t0 + 700000u) sbsim_run(&x, x.t + 1000u, bt_hook, &b);
+        float idle_s = (x.t - t0) * 0.001f;
+        bool idle_end = sb_mode(&x.sb) == MODE_STANDBY;
+        bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        b.silent = true;                                            /* unplugged */
+        t0 = x.t;
+        while (sb_mode(&x.sb) == MODE_BENCH && x.t < t0 + 10000u) sbsim_run(&x, x.t + AP_PERIOD_MS, bt_hook, &b);
+        float lost_s = (x.t - t0) * 0.001f;
+        bool lost_end = sb_mode(&x.sb) == MODE_STANDBY;
+        b.silent = false;
+        sbsim_run(&x, x.t + 2000u, bt_hook, &b);
+        sb_alarm_ack(&x.sb);
+        uint8_t r_back = bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        sim_hal_set_estop(true, true);
+        sbsim_run(&x, x.t + 100u, bt_hook, &b);
+        bool estop_end = sb_mode(&x.sb) == MODE_STANDBY && (x.sb.alarm_bits & SB_ALM_ESTOP);
+        sim_hal_set_estop(true, false);
+        sbsim_run(&x, x.t + 300u, bt_hook, &b);
+        press(&x, HAL_BTN_STANDBY);
+        bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        bool again = sb_mode(&x.sb) == MODE_BENCH;
+        joy_set(0.6f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 500u, bt_hook, &b);
+        bool manual = sb_mode(&x.sb) == MODE_MANUAL;
+        joy_set(0.0f, 0.0f, false, false);
+        sim_hal_set_estop(false, false);
+        const mode_log_entry_t *e = NULL;
+        snprintf(d, sizeof d, "no command: STANDBY after %.0f s %s; laptop unplugged: STANDBY after %.1f s %s; back: %u; "
+                 "e-stop -> STANDBY + alarm %s; again %s; joystick deflected -> MANUAL %s",
+                 idle_s, idle_end ? "yes" : "NO", lost_s, lost_end ? "yes" : "NO", r_back, estop_end ? "yes" : "NO",
+                 again ? "yes" : "NO", manual ? "yes" : "NO");
+        (void)e;
+        test_report("BT4 BENCH TEST ends by itself: 10 min idle, laptop unplugged, e-stop; the joystick takes over",
+                    idle_end && idle_s >= 599.0f && idle_s <= 602.0f && lost_end && lost_s <= 4.0f && r_back == PROTO_R_OK &&
+                    estop_end && again && manual, d);
+    }
+
+    /* BT5 buzzer test: the alarm output for the asked time, then off; out of range refused */
+    {
+        static sbsim_t x;
+        static link_t usb;
+        btwatch_t b;
+        sbsim_init(&x, 956u, 0.0f, 0.0f, NULL);
+        link_init(&usb, &x.sb);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bt_watch_init(&b, &usb);
+        bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        sbsim_run(&x, x.t + 500u, bt_hook, &b);
+        int before = b.alarm_steps;
+        uint8_t r = bench_cmd(&x, &usb, SB_BENCH_BUZZER, 1000u);
+        sbsim_run(&x, x.t + 3000u, bt_hook, &b);
+        int on_steps = b.alarm_steps - before;
+        bool off = !sim_hal_alarm();
+        uint8_t r_long = bench_cmd(&x, &usb, SB_BENCH_BUZZER, 5000u);
+        snprintf(d, sizeof d, "silent before %s; buzzer 1 s: %u, on for %d steps of 50 ms, off after %s; 5 s: %u",
+                 before == 0 ? "yes" : "NO", r, on_steps, off ? "yes" : "NO", r_long);
+        test_report("BT5 BENCH TEST buzzer: on for the asked time, then off",
+                    before == 0 && r == PROTO_R_OK && on_steps >= 19 && on_steps <= 21 && off && r_long == PROTO_R_PRECOND, d);
+    }
+
+    /* BT6 monitor trip test (R3 on the board): a wrong code does nothing; the right one = a real trip,
+     * latched: outputs forced safe, STANDBY, MONITOR alarm, nothing can leave STANDBY */
+    {
+        static sbsim_t x;
+        static link_t usb;
+        btwatch_t b;
+        sbsim_init(&x, 957u, 0.0f, 0.0f, NULL);
+        link_init(&usb, &x.sb);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bt_watch_init(&b, &usb);
+        uint8_t r_out = bench_cmd(&x, &usb, SB_BENCH_TRIP, SB_BENCH_TRIP_CODE);   /* not in BENCH */
+        bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        uint8_t r_bad = bench_cmd(&x, &usb, SB_BENCH_TRIP, 1234u);
+        sbsim_run(&x, x.t + 500u, bt_hook, &b);
+        bool no_trip = !x.mon.tripped;
+        uint8_t r_ok = bench_cmd(&x, &usb, SB_BENCH_TRIP, SB_BENCH_TRIP_CODE);
+        sbsim_run(&x, x.t + 500u, bt_hook, &b);
+        bool tripped = x.mon.tripped && x.mon.reason == MON_TRIP_TEST;
+        bool forced = hal_outputs_forced() && !sim_hal_safety_relay() && sim_hal_alarm();
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY && (x.sb.alarm_bits & SB_ALM_MONITOR);
+        uint8_t r_again = bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        press(&x, HAL_BTN_HDG_LOCK);
+        bool stays = sb_mode(&x.sb) == MODE_STANDBY;
+        snprintf(d, sizeof d, "outside BENCH: %u; wrong code: %u, no trip %s; right code: %u -> trip '%s' %s, outputs forced + "
+                 "relay open + alarm %s, STANDBY + MONITOR alarm %s; enter BENCH again: %u, HDG LOCK: stays STANDBY %s",
+                 r_out, r_bad, no_trip ? "yes" : "NO", r_ok, monitor_reason_name(x.mon.reason), tripped ? "yes" : "NO",
+                 forced ? "yes" : "NO", sb ? "yes" : "NO", r_again, stays ? "yes" : "NO");
+        test_report("BT6 BENCH TEST monitor trip test: only with the code; a real latched trip (outputs safe, STANDBY)",
+                    r_out == PROTO_R_WRONG_MODE && r_bad == PROTO_R_WRONG_CODE && no_trip && r_ok == PROTO_R_OK && tripped &&
+                    forced && sb && r_again == PROTO_R_PRECOND && stays, d);
+        sim_hal_unforce();
+    }
+}
+
 /* ---------------------------------------------------------------- all -- */
 
 void sb_usb_tests(void)
@@ -7125,6 +7428,7 @@ void sb_tests(void)
     link_burst_tests();
     servo_clamp_tests();
     first_test_tests();
+    bench_tests();
     phase4();
     phase5();
     phase6();

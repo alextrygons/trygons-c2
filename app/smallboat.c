@@ -72,6 +72,12 @@ void sb_default_config(sb_config_t *cfg)
     cfg->first_test = false;
     cfg->first_test_min_kn = 2.0f;
     cfg->first_test_cog_deg = 60.0f;
+    cfg->bench_idle_ms = 600000u;
+    cfg->bench_pulse_min_ms = 100u;            /* = the steering core's min_pulse_ms */
+    cfg->bench_pulse_max_ms = 300u;
+    cfg->bench_gap_ms = 200u;
+    cfg->bench_buzz_max_ms = 3000u;
+    cfg->bench_max_kn = 1.5f;
 
     cfg->training_throttle_pct = 20.0f;
     cfg->training_spinup_ms = 30000u;
@@ -403,6 +409,12 @@ static bool auto_leg_ok(const sb_t *s)
     return program_dist_m(lat, lon, program_lat(w), program_lon(w)) <= s->cfg.prog.max_leg_m;
 }
 
+/* BENCH TEST: the GPS says the boat moves (trusted fix, SOG above bench_max_kn) */
+static bool bench_moving(const sb_t *s)
+{
+    return sb_gps_ok(s) && s->gps.last.sog_kn > s->cfg.bench_max_kn;
+}
+
 static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
 {
     bool forced = why == WHY_STANDBY_BUTTON || why == WHY_JOY_FAULT || why == WHY_GEAR_FAULT ||
@@ -436,6 +448,8 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
     case MODE_TRAINING:
         return (why == WHY_PC || why == WHY_USER || why == WHY_TEST) &&
                sb_compass_ok(s) && s->ap.mode != AP_MODE_TRAINING && !gear_fault(&s->gear);
+    case MODE_BENCH:        /* the USB laptop (link.c), boat not moving; no sensor needed (it shows them) */
+        return why == WHY_PC && !bench_moving(s) && s->ap.mode != AP_MODE_TRAINING;
     default:
         return false;
     }
@@ -568,6 +582,16 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         s->manual_from = from;
         autopilot_angle(&s->ap);
         remote_enter(s, from);
+        break;
+    case MODE_BENCH:
+        /* dock test: throttle idle + neutral (no demand), the steering motor
+         * only in pulses (manual steering of the core: estimate, max angle and
+         * end stops respected) */
+        s->stopping = false;
+        s->confirm.kind = CONF_NONE;
+        autopilot_manual(&s->ap, true);
+        memset(&s->bench, 0, sizeof s->bench);
+        s->bench.last_cmd_ms = s->now_ms;
         break;
     case MODE_TRAINING:
         /* outboard centred by hand; steering off until calibration starts */
@@ -1798,6 +1822,95 @@ static void events_step(sb_t *s, uint32_t buttons)
     }
 }
 
+/* BENCH TEST, every step: panel buttons are recorded and do nothing but
+ * STANDBY; the steering pulse of this step (-1 / 0 / +1); ends by itself
+ * after bench_idle_ms without a command, when HELM is no longer the USB
+ * laptop or when the boat moves. */
+static int8_t bench_step(sb_t *s, uint32_t *buttons, uint32_t dt_ms)
+{
+    if (sb_mode(s) != MODE_BENCH) {
+        s->bench.pulse_dir = 0;                         /* left the bench test: no pulse carries on */
+        s->bench.pulse_left_ms = 0u;
+        return 0;
+    }
+    for (unsigned b = 0; b < (unsigned)HAL_BTN_COUNT; b++) {
+        if (*buttons & HAL_BTN_BIT(b)) {
+            s->bench.buttons_seen |= (uint8_t)HAL_BTN_BIT(b);
+            if (s->bench.button_count[b] < 255u) s->bench.button_count[b]++;
+        }
+    }
+    *buttons &= HAL_BTN_BIT(HAL_BTN_STANDBY);           /* STANDBY always wins; the rest only shown */
+    if ((uint32_t)(s->now_ms - s->bench.last_cmd_ms) > s->cfg.bench_idle_ms || s->helm != SB_HELM_USB ||
+        bench_moving(s)) {
+        sb_request_mode(s, MODE_STANDBY, WHY_BENCH_END);
+        return 0;
+    }
+    if (s->bench.pulse_dir == 0) return 0;
+    bool at_stop = (s->bench.pulse_dir < 0) ? (s->limit_bits & 1u) && s->limit_bits != 0x80u
+                                            : (s->limit_bits & 2u) && s->limit_bits != 0x80u;
+    if (s->bench.pulse_left_ms == 0u || at_stop) {      /* done, or reached the end stop */
+        s->bench.pulse_dir = 0;
+        s->bench.pulse_left_ms = 0u;
+        s->bench.pulse_end_ms = s->now_ms;
+        return 0;
+    }
+    int8_t dir = s->bench.pulse_dir;
+    s->bench.pulse_left_ms = (s->bench.pulse_left_ms > dt_ms) ? s->bench.pulse_left_ms - dt_ms : 0u;
+    return dir;
+}
+
+sb_result_t sb_bench(sb_t *s, uint8_t action, uint16_t arg)
+{
+    if (action == SB_BENCH_ENTER) {
+        if (sb_mode(s) == MODE_BENCH) return SB_OK;
+        if (sb_mode(s) == MODE_MANUAL) return SB_ERR_JOYSTICK;
+        if (sb_mode(s) != MODE_STANDBY) return SB_ERR_WRONG_MODE;
+        if (s->joy.off_centre) {
+            (void)sb_request_mode(s, MODE_BENCH, WHY_PC);           /* refused + logged */
+            return SB_ERR_NOT_CENTERED;
+        }
+        return sb_request_mode(s, MODE_BENCH, WHY_PC) ? SB_OK : SB_ERR_PRECOND;
+    }
+    if (sb_mode(s) != MODE_BENCH) return SB_ERR_WRONG_MODE;
+    s->bench.last_cmd_ms = s->now_ms;
+    switch (action) {
+    case SB_BENCH_LEAVE:
+        return sb_request_mode(s, MODE_STANDBY, WHY_PC) ? SB_OK : SB_ERR_PRECOND;
+    case SB_BENCH_LEFT:
+    case SB_BENCH_RIGHT: {
+        int8_t dir = (action == SB_BENCH_LEFT) ? -1 : 1;
+        uint8_t why = SB_BENCH_R_NONE;
+        if (arg < s->cfg.bench_pulse_min_ms || arg > s->cfg.bench_pulse_max_ms) why = SB_BENCH_R_RANGE;
+        else if (s->bench.pulse_dir != 0 || (s->bench.pulses > 0u &&
+                 (uint32_t)(s->now_ms - s->bench.pulse_end_ms) < s->cfg.bench_gap_ms)) why = SB_BENCH_R_BUSY;
+        else if (s->limit_bits != 0x80u && (s->limit_bits & (dir < 0 ? 1u : 2u))) why = SB_BENCH_R_LIMIT;
+        if (why != SB_BENCH_R_NONE) {
+            s->bench.last_refuse = why;
+            s->bench.refused++;
+            return SB_ERR_PRECOND;
+        }
+        s->bench.last_refuse = SB_BENCH_R_NONE;
+        s->bench.pulse_dir = dir;
+        s->bench.pulse_left_ms = arg;
+        s->bench.pulses++;
+        return SB_OK;
+    }
+    case SB_BENCH_BUZZER:
+        if (arg < 100u || arg > s->cfg.bench_buzz_max_ms) {
+            s->bench.last_refuse = SB_BENCH_R_RANGE;
+            return SB_ERR_PRECOND;
+        }
+        s->chirp_ms = arg;
+        return SB_OK;
+    case SB_BENCH_TRIP:
+        if (arg != SB_BENCH_TRIP_CODE) return SB_ERR_WRONG_CODE;
+        s->bench.trip_req = true;                   /* -> g_mon.test_trip: CPU1 trips, latched */
+        return SB_OK;
+    default:
+        return SB_ERR_WRONG_MODE;
+    }
+}
+
 void sb_step(sb_t *s)
 {
     ap_inputs_t in;
@@ -1812,7 +1925,9 @@ void sb_step(sb_t *s)
     /* panel buttons + course buttons from the PC + the same functions on a USB joystick */
     uint32_t buttons = hal_get_button_presses() | s->ext_buttons | s->joy.buttons_edge;
     s->ext_buttons = 0u;
+    int8_t bench_steer = bench_step(s, &buttons, dt_ms);
     read_inputs(s, &in, buttons);
+    if (sb_mode(s) == MODE_BENCH) in.manual_steer = bench_steer;
     bool roll_new = hal_read_roll_rate(&roll);
     float acc[96];
     uint32_t n_acc = hal_read_accel_z(acc, 96u);
@@ -2017,6 +2132,7 @@ void sb_step(sb_t *s)
     g_mon.thr_idle_us = s->cfg.servo.idle_us;
     g_mon.gear_n_us = s->cfg.gear.pwm_n_us;
     monitor_write_end(&g_mon);
+    if (s->bench.trip_req) g_mon.test_trip = MON_TEST_TRIP;     /* BENCH TEST: trip test (latched) */
     g_mon.heartbeat = g_mon.heartbeat + 1u;
     g_mon.running = MON_RUNNING;                    /* the control loop runs (monitor watches from now) */
 

@@ -12,6 +12,7 @@ CONTENTS
   5.  The ground station (PC program)
   6.  The board (AURIX TC375 Lite Kit)
   6A. FIRST TEST: steering only (compile-time switch)
+  6B. BENCH TEST: every sensor and output on the dock
   7.  How the boat behaves: modes, buttons, joystick
   8.  The USB joystick (Thrustmaster T.16000M + TWCS)
   9.  The gateway (Raspberry Pi) and remote access
@@ -373,8 +374,10 @@ WHAT IS DIFFERENT
     gear servo = neutral pulse, whatever happens (the servos may also be
     disconnected).
   * Power-up needs NO joystick, NO neutral switch and NO gateway.
-  * Only STANDBY, TRAINING and HEADING LOCK. MANUAL (joystick), AUTO and
-    remote driving are refused ("not possible in this mode").
+  * Only STANDBY, TRAINING and HEADING LOCK (plus the BENCH TEST on the
+    dock, chapter 6B - it never drives the throttle or the gear). MANUAL
+    (joystick), AUTO and remote driving are refused ("not possible in this
+    mode").
   * HEADING LOCK and TRAINING steer only while the GPS says the boat moves
     AHEAD (at least 2 kn, course within 60 deg of the heading). Stopped or
     going astern: the steering rests.
@@ -389,6 +392,43 @@ EMERGENCY STOP (every configuration, not only the first test)
   A mushroom switch that cuts the steering motor / actuator power itself;
   its second contact tells the board (WIRING.md). Pressed: STANDBY at once,
   alarm EMERGENCY STOP, nothing can leave STANDBY until it is released.
+
+-------------------------------------------------------------------------------
+6B. BENCH TEST: EVERY SENSOR AND OUTPUT ON THE DOCK
+-------------------------------------------------------------------------------
+A mode for checking the wiring with the boat on the trailer or tied up,
+engine OFF (FIRST_TEST.md part 3). Ground station, tab "Bench".
+
+WHO / WHEN
+  * Only the laptop on the USB cable (never through the gateway / from
+    shore: "not allowed").
+  * Only from STANDBY, not while the GPS says the boat moves (> 1.5 kn), not
+    with the emergency stop pressed. Works in the normal and the FIRST TEST
+    build.
+  * Throttle idle + gear neutral all the time.
+
+WHAT IT DOES
+  * Shows every sensor live (10 times a second): IMU (heading, yaw rate,
+    roll / pitch, acceleration, compass accuracy 0-3), GPS (fix, satellites,
+    SOG / COG, spoofing and jamming states), motor current, limit switches,
+    emergency stop, SD card, UART errors.
+  * << LEFT / RIGHT >>: the steering motor runs 100, 200 or 300 ms. At most
+    one pulse every 0.2 s; never past the estimated maximum angle; refused
+    toward an end stop whose switch is open ("at the end stop").
+  * Panel buttons: each press is shown (green box + count). They do nothing
+    else - except STANDBY, which ends the bench test as always.
+  * Buzzer test 1 s.
+  * Servo outputs: the throttle and gear pulse widths being sent (idle /
+    neutral), to compare with a scope or a servo tester.
+  * Monitor trip test (asks first): the CPU1 safety monitor trips for real -
+    idle + neutral forced by the monitor itself, steering driver asleep,
+    relay open, buzzer, STANDBY, alarm MONITOR TRIP. It stays until the
+    board is powered off and on (that is the point: nothing can undo it).
+
+IT ENDS BY ITSELF (back to STANDBY, reason "bench test ended")
+  10 min without a bench command, the USB cable unplugged (3 s), HELM taken
+  by another station, the boat moving. Also: STANDBY button, emergency stop,
+  any fault, the joystick moved (-> MANUAL, normal build).
 
 -------------------------------------------------------------------------------
 7. HOW THE BOAT BEHAVES: MODES, BUTTONS, JOYSTICK

@@ -268,6 +268,15 @@ typedef struct {
     float    first_test_min_kn;         /* "moving ahead": GPS SOG at least this (2 kn) ... */
     float    first_test_cog_deg;        /* ... and COG within this of the heading (60 deg, not astern) */
 
+    /* BENCH TEST (dock, USB laptop only; also in FIRST TEST): throttle idle + neutral,
+     * the steering motor only in short pulses on command (sb_bench) */
+    uint32_t bench_idle_ms;             /* no bench command this long -> STANDBY (600000 = 10 min) */
+    uint16_t bench_pulse_min_ms;        /* shortest steering pulse (100 = outboard min_pulse_ms) */
+    uint16_t bench_pulse_max_ms;        /* longest steering pulse (300) */
+    uint16_t bench_gap_ms;              /* at least this between two pulses (200) */
+    uint16_t bench_buzz_max_ms;         /* buzzer test at most this long (3000) */
+    float    bench_max_kn;              /* GPS trusted and faster than this = not on the dock (1.5) */
+
     /* TRAINING */
     float    training_throttle_pct;     /* fixed slow throttle, forward gear (20) */
     uint32_t training_spinup_ms;        /* at that throttle this long before calibrating (30 s) */
@@ -418,6 +427,19 @@ typedef struct {
     uint32_t sog_n;
 } sb_train_t;
 
+/* BENCH TEST (sb_bench): actions and why a pulse was refused */
+#define SB_BENCH_ENTER      0u      /* STANDBY -> BENCH TEST */
+#define SB_BENCH_LEAVE      1u      /* -> STANDBY */
+#define SB_BENCH_LEFT       2u      /* steering pulse to port, arg = ms */
+#define SB_BENCH_RIGHT      3u      /* steering pulse to starboard, arg = ms */
+#define SB_BENCH_BUZZER     4u      /* alarm output (buzzer + LED) on, arg = ms */
+#define SB_BENCH_TRIP       5u      /* safety monitor trip test (latched until power-off), arg = SB_BENCH_TRIP_CODE */
+#define SB_BENCH_TRIP_CODE  0xB3E7u
+#define SB_BENCH_R_NONE     0u
+#define SB_BENCH_R_LIMIT    1u      /* at the end stop in that direction */
+#define SB_BENCH_R_BUSY     2u      /* a pulse is running / too soon after the last one */
+#define SB_BENCH_R_RANGE    3u      /* pulse / buzzer time out of range */
+
 /* Result of a PC request (link.c turns it into an ACK / NACK reason). */
 typedef enum {
     SB_OK = 0,
@@ -483,6 +505,17 @@ typedef struct {
     uint32_t    chirp_ms;      /* short alarm chirp still to sound */
     uint32_t    refused_centre; /* HDG LOCK button refused: the joystick was not centred */
     uint32_t    ext_buttons;   /* course buttons from the ground station (HAL_BTN_BIT), used by the next step */
+    struct {                   /* BENCH TEST (sb_bench) */
+        uint32_t last_cmd_ms;  /* last bench command (idle timeout) */
+        int8_t   pulse_dir;    /* steering pulse running: -1 port, +1 starboard, 0 none */
+        uint32_t pulse_left_ms;
+        uint32_t pulse_end_ms; /* when the last pulse ended (gap) */
+        uint8_t  buttons_seen; /* HAL_BTN_BIT() of the panel buttons pressed since BENCH TEST started */
+        uint8_t  button_count[HAL_BTN_COUNT];
+        uint16_t pulses, refused;
+        uint8_t  last_refuse;  /* SB_BENCH_R_ */
+        bool     trip_req;     /* monitor trip test requested (g_mon.test_trip) */
+    } bench;
 
     uint32_t now_ms, last_ms;
     bool     gps_bad_msg;       /* this step's GPS message was a fix with invalid values */
@@ -608,6 +641,10 @@ bool sb_joymap_set(sb_t *s, const joymap_t *m, bool save, jm_error_t *err);
 /* REMOTE MANUAL (section D). request: the HELM gateway station asks; the
  * joystick CONFIRM on board within confirm_ms starts it. release: back to
  * STANDBY. input: one remote joystick packet (gateway, 30 Hz). */
+/* BENCH TEST (only the USB laptop calls it, link.c): action SB_BENCH_..., arg ms / code.
+ * ENTER only from STANDBY, not moving; the others only in BENCH TEST. */
+sb_result_t sb_bench(sb_t *s, uint8_t action, uint16_t arg);
+
 sb_result_t sb_remote_request(sb_t *s, uint8_t station);
 sb_result_t sb_remote_release(sb_t *s, uint8_t station);
 void sb_remote_input(sb_t *s, uint8_t station, uint16_t seq, uint16_t age_ms, uint16_t lat_ms,

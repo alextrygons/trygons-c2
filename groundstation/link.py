@@ -231,6 +231,9 @@ class Link:
             elif f.type == proto.T_JOY_RAW:
                 d = proto.decode_joy_raw(f.payload)       # polled often: not logged
                 self.events.put(("joy_raw", d))
+            elif f.type == proto.T_BENCH_DIAG:
+                d = proto.decode_bench_diag(f.payload)    # 10 Hz in the bench test: not logged
+                self.events.put(("bench", d))
             elif f.type == proto.T_PROG_ERROR:
                 d = proto.decode_prog_error(f.payload)
                 if self.logger:

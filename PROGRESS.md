@@ -15,9 +15,9 @@ step that is not DONE below, without redoing finished work.
 | 1 | auto.crt + generated certs / keys in .gitignore | DONE | 24404ce |
 | 2 | .cproject: only board sources compiled (check + fix) | DONE (was already right; check now also catches stray sources) | ce2ad44 |
 | 3 | FIRST TEST configuration (steering only), telemetry + ground station | DONE (tests FT1-FT5, e-stop in every config; gate OK) | 42d1c2b |
-| 4 | hal_tc375.c Stage 1 drivers (WIRING.md), timeouts / no-data detection | DONE (tc_uart/spi/bno085/gps/adc/sd/fat32, hal_pins.h, FAT32 PC test, WIRING 9 + 11) | (this commit) |
-| 5 | BENCH TEST mode (ground station, dock) | open | |
-| 6 | FIRST_TEST.md checklist | open | |
+| 4 | hal_tc375.c Stage 1 drivers (WIRING.md), timeouts / no-data detection | DONE (tc_uart/spi/bno085/gps/adc/sd/fat32, hal_pins.h, FAT32 PC test, WIRING 9 + 11; gate OK) | c02ae06 |
+| 5 | BENCH TEST mode (ground station, dock) | DONE (MODE_BENCH, sb_bench, BENCH_DIAG, hal_get_diag, monitor trip test, tab Bench, BT1-BT6) | (this commit) |
+| 6 | FIRST_TEST.md checklist | drafted (FIRST_TEST.md, not committed yet) | |
 
 ## Notes (first test preparation)
 

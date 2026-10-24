@@ -421,6 +421,7 @@ static bool spec_allowed(sb_mode_t f, sb_mode_t t)
     case MODE_AUTO:     return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_HDG_LOCK || t == MODE_REMOTE;
     case MODE_TRAINING: return t == MODE_STANDBY || t == MODE_MANUAL;
     case MODE_REMOTE:   return t == MODE_STANDBY || t == MODE_MANUAL;
+    case MODE_BENCH:    return t == MODE_STANDBY || t == MODE_MANUAL;              /* dock test: back, or the joystick */
     default:            return false;
     }
 }
