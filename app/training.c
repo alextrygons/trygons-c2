@@ -5,6 +5,7 @@
  */
 #include "training.h"
 
+#include <float.h>
 #include <math.h>
 #include <string.h>
 
@@ -278,7 +279,7 @@ static void quick_fit_step(training_t *t)
 {
     float cum = (float)t->cum_ms, g, c;
     float best_tc = t->tconst, best_lost = 0.0f;
-    double best = 1e300;
+    double best = FLT_MAX;   /* "no fit yet"; FLT_MAX, not 1e300 (TASKING double = 32 bit) */
 
     for (int i = 0; i < 16; i++) {                  /* T 0.5 .. 15 s */
         float tc = 0.5f * powf(30.0f, (float)i / 15.0f);
@@ -320,7 +321,7 @@ static void quick_fit_gap(training_t *t)
 {
     float pmax = (float)t->gap_pulse_ms, g, c, end;
     float best_gap = 0.0f, best_tc = t->tconst;
-    double best = 1e300;
+    double best = FLT_MAX;
 
     for (int j = 0; j <= 20; j++) {
         float gap = pmax * (float)j / 20.0f;
@@ -495,7 +496,7 @@ static double stop_model(const training_t *t, bool right, float l, float *lr_use
         *lr_used = l;
         return stop_model2(t, l, t->travel_l > 0.0f ? t->travel_l : NO_STOP_MS);
     }
-    double best = 1e300;
+    double best = FLT_MAX;
     for (int k = -6; k <= 6; k++) {
         float lr = t->travel_r * (1.0f + 0.025f * (float)k);
         double e = stop_model2(t, lr, l);
@@ -518,7 +519,7 @@ static bool end_stop_check(training_t *t, bool right, float lo, float hi, float 
     if (hi <= lo + 100.0f) return false;
     float lr, best_lr = t->travel_r;
     double free_cost = stop_model(t, right, NO_STOP_MS, &lr);
-    double best = 1e300;
+    double best = FLT_MAX;
     float best_l = hi, a = lo, b = hi;
 
     for (int it = 0; it < 3; it++) {
