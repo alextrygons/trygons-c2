@@ -17,8 +17,8 @@ not DONE below, without redoing finished work.
 | 1 | CLAUDE.md design A-F (no code) | DONE (gate OK, acceptance quick 7/7 PASS) | 4e3a1f8 |
 | 2 | AURIX + sim: profile autodetection, UNCREWED power-raise / CONFIRM from the shore joystick, MANEUVER; invariants I22-I26 | DONE locally (gate: only result.116 missing -> fixed + amended; re-gate + acceptance pending) | f2e9770 |
 | 3 | AURIX + gateway + sim: UNCREWED lost link, GW_SHORE, engine-kill output (sim); invariants I27-I31 | DONE locally (sim 187/186 OK, storm 300 OK, gateway CR 5/5); gate + acceptance pending | |
-| 4 | Gateway: licence flag, captain / copilot, copilot -> captain ACCEPT, boat name check | TODO | |
-| 5 | Ground station: two screens (+ remaining HUD work), boat selector, single-monitor toggle, Greek manual | TODO | |
+| 4 | Gateway: licence flag, captain / copilot, copilot -> captain ACCEPT, boat name check | DONE locally (gateway B 12/12, F1 5/5, CR 9/9, VI 10/10, CA 5/5, I16 storm 60 s PASS); gate + acceptance pending | |
+| 5 | Ground station: two screens (+ remaining HUD work), boat selector, single-monitor toggle, Greek manual | IN PROGRESS (map in screen 2, boats/ + selector + confirm, crew / profile banners, F11, HUD notices + rear cameras in MANEUVER, test_boats 5/5, test_driver 18/18; manuals + screenshots left) | |
 | 6 | Verification: full acceptance (2000 storm, shortened soak), TEST_REPORT, FIRST_TEST.md note, ADS build + memory (LMU block 2), TO CONFIRM / TBD list | TODO | |
 
 ## Notes
@@ -35,6 +35,10 @@ not DONE below, without redoing finished work.
 - Step 3: lostlink_step (smallboat.c) after events_step; the kill is evaluated on the real outputs
   (thr.out_pct idle + gear_is N, or the monitor's safe state). Board: hal_set_engine_kill drives NO pin
   until PIN_ENGINE_KILL is chosen (hal_pins.h, WIRING.md 3A TBD). HELM release in UNCREWED = lost link.
+- Step 4: copilot commands travel in the captain's (HELM) GW_CMD envelope; driving ones after the captain's
+  screen-1 ACCEPT (stations._ask_driver target = the captain). A licensed user may take a FREE HELM (becomes
+  captain); role swap = AURIX HELM action 2 (link.c helm_cmd, one step). Avoidance proposals + vision CLEAR:
+  only the captain's screen 1. The screen texts for result 109-112 now say "captain's screen 1".
 - Two python test_gateway.py processes + one autopilot_sim server (port 53321) were already
   running at the start (from another session?); stopping them was not allowed. If the sim build
   fails with "permission denied" / locked exe, they are the reason.

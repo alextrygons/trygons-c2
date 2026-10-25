@@ -83,7 +83,7 @@ static const char k_events[] =
     "14:MONITOR:reason,throttle*10,limit*10,-;"
     "15:LOG:what,a,b,c;"
     "16:TIME:date,time_of_day_ms,t_ms,-;"
-    "17:HELM:station,action(0 take 1 release 2 lost 3 auto 4 gw lost),refused,holder;"
+    "17:HELM:station,action(0 take 1 release 2 lost 3 auto 4 gw lost 5 handed over),refused,holder;"
     "18:SAVE:trigger(1 button 2 alarm 3 fault 4 takeover 5 standby fault 6 slam),arg,seq,-;"
     "19:SLAM:peak_g*100,level_g*100,impacts_per_min,cap%*10|state<<16|override<<20;"
     "20:NAV:kind|reason<<8|alarm<<16|lost<<24|applied<<25,heading*100,cap_kn*10,seq;"

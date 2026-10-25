@@ -706,11 +706,20 @@ static void helm_set(sb_t *s, uint8_t holder, bool local)
     s->helm_changes++;
 }
 
-/* HELM take (0) / release (1). A local station (USB laptop, boat LAN) can
- * always take HELM - also from a remote one; a remote station only when
- * nobody holds it. */
-static uint8_t helm_cmd(sb_t *s, uint8_t station, bool local, uint8_t action)
+/* HELM take (0) / release (1) / hand over (2, payload u8 2, u8 station, u8
+ * local). A local station (USB laptop, boat LAN) can always take HELM - also
+ * from a remote one; a remote station only when nobody holds it. Hand over:
+ * only the holder, to another gateway station, in one step (the gateway's
+ * captain / copilot role swap: no moment without HELM = no lost link). */
+static uint8_t helm_cmd(sb_t *s, uint8_t station, bool local, uint8_t action, uint8_t to, bool to_local)
 {
+    if (action == 2u) {
+        if (s->helm != station) return PROTO_R_NOT_HELM;
+        if (to < 2u || to == 0xFFu || station < 2u) return PROTO_R_BAD_VALUE;
+        helm_set(s, to, to_local);
+        logcore0_helm(s->now_ms, station, 5u, 0u, to);
+        return PROTO_R_OK;
+    }
     if (action == 0u) {
         if (s->helm != station && s->helm != SB_HELM_NONE && !local) {
             logcore0_helm(s->now_ms, station, 0u, 1u, s->helm);
@@ -756,7 +765,10 @@ static void command(link_t *l, sb_t *s, const proto_frame_t *f, uint8_t station,
     if (f->type >= PROTO_T_SIM_FIRST && f->type <= PROTO_T_SIM_LAST) {
         r = l->sim_fn ? l->sim_fn(l->sim_ctx, f) : PROTO_R_UNKNOWN;
     } else if (f->type == PROTO_T_HELM) {
-        r = (f->len == 1u) ? helm_cmd(s, station, local, f->payload[0]) : PROTO_R_BAD_LENGTH;
+        if (f->len == 1u && f->payload[0] != 2u) r = helm_cmd(s, station, local, f->payload[0], 0u, false);
+        else if (f->len == 3u && f->payload[0] == 2u)
+            r = helm_cmd(s, station, local, 2u, f->payload[1], f->payload[2] != 0u);
+        else r = PROTO_R_BAD_LENGTH;
     } else if (f->type == PROTO_T_REMOTE) {
         /* remote driving: only a gateway station, only the HELM station */
         if (f->len != 1u || f->payload[0] > 1u) r = PROTO_R_BAD_VALUE;

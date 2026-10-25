@@ -34,11 +34,13 @@ def full_from_lite(lite, last_full=None):
 
 class GatewayLink:
     def __init__(self, address, user, password=None, key=None, station="ground station", log=False,
-                 log_folder="logs", local_addr=None, clock_offset=0.0):
+                 log_folder="logs", local_addr=None, clock_offset=0.0, crew=None, boat=None):
         host, port = address.rsplit(":", 1)
         self.host, self.port = host, int(port)
         self.user, self.password, self.key, self.station = user, password, key, station
         self.local_addr = local_addr            # tests: connect from a given address
+        self.crew = crew                        # "captain" / "copilot" wanted (None: the gateway decides)
+        self.boat = boat                        # the boat name we expect (boats/*.json): refused otherwise
         self.clock_offset = clock_offset        # tests: a PC clock that is wrong
         self.events = queue.Queue()
         self.connected = False
@@ -71,6 +73,10 @@ class GatewayLink:
         self.sock = s
         self.running = True
         login = {"t": "login", "user": self.user, "station": self.station, "ts": self.now()}
+        if self.crew:
+            login["crew"] = self.crew
+        if self.boat:
+            login["boat"] = self.boat
         if self.key:
             login["key"] = self.key
         else:
@@ -84,6 +90,12 @@ class GatewayLink:
         if self.welcome is None:
             self.stop()
             raise ConnectionError(self.error or "no answer from the gateway")
+        if self.boat and str(self.welcome.get("boat")) != str(self.boat):
+            # the station checks it too: never drive the wrong boat (CLAUDE.md F)
+            got = self.welcome.get("boat")
+            self.stop()
+            self.welcome = None
+            raise ConnectionError("wrong boat: expected %s, the gateway is %s" % (self.boat, got))
         return self.welcome
 
     def stop(self):

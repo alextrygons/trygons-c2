@@ -97,13 +97,16 @@ result.105 = rate limited
 result.106 = AURIX not connected
 result.107 = wrong session
 result.108 = bad command
-result.109 = driver screen not open
-result.110 = rejected by the driver
-result.111 = no answer from the driver (timeout)
-result.112 = driver screen lost
+result.109 = the captain's screen 1 is not open
+result.110 = rejected by the captain
+result.111 = no answer from the captain (timeout)
+result.112 = the captain's screen 1 was lost
 result.113 = single-operator mode: confirm on the captain screen first
 result.114 = shallow water on the route
 result.116 = no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain
+result.117 = only the captain (or a station on the boat) holds HELM
+result.118 = captain only: REMOTE MANUAL / MANEUVER
+result.119 = no captain holds HELM
 
 # --- command descriptions: shown on the screens; the ENGLISH one also goes to
 #     the gateway's audit log. Keep the {names}. -----------------------------
@@ -156,8 +159,8 @@ gw.driver_accepted = accepted
 gw.driver_rejected_short = rejected
 gw.done_elsewhere = done elsewhere
 gw.viewer_settings = VIEWER: no settings
-gw.vis_driver_only = only the driver screen clears a slowdown
-gw.avoid_driver_only = only the driver screen answers proposals
+gw.vis_driver_only = only the captain's screen 1 clears a slowdown
+gw.avoid_driver_only = only the captain's screen 1 answers proposals
 gw.avoid_rejected = rejected - heading unchanged
 gw.avoid_invalid = proposal no longer valid
 gw.avoid_heading = heading {hdg}

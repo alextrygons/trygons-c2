@@ -265,7 +265,8 @@ class Gateway:
                 log.exception("vision")
 
     def _vision_driver(self, st):
-        return st in self.stations.drivers() or st.single_op
+        """The captain at an open screen 1 (CLAUDE.md D), or a single operator."""
+        return (st in self.stations.drivers() and st.crew == "captain") or st.single_op
 
     def _vision_stage(self, st, m):
         """Stage on / off from a station. STAGE 3 ON (it slows AUTO) needs the driver's ACCEPT."""
@@ -286,7 +287,7 @@ class Gateway:
 
     def _vision_clear(self, st, m):
         if not self._vision_driver(st):
-            return st.send({"t": "vision_ack", "ok": False, "text": "only the driver screen clears a slowdown"})
+            return st.send({"t": "vision_ack", "ok": False, "text": "only the captain's screen 1 clears a slowdown"})
         ok, text = self.vision.clear(st.user)
         st.send({"t": "vision_ack", "ok": ok, "text": text})
 
@@ -300,10 +301,10 @@ class Gateway:
         st.send({"t": "vision_ack", "ok": ok, "text": "injected" if ok else "injection not allowed (vision.allow_inject)"})
 
     def _avoid_answer(self, st, m):
-        """The driver's ACCEPT / REJECT of a HEADING LOCK proposal: only from a station that
-        shows the DRIVER screen, or the captain in SINGLE-OPERATOR mode."""
-        if st not in self.stations.drivers() and not st.single_op:
-            return st.send({"t": "avoid_ack", "ok": False, "text": "only the driver screen answers proposals"})
+        """The captain's ACCEPT / REJECT of a HEADING LOCK proposal: only from the captain's
+        screen 1 (CLAUDE.md D), or a station in SINGLE-OPERATOR mode."""
+        if not ((st in self.stations.drivers() and st.crew == "captain") or st.single_op):
+            return st.send({"t": "avoid_ack", "ok": False, "text": "only the captain's screen 1 answers proposals"})
         pid = m.get("id")
         if m.get("yes"):
             # the way back = the heading the driver had LOCKED (not the momentary compass heading)

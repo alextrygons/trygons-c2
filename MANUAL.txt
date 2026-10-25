@@ -824,6 +824,27 @@ THE MANUAL LICENCE
   MANUAL or MANEUVER; others get "no manual licence" (code 116).
   Add it with: python3 users.py add NAME HELM licence
 
+CAPTAIN AND COPILOT (the gateway decides, every station shows it)
+  CAPTAIN   holds the manual licence and sits at screen 1 (cameras +
+            joystick). Holds HELM. The ONLY one who can start REMOTE
+            MANUAL or MANEUVER. The captain's own actions go straight to the
+            boat.
+  COPILOT   everything except manual driving: routes, AUTO, HEADING LOCK
+            adjustments, maximum speed, AIS / collision, status - also while
+            the captain drives. Every copilot action that changes the
+            driving appears on the CAPTAIN'S SCREEN 1 as a question: ACCEPT
+            -> sent, REJECT / 10 s / screen 1 closed -> refused. STANDBY and
+            HOLD (AUTO pause) never wait. The copilot can't take HELM
+            (code 117) or ask for manual driving (code 118).
+  The first licensed user who logs in is the captain; everybody else is a
+  copilot (a viewer only watches). A station on the boat can always take
+  HELM and then is the captain.
+  ROLE SWAP: either side asks, the other one accepts - only if BOTH hold the
+  licence. HELM moves to the new captain in one step, so an UNCREWED boat
+  never sees a lost link.
+  SINGLE-OPERATOR mode (one person, both screens): your own confirmation
+  instead of the captain's ACCEPT; manual driving still needs the licence.
+
 -------------------------------------------------------------------------------
 8. THE USB JOYSTICK (THRUSTMASTER T.16000M + TWCS)
 -------------------------------------------------------------------------------

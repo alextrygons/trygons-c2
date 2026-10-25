@@ -236,6 +236,8 @@ class WebServer:
         if sid is None:
             return None
         st = Station(sid, user, role, ss.is_local(ip), ip, "web (%s)" % user, _WebWriter())
+        st.licence = self.gw.users.licence(user)
+        ss._crew_login(st, None)                        # captain / copilot like every station (section D)
         st.tokens = ss.burst
         st.tmode_pref = "lite"
         ss.stations[sid] = st

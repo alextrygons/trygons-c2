@@ -141,4 +141,7 @@ def result_text(d):
 
 GW_RESULTS_EN = {109: "driver screen not open", 110: "rejected by the driver",
                  111: "no answer from the driver (timeout)", 112: "driver screen lost",
-                 113: "single-operator mode: confirm on the captain screen first", 114: "shallow water on the route"}
+                 113: "single-operator mode: confirm on the captain screen first", 114: "shallow water on the route",
+                 116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
+                 117: "only the captain (or a station on the boat) holds HELM",
+                 118: "captain only: REMOTE MANUAL / MANEUVER", 119: "no captain holds HELM"}

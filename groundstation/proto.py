@@ -118,6 +118,8 @@ RESULTS = {
     100: "VIEWER: watch only", 101: "duplicate command", 102: "command out of order", 103: "stale command",
     104: "timestamp in the future", 105: "rate limited", 106: "AURIX not connected", 107: "wrong session",
     108: "bad command", 116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
+    117: "only the captain (or a station on the boat) holds HELM", 118: "captain only: REMOTE MANUAL / MANEUVER",
+    119: "no captain holds HELM",
 }
 
 MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL", "BENCH_TEST", "MANEUVER"]
@@ -637,6 +639,11 @@ def p_remote(action):
 def p_helm(action):
     """0 take, 1 release."""
     return struct.pack("<B", action)
+
+
+def p_helm_hand(station, local=False):
+    """HELM action 2: the holder hands HELM to another gateway station in one step (role swap)."""
+    return struct.pack("<BBB", 2, station, 1 if local else 0)
 
 
 def p_gw_status(flags, channel=0, stations=0, pi_log_seq=0, pi_log_gaps=0):

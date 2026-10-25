@@ -316,9 +316,10 @@ def gw_cfg_b(sim, root, **extra):
 class Client:
     """A ground station on the gateway (gwclient.GatewayLink) + its answers."""
 
-    def __init__(self, port, user, pw=None, key=None, local=False, clock_offset=0.0, name=None):
+    def __init__(self, port, user, pw=None, key=None, local=False, clock_offset=0.0, name=None, crew=None, boat=None):
         self.l = GatewayLink("127.0.0.1:%d" % port, user, password=pw, key=key, station=name or user,
-                             local_addr="127.0.0.2" if local else "127.0.0.1", clock_offset=clock_offset)
+                             local_addr="127.0.0.2" if local else "127.0.0.1", clock_offset=clock_offset,
+                             crew=crew, boat=boat)
         self.welcome = self.l.start()
         self.acks = []
         self.telem = None
@@ -452,9 +453,10 @@ def section_b():
         seen2 = alice.status["helm"]["name"] if alice.status else "?"
         report("B3 only the HELM station commands; one HELM; a local station takes it from a remote one; "
                "shown on every station",
-               (r1, r2, r3, r4, r5, r6, r7) == (21, 0, 0, 22, 0, 21, 0) and "alice" in seen and "bob on board" in seen2,
-               "alice without HELM %s, takes %s, command %s; bob (remote) takes %s; viewer sees HELM = %s; "
-               "bob on board takes %s; alice now %s; bob's command %s; alice sees HELM = %s" % (
+               (r1, r2, r3, r4, r5, r6, r7) == (21, 0, 0, 117, 0, 0, 0) and "alice" in seen and "bob on board" in seen2,
+               "alice (captain) without HELM %s, takes %s, command %s; bob (remote copilot) takes %s (117: only the "
+               "captain); viewer sees HELM = %s; bob on board takes %s (becomes the captain); alice now copilot: her "
+               "command runs on the captain's behalf %s; bob's command %s; alice sees HELM = %s" % (
                    r1, r2, r3, r4, seen, r5, r6, r7, seen2))
         bob_local.cmd(proto.T_HELM, proto.p_helm(1))
 
@@ -1856,7 +1858,8 @@ def next_event(client, kinds, timeout=5.0):
 
 
 def section_f1():
-    print("\n=== Fix F1: driver confirmation enforced in the gateway ===", flush=True)
+    print("\n=== F1 / section D: copilot actions need the captain's ACCEPT (screen 1), enforced in the gateway ===",
+          flush=True)
     tmp = tempfile.mkdtemp(prefix="gwtest_f1_")
     sim = gw = None
     try:
@@ -1871,69 +1874,80 @@ def section_f1():
         alice = Client(sp, "alice", PW["alice"], name="captain")
         alice.pump(1.0)
         alice.cmd(proto.T_HELM, proto.p_helm(0))
+        bob = Client(sp, "bob", PW["bob"], name="copilot")             # licence too, but the second: copilot
+        bob.pump(1.0)
         SEA = lambda n: proto.p_sea_state(n)
 
         def sea():
             alice.pump(0.6)
             return alice.telem["sea_state"] if alice.telem else None
 
-        # F1a no driver screen: driving actions refused; STANDBY and non-driving commands still work
-        r_sea = alice.result(alice.cmd(proto.T_SEA_STATE, SEA(3)))
-        r_par = alice.result(alice.cmd(proto.T_PARAM_SET, proto.p_param_set(0, 1.0)))
-        r_sb = alice.result(alice.cmd(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY)))
-        r_ack = alice.result(alice.cmd(proto.T_ALARM_ACK))
-        report("F1a no driver screen open: driving actions REFUSED (\"driver screen not open\"); STANDBY still works",
-               r_sea == 109 and r_par == 109 and r_sb == 0 and r_ack == 0,
-               "sea state %s, parameter %s (109 = driver screen not open); STANDBY %s, alarm ack %s (0 = OK)" % (
-                   r_sea, r_par, r_sb, r_ack))
+        # F1a the captain's screen 1 not open: the copilot's driving actions refused; STANDBY, hold, alarm ack
+        # and non-driving commands still work; the captain's own action goes straight through
+        r_sea = bob.result(bob.cmd(proto.T_SEA_STATE, SEA(3)))
+        r_par = bob.result(bob.cmd(proto.T_PARAM_SET, proto.p_param_set(0, 1.0)))
+        r_sb = bob.result(bob.cmd(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY)))
+        r_hold = bob.result(bob.cmd(proto.T_AUTO_PAUSE))
+        r_ack = bob.result(bob.cmd(proto.T_ALARM_ACK))
+        r_helm = bob.result(bob.cmd(proto.T_HELM, proto.p_helm(0)))
+        r_cap = alice.result(alice.cmd(proto.T_SEA_STATE, SEA(2)))
+        crews = {s.name: s.crew for s in g.stations.stations.values()}
+        report("F1a copilot without the captain's screen 1: driving actions REFUSED; STANDBY / hold / ack direct; "
+               "the captain's own action direct; a copilot can't take HELM",
+               r_sea == 109 and r_par == 109 and r_sb == 0 and r_hold not in (None, 109) and r_ack == 0 and
+               r_helm == 117 and r_cap == 0 and crews == {"captain": "captain", "copilot": "copilot"},
+               "crew %s; copilot: sea state %s, parameter %s (109 = screen not open); STANDBY %s, AUTO pause %s "
+               "(sent: the boat answers 7 = not in AUTO), alarm ack %s; HELM take %s (117); captain's own sea state %s" % (
+                   crews, r_sea, r_par, r_sb, r_hold, r_ack, r_helm, r_cap))
 
-        # F1b driver screen open: ACCEPT -> sent; REJECT -> refused; no answer -> refused
-        bob = Client(sp, "bob", PW["bob"], name="driver screen")
-        beat = DriverBeat(bob)
+        # F1b the captain's screen 1 open: copilot action -> ACCEPT -> sent; REJECT -> refused; no answer -> refused
+        beat = DriverBeat(alice)
         time.sleep(1.0)
         s0 = sea()
-        new = 3 if s0 != 3 else 2
-        seq = alice.l.send(proto.T_SEA_STATE, SEA(new), what="sea state %d" % new)
-        k, ask = next_event(bob, ("driver_ask",))
-        bob.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": True})
-        a_yes = alice.result(alice.wait_ack(seq))
+        new = 3 if s0 != 3 else 4
+        seq = bob.l.send(proto.T_SEA_STATE, SEA(new), what="sea state %d" % new)
+        k, ask = next_event(alice, ("driver_ask",))
+        alice.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": True})
+        a_yes = bob.result(bob.wait_ack(seq))
         s1 = sea()
-        seq = alice.l.send(proto.T_SEA_STATE, SEA(s0), what="sea state back")
-        k, ask2 = next_event(bob, ("driver_ask",))
-        bob.l.send_msg({"t": "driver_answer", "id": ask2["id"], "yes": False})
-        a_no = alice.result(alice.wait_ack(seq))
+        seq = bob.l.send(proto.T_SEA_STATE, SEA(s0), what="sea state back")
+        k, ask2 = next_event(alice, ("driver_ask",))
+        bob.l.send_msg({"t": "driver_answer", "id": ask2["id"], "yes": True})   # the copilot can't answer it
+        alice.l.send_msg({"t": "driver_answer", "id": ask2["id"], "yes": False})
+        a_no = bob.result(bob.wait_ack(seq))
         t0 = time.time()
-        seq = alice.l.send(proto.T_SEA_STATE, SEA(s0))
-        a_to = alice.result(alice.wait_ack(seq, timeout=5))
+        seq = bob.l.send(proto.T_SEA_STATE, SEA(s0))
+        a_to = bob.result(bob.wait_ack(seq, timeout=5))
         dt = time.time() - t0
         s2 = sea()
-        report("F1b driver ACCEPT -> sent; REJECT -> refused; no answer within the timeout -> refused",
-               ask and ask["text"] == "sea state %d" % new and a_yes == 0 and s1 == new and a_no == 110 and
-               a_to == 111 and 1.5 < dt < 4.0 and s2 == new,
-               "question on the driver screen: \"%s\" from %s; ACCEPT -> %s, boat sea state %s -> %s; REJECT -> %s; "
-               "no answer -> %s after %.1f s; sea state still %s" % (
+        report("F1b captain's ACCEPT on screen 1 -> sent; REJECT -> refused; no answer within the timeout -> refused",
+               ask and ask["text"] == "sea state %d" % new and ask["from"] == "copilot" and a_yes == 0 and s1 == new and
+               a_no == 110 and a_to == 111 and 1.5 < dt < 4.0 and s2 == new,
+               "question on the captain's screen 1: \"%s\" from %s; ACCEPT -> %s, boat sea state %s -> %s; "
+               "REJECT (the copilot's own answer ignored) -> %s; no answer -> %s after %.1f s; sea state still %s" % (
                    ask and ask["text"], ask and ask["from"], a_yes, s0, s1, a_no, a_to, dt, s2))
 
-        # F1c the driver screen crashes / disconnects while a question is open -> rejected
-        seq = alice.l.send(proto.T_SEA_STATE, SEA(s0))
-        k, ask3 = next_event(bob, ("driver_ask",))
+        # F1c the captain's screen 1 crashes / is closed while a question is open -> rejected
+        seq = bob.l.send(proto.T_SEA_STATE, SEA(s0))
+        k, ask3 = next_event(alice, ("driver_ask",))
         beat.stop()                                         # crash: the heartbeat stops
         t0 = time.time()
-        a_crash = alice.result(alice.wait_ack(seq, timeout=5))
+        a_crash = bob.result(bob.wait_ack(seq, timeout=5))
         t_crash = time.time() - t0
-        beat = DriverBeat(bob)
+        beat = DriverBeat(alice)
         time.sleep(0.8)
-        seq = alice.l.send(proto.T_SEA_STATE, SEA(s0))
-        k, ask4 = next_event(bob, ("driver_ask",))
+        seq = bob.l.send(proto.T_SEA_STATE, SEA(s0))
+        k, ask4 = next_event(alice, ("driver_ask",))
         beat.stop()
-        bob.close()                                         # the driver PC goes away
-        a_gone = alice.result(alice.wait_ack(seq, timeout=5))
-        r_after = alice.result(alice.cmd(proto.T_SEA_STATE, SEA(s0)))
-        report("F1c driver screen crashes / disconnects during a question -> the pending action is rejected",
+        alice.l.send_msg({"t": "driver", "open": False})    # screen 1 closed
+        a_gone = bob.result(bob.wait_ack(seq, timeout=5))
+        r_after = bob.result(bob.cmd(proto.T_SEA_STATE, SEA(s0)))
+        report("F1c captain's screen 1 crashes / is closed during a question -> the copilot's action is rejected",
                ask3 is not None and a_crash == 112 and t_crash < 3.5 and ask4 is not None and a_gone == 112 and
                r_after == 109 and sea() == new,
-               "heartbeat stopped -> %s after %.1f s (112 = driver screen lost); disconnected -> %s; next command -> %s; "
+               "heartbeat stopped -> %s after %.1f s (112 = screen lost); closed -> %s; next command -> %s; "
                "nothing changed on the boat" % (a_crash, t_crash, a_gone, r_after))
+        bob.close()
 
         # F1d SINGLE-OPERATOR mode: own confirmation; shown; logged; off when the station disconnects
         alice.l.send_msg({"t": "single_op", "on": True})
@@ -1952,12 +1966,12 @@ def section_f1():
         alice.cmd(proto.T_HELM, proto.p_helm(0))
         r_again = alice.result(alice.cmd(proto.T_SEA_STATE, SEA(new)))
         logged = [e for e in g.audit.recent if e["kind"] == "single_operator"]
-        report("F1d SINGLE-OPERATOR: driving action only with the captain's own confirmation; shown in the status; "
+        report("F1d SINGLE-OPERATOR: driving action only with the operator's own confirmation; shown in the status; "
                "logged; OFF after a disconnect",
-               so and so["on"] and r_nc == 113 and r_c == 0 and s3 == s0 and shown and off and r_again == 109 and
+               so and so["on"] and r_nc == 113 and r_c == 0 and s3 == s0 and shown and off and r_again == 0 and
                len(logged) >= 2 and logged[0]["on"] and not logged[-1]["on"],
                "switched on %s; without own confirmation %s (113); with it %s, sea state %s; status shows it %s; "
-               "after reconnect off %s, command %s (109 again); audit %s" % (
+               "after reconnect off %s, the captain's command %s (direct again); audit %s" % (
                    so and so["on"], r_nc, r_c, s3, shown, off, r_again,
                    [(e["on"], e.get("why", "")) for e in logged]))
 
@@ -1988,15 +2002,21 @@ def section_f1():
             pump(1.0)
             ap.open_driver()
             pump(2.5)
-            ap.cmd(proto.T_SEA_STATE, proto.p_sea_state(s0), "sea state %d" % s0)
+            cop = Client(sp, "bob", PW["bob"], name="copilot")
+            seq = cop.l.send(proto.T_SEA_STATE, proto.p_sea_state(s0), what="sea state %d" % s0)
             asked = pump(4, lambda: ap.driver.question is not None)
             ap.driver.answer(True)
             sent = pump(5, lambda: ap.t["sea_state"] == s0)
-            ap.cmd(proto.T_SEA_STATE, proto.p_sea_state(new), "sea state %d" % new)
+            seq = cop.l.send(proto.T_SEA_STATE, proto.p_sea_state(new), what="sea state %d" % new)
             asked2 = pump(4, lambda: ap.driver.question is not None)
             ap.close_driver()                                   # the driver window is closed mid-question
-            lost = pump(6, lambda: any("driver screen lost" in str(v) or "not open" in str(v)
-                                       for v in ap.ev_texts()))
+            end = time.time() + 6
+            a_lost = None
+            while time.time() < end and a_lost is None:
+                pump(0.1)
+                a_lost = cop.wait_ack(seq, timeout=0.05)
+            lost = a_lost is not None and a_lost["result"] in (109, 112)
+            cop.close()
             ap.single_op_toggle(confirmed=True)
             so_on = pump(4, lambda: ap.single_op)
             ap.cmd(proto.T_HELM, proto.p_helm(0), "take HELM")
@@ -2009,8 +2029,8 @@ def section_f1():
             own = ap.cconf is not None and ap.driver.question is None
             ap.cconf_send()
             sent2 = pump(5, lambda: ap.t["sea_state"] == new)
-            report("F1e ground station: the driver window answers the gateway; closing it rejects; single-operator "
-                   "banner on both screens + captain's own confirmation",
+            report("F1e ground station: the captain's driver window answers the copilot's question; closing it "
+                   "rejects; single-operator banner on both screens + own confirmation",
                    asked and sent and asked2 and lost and so_on and banner_c and banner_d and own and sent2,
                    "question shown on the driver window %s, ACCEPT -> boat %s; closed mid-question -> rejected %s; "
                    "single-operator on %s, banner captain %s / driver %s; own confirmation window %s -> sent %s %s" % (
@@ -2419,8 +2439,8 @@ def section_ca():
         alice = Client(sp, "alice", PW["alice"], name="captain")
         alice.pump(1.0)
         alice.cmd(proto.T_HELM, proto.p_helm(0))
-        bob = Client(sp, "bob", PW["bob"], name="driver screen")
-        beat = DriverBeat(bob)
+        bob = Client(sp, "bob", PW["bob"], name="copilot")
+        beat = DriverBeat(alice)                         # the captain's screen 1 (CLAUDE.md D)
 
         def joy(x=0.0, y=0.0, **kw):
             link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, x, y, **kw))
@@ -2458,9 +2478,6 @@ def section_ca():
         wp = east_of(0, 9000)                                             # due north, deep water all the way
         upload(alice, [wp], kn=10.0)
         seq = alice.l.send(proto.T_AUTO_START, b"", what="AUTO start")
-        k_, ask = next_event(bob, ("driver_ask",), 4.0)
-        if ask:
-            bob.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": True})
         alice.wait_ack(seq)
         joy(confirm=True)
         time.sleep(0.2)
@@ -2531,8 +2548,8 @@ def section_ca():
         ship = asim.add(crossing_ship(d1, 239400003, 12.0, 200.0, "FLYING CAT"))
         prop = wait_for(lambda: (g.nav_state.get("proposal") or {}).get("kind") == "avoid", 60)
         why_h = "%s: %s" % (g.avoider.state, g.avoider.why)
-        p_cap, a_cap = answer(alice, True)                                # the captain screen can't answer it
-        p1, a_rej = answer(bob, False)
+        p_cap, a_cap = answer(bob, True)                                  # the copilot can't answer it
+        p1, a_rej = answer(alice, False)
         # (Waiter.pump returns at the first frame: wait on the clock / on the gateway's state)
         gone = wait_for(lambda: g.nav_state.get("proposal") is None, 3)
         time.sleep(5.0)                                   # inside the 10 s hold-off
@@ -2541,18 +2558,18 @@ def section_ca():
         quiet = gone and g.nav_state.get("proposal") is None
         again = wait_for(lambda: (g.nav_state.get("proposal") or {}).get("kind") == "avoid" and
                          g.nav_state["proposal"]["id"] != (p1 or {}).get("id"), 25)
-        p2, a_acc = answer(bob, True)
+        p2, a_acc = answer(alice, True)
         turned = w.until(lambda d: p2 and abs((d["target"] - p2["heading"] + 180) % 360 - 180) < 1.5, 6)
-        report("CA-H HEADING LOCK: proposal on the driver screen; REJECT keeps the heading; ACCEPT changes it",
+        report("CA-H HEADING LOCK: proposal on the captain's screen 1; REJECT keeps the heading; ACCEPT changes it",
                prop and a_cap and not a_cap["ok"] and a_rej and a_rej["ok"] and
                abs((h_after_rej - h0 + 180) % 360 - 180) < 1.5 and quiet and again and a_acc and a_acc["ok"] and
                turned is not None and turned["mode"] == proto.MODE_HDG_LOCK,
-               "planner %s; proposal \"%s\"; from the captain screen: %s; REJECT -> heading %03.0f -> %03.0f, no new proposal "
+               "planner %s; proposal \"%s\"; from the copilot: %s; REJECT -> heading %03.0f -> %03.0f, no new proposal "
                "for 10 s %s; proposed again %s; ACCEPT -> locked heading %s (proposal %s)" % (
                    why_h[:80], p1 and p1["text"], a_cap and a_cap["text"], h0, h_after_rej, quiet, again,
                    "%03.0f" % turned["target"] if turned else "NOT changed", p2 and p2["heading"]))
         ret = wait_for(lambda: (g.nav_state.get("proposal") or {}).get("kind") == "return", 240)
-        p3, a_ret = answer(bob, True)
+        p3, a_ret = answer(alice, True)
         home = w.until(lambda d: abs((d["target"] - h0 + 180) % 360 - 180) < 1.5, 6)
         report("CA-H2 HEADING LOCK: when clear, the way back is proposed too (ACCEPT -> the old heading)",
                ret and p3 and p3["heading"] == round(h0) and a_ret and a_ret["ok"] and home is not None,
@@ -2566,9 +2583,6 @@ def section_ca():
         link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY))
         w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 6)
         seq = alice.l.send(proto.T_AUTO_START, b"", what="AUTO start")
-        k_, ask = next_event(bob, ("driver_ask",), 4.0)
-        if ask:
-            bob.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": True})
         alice.wait_ack(seq)
         joy(confirm=True)
         time.sleep(0.2)
@@ -2728,32 +2742,40 @@ def section_vi():
         wait_for(lambda: not v.threats, 10)
         alice.cmd(proto.T_ALARM_ACK)
 
-        # VI4 STAGE 3 ON needs the driver's ACCEPT (no driver screen / REJECT -> refused)
+        # VI4 STAGE 3 ON (affects the driving): the captain's own decision; the copilot's needs the captain's
+        # ACCEPT on screen 1 (no screen 1 / REJECT -> refused) - CLAUDE.md D
         beat.stop()
-        time.sleep(3.0)                                    # the driver screen is gone (no heartbeat)
-        stage(alice, "stage3", True)
-        a_none = ack(alice)
-        beat = DriverBeat(bob)
+        time.sleep(3.0)                                    # no screen 1 anywhere (no heartbeat)
+        stage(bob, "stage3", True)                          # bob = the copilot
+        a_none = ack(bob)
+        beat = DriverBeat(alice)                            # the captain's screen 1
         time.sleep(1.0)
-        stage(alice, "stage3", True)
-        k_, q = next_event(bob, ("driver_ask",), 4.0)
+        stage(bob, "stage3", True)
+        k_, q = next_event(alice, ("driver_ask",), 4.0)
         if q:
-            bob.l.send_msg({"t": "driver_answer", "id": q["id"], "yes": False})
-        a_rej = ack(alice)
+            alice.l.send_msg({"t": "driver_answer", "id": q["id"], "yes": False})
+        a_rej = ack(bob)
         on_after_rej = v.cfg["stage3"]
-        stage(alice, "stage3", True)
-        k_, q2 = next_event(bob, ("driver_ask",), 4.0)
+        stage(bob, "stage3", True)
+        k_, q2 = next_event(alice, ("driver_ask",), 4.0)
         if q2:
-            bob.l.send_msg({"t": "driver_answer", "id": q2["id"], "yes": True})
-        a_acc = ack(alice)
+            alice.l.send_msg({"t": "driver_answer", "id": q2["id"], "yes": True})
+        a_acc = ack(bob)
+        on_cop = v.cfg["stage3"]
+        stage(alice, "stage3", False)
+        ack(alice)
+        stage(alice, "stage3", True)                        # the captain: straight through, no question
+        a_cap = ack(alice)
         logged = [e for e in g.audit.recent if e["kind"] == "vision_stage" and e.get("stage") == "stage3"]
-        report("VI4 STAGE 3 (affects the driving) is switched on only with the driver screen's ACCEPT; logged",
+        report("VI4 STAGE 3 (affects the driving): the copilot only with the captain's ACCEPT (screen 1), the captain "
+               "directly; logged",
                a_none and not a_none["ok"] and "driver screen not open" in a_none["text"] and q and
-               a_rej and not a_rej["ok"] and not on_after_rej and q2 and a_acc and a_acc["ok"] and
-               v.cfg["stage3"] and logged,
-               "no driver screen: \"%s\"; REJECT: \"%s\" (stage 3 %s); ACCEPT: \"%s\"; audit %d entries" % (
+               a_rej and not a_rej["ok"] and not on_after_rej and q2 and a_acc and a_acc["ok"] and on_cop and
+               a_cap and a_cap["ok"] and v.cfg["stage3"] and logged,
+               "copilot, no screen 1: \"%s\"; REJECT: \"%s\" (stage 3 %s); ACCEPT: \"%s\"; the captain itself: "
+               "\"%s\"; audit %d entries" % (
                    a_none and a_none["text"], a_rej and a_rej["text"], on_after_rej, a_acc and a_acc["text"],
-                   len(logged)))
+                   a_cap and a_cap["text"], len(logged)))
 
         # VI5 MANUAL with STAGE 3: alarm only - throttle unchanged, no cap applied
         thr0 = w.telem["throttle"]
@@ -2782,7 +2804,7 @@ def section_vi():
         v.inject(0.0, 60.0, seconds=5.0)
         prop = wait_for(lambda: v.proposal is not None, 6)
         p6 = v.proposal
-        bob.l.send_msg({"t": "vision_ack", "id": p6 and p6["id"]})
+        alice.l.send_msg({"t": "vision_ack", "id": p6 and p6["id"]})            # the captain's screen 1
         time.sleep(1.0)
         d6 = w.telem
         report("VI6 STAGE 3 in HEADING LOCK: slow-down proposal on the driver screen, throttle unchanged",
@@ -2800,10 +2822,7 @@ def section_vi():
         # never more throttle; then vision CRASHES: no mode change, the cap is HELD until the driver clears it
         wp = east_of(0, 9000)
         upload(alice, [wp], kn=10.0)
-        seq = alice.l.send(proto.T_AUTO_START, b"", what="AUTO start")
-        k_, q = next_event(bob, ("driver_ask",), 4.0)
-        if q:
-            bob.l.send_msg({"t": "driver_answer", "id": q["id"], "yes": True})
+        seq = alice.l.send(proto.T_AUTO_START, b"", what="AUTO start")      # the captain's own: direct
         alice.wait_ack(seq)
         joy(confirm=True)
         time.sleep(0.2)
@@ -2825,10 +2844,10 @@ def section_vi():
         d7 = w.telem
         still = d7.get("nav_applied") and d7.get("nav_cap_kn") == 0.0 and d7["mode"] == proto.MODE_AUTO
         st7 = g.status()["vision"]
-        alice.l.send_msg({"t": "vision_clear"})
-        a_cap = ack(alice, 3.0)
-        bob.l.send_msg({"t": "vision_clear"})
-        a_drv = ack(bob, 3.0)
+        bob.l.send_msg({"t": "vision_clear"})                # the copilot: refused
+        a_cap = ack(bob, 3.0)
+        alice.l.send_msg({"t": "vision_clear"})              # the captain at screen 1: cleared
+        a_drv = ack(alice, 3.0)
         released = w.until(lambda d: not d.get("nav_applied"), 6)
         kinds = {e.get("nav_kind") for e in navs_since(n0)}
         v.fail(None)
@@ -2838,7 +2857,7 @@ def section_vi():
                still and st7["state"] == "OFFLINE" and a_cap and not a_cap["ok"] and a_drv and a_drv["ok"] and
                released is not None,
                "cap 0 kn applied %s; throttle %.1f %% -> max %.1f %% after; request kinds %s (1 = cap only); crash -> "
-               "%s, cap held %s, still applied after 8 s %s (mode %s); captain clear: \"%s\"; driver clear: \"%s\" -> "
+               "%s, cap held %s, still applied after 8 s %s (mode %s); copilot clear: \"%s\"; captain (screen 1) clear: \"%s\" -> "
                "released %s" % ("yes" if cap else "NO", thr0, thr_max, sorted(kinds), st7["state"], held, still,
                                 d7["mode_name"], a_cap and a_cap["text"], a_drv and a_drv["text"],
                                 "yes" if released else "NO"))
@@ -3014,8 +3033,9 @@ def section_cr():
         carl.result(carl.cmd(proto.T_HELM, proto.p_helm(1)))
         carl.close()
         report("CR1 (I26) REMOTE MANUAL / MANEUVER refused for a user without a manual licence",
-               r_helm_c == 0 and r_rem_c == 116 and r_man_c == 116 and r_rel_c == 0,
-               "carl (HELM, no licence): HELM %s, REMOTE %s, MANEUVER %s (116 = no manual licence), release %s" % (
+               r_helm_c == 117 and r_rem_c == 116 and r_man_c == 116 and r_rel_c in (0, 119),
+               "carl (HELM user, no licence = copilot): HELM %s (117), REMOTE %s, MANEUVER %s (116 = no manual "
+               "licence), release %s (never refused for the licence)" % (
                    r_helm_c, r_rem_c, r_man_c, r_rel_c))
 
         alice = Client(sp, "alice", PW["alice"], name="alice")
@@ -3099,6 +3119,94 @@ def section_cr():
                "LINK LOST + STANDBY %s; ENGINE KILLED %s; captain back with HELM: still killed %s; alarms %s" % (
                    lost is not None, killed is not None, still, ", ".join(alarms)))
         alice.close()
+        link.stop()
+        gw.stop()
+        sim.stop()
+
+        # --- crew roles on an UNCREWED boat (no onboard joystick): captain / copilot, swap, boat name ---
+        sim = Sim(1.0, "nojoy")
+        link, w = sim.station()
+        root4 = os.path.join(tmp, "ssd4")
+        os.makedirs(root4)
+        users = users_cfg()
+        users["carl"] = {"role": "HELM", "pw": hash_pw("carl-password-33")}           # no manual licence
+        cfg = gw_cfg_b(sim, root4, users=users)
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        w.until(lambda d: d.get("profile") == proto.PROFILE_UNCREWED, 12)
+        alice = Client(sp, "alice", PW["alice"], name="alice")
+        bob = Client(sp, "bob", PW["bob"], name="bob", crew="captain")             # asks, but alice is the captain
+        carl = Client(sp, "carl", "carl-password-33", name="carl", crew="captain")  # asks, without a licence
+        vic = Client(sp, "vic", PW["vic"], name="vic")
+        crews = {s.name: s.crew for s in g.stations.stations.values()}
+        notes = (bob.welcome.get("crew_note"), carl.welcome.get("crew_note"))
+        alice.result(alice.cmd(proto.T_HELM, proto.p_helm(0)))
+        r_bob_rem = bob.result(bob.cmd(proto.T_REMOTE, proto.p_remote(0)))
+        r_carl_helm = carl.result(carl.cmd(proto.T_HELM, proto.p_helm(0)))
+        report("CR6 crew at login: the first licensed user = captain; a second captain, or one without a licence -> "
+               "copilot; a copilot can't take HELM or ask for manual driving",
+               crews == {"alice": "captain", "bob": "copilot", "carl": "copilot", "vic": None} and all(notes) and
+               r_bob_rem == 118 and r_carl_helm == 117,
+               "crews %s; notes %s; copilot bob asks REMOTE %s (118 = captain only); copilot carl HELM %s (117)" % (
+                   crews, notes, r_bob_rem, r_carl_helm))
+
+        # CR7 role swap (both licensed): HELM moves to the new captain in one step - no LINK LOST (UNCREWED);
+        # with an unlicensed partner refused
+        alice.pump(1.0)
+        bob.l.send_msg({"t": "crew_swap"})
+        k, ask = next_event(alice, ("crew_swap_ask",))
+        lost_seen = []
+        alice.l.send_msg({"t": "crew_swap_answer", "yes": True})
+        k, done = next_event(bob, ("crew_swap_done",))
+        t0 = time.time()
+        while time.time() - t0 < 3:
+            w.pump(0.1)
+            if w.telem and w.telem.get("ll_state"):
+                lost_seen.append(w.telem["ll_state"])
+        helm = w.telem.get("helm") if w.telem else None
+        crews2 = {s.name: s.crew for s in g.stations.stations.values()}
+        bob_id = bob.welcome["id"]
+        bob.l.send_msg({"t": "crew_swap", "with": carl.welcome["id"]})
+        k, refused = next_event(bob, ("crew_swap_done",))
+        r_alice_rem = alice.result(alice.cmd(proto.T_REMOTE, proto.p_remote(0)))
+        report("CR7 role swap captain <-> copilot (both licensed): HELM handed over in one step, no LINK LOST; "
+               "refused when one has no licence",
+               ask is not None and done and done.get("ok") and helm == bob_id and not lost_seen and
+               crews2.get("bob") == "captain" and crews2.get("alice") == "copilot" and refused and
+               not refused.get("ok") and r_alice_rem == 118,
+               "bob asks, alice accepts: %s; AURIX HELM -> %s (bob %s); lost-link states seen %s; crews %s; swap with "
+               "carl (no licence): %s; alice (now copilot) asks REMOTE %s" % (
+                   done, helm, bob_id, lost_seen or "none", crews2, refused and refused.get("text"), r_alice_rem))
+        for c in (alice, bob, carl, vic):
+            c.close()
+
+        # CR8 the boat name: a station that expects another boat is refused (gateway and station both check)
+        boat = g.cfg.get("boat")
+        err = None
+        try:
+            Client(sp, "alice", PW["alice"], name="alice", boat="er69d-not-this-one")
+        except ConnectionError as e:
+            err = str(e)
+        good = Client(sp, "alice", PW["alice"], name="alice", boat=boat)
+        ok_boat = good.welcome is not None and good.welcome.get("boat") == boat
+        good.close()
+        report("CR8 boat name check: the gateway of another boat refuses the login; the right one connects",
+               err is not None and "wrong boat" in err and ok_boat,
+               "this gateway is %r; asked for another boat -> %r; the right name -> connected %s" % (boat, err, ok_boat))
+
+        # CR9 a station on the boat takes HELM from a remote captain: it becomes the captain (on board wins)
+        cap = Client(sp, "alice", PW["alice"], name="shore")
+        cap.result(cap.cmd(proto.T_HELM, proto.p_helm(0)))
+        onb = Client(sp, "bob", PW["bob"], name="on board", local=True)
+        r_take = onb.result(onb.cmd(proto.T_HELM, proto.p_helm(0)))
+        onb.pump(1.0)
+        crews3 = {s.name: s.crew for s in g.stations.stations.values()}
+        report("CR9 a station on the boat can always take HELM and then is the captain; the shore one -> copilot",
+               r_take == 0 and crews3.get("on board") == "captain" and crews3.get("shore") == "copilot",
+               "on board takes HELM %s; crews %s" % (r_take, crews3))
+        cap.close()
+        onb.close()
         link.stop()
         gw.stop()
         sim.stop()
