@@ -36,6 +36,12 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
      AR; with one: horizon + heel scale, velocity vector, waypoint diamond (or
      edge arrow), route ribbon, AIS boxes (or edge arrows), predicted path,
      shallow-water tint; each one switched off on its own; vision overlay stays
+  I17 MAP window: chart layers, AIS list, own boat, track, route, active
+     waypoint, uncertainty, range rings, warnings; follow / free pan, zoom,
+     north-up / course-up, day / dark / night; settings remembered; view only
+     (nothing sent); moved to a monitor
+  (I6 also covers the MAP window: open + place remembered over a restart)
+
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
 import os
@@ -602,6 +608,70 @@ def main():
                "no calibration -> notice %s; shown %s, AIS edge arrow %s, heel scale %s; each off alone %s; vision "
                "mask still drawn %s; errors %d" % (nocal, shown, edge, roll, off_ok, vis_kept, len(errors)))
 
+        # I17 the MAP window
+        sent_frames = []
+        app.link.send = lambda *a, **k: (sent_frames.append(a[0]), orig_send(*a, **k))[1]
+        app.prog["wps"] = [{"lat": app.t["est_lat"] + 0.002, "lon": app.t["est_lon"] + 0.002, "kn": 6, "radius": 25,
+                            "action": 0},
+                           {"lat": app.t["est_lat"] + 0.004, "lon": app.t["est_lon"], "kn": 6, "radius": 25, "action": 0}]
+        la, lo = app.t["est_lat"], app.t["est_lon"]
+        app.gw_status = {"ais": {"list": ships}, "avoid": {"state": "PROPOSE", "threats": threats, "route": [
+            (la, lo), (la + 0.003, lo + 0.003)], "shallow": {"lat": la + 0.001, "lon": lo, "in_s": 40, "depth": 2.1,
+                                                            "limit": 3.0}}}
+        orig_t = app.on_telem
+        app.on_telem = lambda d_: orig_t(dict(d_, pos_source=1, heading=75.0, est_sog=5.0, est_cog=80.0, wp_set=True,
+                                              wp_lat=la + 0.002, wp_lon=lo + 0.002, unc_m=40.0))
+        app.open_map()
+        mw = app.mapwin
+        mw.w.geometry("1200x800+150+90")
+        pump(1.2)
+        tags = {t: len(mw.cv.find_withtag(t)) for t in ("ring", "track", "prog", "active_wp", "unc", "boat", "ais",
+                                                        "route", "shallow", "warning", "north", "note")}
+        rows = mw.tree.get_children()
+        x_n = mw.cv.coords(mw.cv.find_withtag("north")[0])
+        mw.toggle_orient()
+        pump(0.6)
+        x_c = mw.cv.coords(mw.cv.find_withtag("north")[0])
+        rotated = mw.view and mw.view[2] == 75.0 and abs(x_c[0] - x_n[0]) > 5
+        m0 = mw.m
+        mw.zoom(0.6)
+        zoomed = abs(mw.m - m0 * 0.6) < 1e-6
+        c0 = mw.center
+        E = lambda x, y: type("E", (), {"x": x, "y": y})()            # noqa: E731
+        mw.on_press(E(400, 300))
+        mw.on_motion(E(300, 250))
+        panned = not mw.follow and mw.center != c0
+        mw.toggle_follow()
+        pump(0.6)
+        back = mw.follow and abs(mw.center[0] - app.t["est_lat"]) < 1e-4
+        themes = []
+        for _ in range(3):
+            mw.next_theme()
+            themes.append((mw.theme, mw.cv.cget("bg")))
+        settings.reload()
+        remembered = (settings.get("map") or {}).get("course_up") is True and abs(
+            (settings.get("map") or {}).get("m_per_px", 0) - mw.m) < 1e-3
+        moved = A.monitors.move_to(mw.w, 0, app)
+        pump(0.5)
+        mons = A.monitors.list_monitors(root)
+        on_mon = A.monitors.monitor_of(mw.w, mons) == 0
+        hb = [f for f in sent_frames if f != proto.T_HEARTBEAT]
+        app.link.send = orig_send
+        app.on_telem = orig_t
+        mw.toggle_orient()
+        report("I17 MAP window: chart layers, AIS list, boat, track, route, waypoint, uncertainty, range rings, warnings;"
+               " follow / pan / zoom / course-up / themes; remembered; view only; moved to monitor 1",
+               all(v > 0 for k, v in tags.items() if k != "track") and len(rows) == 3 and rotated and zoomed and
+               panned and back and len({t for t, _b in themes}) == 3 and remembered and moved and on_mon and not hb
+               and not errors,
+               "items %s; AIS list %d rows; course-up turns the map (north arrow moved %s); zoom %s; pan %s, follow "
+               "again %s; themes %s; remembered %s; monitors %d, moved to monitor 1 %s; frames sent %s" % (
+                   tags, len(rows), rotated, zoomed, panned, back, themes, remembered, len(mons), on_mon, hb))
+        mw.w.state("normal")
+        mw.w.geometry("1200x800+150+90")
+        app.gw_status = None
+        pump(0.3)
+
         # I9 BENCH TEST tab (USB-style link): enter, live sensors, a steering pulse, a button, leave
         app.bench(A.proto.BENCH_ENTER, 0, "bench test: enter")
         in_bench = pump(3.0, lambda: app.t and app.t.get("mode") == A.proto.MODE_BENCH and app.bench_d is not None)
@@ -629,7 +699,7 @@ def main():
                                                                   btn_green, still, servo, state[:50], left, off_txt))
 
         # I6 window places remembered; F12 swaps the screens
-        g_cap, g_drv = root.geometry(), dv.w.geometry()
+        g_cap, g_drv, g_map = root.geometry(), dv.w.geometry(), app.mapwin.w.geometry()
         app.save_layout()
         with open(A.LAYOUT, encoding="utf-8") as f:
             lay = A.json.load(f)
@@ -644,12 +714,15 @@ def main():
         app2 = A.App(root)
         pump(1.5)
         restored = app2.driver is not None and root.geometry().split("+")[1:] == g_cap.split("+")[1:] and \
-            app2.driver.w.geometry().split("+")[1:] == g_drv.split("+")[1:]
-        report("I6 both window places remembered (monitors) and restored; F12 swaps captain and driver screens",
+            app2.driver.w.geometry().split("+")[1:] == g_drv.split("+")[1:] and app2.mapwin is not None and \
+            app2.mapwin.w.geometry() == g_map
+        report("I6 window places remembered (monitors) and restored: captain, driver, map; F12 swaps captain and "
+               "driver screens",
                lay.get("driver_open") and swapped and restored,
-               "saved %s; after F12 captain at %s, driver at %s (swapped %s); after a restart: captain %s, driver %s" % (
-                   lay, root.geometry(), app2.driver.w.geometry() if app2.driver else None, swapped,
-                   root.geometry(), app2.driver.w.geometry() if app2.driver else "NOT OPEN"))
+               "saved %s; after F12 captain at %s, driver at %s (swapped %s); after a restart: captain %s, driver %s, "
+               "map %s (was %s)" % (lay, root.geometry(), app2.driver.w.geometry() if app2.driver else None, swapped,
+                                    root.geometry(), app2.driver.w.geometry() if app2.driver else "NOT OPEN",
+                                    app2.mapwin.w.geometry() if app2.mapwin else "NOT OPEN", g_map))
         app2.quit()
         root = None
     finally:
