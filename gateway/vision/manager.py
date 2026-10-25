@@ -134,6 +134,8 @@ class VisionManager:
         self.cfg["camera"], bad = geo.check_camera(self.cfg.get("camera"))
         for b in bad:
             log.warning("vision camera config not usable: %s", b)
+        # the ground stations' AR overlays (driver HUD) use the calibration only when it is really set here
+        self.cam_calibrated = bool((cfg or {}).get("camera")) and not bad
         self.gw = gw
         self.state, self.reason = OFFLINE, "starting"
         self.proc, self.reader = None, None
@@ -634,7 +636,8 @@ class VisionManager:
               "threats": len(self.threats), "cap_kn": self.cap_kn, "cap_held": self.cap_held,
               "proposal": self.proposal, "notices": list(self.notices)[-3:], "source": self.cfg["source"],
               "restarts": self.restarts, "counts": dict(self.counts), "paused": self.paused,
-              "model": self.hello.get("model"), "threads": self.cfg["threads"]}
+              "model": self.hello.get("model"), "threads": self.cfg["threads"],
+              "camera": dict(self.cfg["camera"]) if self.cam_calibrated else None}
         if self.mask and not saver:
             st["mask"] = self.mask
         return st

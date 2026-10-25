@@ -29,6 +29,13 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
      file; outside the edit mode a drag moves nothing
   I14 the HUD never changes control behaviour: every HUD button / key pressed,
      no frame to the boat
+  I15 AR maths: horizon from the camera tilt, heel turns it, points on the water
+     below the horizon, out of view detected, predicted path, route points,
+     calibration checked (unknown / out of range = none)
+  I16 AR on the front video: without a calibration "calibration unknown" and no
+     AR; with one: horizon + heel scale, velocity vector, waypoint diamond (or
+     edge arrow), route ribbon, AIS boxes (or edge arrows), predicted path,
+     shallow-water tint; each one switched off on its own; vision overlay stays
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
 import os
@@ -501,6 +508,99 @@ def main():
                "never send a frame to the boat", not hb and not errors,
                "frames sent: %s; errors %d" % ([hex(f) for f in hb], len(errors)))
         i18n.set_lang("en", save=False)
+
+        # I15 AR maths
+        import hudar
+        cal = {"height_m": 2.0, "tilt_down_deg": 3.0, "hfov_deg": 80.0, "vfov_deg": 45.0, "yaw_deg": 0.0}
+        c0 = hudar.Cam(cal)
+        fy = 0.5 / A.math.tan(A.math.radians(22.5))
+        (ul, vl), (ur, vr) = c0.horizon()
+        hz_ok = abs(vl - (0.5 - fy * A.math.tan(A.math.radians(3.0)))) < 1e-6 and abs(vl - vr) < 1e-9
+        c10 = hudar.Cam(cal, roll=10.0)
+        (ul2, vl2), (ur2, vr2) = c10.horizon()
+        heel_ok = vr2 < vl2                                     # starboard down: the horizon rises to the right
+        p20 = c0.project(20.0, 0.0)
+        water_ok = p20 is not None and abs(p20[0] - 0.5) < 1e-9 and p20[1] > vl
+        behind = c0.project(-10.0, 0.0) is None
+        _, _, inv = c0.project_bearing(30.0)
+        _, _, outv = c0.project_bearing(60.0)
+        straight = hudar.path_points(10.0, 0.0, seconds=30.0)
+        turn = hudar.path_points(10.0, 3.0, seconds=30.0)
+        path_ok = abs(straight[-1][1] - 30 * 10 * 0.514444) < 0.5 and abs(straight[-1][2]) < 1e-6 and turn[-1][2] > 20
+        rp = hudar.route_points(37.8, 23.6, [(37.8 + 1000 / 111320.0, 23.6)], step_m=25.0)
+        route_ok = len(rp) == 41 and abs(rp[-1][2] - 1000.0) < 1e-6
+        cal_ok = hudar.calibration({}) is None and hudar.calibration({"vision": {"camera": dict(cal, hfov_deg=0)}}) is \
+            None and hudar.calibration({"vision": {"camera": cal}}) == cal
+        report("I15 AR maths: horizon from the tilt, heel turns it, water points below the horizon, field of view, "
+               "predicted path, route points, calibration checked",
+               hz_ok and heel_ok and water_ok and behind and inv and not outv and path_ok and route_ok and cal_ok,
+               "horizon v %.3f (level %s); heel 10 deg: left %.3f right %.3f; 20 m ahead v %.3f; behind -> None %s; "
+               "30 deg in view %s, 60 deg %s; 30 s at 10 kn %.1f m straight, turning 3 deg/s %.1f m right; route "
+               "points %d; calibration checks %s" % (vl, hz_ok, vl2, vr2, p20[1] if p20 else -1, behind, inv, outv,
+                                                       straight[-1][1], turn[-1][2], len(rp), cal_ok))
+
+        # I16 AR on the HUD
+        class FakeCharts:
+            def __bool__(s):
+                return True
+
+            def depth(s, la, lo):
+                return 1.5 if la > app.t["est_lat"] + 0.0002 else 40.0         # shallow north of the boat
+
+            def area_at(s, la, lo):
+                return True
+
+            attribution = lambda s: []                         # noqa: E731
+            areas = []
+        real_charts = app.charts
+        app.charts = FakeCharts()
+        dv.chartview = driver.mapview.ChartView(app.charts)
+        settings.put("camera", None)
+        orig_t = app.on_telem
+
+        def moving(d_):
+            la, lo = d_["est_lat"], d_["est_lon"]
+            orig_t(dict(d_, est_sog=7.0, est_cog=4.0, heading=0.0, yaw_rate=2.0, att_roll=5.0, att_pitch=0.0,
+                        pos_source=1, wp_set=True, wp_lat=la + 0.006, wp_lon=lo + 0.001, prog_n=2, auto_wp=0,
+                        mode=proto.MODE_HDG_LOCK, mode_name="HDG_LOCK"))
+        app.on_telem = moving
+        app.vstreams = {"FRONT-1": FakeStream(w=640, h=360)}
+        app.front_sel = A.video.FrontSelector()
+        pump(0.6)
+        nocal = dv.has("ar_nocal") and not dv.has("ar_horizon")
+        la, lo = app.t["est_lat"], app.t["est_lon"]
+        app.gw_status = {"vision": {"state": "ACTIVE", "fps": 2.0, "camera": cal, "obstacles": [], "mask": {
+            "w": 64, "h": 48, "b64": base64.b64encode(packed).decode()}},
+                         "ais": {"list": [{"mmsi": 5, "name": "AHEAD", "lat": la + 0.004, "lon": lo, "sog": 9.0,
+                                           "cog": 180.0, "dist_nm": 0.24},
+                                          {"mmsi": 6, "name": "ABEAM", "lat": la, "lon": lo + 0.006, "sog": 9.0,
+                                           "cog": 270.0, "dist_nm": 0.28}]},
+                         "avoid": {"threats": [{"mmsi": 6, "name": "ABEAM", "cpa_nm": 0.1, "tcpa_min": 1.5,
+                                                "dist_nm": 0.28, "bearing": 90.0, "level": "danger"}]}}
+        pump(1.4)
+        tags = {"horizon": "ar_horizon", "velocity": "ar_velocity", "waypoint": "ar_wp", "ribbon": "ar_ribbon",
+                "ais": "ar_ais", "path": "ar_path", "shallow": "ar_shallow"}
+        shown = {k: dv.has(t) for k, t in tags.items()}
+        edge = dv.has("ar_ais_edge")
+        roll = dv.has("ar_roll")
+        off_ok = {}
+        for k, t in tags.items():
+            settings.put("ar", dict({kk: True for kk in tags}, **{k: False}))
+            pump(0.35)
+            off_ok[k] = not dv.has(t) and all(dv.has(tt) for kk, tt in tags.items() if kk != k and kk != "shallow")
+        settings.put("ar", {kk: True for kk in tags})
+        vis_kept = dv.has("vmask")
+        app.on_telem = orig_t
+        app.gw_status = None
+        app.charts = real_charts
+        dv.chartview = driver.mapview.ChartView(app.charts)
+        app.vstreams = {}
+        report("I16 AR overlays: 'calibration unknown' without a calibration; horizon + heel, velocity vector, "
+               "waypoint, route ribbon, AIS box + edge arrow, predicted path, shallow tint; each one off on its own; "
+               "the vision overlay stays",
+               nocal and all(shown.values()) and edge and roll and all(off_ok.values()) and vis_kept and not errors,
+               "no calibration -> notice %s; shown %s, AIS edge arrow %s, heel scale %s; each off alone %s; vision "
+               "mask still drawn %s; errors %d" % (nocal, shown, edge, roll, off_ok, vis_kept, len(errors)))
 
         # I9 BENCH TEST tab (USB-style link): enter, live sensors, a steering pulse, a button, leave
         app.bench(A.proto.BENCH_ENTER, 0, "bench test: enter")

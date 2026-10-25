@@ -2623,6 +2623,15 @@ def section_vi():
            cam["hfov_deg"] == 80.0 and cam["vfov_deg"] == 45.0 and cam["height_m"] == 1.2 and len(bad) == 2 and
            nan_in and math.isfinite(loc[1]),
            "problems %s; NaN distance in the corridor %s; distance with the fixed config %.1f m" % (bad, nan_in, loc[1]))
+    # VI0b the driver HUD's AR overlays get the calibration only when it is really set (and usable)
+    from vision.manager import VisionManager
+    good = {"height_m": 2.0, "tilt_down_deg": 2.0, "hfov_deg": 75.0, "vfov_deg": 44.0}
+    c_none = VisionManager({"enabled": False}, None).status()["camera"]
+    c_set = VisionManager({"enabled": False, "camera": good}, None).status()["camera"]
+    c_bad = VisionManager({"enabled": False, "camera": dict(good, hfov_deg=0)}, None).status()["camera"]
+    report("VI0b vision status: the camera calibration for the HUD's AR overlays only when configured and usable",
+           c_none is None and c_set == dict(good, yaw_deg=0.0) and c_bad is None,
+           "not configured -> %s; configured -> %s; field of view 0 -> %s" % (c_none, c_set, c_bad))
     tmp = tempfile.mkdtemp(prefix="gwtest_vi_")
     sim = gw = None
     try:

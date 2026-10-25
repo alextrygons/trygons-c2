@@ -143,7 +143,9 @@ def vision_config():
     say("vision   %s" % ("eWaSR on the sea video (FRONT-1)" if ok else
                          "synthetic detections only (for the real model: tools\\get_vision_python.py, "
                          "get_vision_model.py, get_vision_samples.py)"))
-    return {"enabled": True, "source": "camera" if ok else "fake", "allow_inject": True}
+    # the front camera calibration of the demo video: the driver HUD's AR overlays (horizon, route ribbon ...)
+    return {"enabled": True, "source": "camera" if ok else "fake", "allow_inject": True,
+            "camera": {"height_m": 2.0, "tilt_down_deg": 2.0, "hfov_deg": 75.0, "vfov_deg": 44.0, "yaw_deg": 0.0}}
 
 
 def gateway_config(mtx, charts):
