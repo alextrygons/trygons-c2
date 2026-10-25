@@ -16,8 +16,8 @@ files), then A, B, C, D, F, G.
 
 | Step | What | State | Commit |
 |---|---|---|---|
-| E | i18n.py + lang/el.txt + lang/en.txt (plain key = text, comments), settings.py (per-PC: gs_settings.json), alerts.py (alarm levels + codes), monitors.py; captain screen fully from the language files, ΕΛ / EN buttons + menu, live switch, remembered; English stays in protocol / audit (TE + from_en); fits 1920 px in both; test_lang.py L1-L5 in the gate | DONE (gate OK except: sim build blocked by the running demo, VR5 flaky under load -> VR alone 5/5) | (this commit) |
-| A | driver.py rewrite: full-screen camera HUD | IN PROGRESS (hud.py + driver.py written, test_driver I1-I14 pass) | |
+| E | i18n.py + lang/el.txt + lang/en.txt (plain key = text, comments), settings.py (per-PC: gs_settings.json), alerts.py (alarm levels + codes), monitors.py; captain screen fully from the language files, ΕΛ / EN buttons + menu, live switch, remembered; English stays in protocol / audit (TE + from_en); fits 1920 px in both; test_lang.py L1-L5 in the gate | DONE (gate OK except: sim build blocked by the running demo, VR5 flaky under load -> VR alone 5/5) | cea40c6 |
+| A | driver.py rewrite: full-screen camera HUD: hud.py (layout, palette, overlays as a display list) + driver.py (Pillow renderer: transparent panels, outlined text, text cache ~25 ms/frame; canvas fallback), fill / fit, mirrors, MASTER lamps, alarm bar, throttle + gear + trend, speed tape, depth (chart), waypoint ETA / TTG, AIS threat, ROT, G-meter, outboard angle, CDI, dark mini map, one bottom line, night, declutter, edit layout (hud_layout.json) | DONE (test_driver I1-I14) | (this commit) |
 | B | AR overlays (hudar.py) | | |
 | C | MAP window (mapwin.py), monitor placement for all windows | | |
 | D | sound.py + tts + callouts + sound test page | | |

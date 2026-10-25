@@ -27,7 +27,7 @@ import alerts  # noqa: E402
 import proto  # noqa: E402
 
 results = []
-SCREEN_MODULES = ["app.py", "mapview.py", "hud.py", "hudar.py", "mapwin.py", "soundtest.py", "monitors.py",
+SCREEN_MODULES = ["app.py", "mapview.py", "driver.py", "hud.py", "hudar.py", "mapwin.py", "soundtest.py", "monitors.py",
                   "sound.py"]
 
 
