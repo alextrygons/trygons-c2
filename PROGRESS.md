@@ -1,6 +1,39 @@
 # PROGRESS
 
-Current task: "Crew profiles + two screens": CREWED / UNCREWED profile (autodetected),
+Current task: "Screen 2 review" (one section, one commit): screen 2 = "navigation & control"
+(Greek "Πλοήγηση & έλεγχος"): full-screen map (boat centred, north-up locked, boat icon turns,
+zoom; temporary pan snaps back after 10 s / "back to boat"), corner overlay panels
+(semi-transparent, collapsible; STANDBY always visible; never over the boat), roles (MANUAL /
+MANEUVER only from screen 1 with the licence, single-operator exception), MANEUVER on screen 1
+(captain, FWD / N / REV), map editing for the copilot (route, geofence, max speed -> captain's
+ACCEPT, pending / accepted / rejected shown), link panel (channels, profile, shore, lost-link
+countdown, engine kill), boat selector (boats/, online, name verified), layout test 1366x768 +
+1920x1080 at 100-150 %, all Greek texts translated, ONE shared style module for both screens
+(theme.py, dark / light together), the logo (assets/) bottom-right on both screens, Greek manual.
+Tests must pass (tools/check.sh + test_driver + quick acceptance), commit, push.
+If interrupted: say "continue from PROGRESS.md" - continue with the first step not DONE.
+
+| Step | What | State |
+|---|---|---|
+| a | theme.py (fonts, sizes, colours, buttons, panels, alpha, dark / light, DPI) + logo PNGs from assets/trygonsdrones_logo.svg | DONE (theme.py, assets/trygonsdrones_logo*.png) |
+| b | mapwin.py: full-screen map core (centred, north-up, zoom, pan + snap back, route / fence editing) | DONE (mapwin.MapView) |
+| c | overlay.py: panel engine (canvas display list, alpha panels, collapse, hits, fit check) | DONE (overlay.py) |
+| d | app.py: screen 2 rebuilt (4 corner panels, banners, STANDBY, logo, tools window for the other tabs) | DONE (app.py rebuilt; tools window = vertical page list) |
+| e | driver.py / hud.py: theme, logo, MANEUVER + REMOTE start (captain + licence), FWD / N / REV | DONE (hud drive / maneuver / logo; driver theme) |
+| f | gateway: PROG_COMMIT = driving (copilot -> ACCEPT), geofence (route check code 120, ask_local) + tests | DONE (gateway/geofence.py, code 120, GF1-GF5 pass) |
+| g | lang el / en (all new keys, every English text in the Greek UI translated) + test_lang | DONE (102 new keys + Greek fixes; i18n.from_en translates the filled-in parts too) |
+| h | tests: test_screen2.py (layout matrix + functions), existing tests adapted, check.sh | DONE (test_screen2 11/11, test_driver 18/18, e2e 10/10, lang / boats / charts / sound / logs pass) |
+| i | CLAUDE.md, MANUAL.txt + MANUAL_EL.txt, PROGRESS.md; gate + quick acceptance; commit + push | docs DONE; gate + quick acceptance running on the commit, then push |
+
+Decisions: no geofence existed anywhere -> added on the GATEWAY (like the shallow-water route
+check: program upload / AUTO start refused when a waypoint or leg leaves the fence, code 120;
+a copilot's change needs the captain's ACCEPT via stations.ask_local). Tk has no transparent
+widgets -> screen 2 panels are drawn on the map canvas (Pillow RGBA backgrounds, canvas text,
+canvas buttons), like the HUD's display list on screen 1.
+
+# Previous task: "Crew profiles + two screens"
+
+Task: "Crew profiles + two screens": CREWED / UNCREWED profile (autodetected),
 UNCREWED lost-link engine kill, MANEUVER mode, captain / copilot roles with the manual
 licence, two screens per station, boats/ folder. Design = CLAUDE.md section
 "Crew, profiles, MANEUVER, screens, boats" (A-F). One commit per section; the gate

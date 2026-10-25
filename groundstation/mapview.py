@@ -16,7 +16,10 @@ import math
 import tkinter as tk
 
 import chart
+import theme
 from i18n import T
+
+F = theme.FAMILY
 
 try:
     from PIL import Image, ImageDraw, ImageTk
@@ -39,8 +42,8 @@ THEMES = {
                        (20.0, "#12364b"), (50.0, "#0e2b3c"), (100.0, "#0a2130"), (1e9, "#071824")],
              "nodata": "#262626", "outside": "#0a0f14", "note_bg": "#1c1400", "note_fg": "#ffb000", "att": "#8090a0",
              "contour": ("#6ab0e0", "#2c5272"), "avoid": "#ff50ff", "route": "#ff70ff", "track": "#80c8ff",
-             "text": "#c8d8e8", "own": "#3cff6a", "warn": "#ff3030", "good": "#3cff6a",
-             "ais": {"danger": "#ff3030", "warn": "#ffb000", None: "#6aa8ff", "stale": "#707070"},
+             "text": "#c8d8e8", "own": theme.GOOD, "warn": theme.WARN, "good": theme.GOOD,
+             "ais": {"danger": theme.WARN, "warn": theme.CAUTION, None: "#6aa8ff", "stale": "#707070"},
              "mark_dark": "#c0c0c0", "vision": ("#ff7020", "#d09000")},
     "night": {"bg": "#000000", "blend": "#000000",
               "bands": [(0.0, "#2a1408"), (2.0, "#401810"), (3.0, "#36140c"), (5.0, "#2e110a"), (10.0, "#270e08"),
@@ -177,7 +180,12 @@ class ChartView:
         return ImageTk.PhotoImage(im)
 
     def draw(self, c, lat0, lon0, m, w, h, layers=None, opacity=0.8, ais=None, threats=None, route=None,
-             shallow=None, small=False, vision=None, theme="day", rot=0.0):
+             shallow=None, small=False, vision=None, theme="day", rot=0.0, note_box=None, origin=None,
+             text_k=1.0):
+        # note_box: (x0, y0, x1, y1) for the note (default: a strip along the bottom); origin: the boat
+        # (lat, lon) the camera obstacles are drawn from (default: the centre); text_k: text size factor
+        def fnt(px, bold=False):
+            return (F, -max(8, int(round(px * text_k))), "bold" if bold else "normal")
         layers = layers or {"depth": True, "contours": True, "marks": True, "ais": True}
         th = THEMES.get(theme, THEMES["day"])
         P, inv = self.projection(lat0, lon0, m, w, h, rot)
@@ -215,7 +223,7 @@ class ChartView:
                         c.create_oval(x - 3, y - 3, x + 3, y + 3, fill=col, outline="", tags="mark")
                         if s.get("name") and m <= 15 and not small:
                             c.create_text(x + 5, y, text=s["name"][:24], anchor="w", fill=col,
-                                          font=("Segoe UI", 8), tags="mark")
+                                          font=fnt(11), tags="mark")
         if route and len(route) >= 2:
             pts = [v for la, lo in route for v in P(la, lo)]
             c.create_line(*pts, fill=th["avoid"], width=3, dash=(8, 4), tags="route")
@@ -224,7 +232,7 @@ class ChartView:
             c.create_line(x - 8, y - 8, x + 8, y + 8, fill=th["warn"], width=3, tags="shallow")
             c.create_line(x - 8, y + 8, x + 8, y - 8, fill=th["warn"], width=3, tags="shallow")
             if not small:
-                c.create_text(x + 10, y, anchor="w", fill=th["warn"], font=("Segoe UI", 10, "bold"), tags="shallow",
+                c.create_text(x + 10, y, anchor="w", fill=th["warn"], font=fnt(13, True), tags="shallow",
                               text=T("map.shallow_mark", depth="?" if shallow.get("depth") is None else
                                      "%.1f m" % shallow["depth"], s="%.0f" % shallow.get("in_s", 0)))
         if ais and layers.get("ais", True):
@@ -254,10 +262,11 @@ class ChartView:
                     if tt.get("level"):
                         lab += "  " + T("map.ais_cpa", cpa="%.2f" % tt["cpa_nm"], tcpa="%.1f" % tt["tcpa_min"])
                     c.create_text(x + r + 3, y - r, text=lab, anchor="w", fill=col,
-                                  font=("Segoe UI", 8 if small else 9, "bold" if tt.get("level") else "normal"),
+                                  font=fnt(11 if small else 12, bool(tt.get("level"))),
                                   tags="ais")
         # camera obstacles (vision): UNCERTAIN - a dashed sector bearing +-4 deg over the rough distance range,
         # drawn from the boat (the map centre); "=AIS name" when it matches an AIS ship
+        ox, oy = P(*origin) if origin else (w / 2, h / 2)
         for o in vision or []:
             if not o.get("confirmed") or o.get("dist") is None:
                 continue
@@ -267,22 +276,26 @@ class ChartView:
             for dd, bs in ((d0, (-4, 4)), (d1, (4, -4))):
                 for db in range(bs[0], bs[1] + (1 if bs[1] > bs[0] else -1), 2 if bs[1] > bs[0] else -2):
                     b = math.radians(o["bearing"] + db - rot)
-                    pts += [w / 2 + dd * math.sin(b) / m, h / 2 - dd * math.cos(b) / m]
+                    pts += [ox + dd * math.sin(b) / m, oy - dd * math.cos(b) / m]
             col = th["vision"][0] if o.get("in_corridor") else th["vision"][1]
             c.create_polygon(*pts, outline=col, fill=col, stipple="gray25", dash=(4, 3), width=2, tags="vision")
             b = math.radians(o["bearing"] - rot)
-            x, y = w / 2 + o["dist"] * math.sin(b) / m, h / 2 - o["dist"] * math.cos(b) / m
+            x, y = ox + o["dist"] * math.sin(b) / m, oy - o["dist"] * math.cos(b) / m
             lab = "? ~%d m" % o["dist"] + ("  =%s" % o["ais"] if o.get("ais") else "")
-            c.create_text(x + 6, y, text=lab, anchor="w", fill=col, font=("Segoe UI", 8 if small else 9, "bold"),
+            c.create_text(x + 6, y, text=lab, anchor="w", fill=col, font=fnt(11 if small else 12, True),
                           tags="vision")
         # the note - always
-        c.create_rectangle(0, h - (16 if small else 34), w, h, fill=th["note_bg"], outline="", tags="note")
-        c.create_text(4, h - (8 if small else 25), anchor="w", text=T("map.note"), fill=th["note_fg"],
-                      font=("Segoe UI", 7 if small else 9, "bold"), tags="note")
-        if not small:
+        x0, y0, x1, y1 = note_box or (0, h - (16 if small else 34), w, h)
+        c.create_rectangle(x0, y0, x1, y1, fill=th["note_bg"], outline="", tags="note")
+        two = not small and y1 - y0 >= 26
+        lp = max(8.0, (y1 - y0) * (0.30 if two else 0.62))          # the line size follows the box
+        c.create_text(x0 + 4, y0 + (y1 - y0) * (0.30 if two else 0.5), anchor="w", text=T("map.note"),
+                      fill=th["note_fg"], font=(F, -int(lp), "bold"), tags="note", width=max(40, x1 - x0 - 8))
+        if two:
             att = " | ".join(a.split(". NOT FOR")[0] for a in self.charts.attribution()) if self.charts else \
                 T("map.no_chart_files")
-            c.create_text(4, h - 9, anchor="w", text=att[:200], fill=th["att"], font=("Segoe UI", 7), tags="note")
+            c.create_text(x0 + 4, y0 + (y1 - y0) * 0.76, anchor="w", text=att[:200], fill=th["att"],
+                          font=(F, -int(lp * 0.8)), tags="note", width=max(40, x1 - x0 - 8))
 
     def _contours(self, c, P, m, w, h, small, th=None, view=None):
         th = th or THEMES["day"]

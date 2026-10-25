@@ -136,6 +136,8 @@ def result_text(d):
     t = d.get("text") or ""
     if base and t.startswith(base):
         rest = t[len(base):]
+        if rest.startswith(": "):
+            rest = ": " + i18n.from_en(rest[2:])            # the gateway's reason, in the screen language too
     return i18n.T(key) + rest
 
 
@@ -144,4 +146,5 @@ GW_RESULTS_EN = {109: "driver screen not open", 110: "rejected by the driver",
                  113: "single-operator mode: confirm on the captain screen first", 114: "shallow water on the route",
                  116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
                  117: "only the captain (or a station on the boat) holds HELM",
-                 118: "captain only: REMOTE MANUAL / MANEUVER", 119: "no captain holds HELM"}
+                 118: "captain only: REMOTE MANUAL / MANEUVER", 119: "no captain holds HELM",
+                 120: "the route leaves the geofence"}

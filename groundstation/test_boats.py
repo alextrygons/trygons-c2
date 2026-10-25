@@ -185,10 +185,10 @@ def b4_app_end_to_end():
         s2 = ap.screen_shown == 2
         ap.open_map()
         pump(0.3)
-        embedded = ap.mapwin is not None and ap.mapwin.embedded and ap.nb.select() == str(ap.map_tab)
-        report("B5 one monitor: F11 shows screen 1, F11 again screen 2; the map is inside screen 2 (no map window)",
-               s1 and s2 and embedded, "screen 1 %s, screen 2 %s, map embedded in screen 2's Map tab %s" % (
-                   s1, s2, embedded))
+        embedded = ap.mapwin is not None and ap.mapwin.cv is ap.cv and str(ap.cv.winfo_toplevel()) == str(ap.root) \
+            and ap.screen_shown == 2
+        report("B5 one monitor: F11 shows screen 1, F11 again screen 2; the map IS screen 2 (no map window)",
+               s1 and s2 and embedded, "screen 1 %s, screen 2 %s, the map fills screen 2 %s" % (s1, s2, embedded))
     finally:
         ap.quit()
         gw.stop()

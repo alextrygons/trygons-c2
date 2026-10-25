@@ -16,6 +16,7 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULTS = {
     "ui_lang": "el",            # screen language: el (default) / en
+    "theme": "dark",            # dark / light: BOTH screens (theme.py)
     "voice_lang": "el",         # voice callout language (may differ from the screen)
     "hud_colour": "green",      # main HUD colour: green / white
     "night": False,             # night mode (dim red / dark)

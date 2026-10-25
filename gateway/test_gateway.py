@@ -1986,6 +1986,8 @@ def section_f1():
             os.remove(A.LAYOUT)
         alice.close()
         troot = tk.Tk()
+        f1e_err = []
+        troot.report_callback_exception = lambda *a: f1e_err.append(repr(a[1]))
         ap = A.App(troot, "gw:127.0.0.1:%d" % sp, login=("alice", PW["alice"]))
 
         def pump(s, until=None):
@@ -1998,13 +2000,28 @@ def section_f1():
             return bool(until and until())
         try:
             pump(8, lambda: ap.t is not None)
+            f1e_id0 = ap.link.welcome.get("id")
+            f1e_seen = []                                   # every gateway message kind the station received
+            _put = ap.link.events.put
+            ap.link.events.put = lambda e: (f1e_seen.append(e[0]), _put(e))[1]
+            _ask = ap.on_driver_ask
+            ap.on_driver_ask = lambda d: (f1e_seen.append("ASK:%s" % d.get("text")), _ask(d))[1]
             ap.cmd(proto.T_HELM, proto.p_helm(0), "take HELM")
             pump(1.0)
+            g.stations.driver_timeout = 10.0                    # the real answer time (F1b tested the short one)
             ap.open_driver()
-            pump(2.5)
+            # the gateway must have seen the captain's screen 1 open (1 s heartbeat; a busy PC is slower)
+            pump(8, lambda: any(s.driver_open for s in g.stations.drivers() if s.user == "alice"))
+            pump(0.5)
             cop = Client(sp, "bob", PW["bob"], name="copilot")
             seq = cop.l.send(proto.T_SEA_STATE, proto.p_sea_state(s0), what="sea state %d" % s0)
-            asked = pump(4, lambda: ap.driver.question is not None)
+            asked = pump(8, lambda: ap.driver.question is not None)
+            f1e_diag = "" if asked else "; copilot answer %s; gateway stations %s; station got %s; answers %s" % (
+                cop.result(cop.wait_ack(seq, 0.5)) if not asked else None,
+                [(s.user, s.crew, s.driver_open, round(time.time() - s.driver_seen, 1))
+                 for s in g.stations.stations.values()],
+                [k for k in f1e_seen if k != "telemetry"][-12:] + ["telemetry x%d" % f1e_seen.count("telemetry")],
+                (ap.driver.answers[-3:], A.i18n.lang(), round(ap.driver.render_ms)) if ap.driver else "no driver")
             ap.driver.answer(True)
             sent = pump(5, lambda: ap.t["sea_state"] == s0)
             seq = cop.l.send(proto.T_SEA_STATE, proto.p_sea_state(new), what="sea state %d" % new)
@@ -2016,14 +2033,20 @@ def section_f1():
                 pump(0.1)
                 a_lost = cop.wait_ack(seq, timeout=0.05)
             lost = a_lost is not None and a_lost["result"] in (109, 112)
+            f1e_lost = (a_lost and a_lost["result"], len(g.stations.asks),
+                        [(s_.user, s_.id, s_.driver_open, round(time.time() - s_.driver_seen, 1))
+                         for s_ in g.stations.stations.values()], ap.link.welcome.get("id"),
+                        [k for k in f1e_seen if k not in ("telemetry", "gw_status", "ack")][-8:])
             cop.close()
             ap.single_op_toggle(confirmed=True)
             so_on = pump(4, lambda: ap.single_op)
             ap.cmd(proto.T_HELM, proto.p_helm(0), "take HELM")
             ap.open_driver()
             pump(1.5)
-            banner_c = bool(ap.so_banner.winfo_manager())
+            ap.render(force=True)
+            banner_c = ap.banner_on("single_op")
             banner_d = bool(ap.driver.status.find_withtag("singleop"))
+            f1e_so = (ap.single_op, ap.link.welcome.get("id"), ap.link.connected)
             ap.cmd(proto.T_SEA_STATE, proto.p_sea_state(new), "sea state %d" % new)
             pump(0.5)
             own = ap.cconf is not None and ap.driver.question is None
@@ -2034,7 +2057,11 @@ def section_f1():
                    asked and sent and asked2 and lost and so_on and banner_c and banner_d and own and sent2,
                    "question shown on the driver window %s, ACCEPT -> boat %s; closed mid-question -> rejected %s; "
                    "single-operator on %s, banner captain %s / driver %s; own confirmation window %s -> sent %s %s" % (
-                       asked, sent, lost, so_on, banner_c, banner_d, own, sent2, "" if sent2 else ap.ev_texts()[-6:]))
+                       asked, sent, lost, so_on, banner_c, banner_d, own, sent2, "" if sent2 else ap.ev_texts()[-6:])
+                   + ("" if asked else "; screen-2 errors %s; events %s; crew %s%s" % (
+                       f1e_err[:3], ap.ev_texts()[-6:], A.crewui.crew_of(ap), f1e_diag))
+                   + ("" if lost and own else "; lost-check %s; single-op at the command %s; errors %s; station id "
+                      "at the start %s" % (f1e_lost, f1e_so, f1e_err[:3], f1e_id0)))
         finally:
             ap.quit()
             if lay is not None:
@@ -3244,8 +3271,193 @@ def section_cr():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------------------------------ section GF --
+
+def fence_around(half_m=1000.0):
+    return [east_of(-half_m, -half_m), east_of(-half_m, half_m), east_of(half_m, half_m), east_of(half_m, -half_m)]
+
+
+def section_gf():
+    """Geofence + the copilot's work on the map (CLAUDE.md D): routes must stay inside the fence (code 120); a
+    copilot's route (PROG_COMMIT) and fence change wait for the captain's ACCEPT on screen 1."""
+    print("\n=== Section GF: geofence, the copilot's route / fence -> the captain's ACCEPT ===", flush=True)
+    import geofence as GF
+    sq = [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)]
+    u = [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.7), (0.3, 0.7), (0.3, 0.3), (1.0, 0.3), (1.0, 0.0)]   # a "C"
+    ins = GF.inside(sq, 0.5, 0.5) and not GF.inside(sq, 1.5, 0.5) and not GF.inside(sq, -0.1, 0.5)
+    v_cross = GF.valid([(0, 0), (1, 1), (0, 1), (1, 0)])
+    v_few, v_range, v_clear = GF.valid([(0, 0), (1, 1)]), GF.valid([(0, 0), (95, 1), (1, 1)]), GF.valid([])
+    v_nan = GF.valid([(0, 0), (float("nan"), 1), (1, 1)])
+    wp_out = GF.check_route(sq, [(0.2, 0.2), (0.2, 1.5)])
+    leg_out = GF.check_route(u, [(0.8, 0.2), (0.8, 0.8)], step_m=200.0)           # both inside, the leg cuts the gap
+    fine = GF.check_route(u, [(0.1, 0.2), (0.1, 0.8)], step_m=200.0)
+    report("GF1 geofence maths: inside / outside, crossing / too few / out of range / NaN corners refused, a waypoint "
+           "outside and a leg through a gap of a C-shaped fence found",
+           ins and not v_cross[0] and "crosses" in v_cross[1] and not v_few[0] and not v_range[0] and not v_nan[0] and
+           v_clear == (True, "", []) and wp_out and wp_out.startswith("WP2 is outside") and leg_out and
+           leg_out.startswith("leg WP1 -> WP2 leaves") and fine is None,
+           "inside %s; crossing %s; 2 corners %s; out of range %s; NaN %s; empty = clear %s; %r; %r; inside route %s" % (
+               ins, v_cross[1], v_few[1], v_range[1], v_nan[1], v_clear[0], wp_out, leg_out and leg_out[:40], fine))
+
+    tmp = tempfile.mkdtemp(prefix="gwtest_gf_")
+    sim = gw = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        charts = os.path.join(tmp, "charts")
+        sim_chart(charts)                                   # deep water around the simulator (a shoal 2 km east)
+        cfg = gw_cfg_b(sim, root, charts_dir=charts, stations={"driver_timeout_s": 6.0},
+                       shallow={"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0, "clearance_m": 50.0})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+        alice.pump(1.0)
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        beat = DriverBeat(alice)                            # the captain's screen 1 is open
+        bob = Client(sp, "bob", PW["bob"], name="copilot")
+        bob.pump(1.0)
+        crews = (g.stations.stations[alice.welcome["id"]].crew, g.stations.stations[bob.welcome["id"]].crew)
+
+        # GF2 the captain sets the fence (no question); routes out of it refused (120), inside accepted
+        fence = fence_around(1000.0)
+        alice.l.send_msg({"t": "geofence", "poly": [list(p_) for p_ in fence], "what": "geofence: 4 corners"})
+        k, ack1 = next_event(alice, ("geofence_ack",), 4.0)
+        alice.pump(1.5)
+        st = (alice.status or {}).get("geofence") or {}
+        a_out = upload(alice, [east_of(300), east_of(-1800, 300)])           # deep water, but out of the fence
+        a_in = upload(alice, [east_of(300), east_of(600, 300)])
+        report("GF2 the captain's geofence is set at once (in the status, audited); a route leaving it refused (120, the "
+               "leg + position), a route inside accepted",
+               crews == ("captain", "copilot") and ack1 and ack1["ok"] and len(st.get("poly") or []) == 4 and
+               st.get("by") == "alice" and a_out and a_out["result"] == 120 and "geofence" in a_out["text"] and
+               a_in and a_in["result"] == 0 and any(e["kind"] == "geofence" for e in g.audit.recent),
+               "crews %s; ack %s; status %d corners by %s; out %s \"%s\"; in %s" % (
+                   crews, ack1 and ack1.get("text"), len(st.get("poly") or []), st.get("by"),
+                   a_out and a_out["result"], a_out and a_out["text"][:90], a_in and a_in["result"]))
+
+        # GF3 the copilot's route: the COMMIT waits for the captain's ACCEPT (yes -> on the boat, no -> 110)
+        prog = {"final": 0, "wps": [{"lat": a, "lon": b, "kn": 8.0, "radius": 30, "action": 0}
+                                    for a, b in (east_of(200), east_of(500, 200))]}
+        frames = progmod.upload_frames(prog)
+        for t, p_ in frames[:-1]:
+            bob.l.send(t, p_)
+        bob.pump(0.3)
+        seq = bob.l.send(frames[-1][0], frames[-1][1], what="program upload (2 waypoints)")
+        k, ask = next_event(alice, ("driver_ask",), 4.0)
+        if ask:
+            alice.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": True})
+        r_yes = bob.result(bob.wait_ack(seq, 6.0))
+        prog_n = w.until(lambda d: d["prog_n"] == 2, 3)
+        for t, p_ in frames[:-1]:
+            bob.l.send(t, p_)
+        bob.pump(0.3)
+        seq = bob.l.send(frames[-1][0], frames[-1][1], what="program upload (2 waypoints)")
+        k, ask2 = next_event(alice, ("driver_ask",), 4.0)
+        if ask2:
+            alice.l.send_msg({"t": "driver_answer", "id": ask2["id"], "yes": False})
+        r_no = bob.result(bob.wait_ack(seq, 6.0))
+        report("GF3 the copilot's new AUTO route (PROG_COMMIT) waits for the captain's ACCEPT on screen 1: accepted -> "
+               "on the boat, rejected -> refused (110)",
+               ask is not None and "program" in ask["text"] and r_yes == 0 and prog_n is not None and ask2 is not None
+               and r_no == 110,
+               "question %s; accepted -> %s, boat program %s; rejected -> %s" % (
+                   ask and ask["text"], r_yes, prog_n and prog_n["prog_n"], r_no))
+
+        # GF4 the copilot changes / clears the fence: the captain's ACCEPT decides; persisted on the SSD
+        big = fence_around(1500.0)
+        bob.l.send_msg({"t": "geofence", "poly": [list(p_) for p_ in big], "what": "geofence: 4 corners"})
+        k, ask3 = next_event(alice, ("driver_ask",), 4.0)
+        if ask3:
+            alice.l.send_msg({"t": "driver_answer", "id": ask3["id"], "yes": False})
+        k, ack3 = next_event(bob, ("geofence_ack",), 4.0)
+        same = g.geofence.poly == [tuple(p_) for p_ in fence] or g.geofence.poly == fence
+        bob.l.send_msg({"t": "geofence", "poly": [list(p_) for p_ in big], "what": "geofence: 4 corners"})
+        k, ask4 = next_event(alice, ("driver_ask",), 4.0)
+        if ask4:
+            alice.l.send_msg({"t": "driver_answer", "id": ask4["id"], "yes": True})
+        k, ack4 = next_event(bob, ("geofence_ack",), 4.0)
+        changed = abs(g.geofence.poly[0][0] - big[0][0]) < 1e-9 and g.geofence.by == "bob"
+        bad = []
+        bob.l.send_msg({"t": "geofence", "poly": [[0, 0], [1, 1]]})
+        k, ack5 = next_event(bob, ("geofence_ack",), 4.0)
+        reread = GF.Geofence(g.geofence.path) if g.geofence.path else None
+        kept = reread is not None and len(reread.poly) == 4 and reread.by == "bob"
+        report("GF4 the copilot's fence change waits for the captain's ACCEPT: rejected -> unchanged (110), accepted -> "
+               "set; a bad fence refused at once; the fence is kept on the SSD (restart)",
+               ask3 is not None and ack3 and not ack3["ok"] and ack3.get("code") == 110 and same and ask4 is not None
+               and ack4 and ack4["ok"] and changed and ack5 and not ack5["ok"] and "3 corners" in ack5["text"] and
+               kept and not bad,
+               "question %s; rejected %s (code %s), unchanged %s; accepted %s, changed %s; bad fence %s; after a "
+               "restart %s" % (ask3 and ask3["text"], ack3 and ack3.get("text"), ack3 and ack3.get("code"), same,
+                               ack4 and ack4.get("text"), changed, ack5 and ack5.get("text"),
+                               reread and (len(reread.poly), reread.by)))
+
+        # GF5 the copilot's ground station shows WAITING, then the captain's answer (route + fence)
+        import tkinter as tk
+        import app as A
+        bob.close()
+        troot = tk.Tk()
+        errs = []
+        troot.report_callback_exception = lambda *a: errs.append(repr(a[1]))
+        ap = A.App(troot, "gw:127.0.0.1:%d" % sp, login=("bob", PW["bob"]),
+                   layout=os.path.join(tmp, "layout_gf.json"))
+
+        def pump(t_, until=None):
+            end = time.time() + t_
+            while time.time() < end:
+                troot.update()
+                if until and until():
+                    return True
+                time.sleep(0.02)
+            return bool(until and until())
+        try:
+            pump(8, lambda: ap.t is not None and ap.gw_status is not None)
+            ap.fence_draft = [tuple(p_) for p_ in fence_around(800.0)]
+            ap.fence_dirty = True
+            ap.fence_send()
+            waiting = bool(ap.decisions) and ap.decisions[-1]["state"] == "wait"
+            ap.render(force=True)
+            shown_wait = any(o.get("tag") == "decision" and A.T("ov.dec_wait", s="").split("(")[0].strip() in o["s"]
+                             for o in ap.ov.ops)
+            k, ask6 = next_event(alice, ("driver_ask",), 4.0)
+            if ask6:
+                alice.l.send_msg({"t": "driver_answer", "id": ask6["id"], "yes": True})
+            ok_state = pump(5, lambda: ap.decisions[-1]["state"] == "ok")
+            ap.prog["wps"] = [{"lat": a, "lon": b, "kn": 8.0, "radius": 30, "action": 0}
+                              for a, b in (east_of(200), east_of(400, 100))]
+            ap.charts = A.chart.Charts(os.path.join(tmp, "no_charts"))
+            ap.route_dirty = True
+            ap.route_send()
+            k, ask7 = next_event(alice, ("driver_ask",), 4.0)
+            if ask7:
+                alice.l.send_msg({"t": "driver_answer", "id": ask7["id"], "yes": False})
+            no_state = pump(6, lambda: ap.decisions[-1]["state"] == "no")
+            ap.render(force=True)
+            shown_no = any(o.get("tag") == "decision" and A.T("ov.dec_no") in o["s"] for o in ap.ov.ops)
+            report("GF5 the copilot's screen 2 shows its route / fence WAITING for the captain, then ACCEPTED / REJECTED",
+                   waiting and shown_wait and ask6 is not None and ok_state and ask7 is not None and no_state and
+                   shown_no and ap.route_dirty and not errs,
+                   "fence: waiting %s (shown %s), captain asked %s, accepted %s; route: asked %s, rejected %s (shown %s), "
+                   "still 'not sent' %s; errors %s" % (waiting, shown_wait, ask6 is not None, ok_state, ask7 is not None,
+                                                       no_state, shown_no, ap.route_dirty, errs[:2]))
+        finally:
+            ap.quit()
+        beat.stop()
+        alice.close()
+        link.stop()
+    finally:
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
-            "G": section_g}
+            "G": section_g, "GF": section_gf}
 
 
 def main():

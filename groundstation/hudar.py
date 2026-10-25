@@ -20,6 +20,7 @@ import math
 import time
 
 import settings
+import theme
 from i18n import T
 
 KEYS = ("horizon", "velocity", "waypoint", "ribbon", "ais", "path", "shallow")
@@ -237,7 +238,7 @@ def build(screen, s, pic, W, H):
                     break
                 corners += p
             if len(corners) == 8:
-                ops.append({"k": "poly", "pts": corners, "tag": "ar_shallow", "fill": "#ff2020", "outline": None,
+                ops.append({"k": "poly", "pts": corners, "tag": "ar_shallow", "fill": theme.AR["shallow"], "outline": None,
                             "alpha": 70, "w": 1})
     # B4 route ribbon (fading with the distance)
     if ar.get("ribbon", True) and have_pos and d.get("wp_set"):
@@ -259,7 +260,7 @@ def build(screen, s, pic, W, H):
             if q and prev:
                 fade = max(0.0, 1.0 - run / 2500.0)
                 ops.append({"k": "poly", "pts": [*prev[0], *prev[1], *q[1], *q[0]], "tag": "ar_ribbon",
-                            "fill": "#ff50ff", "outline": None, "alpha": int(40 + 120 * fade), "w": 1})
+                            "fill": theme.AR["route"], "outline": None, "alpha": int(40 + 120 * fade), "w": 1})
             prev = q
     # B6 predicted path 30 / 60 s
     if ar.get("path", True) and d["est_sog"] > 0.5:
@@ -301,7 +302,7 @@ def build(screen, s, pic, W, H):
                 ey = H * 0.42
                 sgn = -1 if rel < 0 else 1
                 ops.append({"k": "poly", "pts": [ex + sgn * 18, ey, ex, ey - 12, ex, ey + 12], "tag": "ar_ais_edge",
-                            "fill": col, "outline": "#000000", "alpha": 255, "w": 1})
+                            "fill": col, "outline": theme.BLACK, "alpha": 255, "w": 1})
                 text((ex - sgn * 6, ey + 22), lab, "ar_ais_edge", col=col, anchor="e" if sgn > 0 else "w")
     # B3 waypoint diamond on the horizon
     if ar.get("waypoint", True) and have_pos and d.get("wp_set"):
@@ -313,17 +314,17 @@ def build(screen, s, pic, W, H):
         if inview:
             cx, cy = X(u), Y(v)
             ops.append({"k": "poly", "pts": [cx, cy - 16, cx + 12, cy, cx, cy + 16, cx - 12, cy], "tag": "ar_wp",
-                        "fill": None, "outline": "#ff50ff", "alpha": 255, "w": 3})
+                        "fill": None, "outline": theme.AR["route"], "alpha": 255, "w": 3})
             ops.append({"k": "line", "pts": [cx, cy - 16, cx + 12, cy, cx, cy + 16, cx - 12, cy, cx, cy - 16],
-                        "tag": "ar_wp", "fill": "#ff50ff", "w": 3, "alpha": 255})
-            text((cx, cy - 20), lab, "ar_wp", col="#ff70ff", anchor="s")
+                        "tag": "ar_wp", "fill": theme.AR["route"], "w": 3, "alpha": 255})
+            text((cx, cy - 20), lab, "ar_wp", col=theme.AR["route_text"], anchor="s")
         else:
             sgn = -1 if rel < 0 else 1
             ex = max(lo_x + 20, X(0.0) + 40) if sgn < 0 else min(hi_x - 20, X(1.0) - 40)
             ey = H * 0.36
             ops.append({"k": "poly", "pts": [ex + sgn * 20, ey, ex, ey - 13, ex, ey + 13], "tag": "ar_wp_edge",
-                        "fill": "#ff50ff", "outline": "#000000", "alpha": 255, "w": 1})
-            text((ex - sgn * 6, ey + 22), lab, "ar_wp_edge", col="#ff70ff", anchor="e" if sgn > 0 else "w")
+                        "fill": theme.AR["route"], "outline": theme.BLACK, "alpha": 255, "w": 1})
+            text((ex - sgn * 6, ey + 22), lab, "ar_wp_edge", col=theme.AR["route_text"], anchor="e" if sgn > 0 else "w")
     # B1 horizon + heel scale
     if ar.get("horizon", True):
         (u1, v1), (u2, v2) = cam.horizon()
@@ -351,7 +352,7 @@ def build(screen, s, pic, W, H):
                                              py - 7 * math.sin(ang) + 10 * math.cos(ang),
                                              px + 7 * math.cos(ang) - 10 * math.sin(ang),
                                              py + 7 * math.sin(ang) + 10 * math.cos(ang)],
-                        "tag": "ar_roll", "fill": main, "outline": "#000000", "alpha": 255, "w": 1})
+                        "tag": "ar_roll", "fill": main, "outline": theme.BLACK, "alpha": 255, "w": 1})
             text((cx, cy - rad - 16), T("ar.heel", deg="%.0f" % abs(roll), side=T("hud.stbd") if roll > 0.5 else
                                          T("hud.port") if roll < -0.5 else ""), "ar_roll", anchor="s")
         else:

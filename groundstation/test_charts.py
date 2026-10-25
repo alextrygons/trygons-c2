@@ -190,7 +190,7 @@ def main():
         mark = ap.map_mark
         root.update()
         reds = [i for i in ap.pg_prof.find_all() if ap.pg_prof.type(i) == "polygon" and
-                ap.pg_prof.itemcget(i, "fill") == "#ffb0b0"]
+                ap.pg_prof.itemcget(i, "fill") == A.C["prof_bad"]]
         ap.prog["wps"][1] = {"lat": LAT0 + 0.002, "lon": LON0 + 0.005, "kn": 8, "radius": 25, "action": 0}
         ok_leg = ap.prog_depth_check() is True
         ap.quit()

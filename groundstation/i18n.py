@@ -111,12 +111,13 @@ def TE(key, *args, **kw):
 _rx = {}
 
 
-def from_en(text, prefixes=("what.", "gw.")):
+def from_en(text, prefixes=("what.", "gw."), _depth=0):
     """An English text made from one of the templates "what.*" / "gw.*" (a command
     description, a gateway answer) -> the same text in the screen language. The
     English text is what travels in the protocol / audit log; only the screen
-    shows the translation. Unknown text -> unchanged."""
-    if not text or lang() == "en":
+    shows the translation. The parts filled into a template are translated too
+    (e.g. "geofence refused: {why}" with a gateway reason). Unknown text -> unchanged."""
+    if not text or lang() == "en" or _depth > 3:
         return text
     en = load("en")
     for key, tpl in en.items():
@@ -127,9 +128,11 @@ def from_en(text, prefixes=("what.", "gw.")):
             parts = re.split(r"\{(\w+)(?:![rs])?(?::[^}]*)?\}", tpl)
             pat = "".join(re.escape(p) if i % 2 == 0 else "(?P<%s>.+?)" % p for i, p in enumerate(parts))
             rx = _rx[key] = re.compile("^" + pat + "$", re.S)
+        if not re.sub(r"\{\w+\}", "", tpl).strip():
+            continue                                    # a template that is only a {name}: matches anything
         m = rx.match(text)
         if m:
-            return T(key, **m.groupdict())
+            return T(key, **{k: from_en(v, prefixes, _depth + 1) for k, v in m.groupdict().items()})
     return text
 
 

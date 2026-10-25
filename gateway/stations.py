@@ -71,6 +71,7 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               109: "driver screen not open", 110: "rejected by the driver", 111: "no answer from the driver (timeout)",
               112: "driver screen lost", 113: "single-operator mode: confirm on the captain screen first",
               114: "shallow water on the route",
+              120: "the route leaves the geofence",
               116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
               117: "only the captain (or a station on the boat) holds HELM",
               118: "captain only: REMOTE MANUAL / MANEUVER",
@@ -429,7 +430,8 @@ class StationServer:
                                          proto.T_AUTO_START, proto.T_AUTO_RESUME):
             why = self.prog_check(st, ftype, payload)
             if why:
-                return self.refuse(st, seq, ftype, 114, ": " + why)
+                code, why = why if isinstance(why, tuple) else (114, why)
+                return self.refuse(st, seq, ftype, code, ": " + why)
         what = str(m.get("what") or proto.TYPE_NAMES.get(ftype, "command %d" % ftype))[:80]
         driving = proto.is_driving_cmd(ftype, payload)
         if st.single_op:

@@ -1,8 +1,9 @@
 """Screen 2: choosing the boat, confirming it, and the crew (CLAUDE.md sections D + F).
 
-  BoatSelector  the boats of boats/ (git) with ONLINE / OFFLINE / IP NOT SET; user name +
-                password; connects with the boat's name (the gateway and this station both
-                refuse another boat).
+  BoatSelector  the boats of boats/ (git) by NAME with ONLINE / OFFLINE / IP NOT SET (the IP only
+                as a detail); user name + password; connects with the boat's name (the gateway
+                and this station both refuse another boat). Screen 2's boat panel opens it
+                with the clicked boat selected (select()).
   BoatConfirm   after connecting: type the boat's name AND tick "I see its live front camera"
                 (only possible while a front camera picture is live) - only then this station
                 may take HELM (app.boat_ok).
@@ -14,12 +15,27 @@ import tkinter as tk
 
 import boats
 import i18n
+import theme
 from i18n import T
 
-F = ("Segoe UI", 12)
-FB = ("Segoe UI", 12, "bold")
-FH = ("Segoe UI", 16, "bold")
-STATUS_COL = {"online": "#008000", "offline": "#a00000", "no_ip": "#a06000", "checking": "#606060"}
+F = theme.font("label")
+FB = theme.font("button")
+FH = theme.font("title")
+C = theme.C
+
+
+def status_col(st):
+    return {"online": C["ok_txt"], "offline": C["bad_txt"], "no_ip": C["note_txt"], "checking": C["dim"]}.get(st, C["fg"])
+
+
+def lab(parent, text, font=F, **kw):
+    kw.setdefault("bg", C["bg"])
+    kw.setdefault("fg", C["fg"])
+    return tk.Label(parent, text=text, font=font, **kw)
+
+
+def entry(parent, **kw):
+    return tk.Entry(parent, bg=C["entry"], fg=C["entry_fg"], insertbackground=C["entry_fg"], **kw)
 
 
 def front_live(app):
@@ -33,36 +49,37 @@ class BoatSelector:
         self.app = app
         self.boats = boats.load(folder)
         self.prober = boats.Prober(self.boats).start()
-        self.w = tk.Toplevel(app.root)
+        self.w = tk.Toplevel(app.root, bg=C["bg"])
         self.w.title(T("boat.title"))
         self.w.protocol("WM_DELETE_WINDOW", self.close)
-        tk.Label(self.w, text=T("boat.head"), font=FH).pack(anchor="w", padx=10, pady=(10, 2))
-        tk.Label(self.w, text=T("boat.help"), font=F, justify="left", wraplength=620).pack(anchor="w", padx=10)
-        self.lb = tk.Listbox(self.w, font=("Consolas", 13), height=max(3, len(self.boats)), width=60,
-                             exportselection=False)
+        lab(self.w, T("boat.head"), FH).pack(anchor="w", padx=10, pady=(10, 2))
+        lab(self.w, T("boat.help"), justify="left", wraplength=620).pack(anchor="w", padx=10)
+        self.lb = tk.Listbox(self.w, font=theme.font("value"), height=max(3, len(self.boats)), width=46,
+                             exportselection=False, bg=C["panel"], fg=C["fg"], selectbackground=C["sel"])
         self.lb.pack(fill="x", padx=10, pady=8)
-        f = tk.Frame(self.w)
+        f = tk.Frame(self.w, bg=C["bg"])
         f.pack(fill="x", padx=10)
-        tk.Label(f, text=T("cap.login_user"), font=F).grid(row=0, column=0, sticky="w")
-        self.user = tk.Entry(f, font=F, width=20)
+        lab(f, T("cap.login_user")).grid(row=0, column=0, sticky="w")
+        self.user = entry(f, font=F, width=20)
         self.user.grid(row=0, column=1, sticky="w", padx=4)
-        tk.Label(f, text=T("cap.login_pw"), font=F).grid(row=1, column=0, sticky="w")
-        self.pw = tk.Entry(f, font=F, width=20, show="*")
+        lab(f, T("cap.login_pw")).grid(row=1, column=0, sticky="w")
+        self.pw = entry(f, font=F, width=20, show="*")
         self.pw.grid(row=1, column=1, sticky="w", padx=4)
-        tk.Label(f, text=T("boat.crew"), font=F).grid(row=2, column=0, sticky="w")
+        lab(f, T("boat.crew")).grid(row=2, column=0, sticky="w")
         self.crew = tk.StringVar(value="captain")
-        cf = tk.Frame(f)
+        cf = tk.Frame(f, bg=C["bg"])
         cf.grid(row=2, column=1, sticky="w")
         for v in ("captain", "copilot"):
-            rb = tk.Radiobutton(cf, variable=self.crew, value=v, font=F)
+            rb = tk.Radiobutton(cf, variable=self.crew, value=v, font=F, bg=C["bg"], fg=C["fg"],
+                                selectcolor=C["entry"], activebackground=C["bg"])
             i18n.bind(rb, "crew." + v)
             rb.pack(side="left")
-        b = tk.Frame(self.w)
+        b = tk.Frame(self.w, bg=C["bg"])
         b.pack(fill="x", padx=10, pady=10)
-        self.go = tk.Button(b, text=T("boat.connect"), font=FB, bg="#b0ffb0", command=self.connect)
+        self.go = tk.Button(b, text=T("boat.connect"), command=self.connect, **theme.button_opts("ok"))
         self.go.pack(side="left")
-        tk.Button(b, text=T("boat.close"), font=F, command=self.close).pack(side="left", padx=8)
-        self.msg = tk.Label(self.w, text="", font=F, fg="#a00000", wraplength=620, justify="left")
+        tk.Button(b, text=T("boat.close"), command=self.close, **theme.button_opts()).pack(side="left", padx=8)
+        self.msg = lab(self.w, "", fg=C["bad_txt"], wraplength=620, justify="left")
         self.msg.pack(anchor="w", padx=10, pady=(0, 10))
         if not self.boats:
             self.msg.configure(text=T("boat.none", folder=folder or boats.BOATS_DIR))
@@ -81,14 +98,23 @@ class BoatSelector:
             sel = self.lb.curselection()
             self.lb.delete(0, "end")
             for i, (bt, st) in enumerate(self.rows()):
-                self.lb.insert("end", "%-12s %-24s %s" % (bt.name, (bt.ip if bt.ip_ok() else "-"),
-                                                         T("boat.st_" + st)))
-                self.lb.itemconfigure(i, fg=STATUS_COL.get(st, "#202020"))
+                # the NAME first; the address only as a detail at the end
+                self.lb.insert("end", "%s    %s    · %s" % (bt.name, T("boat.st_" + st),
+                                                          bt.ip if bt.ip_ok() else T("ov.ip_not_set")))
+                self.lb.itemconfigure(i, fg=status_col(st))
             if sel:
                 self.lb.selection_set(sel[0])
             self.w.after(1000, self.tick)
         except tk.TclError:
             pass
+
+    def select(self, boat):
+        """Pre-select `boat` (clicked in screen 2's boat panel)."""
+        for i, bt in enumerate(self.boats):
+            if bt.id == boat.id:
+                self.lb.selection_clear(0, "end")
+                self.lb.selection_set(i)
+                self.user.focus_set()
 
     def selected(self):
         sel = self.lb.curselection()
@@ -124,25 +150,25 @@ class BoatConfirm:
     def __init__(self, app, boat):
         self.app = app
         self.boat = boat
-        self.w = tk.Toplevel(app.root, bg="#fff4c0")
+        Y = C["btn_sim"]
+        self.w = tk.Toplevel(app.root, bg=Y)
         self.w.title(T("boat.confirm_title"))
         self.w.attributes("-topmost", True)
-        tk.Label(self.w, text=T("boat.confirm_head", name=boat.name), font=FH, bg="#fff4c0").pack(padx=14, pady=(12, 4))
-        tk.Label(self.w, text=T("boat.confirm_help", name=boat.name), font=F, bg="#fff4c0", wraplength=560,
-                 justify="left").pack(padx=14)
-        self.name = tk.Entry(self.w, font=FH, width=16, justify="center")
+        lab(self.w, T("boat.confirm_head", name=boat.name), FH, bg=Y).pack(padx=14, pady=(12, 4))
+        lab(self.w, T("boat.confirm_help", name=boat.name), bg=Y, wraplength=560, justify="left").pack(padx=14)
+        self.name = entry(self.w, font=FH, width=16, justify="center")
         self.name.pack(pady=8)
         self.cam = tk.BooleanVar(value=False)
-        self.cam_cb = tk.Checkbutton(self.w, variable=self.cam, font=FB, bg="#fff4c0",
-                                     text=T("boat.confirm_cam", name=boat.name))
+        self.cam_cb = tk.Checkbutton(self.w, variable=self.cam, font=FB, bg=Y, fg=C["fg"], selectcolor=C["entry"],
+                                     activebackground=Y, text=T("boat.confirm_cam", name=boat.name))
         self.cam_cb.pack(padx=14)
-        self.cam_lbl = tk.Label(self.w, text="", font=F, bg="#fff4c0", fg="#a00000")
+        self.cam_lbl = lab(self.w, "", bg=Y, fg=C["bad_txt"])
         self.cam_lbl.pack()
-        b = tk.Frame(self.w, bg="#fff4c0")
+        b = tk.Frame(self.w, bg=Y)
         b.pack(pady=10)
-        tk.Button(b, text=T("boat.confirm_ok"), font=FB, bg="#b0ffb0", command=self.ok).pack(side="left", padx=6)
-        tk.Button(b, text=T("boat.confirm_no"), font=F, command=self.wrong).pack(side="left", padx=6)
-        self.msg = tk.Label(self.w, text="", font=F, bg="#fff4c0", fg="#a00000")
+        tk.Button(b, text=T("boat.confirm_ok"), command=self.ok, **theme.button_opts("ok")).pack(side="left", padx=6)
+        tk.Button(b, text=T("boat.confirm_no"), command=self.wrong, **theme.button_opts()).pack(side="left", padx=6)
+        self.msg = lab(self.w, "", bg=Y, fg=C["bad_txt"])
         self.msg.pack(pady=(0, 10))
         self.tick()
 
@@ -161,7 +187,7 @@ class BoatConfirm:
         if not boats.confirmed(self.name.get(), self.boat, self.cam.get() and front_live(self.app)):
             return self.msg.configure(text=T("boat.confirm_bad", name=self.boat.name))
         self.app.boat_ok = True
-        self.app.say(T("boat.confirmed", name=self.boat.name), "#00a000")
+        self.app.say(T("boat.confirmed", name=self.boat.name), theme.GOOD)
         self.app.event(T("boat.confirmed", name=self.boat.name))
         self.close()
 
@@ -206,7 +232,7 @@ def request_swap(app):
     if crew == "captain":
         cops = [s for s in gw.get("stations", []) if s.get("crew") == "copilot" and s.get("licence")]
         if not cops:
-            return app.say(T("crew.no_partner"), "#a00000")
+            return app.say(T("crew.no_partner"), theme.WARN)
         msg["with"] = cops[0]["id"]
     app.link.send_msg(msg)
     app.event(T("crew.swap_asked"))

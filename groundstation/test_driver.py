@@ -36,7 +36,7 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
      AR; with one: horizon + heel scale, velocity vector, waypoint diamond (or
      edge arrow), route ribbon, AIS boxes (or edge arrows), predicted path,
      shallow-water tint; each one switched off on its own; vision overlay stays
-  I17 MAP window: chart layers, AIS list, own boat, track, route, active
+  I17 MAP = screen 2: chart layers, AIS list, own boat, track, route, active
      waypoint, uncertainty, range rings, warnings; follow / free pan, zoom,
      north-up / course-up, day / dark / night; settings remembered; view only
      (nothing sent); moved to a monitor
@@ -603,7 +603,7 @@ def main():
                "no calibration -> notice %s; shown %s, AIS edge arrow %s, heel scale %s; each off alone %s; vision "
                "mask still drawn %s; errors %d" % (nocal, shown, edge, roll, off_ok, vis_kept, len(errors)))
 
-        # I17 the MAP window
+        # I17 the MAP = screen 2 itself (the whole window, the panels on top)
         sent_frames = []
         app.link.send = lambda *a, **k: (sent_frames.append(a[0]), orig_send(*a, **k))[1]
         app.prog["wps"] = [{"lat": app.t["est_lat"] + 0.002, "lon": app.t["est_lon"] + 0.002, "kn": 6, "radius": 25,
@@ -616,50 +616,46 @@ def main():
         orig_t = app.on_telem
         app.on_telem = lambda d_: orig_t(dict(d_, pos_source=1, heading=75.0, est_sog=5.0, est_cog=80.0, wp_set=True,
                                               wp_lat=la + 0.002, wp_lon=lo + 0.002, unc_m=40.0))
-        app.open_map()                                  # screen 2's Map tab (no separate window)
+        app.open_map()                                  # screen 2 to the front, centred on the boat
         mw = app.mapwin
         pump(1.2)
-        tags = {t: len(mw.cv.find_withtag(t)) for t in ("ring", "track", "prog", "active_wp", "unc", "boat", "ais",
-                                                        "route", "shallow", "warning", "north", "note")}
-        rows = mw.rows
-        x_n = mw.cv.coords(mw.cv.find_withtag("north")[0])
-        mw.toggle_orient()
-        pump(0.6)
-        x_c = mw.cv.coords(mw.cv.find_withtag("north")[0])
-        rotated = mw.view and mw.view[2] == 75.0 and abs(x_c[0] - x_n[0]) > 5
+        mw.redraw()
+        app.render(force=True)
+        tags = {t: len(app.cv.find_withtag(t)) for t in ("ring", "track", "prog", "active_wp", "unc", "boat", "ais",
+                                                         "route", "shallow", "note")}
+        rows = app.ais_rows_now()
+        warns = app.banner_on("shallow") and app.banner_on("collision")
+        listed = [o for o in app.ov.ops if o.get("tag") == "ais" and o["k"] == "table"]
         m0 = mw.m
         mw.zoom(0.6)
         zoomed = abs(mw.m - m0 * 0.6) < 1e-6
-        c0 = mw.center
-        E = lambda x, y: type("E", (), {"x": x, "y": y})()            # noqa: E731
-        mw.on_press(E(400, 300))
-        mw.on_motion(E(300, 250))
-        panned = not mw.follow and mw.center != c0
-        mw.toggle_follow()
+        mw.press(400, 300)
+        mw.motion(300, 250)
+        mw.release(300, 250)
+        panned = not mw.follow
+        mw.back_to_boat()
         pump(0.6)
         back = mw.follow and abs(mw.center[0] - app.t["est_lat"]) < 1e-4
-        themes = []
-        for _ in range(3):
-            mw.next_theme()
-            themes.append((mw.theme, mw.cv.cget("bg")))
+        bg0 = app.cv.cget("bg")
+        A.theme.toggle()
+        pump(0.4)
+        bg1 = app.cv.cget("bg")
+        A.theme.toggle()
+        pump(0.4)
         settings.reload()
-        remembered = (settings.get("map") or {}).get("course_up") is True and abs(
-            (settings.get("map") or {}).get("m_per_px", 0) - mw.m) < 1e-3
-        moved = mw.embedded and str(mw.w.winfo_toplevel()) == str(root)
-        mons = A.monitors.list_monitors(root)
-        on_mon = moved
+        remembered = abs((settings.get("map") or {}).get("m_per_px", 0) - mw.m) < 1e-3
+        inside = mw.embedded and mw.cv is app.cv and str(app.cv.winfo_toplevel()) == str(root)
         hb = [f for f in sent_frames if f != proto.T_HEARTBEAT]
         app.link.send = orig_send
         app.on_telem = orig_t
-        mw.toggle_orient()
-        report("I17 MAP in screen 2: chart layers, AIS list, boat, track, route, waypoint, uncertainty, range rings, "
-               "warnings; follow / pan / zoom / course-up / themes; remembered; view only; part of screen 2",
-               all(v > 0 for k, v in tags.items() if k != "track") and len(rows) == 3 and rotated and zoomed and
-               panned and back and len({t for t, _b in themes}) == 3 and remembered and moved and on_mon and not hb
-               and not errors,
-               "items %s; AIS list %d rows; course-up turns the map (north arrow moved %s); zoom %s; pan %s, follow "
-               "again %s; themes %s; remembered %s; monitors %d, inside screen 2 %s; frames sent %s" % (
-                   tags, len(rows), rotated, zoomed, panned, back, themes, remembered, len(mons), on_mon, hb))
+        report("I17 MAP = screen 2: chart layers, AIS (map + corner panel), boat, track, route, waypoint, uncertainty, "
+               "range rings, shallow / collision banners; zoom, temporary pan + back to boat, dark / light; remembered; "
+               "sends nothing",
+               all(v > 0 for k, v in tags.items() if k != "track") and len(rows) == 3 and warns and listed and
+               zoomed and panned and back and bg0 != bg1 and remembered and inside and not hb and not errors,
+               "items %s; AIS rows %d, in the panel %s; banners %s; zoom %s; pan %s, back %s; map bg %s -> %s; "
+               "remembered %s; the window itself %s; frames sent %s" % (
+                   tags, len(rows), bool(listed), warns, zoomed, panned, back, bg0, bg1, remembered, inside, hb))
         app.gw_status = None
         pump(0.3)
 
@@ -707,7 +703,7 @@ def main():
         app.link.send(A.proto.T_SIM_BUTTON, A.proto.p_sim_button(5))          # HDG LOCK on the panel
         seen = pump(3.0, lambda: app.bench_d and app.bench_d["button_counts"][5] >= 1)
         hdg_lbl = [lb for b, lb in app.bench_btn if b == 5][0]
-        btn_green = hdg_lbl.cget("bg") == "#7de07d"
+        btn_green = hdg_lbl.cget("bg") == A.C["lit"]
         servo = app.bench_servo.cget("text")
         state = app.bench_state.cget("text")
         still = app.t.get("mode") == A.proto.MODE_BENCH

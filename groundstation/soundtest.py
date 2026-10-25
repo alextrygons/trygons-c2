@@ -13,12 +13,14 @@ import alerts
 import i18n
 import settings
 import sound
+import theme
 import tts
 from i18n import T
 
-BG = "#ffffff"
-F_TXT = ("Segoe UI", 11)
-F_MED = ("Segoe UI", 12, "bold")
+C = theme.C
+BG = C["bg"]
+F_TXT = theme.font("label")
+F_MED = theme.font("button")
 
 
 def examples():
@@ -74,7 +76,7 @@ def build(parent, app):
     rep.delete(0, "end")
     rep.insert(0, "%d" % int(settings.get("repeat_s", 20)))
     rep.pack(side="left")
-    i18n.bind(tk.Label(parent, font=F_TXT, bg=BG, fg="#a00000", justify="left", wraplength=900, anchor="w"),
+    i18n.bind(tk.Label(parent, font=F_TXT, bg=BG, fg=C["bad_txt"], justify="left", wraplength=900, anchor="w"),
               "snd.warn_note").pack(fill="x", padx=8)
 
     vf = tk.Frame(parent, bg=BG, bd=2, relief="groove")
@@ -84,7 +86,7 @@ def build(parent, app):
     for i, code in enumerate(i18n.LANGS):
         tk.Radiobutton(vf, text=i18n.NAMES[code], variable=vl, value=code, font=F_MED, bg=BG, indicatoron=False,
                        width=4, command=lambda: snd.set_voice_lang(vl.get())).grid(row=0, column=1 + i, padx=2)
-    eng = tk.Label(vf, font=("Consolas", 11), bg=BG, justify="left", anchor="w")
+    eng = tk.Label(vf, font=theme.font("label", bold=False, mono=True), bg=BG, fg=C["fg"], justify="left", anchor="w")
     eng.grid(row=1, column=0, columnspan=6, sticky="w", padx=4)
     bb = tk.Frame(vf, bg=BG)
     bb.grid(row=2, column=0, columnspan=6, sticky="w", padx=2, pady=2)
@@ -113,8 +115,8 @@ def build(parent, app):
                 lines.append(T("snd.engine", lang=i18n.NAMES[lg], what=d or T("snd.no_voice"),
                                cache=T("snd.making") if snd.lib.busy.get(lg) else
                                ("" if n is None else T("snd.cached", n=n))))
-            eng.configure(text="\n".join(lines), fg="#000000" if all(tts.engine(lg) for lg in i18n.LANGS)
-                          else "#a00000")
+            eng.configure(text="\n".join(lines), fg=C["fg"] if all(tts.engine(lg) for lg in i18n.LANGS)
+                          else C["bad_txt"])
             eng.after(2000, engines)
         except tk.TclError:
             pass
