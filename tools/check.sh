@@ -62,6 +62,9 @@ if [ -n "$missing" ]; then echo "MISSING in hal_tc375.c: $missing"; fail=1; else
 "$B/tricore-elf-nm.exe" "$OUT"/tc_*.o | awk '$2=="T" {print $3}' | sort -u > "$TEMP/drv_def.txt"
 missing=$(comm -23 "$TEMP/drv_used.txt" "$TEMP/drv_def.txt")
 if [ -n "$missing" ]; then echo "MISSING driver functions: $missing"; fail=1; else echo "every board driver function used is defined"; fi
+# every iLLD (Ifx*) function used has its .c file present and NOT excluded in .cproject (else the ADS link fails)
+"$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^Ifx/ {print $2}' | sort -u > "$TEMP/ifx_used.txt"
+"$PY" tests/acceptance/check_ads_ifx.py --symbols "$TEMP/ifx_used.txt" || fail=1
 
 # the throttle servo is written ONLY by app/servo.c (power limit clamp in the lowest layer)
 writers=$(grep -rln --include=*.c "hal_set_throttle_pwm *(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/servo.c$")

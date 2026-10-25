@@ -19,6 +19,8 @@ step that is not DONE below, without redoing finished work.
 | 5 | BENCH TEST mode (ground station, dock) | DONE (MODE_BENCH, sb_bench, BENCH_DIAG, hal_get_diag, monitor trip test, tab Bench, BT1-BT6, I9; gate OK, storm 200 OK) | e57f815 |
 | 6 | FIRST_TEST.md checklist | DONE (multimeter, power-up order, bench, dock, TRAINING, HDG LOCK) | (this commit) |
 
+| 7 | (user request) ADS link: 30 unresolved Ifx* externals | DONE: cause = build made before the iLLD un-exclusion (step 4) / stale ADS makefiles; .cproject in git (1d8e796) builds them, the ADS build at 12:22 linked (map OK). New check tests/acceptance/check_ads_ifx.py in check.sh + RUN_ACCEPTANCE | (this commit) |
+
 ## Notes (first test preparation)
 
 - Step 4: iLLD modules Asclin, Qspi, Dma, Evadc, _Lib/DataHandling, Stm un-excluded in the TASKING Debug

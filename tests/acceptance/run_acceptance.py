@@ -31,7 +31,8 @@ def plan(mode):
     t = os.path.join(HERE, "%s")
     url = ["--url", os.environ["ACCEPT_CLONE_URL"]] if os.environ.get("ACCEPT_CLONE_URL") else []
     ads = ("ADS build excludes every non-firmware folder", [PY, t % "check_ads_excludes.py"], 60)
-    q = [ads,
+    ifx = ("ADS builds every iLLD file the firmware calls", [PY, t % "check_ads_ifx.py"], 60)
+    q = [ads, ifx,
          ("fresh build from GitHub (quick)", [PY, t % "fresh_build.py", "--quick"] + url, 3600),
          ("fault storm: 200 episodes", [PY, t % "run_storm.py", "--episodes", "200"], 1800),
          ("32-bit time wraparound", [STORM, "--wrap"], 600),
@@ -39,7 +40,7 @@ def plan(mode):
          ("gateway storm (I14, I15, I17, I20, I21)", [PY, t % "storm_gateway.py", "--episodes", "10"], 1800)]
     if mode == "quick":
         return q
-    return [ads,
+    return [ads, ifx,
             ("fresh build from GitHub (full)", [PY, t % "fresh_build.py"] + url, 14400),
             ("fault storm: 2000 episodes", [PY, t % "run_storm.py", "--episodes", "2000"], 7200),
             ("32-bit time wraparound", [STORM, "--wrap"], 600),
