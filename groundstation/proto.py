@@ -59,11 +59,12 @@ T_TELEM2 = 0x8B            # with every telemetry: gateway / helm / remote / sla
 T_GW_ACK = 0x8C            # AURIX -> gateway: the answer to a station's command
 T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor (link.c bench_diag)
 
-# Commands that change how the boat is driven: with a gateway they are only
-# sent to the AURIX after the DRIVER screen accepted them (or in
-# SINGLE-OPERATOR mode after the captain's own confirmation). Never STANDBY.
+# Commands that change how the boat is driven: through the gateway a copilot's are only
+# sent to the AURIX after the captain's ACCEPT on screen 1 (or in SINGLE-OPERATOR mode
+# after the own confirmation). Never STANDBY. PROG_COMMIT = a new AUTO route (the frames
+# before it only fill the AURIX's staging area; COMMIT makes it the route).
 DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_HEADING_ADJ, T_SEA_STATE,
-                T_TRAINING, T_PARAM_SET, T_POWER_CODE}
+                T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT}
 
 
 def is_driving_cmd(ftype, payload=b""):

@@ -17,6 +17,8 @@ import subprocess
 import threading
 import time
 
+import childproc
+
 FROZEN_S = 1.0
 
 
@@ -64,6 +66,7 @@ class VideoStream:
             try:
                 self.proc = subprocess.Popen(self._cmd(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                              bufsize=size)
+                childproc.dies_with_parent(self.proc)          # the reader dies with the ground station
             except OSError as e:
                 self.error = "ffmpeg not found: %s" % e
                 return

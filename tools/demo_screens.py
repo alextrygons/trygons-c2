@@ -110,9 +110,7 @@ def main():
     ap.open_driver()
     dv = ap.driver
     dv.w.geometry("1600x900+0+0")
-    ap.open_map()
-    mw = ap.mapwin
-    ap.nb.select(ap.map_tab)                       # the map is a part of screen 2 now
+    ap.open_map()                                  # screen 2 = the map with the corner panels
     pump(2.0)
     # the onboard side: the simulator's USB joystick (centred, lever in neutral) on the USB link
     sim = Link("tcp:127.0.0.1:5760")
@@ -184,24 +182,24 @@ def main():
     pump(1.0)
     grab(dv.w, "driver_edit_layout_el", "driver HUD, edit-layout mode (drag / resize / hide every box)")
     dv.action("edit")
-    # --- the map window ------------------------------------------------------------------------
-    for theme, lang, up in (("dark", "el", False), ("day", "en", False), ("night", "el", True)):
+    # --- screen 2 (navigation & control): the map + the corner panels, both themes ------------------------
+    import theme
+    for th, lang in (("dark", "el"), ("light", "en"), ("dark", "en")):
         i18n.set_lang(lang)
-        mw.theme, mw.course_up = theme, up
-        mw.update_buttons()
-        mw.redraw()
+        theme.set_theme(th)
+        ap.mapwin.redraw()
+        ap.render(force=True)
         pump(1.5)
-        grab(mw.w, "map_%s_%s%s" % (theme, lang, "_courseup" if up else ""),
-             "MAP window, %s theme, %s%s: chart, AIS + list, route, avoidance, range rings" % (
-                 theme, lang, ", course-up" if up else ", north-up"))
-    # --- the captain screen ------------------------------------------------------------------------
+        grab(root, "screen2_%s_%s" % (th, lang), "screen 2 (navigation & control), %s theme, %s: the map with the "
+             "boat in the centre, the four corner panels, STANDBY, the logo" % (th, lang))
+    theme.set_theme("dark")
+    # --- the tools window ---------------------------------------------------------------------------------
     i18n.set_lang("el")
-    root.lift()
-    for i, key in enumerate(ap.tab_keys):
-        if key in ("tab.map", "tab.sound"):
-            ap.nb.select(i)
-            pump(1.5)
-            grab(root, "captain_%s_el" % key.split(".")[1], "captain screen, %s tab, Greek" % key.split(".")[1])
+    for key in ("tab.connection", "tab.sound"):
+        ap.open_tab(key)
+        pump(1.5)
+        grab(ap.tools, "tools_%s_el" % key.split(".")[1], "tools window, %s page, Greek" % key.split(".")[1])
+    ap.tools.withdraw()
     sim.stop()
     ap.quit()
     with open(os.path.join(OUT, "README.md"), "w", encoding="utf-8") as f:

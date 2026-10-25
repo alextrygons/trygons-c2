@@ -1,6 +1,6 @@
 ===============================================================================
   TRYGONS C2 BOAT AUTOPILOT - USER MANUAL
-  State: 2026-10-25 (driver HUD, map window, sound + voice, Greek)
+  State: 2026-10-25 (screen 2 = map + corner panels, one look for both screens, geofence)
   The same manual in Greek: MANUAL_EL.txt (kept in step with this one)
 ===============================================================================
 
@@ -13,7 +13,7 @@ CONTENTS
   5.  The ground station (PC program)
   5A. Language: Greek / English
   5B. The DRIVER screen (full-screen camera HUD)
-  5C. The MAP window
+  5C. The map (= screen 2)
   5D. Sounds and voice callouts
   6.  The board (AURIX TC375 Lite Kit)
   6A. FIRST TEST: steering only (compile-time switch)
@@ -256,14 +256,14 @@ WHAT TO TRY
        STBY or STANDBY -> stop.
   2. A SAVE
        DRIVER screen: the big SAVE button (or a SAVE button on a joystick).
-       Captain screen, Cameras tab: "SAVING until ..." and the event in
+       Screen 2, Cameras tab: "SAVING until ..." and the event in
        demo_run\ssd\video\events\.
   3. A channel switch
-       Captain screen, Network tab: channel RF -> MANUAL -> within 60 s KEEP.
+       Screen 2, Network tab: channel RF -> MANUAL -> within 60 s KEEP.
        The top line of the driver screen shows the channel. STARLINK is the
        emergency channel: data saver, no sync, a yellow banner.
   4. An AUTO mission
-       Captain screen, Program tab: Load file -> demo\demo_mission.json
+       Screen 2, Program tab: Load file -> demo\demo_mission.json
        (6 waypoints, 6-12 kn) -> Check depth -> Upload to boat. Then Take
        HELM and press the mode button AUTO: the DRIVER screen asks ->
        ACCEPT; then ON BOARD: CONFIRM within 10 s. The boat drives the program (map tab).
@@ -279,13 +279,13 @@ WHAT TO TRY
        get_vision_samples.py; else only these injected detections).
   5. An AIS collision situation
        While AUTO runs (or in HDG LOCK): double-click DEMO_SHIP.bat. A ferry
-       comes from starboard. Captain screen, AIS tab: the ship turns yellow,
+       comes from starboard. Screen 2, AIS tab: the ship turns yellow,
        then red (CPA / TCPA). AUTO slows down, then passes astern of the
        ferry (route on the map) and goes back to the leg; the driver screen
        shows the ship line; COLLISION RISK starts a SAVE. In HDG LOCK the
        driver screen PROPOSES a heading: ACCEPT / REJECT.
   6. Remote driving with a USB joystick
-       Plug the joystick into this PC. Captain screen, Remote tab: Find
+       Plug the joystick into this PC. Screen 2, Remote tab: Find
        joysticks, choose it, Take HELM, REQUEST REMOTE DRIVING, then ON BOARD:
        CONFIRM within 10 s. Mode REMOTE MANUAL: the shore joystick drives
        (max 20 % / 5 %). Any move of the ON BOARD stick or lever, or STANDBY,
@@ -311,81 +311,121 @@ START WITH THE BOARD (once the USB link is written, chapter 17):
   plug in the USB cable, find the COM port in Device Manager, then
       C:\msys64\ucrt64\bin\python.exe app.py COM5
 
-TWO SCREENS PER STATION
+TWO SCREENS PER STATION (one look: both screens use the same fonts, colours,
+buttons and panels - groundstation\theme.py - and switch dark / light together)
   Screen 1 = DRIVING: the full-screen cameras + HUD (chapter 5B). The
-             captain sits here (with the joystick); copilot questions,
-             avoidance proposals and CLEAR SLOWDOWN are answered here.
-  Screen 2 = NAVIGATION & CONTROL: this window - the map (Map tab), the
-             captain / copilot controls, AIS, collision, link and boat
-             status, alarms.
+             captain sits here (with the joystick): REMOTE MANUAL and
+             MANEUVER are started HERE (captain with the manual licence).
+             Copilot questions, avoidance proposals and CLEAR SLOWDOWN are
+             answered here.
+  Screen 2 = NAVIGATION & CONTROL (Greek: "Πλοήγηση & έλεγχος"): the map
+             fills the whole window, everything else lies on it in panels.
   Laptop + external monitor: screen 2 stays on the laptop's own (main)
   screen, screen 1 opens on the external monitor (F11 puts them back there).
   Only one monitor: F11 shows screen 1, F11 again screen 2 (a question for
   the captain brings screen 1 to the front by itself). F12 swaps the two
-  windows between two monitors. There is no separate map window any more.
+  windows between two monitors. There is no separate map window.
+  Size: screen 2 fits from a 1366 x 768 screen up, at 100 - 150 % Windows
+  scaling (the panel text gets a little smaller when it must; checked by
+  groundstation\test_screen2.py).
 
-CHOOSING THE BOAT (the BOATS button, top left)
+CHOOSING THE BOAT (top-right panel "Boats")
   The list comes from the boats folder of the repository (boats\rf49d.json,
   boats\er69d.json - name + Tailscale address, no passwords). Every boat
-  shows ONLINE / OFFLINE / IP NOT SET. Choose an ONLINE boat, type user
-  name + password, choose "captain" or "copilot", CONNECT.
+  shows its NAME (big), ONLINE / OFFLINE / IP NOT SET, and its address only
+  small. Click a boat: user name + password, "captain" or "copilot",
+  CONNECT.
   * The station refuses to connect if the gateway is another boat (each
     gateway knows its own name - gateway config "boat").
   * Then screen 1 opens and a yellow window asks: type the boat's name AND
     tick "I see the LIVE front camera of <boat>" (only possible while the
-    front camera picture is live). Only after that can this station take
-    HELM. "NOT THIS BOAT" disconnects.
+    front camera picture is live). Only after that the panel shows
+    "✓ name verified" and this station can take HELM. "NOT THIS BOAT"
+    disconnects.
   * A NEW COMPUTER: clone the repository (chapter 16) - the boats come with
     it; nothing else to copy. A new boat = a new file in boats\ (copy one,
     change id / name / address), commit it.
   * Fill in the real Tailscale IPs: the files have PLACEHOLDER addresses.
-  The connection box (gw:host:port, tcp:..., COM5) still works for the
-  simulator, the demo and service; then there is no boat check.
+  "Other address ..." (Tools - Connection): the connection box (COM5,
+  tcp:..., gw:host:port) for the board on USB, the simulator, the demo and
+  service; then there is no boat check.
 
-THE WINDOW (screen 2):
-  Top row 1      BOATS, connection, link status, log file name, and on the
-                 right the language buttons ΕΛ / EN (chapter 5A)
-  Top row 2      HELM (take / release - on an UNCREWED boat releasing HELM is
-                 a lost link, you are asked first), CAPTAIN / COPILOT (and
-                 who the captain is), ROLE SWAP, the profile CREWED /
-                 UNCREWED, "Driver screen" (= screen 1), "Single operator"
-  Menu bar       Windows: open / close screen 1, move a window to monitor
-                 1 / 2 / 3, swap (F12); Language: Ελληνικά / English
-  Blue banner    UNCREWED - nobody on board (chapter 7A)
-  Red banner     LINK LOST / ENGINE KILLED (chapter 7A)
-  Yellow banner  the boat is not confirmed yet (name + live camera)
-  Orange banner  JOYSTICK IN CONTROL (MANUAL) - the PC can't change the mode
-  Yellow banner  PRESS JOYSTICK CONFIRM - <what> - <seconds left>
-  Red banner     alarms (flashing + beep); "ACK ALARM" acknowledges
-  Yellow banner  MOVE THROTTLE TO PICK UP: lever to <position> (chapter 8)
-  Left column    mode, POWER LIMIT (big; orange = raised) with "Raise fwd",
-                 "Raise rev", "Lower now"; heading, target, outboard,
-                 throttle ("asked" if more was asked than allowed), gear, GPS,
-                 position source, uncertainty, current, waypoint ...
-  Middle column  STANDBY (big red), the three driving modes (the active one
-                 is lit: MANUAL = joystick, HDG LOCK = panel button, AUTO
-                 START = PC + CONFIRM), AUTO pause / resume / skip, heading
-                 -10/-1/+1/+10 (HDG LOCK), sea state, training. With the
-                 simulator also: panel HDG LOCK / STANDBY, joystick CONFIRM.
-  Joystick strip stick position, lever bar (green = forward, red = reverse,
-                 grey = neutral zone, yellow mark = pickup point), TAKE /
-                 AUTO / CONFIRM, status and fault reason, source and USB
-                 link (frames/s, CRC errors, stick / throttle connected),
-                 analog calibration
-  Map tab        the full map (chapter 5C): charts, AIS, boat, track, the
-                 program, uncertainty circle, drift arrow; tick "Click adds
-                 a program waypoint" to build a program
-  Program tab    the AUTO program editor (see chapter 7), upload / download,
-                 save / load file
-  Plot tab       heading vs target, outboard angle (2 minutes)
-  Config tab     settings (STANDBY only, lost at power-off)
-  Joystick tab   source (analog / USB), throttle input (stick Y / lever),
-                 neutral zone, lever override, pickup window, the button map
-                 with "now pressed", "Map buttons (guided)", SAVE TO BOAT
-  System tab     CPU time per cycle of the three cores, overruns, link, SD card
-  Bench tab      the BENCH TEST (chapter 6B)
-  Sound tab      sound settings, the voices, play every sound (chapter 5D)
-  Events tab     every command, answer, mode change, alarm
+SCREEN 2 = THE MAP + FOUR CORNER PANELS
+  The boat is ALWAYS in the centre and the map moves under it; north is
+  always up (no course-up); the boat symbol turns with the heading. Zoom:
+  "Zoom +" / "Zoom −" (bottom middle), the mouse wheel or + / -. A drag pans
+  the map for a moment (e.g. to edit a far waypoint): it goes back to the
+  boat by itself 10 s after the last touch, or at once with "Back to boat"
+  (or the key B).
+  The panels are see-through and never cover the boat or the area around it.
+  A click on a panel's title folds it to the title (▸) or opens it again
+  (▾); remembered on this PC. STANDBY (big red, bottom-left corner) is
+  ALWAYS there, also with every panel folded.
+  Top left      STATUS: the mode, the POWER LIMIT with Raise fwd / Raise rev /
+                Lower; heading, target, rate of turn, gear, throttle
+                ("asked" when more was asked than allowed), outboard, GPS
+                (fix, source, uncertainty), speed / course over ground
+  Top right     BOATS (above); HELM / ROLES: who holds HELM, your role
+                (CAPTAIN / COPILOT, licence), the captain's name; Take HELM,
+                Release (UNCREWED: releasing = a lost link, you are asked
+                first), Role swap, Screen 1, Single operator.
+                LINK: data OK / NO DATA; every internet channel (4G, 4G2, RF,
+                STARLINK) with quality bars, latency, loss, up / down (▶ = the
+                one in use); the profile CREWED / UNCREWED; NEAR SHORE xx m /
+                open sea xx m from shallow water / shore distance unknown
+                (counts as near); while the link is lost: the seconds to the
+                engine kill (or "near the shore: engine kill at idle");
+                ENGINE KILLED - reset on board
+  Bottom left   CONTROL: HDG LOCK, AUTO START (+ MANUAL and MANEUVER only in
+                single-operator mode with the manual licence - otherwise
+                they are on screen 1); the AUTO state, Pause / Resume / Skip;
+                the ROUTE, MAX SPEED and GEOFENCE editing (below); heading
+                -10 / -1 / +1 / +10; the captain's answers to your actions
+                (copilot: WAITING / ACCEPTED / REJECTED). With the simulator
+                also: panel HDG LOCK / STANDBY and the joystick CONFIRM.
+  Bottom right  TRAFFIC: the collision-avoidance state and a proposal, the
+                nearest AIS ships (name, distance, bearing, CPA, TCPA; red =
+                danger, amber = warning; a click opens the details), "AIS
+                doesn't show small craft"; under it the logo
+  Top middle    banners, only when needed: alarms (flashing; ACK ALARM),
+                LINK LOST / ENGINE KILLED, PRESS JOYSTICK CONFIRM, REMOTE /
+                MANEUVER / JOYSTICK IN CONTROL, pickup, FIRST TEST, UNCREWED,
+                shallow water ahead, collision risk, STARLINK EMERGENCY,
+                single operator, boat not confirmed, the editing help
+  Bottom middle "Zoom −" / "Zoom +" / "Back to boat" / "Tools", the last
+                message, the chart note "Not for navigation ..."
+  Menu bar      Windows (screen 1, F11, move to a monitor, swap F12), Tools
+                (every page), View (dark / light theme for BOTH screens, the
+                map layers + range rings), Language
+  TOOLS window  (button "Tools" or the Tools menu; a list of pages on the
+                left): Connection, Control (sea state, training, the
+                simulator's panel + USB joystick), Program (the route as a
+                table, save / load a file), AIS (details), Plot, Config,
+                Joystick (+ the stick / lever picture), Cameras, Remote (the
+                shore joystick: device, axes, "send joystick", release),
+                Network, System, Bench, Sound, Events
+                Where this manual says "... tab" (Program tab, Joystick tab,
+                Cameras tab ...), it means that page of the TOOLS window.
+
+EDITING ON THE MAP (the copilot's work; the captain can do it too)
+  ROUTE      "Edit route": a click on the map adds a waypoint at the end, a
+             drag moves one, a right click deletes one; − / + set the speed
+             of the new waypoints (while editing: of all of them). "Send
+             route" = upload to the boat (refused across shallow water or out
+             of the geofence: the leg and the position are shown). Until then
+             the panel says NOT SENT (the route is amber on the map).
+  MAX SPEED  − / + then "Set": the highest leg speed the boat accepts
+             (parameter max_leg_kn).
+  GEOFENCE   "Edit fence": clicks add corners (3 .. 50), a drag moves one, a
+             right click deletes one; "Send fence" -> the GATEWAY keeps it and
+             refuses every route upload / AUTO start that leaves it (code
+             120); "Clear fence" removes it. It never steers and never
+             changes the throttle. Shown on the map: green = in force, amber
+             dashed = being edited / not sent.
+  A copilot's route, max speed and geofence (like every driving command)
+  wait for the captain's ACCEPT on screen 1 (10 s, else refused): the
+  Control panel shows WAITING, then ACCEPTED or REJECTED. The captain's own
+  go straight through; single operator = the own confirmation.
 
 Every command gets an answer: OK, or why not (e.g. "JOYSTICK IS IN CONTROL",
 "only in STANDBY", "program refused: leg speed out of range (waypoint 3)").
@@ -397,12 +437,12 @@ limit) but never stops or starts anything.
 -------------------------------------------------------------------------------
 5A. LANGUAGE: GREEK / ENGLISH
 -------------------------------------------------------------------------------
-Every text on the screens (captain screen, driver screen, map window, alarms,
+Every text on the screens (screen 1, screen 2 + its tools window, alarms,
 buttons, questions, bench test) comes from two plain text files:
     groundstation\lang\el.txt     Greek (the default)
     groundstation\lang\en.txt     English
-SWITCH: the buttons ΕΛ / EN at the top right of the captain screen, the
-Language menu, or on the driver screen the ΕΛ / EN button (key L). It
+SWITCH: the Language menu of screen 2, or on the driver screen the ΕΛ / EN
+button (key L). It
 changes at once on every window - no restart - and is remembered on this
 PC (groundstation\gs_settings.json, not in git). The VOICE language is
 chosen separately (Sound tab), e.g. Greek screens with English voice.
@@ -487,7 +527,7 @@ main colour (green or white, AR menu); RED = warning, AMBER = caution only.
 
 KEYS on the driver screen:  Space / A acknowledge   N night   D declutter
   V fill / fit   L language   E edit layout   G all AR on / off   O obstacle
-  overlay   F11 full screen   F12 swap with the captain screen
+  overlay   F11 full screen   F12 swap with screen 2
   Ctrl+Shift+1..9  this window to monitor 1..9
 FILL / FIT: fill = the picture covers the window, cropped evenly; fit = the
   whole picture with black bars.
@@ -501,9 +541,22 @@ EDIT LAYOUT (LAYOUT button or E): every box gets a blue frame. Drag a box to
   be moved by accident.
 Questions from the captain / the gateway appear in the middle (ACCEPT /
   REJECT, a countdown; no answer = rejected) - as before (part I).
-THE HUD IS DISPLAY ONLY: no HUD button or key changes the driving. The only
-  things it sends are the old driver-screen ones: ACCEPT / REJECT answers,
-  SAVE (video) and CLEAR SLOWDOWN (vision).
+MANUAL DRIVING STARTS HERE (the captain with the manual licence; also a
+  single operator with the licence): REMOTE MANUAL and MANEUVER (the buttons
+  above the bottom-left row) ask the boat; then press CONFIRM on the joystick
+  (on board, or the shore joystick on an UNCREWED boat). While one runs:
+  RELEASE. A copilot doesn't get these buttons. The gateway (licence,
+  captain) and the AURIX (CONFIRM, priorities, watchdogs) check every request
+  again.
+MANEUVER (trailer, ramp, dock): instead of the CDI three boxes REV | N | FWD -
+  the lit one = the gear engaged now, the outlined one = what your lever
+  asks for. The throttle stays at idle.
+OTHERWISE THE HUD ONLY SHOWS: no other button or key changes the driving; it
+  sends only ACCEPT / REJECT answers, SAVE (video) and CLEAR SLOWDOWN
+  (vision).
+THE LOGO: bottom right, above SAVE - small, never over an instrument or a
+  warning. The same look as screen 2 (theme.py): the warning / caution
+  colours are the same on both screens, dark / light switches both.
 
 AR OVERLAYS (on the front video, button AR = menu, each one on / off):
   Horizon line + heel scale (pointer = heel, from the IMU), velocity vector
@@ -533,23 +586,20 @@ astern in REMOTE / MANUAL) the two rear cameras are shown much bigger. A
 copilot's question for the captain appears here (ACCEPT / REJECT).
 
 -------------------------------------------------------------------------------
-5C. THE MAP (SCREEN 2, MAP TAB)
+5C. THE MAP (= SCREEN 2)
 -------------------------------------------------------------------------------
-The full-size map is a part of screen 2 (Map tab); the separate map window is
-gone. It never sends anything to the boat; "Click adds a program waypoint"
-(above the map) only fills the route editor.
-  Shows   depth chart, contours, sea marks, AIS ships + a list on the right
-          (name, distance, bearing, CPA, TCPA, age; red = danger, yellow =
-          warning, grey = old), own boat with its 6-minute course line,
-          track, the program route + waypoints, active waypoint, avoidance
-          route, shallow-water / collision warnings at the top, DR
-          uncertainty circle, range rings with their distance.
-          (The system has no geofence, so there is none to show.)
-  Buttons FOLLOW BOAT / FREE (drag the map = free), Zoom + / - (or the mouse
-          wheel, + / -), NORTH UP / COURSE UP (turns in 5 deg steps), THEME
-          dark / day / night, RANGE RINGS, the chart layers.
-  Mouse   drag = pan, wheel = zoom, a click (with "Click adds ...") = a
-          waypoint.
+The map IS screen 2 (chapter 5: "SCREEN 2 = THE MAP + FOUR CORNER PANELS",
+"EDITING ON THE MAP").
+  Shows   depth chart, contours, sea marks, AIS ships, own boat (in the
+          centre, turned with the heading) with its 6-minute course line,
+          track, the route + waypoints (amber while edited / not sent),
+          active waypoint, avoidance route, the geofence, a refused leg (red
+          X), drift arrow, DR uncertainty circle, range rings with their
+          distance; shallow-water / collision warnings as banners.
+  Layers  View menu: depth, contours, sea marks, AIS, range rings
+          (remembered).
+  Theme   View menu: dark / light (both screens); NIGHT (screen 1, key N) =
+          dim red on both maps.
 BOTH WINDOWS (screen 1, screen 2) remember their monitor, place and size
 (groundstation\gs_layout.json) and come back there at the next start.
 Windows menu -> "Move the ... to monitor n", or Ctrl+Shift+1..9 in that
@@ -594,7 +644,7 @@ WHAT IT SAYS (texts: the "say." lines of the language files, chapter 5A)
              when you push the throttle against it
   sea        rough water, reducing speed
   alarms     every alarm by name (WARNING ones repeat)
-SOUND TAB (captain screen): sound on / off, volume, mute advisories, mute
+SOUND PAGE (screen 2, Tools - Sound): sound on / off, volume, mute advisories, mute
   small sounds, quiet mode, the repeat time, the VOICE language (separate
   from the screens), which voice is installed, "Make the voice cache now",
   "My recordings folder", and the list of every sound and callout: select
@@ -1295,16 +1345,16 @@ I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN
                                     every second that it is open)
   STANDBY, "Lower now", alarm ack and HELM never wait.
   SINGLE-OPERATOR MODE (one person alone at the station): button "Single
-  operator" on the captain screen -> a warning -> ON. A purple banner on
+  operator" (screen 2, HELM / roles panel) -> a warning -> ON. A purple banner on
   both screens shows it; the gateway logs it. Every driving action then
   needs YOUR confirmation in a small window (SEND / Cancel, 10 s). It
   switches OFF by itself when this station disconnects (also after a
   crash); press the button again to switch it off.
   The USB laptop on the boat (no gateway) is the service link: there the
   driver window asks when it is open, otherwise the action goes directly.
-  The window places (monitor, size) of the captain, driver and map windows
-  are remembered (gs_layout.json) and come back at the next start. F12 (or
-  Ctrl+Tab) swaps the captain and driver windows between the monitors.
+  The window places (monitor, size) of screen 1, screen 2 and the tools
+  window are remembered (gs_layout.json) and come back at the next start.
+  F12 (or Ctrl+Tab) swaps screen 1 and screen 2 between the monitors.
 
 
 J. AIS: OTHER SHIPS (RECEIVE ONLY)
@@ -1361,9 +1411,9 @@ K. DEPTH CHARTS AND SEA MARKS (OFFLINE)
   Copy that folder to the Pi too (gateway\README.md section 18): the Pi uses
   it for the shallow-water checks. After that the map works with NO
   internet.
-  Map tab: Depth (shading: dark = shallow, white = deep, sand = land),
-  Contours (2, 5, 10, 20, 50, 100 m), Sea marks, AIS ships - each on / off;
-  "depth shading" = how strong the colours are. Zoom out up to 400 m per
+  Map (screen 2), View menu: Depth (shading: dark = shallow, white = deep,
+  sand = land), Contours (2, 5, 10, 20, 50, 100 m), Sea marks, AIS ships,
+  Range rings - each on / off. Zoom out up to 400 m per
   pixel. The driver screen's small map shows the same, 3 km wide.
   On the map, everywhere the data has no depth (land, harbours, very close
   to the coast) counts as SHALLOW for every check (part L).
@@ -1442,7 +1492,7 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
   an accepted HDG LOCK heading counts only if it came while HDG LOCK was on.
   Collision and shallow-water alarms do NOT lower the power limit (slowing
   down is done by the speed request itself).
-  Captain screen, tab "AIS": the ship list (name, distance, bearing, CPA,
+  Screen 2, tab "AIS": the ship list (name, distance, bearing, CPA,
   TCPA, age), click a ship for its details.
 
 N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
@@ -1454,7 +1504,7 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   everything (night, fog, glare, small things far away): keep a lookout.
   Licence: model and code Apache-2.0, test pictures MaSTr1325 CC BY 4.0 -
   both allowed for this project (gateway\vision\README.md).
-  STAGES (captain screen, Cameras tab; every change is logged):
+  STAGES (screen 2, Tools - Cameras; every change is logged):
     1 overlay + log    (ON)  colours over the front camera on the driver
                              screen, boxes with bearing + "~120 m (rough)",
                              orange sectors on the maps, a log file

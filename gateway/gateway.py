@@ -25,6 +25,7 @@ from common import Clock, load_config, log, proto, setup_logging
 from audit import Audit
 from ais import AisTargets, OnlineFeed
 from shallow import Shallow
+from geofence import Geofence
 from avoid import Avoider
 from vision.manager import VisionManager
 import chart
@@ -106,6 +107,10 @@ class Gateway:
         self.nav_sent = 0
         self.nav_state = {"shallow": None, "threats": [], "route": [], "state": "CLEAR", "why": ""}
         self.stations.prog_check = self.check_prog
+        # geofence (CLAUDE.md D): routes must stay inside; a copilot's change waits for the captain's ACCEPT
+        self.geofence = Geofence(os.path.join(self.storage.folder("state"), "geofence.json")
+                                 if self.storage.usable else None)
+        self.stations.ext["geofence"] = self._geofence_msg
         # collision avoidance (section D): every decision into the audit log
         self.avoider = Avoider(cfg.get("avoid"), self.shallow,
                                log=lambda text, **kw: self.audit("avoid", text=text, **kw))
@@ -189,8 +194,8 @@ class Gateway:
                 "heading": d.get("heading"), "mode": d.get("mode")}
 
     def check_prog(self, st, ftype, payload):
-        """Program upload / AUTO start through the gateway: refused across shallow water.
-        -> None (fine) or the refusal text."""
+        """Program upload / AUTO start through the gateway: refused across shallow water (114) or out of
+        the geofence (120). -> None (fine), the refusal text (114) or (code, text)."""
         import struct as _st
         if ftype == proto.T_PROG_BEGIN and len(payload) >= 2:
             st.prog_up = {"n": payload[0], "wps": {}}
@@ -204,6 +209,10 @@ class Gateway:
             if bad:
                 self.audit("program_refused", station=st.id, user=st.user, why=bad[0])
                 return bad[0]
+            why = self.geofence.check(wps)
+            if why:
+                self.audit("program_refused", station=st.id, user=st.user, why=why)
+                return 120, why
             self.prog_wps = wps
         elif ftype in (proto.T_AUTO_START, proto.T_AUTO_RESUME):
             o, d = self.own(), self.telem or {}
@@ -216,7 +225,30 @@ class Gateway:
             if bad:
                 self.audit("auto_refused", station=st.id, user=st.user, why=bad[0])
                 return bad[0]
+            why = self.geofence.check(rest, start=(o["lat"], o["lon"])) if rest else None
+            if why:
+                self.audit("auto_refused", station=st.id, user=st.user, why=why)
+                return 120, why
         return None
+
+    def _geofence_msg(self, st, m):
+        """Set / change / clear the geofence from a station's map (CLAUDE.md D). A copilot's change waits
+        for the captain's ACCEPT on screen 1; the captain's own goes straight through."""
+        from geofence import valid
+        ok, why, pts = valid(m.get("poly"))
+        if not ok:
+            return st.send({"t": "geofence_ack", "ok": False, "code": 0, "text": "geofence refused: " + why})
+        what = str(m.get("what") or ("geofence: %d corners" % len(pts) if pts else "geofence: clear"))[:80]
+
+        def done(yes, code):
+            if yes:
+                ok2, text = self.geofence.set(pts, st.user)
+                self.audit("geofence", station=st.id, user=st.user, corners=len(pts), ok=ok2)
+            else:
+                from stations import GW_RESULTS
+                ok2, text = False, "refused: %s" % GW_RESULTS.get(code, proto.RESULTS.get(code, code))
+            st.send({"t": "geofence_ack", "ok": ok2, "code": code, "text": text})
+        self.stations.ask_local(st, m, what, done)
 
     def nav_compose(self):
         """The navigation request for the AURIX: collision avoidance (section D) + shallow water
@@ -477,6 +509,7 @@ class Gateway:
                 "sync": self.sync.status(), "ais": self.ais_status(self.net.data_saver()),
                 "avoid": dict(self.nav_state, shallow_limit_m=self.shallow.limit(), charts=bool(self.charts)),
                 "shore": {"flags": self.shore_now[0], "dist_m": self.shore_now[1]},
+                "geofence": self.geofence.status(),
                 "vision": self.vision.status(self.net.data_saver())}
 
     async def run(self):

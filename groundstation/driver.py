@@ -13,10 +13,14 @@ else is an overlay on top of the video (hud.py builds them, this window draws th
   [toolbar]          CDI
   heading tape ...                REC  vision  clock   [SAVE]
 
-DISPLAY ONLY: the HUD never sends a driving command. What it sends is what the
-driver screen always sent: the answers to the captain's questions (ACCEPT /
-REJECT), SAVE (video), CLEAR SLOWDOWN (vision). The MASTER lamps only silence
-this PC.
+The HUD itself never steers or sets the throttle. What it sends: the captain's
+answers to the copilot's questions (ACCEPT / REJECT), SAVE (video), CLEAR
+SLOWDOWN (vision) and - for the captain with the manual licence only - the
+REQUESTS for REMOTE MANUAL / MANEUVER and their RELEASE (CLAUDE.md D: manual
+driving starts on screen 1; the gateway checks licence + captain, the AURIX the
+joystick CONFIRM, priorities and watchdogs). MANEUVER shows REV / N / FWD. The
+MASTER lamps only silence this PC. Look (fonts, colours, the logo): theme.py,
+the same module as screen 2.
 
 Keys: Space / A acknowledge the MASTER lamps, N night, D declutter (FULL /
 NORMAL / MINIMAL), V fill / fit, L language, E edit layout, G AR overlays,
@@ -40,6 +44,7 @@ import mapview
 import monitors
 import proto
 import settings
+import theme
 import video
 from i18n import T
 
@@ -53,13 +58,11 @@ try:
 except ImportError:
     hudar = None
 
-BG = "#000000"
-FG = "#ffffff"
-RED = "#ff3030"
-YEL = "#ffd000"
-GRN = "#40e040"
-F_HUD = ("Segoe UI", 16, "bold")
-F_MID = ("Segoe UI", 20, "bold")
+BG = theme.BLACK                # behind the video
+FG = theme.WHITE
+YEL = theme.YELLOW
+F_HUD = theme.font("title")
+F_MID = theme.font("huge")
 
 # kept for the old tests / other modules
 tape_ticks, tape_x, throttle_geom, angdiff = hud.tape_ticks, hud.tape_x, hud.throttle_geom, hud.angdiff
@@ -115,8 +118,7 @@ def scale_rect(iw, ih, W, H, mode="fill"):
 
 # --- fonts + the Pillow renderer -------------------------------------------------------------------------------
 _FONTS = {}
-_FONT_FILES = {False: ("segoeui.ttf", "DejaVuSans.ttf", "arial.ttf"),
-               True: ("segoeuib.ttf", "DejaVuSans-Bold.ttf", "arialbd.ttf")}
+_FONT_FILES = theme.FONT_FILES
 
 
 def font(size, bold=False):
@@ -182,7 +184,12 @@ class PilRenderer:
         self.text_boxes = []
         for op in ops:
             k = op["k"]
-            if k == "image":
+            if k == "image" and op["src"] == "logo":
+                x0, y0, x1, y1 = [int(round(v)) for v in op["r"]]
+                im = theme.logo_pil(max(1, y1 - y0), dark=True)       # light lettering: on the video
+                if im is not None:
+                    _paste_clip(layer, im, x1 - im.width, y0)
+            elif k == "image":
                 im = images.get(op["src"])
                 if im is not None:
                     x0, y0, x1, y1 = [int(round(v)) for v in op["r"]]
@@ -336,11 +343,11 @@ class CanvasRenderer:
                 if op.get("max_w"):
                     while size > 8 and measure(op["s"], size, op["bold"]) > op["max_w"]:
                         size -= 1
-                fnt = ("Segoe UI", -size, "bold" if op["bold"] else "normal")
+                fnt = theme.tkfont("label", size, bold=op["bold"])
                 anchor = "center" if op["anchor"] == "c" else op["anchor"]
                 x, y = op["xy"]
                 for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
-                    c.create_text(x + dx, y + dy, text=op["s"], fill="#000000", font=fnt, anchor=anchor, tags=tag)
+                    c.create_text(x + dx, y + dy, text=op["s"], fill=theme.BLACK, font=fnt, anchor=anchor, tags=tag)
                 c.create_text(x, y, text=op["s"], fill=op["fill"], font=fnt, anchor=anchor, tags=tag)
 
 
@@ -360,7 +367,7 @@ class DriverScreen:
         self.cv = tk.Canvas(self.w, bg=BG, highlightthickness=0)
         self.cv.pack(fill="both", expand=True)
         self.status = self.front = self.cv      # old names (tests / gateway tests look for tags here)
-        self.map = tk.Canvas(self.w, bg="#000000", highlightthickness=1, highlightbackground="#303030")
+        self.map = tk.Canvas(self.w, bg=theme.BLACK, highlightthickness=1, highlightbackground=theme.C["line"])
         self.chartview = mapview.ChartView(app.charts)
         self.renderer = PilRenderer() if Image is not None else CanvasRenderer(self.cv)
         self.ops, self.hits = [], []
@@ -376,21 +383,21 @@ class DriverScreen:
         self.vis_overlay = bool(settings.get("vision_overlay", True))
         self.vis_opacity = int(settings.get("vision_opacity", 1)) % 3
         # captain -> driver question box
-        QB = "#202000"
+        QB = theme.C["panel"]
         self.qbox = tk.Frame(self.w, bg=QB, highlightbackground=YEL, highlightthickness=4)
         self.qhead = tk.Label(self.qbox, text="", font=F_HUD, bg=QB, fg=YEL)
         self.qhead.pack(padx=20, pady=(12, 0))
-        self.qtext = tk.Label(self.qbox, text="", font=F_MID, bg=QB, fg=FG, wraplength=760, justify="center")
+        self.qtext = tk.Label(self.qbox, text="", font=F_MID, bg=QB, fg=theme.C["fg"], wraplength=760, justify="center")
         self.qtext.pack(padx=20, pady=(6, 6))
         self.qtime = tk.Label(self.qbox, text="", font=F_HUD, bg=QB, fg=YEL)
         self.qtime.pack()
         qb = tk.Frame(self.qbox, bg=QB)
         qb.pack(pady=14)
-        self.q_yes = tk.Button(qb, text=T("drv.accept"), font=F_MID, bg="#008000", fg=FG, width=10,
-                               command=lambda: self.answer(True))
+        self.q_yes = tk.Button(qb, text=T("drv.accept"), width=10, command=lambda: self.answer(True),
+                               **dict(theme.button_opts("ok"), font=F_MID))
         self.q_yes.pack(side="left", padx=12)
-        self.q_no = tk.Button(qb, text=T("drv.reject"), font=F_MID, bg="#a00000", fg=FG, width=10,
-                              command=lambda: self.answer(False))
+        self.q_no = tk.Button(qb, text=T("drv.reject"), width=10, command=lambda: self.answer(False),
+                              **dict(theme.button_opts("no"), font=F_MID))
         self.q_no.pack(side="left", padx=12)
         w = self.w
         for k in ("<F12>", "<Control-Tab>"):
@@ -410,6 +417,7 @@ class DriverScreen:
         w.bind("<Configure>", lambda e: app.layout_changed())
         monitors.bind_keys(w, app)
         i18n.on_change(self.lang_changed)
+        theme.on_change(self.theme_changed)
         self.tick()
 
     # --- settings / actions ---------------------------------------------------------------------------------
@@ -420,6 +428,14 @@ class DriverScreen:
             self.q_no.configure(text=T("drv.reject"))
         except tk.TclError:
             raise RuntimeError("driver window gone")             # i18n drops this listener
+
+    def theme_changed(self, old):
+        """Dark / light switched on either screen: the question box follows, the HUD redraws."""
+        try:
+            theme.retint(self.qbox, old)
+            self.map.configure(highlightbackground=theme.C["line"])
+        except tk.TclError:
+            raise RuntimeError("driver window gone")
 
     def toggle_overlay(self):
         self.vis_overlay = not self.vis_overlay
@@ -464,6 +480,14 @@ class DriverScreen:
             self.toggle_overlay()
         elif act == "vision_clear":
             a.vision_send({"t": "vision_clear"})
+        elif act == "remote_req":
+            if a.manual_allowed():
+                a.remote_request()
+        elif act == "maneuver_req":
+            if a.manual_allowed():
+                a.maneuver_request()
+        elif act == "release":
+            a.remote_release()
         elif act == "fullscreen":
             self.w.attributes("-fullscreen", not self.w.attributes("-fullscreen"))
         elif act == "escape":
@@ -617,6 +641,11 @@ class DriverScreen:
         s["rear_big"] = bool(d is not None and (d["mode"] == proto.MODE_MANEUVER or
                                                 (d["mode"] in (proto.MODE_REMOTE, proto.MODE_MANUAL) and d["gear"] == 2)))
         s["notices"] = self.notices(d, gw)
+        s["manual_ok"] = a.manual_allowed()                     # REMOTE MANUAL / MANEUVER buttons (captain + licence)
+        s["mv_ask"] = None
+        if d is not None and "rjoy_lever1000" in d and d.get("rjoy_age_ms", 99999) < 1000:
+            lv = d["rjoy_lever1000"] / 1000.0                   # the captain's lever: REV / N / FWD zone
+            s["mv_ask"] = 1 if lv > d.get("nz_hi", 0.55) else (2 if lv < d.get("nz_lo", 0.45) else 0)
         v = gw.get("vision")
         s["vision_cap"] = bool(v and v.get("cap_kn") is not None)
         if v:
@@ -678,7 +707,7 @@ class DriverScreen:
         a = self.app
         out = []
         if a.single_op:
-            out.append(("singleop", T("drv.single_op"), "#e080ff"))
+            out.append(("singleop", T("drv.single_op"), theme.NOTICE["single_op"]))
         if getattr(a, "boat", None) is not None and not getattr(a, "boat_ok", True):
             out.append(("boatconfirm", T("boat.banner", name=a.boat.name), "caution"))
         if d is not None:
@@ -690,14 +719,14 @@ class DriverScreen:
                                           T("cap.ll_far", m=d.get("coast_dist_m") or "?", s="%.0f" % d.get("ll_left_s", 0))),
                             "warn"))
             if d.get("profile") == proto.PROFILE_UNCREWED:
-                out.append(("uncrewed", T("drv.uncrewed"), "#60a0ff"))
+                out.append(("uncrewed", T("drv.uncrewed"), theme.NOTICE["uncrewed"]))
             if d["mode"] == proto.MODE_MANEUVER:
                 out.append(("maneuver", T("drv.maneuver"), "caution"))
             if d.get("confirm_kind"):
                 out.append(("confirm", T("cap.confirm_banner", what=T("confirm.%d" % min(
                     d["confirm_kind"], len(proto.CONFIRM_KINDS) - 1)), s="%.0f" % d["confirm_left_s"]), "caution"))
             if d.get("first_test"):
-                out.append(("first_test", T("drv.first_test"), "#ff40ff"))
+                out.append(("first_test", T("drv.first_test"), theme.NOTICE["first_test"]))
             if d["mode"] == proto.MODE_REMOTE and not self.front_live:
                 out.append(("nofront", T("drv.no_front"), "warn"))
             if d.get("pickup") and d["mode"] in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK):
@@ -757,14 +786,14 @@ class DriverScreen:
         if not self.front_live:
             cam = T("hud.video_frozen") if fvs is not None else T("hud.no_video")
             under.append({"k": "rect", "r": (W / 2 - W * 0.16, H * 0.30 - H * 0.035, W / 2 + W * 0.16,
-                                              H * 0.30 + H * 0.035), "tag": "frozen", "fill": "#c00000",
+                                              H * 0.30 + H * 0.035), "tag": "frozen", "fill": theme.FROZEN,
                           "outline": None, "w": 1, "alpha": 210})
             under.append({"k": "text", "xy": (W / 2, H * 0.30), "s": cam, "tag": "frozen",
-                          "size": max(14, int(H * 0.04)), "bold": True, "fill": "#ffffff", "anchor": "c",
+                          "size": max(14, int(H * 0.04)), "bold": True, "fill": theme.WHITE, "anchor": "c",
                           "max_w": W * 0.3, "box": None})
         elif use != "FRONT-1":
             under.append({"k": "text", "xy": (W / 2, H * 0.27), "s": use, "tag": "front_name",
-                          "size": max(10, int(H * 0.02)), "bold": True, "fill": "#ffd000", "anchor": "c",
+                          "size": max(10, int(H * 0.02)), "bold": True, "fill": theme.YELLOW, "anchor": "c",
                           "max_w": None, "box": None})
         self.ops, self.hits = under + ops, hits
         if Image is not None:
@@ -855,9 +884,9 @@ class DriverScreen:
                 px = im.load()
                 for i, k in enumerate(cells):
                     if k == 0:
-                        px[i % mk["w"], i // mk["w"]] = (247, 195, 37, alpha)
+                        px[i % mk["w"], i // mk["w"]] = rgba(theme.VISION["obstacle"], alpha)
                     elif k == 1:
-                        px[i % mk["w"], i // mk["w"]] = (41, 167, 224, alpha)
+                        px[i % mk["w"], i // mk["w"]] = rgba(theme.VISION["water"], alpha)
                 out.append({"k": "mask", "img": im, "r": pic, "tag": "vmask"})
             else:
                 cw, ch = iw / mk["w"], ih / mk["h"]
@@ -871,14 +900,15 @@ class DriverScreen:
                             c1 += 1
                         if k in (0, 1):
                             out.append({"k": "rect", "r": (x0 + c0 * cw, y0 + r * ch, x0 + c1 * cw, y0 + (r + 1) * ch),
-                                        "tag": "vmask", "fill": "#f7c325" if k == 0 else "#29a7e0", "outline": None,
+                                        "tag": "vmask", "fill": theme.VISION["obstacle"] if k == 0 else
+                                        theme.VISION["water"], "outline": None,
                                         "w": 1, "alpha": alpha})
                         c0 = c1
         for o in v.get("obstacles") or []:
             if not o.get("confirmed") or not o.get("box"):
                 continue
             bx = o["box"]
-            col = "#ff3030" if o.get("in_corridor") else "#ffd000"
+            col = theme.WARN if o.get("in_corridor") else theme.YELLOW
             r = (x0 + bx[0] * iw, y0 + bx[1] * ih, x0 + bx[2] * iw, y0 + bx[3] * ih)
             out.append({"k": "rect", "r": r, "tag": "vbox", "fill": None, "outline": col, "w": 3, "alpha": 255})
             out.append({"k": "text", "xy": (r[0], r[1] - 4), "tag": "vbox", "size": 14, "bold": True, "fill": col,
@@ -914,23 +944,22 @@ class DriverScreen:
         w = w or max(50, c.winfo_width())
         h = h or max(50, c.winfo_height())
         d = a.t or {}
-        night = bool(settings.get("night"))
-        theme = "night" if night else "dark"
-        c.configure(bg=mapview.THEMES[theme]["bg"])
+        mth = "night" if settings.get("night") else "dark"      # the mini map over the video: never bright
+        c.configure(bg=mapview.THEMES[mth]["bg"])
         tr = a.track[-600:]
         if not tr or not d:
-            c.create_text(w / 2, h / 2, text=T("map.no_position"), fill=mapview.THEMES[theme]["text"],
-                          font=("Segoe UI", 10, "bold"))
+            c.create_text(w / 2, h / 2, text=T("map.no_position"), fill=mapview.THEMES[mth]["text"],
+                          font=(theme.FAMILY, 10, "bold"))
             return
         la0, lo0 = tr[-1]
         k = math.cos(math.radians(la0)) * 111320.0
         m = 10.0 * 300.0 / max(150.0, w)                # about 3 km wide
         av = (a.gw_status or {}).get("avoid") or {}
         self.chartview.draw(c, la0, lo0, m, w, h, opacity=0.9, ais=a.ais_list(), threats=av.get("threats"),
-                            route=av.get("route"), shallow=av.get("shallow"), small=True, theme=theme,
+                            route=av.get("route"), shallow=av.get("shallow"), small=True, theme=mth,
                             vision=((a.gw_status or {}).get("vision") or {}).get("obstacles"))
         P = lambda la, lo: (w / 2 + (lo - lo0) * k / m, h / 2 - (la - la0) * 111320.0 / m)      # noqa: E731
-        th = mapview.THEMES[theme]
+        th = mapview.THEMES[mth]
         wps = (a.prog or {}).get("wps") or []
         if len(wps) >= 2:
             c.create_line(*[v for wp in wps for v in P(wp["lat"], wp["lon"])], fill=th["route"], width=2, dash=(6, 3))
@@ -950,9 +979,9 @@ class DriverScreen:
         hd = math.radians(d["heading"])
         c.create_polygon(w / 2 + 10 * math.sin(hd), h / 2 - 10 * math.cos(hd), w / 2 + 6 * math.sin(hd + 2.4),
                          h / 2 - 6 * math.cos(hd + 2.4), w / 2 + 6 * math.sin(hd - 2.4), h / 2 - 6 * math.cos(hd - 2.4),
-                         fill=th["own"], outline="#000000")
+                         fill=th["own"], outline=theme.BLACK)
         c.create_text(w - 4, 4, text=T("map.km", km="%.0f" % (m * w / 1000.0)), anchor="ne", fill=th["text"],
-                      font=("Segoe UI", 9, "bold"))
+                      font=(theme.FAMILY, 9, "bold"))
 
 
 def hudar_keys():

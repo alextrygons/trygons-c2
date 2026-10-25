@@ -10,6 +10,11 @@ import subprocess
 import threading
 import time
 
+try:
+    import childproc                    # groundstation/childproc.py (on the path through common.py)
+except ImportError:
+    childproc = None
+
 BITS, SQ, X0, Y0 = 26, 12, 4, 8
 
 
@@ -38,6 +43,8 @@ class SimCamera:
              "-preset", "ultrafast", "-tune", "zerolatency", "-g", str(self.fps), "-b:v", "%dk" % self.kbps,
              "-pix_fmt", "yuv420p", "-f", "rtsp", "-rtsp_transport", "tcp", self.url],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if childproc:
+            childproc.dies_with_parent(self.proc)              # no orphaned encoder when a test is killed
         threading.Thread(target=self._run, daemon=True).start()
         return self
 

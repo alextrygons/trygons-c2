@@ -265,12 +265,12 @@ def start():
         return 1
     say("started  4 camera test streams + AIS traffic")
     gs = os.path.join(REPO, "groundstation", "app.py")
-    launch("onboard", [py, gs, "tcp:127.0.0.1:5760", "--title", "ON BOARD (simulator panel + joystick)",
+    launch("onboard", [py, gs, "tcp:127.0.0.1:5760", "--place", "onboard",
                        "--charts", charts, "--layout", os.path.join(RUN, "layout_onboard.json")],
            os.path.join(REPO, "groundstation"), pids)
     time.sleep(1.0)
     launch("shore", [py, gs, "gw:127.0.0.1:5761", "--login", "%s:%s" % (USER, PASSWORD), "--driver", "--cams", "Full",
-                     "--title", "SHORE (captain)", "--charts", charts,
+                     "--place", "shore", "--charts", charts,
                      "--layout", os.path.join(RUN, "layout_shore.json")],
            os.path.join(REPO, "groundstation"), pids)
     say("started  ground stations: SHORE (captain + driver screen) and ON BOARD\n\n"

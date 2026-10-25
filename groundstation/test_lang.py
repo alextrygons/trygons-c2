@@ -4,8 +4,9 @@
   L2 every key the program uses exists in both files (static keys in the code +
      the families made at run time: modes, alarms, results, gears ...)
   L3 no hard-coded screen text in the screen modules (text="...", say("..."))
-  L4 live switch ΕΛ <-> EN without restart: buttons, tabs, titles follow; no key
-     missing while drawing; the captain screen fits 1920 px in both languages
+  L4 live switch ΕΛ <-> EN without restart: buttons, tabs, titles, screen 2's panels
+     follow; no key missing while drawing; screen 2 fits 1920 x 1080 in both languages
+     (the full layout matrix: test_screen2.py)
   L5 command descriptions / gateway sentences travel in English (protocol,
      audit) and are shown in the screen language (from_en round trip)
 
@@ -29,7 +30,7 @@ import proto  # noqa: E402
 
 results = []
 SCREEN_MODULES = ["app.py", "mapview.py", "driver.py", "hud.py", "hudar.py", "mapwin.py", "soundtest.py", "monitors.py",
-                  "sound.py", "crewui.py"]
+                  "sound.py", "crewui.py", "overlay.py", "theme.py"]
 
 
 def report(name, ok, detail):
@@ -96,11 +97,10 @@ def families():
         f += sound.dynamic_keys()
     except ImportError:
         pass
-    try:
-        import mapwin
-        f += ["mw.theme_" + t for t in mapwin.THEME_ORDER]
-    except ImportError:
-        pass
+    f += ["ov.edit_help_" + k for k in ("route", "fence")] + ["ov.dec_" + k for k in ("ok", "no", "fail")]
+    f += ["crew.role_" + k for k in ("captain", "copilot")] + ["cap.place_" + k for k in ("shore", "onboard")]
+    f += ["menu.theme_" + k for k in ("dark", "light")] + ["map.layer_rings"]
+    f += ["prof.%d" % i for i in range(3)] + ["tab." + k for k in ("connection", "control")]
     return f
 
 
@@ -140,6 +140,8 @@ def main():
     errors = []
     root.report_callback_exception = lambda *a: errors.append(repr(a[1]))
     ap = A.App(root, layout=os.path.join(tempfile.gettempdir(), "trygons_layout_test_lang.json"))
+    root.state("normal")
+    root.geometry("1920x1080+0+0")
     for _ in range(10):
         root.update()
     lang0 = i18n.lang()
@@ -148,18 +150,23 @@ def main():
         i18n.set_lang(lang)
         for _ in range(5):
             root.update()
+        ap.render(force=True)
+        standby = [o["s"] for o in ap.ov.ops if o.get("tag") == "standby"]
+        panel = [o["s"] for o in ap.ov.ops if o["k"] == "panel" and o["panel"] == "control"]
         seen.setdefault(lang, []).append((root.title(), ap.conn_btn.cget("text"), ap.nb.tab(0, "text"),
-                                          ap.mode_btns["MANUAL"].cget("text"), root.winfo_reqwidth()))
+                                          panel[0] if panel else None, ap.ov.fits, standby))
     import settings
     settings.reload()
     remembered = settings.get("ui_lang") == "el"
     el_t, en_t = seen["el"][0], seen["en"][0]
-    fit = all(v[4] <= 1920 for vs in seen.values() for v in vs)
+    fit = all(v[4] for vs in seen.values() for v in vs)
     ok = lang0 == "el" and el_t[0] != en_t[0] and en_t[1] == "Connect" and el_t[1] == "Σύνδεση" and \
-        en_t[2] == "Map" and el_t[3] == "ΧΕΙΡΟΚΙΝΗΤΟ" and seen["el"][1][:4] == el_t[:4] and remembered and fit and \
+        en_t[2] == "Connection" and el_t[3] == "Έλεγχος" and en_t[3] == "Control" and \
+        el_t[0].startswith("Πλοήγηση & έλεγχος") and en_t[0].startswith("navigation & control") and \
+        seen["el"][1][:4] == el_t[:4] and remembered and fit and el_t[5] == ["STANDBY"] and \
         not i18n.MISSING and not errors
-    report("L4 Greek by default; live switch EL <-> EN (titles, buttons, tabs); remembered; fits 1920 px in both",
-           ok, "default %s; el %s; en %s; widths el %s en %s; remembered %s; missing %s; errors %s" % (
+    report("L4 Greek by default; live switch EL <-> EN (titles, buttons, tabs, panels); remembered; screen 2 fits "
+           "1920 x 1080 in both", ok, "default %s; el %s; en %s; fits el %s en %s; remembered %s; missing %s; errors %s" % (
                lang0, el_t[:4], en_t[:4], [v[4] for v in seen["el"]], [v[4] for v in seen["en"]], remembered,
                sorted(i18n.MISSING)[:5], errors[:2]))
     ap.quit()

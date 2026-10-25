@@ -1,29 +1,32 @@
-"""The full-size MAP of screen 2 (navigation & control, CLAUDE.md section E): built
-into screen 2 (MapWindow(app, parent=frame)); the separate map window is gone.
-Nothing here sends anything to the boat; "click adds waypoint" (screen 2's Map tab)
-only fills the route editor.
+"""The map of screen 2 (navigation & control, CLAUDE.md section E): it fills the whole window,
+the panels of overlay.py lie on top of it (the same canvas).
 
-  depth chart, sea marks, AIS targets + list (name, distance, bearing, CPA, TCPA, age),
-  own boat, track, route + waypoints, the avoidance route, shallow-water / collision
-  warnings, DR uncertainty circle, range rings
-  follow the boat / free pan (drag), zoom (buttons, mouse wheel), north-up / course-up,
-  day / dark / night theme; its monitor, place and size are remembered (gs_layout.json)
-  like the captain and driver windows; Ctrl+Shift+1..9 = to monitor n.
-Course-up turns the map in 5 degree steps (the depth shading is redrawn per step).
+  * the boat is ALWAYS in the centre and the map moves under it; north-up, locked (no
+    course-up); the boat symbol turns with the heading; zoom in / out (buttons, mouse wheel)
+  * a temporary pan (drag; e.g. while editing a route far away) snaps back to the boat after
+    PAN_BACK_S (10 s) without input, or at once with "back to boat" (back_to_boat())
+  * editing (the copilot or the captain, CLAUDE.md D): edit = "route" -> a click on the map adds a
+    waypoint at the end, dragging a waypoint moves it, a right click deletes it (app.prog = the
+    route editor, nothing is sent); edit = "fence" -> the same for the geofence corners
+    (app.fence_draft). Sending them is the panels' job (app.py): through the gateway, a copilot's
+    change waits for the captain's ACCEPT on screen 1.
+  * drawn with tag "map": depth chart, sea marks, AIS (mapview.ChartView), range rings, track,
+    route + waypoints, the active waypoint, the geofence, a refused leg, drift, DR uncertainty,
+    the boat + its 6-minute course line. The note "Not for navigation ..." is drawn where the
+    panels leave room (note_box).
+Nothing here sends anything to the boat.
 """
 import math
 import time
-import tkinter as tk
 
-import i18n
 import mapview
-import monitors
 import settings
+import theme
 from i18n import T
 
-F_TXT = ("Segoe UI", 11)
-F_BTN = ("Segoe UI", 11, "bold")
-THEME_ORDER = ("dark", "day", "night")
+PAN_BACK_S = 10.0           # a temporary pan snaps back to the boat after this long without input
+HIT_PX = 14                 # grab radius of a waypoint / fence corner
+ZOOM_MIN, ZOOM_MAX = 0.5, 400.0      # metres per pixel
 
 
 def nice_ring(m_per_px, px=120.0):
@@ -35,227 +38,199 @@ def nice_ring(m_per_px, px=120.0):
     return 20 * 1852.0
 
 
-class MapWindow:
-    def __init__(self, app, geometry=None, parent=None):
+class MapView:
+    def __init__(self, app, canvas):
         self.app = app
-        self.embedded = parent is not None
-        if self.embedded:                        # screen 2: a part of the window
-            self.w = tk.Frame(parent, bg="#000000")
-            self.w.pack(fill="both", expand=True)
-        else:                                    # (old: its own window)
-            self.w = tk.Toplevel(app.root, bg="#000000")
-            self.w.title(T("mw.title"))
-            self.w.geometry(geometry or "1400x900")
-            self.w.protocol("WM_DELETE_WINDOW", app.close_map)
-        self.on_click = None                     # fn(lat, lon) for a click without dragging (add a waypoint)
-        self.press_at = None
+        self.cv = canvas
+        self.embedded = True
         cfg = dict(settings.DEFAULTS["map"], **(settings.get("map") or {}))
-        self.theme = cfg.get("theme", "dark") if cfg.get("theme") in THEME_ORDER else "dark"
-        self.course_up = bool(cfg.get("course_up"))
-        self.m = float(cfg.get("m_per_px") or 10.0)
-        self.follow = True
-        self.center = None                       # (lat, lon) when panned by hand
-        self.drag = None
-        self.rings = True
-        self.layers = {k: tk.BooleanVar(value=True) for k in ("depth", "contours", "marks", "ais")}
+        self.m = min(ZOOM_MAX, max(ZOOM_MIN, float(cfg.get("m_per_px") or 10.0)))
+        lay = settings.get("map_layers") or {}
+        self.layers = {k: bool(lay.get(k, True)) for k in ("depth", "contours", "marks", "ais")}
+        self.rings = bool(settings.get("map_rings", True))
+        self.pan = None                          # (lat, lon) of the window centre while panned, else None
+        self.pan_t = 0.0                         # last pan / edit input (the snap-back clock)
+        self.edit = None                         # None / "route" / "fence"
+        self.grab = None                         # ("route" | "fence", index) being dragged
+        self.press_at = None
+        self.drag_from = None
+        self.view = None                         # (lat0, lon0, w, h) of the last drawing
+        self.boat = None                         # (lat, lon) of the boat at the last drawing
+        self.note_box = None                     # (x0, y0, x1, y1) where the chart note goes (set by the app)
         self.chartview = mapview.ChartView(app.charts)
         self._t = 0.0
-        top = tk.Frame(self.w, bg="#202830")
-        top.pack(fill="x")
-        self.btns = {}
-
-        def b(key, cmd, **kw):
-            bt = tk.Button(top, command=cmd, font=F_BTN, bg="#34404c", fg="#ffffff", activebackground="#506070",
-                           bd=2, padx=6, **kw)
-            i18n.bind(bt, key)
-            bt.pack(side="left", padx=2, pady=3)
-            self.btns[key] = bt
-            return bt
-        b("mw.follow", self.toggle_follow)
-        b("mw.zoom_in", lambda: self.zoom(0.6))
-        b("mw.zoom_out", lambda: self.zoom(1 / 0.6))
-        b("mw.orient", self.toggle_orient)
-        b("mw.theme", self.next_theme)
-        b("mw.rings", self.toggle_rings)
-        lay = top
-        if self.embedded:                        # screen 2: the layers on a second row (fits a laptop screen)
-            lay = tk.Frame(self.w, bg="#202830")
-            lay.pack(fill="x")
-        for k, v in self.layers.items():
-            cb = tk.Checkbutton(lay, variable=v, font=F_TXT, bg="#202830", fg="#ffffff", selectcolor="#34404c",
-                                activebackground="#202830", command=self.redraw)
-            i18n.bind(cb, "map.layer_" + k)
-            cb.pack(side="left", padx=2)
-        body = tk.PanedWindow(self.w, orient="horizontal", bg="#000000", sashwidth=5)
-        body.pack(fill="both", expand=True)
-        self.cv = tk.Canvas(body, bg="#05101a", highlightthickness=0)
-        body.add(self.cv, stretch="always", minsize=400)
-        side = tk.Frame(body, bg="#101820")
-        body.add(side, minsize=220, width=300 if self.embedded else 400)
-        self.view_only = tk.Label(side, font=("Segoe UI", 9), bg="#101820", fg="#a0b0c0", wraplength=380,
-                                  justify="left", anchor="w")
-        i18n.bind(self.view_only, "mw.view_only")
-        self.view_only.pack(fill="x", padx=6, pady=(6, 0))
-        self.ais_lbl = tk.Label(side, font=F_BTN, bg="#101820", fg="#c8d8e8", anchor="w", justify="left")
-        self.ais_lbl.pack(fill="x", padx=6, pady=(6, 2))
-        self.cols = (("name", "ais.col_ship", 15), ("dist", "ais.col_dist", 7), ("brg", "ais.col_brg", 5),
-                     ("cpa", "ais.col_cpa", 6), ("tcpa", "ais.col_tcpa", 6), ("age", "ais.col_age", 5))
-        # the AIS list: a dark text list (a ttk table keeps a white background on Windows)
-        self.tree = tk.Text(side, bg="#101820", fg="#c8d8e8", font=("Consolas", 11), height=20, bd=0,
-                            highlightthickness=0, wrap="none", cursor="arrow")
-        self.tree.tag_configure("head", foreground="#8090a0", font=("Consolas", 10, "bold"))
-        self.tree.tag_configure("danger", background="#601010", foreground="#ffd0d0")
-        self.tree.tag_configure("warn", background="#504000", foreground="#fff0c0")
-        self.tree.tag_configure("stale", foreground="#707070")
-        self.tree.pack(fill="both", expand=True, padx=4)
-        self.rows = []
-        self.small = tk.Label(side, font=("Segoe UI", 9), bg="#101820", fg="#ff8080", wraplength=360, justify="left")
-        i18n.bind(self.small, "ais.small_craft")
-        self.small.pack(fill="x", padx=6, pady=4)
-        self.info = tk.Label(self.w, font=F_TXT, bg="#202830", fg="#c8d8e8", anchor="w")
-        self.info.pack(fill="x")
-        self.cv.bind("<ButtonPress-1>", self.on_press)
-        self.cv.bind("<B1-Motion>", self.on_motion)
-        self.cv.bind("<ButtonRelease-1>", self.on_release)
-        self.cv.bind("<MouseWheel>", lambda e: self.zoom(0.8 if e.delta > 0 else 1.25))
-        self.cv.bind("<Button-4>", lambda e: self.zoom(0.8))
-        self.cv.bind("<Button-5>", lambda e: self.zoom(1.25))
-        if not self.embedded:
-            self.w.bind("<Configure>", lambda e: app.layout_changed())
-        for k, fn in (("f", self.toggle_follow), ("F", self.toggle_follow), ("c", self.toggle_orient),
-                      ("C", self.toggle_orient), ("t", self.next_theme), ("T", self.next_theme),
-                      ("plus", lambda: self.zoom(0.6)), ("minus", lambda: self.zoom(1 / 0.6)),
-                      ("KP_Add", lambda: self.zoom(0.6)), ("KP_Subtract", lambda: self.zoom(1 / 0.6))):
-            self.w.bind("<%s>" % k if len(k) > 1 else k, lambda e, fn=fn: fn())
-        if not self.embedded:
-            for k in ("<F12>", "<Control-Tab>"):
-                self.w.bind(k, lambda e: app.swap_screens())
-            monitors.bind_keys(self.w, app)
-        i18n.on_change(self.lang_changed)
-        self.update_buttons()
-        self.tick()
+        self.redraws = 0
 
     # --- settings ---------------------------------------------------------------------------------------
     def save(self):
-        settings.put("map", {"theme": self.theme, "course_up": self.course_up, "m_per_px": round(self.m, 3)})
+        settings.put("map", {"m_per_px": round(self.m, 3)})
+        settings.put("map_layers", dict(self.layers))
+        settings.put("map_rings", self.rings)
 
-    def update_buttons(self):
-        self.btns["mw.follow"].configure(text=T("mw.follow") if self.follow else T("mw.free"),
-                                         bg="#2a6040" if self.follow else "#34404c")
-        self.btns["mw.orient"].configure(text=T("mw.course_up") if self.course_up else T("mw.north_up"))
-        self.btns["mw.theme"].configure(text=T("mw.theme_" + self.theme))
-        self.btns["mw.rings"].configure(bg="#2a6040" if self.rings else "#34404c")
+    @property
+    def follow(self):
+        return self.pan is None
 
-    def lang_changed(self):
-        try:
-            if not self.embedded:
-                self.w.title(T("mw.title"))
-            self.update_buttons()
-            self.draw_ais_list()
-        except tk.TclError:
-            raise RuntimeError("map window gone")
-
-    def toggle_follow(self):
-        self.follow = not self.follow
-        if self.follow:
-            self.center = None
-        self.update_buttons()
-        self.redraw()
-
-    def toggle_orient(self):
-        self.course_up = not self.course_up
-        self.save()
-        self.update_buttons()
-        self.redraw()
-
-    def next_theme(self):
-        self.theme = THEME_ORDER[(THEME_ORDER.index(self.theme) + 1) % len(THEME_ORDER)]
-        self.save()
-        self.update_buttons()
-        self.redraw()
-
-    def toggle_rings(self):
-        self.rings = not self.rings
-        self.update_buttons()
-        self.redraw()
+    @property
+    def center(self):
+        return self.pan if self.pan is not None else self.boat
 
     def zoom(self, k):
-        self.m = min(400.0, max(0.5, self.m * k))
+        self.m = min(ZOOM_MAX, max(ZOOM_MIN, self.m * k))
+        if self.pan is not None:
+            self.pan_t = time.time()
         self.save()
         self.redraw()
 
-    def on_press(self, e):
-        self.drag = (e.x, e.y)
-        self.press_at = (e.x, e.y)
-
-    def on_release(self, e):
-        """A click without dragging: on_click(lat, lon) (screen 2: "click adds waypoint")."""
-        self.drag = None
-        p, self.press_at = self.press_at, None
-        if p is None or abs(e.x - p[0]) + abs(e.y - p[1]) > 4 or not self.view or not self.on_click:
-            return
-        lat0, lon0, rot, w, h = self.view
-        _P, inv = mapview.ChartView.projection(lat0, lon0, self.m, w, h, rot)
-        lat, lon = inv(e.x, e.y)
-        self.on_click(lat, lon)
-
-    def on_motion(self, e):
-        """Drag = free pan (the map stops following the boat)."""
-        if not self.drag or not self.view:
-            return
-        lat0, lon0, rot, w, h = self.view
-        _P, inv = mapview.ChartView.projection(lat0, lon0, self.m, w, h, rot)
-        dx, dy = e.x - self.drag[0], e.y - self.drag[1]
-        self.center = inv(w / 2 - dx, h / 2 - dy)
-        self.drag = (e.x, e.y)
-        if self.follow:
-            self.follow = False
-            self.update_buttons()
+    def toggle_layer(self, k):
+        if k == "rings":
+            self.rings = not self.rings
+        else:
+            self.layers[k] = not self.layers[k]
+        self.save()
         self.redraw()
 
-    def destroy(self):
-        self.w.destroy()
+    def back_to_boat(self):
+        self.pan = None
+        self.redraw()
+
+    def set_edit(self, what):
+        """None / "route" / "fence" (the panels' buttons)."""
+        self.edit = what if what != self.edit else None
+        self.grab = None
+        self.redraw()
+
+    # --- geometry ---------------------------------------------------------------------------------------
+    def size(self):
+        return max(100, self.cv.winfo_width()), max(100, self.cv.winfo_height())
+
+    def P(self):
+        lat0, lon0, w, h = self.view
+        return mapview.ChartView.projection(lat0, lon0, self.m, w, h, 0.0)
+
+    def boat_xy(self):
+        if not self.view or self.boat is None:
+            return None
+        return self.P()[0](*self.boat)
+
+    def keepout(self, W=None, H=None):
+        """The boat and the area right around it: (cx, cy, r) - no panel may cover it."""
+        if W is None:
+            W, H = self.size()
+        return W / 2.0, H / 2.0, 0.17 * min(W, H)
+
+    # --- mouse (the app passes the clicks that are not on a panel) --------------------------------------------
+    def _points(self, what):
+        if what == "route":
+            return [(w["lat"], w["lon"]) for w in (self.app.prog or {}).get("wps") or []]
+        return list(self.app.fence_draft or [])
+
+    def _near(self, x, y):
+        if not self.view or not self.edit:
+            return None
+        P, _inv = self.P()
+        best = None
+        for i, (la, lo) in enumerate(self._points(self.edit)):
+            px, py = P(la, lo)
+            dd = math.hypot(px - x, py - y)
+            if dd <= HIT_PX and (best is None or dd < best[1]):
+                best = (i, dd)
+        return best[0] if best else None
+
+    def press(self, x, y):
+        self.press_at = (x, y)
+        self.drag_from = (x, y)
+        i = self._near(x, y)
+        self.grab = (self.edit, i) if i is not None else None
+
+    def motion(self, x, y):
+        if not self.view or self.drag_from is None:
+            return
+        P, inv = self.P()
+        if self.grab:
+            what, i = self.grab
+            la, lo = inv(x, y)
+            if what == "route":
+                wps = self.app.prog["wps"]
+                if i < len(wps):
+                    wps[i]["lat"], wps[i]["lon"] = la, lo
+            else:
+                if i < len(self.app.fence_draft):
+                    self.app.fence_draft[i] = (la, lo)
+            self.pan_t = time.time()
+            self.app.map_edited(what)
+        else:                                       # drag = a temporary pan
+            lat0, lon0, w, h = self.view
+            dx, dy = x - self.drag_from[0], y - self.drag_from[1]
+            self.pan = inv(w / 2 - dx, h / 2 - dy)
+            self.view = (self.pan[0], self.pan[1], w, h)
+            self.pan_t = time.time()
+        self.drag_from = (x, y)
+        self.redraw()
+
+    def release(self, x, y):
+        p, self.press_at = self.press_at, None
+        self.drag_from = None
+        grabbed, self.grab = self.grab, None
+        if p is None or grabbed or abs(x - p[0]) + abs(y - p[1]) > 4 or not self.view:
+            return
+        la, lo = self.P()[1](x, y)
+        if self.edit:
+            self.pan_t = time.time()
+            self.app.map_add(self.edit, la, lo)
+        elif self.app.map_click:
+            self.app.map_click(la, lo)
+
+    def right(self, x, y):
+        """A right click on a waypoint / fence corner while editing: delete it."""
+        i = self._near(x, y)
+        if i is not None:
+            self.pan_t = time.time()
+            self.app.map_delete(self.edit, i)
 
     # --- drawing ----------------------------------------------------------------------------------------
     def tick(self):
-        try:
-            if time.time() - self._t >= 0.5:
-                self.redraw()
-        except tk.TclError:
-            return
-        self.w.after(250, self.tick)
-
-    view = None
+        """Called by the app 4 x per second: the snap-back and a redraw twice a second."""
+        now = time.time()
+        if self.pan is not None and self.drag_from is None and now - self.pan_t >= PAN_BACK_S:
+            self.pan = None
+            self._t = 0.0
+        if now - self._t >= 0.5:
+            self.redraw()
 
     def redraw(self):
         self._t = time.time()
+        self.redraws += 1
         a = self.app
         d = a.t
         c = self.cv
-        c.delete("all")
-        th = mapview.THEMES[self.theme]
+        c.delete("map")
+        mark = c.create_line(0, 0, 0, 0, fill="")
+        th = mapview.THEMES[theme.map_theme()]
         c.configure(bg=th["bg"])
-        w, h = max(100, c.winfo_width()), max(100, c.winfo_height())
-        self.draw_ais_list()
-        if not d or not d.get("pos_source"):
-            c.create_text(w / 2, h / 2, text=T("map.no_position"), fill=th["text"], font=("Segoe UI", 18, "bold"))
+        w, h = self.size()
+        boat = (d["est_lat"], d["est_lon"]) if d and d.get("pos_source") else None
+        if boat is None and a.track:
+            boat = a.track[-1]                      # the last known position (no fix now)
+        self.boat = boat
+        if boat is None:
             self.view = None
+            c.create_text(w / 2, h / 2 - 0.22 * min(w, h), text=T("map.no_position"), fill=th["text"],
+                          font=theme.tkfont("value", theme.px("value", w, h)), tags="nopos")
+            self._tag(mark)
             return
-        boat = (d["est_lat"], d["est_lon"])
-        if self.follow or self.center is None:
-            self.center = boat
-        lat0, lon0 = self.center
-        rot = round(d["heading"] / 5.0) * 5.0 % 360.0 if self.course_up else 0.0
-        self.view = (lat0, lon0, rot, w, h)
+        lat0, lon0 = self.pan if self.pan is not None else boat
+        self.view = (lat0, lon0, w, h)
         m = self.m
-        P, _inv = mapview.ChartView.projection(lat0, lon0, m, w, h, rot)
+        P, _inv = self.P()
         av = (a.gw_status or {}).get("avoid") or {}
-        self.chartview.draw(c, lat0, lon0, m, w, h, layers={k: v.get() for k, v in self.layers.items()}, opacity=0.9,
-                            ais=a.ais_list(), threats=av.get("threats"), route=av.get("route"),
-                            shallow=av.get("shallow"), theme=self.theme, rot=rot,
-                            vision=((a.gw_status or {}).get("vision") or {}).get("obstacles"))
+        self.chartview.draw(c, lat0, lon0, m, w, h, layers=dict(self.layers), opacity=0.9, ais=a.ais_list(),
+                            threats=av.get("threats"), route=av.get("route"), shallow=av.get("shallow"),
+                            theme=theme.map_theme(), vision=((a.gw_status or {}).get("vision") or {}).get("obstacles"),
+                            note_box=self.note_box, origin=boat, text_k=getattr(a.ov, "k", 1.0) * theme.unit(w, h))
+        f_small = theme.tkfont("small", theme.px("small", w, h))
+        f_label = theme.tkfont("label", theme.px("label", w, h), bold=True)
         bx, by = P(*boat)
-        # range rings around the boat
         if self.rings:
             step = nice_ring(m)
             for i in range(1, 6):
@@ -265,113 +240,83 @@ class MapWindow:
                 c.create_oval(bx - r, by - r, bx + r, by + r, outline=th["contour"][1], dash=(2, 4), tags="ring")
                 lab = "%.2g %s" % (step * i / 1852.0, T("hud.nm")) if step >= 185 else "%.0f m" % (step * i)
                 c.create_text(bx + r * 0.707 + 3, by - r * 0.707 - 3, text=lab, anchor="sw", fill=th["text"],
-                              font=("Segoe UI", 9), tags="ring")
-        # track
+                              font=f_small, tags="ring")
         tr = a.track[-3000:]
         if len(tr) >= 2:
             pts = []
             for la, lo in tr[::max(1, len(tr) // 1500)]:
                 pts += P(la, lo)
             c.create_line(*pts, fill=th["track"], width=2, tags="track")
-        # the program (route + waypoints) and the active waypoint
+        # the geofence (as sent / being edited)
+        fence = a.fence_draft if (self.edit == "fence" or a.fence_dirty) else a.fence_live()
+        if fence and len(fence) >= 2:
+            pts = [v for la, lo in fence for v in P(la, lo)]
+            col = theme.CAUTION if (self.edit == "fence" or a.fence_dirty) else th["good"]
+            if len(fence) >= 3:
+                c.create_polygon(*pts, outline=col, fill="", width=3, dash=(10, 5), tags="fence")
+            else:
+                c.create_line(*pts, fill=col, width=3, dash=(10, 5), tags="fence")
+            if self.edit == "fence":
+                for i, (la, lo) in enumerate(fence):
+                    x, y = P(la, lo)
+                    c.create_rectangle(x - 6, y - 6, x + 6, y + 6, outline=col, width=2, fill=th["bg"],
+                                       tags="fence")
+        # the route (the editor's program) + the active waypoint
         wps = (a.prog or {}).get("wps") or []
         wpts = [P(wp["lat"], wp["lon"]) for wp in wps]
+        rcol = theme.CAUTION if (self.edit == "route" or a.route_dirty) else th["route"]
         if len(wpts) >= 2:
-            c.create_line(*[v for p in wpts for v in p], fill=th["route"], width=2, dash=(8, 4), tags="prog")
+            c.create_line(*[v for p in wpts for v in p], fill=rcol, width=2 if self.edit != "route" else 3,
+                          dash=(8, 4), tags="prog")
         for i, (x, y) in enumerate(wpts):
-            c.create_oval(x - 6, y - 6, x + 6, y + 6, outline=th["route"], width=2, tags="prog")
-            c.create_text(x + 9, y, text=str(i + 1), anchor="w", font=("Segoe UI", 10, "bold"), fill=th["route"],
-                          tags="prog")
-        if d.get("wp_set"):
+            r = 8 if self.edit == "route" else 6
+            c.create_oval(x - r, y - r, x + r, y + r, outline=rcol, width=2, tags="prog")
+            c.create_text(x + r + 3, y, text=str(i + 1), anchor="w", font=f_label, fill=rcol, tags="prog")
+        if d and d.get("wp_set"):
             x, y = P(d["wp_lat"], d["wp_lon"])
             c.create_line(bx, by, x, y, fill=th["route"], dash=(6, 4), width=2, tags="active_wp")
             c.create_oval(x - 11, y - 11, x + 11, y + 11, outline=th["route"], width=4, tags="active_wp")
-        # a leg the gateway refused (shallow water): its position, from the route editor
         mk = getattr(a, "map_mark", None)
         if mk:
             x, y = P(*mk)
             c.create_line(x - 12, y - 12, x + 12, y + 12, fill=th["warn"], width=4, tags="mark")
             c.create_line(x - 12, y + 12, x + 12, y - 12, fill=th["warn"], width=4, tags="mark")
-            c.create_text(x + 14, y, anchor="w", text=T("map.refused_leg"), fill=th["warn"], font=F_BTN, tags="mark")
-        # drift (current) arrow, 1 kn = 60 px
-        if d.get("drift_kn", 0.0) > 0.02:
-            ang = math.radians(d["set_deg"] - rot)
+            c.create_text(x + 14, y, anchor="w", text=T("map.refused_leg"), fill=th["warn"], font=f_label, tags="mark")
+        if d and d.get("drift_kn", 0.0) > 0.02:
+            ang = math.radians(d["set_deg"])
             L = min(120.0, d["drift_kn"] * 60.0)
             x2, y2 = bx + L * math.sin(ang), by - L * math.cos(ang)
             c.create_line(bx, by, x2, y2, arrow="last", arrowshape=(14, 16, 6), fill=th["route"], width=3, tags="drift")
-            c.create_text(x2, y2 - 12, text=T("map.drift", kn="%.2f" % d["drift_kn"]), font=F_TXT, fill=th["route"],
-                          tags="drift")
+            c.create_text(x2, y2 - 12, text=T("map.drift", kn="%.2f" % d["drift_kn"]), font=f_small,
+                          fill=th["route"], tags="drift")
         if not a.charts:
-            c.create_text(w / 2, h - 20, text=T("cap.no_charts"), fill=th["warn"], font=F_BTN, tags="nocharts")
-        # DR uncertainty
-        r = d["unc_m"] / m
-        if r > 1:
-            c.create_oval(bx - r, by - r, bx + r, by + r, outline=th["warn"] if d["pos_source"] in (2, 3) else
-                          th["good"], width=2, dash=(4, 3), tags="unc")
-        # own boat (turned like the map)
-        hd = math.radians(d["heading"] - rot)
-        pts = []
-        for ang, rr in ((0, 18), (140, 12), (180, 6), (220, 12)):
-            bb = hd + math.radians(ang)
-            pts += [bx + rr * math.sin(bb), by - rr * math.cos(bb)]
-        c.create_polygon(*pts, fill=th["own"], outline="#000000", width=2, tags="boat")
-        cg = math.radians(d["est_cog"] - rot)
-        L = min(200.0, d["est_sog"] * 1852.0 / 10.0 / m)                 # 6 minutes over ground
-        if L > 4:
-            c.create_line(bx, by, bx + L * math.sin(cg), by - L * math.cos(cg), fill=th["own"], width=2,
-                          arrow="last", tags="boat")
-        # warnings: shallow water ahead, collision risk
-        warn = []
-        sh = av.get("shallow")
-        if sh:
-            warn.append(T("map.shallow_ahead", s="%.0f" % sh["in_s"], depth=T("hud.no_data") if sh["depth"] is None
-                          else "%.1f m" % sh["depth"], limit="%.1f" % sh["limit"]))
-        danger = [t for t in av.get("threats") or [] if t.get("level") == "danger"]
-        if danger:
-            t = danger[0]
-            warn.append(T("drv.collision", name=t["name"], cpa="%.2f" % t["cpa_nm"], tcpa="%.1f" % t["tcpa_min"],
-                          brg="%03.0f" % t["bearing"]))
-        if av.get("state") == "DRIVER DECISION":
-            warn.append(T("drv.decision"))
-        for i, txt in enumerate(warn[:3]):
-            c.create_rectangle(w / 2 - 330, 10 + i * 34, w / 2 + 330, 40 + i * 34, fill="#300000", outline=th["warn"],
-                               width=2, tags="warning")
-            c.create_text(w / 2, 25 + i * 34, text=txt, fill=th["warn"], font=("Segoe UI", 13, "bold"),
-                          width=640, tags="warning")
-        # north arrow + scale bar
-        na = math.radians(-rot)
-        nx, ny = w - 40, 40
-        c.create_line(nx - 22 * math.sin(na), ny + 22 * math.cos(na), nx + 22 * math.sin(na), ny - 22 * math.cos(na),
-                      fill=th["text"], width=3, arrow="last", tags="north")
-        c.create_text(nx + 30 * math.sin(na), ny - 30 * math.cos(na), text=T("mw.north"), fill=th["text"],
-                      font=("Segoe UI", 12, "bold"), tags="north")
-        bar_m = 10 ** math.floor(math.log10(max(1.0, m * 150)))
-        c.create_line(20, h - 50, 20 + bar_m / m, h - 50, width=4, fill=th["text"], tags="scale")
-        c.create_text(20, h - 56, text="%g m" % bar_m if bar_m < 1852 else "%g %s" % (bar_m / 1852.0, T("hud.nm")),
-                      anchor="sw", fill=th["text"], font=("Segoe UI", 10), tags="scale")
-        self.info.configure(text=T("mw.info", lat="%.5f" % d["est_lat"], lon="%.5f" % d["est_lon"],
-                                   sog="%.1f" % d["est_sog"], cog="%03.0f" % d["est_cog"], hdg="%03.0f" % d["heading"],
-                                   src=T("pos.%d" % d["pos_source"]) if d["pos_source"] < 4 else "?",
-                                   unc="%.0f" % d["unc_m"], scale="%.1f" % m))
+            c.create_text(w / 2, h / 2 + 0.24 * min(w, h), text=T("cap.no_charts"), fill=th["warn"], font=f_label,
+                          tags="nocharts")
+        if d:
+            r = d["unc_m"] / m
+            if r > 1:
+                c.create_oval(bx - r, by - r, bx + r, by + r, outline=th["warn"] if d["pos_source"] in (2, 3) else
+                              th["good"], width=2, dash=(4, 3), tags="unc")
+            # own boat: always north-up, the symbol turns with the heading
+            hd = math.radians(d["heading"])
+            k = max(1.0, theme.unit(w, h) * 1.2)
+            pts = []
+            for ang, rr in ((0, 20), (140, 13), (180, 6), (220, 13)):
+                bb = hd + math.radians(ang)
+                pts += [bx + k * rr * math.sin(bb), by - k * rr * math.cos(bb)]
+            c.create_polygon(*pts, fill=th["own"], outline=theme.BLACK, width=2, tags="boat")
+            cg = math.radians(d["est_cog"])
+            L = min(200.0, d["est_sog"] * 1852.0 / 10.0 / m)            # 6 minutes over ground
+            if L > 4:
+                c.create_line(bx, by, bx + L * math.sin(cg), by - L * math.cos(cg), fill=th["own"], width=2,
+                              arrow="last", tags="boat")
+        self._tag(mark)
 
-    def draw_ais_list(self):
-        a = self.app
-        rows = a.ais_rows_now() if hasattr(a, "ais_tree") else []
-        self.rows = rows
-        self.ais_lbl.configure(text=T("mw.ais_title", n=len(rows)))
-
-        def f(v, fmt):
-            return "-" if v is None else fmt % v
-        t = self.tree
-        t.configure(state="normal")
-        t.delete("1.0", "end")
-        t.insert("end", " ".join(("%-*s" if i == 0 else "%*s") % (wd, T(key)[:wd]) for i, (_c, key, wd) in
-                                enumerate(self.cols)) + chr(10), "head")
-        for r in rows:
-            tag = "danger" if r.get("level") == "danger" else "warn" if r.get("level") == "warn" else                 "stale" if r.get("stale") else ""
-            vals = ((r.get("name") or str(r["mmsi"]))[:14], f(r.get("dist_nm"), "%.2f"), f(r.get("bearing"), "%03.0f"),
-                    f(r.get("cpa_nm"), "%.2f"), f(r["tcpa_min"] if (r.get("tcpa_min") or 0) >= 0 else None, "%.1f"),
-                    f(r.get("age_s"), "%.0f"))
-            t.insert("end", " ".join(("%-*s" if i == 0 else "%*s") % (wd, v) for i, (v, (_c, _k, wd)) in
-                                    enumerate(zip(vals, self.cols))) + chr(10), tag)
-        t.configure(state="disabled")
+    def _tag(self, mark):
+        """Everything drawn after `mark` belongs to the map (below the panels)."""
+        c = self.cv
+        for i in c.find_all():
+            if i > mark:
+                c.addtag_withtag("map", i)
+        c.delete(mark)
+        c.tag_lower("map")

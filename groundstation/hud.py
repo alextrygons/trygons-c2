@@ -19,6 +19,7 @@ import math
 import os
 
 import i18n
+import theme
 from i18n import T
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -43,13 +44,17 @@ DEFAULT_LAYOUT = {
     "steer": (0.395, 0.775, 0.210, 0.070),
     "cdi": (0.395, 0.850, 0.210, 0.080),
     "controls": (0.008, 0.888, 0.380, 0.052),
+    "drive": (0.095, 0.838, 0.293, 0.045),
     "bottom": (0.008, 0.948, 0.984, 0.045),
 }
 OVERLAYS = list(DEFAULT_LAYOUT)
-MINIMAL = {"status", "master", "alarms", "speed", "throttle", "bottom", "controls"}       # mode, speed, gear,
+# the logo (theme.py): fixed in the free corner above the bottom bar, right of the mini map, below the
+# ROT / G meters - never over an instrument, a warning or the picture's centre
+LOGO_BOX = (0.876, 0.815, 0.116, 0.125)
+MINIMAL = {"status", "master", "alarms", "speed", "throttle", "bottom", "controls", "drive"}   # mode, speed, gear,
 NORMAL_HIDES = {"rot", "gmeter", "cdi"}                                                    # heading, alarms
 DECLUTTER = ("FULL", "NORMAL", "MINIMAL")
-ALWAYS = {"controls"}              # never hidden by declutter: the way back to FULL
+ALWAYS = {"controls", "drive"}     # never hidden by declutter: the way back to FULL; RELEASE of manual driving
 
 
 def declutter_visible(name, level):
@@ -106,19 +111,22 @@ class Layout:
 
 
 # --- colours ------------------------------------------------------------------------------------------
-HUD_COLOURS = {"green": "#3cff6a", "white": "#ffffff"}
+HUD_COLOURS = theme.HUD_MAIN
 
 
 def palette(colour="green", night=False):
-    """One main HUD colour; red and amber only for warnings / cautions. Night: dim red, darker panels."""
+    """One main HUD colour; red and amber only for warnings / cautions (theme.py: the same meaning colours as
+    screen 2). Night: dim red, darker panels. Light theme: light panels on the video (text outlined)."""
     if night:
-        return {"main": "#d84a30", "dim": "#8a3020", "warn": "#ff2a10", "caution": "#c08000", "good": "#a04020",
-                "yellow": "#b07000", "panel": "#000000", "alpha": 185, "outline": "#000000", "video": 0.42,
-                "grey": "#704030", "map_theme": "night"}
+        return dict(theme.NIGHT, panel=theme.BLACK, alpha=int(255 * theme.ALPHA["hud_panel_night"]),
+                    outline=theme.BLACK, video=0.42, map_theme="night")
     main = HUD_COLOURS.get(colour, HUD_COLOURS["green"])
-    return {"main": main, "dim": "#b8c8b8" if colour == "green" else "#c8c8c8", "warn": "#ff3030",
-            "caution": "#ffb000", "good": "#3cff6a", "yellow": "#ffe000", "panel": "#000000", "alpha": 140,
-            "outline": "#000000", "video": 1.0, "grey": "#a0a0a0", "map_theme": "dark"}
+    light = theme.name() == "light"
+    return {"main": main, "dim": theme.HUD_LIGHT["dim"] if light else theme.HUD_DIM.get(colour, theme.HUD_DIM["green"]),
+            "warn": theme.WARN, "caution": theme.CAUTION, "good": theme.GOOD, "yellow": theme.HUD_YELLOW,
+            "panel": theme.HUD_LIGHT["panel"] if light else theme.BLACK, "alpha": int(255 * theme.ALPHA["hud_panel"]),
+            "outline": theme.BLACK, "video": 1.0, "grey": theme.HUD_LIGHT["grey"] if light else theme.HUD_GREY,
+            "map_theme": theme.map_theme()}
 
 
 def latency_colour(ms, pal):
@@ -306,28 +314,45 @@ class Hud:
         self.W, self.H = max(200, W), max(150, H)
         self.ops, self.hits = [], []
         self.pal = palette(s.hud_colour or "green", bool(s.night))
-        H_ = self.H
-        self.f_big = max(18, int(H_ * 0.075))           # speed
-        self.f_mode = max(16, int(H_ * 0.050))          # mode
-        self.f_comm = max(12, int(H_ * 0.030))          # channel / latency / power
-        self.f_norm = max(11, int(H_ * 0.022))
-        self.f_small = max(9, int(H_ * 0.0175))
+        fs = theme.hud_sizes(self.H)                    # the text levels of theme.py
+        self.f_big = fs["big"]                          # speed
+        self.f_mode = fs["mode"]                        # mode
+        self.f_comm = fs["comm"]                        # channel / latency / power
+        self.f_norm = fs["norm"]
+        self.f_small = fs["small"]
         d = s.t
         for name, fn in (("mirror_l", self.mirror), ("mirror_r", self.mirror), ("throttle", self.throttle),
                          ("speed", self.speed), ("depth", self.depth), ("waypoint", self.waypoint),
                          ("traffic", self.traffic), ("rot", self.rot), ("gmeter", self.gmeter),
                          ("steer", self.steer), ("cdi", self.cdi), ("minimap", self.minimap),
-                         ("bottom", self.bottom), ("controls", self.controls), ("status", self.status),
+                         ("bottom", self.bottom), ("controls", self.controls), ("drive", self.drive),
+                         ("status", self.status),
                          ("master", self.master), ("notices", self.notices), ("alarms", self.alarms)):
             if not self.shown(name, s):
                 continue
             if d is None and name not in ("mirror_l", "mirror_r", "status", "master", "alarms", "controls", "bottom",
-                                          "minimap", "notices"):
+                                          "minimap", "notices", "drive"):
                 continue
             fn(name, s)
+        self.logo(s)
         if self.edit:
             self.edit_frames(s)
         return self.ops, self.hits
+
+    def logo_rect(self):
+        """The logo's place: LOGO_BOX, aspect kept, right-bottom aligned, scaled with the window."""
+        x, y, w, h = LOGO_BOX
+        bw, bh = w * self.W, h * self.H
+        lh = min(bh, theme.logo_height(self.W, self.H) * 1.2)
+        lw, lh = theme.logo_size(int(lh), dark=True)
+        if lw > bw:
+            lh = lh * bw / lw
+            lw = bw
+        x1, y1 = (x + w) * self.W, (y + h) * self.H
+        return (x1 - lw, y1 - lh, x1, y1)
+
+    def logo(self, s):
+        self.ops.append({"k": "image", "src": "logo", "r": self.logo_rect(), "tag": "logo"})
 
     # --- overlays --------------------------------------------------------------------------------------------
     def mirror(self, name, s):
@@ -353,7 +378,7 @@ class Hud:
             self.rect((r[0] + 8, cy - self.f_norm, r[2] - 8, cy + self.f_norm), name + "_frozen",
                       fill=self.pal["warn"], alpha=200)
             self.text((cx, cy), T("hud.video_frozen") if m.get("have") else T("hud.no_video"), name + "_frozen",
-                      size=self.f_norm, bold=True, fill="#ffffff", anchor="c", max_w=r[2] - r[0] - 20, box=r)
+                      size=self.f_norm, bold=True, fill=theme.WHITE, anchor="c", max_w=r[2] - r[0] - 20, box=r)
 
     def status(self, name, s):
         r = self.R(name)
@@ -426,7 +451,7 @@ class Hud:
             words = T(key).split("\n")
             for j, wd in enumerate(words):
                 self.text(((x0 + x1) / 2, r[1] + hh * (j + 0.5) / len(words)), wd, "lamp_%d" % lv,
-                          size=self.f_small, bold=True, fill="#000000" if on else col, anchor="c", max_w=x1 - x0 - 6,
+                          size=self.f_small, bold=True, fill=theme.BLACK if on else col, anchor="c", max_w=x1 - x0 - 6,
                           box=r)
             self.hit(r, "ack")
 
@@ -519,7 +544,7 @@ class Hud:
         if d["mode"] == 3 and d.get("speed_set_kn"):                 # AUTO set speed bug
             yb = y0 + 4 + (h - 8) / 2 - (d["speed_set_kn"] - sog) / 10.0 * (h - 8)
             if y0 < yb < y1:
-                self.poly((tx, yb, tx + 9, yb - 6, tx + 9, yb + 6), "sbug", fill="#40c0ff")
+                self.poly((tx, yb, tx + 9, yb - 6, tx + 9, yb + 6), "sbug", fill=theme.ADVISORY)
         self.text((x1 - 6, y0 + h * 0.48), "%.1f" % sog, "speed", size=self.f_big, bold=True, anchor="e",
                   max_w=w * 0.74, box=r)
         self.text((x1 - 6, y1 - 4), T("hud.kn"), "speed_unit", size=self.f_small, bold=True, anchor="se", box=r)
@@ -656,6 +681,8 @@ class Hud:
                   size=self.f_small, bold=True, anchor="n", max_w=w - 8, box=r)
 
     def cdi(self, name, s):
+        if s.t is not None and s.t["mode"] == 7:                        # MANEUVER: the gear state instead
+            return self.maneuver(name, s)
         x0, y0, x1, y1 = self.R(name)
         r = (x0, y0, x1, y1)
         self.panel(r, name)
@@ -669,11 +696,54 @@ class Hud:
         for dx in dots:
             self.oval((x0 + 8 + dx - 3, cy - 3, x0 + 8 + dx + 3, cy + 3), "cdi", outline=self.pal["dim"], w=1)
         self.line((x0 + w / 2, cy - 10, x0 + w / 2, cy + 10), "cdi", fill=self.pal["dim"], w=2)
-        self.line((x0 + 8 + nx, cy - 12, x0 + 8 + nx, cy + 12), "cdi_needle", fill="#ff40ff", w=4)
+        self.line((x0 + 8 + nx, cy - 12, x0 + 8 + nx, cy + 12), "cdi_needle", fill=theme.MAGENTA, w=4)
         side = T("hud.right_of") if s.xte_m > 0 else T("hud.left_of") if s.xte_m < 0 else ""
         self.text((x0 + w / 2, y0 + 2), T("hud.xte", m="%.0f" % abs(s.xte_m), side=side,
                                           scale="%.0f" % (s.xte_scale or 50.0)), "cdi", size=self.f_small,
                   bold=True, anchor="n", max_w=w - 8, box=r)
+
+    def maneuver(self, name, s):
+        """MANEUVER (CLAUDE.md C): throttle always idle - only REV / N / FWD. The lit box = the gear engaged
+        now (telemetry); the outlined box = what the captain's lever asks for."""
+        d = s.t
+        x0, y0, x1, y1 = self.R(name)
+        r = (x0, y0, x1, y1)
+        self.panel(r, "maneuver", alpha=min(230, self.pal["alpha"] + 50))
+        gear = d["gear"] if d["gear"] < 3 else None                  # 0 N, 1 F, 2 R
+        ask = s.mv_ask                                               # same codes, None = unknown
+        w = (x1 - x0 - 16) / 3.0
+        top = y0 + (y1 - y0) * 0.30
+        self.text(((x0 + x1) / 2, y0 + 2), T("mv.title"), "maneuver", size=self.f_small, bold=True, anchor="n",
+                  max_w=x1 - x0 - 8, box=r)
+        for i, (g, key) in enumerate(((2, "mv.rev"), (0, "mv.n"), (1, "mv.fwd"))):
+            b = (x0 + 4 + i * (w + 4), top, x0 + 4 + i * (w + 4) + w, y1 - 3)
+            on = gear == g
+            col = self.pal["caution"] if g == 2 else self.pal["main"]
+            if on:
+                self.rect(b, "mv_gear", fill=col, alpha=220)
+            self.rect(b, "mv_box", outline=col if (on or ask == g) else self.pal["dim"], w=4 if ask == g else 1)
+            self.text(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2), T(key), "mv_" + ("on" if on else "off"),
+                      size=self.f_norm, bold=True, fill=theme.BLACK if on else col, anchor="c", max_w=w - 6, box=r)
+
+    def drive(self, name, s):
+        """Manual driving from this station (CLAUDE.md D): REMOTE MANUAL and MANEUVER for the captain with the
+        manual licence (or single-operator + licence); RELEASE while one runs. The gateway (licence, captain)
+        and the AURIX (CONFIRM on the joystick, priorities, watchdogs) check every request again."""
+        d = s.t
+        mode = d["mode"] if d is not None else None
+        btns = []
+        if s.manual_ok and mode not in (5, 7):
+            btns += [(T("hud.manual_req"), "remote_req", False), (T("hud.maneuver_req"), "maneuver_req", False)]
+        if mode in (5, 7):
+            btns.append((T("hud.release"), "release", True))
+        if not btns:
+            return
+        x0, y0, x1, y1 = self.R(name)
+        n = len(btns)
+        bw = (x1 - x0 - (n - 1) * 4) / n
+        for i, (lab, act, on) in enumerate(btns):
+            r = (x0 + i * (bw + 4), y0, x0 + i * (bw + 4) + bw, y1)
+            self.button(r, lab, act, "drv_" + act, on=on, colour=self.pal["caution"] if act == "release" else None)
 
     def minimap(self, name, s):
         r = self.R(name)
@@ -700,8 +770,8 @@ class Hud:
             cx = tx0 + tw / 2
             if d["mode"] in (2, 3):
                 txx = tx0 + tape_x(hd, d["target"], tw, span=60.0 if tw < 600 else 90.0)
-                self.rect((txx - 5, y0 + h * 0.45, txx + 5, y1 - 1), "target", fill="#40c0ff")
-            self.rect((cx - h * 1.05, y0 + 1, cx + h * 1.05, y1 - 1), "hdg", fill="#000000", outline=self.pal["main"],
+                self.rect((txx - 5, y0 + h * 0.45, txx + 5, y1 - 1), "target", fill=theme.ADVISORY)
+            self.rect((cx - h * 1.05, y0 + 1, cx + h * 1.05, y1 - 1), "hdg", fill=theme.BLACK, outline=self.pal["main"],
                       w=2, alpha=230)
             self.text((cx, (y0 + y1) / 2), "%03.0f°" % hd if d["compass_ok"] else T("hud.no_compass"), "hdg",
                       size=int(h * 0.62), bold=True, fill=self.pal["main"] if d["compass_ok"] else self.pal["warn"],
@@ -715,7 +785,7 @@ class Hud:
         items = []
         rec = s.rec
         if rec is not None:
-            items.append((T("hud.rec") if rec else T("hud.not_rec"), self.pal["warn"] if not rec else "#ff4040",
+            items.append((T("hud.rec") if rec else T("hud.not_rec"), self.pal["warn"] if not rec else theme.REC,
                           "rec"))
         if s.vision:
             items.append((s.vision[0], self.pal.get(s.vision[1], s.vision[1]), "vision"))
@@ -726,7 +796,7 @@ class Hud:
             for i, (txt, col, tag) in enumerate(items):
                 xx = x + i * cw
                 if tag == "rec" and rec:
-                    self.oval((xx, y0 + h * 0.3, xx + h * 0.4, y0 + h * 0.7), "rec", fill="#ff2020")
+                    self.oval((xx, y0 + h * 0.3, xx + h * 0.4, y0 + h * 0.7), "rec", fill=theme.REC)
                     xx += h * 0.5
                 self.text((xx, (y0 + y1) / 2), txt, tag, size=self.f_small, bold=True, fill=col, anchor="w",
                           max_w=cw - 8, box=r)
@@ -758,7 +828,7 @@ class Hud:
         for name in OVERLAYS:
             r = self.R(name)
             hidden = name in self.layout.hidden
-            col = self.pal["grey"] if hidden else "#40c0ff"
+            col = self.pal["grey"] if hidden else theme.ADVISORY
             self.rect(r, "edit", outline=col, w=2)
             self.text((r[0] + 3, r[1] + 2), T("hud.ov_" + name) + (" (" + T("hud.hidden") + ")" if hidden else ""),
                       "edit", size=self.f_small, bold=True, fill=col, max_w=r[2] - r[0] - 26)
@@ -766,14 +836,14 @@ class Hud:
             self.rect((r[2] - hs, r[3] - hs, r[2], r[3]), "edit_handle", fill=col)
             self.rect((r[2] - 20, r[1], r[2], r[1] + 18), "edit_eye", fill=col, alpha=200)
             self.text((r[2] - 10, r[1] + 9), "×" if not hidden else "+", "edit_eye", size=12, bold=True,
-                      fill="#000000", anchor="c")
+                      fill=theme.BLACK, anchor="c")
         W, H = self.W, self.H
         bw, bh = 240, 44
         for i, (lab, act) in enumerate(((T("hud.layout_reset"), "edit_reset"), (T("hud.layout_done"), "edit"))):
             r = (W / 2 - bw - 10 + i * (bw + 20), H * 0.45, W / 2 - 10 + i * (bw + 20), H * 0.45 + bh)
-            self.button(r, lab, act, "edit_btn", on=True, colour="#40c0ff")
+            self.button(r, lab, act, "edit_btn", on=True, colour=theme.ADVISORY)
         self.text((W / 2, H * 0.45 - 10), T("hud.layout_help"), "edit", size=self.f_norm, bold=True,
-                  fill="#40c0ff", anchor="s", max_w=W * 0.6)
+                  fill=theme.ADVISORY, anchor="s", max_w=W * 0.6)
 
     def edit_target(self, x, y):
         """In the edit mode: (overlay, "move" | "resize" | "eye") under (x, y), topmost first."""
