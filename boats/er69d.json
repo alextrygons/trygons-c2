@@ -1,0 +1,8 @@
+{
+  "_help": "One file per boat (CLAUDE.md section F). NO secrets here: no passwords, no keys. The ground station builds its boat list from this folder; the gateway of this boat must have the same name (gateway config \"boat\"). More fields can be added later: length_m, draft_m, outboard, cameras, limits.",
+  "id": "er69d",
+  "name": "ER69D",
+  "tailscale_ip": "PLACEHOLDER-100.x.y.z",
+  "_tailscale_ip_note": "PLACEHOLDER: replace with the real Tailscale IP of this boat's Raspberry Pi (e.g. 100.101.102.103); until then the station shows the boat as IP NOT SET",
+  "gateway_port": 5761
+}

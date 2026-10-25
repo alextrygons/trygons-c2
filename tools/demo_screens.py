@@ -112,7 +112,7 @@ def main():
     dv.w.geometry("1600x900+0+0")
     ap.open_map()
     mw = ap.mapwin
-    mw.w.geometry("1600x900+1640+0")
+    ap.nb.select(ap.map_tab)                       # the map is a part of screen 2 now
     pump(2.0)
     # the onboard side: the simulator's USB joystick (centred, lever in neutral) on the USB link
     sim = Link("tcp:127.0.0.1:5760")

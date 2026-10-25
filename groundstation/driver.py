@@ -613,6 +613,9 @@ class DriverScreen:
         vs = getattr(a, "vstreams", {})
         s["mirrors"] = {k: {"have": vs.get(cam) is not None, "live": vs.get(cam) is not None and not vs[cam].frozen()}
                         for k, cam in (("mirror_l", "REAR-LEFT"), ("mirror_r", "REAR-RIGHT"))}
+        # MANEUVER (dock / trailer) or going astern: the rear cameras big (CLAUDE.md C)
+        s["rear_big"] = bool(d is not None and (d["mode"] == proto.MODE_MANEUVER or
+                                                (d["mode"] in (proto.MODE_REMOTE, proto.MODE_MANUAL) and d["gear"] == 2)))
         s["notices"] = self.notices(d, gw)
         v = gw.get("vision")
         s["vision_cap"] = bool(v and v.get("cap_kn") is not None)
@@ -676,7 +679,20 @@ class DriverScreen:
         out = []
         if a.single_op:
             out.append(("singleop", T("drv.single_op"), "#e080ff"))
+        if getattr(a, "boat", None) is not None and not getattr(a, "boat_ok", True):
+            out.append(("boatconfirm", T("boat.banner", name=a.boat.name), "caution"))
         if d is not None:
+            ll = d.get("ll_state", 0)
+            if ll == 2:
+                out.append(("killed", T("cap.ll_killed"), "warn"))
+            elif ll == 1:
+                out.append(("linklost", T("cap.ll_lost", near=T("cap.ll_near") if d.get("near_shore") else
+                                          T("cap.ll_far", m=d.get("coast_dist_m") or "?", s="%.0f" % d.get("ll_left_s", 0))),
+                            "warn"))
+            if d.get("profile") == proto.PROFILE_UNCREWED:
+                out.append(("uncrewed", T("drv.uncrewed"), "#60a0ff"))
+            if d["mode"] == proto.MODE_MANEUVER:
+                out.append(("maneuver", T("drv.maneuver"), "caution"))
             if d.get("confirm_kind"):
                 out.append(("confirm", T("cap.confirm_banner", what=T("confirm.%d" % min(
                     d["confirm_kind"], len(proto.CONFIRM_KINDS) - 1)), s="%.0f" % d["confirm_left_s"]), "caution"))

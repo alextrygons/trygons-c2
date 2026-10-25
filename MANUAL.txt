@@ -98,6 +98,8 @@ TWCS throttle, read by a small Teensy 4.1 "bridge" board (chapter 8).
   Cpu2_Main.c     core 2: the logger loop.
   sim/            PC simulation, all tests, simulated boat for the ground
                   station. NOT part of the board build.
+  boats/          One file per boat (name + Tailscale address, no secrets): the
+                  ground station's boat list (chapter 5). Comes with every clone.
   groundstation/  PC ground station and log tools (Python).
   gateway/        Raspberry Pi 5 gateway software (Python): remote access,
                   log copy, cameras, sync. Setup step by step:
@@ -309,13 +311,49 @@ START WITH THE BOARD (once the USB link is written, chapter 17):
   plug in the USB cable, find the COM port in Device Manager, then
       C:\msys64\ucrt64\bin\python.exe app.py COM5
 
-THE WINDOW (the CAPTAIN screen):
-  Top            connection, link status, HELM, "Driver screen", "Map
-                 window", "Single operator", log file name, and on the right
-                 the language buttons ΕΛ / EN (chapter 5A)
-  Menu bar       Windows: open / close the driver screen and the map window,
-                 move any window to monitor 1 / 2 / 3, swap (F12);
-                 Language: Ελληνικά / English
+TWO SCREENS PER STATION
+  Screen 1 = DRIVING: the full-screen cameras + HUD (chapter 5B). The
+             captain sits here (with the joystick); copilot questions,
+             avoidance proposals and CLEAR SLOWDOWN are answered here.
+  Screen 2 = NAVIGATION & CONTROL: this window - the map (Map tab), the
+             captain / copilot controls, AIS, collision, link and boat
+             status, alarms.
+  Laptop + external monitor: screen 2 stays on the laptop's own (main)
+  screen, screen 1 opens on the external monitor (F11 puts them back there).
+  Only one monitor: F11 shows screen 1, F11 again screen 2 (a question for
+  the captain brings screen 1 to the front by itself). F12 swaps the two
+  windows between two monitors. There is no separate map window any more.
+
+CHOOSING THE BOAT (the BOATS button, top left)
+  The list comes from the boats folder of the repository (boats\rf49d.json,
+  boats\er69d.json - name + Tailscale address, no passwords). Every boat
+  shows ONLINE / OFFLINE / IP NOT SET. Choose an ONLINE boat, type user
+  name + password, choose "captain" or "copilot", CONNECT.
+  * The station refuses to connect if the gateway is another boat (each
+    gateway knows its own name - gateway config "boat").
+  * Then screen 1 opens and a yellow window asks: type the boat's name AND
+    tick "I see the LIVE front camera of <boat>" (only possible while the
+    front camera picture is live). Only after that can this station take
+    HELM. "NOT THIS BOAT" disconnects.
+  * A NEW COMPUTER: clone the repository (chapter 16) - the boats come with
+    it; nothing else to copy. A new boat = a new file in boats\ (copy one,
+    change id / name / address), commit it.
+  * Fill in the real Tailscale IPs: the files have PLACEHOLDER addresses.
+  The connection box (gw:host:port, tcp:..., COM5) still works for the
+  simulator, the demo and service; then there is no boat check.
+
+THE WINDOW (screen 2):
+  Top row 1      BOATS, connection, link status, log file name, and on the
+                 right the language buttons ΕΛ / EN (chapter 5A)
+  Top row 2      HELM (take / release - on an UNCREWED boat releasing HELM is
+                 a lost link, you are asked first), CAPTAIN / COPILOT (and
+                 who the captain is), ROLE SWAP, the profile CREWED /
+                 UNCREWED, "Driver screen" (= screen 1), "Single operator"
+  Menu bar       Windows: open / close screen 1, move a window to monitor
+                 1 / 2 / 3, swap (F12); Language: Ελληνικά / English
+  Blue banner    UNCREWED - nobody on board (chapter 7A)
+  Red banner     LINK LOST / ENGINE KILLED (chapter 7A)
+  Yellow banner  the boat is not confirmed yet (name + live camera)
   Orange banner  JOYSTICK IN CONTROL (MANUAL) - the PC can't change the mode
   Yellow banner  PRESS JOYSTICK CONFIRM - <what> - <seconds left>
   Red banner     alarms (flashing + beep); "ACK ALARM" acknowledges
@@ -334,8 +372,9 @@ THE WINDOW (the CAPTAIN screen):
                  AUTO / CONFIRM, status and fault reason, source and USB
                  link (frames/s, CRC errors, stick / throttle connected),
                  analog calibration
-  Map tab        boat, track, the program, uncertainty circle, drift arrow;
-                 tick "Click adds a program waypoint" to build a program
+  Map tab        the full map (chapter 5C): charts, AIS, boat, track, the
+                 program, uncertainty circle, drift arrow; tick "Click adds
+                 a program waypoint" to build a program
   Program tab    the AUTO program editor (see chapter 7), upload / download,
                  save / load file
   Plot tab       heading vs target, outboard angle (2 minutes)
@@ -486,11 +525,19 @@ AR OVERLAYS (on the front video, button AR = menu, each one on / off):
   The AR is a picture help, NOT for navigation (chart / AIS / IMU errors).
 
 
+SCREEN 1 ALSO SHOWS (under the alarm bar): UNCREWED (blue: every CONFIRM on
+your joystick, a lost link stops the engine), LINK LOST (seconds to the engine
+kill, or "near the shore") / ENGINE KILLED, "MANEUVER: steering + gear only,
+throttle at idle", and "boat not confirmed yet". In MANEUVER (and going
+astern in REMOTE / MANUAL) the two rear cameras are shown much bigger. A
+copilot's question for the captain appears here (ACCEPT / REJECT).
+
 -------------------------------------------------------------------------------
-5C. THE MAP WINDOW
+5C. THE MAP (SCREEN 2, MAP TAB)
 -------------------------------------------------------------------------------
-"Map window" (top bar) or the Windows menu opens a full-size MAP for a 2nd /
-3rd monitor. VIEW ONLY: routes are still made on the captain screen.
+The full-size map is a part of screen 2 (Map tab); the separate map window is
+gone. It never sends anything to the boat; "Click adds a program waypoint"
+(above the map) only fills the route editor.
   Shows   depth chart, contours, sea marks, AIS ships + a list on the right
           (name, distance, bearing, CPA, TCPA, age; red = danger, yellow =
           warning, grey = old), own boat with its 6-minute course line,
@@ -501,8 +548,9 @@ AR OVERLAYS (on the front video, button AR = menu, each one on / off):
   Buttons FOLLOW BOAT / FREE (drag the map = free), Zoom + / - (or the mouse
           wheel, + / -), NORTH UP / COURSE UP (turns in 5 deg steps), THEME
           dark / day / night, RANGE RINGS, the chart layers.
-  Keys    F follow, C course-up, T theme, + / - zoom, F12, Ctrl+Shift+n.
-ALL WINDOWS (captain, driver, map) remember their monitor, place and size
+  Mouse   drag = pan, wheel = zoom, a click (with "Click adds ...") = a
+          waypoint.
+BOTH WINDOWS (screen 1, screen 2) remember their monitor, place and size
 (groundstation\gs_layout.json) and come back there at the next start.
 Windows menu -> "Move the ... to monitor n", or Ctrl+Shift+1..9 in that
 window: the window goes to that monitor, maximised.

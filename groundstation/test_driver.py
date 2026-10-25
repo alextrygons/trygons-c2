@@ -175,28 +175,19 @@ def main():
                    mode_txt, hdg_ok, d["power_fwd"], "OK" if plim_ok else "WRONG", speed, gear,
                    "drawn" if dv.has("g_limit") else "MISSING", dv.map.winfo_manager() or "MISSING", len(errors)))
 
-        # I2 captain actions that change the driving wait for the driver
-        app.confirm_timeout_s = 3.0
+        # I2 the captain's own actions go straight to the boat (no question on its own screen 1; a copilot's
+        # wait for the captain's ACCEPT - through the gateway, gateway test F1e); STANDBY never waits
         sea0 = app.t["sea_state"]
         new_sea = 3 if sea0 != 3 else 2
-        n0 = len(app.pending)
         app.cmd(proto.T_SEA_STATE, proto.p_sea_state(new_sea), "sea state %d" % new_sea)
-        waiting = dv.question is not None and len(app.pending) == n0
-        pump(4.0)
-        rejected = dv.question is None and dv.answers and "timeout" in dv.answers[-1][1] and len(app.pending) == n0
-        pump(1.0)
-        unchanged = app.t["sea_state"] == sea0
-        app.cmd(proto.T_SEA_STATE, proto.p_sea_state(new_sea), "sea state %d" % new_sea)
-        pump(0.3)
-        dv.answer(True)
+        no_question = dv.question is None
         changed = pump(5.0, lambda: app.t["sea_state"] == new_sea)
         app.cmd(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY), "mode STANDBY")
         sb_direct = dv.question is None
-        report("I2 captain action needs the driver's ACCEPT (no answer in time = rejected); STANDBY never waits",
-               waiting and rejected and unchanged and changed and sb_direct,
-               "sea state request waiting on the driver screen %s; after the timeout: %s, nothing sent %s; "
-               "ACCEPT -> boat sea state %s; STANDBY sent at once %s" % (
-                   waiting, dv.answers[0][1] if dv.answers else "-", unchanged, app.t["sea_state"], sb_direct))
+        report("I2 the captain's own action is sent at once (no question on screen 1); STANDBY never waits",
+               no_question and changed and sb_direct,
+               "no question on screen 1 %s; boat sea state %s -> %s; STANDBY sent at once %s" % (
+                   no_question, sea0, app.t["sea_state"], sb_direct))
 
         # I3 G-meter (replaces the slamming graph): peak, hold, yellow + red lines, colours
         import hud
@@ -625,9 +616,8 @@ def main():
         orig_t = app.on_telem
         app.on_telem = lambda d_: orig_t(dict(d_, pos_source=1, heading=75.0, est_sog=5.0, est_cog=80.0, wp_set=True,
                                               wp_lat=la + 0.002, wp_lon=lo + 0.002, unc_m=40.0))
-        app.open_map()
+        app.open_map()                                  # screen 2's Map tab (no separate window)
         mw = app.mapwin
-        mw.w.geometry("1200x800+150+90")
         pump(1.2)
         tags = {t: len(mw.cv.find_withtag(t)) for t in ("ring", "track", "prog", "active_wp", "unc", "boat", "ais",
                                                         "route", "shallow", "warning", "north", "note")}
@@ -655,24 +645,21 @@ def main():
         settings.reload()
         remembered = (settings.get("map") or {}).get("course_up") is True and abs(
             (settings.get("map") or {}).get("m_per_px", 0) - mw.m) < 1e-3
-        moved = A.monitors.move_to(mw.w, 0, app)
-        pump(0.5)
+        moved = mw.embedded and str(mw.w.winfo_toplevel()) == str(root)
         mons = A.monitors.list_monitors(root)
-        on_mon = A.monitors.monitor_of(mw.w, mons) == 0
+        on_mon = moved
         hb = [f for f in sent_frames if f != proto.T_HEARTBEAT]
         app.link.send = orig_send
         app.on_telem = orig_t
         mw.toggle_orient()
-        report("I17 MAP window: chart layers, AIS list, boat, track, route, waypoint, uncertainty, range rings, warnings;"
-               " follow / pan / zoom / course-up / themes; remembered; view only; moved to monitor 1",
+        report("I17 MAP in screen 2: chart layers, AIS list, boat, track, route, waypoint, uncertainty, range rings, "
+               "warnings; follow / pan / zoom / course-up / themes; remembered; view only; part of screen 2",
                all(v > 0 for k, v in tags.items() if k != "track") and len(rows) == 3 and rotated and zoomed and
                panned and back and len({t for t, _b in themes}) == 3 and remembered and moved and on_mon and not hb
                and not errors,
                "items %s; AIS list %d rows; course-up turns the map (north arrow moved %s); zoom %s; pan %s, follow "
-               "again %s; themes %s; remembered %s; monitors %d, moved to monitor 1 %s; frames sent %s" % (
+               "again %s; themes %s; remembered %s; monitors %d, inside screen 2 %s; frames sent %s" % (
                    tags, len(rows), rotated, zoomed, panned, back, themes, remembered, len(mons), on_mon, hb))
-        mw.w.state("normal")
-        mw.w.geometry("1200x800+150+90")
         app.gw_status = None
         pump(0.3)
 
@@ -737,7 +724,7 @@ def main():
                                                                   btn_green, still, servo, state[:50], left, off_txt))
 
         # I6 window places remembered; F12 swaps the screens
-        g_cap, g_drv, g_map = root.geometry(), dv.w.geometry(), app.mapwin.w.geometry()
+        g_cap, g_drv = root.geometry(), dv.w.geometry()
         app.save_layout()
         with open(A.LAYOUT, encoding="utf-8") as f:
             lay = A.json.load(f)
@@ -753,14 +740,15 @@ def main():
         pump(1.5)
         restored = app2.driver is not None and root.geometry().split("+")[1:] == g_cap.split("+")[1:] and \
             app2.driver.w.geometry().split("+")[1:] == g_drv.split("+")[1:] and app2.mapwin is not None and \
-            app2.mapwin.w.geometry() == g_map
-        report("I6 window places remembered (monitors) and restored: captain, driver, map; F12 swaps captain and "
-               "driver screens",
-               lay.get("driver_open") and swapped and restored,
-               "saved %s; after F12 captain at %s, driver at %s (swapped %s); after a restart: captain %s, driver %s, "
-               "map %s (was %s)" % (lay, root.geometry(), app2.driver.w.geometry() if app2.driver else None, swapped,
-                                    root.geometry(), app2.driver.w.geometry() if app2.driver else "NOT OPEN",
-                                    app2.mapwin.w.geometry() if app2.mapwin else "NOT OPEN", g_map))
+            app2.mapwin.embedded
+        report("I6 window places remembered (monitors) and restored: screen 2 and screen 1 (the map is inside "
+               "screen 2); F12 swaps them",
+               lay.get("driver_open") and "map" not in lay and swapped and restored,
+               "saved %s; after F12 screen 2 at %s, screen 1 at %s (swapped %s); after a restart: screen 2 %s, "
+               "screen 1 %s, map inside screen 2 %s" % (lay, root.geometry(),
+                                                        app2.driver.w.geometry() if app2.driver else None, swapped,
+                                                        root.geometry(), app2.driver.w.geometry() if app2.driver
+                                                        else "NOT OPEN", app2.mapwin is not None))
         app2.quit()
         root = None
     finally:

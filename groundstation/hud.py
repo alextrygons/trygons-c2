@@ -332,10 +332,20 @@ class Hud:
     # --- overlays --------------------------------------------------------------------------------------------
     def mirror(self, name, s):
         r = self.R(name)
+        if s.rear_big:                      # MANEUVER / astern: the rear cameras emphasised (CLAUDE.md C)
+            x0, y0, x1, y1 = r
+            k = 1.7
+            w, h = (x1 - x0) * k, (y1 - y0) * k
+            if name == "mirror_l":
+                r = (x0, y0, min(self.W * 0.49, x0 + w), y0 + h)
+            else:
+                r = (max(self.W * 0.51, x1 - w), y0, x1, y0 + h)
         m = (s.mirrors or {}).get(name) or {}
         self.ops.append({"k": "image", "src": name, "r": r, "tag": name})          # the picture (renderer)
         self.rect(r, name, outline=self.pal["dim"], w=1)
         label = T("hud.rear_left") if name == "mirror_l" else T("hud.rear_right")
+        if s.rear_big:
+            label += "  " + T("hud.rear_maneuver")
         self.text((r[0] + 6, r[1] + 4), label, name, size=self.f_small, bold=True, fill=self.pal["main"],
                   max_w=r[2] - r[0] - 12, box=r)
         if not m.get("live"):

@@ -111,6 +111,9 @@ grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"
 echo "== ground station language tests (el / en)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_lang.py > "$TEMP/lang_tests.txt" 2>&1 ) || { echo "LANGUAGE TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LANGUAGE TESTS" "$TEMP/lang_tests.txt"
+echo "== boats + two screens (boats/, boat confirm before HELM, F11, map in screen 2)"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_boats.py > "$TEMP/boat_tests.txt" 2>&1 ) || { echo "BOAT TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|BOAT TESTS" "$TEMP/boat_tests.txt"
 echo "== ground station sound + voice tests"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sound.py > "$TEMP/sound_tests.txt" 2>&1 ) || { echo "SOUND TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A )\]|SOUND TESTS" "$TEMP/sound_tests.txt"

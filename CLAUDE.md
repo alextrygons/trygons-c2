@@ -144,12 +144,13 @@ D. Roles (gateway stations.py + users.py; the AURIX can't see users - R7)
 E. Two screens per station (ground station)
 - Screen 1 = driving: full-screen cameras + HUD (driver.py / hud.py / hudar.py). Screen 2 = navigation & control: map + captain / copilot controls, AIS, collision, link + boat status, alarms (app.py). No separate map window any more.
 - Laptop: built-in screen = screen 2, external monitor = screen 1. Only one monitor: a hotkey (F11) toggles between the two. Greek default, English available.
+- Code: the map = mapwin.MapWindow(app, parent=...) inside screen 2's Map tab; crewui.py = boat list, boat confirmation, role swap; app.toggle_screen / show_screen (F11); screen 1 notices + rear cameras big in MANEUVER (driver.py / hud.py). Tests: groundstation/test_boats.py (in tools/check.sh), test_driver.py I2 / I6 / I17. Screen 2 needs ~1840 px in Greek (fits 1920; a 1600 px laptop would need several tabs redesigned - open).
 
 F. Boats (boats/ in git, NO secrets)
 - One file per boat: boats/rf49d.json, boats/er69d.json: id, name, Tailscale IP (placeholders, clearly marked, the owner fills them in), gateway port; the format takes more fields later (length, draft, outboard, camera IPs, limits).
 - The station builds its boat list from boats/; unreachable boats are shown OFFLINE. Each gateway stores its own boat name (gateway config "boat"); on connect the station checks it against the file and refuses to connect if it differs.
 - Selecting a boat: confirm the name AND the live camera before HELM is taken.
-- A new computer = clone the repo: the boats come with it (MANUAL).
+- A new computer = clone the repo: the boats come with it (MANUAL). Code: groundstation/boats.py (load, Prober, check_welcome, confirmed); placeholder IPs "PLACEHOLDER-100.x.y.z" = IP NOT SET (never connected); boats/ is excluded from the ADS build (.cproject).
 
 ## Working rules
 - For long multi-part tasks, keep PROGRESS.md updated after every step so the work can resume in a new session.

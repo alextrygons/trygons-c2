@@ -25,6 +25,7 @@ import proto
 import i18n
 import settings
 import alerts
+import crewui
 import monitors
 from i18n import T, TE
 from link import Link, list_ports
@@ -130,7 +131,6 @@ class App:
         self.hist = []                  # (t_s, heading, target, outboard)
         self.track = []                 # (lat, lon)
         self.origin = None
-        self.map_m_per_px = 2.0
         self.params = {}
         self.pending = {}               # seq -> description
         self.prog = program.new_program()   # program in the editor
@@ -170,7 +170,12 @@ class App:
         self._layout_job = None
 
         self.title_extra = ""           # "ON BOARD - " etc. (--title)
-        self.mapwin = None              # the separate MAP window (section C)
+        self.boat = None                # the boat chosen in the boat list (boats/), None = typed address
+        self.boat_ok = False            # its name + live camera confirmed: HELM may be taken (CLAUDE.md F)
+        self.boatsel = None             # the boat list dialog
+        self.boatconf = None            # the boat confirmation dialog
+        self.screen_shown = 2           # one monitor: which screen F11 shows (1 driving, 2 navigation)
+        self.mapwin = None              # the full map of screen 2 (built into the Map tab)
         self.lamps = alerts.MasterLamps()   # MASTER WARNING / CAUTION (driver HUD): acknowledged = silenced here
         self.sound = None               # sound + voice (section D), made in _build_sound
         root.title(T("cap.title"))
@@ -209,12 +214,11 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.quit)
         for k in ("<F12>", "<Control-Tab>"):
             root.bind(k, lambda e: self.swap_screens())
+        root.bind("<F11>", lambda e: self.toggle_screen())
         root.bind("<Configure>", lambda e: self.layout_changed())
         monitors.bind_keys(root, self)
         if self.layout.get("driver_open") or open_driver:
             root.after(600, self.open_driver)
-        if self.layout.get("map_open"):
-            root.after(700, self.open_map)
 
     # --- language (section E) --------------------------------------------------------
     def lang_changed(self):
@@ -268,11 +272,9 @@ class App:
         mb = tk.Menu(self.root)
         wm = tk.Menu(mb, tearoff=0)
         wm.add_command(label=T("menu.driver"), command=lambda: self.close_driver() if self.driver else self.open_driver())
-        wm.add_command(label=T("menu.map"), command=lambda: self.close_map() if self.mapwin else self.open_map())
         wm.add_separator()
         mons = monitors.list_monitors(self.root)
-        for name, getw in (("captain", lambda: self.root), ("driver", lambda: self.driver and self.driver.w),
-                           ("map", lambda: self.mapwin and self.mapwin.w)):
+        for name, getw in (("captain", lambda: self.root), ("driver", lambda: self.driver and self.driver.w)):
             sub = tk.Menu(wm, tearoff=0)
             for i, m in enumerate(mons):
                 sub.add_command(label=T("menu.monitor_n", n=i + 1, w=m[2] - m[0], h=m[3] - m[1]) +
@@ -293,6 +295,7 @@ class App:
     def _build_top(self):
         top = tk.Frame(self.root, bg=PANEL)
         top.pack(fill="x")
+        btn(top, "boat.button", self.open_boats, font=F_MED, bg="#ffe080").pack(side="left", padx=(6, 2))
         lbl(top, "cap.connection", font=F_MED, bg=PANEL).pack(side="left", padx=6)
         self.port_var = tk.StringVar(value="tcp:127.0.0.1:5760")
         self.port_box = ttk.Combobox(top, textvariable=self.port_var, values=list_ports(), width=24, font=F_MED)
@@ -302,27 +305,32 @@ class App:
         self.conn_btn.pack(side="left", padx=6)
         self.link_lbl = tk.Label(top, text=T("cap.link_none"), font=F_MED, bg=PANEL)
         self.link_lbl.pack(side="left", padx=12)
+        top1 = top
+        top = tk.Frame(self.root, bg=PANEL)          # second row: HELM, crew, profile, screens
+        top.pack(fill="x")
         self.helm_lbl = tk.Label(top, text=T("cap.helm_none"), font=F_MED, bg=PANEL)
         self.helm_lbl.pack(side="left", padx=8)
         btn(top, "cap.helm_take", lambda: self.cmd(proto.T_HELM, proto.p_helm(0), TE("what.take_helm")),
             font=F_TXT).pack(side="left")
-        btn(top, "cap.helm_release", lambda: self.cmd(proto.T_HELM, proto.p_helm(1), TE("what.release_helm")),
-            font=F_TXT).pack(side="left", padx=2)
+        btn(top, "cap.helm_release", self.helm_release, font=F_TXT).pack(side="left", padx=2)
+        self.crew_lbl = tk.Label(top, text="", font=F_MED, bg=PANEL)
+        self.crew_lbl.pack(side="left", padx=6)
+        btn(top, "crew.swap", self.crew_swap, font=F_TXT).pack(side="left", padx=2)
+        self.prof_lbl = tk.Label(top, text="", font=F_MED, bg=PANEL)
+        self.prof_lbl.pack(side="left", padx=6)
         btn(top, "cap.driver_screen", lambda: self.close_driver() if self.driver else self.open_driver(),
-            font=F_TXT, bg="#c0d8ff").pack(side="left", padx=8)
-        btn(top, "cap.map_window", lambda: self.close_map() if self.mapwin else self.open_map(),
-            font=F_TXT, bg="#c0d8ff").pack(side="left", padx=2)
+            font=F_TXT, bg="#c0d8ff").pack(side="left", padx=4)
         self.so_btn = btn(top, "cap.single_op", self.single_op_toggle, font=F_TXT)
         self.so_btn.pack(side="left", padx=2)
         lbl(top, "cap.f12_hint", font=F_TXT, bg=PANEL, fg="#606060").pack(side="left")
         self.lang_b = {}
         for code in reversed(i18n.LANGS):                  # the language switch: ΕΛ / EN, right side
-            b = tk.Button(top, text=i18n.NAMES[code], font=F_MED, width=3, bd=3,
+            b = tk.Button(top1, text=i18n.NAMES[code], font=F_MED, width=3, bd=3,
                           command=lambda c=code: self.set_lang(c))
             b.pack(side="right", padx=(0, 4))
             self.lang_b[code] = b
         self.lang_btns()
-        self.log_lbl = tk.Label(top, text="", font=F_TXT, bg=PANEL)
+        self.log_lbl = tk.Label(top1, text="", font=F_TXT, bg=PANEL)
         self.log_lbl.pack(side="right", padx=8)
 
     def _build_banners(self):
@@ -335,6 +343,9 @@ class App:
         self.sl_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#b00060", fg="#ffffff")
         self.so_banner = lbl(self.banners, "cap.so_banner", font=F_BIG, bg="#7000a0", fg="#ffffff")
         self.ft_banner = lbl(self.banners, "cap.ft_banner", font=F_BIG, bg="#ff00ff", fg="#ffffff", wraplength=1100)
+        self.unc_banner = lbl(self.banners, "cap.unc_banner", font=F_BIG, bg="#004080", fg="#ffffff", wraplength=1400)
+        self.ll_banner = tk.Label(self.banners, text="", font=F_BIG, bg=RED, fg="#ffffff", wraplength=1400)
+        self.boat_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#ffe080", fg=FG, wraplength=1400)
         self.alarm_ack = btn(self.banners, "cap.ack_alarm",
                              lambda: self.cmd(proto.T_ALARM_ACK, b"", TE("what.alarm_ack")), font=F_TXT)
 
@@ -1000,28 +1011,13 @@ class App:
         self.map_tab = mp
         mt = tk.Frame(mp, bg=BG)
         mt.pack(fill="x")
-        btn(mt, "cap.zoom_in", lambda: self.zoom(0.5), font=F_TXT).pack(side="left")
-        btn(mt, "cap.zoom_out", lambda: self.zoom(2.0), font=F_TXT).pack(side="left")
         btn(mt, "cap.clear_track", lambda: self.track.clear(), font=F_TXT).pack(side="left")
         self.add_on_click = tk.BooleanVar(value=False)
         chk(mt, "cap.click_adds", variable=self.add_on_click, font=F_TXT, bg=BG).pack(side="left", padx=8)
-        lbl(mt, "cap.north_up", font=F_TXT, bg=BG).pack(side="left")
-        ml = tk.Frame(mp, bg=BG)
-        ml.pack(fill="x")
-        self.map_layers = {}
-        for key in ("depth", "contours", "marks", "ais"):
-            v = tk.BooleanVar(value=True)
-            self.map_layers[key] = v
-            chk(ml, "map.layer_" + key, variable=v, font=F_TXT, bg=BG).pack(side="left", padx=4)
-        lbl(ml, "cap.depth_shading", font=F_TXT, bg=BG).pack(side="left", padx=(12, 2))
-        self.depth_opacity = tk.DoubleVar(value=0.8)
-        tk.Scale(ml, from_=0.2, to=1.0, resolution=0.1, orient="horizontal", variable=self.depth_opacity, length=140,
-                 showvalue=False, bg=BG, highlightthickness=0).pack(side="left")
-        self.chart_lbl = tk.Label(ml, text="", font=F_TXT, bg=BG, fg="#a00000")
-        self.chart_lbl.pack(side="left", padx=10)
-        self.map = tk.Canvas(mp, bg="#d8ecff", highlightthickness=0)
-        self.map.pack(fill="both", expand=True)
-        self.map.bind("<Button-1>", self.map_click)
+        # the full map of screen 2 (was the separate map window, CLAUDE.md E)
+        import mapwin
+        self.mapwin = mapwin.MapWindow(self, parent=mp)
+        self.mapwin.on_click = self.map_click
 
         at = tk.Frame(nb, bg=BG)
         tab(at, "tab.ais")
@@ -1542,13 +1538,50 @@ class App:
             self.prog_refresh()
 
     # --- actions -----------------------------------------------------------------
-    def connect(self):
+    def disconnect(self, why=None):
         if self.link:
             self.link.stop()
             self.link = None
-            self.conn_btn.configure(text=T("cap.connect"), bg="#b0ffb0")
-            self.say(T("cap.disconnected"))
-            return
+        self.boat, self.boat_ok = None, False
+        if self.boatconf:
+            self.boatconf.close()
+        self.conn_btn.configure(text=T("cap.connect"), bg="#b0ffb0")
+        self.say(why or T("cap.disconnected"), RED if why else "#202020")
+
+    def open_boats(self):
+        """The boat list (boats/ in git): choose, log in, connect (CLAUDE.md F)."""
+        if self.boatsel is None:
+            self.boatsel = crewui.BoatSelector(self)
+        else:
+            self.boatsel.w.lift()
+
+    def connect_boat(self, bt, user, pw, crew=None):
+        """Connect to a boat of the list: the gateway must be that boat. -> None or the error."""
+        if self.link:
+            self.disconnect()
+        if not user:
+            return T("boat.need_login")
+        try:
+            self.link = GatewayLink("%s:%d" % (bt.ip, bt.port), user, password=pw, station="ground station (%s)" % user,
+                                    log=True, crew=crew, boat=bt.name)
+            w = self.link.start()
+        except Exception as e:
+            self.link = None
+            return T("cap.cannot_connect", err=i18n.from_en(str(e)))
+        self.boat, self.boat_ok = bt, False
+        self.port_var.set(bt.address())
+        self.say(T("cap.logged_in", user=user, role=w["role"],
+                   where=T("cap.on_board") if w["local"] else T("cap.remote")), GREEN)
+        if w.get("crew_note"):
+            self.event(i18n.from_en(w["crew_note"]))
+        self._connected()
+        self.open_driver()                          # screen 1: the live camera to confirm it
+        self.boatconf = crewui.BoatConfirm(self, bt)
+        return None
+
+    def connect(self):
+        if self.link:
+            return self.disconnect()
         addr = self.port_var.get().strip()
         try:
             if addr.startswith("gw:"):
@@ -1572,6 +1605,9 @@ class App:
             self.link = None
             self.say(T("cap.cannot_connect", err=e), RED)
             return
+        self._connected()
+
+    def _connected(self):
         self.conn_btn.configure(text=T("cap.disconnect"), bg="#ffb0b0")
         if self.port_var.get().startswith("tcp:"):
             self.sim_frame.pack(fill="x", pady=(8, 0))
@@ -1587,8 +1623,56 @@ class App:
     def open_driver(self):
         if self.driver:
             return
-        self.driver = driver.DriverScreen(self, self.layout.get("driver"))
+        geo = self.layout.get("driver")
+        self.driver = driver.DriverScreen(self, geo)
+        mons = monitors.list_monitors(self.root)
+        if not geo and len(mons) >= 2:
+            # laptop + external monitor: screen 1 (driving) on the external one, screen 2 stays on the built-in
+            self.root.after(300, lambda: self.driver and monitors.move_to(self.driver.w, 1, self))
+        for k in ("<F11>",):
+            self.driver.w.bind(k, lambda e: self.toggle_screen())
         self.layout_changed()
+
+    # --- crew / profile (CLAUDE.md A, B, D) ---------------------------------------------
+    def crew_swap(self):
+        if not isinstance(self.link, GatewayLink):
+            return self.say(T("crew.need_gateway"), RED)
+        crewui.request_swap(self)
+
+    def helm_release(self):
+        """Releasing HELM: on an UNCREWED boat that is a LOST LINK (STANDBY, then the engine kill)."""
+        if self.t and self.t.get("profile") == proto.PROFILE_UNCREWED:
+            from tkinter import messagebox
+            if not messagebox.askyesno(T("cap.helm_release"), T("crew.release_uncrewed"), parent=self.root):
+                return
+        self.cmd(proto.T_HELM, proto.p_helm(1), TE("what.release_helm"))
+
+    def draw_crew(self, d):
+        crew, cap, lic = crewui.crew_of(self) if isinstance(self.link, GatewayLink) else (None, None, False)
+        txt = T("crew.you_" + crew) if crew in ("captain", "copilot") else ""
+        if crew == "copilot" and cap:
+            txt += "  " + T("crew.captain_is", name=cap)
+        if self.boat is not None:
+            txt = "%s  %s" % (self.boat.name, txt)
+        self.crew_lbl.configure(text=txt, bg="#b0ffb0" if crew == "captain" else ("#d0e0ff" if crew else PANEL))
+        prof = d.get("profile")
+        if prof is not None:
+            self.prof_lbl.configure(text=T("prof.%d" % prof) if prof < 3 else "?",
+                                    bg="#80c0ff" if prof == proto.PROFILE_UNCREWED else
+                                    ("#b0ffb0" if prof == proto.PROFILE_CREWED else "#ffd080"))
+        unc = prof == proto.PROFILE_UNCREWED
+        self.show(self.unc_banner, unc, row=7, column=0, columnspan=2, sticky="ew")
+        ll = d.get("ll_state", 0)
+        if ll:
+            txt = T("cap.ll_killed") if ll == 2 else T("cap.ll_lost", s="%.0f" % d.get("ll_left_s", 0.0),
+                                                       near=T("cap.ll_near") if d.get("near_shore") else
+                                                       T("cap.ll_far", m=d.get("coast_dist_m") or "?"))
+            self.ll_banner.configure(text=txt)
+        self.show(self.ll_banner, bool(ll), row=8, column=0, columnspan=2, sticky="ew")
+        need = self.boat is not None and not self.boat_ok
+        if need:
+            self.boat_banner.configure(text=T("boat.banner", name=self.boat.name))
+        self.show(self.boat_banner, need, row=9, column=0, columnspan=2, sticky="ew")
 
     def close_driver(self):
         if self.driver:
@@ -1596,22 +1680,41 @@ class App:
             d.destroy()
             self.layout_changed()
 
-    # --- the separate MAP window (section C) ----------------------------------------------
+    # --- the map: part of screen 2 (CLAUDE.md E; the separate map window is gone) ---------
     def open_map(self):
-        if self.mapwin:
-            return
-        try:
-            import mapwin
-        except ImportError:
-            return self.say(T("cap.map_missing"), RED)
-        self.mapwin = mapwin.MapWindow(self, self.layout.get("map"))
-        self.layout_changed()
+        """Show screen 2's Map tab."""
+        self.nb.select(self.map_tab)
 
     def close_map(self):
-        if self.mapwin:
-            m, self.mapwin = self.mapwin, None
-            m.destroy()
-            self.layout_changed()
+        pass
+
+    def toggle_screen(self):
+        """F11. One monitor: show screen 1 (driving) or screen 2 (navigation & control) in turn.
+        Two or more: screen 2 on the built-in (main) monitor, screen 1 on the external one."""
+        mons = monitors.list_monitors(self.root)
+        if len(mons) >= 2:
+            if not self.driver:
+                self.open_driver()
+            monitors.move_to(self.root, 0, self)
+            monitors.move_to(self.driver.w, 1, self)
+            return
+        self.show_screen(1 if self.screen_shown == 2 else 2)
+
+    def show_screen(self, n):
+        """One monitor: bring screen n to the front (the other stays open, behind it)."""
+        if n == 1:
+            if not self.driver:
+                self.open_driver()
+            self.driver.w.deiconify()
+            self.driver.w.lift()
+            self.driver.w.focus_force()
+        else:
+            self.root.deiconify()
+            self.root.lift()
+            if self.driver:
+                self.driver.w.lower(self.root)
+            self.root.focus_force()
+        self.screen_shown = n
 
     def swap_screens(self):
         """F12: captain and driver windows change places (monitors)."""
@@ -1632,9 +1735,7 @@ class App:
         self._layout_job = None
         try:
             self.layout = {"captain": self.root.geometry(), "driver_open": self.driver is not None,
-                           "driver": self.driver.w.geometry() if self.driver else self.layout.get("driver"),
-                           "map_open": self.mapwin is not None,
-                           "map": self.mapwin.w.geometry() if self.mapwin else self.layout.get("map")}
+                           "driver": self.driver.w.geometry() if self.driver else self.layout.get("driver")}
             with open(self.layout_path, "w", encoding="utf-8") as f:
                 json.dump(self.layout, f)
         except (OSError, tk.TclError):
@@ -1666,9 +1767,11 @@ class App:
         self.show(self.so_banner, on, row=5, column=0, columnspan=2, sticky="ew")
 
     def on_driver_ask(self, d):
-        """The gateway asks this station's driver screen to accept a captain action."""
+        """The gateway asks this (the captain's) screen 1 to accept a copilot action."""
         if not self.driver:
             return
+        if self.screen_shown != 1 and len(monitors.list_monitors(self.root)) < 2:
+            self.show_screen(1)                     # one monitor: the question must be seen
         i = d["id"]
         self.gw_asks[i] = d["text"]
         send = lambda yes: isinstance(self.link, GatewayLink) and self.link.send_msg(
@@ -1751,23 +1854,19 @@ class App:
         if not self.link:
             self.say(T("cap.not_connected"), RED)
             return
-        standby = ftype == proto.T_SET_MODE and payload[:1] == bytes([proto.MODE_STANDBY])
+        if ftype == proto.T_HELM and payload[:1] == bytes([0]) and self.boat is not None and not self.boat_ok:
+            # a boat from the list: its name + live camera confirmed first (CLAUDE.md F)
+            self.say(T("boat.confirm_first", name=self.boat.name), RED)
+            if self.boatconf is None:
+                self.boatconf = crewui.BoatConfirm(self, self.boat)
+            return
         if isinstance(self.link, GatewayLink) and proto.is_driving_cmd(ftype, payload):
             if self.single_op:
                 return self.captain_confirm(what, lambda: self._send_cmd(ftype, payload, what, confirm="self"))
-            if self.driver:
-                self.say(T("cap.wait_driver", what=i18n.from_en(what)), ORANGE)
-            self.event(T("cap.ev_driver_asked", what=i18n.from_en(what)))
-            return self._send_cmd(ftype, payload, what)          # the gateway asks the driver screen
-        if self.driver and ftype in DRIVING_CMDS and not standby:
-            self.say(T("cap.wait_driver", what=i18n.from_en(what)), ORANGE)
-            self.event(T("cap.ev_driver_asked", what=i18n.from_en(what)))
-            self.driver.ask(i18n.from_en(what), lambda why: self._send_cmd(ftype, payload, what),
-                            lambda why: (self.say(T("cap.not_sent", why=i18n.from_en(why), what=i18n.from_en(what)),
-                                                  RED),
-                                         self.event("x %s: %s" % (i18n.from_en(why), i18n.from_en(what)))),
-                            self.confirm_timeout_s)
-            return
+            if crewui.crew_of(self)[0] == "copilot" and ftype not in (proto.T_AUTO_PAUSE,):
+                # the gateway asks the captain's screen 1 (CLAUDE.md D)
+                self.say(T("cap.wait_captain", what=i18n.from_en(what)), ORANGE)
+                self.event(T("cap.ev_captain_asked", what=i18n.from_en(what)))
         self._send_cmd(ftype, payload, what)
 
     def _send_cmd(self, ftype, payload, what, confirm=None):
@@ -1869,17 +1968,10 @@ class App:
         self.cmd(proto.T_PARAM_SET, proto.p_param_set(pid, v), TE("what.set_param", name=self.params[pid]["name"],
                                                                      v="%g" % v))
 
-    def zoom(self, k):
-        self.map_m_per_px = min(400.0, max(0.1, self.map_m_per_px * k))
-
-    def map_click(self, ev):
-        if not self.t or not self.add_on_click.get():
+    def map_click(self, lat, lon):
+        """Screen 2's map, "click adds waypoint": into the route editor (nothing is sent)."""
+        if not self.add_on_click.get():
             return
-        w, h = self.map.winfo_width(), self.map.winfo_height()
-        e = (ev.x - w / 2) * self.map_m_per_px
-        n = (h / 2 - ev.y) * self.map_m_per_px
-        lat = self.t["est_lat"] + n / 111320.0
-        lon = self.t["est_lon"] + e / (111320.0 * math.cos(math.radians(self.t["est_lat"])))
         self.pg_vars["lat"].set("%.6f" % lat)
         self.pg_vars["lon"].set("%.6f" % lon)
         self.prog_add()
@@ -1973,6 +2065,15 @@ class App:
                     self.on_driver_ask_done(d)
                 elif kind == "single_op_ack":
                     self.on_single_op(bool(d.get("on")))
+                elif kind == "crew_swap_ask":
+                    crewui.ask_swap(self, d)
+                elif kind == "crew_swap_done":
+                    txt = T("crew.swap_ok") if d.get("ok") else T("crew.swap_refused",
+                                                                   why=i18n.from_en(d.get("text", "")))
+                    self.say(txt, GREEN if d.get("ok") else RED)
+                    self.event(txt)
+                elif kind == "crew":
+                    self.event(T("crew.changed", why=i18n.from_en(d.get("why", ""))))
                 elif kind == "status":
                     self.say(i18n.from_en(d), RED if "DISCONNECTED" in d else "#202020")
                     self.event(i18n.from_en(d))
@@ -2108,6 +2209,7 @@ class App:
                                               now="%.0f" % (100 * (d["lever"] or 0.0))))
         self.show(self.pick_banner, pick, row=2, column=0, columnspan=2, sticky="ew")
         self.show(self.ft_banner, bool(d.get("first_test")), row=6, column=0, columnspan=2, sticky="ew")
+        self.draw_crew(d)
 
         per = ((50000, "cap.sys_core0"), (1000, "cap.sys_cpu1"), (10000, "cap.sys_core2"))
         keys = (("t_core0_avg", "t_core0_max", "ovr_core0"), ("t_mon_avg", "t_mon_max", "ovr_mon"),
@@ -2148,8 +2250,6 @@ class App:
         shown = self.nb.select()                    # draw the map / plot only while their tab is open
         if shown == str(self.plot_tab):
             self.draw_plot()
-        if shown == str(self.map_tab):
-            self.draw_map(d)
 
     def draw_joystick(self, d):
         c = self.joy_cv
@@ -2504,81 +2604,6 @@ class App:
         if len(pts) >= 4:
             c.create_line(*pts, fill=ORANGE, width=3)
         c.create_text(w - 20, h - 4, text=T("plot.last", s="%.0f" % PLOT_S), anchor="se", font=F_TXT)
-
-    def draw_map(self, d):
-        c = self.map
-        c.delete("all")
-        w, h = c.winfo_width(), c.winfo_height()
-        if w < 50 or d["pos_source"] == 0:
-            c.create_text(w / 2, h / 2, text=T("map.no_position"), font=F_BIG)
-            return
-        lat0, lon0 = d["est_lat"], d["est_lon"]
-        k = math.cos(math.radians(lat0)) * 111320.0
-        m = self.map_m_per_px
-
-        def P(lat, lon):
-            return w / 2 + (lon - lon0) * k / m, h / 2 - (lat - lat0) * 111320.0 / m
-
-        # charts, sea marks, AIS ships, avoidance route, shallow water (offline layers)
-        av = (self.gw_status or {}).get("avoid") or {}
-        self.chartview.draw(c, lat0, lon0, m, w, h, layers={k_: v.get() for k_, v in self.map_layers.items()},
-                            opacity=self.depth_opacity.get(), ais=self.ais_list(), threats=av.get("threats"),
-                            route=av.get("route"), shallow=av.get("shallow"),
-                            vision=((self.gw_status or {}).get("vision") or {}).get("obstacles"))
-        self.chart_lbl.configure(text="" if self.charts else T("cap.no_charts"))
-        if self.map_mark:
-            x, y = P(*self.map_mark)
-            c.create_line(x - 12, y - 12, x + 12, y + 12, fill=RED, width=4)
-            c.create_line(x - 12, y + 12, x + 12, y - 12, fill=RED, width=4)
-            c.create_text(x + 14, y, anchor="w", text=T("map.refused_leg"), fill=RED, font=F_TXT)
-        sh = av.get("shallow")
-        if sh:
-            c.create_text(w / 2, 40, text=T("map.shallow_ahead", s="%.0f" % sh["in_s"],
-                                            depth=T("hud.no_data") if sh["depth"] is None else "%.1f m" % sh["depth"],
-                                            limit="%.1f" % sh["limit"]),
-                fill=RED, font=F_BIG)
-        # scale bar
-        bar_m = 10 ** math.floor(math.log10(max(1.0, m * 150)))
-        c.create_line(20, h - 20, 20 + bar_m / m, h - 20, width=4)
-        c.create_text(20, h - 26, text="%g m" % bar_m, anchor="sw", font=F_TXT)
-        c.create_text(w - 20, 20, text=T("map.north_arrow"), font=F_BIG, anchor="ne")
-        # track
-        if len(self.track) >= 2:
-            pts = []
-            for la, lo in self.track[-2000:]:
-                pts += P(la, lo)
-            c.create_line(*pts, fill="#404040", width=2)
-        # program (editor copy) and the active waypoint (from the boat)
-        pts = [P(wp["lat"], wp["lon"]) for wp in self.prog["wps"]]
-        if len(pts) >= 2:
-            c.create_line(*[v for p in pts for v in p], fill="#b080c0", width=2)
-        for i, (x, y) in enumerate(pts):
-            c.create_oval(x - 6, y - 6, x + 6, y + 6, outline="#7a00a0", width=2)
-            c.create_text(x + 9, y, text=str(i + 1), anchor="w", font=F_TXT, fill="#7a00a0")
-        if d["wp_set"]:
-            x, y = P(d["wp_lat"], d["wp_lon"])
-            c.create_line(w / 2, h / 2, x, y, fill="#7a00a0", dash=(6, 4), width=2)
-            c.create_oval(x - 11, y - 11, x + 11, y + 11, outline="#7a00a0", width=4)
-        # uncertainty circle
-        r = d["unc_m"] / m
-        c.create_oval(w / 2 - r, h / 2 - r, w / 2 + r, h / 2 + r,
-                      outline=RED if d["pos_source"] in (2, 3) else GREEN, width=2, dash=(4, 3))
-        # drift arrow (current), 1 kn = 60 px
-        if d["drift_kn"] > 0.02:
-            a = math.radians(d["set_deg"])
-            L = min(120.0, d["drift_kn"] * 60.0)
-            x2, y2 = w / 2 + L * math.sin(a), h / 2 - L * math.cos(a)
-            c.create_line(w / 2, h / 2, x2, y2, arrow="last", arrowshape=(14, 16, 6), fill=BLUE, width=3)
-            c.create_text(x2, y2 - 12, text=T("map.drift", kn="%.2f" % d["drift_kn"]), font=F_TXT, fill=BLUE)
-        # boat
-        a = math.radians(d["heading"])
-        pts = []
-        for ang, rr in ((0, 18), (140, 12), (180, 6), (220, 12)):
-            b = a + math.radians(ang)
-            pts += [w / 2 + rr * math.sin(b), h / 2 - rr * math.cos(b)]
-        c.create_polygon(*pts, fill=MODE_COLORS.get(d["mode_name"], FG), outline=FG, width=2)
-        c.create_text(10, 10, anchor="nw", font=F_TXT,
-                      text=T("map.scale_info", m="%.0f" % m if m >= 1 else "%.1f" % m, n=len(self.track)))
 
     # --- alarm sound -------------------------------------------------------------
     def alarm_tick(self):

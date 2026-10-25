@@ -1,5 +1,7 @@
-"""The separate full-size MAP window (section C) - for a 2nd / 3rd monitor. VIEW ONLY:
-route editing stays on the captain screen; nothing here sends anything to the boat.
+"""The full-size MAP of screen 2 (navigation & control, CLAUDE.md section E): built
+into screen 2 (MapWindow(app, parent=frame)); the separate map window is gone.
+Nothing here sends anything to the boat; "click adds waypoint" (screen 2's Map tab)
+only fills the route editor.
 
   depth chart, sea marks, AIS targets + list (name, distance, bearing, CPA, TCPA, age),
   own boat, track, route + waypoints, the avoidance route, shallow-water / collision
@@ -34,12 +36,19 @@ def nice_ring(m_per_px, px=120.0):
 
 
 class MapWindow:
-    def __init__(self, app, geometry=None):
+    def __init__(self, app, geometry=None, parent=None):
         self.app = app
-        self.w = tk.Toplevel(app.root, bg="#000000")
-        self.w.title(T("mw.title"))
-        self.w.geometry(geometry or "1400x900")
-        self.w.protocol("WM_DELETE_WINDOW", app.close_map)
+        self.embedded = parent is not None
+        if self.embedded:                        # screen 2: a part of the window
+            self.w = tk.Frame(parent, bg="#000000")
+            self.w.pack(fill="both", expand=True)
+        else:                                    # (old: its own window)
+            self.w = tk.Toplevel(app.root, bg="#000000")
+            self.w.title(T("mw.title"))
+            self.w.geometry(geometry or "1400x900")
+            self.w.protocol("WM_DELETE_WINDOW", app.close_map)
+        self.on_click = None                     # fn(lat, lon) for a click without dragging (add a waypoint)
+        self.press_at = None
         cfg = dict(settings.DEFAULTS["map"], **(settings.get("map") or {}))
         self.theme = cfg.get("theme", "dark") if cfg.get("theme") in THEME_ORDER else "dark"
         self.course_up = bool(cfg.get("course_up"))
@@ -68,8 +77,12 @@ class MapWindow:
         b("mw.orient", self.toggle_orient)
         b("mw.theme", self.next_theme)
         b("mw.rings", self.toggle_rings)
+        lay = top
+        if self.embedded:                        # screen 2: the layers on a second row (fits a laptop screen)
+            lay = tk.Frame(self.w, bg="#202830")
+            lay.pack(fill="x")
         for k, v in self.layers.items():
-            cb = tk.Checkbutton(top, variable=v, font=F_TXT, bg="#202830", fg="#ffffff", selectcolor="#34404c",
+            cb = tk.Checkbutton(lay, variable=v, font=F_TXT, bg="#202830", fg="#ffffff", selectcolor="#34404c",
                                 activebackground="#202830", command=self.redraw)
             i18n.bind(cb, "map.layer_" + k)
             cb.pack(side="left", padx=2)
@@ -78,7 +91,7 @@ class MapWindow:
         self.cv = tk.Canvas(body, bg="#05101a", highlightthickness=0)
         body.add(self.cv, stretch="always", minsize=400)
         side = tk.Frame(body, bg="#101820")
-        body.add(side, minsize=260, width=400)
+        body.add(side, minsize=220, width=300 if self.embedded else 400)
         self.view_only = tk.Label(side, font=("Segoe UI", 9), bg="#101820", fg="#a0b0c0", wraplength=380,
                                   justify="left", anchor="w")
         i18n.bind(self.view_only, "mw.view_only")
@@ -103,19 +116,21 @@ class MapWindow:
         self.info.pack(fill="x")
         self.cv.bind("<ButtonPress-1>", self.on_press)
         self.cv.bind("<B1-Motion>", self.on_motion)
-        self.cv.bind("<ButtonRelease-1>", lambda e: setattr(self, "drag", None))
+        self.cv.bind("<ButtonRelease-1>", self.on_release)
         self.cv.bind("<MouseWheel>", lambda e: self.zoom(0.8 if e.delta > 0 else 1.25))
         self.cv.bind("<Button-4>", lambda e: self.zoom(0.8))
         self.cv.bind("<Button-5>", lambda e: self.zoom(1.25))
-        self.w.bind("<Configure>", lambda e: app.layout_changed())
+        if not self.embedded:
+            self.w.bind("<Configure>", lambda e: app.layout_changed())
         for k, fn in (("f", self.toggle_follow), ("F", self.toggle_follow), ("c", self.toggle_orient),
                       ("C", self.toggle_orient), ("t", self.next_theme), ("T", self.next_theme),
                       ("plus", lambda: self.zoom(0.6)), ("minus", lambda: self.zoom(1 / 0.6)),
                       ("KP_Add", lambda: self.zoom(0.6)), ("KP_Subtract", lambda: self.zoom(1 / 0.6))):
             self.w.bind("<%s>" % k if len(k) > 1 else k, lambda e, fn=fn: fn())
-        for k in ("<F12>", "<Control-Tab>"):
-            self.w.bind(k, lambda e: app.swap_screens())
-        monitors.bind_keys(self.w, app)
+        if not self.embedded:
+            for k in ("<F12>", "<Control-Tab>"):
+                self.w.bind(k, lambda e: app.swap_screens())
+            monitors.bind_keys(self.w, app)
         i18n.on_change(self.lang_changed)
         self.update_buttons()
         self.tick()
@@ -133,7 +148,8 @@ class MapWindow:
 
     def lang_changed(self):
         try:
-            self.w.title(T("mw.title"))
+            if not self.embedded:
+                self.w.title(T("mw.title"))
             self.update_buttons()
             self.draw_ais_list()
         except tk.TclError:
@@ -170,6 +186,18 @@ class MapWindow:
 
     def on_press(self, e):
         self.drag = (e.x, e.y)
+        self.press_at = (e.x, e.y)
+
+    def on_release(self, e):
+        """A click without dragging: on_click(lat, lon) (screen 2: "click adds waypoint")."""
+        self.drag = None
+        p, self.press_at = self.press_at, None
+        if p is None or abs(e.x - p[0]) + abs(e.y - p[1]) > 4 or not self.view or not self.on_click:
+            return
+        lat0, lon0, rot, w, h = self.view
+        _P, inv = mapview.ChartView.projection(lat0, lon0, self.m, w, h, rot)
+        lat, lon = inv(e.x, e.y)
+        self.on_click(lat, lon)
 
     def on_motion(self, e):
         """Drag = free pan (the map stops following the boat)."""
@@ -258,6 +286,23 @@ class MapWindow:
             x, y = P(d["wp_lat"], d["wp_lon"])
             c.create_line(bx, by, x, y, fill=th["route"], dash=(6, 4), width=2, tags="active_wp")
             c.create_oval(x - 11, y - 11, x + 11, y + 11, outline=th["route"], width=4, tags="active_wp")
+        # a leg the gateway refused (shallow water): its position, from the route editor
+        mk = getattr(a, "map_mark", None)
+        if mk:
+            x, y = P(*mk)
+            c.create_line(x - 12, y - 12, x + 12, y + 12, fill=th["warn"], width=4, tags="mark")
+            c.create_line(x - 12, y + 12, x + 12, y - 12, fill=th["warn"], width=4, tags="mark")
+            c.create_text(x + 14, y, anchor="w", text=T("map.refused_leg"), fill=th["warn"], font=F_BTN, tags="mark")
+        # drift (current) arrow, 1 kn = 60 px
+        if d.get("drift_kn", 0.0) > 0.02:
+            ang = math.radians(d["set_deg"] - rot)
+            L = min(120.0, d["drift_kn"] * 60.0)
+            x2, y2 = bx + L * math.sin(ang), by - L * math.cos(ang)
+            c.create_line(bx, by, x2, y2, arrow="last", arrowshape=(14, 16, 6), fill=th["route"], width=3, tags="drift")
+            c.create_text(x2, y2 - 12, text=T("map.drift", kn="%.2f" % d["drift_kn"]), font=F_TXT, fill=th["route"],
+                          tags="drift")
+        if not a.charts:
+            c.create_text(w / 2, h - 20, text=T("cap.no_charts"), fill=th["warn"], font=F_BTN, tags="nocharts")
         # DR uncertainty
         r = d["unc_m"] / m
         if r > 1:
