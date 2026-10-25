@@ -5,6 +5,74 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 00. Crew profiles, lost link, MANEUVER, roles, two screens, boats (2026-10-25, commits 4e3a1f8 .. this one)
+
+Code under test: commit `988a537` (sections 1-5 of the task + the fix below). Full acceptance run
+`tests\acceptance\RUN_ACCEPTANCE.bat full --short-soak` (= `run_acceptance.py full --short-soak`).
+**The soak was SHORTENED** (AURIX soak 4 simulated hours instead of 24; system soak 15 min instead of
+60). **The full 24 h soak must be run before the first uncrewed trip** (`RUN_ACCEPTANCE.bat full`).
+
+| Part | Result |
+|---|---|
+| ADS excludes / iLLD sources | PASS (boats/ excluded in all 4 configurations) |
+| Fresh clone from GitHub, every suite (tools/check.sh) | PASS (23.5 min): sim 188 + bridge 187 (1 N/A), gateway 100/100, boats 5/5, language 5/5, sound 10/10, charts, planner 14/14, FAT32 |
+| Fault storm, 2000 episodes, 588 simulated hours | PASS: I1-I13, I19, I20 and the new I22-I25, I27-I31 - 0 failures (see below for the first run) |
+| 32-bit time wraparound | PASS |
+| AURIX soak - SHORTENED, 4 simulated hours with logging | PASS: all invariants, 286 498 control steps, longest 567 us (PC), 0 overruns, 0 log drops |
+| System soak - SHORTENED, 15 min real time | PASS (AURIX step max 265 us on the PC, 0 overruns, 0 log drops) |
+| Day at sea, AURIX part | PASS 15 / 15 |
+| Day at sea, whole system | 11 / 12 on the first run: the script still answered the avoidance proposal from the old "driver screen" station, now a copilot - refused by the new rule (only the captain's screen 1 answers). Script fixed (tests/acceptance/day_at_sea.py) so the captain answers; **rerun: PASS 12 / 12** (28 min) |
+| Gateway storm I14, I15, I17, I20, I21, **I26** | PASS (I26: 8 262 checks) |
+| Station storm **I16** (new rule: copilot actions only after the captain's ACCEPT, in the captain's envelope) | PASS, 300 s: 263 frames, 142 driving (85 captain's own, 5 copilot after ACCEPT), 0 violations; self-test catches a planted frame |
+| Coverage | PASS (smallboat.c 97 % lines / 87 % branches, link.c 89 % / 78 %) |
+
+The system parts first failed at once in the clean worktree: `sim\autopilot_sim.exe` is not in git and
+the runner didn't build it. **Fixed:** run_acceptance.py now builds the simulator first. The three parts
+were then run on the same code: results above.
+
+New invariants (storm.c, numbering after I21):
+
+| | Invariant | Checks (2000 episodes) |
+|---|---|---|
+| I22 | UNCREWED: the onboard joystick has no effect (no MANUAL / HDG LOCK, CONFIRM only from the shore) | 16.7 M |
+| I23 | the profile CREWED / UNCREWED never changes outside STANDBY (stopped); never CREWED -> UNCREWED without a power-up | 23 037 |
+| I24 | MANEUVER never commands throttle above idle | 286 880 |
+| I25 | MANEUVER gear changes only at idle | 286 880 |
+| I26 | MANEUVER / REMOTE refused for users without a manual licence (gateway storm + gateway test CR1) | 8 262 |
+| I27 | ENGINE KILL only after idle + neutral | 1 630 kills |
+| I28 | lost link near shore / missing or stale shore info: kill at once (once idle + neutral) | 1 194 |
+| I29 | lost link at open sea: no kill before the grace time, kill after it unless the link returned | 12 959 |
+| I30 | never an ENGINE KILL started in CREWED | 1 630 |
+| I31 | the kill stays latched until a reset on board | 2.85 M |
+
+25 % of the storm episodes start UNCREWED; the storm adds joystick plug / unplug, shore CONFIRM,
+MANEUVER requests, HELM drop / return and shore-info changes.
+
+**Finding (fixed, commit 988a537): the first 2000-episode run failed I10 once (seed 389).** AUTO
+START was asked while in MANEUVER; then the gateway went quiet, HELM was lost, the boat went to STANDBY,
+and the CONFIRM pressed in the same 50 ms step started AUTO from STANDBY (two allowed transitions in one
+step, but the request should not survive a STANDBY caused by a fault). The same was possible from
+REMOTE before. Fix: entering STANDBY cancels any pending CONFIRM request; sim test MV4. Other storm
+findings during the work (all fixed before their commits): a CREWED joystick that failed in STANDBY
+could switch the boat to UNCREWED (now only a power-up without a joystick gives UNCREWED); a profile
+change UNCREWED -> CREWED kept the outputs armed with a held stick (now the outputs re-arm).
+
+**ADS (TASKING) build:** not run in this session - the headless ADS builder can't run while the ADS
+IDE is open on this PC, and ADS's own make needs the IDE. Checked instead: the TriCore gcc compile of
+every firmware file (app/, hal/, Cpu0/1/2, the big-boat and FIRST TEST variants) with -Wall -Wextra:
+**0 errors, 0 warnings**; every Ifx* function the firmware needs is built in all 4 configurations; no
+new C file was added (the ADS makefiles stay valid). **To do on the PC: Project -> Build in ADS**, then
+`python tools/mapreport.py "TriCore Debug (TASKING)/TRYGONS_C2.map"`.
+Memory (expected, from the objects; tools/mapreport.py --objects): core 0 150.7 KB / 240 KB (62.8 %),
+CPU1 12.1 KB (5.0 %, limit 60 %), core 2 78.1 KB / 96 KB (81.3 %), **LMU blocks 0 / 1 / 2: 53.9 KB / 64 KB
+(84.2 %) each - unchanged** (the black box; nothing new was placed in the LMU; the new data - joystick
+probe, shore joystick, lost-link and shore info - is in core 0's RAM).
+
+Still to be checked on the real boat / PC: the engine-kill relay (not chosen yet - no uncrewed operation
+before it is fitted and bench-tested), the shore joystick's CONFIRM button mapping, the boat list with the
+real Tailscale addresses, screen 2 on a 1600 px laptop (it needs ~1840 px in Greek), the screenshots in
+docs/screens (not regenerated; they still show the old separate map window).
+
 ## 0. Status after the fixes (2026-10-23, commits 6a35b25 .. 8054948)
 
 Every finding of section 2 was worked on, in the order of section 5 (one commit each, with a sim /

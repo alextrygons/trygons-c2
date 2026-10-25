@@ -15,11 +15,11 @@ not DONE below, without redoing finished work.
 | Step | What | State | Commit |
 |---|---|---|---|
 | 1 | CLAUDE.md design A-F (no code) | DONE (gate OK, acceptance quick 7/7 PASS) | 4e3a1f8 |
-| 2 | AURIX + sim: profile autodetection, UNCREWED power-raise / CONFIRM from the shore joystick, MANEUVER; invariants I22-I26 | DONE locally (gate: only result.116 missing -> fixed + amended; re-gate + acceptance pending) | f2e9770 |
-| 3 | AURIX + gateway + sim: UNCREWED lost link, GW_SHORE, engine-kill output (sim); invariants I27-I31 | DONE locally (sim 187/186 OK, storm 300 OK, gateway CR 5/5); gate + acceptance pending | |
-| 4 | Gateway: licence flag, captain / copilot, copilot -> captain ACCEPT, boat name check | DONE locally (gateway B 12/12, F1 5/5, CR 9/9, VI 10/10, CA 5/5, I16 storm 60 s PASS); gate + acceptance pending | |
-| 5 | Ground station: two screens (+ remaining HUD work), boat selector, single-monitor toggle, Greek manual | DONE locally (test_boats 5/5, test_driver 18/18, test_lang 5/5); gate + acceptance pending | |
-| 6 | Verification: full acceptance (2000 storm, shortened soak), TEST_REPORT, FIRST_TEST.md note, ADS build + memory (LMU block 2), TO CONFIRM / TBD list | TODO | |
+| 2 | AURIX + sim: profile autodetection, UNCREWED power-raise / CONFIRM from the shore joystick, MANEUVER; invariants I22-I26 | DONE (gate OK, acceptance quick 7/7), pushed | f2e9770 |
+| 3 | AURIX + gateway + sim: UNCREWED lost link, GW_SHORE, engine-kill output (sim); invariants I27-I31 | DONE (gate OK, acceptance quick 7/7 after the I5 storm-check fix), pushed | a327711 |
+| 4 | Gateway: licence flag, captain / copilot, copilot -> captain ACCEPT, boat name check | DONE (gate OK: gateway 100/100; acceptance quick 7/7), pushed | 2974fbc |
+| 5 | Ground station: two screens (+ remaining HUD work), boat selector, single-monitor toggle, Greek manual | DONE (gate OK incl. test_boats 5/5; acceptance quick 7/7), pushed | 06203de |
+| 6 | Verification: full acceptance (2000 storm, shortened soak), TEST_REPORT, FIRST_TEST.md note, ADS build + memory (LMU block 2), TO CONFIRM / TBD list | DONE: full --short-soak PASS (storm 2000 found I10 seed 389 -> fixed: STANDBY cancels a pending CONFIRM, MV4); runner builds the sim; day_at_sea.py answers from the captain; TEST_REPORT section 00. ADS IDE build still to do on the PC (not runnable headless here) | this commit |
 
 ## Notes
 

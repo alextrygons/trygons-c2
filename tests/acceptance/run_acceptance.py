@@ -2,6 +2,10 @@
 
     python tests/acceptance/run_acceptance.py quick     about 10-15 min
     python tests/acceptance/run_acceptance.py full      several hours
+    python tests/acceptance/run_acceptance.py full --short-soak
+                                       the same with a SHORTENED soak (4 simulated
+                                       hours AURIX, 15 min system) - the full 24 h
+                                       soak stays required before an uncrewed trip
 
 quick: fresh clone from GitHub + the main suites (fresh_build.py --quick), the
        storm self-test, 200 fault-storm episodes, the time wrap, the day at sea
@@ -27,7 +31,7 @@ PY = sys.executable
 STORM = os.path.join(OUT, "storm.exe")
 
 
-def plan(mode):
+def plan(mode, short_soak=False):
     t = os.path.join(HERE, "%s")
     url = ["--url", os.environ["ACCEPT_CLONE_URL"]] if os.environ.get("ACCEPT_CLONE_URL") else []
     ads = ("ADS build excludes every non-firmware folder", [PY, t % "check_ads_excludes.py"], 60)
@@ -44,8 +48,10 @@ def plan(mode):
             ("fresh build from GitHub (full)", [PY, t % "fresh_build.py"] + url, 14400),
             ("fault storm: 2000 episodes", [PY, t % "run_storm.py", "--episodes", "2000"], 7200),
             ("32-bit time wraparound", [STORM, "--wrap"], 600),
-            ("24 h AURIX soak with logging", [STORM, "--soak", "24", "24", "--log"], 7200),
-            ("system soak 60 min", [PY, t % "soak_system.py", "--minutes", "60"], 7200),
+            ("SHORTENED AURIX soak 4 h with logging" if short_soak else "24 h AURIX soak with logging",
+             [STORM, "--soak", "4" if short_soak else "24", "24", "--log"], 7200),
+            ("SHORTENED system soak 15 min" if short_soak else "system soak 60 min",
+             [PY, t % "soak_system.py", "--minutes", "15" if short_soak else "60"], 7200),
             ("day at sea, AURIX part", [STORM, "--dayatsea"], 900),
             ("day at sea, whole system", [PY, t % "day_at_sea.py"], 5400),
             ("gateway storm (I14, I15, I17, I20, I21, I26)", [PY, t % "storm_gateway.py", "--episodes", "120"], 7200),
@@ -55,6 +61,7 @@ def plan(mode):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "quick"
+    short_soak = "--short-soak" in sys.argv[2:]
     if mode not in ("quick", "full"):
         print(__doc__)
         return 2
@@ -63,9 +70,15 @@ def main():
     if "BUILD OK" not in r.stdout:
         print("storm.exe did not build:\n" + r.stdout[-2000:])
         return 2
+    # the system parts (soak, day at sea, station storm) run the simulator: build it here too
+    # (a clean checkout has no sim\autopilot_sim.exe - it is not in git)
+    r = subprocess.run(["cmd", "/c", os.path.join(REPO, "sim", "build_sim.bat")], capture_output=True, text=True)
+    if "BUILD OK" not in r.stdout:
+        print("autopilot_sim.exe did not build:\n" + r.stdout[-2000:])
+        return 2
     t0 = time.time()
     res = []
-    for name, args, tmo in plan(mode):
+    for name, args, tmo in plan(mode, short_soak):
         print("\n######## %s" % name, flush=True)
         log = os.path.join(OUT, "acc_%s.txt" % "".join(c if c.isalnum() else "_" for c in name)[:40])
         t1 = time.time()
@@ -81,7 +94,8 @@ def main():
         res.append((name, rc, dt, log, tail))
         print("%s  %s  (%.1f min)  log %s" % ("PASS" if rc == 0 else ("TIMEOUT" if rc == -1 else "FAIL"), name, dt / 60,
                                              os.path.relpath(log, REPO)), flush=True)
-    lines = ["=== ACCEPTANCE TEST (%s), %.0f min, %s ===" % (mode, (time.time() - t0) / 60,
+    lines = ["=== ACCEPTANCE TEST (%s%s), %.0f min, %s ===" % (mode, ", SHORTENED SOAK" if short_soak else "",
+                                                          (time.time() - t0) / 60,
                                                           time.strftime("%Y-%m-%d %H:%M"))]
     for name, rc, dt, log, tail in res:
         lines.append("%-8s %-45s %6.1f min   %s" % ("PASS" if rc == 0 else ("TIMEOUT" if rc == -1 else "FAIL"), name,

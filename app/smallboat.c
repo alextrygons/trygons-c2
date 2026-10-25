@@ -564,6 +564,9 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
                          from == MODE_REMOTE || from == MODE_MANEUVER);
         s->stop_from_auto = was_auto;
         s->stopping = true;
+        /* a STANDBY (button, fault, HELM lost ...) cancels any pending CONFIRM request:
+         * a CONFIRM in the same step must not start what was asked before it */
+        s->confirm.kind = CONF_NONE;
         if (hdg_fault_steer) break;                 /* keep the gyro hold / centring running */
         s->stop_steer = STOP_STEER_NONE;
         if (from == MODE_MANUAL && moving) {

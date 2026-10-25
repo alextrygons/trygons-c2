@@ -1562,6 +1562,14 @@ int main(int argc, char **argv)
             s_verbose = true;
             bool f = episode(&SC, true);
             printf("seed %lu: %s\n", (unsigned long)sd, f ? C.text : "all invariants held");
+            if (f) {                                    /* the mode manager's last entries (what happened) */
+                uint32_t n = mode_log_size(&S.sb.modes);
+                for (uint32_t i = n > 8u ? n - 8u : 0u; i < n; i++) {
+                    const mode_log_entry_t *e = mode_log_get(&S.sb.modes, i);
+                    printf("  mode log %8.2f s  %s -> %s  why %s  %s\n", e->t_ms * 0.001, mode_name(e->from),
+                           mode_name(e->to), mode_reason_name(e->why), e->verdict == MODE_OK ? "OK" : "refused");
+                }
+            }
             return f ? 1 : 0;
         }
         if (!strcmp(argv[i], "--soak") && i + 2 < argc) {

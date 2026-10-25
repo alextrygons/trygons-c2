@@ -5941,6 +5941,38 @@ static void crew_tests(void)
         test_report("MV3 UNCREWED MANEUVER: confirmed on the shore captain's joystick, throttle idle",
                     ask == PROTO_R_OK && cf && on && thr_max <= 0.01f, d);
     }
+
+    /* MV4 (storm seed 389) a request pending in MANEUVER (AUTO start), then HELM lost -> STANDBY: the
+     * CONFIRM afterwards (or in the same step) must start nothing - a STANDBY cancels pending requests */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static program_t p;
+        prog_error_t err;
+        uint8_t bad;
+        crew_init(&x, &r, 1214u, true, NULL);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        r.rj_on = true;
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        onboard_confirm(&x, &r);
+        bool on = sb_mode(&x.sb) == MODE_MANEUVER;
+        prog_wp_t w = wp_world(&x, x.w.north_m + 1500.0, x.w.east_m, 6.0f, 25.0f, WP_ACT_STOP);
+        prog_make(&p, &w, 1, PROG_END_STOP);
+        sb_program_set(&x.sb, &p, &err, &bad);
+        sb_result_t as = sb_auto_start(&x.sb);
+        bool pending = x.sb.confirm.kind == CONF_AUTO_START;
+        r.rj_on = false;
+        pi_station_left(2u);                                    /* HELM lost -> STANDBY */
+        sbsim_run(&x, x.t + 2u * AP_PERIOD_MS, rj_hook, &r);
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY && x.sb.confirm.kind == CONF_NONE;
+        bool cf = onboard_confirm(&x, &r);
+        sbsim_run(&x, x.t + 500u, rj_hook, &r);
+        snprintf(d, sizeof d, "MANEUVER %s; AUTO start asked %d (pending %s); HELM lost -> STANDBY + request cancelled %s; "
+                 "CONFIRM afterwards %s, mode %s", on ? "yes" : "NO", (int)as, pending ? "yes" : "NO", sb ? "yes" : "NO",
+                 cf ? "ACCEPTED" : "nothing", mode_name(sb_mode(&x.sb)));
+        test_report("MV4 a STANDBY (HELM lost in MANEUVER) cancels a pending request: CONFIRM after it starts nothing",
+                    on && as == SB_OK && pending && sb && !cf && sb_mode(&x.sb) == MODE_STANDBY, d);
+    }
 }
 
 /* --------------------------------------------- UNCREWED lost link (CLAUDE.md B) -- */

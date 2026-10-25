@@ -9,6 +9,10 @@ What this test is: **steering only**. The throttle and gear servos are held at
 idle / neutral by the software; a person drives the engine by hand. Takeover
 is always: **the STANDBY button** and **the emergency stop**.
 
+Profile: the first test runs in the **CREWED** profile (someone on board). The
+FIRST TEST build is always CREWED, whatever is plugged in - so the UNCREWED
+lost-link engine kill is never used in this test.
+
 You need: a multimeter, the laptop with the ground station, the USB cable,
 (for part 4) an oscilloscope or a servo tester, (for part 7) a second person.
 

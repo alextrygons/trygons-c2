@@ -103,8 +103,8 @@ def main():
         alice = TG.Client(sp, "alice", TG.PW["alice"], name="captain (shore)")
         alice.pump(1.0)
         alice.cmd(proto.T_HELM, proto.p_helm(0))
-        bob = TG.Client(sp, "bob", TG.PW["bob"], name="driver screen")
-        beat = TG.DriverBeat(bob)
+        bob = TG.Client(sp, "bob", TG.PW["bob"], name="copilot")
+        beat = TG.DriverBeat(alice)                                # the captain's screen 1 (CLAUDE.md D)
         print("| t | gateway time | what happened | what the system did | expected | result |\n|---|---|---|---|---|---|")
 
         def joy(x=0.0, y=0.0, **kw):
@@ -115,10 +115,11 @@ def main():
             time.sleep(0.2)
             joy()
 
-        def driver_yes(timeout=6.0):
-            k, q = TG.next_event(bob, ("driver_ask",), timeout)
+        def driver_yes(timeout=1.0):
+            """A question on the captain's screen 1 (only for copilot actions: the captain's own go direct)."""
+            k, q = TG.next_event(alice, ("driver_ask",), timeout)
             if q:
-                bob.l.send_msg({"t": "driver_answer", "id": q["id"], "yes": True})
+                alice.l.send_msg({"t": "driver_answer", "id": q["id"], "yes": True})
             return q
 
         def auto_go(resume=False):
@@ -139,7 +140,7 @@ def main():
         asim.add(TG.crossing_ship(d1, 239500001, 12.0, 200.0, "HARBOUR FERRY", from_side=-90.0))
         prop = TG.wait_for(lambda: (g.nav_state.get("proposal") or {}).get("kind") == "avoid", 60)
         p = g.nav_state.get("proposal")
-        bob.l.send_msg({"t": "avoid_answer", "id": p and p["id"], "yes": True})
+        alice.l.send_msg({"t": "avoid_answer", "id": p and p["id"], "yes": True})    # the captain's screen 1
         turned = w.until(lambda d: p and abs((d["target"] - p["heading"] + 180) % 360 - 180) < 1.5, 8)
         row(g, "HEADING LOCK, crossing ship", "proposal \"%s\"; accepted -> locked heading %s" % (
             p and p["text"][:60], "%03.0f" % turned["target"] if turned else "NOT changed"),
@@ -162,9 +163,9 @@ def main():
         wps = [TG.east_of(e, n) for n, e in legs]
         up = TG.upload(alice, wps, kn=6.0)
         q, auto = auto_go()
-        row(g, "AUTO program (6 waypoints, past the 1.5 m shoal)", "upload %s, driver asked %s, AUTO %s" % (
+        row(g, "AUTO program (6 waypoints, past the 1.5 m shoal)", "upload %s, a question on screen 1 %s (the captain's own start: none), AUTO %s" % (
             up and up["result"], bool(q), "running" if auto else "NOT running"),
-            "accepted by the depth check, AUTO after ACCEPT + CONFIRM", bool(up and up["result"] == 0 and auto))
+            "accepted by the depth check, AUTO after the captain's start + CONFIRM", bool(up and up["result"] == 0 and auto))
         w.until(lambda d: d.get("est_sog", 0) > 4.5, 60)
 
         # 3. AIS crossing ship in AUTO -> slow down, pass astern, rejoin

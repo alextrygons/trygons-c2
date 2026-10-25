@@ -75,7 +75,7 @@ Modes — three driving modes + STANDBY + TRAINING
 - HELM (section B): only the HELM station's commands are carried out (AURIX checks it, link.c); a station on the boat can always take HELM; remote HELM lost → REMOTE LINK LOST, HELM to nobody, no mode change.
   - Trust boundary (R7, by design): the station id and the "local" (on the boat) flag come from the Pi (GW_CMD envelope); the AURIX can't verify them. Everything that changes the driving therefore stays behind on-board physical checks (joystick wins, STANDBY, CONFIRM for AUTO / REMOTE / power raise, power limit, navreq limits) - never rely on "local" alone for a safety decision.
 - Driver confirmation (fix F1; REPLACED by section D below: copilot actions need the captain's ACCEPT): captain actions that change the driving (proto.DRIVING_CMDS, never STANDBY) are held by the GATEWAY (stations.py) and only forwarded after the DRIVER screen's ACCEPT; no driver screen open → refused "driver screen not open"; REJECT / 10 s timeout / driver screen lost (1 s heartbeat) → refused. SINGLE-OPERATOR mode (captain screen, warning, banners on both screens, audited) → the captain's own confirmation instead; off when that station disconnects.
-- CONFIRM (joystick) only answers a pending PC request, only with the stick centred and the joystick armed; it never changes the mode on its own.
+- CONFIRM (joystick) only answers a pending PC request, only with the stick centred and the joystick armed; it never changes the mode on its own. Entering STANDBY (button, fault, HELM lost ...) cancels any pending request (storm seed 389, sim MV4).
 - One mode manager owns all transitions (explicit allowed-transition table, every transition logged). Nothing else changes the mode.
 
 Safety rules — never break them
