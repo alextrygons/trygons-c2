@@ -13,6 +13,8 @@ import math
 import tkinter as tk
 
 import chart
+import i18n
+from i18n import T
 
 NOTE = chart.NOTE
 COL_AIS = {"danger": "#e00000", "warn": "#ff8c00", None: "#2050c0", "stale": "#909090"}
@@ -100,8 +102,8 @@ class ChartView:
             c.create_line(x - 8, y + 8, x + 8, y - 8, fill="#e00000", width=3, tags="shallow")
             if not small:
                 c.create_text(x + 10, y, anchor="w", fill="#e00000", font=("Segoe UI", 10, "bold"), tags="shallow",
-                              text="SHALLOW %s in %.0f s" % ("?" if shallow.get("depth") is None else
-                                                              "%.1f m" % shallow["depth"], shallow.get("in_s", 0)))
+                              text=T("map.shallow_mark", depth="?" if shallow.get("depth") is None else
+                                     "%.1f m" % shallow["depth"], s="%.0f" % shallow.get("in_s", 0)))
         if ais and layers.get("ais", True):
             lvl = {t["mmsi"]: t for t in (threats or [])}
             for t in ais:
@@ -126,7 +128,7 @@ class ChartView:
                 if not small or th.get("level"):
                     lab = (t.get("name") or str(t["mmsi"]))[:18]
                     if th.get("level"):
-                        lab += "  CPA %.2f nm / %.1f min" % (th["cpa_nm"], th["tcpa_min"])
+                        lab += "  " + T("map.ais_cpa", cpa="%.2f" % th["cpa_nm"], tcpa="%.1f" % th["tcpa_min"])
                     c.create_text(x + r + 3, y - r, text=lab, anchor="w", fill=col,
                                   font=("Segoe UI", 8 if small else 9, "bold" if th.get("level") else "normal"),
                                   tags="ais")
@@ -151,11 +153,11 @@ class ChartView:
                           tags="vision")
         # the note - always
         c.create_rectangle(0, h - (16 if small else 34), w, h, fill="#fff8d0", outline="", tags="note")
-        c.create_text(4, h - (8 if small else 25), anchor="w", text=NOTE, fill="#a00000",
+        c.create_text(4, h - (8 if small else 25), anchor="w", text=T("map.note"), fill="#a00000",
                       font=("Segoe UI", 7 if small else 9, "bold"), tags="note")
         if not small:
             att = " | ".join(a.split(". NOT FOR")[0] for a in self.charts.attribution()) if self.charts else \
-                "no chart files (tools/chartprep.py)"
+                T("map.no_chart_files")
             c.create_text(4, h - 9, anchor="w", text=att[:200], fill="#606060", font=("Segoe UI", 7), tags="note")
 
     def _contours(self, c, P, m, w, h, small):

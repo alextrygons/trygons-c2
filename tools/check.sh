@@ -108,6 +108,9 @@ grep -E "^\[FAIL\]|FAT32 TESTS|BUILD PROBLEM" "$TEMP/fat32_tests.txt"
 echo "== chart tests"
 ( cd groundstation && "$PY" test_charts.py > "$TEMP/chart_tests.txt" 2>&1 ) || { echo "CHART TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"
+echo "== ground station language tests (el / en)"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_lang.py > "$TEMP/lang_tests.txt" 2>&1 ) || { echo "LANGUAGE TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|LANGUAGE TESTS" "$TEMP/lang_tests.txt"
 echo "== avoidance planner tests"
 ( cd gateway && "$PY" test_avoid.py > "$TEMP/avoid_tests.txt" 2>&1 ) || { echo "AVOIDANCE TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|AVOIDANCE TESTS" "$TEMP/avoid_tests.txt"

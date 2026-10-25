@@ -21,6 +21,9 @@ import time
 import asyncio
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# the ground station in English with a throw-away settings file (never the user's language / HUD settings)
+os.environ.setdefault("TRYGONS_LANG", "en")
+os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(__import__("tempfile").gettempdir(), "trygons_gs_test.json"))
 sys.path.insert(0, HERE)
 from common import load_config, proto, setup_logging  # noqa: E402
 import gateway as gwmod  # noqa: E402

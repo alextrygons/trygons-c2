@@ -25,6 +25,10 @@ auto.key
 gateway/*.crt
 groundstation/sync_receiver.json
 groundstation/gs_layout.json
+# per-PC ground-station settings (language, HUD, sound), the HUD layout and the voice cache
+groundstation/gs_settings.json
+groundstation/hud_layout.json
+groundstation/sound_cache/
 charts/*/
 !charts/areas.json
 tools/bin/

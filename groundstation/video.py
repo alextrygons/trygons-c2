@@ -98,6 +98,12 @@ class VideoStream:
         return b"P6 %d %d 255\n" % (self.w, self.h) + self.frame
 
 
+def notice_text(sel):
+    """The FrontSelector notice (English, as logged) in the screen language."""
+    import i18n
+    return i18n.from_en(sel.notice)
+
+
 class FrontSelector:
     """FRONT-1 big; FRONT-2 when FRONT-1 is frozen / gone; back when FRONT-1 is good again."""
 

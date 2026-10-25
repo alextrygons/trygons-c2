@@ -22,6 +22,9 @@ import threading
 import tkinter as tk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# the ground station in English with a throw-away settings file (never the user's language / HUD settings)
+os.environ.setdefault("TRYGONS_LANG", "en")
+os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(__import__("tempfile").gettempdir(), "trygons_gs_test.json"))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
 import chart  # noqa: E402

@@ -1,6 +1,37 @@
 # PROGRESS
 
-Current task: "First test preparation": (1) generated certificates in .gitignore,
+Current task: "Driver HUD + map window + sound/voice + Greek": (E) Greek / English
+language files, Greek default, live switch; (A) driver screen = full-screen front
+camera with overlays; (B) AR overlays on the front video; (C) separate full-size
+MAP window, windows remember their monitor; (D) cockpit sound + voice system
+(offline TTS); (F) MANUAL.txt + MANUAL_EL.txt; (G) screenshots in docs/screens/
++ tests. HUD, map and sounds are DISPLAY ONLY (never change control or safety).
+One commit per section, all tests pass, git push at the end.
+If interrupted: say "continue from PROGRESS.md" - continue with the first
+step that is not DONE below, without redoing finished work.
+Order of work: E first (every new screen text goes straight into the language
+files), then A, B, C, D, F, G.
+
+## Steps (HUD / map / sound / Greek)
+
+| Step | What | State | Commit |
+|---|---|---|---|
+| E | i18n.py + lang/el.txt + lang/en.txt (plain key = text, comments), settings.py (per-PC: gs_settings.json), alerts.py (alarm levels + codes), monitors.py; captain screen fully from the language files, ΕΛ / EN buttons + menu, live switch, remembered; English stays in protocol / audit (TE + from_en); fits 1920 px in both; test_lang.py L1-L5 in the gate | DONE (gate OK except: sim build blocked by the running demo, VR5 flaky under load -> VR alone 5/5) | (this commit) |
+| A | driver.py rewrite: full-screen camera HUD | IN PROGRESS (hud.py + driver.py written, test_driver I1-I14 pass) | |
+| B | AR overlays (hudar.py) | | |
+| C | MAP window (mapwin.py), monitor placement for all windows | | |
+| D | sound.py + tts + callouts + sound test page | | |
+| F | MANUAL.txt + MANUAL_EL.txt + CLAUDE.md rule | | |
+| G | screenshots docs/screens/, tests, final gate, push | | |
+
+## Notes (HUD / map / sound / Greek)
+
+- Tests run the ground station in English with a throw-away settings file:
+  TRYGONS_LANG=en, TRYGONS_GS_SETTINGS=<temp> (set at the top of each test file).
+- Gateway sentences (proposals, refusals) stay English in the protocol / audit; the
+  screens translate them with i18n.from_en() using the "gw.*" templates of en.txt.
+
+# Previous task: "First test preparation": (1) generated certificates in .gitignore,
 (2) .cproject excludes checked, (3) FIRST TEST configuration (steering only),
 (4) real hal_tc375.c Stage 1 drivers (BNO085, MAX-M10S, Pololu G2, limit
 switches, buttons, buzzer, microSD, USB link), (5) BENCH TEST mode,

@@ -22,6 +22,11 @@ from tkinter import ttk
 
 import program
 import proto
+import i18n
+import settings
+import alerts
+import monitors
+from i18n import T, TE
 from link import Link, list_ports
 from gwclient import GatewayLink
 import shorejoy
@@ -64,12 +69,53 @@ LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.jso
 DRIVING_CMDS = proto.DRIVING_CMDS
 
 
-def btn(parent, text, cmd, bg=PANEL, fg=FG, font=F_MED, width=None):
-    b = tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg, font=font, activebackground="#c0c0c0",
+def btn(parent, key, cmd, bg=PANEL, fg=FG, font=F_MED, width=None, **kw):
+    """A button whose text is the language entry `key` (follows the language switch)."""
+    b = tk.Button(parent, command=cmd, bg=bg, fg=fg, font=font, activebackground="#c0c0c0",
                   relief="raised", bd=3, padx=8, pady=4)
+    i18n.bind(b, key, **kw)
     if width:
         b.configure(width=width)
     return b
+
+
+def proposal_text(p):
+    """A gateway proposal (collision avoidance / vision) in the screen language: the gateway
+    sends it in English (audit log); the language file has the same sentence as a "gw." entry."""
+    return i18n.from_en((p or {}).get("text", ""))
+
+
+def joy_why(d):
+    """Why the joystick is not armed / in fault, in the screen language."""
+    return T("joywhy.%d" % d["joy_why"]) if i18n.has("joywhy.%d" % d["joy_why"], "en") else d["joy_why_text"]
+
+
+def ui_code_name(code):
+    """A USB joystick control code (proto.code_name) in the screen language."""
+    if code == 0:
+        return "-"
+    if 1 <= code <= 64:
+        c = code - 1
+        return T("jcode.button", dev=T("jdev.%d" % (c // 32)), n=c % 32 + 1)
+    if 65 <= code <= 80:
+        c = code - 65
+        return T("jcode.hat", dev=T("jdev.%d" % (c // 8)), dir=T("jhat.%d" % (c % 4)))
+    return "code %d" % code
+
+
+def ui_axis_name(code):
+    if code >= 16:
+        return "-"
+    return T("jcode.axis", dev=T("jdev.%d" % (code // 8)), n=code % 8, name=proto.AXIS_NAMES[code % 8])
+
+
+def lbl(parent, key, **opts):
+    """A label whose text is the language entry `key`."""
+    return i18n.bind(tk.Label(parent, **opts), key)
+
+
+def chk(parent, key, **opts):
+    return i18n.bind(tk.Checkbutton(parent, **opts), key)
 
 
 class App:
@@ -123,7 +169,12 @@ class App:
             pass
         self._layout_job = None
 
-        root.title("Trygons C2 ground station")
+        self.title_extra = ""           # "ON BOARD - " etc. (--title)
+        self.mapwin = None              # the separate MAP window (section C)
+        self.lamps = alerts.MasterLamps()   # MASTER WARNING / CAUTION (driver HUD): acknowledged = silenced here
+        self.sound = None               # sound + voice (section D), made in _build_sound
+        root.title(T("cap.title"))
+        i18n.on_change(self.lang_changed)
         root.configure(bg=BG)
         if self.layout.get("captain"):
             root.geometry(self.layout["captain"])       # where it was last time (which monitor)
@@ -136,7 +187,7 @@ class App:
         style = ttk.Style()
         style.configure("Treeview", font=F_TXT, rowheight=26)
         style.configure("Treeview.Heading", font=F_MED)
-        style.configure("TNotebook.Tab", font=F_MED, padding=(14, 6))
+        style.configure("TNotebook.Tab", font=("Segoe UI", 12, "bold"), padding=(5, 5))
 
         self._build_top()
         self._build_banners()
@@ -145,8 +196,9 @@ class App:
         self._build_values(body)
         self._build_controls(body)
         self._build_tabs(body)
-        self.msg = tk.Label(root, text="Not connected", font=F_MED, bg="#202020", fg="#ffffff", anchor="w")
+        self.msg = tk.Label(root, text=T("cap.not_connected"), font=F_MED, bg="#202020", fg="#ffffff", anchor="w")
         self.msg.pack(fill="x", side="bottom")
+        self._build_menu()
 
         if address:
             self.port_var.set(address)
@@ -158,33 +210,118 @@ class App:
         for k in ("<F12>", "<Control-Tab>"):
             root.bind(k, lambda e: self.swap_screens())
         root.bind("<Configure>", lambda e: self.layout_changed())
+        monitors.bind_keys(root, self)
         if self.layout.get("driver_open") or open_driver:
             root.after(600, self.open_driver)
+        if self.layout.get("map_open"):
+            root.after(700, self.open_map)
+
+    # --- language (section E) --------------------------------------------------------
+    def lang_changed(self):
+        """Live language switch: titles, tabs, list headings and the values drawn every second."""
+        self.root.title(self.title_extra + T("cap.title"))
+        self.lang_btns()
+        if hasattr(self, "nb"):
+            for i, key in enumerate(self.tab_keys):
+                self.nb.tab(i, text=T(key))
+        if hasattr(self, "ptree"):
+            self.ptree.heading("#0", text=T("cap.param"))
+            for c in ("value", "min", "max"):
+                self.ptree.heading(c, text=T("cap.param_" + c))
+        if hasattr(self, "ais_tree"):
+            for i, (c, key, _w) in enumerate(self.AIS_COLS):
+                self.ais_tree.heading("#0" if i == 0 else c, text=T(key) if key else "")
+        if hasattr(self, "pg_tree"):
+            for c in ("lat", "lon", "kn", "radius", "action"):
+                self.pg_tree.heading(c, text=T("cap.pg_" + c))
+            self.prog_combos()
+        if hasattr(self, "sim_fault_cb"):
+            self.sim_fault_cb.configure(values=[T(k) for k in self.SIM_FAULTS])
+        self._build_menu()
+        self.conn_btn.configure(text=T("cap.disconnect") if self.link else T("cap.connect"))
+        self.so_btn.configure(text=T("cap.single_op_on") if self.single_op else T("cap.single_op"))
+        if self.t:
+            self.draw()
+        self.draw_bench()
+        self.draw_ais()
+        self.draw_vision()
+        self.draw_network()
+
+    def set_lang(self, lang):
+        i18n.set_lang(lang)
+
+    def master_ack(self):
+        """MASTER WARNING / CAUTION acknowledged on the driver screen: lamps off and the repeating sound
+        silenced ON THIS PC. Nothing is sent to the boat (its ALARM ACK stays the captain's button)."""
+        self.lamps.ack()
+        if self.sound:
+            self.sound.ack()
+
+    def lang_btns(self):
+        for code, b in getattr(self, "lang_b", {}).items():
+            on = code == i18n.lang()
+            b.configure(bg="#0033cc" if on else PANEL, fg="#ffffff" if on else FG,
+                        relief="sunken" if on else "raised")
+
+    def _build_menu(self):
+        """Menu bar: Windows (open, move to a monitor), Language."""
+        mb = tk.Menu(self.root)
+        wm = tk.Menu(mb, tearoff=0)
+        wm.add_command(label=T("menu.driver"), command=lambda: self.close_driver() if self.driver else self.open_driver())
+        wm.add_command(label=T("menu.map"), command=lambda: self.close_map() if self.mapwin else self.open_map())
+        wm.add_separator()
+        mons = monitors.list_monitors(self.root)
+        for name, getw in (("captain", lambda: self.root), ("driver", lambda: self.driver and self.driver.w),
+                           ("map", lambda: self.mapwin and self.mapwin.w)):
+            sub = tk.Menu(wm, tearoff=0)
+            for i, m in enumerate(mons):
+                sub.add_command(label=T("menu.monitor_n", n=i + 1, w=m[2] - m[0], h=m[3] - m[1]) +
+                                ("   Ctrl+Shift+%d" % (i + 1) if i < 9 else ""),
+                                command=lambda i=i, getw=getw: monitors.move_to(getw(), i, self))
+            wm.add_cascade(label=T("menu.move_" + name), menu=sub)
+        wm.add_separator()
+        wm.add_command(label=T("menu.swap"), command=self.swap_screens)
+        mb.add_cascade(label=T("menu.windows"), menu=wm)
+        lm = tk.Menu(mb, tearoff=0)
+        for code in i18n.LANGS:
+            lm.add_command(label=T("menu.lang_" + code), command=lambda c=code: self.set_lang(c))
+        mb.add_cascade(label=T("menu.language"), menu=lm)
+        self.root.configure(menu=mb)
+        self.menubar = mb
 
     # --- layout ------------------------------------------------------------------
     def _build_top(self):
         top = tk.Frame(self.root, bg=PANEL)
         top.pack(fill="x")
-        tk.Label(top, text="Connection:", font=F_MED, bg=PANEL).pack(side="left", padx=6)
+        lbl(top, "cap.connection", font=F_MED, bg=PANEL).pack(side="left", padx=6)
         self.port_var = tk.StringVar(value="tcp:127.0.0.1:5760")
         self.port_box = ttk.Combobox(top, textvariable=self.port_var, values=list_ports(), width=24, font=F_MED)
         self.port_box.pack(side="left", padx=4)
-        btn(top, "Refresh", lambda: self.port_box.configure(values=list_ports()), font=F_TXT).pack(side="left")
-        self.conn_btn = btn(top, "Connect", self.connect, bg="#b0ffb0")
+        btn(top, "cap.refresh", lambda: self.port_box.configure(values=list_ports()), font=F_TXT).pack(side="left")
+        self.conn_btn = btn(top, "cap.connect", self.connect, bg="#b0ffb0")
         self.conn_btn.pack(side="left", padx=6)
-        self.link_lbl = tk.Label(top, text="link: -", font=F_MED, bg=PANEL)
+        self.link_lbl = tk.Label(top, text=T("cap.link_none"), font=F_MED, bg=PANEL)
         self.link_lbl.pack(side="left", padx=12)
-        self.helm_lbl = tk.Label(top, text="HELM: -", font=F_MED, bg=PANEL)
+        self.helm_lbl = tk.Label(top, text=T("cap.helm_none"), font=F_MED, bg=PANEL)
         self.helm_lbl.pack(side="left", padx=8)
-        btn(top, "Take HELM", lambda: self.cmd(proto.T_HELM, proto.p_helm(0), "take HELM"),
+        btn(top, "cap.helm_take", lambda: self.cmd(proto.T_HELM, proto.p_helm(0), TE("what.take_helm")),
             font=F_TXT).pack(side="left")
-        btn(top, "Release", lambda: self.cmd(proto.T_HELM, proto.p_helm(1), "release HELM"),
+        btn(top, "cap.helm_release", lambda: self.cmd(proto.T_HELM, proto.p_helm(1), TE("what.release_helm")),
             font=F_TXT).pack(side="left", padx=2)
-        btn(top, "Driver screen", lambda: self.close_driver() if self.driver else self.open_driver(),
+        btn(top, "cap.driver_screen", lambda: self.close_driver() if self.driver else self.open_driver(),
             font=F_TXT, bg="#c0d8ff").pack(side="left", padx=8)
-        self.so_btn = btn(top, "Single operator", self.single_op_toggle, font=F_TXT)
+        btn(top, "cap.map_window", lambda: self.close_map() if self.mapwin else self.open_map(),
+            font=F_TXT, bg="#c0d8ff").pack(side="left", padx=2)
+        self.so_btn = btn(top, "cap.single_op", self.single_op_toggle, font=F_TXT)
         self.so_btn.pack(side="left", padx=2)
-        tk.Label(top, text="F12 swaps the screens", font=F_TXT, bg=PANEL, fg="#606060").pack(side="left")
+        lbl(top, "cap.f12_hint", font=F_TXT, bg=PANEL, fg="#606060").pack(side="left")
+        self.lang_b = {}
+        for code in reversed(i18n.LANGS):                  # the language switch: ΕΛ / EN, right side
+            b = tk.Button(top, text=i18n.NAMES[code], font=F_MED, width=3, bd=3,
+                          command=lambda c=code: self.set_lang(c))
+            b.pack(side="right", padx=(0, 4))
+            self.lang_b[code] = b
+        self.lang_btns()
         self.log_lbl = tk.Label(top, text="", font=F_TXT, bg=PANEL)
         self.log_lbl.pack(side="right", padx=8)
 
@@ -192,17 +329,14 @@ class App:
         self.banners = tk.Frame(self.root, bg=BG)       # empty = zero height
         self.banners.pack(fill="x")
         self.banners.columnconfigure(0, weight=1)
-        self.joy_banner = tk.Label(self.banners, text="JOYSTICK IN CONTROL", font=F_HUGE, bg=ORANGE, fg=FG)
+        self.joy_banner = tk.Label(self.banners, text=T("cap.joy_in_control"), font=F_HUGE, bg=ORANGE, fg=FG)
         self.alarm_banner = tk.Label(self.banners, text="", font=F_MED, bg=RED, fg="#ffffff")
         self.pick_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#ffd000", fg=FG)
         self.sl_banner = tk.Label(self.banners, text="", font=F_BIG, bg="#b00060", fg="#ffffff")
-        self.so_banner = tk.Label(self.banners, text="SINGLE-OPERATOR MODE - you confirm your own driving actions",
-                                  font=F_BIG, bg="#7000a0", fg="#ffffff")
-        self.ft_banner = tk.Label(self.banners, text="FIRST TEST - STEERING ONLY: throttle and gear disabled (drive the "
-                                  "throttle by hand) - take over: STANDBY button or EMERGENCY STOP",
-                                  font=F_BIG, bg="#ff00ff", fg="#ffffff", wraplength=1100)
-        self.alarm_ack = btn(self.banners, "ACK ALARM\n(STANDBY)",
-                             lambda: self.cmd(proto.T_ALARM_ACK, b"", "alarm ack"), font=F_TXT)
+        self.so_banner = lbl(self.banners, "cap.so_banner", font=F_BIG, bg="#7000a0", fg="#ffffff")
+        self.ft_banner = lbl(self.banners, "cap.ft_banner", font=F_BIG, bg="#ff00ff", fg="#ffffff", wraplength=1100)
+        self.alarm_ack = btn(self.banners, "cap.ack_alarm",
+                             lambda: self.cmd(proto.T_ALARM_ACK, b"", TE("what.alarm_ack")), font=F_TXT)
 
     def show(self, widget, on, **grid):
         if on and not widget.winfo_manager():
@@ -215,23 +349,21 @@ class App:
         f.pack(side="left", fill="y", padx=4, pady=4)
         self.mode_lbl = tk.Label(f, text="---", font=F_HUGE, bg="#606060", fg="#ffffff", width=10)
         self.mode_lbl.pack(fill="x", pady=(0, 2))
-        self.power_lbl = tk.Label(f, text="POWER LIMIT --", font=F_BIG, bg="#d0ffd0", fg=FG)
+        self.power_lbl = tk.Label(f, text=T("cap.power_none"), font=F_BIG, bg="#d0ffd0", fg=FG)
         self.power_lbl.pack(fill="x")
         pw = tk.Frame(f, bg=BG)
         pw.pack(fill="x", pady=(0, 6))
-        btn(pw, "Raise fwd", lambda: self.power_dialog(0), font=F_TXT).pack(side="left", expand=True, fill="x")
-        btn(pw, "Raise rev", lambda: self.power_dialog(1), font=F_TXT).pack(side="left", expand=True, fill="x")
-        btn(pw, "Lower now", lambda: self.cmd(proto.T_POWER_LOWER, b"", "power lower"), bg="#b0ffb0",
+        btn(pw, "cap.raise_fwd", lambda: self.power_dialog(0), font=F_TXT).pack(side="left", expand=True, fill="x")
+        btn(pw, "cap.raise_rev", lambda: self.power_dialog(1), font=F_TXT).pack(side="left", expand=True, fill="x")
+        btn(pw, "cap.lower_now", lambda: self.cmd(proto.T_POWER_LOWER, b"", TE("what.power_lower")), bg="#b0ffb0",
             font=F_TXT).pack(side="left", expand=True, fill="x")
         self.vals = {}
-        rows = [("heading", "Heading"), ("target", "Target"), ("yaw", "Yaw rate"), ("outboard", "Outboard"),
-                ("throttle", "Throttle"), ("gear", "Gear"), ("gps", "GPS"), ("pos", "Position"),
-                ("sog", "SOG / COG"), ("src", "Pos. source"), ("unc", "Uncertainty"), ("drift", "Set / drift"),
-                ("current", "Motor current"), ("cruise", "Speed set"), ("wp", "Waypoint"), ("train", "Training")]
+        rows = ["heading", "target", "yaw", "outboard", "throttle", "gear", "gps", "pos", "sog", "src", "unc", "drift",
+                "current", "cruise", "wp", "train"]
         grid = tk.Frame(f, bg=BG)
         grid.pack(fill="x")
-        for i, (k, name) in enumerate(rows):
-            tk.Label(grid, text=name, font=F_TXT, bg=BG, anchor="w").grid(row=i, column=0, sticky="w", padx=4)
+        for i, k in enumerate(rows):
+            lbl(grid, "cap.v_" + k, font=F_TXT, bg=BG, anchor="w").grid(row=i, column=0, sticky="w", padx=4)
             big = k in ("heading", "target", "outboard", "throttle", "gear")
             small = k in ("pos", "src", "drift", "wp", "train", "unc", "current", "cruise", "sog")
             v = tk.Label(grid, text="-", font=F_BIG if big else F_TXT if small else F_MED, bg=BG, anchor="w")
@@ -242,104 +374,117 @@ class App:
         f = tk.Frame(body, bg=BG, bd=2, relief="groove")
         f.pack(side="left", fill="y", padx=4, pady=4)
 
-        tk.Label(f, text="Mode (lit = active)", font=F_TXT, bg=BG).pack(anchor="w")
+        lbl(f, "cap.mode_lit", font=F_TXT, bg=BG).pack(anchor="w")
         m = tk.Frame(f, bg=BG)
         m.pack(fill="x")
-        btn(m, "STANDBY", lambda: self.mode(proto.MODE_STANDBY), bg=RED, fg="#ffffff", font=F_BIG).grid(
+        btn(m, "cap.btn_standby", lambda: self.mode(proto.MODE_STANDBY), bg=RED, fg="#ffffff", font=F_BIG).grid(
             row=0, column=0, columnspan=3, sticky="ew", pady=2)
         self.mode_btns = {}
         for i, (name, cmd) in enumerate([("MANUAL", self.info_manual), ("HDG_LOCK", self.info_hdg),
                                          ("AUTO", self.auto_start)]):
-            b = btn(m, name.replace("_", " ") if name != "AUTO" else "AUTO\nSTART", cmd, bg=PANEL, font=F_MED)
+            b = btn(m, "cap.btn_" + name.lower(), cmd, bg=PANEL, font=F_MED)
             b.grid(row=1, column=i, sticky="nsew", padx=1, pady=1)
             self.mode_btns[name] = b
         for i in range(3):
             m.columnconfigure(i, weight=1)
 
-        tk.Label(f, text="AUTO program (start / resume need joystick CONFIRM)", font=F_TXT, bg=BG).pack(
-            anchor="w", pady=(6, 0))
+        lbl(f, "cap.auto_prog", font=F_TXT, bg=BG, wraplength=380, justify="left").pack(anchor="w", pady=(6, 0))
         a = tk.Frame(f, bg=BG)
         a.pack(fill="x")
-        btn(a, "Pause", lambda: self.cmd(proto.T_AUTO_PAUSE, b"", "AUTO pause"), font=F_TXT).pack(side="left")
-        btn(a, "Resume", lambda: self.cmd(proto.T_AUTO_RESUME, b"", "AUTO resume"), font=F_TXT).pack(side="left",
-                                                                                                    padx=2)
-        btn(a, "Skip waypoint", lambda: self.cmd(proto.T_AUTO_SKIP, b"", "AUTO skip"), font=F_TXT).pack(side="left")
-        self.auto_lbl = tk.Label(f, text="-", font=F_TXT, bg=BG, justify="left", anchor="w")
+        btn(a, "cap.pause", lambda: self.cmd(proto.T_AUTO_PAUSE, b"", TE("what.auto_pause")), font=F_TXT).pack(
+            side="left")
+        btn(a, "cap.resume", lambda: self.cmd(proto.T_AUTO_RESUME, b"", TE("what.auto_resume")), font=F_TXT).pack(
+            side="left", padx=2)
+        btn(a, "cap.skip", lambda: self.cmd(proto.T_AUTO_SKIP, b"", TE("what.auto_skip")), font=F_TXT).pack(
+            side="left")
+        self.auto_lbl = tk.Label(f, text="-", font=F_TXT, bg=BG, justify="left", anchor="w", wraplength=380)
         self.auto_lbl.pack(fill="x")
 
-        tk.Label(f, text="Heading (HDG LOCK)", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
+        lbl(f, "cap.hdg_title", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
         h = tk.Frame(f, bg=BG)
         h.pack()
         for d in (-10, -1, 1, 10):
-            btn(h, "%+d" % d, lambda d=d: self.cmd(proto.T_HEADING_ADJ, proto.p_heading(d), "heading %+d" % d),
-                font=F_BIG, width=3).pack(side="left", padx=2)
+            btn(h, "cap.hdg_step", lambda d=d: self.cmd(proto.T_HEADING_ADJ, proto.p_heading(d),
+                                                        TE("what.heading", d="%+d" % d)),
+                font=F_BIG, width=3, d="%+d" % d).pack(side="left", padx=2)
 
-        tk.Label(f, text="Sea state", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
+        lbl(f, "cap.sea_state", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
         cs = tk.Frame(f, bg=BG)
         cs.pack(fill="x")
         self.sea_var = tk.IntVar(value=2)
         for sv in range(1, 6):
             tk.Radiobutton(cs, text=str(sv), variable=self.sea_var, value=sv, font=F_MED, bg=BG, indicatoron=False,
                            width=2, command=lambda: self.cmd(proto.T_SEA_STATE, proto.p_sea_state(self.sea_var.get()),
-                                                             "sea state %d" % self.sea_var.get())).pack(side="left")
+                                                             TE("what.sea_state", n=self.sea_var.get()))).pack(
+                side="left")
 
-        tk.Label(f, text="Training", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
+        lbl(f, "cap.training", font=F_TXT, bg=BG).pack(anchor="w", pady=(6, 0))
         tr = tk.Frame(f, bg=BG)
         tr.pack(fill="x")
-        btn(tr, "Start", lambda: self.cmd(proto.T_TRAINING, proto.p_training(0), "training start"),
+        btn(tr, "cap.start", lambda: self.cmd(proto.T_TRAINING, proto.p_training(0), TE("what.training_start")),
             font=F_TXT).pack(side="left")
-        tk.Label(tr, text="full angle", font=F_TXT, bg=BG).pack(side="left", padx=(6, 0))
+        lbl(tr, "cap.full_angle", font=F_TXT, bg=BG).pack(side="left", padx=(6, 0))
         self.full_var = tk.StringVar(value="0")
         tk.Entry(tr, textvariable=self.full_var, font=F_MED, width=4).pack(side="left")
-        btn(tr, "Accept", self.train_accept, bg="#b0ffb0", font=F_TXT).pack(side="left", padx=2)
-        btn(tr, "Reject", lambda: self.cmd(proto.T_TRAINING, proto.p_training(2), "training reject"),
+        tr = tk.Frame(f, bg=BG)
+        tr.pack(fill="x")
+        btn(tr, "cap.accept", self.train_accept, bg="#b0ffb0", font=F_TXT).pack(side="left", padx=2)
+        btn(tr, "cap.reject", lambda: self.cmd(proto.T_TRAINING, proto.p_training(2), TE("what.training_reject")),
             bg="#ffb0b0", font=F_TXT).pack(side="left")
 
         # simulator only: the panel buttons and the joystick CONFIRM
         self.sim_frame = tk.Frame(f, bg="#fff4c0")
-        tk.Label(self.sim_frame, text="Simulator: panel / joystick", font=F_TXT, bg="#fff4c0").pack(anchor="w")
+        lbl(self.sim_frame, "cap.sim_panel", font=F_TXT, bg="#fff4c0").pack(anchor="w")
         sf = tk.Frame(self.sim_frame, bg="#fff4c0")
         sf.pack(fill="x")
-        btn(sf, "HDG LOCK", lambda: self.cmd(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK),
-                                             "sim HDG LOCK button"), font=F_TXT).pack(side="left")
-        btn(sf, "STANDBY", lambda: self.cmd(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY),
-                                            "sim STANDBY button"), font=F_TXT).pack(side="left", padx=2)
-        btn(sf, "CONFIRM", self.sim_confirm, font=F_TXT).pack(side="left")
+        btn(sf, "cap.sim_hdg", lambda: self.cmd(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK),
+                                                TE("what.sim_hdg")), font=F_TXT).pack(side="left")
+        btn(sf, "cap.sim_standby", lambda: self.cmd(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_STANDBY),
+                                                    TE("what.sim_standby")), font=F_TXT).pack(side="left", padx=2)
+        btn(sf, "cap.sim_confirm", self.sim_confirm, font=F_TXT).pack(side="left")
         Y = "#fff4c0"
-        tk.Label(self.sim_frame, text="Simulator: USB joystick (source = USB bridge)", font=F_TXT, bg=Y).pack(
-            anchor="w", pady=(4, 0))
+        lbl(self.sim_frame, "cap.sim_usb", font=F_TXT, bg=Y).pack(anchor="w", pady=(4, 0))
         su = tk.Frame(self.sim_frame, bg=Y)
         su.pack(fill="x")
-        tk.Label(su, text="lever", font=F_TXT, bg=Y).grid(row=0, column=0)
+        lbl(su, "cap.sim_lever", font=F_TXT, bg=Y).grid(row=0, column=0)
         self.sim_lever = tk.Scale(su, from_=100, to=0, orient="vertical", length=110, bg=Y, showvalue=True,
                                   command=lambda v: self.sim_usb_set("lever", float(v) / 100.0))
         self.sim_lever.set(50)
         self.sim_lever.grid(row=1, column=0, rowspan=3)
-        tk.Label(su, text="stick X", font=F_TXT, bg=Y).grid(row=0, column=1, columnspan=3)
+        lbl(su, "cap.sim_stickx", font=F_TXT, bg=Y).grid(row=0, column=1, columnspan=3)
         self.sim_sx = tk.Scale(su, from_=-100, to=100, orient="horizontal", length=170, bg=Y,
                                command=lambda v: self.sim_usb_set("x", float(v) / 100.0))
         self.sim_sx.grid(row=1, column=1, columnspan=3)
-        for i, (name, k) in enumerate((("TAKE", proto.JM_TAKE), ("AUTO", proto.JM_AUTO), ("HDG", proto.JM_HDG_LOCK))):
-            btn(su, name, lambda k=k: self.sim_usb_press(k), font=F_TXT).grid(row=2, column=1 + i, sticky="ew")
-        for i, (name, k) in enumerate((("STBY", proto.JM_STANDBY), ("-1", 5), ("+1", 6))):
-            btn(su, name, lambda k=k: self.sim_usb_press(k), font=F_TXT).grid(row=3, column=1 + i, sticky="ew")
+        for i, (name, k) in enumerate((("take", proto.JM_TAKE), ("auto", proto.JM_AUTO), ("hdg", proto.JM_HDG_LOCK))):
+            btn(su, "cap.sim_b_" + name, lambda k=k: self.sim_usb_press(k), font=F_TXT).grid(row=2, column=1 + i,
+                                                                                           sticky="ew")
+        for i, (name, k) in enumerate((("stby", proto.JM_STANDBY), ("m1", 5), ("p1", 6))):
+            btn(su, "cap.sim_b_" + name, lambda k=k: self.sim_usb_press(k), font=F_TXT).grid(row=3, column=1 + i,
+                                                                                           sticky="ew")
         uf = tk.Frame(self.sim_frame, bg=Y)
         uf.pack(fill="x")
         self.sim_stick_on = tk.BooleanVar(value=True)
         self.sim_thr_on = tk.BooleanVar(value=True)
-        tk.Checkbutton(uf, text="stick plugged", variable=self.sim_stick_on, bg=Y, font=F_TXT,
-                       command=lambda: self.sim_usb_set("stick", self.sim_stick_on.get())).pack(side="left")
-        tk.Checkbutton(uf, text="throttle plugged", variable=self.sim_thr_on, bg=Y, font=F_TXT,
-                       command=lambda: self.sim_usb_set("throttle", self.sim_thr_on.get())).pack(side="left")
-        self.sim_fault = tk.StringVar(value="link OK")
-        faults = {"link OK": 0, "no frames": 1, "corrupt frames": 2, "counter stuck": 4}
-        tk.OptionMenu(uf, self.sim_fault, *faults.keys(),
-                      command=lambda v: self.sim_usb_set("fault", faults[v])).pack(side="left")
+        chk(uf, "cap.sim_stick_plugged", variable=self.sim_stick_on, bg=Y, font=F_TXT,
+            command=lambda: self.sim_usb_set("stick", self.sim_stick_on.get())).pack(side="left")
+        chk(uf, "cap.sim_thr_plugged", variable=self.sim_thr_on, bg=Y, font=F_TXT,
+            command=lambda: self.sim_usb_set("throttle", self.sim_thr_on.get())).pack(side="left")
+        uf = tk.Frame(self.sim_frame, bg=Y)
+        uf.pack(fill="x")
+        self.sim_fault_cb = ttk.Combobox(uf, values=[T(k) for k in self.SIM_FAULTS], width=16, state="readonly",
+                                         font=F_TXT)
+        self.sim_fault_cb.current(0)
+        self.sim_fault_cb.bind("<<ComboboxSelected>>", lambda e: self.sim_usb_set(
+            "fault", self.SIM_FAULTS[self.SIM_FAULT_KEYS[self.sim_fault_cb.current()]]))
+        self.sim_fault_cb.pack(side="left")
+
+    SIM_FAULTS = {"cap.sim_f_ok": 0, "cap.sim_f_noframes": 1, "cap.sim_f_corrupt": 2, "cap.sim_f_stuck": 4}
+    SIM_FAULT_KEYS = list(SIM_FAULTS)
 
     def _build_joystick(self, parent):
         j = tk.Frame(parent, bg=BG, bd=2, relief="groove")
         j.pack(fill="x", pady=(0, 4))
-        tk.Label(j, text="Joystick", font=F_MED, bg=BG).pack(side="left", anchor="n", padx=4)
+        lbl(j, "cap.joystick", font=F_MED, bg=BG).pack(side="left", anchor="n", padx=4)
         self.joy_cv = tk.Canvas(j, width=130, height=130, bg="#f8f8f8", highlightthickness=2,
                                 highlightbackground=FG)
         self.joy_cv.pack(side="left", pady=2)
@@ -352,14 +497,14 @@ class App:
         self.joy_src.pack(anchor="w")
         self.joy_status = tk.Label(jr, text="-", font=F_MED, bg=BG, justify="left")
         self.joy_status.pack(anchor="w")
-        self.joy_btns = tk.Label(jr, text="TAKE  AUTO", font=F_MED, bg=BG)
+        self.joy_btns = tk.Label(jr, text="-", font=F_MED, bg=BG)
         self.joy_btns.pack(anchor="w")
         jb = tk.Frame(j, bg=BG)
         jb.pack(side="left", padx=4)
-        tk.Label(jb, text="analog joystick:", font=F_TXT, bg=BG).pack(anchor="w")
-        btn(jb, "Calibrate start", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(0), "calibration start"),
+        lbl(jb, "cap.analog_joy", font=F_TXT, bg=BG).pack(anchor="w")
+        btn(jb, "cap.cal_start", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(0), TE("what.calib_start")),
             font=F_TXT).pack(fill="x")
-        btn(jb, "Calibrate finish", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(1), "calibration finish"),
+        btn(jb, "cap.cal_finish", lambda: self.cmd(proto.T_JOY_CAL, proto.p_joy_cal(1), TE("what.calib_finish")),
             font=F_TXT).pack(fill="x")
 
     def _build_cameras(self, ct):
@@ -370,54 +515,55 @@ class App:
         self.cam_photo = None
         top = tk.Frame(ct, bg=BG)
         top.pack(fill="x", pady=4)
-        for pr in ("Full", "Front only", "Mirrors only", "All off"):
-            btn(top, pr, lambda pr=pr: self.cam_preset(pr), font=F_TXT).pack(side="left", padx=2)
+        for pr, key in (("Full", "cap.cam_full"), ("Front only", "cap.cam_front"), ("Mirrors only", "cap.cam_mirrors"),
+                        ("All off", "cap.cam_off")):
+            btn(top, key, lambda pr=pr: self.cam_preset(pr), font=F_TXT).pack(side="left", padx=2)
         self.cam_override = tk.BooleanVar(value=False)
-        tk.Checkbutton(top, text="override data saver (not on STARLINK)", variable=self.cam_override, font=F_TXT,
-                       bg=BG).pack(side="left", padx=8)
-        btn(top, "Camera internet 30 min (firmware)", lambda: self.cam_internet(True), font=F_TXT).pack(side="left")
-        btn(top, "Camera internet OFF", lambda: self.cam_internet(False), font=F_TXT).pack(side="left", padx=2)
+        chk(top, "cap.cam_override", variable=self.cam_override, font=F_TXT, bg=BG).pack(side="left", padx=8)
+        top = tk.Frame(ct, bg=BG)
+        top.pack(fill="x")
+        btn(top, "cap.cam_inet_on", lambda: self.cam_internet(True), font=F_TXT).pack(side="left", padx=2)
+        btn(top, "cap.cam_inet_off", lambda: self.cam_internet(False), font=F_TXT).pack(side="left", padx=2)
         rec = tk.Frame(ct, bg=BG)
         rec.pack(fill="x", pady=2)
-        tk.Button(rec, text="SAVE", font=F_BIG, bg="#d00000", fg="white", width=8,
-                  command=lambda: self.video_save("captain")).pack(side="left", padx=4)
-        tk.Label(rec, text="ring buffer (min):", font=F_TXT, bg=BG).pack(side="left", padx=(12, 2))
+        i18n.bind(tk.Button(rec, font=F_BIG, bg="#d00000", fg="white", width=8,
+                            command=lambda: self.video_save("captain")), "cap.save").pack(side="left", padx=4)
+        lbl(rec, "cap.ring_min", font=F_TXT, bg=BG).pack(side="left", padx=(12, 2))
         self.ring_var = tk.StringVar(value="10")
         cb = ttk.Combobox(rec, textvariable=self.ring_var, values=["5", "10", "20", "30", "60"], width=4,
                           state="readonly", font=F_TXT)
         cb.pack(side="left")
         cb.bind("<<ComboboxSelected>>", lambda e: (self.ring_set(), self.root.focus_set()))
         self.ring_cb = cb
-        self.rec_lbl = tk.Label(rec, text="", font=F_TXT, bg=BG, justify="left", anchor="w")
+        self.rec_lbl = tk.Label(rec, text="", font=F_TXT, bg=BG, justify="left", anchor="w", wraplength=700)
         self.rec_lbl.pack(side="left", padx=10)
         self.sj_save_was = False
         mid = tk.Frame(ct, bg=BG)
         mid.pack(fill="both", expand=True)
         self.cam_cv = tk.Canvas(mid, width=640, height=360, bg="#202020", highlightthickness=0)
         self.cam_cv.pack(side="top", anchor="w", padx=4, pady=4)
-        self.cam_lbl = tk.Label(mid, text="(cameras: connect through the gateway)", font=("Consolas", 12), bg=BG,
-                                justify="left", anchor="nw")
+        self.cam_lbl = lbl(mid, "cap.cam_connect_gw", font=("Consolas", 12), bg=BG, justify="left", anchor="nw")
         self.cam_lbl.pack(side="top", fill="x", padx=6)
         # obstacle detection (eWaSR on the Pi): stages + status
         vf = tk.Frame(ct, bg=BG, bd=2, relief="groove")
         vf.pack(fill="x", padx=4, pady=4)
-        tk.Label(vf, text="Obstacle detection (camera, NOT for navigation):", font=F_MED, bg=BG).pack(
-            side="left", padx=4)
+        lbl(vf, "cap.vis_title", font=F_MED, bg=BG).pack(anchor="w", padx=4)
+        vf = tk.Frame(vf, bg=BG)
+        vf.pack(fill="x")
         self.vis_vars = {}
-        for k, txt in (("stage1", "1 overlay + log"), ("stage2", "2 alarm + SAVE"),
-                       ("stage3", "3 slows AUTO (needs the driver's ACCEPT)")):
+        for k in ("stage1", "stage2", "stage3"):
             var = tk.BooleanVar(value=k != "stage3")
             self.vis_vars[k] = var
-            tk.Checkbutton(vf, text=txt, variable=var, font=F_TXT, bg=BG,
-                           command=lambda k=k: self.vision_stage(k)).pack(side="left", padx=4)
-        btn(vf, "Clear slowdown", lambda: self.vision_send({"t": "vision_clear"}), font=F_TXT).pack(side="left")
+            chk(vf, "cap.vis_" + k, variable=var, font=F_TXT, bg=BG,
+                command=lambda k=k: self.vision_stage(k)).pack(side="left", padx=4)
+        btn(vf, "cap.vis_clear", lambda: self.vision_send({"t": "vision_clear"}), font=F_TXT).pack(side="left")
         self.vis_lbl = tk.Label(ct, text="", font=F_TXT, bg=BG, anchor="w", justify="left")
         self.vis_lbl.pack(fill="x", padx=6)
         self.root.after(100, self.cam_tick)
 
     def vision_send(self, msg):
         if not isinstance(self.link, GatewayLink):
-            return self.say("Obstacle detection: only through the gateway", RED)
+            return self.say(T("cap.vis_only_gw"), RED)
         self.link.send_msg(msg)
 
     def vision_stage(self, k):
@@ -425,7 +571,7 @@ class App:
         msg = {"t": "vision_stage", "stage": k, "on": on}
         if k == "stage3" and on and self.single_op:          # single operator: the own confirmation
             self.vis_vars[k].set(False)
-            return self.captain_confirm("vision STAGE 3 ON (obstacles slow AUTO down)",
+            return self.captain_confirm(T("cap.vis_stage3_confirm"),
                                         lambda: self.vision_send(dict(msg, confirm="self")))
         self.vision_send(msg)
 
@@ -436,15 +582,14 @@ class App:
         for k, var in self.vis_vars.items():                # show the gateway's real setting
             if var.get() != v["stages"].get(k):
                 var.set(v["stages"].get(k))
-        txt = "VISION %s (%s)  %.1f fps  model %s  horizon: %s  restarts %d" % (
-            v["state"], v["reason"], v["fps"], v.get("model") or "-", v.get("horizon"), v.get("restarts", 0))
+        txt = T("cap.vis_status", state=T("vis." + v["state"]), reason=i18n.from_en(v["reason"]), fps="%.1f" % v["fps"],
+                model=v.get("model") or "-", horizon=v.get("horizon"), restarts=v.get("restarts", 0))
         if v.get("cap_kn") is not None:
-            txt += "\nSPEED CAP %.0f kn%s" % (v["cap_kn"], " - HELD (vision not working): the driver clears it"
-                                                if v.get("cap_held") else "")
+            txt += "\n" + T("cap.vis_cap", kn="%.0f" % v["cap_kn"]) + (T("cap.vis_cap_held") if v.get("cap_held") else "")
         obs = [o for o in v.get("obstacles") or [] if o.get("confirmed")]
         if obs:
-            txt += "\n" + "   ".join("%03.0f ~%s m%s%s" % (o["bearing"], o["dist"] or "far",
-                                                          " IN PATH" if o["in_corridor"] else "",
+            txt += "\n" + "   ".join("%03.0f ~%s m%s%s" % (o["bearing"], o["dist"] or T("hud.far"),
+                                                          T("cap.vis_in_path") if o["in_corridor"] else "",
                                                           " =" + o["ais"] if o.get("ais") else "") for o in obs[:6])
         self.vis_lbl.configure(text=txt, fg=RED if v["state"] in ("OFFLINE", "DEGRADED") or v.get("cap_held")
                                else "black")
@@ -460,14 +605,14 @@ class App:
         self.vprop_tag = tag
         if not tag or old == tag or not self.driver:
             return
-        self.event("vision: %s" % p["text"])
+        self.event(T("cap.ev_vision", text=i18n.from_en(p["text"])))
         ack = lambda why: self.vision_send({"t": "vision_ack", "id": p["id"]})       # noqa: E731
-        self.driver.ask(p["text"] + "\n(the throttle is yours)", ack, ack, 60.0, tag=tag,
-                        head="OBSTACLE DETECTION (camera):")
+        self.driver.ask(i18n.from_en(p["text"]) + "\n" + T("drv.throttle_yours"), ack, ack, 60.0, tag=tag,
+                        head=T("drv.head_vision"))
 
     def cam_preset(self, preset):
         if not isinstance(self.link, GatewayLink):
-            return self.say("Cameras: only through the gateway", RED)
+            return self.say(T("cap.cams_only_gw"), RED)
         self.link.send_msg({"t": "cams", "preset": preset, "override": self.cam_override.get()})
 
     def cam_internet(self, on):
@@ -481,16 +626,18 @@ class App:
     def video_save(self, source):
         """SAVE: the gateway keeps the ring window + 2 min after (all cameras)."""
         if not isinstance(self.link, GatewayLink):
-            return self.say("SAVE: only through the gateway", RED)
+            return self.say(T("cap.save_only_gw"), RED)
         self.link.send_msg({"t": "save", "source": source})
+        if self.sound:
+            self.sound.feedback("fb.shutter")
 
     def ring_set(self):
         if isinstance(self.link, GatewayLink):
             self.link.send_msg({"t": "rec", "ring_min": int(self.ring_var.get())})
 
     def on_save_ack(self, d):
-        self.say(d.get("text", ""), GREEN if d.get("ok") else RED)
-        self.event("video: %s" % d.get("text", ""))
+        self.say(i18n.from_en(d.get("text", "")), GREEN if d.get("ok") else RED)
+        self.event(T("cap.ev_video", text=i18n.from_en(d.get("text", ""))))
 
     def shore_save_poll(self):
         """The SAVE button on this PC's USB joystick (any time, not only while driving)."""
@@ -504,7 +651,7 @@ class App:
 
     def on_cams_ack(self, d):
         if "streams" not in d:
-            self.say("cameras: %s" % d.get("text", ""), GREEN if d.get("ok") else RED)
+            self.say(T("cap.cams_msg", text=i18n.from_en(d.get("text", ""))), GREEN if d.get("ok") else RED)
             return
         self.cam_ack = d
         for name in list(self.vstreams):
@@ -515,7 +662,7 @@ class App:
             if url:
                 self.vstreams[name] = video.VideoStream(url, w, h, name).start()
         if d.get("notice"):
-            self.say(d["notice"], ORANGE)
+            self.say(i18n.from_en(d["notice"]), ORANGE)
 
     def cam_tick(self):
         """10 times a second: the front picture (or VIDEO FROZEN)."""
@@ -531,34 +678,33 @@ class App:
                 c.create_image(0, 0, image=self.cam_photo, anchor="nw")
             c.create_text(8, 8, text=use, anchor="nw", fill="#ffffff", font=F_MED)
             if self.front_sel.notice:
-                c.create_text(320, 340, text=self.front_sel.notice, fill="#ffd000", font=F_MED)
+                c.create_text(320, 340, text=video.notice_text(self.front_sel), fill="#ffd000", font=F_MED)
             if vs is None or vs.frozen():
                 c.create_rectangle(120, 140, 520, 220, fill="#d00000", outline="")
-                c.create_text(320, 180, text="VIDEO FROZEN", fill="#ffffff", font=F_HUGE)
+                c.create_text(320, 180, text=T("hud.video_frozen"), fill="#ffffff", font=F_HUGE)
         g = (self.gw_status or {}).get("cameras")
         if g:
-            lines = ["relay %s   total to stations %d kbit/s%s%s" % (
-                "OK" if g["relay"] else "DOWN", g["total_kbps"], "   DATA SAVER (front LOW)" if g["forced_low"] else "",
-                "   CAMERA INTERNET OPEN" if g["internet"] else ""), ""]
+            lines = [T("cap.cam_relay", relay=T("cap.ok") if g["relay"] else T("cap.down"), kbps=g["total_kbps"]) +
+                     (T("cap.cam_saver") if g["forced_low"] else "") + (T("cap.cam_inet_open") if g["internet"] else ""),
+                     ""]
             mine = (self.cam_ack or {}).get("levels", {})
             for cam in g["cameras"]:
-                lines.append("%-11s %-7s %4d s  in %5d kbit/s  out HIGH %4d LOW %4d   you: %s" % (
-                    cam["name"], cam["state"], cam["for_s"], cam["kbps_in"], cam["kbps_out"]["HIGH"],
-                    cam["kbps_out"]["LOW"], mine.get(cam["name"], "-")))
+                lines.append(T("cap.cam_line", name="%-11s" % cam["name"], state="%-7s" % cam["state"],
+                               s="%4d" % cam["for_s"], kin="%5d" % cam["kbps_in"], hi="%4d" % cam["kbps_out"]["HIGH"],
+                               lo="%4d" % cam["kbps_out"]["LOW"], you=mine.get(cam["name"], "-")))
             self.cam_lbl.configure(text="\n".join(lines))
         r = (self.gw_status or {}).get("rec")
         if r and r.get("enabled"):
             rec = [c for c in r["cameras"] if c["state"] == "REC"]
-            txt = "REC %d/%d cameras, ring %s of %s min (%s MB%s)" % (
-                len(rec), len(r["cameras"]), r["ring_have_min"], r["ring_min"], r["ring_mb"],
-                ", %.1f GB/h" % r["gb_per_hour"] if r.get("gb_per_hour") else "")
+            txt = T("cap.rec_line", n=len(rec), of=len(r["cameras"]), have=r["ring_have_min"], ring=r["ring_min"],
+                    mb=r["ring_mb"], gbh=", %.1f GB/h" % r["gb_per_hour"] if r.get("gb_per_hour") else "")
             if r["open"]:
-                txt += "   SAVING until %s" % r["open"][0]["until"]
+                txt += T("cap.rec_saving", until=r["open"][0]["until"])
             if r["full"]:
-                txt += "   STORAGE FULL - SAVE not possible"
+                txt += T("cap.rec_full")
             bad = [c["name"] + " " + c["state"] for c in r["cameras"] if c["state"] != "REC"]
             if bad:
-                txt += "   not recording: " + ", ".join(bad)
+                txt += T("cap.rec_not") + " " + ", ".join(bad)
             self.rec_lbl.configure(text=txt, fg=RED if (r["full"] or bad) else "#202020")
             if self.ring_var.get() != str(r["ring_min"]) and self.root.focus_get() is not self.ring_cb:
                 self.ring_var.set(str(r["ring_min"]))
@@ -573,43 +719,40 @@ class App:
         self.rsender = None
         top = tk.Frame(rt, bg=BG)
         top.pack(fill="x", pady=4)
-        tk.Label(top, text="Shore joystick", font=F_MED, bg=BG).pack(side="left", padx=4)
-        btn(top, "Find joysticks", self.remote_scan, font=F_TXT).pack(side="left")
+        lbl(top, "cap.shore_joy", font=F_MED, bg=BG).pack(side="left", padx=4)
+        btn(top, "cap.find_joy", self.remote_scan, font=F_TXT).pack(side="left")
         self.rsend_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(top, text="send my joystick (30 Hz)", variable=self.rsend_var, font=F_MED, bg=BG,
-                       command=self.remote_send_toggle).pack(side="left", padx=10)
+        chk(top, "cap.send_joy", variable=self.rsend_var, font=F_MED, bg=BG,
+            command=self.remote_send_toggle).pack(side="left", padx=10)
         m = tk.Frame(rt, bg=BG)
         m.pack(fill="x", padx=6)
         self.sj_vars = {}
-        for r, (key, label) in enumerate((("steer", "steering axis"), ("thr", "throttle axis"))):
-            tk.Label(m, text=label, font=F_TXT, bg=BG).grid(row=r, column=0, sticky="w")
+        for r, key in enumerate(("steer", "thr")):
+            lbl(m, "cap.sj_" + key, font=F_TXT, bg=BG).grid(row=r, column=0, sticky="w")
             dv = tk.IntVar(value=self.sj_cfg[key]["dev"])
             av = tk.StringVar(value=self.sj_cfg[key]["axis"])
             iv = tk.BooleanVar(value=self.sj_cfg[key].get("invert", False))
-            tk.Label(m, text="device", font=F_TXT, bg=BG).grid(row=r, column=1)
+            lbl(m, "cap.sj_device", font=F_TXT, bg=BG).grid(row=r, column=1)
             tk.Spinbox(m, from_=0, to=15, textvariable=dv, width=3, font=F_MED).grid(row=r, column=2)
             ttk.Combobox(m, textvariable=av, values=shorejoy.AXES, width=4, state="readonly",
                          font=F_MED).grid(row=r, column=3, padx=4)
-            tk.Checkbutton(m, text="invert", variable=iv, font=F_TXT, bg=BG).grid(row=r, column=4)
+            chk(m, "cap.sj_invert", variable=iv, font=F_TXT, bg=BG).grid(row=r, column=4)
             self.sj_vars[key] = (dv, av, iv)
         self.sj_lever = tk.BooleanVar(value=self.sj_cfg["thr"].get("lever", True))
-        tk.Checkbutton(m, text="throttle is a lever (TWCS), not a spring stick", variable=self.sj_lever, font=F_TXT,
-                       bg=BG).grid(row=1, column=5, padx=8)
-        btn(m, "Save", self.remote_save_cfg, font=F_TXT).grid(row=0, column=5, sticky="w", padx=8)
+        chk(m, "cap.sj_lever", variable=self.sj_lever, font=F_TXT, bg=BG).grid(row=1, column=5, padx=8)
+        btn(m, "cap.save_settings", self.remote_save_cfg, font=F_TXT).grid(row=0, column=5, sticky="w", padx=8)
         b = tk.Frame(rt, bg=BG)
         b.pack(fill="x", pady=6)
-        btn(b, "REQUEST REMOTE DRIVING", lambda: self.cmd(proto.T_REMOTE, proto.p_remote(0), "request remote driving"),
+        btn(b, "cap.remote_request", lambda: self.cmd(proto.T_REMOTE, proto.p_remote(0), TE("what.remote_request")),
             bg="#c0d8ff", font=F_BIG).pack(side="left", padx=4)
-        btn(b, "RELEASE", self.remote_release, bg="#ffb0b0", font=F_BIG).pack(side="left", padx=4)
-        tk.Label(rt, text="Remote driving needs: HELM on this station, the request above, and the joystick CONFIRM "
-                          "pressed by the person on board within 10 s. The onboard joystick and STANDBY always win.",
-                 font=F_TXT, bg=BG, wraplength=900, justify="left").pack(anchor="w", padx=6)
+        btn(b, "cap.remote_release", self.remote_release, bg="#ffb0b0", font=F_BIG).pack(side="left", padx=4)
+        lbl(rt, "cap.remote_help", font=F_TXT, bg=BG, wraplength=900, justify="left").pack(anchor="w", padx=6)
         self.remote_lbl = tk.Label(rt, text="-", font=("Consolas", 13), bg=BG, justify="left", anchor="w")
         self.remote_lbl.pack(fill="x", padx=6, pady=4)
 
     def remote_scan(self):
         found = self.sj.list()
-        self.say("joysticks: " + (", ".join("%d %s" % (j["dev"], j["name"]) for j in found) or "none found"),
+        self.say(T("cap.joysticks", list=", ".join("%d %s" % (j["dev"], j["name"]) for j in found) or T("cap.none_found")),
                  GREEN if found else RED)
 
     def remote_save_cfg(self):
@@ -617,13 +760,13 @@ class App:
             self.sj_cfg[key].update({"dev": dv.get(), "axis": av.get(), "invert": iv.get()})
         self.sj_cfg["thr"]["lever"] = self.sj_lever.get()
         shorejoy.save_config(self.sj_cfg)
-        self.say("shore joystick settings saved", GREEN)
+        self.say(T("cap.sj_saved"), GREEN)
 
     def remote_send_toggle(self):
         if self.rsend_var.get():
             if not isinstance(self.link, GatewayLink):
                 self.rsend_var.set(False)
-                return self.say("Remote driving only through the gateway (gw:...)", RED)
+                return self.say(T("cap.remote_only_gw"), RED)
             self.remote_save_cfg()
             self.rsender = shorejoy.RemoteSender(self.link, lambda: shorejoy.to_remote(self.sj, self.sj_cfg))
             self.rsender.start()
@@ -632,7 +775,7 @@ class App:
             self.rsender = None
 
     def remote_release(self):
-        self.cmd(proto.T_REMOTE, proto.p_remote(1), "release remote driving")
+        self.cmd(proto.T_REMOTE, proto.p_remote(1), TE("what.remote_release"))
         if self.rsender and self.link:
             self.link.send_rjoy({"t": "rjoy", "seq": (self.rsender.seq + 1) & 0xFFFF, "ts": self.link.now(),
                                  "x": 0.0, "release": True})
@@ -641,57 +784,53 @@ class App:
         if "remote_state" not in d:
             return
         s = self.rsender
-        lines = ["boat: %s, remote %s%s" % (d["mode_name"], proto.REMOTE_STATES[min(d["remote_state"], 2)],
-                                           "  (" + proto.REMOTE_LOST_WHY[min(d["remote_lost_why"], 3)] + ")"
-                                           if d["remote_state"] == 2 else "")]
-        lines.append("data age %d ms, one-way latency %d ms, packets %d" % (d["rjoy_age_ms"], d["rjoy_lat_ms"],
-                                                                         d["rjoy_packets"]))
-        lines.append("boat sees: steering %+.2f, lever %.0f %%   cap %d %% fwd / %d %% rev" % (
-            d["rjoy_x1000"] / 1000.0, d["rjoy_lever1000"] / 10.0, d["remote_cap_f"], d["remote_cap_r"]))
+        lines = [T("cap.rm_boat", mode=T("mode." + d["mode_name"]),
+                   state=T("cap.rm_state_%d" % min(d["remote_state"], 2)),
+                   why="  (" + T("cap.rm_why_%d" % min(d["remote_lost_why"], 3)) + ")" if d["remote_state"] == 2 else "")]
+        lines.append(T("cap.rm_age", age=d["rjoy_age_ms"], lat=d["rjoy_lat_ms"], n=d["rjoy_packets"]))
+        lines.append(T("cap.rm_sees", x="%+.2f" % (d["rjoy_x1000"] / 1000.0), lever="%.0f" % (d["rjoy_lever1000"] / 10.0),
+                       f=d["remote_cap_f"], r=d["remote_cap_r"]))
         if d["rjoy_flags"] & 2:
             tgt = d["rjoy_pickup1000"]
-            lines.append("MOVE THROTTLE TO PICK UP: lever to %s" % ("NEUTRAL" if tgt == 0xFFFF else "%.0f %%" % (tgt / 10)))
+            lines.append(T("cap.rm_pickup", to=T("cap.neutral") if tgt == 0xFFFF else "%.0f %%" % (tgt / 10)))
         if d["rjoy_flags"] & 4:
-            lines.append("WAITING FOR THE JOYSTICK CONFIRM ON BOARD (%.0f s)" % d["confirm_left_s"])
+            lines.append(T("cap.rm_wait_confirm", s="%.0f" % d["confirm_left_s"]))
         if s:
             v = s.last or {}
-            lines.append("sending: %d packets%s   x %+.2f  lever %s" % (
-                s.sent, "   JOYSTICK NOT FOUND" if s.missing else "", v.get("x", 0.0),
-                "%.0f %%" % (100 * v["lever"]) if "lever" in v else "-"))
+            lines.append(T("cap.rm_sending", n=s.sent, missing=T("cap.rm_joy_missing") if s.missing else "",
+                           x="%+.2f" % v.get("x", 0.0), lever="%.0f %%" % (100 * v["lever"]) if "lever" in v else "-"))
         cams = (self.gw_status or {}).get("cameras") or {}
         if d["mode"] == proto.MODE_REMOTE and cams and not cams.get("front_live", True):
-            lines.append("WARNING: NO FRONT CAMERA LIVE")
+            lines.append(T("cap.rm_no_front"))
         self.remote_lbl.configure(text="\n".join(lines), fg=RED if d["remote_state"] == 2 else FG)
 
     def _build_network(self, nt):
         """Internet channels (through the gateway): status, mode, Keep."""
         top = tk.Frame(nt, bg=BG)
         top.pack(fill="x", pady=4)
-        btn(top, "AUTO", lambda: self.chan_req("AUTO"), font=F_MED).pack(side="left")
-        tk.Label(top, text="   channel", font=F_TXT, bg=BG).pack(side="left")
+        btn(top, "cap.net_auto", lambda: self.chan_req("AUTO"), font=F_MED).pack(side="left")
+        lbl(top, "cap.net_channel", font=F_TXT, bg=BG).pack(side="left")
         self.chan_var = tk.StringVar(value="4G")
         self.chan_box = ttk.Combobox(top, textvariable=self.chan_var, values=["4G", "4G2", "RF", "STARLINK"],
                                      width=10, font=F_MED, state="readonly")
         self.chan_box.pack(side="left", padx=4)
-        btn(top, "MANUAL", lambda: self.chan_req("MANUAL", self.chan_var.get()), font=F_MED).pack(side="left")
-        btn(top, "MANUAL STRICT", lambda: self.chan_req("MANUAL_STRICT", self.chan_var.get()),
+        btn(top, "cap.net_manual", lambda: self.chan_req("MANUAL", self.chan_var.get()), font=F_MED).pack(side="left")
+        btn(top, "cap.net_strict", lambda: self.chan_req("MANUAL_STRICT", self.chan_var.get()),
             font=F_TXT).pack(side="left", padx=4)
-        self.keep_btn = btn(top, "KEEP", self.chan_keep, bg="#b0ffb0", font=F_BIG)
+        self.keep_btn = tk.Button(top, text=T("cap.keep"), command=self.chan_keep, bg="#b0ffb0", font=F_BIG, bd=3)
         self.keep_btn.pack(side="left", padx=12)
-        self.net_lbl = tk.Label(nt, text="(only through the gateway: connect with gw:host:5761)",
-                                font=("Consolas", 13), bg=BG, justify="left", anchor="w")
+        self.net_lbl = lbl(nt, "cap.net_only_gw", font=("Consolas", 13), bg=BG, justify="left", anchor="w")
         self.net_lbl.pack(fill="x", padx=6, pady=4)
 
     def chan_req(self, mode, channel=None, confirm=False):
         if not isinstance(self.link, GatewayLink):
-            return self.say("Internet channels: only through the gateway", RED)
-        if mode == "MANUAL_STRICT" and not messagebox.askyesno(
-                "MANUAL STRICT", "MANUAL STRICT never switches - not even if %s fails.\n"
-                                 "Only possible from a station on the boat. Continue?" % channel):
+            return self.say(T("cap.net_only_gw_short"), RED)
+        if mode == "MANUAL_STRICT" and not messagebox.askyesno(T("cap.net_strict_title"),
+                                                                 T("cap.net_strict_q", ch=channel)):
             return
         self.link.send_msg({"t": "channel", "mode": mode, "channel": channel, "confirm": confirm})
         self.chan_last = (mode, channel)
-        self.event("> channel %s %s" % (mode, channel or ""))
+        self.event("> %s %s %s" % (T("cap.net_channel").strip(), mode, channel or ""))
 
     def chan_keep(self):
         if isinstance(self.link, GatewayLink):
@@ -699,13 +838,13 @@ class App:
 
     def on_channel_ack(self, d):
         if d.get("needs_confirm"):
-            if messagebox.askyesno("EMERGENCY LINK", "STARLINK - EMERGENCY LINK - metered data.\n\n"
-                                                     "Use STARLINK now?"):
+            if messagebox.askyesno(T("cap.emerg_title"), T("cap.emerg_q")):
                 mode, ch = getattr(self, "chan_last", ("MANUAL", "STARLINK"))
                 self.chan_req(mode, ch, confirm=True)
             return
-        self.say("channel: " + d.get("text", ""), GREEN if d.get("ok") else RED)
-        self.event(("OK   " if d.get("ok") else "NACK ") + "channel: " + d.get("text", ""))
+        txt = T("cap.channel_msg", text=i18n.from_en(d.get("text", "")))
+        self.say(txt, GREEN if d.get("ok") else RED)
+        self.event(("OK   " if d.get("ok") else "NACK ") + txt)
 
     def draw_network(self):
         g = self.gw_status
@@ -713,91 +852,91 @@ class App:
         if not n:
             self.show(self.sl_banner, False, row=3, column=0, columnspan=2, sticky="ew")
             return
-        lines = ["mode %s%s   active: %s   data saver %s   sync %s" % (
-            n["mode"], " " + n["manual"] if n.get("manual") else "", n["active"] or "NONE",
-            "ON" if n["saver"] else "off", "allowed" if n["sync_allowed"] else "STOPPED")]
+        yes, no = T("cap.yes"), T("cap.no")
+        lines = [T("cap.net_head", mode=n["mode"], manual=" " + n["manual"] if n.get("manual") else "",
+                   active=n["active"] or T("cap.none"), saver=T("cap.on") if n["saver"] else T("cap.off"),
+                   sync=T("cap.allowed") if n["sync_allowed"] else T("cap.stopped"))]
         if n.get("fallback"):
-            lines.append("CHANNEL FALLBACK: the chosen channel failed - using %s" % n["active"])
+            lines.append(T("cap.net_fallback", ch=n["active"]))
         if n.get("trial"):
-            lines.append("TRIAL: %s - press KEEP within %d s (%s), otherwise it goes back" % (
-                n["trial"]["to"], n["trial"]["left_s"], n["trial"]["user"]))
+            lines.append(T("cap.net_trial", to=n["trial"]["to"], s=n["trial"]["left_s"], user=n["trial"]["user"]))
         lines.append("")
-        lines.append("%-22s %-6s %-8s %8s %5s %9s %9s  %s" % ("channel", "state", "internet", "latency",
-                                                            "loss", "today MB", "month MB", "signal"))
+        lines.append("%-22s %-6s %-8s %8s %5s %9s %9s  %s" % tuple(T("cap.net_col_" + k) for k in (
+            "channel", "state", "internet", "latency", "loss", "today", "month", "signal")))
         for c in n["channels"]:
             sig = c.get("signal") or {}
             stxt = " ".join(str(v) for v in (sig.get("rssi_dbm"), sig.get("type"), sig.get("operator")) if v)
             if c.get("note"):
                 stxt = c["note"][:30]
             lines.append("%-22s %-6s %-8s %8s %5s %9.1f %9.1f  %s%s" % (
-                ("> " if c["active"] else "  ") + c["label"][:20], "up" if c["up"] else "DOWN",
-                "yes" if c["internet"] else "NO", "%.0f ms" % c["latency_ms"] if c.get("latency_ms") is not None else "-",
+                ("> " if c["active"] else "  ") + c["label"][:20], T("cap.up") if c["up"] else T("cap.down"),
+                yes if c["internet"] else no, "%.0f ms" % c["latency_ms"] if c.get("latency_ms") is not None else "-",
                 "%.0f%%" % c["loss_pct"] if c.get("loss_pct") is not None else "-",
-                c["today_mb"], c["month_mb"], stxt[:34], "  (metered)" if c["metered"] else ""))
+                c["today_mb"], c["month_mb"], stxt[:34], T("cap.metered") if c["metered"] else ""))
         sl = n.get("starlink") or {}
         if sl:
             lines.append("")
-            lines.append("STARLINK: this session %.1f MB, this month %.2f GB (warning at %s GB)%s" % (
-                sl["session_mb"], sl["month_gb"], sl["warn_gb"], "  -- MONTHLY DATA WARNING" if sl["warning"] else ""))
+            lines.append(T("cap.starlink_line", mb="%.1f" % sl["session_mb"], gb="%.2f" % sl["month_gb"],
+                           warn=sl["warn_gb"]) + (T("cap.starlink_warn") if sl["warning"] else ""))
             dish = sl.get("dish") or {}
             if dish:
-                lines.append("dish: " + ", ".join("%s %s" % kv for kv in dish.items()))
+                lines.append(T("cap.dish") + " " + ", ".join("%s %s" % kv for kv in dish.items()))
         sy = (g or {}).get("sync")
         if sy:
             lines.append("")
             cur = sy.get("current")
-            lines.append("SYNC to the shore PC: %s (%s)   %d kbit/s, ping %s ms (base %s)   %d files confirmed, "
-                         "%.1f MB sent%s" % (sy["state"], sy["reason"], sy["rate_kbps"], sy["rtt_ms"], sy["base_ms"],
-                                             sy["confirmed"], sy["sent_mb"],
-                                             "   errors %d: %s" % (sy["errors"], sy["last_error"][:40])
-                                             if sy["errors"] else ""))
+            lines.append(T("cap.sync_line", state=sy["state"], reason=sy["reason"], kbps=sy["rate_kbps"],
+                           rtt=sy["rtt_ms"], base=sy["base_ms"], n=sy["confirmed"], mb="%.1f" % sy["sent_mb"]) +
+                         (T("cap.sync_errors", n=sy["errors"], err=sy["last_error"][:40]) if sy["errors"] else ""))
             if cur:
-                lines.append("  now: %s  %d %%" % (cur["path"][-60:], 100 * cur["done"] // max(1, cur["size"])))
+                lines.append(T("cap.sync_now", path=cur["path"][-60:], pc=100 * cur["done"] // max(1, cur["size"])))
             for k, v in sy["queue"].items():
-                lines.append("  waiting: %-20s %4d files %8.1f MB" % (k, v["files"], v["mb"]))
+                lines.append(T("cap.sync_wait", kind="%-20s" % k, n="%4d" % v["files"], mb="%8.1f" % v["mb"]))
             if sy.get("last"):
-                lines.append("  last confirmed: %s" % sy["last"][-70:])
+                lines.append(T("cap.sync_last", path=sy["last"][-70:]))
         if self.sync_rx:
             r = self.sync_rx.status()
-            lines.append("THIS PC receives: %d files, %.1f MB, %d bad, connected: %s, into %s (%s GB free)" % (
-                r["files"], r["mb"], r["bad"], ", ".join(r["boats_connected"]) or "-", r["root"], r["free_gb"]))
+            lines.append(T("cap.sync_rx", n=r["files"], mb="%.1f" % r["mb"], bad=r["bad"],
+                           boats=", ".join(r["boats_connected"]) or "-", root=r["root"], free=r["free_gb"]))
         self.net_lbl.configure(text="\n".join(lines), fg=RED if n.get("fallback") or n["emergency"] else FG)
         if n["emergency"]:
-            self.sl_banner.configure(text="STARLINK - EMERGENCY LINK  (metered: %.1f MB this session, %.2f GB month)%s" % (
-                sl.get("session_mb", 0), sl.get("month_gb", 0), "  DATA WARNING" if sl.get("warning") else ""))
+            self.sl_banner.configure(text=T("cap.starlink_banner", mb="%.1f" % sl.get("session_mb", 0),
+                                            gb="%.2f" % sl.get("month_gb", 0)) +
+                                     (T("cap.data_warning") if sl.get("warning") else ""))
         self.show(self.sl_banner, bool(n["emergency"]), row=3, column=0, columnspan=2, sticky="ew")
-        self.keep_btn.configure(text="KEEP (%d s)" % n["trial"]["left_s"] if n.get("trial") else "KEEP",
+        self.keep_btn.configure(text=T("cap.keep_s", s=n["trial"]["left_s"]) if n.get("trial") else T("cap.keep"),
                                 bg="#ffd000" if n.get("trial") else "#b0ffb0")
 
     def _build_joytab(self, jt):
         """Joystick tab: source, link status, button map, guided mapping."""
         top = tk.Frame(jt, bg=BG)
         top.pack(fill="x", pady=4)
-        tk.Label(top, text="Source", font=F_MED, bg=BG).grid(row=0, column=0, sticky="w", padx=4)
+        lbl(top, "cap.jm_source", font=F_MED, bg=BG).grid(row=0, column=0, sticky="w", padx=4)
         self.jm_src = tk.IntVar(value=0)
-        for i, name in enumerate(proto.JOY_SOURCES):
-            tk.Radiobutton(top, text=name, variable=self.jm_src, value=i, font=F_TXT, bg=BG,
-                           command=self.jm_from_widgets).grid(row=0, column=1 + i, sticky="w")
-        tk.Label(top, text="Throttle", font=F_MED, bg=BG).grid(row=1, column=0, sticky="w", padx=4)
+        for i in range(len(proto.JOY_SOURCES)):
+            i18n.bind(tk.Radiobutton(top, variable=self.jm_src, value=i, font=F_TXT, bg=BG,
+                                     command=self.jm_from_widgets), "cap.joy_src_%d" % i).grid(row=0, column=1 + i,
+                                                                                            sticky="w")
+        lbl(top, "cap.jm_throttle", font=F_MED, bg=BG).grid(row=1, column=0, sticky="w", padx=4)
         self.jm_thr = tk.IntVar(value=1)
-        for i, name in enumerate(proto.THR_INPUTS):
-            tk.Radiobutton(top, text=name, variable=self.jm_thr, value=i, font=F_TXT, bg=BG,
-                           command=self.jm_from_widgets).grid(row=1, column=1 + i, sticky="w")
+        for i in range(len(proto.THR_INPUTS)):
+            i18n.bind(tk.Radiobutton(top, variable=self.jm_thr, value=i, font=F_TXT, bg=BG,
+                                     command=self.jm_from_widgets), "cap.thr_in_%d" % i).grid(row=1, column=1 + i,
+                                                                                           sticky="w")
         z = tk.Frame(top, bg=BG)
         z.grid(row=2, column=0, columnspan=4, sticky="w", pady=2)
         self.jm_vars = {}
-        for k, text in (("nz_lo", "neutral zone from %"), ("nz_hi", "to %"), ("lever_delta", "lever override %"),
-                        ("pickup_win", "pickup window %")):
-            tk.Label(z, text=text, font=F_TXT, bg=BG).pack(side="left", padx=(6, 2))
+        for k in ("nz_lo", "nz_hi", "lever_delta", "pickup_win"):
+            lbl(z, "cap.jm_" + k, font=F_TXT, bg=BG).pack(side="left", padx=(6, 2))
             v = tk.StringVar()
             tk.Entry(z, textvariable=v, font=F_MED, width=4).pack(side="left")
             self.jm_vars[k] = v
         bb = tk.Frame(jt, bg=BG)
         bb.pack(fill="x", pady=2)
-        btn(bb, "Read from boat", self.jm_read, font=F_TXT).pack(side="left")
-        btn(bb, "Factory default (T.16000M + TWCS)", self.jm_default, font=F_TXT).pack(side="left", padx=4)
-        btn(bb, "Map buttons (guided)", lambda: self.wiz_start(None), bg="#c0d8ff", font=F_TXT).pack(side="left")
-        btn(bb, "SAVE TO BOAT\n(STANDBY only)", self.jm_save, bg="#b0ffb0", font=F_TXT).pack(side="left", padx=4)
+        btn(bb, "cap.jm_read", self.jm_read, font=F_TXT).pack(side="left")
+        btn(bb, "cap.jm_default", self.jm_default, font=F_TXT).pack(side="left", padx=4)
+        btn(bb, "cap.jm_wizard", lambda: self.wiz_start(None), bg="#c0d8ff", font=F_TXT).pack(side="left")
+        btn(bb, "cap.jm_save", self.jm_save, bg="#b0ffb0", font=F_TXT).pack(side="left", padx=4)
 
         self.jl_lbl = tk.Label(jt, text="-", font=("Consolas", 13), bg=BG, justify="left", anchor="w")
         self.jl_lbl.pack(fill="x", padx=6, pady=4)
@@ -805,21 +944,21 @@ class App:
         g = tk.Frame(jt, bg=BG)
         g.pack(fill="x", padx=6)
         self.jm_rows = []
-        names = ["steering axis", "throttle axis"] + proto.JM_BUTTONS
+        names = ["cap.jm_axis_steer", "cap.jm_axis_thr"] + ["jm.%d" % i for i in range(len(proto.JM_BUTTONS))]
         half = 6                                    # two columns: fits a laptop screen
         for i, name in enumerate(names):
             r, c0 = (i % half) + 1, (i // half) * 4
             if i % half == 0:
-                for c, h in enumerate(("function", "joystick control", "now")):
-                    tk.Label(g, text=h, font=F_MED, bg=BG).grid(row=0, column=c0 + c, sticky="w", padx=4)
-            tk.Label(g, text=name, font=F_TXT, bg=BG).grid(row=r, column=c0, sticky="w", padx=4)
+                for c, h in enumerate(("cap.jm_col_func", "cap.jm_col_ctrl", "cap.jm_col_now")):
+                    lbl(g, h, font=F_MED, bg=BG).grid(row=0, column=c0 + c, sticky="w", padx=4)
+            lbl(g, name, font=F_TXT, bg=BG).grid(row=r, column=c0, sticky="w", padx=4)
             code = tk.Label(g, text="-", font=F_TXT, bg=BG, width=24, anchor="w")
             code.grid(row=r, column=c0 + 1, sticky="w", padx=4)
             now = tk.Label(g, text="", font=F_TXT, bg=BG, width=9)
             now.grid(row=r, column=c0 + 2)
             step = ("axis_steer", "axis_thr")[i] if i < 2 else i - 2
-            tk.Button(g, text="Map", command=lambda st=step: self.wiz_start([st]), font=("Segoe UI", 10),
-                      pady=0).grid(row=r, column=c0 + 3, pady=1, padx=(0, 16))
+            i18n.bind(tk.Button(g, command=lambda st=step: self.wiz_start([st]), font=("Segoe UI", 10), pady=0),
+                      "cap.jm_map").grid(row=r, column=c0 + 3, pady=1, padx=(0, 16))
             self.jm_rows.append((code, now))
 
         self.wiz_frame = tk.Frame(jt, bg="#e0ecff", bd=2, relief="groove")
@@ -829,11 +968,12 @@ class App:
         self.wiz_info.pack(anchor="w", padx=6)
         wb = tk.Frame(self.wiz_frame, bg="#e0ecff")
         wb.pack(anchor="w", padx=6, pady=4)
-        self.wiz_next = btn(wb, "Next", self.wiz_next_click, bg="#b0ffb0")
+        self.wiz_next = tk.Button(wb, text=T("cap.wiz_next"), command=self.wiz_next_click, bg="#b0ffb0", font=F_MED,
+                                  bd=3)
         self.wiz_next.pack(side="left")
-        self.wiz_skip = btn(wb, "Skip (not used)", self.wiz_skip_click)
+        self.wiz_skip = btn(wb, "cap.wiz_skip", self.wiz_skip_click)
         self.wiz_skip.pack(side="left", padx=4)
-        btn(wb, "Cancel", self.wiz_cancel, bg="#ffb0b0").pack(side="left")
+        btn(wb, "cap.cancel", self.wiz_cancel, bg="#ffb0b0").pack(side="left")
         self.jm_to_widgets()
 
     def _build_tabs(self, body):
@@ -843,26 +983,30 @@ class App:
         nb = ttk.Notebook(right)
         nb.pack(fill="both", expand=True)
         self.nb = nb
+        self.tab_keys = []
+
+        def tab(frame, key):
+            nb.add(frame, text=T(key))
+            self.tab_keys.append(key)
 
         mp = tk.Frame(nb, bg=BG)
-        nb.add(mp, text="Map")
+        tab(mp, "tab.map")
         mt = tk.Frame(mp, bg=BG)
         mt.pack(fill="x")
-        btn(mt, "Zoom +", lambda: self.zoom(0.5), font=F_TXT).pack(side="left")
-        btn(mt, "Zoom -", lambda: self.zoom(2.0), font=F_TXT).pack(side="left")
-        btn(mt, "Clear track", lambda: self.track.clear(), font=F_TXT).pack(side="left")
+        btn(mt, "cap.zoom_in", lambda: self.zoom(0.5), font=F_TXT).pack(side="left")
+        btn(mt, "cap.zoom_out", lambda: self.zoom(2.0), font=F_TXT).pack(side="left")
+        btn(mt, "cap.clear_track", lambda: self.track.clear(), font=F_TXT).pack(side="left")
         self.add_on_click = tk.BooleanVar(value=False)
-        tk.Checkbutton(mt, text="Click adds a program waypoint", variable=self.add_on_click, font=F_TXT,
-                       bg=BG).pack(side="left", padx=8)
-        tk.Label(mt, text="(north up, centred on the boat)", font=F_TXT, bg=BG).pack(side="left")
+        chk(mt, "cap.click_adds", variable=self.add_on_click, font=F_TXT, bg=BG).pack(side="left", padx=8)
+        lbl(mt, "cap.north_up", font=F_TXT, bg=BG).pack(side="left")
         ml = tk.Frame(mp, bg=BG)
         ml.pack(fill="x")
         self.map_layers = {}
-        for key, txt in (("depth", "Depth"), ("contours", "Contours"), ("marks", "Sea marks"), ("ais", "AIS ships")):
+        for key in ("depth", "contours", "marks", "ais"):
             v = tk.BooleanVar(value=True)
             self.map_layers[key] = v
-            tk.Checkbutton(ml, text=txt, variable=v, font=F_TXT, bg=BG).pack(side="left", padx=4)
-        tk.Label(ml, text="depth shading:", font=F_TXT, bg=BG).pack(side="left", padx=(12, 2))
+            chk(ml, "map.layer_" + key, variable=v, font=F_TXT, bg=BG).pack(side="left", padx=4)
+        lbl(ml, "cap.depth_shading", font=F_TXT, bg=BG).pack(side="left", padx=(12, 2))
         self.depth_opacity = tk.DoubleVar(value=0.8)
         tk.Scale(ml, from_=0.2, to=1.0, resolution=0.1, orient="horizontal", variable=self.depth_opacity, length=140,
                  showvalue=False, bg=BG, highlightthickness=0).pack(side="left")
@@ -873,147 +1017,159 @@ class App:
         self.map.bind("<Button-1>", self.map_click)
 
         at = tk.Frame(nb, bg=BG)
-        nb.add(at, text="AIS")
+        tab(at, "tab.ais")
         self._build_ais(at)
 
         pg = tk.Frame(nb, bg=BG)
-        nb.add(pg, text="Program")
+        tab(pg, "tab.program")
         self._build_program(pg)
 
         pl = tk.Frame(nb, bg=BG)
-        nb.add(pl, text="Plot")
+        tab(pl, "tab.plot")
         self.plot = tk.Canvas(pl, bg=BG, highlightthickness=0)
         self.plot.pack(fill="both", expand=True)
 
         cf = tk.Frame(nb, bg=BG)
-        nb.add(cf, text="Config")
+        tab(cf, "tab.config")
         ct = tk.Frame(cf, bg=BG)
         ct.pack(fill="x")
-        btn(ct, "Read all", self.read_params, font=F_TXT).pack(side="left")
-        tk.Label(ct, text="new value", font=F_TXT, bg=BG).pack(side="left", padx=(12, 2))
+        btn(ct, "cap.read_all", self.read_params, font=F_TXT).pack(side="left")
+        lbl(ct, "cap.new_value", font=F_TXT, bg=BG).pack(side="left", padx=(12, 2))
         self.pval_var = tk.StringVar()
         tk.Entry(ct, textvariable=self.pval_var, font=F_MED, width=10).pack(side="left")
-        btn(ct, "Write selected", self.write_param, font=F_TXT).pack(side="left", padx=4)
-        tk.Label(ct, text="(STANDBY only; RAM only, lost at power-off)", font=F_TXT, bg=BG).pack(side="left")
+        btn(ct, "cap.write_selected", self.write_param, font=F_TXT).pack(side="left", padx=4)
+        lbl(ct, "cap.param_note", font=F_TXT, bg=BG).pack(side="left")
         self.ptree = ttk.Treeview(cf, columns=("value", "min", "max"), height=12)
         for c, w in (("#0", 220), ("value", 140), ("min", 120), ("max", 120)):
             self.ptree.column(c, width=w)
-        self.ptree.heading("#0", text="parameter")
+        self.ptree.heading("#0", text=T("cap.param"))
         for c in ("value", "min", "max"):
-            self.ptree.heading(c, text=c)
+            self.ptree.heading(c, text=T("cap.param_" + c))
         self.ptree.pack(fill="both", expand=True)
 
         jt = tk.Frame(nb, bg=BG)
-        nb.add(jt, text="Joystick")
+        tab(jt, "tab.joystick")
         self.joytab = jt
         self._build_joytab(jt)
 
         ct = tk.Frame(nb, bg=BG)
-        nb.add(ct, text="Cameras")
+        tab(ct, "tab.cameras")
         self._build_cameras(ct)
 
         rt = tk.Frame(nb, bg=BG)
-        nb.add(rt, text="Remote")
+        tab(rt, "tab.remote")
         self._build_remote(rt)
 
         nt = tk.Frame(nb, bg=BG)
-        nb.add(nt, text="Network")
+        tab(nt, "tab.network")
         self._build_network(nt)
 
         sy = tk.Frame(nb, bg=BG)
-        nb.add(sy, text="System")
-        tk.Label(sy, text="CPU time per cycle (min / average / max of the last window) and overruns",
-                 font=F_MED, bg=BG).pack(anchor="w", pady=6)
+        tab(sy, "tab.system")
+        lbl(sy, "cap.sys_title", font=F_MED, bg=BG).pack(anchor="w", pady=6)
         self.sys_lbl = tk.Label(sy, text="-", font=("Consolas", 14), bg=BG, justify="left", anchor="w")
         self.sys_lbl.pack(anchor="w", padx=8)
 
         bt = tk.Frame(nb, bg=BG)
-        nb.add(bt, text="Bench")
+        tab(bt, "tab.bench")
         self._build_bench(bt)
 
+        snd = tk.Frame(nb, bg=BG)
+        tab(snd, "tab.sound")
+        self._build_sound(snd)
+
         lg = tk.Frame(nb, bg=BG)
-        nb.add(lg, text="Events")
+        tab(lg, "tab.events")
         self.events = tk.Listbox(lg, font=F_TXT)
         self.events.pack(fill="both", expand=True)
+
+    # --- sound + voice (section D) -------------------------------------------------------------
+    def _build_sound(self, st):
+        """The sound settings and the sound test page (play every sound / callout in both languages)."""
+        self.callouts = None
+        try:
+            import sound
+            import soundtest
+        except ImportError:
+            return lbl(st, "cap.sound_missing", font=F_MED, bg=BG).pack(anchor="w", padx=6, pady=6)
+        self.sound = sound.SoundSystem.for_app(self)
+        self.callouts = sound.Callouts(self.sound, self)
+        soundtest.build(st, self)
 
     # --- BENCH TEST (dock, USB laptop only): FIRST_TEST.md part 3 -----------------------------
     def _build_bench(self, bt):
         top = tk.Frame(bt, bg=BG)
         top.pack(fill="x", pady=4)
-        btn(top, "Enter BENCH TEST", lambda: self.bench(proto.BENCH_ENTER, 0, "bench test: enter"),
+        btn(top, "cap.bench_enter", lambda: self.bench(proto.BENCH_ENTER, 0, TE("what.bench_enter")),
             bg="#9be0e0", font=F_TXT).pack(side="left", padx=4)
-        btn(top, "Leave", lambda: self.bench(proto.BENCH_LEAVE, 0, "bench test: leave"), font=F_TXT).pack(side="left")
-        tk.Label(top, text="boat on the dock, engine OFF; only the laptop on the USB cable; throttle idle + gear "
-                 "neutral all the time", font=F_TXT, bg=BG).pack(side="left", padx=10)
-        self.bench_state = tk.Label(bt, text="not in the bench test", font=F_MED, bg=BG, anchor="w")
+        btn(top, "cap.bench_leave", lambda: self.bench(proto.BENCH_LEAVE, 0, TE("what.bench_leave")),
+            font=F_TXT).pack(side="left")
+        lbl(top, "cap.bench_note", font=F_TXT, bg=BG, wraplength=640, justify="left").pack(side="left", padx=10)
+        self.bench_state = tk.Label(bt, text=T("cap.bench_off"), font=F_MED, bg=BG, anchor="w")
         self.bench_state.pack(fill="x", padx=6)
         body = tk.Frame(bt, bg=BG)
         body.pack(fill="both", expand=True)
         left = tk.Frame(body, bg=BG)
         left.pack(side="left", fill="both", expand=True, padx=6)
-        tk.Label(left, text="Sensors (live)", font=F_MED, bg=BG).pack(anchor="w")
+        lbl(left, "cap.bench_sensors", font=F_MED, bg=BG).pack(anchor="w")
         self.bench_sens = tk.Label(left, text="-", font=("Consolas", 12), bg=BG, justify="left", anchor="nw")
         self.bench_sens.pack(anchor="w", fill="x")
         right = tk.Frame(body, bg=BG)
         right.pack(side="left", fill="both", expand=True, padx=6)
 
-        tk.Label(right, text="Steering motor pulses", font=F_MED, bg=BG).pack(anchor="w")
+        lbl(right, "cap.bench_pulses", font=F_MED, bg=BG).pack(anchor="w")
         pr = tk.Frame(right, bg=BG)
         pr.pack(anchor="w")
         self.bench_ms = tk.IntVar(value=100)
         for ms in (100, 200, 300):
             tk.Radiobutton(pr, text="%d ms" % ms, variable=self.bench_ms, value=ms, font=F_TXT, bg=BG).pack(side="left")
-        btn(pr, "<< LEFT", lambda: self.bench(proto.BENCH_LEFT, self.bench_ms.get(),
-                                              "pulse LEFT %d ms" % self.bench_ms.get()), font=F_TXT).pack(side="left", padx=6)
-        btn(pr, "RIGHT >>", lambda: self.bench(proto.BENCH_RIGHT, self.bench_ms.get(),
-                                               "pulse RIGHT %d ms" % self.bench_ms.get()), font=F_TXT).pack(side="left")
+        btn(pr, "cap.bench_left", lambda: self.bench(proto.BENCH_LEFT, self.bench_ms.get(),
+                                                     TE("what.pulse_left", ms=self.bench_ms.get())),
+            font=F_TXT).pack(side="left", padx=6)
+        btn(pr, "cap.bench_right", lambda: self.bench(proto.BENCH_RIGHT, self.bench_ms.get(),
+                                                      TE("what.pulse_right", ms=self.bench_ms.get())),
+            font=F_TXT).pack(side="left")
         self.bench_pulse = tk.Label(right, text="-", font=F_TXT, bg=BG, anchor="w", justify="left")
         self.bench_pulse.pack(anchor="w")
 
-        tk.Label(right, text="Limit switches / emergency stop", font=F_MED, bg=BG).pack(anchor="w", pady=(8, 0))
+        lbl(right, "cap.bench_limits", font=F_MED, bg=BG).pack(anchor="w", pady=(8, 0))
         lr = tk.Frame(right, bg=BG)
         lr.pack(anchor="w")
         self.bench_lim = []
-        for txt in ("LIMIT L", "LIMIT R", "E-STOP"):
-            lb = tk.Label(lr, text=txt, font=F_MED, bg=PANEL, width=9, relief="ridge")
+        for key in ("cap.bench_lim_l", "cap.bench_lim_r", "cap.bench_estop"):
+            lb = lbl(lr, key, font=F_MED, bg=PANEL, width=9, relief="ridge")
             lb.pack(side="left", padx=3)
             self.bench_lim.append(lb)
 
-        tk.Label(right, text="Panel buttons (press each; STANDBY last - it ends the bench test)", font=F_MED,
-                 bg=BG).pack(anchor="w", pady=(8, 0))
+        lbl(right, "cap.bench_buttons", font=F_MED, bg=BG).pack(anchor="w", pady=(8, 0))
         br = tk.Frame(right, bg=BG)
         br.pack(anchor="w")
         self.bench_btn = []
         for b in (5, 1, 2, 3, 4, 0):                    # HDG LOCK, -1, +1, -10, +10, STANDBY
-            lb = tk.Label(br, text=proto.BTN_NAMES[b], font=F_TXT, bg=PANEL, width=10, relief="ridge")
+            lb = tk.Label(br, text=T("btn.%d" % b), font=F_TXT, bg=PANEL, width=10, relief="ridge")
             lb.pack(side="left", padx=2)
             self.bench_btn.append((b, lb))
 
-        tk.Label(right, text="Buzzer", font=F_MED, bg=BG).pack(anchor="w", pady=(8, 0))
-        btn(right, "Buzzer test 1 s", lambda: self.bench(proto.BENCH_BUZZER, 1000, "buzzer test 1 s"),
+        lbl(right, "cap.bench_buzzer", font=F_MED, bg=BG).pack(anchor="w", pady=(8, 0))
+        btn(right, "cap.bench_buzz_test", lambda: self.bench(proto.BENCH_BUZZER, 1000, TE("what.buzzer")),
             font=F_TXT).pack(anchor="w")
 
-        tk.Label(right, text="Servo PWM outputs (scope / servo tester, FIRST_TEST.md 3g)", font=F_MED,
-                 bg=BG).pack(anchor="w", pady=(8, 0))
+        lbl(right, "cap.bench_servo_title", font=F_MED, bg=BG).pack(anchor="w", pady=(8, 0))
         self.bench_servo = tk.Label(right, text="-", font=("Consolas", 12), bg=BG, justify="left", anchor="w")
         self.bench_servo.pack(anchor="w")
-        btn(right, "Monitor trip test ...", self.bench_trip, bg="#ffb0b0", font=F_TXT).pack(anchor="w", pady=4)
+        btn(right, "cap.bench_trip", self.bench_trip, bg="#ffb0b0", font=F_TXT).pack(anchor="w", pady=4)
         self.bench_d = None
 
     def bench(self, action, arg, what):
         if isinstance(self.link, GatewayLink):
-            return self.say("BENCH TEST: only from the laptop on the USB cable", RED)
+            return self.say(T("cap.bench_only_usb"), RED)
         self.cmd(proto.T_BENCH, proto.p_bench(action, arg), what)
 
     def bench_trip(self):
         from tkinter import messagebox
-        if not messagebox.askyesno("Monitor trip test",
-                                   "This makes the safety monitor (CPU1) trip for real:\n\n"
-                                   "throttle idle + gear neutral forced, steering motor driver asleep, relay open, "
-                                   "buzzer on, STANDBY.\n\nIt stays like that until you POWER THE BOARD OFF AND ON.\n\n"
-                                   "Measure the servo outputs with the scope while it is tripped. Go on?"):
+        if not messagebox.askyesno(T("cap.trip_title"), T("cap.trip_q")):
             return
-        self.bench(proto.BENCH_TRIP, proto.BENCH_TRIP_CODE, "monitor trip test")
+        self.bench(proto.BENCH_TRIP, proto.BENCH_TRIP_CODE, TE("what.trip"))
 
     def on_bench(self, d):
         self.bench_d = d
@@ -1027,39 +1183,38 @@ class App:
         fresh = d is not None and time.time() - getattr(self, "bench_d_rx", 0) < 1.0
         in_bench = bool(self.t and self.t.get("mode") == proto.MODE_BENCH)
         if not (fresh and in_bench):
-            self.bench_state.configure(text="not in the bench test (STANDBY -> Enter BENCH TEST)", fg="#606060")
+            self.bench_state.configure(text=T("cap.bench_off"), fg="#606060")
             return
-        self.bench_state.configure(text="BENCH TEST - back to STANDBY by itself in %d s without a command%s" % (
-            d["idle_left_s"], "   MONITOR TRIPPED: power the board off and on" if d["mon_tripped"] else ""),
-            fg=RED if d["mon_tripped"] else "#008080")
+        self.bench_state.configure(text=T("cap.bench_on", s="%d" % d["idle_left_s"]) +
+                                   (T("cap.bench_tripped") if d["mon_tripped"] else ""),
+                                   fg=RED if d["mon_tripped"] else "#008080")
+
         def yn(v):
-            return "yes" if v else "NO"
-        acc = proto.IMU_ACC[d["imu_accuracy"]] if d["imu_accuracy"] < 4 else "?"
+            return "%-3s" % (T("cap.yes") if v else T("cap.no"))
+        acc = T("cap.imu_acc_%d" % d["imu_accuracy"]) if d["imu_accuracy"] < 4 else "?"
         lines = [
-            "IMU      ok %-3s  reports %-8d resets %d  accuracy %s" % (yn(d["imu_ok"]), d["imu_reports"],
-                                                                     d["imu_resets"], acc),
-            "heading  %6.1f deg  (compass ok %s)" % (d["heading"], yn(d["compass_ok"])),
-            "yaw rate %+6.1f deg/s  (gyro ok %s)" % (d["yaw"], yn(d["gyro_ok"])),
-            "roll     %+6.1f deg   pitch %+6.1f deg" % (d["roll"], d["pitch"]),
-            "accel z  %+6.2f g" % d["accel_z"],
-            "GPS      ok %-3s  UBX %-3s  fix %s (%dD)  sats %d" % (yn(d["gps_ok"]), yn(d["gps_ubx"]), yn(d["fix"]),
-                                                              d["gps_fix_type"], d["sats"]),
-            "         SOG %.1f kn  COG %.0f deg" % (d["sog"], d["cog"]),
-            "         spoofing %s  jamming %s" % (proto.GPS_SPOOF[d["spoof"]] if d["spoof"] < 4 else "?",
-                                                 proto.GPS_JAM[d["jam"]] if d["jam"] < 4 else "?"),
-            "motor    %s" % ("no current sensor" if d["current"] < 0 else "%.2f A" % d["current"]),
-            "SD card  card %-3s mounted %-3s  %s  free %s" % (
-                yn(d["sd_card"]), yn(d["sd_mounted"]),
-                proto.SD_STATES[d["sd_state"]] if d["sd_state"] < len(proto.SD_STATES) else "?",
-                "?" if d["sd_free_kb"] is None else "%.1f GB" % (d["sd_free_kb"] / 1048576.0)),
-            "UART errors %d" % d["uart_errors"],
+            T("bench.imu", ok=yn(d["imu_ok"]), n="%-8d" % d["imu_reports"], resets=d["imu_resets"], acc=acc),
+            T("bench.heading", hdg="%6.1f" % d["heading"], ok=yn(d["compass_ok"])),
+            T("bench.yaw", yaw="%+6.1f" % d["yaw"], ok=yn(d["gyro_ok"])),
+            T("bench.roll", roll="%+6.1f" % d["roll"], pitch="%+6.1f" % d["pitch"]),
+            T("bench.accel", z="%+6.2f" % d["accel_z"]),
+            T("bench.gps", ok=yn(d["gps_ok"]), ubx=yn(d["gps_ubx"]), fix=yn(d["fix"]), dim=d["gps_fix_type"],
+              sats=d["sats"]),
+            T("bench.sog", sog="%.1f" % d["sog"], cog="%.0f" % d["cog"]),
+            T("bench.spoof", spoof=proto.GPS_SPOOF[d["spoof"]] if d["spoof"] < 4 else "?",
+              jam=proto.GPS_JAM[d["jam"]] if d["jam"] < 4 else "?"),
+            T("bench.motor", v=T("bench.no_current") if d["current"] < 0 else "%.2f A" % d["current"]),
+            T("bench.sd", card=yn(d["sd_card"]), mounted=yn(d["sd_mounted"]),
+              state=proto.SD_STATES[d["sd_state"]] if d["sd_state"] < len(proto.SD_STATES) else "?",
+              free="?" if d["sd_free_kb"] is None else "%.1f GB" % (d["sd_free_kb"] / 1048576.0)),
+            T("bench.uart", n=d["uart_errors"]),
         ]
         self.bench_sens.configure(text="\n".join(lines))
-        run = {-1: "running LEFT", 1: "running RIGHT"}.get(d["pulse"], "stopped")
-        self.bench_pulse.configure(text="motor %s, outboard estimate %+.1f deg; pulses %d, refused %d%s" % (
-            run, d["estimate"], d["pulses"], d["refused"],
-            (" (last: %s)" % proto.BENCH_REFUSE[d["last_refuse"]]) if 0 < d["last_refuse"] < len(proto.BENCH_REFUSE)
-            else ""))
+        run = {-1: T("bench.run_left"), 1: T("bench.run_right")}.get(d["pulse"], T("bench.stopped"))
+        self.bench_pulse.configure(text=T("bench.pulse", run=run, est="%+.1f" % d["estimate"], n=d["pulses"],
+                                          refused=d["refused"]) +
+                                   (T("bench.last_refuse", why=T("bench.refuse_%d" % d["last_refuse"]))
+                                    if 0 < d["last_refuse"] < len(proto.BENCH_REFUSE) else ""))
         for lb, on, fitted in ((self.bench_lim[0], d["limit_left"], d["limits_fitted"]),
                                (self.bench_lim[1], d["limit_right"], d["limits_fitted"]),
                                (self.bench_lim[2], d["estop"] == 2, d["estop"] != 0)):
@@ -1068,39 +1223,38 @@ class App:
         for b, lb in self.bench_btn:
             n = d["button_counts"][b]
             lb.configure(bg="#7de07d" if n else PANEL,
-                         text="%s%s" % (proto.BTN_NAMES[b], (" x%d" % n) if n else ""))
-        self.bench_servo.configure(text="throttle D9: %4d us (idle %d)   gear D8: %4d us (neutral %d)   50 Hz" % (
-            d["thr_us"], d["thr_idle_us"], d["gear_us"], d["gear_n_us"]))
+                         text="%s%s" % (T("btn.%d" % b), (" x%d" % n) if n else ""))
+        self.bench_servo.configure(text=T("bench.servo", thr="%4d" % d["thr_us"], idle=d["thr_idle_us"],
+                                          gear="%4d" % d["gear_us"], n=d["gear_n_us"]))
 
     # --- AIS ship list + collision avoidance (sections A / D / E2) ------------------
-    AIS_COLS = (("name", "ship", 200), ("cls", "class", 50), ("dist", "distance nm", 95), ("brg", "bearing", 70),
-                ("cpa", "CPA nm", 70), ("tcpa", "TCPA min", 80), ("age", "age s", 60), ("state", "", 110))
+    AIS_COLS = (("name", "ais.col_ship", 200), ("cls", "ais.col_class", 50), ("dist", "ais.col_dist", 95),
+                ("brg", "ais.col_brg", 70), ("cpa", "ais.col_cpa", 70), ("tcpa", "ais.col_tcpa", 80),
+                ("age", "ais.col_age", 60), ("state", "", 110))
 
     def _build_ais(self, at):
-        self.ais_state_lbl = tk.Label(at, text="collision avoidance: -", font=F_MED, bg=BG, anchor="w",
+        self.ais_state_lbl = tk.Label(at, text=T("ais.state", state="-"), font=F_MED, bg=BG, anchor="w",
                                       justify="left")
         self.ais_state_lbl.pack(fill="x", padx=6, pady=(4, 0))
-        tk.Label(at, text="AIS does NOT show small boats, jet skis, swimmers or kayaks - keep a lookout.",
-                 font=F_TXT, bg=BG, fg="#a00000").pack(anchor="w", padx=6)
+        lbl(at, "ais.small_craft", font=F_TXT, bg=BG, fg="#a00000").pack(anchor="w", padx=6)
         self.ais_tree = ttk.Treeview(at, columns=[c for c, _t, _w in self.AIS_COLS[1:]], height=12)
         for i, (c, t, w) in enumerate(self.AIS_COLS):
             col = "#0" if i == 0 else c
             self.ais_tree.column(col, width=w, anchor="w" if i == 0 else "e")
-            self.ais_tree.heading(col, text=t)
+            self.ais_tree.heading(col, text=T(t) if t else "")
         self.ais_tree.tag_configure("danger", background="#ffb0b0")
         self.ais_tree.tag_configure("warn", background="#fff0a0")
         self.ais_tree.tag_configure("stale", foreground="#888888")
         self.ais_tree.pack(fill="both", expand=True, padx=6, pady=4)
         self.ais_tree.bind("<<TreeviewSelect>>", lambda e: self.ais_details())
-        self.ais_detail = tk.Label(at, text="click a ship for its details", font=F_TXT, bg=BG, anchor="w",
-                                   justify="left")
+        self.ais_detail = lbl(at, "ais.click_ship", font=F_TXT, bg=BG, anchor="w", justify="left")
         self.ais_detail.pack(fill="x", padx=6, pady=(0, 6))
         bb = tk.Frame(at, bg=BG)
         bb.pack(anchor="w", padx=6, pady=(0, 6))
-        tk.Label(bb, text="proposal (SINGLE-OPERATOR mode only; normally the driver screen answers):",
-                 font=F_TXT, bg=BG).pack(side="left")
-        btn(bb, "ACCEPT", lambda: self.avoid_answer(None, True), font=F_TXT, bg="#b0ffb0").pack(side="left", padx=4)
-        btn(bb, "REJECT", lambda: self.avoid_answer(None, False), font=F_TXT, bg="#ffb0b0").pack(side="left")
+        lbl(bb, "ais.proposal_so", font=F_TXT, bg=BG).pack(side="left")
+        btn(bb, "drv.accept", lambda: self.avoid_answer(None, True), font=F_TXT, bg="#b0ffb0").pack(side="left",
+                                                                                                    padx=4)
+        btn(bb, "drv.reject", lambda: self.avoid_answer(None, False), font=F_TXT, bg="#ffb0b0").pack(side="left")
         self.ais_rows = {}
 
     def ais_rows_now(self):
@@ -1127,11 +1281,11 @@ class App:
             return
         av = (self.gw_status or {}).get("avoid") or {}
         st = av.get("state") or "-"
-        txt = "collision avoidance: %s" % st
+        txt = T("ais.state", state=T("avoid." + st.replace(" ", "_")) if st != "-" else "-")
         if av.get("why"):
-            txt += " - %s" % av["why"]
+            txt += " - %s" % i18n.from_en(av["why"])
         if av.get("proposal"):
-            txt += "\nPROPOSAL on the driver screen: %s" % av["proposal"].get("text", "")
+            txt += "\n" + T("ais.proposal_on_driver", text=proposal_text(av["proposal"]))
         self.ais_state_lbl.configure(text=txt, fg=RED if st in ("AVOID", "DRIVER DECISION", "ALARM ONLY", "PROPOSE")
                                      else "black")
         rows = self.ais_rows_now()
@@ -1142,9 +1296,9 @@ class App:
         def f(v, fmt):
             return "-" if v is None else fmt % v
         for r in rows:
-            state = {"danger": "DANGER", "warn": "warning"}.get(r["level"], "")
+            state = {"danger": T("ais.danger"), "warn": T("ais.warning")}.get(r["level"], "")
             if r.get("stale"):
-                state = (state + " STALE").strip()
+                state = (state + " " + T("ais.stale")).strip()
             tag = "danger" if r["level"] == "danger" else "warn" if r["level"] == "warn" else \
                 "stale" if r.get("stale") else ""
             self.ais_tree.insert("", "end", iid=str(r["mmsi"]), text=r.get("name") or str(r["mmsi"]), tags=(tag,),
@@ -1161,60 +1315,68 @@ class App:
         r = self.ais_rows.get(sel[0]) if sel else None
         if not r:
             return
-        bits = ["%s  MMSI %s  class %s%s" % (r.get("name") or "?", r["mmsi"], r.get("cls", "?"),
-                                              "  (online AIS)" if r.get("src") == "online" else "")]
-        bits.append("speed %s kn, course %s, heading %s, turning %s deg/min" % (
-            r.get("sog"), r.get("cog"), r.get("heading"), r.get("turn_dpm")))
+        bits = [T("ais.d_name", name=r.get("name") or "?", mmsi=r["mmsi"], cls=r.get("cls", "?")) +
+                (T("ais.d_online") if r.get("src") == "online" else "")]
+        bits.append(T("ais.d_motion", sog=r.get("sog"), cog=r.get("cog"), hdg=r.get("heading"), rot=r.get("turn_dpm")))
         if r.get("length") or r.get("type"):
-            bits.append("type %s, %s x %s m, draught %s m, call sign %s" % (
-                r.get("type"), r.get("length"), r.get("beam"), r.get("draught"), r.get("callsign") or "-"))
+            bits.append(T("ais.d_ship", type=r.get("type"), l=r.get("length"), b=r.get("beam"), d=r.get("draught"),
+                          call=r.get("callsign") or "-"))
         if r.get("dest"):
-            bits.append("destination %s" % r["dest"])
-        bits.append("position %.5f %.5f, last report %s s ago%s" % (
-            r["lat"], r["lon"], r.get("age_s"), " (STALE)" if r.get("stale") else ""))
+            bits.append(T("ais.d_dest", dest=r["dest"]))
+        bits.append(T("ais.d_pos", lat="%.5f" % r["lat"], lon="%.5f" % r["lon"], age=r.get("age_s")) +
+                    (" (%s)" % T("ais.stale") if r.get("stale") else ""))
         self.ais_detail.configure(text="\n".join(bits))
 
     def _build_program(self, pg):
         top = tk.Frame(pg, bg=BG)
         top.pack(fill="x")
-        for text, fn in (("Upload to boat", self.prog_upload), ("Download", self.prog_download),
-                         ("Save file", self.prog_save), ("Load file", self.prog_load)):
-            btn(top, text, fn, font=F_TXT).pack(side="left", padx=1)
-        tk.Label(top, text="  at the end:", font=F_TXT, bg=BG).pack(side="left")
-        self.final_var = tk.StringVar(value=proto.PROG_END[0])
-        ttk.Combobox(top, textvariable=self.final_var, values=proto.PROG_END, width=18, state="readonly",
-                     font=F_TXT).pack(side="left")
+        for key, fn in (("cap.pg_upload", self.prog_upload), ("cap.pg_download", self.prog_download),
+                        ("cap.pg_save", self.prog_save), ("cap.pg_load", self.prog_load)):
+            btn(top, key, fn, font=F_TXT).pack(side="left", padx=1)
+        lbl(top, "cap.pg_at_end", font=F_TXT, bg=BG).pack(side="left")
+        self.final_cb = ttk.Combobox(top, width=18, state="readonly", font=F_TXT)
+        self.final_cb.pack(side="left")
         self.pg_tree = ttk.Treeview(pg, columns=("lat", "lon", "kn", "radius", "action"), height=10)
         for c, w in (("#0", 50), ("lat", 140), ("lon", 140), ("kn", 70), ("radius", 80), ("action", 100)):
             self.pg_tree.column(c, width=w)
-            self.pg_tree.heading(c, text="#" if c == "#0" else c)
+            self.pg_tree.heading(c, text="#" if c == "#0" else T("cap.pg_" + c))
         self.pg_tree.pack(fill="both", expand=True)
         self.pg_tree.bind("<<TreeviewSelect>>", self.prog_select)
         ed = tk.Frame(pg, bg=BG)
         ed.pack(fill="x")
         self.pg_vars = {}
         for k, w in (("lat", 11), ("lon", 11), ("kn", 5), ("radius", 5)):
-            tk.Label(ed, text=k, font=F_TXT, bg=BG).pack(side="left")
+            lbl(ed, "cap.pg_" + k, font=F_TXT, bg=BG).pack(side="left")
             v = tk.StringVar()
             tk.Entry(ed, textvariable=v, font=F_MED, width=w).pack(side="left", padx=(0, 4))
             self.pg_vars[k] = v
         self.pg_vars["radius"].set("25")
         self.pg_vars["kn"].set("8")
-        self.pg_act = tk.StringVar(value=proto.WP_ACTIONS[0])
-        ttk.Combobox(ed, textvariable=self.pg_act, values=proto.WP_ACTIONS, width=8, state="readonly",
-                     font=F_TXT).pack(side="left")
+        self.act_cb = ttk.Combobox(ed, width=8, state="readonly", font=F_TXT)
+        self.act_cb.pack(side="left")
+        self.prog_combos()
+        self.final_cb.current(0)
+        self.act_cb.current(0)
         bt = tk.Frame(pg, bg=BG)
         bt.pack(fill="x")
-        for text, fn in (("Add", self.prog_add), ("Change selected", self.prog_change), ("Delete", self.prog_delete),
-                         ("Up", lambda: self.prog_move(-1)), ("Down", lambda: self.prog_move(1)),
-                         ("Clear", self.prog_clear)):
-            btn(bt, text, fn, font=F_TXT).pack(side="left", padx=1)
-        btn(bt, "Check depth", self.prog_depth_check, font=F_TXT, bg="#c0e0ff").pack(side="left", padx=8)
-        tk.Label(pg, text="Depth along the leg from the selected waypoint to the next (red = shallower than the limit)",
-                 font=F_TXT, bg=BG).pack(anchor="w")
+        for key, fn in (("cap.pg_add", self.prog_add), ("cap.pg_change", self.prog_change),
+                        ("cap.pg_delete", self.prog_delete), ("cap.pg_up", lambda: self.prog_move(-1)),
+                        ("cap.pg_down", lambda: self.prog_move(1)), ("cap.pg_clear", self.prog_clear)):
+            btn(bt, key, fn, font=F_TXT).pack(side="left", padx=1)
+        btn(bt, "cap.pg_depth", self.prog_depth_check, font=F_TXT, bg="#c0e0ff").pack(side="left", padx=8)
+        lbl(pg, "cap.pg_profile_note", font=F_TXT, bg=BG).pack(anchor="w")
         self.pg_prof = tk.Canvas(pg, height=150, bg="#ffffff", highlightthickness=0)
         self.pg_prof.pack(fill="x", padx=4, pady=2)
         self.map_mark = None                 # a refused position, shown on the map
+
+    def prog_combos(self):
+        """The two program drop-downs in the screen language (the choice is kept by its index)."""
+        for cb, names, key in ((self.final_cb, proto.PROG_END, "prog.end_%d"), (self.act_cb, proto.WP_ACTIONS,
+                                                                               "wp.act_%d")):
+            i = cb.current()
+            cb.configure(values=[T(key % n) for n in range(len(names))])
+            if i >= 0:
+                cb.current(i)
 
     # --- program editor ----------------------------------------------------------
     def prog_refresh(self):
@@ -1222,16 +1384,16 @@ class App:
         for i, w in enumerate(self.prog["wps"]):
             self.pg_tree.insert("", "end", iid=str(i), text=str(i + 1),
                                 values=("%.6f" % w["lat"], "%.6f" % w["lon"], "%.1f" % w["kn"], "%.0f" % w["radius"],
-                                        proto.WP_ACTIONS[w["action"]]))
-        self.final_var.set(proto.PROG_END[self.prog["final"]])
+                                        T("wp.act_%d" % w["action"])))
+        self.final_cb.current(self.prog["final"])
 
     def prog_entry(self):
         try:
             return {"lat": float(self.pg_vars["lat"].get()), "lon": float(self.pg_vars["lon"].get()),
                     "kn": float(self.pg_vars["kn"].get()), "radius": float(self.pg_vars["radius"].get()),
-                    "action": proto.WP_ACTIONS.index(self.pg_act.get())}
+                    "action": max(0, self.act_cb.current())}
         except ValueError:
-            self.say("Waypoint: lat, lon, kn and radius must be numbers", RED)
+            self.say(T("cap.pg_numbers"), RED)
             return None
 
     def prog_selected(self):
@@ -1247,7 +1409,7 @@ class App:
             self.pg_vars[k].set("%.6f" % w[k])
         self.pg_vars["kn"].set("%.1f" % w["kn"])
         self.pg_vars["radius"].set("%.0f" % w["radius"])
-        self.pg_act.set(proto.WP_ACTIONS[w["action"]])
+        self.act_cb.current(w["action"])
         self.draw_profile(i)
 
     # --- depth (section C) --------------------------------------------------------
@@ -1261,9 +1423,9 @@ class App:
         wps = self.prog["wps"]
         w, h = max(200, c.winfo_width()), 150
         if not self.charts:
-            return c.create_text(10, 70, anchor="w", text="no chart files (python tools/chartprep.py)", font=F_TXT)
+            return c.create_text(10, 70, anchor="w", text=T("cap.no_charts"), font=F_TXT)
         if i is None or i + 1 >= len(wps):
-            return c.create_text(10, 70, anchor="w", text="select a waypoint that has a next one", font=F_TXT)
+            return c.create_text(10, 70, anchor="w", text=T("cap.pg_select_next"), font=F_TXT)
         a, b = wps[i], wps[i + 1]
         prof = self.charts.profile(a["lat"], a["lon"], b["lat"], b["lon"], 25.0)
         lim = self.shallow_limit()
@@ -1281,13 +1443,13 @@ class App:
             c.create_polygon(X(d1), 10, X(d2), 10, X(d2), Y(z2), X(d1), Y(z1),
                              fill="#ffb0b0" if bad else "#b0d8f0", outline="")
         c.create_text(w - 10, h - 4, anchor="se", font=F_TXT,
-                      text="WP%d -> WP%d: %.0f m, shallowest %s" % (i + 1, i + 2, L, "%.1f m" % min(deps) if deps
-                                                                     else "no data"))
+                      text=T("cap.pg_leg_profile", a=i + 1, b=i + 2, m="%.0f" % L,
+                             min="%.1f m" % min(deps) if deps else T("hud.no_data")))
 
     def prog_depth_check(self):
         """Every leg against the charts (the gateway checks the same before AUTO)."""
         if not self.charts:
-            return self.say("No chart files: python tools/chartprep.py (the gateway refuses AUTO without)", RED)
+            return self.say(T("cap.no_charts_auto"), RED)
         wps = self.prog["wps"]
         lim = self.shallow_limit()
         for k in range(len(wps) - 1):
@@ -1296,11 +1458,11 @@ class App:
             if bad:
                 self.map_mark = (bad[1], bad[2])
                 self.draw_profile(k)
-                self.say("Leg WP%d -> WP%d: %s at %.5f %.5f - shown on the map (red X)" % (
-                    k + 1, k + 2, bad[4], bad[1], bad[2]), RED)
+                self.say(T("cap.pg_leg_bad", a=k + 1, b=k + 2, why=i18n.from_en(bad[4]), lat="%.5f" % bad[1],
+                           lon="%.5f" % bad[2]), RED)
                 return False
         self.map_mark = None
-        self.say("Depth check OK: every leg deeper than %.1f m and 50 m from shallower water" % lim, GREEN)
+        self.say(T("cap.pg_depth_ok", m="%.1f" % lim), GREEN)
         return True
 
     def prog_add(self):
@@ -1335,38 +1497,38 @@ class App:
         self.prog_refresh()
 
     def prog_upload(self):
-        self.prog["final"] = proto.PROG_END.index(self.final_var.get())
+        self.prog["final"] = max(0, self.final_cb.current())
         problems = program.check(self.prog)
         if problems:
-            return self.say("Program: " + "; ".join(problems[:3]), RED)
+            return self.say(T("cap.pg_problems", list="; ".join(i18n.from_en(p) for p in problems[:3])), RED)
         if not self.link:
-            return self.say("Not connected", RED)
+            return self.say(T("cap.not_connected"), RED)
         if self.charts and not self.prog_depth_check():
             return                                          # refused here already (the gateway would too)
         frames = program.upload_frames(self.prog)
         for t, p in frames[:-1]:
             self.link.send(t, p)
-        self.cmd(frames[-1][0], frames[-1][1], "program upload (%d waypoints)" % len(self.prog["wps"]))
+        self.cmd(frames[-1][0], frames[-1][1], TE("what.program_upload", n=len(self.prog["wps"])))
 
     def prog_download(self):
         n = self.t["prog_n"] if self.t else 0
         if not self.link or n == 0:
-            return self.say("No program on the boat", RED)
+            return self.say(T("cap.pg_none_on_boat"), RED)
         self.prog_dl = []
         for i in range(n):
             self.link.send(proto.T_PROG_GET, struct.pack("<B", i))
 
     def prog_save(self):
         from tkinter import filedialog
-        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("program", "*.json")])
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[(T("cap.pg_filetype"), "*.json")])
         if path:
-            self.prog["final"] = proto.PROG_END.index(self.final_var.get())
+            self.prog["final"] = max(0, self.final_cb.current())
             program.save(self.prog, path)
-            self.say("Program saved: " + path)
+            self.say(T("cap.pg_saved", path=path))
 
     def prog_load(self):
         from tkinter import filedialog
-        path = filedialog.askopenfilename(filetypes=[("program", "*.json")])
+        path = filedialog.askopenfilename(filetypes=[(T("cap.pg_filetype"), "*.json")])
         if path:
             self.prog = program.load(path)
             self.prog_refresh()
@@ -1376,8 +1538,8 @@ class App:
         if self.link:
             self.link.stop()
             self.link = None
-            self.conn_btn.configure(text="Connect", bg="#b0ffb0")
-            self.say("Disconnected")
+            self.conn_btn.configure(text=T("cap.connect"), bg="#b0ffb0")
+            self.say(T("cap.disconnected"))
             return
         addr = self.port_var.get().strip()
         try:
@@ -1386,27 +1548,28 @@ class App:
                 if self.login:
                     user, pw = self.login
                 else:
-                    user = simpledialog.askstring("Gateway login", "User name:", parent=self.root)
-                    pw = simpledialog.askstring("Gateway login", "Password:", show="*", parent=self.root) if user else None
+                    user = simpledialog.askstring(T("cap.login_title"), T("cap.login_user"), parent=self.root)
+                    pw = simpledialog.askstring(T("cap.login_title"), T("cap.login_pw"), show="*",
+                                                parent=self.root) if user else None
                 if not user or pw is None:
                     return
                 self.link = GatewayLink(addr[3:], user, password=pw, station="ground station (%s)" % user, log=True)
                 w = self.link.start()
-                self.say("Logged in to the gateway as %s (%s, %s)" % (user, w["role"],
-                                                                      "on board" if w["local"] else "remote"), GREEN)
+                self.say(T("cap.logged_in", user=user, role=w["role"],
+                           where=T("cap.on_board") if w["local"] else T("cap.remote")), GREEN)
             else:
                 self.link = Link(addr)
                 self.link.start()
         except Exception as e:
             self.link = None
-            self.say("Cannot connect: %s" % e, RED)
+            self.say(T("cap.cannot_connect", err=e), RED)
             return
-        self.conn_btn.configure(text="Disconnect", bg="#ffb0b0")
+        self.conn_btn.configure(text=T("cap.disconnect"), bg="#ffb0b0")
         if self.port_var.get().startswith("tcp:"):
             self.sim_frame.pack(fill="x", pady=(8, 0))
         else:
             self.sim_frame.pack_forget()
-        self.log_lbl.configure(text="log: " + self.link.logger.path)
+        self.log_lbl.configure(text=T("cap.log", path=self.link.logger.path))
         self.root.after(500, self.read_params)
         self.jm_load = True
         self.root.after(700, lambda: self.link and self.link.send(proto.T_JOYMAP_GET))
@@ -1423,6 +1586,23 @@ class App:
         if self.driver:
             d, self.driver = self.driver, None
             d.destroy()
+            self.layout_changed()
+
+    # --- the separate MAP window (section C) ----------------------------------------------
+    def open_map(self):
+        if self.mapwin:
+            return
+        try:
+            import mapwin
+        except ImportError:
+            return self.say(T("cap.map_missing"), RED)
+        self.mapwin = mapwin.MapWindow(self, self.layout.get("map"))
+        self.layout_changed()
+
+    def close_map(self):
+        if self.mapwin:
+            m, self.mapwin = self.mapwin, None
+            m.destroy()
             self.layout_changed()
 
     def swap_screens(self):
@@ -1444,7 +1624,9 @@ class App:
         self._layout_job = None
         try:
             self.layout = {"captain": self.root.geometry(), "driver_open": self.driver is not None,
-                           "driver": self.driver.w.geometry() if self.driver else self.layout.get("driver")}
+                           "driver": self.driver.w.geometry() if self.driver else self.layout.get("driver"),
+                           "map_open": self.mapwin is not None,
+                           "map": self.mapwin.w.geometry() if self.mapwin else self.layout.get("map")}
             with open(self.layout_path, "w", encoding="utf-8") as f:
                 json.dump(self.layout, f)
         except (OSError, tk.TclError):
@@ -1459,22 +1641,19 @@ class App:
 
     def single_op_toggle(self, confirmed=None):
         if not isinstance(self.link, GatewayLink):
-            return self.say("Single-operator mode: only through the gateway", RED)
+            return self.say(T("cap.so_only_gw"), RED)
         if self.single_op:
             return self.link.send_msg({"t": "single_op", "on": False})
         if confirmed is None:
-            confirmed = messagebox.askyesno(
-                "SINGLE-OPERATOR MODE", "Nobody watches the driver screen?\n\nIn single-operator mode YOU confirm "
-                "every driving action yourself, on this screen. There is no second person checking it.\n\n"
-                "It switches off by itself when this station disconnects.\n\nSwitch it ON?", icon="warning")
+            confirmed = messagebox.askyesno(T("cap.so_title"), T("cap.so_q"), icon="warning")
         if confirmed:
             self.link.send_msg({"t": "single_op", "on": True})
 
     def on_single_op(self, on):
         if on != self.single_op:
-            self.event("SINGLE-OPERATOR mode %s" % ("ON" if on else "off"))
+            self.event(T("cap.ev_so_on") if on else T("cap.ev_so_off"))
         self.single_op = on
-        self.so_btn.configure(text="Single operator: ON" if on else "Single operator",
+        self.so_btn.configure(text=T("cap.single_op_on") if on else T("cap.single_op"),
                               bg="#d080ff" if on else PANEL)
         self.show(self.so_banner, on, row=5, column=0, columnspan=2, sticky="ew")
 
@@ -1486,7 +1665,8 @@ class App:
         self.gw_asks[i] = d["text"]
         send = lambda yes: isinstance(self.link, GatewayLink) and self.link.send_msg(
             {"t": "driver_answer", "id": i, "yes": yes})
-        self.driver.ask("%s\n(from %s)" % (d["text"], d.get("from", "?")), lambda why: send(True),
+        self.driver.ask(T("drv.ask_from", what=i18n.from_en(d["text"]), who=d.get("from", "?")),
+                        lambda why: send(True),
                         lambda why: send(False) if "closed" not in why and "done" not in why else None,
                         d.get("timeout_s", 10.0), tag=i)
 
@@ -1500,17 +1680,17 @@ class App:
         self.prop_tag = tag
         if not p or old == tag or not self.driver:
             return
-        self.event("avoidance proposal: %s" % p["text"])
-        self.driver.ask(p["text"], lambda why: self.avoid_answer(p["id"], True),
+        self.event(T("cap.ev_proposal", text=proposal_text(p)))
+        self.driver.ask(proposal_text(p), lambda why: self.avoid_answer(p["id"], True),
                         lambda why: self.avoid_answer(p["id"], False) if "closed" not in why and "done" not in why
-                        else None, 60.0, tag=tag, head="COLLISION AVOIDANCE proposes:")
+                        else None, 60.0, tag=tag, head=T("drv.head_avoid"))
 
     def avoid_answer(self, pid, yes):
         """ACCEPT / REJECT of the proposal (the gateway takes it only from a driver screen or single-operator)."""
         if pid is None:
             p = ((self.gw_status or {}).get("avoid") or {}).get("proposal")
             if not p:
-                return self.say("No avoidance proposal", RED)
+                return self.say(T("cap.no_proposal"), RED)
             pid = p["id"]
         if isinstance(self.link, GatewayLink):
             self.link.send_msg({"t": "avoid_answer", "id": pid, "yes": yes})
@@ -1525,12 +1705,11 @@ class App:
         if self.cconf is not None:
             self.cconf.destroy()
         w = tk.Toplevel(self.root, bg="#f0e0ff")
-        w.title("Confirm driving action")
+        w.title(T("cap.cc_title"))
         w.transient(self.root)
         self.cconf = w
-        tk.Label(w, text="SINGLE-OPERATOR MODE\nSend this driving action?", font=F_BIG, bg="#f0e0ff").pack(padx=20,
-                                                                                                      pady=10)
-        tk.Label(w, text=what, font=F_BIG, bg="#f0e0ff", fg="#7000a0").pack(padx=20, pady=6)
+        tk.Label(w, text=T("cap.cc_q"), font=F_BIG, bg="#f0e0ff").pack(padx=20, pady=10)
+        tk.Label(w, text=i18n.from_en(what), font=F_BIG, bg="#f0e0ff", fg="#7000a0").pack(padx=20, pady=6)
         left = tk.Label(w, text="", font=F_MED, bg="#f0e0ff")
         left.pack()
         b = tk.Frame(w, bg="#f0e0ff")
@@ -1544,10 +1723,10 @@ class App:
             if yes:
                 on_yes()
             else:
-                self.say("NOT SENT (not confirmed): " + what, RED)
+                self.say(T("cap.not_confirmed", what=i18n.from_en(what)), RED)
 
-        btn(b, "SEND", lambda: done(True), bg="#b0ffb0").pack(side="left", padx=8)
-        btn(b, "Cancel", lambda: done(False)).pack(side="left", padx=8)
+        btn(b, "cap.cc_send", lambda: done(True), bg="#b0ffb0").pack(side="left", padx=8)
+        btn(b, "cap.cancel", lambda: done(False)).pack(side="left", padx=8)
 
         def tick():
             if self.cconf is not w:
@@ -1555,82 +1734,83 @@ class App:
             s = deadline - time.time()
             if s <= 0:
                 return done(False)
-            left.configure(text="%.0f s - no answer = not sent" % s)
+            left.configure(text=T("cap.cc_left", s="%.0f" % s))
             w.after(250, tick)
         tick()
         self.cconf_send = lambda: done(True)            # tests
 
     def cmd(self, ftype, payload, what):
         if not self.link:
-            self.say("Not connected", RED)
+            self.say(T("cap.not_connected"), RED)
             return
         standby = ftype == proto.T_SET_MODE and payload[:1] == bytes([proto.MODE_STANDBY])
         if isinstance(self.link, GatewayLink) and proto.is_driving_cmd(ftype, payload):
             if self.single_op:
                 return self.captain_confirm(what, lambda: self._send_cmd(ftype, payload, what, confirm="self"))
             if self.driver:
-                self.say("waiting for the driver: " + what, ORANGE)
-            self.event("? driver asked: " + what)
+                self.say(T("cap.wait_driver", what=i18n.from_en(what)), ORANGE)
+            self.event(T("cap.ev_driver_asked", what=i18n.from_en(what)))
             return self._send_cmd(ftype, payload, what)          # the gateway asks the driver screen
         if self.driver and ftype in DRIVING_CMDS and not standby:
-            self.say("waiting for the driver: " + what, ORANGE)
-            self.event("? driver asked: " + what)
-            self.driver.ask(what, lambda why: self._send_cmd(ftype, payload, what),
-                            lambda why: (self.say("NOT SENT - %s: %s" % (why, what), RED),
-                                         self.event("x %s: %s" % (why, what))), self.confirm_timeout_s)
+            self.say(T("cap.wait_driver", what=i18n.from_en(what)), ORANGE)
+            self.event(T("cap.ev_driver_asked", what=i18n.from_en(what)))
+            self.driver.ask(i18n.from_en(what), lambda why: self._send_cmd(ftype, payload, what),
+                            lambda why: (self.say(T("cap.not_sent", why=i18n.from_en(why), what=i18n.from_en(what)),
+                                                  RED),
+                                         self.event("x %s: %s" % (i18n.from_en(why), i18n.from_en(what)))),
+                            self.confirm_timeout_s)
             return
         self._send_cmd(ftype, payload, what)
 
     def _send_cmd(self, ftype, payload, what, confirm=None):
         if not self.link:
-            return self.say("Not connected", RED)
+            return self.say(T("cap.not_connected"), RED)
         if isinstance(self.link, GatewayLink):
             seq = self.link.send(ftype, payload, what=what, confirm=confirm)
         else:
             seq = self.link.send(ftype, payload)
         self.pending[seq] = what
-        self.event("> " + what)
+        self.event("> " + i18n.from_en(what))
 
     def mode(self, m):
-        self.cmd(proto.T_SET_MODE, proto.p_set_mode(m), "mode " + proto.MODES[m])
+        self.cmd(proto.T_SET_MODE, proto.p_set_mode(m), TE("what.mode", mode=proto.MODES[m]))
 
     # --- power limit raise ------------------------------------------------------
     def power_dialog(self, direction):
         """Ask the boat for a code, show it, the user types it back, then the
         joystick CONFIRM within 10 s does one step up."""
         if not self.link:
-            return self.say("Not connected", RED)
+            return self.say(T("cap.not_connected"), RED)
         if self.pdlg is not None:
             self.pdlg.destroy()
-        self.cmd(proto.T_POWER_CODE, proto.p_power_code(direction), "power code (%s)" % ("fwd", "rev")[direction])
+        self.cmd(proto.T_POWER_CODE, proto.p_power_code(direction), TE("what.power_code", dir=("fwd", "rev")[direction]))
         d = tk.Toplevel(self.root, bg=BG)
-        d.title("Raise the power limit")
+        d.title(T("cap.pw_title"))
         d.transient(self.root)
         self.pdlg = d
         self.pdlg_dir = direction
-        tk.Label(d, text="Raise the %s power limit ONE step" % ("FORWARD", "REVERSE")[direction], font=F_BIG,
+        tk.Label(d, text=T("cap.pw_head_%s" % ("fwd", "rev")[direction]), font=F_BIG,
                  bg=BG).pack(padx=20, pady=(14, 4))
-        tk.Label(d, text="1. Type the code shown by the boat:", font=F_MED, bg=BG).pack(anchor="w", padx=20)
+        lbl(d, "cap.pw_step1", font=F_MED, bg=BG).pack(anchor="w", padx=20)
         self.pdlg_code = tk.Label(d, text="....", font=("Consolas", 40, "bold"), bg="#ffffe0")
         self.pdlg_code.pack(padx=20, pady=6)
         self.pdlg_var = tk.StringVar()
         e = tk.Entry(d, textvariable=self.pdlg_var, font=("Consolas", 32, "bold"), width=6, justify="center")
         e.pack(pady=4)
         e.focus_set()
-        tk.Label(d, text="2. Then press CONFIRM on the joystick within 10 s (stick centred).", font=F_MED,
-                 bg=BG).pack(anchor="w", padx=20, pady=(8, 4))
+        lbl(d, "cap.pw_step2", font=F_MED, bg=BG).pack(anchor="w", padx=20, pady=(8, 4))
         b = tk.Frame(d, bg=BG)
         b.pack(pady=12)
-        btn(b, "Send code", self.power_send, bg="#ffd000").pack(side="left", padx=6)
-        btn(b, "Cancel", self.power_close).pack(side="left", padx=6)
+        btn(b, "cap.pw_send", self.power_send, bg="#ffd000").pack(side="left", padx=6)
+        btn(b, "cap.cancel", self.power_close).pack(side="left", padx=6)
         e.bind("<Return>", lambda _ev: self.power_send())
 
     def power_send(self):
         try:
             code = int(self.pdlg_var.get())
         except ValueError:
-            return self.say("Type the 4-digit code", RED)
-        self.cmd(proto.T_POWER_RAISE, proto.p_power_raise(self.pdlg_dir, code), "power raise (code %d)" % code)
+            return self.say(T("cap.pw_type_code"), RED)
+        self.cmd(proto.T_POWER_RAISE, proto.p_power_raise(self.pdlg_dir, code), TE("what.power_raise", code=code))
         self.power_close()
 
     def power_close(self):
@@ -1639,13 +1819,13 @@ class App:
             self.pdlg = None
 
     def info_manual(self):
-        self.say("MANUAL: move the joystick or press TAKE (the PC can't select it)")
+        self.say(T("cap.info_manual"))
 
     def info_hdg(self):
-        self.say("HDG LOCK: press the HDG LOCK button on the panel (the PC can't select it)")
+        self.say(T("cap.info_hdg"))
 
     def auto_start(self):
-        self.cmd(proto.T_AUTO_START, b"", "AUTO start")
+        self.cmd(proto.T_AUTO_START, b"", TE("what.auto_start"))
 
     def sim_confirm(self):
         """Simulator: press and release the joystick CONFIRM (stick centred)."""
@@ -1661,8 +1841,8 @@ class App:
         try:
             full = float(self.full_var.get())
         except ValueError:
-            return self.say("Full angle: enter a number (0 = unknown)", RED)
-        self.cmd(proto.T_TRAINING, proto.p_training(1, full), "training accept")
+            return self.say(T("cap.full_angle_num"), RED)
+        self.cmd(proto.T_TRAINING, proto.p_training(1, full), TE("what.training_accept"))
 
     def read_params(self):
         if self.link:
@@ -1672,13 +1852,14 @@ class App:
     def write_param(self):
         sel = self.ptree.selection()
         if not sel:
-            return self.say("Select a parameter first", RED)
+            return self.say(T("cap.select_param"), RED)
         try:
             v = float(self.pval_var.get())
         except ValueError:
-            return self.say("Enter a number", RED)
+            return self.say(T("cap.enter_number"), RED)
         pid = int(sel[0])
-        self.cmd(proto.T_PARAM_SET, proto.p_param_set(pid, v), "set %s = %g" % (self.params[pid]["name"], v))
+        self.cmd(proto.T_PARAM_SET, proto.p_param_set(pid, v), TE("what.set_param", name=self.params[pid]["name"],
+                                                                     v="%g" % v))
 
     def zoom(self, k):
         self.map_m_per_px = min(400.0, max(0.1, self.map_m_per_px * k))
@@ -1694,7 +1875,7 @@ class App:
         self.pg_vars["lat"].set("%.6f" % lat)
         self.pg_vars["lon"].set("%.6f" % lon)
         self.prog_add()
-        self.say("Waypoint %d added (Program tab), not uploaded yet" % len(self.prog["wps"]))
+        self.say(T("cap.wp_added", n=len(self.prog["wps"])))
 
     # --- feedback ----------------------------------------------------------------
     def say(self, text, color="#202020"):
@@ -1727,9 +1908,11 @@ class App:
                     if d["cmd"] == proto.T_PARAM_GET and d["result"] == 10:
                         continue                # "Read all" probes past the last id
                     if what is not None or not d["ok"]:
-                        txt = "%s: %s" % (what or d["cmd_name"], d["text"])
+                        txt = "%s: %s" % (i18n.from_en(what) if what else d["cmd_name"], alerts.result_text(d))
                         self.say(txt, GREEN if d["ok"] else RED)
                         self.event(("OK   " if d["ok"] else "NACK ") + txt)
+                        if self.sound and what is not None:
+                            self.sound.feedback("fb.confirm" if d["ok"] else "fb.refuse")
                 elif kind == "param":
                     self.on_param(d)
                 elif kind == "prog_wp":
@@ -1737,11 +1920,13 @@ class App:
                     if len(self.prog_dl) >= d["n"]:
                         self.prog = program.from_wp_values(self.prog_dl)
                         self.prog_refresh()
-                        self.say("Program downloaded (%d waypoints)" % len(self.prog["wps"]), GREEN)
+                        self.say(T("cap.pg_downloaded", n=len(self.prog["wps"])), GREEN)
                 elif kind == "prog_error":
-                    where = "" if d["index"] == 255 else " at waypoint %d" % (d["index"] + 1)
-                    self.say("PROGRAM REFUSED: %s%s" % (d["text"], where), RED)
-                    self.event("program refused: %s%s" % (d["text"], where))
+                    where = "" if d["index"] == 255 else T("cap.pg_at_wp", n=d["index"] + 1)
+                    why = T("prog.err_%d" % d["error"]) if i18n.has("prog.err_%d" % d["error"], "en") \
+                        else d["text"]
+                    self.say(T("cap.pg_refused", why=why, where=where), RED)
+                    self.event(T("cap.pg_refused", why=why, where=where))
                 elif kind == "joymap":
                     self.on_joymap(d)
                 elif kind == "joy_raw":
@@ -1760,6 +1945,8 @@ class App:
                     self.draw_vision()
                     self.drv_vision()
                     self.drv_proposal()
+                    if self.callouts:
+                        self.callouts.gw(d)
                 elif kind == "channel_ack":
                     self.on_channel_ack(d)
                 elif kind == "cams_ack":
@@ -1767,11 +1954,11 @@ class App:
                 elif kind == "save_ack":
                     self.on_save_ack(d)
                 elif kind == "vision_ack":
-                    self.say("Vision: %s" % d.get("text", ""), GREEN if d.get("ok") else RED)
-                    self.event("vision: %s" % d.get("text", ""))
+                    self.say(T("cap.vis_msg", text=i18n.from_en(d.get("text", ""))), GREEN if d.get("ok") else RED)
+                    self.event(T("cap.ev_vision", text=i18n.from_en(d.get("text", ""))))
                 elif kind == "avoid_ack":
-                    self.say("Proposal: %s" % d.get("text", ""), GREEN if d.get("ok") else RED)
-                    self.event("avoidance proposal: %s" % d.get("text", ""))
+                    self.say(T("cap.prop_msg", text=i18n.from_en(d.get("text", ""))), GREEN if d.get("ok") else RED)
+                    self.event(T("cap.ev_proposal", text=i18n.from_en(d.get("text", ""))))
                 elif kind == "driver_ask":
                     self.on_driver_ask(d)
                 elif kind == "driver_ask_done":
@@ -1779,11 +1966,11 @@ class App:
                 elif kind == "single_op_ack":
                     self.on_single_op(bool(d.get("on")))
                 elif kind == "status":
-                    self.say(d, RED if "DISCONNECTED" in d else "#202020")
-                    self.event(d)
+                    self.say(i18n.from_en(d), RED if "DISCONNECTED" in d else "#202020")
+                    self.event(i18n.from_en(d))
             age = time.time() - self.t_rx if self.t_rx else 99
             ok = self.link.connected and age < 1.0
-            self.link_lbl.configure(text="link: OK" if ok else "link: NO DATA", fg=GREEN if ok else RED)
+            self.link_lbl.configure(text=T("cap.link_ok") if ok else T("cap.link_nodata"), fg=GREEN if ok else RED)
         self.root.after(50, self.poll)
 
     def on_param(self, d):
@@ -1815,11 +2002,13 @@ class App:
                 if len(self.track) > 5000:
                     self.track.pop(0)
         if prev and prev["mode"] != d["mode"]:
-            self.event("mode %s -> %s" % (prev["mode_name"], d["mode_name"]))
+            self.event(T("cap.ev_mode", a=T("mode." + prev["mode_name"]), b=T("mode." + d["mode_name"])))
         if prev and prev["alarm_bits"] != d["alarm_bits"]:
             new = d["alarm_bits"] & ~prev["alarm_bits"]
             if new:
-                self.event("ALARM: " + ", ".join(proto.alarm_texts(new)))
+                self.event(T("cap.alarm_banner", list=", ".join(alerts.texts(new))))
+        if self.callouts:
+            self.callouts.telem(prev, d)
         # draw at most 10 times per second
         if not prev or d["t_ms"] - getattr(self, "_drawn", 0) >= 100 or d["t_ms"] < getattr(self, "_drawn", 0):
             self._drawn = d["t_ms"]
@@ -1829,123 +2018,121 @@ class App:
     def draw(self):
         d = self.t
         mode = d["mode_name"]
-        self.mode_lbl.configure(text=mode, bg=MODE_COLORS.get(mode, "#606060"))
+        self.mode_lbl.configure(text=T("mode." + mode), bg=MODE_COLORS.get(mode, "#606060"))
         v = self.vals
-        v["heading"].configure(text="%05.1f°" % d["heading"] if d["compass_ok"] else "NO COMPASS",
+        v["heading"].configure(text="%05.1f°" % d["heading"] if d["compass_ok"] else T("cap.no_compass"),
                                fg=FG if d["compass_ok"] else RED)
         v["target"].configure(text="%05.1f°" % d["target"])
         v["yaw"].configure(text="%+.1f °/s" % d["yaw_rate"])
         v["outboard"].configure(text="%+.1f°" % d["outboard"])
         v["throttle"].configure(text="%.0f %%" % d["throttle"] if d["throttle_demand"] <= d["throttle"] + 0.5
-                                else "%.0f %% (asked %.0f)" % (d["throttle"], d["throttle_demand"]))
-        self.power_lbl.configure(text="POWER LIMIT %.0f %% / R %.0f %%" % (d["power_fwd"], d["power_rev"]),
+                                else T("cap.thr_asked", thr="%.0f" % d["throttle"], ask="%.0f" % d["throttle_demand"]))
+        self.power_lbl.configure(text=T("cap.power_lbl", f="%.0f" % d["power_fwd"], r="%.0f" % d["power_rev"]),
                                  bg="#ffc080" if d["power_raised"] else "#d0ffd0")
         if self.pdlg is not None:
             ok = d["power_code"] and d["power_code_dir"] == self.pdlg_dir
             self.pdlg_code.configure(text="%04d" % d["power_code"] if ok else "....")
-        v["gear"].configure(text=proto.GEARS[d["gear"]] if d["gear"] < 3 else "?",
+        v["gear"].configure(text=T("gear.%d" % d["gear"]) if d["gear"] < 3 else "?",
                             fg={0: FG, 1: GREEN, 2: RED}.get(d["gear"], FG))
-        v["gps"].configure(text="FIX" if d["gps_fix"] else "NO FIX", fg=GREEN if d["gps_fix"] else RED)
+        v["gps"].configure(text=T("cap.fix") if d["gps_fix"] else T("cap.no_fix"), fg=GREEN if d["gps_fix"] else RED)
         v["pos"].configure(text="%.6f  %.6f" % (d["est_lat"], d["est_lon"]))
         v["sog"].configure(text="%.1f kn  %03.0f°" % (d["est_sog"], d["est_cog"]))
-        src = proto.POS_SOURCES[d["pos_source"]] if d["pos_source"] < 4 else "?"
+        src = T("pos.%d" % d["pos_source"]) if d["pos_source"] < 4 else "?"
         if d["pos_source"] in (2, 3):
-            src += " (%s, %.0f s)" % (proto.DR_REASONS[min(d["dr_reason"], len(proto.DR_REASONS) - 1)], d["dr_time_s"])
+            src += " (%s, %.0f s)" % (T("dr.%d" % min(d["dr_reason"], len(proto.DR_REASONS) - 1)), d["dr_time_s"])
         v["src"].configure(text=src, fg=FG if d["pos_source"] == 1 else RED)
         v["unc"].configure(text="± %.0f m" % d["unc_m"])
         v["drift"].configure(text="%03.0f° %.2f kn (%.0f %%)" % (d["set_deg"], d["drift_kn"], 100 * d["current_conf"]))
-        v["current"].configure(text="%.1f A" % d["motor_current"] if d["motor_current"] >= 0 else "no sensor")
+        v["current"].configure(text="%.1f A" % d["motor_current"] if d["motor_current"] >= 0 else T("cap.no_sensor"))
         v["cruise"].configure(text="%.1f kn" % d["speed_set_kn"] if d["mode"] == proto.MODE_AUTO else "-")
         v["wp"].configure(text="%d/%d  %.1f kn" % (d["auto_wp"] + 1, d["prog_n"], d["wp_kn"]) if d["prog_ok"]
-                          else "no program")
+                          else T("cap.no_program"))
         for name, b in self.mode_btns.items():
             on = mode == name
             b.configure(bg=MODE_COLORS[name] if on else PANEL, fg="#ffffff" if on else FG)
-        st = proto.AUTO_STATES[d["auto_state"]] if d["auto_state"] < 4 else "?"
+        st = T("auto.%d" % d["auto_state"]) if d["auto_state"] < 4 else "?"
         if not d["prog_ok"]:
-            txt = "no program on the boat"
+            txt = T("cap.no_program_boat")
         elif d["mode"] == proto.MODE_AUTO:
-            txt = "waypoint %d of %d, %s" % (d["auto_wp"] + 1, d["prog_n"], st)
+            txt = T("cap.auto_wp", n=d["auto_wp"] + 1, of=d["prog_n"], state=st)
             if d["speed_limited"]:
-                txt += "\nSPEED LIMITED BY POWER LIMIT"
+                txt += "\n" + T("cap.speed_limited")
         elif d["prog_suspended"]:
-            txt = "program interrupted at waypoint %d: Resume + CONFIRM" % (d["auto_wp"] + 1)
+            txt = T("cap.prog_interrupted", n=d["auto_wp"] + 1)
         elif d["prog_finished"]:
-            txt = "program finished"
+            txt = T("cap.prog_finished")
         else:
-            txt = "%d waypoints stored" % d["prog_n"]
+            txt = T("cap.prog_stored", n=d["prog_n"])
         self.auto_lbl.configure(text=txt)
         if d["mode"] == proto.MODE_TRAINING:
-            tr = proto.TRAIN_STAGES[min(d["train_stage"], 2)]
+            tr = T("train.stage_%d" % min(d["train_stage"], 2))
             if d["train_stage"] >= 1:
-                tr += " / " + proto.TRAIN_PHASES[min(d["train_phase"], 10)]
+                tr += " / " + T("train.phase_%d" % min(d["train_phase"], 10))
         else:
-            tr = "last: " + proto.TRAIN_RESULTS[min(d["train_result"], 11)]
+            tr = T("cap.train_last", r=T("train.result_%d" % min(d["train_result"], 11)))
         v["train"].configure(text=tr)
 
         # banners
         if d["confirm_kind"]:
-            self.joy_banner.configure(text="PRESS JOYSTICK CONFIRM - %s - %.0f s" % (
-                proto.CONFIRM_KINDS[min(d["confirm_kind"], len(proto.CONFIRM_KINDS) - 1)],
-                d["confirm_left_s"]), bg="#ffd000")
+            self.joy_banner.configure(text=T("cap.confirm_banner", what=T("confirm.%d" % min(
+                d["confirm_kind"], len(proto.CONFIRM_KINDS) - 1)), s="%.0f" % d["confirm_left_s"]), bg="#ffd000")
         elif d["mode"] == proto.MODE_REMOTE:
             st = d.get("remote_state", 1)
-            self.joy_banner.configure(
-                text="REMOTE DRIVING LINK LOST - idle, neutral, holding heading" if st == 2 else
-                "REMOTE DRIVING (shore joystick) - onboard joystick / STANDBY take over", bg=RED if st == 2 else BLUE)
+            self.joy_banner.configure(text=T("cap.remote_lost_banner") if st == 2 else T("cap.remote_banner"),
+                                      bg=RED if st == 2 else BLUE)
         else:
-            self.joy_banner.configure(text="JOYSTICK IN CONTROL", bg=ORANGE)
+            self.joy_banner.configure(text=T("cap.joy_in_control"), bg=ORANGE)
         self.show(self.joy_banner, d["mode"] in (proto.MODE_MANUAL, proto.MODE_REMOTE) or d["confirm_kind"] != 0,
                   row=0, column=0, columnspan=2, sticky="ew")
-        alarms = proto.alarm_texts(d["alarm_bits"])
+        alarms = alerts.texts(d["alarm_bits"])
         on = d["alarm"] or bool(alarms)
         if on:
-            self.alarm_banner.configure(text="ALARM: " + (", ".join(alarms) if alarms else "autopilot"))
+            self.alarm_banner.configure(text=T("cap.alarm_banner", list=", ".join(alarms) if alarms
+                                               else T("cap.alarm_autopilot")))
         self.show(self.alarm_banner, on, row=1, column=0, sticky="ew")
         self.show(self.alarm_ack, on, row=1, column=1, sticky="ns")
         pick = d["pickup"] and d["mode"] in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK)
         if pick:
             tgt = d["pickup_target"]
-            self.pick_banner.configure(text="MOVE THROTTLE TO PICK UP:  lever to %s   (now %.0f %%)" % (
-                "%.0f %%" % (100 * tgt) if tgt is not None else
-                "NEUTRAL (%.0f-%.0f %%)" % (100 * d["nz_lo"], 100 * d["nz_hi"]),
-                100 * (d["lever"] or 0.0)))
+            self.pick_banner.configure(text=T("cap.pickup_banner", to="%.0f %%" % (100 * tgt) if tgt is not None else
+                                              T("cap.pickup_neutral", lo="%.0f" % (100 * d["nz_lo"]),
+                                                hi="%.0f" % (100 * d["nz_hi"])),
+                                              now="%.0f" % (100 * (d["lever"] or 0.0))))
         self.show(self.pick_banner, pick, row=2, column=0, columnspan=2, sticky="ew")
         self.show(self.ft_banner, bool(d.get("first_test")), row=6, column=0, columnspan=2, sticky="ew")
 
-        per = ((50000, "core 0  control 20 Hz"), (1000, "CPU1    monitor 1 kHz"), (10000, "core 2  logger"))
+        per = ((50000, "cap.sys_core0"), (1000, "cap.sys_cpu1"), (10000, "cap.sys_core2"))
         keys = (("t_core0_avg", "t_core0_max", "ovr_core0"), ("t_mon_avg", "t_mon_max", "ovr_mon"),
                 ("t_log_avg", "t_log_max", "ovr_log"))
-        lines = ["%-22s %8s %8s %7s %9s" % ("", "avg us", "max us", "max %", "overruns")]
+        lines = ["%-22s %8s %8s %7s %9s" % ("", T("cap.sys_avg"), T("cap.sys_max"), T("cap.sys_maxpc"),
+                                           T("cap.sys_overruns"))]
         for (p, name), (ka, km, ko) in zip(per, keys):
-            lines.append("%-22s %8d %8d %6.1f%% %9d" % (name, d[ka], d[km], 100.0 * d[km] / p, d[ko]))
+            lines.append("%-22s %8d %8d %6.1f%% %9d" % (T(name), d[ka], d[km], 100.0 * d[km] / p, d[ko]))
         lines.append("")
-        lines.append("link: %d frames received, %d CRC errors" % (d["rx_frames"], d["rx_crc_errors"]))
-        lines.append("log:  SD card %s, %s, %d files, %d records dropped" % (
-            "present" if d["log_flags"] & 2 else "MISSING", "LOG FAILURE" if d["log_flags"] & 1 else "writing",
-            d["log_files"], d["log_dropped"]))
+        lines.append(T("cap.sys_link", n=d["rx_frames"], crc=d["rx_crc_errors"]))
+        lines.append(T("cap.sys_log", sd=T("cap.sd_present") if d["log_flags"] & 2 else T("cap.sd_missing"),
+                       state=T("cap.log_failure") if d["log_flags"] & 1 else T("cap.log_writing"),
+                       n=d["log_files"], dropped=d["log_dropped"]))
         hid = d.get("helm")
         if hid is not None:
-            name = {0: "nobody", 1: "USB laptop (on board)"}.get(hid, "station %d" % hid)
+            name = {0: T("cap.helm_nobody"), 1: T("cap.helm_usb")}.get(hid, T("cap.helm_station", n=hid))
             if self.gw_status and self.gw_status.get("helm"):
                 name = self.gw_status["helm"]["name"]
             mine = (self.gw_status or {}).get("you")
             me = (hid == mine) if mine else (hid == 1 and isinstance(self.link, Link))
-            self.helm_lbl.configure(text="HELM: %s%s" % ("YOU - " if me else "", name),
+            self.helm_lbl.configure(text=T("cap.helm_you", who=name) if me else T("cap.helm", who=name),
                                     bg="#b0ffb0" if me else ("#ffd080" if hid else PANEL))
         if self.gw_status:
             lines.append("")
-            lines.append("stations on the gateway (latency = round trip):")
+            lines.append(T("cap.sys_stations"))
             for st in self.gw_status.get("stations", []):
-                lines.append("  %-3d %-24s %-7s %-7s %6s ms  telemetry %s%s" % (
-                    st["id"], st["name"][:24], st["role"], "on board" if st["local"] else "remote",
-                    st["rtt_ms"] if st["rtt_ms"] is not None else "-", st["tmode"],
-                    "   <- you" if st["id"] == self.gw_status.get("you") else ""))
+                lines.append("  %-3d %-24s %-7s %-7s %6s ms  %s %s%s" % (
+                    st["id"], st["name"][:24], st["role"], T("cap.on_board") if st["local"] else T("cap.remote"),
+                    st["rtt_ms"] if st["rtt_ms"] is not None else "-", T("cap.sys_telemetry"), st["tmode"],
+                    T("cap.sys_you") if st["id"] == self.gw_status.get("you") else ""))
         if "gw_state" in d:
-            lines.append("gateway (Pi): %s, %d station(s); Pi log copy up to record %d, %d gaps; "
-                         "dropped for the Pi %d, not sent (no Pi) %d" % (
-                             d["gw_state_name"], d["gw_stations"], d["pi_log_seq"], d["pi_log_gaps"],
-                             d["log_dropped_pi"], d["log_skipped"]))
+            lines.append(T("cap.sys_gw", state=d["gw_state_name"], n=d["gw_stations"], seq=d["pi_log_seq"],
+                           gaps=d["pi_log_gaps"], dropped=d["log_dropped_pi"], skipped=d["log_skipped"]))
         self.sys_lbl.configure(text="\n".join(lines))
 
         self.draw_joystick(d)
@@ -1969,23 +2156,24 @@ class App:
         y = s / 2 - d["joy_y"] * (s / 2 - 8)
         c.create_oval(x - 9, y - 9, x + 9, y + 9, fill=col, outline=FG, width=2)
         self.draw_lever(d)
-        txt = proto.JOY_STATUS[st] if st < 4 else "?"
+        txt = T("joy.st_%d" % st) if st < 4 else "?"
         if st == 3 or (st == 1 and d["joy_why"]):
-            txt += "\n" + d["joy_why_text"]
+            txt += "\n" + joy_why(d)
         elif st == 1:
-            txt = "NOT IN NEUTRAL / not armed" if d["has_lever"] else txt
+            txt = T("joy.not_neutral") if d["has_lever"] else txt
         self.joy_status.configure(text="%s\nX %+.2f  Y %+.2f" % (txt, d["joy_x"], d["joy_y"]),
                                   fg=RED if st in (1, 3) else FG)
         if d["usb"]:
-            ok = lambda b: "OK" if b else "UNPLUGGED"
-            src = "USB bridge: %d frames/s, CRC errors %d\nstick %s, throttle %s%s" % (
-                d["usb_fps"], d["usb_crc"], ok(d["usb_dev0"]), ok(d["usb_dev1"]),
-                ", LEARN MODE" if d["usb_learn"] else ", starting" if d["usb_starting"] else "")
+            ok = lambda b: T("cap.ok") if b else T("joy.unplugged")         # noqa: E731
+            src = T("joy.usb_src", fps=d["usb_fps"], crc=d["usb_crc"], stick=ok(d["usb_dev0"]),
+                    thr=ok(d["usb_dev1"])) + (T("joy.learn") if d["usb_learn"] else
+                                              T("joy.starting") if d["usb_starting"] else "")
         else:
-            src = "analog joystick (wired)"
+            src = T("joy.analog")
         self.joy_src.configure(text=src, fg=RED if d["usb"] and not (d["usb_dev0"] and d["usb_dev1"]) else FG)
-        self.joy_btns.configure(text="TAKE %s  AUTO %s  CONFIRM %s" % (
-            "■" if d["joy_take"] else "□", "■" if d["joy_auto"] else "□", "■" if d["joy_confirm"] else "□"))
+        self.joy_btns.configure(text="%s %s  %s %s  %s %s" % (
+            T("jm.0"), "■" if d["joy_take"] else "□", T("jm.1"), "■" if d["joy_auto"] else "□",
+            T("jm.2"), "■" if d["joy_confirm"] else "□"))
         self.draw_joytab(d)
 
     def draw_lever(self, d):
@@ -1995,7 +2183,7 @@ class App:
         c.delete("all")
         h, w = 130, 54
         if d["lever"] is None:
-            c.create_text(w / 2, h / 2, text="no\nlever", font=F_TXT, justify="center")
+            c.create_text(w / 2, h / 2, text=T("joy.no_lever"), font=F_TXT, justify="center")
             return
         top, bot = 12, h - 12
 
@@ -2006,8 +2194,8 @@ class App:
         pick = d["pickup"] and d["mode"] in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK)
         nz_col = "#ffd000" if pick and d["pickup_target"] is None else "#a0a0a0"
         c.create_rectangle(16, Y(d["nz_hi"]), w - 16, Y(d["nz_lo"]), fill=nz_col, outline="")
-        c.create_text(w / 2, 6, text="F", font=F_TXT)
-        c.create_text(w / 2, h - 5, text="R", font=F_TXT)
+        c.create_text(w / 2, 6, text=T("gear.1"), font=F_TXT)
+        c.create_text(w / 2, h - 5, text=T("gear.2"), font=F_TXT)
         if pick and d["pickup_target"] is not None:
             ty = Y(d["pickup_target"])
             c.create_polygon(w - 14, ty, w - 2, ty - 7, w - 2, ty + 7, fill="#ffd000", outline=FG)
@@ -2021,9 +2209,9 @@ class App:
         self.jm_thr.set(m["thr_input"])
         for k in ("nz_lo", "nz_hi", "lever_delta", "pickup_win"):
             self.jm_vars[k].set("%g" % round(100 * m[k], 1))
-        names = [proto.axis_name(m["axis_steer"]) + (" inverted" if m["inv_steer"] else ""),
-                 proto.axis_name(m["axis_thr"]) + (" inverted" if m["inv_thr"] else "")]
-        names += [proto.code_name(cd) for cd in m["btn"]]
+        names = [ui_axis_name(m["axis_steer"]) + (T("joy.inverted") if m["inv_steer"] else ""),
+                 ui_axis_name(m["axis_thr"]) + (T("joy.inverted") if m["inv_thr"] else "")]
+        names += [ui_code_name(cd) for cd in m["btn"]]
         for (lbl, _), n in zip(self.jm_rows, names):
             lbl.configure(text=n)
 
@@ -2040,21 +2228,21 @@ class App:
 
     def jm_read(self):
         self.jm_load = True
-        self.cmd(proto.T_JOYMAP_GET, b"", "joystick map read")
+        self.cmd(proto.T_JOYMAP_GET, b"", TE("what.joymap_read"))
 
     def jm_default(self):
         self.jm_edit = proto.default_joymap(self.jm_src.get())
         self.jm_to_widgets()
-        self.say("Factory map in the editor (T.16000M + TWCS) - SAVE TO BOAT to use it")
+        self.say(T("cap.jm_factory"))
 
     def jm_save(self):
         m = self.jm_from_widgets()
         err = proto.check_joymap(m)
         if err:
-            return self.say("Map not sent: " + err, RED)
+            return self.say(T("cap.jm_not_sent", why=i18n.from_en(err)), RED)
         if self.t and self.t["mode"] != proto.MODE_STANDBY:
-            return self.say("Map not sent: the boat must be in STANDBY", RED)
-        self.cmd(proto.T_JOYMAP_SET, proto.p_joymap_set(m, True), "joystick map save")
+            return self.say(T("cap.jm_not_sent", why=T("cap.jm_standby")), RED)
+        self.cmd(proto.T_JOYMAP_SET, proto.p_joymap_set(m, True), TE("what.joymap_save"))
 
     def on_joymap(self, d):
         self.jmap = d
@@ -2097,19 +2285,19 @@ class App:
         return False
 
     def draw_joytab(self, d):
+        con = lambda b: "%-10s" % (T("joy.connected") if b else T("joy.unplugged"))         # noqa: E731
         if d["usb"]:
-            lines = ["source: USB bridge (Teensy)     frames/s %3d     CRC errors %d" % (d["usb_fps"], d["usb_crc"]),
-                     "stick %-10s throttle %-10s hub %-4s %s" % (
-                         "connected" if d["usb_dev0"] else "UNPLUGGED", "connected" if d["usb_dev1"] else "UNPLUGGED",
-                         "yes" if d["usb_hub"] else "no", "LEARN MODE (joystick disarmed)" if d["usb_learn"] else "")]
+            lines = [T("joy.tab_usb", fps="%3d" % d["usb_fps"], crc=d["usb_crc"]),
+                     T("joy.tab_devs", stick=con(d["usb_dev0"]), thr=con(d["usb_dev1"]),
+                       hub="%-4s" % (T("cap.yes") if d["usb_hub"] else T("cap.no")),
+                       learn=T("joy.tab_learn") if d["usb_learn"] else "")]
         else:
-            lines = ["source: analog joystick (wired)", ""]
+            lines = [T("joy.tab_analog"), ""]
         st = d["joy_status"]
-        lines.append("joystick: %s %s" % (proto.JOY_STATUS[st] if st < 4 else "?", d["joy_why_text"]))
+        lines.append(T("joy.tab_status", st=T("joy.st_%d" % st) if st < 4 else "?", why=joy_why(d)))
         if d["lever"] is not None:
-            lines.append("lever %.0f %%   neutral zone %.0f-%.0f %%   %s" % (
-                100 * d["lever"], 100 * d["nz_lo"], 100 * d["nz_hi"],
-                "PICKUP PENDING" if d["pickup"] else ""))
+            lines.append(T("joy.tab_lever", lever="%.0f" % (100 * d["lever"]), lo="%.0f" % (100 * d["nz_lo"]),
+                           hi="%.0f" % (100 * d["nz_hi"]), pickup=T("joy.pickup_pending") if d["pickup"] else ""))
         self.jl_lbl.configure(text="\n".join(lines), fg=RED if st in (1, 3) else FG)
         m = self.jm_edit
         for i, (_, now) in enumerate(self.jm_rows):
@@ -2118,23 +2306,15 @@ class App:
                 continue
             code = m["btn"][i - 2]
             on = d["usb"] and code and self.code_now(d, code)
-            now.configure(text="■ PRESSED" if on else "", fg=GREEN)
+            now.configure(text=T("joy.pressed") if on else "", fg=GREEN)
 
     # --- guided button mapping ------------------------------------------------------
-    PROMPTS = {
-        "axis_steer": "Move the STICK fully to the RIGHT and hold it there, then click Next.",
-        "axis_thr_lever": "Push the THROTTLE LEVER fully FORWARD and hold it there, then click Next.",
-        "axis_thr_y": "Push the STICK fully FORWARD and hold it there, then click Next.",
-    }
-    HINTS = ["stick trigger", "a TWCS button", "a different TWCS button, clearly apart from AUTO",
-             "a TWCS button", "an extra stick button", "throttle hat LEFT", "throttle hat RIGHT",
-             "throttle hat DOWN", "throttle hat UP", "an extra stick button (video SAVE, optional - skip = not used)"]
 
     def wiz_start(self, steps):
         if not self.t or not self.t["usb"]:
-            return self.say("Mapping needs the USB bridge as the source (save the source first)", RED)
+            return self.say(T("wiz.need_usb"), RED)
         if self.t["mode"] != proto.MODE_STANDBY:
-            return self.say("Mapping only in STANDBY", RED)
+            return self.say(T("wiz.only_standby"), RED)
         self.jm_from_widgets()
         full = steps is None
         if full:
@@ -2151,25 +2331,22 @@ class App:
         st = self.wiz_step()
         if st is None:
             err = proto.check_joymap(self.jm_edit)
-            self.wiz_lbl.configure(text="Mapping finished. Check the table, press STANDBY (panel) if a button took control, then SAVE TO BOAT." if not err
-                                   else "Mapping finished, but: " + err)
+            self.wiz_lbl.configure(text=T("wiz.finished") if not err else T("wiz.finished_but", err=i18n.from_en(err)))
             self.wiz_info.configure(text="")
-            self.wiz_next.configure(text="Close", command=self.wiz_cancel)
+            self.wiz_next.configure(text=T("cap.close"), command=self.wiz_cancel)
             self.wiz_skip.pack_forget()
             self.jm_to_widgets()
             self.wiz = None
             return
-        self.wiz_next.configure(text="Next", command=self.wiz_next_click)
+        self.wiz_next.configure(text=T("cap.wiz_next"), command=self.wiz_next_click)
         if st == "base":
-            txt = ("Let go of everything: stick centred, lever in neutral, no button pressed. Then click Next.  "
-                   "(The buttons keep their old job while you map them - TAKE will switch to MANUAL. "
-                   "That is intended: the joystick is never switched off.)")
+            txt = T("wiz.base")
         elif st == "axis_steer":
-            txt = self.PROMPTS["axis_steer"]
+            txt = T("wiz.axis_steer")
         elif st == "axis_thr":
-            txt = self.PROMPTS["axis_thr_lever" if self.jm_thr.get() == 1 else "axis_thr_y"]
+            txt = T("wiz.axis_thr_lever" if self.jm_thr.get() == 1 else "wiz.axis_thr_y")
         else:
-            txt = "Press the button for  %s   (suggested: %s)" % (proto.JM_BUTTONS[st], self.HINTS[st])
+            txt = T("wiz.press", func=T("jm.%d" % st), hint=T("wiz.hint_%d" % st))
         optional = isinstance(st, int) and st not in (proto.JM_TAKE, proto.JM_AUTO, proto.JM_CONFIRM)
         if optional:
             self.wiz_skip.pack(side="left", padx=4)
@@ -2192,14 +2369,14 @@ class App:
         st = self.wiz_step()
         if isinstance(st, int):
             self.jm_edit["btn"][st] = 0
-            self.wiz_advance("%s: not used" % proto.JM_BUTTONS[st])
+            self.wiz_advance(T("wiz.not_used", func=T("jm.%d" % st)))
 
     def wiz_next_click(self):
         w, st, raw = self.wiz, self.wiz_step(), self.raw
         if w is None or st is None:
             return
         if raw is None:
-            return self.wiz_info.configure(text="No data from the bridge yet - is it connected?")
+            return self.wiz_info.configure(text=T("wiz.no_data"))
         if st == "base":
             w["base"] = raw
             return self.wiz_advance()
@@ -2214,14 +2391,14 @@ class App:
                     if abs(v - b) > abs(best):
                         best, code = v - b, cd
             if code is None or abs(best) < 0.5:
-                return self.wiz_info.configure(text="No axis moved far enough - move it all the way and hold.")
+                return self.wiz_info.configure(text=T("wiz.no_axis"))
             key = "steer" if st == "axis_steer" else "thr"
             self.jm_edit["axis_" + key] = code
             self.jm_edit["inv_" + key] = 1 if best < 0 else 0
-            return self.wiz_advance("%s = %s%s" % ("steering" if key == "steer" else "throttle",
-                                                   proto.axis_name(code), " (inverted)" if best < 0 else ""))
+            return self.wiz_advance("%s = %s%s" % (T("wiz.steering") if key == "steer" else T("wiz.throttle"),
+                                                   ui_axis_name(code), T("joy.inverted") if best < 0 else ""))
         # buttons are detected automatically (wiz_raw); Next does nothing here
-        self.wiz_info.configure(text="Press the joystick button itself (or Skip if not used).")
+        self.wiz_info.configure(text=T("wiz.press_itself"))
 
     def wiz_raw(self, raw):
         """Button steps: the first newly pressed button / hat direction is taken.
@@ -2240,14 +2417,13 @@ class App:
         code = now[0]
         for i, other in enumerate(self.jm_edit["btn"]):
             if other == code and i != st:
-                self.wiz_info.configure(text="%s is already %s - press a different button" % (
-                    proto.code_name(code), proto.JM_BUTTONS[i]), fg=RED)
+                self.wiz_info.configure(text=T("wiz.already", ctrl=ui_code_name(code), func=T("jm.%d" % i)), fg=RED)
                 w["release"] = True
                 return
         self.wiz_info.configure(fg=FG)
         self.jm_edit["btn"][st] = code
         w["release"] = True
-        self.wiz_advance("%s = %s" % (proto.JM_BUTTONS[st], proto.code_name(code)))
+        self.wiz_advance("%s = %s" % (T("jm.%d" % st), ui_code_name(code)))
 
     # --- simulator: USB joystick ---------------------------------------------------
     def sim_usb_set(self, key, value):
@@ -2275,7 +2451,7 @@ class App:
         m = self.jmap or proto.default_joymap(1)
         code = m["btn"][func]
         if not code:
-            return self.say("%s is not mapped" % proto.JM_BUTTONS[func], RED)
+            return self.say(T("cap.not_mapped", func=T("jm.%d" % func)), RED)
         self.sim_usb_send([code])
         self.root.after(200, self.sim_usb_send)
 
@@ -2293,8 +2469,7 @@ class App:
         ref = self.hist[-1][2]
         span = max(20.0, max(abs(((p[1] - ref + 180) % 360) - 180) for p in self.hist) * 1.2)
         Y1 = lambda deg: 20 + (1 - (((deg - ref + 180) % 360 - 180) + span) / (2 * span)) * (top_h - 40)
-        c.create_text(10, 8, text="Heading (black) vs target (blue), ±%.0f° around %.0f°" % (span, ref),
-                      anchor="nw", font=F_MED)
+        c.create_text(10, 8, text=T("plot.heading", span="%.0f" % span, ref="%.0f" % ref), anchor="nw", font=F_MED)
         for k in (-1, 0, 1):
             y = Y1(ref + k * span * 0.5)
             c.create_line(60, y, w - 20, y, fill="#d0d0d0")
@@ -2308,7 +2483,7 @@ class App:
         # outboard angle
         oy0 = top_h + 10
         Y2 = lambda a: oy0 + 20 + (1 - (max(-40, min(40, a)) + 40) / 80) * (h - oy0 - 30)
-        c.create_text(10, oy0, text="Outboard angle (estimate), ±40°", anchor="nw", font=F_MED)
+        c.create_text(10, oy0, text=T("plot.outboard"), anchor="nw", font=F_MED)
         for a in (-30, 0, 30):
             c.create_line(60, Y2(a), w - 20, Y2(a), fill="#d0d0d0")
             c.create_text(55, Y2(a), text="%+d" % a, anchor="e", font=F_TXT)
@@ -2317,14 +2492,14 @@ class App:
             pts += [X(p[0]), Y2(p[3])]
         if len(pts) >= 4:
             c.create_line(*pts, fill=ORANGE, width=3)
-        c.create_text(w - 20, h - 4, text="last %.0f s" % PLOT_S, anchor="se", font=F_TXT)
+        c.create_text(w - 20, h - 4, text=T("plot.last", s="%.0f" % PLOT_S), anchor="se", font=F_TXT)
 
     def draw_map(self, d):
         c = self.map
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
         if w < 50 or d["pos_source"] == 0:
-            c.create_text(w / 2, h / 2, text="no position yet", font=F_BIG)
+            c.create_text(w / 2, h / 2, text=T("map.no_position"), font=F_BIG)
             return
         lat0, lon0 = d["est_lat"], d["est_lon"]
         k = math.cos(math.radians(lat0)) * 111320.0
@@ -2339,22 +2514,23 @@ class App:
                             opacity=self.depth_opacity.get(), ais=self.ais_list(), threats=av.get("threats"),
                             route=av.get("route"), shallow=av.get("shallow"),
                             vision=((self.gw_status or {}).get("vision") or {}).get("obstacles"))
-        self.chart_lbl.configure(text="" if self.charts else "no chart files: python tools/chartprep.py")
+        self.chart_lbl.configure(text="" if self.charts else T("cap.no_charts"))
         if self.map_mark:
             x, y = P(*self.map_mark)
             c.create_line(x - 12, y - 12, x + 12, y + 12, fill=RED, width=4)
             c.create_line(x - 12, y + 12, x + 12, y - 12, fill=RED, width=4)
-            c.create_text(x + 14, y, anchor="w", text="refused leg: shallow", fill=RED, font=F_TXT)
+            c.create_text(x + 14, y, anchor="w", text=T("map.refused_leg"), fill=RED, font=F_TXT)
         sh = av.get("shallow")
         if sh:
-            c.create_text(w / 2, 40, text="SHALLOW WATER AHEAD in %.0f s (%s, limit %.1f m)" % (
-                sh["in_s"], "no data" if sh["depth"] is None else "%.1f m" % sh["depth"], sh["limit"]),
+            c.create_text(w / 2, 40, text=T("map.shallow_ahead", s="%.0f" % sh["in_s"],
+                                            depth=T("hud.no_data") if sh["depth"] is None else "%.1f m" % sh["depth"],
+                                            limit="%.1f" % sh["limit"]),
                 fill=RED, font=F_BIG)
         # scale bar
         bar_m = 10 ** math.floor(math.log10(max(1.0, m * 150)))
         c.create_line(20, h - 20, 20 + bar_m / m, h - 20, width=4)
         c.create_text(20, h - 26, text="%g m" % bar_m, anchor="sw", font=F_TXT)
-        c.create_text(w - 20, 20, text="N ↑", font=F_BIG, anchor="ne")
+        c.create_text(w - 20, 20, text=T("map.north_arrow"), font=F_BIG, anchor="ne")
         # track
         if len(self.track) >= 2:
             pts = []
@@ -2382,7 +2558,7 @@ class App:
             L = min(120.0, d["drift_kn"] * 60.0)
             x2, y2 = w / 2 + L * math.sin(a), h / 2 - L * math.cos(a)
             c.create_line(w / 2, h / 2, x2, y2, arrow="last", arrowshape=(14, 16, 6), fill=BLUE, width=3)
-            c.create_text(x2, y2 - 12, text="drift %.2f kn" % d["drift_kn"], font=F_TXT, fill=BLUE)
+            c.create_text(x2, y2 - 12, text=T("map.drift", kn="%.2f" % d["drift_kn"]), font=F_TXT, fill=BLUE)
         # boat
         a = math.radians(d["heading"])
         pts = []
@@ -2391,8 +2567,7 @@ class App:
             pts += [w / 2 + rr * math.sin(b), h / 2 - rr * math.cos(b)]
         c.create_polygon(*pts, fill=MODE_COLORS.get(d["mode_name"], FG), outline=FG, width=2)
         c.create_text(10, 10, anchor="nw", font=F_TXT,
-                      text="%.0f m/px   track %d points" % (m, len(self.track)) if m >= 1 else
-                      "%.1f m/px   track %d points" % (m, len(self.track)))
+                      text=T("map.scale_info", m="%.0f" % m if m >= 1 else "%.1f" % m, n=len(self.track)))
 
     # --- alarm sound -------------------------------------------------------------
     def alarm_tick(self):
@@ -2402,9 +2577,10 @@ class App:
             flash = int(time.time() * 2) % 2 == 0
             self.alarm_banner.configure(bg=RED if flash else "#800000")
             if stale:
-                self.alarm_banner.configure(text="ALARM: NO DATA FROM THE BOAT")
+                self.alarm_banner.configure(text=T("cap.alarm_nodata"))
                 self.show(self.alarm_banner, True, row=1, column=0, sticky="ew")
-            if time.time() - self.last_beep > 1.0:
+            if time.time() - self.last_beep > 1.0 and not (self.sound and self.sound.enabled()):
+                # without the sound system (section D) only: it plays the warnings itself
                 self.last_beep = time.time()
                 if winsound:     # in a thread: Beep blocks while it sounds
                     f = 2000 if (d and d["mode"] == proto.MODE_MANUAL) else 1500
@@ -2445,10 +2621,11 @@ def main():
     a = ap.parse_args()
     login = tuple(a.login.split(":", 1)) if a.login and ":" in a.login else None
     root = tk.Tk()
-    App(root, a.address, login=login, charts_dir=a.charts, open_driver=a.driver, layout=a.layout,
-        cams=a.cams)
+    app = App(root, a.address, login=login, charts_dir=a.charts, open_driver=a.driver, layout=a.layout,
+              cams=a.cams)
     if a.title:
-        root.title("%s - %s" % (a.title, root.title()))
+        app.title_extra = "%s - " % a.title
+        root.title(app.title_extra + T("cap.title"))
     root.mainloop()
 
 
