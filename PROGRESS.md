@@ -19,8 +19,8 @@ files), then A, B, C, D, F, G.
 | E | i18n.py + lang/el.txt + lang/en.txt (plain key = text, comments), settings.py (per-PC: gs_settings.json), alerts.py (alarm levels + codes), monitors.py; captain screen fully from the language files, ΕΛ / EN buttons + menu, live switch, remembered; English stays in protocol / audit (TE + from_en); fits 1920 px in both; test_lang.py L1-L5 in the gate | DONE (gate OK except: sim build blocked by the running demo, VR5 flaky under load -> VR alone 5/5) | cea40c6 |
 | A | driver.py rewrite: full-screen camera HUD: hud.py (layout, palette, overlays as a display list) + driver.py (Pillow renderer: transparent panels, outlined text, text cache ~25 ms/frame; canvas fallback), fill / fit, mirrors, MASTER lamps, alarm bar, throttle + gear + trend, speed tape, depth (chart), waypoint ETA / TTG, AIS threat, ROT, G-meter, outboard angle, CDI, dark mini map, one bottom line, night, declutter, edit layout (hud_layout.json) | DONE (test_driver I1-I14) | bdb5a2a |
 | B | AR overlays (hudar.py): camera model = gateway vision geometry + IMU roll / pitch; horizon + heel arc, velocity vector, waypoint diamond / edge arrow, route ribbon (fading), AIS boxes / edge arrows, predicted path 30 / 60 s, shallow tint (chart); each on / off (AR menu), "calibration unknown" without one; gateway vision status publishes "camera" only when configured (VI0b); demo has a calibration | DONE (test_driver I15-I16, gateway VI 10/10) | 628909e |
-| C | MAP window (mapwin.py): chart layers, AIS list, boat, track, route, active waypoint, avoidance route, shallow / collision warnings (no geofence exists in the system), DR circle, range rings; follow / free pan, zoom (wheel), north / course-up (5 deg steps), day / dark / night, remembered; view only. All windows: place + monitor remembered (gs_layout.json map / map_open), Windows menu + Ctrl+Shift+1..9 move to a monitor | DONE (test_driver I17 + I6 with the map) | (this commit) |
-| D | sound.py + tts + callouts + sound test page | | |
+| C | MAP window (mapwin.py): chart layers, AIS list, boat, track, route, active waypoint, avoidance route, shallow / collision warnings (no geofence exists in the system), DR circle, range rings; follow / free pan, zoom (wheel), north / course-up (5 deg steps), day / dark / night, remembered; view only. All windows: place + monitor remembered (gs_layout.json map / map_open), Windows menu + Ctrl+Shift+1..9 move to a monitor | DONE (test_driver I17 + I6 with the map) | de35b6c |
+| D | sound.py (tones made in code, priority scheduler, callouts from telemetry / gateway status), tts.py (Piper offline neural voices el_GR-rapunzelina-low + en_GB-alan-medium via tools/get_piper.py; Windows SAPI fallback), every callout spoken as ONE sentence (the Greek voice garbles lone short words), 370 sentences per language pre-made in the background + auto retry of garbled takes, own recordings in sounds/<lang>/<key>.wav, Sound tab (soundtest.py) | DONE (test_sound S1-S10, test_driver I18) | (this commit) |
 | F | MANUAL.txt + MANUAL_EL.txt + CLAUDE.md rule | | |
 | G | screenshots docs/screens/, tests, final gate, push | | |
 
@@ -30,6 +30,9 @@ files), then A, B, C, D, F, G.
   TRYGONS_LANG=en, TRYGONS_GS_SETTINGS=<temp> (set at the top of each test file).
 - Gateway sentences (proposals, refusals) stay English in the protocol / audit; the
   screens translate them with i18n.from_en() using the "gw.*" templates of en.txt.
+- Tests are silent: TRYGONS_SOUND=off (recording player, no voice making).
+- The demo was running during the work: it locks sim/autopilot_sim.exe -> the gate's sim build
+  "fails" (no C code changed). Stop it (STOP_DEMO.bat) before the final gate.
 
 # Previous task: "First test preparation": (1) generated certificates in .gitignore,
 (2) .cproject excludes checked, (3) FIRST TEST configuration (steering only),

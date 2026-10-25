@@ -41,6 +41,9 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
      north-up / course-up, day / dark / night; settings remembered; view only
      (nothing sent); moved to a monitor
   (I6 also covers the MAP window: open + place remembered over a restart)
+  I18 sound in the real ground station: mode callouts from the live telemetry,
+     a WARNING repeats until the MASTER lamp is acknowledged on the driver
+     screen, a command answer gives the confirm sound; nothing sent
 
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
@@ -54,6 +57,7 @@ import tkinter as tk
 HERE = os.path.dirname(os.path.abspath(__file__))
 # the ground station in English with a throw-away settings file (never the user's language / HUD settings)
 os.environ.setdefault("TRYGONS_LANG", "en")
+os.environ.setdefault("TRYGONS_SOUND", "off")                    # silent: no sound, no voice making
 os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(__import__("tempfile").gettempdir(), "trygons_gs_test.json"))
 TMP = __import__("tempfile").mkdtemp(prefix="trygons_drv_")
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(TMP, "gs_settings.json")      # fresh HUD settings every run
@@ -671,6 +675,40 @@ def main():
         mw.w.geometry("1200x800+150+90")
         app.gw_status = None
         pump(0.3)
+
+        # I18 sound callouts in the real app (silent player: TRYGONS_SOUND=off)
+        snd = app.sound
+        sent_frames = []
+        app.link.send = lambda *a, **k: (sent_frames.append(a[0]), orig_send(*a, **k))[1]
+        orig_t = app.on_telem
+        fake = {"mode": proto.MODE_HDG_LOCK, "mode_name": "HDG_LOCK"}
+        app.on_telem = lambda d_: orig_t(dict(d_, **fake))
+        pump(0.8)
+        fake.update(mode=proto.MODE_STANDBY, mode_name="STANDBY")
+        pump(0.8)
+        played = lambda code: [h for h in snd.sched.history if h[1] == code and h[3] == "played"]   # noqa: E731
+        modes_ok = bool(played("mode.hdg_lock")) and bool(played("mode.standby"))
+        fake["alarm_bits"] = 0x001                                  # compass lost: a WARNING
+        app.on_telem = lambda d_: orig_t(dict(d_, **fake))
+        pump(9.0)
+        n_warn = len(played("alarm.compass_lost"))
+        dv.action("ack")
+        pump(8.0)
+        n_after = len(played("alarm.compass_lost"))
+        fake["alarm_bits"] = 0
+        app.on_telem = orig_t
+        pump(0.5)
+        hb = [f for f in sent_frames if f != proto.T_HEARTBEAT]
+        app.link.send = orig_send
+        app.cmd(proto.T_SEA_STATE, proto.p_sea_state(app.t["sea_state"]), "sea state %d" % app.t["sea_state"])
+        pump(0.3)
+        dv.answer(True)
+        conf = pump(3.0, lambda: bool(played("fb.confirm")))
+        report("I18 sound in the ground station: mode callouts from the live telemetry, a WARNING repeats until the "
+               "driver acknowledges the MASTER lamp, a command answer gives the confirm sound; the sound sends nothing",
+               modes_ok and n_warn >= 2 and n_after == n_warn and conf and not hb and not errors,
+               "heading lock / standby said %s; compass warning played %d times in 9 s, after ACK %d more; confirm "
+               "sound %s; frames sent by the sound %s" % (modes_ok, n_warn, n_after - n_warn, conf, hb))
 
         # I9 BENCH TEST tab (USB-style link): enter, live sensors, a steering pulse, a button, leave
         app.bench(A.proto.BENCH_ENTER, 0, "bench test: enter")

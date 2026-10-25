@@ -2573,6 +2573,10 @@ class App:
     def alarm_tick(self):
         d = self.t
         stale = self.link is not None and self.t_rx and time.time() - self.t_rx > 3.0
+        # MASTER lamps + the repeating warning sounds work with or without the driver screen open
+        self.lamps.update(d["alarm_bits"] if d else 0, no_data=bool(stale))
+        if self.callouts and self.link is not None and self.t_rx:
+            self.callouts.link(not stale)
         if (d and (d["alarm"] or d["alarm_bits"])) or stale:
             flash = int(time.time() * 2) % 2 == 0
             self.alarm_banner.configure(bg=RED if flash else "#800000")

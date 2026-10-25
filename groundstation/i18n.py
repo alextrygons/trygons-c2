@@ -84,6 +84,19 @@ def T(key, *args, **kw):
     return s
 
 
+def TL(lang_, key, *args, **kw):
+    """The text of a key in a given language (the voice language may differ from the screen's)."""
+    s = load(lang_).get(key)
+    if s is None:
+        s = load("en").get(key, "[%s]" % key)
+    if args or kw:
+        try:
+            return s.format(*args, **kw)
+        except (KeyError, IndexError, ValueError):
+            return s
+    return s
+
+
 def TE(key, *args, **kw):
     """The ENGLISH text of a key: for what goes into the protocol / audit / logs (E3)."""
     s = load("en").get(key, "[%s]" % key)

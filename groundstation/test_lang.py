@@ -22,6 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(tempfile.gettempdir(), "trygons_gs_test_lang.json")
 os.environ.pop("TRYGONS_LANG", None)
+os.environ.setdefault("TRYGONS_SOUND", "off")                    # silent: no sound, no voice making
 import i18n  # noqa: E402
 import alerts  # noqa: E402
 import proto  # noqa: E402
@@ -129,7 +130,7 @@ def main():
             continue
         for n, line in enumerate(open(p, encoding="utf-8"), 1):
             for m in HARD.finditer(line):
-                if m.group(1) not in ALLOWED:
+                if m.group(1) not in ALLOWED and not re.fullmatch(r"[a-z0-9_.%]+", m.group(1)):     # event codes
                     hard.append("%s:%d %r" % (fn, n, m.group(1)[:40]))
     report("L3 no hard-coded screen text in the screen modules", not hard, "%d found %s" % (len(hard), hard[:6]))
 

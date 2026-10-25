@@ -604,7 +604,7 @@ class DriverScreen:
         s["age_s"] = now - a.t_rx if a.t_rx else None
         me = [st for st in gw.get("stations", []) if st.get("id") == gw.get("you")]
         s["latency_ms"] = me[0].get("rtt_ms") if me else None
-        no_data = a.link is not None and (not a.t_rx or now - a.t_rx > 3.0)
+        no_data = bool(a.link is not None and a.t_rx and now - a.t_rx > 3.0)       # as the captain screen
         a.lamps.update(d["alarm_bits"] if d else 0, no_data=no_data)
         items = [(alerts.text(bit), lv) for bit, _c, lv in alerts.active(d["alarm_bits"] if d else 0)]
         if no_data:
