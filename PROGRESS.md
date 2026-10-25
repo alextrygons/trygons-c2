@@ -1,6 +1,36 @@
 # PROGRESS
 
-Current task: "Driver HUD + map window + sound/voice + Greek": (E) Greek / English
+Current task: "Crew profiles + two screens": CREWED / UNCREWED profile (autodetected),
+UNCREWED lost-link engine kill, MANEUVER mode, captain / copilot roles with the manual
+licence, two screens per station, boats/ folder. Design = CLAUDE.md section
+"Crew, profiles, MANEUVER, screens, boats" (A-F). One commit per section; the gate
+(sh tools/check.sh) AND the acceptance gate (tests\acceptance\RUN_ACCEPTANCE.bat quick)
+pass before each commit; then git push. FIRST_TEST stays ON, its behaviour unchanged;
+MANEUVER / REMOTE / AUTO stay blocked in FIRST_TEST.
+If interrupted: say "continue from PROGRESS.md" - continue with the first step that is
+not DONE below, without redoing finished work.
+
+## Steps
+
+| Step | What | State | Commit |
+|---|---|---|---|
+| 1 | CLAUDE.md design A-F (no code) | IN PROGRESS | |
+| 2 | AURIX + sim: profile autodetection, UNCREWED power-raise / CONFIRM from the shore joystick, MANEUVER; invariants I22+ | TODO | |
+| 3 | AURIX + gateway + sim: UNCREWED lost link, GW_SHORE, engine-kill output (sim); invariants | TODO | |
+| 4 | Gateway: licence flag, captain / copilot, copilot -> captain ACCEPT, boat name check | TODO | |
+| 5 | Ground station: two screens (+ remaining HUD work), boat selector, single-monitor toggle, Greek manual | TODO | |
+| 6 | Verification: full acceptance (2000 storm, shortened soak), TEST_REPORT, FIRST_TEST.md note, ADS build + memory (LMU block 2), TO CONFIRM / TBD list | TODO | |
+
+## Notes
+
+- Two python test_gateway.py processes + one autopilot_sim server (port 53321) were already
+  running at the start (from another session?); stopping them was not allowed. If the sim build
+  fails with "permission denied" / locked exe, they are the reason.
+
+# Previous task: HUD / map / sound / Greek (done; the open items below are folded into step 5)
+
+
+Task: "Driver HUD + map window + sound/voice + Greek": (E) Greek / English
 language files, Greek default, live switch; (A) driver screen = full-screen front
 camera with overlays; (B) AR overlays on the front video; (C) separate full-size
 MAP window, windows remember their monitor; (D) cockpit sound + voice system
