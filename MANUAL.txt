@@ -1,6 +1,7 @@
 ===============================================================================
   TRYGONS C2 BOAT AUTOPILOT - USER MANUAL
-  State: 2026-10-20 (gateway / remote access work)
+  State: 2026-10-25 (driver HUD, map window, sound + voice, Greek)
+  The same manual in Greek: MANUAL_EL.txt (kept in step with this one)
 ===============================================================================
 
 CONTENTS
@@ -10,6 +11,10 @@ CONTENTS
   4.  The PC simulation: build, test, try it out
   4A. The demo (one click, no boat)
   5.  The ground station (PC program)
+  5A. Language: Greek / English
+  5B. The DRIVER screen (full-screen camera HUD)
+  5C. The MAP window
+  5D. Sounds and voice callouts
   6.  The board (AURIX TC375 Lite Kit)
   6A. FIRST TEST: steering only (compile-time switch)
   6B. BENCH TEST: every sensor and output on the dock
@@ -142,6 +147,18 @@ On a new PC, install:
        C:\msys64\ucrt64\bin\python.exe tools\get_mediamtx.py
      (The demo asks to do it when it's missing. Check: python
       gateway\toolpaths.py shows where ffmpeg and MediaMTX are.)
+
+  f) Pillow, for the driver screen (see-through panels, outlined text):
+       pacman -S mingw-w64-ucrt-x86_64-python-pillow
+     (python.org Python: pip install pillow). Without it the driver screen
+     still works, only plainer.
+
+  g) The voices for the spoken callouts (Greek + English, offline, about
+     130 MB, into tools\bin\piper, not in git):
+       C:\msys64\ucrt64\bin\python.exe tools\get_piper.py
+     Then restart the ground station. The first start makes all spoken
+     sentences once in the background (about 1 minute per language) and
+     keeps them in groundstation\sound_cache\. Details: chapter 5D.
 
   Check in a terminal (VS Code: Terminal -> New Terminal):
        gcc --version
@@ -292,8 +309,13 @@ START WITH THE BOARD (once the USB link is written, chapter 17):
   plug in the USB cable, find the COM port in Device Manager, then
       C:\msys64\ucrt64\bin\python.exe app.py COM5
 
-THE WINDOW:
-  Top            connection, link status, log file name
+THE WINDOW (the CAPTAIN screen):
+  Top            connection, link status, HELM, "Driver screen", "Map
+                 window", "Single operator", log file name, and on the right
+                 the language buttons ΕΛ / EN (chapter 5A)
+  Menu bar       Windows: open / close the driver screen and the map window,
+                 move any window to monitor 1 / 2 / 3, swap (F12);
+                 Language: Ελληνικά / English
   Orange banner  JOYSTICK IN CONTROL (MANUAL) - the PC can't change the mode
   Yellow banner  PRESS JOYSTICK CONFIRM - <what> - <seconds left>
   Red banner     alarms (flashing + beep); "ACK ALARM" acknowledges
@@ -322,6 +344,8 @@ THE WINDOW:
                  neutral zone, lever override, pickup window, the button map
                  with "now pressed", "Map buttons (guided)", SAVE TO BOAT
   System tab     CPU time per cycle of the three cores, overruns, link, SD card
+  Bench tab      the BENCH TEST (chapter 6B)
+  Sound tab      sound settings, the voices, play every sound (chapter 5D)
   Events tab     every command, answer, mode change, alarm
 
 Every command gets an answer: OK, or why not (e.g. "JOYSTICK IS IN CONTROL",
@@ -329,6 +353,216 @@ Every command gets an answer: OK, or why not (e.g. "JOYSTICK IS IN CONTROL",
 Losing the PC for 3 s gives the alarm "PC LINK LOST" (and drops the power
 limit) but never stops or starts anything.
 
+
+
+-------------------------------------------------------------------------------
+5A. LANGUAGE: GREEK / ENGLISH
+-------------------------------------------------------------------------------
+Every text on the screens (captain screen, driver screen, map window, alarms,
+buttons, questions, bench test) comes from two plain text files:
+    groundstation\lang\el.txt     Greek (the default)
+    groundstation\lang\en.txt     English
+SWITCH: the buttons ΕΛ / EN at the top right of the captain screen, the
+Language menu, or on the driver screen the ΕΛ / EN button (key L). It
+changes at once on every window - no restart - and is remembered on this
+PC (groundstation\gs_settings.json, not in git). The VOICE language is
+chosen separately (Sound tab), e.g. Greek screens with English voice.
+
+EDIT THE WORDS YOURSELF: open the file in VS Code (it is UTF-8 text):
+    key = text
+  * never change the key (left of "="); change the text freely
+  * keep every {name} of a line (the program puts a number / name there);
+    you may move it inside the text
+  * \n starts a new line; lines starting with # are comments
+  * restart the ground station (or switch the language twice)
+  * run  python groundstation\test_lang.py : it checks that both files
+    have the same keys and the same {names} (tools\check.sh runs it too)
+The "say." lines are what the VOICE says (chapter 5D): write numbers as
+words and whole phrases (the Greek voice garbles a single short word).
+The "gw." lines translate sentences that come from the gateway in English
+(proposals, refusals): their ENGLISH text must stay exactly as the gateway
+writes it.
+
+WHAT STAYS IN ENGLISH (on purpose): the logs, the gateway's audit, the
+protocol, recordings and test reports use English + event codes, so an
+analysis works the same whatever language the screens had.
+
+
+-------------------------------------------------------------------------------
+5B. THE DRIVER SCREEN (FULL-SCREEN CAMERA HUD)
+-------------------------------------------------------------------------------
+"Driver screen" (top bar) or Windows menu. The FRONT camera fills the whole
+window; everything else is drawn ON the video with a dark see-through
+backing and black-outlined text, readable over bright sea, sky and sun. One
+main colour (green or white, AR menu); RED = warning, AMBER = caution only.
+
+  +----------+   MODE (+ target heading)    [GENERAL WARNING] +----------+
+  | REAR-L   |   channel  latency  POWER    [GENERAL CAUTION] |  REAR-R  |
+  | mirror   |       alarm bar (only when there are alarms)   |  mirror  |
+  +----------+          notices (confirm, collision, ...)     +----------+
+  throttle                                                     SPEED
+  bar          FRONT camera + AR overlays (5B AR)              depth
+  limit                                                        waypoint
+  GEAR                                                         AIS threat
+                    outboard angle          mini map           ROT    G
+  [buttons]         CDI (track)
+  heading tape ...                 REC  vision  clock  mission  [SAVE]
+
+  Top left/right   rear cameras as MIRRORS (picture flipped), small label;
+                   "VIDEO FROZEN" / "NO VIDEO" over a dead one
+  Top centre       MODE big (+ target heading in HDG LOCK / AUTO); internet
+                   channel + latency (green < 250 ms, yellow, red > 600 ms;
+                   STARLINK EMERGENCY in a red box); POWER limit (amber when
+                   raised); "data x s old" when the telemetry is late
+  GENERAL WARNING  (red) / GENERAL CAUTION (amber): lit by a new alarm of
+                   that level. One click (or Space / A) acknowledges BOTH and
+                   silences the repeating sound ON THIS PC. It sends nothing
+                   to the boat (the boat's ALARM ACK stays the captain's
+                   button). A newer alarm lights it again.
+  Alarm bar        only while alarms are active, under the mode, never over
+                   the middle of the picture
+  Notices          press CONFIRM, pickup, single operator, collision line,
+                   shallow water ahead, front camera lost, FIRST TEST
+  Left             throttle bar (0..100 %), amber line = power limit, amber
+                   band = cut by slamming, speed-trend arrow, GEAR as a big
+                   F / N / R (R amber)
+  Right            SPEED very big + speed tape (+ AUTO set speed, trend);
+                   DEPTH from the chart at the boat (red below the shallow
+                   limit, amber below twice it; "no chart" if none); next
+                   WAYPOINT n/N, distance + bearing, ETA (clock), time to go;
+                   nearest AIS THREAT (name, CPA, TCPA, distance; red =
+                   danger); RATE OF TURN dial (+-15 deg/s); G-METER for
+                   slamming (bar = last impact, yellow + red lines = limits,
+                   marker = peak of the last 10 s)
+  Lower centre     OUTBOARD angle (+-40 deg) and the CDI: how far off the
+                   planned track (AUTO; scale = 2 x the arrival radius,
+                   at least +-50 m)
+  Bottom right     MINI MAP (dark, never white): depth chart, sea marks, AIS,
+                   own track, the program, active waypoint, DR circle
+  Bottom line      heading tape with the target mark, REC (red dot) or
+                   NOT RECORDING, vision status, clock + mission time (since
+                   the first mode other than STANDBY), SAVE (outlined; still
+                   big enough to hit)
+  Bottom left      buttons: ΕΛ/EN, NIGHT, declutter, FILL / FIT, AR, LAYOUT
+                   (+ CLEAR SLOWDOWN while vision slows AUTO)
+
+KEYS on the driver screen:  Space / A acknowledge   N night   D declutter
+  V fill / fit   L language   E edit layout   G all AR on / off   O obstacle
+  overlay   F11 full screen   F12 swap with the captain screen
+  Ctrl+Shift+1..9  this window to monitor 1..9
+FILL / FIT: fill = the picture covers the window, cropped evenly; fit = the
+  whole picture with black bars.
+NIGHT: dim red, darker picture, quieter sounds (5D). Remembered.
+DECLUTTER: FULL (all) -> NORMAL (no rate of turn, G-meter, CDI) -> MINIMAL
+  (speed, heading, mode, gear, alarms only - also no AR). Remembered.
+EDIT LAYOUT (LAYOUT button or E): every box gets a blue frame. Drag a box to
+  move it, drag its bottom-right corner to resize it, the x / + in its top
+  corner hides / shows it. RESET TO DEFAULT, DONE. Saved in
+  groundstation\hud_layout.json (per PC). Outside the edit mode nothing can
+  be moved by accident.
+Questions from the captain / the gateway appear in the middle (ACCEPT /
+  REJECT, a countdown; no answer = rejected) - as before (part I).
+THE HUD IS DISPLAY ONLY: no HUD button or key changes the driving. The only
+  things it sends are the old driver-screen ones: ACCEPT / REJECT answers,
+  SAVE (video) and CLEAR SLOWDOWN (vision).
+
+AR OVERLAYS (on the front video, button AR = menu, each one on / off):
+  Horizon line + heel scale (pointer = heel, from the IMU), velocity vector
+  (small circle with wings: where the boat really goes = course over ground;
+  "drift 5 deg STBD"), waypoint diamond on the horizon with its distance
+  (arrow at the edge when outside the picture), route ribbon on the water
+  (fading with the distance), AIS ships boxed at their bearing (name,
+  distance, CPA; red = threat; arrows at the edge for threats outside the
+  picture), predicted path for 30 s and 60 s (speed + turn rate), water
+  ahead shallower than the shallow limit tinted red (chart; no data =
+  shallow), and the obstacle overlay of the camera detection (part N).
+  They need the CAMERA CALIBRATION in the gateway config:
+    "vision": {"camera": {"height_m": 2.0, "tilt_down_deg": 2.0,
+               "hfov_deg": 75, "vfov_deg": 44, "yaw_deg": 0}}
+  (height of the camera above the water, how far it looks down, field of
+  view across / up-down, turned off the bow). Without it the HUD says
+  "AR: camera calibration unknown" and shows no AR. Check it in harbour:
+  the AR horizon must lie on the real horizon - else change tilt_down_deg.
+  The AR is a picture help, NOT for navigation (chart / AIS / IMU errors).
+
+
+-------------------------------------------------------------------------------
+5C. THE MAP WINDOW
+-------------------------------------------------------------------------------
+"Map window" (top bar) or the Windows menu opens a full-size MAP for a 2nd /
+3rd monitor. VIEW ONLY: routes are still made on the captain screen.
+  Shows   depth chart, contours, sea marks, AIS ships + a list on the right
+          (name, distance, bearing, CPA, TCPA, age; red = danger, yellow =
+          warning, grey = old), own boat with its 6-minute course line,
+          track, the program route + waypoints, active waypoint, avoidance
+          route, shallow-water / collision warnings at the top, DR
+          uncertainty circle, range rings with their distance.
+          (The system has no geofence, so there is none to show.)
+  Buttons FOLLOW BOAT / FREE (drag the map = free), Zoom + / - (or the mouse
+          wheel, + / -), NORTH UP / COURSE UP (turns in 5 deg steps), THEME
+          dark / day / night, RANGE RINGS, the chart layers.
+  Keys    F follow, C course-up, T theme, + / - zoom, F12, Ctrl+Shift+n.
+ALL WINDOWS (captain, driver, map) remember their monitor, place and size
+(groundstation\gs_layout.json) and come back there at the next start.
+Windows menu -> "Move the ... to monitor n", or Ctrl+Shift+1..9 in that
+window: the window goes to that monitor, maximised.
+
+
+-------------------------------------------------------------------------------
+5D. SOUNDS AND VOICE CALLOUTS
+-------------------------------------------------------------------------------
+Like a cockpit, the PC speaks. DISPLAY ONLY: the sounds never change the
+driving. The boat's own BUZZER is separate: it sounds the boat's alarms by
+itself (also with no PC at all); this PC never switches it.
+
+LEVELS
+  WARNING   urgent two-tone + voice, REPEATS until acknowledged (GENERAL
+            WARNING lamp on the driver screen, or Space). Can't be muted;
+            never quieter than 60 %.
+  CAUTION   one chime + the voice once
+  ADVISORY  a soft click or a short voice (can be muted)
+  FEEDBACK  small sounds for your own actions (can be muted): camera
+            shutter for SAVE, double chirp when the joystick takes over,
+            confirm / refuse tones for the boat's answers, a question tone
+RULES: a higher level interrupts a lower one; two voices never at the same
+  time (the next waits); the same callout is not repeated within 20 s
+  (Sound tab); traffic is called only when a ship becomes a threat or gets
+  worse; quiet / night mode = half volume, fewer advisories.
+WHAT IT SAYS (texts: the "say." lines of the language files, chapter 5A)
+  modes      heading lock engaged, auto engaged, standby, joystick in
+             control, remote driving engaged / ended
+  autopilot  the "cavalry charge" when HDG LOCK / AUTO / REMOTE drops to
+             STANDBY together with a fault (not when you press STANDBY)
+  traffic    "traffic, two o'clock, eight hundred metres" (clock position
+             from the bow, distance); "traffic, slowing down" (AUTO slows);
+             "avoid, turn starboard / port" (HDG LOCK proposal)
+  water      depth 10 / 5 / 3 metres (chart depth getting shallower),
+             shallow water
+  navigation waypoint in thirty seconds, turning to <heading, to 5 deg>,
+             arrived
+  links      link lost / restored, STARLINK emergency link, 4G, radio; a
+             rising tone every 2 s while remote-driving latency is high
+  power      "power fifty percent" after a confirmed raise, "power limit"
+             when you push the throttle against it
+  sea        rough water, reducing speed
+  alarms     every alarm by name (WARNING ones repeat)
+SOUND TAB (captain screen): sound on / off, volume, mute advisories, mute
+  small sounds, quiet mode, the repeat time, the VOICE language (separate
+  from the screens), which voice is installed, "Make the voice cache now",
+  "My recordings folder", and the list of every sound and callout: select
+  one and play it in Greek or English, or "Play all".
+THE VOICES: Piper, a free offline neural text-to-speech (MIT licence),
+  with a Greek voice (el_GR-rapunzelina-low) and an English one
+  (en_GB-alan-medium). Chosen because it is free, needs no internet, has a
+  Greek voice (Windows only has one after installing a Greek speech pack)
+  and also runs on the Raspberry Pi. Install: chapter 3 g). Without Piper
+  the ground station uses an installed Windows voice for that language, or
+  tones only. Every callout is said as one sentence and all of them are
+  made once in advance (groundstation\sound_cache\, not in git) so a
+  callout starts at once; garbled takes are made again by themselves.
+OWN RECORDINGS: a WAV file groundstation\sounds\el\<key>.wav (or \en\)
+  replaces the computer voice for that phrase, e.g.
+  sounds\el\say.alarm.compass_lost.wav (groundstation\sounds\README.txt).
 
 -------------------------------------------------------------------------------
 6. THE BOARD (AURIX TC375 LITE KIT)
@@ -899,20 +1133,12 @@ H. SLAMMING (hull impacts) AND AUTOMATIC THROTTLE REDUCTION
 
 I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN
   The normal ground-station window is the CAPTAIN screen (everything). The
-  button "Driver screen" (top bar) opens the DRIVER screen - drag it to the
-  second monitor (or the driver's PC monitor) and make it full size:
-    top        rear cameras as mirrors (REAR-LEFT left, REAR-RIGHT right,
-               flipped like a mirror), MODE, alarms, internet channel
-               (STARLINK in yellow), latency, REC, joystick / remote status
-    middle     the FRONT camera big (FRONT-2 by itself if FRONT-1 is lost;
-               VIDEO FROZEN within 1 s; "NO FRONT CAMERA" warning while
-               driving remotely without a live front camera)
-    left       throttle bar: green = throttle now, red line = power limit,
-               shaded "SLAM" part = cut by the slamming reduction
-    right      speed, slamming graph (bars around the running average, red
-               dashed line = limit; click it for absolute g), small map
-    bottom     compass tape (heading in the middle, blue mark = target
-               heading in HDG LOCK / AUTO), big SAVE button
+  button "Driver screen" (top bar) opens the DRIVER screen - put it on the
+  second monitor (Windows menu or Ctrl+Shift+2) and make it full size (F11).
+  It is the full-screen camera HUD of chapter 5B: the FRONT camera fills the
+  window (FRONT-2 by itself if FRONT-1 is lost; VIDEO FROZEN within 1 s;
+  "NO FRONT CAMERA" while driving remotely without a live front camera),
+  everything else is drawn on top of it.
   CAPTAIN ACTIONS THAT CHANGE THE DRIVING (mode, AUTO start / pause /
   resume / skip, heading +-1/10, sea state, training, parameters such as
   slam_limit_g, power-limit code) are only sent when the driver presses
@@ -933,9 +1159,9 @@ I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN
   crash); press the button again to switch it off.
   The USB laptop on the boat (no gateway) is the service link: there the
   driver window asks when it is open, otherwise the action goes directly.
-  Both window places (monitor, size) are remembered (gs_layout.json) and
-  come back at the next start. F12 (or Ctrl+Tab) swaps the two windows
-  between the monitors.
+  The window places (monitor, size) of the captain, driver and map windows
+  are remembered (gs_layout.json) and come back at the next start. F12 (or
+  Ctrl+Tab) swaps the captain and driver windows between the monitors.
 
 
 J. AIS: OTHER SHIPS (RECEIVE ONLY)
@@ -1101,9 +1327,9 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   An obstacle must be seen in 3 pictures in a row before it counts (wakes,
   foam and glare flicker and are filtered). The bottom of the picture (own
   bow, own wake) is ignored.
-  DRIVER SCREEN: "VISION ACTIVE 2.0 fps" in the top line; buttons "overlay
-  ON/OFF" and "opacity" under the small map; "CLEAR SLOWDOWN" while a STAGE 3
-  slowdown is active.
+  DRIVER SCREEN: "VISION ACTIVE 2.0" in the bottom line; the overlay on / off
+  and its opacity in the AR menu (key O = overlay on / off); the button
+  "CLEAR SLOWDOWN" appears while a STAGE 3 slowdown is active.
   STATUS (a notice, never an alarm, never a mode change):
     ACTIVE     working
     PAUSED     the Pi's main jobs need the CPU, or the Pi is hot / throttling
@@ -1185,6 +1411,15 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   An acknowledge clears only the alarms whose cause is gone: a compass /
   GPS / joystick fault, a lost link, a tripped monitor, a gateway problem
   ... that is still there stays on (from any station, also from shore).
+
+  ON THE PC every alarm has a LEVEL (sounds, lamps: chapters 5B / 5D):
+    WARNING  COMPASS LOST, GEAR FAULT, JOYSTICK FAULT, SAFETY MONITOR
+             TRIPPED, REMOTE DRIVING LINK LOST, COLLISION RISK (+ DRIVER
+             DECISION), SHALLOW WATER, EMERGENCY STOP, NO DATA FROM THE BOAT
+    ADVISORY ARRIVED, TRAINING, JOYSTICK TOOK CONTROL, AIS RECEIVER SILENT
+    CAUTION  all the others
+  (groundstation\alerts.py). The GENERAL WARNING / CAUTION lamps of the
+  driver screen only silence this PC - they are not the boat's ALARM ACK.
 
 
 -------------------------------------------------------------------------------
@@ -1463,6 +1698,28 @@ FUTURE IDEAS
                                  MANUAL (onboard joystick driving).
   "REMOTE DRIVING LINK LOST"     the link was too slow / broken; request
                                  again (+ CONFIRM on board) when it is good.
+  The screens are in Greek /     the ΕΛ / EN buttons (top right) or the
+  English, I want the other      Language menu; on the driver screen L.
+  Some text stays English        it comes from the gateway and has no "gw."
+                                 line in lang\el.txt yet: add one (5A).
+  No voice, only tones           Sound tab shows "NO VOICE": run
+                                 python tools\get_piper.py, restart.
+  A callout says it wrong        change its "say." line in lang\el.txt /
+                                 en.txt (whole phrase, numbers as words), or
+                                 put a recording in groundstation\sounds\.
+  The warning sound repeats      acknowledge: GENERAL WARNING lamp on the
+                                 driver screen (or Space). It comes back
+                                 only for a new warning.
+  "AR: camera calibration        set "vision": {"camera": {...}} in the
+  unknown"                       gateway config (chapter 5B).
+  AR horizon not on the sea's    tilt_down_deg in the gateway config (and
+  horizon                        hfov / vfov) - check in harbour.
+  The driver screen is plain     Pillow is missing (chapter 3 f).
+  (stippled panels)
+  A HUD box is in the way /      LAYOUT button (or E): move / resize / hide
+  gone                           it; RESET TO DEFAULT brings all back.
+  A window is on a monitor       Windows menu -> Move ... to monitor 1, or
+  that is not there any more     Ctrl+Shift+1 in that window.
   Channel switched back by itself you did not press KEEP within 60 s.
   STARLINK banner                all 4G / RF channels are down (AUTO), or you
                                  chose it; it costs data - go back to AUTO.
