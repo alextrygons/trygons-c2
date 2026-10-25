@@ -145,7 +145,7 @@ def vision_config():
                          "get_vision_model.py, get_vision_samples.py)"))
     # the front camera calibration of the demo video: the driver HUD's AR overlays (horizon, route ribbon ...)
     return {"enabled": True, "source": "camera" if ok else "fake", "allow_inject": True,
-            "camera": {"height_m": 2.0, "tilt_down_deg": 2.0, "hfov_deg": 75.0, "vfov_deg": 44.0, "yaw_deg": 0.0}}
+            "camera": {"height_m": 2.0, "tilt_down_deg": -3.0, "hfov_deg": 70.0, "vfov_deg": 40.0, "yaw_deg": 0.0}}
 
 
 def gateway_config(mtx, charts):

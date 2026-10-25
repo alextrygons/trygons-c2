@@ -18,6 +18,11 @@ import tkinter as tk
 import chart
 from i18n import T
 
+try:
+    from PIL import Image, ImageDraw, ImageTk
+except ImportError:                 # without Pillow: shading as tk.PhotoImage, contours as canvas lines
+    Image = None
+
 NOTE = chart.NOTE
 COL_AIS = {"danger": "#e00000", "warn": "#ff8c00", None: "#2050c0", "stale": "#909090"}
 MARK_COL = {"light": "#d0a000", "buoy_lateral": "#c00000", "beacon_lateral": "#c00000", "harbour": "#004080",
@@ -120,22 +125,85 @@ class ChartView:
         img.put(" ".join(rows))
         return img.zoom(step, step) if step > 1 else img
 
+    def _bitmap(self, lat0, lon0, m, w, h, opacity, step, theme, rot, depth_on, contours_on, small):
+        """Depth shading + contours as one Pillow picture (-> ImageTk) for this view."""
+        P, inv = self.projection(lat0, lon0, m, w, h, rot)
+        th = THEMES.get(theme, THEMES["day"])
+        cw, ch = (w + step - 1) // step, (h + step - 1) // step
+        if depth_on:
+            cache, data = {}, []
+            rgb = lambda col: (int(col[1:3], 16), int(col[3:5], 16), int(col[5:7], 16), 255)    # noqa: E731
+            for yy in range(0, ch * step, step):
+                for xx in range(0, cw * step, step):
+                    la, lo = inv(xx + step / 2, yy + step / 2)
+                    d = self.charts.depth(la, lo)
+                    k = None if d is None else int(d * 2) / 2.0
+                    colr = cache.get(k) if d is not None else None
+                    if colr is None:
+                        if d is not None:
+                            colr = cache[k] = rgb(blend(depth_colour(d, theme), opacity, th["blend"]))
+                        elif self.charts.area_at(la, lo):
+                            colr = rgb(blend(depth_colour(None, theme), opacity, th["blend"]))
+                        else:
+                            colr = rgb(blend(th["outside"], opacity, th["blend"]))
+                    data.append(colr)
+            im = Image.new("RGBA", (cw, ch))
+            im.putdata(data)
+            im = im.resize((cw * step, ch * step), Image.NEAREST).crop((0, 0, w, h))
+        else:
+            im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        if contours_on:
+            dr = ImageDraw.Draw(im)
+            corners = [inv(x, y) for x, y in ((0, 0), (w, 0), (0, h), (w, h))]
+            view = (min(p[0] for p in corners), max(p[0] for p in corners), min(p[1] for p in corners),
+                    max(p[1] for p in corners))
+            levels = (2, 5, 10, 20, 50, 100) if m < 30 else (5, 20, 50, 100)
+            for a in self.charts.areas:
+                cont = a.contours()
+                for lv in levels:
+                    lines = cont.get(str(lv), [])
+                    bkey = (a.folder, lv)
+                    if bkey not in self._bboxes:
+                        self._bboxes[bkey] = [(min(p[0] for p in ln), max(p[0] for p in ln), min(p[1] for p in ln),
+                                               max(p[1] for p in ln)) for ln in lines]
+                    col = th["contour"][0] if lv <= 5 else th["contour"][1]
+                    for ln, (la0, la1, lo0, lo1) in zip(lines, self._bboxes[bkey]):
+                        if la1 < view[0] or la0 > view[1] or lo1 < view[2] or lo0 > view[3]:
+                            continue
+                        stride = max(1, int(m / 40)) if not small else max(1, int(m / 20))
+                        pts = [P(p[0], p[1]) for p in ln[::stride] + [ln[-1]]]
+                        if len(pts) >= 2:
+                            dr.line(pts, fill=col, width=1)
+        return ImageTk.PhotoImage(im)
+
     def draw(self, c, lat0, lon0, m, w, h, layers=None, opacity=0.8, ais=None, threats=None, route=None,
              shallow=None, small=False, vision=None, theme="day", rot=0.0):
         layers = layers or {"depth": True, "contours": True, "marks": True, "ais": True}
         th = THEMES.get(theme, THEMES["day"])
-        P, _ = self.projection(lat0, lon0, m, w, h, rot)
-        if self.charts and layers.get("depth"):
+        P, inv = self.projection(lat0, lon0, m, w, h, rot)
+        baked = False
+        if self.charts and (layers.get("depth") or (layers.get("contours") and Image is not None)):
+            # one bitmap per view (depth shading + the contours drawn into it with Pillow): every redraw only
+            # places it; it is made again when the scale / size / theme / layers change or the boat moved 20 %
             step = 6 if small else 4
-            key = (round(m, 3), w, h, round(opacity, 2), step, theme, round(rot, 1))
+            key = (round(m, 3), w, h, round(opacity, 2), step, theme, round(rot, 1), bool(layers.get("depth")),
+                   bool(layers.get("contours")) and Image is not None, small)
             if self.key != key or self.img_at is None or \
                     abs(P(*self.img_at)[0] - w / 2) > w * 0.2 or abs(P(*self.img_at)[1] - h / 2) > h * 0.2:
-                self.img = self._shade(lat0, lon0, m, w, h, opacity, step, theme, rot)
+                if Image is not None:
+                    self.img = self._bitmap(lat0, lon0, m, w, h, opacity, step, theme, rot, layers.get("depth"),
+                                            layers.get("contours"), small)
+                else:
+                    self.img = self._shade(lat0, lon0, m, w, h, opacity, step, theme, rot)
                 self.key, self.img_at = key, (lat0, lon0)
             x, y = P(*self.img_at)
-            c.create_image(x, y, image=self.img, anchor="center", tags="chart")
-        if self.charts and layers.get("contours"):
-            self._contours(c, P, m, w, h, small, th)
+            baked = bool(layers.get("contours")) and Image is not None
+            c.create_image(x, y, image=self.img, anchor="center", tags=("chart", "contour") if baked else "chart")
+        if self.charts and layers.get("contours") and not baked:
+            corners = [inv(x, y) for x, y in ((0, 0), (w, 0), (0, h), (w, h))]
+            view = (min(p[0] for p in corners), max(p[0] for p in corners), min(p[1] for p in corners),
+                    max(p[1] for p in corners))
+            self._contours(c, P, m, w, h, small, th, view)
         if self.charts and layers.get("marks") and m <= 60:
             for a in self.charts.areas:
                 for s in a.seamarks():
@@ -216,7 +284,7 @@ class ChartView:
                 T("map.no_chart_files")
             c.create_text(4, h - 9, anchor="w", text=att[:200], fill=th["att"], font=("Segoe UI", 7), tags="note")
 
-    def _contours(self, c, P, m, w, h, small, th=None):
+    def _contours(self, c, P, m, w, h, small, th=None, view=None):
         th = th or THEMES["day"]
         levels = (2, 5, 10, 20, 50, 100) if m < 30 else (5, 20, 50, 100)
         for a in self.charts.areas:
@@ -229,10 +297,8 @@ class ChartView:
                                           max(p[1] for p in ln)) for ln in lines]
                 col = th["contour"][0] if lv <= 5 else th["contour"][1]
                 for ln, (la0, la1, lo0, lo1) in zip(lines, self._bboxes[key]):
-                    corners = [P(la1, lo0), P(la0, lo1), P(la1, lo1), P(la0, lo0)]
-                    if max(x for x, _ in corners) < 0 or min(x for x, _ in corners) > w or \
-                            max(y for _, y in corners) < 0 or min(y for _, y in corners) > h:
-                        continue
+                    if view and (la1 < view[0] or la0 > view[1] or lo1 < view[2] or lo0 > view[3]):
+                        continue                    # outside the window (lat / lon box: no projection needed)
                     stride = max(1, int(m / 40)) if not small else max(1, int(m / 20))
                     pts = [v for p in ln[::stride] + [ln[-1]] for v in P(p[0], p[1])]
                     if len(pts) >= 4:

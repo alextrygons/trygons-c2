@@ -12,7 +12,6 @@ Course-up turns the map in 5 degree steps (the depth shading is redrawn per step
 import math
 import time
 import tkinter as tk
-from tkinter import ttk
 
 import i18n
 import mapview
@@ -74,32 +73,29 @@ class MapWindow:
                                 activebackground="#202830", command=self.redraw)
             i18n.bind(cb, "map.layer_" + k)
             cb.pack(side="left", padx=2)
-        self.view_only = tk.Label(top, font=F_TXT, bg="#202830", fg="#a0b0c0")
-        i18n.bind(self.view_only, "mw.view_only")
-        self.view_only.pack(side="right", padx=8)
         body = tk.PanedWindow(self.w, orient="horizontal", bg="#000000", sashwidth=5)
         body.pack(fill="both", expand=True)
         self.cv = tk.Canvas(body, bg="#05101a", highlightthickness=0)
         body.add(self.cv, stretch="always", minsize=400)
         side = tk.Frame(body, bg="#101820")
-        body.add(side, minsize=260, width=380)
+        body.add(side, minsize=260, width=400)
+        self.view_only = tk.Label(side, font=("Segoe UI", 9), bg="#101820", fg="#a0b0c0", wraplength=380,
+                                  justify="left", anchor="w")
+        i18n.bind(self.view_only, "mw.view_only")
+        self.view_only.pack(fill="x", padx=6, pady=(6, 0))
         self.ais_lbl = tk.Label(side, font=F_BTN, bg="#101820", fg="#c8d8e8", anchor="w", justify="left")
         self.ais_lbl.pack(fill="x", padx=6, pady=(6, 2))
-        self.cols = (("name", "ais.col_ship", 120), ("dist", "ais.col_dist", 70), ("brg", "ais.col_brg", 55),
-                     ("cpa", "ais.col_cpa", 55), ("tcpa", "ais.col_tcpa", 60), ("age", "ais.col_age", 45))
-        style = ttk.Style(self.w)
-        style.configure("Map.Treeview", background="#101820", fieldbackground="#101820", foreground="#c8d8e8",
-                        rowheight=22, font=F_TXT)
-        style.configure("Map.Treeview.Heading", font=("Segoe UI", 9, "bold"))
-        self.tree = ttk.Treeview(side, columns=[c for c, _k, _w in self.cols[1:]], height=20, style="Map.Treeview")
-        for i, (c, key, wd) in enumerate(self.cols):
-            col = "#0" if i == 0 else c
-            self.tree.column(col, width=wd, anchor="w" if i == 0 else "e", stretch=i == 0)
-            self.tree.heading(col, text=T(key))
+        self.cols = (("name", "ais.col_ship", 15), ("dist", "ais.col_dist", 7), ("brg", "ais.col_brg", 5),
+                     ("cpa", "ais.col_cpa", 6), ("tcpa", "ais.col_tcpa", 6), ("age", "ais.col_age", 5))
+        # the AIS list: a dark text list (a ttk table keeps a white background on Windows)
+        self.tree = tk.Text(side, bg="#101820", fg="#c8d8e8", font=("Consolas", 11), height=20, bd=0,
+                            highlightthickness=0, wrap="none", cursor="arrow")
+        self.tree.tag_configure("head", foreground="#8090a0", font=("Consolas", 10, "bold"))
         self.tree.tag_configure("danger", background="#601010", foreground="#ffd0d0")
         self.tree.tag_configure("warn", background="#504000", foreground="#fff0c0")
         self.tree.tag_configure("stale", foreground="#707070")
         self.tree.pack(fill="both", expand=True, padx=4)
+        self.rows = []
         self.small = tk.Label(side, font=("Segoe UI", 9), bg="#101820", fg="#ff8080", wraplength=360, justify="left")
         i18n.bind(self.small, "ais.small_craft")
         self.small.pack(fill="x", padx=6, pady=4)
@@ -138,9 +134,8 @@ class MapWindow:
     def lang_changed(self):
         try:
             self.w.title(T("mw.title"))
-            for i, (c, key, _wd) in enumerate(self.cols):
-                self.tree.heading("#0" if i == 0 else c, text=T(key))
             self.update_buttons()
+            self.draw_ais_list()
         except tk.TclError:
             raise RuntimeError("map window gone")
 
@@ -317,19 +312,21 @@ class MapWindow:
     def draw_ais_list(self):
         a = self.app
         rows = a.ais_rows_now() if hasattr(a, "ais_tree") else []
+        self.rows = rows
         self.ais_lbl.configure(text=T("mw.ais_title", n=len(rows)))
-        sel = self.tree.selection()
-        self.tree.delete(*self.tree.get_children())
 
         def f(v, fmt):
             return "-" if v is None else fmt % v
+        t = self.tree
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        t.insert("end", " ".join(("%-*s" if i == 0 else "%*s") % (wd, T(key)[:wd]) for i, (_c, key, wd) in
+                                enumerate(self.cols)) + chr(10), "head")
         for r in rows:
-            tag = "danger" if r.get("level") == "danger" else "warn" if r.get("level") == "warn" else \
-                "stale" if r.get("stale") else ""
-            self.tree.insert("", "end", iid=str(r["mmsi"]), text=r.get("name") or str(r["mmsi"]), tags=(tag,),
-                             values=(f(r.get("dist_nm"), "%.2f"), f(r.get("bearing"), "%03.0f"), f(r.get("cpa_nm"), "%.2f"),
-                                     f(r["tcpa_min"] if (r.get("tcpa_min") or 0) >= 0 else None, "%.1f"),
-                                     f(r.get("age_s"), "%.0f")))
-        keep = [i for i in sel if self.tree.exists(i)]
-        if keep:
-            self.tree.selection_set(keep)
+            tag = "danger" if r.get("level") == "danger" else "warn" if r.get("level") == "warn" else                 "stale" if r.get("stale") else ""
+            vals = ((r.get("name") or str(r["mmsi"]))[:14], f(r.get("dist_nm"), "%.2f"), f(r.get("bearing"), "%03.0f"),
+                    f(r.get("cpa_nm"), "%.2f"), f(r["tcpa_min"] if (r.get("tcpa_min") or 0) >= 0 else None, "%.1f"),
+                    f(r.get("age_s"), "%.0f"))
+            t.insert("end", " ".join(("%-*s" if i == 0 else "%*s") % (wd, v) for i, (v, (_c, _k, wd)) in
+                                    enumerate(zip(vals, self.cols))) + chr(10), tag)
+        t.configure(state="disabled")

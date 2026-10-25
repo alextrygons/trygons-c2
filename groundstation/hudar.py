@@ -198,13 +198,14 @@ def build(screen, s, pic, W, H):
     f_s = max(10, int(H * 0.018))
 
     measure = getattr(screen.hud, "measure", lambda t_, s_, b_=False: len(t_) * s_ * 0.6)
+    lo_x, hi_x = W * 0.10, W * 0.86          # AR labels / edge arrows stay in the free middle (HUD columns aside)
 
     def text(xy, txt, tag, col=main, anchor="c", size=f_s, bold=True):
         """A label, moved inside the window when it would stick out at the side."""
         x, y = xy
         w = measure(txt, size, bold)
         left = x - (w / 2 if anchor in ("c", "n", "s") else w if anchor in ("e", "ne", "se") else 0)
-        x += max(0.0, 4 - left) - max(0.0, left + w - (W - 4))
+        x += max(0.0, lo_x - left) - max(0.0, left + w - hi_x)
         ops.append({"k": "text", "xy": (x, y), "s": txt, "tag": tag, "size": size, "bold": bold, "fill": col,
                     "anchor": anchor, "max_w": None, "box": None})
 
@@ -251,7 +252,7 @@ def build(screen, s, pic, W, H):
             e, n = enu(lat, lon, la, lo)
             f, r = to_boat(e, n, hd)
             q = None
-            if f > 4.0:
+            if f > 15.0:                            # from 15 m ahead (closer: a huge wedge)
                 q = (P(f, r - half), P(f, r + half))
                 if None in q:
                     q = None
@@ -296,8 +297,7 @@ def build(screen, s, pic, W, H):
                             "fill": None, "outline": col, "w": 2, "alpha": 255})
                 text((bx, by - bh - 3), lab, "ar_ais", col=col, anchor="s")
             elif t.get("level"):
-                ex = X(0.0) + 30 if rel < 0 else X(1.0) - 30
-                ex = max(30, min(W - 30, ex))
+                ex = max(lo_x + 20, X(0.0) + 30) if rel < 0 else min(hi_x - 20, X(1.0) - 30)
                 ey = H * 0.42
                 sgn = -1 if rel < 0 else 1
                 ops.append({"k": "poly", "pts": [ex + sgn * 18, ey, ex, ey - 12, ex, ey + 12], "tag": "ar_ais_edge",
@@ -319,7 +319,7 @@ def build(screen, s, pic, W, H):
             text((cx, cy - 20), lab, "ar_wp", col="#ff70ff", anchor="s")
         else:
             sgn = -1 if rel < 0 else 1
-            ex = max(40, min(W - 40, X(0.0) + 40 if sgn < 0 else X(1.0) - 40))
+            ex = max(lo_x + 20, X(0.0) + 40) if sgn < 0 else min(hi_x - 20, X(1.0) - 40)
             ey = H * 0.36
             ops.append({"k": "poly", "pts": [ex + sgn * 20, ey, ex, ey - 13, ex, ey + 13], "tag": "ar_wp_edge",
                         "fill": "#ff50ff", "outline": "#000000", "alpha": 255, "w": 1})

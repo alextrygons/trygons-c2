@@ -449,10 +449,12 @@ class Hud:
     def throttle(self, name, s):
         d = s.t
         x0, y0, x1, y1 = self.R(name)
-        r = (x0, y0, x1, y1)
-        self.panel(r, name)
         w = x1 - x0
         gear_h = self.f_big * 1.15
+        if s.declutter == "MINIMAL":
+            y0 = y1 - gear_h - 6                     # only the gear letter
+        r = (x0, y0, x1, y1)
+        self.panel(r, name)
         bar = (x0 + w * 0.30, y0 + self.f_small * 1.6, x0 + w * 0.70, y1 - gear_h - self.f_small * 1.4)
         bh = bar[3] - bar[1]
         if s.declutter != "MINIMAL" and bh > 30:

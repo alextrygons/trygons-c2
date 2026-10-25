@@ -991,6 +991,7 @@ class App:
 
         mp = tk.Frame(nb, bg=BG)
         tab(mp, "tab.map")
+        self.map_tab = mp
         mt = tk.Frame(mp, bg=BG)
         mt.pack(fill="x")
         btn(mt, "cap.zoom_in", lambda: self.zoom(0.5), font=F_TXT).pack(side="left")
@@ -1026,6 +1027,7 @@ class App:
 
         pl = tk.Frame(nb, bg=BG)
         tab(pl, "tab.plot")
+        self.plot_tab = pl
         self.plot = tk.Canvas(pl, bg=BG, highlightthickness=0)
         self.plot.pack(fill="both", expand=True)
 
@@ -2137,8 +2139,11 @@ class App:
 
         self.draw_joystick(d)
         self.draw_remote(d)
-        self.draw_plot()
-        self.draw_map(d)
+        shown = self.nb.select()                    # draw the map / plot only while their tab is open
+        if shown == str(self.plot_tab):
+            self.draw_plot()
+        if shown == str(self.map_tab):
+            self.draw_map(d)
 
     def draw_joystick(self, d):
         c = self.joy_cv

@@ -832,6 +832,8 @@ class DriverScreen:
         if self.vis_overlay and mk and mk.get("b64") and v.get("state") in ("ACTIVE", "DEGRADED"):
             cells = decode_mask(mk["b64"], mk["w"], mk["h"])
             alpha = self.STIPPLE[self.vis_opacity]
+            if settings.get("night"):
+                alpha //= 2                             # night: the mask dimmed too
             if Image is not None:
                 im = Image.new("RGBA", (mk["w"], mk["h"]), (0, 0, 0, 0))
                 px = im.load()

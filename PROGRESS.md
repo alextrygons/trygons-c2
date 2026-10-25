@@ -21,8 +21,30 @@ files), then A, B, C, D, F, G.
 | B | AR overlays (hudar.py): camera model = gateway vision geometry + IMU roll / pitch; horizon + heel arc, velocity vector, waypoint diamond / edge arrow, route ribbon (fading), AIS boxes / edge arrows, predicted path 30 / 60 s, shallow tint (chart); each on / off (AR menu), "calibration unknown" without one; gateway vision status publishes "camera" only when configured (VI0b); demo has a calibration | DONE (test_driver I15-I16, gateway VI 10/10) | 628909e |
 | C | MAP window (mapwin.py): chart layers, AIS list, boat, track, route, active waypoint, avoidance route, shallow / collision warnings (no geofence exists in the system), DR circle, range rings; follow / free pan, zoom (wheel), north / course-up (5 deg steps), day / dark / night, remembered; view only. All windows: place + monitor remembered (gs_layout.json map / map_open), Windows menu + Ctrl+Shift+1..9 move to a monitor | DONE (test_driver I17 + I6 with the map) | de35b6c |
 | D | sound.py (tones made in code, priority scheduler, callouts from telemetry / gateway status), tts.py (Piper offline neural voices el_GR-rapunzelina-low + en_GB-alan-medium via tools/get_piper.py; Windows SAPI fallback), every callout spoken as ONE sentence (the Greek voice garbles lone short words), 370 sentences per language pre-made in the background + auto retry of garbled takes, own recordings in sounds/<lang>/<key>.wav, Sound tab (soundtest.py) | DONE (test_sound S1-S10, test_driver I18) | 8223ebe |
-| F | MANUAL.txt (5A language, 5B driver HUD + AR, 5C map window, 5D sounds, install f / g, part I, alarm levels, troubleshooting) + MANUAL_EL.txt (Greek user manual) + CLAUDE.md rule (keep both in step) | DONE | (this commit) |
-| G | screenshots docs/screens/, tests, final gate, push | | |
+| F | MANUAL.txt (5A language, 5B driver HUD + AR, 5C map window, 5D sounds, install f / g, part I, alarm levels, troubleshooting) + MANUAL_EL.txt (Greek user manual) + CLAUDE.md rule (keep both in step) | DONE | 5d4382a |
+| G | tools/demo_screens.py (restarts the demo, drives the AUTO mission + DEMO_SHIP + GPS fault, DPI-aware window captures) -> docs/screens/ (13 pictures + README); review fixes: contours baked into the chart bitmap (3 maps were saturating the UI), map / plot tab drawn only when open, AR labels kept in the free middle, ribbon from 15 m, night-dimmed vision mask, MINIMAL gear box, dark AIS list in the map window; tests test_lang L1-L5, test_sound S1-S10, test_driver I1-I18 | DONE (test_lang 5/5, test_sound 10/10, test_charts 6/6, test_driver 18/18 on the committed files) | (this commit) |
+
+## STOPPED HERE (user request, 2026-10-25) - what is left
+
+Done: sections E, A, B, C, D, F, G are committed (one commit each). Not done / open:
+- NOT PUSHED: run `git push` when ready (6 + 1 commits since 7543ee4).
+- The last COMPLETE gate (tools/check.sh) ran before the final small ground-station fixes: everything
+  passed (sim all + bridge, TriCore, gateway 91/91, lang, sound, charts, avoidance, FAT32) except the
+  ADS-exclude check, tripped by a stray top-level logs/ folder from the screenshot script - deleted, and
+  tools/demo_screens.py now runs from groundstation/. A second full gate was started and stopped on
+  request: run `sh tools/check.sh` once (stop the demo first: it locks sim/autopilot_sim.exe).
+- The demo is STOPPED (it was stopped for the gate): START_DEMO.bat.
+- test_driver.py once failed right after the gate (no telemetry within the 10 s start-up wait on a
+  busy PC); the wait is now 30 s and it passed 18/18 alone.
+- Captain screen needs about 1850 px width in Greek (fits 1920; cramped on a 1600 px laptop).
+- Some gateway sentences (recorder / channel details) still show in English: add "gw." lines.
+- Greek voice (el_GR-rapunzelina-low) garbles some short phrases: every callout is a whole sentence,
+  garbled takes are re-made automatically (0 left of 370); listen to them on the boat PC (Sound tab).
+- To check on the real boat / PC: the front camera calibration (gateway vision.camera, AR horizon),
+  the HUD speed on the real PC (here ~25 ms per frame at 100 % scaling, ~60 ms at 250 % scaling),
+  Piper on that PC (python tools/get_piper.py).
+- docs/screens/map_*.png show the map AIS list before the last column-gap fix (cosmetic).
+- No geofence exists in the system, so the map window shows none.
 
 ## Notes (HUD / map / sound / Greek)
 

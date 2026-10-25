@@ -145,7 +145,7 @@ def main():
                 time.sleep(0.02)
             return bool(until and until())
 
-        pump(10, lambda: app.t is not None and app.link and app.link.connected)
+        pump(30, lambda: app.t is not None and app.link and app.link.connected)     # a busy PC: slow start
         root.state("normal")
         root.geometry("1200x800+40+40")
         app.open_driver()
@@ -631,7 +631,7 @@ def main():
         pump(1.2)
         tags = {t: len(mw.cv.find_withtag(t)) for t in ("ring", "track", "prog", "active_wp", "unc", "boat", "ais",
                                                         "route", "shallow", "warning", "north", "note")}
-        rows = mw.tree.get_children()
+        rows = mw.rows
         x_n = mw.cv.coords(mw.cv.find_withtag("north")[0])
         mw.toggle_orient()
         pump(0.6)

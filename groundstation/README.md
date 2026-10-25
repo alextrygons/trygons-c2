@@ -79,7 +79,11 @@ drop-down list and press **Connect**.
 | Program tab | the AUTO program editor: add / change / delete / reorder waypoints (lat, lon, leg speed, arrival radius, action continue / slow / stop), final action, Upload to boat, Download, Save / Load file. The boat checks the program again and says what is wrong |
 | Plot tab | heading vs target and the outboard angle, last 2 minutes |
 | Config tab | "Read all" shows the settings. Select one, type a value and press "Write selected" (STANDBY only, range-checked, lost at power-off) |
+| Sound tab | sound / voice settings, the voices found, every sound and callout to play in Greek or English |
 | Events tab | every command, answer, mode change and alarm |
+| Driver screen | full-screen front camera with the HUD on top (MANUAL.txt chapter 5B) |
+| Map window | a full-size map for another monitor, view only (chapter 5C) |
+| ΕΛ / EN | screen language, Greek by default, switches live (chapter 5A; texts in `lang/`) |
 | Simulator box | (only with the simulator) panel HDG LOCK / STANDBY and joystick CONFIRM buttons; USB joystick lever, stick, buttons, unplug and link-fault controls (used when the source is the USB bridge; or start the simulator with `server 5760 1 usb`) |
 
 **Starting AUTO:** make a program, "Upload to boat", press **AUTO START**, then
@@ -134,5 +138,10 @@ unplugs the throttle (JOYSTICK FAULT). 10 tests.
 * `program.py`: AUTO programs (upload, download, save / load).
 * `replay.py`: replay of the ground station's .jsonl logs.
 * `test_e2e.py`: end-to-end test.
+* `i18n.py`, `lang/el.txt`, `lang/en.txt`: every screen text (Greek / English); `settings.py`: per-PC settings.
+* `driver.py` + `hud.py`: the driver screen (camera HUD); `hudar.py`: AR overlays; `mapwin.py`: the map window;
+  `mapview.py`: chart layers; `monitors.py`: window -> monitor; `alerts.py`: alarm levels + MASTER lamps.
+* `sound.py`, `tts.py`, `soundtest.py`: sounds, voice callouts (Piper, offline), the Sound tab.
+* `test_driver.py`, `test_lang.py`, `test_sound.py`, `test_charts.py`: tests of the screens, languages, sounds, maps.
 * `tlg.py`: read / write .TLG logs; `log2csv.py`, `logview.py`, `tlgreplay.py`: the log tools;
   `test_logs.py`: their tests.
