@@ -63,7 +63,7 @@ typedef enum {
     E_COMPASS, E_GYRO, E_GPS, E_GPS_JUMP, E_NSW, E_CURRENT, E_LIMITSW, E_JOY_WIRE, E_ACCEL, E_SEA,
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
-    E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG,
+    E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
     E_COUNT
 } ev_kind_t;
 
@@ -75,7 +75,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "limit switches", "joystick wire", "slamming sensor", "sea state", "gateway status", "navigation request",
     "USB link fuzz", "gateway UART fuzz", "core 0 frozen", "chip reset", "inject throttle over the limit",
     "inject gear change under load", "shore CONFIRM (captain's joystick)", "MANEUVER request",
-    "onboard joystick plugged / unplugged"
+    "onboard joystick plugged / unplugged", "HELM station dropped (link lost)", "HELM station back",
+    "shore info (near / far / none / invalid)"
 };
 
 typedef struct {
@@ -148,9 +149,12 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         else if (p < 0.95f) k = E_RESET;
         else if (p < 0.970f) k = E_INJ_THR;
         else if (p < 0.980f) k = E_INJ_GEAR;
-        else if (p < 0.990f) k = E_MAN_REQ;
-        else if (p < 0.996f) k = E_SCONFIRM;
-        else k = E_JOY_PLUG;
+        else if (p < 0.986f) k = E_MAN_REQ;
+        else if (p < 0.989f) k = E_SCONFIRM;
+        else if (p < 0.991f) k = E_JOY_PLUG;
+        else if (p < 0.994f) k = E_HELM_DROP;
+        else if (p < 0.997f) k = E_HELM_BACK;
+        else k = E_SHORE;
         e->kind = (uint8_t)k;
         e->a = rndi(&r, 1000);
         e->b = rndi(&r, 1000);
@@ -245,6 +249,8 @@ typedef struct {
     uint32_t    btn_release;
     bool        rem_stream, rem_stale;
     bool        sconf_held;         /* the shore captain's CONFIRM button */
+    uint8_t     shore_mode;         /* GW_SHORE the Pi sends: 0 none, 1 near (40 m), 2 far (900 m), 3 not valid */
+    uint32_t    gw_off_t;           /* when the Pi went quiet (0 = it talks) */
     uint32_t    sconf_release;
     bool        uncrewed;
     uint16_t    rem_seq;
@@ -339,6 +345,7 @@ static void sim_init(const sched_t *sc)
     proto_rx_init(&S.gw_rx);
     S.wdt_ms = 100u;
     S.gw_on = true;
+    S.shore_mode = (uint8_t)(sc->seed % 4u);
     if (s_log) {
         (void)system("mkdir soak_sd 2>nul & del /q soak_sd\\*.TLG 2>nul");
         sim_hal_sd_setup("soak_sd", true, 64000000u, false);
@@ -396,7 +403,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 27
+#define NINV 32
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -420,7 +427,12 @@ static const char *INV_NAMES[NINV] = { "",
     "I23 the profile CREWED / UNCREWED never changes outside STANDBY (stopped)",
     "I24 MANEUVER never commands throttle above idle",
     "I25 MANEUVER gear changes only at idle",
-    "I26 (gateway: MANEUVER / REMOTE refused without a manual licence)" };
+    "I26 (gateway: MANEUVER / REMOTE refused without a manual licence)",
+    "I27 ENGINE KILL only after idle + neutral",
+    "I28 lost link near shore or with missing / stale shore info: ENGINE KILL at once (once idle + neutral)",
+    "I29 lost link at open sea: no kill before the grace time; kill after it unless the link returned",
+    "I30 never an ENGINE KILL in CREWED",
+    "I31 the ENGINE KILL stays latched until a reset on board" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -486,6 +498,9 @@ typedef struct {
     uint32_t last_action_t;         /* the last event that may legitimately change the mode */
     uint32_t sconf_t;               /* last shore CONFIRM press */
     uint8_t  prof_prev;
+    bool     killed;                /* the ENGINE KILL output was seen on (since this boot) */
+    uint32_t safe_since;            /* outputs idle + neutral since (0 = not) */
+    uint32_t lost_t;                /* the link loss the AURIX saw (its ll.lost_ms) */
 } chk_t;
 
 static chk_t C;
@@ -547,6 +562,8 @@ static void check_step(void)
         C.gear_prev = gp;
         C.confirms_prev = s->confirm.accepted;
         C.prof_prev = s->profile;
+        C.killed = false;
+        C.safe_since = 0u;
         return;
     }
 
@@ -610,7 +627,7 @@ static void check_step(void)
 
     /* I5 / I6: the onboard joystick */
     bool joy_ok = S.joy_fitted && !S.joy_broken && s->armed && !forced && !s->joy.fault && !s->mon_tripped &&
-                  s->profile == SB_PROFILE_CREWED && s->joy.present;
+                  s->profile == SB_PROFILE_CREWED && s->joy.present && s->ll.state == SB_LL_OK;   /* killed: STANDBY only */
     if (C.defl_pending && joy_ok) {
         float el = (S.t - C.defl_t) * 0.001f;
         if (m == MODE_MANUAL) {
@@ -681,6 +698,44 @@ static void check_step(void)
     }
     if (C.prof_prev == SB_PROFILE_CREWED && s->profile == SB_PROFILE_UNCREWED)
         fail(23, "profile CREWED -> UNCREWED without a power-up%.0f%.0f", 0.0, 0.0);
+
+    /* I27-I31: UNCREWED lost link + ENGINE KILL */
+    {
+        bool kill = sim_hal_engine_killed();
+        bool safe_now = forced || (thr <= 0.6f && (gp == 0 || gp == -1));
+        if (safe_now) { if (!C.safe_since) C.safe_since = S.t ? S.t : 1u; } else C.safe_since = 0u;
+        if (kill && !C.killed) {
+            if (safe_now) ok(27);
+            else fail(27, "ENGINE KILL with the throttle at %.1f %% / gear %.0f", thr, (double)gp);
+            if (s->profile == SB_PROFILE_CREWED) fail(30, "ENGINE KILL started in a CREWED boat%.0f%.0f", 0.0, 0.0);
+            else ok(30);
+            /* open sea with fresh far shore info (the storm's own view): never before the grace time */
+            bool far = S.shore_mode == 2u && S.gw_on && s->gw.state == SB_GW_OK;
+            float since = (S.t - s->ll.lost_ms) * 0.001f;
+            if (far && since < s->cfg.lostlink_grace_s - 0.1f)
+                fail(29, "killed %.1f s after the loss at open sea (grace %.0f s)", since, s->cfg.lostlink_grace_s);
+            else ok(29);
+        }
+        if (C.killed && !kill) fail(31, "ENGINE KILL released without a reset%.0f%.0f", 0.0, 0.0);
+        else if (C.killed) ok(31);
+        if (kill) C.killed = true;
+        if (s->ll.state == SB_LL_LOST && !kill && C.safe_since && S.t - C.safe_since > 1500u && !s->mon_tripped) {
+            /* near shore (the storm's view): the Pi said near / nothing / not valid, or it is quiet */
+            uint32_t cage = s->coast.rx_ms ? S.t - s->coast.rx_ms : 0xFFFFFFFFu;
+            bool fresh = cage < 1500u;
+            bool near = s->coast.rx_ms == 0u || cage > s->cfg.shore_max_age_ms + 500u ||
+                        (fresh && (S.shore_mode == 1u || S.shore_mode == 3u)) || (S.gw_off_t && S.t - S.gw_off_t > 4500u);
+            bool far = S.shore_mode == 2u && S.gw_on && s->gw.state == SB_GW_OK && fresh;
+            float since = (S.t - s->ll.lost_ms) * 0.001f;
+            if (near && !far && S.t - s->ll.lost_ms > 1000u)
+                fail(28, "lost %.1f s ago, near shore / no shore info, idle + neutral - but no kill", since, 0.0);
+            else if (near && !far) ok(28);
+            if (far && since > s->cfg.lostlink_grace_s + 0.5f)
+                fail(29, "lost %.1f s ago at open sea, idle + neutral - no kill after the grace time %.0f s", since,
+                     s->cfg.lostlink_grace_s);
+            else if (far) ok(29);
+        }
+    }
 
     /* I24 / I25: MANEUVER - throttle always idle, gear changes only at idle */
     if (m == MODE_MANEUVER && !forced && !inj) {
@@ -799,7 +854,7 @@ static void apply(const ev_t *e)
     case E_JOY: case E_BTN: case E_TAKE: case E_AUTOBTN: case E_CONFIRM: case E_PC_MODE: case E_PC_AUTO_START:
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
-    case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG:
+    case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -878,6 +933,14 @@ static void apply(const ev_t *e)
         (void)sb_maneuver_request(s, S.rem_station);
         break;
     case E_JOY_PLUG: S.joy_fitted = !S.joy_fitted; joy_apply(); break;
+    case E_HELM_DROP: s->helm = SB_HELM_NONE; s->helm_local = false; S.rem_stream = false; break;  /* gateway dropped it */
+    case E_HELM_BACK:
+        if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->a % 3);
+        s->helm = S.rem_station;
+        s->helm_local = false;
+        S.rem_stream = e->b < 700;
+        break;
+    case E_SHORE: S.shore_mode = (uint8_t)(e->a % 4); break;
     case E_REMOTE_ON: S.rem_stream = true; S.rem_stale = false; S.rx_x = e->f; S.rx_lever = 0.5f + 0.5f * e->g; break;
     case E_REMOTE_OFF:
         if (S.rem_stream && sb_mode(s) == MODE_REMOTE && s->remote.state == 1u) C.rem_check = true;
@@ -1035,7 +1098,15 @@ static void run_until(uint32_t until)
             uint8_t pl[12] = { 1u, 0u, 1u, 1u };
             S.gw_next = S.t + 1000u;
             push_frame(true, PROTO_T_GW_STATUS, pl, sizeof pl);
+            if (S.shore_mode != 0u) {
+                uint16_t m = S.shore_mode == 1u ? 40u : S.shore_mode == 2u ? 900u : 0xFFFFu;
+                uint8_t sp[3] = { (uint8_t)(S.shore_mode == 3u ? 0u : (S.shore_mode == 1u ? 3u : 2u)), (uint8_t)m,
+                                  (uint8_t)(m >> 8) };
+                push_frame(true, PROTO_T_GW_SHORE, sp, 3u);
+            }
         }
+        if (S.gw_on) S.gw_off_t = 0u;
+        else if (!S.gw_off_t) S.gw_off_t = S.t ? S.t : 1u;
         uint8_t buf[512];
         uint32_t n;
         proto_frame_t f;
@@ -1099,6 +1170,7 @@ static void report(int episodes, double hours)
     for (int i = 1; i < NINV; i++) {
         if (i >= 14 && i <= 17) continue;
         if (i == 21 || i == 26) continue;
+        if (ST.checks[i] == 0u && i >= 27) { printf("N/A  %-96s (not reached in these episodes)\n", INV_NAMES[i]); continue; }
         if (i == 18) continue;
         printf("%-4s %-96s checks %9lu  fails %lu%s", ST.fails[i] ? "FAIL" : "PASS", INV_NAMES[i],
                (unsigned long)ST.checks[i], (unsigned long)ST.fails[i], "");

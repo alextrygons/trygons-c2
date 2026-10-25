@@ -92,6 +92,8 @@ void     sim_hal_gw_reset(uint32_t baud);
 
 /* Hardening: safety relay state, simulated chip reset, clear the monitor latch. */
 bool     sim_hal_safety_relay(void);
+bool     sim_hal_engine_killed(void);       /* ENGINE KILL output on (engine stopped) */
+uint32_t sim_hal_engine_kills(void);        /* times it was switched on */
 void     sim_hal_chip_reset(hal_reset_t why);
 void     sim_hal_unforce(void);
 

@@ -220,6 +220,12 @@ bool hal_outputs_forced(void);
  * the outputs are armed (neutral-start interlock). */
 void hal_set_safety_relay(bool closed);
 
+/* ENGINE KILL (UNCREWED lost link, CLAUDE.md section B): true = the relay in
+ * the outboard's kill-switch circuit stops the engine. Core 0 latches it
+ * (stays killed until the AURIX is reset on board - no remote restart).
+ * Board: pin, relay type and fail-safe direction TBD (WIRING.md 3A). */
+void hal_set_engine_kill(bool kill);
+
 /* Emergency stop: the mushroom switch cuts the actuator power itself; its
  * second (normally closed) contact goes to an input so the software knows.
  * Returns false if no e-stop input is fitted / configured. */

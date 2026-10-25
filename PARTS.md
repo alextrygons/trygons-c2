@@ -20,6 +20,7 @@ why each part is needed: MANUAL.txt.
 - [ ] Buzzer: 12 V active piezo buzzer > 85 dB, BC337 (or 2N7000 / AO3400), 1 kOhm, 1 A fuse.
 - [ ] Optional: paddlewheel speed sensor, supply voltage divider for A2.
 - [ ] Keep the engine kill cord fitted and worn.
+- [ ] ENGINE KILL relay for the UNCREWED lost-link rule (WIRING.md 3A): relay + transistor driver + fuse in the outboard kill-switch circuit - TYPE, PIN AND FAIL-SAFE DIRECTION TBD (decide with the engine dealer).
 
 ## Gateway (remote access)
 

@@ -50,6 +50,7 @@
 #define PROTO_T_REMOTE        0x37u   /* u8 0 ask for remote driving (then joystick CONFIRM on board) / 1 release */
 #define PROTO_T_MANEUVER      0x38u   /* u8 0 ask for MANEUVER (captain; then CONFIRM) / 1 release */
 #define PROTO_T_GW_GPS2       0x39u   /* gateway only: i32 lat*1e7, i32 lon*1e7, u16 age ms (second GPS, AIS device) */
+#define PROTO_T_GW_SHORE      0x3Bu   /* gateway only, 1 Hz: u8 flags (b0 near, b1 valid), u16 distance to the shore m */
 #define PROTO_T_GW_NAVREQ     0x3Au   /* gateway only, 2 Hz: navigation request (link.c gw_navreq, smallboat.h SB_NAV_) */
 #define PROTO_T_JOYMAP_GET    0x1Bu   /* -  -> JOYMAP_VALUE                     */
 #define PROTO_T_JOYMAP_SET    0x1Cu   /* joymap body (see link.c), u8 save; STANDBY only */

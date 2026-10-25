@@ -108,6 +108,17 @@
 #define SB_ALM_ESTOP              0x8000000u /* EMERGENCY STOP pressed (its contact; the switch also cuts power) */
 #define SB_ALM_PROFILE            0x10000000u /* PROFILE: CREWED / UNCREWED changed (STANDBY), or a joystick appeared while
                                                  driving UNCREWED (-> STANDBY) */
+#define SB_ALM_LINK_LOST          0x20000000u /* UNCREWED: LINK LOST to the HELM shore station (idle + neutral, STANDBY) */
+#define SB_ALM_ENGINE_KILLED      0x40000000u /* UNCREWED lost link: ENGINE KILLED (latched until reset on board) */
+
+/* UNCREWED lost link (CLAUDE.md section B), sb_t.ll.state */
+#define SB_LL_OK      0u        /* link to the HELM station OK (or not armed yet, or CREWED) */
+#define SB_LL_LOST    1u        /* lost: STANDBY, idle + neutral, waiting (near shore: kill at once) */
+#define SB_LL_KILLED  2u        /* engine killed: latched until the AURIX is reset on board */
+
+/* GW_SHORE flags (gateway, 1 Hz): distance to the shore / shallow water of the route check */
+#define SB_SHORE_NEAR   0x01u   /* the gateway says: near the shore */
+#define SB_SHORE_VALID  0x02u   /* chart data and a position: the distance means something */
 
 /* Operating profile (CLAUDE.md section A), autodetected on the AURIX, never from the PC:
  * CREWED = an onboard joystick detected and passing its self-check, else UNCREWED.
@@ -319,6 +330,11 @@ typedef struct {
     uint32_t profile_detect_ms;         /* not detected this long after power-up = UNCREWED (6000; > the USB
                                            bridge start-up grace) */
     uint32_t profile_switch_ms;         /* in STANDBY: the other state this long -> profile changes (10000) */
+
+    /* UNCREWED lost link (section B) - defaults TO CONFIRM */
+    float    near_shore_m;              /* closer to the shore than this: ENGINE KILL at once (100, NEAR_SHORE_M) */
+    float    lostlink_grace_s;          /* open sea: kill after this unless the link returns (10, LOSTLINK_GRACE_S) */
+    uint32_t shore_max_age_ms;          /* shore info older than this = missing = near shore (3000) */
 } sb_config_t;
 
 /* One side (forward / reverse) of the non-returning throttle lever:
@@ -524,6 +540,19 @@ typedef struct {
     bool        profile_fault; /* UNCREWED: joystick appeared while driving (alarmed once) */
     bool        joy_was_present; /* CREWED: the joystick was there last step (disappearing = fault) */
     sb_shore_t  shore;         /* the HELM station's joystick (CONFIRM in UNCREWED) */
+    struct {                   /* UNCREWED lost link (section B) */
+        uint8_t  state;        /* SB_LL_ */
+        bool     armed;        /* a HELM station held HELM (the link existed) since power-up */
+        uint32_t lost_ms;      /* when the link was lost */
+        bool     near_at_kill; /* the kill: near shore (immediate) or after the grace time */
+        uint32_t losses, returns, kills;
+    } ll;
+    struct {                   /* distance to the shore from the gateway (GW_SHORE) */
+        uint32_t rx_ms;        /* 0 = never */
+        uint8_t  flags;        /* SB_SHORE_ */
+        uint16_t dist_m;       /* 0xFFFF = unknown */
+        uint32_t count, bad;
+    } coast;
     joymap_t    jmap;          /* joystick source + USB button map (NV slot 4) */
     jb_t        jb;            /* USB joystick bridge input */
     sb_lever_t  lev;           /* USB throttle lever: mapping and pickup */
@@ -706,5 +735,14 @@ void sb_shore_joy(sb_t *s, uint8_t station, uint16_t age_ms, float x, float y, f
 bool sb_confirm_ready(const sb_t *s);
 
 const char *sb_profile_name(uint8_t profile);
+
+/* GW_SHORE from the gateway: flags SB_SHORE_, distance m to the shore /
+ * shallow water (0xFFFF unknown). */
+void sb_gw_shore(sb_t *s, uint8_t flags, uint16_t dist_m);
+/* Near shore for the lost-link rule: closer than near_shore_m, or the shore
+ * information is missing / stale / not valid (fail safe). */
+bool sb_near_shore(const sb_t *s);
+/* Seconds left before the open-sea kill (0 if not counting). */
+float sb_lostlink_left_s(const sb_t *s);
 
 #endif /* SMALLBOAT_H */

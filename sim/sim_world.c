@@ -120,6 +120,7 @@ void world_step(world_t *w, float dt_s)
     float vss = 0.0f;
     if (eng == GEAR_F) vss = w->idle_fwd_kn + (w->vmax_fwd_kn - w->idle_fwd_kn) * t_eff / 100.0f;
     if (eng == GEAR_R) vss = -(0.8f + (w->vmax_rev_kn - 0.8f) * t_eff / 100.0f);
+    if (sim_hal_engine_killed()) vss = 0.0f;               /* ENGINE KILL: the outboard stopped */
     w->speed_kn += (vss - w->speed_kn) * dt_s / w->speed_tau_s;
 
     /* steering actuator */

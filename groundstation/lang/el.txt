@@ -63,6 +63,8 @@ alarm.shallow_water = ΡΗΧΑ ΝΕΡΑ
 alarm.obstacle_ahead = ΕΜΠΟΔΙΟ ΜΠΡΟΣΤΑ
 alarm.emergency_stop = ΚΟΜΒΙΟ ΕΚΤΑΚΤΗΣ ΑΝΑΓΚΗΣ
 alarm.profile = ΑΛΛΑΓΗ ΠΡΟΦΙΛ (ΜΕ / ΧΩΡΙΣ ΠΛΗΡΩΜΑ)
+alarm.link_lost = ΧΑΘΗΚΕ Η ΣΥΝΔΕΣΗ (ΧΩΡΙΣ ΠΛΗΡΩΜΑ): STANDBY
+alarm.engine_killed = Η ΜΗΧΑΝΗ ΣΒΗΣΤΗΚΕ (επαναφορά στο σκάφος)
 alarm.no_data = ΚΑΝΕΝΑ ΣΤΟΙΧΕΙΟ ΑΠΟ ΤΟ ΣΚΑΦΟΣ
 
 # --- απαντήσεις σκάφους / gateway σε εντολή (κωδικοί ACK) -----------------------
@@ -1155,4 +1157,6 @@ say.alarm.shallow_water = Προσοχή, ρηχά νερά μπροστά
 say.alarm.obstacle_ahead = Προσοχή, εμπόδιο μπροστά
 say.alarm.emergency_stop = Πατήθηκε το κομβίο έκτακτης ανάγκης
 say.alarm.profile = Άλλαξε το προφίλ λειτουργίας, ελέγξτε αν είναι με ή χωρίς πλήρωμα
+say.alarm.link_lost = Χάθηκε η σύνδεση, το σκάφος είναι σε αναμονή
+say.alarm.engine_killed = Η μηχανή σβήστηκε, πρέπει να γίνει επαναφορά πάνω στο σκάφος
 say.alarm.no_data = Κανένα στοιχείο από το σκάφος

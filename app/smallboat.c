@@ -103,6 +103,9 @@ void sb_default_config(sb_config_t *cfg)
     cfg->profile_ok_ms = 200u;
     cfg->profile_detect_ms = 6000u;
     cfg->profile_switch_ms = 10000u;
+    cfg->near_shore_m = 100.0f;                 /* TO CONFIRM */
+    cfg->lostlink_grace_s = 10.0f;              /* TO CONFIRM */
+    cfg->shore_max_age_ms = 3000u;
 }
 
 static bool lever_has_throttle(sb_mode_t m);
@@ -161,6 +164,7 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         joy_init(&s->joy_probe, &cfg->joy, have ? &cal : NULL);
     }
     s->boot_ms = s->now_ms;
+    hal_set_engine_kill(false);                 /* a reset (on board) is the only restart */
     /* FIRST TEST is always CREWED (steering only, its own arming rule; no lost-link kill) */
     s->profile = cfg->first_test ? SB_PROFILE_CREWED : SB_PROFILE_DETECTING;
     if (!(hal_nv_load(HAL_NV_SLOT_JOYMAP, &s->jmap, (uint32_t)sizeof s->jmap) && joymap_valid(&s->jmap)))
@@ -203,6 +207,8 @@ void sb_alarm_ack(sb_t *s)
     if (s->gw.state == SB_GW_LOST) keep |= SB_ALM_GATEWAY;
     if (s->nav.lost) keep |= SB_ALM_DECISION;
     if (s->estop_state == 2u) keep |= SB_ALM_ESTOP;
+    if (s->ll.state == SB_LL_LOST) keep |= SB_ALM_LINK_LOST;
+    if (s->ll.state == SB_LL_KILLED) keep |= SB_ALM_ENGINE_KILLED | SB_ALM_LINK_LOST;
     s->alarm_bits &= keep;              /* (the link-lost bits are raised again while lost, link.c) */
     s->alarm = s->alarm_bits != 0u;
     if (!s->ap.sensor_fault) s->ap.alarm = false;
@@ -353,7 +359,7 @@ static bool fault_why(mode_reason_t w)
 {
     return w == WHY_COMPASS_FAULT || w == WHY_GPS_LOST || w == WHY_GEAR_FAULT || w == WHY_DR_LIMIT ||
            w == WHY_JOY_FAULT || w == WHY_NOT_ARMED || w == WHY_MONITOR || w == WHY_REMOTE_LOST ||
-           w == WHY_TRAINING_ABORT;
+           w == WHY_TRAINING_ABORT || w == WHY_PROFILE || w == WHY_LINK_LOST;
 }
 
 /* Rising edges only; the AURIX never waits for the Pi. */
@@ -438,6 +444,7 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
     bool forced = why == WHY_STANDBY_BUTTON || why == WHY_JOY_FAULT || why == WHY_GEAR_FAULT ||
                   why == WHY_NOT_ARMED || why == WHY_MONITOR || why == WHY_ESTOP;
     if (s->estop_state == 2u && to != MODE_STANDBY) return false;     /* emergency stop pressed */
+    if (s->ll.state != SB_LL_OK && to != MODE_STANDBY) return false;  /* UNCREWED link lost / engine killed */
     /* FIRST TEST: steering only - STANDBY, TRAINING, HDG LOCK */
     if (s->cfg.first_test && (to == MODE_MANUAL || to == MODE_AUTO || to == MODE_REMOTE || to == MODE_MANEUVER))
         return false;
@@ -756,6 +763,88 @@ void sb_shore_joy(sb_t *s, uint8_t station, uint16_t age_ms, float x, float y, f
         h->presses++;
     }
     h->confirm = confirm;
+}
+
+/* --- UNCREWED lost link (CLAUDE.md section B) ----------------------------------- */
+
+void sb_gw_shore(sb_t *s, uint8_t flags, uint16_t dist_m)
+{
+    s->coast.rx_ms = s->now_ms ? s->now_ms : 1u;
+    s->coast.flags = flags;
+    s->coast.dist_m = dist_m;
+    s->coast.count++;
+}
+
+bool sb_near_shore(const sb_t *s)
+{
+    const uint32_t age = s->now_ms - s->coast.rx_ms;
+    if (s->coast.rx_ms == 0u || age > s->cfg.shore_max_age_ms || s->gw.state != SB_GW_OK) return true;
+    if (!(s->coast.flags & SB_SHORE_VALID) || (s->coast.flags & SB_SHORE_NEAR)) return true;
+    return s->coast.dist_m == 0xFFFFu || (float)s->coast.dist_m <= s->cfg.near_shore_m;
+}
+
+float sb_lostlink_left_s(const sb_t *s)
+{
+    if (s->ll.state != SB_LL_LOST) return 0.0f;
+    float left = s->cfg.lostlink_grace_s - (float)(s->now_ms - s->ll.lost_ms) * 0.001f;
+    return left > 0.0f ? left : 0.0f;
+}
+
+/* The link to the HELM station: a gateway station holds HELM and the
+ * gateway is there (the USB laptop on board counts while its link is up). */
+static bool helm_link_ok(const sb_t *s)
+{
+    if (s->helm == SB_HELM_USB) return !(s->alarm_bits & SB_ALM_PC_LINK);
+    return s->helm >= 2u && s->gw.state == SB_GW_OK;
+}
+
+/* Every step, UNCREWED only: link lost -> STANDBY (idle + neutral first);
+ * then ENGINE KILL near shore (or without fresh shore info) as soon as idle +
+ * neutral, at open sea after lostlink_grace_s unless the link came back. The
+ * kill is latched until reset; CREWED never kills. */
+static void lostlink_step(sb_t *s)
+{
+    if (s->ll.state == SB_LL_KILLED) {
+        hal_set_engine_kill(true);
+        if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_LINK_LOST);
+        return;
+    }
+    hal_set_engine_kill(false);
+    if (s->profile != SB_PROFILE_UNCREWED) {
+        s->ll.state = SB_LL_OK;                         /* CREWED: the current behaviour, never a kill */
+        s->ll.armed = false;
+        return;
+    }
+    bool ok = helm_link_ok(s);
+    if (ok) s->ll.armed = true;
+    if (s->ll.state == SB_LL_OK) {
+        if (!s->ll.armed || ok) return;
+        s->ll.state = SB_LL_LOST;
+        s->ll.lost_ms = s->now_ms;
+        s->ll.losses++;
+        alarm_on(s, SB_ALM_LINK_LOST);
+        s->confirm.kind = CONF_NONE;
+        if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_LINK_LOST);
+        return;
+    }
+    /* lost */
+    if (ok) {
+        s->ll.state = SB_LL_OK;                         /* back in time: stays in STANDBY, the alarm stays */
+        s->ll.returns++;
+        return;
+    }
+    if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_LINK_LOST);
+    bool safe = s->mon_tripped ||
+                (s->thr.out_pct <= s->cfg.gear.idle_max_pct && (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear)));
+    bool near = sb_near_shore(s);
+    bool late = (float)(s->now_ms - s->ll.lost_ms) >= s->cfg.lostlink_grace_s * 1000.0f;
+    if (safe && (near || late)) {
+        s->ll.state = SB_LL_KILLED;
+        s->ll.near_at_kill = near;
+        s->ll.kills++;
+        alarm_on(s, SB_ALM_ENGINE_KILLED);
+        hal_set_engine_kill(true);
+    }
 }
 
 /* the shore joystick counts: HELM station, packets fresh and not old */
@@ -2166,6 +2255,7 @@ void sb_step(sb_t *s)
     /* 2. interlock, faults, joystick, buttons */
     interlock_step(s, neutral_sw, dt_ms);
     events_step(s, buttons);
+    lostlink_step(s);
 
     /* gateway navigation request: alarms, lease, HDG LOCK one-shot heading */
     nav_step(s);

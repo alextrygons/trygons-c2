@@ -16,6 +16,9 @@
 #define PIN_GEAR_PWM        &MODULE_P02, 6u     /* D8, GTM TOM0 ch 14 */
 #define PIN_RELAY           &MODULE_P10, 5u     /* D10, high = safety relay closed */
 #define PIN_ALARM_LED       &MODULE_P00, 5u     /* LED1 on the board, low = on */
+/* ENGINE KILL relay (outboard kill-switch circuit, UNCREWED lost link): TBD - pin, relay
+ * type and fail-safe direction not decided yet (WIRING.md 3A). Until then hal_set_engine_kill
+ * drives no pin. When chosen: #define PIN_ENGINE_KILL &MODULE_Pxx, n and ENGINE_KILL_ACTIVE_HIGH. */
 
 /* Pololu G2 High-Power Motor Driver 18v17 (steering motor) */
 #define PIN_MOTOR_PWM       &MODULE_P02, 5u     /* D6 -> G2 PWM (on / off: full speed or stopped) */

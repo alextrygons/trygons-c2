@@ -362,6 +362,23 @@ void hal_set_safety_relay(bool closed)
     else IfxPort_setPinLow(PIN_RELAY);
 }
 
+/* ENGINE KILL relay: the pin is TBD (hal_pins.h). Until it is chosen nothing
+ * is driven - the board can't kill the engine yet (the FIRST TEST build is
+ * always CREWED, where the kill is never used). */
+static volatile boolean s_engine_kill;
+
+void hal_set_engine_kill(bool kill)
+{
+    s_engine_kill = kill ? TRUE : FALSE;
+#ifdef PIN_ENGINE_KILL
+#ifdef ENGINE_KILL_ACTIVE_HIGH
+    if (kill) IfxPort_setPinHigh(PIN_ENGINE_KILL); else IfxPort_setPinLow(PIN_ENGINE_KILL);
+#else
+    if (kill) IfxPort_setPinLow(PIN_ENGINE_KILL); else IfxPort_setPinHigh(PIN_ENGINE_KILL);
+#endif
+#endif
+}
+
 /* WDT counts from RELOAD up to 0xFFFF at fSPB / 16384 (default input
  * divider): timeout = (0x10000 - reload) * 16384 / fSPB. */
 void hal_watchdog_init(uint32_t timeout_ms)

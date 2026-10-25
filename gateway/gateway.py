@@ -101,6 +101,7 @@ class Gateway:
         self.shallow = Shallow(cfg.get("shallow"), self.charts)
         self.prog_wps = None            # the last AUTO program accepted through the gateway: [(lat, lon)]
         self.nav_seq = 0
+        self.shore_now = (0, 0xFFFF)    # last GW_SHORE: (flags, distance m)
         self.nav_last = None
         self.nav_sent = 0
         self.nav_state = {"shallow": None, "threats": [], "route": [], "state": "CLEAR", "why": ""}
@@ -451,8 +452,19 @@ class Gateway:
             self.aurix.send(proto.T_GW_STATUS, proto.p_gw_status(
                 self.status_flags(), self.channel_id, self.station_count,
                 self.logs.last_seq or 0, self.logs.gaps))
+            self.shore_send()
             self.stations.tick()
             await asyncio.sleep(self.cfg.get("status_s", 1.0))
+
+    def shore_send(self):
+        """GW_SHORE once a second: the distance to the shore / shallow water (UNCREWED lost-link
+        rule, CLAUDE.md B). Missing on the AURIX = near shore (fail safe)."""
+        try:
+            self.shore_now = self.shallow.shore(self.own())
+        except Exception:
+            log.exception("shore distance")
+            self.shore_now = (0, 0xFFFF)
+        self.aurix.send(proto.T_GW_SHORE, proto.p_gw_shore(*self.shore_now))
 
     def status(self):
         """Everything the ground stations show about the gateway."""
@@ -463,6 +475,7 @@ class Gateway:
                 "net": self.net.info(), "cameras": self.cams.status(), "rec": self.rec.status(),
                 "sync": self.sync.status(), "ais": self.ais_status(self.net.data_saver()),
                 "avoid": dict(self.nav_state, shallow_limit_m=self.shallow.limit(), charts=bool(self.charts)),
+                "shore": {"flags": self.shore_now[0], "dist_m": self.shore_now[1]},
                 "vision": self.vision.status(self.net.data_saver())}
 
     async def run(self):

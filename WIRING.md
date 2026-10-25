@@ -183,6 +183,27 @@ fail-safe** (one or more of these):
 
 Recommended: 1 + 2 (servo power through the relay) + 3.
 
+
+### 3A. Engine kill relay (UNCREWED lost link) - hardware TBD
+
+UNCREWED boat (no onboard joystick at power-up, CLAUDE.md section B): when the
+link to the captain's shore station is lost, the AURIX first goes to STANDBY
+(idle + neutral), then stops the engine through a **relay in the outboard's
+kill-switch circuit** - at once near the shore (closer than `near_shore_m`,
+100 m, or no valid shore distance from the gateway), at open sea after
+`lostlink_grace_s` (10 s) unless the link came back. Once killed it stays
+killed until the AURIX is reset **on board** (power cycle); there is no remote
+restart. A CREWED boat never uses it.
+
+| Item | Decision | State |
+|------|----------|-------|
+| AURIX pin | `PIN_ENGINE_KILL` in hal/hal_pins.h | **TBD** (not defined: `hal_set_engine_kill` drives no pin yet) |
+| Relay type | automotive / marine relay, coil via a transistor driver (never the pin directly), contact rating for the kill circuit | **TBD** (check the outboard's kill-switch circuit with the engine dealer) |
+| Fail-safe direction | which state stops the engine: relay energised = kill, or de-energised = kill (then the engine stops whenever the board is unpowered / in reset) | **TBD** (`ENGINE_KILL_ACTIVE_HIGH` in hal_pins.h follows the choice) |
+| Wiring | in the kill-switch circuit, in addition to the kill cord (the cord must stay) | **TBD** |
+| Reset on board | how the crew restarts after a kill: AURIX power cycle + the outboard's normal start | **TBD** (procedure in MANUAL 7A) |
+
+Until all of this is decided and tested on the bench, **no uncrewed operation**.
 ## 4. microSD card (log)
 
 A **microSD click** board (MikroElektronika MIKROE-924, 3.3 V) plugged into the

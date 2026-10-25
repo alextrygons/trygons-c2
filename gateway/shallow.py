@@ -10,13 +10,18 @@ limit = max(shallow_m, draft_m + margin_m)   (default 3.0 m; draft: measure it,
     look_min_m ahead) over shallow water -> warning on both screens; in AUTO
     also slow down (navreq speed cap) and the SHALLOW WATER alarm.
   * Every avoidance route (section D) uses the same check (check_leg).
+  * Shore distance (CLAUDE.md section B, UNCREWED lost link): the distance from the
+    boat to the nearest water shallower than the limit (or without chart data) -
+    the same data as the route check - sent to the AURIX once a second (GW_SHORE).
+    No charts / no position = not valid = the AURIX treats the boat as near shore.
 """
 import math
 
 from ais import KN, from_xy
 
 DEFAULTS = {"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0, "clearance_m": 50.0, "look_s": 30.0,
-            "look_min_m": 200.0, "slow_kn": 4.0, "require_charts": True}
+            "look_min_m": 200.0, "slow_kn": 4.0, "require_charts": True,
+            "near_shore_m": 100.0, "shore_search_m": 2000.0}
 
 
 class Shallow:
@@ -48,6 +53,17 @@ class Shallow:
                     leg = "WP%d -> WP%d" % (k + 1, k + 2)
                 return "leg %s: %s at %.5f %.5f (%.0f m along the leg)" % (leg, bad[4], bad[1], bad[2], bad[0]), bad
         return None
+
+    def shore(self, own):
+        """-> (flags, distance m) for GW_SHORE: flags b0 near (closer than near_shore_m),
+        b1 valid. Distance 0xFFFE = nothing within shore_search_m; not valid = 0xFFFF."""
+        c = self.cfg
+        if own.get("lat") is None or not self.charts:
+            return 0, 0xFFFF
+        d = self.charts.nearest_shallow_m(own["lat"], own["lon"], self.limit(), c["shore_search_m"])
+        if d is None:
+            return 2, 0xFFFE
+        return 2 | (1 if d <= c["near_shore_m"] else 0), int(min(65000, round(d)))
 
     def watch(self, own):
         """Predicted shallow water ahead -> {"lat", "lon", "depth", "in_s", "limit"} or None."""

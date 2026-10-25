@@ -67,6 +67,7 @@ typedef enum {
                            heading*100, cap kn*10 (-1 none), seq */
     EV_PROFILE,         /* operating profile change: profile (0 detecting 1 CREWED 2 UNCREWED), onboard joystick
                            detected, changes, 0 */
+    EV_LINKLOST,        /* UNCREWED lost link: state (0 ok 1 lost 2 killed), near shore, shore distance m, losses */
     EV_COUNT
 } log_event_t;
 

@@ -48,6 +48,8 @@ ALARM_LEVELS = {
     0x4000000: ("obstacle_ahead", CAUTION),
     0x8000000: ("emergency_stop", WARNING),
     0x10000000: ("profile", CAUTION),
+    0x20000000: ("link_lost", WARNING),
+    0x40000000: ("engine_killed", WARNING),
 }
 NO_DATA = "no_data"                 # the PC gets no telemetry (not an alarm bit): WARNING
 

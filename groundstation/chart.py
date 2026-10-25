@@ -87,6 +87,24 @@ class Area:
                 best = min(best, v)
         return best
 
+    def nearest_shallow_m(self, lat, lon, limit_m, max_m):
+        """Exact distance (m, cell centres) to the nearest cell shallower than limit_m or
+        without data, within max_m; None if there is none that close."""
+        fi, fj = self.ij(lat, lon)
+        my = self.dlat * 111320.0
+        mx = self.dlon * 111320.0 * math.cos(math.radians(lat))
+        ri, rj = int(math.ceil(max_m / my)) + 1, int(math.ceil(max_m / mx)) + 1
+        best = None
+        for i in range(int(math.floor(fi)) - ri, int(math.floor(fi)) + ri + 2):
+            for j in range(int(math.floor(fj)) - rj, int(math.floor(fj)) + rj + 2):
+                d = math.hypot((i - fi) * my, (j - fj) * mx)
+                if d > max_m or (best is not None and d >= best):
+                    continue
+                v = self.cell(i, j)
+                if v is None or v < limit_m:
+                    best = d
+        return best
+
     def contours(self):
         if self._contours is None:
             p = os.path.join(self.folder, "contours.json")
@@ -130,6 +148,12 @@ class Charts:
     def min_depth_near(self, lat, lon, radius_m):
         a = self.area_at(lat, lon)
         return a.min_depth_near(lat, lon, radius_m) if a else None
+
+    def nearest_shallow_m(self, lat, lon, limit_m, max_m):
+        """Distance to the nearest shallow (or no-data) water within max_m: 0.0 outside the
+        charts, None if nothing that close (Area.nearest_shallow_m)."""
+        a = self.area_at(lat, lon)
+        return a.nearest_shallow_m(lat, lon, limit_m, max_m) if a else 0.0
 
     def profile(self, lat1, lon1, lat2, lon2, step_m=50.0):
         """[(distance m, lat, lon, depth or None)] along a straight leg."""

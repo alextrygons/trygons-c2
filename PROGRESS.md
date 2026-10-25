@@ -15,8 +15,8 @@ not DONE below, without redoing finished work.
 | Step | What | State | Commit |
 |---|---|---|---|
 | 1 | CLAUDE.md design A-F (no code) | DONE (gate OK, acceptance quick 7/7 PASS) | 4e3a1f8 |
-| 2 | AURIX + sim: profile autodetection, UNCREWED power-raise / CONFIRM from the shore joystick, MANEUVER; invariants I22-I26 | GATE RUNNING (sim all + bridge OK, storm 600 OK, gateway CR 3/3) | |
-| 3 | AURIX + gateway + sim: UNCREWED lost link, GW_SHORE, engine-kill output (sim); invariants | TODO | |
+| 2 | AURIX + sim: profile autodetection, UNCREWED power-raise / CONFIRM from the shore joystick, MANEUVER; invariants I22-I26 | DONE locally (gate: only result.116 missing -> fixed + amended; re-gate + acceptance pending) | f2e9770 |
+| 3 | AURIX + gateway + sim: UNCREWED lost link, GW_SHORE, engine-kill output (sim); invariants I27-I31 | DONE locally (sim 187/186 OK, storm 300 OK, gateway CR 5/5); gate + acceptance pending | |
 | 4 | Gateway: licence flag, captain / copilot, copilot -> captain ACCEPT, boat name check | TODO | |
 | 5 | Ground station: two screens (+ remaining HUD work), boat selector, single-monitor toggle, Greek manual | TODO | |
 | 6 | Verification: full acceptance (2000 storm, shortened soak), TEST_REPORT, FIRST_TEST.md note, ADS build + memory (LMU block 2), TO CONFIRM / TBD list | TODO | |
@@ -32,6 +32,9 @@ not DONE below, without redoing finished work.
 - MANEUVER = MODE_MANEUVER (7), PROTO_T_MANEUVER 0x38, shares the REMOTE watchdog (sb_remote_t); gateway refuses
   REMOTE / MANEUVER asks without "licence": true (code 116). Sim server option "nojoy" = UNCREWED boat.
 - New: TELEM2 group J (profile, joystick probe, shore joystick), log event 21 PROFILE, alarm 0x10000000 PROFILE.
+- Step 3: lostlink_step (smallboat.c) after events_step; the kill is evaluated on the real outputs
+  (thr.out_pct idle + gear_is N, or the monitor's safe state). Board: hal_set_engine_kill drives NO pin
+  until PIN_ENGINE_KILL is chosen (hal_pins.h, WIRING.md 3A TBD). HELM release in UNCREWED = lost link.
 - Two python test_gateway.py processes + one autopilot_sim server (port 53321) were already
   running at the start (from another session?); stopping them was not allowed. If the sim build
   fails with "permission denied" / locked exe, they are the reason.

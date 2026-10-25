@@ -229,6 +229,8 @@ ALARMS = [
     (0x4000000, "OBSTACLE AHEAD"),
     (0x8000000, "EMERGENCY STOP"),
     (0x10000000, "PROFILE (CREWED / UNCREWED)"),
+    (0x20000000, "LINK LOST (UNCREWED)"),
+    (0x40000000, "ENGINE KILLED"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -605,6 +607,7 @@ GWF_STORAGE, GWF_STORAGE_FULL, GWF_FALLBACK, GWF_STARLINK, GWF_SAVER = 0x01, 0x0
 GWF_AIS_SILENT = 0x20
 T_GW_GPS2 = 0x39
 T_GW_NAVREQ = 0x3A
+T_GW_SHORE = 0x3B          # gateway -> AURIX, 1 Hz: distance to the shore (UNCREWED lost-link rule)
 NAV_NONE, NAV_CAP, NAV_HEADING, NAV_HDG_SET = 0, 1, 2, 3
 
 
@@ -613,6 +616,11 @@ def p_gw_navreq(seq, kind, reason=0, alarm=0, heading=None, cap_kn=None, lease_m
     return struct.pack("<BBBBHHH", seq & 0xFF, kind, reason, alarm,
                        0 if heading is None else int(round((heading % 360.0) * 100)) % 36000,
                        0xFFFF if cap_kn is None else max(0, min(600, int(round(cap_kn * 10)))), lease_ms)
+
+
+def p_gw_shore(flags, dist_m):
+    """GW_SHORE (gateway -> AURIX, 1 Hz): b0 near shore, b1 valid; distance m (0xFFFF unknown)."""
+    return struct.pack("<BH", flags & 0xFF, max(0, min(0xFFFF, int(dist_m))))
 
 
 def p_gw_gps2(lat, lon, age_ms):
@@ -670,7 +678,9 @@ _T2_GROUPS = [
     (struct.Struct("<hhH"), "att_roll100 att_pitch100 att_age_ms".split()),
     (struct.Struct("<BBB"), "cfg_flags estop_state moving_ahead".split()),
     (struct.Struct("<BBBH"), "profile probe_flags shore_flags profile_changes".split()),
+    (struct.Struct("<BBHHHH"), "ll_state ll_flags coast_m coast_age_ms ll_left10 near_shore_m".split()),
 ]
+LL_STATES = ["OK", "LINK LOST", "ENGINE KILLED"]
 
 # video SAVE triggers (app/smallboat.h SB_SAVE_)
 SAVE_TRIGGERS = {1: "SAVE button (joystick)", 2: "alarm", 3: "fault", 4: "joystick takeover",
@@ -716,6 +726,13 @@ def decode_telem2(payload: bytes) -> dict:
         d["shore_fresh"] = bool(d["shore_flags"] & 1)
         d["shore_centred"] = bool(d["shore_flags"] & 2)
         d["shore_confirm"] = bool(d["shore_flags"] & 4)
+    if "ll_state" in d:
+        d["ll_name"] = LL_STATES[d["ll_state"]] if d["ll_state"] < 3 else "?"
+        d["ll_armed"] = bool(d["ll_flags"] & 1)
+        d["near_shore"] = bool(d["ll_flags"] & 2)
+        d["ll_left_s"] = d["ll_left10"] / 10.0
+        d["coast_valid"] = bool(d["ll_flags"] & 0x20)
+        d["coast_dist_m"] = None if d["coast_m"] >= 0xFFFE else d["coast_m"]
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

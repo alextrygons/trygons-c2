@@ -108,6 +108,8 @@ DEFAULTS = {
         "look_s": 30.0, "look_min_m": 200.0,   # predicted position: this far ahead
         "slow_kn": 4.0,                 # AUTO slows to this towards shallow water
         "require_charts": True,         # no charts = AUTO programs refused
+        "near_shore_m": 100.0,          # GW_SHORE "near" flag (the AURIX has its own near_shore_m: TO CONFIRM)
+        "shore_search_m": 2000.0,       # shore distance searched this far
     },
     "nav_s": 0.5,                       # navigation request to the AURIX every 0.5 s (lease 3 s)
     "vision": {                         # camera obstacle detection (eWaSR); all settings: gateway/vision/manager.py

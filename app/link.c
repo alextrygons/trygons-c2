@@ -24,7 +24,7 @@ typedef enum {
     P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
     P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET, P_GPS2_CHECK, P_NAV_LOST_KN,
-    P_STOP_RATE, P_NAV_MAX_DEV,
+    P_STOP_RATE, P_NAV_MAX_DEV, P_NEAR_SHORE, P_LL_GRACE,
     P_COUNT
 } param_id_t;
 
@@ -51,6 +51,8 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "nav_lost_kn",     2.0f,   10.0f },     /* avoidance request lost (gateway gone): slow to this */
     { "stop_rate_pc_s", 40.0f,  300.0f },     /* STANDBY safe stop: throttle closing rate (100 = idle in 1 s) */
     { "nav_max_dev",    30.0f,  180.0f },     /* avoidance heading: max deg off the leg track (150) */
+    { "near_shore_m",   20.0f, 2000.0f },     /* UNCREWED lost link: closer = engine kill at once (100, TO CONFIRM) */
+    { "lostlink_grc_s",  0.0f,  120.0f },     /* UNCREWED lost link, open sea: kill after this (10, TO CONFIRM) */
 };
 
 uint8_t link_param_count(void)
@@ -89,6 +91,8 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_NAV_LOST_KN:  return &s->cfg.nav_lost_kn;
     case P_STOP_RATE:    return &s->thr.cfg.rate_stop_pct_s;
     case P_NAV_MAX_DEV:  return &s->cfg.nav_max_dev_deg;
+    case P_NEAR_SHORE:   return &s->cfg.near_shore_m;
+    case P_LL_GRACE:     return &s->cfg.lostlink_grace_s;
     default:             return NULL;
     }
 }
@@ -837,6 +841,10 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
         }
         return;
     }
+    if (f->type == PROTO_T_GW_SHORE && f->len >= 3u) {           /* distance to the shore (lost-link rule) */
+        sb_gw_shore(s, f->payload[0], (uint16_t)(f->payload[1] | (f->payload[2] << 8)));
+        return;
+    }
     if (f->type == PROTO_T_GW_NAVREQ && f->len >= 10u) {         /* collision avoidance / shallow water */
         gw_navreq(s, f);
         return;
@@ -886,6 +894,9 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *   J: u8 profile (0 detecting, 1 CREWED, 2 UNCREWED) | u8 onboard joystick (b0 detected + self-check OK,
  *      b1 present, b2 fault, b3 starting) | u8 shore joystick (b0 fresh from HELM, b1 centred, b2 CONFIRM held) |
  *      u16 profile changes
+ *   K: u8 lost-link state (0 ok, 1 LOST, 2 ENGINE KILLED) | u8 flags (b0 armed: a HELM station held HELM,
+ *      b1 near shore now, b2 the kill was near shore; b4.. GW_SHORE flags) | u16 shore distance m (0xFFFF unknown) |
+ *      u16 shore info age ms (0xFFFF never) | u16 open-sea kill in (0.1 s) | u16 near_shore_m
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -968,6 +979,15 @@ static void telemetry2(link_t *l, sb_t *s)
                               (pb->fault ? 4u : 0u) | (!s->probe_ready ? 8u : 0u)));
     proto_wr_u8(&w, (uint8_t)((shore_fresh ? 1u : 0u) | (s->shore.centred ? 2u : 0u) | (s->shore.confirm ? 4u : 0u)));
     proto_wr_u16(&w, s->profile_changes);
+    /* K */
+    uint32_t cage = s->coast.rx_ms ? s->now_ms - s->coast.rx_ms : 0xFFFFu;
+    proto_wr_u8(&w, s->ll.state);
+    proto_wr_u8(&w, (uint8_t)((s->ll.armed ? 1u : 0u) | (sb_near_shore(s) ? 2u : 0u) | (s->ll.near_at_kill ? 4u : 0u) |
+                              (s->coast.flags << 4)));
+    proto_wr_u16(&w, s->coast.dist_m);
+    proto_wr_u16(&w, (uint16_t)(cage > 65534u ? (s->coast.rx_ms ? 65534u : 0xFFFFu) : cage));
+    proto_wr_u16(&w, (uint16_t)(sb_lostlink_left_s(s) * 10.0f + 0.5f));
+    proto_wr_u16(&w, (uint16_t)(s->cfg.near_shore_m + 0.5f));
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
     else l->telem_overflows++;

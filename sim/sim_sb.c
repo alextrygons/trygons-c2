@@ -4881,6 +4881,9 @@ typedef struct {
     uint32_t   save_mask;       /* bit per trigger seen */
     uint32_t   save_changes;
     uint8_t    save_last_arg_take;
+    bool       shore_on;        /* the Pi sends GW_SHORE with its status (lost-link rule) */
+    uint8_t    shore_flags;
+    uint16_t   shore_m;
 } pisim_t;
 
 static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
@@ -4954,6 +4957,11 @@ static void pi_hook(sbsim_t *x, void *ctx)
         uint8_t fr[PROTO_MAX_FRAME];
         size_t n = proto_encode(fr, PROTO_T_GW_STATUS, 0u, pl, sizeof pl);
         sim_hal_gw_rx_push(fr, (uint32_t)n);
+        if (p->shore_on) {
+            uint8_t sp[3] = { p->shore_flags, (uint8_t)p->shore_m, (uint8_t)(p->shore_m >> 8) };
+            n = proto_encode(fr, PROTO_T_GW_SHORE, 0u, sp, sizeof sp);
+            sim_hal_gw_rx_push(fr, (uint32_t)n);
+        }
     }
     uint8_t buf[2048];
     uint32_t n;
@@ -5933,6 +5941,223 @@ static void crew_tests(void)
         test_report("MV3 UNCREWED MANEUVER: confirmed on the shore captain's joystick, throttle idle",
                     ask == PROTO_R_OK && cf && on && thr_max <= 0.01f, d);
     }
+}
+
+/* --------------------------------------------- UNCREWED lost link (CLAUDE.md B) -- */
+
+/* What the outputs did when the ENGINE KILL first came on. */
+typedef struct {
+    rjsim_t  r;
+    bool     killed;
+    uint32_t t_kill;
+    float    thr_at_kill;
+    uint16_t gear_at_kill;
+    bool     moving_at_kill;
+} llsim_t;
+
+static void ll_hook(sbsim_t *x, void *ctx)
+{
+    llsim_t *l = (llsim_t *)ctx;
+    rj_hook(x, &l->r);
+    if (sim_hal_engine_killed() && !l->killed) {
+        l->killed = true;
+        l->t_kill = x->t;
+        l->thr_at_kill = sim_hal_throttle();
+        l->gear_at_kill = sim_hal_gear_pwm();
+    }
+}
+
+/* A boat (crewed or not) driven remotely at the remote cap, shore distance dist_m
+ * from the gateway (0xFFFF = no GW_SHORE at all). True if it drives. */
+static bool ll_drive(sbsim_t *x, llsim_t *l, uint32_t seed, bool crewed, uint16_t dist_m)
+{
+    const uint8_t TAKE = 0u, ASK = 0u;
+    memset(l, 0, sizeof *l);
+    crew_init(x, &l->r, seed, crewed, NULL);
+    l->r.p.shore_on = dist_m != 0xFFFFu;
+    l->r.p.shore_flags = (uint8_t)(SB_SHORE_VALID | (dist_m <= 100u ? SB_SHORE_NEAR : 0u));
+    l->r.p.shore_m = dist_m;
+    pi_cmd(x, &l->r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+    l->r.rj_on = true;
+    sbsim_run(x, x->t + 300u, ll_hook, l);
+    sb_alarm_ack(&x->sb);
+    pi_cmd(x, &l->r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+    if (crewed) onboard_confirm(x, &l->r); else shore_confirm(x, &l->r);
+    rj_lever(x, &l->r, 1.0f, 1.0f);
+    sbsim_run(x, x->t + 8000u, ll_hook, l);
+    return sb_mode(&x->sb) == MODE_REMOTE && sim_hal_throttle() > 10.0f && gear_is(&x->sb.gear, GEAR_F);
+}
+
+/* the HELM station disappears (the gateway drops it: lost_s) */
+static void ll_cut(sbsim_t *x, llsim_t *l)
+{
+    l->r.rj_on = false;
+    pi_station_left(2u);
+    sbsim_run(x, x->t + 2u * AP_PERIOD_MS, ll_hook, l);         /* (read by the link after the next step) */
+}
+
+static void lostlink_tests(void)
+{
+    char d[900];
+    const uint8_t TAKE = 0u, ASK = 0u;
+    printf("\n=== UNCREWED lost link + ENGINE KILL ===\n");
+    bool idle_neutral_ok = true;                 /* LL7: every kill came after idle + neutral */
+    int kills = 0;
+
+    /* LL1 near shore (50 m): STANDBY at once, kill as soon as idle + neutral */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        bool drv = ll_drive(&x, &l, 1301u, false, 50u);
+        uint32_t t0 = x.t;
+        ll_cut(&x, &l);
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY && (x.sb.alarm_bits & SB_ALM_LINK_LOST);
+        sbsim_run(&x, x.t + 6000u, ll_hook, &l);
+        float t_kill = l.killed ? (l.t_kill - t0) * 0.001f : -1.0f;
+        bool safe = l.killed && l.thr_at_kill <= 1.0f && l.gear_at_kill == x.sb.cfg.gear.pwm_n_us;
+        idle_neutral_ok &= safe;
+        kills += l.killed;
+        snprintf(d, sizeof d, "driving %s; HELM station lost: STANDBY + LINK LOST %s; ENGINE KILL after %.2f s at "
+                 "throttle %.1f %%, gear %s (idle + neutral first %s); state %d, alarm ENGINE KILLED %s",
+                 drv ? "yes" : "NO", sb ? "yes" : "NO", t_kill, l.thr_at_kill,
+                 l.gear_at_kill == x.sb.cfg.gear.pwm_n_us ? "N" : "not N", safe ? "yes" : "NO", x.sb.ll.state,
+                 (x.sb.alarm_bits & SB_ALM_ENGINE_KILLED) ? "yes" : "NO");
+        test_report("LL1 UNCREWED lost link near shore: STANDBY, idle + neutral, then ENGINE KILL at once",
+                    drv && sb && safe && t_kill > 0.0f && t_kill < 3.0f && x.sb.ll.state == SB_LL_KILLED, d);
+    }
+
+    /* LL2 open sea (800 m): no kill during the grace time, kill after 10 s */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        bool drv = ll_drive(&x, &l, 1302u, false, 800u);
+        uint32_t t0 = x.t;
+        ll_cut(&x, &l);
+        sbsim_run(&x, t0 + 9000u, ll_hook, &l);
+        bool not_yet = !l.killed && sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 1.0f;
+        float left = sb_lostlink_left_s(&x.sb);
+        sbsim_run(&x, t0 + 12000u, ll_hook, &l);
+        float t_kill = l.killed ? (l.t_kill - t0) * 0.001f : -1.0f;
+        bool safe = l.killed && l.thr_at_kill <= 1.0f && l.gear_at_kill == x.sb.cfg.gear.pwm_n_us;
+        idle_neutral_ok &= safe;
+        kills += l.killed;
+        snprintf(d, sizeof d, "driving %s; lost at sea (800 m from the shore): at 9 s no kill, idle %s (%.1f s left); "
+                 "ENGINE KILL after %.2f s (grace 10 s), idle + neutral %s",
+                 drv ? "yes" : "NO", not_yet ? "yes" : "NO", left, t_kill, safe ? "yes" : "NO");
+        test_report("LL2 UNCREWED lost link at open sea: STANDBY, kill only after the grace time (10 s)",
+                    drv && not_yet && left > 0.5f && left < 1.5f && t_kill >= 10.0f && t_kill < 10.5f && safe, d);
+    }
+
+    /* LL3 open sea, the link returns after 5 s: no kill, STANDBY stays, alarm at the station */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        bool drv = ll_drive(&x, &l, 1303u, false, 800u);
+        uint32_t t0 = x.t;
+        ll_cut(&x, &l);
+        sbsim_run(&x, t0 + 5000u, ll_hook, &l);
+        uint8_t back = pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        l.r.rj_on = true;
+        sbsim_run(&x, t0 + 25000u, ll_hook, &l);
+        bool ok = !l.killed && x.sb.ll.state == SB_LL_OK && sb_mode(&x.sb) == MODE_STANDBY &&
+                  (x.sb.alarm_bits & SB_ALM_LINK_LOST) && x.sb.ll.returns == 1u;
+        /* and it can drive again (a new request + CONFIRM) */
+        sb_alarm_ack(&x.sb);
+        rj_lever(&x, &l.r, 0.5f, 2.0f);                          /* the captain centres the lever */
+        uint8_t again = pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool cf = shore_confirm(&x, &l.r);
+        snprintf(d, sizeof d, "driving %s; lost at sea, HELM back after 5 s (%u): killed %s, state %d, mode %s, LINK LOST "
+                 "alarm for the station %s; never resumed by itself; new REMOTE request %u + CONFIRM %s -> %s",
+                 drv ? "yes" : "NO", back, l.killed ? "YES" : "no", x.sb.ll.state, mode_name(sb_mode(&x.sb)),
+                 ok ? "yes" : "NO", again, cf ? "yes" : "NO", mode_name(sb_mode(&x.sb)));
+        test_report("LL3 UNCREWED link back within the grace time: no kill, stays in STANDBY at idle / neutral, alarm",
+                    drv && back == PROTO_R_OK && ok && again == PROTO_R_OK && cf && sb_mode(&x.sb) == MODE_REMOTE, d);
+    }
+
+    /* LL4 shore info missing / stale / not valid / gateway lost -> treated as near shore: kill at once */
+    {
+        char t[600] = "";
+        int good = 0;
+        for (int k = 0; k < 3; k++) {
+            static sbsim_t x;
+            static llsim_t l;
+            bool drv = ll_drive(&x, &l, 1304u + (uint32_t)k, false, k == 0 ? 0xFFFFu : 800u);
+            if (k == 1) l.r.p.shore_flags = 0u;                 /* no chart data at the boat */
+            uint32_t t0 = x.t;
+            if (k == 2) {                                        /* the whole gateway goes quiet */
+                l.r.p.pi_on = false;
+                l.r.p.shore_on = false;
+                l.r.rj_on = false;
+            } else {
+                sbsim_run(&x, x.t + 1500u, ll_hook, &l);
+                t0 = x.t;
+                ll_cut(&x, &l);
+            }
+            sbsim_run(&x, t0 + 8000u, ll_hook, &l);
+            float t_kill = l.killed ? (l.t_kill - t0) * 0.001f : -1.0f;
+            bool safe = l.killed && l.thr_at_kill <= 1.0f && l.gear_at_kill == x.sb.cfg.gear.pwm_n_us;
+            idle_neutral_ok &= safe;
+            kills += l.killed;
+            /* gateway lost: found after 3 s (pc_timeout), then at once */
+            bool in_time = l.killed && t_kill < (k == 2 ? 6.0f : 3.0f);
+            good += drv && safe && in_time;
+            snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s: kill after %.2f s, idle + neutral first %s", k ? "; " : "",
+                     k == 0 ? "never any shore info" : k == 1 ? "shore info not valid (no charts)" :
+                     "gateway lost (shore info stale)", t_kill, safe ? "yes" : "NO");
+        }
+        test_report("LL4 shore info missing / not valid / stale (gateway lost) = near shore: immediate kill", good == 3, t);
+    }
+
+    /* LL5 CREWED never kills: same loss, the current behaviour (REMOTE LINK LOST, no mode change from the loss) */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        bool drv = ll_drive(&x, &l, 1308u, true, 50u);
+        ll_cut(&x, &l);
+        l.r.p.pi_on = false;                                     /* the gateway too */
+        sbsim_run(&x, x.t + 30000u, ll_hook, &l);
+        bool ok = !l.killed && !sim_hal_engine_killed() && x.sb.ll.state == SB_LL_OK &&
+                  (x.sb.alarm_bits & SB_ALM_REMOTE_LINK) && !(x.sb.alarm_bits & SB_ALM_LINK_LOST);
+        snprintf(d, sizeof d, "CREWED, driving %s; HELM station + gateway lost near shore for 30 s: engine killed %s, "
+                 "REMOTE LINK LOST %s, LINK LOST (uncrewed) %s, mode %s",
+                 drv ? "yes" : "NO", l.killed ? "YES" : "never", (x.sb.alarm_bits & SB_ALM_REMOTE_LINK) ? "yes" : "NO",
+                 (x.sb.alarm_bits & SB_ALM_LINK_LOST) ? "YES" : "no", mode_name(sb_mode(&x.sb)));
+        test_report("LL5 CREWED: never an engine kill (current lost-link behaviour)", drv && ok, d);
+    }
+
+    /* LL6 the kill stays latched: link back, HELM, requests - still killed; only a reset (on board) restarts */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        ll_drive(&x, &l, 1309u, false, 50u);
+        ll_cut(&x, &l);
+        sbsim_run(&x, x.t + 4000u, ll_hook, &l);
+        bool k1 = x.sb.ll.state == SB_LL_KILLED;
+        idle_neutral_ok &= l.killed && l.thr_at_kill <= 1.0f && l.gear_at_kill == x.sb.cfg.gear.pwm_n_us;
+        kills += l.killed;
+        uint8_t helm = pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        l.r.rj_on = true;
+        sb_alarm_ack(&x.sb);
+        uint8_t ask = pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool cf = shore_confirm(&x, &l.r);
+        sbsim_run(&x, x.t + 20000u, ll_hook, &l);
+        bool still = sim_hal_engine_killed() && x.sb.ll.state == SB_LL_KILLED && sb_mode(&x.sb) == MODE_STANDBY &&
+                     (x.sb.alarm_bits & SB_ALM_ENGINE_KILLED) && fabsf(x.w.speed_kn) < 0.5f;
+        /* power cycle on board */
+        sim_hal_chip_reset(HAL_RESET_POWER_ON);
+        sb_init(&x.sb, &x.cfg);
+        sbsim_run(&x, x.t + 500u, ll_hook, &l);
+        bool reset = !sim_hal_engine_killed() && x.sb.ll.state == SB_LL_OK;
+        snprintf(d, sizeof d, "killed %s; HELM back %u, alarm ack, REMOTE request %u + CONFIRM %s: after 20 s still "
+                 "killed + STANDBY + alarm, boat stopped (%.1f kn) %s; after a reset on board: kill output off %s",
+                 k1 ? "yes" : "NO", helm, ask, cf ? "ACCEPTED" : "refused", x.w.speed_kn, still ? "yes" : "NO",
+                 reset ? "yes" : "NO");
+        test_report("LL6 ENGINE KILL latched until reset on board (no remote restart)", k1 && still && !cf && reset, d);
+    }
+
+    snprintf(d, sizeof d, "%d kills in LL1-LL6: every one with the throttle at idle and the gear in neutral %s",
+             kills, idle_neutral_ok ? "yes" : "NO");
+    test_report("LL7 every engine kill only after idle + neutral", kills >= 6 && idle_neutral_ok, d);
 }
 
 /* ------------------------------------------ video SAVE requests (section F) -- */
@@ -7737,6 +7962,7 @@ void sb_gateway_tests(void)
     helm_tests();
     remote_tests();
     crew_tests();
+    lostlink_tests();
     save_tests();
     ais_tests();
     nav_tests();
@@ -7753,6 +7979,7 @@ void sb_tests(void)
     helm_tests();
     remote_tests();
     crew_tests();
+    lostlink_tests();
     save_tests();
     ais_tests();
     nav_tests();

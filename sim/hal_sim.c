@@ -155,6 +155,7 @@ void sim_hal_set_rudder_feedback(bool fitted) { s_rudder_feedback = fitted; }
 /* ---- small boat: engine and GPS ---------------------------------------- */
 
 static uint16_t  s_throttle_us = 1000u;
+static bool      s_engine_kill;     /* the kill relay: the simulated engine stops (no thrust) */
 static uint16_t  s_gear_pwm = 1500u;
 static hal_gps_t s_gps;
 static bool      s_gps_new;
@@ -189,6 +190,7 @@ uint16_t sim_hal_gear_pwm(void)  { return s_gear_pwm; }
 void     sim_hal_gps_message(const hal_gps_t *g) { s_gps = *g; s_gps_new = true; }
 void     sim_hal_reset_engine(void)
 {
+    s_engine_kill = false;                  /* a new boat / the engine restarted on board */
     s_throttle_us = 1000u;
     s_gear_pwm = 1500u;
     s_gps_new = false;
@@ -638,6 +640,16 @@ bool hal_read_estop(bool *pressed)
 }
 void hal_set_safety_relay(bool closed) { s_relay = closed && !s_forced; }
 bool sim_hal_safety_relay(void) { return s_relay; }
+
+
+static uint32_t s_engine_kills; /* times the output went to "kill" */
+void hal_set_engine_kill(bool kill)
+{
+    if (kill && !s_engine_kill) s_engine_kills++;
+    s_engine_kill = kill;
+}
+bool sim_hal_engine_killed(void) { return s_engine_kill; }
+uint32_t sim_hal_engine_kills(void) { return s_engine_kills; }
 
 /* The simulator's watchdog is modelled by the test harness (sim_sb.c). */
 void hal_watchdog_init(uint32_t timeout_ms) { (void)timeout_ms; }

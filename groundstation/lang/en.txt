@@ -60,6 +60,8 @@ alarm.shallow_water = SHALLOW WATER
 alarm.obstacle_ahead = OBSTACLE AHEAD
 alarm.emergency_stop = EMERGENCY STOP
 alarm.profile = PROFILE CHANGED (CREWED / UNCREWED)
+alarm.link_lost = LINK LOST (UNCREWED): STANDBY
+alarm.engine_killed = ENGINE KILLED (reset on board)
 alarm.no_data = NO DATA FROM THE BOAT
 
 # --- answers of the boat / gateway to a command (ACK result codes) ----------
@@ -1151,4 +1153,6 @@ say.alarm.shallow_water = Shallow water
 say.alarm.obstacle_ahead = Obstacle ahead
 say.alarm.emergency_stop = Emergency stop
 say.alarm.profile = The operating profile changed, check crewed or uncrewed
+say.alarm.link_lost = Link lost, the boat is in standby
+say.alarm.engine_killed = The engine was killed, it must be reset on board
 say.alarm.no_data = No data from the boat

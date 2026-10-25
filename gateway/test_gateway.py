@@ -3082,8 +3082,53 @@ def section_cr():
                unc is not None and r_ask == 0 and ignored and on is not None,
                "profile %s; REMOTE asked %s; onboard CONFIRM: still STANDBY %s; shore CONFIRM -> %s" % (
                    unc and unc.get("profile_name"), r_ask, ignored, on and on["mode_name"]))
+        # CR5 the same boat: the captain's station disappears near the shore (no charts on this gateway =
+        # no valid shore distance = near) -> STANDBY, idle + neutral, ENGINE KILLED, latched
         snd.stop()
+        alice.close()                                   # TCP closed: the gateway drops it at once
+        lost = w.until(lambda d: d.get("ll_state") in (1, 2) and d["mode"] == proto.MODE_STANDBY, 8)
+        killed = w.until(lambda d: d.get("ll_state") == 2, 10)
+        alice = Client(sp, "alice", PW["alice"], name="alice")
+        alice.pump(1.0)
+        alice.result(alice.cmd(proto.T_HELM, proto.p_helm(0)))
+        w.pump(3.0)
+        still = w.telem and w.telem.get("ll_state") == 2 and w.telem["throttle"] <= 0.6
+        alarms = proto.alarm_texts(w.telem["alarm_bits"]) if w.telem else []
+        report("CR5 UNCREWED captain's station lost near the shore (no shore info): STANDBY, ENGINE KILLED, latched",
+               lost is not None and killed is not None and still and "ENGINE KILLED" in alarms,
+               "LINK LOST + STANDBY %s; ENGINE KILLED %s; captain back with HELM: still killed %s; alarms %s" % (
+                   lost is not None, killed is not None, still, ", ".join(alarms)))
         alice.close()
+        link.stop()
+        gw.stop()
+        sim.stop()
+
+        # CR4 the shore distance from the charts: gateway -> GW_SHORE -> AURIX telemetry
+        import shallow as shmod
+        charts = os.path.join(tmp, "charts")
+        sim_chart(charts)
+        ch = chartmod.Charts(charts)
+        sh = shmod.Shallow({}, ch)
+        f_boat, d_boat = sh.shore({"lat": SIM_LAT, "lon": SIM_LON})
+        la, lo = east_of(2000.0 - 250.0 - 60.0)                   # 60 m from the edge of the shoal
+        f_near, d_near = sh.shore({"lat": la, "lon": lo})
+        f_none, d_none = shmod.Shallow({}, chartmod.Charts(os.path.join(tmp, "nothing"))).shore(
+            {"lat": SIM_LAT, "lon": SIM_LON})
+        sim = Sim(1.0)
+        link, w = sim.station()
+        root3 = os.path.join(tmp, "ssd3")
+        os.makedirs(root3)
+        cfg = gw_cfg_b(sim, root3, charts_dir=charts)
+        gw = GwRunner(cfg)
+        got = w.until(lambda d: d.get("coast_valid") and d.get("coast_dist_m") is not None, 10)
+        report("CR4 shore distance from the charts (same data as the route check) reaches the AURIX once a second",
+               f_boat == 2 and 1500 <= d_boat <= 1900 and f_near == 3 and 20 <= d_near <= 100 and
+               (f_none, d_none) == (0, 0xFFFF) and got is not None and abs(got["coast_dist_m"] - d_boat) <= 60 and
+               not got["near_shore"],
+               "boat: flags %d, %d m from the shoal; 60 m from its edge: flags %d (near), %d m; no charts: flags %d, "
+               "%d (= not valid -> near on the AURIX); AURIX telemetry: %s m, near %s" % (
+                   f_boat, d_boat, f_near, d_near, f_none, d_none, got and got["coast_dist_m"],
+                   got and got["near_shore"]))
         link.stop()
         gw.stop()
         sim.stop()

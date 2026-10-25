@@ -797,6 +797,27 @@ MANEUVER (trailer, ramp, dock approach) - captain only
     STANDBY after 5 s (as REMOTE MANUAL).
   * Not in the FIRST TEST build.
 
+LOST LINK (UNCREWED ONLY) AND THE ENGINE KILL
+  Lost link = no working link to the captain's (HELM) shore station on any
+  channel: the gateway dropped the station (no answer for 5 s), the gateway
+  itself is lost (3 s), or nobody holds HELM any more (also a RELEASE of
+  HELM - hand over with the role swap instead, chapter 9).
+  1. Always first: STANDBY - throttle to idle, neutral (fast closing rate),
+     alarm LINK LOST.
+  2. Near the shore (closer than near_shore_m, default 100 m, to the
+     shallow-water / shore data the route check uses) - or the gateway gives
+     no valid / fresh shore distance: ENGINE KILL as soon as idle + neutral.
+  3. Open sea: wait lostlink_grace_s (default 10 s). Link back in time: the
+     boat stays in STANDBY at idle / neutral and the station sees the alarm
+     (it never drives on by itself). Otherwise: ENGINE KILL.
+  A killed engine stays killed (alarm ENGINE KILLED) until the AURIX is
+  reset ON BOARD (power cycle). There is no remote restart. A CREWED boat
+  never kills the engine: it keeps the behaviour of chapter 9 (REMOTE LINK
+  LOST, HELM to nobody, no mode change by itself).
+  near_shore_m and lostlink_grace_s are parameters (Config tab) - their
+  defaults are still TO CONFIRM. The kill relay itself is not chosen yet
+  (WIRING.md 3A): no uncrewed operation before it is fitted and tested.
+
 THE MANUAL LICENCE
   Each user in the gateway's user database may have "licence": true (a
   manual / boat driving licence). Only such a user can ask for REMOTE
