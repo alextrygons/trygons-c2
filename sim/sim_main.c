@@ -440,7 +440,7 @@ int main(int argc, char **argv)
         int port = (argc > 2) ? atoi(argv[2]) : 5760;
         double speed = (argc > 3) ? atof(argv[3]) : 1.0;
         if (port <= 0 || port > 65535 || !(speed > 0.0 && speed <= 50.0)) {
-            printf("usage: autopilot_sim server [port 1..65535] [speed 0..50] [usb] [gwbaud=N] [origin=lat,lon]\n"
+            printf("usage: autopilot_sim server [port 1..65535] [speed 0..50] [usb] [nojoy] [gwbaud=N] [origin=lat,lon]\n"
                    "       (the gateway UART for the Raspberry Pi software is on port + 2)\n");
             return 1;
         }
@@ -448,6 +448,7 @@ int main(int argc, char **argv)
         uint32_t gw_baud = 921600u;             /* "gwbaud=N": slower gateway UART (tests) */
         for (int i = 4; i < argc; i++) {
             if (strcmp(argv[i], "usb") == 0) usb = true;
+            else if (strcmp(argv[i], "nojoy") == 0) sim_server_nojoy(true);    /* UNCREWED boat */
             else if (strncmp(argv[i], "gwbaud=", 7) == 0) gw_baud = (uint32_t)strtoul(argv[i] + 7, NULL, 10);
             else if (strncmp(argv[i], "origin=", 7) == 0) {     /* "origin=37.75,23.70": start position */
                 double la = 0.0, lo = 0.0;

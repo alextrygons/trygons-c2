@@ -100,11 +100,15 @@ void sb_default_config(sb_config_t *cfg)
     cfg->remote_max_age_ms = 300u;
     cfg->remote_max_lat_ms = 400u;
     cfg->remote_lost_ms = 5000u;
+    cfg->profile_ok_ms = 200u;
+    cfg->profile_detect_ms = 6000u;
+    cfg->profile_switch_ms = 10000u;
 }
 
 static bool lever_has_throttle(sb_mode_t m);
 static void lever_pickup_start(sb_t *s, sb_mode_t from);
 static void remote_enter(sb_t *s, sb_mode_t from);
+static bool remote_like(sb_mode_t m);
 static float remote_steer(sb_t *s, float dt);
 
 static void lever_standard(sb_t *s)
@@ -123,8 +127,10 @@ static void joymap_apply(sb_t *s)
     s->joy.cfg.nz_lo = s->jmap.nz_lo;
     s->joy.cfg.nz_hi = s->jmap.nz_hi;
     s->joy.cfg.lever_delta = s->jmap.lever_delta;
+    s->joy_probe.cfg = s->joy.cfg;
     jb_init(&s->jb, &s->cfg.jb, s->now_ms);
     joy_disarm(&s->joy);
+    joy_disarm(&s->joy_probe);
     lever_standard(s);
 }
 
@@ -152,7 +158,11 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         joy_cal_t cal;
         bool have = hal_nv_load(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal) && joy_cal_valid(&cal);
         joy_init(&s->joy, &cfg->joy, have ? &cal : NULL);
+        joy_init(&s->joy_probe, &cfg->joy, have ? &cal : NULL);
     }
+    s->boot_ms = s->now_ms;
+    /* FIRST TEST is always CREWED (steering only, its own arming rule; no lost-link kill) */
+    s->profile = cfg->first_test ? SB_PROFILE_CREWED : SB_PROFILE_DETECTING;
     if (!(hal_nv_load(HAL_NV_SLOT_JOYMAP, &s->jmap, (uint32_t)sizeof s->jmap) && joymap_valid(&s->jmap)))
         joymap_default(&s->jmap);
     joymap_apply(s);
@@ -385,7 +395,7 @@ static void save_triggers(sb_t *s)
             save_req(s, SB_SAVE_STANDBY_FAULT, (uint8_t)e->why);
         else if (e->to == MODE_MANUAL && e->why == WHY_JOYSTICK &&
                  (e->from == MODE_HDG_LOCK || e->from == MODE_AUTO || e->from == MODE_REMOTE ||
-                  e->from == MODE_TRAINING))
+                  e->from == MODE_TRAINING || e->from == MODE_MANEUVER))
             save_req(s, SB_SAVE_TAKEOVER, (uint8_t)e->from);
     }
 }
@@ -395,6 +405,14 @@ static void save_triggers(sb_t *s)
 static bool joy_ready(const sb_t *s)
 {
     return s->joy.present && s->joy.armed && !s->joy.fault;
+}
+
+static bool shore_ready(const sb_t *s);
+
+bool sb_confirm_ready(const sb_t *s)
+{
+    if (s->profile == SB_PROFILE_UNCREWED) return shore_ready(s);
+    return s->profile == SB_PROFILE_CREWED && joy_ready(s);
 }
 
 /* The active waypoint can be reached from here (position known, leg not
@@ -421,7 +439,10 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
                   why == WHY_NOT_ARMED || why == WHY_MONITOR || why == WHY_ESTOP;
     if (s->estop_state == 2u && to != MODE_STANDBY) return false;     /* emergency stop pressed */
     /* FIRST TEST: steering only - STANDBY, TRAINING, HDG LOCK */
-    if (s->cfg.first_test && (to == MODE_MANUAL || to == MODE_AUTO || to == MODE_REMOTE)) return false;
+    if (s->cfg.first_test && (to == MODE_MANUAL || to == MODE_AUTO || to == MODE_REMOTE || to == MODE_MANEUVER))
+        return false;
+    /* UNCREWED: the onboard joystick is ignored (no MANUAL), nobody on board for the HDG LOCK button */
+    if (s->profile == SB_PROFILE_UNCREWED && (to == MODE_MANUAL || to == MODE_HDG_LOCK)) return false;
 
     /* The joystick always wins: MANUAL is left only with the stick centred
      * (AUTO / HDG LOCK button, PC + CONFIRM), the STANDBY button or a fault. */
@@ -435,6 +456,7 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
      * take over: no autopilot / remote / training mode while it is held */
     if (to != MODE_STANDBY && s->joy.off_centre) return false;
     if (to == MODE_REMOTE) return why == WHY_REMOTE && !gear_fault(&s->gear);   /* HELM request + CONFIRM */
+    if (to == MODE_MANEUVER) return why == WHY_MANEUVER && !gear_fault(&s->gear);
 
     switch (to) {
     case MODE_STANDBY:
@@ -517,7 +539,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         s->ap.gain_scale = 1.0f;
     }
     if (from == MODE_AUTO && !s->autop.finished) s->autop.suspended = true;   /* resume: PC + CONFIRM */
-    if (from == MODE_REMOTE) s->remote.state = SB_REMOTE_OFF;
+    if (from == MODE_REMOTE || from == MODE_MANEUVER) s->remote.state = SB_REMOTE_OFF;
     bool hdg_fault_steer = s->hdg_compass_lost &&
                            (s->stop_steer == STOP_STEER_GYRO || s->stop_steer == STOP_STEER_CENTER);
     s->hdg_compass_lost = false;
@@ -532,7 +554,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         /* safe stop: throttle idle + neutral first (below), steering last */
         bool moving = s->thr.out_pct > s->cfg.gear.idle_max_pct || !gear_is(&s->gear, GEAR_N);
         bool was_auto = (from == MODE_HDG_LOCK || from == MODE_AUTO || from == MODE_TRAINING ||
-                         from == MODE_REMOTE);
+                         from == MODE_REMOTE || from == MODE_MANEUVER);
         s->stop_from_auto = was_auto;
         s->stopping = true;
         if (hdg_fault_steer) break;                 /* keep the gyro hold / centring running */
@@ -543,7 +565,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
              * gone (fault): gyro hold / centring */
             if (s->joy.steer_ok) s->stop_steer = STOP_STEER_STICK;
             else start_fault_steer(s);
-        } else if (from == MODE_REMOTE && moving) {
+        } else if ((from == MODE_REMOTE || from == MODE_MANEUVER) && moving) {
             start_fault_steer(s);                   /* remote stick ignored from now: gyro holds */
         } else if (s->ap.mode == AP_MODE_AUTO && sb_compass_ok(s)) {
             s->stop_steer = STOP_STEER_HEADING;
@@ -577,7 +599,9 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
             s->alarm_bits |= SB_ALM_JOYSTICK;
         break;
     case MODE_REMOTE:
-        /* the shore joystick: angle steering like MANUAL, its own lever / caps */
+    case MODE_MANEUVER:
+        /* the shore joystick: angle steering like MANUAL, its own lever / caps
+         * (MANEUVER: gear only, the throttle stays idle) */
         s->stopping = false;
         s->manual_from = from;
         autopilot_angle(&s->ap);
@@ -623,15 +647,123 @@ bool sb_request_mode(sb_t *s, sb_mode_t to, mode_reason_t why)
  * from any mode). Analog: wires + ADC; USB: bridge frames + map. */
 static void joystick_read(sb_t *s, uint32_t dt_ms)
 {
+    /* UNCREWED: the onboard joystick is ignored completely - control sees
+     * "no joystick"; the probe still watches it (a joystick appearing) */
+    bool use = s->profile != SB_PROFILE_UNCREWED;
+    joy_input_t none;
+    memset(&none, 0, sizeof none);
+    none.ready = true;
     if (s->jmap.source == JOY_SRC_BRIDGE) {
         joy_input_t u;
         jb_step(&s->jb, &s->jmap, s->now_ms, &u);
-        joy_update(&s->joy, &u, dt_ms);
+        joy_update(&s->joy_probe, &u, dt_ms);
+        s->probe_ready = u.ready;
+        joy_update(&s->joy, use ? &u : &none, dt_ms);
     } else {
         hal_joystick_t js;
         bool ok = hal_read_joystick(&js);
-        joy_step(&s->joy, ok ? &js : NULL, dt_ms);
+        joy_step(&s->joy_probe, ok ? &js : NULL, dt_ms);
+        s->probe_ready = true;
+        if (use) joy_step(&s->joy, ok ? &js : NULL, dt_ms);
+        else joy_update(&s->joy, &none, dt_ms);
     }
+}
+
+const char *sb_profile_name(uint8_t profile)
+{
+    return profile == SB_PROFILE_CREWED ? "CREWED" : profile == SB_PROFILE_UNCREWED ? "UNCREWED" : "DETECTING";
+}
+
+static void profile_set(sb_t *s, uint8_t p)
+{
+    bool change = s->profile != SB_PROFILE_DETECTING;
+    s->profile = p;
+    s->profile_changes++;
+    if (change || p == SB_PROFILE_UNCREWED) {
+        /* control starts from a clean joystick state (disarmed, no latched fault) */
+        joy_config_t jc = s->joy.cfg;
+        joy_cal_t cal = s->joy.cal;
+        joy_init(&s->joy, &jc, &cal);
+    }
+    if (change) {
+        alarm_on(s, SB_ALM_PROFILE);
+        s->confirm.kind = CONF_NONE;
+        plim_drop(&s->plim, PLIM_SRC_FAULT, s->now_ms);
+        /* the neutral-start interlock again, with the new profile's rule (CREWED:
+         * the joystick seen centred) - a held stick can't arrive armed */
+        s->armed = false;
+        s->arm_ok_ms = 0u;
+        s->unarmed_ms = 0u;
+        hal_set_safety_relay(false);
+    }
+}
+
+/* CREWED / UNCREWED (CLAUDE.md section A): decided at power-up, changed only
+ * in STANDBY with the boat stopped (UNCREWED -> CREWED); a joystick appearing
+ * while driving UNCREWED is a fault (STANDBY, alarm), never a profile change. */
+static void profile_step(sb_t *s, uint32_t dt_ms)
+{
+    const joy_t *p = &s->joy_probe;
+    bool ok = p->present && s->probe_ready && !p->fault;
+    s->probe_ok_ms = ok ? s->probe_ok_ms + dt_ms : 0u;
+    if (s->cfg.first_test) {
+        s->profile = SB_PROFILE_CREWED;
+        return;
+    }
+    if (s->profile == SB_PROFILE_DETECTING) {
+        if (s->probe_ok_ms >= s->cfg.profile_ok_ms) profile_set(s, SB_PROFILE_CREWED);
+        else if (s->now_ms - s->boot_ms >= s->cfg.profile_detect_ms) profile_set(s, SB_PROFILE_UNCREWED);
+        return;
+    }
+    /* In STANDBY (stopped) only UNCREWED -> CREWED: a joystick plugged in on
+     * board and passing its self-check. A CREWED boat whose joystick fails or
+     * is unplugged keeps CREWED (that is a joystick fault, the crew is still
+     * there): UNCREWED needs a power-up without the joystick. */
+    bool calm = sb_mode(s) == MODE_STANDBY && !s->stopping;
+    if (calm && s->profile == SB_PROFILE_UNCREWED && s->probe_ok_ms >= s->cfg.profile_switch_ms)
+        profile_set(s, SB_PROFILE_CREWED);
+    /* CREWED: the joystick disappears (not detected any more) = a joystick
+     * fault: the modes it drives end in STANDBY (idle + neutral first) */
+    if (s->profile == SB_PROFILE_CREWED && s->joy_was_present && !s->joy.present) {
+        alarm_on(s, SB_ALM_JOY_FAULT);
+        plim_drop(&s->plim, PLIM_SRC_JOYSTICK, s->now_ms);
+        if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK || remote_like(sb_mode(s)))
+            sb_request_mode(s, MODE_STANDBY, WHY_JOY_FAULT);
+    }
+    s->joy_was_present = s->profile == SB_PROFILE_CREWED && s->joy.present;
+    if (s->profile == SB_PROFILE_UNCREWED && sb_mode(s) != MODE_STANDBY && s->probe_ok_ms >= s->cfg.profile_ok_ms &&
+        !s->profile_fault) {
+        s->profile_fault = true;
+        alarm_on(s, SB_ALM_PROFILE);
+        sb_request_mode(s, MODE_STANDBY, WHY_PROFILE);          /* idle + neutral first */
+    }
+    if (!ok) s->profile_fault = false;
+}
+
+void sb_shore_joy(sb_t *s, uint8_t station, uint16_t age_ms, float x, float y, float lever, bool has_lever,
+                  bool confirm)
+{
+    sb_shore_t *h = &s->shore;
+    if (station < 2u || station != s->helm) return;             /* only the HELM station's joystick */
+    float tol = s->joy.cfg.center_tol;
+    h->station = station;
+    h->rx_ms = s->now_ms ? s->now_ms : 1u;
+    h->age_ms = age_ms;
+    h->centred = isfinite(x) && isfinite(y) && fabsf(x) < tol && fabsf(y) < tol &&
+                 (!has_lever || (isfinite(lever) && joy_lever_neutral(&s->joy, lever)));
+    if (confirm && !h->confirm) {
+        h->confirm_edge = true;
+        h->presses++;
+    }
+    h->confirm = confirm;
+}
+
+/* the shore joystick counts: HELM station, packets fresh and not old */
+static bool shore_ready(const sb_t *s)
+{
+    const sb_shore_t *h = &s->shore;
+    return s->helm >= 2u && h->station == s->helm && h->rx_ms != 0u &&
+           s->now_ms - h->rx_ms <= s->cfg.remote_max_age_ms && h->age_ms <= s->cfg.remote_max_age_ms;
 }
 
 /* X -> outboard angle over the full range (deadband around centre) */
@@ -686,7 +818,8 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
         s->hdg_target = autopilot_wrap360(s->hdg_target + dlt);
         autopilot_set_target(&s->ap, s->hdg_target);         /* shown as the target */
     }
-    if (sb_mode(s) == MODE_REMOTE) in->angle_cmd_deg = remote_steer(s, (float)(s->now_ms - s->last_ms) * 0.001f);
+    if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_MANEUVER)
+        in->angle_cmd_deg = remote_steer(s, (float)(s->now_ms - s->last_ms) * 0.001f);
     if (sb_mode(s) == MODE_MANUAL) in->angle_cmd_deg = stick_angle(s, s->joy.x);
     if (sb_mode(s) == MODE_STANDBY && s->stop_steer == STOP_STEER_STICK && s->joy.steer_ok)
         in->angle_cmd_deg = stick_angle(s, s->joy.steer_x);     /* safe stop from MANUAL */
@@ -849,7 +982,7 @@ sb_result_t sb_remote_request(sb_t *s, uint8_t station)
     if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_TRAINING) return SB_ERR_WRONG_MODE;
     if (!s->armed || s->mon_tripped) return SB_ERR_PRECOND;
     if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
-    if (!joy_ready(s)) return SB_ERR_JOY_NOT_READY;              /* nobody could press CONFIRM */
+    if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;              /* nobody could press CONFIRM */
     s->remote.station = station;
     s->confirm.kind = CONF_REMOTE;
     s->confirm.deadline_ms = s->now_ms + s->cfg.confirm_ms;
@@ -857,10 +990,31 @@ sb_result_t sb_remote_request(sb_t *s, uint8_t station)
     return SB_OK;
 }
 
+sb_result_t sb_maneuver_request(sb_t *s, uint8_t station)
+{
+    if (s->cfg.first_test) return SB_ERR_WRONG_MODE;              /* FIRST TEST: steering only */
+    if (sb_mode(s) == MODE_MANUAL) return SB_ERR_JOYSTICK;        /* the onboard joystick has it */
+    if (sb_mode(s) != MODE_STANDBY && sb_mode(s) != MODE_REMOTE) return SB_ERR_WRONG_MODE;
+    if (!s->armed || s->mon_tripped) return SB_ERR_PRECOND;
+    if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
+    if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;        /* nobody could press CONFIRM */
+    s->remote.station = station;
+    s->confirm.kind = CONF_MANEUVER;
+    s->confirm.deadline_ms = s->now_ms + s->cfg.confirm_ms;
+    s->remote.requests++;
+    return SB_OK;
+}
+
+static bool remote_like(sb_mode_t m)
+{
+    return m == MODE_REMOTE || m == MODE_MANEUVER;
+}
+
 sb_result_t sb_remote_release(sb_t *s, uint8_t station)
 {
-    if (s->confirm.kind == CONF_REMOTE && s->remote.station == station) s->confirm.kind = CONF_NONE;
-    if (sb_mode(s) != MODE_REMOTE) return SB_OK;
+    if ((s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER) && s->remote.station == station)
+        s->confirm.kind = CONF_NONE;
+    if (!remote_like(sb_mode(s))) return SB_OK;
     if (station != s->remote.station) return SB_ERR_WRONG_MODE;
     return sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_END) ? SB_OK : SB_ERR_PRECOND;
 }
@@ -869,7 +1023,7 @@ void sb_remote_input(sb_t *s, uint8_t station, uint16_t seq, uint16_t age_ms, ui
                      float x, float y, float lever, bool has_lever)
 {
     sb_remote_t *r = &s->remote;
-    if (sb_mode(s) != MODE_REMOTE || station != r->station) {
+    if (!remote_like(sb_mode(s)) || station != r->station) {
         r->ignored++;
         return;
     }
@@ -943,6 +1097,21 @@ static void remote_mode(sb_t *s)
             sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_LOST);
         return;
     }
+    if (sb_mode(s) == MODE_MANEUVER) {
+        /* MANEUVER: the throttle is ALWAYS idle; the captain's joystick only
+         * chooses the gear (forward / neutral zone / reverse) - gear changes go
+         * through the gear state machine (idle -> neutral -> gear) */
+        s->throttle_demand = 0.0f;
+        if (!r->have) {
+            s->gear_demand = s->gear.current;               /* no data yet: no gear change for nothing */
+        } else if (r->has_lever) {
+            s->gear_demand = (r->lever > s->joy.cfg.nz_hi) ? GEAR_F : (r->lever < s->joy.cfg.nz_lo) ? GEAR_R : GEAR_N;
+        } else {
+            float db = s->joy.cfg.deadband;
+            s->gear_demand = (r->y > db) ? GEAR_F : (r->y < -db) ? GEAR_R : GEAR_N;
+        }
+        return;
+    }
     if (!r->have) {
         /* no remote data yet: keep what the engine does now (like a pickup) - a
          * neutral demand here would start a gear change for nothing */
@@ -987,6 +1156,7 @@ bool sb_joystick_cal_finish(sb_t *s)
 {
     joy_cal_t cal;
     if (sb_mode(s) != MODE_STANDBY || !joy_cal_finish(&s->joy, &cal)) return false;
+    s->joy_probe.cal = cal;
     s->cfg_version++;
     return hal_nv_save(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal);
 }
@@ -1414,7 +1584,7 @@ static sb_result_t auto_common_checks(const sb_t *s)
     if (s->cfg.first_test) return SB_ERR_WRONG_MODE;              /* FIRST TEST: no AUTO */
     if (!s->autop.prog_ok) return SB_ERR_NO_PROGRAM;
     if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
-    if (!joy_ready(s)) return SB_ERR_JOY_NOT_READY;
+    if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;
     if (!sb_compass_ok(s) || !sb_gps_ok(s) || gear_fault(&s->gear)) return SB_ERR_PRECOND;
     return SB_OK;
 }
@@ -1529,6 +1699,9 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
         /* the HELM station must still be the one that asked */
         if (s->helm != s->remote.station) return false;
         return sb_request_mode(s, MODE_REMOTE, WHY_REMOTE);
+    case CONF_MANEUVER:
+        if (s->helm != s->remote.station) return false;
+        return sb_request_mode(s, MODE_MANEUVER, WHY_MANEUVER);
     case CONF_RAISE_FWD:
     case CONF_RAISE_REV:
         /* one step up; never changes the mode */
@@ -1546,7 +1719,7 @@ static bool is_raise(confirm_kind_t k)
 sb_result_t sb_power_code(sb_t *s, uint8_t dir, uint16_t *code)
 {
     *code = 0u;
-    if (!joy_ready(s)) return SB_ERR_JOY_NOT_READY;
+    if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;
     if (s->alarm || s->ap.alarm) return SB_ERR_ALARM;
     if (dir == 0u ? s->plim.fwd_step + 1u >= PLIM_FWD_STEPS
                   : s->plim.rev_pct >= s->plim.cfg.rev_max - 0.01f) return SB_ERR_AT_MAX;
@@ -1557,7 +1730,7 @@ sb_result_t sb_power_code(sb_t *s, uint8_t dir, uint16_t *code)
 sb_result_t sb_power_raise(sb_t *s, uint8_t dir, uint16_t code)
 {
     dir = dir ? 1u : 0u;
-    if (!joy_ready(s)) {
+    if (!sb_confirm_ready(s)) {
         plim_log_attempt(&s->plim, dir, PLIM_ERR_JOY_NOT_READY, s->now_ms);
         return SB_ERR_JOY_NOT_READY;
     }
@@ -1585,12 +1758,17 @@ static void confirm_step(sb_t *s)
         if (is_raise(c->kind)) plim_log_attempt(&s->plim, c->kind == CONF_RAISE_REV, PLIM_ERR_LATE, s->now_ms);
         c->kind = CONF_NONE;            /* too late */
     }
-    if (!s->joy.confirm_edge) return;
+    /* CREWED: the onboard joystick's CONFIRM; UNCREWED: the HELM station's
+     * (shore captain's) joystick, same rules (stick centred, ready, in time) */
+    bool shore = s->profile == SB_PROFILE_UNCREWED;
+    bool edge = shore ? s->shore.confirm_edge : s->joy.confirm_edge;
+    s->shore.confirm_edge = false;
+    if (!edge) return;
     if (c->kind == CONF_NONE) {
         c->ignored++;                   /* nothing pending: does nothing */
         return;
     }
-    if (!joy_confirm(&s->joy)) {
+    if (shore ? !(shore_ready(s) && s->shore.centred) : !joy_confirm(&s->joy)) {
         c->refused++;                   /* stick not centred / not armed / faulted */
         if (is_raise(c->kind)) plim_log_attempt(&s->plim, c->kind == CONF_RAISE_REV, PLIM_ERR_NOT_CENTRED, s->now_ms);
         s->chirp_ms = 300u;
@@ -1679,10 +1857,12 @@ static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
      * stick not detected is no reason to skip the check) - unless the boat is
      * configured without one */
     bool stick = s->joy.present ? (s->joy.armed && joy_centered(&s->joy)) : s->cfg.joy_optional;
+    if (s->profile == SB_PROFILE_UNCREWED) stick = true;              /* the onboard joystick is ignored */
+    if (s->profile == SB_PROFILE_DETECTING) stick = false;            /* not decided yet: wait */
     if (s->cfg.first_test) stick = true;                              /* no joystick needed (no MANUAL) */
     bool idle = s->thr.out_pct <= s->cfg.gear.idle_max_pct;
     s->arm_ok_ms = (neutral && stick && idle) ? s->arm_ok_ms + dt_ms : 0u;
-    s->unarmed_ms += dt_ms;
+    if (s->profile != SB_PROFILE_DETECTING) s->unarmed_ms += dt_ms;   /* (the detection window is no fault) */
     if (s->arm_ok_ms >= s->cfg.arm_ms && !s->mon_tripped) {
         s->armed = true;
         hal_set_safety_relay(true);
@@ -1734,7 +1914,7 @@ static void events_step(sb_t *s, uint32_t buttons)
         s->compass_fault_seen = true;
         alarm_on(s, SB_ALM_COMPASS);
         plim_drop(&s->plim, PLIM_SRC_COMPASS, s->now_ms);
-        if (sb_mode(s) == MODE_AUTO || sb_mode(s) == MODE_TRAINING || sb_mode(s) == MODE_REMOTE) {
+        if (sb_mode(s) == MODE_AUTO || sb_mode(s) == MODE_TRAINING || remote_like(sb_mode(s))) {
             sb_request_mode(s, MODE_STANDBY, WHY_COMPASS_FAULT);
         } else if (sb_mode(s) == MODE_HDG_LOCK) {
             /* throttle stays with the user: gyro hold / centring until stopped */
@@ -1767,7 +1947,7 @@ static void events_step(sb_t *s, uint32_t buttons)
         alarm_on(s, SB_ALM_JOY_FAULT);
         plim_drop(&s->plim, PLIM_SRC_JOYSTICK, s->now_ms);
         if (is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;
-        if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK || sb_mode(s) == MODE_REMOTE)
+        if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK || remote_like(sb_mode(s)))
             sb_request_mode(s, MODE_STANDBY, WHY_JOY_FAULT);
     }
     if (!s->joy.fault) s->joy_fault_seen = false;
@@ -1778,7 +1958,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     if (s->joy.armed) s->joy_nc_seen = false;
 
     /* REMOTE MANUAL needs its station to hold HELM (a station on board took command) */
-    if (sb_mode(s) == MODE_REMOTE && s->helm != s->remote.station) sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_END);
+    if (remote_like(sb_mode(s)) && s->helm != s->remote.station) sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_END);
 
     /* override: it always wins (Y / the lever is the throttle in HDG_LOCK) */
     bool grab = s->joy.take_edge || s->joy.engage_x || (s->joy.engage_y && sb_mode(s) != MODE_HDG_LOCK) ||
@@ -1786,7 +1966,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     if (s->joy.take_edge) plim_drop(&s->plim, PLIM_SRC_OVERRIDE, s->now_ms);      /* TAKE always lowers */
     if (grab && sb_mode(s) != MODE_MANUAL && !s->cfg.first_test) {     /* FIRST TEST: no MANUAL */
         if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
-            s->confirm.kind == CONF_REMOTE) s->confirm.kind = CONF_NONE;
+            s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER) s->confirm.kind = CONF_NONE;
         sb_request_mode(s, MODE_MANUAL, WHY_JOYSTICK);
     }
     if (sb_mode(s) == MODE_MANUAL && s->joy.auto_edge) joystick_handback(s);
@@ -1922,9 +2102,12 @@ void sb_step(sb_t *s)
     float dt = (float)dt_ms * 0.001f;
 
     joystick_read(s, dt_ms);
+    profile_step(s, dt_ms);
     /* panel buttons + course buttons from the PC + the same functions on a USB joystick */
     uint32_t buttons = hal_get_button_presses() | s->ext_buttons | s->joy.buttons_edge;
     s->ext_buttons = 0u;
+    /* UNCREWED: nobody on board - only the STANDBY button counts (it always does) */
+    if (s->profile == SB_PROFILE_UNCREWED) buttons &= HAL_BTN_BIT(HAL_BTN_STANDBY);
     int8_t bench_steer = bench_step(s, &buttons, dt_ms);
     read_inputs(s, &in, buttons);
     if (sb_mode(s) == MODE_BENCH) in.manual_steer = bench_steer;
@@ -1995,7 +2178,7 @@ void sb_step(sb_t *s)
     else if (sb_mode(s) == MODE_HDG_LOCK) hdg_lock_mode(s);
     else if (sb_mode(s) == MODE_AUTO) auto_mode(s, dt, dt_ms, roll_new, roll);
     else if (sb_mode(s) == MODE_TRAINING) training_mode(s, dt_ms);
-    else if (sb_mode(s) == MODE_REMOTE) remote_mode(s);
+    else if (remote_like(sb_mode(s))) remote_mode(s);
     if (sb_mode(s) == MODE_STANDBY) {
         s->throttle_demand = 0.0f;
         s->gear_demand = GEAR_N;

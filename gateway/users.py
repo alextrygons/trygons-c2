@@ -2,16 +2,18 @@
 
 secrets.json (never in git, chmod 600):
     "users": {
-      "alex":   {"role": "HELM",   "pw": "pbkdf2_sha256$200000$<salt>$<hash>"},
+      "alex":   {"role": "HELM",   "pw": "pbkdf2_sha256$200000$<salt>$<hash>", "licence": true},
       "phone":  {"role": "VIEWER", "keys": ["<sha256 of a long random key>"]}
     }
 
 VIEWER: watch only. HELM: may hold HELM (only one station at a time does,
-enforced on the AURIX). Log in with a password, or with a key (a long
+enforced on the AURIX). "licence": true = the user holds a manual (boat
+driving) licence: only such a user may ask for REMOTE MANUAL or MANEUVER
+(and be the captain, section D). Missing = no licence. Log in with a password, or with a key (a long
 random token, e.g. for a PC that logs in by itself).
 
 Add a user (prints the line to paste into secrets.json):
-    python3 users.py add alex HELM
+    python3 users.py add alex HELM [licence]   (licence: holds a manual licence)
     python3 users.py key phone VIEWER          (makes a random key)
 """
 import getpass
@@ -77,12 +79,18 @@ class Users:
         self.fails.pop(ip, None)
         return u["role"], None
 
+    def licence(self, user):
+        """True if the user holds a manual (driving) licence - only flagged users."""
+        u = self.users.get(user)
+        return bool(u and u.get("licence") is True)
+
 
 def main():
     if len(sys.argv) < 4 or sys.argv[1] not in ("add", "key") or sys.argv[3] not in ROLES:
         print(__doc__)
         return 1
     name, role = sys.argv[2], sys.argv[3]
+    lic = len(sys.argv) > 4 and sys.argv[4] == "licence"
     if sys.argv[1] == "add":
         pw = getpass.getpass("password for %s: " % name)
         if len(pw) < 10:
@@ -96,6 +104,8 @@ def main():
         key = secrets.token_urlsafe(32)
         print("the key (give it to the device, it is shown only now):\n  %s" % key)
         entry = {"role": role, "keys": [hash_key(key)]}
+    if lic:
+        entry["licence"] = True
     print('paste into "users" in secrets.json:\n  %s: %s' % (json.dumps(name), json.dumps(entry)))
     return 0
 

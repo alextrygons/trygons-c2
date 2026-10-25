@@ -37,7 +37,7 @@ def plan(mode):
          ("fault storm: 200 episodes", [PY, t % "run_storm.py", "--episodes", "200"], 1800),
          ("32-bit time wraparound", [STORM, "--wrap"], 600),
          ("day at sea, AURIX part", [STORM, "--dayatsea"], 900),
-         ("gateway storm (I14, I15, I17, I20, I21)", [PY, t % "storm_gateway.py", "--episodes", "10"], 1800)]
+         ("gateway storm (I14, I15, I17, I20, I21, I26)", [PY, t % "storm_gateway.py", "--episodes", "10"], 1800)]
     if mode == "quick":
         return q
     return [ads, ifx,
@@ -48,7 +48,7 @@ def plan(mode):
             ("system soak 60 min", [PY, t % "soak_system.py", "--minutes", "60"], 7200),
             ("day at sea, AURIX part", [STORM, "--dayatsea"], 900),
             ("day at sea, whole system", [PY, t % "day_at_sea.py"], 5400),
-            ("gateway storm (I14, I15, I17, I20, I21)", [PY, t % "storm_gateway.py", "--episodes", "120"], 7200),
+            ("gateway storm (I14, I15, I17, I20, I21, I26)", [PY, t % "storm_gateway.py", "--episodes", "120"], 7200),
             ("station storm (I16)", [PY, t % "stations_storm.py", "--seconds", "300"], 1800),
             ("coverage", [PY, t % "coverage_run.py"], 14400)]
 

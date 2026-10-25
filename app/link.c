@@ -636,7 +636,8 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
 static void gw_status(sb_t *s, const proto_frame_t *f);
 
 /* GW_RJOY, 15 bytes: u8 station | u16 seq | u16 data age ms | u16 one-way latency ms |
- * i16 x*1000 | i16 y*1000 | u16 lever*1000 | u8 flags (b0 lever, b1 release) */
+ * i16 x*1000 | i16 y*1000 | u16 lever*1000 | u8 reserved | u8 flags (b0 lever, b1 release,
+ * b2 CONFIRM held - counts only in UNCREWED) */
 static void gw_rjoy(sb_t *s, const proto_frame_t *f)
 {
     const uint8_t *p = f->payload;
@@ -650,6 +651,8 @@ static void gw_rjoy(sb_t *s, const proto_frame_t *f)
         (void)sb_remote_release(s, st);
         return;
     }
+    /* every packet of the HELM station: its CONFIRM button counts in UNCREWED */
+    sb_shore_joy(s, st, age, x * 0.001f, y * 0.001f, lev * 0.001f, (flags & 1u) != 0u, (flags & 4u) != 0u);
     sb_remote_input(s, st, seq, age, lat, x * 0.001f, y * 0.001f, lev * 0.001f, (flags & 1u) != 0u);
 }
 
@@ -756,6 +759,13 @@ static void command(link_t *l, sb_t *s, const proto_frame_t *f, uint8_t station,
         else if (station < 2u) r = PROTO_R_NOT_ALLOWED;
         else if (s->helm != station) r = PROTO_R_NOT_HELM;
         else r = sb_result_to_proto(f->payload[0] == 0u ? sb_remote_request(s, station)
+                                                          : sb_remote_release(s, station));
+    } else if (f->type == PROTO_T_MANEUVER) {
+        /* MANEUVER: like remote driving (the gateway lets only a licensed captain ask) */
+        if (f->len != 1u || f->payload[0] > 1u) r = PROTO_R_BAD_VALUE;
+        else if (station < 2u) r = PROTO_R_NOT_ALLOWED;
+        else if (s->helm != station) r = PROTO_R_NOT_HELM;
+        else r = sb_result_to_proto(f->payload[0] == 0u ? sb_maneuver_request(s, station)
                                                           : sb_remote_release(s, station));
     } else if (f->type == PROTO_T_BENCH && station != SB_HELM_USB) {
         r = PROTO_R_NOT_ALLOWED;                         /* BENCH TEST: only the laptop on the USB cable */
@@ -873,6 +883,9 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      camera horizon (gateway vision), never used for control
  *   I: u8 config flags (b0 FIRST TEST: steering only) | u8 e-stop (0 not fitted, 1 released,
  *      2 pressed) | u8 moving ahead (FIRST TEST: steering allowed)
+ *   J: u8 profile (0 detecting, 1 CREWED, 2 UNCREWED) | u8 onboard joystick (b0 detected + self-check OK,
+ *      b1 present, b2 fault, b3 starting) | u8 shore joystick (b0 fresh from HELM, b1 centred, b2 CONFIRM held) |
+ *      u16 profile changes
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -894,7 +907,7 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u8(&w, s->helm_local ? 1u : 0u);
     proto_wr_u16(&w, s->helm_changes);
     const sb_remote_t *r = &s->remote;
-    proto_wr_u8(&w, (sb_mode(s) == MODE_REMOTE) ? r->state : SB_REMOTE_OFF);
+    proto_wr_u8(&w, (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_MANEUVER) ? r->state : SB_REMOTE_OFF);
     proto_wr_u8(&w, r->station);
     proto_wr_u16(&w, r->age_ms);
     proto_wr_u16(&w, r->lat_ms);
@@ -946,6 +959,15 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u8(&w, (uint8_t)(s->cfg.first_test ? 1u : 0u));
     proto_wr_u8(&w, s->estop_state);
     proto_wr_u8(&w, (uint8_t)(s->moving_ahead ? 1u : 0u));
+    /* J */
+    const joy_t *pb = &s->joy_probe;
+    bool shore_fresh = s->shore.rx_ms != 0u && s->now_ms - s->shore.rx_ms <= s->cfg.remote_max_age_ms &&
+                       s->shore.station == s->helm;
+    proto_wr_u8(&w, s->profile);
+    proto_wr_u8(&w, (uint8_t)((pb->present && s->probe_ready && !pb->fault ? 1u : 0u) | (pb->present ? 2u : 0u) |
+                              (pb->fault ? 4u : 0u) | (!s->probe_ready ? 8u : 0u)));
+    proto_wr_u8(&w, (uint8_t)((shore_fresh ? 1u : 0u) | (s->shore.centred ? 2u : 0u) | (s->shore.confirm ? 4u : 0u)));
+    proto_wr_u16(&w, s->profile_changes);
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
     else l->telem_overflows++;

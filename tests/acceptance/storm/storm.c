@@ -63,6 +63,7 @@ typedef enum {
     E_COMPASS, E_GYRO, E_GPS, E_GPS_JUMP, E_NSW, E_CURRENT, E_LIMITSW, E_JOY_WIRE, E_ACCEL, E_SEA,
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
+    E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG,
     E_COUNT
 } ev_kind_t;
 
@@ -73,7 +74,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "remote release", "compass", "gyro", "GPS", "GPS jump (spoof)", "neutral switch", "motor current sense",
     "limit switches", "joystick wire", "slamming sensor", "sea state", "gateway status", "navigation request",
     "USB link fuzz", "gateway UART fuzz", "core 0 frozen", "chip reset", "inject throttle over the limit",
-    "inject gear change under load"
+    "inject gear change under load", "shore CONFIRM (captain's joystick)", "MANEUVER request",
+    "onboard joystick plugged / unplugged"
 };
 
 typedef struct {
@@ -88,6 +90,7 @@ typedef struct {
     uint32_t seed, dur_ms;
     float    sea0;
     bool     boot_deflected;    /* joystick held at power-up (I11) */
+    bool     uncrewed;          /* no onboard joystick at power-up: UNCREWED profile (I22) */
     int      n;
     ev_t     ev[MAX_EV];
     bool     on[MAX_EV];        /* used while shrinking */
@@ -101,6 +104,7 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
     s->dur_ms = dur_ms;
     s->sea0 = (float)rndi(&r, 5);
     s->boot_deflected = rnd(&r) < 0.15f;
+    s->uncrewed = rnd(&r) < 0.25f;
     uint32_t t = 2000u;
     /* the boat should be doing something: a program and a power raise early on */
     while (t < dur_ms && s->n < MAX_EV) {
@@ -142,8 +146,11 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         else if (p < 0.92f) k = E_FUZZ_GW;
         else if (p < 0.935f) k = E_FREEZE;
         else if (p < 0.95f) k = E_RESET;
-        else if (p < 0.975f) k = E_INJ_THR;
-        else k = E_INJ_GEAR;
+        else if (p < 0.970f) k = E_INJ_THR;
+        else if (p < 0.980f) k = E_INJ_GEAR;
+        else if (p < 0.990f) k = E_MAN_REQ;
+        else if (p < 0.996f) k = E_SCONFIRM;
+        else k = E_JOY_PLUG;
         e->kind = (uint8_t)k;
         e->a = rndi(&r, 1000);
         e->b = rndi(&r, 1000);
@@ -154,7 +161,7 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         s->n++;
         /* what a crew does: a program before AUTO, the remote data before its request, and the
            joystick CONFIRM 1-3 s after a request (mostly) */
-        if ((k == E_PC_AUTO_START || k == E_PC_RAISE || k == E_REMOTE_REQ) && s->n + 3 < MAX_EV) {
+        if ((k == E_PC_AUTO_START || k == E_PC_RAISE || k == E_REMOTE_REQ || k == E_MAN_REQ) && s->n + 3 < MAX_EV) {
             if (k == E_PC_AUTO_START && rnd(&r) < 0.6f) {
                 ev_t pe = *e;
                 pe.kind = E_PC_PROG;
@@ -167,7 +174,7 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                 st->kind = E_PC_AUTO_START;
                 s->on[s->n - 1] = true;
             }
-            if (k == E_REMOTE_REQ) {
+            if (k == E_REMOTE_REQ || k == E_MAN_REQ) {
                 ev_t req = *e;
                 if (rnd(&r) < 0.6f) {                      /* stick to the centre + STANDBY first */
                     ev_t *jc = e;
@@ -197,10 +204,11 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                 ev_t *cf = &s->ev[s->n++];
                 memset(cf, 0, sizeof *cf);
                 cf->t = t + 1000u + (uint32_t)rndi(&r, 2000);
-                cf->kind = E_CONFIRM;
+                /* the CONFIRM where the profile wants it - and sometimes the wrong one (must do nothing) */
+                cf->kind = (uint8_t)((s->uncrewed ^ (rnd(&r) < 0.1f)) ? E_SCONFIRM : E_CONFIRM);
                 s->on[s->n - 1] = true;
                 t = cf->t;
-                if (k == E_REMOTE_REQ && rnd(&r) < 0.5f && s->n + 1 < MAX_EV) {   /* a dropout / old data */
+                if ((k == E_REMOTE_REQ || k == E_MAN_REQ) && rnd(&r) < 0.5f && s->n + 1 < MAX_EV) {   /* a dropout / old data */
                     ev_t *dr = &s->ev[s->n++];
                     memset(dr, 0, sizeof *dr);
                     dr->t = t + 3000u + (uint32_t)rndi(&r, 17000);
@@ -236,6 +244,9 @@ typedef struct {
     bool        take_held, auto_held;
     uint32_t    btn_release;
     bool        rem_stream, rem_stale;
+    bool        sconf_held;         /* the shore captain's CONFIRM button */
+    uint32_t    sconf_release;
+    bool        uncrewed;
     uint16_t    rem_seq;
     uint8_t     rem_station;
     float       rx_x, rx_lever;
@@ -276,6 +287,14 @@ static void boot(void)
     S.next_ctrl = S.t;
     S.last_kick = S.t;
     S.boots++;
+    if (S.uncrewed) {                   /* the shore captain holds HELM, its joystick sends (gateway) */
+        S.rem_station = 2u;
+        S.sb.helm = 2u;
+        S.sb.helm_local = false;
+        S.rem_stream = true;
+        S.rx_x = 0.0f;
+        S.rx_lever = 0.5f;
+    }
     if (s_log) {
         g_logstat.boot = S.boots;
         logger_init(&s_lg, S.t);
@@ -304,7 +323,8 @@ static void sim_init(const sched_t *sc)
     remove("nv1.bin");
     remove("nv2.bin");
     remove("nv4.bin");
-    S.joy_fitted = true;
+    S.joy_fitted = !sc->uncrewed;
+    S.uncrewed = sc->uncrewed;
     S.jx = sc->boot_deflected ? 0.8f : 0.0f;
     S.jy = 0.0f;
     joy_apply();
@@ -376,7 +396,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 22
+#define NINV 27
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -384,18 +404,23 @@ static const char *INV_NAMES[NINV] = { "",
     "I4  the STANDBY button always wins: idle + neutral within the time",
     "I5  the onboard joystick wins over autopilot / PC / remote / vision within the time",
     "I6  the PC / remote never take control from the onboard joystick",
-    "I7  power raise, AUTO start, remote driving only with an onboard CONFIRM within 10 s",
+    "I7  power raise, AUTO start, REMOTE / MANEUVER only with a CONFIRM within 10 s (onboard; UNCREWED: shore)",
     "I8  CONFIRM alone never changes the mode",
     "I9  fault / STANDBY: idle + neutral commanded before (or with) steering off",
     "I10 no mode change outside the allowed-transition table",
-    "I11 outputs disarmed at power-up until neutral + joystick centred",
+    "I11 outputs disarmed at power-up until neutral + joystick centred (CREWED)",
     "I12 remote data old / missing -> idle + neutral in time, never resumes by itself",
     "I13 slamming / caps never increase the throttle (never above what the mode asks)",
     "I14 (gateway: storm_gateway.py)", "I15 (gateway)", "I16 (gateway)", "I17 (gateway)",
     "I18 logging never delays the control step (20 Hz kept)",
     "I19 the CPU1 monitor forces the safe state on every injected violation in time",
     "I20 navigation / vision caps never steer the boat in other modes, never raise the throttle",
-    "I21 (gateway)" };
+    "I21 (gateway)",
+    "I22 UNCREWED: the onboard joystick has no effect (no MANUAL / HDG LOCK, CONFIRM only from the shore)",
+    "I23 the profile CREWED / UNCREWED never changes outside STANDBY (stopped)",
+    "I24 MANEUVER never commands throttle above idle",
+    "I25 MANEUVER gear changes only at idle",
+    "I26 (gateway: MANEUVER / REMOTE refused without a manual licence)" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -420,7 +445,8 @@ static bool spec_allowed(sb_mode_t f, sb_mode_t t)
     case MODE_HDG_LOCK: return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_AUTO || t == MODE_REMOTE;
     case MODE_AUTO:     return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_HDG_LOCK || t == MODE_REMOTE;
     case MODE_TRAINING: return t == MODE_STANDBY || t == MODE_MANUAL;
-    case MODE_REMOTE:   return t == MODE_STANDBY || t == MODE_MANUAL;
+    case MODE_REMOTE:   return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_MANEUVER;
+    case MODE_MANEUVER: return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_REMOTE;   /* captain: dock */
     case MODE_BENCH:    return t == MODE_STANDBY || t == MODE_MANUAL;              /* dock test: back, or the joystick */
     default:            return false;
     }
@@ -458,6 +484,8 @@ typedef struct {
     float    target_prev;
     bool     rem_lost_session;      /* this REMOTE session went LOST: it must never drive again by itself */
     uint32_t last_action_t;         /* the last event that may legitimately change the mode */
+    uint32_t sconf_t;               /* last shore CONFIRM press */
+    uint8_t  prof_prev;
 } chk_t;
 
 static chk_t C;
@@ -518,6 +546,7 @@ static void check_step(void)
         C.thr_prev = thr;
         C.gear_prev = gp;
         C.confirms_prev = s->confirm.accepted;
+        C.prof_prev = s->profile;
         return;
     }
 
@@ -535,7 +564,7 @@ static void check_step(void)
         if (thr <= 0.6f && (gp == 0 || gp == -1) && fabsf(sim_hal_motor_command()) < 0.01f) ok(11);
         else fail(11, "not armed but throttle %.1f %% / gear %.0f", thr, (double)gp);
     }
-    if (s->armed && !C.armed_ok_seen) fail(11, "armed although the joystick was never centred (%.1f, %.1f)",
+    if (s->armed && !C.armed_ok_seen && s->profile == SB_PROFILE_CREWED) fail(11, "armed although the joystick was never centred (%.1f, %.1f)",
                                              S.jx, S.jy);
 
     /* I1: under the limit, or coming down at the closing rate */
@@ -580,7 +609,8 @@ static void check_step(void)
     }
 
     /* I5 / I6: the onboard joystick */
-    bool joy_ok = S.joy_fitted && !S.joy_broken && s->armed && !forced && !s->joy.fault && !s->mon_tripped;
+    bool joy_ok = S.joy_fitted && !S.joy_broken && s->armed && !forced && !s->joy.fault && !s->mon_tripped &&
+                  s->profile == SB_PROFILE_CREWED && s->joy.present;
     if (C.defl_pending && joy_ok) {
         float el = (S.t - C.defl_t) * 0.001f;
         if (m == MODE_MANUAL) {
@@ -626,10 +656,42 @@ static void check_step(void)
         else fail(7, "AUTO entered from mode %.0f without CONFIRM (last %.0f ms ago)", (double)C.mode_prev,
                   C.confirm_t ? (double)(S.t - C.confirm_t) : -1.0);
     }
-    if (m == MODE_REMOTE && C.mode_prev != MODE_REMOTE) {
+    if ((m == MODE_REMOTE || m == MODE_MANEUVER) && C.mode_prev != m) {
         ST.remote_entries++;
         if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(7);
-        else fail(7, "REMOTE entered without CONFIRM (mode before %.0f)%.0f", (double)C.mode_prev, 0.0);
+        else fail(7, "REMOTE / MANEUVER entered without CONFIRM (mode before %.0f, now %.0f)", (double)C.mode_prev,
+                  (double)m);
+    }
+
+    /* I22: UNCREWED - the onboard joystick has no effect */
+    if (s->profile == SB_PROFILE_UNCREWED) {
+        if (m == MODE_MANUAL || m == MODE_HDG_LOCK) fail(22, "UNCREWED but mode %.0f (onboard control)%.0f", (double)m, 0.0);
+        else ok(22);
+        if (conf_now) {
+            if (C.sconf_t && S.t - C.sconf_t <= 300u) ok(22);
+            else fail(22, "UNCREWED: a CONFIRM accepted without the shore CONFIRM (last %.0f ms ago)%.0f",
+                      C.sconf_t ? (double)(S.t - C.sconf_t) : -1.0, 0.0);
+        }
+    }
+
+    /* I23: the profile changes only in STANDBY with the boat stopped */
+    if (s->profile != C.prof_prev) {
+        if (m == MODE_STANDBY && C.mode_prev == MODE_STANDBY && !s->stopping) ok(23);
+        else fail(23, "profile changed to %.0f in mode %.0f", (double)s->profile, (double)m);
+    }
+    if (C.prof_prev == SB_PROFILE_CREWED && s->profile == SB_PROFILE_UNCREWED)
+        fail(23, "profile CREWED -> UNCREWED without a power-up%.0f%.0f", 0.0, 0.0);
+
+    /* I24 / I25: MANEUVER - throttle always idle, gear changes only at idle */
+    if (m == MODE_MANEUVER && !forced && !inj) {
+        if (s->throttle_mode <= 0.01f && thr <= fmaxf(C.thr_prev, 0.6f) + 0.01f) ok(24);
+        else fail(24, "MANEUVER: throttle asked %.1f %%, output %.1f %%", s->throttle_mode, thr);
+        if (gp >= 0 && C.gear_prev >= 0 && gp != C.gear_prev && gp != 3 && C.gear_prev != 3) {
+            if (thr <= 0.6f && C.thr_prev <= 0.6f) ok(25);
+            else fail(25, "MANEUVER: gear moved with the throttle at %.1f %% (before %.1f %%)", thr, C.thr_prev);
+        } else if (gp >= 0) {
+            ok(25);
+        }
     }
 
     /* I8: a CONFIRM with nothing pending */
@@ -712,6 +774,7 @@ static void check_step(void)
     C.plim_f_prev = s->plim.fwd_pct;
     C.plim_r_prev = s->plim.rev_pct;
     C.target_prev = s->ap.target_heading;
+    C.prof_prev = s->profile;
 }
 
 /* during a frozen core 0: the monitor must trip by itself */
@@ -736,6 +799,7 @@ static void apply(const ev_t *e)
     case E_JOY: case E_BTN: case E_TAKE: case E_AUTOBTN: case E_CONFIRM: case E_PC_MODE: case E_PC_AUTO_START:
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
+    case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -792,11 +856,28 @@ static void apply(const ev_t *e)
     }
     case E_PC_LOWER: sb_power_lower(s); break;
     case E_REMOTE_REQ:
-        S.rem_station = (uint8_t)(2 + e->a % 3);
+        if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->a % 3);
         s->helm = S.rem_station;                          /* the shore station took HELM first (gateway) */
         s->helm_local = false;
         ST.rem_req[(int)sb_remote_request(s, S.rem_station) & 15]++;
         break;
+    case E_SCONFIRM:
+        if (e->a < 700) { S.rx_x = 0.0f; S.rx_lever = 0.5f; }             /* the captain centres first (mostly) */
+        if (s->confirm.kind == CONF_NONE && S.uncrewed) {
+            C.confirm_free_t = S.t + 1u;
+            C.confirm_free_mode = sb_mode(s);
+        }
+        S.sconf_held = true;
+        S.sconf_release = S.t + 150u;
+        C.sconf_t = S.t;
+        break;
+    case E_MAN_REQ:
+        if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->a % 3);
+        s->helm = S.rem_station;
+        s->helm_local = false;
+        (void)sb_maneuver_request(s, S.rem_station);
+        break;
+    case E_JOY_PLUG: S.joy_fitted = !S.joy_fitted; joy_apply(); break;
     case E_REMOTE_ON: S.rem_stream = true; S.rem_stale = false; S.rx_x = e->f; S.rx_lever = 0.5f + 0.5f * e->g; break;
     case E_REMOTE_OFF:
         if (S.rem_stream && sb_mode(s) == MODE_REMOTE && s->remote.state == 1u) C.rem_check = true;
@@ -901,7 +982,12 @@ static void run_until(uint32_t until)
                 /* the hands: release buttons, remote stream */
                 if (S.confirm_held && AT_OR_AFTER(S.t, S.confirm_release)) { S.confirm_held = false; joy_apply(); }
                 if ((S.take_held || S.auto_held) && AT_OR_AFTER(S.t, S.btn_release)) { S.take_held = S.auto_held = false; joy_apply(); }
-                if (S.rem_stream && sb_mode(&S.sb) == MODE_REMOTE) {
+                if (S.sconf_held && AT_OR_AFTER(S.t, S.sconf_release)) S.sconf_held = false;
+                if (S.rem_stream) {                         /* every packet: the shore CONFIRM source */
+                    uint16_t age = S.rem_stale ? 900u : 40u;
+                    sb_shore_joy(&S.sb, S.rem_station, age, S.rx_x, 0.0f, S.rx_lever, true, S.sconf_held);
+                }
+                if (S.rem_stream && (sb_mode(&S.sb) == MODE_REMOTE || sb_mode(&S.sb) == MODE_MANEUVER)) {
                     uint16_t age = S.rem_stale ? 900u : 40u;
                     sb_remote_input(&S.sb, S.rem_station, ++S.rem_seq, age, 30u, S.rx_x, 0.0f, S.rx_lever, true);
                     if (!S.rem_stale) C.rem_last_fresh = S.t;
@@ -1012,7 +1098,7 @@ static void report(int episodes, double hours)
     printf("\n=== FAULT STORM: %d episodes, %.1f simulated hours ===\n", episodes, hours);
     for (int i = 1; i < NINV; i++) {
         if (i >= 14 && i <= 17) continue;
-        if (i == 21) continue;
+        if (i == 21 || i == 26) continue;
         if (i == 18) continue;
         printf("%-4s %-96s checks %9lu  fails %lu%s", ST.fails[i] ? "FAIL" : "PASS", INV_NAMES[i],
                (unsigned long)ST.checks[i], (unsigned long)ST.fails[i], "");

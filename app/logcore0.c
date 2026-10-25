@@ -19,6 +19,7 @@ static struct {
     uint16_t save_seq;
     uint32_t slam_impacts, slam_code;
     uint32_t nav_code, nav_hdg;
+    uint8_t  profile;
     uint32_t alarm_bits;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -273,6 +274,11 @@ static void changes(const sb_t *s)
         k.nav_code = code;
         k.nav_hdg = hd;
     }
+    /* operating profile (CREWED / UNCREWED): every change */
+    if (s->profile != k.profile)
+        ev(s, EV_PROFILE, s->profile, s->joy_probe.present && s->probe_ready && !s->joy_probe.fault ? 1 : 0,
+           s->profile_changes, 0);
+    k.profile = s->profile;
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
     k.save_seq = s->save.seq;

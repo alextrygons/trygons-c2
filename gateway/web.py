@@ -49,7 +49,7 @@ button{font-size:22px;padding:12px;margin:4px;border-radius:8px;border:2px solid
 <div id="answer" class="small"></div></div>
 <div class="small" id="age"></div>
 <script>
-const COL={STANDBY:'#606060',MANUAL:'#ff8c00',HDG_LOCK:'#007a00',AUTO:'#7a00a0',TRAINING:'#a06000',REMOTE_MANUAL:'#0033cc',BENCH_TEST:'#008080'};
+const COL={STANDBY:'#606060',MANUAL:'#ff8c00',HDG_LOCK:'#007a00',AUTO:'#7a00a0',TRAINING:'#a06000',REMOTE_MANUAL:'#0033cc',BENCH_TEST:'#008080',MANEUVER:'#b03060'};
 let last=0;
 async function poll(){
  try{const r=await fetch('api/status',{cache:'no-store'});const d=await r.json();last=Date.now();

@@ -158,7 +158,7 @@ def gateway_config(mtx, charts):
         "aurix": "tcp:127.0.0.1:5762", "set_clock": False,
         # the demo ground station counts as a SHORE station (only 127.0.0.2 is "on the boat")
         "stations": {"listen": "127.0.0.1", "port": 5761, "local_nets": ["127.0.0.2/32"]},
-        "users": {USER: {"role": "HELM", "pw": hash_pw(PASSWORD)},
+        "users": {USER: {"role": "HELM", "pw": hash_pw(PASSWORD), "licence": True},
                   "tool": {"role": "VIEWER", "pw": hash_pw(PASSWORD)}},
         "channels": {"driver": "sim", "starlink_status": False, "check_s": 1.0, "stable_s": 10.0},
         "cameras": {"enabled": True, "mediamtx_bin": mtx, "mediamtx_conf": os.path.join(RUN, "mediamtx.yml"),

@@ -26,6 +26,7 @@ mode.AUTO = AUTO
 mode.TRAINING = ΕΚΜΑΘΗΣΗ
 mode.REMOTE_MANUAL = ΤΗΛΕΧΕΙΡΙΣΜΟΣ
 mode.BENCH_TEST = ΔΟΚΙΜΗ ΠΑΓΚΟΥ
+mode.MANEUVER = ΜΑΝΟΥΒΡΑ
 
 # --- γράμματα σασμάν (μπάρα γκαζιού, τιμές): F πρόσω, N νεκρά, R όπισθεν --------
 gear.0 = N
@@ -61,6 +62,7 @@ alarm.collision_decision = ΚΙΝΔΥΝΟΣ ΣΥΓΚΡΟΥΣΗΣ - ΑΠΟΦΑΣ�
 alarm.shallow_water = ΡΗΧΑ ΝΕΡΑ
 alarm.obstacle_ahead = ΕΜΠΟΔΙΟ ΜΠΡΟΣΤΑ
 alarm.emergency_stop = ΚΟΜΒΙΟ ΕΚΤΑΚΤΗΣ ΑΝΑΓΚΗΣ
+alarm.profile = ΑΛΛΑΓΗ ΠΡΟΦΙΛ (ΜΕ / ΧΩΡΙΣ ΠΛΗΡΩΜΑ)
 alarm.no_data = ΚΑΝΕΝΑ ΣΤΟΙΧΕΙΟ ΑΠΟ ΤΟ ΣΚΑΦΟΣ
 
 # --- απαντήσεις σκάφους / gateway σε εντολή (κωδικοί ACK) -----------------------
@@ -102,6 +104,7 @@ result.111 = καμία απάντηση από τον οδηγό (λήξη χρ
 result.112 = χάθηκε η οθόνη οδηγού
 result.113 = λειτουργία ενός χειριστή: επιβεβαιώστε πρώτα στην οθόνη καπετάνιου
 result.114 = ρηχά νερά στη διαδρομή
+result.116 = χωρίς δίπλωμα: ΤΗΛΕΧΕΙΡΙΣΜΟΣ / ΜΑΝΟΥΒΡΑ μόνο για κυβερνήτη με δίπλωμα
 
 # --- περιγραφές εντολών: στις οθόνες στα ελληνικά· στο audit του gateway πάει
 #     πάντα η ΑΓΓΛΙΚΗ. Κρατήστε τα {ονόματα}. --------------------------------------
@@ -130,6 +133,8 @@ what.calib_start = έναρξη βαθμονόμησης
 what.calib_finish = τέλος βαθμονόμησης
 what.remote_request = αίτημα τηλεχειρισμού
 what.remote_release = λήξη τηλεχειρισμού
+what.maneuver_request = αίτημα μανούβρας
+what.maneuver_release = λήξη μανούβρας
 what.program_upload = αποστολή προγράμματος ({n} σημεία)
 what.bench_enter = δοκιμή πάγκου: είσοδος
 what.bench_leave = δοκιμή πάγκου: έξοδος
@@ -703,6 +708,7 @@ cap.joysticks = χειριστήρια: {list}
 cap.none_found = δεν βρέθηκε κανένα
 cap.remote_request = ΑΙΤΗΜΑ ΤΗΛΕΧΕΙΡΙΣΜΟΥ
 cap.remote_release = ΛΗΞΗ
+cap.maneuver_request = ΜΑΝΟΥΒΡΑ (ΠΡΟΒΛΗΤΑ / ΤΡΕΙΛΕΡ)
 cap.remote_help = Ο τηλεχειρισμός θέλει: το ΤΙΜΟΝΙ σε αυτόν τον σταθμό, το αίτημα παραπάνω και το CONFIRM του χειριστηρίου από το άτομο πάνω στο σκάφος μέσα σε 10 s. Το χειριστήριο του σκάφους και το STANDBY κερδίζουν πάντα.
 cap.remote_only_gw = Τηλεχειρισμός μόνο μέσω του gateway (gw:...)
 cap.rm_boat = σκάφος: {mode}, τηλεχειρισμός {state}{why}
@@ -1148,4 +1154,5 @@ say.alarm.collision_decision = Κίνδυνος σύγκρουσης, αποφα
 say.alarm.shallow_water = Προσοχή, ρηχά νερά μπροστά
 say.alarm.obstacle_ahead = Προσοχή, εμπόδιο μπροστά
 say.alarm.emergency_stop = Πατήθηκε το κομβίο έκτακτης ανάγκης
+say.alarm.profile = Άλλαξε το προφίλ λειτουργίας, ελέγξτε αν είναι με ή χωρίς πλήρωμα
 say.alarm.no_data = Κανένα στοιχείο από το σκάφος

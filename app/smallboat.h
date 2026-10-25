@@ -106,6 +106,15 @@
 #define SB_ALM_SHALLOW            0x2000000u /* SHALLOW WATER ahead (AUTO; gateway depth check) */
 #define SB_ALM_OBSTACLE           0x4000000u /* OBSTACLE AHEAD: camera obstacle detection (gateway vision) */
 #define SB_ALM_ESTOP              0x8000000u /* EMERGENCY STOP pressed (its contact; the switch also cuts power) */
+#define SB_ALM_PROFILE            0x10000000u /* PROFILE: CREWED / UNCREWED changed (STANDBY), or a joystick appeared while
+                                                 driving UNCREWED (-> STANDBY) */
+
+/* Operating profile (CLAUDE.md section A), autodetected on the AURIX, never from the PC:
+ * CREWED = an onboard joystick detected and passing its self-check, else UNCREWED.
+ * Latched at power-up; changes only in STANDBY (not stopping), after profile_switch_ms. */
+#define SB_PROFILE_DETECTING 0u     /* power-up: not decided yet (outputs not armed) */
+#define SB_PROFILE_CREWED    1u     /* onboard joystick wins, every CONFIRM on it */
+#define SB_PROFILE_UNCREWED  2u     /* onboard joystick ignored, CONFIRM on the shore captain's joystick */
 /* navigation advisories: alarm (sound, shown, logged) but they never lower the
  * power limit - their reaction is defined explicitly (AUTO: the gateway's
  * navreq slows down / steers; MANUAL / REMOTE: alarm only) */
@@ -304,6 +313,12 @@ typedef struct {
     uint32_t remote_max_age_ms;         /* data older / gap longer than this -> link lost (300) */
     uint32_t remote_max_lat_ms;         /* one-way latency above this -> link lost (400) */
     uint32_t remote_lost_ms;            /* lost this long -> STANDBY (5000) */
+
+    /* Operating profile CREWED / UNCREWED (autodetection) */
+    uint32_t profile_ok_ms;             /* joystick passing its self-check this long = detected (200) */
+    uint32_t profile_detect_ms;         /* not detected this long after power-up = UNCREWED (6000; > the USB
+                                           bridge start-up grace) */
+    uint32_t profile_switch_ms;         /* in STANDBY: the other state this long -> profile changes (10000) */
 } sb_config_t;
 
 /* One side (forward / reverse) of the non-returning throttle lever:
@@ -341,6 +356,18 @@ typedef struct {
     sb_lever_t lev;             /* the remote lever: neutral zone + pickup */
     uint32_t packets, ignored, requests, losses;
 } sb_remote_t;
+
+/* The HELM station's (shore captain's) joystick as a CONFIRM source in
+ * UNCREWED: every GW_RJOY packet of the HELM station, in any mode. */
+typedef struct {
+    uint8_t  station;           /* the station of the last packet */
+    uint32_t rx_ms;             /* when (0 = never) */
+    uint16_t age_ms;            /* data age on the gateway */
+    bool     centred;           /* stick centred (and lever in its neutral zone) */
+    bool     confirm;           /* CONFIRM held */
+    bool     confirm_edge;      /* pressed since the last control step */
+    uint32_t presses;
+} sb_shore_t;
 
 typedef struct {
     hal_gps_t last;         /* last message */
@@ -405,7 +432,8 @@ typedef enum {
     CONF_AUTO_RESUME,       /* resume at the active waypoint */
     CONF_RAISE_FWD,         /* raise the forward power limit one step */
     CONF_RAISE_REV,         /* raise the reverse power limit one step */
-    CONF_REMOTE             /* start REMOTE MANUAL (the shore joystick drives) */
+    CONF_REMOTE,            /* start REMOTE MANUAL (the shore joystick drives) */
+    CONF_MANEUVER           /* start MANEUVER (captain: steering + gear, throttle idle) */
 } confirm_kind_t;
 
 typedef struct {
@@ -485,7 +513,17 @@ typedef struct {
     uint8_t     helm;          /* HELM holder: SB_HELM_NONE / SB_HELM_USB / gateway station id */
     bool        helm_local;    /* the holder is on the boat (USB or boat LAN) */
     uint16_t    helm_changes;
-    joy_t       joy;           /* joystick (analog or USB, same interface) */
+    joy_t       joy;           /* joystick (analog or USB, same interface) - what control uses:
+                                  in UNCREWED fed "no joystick" (ignored completely) */
+    joy_t       joy_probe;     /* the same joystick, always fed: profile detection only */
+    bool        probe_ready;   /* its source is not starting up (USB bridge grace over) */
+    uint32_t    probe_ok_ms;   /* passing its self-check this long */
+    uint8_t     profile;       /* SB_PROFILE_ */
+    uint32_t    boot_ms;       /* sb_init time (profile detection window) */
+    uint16_t    profile_changes;
+    bool        profile_fault; /* UNCREWED: joystick appeared while driving (alarmed once) */
+    bool        joy_was_present; /* CREWED: the joystick was there last step (disappearing = fault) */
+    sb_shore_t  shore;         /* the HELM station's joystick (CONFIRM in UNCREWED) */
     joymap_t    jmap;          /* joystick source + USB button map (NV slot 4) */
     jb_t        jb;            /* USB joystick bridge input */
     sb_lever_t  lev;           /* USB throttle lever: mapping and pickup */
@@ -646,8 +684,27 @@ bool sb_joymap_set(sb_t *s, const joymap_t *m, bool save, jm_error_t *err);
 sb_result_t sb_bench(sb_t *s, uint8_t action, uint16_t arg);
 
 sb_result_t sb_remote_request(sb_t *s, uint8_t station);
+/* release: ends REMOTE or MANEUVER of that station (-> STANDBY) */
 sb_result_t sb_remote_release(sb_t *s, uint8_t station);
+/* input: also drives MANEUVER (X steering, Y / lever = gear F / N / R) */
 void sb_remote_input(sb_t *s, uint8_t station, uint16_t seq, uint16_t age_ms, uint16_t lat_ms,
                      float x, float y, float lever, bool has_lever);
+
+/* MANEUVER (captain only - the gateway checks the role + manual licence):
+ * the HELM station asks, CONFIRM within confirm_ms (onboard joystick in
+ * CREWED, the shore joystick in UNCREWED) starts it; from STANDBY / REMOTE.
+ * Throttle always idle; steering + gear from the remote joystick. */
+sb_result_t sb_maneuver_request(sb_t *s, uint8_t station);
+
+/* The HELM station's joystick (every GW_RJOY packet, any mode): the CONFIRM
+ * source in UNCREWED. x, y -1..1, lever 0..1. */
+void sb_shore_joy(sb_t *s, uint8_t station, uint16_t age_ms, float x, float y, float lever, bool has_lever,
+                  bool confirm);
+
+/* CONFIRM can be given now (CREWED: onboard joystick armed + no fault;
+ * UNCREWED: fresh packets from the HELM station's joystick). */
+bool sb_confirm_ready(const sb_t *s);
+
+const char *sb_profile_name(uint8_t profile);
 
 #endif /* SMALLBOAT_H */

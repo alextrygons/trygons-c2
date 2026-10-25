@@ -52,7 +52,8 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               106: "AURIX not connected", 107: "wrong session", 108: "bad command",
               109: "driver screen not open", 110: "rejected by the driver", 111: "no answer from the driver (timeout)",
               112: "driver screen lost", 113: "single-operator mode: confirm on the captain screen first",
-              114: "shallow water on the route"}
+              114: "shallow water on the route",
+              116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain"}
 READ_ONLY = (proto.T_PARAM_GET, proto.T_PROG_GET, proto.T_JOYMAP_GET, proto.T_JOY_RAW_GET)
 LITE_FIELDS = ("t_ms", "mode", "mode_name", "heading", "target", "throttle", "gear", "gps_fix", "compass_ok",
                "est_lat", "est_lon", "est_sog", "est_cog", "unc_m", "pos_source", "alarm_bits", "power_fwd",
@@ -92,6 +93,7 @@ class Station:
         self.driver_open = False            # this station shows the DRIVER screen (heartbeat, section F1)
         self.driver_seen = 0.0
         self.single_op = False              # SINGLE-OPERATOR mode (off again when it disconnects)
+        self.licence = False                # the user holds a manual licence (users.py)
 
     def send(self, obj):
         if self.closed:
@@ -118,7 +120,7 @@ class Station:
                 "ip": self.ip, "rtt_ms": None if self.rtt_ms is None else round(self.rtt_ms),
                 "tmode": self.tmode, "connected_s": int(time.time() - self.joined), "cmds": self.cmds,
                 "refused": self.refused, "kb_out": round(self.bytes_out / 1024),
-                "driver": self.driver_open, "single_op": self.single_op}
+                "driver": self.driver_open, "single_op": self.single_op, "licence": self.licence}
 
 
 class StationServer:
@@ -208,6 +210,7 @@ class StationServer:
             if sid is None:
                 raise ValueError("too many stations")
             st = Station(sid, m["user"], role, self.is_local(ip), ip, m.get("station"), writer)
+            st.licence = self.gw.users.licence(m["user"])
             if "ts" in m:
                 st.offsets.append(float(m["ts"]) - time.time())
             self.stations[sid] = st
@@ -301,7 +304,8 @@ class StationServer:
         st.rjoy_seq = seq
         age_ms = int(min(65535, max(0, age * 1000)))
         lat_ms = int(min(65535, (st.rtt_ms or 0) / 2))
-        flags = (1 if lever is not None else 0) | (2 if m.get("release") else 0)
+        # b2: the captain's CONFIRM button (counts on the AURIX only in UNCREWED)
+        flags = (1 if lever is not None else 0) | (2 if m.get("release") else 0) | (4 if m.get("confirm") else 0)
         lv = int(min(1000, max(0, float(lever if lever is not None else 0.5) * 1000)))
         self.gw.aurix.send(proto.T_GW_RJOY, struct.pack(
             "<BHHHhhHBB", st.id, seq, age_ms, lat_ms, int(max(-1000, min(1000, x * 1000))),
@@ -372,6 +376,8 @@ class StationServer:
         st.last_seq = seq
         if not self.gw.aurix.connected or len(payload) > 194:
             return self.refuse(st, seq, ftype, 106 if not self.gw.aurix.connected else 108)
+        if ftype in (proto.T_REMOTE, proto.T_MANEUVER) and payload[:1] == bytes([0]) and not st.licence:
+            return self.refuse(st, seq, ftype, 116)          # manual driving: a licensed user only
         if self.prog_check and ftype in (proto.T_PROG_BEGIN, proto.T_PROG_WP, proto.T_PROG_COMMIT,
                                          proto.T_AUTO_START, proto.T_AUTO_RESUME):
             why = self.prog_check(st, ftype, payload)

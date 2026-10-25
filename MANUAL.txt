@@ -691,14 +691,16 @@ MODES
   TRAINING   outboard calibration, started from STANDBY by the PC.
 
   Mode changes allowed (all others are refused and logged):
-     from \ to   STANDBY MANUAL HDG_LOCK AUTO TRAINING REMOTE
-     STANDBY        -      yes     yes    yes    yes     yes
-     MANUAL        yes      -      yes    yes    no      no
-     HDG_LOCK      yes     yes      -     yes    no      yes
-     AUTO          yes     yes     yes     -     no      yes
-     TRAINING      yes     yes     no     no      -      no
-     REMOTE        yes     yes     no     no     no       -
-  (REMOTE = REMOTE MANUAL, the shore joystick, chapter 9 part D)
+     from \ to   STANDBY MANUAL HDG_LOCK AUTO TRAINING REMOTE MANEUVER
+     STANDBY        -      yes     yes    yes    yes     yes     yes
+     MANUAL        yes      -      yes    yes    no      no      no
+     HDG_LOCK      yes     yes      -     yes    no      yes     no
+     AUTO          yes     yes     yes     -     no      yes     no
+     TRAINING      yes     yes     no     no      -      no      no
+     REMOTE        yes     yes     no     no     no       -      yes
+     MANEUVER      yes     yes     no     no     no      yes      -
+  (REMOTE = REMOTE MANUAL, the shore joystick, chapter 9 part D;
+   MANEUVER = steering + gear at idle for the dock / trailer, chapter 7A)
   Extra rules: only the joystick enters MANUAL; MANUAL is left only with
   the stick centred; AUTO needs compass, GPS, a valid program and CONFIRM;
   TRAINING only from STANDBY by the PC; nothing but STANDBY until the
@@ -749,6 +751,57 @@ AUTO PROGRAM - HOW TO
   3. Raise the power limit if you want more than ~7 kn (chapter 10).
   4. AUTO START, then CONFIRM on the joystick within 10 s.
 
+
+-------------------------------------------------------------------------------
+7A. CREWED / UNCREWED PROFILE AND MANEUVER
+-------------------------------------------------------------------------------
+THE PROFILE (decided by the boat, never by a PC)
+  CREWED     an onboard joystick (analog, or T.16000M + TWCS through the
+             Teensy) was found at power-up and passed its self-check.
+             Everything works as in chapter 7: the onboard joystick wins,
+             every CONFIRM is pressed on the onboard joystick.
+  UNCREWED   no onboard joystick at power-up (or it failed its self-check
+             within 6 s). The onboard joystick is ignored completely: no
+             MANUAL, no CONFIRM, no joystick buttons; the panel HDG LOCK and
+             course buttons do nothing (nobody is on board). Every CONFIRM
+             (power raise, AUTO start / resume, REMOTE MANUAL, MANEUVER) is
+             pressed on the shore captain's joystick instead: same rules -
+             stick centred, within 10 s, only for a pending request.
+  Both profiles: the STANDBY button and the emergency stop always work.
+  The profile is shown on every screen and in the log.
+  It changes only in STANDBY with the boat stopped, and only one way:
+  a joystick plugged in on board (and passing its self-check for 10 s)
+  makes an UNCREWED boat CREWED. A CREWED boat whose joystick fails or is
+  unplugged stays CREWED (that is a JOYSTICK FAULT: idle + neutral,
+  STANDBY, alarm). UNCREWED needs a power-up without the joystick. A
+  joystick that appears while an UNCREWED boat is driving is a fault:
+  STANDBY + alarm PROFILE CHANGED. After every profile change the power
+  limit is back at 30 % / 5 % and the outputs re-arm (CREWED: stick centred).
+
+  OPERATING RULE: UNPLUG THE ONBOARD JOYSTICK BEFORE ANY UNCREWED
+  OPERATION, and check that every screen shows UNCREWED before the boat
+  leaves the dock. With someone on board: joystick plugged in, CREWED.
+  The FIRST TEST build (chapter 6A) is always CREWED.
+
+MANEUVER (trailer, ramp, dock approach) - captain only
+  * Steering and gear only: the captain's joystick sideways = outboard
+    angle, the lever (or stick forward / back) = FORWARD / NEUTRAL /
+    REVERSE. The throttle is ALWAYS at idle - no rpm control at all.
+  * Gear changes go idle -> neutral -> gear, as always.
+  * Start: button MANEUVER (DOCK / TRAILER) on the captain's station (it
+    must hold HELM and the user must hold a manual licence), then CONFIRM
+    within 10 s (onboard joystick when CREWED, the captain's joystick when
+    UNCREWED). From STANDBY or REMOTE MANUAL.
+  * Ends: RELEASE, STANDBY button, the onboard joystick (CREWED), any
+    fault, HELM lost. Joystick data old / missing: neutral + course held,
+    STANDBY after 5 s (as REMOTE MANUAL).
+  * Not in the FIRST TEST build.
+
+THE MANUAL LICENCE
+  Each user in the gateway's user database may have "licence": true (a
+  manual / boat driving licence). Only such a user can ask for REMOTE
+  MANUAL or MANEUVER; others get "no manual licence" (code 116).
+  Add it with: python3 users.py add NAME HELM licence
 
 -------------------------------------------------------------------------------
 8. THE USB JOYSTICK (THRUSTMASTER T.16000M + TWCS)

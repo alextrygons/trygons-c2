@@ -8,14 +8,17 @@ shore_joystick.json (next to app.py, written by the ground station):
   {"steer": {"dev": 0, "axis": "X", "invert": false},
    "thr":   {"dev": 1, "axis": "Z", "invert": true, "lever": true},
    "release_button": {"dev": 0, "button": 1},
-   "save_button": {"dev": 0, "button": 3}}
+   "save_button": {"dev": 0, "button": 3},
+   "confirm_button": {"dev": 1, "button": 4}}
+"confirm_button": the captain's CONFIRM (UNCREWED boat: power raise, AUTO / REMOTE /
+MANEUVER start are confirmed here instead of on the onboard joystick).
 "save_button": video SAVE on the gateway (works any time, not only while driving).
 "lever": true = non-returning throttle lever (TWCS, 0 back .. 1 forward);
 false = spring-centred stick Y (-1 .. +1).
 
-RemoteSender sends {"t":"rjoy", "seq", "ts", "x", "lever" | "y"} at 30 Hz
-through the gateway. The AURIX only uses it while REMOTE MANUAL is on and
-this station holds HELM.
+RemoteSender sends {"t":"rjoy", "seq", "ts", "x", "lever" | "y", "release", "confirm"}
+at 30 Hz through the gateway. The AURIX only uses it while this station holds
+HELM: steering / throttle in REMOTE MANUAL and MANEUVER, CONFIRM in UNCREWED.
 """
 import ctypes
 import json
@@ -29,7 +32,8 @@ CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shore_joystic
 DEFAULT = {"steer": {"dev": 0, "axis": "X", "invert": False},
            "thr": {"dev": 1, "axis": "Z", "invert": True, "lever": True},
            "release_button": {"dev": 0, "button": 1},
-           "save_button": {"dev": 0, "button": 3}}
+           "save_button": {"dev": 0, "button": 3},
+           "confirm_button": {"dev": 1, "button": 4}}
 
 
 # --- reading ---------------------------------------------------------------------------
@@ -164,10 +168,11 @@ def to_remote(js, cfg):
         out["lever"] = max(0.0, min(1.0, (v + 1.0) / 2.0))
     else:
         out["y"] = max(-1.0, min(1.0, v))
-    rb = cfg.get("release_button")
-    if rb:
-        r = js.read(rb["dev"])
-        out["release"] = bool(r["ok"] and r["buttons"] & (1 << (rb["button"] - 1)))
+    for key, name in (("release_button", "release"), ("confirm_button", "confirm")):
+        rb = cfg.get(key)
+        if rb:
+            r = js.read(rb["dev"])
+            out[name] = bool(r["ok"] and r["buttons"] & (1 << (rb["button"] - 1)))
     return out
 
 

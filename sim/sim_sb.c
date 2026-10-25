@@ -4732,11 +4732,15 @@ static void usb_joystick_tests(void)
         sim_hal_bridge_fault(SIM_BR_STOP);           /* bridge never sends */
         (void)sb_joymap_set(&y.sb, &m, false, &e);
         sbsim_run(&y, 7000u, NULL, NULL);
-        bool dead = y.sb.joy.fault && (y.sb.alarm_bits & SB_ALM_JOY_FAULT) && y.sb.joy.fault_axis == JOY_WHY_TIMEOUT;
-        snprintf(d, sizeof d, "USB enumeration (3 s): no fault, no alarm, not armed %s; joysticks up: armed %s; "
-                 "bridge silent 5 s after power-up: JOYSTICK FAULT %s", quiet ? "yes" : "NO", up ? "yes" : "NO",
+        /* never seen: the self-check fails (timeout) -> UNCREWED, the joystick is ignored */
+        bool dead = y.sb.joy_probe.fault && y.sb.joy_probe.fault_axis == JOY_WHY_TIMEOUT &&
+                    y.sb.profile == SB_PROFILE_UNCREWED && !y.sb.joy.present;
+        snprintf(d, sizeof d, "USB enumeration (3 s): no fault, no alarm, not armed %s; joysticks up: armed %s (CREWED %s); "
+                 "bridge silent after power-up: self-check fault (timeout) -> UNCREWED, joystick ignored %s",
+                 quiet ? "yes" : "NO", up ? "yes" : "NO", x.sb.profile == SB_PROFILE_CREWED ? "yes" : "NO",
                  dead ? "yes" : "NO");
-        test_report("U14 bridge start-up: quiet while USB enumerates, fault if it never comes", quiet && up && dead, d);
+        test_report("U14 bridge start-up: quiet while USB enumerates; never comes -> UNCREWED", quiet && up && dead &&
+                    x.sb.profile == SB_PROFILE_CREWED, d);
     }
 
     /* U15 latency: TAKE on the joystick -> MANUAL on the AURIX, simulated
@@ -5261,6 +5265,7 @@ static void helm_tests(void)
 typedef struct {
     pisim_t  p;
     bool     rj_on;
+    bool     conf;              /* the shore joystick's CONFIRM held (flags b2) */
     uint8_t  st;
     uint16_t seq;
     float    x, y, lever;
@@ -5292,7 +5297,7 @@ static void rj_send(rjsim_t *r, uint8_t flags)
 static void rj_hook(sbsim_t *x, void *ctx)
 {
     rjsim_t *r = (rjsim_t *)ctx;
-    if (r->rj_on) rj_send(r, 0u);
+    if (r->rj_on) rj_send(r, r->conf ? 4u : 0u);
     pi_hook(x, &r->p);
     if (sb_mode(&x->sb) == MODE_REMOTE) {
         float t = sim_hal_throttle();
@@ -5581,6 +5586,352 @@ static void remote_tests(void)
                      mode_name(sb_mode(&x.sb)));
         }
         test_report("RD7 remote driving ends: released, STANDBY button, HELM taken on board -> STANDBY", ok == 3, t);
+    }
+}
+
+/* ------------------- CREWED / UNCREWED profile, MANEUVER (CLAUDE.md A + C) -- */
+
+/* Power-up with (crewed) or without (uncrewed) the onboard joystick, a Pi on
+ * the gateway UART, station 2's remote joystick ready (not sending yet). */
+static void crew_init(sbsim_t *x, rjsim_t *r, uint32_t seed, bool crewed, const sb_config_t *cfg)
+{
+    memset(r, 0, sizeof *r);
+    sbsim_init(x, seed, 90.0f, 0.0f, cfg);
+    if (!crewed) {
+        sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);
+        if (s_bridge) sim_hal_bridge_fault(SIM_BR_STOP);
+    }
+    pisim_init(&r->p, x, 921600u);
+    r->st = 2u;
+    r->lever = 0.5f;
+    r->has_lever = true;
+    r->age_ms = 60u;
+    r->lat_ms = 40u;
+    sbsim_run(x, 7000u, rj_hook, r);
+}
+
+/* the onboard joystick plugged in (centred) / back to normal after a test */
+static void crew_plug(void)
+{
+    sim_hal_bridge_fault(0u);
+    joy_set(0.0f, 0.0f, false, false);
+}
+
+/* CONFIRM on the shore captain's joystick (0.15 s). True if accepted. */
+static bool shore_confirm(sbsim_t *x, rjsim_t *r)
+{
+    uint32_t before = x->sb.confirm.accepted;
+    r->conf = true;
+    sbsim_run(x, x->t + 150u, rj_hook, r);
+    r->conf = false;
+    sbsim_run(x, x->t + 100u, rj_hook, r);
+    return x->sb.confirm.accepted > before;
+}
+
+static bool onboard_confirm(sbsim_t *x, rjsim_t *r)
+{
+    uint32_t before = x->sb.confirm.accepted;
+    if (s_usb.on) { s_usb.b1 |= 8u; usb_send(); }
+    else sim_hal_joystick_confirm(true);
+    sbsim_run(x, x->t + 120u, rj_hook, r);
+    if (s_usb.on) { s_usb.b1 &= ~8u; usb_send(); }
+    else sim_hal_joystick_confirm(false);
+    sbsim_run(x, x->t + 100u, rj_hook, r);
+    return x->sb.confirm.accepted > before;
+}
+
+static void crew_tests(void)
+{
+    char d[900];
+    const uint8_t TAKE = 0u, ASK = 0u;
+    printf("\n=== CREWED / UNCREWED profile, MANEUVER ===\n");
+
+    /* PR1 autodetection at power-up (and FIRST TEST always CREWED) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        crew_init(&x, &r, 1201u, true, NULL);
+        bool crewed = x.sb.profile == SB_PROFILE_CREWED && x.sb.armed;
+        sbsim_init(&x, 1202u, 90.0f, 0.0f, NULL);
+        sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);
+        if (s_bridge) sim_hal_bridge_fault(SIM_BR_STOP);
+        sbsim_run(&x, 5000u, NULL, NULL);
+        bool detecting = x.sb.profile == SB_PROFILE_DETECTING && !x.sb.armed;
+        sbsim_run(&x, 7000u, NULL, NULL);
+        bool unc = x.sb.profile == SB_PROFILE_UNCREWED && x.sb.armed && !x.sb.joy.present;
+        sb_config_t c;
+        sb_default_config(&c);
+        c.first_test = true;
+        sbsim_init(&x, 1203u, 90.0f, 0.0f, &c);
+        sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);
+        sbsim_run(&x, 7000u, NULL, NULL);
+        bool ft = x.sb.profile == SB_PROFILE_CREWED;
+        crew_plug();
+        snprintf(d, sizeof d, "joystick at power-up: CREWED + armed %s; none: still detecting + not armed at 5 s %s, "
+                 "UNCREWED + armed (joystick ignored) at 7 s %s; FIRST TEST without a joystick: CREWED %s",
+                 crewed ? "yes" : "NO", detecting ? "yes" : "NO", unc ? "yes" : "NO", ft ? "yes" : "NO");
+        test_report("PR1 profile autodetected at power-up: joystick -> CREWED, none -> UNCREWED; FIRST TEST CREWED",
+                    crewed && detecting && unc && ft, d);
+    }
+
+    /* PR2 UNCREWED: the onboard joystick has no effect; STANDBY button + e-stop still work */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        crew_init(&x, &r, 1204u, false, NULL);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        r.rj_on = true;
+        sbsim_run(&x, x.t + 500u, rj_hook, &r);
+        press(&x, HAL_BTN_HDG_LOCK);
+        bool no_hdg = sb_mode(&x.sb) == MODE_STANDBY;
+        uint8_t ask = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        sim_hal_joystick_confirm(true);                    /* someone presses the onboard CONFIRM: nothing */
+        sbsim_run(&x, x.t + 200u, rj_hook, &r);
+        sim_hal_joystick_confirm(false);
+        sbsim_run(&x, x.t + 200u, rj_hook, &r);
+        bool not_onboard = sb_mode(&x.sb) == MODE_STANDBY && x.sb.confirm.kind == CONF_REMOTE;
+        bool sc = shore_confirm(&x, &r);
+        bool remote = sb_mode(&x.sb) == MODE_REMOTE;
+        sbsim_run(&x, x.t + 2000u, rj_hook, &r);
+        /* a joystick appears on board while driving and is pushed hard: never MANUAL, a profile fault */
+        crew_plug();                                       /* (USB: a latched fault clears after 2 s centred) */
+        bool manual = false;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 4000u) {
+            if (x.t >= t0 + 150u) joy_set(0.9f, 0.9f, true, false);
+            if (s_bridge && x.t < t0 + 2500u) joy_set(0.0f, 0.0f, false, false);
+            sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);
+            if (sb_mode(&x.sb) == MODE_MANUAL) manual = true;
+        }
+        bool fault = sb_mode(&x.sb) == MODE_STANDBY && (x.sb.alarm_bits & SB_ALM_PROFILE) &&
+                     auto_end_why(&x) == WHY_PROFILE && x.sb.profile == SB_PROFILE_UNCREWED;
+        /* the STANDBY button in REMOTE */
+        static sbsim_t y;
+        static rjsim_t q;
+        crew_init(&y, &q, 1205u, false, NULL);
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        q.rj_on = true;
+        sbsim_run(&y, y.t + 300u, rj_hook, &q);
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        shore_confirm(&y, &q);
+        bool rem2 = sb_mode(&y.sb) == MODE_REMOTE;
+        press(&y, HAL_BTN_STANDBY);
+        bool sbb = sb_mode(&y.sb) == MODE_STANDBY;
+        crew_plug();
+        snprintf(d, sizeof d, "UNCREWED: panel HDG LOCK ignored %s; REMOTE asked %u, onboard CONFIRM ignored %s, shore "
+                 "CONFIRM %s -> REMOTE %s; joystick plugged in + pushed while driving: MANUAL %s, STANDBY + PROFILE alarm "
+                 "(why %s) %s, still UNCREWED; STANDBY button in REMOTE %s -> %s",
+                 no_hdg ? "yes" : "NO", ask, not_onboard ? "yes" : "NO", sc ? "accepted" : "NO", remote ? "yes" : "NO",
+                 manual ? "YES" : "never", mode_reason_name(auto_end_why(&x)), fault ? "yes" : "NO",
+                 rem2 ? "yes" : "NO", mode_name(sb_mode(&y.sb)));
+        test_report("PR2 UNCREWED: the onboard joystick (stick, CONFIRM, buttons) has no effect; STANDBY button wins",
+                    no_hdg && ask == PROTO_R_OK && not_onboard && sc && remote && !manual && fault && rem2 && sbb, d);
+    }
+
+    /* PR3 UNCREWED power raise: code + the shore captain's CONFIRM, same rules */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        crew_init(&x, &r, 1206u, false, NULL);
+        uint16_t code = 0u;
+        sb_result_t no_shore = sb_power_code(&x.sb, 0u, &code);     /* no shore joystick yet */
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        r.rj_on = true;
+        sbsim_run(&x, x.t + 500u, rj_hook, &r);
+        sb_alarm_ack(&x.sb);
+        (void)sb_power_code(&x.sb, 0u, &code);
+        sb_result_t rq = sb_power_raise(&x.sb, 0u, code);
+        bool onb = onboard_confirm(&x, &r);
+        bool c50 = shore_confirm(&x, &r) && x.sb.plim.fwd_pct == 50.0f;
+        (void)sb_power_code(&x.sb, 0u, &code);
+        (void)sb_power_raise(&x.sb, 0u, code);
+        sbsim_run(&x, x.t + 10500u, rj_hook, &r);                  /* too late */
+        bool late = !shore_confirm(&x, &r) && x.sb.plim.fwd_pct == 50.0f;
+        (void)sb_power_code(&x.sb, 0u, &code);
+        (void)sb_power_raise(&x.sb, 0u, code);
+        r.x = 0.6f;                                                /* shore stick held */
+        sbsim_run(&x, x.t + 200u, rj_hook, &r);
+        bool held = !shore_confirm(&x, &r) && x.sb.plim.fwd_pct == 50.0f;
+        r.x = 0.0f;
+        (void)sb_power_code(&x.sb, 0u, &code);
+        (void)sb_power_raise(&x.sb, 0u, code);
+        bool c75 = shore_confirm(&x, &r) && x.sb.plim.fwd_pct == 75.0f;
+        press(&x, HAL_BTN_STANDBY);
+        bool drop = x.sb.plim.fwd_pct == 30.0f;
+        crew_plug();
+        snprintf(d, sizeof d, "without shore joystick: code %d (2 = not ready); raise asked %d; onboard CONFIRM %s; "
+                 "shore CONFIRM -> 50 %% %s; late (10.5 s) refused %s; shore stick held refused %s; next step 75 %% %s; "
+                 "STANDBY button -> 30 %% %s",
+                 (int)no_shore, (int)rq, onb ? "ACCEPTED" : "ignored", c50 ? "yes" : "NO", late ? "yes" : "NO",
+                 held ? "yes" : "NO", c75 ? "yes" : "NO", drop ? "yes" : "NO");
+        test_report("PR3 UNCREWED power raise: code + shore joystick CONFIRM in 10 s, one step, centred; lowering instant",
+                    no_shore == SB_ERR_JOY_NOT_READY && rq == SB_OK && !onb && c50 && late && held && c75 && drop, d);
+    }
+
+    /* PR4 the profile changes only in STANDBY (stopped): UNCREWED -> CREWED when a joystick is
+     * plugged in; a CREWED joystick unplugged stays CREWED */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        crew_init(&x, &r, 1207u, false, NULL);
+        crew_plug();
+        sbsim_run(&x, x.t + 5000u, rj_hook, &r);
+        bool not_yet = x.sb.profile == SB_PROFILE_UNCREWED;
+        sbsim_run(&x, x.t + 9000u, rj_hook, &r);
+        bool crewed = x.sb.profile == SB_PROFILE_CREWED && (x.sb.alarm_bits & SB_ALM_PROFILE) &&
+                      x.sb.profile_changes >= 2u;
+        static sbsim_t y;
+        static rjsim_t q;
+        crew_init(&y, &q, 1208u, true, NULL);
+        joy_set(0.0f, 0.5f, false, false);                    /* driving in MANUAL ... */
+        sbsim_run(&y, y.t + 3000u, rj_hook, &q);
+        bool man = sb_mode(&y.sb) == MODE_MANUAL;
+        sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);   /* ... and it is unplugged */
+        if (s_bridge) sim_hal_bridge_fault(SIM_BR_STOP);
+        sbsim_run(&y, y.t + 400u, rj_hook, &q);
+        bool gone = sb_mode(&y.sb) == MODE_STANDBY && (y.sb.alarm_bits & SB_ALM_JOY_FAULT);
+        sbsim_run(&y, y.t + 30000u, rj_hook, &q);
+        bool stays = y.sb.profile == SB_PROFILE_CREWED && man && gone;
+        crew_plug();
+        snprintf(d, sizeof d, "UNCREWED, joystick plugged in at STANDBY: after 5 s still UNCREWED %s, after 14 s CREWED + "
+                 "PROFILE alarm %s; CREWED joystick unplugged while driving: STANDBY + JOYSTICK FAULT, "
+                 "then 30 s: still CREWED %s",
+                 not_yet ? "yes" : "NO", crewed ? "yes" : "NO", stays ? "yes" : "NO");
+        test_report("PR4 profile changes only in STANDBY: UNCREWED -> CREWED when plugged in; CREWED never by unplugging",
+                    not_yet && crewed && stays, d);
+    }
+
+    /* MV1 MANEUVER: HELM request + CONFIRM; throttle always idle, gear F / N / R from the lever, steering */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        crew_init(&x, &r, 1210u, true, NULL);
+        power_full(&x);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        r.rj_on = true;
+        uint8_t ask = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        bool waits = sb_mode(&x.sb) == MODE_STANDBY;
+        bool cf = onboard_confirm(&x, &r);
+        bool on = sb_mode(&x.sb) == MODE_MANEUVER;
+        float thr_max = 0.0f;
+        bool gf = false, gr = false, gn = false;
+        int under0 = x.w.shift_under_load;
+        rj_lever(&x, &r, 1.0f, 2.0f);                               /* full forward */
+        for (int i = 0; i < 200; i++) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);
+            thr_max = fmaxf(thr_max, sim_hal_throttle());
+        }
+        gf = gear_is(&x.sb.gear, GEAR_F);
+        float v_f = x.w.speed_kn;
+        r.x = 1.0f;
+        for (int i = 0; i < 80; i++) { sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r); thr_max = fmaxf(thr_max, sim_hal_throttle()); }
+        float est = x.sb.ap.est_angle;
+        r.x = 0.0f;
+        rj_lever(&x, &r, 0.0f, 2.0f);                               /* full reverse */
+        for (int i = 0; i < 200; i++) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);
+            thr_max = fmaxf(thr_max, sim_hal_throttle());
+        }
+        gr = gear_is(&x.sb.gear, GEAR_R);
+        rj_lever(&x, &r, 0.5f, 2.0f);
+        for (int i = 0; i < 100; i++) { sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r); thr_max = fmaxf(thr_max, sim_hal_throttle()); }
+        gn = gear_is(&x.sb.gear, GEAR_N);
+        bool still = sb_mode(&x.sb) == MODE_MANEUVER;
+        snprintf(d, sizeof d, "asked %u, waits for CONFIRM %s, CONFIRM %s -> MANEUVER %s; power limit %.0f %%, lever full "
+                 "forward: gear F %s (%.1f kn at idle), full right: outboard %+.1f deg; full reverse: gear R %s; neutral "
+                 "zone: N %s; highest throttle %.2f %%; gear changes under load %d",
+                 ask, waits ? "yes" : "NO", cf ? "accepted" : "NO", on ? "yes" : "NO", x.sb.plim.fwd_pct,
+                 gf ? "yes" : "NO", v_f, est, gr ? "yes" : "NO", gn ? "yes" : "NO", thr_max,
+                 x.w.shift_under_load - under0);
+        test_report("MV1 MANEUVER: request + CONFIRM; throttle always idle, gear F / N / R from the lever, steering",
+                    ask == PROTO_R_OK && waits && cf && on && gf && est > 10.0f && gr && gn && still &&
+                    thr_max <= 0.01f && x.w.shift_under_load == under0, d);
+    }
+
+    /* MV2 refusals; data loss; the onboard joystick wins (CREWED); from REMOTE the throttle goes to idle */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static link_t usb;
+        crew_init(&x, &r, 1211u, true, NULL);
+        uint8_t no_helm = pi_cmd(&x, &r.p, 3u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        link_init(&usb, &x.sb);
+        uint8_t by_usb = usb_cmd(&x, &usb, PROTO_T_MANEUVER, &ASK, 1u);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        hdg_lock(&x);
+        uint8_t in_hdg = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, x.t + 3000u, rj_hook, &r);
+        /* REMOTE at speed -> MANEUVER: throttle to idle */
+        r.rj_on = true;
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        onboard_confirm(&x, &r);
+        rj_lever(&x, &r, 0.5f, 2.0f);
+        rj_lever(&x, &r, 1.0f, 0.5f);
+        sbsim_run(&x, x.t + 8000u, rj_hook, &r);
+        float thr_rem = sim_hal_throttle();
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        bool cf = onboard_confirm(&x, &r);
+        sbsim_run(&x, x.t + 2500u, rj_hook, &r);
+        bool idle = sb_mode(&x.sb) == MODE_MANEUVER && sim_hal_throttle() <= 0.01f;
+        /* data gap: neutral, STANDBY after 5 s */
+        r.rj_on = false;
+        sbsim_run(&x, x.t + 600u, rj_hook, &r);
+        bool lost = x.sb.remote.state == SB_REMOTE_LOST && x.sb.gear_demand == GEAR_N;
+        sbsim_run(&x, x.t + 5200u, rj_hook, &r);
+        bool sb5 = sb_mode(&x.sb) == MODE_STANDBY;
+        /* the onboard joystick takes over */
+        r.rj_on = true;
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        onboard_confirm(&x, &r);
+        bool on2 = sb_mode(&x.sb) == MODE_MANEUVER;
+        joy_set(0.7f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        bool man = sb_mode(&x.sb) == MODE_MANUAL;
+        joy_set(0.0f, 0.0f, false, false);
+        /* FIRST TEST: never */
+        static sbsim_t y;
+        static rjsim_t q;
+        sb_config_t c;
+        sb_default_config(&c);
+        c.first_test = true;
+        crew_init(&y, &q, 1212u, true, &c);
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        q.rj_on = true;
+        uint8_t ft = pi_cmd(&y, &q.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        bool ftc = onboard_confirm(&y, &q);
+        snprintf(d, sizeof d, "no HELM %u (21); USB laptop %u (5); in HDG LOCK %u (7); REMOTE at %.1f %% -> MANEUVER "
+                 "(CONFIRM %s): idle after 2.5 s %s; data gap: LOST + neutral %s, STANDBY after 5 s %s; onboard stick "
+                 "-> MANUAL %s (was MANEUVER %s); FIRST TEST: asked %u (7), CONFIRM %s, mode %s",
+                 no_helm, by_usb, in_hdg, thr_rem, cf ? "yes" : "NO", idle ? "yes" : "NO", lost ? "yes" : "NO",
+                 sb5 ? "yes" : "NO", man ? "yes" : "NO", on2 ? "yes" : "NO", ft, ftc ? "ACCEPTED" : "nothing",
+                 mode_name(sb_mode(&y.sb)));
+        test_report("MV2 MANEUVER refused without HELM / from USB / HDG LOCK / FIRST TEST; data loss -> neutral, "
+                    "STANDBY; onboard joystick wins",
+                    no_helm == PROTO_R_NOT_HELM && by_usb == PROTO_R_NOT_ALLOWED && in_hdg == PROTO_R_WRONG_MODE &&
+                    thr_rem > 5.0f && cf && idle && lost && sb5 && on2 && man && ft == PROTO_R_WRONG_MODE && !ftc &&
+                    sb_mode(&y.sb) == MODE_STANDBY, d);
+    }
+
+    /* MV3 UNCREWED MANEUVER: confirmed on the shore joystick */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        crew_init(&x, &r, 1213u, false, NULL);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        r.rj_on = true;
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        uint8_t ask = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        bool cf = shore_confirm(&x, &r);
+        rj_lever(&x, &r, 1.0f, 2.0f);
+        float thr_max = 0.0f;
+        for (int i = 0; i < 100; i++) { sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r); thr_max = fmaxf(thr_max, sim_hal_throttle()); }
+        bool on = sb_mode(&x.sb) == MODE_MANEUVER && gear_is(&x.sb.gear, GEAR_F);
+        crew_plug();
+        snprintf(d, sizeof d, "UNCREWED: asked %u, shore CONFIRM %s, MANEUVER + forward gear %s, highest throttle %.2f %%",
+                 ask, cf ? "accepted" : "NO", on ? "yes" : "NO", thr_max);
+        test_report("MV3 UNCREWED MANEUVER: confirmed on the shore captain's joystick, throttle idle",
+                    ask == PROTO_R_OK && cf && on && thr_max <= 0.01f, d);
     }
 }
 
@@ -6697,10 +7048,10 @@ static void gps_retrust_tests(void)
 
 /* ------------------------------------ R9: arming needs the joystick seen -- */
 
-/* Power-up with no joystick seen (analog not detected / USB bridge not yet
- * sending): the outputs stay unarmed (NOT ARMED alarm after 3 s) until the
- * joystick appears centred. A boat configured without a joystick
- * (cfg.joy_optional) arms without it. */
+/* Power-up with no joystick seen (analog not detected / USB bridge not
+ * sending): not armed (and no alarm) during the profile detection window,
+ * then UNCREWED (CLAUDE.md section A): the outputs arm without it. A
+ * joystick seen: CREWED, arms only once it is centred. */
 static void arm_joystick_tests(void)
 {
     char d[500];
@@ -6708,24 +7059,21 @@ static void arm_joystick_tests(void)
     static sbsim_t x;
     sbsim_init(&x, 281u, 0.0f, 0.0f, NULL);
     sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);   /* (bridge: no device frames) */
+    if (s_bridge) sim_hal_bridge_fault(SIM_BR_STOP);
     sbsim_run(&x, 5000u, NULL, NULL);
-    bool unarmed = !x.sb.armed, alarm = (x.sb.alarm_bits & SB_ALM_NOT_ARMED) != 0u;
+    bool unarmed = !x.sb.armed && x.sb.profile == SB_PROFILE_DETECTING, alarm = (x.sb.alarm_bits & SB_ALM_NOT_ARMED) != 0u;
+    sbsim_run(&x, 8000u, NULL, NULL);
+    bool unc = x.sb.profile == SB_PROFILE_UNCREWED && x.sb.armed && !(x.sb.alarm_bits & SB_ALM_NOT_ARMED);
+    sim_hal_bridge_fault(0u);
     sbsim_init(&x, 282u, 0.0f, 0.0f, NULL);              /* joystick fitted and centred from the start */
     sbsim_run(&x, 3000u, NULL, NULL);
-    bool armed_with = x.sb.armed;
-    sb_config_t c;
-    sb_default_config(&c);
-    c.joy_optional = true;
-    sbsim_init(&x, 283u, 0.0f, 0.0f, &c);
-    sim_hal_set_joystick(false, joy_raw(0.0f), joy_raw(0.0f), false, false);
-    sbsim_run(&x, 3000u, NULL, NULL);
-    bool armed_opt = x.sb.armed;
-    snprintf(d, sizeof d, "no joystick seen for 5 s: armed %s, NOT ARMED alarm %s; joystick fitted + centred: armed %s; "
-             "boat configured without a joystick: armed %s%s",
-             unarmed ? "no" : "YES", alarm ? "yes" : "NO", armed_with ? "yes" : "NO", armed_opt ? "yes" : "NO",
-             s_bridge ? " (USB bridge source: a missing stick is a JOYSTICK FAULT, joy_optional does not apply)" : "");
-    test_report("R9 outputs arm only with the joystick seen and centred (unless configured without one)",
-                unarmed && alarm && armed_with && (armed_opt || s_bridge), d);
+    bool armed_with = x.sb.armed && x.sb.profile == SB_PROFILE_CREWED;
+    snprintf(d, sizeof d, "no joystick seen for 5 s: still detecting + not armed %s, NOT ARMED alarm %s; at 8 s: "
+             "UNCREWED + armed %s (profile %s); joystick fitted + centred: CREWED + armed %s",
+             unarmed ? "yes" : "NO", alarm ? "YES" : "no", unc ? "yes" : "NO", sb_profile_name(x.sb.profile),
+             armed_with ? "yes" : "NO");
+    test_report("R9 no joystick at power-up: UNCREWED after the detection window, arms without it; seen: CREWED",
+                unarmed && !alarm && unc && armed_with, d);
 }
 
 /* ----------------------- R11: an acknowledge never hides an active condition -- */
@@ -7388,6 +7736,7 @@ void sb_gateway_tests(void)
     gateway_tests();
     helm_tests();
     remote_tests();
+    crew_tests();
     save_tests();
     ais_tests();
     nav_tests();
@@ -7403,6 +7752,7 @@ void sb_tests(void)
     gateway_tests();
     helm_tests();
     remote_tests();
+    crew_tests();
     save_tests();
     ais_tests();
     nav_tests();

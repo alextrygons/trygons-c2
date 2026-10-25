@@ -23,6 +23,7 @@ mode.AUTO = AUTO
 mode.TRAINING = TRAINING
 mode.REMOTE_MANUAL = REMOTE MANUAL
 mode.BENCH_TEST = BENCH TEST
+mode.MANEUVER = MANEUVER
 
 # --- gear letters (throttle bar, values) -------------------------------------
 gear.0 = N
@@ -58,6 +59,7 @@ alarm.collision_decision = COLLISION RISK - DRIVER DECISION
 alarm.shallow_water = SHALLOW WATER
 alarm.obstacle_ahead = OBSTACLE AHEAD
 alarm.emergency_stop = EMERGENCY STOP
+alarm.profile = PROFILE CHANGED (CREWED / UNCREWED)
 alarm.no_data = NO DATA FROM THE BOAT
 
 # --- answers of the boat / gateway to a command (ACK result codes) ----------
@@ -99,6 +101,7 @@ result.111 = no answer from the driver (timeout)
 result.112 = driver screen lost
 result.113 = single-operator mode: confirm on the captain screen first
 result.114 = shallow water on the route
+result.116 = no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain
 
 # --- command descriptions: shown on the screens; the ENGLISH one also goes to
 #     the gateway's audit log. Keep the {names}. -----------------------------
@@ -127,6 +130,8 @@ what.calib_start = calibration start
 what.calib_finish = calibration finish
 what.remote_request = request remote driving
 what.remote_release = release remote driving
+what.maneuver_request = request MANEUVER
+what.maneuver_release = release MANEUVER
 what.program_upload = program upload ({n} waypoints)
 what.bench_enter = bench test: enter
 what.bench_leave = bench test: leave
@@ -701,6 +706,7 @@ cap.joysticks = joysticks: {list}
 cap.none_found = none found
 cap.remote_request = REQUEST REMOTE DRIVING
 cap.remote_release = RELEASE
+cap.maneuver_request = MANEUVER (DOCK / TRAILER)
 cap.remote_help = Remote driving needs: HELM on this station, the request above, and the joystick CONFIRM pressed by the person on board within 10 s. The onboard joystick and STANDBY always win.
 cap.remote_only_gw = Remote driving only through the gateway (gw:...)
 cap.rm_boat = boat: {mode}, remote {state}{why}
@@ -1144,4 +1150,5 @@ say.alarm.collision_decision = Collision risk, driver decision
 say.alarm.shallow_water = Shallow water
 say.alarm.obstacle_ahead = Obstacle ahead
 say.alarm.emergency_stop = Emergency stop
+say.alarm.profile = The operating profile changed, check crewed or uncrewed
 say.alarm.no_data = No data from the boat

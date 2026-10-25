@@ -299,8 +299,8 @@ KIOSK_KEY = "kiosk-key-0123456789abcdefghij"
 
 
 def users_cfg():
-    return {"alice": {"role": "HELM", "pw": hash_pw(PW["alice"])},
-            "bob": {"role": "HELM", "pw": hash_pw(PW["bob"])},
+    return {"alice": {"role": "HELM", "pw": hash_pw(PW["alice"]), "licence": True},
+            "bob": {"role": "HELM", "pw": hash_pw(PW["bob"]), "licence": True},
             "vic": {"role": "VIEWER", "pw": hash_pw(PW["vic"])},
             "kiosk": {"role": "HELM", "keys": [hash_key(KIOSK_KEY)]}}
 
@@ -2990,7 +2990,108 @@ def section_vr():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-SECTIONS = {"F1": section_f1, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
+def section_cr():
+    """Crew (CLAUDE.md sections A-D): manual licence, MANEUVER, UNCREWED shore CONFIRM - end to end."""
+    print("\n=== Section CR: crew - licence, MANEUVER, UNCREWED profile ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_cr_")
+    try:
+        # --- CREWED boat: licence refusals, MANEUVER with the onboard CONFIRM ---
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        users = users_cfg()
+        users["carl"] = {"role": "HELM", "pw": hash_pw("carl-password-33")}           # no manual licence
+        cfg = gw_cfg_b(sim, root, users=users)
+        gw = GwRunner(cfg)
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()                          # the laptop on board (USB): CONFIRM, observing
+        carl = Client(sp, "carl", "carl-password-33", name="carl")
+        carl.pump(1.5)
+        r_helm_c = carl.result(carl.cmd(proto.T_HELM, proto.p_helm(0)))
+        r_rem_c = carl.result(carl.cmd(proto.T_REMOTE, proto.p_remote(0)))
+        r_man_c = carl.result(carl.cmd(proto.T_MANEUVER, proto.p_remote(0)))
+        r_rel_c = carl.result(carl.cmd(proto.T_MANEUVER, proto.p_remote(1)))       # a release is always allowed
+        carl.result(carl.cmd(proto.T_HELM, proto.p_helm(1)))
+        carl.close()
+        report("CR1 (I26) REMOTE MANUAL / MANEUVER refused for a user without a manual licence",
+               r_helm_c == 0 and r_rem_c == 116 and r_man_c == 116 and r_rel_c == 0,
+               "carl (HELM, no licence): HELM %s, REMOTE %s, MANEUVER %s (116 = no manual licence), release %s" % (
+                   r_helm_c, r_rem_c, r_man_c, r_rel_c))
+
+        alice = Client(sp, "alice", PW["alice"], name="alice")
+        alice.pump(1.0)
+        stick = {"x": 0.0, "lever": 0.5}
+        snd = RemoteSender(alice.l, lambda: dict(stick))
+        snd.start()
+        r_helm = alice.result(alice.cmd(proto.T_HELM, proto.p_helm(0)))
+        r_ask = alice.result(alice.cmd(proto.T_MANEUVER, proto.p_remote(0)))
+        time.sleep(0.5)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))   # the person on board
+        time.sleep(0.2)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        on = w.until(lambda d: d["mode"] == proto.MODE_MANEUVER, 3)
+        stick["lever"] = 1.0
+        top, gear_f = 0.0, False
+        t0 = time.time()
+        while time.time() - t0 < 4:
+            w.pump(0.1)
+            if w.telem:
+                top = max(top, w.telem["throttle"])
+                gear_f = gear_f or w.telem["gear"] == 1
+        prof = w.telem.get("profile_name") if w.telem else None
+        report("CR2 MANEUVER through the gateway: licensed captain asks, CONFIRM on board; full lever = forward gear, "
+               "throttle idle",
+               r_helm == 0 and r_ask == 0 and on is not None and gear_f and top <= 0.01 and prof == "CREWED",
+               "alice: HELM %s, MANEUVER %s, after CONFIRM: %s; full lever: gear F %s, highest throttle %.2f %%; "
+               "profile %s" % (r_helm, r_ask, on and on["mode_name"], gear_f, top, prof))
+        snd.stop()
+        alice.close()
+        link.stop()
+        gw.stop()
+        sim.stop()
+
+        # --- UNCREWED boat (no onboard joystick at power-up): CONFIRM from the captain's joystick ---
+        sim = Sim(1.0, "nojoy")
+        link, w = sim.station()
+        root2 = os.path.join(tmp, "ssd2")
+        os.makedirs(root2)
+        cfg = gw_cfg_b(sim, root2)
+        gw = GwRunner(cfg)
+        sp = cfg["stations"]["port"]
+        unc = w.until(lambda d: d.get("profile") == proto.PROFILE_UNCREWED, 12)
+        alice = Client(sp, "alice", PW["alice"], name="alice")
+        alice.pump(1.0)
+        stick = {"x": 0.0, "lever": 0.5, "confirm": False}
+        snd = RemoteSender(alice.l, lambda: dict(stick))
+        snd.start()
+        alice.result(alice.cmd(proto.T_HELM, proto.p_helm(0)))
+        time.sleep(0.5)
+        alice.result(alice.cmd(proto.T_ALARM_ACK))
+        r_ask = alice.result(alice.cmd(proto.T_REMOTE, proto.p_remote(0)))
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))   # onboard: ignored
+        time.sleep(0.3)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(False, 0.0, 0.0))
+        w.pump(0.5)
+        ignored = w.telem and w.telem["mode"] == proto.MODE_STANDBY
+        stick["confirm"] = True                          # the captain's CONFIRM button
+        time.sleep(0.3)
+        stick["confirm"] = False
+        on = w.until(lambda d: d["mode"] == proto.MODE_REMOTE, 3)
+        report("CR3 UNCREWED: the onboard joystick is ignored, the shore captain's CONFIRM (through the gateway) "
+               "starts REMOTE",
+               unc is not None and r_ask == 0 and ignored and on is not None,
+               "profile %s; REMOTE asked %s; onboard CONFIRM: still STANDBY %s; shore CONFIRM -> %s" % (
+                   unc and unc.get("profile_name"), r_ask, ignored, on and on["mode_name"]))
+        snd.stop()
+        alice.close()
+        link.stop()
+        gw.stop()
+        sim.stop()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
             "G": section_g}
 
 

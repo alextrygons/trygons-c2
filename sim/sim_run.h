@@ -84,5 +84,6 @@ int sb_timing_report(void);
 
 /* sim_server.c: simulated boat behind TCP for the ground station */
 int sim_server(int port, double speed, bool usb, uint32_t gw_baud);   /* gateway UART on port + 2 */
+void sim_server_nojoy(bool on);     /* before sim_server: start without the onboard joystick (UNCREWED) */
 
 #endif /* SIM_RUN_H */

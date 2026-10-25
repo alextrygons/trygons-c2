@@ -1,7 +1,7 @@
 """Part 4.4, gateway side: random storms against the REAL gateway modules (not
 changed), each checked by its own independent rule. Every run prints its seed.
 
-    python tests/acceptance/storm_gateway.py [--episodes N] [--seed S] [--part avoid|channels|events|vision]
+    python tests/acceptance/storm_gateway.py [--episodes N] [--seed S] [--part avoid|channels|events|vision|licence]
 
   I14 avoidance routes / accepted AUTO programs never over water shallower than
       the limit (checked independently: the chart every 5 m), avoidance never
@@ -14,6 +14,8 @@ changed), each checked by its own independent rule. Every run prints its seed.
       STAGE 3 off -> no cap at all
   I21 a vision crash / overload never releases an active cap by itself (only
       the driver's CLEAR, STAGE 3 off, or leaving AUTO)          -> gateway/vision/manager.py
+  I26 REMOTE MANUAL / MANEUVER are never asked of the AURIX for a user without a
+      manual licence                                            -> gateway/stations.py, users.py
   (I16, driver ACCEPT, needs the real gateway + simulator: stations_storm.py)
 """
 import argparse
@@ -369,7 +371,87 @@ def storm_vision(seed):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-PARTS = {"avoid": storm_avoid, "channels": storm_channels, "events": storm_events, "vision": storm_vision}
+# ------------------------------------------------------------------------- I26 --
+class _Writer:
+    def write(self, b):
+        pass
+
+    def close(self):
+        pass
+
+
+class _Aurix:
+    connected = True
+
+    def __init__(self):
+        self.sent = []
+
+    def on(self, t, f):
+        pass
+
+    def send(self, t, p):
+        self.sent.append((t, p))
+
+
+class _Gw:
+    def __init__(self, users):
+        import users as U
+        self.aurix = _Aurix()
+        self.users = U.Users(users)
+        self.cfg = {}
+        self.telem2 = {}
+        self.telem = {}
+
+    def audit(self, *a, **k):
+        pass
+
+
+def storm_licence(seed):
+    """Random users (licensed or not, HELM / VIEWER, local / remote) send random commands
+    straight into the real StationServer.command(); every frame that reaches the AURIX
+    is checked: a REMOTE / MANEUVER request (payload 0) only from a licensed user."""
+    import stations as STN
+    import proto as P
+    rng = random.Random(seed)
+    users = {}
+    for i in range(6):
+        u = {"role": rng.choice(["HELM", "HELM", "VIEWER"]), "pw": "x"}
+        if rng.random() < 0.5:
+            u["licence"] = rng.choice([True, True, "yes", 1, False])     # only the JSON true counts
+        users["u%d" % i] = u
+    gw = _Gw(users)
+    srv = STN.StationServer(gw, {"rate_per_s": 1e6, "rate_burst": 1e6})
+    sts = []
+    for i, name in enumerate(users):
+        st = STN.Station(2 + i, name, users[name]["role"], rng.random() < 0.3, "10.0.0.%d" % i, name, _Writer())
+        st.licence = gw.users.licence(name)
+        st.tokens = 1e6
+        srv.stations[st.id] = st
+        sts.append(st)
+    types = [P.T_REMOTE, P.T_MANEUVER, P.T_REMOTE, P.T_MANEUVER, P.T_HELM, P.T_ALARM_ACK, P.T_POWER_LOWER]
+    for k in range(300):
+        st = rng.choice(sts)
+        ft = rng.choice(types)
+        pl = bytes([rng.choice([0, 0, 1, 2])]) if ft in (P.T_REMOTE, P.T_MANEUVER, P.T_HELM) else b""
+        st.last_seq = None if rng.random() < 0.5 else st.last_seq
+        n0 = len(gw.aurix.sent)
+        srv.command(st, {"sid": st.session, "seq": k + 1, "ts": time.time(), "type": ft, "p": pl.hex()})
+        for t, env in gw.aurix.sent[n0:]:
+            if t != P.T_GW_CMD:
+                continue
+            sid, ftype, body = env[0], env[4], env[5:]
+            if ftype in (P.T_REMOTE, P.T_MANEUVER) and body[:1] == bytes([0]):
+                who = srv.stations.get(sid)
+                ok = who is not None and users[who.user].get("licence") is True
+                res("I26", ok, seed, "%s asked by %s (licence %r)" % (P.TYPE_NAMES.get(ftype), who and who.user,
+                                                                      who and users[who.user].get("licence")))
+        if ft in (P.T_REMOTE, P.T_MANEUVER) and pl == bytes([0]) and users[st.user].get("licence") is not True:
+            res("I26", len([1 for t, e in gw.aurix.sent[n0:] if t == P.T_GW_CMD]) == 0, seed,
+                "unlicensed %s: forwarded" % st.user)
+
+
+PARTS = {"avoid": storm_avoid, "channels": storm_channels, "events": storm_events, "vision": storm_vision,
+         "licence": storm_licence}
 
 
 def main():
@@ -388,7 +470,8 @@ def main():
              "I15": "STARLINK never for sync, never switched to while a normal channel works",
              "I17": "a not fully synced (or open) saved event is never deleted",
              "I20": "vision: a speed cap only, never more speed, none with STAGE 3 off",
-             "I21": "vision crash / overload never releases an active cap by itself"}
+             "I21": "vision crash / overload never releases an active cap by itself",
+             "I26": "REMOTE MANUAL / MANEUVER never asked for a user without a manual licence"}
     bad = 0
     print("\n=== GATEWAY STORM (%.1f min) ===" % ((time.time() - t0) / 60.0))
     for inv in sorted(RES):

@@ -172,6 +172,9 @@ static uint8_t sim_cmd(void *ctx, const proto_frame_t *f)
 
 /* --- main loop ------------------------------------------------------------- */
 
+static bool s_nojoy;            /* "nojoy": no onboard joystick at power-up (UNCREWED profile) */
+void sim_server_nojoy(bool on) { s_nojoy = on; }
+
 static void sim_init(server_t *x, uint32_t seed, bool usb, uint32_t gw_baud)
 {
     sb_config_t c;
@@ -192,7 +195,7 @@ static void sim_init(server_t *x, uint32_t seed, bool usb, uint32_t gw_baud)
     sim_hal_reset_engine();
     sim_hal_link_reset();
     sim_hal_gw_reset(gw_baud);
-    sim_hal_set_joystick(true, 2048u, 2048u, false, false);    /* fitted, centred */
+    sim_hal_set_joystick(!s_nojoy, 2048u, 2048u, false, false);    /* fitted, centred (nojoy: none) */
     world_publish(&x->w, 0);
     hal_init();
     sb_default_config(&c);

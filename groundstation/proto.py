@@ -28,6 +28,7 @@ T_HELM = 0x33              # u8 0 take / 1 release
 T_GW_STATION = 0x34        # gateway -> AURIX: station joined / left
 T_GW_RJOY = 0x36           # gateway -> AURIX: remote joystick packet (30 Hz, no answer)
 T_REMOTE = 0x37            # u8 0 ask for remote driving (then CONFIRM on board) / 1 release
+T_MANEUVER = 0x38          # u8 0 ask for MANEUVER (captain; then CONFIRM) / 1 release
 T_PROG_BEGIN = 0x20
 T_PROG_WP = 0x21
 T_PROG_COMMIT = 0x22
@@ -84,7 +85,7 @@ TYPE_NAMES = {
     T_SIM_BRIDGE: "sim USB joystick", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
-    T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_BENCH: "bench test", T_BENCH_DIAG: "bench data",
+    T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -116,16 +117,20 @@ RESULTS = {
     # gateway refusals (gateway/stations.py)
     100: "VIEWER: watch only", 101: "duplicate command", 102: "command out of order", 103: "stale command",
     104: "timestamp in the future", 105: "rate limited", 106: "AURIX not connected", 107: "wrong session",
-    108: "bad command",
+    108: "bad command", 116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
 }
 
-MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL", "BENCH_TEST"]
+MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL", "BENCH_TEST", "MANEUVER"]
 # mode change reasons (app/modes.h mode_reason_t)
 WHY = ["user", "STANDBY button", "compass fault", "GPS lost", "arrived", "training done", "training abort",
        "test", "gear fault", "DR limit", "arrival uncertain", "joystick", "joystick hand-back", "joystick fault",
        "PC", "HDG LOCK button", "CONFIRM", "not armed", "safety monitor", "remote", "remote end", "remote lost",
-       "emergency stop", "bench test ended (idle / link / moving / HELM)"]
-MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE, MODE_BENCH = range(7)
+       "emergency stop", "bench test ended (idle / link / moving / HELM)", "maneuver",
+       "profile fault (joystick appeared, UNCREWED)", "link to the HELM station lost"]
+MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE, MODE_BENCH, MODE_MANEUVER = range(8)
+# operating profile (app/smallboat.h SB_PROFILE_)
+PROFILES = ["DETECTING", "CREWED", "UNCREWED"]
+PROFILE_DETECTING, PROFILE_CREWED, PROFILE_UNCREWED = range(3)
 
 # BENCH TEST (app/smallboat.h SB_BENCH_)
 BENCH_ENTER, BENCH_LEAVE, BENCH_LEFT, BENCH_RIGHT, BENCH_BUZZER, BENCH_TRIP = range(6)
@@ -223,6 +228,7 @@ ALARMS = [
     (0x2000000, "SHALLOW WATER"),
     (0x4000000, "OBSTACLE AHEAD"),
     (0x8000000, "EMERGENCY STOP"),
+    (0x10000000, "PROFILE (CREWED / UNCREWED)"),
 ]
 ALM_PC_LINK = 0x800
 
@@ -663,6 +669,7 @@ _T2_GROUPS = [
                                  "nav_age_ms".split()),
     (struct.Struct("<hhH"), "att_roll100 att_pitch100 att_age_ms".split()),
     (struct.Struct("<BBB"), "cfg_flags estop_state moving_ahead".split()),
+    (struct.Struct("<BBBH"), "profile probe_flags shore_flags profile_changes".split()),
 ]
 
 # video SAVE triggers (app/smallboat.h SB_SAVE_)
@@ -703,6 +710,12 @@ def decode_telem2(payload: bytes) -> dict:
     if "cfg_flags" in d:
         d["first_test"] = bool(d["cfg_flags"] & 1)
         d["estop_name"] = ["not fitted", "released", "PRESSED"][d["estop_state"]] if d["estop_state"] < 3 else "?"
+    if "profile" in d:
+        d["profile_name"] = PROFILES[d["profile"]] if d["profile"] < 3 else "?"
+        d["joy_detected"] = bool(d["probe_flags"] & 1)
+        d["shore_fresh"] = bool(d["shore_flags"] & 1)
+        d["shore_centred"] = bool(d["shore_flags"] & 2)
+        d["shore_confirm"] = bool(d["shore_flags"] & 4)
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

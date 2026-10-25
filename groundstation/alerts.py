@@ -47,6 +47,7 @@ ALARM_LEVELS = {
     0x2000000: ("shallow_water", WARNING),
     0x4000000: ("obstacle_ahead", CAUTION),
     0x8000000: ("emergency_stop", WARNING),
+    0x10000000: ("profile", CAUTION),
 }
 NO_DATA = "no_data"                 # the PC gets no telemetry (not an alarm bit): WARNING
 

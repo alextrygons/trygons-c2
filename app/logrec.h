@@ -65,6 +65,8 @@ typedef enum {
                            cap %*10 | state<<16 | override<<20 */
     EV_NAV,             /* navigation request change: kind | reason<<8 | alarm<<16 | lost<<24 | applied<<25,
                            heading*100, cap kn*10 (-1 none), seq */
+    EV_PROFILE,         /* operating profile change: profile (0 detecting 1 CREWED 2 UNCREWED), onboard joystick
+                           detected, changes, 0 */
     EV_COUNT
 } log_event_t;
 

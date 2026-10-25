@@ -57,7 +57,7 @@ F_BIG = ("Segoe UI", 20, "bold")
 F_MED = ("Segoe UI", 14, "bold")
 F_TXT = ("Segoe UI", 12)
 MODE_COLORS = {"STANDBY": "#606060", "MANUAL": ORANGE, "HDG_LOCK": GREEN, "AUTO": "#7a00a0",
-               "TRAINING": "#a06000", "REMOTE_MANUAL": BLUE, "BENCH_TEST": "#008080"}
+               "TRAINING": "#a06000", "REMOTE_MANUAL": BLUE, "BENCH_TEST": "#008080", "MANEUVER": "#b03060"}
 PLOT_S = 120.0              # seconds shown in the plot
 LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
 
@@ -746,6 +746,9 @@ class App:
         btn(b, "cap.remote_request", lambda: self.cmd(proto.T_REMOTE, proto.p_remote(0), TE("what.remote_request")),
             bg="#c0d8ff", font=F_BIG).pack(side="left", padx=4)
         btn(b, "cap.remote_release", self.remote_release, bg="#ffb0b0", font=F_BIG).pack(side="left", padx=4)
+        btn(b, "cap.maneuver_request", lambda: self.cmd(proto.T_MANEUVER, proto.p_remote(0),
+                                                        TE("what.maneuver_request")),
+            bg="#f0c0d0", font=F_BIG).pack(side="left", padx=4)
         lbl(rt, "cap.remote_help", font=F_TXT, bg=BG, wraplength=900, justify="left").pack(anchor="w", padx=6)
         self.remote_lbl = tk.Label(rt, text="-", font=("Consolas", 13), bg=BG, justify="left", anchor="w")
         self.remote_lbl.pack(fill="x", padx=6, pady=4)
@@ -775,7 +778,10 @@ class App:
             self.rsender = None
 
     def remote_release(self):
-        self.cmd(proto.T_REMOTE, proto.p_remote(1), TE("what.remote_release"))
+        if self.t and self.t.get("mode") == proto.MODE_MANEUVER:
+            self.cmd(proto.T_MANEUVER, proto.p_remote(1), TE("what.maneuver_release"))
+        else:
+            self.cmd(proto.T_REMOTE, proto.p_remote(1), TE("what.remote_release"))
         if self.rsender and self.link:
             self.link.send_rjoy({"t": "rjoy", "seq": (self.rsender.seq + 1) & 0xFFFF, "ts": self.link.now(),
                                  "x": 0.0, "release": True})

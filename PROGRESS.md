@@ -14,8 +14,8 @@ not DONE below, without redoing finished work.
 
 | Step | What | State | Commit |
 |---|---|---|---|
-| 1 | CLAUDE.md design A-F (no code) | IN PROGRESS | |
-| 2 | AURIX + sim: profile autodetection, UNCREWED power-raise / CONFIRM from the shore joystick, MANEUVER; invariants I22+ | TODO | |
+| 1 | CLAUDE.md design A-F (no code) | DONE (gate OK, acceptance quick 7/7 PASS) | 4e3a1f8 |
+| 2 | AURIX + sim: profile autodetection, UNCREWED power-raise / CONFIRM from the shore joystick, MANEUVER; invariants I22-I26 | GATE RUNNING (sim all + bridge OK, storm 600 OK, gateway CR 3/3) | |
 | 3 | AURIX + gateway + sim: UNCREWED lost link, GW_SHORE, engine-kill output (sim); invariants | TODO | |
 | 4 | Gateway: licence flag, captain / copilot, copilot -> captain ACCEPT, boat name check | TODO | |
 | 5 | Ground station: two screens (+ remaining HUD work), boat selector, single-monitor toggle, Greek manual | TODO | |
@@ -23,6 +23,15 @@ not DONE below, without redoing finished work.
 
 ## Notes
 
+- Step 2 decisions (in CLAUDE.md A/C): CREWED -> UNCREWED only by a power-up without the joystick (a failing
+  CREWED joystick is a joystick fault, not a profile change - the storm / P3 / U3 showed the other way is unsafe);
+  UNCREWED -> CREWED in STANDBY after 10 s of a joystick passing its self-check; a profile change disarms the
+  outputs (storm found I11: a held stick could arrive armed). Detection window 6 s (> USB bridge grace 5 s).
+- UNCREWED: every CONFIRM from the HELM station's joystick (GW_RJOY flags b2, shorejoy.py "confirm_button");
+  panel HDG LOCK / course buttons ignored; HDG LOCK not available.
+- MANEUVER = MODE_MANEUVER (7), PROTO_T_MANEUVER 0x38, shares the REMOTE watchdog (sb_remote_t); gateway refuses
+  REMOTE / MANEUVER asks without "licence": true (code 116). Sim server option "nojoy" = UNCREWED boat.
+- New: TELEM2 group J (profile, joystick probe, shore joystick), log event 21 PROFILE, alarm 0x10000000 PROFILE.
 - Two python test_gateway.py processes + one autopilot_sim server (port 53321) were already
   running at the start (from another session?); stopping them was not allowed. If the sim build
   fails with "permission denied" / locked exe, they are the reason.
