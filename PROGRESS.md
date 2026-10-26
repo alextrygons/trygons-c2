@@ -1,6 +1,61 @@
 # PROGRESS
 
-Current task: "Screen 2 review" (one section, one commit): screen 2 = "navigation & control"
+Current task: "C2 extensions + Academy" (design = CLAUDE.md section "C2 extensions + Academy", parts
+G-S; academy spec = docs/ACADEMY_SPEC.md). Steps 0-14 = C2 extensions (alarms in one place, boat
+dropdown, data flash, supply voltage, generator mode, boat file v2, Modbus relay board, engine controls +
+remote restart, relay buttons, DP parts 1-3, x86 gateway, open items, final check), 15-22 = Academy.
+If interrupted: /clear, then "continue from PROGRESS.md" - do ONLY the first step not DONE, then stop.
+
+Rules for every step: the owner decisions (CLAUDE.md G-S) are binding; the safety rules in CLAUDE.md
+always win unless an owner decision changes them explicitly; sim tests for every failure case; new
+storm invariants where a step moves the boat; tools/check.sh AND tests\acceptance\RUN_ACCEPTANCE.bat
+quick pass before the commit; commit only after they pass, then git push at once; never amend or
+rewrite a pushed commit; one commit per step; FIRST_TEST stays ON and its behaviour unchanged (DP,
+generator, engine relays blocked in FIRST TEST); big-boat variant unchanged; Greek default for all
+screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.md for hardware
+(unknown = TBD); new folders excluded from the ADS build.
+
+| Step | What | State | Commit |
+|---|---|---|---|
+| 0 | CLAUDE.md design for everything below (no code); docs/ACADEMY_SPEC.md | DONE (gate + acceptance quick: see the commit) | this commit |
+| 1 | Alarms in ONE place, top right, flashing (DISPLAY ONLY): screen 1 box under mirror_r + notices, right column moved; screen 2 top-right panel always drawn; flash 1.25 Hz unacknowledged; hud_layout.json version bump; tests test_driver + test_screen2 S1 | | |
+| 2 | Boat dropdown = first line of screen 2's top-left panel + lamp ΣΥΝΔΕΔΕΜΕΝΟ; confirm step kept; tests test_boats + test_screen2 | | |
+| 3 | Data flash (NV): TRAINING result, joystick calibration + map, AUTO program, boot counter, generator learned value; CRC, versioned; board tc_nv.c | | |
+| 4 | Supply voltage input (12 V bank), filtered ~30 s, low-battery alarm | | |
+| 4b | Generator mode (the ONLY automatic throttle rise; CLAUDE.md K) | | |
+| 5 | Boat file v2: relay list + generator_max_pct + thruster settings; old files still load | | |
+| 6 | RS485 Modbus RTU relay board driver on the AURIX (state machine, timeouts, no-data advisory; never on CPU1) | | |
+| 7 | Engine controls + remote restart (CLAUDE.md N; I31 changed) | | |
+| 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | | |
+| 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | | |
+| 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | | |
+| 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | | |
+| 12 | Gateway on a rugged x86 mini PC: remove Pi-only parts, 3.3 V USB-UART (never RS232), USB AIS receiver; README / PARTS / WIRING | | |
+| 13 | Open items: AUTO return, docs/screens pictures (tools/demo_screens.py), paddlewheel, analog joystick | | |
+| 14 | Final check: full acceptance + 24 h soak, TEST_REPORT | | |
+| 15 | Academy design + "no boat link" tests | | |
+| 16 | Academy A (accounts, levels, gateway push) | | |
+| 17 | Academy B (guided tour) | | |
+| 18 | Academy C + D (sim lessons, quizzes) | | |
+| 19 | Academy E (emergency scenarios) | | |
+| 20 | Academy F (real-trip video lessons + editor) | | |
+| 21 | Academy G + J (exams, practical test, online academy) | | |
+| 22 | Academy H + I (3D sim interface, manual + tests + screenshots) + final report | | |
+
+## Notes
+
+- Step 0 (2026-10-26): CLAUDE.md got the section "C2 extensions + Academy" (G-S), the generator exception
+  in "Safety rules" ("Nothing raises the throttle by itself" + the one exception), the engine-kill latch
+  line in B (remote restart, I31) and the AUTO-return pointer in D. The first alarm word is full: new
+  alarms go into alarm_bits2 (SB_ALM2_*, TELEM2 group L). Frame ids reserved: 0x2C GENERATOR, 0x2D RESTART,
+  0x2E DP, 0x2F RELAY_CFG, 0x30 CONFIRM_ONLY (academy). Log events 23 NV, 24 GENERATOR, 27 RESTART, 28 DP.
+  TELEM2 groups L (bank / generator / alarms2), M (relays), N (DP). NV slots 5 TRAINING, 6 generator.
+  Storm invariants: I31 reworded (remote restart), I32-I35 generator, I36 relays, I37-I38 restart,
+  I39-I43 DP. The iLLD Flash/Std driver is excluded in .cproject today: step 3 must un-exclude it.
+
+# Previous task: "Screen 2 review"
+
+Task: "Screen 2 review" (one section, one commit): screen 2 = "navigation & control"
 (Greek "Πλοήγηση & έλεγχος"): full-screen map (boat centred, north-up locked, boat icon turns,
 zoom; temporary pan snaps back after 10 s / "back to boat"), corner overlay panels
 (semi-transparent, collapsible; STANDBY always visible; never over the boat), roles (MANUAL /
