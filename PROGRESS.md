@@ -23,7 +23,7 @@ If interrupted: say "continue from PROGRESS.md" - continue with the first step n
 | f | gateway: PROG_COMMIT = driving (copilot -> ACCEPT), geofence (route check code 120, ask_local) + tests | DONE (gateway/geofence.py, code 120, GF1-GF5 pass) |
 | g | lang el / en (all new keys, every English text in the Greek UI translated) + test_lang | DONE (102 new keys + Greek fixes; i18n.from_en translates the filled-in parts too) |
 | h | tests: test_screen2.py (layout matrix + functions), existing tests adapted, check.sh | DONE (test_screen2 11/11, test_driver 18/18, e2e 10/10, lang / boats / charts / sound / logs pass) |
-| i | CLAUDE.md, MANUAL.txt + MANUAL_EL.txt, PROGRESS.md; gate + quick acceptance; commit + push | docs DONE; gate + quick acceptance running on the commit, then push |
+| i | CLAUDE.md, MANUAL.txt + MANUAL_EL.txt, PROGRESS.md; gate + quick acceptance; commit + push | DONE: gate OK + quick acceptance 7/7 on a quiet PC (after the other demo and the orphaned ffmpeg were stopped), pushed |
 
 Gate note (2026-10-26): the full gate failed only gateway F1e on this PC, by CPU starvation of the station
 (a watchdog in the test showed 2-9 s stalls inside ordinary Tk / Pillow calls; every suite passes alone).
