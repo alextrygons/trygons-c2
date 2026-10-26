@@ -1,4 +1,4 @@
-"""Boats + two screens (CLAUDE.md sections E + F): boats/ list, online / offline,
+"""Boats + two screens (CLAUDE.md sections E + F + H): boats/ list, online / offline,
 name check, the confirm step before HELM, screen 1 / 2 on one monitor, the map
 inside screen 2.
 
@@ -189,10 +189,73 @@ def b4_app_end_to_end():
             and ap.screen_shown == 2
         report("B5 one monitor: F11 shows screen 1, F11 again screen 2; the map IS screen 2 (no map window)",
                s1 and s2 and embedded, "screen 1 %s, screen 2 %s, the map fills screen 2 %s" % (s1, s2, embedded))
+        b6_dropdown(ap, pump, good)
     finally:
         ap.quit()
         gw.stop()
         sim.stop()
+
+
+def b6_dropdown(ap, pump, good):
+    """CLAUDE.md H: the boat dropdown (screen 2 status panel, first line) + the lamp. CONNECTED only when the
+    boat's gateway was found by the prober AND the station is connected to it AND the welcome name check
+    passed; otherwise grey with the reason. ap is connected to `good` (B4) through a real gateway."""
+    import theme
+    T = __import__("i18n").T
+
+    def lamp():
+        ap.render(force=True)
+        dd = [o["s"] for o in ap.ov.ops if o.get("tag") == "boat_dd"]
+        lp = [(o["s"], o.get("fill")) for o in ap.ov.ops if o.get("tag") == "boat_lamp"]
+        return (dd[0] if dd else None), (lp[0] if lp else None), ap.boat_state()[1]
+    st = {}
+    st["connected"] = lamp()                                     # the real gateway, name check passed
+    w = dict(ap.link.welcome)
+    ap.link.welcome["boat"] = "ER69D"                            # the welcome name check fails
+    st["wrong_name"] = lamp()
+    ap.link.welcome.clear()
+    ap.link.welcome.update(w)
+    ap.prober.result[good.id] = ("offline", time.time())         # the prober can't find the gateway
+    st["not_found"] = lamp()
+    ap.prober.found(good)
+    st["again"] = lamp()
+    # the other boats of a folder: online (not connected), offline, IP not set
+    d = tempfile.mkdtemp(prefix="boats_dd_")
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    for n, v in {"aa": {"name": "ALPHA", "tailscale_ip": "127.0.0.1", "gateway_port": srv.getsockname()[1]},
+                 "bb": {"name": "BRAVO", "tailscale_ip": "127.0.0.1", "gateway_port": free_port()},
+                 "cc": {"name": "CHARLIE", "tailscale_ip": "PLACEHOLDER-100.x.y.z"}}.items():
+        with open(os.path.join(d, n + ".json"), "w", encoding="utf-8") as f:
+            json.dump(dict(v, id=n), f)
+    ap.boat_list = boats.load(d)
+    ap.prober.stop()
+    ap.prober = boats.Prober(ap.boat_list, period_s=0.5).start()
+    pump(5, lambda: all(ap.prober.status(b) != "?" for b in ap.boat_list))
+    menu = [e[0].split("    ")[:2] for e in ap.boat_menu_entries() if e is not None][:3]
+    picked = {}
+    for b in ap.boat_list:
+        ap.disconnect()                                          # not connected: only the prober's view
+        ap.boat_pick = b
+        picked[b.name] = lamp()
+    ap.boat_pick = None
+    st["none"] = lamp()
+    srv.close()
+    G, grey = theme.GOOD, theme.C["head"]
+    ok = st["connected"][1] == ("● " + T("ov.connected"), G) and st["connected"][0].startswith("RF49D") and \
+        st["wrong_name"][1][1] == grey and st["not_found"][1] == ("● " + T("boat.st_offline"), grey) and \
+        st["again"][1][1] == G and \
+        picked["ALPHA"][1] == ("● " + T("boat.st_online"), grey) and \
+        picked["BRAVO"][1] == ("● " + T("boat.st_offline"), grey) and \
+        picked["CHARLIE"][1] == ("● " + T("boat.st_no_ip"), grey) and \
+        st["none"][1] is None and st["none"][0].startswith(T("ov.choose_boat")) and \
+        menu == [["ALPHA", T("boat.st_online")], ["BRAVO", T("boat.st_offline")], ["CHARLIE", T("boat.st_no_ip")]]
+    report("B6 boat dropdown + lamp: CONNECTED (green) only when found + connected + name check passed; else grey "
+           "(name check failed, not found, online but not connected, offline, IP not set); nothing chosen = no lamp",
+           ok, "connected %s; wrong name %s; not found %s; found again %s; picked %s; nothing chosen %s; menu %s" % (
+               st["connected"][1:], st["wrong_name"][1:], st["not_found"][1:], st["again"][1:],
+               {k: v[1] for k, v in picked.items()}, st["none"][:2], menu))
 
 
 def main():

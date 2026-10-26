@@ -11,9 +11,11 @@ Options (the demo uses them): --login user:password (no login window),
 Screen 2 (CLAUDE.md section E): the MAP fills the window - the boat always in the centre,
 north-up - and everything else lies on it in four corner panels (overlay.py; semi-transparent,
 collapsible, never over the boat):
-  top-left      mode, power limit, heading / target / rate of turn / gear / throttle / GPS
+  top-left      first line: the boat dropdown (boats/ by name) + the lamp CONNECTED (found +
+                connected + name check passed) + "name verified" (CLAUDE.md H); then mode, power
+                limit, heading / target / rate of turn / gear / throttle / GPS
   top-right     the ALARMS (always drawn, one per line, flashing until acknowledged on this PC,
-                ACK ALARM), then the boats (boats/: online, name verified), HELM + captain / copilot,
+                ACK ALARM), then HELM + captain / copilot,
                 the link (channels, CREWED / UNCREWED, near shore / open sea, lost-link countdown, engine)
   bottom-left   mode buttons, AUTO program + route / geofence / max speed editing, heading lock
                 (+ STANDBY, always visible, bottom-left corner)
@@ -289,6 +291,8 @@ class App:
         self._layout_job = None
         self.title_extra = ""           # old --title text (now --place)
         self.boat = None                # the boat chosen in the boat list (boats/), None = typed address
+        self.boat_pick = None           # the boat picked in screen 2's dropdown (before / while connecting)
+        self.boat_menu = None           # the dropdown menu (built on click)
         self.boat_ok = False            # its name + live camera confirmed: HELM may be taken (CLAUDE.md F)
         self.boatsel = None             # the boat list dialog
         self.boatconf = None            # the boat confirmation dialog
@@ -1406,6 +1410,8 @@ class App:
             self.link = None
             return T("cap.cannot_connect", err=i18n.from_en(str(e)))
         self.boat, self.boat_ok = bt, False
+        self.boat_pick = bt
+        self.prober.found(bt)                       # the gateway answered: found (screen 2's lamp)
         self.port_var.set(bt.address())
         self.say(T("cap.logged_in", user=user, role=w["role"],
                    where=T("cap.on_board") if w["local"] else T("cap.remote")), GREEN)
@@ -2836,7 +2842,6 @@ class App:
         self.panel_status()
         self.panel_control()
         self.panel_alarms()                 # top-right, first: always drawn (CLAUDE.md G)
-        self.panel_boat()
         self.panel_helm()
         self.panel_link()
         self.panel_traffic(H)
@@ -2875,6 +2880,8 @@ class App:
     def panel_status(self):
         """Top-left: mode, power limit, heading / target / rate of turn / gear / throttle / GPS."""
         p = self.ov.panel("status", T("ov.status"), "nw")
+        self.boat_line(p)                   # the FIRST line: the boat dropdown + lamp (CLAUDE.md H)
+        p.br()
         d = self.t
         if d is None:
             p.badge(T("cap.not_connected") if not self.link else T("alarm.no_data"), MODE_COLORS["STANDBY"])
@@ -2982,31 +2989,77 @@ class App:
             p.button(T("cap.sim_standby"), self.sim_standby, "sim")
             p.button(T("cap.sim_confirm"), self.sim_confirm, "sim", tag="sim_confirm")
 
-    def panel_boat(self):
-        """Top-right (1): the boats of boats/ - online / offline, name verified; the IP only small."""
-        p = self.ov.panel("boats", T("ov.boats"), "ne")
-        col = {"online": C["ok_txt"], "offline": C["bad_txt"], "no_ip": theme.CAUTION, "checking": C["dim"]}
+    def boat_state(self):
+        """(the boat shown in the dropdown or None, lamp state). The lamp is "connected" ONLY when that
+        boat's gateway was found by the prober AND this station is connected to it AND the welcome name
+        check passed (CLAUDE.md H); otherwise "online" (found, not connected), "offline", "no_ip",
+        "checking", "address" (connected to a typed address: no boat check) or "none" (nothing chosen)."""
+        bt = self.boat or self.boat_pick
+        if bt is None:
+            return None, "address" if self.link is not None else "none"
+        st = "no_ip" if (bt.error or not bt.ip_ok()) else self.prober.status(bt)
+        st = "checking" if st == "?" else st
+        lk = self.link
+        if st == "online" and self.boat is not None and self.boat.id == bt.id and lk is not None and \
+                getattr(lk, "connected", False) and boats.check_welcome(bt, getattr(lk, "welcome", None)) is None:
+            st = "connected"
+        return bt, st
+
+    def boat_line(self, p):
+        """Screen 2 status panel, first line: the boat dropdown (boats/ by name), the lamp, "name verified"."""
+        bt, st = self.boat_state()
+        if bt is not None:
+            label = bt.name
+        elif st == "address":
+            label = self.port_var.get()
+        else:
+            label = T("ov.choose_boat")
+        p.button(label + "  ▾", self.boat_dropdown, "info", level="value", tag="boat_dd")
+        if st == "connected":
+            p.badge("● " + T("ov.connected"), theme.GOOD, fg=theme.BLACK, level="label", tag="boat_lamp")
+        elif st != "none":
+            txt = T("ov.no_boat_check") if st == "address" else T("boat.st_" + st)
+            p.badge("● " + txt, C["head"], fg=C["dim"], level="label", tag="boat_lamp", outline=C["line"])
+        if self.boat is not None and self.link is not None:
+            p.text(T("ov.verified") if self.boat_ok else T("ov.not_verified"), "small",
+                   colour=C["ok_txt"] if self.boat_ok else theme.CAUTION, bold=True, tag="verified")
+
+    def boat_menu_entries(self):
+        """The dropdown's entries: [(label, fn)], None = a separator. The boats by name (status, the IP
+        only as a detail at the end), then another address / disconnect."""
+        out = []
         for bt in self.boat_list:
             st = "no_ip" if (bt.error or not bt.ip_ok()) else self.prober.status(bt)
             st = "checking" if st == "?" else st
-            mine = self.boat is not None and self.boat.id == bt.id and self.link is not None
-            if mine:
-                st = "online"
-            p.text("● " + bt.name, "value", colour=col.get(st), action=lambda bt=bt: self.choose_boat(bt),
-                   tag="boat_" + bt.id)
-            p.text(T("boat.st_" + st), "label", colour=col.get(st), action=lambda bt=bt: self.choose_boat(bt))
-            if mine:
-                p.text(T("ov.verified") if self.boat_ok else T("ov.not_verified"), "label",
-                       colour=C["ok_txt"] if self.boat_ok else theme.CAUTION, bold=True, tag="verified")
-            p.text(("%s:%d" % (bt.ip, bt.port)) if bt.ip_ok() else T("ov.ip_not_set"), "small", colour=C["faint"])
-            p.br()                                   # one line per boat (the alarms panel above needs the room)
-        if self.link is not None and self.boat is None:
-            p.text(T("ov.address", a=self.port_var.get()), "label", tag="address")
-            p.br()
-        p.br(stretch=True)
-        p.button(T("ov.other_address"), lambda: self.open_tab("tab.connection"))
+            if self.boat is not None and self.boat.id == bt.id and self.boat_state()[1] == "connected":
+                st = "connected"
+            stt = T("ov.connected") if st == "connected" else T("boat.st_" + st)
+            out.append(("%s    %s    · %s" % (bt.name, stt, bt.ip if bt.ip_ok() else T("ov.ip_not_set")),
+                        lambda bt=bt: self.choose_boat(bt)))
+        out.append(None)
+        out.append((T("ov.other_address"), lambda: self.open_tab("tab.connection")))
         if self.link is not None:
-            p.button(T("cap.disconnect"), self.disconnect, "no", tag="disconnect")
+            out.append((T("cap.disconnect"), self.disconnect))
+        return out
+
+    def boat_dropdown(self, post=True):
+        """Open the boat dropdown under its button (post=False: only build it - the tests)."""
+        m = tk.Menu(self.root, tearoff=0, font=theme.font("value"), bg=C["panel"], fg=C["fg"],
+                    activebackground=C["sel"], activeforeground=C["fg"])
+        for e in self.boat_menu_entries():
+            if e is None:
+                m.add_separator()
+            else:
+                m.add_command(label=e[0], command=e[1])
+        self.boat_menu = m
+        if post:
+            r = [o["r"] for o in self.ov.ops if o.get("tag") == "boat_dd"]
+            x, y = (r[0][0], r[0][3]) if r else (0, 0)
+            try:
+                m.tk_popup(int(self.cv.winfo_rootx() + x), int(self.cv.winfo_rooty() + y))
+            finally:
+                m.grab_release()
+        return m
 
     def panel_helm(self):
         """Top-right (2): who holds HELM, my role, take / release / swap, screen 1, single operator."""
@@ -3324,7 +3377,8 @@ class App:
                 x["t"] = time.time()
 
     def choose_boat(self, bt):
-        """A boat clicked in the panel: log in + connect (the confirm step follows, CLAUDE.md F)."""
+        """A boat chosen in screen 2's dropdown: log in + connect (the confirm step follows, CLAUDE.md F / H)."""
+        self.boat_pick = bt
         if self.boatsel is None:
             self.boatsel = crewui.BoatSelector(self)
         else:

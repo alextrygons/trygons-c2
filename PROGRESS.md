@@ -19,7 +19,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 |---|---|---|---|
 | 0 | CLAUDE.md design for everything below (no code); docs/ACADEMY_SPEC.md | DONE (gate + acceptance quick: see the commit) | this commit |
 | 1 | Alarms in ONE place, top right, flashing (DISPLAY ONLY): screen 1 box under mirror_r + notices, right column moved; screen 2 top-right panel always drawn; flash 1.25 Hz unacknowledged; hud_layout.json version bump; tests test_driver + test_screen2 S1 | DONE (gate OK; test_driver 19/19 incl. I19; test_screen2 12/12 incl. S12; acceptance quick run) | this commit |
-| 2 | Boat dropdown = first line of screen 2's top-left panel + lamp ΣΥΝΔΕΔΕΜΕΝΟ; confirm step kept; tests test_boats + test_screen2 | | |
+| 2 | Boat dropdown = first line of screen 2's top-left panel + lamp ΣΥΝΔΕΔΕΜΕΝΟ; confirm step kept; tests test_boats + test_screen2 | DONE (gate OK except gateway VR5 under PC load - test_gateway alone 105/105 PASS; test_boats 6/6 incl. B6; test_screen2 13/13 incl. S13; acceptance quick 6/7 PASS - only START_DEMO skipped: a demo was already running on this PC, ports 5760-8554 in use) | this commit |
 | 3 | Data flash (NV): TRAINING result, joystick calibration + map, AUTO program, boot counter, generator learned value; CRC, versioned; board tc_nv.c | | |
 | 4 | Supply voltage input (12 V bank), filtered ~30 s, low-battery alarm | | |
 | 4b | Generator mode (the ONLY automatic throttle rise; CLAUDE.md K) | | |
@@ -52,6 +52,16 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   TELEM2 groups L (bank / generator / alarms2), M (relays), N (DP). NV slots 5 TRAINING, 6 generator.
   Storm invariants: I31 reworded (remote restart), I32-I35 generator, I36 relays, I37-I38 restart,
   I39-I43 DP. The iLLD Flash/Std driver is excluded in .cproject today: step 3 must un-exclude it.
+- Step 2 (2026-10-26): screen 2's top-right "boats" panel is gone (6 panels now, S1 counts 6). The status
+  panel's first line = app.boat_line: the dropdown button (tag boat_dd: boat name / typed address / "Choose
+  boat", click = tk.Menu from app.boat_menu_entries: the boats by name + status + IP detail, Other
+  address, Disconnect), the lamp (tag boat_lamp; app.boat_state: "connected" green ONLY when prober status
+  online AND app.boat is that boat AND link.connected AND boats.check_welcome passes; else grey online /
+  offline / no_ip / checking / "no boat check"), "name verified" small (tag verified). New: app.boat_pick
+  (the boat chosen before / while connecting), boats.Prober.found(boat) (connect_boat marks the boat found
+  and adds it to the prober), crewui.BoatSelector uses app.boat_list. Choosing -> the existing login +
+  BoatConfirm (name + live camera) before HELM, unchanged. Lang keys: ov.choose_boat, ov.connected,
+  ov.no_boat_check (ov.boats, ov.address removed). Tests: test_boats B6, test_screen2 S8 rewritten + S13.
 
 # Previous task: "Screen 2 review"
 

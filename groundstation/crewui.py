@@ -2,8 +2,8 @@
 
   BoatSelector  the boats of boats/ (git) by NAME with ONLINE / OFFLINE / IP NOT SET (the IP only
                 as a detail); user name + password; connects with the boat's name (the gateway
-                and this station both refuse another boat). Screen 2's boat panel opens it
-                with the clicked boat selected (select()).
+                and this station both refuse another boat). Screen 2's boat dropdown (first line
+                of the status panel) opens it with the chosen boat selected (select()).
   BoatConfirm   after connecting: type the boat's name AND tick "I see its live front camera"
                 (only possible while a front camera picture is live) - only then this station
                 may take HELM (app.boat_ok).
@@ -47,7 +47,8 @@ def front_live(app):
 class BoatSelector:
     def __init__(self, app, folder=None):
         self.app = app
-        self.boats = boats.load(folder)
+        lst = getattr(app, "boat_list", None)
+        self.boats = list(lst) if folder is None and lst else boats.load(folder)    # the same list as screen 2
         self.prober = boats.Prober(self.boats).start()
         self.w = tk.Toplevel(app.root, bg=C["bg"])
         self.w.title(T("boat.title"))
@@ -109,7 +110,7 @@ class BoatSelector:
             pass
 
     def select(self, boat):
-        """Pre-select `boat` (clicked in screen 2's boat panel)."""
+        """Pre-select `boat` (chosen in screen 2's boat dropdown)."""
         for i, bt in enumerate(self.boats):
             if bt.id == boat.id:
                 self.lb.selection_clear(0, "end")

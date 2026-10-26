@@ -15,8 +15,9 @@
      geofence (corners, NOT SENT state, only through the gateway), max speed
   S7 link panel: channel quality, CREWED / UNCREWED, near shore / open sea + distance, the
      lost-link countdown, ENGINE KILLED
-  S8 boat selector: the boats of boats/ by name, ONLINE / OFFLINE / IP not set, "name verified"
-     only after the confirm step, the IP only small
+  S8 boat selector: no "boats" panel any more; the dropdown lists the boats of boats/ by name,
+     ONLINE / OFFLINE / IP not set, the IP only as a detail; "name verified" only after the confirm
+     step, small
   S9 one look: no colour / font written in a screen module (all from theme.py); dark / light
      switches BOTH screens; the meaning colours (warning / caution) are the same on both; the
      logo on both screens, under nothing on screen 1 either
@@ -24,6 +25,9 @@
   S11 the Greek screen: no English words left (panels, tools pages, dialogs, the HUD texts)
   S12 alarms panel (CLAUDE.md G): top-right, always drawn, outside the boat circle, one row per
       alarm, unacknowledged rows flash on the MASTER lamp clock, ACK ALARM, no alarm banner
+  S13 boat dropdown (CLAUDE.md H): the FIRST line of the status panel = the dropdown + the lamp
+      (CONNECTED green only when found + connected + welcome name check passed, else grey), choosing
+      a boat opens the login / confirm step with it selected, the line fits in the S1 matrix
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
@@ -235,7 +239,7 @@ def s1_matrix(rig):
     bad = [c for c in cases if c[3]]
     report("S1 layout 1366x768 / 1920x1080 (+ maximised) at 100 / 125 / 150 %, Greek + English, every panel full: "
            "nothing clipped, STANDBY visible, the boat free, the logo under no panel",
-           not bad and all(c[2] == 7 for c in cases) and not rig.errors,
+           not bad and all(c[2] == 6 for c in cases) and not rig.errors,
            "%d layouts checked (text size factors %s); problems: %s; errors %s" % (
                len(cases), sorted({round(c[1], 2) for c in cases}), [(c[0], c[3][:3]) for c in bad][:4],
                rig.errors[:2]))
@@ -491,26 +495,33 @@ def s7_link(rig):
 
 
 def s8_boats(rig):
+    """The top-right "boats" panel is gone (CLAUDE.md H): its content = the dropdown + lamp in the status panel."""
     ap = rig.ap
-    ap.render(force=True)
-    names = [o["s"] for o in ap.ov.ops if str(o.get("tag", "")).startswith("boat_")]
-    small = [o for o in ap.ov.ops if o.get("panel") == "boats" and o["s"] == A.T("ov.ip_not_set")]
+    rig.size(1366, 768, 1.25)
+    no_panel = "boats" not in {p.key for p in ap.ov.panels}
+    ents = [e[0] for e in ap.boat_menu_entries() if e is not None]
+    names = [e.split("    ")[0] for e in ents[:len(ap.boat_list)]]
+    ip_detail = all(e.endswith("· " + A.T("ov.ip_not_set")) and A.T("boat.st_no_ip") in e
+                    for e in ents[:len(ap.boat_list)])
+    extra = ents[len(ap.boat_list):] == [A.T("ov.other_address"), A.T("cap.disconnect")]
     ver0 = [o["s"] for o in ap.ov.ops if o.get("tag") == "verified"]
     ap.boat, ap.boat_ok = ap.boat_list[0], False
     ap.render(force=True)
     ver1 = [o["s"] for o in ap.ov.ops if o.get("tag") == "verified"]
     ap.boat_ok = True
     ap.render(force=True)
-    ver2 = [o["s"] for o in ap.ov.ops if o.get("tag") == "verified"]
-    sizes = {o["s"]: o["r"][3] - o["r"][1] for o in ap.ov.ops if o.get("panel") == "boats" and o["k"] == "text"}
-    name_big = bool(names) and bool(small) and sizes.get(names[0], 0) > sizes.get(small[0]["s"], 99)
+    ver2 = [o for o in ap.ov.ops if o.get("tag") == "verified"]
+    dd = [o for o in ap.ov.ops if o.get("tag") == "boat_dd"]
+    small = bool(ver2) and bool(dd) and (ver2[0]["r"][3] - ver2[0]["r"][1]) < (dd[0]["r"][3] - dd[0]["r"][1])
     ap.boat, ap.boat_ok = None, False
-    report("S8 boat selector: the boats of boats/ by name (RF49D, ER69D), status, 'name verified' only after the "
-           "confirm step, the IP only small",
-           names == ["● ER69D", "● RF49D"] and len(small) == 2 and not ver0 and ver1 == [A.T("ov.not_verified")] and
-           ver2 == [A.T("ov.verified")] and name_big,
-           "names %s; small IP texts %d; verified: none %s, connected %s, confirmed %s; name bigger than the IP %s" % (
-               names, len(small), ver0, ver1, ver2, name_big))
+    ap.render(force=True)
+    report("S8 boat selector: no 'boats' panel; the dropdown lists the boats of boats/ by name (ER69D, RF49D) with "
+           "the status, the IP only as a detail; 'name verified' only after the confirm step, small",
+           no_panel and names == ["ER69D", "RF49D"] and ip_detail and extra and not ver0 and
+           ver1 == [A.T("ov.not_verified")] and [o["s"] for o in ver2] == [A.T("ov.verified")] and small,
+           "boats panel gone %s; dropdown %s; IP as a detail %s; other address + disconnect %s; verified: none %s, "
+           "connected %s, confirmed %s; smaller than the dropdown %s" % (
+               no_panel, names, ip_detail, extra, ver0, ver1, [o["s"] for o in ver2], small))
 
 
 LITERAL = re.compile(r'''["']#[0-9a-fA-F]{6}["']|["'](?:Segoe UI|Consolas|Arial|Helvetica)["']''')
@@ -740,6 +751,99 @@ def s12_alarms(rig):
                sent, still, header_only, rig.errors[:2]))
 
 
+def s13_boat_line(rig):
+    """CLAUDE.md H: the status panel's FIRST line = the boat dropdown + the lamp; CONNECTED (green) only
+    when the boat's gateway was found by the prober AND the station is connected AND the welcome name
+    check passed, otherwise grey; choosing a boat opens the login (then the confirm step) with that boat
+    selected; the line fits in the S1 matrix."""
+    ap = rig.ap
+    import boats
+    rig.size(1366, 768, 1.25)
+
+    def line():
+        ap.render(force=True)
+        st = [o for o in ap.ov.ops if o.get("panel") == "status" and o["k"] != "panel"]
+        dd = [o for o in st if o.get("tag") == "boat_dd"]
+        lamp = [o for o in st if o.get("tag") == "boat_lamp"]
+        # the first line: nothing of the panel's content above or beside it (the header is above it)
+        first = bool(dd) and all(o["r"][1] >= dd[0]["r"][3] - 1.0 for o in st
+                                 if o.get("tag") not in ("boat_dd", "boat_lamp", "verified") and
+                                 o["r"][3] > dd[0]["r"][1] + 1.0)
+        same = bool(lamp) and bool(dd) and lamp[0]["r"][0] >= dd[0]["r"][2] - 1.0 and \
+            lamp[0]["r"][1] < dd[0]["r"][3] and lamp[0]["r"][3] > dd[0]["r"][1]
+        return first, same, (dd[0]["s"] if dd else ""), ((lamp[0]["s"], lamp[0].get("fill")) if lamp else None)
+    out = {}
+    out["address"] = line()                                   # tcp to the simulator: no boat check
+    ap.boat_pick = ap.boat_list[-1]                            # RF49D: placeholder IP
+    out["no_ip"] = line()
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    bt = boats.Boat("t.json", {"id": "tt", "name": "TESTBOAT", "tailscale_ip": "127.0.0.1",
+                               "gateway_port": srv.getsockname()[1]})
+    off = boats.Boat("o.json", {"id": "oo", "name": "OFFBOAT", "tailscale_ip": "127.0.0.1",
+                                "gateway_port": free_port()})
+    ap.prober.result["oo"] = ("offline", time.time())
+    ap.boat_pick = off
+    out["offline"] = line()
+    ap.prober.result.pop("oo", None)
+    ap.boat_pick = bt
+    out["checking"] = line()
+    ap.prober.found(bt)
+    out["online"] = line()                                    # found, not connected to it
+    had = hasattr(ap.link, "welcome")
+    ap.boat, ap.boat_ok = bt, False
+    ap.link.welcome = {"boat": "OTHER"}
+    out["wrong_name"] = line()                                # the welcome name check fails: grey
+    ap.link.welcome = {"boat": "TESTBOAT"}
+    out["connected"] = line()
+    ap.link.connected = False
+    out["link_down"] = line()
+    ap.link.connected = True
+    G, grey = A.theme.GOOD, A.theme.C["head"]
+    lit = {k: v[3] for k, v in out.items()}
+    ok_states = lit["address"] == ("● " + A.T("ov.no_boat_check"), grey) and \
+        lit["no_ip"] == ("● " + A.T("boat.st_no_ip"), grey) and lit["offline"] == ("● " + A.T("boat.st_offline"), grey) \
+        and lit["checking"] == ("● " + A.T("boat.st_checking"), grey) and \
+        lit["online"] == ("● " + A.T("boat.st_online"), grey) and lit["wrong_name"] == lit["online"] and \
+        lit["connected"] == ("● " + A.T("ov.connected"), G) and lit["link_down"] == lit["online"] and \
+        out["no_ip"][2].startswith("RF49D") and out["connected"][2].startswith("TESTBOAT") and \
+        out["address"][2].startswith(ap.port_var.get())
+    first_ok = all(v[0] and v[1] for v in out.values())
+    # the S1 matrix with the widest line (connected + "name verified"): still fits, the line still first
+    cases = []
+    for lang in ("el", "en"):
+        i18n.set_lang(lang, save=False)
+        for W, H in ((1366, 768), (1366, 658), (1920, 1080), (1920, 970)):
+            for dpi in (1.0, 1.25, 1.5):
+                rig.size(W, H, dpi)
+                f = line()
+                cases.append(((lang, W, H, dpi), f[0] and f[1] and "verified" in tags(ap), layout_problems(ap)))
+    i18n.set_lang("el", save=False)
+    bad = [c for c in cases if not c[1] or c[2]]
+    # choosing a boat in the dropdown: the login opens with that boat selected (then the confirm step, test_boats B4)
+    m = ap.boat_dropdown(post=False)
+    labels = [m.entrycget(i, "label") for i in range(m.index("end") + 1) if m.type(i) == "command"]
+    m.invoke(1)                                               # the second boat of the list
+    rig.pump(0.3)
+    sel = ap.boatsel.selected()[0] if ap.boatsel else None
+    chosen = sel is not None and sel.id == ap.boat_list[1].id and ap.boat_pick is ap.boat_list[1]
+    if ap.boatsel:
+        ap.boatsel.close()
+    ap.boat, ap.boat_ok, ap.boat_pick = None, False, None
+    if not had:
+        del ap.link.welcome
+    srv.close()
+    ap.render(force=True)
+    report("S13 boat dropdown = the status panel's first line + the lamp: CONNECTED (green) only when found + "
+           "connected + name check passed, else grey (offline / IP not set / checking / online / no boat check); "
+           "choosing opens the login with the boat selected; fits the S1 matrix",
+           ok_states and first_ok and not bad and chosen and len(labels) >= len(ap.boat_list) and not rig.errors,
+           "lamp %s; first line + lamp beside it %s; matrix %d layouts, bad %s; menu %s; chosen -> login with %s; "
+           "errors %s" % (lit, {k: v[:2] for k, v in out.items() if not (v[0] and v[1])} or "all",
+                          len(cases), [(c[0], c[2][:2]) for c in bad][:3], labels, sel, rig.errors[:2]))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
@@ -748,7 +852,7 @@ def main():
     rig = Rig()
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
-                   s10_tools, s11_greek, s12_alarms):
+                   s10_tools, s11_greek, s12_alarms, s13_boat_line):
             try:
                 fn(rig)
             except Exception as e:

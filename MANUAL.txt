@@ -329,17 +329,23 @@ buttons and panels - groundstation\theme.py - and switch dark / light together)
   scaling (the panel text gets a little smaller when it must; checked by
   groundstation\test_screen2.py).
 
-CHOOSING THE BOAT (top-right panel "Boats")
-  The list comes from the boats folder of the repository (boats\rf49d.json,
-  boats\er69d.json - name + Tailscale address, no passwords). Every boat
-  shows its NAME (big), ONLINE / OFFLINE / IP NOT SET, and its address only
-  small. Click a boat: user name + password, "captain" or "copilot",
-  CONNECT.
+CHOOSING THE BOAT (the first line of the top-left STATUS panel)
+  The first line of STATUS is the boat dropdown: the boat's name with ▾, a
+  lamp next to it and "✓ name verified". Click it: the list of the boats
+  folder of the repository (boats\rf49d.json, boats\er69d.json - name +
+  Tailscale address, no passwords), every boat by NAME with ONLINE /
+  OFFLINE / IP NOT SET and its address only as a detail at the end, then
+  "Other address ..." and "Disconnect". Choose a boat: user name +
+  password, "captain" or "copilot", CONNECT.
+  The lamp: green CONNECTED only when this PC found the boat's gateway AND
+  is connected to it AND the gateway said the right boat name. Otherwise
+  grey with the reason: ONLINE (found, not connected), OFFLINE, IP NOT
+  SET, checking ..., "no boat check" (connected to a typed address).
   * The station refuses to connect if the gateway is another boat (each
     gateway knows its own name - gateway config "boat").
   * Then screen 1 opens and a yellow window asks: type the boat's name AND
     tick "I see the LIVE front camera of <boat>" (only possible while the
-    front camera picture is live). Only after that the panel shows
+    front camera picture is live). Only after that the dropdown line shows
     "✓ name verified" and this station can take HELM. "NOT THIS BOAT"
     disconnects.
   * A NEW COMPUTER: clone the repository (chapter 16) - the boats come with
@@ -361,7 +367,9 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
   A click on a panel's title folds it to the title (▸) or opens it again
   (▾); remembered on this PC. STANDBY (big red, bottom-left corner) is
   ALWAYS there, also with every panel folded.
-  Top left      STATUS: the mode, the POWER LIMIT with Raise fwd / Raise rev /
+  Top left      STATUS: first line = the boat dropdown + the lamp CONNECTED +
+                "✓ name verified" (see CHOOSING THE BOAT); the mode, the
+                POWER LIMIT with Raise fwd / Raise rev /
                 Lower; heading, target, rate of turn, gear, throttle
                 ("asked" when more was asked than allowed), outboard, GPS
                 (fix, source, uncertainty), speed / course over ground
@@ -374,7 +382,7 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
                 are steady. "+N more" when more are active than fit. ACK ALARM
                 = the boat's acknowledge (clears only alarms whose cause is
                 gone; from any station). Under it:
-                BOATS; HELM / ROLES: who holds HELM, your role
+                HELM / ROLES: who holds HELM, your role
                 (CAPTAIN / COPILOT, licence), the captain's name; Take HELM,
                 Release (UNCREWED: releasing = a lost link, you are asked
                 first), Role swap, Screen 1, Single operator.

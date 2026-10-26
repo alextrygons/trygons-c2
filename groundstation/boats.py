@@ -9,7 +9,8 @@ A new computer = clone the repository: the boats come with it.
 
   load(folder)            -> [Boat] (sorted by name); a broken file is listed with its error
   Prober(boats).start()   -> background reachability check (TCP to the gateway port every
-                             period_s): status(boat) = "online" / "offline" / "no_ip" / "?"
+                             period_s): status(boat) = "online" / "offline" / "no_ip" / "?";
+                             found(boat) = the station just connected to it (online now)
   check_welcome(boat, w)  -> None, or the reason to refuse the connection (the gateway's
                              own boat name must be the file's name)
   confirmed(name_typed, boat, camera_live) -> the selection may take HELM
@@ -107,13 +108,22 @@ class Prober:
     def _run(self):
         while self.running:
             for b in list(self.boats):
-                self.result[b.id] = (probe(b, self.timeout), time.time())
+                r = probe(b, self.timeout)
+                if any(x is b for x in self.boats):      # not replaced by found() meanwhile
+                    self.result[b.id] = (r, time.time())
             end = time.time() + self.period
             while self.running and time.time() < end:
                 time.sleep(0.2)
 
     def status(self, boat):
         return self.result.get(boat.id, ("?", 0.0))[0]
+
+    def found(self, boat):
+        """The station just connected to this boat's gateway: it is found now (and checked from now on)."""
+        # the connected boat replaces a list entry with the same id (else the next round would probe the
+        # old entry's address and overwrite this result)
+        self.boats = [b for b in self.boats if b.id != boat.id] + [boat]
+        self.result[boat.id] = ("online", time.time())
 
 
 def check_welcome(boat, welcome):
