@@ -41,6 +41,7 @@ T_POWER_CODE = 0x28        # u8 dir (0 fwd, 1 rev): the boat shows a code
 T_POWER_RAISE = 0x29       # u8 dir, u16 typed code; then joystick CONFIRM within 10 s
 T_POWER_LOWER = 0x2A       # back to 30 % / 5 % at once
 T_BENCH = 0x2B             # u8 action, u16 arg - BENCH TEST, only from the laptop on the USB cable
+T_GENERATOR = 0x2C         # u8 0 off / 1 on: generator auto (HELM station; a copilot's ON needs the captain's ACCEPT)
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
@@ -64,12 +65,14 @@ T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor 
 # after the own confirmation). Never STANDBY. PROG_COMMIT = a new AUTO route (the frames
 # before it only fill the AURIX's staging area; COMMIT makes it the route).
 DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_HEADING_ADJ, T_SEA_STATE,
-                T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT}
+                T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR}
 
 
 def is_driving_cmd(ftype, payload=b""):
     if ftype not in DRIVING_CMDS:
         return False
+    if ftype == T_GENERATOR:
+        return payload[:1] == b"\x01"           # switching the generator ON opens the throttle (in neutral): ACCEPT; OFF is free
     return not (ftype == T_SET_MODE and payload[:1] == bytes([MODE_STANDBY]))
 
 
@@ -87,6 +90,7 @@ TYPE_NAMES = {
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data",
+    T_GENERATOR: "generator auto",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -703,6 +707,8 @@ _T2_GROUPS = [
     (struct.Struct("<IHHBBB"), "alarm_bits2 bank_v100 bank_fast100 batt_flags gen_state gen_pct".split()),
 ]
 LL_STATES = ["OK", "LINK LOST", "ENGINE KILLED"]
+# generator mode (app/generator.h GEN_, TELEM2 group L "gen_state"): the throttle opens in NEUTRAL to charge the bank
+GEN_STATES = ["OFF", "READY", "STARTING", "RUNNING", "STOPPING", "REST", "FAULT", "DONE"]
 
 # video SAVE triggers (app/smallboat.h SB_SAVE_)
 SAVE_TRIGGERS = {1: "SAVE button (joystick)", 2: "alarm", 3: "fault", 4: "joystick takeover",
@@ -765,6 +771,8 @@ def decode_telem2(payload: bytes) -> dict:
         d["batt_low"] = bool(f & 4)                     # LOW BATTERY condition (alarm bit 1 of word 2)
         d["bank_v"] = None if d["bank_v100"] == 0xFFFF else d["bank_v100"] / 100.0
         d["bank_v_fast"] = None if d["bank_fast100"] == 0xFFFF else d["bank_fast100"] / 100.0
+        d["gen_state_name"] = GEN_STATES[d["gen_state"]] if d["gen_state"] < len(GEN_STATES) else "?"
+        d["gen_active"] = d["gen_state"] in (3, 4)          # RUNNING / STOPPING: throttle above idle in neutral
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

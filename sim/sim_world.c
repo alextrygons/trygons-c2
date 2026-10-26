@@ -210,7 +210,8 @@ void world_publish(world_t *w, uint32_t t_ms)
     sim_hal_set_truth(w->heading_deg, w->rud.angle_deg);
     sim_hal_set_yaw_truth(w->yaw_dps);
     sim_hal_set_neutral_switch(w->neutral_switch,
-                               w->gear_pos_us > 1200.0f && w->gear_pos_us < 1800.0f);
+                               w->neutral_sw_force ? w->neutral_sw_force == 2
+                                                   : (w->gear_pos_us > 1200.0f && w->gear_pos_us < 1800.0f));
     /* steering motor: ~2 A running, ~8 A pushing against an end stop */
     float mot = fabsf(sim_hal_motor_command());
     float amps = mot * (w->rud.stall_run_s > 0.0f ? 8.0f : 2.0f) + 0.1f * boat_rand_gauss(&w->cur_rng);

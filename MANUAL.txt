@@ -970,6 +970,46 @@ CAPTAIN AND COPILOT (the gateway decides, every station shows it)
   SINGLE-OPERATOR mode (one person, both screens): your own confirmation
   instead of the captain's ACCEPT; manual driving still needs the licence.
 
+GENERATOR MODE (the engine charges the 12 V bank at a fast idle in NEUTRAL)
+  This is the ONE thing on the boat that opens the throttle by itself - and
+  only in NEUTRAL, only while every condition below holds (checked every
+  step, app/generator.c):
+    * "GENERATOR AUTO ON" was pressed by the captain (screen 2, control
+      panel; a copilot's press is a question on the captain's screen 1).
+      It is OFF after every power-up; the STANDBY button switches it OFF
+      again (until somebody switches it on).
+    * the boat is in STANDBY (not stopping), the outputs are armed, the
+      gear is NEUTRAL and the NEUTRAL SWITCH confirms it (a boat without
+      the switch never runs the generator), no engine kill, no e-stop, no
+      safety-monitor trip, not FIRST TEST, no alarm that is not an
+      advisory (acknowledge first - LOW BATTERY is an advisory and does not
+      block it), the bank voltage is measured and below gen_start_v 12.1 V.
+  What it does: beep + notice GENERATOR STARTING, 10 s later the fast idle
+  (gen_idle_pct 8 %), then +2 % every 30 s while the voltage (fast filter)
+  still falls, hold when it stops falling (that throttle is remembered in
+  the data flash and is the first step next time), -2 % every 30 s when the
+  bank rises above 12.5 V. Never above min(gen_max_pct 25 %, 30 %, the power
+  limit). Cycle: 20 min, then 1 min at idle and a rest-voltage check: still
+  low -> again; recovered -> GENERATOR DONE (notice, auto stays on).
+  Every stop is idle FIRST (the throttle comes down at its normal rate and
+  nothing opens it again until it is idle): the captain's OFF, the STANDBY
+  button, a joystick deflection, any alarm, any mode / gear request (also a
+  pending AUTO start waiting for CONFIRM), link lost (UNCREWED), e-stop,
+  engine kill, no voltage data.
+  GEAR FAULT: the neutral switch opens while it runs, or the boat speeds up
+  (SOG + 0.5 kn within 20 s of a throttle rise) -> throttle idle at once
+  (the fast STANDBY closing rate), alarm GEAR, generator auto OFF until it
+  is switched on again (acknowledge the alarm first).
+  CPU1 watches it too: throttle above idle in neutral is allowed only while
+  core 0 says "generator active" and at most the generator cap; the gear
+  leaving neutral meanwhile = trip (safe outputs, latched).
+  Screens: screen 2 status panel row "Generator" + the button; screen 1
+  bottom line "GEN x %" while it runs; notices STARTING / FAULT / DONE.
+  Parameters (Config tab, STANDBY only): gen_max_pct 0..30 (0 = generator
+  disabled; the boat file's generator_max_pct, step 5), gen_start_v
+  11.5..13 V, gen_idle_pct 3..15 %. Log: event 24 GENERATOR (every state
+  change and throttle step), TELEM2 group L.
+
 -------------------------------------------------------------------------------
 8. THE USB JOYSTICK (THRUSTMASTER T.16000M + TWCS)
 -------------------------------------------------------------------------------
@@ -1764,6 +1804,14 @@ The ground station saves its own copy of the telemetry in the same format
                            NO VOLTAGE DATA notice after 5 s without a sample.
                            Board: divider on A2 / AN37, HAL_SUPPLY_FITTED and
                            SUPPLY_DIV_RATIO in hal/hal_pins.h (WIRING.md 3B)
+  Generator mode           gen_max_pct 25 % (PC, 0..30; 0 = disabled; the
+                           AURIX ceiling is 30 %), gen_start_v 12.1 V (PC,
+                           11.5..13), gen_idle_pct 8 % (PC, 3..15); +-2 %
+                           every 30 s, start delay 10 s, "still falling" =
+                           0.02 V over 30 s, step down above start + 0.4 V,
+                           run 20 min, rest 1 min, SOG rise 0.5 kn within
+                           20 s = GEAR FAULT; learned value NV slot 6 (all
+                           TO CONFIRM; the generator needs the neutral switch)
   Dead reckoning           x0.7 speed, limit 200 m or 10 min, then hold
                            at 4 kn (PC: all)
   TRAINING                 throttle 20 % (PC), 30 s spin-up
@@ -1838,6 +1886,9 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c, drivers hal/tc_*.c)
          app/battery.c, LOW BATTERY advisory + NO VOLTAGE DATA notice.
          The divider and the pin are still TBD (WIRING.md 3B):
          HAL_SUPPLY_FITTED 0 until wired, so the boat shows NO VOLTAGE DATA
+     [x] generator mode (app/generator.c, chapter 7): needs the neutral
+         switch wired (HAL_NEUTRAL_SW_FITTED 1) and the voltage divider -
+         until then it never starts (no switch = never, no data = never)
    Still stubs:
      [ ] joystick ADC + 3 buttons (the USB bridge works), neutral switch
          (input done, HAL_NEUTRAL_SW_FITTED 0), paddlewheel

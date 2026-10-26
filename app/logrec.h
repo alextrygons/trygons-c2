@@ -69,6 +69,7 @@ typedef enum {
                            detected, changes, 0 */
     EV_LINKLOST,        /* UNCREWED lost link: state (0 ok 1 lost 2 killed), near shore, shore distance m, losses */
     EV_NV,              /* non-volatile storage: what (1 record unusable -> defaults, 2 NV FAULT), slot, resets, 0 */
+    EV_GENERATOR,       /* generator mode: state (GEN_), stop why | enabled << 8, bank V*100, throttle demand %*10 */
     EV_COUNT
 } log_event_t;
 

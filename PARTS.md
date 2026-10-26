@@ -7,7 +7,7 @@ why each part is needed: MANUAL.txt.
 
 - [ ] Joystick with 2 potentiometer axes (10 k) and THREE buttons (TAKE, AUTO, CONFIRM - CONFIRM clearly separate from TAKE), marine grade; 4 x 1 kOhm (end resistors), 2 x 100 kOhm (pull-downs), 2 x 100 nF.
 - [ ] Panel: 6 x IP67 push buttons (one big red STANDBY, one HDG LOCK, -1, +1, -10, +10), cable.
-- [ ] Neutral switch on the gearbox / shift linkage (closes in neutral).
+- [ ] Neutral switch on the gearbox / shift linkage (closes in neutral). Also required by GENERATOR mode (the engine charges the bank in neutral only while this switch confirms neutral).
 - [ ] microSD click (MIKROE-924) + industrial microSD card 8-32 GB.
 - [ ] Throttle servo (analog, or digital with "fail-safe = idle") + a throttle return spring; gear servo.
 - [ ] Steering motor driver: Pololu G2 High-Power Motor Driver 18v17 (#2991), 20 A blade fuse + holder, 100 uF / 35 V low-ESR capacitor, 2.5 mm2 wire.

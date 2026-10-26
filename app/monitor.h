@@ -16,6 +16,11 @@
  *   - bench trip test: core 0 writes MON_TEST_TRIP into test_trip (BENCH TEST
  *     mode, operator confirmed) -> a real trip, latched like any other, so the
  *     safe outputs can be checked with a scope (FIRST_TEST.md 3g)
+ *   - generator mode (CLAUDE.md K): while core 0 says gen_active the throttle
+ *     may be above idle with the gear in NEUTRAL, at most min(gen_cap_pct,
+ *     forward limit) - instead of the reverse limit that applies out of
+ *     forward gear; the gear pulse not at neutral with gen_active -> trip
+ *     (MON_TRIP_GENERATOR). Without gen_active the existing rules apply.
  * Trip: hal_safe_outputs() forces throttle idle + gear neutral + steering
  * motor off + alarm + safety relay open, latched in the HAL until reset
  * (core 0 can't override it), and g_mon.tripped tells core 0 (-> STANDBY).
@@ -43,7 +48,8 @@ typedef enum {
     MON_TRIP_GEAR,              /* gear moved with the throttle open */
     MON_TRIP_HEARTBEAT,         /* core 0 stopped */
     MON_TRIP_BOOT,              /* core 0 never started its control loop */
-    MON_TRIP_TEST               /* bench trip test (operator request in BENCH TEST) */
+    MON_TRIP_TEST,              /* bench trip test (operator request in BENCH TEST) */
+    MON_TRIP_GENERATOR          /* generator mode: gear not in neutral while gen_active */
 } mon_reason_t;
 
 /* Shared memory core 0 -> CPU1 (and the trip flag back). On the TC375
@@ -62,6 +68,8 @@ typedef struct {
     volatile uint8_t  tripped;          /* monitor -> core 0 */
     volatile uint8_t  reason;           /* mon_reason_t */
     volatile uint32_t test_trip;        /* MON_TEST_TRIP = bench trip test (core 0 -> monitor) */
+    volatile uint8_t  gen_active;       /* generator mode runs / stops: throttle above idle in NEUTRAL allowed ... */
+    volatile float    gen_cap_pct;      /* ... up to this (never above the forward limit) */
 } mon_shared_t;
 
 extern mon_shared_t g_mon;

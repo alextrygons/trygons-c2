@@ -25,7 +25,7 @@ typedef enum {
     P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
     P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET, P_GPS2_CHECK, P_NAV_LOST_KN,
-    P_STOP_RATE, P_NAV_MAX_DEV, P_NEAR_SHORE, P_LL_GRACE, P_BATT_LOW,
+    P_STOP_RATE, P_NAV_MAX_DEV, P_NEAR_SHORE, P_LL_GRACE, P_BATT_LOW, P_GEN_MAX, P_GEN_START_V, P_GEN_IDLE,
     P_COUNT
 } param_id_t;
 
@@ -55,6 +55,9 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "near_shore_m",   20.0f, 2000.0f },     /* UNCREWED lost link: closer = engine kill at once (100, TO CONFIRM) */
     { "lostlink_grc_s",  0.0f,  120.0f },     /* UNCREWED lost link, open sea: kill after this (10, TO CONFIRM) */
     { "batt_low_v",     10.0f,   13.5f },     /* LOW BATTERY below this for 60 s (11.8 V, TO CONFIRM; advisory) */
+    { "gen_max_pct",     0.0f,   30.0f },     /* generator: throttle cap in neutral (25, TO CONFIRM; 0 = disabled; boat file) */
+    { "gen_start_v",    11.5f,   13.0f },     /* generator runs while the bank is below this (12.1 V) */
+    { "gen_idle_pct",    3.0f,   15.0f },     /* generator: the fast idle, first step (8 %, TO CONFIRM) */
 };
 
 uint8_t link_param_count(void)
@@ -96,6 +99,9 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_NEAR_SHORE:   return &s->cfg.near_shore_m;
     case P_LL_GRACE:     return &s->cfg.lostlink_grace_s;
     case P_BATT_LOW:     return &s->batt.cfg.low_v;
+    case P_GEN_MAX:      return &s->gen.cfg.max_pct;
+    case P_GEN_START_V:  return &s->gen.cfg.start_v;
+    case P_GEN_IDLE:     return &s->gen.cfg.idle_pct;
     default:             return NULL;
     }
 }
@@ -414,6 +420,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_POWER_RAISE:  return 3;
     case PROTO_T_POWER_LOWER:  return 0;
     case PROTO_T_BENCH:        return 3;
+    case PROTO_T_GENERATOR:    return 1;
     default:                   return -1;
     }
 }
@@ -465,6 +472,13 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
     bool joy = (sb_mode(s) == MODE_MANUAL);
 
     switch (f->type) {
+    case PROTO_T_GENERATOR: {
+        /* generator auto on / off (section K): the HELM station (checked by the
+         * caller); the generator itself runs only in STANDBY with neutral confirmed */
+        uint8_t on = proto_rd_u8(&r);
+        if (on > 1u) return PROTO_R_BAD_VALUE;
+        return sb_result_to_proto(sb_generator_set(s, on == 1u));
+    }
     case PROTO_T_SET_MODE: {
         uint8_t m = proto_rd_u8(&r);
         if (m >= (uint8_t)MODE_COUNT) return PROTO_R_BAD_VALUE;
@@ -915,8 +929,8 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      u16 shore info age ms (0xFFFF never) | u16 open-sea kill in (0.1 s) | u16 near_shore_m
  *   L: u32 alarm_bits2 (SB_ALM2_: the second alarm word) | u16 bank V*100 (0xFFFF no data) |
  *      u16 fast-filtered bank V*100 (0xFFFF) | u8 battery flags (b0 measured now, b1 NO VOLTAGE DATA
- *      notice, b2 LOW BATTERY condition) | u8 generator state (0 off; generator mode, section K) |
- *      u8 generator throttle %
+ *      notice, b2 LOW BATTERY condition) | u8 generator state (GEN_: 0 off 1 ready 2 starting 3 running
+ *      4 stopping 5 rest 6 fault 7 done; section K) | u8 generator throttle demand %
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1018,8 +1032,8 @@ static void telemetry2(link_t *l, sb_t *s)
         proto_wr_u16(&w, b->valid ? (uint16_t)lroundf(fminf(655.0f, b->bank_v) * 100.0f) : 0xFFFFu);
         proto_wr_u16(&w, b->valid ? (uint16_t)lroundf(fminf(655.0f, b->bank_v_fast) * 100.0f) : 0xFFFFu);
         proto_wr_u8(&w, (uint8_t)((b->valid ? 1u : 0u) | (b->no_data ? 2u : 0u) | (b->low ? 4u : 0u)));
-        proto_wr_u8(&w, 0u);                /* generator state: off (generator mode comes with section K) */
-        proto_wr_u8(&w, 0u);                /* generator throttle % */
+        proto_wr_u8(&w, s->gen.state);      /* generator mode (section K) */
+        proto_wr_u8(&w, (uint8_t)(s->gen.demand_pct + 0.5f));
     }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);

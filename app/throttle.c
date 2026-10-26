@@ -17,12 +17,15 @@ void throttle_init(throttle_t *t, const throttle_config_t *cfg)
     t->cfg = *cfg;
     t->out_pct = 0.0f;
     t->stop = false;
+    t->neutral_run_pct = 0.0f;
 }
 
 float throttle_step(throttle_t *t, float demand_pct, gear_t gear, bool allowed, float dt_s)
 {
     float target = demand_pct;
-    if (!allowed || gear == GEAR_N) target = 0.0f;
+    bool neutral_run = gear == GEAR_N && t->neutral_run_pct > 0.0f;   /* the generator (neutral, capped) */
+    if (neutral_run) { if (target > t->neutral_run_pct) target = t->neutral_run_pct; }
+    else if (!allowed || gear == GEAR_N) target = 0.0f;
     if (gear == GEAR_R && target > t->cfg.max_rev_pct) target = t->cfg.max_rev_pct;
     if (gear == GEAR_F && target > t->cfg.max_fwd_pct) target = t->cfg.max_fwd_pct;
     if (target < 0.0f) target = 0.0f;

@@ -63,6 +63,7 @@
 #include "autopilot.h"
 #include "battery.h"
 #include "gear.h"
+#include "generator.h"
 #include "joybridge.h"
 #include "joymap.h"
 #include "slam.h"
@@ -347,6 +348,9 @@ typedef struct {
 
     /* supply voltage of the 12 V bank (battery.c): filters, LOW BATTERY (parameter batt_low_v) */
     batt_config_t batt;
+    /* generator mode (generator.c, section K): the ONE automatic throttle rise - in neutral only
+     * (parameters gen_max_pct 0 = disabled, gen_start_v, gen_idle_pct) */
+    gen_config_t  gen;
 } sb_config_t;
 
 /* One side (forward / reverse) of the non-returning throttle lever:
@@ -540,6 +544,7 @@ typedef struct {
     uint32_t    alarm_bits2;   /* SB_ALM2_... (the second word: newer alarms) */
     uint32_t    alarm_bits2_seen;
     batt_t      batt;          /* supply voltage of the 12 V bank (filtered), LOW BATTERY condition */
+    gen_t       gen;           /* generator mode: throttle in NEUTRAL to charge the bank (captain-enabled) */
     sb_gw_t     gw;            /* gateway (Raspberry Pi) link status */
     uint8_t     helm;          /* HELM holder: SB_HELM_NONE / SB_HELM_USB / gateway station id */
     bool        helm_local;    /* the holder is on the boat (USB or boat LAN) */
@@ -760,5 +765,12 @@ void sb_gw_shore(sb_t *s, uint8_t flags, uint16_t dist_m);
 bool sb_near_shore(const sb_t *s);
 /* Seconds left before the open-sea kill (0 if not counting). */
 float sb_lostlink_left_s(const sb_t *s);
+
+/* Generator auto on / off (PROTO_T_GENERATOR, the HELM station; section K).
+ * On: refused in FIRST TEST and with gen_max_pct 0 (disabled). The generator
+ * itself only runs in STANDBY with neutral confirmed, a low bank voltage and
+ * no alarm (generator.h); off = a stop, idle first. The STANDBY button also
+ * switches it off. */
+sb_result_t sb_generator_set(sb_t *s, bool on);
 
 #endif /* SMALLBOAT_H */

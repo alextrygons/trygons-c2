@@ -23,6 +23,9 @@ static struct {
     uint8_t  profile, ll_state;
     uint16_t nv_mask;
     bool     nv_fault;
+    uint8_t  gen_state;
+    bool     gen_enabled;
+    float    gen_pct;
     uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -299,6 +302,15 @@ static void changes(const sb_t *s)
         if (nv->fault && !k.nv_fault) ev(s, EV_NV, 2, 0, nv->resets, 0);
         k.nv_mask = nv->reset_mask;
         k.nv_fault = nv->fault;
+    }
+    /* generator mode: every state change, switch on / off and throttle step
+     * (events, not the 20 Hz sample: the black box has 2 bytes left) */
+    if (s->gen.state != k.gen_state || s->gen.enabled != k.gen_enabled || s->gen.demand_pct != k.gen_pct) {
+        ev(s, EV_GENERATOR, s->gen.state, (int32_t)s->gen.stop_why | (s->gen.enabled ? 256 : 0),
+           s->batt.valid ? (int32_t)(s->batt.bank_v * 100.0f) : -1, (int32_t)(s->gen.demand_pct * 10.0f));
+        k.gen_state = s->gen.state;
+        k.gen_enabled = s->gen.enabled;
+        k.gen_pct = s->gen.demand_pct;
     }
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);

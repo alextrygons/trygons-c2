@@ -34,9 +34,13 @@ uint16_t servo_pulse_for(const servo_config_t *c, float pct)
     return (uint16_t)(us + 0.5f);
 }
 
-float servo_throttle_write(servo_t *sv, const plim_t *lim, bool forward_engaged, float pct, float dt_s)
+float servo_throttle_write(servo_t *sv, const plim_t *lim, bool forward_engaged, float pct, float dt_s,
+                           float neutral_run_pct)
 {
     float limit = forward_engaged ? lim->fwd_pct : lim->rev_pct;
+    /* generator mode: in neutral, never above the generator cap nor the forward limit */
+    if (!forward_engaged && neutral_run_pct >= 0.0f)
+        limit = (neutral_run_pct < lim->fwd_pct) ? neutral_run_pct : lim->fwd_pct;
     if (limit > 100.0f) limit = 100.0f;
     if (limit < 0.0f) limit = 0.0f;
     /* just after a limit drop: may still be above it, but only coming down */

@@ -845,6 +845,8 @@ class Hud:
             bv = d.get("bank_v")
             items.append((T("hud.batt", v="%.1f" % bv) if bv is not None else T("hud.batt_none"),
                           self.pal["warn"] if d.get("batt_low") else self.pal["main"], "batt"))
+        if d is not None and d.get("gen_state", 0) in (2, 3, 4):   # the generator opens the throttle in neutral
+            items.append((T("hud.gen", p="%d" % d.get("gen_pct", 0)), self.pal["main"], "gen"))
         items.append((T("hud.clock", clock=s.clock or "--:--", mission=s.mission or "--:--"), self.pal["main"],
                       "clock"))
         if items:

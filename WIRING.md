@@ -137,7 +137,7 @@ connectors, which nothing else in this project uses.
 | Steering motor driver sleep | X1/X2 header | CHECK | P33.7 | to the G2 **SLP**: high = driver awake; low = asleep, outputs open (power-up, monitor trip). The G2 pulls SLP low itself |
 | Steering motor current | A3 | X301 pin 4 | P40.6 = AN36 (EVADC group 8 ch 4) | from the G2 **CS** (about 20 mV per amp + 50 mV) |
 | Safety relay driver | D10 | X303 pin 3 | P10.5 | high = relay closed (actuators allowed); through a transistor / relay driver, never the coil directly |
-| Neutral switch | D5 | X304 pin 6 | P02.3 (input, pull-up) | switch to GND, CLOSED when the gearbox is in neutral |
+| Neutral switch | D5 | X304 pin 6 | P02.3 (input, pull-up) | switch to GND, CLOSED when the gearbox is in neutral; also the precondition of GENERATOR mode (CLAUDE.md K): without it the generator never runs |
 
 The Arduino SPI pins D11-D13 are used by the BNO085 (section 9); the SD card
 uses the mikroBUS socket. The steering end stops, the emergency stop contact

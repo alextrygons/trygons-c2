@@ -1,4 +1,4 @@
-/*
+﻿/*
  * sim_sb.c - Small-boat feature tests (one block per phase).
  */
 #include <math.h>
@@ -2739,6 +2739,8 @@ typedef struct {
     int         joymaps, raws;
     uint8_t     jm[PROTO_MAX_PAYLOAD], jm_len;      /* last JOYMAP_VALUE */
     uint8_t     raw[PROTO_MAX_PAYLOAD], raw_len;    /* last JOY_RAW */
+    uint8_t     t2[PROTO_MAX_PAYLOAD];              /* last TELEM2 */
+    uint16_t    t2_len;
 } pcsim_t;
 
 static void pc_send(pcsim_t *p, uint8_t type, const uint8_t *payload, uint8_t len)
@@ -2790,6 +2792,9 @@ static void pc_hook(sbsim_t *x, void *ctx)
             (void)proto_rd_u8(&r);
             p->param_value = proto_rd_f32(&r);
             p->params++;
+        } else if (f.type == PROTO_T_TELEM2) {
+            memcpy(p->t2, f.payload, f.len);
+            p->t2_len = f.len;
         }
     }
 }
@@ -7455,41 +7460,41 @@ static void servo_clamp_tests(void)
 #define CHK(cond, txt) do { if (!(cond)) { fails++; snprintf(why + strlen(why), sizeof why - strlen(why), "%s; ", txt); } } while (0)
     /* forward 30 %: above it -> clamped */
     lim.fwd_pct = 30.0f; lim.rev_pct = 5.0f;
-    float o = servo_throttle_write(&sv, &lim, true, 80.0f, dt);
+    float o = servo_throttle_write(&sv, &lim, true, 80.0f, dt, -1.0f);
     CHK(o <= 30.0f && sv.clamped, "fwd 80 over 30 not clamped");
     /* reverse uses the reverse limit, also at exactly the limit */
-    o = servo_throttle_write(&sv, &lim, false, 5.0f, dt);
+    o = servo_throttle_write(&sv, &lim, false, 5.0f, dt, -1.0f);
     CHK(o <= 5.0f + 1e-4f, "reverse at its limit");
-    o = servo_throttle_write(&sv, &lim, false, 12.0f, dt);
+    o = servo_throttle_write(&sv, &lim, false, 12.0f, dt, -1.0f);
     CHK(o <= 5.0f + 1e-4f && sv.clamped, "reverse 12 over 5 not clamped");
     /* limit lowered while above it: only comes down, at most rate_down per step */
     servo_init(&sv, &c);
     lim.fwd_pct = 100.0f;
-    for (int i = 0; i < 60; i++) servo_throttle_write(&sv, &lim, true, 90.0f, dt);
+    for (int i = 0; i < 60; i++) servo_throttle_write(&sv, &lim, true, 90.0f, dt, -1.0f);
     float before = sv.out_pct;
     lim.fwd_pct = 30.0f;
-    o = servo_throttle_write(&sv, &lim, true, 90.0f, dt);
+    o = servo_throttle_write(&sv, &lim, true, 90.0f, dt, -1.0f);
     CHK(o < before && o >= before - c.rate_down_pct_s * dt - 1e-3f, "limit drop: not coming down at the closing rate");
-    for (int i = 0; i < 100; i++) o = servo_throttle_write(&sv, &lim, true, 90.0f, dt);
+    for (int i = 0; i < 100; i++) o = servo_throttle_write(&sv, &lim, true, 90.0f, dt, -1.0f);
     CHK(o <= 30.0f + 1e-4f, "never reached the lowered limit");
     /* limit dropped during reverse */
     servo_init(&sv, &c);
     lim.rev_pct = 15.0f;
-    for (int i = 0; i < 40; i++) servo_throttle_write(&sv, &lim, false, 15.0f, dt);
+    for (int i = 0; i < 40; i++) servo_throttle_write(&sv, &lim, false, 15.0f, dt, -1.0f);
     lim.rev_pct = 5.0f;
-    for (int i = 0; i < 40; i++) o = servo_throttle_write(&sv, &lim, false, 15.0f, dt);
+    for (int i = 0; i < 40; i++) o = servo_throttle_write(&sv, &lim, false, 15.0f, dt, -1.0f);
     CHK(o <= 5.0f + 1e-4f, "reverse limit drop not followed");
     /* NaN / negative / limits out of range */
-    o = servo_throttle_write(&sv, &lim, true, NAN, dt);
+    o = servo_throttle_write(&sv, &lim, true, NAN, dt, -1.0f);
     CHK(o == 0.0f && sv.out_us == c.idle_us, "NaN demand not idle");
-    o = servo_throttle_write(&sv, &lim, true, -20.0f, dt);
+    o = servo_throttle_write(&sv, &lim, true, -20.0f, dt, -1.0f);
     CHK(o == 0.0f, "negative demand not idle");
     lim.fwd_pct = 250.0f;
     servo_init(&sv, &c);
-    for (int i = 0; i < 400; i++) o = servo_throttle_write(&sv, &lim, true, 100.0f, dt);
+    for (int i = 0; i < 400; i++) o = servo_throttle_write(&sv, &lim, true, 100.0f, dt, -1.0f);
     CHK(o <= 100.0f && sv.out_us <= c.full_us, "limit above 100 not capped");
     lim.fwd_pct = -5.0f;
-    o = servo_throttle_write(&sv, &lim, true, 50.0f, dt);
+    o = servo_throttle_write(&sv, &lim, true, 50.0f, dt, -1.0f);
     CHK(o <= sv.out_pct + 1e-4f && sv.limit_pct == 0.0f, "negative limit not 0");
     /* reversed servo (full < idle): pulses stay inside its calibrated range */
     servo_config_t r = c;
@@ -8265,6 +8270,656 @@ static void nv_tests(void)
 
 /* ------------------------------------------ BV: supply voltage (section J) -- */
 
+/* ----------------------------------------------- GN generator mode (generator.c) -- */
+
+/* The bank as the tests need it: a fixed voltage, or one that falls slowly
+ * (drain) and is lifted by the engine's alternator with the throttle; or no
+ * data at all. Also watches every stop: once the generator is STOPPING the
+ * throttle output must never rise until idle, and in STANDBY with the
+ * generator not active the throttle must be idle in neutral. */
+typedef struct {
+    bool  none;                 /* not measured */
+    bool  fixed;
+    float fixed_v;
+    float base_v, drain_v_s, alt_v_pct;
+    uint32_t t0;
+    /* watch */
+    float prev_out;
+    int   rises_in_stop;        /* output rose while STOPPING */
+    int   stray;                /* throttle in neutral without the generator */
+    float max_out;              /* highest output seen */
+    float max_demand;
+    int   gear_not_n;           /* gear left N while the generator was active */
+    bool  started;              /* RUNNING seen */
+} gensup_t;
+
+static void gen_hook(sbsim_t *x, void *ctx)
+{
+    gensup_t *g = (gensup_t *)ctx;
+    float out = x->sb.thr.out_pct;
+    if (g->none) sim_hal_set_supply(false, 0.0f);
+    else if (g->fixed) sim_hal_set_supply(true, g->fixed_v);
+    else sim_hal_set_supply(true, g->base_v - g->drain_v_s * ((x->t - g->t0) * 0.001f) + g->alt_v_pct * out);
+    const gen_t *gen = &x->sb.gen;
+    if (gen->state == GEN_STOPPING && out > g->prev_out + 0.01f) g->rises_in_stop++;
+    if (sb_mode(&x->sb) == MODE_STANDBY && !gen->active && gear_is(&x->sb.gear, GEAR_N) &&
+        out > x->sb.cfg.gear.idle_max_pct + 0.01f && out > g->prev_out + 0.01f) g->stray++;
+    if (gen->active && !gear_is(&x->sb.gear, GEAR_N) && x->sb.gear.target != GEAR_N &&
+        out > x->sb.cfg.gear.idle_max_pct) g->gear_not_n++;
+    if (gen->state == GEN_RUNNING) g->started = true;
+    if (out > g->max_out) g->max_out = out;
+    if (gen->demand_pct > g->max_demand) g->max_demand = gen->demand_pct;
+    g->prev_out = out;
+}
+
+/* GN6: the "bug" where core 0 forgets to publish gen_active (cleared after every control step) */
+static void gen_clear_hook(sbsim_t *x, void *ctx)
+{
+    gen_hook(x, ctx);
+    g_mon.gen_active = 0u;
+}
+
+static void gensup_fixed(gensup_t *g, float v)
+{
+    memset(g, 0, sizeof *g);
+    g->fixed = true;
+    g->fixed_v = v;
+}
+
+/* a boat at the dock: neutral switch fitted (follows the gearbox), the bank
+ * at v0 from the first sample (the slow filter starts there), armed in
+ * STANDBY after 2 s */
+static void gen_setup(sbsim_t *x, uint32_t seed, const sb_config_t *cfg, float v0)
+{
+    sbsim_init(x, seed, 90.0f, 0.0f, cfg);
+    x->w.neutral_switch = true;
+    x->w.neutral_sw_force = 0;
+    sim_hal_set_supply(true, v0);
+    sbsim_run(x, 2000u, NULL, NULL);
+}
+
+static bool gen_running_at(const sbsim_t *x, float pct)
+{
+    return x->sb.gen.state == GEN_RUNNING && fabsf(x->sb.gen.demand_pct - pct) < 0.01f &&
+           fabsf(x->sb.thr.out_pct - pct) < 0.6f && gear_is(&x->sb.gear, GEAR_N) && sb_mode(&x->sb) == MODE_STANDBY;
+}
+
+static void generator_tests(void)
+{
+    char d[1200];
+    printf("\n=== GN generator mode (generator.c): the ONE automatic throttle rise, in NEUTRAL only ===\n");
+
+    /* GN1 the start conditions one by one: nothing starts until ALL hold; then STARTING (beep) -> 10 s -> the
+     * fast idle in neutral, CPU1 told (gen_active), the boat does not move */
+    {
+        static sbsim_t x;
+        static gensup_t g;
+        int n_ok = 0, len = 0;
+        d[0] = 0;
+#define GN1_CASE(name, cond) do { bool c_ = (cond); if (c_) { n_ok++; } \
+        len += snprintf(d + len, sizeof d - (size_t)len, "%s %s; ", name, c_ ? "ok" : "FAILED"); } while (0)
+        /* a. auto off: a low bank alone starts nothing */
+        gen_setup(&x, 1601u, NULL, 12.6f);
+        gensup_fixed(&g, 11.5f);
+        sbsim_run(&x, x.t + 40000u, gen_hook, &g);
+        GN1_CASE("auto off", x.sb.gen.state == GEN_OFF && x.sb.thr.out_pct == 0.0f && !x.sb.gen.active &&
+                 x.sb.gen.cfg.run_ms == 1200000u && x.sb.gen.cfg.rest_ms == 60000u && x.sb.gen.cfg.max_pct == 25.0f);
+        /* b. auto on, bank fine (12.6 V): READY, waiting */
+        gensup_fixed(&g, 12.6f);
+        sbsim_run(&x, x.t + 40000u, gen_hook, &g);
+        bool on_ok = sb_generator_set(&x.sb, true) == SB_OK;
+        sbsim_run(&x, x.t + 40000u, gen_hook, &g);
+        GN1_CASE("bank fine", on_ok && x.sb.gen.state == GEN_READY && x.sb.thr.out_pct == 0.0f);
+        /* c. bank low but the neutral switch not fitted: never */
+        x.w.neutral_switch = false;
+        gensup_fixed(&g, 11.5f);
+        sbsim_run(&x, x.t + 60000u, gen_hook, &g);
+        GN1_CASE("no neutral switch", x.sb.gen.state == GEN_READY && x.sb.neutral_sw == -1 && x.sb.thr.out_pct == 0.0f);
+        /* d. switch fitted but open (says "in gear") */
+        x.w.neutral_switch = true;
+        x.w.neutral_sw_force = 1;
+        sbsim_run(&x, x.t + 40000u, gen_hook, &g);
+        GN1_CASE("switch open", x.sb.gen.state == GEN_READY && x.sb.neutral_sw == 0 && x.sb.thr.out_pct == 0.0f);
+        x.w.neutral_sw_force = 0;
+        /* e. a non-advisory alarm (compass lost in STANDBY = alarm only) blocks it; acknowledged -> starts */
+        sim_hal_fail_heading(true);
+        sbsim_run(&x, x.t + 20000u, gen_hook, &g);
+        bool alarm_blocks = (x.sb.alarm_bits & SB_ALM_COMPASS) && x.sb.gen.state == GEN_READY && x.sb.thr.out_pct == 0.0f;
+        sim_hal_fail_heading(false);
+        sbsim_run(&x, x.t + 5000u, gen_hook, &g);
+        sb_alarm_ack(&x.sb);
+        sbsim_run(&x, x.t + 100u, gen_hook, &g);
+        bool starting = x.sb.gen.state == GEN_STARTING && x.sb.thr.out_pct == 0.0f && x.sb.chirp_ms > 0u;
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        GN1_CASE("alarm blocks, ACK -> STARTING (beep) -> RUNNING 8 %",
+                 alarm_blocks && starting && gen_running_at(&x, 8.0f) && x.sb.gen.active && g_mon.gen_active == 1u &&
+                 fabsf(g_mon.gen_cap_pct - 25.0f) < 0.01f && !x.mon.tripped && x.w.speed_kn < 0.2f &&
+                 x.w.engaged == GEAR_N && x.w.shift_under_load == 0 && sim_hal_safety_relay());
+        /* f. e-stop: stops (idle first) and blocks a restart while pressed */
+        sim_hal_set_estop(true, true);
+        sbsim_run(&x, x.t + 3000u, gen_hook, &g);
+        bool estop_stops = x.sb.gen.state != GEN_RUNNING && x.sb.thr.out_pct == 0.0f && sb_mode(&x.sb) == MODE_STANDBY;
+        sim_hal_set_estop(true, false);
+        sbsim_run(&x, x.t + 3000u, gen_hook, &g);
+        bool estop_alarm_blocks = x.sb.gen.state == GEN_READY && x.sb.thr.out_pct == 0.0f;
+        sb_alarm_ack(&x.sb);
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        GN1_CASE("e-stop stops + blocks until ACK", estop_stops && estop_alarm_blocks && gen_running_at(&x, 8.0f) &&
+                 g.rises_in_stop == 0 && g.stray == 0 && g.gear_not_n == 0);
+        /* g. gen_max_pct 0 = disabled: the switch is refused */
+        {
+            static sbsim_t y;
+            gen_setup(&y, 1602u, NULL, 11.5f);
+            y.sb.gen.cfg.max_pct = 0.0f;
+            bool refused = sb_generator_set(&y.sb, true) == SB_ERR_PRECOND && y.sb.gen.state == GEN_OFF;
+            gensup_fixed(&g, 11.5f);
+            sbsim_run(&y, y.t + 20000u, gen_hook, &g);
+            GN1_CASE("gen_max_pct 0 refused", refused && y.sb.gen.state == GEN_OFF && y.sb.thr.out_pct == 0.0f);
+        }
+        /* h. not in STANDBY (HDG LOCK at the dock): READY, nothing */
+        {
+            static sbsim_t y;
+            gen_setup(&y, 1603u, NULL, 11.5f);
+            (void)sb_generator_set(&y.sb, true);
+            press(&y, HAL_BTN_HDG_LOCK);
+            gensup_fixed(&g, 11.5f);
+            sbsim_run(&y, y.t + 20000u, gen_hook, &g);
+            bool hdg = sb_mode(&y.sb) == MODE_HDG_LOCK && y.sb.gen.state == GEN_READY && y.sb.gen.demand_pct == 0.0f;
+            press(&y, HAL_BTN_STANDBY);                     /* the STANDBY button: auto OFF */
+            sbsim_run(&y, y.t + 20000u, gen_hook, &g);
+            GN1_CASE("HDG LOCK: nothing; STANDBY button -> auto off", hdg && x.sb.gen.state != GEN_OFF &&
+                     y.sb.gen.state == GEN_OFF && !y.sb.gen.enabled && y.sb.thr.out_pct == 0.0f);
+        }
+        /* i. FIRST TEST: refused, never */
+        {
+            static sbsim_t y;
+            sb_config_t c;
+            sb_default_config(&c);
+            c.first_test = true;
+            gen_setup(&y, 1604u, &c, 11.5f);
+            bool refused = sb_generator_set(&y.sb, true) == SB_ERR_WRONG_MODE;
+            y.sb.gen.enabled = true;                        /* even forced on: the conditions never hold */
+            gensup_fixed(&g, 11.5f);
+            sbsim_run(&y, y.t + 20000u, gen_hook, &g);
+            GN1_CASE("FIRST TEST refused", refused && y.sb.gen.state == GEN_READY && y.sb.thr.out_pct == 0.0f &&
+                     sim_hal_throttle() <= 0.0f);
+        }
+        /* j. no voltage data: never */
+        {
+            static sbsim_t y;
+            gen_setup(&y, 1605u, NULL, 12.6f);
+            (void)sb_generator_set(&y.sb, true);
+            memset(&g, 0, sizeof g);
+            g.none = true;
+            sbsim_run(&y, y.t + 20000u, gen_hook, &g);
+            GN1_CASE("no voltage data", y.sb.batt.no_data && y.sb.gen.state == GEN_READY && y.sb.thr.out_pct == 0.0f);
+        }
+#undef GN1_CASE
+        test_report("GN1 start conditions one by one (auto off, bank fine, no switch, switch open, alarm, e-stop, "
+                    "disabled, not STANDBY, FIRST TEST, no voltage data); all OK -> beep, 10 s, fast idle in N",
+                    n_ok == 10, d);
+        sim_hal_set_estop(false, false);
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* GN2 steps, hold, down, the cap: +2 % every 30 s while the fast voltage still falls, hold when it stops
+     * (= the learned value), -2 % above start + 0.4 V, never above min(gen_max_pct, 30, power limit); a lower
+     * cap is followed down at once, never up; parameter limits */
+    {
+        static pcsim_t p;
+        static gensup_t g;
+        pcsim_init(&p, 1606u);
+        p.x.w.neutral_switch = true;
+        sim_hal_set_supply(true, 12.0f);                   /* the slow filter starts here */
+        pc_run(&p, 2000u);
+        uint8_t id_max = 0xFFu, id_sv = 0xFFu, id_idle = 0xFFu;
+        for (uint8_t i = 0; i < link_param_count(); i++) {
+            if (strcmp(link_param_info(i)->name, "gen_max_pct") == 0) id_max = i;
+            if (strcmp(link_param_info(i)->name, "gen_start_v") == 0) id_sv = i;
+            if (strcmp(link_param_info(i)->name, "gen_idle_pct") == 0) id_idle = i;
+        }
+        bool params = id_max != 0xFFu && id_sv != 0xFFu && id_idle != 0xFFu &&
+                      link_param_info(id_max)->min == 0.0f && link_param_info(id_max)->max == 30.0f &&
+                      link_param_info(id_sv)->min == 11.5f && link_param_info(id_sv)->max == 13.0f &&
+                      link_param_info(id_idle)->min == 3.0f && link_param_info(id_idle)->max == 15.0f &&
+                      p.x.sb.gen.cfg.max_pct == 25.0f && p.x.sb.gen.cfg.start_v == 12.1f && p.x.sb.gen.cfg.idle_pct == 8.0f;
+        uint8_t ps[5]; proto_wr_t w;
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id_max); proto_wr_f32(&w, 40.0f);
+        bool over_refused = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u) == PROTO_R_BAD_VALUE && p.x.sb.gen.cfg.max_pct == 25.0f;
+        /* the bank falls 0.002 V/s whatever the engine does (alternator too weak): every 30 s one step up */
+        memset(&g, 0, sizeof g);
+        g.base_v = 12.0f; g.drain_v_s = 0.002f; g.alt_v_pct = 0.0f; g.t0 = p.x.t;
+        uint8_t one = 1u;
+        bool cmd_on = pc_cmd(&p, PROTO_T_GENERATOR, &one, 1u) == PROTO_R_OK && p.x.sb.gen.enabled;
+        sbsim_run(&p.x, p.x.t + 12000u, gen_hook, &g);
+        bool run8 = gen_running_at(&p.x, 8.0f);
+        sbsim_run(&p.x, p.x.t + 31000u, gen_hook, &g);
+        bool step10 = gen_running_at(&p.x, 10.0f) && p.x.sb.gen.steps_up == 1u;
+        sbsim_run(&p.x, p.x.t + 30000u, gen_hook, &g);
+        bool step12 = gen_running_at(&p.x, 12.0f);
+        sbsim_run(&p.x, p.x.t + 7u * 30000u, gen_hook, &g);     /* 7 more steps: 26 -> capped at 25 */
+        bool cap25 = gen_running_at(&p.x, 25.0f) && g.max_demand <= 25.0f && g.max_out <= 25.6f && !p.x.mon.tripped;
+        sbsim_run(&p.x, p.x.t + 60000u, gen_hook, &g);
+        bool hold_cap = gen_running_at(&p.x, 25.0f) && g.max_demand <= 25.0f && g_mon.gen_cap_pct == 25.0f;
+        /* the bank recovers to 12.3 V (between start_v and start_v + 0.4): stopped falling -> hold, learned 25 */
+        gensup_fixed(&g, 12.3f);
+        sbsim_run(&p.x, p.x.t + 65000u, gen_hook, &g);
+        bool learned = gen_running_at(&p.x, 25.0f) && p.x.sb.gen.learned_pct == 25.0f && p.x.sb.gen.stopped_falling;
+        /* above 12.5 V: -2 % every 30 s, never below the fast idle 8 % */
+        gensup_fixed(&g, 12.8f);
+        sbsim_run(&p.x, p.x.t + 35000u, gen_hook, &g);
+        bool down23 = p.x.sb.gen.state == GEN_RUNNING && p.x.sb.gen.steps_down >= 1u && p.x.sb.gen.demand_pct <= 23.0f &&
+                      p.x.sb.gen.demand_pct >= 21.0f;
+        sbsim_run(&p.x, p.x.t + 9u * 30000u, gen_hook, &g);
+        bool floor8 = gen_running_at(&p.x, 8.0f);
+        /* the power limit raised to 50 % and gen_max_pct set to 30: cap = min(30, 30 ceiling, 50) = 30
+         * (LOW BATTERY came and went meanwhile - an advisory: the generator kept running - but a raise
+         * needs the alarms acknowledged first) */
+        bool low_seen = (p.x.sb.alarm_bits2 & SB_ALM2_LOW_BATTERY) && p.x.sb.gen.state == GEN_RUNNING;
+        sb_alarm_ack(&p.x.sb);
+        bool raised = low_seen && power_step(&p.x, 0u) && p.x.sb.plim.fwd_pct == 50.0f && p.x.sb.gen.state == GEN_RUNNING;
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id_max); proto_wr_f32(&w, 30.0f);
+        bool set30 = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u) == PROTO_R_OK && p.x.sb.gen.cfg.max_pct == 30.0f;
+        memset(&g, 0, sizeof g);
+        g.base_v = 11.9f; g.drain_v_s = 0.002f; g.t0 = p.x.t;
+        sbsim_run(&p.x, p.x.t + 12u * 30000u, gen_hook, &g);    /* 8 -> 30 in 11 steps */
+        bool cap30 = gen_running_at(&p.x, 30.0f) && g.max_demand <= 30.0f && g.max_out <= 30.6f && !p.x.mon.tripped &&
+                     g_mon.gen_cap_pct == 30.0f;
+        /* the cap lowered to 20 while running at 30: followed down at once (normal closing rate), never up */
+        float out_before = p.x.sb.thr.out_pct;
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id_max); proto_wr_f32(&w, 20.0f);
+        bool set20 = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u) == PROTO_R_OK && p.x.sb.gen.demand_pct == 20.0f;
+        pc_run(&p, 1000u);
+        bool at20 = gen_running_at(&p.x, 20.0f) && out_before > 29.0f && !p.x.mon.tripped;
+        sbsim_run(&p.x, p.x.t + 2u * 30000u, gen_hook, &g);
+        bool stays20 = gen_running_at(&p.x, 20.0f) && g.max_demand <= 30.0f;
+        snprintf(d, sizeof d, "parameters gen_max_pct 0..30 / gen_start_v 11.5..13 / gen_idle_pct 3..15 with defaults "
+                 "25 / 12.1 / 8 %s; 40 refused %s; GENERATOR on %s; RUNNING 8 %% %s; +2 %% at 30 s %s, 12 %% at 60 s "
+                 "%s; capped at 25 %% %s (max demand %.0f, max output %.1f); holds %s; bank 12.3 V: hold, learned 25 "
+                 "%s; 12.8 V: 23 %% %s ... floor 8 %% %s; power 50 %% %s, gen_max 30 %s -> 30 %% %s; gen_max 20 while "
+                 "at 30: set %s, demand 20 at once %s, stays %s",
+                 params ? "ok" : "NO", over_refused ? "yes" : "NO", cmd_on ? "yes" : "NO", run8 ? "yes" : "NO",
+                 step10 ? "yes" : "NO", step12 ? "yes" : "NO", cap25 ? "yes" : "NO", g.max_demand, g.max_out,
+                 hold_cap ? "yes" : "NO", learned ? "yes" : "NO", down23 ? "yes" : "NO", floor8 ? "yes" : "NO",
+                 raised ? "yes" : "NO", set30 ? "yes" : "NO", cap30 ? "yes" : "NO", set20 ? "yes" : "NO",
+                 at20 ? "yes" : "NO", stays20 ? "yes" : "NO");
+        test_report("GN2 steps +2 % / 30 s while the voltage falls, hold = learned value, -2 % when high, floor at the "
+                    "fast idle, cap = min(gen_max_pct, 30, power limit), a lowered cap followed down at once",
+                    params && over_refused && cmd_on && run8 && step10 && step12 && cap25 && hold_cap && learned &&
+                    down23 && floor8 && raised && set30 && cap30 && set20 && at20 && stays20, d);
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* GN3 the cycle: run_ms, then rest_ms at idle, the rest-voltage check: still low -> again (beep); recovered
+     * -> DONE (notice) and waiting; low again later -> again */
+    {
+        static sbsim_t x;
+        static gensup_t g;
+        sb_config_t c;
+        sb_default_config(&c);
+        c.gen.run_ms = 90000u;                             /* short cycle for the test (defaults checked in GN1) */
+        c.gen.rest_ms = 20000u;
+        gen_setup(&x, 1607u, &c, 11.8f);
+        (void)sb_generator_set(&x.sb, true);
+        gensup_fixed(&g, 11.8f);
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        bool run1 = gen_running_at(&x, 8.0f);
+        sbsim_run(&x, x.t + 90000u, gen_hook, &g);         /* run over -> STOPPING -> REST */
+        bool rest = x.sb.gen.state == GEN_REST && x.sb.thr.out_pct == 0.0f && gear_is(&x.sb.gear, GEAR_N) &&
+                    x.sb.gen.stop_why == GEN_STOP_REST && !x.sb.gen.active;
+        sbsim_run(&x, x.t + 21000u, gen_hook, &g);         /* still low: again */
+        bool again = (x.sb.gen.state == GEN_STARTING || x.sb.gen.state == GEN_RUNNING) && x.sb.gen.cycles == 1u;
+        sbsim_run(&x, x.t + 12000u, gen_hook, &g);
+        bool run2 = gen_running_at(&x, 8.0f) && x.sb.gen.starts == 2u;
+        gensup_fixed(&g, 12.6f);                           /* the bank recovers during the run */
+        sbsim_run(&x, x.t + 90000u + 25000u, gen_hook, &g);
+        bool done = x.sb.gen.state == GEN_DONE && x.sb.gen.cycles == 2u && x.sb.thr.out_pct == 0.0f && x.sb.gen.enabled;
+        sbsim_run(&x, x.t + 60000u, gen_hook, &g);
+        bool waits = x.sb.gen.state == GEN_DONE && x.sb.gen.starts == 2u;
+        gensup_fixed(&g, 11.7f);                           /* low again later: again */
+        sbsim_run(&x, x.t + 60000u, gen_hook, &g);
+        bool run3 = gen_running_at(&x, 8.0f) && x.sb.gen.starts == 3u && g.rises_in_stop == 0 && g.stray == 0;
+        snprintf(d, sizeof d, "run 1 %s; REST at idle + N after 90 s %s; still low: again %s, run 2 %s; bank 12.6 V "
+                 "-> DONE after the rest %s; waits %s; 11.7 V later: run 3 %s (no rise in a stop, no stray throttle)",
+                 run1 ? "yes" : "NO", rest ? "yes" : "NO", again ? "yes" : "NO", run2 ? "yes" : "NO",
+                 done ? "yes" : "NO", waits ? "yes" : "NO", run3 ? "yes" : "NO");
+        test_report("GN3 cycle: run, rest at idle, rest-voltage check (still low: again; recovered: DONE), again later",
+                    run1 && rest && again && run2 && done && waits && run3, d);
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* GN4 the neutral checks while running: the switch opens -> idle at once + GEAR FAULT, auto off until
+     * re-enabled; a SOG rise within 20 s of a throttle rise (the boat is moving: the gearbox is not in N
+     * whatever the switch says) -> idle + GEAR FAULT */
+    {
+        static sbsim_t x;
+        static gensup_t g;
+        gen_setup(&x, 1608u, NULL, 11.8f);
+        (void)sb_generator_set(&x.sb, true);
+        gensup_fixed(&g, 11.8f);
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        bool run1 = gen_running_at(&x, 8.0f);
+        x.w.neutral_sw_force = 1;                          /* the switch opens */
+        sbsim_run(&x, x.t + 100u, gen_hook, &g);
+        bool at_once = x.sb.gen.demand_pct == 0.0f && x.sb.gen.state == GEN_STOPPING && x.sb.gen.fast_stop &&
+                       (x.sb.alarm_bits & SB_ALM_GEAR) && !x.sb.gen.enabled && x.sb.throttle_mode == 0.0f;
+        sbsim_run(&x, x.t + 400u, gen_hook, &g);
+        bool idle_fast = x.sb.thr.out_pct == 0.0f && x.sb.gen.state == GEN_FAULT && sb_mode(&x.sb) == MODE_STANDBY;
+        x.w.neutral_sw_force = 0;                          /* closed again: still off */
+        sb_alarm_ack(&x.sb);
+        sbsim_run(&x, x.t + 30000u, gen_hook, &g);
+        bool stays_off = x.sb.gen.state == GEN_FAULT && x.sb.thr.out_pct == 0.0f && !x.sb.gen.enabled &&
+                         !(x.sb.alarm_bits & SB_ALM_GEAR);
+        (void)sb_generator_set(&x.sb, true);               /* re-enabled by the captain: runs again */
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        bool again = gen_running_at(&x, 8.0f) && x.sb.gen.faults == 1u;
+        /* the boat starts moving (a current carries it: SOG rises 0.6 kn) 5 s after the next rise */
+        x.w.neutral_sw_force = 2;                          /* the switch stays "closed" whatever happens */
+        sbsim_run(&x, x.t + 26000u, gen_hook, &g);         /* the first judgement (30 s): hold (no rise yet) */
+        memset(&g, 0, sizeof g);
+        g.base_v = 11.8f; g.drain_v_s = 0.004f; g.t0 = x.t;  /* falling: the judgement at 60 s steps up */
+        sbsim_run(&x, x.t + 40000u, gen_hook, &g);
+        bool rose = x.sb.gen.state == GEN_RUNNING && x.sb.gen.demand_pct >= 10.0f && x.sb.gen.move_ms > 0u;
+        bool gps_ok = sb_gps_ok(&x.sb);
+        x.w.current_n = 0.31f;                             /* 0.6 kn northwards */
+        sbsim_run(&x, x.t + 12000u, gen_hook, &g);
+        bool moved = x.sb.gen.state != GEN_RUNNING && x.sb.gen.stop_why == GEN_STOP_MOVED && x.sb.gen.faults == 2u &&
+                     (x.sb.alarm_bits & SB_ALM_GEAR) && x.sb.thr.out_pct == 0.0f && !x.sb.gen.enabled &&
+                     sb_mode(&x.sb) == MODE_STANDBY;
+        snprintf(d, sizeof d, "running %s; switch opens: demand 0 + STOPPING (fast) + GEAR FAULT + auto off at once %s; "
+                 "idle within 0.5 s, FAULT %s; closed again + ACK: stays off %s; re-enabled: runs %s; a throttle rise "
+                 "%s (GPS trusted %s); 0.6 kn SOG rise within 20 s: GEAR FAULT, idle, auto off %s (why %u)",
+                 run1 ? "yes" : "NO", at_once ? "yes" : "NO", idle_fast ? "yes" : "NO", stays_off ? "yes" : "NO",
+                 again ? "yes" : "NO", rose ? "yes" : "NO", gps_ok ? "yes" : "no", moved ? "yes" : "NO",
+                 x.sb.gen.stop_why);
+        test_report("GN4 neutral checks: switch opens -> idle at once + GEAR FAULT + auto off until re-enabled; "
+                    "SOG rise after a throttle rise -> idle + GEAR FAULT",
+                    run1 && at_once && idle_fast && stays_off && again && rose && gps_ok && moved, d);
+        x.w.current_n = 0.0f;
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* GN5 every stop path is idle FIRST and never raises during the stop: STANDBY button (auto off),
+     * joystick takeover (MANUAL: the gear only engages at idle), captain off, HDG LOCK button, a pending
+     * AUTO start (CONFIRM arrives at idle), no voltage data, a new alarm */
+    {
+        static sbsim_t x;
+        static gensup_t g;
+        int n_ok = 0, len = 0;
+        d[0] = 0;
+#define GN5_START(seed) do { gen_setup(&x, (seed), NULL, 11.8f); (void)sb_generator_set(&x.sb, true); gensup_fixed(&g, 11.8f); \
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g); g.rises_in_stop = 0; g.stray = 0; g.gear_not_n = 0; } while (0)
+#define GN5_CASE(name, cond) do { bool c_ = (cond) && g.rises_in_stop == 0 && g.stray == 0 && g.gear_not_n == 0; \
+        if (c_) { n_ok++; } len += snprintf(d + len, sizeof d - (size_t)len, "%s %s%s; ", name, c_ ? "ok" : "FAILED", \
+        g.rises_in_stop ? " (rose in the stop)" : ""); } while (0)
+        /* 1. STANDBY button */
+        GN5_START(1609u);
+        bool r1 = gen_running_at(&x, 8.0f);
+        press(&x, HAL_BTN_STANDBY);
+        bool d0 = x.sb.gen.demand_pct == 0.0f && !x.sb.gen.enabled;
+        sbsim_run(&x, x.t + 1000u, gen_hook, &g);
+        GN5_CASE("STANDBY button -> auto off, idle", r1 && d0 && x.sb.gen.state == GEN_OFF && x.sb.thr.out_pct == 0.0f);
+        /* 2. joystick X deflection: MANUAL - the gear waits for idle; back to STANDBY -> runs again */
+        GN5_START(1610u);
+        r1 = gen_running_at(&x, 8.0f);
+        joy_set(0.6f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 300u, gen_hook, &g);
+        bool manual = sb_mode(&x.sb) == MODE_MANUAL && x.sb.gen.demand_pct == 0.0f && x.sb.gen.state != GEN_RUNNING;
+        if (s_usb.on) usb_lever(&x, 0.75f, 2.0f, gen_hook, &g);   /* and ahead (USB: the lever) */
+        else joy_set(0.6f, 0.5f, false, false);
+        sbsim_run(&x, x.t + 7000u, gen_hook, &g);
+        bool drives = sb_mode(&x.sb) == MODE_MANUAL && gear_is(&x.sb.gear, GEAR_F) && x.sb.thr.out_pct > 5.0f &&
+                      x.w.shift_under_load == 0 && !x.mon.tripped && !x.sb.gen.active;
+        if (s_usb.on) usb_lever(&x, 0.5f, 2.0f, gen_hook, &g);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 3000u, gen_hook, &g);
+        joy_set(0.0f, 0.0f, false, true);                  /* AUTO button with the stick centred: hand back */
+        sbsim_run(&x, x.t + 200u, gen_hook, &g);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 20000u, gen_hook, &g);
+        GN5_CASE("joystick -> MANUAL (gear at idle), back in STANDBY -> runs again",
+                 r1 && manual && drives && sb_mode(&x.sb) == MODE_STANDBY && gen_running_at(&x, 8.0f));
+        /* 3. the captain switches it off */
+        GN5_START(1611u);
+        r1 = gen_running_at(&x, 8.0f);
+        (void)sb_generator_set(&x.sb, false);
+        bool s3 = x.sb.gen.state == GEN_STOPPING && x.sb.gen.demand_pct == 0.0f;
+        sbsim_run(&x, x.t + 1000u, gen_hook, &g);
+        GN5_CASE("captain off", r1 && s3 && x.sb.gen.state == GEN_OFF && x.sb.thr.out_pct == 0.0f);
+        /* 4. HDG LOCK button (a mode request) */
+        GN5_START(1612u);
+        r1 = gen_running_at(&x, 8.0f);
+        press(&x, HAL_BTN_HDG_LOCK);
+        sbsim_run(&x, x.t + 1000u, gen_hook, &g);
+        GN5_CASE("HDG LOCK button", r1 && sb_mode(&x.sb) == MODE_HDG_LOCK && x.sb.thr.out_pct == 0.0f &&
+                 x.sb.gen.state == GEN_READY && x.sb.gen.demand_pct == 0.0f);
+        /* 5. a pending AUTO start: the stop begins with the request, the CONFIRM finds the engine idle */
+        GN5_START(1613u);
+        r1 = gen_running_at(&x, 8.0f);
+        {
+            prog_wp_t w5[5];
+            program_t pr;
+            (void)prog5(&x, w5);
+            prog_make(&pr, w5, 5, PROG_END_STOP);
+            prog_error_t err; uint8_t bad;
+            bool stored = sb_program_set(&x.sb, &pr, &err, &bad) == SB_OK;
+            bool asked = sb_auto_start(&x.sb) == SB_OK;
+            sbsim_run(&x, x.t + 1000u, gen_hook, &g);
+            bool stopped = x.sb.gen.state == GEN_READY && x.sb.thr.out_pct == 0.0f && sb_mode(&x.sb) == MODE_STANDBY;
+            bool conf = confirm_press(&x) && sb_mode(&x.sb) == MODE_AUTO;
+            sbsim_run(&x, x.t + 3000u, gen_hook, &g);
+            GN5_CASE("pending AUTO start stops it; CONFIRM at idle -> AUTO", r1 && stored && asked && stopped && conf &&
+                     sb_mode(&x.sb) == MODE_AUTO && !x.sb.gen.active && x.w.shift_under_load == 0);
+        }
+        /* 6. the voltage data goes away */
+        GN5_START(1614u);
+        r1 = gen_running_at(&x, 8.0f);
+        g.none = true;
+        sbsim_run(&x, x.t + 7000u, gen_hook, &g);
+        bool s6 = x.sb.batt.no_data && x.sb.gen.state == GEN_READY && x.sb.thr.out_pct == 0.0f &&
+                  x.sb.gen.stop_why == GEN_STOP_NO_VOLTS;
+        g.none = false;
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        GN5_CASE("no voltage data -> idle, data back -> runs", r1 && s6 && gen_running_at(&x, 8.0f));
+        /* 7. a new alarm (GPS lost in STANDBY is no alarm; the compass is): idle; ACK -> again */
+        GN5_START(1615u);
+        r1 = gen_running_at(&x, 8.0f);
+        sim_hal_fail_heading(true);
+        sbsim_run(&x, x.t + 5000u, gen_hook, &g);
+        bool s7 = (x.sb.alarm_bits & SB_ALM_COMPASS) && x.sb.gen.state == GEN_READY && x.sb.thr.out_pct == 0.0f &&
+                  sb_mode(&x.sb) == MODE_STANDBY;
+        sim_hal_fail_heading(false);
+        sbsim_run(&x, x.t + 3000u, gen_hook, &g);
+        sb_alarm_ack(&x.sb);
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        GN5_CASE("alarm -> idle, ACK -> runs", r1 && s7 && gen_running_at(&x, 8.0f));
+#undef GN5_START
+#undef GN5_CASE
+        test_report("GN5 every stop idle FIRST, nothing rises during a stop: STANDBY button, joystick, captain off, "
+                    "HDG LOCK, pending AUTO start, no voltage data, new alarm", n_ok == 7, d);
+        joy_set(0.0f, 0.0f, false, false);
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* GN6 CPU1: with gen_active the gear must stay at neutral and the throttle under min(cap, power limit);
+     * without gen_active the old rule (idle in neutral: the reverse limit) */
+    {
+        static sbsim_t x;
+        static gensup_t g;
+        static inject_t j;
+        int n_ok = 0, len = 0;
+        d[0] = 0;
+        /* a. gear pulse leaves neutral while the generator runs */
+        gen_setup(&x, 1616u, NULL, 11.8f);
+        (void)sb_generator_set(&x.sb, true);
+        gensup_fixed(&g, 11.8f);
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        bool r1 = gen_running_at(&x, 8.0f);
+        memset(&j, 0, sizeof j);
+        j.kind = 2; j.at_ms = x.t;
+        react_t r = watch_reaction(&x, x.t, inject_hook, &j, 1000u);
+        bool a = r1 && x.mon.tripped && x.mon.reason == MON_TRIP_GENERATOR && r.t_react >= 0.0f && r.t_react <= 150.0f &&
+                 r.relay_open && x.sb.mon_tripped && sb_mode(&x.sb) == MODE_STANDBY && !x.sb.gen.active;
+        len += snprintf(d + len, sizeof d - (size_t)len, "gear leaves N: trip %s (%s, %.0f ms); ", a ? "ok" : "FAILED",
+                        monitor_reason_name(x.mon.reason), r.t_react);
+        if (a) n_ok++;
+        /* b. throttle above the generator cap (25 %) in neutral */
+        gen_setup(&x, 1617u, NULL, 11.8f);
+        (void)sb_generator_set(&x.sb, true);
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        r1 = gen_running_at(&x, 8.0f);
+        memset(&j, 0, sizeof j);
+        j.kind = 1; j.at_ms = x.t;                         /* 90 %: past every limit */
+        r = watch_reaction(&x, x.t, inject_hook, &j, 1000u);
+        bool b = r1 && x.mon.tripped && x.mon.reason == MON_TRIP_THROTTLE && r.t_react >= 0.0f && r.t_react <= 150.0f &&
+                 r.relay_open;
+        len += snprintf(d + len, sizeof d - (size_t)len, "throttle 90 %% with gen_active: trip %s (%.0f ms); ",
+                        b ? "ok" : "FAILED", r.t_react);
+        if (b) n_ok++;
+        /* c. throttle 10 % in neutral WITHOUT gen_active (generator off): the old rule trips (reverse limit) */
+        gen_setup(&x, 1618u, NULL, 12.6f);
+        {
+            uint32_t t0 = x.t;
+            bool tripped = false; float t_react = 0.0f;
+            for (int i = 0; i < 60 && !tripped; i++) {
+                sbsim_run(&x, x.t + 50u, NULL, NULL);
+                hal_set_throttle_pwm(1100u);               /* 10 % in neutral, gen_active 0 */
+                g_mon.throttle_pct = 10.0f;
+                tripped = x.mon.tripped;
+                t_react = (x.t - t0) * 0.001f;
+            }
+            bool c = tripped && x.mon.reason == MON_TRIP_THROTTLE && t_react <= 0.2f;
+            len += snprintf(d + len, sizeof d - (size_t)len, "10 %% in N without gen_active: trip %s (%.2f s); ",
+                            c ? "ok" : "FAILED", t_react);
+            if (c) n_ok++;
+        }
+        /* d. the generator runs at 8 % but core 0 "forgets" gen_active: the throttle is above the reverse limit
+         *    and not coming down -> trip after MON_OVER_MS */
+        gen_setup(&x, 1619u, NULL, 11.8f);
+        (void)sb_generator_set(&x.sb, true);
+        sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+        r1 = gen_running_at(&x, 8.0f);
+        {
+            uint32_t t0 = x.t;
+            bool tripped = false; float t_react = 0.0f;
+            for (int i = 0; i < 80 && !tripped; i++) {
+                sbsim_run(&x, x.t + 50u, gen_clear_hook, &g);  /* gen_active cleared right after every step */
+                tripped = x.mon.tripped;
+                t_react = (x.t - t0) * 0.001f;
+            }
+            bool dd = r1 && tripped && x.mon.reason == MON_TRIP_THROTTLE && t_react > 2.0f && t_react <= 3.0f;
+            len += snprintf(d + len, sizeof d - (size_t)len, "8 %% in N, gen_active cleared: trip after %.2f s %s",
+                            t_react, dd ? "ok" : "FAILED");
+            if (dd) n_ok++;
+        }
+        test_report("GN6 CPU1 monitor: gear not N with gen_active -> trip; throttle above the cap -> trip; throttle "
+                    "in neutral without gen_active -> trip (old rule)", n_ok == 4, d);
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* GN7 the learned value: saved in NV slot 6 (STANDBY), the first step of the next run after a reboot;
+     * a bad record = the fast idle + NV DATA RESET */
+    {
+        static sbsim_t x;
+        static gensup_t g;
+        remove("nv6.bin");
+        gen_setup(&x, 1620u, NULL, 12.0f);
+        (void)sb_generator_set(&x.sb, true);
+        memset(&g, 0, sizeof g);
+        g.base_v = 12.0f; g.drain_v_s = 0.002f; g.t0 = x.t;
+        sbsim_run(&x, x.t + 12000u + 2u * 30000u + 2000u, gen_hook, &g);   /* 8 -> 10 -> 12 */
+        bool at12 = gen_running_at(&x, 12.0f);
+        gensup_fixed(&g, 12.3f);                           /* stops falling at 12 %: learned */
+        sbsim_run(&x, x.t + 35000u, gen_hook, &g);
+        bool learned = x.sb.gen.learned_pct == 12.0f && x.sb.gen.learned_new;
+        uint32_t writes0 = sim_hal_nv_writes();
+        (void)sb_generator_set(&x.sb, false);              /* stop: saved in STANDBY once idle */
+        sbsim_run(&x, x.t + 3000u, gen_hook, &g);
+        bool saved = sim_hal_nv_writes() == writes0 + 1u && !x.sb.gen.learned_new && x.sb.gen.state == GEN_OFF;
+        /* reboot: the record is read back; the first step is 12 % */
+        gen_setup(&x, 1621u, NULL, 11.8f);
+        bool loaded = x.sb.gen.learned_pct == 12.0f && !(nv_status()->reset_mask & (1u << HAL_NV_SLOT_GENERATOR));
+        (void)sb_generator_set(&x.sb, true);
+        gensup_fixed(&g, 11.8f);
+        sbsim_run(&x, x.t + 12000u, gen_hook, &g);
+        bool first12 = gen_running_at(&x, 12.0f) && x.sb.gen.steps_up == 0u;
+        /* a record of another version: refused -> the fast idle, NV DATA RESET */
+        {
+            struct { uint8_t version; uint8_t pct; uint8_t pad[2]; uint32_t crc; } bad;   /* = smallboat.c gen_nv_t */
+            memset(&bad, 0, sizeof bad);
+            bad.version = 9u; bad.pct = 20u; bad.crc = 0x12345678u;
+            (void)hal_nv_save(HAL_NV_SLOT_GENERATOR, &bad, (uint32_t)sizeof bad);
+            for (int i = 0; i < 50 && hal_nv_pending(); i++) hal_nv_service(true);
+        }
+        gen_setup(&x, 1622u, NULL, 11.8f);
+        bool reset = x.sb.gen.learned_pct == 0.0f && (nv_status()->reset_mask & (1u << HAL_NV_SLOT_GENERATOR));
+        (void)sb_generator_set(&x.sb, true);
+        sbsim_run(&x, x.t + 12000u, gen_hook, &g);
+        bool first8 = gen_running_at(&x, 8.0f);
+        snprintf(d, sizeof d, "12 %% reached %s; learned 12 %s; saved once idle in STANDBY %s; reboot: loaded %s, first "
+                 "step 12 %% %s; a bad record: defaults + NV DATA RESET %s, first step 8 %% %s",
+                 at12 ? "yes" : "NO", learned ? "yes" : "NO", saved ? "yes" : "NO", loaded ? "yes" : "NO",
+                 first12 ? "yes" : "NO", reset ? "yes" : "NO", first8 ? "yes" : "NO");
+        test_report("GN7 learned value in NV slot 6: saved in STANDBY, the first step after a reboot; a bad record = "
+                    "defaults + NV DATA RESET", at12 && learned && saved && loaded && first12 && reset && first8, d);
+        remove("nv6.bin");
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* GN8 the link: PROTO_T_GENERATOR on / off / bad value / bad length, TELEM2 group L carries state + %, the
+     * stop_why / events, FIRST TEST refused over the link */
+    {
+        static pcsim_t p;
+        static gensup_t g;
+        pcsim_init(&p, 1623u);
+        p.x.w.neutral_switch = true;
+        sim_hal_set_supply(true, 11.8f);
+        (void)g;
+        pc_run(&p, 2000u);
+        uint8_t v = 1u;
+        bool on = pc_cmd(&p, PROTO_T_GENERATOR, &v, 1u) == PROTO_R_OK && p.x.sb.gen.enabled &&
+                  (p.x.sb.gen.state == GEN_READY || p.x.sb.gen.state == GEN_STARTING);
+        v = 2u;
+        bool bad = pc_cmd(&p, PROTO_T_GENERATOR, &v, 1u) == PROTO_R_BAD_VALUE && p.x.sb.gen.enabled;
+        bool badlen = pc_cmd(&p, PROTO_T_GENERATOR, NULL, 0u) == PROTO_R_BAD_LENGTH;
+        /* the PC keeps its heartbeat (a silent PC = PC LINK LOST = an alarm that stops the generator) */
+        p.heartbeat = true;
+        p.next_hb = p.x.t;
+        pc_run(&p, 15000u);
+        uint8_t st1 = p.t2_len >= 2u ? p.t2[p.t2_len - 2u] : 99u, pc1 = p.t2_len >= 1u ? p.t2[p.t2_len - 1u] : 99u;
+        const char *sbst1 = gen_state_name(p.x.sb.gen.state);
+        bool t2 = p.t2_len >= 11u && st1 == GEN_RUNNING && pc1 == 8u;
+        v = 0u;
+        bool off = pc_cmd(&p, PROTO_T_GENERATOR, &v, 1u) == PROTO_R_OK && !p.x.sb.gen.enabled;
+        pc_run(&p, 2000u);
+        bool t2off = p.t2_len >= 11u && p.t2[p.t2_len - 2u] == GEN_OFF && p.t2[p.t2_len - 1u] == 0u &&
+                     p.x.sb.thr.out_pct == 0.0f;
+        /* FIRST TEST over the link: refused */
+        {
+            static pcsim_t q;
+            sb_config_t c;
+            sb_default_config(&c);
+            c.first_test = true;
+            memset(&q, 0, sizeof q);
+            sbsim_init(&q.x, 1624u, 90.0f, 0.0f, &c);
+            sim_hal_link_reset();
+            link_init(&q.link, &q.x.sb);
+            proto_rx_init(&q.pc_rx);
+            pc_run(&q, 2000u);
+            v = 1u;
+            bool ft = pc_cmd(&q, PROTO_T_GENERATOR, &v, 1u) == PROTO_R_WRONG_MODE && !q.x.sb.gen.enabled;
+            snprintf(d, sizeof d, "on %s; 2 = bad value %s; no payload = bad length %s; TELEM2 L: state RUNNING + 8 %% "
+                     "%s (len %u, state %u pct %u, sb state %s); off %s -> TELEM2 OFF + 0 %% %s; FIRST TEST: refused %s",
+                     on ? "ok" : "NO", bad ? "ok" : "NO", badlen ? "ok" : "NO", t2 ? "ok" : "NO", p.t2_len, st1, pc1,
+                     sbst1,
+                     off ? "ok" : "NO", t2off ? "ok" : "NO", ft ? "ok" : "NO");
+            test_report("GN8 link: GENERATOR command on / off / bad value / bad length, TELEM2 group L state + %, "
+                        "FIRST TEST refused", on && bad && badlen && t2 && off && t2off && ft, d);
+        }
+        sim_hal_set_supply(true, 12.6f);
+    }
+}
+
 static void battery_tests(void)
 {
     char d[700];
@@ -8441,8 +9096,14 @@ void sb_battery_tests(void)
     battery_tests();
 }
 
+void sb_generator_tests(void)
+{
+    generator_tests();
+}
+
 void sb_tests(void)
 {
+    generator_tests();
     battery_tests();
     nv_tests();
     gateway_tests();

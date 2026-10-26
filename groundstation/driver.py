@@ -731,6 +731,13 @@ class DriverScreen:
                 out.append(("nv_reset", T("nv.reset"), "caution"))
             if d.get("batt_no_data"):                   # a notice, never an alarm (CLAUDE.md J)
                 out.append(("batt_no_data", T("batt.no_data"), "caution"))
+            gs = d.get("gen_state", 0)                  # generator mode (CLAUDE.md K)
+            if gs == 2:
+                out.append(("gen_starting", T("gen.starting"), "caution"))
+            elif gs == 6:
+                out.append(("gen_fault", T("gen.fault"), "caution"))
+            elif gs == 7:
+                out.append(("gen_done", T("gen.done"), "caution"))
             if d["mode"] == proto.MODE_REMOTE and not self.front_live:
                 out.append(("nofront", T("drv.no_front"), "warn"))
             if d.get("pickup") and d["mode"] in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK):

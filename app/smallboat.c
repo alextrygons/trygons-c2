@@ -4,6 +4,7 @@
 #include "smallboat.h"
 
 #include <math.h>
+#include <stddef.h>
 
 #include "monitor.h"
 #include "timing.h"
@@ -108,6 +109,28 @@ void sb_default_config(sb_config_t *cfg)
     cfg->lostlink_grace_s = 10.0f;              /* TO CONFIRM */
     cfg->shore_max_age_ms = 3000u;
     batt_default_config(&cfg->batt);
+    gen_default_config(&cfg->gen);
+}
+
+/* NV slot 6: the generator's learned value (version + CRC-32, like calib.c):
+ * a record that fails the check = defaults + NV DATA RESET, never half used */
+#define GEN_NV_VERSION 1u
+typedef struct { uint8_t version; uint8_t pct; uint8_t pad[2]; uint32_t crc; } gen_nv_t;
+
+static uint32_t gen_nv_crc(const gen_nv_t *r)
+{
+    const uint8_t *p = (const uint8_t *)r;
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < offsetof(gen_nv_t, crc); i++) {
+        crc ^= p[i];
+        for (int b = 0; b < 8; b++) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
+static bool gen_nv_valid(const gen_nv_t *r)
+{
+    return r->version == GEN_NV_VERSION && r->pct > 0u && (float)r->pct <= GEN_CEILING_PCT && r->crc == gen_nv_crc(r);
 }
 
 static bool lever_has_throttle(sb_mode_t m);
@@ -191,6 +214,26 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
             nv_invalid(HAL_NV_SLOT_PROGRAM);
         }
     }
+    /* generator mode: auto OFF after every power-up; the learned value (NV slot 6) is its first step */
+    {
+        gen_nv_t r;
+        float learned = 0.0f;
+        if (nv_load(HAL_NV_SLOT_GENERATOR, &r, (uint32_t)sizeof r)) {
+            if (gen_nv_valid(&r)) learned = (float)r.pct;
+            else nv_invalid(HAL_NV_SLOT_GENERATOR);
+        }
+        gen_init(&s->gen, &cfg->gen, learned);
+    }
+}
+
+sb_result_t sb_generator_set(sb_t *s, bool on)
+{
+    if (on) {
+        if (s->cfg.first_test) return SB_ERR_WRONG_MODE;              /* FIRST TEST: throttle stays idle */
+        if (!(s->gen.cfg.max_pct > 0.0f)) return SB_ERR_PRECOND;      /* gen_max_pct 0 = disabled */
+    }
+    gen_set(&s->gen, on);
+    return SB_OK;
 }
 
 bool sb_compass_ok(const sb_t *s)
@@ -2104,6 +2147,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     if (buttons & HAL_BTN_BIT(HAL_BTN_STANDBY)) {
         s->confirm.kind = CONF_NONE;
         plim_drop(&s->plim, PLIM_SRC_STANDBY_BUTTON, s->now_ms);
+        gen_set(&s->gen, false);        /* generator auto OFF until re-enabled (a running one stops idle first) */
         if (sb_mode(s) != MODE_STANDBY) {
             if (!joy_centered(&s->joy)) joy_disarm(&s->joy);   /* can't grab control right back */
             sb_request_mode(s, MODE_STANDBY, WHY_STANDBY_BUTTON);
@@ -2333,6 +2377,46 @@ void sb_step(sb_t *s)
     }
 #endif
 
+    /* generator mode (section K): the ONE automatic throttle rise - only in
+     * STANDBY (not stopping) with gear N confirmed by the neutral switch, the
+     * outputs armed, a known low bank voltage, no kill / e-stop / trip and no
+     * alarm that is not an advisory, never in FIRST TEST. The demand is in
+     * neutral and goes through the normal throttle path (rate limits, the
+     * servo.c clamp with the generator cap); CPU1 gets gen_active + the cap.
+     * Every stop is idle FIRST (generator.c); a neutral switch that opens or
+     * a speed rise = GEAR FAULT (alarm, generator auto off). */
+    {
+        gen_input_t gi;
+        sb_mode_t gm = sb_mode(s);
+        bool kind_stop = s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
+                         s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER;
+        bool alarm_now = (s->alarm_bits & ~SB_NAV_ADVISORY) != 0u || (s->alarm_bits2 & ~SB_ALM2_ADVISORY) != 0u ||
+                         s->ap.alarm;
+        memset(&gi, 0, sizeof gi);
+        gi.allowed = gm == MODE_STANDBY && !s->stopping && s->armed && !s->cfg.first_test && !s->mon_tripped &&
+                     s->estop_state != 2u && s->ll.state == SB_LL_OK;
+        gi.neutral_confirmed = neutral_sw == 1 && gear_is(&s->gear, GEAR_N) && !gear_fault(&s->gear);
+        gi.volts_valid = s->batt.valid;
+        gi.bank_v = s->batt.bank_v;
+        gi.bank_v_fast = s->batt.bank_v_fast;
+        gi.limit_pct = s->plim.fwd_pct;
+        gi.stop_request = alarm_now || kind_stop || s->joy.take_edge ||
+                          (s->profile == SB_PROFILE_CREWED && s->joy.off_centre);
+        gi.gps_trusted = sb_gps_ok(s);
+        gi.sog_kn = s->gps.last.sog_kn;
+        gi.thrust_pct = 0.0f;                           /* thrusters come with DP (section P) */
+        gi.throttle_out_pct = s->thr.out_pct;
+        gi.idle_max_pct = s->cfg.gear.idle_max_pct;
+        gi.dt_ms = dt_ms;
+        gen_step(&s->gen, &gi);
+        if (s->gen.start_edge && s->chirp_ms < 300u) s->chirp_ms = 300u;    /* beep: GENERATOR STARTING */
+        if (s->gen.fault_edge) alarm_on(s, SB_ALM_GEAR);                     /* neutral opened / the boat moved */
+        if (gm == MODE_STANDBY && s->gen.demand_pct > 0.0f) {
+            s->throttle_demand = s->gen.demand_pct;
+            s->gear_demand = GEAR_N;
+        }
+    }
+
     /* 4. safe stop: idle + neutral first, then steering off */
     if (sb_mode(s) == MODE_STANDBY) {
         if (s->stopping) {
@@ -2418,18 +2502,28 @@ void sb_step(sb_t *s)
     /* 5. gear and throttle (order: throttle limited by the gear state),
      *    demand limited by the power limit of its direction */
     s->throttle_mode = s->throttle_demand;
-    float lim_dir = (s->gear_demand == GEAR_F) ? fminf(s->plim.fwd_pct, slam_cap(&s->slam)) : s->plim.rev_pct;
+    /* the generator: throttle in NEUTRAL, at most its cap (section K) - only
+     * for the generator's own demand (STANDBY, gear demand N); any other demand
+     * (a takeover in the same step) meets the normal rule: idle in neutral, the
+     * reverse limit out of forward, the gear only moves at idle */
+    bool gen_neutral = s->gen.active && gear_is(&s->gear, GEAR_N) && s->gear_demand == GEAR_N &&
+                       sb_mode(s) == MODE_STANDBY;
+    float lim_dir = (s->gear_demand == GEAR_F) ? fminf(s->plim.fwd_pct, slam_cap(&s->slam))
+                  : gen_neutral ? fminf(s->gen.cap_pct, s->plim.fwd_pct)
+                  : s->plim.rev_pct;
     if (s->throttle_demand > lim_dir) s->throttle_demand = lim_dir;
     gear_request(&s->gear, s->gear_demand);
     /* STANDBY (button, fault, alarm ...): the faster closing rate; a planned
      * arrival stop and normal driving keep the normal one */
-    s->thr.stop = sb_mode(s) == MODE_STANDBY && !s->stop_planned;
+    s->thr.stop = sb_mode(s) == MODE_STANDBY && !s->stop_planned && !(s->gen.active && !s->gen.fast_stop);
+    s->thr.neutral_run_pct = gen_neutral ? s->gen.cap_pct : 0.0f;   /* 0 = the normal rule: idle in neutral */
     s->throttle_rate = throttle_step(&s->thr, s->throttle_demand, s->gear.current, gear_throttle_allowed(&s->gear), dt);
 
     /* 6. outputs: engine first, steering last. The servo module clamps to
      *    the power limit once more (lowest layer); the rate limiter goes on
      *    from what was really sent. */
-    s->thr.out_pct = servo_throttle_write(&s->servo, &s->plim, gear_is(&s->gear, GEAR_F), s->thr.out_pct, dt);
+    s->thr.out_pct = servo_throttle_write(&s->servo, &s->plim, gear_is(&s->gear, GEAR_F), s->thr.out_pct, dt,
+                                          gen_neutral ? s->gen.cap_pct : -1.0f);
     gear_step(&s->gear, dt_ms, s->thr.out_pct, neutral_sw);
     if (gear_fault(&s->gear)) {
         alarm_on(s, SB_ALM_GEAR);
@@ -2453,6 +2547,8 @@ void sb_step(sb_t *s)
     g_mon.idle_max_pct = s->cfg.gear.idle_max_pct;
     g_mon.thr_idle_us = s->cfg.servo.idle_us;
     g_mon.gear_n_us = s->cfg.gear.pwm_n_us;
+    g_mon.gen_active = s->gen.active ? 1u : 0u;     /* throttle above idle in neutral allowed up to the cap */
+    g_mon.gen_cap_pct = s->gen.cap_pct;
     monitor_write_end(&g_mon);
     if (s->bench.trip_req) g_mon.test_trip = MON_TEST_TRIP;     /* BENCH TEST: trip test (latched) */
     g_mon.heartbeat = g_mon.heartbeat + 1u;
@@ -2463,6 +2559,15 @@ void sb_step(sb_t *s)
 
     /* 9. non-volatile storage: queued saves reach the data flash only in
      *    STANDBY (not stopping); one bounded step, never a wait */
+    if (s->gen.learned_new && sb_mode(s) == MODE_STANDBY && !s->stopping && !s->gen.active) {
+        gen_nv_t r;                                     /* the generator's learned value (slot 6) */
+        memset(&r, 0, sizeof r);
+        r.version = GEN_NV_VERSION;
+        r.pct = (uint8_t)(s->gen.learned_pct + 0.5f);
+        r.crc = gen_nv_crc(&r);
+        (void)nv_save(HAL_NV_SLOT_GENERATOR, &r, (uint32_t)sizeof r);
+        s->gen.learned_new = false;
+    }
     nv_step(sb_mode(s) == MODE_STANDBY && !s->stopping, dt_ms);
 }
 

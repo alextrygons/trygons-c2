@@ -64,6 +64,7 @@ typedef enum {
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
+    E_GEN, E_SUPPLY,
     E_COUNT
 } ev_kind_t;
 
@@ -76,7 +77,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "USB link fuzz", "gateway UART fuzz", "core 0 frozen", "chip reset", "inject throttle over the limit",
     "inject gear change under load", "shore CONFIRM (captain's joystick)", "MANEUVER request",
     "onboard joystick plugged / unplugged", "HELM station dropped (link lost)", "HELM station back",
-    "shore info (near / far / none / invalid)"
+    "shore info (near / far / none / invalid)", "generator auto on (+ ACK, bank low) / off",
+    "bank voltage (low / fine / no data / just low)"
 };
 
 typedef struct {
@@ -142,7 +144,9 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         else if (p < 0.70f) k = E_ACCEL;
         else if (p < 0.72f) k = E_SEA;
         else if (p < 0.74f) k = E_GW;
-        else if (p < 0.82f) k = E_NAVREQ;
+        else if (p < 0.80f) k = E_NAVREQ;
+        else if (p < 0.81f) k = E_GEN;
+        else if (p < 0.82f) k = E_SUPPLY;
         else if (p < 0.87f) k = E_FUZZ_USB;
         else if (p < 0.92f) k = E_FUZZ_GW;
         else if (p < 0.935f) k = E_FREEZE;
@@ -321,6 +325,7 @@ static void sim_init(const sched_t *sc)
     sim_hal_set_accel(true);
     sim_hal_set_attitude(true);
     sim_hal_set_neutral_switch(false, true);
+    sim_hal_set_supply(true, 12.6f);
     sim_hal_set_motor_current(false, 0.0f);
     sim_hal_set_limit_switches(false, false, false);
     sim_hal_reset_engine();
@@ -403,7 +408,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 32
+#define NINV 36
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -432,7 +437,11 @@ static const char *INV_NAMES[NINV] = { "",
     "I28 lost link near shore or with missing / stale shore info: ENGINE KILL at once (once idle + neutral)",
     "I29 lost link at open sea: no kill before the grace time; kill after it unless the link returned",
     "I30 never an ENGINE KILL in CREWED",
-    "I31 the ENGINE KILL stays latched until a reset on board" };
+    "I31 the ENGINE KILL stays latched until a reset on board",
+    "I32 generator: throttle above idle in neutral only while the generator is active, gear N confirmed by the switch",
+    "I33 generator throttle <= min(generator cap, power limit)",
+    "I34 generator only in STANDBY (not stopping), armed, neutral switch closed, no kill / e-stop / trip / FIRST TEST",
+    "I35 every generator stop idle first: no throttle rise while stopping" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -501,6 +510,7 @@ typedef struct {
     bool     killed;                /* the ENGINE KILL output was seen on (since this boot) */
     uint32_t safe_since;            /* outputs idle + neutral since (0 = not) */
     uint32_t lost_t;                /* the link loss the AURIX saw (its ll.lost_ms) */
+    float    gen_env;               /* I33: the generator cap envelope (coming down at the closing rate) */
 } chk_t;
 
 static chk_t C;
@@ -737,6 +747,41 @@ static void check_step(void)
         }
     }
 
+    /* I32-I35: generator mode (CLAUDE.md K) - the one automatic throttle rise, in neutral only */
+    if (!forced && !inj) {
+        bool nsw = false;
+        bool fitted = hal_read_neutral_switch(&nsw);
+        const gen_t *g = &s->gen;
+        if (g->active) {
+            /* I32: gear at N and the switch confirming it (STOPPING: the switch may just have opened) */
+            if (gp == 0 && (g->state == GEN_STOPPING || (fitted && nsw))) ok(32);
+            else fail(32, "generator active with the gear at %.0f / switch %.0f (-1 none)", (double)gp,
+                      fitted ? (nsw ? 1.0 : 0.0) : -1.0);
+            /* I33: under min(cap, power limit), or coming down to it at the closing rate */
+            float cap = fminf(g->cap_pct, s->plim.fwd_pct);
+            C.gen_env = fmaxf(cap, C.gen_env - down * dt);
+            if (thr <= C.gen_env + 1.0f && g->demand_pct <= cap + 0.01f) ok(33);
+            else fail(33, "generator throttle %.1f %% above the cap %.1f %%", thr, cap);
+            C.gen_env = fmaxf(C.gen_env, fminf(thr, C.gen_env));
+            /* I34: the run conditions (a stop that has begun may outlive them) */
+            if (g->state == GEN_STOPPING ||
+                (m == MODE_STANDBY && !s->stopping && s->armed && !s->mon_tripped && !sim_hal_engine_killed() &&
+                 s->estop_state != 2u && !s->cfg.first_test && fitted && nsw)) ok(34);
+            else fail(34, "generator running in mode %.0f (armed %.0f)", (double)m, s->armed ? 1.0 : 0.0);
+        } else {
+            /* I32 the other way round: no throttle rise in neutral without the generator */
+            if (gp == 0 && thr > 0.6f && thr > C.thr_prev + 0.01f)
+                fail(32, "throttle %.1f %% rising in neutral without the generator (before %.1f %%)", thr, C.thr_prev);
+            else if (gp == 0) ok(32);
+            C.gen_env = 0.0f;
+        }
+        /* I35: a stop is idle first - the demand is 0 and the output never rises until idle */
+        if (g->state == GEN_STOPPING) {
+            if (g->demand_pct == 0.0f && thr <= C.thr_prev + 0.01f) ok(35);
+            else fail(35, "generator stopping but the throttle rose to %.1f %% (before %.1f %%)", thr, C.thr_prev);
+        }
+    }
+
     /* I24 / I25: MANEUVER - throttle always idle, gear changes only at idle */
     if (m == MODE_MANEUVER && !forced && !inj) {
         if (s->throttle_mode <= 0.01f && thr <= fmaxf(C.thr_prev, 0.6f) + 0.01f) ok(24);
@@ -854,7 +899,7 @@ static void apply(const ev_t *e)
     case E_JOY: case E_BTN: case E_TAKE: case E_AUTOBTN: case E_CONFIRM: case E_PC_MODE: case E_PC_AUTO_START:
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
-    case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK:
+    case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK: case E_GEN:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -956,6 +1001,23 @@ static void apply(const ev_t *e)
     case E_GPS: S.w.gps_fail = e->a < 500; break;
     case E_GPS_JUMP: S.w.gps_off_n += (e->f * 3000.0); S.w.gps_off_e += (e->g * 3000.0); break;
     case E_NSW: sim_hal_set_neutral_switch(e->a < 600, e->b < 900); break;
+    case E_GEN:
+        if (e->a < 500) {                                                  /* the captain: ACK, bank low, generator auto on */
+            S.w.neutral_switch = true;                                     /* a neutral switch that follows the gearbox
+                                                                            * (the world publishes it every tick) */
+            S.w.neutral_sw_force = 0;
+            sb_alarm_ack(s);
+            sim_hal_set_supply(true, 11.5f);
+            (void)sb_generator_set(s, true);
+        } else {
+            (void)sb_generator_set(s, false);
+        }
+        break;
+    case E_SUPPLY: {
+        static const float V[4] = { 11.5f, 12.6f, 0.0f, 11.9f };
+        sim_hal_set_supply(e->a % 4 != 2, V[e->a % 4]);
+        break;
+    }
     case E_CURRENT: sim_hal_set_motor_current(e->a < 500, (float)e->b * 0.02f); break;
     case E_LIMITSW: sim_hal_set_limit_switches(e->a < 500, e->b < 100, e->c < 100); break;
     case E_JOY_WIRE: S.joy_broken = e->a < 300; joy_apply(); break;

@@ -39,7 +39,11 @@ void servo_init(servo_t *sv, const servo_config_t *c);
 
 /* Write the throttle servo. forward_engaged = gearbox confirmed in F.
  * Returns the throttle actually sent (%). */
-float servo_throttle_write(servo_t *sv, const plim_t *lim, bool forward_engaged, float pct, float dt_s);
+/* neutral_run_pct: generator mode (section K) - the gear is settled in NEUTRAL
+ * and the generator is active: the clamp is min(neutral_run_pct, forward limit)
+ * instead of the reverse limit; < 0 = not active (the normal rule). */
+float servo_throttle_write(servo_t *sv, const plim_t *lim, bool forward_engaged, float pct, float dt_s,
+                           float neutral_run_pct);
 
 /* Pulse for a throttle %, inside the calibrated endpoints. */
 uint16_t servo_pulse_for(const servo_config_t *c, float pct);

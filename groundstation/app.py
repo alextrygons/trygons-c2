@@ -2814,6 +2814,13 @@ class App:
                 out.append(("nv_reset", T("nv.reset")) + B["pickup"] + (None,))
             if d.get("batt_no_data"):                   # a notice, never an alarm (CLAUDE.md J)
                 out.append(("batt_no_data", T("batt.no_data")) + B["pickup"] + (None,))
+            gs = d.get("gen_state", 0)                  # generator mode (CLAUDE.md K): notices, the GEAR alarm is the alarm
+            if gs == 2:
+                out.append(("gen_starting", T("gen.starting")) + B["pickup"] + (None,))
+            elif gs == 6:
+                out.append(("gen_fault", T("gen.fault")) + B["pickup"] + (None,))
+            elif gs == 7:
+                out.append(("gen_done", T("gen.done")) + B["pickup"] + (None,))
             if d.get("profile") == proto.PROFILE_UNCREWED:
                 out.append(("uncrewed", T("cap.unc_banner")) + B["uncrewed"] + (None,))
         av = (self.gw_status or {}).get("avoid") or {}
@@ -2922,8 +2929,13 @@ class App:
                 ([T("cap.v_sog"), "%.1f kn  %03.0f°" % (d["est_sog"], d["est_cog"])], None)]
         # the 12 V bank (TELEM2 group L): filtered volts, red while LOW BATTERY; "no data" when not measured
         bv = d.get("bank_v")
-        rows.append(([T("cap.v_battery"), "%.1f V" % bv if bv is not None else T("cap.batt_none")],
-                     bad if d.get("batt_low") else None))
+        # generator mode (TELEM2 group L) on the same row while generator auto is on: its state, the throttle
+        # it asks while running (a row of its own would not fit at 1366 x 658)
+        gs = d.get("gen_state", 0)
+        btxt = "%.1f V" % bv if bv is not None else T("cap.batt_none")
+        if gs:
+            btxt += "  ·  " + T("cap.v_generator") + " " + T("gen.st_%d" % min(gs, 7)) +                     (" %d %%" % d.get("gen_pct", 0) if gs in (3, 4) else "")
+        rows.append(([T("cap.v_battery"), btxt], bad if d.get("batt_low") or gs == 6 else ok if gs == 3 else None))
         p.table(None, rows, ["l", "l"], tag="values", level="label")
 
     def panel_control(self):
@@ -2943,6 +2955,16 @@ class App:
         p.button(T("cap.pause"), lambda: self.cmd(proto.T_AUTO_PAUSE, b"", TE("what.auto_pause")))
         p.button(T("cap.resume"), lambda: self.cmd(proto.T_AUTO_RESUME, b"", TE("what.auto_resume")))
         p.button(T("cap.skip"), lambda: self.cmd(proto.T_AUTO_SKIP, b"", TE("what.auto_skip")))
+        # generator auto (CLAUDE.md K): the captain switches it on / off (a copilot's ON needs the captain's
+        # ACCEPT - the gateway holds it); the boat itself decides when it runs (STANDBY, neutral, low bank);
+        # its state is in the status panel
+        gs = d.get("gen_state", 0)
+        if gs == 0:
+            p.button(T("cap.btn_gen_on"), lambda: self.cmd(proto.T_GENERATOR, bytes([1]), TE("what.generator_on")),
+                     tag="btn_gen")
+        else:
+            p.button(T("cap.btn_gen_off"), lambda: self.cmd(proto.T_GENERATOR, bytes([0]), TE("what.generator_off")),
+                     on=True, tag="btn_gen")
         p.br()
         wps = self.prog["wps"]
         p.text(T("ov.route", n=len(wps), nm="%.1f" % self.route_nm(), kn="%.0f" % self.new_wp["kn"]) +

@@ -25,6 +25,9 @@ typedef struct {
     throttle_config_t cfg;
     float out_pct;          /* what goes to the throttle servo */
     bool  stop;             /* safe stop (STANDBY): close at rate_stop_pct_s */
+    float neutral_run_pct;  /* generator mode (section K): the throttle may open in NEUTRAL up to this
+                             * (set by smallboat.c only while the generator is active, gear settled in N);
+                             * 0 = the normal rule: idle in neutral */
 } throttle_t;
 
 void  throttle_default_config(throttle_config_t *cfg);

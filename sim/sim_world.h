@@ -29,6 +29,7 @@ typedef struct {
     bool  gps_fail;             /* no GPS messages */
     float gps_pos_noise_m;      /* 1.5 */
     bool  neutral_switch;       /* a neutral switch is fitted */
+    int8_t neutral_sw_force;    /* tests: 0 the switch follows the gearbox, 1 stuck open, 2 stuck closed */
     bool  servo_stuck;          /* gear servo does not move any more */
     bool  current_sensor;       /* steering motor current sense fitted */
     bool  limit_switches;       /* steering end-stop switches fitted */

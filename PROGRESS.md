@@ -22,7 +22,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 2 | Boat dropdown = first line of screen 2's top-left panel + lamp ΣΥΝΔΕΔΕΜΕΝΟ; confirm step kept; tests test_boats + test_screen2 | DONE (gate OK except gateway VR5 under PC load - test_gateway alone 105/105 PASS; test_boats 6/6 incl. B6; test_screen2 13/13 incl. S13; acceptance quick 6/7 PASS - only START_DEMO skipped: a demo was already running on this PC, ports 5760-8554 in use) | this commit |
 | 3 | Data flash (NV): TRAINING result, joystick calibration + map, AUTO program, boot counter, generator learned value; CRC, versioned; board tc_nv.c | DONE (gate OK: sim 193/193 + bridge 192/192 incl. DF1-DF5, TriCore + iLLD check with Flash/Std built, NV harness 4/4, gateway 105/105; test_driver 19/19, test_screen2 13/13; acceptance quick 7/7 PASS on a fresh clone of this commit, incl. START_DEMO) | this commit |
 | 4 | Supply voltage input (12 V bank), filtered ~30 s, low-battery alarm | DONE (gate OK: sim 197/197 + bridge 196/196 incl. BV1-BV4, TriCore + iLLD check, NV 4/4, gateway 105/105, test_screen2 13/13, test_driver 19/19, test_lang 5/5, sound 10/10; acceptance quick 7/7 PASS on a fresh clone of this commit, incl. START_DEMO, storm 200 episodes) | this commit |
-| 4b | Generator mode (the ONLY automatic throttle rise; CLAUDE.md K) | | |
+| 4b | Generator mode (the ONLY automatic throttle rise; CLAUDE.md K) | DONE (gate OK: sim 205/205 + bridge 204/204 incl. GN1-GN8, TriCore + iLLD check, NV 4/4, gateway, test_screen2 13/13, test_lang 5/5, test_driver 19/19; storm 200 episodes incl. I32-I35; acceptance quick 7/7 PASS - the "fresh build from GitHub" suite builds the pushed step-4 HEAD, every other suite this tree) | this commit |
 | 5 | Boat file v2: relay list + generator_max_pct + thruster settings; old files still load | | |
 | 6 | RS485 Modbus RTU relay board driver on the AURIX (state machine, timeouts, no-data advisory; never on CPU1) | | |
 | 7 | Engine controls + remote restart (CLAUDE.md N; I31 changed) | | |
@@ -102,6 +102,45 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   both words. Lang: alarm.low_battery, say.alarm.low_battery, cap.v_battery, cap.batt_none, batt.no_data,
   hud.batt(_none). MANUAL 11 / 13 / 15 / 17, MANUAL_EL 9 / 10. TO CONFIRM: 11.8 V, 60 s, advisory (power limit
   stays), the divider values.
+- Step 4b (2026-10-26): generator mode. app/generator.c (pure C): gen_t with states OFF / READY / STARTING / RUNNING /
+  STOPPING / REST / FAULT / DONE (= TELEM2 group L "generator state" + demand %), gen_set (captain on / off; the
+  STANDBY button = off), gen_step with gen_input_t (allowed, neutral confirmed, volts, power limit, stop request, GPS
+  SOG, thrust (0 until DP), throttle output). Rules as CLAUDE.md K: start only with ALL conditions (10 s beep ->
+  idle_pct 8 %), +2 % / 30 s while bank_v_fast still falls (> 0.02 V), hold = learned value, -2 % above start_v + 0.4,
+  cap = min(gen_max_pct, GEN_CEILING 30, power limit) followed down at once, cycle 20 min / 1 min rest / rest check,
+  every stop idle first (demand 0, STOPPING until the output is idle, nothing rises), GEAR FAULT (switch opened / SOG
+  + 0.5 kn within 20 s of a rise) = idle at the fast STANDBY rate + SB_ALM_GEAR + auto off until re-enabled.
+  smallboat.c: the demand is applied in STANDBY only (gear N), stop requests = any non-advisory alarm (LOW BATTERY,
+  nav advisories do not stop it), a pending AUTO / REMOTE / MANEUVER CONFIRM, TAKE, a CREWED stick off centre;
+  throttle.c neutral_run_pct + servo.c neutral_run_pct (clamp min(cap, fwd limit) instead of the reverse limit in
+  neutral) + the section-5 direction clamp; thr.stop uses the normal closing rate for a generator stop, the fast one
+  for a fault. CPU1 (monitor.c): g_mon.gen_active + gen_cap_pct in the seqlock set; with gen_active the throttle limit
+  in neutral = min(cap, fwd limit) and the gear pulse must stay at neutral (MON_TRIP_GENERATOR, new reason 6); without
+  it the reverse limit applies as before (GN6 proves all three). link.c: PROTO_T_GENERATOR 0x2C (u8 0 / 1; FIRST TEST
+  -> WRONG_MODE, gen_max_pct 0 -> PRECOND; HELM check as every command), parameters gen_max_pct 0..30 / gen_start_v
+  11.5..13 / gen_idle_pct 3..15. Log event 24 GENERATOR (state, stop_why | enabled << 8, bank V*100, pct*10) on every
+  state / demand change - events only, the 20 Hz sample is untouched. NV slot 6 = {version 1, pct, pad, crc32}, saved
+  in STANDBY once the generator is idle, loaded in sb_init (bad record = fast idle + NV DATA RESET). Sim: world
+  neutral_sw_force (0 follows the gearbox, 1 stuck open, 2 stuck closed), pcsim captures TELEM2, `autopilot_sim gen`
+  = GN1-GN8 (in `all` too). Storm: NINV 36, I32-I35, events E_GEN (ACK + bank 11.5 V + auto on, fits a neutral switch
+  that follows the gearbox) and E_SUPPLY; 200 episodes 0 fails (I33 / I34 8188 checks, 66 stops). FOUND BY THE
+  STORM + FIXED (seed 169, I35): in the step of a joystick takeover while the generator ran, the neutral-run cap was
+  computed before the gear request, so the MANUAL demand (capped at the generator cap) opened the throttle in neutral
+  for one step (+0.75 %) - the cap now applies only to the generator's own demand (STANDBY, gear demand N); every
+  other demand meets the normal rule (idle in neutral, gear only at idle). Ground station:
+  proto T_GENERATOR + GEN_STATES + is_driving_cmd (only ON needs the captain's ACCEPT; OFF goes straight), screen 2
+  control panel button GENERATOR AUTO ON / OFF on the AUTO button line, the state on the Battery row (its own row
+  did not fit at 1366 x 658), notices STARTING / FAULT / DONE on both screens, HUD bottom line "GEN x %". Lang keys
+  cap.v_generator, gen.st_0..7, cap.btn_gen_on/off, gen.starting / fault / done, hud.gen, what.generator_on/off.
+  MANUAL 7 (new part GENERATOR MODE) / 15 / 17, MANUAL_EL 7; WIRING.md + PARTS.md: the neutral switch is the
+  generator's precondition. TO CONFIRM: 25 % / 30 % ceiling, 8 % idle, 12.1 V, +-2 % / 30 s, 20 min / 1 min.
+  FINDING (not fixed - acceptance tests report, they don't change app logic): with a fitted neutral switch that is
+  stuck OPEN, TRAINING -> gear fault -> STANDBY logs the TRAINING throttle demand (20 %) in the fault step (storm I9
+  "STANDBY with throttle asked 20 % / gear F"; the output itself stays idle: the gear machine never allowed it). Seen
+  only when the storm's E_NSW event was routed through the world (switch really fitted); reverted E_NSW to its old
+  direct HAL set (overridden every tick, as before) so the storm's coverage is unchanged. Reproduction: route E_NSW
+  through S.w.neutral_switch / neutral_sw_force and run `storm.exe --replay 37`. Candidate fix: zero throttle_mode /
+  gear_demand when the gear fault requests STANDBY in sb_step section 6 (cosmetic: the log value only).
 
 # Previous task: "Screen 2 review"
 
