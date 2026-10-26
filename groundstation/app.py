@@ -294,6 +294,9 @@ class App:
         self.boat_pick = None           # the boat picked in screen 2's dropdown (before / while connecting)
         self.boat_menu = None           # the dropdown menu (built on click)
         self.boat_ok = False            # its name + live camera confirmed: HELM may be taken (CLAUDE.md F)
+        self.boat_pushed = False        # the boat file's settings pushed to the AURIX (CLAUDE.md L): HELM + STANDBY
+        self.boat_push_seq = None       # the seq of that PARAM_SET (a NACK re-arms the push)
+        self.boat_push_at = 0.0         # no retry before this time
         self.boatsel = None             # the boat list dialog
         self.boatconf = None            # the boat confirmation dialog
         self.screen_shown = 2           # one monitor: which screen F11 shows (1 driving, 2 navigation)
@@ -1402,6 +1405,8 @@ class App:
             self.disconnect()
         if not user:
             return T("boat.need_login")
+        if bt.error:
+            return T("boat.invalid", name=bt.name, err=bt.error, file=bt.path)     # a bad file is never connected
         try:
             self.link = GatewayLink("%s:%d" % (bt.ip, bt.port), user, password=pw, station="ground station (%s)" % user,
                                     log=True, crew=crew, boat=bt.name)
@@ -1410,6 +1415,7 @@ class App:
             self.link = None
             return T("cap.cannot_connect", err=i18n.from_en(str(e)))
         self.boat, self.boat_ok = bt, False
+        self.boat_pushed, self.boat_push_seq, self.boat_push_at = False, None, 0.0
         self.boat_pick = bt
         self.prober.found(bt)                       # the gateway answered: found (screen 2's lamp)
         self.port_var.set(bt.address())
@@ -1840,6 +1846,8 @@ class App:
                         continue                # "Read all" probes past the last id
                     if d["cmd"] == proto.T_PARAM_SET and d["ok"]:
                         self.root.after(300, self.read_params)
+                    if d["seq"] == self.boat_push_seq and not d["ok"]:
+                        self.boat_pushed, self.boat_push_at = False, time.time() + 5.0   # e.g. left STANDBY: again later
                     if what is not None or not d["ok"]:
                         txt = "%s: %s" % (i18n.from_en(what) if what else d["cmd_name"], alerts.result_text(d))
                         self.say(txt, GREEN if d["ok"] else RED)
@@ -1939,6 +1947,8 @@ class App:
         ts = d["t_ms"] / 1000.0
         if self.hist and ts < self.hist[-1][0]:
             self.hist.clear()               # boat restarted
+            self.boat_pushed = False        # its RAM-only boat file settings are gone: push them again
+        self.boat_push(d)
         self.hist.append((ts, d["heading"], d["target"], d["outboard"]))
         while self.hist and self.hist[0][0] < ts - PLOT_S:
             self.hist.pop(0)
@@ -3029,7 +3039,7 @@ class App:
         bt = self.boat or self.boat_pick
         if bt is None:
             return None, "address" if self.link is not None else "none"
-        st = "no_ip" if (bt.error or not bt.ip_ok()) else self.prober.status(bt)
+        st = self.prober.status(bt)                 # "invalid" / "no_ip" without probing (boats.Boat.fixed_status)
         st = "checking" if st == "?" else st
         lk = self.link
         if st == "online" and self.boat is not None and self.boat.id == bt.id and lk is not None and \
@@ -3061,7 +3071,7 @@ class App:
         only as a detail at the end), then another address / disconnect."""
         out = []
         for bt in self.boat_list:
-            st = "no_ip" if (bt.error or not bt.ip_ok()) else self.prober.status(bt)
+            st = self.prober.status(bt)
             st = "checking" if st == "?" else st
             if self.boat is not None and self.boat.id == bt.id and self.boat_state()[1] == "connected":
                 st = "connected"
@@ -3233,6 +3243,28 @@ class App:
         hid = (self.t or {}).get("helm")
         mine = (self.gw_status or {}).get("you")
         return bool(hid) and ((hid == mine) if mine else (hid == 1 and isinstance(self.link, Link)))
+
+    def boat_push(self, d):
+        """CLAUDE.md L: once this station holds HELM, it pushes the boat file's settings to the AURIX (RAM only):
+        the generator cap gen_max_pct = min(file, the AURIX's own ceiling) - a v1 / invalid file pushes 0 =
+        generator disabled. PARAM_SET is STANDBY only, so the push waits for STANDBY; a NACK re-arms it (5 s);
+        a boat restart (t_ms back to 0) re-arms it too. The relay table (step 6, PROTO_T_RELAY_CFG) and the
+        thruster settings (step 9) join here when the AURIX takes them. Never from a copilot (it never holds
+        HELM); the captain's own setting, so no ACCEPT; single-operator mode = its own confirmation."""
+        if self.boat is None or not self.boat_ok or self.boat_pushed or self.link is None or \
+                time.time() < self.boat_push_at:
+            return                                  # only a confirmed boat (name + live camera) gets its settings
+        if not self.helm_mine() or d.get("mode_name") != "STANDBY":
+            return
+        pid = next((k for k, p in self.params.items() if p.get("name") == "gen_max_pct"), None)
+        if pid is None:
+            return                                  # the parameter list is not read yet
+        st = boats.aurix_settings(self.boat, self.params[pid].get("max", boats.GEN_MAX_CEILING))
+        v = st["gen_max_pct"]
+        self.boat_pushed = True
+        self.boat_push_seq = self._send_cmd(proto.T_PARAM_SET, proto.p_param_set(pid, v),
+                                            TE("what.boat_gen", v="%g" % v, name=self.boat.name),
+                                            confirm="self" if self.single_op else None)
 
     def helm_text(self):
         """Who holds HELM, in the screen language (the gateway's own name of it is English)."""

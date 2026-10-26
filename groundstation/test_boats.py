@@ -80,8 +80,8 @@ def b2_list_and_probe():
     pr.stop()
     srv.close()
     alpha = [b for b in bs if b.name == "ALPHA"][0]
-    report("B2 boat list: online / offline / IP not set / broken file; extra fields kept (format can grow)",
-           st == {"ALPHA": "online", "BRAVO": "offline", "CHARLIE": "no_ip", "zz": "no_ip"} and st2 == st and
+    report("B2 boat list: online / offline / IP not set / broken file = INVALID; extra fields kept (format can grow)",
+           st == {"ALPHA": "online", "BRAVO": "offline", "CHARLIE": "no_ip", "zz": "invalid"} and st2 == st and
            alpha.extra == {"length_m": 4.9, "cameras": ["FRONT"]} and [b.name for b in bs if b.error] == ["zz"],
            "probe %s; background prober %s; extra %s" % (st, st2, alpha.extra))
 
@@ -95,6 +95,97 @@ def b3_name_and_confirm():
     report("B3 name check (refused when the gateway is another boat); confirm = name typed + live camera",
            ok and bad and "wrong boat" in bad and c == [True, True, False, False, False],
            "right %s; wrong -> %r; confirm (name ok + camera, spaces, no camera, wrong name, empty) %s" % (ok, bad, c))
+
+
+V2 = {"format": 2, "id": "v2", "name": "VICTOR", "tailscale_ip": "127.0.0.1", "gateway_port": 5761,
+      "generator_max_pct": 40, "length_m": 5.2, "draft_m": 0.6,
+      "relays": [{"n": 1, "name_el": "ΑΝΑΦΛΕΞΗ", "name_en": "IGNITION", "type": "onoff", "group": "engine",
+                  "pair": None, "max_s": 0, "show_hud": True, "power_up": "off"},
+                 {"n": 2, "name_el": "ΜΙΖΑ", "name_en": "STARTER", "type": "momentary", "group": "engine",
+                  "pair": None, "max_s": 1, "show_hud": False, "power_up": "off"},
+                 {"n": 4, "name_el": "ΤΡΙΜ ΠΑΝΩ", "name_en": "TRIM UP", "type": "momentary", "group": "trim",
+                  "pair": 5, "max_s": 3, "show_hud": True, "power_up": "off"},
+                 {"n": 5, "name_el": "ΤΡΙΜ ΚΑΤΩ", "name_en": "TRIM DOWN", "type": "momentary", "group": "trim",
+                  "pair": 4, "max_s": 3, "show_hud": True, "power_up": "off"},
+                 {"n": 7, "name_el": "ΑΝΤΛΙΑ", "name_en": "PUMP", "type": "timed", "group": "extra", "pair": None,
+                  "max_s": 120, "power_up": "keep"}],
+      "thrusters": {"bow": {"max_pct": 80, "run_s": 60, "rest_s": 120}, "stern": {"max_pct": 100, "run_s": 120,
+                                                                                   "rest_s": 90}, "jog_m": 2.0}}
+
+
+def b7_file_formats():
+    """CLAUDE.md L: a v1 file (no "format") loads with defaults; a v2 file gives the generator cap, the relay
+    table and the thruster settings; every bad file is INVALID (listed with its error, never connected)."""
+    import copy
+    d = tempfile.mkdtemp(prefix="boats_v2_")
+
+    def bad(mut):
+        x = copy.deepcopy(V2)
+        mut(x)
+        return x
+
+    def relay_mut(i, **kw):
+        def f(x):
+            x["relays"][i].update(kw)
+        return f
+    files = {
+        "v1.json": {"id": "v1", "name": "OLD", "tailscale_ip": "127.0.0.1", "generator_max_pct": 50,
+                    "relays": [{"n": 1}], "length_m": 4.0},                 # v1: the v2 fields are ignored
+        "v2.json": V2,
+        "f3.json": bad(lambda x: x.__setitem__("format", 3)),               # unknown format
+        "gen_txt.json": bad(lambda x: x.__setitem__("generator_max_pct", "25")),
+        "gen_hi.json": bad(lambda x: x.__setitem__("generator_max_pct", 101)),
+        "pair.json": bad(relay_mut(2, pair=1)),                             # TRIM UP pairs IGNITION: not mutual
+        "pair_self.json": bad(relay_mut(2, pair=4)),
+        "mom6.json": bad(relay_mut(1, max_s=6)),                            # momentary longer than 5 s
+        "mom0.json": bad(relay_mut(1, max_s=0)),
+        "timed0.json": bad(relay_mut(4, max_s=0)),
+        "eng_on.json": bad(relay_mut(0, power_up="on")),                    # engine relay switched automatically
+        "eng_keep.json": bad(relay_mut(0, power_up="keep")),
+        "type.json": bad(relay_mut(0, type="pulse")),
+        "group.json": bad(relay_mut(0, group="lights")),
+        "dup_n.json": bad(relay_mut(1, n=1)),
+        "no_name.json": bad(relay_mut(0, name_el="")),
+        "thr_hi.json": bad(lambda x: x["thrusters"]["bow"].__setitem__("max_pct", 101)),
+        "thr_run.json": bad(lambda x: x["thrusters"]["bow"].__setitem__("run_s", 0)),
+        "thr_jog.json": bad(lambda x: x["thrusters"].__setitem__("jog_m", 0)),
+        "relays_obj.json": bad(lambda x: x.__setitem__("relays", {"n": 1})),
+    }
+    for n, v in files.items():
+        with open(os.path.join(d, n), "w", encoding="utf-8") as f:
+            json.dump(v, f, ensure_ascii=False)
+    with open(os.path.join(d, "broken.json"), "w", encoding="utf-8") as f:
+        f.write("{broken")
+    bs = {os.path.basename(b.path): b for b in boats.load(d)}
+    v1, v2 = bs["v1.json"], bs["v2.json"]
+    v1_ok = v1.error is None and v1.format == 1 and v1.generator_max_pct == 0 and v1.relays == [] and \
+        v1.thrusters["bow"]["max_pct"] == 0 and v1.thrusters["stern"]["max_pct"] == 0 and v1.length_m == 4.0 and \
+        v1.fixed_status() == None and boats.aurix_settings(v1) == {"gen_max_pct": 0.0, "relays": [],
+                                                                    "thrusters": boats.aurix_settings(v1)["thrusters"]}
+    s2 = boats.aurix_settings(v2)
+    v2_ok = v2.error is None and v2.format == 2 and v2.generator_max_pct == 40 and s2["gen_max_pct"] == 30 and \
+        boats.aurix_settings(v2, 20)["gen_max_pct"] == 20 and [r["n"] for r in v2.relays] == [1, 2, 4, 5, 7] and \
+        v2.relay(4)["pair"] == 5 and v2.relay(5)["pair"] == 4 and v2.relay(7)["show_hud"] is False and \
+        v2.relay(7)["power_up"] == "keep" and v2.relay(2)["max_s"] == 1.0 and \
+        v2.thrusters["bow"] == {"max_pct": 80.0, "run_s": 60.0, "rest_s": 120.0} and v2.thrusters["jog_m"] == 2.0 and \
+        v2.thrusters["spot_alarm_m"] == 15.0 and v2.length_m == 5.2 and v2.draft_m == 0.6 and \
+        s2["relays"] == v2.relays and s2["relays"] is not v2.relays and v2.fixed_status() is None
+    invalid = {n: (b.error, b.fixed_status(), boats.probe(b)) for n, b in bs.items() if n not in ("v1.json", "v2.json")}
+    inv_ok = all(e and st == "invalid" and pr == "invalid" for e, st, pr in invalid.values()) and \
+        len(invalid) == len(files) - 2 + 1
+    # an invalid file pushes the defaults (never its contents) and is never connected
+    bad_b = bs["eng_on.json"]
+    defaults = boats.aurix_settings(bad_b) == boats.aurix_settings(v1)
+    repo = boats.load()
+    repo_ok = all(b.error is None and b.format == 2 and 0 < boats.aurix_settings(b)["gen_max_pct"] <= 30 and
+                  b.relays and all(r["power_up"] == "off" for r in b.relays if r["group"] == "engine") for b in repo)
+    report("B7 boat file v2: v1 loads with defaults (generator off, no relays / thrusters); v2 parsed, generator "
+           "capped at the AURIX ceiling; %d bad files INVALID (format, generator, pair not mutual, momentary > 5 s, "
+           "engine power_up, type, group, duplicate n, thrusters, broken JSON); repo files valid v2" % len(invalid),
+           v1_ok and v2_ok and inv_ok and defaults and repo_ok,
+           "v1 %s; v2 %s (gen 40 -> push %s); invalid %s; bad file = defaults %s; repo %s" % (
+               v1_ok, v2_ok, s2["gen_max_pct"], {n: v[0] for n, v in invalid.items()}, defaults,
+               [(b.name, b.format, b.error) for b in repo]))
 
 
 class FakeStream:
@@ -124,7 +215,8 @@ def b4_app_end_to_end():
     cfg = TG.gw_cfg_b(sim, root_dir, boat="RF49D")
     gw = TG.GwRunner(cfg)
     sp = cfg["stations"]["port"]
-    good = boats.Boat("rf.json", {"id": "rf49d", "name": "RF49D", "tailscale_ip": "127.0.0.1", "gateway_port": sp})
+    good = boats.Boat("rf.json", {"format": 2, "id": "rf49d", "name": "RF49D", "tailscale_ip": "127.0.0.1",
+                                  "gateway_port": sp, "generator_max_pct": 20})
     wrong = boats.Boat("er.json", {"id": "er69d", "name": "ER69D", "tailscale_ip": "127.0.0.1", "gateway_port": sp})
     troot = tk.Tk()
     ap = A.App(troot, layout=os.path.join(tmp, "lay.json"))
@@ -146,6 +238,7 @@ def b4_app_end_to_end():
         ap.cmd(proto.T_HELM, proto.p_helm(0), "take HELM")
         pump(2.0)
         helm_before = ap.t.get("helm") if ap.t else None
+        pushed_before_helm = ap.boat_pushed                      # B8: nothing pushed without HELM
         # confirm without a live camera / with the wrong name: refused
         ap.boatconf.name.insert(0, "RF49D")
         ap.boatconf.cam.set(True)
@@ -189,11 +282,36 @@ def b4_app_end_to_end():
             and ap.screen_shown == 2
         report("B5 one monitor: F11 shows screen 1, F11 again screen 2; the map IS screen 2 (no map window)",
                s1 and s2 and embedded, "screen 1 %s, screen 2 %s, the map fills screen 2 %s" % (s1, s2, embedded))
+        b8_push(ap, pump, pushed_before_helm)
         b6_dropdown(ap, pump, good)
     finally:
         ap.quit()
         gw.stop()
         sim.stop()
+
+
+def b8_push(ap, pump, pushed_before_helm):
+    """CLAUDE.md L: once this station holds HELM (STANDBY), the boat file's generator_max_pct reaches the AURIX
+    (parameter gen_max_pct, RAM only); the AURIX's own ceiling (30) wins over a bigger file value; nothing is
+    pushed outside STANDBY; a NACK / restart re-arms the push."""
+    pid = next((k for k, p in ap.params.items() if p.get("name") == "gen_max_pct"), None)
+    val = lambda: ap.params.get(pid, {}).get("value")
+    pushed = pid is not None and pump(8, lambda: ap.boat_pushed and val() == 20.0)
+    v20 = val()
+    # outside STANDBY: not pushed (PARAM_SET is STANDBY only)
+    ap.boat_pushed, ap.boat_push_at = False, 0.0
+    seq0 = ap.boat_push_seq
+    ap.boat_push(dict(ap.t, mode_name="MANUAL"))
+    held = not ap.boat_pushed and ap.boat_push_seq == seq0
+    # the file says 40: the AURIX ceiling (parameter max 30) wins
+    ap.boat.generator_max_pct = 40.0
+    ap.boat_push(ap.t)
+    capped = pump(8, lambda: val() == 30.0)
+    report("B8 boat file -> AURIX: generator max pushed once HELM is held (STANDBY only), capped at the AURIX "
+           "ceiling; nothing before HELM",
+           not pushed_before_helm and pushed and held and capped,
+           "before HELM pushed %s; after HELM gen_max_pct = %s (file 20) %s; MANUAL: held %s; file 40 -> %s (max 30) %s"
+           % (pushed_before_helm, v20, pushed, held, val(), capped))
 
 
 def b6_dropdown(ap, pump, good):
@@ -262,6 +380,7 @@ def main():
     b1_repo_boats()
     b2_list_and_probe()
     b3_name_and_confirm()
+    b7_file_formats()
     b4_app_end_to_end()
     bad = results.count(False)
     print("BOAT TESTS: %d passed, %d failed" % (len(results) - bad, bad))

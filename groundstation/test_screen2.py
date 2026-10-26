@@ -141,6 +141,9 @@ class Rig:
         A.GatewayLink = A.Link if on else self.real_gw
         if on:
             self.ap.link.send_msg = lambda m: None
+            self.ap.link.send = lambda *a, **k: 0           # commands (e.g. the boat file push, CLAUDE.md L) too
+        else:
+            self.ap.link.__dict__.pop("send", None)         # the real send again (the class's)
 
     real_gw = A.GatewayLink
 

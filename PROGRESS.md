@@ -23,7 +23,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 3 | Data flash (NV): TRAINING result, joystick calibration + map, AUTO program, boot counter, generator learned value; CRC, versioned; board tc_nv.c | DONE (gate OK: sim 193/193 + bridge 192/192 incl. DF1-DF5, TriCore + iLLD check with Flash/Std built, NV harness 4/4, gateway 105/105; test_driver 19/19, test_screen2 13/13; acceptance quick 7/7 PASS on a fresh clone of this commit, incl. START_DEMO) | this commit |
 | 4 | Supply voltage input (12 V bank), filtered ~30 s, low-battery alarm | DONE (gate OK: sim 197/197 + bridge 196/196 incl. BV1-BV4, TriCore + iLLD check, NV 4/4, gateway 105/105, test_screen2 13/13, test_driver 19/19, test_lang 5/5, sound 10/10; acceptance quick 7/7 PASS on a fresh clone of this commit, incl. START_DEMO, storm 200 episodes) | this commit |
 | 4b | Generator mode (the ONLY automatic throttle rise; CLAUDE.md K) | DONE (gate OK: sim 205/205 + bridge 204/204 incl. GN1-GN8, TriCore + iLLD check, NV 4/4, gateway, test_screen2 13/13, test_lang 5/5, test_driver 19/19; storm 200 episodes incl. I32-I35; acceptance quick 7/7 PASS - the "fresh build from GitHub" suite builds the pushed step-4 HEAD, every other suite this tree) | this commit |
-| 5 | Boat file v2: relay list + generator_max_pct + thruster settings; old files still load | | |
+| 5 | Boat file v2: relay list + generator_max_pct + thruster settings; old files still load | DONE (gate OK: sim 205/205 + bridge 204/204, TriCore + iLLD check, NV 4/4, FAT32 2/2, charts 6/6, test_lang 5/5, test_boats 8/8 incl. B7 + B8, test_screen2 13/13, sound 10/10, avoidance 14/14; gateway: section C crashed in the gate (sim connection refused at its start = PC load, untouched by this step) and passed alone 11/11, the other 94 OK; acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the "fresh build from GitHub" suite builds the pushed step-4b HEAD, every other suite this tree), storm 200 episodes) | this commit |
 | 6 | RS485 Modbus RTU relay board driver on the AURIX (state machine, timeouts, no-data advisory; never on CPU1) | | |
 | 7 | Engine controls + remote restart (CLAUDE.md N; I31 changed) | | |
 | 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | | |
@@ -141,6 +141,27 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   direct HAL set (overridden every tick, as before) so the storm's coverage is unchanged. Reproduction: route E_NSW
   through S.w.neutral_switch / neutral_sw_force and run `storm.exe --replay 37`. Candidate fix: zero throttle_mode /
   gear_demand when the gear fault requests STANDBY in sb_step section 6 (cosmetic: the log value only).
+- Step 5 (2026-10-26): boat file v2 (ground station only; no AURIX change). groundstation/boats.py: "format" (missing = v1:
+  the v2 fields stay at their defaults - generator_max_pct 0 = disabled, no relays, thrusters max_pct 0; unknown format =
+  INVALID), generator_max_pct 0..100 (the AURIX ceiling 30 applies on the push), relays (n 1..32 unique, name_el /
+  name_en, type onoff | momentary | latching | timed, group engine | trim | extra, pair mutual, momentary 0 < max_s <= 5,
+  timed max_s > 0, show_hud bool, power_up off | on | keep - the engine group only "off": owner clarification), thrusters
+  (bow / stern max_pct 0..100, run_s > 0 when fitted, rest_s, jog_m 0.5..10 default 1.5, spot_alarm_m 5..100 default 15),
+  length_m / draft_m optional. Any failed check = Boat.error -> status "invalid" (Boat.fixed_status(), prober.status,
+  probe; lamp / list / dropdown "INVALID FILE" / "ΑΚΥΡΟ ΑΡΧΕΙΟ", crewui + app.connect_boat refuse: never connected).
+  boats.aurix_settings(boat, ceiling) = what the HELM station pushes; app.boat_push (called from on_telem): only a
+  confirmed boat (boat_ok), HELM held, mode STANDBY (PARAM_SET is STANDBY only), the parameter list read -> PARAM_SET
+  gen_max_pct = min(file, the parameter's max) through _send_cmd (the captain's own action, single-op: confirm "self");
+  a NACK re-arms it after 5 s, a boat restart (t_ms back) re-arms it. The relay table (PROTO_T_RELAY_CFG, step 6) and the
+  thruster settings (step 9) join boat_push when the AURIX takes them. boats/rf49d.json + er69d.json are format 2
+  (generator_max_pct 25, 7 sample relays IGNITION / STARTER / SHUTOFF (engine), TRIM UP / DOWN (trim, pair), NAV LIGHTS /
+  BILGE PUMP (extra), thrusters 100 % 60-120 s - all channel numbers and values TBD / TO CONFIRM, notes in the files).
+  Lang: boat.st_invalid, boat.invalid, what.boat_gen. Tests: test_boats B2 (broken file = invalid), B7 (v1 defaults, v2
+  parsed + ceiling, 19 bad files INVALID, repo files valid v2), B8 (e2e through the real gateway + sim: nothing pushed
+  before HELM, gen_max_pct 20 on the boat after HELM, nothing outside STANDBY, file 40 -> 30). test_screen2's rig stubs
+  link.send in gateway_like mode (the push would have reached a plain Link with gateway kwargs). MANUAL chapter 5 + 7,
+  MANUAL_EL: the boat file paragraph. Gate note: gateway section C (channels) crashed once in the full gate with
+  "connection refused" when its simulator started (PC load); alone 11/11.
 
 # Previous task: "Screen 2 review"
 

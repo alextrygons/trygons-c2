@@ -25,7 +25,8 @@ C = theme.C
 
 
 def status_col(st):
-    return {"online": C["ok_txt"], "offline": C["bad_txt"], "no_ip": C["note_txt"], "checking": C["dim"]}.get(st, C["fg"])
+    return {"online": C["ok_txt"], "offline": C["bad_txt"], "no_ip": C["note_txt"], "invalid": C["bad_txt"],
+            "checking": C["dim"]}.get(st, C["fg"])
 
 
 def lab(parent, text, font=F, **kw):
@@ -89,7 +90,7 @@ class BoatSelector:
     def rows(self):
         out = []
         for bt in self.boats:
-            st = "no_ip" if (bt.error or not bt.ip_ok()) else self.prober.status(bt)
+            st = self.prober.status(bt)             # "invalid" / "no_ip" without probing
             st = "checking" if st == "?" else st
             out.append((bt, st))
         return out
@@ -125,6 +126,8 @@ class BoatSelector:
         bt, st = self.selected()
         if bt is None:
             return self.msg.configure(text=T("boat.pick"))
+        if st == "invalid":
+            return self.msg.configure(text=T("boat.invalid", name=bt.name, err=bt.error, file=bt.path))
         if st == "no_ip":
             return self.msg.configure(text=T("boat.no_ip", name=bt.name, file=bt.path))
         if st != "online":

@@ -98,8 +98,9 @@ TWCS throttle, read by a small Teensy 4.1 "bridge" board (chapter 8).
   Cpu2_Main.c     core 2: the logger loop.
   sim/            PC simulation, all tests, simulated boat for the ground
                   station. NOT part of the board build.
-  boats/          One file per boat (name + Tailscale address, no secrets): the
-                  ground station's boat list (chapter 5). Comes with every clone.
+  boats/          One file per boat (name + Tailscale address + equipment:
+                  generator cap, relays, thrusters; no secrets): the ground
+                  station's boat list (chapter 5). Comes with every clone.
   groundstation/  PC ground station and log tools (Python).
   gateway/        Raspberry Pi 5 gateway software (Python): remote access,
                   log copy, cameras, sync. Setup step by step:
@@ -334,7 +335,7 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   lamp next to it and "✓ name verified". Click it: the list of the boats
   folder of the repository (boats\rf49d.json, boats\er69d.json - name +
   Tailscale address, no passwords), every boat by NAME with ONLINE /
-  OFFLINE / IP NOT SET and its address only as a detail at the end, then
+  OFFLINE / IP NOT SET / INVALID FILE and its address only as a detail at the end, then
   "Other address ..." and "Disconnect". Choose a boat: user name +
   password, "captain" or "copilot", CONNECT.
   The lamp: green CONNECTED only when this PC found the boat's gateway AND
@@ -352,6 +353,31 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
     it; nothing else to copy. A new boat = a new file in boats\ (copy one,
     change id / name / address), commit it.
   * Fill in the real Tailscale IPs: the files have PLACEHOLDER addresses.
+  THE BOAT FILE (format 2): "format": 2, id, name, tailscale_ip,
+  gateway_port, and the boat's equipment:
+    generator_max_pct  the generator's throttle cap in neutral (chapter 7),
+                       0 or missing = generator disabled; the AURIX caps it at
+                       30 % whatever the file says.
+    relays             the relay board's channels (step 6): n (channel),
+                       name_el / name_en, type onoff | momentary (a board-timed
+                       pulse, max_s <= 5 s) | latching | timed (off after
+                       max_s), group engine (IGNITION, STARTER, SHUTOFF: the
+                       engine rules) | trim | extra, pair (the other relay of an
+                       interlocked pair - must point back, never both on),
+                       show_hud (also on screen 1), power_up off | on | keep
+                       (engine relays: only off - never switched by themselves).
+    thrusters          bow / stern: max_pct, run_s / rest_s (heat budget),
+                       jog_m (one JOG step), spot_alarm_m (DP, step 9).
+    length_m, draft_m  optional.
+  A file without "format" is the old v1: it still loads, with generator
+  disabled, no relays and no thrusters. A file that fails the checks (wrong
+  type, a pair that is not mutual, a momentary relay longer than 5 s, an
+  engine relay with power_up on / keep ...) is listed as INVALID FILE with
+  the reason and is never connected: fix the file.
+  When this station holds HELM (in STANDBY) it pushes the file's settings to
+  the boat (generator cap now; the relay table and the thruster settings
+  when steps 6 / 9 add them): RAM only - a boat restart gets them again.
+  The event list shows "boat file RF49D: generator max 25 %".
   "Other address ..." (Tools - Connection): the connection box (COM5,
   tcp:..., gw:host:port) for the board on USB, the simulator, the demo and
   service; then there is no boat check.
@@ -1006,7 +1032,8 @@ GENERATOR MODE (the engine charges the 12 V bank at a fast idle in NEUTRAL)
   Screens: screen 2 status panel row "Generator" + the button; screen 1
   bottom line "GEN x %" while it runs; notices STARTING / FAULT / DONE.
   Parameters (Config tab, STANDBY only): gen_max_pct 0..30 (0 = generator
-  disabled; the boat file's generator_max_pct, step 5), gen_start_v
+  disabled; set from the boat file's generator_max_pct when the HELM
+  station connects, chapter 5), gen_start_v
   11.5..13 V, gen_idle_pct 3..15 %. Log: event 24 GENERATOR (every state
   change and throttle step), TELEM2 group L.
 

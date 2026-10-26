@@ -1,8 +1,108 @@
 {
-  "_help": "One file per boat (CLAUDE.md section F). NO secrets here: no passwords, no keys. The ground station builds its boat list from this folder; the gateway of this boat must have the same name (gateway config \"boat\"). More fields can be added later: length_m, draft_m, outboard, cameras, limits.",
+  "_help": "One file per boat (CLAUDE.md sections F + L, format 2). NO secrets here: no passwords, no keys. The ground station builds its boat list from this folder; the gateway of this boat must have the same name (gateway config \"boat\"). On connect the HELM station pushes generator_max_pct (the AURIX caps it at 30 %), the relay table and the thruster settings to the AURIX (RAM only). A file without \"format\" is the old v1 (no relays, generator disabled, no thrusters); a file that fails the checks (groundstation/boats.py) is INVALID and never connected.",
+  "format": 2,
   "id": "er69d",
   "name": "ER69D",
   "tailscale_ip": "PLACEHOLDER-100.x.y.z",
-  "_tailscale_ip_note": "PLACEHOLDER: replace with the real Tailscale IP of this boat's Raspberry Pi (e.g. 100.101.102.103); until then the station shows the boat as IP NOT SET",
-  "gateway_port": 5761
+  "_tailscale_ip_note": "PLACEHOLDER: replace with the real Tailscale IP of this boat's gateway PC (e.g. 100.101.102.103); until then the station shows the boat as IP NOT SET",
+  "gateway_port": 5761,
+  "length_m": 4.9,
+  "draft_m": 0.5,
+  "_generator_note": "generator_max_pct: the generator's throttle cap in neutral, 0 = disabled; the AURIX caps it at 30 % whatever is written here (TO CONFIRM: 25)",
+  "generator_max_pct": 25,
+  "_relays_note": "TBD: the Modbus relay board and its channel numbers (WIRING.md, PARTS.md) - confirm n for every relay. type onoff | momentary (board-timed pulse, max_s <= 5) | latching | timed (off after max_s); group engine (IGNITION / STARTER / SHUTOFF: remote restart rules, CLAUDE.md N) | trim | extra; pair = the other relay of an interlocked pair (mutual, never both on); show_hud = also on the driving screen; power_up off | on | keep (engine group: only off - never switched automatically).",
+  "relays": [
+    {
+      "n": 1,
+      "name_el": "ΑΝΑΦΛΕΞΗ",
+      "name_en": "IGNITION",
+      "type": "onoff",
+      "group": "engine",
+      "pair": null,
+      "max_s": 0,
+      "show_hud": true,
+      "power_up": "off"
+    },
+    {
+      "n": 2,
+      "name_el": "ΜΙΖΑ",
+      "name_en": "STARTER",
+      "type": "momentary",
+      "group": "engine",
+      "pair": null,
+      "max_s": 1.0,
+      "show_hud": false,
+      "power_up": "off"
+    },
+    {
+      "n": 3,
+      "name_el": "ΣΒΗΣΙΜΟ",
+      "name_en": "SHUTOFF",
+      "type": "onoff",
+      "group": "engine",
+      "pair": null,
+      "max_s": 0,
+      "show_hud": true,
+      "power_up": "off"
+    },
+    {
+      "n": 4,
+      "name_el": "ΤΡΙΜ ΠΑΝΩ",
+      "name_en": "TRIM UP",
+      "type": "momentary",
+      "group": "trim",
+      "pair": 5,
+      "max_s": 3.0,
+      "show_hud": true,
+      "power_up": "off"
+    },
+    {
+      "n": 5,
+      "name_el": "ΤΡΙΜ ΚΑΤΩ",
+      "name_en": "TRIM DOWN",
+      "type": "momentary",
+      "group": "trim",
+      "pair": 4,
+      "max_s": 3.0,
+      "show_hud": true,
+      "power_up": "off"
+    },
+    {
+      "n": 6,
+      "name_el": "ΦΩΤΑ ΠΛΕΥΣΗΣ",
+      "name_en": "NAV LIGHTS",
+      "type": "onoff",
+      "group": "extra",
+      "pair": null,
+      "max_s": 0,
+      "show_hud": false,
+      "power_up": "keep"
+    },
+    {
+      "n": 7,
+      "name_el": "ΑΝΤΛΙΑ ΣΕΝΤΙΝΑΣ",
+      "name_en": "BILGE PUMP",
+      "type": "timed",
+      "group": "extra",
+      "pair": null,
+      "max_s": 120,
+      "show_hud": false,
+      "power_up": "off"
+    }
+  ],
+  "_thrusters_note": "TBD: bow tunnel thruster + stern electric motor (CLAUDE.md P): max_pct = the station's ceiling, run_s / rest_s = the heat budget, jog_m = one JOG step, spot_alarm_m = DP OFF SPOT alarm distance. max_pct 0 = no thruster. TO CONFIRM.",
+  "thrusters": {
+    "bow": {
+      "max_pct": 100,
+      "run_s": 60,
+      "rest_s": 120
+    },
+    "stern": {
+      "max_pct": 100,
+      "run_s": 120,
+      "rest_s": 120
+    },
+    "jog_m": 1.5,
+    "spot_alarm_m": 15
+  }
 }
