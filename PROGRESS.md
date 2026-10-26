@@ -20,7 +20,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 0 | CLAUDE.md design for everything below (no code); docs/ACADEMY_SPEC.md | DONE (gate + acceptance quick: see the commit) | this commit |
 | 1 | Alarms in ONE place, top right, flashing (DISPLAY ONLY): screen 1 box under mirror_r + notices, right column moved; screen 2 top-right panel always drawn; flash 1.25 Hz unacknowledged; hud_layout.json version bump; tests test_driver + test_screen2 S1 | DONE (gate OK; test_driver 19/19 incl. I19; test_screen2 12/12 incl. S12; acceptance quick run) | this commit |
 | 2 | Boat dropdown = first line of screen 2's top-left panel + lamp ΣΥΝΔΕΔΕΜΕΝΟ; confirm step kept; tests test_boats + test_screen2 | DONE (gate OK except gateway VR5 under PC load - test_gateway alone 105/105 PASS; test_boats 6/6 incl. B6; test_screen2 13/13 incl. S13; acceptance quick 6/7 PASS - only START_DEMO skipped: a demo was already running on this PC, ports 5760-8554 in use) | this commit |
-| 3 | Data flash (NV): TRAINING result, joystick calibration + map, AUTO program, boot counter, generator learned value; CRC, versioned; board tc_nv.c | | |
+| 3 | Data flash (NV): TRAINING result, joystick calibration + map, AUTO program, boot counter, generator learned value; CRC, versioned; board tc_nv.c | DONE (gate OK: sim 193/193 + bridge 192/192 incl. DF1-DF5, TriCore + iLLD check with Flash/Std built, NV harness 4/4, gateway 105/105; test_driver 19/19, test_screen2 13/13; acceptance quick 7/7 PASS on a fresh clone of this commit, incl. START_DEMO) | this commit |
 | 4 | Supply voltage input (12 V bank), filtered ~30 s, low-battery alarm | | |
 | 4b | Generator mode (the ONLY automatic throttle rise; CLAUDE.md K) | | |
 | 5 | Boat file v2: relay list + generator_max_pct + thruster settings; old files still load | | |
@@ -62,6 +62,26 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   and adds it to the prober), crewui.BoatSelector uses app.boat_list. Choosing -> the existing login +
   BoatConfirm (name + live camera) before HELM, unchanged. Lang keys: ov.choose_boat, ov.connected,
   ov.no_boat_check (ov.boats, ov.address removed). Tests: test_boats B6, test_screen2 S8 rewritten + S13.
+- Step 3 (2026-10-26): data flash. hal/tc_nv.c (+ .h) = the record log (pure C over a port, API nvlog_*),
+  hal_tc375.c = the DFLASH0 port (IfxFlash.h inlines issued, D0BUSY polled; regions A / B = sectors 0-7 /
+  8-15, erased pages read as 0 per IfxFlash.h "Verify Erased Page"; iLLD Flash + Flash/Std un-excluded
+  in .cproject - only one configuration had excluded them). hal.h: hal_calib_save / load removed (calib.c
+  -> slot 5 through app/nv.c), new hal_nv_service(allowed) / hal_nv_pending / hal_nv_ok, slots 5-7,
+  HAL_NV_MAX_SIZE 1536. app/nv.c = status (reset mask, fault, pending) + nv_step at the end of sb_step
+  (allowed = STANDBY and not stopping); Cpu0_Main.c writes the boot counter before the loop (2 s limit,
+  watchdog kicked) and services the flash in the big-boat variant in AP_MODE_STANDBY. Notice: TELEM2 group I
+  config flags b1 NV DATA RESET / b2 NV FAULT / b3 save pending (no new group: L-N stay reserved), log
+  event 23 NV, both screens (lang nv.reset / nv.fault). Sim: hal_sim.c queue + one file write per
+  service call, faults SIM_NV_POWER_LOSS / SIM_NV_STUCK; hal/tc_nv.c is in build_sim.bat and
+  build_storm.bat (DF4 drives the real log on a RAM flash). Test A3 adapted: it never modelled the power-off
+  (now: one STANDBY step writes the program, hal_init() = reboot). New: `autopilot_sim df`, tests/hal_pc/
+  test_nv.c + nv_check.py in the gate (tools/check.sh also knows the nvlog_ driver prefix).
+  TODO on the board (no hardware yet): confirm on the kit that an erased DFLASH page reads as 0 and that
+  no ECC trap follows a cut write (DMU_HF_ECCC.TRAPDIS left at its reset value); the log recovers from a
+  wrong erased value by NV FAULT (never a wrong record). Gate note: the full gate passed except S11 (two
+  English words in the new Greek texts); fixed, test_screen2 + test_lang re-run alone 13/13 + 5/5.
+  The owner's demo (START_DEMO, running since 18:40) held sim/autopilot_sim.exe open: stopped with
+  demo.py stop so the sim could be rebuilt - restart it with START_DEMO.bat.
 
 # Previous task: "Screen 2 review"
 

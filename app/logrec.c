@@ -88,7 +88,8 @@ static const char k_events[] =
     "19:SLAM:peak_g*100,level_g*100,impacts_per_min,cap%*10|state<<16|override<<20;"
     "20:NAV:kind|reason<<8|alarm<<16|lost<<24|applied<<25,heading*100,cap_kn*10,seq;"
     "21:PROFILE:profile(0 detecting 1 CREWED 2 UNCREWED),joystick_detected,changes,-;"
-    "22:LINKLOST:state(0 ok 1 lost 2 engine killed),near_shore,shore_m,losses;";
+    "22:LINKLOST:state(0 ok 1 lost 2 engine killed),near_shore,shore_m,losses;"
+    "23:NV:what(1 record unusable -> defaults 2 NV FAULT),slot,resets,-;";
 
 static const char k_alarms[] =
     "1:COMPASS,2:GPS_LOST,4:GPS_SUSPECT,8:DR_LIMIT,16:ARRIVAL_UNCERTAIN,32:ARRIVED,64:GEAR,128:TRAINING,"

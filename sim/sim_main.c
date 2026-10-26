@@ -432,6 +432,7 @@ int main(int argc, char **argv)
 
     if (argc > 1 && strcmp(argv[1], "usb") == 0) { sb_usb_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "gw") == 0) { sb_gateway_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "df") == 0) { sb_nv_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "slam") == 0) { sb_slam_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "timing") == 0) return sb_timing_report();
     if (argc > 2 && strcmp(argv[1], "logtest") == 0) return sb_logtest(argv[2]);

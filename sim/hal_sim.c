@@ -12,7 +12,8 @@
 #define GYRO_PERIOD_MS       50u    /* 20 Hz */
 #define COMPASS_NOISE_DEG   0.2f
 #define RUDDER_NOISE_DEG    0.1f
-#define CALIB_FILE          "calib.bin"
+
+static void nv_sim_reset(void);         /* non-volatile storage queue (below) */
 
 /* safety monitor trip latch (hal_safe_outputs) */
 static bool     s_forced;
@@ -49,6 +50,7 @@ void hal_init(void)
     s_alarm = false;
     s_rng = 12345u;         /* same sensor noise every run */
     s_gyro_rng = 777u;
+    nv_sim_reset();         /* a reboot: queued saves are gone, the files stay */
 }
 
 uint32_t hal_millis(void)
@@ -108,23 +110,6 @@ uint32_t hal_get_button_presses(void)
 void hal_set_alarm(bool on)
 {
     s_alarm = on || s_forced;
-}
-
-bool hal_calib_save(const void *data, uint32_t size)
-{
-    FILE *f = fopen(CALIB_FILE, "wb");
-    if (!f) return false;
-    bool ok = fwrite(data, 1, size, f) == size;
-    return (fclose(f) == 0) && ok;
-}
-
-bool hal_calib_load(void *data, uint32_t size)
-{
-    FILE *f = fopen(CALIB_FILE, "rb");
-    if (!f) return false;
-    bool ok = fread(data, 1, size, f) == size;
-    fclose(f);
-    return ok;
 }
 
 /* ---- simulation control ------------------------------------------------ */
@@ -493,26 +478,106 @@ void sim_hal_joystick_confirm(bool pressed)
     s_joy.confirm = pressed;
     br_from_analog();
 }
+/* --- non-volatile storage: files nv<slot>.bin, written like the board's data
+ *     flash: a save only queues, the file is written by hal_nv_service(true)
+ *     (STANDBY), one record per call; test faults: a power loss cuts the next
+ *     write (the file keeps the old record, the queued save is lost), a stuck
+ *     flash never finishes (NV FAULT after the time limit, like the board) --- */
+#define NV_SIM_Q          4u
+#define NV_SIM_TIMEOUT_MS 1000u
+typedef struct { bool used; uint8_t slot; uint32_t len; uint8_t data[HAL_NV_MAX_SIZE]; } nv_sim_q_t;
+static nv_sim_q_t s_nvq[NV_SIM_Q];
+static uint32_t s_nv_fault, s_nv_writes, s_nv_write_ms, s_nv_lost, s_nv_busy_since;
+static bool     s_nv_ok = true, s_nv_busy;
+
+static void nv_sim_reset(void)
+{
+    memset(s_nvq, 0, sizeof s_nvq);
+    s_nv_fault = 0u;
+    s_nv_ok = true;
+    s_nv_busy = false;
+}
+
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size)
 {
-    char name[32];
-    snprintf(name, sizeof name, "nv%u.bin", (unsigned)slot);
-    FILE *f = fopen(name, "wb");
-    if (!f) return false;
-    bool ok = fwrite(data, 1, size, f) == size;
-    return (fclose(f) == 0) && ok;
+    if (slot == 0u || slot > HAL_NV_MAX_SLOT || size == 0u || size > HAL_NV_MAX_SIZE || !s_nv_ok) return false;
+    nv_sim_q_t *e = NULL;
+    for (uint32_t i = 0; i < NV_SIM_Q; i++) if (s_nvq[i].used && s_nvq[i].slot == slot) { e = &s_nvq[i]; break; }
+    if (!e) for (uint32_t i = 0; i < NV_SIM_Q; i++) if (!s_nvq[i].used) { e = &s_nvq[i]; break; }
+    if (!e) return false;
+    e->used = true;
+    e->slot = slot;
+    e->len = size;
+    memcpy(e->data, data, size);
+    return true;
 }
 
 bool hal_nv_load(uint8_t slot, void *data, uint32_t size)
 {
     char name[32];
+    if (slot == 0u || slot > HAL_NV_MAX_SLOT || size == 0u) return false;
+    for (uint32_t i = 0; i < NV_SIM_Q; i++) {
+        if (s_nvq[i].used && s_nvq[i].slot == slot) {     /* the queued save is the newest value */
+            if (s_nvq[i].len != size) return false;
+            memcpy(data, s_nvq[i].data, size);
+            return true;
+        }
+    }
     snprintf(name, sizeof name, "nv%u.bin", (unsigned)slot);
     FILE *f = fopen(name, "rb");
     if (!f) return false;
-    bool ok = fread(data, 1, size, f) == size;
+    bool ok = fread(data, 1, size, f) == size && fgetc(f) == EOF;   /* exactly `size` bytes */
     fclose(f);
     return ok;
 }
+
+void hal_nv_service(bool allowed)
+{
+    if (!s_nv_ok) return;
+    if (s_nv_busy) {                                    /* a "flash command" that never ends */
+        if (s_time_ms - s_nv_busy_since > NV_SIM_TIMEOUT_MS) s_nv_ok = false;
+        return;
+    }
+    if (!allowed) return;
+    for (uint32_t i = 0; i < NV_SIM_Q; i++) {
+        nv_sim_q_t *e = &s_nvq[i];
+        if (!e->used) continue;
+        if (s_nv_fault & SIM_NV_STUCK) { s_nv_busy = true; s_nv_busy_since = s_time_ms; return; }
+        if (s_nv_fault & SIM_NV_POWER_LOSS) {           /* cut: the file stays as it was */
+            s_nv_fault &= ~SIM_NV_POWER_LOSS;
+            e->used = false;
+            s_nv_lost++;
+            return;
+        }
+        char name[32];
+        snprintf(name, sizeof name, "nv%u.bin", (unsigned)e->slot);
+        FILE *f = fopen(name, "wb");
+        bool ok = f != NULL && fwrite(e->data, 1, e->len, f) == e->len;
+        if (f) ok = (fclose(f) == 0) && ok;
+        if (!ok) { s_nv_ok = false; return; }
+        e->used = false;
+        s_nv_writes++;
+        s_nv_write_ms = s_time_ms;
+        return;                                         /* one record per step */
+    }
+}
+
+bool hal_nv_pending(void)
+{
+    if (s_nv_busy) return true;
+    for (uint32_t i = 0; i < NV_SIM_Q; i++) if (s_nvq[i].used) return true;
+    return false;
+}
+
+bool hal_nv_ok(void)
+{
+    return s_nv_ok;
+}
+
+void     sim_hal_nv_fault(uint32_t bits) { s_nv_fault = bits; }
+uint32_t sim_hal_nv_writes(void)         { return s_nv_writes; }
+uint32_t sim_hal_nv_write_ms(void)       { return s_nv_write_ms; }
+uint32_t sim_hal_nv_lost(void)           { return s_nv_lost; }
 
 /* --- ground-station link: two byte rings, filled / emptied by the sim
  *     TCP server (sim_server.c) or directly by the tests --- */

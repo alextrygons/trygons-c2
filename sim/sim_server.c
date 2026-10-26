@@ -213,6 +213,7 @@ static void sim_init(server_t *x, uint32_t seed, bool usb, uint32_t gw_baud)
         if (!hal_nv_load(HAL_NV_SLOT_BOOT, &boot, sizeof boot)) boot = 0u;
         boot++;
         (void)hal_nv_save(HAL_NV_SLOT_BOOT, &boot, sizeof boot);
+        for (int i = 0; i < 100 && hal_nv_pending() && hal_nv_ok(); i++) hal_nv_service(true);   /* like Cpu0_Main.c */
         (void)system("mkdir sdcard 2>nul");
         sim_hal_sd_setup("sdcard", true, 4000000u, false);
         logq_init_all();

@@ -18,6 +18,8 @@
 #include "logrec.h"
 #include "logger.h"
 #include "smallboat.h"
+#include "nv.h"
+#include "tc_nv.h"
 
 /* ------------------------------------------------------------ harness -- */
 
@@ -2522,16 +2524,20 @@ static void modes_tests(void)
         prog_make(&p, w, n, PROG_END_STOP);
         TRYP("valid", PROG_OK);
 #undef TRYP
-        /* stored with checksum: survives a restart, a corrupted copy is not loaded */
+        /* stored with checksum (the save is queued: written by the next control
+         * step in STANDBY): survives a restart, a corrupted copy is not loaded */
+        sbsim_run(&x, x.t + 200u, NULL, NULL);
         sbsim_t y;
         sb_config_t c;
         sb_default_config(&c);
         memset(&y, 0, sizeof y);
         world_init(&y.w, 205u, 90.0f, 0.0f);
+        hal_init();                                  /* power-off: queued saves are gone, the flash stays */
         sb_init(&y.sb, &c);
         bool survived = y.sb.autop.prog_ok && y.sb.autop.prog.n == 5u;
         FILE *f = fopen("nv2.bin", "r+b");
         if (f) { fseek(f, 40, SEEK_SET); fputc(0x5A, f); fclose(f); }
+        hal_init();
         sb_init(&y.sb, &c);
         bool corrupt_refused = !y.sb.autop.prog_ok;
         remove("nv2.bin");
@@ -8005,8 +8011,266 @@ void sb_slam_tests(void)
     slam_tests();
 }
 
+/* --- DF: data flash / non-volatile storage ---------------------------------- */
+
+/* a tiny flash in RAM for the board's record log (hal/tc_nv.c), instant commands */
+#define DF_SECTOR 512u
+#define DF_REGION 1024u
+static uint8_t  df_img[2][DF_REGION];
+static uint32_t df_cmds;
+static bool     df_busy;
+static struct { bool erase; uint8_t region; uint32_t off; uint32_t w0, w1; } df_cmd;
+static bool df_read(uint8_t r, uint32_t off, void *buf, uint32_t len)
+{
+    if (r > 1u || off + len > DF_REGION || df_busy) return false;
+    memcpy(buf, &df_img[r][off], len);
+    return true;
+}
+static bool df_erase(uint8_t r, uint32_t sector)
+{
+    if (df_busy || r > 1u || (sector + 1u) * DF_SECTOR > DF_REGION) return false;
+    df_cmd.erase = true; df_cmd.region = r; df_cmd.off = sector * DF_SECTOR;
+    df_busy = true; df_cmds++;
+    return true;
+}
+static bool df_write(uint8_t r, uint32_t off, uint32_t w0, uint32_t w1)
+{
+    if (df_busy || r > 1u || off + 8u > DF_REGION) return false;
+    df_cmd.erase = false; df_cmd.region = r; df_cmd.off = off; df_cmd.w0 = w0; df_cmd.w1 = w1;
+    df_busy = true; df_cmds++;
+    return true;
+}
+static bool df_is_busy(void)
+{
+    if (df_busy) {                              /* finishes at the first poll */
+        uint8_t *p = &df_img[df_cmd.region][df_cmd.off];
+        if (df_cmd.erase) memset(p, 0, DF_SECTOR);
+        else { memcpy(p, &df_cmd.w0, 4u); memcpy(p + 4, &df_cmd.w1, 4u); }
+        df_busy = false;
+    }
+    return false;
+}
+static bool df_failed(void) { return false; }
+static uint32_t df_us;
+static uint32_t df_micros(void) { return df_us += 5u; }
+
+static void nv_tests(void)
+{
+    char d[700];
+    printf("\n=== DF data flash (non-volatile storage) ===\n");
+
+    /* DF1 a stored record with a bad checksum -> defaults + NV DATA RESET notice (log event 23) */
+    {
+        static sbsim_t x;
+        sbsim_init(&x, 1401u, 90.0f, 0.0f, NULL);
+        joymap_t m;
+        joymap_default(&m);
+        m.nz_lo = 0.40f;                                   /* not the default */
+        joymap_seal(&m);
+        FILE *f = fopen("nv4.bin", "wb");
+        if (f) { uint8_t *b = (uint8_t *)&m; b[20] ^= 0x5Au; fwrite(&m, 1, sizeof m, f); fclose(f); }
+        f = fopen("nv1.bin", "wb");                        /* joystick calibration: 28 bytes of nothing */
+        if (f) { uint8_t z[28] = {0}; fwrite(z, 1, sizeof z, f); fclose(f); }
+        hal_init();
+        sb_init(&x.sb, &x.cfg);
+        const nv_status_t *st = nv_status();
+        bool defaults = x.sb.jmap.nz_lo != 0.40f && joymap_valid(&x.sb.jmap);
+        bool flagged = (st->reset_mask & (1u << HAL_NV_SLOT_JOYMAP)) && (st->reset_mask & (1u << HAL_NV_SLOT_JOYSTICK)) &&
+                       st->resets == 2u;
+        /* the notice reaches the log: event 23 NV, one per slot (core 0's log producer) */
+        logq_init_all();
+        logcore0_init(&x.sb, 3u);
+        logcore0_step(&x.sb);
+        int ev_nv = 0;
+        {
+            static uint8_t rec[LOGR_MAX];
+            uint16_t n;
+            while ((n = logq_pop(&g_logq0, rec, sizeof rec)) != 0u) {
+                if (n >= LOGR_HDR + 2u && rec[1] == LOGR_EVENT && (rec[8] | (rec[9] << 8)) == EV_NV) ev_nv++;
+            }
+        }
+        snprintf(d, sizeof d, "corrupted joystick map + calibration on 'flash': defaults in use %s; reset mask 0x%x "
+                 "(resets %u) %s; log events NV: %d", defaults ? "yes" : "NO", st->reset_mask, st->resets,
+                 flagged ? "both slots flagged" : "NOT flagged", ev_nv);
+        test_report("DF1 bad checksum in the flash -> defaults + NV DATA RESET notice (log event 23)",
+                    defaults && flagged && ev_nv == 2, d);
+        remove("nv1.bin"); remove("nv4.bin");
+    }
+
+    /* DF2 a power loss during the write keeps the old record */
+    {
+        static sbsim_t x;
+        sbsim_init(&x, 1402u, 90.0f, 0.0f, NULL);
+        joymap_t a, b, back;
+        joymap_default(&a); a.nz_lo = 0.41f; joymap_seal(&a);
+        joymap_default(&b); b.nz_lo = 0.42f; joymap_seal(&b);
+        uint32_t w0 = sim_hal_nv_writes();
+        bool qa = nv_save(HAL_NV_SLOT_JOYMAP, &a, (uint32_t)sizeof a);
+        sbsim_run(&x, x.t + 200u, NULL, NULL);            /* STANDBY: written */
+        bool wrote_a = sim_hal_nv_writes() == w0 + 1u && !nv_status()->pending;
+        sim_hal_nv_fault(SIM_NV_POWER_LOSS);
+        bool qb = nv_save(HAL_NV_SLOT_JOYMAP, &b, (uint32_t)sizeof b);
+        bool shadow = nv_load(HAL_NV_SLOT_JOYMAP, &back, (uint32_t)sizeof back) && back.nz_lo == 0.42f;
+        sbsim_run(&x, x.t + 200u, NULL, NULL);            /* the write is cut */
+        hal_init();                                        /* reboot */
+        sb_init(&x.sb, &x.cfg);
+        bool old_kept = x.sb.jmap.nz_lo == 0.41f && sim_hal_nv_writes() == w0 + 1u;
+        snprintf(d, sizeof d, "A queued %s + written in STANDBY %s; B queued %s (a load sees B meanwhile %s); power "
+                 "loss during B's write: after the reboot the map is %s (nz_lo %.2f), writes %u, lost %u",
+                 qa ? "yes" : "NO", wrote_a ? "yes" : "NO", qb ? "yes" : "NO", shadow ? "yes" : "NO",
+                 old_kept ? "A (the old record)" : "NOT A", x.sb.jmap.nz_lo, sim_hal_nv_writes() - w0, sim_hal_nv_lost());
+        test_report("DF2 power loss during a write keeps the old record", qa && wrote_a && qb && shadow && old_kept, d);
+        remove("nv4.bin");
+    }
+
+    /* DF3 an old record version (valid checksum) is refused: defaults + notice */
+    {
+        static sbsim_t x;
+        sbsim_init(&x, 1403u, 90.0f, 0.0f, NULL);
+        calib_data_t c;
+        memset(&c, 0, sizeof c);
+        c.gain_dps_per_ms = 0.01f; c.time_const_s = 2.0f; c.travel_right_ms = 3000.0f; c.travel_left_ms = 3000.0f;
+        c.gap_ms = 100.0f; c.full_angle_deg = 60.0f;
+        calib_seal(&c);
+        c.version = CALIB_VERSION + 1u;                    /* a format this firmware does not know */
+        c.checksum = calib_checksum(&c);
+        FILE *f = fopen("nv5.bin", "wb");
+        if (f) { fwrite(&c, 1, sizeof c, f); fclose(f); }
+        hal_init();
+        sb_init(&x.sb, &x.cfg);
+        bool loaded = autopilot_load_calibration(&x.sb.ap);
+        const nv_status_t *st = nv_status();
+        bool flagged = (st->reset_mask & (1u << HAL_NV_SLOT_CALIB)) != 0u;
+        calib_seal(&c);                                    /* the right version: accepted */
+        f = fopen("nv5.bin", "wb");
+        if (f) { fwrite(&c, 1, sizeof c, f); fclose(f); }
+        hal_init();
+        sb_init(&x.sb, &x.cfg);
+        bool loaded2 = autopilot_load_calibration(&x.sb.ap);
+        snprintf(d, sizeof d, "TRAINING result with version %u on 'flash': loaded %s, NV DATA RESET flagged %s; the same "
+                 "record with version %u: loaded %s", CALIB_VERSION + 1u, loaded ? "YES" : "no", flagged ? "yes" : "NO",
+                 CALIB_VERSION, loaded2 ? "yes" : "NO");
+        test_report("DF3 unknown record version refused (defaults + notice), the right one loads", !loaded && flagged && loaded2, d);
+        remove("nv5.bin");
+    }
+
+    /* DF4 the board's record log: sector swap carries every live record over; a power
+     * loss in the middle of the swap loses nothing (both regions scanned at init) */
+    {
+        nvlog_port_t port = { DF_REGION, DF_SECTOR, 0u, 1000000u, df_read, df_erase, df_write, df_is_busy, df_failed, df_micros };
+        memset(df_img, 0, sizeof df_img);
+        df_busy = false;
+        nvlog_init(&port);
+        uint8_t v[6][64];
+        uint32_t lens[6] = { 4u, 28u, 48u, 64u, 12u, 20u };
+        bool ok = nvlog_ok(), kept = true;
+        uint32_t swaps_seen = 0u, n = 0u;
+        for (uint32_t round = 0; round < 100u && ok; round++) {
+            uint8_t s = (uint8_t)(1u + round % 6u);
+            for (uint32_t i = 0; i < lens[s - 1u]; i++) v[s - 1u][i] = (uint8_t)(round * 7u + i + s);
+            ok = ok && nvlog_save(s, v[s - 1u], lens[s - 1u]);
+            for (int k = 0; k < 2000 && nvlog_pending(); k++) nvlog_service(true, 0u);
+            ok = ok && !nvlog_pending() && nvlog_ok();
+            n++;
+            if (nvlog_stats()->swaps > swaps_seen) {
+                swaps_seen = nvlog_stats()->swaps;
+                nvlog_init(&port);                         /* a reboot right after a swap */
+            }
+            for (uint8_t t = 1; t <= 6u && round >= 5u; t++) {
+                uint8_t back[64];
+                if (!nvlog_load(t, back, lens[t - 1u]) || memcmp(back, v[t - 1u], lens[t - 1u]) != 0) kept = false;
+            }
+        }
+        /* a power loss while a swap is copying: cut after the first copied record */
+        uint32_t cmds0 = df_cmds, swaps0 = nvlog_stats()->swaps;
+        bool cut_ok = true, cut_hit = false;
+        for (uint32_t round = 0; round < 60u && nvlog_stats()->swaps == swaps0; round++) {
+            uint8_t s = (uint8_t)(1u + round % 6u);
+            for (uint32_t i = 0; i < lens[s - 1u]; i++) v[s - 1u][i] = (uint8_t)(round * 3u + i + 9u * s);
+            (void)nvlog_save(s, v[s - 1u], lens[s - 1u]);
+            for (int k = 0; k < 2000 && nvlog_pending() && nvlog_stats()->swaps == swaps0; k++) nvlog_service(true, 0u);
+            if (nvlog_stats()->swaps > swaps0) {
+                cut_hit = true;
+                /* the swap began: let ~2 records copy, then "power loss" = re-init without the rest */
+                for (int k = 0; k < 6; k++) nvlog_service(true, 0u);
+                nvlog_init(&port);
+                for (int k = 0; k < 4000 && nvlog_pending(); k++) nvlog_service(true, 0u);   /* completes the swap */
+                for (uint8_t t = 1; t <= 6u; t++) {
+                    uint8_t back[64];
+                    bool is_new = (t == s);
+                    bool got = nvlog_load(t, back, lens[t - 1u]);
+                    /* the slot being saved may show the old or the new value, every other the old */
+                    if (!got) cut_ok = false;
+                    else if (!is_new && memcmp(back, v[t - 1u], lens[t - 1u]) != 0) cut_ok = false;
+                }
+            }
+        }
+        snprintf(d, sizeof d, "%u saves into 2 x %u B regions: %u swaps, every slot reads its newest value after each "
+                 "swap + reboot %s; power loss while a swap copies: nothing lost %s (%u flash commands, log ok %s)",
+                 n, DF_REGION, swaps_seen, kept ? "yes" : "NO", cut_ok ? "yes" : "NO", df_cmds - cmds0,
+                 nvlog_ok() ? "yes" : "NO");
+        test_report("DF4 record log: sector swap keeps every live record, also through a power loss",
+                    ok && kept && swaps_seen >= 2u && cut_hit && cut_ok && nvlog_ok(), d);
+    }
+
+    /* DF5 a save never blocks a step and never runs in a driving mode; a stuck flash = NV FAULT, the loop goes on */
+    {
+        static sbsim_t x;
+        sbsim_init(&x, 1405u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        bool manual = goto_mode(&x, MODE_MANUAL);
+        uint32_t w0 = sim_hal_nv_writes();
+        joymap_t m;
+        joymap_default(&m); m.nz_lo = 0.43f; joymap_seal(&m);
+        bool queued = nv_save(HAL_NV_SLOT_JOYMAP, &m, (uint32_t)sizeof m);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool waited = sim_hal_nv_writes() == w0 && nv_status()->pending && nv_status()->pending_ms >= 2900u;
+        uint32_t max_us_driving = g_timing.core0.max_us;
+        joy_set(0.0f, 0.0f, false, false);                 /* stick centred, STANDBY button: written at once */
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, x.t + 2u * AP_PERIOD_MS, NULL, NULL);
+        bool written = sb_mode(&x.sb) == MODE_STANDBY && sim_hal_nv_writes() == w0 + 1u && !nv_status()->pending;
+        /* a flash that never finishes: NV FAULT after the time limit, the control loop never waits */
+        sim_hal_nv_fault(SIM_NV_STUCK);
+        m.nz_lo = 0.44f; joymap_seal(&m);
+        (void)nv_save(HAL_NV_SLOT_JOYMAP, &m, (uint32_t)sizeof m);
+        uint32_t t0 = x.t, steps0 = g_timing.core0.w_n;
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool fault = nv_status()->fault && !hal_nv_ok();
+        bool refused = !nv_save(HAL_NV_SLOT_JOYMAP, &m, (uint32_t)sizeof m);
+        bool kept_stepping = g_timing.core0.w_n - steps0 >= 35u && g_timing.core0.max_us < 20000u && x.resets == 0u;
+        /* a load meanwhile returns the value that was asked for (the queued one), the
+         * reboot shows what the flash really holds: the record written in STANDBY */
+        joymap_t back;
+        bool loads = nv_load(HAL_NV_SLOT_JOYMAP, &back, (uint32_t)sizeof back) && back.nz_lo == 0.44f;
+        uint32_t pend_ms = nv_status()->pending_ms;
+        sim_hal_nv_fault(0u);
+        hal_init();
+        sb_init(&x.sb, &x.cfg);
+        bool after_reboot = x.sb.jmap.nz_lo == 0.43f && !nv_status()->fault;
+        snprintf(d, sizeof d, "MANUAL: save queued %s, nothing written for 3 s %s, longest step %u us; "
+                 "STANDBY: written %s; stuck flash: NV FAULT %s after %u ms (pending %u ms), further saves refused %s, "
+                 "a load meanwhile %s, loop kept stepping %s (max step %u us, resets %u); after the reboot: the record "
+                 "written before the fault %s",
+                 queued ? "yes" : "NO", waited ? "yes" : "NO", max_us_driving,
+                 written ? "yes" : "NO", fault ? "yes" : "NO", x.t - t0, pend_ms, refused ? "yes" : "NO",
+                 loads ? "works" : "FAILS", kept_stepping ? "yes" : "NO", g_timing.core0.max_us, x.resets,
+                 after_reboot ? "yes" : "NO");
+        test_report("DF5 a save never blocks a step and never runs while driving; a stuck flash = NV FAULT only",
+                    manual && queued && waited && written && fault && refused && loads && kept_stepping && after_reboot, d);
+        remove("nv4.bin");
+    }
+}
+
+void sb_nv_tests(void)
+{
+    nv_tests();
+}
+
 void sb_tests(void)
 {
+    nv_tests();
     gateway_tests();
     helm_tests();
     remote_tests();

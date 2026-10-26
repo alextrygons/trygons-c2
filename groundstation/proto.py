@@ -727,6 +727,9 @@ def decode_telem2(payload: bytes) -> dict:
         d["nav_cap_kn"] = None if d["nav_cap10"] == 0xFFFF else d["nav_cap10"] / 10.0
     if "cfg_flags" in d:
         d["first_test"] = bool(d["cfg_flags"] & 1)
+        d["nv_reset"] = bool(d["cfg_flags"] & 2)        # a stored record was unusable: defaults in use
+        d["nv_fault"] = bool(d["cfg_flags"] & 4)        # the data flash does not work: nothing is saved
+        d["nv_pending"] = bool(d["cfg_flags"] & 8)      # a save waits for STANDBY / the flash
         d["estop_name"] = ["not fitted", "released", "PRESSED"][d["estop_state"]] if d["estop_state"] < 3 else "?"
     if "profile" in d:
         d["profile_name"] = PROFILES[d["profile"]] if d["profile"] < 3 else "?"

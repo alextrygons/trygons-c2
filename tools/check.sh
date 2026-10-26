@@ -4,7 +4,8 @@
 # sim build without warnings, all sim tests (analog + USB bridge), TriCore
 # compile of app/ + hal/ + Cpu*_Main.c, HAL / throttle-writer checks, the
 # expected memory per core (CPU1 RAM must stay below 60 %), the board's FAT32
-# writer on PC disk images, Python syntax, the gateway tests.
+# writer on PC disk images, the board's data-flash record log on a PC flash
+# image, Python syntax, the gateway tests.
 # Ends with "GATE: OK" or "GATE: FAILED".
 cd "$(dirname "$0")/.." || exit 1
 # Python: $PYTHON, else MSYS2's (MANUAL chapter 3), else "python" on the PATH
@@ -58,7 +59,7 @@ if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (FIRS
 missing=$(comm -23 "$TEMP/hal_used.txt" "$TEMP/hal_def.txt")
 if [ -n "$missing" ]; then echo "MISSING in hal_tc375.c: $missing"; fail=1; else echo "hal_tc375.c provides every HAL function used"; fi
 # the board drivers (hal/tc_*.c): every driver function used is defined
-"$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^(uart|spi|bno|gps|sd|fat32|adc)_/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
+"$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^(uart|spi|bno|gps|sd|fat32|adc|nvlog)_/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
 "$B/tricore-elf-nm.exe" "$OUT"/tc_*.o | awk '$2=="T" {print $3}' | sort -u > "$TEMP/drv_def.txt"
 missing=$(comm -23 "$TEMP/drv_used.txt" "$TEMP/drv_def.txt")
 if [ -n "$missing" ]; then echo "MISSING driver functions: $missing"; fail=1; else echo "every board driver function used is defined"; fi
@@ -105,6 +106,9 @@ echo "python files parse"
 echo "== FAT32 writer of the board (PC disk images)"
 "$PY" tests/hal_pc/fat32_check.py > "$TEMP/fat32_tests.txt" 2>&1 || { echo "FAT32 TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|FAT32 TESTS|BUILD PROBLEM" "$TEMP/fat32_tests.txt"
+echo "== data flash record log of the board (PC flash image: power losses, swaps, corruption)"
+"$PY" tests/hal_pc/nv_check.py > "$TEMP/nv_tests.txt" 2>&1 || { echo "NV TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|NV TESTS|BUILD PROBLEM" "$TEMP/nv_tests.txt"
 echo "== chart tests"
 ( cd groundstation && "$PY" test_charts.py > "$TEMP/chart_tests.txt" 2>&1 ) || { echo "CHART TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"

@@ -108,4 +108,12 @@ uint32_t sim_hal_core_kicks(void);
 void     sim_hal_set_estop(bool fitted, bool pressed);    /* emergency stop input */                 /* hal_watchdog_kick_core() calls (logger between SD ops) */
 uint32_t sim_hal_sd_ops(void);                     /* hal_sd_open / write / sync / close calls */
 
+/* Non-volatile storage (files nv<slot>.bin): faults for the tests. */
+#define SIM_NV_POWER_LOSS 0x1u   /* the next flash write is cut: the file keeps the old record, the save is lost */
+#define SIM_NV_STUCK      0x2u   /* the flash never finishes: saves stay pending, NV FAULT after the time limit */
+void     sim_hal_nv_fault(uint32_t bits);
+uint32_t sim_hal_nv_writes(void);          /* records written to the files */
+uint32_t sim_hal_nv_write_ms(void);        /* sim time of the last one */
+uint32_t sim_hal_nv_lost(void);            /* saves lost to a simulated power loss */
+
 #endif /* HAL_SIM_H */

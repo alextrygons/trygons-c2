@@ -161,27 +161,45 @@ bool hal_read_joystick(hal_joystick_t *j);
  * Only used when the joystick source is "USB bridge" (joymap.h). */
 uint32_t hal_bridge_read(uint8_t *buf, uint32_t max);
 
-/* Small non-volatile storage slots (e.g. slot 1 = joystick calibration).
- * The app adds its own version + checksum. */
+/*
+ * Small non-volatile storage slots in the data flash (board: hal/tc_nv.c =
+ * an append-only record log on DFLASH0, two sectors A / B, CRC-32 per
+ * record; sim: files nv<slot>.bin). The app adds its own version + checksum
+ * inside the record (app/nv.c).
+ *
+ * hal_nv_save only QUEUES the record (copied; a newer request for the same
+ * slot replaces the queued one): true = queued, false = bad slot / size or
+ * the queue is full. The flash write itself runs in hal_nv_service(), called
+ * once per control step: a bounded step of a state machine (issue a flash
+ * command, poll busy, time limit) - NEVER a blocking wait. allowed = true
+ * only in STANDBY (not stopping): a request made while driving waits for
+ * STANDBY. The one write outside STANDBY is the boot counter, before the
+ * control loop starts (core 0 calls hal_nv_service(true) until
+ * !hal_nv_pending(), with a time limit).
+ * hal_nv_load returns the newest valid record of the slot (a queued one
+ * first); it needs exactly `size` bytes. A power loss during a write keeps
+ * the previous record. hal_nv_ok() = the data flash works; false = NV FAULT
+ * (nothing is saved any more, loads keep working). Core 0 only (one flash
+ * master; never CPU1 / CPU2).
+ */
 #define HAL_NV_SLOT_JOYSTICK  1u
 #define HAL_NV_SLOT_PROGRAM   2u     /* AUTO waypoint program */
 #define HAL_NV_SLOT_BOOT      3u     /* boot counter (log file names) */
 #define HAL_NV_SLOT_JOYMAP    4u     /* joystick source + button map (joymap.c) */
+#define HAL_NV_SLOT_CALIB     5u     /* TRAINING result (calib.c) */
+#define HAL_NV_SLOT_GENERATOR 6u     /* generator learned value (generator mode) */
+#define HAL_NV_SLOT_RELAYS    7u     /* relay table (relay board) */
+#define HAL_NV_MAX_SLOT       15u
+#define HAL_NV_MAX_SIZE       1536u  /* bytes per record (the AUTO program is 1020) */
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size);
 bool hal_nv_load(uint8_t slot, void *data, uint32_t size);
+void hal_nv_service(bool allowed);
+bool hal_nv_pending(void);
+bool hal_nv_ok(void);
 
 /* Optional speed sensor (paddlewheel): speed through water, kn.
  * Returns false if not fitted. */
 bool hal_read_water_speed(float *kn);
-
-/*
- * Non-volatile storage for the calibration record (an opaque block of
- * bytes; the app adds its own version and checksum). Save returns true
- * when written. Load returns true when exactly `size` bytes were read;
- * the caller must still check version and checksum.
- */
-bool hal_calib_save(const void *data, uint32_t size);
-bool hal_calib_load(void *data, uint32_t size);
 
 /*
  * Ground-station link: a plain byte stream (board: USB virtual COM =

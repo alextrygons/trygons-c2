@@ -8,6 +8,7 @@
 #include "monitor.h"
 #include "timing.h"
 #include "logger.h"
+#include "nv.h"
 #include <string.h>
 
 static float clampf(float x, float lo, float hi)
@@ -157,9 +158,16 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     s->gear_demand = GEAR_N;
     dr_init(&s->dr, &cfg->dr);
     s->dr.cfg.gps_timeout_ms = cfg->gps_timeout_ms;
+    /* stored settings: a record that loads but fails its version / checksum
+     * check = defaults + the notice NV DATA RESET (nv_invalid) */
+    nv_init();
     {
         joy_cal_t cal;
-        bool have = hal_nv_load(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal) && joy_cal_valid(&cal);
+        bool have = false;
+        if (nv_load(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal)) {
+            have = joy_cal_valid(&cal);
+            if (!have) nv_invalid(HAL_NV_SLOT_JOYSTICK);
+        }
         joy_init(&s->joy, &cfg->joy, have ? &cal : NULL);
         joy_init(&s->joy_probe, &cfg->joy, have ? &cal : NULL);
     }
@@ -167,13 +175,19 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     hal_set_engine_kill(false);                 /* a reset (on board) is the only restart */
     /* FIRST TEST is always CREWED (steering only, its own arming rule; no lost-link kill) */
     s->profile = cfg->first_test ? SB_PROFILE_CREWED : SB_PROFILE_DETECTING;
-    if (!(hal_nv_load(HAL_NV_SLOT_JOYMAP, &s->jmap, (uint32_t)sizeof s->jmap) && joymap_valid(&s->jmap)))
+    if (nv_load(HAL_NV_SLOT_JOYMAP, &s->jmap, (uint32_t)sizeof s->jmap)) {
+        if (!joymap_valid(&s->jmap)) { nv_invalid(HAL_NV_SLOT_JOYMAP); joymap_default(&s->jmap); }
+    } else {
         joymap_default(&s->jmap);
+    }
     joymap_apply(s);
-    if (hal_nv_load(HAL_NV_SLOT_PROGRAM, &p, (uint32_t)sizeof p) &&
-        program_validate(&p, &s->cfg.prog, &bad) == PROG_OK) {
-        s->autop.prog = p;
-        s->autop.prog_ok = true;
+    if (nv_load(HAL_NV_SLOT_PROGRAM, &p, (uint32_t)sizeof p)) {
+        if (program_validate(&p, &s->cfg.prog, &bad) == PROG_OK) {
+            s->autop.prog = p;
+            s->autop.prog_ok = true;
+        } else {
+            nv_invalid(HAL_NV_SLOT_PROGRAM);
+        }
     }
 }
 
@@ -1250,7 +1264,7 @@ bool sb_joystick_cal_finish(sb_t *s)
     if (sb_mode(s) != MODE_STANDBY || !joy_cal_finish(&s->joy, &cal)) return false;
     s->joy_probe.cal = cal;
     s->cfg_version++;
-    return hal_nv_save(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal);
+    return nv_save(HAL_NV_SLOT_JOYSTICK, &cal, (uint32_t)sizeof cal);
 }
 
 bool sb_joymap_set(sb_t *s, const joymap_t *m, bool save, jm_error_t *err)
@@ -1262,7 +1276,7 @@ bool sb_joymap_set(sb_t *s, const joymap_t *m, bool save, jm_error_t *err)
     s->jmap = n;
     joymap_apply(s);
     s->cfg_version++;
-    return !save || hal_nv_save(HAL_NV_SLOT_JOYMAP, &n, (uint32_t)sizeof n);
+    return !save || nv_save(HAL_NV_SLOT_JOYMAP, &n, (uint32_t)sizeof n);
 }
 
 /* --- heading hold paused ------------------------------------------------------- */
@@ -1702,7 +1716,7 @@ sb_result_t sb_program_set(sb_t *s, const program_t *p, prog_error_t *err, uint8
     s->autop.legs_done = 0u;
     s->cfg_version++;
     if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME) s->confirm.kind = CONF_NONE;
-    (void)hal_nv_save(HAL_NV_SLOT_PROGRAM, p, (uint32_t)sizeof *p);
+    (void)nv_save(HAL_NV_SLOT_PROGRAM, p, (uint32_t)sizeof *p);   /* written in STANDBY */
     return SB_OK;
 }
 
@@ -2414,6 +2428,10 @@ void sb_step(sb_t *s)
 
     /* 8. video SAVE requests for the gateway */
     save_triggers(s);
+
+    /* 9. non-volatile storage: queued saves reach the data flash only in
+     *    STANDBY (not stopping); one bounded step, never a wait */
+    nv_step(sb_mode(s) == MODE_STANDBY && !s->stopping, dt_ms);
 }
 
 sb_status_t sb_status(const sb_t *s)

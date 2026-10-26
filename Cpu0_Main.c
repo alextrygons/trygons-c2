@@ -55,6 +55,7 @@
 IFX_ALIGN(4) IfxCpu_syncEvent cpuSyncEvent = 0;
 
 #define WATCHDOG_MS 100u        /* > 2 control periods (50 ms) */
+#define NV_BOOT_MS  2000u       /* the boot counter's data-flash write before the control loop: at most */
 
 #ifdef BOAT_VARIANT_BIG
 static autopilot_t g_autopilot;
@@ -77,12 +78,19 @@ void core0_main(void)
     hal_watchdog_init(WATCHDOG_MS);
     timing_init_all();
     logq_init_all();
-    {   /* boot counter (log file names) */
+    {   /* boot counter (log file names): the one data-flash write outside
+         * STANDBY, finished here before the control loop (time limit, the
+         * watchdog kicked while the flash works) */
         uint32_t boot = 0u;
         if (!hal_nv_load(HAL_NV_SLOT_BOOT, &boot, sizeof boot)) boot = 0u;
         boot++;
         (void)hal_nv_save(HAL_NV_SLOT_BOOT, &boot, sizeof boot);
         g_logstat.boot = boot;
+        uint32_t t0 = hal_millis();
+        while (hal_nv_pending() && hal_nv_ok() && hal_millis() - t0 < NV_BOOT_MS) {
+            hal_nv_service(true);
+            hal_watchdog_kick();
+        }
     }
 
     /* Wait for CPU sync event */
@@ -116,6 +124,8 @@ void core0_main(void)
             autopilot_step(&g_autopilot);
             /* CPU1 monitor: heartbeat (no throttle / gear on this boat) */
             monitor_publish_steering_only(&g_mon, 1000u, 1500u);
+            /* data flash: a saved TRAINING result is written in STANDBY (bounded step) */
+            hal_nv_service(g_autopilot.mode == AP_MODE_STANDBY);
 #else
             uint32_t t0 = hal_micros();
             sb_step(&g_boat);

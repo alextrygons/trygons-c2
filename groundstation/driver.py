@@ -725,6 +725,10 @@ class DriverScreen:
                     d["confirm_kind"], len(proto.CONFIRM_KINDS) - 1)), s="%.0f" % d["confirm_left_s"]), "caution"))
             if d.get("first_test"):
                 out.append(("first_test", T("drv.first_test"), theme.NOTICE["first_test"]))
+            if d.get("nv_fault"):
+                out.append(("nv_fault", T("nv.fault"), "caution"))
+            elif d.get("nv_reset"):
+                out.append(("nv_reset", T("nv.reset"), "caution"))
             if d["mode"] == proto.MODE_REMOTE and not self.front_live:
                 out.append(("nofront", T("drv.no_front"), "warn"))
             if d.get("pickup") and d["mode"] in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK):

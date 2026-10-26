@@ -11,6 +11,7 @@
 #include "logrec.h"
 #include "monitor.h"
 #include "timing.h"
+#include "nv.h"
 
 /* What was seen last step (for the "something changed" events). */
 static struct {
@@ -20,6 +21,8 @@ static struct {
     uint32_t slam_impacts, slam_code;
     uint32_t nav_code, nav_hdg;
     uint8_t  profile, ll_state;
+    uint16_t nv_mask;
+    bool     nv_fault;
     uint32_t alarm_bits;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -282,6 +285,17 @@ static void changes(const sb_t *s)
     if (s->ll.state != k.ll_state)
         ev(s, EV_LINKLOST, s->ll.state, sb_near_shore(s) ? 1 : 0, s->coast.dist_m, (int32_t)s->ll.losses);
     k.ll_state = s->ll.state;
+    /* non-volatile storage: a stored record refused (defaults in use), NV FAULT */
+    {
+        const nv_status_t *nv = nv_status();
+        uint16_t fresh = (uint16_t)(nv->reset_mask & ~k.nv_mask);
+        for (uint8_t slot = 1; slot < 16u && fresh; slot++) {
+            if (fresh & (1u << slot)) ev(s, EV_NV, 1, slot, nv->resets, 0);
+        }
+        if (nv->fault && !k.nv_fault) ev(s, EV_NV, 2, 0, nv->resets, 0);
+        k.nv_mask = nv->reset_mask;
+        k.nv_fault = nv->fault;
+    }
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
     k.save_seq = s->save.seq;

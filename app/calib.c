@@ -3,6 +3,7 @@
  */
 #include "calib.h"
 #include "hal.h"
+#include "nv.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -55,10 +56,13 @@ bool calib_valid(const calib_data_t *c)
 bool calib_save(calib_data_t *c)
 {
     calib_seal(c);
-    return hal_calib_save(c, (uint32_t)sizeof *c);
+    return nv_save(HAL_NV_SLOT_CALIB, c, (uint32_t)sizeof *c);     /* queued; written in STANDBY */
 }
 
 bool calib_load(calib_data_t *c)
 {
-    return hal_calib_load(c, (uint32_t)sizeof *c) && calib_valid(c);
+    if (!nv_load(HAL_NV_SLOT_CALIB, c, (uint32_t)sizeof *c)) return false;
+    if (calib_valid(c)) return true;
+    nv_invalid(HAL_NV_SLOT_CALIB);              /* stored record unusable: NV DATA RESET notice */
+    return false;
 }

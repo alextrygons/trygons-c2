@@ -7,7 +7,6 @@
 __pycache__/
 groundstation/logs/
 sim/*.exe
-sim/calib.bin
 sim/nv*.bin
 sim/sd_*/
 sim/sdcard/

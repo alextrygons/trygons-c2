@@ -606,7 +606,9 @@ AR OVERLAYS (on the front video, button AR = menu, each one on / off):
 SCREEN 1 ALSO SHOWS (the notices under the alarms): UNCREWED (blue: every CONFIRM on
 your joystick, a lost link stops the engine), LINK LOST (seconds to the engine
 kill, or "near the shore") / ENGINE KILLED, "MANEUVER: steering + gear only,
-throttle at idle", and "boat not confirmed yet". In MANEUVER (and going
+throttle at idle", "boat not confirmed yet", NV DATA RESET (a stored setting
+was unusable: defaults in use - chapter 15) and NV FAULT (the data flash does
+not work: nothing is saved). In MANEUVER (and going
 astern in REMOTE / MANUAL) the two rear cameras are shown much bigger. A
 copilot's question for the captain appears here (ACCEPT / REJECT).
 
@@ -1756,6 +1758,25 @@ The ground station saves its own copy of the telemetry in the same format
   Logging                  sync 2 s, new file 10 min / 20 MB, black box
                            60 s + 30 s
 
+WHAT THE BOAT REMEMBERS (DATA FLASH)
+  Kept after power-off, on the chip: the TRAINING result, the joystick
+  calibration, the joystick source + button map, the last AUTO program and
+  the boot counter (log file names). NOT kept, by design: the power limit
+  (every power-up starts at 30 / 5 %) and the parameters changed from the
+  Config tab.
+  * A save is written to the flash only in STANDBY (the boat not stopping):
+    a program uploaded while driving is kept in memory and written at the
+    next STANDBY; the screens show "NV save pending" meanwhile. The
+    control loop never waits for the flash.
+  * Every record carries a version and a checksum. A record that is
+    unusable (bad checksum, an older firmware format, a corrupted flash)
+    is NOT used: the defaults take over and both screens show the notice
+    NV DATA RESET (log event NV) - check the joystick calibration / map,
+    the TRAINING result and the program before leaving the dock. A power
+    loss during a write keeps the previous record.
+  * NV FAULT (a notice, no alarm): the data flash does not work; nothing is
+    saved any more (everything is lost at power-off), the boat drives on.
+
 
 -------------------------------------------------------------------------------
 16. GIT: SAVING AND UPLOADING YOUR WORK
@@ -1788,11 +1809,14 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c, drivers hal/tc_*.c)
          buffer 8 KB = HAL_GW_TX_RING), USB joystick bridge (ASCLIN3, 230400)
      [x] microSD card: QSPI2 + own FAT32 writer (long file names; tested on
          PC disk images: tests/hal_pc/fat32_check.py)
+     [x] data flash (DFLASH0, on the chip - nothing to wire): the TRAINING
+         result, the joystick calibration + map, the AUTO program and the
+         boot counter in an append-only record log (hal/tc_nv.c: two
+         regions A / B of 32 KB, CRC-32 per record, wear levelling, a
+         power loss during a write keeps the old record; tested on a PC
+         flash image: tests/hal_pc/nv_check.py). Written only in STANDBY,
+         never a wait in the control loop (chapter 15).
    Still stubs:
-     [ ] flash storage (TRAINING result, joystick calibration, joystick map,
-         AUTO program, boot counter). Until then: a TRAINING result is lost
-         at power-off (do TRAINING again after every power-up), the boot
-         number is always 1 (the SD card adds -2, -3 ... to repeated names)
      [ ] joystick ADC + 3 buttons (the USB bridge works), neutral switch
          (input done, HAL_NEUTRAL_SW_FITTED 0), paddlewheel, supply voltage
      [ ] safety relay hardware (pin done)
@@ -1845,7 +1869,9 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
        STANDBY).
      * A normally-open STANDBY button can't be pressed if its wire breaks;
        a normally-closed button with a line check would catch that.
-     * Settings changed from the PC are lost at power-off.
+     * Parameters changed from the PC are lost at power-off (the joystick
+       calibration / map, the TRAINING result and the AUTO program are
+       kept in the data flash - chapter 15).
      * A new program can't be uploaded while AUTO runs.
      * Joystick hand-back in a running AUTO goes to STANDBY (resume = PC +
        CONFIRM).

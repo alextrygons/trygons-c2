@@ -2808,6 +2808,10 @@ class App:
                                         now="%.0f" % (100 * (d["lever"] or 0.0)))) + B["pickup"] + (None,))
             if d.get("first_test"):
                 out.append(("first_test", T("cap.ft_banner")) + B["first_test"] + (None,))
+            if d.get("nv_fault"):
+                out.append(("nv_fault", T("nv.fault")) + B["pickup"] + (None,))
+            elif d.get("nv_reset"):
+                out.append(("nv_reset", T("nv.reset")) + B["pickup"] + (None,))
             if d.get("profile") == proto.PROFILE_UNCREWED:
                 out.append(("uncrewed", T("cap.unc_banner")) + B["uncrewed"] + (None,))
         av = (self.gw_status or {}).get("avoid") or {}

@@ -6,7 +6,8 @@
  * units (ms of motor run). Degrees are only known if the user enters one
  * measured value: the full lock-to-lock outboard angle.
  *
- * Stored with a version and a CRC-32 checksum via hal_calib_save/load.
+ * Stored with a version and a CRC-32 checksum in NV slot 5 (app/nv.c:
+ * queued, written in STANDBY; an unusable record = defaults + NV DATA RESET).
  */
 #ifndef CALIB_H
 #define CALIB_H

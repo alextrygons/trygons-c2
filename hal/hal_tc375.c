@@ -17,8 +17,11 @@
  * Each driver has a time limit and "no data" detection: a sensor that stops
  * answering simply returns no new data, and the app raises its timeout alarm.
  *
- * Not yet: analog joystick, data flash (NV / calibration), paddlewheel,
- * supply voltage, roll rate - they return "not fitted" / "not saved".
+ *   - data flash DFLASH0       : NV record log (tc_nv.c: TRAINING result,
+ *                                 joystick calibration + map, AUTO program,
+ *                                 boot counter), written only in STANDBY
+ * Not yet: analog joystick, paddlewheel, supply voltage, roll rate - they
+ * return "not fitted".
  *
  * This file is only built by ADS. The PC simulation uses sim/hal_sim.c.
  */
@@ -42,6 +45,12 @@
 #include "tc_gps.h"
 #include "tc_sd.h"
 #include "tc_uart.h"
+#include "tc_nv.h"
+#include "IfxFlash.h"      /* data flash command sequences (inline; Flash/Std built by ADS) */
+
+#include <string.h>
+
+static void nv_port_init(void);      /* below, with the data flash port */
 
 #define LINK_BAUD    921600.0f
 #define GW_BAUD      921600.0f
@@ -200,6 +209,7 @@ void hal_init(void)
     uart_init(UART_BRIDGE, BRIDGE_BAUD);
     gps_init();                                 /* its UART + configuration (state machine) */
     bno_init();                                 /* SPI + reset pulse (state machine) */
+    nv_port_init();                             /* data flash record log: scan only (no command) */
     /* the SD card is started by CPU2 (hal_sd_present), the only core that uses it */
 }
 
@@ -474,20 +484,6 @@ bool hal_read_attitude(float *roll_deg, float *pitch_deg)
     return bno_attitude(roll_deg, pitch_deg);
 }
 
-bool hal_calib_save(const void *data, uint32_t size)
-{
-    (void)data;
-    (void)size;
-    return false;    /* TODO: write to data flash (DFLASH0, IfxFlash) */
-}
-
-bool hal_calib_load(void *data, uint32_t size)
-{
-    (void)data;
-    (void)size;
-    return false;    /* TODO: read from data flash */
-}
-
 void hal_set_throttle_pwm(uint16_t pulse_us)
 {
     if (s_forced) pulse_us = s_safe_thr_us;     /* monitor tripped: idle, latched */
@@ -537,16 +533,102 @@ uint32_t hal_bridge_read(uint8_t *buf, uint32_t max)
     return uart_read(UART_BRIDGE, buf, max);     /* ASCLIN3, RX P20.3, 230400 (WIRING.md section 6) */
 }
 
+/* --- non-volatile storage: tc_nv.c record log on DFLASH0 ---------------------
+ * DFLASH0 (0xAF000000, 64 logical sectors of 4 KB, 8-byte pages, erased pages
+ * read as 0 - IfxFlash.h "Verify Erased Page": erased = 0 data and ECC bits)
+ * regions A = sectors 0-7, B = sectors 8-15 (32 KB each; the live records are
+ * ~1.3 KB). The flash commands come from the iLLD Flash/Std inline sequences
+ * (IfxFlash.h, Libraries un-excluded in .cproject); every command is ISSUED
+ * here and polled by tc_nv.c through nv_busy() - no waitUnbusy loop, the
+ * control loop and the CPU1 heartbeat are untouched. The DFLASH is read only
+ * while no command runs (tc_nv.c keeps that rule: a read of a busy DFLASH
+ * bank is not allowed on the TC3xx). DFLASH commands need no ENDINIT and no
+ * write-protection unlock (UCB_DFLASH is not programmed). Core 0 only. */
+#define NV_DFLASH_BASE   IFXFLASH_DFLASH_START
+#define NV_SECTOR_BYTES  4096u
+#define NV_REGION_BYTES  (8u * NV_SECTOR_BYTES)
+#define NV_BUDGET_US     300u             /* page programs per control step: within this */
+#define NV_ERR_MASK      0x7Fu            /* DMU_HF_ERRSR: OPER SQER PROER PVER EVER ADER ORIER */
+#define NV_PAGEMODE_SPIN 10000u           /* "enter page mode" is immediate; bounded anyway */
+
+static uint32 nv_addr(uint8_t region, uint32_t off)
+{
+    return (uint32)(NV_DFLASH_BASE + (uint32)region * NV_REGION_BYTES + off);
+}
+
+static bool nv_port_read(uint8_t region, uint32_t off, void *buf, uint32_t len)
+{
+    if (region > 1u || off + len > NV_REGION_BYTES) return false;
+    memcpy(buf, (const void *)nv_addr(region, off), len);
+    return true;
+}
+
+static bool nv_port_busy(void)
+{
+    return DMU_HF_STATUS.B.D0BUSY != 0u;
+}
+
+static bool nv_port_failed(void)
+{
+    return (DMU_HF_ERRSR.U & NV_ERR_MASK) != 0u;
+}
+
+static bool nv_port_erase_start(uint8_t region, uint32_t sector)
+{
+    if (region > 1u || sector * NV_SECTOR_BYTES >= NV_REGION_BYTES || nv_port_busy()) return false;
+    IfxFlash_clearStatus(0u);
+    IfxFlash_eraseSector(nv_addr(region, sector * NV_SECTOR_BYTES));
+    return true;
+}
+
+static bool nv_port_write_start(uint8_t region, uint32_t off, uint32_t w0, uint32_t w1)
+{
+    if (region > 1u || (off & 7u) != 0u || off + 8u > NV_REGION_BYTES || nv_port_busy()) return false;
+    uint32 page = nv_addr(region, off);
+    IfxFlash_clearStatus(0u);
+    if (IfxFlash_enterPageMode(page) != 0u) return false;
+    for (uint32_t i = 0; nv_port_busy(); i++) {          /* page mode is entered at once */
+        if (i >= NV_PAGEMODE_SPIN) return false;
+    }
+    if (nv_port_failed()) return false;
+    IfxFlash_loadPage2X32(page, w0, w1);
+    IfxFlash_writePage(page);
+    return true;
+}
+
+static const nvlog_port_t s_nv_port = {
+    NV_REGION_BYTES, NV_SECTOR_BYTES, 0u /* erased word */, 1000000u /* command time limit, us */,
+    nv_port_read, nv_port_erase_start, nv_port_write_start, nv_port_busy, nv_port_failed, hal_micros
+};
+
+static void nv_port_init(void)
+{
+    nvlog_init(&s_nv_port);
+}
+
 bool hal_nv_save(uint8_t slot, const void *data, uint32_t size)
 {
-    (void)slot; (void)data; (void)size;
-    return false;    /* TODO: data flash (DFLASH0), one sector per slot */
+    return nvlog_save(slot, data, size);
 }
 
 bool hal_nv_load(uint8_t slot, void *data, uint32_t size)
 {
-    (void)slot; (void)data; (void)size;
-    return false;    /* TODO: data flash */
+    return nvlog_load(slot, data, size);
+}
+
+void hal_nv_service(bool allowed)
+{
+    nvlog_service(allowed, NV_BUDGET_US);
+}
+
+bool hal_nv_pending(void)
+{
+    return nvlog_pending();
+}
+
+bool hal_nv_ok(void)
+{
+    return nvlog_ok();
 }
 
 bool hal_read_water_speed(float *kn)
