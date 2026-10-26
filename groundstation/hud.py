@@ -26,20 +26,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --- overlays -------------------------------------------------------------------------------------
 # name: (x, y, w, h) in fractions of the window. Centre of the picture (0.25..0.75 x 0.22..0.75) stays free.
+# Alarms in ONE place (CLAUDE.md G): the "alarms" box in the right column directly under the right mirror,
+# the notices under it; the right-column instruments below them.
 DEFAULT_LAYOUT = {
     "mirror_l": (0.008, 0.010, 0.215, 0.215),
     "mirror_r": (0.777, 0.010, 0.215, 0.215),
     "status": (0.250, 0.010, 0.420, 0.140),
     "master": (0.676, 0.010, 0.095, 0.140),
-    "alarms": (0.250, 0.158, 0.520, 0.052),
-    "notices": (0.250, 0.214, 0.520, 0.040),
+    "alarms": (0.777, 0.232, 0.215, 0.140),
+    "notices": (0.777, 0.376, 0.215, 0.040),
     "throttle": (0.008, 0.235, 0.080, 0.600),
-    "speed": (0.876, 0.235, 0.116, 0.175),
-    "depth": (0.876, 0.415, 0.116, 0.055),
-    "waypoint": (0.876, 0.475, 0.116, 0.120),
-    "traffic": (0.876, 0.600, 0.116, 0.095),
-    "rot": (0.876, 0.700, 0.056, 0.110),
-    "gmeter": (0.936, 0.700, 0.056, 0.110),
+    "speed": (0.876, 0.422, 0.116, 0.120),
+    "depth": (0.876, 0.546, 0.116, 0.045),
+    "waypoint": (0.876, 0.595, 0.116, 0.090),
+    "traffic": (0.876, 0.689, 0.116, 0.060),
+    "rot": (0.876, 0.753, 0.056, 0.058),
+    "gmeter": (0.936, 0.753, 0.056, 0.058),
     "minimap": (0.655, 0.700, 0.215, 0.240),
     "steer": (0.395, 0.775, 0.210, 0.070),
     "cdi": (0.395, 0.850, 0.210, 0.080),
@@ -55,6 +57,21 @@ MINIMAL = {"status", "master", "alarms", "speed", "throttle", "bottom", "control
 NORMAL_HIDES = {"rot", "gmeter", "cdi"}                                                    # heading, alarms
 DECLUTTER = ("FULL", "NORMAL", "MINIMAL")
 ALWAYS = {"controls", "drive"}     # never hidden by declutter: the way back to FULL; RELEASE of manual driving
+# hud_layout.json carries "layout_version": a saved file without it (or older) takes the NEW defaults for the
+# boxes that moved in that version; every other box keeps the user's values; the file is saved back.
+HUD_LAYOUT_VERSION = 2
+LAYOUT_MIGRATE = {2: ("alarms", "notices", "speed", "depth", "waypoint", "traffic", "rot", "gmeter")}
+
+
+def rows_that_fit(n, box_h, lh, pad=4):
+    """n list items in a box box_h high with lines lh high -> (shown, more). more > 0: a last line "+more" is
+    needed; with room for one line only, the single shown item carries the "+more" itself."""
+    fit = max(1, int((box_h - pad) // max(1.0, lh)))
+    if n <= fit:
+        return n, 0
+    if fit == 1:
+        return 1, n - 1
+    return fit - 1, n - fit + 1
 
 
 def declutter_visible(name, level):
@@ -75,17 +92,24 @@ class Layout:
         try:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
+            ver = int(d.get("layout_version") or 1)
+            renewed = set()                                   # boxes that take the new defaults
+            for v in range(ver + 1, HUD_LAYOUT_VERSION + 1):
+                renewed |= set(LAYOUT_MIGRATE.get(v, ()))
             for k, r in (d.get("rects") or {}).items():
-                if k in self.rects and len(r) == 4:
+                if k in self.rects and k not in renewed and len(r) == 4:
                     self.rects[k] = tuple(float(v) for v in r)
             self.hidden = {k for k in d.get("hidden", []) if k in self.rects}
+            if ver < HUD_LAYOUT_VERSION:
+                self.save()                                   # written back with the version
         except (OSError, ValueError, TypeError):
             pass
 
     def save(self):
         try:
             with open(self.path, "w", encoding="utf-8") as f:
-                json.dump({"rects": self.rects, "hidden": sorted(self.hidden)}, f, indent=1)
+                json.dump({"layout_version": HUD_LAYOUT_VERSION, "rects": self.rects, "hidden": sorted(self.hidden)},
+                          f, indent=1)
         except OSError:
             pass
 
@@ -455,31 +479,59 @@ class Hud:
                           box=r)
             self.hit(r, "ack")
 
+    def level_colour(self, lv):
+        return self.pal["warn"] if lv >= 3 else self.pal["caution"] if lv == 2 else self.pal["main"]
+
     def alarms(self, name, s):
-        items = s.alarm_items or []                         # [(text, level)] most severe first
-        if not items:
+        """Alarms in ONE place (CLAUDE.md G): one alarm per line, most severe first, a last line "+N" when more
+        are active than fit. An alarm not acknowledged on this PC flashes on the MASTER lamp clock (s.flash):
+        WARNING red, CAUTION amber - the text is always drawn, only the fill / outline alternates.
+        Acknowledged alarms and ADVISORY are steady."""
+        rows = s.alarm_rows or []                           # [(text, level, steady)] most severe first
+        if not rows:
             return
         x0, y0, x1, y1 = self.R(name)
-        self.panel((x0, y0, x1, y1), name, alpha=min(230, self.pal["alpha"] + 60))
-        col = self.pal["warn"] if items[0][1] >= 3 else self.pal["caution"]
-        self.rect((x0, y0, x1, y1), name, outline=col, w=3)
-        txt = "  •  ".join(t for t, _l in items)
-        self.text(((x0 + x1) / 2, (y0 + y1) / 2), txt, "alarm", size=self.f_norm, bold=True, fill=col, anchor="c",
-                  max_w=x1 - x0 - 12, box=(x0, y0, x1, y1))
+        box = (x0, y0, x1, y1)
+        self.panel(box, name, alpha=min(230, self.pal["alpha"] + 60))
+        self.rect(box, name, outline=self.level_colour(rows[0][1]), w=2)
+        self.list_rows(box, [(t, lv, steady, "alarm_" + ("warn" if lv >= 3 else "caution" if lv == 2 else
+                                                         "advisory")) for t, lv, steady in rows], s.flash,
+                       "alarm_more")
 
     def notices(self, name, s):
+        """Notices (confirm, pickup, collision, ...) in the same style directly under the alarms."""
         lines = s.notices or []                              # [(tag, text, colour key)]
         if not lines:
             return
         x0, y0, x1, y1 = self.R(name)
-        h = y1 - y0
-        for i, (tag, txt, ck) in enumerate(lines[:3]):
-            r = (x0, y0 + i * (h + 3), x1, y0 + i * (h + 3) + h)
-            self.panel(r, tag, alpha=min(230, self.pal["alpha"] + 60))
-            col = self.pal.get(ck, ck)
-            self.rect(r, tag, outline=col, w=2)
-            self.text(((x0 + x1) / 2, r[1] + h / 2), txt, tag, size=self.f_norm, bold=True, fill=col, anchor="c",
-                      max_w=x1 - x0 - 12, box=r)
+        box = (x0, y0, x1, y1)
+        self.panel(box, name, alpha=min(230, self.pal["alpha"] + 60))
+        self.list_rows(box, [(txt, self.pal.get(ck, ck), True, tag) for tag, txt, ck in lines], False, "notice_more")
+
+    def list_rows(self, box, rows, flash, more_tag):
+        """rows: [(text, level or colour, steady, tag)] one per line in `box`; the overflow as "+N"."""
+        x0, y0, x1, y1 = box
+        lh = self.f_norm * 1.45
+        shown, more = rows_that_fit(len(rows), y1 - y0, lh)
+        y = y0 + 3
+        for i, (txt, lv, steady, tag) in enumerate(rows[:shown]):
+            r = (x0 + 3, y, x1 - 3, y + lh - 2)
+            col = self.level_colour(lv) if isinstance(lv, int) else lv
+            blinking = isinstance(lv, int) and lv >= 2 and not steady
+            lit = blinking and flash
+            if lit:
+                self.rect(r, tag, fill=col, alpha=230)
+            elif blinking or (isinstance(lv, int) and lv >= 2):
+                self.rect(r, tag, outline=col, w=2 if blinking else 1)
+            if more and shown == 1:
+                txt = txt + "  " + T("hud.more_alarms", n=more)
+            self.text((r[0] + 5, (r[1] + r[3]) / 2), txt, tag, size=self.f_norm, bold=True,
+                      fill=theme.BLACK if lit else col, anchor="w", max_w=x1 - x0 - 16, box=box)
+            y += lh
+        if more and shown > 1:
+            self.text((x0 + 8, y + (lh - 2) / 2), T("hud.more_alarms", n=more), more_tag, size=self.f_norm, bold=True,
+                      fill=self.pal["warn"] if more_tag == "alarm_more" else self.pal["caution"], anchor="w",
+                      max_w=x1 - x0 - 16, box=box)
 
     def throttle(self, name, s):
         d = s.t

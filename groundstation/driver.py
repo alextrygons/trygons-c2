@@ -3,12 +3,13 @@ else is an overlay on top of the video (hud.py builds them, this window draws th
 
   +----------+     MODE  target      [WARNING]   +-----------+
   | REAR-L   |  channel latency power [CAUTION]  |  REAR-R   |
-  | (mirror) |        alarm bar (only with alarms)|  (mirror) |
+  | (mirror) |                                   |  (mirror) |
   +----------+                                   +-----------+
-  thr                                                  SPEED
-  bar           FRONT camera (+ AR, vision)            depth
-  gear                                                 waypoint
-                                                       traffic
+  thr                                                  ALARMS (one per line,
+  bar           FRONT camera (+ AR, vision)            flashing = not acked)
+  gear                                                 notices
+                                                       SPEED  depth
+                                                       waypoint  traffic
                     outboard angle       mini map      ROT  G
   [toolbar]          CDI
   heading tape ...                REC  vision  clock   [SAVE]
@@ -620,7 +621,7 @@ class DriverScreen:
         a, now = self.app, time.time()
         d = a.t
         gw = a.gw_status or {}
-        s = hud.Snapshot(t=d, gw=gw, lamps=a.lamps, flash=int(now * 2.5) % 2 == 0,
+        s = hud.Snapshot(t=d, gw=gw, lamps=a.lamps, flash=alerts.flash(now),
                          night=bool(settings.get("night")), declutter=settings.get("declutter") or "FULL",
                          hud_colour=settings.get("hud_colour") or "green",
                          video_scale=settings.get("video_scale") or "fill",
@@ -630,10 +631,7 @@ class DriverScreen:
         s["latency_ms"] = me[0].get("rtt_ms") if me else None
         no_data = bool(a.link is not None and a.t_rx and now - a.t_rx > 3.0)       # as the captain screen
         a.lamps.update(d["alarm_bits"] if d else 0, no_data=no_data)
-        items = [(alerts.text(bit), lv) for bit, _c, lv in alerts.active(d["alarm_bits"] if d else 0)]
-        if no_data:
-            items.insert(0, (T("alarm.no_data"), alerts.WARNING))
-        s["alarm_items"] = items
+        s["alarm_rows"] = a.lamps.rows()                        # [(text, level, steady)] most severe first
         vs = getattr(a, "vstreams", {})
         s["mirrors"] = {k: {"have": vs.get(cam) is not None, "live": vs.get(cam) is not None and not vs[cam].frozen()}
                         for k, cam in (("mirror_l", "REAR-LEFT"), ("mirror_r", "REAR-RIGHT"))}

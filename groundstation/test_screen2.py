@@ -22,6 +22,8 @@
      logo on both screens, under nothing on screen 1 either
   S10 the tools pages: page names never cut off, every table heading fits its column
   S11 the Greek screen: no English words left (panels, tools pages, dialogs, the HUD texts)
+  S12 alarms panel (CLAUDE.md G): top-right, always drawn, outside the boat circle, one row per
+      alarm, unacknowledged rows flash on the MASTER lamp clock, ACK ALARM, no alarm banner
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
@@ -233,7 +235,7 @@ def s1_matrix(rig):
     bad = [c for c in cases if c[3]]
     report("S1 layout 1366x768 / 1920x1080 (+ maximised) at 100 / 125 / 150 %, Greek + English, every panel full: "
            "nothing clipped, STANDBY visible, the boat free, the logo under no panel",
-           not bad and all(c[2] == 6 for c in cases) and not rig.errors,
+           not bad and all(c[2] == 7 for c in cases) and not rig.errors,
            "%d layouts checked (text size factors %s); problems: %s; errors %s" % (
                len(cases), sorted({round(c[1], 2) for c in cases}), [(c[0], c[3][:3]) for c in bad][:4],
                rig.errors[:2]))
@@ -247,7 +249,9 @@ def s2_collapsed(rig):
         ap.ov.collapsed.add(p.key)
     ap.render(force=True)
     sb = [o for o in ap.ov.ops if o.get("tag") == "standby"]
-    heads_only = all(o["k"] in ("panel", "text") for o in ap.ov.ops if o.get("panel"))
+    # the alarms panel is never collapsed (CLAUDE.md G): every other panel = its header only
+    heads_only = all(o["k"] in ("panel", "text") for o in ap.ov.ops if o.get("panel") and o["panel"] != "alarms")
+    alarms_stay = any(o.get("tag") == "alarm_row" for o in ap.ov.ops)
     sent = []
     orig = ap.cmd
     ap.cmd = lambda f, p, w: sent.append((f, p))
@@ -262,10 +266,12 @@ def s2_collapsed(rig):
     opened = "control" not in ap.ov.collapsed
     ap.ov.collapsed.clear()
     ap.render(force=True)
-    report("S2 every panel collapsed to its header: STANDBY still visible and works; a header click opens the panel",
-           len(sb) == 1 and heads_only and clicked and opened and not layout_problems(ap) if sb else False,
-           "STANDBY shown %d; only headers %s; STANDBY click sends %s; header click opens %s" % (
-               len(sb), heads_only, sent, opened))
+    report("S2 every panel collapsed to its header: STANDBY still visible and works; a header click opens the panel; "
+           "the alarms panel stays open",
+           len(sb) == 1 and heads_only and alarms_stay and clicked and opened and not layout_problems(ap) if sb
+           else False,
+           "STANDBY shown %d; only headers %s; alarm rows still drawn %s; STANDBY click sends %s; header click opens "
+           "%s" % (len(sb), heads_only, alarms_stay, sent, opened))
 
 
 def tags(ap):
@@ -661,6 +667,79 @@ def s11_greek(rig):
                len(texts), sorted(english.items())[:20], sorted(lang_words.items())[:20]))
 
 
+def s12_alarms(rig):
+    """CLAUDE.md G: the alarms panel = the top-right corner, always drawn, never into the keep-out circle; one
+    row per alarm, most severe first; unacknowledged rows flash on the MASTER lamp clock (fill / outline
+    alternates, the text stays), acknowledged = steady; no alarm banner any more; the moved panels fit."""
+    ap = rig.ap
+    import alerts
+    rig.size(1366, 768, 1.25)
+    rig.extra.update(alarm_bits=0x001 | 0x002 | 0x020, alarm=True)      # compass lost (W), GPS lost (C), arrived (A)
+    ap.lamps.acked = {alerts.WARNING: 0, alerts.CAUTION: 0}             # nothing acknowledged on this PC
+    rig.pump(1.2)                                                       # alarm_tick: the lamps know the bits
+    orig_flash = alerts.flash
+    ops = {}
+    for ph in (True, False):
+        alerts.flash = lambda now=None, ph=ph: ph
+        ap.render(force=True)
+        ops[ph] = [dict(o) for o in ap.ov.ops if o.get("tag") in ("alarm_row", "alarm_more")]
+    pn = {p.key: p for p in ap.ov.panels}
+    al = pn.get("alarms")
+    ne = [p for p in ap.ov.panels if p.corner == "ne"]
+    topmost = al is not None and all(p.r[1] >= al.r[3] for p in ne if p is not al)
+    right = al is not None and al.r[2] >= ap.cv.winfo_width() - 40
+    n_rows = len([o for o in ops[True] if o["tag"] == "alarm_row"])
+    texts = [o["s"] for o in ops[True] if o["tag"] == "alarm_row"]
+    order_ok = texts == [A.T("alarm.compass_lost"), A.T("alarm.gps_lost"), A.T("alarm.arrived")]
+    fills_on = [o.get("fill") for o in ops[True] if o["k"] == "badge"]
+    fills_off = [o.get("fill") for o in ops[False] if o["k"] == "badge"]
+    flashing = fills_on == [A.theme.WARN, A.theme.CAUTION] and fills_off == ["", ""] and \
+        [o["s"] for o in ops[True]] == [o["s"] for o in ops[False]]
+    advisory_steady = [o["k"] for o in ops[True] if o["s"] == A.T("alarm.arrived")] == ["text"]
+    ap.lamps.ack()
+    for ph in (True, False):
+        alerts.flash = lambda now=None, ph=ph: ph
+        ap.render(force=True)
+        ops[ph] = [dict(o) for o in ap.ov.ops if o.get("tag") == "alarm_row"]
+    steady = ops[True] == ops[False] and all(o["k"] == "text" for o in ops[True]) and len(ops[True]) == 3
+    alerts.flash = orig_flash
+    no_banner = not ap.banner_on("alarm")
+    probs = layout_problems(ap)
+    # ACK ALARM in the panel sends the boat's alarm acknowledge
+    sent = []
+    orig = ap.cmd
+    ap.cmd = lambda f, p, w: sent.append((f, p))
+    ack = [o for o in ap.ov.ops if o.get("tag") == "ack"]
+    if ack:
+        r = ack[0]["r"]
+        ap.cv_press(type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})())
+        ap.cv_release(type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})())
+    ap.cmd = orig
+    ack_ok = sent == [(proto.T_ALARM_ACK, b"")]
+    # every panel collapsed: the alarms panel is still there with its rows
+    for p in list(ap.ov.panels):
+        ap.ov.collapsed.add(p.key)
+    ap.render(force=True)
+    still = any(o.get("tag") == "alarm_row" for o in ap.ov.ops) and not al.collapsible
+    ap.ov.collapsed.clear()
+    # no alarm: a one-line header only
+    rig.extra.update(alarm_bits=0, alarm=False)
+    rig.pump(1.2)
+    ap.render(force=True)
+    pn = {p.key: p for p in ap.ov.panels}
+    header_only = "alarms" in pn and not any(o.get("panel") == "alarms" and o["k"] not in ("panel", "text")
+                                             for o in ap.ov.ops) and pn["alarms"].title == A.T("ov.no_alarms")
+    report("S12 alarms panel top-right: always drawn (also collapsed; no alarm = a header), outside the boat circle, "
+           "one row per alarm most severe first, unacknowledged rows flash on the lamp clock (text stays), "
+           "acknowledged / advisory steady, ACK ALARM sends the boat's ack, no alarm banner, the moved panels fit",
+           topmost and right and n_rows == 3 and order_ok and flashing and advisory_steady and steady and no_banner
+           and not probs and ack_ok and still and header_only and not rig.errors,
+           "topmost %s right %s; rows %d %s; fills lit %s / dark %s; advisory steady %s; after ack steady %s; banner "
+           "gone %s; layout problems %s; ack sends %s; collapsed still drawn %s; empty = header %s; errors %s" % (
+               topmost, right, n_rows, texts, fills_on, fills_off, advisory_steady, steady, no_banner, probs[:3],
+               sent, still, header_only, rig.errors[:2]))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
@@ -669,7 +748,7 @@ def main():
     rig = Rig()
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
-                   s10_tools, s11_greek):
+                   s10_tools, s11_greek, s12_alarms):
             try:
                 fn(rig)
             except Exception as e:

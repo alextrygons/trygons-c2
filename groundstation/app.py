@@ -12,12 +12,13 @@ Screen 2 (CLAUDE.md section E): the MAP fills the window - the boat always in th
 north-up - and everything else lies on it in four corner panels (overlay.py; semi-transparent,
 collapsible, never over the boat):
   top-left      mode, power limit, heading / target / rate of turn / gear / throttle / GPS
-  top-right     the boats (boats/: online, name verified), HELM + captain / copilot, the link
-                (channels, CREWED / UNCREWED, near shore / open sea, lost-link countdown, engine)
+  top-right     the ALARMS (always drawn, one per line, flashing until acknowledged on this PC,
+                ACK ALARM), then the boats (boats/: online, name verified), HELM + captain / copilot,
+                the link (channels, CREWED / UNCREWED, near shore / open sea, lost-link countdown, engine)
   bottom-left   mode buttons, AUTO program + route / geofence / max speed editing, heading lock
                 (+ STANDBY, always visible, bottom-left corner)
   bottom-right  AIS list + collision alerts, above the logo
-Banners (alarms, joystick, confirm ...) at the top between the panels; zoom / back to boat /
+Banners (joystick, confirm, lost link ...) at the top between the panels; zoom / back to boat /
 tools at the bottom. The other pages (connection, AIS details, route table, plot, parameters,
 joystick, cameras, remote joystick, network, system, bench test, sound, events) are in the
 TOOLS window (menu Tools or the Tools button). Look: theme.py (shared with screen 1).
@@ -76,7 +77,8 @@ MODE_COLORS = theme.MODE_COLOURS
 PLOT_S = 120.0              # seconds shown in the plot
 LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
 P_MAX_LEG = 4               # parameter "max_leg_kn" (app/link.c): the highest leg speed of a program
-AIS_ROWS = (4, 8)           # AIS rows in the corner panel: small / big screen
+AIS_ROWS = (2, 4, 8)        # AIS rows in the corner panel: low (< 720 px) / small / big screen
+ALARM_ROWS = (5, 8)         # alarm rows in the top-right panel: small / big screen (then "+N more")
 
 # Captain actions that change how the boat is driven (proto.DRIVING_CMDS, incl. a new AUTO program).
 # Through the gateway the GATEWAY enforces it (CLAUDE.md D): a copilot's waits for the captain's
@@ -2772,16 +2774,8 @@ class App:
         out = []
         d = self.t
         B = theme.BANNERS
-        stale = self.link is not None and self.t_rx and time.time() - self.t_rx > 3.0
-        flash = int(time.time() * 2) % 2 == 0
-        if stale:
-            out.append(("alarm", T("cap.alarm_nodata"), theme.WHITE, theme.WARN if flash else theme.WARN_DARK, None))
+        # the alarms (and NO DATA) are in the top-right "alarms" panel (panel_alarms), not a banner
         if d is not None:
-            alarms = alerts.texts(d["alarm_bits"])
-            if d["alarm"] or alarms:
-                out.append(("alarm", T("cap.alarm_banner", list=", ".join(alarms) if alarms else
-                                       T("cap.alarm_autopilot")), theme.WHITE, theme.WARN if flash else theme.WARN_DARK,
-                            lambda: self.cmd(proto.T_ALARM_ACK, b"", TE("what.alarm_ack"))))
             ll = d.get("ll_state", 0)
             if ll:
                 txt = T("cap.ll_killed") if ll == 2 else T("cap.ll_lost", s="%.0f" % d.get("ll_left_s", 0.0),
@@ -2841,10 +2835,42 @@ class App:
     def build_panels(self, W, H):
         self.panel_status()
         self.panel_control()
+        self.panel_alarms()                 # top-right, first: always drawn (CLAUDE.md G)
         self.panel_boat()
         self.panel_helm()
         self.panel_link()
         self.panel_traffic(H)
+
+    def panel_alarms(self):
+        """Top-right (0), ALWAYS drawn (also with every panel collapsed; no alarm = a one-line header): every
+        active alarm, one per line, most severe first. Not acknowledged on this PC (MASTER lamp state) =
+        flashing on the lamp clock (WARNING red, CAUTION amber; the text always drawn, only the fill /
+        outline alternates); acknowledged and ADVISORY = steady. ACK ALARM = the boat's alarm acknowledge
+        (clears only alarms whose cause is gone)."""
+        rows = self.lamps.rows()
+        d = self.t
+        p = self.ov.panel("alarms", T("ov.alarms", n=len(rows)) if rows else T("ov.no_alarms"), "ne",
+                          collapsible=False)
+        if not rows and d is not None and d["alarm"]:
+            rows = [(T("cap.alarm_autopilot"), alerts.CAUTION, True)]
+        if not rows:
+            return
+        lit = alerts.flash()
+        n = ALARM_ROWS[0] if self.ov.H < 900 else ALARM_ROWS[1]
+        for i, (txt, lv, steady) in enumerate(rows[:n]):
+            col = theme.WARN if lv >= alerts.WARNING else theme.CAUTION if lv == alerts.CAUTION else theme.ADVISORY
+            if lv >= alerts.CAUTION and not steady:
+                p.badge(txt, col if lit else "", fg=(theme.WHITE if lv >= alerts.WARNING else theme.BLACK) if lit
+                        else col, level="label", tag="alarm_row", outline=col, wrap=0.26)
+            else:
+                p.text(txt, "label", colour=col, bold=True, tag="alarm_row", wrap=0.26)
+            if i == 0:                      # ACK ALARM beside the first row (the panel stays low)
+                p.button(T("ov.ack_alarm"), lambda: self.cmd(proto.T_ALARM_ACK, b"", TE("what.alarm_ack")), "warn",
+                         level="small", tag="ack")
+            p.br()
+        if len(rows) > n:
+            p.text(T("ov.more_banners", n=len(rows) - n), "small", colour=theme.WARN, bold=True, tag="alarm_more")
+            p.br()
 
     def panel_status(self):
         """Top-left: mode, power limit, heading / target / rate of turn / gear / throttle / GPS."""
@@ -2973,7 +2999,7 @@ class App:
                 p.text(T("ov.verified") if self.boat_ok else T("ov.not_verified"), "label",
                        colour=C["ok_txt"] if self.boat_ok else theme.CAUTION, bold=True, tag="verified")
             p.text(("%s:%d" % (bt.ip, bt.port)) if bt.ip_ok() else T("ov.ip_not_set"), "small", colour=C["faint"])
-            p.br()
+            p.br()                                   # one line per boat (the alarms panel above needs the room)
         if self.link is not None and self.boat is None:
             p.text(T("ov.address", a=self.port_var.get()), "label", tag="address")
             p.br()
@@ -2997,7 +3023,6 @@ class App:
         p.button(T("cap.helm_take"), lambda: self.cmd(proto.T_HELM, proto.p_helm(0), TE("what.take_helm")), "ok")
         p.button(T("cap.helm_release"), self.helm_release)
         p.button(T("crew.swap"), self.crew_swap, enabled=isinstance(self.link, GatewayLink))
-        p.br(stretch=True)
         p.button(T("ov.screen1"), lambda: self.close_driver() if self.driver else self.open_driver(), "info",
                  on=self.driver is not None)
         p.button(T("cap.single_op_on") if self.single_op else T("cap.single_op"), self.single_op_toggle,
@@ -3071,7 +3096,7 @@ class App:
                 p.br()
                 p.button(T("drv.accept"), lambda: self.avoid_answer(None, True), "ok")
                 p.button(T("drv.reject"), lambda: self.avoid_answer(None, False), "no")
-        n = AIS_ROWS[0] if H < 900 else AIS_ROWS[1]
+        n = AIS_ROWS[0] if H < 720 else AIS_ROWS[1] if H < 900 else AIS_ROWS[2]
         if rows:
             def fv(v, fmt):
                 return "-" if v is None else fmt % v

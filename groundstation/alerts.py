@@ -11,11 +11,20 @@ files and the language files: "alarm.<code>" is its screen text,
 DISPLAY ONLY: acknowledging a lamp here silences this PC; it never sends
 anything to the boat (the boat's ALARM ACK stays the captain's button).
 """
+import time
+
 import i18n
 import proto
 
 WARNING, CAUTION, ADVISORY, FEEDBACK = 3, 2, 1, 0
 LEVEL_NAMES = {WARNING: "WARNING", CAUTION: "CAUTION", ADVISORY: "ADVISORY", FEEDBACK: "FEEDBACK"}
+FLASH_HZ = 1.25                     # the MASTER lamp clock: lamps and unacknowledged alarm rows on both screens
+
+
+def flash(now=None):
+    """The flash phase (True = lit) of the MASTER lamp clock, ~1.25 Hz; every flashing thing on both
+    screens uses it, so they all blink in step."""
+    return int((time.time() if now is None else now) * 2 * FLASH_HZ) % 2 == 0
 
 # bit -> (event code, level)
 ALARM_LEVELS = {
@@ -121,6 +130,16 @@ class MasterLamps:
         out = [c for b, c, l_ in active(self.bits) if l_ == lv and not self.acked[lv] & b]
         if lv == WARNING and self.no_data and not self.no_data_acked:
             out.insert(0, NO_DATA)
+        return out
+
+    def rows(self):
+        """The alarm list of both screens: [(text, level, steady)] most severe first (NO DATA first of all).
+        steady = acknowledged on this PC or ADVISORY; an unacknowledged WARNING / CAUTION flashes."""
+        out = []
+        if self.no_data:
+            out.append((i18n.T("alarm." + NO_DATA), WARNING, self.no_data_acked))
+        for bit, c, lv in active(self.bits):
+            out.append((i18n.T("alarm." + c), lv, lv not in self.acked or bool(self.acked[lv] & bit)))
         return out
 
 

@@ -102,8 +102,10 @@ class Panel:
         return self._add(Item("text", s=str(s), level=level, colour=colour, bold=bold, tag=tag, action=action,
                               wrap=wrap))
 
-    def badge(self, s, fill, fg=theme.WHITE, level="value", tag=None):
-        return self._add(Item("badge", s=str(s), level=level, fill=fill, fg=fg, bold=True, tag=tag))
+    def badge(self, s, fill, fg=theme.WHITE, level="value", tag=None, outline=None, wrap=None):
+        """fill "" = see-through (outline only: the dark phase of a flashing alarm); wrap like text()."""
+        return self._add(Item("badge", s=str(s), level=level, fill=fill, fg=fg, bold=True, tag=tag,
+                              outline=outline, wrap=wrap))
 
     def button(self, s, action, kind="normal", on=False, enabled=True, level="button", tag=None):
         return self._add(Item("button", s=str(s), level=level, action=action, btn=kind, on=on, enabled=enabled,
@@ -182,7 +184,9 @@ class Overlay:
                 it.shown = it.s
             it.w, it.h = self.measure(it.shown, lv, it.bold)
         elif it.kind == "badge":
-            tw, th = self.measure(it.s, lv, True)
+            it.shown = "\n".join(wrap_lines(it.s, self.font(self.size(lv), True), it.wrap * self.W)) if it.wrap \
+                else it.s
+            tw, th = self.measure(it.shown, lv, True)
             it.w, it.h = tw + self.size(lv) * 0.9, th + self.size(lv) * 0.25
         elif it.kind == "button":
             fs = self.size(lv)
@@ -351,9 +355,11 @@ class Overlay:
             if it.action:
                 self.hits.append((r, it.action))
         elif it.kind == "badge":
-            c.create_polygon(*rrect_pts(r[0], r[1], r[2], r[3], fs * 0.35), smooth=True, fill=it.fill, outline="",
-                             tags="ov")
-            c.create_text((r[0] + r[2]) / 2, cy, text=it.s, fill=it.fg, font=self.font(fs, True), tags="ov")
+            c.create_polygon(*rrect_pts(r[0], r[1], r[2], r[3], fs * 0.35), smooth=True, fill=it.fill,
+                             outline=it.outline or "", width=2 if it.outline else 1, tags="ov")
+            c.create_text((r[0] + r[2]) / 2, cy, text=it.shown, fill=it.fg, font=self.font(fs, True), tags="ov",
+                          justify="center")
+            op["fill"], op["outline"] = it.fill, it.outline
         elif it.kind == "button":
             kind = it.btn
             fill = {"normal": C["btn"], "ok": C["btn_ok"], "no": C["btn_no"], "info": C["btn_info"],

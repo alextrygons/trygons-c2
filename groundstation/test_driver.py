@@ -44,6 +44,10 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
   I18 sound in the real ground station: mode callouts from the live telemetry,
      a WARNING repeats until the MASTER lamp is acknowledged on the driver
      screen, a command answer gives the confirm sound; nothing sent
+  I19 alarms in ONE place (CLAUDE.md G): the alarms box under the right mirror
+     (right column, top half, over no other box), the notices under it; one
+     alarm per line, most severe first, flashing until acknowledged on this
+     PC, "+N" when more than fit; hud_layout.json version migration
 
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
@@ -692,6 +696,94 @@ def main():
                modes_ok and n_warn >= 2 and n_after == n_warn and conf and not hb and not errors,
                "heading lock / standby said %s; compass warning played %d times in 9 s, after ACK %d more; confirm "
                "sound %s; frames sent by the sound %s" % (modes_ok, n_warn, n_after - n_warn, conf, hb))
+
+        # I19 alarms in ONE place (CLAUDE.md G): the alarms box in the right column under the right mirror, top
+        # half, over no other box; one alarm per line, flashing until acknowledged, "+N"; layout file migration
+        import overlay
+        L = hud.DEFAULT_LAYOUT
+        rect = lambda k: (L[k][0], L[k][1], L[k][0] + L[k][2], L[k][1] + L[k][3])          # noqa: E731
+        ab, nb, mr = rect("alarms"), rect("notices"), rect("mirror_r")
+        place_ok = ab[0] >= 0.75 and ab[3] <= 0.5 and ab[1] >= mr[3] and ab[1] - mr[3] < 0.02 and \
+            nb[1] >= ab[3] and abs(nb[0] - ab[0]) < 1e-6 and nb[3] <= 0.5
+        others = {k: rect(k) for k in L if k not in ("alarms", "notices")}
+        others["LOGO_BOX"] = (hud.LOGO_BOX[0], hud.LOGO_BOX[1], hud.LOGO_BOX[0] + hud.LOGO_BOX[2],
+                              hud.LOGO_BOX[1] + hud.LOGO_BOX[3])
+        over = [k for k, r in others.items() if overlay.overlaps(ab, r) or overlay.overlaps(nb, r)]
+        right_col = ("alarms", "notices", "speed", "depth", "waypoint", "traffic", "rot", "gmeter")
+        in_centre = [k for k in right_col if overlay.overlaps(rect(k), (0.25, 0.22, 0.75, 0.75))]
+        col_over = [(a_, b_) for i_, a_ in enumerate(right_col) for b_ in right_col[i_ + 1:]
+                    if overlay.overlaps(rect(a_), rect(b_))] + \
+            [k for k in right_col if overlay.overlaps(rect(k), others["LOGO_BOX"])]
+        every_level = all(hud.declutter_visible("alarms", lv) for lv in hud.DECLUTTER)
+        # flash / steady: compass lost (WARNING, acknowledged), joystick fault (WARNING, new), GPS lost (CAUTION,
+        # acknowledged), arrived (ADVISORY)
+        lamps = alerts.MasterLamps()
+        lamps.update(0x001 | 0x002 | 0x020)
+        lamps.ack()
+        lamps.update(0x001 | 0x002 | 0x020 | 0x100)
+        gh = hud.Hud(hud.Layout(os.path.join(TMP, "al_layout.json")))
+
+        def build(flash, rows=None):
+            s = hud.Snapshot(t=d, gw={}, lamps=lamps, declutter="FULL", flash=flash,
+                             alarm_rows=lamps.rows() if rows is None else rows)
+            return gh.build(1600, 900, s)[0]
+        on, off = build(True), build(False)
+        tagged = lambda ops, tag, k=None: [o for o in ops if o.get("tag") == tag and (k is None or o["k"] == k)]  # noqa
+        warn_fill_on = [o for o in tagged(on, "alarm_warn", "rect") if o.get("fill")]
+        warn_fill_off = [o for o in tagged(off, "alarm_warn", "rect") if o.get("fill")]
+        texts_on, texts_off = [o["s"] for o in tagged(on, "alarm_warn", "text")], \
+            [o["s"] for o in tagged(off, "alarm_warn", "text")]
+        order_ok = [o["s"] for o in on if o["k"] == "text" and str(o.get("tag", "")).startswith("alarm_")] == \
+            [A.T("alarm.compass_lost"), A.T("alarm.joystick_fault"), A.T("alarm.gps_lost"), A.T("alarm.arrived")]
+        flash_ok = len(warn_fill_on) == 1 and not warn_fill_off and texts_on == texts_off and len(texts_on) == 2
+        steady_ok = tagged(on, "alarm_caution") == tagged(off, "alarm_caution") and \
+            tagged(on, "alarm_advisory") == tagged(off, "alarm_advisory") and \
+            not [o for o in tagged(on, "alarm_advisory", "rect")]
+        # more alarms than lines: the last line is "+N"; every text inside the box
+        many = build(True, rows=[("ALARM %d" % i, 3, True) for i in range(9)])
+        more = [o["s"] for o in tagged(many, "alarm_more", "text")]
+        shown_n = len(tagged(many, "alarm_warn", "text"))
+        box = gh.layout.px("alarms", 1600, 900)
+        inside = all(box[0] <= o["xy"][0] <= box[2] and box[1] <= o["xy"][1] <= box[3] for o in many
+                     if o["k"] == "text" and str(o.get("tag", "")).startswith("alarm_"))
+        more_ok = shown_n >= 2 and more == [A.T("hud.more_alarms", n=9 - shown_n)] and inside
+        # the real screen 1: the alarms drawn in their box (right column, top half), no old alarm bar
+        app.on_telem = lambda d_: orig_t(dict(d_, alarm_bits=d_["alarm_bits"] | 0x001 | 0x002))
+        pump(0.8)
+        W_, H_ = dv.cv.winfo_width(), dv.cv.winfo_height()
+        live_box = dv.layout.px("alarms", W_, H_)
+        live = [bb for t, bb, bx, s_ in dv.renderer.text_boxes if str(t).startswith("alarm_")]
+        live_ok = len(live) >= 2 and all(bb[0] >= live_box[0] - 3 and bb[2] <= live_box[2] + 3 and
+                                         bb[1] >= live_box[1] - 3 and bb[3] <= live_box[3] + 3 for bb in live) and \
+            live_box[0] >= 0.75 * W_ and live_box[3] <= 0.5 * H_ and not dv.has("alarm")
+        app.on_telem = orig_t
+        pump(0.5)
+        # layout migration: a saved file without a version keeps the user's other boxes, renews the moved ones
+        old = os.path.join(TMP, "old_layout.json")
+        with open(old, "w", encoding="utf-8") as f:
+            A.json.dump({"rects": {"speed": [0.5, 0.5, 0.1, 0.1], "status": [0.3, 0.01, 0.4, 0.14]},
+                         "hidden": ["rot"]}, f)
+        lay = hud.Layout(old)
+        with open(old, encoding="utf-8") as f:
+            saved2 = A.json.load(f)
+        lay2 = hud.Layout(old)
+        lay2.rects["speed"] = (0.6, 0.6, 0.1, 0.1)
+        lay2.save()
+        lay3 = hud.Layout(old)
+        migr_ok = lay.rects["speed"] == hud.DEFAULT_LAYOUT["speed"] and lay.rects["status"] == (0.3, 0.01, 0.4, 0.14) \
+            and lay.hidden == {"rot"} and saved2.get("layout_version") == hud.HUD_LAYOUT_VERSION and \
+            lay3.rects["speed"] == (0.6, 0.6, 0.1, 0.1) and lay3.rects["status"] == (0.3, 0.01, 0.4, 0.14)
+        report("I19 alarms in ONE place: the alarms box under the right mirror (x > 0.75, top half), the notices "
+               "under it, over no other box (drive, controls, logo, centre free); one alarm per line most severe "
+               "first; unacknowledged = flashing (fill alternates, text stays), acknowledged / advisory steady; "
+               "\"+N\" when more than fit; shown at every declutter level; layout file migration",
+               place_ok and not over and not in_centre and not col_over and every_level and order_ok and flash_ok
+               and steady_ok and more_ok and live_ok and migr_ok and not errors,
+               "place %s; overlaps %s; in the centre %s; column overlaps %s; every level %s; order %s; flash %s "
+               "(filled lit %d / dark %d); steady %s; +N %s (%d shown, %s); live %s (box %s, %d texts); migration %s"
+               % (place_ok, over, in_centre, col_over, every_level, order_ok, flash_ok, len(warn_fill_on),
+                  len(warn_fill_off), steady_ok, more_ok, shown_n, more, live_ok,
+                  [round(v) for v in live_box], len(live), migr_ok))
 
         # I9 BENCH TEST tab (USB-style link): enter, live sensors, a steering pulse, a button, leave
         app.bench(A.proto.BENCH_ENTER, 0, "bench test: enter")

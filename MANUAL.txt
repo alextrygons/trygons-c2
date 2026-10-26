@@ -365,7 +365,16 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
                 Lower; heading, target, rate of turn, gear, throttle
                 ("asked" when more was asked than allowed), outboard, GPS
                 (fix, source, uncertainty), speed / course over ground
-  Top right     BOATS (above); HELM / ROLES: who holds HELM, your role
+  Top right     ALARMS (always shown, also with every panel folded; no alarm =
+                a one-line header): every active alarm, one per line, the
+                most severe first; red = WARNING, amber = CAUTION, blue =
+                advisory. An alarm not yet acknowledged ON THIS PC flashes
+                (the same clock as the GENERAL lamps on screen 1; the text
+                stays, only the fill blinks); acknowledged ones and advisories
+                are steady. "+N more" when more are active than fit. ACK ALARM
+                = the boat's acknowledge (clears only alarms whose cause is
+                gone; from any station). Under it:
+                BOATS; HELM / ROLES: who holds HELM, your role
                 (CAPTAIN / COPILOT, licence), the captain's name; Take HELM,
                 Release (UNCREWED: releasing = a lost link, you are asked
                 first), Role swap, Screen 1, Single operator.
@@ -387,7 +396,7 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
                 nearest AIS ships (name, distance, bearing, CPA, TCPA; red =
                 danger, amber = warning; a click opens the details), "AIS
                 doesn't show small craft"; under it the logo
-  Top middle    banners, only when needed: alarms (flashing; ACK ALARM),
+  Top middle    banners, only when needed (the alarms are in the ALARMS panel):
                 LINK LOST / ENGINE KILLED, PRESS JOYSTICK CONFIRM, REMOTE /
                 MANEUVER / JOYSTICK IN CONTROL, pickup, FIRST TEST, UNCREWED,
                 shallow water ahead, collision risk, STARLINK EMERGENCY,
@@ -477,12 +486,13 @@ main colour (green or white, AR menu); RED = warning, AMBER = caution only.
 
   +----------+   MODE (+ target heading)    [GENERAL WARNING] +----------+
   | REAR-L   |   channel  latency  POWER    [GENERAL CAUTION] |  REAR-R  |
-  | mirror   |       alarm bar (only when there are alarms)   |  mirror  |
-  +----------+          notices (confirm, collision, ...)     +----------+
-  throttle                                                     SPEED
-  bar          FRONT camera + AR overlays (5B AR)              depth
-  limit                                                        waypoint
-  GEAR                                                         AIS threat
+  | mirror   |                                                |  mirror  |
+  +----------+                                                +----------+
+  throttle                                                     ALARMS
+  bar          FRONT camera + AR overlays (5B AR)              (one per line)
+  limit                                                        notices
+  GEAR                                                         SPEED  depth
+                                                               waypoint  AIS
                     outboard angle          mini map           ROT    G
   [buttons]         CDI (track)
   heading tape ...                 REC  vision  clock  mission  [SAVE]
@@ -498,10 +508,17 @@ main colour (green or white, AR menu); RED = warning, AMBER = caution only.
                    silences the repeating sound ON THIS PC. It sends nothing
                    to the boat (the boat's ALARM ACK stays the captain's
                    button). A newer alarm lights it again.
-  Alarm bar        only while alarms are active, under the mode, never over
-                   the middle of the picture
-  Notices          press CONFIRM, pickup, single operator, collision line,
-                   shallow water ahead, front camera lost, FIRST TEST
+  ALARMS           the ONE place for alarms on this screen: the right column,
+                   directly under the right mirror. One alarm per line, the
+                   most severe first; red = WARNING, amber = CAUTION. An
+                   alarm not yet acknowledged ON THIS PC FLASHES (the same
+                   clock as the GENERAL lamps; the text stays, only the fill
+                   blinks); acknowledged ones and advisories are steady.
+                   "+N more" when more are active than fit. Shown at every
+                   declutter level, never over the middle of the picture.
+  Notices          directly under the alarms, same style: press CONFIRM,
+                   pickup, single operator, collision line, shallow water
+                   ahead, front camera lost, FIRST TEST
   Left             throttle bar (0..100 %), amber line = power limit, amber
                    band = cut by slamming, speed-trend arrow, GEAR as a big
                    F / N / R (R amber)
@@ -578,7 +595,7 @@ AR OVERLAYS (on the front video, button AR = menu, each one on / off):
   The AR is a picture help, NOT for navigation (chart / AIS / IMU errors).
 
 
-SCREEN 1 ALSO SHOWS (under the alarm bar): UNCREWED (blue: every CONFIRM on
+SCREEN 1 ALSO SHOWS (the notices under the alarms): UNCREWED (blue: every CONFIRM on
 your joystick, a lost link stops the engine), LINK LOST (seconds to the engine
 kill, or "near the shore") / ENGINE KILLED, "MANEUVER: steering + gear only,
 throttle at idle", and "boat not confirmed yet". In MANEUVER (and going
@@ -1600,7 +1617,11 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
   DECISION, OBSTACLE AHEAD and AIS RECEIVER SILENT: they never change the
-  power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM".
+  power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM" in
+  the ALARMS panel (top right of screen 2). Both screens list every active
+  alarm in ONE place (screen 1: under the right mirror; screen 2: top
+  right), one per line, most severe first; an alarm not yet acknowledged on
+  THIS PC flashes, the others are steady.
   An acknowledge clears only the alarms whose cause is gone: a compass /
   GPS / joystick fault, a lost link, a tripped monitor, a gateway problem
   ... that is still there stays on (from any station, also from shore).
