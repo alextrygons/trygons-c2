@@ -1623,11 +1623,21 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          gateway uses the next working one (no mode change)
   REMOTE DRIVING LINK LOST  remote joystick data too old / missing: idle,
                          neutral, gyro heading hold; STANDBY after 5 s
+  LOW BATTERY            the 12 V bank (filtered over ~30 s) stayed below
+                         batt_low_v (11.8 V, TO CONFIRM) for 60 s; clears
+                         0.3 V higher. ADVISORY: no mode change, the power
+                         limit STAYS (the way home may need the power), no
+                         video SAVE. The acknowledge clears it once the bank
+                         is back above 12.1 V. (In the log / telemetry it is
+                         bit 1 of the SECOND alarm word, alarm_bits2: the
+                         first word is full.) Not measured at all (divider not wired,
+                         converter dead): the NOTICE "NO VOLTAGE DATA" after
+                         5 s - no alarm, nothing else changes.
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
-  DECISION, OBSTACLE AHEAD and AIS RECEIVER SILENT: they never change the
-  power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM" in
+  DECISION, OBSTACLE AHEAD and AIS RECEIVER SILENT, and LOW BATTERY: they
+  never change the power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM" in
   the ALARMS panel (top right of screen 2). Both screens list every active
   alarm in ONE place (screen 1: under the right mirror; screen 2: top
   right), one per line, most severe first; an alarm not yet acknowledged on
@@ -1640,7 +1650,8 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
     WARNING  COMPASS LOST, GEAR FAULT, JOYSTICK FAULT, SAFETY MONITOR
              TRIPPED, REMOTE DRIVING LINK LOST, COLLISION RISK (+ DRIVER
              DECISION), SHALLOW WATER, EMERGENCY STOP, NO DATA FROM THE BOAT
-    ADVISORY ARRIVED, TRAINING, JOYSTICK TOOK CONTROL, AIS RECEIVER SILENT
+    ADVISORY ARRIVED, TRAINING, JOYSTICK TOOK CONTROL, AIS RECEIVER SILENT,
+             LOW BATTERY
     CAUTION  all the others
   (groundstation\alerts.py). The GENERAL WARNING / CAUTION lamps of the
   driver screen only silence this PC - they are not the boat's ALARM ACK.
@@ -1684,8 +1695,8 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
 WHAT IS LOGGED: 20 times a second 86 values (mode, all sensors raw and
 filtered, GPS with satellites and spoof flag, PID terms, outboard estimate,
 throttle after every limit stage, gear, power limit, navigation, position
-estimate + uncertainty, current, joystick, buttons, CPU times, supply
-voltage) and every event with its time (mode changes and refused requests,
+estimate + uncertainty, current, joystick, buttons, CPU times, bank
+voltage filtered) and every event with its time (mode changes and refused requests,
 every PC command with its answer, every button, alarms on/off, power-limit
 changes and raise attempts, training, GPS lost / suspect / recovered,
 faults, resets with the reason, program steps, config changes).
@@ -1747,6 +1758,12 @@ The ground station saves its own copy of the telemetry in the same format
   CONFIRM window           10 s
   AUTO                     max leg speed 25 kn (PC), slow from 150 m (PC),
                            approach 4 kn (PC), leg 10 m .. 50 km
+  Battery (12 V bank)      LOW BATTERY below batt_low_v 11.8 V (PC, 10..13.5,
+                           TO CONFIRM) for 60 s, clears 0.3 V higher; filters
+                           ~30 s (alarm, displays) and 1 s (generator checks);
+                           NO VOLTAGE DATA notice after 5 s without a sample.
+                           Board: divider on A2 / AN37, HAL_SUPPLY_FITTED and
+                           SUPPLY_DIV_RATIO in hal/hal_pins.h (WIRING.md 3B)
   Dead reckoning           x0.7 speed, limit 200 m or 10 min, then hold
                            at 4 kn (PC: all)
   TRAINING                 throttle 20 % (PC), 30 s spin-up
@@ -1816,9 +1833,16 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c, drivers hal/tc_*.c)
          power loss during a write keeps the old record; tested on a PC
          flash image: tests/hal_pc/nv_check.py). Written only in STANDBY,
          never a wait in the control loop (chapter 15).
+     [x] supply voltage of the 12 V bank: EVADC channel on A2 / AN37
+         (tc_adc.c, the same group as the motor current), filtered in
+         app/battery.c, LOW BATTERY advisory + NO VOLTAGE DATA notice.
+         The divider and the pin are still TBD (WIRING.md 3B):
+         HAL_SUPPLY_FITTED 0 until wired, so the boat shows NO VOLTAGE DATA
    Still stubs:
      [ ] joystick ADC + 3 buttons (the USB bridge works), neutral switch
-         (input done, HAL_NEUTRAL_SW_FITTED 0), paddlewheel, supply voltage
+         (input done, HAL_NEUTRAL_SW_FITTED 0), paddlewheel
+     [ ] supply voltage divider (47 k / 10 k, TBD) on A2 + the starter
+         battery isolator (WIRING.md 3B)
      [ ] safety relay hardware (pin done)
      [ ] rudder angle sensor (big boat only)
 

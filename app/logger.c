@@ -69,6 +69,10 @@ static uint8_t *bb_slot(uint32_t i)
 static uint8_t s_bb_ev[LOG_BB_EVENTS][LOG_BB_EV_SLOT];      /* events: logger's own RAM */
 static uint8_t s_rec[4096 + 64];
 static uint8_t s_gw[4096 + 64 + 4];
+/* the header text (field / event / alarm names, ~3.9 KB: it must fit whole,
+ * else the PC tools lose the alarm, mode and reason names); one buffer for
+ * the three places that build it (never at the same time, core 2 only) */
+static char s_hdr[LOGR_MAX];
 
 /* Copy for the Raspberry Pi (core 0 forwards it, link.c): u32 number +
  * the record. Never waits: a full queue drops the record (counted). */
@@ -135,9 +139,8 @@ static void file_name(const logger_t *lg, char *out, size_t max, const char *pre
 /* magic, header, boot event, config: every file can be read on its own */
 static bool file_start(logger_t *lg, int h, uint8_t *buf, uint32_t *n, uint32_t no)
 {
-    static char txt[3072];
-    uint16_t tl = logrec_header_text(txt, sizeof txt, g_logstat.boot, no);
-    uint16_t rl = logrec_make(s_rec, LOGR_HEADER, lg->now, txt, tl);
+    uint16_t tl = logrec_header_text(s_hdr, sizeof s_hdr, g_logstat.boot, no);
+    uint16_t rl = logrec_make(s_rec, LOGR_HEADER, lg->now, s_hdr, tl);
     if (h == lg->h) gw_push(lg, s_rec, rl);         /* the Pi starts a file too */
     bool ok = raw_write(h, buf, n, "TLG1", 4u) && raw_write(h, buf, n, s_rec, rl);
     if (ok && lg->boot_len) ok = raw_write(h, buf, n, lg->boot_rec, lg->boot_len);
@@ -302,9 +305,8 @@ void logger_init(logger_t *lg, uint32_t now_ms)
     g_logstat.records = 0u;
     {
         /* the Pi copy starts with the field description even without an SD card */
-        static char txt[3072];
-        uint16_t tl = logrec_header_text(txt, sizeof txt, g_logstat.boot, 0u);
-        gw_push(lg, s_rec, logrec_make(s_rec, LOGR_HEADER, now_ms, txt, tl));
+        uint16_t tl = logrec_header_text(s_hdr, sizeof s_hdr, g_logstat.boot, 0u);
+        gw_push(lg, s_rec, logrec_make(s_rec, LOGR_HEADER, now_ms, s_hdr, tl));
     }
 }
 
@@ -313,10 +315,9 @@ void logger_step(logger_t *lg, uint32_t now_ms)
     lg->now = now_ms;
     if (g_logstat.gw_resend) {
         /* the Pi (re)connected: give its copy a fresh start it can read on its own */
-        static char txt[3072];
         g_logstat.gw_resend = 0u;
-        uint16_t tl = logrec_header_text(txt, sizeof txt, g_logstat.boot, lg->file_no);
-        gw_push(lg, s_rec, logrec_make(s_rec, LOGR_HEADER, now_ms, txt, tl));
+        uint16_t tl = logrec_header_text(s_hdr, sizeof s_hdr, g_logstat.boot, lg->file_no);
+        gw_push(lg, s_rec, logrec_make(s_rec, LOGR_HEADER, now_ms, s_hdr, tl));
         if (lg->boot_len) gw_push(lg, lg->boot_rec, lg->boot_len);
         if (lg->config_len) gw_push(lg, lg->config_rec, lg->config_len);
     }

@@ -30,6 +30,16 @@
 #define ADC_MOTOR_CHANNEL   IfxEvadc_ChannelId_4
 #define MOTOR_CS_V_PER_A    0.020f              /* G2 18v17 current sense */
 #define MOTOR_CS_OFFSET_V   0.050f              /* its zero-current offset (measure on the bench) */
+/* Supply voltage of the 12 V bank (WIRING.md 3B): a resistor divider on Arduino A2 = P40.7 / AN37 CHECK
+ * (iLLD: group 8 channel 5, the same EVADC group as the motor current). TBD: the pin and the
+ * divider are not wired yet - HAL_SUPPLY_FITTED 0 makes hal_read_supply_voltage return "not
+ * measured" (the boat shows NO VOLTAGE DATA, no alarm). Set 1 once the divider is on the board
+ * and SUPPLY_DIV_RATIO was measured (bank volts / volts at the pin; 47 k over 10 k = 5.7:
+ * 15 V -> 2.63 V, below the 3.3 V reference). NEVER a pin above 3.3 V: the divider must be fitted. */
+#define ADC_SUPPLY_GROUP    IfxEvadc_GroupId_8
+#define ADC_SUPPLY_CHANNEL  IfxEvadc_ChannelId_5
+#define HAL_SUPPLY_FITTED   0                   /* TBD: 1 when the divider is wired and the ratio measured */
+#define SUPPLY_DIV_RATIO    5.7f                /* (47 k + 10 k) / 10 k, measure the real one */
 
 #define PIN_BUZZER          &MODULE_P33, 3u     /* CHECK X1/X2 -> transistor -> 12 V piezo buzzer, high = on */
 

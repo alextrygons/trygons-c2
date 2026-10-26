@@ -8263,13 +8263,187 @@ static void nv_tests(void)
     }
 }
 
+/* ------------------------------------------ BV: supply voltage (section J) -- */
+
+static void battery_tests(void)
+{
+    char d[700];
+    printf("\n=== BV supply voltage of the 12 V bank (battery.c) ===\n");
+
+    /* BV1 the filters: first sample sets both (no ramp from 0 V), fast ~1 s, slow ~30 s; NaN = no sample */
+    {
+        static sbsim_t x;
+        sbsim_init(&x, 1501u, 90.0f, 0.0f, NULL);
+        sim_hal_set_supply(true, 12.6f);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        const batt_t *b = &x.sb.batt;
+        bool first = b->valid && fabsf(b->bank_v - 12.6f) < 0.01f && fabsf(b->bank_v_fast - 12.6f) < 0.01f &&
+                     !b->no_data && x.sb.alarm_bits2 == 0u;
+        sim_hal_set_supply(true, 11.0f);                   /* a 1.6 V step down */
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        float fast_1s = b->bank_v_fast, slow_1s = b->bank_v;
+        /* 1 s = one fast time constant: 63 % of the step; the slow filter has barely moved */
+        bool fast_ok = fabsf(fast_1s - (12.6f - 1.6f * 0.632f)) < 0.08f && slow_1s > 12.5f;
+        sbsim_run(&x, x.t + 29000u, NULL, NULL);          /* 30 s after the step */
+        float slow_30s = b->bank_v;
+        bool slow_ok = fabsf(slow_30s - (12.6f - 1.6f * 0.632f)) < 0.08f && fabsf(b->bank_v_fast - 11.0f) < 0.01f;
+        sim_hal_set_supply(true, NAN);                     /* a broken sample: not a measurement */
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool nan_ignored = fabsf(b->bank_v - slow_30s) < 0.02f && b->valid && !b->no_data && isfinite(b->bank_v) &&
+                           isfinite(b->bank_v_fast);
+        sim_hal_set_supply(true, 11.0f);
+        sbsim_run(&x, x.t + 120000u, NULL, NULL);
+        bool settled = fabsf(b->bank_v - 11.0f) < 0.05f && b->raw_v == 11.0f;
+        snprintf(d, sizeof d, "first sample 12.6 V into both filters %s; after a 1.6 V step: fast %.2f V slow %.2f V "
+                 "at 1 s %s; slow %.2f V at 30 s %s; a NaN sample ignored %s; settled at 11.0 V %s",
+                 first ? "yes" : "NO", fast_1s, slow_1s, fast_ok ? "ok" : "WRONG", slow_30s, slow_ok ? "ok" : "WRONG",
+                 nan_ignored ? "yes" : "NO", settled ? "yes" : "NO");
+        test_report("BV1 bank voltage filters: first sample, fast ~1 s, slow ~30 s, NaN / inf samples ignored",
+                    first && fast_ok && slow_ok && nan_ignored && settled, d);
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* BV2 LOW BATTERY on / off: below 11.8 V for 60 s -> alarm (advisory: no mode change, the power limit stays,
+     * no SAVE); clears above 12.1 V; the acknowledge keeps it while the cause is there */
+    {
+        static sbsim_t x;
+        sbsim_init(&x, 1502u, 90.0f, 0.0f, NULL);
+        sim_hal_set_supply(true, 12.6f);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        bool raised = power_step(&x, 0u) && x.sb.plim.fwd_pct == 50.0f;
+        /* HDG LOCK with the throttle on the stick (entering MANUAL would lower the limit by design: override) */
+        press(&x, HAL_BTN_HDG_LOCK);
+        joy_set(0.0f, 0.5f, false, false);                 /* half throttle ahead, HDG LOCK stays */
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool driving = sb_mode(&x.sb) == MODE_HDG_LOCK && x.sb.plim.fwd_pct == 50.0f;
+        uint32_t modes0 = x.sb.modes.log_count;
+        uint16_t save0 = x.sb.save.seq;
+        sim_hal_set_supply(true, 11.5f);                   /* bank_v < 11.8 after ~39 s, the alarm 60 s later */
+        sbsim_run(&x, x.t + 90000u, NULL, NULL);
+        bool not_yet = x.sb.alarm_bits2 == 0u && !x.sb.batt.low && x.sb.batt.bank_v < 11.8f;
+        sbsim_run(&x, x.t + 20000u, NULL, NULL);          /* ~110 s */
+        bool on = (x.sb.alarm_bits2 & SB_ALM2_LOW_BATTERY) && x.sb.batt.low && x.sb.alarm && sim_hal_alarm();
+        bool advisory = sb_mode(&x.sb) == MODE_HDG_LOCK && x.sb.modes.log_count == modes0 &&
+                        x.sb.plim.fwd_pct == 50.0f && x.sb.save.seq == save0 && x.sb.thr.out_pct > 40.0f &&
+                        x.sb.gps.last.sog_kn > 3.0f;
+        sb_alarm_ack(&x.sb);                               /* acknowledged while still low: stays */
+        sbsim_run(&x, x.t + 200u, NULL, NULL);
+        bool kept = (x.sb.alarm_bits2 & SB_ALM2_LOW_BATTERY) != 0u;
+        sim_hal_set_supply(true, 12.0f);                   /* better, but not above 11.8 + 0.3 */
+        sbsim_run(&x, x.t + 150000u, NULL, NULL);
+        bool hyst = x.sb.batt.low && fabsf(x.sb.batt.bank_v - 12.0f) < 0.05f;
+        sb_alarm_ack(&x.sb);
+        bool kept2 = (x.sb.alarm_bits2 & SB_ALM2_LOW_BATTERY) != 0u;
+        sim_hal_set_supply(true, 12.5f);                   /* above 12.1 V: the condition clears */
+        sbsim_run(&x, x.t + 60000u, NULL, NULL);
+        bool cleared_cond = !x.sb.batt.low && (x.sb.alarm_bits2 & SB_ALM2_LOW_BATTERY);     /* shown until acknowledged */
+        sb_alarm_ack(&x.sb);
+        sbsim_run(&x, x.t + 200u, NULL, NULL);
+        bool off = x.sb.alarm_bits2 == 0u && !x.sb.alarm && !sim_hal_alarm() && sb_mode(&x.sb) == MODE_HDG_LOCK &&
+                   x.sb.plim.fwd_pct == 50.0f;
+        snprintf(d, sizeof d, "power 50 %% %s, HDG LOCK driving %s; at 11.5 V: no alarm at 90 s %s, LOW BATTERY at 110 s "
+                 "%s (buzzer); still HDG LOCK, no transition, power limit 50 %%, no SAVE, throttle kept %s; ACK while "
+                 "low keeps it %s; 12.0 V: still low (hysteresis) %s, ACK keeps %s; 12.5 V: condition gone %s; ACK -> "
+                 "off %s", raised ? "yes" : "NO", driving ? "yes" : "NO", not_yet ? "ok" : "NO", on ? "yes" : "NO",
+                 advisory ? "yes" : "NO", kept ? "yes" : "NO", hyst ? "yes" : "NO", kept2 ? "yes" : "NO",
+                 cleared_cond ? "yes" : "NO", off ? "yes" : "NO");
+        test_report("BV2 LOW BATTERY after 60 s below 11.8 V: advisory only (mode + power limit untouched), hysteresis "
+                    "0.3 V, acknowledge clears it only once the bank recovered",
+                    raised && driving && not_yet && on && advisory && kept && hyst && kept2 && cleared_cond && off, d);
+        joy_set(0.0f, 0.0f, false, false);
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* BV3 no voltage data: notice after 5 s, never an alarm, nothing changes; data back = filters restart;
+     * data lost while LOW = the condition can't be judged (cleared) */
+    {
+        static sbsim_t x;
+        static link_t usb;
+        sbsim_init(&x, 1503u, 90.0f, 0.0f, NULL);
+        sim_hal_set_supply(true, 12.6f);
+        sbsim_run(&x, 2000u, NULL, NULL);
+        link_init(&usb, &x.sb);
+        uint32_t modes0 = x.sb.modes.log_count;
+        sim_hal_set_supply(false, 0.0f);                   /* the board says "not measured" */
+        sbsim_run(&x, x.t + 3000u, usb_link_hook, &usb);
+        bool grace = !x.sb.batt.no_data && x.sb.batt.valid;              /* a 3 s gap is not "no data" yet */
+        sbsim_run(&x, x.t + 3000u, usb_link_hook, &usb);
+        bool notice = x.sb.batt.no_data && !x.sb.batt.valid && x.sb.alarm_bits2 == 0u && !x.sb.alarm &&
+                      !sim_hal_alarm() && sb_mode(&x.sb) == MODE_STANDBY && x.sb.modes.log_count == modes0 &&
+                      x.sb.plim.fwd_pct == 30.0f;
+        uint16_t t2_len = usb.telem2_len;                  /* TELEM2 carries group L (11 bytes after K) */
+        sim_hal_set_supply(true, 11.0f);                   /* data back: the filters start from this sample */
+        sbsim_run(&x, x.t + 100u, usb_link_hook, &usb);
+        bool restart = !x.sb.batt.no_data && x.sb.batt.valid && fabsf(x.sb.batt.bank_v - 11.0f) < 0.01f;
+        sbsim_run(&x, x.t + 70000u, usb_link_hook, &usb);
+        bool low = x.sb.batt.low && (x.sb.alarm_bits2 & SB_ALM2_LOW_BATTERY);
+        sim_hal_set_supply(false, 0.0f);                   /* the data goes while low */
+        sbsim_run(&x, x.t + 6000u, usb_link_hook, &usb);
+        bool unknown = !x.sb.batt.low && x.sb.batt.no_data && (x.sb.alarm_bits2 & SB_ALM2_LOW_BATTERY);
+        sb_alarm_ack(&x.sb);
+        bool ack_clears = x.sb.alarm_bits2 == 0u;          /* the cause can't be seen any more */
+        snprintf(d, sizeof d, "3 s gap: no notice %s; 6 s: NO VOLTAGE DATA notice %s (no alarm, STANDBY, no transition, "
+                 "power limit 30 %%); TELEM2 %u bytes (>= 120 with group L) %s; data back at 11.0 V: filters restart "
+                 "%s; LOW BATTERY after 70 s %s; data lost while low: condition cleared, notice %s; ACK clears %s",
+                 grace ? "ok" : "NO", notice ? "yes" : "NO", t2_len, t2_len >= 120u ? "ok" : "SHORT",
+                 restart ? "yes" : "NO", low ? "yes" : "NO", unknown ? "yes" : "NO", ack_clears ? "yes" : "NO");
+        test_report("BV3 no voltage data: notice after 5 s, never an alarm, nothing else changes; data back restarts "
+                    "the filters; data lost while low = cause unknown",
+                    grace && notice && t2_len >= 120u && restart && low && unknown && ack_clears, d);
+        sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* BV4 the parameter batt_low_v: limits 10..13.5 V (PC), STANDBY only, applied at once */
+    {
+        static pcsim_t p;
+        pcsim_init(&p, 1504u);
+        sim_hal_set_supply(true, 12.6f);
+        pc_run(&p, 2000u);
+        uint8_t id = 0xFFu;
+        for (uint8_t i = 0; i < link_param_count(); i++)
+            if (strcmp(link_param_info(i)->name, "batt_low_v") == 0) id = i;
+        bool found = id != 0xFFu && link_param_info(id)->min == 10.0f && link_param_info(id)->max == 13.5f &&
+                     p.x.sb.batt.cfg.low_v == 11.8f;
+        uint8_t ps[5]; proto_wr_t w;
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id); proto_wr_f32(&w, 9.0f);
+        bool low_refused = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u) == PROTO_R_BAD_VALUE && p.x.sb.batt.cfg.low_v == 11.8f;
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id); proto_wr_f32(&w, 14.0f);
+        bool high_refused = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u) == PROTO_R_BAD_VALUE && p.x.sb.batt.cfg.low_v == 11.8f;
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id); proto_wr_f32(&w, 12.3f);
+        bool set = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u) == PROTO_R_OK && p.x.sb.batt.cfg.low_v == 12.3f &&
+                   fabsf(p.param_value - 12.3f) < 1e-4f;
+        sim_hal_set_supply(true, 12.0f);                   /* below the new limit (not below the default 11.8) */
+        pc_run(&p, 100000u);
+        bool alarm = (p.x.sb.alarm_bits2 & SB_ALM2_LOW_BATTERY) && p.x.sb.batt.low && sb_mode(&p.x.sb) == MODE_STANDBY;
+        joy_set(0.0f, 0.5f, false, false);                 /* MANUAL: the parameter is refused while driving */
+        pc_run(&p, 1000u);
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id); proto_wr_f32(&w, 11.0f);
+        bool driving = sb_mode(&p.x.sb) == MODE_MANUAL &&
+                       pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u) == PROTO_R_STANDBY_ONLY && p.x.sb.batt.cfg.low_v == 12.3f;
+        joy_set(0.0f, 0.0f, false, false);
+        snprintf(d, sizeof d, "parameter batt_low_v id %u, limits 10..13.5, default 11.8 %s; 9.0 refused %s; 14.0 refused "
+                 "%s; 12.3 set + echoed %s; bank 12.0 V -> LOW BATTERY at 100 s %s; refused while driving %s",
+                 id, found ? "ok" : "NO", low_refused ? "yes" : "NO", high_refused ? "yes" : "NO", set ? "yes" : "NO",
+                 alarm ? "yes" : "NO", driving ? "yes" : "NO");
+        test_report("BV4 parameter batt_low_v: limits 10..13.5 V, STANDBY only, used by the LOW BATTERY check at once",
+                    found && low_refused && high_refused && set && alarm && driving, d);
+        sim_hal_set_supply(true, 12.6f);
+    }
+}
+
 void sb_nv_tests(void)
 {
     nv_tests();
 }
 
+void sb_battery_tests(void)
+{
+    battery_tests();
+}
+
 void sb_tests(void)
 {
+    battery_tests();
     nv_tests();
     gateway_tests();
     helm_tests();

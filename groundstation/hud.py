@@ -841,6 +841,10 @@ class Hud:
                           "rec"))
         if s.vision:
             items.append((s.vision[0], self.pal.get(s.vision[1], s.vision[1]), "vision"))
+        if d is not None and "bank_v" in d:                      # the 12 V bank (TELEM2 group L), red while LOW
+            bv = d.get("bank_v")
+            items.append((T("hud.batt", v="%.1f" % bv) if bv is not None else T("hud.batt_none"),
+                          self.pal["warn"] if d.get("batt_low") else self.pal["main"], "batt"))
         items.append((T("hud.clock", clock=s.clock or "--:--", mission=s.mission or "--:--"), self.pal["main"],
                       "clock"))
         if items:

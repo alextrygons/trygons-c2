@@ -21,7 +21,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 1 | Alarms in ONE place, top right, flashing (DISPLAY ONLY): screen 1 box under mirror_r + notices, right column moved; screen 2 top-right panel always drawn; flash 1.25 Hz unacknowledged; hud_layout.json version bump; tests test_driver + test_screen2 S1 | DONE (gate OK; test_driver 19/19 incl. I19; test_screen2 12/12 incl. S12; acceptance quick run) | this commit |
 | 2 | Boat dropdown = first line of screen 2's top-left panel + lamp ΣΥΝΔΕΔΕΜΕΝΟ; confirm step kept; tests test_boats + test_screen2 | DONE (gate OK except gateway VR5 under PC load - test_gateway alone 105/105 PASS; test_boats 6/6 incl. B6; test_screen2 13/13 incl. S13; acceptance quick 6/7 PASS - only START_DEMO skipped: a demo was already running on this PC, ports 5760-8554 in use) | this commit |
 | 3 | Data flash (NV): TRAINING result, joystick calibration + map, AUTO program, boot counter, generator learned value; CRC, versioned; board tc_nv.c | DONE (gate OK: sim 193/193 + bridge 192/192 incl. DF1-DF5, TriCore + iLLD check with Flash/Std built, NV harness 4/4, gateway 105/105; test_driver 19/19, test_screen2 13/13; acceptance quick 7/7 PASS on a fresh clone of this commit, incl. START_DEMO) | this commit |
-| 4 | Supply voltage input (12 V bank), filtered ~30 s, low-battery alarm | | |
+| 4 | Supply voltage input (12 V bank), filtered ~30 s, low-battery alarm | DONE (gate OK: sim 197/197 + bridge 196/196 incl. BV1-BV4, TriCore + iLLD check, NV 4/4, gateway 105/105, test_screen2 13/13, test_driver 19/19, test_lang 5/5, sound 10/10; acceptance quick 7/7 PASS on a fresh clone of this commit, incl. START_DEMO, storm 200 episodes) | this commit |
 | 4b | Generator mode (the ONLY automatic throttle rise; CLAUDE.md K) | | |
 | 5 | Boat file v2: relay list + generator_max_pct + thruster settings; old files still load | | |
 | 6 | RS485 Modbus RTU relay board driver on the AURIX (state machine, timeouts, no-data advisory; never on CPU1) | | |
@@ -82,6 +82,26 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   English words in the new Greek texts); fixed, test_screen2 + test_lang re-run alone 13/13 + 5/5.
   The owner's demo (START_DEMO, running since 18:40) held sim/autopilot_sim.exe open: stopped with
   demo.py stop so the sim could be rebuilt - restart it with START_DEMO.bat.
+- Step 4 (2026-10-26): supply voltage. app/battery.c (pure C: filters bank_v tau 30 s / bank_v_fast 1 s, LOW
+  BATTERY below batt_low_v 11.8 V for 60 s, clears +0.3 V, NO VOLTAGE DATA notice after 5 s, NaN / out-of-range
+  samples = not measured, filters restart from the first sample after a gap, data lost while low = condition
+  cleared). smallboat: sb_t.batt, alarm_bits2 / SB_ALM2_LOW_BATTERY / SB_ALM2_ADVISORY (the first word is full);
+  the power-limit drop and the video SAVE skip advisories of BOTH words; sb_alarm_ack keeps LOW BATTERY while
+  batt.low; hal_read_supply_voltage is read once per step in sb_step (logcore0 no longer calls it). link.c:
+  parameter batt_low_v (10..13.5), TELEM2 group L (alarm_bits2, bank V, fast V, flags, generator state 0).
+  Log: field bank_v replaces the raw supply_v (the 20 Hz sample is 182 of the 184 B black-box slot: 2 bytes
+  left - new values go into events); ALARM_ON / OFF events carry word = 2 in d for the second word; header line
+  alarms2. FOUND + FIXED: the log header text (~3.9 KB) was cut at 3072 B, so every TLG file lost part of the
+  alarm names and the whole modes / why lists - logger.c now builds it in one shared 4 KB buffer (s_hdr, replaces
+  three 3 KB statics: 3 KB less CPU2 RAM). Board: tc_adc channel ADC_SUPPLY (group 8 ch 5 = A2 / P40.7 / AN37
+  CHECK), HAL_SUPPLY_FITTED 0 + SUPPLY_DIV_RATIO in hal_pins.h (divider TBD: WIRING.md 3B, PARTS.md incl. the
+  starter battery isolator). Sim: sim_hal_set_supply(fitted, volts), `autopilot_sim bv`. Ground station:
+  alerts.bits_of(d) = both words (word 2 at bit << 32, ALL_ALARMS), proto ALARMS2 / alarm_texts2 / group L
+  decode (bank_v, batt_low, batt_no_data), status panel row "Battery", HUD bottom-line volts (red while low),
+  NO VOLTAGE DATA notice on both screens, tlg.py reads alarms2 + word 2 events, gateway web / recorder list
+  both words. Lang: alarm.low_battery, say.alarm.low_battery, cap.v_battery, cap.batt_none, batt.no_data,
+  hud.batt(_none). MANUAL 11 / 13 / 15 / 17, MANUAL_EL 9 / 10. TO CONFIRM: 11.8 V, 60 s, advisory (power limit
+  stays), the divider values.
 
 # Previous task: "Screen 2 review"
 

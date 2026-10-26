@@ -69,8 +69,8 @@ uint16_t logrec_data_size(void)
 static const char k_events[] =
     "1:BOOT:reset,raw,boot,format;"
     "2:MODE:from,to,why,verdict;"
-    "3:ALARM_ON:new_bits,all_bits,ap_alarm,-;"
-    "4:ALARM_OFF:cleared_bits,all_bits,-,-;"
+    "3:ALARM_ON:new_bits,all_bits,ap_alarm,word(0 first 2 second);"
+    "4:ALARM_OFF:cleared_bits,all_bits,-,word(0 first 2 second);"
     "5:BUTTON:panel_mask,-,-,-;"
     "6:JOY_BUTTON:pressed(1 TAKE 2 AUTO 4 CONFIRM),x*1000,y*1000,armed;"
     "7:POWER_LIMIT:src|res<<8|attempt<<16|dir<<24,fwd_old*10,fwd_new*10,rev_old*10<<16|rev_new*10;"
@@ -96,11 +96,15 @@ static const char k_alarms[] =
     "256:JOY_FAULT,512:JOY_NOT_CENTERED,1024:JOYSTICK,2048:PC_LINK,4096:NOT_ARMED,8192:MONITOR,"
     "16384:OVERRUN,32768:LOG_FAILURE,65536:GATEWAY_LOST,131072:GATEWAY_STORAGE,262144:REMOTE_LINK_LOST,524288:CHANNEL_FALLBACK,1048576:REMOTE_DRIVING_LINK_LOST,2097152:SLAMMING,4194304:AIS_RECEIVER_SILENT,8388608:COLLISION_RISK,16777216:DRIVER_DECISION,33554432:SHALLOW_WATER,67108864:OBSTACLE_AHEAD,134217728:EMERGENCY_STOP,268435456:PROFILE,536870912:LINK_LOST,1073741824:ENGINE_KILLED";
 
+/* the second alarm word (SB_ALM2_, log events with word = 2) */
+static const char k_alarms2[] = "1:LOW_BATTERY";
+
 uint16_t logrec_header_text(char *out, uint16_t max, uint32_t boot, uint32_t file_no)
 {
-    int n = snprintf(out, max, "TLG header\nformat=%u\nboot=%lu\nfile=%lu\nfields=%s\nevents=%s\nalarms=%s\nmodes=",
+    int n = snprintf(out, max,
+                     "TLG header\nformat=%u\nboot=%lu\nfile=%lu\nfields=%s\nevents=%s\nalarms=%s\nalarms2=%s\nmodes=",
                      (unsigned)LOG_FORMAT_VERSION, (unsigned long)boot, (unsigned long)file_no, k_fields, k_events,
-                     k_alarms);
+                     k_alarms, k_alarms2);
     for (int m = 0; m < (int)MODE_COUNT && n > 0 && n < (int)max; m++)
         n += snprintf(out + n, (size_t)(max - n), "%s%s", m ? "," : "", mode_name((sb_mode_t)m));
     if (n > 0 && n < (int)max) n += snprintf(out + n, (size_t)(max - n), "\nwhy=");

@@ -61,6 +61,7 @@
 #include <stdint.h>
 
 #include "autopilot.h"
+#include "battery.h"
 #include "gear.h"
 #include "joybridge.h"
 #include "joymap.h"
@@ -110,6 +111,13 @@
                                                  driving UNCREWED (-> STANDBY) */
 #define SB_ALM_LINK_LOST          0x20000000u /* UNCREWED: LINK LOST to the HELM shore station (idle + neutral, STANDBY) */
 #define SB_ALM_ENGINE_KILLED      0x40000000u /* UNCREWED lost link: ENGINE KILLED (latched until reset on board) */
+
+/* The first alarm word is full (0x80000000 is its last free bit): newer alarms
+ * live in the second word (sb_t.alarm_bits2, TELEM2 group L, log events
+ * ALARM_ON / OFF with word = 2). The ground station treats both words alike. */
+#define SB_ALM2_LOW_BATTERY       0x01u   /* LOW BATTERY: bank voltage below batt_low_v for 60 s (advisory) */
+/* advisories of the second word: never a mode change, never lower the power limit */
+#define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY)
 
 /* UNCREWED lost link (CLAUDE.md section B), sb_t.ll.state */
 #define SB_LL_OK      0u        /* link to the HELM station OK (or not armed yet, or CREWED) */
@@ -205,6 +213,7 @@ typedef struct {
     uint32_t t_ms;              /* when */
     uint8_t  kinds;             /* bit per trigger kind of every request in the last 2 s (several in one step) */
     uint32_t k_alarms;          /* what was already seen */
+    uint32_t k_alarms2;         /* ... second alarm word (arg = 32 + bit) */
     uint32_t k_modes;
     uint32_t k_overruns;
     bool     k_gear, k_compass, k_joy, k_mon, init;
@@ -335,6 +344,9 @@ typedef struct {
     float    near_shore_m;              /* closer to the shore than this: ENGINE KILL at once (100, NEAR_SHORE_M) */
     float    lostlink_grace_s;          /* open sea: kill after this unless the link returns (10, LOSTLINK_GRACE_S) */
     uint32_t shore_max_age_ms;          /* shore info older than this = missing = near shore (3000) */
+
+    /* supply voltage of the 12 V bank (battery.c): filters, LOW BATTERY (parameter batt_low_v) */
+    batt_config_t batt;
 } sb_config_t;
 
 /* One side (forward / reverse) of the non-returning throttle lever:
@@ -525,6 +537,9 @@ typedef struct {
     dr_t        dr;            /* position estimate (GPS / dead reckoning) */
     bool        gps_new_msg;   /* a GPS message arrived this step */
     uint32_t    alarm_bits;    /* SB_ALM_... (what the alarm is about) */
+    uint32_t    alarm_bits2;   /* SB_ALM2_... (the second word: newer alarms) */
+    uint32_t    alarm_bits2_seen;
+    batt_t      batt;          /* supply voltage of the 12 V bank (filtered), LOW BATTERY condition */
     sb_gw_t     gw;            /* gateway (Raspberry Pi) link status */
     uint8_t     helm;          /* HELM holder: SB_HELM_NONE / SB_HELM_USB / gateway station id */
     bool        helm_local;    /* the holder is on the boat (USB or boat LAN) */
@@ -689,6 +704,7 @@ typedef struct {
     double      lat, lon;       /* estimated position */
     float       sog_kn, cog_deg;/* estimated */
     uint32_t    alarm_bits;     /* SB_ALM_... */
+    uint32_t    alarm_bits2;    /* SB_ALM2_... */
     uint32_t    gps_suspects;   /* fixes rejected by the integrity check (events) */
 } sb_status_t;
 

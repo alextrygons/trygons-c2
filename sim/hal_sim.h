@@ -59,6 +59,9 @@ void     sim_hal_set_limit_switches(bool fitted, bool left, bool right);
 /* Optional paddlewheel (speed through water). */
 void     sim_hal_set_water_speed(bool fitted, float kn);
 
+/* Supply voltage of the 12 V bank (default: measured, 12.6 V). */
+void     sim_hal_set_supply(bool fitted, float volts);
+
 /* Joystick (raw 12-bit ADC values and buttons). */
 void     sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob);
 void     sim_hal_joystick_confirm(bool pressed);     /* CONFIRM button held */

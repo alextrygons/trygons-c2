@@ -795,10 +795,22 @@ uint64_t sim_hal_real_ns(void)
 /* --- memory barrier, supply voltage ----------------------------------------- */
 void hal_mem_barrier(void) { __sync_synchronize(); }
 
+/* Supply voltage of the 12 V bank: measured (12.6 V) unless a test says
+ * otherwise (sim_hal_set_supply: not fitted / any value, also NaN). */
+static bool  s_supply_fitted = true;
+static float s_supply_v = 12.6f;
+
 bool hal_read_supply_voltage(float *volts)
 {
-    *volts = 12.6f;
+    if (!s_supply_fitted) return false;
+    *volts = s_supply_v;
     return true;
+}
+
+void sim_hal_set_supply(bool fitted, float volts)
+{
+    s_supply_fitted = fitted;
+    s_supply_v = volts;
 }
 
 /* --- microSD card: files in the folder "sdcard" ------------------------------

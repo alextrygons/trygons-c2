@@ -97,7 +97,7 @@
     X(water_kn,      H, 100,   v.water_kn) \
     X(motor_a,       H, 100,   v.motor_a) \
     X(limit_sw,      B, 1,     s->limit_bits) \
-    X(supply_v,      H, 100,   v.supply_v) \
+    X(bank_v,        H, 100,   (s->batt.valid ? s->batt.bank_v : 0.0f)) \
     /* joystick, buttons */ \
     X(joy_x,         h, 1000,  s->joy.x) \
     X(joy_y,         h, 1000,  s->joy.y) \

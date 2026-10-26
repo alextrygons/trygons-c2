@@ -18,7 +18,9 @@ why each part is needed: MANUAL.txt.
 - [ ] 2 x normally closed IP67 micro limit switches (steering end stops), 2 x 4.7 kOhm, 2 x 100 nF.
 - [ ] Emergency stop: red mushroom switch with TWO normally closed contacts (twist release), IP65 enclosure; 30 A automotive relay (12 V coil) + socket for the actuator power; 4.7 kOhm + 100 nF.
 - [ ] Buzzer: 12 V active piezo buzzer > 85 dB, BC337 (or 2N7000 / AO3400), 1 kOhm, 1 A fuse.
-- [ ] Optional: paddlewheel speed sensor, supply voltage divider for A2.
+- [ ] Optional: paddlewheel speed sensor.
+- [ ] Supply voltage divider for A2 (WIRING.md 3B): 47 kOhm + 10 kOhm (1 %), 100 nF, 1 A fuse in the sense wire; optional 3.3 V clamp on the pin - RATIO TO MEASURE, PIN TO CHECK.
+- [ ] Battery bank: 3 x 12 V in parallel (one bank for everything) + a battery isolator / split-charge relay that cuts the starter battery from the bank only while cranking - TYPE TBD (decide with the engine dealer).
 - [ ] Keep the engine kill cord fitted and worn.
 - [ ] ENGINE KILL relay for the UNCREWED lost-link rule (WIRING.md 3A): relay + transistor driver + fuse in the outboard kill-switch circuit - TYPE, PIN AND FAIL-SAFE DIRECTION TBD (decide with the engine dealer).
 

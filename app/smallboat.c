@@ -107,6 +107,7 @@ void sb_default_config(sb_config_t *cfg)
     cfg->near_shore_m = 100.0f;                 /* TO CONFIRM */
     cfg->lostlink_grace_s = 10.0f;              /* TO CONFIRM */
     cfg->shore_max_age_ms = 3000u;
+    batt_default_config(&cfg->batt);
 }
 
 static bool lever_has_throttle(sb_mode_t m);
@@ -152,6 +153,7 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     gear_init(&s->gear, &cfg->gear);
     throttle_init(&s->thr, &cfg->throttle);
     slam_init(&s->slam, &cfg->slam);
+    batt_init(&s->batt, &cfg->batt);
     plim_init(&s->plim, &cfg->plim, s->now_ms * 2654435761u + 12345u);     /* always 30 / 5 */
     hal_set_safety_relay(false);                /* closed once armed (interlock) */
     servo_init(&s->servo, &cfg->servo);
@@ -224,7 +226,10 @@ void sb_alarm_ack(sb_t *s)
     if (s->ll.state == SB_LL_LOST) keep |= SB_ALM_LINK_LOST;
     if (s->ll.state == SB_LL_KILLED) keep |= SB_ALM_ENGINE_KILLED | SB_ALM_LINK_LOST;
     s->alarm_bits &= keep;              /* (the link-lost bits are raised again while lost, link.c) */
-    s->alarm = s->alarm_bits != 0u;
+    uint32_t keep2 = 0u;                /* the second word, the same rule */
+    if (s->batt.low) keep2 |= SB_ALM2_LOW_BATTERY;
+    s->alarm_bits2 &= keep2;
+    s->alarm = s->alarm_bits != 0u || s->alarm_bits2 != 0u;
     if (!s->ap.sensor_fault) s->ap.alarm = false;
 }
 
@@ -279,6 +284,13 @@ static void alarm_on(sb_t *s, uint32_t bits)
 {
     s->alarm = true;
     s->alarm_bits |= bits;
+}
+
+/* the second alarm word (SB_ALM2_) */
+static void alarm2_on(sb_t *s, uint32_t bits)
+{
+    s->alarm = true;
+    s->alarm_bits2 |= bits;
 }
 
 /* --- gateway navigation request (section D) --------------------------------- */
@@ -384,6 +396,7 @@ static void save_triggers(sb_t *s)
     if (!v->init) {
         v->init = true;
         v->k_alarms = s->alarm_bits;
+        v->k_alarms2 = s->alarm_bits2;
         v->k_modes = s->modes.log_count;
         v->k_overruns = g_timing.core0.overruns;
         v->k_gear = gf; v->k_compass = cf; v->k_joy = jf; v->k_mon = mf;
@@ -399,6 +412,14 @@ static void save_triggers(sb_t *s)
         save_req(s, SB_SAVE_ALARM, bit);
     }
     v->k_alarms = s->alarm_bits;
+    /* the second word: advisories (LOW BATTERY) are no incidents; arg = 32 + bit */
+    uint32_t on2 = s->alarm_bits2 & ~v->k_alarms2 & ~SB_ALM2_ADVISORY;
+    if (on2) {
+        uint8_t bit = 0u;
+        while (!(on2 & (1u << bit))) bit++;
+        save_req(s, SB_SAVE_ALARM, (uint8_t)(32u + bit));
+    }
+    v->k_alarms2 = s->alarm_bits2;
     if (gf && !v->k_gear) save_req(s, SB_SAVE_FAULT, 1u);
     if (cf && !v->k_compass) save_req(s, SB_SAVE_FAULT, 2u);
     if (jf && !v->k_joy) save_req(s, SB_SAVE_FAULT, 3u);
@@ -2234,6 +2255,17 @@ void sb_step(sb_t *s)
     s->motor_a = in.current_ok ? in.current_a : -1.0f;
     s->limit_bits = in.limits_ok ? (uint8_t)((in.limit_left ? 1u : 0u) | (in.limit_right ? 2u : 0u)) : 0x80u;
     s->neutral_sw = neutral_sw;
+    /* supply voltage of the 12 V bank: filtered here (battery.c), the raw
+     * value comes from the HAL. LOW BATTERY is an ADVISORY: it is raised
+     * while the condition holds (the acknowledge keeps it then), it never
+     * changes the mode and never lowers the power limit (SB_ALM2_ADVISORY).
+     * No data = a notice only (batt.no_data), never an alarm. */
+    {
+        float volts = 0.0f;
+        bool measured = hal_read_supply_voltage(&volts);
+        batt_step(&s->batt, measured, volts, dt_ms);
+        if (s->batt.low) alarm2_on(s, SB_ALM2_LOW_BATTERY);
+    }
 
     /* 1. steering core (also detects compass timeout) */
     autopilot_update(&s->ap, &in);
@@ -2362,22 +2394,22 @@ void sb_step(sb_t *s)
     if (gear_fault(&s->gear)) alarm_on(s, SB_ALM_GEAR);
     {
         uint32_t fresh = s->alarm_bits & ~s->alarm_bits_seen;
+        /* the second word: its advisories (LOW BATTERY) never touch the power limit either */
+        uint32_t fresh2 = s->alarm_bits2 & ~s->alarm_bits2_seen & ~SB_ALM2_ADVISORY;
         bool any = s->alarm || s->ap.alarm;
         /* the one exception: slamming RED in STEP mode reduces in steps (slam.c),
          * the power limit stays - a sudden drop can be dangerous in a following sea */
-        if (s->slam.cfg.red_reset < 0.5f) {
-            fresh &= ~SB_ALM_SLAM;
-            if ((s->alarm_bits & ~SB_ALM_SLAM) == 0u && !s->ap.alarm) any = false;
-        }
+        if (s->slam.cfg.red_reset < 0.5f) fresh &= ~SB_ALM_SLAM;
         /* navigation advisories never touch the power limit (their reaction is
          * defined explicitly: AIS silent = warning only) */
         fresh &= ~SB_NAV_ADVISORY;
         if ((s->alarm_bits & ~(SB_NAV_ADVISORY | (s->slam.cfg.red_reset < 0.5f ? SB_ALM_SLAM : 0u))) == 0u &&
-            !s->ap.alarm) any = false;
+            (s->alarm_bits2 & ~SB_ALM2_ADVISORY) == 0u && !s->ap.alarm) any = false;
         if (fresh & SB_ALM_PC_LINK) plim_drop(&s->plim, PLIM_SRC_PC_LINK, s->now_ms);
-        else if (fresh || (any && !s->alarm_seen)) plim_drop(&s->plim, PLIM_SRC_ALARM, s->now_ms);
-        if ((fresh || (any && !s->alarm_seen)) && is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;
+        else if (fresh || fresh2 || (any && !s->alarm_seen)) plim_drop(&s->plim, PLIM_SRC_ALARM, s->now_ms);
+        if ((fresh || fresh2 || (any && !s->alarm_seen)) && is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;
         s->alarm_bits_seen = s->alarm_bits;
+        s->alarm_bits2_seen = s->alarm_bits2;
         s->alarm_seen = any;
         plim_step(&s->plim, speed_now(s), dt_ms, s->now_ms);
     }
@@ -2448,6 +2480,7 @@ sb_status_t sb_status(const sb_t *s)
     st.sog_kn = dr_sog_kn(&s->dr);
     st.cog_deg = dr_cog_deg(&s->dr);
     st.alarm_bits = s->alarm_bits | (s->ap.alarm ? SB_ALM_COMPASS : 0u);
+    st.alarm_bits2 = s->alarm_bits2;
     st.gps_suspects = s->dr.suspects;
     return st;
 }

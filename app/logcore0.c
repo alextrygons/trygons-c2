@@ -23,7 +23,7 @@ static struct {
     uint8_t  profile, ll_state;
     uint16_t nv_mask;
     bool     nv_fault;
-    uint32_t alarm_bits;
+    uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
     uint32_t plim_log_count;
     uint8_t  tr_stage, tr_phase, tr_result;
@@ -48,7 +48,7 @@ typedef struct {
     uint32_t gps_age_ms;
     double est_lat, est_lon;
     float  est_sog, est_cog, cur_conf;
-    float  water_kn, motor_a, supply_v;
+    float  water_kn, motor_a;
     uint8_t joy_buttons, joy_status, joy_src;
     uint32_t t_core0, t_mon, t_log;
 } derived_t;
@@ -96,7 +96,6 @@ static uint16_t data_sample(const sb_t *s, uint8_t *out)
     v.cur_conf = (tau4 > 0.0f) ? fminf(1.0f, s->dr.cur_learn_s / tau4) : 0.0f;
     v.water_kn = s->dr.speed_sensor ? s->dr.water_kn : 0.0f;
     v.motor_a = s->motor_a >= 0.0f ? s->motor_a : 655.35f;
-    if (!hal_read_supply_voltage(&v.supply_v)) v.supply_v = 0.0f;
     v.joy_buttons = (uint8_t)((s->joy.take ? 1u : 0u) | (s->joy.autob ? 2u : 0u) | (s->joy.confirm ? 4u : 0u));
     v.joy_status = (uint8_t)(!s->joy.present ? 0u : s->joy.fault ? 3u : s->joy.armed ? 2u : 1u);
     /* b0 USB source, b1 lever, b2 pickup pending, b3/b4 USB stick/throttle connected, b5 learn */
@@ -249,6 +248,11 @@ static void changes(const sb_t *s)
     if (off) ev(s, EV_ALARM_OFF, (int32_t)off, (int32_t)s->alarm_bits, 0, 0);
     k.alarm_bits = s->alarm_bits;
     k.ap_alarm = s->ap.alarm;
+    /* the second alarm word: the same events with word = 2 (d) */
+    uint32_t on2 = s->alarm_bits2 & ~k.alarm_bits2, off2 = k.alarm_bits2 & ~s->alarm_bits2;
+    if (on2) ev(s, EV_ALARM_ON, (int32_t)on2, (int32_t)s->alarm_bits2, 0, 2);
+    if (off2) ev(s, EV_ALARM_OFF, (int32_t)off2, (int32_t)s->alarm_bits2, 0, 2);
+    k.alarm_bits2 = s->alarm_bits2;
     /* slamming: every impact, and every change of state / cap / override (not
      * in the 20 Hz sample: the black box has no room left) */
     {

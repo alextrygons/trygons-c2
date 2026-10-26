@@ -630,7 +630,7 @@ class DriverScreen:
         me = [st for st in gw.get("stations", []) if st.get("id") == gw.get("you")]
         s["latency_ms"] = me[0].get("rtt_ms") if me else None
         no_data = bool(a.link is not None and a.t_rx and now - a.t_rx > 3.0)       # as the captain screen
-        a.lamps.update(d["alarm_bits"] if d else 0, no_data=no_data)
+        a.lamps.update(alerts.bits_of(d), no_data=no_data)          # both alarm words
         s["alarm_rows"] = a.lamps.rows()                        # [(text, level, steady)] most severe first
         vs = getattr(a, "vstreams", {})
         s["mirrors"] = {k: {"have": vs.get(cam) is not None, "live": vs.get(cam) is not None and not vs[cam].frozen()}
@@ -729,6 +729,8 @@ class DriverScreen:
                 out.append(("nv_fault", T("nv.fault"), "caution"))
             elif d.get("nv_reset"):
                 out.append(("nv_reset", T("nv.reset"), "caution"))
+            if d.get("batt_no_data"):                   # a notice, never an alarm (CLAUDE.md J)
+                out.append(("batt_no_data", T("batt.no_data"), "caution"))
             if d["mode"] == proto.MODE_REMOTE and not self.front_live:
                 out.append(("nofront", T("drv.no_front"), "warn"))
             if d.get("pickup") and d["mode"] in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK):

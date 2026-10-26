@@ -69,6 +69,10 @@ class Log:
             if ":" in item:
                 bit, name = item.split(":")
                 self.alarm_names[int(bit)] = name
+        for item in self.header.get("alarms2", "").split(","):      # the second alarm word: bit << 32
+            if ":" in item:
+                bit, name = item.split(":")
+                self.alarm_names[int(bit) << 32] = name
         self.mode_names = self.header.get("modes", "").split(",")
         self.why_names = self.header.get("why", "").split(",")
 
@@ -95,8 +99,11 @@ class Log:
             why = self.why_names[a[2]] if 0 <= a[2] < len(self.why_names) else a[2]
             return "MODE %s -> %s (%s) %s" % (self.mode_name(a[0]), self.mode_name(a[1]), why, v)
         if name in ("ALARM_ON", "ALARM_OFF"):
-            return "%s %s" % (name, self.alarm_text(a[0] & 0xFFFFFFFF) + (" + autopilot" if name == "ALARM_ON"
-                                                                         and a[2] else ""))
+            bits = a[0] & 0xFFFFFFFF
+            if a[3] == 2:                                               # the second alarm word
+                bits <<= 32
+            return "%s %s" % (name, self.alarm_text(bits) + (" + autopilot" if name == "ALARM_ON"
+                                                             and a[2] else ""))
         if name == "POWER_LIMIT":
             src, res, att, dr = a[0] & 0xFF, (a[0] >> 8) & 0xFF, (a[0] >> 16) & 0xFF, (a[0] >> 24) & 0xFF
             rev_old, rev_new = (a[3] >> 16) & 0xFFFF, a[3] & 0xFFFF
@@ -193,18 +200,21 @@ class Writer:
     """Writes telemetry frames as a .TLG file (DATA = the raw telemetry
     payload, described by the header), PC commands and their answers."""
 
-    EVENTS = ("1:BOOT:reset,raw,boot,format;3:ALARM_ON:new_bits,all_bits,ap_alarm,-;"
-              "4:ALARM_OFF:cleared_bits,all_bits,-,-;2:MODE:from,to,why,verdict;")
+    EVENTS = ("1:BOOT:reset,raw,boot,format;3:ALARM_ON:new_bits,all_bits,ap_alarm,word;"
+              "4:ALARM_OFF:cleared_bits,all_bits,-,word;2:MODE:from,to,why,verdict;")
 
     def __init__(self, path):
         self.f = open(path, "wb")
         self.f.write(b"TLG1")
-        hdr = ("TLG header\nformat=1\nsource=ground station telemetry\nfields=%s\nevents=%s\nalarms=%s\nmodes=%s\n" % (
-            telemetry_fields(), self.EVENTS, ",".join("%d:%s" % (b, n.replace(" ", "_")) for b, n in proto.ALARMS),
-            ",".join(proto.MODES)))
+        hdr = ("TLG header\nformat=1\nsource=ground station telemetry\nfields=%s\nevents=%s\nalarms=%s\nalarms2=%s\n"
+               "modes=%s\n" % (
+                   telemetry_fields(), self.EVENTS,
+                   ",".join("%d:%s" % (b, n.replace(" ", "_")) for b, n in proto.ALARMS),
+                   ",".join("%d:%s" % (b, n.replace(" ", "_")) for b, n in proto.ALARMS2), ",".join(proto.MODES)))
         self.f.write(record(HEADER, 0, hdr.encode()))
         self.last_mode = None
         self.last_alarms = 0
+        self.last_alarms2 = 0
 
     def telemetry(self, payload, d):
         t = d["t_ms"]
@@ -214,7 +224,12 @@ class Writer:
             self.event(t, 3, d["alarm_bits"] & ~self.last_alarms, d["alarm_bits"], 0, 0)
         if self.last_alarms & ~d["alarm_bits"]:
             self.event(t, 4, self.last_alarms & ~d["alarm_bits"], d["alarm_bits"], 0, 0)
-        self.last_mode, self.last_alarms = d["mode"], d["alarm_bits"]
+        a2 = d.get("alarm_bits2", 0)                    # the second alarm word (TELEM2 group L): word = 2
+        if a2 & ~self.last_alarms2:
+            self.event(t, 3, a2 & ~self.last_alarms2, a2, 0, 2)
+        if self.last_alarms2 & ~a2:
+            self.event(t, 4, self.last_alarms2 & ~a2, a2, 0, 2)
+        self.last_mode, self.last_alarms, self.last_alarms2 = d["mode"], d["alarm_bits"], a2
         self.f.write(record(DATA, t, bytes(payload)))
 
     def event(self, t, code, a, b, c, dd):

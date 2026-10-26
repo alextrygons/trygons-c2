@@ -1949,8 +1949,8 @@ class App:
                     self.track.pop(0)
         if prev and prev["mode"] != d["mode"]:
             self.event(T("cap.ev_mode", a=T("mode." + prev["mode_name"]), b=T("mode." + d["mode_name"])))
-        if prev and prev["alarm_bits"] != d["alarm_bits"]:
-            new = d["alarm_bits"] & ~prev["alarm_bits"]
+        if prev and alerts.bits_of(prev) != alerts.bits_of(d):         # both alarm words
+            new = alerts.bits_of(d) & ~alerts.bits_of(prev)
             if new:
                 self.event(T("cap.alarm_banner", list=", ".join(alerts.texts(new))))
         if self.callouts:
@@ -2358,10 +2358,10 @@ class App:
         d = self.t
         stale = self.link is not None and self.t_rx and time.time() - self.t_rx > 3.0
         # MASTER lamps + the repeating warning sounds work with or without the driver screen open
-        self.lamps.update(d["alarm_bits"] if d else 0, no_data=bool(stale))
+        self.lamps.update(alerts.bits_of(d), no_data=bool(stale))
         if self.callouts and self.link is not None and self.t_rx:
             self.callouts.link(not stale)
-        if (d and (d["alarm"] or d["alarm_bits"])) or stale:
+        if (d and (d["alarm"] or alerts.bits_of(d))) or stale:
             if time.time() - self.last_beep > 1.0 and not (self.sound and self.sound.enabled()):
                 # without the sound system (section D) only: it plays the warnings itself
                 self.last_beep = time.time()
@@ -2812,6 +2812,8 @@ class App:
                 out.append(("nv_fault", T("nv.fault")) + B["pickup"] + (None,))
             elif d.get("nv_reset"):
                 out.append(("nv_reset", T("nv.reset")) + B["pickup"] + (None,))
+            if d.get("batt_no_data"):                   # a notice, never an alarm (CLAUDE.md J)
+                out.append(("batt_no_data", T("batt.no_data")) + B["pickup"] + (None,))
             if d.get("profile") == proto.PROFILE_UNCREWED:
                 out.append(("uncrewed", T("cap.unc_banner")) + B["uncrewed"] + (None,))
         av = (self.gw_status or {}).get("avoid") or {}
@@ -2918,6 +2920,10 @@ class App:
                 ([T("cap.v_gps"), (T("cap.fix") if d["gps_fix"] else T("cap.no_fix")) + "  " + src +
                   "  ± %.0f m" % d["unc_m"]], ok if d["gps_fix"] and d["pos_source"] == 1 else bad),
                 ([T("cap.v_sog"), "%.1f kn  %03.0f°" % (d["est_sog"], d["est_cog"])], None)]
+        # the 12 V bank (TELEM2 group L): filtered volts, red while LOW BATTERY; "no data" when not measured
+        bv = d.get("bank_v")
+        rows.append(([T("cap.v_battery"), "%.1f V" % bv if bv is not None else T("cap.batt_none")],
+                     bad if d.get("batt_low") else None))
         p.table(None, rows, ["l", "l"], tag="values", level="label")
 
     def panel_control(self):

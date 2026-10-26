@@ -25,7 +25,7 @@ typedef enum {
     P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
     P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET, P_GPS2_CHECK, P_NAV_LOST_KN,
-    P_STOP_RATE, P_NAV_MAX_DEV, P_NEAR_SHORE, P_LL_GRACE,
+    P_STOP_RATE, P_NAV_MAX_DEV, P_NEAR_SHORE, P_LL_GRACE, P_BATT_LOW,
     P_COUNT
 } param_id_t;
 
@@ -54,6 +54,7 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "nav_max_dev",    30.0f,  180.0f },     /* avoidance heading: max deg off the leg track (150) */
     { "near_shore_m",   20.0f, 2000.0f },     /* UNCREWED lost link: closer = engine kill at once (100, TO CONFIRM) */
     { "lostlink_grc_s",  0.0f,  120.0f },     /* UNCREWED lost link, open sea: kill after this (10, TO CONFIRM) */
+    { "batt_low_v",     10.0f,   13.5f },     /* LOW BATTERY below this for 60 s (11.8 V, TO CONFIRM; advisory) */
 };
 
 uint8_t link_param_count(void)
@@ -94,6 +95,7 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_NAV_MAX_DEV:  return &s->cfg.nav_max_dev_deg;
     case P_NEAR_SHORE:   return &s->cfg.near_shore_m;
     case P_LL_GRACE:     return &s->cfg.lostlink_grace_s;
+    case P_BATT_LOW:     return &s->batt.cfg.low_v;
     default:             return NULL;
     }
 }
@@ -911,6 +913,10 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *   K: u8 lost-link state (0 ok, 1 LOST, 2 ENGINE KILLED) | u8 flags (b0 armed: a HELM station held HELM,
  *      b1 near shore now, b2 the kill was near shore; b4.. GW_SHORE flags) | u16 shore distance m (0xFFFF unknown) |
  *      u16 shore info age ms (0xFFFF never) | u16 open-sea kill in (0.1 s) | u16 near_shore_m
+ *   L: u32 alarm_bits2 (SB_ALM2_: the second alarm word) | u16 bank V*100 (0xFFFF no data) |
+ *      u16 fast-filtered bank V*100 (0xFFFF) | u8 battery flags (b0 measured now, b1 NO VOLTAGE DATA
+ *      notice, b2 LOW BATTERY condition) | u8 generator state (0 off; generator mode, section K) |
+ *      u8 generator throttle %
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1005,6 +1011,16 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u16(&w, (uint16_t)(cage > 65534u ? (s->coast.rx_ms ? 65534u : 0xFFFFu) : cage));
     proto_wr_u16(&w, (uint16_t)(sb_lostlink_left_s(s) * 10.0f + 0.5f));
     proto_wr_u16(&w, (uint16_t)(s->cfg.near_shore_m + 0.5f));
+    /* L */
+    {
+        const batt_t *b = &s->batt;
+        proto_wr_u32(&w, s->alarm_bits2);
+        proto_wr_u16(&w, b->valid ? (uint16_t)lroundf(fminf(655.0f, b->bank_v) * 100.0f) : 0xFFFFu);
+        proto_wr_u16(&w, b->valid ? (uint16_t)lroundf(fminf(655.0f, b->bank_v_fast) * 100.0f) : 0xFFFFu);
+        proto_wr_u8(&w, (uint8_t)((b->valid ? 1u : 0u) | (b->no_data ? 2u : 0u) | (b->low ? 4u : 0u)));
+        proto_wr_u8(&w, 0u);                /* generator state: off (generator mode comes with section K) */
+        proto_wr_u8(&w, 0u);                /* generator throttle % */
+    }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
     else l->telem_overflows++;

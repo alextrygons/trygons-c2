@@ -62,6 +62,7 @@ alarm.emergency_stop = EMERGENCY STOP
 alarm.profile = PROFILE CHANGED (CREWED / UNCREWED)
 alarm.link_lost = LINK LOST (UNCREWED): STANDBY
 alarm.engine_killed = ENGINE KILLED (reset on board)
+alarm.low_battery = LOW BATTERY (12 V bank)
 alarm.no_data = NO DATA FROM THE BOAT
 
 # --- answers of the boat / gateway to a command (ACK result codes) ----------
@@ -292,6 +293,8 @@ cap.v_gear = Gear
 cap.v_gps = GPS
 cap.v_pos = Position
 cap.v_sog = SOG / COG
+cap.v_battery = Battery
+cap.batt_none = no data
 cap.v_src = Pos. source
 cap.v_unc = Uncertainty
 cap.v_drift = Set / drift
@@ -894,6 +897,7 @@ drv.single_op = SINGLE-OPERATOR MODE - the captain confirms alone
 drv.first_test = FIRST TEST - STEERING ONLY (throttle by hand)
 nv.reset = NV DATA RESET - a stored setting was unusable (TRAINING result, joystick calibration / map or AUTO program): defaults in use, check them
 nv.fault = NV FAULT - the data flash does not work: settings are NOT saved (they are lost at power-off)
+batt.no_data = NO VOLTAGE DATA - the bank voltage is not measured (divider not wired / converter dead): no LOW BATTERY check
 drv.no_front = NO FRONT CAMERA - DRIVE CAREFULLY / STOP
 drv.pickup = MOVE THE THROTTLE TO PICK UP: lever to {to}
 drv.shallow = SHALLOW WATER AHEAD in {s} s ({depth})
@@ -941,6 +945,8 @@ hud.no_compass = NO COMPASS
 hud.rec = REC
 hud.not_rec = NOT RECORDING
 hud.clock = {clock}  mission {mission}
+hud.batt = {v} V
+hud.batt_none = -- V
 hud.save = SAVE
 hud.night = NIGHT
 hud.decl_FULL = FULL
@@ -1161,6 +1167,7 @@ say.alarm.emergency_stop = Emergency stop
 say.alarm.profile = The operating profile changed, check crewed or uncrewed
 say.alarm.link_lost = Link lost, the boat is in standby
 say.alarm.engine_killed = The engine was killed, it must be reset on board
+say.alarm.low_battery = Low battery
 say.alarm.no_data = No data from the boat
 
 # --- boats (boats/ folder), crew, profile (CLAUDE.md A, B, D, F) ---

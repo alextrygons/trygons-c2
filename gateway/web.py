@@ -175,7 +175,8 @@ class WebServer:
         d = self.gw.telem or {}
         s = self.gw.stations
         h = self.gw.telem2.get("helm")
-        alarms = proto.alarm_texts(d.get("alarm_bits", 0)) if d else ["NO DATA FROM THE BOAT"]
+        alarms = (proto.alarm_texts(d.get("alarm_bits", 0)) +
+                  proto.alarm_texts2(self.gw.telem2.get("alarm_bits2", 0))) if d else ["NO DATA FROM THE BOAT"]
         mode = d.get("mode_name", "---") if d else "---"
         banner = ""
         if d and d.get("mode") == proto.MODE_MANUAL:

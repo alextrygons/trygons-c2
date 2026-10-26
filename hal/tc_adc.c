@@ -27,13 +27,17 @@ void adc_init(void)
     gc.queueRequest[0].triggerConfig.gatingMode = IfxEvadc_GatingMode_always;
     IfxEvadc_Adc_initGroup(&s_grp, &gc);
 
-    IfxEvadc_Adc_ChannelConfig cc;
-    IfxEvadc_Adc_initChannelConfig(&cc, &s_grp);
-    cc.channelId = ADC_MOTOR_CHANNEL;
-    cc.resultRegister = (IfxEvadc_ChannelResult)ADC_MOTOR_CHANNEL;     /* result register = channel number */
-    IfxEvadc_Adc_initChannel(&s_ch[ADC_MOTOR_CS], &cc);
-
-    IfxEvadc_Adc_addToQueue(&s_ch[ADC_MOTOR_CS], IfxEvadc_RequestSource_queue0, IFXEVADC_QUEUE_REFILL);
+    /* one group (8) for both channels: the motor current sense (ch 4) and the
+     * supply voltage divider (ch 5), measured in turns by the refilling queue */
+    static const IfxEvadc_ChannelId ids[ADC_COUNT] = { ADC_MOTOR_CHANNEL, ADC_SUPPLY_CHANNEL };
+    for (int i = 0; i < (int)ADC_COUNT; i++) {
+        IfxEvadc_Adc_ChannelConfig cc;
+        IfxEvadc_Adc_initChannelConfig(&cc, &s_grp);
+        cc.channelId = ids[i];
+        cc.resultRegister = (IfxEvadc_ChannelResult)ids[i];           /* result register = channel number */
+        IfxEvadc_Adc_initChannel(&s_ch[i], &cc);
+        IfxEvadc_Adc_addToQueue(&s_ch[i], IfxEvadc_RequestSource_queue0, IFXEVADC_QUEUE_REFILL);
+    }
     IfxEvadc_Adc_startQueue(&s_grp, IfxEvadc_RequestSource_queue0);
     s_up = TRUE;
 }

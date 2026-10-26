@@ -204,6 +204,24 @@ restart. A CREWED boat never uses it.
 | Reset on board | how the crew restarts after a kill: AURIX power cycle + the outboard's normal start | **TBD** (procedure in MANUAL 7A) |
 
 Until all of this is decided and tested on the bench, **no uncrewed operation**.
+
+### 3B. Supply voltage of the 12 V bank + the starter battery isolator (CLAUDE.md J)
+
+Power on the boat = **3 x 12 V batteries in parallel = ONE bank** for everything
+(electronics, actuators, thrusters later). The starter battery is cut from the
+bank **only while cranking** (a battery isolator / split-charge relay: TBD).
+The AURIX measures the bank voltage through a **resistor divider on an EVADC
+input**; `app/battery.c` filters it (~30 s for the LOW BATTERY alarm and the
+displays, 1 s for the generator checks) - the software never raises anything
+from it: LOW BATTERY is an advisory (no mode change, the power limit stays).
+
+| Item | Decision | State |
+|------|----------|-------|
+| AURIX input | Arduino **A2 = P40.7 / AN37 CHECK** (EVADC group 8 channel 5, the same group as the motor current on A3); `ADC_SUPPLY_GROUP` / `ADC_SUPPLY_CHANNEL` in hal/hal_pins.h | **TBD** (pin to check on the silk screen; `HAL_SUPPLY_FITTED 0` until the divider is on the board - the boat then shows the notice NO VOLTAGE DATA, no alarm) |
+| Divider | 47 kOhm from the bank (+, after the main fuse) to A2, 10 kOhm from A2 to GND, 100 nF across the 10 k: ratio 5.7, 15 V -> 2.63 V (below the 3.3 V reference). Measure the real ratio with a meter and put it in `SUPPLY_DIV_RATIO` | **TBD** |
+| Protection | NEVER more than 3.3 V on the pin: the divider must be fitted before the bank is connected; a 3.3 V zener / Schottky clamp to 3.3 V on A2 is cheap insurance; 1 A fuse in the sense wire at the battery end | **TBD** |
+| Starter isolator | battery isolator / split-charge relay rated for the outboard's starter current: the bank stays connected to the electronics while cranking, the starter battery is isolated; type and wiring with the engine dealer | **TBD** (PARTS.md) |
+| Where it shows | screen 2 status panel "Battery", screen 1 bottom line; log field `bank_v`; TELEM2 group L; parameter `batt_low_v` (11.8 V TO CONFIRM, 10..13.5) | done |
 ## 4. microSD card (log)
 
 A **microSD click** board (MikroElektronika MIKROE-924, 3.3 V) plugged into the

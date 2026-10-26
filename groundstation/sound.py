@@ -615,7 +615,7 @@ class Callouts:
         if prev is None:
             return
         # alarms (new bits). WARNINGS repeat through the MASTER lamps (SoundSystem._tick)
-        new = d["alarm_bits"] & ~prev["alarm_bits"]
+        new = alerts.bits_of(d) & ~alerts.bits_of(prev)          # both alarm words
         for bit, code, lv in alerts.active(new):
             self.alarm_t[bit] = now
             if lv < WARNING and code != "joystick_took_control":

@@ -20,8 +20,9 @@
  *   - data flash DFLASH0       : NV record log (tc_nv.c: TRAINING result,
  *                                 joystick calibration + map, AUTO program,
  *                                 boot counter), written only in STANDBY
- * Not yet: analog joystick, paddlewheel, supply voltage, roll rate - they
- * return "not fitted".
+ *   - supply voltage           : divider on A2 / AN37 (tc_adc.c, HAL_SUPPLY_FITTED
+ *                                 0 until the divider is wired: "not measured")
+ * Not yet: analog joystick, paddlewheel, roll rate - they return "not fitted".
  *
  * This file is only built by ADS. The PC simulation uses sim/hal_sim.c.
  */
@@ -228,10 +229,31 @@ void hal_mem_barrier(void)
     __dsync();      /* TriCore: all data writes done before going on */
 }
 
+/* Supply voltage of the 12 V bank: the divider on A2 / AN37 (hal_pins.h: the
+ * pin and the divider are TBD, HAL_SUPPLY_FITTED 0 until wired). The raw
+ * value only: app/battery.c filters it and judges LOW BATTERY. A result
+ * older than SUPPLY_FRESH_MS = no data (the converter is dead). */
+#define SUPPLY_FRESH_MS 100u
 bool hal_read_supply_voltage(float *volts)
 {
+#if HAL_SUPPLY_FITTED
+    static float last_v = 0.0f;
+    static uint32_t last_ms = 0u;
+    static boolean have = FALSE;
+    uint16_t raw;
+    uint32_t now = hal_millis();
+    if (adc_read(ADC_SUPPLY, &raw)) {
+        last_v = adc_volts(raw) * SUPPLY_DIV_RATIO;
+        last_ms = now;
+        have = TRUE;
+    }
+    if (!have || (uint32_t)(now - last_ms) > SUPPLY_FRESH_MS) return false;
+    *volts = last_v;
+    return true;
+#else
     (void)volts;
-    return false;    /* TODO: battery voltage divider on EVADC (A2, AN37) */
+    return false;    /* divider not wired yet (HAL_SUPPLY_FITTED 0): NO VOLTAGE DATA, no alarm */
+#endif
 }
 
 /* microSD on the mikroBUS socket (microSD click): QSPI2, FAT32 (tc_sd.c, tc_fat32.c).

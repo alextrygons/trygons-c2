@@ -252,7 +252,9 @@ class Recorder:
         if d:
             snap.update({"lat": round(d.get("est_lat", 0.0), 6), "lon": round(d.get("est_lon", 0.0), 6),
                          "sog_kn": round(d.get("est_sog", 0.0), 1), "heading": round(d.get("heading", 0.0), 1),
-                         "mode": d.get("mode_name"), "alarms": proto.alarm_texts(d.get("alarm_bits", 0)),
+                         "mode": d.get("mode_name"),
+                         "alarms": proto.alarm_texts(d.get("alarm_bits", 0)) +
+                         proto.alarm_texts2(getattr(self.gw, "telem2", {}).get("alarm_bits2", 0)),
                          "throttle": d.get("throttle"), "boat_t_ms": d.get("t_ms")})
         else:
             snap["boat"] = "no telemetry"

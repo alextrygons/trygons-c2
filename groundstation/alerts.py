@@ -59,8 +59,20 @@ ALARM_LEVELS = {
     0x10000000: ("profile", CAUTION),
     0x20000000: ("link_lost", WARNING),
     0x40000000: ("engine_killed", WARNING),
+    # the second alarm word (TELEM2 "alarm_bits2", app/smallboat.h SB_ALM2_): its bits live at bit << WORD2
+    0x1 << 32: ("low_battery", ADVISORY),
 }
 NO_DATA = "no_data"                 # the PC gets no telemetry (not an alarm bit): WARNING
+WORD2 = 32                          # the second alarm word's bits are shifted by this in every "bits" here
+ALL_ALARMS = proto.ALARMS + [(bit << WORD2, name) for bit, name in proto.ALARMS2]
+
+
+def bits_of(d):
+    """Both alarm words of a telemetry dict (TELEM2 merged in) as one int: word 2 at bit << WORD2.
+    Every alarm function here takes these combined bits; the ground station treats both words alike."""
+    if not d:
+        return 0
+    return d.get("alarm_bits", 0) | (d.get("alarm_bits2", 0) << WORD2)
 
 
 def code(bit):
@@ -72,8 +84,8 @@ def level(bit):
 
 
 def active(bits):
-    """[(bit, code, level)] of the bits set, most severe first."""
-    out = [(bit, code(bit), level(bit)) for bit, _name in proto.ALARMS if bits & bit]
+    """[(bit, code, level)] of the bits set (both words, bits_of), most severe first."""
+    out = [(bit, code(bit), level(bit)) for bit, _name in ALL_ALARMS if bits & bit]
     out.sort(key=lambda a: -a[2])
     return out
 

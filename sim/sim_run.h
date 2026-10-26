@@ -74,6 +74,7 @@ void sb_tests(void);
 void sb_usb_tests(void);
 void sb_gateway_tests(void);      /* gateway link, HELM, REMOTE, SAVE requests */
 void sb_nv_tests(void);           /* DF: data flash / non-volatile storage */
+void sb_battery_tests(void);      /* BV: supply voltage of the 12 V bank, LOW BATTERY */
 void sb_slam_tests(void);         /* only the slamming tests (section H) */
 void sb_set_bridge(bool on);      /* all tests through the USB joystick bridge */
 

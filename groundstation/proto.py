@@ -236,10 +236,23 @@ ALARMS = [
     (0x40000000, "ENGINE KILLED"),
 ]
 ALM_PC_LINK = 0x800
+# the second alarm word (app/smallboat.h SB_ALM2_, TELEM2 group L "alarm_bits2"): the first one is full
+ALARMS2 = [
+    (0x001, "LOW BATTERY"),
+]
 
 
 def alarm_texts(bits):
     return [name for bit, name in ALARMS if bits & bit]
+
+
+def alarm_texts2(bits2):
+    return [name for bit, name in ALARMS2 if bits2 & bit]
+
+
+def alarm_texts_all(d):
+    """Both words of a telemetry dict (TELEM2 merged in)."""
+    return alarm_texts(d.get("alarm_bits", 0)) + alarm_texts2(d.get("alarm_bits2", 0))
 
 
 def crc16(data: bytes) -> int:
@@ -687,6 +700,7 @@ _T2_GROUPS = [
     (struct.Struct("<BBB"), "cfg_flags estop_state moving_ahead".split()),
     (struct.Struct("<BBBH"), "profile probe_flags shore_flags profile_changes".split()),
     (struct.Struct("<BBHHHH"), "ll_state ll_flags coast_m coast_age_ms ll_left10 near_shore_m".split()),
+    (struct.Struct("<IHHBBB"), "alarm_bits2 bank_v100 bank_fast100 batt_flags gen_state gen_pct".split()),
 ]
 LL_STATES = ["OK", "LINK LOST", "ENGINE KILLED"]
 
@@ -699,8 +713,8 @@ FAULT_KINDS = {1: "gear", 2: "compass", 3: "joystick", 4: "safety monitor", 5: "
 def save_trigger_text(trig, arg):
     t = SAVE_TRIGGERS.get(trig, "trigger %d" % trig)
     if trig == 2:
-        names = dict(ALARMS)
-        t += " " + names.get(1 << arg, "bit %d" % arg)
+        names = dict(ALARMS) if arg < 32 else dict(ALARMS2)     # 32 + bit = the second alarm word
+        t += " " + names.get(1 << (arg % 32), "bit %d" % arg)
     elif trig == 3:
         t += " " + FAULT_KINDS.get(arg, str(arg))
     elif trig == 4:
@@ -744,6 +758,13 @@ def decode_telem2(payload: bytes) -> dict:
         d["ll_left_s"] = d["ll_left10"] / 10.0
         d["coast_valid"] = bool(d["ll_flags"] & 0x20)
         d["coast_dist_m"] = None if d["coast_m"] >= 0xFFFE else d["coast_m"]
+    if "alarm_bits2" in d:
+        f = d["batt_flags"]
+        d["batt_measured"] = bool(f & 1)                # the bank voltage is measured (fresh)
+        d["batt_no_data"] = bool(f & 2)                 # notice NO VOLTAGE DATA (not an alarm)
+        d["batt_low"] = bool(f & 4)                     # LOW BATTERY condition (alarm bit 1 of word 2)
+        d["bank_v"] = None if d["bank_v100"] == 0xFFFF else d["bank_v100"] / 100.0
+        d["bank_v_fast"] = None if d["bank_fast100"] == 0xFFFF else d["bank_fast100"] / 100.0
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None
