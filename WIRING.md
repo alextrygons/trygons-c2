@@ -128,6 +128,8 @@ connectors, which nothing else in this project uses.
 
 ### Pin plan (outputs and the neutral switch)
 
+From step 11e the small boat drives the throttle, gear and steering servos over DroneCAN (section 3E); the servo PWM rows below stay for the big boat and until then.
+
 | Signal | Board pin | Connector / pin | TC375 pin | Notes |
 |--------|-----------|-----------------|-----------|-------|
 | Throttle servo signal | D9 | X303 pin 2 | P02.7 (GTM TOM0 ch 15, TOUT7) | 50 Hz, 1000 us = idle, 2000 us = full (calibrated) |
@@ -288,6 +290,37 @@ The same for the ignition and the engine stop: role IGNITION / SHUTOFF in
 the engine group. (boats.py already refuses a relay named STARTER / ΜΙΖΑ
 without the role - but it can't see what a channel is wired to: the wiring
 and the boat file must agree.)
+
+### 3E. DroneCAN bus: servos + relay board (CLAUDE.md T, docs/dronecan_design.md) - DESIGN, hardware TO CONFIRM
+
+The AURIX replaces the ArduPilot (Pixhawk): the throttle, steering (360 deg
+position servo) and gear servos stay on their **DroneCAN servo nodes**
+(Matek CAN-L431), the relay board becomes a DroneCAN node too. From step 11e
+the servo PWM pins of the pin plan above (P02.7 / P02.6) and the steering
+motor driver are no longer used on the small boat (the big boat is
+unchanged). Nothing is wired or enabled before the owner confirms the items
+below (`HAL_CAN_FITTED 0` in hal/hal_pins.h).
+
+| Item | Decision | State |
+|------|----------|-------|
+| CAN controller | MCMCAN CAN0 node 0, owned by core 0 (CPU1 has one reserved TX buffer for the safe frames) | design |
+| TXD / RXD | **P20.8** = `IfxCan_TXD00_P20_8_OUT`, **P20.7** = `IfxCan_RXD00B_P20_7_IN` (the iLLD pin map confirms these functions) | **TO CONFIRM** that the kit wires them to its transceiver (kit user manual / schematic, not in the repo) |
+| Transceiver | on the kit: **TLE9251VSJ**; STB on **P20.6** (GPIO), STB high = stand-by / low = normal per the TLE9251V datasheet | **TO CONFIRM** (pin + polarity + any pull resistor on the kit) |
+| Connector | the kit's CAN connector | **TO CONFIRM** type and pinout (CAN_H, CAN_L, GND) |
+| Termination | 120 Ohm at BOTH physical ends of the line; with everything off, CAN_H-CAN_L must read ~60 Ohm | **TO CONFIRM** whether the kit has it on board / on a jumper / not at all |
+| Bus | 1 Mbit/s (ArduPilot CAN_P1_BITRATE), twisted pair, short stubs, common GND, away from the steering / starter cables | design |
+| Node IDs | STATIC (no dynamic-ID server): proposal AURIX 10, throttle 20, steering 21, gear 22, relay board 30 (GPS + compass node 124 not used) | **TO CONFIRM** (set with the DroneCAN GUI Tool) |
+| Node power | the nodes were powered with 5 V through the Pixhawk's CAN port: now their **own fused 5 V supply** (12 V -> 5 V converter from the bank, fuse at the bank end, a fuse per branch), NEVER from the AURIX kit | **TO CONFIRM** converter rating; how each node powers its servo (the servos can draw amps) |
+| Command timeouts (set on each node) | throttle -> **IDLE** (-1.0 = 1000 us; NEVER "0" = half throttle), gear -> **HOLD**, steering -> **HOLD** | **TO CONFIRM** + bench test, engine OFF, before the boat moves (FIRST_TEST.md) |
+| E-stop / engine kill / STANDBY | stay hard-wired GPIO, never over CAN; stopping the engine never depends on the throttle servo | open decisions OD-1 / OD-2 (e-stop into the kill circuit; what the safety relay switches - it must not freeze the throttle by cutting servo power) |
+
+**Bench test of the command timeouts (engine OFF, DroneCAN GUI Tool on a
+laptop directly on the bus, not through the AURIX):** for each servo node
+set the timeout and failsafe, command a position, stop the commands, and
+check with a scope / by eye: throttle goes to IDLE (not to the middle!),
+gear HOLDS, steering HOLDS, within the timeout. Write the measured times
+and the servo speeds (steering lock to lock, throttle idle to full) into
+FIRST_TEST.md. Until then the software uses 12 s / 6 s as the worst case.
 
 ## 4. microSD card (log)
 

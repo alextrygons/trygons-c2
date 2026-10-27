@@ -3,7 +3,8 @@
 Current task: "C2 extensions + Academy" (design = CLAUDE.md section "C2 extensions + Academy", parts
 G-S; academy spec = docs/ACADEMY_SPEC.md). Steps 0-14 = C2 extensions (alarms in one place, boat
 dropdown, data flash, supply voltage, generator mode, boat file v2, Modbus relay board, engine controls +
-remote restart, relay buttons, DP parts 1-3, x86 gateway, open items, final check), 15-22 = Academy.
+remote restart, relay buttons, DP parts 1-3, 11c-11f DroneCAN actuators (design + review stop after 11c and
+after 11f), ThinkPad gateway, open items, final check), 15-22 = Academy.
 If interrupted: /clear, then "continue from PROGRESS.md" - do ONLY the first step not DONE, then stop.
 
 Rules for every step: the owner decisions (CLAUDE.md G-S) are binding; the safety rules in CLAUDE.md
@@ -32,7 +33,11 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A) incl. DP5-DP14 + GN9, TriCore + iLLD + writer checks, gateway 108/108, screen 2 14/14, lang 5/5; test_driver 20/20 (twice); acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-9 HEAD, every other suite this tree), storm 200 episodes I39 4.28 M checks, I40-I43 10 k DP steps, 0 fails) | this commit |
 | 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A), TriCore + iLLD + writer checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15 incl. S15, sound 10/10, avoidance 14/14, gateway 111/111 incl. DP1-DP3; test_driver 21/21 incl. I22; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-10 HEAD, every other suite this tree), storm 200 episodes) | this commit |
 | 11b | Steps 7-10 review fixes | DONE (all 8 points re-checked; point 1 was already covered for TRIP / continue / boat leg / current geofence - only the unchecked-program gap fixed (code 121); see notes. Gate OK: sim 244/244 + bridge 243/243 (1 N/A) incl. ER7-ER8, DP15-DP16, RB9 updated, TriCore + iLLD + writer checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, sound 10/10, avoidance 14/14, gateway 112/112 incl. DP4; test_driver 21/21; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-11 HEAD, every other suite this tree), storm 200 episodes I31 / I38 across resets, I44-I46 0 fails) | this commit |
-| 12 | Gateway on a rugged x86 mini PC: remove Pi-only parts, 3.3 V USB-UART (never RS232), USB AIS receiver; README / PARTS / WIRING | | |
+| 11c | DroneCAN design, NO firmware code (CLAUDE.md T + docs/dronecan_design.md): the AURIX replaces the ArduPilot; servos (throttle / steering 360 deg position servo / gear) + relay board on DroneCAN; ardupilot.param read-out; kit CAN pins; node health + command timeouts; the new CPU1 safety path; asymmetric throttle rates + the slow servo; steering model / TRAINING; relay rules on DroneCAN; TO CONFIRM list + open decisions. **LOOP STOPS HERE for the owner's safety review** | DONE (docs only. Gate OK: sim 244/244 + bridge 243/243 (1 N/A), TriCore + iLLD checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15, sound 10/10, avoidance 14/14, gateway 112/112. Acceptance quick 5/7: storm 200 FAILED once on I36 seed 108 ("engine relay 3 switched on"), --replay 108 holds and a re-run of the 200 episodes passed 0 fails - the storm is not deterministic across runs (check counts differ): finding, see notes; fresh build: test_driver 18/21 (I4 / I12 / I19 live HUD) on the pushed 11b HEAD AND this tree - not caused by this step, see notes. Open decisions OD-1..OD-12 + TO CONFIRM C1-C21: notes + docs/dronecan_design.md 12-13) | this commit |
+| 11d | CAN driver (MultiCAN / iLLD) + libcanard (MIT, vendored with its licence), DroneCAN messages needed; sim + host tests | | |
+| 11e | Servos over DroneCAN + the new CPU1 safety path + the steering model / TRAINING from 11c; storm invariants for node loss and command timeout | | |
+| 11f | Relay board over DroneCAN (all relay rules and tests kept). **LOOP STOPS HERE for the owner's safety review** | | |
+| 12 | Gateway on a Lenovo ThinkPad L390 Yoga (i5-8265U, 8 GB RAM, 500 GB SSD, Win11 now): support BOTH Ubuntu 24.04 LTS (recommended at sea: no forced updates / restarts) and Windows 11; remove Pi-only parts; 3.3 V USB-UART to the AURIX (never RS232); USB AIS receiver; README / PARTS / WIRING with install steps for both OSes; measure CPU / RAM with 4 camera streams + vision on the CPU (no NVIDIA); power from the 12 V bank via a USB-C PD car charger, built-in battery = UPS, battery charge limit 80 % (Vantage on Windows / TLP on Ubuntu), lid closed must keep running, Ethernet to the PoE switch (USB-Ethernet adapter if no RJ45) - put this in PARTS / README | | |
 | 13 | Open items: AUTO return, docs/screens pictures (tools/demo_screens.py), paddlewheel, analog joystick | | |
 | 14 | Final check: full acceptance + 24 h soak, TEST_REPORT | | |
 | 15 | Academy design + "no boat link" tests | | |
@@ -422,6 +427,41 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
     trip speed <= dp_max_kn), I46 (never a DP step with a thruster HOT). NINV 47.
   8 WIRING.md 3D: a relay wired to the starter MUST be the engine group's role STARTER, never "extra" / "trim" (same
     for IGNITION / SHUTOFF).
+- Step 11c (2026-10-27): DroneCAN DESIGN only (no firmware code). CLAUDE.md section T + docs/dronecan_design.md
+  (13 sections: what changes, ardupilot.param read-out, kit CAN pins, bus / IDs / messages, node health + timeouts,
+  CPU1 safety path options A-D + recommendation B + failure analysis, asymmetric throttle rates + thr_est, steering
+  model / TRAINING / adaptation, relay board on DroneCAN, 11d-11f structure, the photo rule, TO CONFIRM C1-C21, OPEN
+  DECISIONS OD-1..OD-12). CLAUDE.md Safety-rules rate line rewritten (asymmetric; in force from 11e, the code keeps
+  40 / 100 %/s until then), CPU1 board line + actuator lines point to T, section Q points to the new step 12.
+  hal/hal_pins.h: HAL_CAN_FITTED 0 + CAN_TXD P20.8 / CAN_RXD P20.7 (iLLD-confirmed functions) / PIN_CAN_STB P20.6
+  (unverified, unused). WIRING.md 3E, PARTS.md (node 5 V supply, CAN cable, terminations, USB-CAN adapter),
+  ACADEMY_SPEC photo rule. docs/ardupilot.param committed (renamed from ardupilot.param.param).
+  docs/daskalio/ was NOT on this PC (searched C:	rygons, Desktop, Downloads, Documents: only videos under
+  C:	rygonsideos) - copy the photos into docs/daskalio/ and commit them; the photo rule is already in
+  CLAUDE.md T + ACADEMY_SPEC + the design doc.
+  Reserved: SB_ALM2_CAN_NODE 0x20 / SB_ALM2_CAN_BUS 0x40, TELEM2 P (CAN nodes) / Q (steering model), log events 29
+  CAN / 30 STEERMODEL, MON_TRIP_CAN_TX, storm I47-I53, sim SM1-SM8.
+  The iLLD Can driver is excluded in .cproject today: 11d must un-exclude it (check_ads_ifx.py).
+  OPEN DECISIONS (owner, before 11e / 11f): OD-1 e-stop into the engine kill circuit (also CREWED); OD-2 what the
+  safety relay P10.5 switches (cutting servo power would freeze the throttle); OD-3 throttle node lost in UNCREWED ->
+  engine kill at once; OD-4 may a measured throttle travel time shorten the 6 s safety waits; OD-5 gear node timeout
+  HOLD (recommended) vs neutral after a delay; OD-6 health WARNING = notice only; OD-7 centre the steering at a
+  power-on boot; OD-8 save adapted steering values; OD-9 relay board with only one timeout behaviour; OD-10 STANDBY
+  "steering off" = hold; OD-11 throttle return spring vs a position servo; OD-12 big boat unchanged.
+  TO CONFIRM (never guessed; hardware flags 0): servo node model + firmware, relay board model, node IDs / actuator
+  numbers (gear = actuator 3? 4 / 5?), steering wire sign, unitless mapping, node timeout options, NodeStatus rate,
+  servo speeds (worst case 12 s / 6 s), servo behaviour unpowered, kit CAN pins / STB polarity / connector /
+  termination / transceiver supply, node 5 V supply, MCMCAN CPU1 access + transfer-ID hand-over, ThinkPad details
+  (step 12), throttle rate parameter limits. Full table: docs/dronecan_design.md section 12.
+  Test findings of this run (NOT caused by this docs-only step, not fixed here - acceptance never changes logic):
+  (1) storm 200: I36 failed once, seed 108 "engine relay 3 switched on with throttle 0.0 % / gear / e-stop at
+  1168.9 s"; `test_results/storm.exe --replay 108` = all invariants held and a second 200-episode run passed (I36
+  4278462 checks 0 fails vs 4271850 in the failing run) -> the episodes are not reproducible run to run (suspect:
+  parallel workers sharing a file such as the sim NV files nv<slot>.bin in the working folder - relay table slot 7);
+  look at it with the relay / restart work in 11f. (2) groundstation/test_driver.py 18/21 here AND in the fresh clone
+  of the pushed 11b HEAD: I4 (HUD mirror left / right None), I12 (MINIMAL without the alarms box), I19 ("live False
+  (... 0 texts)"); 11b passed 21/21 - something on this PC changed (two pythonw processes running since 13:56 /
+  14:53 = probably the owner's ground stations; not touched). Re-run test_driver alone on a quiet PC.
 
 # Previous task: "Screen 2 review"
 

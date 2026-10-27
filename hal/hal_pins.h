@@ -135,6 +135,21 @@
 #define RELAY_SLAVE_ADDR    1u                          /* TBD: the board's Modbus address */
 #define RELAY_CHANNELS      8u                          /* TBD: coils the board has (8-16); read back per poll */
 
+/* DroneCAN bus (WIRING.md 3E, CLAUDE.md T, docs/dronecan_design.md) - DESIGN ONLY (step 11c), nothing
+ * uses these yet (driver = step 11d). CONFIRMED by the iLLD pin map: P20.8 can be CAN0 node 0 TXD,
+ * P20.7 can be CAN0 node 0 RXD (input B). NOT CONFIRMED (the kit user manual is not in the repo): that
+ * the KIT_A2G_TC375_LITE V2 wires them to its TLE9251VSJ transceiver, that P20.6 drives the transceiver's
+ * STB pin and its polarity (TLE9251V: high = stand-by, low = normal - check datasheet + kit schematic),
+ * the CAN connector pinout and whether a 120 Ohm termination is on the kit. HAL_CAN_FITTED stays 0 until
+ * the owner confirms all of it. Bus: 1 Mbit/s (docs/ardupilot.param CAN_P1_BITRATE), 120 Ohm at both ends.
+ * Static node IDs TO CONFIRM (proposal: AURIX 10 = ArduPilot's CAN_D1_UC_NODE, throttle 20, steering 21,
+ * gear 22, relay board 30; GPS + compass 124 not used): set on the nodes with the DroneCAN GUI Tool. */
+#define HAL_CAN_FITTED      0                           /* TO CONFIRM: 1 only after the pins / termination are checked */
+#define CAN_TXD             IfxCan_TXD00_P20_8_OUT      /* TO CONFIRM on the kit schematic */
+#define CAN_RXD             IfxCan_RXD00B_P20_7_IN      /* TO CONFIRM on the kit schematic */
+#define PIN_CAN_STB         &MODULE_P20, 6u             /* TO CONFIRM: TLE9251V STB (GPIO), polarity TO CONFIRM */
+#define CAN_BITRATE         1000000u
+
 /* --- interrupt priorities (unique per CPU; 1 = lowest) ----------------------------- */
 #define PRIO_LINK_TX   10
 #define PRIO_LINK_RX   11

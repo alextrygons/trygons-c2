@@ -10,6 +10,10 @@ Design in CLAUDE.md section "C2 extensions + Academy", part S. Implemented in st
   checks; it only observes (telemetry + audit log) and grades, never sends its own driving commands; a
   second test proves it can't bypass any safety rule.
 - Greek default, English option, all texts in lang files.
+- Chart PHOTOS (docs/daskalio/, depth-chart photos of the Daskalio area): for the academy test area, the demo
+  map and the 3D sim ONLY. A photo is NOT a navigation chart: it is NEVER used for the shallow-water,
+  collision / route or any other safety check unless it has been georeferenced AND checked against an
+  official chart (a separate, reviewed step). The safety checks use only charts/ (tools/chartprep.py).
 - All lessons, questions, scenarios, exams, limits = commented content / config files.
 - Existing safety always wins (STANDBY button, onboard joystick priority, 30 / 5 % start power limit,
   onboard CONFIRM, gear only at idle, captain's screen 1 ACCEPT for copilot actions); the academy only

@@ -9,7 +9,7 @@ why each part is needed: MANUAL.txt.
 - [ ] Panel: 6 x IP67 push buttons (one big red STANDBY, one HDG LOCK, -1, +1, -10, +10), cable.
 - [ ] Neutral switch on the gearbox / shift linkage (closes in neutral). Also required by GENERATOR mode (the engine charges the bank in neutral only while this switch confirms neutral).
 - [ ] microSD click (MIKROE-924) + industrial microSD card 8-32 GB.
-- [ ] Throttle servo (analog, or digital with "fail-safe = idle") + a throttle return spring; gear servo.
+- [ ] Throttle servo (analog, or digital with "fail-safe = idle") + a throttle return spring; gear servo. (From step 11e the small boat uses the DroneCAN servos below; whether the return spring can back-drive the position servo: TO CONFIRM.)
 - [ ] Steering motor driver: Pololu G2 High-Power Motor Driver 18v17 (#2991), 20 A blade fuse + holder, 100 uF / 35 V low-ESR capacitor, 2.5 mm2 wire.
 - [ ] Safety relay module (3.3 V input via transistor driver) for the servo power and/or the engine kill circuit.
 - [ ] 10 kOhm pull-down resistors for the servo / driver / relay signals.
@@ -26,6 +26,8 @@ why each part is needed: MANUAL.txt.
 - [ ] Tacho / rpm input for the remote START (CLAUDE.md N: "engine running" detection, today time limit only) - TBD.
 - [ ] RS485 Modbus RTU relay board, 8-16 channels, 12 V, with board-timed pulses ("flash on"), + a 3.3 V RS485 transceiver module (MAX3485 class), 2 x 120 Ohm termination, twisted pair cable, a fuse per load (WIRING.md 3D) - BOARD, BAUD RATE AND PINS TBD.
 - [ ] DP thrusters (CLAUDE.md P, WIRING.md 3C): a small 12 V bow TUNNEL thruster (sideways) + a small fixed 12 V transom electric motor (fore / aft), each with a bidirectional controller with an RC-style input (1500 us = stop, "no pulses = stop" fail-safe), a fuse per thruster, a contactor in the thruster feed whose coil goes through the e-stop's power contact, 2 x 10 kOhm pull-downs - MODELS, CONTROLLERS, CONTACTOR RATING AND PINS TBD.
+
+- [ ] DroneCAN (CLAUDE.md T, WIRING.md 3E, docs/dronecan_design.md - the AURIX replaces the ArduPilot): the existing DroneCAN servo nodes (Matek CAN-L431, throttle / steering 360 deg position servo / gear) and the DroneCAN relay board are REUSED - MODELS, NODE IDS AND TIMEOUT SETTINGS TO CONFIRM. New: a 12 V -> 5 V DC-DC converter for the nodes (they were powered through the Pixhawk's CAN port; rating TO CONFIRM by measuring the nodes' current) + a fuse at the bank end and one per branch; CAN cable (twisted pair, JST-GH or as the nodes need) from the kit's CAN connector (pinout TO CONFIRM); 2 x 120 Ohm terminations if not on the kit / the last node (TO CONFIRM); a USB-CAN adapter for the laptop (for the DroneCAN GUI Tool: set static node IDs, timeouts, bench tests).
 
 ## Gateway (remote access)
 
