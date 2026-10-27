@@ -147,6 +147,9 @@ class Rig:
         if on:
             self.ap.link.send_msg = lambda m: None
             self.ap.link.send = lambda *a, **k: 0           # commands (e.g. the boat file push, CLAUDE.md L) too
+            # (no ACK ever comes: the DP thruster push would repeat every 15 s and leave its line in the event log in
+            # whatever language was on at that moment - S11 then sees an English line from the S1 English pass)
+            self.ap.thr_push_at = time.time() + 1e9
         else:
             self.ap.link.__dict__.pop("send", None)         # the real send again (the class's)
 

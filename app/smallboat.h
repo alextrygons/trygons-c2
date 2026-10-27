@@ -70,6 +70,7 @@
 #include "joystick.h"
 #include "hal.h"
 #include "dr.h"
+#include "dp.h"
 #include "engine.h"
 #include "modes.h"
 #include "nav.h"
@@ -126,9 +127,13 @@
                                              relay states unknown, no new relay command; nothing else changes) */
 #define SB_ALM2_DP_HEAT           0x04u   /* DP THRUSTER HOT: a thruster used its heat budget (boat file run_s): held at
                                              0 until it rested (rest_s). An ordinary alarm (buzzer, power limit down);
-                                             it never changes the mode by itself (step 10 decides what DP does) */
+                                             it never changes the mode by itself; in MODE_DP the DP ends (thrusters 0,
+                                             STANDBY: DP can't hold with one thruster) */
+#define SB_ALM2_DP_OFFSPOT        0x08u   /* DP OFF SPOT: pushed farther than spot_alarm_m (boat file, 15 m) off the spot
+                                             (advisory: DP keeps trying; > 50 m or 2 min -> STANDBY) */
+#define SB_ALM2_DP_OVERPOWER      0x10u   /* DP OVERPOWER: both thrusters at their limit for 10 s (advisory) */
 /* advisories of the second word: never a mode change, never lower the power limit */
-#define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY | SB_ALM2_RELAY_SILENT)
+#define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY | SB_ALM2_RELAY_SILENT | SB_ALM2_DP_OFFSPOT | SB_ALM2_DP_OVERPOWER)
 /* ... and of those the ones that never set sb alarm either (no buzzer, no power-raise block; step 7b).
  * LOW BATTERY keeps its buzzer (step 4 design, test BV2) - TO CONFIRM by the owner. */
 #define SB_ALM2_QUIET             (SB_ALM2_RELAY_SILENT)
@@ -365,6 +370,9 @@ typedef struct {
     /* generator mode (generator.c, section K): the ONE automatic throttle rise - in neutral only
      * (parameters gen_max_pct 0 = disabled, gen_start_v, gen_idle_pct) */
     gen_config_t  gen;
+    /* DP (section P): CRUISE / TRIP speed limit, entry only slower than dp_max_entry_kn (TO CONFIRM) */
+    float    dp_max_kn;                 /* 3 kn */
+    float    dp_max_entry_kn;           /* 2 kn */
 } sb_config_t;
 
 /* One side (forward / reverse) of the non-returning throttle lever:
@@ -480,7 +488,8 @@ typedef enum {
     CONF_RAISE_REV,         /* raise the reverse power limit one step */
     CONF_REMOTE,            /* start REMOTE MANUAL (the shore joystick drives) */
     CONF_MANEUVER,          /* start MANEUVER (captain: steering + gear, throttle idle) */
-    CONF_RELAY_TABLE        /* take a relay table that differs from the stored one (STANDBY; never a mode change) */
+    CONF_RELAY_TABLE,       /* take a relay table that differs from the stored one (STANDBY; never a mode change) */
+    CONF_DP                 /* start DP (from STANDBY), or CRUISE / TRIP while in DP (sb_t.dp_req) */
 } confirm_kind_t;
 
 typedef struct {
@@ -567,6 +576,14 @@ typedef struct {
     relays_t    relays;        /* RS485 Modbus relay board: table (NV slot 7), interlocks, time limits (relays.c) */
     engine_t    eng;           /* remote restart + hold-to-crank (section N, engine.c) */
     thruster_t  thrust;        /* DP thrusters (section P, thruster.c): settings from the boat file, heat budget */
+    dp_t        dp;            /* DP control (section P, dp.c): SPOT / JOG / CRUISE / TRIP; DP_OFF outside MODE_DP */
+    struct {                   /* the DP request waiting for the CONFIRM (CONF_DP) */
+        uint8_t  sub;          /* DP_SPOT / DP_CRUISE / DP_TRIP */
+        bool     cont;         /* TRIP: from the active waypoint (else waypoint 1) */
+        float    kn;           /* CRUISE / TRIP speed */
+        uint8_t  station;      /* the HELM station that asked */
+        uint32_t requests;
+    } dp_req;
     sb_gw_t     gw;            /* gateway (Raspberry Pi) link status */
     uint8_t     helm;          /* HELM holder: SB_HELM_NONE / SB_HELM_USB / gateway station id */
     bool        helm_local;    /* the holder is on the boat (USB or boat LAN) */
@@ -663,7 +680,7 @@ typedef struct {
 
     /* sim tests only: raw gear/throttle demand in the driving modes */
     struct { bool on; gear_t gear; float throttle_pct; } test_drive;
-    /* sim tests only (step 9, before MODE_DP): DP "active" with a raw thrust demand */
+    /* sim tests only (step 9: the thruster layer alone, without MODE_DP): DP "active" with a raw thrust demand */
     struct { bool on; float bow_pct, stern_pct; } test_thrust;
 } sb_t;
 
@@ -825,6 +842,14 @@ sb_result_t sb_restart(sb_t *s, uint8_t station, uint8_t action);
  * only, STANDBY (not stopping) only - SB_ERR_STANDBY_ONLY otherwise. hash = CRC-16 of the frame body
  * (TELEM2 group N: the station compares its file). The AURIX keeps its own ceiling (THR_CEILING_PCT). */
 sb_result_t sb_thruster_cfg(sb_t *s, const thr_cfg_t *c, uint16_t hash);
+
+/* DP (PROTO_T_DP, section P; dp.h DP_ACT_): only the HELM station (station == helm, checked here too).
+ * START (arg = sub, value = speed kn*100): from STANDBY (not stopping) - outputs armed, GPS trusted, compass,
+ * SOG < dp_max_entry_kn, both thrusters fitted and not hot, no gear fault, TRIP: a valid program - then the
+ * joystick CONFIRM within confirm_ms (CREWED onboard, UNCREWED the shore joystick) enters MODE_DP; in DP:
+ * SPOT at once (a hold), CRUISE / TRIP again with the CONFIRM. JOG / SPEED / HEADING in DP only. STOP: DP
+ * off (thrusters 0 first), STANDBY. Never in FIRST TEST. */
+sb_result_t sb_dp_cmd(sb_t *s, uint8_t station, uint8_t action, uint8_t arg, int16_t value);
 
 /* the restart conditions are met now (idle + neutral confirmed, e-stop released, not FIRST TEST) */
 bool sb_restart_ready(const sb_t *s);

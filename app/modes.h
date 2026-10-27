@@ -16,7 +16,8 @@
  *   AUTO          yes     yes     yes     -     no
  *   TRAINING      yes     yes     no     no      -
  *   (REMOTE: -> STANDBY / MANUAL / MANEUVER. BENCH: from STANDBY only, -> STANDBY / MANUAL.
- *    MANEUVER: from STANDBY / REMOTE, -> STANDBY / MANUAL / REMOTE)
+ *    MANEUVER: from STANDBY / REMOTE, -> STANDBY / MANUAL / REMOTE.
+ *    DP: from STANDBY only, -> STANDBY / MANUAL (the onboard joystick takes over, CREWED))
  *
  * smallboat.c adds the rules on top (preconditions):
  *   - only the joystick enters MANUAL (it always wins);
@@ -26,6 +27,8 @@
  *   - TRAINING only from STANDBY by the PC;
  *   - MANEUVER (captain): HELM station request + CONFIRM, like REMOTE;
  *     throttle always idle, gear F / N / R from the captain's joystick;
+ *   - DP only from STANDBY (not stopping) by the HELM station + CONFIRM, GPS
+ *     trusted, slow, both thrusters fitted; outboard idle + neutral throughout;
  *   - BENCH TEST only from STANDBY by the USB laptop (dock test, link.c):
  *     throttle idle + gear neutral all the time, the steering motor only
  *     in short pulses on command (smallboat.c sb_bench).
@@ -45,6 +48,7 @@ typedef enum {
     MODE_REMOTE,            /* REMOTE MANUAL: the shore joystick drives (someone always on board) */
     MODE_BENCH,             /* BENCH TEST (dock): sensors live, steering pulses, buttons / buzzer / e-stop checks */
     MODE_MANEUVER,          /* MANEUVER (captain): trailer / ramp / dock - steering + gear only, throttle always idle */
+    MODE_DP,                /* DP (section P): the thrusters hold / move the boat; outboard idle + neutral throughout */
     MODE_COUNT
 } sb_mode_t;
 
@@ -76,6 +80,10 @@ typedef enum {
     WHY_MANEUVER,           /* MANEUVER: HELM station request + CONFIRM */
     WHY_PROFILE,            /* UNCREWED: a joystick appeared while driving (profile fault) */
     WHY_LINK_LOST,          /* UNCREWED: link to the HELM shore station lost */
+    WHY_DP,                 /* DP: HELM station request + CONFIRM */
+    WHY_DP_STOP,            /* DP STOP from the station */
+    WHY_DP_OFFSPOT,         /* DP: too far / too long off the spot */
+    WHY_DP_THRUSTER,        /* DP: a thruster HOT (heat budget) / blocked */
     WHY_COUNT
 } mode_reason_t;
 

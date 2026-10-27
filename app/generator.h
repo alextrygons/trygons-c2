@@ -6,7 +6,7 @@
  * the generator may open the throttle, but only
  *   - while "generator auto" is switched on by the captain (default off
  *     after every power-up; the STANDBY button switches it off again),
- *   - in STANDBY (not stopping) [MODE_DP later], outputs armed, gear N
+ *   - in STANDBY (not stopping) or MODE_DP holding (SPOT / JOG), outputs armed, gear N
  *     CONFIRMED by a fitted neutral switch, no engine kill, no e-stop, no
  *     monitor trip, not FIRST TEST, the bank voltage known and below
  *     start_v,
@@ -52,6 +52,7 @@
 #define GEN_STOP_REST       5u  /* cycle: rest */
 #define GEN_STOP_SWITCH     6u  /* FAULT: the neutral switch opened */
 #define GEN_STOP_MOVED      7u  /* FAULT: SOG rose after a throttle rise */
+#define GEN_STOP_DP_FIGHT   8u  /* FAULT (MODE_DP): the stern motor fought an unexplained forward push (dp.c) */
 
 typedef struct {
     float    max_pct;           /* parameter gen_max_pct (boat file generator_max_pct): 0 = disabled (25, TO CONFIRM) */
@@ -81,7 +82,8 @@ typedef struct {
     bool     stop_request;      /* joystick deflection, a non-advisory alarm, a mode / gear request, link lost ... */
     bool     gps_trusted;
     float    sog_kn;
-    float    thrust_pct;        /* |thruster demand| (DP, later): 0 without thrusters */
+    float    thrust_pct;        /* |thruster demand| (DP): 0 without thrusters */
+    bool     dp_fight;          /* MODE_DP: stern astern > 30 % for 5 s while the spot error grows ahead (= in gear?) */
     float    throttle_out_pct;  /* what the servo got last step */
     float    idle_max_pct;      /* "idle" for the stop */
     uint32_t dt_ms;

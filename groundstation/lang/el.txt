@@ -27,6 +27,7 @@ mode.TRAINING = ΕΚΜΑΘΗΣΗ
 mode.REMOTE_MANUAL = ΤΗΛΕΧΕΙΡΙΣΜΟΣ
 mode.BENCH_TEST = ΔΟΚΙΜΗ ΠΑΓΚΟΥ
 mode.MANEUVER = ΜΑΝΟΥΒΡΑ
+mode.DP = DP
 
 # --- γράμματα σασμάν (μπάρα γκαζιού, τιμές): F πρόσω, N νεκρά, R όπισθεν --------
 gear.0 = N
@@ -68,6 +69,8 @@ alarm.engine_killed = Η ΜΗΧΑΝΗ ΣΒΗΣΤΗΚΕ (επαναφορά στ�
 alarm.low_battery = ΧΑΜΗΛΗ ΜΠΑΤΑΡΙΑ (συστοιχία 12 V)
 alarm.relay_silent = ΠΛΑΚΕΤΑ ΡΕΛΕ ΣΙΩΠΗΛΗ
 alarm.dp_heat = ΥΠΕΡΘΕΡΜΑΝΣΗ ΠΡΟΩΣΤΗΡΑ DP
+alarm.dp_offspot = DP ΕΚΤΟΣ ΘΕΣΗΣ
+alarm.dp_overpower = DP ΣΤΟ ΟΡΙΟ ΙΣΧΥΟΣ
 alarm.no_data = ΚΑΝΕΝΑ ΣΤΟΙΧΕΙΟ ΑΠΟ ΤΟ ΣΚΑΦΟΣ
 
 # --- απαντήσεις σκάφους / gateway σε εντολή (κωδικοί ACK) -----------------------
@@ -285,6 +288,7 @@ confirm.4 = ΑΥΞΗΣΗ ΙΣΧΥΟΣ ΟΠΙΣΘΕΝ
 confirm.5 = ΤΗΛΕΧΕΙΡΙΣΜΟΣ
 confirm.6 = ΕΛΙΓΜΟΣ
 confirm.7 = ΠΙΝΑΚΑΣ ΡΕΛΕ
+confirm.8 = DP
 
 # --- οθόνη καπετάνιου: αριστερή στήλη (τιμές) ------------------------------------------------
 cap.power_none = ΟΡΙΟ ΙΣΧΥΟΣ --
@@ -1195,6 +1199,8 @@ say.alarm.engine_killed = Η μηχανή σβήστηκε, πρέπει να γ
 say.alarm.low_battery = Χαμηλή μπαταρία
 say.alarm.relay_silent = Η πλακέτα ρελέ δεν απαντά
 say.alarm.dp_heat = Ο προωστήρας υπερθερμάνθηκε και σταμάτησε
+say.alarm.dp_offspot = Το σκάφος βγήκε από τη θέση του
+say.alarm.dp_overpower = Οι προωστήρες είναι στο όριό τους
 say.alarm.no_data = Κανένα στοιχείο από το σκάφος
 
 # --- σκάφη (φάκελος boats), πλήρωμα, προφίλ (CLAUDE.md A, B, D, F) ---

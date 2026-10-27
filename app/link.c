@@ -425,6 +425,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_RELAY_CFG:    return -2;       /* variable: checked by relay_table_decode */
     case PROTO_T_THRUSTER_CFG: return (int)THR_FRAME_BYTES;
     case PROTO_T_RESTART:      return 1;
+    case PROTO_T_DP:           return 4;
     default:                   return -1;
     }
 }
@@ -509,6 +510,13 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         if (act > ENG_ACT_RELEASE) return PROTO_R_BAD_VALUE;
         return sb_result_to_proto(sb_restart(s, s->helm, act));
     }
+    case PROTO_T_DP: {
+        /* DP (section P): the HELM station (checked by the caller, and again by sb_dp_cmd) */
+        uint8_t act = proto_rd_u8(&r), arg = proto_rd_u8(&r);
+        int16_t v = (int16_t)proto_rd_u16(&r);
+        if (joy && act != DP_ACT_STOP) return PROTO_R_JOYSTICK;
+        return sb_result_to_proto(sb_dp_cmd(s, s->helm, act, arg, v));
+    }
     case PROTO_T_RELAY: {
         uint8_t n = proto_rd_u8(&r), act = proto_rd_u8(&r);
         uint16_t ms = proto_rd_u16(&r);
@@ -529,6 +537,8 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         else if (d == 10) bit = HAL_BTN_BIT(HAL_BTN_PLUS_10);
         else return PROTO_R_BAD_VALUE;
         if (joy) return PROTO_R_JOYSTICK;
+        if (sb_mode(s) == MODE_DP)                                     /* DP: the held heading (also UNCREWED) */
+            return sb_result_to_proto(sb_dp_cmd(s, s->helm, DP_ACT_HEADING, 1u, (int16_t)(d * 10)));
         if (sb_mode(s) != MODE_HDG_LOCK) return PROTO_R_WRONG_MODE;   /* same as the buttons */
         s->ext_buttons |= bit;
         return PROTO_R_OK;
@@ -976,7 +986,11 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *   N: DP thrusters (section P; step 10 appends the DP state): u8 flags (thruster_flags: b0 settings
  *      received, b1 active, b2 bow HOT, b3 stern HOT, b4 bow fitted, b5 stern fitted) | i8 bow output % |
  *      i8 stern output % | u8 bow heat budget used % | u8 stern heat budget used % | u8 bow max % |
- *      u8 stern max % | u16 settings hash (CRC-16 of the THRUSTER_CFG body, 0 none) | u8 why (THR_WHY_)
+ *      u8 stern max % | u16 settings hash (CRC-16 of the THRUSTER_CFG body, 0 none) | u8 why (THR_WHY_) |
+ *      DP (step 10): u8 sub (dp.h DP_: 0 off 1 SPOT 2 JOG 3 CRUISE 4 TRIP) | u8 flags (b0 OFF SPOT, b1 OVERPOWER,
+ *      b2 compass lost: gyro hold, b3 TRIP done, b4 a DP request waits for the CONFIRM, b5 generator check
+ *      "stern fights") | i16 spot error ahead dm | i16 spot error to starboard dm | u16 heading target*10 |
+ *      u8 set speed kn*10 | u8 TRIP speed now kn*10 | u8 TRIP waypoint | u8 last stop why (DP_STOP_)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1031,7 +1045,7 @@ static void telemetry2(link_t *l, sb_t *s)
      *    u16 heading*100 | u16 cap kn*10 (0xFFFF none) | u8 seq | u16 age ms (0xFFFF never) */
     const sb_navreq_t *nv = &s->nav;
     bool fresh = nv->rx_ms != 0u && s->now_ms - nv->rx_ms <= nv->lease_ms;
-    bool applied = (sb_mode(s) == MODE_AUTO && (nv->lost || (fresh && (nv->kind == SB_NAV_CAP ||
+    bool applied = ((sb_mode(s) == MODE_AUTO || (sb_mode(s) == MODE_DP && s->dp.sub == DP_TRIP)) && (nv->lost || (fresh && (nv->kind == SB_NAV_CAP ||
                                                                        nv->kind == SB_NAV_HEADING))));
     proto_wr_u8(&w, nv->kind);
     proto_wr_u8(&w, (uint8_t)((fresh ? 1u : 0u) | (nv->lost ? 2u : 0u) | (applied ? 4u : 0u)));
@@ -1120,6 +1134,20 @@ static void telemetry2(link_t *l, sb_t *s)
         proto_wr_u8(&w, (uint8_t)lroundf(thruster_cap(t, THR_STERN)));
         proto_wr_u16(&w, t->have_cfg ? t->cfg_hash : 0u);
         proto_wr_u8(&w, t->why);
+        const dp_t *d = &s->dp;
+        proto_wr_u8(&w, d->sub);
+        proto_wr_u8(&w, (uint8_t)((d->offspot ? 1u : 0u) | (d->overpower ? 2u : 0u) |
+                                  (d->sub != DP_OFF && d->compass_lost_ms > 0u ? 4u : 0u) | (d->trip_done ? 8u : 0u) |
+                                  (s->confirm.kind == CONF_DP ? 16u : 0u) | (d->fight ? 32u : 0u)));
+        float ef = d->sub == DP_OFF ? 0.0f : fmaxf(-3276.0f, fminf(3276.0f, d->err_fwd));
+        float es = d->sub == DP_OFF ? 0.0f : fmaxf(-3276.0f, fminf(3276.0f, d->err_stbd));
+        proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(ef * 10.0f));
+        proto_wr_u16(&w, (uint16_t)(int16_t)lroundf(es * 10.0f));
+        proto_wr_u16(&w, (uint16_t)lroundf(d->hdg_target * 10.0f) % 3600u);
+        proto_wr_u8(&w, (uint8_t)lroundf(fminf(25.5f, d->set_kn) * 10.0f));
+        proto_wr_u8(&w, (uint8_t)lroundf(fminf(25.5f, d->trip_kn) * 10.0f));
+        proto_wr_u8(&w, d->wp);
+        proto_wr_u8(&w, d->stop_why);
     }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);

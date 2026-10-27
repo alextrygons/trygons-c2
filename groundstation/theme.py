@@ -80,7 +80,8 @@ BLACK = "#000000"           # text on a coloured (light) fill, text outlines, th
 NIGHT = {"main": "#d84a30", "dim": "#8a3020", "warn": "#ff2a10", "caution": "#c08000", "good": "#a04020",
          "yellow": "#b07000", "grey": "#704030"}
 MODE_COLOURS = {"STANDBY": "#606060", "MANUAL": "#ff8c00", "HDG_LOCK": "#007a00", "AUTO": "#7a00a0",
-                "TRAINING": "#a06000", "REMOTE_MANUAL": "#0033cc", "BENCH_TEST": "#008080", "MANEUVER": "#b03060"}
+                "TRAINING": "#a06000", "REMOTE_MANUAL": "#0033cc", "BENCH_TEST": "#008080", "MANEUVER": "#b03060",
+                "DP": "#006a8a"}
 BADGE_FG = {"dark": "#ffffff", "light": "#ffffff"}
 # banner colours (both screens): text colour + fill
 BANNERS = {"alarm": ("#ffffff", WARN), "joystick": ("#000000", "#ff8c00"), "confirm": ("#000000", "#ffd000"),

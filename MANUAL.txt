@@ -1157,12 +1157,11 @@ ENGINE CONTROLS + REMOTE RESTART (Tools -> Engine)
   Log: event 27 RESTART (kill cleared / reset / START begins / stops /
   refused, with the reason); TELEM2 group O.
 
-DP THRUSTERS (part 1: the thrusters themselves; the DP mode comes next)
+DP THRUSTERS (the thrusters themselves; the DP mode is the next part)
   Dynamic positioning (Minn Kota style) uses two small electric thrusters on
   the 12 V bank: a bow TUNNEL thruster (sideways) and a fixed transom motor
-  (fore / aft). This part only drives and protects them - the DP mode that
-  uses them (SPOT, JOG, CRUISE, TRIP) is not there yet, so today the
-  thrusters ALWAYS stay at 0.
+  (fore / aft). This part drives and protects them; only the DP mode below
+  ever asks them for thrust - outside DP they ALWAYS stay at 0.
   * The boat file's "thrusters" block (chapter 5) reaches the boat when the
     HELM station holds HELM in STANDBY (RAM only, again after every boat
     restart; TELEM2 group N shows what the boat took). No settings = no
@@ -1182,6 +1181,57 @@ DP THRUSTERS (part 1: the thrusters themselves; the DP mode comes next)
     on the big boat.
   Hardware: WIRING.md 3C (TBD: thrusters, controllers, pins, contactor).
   Log: event 28 DP (settings taken, thruster HOT, cooled down).
+
+DP MODE (SPOT / JOG / CRUISE / TRIP) - the thrusters hold or move the boat
+  While DP runs the OUTBOARD stays at idle in NEUTRAL with its steering off
+  the whole time (only the generator may open its throttle in neutral, see
+  GENERATOR MODE); the two thrusters do everything.
+  * SPOT (Spot-Lock): the boat holds the GPS position where DP started and
+    the heading it had (the anchor heading). +1 / -1 / +10 / -10 (the panel
+    course buttons, or the station's heading buttons) turn the held heading.
+  * JOG: moves the spot 1.5 m (boat file jog_m) ahead / astern / to port /
+    to starboard of the held heading; back to SPOT once there.
+  * CRUISE: holds a heading and a speed over ground on the stern motor
+    (0 .. 3 kn, dp_max_kn TO CONFIRM); speed and heading can be changed.
+  * TRIP: drives the stored AUTO program at a set speed (at most 3 kn; the
+    legs' own speeds still apply); the gateway's speed cap / avoidance
+    heading work as in AUTO (also the lost lease: hold the heading, slow,
+    DRIVER DECISION); at the last waypoint (or a STOP waypoint) it switches
+    to SPOT there. A new program can't be uploaded while a TRIP runs.
+  * Start: the HELM station asks (PROTO_T_DP; a copilot's request needs the
+    captain's ACCEPT) and the joystick CONFIRM follows within 10 s (CREWED:
+    the onboard joystick; UNCREWED: the shore captain's joystick). Only from
+    STANDBY (not stopping), outputs armed, GPS trusted, compass working,
+    slower than 2 kn, both thrusters set up by the boat file and not hot.
+    Never in the FIRST TEST build. In DP: SPOT starts at once (it only holds
+    the boat where it is); CRUISE / TRIP need the CONFIRM again.
+  * The end - the thrusters go to 0 FIRST, then STANDBY:
+      DP STOP (a copilot may always send it, without the captain's ACCEPT),
+      the STANDBY button, the e-stop, any fault (gear, joystick, monitor ...),
+      UNCREWED link lost, GPS lost or suspect (no dead reckoning in DP),
+      the compass lost for 10 s (the gyro holds the heading meanwhile; no
+      gyro: at once), a thruster HOT (it can't hold with one), pushed more
+      than 50 m off the spot or off it for 2 min (TO CONFIRM).
+    The onboard joystick (CREWED) ALWAYS wins: deflect it / TAKE = thrusters
+    0 at once and MANUAL on the outboard (alarm JOYSTICK, like every
+    takeover).
+  * Advisories (DP keeps trying, the power limit stays): DP OFF SPOT (pushed
+    farther than spot_alarm_m, 15 m, off the spot), DP OVERPOWER (both
+    thrusters at their limit for 10 s).
+  * Limits of a bow tunnel thruster: it pushes the bow sideways AND turns the
+    boat, so it can't move the boat sideways while it holds the heading. The
+    heading comes first: in a current or wind from the SIDE the boat slowly
+    drifts off the spot (DP OFF SPOT). Turn the bow into the current (+1 /
+    +10) - then the stern motor holds it.
+  * Generator in DP: it may run while DP holds (SPOT / JOG); a CRUISE / TRIP
+    start stops it (idle first). If the stern motor has to push astern hard
+    (> 30 % for 5 s) while the boat is still pushed ahead off the spot, the
+    gearbox may not be in neutral: GEAR FAULT, the generator idles, auto off,
+    DP ends.
+  TELEM2 group N (sub-state, spot error ahead / to starboard, held heading,
+  speeds, waypoint, why it ended); log event 28 DP (start / sub-state, JOG,
+  TRIP end, stop + why). The ground-station controls come with the next
+  part (step 11); until then the station sends the frames.
 
 -------------------------------------------------------------------------------
 8. THE USB JOYSTICK (THRUSTMASTER T.16000M + TWCS)
@@ -1854,15 +1904,22 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          alarm word, bit 2). Never shown without a fitted
                          relay board.
   DP THRUSTER HOT        a DP thruster used its heat budget (boat file
-                         run_s): it stays at 0 until it rested (rest_s),
-                         the other one runs on. An ordinary alarm (buzzer,
-                         power limit back to 30 / 5); no mode change by
-                         itself. The acknowledge keeps it while the thruster
-                         is still hot (second alarm word, bit 3).
+                         run_s): it stays at 0 until it rested (rest_s).
+                         An ordinary alarm (buzzer, power limit back to
+                         30 / 5). In DP the DP ends (thrusters 0, STANDBY:
+                         it can't hold with one thruster); no new DP until
+                         it rested. The acknowledge keeps it while the
+                         thruster is still hot (second alarm word, bit 3).
+  DP OFF SPOT            DP SPOT / JOG: the boat is farther than spot_alarm_m
+                         (boat file, 15 m) from the spot. ADVISORY: DP keeps
+                         trying, the power limit stays; more than 50 m or 2
+                         min off -> thrusters 0, STANDBY (second word, bit 4).
+  DP OVERPOWER           both DP thrusters at their limit for 10 s: the wind
+                         / current is too strong. ADVISORY (bit 5).
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
-  DECISION, OBSTACLE AHEAD, AIS RECEIVER SILENT, LOW BATTERY and RELAY BOARD SILENT: they
+  DECISION, OBSTACLE AHEAD, AIS RECEIVER SILENT, LOW BATTERY, RELAY BOARD SILENT, DP OFF SPOT and DP OVERPOWER: they
   never change the power limit; RELAY BOARD SILENT doesn't sound the boat's buzzer and
   doesn't block a power raise either). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM" in
   the ALARMS panel (top right of screen 2). Both screens list every active
@@ -2093,7 +2150,9 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c, drivers hal/tc_*.c)
          pulses on GTM TOM0 ch 12 / 13, stopped in hal_safe_outputs(). The
          thrusters, their controllers, the pins and the e-stop contactor
          are TBD (WIRING.md 3C): HAL_THRUSTERS_FITTED 0 until wired. The DP
-         mode itself (SPOT / JOG / CRUISE / TRIP) is the next step.
+         mode (app/dp.c: SPOT / JOG / CRUISE / TRIP) runs in the sim; its
+         gains are TO CONFIRM on the water (first SPOT in calm water at the
+         dock, the e-stop at hand).
    Still stubs:
      [ ] joystick ADC + 3 buttons (the USB bridge works), neutral switch
          (input done, HAL_NEUTRAL_SW_FITTED 0), paddlewheel

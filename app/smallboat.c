@@ -110,6 +110,8 @@ void sb_default_config(sb_config_t *cfg)
     cfg->shore_max_age_ms = 3000u;
     batt_default_config(&cfg->batt);
     gen_default_config(&cfg->gen);
+    cfg->dp_max_kn = 3.0f;                      /* TO CONFIRM */
+    cfg->dp_max_entry_kn = 2.0f;
 }
 
 /* NV slot 6: the generator's learned value (version + CRC-32, like calib.c):
@@ -200,6 +202,7 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     hal_set_engine_kill(false);                 /* a reset clears the kill (or the HELM station's restart) */
     engine_init(&s->eng);
     thruster_init(&s->thrust);                  /* no settings = no thruster fitted (the station pushes them) */
+    dp_init(&s->dp);
     /* FIRST TEST is always CREWED (steering only, its own arming rule; no lost-link kill) */
     s->profile = cfg->first_test ? SB_PROFILE_CREWED : SB_PROFILE_DETECTING;
     if (nv_load(HAL_NV_SLOT_JOYMAP, &s->jmap, (uint32_t)sizeof s->jmap)) {
@@ -347,6 +350,8 @@ void sb_alarm_ack(sb_t *s)
     if (s->batt.low) keep2 |= SB_ALM2_LOW_BATTERY;
     if (relays_silent(&s->relays)) keep2 |= SB_ALM2_RELAY_SILENT;
     if (thruster_any_hot(&s->thrust)) keep2 |= SB_ALM2_DP_HEAT;
+    if (s->dp.offspot) keep2 |= SB_ALM2_DP_OFFSPOT;
+    if (s->dp.overpower) keep2 |= SB_ALM2_DP_OVERPOWER;
     s->alarm_bits2 &= keep2;
     s->alarm = s->alarm_bits != 0u || (s->alarm_bits2 & ~SB_ALM2_QUIET) != 0u;
     if (!s->ap.sensor_fault) s->ap.alarm = false;
@@ -428,10 +433,18 @@ static bool nav_fresh(const sb_t *s)
     return s->nav.rx_ms != 0u && s->now_ms - s->nav.rx_ms <= s->nav.lease_ms;
 }
 
-/* Speed cap (kn) the navigation request puts on AUTO; < 0 = none. */
+/* The navigation request applies (speed cap, avoidance heading, the lost lease) in AUTO and in a DP TRIP
+ * (section P: "collision avoidance navreq as in AUTO"); in SPOT / JOG / CRUISE and every other mode it is
+ * an alarm only. */
+static bool nav_applies(const sb_t *s)
+{
+    return sb_mode(s) == MODE_AUTO || (sb_mode(s) == MODE_DP && s->dp.sub == DP_TRIP);
+}
+
+/* Speed cap (kn) the navigation request puts on AUTO / a DP TRIP; < 0 = none. */
 static float nav_cap(const sb_t *s)
 {
-    if (sb_mode(s) != MODE_AUTO) return -1.0f;
+    if (!nav_applies(s)) return -1.0f;
     if (s->nav.lost) {                  /* never faster than the last cap: a slowdown stays */
         float c = s->cfg.nav_lost_kn;
         return (s->nav.lost_cap_kn >= 0.0f && s->nav.lost_cap_kn < c) ? s->nav.lost_cap_kn : c;
@@ -440,23 +453,34 @@ static float nav_cap(const sb_t *s)
     return -1.0f;
 }
 
+/* AUTO / DP TRIP: the heading the navigation request wants (the avoidance heading, or the held
+ * heading when the request was lost); false = none. track = the leg's track. */
+static bool nav_heading(sb_t *s, float track, float *hdg)
+{
+    if (!nav_applies(s)) return false;
+    if (s->nav.lost) {
+        *hdg = s->nav.lost_heading;
+        return true;
+    }
+    if (nav_fresh(s) && s->nav.kind == SB_NAV_HEADING) {
+        /* the Pi may turn the boat away from the leg, but not anywhere: too far
+         * off the track -> not steered (the cap still slows), DRIVER DECISION */
+        if (fabsf(autopilot_heading_error(track, s->nav.heading)) <= s->cfg.nav_max_dev_deg) {
+            *hdg = s->nav.heading;
+            return true;
+        }
+        if (s->nav.too_far_seq != s->nav.seq || !s->nav.too_far) s->nav.too_far++;
+        s->nav.too_far_seq = s->nav.seq;
+        alarm_on(s, SB_ALM_DECISION);
+    }
+    return false;
+}
+
 /* AUTO: the avoidance heading (or the held heading when the request was lost). */
 static void nav_steer(sb_t *s)
 {
-    if (sb_mode(s) != MODE_AUTO) return;
-    if (s->nav.lost) {
-        autopilot_set_target(&s->ap, s->nav.lost_heading);
-    } else if (nav_fresh(s) && s->nav.kind == SB_NAV_HEADING) {
-        /* the Pi may turn the boat away from the leg, but not anywhere: too far
-         * off the track -> not steered (the cap still slows), DRIVER DECISION */
-        if (fabsf(autopilot_heading_error(s->autop.leg.track_deg, s->nav.heading)) <= s->cfg.nav_max_dev_deg) {
-            autopilot_set_target(&s->ap, s->nav.heading);
-        } else {
-            if (s->nav.too_far_seq != s->nav.seq || !s->nav.too_far) s->nav.too_far++;
-            s->nav.too_far_seq = s->nav.seq;
-            alarm_on(s, SB_ALM_DECISION);
-        }
-    }
+    float h;
+    if (sb_mode(s) == MODE_AUTO && nav_heading(s, s->autop.leg.track_deg, &h)) autopilot_set_target(&s->ap, h);
 }
 
 static float auto_target_kn(const sb_t *s)
@@ -469,12 +493,12 @@ static void nav_step(sb_t *s)
 {
     sb_navreq_t *n = &s->nav;
     bool fresh = nav_fresh(s);
-    if (sb_mode(s) != MODE_AUTO) n->lost = false;
+    if (!nav_applies(s)) n->lost = false;
     if (fresh) {
         n->lost = false;
         if (n->alarm & 1u) alarm_on(s, SB_ALM_COLLISION);
         if (n->alarm & 2u) alarm_on(s, SB_ALM_DECISION);
-        if ((n->alarm & 4u) && sb_mode(s) == MODE_AUTO) alarm_on(s, SB_ALM_SHALLOW);
+        if ((n->alarm & 4u) && nav_applies(s)) alarm_on(s, SB_ALM_SHALLOW);
         if (n->alarm & 8u) alarm_on(s, SB_ALM_OBSTACLE);
         if (n->kind == SB_NAV_HDG_SET && (!n->hdg_any || n->seq != n->hdg_seq_done) && sb_mode(s) == MODE_HDG_LOCK &&
             n->rx_mode == (uint8_t)MODE_HDG_LOCK && !s->hdg_compass_lost) {
@@ -484,12 +508,12 @@ static void nav_step(sb_t *s)
             s->hdg_target = n->heading;
             autopilot_set_target(&s->ap, n->heading);
         }
-    } else if (sb_mode(s) == MODE_AUTO && !n->lost && n->rx_ms != 0u &&
+    } else if (nav_applies(s) && !n->lost && n->rx_ms != 0u &&
                (n->kind == SB_NAV_CAP || n->kind == SB_NAV_HEADING)) {
         /* the gateway went quiet in the middle of an avoidance: don't carry on blindly */
         n->lost = true;
         n->losses++;
-        n->lost_heading = s->ap.heading;
+        n->lost_heading = (sb_mode(s) == MODE_DP) ? s->dp.hdg_est : s->ap.heading;
         n->lost_cap_kn = n->cap_kn;
         alarm_on(s, SB_ALM_DECISION);
     }
@@ -513,7 +537,8 @@ static bool fault_why(mode_reason_t w)
 {
     return w == WHY_COMPASS_FAULT || w == WHY_GPS_LOST || w == WHY_GEAR_FAULT || w == WHY_DR_LIMIT ||
            w == WHY_JOY_FAULT || w == WHY_NOT_ARMED || w == WHY_MONITOR || w == WHY_REMOTE_LOST ||
-           w == WHY_TRAINING_ABORT || w == WHY_PROFILE || w == WHY_LINK_LOST;
+           w == WHY_TRAINING_ABORT || w == WHY_PROFILE || w == WHY_LINK_LOST || w == WHY_DP_OFFSPOT ||
+           w == WHY_DP_THRUSTER;
 }
 
 /* Rising edges only; the AURIX never waits for the Pi. */
@@ -564,7 +589,7 @@ static void save_triggers(sb_t *s)
             save_req(s, SB_SAVE_STANDBY_FAULT, (uint8_t)e->why);
         else if (e->to == MODE_MANUAL && e->why == WHY_JOYSTICK &&
                  (e->from == MODE_HDG_LOCK || e->from == MODE_AUTO || e->from == MODE_REMOTE ||
-                  e->from == MODE_TRAINING || e->from == MODE_MANEUVER))
+                  e->from == MODE_TRAINING || e->from == MODE_MANEUVER || e->from == MODE_DP))
             save_req(s, SB_SAVE_TAKEOVER, (uint8_t)e->from);
     }
 }
@@ -596,6 +621,30 @@ static bool auto_leg_ok(const sb_t *s)
     return program_dist_m(lat, lon, program_lat(w), program_lon(w)) <= s->cfg.prog.max_leg_m;
 }
 
+/* DP TRIP: waypoint wp can be reached from here (a valid program, position known, leg not absurd) */
+static bool dp_trip_ok(const sb_t *s, uint8_t wp)
+{
+    const sb_auto_t *a = &s->autop;
+    if (!a->prog_ok || wp >= a->prog.n || !sb_gps_ok(s)) return false;
+    const prog_wp_t *w = &a->prog.wp[wp];
+    return program_dist_m(s->gps.last.lat_deg, s->gps.last.lon_deg, program_lat(w), program_lon(w)) <=
+           s->cfg.prog.max_leg_m;
+}
+
+/* DP may start (entry: from STANDBY, slow) / change to sub now: GPS trusted (no dead reckoning in DP),
+ * compass, both thrusters fitted (boat file settings) and not hot, allowed (no trip, e-stop released,
+ * outputs not forced), no gear fault, no lost link; TRIP: the program's waypoint reachable. */
+static bool dp_ok(const sb_t *s, uint8_t sub, bool cont, bool entry)
+{
+    if (!sb_gps_ok(s) || !sb_compass_ok(s) || gear_fault(&s->gear) || s->mon_tripped || !s->armed) return false;
+    if (s->estop_state == 2u || s->ll.state != SB_LL_OK || hal_outputs_forced() || s->cfg.first_test) return false;
+    if (!thruster_fitted(&s->thrust, THR_BOW) || !thruster_fitted(&s->thrust, THR_STERN) ||
+        thruster_any_hot(&s->thrust)) return false;
+    if (entry && !(s->gps.last.sog_kn < s->cfg.dp_max_entry_kn)) return false;
+    if (sub == DP_TRIP) return dp_trip_ok(s, cont ? s->dp.wp : 0u);
+    return sub == DP_SPOT || sub == DP_CRUISE;
+}
+
 /* BENCH TEST: the GPS says the boat moves (trusted fix, SOG above bench_max_kn) */
 static bool bench_moving(const sb_t *s)
 {
@@ -609,7 +658,8 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
     if (s->estop_state == 2u && to != MODE_STANDBY) return false;     /* emergency stop pressed */
     if (s->ll.state != SB_LL_OK && to != MODE_STANDBY) return false;  /* UNCREWED link lost / engine killed */
     /* FIRST TEST: steering only - STANDBY, TRAINING, HDG LOCK */
-    if (s->cfg.first_test && (to == MODE_MANUAL || to == MODE_AUTO || to == MODE_REMOTE || to == MODE_MANEUVER))
+    if (s->cfg.first_test && (to == MODE_MANUAL || to == MODE_AUTO || to == MODE_REMOTE || to == MODE_MANEUVER ||
+                              to == MODE_DP))
         return false;
     /* UNCREWED: the onboard joystick is ignored (no MANUAL), nobody on board for the HDG LOCK button */
     if (s->profile == SB_PROFILE_UNCREWED && (to == MODE_MANUAL || to == MODE_HDG_LOCK)) return false;
@@ -640,6 +690,8 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
     case MODE_TRAINING:
         return (why == WHY_PC || why == WHY_USER || why == WHY_TEST) &&
                sb_compass_ok(s) && s->ap.mode != AP_MODE_TRAINING && !gear_fault(&s->gear);
+    case MODE_DP:           /* HELM station request + CONFIRM, from STANDBY (not stopping) */
+        return why == WHY_DP && !s->stopping && dp_ok(s, s->dp_req.sub, s->dp_req.cont, true);
     case MODE_BENCH:        /* the USB laptop (link.c), boat not moving; no sensor needed (it shows them) */
         return why == WHY_PC && !bench_moving(s) && s->ap.mode != AP_MODE_TRAINING;
     default:
@@ -768,7 +820,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         plim_drop(&s->plim, PLIM_SRC_OVERRIDE, s->now_ms);
         autopilot_angle(&s->ap);
         s->chirp_ms = 300u;
-        if (from == MODE_HDG_LOCK || from == MODE_AUTO || from == MODE_TRAINING)
+        if (from == MODE_HDG_LOCK || from == MODE_AUTO || from == MODE_TRAINING || from == MODE_DP)
             s->alarm_bits |= SB_ALM_JOYSTICK;
         break;
     case MODE_REMOTE:
@@ -780,6 +832,16 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         autopilot_angle(&s->ap);
         remote_enter(s, from);
         break;
+    case MODE_DP: {
+        /* the thrusters hold / move the boat; the outboard stays idle + neutral (no demand) with its
+         * steering off; the anchor / heading / route from where the boat is now */
+        s->stopping = false;
+        autopilot_disengage(&s->ap);
+        uint8_t from_wp = s->dp_req.cont ? s->dp.wp : 0u;
+        dp_start(&s->dp, s->dp_req.sub, s->gps.last.lat_deg, s->gps.last.lon_deg, s->ap.heading, s->dp_req.kn,
+                 s->cfg.dp_max_kn, &s->autop.prog, from_wp);
+        break;
+    }
     case MODE_BENCH:
         /* dock test: throttle idle + neutral (no demand), the steering motor
          * only in pulses (manual steering of the core: estimate, max angle and
@@ -804,11 +866,28 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
     }
 }
 
+/* why DP ended, from the mode change reason */
+static uint8_t dp_stop_why(mode_reason_t why, sb_mode_t to)
+{
+    if (to == MODE_MANUAL) return DP_STOP_JOYSTICK;
+    switch (why) {
+    case WHY_DP_STOP:       return DP_STOP_CMD;
+    case WHY_GPS_LOST:      return DP_STOP_GPS;
+    case WHY_COMPASS_FAULT: return DP_STOP_COMPASS;
+    case WHY_DP_THRUSTER:   return DP_STOP_THRUSTER;
+    case WHY_DP_OFFSPOT:    return DP_STOP_OFFSPOT;
+    case WHY_STANDBY_BUTTON: case WHY_ESTOP: case WHY_LINK_LOST: case WHY_PC: case WHY_USER: case WHY_TEST:
+        return DP_STOP_STANDBY;
+    default:                return DP_STOP_FAULT;
+    }
+}
+
 bool sb_request_mode(sb_t *s, sb_mode_t to, mode_reason_t why)
 {
     sb_mode_t from = s->modes.mode;
     mode_verdict_t v = mode_request(&s->modes, to, why, precondition(s, to, why), s->now_ms);
     if (v != MODE_OK) return false;
+    if (from == MODE_DP && to != MODE_DP) dp_stop(&s->dp, dp_stop_why(why, to));   /* thrusters 0 in this step */
     if (to == MODE_STANDBY) s->stop_planned = (why == WHY_ARRIVED);   /* arrival: the normal closing rate */
     on_enter(s, from, to);
     return true;
@@ -900,7 +979,7 @@ static void profile_step(sb_t *s, uint32_t dt_ms)
     if (s->profile == SB_PROFILE_CREWED && s->joy_was_present && !s->joy.present) {
         alarm_on(s, SB_ALM_JOY_FAULT);
         plim_drop(&s->plim, PLIM_SRC_JOYSTICK, s->now_ms);
-        if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK || remote_like(sb_mode(s)))
+        if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK || remote_like(sb_mode(s)) || sb_mode(s) == MODE_DP)
             sb_request_mode(s, MODE_STANDBY, WHY_JOY_FAULT);
     }
     s->joy_was_present = s->profile == SB_PROFILE_CREWED && s->joy.present;
@@ -1914,7 +1993,8 @@ sb_result_t sb_program_set(sb_t *s, const program_t *p, prog_error_t *err, uint8
 {
     *bad_index = 0xFFu;
     *err = PROG_OK;
-    if (sb_mode(s) == MODE_AUTO) return SB_ERR_WRONG_MODE;   /* not while it runs */
+    if (sb_mode(s) == MODE_AUTO || (sb_mode(s) == MODE_DP && s->dp.sub == DP_TRIP))
+        return SB_ERR_WRONG_MODE;                               /* not while it runs (AUTO / a DP TRIP) */
     *err = program_validate(p, &s->cfg.prog, bad_index);
     if (*err != PROG_OK) return SB_ERR_BAD_PROGRAM;
     s->autop.prog = *p;
@@ -1923,8 +2003,10 @@ sb_result_t sb_program_set(sb_t *s, const program_t *p, prog_error_t *err, uint8
     s->autop.suspended = false;
     s->autop.finished = false;
     s->autop.legs_done = 0u;
+    s->dp.wp = 0u;                                          /* a DP TRIP "continue" starts the new one at waypoint 1 */
     s->cfg_version++;
-    if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME) s->confirm.kind = CONF_NONE;
+    if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
+        (s->confirm.kind == CONF_DP && s->dp_req.sub == DP_TRIP)) s->confirm.kind = CONF_NONE;
     (void)nv_save(HAL_NV_SLOT_PROGRAM, p, (uint32_t)sizeof *p);   /* written in STANDBY */
     return SB_OK;
 }
@@ -2024,6 +2106,16 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
     case CONF_RELAY_TABLE:
         /* the offered relay table becomes the active one (saved in STANDBY, below); never a mode change */
         return relays_accept(&s->relays, sb_mode(s) == MODE_STANDBY && !s->stopping);
+    case CONF_DP:
+        /* the HELM station must still be the one that asked; the conditions again, now */
+        if (s->helm != s->dp_req.station) return false;
+        if (sb_mode(s) == MODE_DP) {
+            if (!dp_ok(s, s->dp_req.sub, s->dp_req.cont, false)) return false;
+            dp_start(&s->dp, s->dp_req.sub, s->gps.last.lat_deg, s->gps.last.lon_deg, s->dp.hdg_est, s->dp_req.kn,
+                     s->cfg.dp_max_kn, &s->autop.prog, s->dp_req.cont ? s->dp.wp : 0u);
+            return true;
+        }
+        return sb_request_mode(s, MODE_DP, WHY_DP);
     default:
         return false;
     }
@@ -2069,6 +2161,64 @@ void sb_power_lower(sb_t *s)
     plim_drop(&s->plim, PLIM_SRC_PC, s->now_ms);
 }
 
+sb_result_t sb_dp_cmd(sb_t *s, uint8_t station, uint8_t action, uint8_t arg, int16_t value)
+{
+    bool in_dp = sb_mode(s) == MODE_DP;
+    if (station == SB_HELM_NONE || station != s->helm) return SB_ERR_NOT_ALLOWED;
+    if (s->cfg.first_test) return SB_ERR_WRONG_MODE;              /* FIRST TEST: no DP */
+    switch (action) {
+    case DP_ACT_STOP:
+        if (s->confirm.kind == CONF_DP) s->confirm.kind = CONF_NONE;
+        if (!in_dp) return SB_OK;
+        return sb_request_mode(s, MODE_STANDBY, WHY_DP_STOP) ? SB_OK : SB_ERR_PRECOND;
+    case DP_ACT_START: {
+        uint8_t sub = (uint8_t)(arg & 0x7Fu);
+        bool cont = (arg & DP_TRIP_CONTINUE) != 0u;
+        float kn = (float)value * 0.01f;
+        if ((sub != DP_SPOT && sub != DP_CRUISE && sub != DP_TRIP) || (cont && sub != DP_TRIP) || value < 0 ||
+            kn > s->cfg.dp_max_kn + 0.001f) return SB_ERR_BAD_VALUE;
+        if (sub == DP_TRIP && !(kn > 0.0f)) kn = s->cfg.dp_max_kn;  /* TRIP 0 = as fast as DP may (and the legs say) */
+        if (in_dp && sub == DP_SPOT) {
+            /* a hold: SPOT here at once (no CONFIRM - it only stops the boat where it is) */
+            dp_start(&s->dp, DP_SPOT, s->gps.last.lat_deg, s->gps.last.lon_deg, s->dp.hdg_est, 0.0f, s->cfg.dp_max_kn,
+                     NULL, 0u);
+            return SB_OK;
+        }
+        if (!in_dp) {
+            if (sb_mode(s) == MODE_MANUAL) return SB_ERR_JOYSTICK;  /* the onboard joystick has it */
+            if (sb_mode(s) != MODE_STANDBY || s->stopping) return SB_ERR_STANDBY_ONLY;
+        }
+        if (!s->armed || s->mon_tripped) return SB_ERR_PRECOND;
+        if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;        /* centre the joystick */
+        if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;    /* nobody could press CONFIRM */
+        if (sub == DP_TRIP && !s->autop.prog_ok) return SB_ERR_NO_PROGRAM;
+        if (!dp_ok(s, sub, cont, !in_dp)) return SB_ERR_PRECOND;
+        s->dp_req.sub = sub;
+        s->dp_req.cont = cont;
+        s->dp_req.kn = kn;
+        s->dp_req.station = station;
+        s->dp_req.requests++;
+        confirm_arm(s, CONF_DP);
+        return SB_OK;
+    }
+    case DP_ACT_JOG:
+        if (!in_dp) return SB_ERR_WRONG_MODE;
+        if (arg > DP_JOG_STBD) return SB_ERR_BAD_VALUE;
+        return dp_jog(&s->dp, arg, s->thrust.cfg.jog_m) ? SB_OK : SB_ERR_WRONG_MODE;
+    case DP_ACT_SPEED:
+        if (!in_dp) return SB_ERR_WRONG_MODE;
+        if (value < 0 || (float)value * 0.01f > s->cfg.dp_max_kn + 0.001f) return SB_ERR_BAD_VALUE;
+        return dp_speed(&s->dp, (float)value * 0.01f, s->cfg.dp_max_kn) ? SB_OK : SB_ERR_WRONG_MODE;
+    case DP_ACT_HEADING:
+        if (!in_dp) return SB_ERR_WRONG_MODE;
+        if (arg > 1u || (arg == 0u && (value < 0 || value > 3599)) || (arg == 1u && (value < -1800 || value > 1800)))
+            return SB_ERR_BAD_VALUE;
+        return dp_heading(&s->dp, (float)value * 0.1f, arg == 1u) ? SB_OK : SB_ERR_WRONG_MODE;
+    default:
+        return SB_ERR_BAD_VALUE;
+    }
+}
+
 static void confirm_step(sb_t *s)
 {
     sb_confirm_t *c = &s->confirm;
@@ -2102,6 +2252,65 @@ static void confirm_step(sb_t *s)
     } else {
         c->refused++;
         s->chirp_ms = 300u;
+    }
+}
+
+/* --- DP (section P) ----------------------------------------------------------------- */
+
+/* Every step in MODE_DP: the outboard stays idle + neutral (the step's default demand), its steering
+ * off; dp.c computes the thrust. GPS lost / suspect -> STANDBY (no dead reckoning in DP); the compass
+ * lost -> the gyro holds the heading, STANDBY after DP_COMPASS_MS; too far / too long off the spot ->
+ * STANDBY; off the spot / both thrusters saturated = advisories. The thrusters go to 0 in the same
+ * step as the mode leaves DP (the thruster step below sees dp_active false). */
+static void dp_mode(sb_t *s, float dt, uint32_t buttons)
+{
+    dp_t *d = &s->dp;
+    if (!sb_gps_ok(s)) {
+        alarm_on(s, (s->dr.why == DR_WHY_LOST || s->dr.state == DR_NO_FIX || s->dr.state == DR_GPS)
+                    ? SB_ALM_GPS_LOST : SB_ALM_GPS_SUSPECT);
+        sb_request_mode(s, MODE_STANDBY, WHY_GPS_LOST);
+        return;
+    }
+    if (d->sub != DP_TRIP) {
+        /* the course buttons (CREWED; HDG LOCK's buttons) move the held heading */
+        float dlt = 0.0f;
+        if (buttons & HAL_BTN_BIT(HAL_BTN_MINUS_1))  dlt -= 1.0f;
+        if (buttons & HAL_BTN_BIT(HAL_BTN_PLUS_1))   dlt += 1.0f;
+        if (buttons & HAL_BTN_BIT(HAL_BTN_MINUS_10)) dlt -= 10.0f;
+        if (buttons & HAL_BTN_BIT(HAL_BTN_PLUS_10))  dlt += 10.0f;
+        if (dlt != 0.0f) (void)dp_heading(d, dlt, true);
+    }
+    dp_in_t in;
+    memset(&in, 0, sizeof in);
+    in.dt = dt;
+    in.fix_new = s->gps_new_msg && !s->gps_bad_msg && s->gps.last.fix;
+    in.lat = s->gps.last.lat_deg;
+    in.lon = s->gps.last.lon_deg;
+    in.sog_kn = s->gps.last.sog_kn;
+    in.cog_deg = s->gps.last.cog_deg;
+    in.compass_ok = sb_compass_ok(s);
+    in.heading = s->ap.heading;
+    in.gyro_ok = autopilot_gyro_ok(&s->ap);
+    in.yaw_dps = s->ap.gyro_dps;
+    in.cap_bow = thruster_cap(&s->thrust, THR_BOW);
+    in.cap_stern = thruster_cap(&s->thrust, THR_STERN);
+    in.out_bow = s->thrust.out_pct[THR_BOW];
+    in.out_stern = s->thrust.out_pct[THR_STERN];
+    in.max_kn = s->cfg.dp_max_kn;
+    in.spot_alarm_m = s->thrust.cfg.spot_alarm_m;
+    in.nav_cap_kn = nav_cap(s);
+    in.nav_heading_on = d->sub == DP_TRIP && nav_heading(s, d->leg.track_deg, &in.nav_heading);
+    in.prog = &s->autop.prog;
+    uint8_t r = dp_step(d, &in);
+    if (d->offspot) alarm2_on(s, SB_ALM2_DP_OFFSPOT);
+    if (d->overpower) alarm2_on(s, SB_ALM2_DP_OVERPOWER);
+    if (r == DP_R_COMPASS) {
+        sb_request_mode(s, MODE_STANDBY, WHY_COMPASS_FAULT);    /* gyro hold for DP_COMPASS_MS, or no gyro */
+    } else if (r == DP_R_OFFSPOT) {
+        sb_request_mode(s, MODE_STANDBY, WHY_DP_OFFSPOT);
+    } else if (r == DP_R_TRIP_END) {
+        s->chirp_ms = 600u;                                     /* SPOT at the end of the route */
+        if (d->trip_done) alarm_on(s, SB_ALM_ARRIVED);
     }
 }
 
@@ -2268,7 +2477,9 @@ static void events_step(sb_t *s, uint32_t buttons)
         alarm_on(s, SB_ALM_JOY_FAULT);
         plim_drop(&s->plim, PLIM_SRC_JOYSTICK, s->now_ms);
         if (is_raise(s->confirm.kind)) s->confirm.kind = CONF_NONE;
-        if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK || remote_like(sb_mode(s)))
+        /* (DP, CREWED: the joystick is the crew's takeover - without it DP ends too) */
+        if (sb_mode(s) == MODE_MANUAL || sb_mode(s) == MODE_HDG_LOCK || remote_like(sb_mode(s)) ||
+            (sb_mode(s) == MODE_DP && s->profile == SB_PROFILE_CREWED))
             sb_request_mode(s, MODE_STANDBY, WHY_JOY_FAULT);
     }
     if (!s->joy.fault) s->joy_fault_seen = false;
@@ -2287,7 +2498,8 @@ static void events_step(sb_t *s, uint32_t buttons)
     if (s->joy.take_edge) plim_drop(&s->plim, PLIM_SRC_OVERRIDE, s->now_ms);      /* TAKE always lowers */
     if (grab && sb_mode(s) != MODE_MANUAL && !s->cfg.first_test) {     /* FIRST TEST: no MANUAL */
         if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
-            s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER) s->confirm.kind = CONF_NONE;
+            s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER || s->confirm.kind == CONF_DP)
+            s->confirm.kind = CONF_NONE;
         sb_request_mode(s, MODE_MANUAL, WHY_JOYSTICK);
     }
     if (sb_mode(s) == MODE_MANUAL && s->joy.auto_edge) joystick_handback(s);
@@ -2513,7 +2725,9 @@ void sb_step(sb_t *s)
     else if (sb_mode(s) == MODE_AUTO) auto_mode(s, dt, dt_ms, roll_new, roll);
     else if (sb_mode(s) == MODE_TRAINING) training_mode(s, dt_ms);
     else if (remote_like(sb_mode(s))) remote_mode(s);
-    if (sb_mode(s) == MODE_STANDBY) {
+    else if (sb_mode(s) == MODE_DP) dp_mode(s, dt, buttons);
+    if (sb_mode(s) != MODE_DP) dp_stop(&s->dp, DP_STOP_FAULT);     /* (left DP above: already stopped) */
+    if (sb_mode(s) == MODE_STANDBY || sb_mode(s) == MODE_DP) {      /* DP: the outboard idle + neutral throughout */
         s->throttle_demand = 0.0f;
         s->gear_demand = GEAR_N;
     }
@@ -2540,12 +2754,15 @@ void sb_step(sb_t *s)
         gen_input_t gi;
         sb_mode_t gm = sb_mode(s);
         bool kind_stop = s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
-                         s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER;
+                         s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER ||
+                         (s->confirm.kind == CONF_DP && s->dp_req.sub != DP_SPOT);      /* a DP trip / cruise start */
+        /* DP: the generator may run while DP holds the boat (SPOT / JOG); CRUISE / TRIP move the boat */
+        bool dp_hold = gm == MODE_DP && (s->dp.sub == DP_SPOT || s->dp.sub == DP_JOG);
         bool alarm_now = (s->alarm_bits & ~SB_NAV_ADVISORY) != 0u || (s->alarm_bits2 & ~SB_ALM2_ADVISORY) != 0u ||
                          s->ap.alarm;
         memset(&gi, 0, sizeof gi);
-        gi.allowed = gm == MODE_STANDBY && !s->stopping && s->armed && !s->cfg.first_test && !s->mon_tripped &&
-                     s->estop_state != 2u && s->ll.state == SB_LL_OK;
+        gi.allowed = ((gm == MODE_STANDBY && !s->stopping) || dp_hold) && s->armed && !s->cfg.first_test &&
+                     !s->mon_tripped && s->estop_state != 2u && s->ll.state == SB_LL_OK;
         gi.neutral_confirmed = neutral_sw == 1 && gear_is(&s->gear, GEAR_N) && !gear_fault(&s->gear);
         gi.volts_valid = s->batt.valid;
         gi.bank_v = s->batt.bank_v;
@@ -2553,8 +2770,11 @@ void sb_step(sb_t *s)
         gi.limit_pct = s->plim.fwd_pct;
         gi.stop_request = alarm_now || kind_stop || s->joy.take_edge ||
                           (s->profile == SB_PROFILE_CREWED && s->joy.off_centre);
-        gi.gps_trusted = sb_gps_ok(s);
+        /* outside DP a SOG rise after a throttle rise = GEAR FAULT; in DP the boat moves anyway - there the
+         * stern motor fighting an unexplained forward push is the check (dp.c fight) */
+        gi.gps_trusted = sb_gps_ok(s) && gm != MODE_DP;
         gi.sog_kn = s->gps.last.sog_kn;
+        gi.dp_fight = gm == MODE_DP && s->dp.fight;
         gi.thrust_pct = thruster_load_pct(&s->thrust);  /* DP thruster load (last step): pauses the judgement */
         gi.throttle_out_pct = s->thr.out_pct;
         gi.idle_max_pct = s->cfg.gear.idle_max_pct;
@@ -2562,7 +2782,8 @@ void sb_step(sb_t *s)
         gen_step(&s->gen, &gi);
         if (s->gen.start_edge && s->chirp_ms < 300u) s->chirp_ms = 300u;    /* beep: GENERATOR STARTING */
         if (s->gen.fault_edge) alarm_on(s, SB_ALM_GEAR);                     /* neutral opened / the boat moved */
-        if (gm == MODE_STANDBY && s->gen.demand_pct > 0.0f) {
+        if (s->gen.fault_edge && gm == MODE_DP) sb_request_mode(s, MODE_STANDBY, WHY_GEAR_FAULT);   /* a fault: DP ends */
+        if ((gm == MODE_STANDBY || gm == MODE_DP) && s->gen.demand_pct > 0.0f) {
             s->throttle_demand = s->gen.demand_pct;
             s->gear_demand = GEAR_N;
         }
@@ -2650,6 +2871,37 @@ void sb_step(sb_t *s)
     }
     if (sb_mode(s) != MODE_AUTO) { s->speed_limited = false; s->sat_ms = 0u; }
 
+    /* 4b. DP thrusters (section P; thruster.c is their only writer) - FIRST, before the
+     *     outboard's gear and throttle: 0 unless MODE_DP runs (dp.c demands) AND
+     *     allowed - not FIRST TEST, e-stop released (its contactor also cuts their
+     *     power), no monitor trip, outputs armed; clamped to the boat file's max_pct,
+     *     rate limited, heat budget per thruster (used up = that one 0 + DP THRUSTER
+     *     HOT). Every exit from DP (STANDBY, a fault, the joystick) happened above
+     *     in this step: the thrusters are 0 now. A thruster HOT (it went to 0
+     *     itself, last step) or the thrusters blocked ends DP (it can't hold with
+     *     one): STANDBY first, so both are 0 in this step. */
+    {
+        thr_input_t ti;
+        memset(&ti, 0, sizeof ti);
+        ti.allowed = !s->cfg.first_test && s->estop_state != 2u && !s->mon_tripped && s->armed &&
+                     !hal_outputs_forced();
+        if (sb_mode(s) == MODE_DP && (thruster_any_hot(&s->thrust) || !ti.allowed))
+            sb_request_mode(s, MODE_STANDBY, WHY_DP_THRUSTER);
+        ti.dp_active = sb_mode(s) == MODE_DP && s->dp.sub != DP_OFF;
+        ti.demand_pct[THR_BOW] = ti.dp_active ? s->dp.bow : 0.0f;
+        ti.demand_pct[THR_STERN] = ti.dp_active ? s->dp.stern : 0.0f;
+#ifdef SB_TEST_HOOKS
+        if (s->test_thrust.on && !ti.dp_active) {   /* (the step-9 thruster tests, without MODE_DP) */
+            ti.dp_active = true;
+            ti.demand_pct[THR_BOW] = s->test_thrust.bow_pct;
+            ti.demand_pct[THR_STERN] = s->test_thrust.stern_pct;
+        }
+#endif
+        ti.dt_ms = dt_ms;
+        thruster_step(&s->thrust, &ti);
+        if (thruster_any_hot(&s->thrust)) alarm2_on(s, SB_ALM2_DP_HEAT);
+    }
+
     /* 5. gear and throttle (order: throttle limited by the gear state),
      *    demand limited by the power limit of its direction */
     s->throttle_mode = s->throttle_demand;
@@ -2658,7 +2910,7 @@ void sb_step(sb_t *s)
      * (a takeover in the same step) meets the normal rule: idle in neutral, the
      * reverse limit out of forward, the gear only moves at idle */
     bool gen_neutral = s->gen.active && gear_is(&s->gear, GEAR_N) && s->gear_demand == GEAR_N &&
-                       sb_mode(s) == MODE_STANDBY;
+                       (sb_mode(s) == MODE_STANDBY || sb_mode(s) == MODE_DP);
     float lim_dir = (s->gear_demand == GEAR_F) ? fminf(s->plim.fwd_pct, slam_cap(&s->slam))
                   : gen_neutral ? fminf(s->gen.cap_pct, s->plim.fwd_pct)
                   : s->plim.rev_pct;
@@ -2684,28 +2936,6 @@ void sb_step(sb_t *s)
             sb_request_mode(s, MODE_STANDBY, WHY_GEAR_FAULT);
     }
     hal_set_gear_pwm(s->gear.pwm_us);
-    /* 6a. DP thrusters (section P; thruster.c is their only writer): 0 unless DP
-     *     is active (MODE_DP: step 10) AND allowed - not FIRST TEST, e-stop
-     *     released (its contactor also cuts their power), no monitor trip,
-     *     outputs armed; clamped to the boat file's max_pct, rate limited,
-     *     heat budget per thruster (used up = that one 0 + DP THRUSTER HOT) */
-    {
-        thr_input_t ti;
-        memset(&ti, 0, sizeof ti);
-        ti.dp_active = false;                       /* no MODE_DP yet (step 10) */
-#ifdef SB_TEST_HOOKS
-        if (s->test_thrust.on) {
-            ti.dp_active = true;
-            ti.demand_pct[THR_BOW] = s->test_thrust.bow_pct;
-            ti.demand_pct[THR_STERN] = s->test_thrust.stern_pct;
-        }
-#endif
-        ti.allowed = !s->cfg.first_test && s->estop_state != 2u && !s->mon_tripped && s->armed &&
-                     !hal_outputs_forced();
-        ti.dt_ms = dt_ms;
-        thruster_step(&s->thrust, &ti);
-        if (thruster_any_hot(&s->thrust)) alarm2_on(s, SB_ALM2_DP_HEAT);
-    }
     hal_set_rudder_motor(s->ap.motor_cmd);
     if (s->chirp_ms > 0u) s->chirp_ms = (s->chirp_ms > dt_ms) ? s->chirp_ms - dt_ms : 0u;
     hal_set_alarm(s->alarm || s->ap.alarm || s->chirp_ms > 0u);

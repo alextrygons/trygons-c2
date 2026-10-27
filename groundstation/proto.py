@@ -49,6 +49,9 @@ T_THRUSTER_CFG = 0x1F      # 12 bytes: bow {u8 max_pct, u16 run_s, u16 rest_s}, 
                            # the boat file's DP thruster settings (HELM station, STANDBY only, RAM only; app/thruster.h)
 T_RESTART = 0x2D           # u8 action: 0 RESTART (clear the ENGINE KILL / software reset after a monitor trip), 1 CRANK
                            # (START held, 5 Hz), 2 RELEASE - HELM station; idle + neutral, e-stop released (app/engine.h)
+T_DP = 0x2E                # u8 action (0 START, 1 JOG, 2 SPEED, 3 HEADING, 4 STOP), u8 arg, i16 value: DP (app/dp.h;
+                           # HELM station; START from STANDBY + joystick CONFIRM; a copilot's needs the captain's ACCEPT
+                           # except STOP)
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
@@ -73,8 +76,9 @@ T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor 
 # before it only fill the AURIX's staging area; COMMIT makes it the route).
 DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_HEADING_ADJ, T_SEA_STATE,
                 T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR, T_RELAY, T_RELAY_CFG, T_RESTART,
-                T_THRUSTER_CFG}
+                T_THRUSTER_CFG, T_DP}
 # (T_THRUSTER_CFG = the DP thruster settings: a copilot's always needs the captain's ACCEPT, like the relay table)
+# (T_DP: START / JOG / SPEED / HEADING move the boat = ACCEPT; STOP (thrusters 0, STANDBY) goes straight - CLAUDE.md P/D)
 # (T_RELAY_CFG = the relay table: always the captain's ACCEPT. T_RELAY (CLAUDE.md O): an ENGINE-group relay needs
 #  the captain's ACCEPT from a copilot, a trim / extra relay goes straight - but only when the relay's group is KNOWN
 #  from the table that is active on the AURIX (relay_groups); unknown relay / unknown table = engine = ACCEPT.)
@@ -111,6 +115,8 @@ def is_driving_cmd(ftype, payload=b"", relay_groups=None):
         return g not in RELAY_FREE_GROUPS
     if ftype == T_GENERATOR:
         return payload[:1] == b"\x01"           # switching the generator ON opens the throttle (in neutral): ACCEPT; OFF is free
+    if ftype == T_DP:
+        return payload[:1] != bytes([DP_STOP])     # DP STOP: a copilot may always stop (like STANDBY / hold)
     if ftype == T_RESTART:
         # RESTART: a copilot's needs the captain's ACCEPT; CRANK / RELEASE (hold-to-crank, 5 Hz) are not asked one by
         # one - the gateway lets only the captain crank (code 118), RELEASE is always free
@@ -133,7 +139,7 @@ TYPE_NAMES = {
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data",
     T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table", T_RESTART: "engine restart / start",
-    T_THRUSTER_CFG: "thruster settings",
+    T_THRUSTER_CFG: "thruster settings", T_DP: "DP",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -170,14 +176,29 @@ RESULTS = {
     119: "no captain holds HELM",
 }
 
-MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL", "BENCH_TEST", "MANEUVER"]
+MODES = ["STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL", "BENCH_TEST", "MANEUVER", "DP"]
 # mode change reasons (app/modes.h mode_reason_t)
 WHY = ["user", "STANDBY button", "compass fault", "GPS lost", "arrived", "training done", "training abort",
        "test", "gear fault", "DR limit", "arrival uncertain", "joystick", "joystick hand-back", "joystick fault",
        "PC", "HDG LOCK button", "CONFIRM", "not armed", "safety monitor", "remote", "remote end", "remote lost",
        "emergency stop", "bench test ended (idle / link / moving / HELM)", "maneuver",
-       "profile fault (joystick appeared, UNCREWED)", "link to the HELM station lost"]
-MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE, MODE_BENCH, MODE_MANEUVER = range(8)
+       "profile fault (joystick appeared, UNCREWED)", "link to the HELM station lost", "DP (HELM + CONFIRM)", "DP STOP",
+       "DP: off the spot", "DP: thruster hot / blocked"]
+MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE, MODE_BENCH, MODE_MANEUVER, MODE_DP = range(9)
+# DP (app/dp.h): sub-states (TELEM2 group N "dp_sub"), PROTO_T_DP actions, why it ended
+DP_SUBS = ["off", "SPOT", "JOG", "CRUISE", "TRIP"]
+DP_OFF, DP_SPOT, DP_JOG, DP_CRUISE, DP_TRIP = range(5)
+DP_TRIP_CONTINUE = 0x80
+DP_START, DP_JOG_ACT, DP_SPEED, DP_HEADING, DP_STOP = range(5)
+DP_JOG_AHEAD, DP_JOG_ASTERN, DP_JOG_PORT, DP_JOG_STBD = range(4)
+DP_STOP_WHY = ["-", "DP STOP", "STANDBY (button / e-stop / link lost)", "joystick took over", "GPS lost / suspect",
+               "compass lost", "thruster hot / blocked", "off the spot", "fault"]
+
+
+def p_dp(action, arg=0, value=0):
+    """PROTO_T_DP payload: START (arg sub, value speed kn*100) / JOG (arg dir) / SPEED (value kn*100) /
+    HEADING (arg 0 absolute deg*10, 1 change deg*10) / STOP."""
+    return struct.pack("<BBh", action, arg, int(value))
 # operating profile (app/smallboat.h SB_PROFILE_)
 PROFILES = ["DETECTING", "CREWED", "UNCREWED"]
 PROFILE_DETECTING, PROFILE_CREWED, PROFILE_UNCREWED = range(3)
@@ -274,7 +295,7 @@ def decode_bench_diag(payload: bytes) -> dict:
     }
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
 CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING", "MANEUVER",
-                 "RELAY TABLE"]
+                 "RELAY TABLE", "DP"]
 REMOTE_STATES = ["off", "DRIVING", "LINK LOST"]
 REMOTE_LOST_WHY = ["", "no data (gap > 300 ms)", "data too old", "latency too high"]
 WP_ACTIONS = ["continue", "slow", "stop"]
@@ -339,6 +360,8 @@ ALARMS2 = [
     (0x001, "LOW BATTERY"),
     (0x002, "RELAY BOARD SILENT"),
     (0x004, "DP THRUSTER HOT"),
+    (0x008, "DP OFF SPOT"),
+    (0x010, "DP OVERPOWER"),
 ]
 
 
@@ -806,6 +829,9 @@ _T2_GROUPS = [
                                  "eng_cranks".split()),
     (struct.Struct("<BbbBBBBHB"), "thr_flags thr_bow thr_stern thr_heat_b thr_heat_s thr_max_b thr_max_s thr_hash "
                                   "thr_why".split()),
+    # group N, the DP state (step 10)
+    (struct.Struct("<BBhhHBBBB"), "dp_sub dp_flags dp_err_fwd10 dp_err_stbd10 dp_hdg10 dp_set10 dp_trip10 dp_wp "
+                                  "dp_stop".split()),
 ]
 LL_STATES = ["OK", "LINK LOST", "ENGINE KILLED"]
 # engine controls (app/engine.h, TELEM2 group O, log event RESTART)
@@ -921,6 +947,22 @@ def decode_telem2(payload: bytes) -> dict:
         d["thr_fitted_stern"] = bool(f & 32)
         if not d["thr_cfg"]:
             d["thr_hash"] = None                        # nothing taken yet (the station pushes its file)
+    if "dp_sub" in d:
+        f = d["dp_flags"]
+        d["dp_sub_name"] = DP_SUBS[d["dp_sub"]] if d["dp_sub"] < len(DP_SUBS) else "?"
+        d["dp_offspot"] = bool(f & 1)                   # DP OFF SPOT (advisory)
+        d["dp_overpower"] = bool(f & 2)                 # DP OVERPOWER (advisory)
+        d["dp_gyro_hold"] = bool(f & 4)                 # compass lost: the gyro holds the heading (STANDBY after 10 s)
+        d["dp_trip_done"] = bool(f & 8)
+        d["dp_pending"] = bool(f & 16)                  # a DP request waits for the joystick CONFIRM
+        d["dp_fight"] = bool(f & 32)                    # the generator check: the stern fights a forward push
+        d["dp_err_fwd"] = d["dp_err_fwd10"] / 10.0      # the spot ahead (+) / astern (-), m
+        d["dp_err_stbd"] = d["dp_err_stbd10"] / 10.0    # the spot to starboard (+) / port (-), m
+        d["dp_err_m"] = (d["dp_err_fwd"] ** 2 + d["dp_err_stbd"] ** 2) ** 0.5
+        d["dp_heading"] = d["dp_hdg10"] / 10.0
+        d["dp_set_kn"] = d["dp_set10"] / 10.0
+        d["dp_trip_kn"] = d["dp_trip10"] / 10.0
+        d["dp_stop_text"] = DP_STOP_WHY[d["dp_stop"]] if d["dp_stop"] < len(DP_STOP_WHY) else "why %d" % d["dp_stop"]
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

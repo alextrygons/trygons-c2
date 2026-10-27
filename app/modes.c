@@ -4,15 +4,17 @@
 #include "modes.h"
 
 static const bool k_allowed[MODE_COUNT][MODE_COUNT] = {
-    /* to:          STANDBY MANUAL HDG_LOCK AUTO  TRAINING REMOTE BENCH  MANEUVER */
-    /* STANDBY  */ { false, true,  true,    true,  true,    true,  true,  true  },
-    /* MANUAL   */ { true,  false, true,    true,  false,   false, false, false },   /* the onboard joystick has it */
-    /* HDG_LOCK */ { true,  true,  false,   true,  false,   true,  false, false },
-    /* AUTO     */ { true,  true,  true,    false, false,   true,  false, false },
-    /* TRAINING */ { true,  true,  false,   false, false,   false, false, false },
-    /* REMOTE   */ { true,  true,  false,   false, false,   false, false, true  },   /* onboard joystick takes over */
-    /* BENCH    */ { true,  true,  false,   false, false,   false, false, false },   /* dock test: back to STANDBY */
-    /* MANEUVER */ { true,  true,  false,   false, false,   true,  false, false },   /* captain: dock / trailer */
+    /* to:          STANDBY MANUAL HDG_LOCK AUTO  TRAINING REMOTE BENCH  MANEUVER DP */
+    /* STANDBY  */ { false, true,  true,    true,  true,    true,  true,  true,    true  },
+    /* MANUAL   */ { true,  false, true,    true,  false,   false, false, false,   false },   /* the onboard joystick has it */
+    /* HDG_LOCK */ { true,  true,  false,   true,  false,   true,  false, false,   false },
+    /* AUTO     */ { true,  true,  true,    false, false,   true,  false, false,   false },
+    /* TRAINING */ { true,  true,  false,   false, false,   false, false, false,   false },
+    /* REMOTE   */ { true,  true,  false,   false, false,   false, false, true,    false },   /* onboard joystick takes over */
+    /* BENCH    */ { true,  true,  false,   false, false,   false, false, false,   false },   /* dock test: back to STANDBY */
+    /* MANEUVER */ { true,  true,  false,   false, false,   true,  false, false,   false },   /* captain: dock / trailer */
+    /* DP       */ { true,  true,  false,   false, false,   false, false, false,   false },   /* thrusters 0 first, then STANDBY;
+                                                                                               the onboard joystick: MANUAL */
 };
 
 void mode_init(mode_mgr_t *m, uint32_t now_ms)
@@ -72,7 +74,7 @@ const mode_log_entry_t *mode_log_get(const mode_mgr_t *m, uint32_t i)
 const char *mode_name(sb_mode_t m)
 {
     static const char *const n[] = { "STANDBY", "MANUAL", "HDG_LOCK", "AUTO", "TRAINING", "REMOTE_MANUAL",
-                                     "BENCH_TEST", "MANEUVER" };
+                                     "BENCH_TEST", "MANEUVER", "DP" };
     return ((unsigned)m < MODE_COUNT) ? n[m] : "?";
 }
 
@@ -85,7 +87,8 @@ const char *mode_reason_name(mode_reason_t r)
         "HDG LOCK button", "PC + CONFIRM", "outputs not armed", "safety monitor",
         "remote driving (HELM + CONFIRM)", "remote driver released", "remote driving link lost",
         "emergency stop", "bench test ended (idle / link / moving / HELM)",
-        "maneuver (HELM + CONFIRM)", "profile fault (joystick appeared, UNCREWED)", "link to the HELM station lost"
+        "maneuver (HELM + CONFIRM)", "profile fault (joystick appeared, UNCREWED)", "link to the HELM station lost",
+        "DP", "DP stop", "DP off spot", "DP thruster"
     };
     return ((unsigned)r < WHY_COUNT) ? n[r] : "?";
 }

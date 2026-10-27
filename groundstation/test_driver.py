@@ -161,6 +161,9 @@ def main():
         dv = app.driver
         dv.w.geometry("1600x900+100+60")
         pump(2.0)
+        # (a busy PC: the first HUD may still be the one drawn before the window got its size - wait for one
+        # drawn at the real size; the heading box then sits in the bottom strip)
+        pump(10.0, lambda: any(o.get("r") and o["r"][1] > dv.cv.winfo_height() * 0.5 for o in dv.items("hdg")))
         d = app.t
 
         # I1 the HUD from live telemetry

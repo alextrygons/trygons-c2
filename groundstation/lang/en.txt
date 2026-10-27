@@ -24,6 +24,7 @@ mode.TRAINING = TRAINING
 mode.REMOTE_MANUAL = REMOTE MANUAL
 mode.BENCH_TEST = BENCH TEST
 mode.MANEUVER = MANEUVER
+mode.DP = DP
 
 # --- gear letters (throttle bar, values) -------------------------------------
 gear.0 = N
@@ -65,6 +66,8 @@ alarm.engine_killed = ENGINE KILLED (reset on board)
 alarm.low_battery = LOW BATTERY (12 V bank)
 alarm.relay_silent = RELAY BOARD SILENT
 alarm.dp_heat = DP THRUSTER HOT
+alarm.dp_offspot = DP OFF SPOT
+alarm.dp_overpower = DP OVERPOWER
 alarm.no_data = NO DATA FROM THE BOAT
 
 # --- answers of the boat / gateway to a command (ACK result codes) ----------
@@ -283,6 +286,7 @@ confirm.4 = POWER RAISE REV
 confirm.5 = REMOTE DRIVING
 confirm.6 = MANEUVER
 confirm.7 = RELAY TABLE
+confirm.8 = DP
 
 # --- captain screen: left column (values) -------------------------------------
 cap.power_none = POWER LIMIT --
@@ -1191,6 +1195,8 @@ say.alarm.engine_killed = The engine was killed, it must be reset on board
 say.alarm.low_battery = Low battery
 say.alarm.relay_silent = Relay board silent
 say.alarm.dp_heat = A thruster is hot and has stopped
+say.alarm.dp_offspot = The boat is off the spot
+say.alarm.dp_overpower = The thrusters are at their limit
 say.alarm.no_data = No data from the boat
 
 # --- boats (boats/ folder), crew, profile (CLAUDE.md A, B, D, F) ---

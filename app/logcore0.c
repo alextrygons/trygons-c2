@@ -30,6 +30,7 @@ static struct {
     bool     relay_ok;
     uint32_t eng_seq;
     uint32_t thr_seq;
+    uint32_t dp_seq;
     uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -277,7 +278,7 @@ static void changes(const sb_t *s)
     {
         const sb_navreq_t *nv = &s->nav;
         bool fresh = nv->rx_ms != 0u && s->now_ms - nv->rx_ms <= nv->lease_ms;
-        bool applied = sb_mode(s) == MODE_AUTO && (nv->lost || (fresh && (nv->kind == SB_NAV_CAP ||
+        bool applied = (sb_mode(s) == MODE_AUTO || (sb_mode(s) == MODE_DP && s->dp.sub == DP_TRIP)) && (nv->lost || (fresh && (nv->kind == SB_NAV_CAP ||
                                                                           nv->kind == SB_NAV_HEADING)));
         uint32_t code = (uint32_t)(fresh ? nv->kind : 0u) | ((uint32_t)nv->reason << 8) | ((uint32_t)nv->alarm << 16) |
                         ((nv->lost ? 1u : 0u) << 24) | ((applied ? 1u : 0u) << 25);
@@ -347,6 +348,16 @@ static void changes(const sb_t *s)
            (int32_t)((uint32_t)(thruster_heat(t, t->log_unit) * 100.0f + 0.5f) | ((uint32_t)t->cfg_hash << 8)));
     }
     k.thr_seq = s->thrust.log_seq;
+    /* DP (section P): start / sub-state change, JOG, the end of a TRIP, the stop (events only: the 20 Hz
+     * sample is full) - what 4 start / sub, 5 stopped, 6 jog, 7 trip end; sub | stop why << 8 | wp << 16,
+     * spot error m*10, heading target*10 | set speed kn*10 << 16 */
+    if (s->dp.log_seq != k.dp_seq) {
+        const dp_t *d = &s->dp;
+        ev(s, EV_DP, d->log_what, (int32_t)((uint32_t)d->sub | ((uint32_t)d->stop_why << 8) | ((uint32_t)d->wp << 16)),
+           (int32_t)lroundf(d->err_m * 10.0f),
+           (int32_t)((uint32_t)lroundf(d->hdg_target * 10.0f) | ((uint32_t)lroundf(d->set_kn * 10.0f) << 16)));
+    }
+    k.dp_seq = s->dp.log_seq;
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
     k.save_seq = s->save.seq;

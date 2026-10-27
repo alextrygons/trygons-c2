@@ -29,7 +29,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 7b | Step 6 review fixes | DONE (gate OK: sim 225/225 + bridge 224/224 incl. RB9-RB14, TriCore + iLLD + relay / engine-relay writer checks, boats 9/9, screen 2 13/13, gateway 106/106; test_driver 19/19; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-7 HEAD, every other suite this tree), storm 200 episodes I36 4.28 M checks / I37 / I38 0 fails) | this commit |
 | 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | DONE (gate OK: sim 225/225 + bridge 224/224, TriCore + iLLD checks, lang 5/5, boats 9/9, screen 2 14/14 incl. S14 + S1 with the relays panel, sound 10/10, avoidance 14/14, gateway 108/108 incl. RL1-RL2; test_driver 20/20 incl. I21; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-7b HEAD, every other suite this tree), stations storm I16 30 s 0 violations) | this commit |
 | 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | DONE (gate OK except gateway B3 under PC load - section B alone 12/12 PASS; sim 229/229 + bridge 228/228 incl. DP1-DP4, TriCore + iLLD + thruster-writer / safe-output checks, boats 10/10 incl. B10, screen 2, lang, sound, avoidance; test_driver 20/20; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-8 HEAD, every other suite this tree), storm 200 episodes I39 4.28 M checks 0 fails) | this commit |
-| 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | | |
+| 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A) incl. DP5-DP14 + GN9, TriCore + iLLD + writer checks, gateway 108/108, screen 2 14/14, lang 5/5; test_driver 20/20 (twice); acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-9 HEAD, every other suite this tree), storm 200 episodes I39 4.28 M checks, I40-I43 10 k DP steps, 0 fails) | this commit |
 | 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | | |
 | 12 | Gateway on a rugged x86 mini PC: remove Pi-only parts, 3.3 V USB-UART (never RS232), USB AIS receiver; README / PARTS / WIRING | | |
 | 13 | Open items: AUTO return, docs/screens pictures (tools/demo_screens.py), paddlewheel, analog joystick | | |
@@ -304,6 +304,66 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   now: thrusters 0 every step). T2_O in sim_sb.c now skips O + N. Docs: WIRING 3C (new) + e-stop power contact,
   PARTS, MANUAL 5 / 7 (DP THRUSTERS) / alarms / 17, MANUAL_EL, CLAUDE.md P (done line). TBD: thrusters, controllers
   (RC input with "no pulses = stop" assumed; PWM + DIR would need a HAL change), pins, contactor.
+- Step 10 (2026-10-27): DP part 2 = MODE_DP. app/dp.c (+ .h, pure C): dp_t (sub SPOT / JOG / CRUISE / TRIP, the anchor,
+  the held heading, set speed, integrators, the TRIP leg) + dp_start / dp_jog / dp_speed / dp_heading / dp_stop / dp_step.
+  Control: the GPS fix (1 Hz) blended 0.5 into an estimate propagated with the GPS velocity; boat frame from the compass
+  (or the gyro-integrated heading while the compass is lost); SPOT / JOG: stern = fore / aft PI + velocity damping (8 %/m,
+  30 %/(m/s), I 0.4 %/(m s), clamp 60 % of the cap, frozen beyond 15 m), bow = heading PD on the gyro (4 %/deg, 10 %/(deg/s))
+  FIRST + the sideways PD only with what is left, at most DP_SWAY_SHARE 30 % of the cap and fading to 0 at 5 deg of heading
+  error; dead bands 1.5 deg / 0.4 deg/s and 1 m / 0.15 m/s (heat budget). CRUISE / TRIP: stern = speed PI (15 %/kn, 4 %/(kn s),
+  ahead only, astern down to -30 % of the cap), bow = heading. TRIP: nav_leg to each waypoint, look-ahead max(20 m, 8 s),
+  speed = min(set, leg, dp_max_kn, navreq cap), slows to 1 kn in the last 30 m before the last / a STOP waypoint; the end or a
+  STOP waypoint -> SPOT there (STOP: "continue" = START TRIP | 0x80 goes on from the next one). JOG done within 1 m / after 30 s.
+  Off spot: beyond spot_alarm_m = offspot (hysteresis 80 %), > 50 m or offspot for 2 min = DP_R_OFFSPOT; both thrusters within
+  0.5 % of their caps 10 s = overpower; the generator check "fight" = stern < -30 % for 5 s while the boat got 1 m farther
+  ahead of the spot.
+  smallboat: MODE_DP = 8 (modes.c table: STANDBY -> DP, DP -> STANDBY / MANUAL), WHY_DP / WHY_DP_STOP / WHY_DP_OFFSPOT /
+  WHY_DP_THRUSTER (log header names short: ER6 still complete), CONF_DP + sb_t.dp_req, cfg dp_max_kn 3 / dp_max_entry_kn 2
+  (TO CONFIRM), dp_ok() = GPS trusted, compass, armed, no trip / e-stop / lost link / forced outputs / gear fault / FIRST TEST,
+  both thrusters fitted + none hot, entry SOG < 2 kn, TRIP waypoint reachable. sb_dp_cmd (link.c PROTO_T_DP 0x2E, 4 bytes,
+  HELM station; MANUAL -> JOYSTICK except STOP): START from STANDBY = CONFIRM; in DP SPOT at once, CRUISE / TRIP with the
+  CONFIRM again; JOG / SPEED / HEADING in DP only; STOP cancels a waiting DP request and ends DP. HEADING_ADJ in DP = a heading
+  change (works UNCREWED too; the panel course buttons in DP CREWED). sb_request_mode calls dp_stop(why) when leaving DP;
+  on_enter(DP): steering core disengaged, dp_start at the trusted fix. dp_mode(): GPS not trusted -> alarm + STANDBY
+  (WHY_GPS_LOST), compass 10 s / no gyro -> WHY_COMPASS_FAULT, off spot -> WHY_DP_OFFSPOT, TRIP end -> chirp + ARRIVED.
+  The thruster step (4b) now runs BEFORE the outboard's gear / throttle: dp_active = MODE_DP; a thruster HOT (it went to 0
+  itself the step before) or not allowed in DP -> STANDBY (WHY_DP_THRUSTER) first, so both are 0 in that step.
+  DECISION (step 9 left it to step 10, TO CONFIRM by the owner): DP THRUSTER HOT in DP ends DP (STANDBY) - it can't hold with
+  one thruster; no new DP while hot. Joystick fault (CREWED) and the joystick disappearing end DP too (the crew's takeover).
+  The generator may run in DP SPOT / JOG (gi.allowed, the demand + gen_neutral in DP, the SOG check off in DP); a pending DP
+  CRUISE / TRIP start and CRUISE / TRIP itself stop it; dp.fight -> GEN_STOP_DP_FIGHT (generator.c, FAULT, auto off) ->
+  SB_ALM_GEAR + DP ends (WHY_GEAR_FAULT). Navigation request: nav_applies() = AUTO or DP TRIP (cap, avoidance heading, lost
+  lease = hold the heading + min(nav_lost_kn, last cap), shallow alarm); SPOT / JOG / CRUISE = alarm only. sb_program_set
+  refused while a TRIP runs; a new program resets the TRIP "continue" waypoint and cancels a waiting TRIP request.
+  Alarms (second word, advisories): SB_ALM2_DP_OFFSPOT 0x8, SB_ALM2_DP_OVERPOWER 0x10 (kept by the ACK while they hold).
+  TELEM2 group N + 12 bytes (u8 sub, u8 flags b0 off spot b1 overpower b2 gyro hold b3 trip done b4 DP CONFIRM pending b5
+  fight, i16 spot error ahead / starboard dm, u16 heading target*10, u8 set kn*10, u8 trip kn*10, u8 wp, u8 stop why):
+  sim T2_N = 10 + T2_DP 12. Log event 28 what 4 start / sub, 5 stopped, 6 JOG, 7 TRIP end (header text "28:DP:what,a,b,c").
+  LIMIT (sim + physics): a tunnel thruster can't sway the boat while holding the heading - a cross current / wind drifts the
+  boat off the spot (DP OFF SPOT, then STANDBY after 50 m / 2 min); the manual says "turn the bow into the current".
+  NOTE for the owner: the sample boat files' heat budgets (bow 60 s / stern 120 s) end a DP in a current after 1-2 min
+  (HOT -> STANDBY) - real run_s / rest_s of the chosen thrusters TBD.
+  Station (display only for now; screens = step 11): proto T_DP + p_dp + DP_* names, is_driving_cmd(T_DP) = everything but
+  STOP (a copilot's STOP goes straight), MODES + "DP" (MODE_DP 8), WHY + 4, CONFIRM_KINDS + "DP", ALARMS2 + DP OFF SPOT /
+  DP OVERPOWER, TELEM2 N DP decode (dp_sub_name, dp_err_*, dp_heading ...), alerts dp_offspot / dp_overpower CAUTION, theme
+  MODE_COLOURS DP, tlg.py event 28 what 4-7 + GEN_STOP 8. Lang: mode.DP, confirm.8, alarm.dp_offspot / dp_overpower,
+  say.alarm.* (el + en).
+  Tests: sim DP5 (every entry refusal + CONFIRM onboard / shore), DP6 (SPOT in a 0.5 kn head current: <1 m, heading <2 deg;
+  HEADING_ADJ / course button), DP7 (JOG x4), DP8 (CRUISE 2 / 1 kn, heading 120, SPOT at once), DP9 (TRIP, navreq cap,
+  lost lease, end in SPOT at the last waypoint, navreq heading in SPOT = alarm only, program refused while it runs), DP10
+  (stick X / TAKE -> thrusters 0 same step + MANUAL), DP11 (GPS lost / jump), DP12 (off spot advisory, 50 m, 2 min), DP13
+  (HOT -> STANDBY, overpower advisory), DP14 (STANDBY button, e-stop, DP STOP, compass 10 s gyro hold, compass + gyro,
+  UNCREWED link lost, STOP cancels a waiting request), GN9 (generator in DP SPOT, CRUISE stops it, the stern fight = GEAR
+  FAULT). Storm: event E_DP (settings incl. tiny heat budgets, START SPOT / CRUISE / TRIP after centre + STANDBY + 15 s, JOG,
+  SPEED, HEADING, STOP from the HELM or another station, a random current), NINV 44: I39 (0 outside DP + e-stop contactor),
+  I40, I41, I42, I43; I7 (DP entry only with a CONFIRM), I20 (navreq heading never in SPOT / JOG / CRUISE), I34 (generator
+  in DP SPOT / JOG), spec table + DP. Test change: sim GA2 (slow UART) at 76800 instead of 57600 - TELEM2 grew 12 bytes and
+  the 10 Hz telemetry got one step late at 57600 (the real gateway UART is 921600).
+  Test robustness (no app change): test_screen2 Rig.gateway_like holds the DP thruster push (send is stubbed, no ACK
+  ever comes: the push repeated every 15 s and left an English event line from the S1 English pass -> S11 failed);
+  test_driver I1 waits until the HUD was drawn at the real window size (on a busy PC the first HUD was still the one
+  drawn at 200 x 150 - also seen once at the step-9 HEAD). Gate: the first run had gateway F1e fail (section F1 alone
+  5/5 PASS, PC load), the second run GATE OK.
 
 # Previous task: "Screen 2 review"
 

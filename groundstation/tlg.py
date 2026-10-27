@@ -22,7 +22,7 @@ FMT = {"B": "B", "c": "b", "H": "H", "h": "h", "I": "I", "i": "i", "f": "f"}
 POS_SOURCES = ["NO FIX", "GPS", "DEAD RECKONING", "RECOVERING"]
 # app/generator.h GEN_STOP_ (log event GENERATOR, b low byte)
 GEN_STOP_WHY = {0: "-", 1: "conditions", 2: "off", 3: "request", 4: "no volts", 5: "rest", 6: "switch opened",
-                7: "moved"}
+                7: "moved", 8: "DP: the stern fought a forward push"}
 # log event RELAY "what" (a >> 24)
 RELAY_WHAT = {1: "command", 2: "table", 3: "states", 4: "board"}
 
@@ -149,6 +149,13 @@ class Log:
             return "RESTART %s%s, hold %d ms (restarts %d, cranks %d)" % (
                 proto.ENG_ACTIONS.get(a[0], a[0]), "" if not a[1] else " - " + proto.eng_why_text(a[1]), a[2],
                 a[3] & 0xFFFF, (a[3] >> 16) & 0xFFFF)
+        if name == "DP" and a[0] >= 4:
+            what = {4: "start / sub-state", 5: "stopped", 6: "JOG", 7: "TRIP end (SPOT)"}
+            sub, why, wp = a[1] & 0xFF, (a[1] >> 8) & 0xFF, (a[1] >> 16) & 0xFF
+            return "DP %s: %s%s, waypoint %d, spot error %.1f m, heading %.1f, speed %.1f kn" % (
+                what.get(a[0], a[0]), proto.DP_SUBS[sub] if sub < len(proto.DP_SUBS) else sub,
+                "" if a[0] != 5 else " - " + (proto.DP_STOP_WHY[why] if why < len(proto.DP_STOP_WHY) else str(why)),
+                wp, a[2] / 10.0, (a[3] & 0xFFFF) / 10.0, ((a[3] >> 16) & 0xFFFF) / 10.0)
         if name == "DP":
             what = {1: "thruster settings taken", 2: "thruster HOT (heat budget used up)", 3: "thruster cooled down"}
             unit = ("bow", "stern")[a[1]] if a[1] in (0, 1) else a[1]

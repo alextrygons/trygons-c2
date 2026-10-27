@@ -64,7 +64,7 @@ typedef enum {
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
-    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT,
+    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP,
     E_COUNT
 } ev_kind_t;
 
@@ -80,7 +80,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "shore info (near / far / none / invalid)", "generator auto on (+ ACK, bank low) / off",
     "bank voltage (low / fine / no data / just low)", "relay board (table offer / relay command / board fault / back)",
     "engine (RESTART / START held / released / e-stop pressed or released)",
-    "watchdog reset (the chip restarts: system reset, not a power-on)"
+    "watchdog reset (the chip restarts: system reset, not a power-on)",
+    "DP (thruster settings / START SPOT, CRUISE, TRIP / JOG / SPEED / HEADING / STOP; a current)"
 };
 
 typedef struct {
@@ -152,7 +153,8 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         else if (p < 0.831f) k = E_RELAY;
         else if (p < 0.835f) k = E_WDT;
         else if (p < 0.85f) k = E_ENGINE;
-        else if (p < 0.87f) k = E_FUZZ_USB;
+        else if (p < 0.865f) k = E_DP;
+        else if (p < 0.875f) k = E_FUZZ_USB;
         else if (p < 0.92f) k = E_FUZZ_GW;
         else if (p < 0.935f) k = E_FREEZE;
         else if (p < 0.95f) k = E_RESET;
@@ -172,6 +174,29 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         e->g = rnd(&r) * 2.0f - 1.0f;
         s->on[s->n] = true;
         s->n++;
+        /* DP: mostly a START (centre the stick, STANDBY, let the boat slow down first) + the CONFIRM */
+        if (k == E_DP && e->a >= 150 && e->a < 550 && s->n + 3 < MAX_EV && rnd(&r) < 0.7f) {
+            ev_t req = *e;
+            memset(e, 0, sizeof *e);
+            e->t = t;
+            e->kind = E_JOY;                               /* a < 400: centre */
+            ev_t *sb = &s->ev[s->n++];
+            memset(sb, 0, sizeof *sb);
+            sb->t = t + 100u;
+            sb->kind = E_BTN;                              /* a < 350: STANDBY */
+            s->on[s->n - 1] = true;
+            ev_t *rq = &s->ev[s->n++];
+            *rq = req;
+            rq->t = t + 15000u;
+            s->on[s->n - 1] = true;
+            ev_t *cf = &s->ev[s->n++];
+            memset(cf, 0, sizeof *cf);
+            cf->t = t + 15000u + 1000u + (uint32_t)rndi(&r, 2000);
+            cf->kind = (uint8_t)((s->uncrewed ^ (rnd(&r) < 0.1f)) ? E_SCONFIRM : E_CONFIRM);
+            s->on[s->n - 1] = true;
+            t = cf->t;
+            continue;
+        }
         /* what a crew does: a program before AUTO, the remote data before its request, and the
            joystick CONFIRM 1-3 s after a request (mostly) */
         if ((k == E_PC_AUTO_START || k == E_PC_RAISE || k == E_REMOTE_REQ || k == E_MAN_REQ) && s->n + 3 < MAX_EV) {
@@ -441,7 +466,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 40
+#define NINV 44
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -478,7 +503,11 @@ static const char *INV_NAMES[NINV] = { "",
     "I36 relays: no control path (mode / throttle / gear / steering / alarms), pair never both, pulse <= 5 s, engine relays never automatic, none in FIRST TEST, no power_up after a watchdog reset",
     "I37 STARTER only with idle + neutral confirmed and the e-stop released, <= 5 s per hold",
     "I38 the engine-kill / monitor latch is cleared only by a reset or the HELM station's restart under its conditions",
-    "I39 DP thrusters 0 outside MODE_DP (step 9: no MODE_DP yet = 0 every step; step 10 adds: within one step of every fault / STANDBY / e-stop)" };
+    "I39 DP thrusters 0 outside MODE_DP: within one step of every fault / STANDBY / e-stop (and the e-stop contactor)",
+    "I40 outboard idle + neutral throughout DP (only the generator's neutral throttle), its steering off",
+    "I41 CREWED joystick deflection in DP -> thrusters 0 + MANUAL (in time)",
+    "I42 GPS lost / suspect in DP -> thrusters 0 + STANDBY (never a DP step without a trusted GPS)",
+    "I43 thrust <= cap and within the heat budget (a HOT thruster at 0)" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -506,6 +535,7 @@ static bool spec_allowed(sb_mode_t f, sb_mode_t t)
     case MODE_REMOTE:   return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_MANEUVER;
     case MODE_MANEUVER: return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_REMOTE;   /* captain: dock */
     case MODE_BENCH:    return t == MODE_STANDBY || t == MODE_MANUAL;              /* dock test: back, or the joystick */
+    case MODE_DP:       return t == MODE_STANDBY || t == MODE_MANUAL;              /* thrusters 0 first; the joystick */
     default:            return false;
     }
 }
@@ -568,6 +598,7 @@ typedef struct {
     uint32_t edges_prev[4];                 /* I36: off -> on changes of the board's coils 1..3 */
     uint32_t eng_on_t[4];                   /* I36: an accepted engine-relay ON command (relay 1 / 3) */
     bool     alarm_flag_prev;
+    float    dp_tgt_prev;                   /* I20: DP heading target last step */
 } chk_t;
 
 static chk_t C;
@@ -744,6 +775,11 @@ static void check_step(void)
         else fail(7, "AUTO entered from mode %.0f without CONFIRM (last %.0f ms ago)", (double)C.mode_prev,
                   C.confirm_t ? (double)(S.t - C.confirm_t) : -1.0);
     }
+    if (m == MODE_DP && C.mode_prev != MODE_DP) {
+        if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(7);
+        else fail(7, "DP entered from mode %.0f without CONFIRM (last %.0f ms ago)", (double)C.mode_prev,
+                  C.confirm_t ? (double)(S.t - C.confirm_t) : -1.0);
+    }
     if ((m == MODE_REMOTE || m == MODE_MANEUVER) && C.mode_prev != m) {
         ST.remote_entries++;
         if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(7);
@@ -831,7 +867,8 @@ static void check_step(void)
             C.gen_env = fmaxf(C.gen_env, fminf(thr, C.gen_env));
             /* I34: the run conditions (a stop that has begun may outlive them) */
             if (g->state == GEN_STOPPING ||
-                (m == MODE_STANDBY && !s->stopping && s->armed && !s->mon_tripped && !sim_hal_engine_killed() &&
+                (((m == MODE_STANDBY && !s->stopping) || (m == MODE_DP && (s->dp.sub == DP_SPOT || s->dp.sub == DP_JOG))) &&
+                 s->armed && !s->mon_tripped && !sim_hal_engine_killed() &&
                  s->estop_state != 2u && !s->cfg.first_test && fitted && nsw)) ok(34);
             else fail(34, "generator running in mode %.0f (armed %.0f)", (double)m, s->armed ? 1.0 : 0.0);
         } else {
@@ -917,6 +954,9 @@ static void check_step(void)
             fabsf(s->ap.target_heading - s->nav.heading) < 0.01f) {
             fail(20, "navigation heading %.1f applied in mode %.0f", s->nav.heading, (double)m);
         } else ok(20);
+        if (m == MODE_DP && C.mode_prev == MODE_DP && s->dp.sub != DP_TRIP && s->nav.kind == SB_NAV_HEADING &&
+            fabsf(s->dp.hdg_target - C.dp_tgt_prev) > 0.01f && fabsf(s->dp.hdg_target - s->nav.heading) < 0.01f)
+            fail(20, "navigation heading %.1f applied in DP sub-state %.0f (not a TRIP)", s->nav.heading, (double)s->dp.sub);
     }
 
     /* I19: injected violations / frozen core 0 -> the monitor's safe state */
@@ -1023,13 +1063,42 @@ static void check_step(void)
             fail(36, "an advisory (word 2 bits %.0f) set the alarm flag%.0f", (double)new2, 0.0);
         else if (new2) ok(36);
     }
-    /* I39 (step 9): no MODE_DP exists yet, so both thruster outputs are 0 every step, whatever the storm does */
+    /* I39-I43: DP (section P). The thruster outputs every step: 0 outside MODE_DP (so within one step of every
+     * fault / STANDBY / e-stop / takeover: the mode left DP in that step), 0 at the contactor while the e-stop is
+     * pressed; in DP the outboard idle + neutral, its steering off; never a DP step without a trusted GPS; the
+     * caps + the heat budget */
     {
-        float tb, ts;
+        float tb, ts, hb, hs;
         sim_hal_thrusters(&tb, &ts);
-        if (tb != 0.0f || ts != 0.0f || s->thrust.active) fail(39, "thrusters %.1f / %.1f %% without MODE_DP", tb, ts);
+        sim_hal_thrust_truth(&hb, &hs);
+        const thruster_t *t = &s->thrust;
+        if (m != MODE_DP && (tb != 0.0f || ts != 0.0f || t->active))
+            fail(39, "thrusters %.1f / %.1f %% outside MODE_DP", tb, ts);
+        else if (S.estop && (hb != 0.0f || hs != 0.0f || tb != 0.0f || ts != 0.0f))
+            fail(39, "thrusters %.1f / %.1f %% with the e-stop pressed", tb, ts);
         else ok(39);
+        if (m == MODE_DP && !forced && !inj) {
+            bool gen = s->gen.active;
+            bool idle = gen ? true : (thr <= 0.6f && s->throttle_mode <= 0.01f);
+            if (idle && gp == 0 && s->gear_demand == GEAR_N && fabsf(sim_hal_motor_command()) < 0.01f) ok(40);
+            else fail(40, "DP with the outboard throttle %.1f %% / gear %.0f (or its steering on)", thr, (double)gp);
+            if (sb_gps_ok(s)) ok(42);
+            else fail(42, "a DP step without a trusted GPS (DR state %.0f)%.0f", (double)s->dr.state, 0.0);
+        }
+        if (C.mode_prev == MODE_DP && m == MODE_MANUAL) {
+            if (tb == 0.0f && ts == 0.0f && !t->active) ok(41);
+            else fail(41, "joystick took over from DP but the thrusters run %.1f / %.1f %%", tb, ts);
+        }
+        if (C.defl_pending && m == MODE_DP && joy_ok && S.t - C.defl_t > 400u)
+            fail(41, "joystick deflected %.2f s ago, still DP (sub %.0f)", (S.t - C.defl_t) * 0.001, (double)s->dp.sub);
+        bool over = fabsf(tb) > thruster_cap(t, THR_BOW) + 0.01f || fabsf(ts) > thruster_cap(t, THR_STERN) + 0.01f;
+        bool hot = (t->hot[THR_BOW] && tb != 0.0f) || (t->hot[THR_STERN] && ts != 0.0f);
+        bool budget = (!thruster_fitted(t, THR_BOW) || t->heat_s[THR_BOW] <= (float)t->cfg.unit[THR_BOW].run_s + 0.01f) &&
+                      (!thruster_fitted(t, THR_STERN) || t->heat_s[THR_STERN] <= (float)t->cfg.unit[THR_STERN].run_s + 0.01f);
+        if (over || hot || !budget) fail(43, "thrust %.1f / %.1f %% over the cap / with a HOT thruster / beyond the budget", tb, ts);
+        else if (tb != 0.0f || ts != 0.0f || m == MODE_DP) ok(43);
     }
+    C.dp_tgt_prev = s->dp.hdg_target;
     C.alarm_flag_prev = s->alarm;
     C.mode_prev = m;
     C.thr_prev = thr;
@@ -1069,7 +1138,7 @@ static void apply(const ev_t *e)
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
     case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK: case E_GEN: case E_ENGINE:
-    case E_WDT:
+    case E_WDT: case E_DP:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -1249,6 +1318,45 @@ static void apply(const ev_t *e)
         } else {                                                           /* the e-stop */
             S.estop = e->b < 500;
             sim_hal_set_estop(true, S.estop);
+        }
+        break;
+    }
+    case E_DP: {
+        /* section P: the HELM station (CREWED: it takes HELM first, like the remote requests) */
+        if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->c % 3);
+        s->helm = S.rem_station;
+        s->helm_local = false;
+        if (!s->thrust.have_cfg || e->a < 150) {               /* the boat file's thrusters (STANDBY only) */
+            thr_cfg_t c;
+            memset(&c, 0, sizeof c);
+            bool small = e->b % 3 == 0;                         /* sometimes a tiny heat budget (HOT in DP) */
+            c.unit[THR_BOW].max_pct = (float)(30 + e->b % 71);
+            c.unit[THR_BOW].run_s = small ? 20u : 600u;
+            c.unit[THR_BOW].rest_s = small ? 20u : 600u;
+            c.unit[THR_STERN].max_pct = (float)(30 + e->c % 71);
+            c.unit[THR_STERN].run_s = small ? 15u : 600u;
+            c.unit[THR_STERN].rest_s = 30u;
+            c.jog_m = 1.5f;
+            c.spot_alarm_m = 15.0f;
+            (void)sb_thruster_cfg(s, &c, (uint16_t)(1u + e->b));
+        }
+        S.w.current_e = e->f * 0.4f;                            /* a current (DP must cope or give up) */
+        S.w.current_n = e->g * 0.2f;
+        if (e->a < 150) break;
+        if (e->a < 550) {
+            uint8_t sub = (e->b < 500) ? DP_SPOT : (e->b < 750) ? DP_CRUISE
+                        : (uint8_t)(DP_TRIP | (e->c < 300 ? DP_TRIP_CONTINUE : 0u));
+            if ((sub & 0x7Fu) == DP_TRIP && e->c < 500) prog_random(1 + e->c % 4, &r);
+            (void)sb_dp_cmd(s, s->helm, DP_ACT_START, sub, (int16_t)(e->c * 3 % 301));
+        } else if (e->a < 700) {
+            (void)sb_dp_cmd(s, s->helm, DP_ACT_JOG, (uint8_t)(e->b % 4), 0);
+        } else if (e->a < 780) {
+            (void)sb_dp_cmd(s, s->helm, DP_ACT_SPEED, 0u, (int16_t)(e->b * 3 % 320));
+        } else if (e->a < 880) {
+            (void)sb_dp_cmd(s, s->helm, DP_ACT_HEADING, (uint8_t)(e->b % 2),
+                            (int16_t)(e->b % 2 ? e->c * 3 - 1500 : e->c * 3));
+        } else {
+            (void)sb_dp_cmd(s, (e->b % 4 == 0) ? (uint8_t)(2u + (uint32_t)e->c % 3u) : s->helm, DP_ACT_STOP, 0u, 0);
         }
         break;
     }

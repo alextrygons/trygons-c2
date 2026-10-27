@@ -138,6 +138,8 @@ void gen_step(gen_t *g, const gen_input_t *in)
         if (!in->volts_valid) { stop(g, GEN_STOP_NO_VOLTS, false); break; }
         if (!in->allowed || g->cap_pct < g->cfg.idle_pct - 0.001f) { stop(g, GEN_STOP_CONDITIONS, false); break; }
         if (in->stop_request) { stop(g, GEN_STOP_REQUEST, false); break; }
+        /* 2a. DP: the stern motor fighting a forward push it can't explain = the gearbox may be in gear */
+        if (in->dp_fight) { stop(g, GEN_STOP_DP_FIGHT, true); break; }
         /* 2. the boat must not move: a SOG rise within move_ms of a throttle rise = GEAR FAULT */
         if (g->move_ms) {
             g->move_ms += dt;
@@ -197,7 +199,8 @@ void gen_step(gen_t *g, const gen_input_t *in)
         g->demand_pct = 0.0f;                           /* never raises while a stop is pending */
         if (in->throttle_out_pct <= in->idle_max_pct + 0.001f) {
             g->fast_stop = false;
-            if (g->stop_why == GEN_STOP_SWITCH || g->stop_why == GEN_STOP_MOVED) g->state = GEN_FAULT;
+            if (g->stop_why == GEN_STOP_SWITCH || g->stop_why == GEN_STOP_MOVED || g->stop_why == GEN_STOP_DP_FIGHT)
+                g->state = GEN_FAULT;
             else if (!g->enabled) g->state = GEN_OFF;
             else if (g->stop_why == GEN_STOP_REST) { g->state = GEN_REST; g->timer_ms = 0u; }
             else g->state = GEN_READY;

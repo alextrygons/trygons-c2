@@ -49,8 +49,10 @@ struct sbsim {
 static logger_t s_logger;   /* core 2 logger (sim: a separate step) */
 
 /* TELEM2: the tests that read groups L / M from the end of the frame skip the
- * groups appended after them: O (engine controls, 12 bytes) + N (DP thrusters, T2_N bytes) */
-#define T2_N 10u
+ * groups appended after them: O (engine controls, 12 bytes) + N (DP thrusters 10 bytes + the DP state
+ * T2_DP bytes = T2_N) */
+#define T2_DP 12u
+#define T2_N (10u + T2_DP)
 #define T2_O (12u + T2_N)
 
 /* "all --bridge": every test drives the boat through the USB joystick
@@ -5054,7 +5056,7 @@ static void gateway_tests(void)
         static pisim_t p;
         sbsim_init(&x, 902u, 90.0f, 0.0f, NULL);
         sbsim_log_start(&x, "gwtest_sd", 8u);
-        pisim_init(&p, &x, 57600u);
+        pisim_init(&p, &x, 76800u);
         sbsim_run(&x, 2000u, pi_hook, &p);
         hdg_lock(&x);
         sbsim_run(&x, x.t + 500u, pi_hook, &p);
@@ -5062,7 +5064,7 @@ static void gateway_tests(void)
         p.last_telem_ms = x.t;
         sbsim_run(&x, 60000u, pi_hook, &p);
         bool sd_ok = !g_logstat.failure && g_logq0.dropped == 0u;
-        snprintf(d, sizeof d, "57600 baud: telemetry frames %d of 600, none lost (max gap %lu ms at %.1f s: 10 Hz + at most one 50 ms step late), TIME %d; log records to the Pi %lu, "
+        snprintf(d, sizeof d, "76800 baud (TELEM2 grew with the DP state, step 10): telemetry frames %d of 600, none lost (max gap %lu ms at %.1f s: 10 Hz + at most one 50 ms step late), TIME %d; log records to the Pi %lu, "
                  "dropped for the Pi %lu, gaps the Pi noticed %lu, bad %lu; SD: %lu records, none dropped %s",
                  p.telem, (unsigned long)p.max_telem_gap_ms, p.max_gap_at * 0.001, p.times, (unsigned long)p.recs,
                  (unsigned long)g_logq_gw.dropped, (unsigned long)p.gaps, (unsigned long)p.bad,
@@ -10624,9 +10626,748 @@ static void dp_tests(void)
     }
 }
 
+
+/* ------------------------------------------- DP mode (CLAUDE.md P, step 10) -- */
+
+/* A boat with the boat file's thruster settings, the gateway (Pi) on its UART, station 2 holds HELM
+ * (CREWED: the onboard joystick confirms; UNCREWED: the shore joystick streams + confirms). Measured
+ * after every control step: what the outboard / thrusters do in and out of DP. */
+typedef struct {
+    sbsim_t  x;
+    rjsim_t  r;
+    bool     crewed;
+    uint32_t steps, dp_steps;
+    uint32_t settle_until;      /* SPOT / CRUISE judged from here */
+    float    max_err;           /* SPOT / JOG: true distance boat -> spot, m */
+    float    max_hdg;           /* |true heading - target| (not TRIP) */
+    float    max_outboard;      /* outboard throttle servo % in DP (generator not active) */
+    uint32_t gear_off;          /* steps in DP with the gear pulse not N */
+    uint32_t steer_on;          /* steps in DP with the outboard steering motor on */
+    uint32_t thrust_outside;    /* steps NOT in DP with a thruster output != 0 */
+    uint32_t dp_no_gps;         /* steps in DP without a trusted GPS */
+    float    max_over;          /* |output| above its cap */
+    uint32_t hot_on;            /* a HOT thruster's output != 0 */
+    float    max_kn, min_kn;    /* true SOG (judged) */
+    float    sum_kn;
+    uint32_t n_kn;
+} dpx_t;
+
+static float dp_true_err(const sbsim_t *x)
+{
+    double n, e;
+    world_from_latlon(x->sb.dp.alat, x->sb.dp.alon, &n, &e);
+    double dn = x->w.north_m - n, de = x->w.east_m - e;
+    return (float)sqrt(dn * dn + de * de);
+}
+
+static float dp_wrap180(float a)
+{
+    a = fmodf(a, 360.0f);
+    if (a > 180.0f) a -= 360.0f;
+    if (a < -180.0f) a += 360.0f;
+    return a;
+}
+
+static void dpx_hook(sbsim_t *x, void *ctx)
+{
+    dpx_t *d = (dpx_t *)ctx;
+    rj_hook(x, &d->r);
+    d->steps++;
+    float b, s;
+    sim_hal_thrusters(&b, &s);
+    const thruster_t *t = &x->sb.thrust;
+    d->max_over = fmaxf(d->max_over, fmaxf(fabsf(b) - thruster_cap(t, THR_BOW), fabsf(s) - thruster_cap(t, THR_STERN)));
+    if ((t->hot[THR_BOW] && b != 0.0f) || (t->hot[THR_STERN] && s != 0.0f)) d->hot_on++;
+    if (sb_mode(&x->sb) != MODE_DP) {
+        if (b != 0.0f || s != 0.0f) d->thrust_outside++;
+        return;
+    }
+    d->dp_steps++;
+    if (!sb_gps_ok(&x->sb)) d->dp_no_gps++;
+    if (!x->sb.gen.active) d->max_outboard = fmaxf(d->max_outboard, sim_hal_throttle());
+    if (sim_hal_gear_pwm() != x->sb.cfg.gear.pwm_n_us) d->gear_off++;
+    if (fabsf(sim_hal_motor_command()) > 0.01f) d->steer_on++;
+    if (x->t >= d->settle_until) {
+        uint8_t sub = x->sb.dp.sub;
+        if (sub == DP_SPOT || sub == DP_JOG) d->max_err = fmaxf(d->max_err, dp_true_err(x));
+        if (sub != DP_TRIP) d->max_hdg = fmaxf(d->max_hdg, fabsf(dp_wrap180(x->w.heading_deg - x->sb.dp.hdg_target)));
+        float kn = world_sog_kn(&x->w);
+        d->max_kn = fmaxf(d->max_kn, kn);
+        d->min_kn = fminf(d->min_kn, kn);
+        d->sum_kn += kn;
+        d->n_kn++;
+    }
+}
+
+static void dpx_run(dpx_t *d, uint32_t ms)
+{
+    sbsim_run(&d->x, d->x.t + ms, dpx_hook, d);
+}
+
+/* judge from now + settle_ms (the measures start again) */
+static void dpx_judge(dpx_t *d, uint32_t settle_ms)
+{
+    d->settle_until = d->x.t + settle_ms;
+    d->max_err = d->max_hdg = 0.0f;
+    d->max_kn = 0.0f;
+    d->min_kn = 99.0f;
+    d->sum_kn = 0.0f;
+    d->n_kn = 0u;
+}
+
+static uint8_t dpx_cmd_st(dpx_t *d, uint8_t st, uint8_t act, uint8_t arg, int16_t value)
+{
+    uint8_t pl[4] = { act, arg, (uint8_t)value, (uint8_t)((uint16_t)value >> 8) };
+    return pi_cmd(&d->x, &d->r.p, st, false, PROTO_T_DP, pl, sizeof pl);
+}
+
+static uint8_t dpx_cmd(dpx_t *d, uint8_t act, uint8_t arg, int16_t value)
+{
+    return dpx_cmd_st(d, 2u, act, arg, value);
+}
+
+static bool dpx_confirm(dpx_t *d)
+{
+    return d->crewed ? onboard_confirm(&d->x, &d->r) : shore_confirm(&d->x, &d->r);
+}
+
+/* the boat file's thrusters (bow / stern max %, run_s, rest_s, spot_alarm_m) */
+static uint8_t dpx_settings(dpx_t *d, uint8_t bmax, uint16_t brun, uint16_t brest, uint8_t smax, uint16_t srun,
+                            uint16_t srest, uint8_t spot)
+{
+    uint8_t b[THR_FRAME_BYTES];
+    dp_body(b, bmax, brun, brest, smax, srun, srest, 15u, spot);
+    return pi_cmd(&d->x, &d->r.p, 2u, false, PROTO_T_THRUSTER_CFG, b, sizeof b);
+}
+
+/* armed in STANDBY, HELM station 2, the settings taken (a big heat budget) unless settings is false */
+static bool dpx_init(dpx_t *d, uint32_t seed, bool crewed, const sb_config_t *cfg, bool settings)
+{
+    const uint8_t TAKE = 0u;
+    memset(d, 0, sizeof *d);
+    d->crewed = crewed;
+    crew_init(&d->x, &d->r, seed, crewed, cfg);
+    if (!crewed) d->r.rj_on = true;                 /* the shore captain's joystick streams (the CONFIRM source) */
+    bool helm = pi_cmd(&d->x, &d->r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u) == PROTO_R_OK;
+    dpx_run(d, 500u);
+    sb_alarm_ack(&d->x.sb);
+    bool set = !settings || dpx_settings(d, 100u, 1800u, 600u, 100u, 1800u, 600u, 15u) == PROTO_R_OK;
+    dpx_run(d, 200u);
+    d->min_kn = 99.0f;
+    return helm && set && d->x.sb.armed && sb_mode(&d->x.sb) == MODE_STANDBY;
+}
+
+/* DP START (sub, speed kn) + the CONFIRM: true = in MODE_DP with that sub-state */
+static bool dpx_start(dpx_t *d, uint8_t sub, float kn)
+{
+    if (dpx_cmd(d, DP_ACT_START, sub, (int16_t)lroundf(kn * 100.0f)) != PROTO_R_OK) return false;
+    dpx_run(d, 800u);
+    dpx_confirm(d);
+    dpx_run(d, 100u);
+    return sb_mode(&d->x.sb) == MODE_DP && d->x.sb.dp.sub == (sub & 0x7Fu);
+}
+
+/* the thruster outputs right now */
+static void dpx_thr(float *b, float *s)
+{
+    sim_hal_thrusters(b, s);
+}
+
+static void dp_mode_tests(void)
+{
+    char d[1800];
+    printf("\n=== DP mode (section P, step 10): SPOT / JOG / CRUISE / TRIP ===\n");
+
+    /* DP5 every entry refusal, then PC + CONFIRM -> DP SPOT; UNCREWED: the shore CONFIRM enters */
+    {
+        static dpx_t a;
+        int n_ok = 0, n_all = 0, len = 0;
+        d[0] = 0;
+#define DP5_CASE(name, cond) do { bool c_ = (cond); n_all++; if (c_) n_ok++; \
+        len += snprintf(d + len, sizeof d - (size_t)len, "%s %s; ", name, c_ ? "ok" : "FAILED"); } while (0)
+        bool set = dpx_init(&a, 2001u, true, NULL, false);
+        DP5_CASE("set up", set);
+        DP5_CASE("no thruster settings -> PRECOND", dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0) == PROTO_R_PRECOND);
+        DP5_CASE("settings taken", dpx_settings(&a, 100u, 1800u, 600u, 100u, 1800u, 600u, 15u) == PROTO_R_OK);
+        DP5_CASE("bad sub -> BAD VALUE", dpx_cmd(&a, DP_ACT_START, 7u, 0) == PROTO_R_BAD_VALUE);
+        DP5_CASE("3.1 kn -> BAD VALUE", dpx_cmd(&a, DP_ACT_START, DP_CRUISE, 310) == PROTO_R_BAD_VALUE);
+        DP5_CASE("JOG outside DP -> WRONG MODE", dpx_cmd(&a, DP_ACT_JOG, DP_JOG_AHEAD, 0) == PROTO_R_WRONG_MODE);
+        DP5_CASE("not the HELM station -> NOT HELM", dpx_cmd_st(&a, 3u, DP_ACT_START, DP_SPOT, 0) == PROTO_R_NOT_HELM);
+        DP5_CASE("TRIP without a program -> NO PROGRAM", dpx_cmd(&a, DP_ACT_START, DP_TRIP, 0) == PROTO_R_NO_PROGRAM);
+        joy_set(0.0f, 0.6f, false, false);                       /* MANUAL, driving ahead */
+        dpx_run(&a, 1500u);
+        DP5_CASE("MANUAL -> JOYSTICK", sb_mode(&a.x.sb) == MODE_MANUAL &&
+                 dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0) == PROTO_R_JOYSTICK);
+        joy_set(0.0f, 0.0f, false, false);
+        dpx_run(&a, 6000u);
+        press(&a.x, HAL_BTN_STANDBY);
+        dpx_run(&a, 15000u);                                     /* (the boat slows down) */
+        sb_alarm_ack(&a.x.sb);
+        press(&a.x, HAL_BTN_HDG_LOCK);
+        dpx_run(&a, 300u);
+        DP5_CASE("HDG LOCK -> STANDBY ONLY", sb_mode(&a.x.sb) == MODE_HDG_LOCK &&
+                 dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0) == PROTO_R_STANDBY_ONLY);
+        press(&a.x, HAL_BTN_STANDBY);
+        dpx_run(&a, 1000u);
+        joy_set(0.5f, 0.0f, false, false);                       /* the stick held -> MANUAL; STANDBY: ignored */
+        dpx_run(&a, 500u);
+        press(&a.x, HAL_BTN_STANDBY);
+        dpx_run(&a, 2000u);
+        DP5_CASE("stick held -> NOT CENTRED", sb_mode(&a.x.sb) == MODE_STANDBY &&
+                 dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0) == PROTO_R_NOT_CENTERED);
+        joy_set(0.0f, 0.0f, false, false);
+        dpx_run(&a, 1000u);
+        sb_alarm_ack(&a.x.sb);
+        a.x.w.gps_fail = true;
+        dpx_run(&a, 4000u);
+        DP5_CASE("GPS lost -> PRECOND", dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0) == PROTO_R_PRECOND);
+        a.x.w.gps_fail = false;
+        dpx_run(&a, 5000u);
+        sim_hal_fail_heading(true);
+        dpx_run(&a, 2000u);
+        DP5_CASE("compass lost -> PRECOND", dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0) == PROTO_R_PRECOND);
+        sim_hal_fail_heading(false);
+        dpx_run(&a, 2000u);
+        a.x.w.current_e = 1.3f;                                  /* drifting 2.5 kn: too fast to start */
+        dpx_run(&a, 5000u);
+        DP5_CASE("SOG 2.5 kn -> PRECOND", dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0) == PROTO_R_PRECOND);
+        a.x.w.current_e = 0.0f;
+        dpx_run(&a, 3000u);
+        sb_alarm_ack(&a.x.sb);
+        /* no CONFIRM within 10 s: nothing */
+        uint8_t r_req = dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0);
+        bool pend = a.x.sb.confirm.kind == CONF_DP;
+        dpx_run(&a, 10500u);
+        bool late = onboard_confirm(&a.x, &a.r);
+        DP5_CASE("no CONFIRM in 10 s: stays STANDBY", r_req == PROTO_R_OK && pend && !late && sb_mode(&a.x.sb) == MODE_STANDBY);
+        /* the request + CONFIRM: DP SPOT, outboard idle + neutral, its steering off */
+        bool in = dpx_start(&a, DP_SPOT, 0.0f);
+        dpx_run(&a, 5000u);
+        DP5_CASE("PC + CONFIRM -> DP SPOT", in && sb_mode(&a.x.sb) == MODE_DP && a.x.sb.dp.sub == DP_SPOT &&
+                 a.x.sb.thrust.active && a.max_outboard <= 0.01f && a.gear_off == 0u && a.steer_on == 0u &&
+                 a.x.sb.ap.mode == AP_MODE_STANDBY);
+        DP5_CASE("a mode request from the PC can't enter DP", (sb_request_mode(&a.x.sb, MODE_STANDBY, WHY_PC),
+                 !sb_request_mode(&a.x.sb, MODE_DP, WHY_PC) && sb_mode(&a.x.sb) == MODE_STANDBY));
+        dpx_run(&a, 1000u);
+        /* FIRST TEST: never */
+        {
+            sb_config_t c;
+            sb_default_config(&c);
+            c.first_test = true;
+            static dpx_t f;
+            (void)dpx_init(&f, 2002u, true, &c, true);
+            DP5_CASE("FIRST TEST -> WRONG MODE", dpx_cmd(&f, DP_ACT_START, DP_SPOT, 0) == PROTO_R_WRONG_MODE &&
+                     !sb_request_mode(&f.x.sb, MODE_DP, WHY_DP));
+        }
+        /* UNCREWED: the shore CONFIRM; the onboard CONFIRM does nothing */
+        {
+            static dpx_t u;
+            bool us = dpx_init(&u, 2003u, false, NULL, true);
+            bool prof = u.x.sb.profile == SB_PROFILE_UNCREWED;
+            uint8_t r1 = dpx_cmd(&u, DP_ACT_START, DP_SPOT, 0);
+            dpx_run(&u, 500u);
+            sim_hal_joystick_confirm(true);                       /* (no onboard joystick: nothing) */
+            dpx_run(&u, 200u);
+            sim_hal_joystick_confirm(false);
+            bool still = sb_mode(&u.x.sb) == MODE_STANDBY;
+            bool sc = shore_confirm(&u.x, &u.r);
+            dpx_run(&u, 500u);
+            DP5_CASE("UNCREWED: shore CONFIRM -> DP", us && prof && r1 == PROTO_R_OK && still && sc &&
+                     sb_mode(&u.x.sb) == MODE_DP);
+        }
+#undef DP5_CASE
+        test_report("DP5 DP entry: HELM + PC request + CONFIRM (onboard / shore) from STANDBY only; refused without "
+                    "settings, in FIRST TEST, MANUAL / HDG LOCK, stick held, GPS / compass lost, moving, no program",
+                    n_ok == n_all, d);
+    }
+
+    /* DP6 SPOT holds in a current from ahead (and a little from the side): the true position within a few metres
+     * for 3 min, the heading held, the outboard idle + neutral with its steering off the whole time, the thrusters
+     * within their caps; the heading moves with HEADING_ADJ / the course buttons */
+    {
+        static dpx_t a;
+        bool set = dpx_init(&a, 2004u, true, NULL, true);
+        a.x.w.current_e = -0.25f;                                /* heading 90: 0.5 kn from ahead (a current from the
+                                                                    side drifts the boat: the bow can't sway without
+                                                                    turning it - heading first) */
+        bool in = dpx_start(&a, DP_SPOT, 0.0f);
+        dpx_judge(&a, 60000u);
+        dpx_run(&a, 240000u);
+        float err = a.max_err, hdg = a.max_hdg;
+        float b, s;
+        dpx_thr(&b, &s);
+        bool still_dp = sb_mode(&a.x.sb) == MODE_DP && a.x.sb.dp.sub == DP_SPOT;
+        uint32_t alarms2 = a.x.sb.alarm_bits2;
+        /* heading +10 (HEADING_ADJ) and -1 (the course button) */
+        int8_t ten = 10;
+        uint8_t r_adj = pi_cmd(&a.x, &a.r.p, 2u, false, PROTO_T_HEADING_ADJ, (const uint8_t *)&ten, 1u);
+        float t1 = a.x.sb.dp.hdg_target;
+        press(&a.x, HAL_BTN_MINUS_1);
+        float t2 = a.x.sb.dp.hdg_target;
+        dpx_judge(&a, 40000u);
+        dpx_run(&a, 60000u);
+        float hdg2 = a.max_hdg, err2 = a.max_err;
+        snprintf(d, sizeof d, "set up %s, DP %s; current 0.5 kn from ahead: after 1 min for 3 min the "
+                 "spot within %.1f m, heading within %.1f deg, still SPOT %s, stern %.0f %% (I %.0f %%), bow %.0f %%; outboard max "
+                 "%.1f %%, gear off N %lu steps, steering on %lu steps, over the cap %.2f, no DP alarm (word 2 0x%lx) %s; "
+                 "HEADING_ADJ +10 -> %u, target %.0f, course button -1 -> %.0f; then heading within %.1f deg, spot %.1f m",
+                 set ? "yes" : "NO", in ? "SPOT" : "NOT ENTERED", err, hdg, still_dp ? "yes" : "NO", s, a.x.sb.dp.ix, b,
+                 a.max_outboard,
+                 (unsigned long)a.gear_off, (unsigned long)a.steer_on, a.max_over, (unsigned long)alarms2,
+                 (alarms2 & (SB_ALM2_DP_OFFSPOT | SB_ALM2_DP_OVERPOWER | SB_ALM2_DP_HEAT)) == 0u ? "yes" : "NO", r_adj, t1, t2,
+                 hdg2, err2);
+        test_report("DP6 SPOT holds position + heading in a current; outboard idle + neutral, steering off; "
+                    "heading +-1 / +-10 (HEADING_ADJ, course buttons)",
+                    set && in && err < 4.0f && hdg < 4.0f && still_dp && a.x.sb.dp.ix > 10.0f && a.max_outboard <= 0.01f &&
+                    a.gear_off == 0u && a.steer_on == 0u && a.max_over <= 0.0f &&
+                    (alarms2 & (SB_ALM2_DP_OFFSPOT | SB_ALM2_DP_OVERPOWER | SB_ALM2_DP_HEAT)) == 0u &&
+                    r_adj == PROTO_R_OK && fabsf(dp_wrap180(t1 - 100.0f)) < 1.5f && fabsf(dp_wrap180(t2 - (t1 - 1.0f))) < 0.01f &&
+                    hdg2 < 4.0f && err2 < 4.0f && a.thrust_outside == 0u, d);
+    }
+
+    /* DP7 JOG: 1.5 m (boat file jog_m) ahead / to starboard / astern / to port of the anchor heading; JOG -> SPOT
+     * once there; refused in CRUISE */
+    {
+        static dpx_t a;
+        bool set = dpx_init(&a, 2005u, true, NULL, true);
+        bool in = dpx_start(&a, DP_SPOT, 0.0f);
+        dpx_run(&a, 20000u);
+        static const uint8_t DIR[4] = { DP_JOG_AHEAD, DP_JOG_STBD, DP_JOG_ASTERN, DP_JOG_PORT };
+        static const char *const NM[4] = { "ahead", "starboard", "astern", "port" };
+        int good = 0, len = 0;
+        char t[700] = "";
+        for (int k = 0; k < 4; k++) {
+            double n0 = a.x.w.north_m, e0 = a.x.w.east_m;
+            double an0 = 0, ae0 = 0, an1 = 0, ae1 = 0;
+            world_from_latlon(a.x.sb.dp.alat, a.x.sb.dp.alon, &an0, &ae0);
+            uint8_t r = dpx_cmd(&a, DP_ACT_JOG, DIR[k], 0);
+            bool jog = a.x.sb.dp.sub == DP_JOG;
+            world_from_latlon(a.x.sb.dp.alat, a.x.sb.dp.alon, &an1, &ae1);
+            dpx_run(&a, 40000u);
+            /* heading 90 (east): ahead = east, starboard = south */
+            float h = a.x.sb.dp.hdg_target * 3.14159265f / 180.0f;
+            float sf = (float)((an1 - an0) * cos(h) + (ae1 - ae0) * sin(h));
+            float ss = (float)(-(an1 - an0) * sin(h) + (ae1 - ae0) * cos(h));
+            float bf = (float)((a.x.w.north_m - n0) * cos(h) + (a.x.w.east_m - e0) * sin(h));
+            float bs = (float)(-(a.x.w.north_m - n0) * sin(h) + (a.x.w.east_m - e0) * cos(h));
+            float wf = (k == 0) ? 1.5f : (k == 2) ? -1.5f : 0.0f, ws = (k == 1) ? 1.5f : (k == 3) ? -1.5f : 0.0f;
+            bool ok = r == PROTO_R_OK && jog && fabsf(sf - wf) < 0.05f && fabsf(ss - ws) < 0.05f &&
+                      a.x.sb.dp.sub == DP_SPOT && dp_true_err(&a.x) < 3.0f &&
+                      (wf != 0.0f ? bf * wf > 0.0f : bs * ws > 0.0f);
+            good += ok;
+            len += snprintf(t + len, sizeof t - (size_t)len, "%s%s: spot moved %+.2f / %+.2f m, boat %+.1f / %+.1f m, "
+                            "back in SPOT %s (%.1f m off)", k ? "; " : "", NM[k], sf, ss, bf, bs,
+                            a.x.sb.dp.sub == DP_SPOT ? "yes" : "NO", dp_true_err(&a.x));
+        }
+        uint8_t r_cr = 0xFFu;
+        bool cr = dpx_start(&a, DP_CRUISE, 0.5f);
+        if (cr) r_cr = dpx_cmd(&a, DP_ACT_JOG, DP_JOG_AHEAD, 0);
+        snprintf(d, sizeof d, "set up %s, SPOT %s; %s; in CRUISE (%s) a JOG -> %u", set ? "yes" : "NO", in ? "yes" : "NO",
+                 t, cr ? "yes" : "NO", r_cr);
+        test_report("DP7 JOG 1.5 m fore / aft / port / starboard of the anchor heading, back to SPOT; not in CRUISE",
+                    set && in && good == 4 && cr && r_cr == PROTO_R_WRONG_MODE && a.thrust_outside == 0u, d);
+    }
+
+    /* DP8 CRUISE: heading + speed set point on the stern motor (<= dp_max_kn); SPEED / HEADING change it; a
+     * SPOT command stops the boat there (no CONFIRM) */
+    {
+        static dpx_t a;
+        bool set = dpx_init(&a, 2006u, true, NULL, true);
+        bool in = dpx_start(&a, DP_CRUISE, 2.0f);
+        dpx_judge(&a, 30000u);
+        dpx_run(&a, 60000u);
+        float avg1 = a.n_kn ? a.sum_kn / (float)a.n_kn : 0.0f, hdg1 = a.max_hdg;
+        uint8_t r_fast = dpx_cmd(&a, DP_ACT_SPEED, 0u, 350);
+        uint8_t r_sp = dpx_cmd(&a, DP_ACT_SPEED, 0u, 100);
+        uint8_t r_hd = dpx_cmd(&a, DP_ACT_HEADING, 0u, 1200);           /* 120 deg */
+        dpx_judge(&a, 40000u);
+        dpx_run(&a, 60000u);
+        float avg2 = a.n_kn ? a.sum_kn / (float)a.n_kn : 0.0f, hdg2 = a.max_hdg;
+        float cog = world_cog_deg(&a.x.w);
+        uint8_t r_spot = dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0);
+        bool spot = a.x.sb.dp.sub == DP_SPOT && sb_mode(&a.x.sb) == MODE_DP;
+        dpx_run(&a, 60000u);
+        float kn3 = world_sog_kn(&a.x.w);
+        snprintf(d, sizeof d, "set up %s, CRUISE %s; 2 kn ahead at 90 deg: average %.2f kn, heading within %.1f deg; "
+                 "3.5 kn -> %u, 1 kn -> %u, heading 120 -> %u: average %.2f kn, heading within %.1f deg, COG %.0f; "
+                 "SPOT (no CONFIRM) -> %u %s, 60 s later %.2f kn, %.1f m off the spot; outboard max %.1f %%, gear off N %lu",
+                 set ? "yes" : "NO", in ? "yes" : "NO", avg1, hdg1, r_fast, r_sp, r_hd, avg2, hdg2, cog, r_spot,
+                 spot ? "SPOT" : "NOT SPOT", kn3, dp_true_err(&a.x), a.max_outboard, (unsigned long)a.gear_off);
+        test_report("DP8 CRUISE: heading + speed (<= 3 kn) on the stern motor; SPEED / HEADING; SPOT at once",
+                    set && in && fabsf(avg1 - 2.0f) < 0.3f && hdg1 < 4.0f && r_fast == PROTO_R_BAD_VALUE &&
+                    r_sp == PROTO_R_OK && r_hd == PROTO_R_OK && fabsf(avg2 - 1.0f) < 0.25f && hdg2 < 4.0f &&
+                    fabsf(dp_wrap180(cog - 120.0f)) < 10.0f && r_spot == PROTO_R_OK && spot && kn3 < 0.4f &&
+                    dp_true_err(&a.x) < 15.0f && a.max_outboard <= 0.01f && a.gear_off == 0u && a.thrust_outside == 0u, d);
+    }
+
+    /* DP9 TRIP: the stored program at <= 3 kn, the navigation request's cap applies (as in AUTO), it ends in
+     * SPOT at the last waypoint; a navigation heading in SPOT is NOT applied (alarm only); a new program is
+     * refused while a TRIP runs */
+    {
+        static dpx_t a;
+        static program_t p;
+        bool set = dpx_init(&a, 2007u, true, NULL, true);
+        prog_wp_t w[3];
+        w[0] = wp_world(&a.x, 0.0, 120.0, 3.0f, 10.0f, WP_ACT_CONTINUE);
+        w[1] = wp_world(&a.x, -100.0, 200.0, 3.0f, 10.0f, WP_ACT_CONTINUE);
+        w[2] = wp_world(&a.x, -100.0, 320.0, 3.0f, 10.0f, WP_ACT_CONTINUE);
+        prog_make(&p, w, 3, PROG_END_STOP);
+        prog_error_t pe;
+        uint8_t bad;
+        bool up = sb_program_set(&a.x.sb, &p, &pe, &bad) == SB_OK;
+        bool in = dpx_start(&a, DP_TRIP, 3.0f);
+        dpx_judge(&a, 25000u);
+        dpx_run(&a, 50000u);
+        float avg1 = a.n_kn ? a.sum_kn / (float)a.n_kn : 0.0f;
+        bool refused = sb_program_set(&a.x.sb, &p, &pe, &bad) == SB_ERR_WRONG_MODE;
+        /* the gateway: speed cap 1.5 kn (shallow water ahead), lease 3 s, 2 Hz for 40 s */
+        static navsim_t nv;
+        memset(&nv, 0, sizeof nv);
+        uint32_t t0 = a.x.t;
+        float cap_min = 99.0f, cap_max = 0.0f;
+        while (a.x.t < t0 + 40000u) {
+            nv.seq++;
+            nav_push(&nv, SB_NAV_CAP, 2u, 4u, 0.0f, 1.5f, 3000u);
+            dpx_run(&a, 500u);
+            if (a.x.t > t0 + 20000u) {
+                float kn = world_sog_kn(&a.x.w);
+                cap_min = fminf(cap_min, kn);
+                cap_max = fmaxf(cap_max, kn);
+            }
+        }
+        bool shallow = (a.x.sb.alarm_bits & SB_ALM_SHALLOW) != 0u;
+        uint8_t wp_mid = a.x.sb.dp.wp;
+        /* let the lease run out mid-trip: DRIVER DECISION, the lower of nav_lost_kn and the last cap */
+        dpx_run(&a, 4000u);
+        bool lost = a.x.sb.nav.lost && (a.x.sb.alarm_bits & SB_ALM_DECISION);
+        /* the gateway back with "nothing" (the driver decided): the route again */
+        nv.seq++;
+        nav_push(&nv, SB_NAV_NONE, 0u, 0u, 0.0f, -1.0f, 3000u);
+        dpx_run(&a, 500u);
+        bool back = !a.x.sb.nav.lost;
+        sb_alarm_ack(&a.x.sb);
+        /* to the end (the lost lease keeps the slow speed: give it time) */
+        uint32_t t1 = a.x.t;
+        while (a.x.t < t1 + 600000u && !(a.x.sb.dp.sub == DP_SPOT && a.x.sb.dp.trip_done)) dpx_run(&a, 1000u);
+        bool end = a.x.sb.dp.sub == DP_SPOT && a.x.sb.dp.trip_done && sb_mode(&a.x.sb) == MODE_DP;
+        double ln, le;
+        world_from_latlon(program_lat(&p.wp[2]), program_lon(&p.wp[2]), &ln, &le);
+        float at_wp = (float)sqrt((a.x.w.north_m - ln) * (a.x.w.north_m - ln) + (a.x.w.east_m - le) * (a.x.w.east_m - le));
+        dpx_run(&a, 30000u);
+        float held = dp_true_err(&a.x);
+        /* in SPOT: a navigation heading request is an alarm only */
+        float tgt0 = a.x.sb.dp.hdg_target;
+        uint32_t t2 = a.x.t;
+        while (a.x.t < t2 + 5000u) {
+            nv.seq++;
+            nav_push(&nv, SB_NAV_HEADING, 1u, 1u, fmodf(tgt0 + 90.0f, 360.0f), 1.0f, 3000u);
+            dpx_run(&a, 500u);
+        }
+        bool not_steered = fabsf(dp_wrap180(a.x.sb.dp.hdg_target - tgt0)) < 0.01f && (a.x.sb.alarm_bits & SB_ALM_COLLISION);
+        snprintf(d, sizeof d, "set up %s, program %s, TRIP %s; 3 kn legs: average %.2f kn; new program while it runs refused %s; "
+                 "navreq cap 1.5 kn: SOG %.2f .. %.2f kn, SHALLOW alarm %s (waypoint %u); lease lost: DRIVER DECISION %s, back %s; "
+                 "the end: SPOT %s, %.1f m from the last waypoint, 30 s later %.1f m off the spot; a heading request in SPOT "
+                 "not applied + COLLISION alarm %s; outboard max %.1f %%, gear off N %lu, steering on %lu",
+                 set ? "yes" : "NO", up ? "ok" : "REFUSED", in ? "yes" : "NO", avg1, refused ? "yes" : "NO", cap_min, cap_max,
+                 shallow ? "yes" : "NO", wp_mid, lost ? "yes" : "NO", back ? "yes" : "NO", end ? "yes" : "NO", at_wp, held,
+                 not_steered ? "yes" : "NO", a.max_outboard, (unsigned long)a.gear_off, (unsigned long)a.steer_on);
+        test_report("DP9 TRIP: the program at <= 3 kn, navreq cap / lost lease as in AUTO, ends in SPOT at the last "
+                    "waypoint; navreq heading in SPOT = alarm only",
+                    set && up && in && avg1 > 2.4f && avg1 < 3.3f && refused && cap_max < 1.9f && cap_min > 0.8f && shallow &&
+                    lost && back && end && at_wp < 15.0f && held < 5.0f && not_steered && a.max_outboard <= 0.01f &&
+                    a.gear_off == 0u && a.steer_on == 0u && a.thrust_outside == 0u, d);
+    }
+
+    /* DP10 the onboard joystick (CREWED) takes over: thrusters 0 in the same step, MANUAL on the outboard (the
+     * existing takeover: alarm JOYSTICK, chirp, the stick steers); TAKE too */
+    {
+        int ok = 0, len = 0;
+        char t[700] = "";
+        for (int k = 0; k < 2; k++) {
+            static dpx_t a;
+            bool set = dpx_init(&a, 2008u + (uint32_t)k, true, NULL, true);
+            a.x.w.current_e = -0.2f;
+            bool in = dpx_start(&a, DP_SPOT, 0.0f);
+            dpx_run(&a, 30000u);
+            float b0, s0;
+            dpx_thr(&b0, &s0);
+            uint32_t t0 = a.x.t;
+            if (k == 0) joy_set(0.6f, 0.0f, false, false);         /* X deflected */
+            else joy_set(0.0f, 0.0f, true, false);                  /* TAKE */
+            while (sb_mode(&a.x.sb) == MODE_DP && a.x.t < t0 + 1000u) dpx_run(&a, AP_PERIOD_MS);
+            float b1, s1;
+            dpx_thr(&b1, &s1);
+            uint32_t dt = a.x.t - t0;
+            bool manual = sb_mode(&a.x.sb) == MODE_MANUAL && b1 == 0.0f && s1 == 0.0f && (a.x.sb.alarm_bits & SB_ALM_JOYSTICK) &&
+                          a.x.sb.dp.stop_why == DP_STOP_JOYSTICK && !a.x.sb.thrust.active;
+            joy_set(k == 0 ? 0.6f : 0.0f, 0.0f, false, false);
+            dpx_run(&a, 3000u);
+            bool steers = k == 1 || fabsf(a.x.w.rud.angle_deg) > 3.0f;
+            bool good = set && in && (b0 != 0.0f || s0 != 0.0f) && manual && dt <= 300u && steers && a.thrust_outside == 0u;
+            ok += good;
+            len += snprintf(t + len, sizeof t - (size_t)len, "%s%s: thrusting %.0f / %.0f, MANUAL after %lu ms with thrusters "
+                            "%.0f / %.0f %s, outboard %.1f deg", k ? "; " : "", k == 0 ? "stick X" : "TAKE", b0, s0,
+                            (unsigned long)dt, b1, s1, manual ? "ok" : "FAILED", a.x.w.rud.angle_deg);
+            joy_set(0.0f, 0.0f, false, false);
+        }
+        test_report("DP10 CREWED joystick (X / TAKE) in DP -> thrusters 0 in the same step + MANUAL on the outboard",
+                    ok == 2, t);
+    }
+
+    /* DP11 GPS lost / suspect (jump) in DP: thrusters 0 + alarm + STANDBY (no dead reckoning in DP) */
+    {
+        int ok = 0, len = 0;
+        char t[600] = "";
+        for (int k = 0; k < 2; k++) {
+            static dpx_t a;
+            bool set = dpx_init(&a, 2010u + (uint32_t)k, true, NULL, true);
+            a.x.w.current_e = -0.2f;
+            bool in = dpx_start(&a, DP_SPOT, 0.0f);
+            dpx_run(&a, 20000u);
+            uint32_t t0 = a.x.t;
+            if (k == 0) a.x.w.gps_fail = true;
+            else a.x.w.gps_off_n += 300.0;                           /* a jump: the integrity check rejects it */
+            while (sb_mode(&a.x.sb) == MODE_DP && a.x.t < t0 + 8000u) dpx_run(&a, AP_PERIOD_MS);
+            float b, s;
+            dpx_thr(&b, &s);
+            uint32_t why = a.x.sb.alarm_bits & (SB_ALM_GPS_LOST | SB_ALM_GPS_SUSPECT);
+            bool good = set && in && sb_mode(&a.x.sb) == MODE_STANDBY && b == 0.0f && s == 0.0f && why &&
+                        a.x.sb.dp.stop_why == DP_STOP_GPS && a.dp_no_gps == 0u && a.thrust_outside == 0u;
+            ok += good;
+            len += snprintf(t + len, sizeof t - (size_t)len, "%s%s: STANDBY after %lu ms, thrusters %.0f / %.0f, alarm 0x%lx, "
+                            "DP steps without a trusted GPS %lu %s", k ? "; " : "", k == 0 ? "GPS lost" : "GPS jump 300 m",
+                            (unsigned long)(a.x.t - t0), b, s, (unsigned long)why, (unsigned long)a.dp_no_gps,
+                            good ? "ok" : "FAILED");
+            a.x.w.gps_fail = false;
+        }
+        test_report("DP11 GPS lost / suspect in DP -> thrusters 0 + alarm + STANDBY (never a DP step without a trusted GPS)",
+                    ok == 2, t);
+    }
+
+    /* DP12 off the spot: pushed beyond spot_alarm_m = DP OFF SPOT (advisory: DP keeps trying, the power limit
+     * stays); beyond 50 m -> STANDBY (thrusters 0); off it for 2 min -> STANDBY too */
+    {
+        static dpx_t a;
+        bool set = dpx_init(&a, 2012u, true, NULL, true);
+        power_full(&a.x);
+        float pf0 = a.x.sb.plim.fwd_pct;
+        a.x.w.current_n = -0.6f;                                 /* heading 90: 1.2 kn from the port side */
+        bool in = dpx_start(&a, DP_SPOT, 0.0f);
+        uint32_t t0 = a.x.t, t_alarm = 0u;
+        while (sb_mode(&a.x.sb) == MODE_DP && a.x.t < t0 + 400000u) {
+            dpx_run(&a, 200u);
+            if (!t_alarm && (a.x.sb.alarm_bits2 & SB_ALM2_DP_OFFSPOT)) t_alarm = a.x.t;
+        }
+        bool advisory = t_alarm != 0u && a.x.sb.plim.fwd_pct == pf0;
+        float err_end = dp_true_err(&a.x);
+        float b, s;
+        dpx_thr(&b, &s);
+        bool stop50 = sb_mode(&a.x.sb) == MODE_STANDBY && a.x.sb.dp.stop_why == DP_STOP_OFFSPOT && b == 0.0f && s == 0.0f;
+        uint32_t t_stop = a.x.t - t0;
+        /* 2 min rule: a push that keeps the boat between 15 and 50 m */
+        static dpx_t c;
+        bool set2 = dpx_init(&c, 2013u, true, NULL, true);
+        (void)dpx_settings(&c, 100u, 1800u, 600u, 100u, 1800u, 600u, 5u);   /* spot_alarm_m 5 m */
+        c.x.w.current_n = -0.05f;                                 /* a gentle side push: some metres off */
+        bool in2 = dpx_start(&c, DP_SPOT, 0.0f);
+        uint32_t t1 = c.x.t, t_off = 0u;
+        float max2 = 0.0f;
+        bool was_off = false;
+        while (sb_mode(&c.x.sb) == MODE_DP && c.x.t < t1 + 400000u) {
+            dpx_run(&c, 200u);
+            if (c.x.sb.dp.offspot && !was_off) t_off = c.x.t;            /* (the latest onset: noise may reset it) */
+            was_off = c.x.sb.dp.offspot;
+            max2 = fmaxf(max2, dp_true_err(&c.x));
+        }
+        bool stop2 = sb_mode(&c.x.sb) == MODE_STANDBY && c.x.sb.dp.stop_why == DP_STOP_OFFSPOT && t_off &&
+                     c.x.t - t_off >= DP_OFF_STOP_MS - 1000u && c.x.t - t_off <= DP_OFF_STOP_MS + 5000u && max2 < 50.0f;
+        snprintf(d, sizeof d, "set up %s / %s; 1.2 kn from the side: DP %s, OFF SPOT after %.0f s (advisory, power limit "
+                 "%.0f %% kept %s), STANDBY after %.0f s at %.1f m (thrusters %.0f / %.0f) %s; spot alarm 5 m, a gentle push "
+                 "(DP %s, max %.1f m): OFF SPOT at %.0f s, STANDBY %.0f s later %s",
+                 set ? "yes" : "NO", set2 ? "yes" : "NO", in ? "yes" : "NO", t_alarm ? (t_alarm - t0) * 0.001 : -1.0, pf0,
+                 advisory ? "yes" : "NO", t_stop * 0.001, err_end, b, s, stop50 ? "ok" : "FAILED", in2 ? "yes" : "NO", max2,
+                 t_off ? (t_off - t1) * 0.001 : -1.0, t_off ? (c.x.t - t_off) * 0.001 : -1.0, stop2 ? "ok" : "FAILED");
+        test_report("DP12 off the spot: DP OFF SPOT advisory beyond spot_alarm_m; > 50 m or 2 min -> thrusters 0, STANDBY",
+                    set && in && advisory && stop50 && err_end > 49.0f && set2 && in2 && stop2 && a.thrust_outside == 0u &&
+                    c.thrust_outside == 0u, d);
+    }
+
+    /* DP13 a thruster HOT in DP (heat budget used up) -> DP ends: thrusters 0, STANDBY, DP THRUSTER HOT; both
+     * thrusters at their limit for 10 s -> DP OVERPOWER (advisory, DP goes on) */
+    {
+        static dpx_t a;
+        bool set = dpx_init(&a, 2014u, true, NULL, true);
+        (void)dpx_settings(&a, 100u, 1800u, 600u, 100u, 40u, 40u, 15u);      /* stern: 40 s budget */
+        a.x.w.current_e = -0.3f;                                  /* the stern works all the time */
+        bool in = dpx_start(&a, DP_SPOT, 0.0f);
+        uint32_t t0 = a.x.t;
+        while (sb_mode(&a.x.sb) == MODE_DP && a.x.t < t0 + 120000u) dpx_run(&a, AP_PERIOD_MS);
+        float b, s;
+        dpx_thr(&b, &s);
+        bool hot = sb_mode(&a.x.sb) == MODE_STANDBY && a.x.sb.thrust.hot[THR_STERN] && b == 0.0f && s == 0.0f &&
+                   (a.x.sb.alarm_bits2 & SB_ALM2_DP_HEAT) && a.x.sb.dp.stop_why == DP_STOP_THRUSTER && a.hot_on == 0u;
+        uint32_t t_hot = a.x.t - t0;
+        /* a hot thruster: no new DP */
+        sb_alarm_ack(&a.x.sb);
+        uint8_t r_hot = dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0);
+        /* overpower: 30 % caps, a current the stern can't hold + a big heading change for the bow */
+        static dpx_t c;
+        bool set2 = dpx_init(&c, 2015u, true, NULL, true);
+        (void)dpx_settings(&c, 30u, 1800u, 600u, 30u, 1800u, 600u, 100u);
+        c.x.w.current_e = -0.6f;
+        bool in2 = dpx_start(&c, DP_SPOT, 0.0f);
+        dpx_run(&c, 5000u);
+        uint8_t r_h = dpx_cmd(&c, DP_ACT_HEADING, 0u, 2700);
+        uint32_t t1 = c.x.t, t_op = 0u;
+        while (sb_mode(&c.x.sb) == MODE_DP && c.x.t < t1 + 60000u && !t_op) {
+            dpx_run(&c, 200u);
+            if (c.x.sb.alarm_bits2 & SB_ALM2_DP_OVERPOWER) t_op = c.x.t;
+        }
+        bool op = t_op && sb_mode(&c.x.sb) == MODE_DP && t_op - t1 >= DP_OVERPOWER_MS;
+        snprintf(d, sizeof d, "set up %s, DP %s: stern budget 40 s in a current -> STANDBY after %.1f s, thrusters %.0f / %.0f, "
+                 "DP THRUSTER HOT %s; while hot DP START -> %u; 30 %% caps + 1.2 kn current + heading 270 (-> %u, DP %s / %s): "
+                 "OVERPOWER after %.1f s, still DP %s",
+                 set ? "yes" : "NO", in ? "yes" : "NO", t_hot * 0.001, b, s, hot ? "ok" : "FAILED", r_hot, r_h,
+                 set2 ? "yes" : "NO", in2 ? "yes" : "NO", t_op ? (t_op - t1) * 0.001 : -1.0, op ? "yes" : "NO");
+        test_report("DP13 a thruster HOT in DP -> thrusters 0 + STANDBY + DP THRUSTER HOT (no new DP while hot); both "
+                    "saturated 10 s -> DP OVERPOWER (advisory)",
+                    set && in && hot && t_hot >= 35000u && r_hot == PROTO_R_PRECOND && set2 && in2 && r_h == PROTO_R_OK && op &&
+                    a.thrust_outside == 0u && c.thrust_outside == 0u, d);
+    }
+
+    /* DP14 every other way out: thrusters 0 FIRST (the same step), then STANDBY - the STANDBY button, the e-stop, DP
+     * STOP (also while a request waits), compass lost (gyro hold, STANDBY after 10 s; no gyro: at once), UNCREWED
+     * link lost; the generator may run in SPOT (neutral confirmed, gear N) and stops for CRUISE; the stern fighting a
+     * forward push = GEAR FAULT, DP ends */
+    {
+        int ok = 0, n = 0, len = 0;
+        char t[1500] = "";
+        for (int k = 0; k < 6; k++) {
+            static dpx_t a;
+            bool set = dpx_init(&a, 2016u + (uint32_t)k, k != 5, NULL, true);
+            a.x.w.current_e = -0.2f;
+            if (k == 5) {                                        /* UNCREWED: the Pi tells "open sea" */
+                a.r.p.shore_on = true;
+                a.r.p.shore_flags = SB_SHORE_VALID;
+                a.r.p.shore_m = 900u;
+            }
+            bool in = dpx_start(&a, DP_SPOT, 0.0f);
+            dpx_run(&a, 20000u);
+            uint32_t t0 = a.x.t;
+            const char *what = "?";
+            uint8_t want = DP_STOP_STANDBY;
+            uint32_t limit = 200u;
+            switch (k) {
+            case 0: what = "STANDBY button"; sim_hal_press(HAL_BTN_STANDBY); break;
+            case 1: what = "e-stop"; sim_hal_set_estop(true, true); break;
+            case 2: what = "DP STOP"; (void)dpx_cmd(&a, DP_ACT_STOP, 0u, 0); want = DP_STOP_CMD; t0 = a.x.t - 200u; limit = 400u; break;
+            case 3: what = "compass lost (gyro hold 10 s)"; sim_hal_fail_heading(true); want = DP_STOP_COMPASS;
+                    limit = DP_COMPASS_MS + 3000u; break;          /* (+ the compass timeout of the steering core) */
+            case 4: what = "compass + gyro lost"; sim_hal_fail_heading(true); sim_hal_set_gyro(false, 0.0f, 0.0f);
+                    want = DP_STOP_COMPASS; limit = 3000u; break;
+            default: what = "UNCREWED link lost"; a.r.p.pi_on = false; a.r.rj_on = false; want = DP_STOP_STANDBY;
+                     limit = 5000u; break;
+            }
+            float hdg0 = a.x.w.heading_deg, hdg_max = 0.0f;
+            while (sb_mode(&a.x.sb) == MODE_DP && a.x.t < t0 + limit + 1000u) {
+                dpx_run(&a, AP_PERIOD_MS);
+                hdg_max = fmaxf(hdg_max, fabsf(dp_wrap180(a.x.w.heading_deg - hdg0)));
+            }
+            float b, s;
+            dpx_thr(&b, &s);
+            uint32_t dt = a.x.t - t0;
+            bool good = set && in && sb_mode(&a.x.sb) == MODE_STANDBY && b == 0.0f && s == 0.0f && dt <= limit + 60u &&
+                        a.x.sb.dp.stop_why == want && a.thrust_outside == 0u;
+            if (k == 3) good = good && dt >= DP_COMPASS_MS - 100u && hdg_max < 5.0f;    /* the gyro held it meanwhile */
+            if (k == 5) good = good && a.x.sb.profile == SB_PROFILE_UNCREWED && a.x.sb.ll.state != SB_LL_OK;
+            ok += good;
+            n++;
+            len += snprintf(t + len, sizeof t - (size_t)len, "%s%s: STANDBY after %lu ms (why %u), thrusters %.0f / %.0f%s %s",
+                            k ? "; " : "", what, (unsigned long)dt, a.x.sb.dp.stop_why, b, s,
+                            k == 3 ? (hdg_max < 5.0f ? ", heading held on the gyro" : ", HEADING NOT HELD") : "",
+                            good ? "ok" : "FAILED");
+            sim_hal_set_estop(false, false);
+            sim_hal_fail_heading(false);
+            sim_hal_set_gyro(true, 0.05f, 0.02f);
+        }
+        /* DP STOP while a DP request waits for its CONFIRM: cancelled */
+        {
+            static dpx_t a;
+            bool set = dpx_init(&a, 2022u, true, NULL, true);
+            uint8_t r1 = dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0);
+            uint8_t r2 = dpx_cmd(&a, DP_ACT_STOP, 0u, 0);
+            bool late = onboard_confirm(&a.x, &a.r);
+            bool good = set && r1 == PROTO_R_OK && r2 == PROTO_R_OK && !late && sb_mode(&a.x.sb) == MODE_STANDBY;
+            ok += good;
+            n++;
+            len += snprintf(t + len, sizeof t - (size_t)len, "; DP STOP cancels a waiting request %s", good ? "ok" : "FAILED");
+        }
+        test_report("DP14 STANDBY button / e-stop / DP STOP / compass lost (gyro 10 s) / UNCREWED link lost: thrusters 0 "
+                    "first, then STANDBY", ok == n, t);
+    }
+
+    /* GN9 the generator in DP (section K): it may run while DP holds the spot (neutral confirmed by the switch, gear
+     * N, the cap), stops idle-first when CRUISE starts; the stern fighting an unexplained forward push (gear in?) =
+     * GEAR FAULT: the generator idles, DP ends (a fault), generator auto off */
+    {
+        static dpx_t a;
+        bool set = dpx_init(&a, 2023u, true, NULL, true);
+        a.x.w.neutral_switch = true;
+        a.x.w.neutral_sw_force = 0;
+        sim_hal_set_supply(true, 11.5f);
+        dpx_run(&a, 2000u);
+        sb_alarm_ack(&a.x.sb);
+        bool on = sb_generator_set(&a.x.sb, true) == SB_OK;
+        bool in = dpx_start(&a, DP_SPOT, 0.0f);
+        uint32_t t0 = a.x.t;
+        while (a.x.sb.gen.state != GEN_RUNNING && a.x.t < t0 + 90000u) dpx_run(&a, 200u);
+        dpx_run(&a, 3000u);
+        bool runs = a.x.sb.gen.state == GEN_RUNNING && sb_mode(&a.x.sb) == MODE_DP && gear_is(&a.x.sb.gear, GEAR_N) &&
+                    sim_hal_throttle() > 1.0f && sim_hal_throttle() <= fminf(a.x.sb.gen.cap_pct, a.x.sb.plim.fwd_pct) + 0.01f &&
+                    a.gear_off == 0u;
+        float thr_run = sim_hal_throttle();
+        /* CRUISE asked: a DP cruise start = a stop request (idle first) */
+        uint8_t r_cr = dpx_cmd(&a, DP_ACT_START, DP_CRUISE, 100);
+        dpx_run(&a, 200u);
+        bool stopping = a.x.sb.gen.state == GEN_STOPPING || a.x.sb.gen.state == GEN_READY;
+        dpx_confirm(&a);
+        dpx_run(&a, 5000u);
+        bool idle_cr = a.x.sb.dp.sub == DP_CRUISE && sim_hal_throttle() <= 0.6f && !a.x.sb.gen.active;
+        /* back to SPOT: it may start again; then the gearbox slips into forward (the switch still says N) */
+        (void)dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0);
+        t0 = a.x.t;
+        while (a.x.sb.gen.state != GEN_RUNNING && a.x.t < t0 + 40000u) dpx_run(&a, 200u);
+        bool again = a.x.sb.gen.state == GEN_RUNNING;
+        a.x.w.neutral_sw_force = 2;                               /* the switch stuck "neutral" ... */
+        a.x.w.servo_stuck = true;
+        a.x.w.gear_pos_us = 1900.0f;                              /* ... the gearbox in forward: the boat is pushed ahead */
+        a.x.w.engaged = GEAR_F;
+        t0 = a.x.t;
+        while (sb_mode(&a.x.sb) == MODE_DP && a.x.t < t0 + 60000u) dpx_run(&a, AP_PERIOD_MS);
+        float b, s;
+        dpx_thr(&b, &s);
+        bool fault = sb_mode(&a.x.sb) == MODE_STANDBY && a.x.sb.gen.stop_why == GEN_STOP_DP_FIGHT &&
+                     (a.x.sb.alarm_bits & SB_ALM_GEAR) && !a.x.sb.gen.enabled && b == 0.0f && s == 0.0f;
+        dpx_run(&a, 3000u);
+        bool idle = sim_hal_throttle() <= 0.6f;
+        snprintf(d, sizeof d, "set up %s, generator on %s, DP %s; in SPOT the generator runs at %.1f %% in neutral %s; "
+                 "CRUISE asked (-> %u): stop begins %s, in CRUISE idle %s; back in SPOT it runs again %s; the gearbox slips "
+                 "into forward: GEAR FAULT after %.1f s, DP ended, thrusters %.0f / %.0f, auto off %s, idle %s",
+                 set ? "yes" : "NO", on ? "yes" : "NO", in ? "yes" : "NO", thr_run, runs ? "ok" : "FAILED", r_cr,
+                 stopping ? "yes" : "NO", idle_cr ? "yes" : "NO", again ? "yes" : "NO", (a.x.t - t0) * 0.001 - 3.0, b, s,
+                 fault ? "yes" : "NO", idle ? "yes" : "NO");
+        test_report("GN9 generator in DP: runs while SPOT holds (neutral confirmed), stops idle-first for CRUISE; the stern "
+                    "fighting a forward push = GEAR FAULT, DP ends",
+                    set && on && in && runs && r_cr == PROTO_R_OK && stopping && idle_cr && again && fault && idle, d);
+        a.x.w.servo_stuck = false;
+        sim_hal_set_supply(true, 12.6f);
+    }
+}
+
 void sb_dp_tests(void)
 {
     dp_tests();
+    dp_mode_tests();
 }
 
 void sb_engine_tests(void)
@@ -10652,6 +11393,7 @@ void sb_generator_tests(void)
 void sb_tests(void)
 {
     dp_tests();
+    dp_mode_tests();
     generator_tests();
     relay_tests();
     engine_tests();

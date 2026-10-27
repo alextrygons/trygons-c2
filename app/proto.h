@@ -86,6 +86,11 @@
                                        * no code / CONFIRM; every time idle + neutral confirmed, e-stop released,
                                        * not FIRST TEST (engine.h; a copilot's RESTART needs the captain's ACCEPT,
                                        * CRANK is the captain's only - gateway) */
+#define PROTO_T_DP            0x2Eu   /* 4 bytes: u8 action (dp.h DP_ACT_: 0 START, 1 JOG, 2 SPEED, 3 HEADING, 4 STOP) |
+                                       * u8 arg | i16 value. HELM station only. START (arg = sub SPOT 1 / CRUISE 3 /
+                                       * TRIP 4, | 0x80 TRIP from the active waypoint; value speed kn*100) from
+                                       * STANDBY + joystick CONFIRM within 10 s (CREWED onboard, UNCREWED shore);
+                                       * never FIRST TEST. A copilot's needs the captain's ACCEPT, except STOP */
 #define PROTO_T_SIM_FIRST     0x70u   /* 0x70..0x7F: simulator control only   */
 #define PROTO_T_SIM_JOYSTICK  0x70u   /* u8 fitted, f32 x, f32 y, u8 take, u8 auto, u8 confirm */
 #define PROTO_T_SIM_GPS       0x71u   /* u8 1 = GPS fails, 0 = GPS back       */
