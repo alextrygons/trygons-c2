@@ -76,6 +76,7 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               112: "driver screen lost", 113: "single-operator mode: confirm on the captain screen first",
               114: "shallow water on the route",
               120: "the route leaves the geofence",
+              121: "route not checked by the gateway",
               116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
               117: "only the captain (or a station on the boat) holds HELM",
               118: "captain only: REMOTE MANUAL / MANEUVER / engine START",
@@ -666,6 +667,8 @@ class StationServer:
         if p is None or p[5] != sid:
             return
         del self.pending[gseq]
+        if ftype == proto.T_PROG_COMMIT and hasattr(self.gw, "prog_committed"):
+            self.gw.prog_committed(result)                   # the gateway's copy of the route (DP TRIP check)
         if p[6]:
             return p[6](result)
         st = self.stations.get(p[0])

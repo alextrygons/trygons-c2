@@ -31,6 +31,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | DONE (gate OK except gateway B3 under PC load - section B alone 12/12 PASS; sim 229/229 + bridge 228/228 incl. DP1-DP4, TriCore + iLLD + thruster-writer / safe-output checks, boats 10/10 incl. B10, screen 2, lang, sound, avoidance; test_driver 20/20; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-8 HEAD, every other suite this tree), storm 200 episodes I39 4.28 M checks 0 fails) | this commit |
 | 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A) incl. DP5-DP14 + GN9, TriCore + iLLD + writer checks, gateway 108/108, screen 2 14/14, lang 5/5; test_driver 20/20 (twice); acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-9 HEAD, every other suite this tree), storm 200 episodes I39 4.28 M checks, I40-I43 10 k DP steps, 0 fails) | this commit |
 | 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A), TriCore + iLLD + writer checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15 incl. S15, sound 10/10, avoidance 14/14, gateway 111/111 incl. DP1-DP3; test_driver 21/21 incl. I22; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-10 HEAD, every other suite this tree), storm 200 episodes) | this commit |
+| 11b | Steps 7-10 review fixes | DONE (all 8 points re-checked; point 1 was already covered for TRIP / continue / boat leg / current geofence - only the unchecked-program gap fixed (code 121); see notes. Gate OK: sim 244/244 + bridge 243/243 (1 N/A) incl. ER7-ER8, DP15-DP16, RB9 updated, TriCore + iLLD + writer checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, sound 10/10, avoidance 14/14, gateway 112/112 incl. DP4; test_driver 21/21; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-11 HEAD, every other suite this tree), storm 200 episodes I31 / I38 across resets, I44-I46 0 fails) | this commit |
 | 12 | Gateway on a rugged x86 mini PC: remove Pi-only parts, 3.3 V USB-UART (never RS232), USB AIS receiver; README / PARTS / WIRING | | |
 | 13 | Open items: AUTO return, docs/screens pictures (tools/demo_screens.py), paddlewheel, analog joystick | | |
 | 14 | Final check: full acceptance + 24 h soak, TEST_REPORT | | |
@@ -384,6 +385,43 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   once after S14 for an hour in the gate (not reproduced: alone 15/15 twice); now such a click fails the test with a
   reason instead of stalling the gate. An earlier interrupted gate also stood still in test_boats (an agent killed
   meanwhile; not reproduced: test_boats 10/10 alone and in the gate since) - watch for it (PC load / Tk).
+- Step 11b (2026-10-27): steps 7-10 review fixes. Each point re-checked against the code first:
+  1 (MED, gateway DP TRIP route check): ALREADY covered by step 11 - T_DP START sub TRIP and "continue" go through
+    check_prog like AUTO_START, the boat -> first waypoint leg is checked (start=), the geofence is the current one
+    at start time (a fence changed after the upload counts). The GAP was a program the gateway did not check
+    (USB upload, loaded from NV at boot, a gateway restart, a stale copy after a USB upload with the same count):
+    rest = [] -> nothing checked, the TRIP passed. Fix: the AURIX tells where its program came from (sb autop.via_gw,
+    set by link.c on a gateway-port PROG_COMMIT, cleared by every other sb_program_set; TELEM auto_flags b3 ->
+    proto prog_gw); the gateway keeps its copy only after the AURIX's ACK (prog_pending -> prog_committed from
+    stations._on_gw_ack; prog_ack_new covers the telemetry still older than that ACK). DP TRIP without a checked
+    program (or nothing left to continue) -> refused 121 "route not checked by the gateway" (+ lang el / en,
+    alerts, MANUAL). AUTO start is unchanged (without the gateway's copy it still checks the active waypoint only:
+    an open point for the owner, not part of this step). Test gateway DP4.
+  2 engine.c: the crank pulse is cut to the hold's rest in whole 0.1 s units (the board rounds to the nearest, a
+    250 ms rest gave 300 ms = past 5 s); less than 100 ms left -> crank_stop (MAX_TIME), no pulse. Sim ER7.
+  3 kill latch: hal_kill_keep_set / _get (hal.h; board: two words in DSPR0 with TASKING #pragma noclear, magic +
+    complement; sim: a variable the chip reset keeps). sb_init restores SB_LL_KILLED (+ alarm, kill output,
+    ll.kept) only when hal_reset_reason() is not POWER_ON; a power-on writes "off". The restart path: a killed AND
+    tripped boat's RESTART clears the kill too (before its software reset). FIRST_TEST.md 3i (check on the kit that
+    the startup / SSW keeps DSPR0 on a warm reset). CLAUDE.md B / N (I31 / I38 wording), MANUAL + MANUAL_EL, WIRING
+    3A. Sim ER8, storm: I31 / I38 checked at every boot (a kill before a non-power-on reset is still there after it;
+    after a power-on it is gone).
+  4 SHUTOFF ON (= stop the engine) always allowed: engine_relay(.., shutoff, ..) skips every condition for the
+    SHUTOFF role (FIRST TEST still refuses every relay in relays.c); IGNITION ON keeps idle + neutral + e-stop +
+    no kill / trip. Reverses the step-7b SHUTOFF condition: sim RB9 updated (driving: SHUTOFF ON ok, still HDG LOCK;
+    e-stop: SHUTOFF ON ok, IGNITION refused), storm I36 judges only IGNITION's conditions. Docs: engine.h, CLAUDE.md
+    step 11b line, MANUAL / MANUAL_EL.
+  5 thruster.c: a HOT thruster now rests by the clock (cool_left_s / cool_total_s, set when it goes HOT); a settings
+    push never touches HOT or cool_left; a push without the thruster keeps heat_s (no clamp to run_s 0) and the
+    budget is frozen while it is not fitted (was: heat_s / hot cleared at once - a re-push cleared HOT early). Sim
+    DP15.
+  6 smallboat.c: after thruster_step, a thruster HOT in DP -> STANDBY + thruster_stop (both 0 in the same step;
+    thruster.c stays the only hal_set_thrusters writer). Sim DP16.
+  7 storm: I37 also needs the HELM station + its link, no kill, no trip (crank_link_ok; the per-pulse check also the
+    crank station = HELM); new I44 (SPOT / JOG > 50 m or 2 min off the spot -> DP ended in that step), I45 (DP set /
+    trip speed <= dp_max_kn), I46 (never a DP step with a thruster HOT). NINV 47.
+  8 WIRING.md 3D: a relay wired to the starter MUST be the engine group's role STARTER, never "extra" / "trim" (same
+    for IGNITION / SHUTOFF).
 
 # Previous task: "Screen 2 review"
 

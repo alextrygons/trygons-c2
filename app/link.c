@@ -247,7 +247,7 @@ static void send_prog_wp(link_t *l, const program_t *p, uint8_t i)
  *   f32 speed_set_kn (AUTO) | i32 wp_lat | i32 wp_lon | f32 wp_kn  (active waypoint)
  *   u16 rx_frames | u16 rx_crc_errors
  *   u8 prog_n | u8 auto_wp | u8 auto_state (auto_state_t) | u8 auto_flags (b0 program ok,
- *     b1 suspended, b2 finished) | u8 confirm_kind (confirm_kind_t) | u16 confirm_left (0.1 s)
+ *     b1 suspended, b2 finished, b3 loaded over the gateway link) | u8 confirm_kind (confirm_kind_t) | u16 confirm_left (0.1 s)
  *   f32 power_fwd_pct | f32 power_rev_pct | u16 power_code (0 = none) | u8 power_code_dir |
  *     u16 power_code_left (0.1 s) | u8 power_flags (b0 speed limited by the power limit,
  *     b1 limit raised) | f32 throttle_demand (before the limits)
@@ -344,7 +344,8 @@ static void telemetry(link_t *l, sb_t *s)
     proto_wr_u8(&w, a->prog_ok ? (uint8_t)a->prog.n : 0u);
     proto_wr_u8(&w, a->wp);
     proto_wr_u8(&w, (uint8_t)a->state);
-    proto_wr_u8(&w, (uint8_t)((a->prog_ok ? 1u : 0u) | (a->suspended ? 2u : 0u) | (a->finished ? 4u : 0u)));
+    proto_wr_u8(&w, (uint8_t)((a->prog_ok ? 1u : 0u) | (a->suspended ? 2u : 0u) | (a->finished ? 4u : 0u) |
+                              (a->prog_ok && a->via_gw ? 8u : 0u)));
     proto_wr_u8(&w, (uint8_t)s->confirm.kind);
     proto_wr_u16(&w, (uint16_t)(sb_confirm_left_s(s) * 10.0f + 0.5f));
 
@@ -651,7 +652,10 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
             uint8_t p[2] = { (uint8_t)err, bad };
             send(l, PROTO_T_PROG_ERROR, f->seq, p, sizeof p);
         }
-        if (res == SB_OK) l->staging_n = 0u;
+        if (res == SB_OK) {
+            l->staging_n = 0u;
+            s->autop.via_gw = l->port == LINK_PORT_GW;     /* the gateway checked this route (TELEM auto_flags b3) */
+        }
         return sb_result_to_proto(res);
     }
     case PROTO_T_PROG_GET: {

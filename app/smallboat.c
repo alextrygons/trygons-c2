@@ -199,7 +199,18 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         joy_init(&s->joy_probe, &cfg->joy, have ? &cal : NULL);
     }
     s->boot_ms = s->now_ms;
-    hal_set_engine_kill(false);                 /* a reset clears the kill (or the HELM station's restart) */
+    /* the ENGINE KILL latch (step 11b): kept through a watchdog / software reset; only a real
+     * power-on reset (or the HELM station's remote restart) clears it */
+    if (hal_reset_reason(NULL) != HAL_RESET_POWER_ON && hal_kill_keep_get()) {
+        s->ll.state = SB_LL_KILLED;
+        s->ll.kept = true;
+        s->alarm_bits |= SB_ALM_ENGINE_KILLED;
+        s->alarm = true;
+        hal_set_engine_kill(true);
+    } else {
+        hal_kill_keep_set(false);
+        hal_set_engine_kill(false);
+    }
     engine_init(&s->eng);
     thruster_init(&s->thrust);                  /* no settings = no thruster fitted (the station pushes them) */
     dp_init(&s->dp);
@@ -280,10 +291,12 @@ sb_result_t sb_relay_cmd(sb_t *s, uint8_t n, uint8_t action, uint16_t ms)
     const relay_def_t *d = s->relays.have_table ? relay_table_find(&s->relays.table, n) : NULL;
     if (d != NULL && action <= RELAY_CMD_PULSE &&
         (d->role == RELAY_ROLE_IGNITION || d->role == RELAY_ROLE_SHUTOFF)) {
-        /* IGNITION / SHUTOFF: through the engine rules (section N: idle + neutral + e-stop released) */
+        /* IGNITION / SHUTOFF: through the engine rules (section N: IGNITION ON = idle + neutral +
+         * e-stop released; SHUTOFF ON = stop the engine, always - step 11b) */
         eng_cond_t c;
         eng_cond(s, &c, false);
-        eng_why_t why = engine_relay(&s->eng, &c, &s->relays, n, action != RELAY_CMD_OFF, &res);
+        eng_why_t why = engine_relay(&s->eng, &c, &s->relays, n, action != RELAY_CMD_OFF,
+                                     d->role == RELAY_ROLE_SHUTOFF, &res);
         if (why == ENG_WHY_FIRST_TEST) return SB_ERR_WRONG_MODE;
         if (why == ENG_WHY_ESTOP) return SB_ERR_REFUSED;
         if (why != ENG_WHY_NONE && why != ENG_WHY_RELAY) return SB_ERR_PRECOND;
@@ -1046,7 +1059,8 @@ static bool helm_link_ok(const sb_t *s)
 /* Every step, UNCREWED only: link lost -> STANDBY (idle + neutral first);
  * then ENGINE KILL near shore (or without fresh shore info) as soon as idle +
  * neutral, at open sea after lostlink_grace_s unless the link came back. The
- * kill is latched until a reset or the HELM station's remote restart
+ * kill is latched until a POWER-ON reset (a watchdog / software reset keeps it,
+ * hal_kill_keep_*) or the HELM station's remote restart
  * (sb_restart, section N); CREWED never kills. */
 static void lostlink_step(sb_t *s)
 {
@@ -1089,6 +1103,7 @@ static void lostlink_step(sb_t *s)
         s->ll.near_at_kill = near;
         s->ll.kills++;
         alarm_on(s, SB_ALM_ENGINE_KILLED);
+        hal_kill_keep_set(true);                        /* (kept through a watchdog / software reset) */
         hal_set_engine_kill(true);
     }
 }
@@ -1134,8 +1149,10 @@ sb_result_t sb_restart(sb_t *s, uint8_t station, uint8_t action)
         if (clear) {
             /* (a) the ENGINE KILL latch: cleared; STANDBY stays, nothing starts by itself */
             s->ll.state = SB_LL_OK;
+            s->ll.kept = false;
             s->alarm_bits &= ~SB_ALM_ENGINE_KILLED;
             if (s->alarm_bits == 0u && (s->alarm_bits2 & ~SB_ALM2_QUIET) == 0u && !s->ap.alarm) s->alarm = false;
+            hal_kill_keep_set(false);
             hal_set_engine_kill(false);
         }
     } else if (action == ENG_ACT_CRANK) {
@@ -2003,6 +2020,7 @@ sb_result_t sb_program_set(sb_t *s, const program_t *p, prog_error_t *err, uint8
     s->autop.suspended = false;
     s->autop.finished = false;
     s->autop.legs_done = 0u;
+    s->autop.via_gw = false;                                /* (link.c sets it for a gateway upload) */
     s->dp.wp = 0u;                                          /* a DP TRIP "continue" starts the new one at waypoint 1 */
     s->cfg_version++;
     if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
@@ -2897,9 +2915,18 @@ void sb_step(sb_t *s)
             ti.demand_pct[THR_STERN] = s->test_thrust.stern_pct;
         }
 #endif
+        bool dp_ran = sb_mode(s) == MODE_DP && s->dp.sub != DP_OFF;   /* (not the step-9 test hook) */
         ti.dt_ms = dt_ms;
         thruster_step(&s->thrust, &ti);
-        if (thruster_any_hot(&s->thrust)) alarm2_on(s, SB_ALM2_DP_HEAT);
+        if (thruster_any_hot(&s->thrust)) {
+            alarm2_on(s, SB_ALM2_DP_HEAT);
+            /* a thruster went HOT in this very step (thruster_step put only that one to 0): DP
+             * ends NOW and the other one stops in the same step too (step 11b) */
+            if (dp_ran) {
+                sb_request_mode(s, MODE_STANDBY, WHY_DP_THRUSTER);
+                thruster_stop(&s->thrust);
+            }
+        }
     }
 
     /* 5. gear and throttle (order: throttle limited by the gear state),

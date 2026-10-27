@@ -101,6 +101,8 @@ class Gateway:
         self.charts = chart.Charts(cfg.get("charts_dir"))
         self.shallow = Shallow(cfg.get("shallow"), self.charts)
         self.prog_wps = None            # the last AUTO program accepted through the gateway: [(lat, lon)]
+        self.prog_pending = None        # ... checked here, waiting for the AURIX's ACK of the PROG_COMMIT
+        self.prog_ack_new = False       # a commit ACK came after the latest telemetry (prog_gw not shown yet)
         self.nav_seq = 0
         self.shore_now = (0, 0xFFFF)    # last GW_SHORE: (flags, distance m)
         self.nav_last = None
@@ -129,6 +131,7 @@ class Gateway:
             return
         d.update(self.telem2)
         self.telem = d
+        self.prog_ack_new = False           # (this telemetry was sent after the last PROG_COMMIT ACK: it knows)
 
     # --- AIS (section A) ---------------------------------------------------------------
     def _ais_online_allowed(self):
@@ -219,7 +222,7 @@ class Gateway:
             if why:
                 self.audit("program_refused", station=st.id, user=st.user, why=why)
                 return 120, why
-            self.prog_wps = wps
+            self.prog_pending = wps                         # the AURIX's ACK makes it the program (prog_committed)
         elif ftype in (proto.T_AUTO_START, proto.T_AUTO_RESUME) or (
                 ftype == proto.T_DP and len(payload) >= 2 and payload[0] == proto.DP_START and
                 payload[1] & 0x7F == proto.DP_TRIP):
@@ -229,9 +232,21 @@ class Gateway:
             wps = self.prog_wps or []
             dp = ftype == proto.T_DP
             if dp:
-                # a DP TRIP (CLAUDE.md P) is checked like AUTO: from waypoint 1, or "continue" from the DP's waypoint
+                # a DP TRIP (CLAUDE.md P) is checked like AUTO: from waypoint 1, or "continue" from the DP's waypoint;
+                # the boat -> first waypoint leg included (start=). Only a program the gateway itself checked and
+                # the AURIX still holds (loaded over the gateway link, same count) can be checked - a USB-loaded one,
+                # one from the boat's memory or from before a gateway restart can't: the TRIP is refused (121)
+                fresh = self.prog_ack_new                   # accepted just now: the telemetry is older
+                if not wps or not (fresh or (d.get("prog_gw") and len(wps) == d.get("prog_n"))):
+                    why = "upload the route again through the gateway (loaded over USB, from the boat's memory or "                           "before a gateway restart)"
+                    self.audit("dp_trip_refused", station=st.id, user=st.user, why=why)
+                    return 121, why
                 k = (d.get("dp_wp", 0) or 0) if payload[1] & proto.DP_TRIP_CONTINUE else 0
-                rest = wps[k:] if wps and k < len(wps) else []
+                rest = wps[k:] if k < len(wps) else []
+                if not rest:
+                    why = "no waypoint left to continue from"
+                    self.audit("dp_trip_refused", station=st.id, user=st.user, why=why)
+                    return 121, why
             else:
                 k = d.get("auto_wp", 0) or 0
                 rest = wps[k:] if wps and k < len(wps) else ([(d["wp_lat"], d["wp_lon"])] if d.get("wp_set") else [])
@@ -245,6 +260,14 @@ class Gateway:
                 self.audit(kind, station=st.id, user=st.user, why=why)
                 return 120, why
         return None
+
+    def prog_committed(self, result):
+        """The AURIX's answer to a PROG_COMMIT sent through the gateway: accepted = the checked waypoints are
+        the boat's program now (the DP TRIP / AUTO checks use them)."""
+        if result == 0 and self.prog_pending is not None:
+            self.prog_wps = self.prog_pending
+            self.prog_ack_new = True        # the telemetry still in hand is older than this program
+        self.prog_pending = None
 
     def _geofence_msg(self, st, m):
         """Set / change / clear the geofence from a station's map (CLAUDE.md D). A copilot's change waits

@@ -69,6 +69,8 @@ typedef struct {
     float    out_pct[THR_N];    /* what goes to hal_set_thrusters (-max..max) */
     float    heat_s[THR_N];     /* heat budget used, s (0 .. run_s) */
     bool     hot[THR_N];        /* budget full: held at 0 until it is empty again */
+    float    cool_left_s[THR_N];    /* HOT: rest time still to go (never shortened by a settings push, step 11b) */
+    float    cool_total_s[THR_N];   /* HOT: the rest time it started with */
     bool     active;            /* dp_active and allowed this step (published to CPU1 as dp_active) */
     uint8_t  why;               /* THR_WHY_ */
     bool     hot_edge, cool_edge;   /* a thruster got HOT / cooled down this step */
@@ -86,11 +88,16 @@ void thruster_init(thruster_t *t);
  * max_pct > 0, times > THR_MAX_S, jog 0.5..10 m, spot 5..100 m). */
 #define THR_FRAME_BYTES 12u
 bool thruster_cfg_decode(const uint8_t *p, uint32_t len, thr_cfg_t *c);
-/* Take the settings (the caller checks HELM + STANDBY). The heat budget is kept. */
+/* Take the settings (the caller checks HELM + STANDBY). The heat budget is kept: heat_s
+ * (at most the new run_s), a HOT thruster stays HOT for the rest time it already had
+ * (step 11b: a re-push - also one that unfits it and fits it again - never clears HOT early). */
 void thruster_cfg_set(thruster_t *t, const thr_cfg_t *c, uint16_t hash);
 
 /* One control step: out_pct[] for hal_set_thrusters. */
 void thruster_step(thruster_t *t, const thr_input_t *in);
+/* Both thrusters 0 NOW (after thruster_step in the same control step: a thruster got HOT
+ * in DP - DP ends, the other one stops too, step 11b). The only other writer call. */
+void thruster_stop(thruster_t *t);
 
 /* fitted = max_pct > 0 and run_s > 0 */
 bool thruster_fitted(const thruster_t *t, uint8_t u);

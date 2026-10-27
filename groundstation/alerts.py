@@ -182,4 +182,4 @@ GW_RESULTS_EN = {109: "driver screen not open", 110: "rejected by the driver",
                  116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
                  117: "only the captain (or a station on the boat) holds HELM",
                  118: "captain only: REMOTE MANUAL / MANEUVER", 119: "no captain holds HELM",
-                 120: "the route leaves the geofence"}
+                 120: "the route leaves the geofence", 121: "route not checked by the gateway"}

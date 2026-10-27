@@ -722,6 +722,12 @@ void hal_set_engine_kill(bool kill)
 }
 bool sim_hal_engine_killed(void) { return s_engine_kill; }
 
+/* the kill latch kept across a reset: sim_hal_chip_reset / hal_init never touch it
+ * (a real chip's no-clear RAM); sb_init ignores it after a power-on */
+static bool s_kill_keep;
+void hal_kill_keep_set(bool killed) { s_kill_keep = killed; }
+bool hal_kill_keep_get(void) { return s_kill_keep; }
+
 /* hal_system_reset (remote restart after a trip): the harness sees the
  * request after the step and reboots the chip (HAL_RESET_APPLICATION). */
 static uint32_t s_sw_resets;

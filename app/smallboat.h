@@ -115,7 +115,7 @@
 #define SB_ALM_PROFILE            0x10000000u /* PROFILE: CREWED / UNCREWED changed (STANDBY), or a joystick appeared while
                                                  driving UNCREWED (-> STANDBY) */
 #define SB_ALM_LINK_LOST          0x20000000u /* UNCREWED: LINK LOST to the HELM shore station (idle + neutral, STANDBY) */
-#define SB_ALM_ENGINE_KILLED      0x40000000u /* UNCREWED lost link: ENGINE KILLED (latched until reset on board or a
+#define SB_ALM_ENGINE_KILLED      0x40000000u /* UNCREWED lost link: ENGINE KILLED (latched until a power-on reset or a
                                                  remote restart from the HELM station, section N) */
 
 /* The first alarm word is full (0x80000000 is its last free bit): newer alarms
@@ -141,8 +141,9 @@
 /* UNCREWED lost link (CLAUDE.md section B), sb_t.ll.state */
 #define SB_LL_OK      0u        /* link to the HELM station OK (or not armed yet, or CREWED) */
 #define SB_LL_LOST    1u        /* lost: STANDBY, idle + neutral, waiting (near shore: kill at once) */
-#define SB_LL_KILLED  2u        /* engine killed: latched until the AURIX is reset on board, or the HELM station
-                                   restarts it (sb_restart: idle + neutral confirmed, e-stop released) */
+#define SB_LL_KILLED  2u        /* engine killed: latched until a POWER-ON reset of the AURIX on board (a watchdog /
+                                   software reset keeps it: hal_kill_keep_*), or the HELM station restarts it
+                                   (sb_restart: idle + neutral confirmed, e-stop released) */
 
 /* GW_SHORE flags (gateway, 1 Hz): distance to the shore / shallow water of the route check */
 #define SB_SHORE_NEAR   0x01u   /* the gateway says: near the shore */
@@ -467,6 +468,7 @@ typedef struct {
     uint8_t    wp;              /* active waypoint (next to reach) */
     bool       suspended;       /* interrupted (override / STANDBY): resume = PC + CONFIRM */
     bool       finished;        /* last waypoint reached */
+    bool       via_gw;          /* the program came over the gateway link (the gateway checked its route; step 11b) */
     auto_state_t state;
     float      hold_kn;         /* AUTO_HOLD speed */
     nav_leg_t  leg;
@@ -604,6 +606,7 @@ typedef struct {
         bool     armed;        /* a HELM station held HELM (the link existed) since power-up */
         uint32_t lost_ms;      /* when the link was lost */
         bool     near_at_kill; /* the kill: near shore (immediate) or after the grace time */
+        bool     kept;         /* the kill came through a watchdog / software reset (step 11b) */
         uint32_t losses, returns, kills;
     } ll;
     struct {                   /* distance to the shore from the gateway (GW_SHORE) */

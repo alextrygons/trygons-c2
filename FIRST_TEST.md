@@ -176,6 +176,18 @@ entry has `"power_up": "on"` (e.g. NAV LIGHTS).
       just before the request and low right after its LAST stop bit (well under 1 ms at 9600 baud - not
       one control step of 50 ms later); the board's reply is seen on the bus after DE is low.
 
+### 3i. ENGINE KILL latch through a reset (later: normal build, UNCREWED, kill relay fitted - not in FIRST TEST)
+
+The FIRST TEST build never kills the engine, so this check waits for the first UNCREWED test with the
+kill relay wired (engine OFF, a test lamp on the kill relay output).
+
+- [ ] Make a lost-link kill (UNCREWED, HELM station disconnected): ENGINE KILLED, lamp on.
+- [ ] Make a REAL watchdog reset (halt core 0 in ADS > 1 s, as in 3h): after the restart the boat is
+      STILL killed (ENGINE KILLED alarm, lamp on). If the kill is gone: STOP - the no-clear RAM of
+      hal_kill_keep_set / _get (hal_tc375.c, DSPR0) is cleared by the startup code - report it.
+- [ ] RESTART from the HELM station (idle, neutral, e-stop released): the kill goes (lamp off).
+- [ ] Kill again, then a real power cycle of the board: the kill goes (power-on).
+
 - [ ] Leave the bench test (button **Leave**): mode STANDBY.
 
 ## 4. Dock test (boat in the water, tied up, engine running in NEUTRAL)

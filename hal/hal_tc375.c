@@ -445,6 +445,38 @@ void hal_set_engine_kill(bool kill)
 #endif
 }
 
+/* The ENGINE KILL latch kept across a watchdog / SMU / software reset (step 11b):
+ * two words in core 0's DSPR (not cached: nothing lost in a cache at the reset),
+ * excluded from the startup clearing (TASKING #pragma noclear); a magic + its
+ * complement, so stale or random RAM never reads as "killed". sb_init reads it
+ * only after a reset that is NOT a power-on (after a power-on it is garbage and
+ * is written "off" first). TODO on the kit: confirm the startup / SSW leaves
+ * DSPR0 as it is on a warm reset (kill, then a watchdog reset: still killed;
+ * FIRST_TEST.md 3i). Other compilers: cleared at start = the kill goes with
+ * every reset (the old behaviour). */
+#define KILL_KEEP_ON  0x4B494C4Cu       /* "KILL" */
+#if defined(__TASKING__)
+#pragma section farbss bss_cpu0
+#pragma noclear
+#endif
+static volatile uint32 s_kill_keep[2];
+#if defined(__TASKING__)
+#pragma clear
+#pragma section farbss restore
+#endif
+
+void hal_kill_keep_set(bool killed)
+{
+    uint32 v = killed ? KILL_KEEP_ON : 0u;
+    s_kill_keep[0] = v;
+    s_kill_keep[1] = ~v;
+}
+
+bool hal_kill_keep_get(void)
+{
+    return s_kill_keep[0] == KILL_KEEP_ON && s_kill_keep[1] == ~KILL_KEEP_ON;
+}
+
 /* Remote restart after a monitor trip (section N): an APPLICATION reset of the
  * whole chip (all CPUs + peripherals; the next start reports
  * HAL_RESET_APPLICATION, so the relay power_up states are NOT applied again).

@@ -9537,8 +9537,9 @@ static void relay_tests(void)
 
     /* RB9 (step 7b, review 1) the engine ROLES: the STARTER = an explicit role, a momentary relay of <= 5 s
      * (typed otherwise = an INVALID table); every engine relay has a role, no other relay has one; each role
-     * once. No engine relay is switched ON by the plain relay command: IGNITION / SHUTOFF only with idle +
-     * neutral confirmed and the e-stop released (engine.c), the STARTER never (hold-to-crank only); OFF always */
+     * once. No engine relay is switched ON by the plain relay command: IGNITION only with idle + neutral
+     * confirmed and the e-stop released (engine.c), SHUTOFF ON (= stop the engine) ALWAYS (step 11b: also while
+     * driving and with the e-stop pressed), the STARTER never (hold-to-crank only); OFF always */
     {
         static sbsim_t x;
         static relay_table_t t, bad;
@@ -9566,24 +9567,31 @@ static void relay_tests(void)
         ign_off = ign_off && !sim_hal_relay_state(1u);
         bool starter = sb_relay_cmd(&x.sb, 2u, RELAY_CMD_ON, 0u) == SB_ERR_NOT_ALLOWED &&
                        sb_relay_cmd(&x.sb, 2u, RELAY_CMD_PULSE, 300u) == SB_ERR_NOT_ALLOWED;
-        /* driving (throttle not idle, gear F): IGNITION / SHUTOFF ON refused, OFF still goes */
+        /* driving (throttle not idle, gear F): IGNITION ON refused, SHUTOFF ON (stop the engine) and OFF go */
         uint32_t e1 = sim_hal_relay_edges(1u), e3 = sim_hal_relay_edges(3u);
         bool hdg = hdg_lock(&x);
         sb_test_drive(&x.sb, true, GEAR_F, 40.0f);
         sbsim_run(&x, x.t + 8000u, NULL, NULL);
         bool drive_ref = x.sb.thr.out_pct > 10.0f && sb_relay_cmd(&x.sb, 1u, RELAY_CMD_ON, 0u) == SB_ERR_PRECOND &&
-                         sb_relay_cmd(&x.sb, 3u, RELAY_CMD_ON, 0u) == SB_ERR_PRECOND &&
-                         sb_relay_cmd(&x.sb, 3u, RELAY_CMD_PULSE, 500u) == SB_ERR_PRECOND &&
-                         sb_relay_cmd(&x.sb, 3u, RELAY_CMD_OFF, 0u) == SB_OK;
+                         sb_relay_cmd(&x.sb, 1u, RELAY_CMD_PULSE, 500u) == SB_ERR_PRECOND;
+        bool shut_drive = sb_relay_cmd(&x.sb, 3u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        shut_drive = shut_drive && sim_hal_relay_state(3u) && sb_mode(&x.sb) == MODE_HDG_LOCK &&
+                     sb_relay_cmd(&x.sb, 3u, RELAY_CMD_OFF, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        shut_drive = shut_drive && !sim_hal_relay_state(3u);
         sb_test_drive(&x.sb, false, GEAR_N, 0.0f);
         press(&x, HAL_BTN_STANDBY);
         sbsim_run(&x, x.t + 6000u, NULL, NULL);
-        /* the e-stop pressed: refused (REFUSED), released: allowed again */
+        /* the e-stop pressed: IGNITION refused (REFUSED), SHUTOFF ON goes; released: IGNITION allowed again */
         sim_hal_set_estop(true, true);
         sbsim_run(&x, x.t + 300u, NULL, NULL);
         bool estop_ref = sb_relay_cmd(&x.sb, 1u, RELAY_CMD_ON, 0u) == SB_ERR_REFUSED;
+        bool shut_es = sb_relay_cmd(&x.sb, 3u, RELAY_CMD_ON, 0u) == SB_OK;
         sbsim_run(&x, x.t + 500u, NULL, NULL);
-        bool never = sim_hal_relay_edges(1u) == e1 && sim_hal_relay_edges(3u) == e3;
+        shut_es = shut_es && sim_hal_relay_state(3u) && sim_hal_relay_edges(3u) == e3 + 2u;
+        (void)sb_relay_cmd(&x.sb, 3u, RELAY_CMD_OFF, 0u);
+        bool never = sim_hal_relay_edges(1u) == e1;
         sim_hal_set_estop(true, false);
         sbsim_run(&x, x.t + 500u, NULL, NULL);
         bool again = sb_relay_cmd(&x.sb, 1u, RELAY_CMD_ON, 0u) == SB_OK;
@@ -9593,14 +9601,15 @@ static void relay_tests(void)
         sim_hal_set_estop(false, false);
         snprintf(d, sizeof d, "bad tables INVALID %d / 8 (STARTER onoff / timed / 6 s, engine without role, role outside the "
                  "engine, two STARTERs, IGNITION momentary, a trim relay as STARTER), refused over the link %s; STANDBY: "
-                 "IGNITION on %s / off %s, STARTER by the plain command refused %s; driving (HDG LOCK %s): IGNITION / "
-                 "SHUTOFF ON refused, OFF ok %s; e-stop: refused %s, no engine coil on meanwhile %s; released: ON again %s",
+                 "IGNITION on %s / off %s, STARTER by the plain command refused %s; driving (HDG LOCK %s): IGNITION ON "
+                 "refused %s, SHUTOFF ON (engine stop) + OFF ok, still HDG LOCK %s; e-stop: IGNITION refused %s, SHUTOFF ON "
+                 "ok %s, IGNITION coil never on meanwhile %s; released: ON again %s",
                  invalid, link_bad ? "yes" : "NO", ign_on ? "yes" : "NO", ign_off ? "yes" : "NO", starter ? "yes" : "NO",
-                 hdg ? "yes" : "NO", drive_ref ? "yes" : "NO", estop_ref ? "yes" : "NO", never ? "yes" : "NO",
-                 again ? "yes" : "NO");
-        test_report("RB9 engine roles: STARTER only by role (momentary <= 5 s, else INVALID); IGNITION / SHUTOFF ON only "
-                    "idle + neutral + e-stop released", invalid == 8 && loaded && link_bad && ign_on && ign_off && starter &&
-                    hdg && drive_ref && estop_ref && never && again, d);
+                 hdg ? "yes" : "NO", drive_ref ? "yes" : "NO", shut_drive ? "yes" : "NO", estop_ref ? "yes" : "NO",
+                 shut_es ? "yes" : "NO", never ? "yes" : "NO", again ? "yes" : "NO");
+        test_report("RB9 engine roles: STARTER only by role (momentary <= 5 s, else INVALID); IGNITION ON only idle + neutral "
+                    "+ e-stop released; SHUTOFF ON (engine stop) always", invalid == 8 && loaded && link_bad && ign_on &&
+                    ign_off && starter && hdg && drive_ref && shut_drive && estop_ref && shut_es && never && again, d);
         remove("nv7.bin");
     }
 
@@ -10215,6 +10224,133 @@ static void engine_tests(void)
                  set ? "yes" : "NO", cr);
         test_report("ER6 no attempt limit / code / CONFIRM; log event 27 in the header (complete); CREWED: no kill",
                     drv && ok == 3 && listed && whole && set && cr == PROTO_R_PRECOND, d);
+    }
+
+    /* ER7 (step 11b) the 5 s crank limit is never passed: every board pulse ends by hold start + 5 s (a pulse
+     * shorter than the hold's rest is cut down to whole 0.1 s units, the board rounds to the nearest); a CRANK
+     * with less than 100 ms of the hold left ends the hold (MAX_TIME) instead of a 100 ms pulse */
+    {
+        static sbsim_t x;
+        static ersim_t e;
+        bool set = er_setup(&x, &e, 1815u, true, NULL);
+        const relay_def_t *sd = relay_table_find(&x.sb.relays.table, 2u);
+        uint8_t idx = sd ? (uint8_t)(sd - x.sb.relays.table.r) : 0u;
+        static const uint32_t at[] = { 0u, 200u, 400u, 600u, 800u, 1000u, 1200u, 1400u, 1600u, 1800u, 2000u, 2200u,
+                                       2400u, 2600u, 2800u, 3000u, 3200u, 3400u, 3600u, 3800u, 4000u, 4200u, 4400u,
+                                       4600u, 4750u, 4950u };
+        uint32_t t0 = 0u, end_max = 0u, p_late = 0u, len_4750 = 0u;
+        sb_result_t r_last = SB_OK;
+        bool ok_all = true;
+        for (unsigned k = 0; k < sizeof at / sizeof at[0]; k++) {
+            while (k > 0u && x.sb.now_ms - t0 < at[k]) sbsim_run(&x, x.t, er_hook, &e);
+            uint32_t p0 = x.sb.eng.pulses;
+            sb_result_t r = sb_restart(&x.sb, 2u, ENG_ACT_CRANK);
+            if (k == 0u) t0 = x.sb.eng.hold_t0_ms;
+            if (at[k] == 4950u) { r_last = r; p_late = x.sb.eng.pulses - p0; continue; }
+            ok_all = ok_all && r == SB_OK;
+            uint32_t end = x.sb.relays.until_ms[idx] - RELAY_PULSE_MARGIN_MS - t0;
+            if (at[k] == 4750u) len_4750 = end - at[k];
+            if (end > end_max) end_max = end;
+        }
+        bool stopped = x.sb.eng.crank == ENG_CRANK_COOL && x.sb.eng.stop_why == ENG_WHY_MAX_TIME &&
+                       x.sb.eng.hold_ms <= ENG_CRANK_MAX_MS;
+        sbsim_run(&x, x.t + 400u, er_hook, &e);
+        bool off = !sim_hal_relay_state(2u);
+        snprintf(d, sizeof d, "set up %s; 25 CRANKs accepted %s; latest pulse end %u ms after the hold start (limit %u); "
+                 "the CRANK at 4.75 s -> a %u ms pulse (250 ms left, whole units); the CRANK at 4.95 s (50 ms left) -> %d, "
+                 "%u new pulses, hold ended MAX_TIME at %u ms %s; STARTER off %s",
+                 set ? "yes" : "NO", ok_all ? "yes" : "NO", (unsigned)end_max, (unsigned)ENG_CRANK_MAX_MS,
+                 (unsigned)len_4750, (int)r_last, (unsigned)p_late, (unsigned)x.sb.eng.hold_ms, stopped ? "yes" : "NO",
+                 off ? "yes" : "NO");
+        test_report("ER7 the crank never passes 5 s: pulses cut to the hold's rest (whole 0.1 s), < 100 ms left = the hold ends",
+                    set && ok_all && end_max <= ENG_CRANK_MAX_MS && len_4750 == 200u && r_last != SB_OK && p_late == 0u &&
+                    stopped && off, d);
+    }
+
+    /* ER8 (step 11b) the ENGINE KILL latch survives a watchdog reset and a software reset (still killed, alarm,
+     * STANDBY only); it goes only with a real power-on reset or the HELM station's RESTART (after which a reset
+     * keeps it off); a RESTART of a killed AND tripped boat clears the kill before its own software reset */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        static ersim_t e;
+        remove("nv7.bin");
+        bool drv = ll_drive(&x, &l, 1816u, false, 50u);
+        ll_cut(&x, &l);
+        sbsim_run(&x, x.t + 4000u, ll_hook, &l);
+        bool killed = x.sb.ll.state == SB_LL_KILLED && sim_hal_engine_killed() && !x.sb.ll.kept;
+        /* a watchdog reset (core 0 frozen) */
+        uint32_t r0 = x.resets;
+        x.frozen = true;
+        sbsim_run(&x, x.t + 600u, ll_hook, &l);
+        bool wdt = x.resets == r0 + 1u && hal_reset_reason(NULL) == HAL_RESET_SYSTEM;
+        bool kept_wdt = x.sb.ll.state == SB_LL_KILLED && x.sb.ll.kept && sim_hal_engine_killed() &&
+                        (x.sb.alarm_bits & SB_ALM_ENGINE_KILLED) && sb_mode(&x.sb) == MODE_STANDBY;
+        /* a software reset */
+        sim_hal_chip_reset(HAL_RESET_APPLICATION);
+        x.boot_until = x.t + 200u;
+        sbsim_run(&x, x.t + 600u, ll_hook, &l);
+        bool kept_sw = x.sb.ll.state == SB_LL_KILLED && sim_hal_engine_killed() && hal_reset_reason(NULL) == HAL_RESET_APPLICATION;
+        /* the HELM station's RESTART clears it; a watchdog reset afterwards keeps it OFF */
+        memset(&e, 0, sizeof e);
+        e.r = l.r;
+        e.resets = sim_hal_sw_resets();
+        uint8_t helm = pi_cmd(&x, &e.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        e.r.rj_on = true;
+        sbsim_run(&x, x.t + 300u, er_hook, &e);
+        bool stays = sb_mode(&x.sb) == MODE_STANDBY && x.sb.ll.state == SB_LL_KILLED;
+        uint8_t rs = er_cmd(&x, &e, 2u, ENG_ACT_RESTART);
+        bool cleared = !sim_hal_engine_killed() && x.sb.ll.state == SB_LL_OK && !x.sb.ll.kept;
+        r0 = x.resets;
+        x.frozen = true;
+        sbsim_run(&x, x.t + 600u, er_hook, &e);
+        bool off_after = x.resets == r0 + 1u && x.sb.ll.state == SB_LL_OK && !sim_hal_engine_killed();
+        /* killed again, then a real power-on: gone */
+        static sbsim_t y;
+        static llsim_t m;
+        bool drv2 = ll_drive(&y, &m, 1817u, false, 50u);
+        ll_cut(&y, &m);
+        sbsim_run(&y, y.t + 4000u, ll_hook, &m);
+        bool k2 = y.sb.ll.state == SB_LL_KILLED;
+        sim_hal_chip_reset(HAL_RESET_POWER_ON);
+        y.boot_until = y.t + 200u;
+        sbsim_run(&y, y.t + 600u, ll_hook, &m);
+        bool gone = y.sb.ll.state == SB_LL_OK && !sim_hal_engine_killed() && !(y.sb.alarm_bits & SB_ALM_ENGINE_KILLED);
+        /* killed AND tripped: one RESTART clears the kill, then the software reset (the trip goes); after it not killed */
+        static sbsim_t z;
+        static llsim_t n;
+        static ersim_t f;
+        bool drv3 = ll_drive(&z, &n, 1818u, false, 50u);
+        ll_cut(&z, &n);
+        sbsim_run(&z, z.t + 4000u, ll_hook, &n);
+        bool k3 = z.sb.ll.state == SB_LL_KILLED;
+        g_mon.test_trip = MON_TEST_TRIP;
+        sbsim_run(&z, z.t + 600u, ll_hook, &n);
+        bool tr3 = z.sb.mon_tripped && hal_outputs_forced();
+        memset(&f, 0, sizeof f);
+        f.r = n.r;
+        f.resets = sim_hal_sw_resets();
+        pi_cmd(&z, &f.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        f.r.rj_on = true;
+        sbsim_run(&z, z.t + 300u, er_hook, &f);
+        uint32_t sw0 = sim_hal_sw_resets();
+        uint8_t rs3 = er_cmd(&z, &f, 2u, ENG_ACT_RESTART);
+        bool kc = z.sb.eng.kill_clears == 1u && !sim_hal_engine_killed();
+        sbsim_run(&z, z.t + 2000u, er_hook, &f);
+        bool both = sim_hal_sw_resets() == sw0 + 1u && !hal_outputs_forced() && z.sb.ll.state == SB_LL_OK &&
+                    !sim_hal_engine_killed();
+        memset((void *)&g_mon, 0, sizeof g_mon);
+        snprintf(d, sizeof d, "driving %s, killed %s; watchdog reset %s: still killed (kept, alarm, STANDBY) %s; software reset: "
+                 "still killed %s; HELM %u (still STANDBY + killed %s), RESTART %u -> cleared %s, a watchdog reset then keeps it "
+                 "off %s; second boat (driving %s, killed %s): power-on reset -> gone %s; third boat (driving %s) killed %s + "
+                 "tripped %s: RESTART %u clears the kill %s, then the software reset: no trip, not killed %s",
+                 drv ? "yes" : "NO", killed ? "yes" : "NO", wdt ? "yes" : "NO", kept_wdt ? "yes" : "NO", kept_sw ? "yes" : "NO",
+                 helm, stays ? "yes" : "NO", rs, cleared ? "yes" : "NO", off_after ? "yes" : "NO", drv2 ? "yes" : "NO",
+                 k2 ? "yes" : "NO", gone ? "yes" : "NO", drv3 ? "yes" : "NO", k3 ? "yes" : "NO", tr3 ? "yes" : "NO", rs3,
+                 kc ? "yes" : "NO", both ? "yes" : "NO");
+        test_report("ER8 the ENGINE KILL latch survives a watchdog / software reset; only a power-on or the HELM RESTART clears it",
+                    drv && killed && wdt && kept_wdt && kept_sw && stays && helm == PROTO_R_OK && rs == PROTO_R_OK && cleared &&
+                    off_after && drv2 && k2 && gone && drv3 && k3 && tr3 && rs3 == PROTO_R_OK && kc && both, d);
     }
     remove("nv7.bin");
     sim_hal_relay_board_reset();
@@ -11361,6 +11497,84 @@ static void dp_mode_tests(void)
                     set && on && in && runs && r_cr == PROTO_R_OK && stopping && idle_cr && again && fault && idle, d);
         a.x.w.servo_stuck = false;
         sim_hal_set_supply(true, 12.6f);
+    }
+
+    /* DP15 (step 11b) a thruster settings push keeps the heat budget: a HOT thruster stays HOT for its own rest
+     * time (the same settings again, settings without it and with it again, a shorter rest_s) - never cleared
+     * early; a part-used budget is kept too (not reset by a push without the thruster) */
+    {
+        static dpx_t a;
+        bool set = dpx_init(&a, 2024u, true, NULL, false);
+        bool s1 = dpx_settings(&a, 50u, 10u, 20u, 50u, 60u, 30u, 15u) == PROTO_R_OK;
+        sb_test_thrust(&a.x.sb, true, 50.0f, 50.0f);
+        uint32_t t0 = a.x.t;
+        while (!a.x.sb.thrust.hot[THR_BOW] && a.x.t < t0 + 15000u) dpx_run(&a, AP_PERIOD_MS);
+        uint32_t t_hot = a.x.t;
+        sb_test_thrust(&a.x.sb, false, 0.0f, 0.0f);
+        dpx_run(&a, 200u);
+        /* re-pushes while it rests (20 s): same, without both thrusters, with them again, then a 1 s rest_s */
+        uint8_t r_same = dpx_settings(&a, 50u, 10u, 20u, 50u, 60u, 30u, 15u);
+        dpx_run(&a, 1000u);
+        bool hot1 = a.x.sb.thrust.hot[THR_BOW];
+        uint8_t r_none = dpx_settings(&a, 0u, 0u, 0u, 0u, 0u, 0u, 15u);
+        float stern0 = a.x.sb.thrust.heat_s[THR_STERN];
+        dpx_run(&a, 1000u);
+        bool hot2 = a.x.sb.thrust.hot[THR_BOW];
+        float stern1 = a.x.sb.thrust.heat_s[THR_STERN];
+        uint8_t r_back = dpx_settings(&a, 50u, 10u, 20u, 50u, 60u, 30u, 15u);
+        dpx_run(&a, 1000u);
+        bool hot3 = a.x.sb.thrust.hot[THR_BOW];
+        uint8_t r_short = dpx_settings(&a, 50u, 10u, 1u, 50u, 60u, 30u, 15u);
+        dpx_run(&a, 3000u);
+        bool hot4 = a.x.sb.thrust.hot[THR_BOW] && (a.x.sb.alarm_bits2 & SB_ALM2_DP_HEAT);
+        uint32_t t_cool = 0u;
+        while (!t_cool && a.x.t < t_hot + 30000u) {
+            dpx_run(&a, AP_PERIOD_MS);
+            if (!a.x.sb.thrust.hot[THR_BOW]) t_cool = a.x.t - t_hot;
+        }
+        bool rest_kept = t_cool >= 19500u && t_cool <= 20800u;
+        snprintf(d, sizeof d, "set up %s / %s; bow HOT after %.1f s; settings again %u: HOT %s; without thrusters %u: HOT %s, "
+                 "stern budget %.1f -> %.1f s kept; with them again %u: HOT %s; rest 1 s %u: HOT + alarm 3 s later %s; "
+                 "cooled %.1f s after it went HOT (its own rest 20 s) %s",
+                 set ? "yes" : "NO", s1 ? "yes" : "NO", (t_hot - t0) * 0.001, r_same, hot1 ? "yes" : "NO", r_none,
+                 hot2 ? "yes" : "NO", stern0, stern1, r_back, hot3 ? "yes" : "NO", r_short, hot4 ? "yes" : "NO",
+                 t_cool * 0.001, rest_kept ? "yes" : "NO");
+        test_report("DP15 a thruster settings push keeps heat_s / HOT (same, without, with again, shorter rest): never "
+                    "cleared early",
+                    set && s1 && r_same == PROTO_R_OK && hot1 && r_none == PROTO_R_OK && hot2 && stern0 > 5.0f &&
+                    fabsf(stern1 - stern0) < 0.01f && r_back == PROTO_R_OK && hot3 && r_short == PROTO_R_OK && hot4 &&
+                    rest_kept && a.hot_on == 0u, d);
+    }
+
+    /* DP16 (step 11b) a thruster going HOT in DP: DP ends AND both thrusters are 0 in that very step (the other
+     * one never runs on for a step) */
+    {
+        static dpx_t a;
+        bool set = dpx_init(&a, 2025u, true, NULL, true);
+        (void)dpx_settings(&a, 100u, 1800u, 600u, 100u, 30u, 30u, 15u);      /* stern: 30 s budget */
+        a.x.w.current_e = -0.3f;                                  /* the stern works all the time ... */
+        a.x.w.current_n = -0.15f;                                 /* ... the bow too (a side push) */
+        bool in = dpx_start(&a, DP_SPOT, 0.0f);
+        uint32_t t0 = a.x.t;
+        float b_prev = 0.0f, b = 0.0f, s = 0.0f;
+        bool hot = false;
+        while (sb_mode(&a.x.sb) == MODE_DP && a.x.t < t0 + 90000u) {
+            float pb, ps;
+            dpx_thr(&pb, &ps);
+            b_prev = pb;
+            /* one control step */
+            uint32_t n0 = a.steps;
+            while (a.steps == n0) sbsim_run(&a.x, a.x.t, dpx_hook, &a);
+            if (a.x.sb.thrust.hot[THR_STERN]) { hot = true; break; }
+        }
+        dpx_thr(&b, &s);
+        bool same = hot && b == 0.0f && s == 0.0f && sb_mode(&a.x.sb) == MODE_STANDBY && !a.x.sb.thrust.active &&
+                    a.x.sb.dp.stop_why == DP_STOP_THRUSTER;
+        snprintf(d, sizeof d, "set up %s, DP %s; stern HOT after %.1f s (bow running %.1f %% the step before): in that step "
+                 "thrusters %.1f / %.1f, STANDBY %s",
+                 set ? "yes" : "NO", in ? "yes" : "NO", (a.x.t - t0) * 0.001, b_prev, b, s, same ? "yes" : "NO");
+        test_report("DP16 a thruster HOT in DP: DP ends and BOTH thrusters 0 in the same step",
+                    set && in && hot && fabsf(b_prev) > 0.5f && same && a.hot_on == 0u, d);
     }
 }
 

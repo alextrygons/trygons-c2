@@ -466,7 +466,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 44
+#define NINV 47
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -495,19 +495,22 @@ static const char *INV_NAMES[NINV] = { "",
     "I28 lost link near shore or with missing / stale shore info: ENGINE KILL at once (once idle + neutral)",
     "I29 lost link at open sea: no kill before the grace time; kill after it unless the link returned",
     "I30 never an ENGINE KILL in CREWED",
-    "I31 the ENGINE KILL stays latched until a reset on board OR the HELM station's restart (idle + neutral, e-stop released)",
+    "I31 the ENGINE KILL stays latched until a POWER-ON reset OR the HELM station's restart (idle + neutral, e-stop released); a watchdog / software reset keeps it",
     "I32 generator: throttle above idle in neutral only while the generator is active, gear N confirmed by the switch",
     "I33 generator throttle <= min(generator cap, power limit)",
     "I34 generator only in STANDBY (not stopping), armed, neutral switch closed, no kill / e-stop / trip / FIRST TEST",
     "I35 every generator stop idle first: no throttle rise while stopping",
     "I36 relays: no control path (mode / throttle / gear / steering / alarms), pair never both, pulse <= 5 s, engine relays never automatic, none in FIRST TEST, no power_up after a watchdog reset",
-    "I37 STARTER only with idle + neutral confirmed and the e-stop released, <= 5 s per hold",
-    "I38 the engine-kill / monitor latch is cleared only by a reset or the HELM station's restart under its conditions",
+    "I37 STARTER only with idle + neutral confirmed, e-stop released, HELM station + its link, no kill / trip, <= 5 s per hold",
+    "I38 the engine-kill latch is cleared only by a power-on reset or the HELM station's restart under its conditions; the monitor latch only by a reset",
     "I39 DP thrusters 0 outside MODE_DP: within one step of every fault / STANDBY / e-stop (and the e-stop contactor)",
     "I40 outboard idle + neutral throughout DP (only the generator's neutral throttle), its steering off",
     "I41 CREWED joystick deflection in DP -> thrusters 0 + MANUAL (in time)",
     "I42 GPS lost / suspect in DP -> thrusters 0 + STANDBY (never a DP step without a trusted GPS)",
-    "I43 thrust <= cap and within the heat budget (a HOT thruster at 0)" };
+    "I43 thrust <= cap and within the heat budget (a HOT thruster at 0)",
+    "I44 DP SPOT / JOG more than 50 m or 2 min off the spot -> DP ends (in that step)",
+    "I45 the DP set speed (CRUISE / TRIP) never above dp_max_kn",
+    "I46 a HOT thruster ends DP (never a DP step with a thruster HOT)" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -616,6 +619,13 @@ static void fail(int inv, const char *fmt, double a, double b)
 
 static void ok(int inv) { ST.checks[inv]++; }
 
+/* I37: the STARTER's other conditions as the storm sees them (smallboat.c helm_link_ok + no kill / trip) */
+static bool crank_link_ok(const sb_t *s)
+{
+    bool link = s->helm == SB_HELM_USB ? !(s->alarm_bits & SB_ALM_PC_LINK) : (s->helm >= 2u && s->gw.state == SB_GW_OK);
+    return link && s->ll.state != SB_LL_KILLED && !s->mon_tripped && !hal_outputs_forced();
+}
+
 static int gear_pos(uint16_t us)
 {
     if (us == 0u) return -1;                                      /* no pulses (reset) */
@@ -660,7 +670,21 @@ static void check_step(void)
         C.gear_prev = gp;
         C.confirms_prev = s->confirm.accepted;
         C.prof_prev = s->profile;
-        C.killed = false;
+        /* I31 / I38 (step 11b): a kill latched before a watchdog / software reset is latched after it too; a
+         * power-on reset clears it */
+        {
+            bool was_killed = C.killed;
+            bool now_killed = s->ll.state == SB_LL_KILLED && sim_hal_engine_killed();
+            hal_reset_t why = hal_reset_reason(NULL);
+            if (why != HAL_RESET_POWER_ON && was_killed) {
+                if (now_killed) ok(31);
+                else fail(31, "ENGINE KILL lost in a reset that is not a power-on (reason %.0f)%.0f", (double)why, 0.0);
+            }
+            if (why == HAL_RESET_POWER_ON && s->ll.state == SB_LL_KILLED)
+                fail(38, "ENGINE KILL still latched after a power-on reset%.0f%.0f", 0.0, 0.0);
+            else if (why == HAL_RESET_POWER_ON) ok(38);
+            C.killed = sim_hal_engine_killed();
+        }
         C.safe_since = 0u;
         C.ll_prev = s->ll.state;
         C.forced_prev = forced;
@@ -1019,7 +1043,7 @@ static void check_step(void)
      * ends by itself within 300 ms + latency) */
     {
         bool on = sim_hal_relay_state(2u);
-        bool cond = thr <= 0.6f && gp == 0 && !S.estop;
+        bool cond = thr <= 0.6f && gp == 0 && !S.estop && crank_link_ok(s);
         if (on && !C.st_on_since) C.st_on_since = S.t ? S.t : 1u;
         if (!on) C.st_on_since = 0u;
         if (cond || !on) C.st_bad_since = 0u;
@@ -1027,7 +1051,7 @@ static void check_step(void)
         if (on && S.t - C.st_on_since > ENG_CRANK_MAX_MS + ENG_CRANK_PULSE_MS + 300u)
             fail(37, "STARTER on %.0f ms in one go (limit %.0f + pulse)", (double)(S.t - C.st_on_since), (double)ENG_CRANK_MAX_MS);
         else if (on && C.st_bad_since && S.t - C.st_bad_since > ENG_CRANK_PULSE_MS + 300u)
-            fail(37, "STARTER on %.0f ms after idle / neutral / e-stop released went (throttle %.1f)",
+            fail(37, "STARTER on %.0f ms after idle / neutral / e-stop released / HELM link / no kill-trip went (throttle %.1f)",
                  (double)(S.t - C.st_bad_since), thr);
         else if (on) ok(37);
     }
@@ -1097,6 +1121,20 @@ static void check_step(void)
                       (!thruster_fitted(t, THR_STERN) || t->heat_s[THR_STERN] <= (float)t->cfg.unit[THR_STERN].run_s + 0.01f);
         if (over || hot || !budget) fail(43, "thrust %.1f / %.1f %% over the cap / with a HOT thruster / beyond the budget", tb, ts);
         else if (tb != 0.0f || ts != 0.0f || m == MODE_DP) ok(43);
+        /* I44-I46 (step 11b): the DP ends the control step itself must make */
+        if (m == MODE_DP && !forced) {
+            const dp_t *dpp = &s->dp;
+            bool spot = dpp->sub == DP_SPOT || dpp->sub == DP_JOG;
+            if (spot && (dpp->err_m > DP_OFF_STOP_M || dpp->off_ms >= DP_OFF_STOP_MS))
+                fail(44, "still DP %.1f m off the spot / off it for %.0f ms", dpp->err_m, (double)dpp->off_ms);
+            else ok(44);
+            if (dpp->set_kn > s->cfg.dp_max_kn + 0.001f || dpp->trip_kn > s->cfg.dp_max_kn + 0.001f)
+                fail(45, "DP set speed %.2f kn / trip %.2f kn above dp_max_kn", dpp->set_kn, dpp->trip_kn);
+            else ok(45);
+            if (thruster_any_hot(t)) fail(46, "a DP step with a thruster HOT (bow %.0f, stern %.0f)", (double)t->hot[THR_BOW],
+                                          (double)t->hot[THR_STERN]);
+            else ok(46);
+        }
     }
     C.dp_tgt_prev = s->dp.hdg_target;
     C.alarm_flag_prev = s->alarm;
@@ -1463,11 +1501,11 @@ static void run_until(uint32_t until)
                     S.crank_next = S.t + 200u;
                     uint32_t p0 = S.sb.eng.pulses;
                     bool cond = sim_hal_throttle() <= 0.6f && gear_pos(sim_hal_gear_pwm()) == 0 && !S.estop &&
-                                !hal_outputs_forced();
+                                !hal_outputs_forced() && crank_link_ok(&S.sb) && S.crank_station == S.sb.helm;
                     (void)sb_restart(&S.sb, S.crank_station, ENG_ACT_CRANK);
                     if (S.sb.eng.pulses != p0) {
                         if (cond) ok(37);
-                        else fail(37, "STARTER pulse with throttle %.1f %% / gear %.0f / e-stop", sim_hal_throttle(),
+                        else fail(37, "STARTER pulse with throttle %.1f %% / gear %.0f / e-stop / not HELM / no link / kill / trip", sim_hal_throttle(),
                                   (double)gear_pos(sim_hal_gear_pwm()));
                     }
                 }

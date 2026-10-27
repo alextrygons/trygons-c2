@@ -43,9 +43,12 @@ void thruster_cfg_set(thruster_t *t, const thr_cfg_t *c, uint16_t hash)
     for (uint8_t u = 0u; u < THR_N; u++) {
         if (!(t->cfg.unit[u].max_pct >= 0.0f)) t->cfg.unit[u].max_pct = 0.0f;
         if (t->cfg.unit[u].max_pct > THR_CEILING_PCT) t->cfg.unit[u].max_pct = THR_CEILING_PCT;
-        /* a budget that is used up stays used up (the motor is hot whatever the file says) */
+        /* a budget that is used up stays used up (the motor is hot whatever the file says):
+         * heat_s at most the new budget, HOT keeps its own rest time (cool_left_s) */
         float run = (float)t->cfg.unit[u].run_s;
+        if (!thruster_fitted(t, u)) continue;           /* settings without it: its budget is kept as it is */
         if (t->heat_s[u] > run) t->heat_s[u] = run;
+        if (t->hot[u]) t->heat_s[u] = run;
     }
     t->have_cfg = true;
     t->cfg_hash = hash;
@@ -93,12 +96,27 @@ uint8_t thruster_flags(const thruster_t *t)
 static void heat_step(thruster_t *t, uint8_t u, float dt)
 {
     const thr_unit_cfg_t *c = &t->cfg.unit[u];
-    if (!thruster_fitted(t, u)) {
-        t->heat_s[u] = 0.0f;
-        t->hot[u] = false;
+    bool fitted = thruster_fitted(t, u);
+    float run = (float)c->run_s;
+    if (t->hot[u]) {
+        /* HOT: held at 0 for the rest time it got when it went HOT - by the clock, whatever
+         * settings arrive meanwhile (step 11b) */
+        t->cool_left_s[u] -= dt;
+        if (t->cool_left_s[u] <= 0.0f) {
+            t->cool_left_s[u] = 0.0f;
+            t->heat_s[u] = 0.0f;
+            t->hot[u] = false;                                   /* rested: may run again */
+            t->cool_edge = true;
+            t->log_what = 3u;
+            t->log_unit = u;
+            t->log_seq++;
+        } else if (fitted && t->cool_total_s[u] > 0.0f) {
+            float h = run * t->cool_left_s[u] / t->cool_total_s[u];
+            t->heat_s[u] = h > run ? run : h;                    /* (the budget shown drains with the rest) */
+        }
         return;
     }
-    float run = (float)c->run_s;
+    if (!fitted) return;            /* not fitted (settings without it): the budget is kept as it is */
     float rest = (c->rest_s > 0u) ? (float)c->rest_s : run;     /* rest_s 0 = as long as it may run */
     bool running = fabsf(t->out_pct[u]) > THR_RUN_PCT;
     if (running) t->heat_s[u] += dt;
@@ -106,17 +124,11 @@ static void heat_step(thruster_t *t, uint8_t u, float dt)
     if (t->heat_s[u] < 0.0f) t->heat_s[u] = 0.0f;
     if (t->heat_s[u] >= run) {
         t->heat_s[u] = run;
-        if (!t->hot[u]) {
-            t->hot[u] = true;
-            t->hot_edge = true;
-            t->log_what = 2u;
-            t->log_unit = u;
-            t->log_seq++;
-        }
-    } else if (t->hot[u] && t->heat_s[u] <= 0.0f) {
-        t->hot[u] = false;                                       /* rested: may run again */
-        t->cool_edge = true;
-        t->log_what = 3u;
+        t->hot[u] = true;
+        t->cool_left_s[u] = rest;
+        t->cool_total_s[u] = rest;
+        t->hot_edge = true;
+        t->log_what = 2u;
         t->log_unit = u;
         t->log_seq++;
     }
@@ -153,4 +165,12 @@ void thruster_step(thruster_t *t, const thr_input_t *in)
     }
     if (t->out_pct[THR_BOW] != 0.0f || t->out_pct[THR_STERN] != 0.0f) t->run_ms += in->dt_ms;
     hal_set_thrusters(t->out_pct[THR_BOW], t->out_pct[THR_STERN]);     /* the ONE writer, every step */
+}
+
+void thruster_stop(thruster_t *t)
+{
+    t->out_pct[THR_BOW] = 0.0f;
+    t->out_pct[THR_STERN] = 0.0f;
+    t->active = false;
+    hal_set_thrusters(0.0f, 0.0f);
 }

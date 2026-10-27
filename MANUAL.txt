@@ -973,7 +973,9 @@ LOST LINK (UNCREWED ONLY) AND THE ENGINE KILL
      boat stays in STANDBY at idle / neutral and the station sees the alarm
      (it never drives on by itself). Otherwise: ENGINE KILL.
   A killed engine stays killed (alarm ENGINE KILLED) until the AURIX is
-  reset ON BOARD (power cycle) OR the HELM station sends RESTART (Tools ->
+  POWER CYCLED ON BOARD (a real power-off / power-on; a watchdog reset or a
+  software reset of the AURIX keeps the kill) OR the HELM station sends
+  RESTART (Tools ->
   Engine; next part: throttle idle, gear in neutral and the e-stop released
   are checked on the boat). A CREWED boat
   never kills the engine: it keeps the behaviour of chapter 9 (REMOTE LINK
@@ -1081,9 +1083,11 @@ RELAY BOARD (RS485 Modbus RTU: lights, pumps, trim, engine switches)
     while the other one is on.
   * Engine relays follow their ROLE (never the type or the name): the
     STARTER is never pulsed by a plain relay command - only the START button
-    of the engine page (ENGINE CONTROLS below). IGNITION / SHUTOFF switch ON
-    only with the engine conditions (throttle idle, gear neutral confirmed,
-    e-stop released, no ENGINE KILL / monitor trip latched); OFF always.
+    of the engine page (ENGINE CONTROLS below). IGNITION switches ON only
+    with the engine conditions (throttle idle, gear neutral confirmed, e-stop
+    released, no ENGINE KILL / monitor trip latched); SHUTOFF ON (= stop the
+    engine) is ALWAYS allowed (also while driving, with the e-stop pressed or
+    the kill latched: stopping is never refused); OFF always.
   * power_up "on" is applied only ONCE, only with the first table after the
     AURIX's own power-on (never after a watchdog / software reset or a
     reconnect: then the board's states are read back and kept), and it only
@@ -1127,8 +1131,9 @@ ENGINE CONTROLS + REMOTE RESTART (Tools -> Engine)
   (IGNITION, SHUTOFF: ON / OFF), START (hold) and RESTART. Order: IGNITION
   on -> hold START -> SHUTOFF to stop. The engine kill stays its own AURIX
   output, never a relay.
-  * IGNITION / SHUTOFF ON: the same conditions as below (idle, neutral,
-    e-stop released) - refused while you drive.
+  * IGNITION ON: the same conditions as below (idle, neutral, e-stop
+    released) - refused while you drive. SHUTOFF ON (stop the engine): always,
+    no conditions.
   * Every time, on the boat: you hold HELM, the throttle output is idle, the
     gear is in neutral (the neutral switch if fitted, else the gear servo at
     N), the e-stop is released, not the FIRST TEST build. Otherwise refused
@@ -1137,7 +1142,8 @@ ENGINE CONTROLS + REMOTE RESTART (Tools -> Engine)
   * START (hold): while you hold the button the station sends START 5 times
     a second; each one keeps a 300 ms STARTER pulse on the relay board (timed
     by the board itself). At most 5 s per hold, then 10 s cool-down (also
-    after a shorter hold). The starter stops at once when you let go (or no
+    after a shorter hold; never past 5 s: with less than 0.1 s of the hold
+    left the hold simply ends). The starter stops at once when you let go (or no
     START for 0.3 s), the link / HELM is lost, the e-stop is pressed, the
     gear leaves neutral (also a joystick takeover), the throttle opens, or
     the STANDBY button is pressed. There is no tacho yet: time limit only.
@@ -1254,7 +1260,12 @@ DP MODE (SPOT / JOG / CRUISE / TRIP) - the thrusters hold or move the boat
     amber when a thruster is hot or the boat is off the spot. Display only.
   * The gateway checks a TRIP start like an AUTO start: across or near
     shallow water refused (code 114), out of the geofence refused (120)
-    (also "continue": from the DP's next waypoint). In a TRIP the collision
+    (also "continue": from the DP's next waypoint; the leg from the boat to
+    the first waypoint and the geofence as it is NOW are checked). A program
+    the gateway has not checked itself - loaded over the USB cable, from the
+    boat's memory after a power-up, or before a gateway restart - can't start
+    a TRIP (code 121 "route not checked by the gateway"): send the route
+    again from screen 2 ("Send route"). In a TRIP the collision
     avoidance works as in AUTO (slow down, route astern, DRIVER DECISION;
     the slowest speed asked in DP is 1 kn); in SPOT / JOG / CRUISE a
     collision danger is the COLLISION RISK + DRIVER DECISION alarm only -

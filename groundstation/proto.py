@@ -574,6 +574,7 @@ def decode_telemetry(payload: bytes) -> dict:
     d["joy_confirm"] = bool(d["joy_buttons"] & 4)
     d["prog_suspended"] = bool(d["auto_flags"] & 2)
     d["prog_finished"] = bool(d["auto_flags"] & 4)
+    d["prog_gw"] = bool(d["auto_flags"] & 8)        # loaded over the gateway link (its route was checked there)
     d["confirm_left_s"] = d["confirm_left_ds"] / 10.0
     d["power_code_left_s"] = d["power_code_left_ds"] / 10.0
     d["speed_limited"] = bool(d["power_flags"] & 1)

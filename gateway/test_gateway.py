@@ -3627,7 +3627,7 @@ DP_THRUSTERS = {"bow": {"max_pct": 100, "run_s": 1800, "rest_s": 600},
 
 
 def section_dp():
-    """CLAUDE.md P, step 11: a DP TRIP is checked by the gateway like AUTO - shallow water (114), the geofence
+    """CLAUDE.md P, step 11 (+ 11b DP4): a DP TRIP is checked by the gateway like AUTO - shallow water (114), the geofence
     (120), collision avoidance (the navreq cap / heading applied in TRIP); in DP SPOT / JOG / CRUISE a collision
     danger = the DRIVER DECISION alarm only."""
     print("\n=== Section DP: DP TRIP checked like AUTO (shallow 114, geofence 120, collision avoidance) ===", flush=True)
@@ -3762,6 +3762,53 @@ def section_dp():
                    slow and slow.get("nav_cap_kn"), st_trip, len(texts), spot is not None, clear,
                    "yes" if dec else "NO", st_spot, d2["mode_name"], d2.get("dp_sub_name"), d2.get("nav_applied"),
                    d2.get("nav_kind"), r_end, stby is not None))
+
+        # DP4 (step 11b) a program the gateway did not check can't start a DP TRIP: loaded over USB (also over
+        # a program the gateway checked before: the copy is stale), or the gateway's copy lost (restart) -> 121;
+        # uploaded through the gateway -> checked and passed on
+        def usb_upload(wps, kn=3.0):
+            # the laptop on the USB cable (on board) takes HELM, uploads, gives HELM back; the captain takes it again
+            prog = {"final": 0, "wps": [{"lat": a, "lon": b, "kn": kn, "radius": 30, "action": 0} for a, b in wps]}
+            link.send(proto.T_HELM, proto.p_helm(0))
+            time.sleep(0.2)
+            for t_, p_ in progmod.upload_frames(prog):
+                link.send(t_, p_)
+                time.sleep(0.05)
+            time.sleep(0.2)
+            link.send(proto.T_HELM, proto.p_helm(1))
+            time.sleep(0.2)
+            alice.cmd(proto.T_HELM, proto.p_helm(0))
+            alice.pump(0.3)
+        w.until(lambda d: d["mode"] == proto.MODE_STANDBY and d.get("est_sog", 9) < 1.0, 30)
+        usb_upload([east_of(1200)])
+        usb = w.until(lambda d: d["prog_n"] == 1 and not d.get("prog_gw"), 4)
+        n4 = len(g.audit.recent)
+        r_usb = dp(proto.DP_START, proto.DP_TRIP, 300)
+        r_usb_c = dp(proto.DP_START, proto.DP_TRIP | proto.DP_TRIP_CONTINUE, 300)
+        aud4 = [e for e in list(g.audit.recent)[n4:] if e["kind"] == "dp_trip_refused"]
+        a_gw = upload(alice, [east_of(1200)], kn=3.0)
+        viagw = w.until(lambda d: d["prog_n"] == 1 and d.get("prog_gw"), 4)
+        r_gw = dp(proto.DP_START, proto.DP_TRIP, 300)
+        pend4 = w.until(lambda d: d.get("dp_pending"), 2)
+        dp(proto.DP_STOP)
+        w.until(lambda d: not d.get("dp_pending"), 2)
+        usb_upload([east_of(1300)])                                              # same count, other route
+        stale = w.until(lambda d: d["prog_n"] == 1 and not d.get("prog_gw"), 4)
+        r_stale = dp(proto.DP_START, proto.DP_TRIP, 300)
+        a_gw2 = upload(alice, [east_of(1200)], kn=3.0)
+        w.until(lambda d: d.get("prog_gw"), 4)
+        saved, g.prog_wps = g.prog_wps, None                                    # the gateway restarted: no copy
+        r_lost = dp(proto.DP_START, proto.DP_TRIP, 300)
+        g.prog_wps = saved
+        report("DP4 a DP TRIP with a program the gateway did not check is refused (121): loaded over USB, a stale "
+               "copy after a USB upload, the copy lost; uploaded through the gateway -> checked and passed on",
+               usb is not None and r_usb == 121 and r_usb_c == 121 and len(aud4) == 2 and a_gw and a_gw["result"] == 0
+               and viagw is not None and r_gw == 0 and pend4 is not None and stale is not None and r_stale == 121 and
+               a_gw2 and a_gw2["result"] == 0 and r_lost == 121,
+               "USB program %s: TRIP %s, continue %s (audited %d); through the gateway %s (flag %s): TRIP %s (waits %s); "
+               "USB again %s: TRIP %s; gateway copy lost: TRIP %s" % (
+                   usb is not None, r_usb, r_usb_c, len(aud4), a_gw and a_gw["result"], viagw is not None, r_gw,
+                   pend4 is not None, stale is not None, r_stale, r_lost))
 
         beat.stop()
         alice.close()

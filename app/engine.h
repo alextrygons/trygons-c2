@@ -8,8 +8,10 @@
  *   the gear servo at N + the gear state N), e-stop not pressed, not FIRST TEST.
  * What it does:
  *   (a) the ENGINE KILL latch (UNCREWED lost link) is cleared (invariant I31:
- *       "the kill stays latched until a reset on board OR a remote restart from
- *       the HELM station with idle + neutral confirmed and the e-stop released");
+ *       "the kill stays latched until a POWER-ON reset on board OR a remote
+ *       restart from the HELM station with idle + neutral confirmed and the
+ *       e-stop released"; a watchdog / software reset keeps it - step 11b;
+ *       with a trip too, the kill goes here and the reset of (b) follows);
  *   (b) after a monitor trip: the HAL latch is cleared only by a reset (R3), so
  *       the restart asks for a controlled software reset of the AURIX (log event
  *       27 RESTART first: the reset follows ENG_RESET_DELAY_MS later, after the
@@ -25,11 +27,13 @@
  *       request), throttle not idle, the STANDBY button, an ENGINE KILL or a
  *       monitor trip. IGNITION first is the station's order (engine page).
  *   (d) IGNITION / SHUTOFF (the engine-group relays with that ROLE in the
- *       relay table): switched ON only here (engine_relay -> relays_engine_set),
- *       with the same conditions (idle + neutral confirmed, e-stop released,
- *       not FIRST TEST) and not while the ENGINE KILL is latched or the monitor
- *       tripped; OFF always. The plain relay command never switches an engine
- *       relay ON (relays.c), whatever its type.
+ *       relay table): switched ON only here (engine_relay -> relays_engine_set).
+ *       IGNITION ON (starting) with the same conditions (idle + neutral
+ *       confirmed, e-stop released, not FIRST TEST) and not while the ENGINE
+ *       KILL is latched or the monitor tripped; SHUTOFF ON (stopping the engine)
+ *       ALWAYS (step 11b: stopping is never refused); OFF always. The plain
+ *       relay command never switches an engine relay ON (relays.c), whatever
+ *       its type.
  * No tacho yet: the time limit only. The engine kill pin stays its own AURIX
  * output (hal_set_engine_kill), never the relay board. This module only
  * decides; the STARTER relay is driven by relays.c (relays_starter_pulse /
@@ -46,6 +50,7 @@
 #define ENG_CRANK_MAX_MS     5000u   /* crank_max_s: one hold never longer */
 #define ENG_COOL_MS          10000u  /* cool-down after a hold */
 #define ENG_RELEASE_MS       300u    /* no CRANK this long = released */
+#define ENG_CRANK_MIN_PULSE_MS 100u  /* the board's pulse unit: less of the hold left = the hold ends (never past 5 s) */
 #define ENG_RESET_DELAY_MS   500u    /* log event RESTART reaches the logger / gateway before the reset */
 #define ENG_RESET_NV_MAX_MS  2000u   /* a data-flash write in progress: wait at most this */
 
@@ -132,9 +137,11 @@ eng_why_t engine_restart(engine_t *e, const eng_cond_t *c, uint8_t station, uint
 eng_why_t engine_crank(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t station, uint32_t now_ms);
 void      engine_release(engine_t *e, relays_t *r, uint8_t station, uint32_t now_ms);
 /* IGNITION / SHUTOFF relay n on / off (the HELM station's relay command; link.c checks HELM).
- * ON needs engine_check + not killed / tripped; *res = the relay layer's answer
+ * IGNITION ON needs engine_check + not killed / tripped; SHUTOFF ON (= stop the engine,
+ * shutoff true) and every OFF always go (step 11b); *res = the relay layer's answer
  * (RELAY_R_ENGINE when the conditions refused it). */
-eng_why_t engine_relay(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t n, bool on, relay_result_t *res);
+eng_why_t engine_relay(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t n, bool on, bool shutoff,
+                       relay_result_t *res);
 /* every control step (after the outputs): stops a crank whose conditions
  * failed, ends the cool-down, re-checks a pending reset. True = do the
  * software reset NOW (the caller calls hal_system_reset). */

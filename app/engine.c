@@ -41,6 +41,12 @@ eng_why_t engine_restart(engine_t *e, const eng_cond_t *c, uint8_t station, uint
         return why;
     }
     e->restarts++;
+    if (c->killed) {
+        /* the kill latch goes with this valid restart, also when a trip reset follows (step 11b:
+         * the latch now survives that reset - only a power-on or this restart clears it) */
+        *kill_clear = true;
+        e->kill_clears++;
+    }
     if (c->tripped) {
         /* the HAL latch goes only with a reset: the event first, then the reset */
         if (!e->reset_pending) {
@@ -52,8 +58,6 @@ eng_why_t engine_restart(engine_t *e, const eng_cond_t *c, uint8_t station, uint
         note(e, ENG_LOG_RESET, ENG_WHY_NONE);
         return ENG_WHY_NONE;
     }
-    *kill_clear = true;
-    e->kill_clears++;
     note(e, ENG_LOG_KILL_CLEARED, ENG_WHY_NONE);
     return ENG_WHY_NONE;
 }
@@ -99,7 +103,13 @@ eng_why_t engine_crank(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t st
     }
     uint32_t len = ENG_CRANK_PULSE_MS;
     if (len > ENG_CRANK_MAX_MS - held) len = ENG_CRANK_MAX_MS - held;
-    if (len < 100u) len = 100u;                         /* the board's pulse unit is 0.1 s */
+    len -= len % ENG_CRANK_MIN_PULSE_MS;                /* whole board units (it rounds to the nearest 0.1 s) */
+    if (len < ENG_CRANK_MIN_PULSE_MS) {
+        /* less than one board pulse unit (0.1 s) of the hold left: a 100 ms pulse would crank
+         * past ENG_CRANK_MAX_MS - the hold ends here (step 11b) */
+        if (e->crank == ENG_CRANK_ON) crank_stop(e, r, now_ms, ENG_WHY_MAX_TIME);
+        return ENG_WHY_MAX_TIME;
+    }
     if (relays_starter_pulse(r, (uint16_t)len, now_ms) != RELAY_R_OK) {
         if (e->crank == ENG_CRANK_ON) crank_stop(e, r, now_ms, ENG_WHY_RELAY);
         else { e->refused++; note(e, ENG_LOG_CRANK_REFUSED, ENG_WHY_RELAY); }
@@ -118,10 +128,14 @@ eng_why_t engine_crank(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t st
     return ENG_WHY_NONE;
 }
 
-eng_why_t engine_relay(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t n, bool on, relay_result_t *res)
+eng_why_t engine_relay(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t n, bool on, bool shutoff,
+                       relay_result_t *res)
 {
     (void)e;
-    if (on) {
+    /* SHUTOFF ON = stop the engine: always allowed (no idle / neutral / e-stop / kill / trip
+     * condition - stopping is never refused, step 11b; FIRST TEST: relays.c refuses every relay).
+     * IGNITION ON (starting) keeps its conditions; OFF always. */
+    if (on && !shutoff) {
         eng_why_t why = engine_check(c);
         if (why == ENG_WHY_NONE && c->killed) why = ENG_WHY_KILLED;
         if (why == ENG_WHY_NONE && c->tripped) why = ENG_WHY_TRIPPED;

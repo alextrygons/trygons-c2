@@ -192,7 +192,8 @@ link to the captain's shore station is lost, the AURIX first goes to STANDBY
 kill-switch circuit** - at once near the shore (closer than `near_shore_m`,
 100 m, or no valid shore distance from the gateway), at open sea after
 `lostlink_grace_s` (10 s) unless the link came back. Once killed it stays
-killed until the AURIX is reset **on board** (power cycle) or the HELM station
+killed until the AURIX is **power cycled on board** (a watchdog or software
+reset keeps the kill: the latch is kept in RAM that the startup does not clear) or the HELM station
 sends a remote RESTART (CLAUDE.md N: only with the throttle idle, the gear in
 neutral confirmed and the e-stop released - checked on the AURIX). A CREWED
 boat never uses it. The kill stays on its own AURIX pin, never the relay board.
@@ -276,6 +277,17 @@ hold, 10 s cool-down, only at idle + neutral with the e-stop released). Check
 with the engine dealer that the outboard has its own neutral-start switch in
 the starter circuit (it must stay: the software check is not the only one).
 No tacho input yet (TBD): the starter is limited by time only.
+
+**A relay wired to the starter (solenoid control wire) MUST be declared in the
+boat file in the engine group with role STARTER** (`"group": "engine"`,
+`"role": "starter"`, momentary, max_s <= 5) - **never as an `extra` or
+`trim` relay**. Only the STARTER role gets the hold-to-crank rules (idle +
+neutral confirmed, e-stop released, HELM station, at most 5 s, cool-down); an
+`extra` relay is switched by the plain relay command without any of them.
+The same for the ignition and the engine stop: role IGNITION / SHUTOFF in
+the engine group. (boats.py already refuses a relay named STARTER / ΜΙΖΑ
+without the role - but it can't see what a channel is wired to: the wiring
+and the boat file must agree.)
 
 ## 4. microSD card (log)
 
