@@ -365,15 +365,20 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
                        engine rules) | trim | extra, pair (the other relay of an
                        interlocked pair - must point back, never both on),
                        show_hud (also on screen 1), power_up off | on | keep
-                       (engine relays: only off - never switched by themselves).
+                       (engine relays: only off - never switched by themselves),
+                       role (engine relays ONLY, required): starter (a
+                       momentary relay, max_s <= 5 s) | ignition | shutoff
+                       (onoff / latching), each once.
     thrusters          bow / stern: max_pct, run_s / rest_s (heat budget),
                        jog_m (one JOG step), spot_alarm_m (DP, step 9).
     length_m, draft_m  optional.
   A file without "format" is the old v1: it still loads, with generator
   disabled, no relays and no thrusters. A file that fails the checks (wrong
   type, a pair that is not mutual, a momentary relay longer than 5 s, an
-  engine relay with power_up on / keep ...) is listed as INVALID FILE with
-  the reason and is never connected: fix the file.
+  engine relay with power_up on / keep, an engine relay without its role, a
+  STARTER that is not momentary, a relay named STARTER / ΜΙΖΑ without the
+  role "starter" ...) is listed as INVALID FILE with the reason and is never
+  connected: fix the file.
   When this station holds HELM (in STANDBY) it pushes the file's settings to
   the boat (generator cap, the relay table; the thruster settings when
   step 9 adds them): the cap is RAM only - a boat restart gets it again;
@@ -1056,15 +1061,26 @@ RELAY BOARD (RS485 Modbus RTU: lights, pumps, trim, engine switches)
     onboard joystick, UNCREWED: the shore joystick) - until then the stored
     table stays in use (a wrong boat file must not move the STARTER out of
     the engine rules). No CONFIRM = the station offers it again later.
-    Without any table no relay can be switched.
+    While ANY other CONFIRM is waiting (a power raise, AUTO start ...) the
+    table is not offered (the AURIX refuses it then): yours goes first. In
+    single-operator mode the station asks you first ("send the relay
+    table?") - it never confirms by itself.
+    Without any table no relay can be switched. A relay channel must exist
+    on the fitted board (8-16 channels): a table with a higher channel is
+    refused.
   * onoff / latching: on / off. momentary: a pulse timed BY THE BOARD
     (at most max_s, never more than 5 s - it ends even if the AURIX stops).
-    timed: on, and switched off by the AURIX after max_s. An interlocked
+    timed: on, and switched off by the AURIX after max_s. If a momentary
+    relay is still on 0.5 s after its pulse should have ended (the board's
+    timer failed), the AURIX switches it OFF itself and keeps trying until
+    the readback shows it off. An interlocked
     pair (TRIM UP / TRIM DOWN): never both - the second request is refused
     while the other one is on.
-  * The STARTER (engine group, momentary) is never pulsed by a plain relay
-    command: only the START button of the engine page (ENGINE CONTROLS
-    below). IGNITION / SHUTOFF are ordinary switches.
+  * Engine relays follow their ROLE (never the type or the name): the
+    STARTER is never pulsed by a plain relay command - only the START button
+    of the engine page (ENGINE CONTROLS below). IGNITION / SHUTOFF switch ON
+    only with the engine conditions (throttle idle, gear neutral confirmed,
+    e-stop released, no ENGINE KILL / monitor trip latched); OFF always.
   * power_up "on" is applied only ONCE, only with the first table after the
     AURIX's own power-on (never after a watchdog / software reset or a
     reconnect: then the board's states are read back and kept), and it only
@@ -1072,8 +1088,9 @@ RELAY BOARD (RS485 Modbus RTU: lights, pumps, trim, engine switches)
     never switched automatically.
   * The board is read back every 100 ms. No valid reply for 3 s ->
     RELAY BOARD SILENT (an advisory: states shown unknown, no new relay
-    command, nothing else changes). It clears by itself when the board
-    answers again; an OFF that was waiting is then carried out.
+    command, no buzzer, nothing else changes). It clears by itself when the
+    board answers again; an OFF that was waiting is then carried out. With
+    no board fitted at all (HAL_RELAY_FITTED 0) there is no such alarm.
   * FIRST TEST: no relay changes at all. A monitor trip / the e-stop leave
     the relays as they are (the board is not a safety path).
   The relay buttons come with step 8; today the station pushes the table
@@ -1086,6 +1103,8 @@ ENGINE CONTROLS + REMOTE RESTART (Tools -> Engine)
   (IGNITION, SHUTOFF: ON / OFF), START (hold) and RESTART. Order: IGNITION
   on -> hold START -> SHUTOFF to stop. The engine kill stays its own AURIX
   output, never a relay.
+  * IGNITION / SHUTOFF ON: the same conditions as below (idle, neutral,
+    e-stop released) - refused while you drive.
   * Every time, on the boat: you hold HELM, the throttle output is idle, the
     gear is in neutral (the neutral switch if fitted, else the gear servo at
     N), the e-stop is released, not the FIRST TEST build. Otherwise refused
@@ -1780,13 +1799,16 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   RELAY BOARD SILENT     the RS485 relay board gave no valid reply for 3 s
                          while a relay table is loaded. ADVISORY: states
                          shown unknown, no new relay command; no mode
-                         change, the power limit stays. Clears by itself
-                         when the board answers (second alarm word, bit 2).
+                         change, the power limit stays, no buzzer.
+                         Clears by itself when the board answers (second
+                         alarm word, bit 2). Never shown without a fitted
+                         relay board.
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
   DECISION, OBSTACLE AHEAD, AIS RECEIVER SILENT, LOW BATTERY and RELAY BOARD SILENT: they
-  never change the power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM" in
+  never change the power limit; RELAY BOARD SILENT doesn't sound the boat's buzzer and
+  doesn't block a power raise either). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM" in
   the ALARMS panel (top right of screen 2). Both screens list every active
   alarm in ONE place (screen 1: under the right mirror; screen 2: top
   right), one per line, most severe first; an alarm not yet acknowledged on
@@ -2001,8 +2023,10 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c, drivers hal/tc_*.c)
      [x] RS485 Modbus relay board driver (hal/tc_modbus.c, app/relays.c,
          chapter 7): relay table in data flash slot 7. The board, the
          transceiver, the ASCLIN4 pins and the DE pin are TBD (WIRING.md
-         3D): HAL_RELAY_FITTED 0 until wired - a boat file with relays then
-         shows RELAY BOARD SILENT (advisory).
+         3D): HAL_RELAY_FITTED 0 until wired - no relay can be switched
+         then and there is no RELAY BOARD SILENT. FIRST_TEST.md 3h: a real
+         watchdog reset must not read as power-on (no power_up), the RS485
+         DE line released right after the last stop bit.
      [x] engine controls + remote restart (app/engine.c, chapter 7): the
          STARTER through the relay board, the software reset after a trip
          (hal_system_reset = an application reset: TO CHECK on the kit that

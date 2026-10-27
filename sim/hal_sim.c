@@ -848,15 +848,25 @@ static struct {
     uint32_t reply_at_ms;
     bool     reply_pending;
     uint32_t requests, bad_requests, writes, pulses, polls, corrupted;
+    uint32_t max_pulse_ms;          /* the longest "flash on" asked */
+    uint32_t edges[RB_COILS];       /* off -> on per coil */
     bool     inited;
 } s_rb;
+static uint8_t s_rb_channels = RB_COILS;     /* hal_relay_channels(); 0 = no board fitted */
+static uint8_t s_rb_channels_boot = RB_COILS; /* what the driver was started with (hal_init) */
+
+static void rb_set(uint32_t i, bool on)
+{
+    if (on && !(s_rb.coils & (1u << i))) s_rb.edges[i]++;
+    if (on) s_rb.coils |= 1u << i; else s_rb.coils &= ~(1u << i);
+}
 
 static void rb_tick(void)
 {
     for (uint32_t i = 0; i < RB_COILS; i++) {
         if (s_rb.pulse_end[i] && (int32_t)(s_time_ms - s_rb.pulse_end[i]) >= 0) {
             s_rb.pulse_end[i] = 0u;
-            s_rb.coils &= ~(1u << i);
+            if (!(s_rb.fault & SIM_RB_NO_PULSE_END)) s_rb.coils &= ~(1u << i);   /* (broken timer: stays on) */
         }
     }
 }
@@ -905,10 +915,11 @@ static bool rb_port_write(const uint8_t *buf, uint32_t len)
             rb_reply(e, 3u);
             return true;
         }
-        if (v == 0xFF00u) { s_rb.coils |= 1u << a; s_rb.pulse_end[a] = 0u; s_rb.writes++; }
-        else if (v == 0x0000u) { s_rb.coils &= ~(1u << a); s_rb.pulse_end[a] = 0u; s_rb.writes++; }
+        if (v == 0xFF00u) { rb_set(a, true); s_rb.pulse_end[a] = 0u; s_rb.writes++; }
+        else if (v == 0x0000u) { rb_set(a, false); s_rb.pulse_end[a] = 0u; s_rb.writes++; }
         else if ((v & 0xFF00u) == 0x0200u && (v & 0xFFu) != 0u) {  /* flash on: the board times it */
-            s_rb.coils |= 1u << a;
+            rb_set(a, true);
+            if (100u * (v & 0xFFu) > s_rb.max_pulse_ms) s_rb.max_pulse_ms = 100u * (v & 0xFFu);
             s_rb.pulse_end[a] = s_time_ms + 100u * (v & 0xFFu);
             if (s_rb.pulse_end[a] == 0u) s_rb.pulse_end[a] = 1u;
             s_rb.pulses++;
@@ -930,7 +941,7 @@ static bool rb_port_write(const uint8_t *buf, uint32_t len)
         uint32_t v = 0u;
         for (uint8_t i = 0; i < nb && i < 4u; i++) v |= (uint32_t)buf[7u + i] << (8u * i);
         uint32_t mask = (qty >= 32u) ? 0xFFFFFFFFu : ((1u << qty) - 1u) << start;
-        s_rb.coils = (s_rb.coils & ~mask) | ((v << start) & mask);
+        for (uint32_t i = 0; i < RB_COILS; i++) if (mask & (1u << i)) rb_set(i, ((v << start) >> i) & 1u);
         for (uint32_t i = 0; i < RB_COILS; i++) if (mask & (1u << i)) s_rb.pulse_end[i] = 0u;
         s_rb.writes++;
         rb_reply(buf, 6u);
@@ -955,7 +966,8 @@ static const mb_port_t s_rb_port = { rb_port_write, rb_port_read, hal_millis };
 
 static void rb_driver_init(void)                 /* the AURIX side: at every boot */
 {
-    mb_config_t c = { 1u, RB_COILS, 100u, HAL_RELAY_LOST_MS, 100u };
+    mb_config_t c = { 1u, s_rb_channels ? s_rb_channels : RB_COILS, 100u, HAL_RELAY_LOST_MS, 100u };
+    s_rb_channels_boot = s_rb_channels;
     mb_init(&s_rb_port, &c);
     if (!s_rb.inited) {                          /* the board itself: once (it keeps its states across AURIX resets) */
         s_rb.inited = true;
@@ -966,11 +978,16 @@ static void rb_driver_init(void)                 /* the AURIX side: at every boo
     s_rb.reply_pending = false;                  /* a reply in flight is lost with the reboot */
 }
 
-void hal_relay_service(void)      { mb_service(); }
-bool hal_relay_set(uint8_t n, bool on)        { return mb_set_coil(n, on); }
-bool hal_relay_pulse(uint8_t n, uint16_t ms)  { return mb_pulse_coil(n, ms); }
-bool hal_relay_read(uint8_t n, bool *on)      { return mb_coil(n, on); }
-bool hal_relay_ok(void)                        { return mb_ok(); }
+/* (no board fitted: like the TC375 with HAL_RELAY_FITTED 0 - the driver never runs) */
+void hal_relay_service(void)      { if (s_rb_channels_boot) mb_service(); }
+bool hal_relay_set(uint8_t n, bool on)        { return s_rb_channels_boot && mb_set_coil(n, on); }
+bool hal_relay_pulse(uint8_t n, uint16_t ms)  { return s_rb_channels_boot && mb_pulse_coil(n, ms); }
+bool hal_relay_read(uint8_t n, bool *on)      { return s_rb_channels_boot && mb_coil(n, on); }
+bool hal_relay_ok(void)                        { return s_rb_channels_boot && mb_ok(); }
+uint8_t hal_relay_channels(void)               { return s_rb_channels_boot; }
+void sim_hal_relay_fitted(uint8_t channels)    { s_rb_channels = channels > RB_COILS ? RB_COILS : channels; }
+uint32_t sim_hal_relay_max_pulse_ms(void)      { return s_rb.max_pulse_ms; }
+uint32_t sim_hal_relay_edges(uint8_t n)        { return (n >= 1u && n <= RB_COILS) ? s_rb.edges[n - 1u] : 0u; }
 
 void sim_hal_relay_board(bool present, uint32_t latency_ms, uint32_t fault)
 {
@@ -985,6 +1002,8 @@ void sim_hal_relay_board(bool present, uint32_t latency_ms, uint32_t fault)
 void sim_hal_relay_board_reset(void)
 {
     s_rb.coils = 0u;
+    s_rb.max_pulse_ms = 0u;
+    memset(s_rb.edges, 0, sizeof s_rb.edges);
     memset(s_rb.pulse_end, 0, sizeof s_rb.pulse_end);
     s_rb.reply_pending = false;
 }
@@ -998,7 +1017,7 @@ bool sim_hal_relay_state(uint8_t n)
 void sim_hal_relay_force(uint8_t n, bool on)
 {
     if (n < 1u || n > RB_COILS) return;
-    if (on) s_rb.coils |= 1u << (n - 1u); else s_rb.coils &= ~(1u << (n - 1u));
+    rb_set(n - 1u, on);
     s_rb.pulse_end[n - 1u] = 0u;
 }
 

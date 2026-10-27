@@ -24,6 +24,10 @@ uint32_t uart_read(uart_id_t id, uint8_t *buf, uint32_t max);
 bool     uart_write(uart_id_t id, const uint8_t *buf, uint32_t len);   /* whole block or nothing */
 uint32_t uart_tx_free(uart_id_t id);
 bool     uart_tx_done(uart_id_t id);                    /* nothing left to send, the last bit is out (RS485 DE) */
+/* RS485: fn() is called from the port's interrupt (CPU0) as soon as the last
+ * stop bit of a uart_write block is out (TC flag, armed by uart_write): the
+ * driver-enable pin goes low at once, not on the next control step. */
+void     uart_on_tx_done(uart_id_t id, void (*fn)(void));
 const uart_stat_t *uart_stat(uart_id_t id);
 
 #endif /* TC_UART_H */

@@ -10,7 +10,7 @@
   "draft_m": 0.5,
   "_generator_note": "generator_max_pct: the generator's throttle cap in neutral, 0 = disabled; the AURIX caps it at 30 % whatever is written here (TO CONFIRM: 25)",
   "generator_max_pct": 25,
-  "_relays_note": "TBD: the Modbus relay board and its channel numbers (WIRING.md, PARTS.md) - confirm n for every relay. type onoff | momentary (board-timed pulse, max_s <= 5) | latching | timed (off after max_s); group engine (IGNITION / STARTER / SHUTOFF: remote restart rules, CLAUDE.md N) | trim | extra; pair = the other relay of an interlocked pair (mutual, never both on); show_hud = also on the driving screen; power_up off | on | keep (engine group: only off - never switched automatically).",
+  "_relays_note": "TBD: the Modbus relay board and its channel numbers (WIRING.md, PARTS.md) - confirm n for every relay. type onoff | momentary (board-timed pulse, max_s <= 5) | latching | timed (off after max_s); group engine (IGNITION / STARTER / SHUTOFF: remote restart rules, CLAUDE.md N; every engine relay needs a role: starter | ignition | shutoff - the STARTER is a momentary relay <= 5 s) | trim | extra; pair = the other relay of an interlocked pair (mutual, never both on); show_hud = also on the driving screen; power_up off | on | keep (engine group: only off - never switched automatically).",
   "relays": [
     {
       "n": 1,
@@ -21,7 +21,8 @@
       "pair": null,
       "max_s": 0,
       "show_hud": true,
-      "power_up": "off"
+      "power_up": "off",
+      "role": "ignition"
     },
     {
       "n": 2,
@@ -32,7 +33,8 @@
       "pair": null,
       "max_s": 1.0,
       "show_hud": false,
-      "power_up": "off"
+      "power_up": "off",
+      "role": "starter"
     },
     {
       "n": 3,
@@ -43,7 +45,8 @@
       "pair": null,
       "max_s": 0,
       "show_hud": true,
-      "power_up": "off"
+      "power_up": "off",
+      "role": "shutoff"
     },
     {
       "n": 4,

@@ -100,9 +100,9 @@ def b3_name_and_confirm():
 V2 = {"format": 2, "id": "v2", "name": "VICTOR", "tailscale_ip": "127.0.0.1", "gateway_port": 5761,
       "generator_max_pct": 40, "length_m": 5.2, "draft_m": 0.6,
       "relays": [{"n": 1, "name_el": "ΑΝΑΦΛΕΞΗ", "name_en": "IGNITION", "type": "onoff", "group": "engine",
-                  "pair": None, "max_s": 0, "show_hud": True, "power_up": "off"},
+                  "pair": None, "max_s": 0, "show_hud": True, "power_up": "off", "role": "ignition"},
                  {"n": 2, "name_el": "ΜΙΖΑ", "name_en": "STARTER", "type": "momentary", "group": "engine",
-                  "pair": None, "max_s": 1, "show_hud": False, "power_up": "off"},
+                  "pair": None, "max_s": 1, "show_hud": False, "power_up": "off", "role": "starter"},
                  {"n": 4, "name_el": "ΤΡΙΜ ΠΑΝΩ", "name_en": "TRIM UP", "type": "momentary", "group": "trim",
                   "pair": 5, "max_s": 3, "show_hud": True, "power_up": "off"},
                  {"n": 5, "name_el": "ΤΡΙΜ ΚΑΤΩ", "name_en": "TRIM DOWN", "type": "momentary", "group": "trim",
@@ -150,6 +150,15 @@ def b7_file_formats():
         "thr_run.json": bad(lambda x: x["thrusters"]["bow"].__setitem__("run_s", 0)),
         "thr_jog.json": bad(lambda x: x["thrusters"].__setitem__("jog_m", 0)),
         "relays_obj.json": bad(lambda x: x.__setitem__("relays", {"n": 1})),
+        # step 7b: the engine roles (the STARTER is a role, never just a type)
+        "starter_onoff.json": bad(relay_mut(1, type="onoff", max_s=0)),     # the STARTER typed on / off
+        "starter_timed.json": bad(relay_mut(1, type="timed", max_s=2)),
+        "eng_no_role.json": bad(relay_mut(0, role=None)),                   # an engine relay without a role
+        "eng_bad_role.json": bad(relay_mut(0, role="horn")),
+        "role_extra.json": bad(relay_mut(4, role="ignition")),              # a role outside the engine group
+        "two_starters.json": bad(relay_mut(0, role="starter", type="momentary", max_s=1)),
+        "ign_momentary.json": bad(relay_mut(0, type="momentary", max_s=1)),
+        "named_starter.json": bad(relay_mut(4, name_en="STARTER", type="momentary", max_s=1)),  # extra "STARTER"
     }
     for n, v in files.items():
         with open(os.path.join(d, n), "w", encoding="utf-8") as f:
@@ -166,7 +175,8 @@ def b7_file_formats():
     v2_ok = v2.error is None and v2.format == 2 and v2.generator_max_pct == 40 and s2["gen_max_pct"] == 30 and \
         boats.aurix_settings(v2, 20)["gen_max_pct"] == 20 and [r["n"] for r in v2.relays] == [1, 2, 4, 5, 7] and \
         v2.relay(4)["pair"] == 5 and v2.relay(5)["pair"] == 4 and v2.relay(7)["show_hud"] is False and \
-        v2.relay(7)["power_up"] == "keep" and v2.relay(2)["max_s"] == 1.0 and \
+        v2.relay(7)["power_up"] == "keep" and v2.relay(2)["max_s"] == 1.0 and v2.relay(2)["role"] == "starter" and \
+        v2.relay(1)["role"] == "ignition" and v2.relay(7)["role"] is None and \
         v2.thrusters["bow"] == {"max_pct": 80.0, "run_s": 60.0, "rest_s": 120.0} and v2.thrusters["jog_m"] == 2.0 and \
         v2.thrusters["spot_alarm_m"] == 15.0 and v2.length_m == 5.2 and v2.draft_m == 0.6 and \
         s2["relays"] == v2.relays and s2["relays"] is not v2.relays and v2.fixed_status() is None
@@ -178,10 +188,13 @@ def b7_file_formats():
     defaults = boats.aurix_settings(bad_b) == boats.aurix_settings(v1)
     repo = boats.load()
     repo_ok = all(b.error is None and b.format == 2 and 0 < boats.aurix_settings(b)["gen_max_pct"] <= 30 and
-                  b.relays and all(r["power_up"] == "off" for r in b.relays if r["group"] == "engine") for b in repo)
+                  b.relays and all(r["power_up"] == "off" for r in b.relays if r["group"] == "engine") and
+                  [r["role"] for r in b.relays if r["group"] == "engine"] == ["ignition", "starter", "shutoff"]
+                  for b in repo)
     report("B7 boat file v2: v1 loads with defaults (generator off, no relays / thrusters); v2 parsed, generator "
            "capped at the AURIX ceiling; %d bad files INVALID (format, generator, pair not mutual, momentary > 5 s, "
-           "engine power_up, type, group, duplicate n, thrusters, broken JSON); repo files valid v2" % len(invalid),
+           "engine power_up, type, group, duplicate n, thrusters, engine roles, broken JSON); repo files valid v2"
+           % len(invalid),
            v1_ok and v2_ok and inv_ok and defaults and repo_ok,
            "v1 %s; v2 %s (gen 40 -> push %s); invalid %s; bad file = defaults %s; repo %s" % (
                v1_ok, v2_ok, s2["gen_max_pct"], {n: v[0] for n, v in invalid.items()}, defaults,
@@ -326,13 +339,26 @@ def b9_relay_push(ap, pump, sim):
     seq0 = ap.relay_push_seq
     nothing_for_empty = seq0 is None                             # the file had no relays: nothing sent
     ap.boat.relays = boats._parse_relays([
-        {"n": 1, "name_el": "ΑΝΑΦΛΕΞΗ", "name_en": "IGNITION", "type": "onoff", "group": "engine"},
+        {"n": 1, "name_el": "ΑΝΑΦΛΕΞΗ", "name_en": "IGNITION", "type": "onoff", "group": "engine", "role": "ignition"},
         {"n": 4, "name_el": "TRIM ΠΑΝΩ", "name_en": "TRIM UP", "type": "momentary", "group": "trim", "pair": 5,
          "max_s": 3},
         {"n": 5, "name_el": "TRIM ΚΑΤΩ", "name_en": "TRIM DOWN", "type": "momentary", "group": "trim", "pair": 4,
          "max_s": 3},
         {"n": 6, "name_el": "ΦΩΤΑ", "name_en": "NAV LIGHTS", "type": "onoff", "group": "extra", "power_up": "keep"}])
     want = proto.relay_table_hash(ap.boat.relays)
+    # step 7b: never while another CONFIRM is pending on the boat; never confirmed by itself in single-operator mode
+    seq_a = ap.relay_push_seq
+    ap.relay_push_at = 0.0
+    ap.relay_push({"relay_hash": want ^ 1, "relay_pending": False, "confirm_kind": 1})
+    skip_confirm = ap.relay_push_seq == seq_a
+    single, ap.single_op = ap.single_op, True
+    ap.relay_push_at = 0.0
+    ap.relay_push({"relay_hash": want ^ 1, "relay_pending": False, "confirm_kind": 0})
+    asked = ap.cconf is not None and ap.relay_push_seq == seq_a          # the operator's question, nothing sent
+    if ap.cconf is not None:
+        ap.cconf.destroy()
+        ap.cconf = None
+    ap.single_op = single
     ap.relay_push_at = 0.0
     pending = pump(8, lambda: t2().get("relay_pending") and ap.t and ap.t.get("confirm_kind") == 7)
     active_before = t2().get("relay_table")
@@ -352,10 +378,13 @@ def b9_relay_push(ap, pump, sim):
     no_resend = ap.relay_push_seq == seq1                        # the same table: never sent again
     report("B9 boat file relay table -> AURIX: sent with HELM in STANDBY, waits for the joystick CONFIRM, then "
            "active (hash = the file's); the same table never re-sent; no relays = nothing to send",
-           empty and nothing_for_empty and pending and not active_before and active and no_resend,
-           "empty table on the boat %s, nothing sent for a file without relays %s; 4 relays sent -> CONFIRM pending %s "
+           empty and nothing_for_empty and skip_confirm and asked and pending and not active_before and active and
+           no_resend,
+           "empty table on the boat %s, nothing sent for a file without relays %s; not sent while another CONFIRM is "
+           "pending %s; single operator: asked, not self-confirmed %s; 4 relays sent -> CONFIRM pending %s "
            "(not active yet %s); after CONFIRM active, hash %s = file %s: %s; no re-send %s" % (
-               empty, nothing_for_empty, pending, not active_before, t2().get("relay_hash"), want, active, no_resend))
+               empty, nothing_for_empty, skip_confirm, asked, pending, not active_before, t2().get("relay_hash"), want,
+               active, no_resend))
 
 
 def b6_dropdown(ap, pump, good):

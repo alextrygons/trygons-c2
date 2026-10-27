@@ -26,10 +26,20 @@
  *   - a silent board (no valid reply for HAL_RELAY_LOST_MS): no new command
  *     (the OFF of a timed relay still goes), states shown unknown, the
  *     advisory RELAY BOARD SILENT (raised by smallboat.c)
- *   - engine group: STARTER (= an engine-group MOMENTARY relay) is never
- *     pulsed by the plain relay command - only the remote-restart rules of
- *     section N (engine.c: relays_starter_pulse / _off);
- *     IGNITION / SHUTOFF (onoff) are the captain's key
+ *   - engine group: every relay has an explicit ROLE (STARTER / IGNITION /
+ *     SHUTOFF, at most one each; a table without it, or a STARTER that is not
+ *     a momentary relay of <= 5 s, is INVALID - the rules never depend on the
+ *     type alone). NO engine-group relay is switched ON by the plain relay
+ *     command: the STARTER only by the hold-to-crank rules of section N
+ *     (engine.c: relays_starter_pulse / _off), IGNITION / SHUTOFF only through
+ *     engine.c (engine_relay: idle + neutral confirmed, e-stop released, not
+ *     killed / tripped -> relays_engine_set). OFF is always allowed.
+ *   - momentary: the AURIX's own copy of the board timer; RELAY_PULSE_MARGIN_MS
+ *     after the pulse should have ended it sends an OFF itself and keeps it
+ *     pending until the readback shows the relay off (a board whose timer
+ *     failed never keeps a relay on)
+ *   - channels: n must be within the fitted board's channels (hal_relay_channels);
+ *     no board fitted = nothing is switched and no RELAY BOARD SILENT
  *   - power_up: ONLY switching ON, only once, only with the FIRST active
  *     table after the AURIX's own POWER-ON reset (never after a watchdog /
  *     software reset or a reconnect: then the board is read back and its
@@ -47,9 +57,10 @@
 
 #define RELAY_TABLE_MAX   16u       /* relays in a table (8-16 channel boards) */
 #define RELAY_N_MAX       32u       /* channel numbers 1..32 */
-#define RELAY_TABLE_VERSION 1u
+#define RELAY_TABLE_VERSION 2u      /* 2: the engine roles (a version-1 record = defaults: the station pushes again) */
 #define RELAY_PULSE_MAX_MS 5000u    /* a momentary relay: never longer */
-#define RELAY_FRAME_BYTES 7u        /* per relay in PROTO_T_RELAY_CFG */
+#define RELAY_PULSE_MARGIN_MS 500u  /* after a pulse should have ended: the AURIX sends the OFF itself */
+#define RELAY_FRAME_BYTES 8u        /* per relay in PROTO_T_RELAY_CFG */
 #define RELAY_OFF_RETRY_MS 500u     /* a pending OFF is sent again this often until the readback shows it off */
 
 /* relay_def_t.type */
@@ -65,6 +76,11 @@
 #define RELAY_F_SHOW_HUD  0x01u
 #define RELAY_F_POWER_ON  0x02u     /* power_up "on" */
 #define RELAY_F_KEEP      0x04u     /* power_up "keep" (= nothing is done: the board keeps its state) */
+/* relay_def_t.role: engine group = one of these (each at most once), every other group = NONE */
+#define RELAY_ROLE_NONE     0u
+#define RELAY_ROLE_STARTER  1u      /* momentary, <= 5 s: hold-to-crank only (section N) */
+#define RELAY_ROLE_IGNITION 2u      /* onoff / latching: ON only through engine.c */
+#define RELAY_ROLE_SHUTOFF  3u      /* onoff / latching: ON only through engine.c */
 
 typedef struct {
     uint8_t  n;                 /* channel 1..32 */
@@ -73,7 +89,7 @@ typedef struct {
     uint8_t  pair;              /* the other relay of an interlocked pair (its n), 0 = none */
     uint16_t max_ds;            /* momentary: pulse length; timed: on at most this (0.1 s units) */
     uint8_t  flags;             /* RELAY_F_ */
-    uint8_t  pad;
+    uint8_t  role;              /* RELAY_ROLE_ */
 } relay_def_t;
 
 /* NV slot 7 record (version + CRC-32 like the other records) */
@@ -96,9 +112,10 @@ typedef enum {
     RELAY_R_UNKNOWN,        /* n is not in the table / bad action */
     RELAY_R_SILENT,         /* the board is silent: no new command */
     RELAY_R_PAIR,           /* the interlocked partner is on */
-    RELAY_R_ENGINE,         /* STARTER: only through the remote-restart rules (section N) */
+    RELAY_R_ENGINE,         /* engine group ON: only through engine.c (section N rules) */
     RELAY_R_FIRST_TEST,     /* FIRST TEST: no relay changes */
-    RELAY_R_HAL             /* the driver refused (queue full) */
+    RELAY_R_HAL,            /* the driver refused (queue full) */
+    RELAY_R_NOT_FITTED      /* no relay board fitted (hal_relay_channels() == 0) */
 } relay_result_t;
 
 typedef enum {
@@ -118,6 +135,8 @@ typedef struct {
     bool     power_on_reset;    /* the AURIX's own power-on reset (not a watchdog / software reset) */
     bool     power_up_done;     /* the one-shot power_up is over (done, or never allowed) */
     bool     board_ok;          /* hal_relay_ok() this step */
+    uint8_t  channels;          /* hal_relay_channels(): the fitted board's coils, 0 = no board */
+    uint32_t pulse_offs;        /* OFFs the AURIX sent itself after a pulse should have ended */
     uint32_t states, known;     /* readback: bit n-1 (known = a valid readback) */
     uint32_t cmd_on;            /* bit n-1: commanded on by the AURIX (pulse running / on / timed on) */
     uint32_t off_pending;       /* bit n-1: an OFF not yet confirmed by the readback (re-sent while the board
@@ -143,20 +162,29 @@ bool     relay_table_decode(const uint8_t *in, uint32_t len, relay_table_t *t);
 uint16_t relay_table_hash(const relay_table_t *t);
 const relay_def_t *relay_table_find(const relay_table_t *t, uint8_t n);
 
+/* every n of the table within the fitted board's channels (always true without a board) */
+bool     relays_table_fits(const relay_table_t *t);
 /* stored = the NV record (NULL = none / unusable) */
 void relays_init(relays_t *r, const relay_table_t *stored, bool power_on_reset, bool first_test);
 /* a table from the HELM station */
 relay_offer_t relays_offer(relays_t *r, const relay_table_t *t, bool standby_idle);
+/* t is the active table already (an offer of it changes nothing) */
+bool     relays_offer_same(const relays_t *r, const relay_table_t *t);
 /* the joystick CONFIRM (only in STANDBY, not stopping): the offer becomes the active table */
 bool     relays_accept(relays_t *r, bool standby_idle);
 void     relays_cancel_offer(relays_t *r);
 /* the relay command of the HELM station */
 relay_result_t relays_cmd(relays_t *r, uint8_t n, uint8_t action, uint16_t ms, uint32_t now_ms);
+/* IGNITION / SHUTOFF (engine group, not the STARTER): ONLY engine.c calls this
+ * (engine_relay checks idle + neutral + e-stop first; tools/check.sh) */
+relay_result_t relays_engine_set(relays_t *r, uint8_t n, bool on);
+/* the log record of a command refused before relays_cmd / relays_engine_set (engine conditions) */
+relay_result_t relays_note(relays_t *r, uint8_t n, uint8_t action, relay_result_t res);
 /* every control step: the driver's step, readback, time limits, power_up */
 void     relays_step(relays_t *r, uint32_t now_ms);
 /* the advisory condition: a table with relays and the board silent */
 bool     relays_silent(const relays_t *r);
-/* The STARTER (= the engine-group MOMENTARY relay of the table; 0 = none).
+/* The STARTER (= the relay with RELAY_ROLE_STARTER; 0 = none).
  * Driven ONLY by the remote-restart rules (engine.c, section N; tools/check.sh):
  * a board-timed pulse of ms (<= the relay's max_s, <= RELAY_PULSE_MAX_MS), and
  * off at once. Refused in FIRST TEST, without a table / STARTER, on a silent board. */

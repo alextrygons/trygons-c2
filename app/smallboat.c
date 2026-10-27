@@ -230,7 +230,7 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     {
         static relay_table_t t;     /* 140 bytes: not on the stack */
         bool have = nv_load(HAL_NV_SLOT_RELAYS, &t, (uint32_t)sizeof t);
-        if (have && !relay_table_valid(&t)) { nv_invalid(HAL_NV_SLOT_RELAYS); have = false; }
+        if (have && (!relay_table_valid(&t) || !relays_table_fits(&t))) { nv_invalid(HAL_NV_SLOT_RELAYS); have = false; }
         relays_init(&s->relays, have ? &t : NULL, hal_reset_reason(NULL) == HAL_RESET_POWER_ON, cfg->first_test);
     }
 }
@@ -238,6 +238,12 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
 sb_result_t sb_relay_table(sb_t *s, const relay_table_t *t)
 {
     bool standby_idle = sb_mode(s) == MODE_STANDBY && !s->stopping;
+    /* another CONFIRM is pending (power raise, AUTO, REMOTE ...): a table offer never replaces
+     * it - the same table is still OK at once, a different one is refused (the station tries
+     * again later; its relay_push waits while any CONFIRM is pending) */
+    bool other = s->confirm.kind != CONF_NONE && s->confirm.kind != CONF_RELAY_TABLE;
+    if (other && relay_table_valid(t) && relays_table_fits(t) && !relays_offer_same(&s->relays, t))
+        return SB_ERR_REFUSED;
     switch (relays_offer(&s->relays, t, standby_idle)) {
     case RELAY_OFFER_SAME:
         if (s->confirm.kind == CONF_RELAY_TABLE) s->confirm.kind = CONF_NONE;
@@ -250,16 +256,33 @@ sb_result_t sb_relay_table(sb_t *s, const relay_table_t *t)
         relays_cancel_offer(&s->relays);
         return SB_ERR_JOY_NOT_READY;
     }
-    s->confirm.kind = CONF_RELAY_TABLE;         /* replaces any other pending request (STANDBY: none drives) */
+    s->confirm.kind = CONF_RELAY_TABLE;         /* (no other request is pending: checked above) */
     s->confirm.deadline_ms = s->now_ms + s->cfg.confirm_ms;
     return SB_OK;
 }
 
+static void eng_cond(const sb_t *s, eng_cond_t *c, bool standby_button);
+
 sb_result_t sb_relay_cmd(sb_t *s, uint8_t n, uint8_t action, uint16_t ms)
 {
-    switch (relays_cmd(&s->relays, n, action, ms, s->now_ms)) {
+    relay_result_t res;
+    const relay_def_t *d = s->relays.have_table ? relay_table_find(&s->relays.table, n) : NULL;
+    if (d != NULL && action <= RELAY_CMD_PULSE &&
+        (d->role == RELAY_ROLE_IGNITION || d->role == RELAY_ROLE_SHUTOFF)) {
+        /* IGNITION / SHUTOFF: through the engine rules (section N: idle + neutral + e-stop released) */
+        eng_cond_t c;
+        eng_cond(s, &c, false);
+        eng_why_t why = engine_relay(&s->eng, &c, &s->relays, n, action != RELAY_CMD_OFF, &res);
+        if (why == ENG_WHY_FIRST_TEST) return SB_ERR_WRONG_MODE;
+        if (why == ENG_WHY_ESTOP) return SB_ERR_REFUSED;
+        if (why != ENG_WHY_NONE && why != ENG_WHY_RELAY) return SB_ERR_PRECOND;
+    } else {
+        res = relays_cmd(&s->relays, n, action, ms, s->now_ms);
+    }
+    switch (res) {
     case RELAY_R_OK:         return SB_OK;
     case RELAY_R_NO_TABLE:   return SB_ERR_PRECOND;
+    case RELAY_R_NOT_FITTED: return SB_ERR_PRECOND;
     case RELAY_R_UNKNOWN:    return SB_ERR_BAD_VALUE;
     case RELAY_R_SILENT:     return SB_ERR_REFUSED;
     case RELAY_R_PAIR:       return SB_ERR_REFUSED;
@@ -316,7 +339,7 @@ void sb_alarm_ack(sb_t *s)
     if (s->batt.low) keep2 |= SB_ALM2_LOW_BATTERY;
     if (relays_silent(&s->relays)) keep2 |= SB_ALM2_RELAY_SILENT;
     s->alarm_bits2 &= keep2;
-    s->alarm = s->alarm_bits != 0u || s->alarm_bits2 != 0u;
+    s->alarm = s->alarm_bits != 0u || (s->alarm_bits2 & ~SB_ALM2_QUIET) != 0u;
     if (!s->ap.sensor_fault) s->ap.alarm = false;
 }
 
@@ -373,10 +396,12 @@ static void alarm_on(sb_t *s, uint32_t bits)
     s->alarm_bits |= bits;
 }
 
-/* the second alarm word (SB_ALM2_) */
+/* the second alarm word (SB_ALM2_). The QUIET advisories (RELAY BOARD SILENT)
+ * never set s->alarm: no buzzer, no power-raise block, no power-limit drop -
+ * only the bit (shown on the screens). */
 static void alarm2_on(sb_t *s, uint32_t bits)
 {
-    s->alarm = true;
+    if (bits & ~SB_ALM2_QUIET) s->alarm = true;
     s->alarm_bits2 |= bits;
 }
 
@@ -1015,7 +1040,7 @@ sb_result_t sb_restart(sb_t *s, uint8_t station, uint8_t action)
             /* (a) the ENGINE KILL latch: cleared; STANDBY stays, nothing starts by itself */
             s->ll.state = SB_LL_OK;
             s->alarm_bits &= ~SB_ALM_ENGINE_KILLED;
-            if (s->alarm_bits == 0u && s->alarm_bits2 == 0u && !s->ap.alarm) s->alarm = false;
+            if (s->alarm_bits == 0u && (s->alarm_bits2 & ~SB_ALM2_QUIET) == 0u && !s->ap.alarm) s->alarm = false;
             hal_set_engine_kill(false);
         }
     } else if (action == ENG_ACT_CRANK) {

@@ -11,9 +11,13 @@ Format 2 (section L + the owner clarifications 2026-10-26):
   generator_max_pct  0..100 % (0 / missing = generator disabled); the AURIX keeps its own ceiling
                      (parameter gen_max_pct, 30 %): the station pushes min(file, AURIX max)
   relays             [{"n", "name_el", "name_en", "type": onoff | momentary | latching | timed,
-                       "group": engine | trim | extra, "pair": n | null, "max_s", "show_hud", "power_up"}]
+                       "group": engine | trim | extra, "pair": n | null, "max_s", "show_hud", "power_up",
+                       "role": starter | ignition | shutoff (engine group: required; other groups: none)}]
                      pair must be mutual; momentary: 0 < max_s <= 5; timed: max_s > 0;
-                     power_up off | on | keep - the ENGINE group only "off" (never switched automatically)
+                     power_up off | on | keep - the ENGINE group only "off" (never switched automatically);
+                     the STARTER = role "starter" = a momentary relay (<= 5 s), IGNITION / SHUTOFF = onoff /
+                     latching, each role once; a relay NAMED like a starter (START / ΜΙΖΑ) without the role is
+                     INVALID too (the AURIX's rules follow the role, never the type or the name)
   thrusters          {"bow": {"max_pct", "run_s", "rest_s"}, "stern": {...}, "jog_m": 1.5, "spot_alarm_m": 15}
   length_m, draft_m  optional
 
@@ -42,6 +46,8 @@ BASE_KEYS = ("format", "id", "name", "tailscale_ip", "gateway_port")
 RELAY_TYPES = ("onoff", "momentary", "latching", "timed")
 RELAY_GROUPS = ("engine", "trim", "extra")
 POWER_UP = ("off", "on", "keep")
+ENGINE_ROLES = ("starter", "ignition", "shutoff")       # app/relays.h RELAY_ROLE_ (the engine group only)
+ROLE_TYPES = {"starter": ("momentary",), "ignition": ("onoff", "latching"), "shutoff": ("onoff", "latching")}
 MOMENTARY_MAX_S = 5.0                   # a board-timed pulse is never longer (section M)
 RELAY_N_MAX = 32                        # relay channel numbers 1..32 (8-16 channel boards, TBD)
 RELAY_COUNT_MAX = 16                    # relays in one table (the AURIX's RELAY_TABLE_MAX, app/relays.h)
@@ -98,8 +104,22 @@ def _parse_relays(lst):
         if grp == "engine" and pu != "off":
             # owner clarification: engine-group relays are never switched automatically
             raise ValueError("relay %d: an engine relay can't have power_up %r (only off)" % (n, pu))
+        role = r.get("role")
+        if grp == "engine":
+            if role not in ENGINE_ROLES:
+                raise ValueError("relay %d: an engine relay needs a role (%s)" % (n, ", ".join(ENGINE_ROLES)))
+            if typ not in ROLE_TYPES[role]:
+                raise ValueError("relay %d: the %s must be %s" % (n, role.upper(), " / ".join(ROLE_TYPES[role])))
+        elif role is not None:
+            raise ValueError("relay %d: only an engine relay has a role" % n)
+        if role != "starter" and (name_en.upper() in ("STARTER", "START", "CRANK") or name_el.upper() in ("ΜΙΖΑ", "ΜΊΖΑ")):
+            raise ValueError("relay %d: named like the STARTER but not the role \"starter\" (engine group, "
+                             "momentary)" % n)
         out.append({"n": n, "name_el": name_el, "name_en": name_en, "type": typ, "group": grp, "pair": pair,
-                    "max_s": max_s, "show_hud": show, "power_up": pu})
+                    "max_s": max_s, "show_hud": show, "power_up": pu, "role": role})
+    for role in ENGINE_ROLES:
+        if sum(1 for r in out if r["role"] == role) > 1:
+            raise ValueError("more than one %s relay" % role.upper())
     by_n = {r["n"]: r for r in out}
     for r in out:
         p = r["pair"]

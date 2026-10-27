@@ -158,6 +158,24 @@ Servos disconnected (or the engine OFF and the linkages free).
       shows the idle / neutral pulses on D9 / D8 (they come from the monitor
       itself now). Nothing can switch it back: **power the board off and on**.
 
+### 3h. Reset reason + relay board (only once the RS485 relay board is wired, HAL_RELAY_FITTED 1)
+
+Engine OFF, nothing connected to the relay outputs except a test lamp on a relay whose boat file
+entry has `"power_up": "on"` (e.g. NAV LIGHTS).
+
+- [ ] Power the board off and on: the Events tab shows the start as POWER-ON, the test lamp comes on
+      (power_up, once).
+- [ ] Switch the lamp OFF from the ground station. Then make a REAL watchdog reset: in ADS halt core 0
+      with the debugger for more than 1 s and let it run again (or disconnect the debugger while it is
+      halted) - the chip resets by the watchdog. Events tab: the start is NOT a power-on (SYSTEM /
+      watchdog), and the lamp stays OFF (no power_up after a watchdog reset). If the lamp comes on: STOP,
+      the reset reason is read wrong (hal_reset_reason / tc_rstcause.h) - report it.
+- [ ] Do it twice in a row (the cold-reset bits are cleared after the first boot: the second watchdog
+      reset must also read as SYSTEM, not as a power-on).
+- [ ] RS485 driver enable (scope on PIN_RELAY_DE, P00.11, and on the RS485 A/B lines): DE goes high
+      just before the request and low right after its LAST stop bit (well under 1 ms at 9600 baud - not
+      one control step of 50 ms later); the board's reply is seen on the bus after DE is low.
+
 - [ ] Leave the bench test (button **Leave**): mode STANDBY.
 
 ## 4. Dock test (boat in the water, tied up, engine running in NEUTRAL)

@@ -32,11 +32,18 @@ static bool table_consistent(const relay_table_t *t)
     for (uint8_t i = 0; i < t->count; i++) {
         const relay_def_t *d = &t->r[i];
         if (d->n == 0u || d->n > RELAY_N_MAX || d->type > RELAY_TIMED || d->group > RELAY_GRP_EXTRA) return false;
-        if ((d->flags & ~(RELAY_F_SHOW_HUD | RELAY_F_POWER_ON | RELAY_F_KEEP)) != 0u || d->pad != 0u) return false;
+        if ((d->flags & ~(RELAY_F_SHOW_HUD | RELAY_F_POWER_ON | RELAY_F_KEEP)) != 0u || d->role > RELAY_ROLE_SHUTOFF) return false;
         for (uint8_t j = 0; j < i; j++) if (t->r[j].n == d->n) return false;          /* n twice */
         if (d->type == RELAY_MOMENTARY && (d->max_ds == 0u || d->max_ds > RELAY_PULSE_MAX_MS / 100u)) return false;
         if (d->type == RELAY_TIMED && d->max_ds == 0u) return false;
         if (d->group == RELAY_GRP_ENGINE && (d->flags & (RELAY_F_POWER_ON | RELAY_F_KEEP))) return false;
+        /* the engine roles: engine group <=> a role; the STARTER = a momentary relay of <= 5 s;
+         * IGNITION / SHUTOFF = on / off (onoff / latching); every role at most once */
+        if ((d->group == RELAY_GRP_ENGINE) != (d->role != RELAY_ROLE_NONE)) return false;
+        if (d->role == RELAY_ROLE_STARTER && d->type != RELAY_MOMENTARY) return false;
+        if ((d->role == RELAY_ROLE_IGNITION || d->role == RELAY_ROLE_SHUTOFF) &&
+            d->type != RELAY_ONOFF && d->type != RELAY_LATCHING) return false;
+        for (uint8_t j = 0; j < i && d->role != RELAY_ROLE_NONE; j++) if (t->r[j].role == d->role) return false;
         if (d->pair != 0u) {                                                           /* mutual, another relay */
             const relay_def_t *p = relay_table_find(t, d->pair);
             if (p == NULL || p == d || p->pair != d->n) return false;
@@ -62,7 +69,6 @@ void relay_table_seal(relay_table_t *t)
     t->pad[0] = t->pad[1] = 0u;
     for (uint8_t i = 0; i < RELAY_TABLE_MAX; i++) {
         if (i >= t->count) memset(&t->r[i], 0, sizeof t->r[i]);     /* unused entries all zero: one encoding */
-        else t->r[i].pad = 0u;
     }
     t->crc = table_crc(t);
 }
@@ -76,6 +82,7 @@ uint32_t relay_table_encode(const relay_table_t *t, uint8_t *out, uint32_t max)
         uint8_t *p = out + 1u + (uint32_t)i * RELAY_FRAME_BYTES;
         p[0] = t->r[i].n; p[1] = t->r[i].type; p[2] = t->r[i].group; p[3] = t->r[i].pair;
         p[4] = (uint8_t)t->r[i].max_ds; p[5] = (uint8_t)(t->r[i].max_ds >> 8); p[6] = t->r[i].flags;
+        p[7] = t->r[i].role;
     }
     return n;
 }
@@ -89,6 +96,7 @@ bool relay_table_decode(const uint8_t *in, uint32_t len, relay_table_t *t)
         const uint8_t *p = in + 1u + (uint32_t)i * RELAY_FRAME_BYTES;
         t->r[i].n = p[0]; t->r[i].type = p[1]; t->r[i].group = p[2]; t->r[i].pair = p[3];
         t->r[i].max_ds = (uint16_t)(p[4] | ((uint16_t)p[5] << 8)); t->r[i].flags = p[6];
+        t->r[i].role = p[7];
     }
     relay_table_seal(t);
     return table_consistent(t);
@@ -99,6 +107,13 @@ uint16_t relay_table_hash(const relay_table_t *t)
     uint8_t buf[1u + RELAY_TABLE_MAX * RELAY_FRAME_BYTES];
     uint32_t n = relay_table_encode(t, buf, sizeof buf);
     return proto_crc16(buf, n);
+}
+
+bool relays_table_fits(const relay_table_t *t)
+{
+    uint8_t ch = hal_relay_channels();
+    for (uint8_t i = 0; ch != 0u && i < t->count && i < RELAY_TABLE_MAX; i++) if (t->r[i].n > ch) return false;
+    return true;
 }
 
 static void table_activate(relays_t *r, const relay_table_t *t, bool from_nv)
@@ -122,22 +137,27 @@ void relays_init(relays_t *r, const relay_table_t *stored, bool power_on_reset, 
     r->power_on_reset = power_on_reset;
     /* power_up only after the AURIX's own power-on reset; never in FIRST TEST */
     r->power_up_done = !power_on_reset || first_test;
+    r->channels = hal_relay_channels();
     memset(&empty, 0, sizeof empty);
     relay_table_seal(&empty);
     r->hash = relay_table_hash(&empty);                 /* "no table" = the empty table's hash */
-    if (stored && relay_table_valid(stored)) table_activate(r, stored, true);
+    if (stored && relay_table_valid(stored) && relays_table_fits(stored)) table_activate(r, stored, true);
+}
+
+bool relays_offer_same(const relays_t *r, const relay_table_t *t)
+{
+    if (!r->have_table && t->count == 0u) return true;
+    return relay_table_hash(t) == r->hash && (r->have_table || t->count == 0u) &&
+           memcmp(&r->table.r, &t->r, sizeof t->r) == 0 && r->table.count == t->count;
 }
 
 relay_offer_t relays_offer(relays_t *r, const relay_table_t *t, bool standby_idle)
 {
-    if (!relay_table_valid(t)) return RELAY_OFFER_BAD;
-    uint16_t h = relay_table_hash(t);
-    if (h == r->hash && (r->have_table || t->count == 0u) && memcmp(&r->table.r, &t->r, sizeof t->r) == 0 &&
-        r->table.count == t->count) {
+    if (!relay_table_valid(t) || !relays_table_fits(t)) return RELAY_OFFER_BAD;
+    if (relays_offer_same(r, t)) {
         r->offer_pending = false;                        /* the same table: nothing to confirm */
         return RELAY_OFFER_SAME;
     }
-    if (!r->have_table && t->count == 0u) { r->offer_pending = false; return RELAY_OFFER_SAME; }
     if (!standby_idle) return RELAY_OFFER_STANDBY;
     r->offer = *t;
     r->offer_pending = true;
@@ -167,7 +187,7 @@ static bool relay_on(const relays_t *r, uint8_t n)
     return (r->cmd_on & bit) != 0u || ((r->known & bit) && (r->states & bit));
 }
 
-static relay_result_t cmd_result(relays_t *r, uint8_t n, uint8_t action, relay_result_t res)
+relay_result_t relays_note(relays_t *r, uint8_t n, uint8_t action, relay_result_t res)
 {
     r->last_n = n;
     r->last_action = action;
@@ -180,10 +200,12 @@ static relay_result_t cmd_result(relays_t *r, uint8_t n, uint8_t action, relay_r
 
 relay_result_t relays_cmd(relays_t *r, uint8_t n, uint8_t action, uint16_t ms, uint32_t now_ms)
 {
-    if (r->first_test) return cmd_result(r, n, action, RELAY_R_FIRST_TEST);
-    if (!r->have_table || r->table.count == 0u) return cmd_result(r, n, action, RELAY_R_NO_TABLE);
+    if (r->first_test) return relays_note(r, n, action, RELAY_R_FIRST_TEST);
+    if (!r->have_table || r->table.count == 0u) return relays_note(r, n, action, RELAY_R_NO_TABLE);
     const relay_def_t *d = relay_table_find(&r->table, n);
-    if (d == NULL || action > RELAY_CMD_PULSE) return cmd_result(r, n, action, RELAY_R_UNKNOWN);
+    if (d == NULL || action > RELAY_CMD_PULSE || (r->channels != 0u && n > r->channels))
+        return relays_note(r, n, action, RELAY_R_UNKNOWN);
+    if (r->channels == 0u) return relays_note(r, n, action, RELAY_R_NOT_FITTED);
     uint8_t idx = (uint8_t)(d - r->table.r);
     uint32_t bit = 1u << (n - 1u);
     if (action == RELAY_CMD_OFF) {
@@ -191,37 +213,67 @@ relay_result_t relays_cmd(relays_t *r, uint8_t n, uint8_t action, uint16_t ms, u
         r->cmd_on &= ~bit;
         r->until_ms[idx] = 0u;
         r->off_pending |= bit;                          /* re-sent until the readback shows it off */
-        if (!hal_relay_set(n, false)) return cmd_result(r, n, action, RELAY_R_HAL);
-        return cmd_result(r, n, action, RELAY_R_OK);
+        if (!hal_relay_set(n, false)) return relays_note(r, n, action, RELAY_R_HAL);
+        return relays_note(r, n, action, RELAY_R_OK);
     }
-    if (d->group == RELAY_GRP_ENGINE && d->type == RELAY_MOMENTARY)      /* the STARTER: section N only */
-        return cmd_result(r, n, action, RELAY_R_ENGINE);
-    if (!r->board_ok) return cmd_result(r, n, action, RELAY_R_SILENT);
-    if (d->pair != 0u && relay_on(r, d->pair)) return cmd_result(r, n, action, RELAY_R_PAIR);
+    /* engine group ON: never by the plain command - the STARTER only hold-to-crank, IGNITION / SHUTOFF
+     * only through engine.c with idle + neutral + e-stop released (section N; the ROLE decides, not the type) */
+    if (d->group == RELAY_GRP_ENGINE || d->role != RELAY_ROLE_NONE) return relays_note(r, n, action, RELAY_R_ENGINE);
+    if (!r->board_ok) return relays_note(r, n, action, RELAY_R_SILENT);
+    if (d->pair != 0u && relay_on(r, d->pair)) return relays_note(r, n, action, RELAY_R_PAIR);
     if (d->type == RELAY_MOMENTARY) {
         uint32_t len = (uint32_t)d->max_ds * 100u;
         if (action == RELAY_CMD_PULSE && ms != 0u && ms < len) len = ms;
         if (len > RELAY_PULSE_MAX_MS) len = RELAY_PULSE_MAX_MS;
         if (len < 100u) len = 100u;
-        if (!hal_relay_pulse(n, (uint16_t)len)) return cmd_result(r, n, action, RELAY_R_HAL);
+        if (!hal_relay_pulse(n, (uint16_t)len)) return relays_note(r, n, action, RELAY_R_HAL);
         r->cmd_on |= bit;
         r->off_pending &= ~bit;
-        r->until_ms[idx] = (now_ms + len) ? now_ms + len : 1u;    /* the AURIX's own copy of the board timer */
+        /* the AURIX's own copy of the board timer (+ a margin: then it sends the OFF itself) */
+        r->until_ms[idx] = (now_ms + len + RELAY_PULSE_MARGIN_MS) ? now_ms + len + RELAY_PULSE_MARGIN_MS : 1u;
         r->pulses++;
-        return cmd_result(r, n, action, RELAY_R_OK);
+        return relays_note(r, n, action, RELAY_R_OK);
     }
-    if (!hal_relay_set(n, true)) return cmd_result(r, n, action, RELAY_R_HAL);
+    if (!hal_relay_set(n, true)) return relays_note(r, n, action, RELAY_R_HAL);
     r->cmd_on |= bit;
     r->off_pending &= ~bit;
     r->until_ms[idx] = (d->type == RELAY_TIMED) ? ((now_ms + (uint32_t)d->max_ds * 100u) ? now_ms + (uint32_t)d->max_ds * 100u : 1u)
                                                 : 0u;
-    return cmd_result(r, n, action, RELAY_R_OK);
+    return relays_note(r, n, action, RELAY_R_OK);
+}
+
+relay_result_t relays_engine_set(relays_t *r, uint8_t n, bool on)
+{
+    uint8_t action = on ? RELAY_CMD_ON : RELAY_CMD_OFF;
+    if (r->first_test) return relays_note(r, n, action, RELAY_R_FIRST_TEST);
+    if (!r->have_table || r->table.count == 0u) return relays_note(r, n, action, RELAY_R_NO_TABLE);
+    const relay_def_t *d = relay_table_find(&r->table, n);
+    if (d == NULL || (d->role != RELAY_ROLE_IGNITION && d->role != RELAY_ROLE_SHUTOFF) ||
+        (r->channels != 0u && n > r->channels)) return relays_note(r, n, action, RELAY_R_UNKNOWN);
+    if (r->channels == 0u) return relays_note(r, n, action, RELAY_R_NOT_FITTED);
+    uint32_t bit = 1u << (n - 1u);
+    uint8_t idx = (uint8_t)(d - r->table.r);
+    if (!on) {
+        r->cmd_on &= ~bit;
+        r->until_ms[idx] = 0u;
+        r->off_pending |= bit;                          /* re-sent until the readback shows it off */
+        if (!hal_relay_set(n, false)) return relays_note(r, n, action, RELAY_R_HAL);
+        return relays_note(r, n, action, RELAY_R_OK);
+    }
+    if (!r->board_ok) return relays_note(r, n, action, RELAY_R_SILENT);
+    if (d->pair != 0u && relay_on(r, d->pair)) return relays_note(r, n, action, RELAY_R_PAIR);
+    if (!hal_relay_set(n, true)) return relays_note(r, n, action, RELAY_R_HAL);
+    r->cmd_on |= bit;
+    r->off_pending &= ~bit;
+    r->until_ms[idx] = 0u;
+    return relays_note(r, n, action, RELAY_R_OK);
 }
 
 void relays_step(relays_t *r, uint32_t now_ms)
 {
     hal_relay_service();
-    r->board_ok = hal_relay_ok();
+    r->channels = hal_relay_channels();
+    r->board_ok = r->channels != 0u && hal_relay_ok();
     /* readback of every relay of the table */
     r->known = 0u;
     r->states = 0u;
@@ -234,7 +286,9 @@ void relays_step(relays_t *r, uint32_t now_ms)
         }
     }
     /* time limits: a timed relay OFF after max_s (also while silent: queued);
-     * a momentary relay's pulse is over (the board switched it off) */
+     * a momentary relay's pulse is over (+ RELAY_PULSE_MARGIN_MS): the board should have
+     * switched it off - the AURIX sends the OFF itself and keeps it pending until the
+     * readback shows it off (a board whose pulse timer failed never keeps it on) */
     for (uint8_t i = 0; r->have_table && i < r->table.count; i++) {
         const relay_def_t *d = &r->table.r[i];
         uint32_t bit = 1u << (d->n - 1u);
@@ -250,6 +304,10 @@ void relays_step(relays_t *r, uint32_t now_ms)
             r->last_result = (uint8_t)RELAY_R_OK;
             r->last_what = 1u;
             r->log_seq++;
+        } else if (d->type == RELAY_MOMENTARY) {
+            r->off_pending |= bit;
+            (void)hal_relay_set(d->n, false);
+            r->pulse_offs++;
         }
     }
     /* pending OFFs: done once the readback shows the relay off; re-sent while the
@@ -293,7 +351,8 @@ void relays_step(relays_t *r, uint32_t now_ms)
 
 bool relays_silent(const relays_t *r)
 {
-    return r->have_table && r->table.count > 0u && !r->board_ok;
+    /* (no board fitted: nothing is there to be silent) */
+    return r->have_table && r->table.count > 0u && r->channels != 0u && !r->board_ok;
 }
 
 uint8_t relays_flags(const relays_t *r)
@@ -305,7 +364,7 @@ uint8_t relays_flags(const relays_t *r)
 uint8_t relays_starter(const relays_t *r)
 {
     for (uint8_t i = 0; r->have_table && i < r->table.count; i++)
-        if (r->table.r[i].group == RELAY_GRP_ENGINE && r->table.r[i].type == RELAY_MOMENTARY) return r->table.r[i].n;
+        if (r->table.r[i].role == RELAY_ROLE_STARTER) return r->table.r[i].n;
     return 0u;
 }
 
@@ -314,8 +373,10 @@ relay_result_t relays_starter_pulse(relays_t *r, uint16_t ms, uint32_t now_ms)
     uint8_t n = relays_starter(r);
     if (r->first_test) return RELAY_R_FIRST_TEST;
     if (n == 0u) return RELAY_R_NO_TABLE;
+    if (r->channels == 0u) return RELAY_R_NOT_FITTED;
     if (!r->board_ok) return RELAY_R_SILENT;
     const relay_def_t *d = relay_table_find(&r->table, n);
+    if (d == NULL || d->type != RELAY_MOMENTARY || n > r->channels) return RELAY_R_UNKNOWN;
     uint32_t len = ms;
     if (len > (uint32_t)d->max_ds * 100u) len = (uint32_t)d->max_ds * 100u;
     if (len > RELAY_PULSE_MAX_MS) len = RELAY_PULSE_MAX_MS;
@@ -324,7 +385,7 @@ relay_result_t relays_starter_pulse(relays_t *r, uint16_t ms, uint32_t now_ms)
     uint32_t bit = 1u << (n - 1u);
     r->cmd_on |= bit;
     r->off_pending &= ~bit;
-    r->until_ms[d - r->table.r] = (now_ms + len) ? now_ms + len : 1u;
+    r->until_ms[d - r->table.r] = (now_ms + len + RELAY_PULSE_MARGIN_MS) ? now_ms + len + RELAY_PULSE_MARGIN_MS : 1u;
     r->pulses++;
     return RELAY_R_OK;                                  /* (logged by engine.c: start / stop, not every refresh) */
 }

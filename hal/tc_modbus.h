@@ -14,7 +14,6 @@
  *                        pulse "flash on" (0x02xx: xx = time in 100 ms units,
  *                        Waveshare-style Modbus RTU relay boards - TBD per the
  *                        board chosen, PARTS.md)
- *   0x0F write coils  -> several coils in one frame (the power-up states)
  * CRC-16/MODBUS (0xA001 reflected, init 0xFFFF) on every frame; a reply with
  * a bad CRC, a wrong address / function, an exception, or no reply within
  * timeout_ms counts as a failed request (the write is dropped - the caller
@@ -59,12 +58,11 @@ typedef struct {
 void     mb_init(const mb_port_t *port, const mb_config_t *cfg);
 /* one bounded step of the state machine (every control step) */
 void     mb_service(void);
-/* queue: coil n (1..MB_COILS_MAX) on / off; a board-timed pulse of ms (100 ms
- * units, 100..25500); several coils at once (bit i = coil i + 1). false = no
- * room / bad argument (nothing queued). */
+/* queue: coil n (1..n_coils, the board's channel count) on / off; a board-timed
+ * pulse of ms (100 ms units, 100..25500). false = no room / bad argument / n
+ * beyond the board (nothing queued). */
 bool     mb_set_coil(uint8_t n, bool on);
 bool     mb_pulse_coil(uint8_t n, uint16_t ms);
-bool     mb_write_coils(uint32_t mask, uint32_t values);
 /* the last readback: true + state if coil n was read within lost_ms */
 bool     mb_coil(uint8_t n, bool *on);
 /* the board answered within lost_ms (since the start: within lost_ms of mb_init

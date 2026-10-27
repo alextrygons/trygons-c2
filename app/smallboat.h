@@ -125,6 +125,9 @@
                                              relay states unknown, no new relay command; nothing else changes) */
 /* advisories of the second word: never a mode change, never lower the power limit */
 #define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY | SB_ALM2_RELAY_SILENT)
+/* ... and of those the ones that never set sb alarm either (no buzzer, no power-raise block; step 7b).
+ * LOW BATTERY keeps its buzzer (step 4 design, test BV2) - TO CONFIRM by the owner. */
+#define SB_ALM2_QUIET             (SB_ALM2_RELAY_SILENT)
 
 /* UNCREWED lost link (CLAUDE.md section B), sb_t.ll.state */
 #define SB_LL_OK      0u        /* link to the HELM station OK (or not armed yet, or CREWED) */

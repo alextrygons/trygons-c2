@@ -26,6 +26,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 5 | Boat file v2: relay list + generator_max_pct + thruster settings; old files still load | DONE (gate OK: sim 205/205 + bridge 204/204, TriCore + iLLD check, NV 4/4, FAT32 2/2, charts 6/6, test_lang 5/5, test_boats 8/8 incl. B7 + B8, test_screen2 13/13, sound 10/10, avoidance 14/14; gateway: section C crashed in the gate (sim connection refused at its start = PC load, untouched by this step) and passed alone 11/11, the other 94 OK; acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the "fresh build from GitHub" suite builds the pushed step-4b HEAD, every other suite this tree), storm 200 episodes) | this commit |
 | 6 | RS485 Modbus RTU relay board driver on the AURIX (state machine, timeouts, no-data advisory; never on CPU1) | DONE (gate OK: sim 213/213 + bridge 212/212 incl. RB1-RB8, TriCore + iLLD check, relay-writer check, NV 4/4, FAT32 2/2, charts 6/6, test_lang 5/5, test_boats 9/9 incl. B9, test_screen2 13/13, sound 10/10, avoidance 14/14, gateway 105/105; test_driver 19/19 (see the gate note); acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the fresh-build suite builds the pushed step-5 HEAD, every other suite this tree), storm 200 episodes incl. I36 647 checks 0 fails) | this commit |
 | 7 | Engine controls + remote restart (CLAUDE.md N; I31 changed) | DONE (gate OK: sim 219/219 + bridge 218/218 incl. ER1-ER6, TriCore + iLLD + STARTER / reset writer checks, gateway incl. CR10 (A2 at 57600, see notes); test_driver 19/19, test_screen2 13/13; acceptance quick 7/7 PASS, storm I31 / I37 / I38 0 fails) | this commit |
+| 7b | Step 6 review fixes | DONE (gate OK: sim 225/225 + bridge 224/224 incl. RB9-RB14, TriCore + iLLD + relay / engine-relay writer checks, boats 9/9, screen 2 13/13, gateway 106/106; test_driver 19/19; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-7 HEAD, every other suite this tree), storm 200 episodes I36 4.28 M checks / I37 / I38 0 fails) | this commit |
 | 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | | |
 | 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | | |
 | 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | | |
@@ -220,6 +221,44 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   with the first engine page: the state label resized the tools window every telemetry - fixed: fixed height, set only on
   change); test_screen2 13/13, test_lang 5/5; acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the fresh-build
   suite builds the pushed step-6 HEAD), storm 200 episodes incl. I31 / I37 / I38 0 fails.
+
+- Step 7b (2026-10-27): step 6 review fixes. Re-checked against the code after step 7: none of the 8 findings was
+  fixed by step 7 (finding 1 only partly: the STARTER was already pulsed only from engine.c, but it was found by its TYPE).
+  1 engine ROLES: relay_def_t.pad -> role (RELAY_ROLE_STARTER / IGNITION / SHUTOFF), RELAY_CFG frame 8 bytes per relay,
+    table version 2 (a stored v1 table = NV DATA RESET, the station pushes again + CONFIRM). Table check: engine group <=>
+    a role, STARTER momentary (<= 5 s), IGNITION / SHUTOFF onoff / latching, each role once. relays_cmd never switches an
+    engine relay ON; IGNITION / SHUTOFF ON only via engine_relay (engine.c: idle + neutral confirmed, e-stop released, no
+    kill / trip) -> relays_engine_set; OFF always. boats.py: "role" required for the engine group, a relay named STARTER /
+    ΜΙΖΑ without the role = INVALID; boats/*.json have the roles; app.engine_relays by role. check.sh greps relays_engine_set.
+    NOTE: SHUTOFF ON also needs idle + neutral (the owner's rule "engine-group relays ON only with idle + neutral");
+    the engine kill pin / e-stop stop the engine at any time.
+  2 sb_relay_table: a different table is refused (REFUSED) while any other CONFIRM is pending (the same table = OK);
+    app.relay_push skips while TELEM2 confirm_kind != 0.
+  3 momentary: until = pulse end + RELAY_PULSE_MARGIN_MS 500 ms -> the AURIX's own OFF, pending until the readback shows off.
+  4 hal_tc375: reset reason latched once in hal_init + IfxScuRcu_clearColdResetStatus; decision = hal/tc_rstcause.h
+    (pure, warm trigger beats a stale PORST - the iLLD evaluateReset turned every reset into "warm power-on" while PORST
+    was still set); compile-time check of the RSTSTAT / RSTCON bit positions. FIRST_TEST.md 3h (real watchdog reset ->
+    no power_up, twice; DE timing on the scope).
+  5 tc_uart: uart_on_tx_done(UART_RELAY, ...) arms the ASCLIN TC flag (EX interrupt) per write; the ISR releases DE
+    right after the last stop bit (the old poll in relay_port_read stays as a fallback). Board-only: no sim test
+    possible (hardware timing) - FIRST_TEST.md 3h checks it on the scope.
+  6 SB_ALM2_QUIET (= RELAY BOARD SILENT): never sets sb alarm (no buzzer, no power-raise block). LOW BATTERY KEPT its
+    buzzer (step-4 design, test BV2 requires it) - TO CONFIRM by the owner whether LOW BATTERY should be quiet too.
+    hal_relay_channels() (board: RELAY_CHANNELS if HAL_RELAY_FITTED else 0; sim: sim_hal_relay_fitted): 0 = no SILENT,
+    commands refused (PRECOND).
+  7 mb_write_coils (+ the 0x0F path) deleted; mb_set_coil / pulse refuse n > the board's coils; tables / stored tables
+    with a channel beyond the board refused / not used; the automatic relay push never sends confirm "self" (single
+    operator: the own-confirmation question first, then it goes).
+  8 storm I36: the sim board every step (pair 4/5 never both, every board pulse <= 5 s, engine coils 1-3 switched on only
+    <= 800 ms after an accepted command / crank pulse, no power_up after a non-power-on reset, a QUIET advisory never sets
+    the alarm flag), the first alarm word judged after a relay event (monitor / gear / e-stop / profile / takeover /
+    TRAINING / overrun; the self-timed bits excluded), FIRST TEST via a shadow relays_t (every command refused, no
+    power_up: the storm has no FIRST TEST episodes), new event E_WDT (watchdog reset = SYSTEM); episodes now start with
+    a fresh relay board and no nv7.bin. Sim: SIM_RB_NO_PULSE_END, sim_hal_relay_max_pulse_ms / _edges / _fitted.
+  Tests: sim RB9 (roles), RB10 (offer vs pending CONFIRM), RB11 (pulse OFF), RB12 (quiet advisory, no board), RB13
+  (channels), RB14 (reset reason patterns + no power_up after a watchdog reset); test_boats B7 (8 new INVALID role
+  files) + B9 (no push while a CONFIRM is pending, single operator asked). Docs: MANUAL 5 / 7 / alarms, MANUAL_EL,
+  CLAUDE.md M (step 7b line), WIRING 3D, FIRST_TEST 3h.
 
 # Previous task: "Screen 2 review"
 

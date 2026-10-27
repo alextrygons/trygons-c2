@@ -48,12 +48,14 @@
 #include "tc_uart.h"
 #include "tc_nv.h"
 #include "tc_modbus.h"
+#include "tc_rstcause.h"
 #include "IfxFlash.h"      /* data flash command sequences (inline; Flash/Std built by ADS) */
 
 #include <string.h>
 
 static void nv_port_init(void);      /* below, with the data flash port */
 static void relay_port_init(void);   /* below, with the RS485 Modbus port */
+static void reset_latch(void);       /* below, with the reset reason */
 
 #define LINK_BAUD    921600.0f
 #define GW_BAUD      921600.0f
@@ -182,6 +184,7 @@ void hal_init(void)
     pin_low_output(PIN_MOTOR_SLP);
     pin_low_output(PIN_RELAY);
     pin_low_output(PIN_BUZZER);
+    reset_latch();                              /* the reset reason, once, before anything can reset again */
 
     /* STM0 runs from reset; we only need its frequency (100 MHz by default). */
     s_stm_ticks_per_ms = (uint32)(IfxScuCcu_getStmFrequency() / 1000.0f);
@@ -453,18 +456,43 @@ void hal_watchdog_kick(void)
     IfxScuWdt_serviceSafetyWatchdog(IfxScuWdt_getSafetyWatchdogPassword());
 }
 
+/* The reset reason is read ONCE at boot (hal_init, first thing) and latched;
+ * then the cold-reset sticky bits (PORST, EVR, SWD, STBYR) are cleared
+ * (IfxScuRcu_clearColdResetStatus, the iLLD's documented sequence). Without the
+ * clear, PORST stays set from the power-on and every later watchdog / SMU /
+ * software reset would read as a (warm) power-on - and the relay board's
+ * power_up states would be applied again (owner clarification: never after a
+ * watchdog / software reset). The decision itself is rstcause_classify
+ * (hal/tc_rstcause.h, pure C: a warm trigger always wins over a stale cold bit;
+ * PC-tested in the sim, RB13). */
+static hal_reset_t s_reset_why = HAL_RESET_OTHER;
+static uint32_t s_reset_raw;
+static boolean s_reset_latched;
+
+/* (tc_rstcause.h assumes the TC37x bit positions of RSTSTAT / RSTCON: a compile error here if not) */
+typedef char rstcause_layout_check[(IFX_SCU_RSTSTAT_ESR0_OFF == RST_ESR0 && IFX_SCU_RSTSTAT_ESR1_OFF == RST_ESR1 &&
+    IFX_SCU_RSTSTAT_SMU_OFF == RST_SMU && IFX_SCU_RSTSTAT_SW_OFF == RST_SW && IFX_SCU_RSTSTAT_STM0_OFF == RST_STM0 &&
+    IFX_SCU_RSTSTAT_STM2_OFF == RST_STM2 && IFX_SCU_RSTSTAT_PORST_OFF == RST_PORST && IFX_SCU_RSTSTAT_CB0_OFF == RST_CB0 &&
+    IFX_SCU_RSTSTAT_CB3_OFF == RST_CB3 && IFX_SCU_RSTSTAT_EVRC_OFF == RST_EVRC && IFX_SCU_RSTSTAT_SWD_OFF == RST_SWD &&
+    IFX_SCU_RSTSTAT_HSMA_OFF == RST_HSMA && IFX_SCU_RSTSTAT_STBYR_OFF == RST_STBYR &&
+    IFX_SCU_RSTSTAT_LBPORST_OFF == RST_LBPORST && IFX_SCU_RSTCON_ESR1_OFF == RSTCON_ESR1 &&
+    IFX_SCU_RSTCON_SMU_OFF == RSTCON_SMU && IFX_SCU_RSTCON_SW_OFF == RSTCON_SW &&
+    IFX_SCU_RSTCON_STM2_OFF == RSTCON_STM2) ? 1 : -1];
+
+static void reset_latch(void)
+{
+    if (s_reset_latched) return;
+    s_reset_raw = MODULE_SCU.RSTSTAT.U;
+    s_reset_why = rstcause_classify(s_reset_raw, MODULE_SCU.RSTCON.U);
+    s_reset_latched = TRUE;
+    IfxScuRcu_clearColdResetStatus();           /* the next reset reports only itself */
+}
+
 hal_reset_t hal_reset_reason(uint32_t *raw)
 {
-    IfxScuRcu_ResetCode rc = IfxScuRcu_evaluateReset();
-    if (raw) *raw = IfxScuRcu_readRawResetStatus();
-    switch (rc.resetType) {
-    case IfxScuRcu_ResetType_coldpoweron:
-    case IfxScuRcu_ResetType_warmpoweron: return HAL_RESET_POWER_ON;
-    case IfxScuRcu_ResetType_system:      return HAL_RESET_SYSTEM;
-    case IfxScuRcu_ResetType_application: return HAL_RESET_APPLICATION;
-    case IfxScuRcu_ResetType_debug:       return HAL_RESET_DEBUG;
-    default:                              return HAL_RESET_OTHER;
-    }
+    reset_latch();
+    if (raw) *raw = s_reset_raw;
+    return s_reset_why;
 }
 
 /* G2 current sense: V = offset + 20 mV/A. The newest ADC result, as long as
@@ -706,7 +734,7 @@ static uint32_t relay_port_read(uint8_t *buf, uint32_t max)
 {
 #if HAL_RELAY_FITTED
     if (!s_relay_up) return 0u;
-    if (s_relay_de && uart_tx_done(UART_RELAY)) {   /* request out: listen */
+    if (s_relay_de && uart_tx_done(UART_RELAY)) {   /* (fallback only: the TX-complete interrupt released it) */
         IfxPort_setPinLow(PIN_RELAY_DE);
         s_relay_de = FALSE;
     }
@@ -719,6 +747,16 @@ static uint32_t relay_port_read(uint8_t *buf, uint32_t max)
 
 static const mb_port_t s_relay_port = { relay_port_write, relay_port_read, hal_millis };
 
+#if HAL_RELAY_FITTED
+/* the TX-complete interrupt (tc_uart.c): the last stop bit of the request is out -
+ * release the bus at once, so a fast board's reply (<< one control step) is heard */
+static void relay_de_release(void)
+{
+    IfxPort_setPinLow(PIN_RELAY_DE);
+    s_relay_de = FALSE;
+}
+#endif
+
 static void relay_port_init(void)
 {
     s_relay_up = FALSE;
@@ -726,6 +764,7 @@ static void relay_port_init(void)
 #if HAL_RELAY_FITTED
     pin_low_output(PIN_RELAY_DE);               /* receive until a request goes out */
     uart_init(UART_RELAY, RELAY_BAUD);
+    uart_on_tx_done(UART_RELAY, relay_de_release);
     {
         mb_config_t c = { RELAY_SLAVE_ADDR, RELAY_CHANNELS, 100u, HAL_RELAY_LOST_MS, 100u };
         mb_init(&s_relay_port, &c);
@@ -759,6 +798,15 @@ bool hal_relay_read(uint8_t n, bool *on)
 bool hal_relay_ok(void)
 {
     return s_relay_up && mb_ok();
+}
+
+uint8_t hal_relay_channels(void)
+{
+#if HAL_RELAY_FITTED
+    return (uint8_t)RELAY_CHANNELS;
+#else
+    return 0u;                                  /* no board wired: nothing to switch, no SILENT alarm */
+#endif
 }
 
 /* Panel buttons, sampled once per control step (50 ms): a level that is the

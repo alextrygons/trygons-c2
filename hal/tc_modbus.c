@@ -13,12 +13,10 @@
 
 #define F_READ_COILS   0x01u
 #define F_WRITE_COIL   0x05u
-#define F_WRITE_COILS  0x0Fu
 
-typedef struct { uint8_t kind; uint8_t n; uint16_t val; uint32_t mask, values; } mb_req_t;
+typedef struct { uint8_t kind; uint8_t n; uint16_t val; } mb_req_t;
 #define Q_SET    1u
 #define Q_PULSE  2u
-#define Q_MULTI  3u
 
 static struct {
     const mb_port_t *port;
@@ -68,25 +66,18 @@ static bool q_push(const mb_req_t *r)
 
 bool mb_set_coil(uint8_t n, bool on)
 {
-    mb_req_t r = { Q_SET, n, on ? 0xFF00u : 0x0000u, 0u, 0u };
-    if (n == 0u || n > MB_COILS_MAX) return false;
+    mb_req_t r = { Q_SET, n, on ? 0xFF00u : 0x0000u };
+    if (n == 0u || n > s.cfg.n_coils) return false;
     return q_push(&r);
 }
 
 bool mb_pulse_coil(uint8_t n, uint16_t ms)
 {
     uint32_t units = ((uint32_t)ms + 50u) / 100u;             /* 100 ms units, at least 1 */
-    if (n == 0u || n > MB_COILS_MAX || ms == 0u) return false;
+    if (n == 0u || n > s.cfg.n_coils || ms == 0u) return false;
     if (units < 1u) units = 1u;
     if (units > 255u) units = 255u;
-    mb_req_t r = { Q_PULSE, n, (uint16_t)(0x0200u | units), 0u, 0u };
-    return q_push(&r);
-}
-
-bool mb_write_coils(uint32_t mask, uint32_t values)
-{
-    mb_req_t r = { Q_MULTI, 0u, 0u, mask, values & mask };
-    if (mask == 0u) return false;
+    mb_req_t r = { Q_PULSE, n, (uint16_t)(0x0200u | units) };
     return q_push(&r);
 }
 
@@ -127,26 +118,12 @@ static bool next_request(uint32_t now)
         mb_req_t r = s.q[s.q_tail % MB_QUEUE];
         s.q_tail++;
         f[0] = s.cfg.slave;
-        if (r.kind == Q_MULTI) {
-            uint8_t nb = (uint8_t)((s.cfg.n_coils + 7u) / 8u);
-            f[1] = F_WRITE_COILS;
-            f[2] = 0u; f[3] = 0u;                                  /* from coil 1 */
-            f[4] = 0u; f[5] = s.cfg.n_coils;
-            f[6] = nb;
-            /* coils not in the mask keep their last read state */
-            uint32_t v = (s.coils & ~r.mask) | r.values;
-            for (uint8_t i = 0; i < nb; i++) f[7u + i] = (uint8_t)(v >> (8u * i));
-            frame_crc(f, (uint8_t)(7u + nb));
-            s.req_len = (uint8_t)(9u + nb);
-            s.expect = 8u;
-        } else {
-            f[1] = F_WRITE_COIL;
-            f[2] = 0u; f[3] = (uint8_t)(r.n - 1u);
-            f[4] = (uint8_t)(r.val >> 8); f[5] = (uint8_t)r.val;
-            frame_crc(f, 6u);
-            s.req_len = 8u;
-            s.expect = 8u;                                          /* echo */
-        }
+        f[1] = F_WRITE_COIL;
+        f[2] = 0u; f[3] = (uint8_t)(r.n - 1u);
+        f[4] = (uint8_t)(r.val >> 8); f[5] = (uint8_t)r.val;
+        frame_crc(f, 6u);
+        s.req_len = 8u;
+        s.expect = 8u;                                              /* echo */
         s.func = f[1];
         return true;
     }
@@ -184,7 +161,7 @@ static void reply_good(uint32_t now)
     } else if (s.func == F_WRITE_COIL) {
         uint8_t n = (uint8_t)(s.rx[3] + 1u);
         uint16_t val = (uint16_t)(((uint16_t)s.rx[4] << 8) | s.rx[5]);
-        if (n <= MB_COILS_MAX) {                 /* keep the shadow current until the next readback */
+        if (n <= s.cfg.n_coils) {                /* keep the shadow current until the next readback */
             if (val == 0xFF00u || (val & 0xFF00u) == 0x0200u) s.coils |= 1u << (n - 1u);
             else if (val == 0u) s.coils &= ~(1u << (n - 1u));
         }

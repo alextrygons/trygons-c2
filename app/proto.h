@@ -60,7 +60,7 @@
                                        * relay of the table (HELM station; relays.h rules: interlock, max time,
                                        * never the STARTER, nothing in FIRST TEST / without a table / silent board) */
 #define PROTO_T_RELAY_CFG     0x2Fu   /* u8 count (0..16), count x {u8 n, u8 type, u8 group, u8 pair, u16 max_s*10,
-                                       * u8 flags}: the boat file's relay table (HELM station). The same table as the
+                                       * u8 flags, u8 role (0 none, 1 starter, 2 ignition, 3 shutoff)}: the boat file's relay table (HELM station). The same table as the
                                        * active one = OK; a different one: STANDBY only, then joystick CONFIRM
                                        * (CONF_RELAY_TABLE) - the stored table (NV slot 7) stays in use until then */
 #define PROTO_T_PROG_BEGIN    0x20u   /* u8 n (1..50), u8 final action        */

@@ -43,7 +43,7 @@ T_POWER_LOWER = 0x2A       # back to 30 % / 5 % at once
 T_BENCH = 0x2B             # u8 action, u16 arg - BENCH TEST, only from the laptop on the USB cable
 T_GENERATOR = 0x2C         # u8 0 off / 1 on: generator auto (HELM station; a copilot's ON needs the captain's ACCEPT)
 T_RELAY = 0x1E             # u8 n, u8 action (0 off / 1 on / 2 pulse), u16 pulse ms: switch a relay of the table (HELM station)
-T_RELAY_CFG = 0x2F         # u8 count, count x {u8 n, u8 type, u8 group, u8 pair, u16 max_s*10, u8 flags}: the boat file's
+T_RELAY_CFG = 0x2F         # u8 count, count x {u8 n, u8 type, u8 group, u8 pair, u16 max_s*10, u8 flags, u8 role}: the boat file's
                            # relay table (HELM station; a different table than the stored one: STANDBY + joystick CONFIRM)
 T_RESTART = 0x2D           # u8 action: 0 RESTART (clear the ENGINE KILL / software reset after a monitor trip), 1 CRANK
                            # (START held, 5 Hz), 2 RELEASE - HELM station; idle + neutral, e-stop released (app/engine.h)
@@ -168,21 +168,23 @@ def p_bench(action, arg=0):
 # relay board (app/relays.h): the table's frame encoding and the relay command
 RELAY_TYPES = ["onoff", "momentary", "latching", "timed"]
 RELAY_GROUPS = ["engine", "trim", "extra"]
+RELAY_ROLES = [None, "starter", "ignition", "shutoff"]     # app/relays.h RELAY_ROLE_ (engine group only)
 RELAY_TABLE_MAX = 16
 RELAY_CMD_OFF, RELAY_CMD_ON, RELAY_CMD_PULSE = 0, 1, 2
 
 
 def p_relay_cfg(relays):
     """The relay table as the AURIX takes it (PROTO_T_RELAY_CFG): a list of boats.py relay dicts
-    (n, type, group, pair, max_s, show_hud, power_up). Names stay on the PC."""
+    (n, type, group, pair, max_s, show_hud, power_up, role). Names stay on the PC."""
     if len(relays) > RELAY_TABLE_MAX:
         raise ValueError("at most %d relays" % RELAY_TABLE_MAX)
     out = bytearray([len(relays)])
     for r in relays:
         flags = (1 if r.get("show_hud") else 0) | (2 if r.get("power_up") == "on" else 0) | (
             4 if r.get("power_up") == "keep" else 0)
-        out += struct.pack("<BBBBHB", int(r["n"]), RELAY_TYPES.index(r["type"]), RELAY_GROUPS.index(r["group"]),
-                           int(r.get("pair") or 0), int(round(float(r.get("max_s") or 0) * 10)), flags)
+        out += struct.pack("<BBBBHBB", int(r["n"]), RELAY_TYPES.index(r["type"]), RELAY_GROUPS.index(r["group"]),
+                           int(r.get("pair") or 0), int(round(float(r.get("max_s") or 0) * 10)), flags,
+                           RELAY_ROLES.index(r.get("role")))
     return bytes(out)
 
 
@@ -851,7 +853,7 @@ def decode_telem2(payload: bytes) -> dict:
         f = d["eng_flags"]
         d["eng_ready"] = bool(f & 1)                    # idle + neutral confirmed, e-stop released, not FIRST TEST
         d["eng_reset_pending"] = bool(f & 2)            # the software reset after a trip is coming
-        d["eng_starter"] = bool(f & 4)                  # a STARTER (engine-group momentary relay) is in the table
+        d["eng_starter"] = bool(f & 4)                  # a STARTER (the relay with the role "starter") is in the table
         d["eng_killed"] = bool(f & 8)                   # ENGINE KILL latched
         d["eng_tripped"] = bool(f & 16)                 # the safety monitor tripped
         d["eng_crank_name"] = ENG_CRANK_STATES[d["eng_crank"]] if d["eng_crank"] < 3 else "?"

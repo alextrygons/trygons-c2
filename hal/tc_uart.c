@@ -30,6 +30,7 @@ typedef struct {
 } uart_t;
 
 static uart_t s_u[UART_COUNT];
+static void (*volatile s_txdone_fn[UART_COUNT])(void);   /* RS485: release the driver at the frame end */
 
 typedef struct {
     Ifx_ASCLIN *mod;
@@ -48,17 +49,46 @@ static const uart_hw_t k_hw[UART_COUNT] = {
     { &RELAY_ASC,  &RELAY_TX,  &RELAY_RX,  PRIO_RL_TX,   PRIO_RL_RX,   PRIO_RL_ER,   s_rl_rx,   s_rl_tx,   128u,  64u },
 };
 
+/* The error interrupt also carries the TC (transmission completed) flag (ASCLIN EX
+ * service request; iLLD Lin: exTransmissionCompleted). Only armed (TCE) on a port
+ * with uart_on_tx_done: when the last frame is out and nothing is left in the
+ * software / hardware FIFO, the hook runs once and TCE goes off again. */
+static boolean tx_done_check(uart_id_t id);
+
 /* --- interrupts (CPU0) ------------------------------------------------------------ */
 #define UART_ISRS(n, id, ptx, prx, per)                                                   \
     IFX_INTERRUPT(uart##n##_tx_isr, 0, ptx) { IfxAsclin_Asc_isrTransmit(&s_u[id].asc); }   \
     IFX_INTERRUPT(uart##n##_rx_isr, 0, prx) { IfxAsclin_Asc_isrReceive(&s_u[id].asc); }    \
-    IFX_INTERRUPT(uart##n##_er_isr, 0, per) { IfxAsclin_Asc_isrError(&s_u[id].asc); s_u[id].st.errors++; }
+    IFX_INTERRUPT(uart##n##_er_isr, 0, per) {                                             \
+        boolean tc = tx_done_check(id);                                                   \
+        IfxAsclin_Asc_isrError(&s_u[id].asc);                                             \
+        if (!tc) s_u[id].st.errors++;                                                     \
+    }
 
 UART_ISRS(0, UART_LINK,   PRIO_LINK_TX, PRIO_LINK_RX, PRIO_LINK_ER)
 UART_ISRS(1, UART_GW,     PRIO_GW_TX,   PRIO_GW_RX,   PRIO_GW_ER)
 UART_ISRS(2, UART_GPS,    PRIO_GPS_TX,  PRIO_GPS_RX,  PRIO_GPS_ER)
 UART_ISRS(3, UART_BRIDGE, PRIO_BR_TX,   PRIO_BR_RX,   PRIO_BR_ER)
 UART_ISRS(4, UART_RELAY,  PRIO_RL_TX,   PRIO_RL_RX,   PRIO_RL_ER)
+
+/* true = this interrupt was the TC flag (not an error) */
+static boolean tx_done_check(uart_id_t id)
+{
+    uart_t *u = &s_u[id];
+    if (s_txdone_fn[id] == NULL || !IfxAsclin_getTransmissionCompletedFlagStatus(u->asc.asclin)) return FALSE;
+    IfxAsclin_clearTransmissionCompletedFlag(u->asc.asclin);
+    if (IfxAsclin_Asc_getWriteCount(&u->asc) >= (sint32)k_hw[id].tx_size &&
+        IfxAsclin_getTxFifoFillLevel(u->asc.asclin) == 0u) {
+        IfxAsclin_enableTransmissionCompletedFlag(u->asc.asclin, FALSE);
+        s_txdone_fn[id]();                              /* the last stop bit is out: release the bus now */
+    }
+    return TRUE;
+}
+
+void uart_on_tx_done(uart_id_t id, void (*fn)(void))
+{
+    s_txdone_fn[id] = fn;
+}
 
 void uart_init(uart_id_t id, float baud)
 {
@@ -128,6 +158,7 @@ bool uart_write(uart_id_t id, const uint8_t *buf, uint32_t len)
     }
     Ifx_SizeT n = (Ifx_SizeT)len;
     IfxAsclin_clearTransmissionCompletedFlag(u->asc.asclin);   /* uart_tx_done: this frame's end */
+    if (s_txdone_fn[id] != NULL) IfxAsclin_enableTransmissionCompletedFlag(u->asc.asclin, TRUE);  /* RS485 */
     (void)IfxAsclin_Asc_write(&u->asc, buf, &n, 0);
     u->st.tx_bytes += (uint32_t)n;
     return n == (Ifx_SizeT)len;

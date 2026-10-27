@@ -216,6 +216,9 @@ bool hal_read_water_speed(float *kn);
  *   read:    the last readback of relay n: false = unknown (no valid reply
  *            within HAL_RELAY_LOST_MS, or n beyond the board).
  *   ok:      the board answered within HAL_RELAY_LOST_MS (false = SILENT).
+ *   channels: the coils the fitted board has (hal_pins.h RELAY_CHANNELS);
+ *            0 = no board fitted (HAL_RELAY_FITTED 0): then nothing can be
+ *            switched and a silent board is NOT an alarm (nothing is there).
  */
 #define HAL_RELAY_MAX       32u
 #define HAL_RELAY_LOST_MS   3000u
@@ -224,6 +227,7 @@ bool hal_relay_set(uint8_t n, bool on);
 bool hal_relay_pulse(uint8_t n, uint16_t ms);
 bool hal_relay_read(uint8_t n, bool *on);
 bool hal_relay_ok(void);
+uint8_t hal_relay_channels(void);
 
 /*
  * Ground-station link: a plain byte stream (board: USB virtual COM =

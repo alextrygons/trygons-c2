@@ -239,7 +239,7 @@ uses it; core 0 only (never CPU1).
 | Item | Decision | State |
 |------|----------|-------|
 | UART | **ASCLIN4** (ASCLIN0-3 = USB, gateway, GPS, bridge): TX **P00.9**, RX **P00.12** (`RELAY_TX` / `RELAY_RX` in hal/hal_pins.h) | **TBD** (CHECK on the X1/X2 headers) |
-| Driver enable | DE and /RE of the transceiver tied together on **P00.11** (`PIN_RELAY_DE`, high = transmit, released when the last bit is out) | **TBD** (CHECK) |
+| Driver enable | DE and /RE of the transceiver tied together on **P00.11** (`PIN_RELAY_DE`, high = transmit, released by the ASCLIN TX-complete interrupt right after the last stop bit; FIRST_TEST.md 3h checks it on the scope) | **TBD** (CHECK) |
 | Transceiver | 3.3 V RS485 (MAX3485 class) at the AURIX end, 120 Ohm termination at both ends of the line, A / B twisted pair, common GND | **TBD** (PARTS.md) |
 | Board | 8-16 channel Modbus RTU relay board, 12 V supply from the bank, address `RELAY_SLAVE_ADDR` (1), channels `RELAY_CHANNELS` (8) | **TBD** |
 | Baud | 9600-115200 8N1 per the board (`RELAY_BAUD`, 9600 now) | **TBD** |

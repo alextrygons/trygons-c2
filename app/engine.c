@@ -1,7 +1,8 @@
 /*
  * engine.c - Engine controls + remote restart. See engine.h.
- * The STARTER relay only through relays_starter_pulse / relays_starter_off
- * (this file is their only caller: tools/check.sh).
+ * The STARTER relay only through relays_starter_pulse / relays_starter_off,
+ * IGNITION / SHUTOFF only through relays_engine_set (this file is their only
+ * caller: tools/check.sh).
  */
 #include "engine.h"
 
@@ -115,6 +116,22 @@ eng_why_t engine_crank(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t st
         note(e, ENG_LOG_CRANK_START, ENG_WHY_NONE);
     }
     return ENG_WHY_NONE;
+}
+
+eng_why_t engine_relay(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t n, bool on, relay_result_t *res)
+{
+    (void)e;
+    if (on) {
+        eng_why_t why = engine_check(c);
+        if (why == ENG_WHY_NONE && c->killed) why = ENG_WHY_KILLED;
+        if (why == ENG_WHY_NONE && c->tripped) why = ENG_WHY_TRIPPED;
+        if (why != ENG_WHY_NONE) {
+            *res = relays_note(r, n, RELAY_CMD_ON, why == ENG_WHY_FIRST_TEST ? RELAY_R_FIRST_TEST : RELAY_R_ENGINE);
+            return why;
+        }
+    }
+    *res = relays_engine_set(r, n, on);
+    return *res == RELAY_R_OK ? ENG_WHY_NONE : ENG_WHY_RELAY;
 }
 
 void engine_release(engine_t *e, relays_t *r, uint8_t station, uint32_t now_ms)

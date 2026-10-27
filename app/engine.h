@@ -23,8 +23,13 @@
  *       cranking stops on release (no CRANK for ENG_RELEASE_MS, or action
  *       RELEASE), HELM / gateway link loss, e-stop, gear not N (or a gear
  *       request), throttle not idle, the STANDBY button, an ENGINE KILL or a
- *       monitor trip. IGNITION first is the station's order (engine page): the
- *       AURIX can't tell IGNITION from SHUTOFF (both engine-group on/off relays).
+ *       monitor trip. IGNITION first is the station's order (engine page).
+ *   (d) IGNITION / SHUTOFF (the engine-group relays with that ROLE in the
+ *       relay table): switched ON only here (engine_relay -> relays_engine_set),
+ *       with the same conditions (idle + neutral confirmed, e-stop released,
+ *       not FIRST TEST) and not while the ENGINE KILL is latched or the monitor
+ *       tripped; OFF always. The plain relay command never switches an engine
+ *       relay ON (relays.c), whatever its type.
  * No tacho yet: the time limit only. The engine kill pin stays its own AURIX
  * output (hal_set_engine_kill), never the relay board. This module only
  * decides; the STARTER relay is driven by relays.c (relays_starter_pulse /
@@ -64,7 +69,7 @@ typedef enum {
     ENG_WHY_NOTHING,        /* 5 restart: nothing latched (no kill, no trip) */
     ENG_WHY_KILLED,         /* 6 crank: the ENGINE KILL is latched (restart first) */
     ENG_WHY_TRIPPED,        /* 7 crank: the monitor tripped (restart = reset first) */
-    ENG_WHY_NO_STARTER,     /* 8 crank: no STARTER (engine-group momentary relay) in the table */
+    ENG_WHY_NO_STARTER,     /* 8 crank: no STARTER (the relay with the STARTER role) in the table */
     ENG_WHY_COOLING,        /* 9 crank: cool-down after the last hold */
     ENG_WHY_RELAY,          /* 10 crank: relay board silent / refused */
     ENG_WHY_NOT_HELM,       /* 11 not the HELM station */
@@ -126,6 +131,10 @@ eng_why_t engine_restart(engine_t *e, const eng_cond_t *c, uint8_t station, uint
 /* CRANK (START held) / RELEASE from `station` */
 eng_why_t engine_crank(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t station, uint32_t now_ms);
 void      engine_release(engine_t *e, relays_t *r, uint8_t station, uint32_t now_ms);
+/* IGNITION / SHUTOFF relay n on / off (the HELM station's relay command; link.c checks HELM).
+ * ON needs engine_check + not killed / tripped; *res = the relay layer's answer
+ * (RELAY_R_ENGINE when the conditions refused it). */
+eng_why_t engine_relay(engine_t *e, const eng_cond_t *c, relays_t *r, uint8_t n, bool on, relay_result_t *res);
 /* every control step (after the outputs): stops a crank whose conditions
  * failed, ends the cool-down, re-checks a pending reset. True = do the
  * software reset NOW (the caller calls hal_system_reset). */

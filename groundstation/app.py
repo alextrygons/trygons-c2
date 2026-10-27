@@ -970,14 +970,15 @@ class App:
         self.eng_relay_n = None
 
     def engine_relays(self):
-        """The boat file's engine-group on / off relays (IGNITION, SHUTOFF ...): name, n. The STARTER (the
-        engine-group momentary relay) is the START button, never a plain relay switch."""
+        """The boat file's IGNITION / SHUTOFF relays (engine group, by their role): name, n. The STARTER (role
+        "starter") is the START button, never a plain relay switch; the AURIX switches an engine relay ON only
+        with idle + neutral confirmed and the e-stop released."""
         b = self.boat
         if b is None or getattr(b, "error", None):
             return []
         out = []
         for r in getattr(b, "relays", []) or []:
-            if r.get("group") == "engine" and r.get("type") in ("onoff", "latching"):
+            if r.get("group") == "engine" and r.get("role") in ("ignition", "shutoff"):
                 name = r.get("name_el") if i18n.lang() == "el" else r.get("name_en")
                 out.append((name or "%d" % r["n"], r["n"]))
         return out
@@ -3396,16 +3397,29 @@ class App:
         RELAY_PUSH_S while no CONFIRM is pending - the AURIX takes it only in STANDBY and only after the
         joystick CONFIRM (its stored table stays until then), so the captain sees the CONFIRM banner each time.
         A v1 file (no relays) pushes the EMPTY table (the file is the source: the stored table is then cleared,
-        after the CONFIRM). HELM + STANDBY as the generator cap."""
+        after the CONFIRM). HELM + STANDBY as the generator cap.
+        Never while ANY CONFIRM is pending on the boat (confirm_kind: a power raise, AUTO start ...): the AURIX
+        refuses the offer then, and the push must not get in the way of the user's own request. The automatic
+        push never confirms itself: in single-operator mode the operator answers the usual own-confirmation
+        question first (only then it goes, with confirm "self"); otherwise the captain's push is their own."""
         if d.get("relay_hash") is None or d.get("relay_pending") or time.time() < self.relay_push_at:
             return
+        if d.get("confirm_kind"):
+            return                                  # another CONFIRM waits on the boat: not now
         relays = [] if self.boat.error else self.boat.relays
         if proto.relay_table_hash(relays) == d["relay_hash"]:
             return
         self.relay_push_at = time.time() + RELAY_PUSH_S
-        self.relay_push_seq = self._send_cmd(proto.T_RELAY_CFG, proto.p_relay_cfg(relays),
-                                             TE("what.boat_relays", n=len(relays), name=self.boat.name),
-                                             confirm="self" if self.single_op else None)
+        what = TE("what.boat_relays", n=len(relays), name=self.boat.name)
+        payload = proto.p_relay_cfg(relays)
+        if self.single_op:
+            if self.cconf is None:                  # (one question at a time; asked again after RELAY_PUSH_S)
+                self.captain_confirm(what, lambda: self._relay_push_send(payload, what, "self"))
+            return
+        self._relay_push_send(payload, what, None)
+
+    def _relay_push_send(self, payload, what, confirm):
+        self.relay_push_seq = self._send_cmd(proto.T_RELAY_CFG, payload, what, confirm=confirm)
 
     def helm_text(self):
         """Who holds HELM, in the screen language (the gateway's own name of it is English)."""

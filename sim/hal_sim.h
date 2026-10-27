@@ -70,6 +70,7 @@ void     sim_hal_set_supply(bool fitted, float volts);
 #define SIM_RB_SILENT       0x1u    /* never answers (bus cut / board dead) */
 #define SIM_RB_CORRUPT      0x2u    /* every reply has a bad CRC */
 #define SIM_RB_CORRUPT_SOME 0x4u    /* one reply in 7 has a bad CRC */
+#define SIM_RB_NO_PULSE_END 0x8u    /* the board's pulse timer is broken: a "flash on" stays ON */
 void     sim_hal_relay_board(bool present, uint32_t latency_ms, uint32_t fault);
 void     sim_hal_relay_board_reset(void);
 bool     sim_hal_relay_state(uint8_t n);
@@ -77,6 +78,12 @@ void     sim_hal_relay_force(uint8_t n, bool on);
 uint32_t sim_hal_relay_requests(void);     /* frames the board received */
 uint32_t sim_hal_relay_writes(void);       /* coil writes + pulses carried out */
 uint32_t sim_hal_relay_pulses(void);       /* board-timed pulses started */
+uint32_t sim_hal_relay_max_pulse_ms(void); /* the longest board-timed pulse ever asked (0 = none) */
+uint32_t sim_hal_relay_edges(uint8_t n);   /* coil n: off -> on changes on the board (any cause) */
+/* the board fitted with this many coils (hal_relay_channels; default 16); 0 = no board
+ * fitted (like HAL_RELAY_FITTED 0 on the TC375: the driver is never started). Takes
+ * effect at the next hal_init (the AURIX's boot). */
+void     sim_hal_relay_fitted(uint8_t channels);
 
 /* Joystick (raw 12-bit ADC values and buttons). */
 void     sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob);
