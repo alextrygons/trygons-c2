@@ -264,9 +264,18 @@ void hal_set_safety_relay(bool closed);
 
 /* ENGINE KILL (UNCREWED lost link, CLAUDE.md section B): true = the relay in
  * the outboard's kill-switch circuit stops the engine. Core 0 latches it
- * (stays killed until the AURIX is reset on board - no remote restart).
+ * (stays killed until the AURIX is reset on board, or the HELM station's
+ * remote restart with idle + neutral confirmed and the e-stop released:
+ * section N). Its own AURIX pin, never the relay board.
  * Board: pin, relay type and fail-safe direction TBD (WIRING.md 3A). */
 void hal_set_engine_kill(bool kill);
+
+/* Controlled software reset of the whole AURIX (remote restart after a
+ * monitor trip, section N): like a watchdog reset, everything starts again
+ * (the monitor latch goes, neutral-start interlock, startup power limits,
+ * boot counter); hal_reset_reason() then says HAL_RESET_APPLICATION.
+ * Board: never returns. Sim: the harness reboots after the step. */
+void hal_system_reset(void);
 
 /* Emergency stop: the mushroom switch cuts the actuator power itself; its
  * second (normally closed) contact goes to an input so the software knows.

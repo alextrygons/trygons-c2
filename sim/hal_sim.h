@@ -113,6 +113,8 @@ void     sim_hal_gw_reset(uint32_t baud);
 bool     sim_hal_safety_relay(void);
 bool     sim_hal_engine_killed(void);       /* ENGINE KILL output on (engine stopped) */
 uint32_t sim_hal_engine_kills(void);        /* times it was switched on */
+bool     sim_hal_reset_requested(void);     /* hal_system_reset() was called (read clears); the harness reboots */
+uint32_t sim_hal_sw_resets(void);           /* hal_system_reset() calls so far */
 void     sim_hal_chip_reset(hal_reset_t why);
 void     sim_hal_unforce(void);
 

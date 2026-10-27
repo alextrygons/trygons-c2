@@ -20,6 +20,11 @@ HEADER, CONFIG, DATA, EVENT, PCCMD, TEXT = 1, 2, 0x10, 0x20, 0x22, 0x30
 SIZES = {"B": 1, "c": 1, "H": 2, "h": 2, "I": 4, "i": 4, "f": 4}
 FMT = {"B": "B", "c": "b", "H": "H", "h": "h", "I": "I", "i": "i", "f": "f"}
 POS_SOURCES = ["NO FIX", "GPS", "DEAD RECKONING", "RECOVERING"]
+# app/generator.h GEN_STOP_ (log event GENERATOR, b low byte)
+GEN_STOP_WHY = {0: "-", 1: "conditions", 2: "off", 3: "request", 4: "no volts", 5: "rest", 6: "switch opened",
+                7: "moved"}
+# log event RELAY "what" (a >> 24)
+RELAY_WHAT = {1: "command", 2: "table", 3: "states", 4: "board"}
 
 
 class Field:
@@ -126,6 +131,24 @@ class Log:
                 " LOST (gateway quiet: slow + hold heading)" if (a[0] >> 24) & 1 else "")
         if name == "SAVE":
             return "VIDEO SAVE request %d: %s" % (a[2], proto.save_trigger_text(a[0], a[1]))
+        # (the AURIX header keeps these short: the names of the numbers live here)
+        if name == "NV":
+            return "NV %s slot %d (resets %d)" % ({1: "record unusable -> defaults", 2: "NV FAULT"}.get(a[0], a[0]),
+                                                  a[1], a[2])
+        if name == "GENERATOR":
+            st = proto.GEN_STATES[a[0]] if 0 <= a[0] < len(proto.GEN_STATES) else a[0]
+            why = GEN_STOP_WHY.get(a[1] & 0xFF, a[1] & 0xFF)
+            return "GENERATOR %s (stop: %s) auto %s, bank %s V, demand %.1f %%" % (
+                st, why, "on" if (a[1] >> 8) & 1 else "off", "-" if a[2] < 0 else "%.2f" % (a[2] / 100.0), a[3] / 10.0)
+        if name == "RELAY":
+            what = (a[0] >> 24) & 0xFF
+            return "RELAY %s n %d action %d result %d, states 0x%x, board %s" % (
+                RELAY_WHAT.get(what, what), a[0] & 0xFF, (a[0] >> 8) & 0xFF, (a[0] >> 16) & 0xFF, a[1] & 0xFFFFFFFF,
+                "ok" if (a[2] >> 31) & 1 else "SILENT")
+        if name == "RESTART":
+            return "RESTART %s%s, hold %d ms (restarts %d, cranks %d)" % (
+                proto.ENG_ACTIONS.get(a[0], a[0]), "" if not a[1] else " - " + proto.eng_why_text(a[1]), a[2],
+                a[3] & 0xFFFF, (a[3] >> 16) & 0xFFFF)
         parts = ["%s=%d" % (n, v) for n, v in zip(args, a) if n != "-"]
         return name + " " + " ".join(parts)
 

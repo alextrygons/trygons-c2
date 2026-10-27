@@ -45,6 +45,8 @@ T_GENERATOR = 0x2C         # u8 0 off / 1 on: generator auto (HELM station; a co
 T_RELAY = 0x1E             # u8 n, u8 action (0 off / 1 on / 2 pulse), u16 pulse ms: switch a relay of the table (HELM station)
 T_RELAY_CFG = 0x2F         # u8 count, count x {u8 n, u8 type, u8 group, u8 pair, u16 max_s*10, u8 flags}: the boat file's
                            # relay table (HELM station; a different table than the stored one: STANDBY + joystick CONFIRM)
+T_RESTART = 0x2D           # u8 action: 0 RESTART (clear the ENGINE KILL / software reset after a monitor trip), 1 CRANK
+                           # (START held, 5 Hz), 2 RELEASE - HELM station; idle + neutral, e-stop released (app/engine.h)
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
@@ -68,7 +70,7 @@ T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor 
 # after the own confirmation). Never STANDBY. PROG_COMMIT = a new AUTO route (the frames
 # before it only fill the AURIX's staging area; COMMIT makes it the route).
 DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_HEADING_ADJ, T_SEA_STATE,
-                T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR, T_RELAY, T_RELAY_CFG}
+                T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR, T_RELAY, T_RELAY_CFG, T_RESTART}
 # (T_RELAY / T_RELAY_CFG: every relay switch and the relay table need the captain's ACCEPT from a copilot until
 #  step 8 tells the engine group (ACCEPT) from trim / extra (straight through) - conservative meanwhile)
 
@@ -78,6 +80,10 @@ def is_driving_cmd(ftype, payload=b""):
         return False
     if ftype == T_GENERATOR:
         return payload[:1] == b"\x01"           # switching the generator ON opens the throttle (in neutral): ACCEPT; OFF is free
+    if ftype == T_RESTART:
+        # RESTART: a copilot's needs the captain's ACCEPT; CRANK / RELEASE (hold-to-crank, 5 Hz) are not asked one by
+        # one - the gateway lets only the captain crank (code 118), RELEASE is always free
+        return payload[:1] == bytes([ENG_RESTART])
     return not (ftype == T_SET_MODE and payload[:1] == bytes([MODE_STANDBY]))
 
 
@@ -95,7 +101,7 @@ TYPE_NAMES = {
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data",
-    T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table",
+    T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table", T_RESTART: "engine restart / start",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -128,7 +134,7 @@ RESULTS = {
     100: "VIEWER: watch only", 101: "duplicate command", 102: "command out of order", 103: "stale command",
     104: "timestamp in the future", 105: "rate limited", 106: "AURIX not connected", 107: "wrong session",
     108: "bad command", 116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
-    117: "only the captain (or a station on the boat) holds HELM", 118: "captain only: REMOTE MANUAL / MANEUVER",
+    117: "only the captain (or a station on the boat) holds HELM", 118: "captain only: REMOTE MANUAL / MANEUVER / engine START",
     119: "no captain holds HELM",
 }
 
@@ -743,8 +749,28 @@ _T2_GROUPS = [
     (struct.Struct("<BBHHHH"), "ll_state ll_flags coast_m coast_age_ms ll_left10 near_shore_m".split()),
     (struct.Struct("<IHHBBB"), "alarm_bits2 bank_v100 bank_fast100 batt_flags gen_state gen_pct".split()),
     (struct.Struct("<IIHBBI"), "relay_states relay_known relay_hash relay_flags relay_count relay_cmd_on".split()),
+    (struct.Struct("<BBHHBBHH"), "eng_crank eng_flags eng_hold_ms eng_cool10 eng_action eng_why eng_restarts "
+                                 "eng_cranks".split()),
 ]
 LL_STATES = ["OK", "LINK LOST", "ENGINE KILLED"]
+# engine controls (app/engine.h, TELEM2 group O, log event RESTART)
+ENG_RESTART, ENG_CRANK, ENG_RELEASE = 0, 1, 2           # PROTO_T_RESTART actions
+ENG_CRANK_STATES = ["OFF", "CRANKING", "COOL-DOWN"]
+ENG_ACTIONS = {0: "-", 1: "ENGINE KILL cleared", 2: "software reset after a monitor trip", 3: "START (crank) begins",
+               4: "START (crank) stops", 5: "RESTART refused", 6: "START refused", 7: "reset cancelled"}
+ENG_WHY = ["-", "FIRST TEST", "throttle not idle", "gear not in neutral", "e-stop pressed", "nothing to restart",
+           "engine killed: RESTART first", "monitor tripped: RESTART first", "no STARTER in the relay table",
+           "starter cool-down", "relay board silent / refused", "not the HELM station", "link lost", "STANDBY button",
+           "released", "5 s limit"]
+
+
+def eng_why_text(why):
+    return ENG_WHY[why] if 0 <= why < len(ENG_WHY) else "why %d" % why
+
+
+def p_restart(action):
+    """PROTO_T_RESTART payload: ENG_RESTART / ENG_CRANK / ENG_RELEASE."""
+    return bytes([action])
 # generator mode (app/generator.h GEN_, TELEM2 group L "gen_state"): the throttle opens in NEUTRAL to charge the bank
 GEN_STATES = ["OFF", "READY", "STARTING", "RUNNING", "STOPPING", "REST", "FAULT", "DONE"]
 
@@ -821,6 +847,15 @@ def decode_telem2(payload: bytes) -> dict:
         d["relay_first_test"] = bool(f & 32)            # FIRST TEST: no relay changes
         d["relay_on"] = [n for n in range(1, 33) if d["relay_known"] >> (n - 1) & 1 and d["relay_states"] >> (n - 1) & 1]   # lists: the gateway forwards it as JSON
         d["relay_unknown"] = [n for n in range(1, 33) if not d["relay_known"] >> (n - 1) & 1]
+    if "eng_flags" in d:
+        f = d["eng_flags"]
+        d["eng_ready"] = bool(f & 1)                    # idle + neutral confirmed, e-stop released, not FIRST TEST
+        d["eng_reset_pending"] = bool(f & 2)            # the software reset after a trip is coming
+        d["eng_starter"] = bool(f & 4)                  # a STARTER (engine-group momentary relay) is in the table
+        d["eng_killed"] = bool(f & 8)                   # ENGINE KILL latched
+        d["eng_tripped"] = bool(f & 16)                 # the safety monitor tripped
+        d["eng_crank_name"] = ENG_CRANK_STATES[d["eng_crank"]] if d["eng_crank"] < 3 else "?"
+        d["eng_cool_s"] = d["eng_cool10"] / 10.0
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

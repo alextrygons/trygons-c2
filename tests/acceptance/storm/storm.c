@@ -64,7 +64,7 @@ typedef enum {
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
-    E_GEN, E_SUPPLY, E_RELAY,
+    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE,
     E_COUNT
 } ev_kind_t;
 
@@ -78,7 +78,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "inject gear change under load", "shore CONFIRM (captain's joystick)", "MANEUVER request",
     "onboard joystick plugged / unplugged", "HELM station dropped (link lost)", "HELM station back",
     "shore info (near / far / none / invalid)", "generator auto on (+ ACK, bank low) / off",
-    "bank voltage (low / fine / no data / just low)", "relay board (table offer / relay command / board fault / back)"
+    "bank voltage (low / fine / no data / just low)", "relay board (table offer / relay command / board fault / back)",
+    "engine (RESTART / START held / released / e-stop pressed or released)"
 };
 
 typedef struct {
@@ -148,6 +149,7 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         else if (p < 0.81f) k = E_GEN;
         else if (p < 0.82f) k = E_SUPPLY;
         else if (p < 0.835f) k = E_RELAY;
+        else if (p < 0.85f) k = E_ENGINE;
         else if (p < 0.87f) k = E_FUZZ_USB;
         else if (p < 0.92f) k = E_FUZZ_GW;
         else if (p < 0.935f) k = E_FREEZE;
@@ -266,6 +268,9 @@ typedef struct {
     uint32_t    sched_seed;
     bool        pc_on;              /* a ground station on the USB link: heartbeats like the real one */
     uint32_t    pc_next;
+    uint32_t    crank_until, crank_next;    /* the station's START button held until (0 = not): CRANK at 5 Hz */
+    uint8_t     crank_station;
+    bool        estop;              /* the e-stop is pressed (its contact is fitted from the first E_ENGINE e-stop event) */
 } sim_t;
 
 static sim_t S;
@@ -326,6 +331,7 @@ static void sim_init(const sched_t *sc)
     sim_hal_set_accel(true);
     sim_hal_set_attitude(true);
     sim_hal_set_neutral_switch(false, true);
+    sim_hal_set_estop(false, false);
     sim_hal_set_supply(true, 12.6f);
     sim_hal_set_motor_current(false, 0.0f);
     sim_hal_set_limit_switches(false, false, false);
@@ -429,7 +435,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 37
+#define NINV 39
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -458,12 +464,14 @@ static const char *INV_NAMES[NINV] = { "",
     "I28 lost link near shore or with missing / stale shore info: ENGINE KILL at once (once idle + neutral)",
     "I29 lost link at open sea: no kill before the grace time; kill after it unless the link returned",
     "I30 never an ENGINE KILL in CREWED",
-    "I31 the ENGINE KILL stays latched until a reset on board",
+    "I31 the ENGINE KILL stays latched until a reset on board OR the HELM station's restart (idle + neutral, e-stop released)",
     "I32 generator: throttle above idle in neutral only while the generator is active, gear N confirmed by the switch",
     "I33 generator throttle <= min(generator cap, power limit)",
     "I34 generator only in STANDBY (not stopping), armed, neutral switch closed, no kill / e-stop / trip / FIRST TEST",
     "I35 every generator stop idle first: no throttle rise while stopping",
-    "I36 relays never change the mode, the throttle, the gear, the steering or the thrust (no relay in a control path)" };
+    "I36 relays never change the mode, the throttle, the gear, the steering or the thrust (no relay in a control path)",
+    "I37 STARTER only with idle + neutral confirmed and the e-stop released, <= 5 s per hold",
+    "I38 the engine-kill / monitor latch is cleared only by a reset or the HELM station's restart under its conditions" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -543,6 +551,12 @@ typedef struct {
     gear_t   gear_demand_prev;
     uint8_t  ap_mode_prev;
     uint32_t alm_prev, alm2_prev;
+    uint32_t rs_t;                  /* I31 / I38: a RESTART was asked (0 = none) ... */
+    bool     rs_ok;                 /* ... by the HELM station with idle + neutral + e-stop released (the storm's view) */
+    uint8_t  ll_prev;
+    bool     forced_prev;
+    uint32_t kc_prev;               /* eng.kill_clears */
+    uint32_t st_on_since, st_bad_since;     /* I37: the STARTER coil on since / on while the conditions are gone */
 } chk_t;
 
 static chk_t C;
@@ -606,6 +620,9 @@ static void check_step(void)
         C.prof_prev = s->profile;
         C.killed = false;
         C.safe_since = 0u;
+        C.ll_prev = s->ll.state;
+        C.forced_prev = forced;
+        C.kc_prev = s->eng.kill_clears;
         return;
     }
 
@@ -669,7 +686,8 @@ static void check_step(void)
 
     /* I5 / I6: the onboard joystick */
     bool joy_ok = S.joy_fitted && !S.joy_broken && s->armed && !forced && !s->joy.fault && !s->mon_tripped &&
-                  s->profile == SB_PROFILE_CREWED && s->joy.present && s->ll.state == SB_LL_OK;   /* killed: STANDBY only */
+                  s->profile == SB_PROFILE_CREWED && s->joy.present && s->ll.state == SB_LL_OK &&   /* killed: STANDBY only */
+                  s->estop_state != 2u;                                     /* e-stop pressed: STANDBY only */
     if (C.defl_pending && joy_ok) {
         float el = (S.t - C.defl_t) * 0.001f;
         if (m == MODE_MANUAL) {
@@ -758,8 +776,13 @@ static void check_step(void)
                 fail(29, "killed %.1f s after the loss at open sea (grace %.0f s)", since, s->cfg.lostlink_grace_s);
             else ok(29);
         }
-        if (C.killed && !kill) fail(31, "ENGINE KILL released without a reset%.0f%.0f", 0.0, 0.0);
-        else if (C.killed) ok(31);
+        if (C.killed && !kill) {
+            /* only the HELM station's RESTART with idle + neutral and the e-stop released (or a reset: boot) */
+            if (C.rs_t && S.t - C.rs_t <= 2u * AP_PERIOD_MS && C.rs_ok) ok(31);
+            else fail(31, "ENGINE KILL released without a reset or a valid restart (restart %.0f ms ago, valid %.0f)",
+                      C.rs_t ? (double)(S.t - C.rs_t) : -1.0, C.rs_ok ? 1.0 : 0.0);
+            C.killed = false;
+        } else if (C.killed) ok(31);
         if (kill) C.killed = true;
         if (s->ll.state == SB_LL_LOST && !kill && C.safe_since && S.t - C.safe_since > 1500u && !s->mon_tripped) {
             /* near shore (the storm's view): the Pi said near / nothing / not valid, or it is quiet */
@@ -923,6 +946,35 @@ static void check_step(void)
         }
         C.relay_t = 0u;
     }
+    /* I38: the AURIX's kill latch and the monitor latch: cleared only by a reset (boot, above) or, for the
+     * kill, the HELM station's RESTART under its conditions */
+    if (C.ll_prev == SB_LL_KILLED && s->ll.state != SB_LL_KILLED) {
+        if (s->eng.kill_clears != C.kc_prev && C.rs_t && S.t - C.rs_t <= 2u * AP_PERIOD_MS && C.rs_ok) ok(38);
+        else fail(38, "kill latch cleared without a valid restart (clears %.0f -> %.0f)", (double)C.kc_prev,
+                  (double)s->eng.kill_clears);
+    } else if (s->ll.state == SB_LL_KILLED) ok(38);
+    if (C.forced_prev && !forced && !S.boot_until) fail(38, "monitor latch released without a reset%.0f%.0f", 0.0, 0.0);
+    else if (forced) ok(38);
+    C.ll_prev = s->ll.state;
+    C.forced_prev = forced;
+    C.kc_prev = s->eng.kill_clears;
+    /* I37: the STARTER coil (relay 2 of the storm's table) never on longer than one hold (5 s + the 300 ms
+     * board pulse + the board's latency), never on long after the conditions went (the board-timed pulse
+     * ends by itself within 300 ms + latency) */
+    {
+        bool on = sim_hal_relay_state(2u);
+        bool cond = thr <= 0.6f && gp == 0 && !S.estop;
+        if (on && !C.st_on_since) C.st_on_since = S.t ? S.t : 1u;
+        if (!on) C.st_on_since = 0u;
+        if (cond || !on) C.st_bad_since = 0u;
+        else if (!C.st_bad_since) C.st_bad_since = S.t ? S.t : 1u;
+        if (on && S.t - C.st_on_since > ENG_CRANK_MAX_MS + ENG_CRANK_PULSE_MS + 300u)
+            fail(37, "STARTER on %.0f ms in one go (limit %.0f + pulse)", (double)(S.t - C.st_on_since), (double)ENG_CRANK_MAX_MS);
+        else if (on && C.st_bad_since && S.t - C.st_bad_since > ENG_CRANK_PULSE_MS + 300u)
+            fail(37, "STARTER on %.0f ms after idle / neutral / e-stop released went (throttle %.1f)",
+                 (double)(S.t - C.st_bad_since), thr);
+        else if (on) ok(37);
+    }
     C.mode_prev = m;
     C.thr_prev = thr;
     C.gear_prev = gp;
@@ -960,7 +1012,7 @@ static void apply(const ev_t *e)
     case E_JOY: case E_BTN: case E_TAKE: case E_AUTOBTN: case E_CONFIRM: case E_PC_MODE: case E_PC_AUTO_START:
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
-    case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK: case E_GEN:
+    case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK: case E_GEN: case E_ENGINE:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -1102,6 +1154,27 @@ static void apply(const ev_t *e)
         }
         break;
     }
+    case E_ENGINE: {
+        /* section N: mostly the HELM station, sometimes another one (must be refused) */
+        uint8_t st = (e->b % 4 == 0) ? (uint8_t)(2u + (uint32_t)e->c % 3u) : s->helm;
+        if (e->a < 350) {                                                  /* RESTART */
+            C.rs_t = S.t ? S.t : 1u;
+            C.rs_ok = st != 0u && st == s->helm && sim_hal_throttle() <= 0.6f && gear_pos(sim_hal_gear_pwm()) == 0 &&
+                      !S.estop;
+            (void)sb_restart(s, st, ENG_ACT_RESTART);
+        } else if (e->a < 850) {                                           /* START held 0.2 .. 8 s */
+            S.crank_until = S.t + 200u + (uint32_t)e->c * 8u;
+            S.crank_next = S.t;
+            S.crank_station = st;
+        } else if (e->a < 920) {                                           /* START released */
+            S.crank_until = 0u;
+            (void)sb_restart(s, st, ENG_ACT_RELEASE);
+        } else {                                                           /* the e-stop */
+            S.estop = e->b < 500;
+            sim_hal_set_estop(true, S.estop);
+        }
+        break;
+    }
     case E_CURRENT: sim_hal_set_motor_current(e->a < 500, (float)e->b * 0.02f); break;
     case E_LIMITSW: sim_hal_set_limit_switches(e->a < 500, e->b < 100, e->c < 100); break;
     case E_JOY_WIRE: S.joy_broken = e->a < 300; joy_apply(); break;
@@ -1192,6 +1265,19 @@ static void run_until(uint32_t until)
                 if (S.confirm_held && AT_OR_AFTER(S.t, S.confirm_release)) { S.confirm_held = false; joy_apply(); }
                 if ((S.take_held || S.auto_held) && AT_OR_AFTER(S.t, S.btn_release)) { S.take_held = S.auto_held = false; joy_apply(); }
                 if (S.sconf_held && AT_OR_AFTER(S.t, S.sconf_release)) S.sconf_held = false;
+                if (S.crank_until && AT_OR_AFTER(S.t, S.crank_until)) S.crank_until = 0u;
+                if (S.crank_until && AT_OR_AFTER(S.t, S.crank_next)) {
+                    S.crank_next = S.t + 200u;
+                    uint32_t p0 = S.sb.eng.pulses;
+                    bool cond = sim_hal_throttle() <= 0.6f && gear_pos(sim_hal_gear_pwm()) == 0 && !S.estop &&
+                                !hal_outputs_forced();
+                    (void)sb_restart(&S.sb, S.crank_station, ENG_ACT_CRANK);
+                    if (S.sb.eng.pulses != p0) {
+                        if (cond) ok(37);
+                        else fail(37, "STARTER pulse with throttle %.1f %% / gear %.0f / e-stop", sim_hal_throttle(),
+                                  (double)gear_pos(sim_hal_gear_pwm()));
+                    }
+                }
                 if (S.rem_stream) {                         /* every packet: the shore CONFIRM source */
                     uint16_t age = S.rem_stale ? 900u : 40u;
                     sb_shore_joy(&S.sb, S.rem_station, age, S.rx_x, 0.0f, S.rx_lever, true, S.sconf_held);
@@ -1207,6 +1293,7 @@ static void run_until(uint32_t until)
                 sb_step(&S.sb);
                 if (s_log) logcore0_step(&S.sb);
                 uint32_t us = hal_micros() - t0;
+                bool sw_reset = sim_hal_reset_requested();         /* remote restart after a trip (after the checks) */
                 if (us > s_ctrl_max_us) s_ctrl_max_us = us;
                 s_ctrl_n++;
                 s_ctrl_sum_us += us;
@@ -1224,6 +1311,10 @@ static void run_until(uint32_t until)
                 }
                 S.last_kick = S.t;
                 check_step();
+                if (sw_reset) {                                    /* hal_system_reset(): the chip restarts */
+                    sim_hal_chip_reset(HAL_RESET_APPLICATION);
+                    S.boot_until = (S.t + 200u) ? S.t + 200u : 1u;
+                }
             }
         }
         if (S.frozen && !S.boot_until) check_frozen();

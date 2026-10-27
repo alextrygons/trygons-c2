@@ -221,7 +221,9 @@ def section_a():
         sim.stop()
 
         # A2 slow UART: the log copy loses records (noted), the SD card and control traffic don't
-        sim = Sim(5.0, "gwbaud=38400")
+        # 57600 (like sim GA2): at 38400 the control traffic alone (telemetry + TELEM2 at 10 Hz, ~3.7 kB/s since
+        # TELEM2 group O, step 7) fills the line, so the log copy gets no room at all - nothing left to note
+        sim = Sim(5.0, "gwbaud=57600")
         root = os.path.join(tmp, "ssd2")
         os.makedirs(root)
         gw = GwRunner(gw_cfg(sim, root))
@@ -238,7 +240,7 @@ def section_a():
         rate = n0[0] / 12.0 / sim.speed * 10                    # telemetry frames per boat second x10
         report("A2 slow UART: records for the Pi dropped first and noted; SD card and control traffic complete",
                st["logs"]["gaps"] > 0 and gaps_csv and holes == 0 and n0[0] >= 0.9 * 12 * 10 * sim.speed,
-               "38400 baud: Pi copy %d records, %d gaps noted in gaps.csv (%d missing); SD card %d data records, "
+               "57600 baud: Pi copy %d records, %d gaps noted in gaps.csv (%d missing); SD card %d data records, "
                "holes %d; telemetry %d frames in 60 s boat time" % (
                    st["logs"]["records"], st["logs"]["gaps"], st["logs"]["missing"], len(ts), holes, n0[0]))
         link.stop()
@@ -3172,6 +3174,12 @@ def section_cr():
                lost is not None and killed is not None and still and "ENGINE KILLED" in alarms,
                "LINK LOST + STANDBY %s; ENGINE KILLED %s; captain back with HELM: still killed %s; alarms %s" % (
                    lost is not None, killed is not None, still, ", ".join(alarms)))
+        # (CR10, section N) the captain's RESTART through the gateway clears the ENGINE KILL - the boat checks
+        # idle + neutral + e-stop released; nothing starts by itself
+        r_rs = alice.result(alice.cmd(proto.T_RESTART, proto.p_restart(proto.ENG_RESTART)))
+        freed = w.until(lambda d: d.get("ll_state") == 0 and not d.get("eng_killed"), 5)
+        w.pump(2.0)
+        calm = bool(w.telem) and w.telem["mode"] == proto.MODE_STANDBY and w.telem["throttle"] <= 0.6
         alice.close()
         link.stop()
         gw.stop()
@@ -3204,6 +3212,16 @@ def section_cr():
                r_bob_rem == 118 and r_carl_helm == 117,
                "crews %s; notes %s; copilot bob asks REMOTE %s (118 = captain only); copilot carl HELM %s (117)" % (
                    crews, notes, r_bob_rem, r_carl_helm))
+        # CR10 engine controls (section N): the captain's RESTART cleared the kill above; a copilot can't hold
+        # START (118) and its RESTART goes to the captain's screen 1 for the ACCEPT (none open here: 109)
+        r_bob_crank = bob.result(bob.cmd(proto.T_RESTART, proto.p_restart(proto.ENG_CRANK)))
+        r_bob_rs = bob.result(bob.cmd(proto.T_RESTART, proto.p_restart(proto.ENG_RESTART)))
+        r_bob_rel = bob.result(bob.cmd(proto.T_RESTART, proto.p_restart(proto.ENG_RELEASE)))
+        report("CR10 engine RESTART through the gateway: the captain's clears the ENGINE KILL (boat checks idle + "
+               "neutral), nothing starts; a copilot can't hold START, its RESTART needs the captain's ACCEPT",
+               r_rs == 0 and freed is not None and calm and r_bob_crank == 118 and r_bob_rs == 109 and r_bob_rel == 0,
+               "captain RESTART %s -> kill cleared %s, STANDBY idle %s; copilot START %s (118), RESTART %s (109 = no "
+               "captain screen to ACCEPT), RELEASE %s" % (r_rs, freed is not None, calm, r_bob_crank, r_bob_rs, r_bob_rel))
 
         # CR7 role swap (both licensed): HELM moves to the new captain in one step - no LINK LOST (UNCREWED);
         # with an unlicensed partner refused

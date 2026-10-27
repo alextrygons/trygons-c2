@@ -77,6 +77,12 @@
 #define PROTO_T_BENCH         0x2Bu   /* u8 action (SB_BENCH_), u16 arg (ms / trip code); USB laptop ONLY */
 #define PROTO_T_GENERATOR     0x2Cu   /* u8 0 off / 1 on: generator auto (HELM station; a copilot's ON needs the
                                        * captain's ACCEPT on the gateway; the STANDBY button switches it off) */
+#define PROTO_T_RESTART       0x2Du   /* u8 action: 0 RESTART (clear the ENGINE KILL / software reset after a
+                                       * monitor trip), 1 CRANK (START held: 5 Hz, refreshes a 300 ms STARTER
+                                       * pulse, <= 5 s per hold, 10 s cool-down), 2 RELEASE. HELM station only;
+                                       * no code / CONFIRM; every time idle + neutral confirmed, e-stop released,
+                                       * not FIRST TEST (engine.h; a copilot's RESTART needs the captain's ACCEPT,
+                                       * CRANK is the captain's only - gateway) */
 #define PROTO_T_SIM_FIRST     0x70u   /* 0x70..0x7F: simulator control only   */
 #define PROTO_T_SIM_JOYSTICK  0x70u   /* u8 fitted, f32 x, f32 y, u8 take, u8 auto, u8 confirm */
 #define PROTO_T_SIM_GPS       0x71u   /* u8 1 = GPS fails, 0 = GPS back       */

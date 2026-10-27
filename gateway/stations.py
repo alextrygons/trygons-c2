@@ -74,7 +74,7 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               120: "the route leaves the geofence",
               116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
               117: "only the captain (or a station on the boat) holds HELM",
-              118: "captain only: REMOTE MANUAL / MANEUVER",
+              118: "captain only: REMOTE MANUAL / MANEUVER / engine START",
               119: "no captain holds HELM"}
 # copilot commands that never wait for the captain's ACCEPT (CLAUDE.md D: STANDBY, hold;
 # AUTO return does not exist yet)
@@ -421,6 +421,9 @@ class StationServer:
             return self.refuse(st, seq, ftype, 116)          # manual driving: a licensed user only
         if manual_ask and st.crew != "captain" and not st.single_op:
             return self.refuse(st, seq, ftype, 118)          # ... and only the captain
+        if ftype == proto.T_RESTART and payload[:1] == bytes([proto.ENG_CRANK]) and st.crew != "captain" \
+                and not st.single_op:
+            return self.refuse(st, seq, ftype, 118)          # hold-to-crank (engine START): the captain only (section N)
         if ftype == proto.T_HELM and payload[:1] == bytes([0]) and st.crew != "captain" and not st.local \
                 and not st.single_op and not (st.licence and not self.gw.telem2.get("helm")):
             # a copilot never takes HELM from the captain (that is the role swap); a licensed user may take a

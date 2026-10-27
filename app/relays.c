@@ -301,3 +301,42 @@ uint8_t relays_flags(const relays_t *r)
     return (uint8_t)((r->board_ok ? 1u : 0u) | (r->have_table ? 2u : 0u) | (r->from_nv ? 4u : 0u) |
                      (r->offer_pending ? 8u : 0u) | (r->power_ups ? 16u : 0u) | (r->first_test ? 32u : 0u));
 }
+
+uint8_t relays_starter(const relays_t *r)
+{
+    for (uint8_t i = 0; r->have_table && i < r->table.count; i++)
+        if (r->table.r[i].group == RELAY_GRP_ENGINE && r->table.r[i].type == RELAY_MOMENTARY) return r->table.r[i].n;
+    return 0u;
+}
+
+relay_result_t relays_starter_pulse(relays_t *r, uint16_t ms, uint32_t now_ms)
+{
+    uint8_t n = relays_starter(r);
+    if (r->first_test) return RELAY_R_FIRST_TEST;
+    if (n == 0u) return RELAY_R_NO_TABLE;
+    if (!r->board_ok) return RELAY_R_SILENT;
+    const relay_def_t *d = relay_table_find(&r->table, n);
+    uint32_t len = ms;
+    if (len > (uint32_t)d->max_ds * 100u) len = (uint32_t)d->max_ds * 100u;
+    if (len > RELAY_PULSE_MAX_MS) len = RELAY_PULSE_MAX_MS;
+    if (len < 100u) len = 100u;
+    if (!hal_relay_pulse(n, (uint16_t)len)) return RELAY_R_HAL;
+    uint32_t bit = 1u << (n - 1u);
+    r->cmd_on |= bit;
+    r->off_pending &= ~bit;
+    r->until_ms[d - r->table.r] = (now_ms + len) ? now_ms + len : 1u;
+    r->pulses++;
+    return RELAY_R_OK;                                  /* (logged by engine.c: start / stop, not every refresh) */
+}
+
+void relays_starter_off(relays_t *r)
+{
+    uint8_t n = relays_starter(r);
+    if (n == 0u) return;
+    uint32_t bit = 1u << (n - 1u);
+    const relay_def_t *d = relay_table_find(&r->table, n);
+    r->cmd_on &= ~bit;
+    r->until_ms[d - r->table.r] = 0u;
+    r->off_pending |= bit;                              /* re-sent until the readback shows it off */
+    (void)hal_relay_set(n, false);
+}

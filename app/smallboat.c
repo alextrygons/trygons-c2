@@ -197,7 +197,8 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         joy_init(&s->joy_probe, &cfg->joy, have ? &cal : NULL);
     }
     s->boot_ms = s->now_ms;
-    hal_set_engine_kill(false);                 /* a reset (on board) is the only restart */
+    hal_set_engine_kill(false);                 /* a reset clears the kill (or the HELM station's restart) */
+    engine_init(&s->eng);
     /* FIRST TEST is always CREWED (steering only, its own arming rule; no lost-link kill) */
     s->profile = cfg->first_test ? SB_PROFILE_CREWED : SB_PROFILE_DETECTING;
     if (nv_load(HAL_NV_SLOT_JOYMAP, &s->jmap, (uint32_t)sizeof s->jmap)) {
@@ -925,7 +926,8 @@ static bool helm_link_ok(const sb_t *s)
 /* Every step, UNCREWED only: link lost -> STANDBY (idle + neutral first);
  * then ENGINE KILL near shore (or without fresh shore info) as soon as idle +
  * neutral, at open sea after lostlink_grace_s unless the link came back. The
- * kill is latched until reset; CREWED never kills. */
+ * kill is latched until a reset or the HELM station's remote restart
+ * (sb_restart, section N); CREWED never kills. */
 static void lostlink_step(sb_t *s)
 {
     if (s->ll.state == SB_LL_KILLED) {
@@ -968,6 +970,65 @@ static void lostlink_step(sb_t *s)
         s->ll.kills++;
         alarm_on(s, SB_ALM_ENGINE_KILLED);
         hal_set_engine_kill(true);
+    }
+}
+
+/* The engine-control conditions (section N) as they are this step. */
+static void eng_cond(const sb_t *s, eng_cond_t *c, bool standby_button)
+{
+    memset(c, 0, sizeof *c);
+    c->idle = s->thr.out_pct <= s->cfg.gear.idle_max_pct && s->servo.out_pct <= s->cfg.gear.idle_max_pct;
+    /* gear N confirmed: the neutral switch if fitted, else the gear servo at N; the gear state N always */
+    c->neutral = gear_is(&s->gear, GEAR_N) && !gear_fault(&s->gear) &&
+                 (s->neutral_sw >= 0 ? s->neutral_sw == 1 : s->gear.pwm_us == s->cfg.gear.pwm_n_us);
+    c->gear_request = s->gear_demand != GEAR_N;
+    c->estop_pressed = s->estop_state == 2u;
+    c->first_test = s->cfg.first_test;
+    c->killed = s->ll.state == SB_LL_KILLED;
+    c->tripped = s->mon_tripped;
+    c->helm_link = helm_link_ok(s);
+    c->helm = s->helm;
+    c->standby_button = standby_button;
+    c->nv_busy = hal_nv_pending();
+}
+
+bool sb_restart_ready(const sb_t *s)
+{
+    eng_cond_t c;
+    eng_cond(s, &c, false);
+    return engine_check(&c) == ENG_WHY_NONE;
+}
+
+sb_result_t sb_restart(sb_t *s, uint8_t station, uint8_t action)
+{
+    eng_cond_t c;
+    eng_why_t why;
+    eng_cond(s, &c, false);
+    if (action == ENG_ACT_RELEASE) {
+        engine_release(&s->eng, &s->relays, station, s->now_ms);
+        return SB_OK;
+    }
+    if (action == ENG_ACT_RESTART) {
+        bool clear = false;
+        why = engine_restart(&s->eng, &c, station, s->now_ms, &clear);
+        if (clear) {
+            /* (a) the ENGINE KILL latch: cleared; STANDBY stays, nothing starts by itself */
+            s->ll.state = SB_LL_OK;
+            s->alarm_bits &= ~SB_ALM_ENGINE_KILLED;
+            if (s->alarm_bits == 0u && s->alarm_bits2 == 0u && !s->ap.alarm) s->alarm = false;
+            hal_set_engine_kill(false);
+        }
+    } else if (action == ENG_ACT_CRANK) {
+        why = engine_crank(&s->eng, &c, &s->relays, station, s->now_ms);
+    } else {
+        return SB_ERR_BAD_VALUE;
+    }
+    switch (why) {
+    case ENG_WHY_NONE:       return SB_OK;
+    case ENG_WHY_FIRST_TEST: return SB_ERR_WRONG_MODE;
+    case ENG_WHY_NOT_HELM:   return SB_ERR_NOT_ALLOWED;
+    case ENG_WHY_ESTOP: case ENG_WHY_COOLING: case ENG_WHY_RELAY: case ENG_WHY_LINK: return SB_ERR_REFUSED;
+    default:                 return SB_ERR_PRECOND;
     }
 }
 
@@ -2586,6 +2647,16 @@ void sb_step(sb_t *s)
     if (s->chirp_ms > 0u) s->chirp_ms = (s->chirp_ms > dt_ms) ? s->chirp_ms - dt_ms : 0u;
     hal_set_alarm(s->alarm || s->ap.alarm || s->chirp_ms > 0u);
 
+    /* 6b. engine controls (section N): a crank whose conditions failed stops now
+     *     (the STARTER OFF goes to the relay board in 8b), a pending restart
+     *     reset is checked again (it happens at the end of this step) */
+    bool eng_reset;
+    {
+        eng_cond_t ec;
+        eng_cond(s, &ec, (buttons & HAL_BTN_BIT(HAL_BTN_STANDBY)) != 0u);
+        eng_reset = engine_step(&s->eng, &ec, &s->relays, s->now_ms);
+    }
+
     /* 7. publish for the independent safety monitor (CPU1), as one set (seqlock) */
     monitor_write_begin(&g_mon);
     g_mon.throttle_pct = s->servo.out_pct;
@@ -2628,6 +2699,14 @@ void sb_step(sb_t *s)
         s->gen.learned_new = false;
     }
     nv_step(sb_mode(s) == MODE_STANDBY && !s->stopping, dt_ms);
+
+    /* 10. remote restart after a monitor trip (section N): the controlled
+     *     software reset, once the event is logged and the flash is idle, the
+     *     conditions met until now. Everything starts again (board: never returns). */
+    if (eng_reset) {
+        s->eng.reset_pending = false;
+        hal_system_reset();
+    }
 }
 
 sb_status_t sb_status(const sb_t *s)

@@ -78,6 +78,7 @@ F_SMALL = theme.font("small")
 MODE_COLORS = theme.MODE_COLOURS
 PLOT_S = 120.0              # seconds shown in the plot
 RELAY_PUSH_S = 15.0         # the boat file's relay table: no re-send to the AURIX before this (CLAUDE.md M)
+CRANK_PERIOD_MS = 200       # engine START held: CRANK to the AURIX at 5 Hz (it releases after 300 ms without one)
 LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
 P_MAX_LEG = 4               # parameter "max_leg_kn" (app/link.c): the highest leg speed of a program
 AIS_ROWS = (2, 4, 8)        # AIS rows in the corner panel: low (< 720 px) / small / big screen
@@ -946,6 +947,118 @@ class App:
         self.sound = sound.SoundSystem.for_app(self)
         self.callouts = sound.Callouts(self.sound, self)
         soundtest.build(st, self)
+
+    # --- engine controls + remote restart (CLAUDE.md N): the station's engine page ------------------------
+    def _build_engine(self, fr):
+        """IGNITION -> START (hold) -> SHUTOFF, and RESTART (clears the ENGINE KILL, or the controlled reset
+        after a monitor trip). Requests only: the AURIX checks HELM, idle + neutral, the e-stop and the time
+        limits every time (START <= 5 s per hold, then 10 s cool-down)."""
+        self.crank_job = None
+        lbl(fr, "eng.title", font=F_MED).pack(anchor="w", padx=6, pady=(6, 2))
+        lbl(fr, "eng.note", font=F_TXT, wraplength=820, justify="left").pack(anchor="w", padx=6)
+        self.eng_state = tk.Label(fr, text="-", font=F_MED, bg=C["bg"], fg=C["fg"], anchor="nw", justify="left", height=6)
+        self.eng_state.pack(fill="x", padx=6, pady=6)
+        row = tk.Frame(fr, bg=C["bg"])
+        row.pack(anchor="w", padx=6, pady=4)
+        self.eng_relays = tk.Frame(row, bg=C["bg"])          # IGNITION / SHUTOFF of the boat file (engine group)
+        self.eng_relays.pack(side="left")
+        self.eng_start = btn(row, "eng.start", None, kind="warn", font=F_MED)
+        self.eng_start.pack(side="left", padx=12)
+        self.eng_start.bind("<ButtonPress-1>", lambda _e: self.crank_press())
+        self.eng_start.bind("<ButtonRelease-1>", lambda _e: self.crank_release())
+        btn(row, "eng.restart", self.engine_restart, kind="info", font=F_MED).pack(side="left", padx=12)
+        self.eng_relay_n = None
+
+    def engine_relays(self):
+        """The boat file's engine-group on / off relays (IGNITION, SHUTOFF ...): name, n. The STARTER (the
+        engine-group momentary relay) is the START button, never a plain relay switch."""
+        b = self.boat
+        if b is None or getattr(b, "error", None):
+            return []
+        out = []
+        for r in getattr(b, "relays", []) or []:
+            if r.get("group") == "engine" and r.get("type") in ("onoff", "latching"):
+                name = r.get("name_el") if i18n.lang() == "el" else r.get("name_en")
+                out.append((name or "%d" % r["n"], r["n"]))
+        return out
+
+    def draw_engine(self, d):
+        if not hasattr(self, "eng_state"):
+            return
+        rel = self.engine_relays()
+        if rel != self.eng_relay_n:                             # (re)build the IGNITION / SHUTOFF buttons
+            self.eng_relay_n = rel
+            for w in self.eng_relays.winfo_children():
+                w.destroy()
+            for name, n in rel:
+                f = tk.Frame(self.eng_relays, bg=C["bg"])
+                f.pack(side="left", padx=4)
+                tk.Label(f, text=name, font=F_TXT, bg=C["bg"], fg=C["fg"]).pack()
+                tk.Button(f, text=T("eng.on"), command=lambda n=n, nm=name: self.engine_relay(n, True, nm),
+                          **theme.button_opts("normal")).pack(side="left")
+                tk.Button(f, text=T("eng.off"), command=lambda n=n, nm=name: self.engine_relay(n, False, nm),
+                          **theme.button_opts("normal")).pack(side="left")
+        if not d or "eng_flags" not in d:
+            self.eng_show(T("eng.no_data"), C["dim"])
+            return
+        lines = []
+        if d["eng_killed"]:
+            lines.append(T("eng.killed"))
+        if d["eng_tripped"]:
+            lines.append(T("eng.tripped"))
+        if d["eng_reset_pending"]:
+            lines.append(T("eng.reset_pending"))
+        if d["eng_crank"] == 1:
+            lines.append(T("eng.cranking", s="%.1f" % (d["eng_hold_ms"] / 1000.0)))
+        elif d["eng_crank"] == 2:
+            lines.append(T("eng.cooling", s="%.0f" % d["eng_cool_s"]))
+        lines.append(T("eng.ready") if d["eng_ready"] else T("eng.not_ready"))
+        if not d["eng_starter"]:
+            lines.append(T("eng.no_starter"))
+        if d["eng_why"]:
+            lines.append(T("eng.last", why=T("eng.why_%d" % d["eng_why"]) if d["eng_why"] < len(proto.ENG_WHY)
+                           else str(d["eng_why"])))
+        bad = d["eng_killed"] or d["eng_tripped"]
+        self.eng_show("\n".join(lines), RED if bad else (GREEN if d["eng_ready"] else ORANGE))
+
+    def eng_show(self, text, fg):
+        """The engine page's state text - only when it changes."""
+        if (text, fg) != getattr(self, "eng_shown", None):
+            self.eng_shown = (text, fg)
+            self.eng_state.configure(text=text, fg=fg)
+
+    def engine_relay(self, n, on, name):
+        self.cmd(proto.T_RELAY, proto.p_relay(n, 1 if on else 0), TE("what.relay_onoff", name=name,
+                                                                   state="ON" if on else "OFF"))
+
+    def engine_restart(self):
+        self.cmd(proto.T_RESTART, proto.p_restart(proto.ENG_RESTART), TE("what.engine_restart"))
+
+    def crank_press(self):
+        """START held: one CRANK now (through cmd: logged), then every CRANK_PERIOD_MS while held."""
+        if not self.link:
+            return self.say(T("cap.not_connected"), RED)
+        if crewui.crew_of(self)[0] == "copilot":
+            return self.say(T("eng.captain_only"), RED)          # (the gateway refuses it too: code 118)
+        self.cmd(proto.T_RESTART, proto.p_restart(proto.ENG_CRANK), TE("what.engine_start"))
+        self.crank_job = self.root.after(CRANK_PERIOD_MS, self.crank_tick)
+
+    def crank_tick(self):
+        self.crank_job = None
+        if not self.link:
+            return
+        if isinstance(self.link, GatewayLink):
+            self.link.send(proto.T_RESTART, proto.p_restart(proto.ENG_CRANK), what=TE("what.engine_start"))
+        else:
+            self.link.send(proto.T_RESTART, proto.p_restart(proto.ENG_CRANK))
+        self.crank_job = self.root.after(CRANK_PERIOD_MS, self.crank_tick)
+
+    def crank_release(self):
+        if self.crank_job is not None:
+            self.root.after_cancel(self.crank_job)
+            self.crank_job = None
+        if self.link:
+            self._send_cmd(proto.T_RESTART, proto.p_restart(proto.ENG_RELEASE), TE("what.engine_release"))
 
     # --- BENCH TEST (dock, USB laptop only): FIRST_TEST.md part 3 -----------------------------
     def _build_bench(self, bt):
@@ -1956,6 +2069,7 @@ class App:
             self.boat_pushed = False        # its RAM-only boat file settings are gone: push them again
             self.relay_push_at = 0.0        # (the relay table is in its data flash: sent only if it differs)
         self.boat_push(d)
+        self.draw_engine(d)
         self.hist.append((ts, d["heading"], d["target"], d["outboard"]))
         while self.hist and self.hist[0][0] < ts - PLOT_S:
             self.hist.pop(0)
@@ -2492,6 +2606,7 @@ class App:
         self.sys_lbl = tk.Label(sy, text="-", font=F_MONO, bg=C["bg"], fg=C["fg"], justify="left", anchor="w")
         self.sys_lbl.pack(anchor="w", padx=8)
         tab("tab.bench", self._build_bench)
+        tab("tab.engine", self._build_engine)
         tab("tab.sound", self._build_sound)
         lg = tab("tab.events")
         self.events = tk.Listbox(lg, font=F_TXT, bg=C["panel"], fg=C["fg"], selectbackground=C["sel"])

@@ -225,6 +225,34 @@ static void sim_init(server_t *x, uint32_t seed, bool usb, uint32_t gw_baud)
     x->link.sim_ctx = x;
 }
 
+/* hal_system_reset() (the remote restart after a monitor trip, CLAUDE.md N):
+ * the chip starts again like on the board - monitor latch gone, everything
+ * initialised, boot counter + 1; the world (and the relay board) go on. */
+static void sim_reboot(server_t *x)
+{
+    sb_config_t c;
+    uint32_t boot = 0u;
+    sim_hal_chip_reset(HAL_RESET_APPLICATION);
+    memset((void *)&g_mon, 0, sizeof g_mon);
+    hal_init();
+    sb_default_config(&c);
+    sb_init(&x->sb, &c);
+    monitor_init(&x->mon, x->t);
+    link_init(&x->link, &x->sb);
+    link_init_port(&x->gwlink, &x->sb, LINK_PORT_GW);
+    x->link.sim_fn = sim_cmd;
+    x->link.sim_ctx = x;
+    if (!hal_nv_load(HAL_NV_SLOT_BOOT, &boot, sizeof boot)) boot = 0u;
+    boot++;
+    (void)hal_nv_save(HAL_NV_SLOT_BOOT, &boot, sizeof boot);
+    for (int i = 0; i < 100 && hal_nv_pending() && hal_nv_ok(); i++) hal_nv_service(true);
+    g_logstat.boot = boot;
+    logcore0_init(&x->sb, boot);
+    printf("[%7.1f s] AURIX software reset (remote restart after a monitor trip), boot %lu\n", x->t * 0.001,
+           (unsigned long)boot);
+    fflush(stdout);
+}
+
 static void sim_advance(server_t *x, uint32_t until_ms)
 {
     while (x->t < until_ms) {
@@ -240,6 +268,7 @@ static void sim_advance(server_t *x, uint32_t until_ms)
             link_step(&x->gwlink, &x->sb);
             logcore0_step(&x->sb);
             (void)cyc_record(&g_timing.core0, hal_micros() - t0);
+            if (sim_hal_reset_requested()) sim_reboot(x);
         }
         if (x->t % 10u == 0u) {                     /* the logger (core 2) */
             uint32_t t2 = hal_micros();

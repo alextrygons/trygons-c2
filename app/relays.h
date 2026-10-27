@@ -28,7 +28,8 @@
  *     advisory RELAY BOARD SILENT (raised by smallboat.c)
  *   - engine group: STARTER (= an engine-group MOMENTARY relay) is never
  *     pulsed by the plain relay command - only the remote-restart rules of
- *     section N (step 7); IGNITION / SHUTOFF (onoff) are the captain's key
+ *     section N (engine.c: relays_starter_pulse / _off);
+ *     IGNITION / SHUTOFF (onoff) are the captain's key
  *   - power_up: ONLY switching ON, only once, only with the FIRST active
  *     table after the AURIX's own POWER-ON reset (never after a watchdog /
  *     software reset or a reconnect: then the board is read back and its
@@ -155,6 +156,13 @@ relay_result_t relays_cmd(relays_t *r, uint8_t n, uint8_t action, uint16_t ms, u
 void     relays_step(relays_t *r, uint32_t now_ms);
 /* the advisory condition: a table with relays and the board silent */
 bool     relays_silent(const relays_t *r);
+/* The STARTER (= the engine-group MOMENTARY relay of the table; 0 = none).
+ * Driven ONLY by the remote-restart rules (engine.c, section N; tools/check.sh):
+ * a board-timed pulse of ms (<= the relay's max_s, <= RELAY_PULSE_MAX_MS), and
+ * off at once. Refused in FIRST TEST, without a table / STARTER, on a silent board. */
+uint8_t  relays_starter(const relays_t *r);
+relay_result_t relays_starter_pulse(relays_t *r, uint16_t ms, uint32_t now_ms);
+void     relays_starter_off(relays_t *r);
 uint8_t  relays_flags(const relays_t *r);           /* TELEM2 group M flags */
 
 #endif /* RELAYS_H */

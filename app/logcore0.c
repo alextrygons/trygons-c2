@@ -28,6 +28,7 @@ static struct {
     float    gen_pct;
     uint32_t relay_seq, relay_states, relay_known;
     bool     relay_ok;
+    uint32_t eng_seq;
     uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -331,6 +332,12 @@ static void changes(const sb_t *s)
         k.relay_known = rl->known;
         k.relay_ok = rl->board_ok;
     }
+    /* engine controls / remote restart (section N): every restart, crank start / stop, refusal.
+     * The reset after a trip waits ENG_RESET_DELAY_MS so this event is in the queue first. */
+    if (s->eng.log_seq != k.eng_seq)
+        ev(s, EV_RESTART, s->eng.last_action, s->eng.last_why, (int32_t)s->eng.hold_ms,
+           (int32_t)((s->eng.restarts & 0xFFFFu) | ((s->eng.cranks & 0xFFFFu) << 16)));
+    k.eng_seq = s->eng.log_seq;
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
     k.save_seq = s->save.seq;

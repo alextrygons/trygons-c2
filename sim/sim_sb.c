@@ -47,6 +47,10 @@ struct sbsim {
 
 static logger_t s_logger;   /* core 2 logger (sim: a separate step) */
 
+/* TELEM2: the tests that read groups L / M from the end of the frame skip the
+ * groups appended after them: O (engine controls, 12 bytes) */
+#define T2_O 12u
+
 /* "all --bridge": every test drives the boat through the USB joystick
  * bridge (simulated Teensy frames) instead of the analog joystick. */
 static bool s_bridge;
@@ -184,6 +188,7 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
             hal_init();
             sb_init(&x->sb, &x->cfg);
             monitor_init(&x->mon, x->t);
+            if (x->log_on) logcore0_init(&x->sb, g_logstat.boot);
             x->next_ctrl = x->t;
             x->last_kick = x->t;
         }
@@ -196,6 +201,10 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
                 (void)cyc_record(&g_timing.core0, hal_micros() - t0 + x->inject_us);
                 x->last_kick = x->t;                /* hal_watchdog_kick() in the loop */
                 if (hook) hook(x, ctx);
+                if (sim_hal_reset_requested()) {    /* hal_system_reset(): the remote restart after a trip */
+                    sim_hal_chip_reset(HAL_RESET_APPLICATION);
+                    x->boot_until = x->t + 200u;
+                }
             }
         }
         /* watchdog: not kicked in time -> chip reset, outputs stop */
@@ -4899,6 +4908,10 @@ typedef struct {
     bool       shore_on;        /* the Pi sends GW_SHORE with its status (lost-link rule) */
     uint8_t    shore_flags;
     uint16_t   shore_m;
+    uint32_t   ev_restart;      /* log event RESTART records in the Pi's copy, the last one's action, when */
+    int32_t    ev_restart_a;
+    uint32_t   ev_restart_t;
+    uint32_t   ev_reset_t;      /* first RESTART event with action 2 (reset coming) */
 } pisim_t;
 
 static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
@@ -4954,6 +4967,12 @@ static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
             uint32_t L = p->cur_len;
             uint16_t crc = (uint16_t)(p->cur[L - 2u] | (p->cur[L - 1u] << 8));
             if (p->cur[0] != LOGR_SYNC || proto_crc16(&p->cur[1], L - 3u) != crc) p->bad++;
+            else if (L >= LOGR_HDR + 6u && p->cur[1] == LOGR_EVENT && (p->cur[8] | (p->cur[9] << 8)) == EV_RESTART) {
+                p->ev_restart++;
+                p->ev_restart_a = (int32_t)(p->cur[10] | (p->cur[11] << 8) | (p->cur[12] << 16) | ((uint32_t)p->cur[13] << 24));
+                p->ev_restart_t = x->t;
+                if (p->ev_restart_a == (int32_t)ENG_LOG_RESET && !p->ev_reset_t) p->ev_reset_t = x->t;
+            }
             p->recs++;
             p->last_seq = seq;
             p->have_seq = true;
@@ -6199,7 +6218,7 @@ static void lostlink_tests(void)
                  "killed + STANDBY + alarm, boat stopped (%.1f kn) %s; after a reset on board: kill output off %s",
                  k1 ? "yes" : "NO", helm, ask, cf ? "ACCEPTED" : "refused", x.w.speed_kn, still ? "yes" : "NO",
                  reset ? "yes" : "NO");
-        test_report("LL6 ENGINE KILL latched until reset on board (no remote restart)", k1 && still && !cf && reset, d);
+        test_report("LL6 ENGINE KILL latched until reset on board (or the HELM station's remote restart: ER4)", k1 && still && !cf && reset, d);
     }
 
     snprintf(d, sizeof d, "%d kills in LL1-LL6: every one with the throttle at idle and the gear in neutral %s",
@@ -8890,14 +8909,14 @@ static void generator_tests(void)
         p.heartbeat = true;
         p.next_hb = p.x.t;
         pc_run(&p, 15000u);
-        /* group L ends 16 bytes (group M, the relay board) before the end of the frame */
-        uint8_t st1 = p.t2_len >= 18u ? p.t2[p.t2_len - 18u] : 99u, pc1 = p.t2_len >= 17u ? p.t2[p.t2_len - 17u] : 99u;
+        /* group L ends 16 bytes (group M, the relay board) + group O before the end of the frame */
+        uint8_t st1 = p.t2_len >= 18u ? p.t2[p.t2_len - T2_O - 18u] : 99u, pc1 = p.t2_len >= 17u ? p.t2[p.t2_len - T2_O - 17u] : 99u;
         const char *sbst1 = gen_state_name(p.x.sb.gen.state);
         bool t2 = p.t2_len >= 11u && st1 == GEN_RUNNING && pc1 == 8u;
         v = 0u;
         bool off = pc_cmd(&p, PROTO_T_GENERATOR, &v, 1u) == PROTO_R_OK && !p.x.sb.gen.enabled;
         pc_run(&p, 2000u);
-        bool t2off = p.t2_len >= 27u && p.t2[p.t2_len - 18u] == GEN_OFF && p.t2[p.t2_len - 17u] == 0u &&
+        bool t2off = p.t2_len >= 27u && p.t2[p.t2_len - T2_O - 18u] == GEN_OFF && p.t2[p.t2_len - T2_O - 17u] == 0u &&
                      p.x.sb.thr.out_pct == 0.0f;
         /* FIRST TEST over the link: refused */
         {
@@ -9384,13 +9403,13 @@ static void relay_tests(void)
         pc_run(&p, 8000u);
         uint8_t fr[1u + RELAY_TABLE_MAX * RELAY_FRAME_BYTES];
         uint32_t na = relay_table_encode(&a, fr, sizeof fr);
-        uint16_t empty_hash = p.t2_len >= 16u ? (uint16_t)(p.t2[p.t2_len - 8u] | (p.t2[p.t2_len - 7u] << 8)) : 0u;
+        uint16_t empty_hash = p.t2_len >= 16u ? (uint16_t)(p.t2[p.t2_len - T2_O - 8u] | (p.t2[p.t2_len - T2_O - 7u] << 8)) : 0u;
         bool empty_ok = p.t2_len >= 16u && empty_hash == p.x.sb.relays.hash && !p.x.sb.relays.have_table;
         /* offered, no CONFIRM: dropped after 10 s, nothing active */
         bool offered = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)na) == PROTO_R_OK && p.x.sb.relays.offer_pending &&
                        p.x.sb.confirm.kind == CONF_RELAY_TABLE;
         pc_run(&p, 1000u);
-        offered = offered && (p.t2[p.t2_len - 6u] & 8u);
+        offered = offered && (p.t2[p.t2_len - T2_O - 6u] & 8u);
         pc_run(&p, 10000u);
         bool dropped = !p.x.sb.relays.offer_pending && !p.x.sb.relays.have_table && p.x.sb.confirm.kind == CONF_NONE;
         /* offered + CONFIRM: active, saved in slot 7 */
@@ -9398,9 +9417,9 @@ static void relay_tests(void)
         bool sent = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)na) == PROTO_R_OK;
         bool conf = confirm_press(&p.x);
         pc_run(&p, 1500u);
-        uint16_t t2_hash = (uint16_t)(p.t2[p.t2_len - 8u] | (p.t2[p.t2_len - 7u] << 8));
-        bool active = sent && conf && p.x.sb.relays.have_table && t2_hash == relay_table_hash(&a) && p.t2[p.t2_len - 5u] == 7u &&
-                      (p.t2[p.t2_len - 6u] & 3u) == 3u && sim_hal_nv_writes() > nvw;
+        uint16_t t2_hash = (uint16_t)(p.t2[p.t2_len - T2_O - 8u] | (p.t2[p.t2_len - T2_O - 7u] << 8));
+        bool active = sent && conf && p.x.sb.relays.have_table && t2_hash == relay_table_hash(&a) && p.t2[p.t2_len - T2_O - 5u] == 7u &&
+                      (p.t2[p.t2_len - T2_O - 6u] & 3u) == 3u && sim_hal_nv_writes() > nvw;
         FILE *fp = fopen("nv7.bin", "rb");
         bool saved = fp != NULL;
         if (fp) fclose(fp);
@@ -9411,7 +9430,7 @@ static void relay_tests(void)
         uint8_t rc[4] = { 6u, RELAY_CMD_ON, 0u, 0u };
         bool cmd = pc_cmd(&p, PROTO_T_RELAY, rc, 4u) == PROTO_R_OK;
         pc_run(&p, 1500u);
-        uint32_t t2_states = (uint32_t)p.t2[p.t2_len - 16u] | ((uint32_t)p.t2[p.t2_len - 15u] << 8);
+        uint32_t t2_states = (uint32_t)p.t2[p.t2_len - T2_O - 16u] | ((uint32_t)p.t2[p.t2_len - T2_O - 15u] << 8);
         bool t2_on = cmd && (t2_states & rb_bit(6)) && sim_hal_relay_state(6u);
         rc[1] = RELAY_CMD_OFF;
         (void)pc_cmd(&p, PROTO_T_RELAY, rc, 4u);
@@ -9517,6 +9536,434 @@ void sb_relay_tests(void)
     relay_tests();
 }
 
+/* ------------------------------ engine controls + remote restart (CLAUDE.md N) -- */
+
+/* What the STARTER relay (channel 2 of the sample table) did, measured after every step. */
+typedef struct {
+    rjsim_t  r;
+    uint32_t on_since;          /* the board's STARTER coil on since (0 = off) */
+    uint32_t on_max_ms;         /* longest continuous on */
+    uint32_t on_bad;            /* steps with the coil on > 350 ms after idle + neutral / e-stop went (stop latency) */
+    uint32_t bad_since;
+    uint32_t reset_t;           /* when hal_system_reset() was asked (0 = never) */
+    uint32_t resets;
+} ersim_t;
+
+static int er_gear(const sbsim_t *x)
+{
+    uint16_t g = sim_hal_gear_pwm();
+    return g == x->sb.cfg.gear.pwm_n_us ? 0 : 1;
+}
+
+static void er_hook(sbsim_t *x, void *ctx)
+{
+    ersim_t *e = (ersim_t *)ctx;
+    rj_hook(x, &e->r);
+    bool on = sim_hal_relay_state(2u);
+    if (on && !e->on_since) e->on_since = x->t ? x->t : 1u;
+    if (!on) e->on_since = 0u;
+    if (on && x->t - e->on_since > e->on_max_ms) e->on_max_ms = x->t - e->on_since;
+    bool bad = er_gear(x) != 0 || sim_hal_throttle() > 1.0f || x->sb.estop_state == 2u;
+    if (!bad) e->bad_since = 0u;
+    else if (!e->bad_since) e->bad_since = x->t ? x->t : 1u;
+    if (on && bad && x->t - e->bad_since > 350u) e->on_bad++;
+    if (sim_hal_sw_resets() != e->resets) {
+        e->resets = sim_hal_sw_resets();
+        e->reset_t = x->t;
+    }
+}
+
+/* A RESTART frame (action) from gateway station st, run 200 ms; the GW_ACK result (0xFF none). */
+static uint8_t er_cmd(sbsim_t *x, ersim_t *e, uint8_t st, uint8_t act)
+{
+    uint8_t buf[8], fr[PROTO_MAX_FRAME];
+    static uint16_t seq = 3000u;
+    seq++;
+    buf[0] = st; buf[1] = 0u; buf[2] = (uint8_t)seq; buf[3] = (uint8_t)(seq >> 8);
+    buf[4] = PROTO_T_RESTART; buf[5] = act;
+    size_t n = proto_encode(fr, PROTO_T_GW_CMD, 0u, buf, 6u);
+    int before = e->r.p.acks;
+    sim_hal_gw_rx_push(fr, (uint32_t)n);
+    sbsim_run(x, x->t + 200u, er_hook, e);
+    return (e->r.p.acks > before && e->r.p.ack_seq == seq && e->r.p.ack_station == st) ? e->r.p.ack_result : 0xFFu;
+}
+
+/* START held ms long (CRANK at 5 Hz): how many were accepted */
+static int er_hold(sbsim_t *x, ersim_t *e, uint32_t ms)
+{
+    int ok = 0;
+    uint32_t end = x->t + ms;
+    while (x->t + 100u < end) ok += er_cmd(x, e, 2u, ENG_ACT_CRANK) == PROTO_R_OK;
+    return ok;
+}
+
+/* power-up (CREWED or not), station 2 takes HELM, the boat file's relay table confirmed */
+static bool er_setup(sbsim_t *x, ersim_t *e, uint32_t seed, bool crewed, const sb_config_t *cfg)
+{
+    const uint8_t TAKE = 0u;
+    static relay_table_t t;
+    memset(e, 0, sizeof *e);
+    remove("nv7.bin");
+    crew_init(x, &e->r, seed, crewed, cfg);
+    e->resets = sim_hal_sw_resets();
+    bool helm = pi_cmd(x, &e->r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u) == PROTO_R_OK;
+    e->r.rj_on = true;
+    sbsim_run(x, x->t + 300u, er_hook, e);
+    sb_alarm_ack(&x->sb);
+    rb_table(&t, false, false);
+    if (sb_relay_table(&x->sb, &t) != SB_OK) return false;
+    bool cf = crewed ? onboard_confirm(x, &e->r) : shore_confirm(x, &e->r);
+    sbsim_run(x, x->t + 500u, er_hook, e);
+    return helm && cf && x->sb.relays.have_table && relays_starter(&x->sb.relays) == 2u;
+}
+
+static void engine_tests(void)
+{
+    char d[1400];
+    const uint8_t TAKE = 0u;
+    printf("\n=== ER engine controls + remote restart (section N) ===\n");
+
+    /* ER1 the conditions, checked every time: not HELM, nothing latched, e-stop, throttle not idle,
+     * gear not N (neutral switch fitted + open), FIRST TEST - all refused, the STARTER never pulsed;
+     * idle + neutral (servo at N without a switch, the switch closed with one) = cranking allowed */
+    {
+        static sbsim_t x;
+        static ersim_t e;
+        bool set = er_setup(&x, &e, 1801u, true, NULL);
+        uint32_t p0 = sim_hal_relay_pulses();
+        uint8_t nothing = er_cmd(&x, &e, 2u, ENG_ACT_RESTART);
+        uint8_t why_nothing = x.sb.eng.last_why;
+        uint8_t other = er_cmd(&x, &e, 3u, ENG_ACT_CRANK);                     /* link.c: not the HELM station */
+        sb_result_t direct = sb_restart(&x.sb, 3u, ENG_ACT_CRANK);              /* sb_restart checks it too */
+        sim_hal_set_estop(true, true);
+        sbsim_run(&x, x.t + 200u, er_hook, &e);
+        uint8_t es = er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+        uint8_t why_es = x.sb.eng.last_why;
+        sim_hal_set_estop(true, false);
+        sbsim_run(&x, x.t + 300u, er_hook, &e);
+        sb_alarm_ack(&x.sb);
+        joy_set(0.0f, 0.7f, false, false);                                      /* MANUAL: forward, throttle up */
+        sbsim_run(&x, x.t + 3000u, er_hook, &e);
+        bool driving = sb_mode(&x.sb) == MODE_MANUAL && gear_is(&x.sb.gear, GEAR_F);
+        uint8_t thr = er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+        uint8_t why_thr = x.sb.eng.last_why;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 4000u, er_hook, &e);
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, x.t + 1000u, er_hook, &e);
+        bool none = sim_hal_relay_pulses() == p0 && !sim_hal_relay_state(2u);
+        /* no neutral switch: the gear servo at N + gear state N -> allowed */
+        uint8_t ok1 = er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+        bool on1 = sim_hal_relay_state(2u);
+        er_cmd(&x, &e, 2u, ENG_ACT_RELEASE);
+        sbsim_run(&x, x.t + 10500u, er_hook, &e);                               /* cool-down */
+        /* a neutral switch fitted and closed -> allowed; stuck open -> refused (gear) */
+        x.w.neutral_switch = true;
+        x.w.neutral_sw_force = 0;
+        sbsim_run(&x, x.t + 500u, er_hook, &e);
+        uint8_t ok2 = er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+        bool on2 = sim_hal_relay_state(2u);
+        er_cmd(&x, &e, 2u, ENG_ACT_RELEASE);
+        sbsim_run(&x, x.t + 10500u, er_hook, &e);
+        x.w.neutral_sw_force = 1;                                               /* stuck open */
+        sbsim_run(&x, x.t + 300u, er_hook, &e);
+        uint32_t p1 = sim_hal_relay_pulses();
+        uint8_t ns = er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+        uint8_t why_ns = x.sb.eng.last_why;
+        bool none2 = sim_hal_relay_pulses() == p1;
+        x.w.neutral_switch = false;
+        x.w.neutral_sw_force = 0;
+        /* FIRST TEST: never (restart and crank) */
+        static sbsim_t y;
+        static ersim_t f;
+        sb_config_t c;
+        sb_default_config(&c);
+        c.first_test = true;
+        memset(&f, 0, sizeof f);
+        crew_init(&y, &f.r, 1802u, true, &c);
+        uint8_t fh = pi_cmd(&y, &f.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        uint8_t ft1 = er_cmd(&y, &f, 2u, ENG_ACT_RESTART), ft2 = er_cmd(&y, &f, 2u, ENG_ACT_CRANK);
+        sim_hal_set_estop(false, false);
+        snprintf(d, sizeof d, "set up %s; restart with nothing latched -> %u (why %u); another station -> %u, sb_restart -> %d; "
+                 "e-stop -> %u (why %u); driving %s: throttle not idle -> %u (why %u); no STARTER pulse so far %s; no switch, "
+                 "servo at N -> %u (STARTER on %s); switch closed -> %u (on %s); switch stuck open -> %u (why %u, no pulse %s); "
+                 "FIRST TEST (HELM %u): restart %u, crank %u; STARTER on while not idle / not N / e-stop: %u steps",
+                 set ? "yes" : "NO", nothing, why_nothing, other, (int)direct, es, why_es, driving ? "yes" : "NO", thr, why_thr,
+                 none ? "yes" : "NO", ok1, on1 ? "yes" : "NO", ok2, on2 ? "yes" : "NO", ns, why_ns, none2 ? "yes" : "NO",
+                 fh, ft1, ft2, (unsigned)e.on_bad);
+        test_report("ER1 restart / crank conditions every time: HELM, idle, neutral confirmed, e-stop released, not FIRST TEST",
+                    set && nothing == PROTO_R_PRECOND && why_nothing == ENG_WHY_NOTHING && other == PROTO_R_NOT_HELM &&
+                    direct == SB_ERR_NOT_ALLOWED && es == PROTO_R_REFUSED && why_es == ENG_WHY_ESTOP && driving &&
+                    thr == PROTO_R_PRECOND && (why_thr == ENG_WHY_THROTTLE || why_thr == ENG_WHY_GEAR) && none &&
+                    ok1 == PROTO_R_OK && on1 && ok2 == PROTO_R_OK && on2 && ns == PROTO_R_PRECOND && why_ns == ENG_WHY_GEAR &&
+                    none2 && fh == PROTO_R_OK && ft1 == PROTO_R_WRONG_MODE && ft2 == PROTO_R_WRONG_MODE && e.on_bad == 0u, d);
+    }
+
+    /* ER2 hold-to-crank: the STARTER on while START is held (board-timed 300 ms pulses refreshed at 5 Hz),
+     * off within 0.3 s of the release, never longer than 5 s per hold, then 10 s cool-down; RELEASE = off at once */
+    {
+        static sbsim_t x;
+        static ersim_t e;
+        bool set = er_setup(&x, &e, 1803u, true, NULL);
+        uint8_t ign[4] = { 1u, RELAY_CMD_ON, 0u, 0u };
+        uint8_t ig = pi_cmd(&x, &e.r.p, 2u, false, PROTO_T_RELAY, ign, 4u);   /* IGNITION first (the station's order) */
+        sbsim_run(&x, x.t + 300u, er_hook, &e);
+        bool ign_on = sim_hal_relay_state(1u);
+        e.on_max_ms = 0u;
+        int ok = er_hold(&x, &e, 2000u);
+        bool held_on = sim_hal_relay_state(2u) && x.sb.eng.crank == ENG_CRANK_ON;
+        uint32_t t_rel = x.t;
+        while (sim_hal_relay_state(2u) && x.t - t_rel < 2000u) sbsim_run(&x, x.t + 10u, er_hook, &e);
+        uint32_t off_ms = x.t - t_rel;
+        bool released = x.sb.eng.crank == ENG_CRANK_COOL && x.sb.eng.stop_why == ENG_WHY_RELEASED &&
+                        x.sb.eng.hold_ms >= 1600u && x.sb.eng.hold_ms <= 2300u;
+        uint32_t hold1 = e.on_max_ms, holdr = x.sb.eng.hold_ms;
+        uint8_t cool = er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+        uint8_t why_cool = x.sb.eng.last_why;
+        sbsim_run(&x, x.t + 10200u, er_hook, &e);
+        bool cool_over = x.sb.eng.crank == ENG_CRANK_OFF;
+        e.on_max_ms = 0u;
+        int ok7 = er_hold(&x, &e, 7000u);                                       /* held 7 s: the limit is 5 s */
+        uint32_t hold7 = x.sb.eng.hold_ms;
+        bool limited = x.sb.eng.stop_why == ENG_WHY_MAX_TIME && hold7 >= 4800u && hold7 <= 5200u &&
+                       !sim_hal_relay_state(2u) && e.on_max_ms <= 5300u && e.on_max_ms >= 4500u;
+        sbsim_run(&x, x.t + 10500u, er_hook, &e);
+        er_hold(&x, &e, 1000u);
+        bool on_again = sim_hal_relay_state(2u);
+        uint8_t rel = er_cmd(&x, &e, 2u, ENG_ACT_RELEASE);
+        bool off_at_once = !sim_hal_relay_state(2u) && x.sb.eng.stop_why == ENG_WHY_RELEASED;
+        snprintf(d, sizeof d, "set up %s; IGNITION %u (on %s); held 2 s: %d CRANK accepted, STARTER on %s; released: off after "
+                 "%u ms, cool-down + why RELEASED + hold %u ms %s (on %u ms); CRANK in the cool-down -> %u (why %u); after 10 s "
+                 "ready %s; held 7 s: %d accepted, stopped at %u ms (STARTER on %u ms, then cool-down) %s; RELEASE %u -> "
+                 "off at once %s (was on %s); STARTER on while not idle / not N / e-stop: %u steps",
+                 set ? "yes" : "NO", ig, ign_on ? "yes" : "NO", ok, held_on ? "yes" : "NO", (unsigned)off_ms,
+                 (unsigned)holdr, released ? "yes" : "NO", (unsigned)hold1, cool, why_cool, cool_over ? "yes" : "NO",
+                 ok7, (unsigned)hold7, (unsigned)e.on_max_ms, limited ? "yes" : "NO", rel, off_at_once ? "yes" : "NO",
+                 on_again ? "yes" : "NO", (unsigned)e.on_bad);
+        test_report("ER2 hold-to-crank: STARTER only while held, off <= 0.3 s after release, <= 5 s per hold, 10 s cool-down",
+                    set && ig == PROTO_R_OK && ign_on && ok >= 9 && held_on && off_ms <= 450u && released && hold1 >= 1600u &&
+                    cool == PROTO_R_REFUSED && why_cool == ENG_WHY_COOLING && cool_over && ok7 >= 23 && ok7 <= 26 && limited &&
+                    on_again && rel == PROTO_R_OK && off_at_once && e.on_bad == 0u, d);
+    }
+
+    /* ER3 the cranking stops at once on: HELM station lost (link), e-stop, neutral switch opening, the STANDBY
+     * button, a joystick takeover (gear request / throttle) - every time before the gear can leave N */
+    {
+        char t[900] = "";
+        int good = 0;
+        for (int k = 0; k < 5; k++) {
+            static sbsim_t x;
+            static ersim_t e;
+            bool set = er_setup(&x, &e, 1804u + (uint32_t)k, true, NULL);
+            if (k == 2) { x.w.neutral_switch = true; x.w.neutral_sw_force = 0; sbsim_run(&x, x.t + 500u, er_hook, &e); }
+            er_hold(&x, &e, 1000u);
+            bool on = sim_hal_relay_state(2u) && x.sb.eng.crank == ENG_CRANK_ON;
+            uint8_t want;
+            switch (k) {
+            case 0: pi_station_left(2u); want = ENG_WHY_LINK; break;
+            case 1: sim_hal_set_estop(true, true); want = ENG_WHY_ESTOP; break;
+            case 2: x.w.neutral_sw_force = 1; want = ENG_WHY_GEAR; break;
+            case 3: sim_hal_press(HAL_BTN_STANDBY); want = ENG_WHY_STANDBY_BTN; break;
+            default: joy_set(0.0f, 0.8f, false, false); want = ENG_WHY_GEAR; break;
+            }
+            uint32_t t0 = x.t;
+            /* the station keeps sending CRANK (START still held): only the condition can stop it */
+            while (x.sb.eng.crank == ENG_CRANK_ON && x.t - t0 < 1000u) {
+                if (k != 0) {
+                    uint8_t buf[6] = { 2u, 0u, 0u, 0u, PROTO_T_RESTART, ENG_ACT_CRANK }, fr[PROTO_MAX_FRAME];
+                    size_t n = proto_encode(fr, PROTO_T_GW_CMD, 0u, buf, 6u);
+                    sim_hal_gw_rx_push(fr, (uint32_t)n);
+                }
+                sbsim_run(&x, x.t + AP_PERIOD_MS, er_hook, &e);
+            }
+            uint32_t stop_ms = x.t - t0;
+            bool gear_n_at_stop = er_gear(&x) == 0;
+            uint32_t t1 = x.t;
+            while (sim_hal_relay_state(2u) && x.t - t1 < 1000u) sbsim_run(&x, x.t + 10u, er_hook, &e);
+            uint32_t off_ms = x.t - t1;
+            bool why_ok = x.sb.eng.stop_why == want || (k == 4 && x.sb.eng.stop_why == ENG_WHY_THROTTLE);
+            bool g = set && on && stop_ms <= 4u * AP_PERIOD_MS && gear_n_at_stop && off_ms <= 350u && why_ok &&
+                     e.on_bad == 0u;
+            good += g;
+            snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s: stopped after %u ms (why %u), STARTER off %u ms later, gear N %s%s",
+                     k ? "; " : "", k == 0 ? "HELM station lost" : k == 1 ? "e-stop" : k == 2 ? "neutral switch opens" :
+                     k == 3 ? "STANDBY button" : "joystick takeover", (unsigned)stop_ms, x.sb.eng.stop_why, (unsigned)off_ms,
+                     gear_n_at_stop ? "yes" : "NO", g ? "" : " FAIL");
+            sim_hal_set_estop(false, false);
+            x.w.neutral_switch = false;
+            x.w.neutral_sw_force = 0;
+            joy_set(0.0f, 0.0f, false, false);
+        }
+        test_report("ER3 cranking stops at once: link loss, e-stop, gear not N, STANDBY button, joystick takeover", good == 5, t);
+    }
+
+    /* ER4 after an ENGINE KILL (UNCREWED lost link): RESTART from the HELM station clears the latch only with
+     * idle + neutral and the e-stop released; nothing drives by itself; START works again; the next loss kills again */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        static ersim_t e;
+        static relay_table_t tb;
+        remove("nv7.bin");
+        bool drv = ll_drive(&x, &l, 1810u, false, 50u);
+        ll_cut(&x, &l);
+        sbsim_run(&x, x.t + 4000u, ll_hook, &l);
+        bool killed = x.sb.ll.state == SB_LL_KILLED && sim_hal_engine_killed();
+        memset(&e, 0, sizeof e);
+        e.r = l.r;
+        e.resets = sim_hal_sw_resets();
+        uint8_t helm = pi_cmd(&x, &e.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        e.r.rj_on = true;
+        sbsim_run(&x, x.t + 300u, er_hook, &e);
+        rb_table(&tb, false, false);
+        rj_lever(&x, &e.r, 0.5f, 1.0f);                                        /* the captain's lever back to neutral */
+        bool tab = sb_relay_table(&x.sb, &tb) == SB_OK && shore_confirm(&x, &e.r) && relays_starter(&x.sb.relays) == 2u;
+        uint8_t ck = er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+        uint8_t why_ck = x.sb.eng.last_why;
+        sim_hal_set_estop(true, true);
+        sbsim_run(&x, x.t + 200u, er_hook, &e);
+        uint8_t es = er_cmd(&x, &e, 2u, ENG_ACT_RESTART);
+        bool still = sim_hal_engine_killed() && x.sb.ll.state == SB_LL_KILLED;
+        sim_hal_set_estop(true, false);
+        sbsim_run(&x, x.t + 300u, er_hook, &e);
+        uint8_t oth = er_cmd(&x, &e, 3u, ENG_ACT_RESTART);
+        bool still2 = sim_hal_engine_killed() && x.sb.ll.state == SB_LL_KILLED;
+        uint8_t rs = er_cmd(&x, &e, 2u, ENG_ACT_RESTART);
+        bool cleared = !sim_hal_engine_killed() && x.sb.ll.state == SB_LL_OK && !(x.sb.alarm_bits & SB_ALM_ENGINE_KILLED) &&
+                       x.sb.eng.kill_clears == 1u && sb_mode(&x.sb) == MODE_STANDBY;
+        float thr_max = 0.0f;
+        for (int i = 0; i < 100; i++) { sbsim_run(&x, x.t + AP_PERIOD_MS, er_hook, &e); thr_max = fmaxf(thr_max, sim_hal_throttle()); }
+        bool calm = sb_mode(&x.sb) == MODE_STANDBY && thr_max <= 0.6f && !sim_hal_engine_killed();
+        er_hold(&x, &e, 1000u);
+        bool cranks = sim_hal_relay_state(2u);
+        er_cmd(&x, &e, 2u, ENG_ACT_RELEASE);
+        /* the lost-link rule still works: the next loss kills again */
+        l.r = e.r;
+        l.killed = false;
+        ll_cut(&x, &l);
+        sbsim_run(&x, x.t + 4000u, ll_hook, &l);
+        bool again = x.sb.ll.state == SB_LL_KILLED && sim_hal_engine_killed();
+        sim_hal_set_estop(false, false);
+        snprintf(d, sizeof d, "driving %s, killed %s; HELM back %u, table %s; START while killed -> %u (why %u); RESTART with the "
+                 "e-stop pressed -> %u (still killed %s); from another station -> %u (still killed %s); RESTART -> %u: kill off, "
+                 "alarm gone, STANDBY %s; 5 s later nothing started by itself (throttle max %.1f %%) %s; START works %s; next "
+                 "link loss kills again %s",
+                 drv ? "yes" : "NO", killed ? "yes" : "NO", helm, tab ? "yes" : "NO", ck, why_ck, es, still ? "yes" : "NO", oth,
+                 still2 ? "yes" : "NO", rs, cleared ? "yes" : "NO", thr_max, calm ? "yes" : "NO", cranks ? "yes" : "NO",
+                 again ? "yes" : "NO");
+        test_report("ER4 after an ENGINE KILL: the HELM station's RESTART (idle + neutral, e-stop released) clears the latch",
+                    drv && killed && helm == PROTO_R_OK && tab && ck == PROTO_R_PRECOND && why_ck == ENG_WHY_KILLED &&
+                    es == PROTO_R_REFUSED && still && oth == PROTO_R_NOT_HELM && still2 && rs == PROTO_R_OK && cleared && calm &&
+                    cranks && again, d);
+    }
+
+    /* ER5 after a monitor trip: RESTART = a controlled software reset, the log event RESTART first (it reaches the
+     * gateway's copy before the reset); everything starts again (startup power limits, interlock, no power_up), the
+     * trip re-arms; conditions failing before the reset (e-stop) cancel it */
+    {
+        static sbsim_t x;
+        static ersim_t e;
+        bool set = er_setup(&x, &e, 1811u, true, NULL);
+        sbsim_log_start(&x, "sd_er5", 5u);
+        sbsim_run(&x, x.t + 1000u, er_hook, &e);
+        g_mon.test_trip = MON_TEST_TRIP;
+        sbsim_run(&x, x.t + 600u, er_hook, &e);
+        bool tripped = x.sb.mon_tripped && hal_outputs_forced() && sb_mode(&x.sb) == MODE_STANDBY;
+        uint8_t ck = er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+        uint8_t why_ck = x.sb.eng.last_why;
+        uint32_t ev0 = e.r.p.ev_restart;
+        uint32_t r0 = sim_hal_sw_resets();
+        uint8_t rs = er_cmd(&x, &e, 2u, ENG_ACT_RESTART);
+        bool pending = x.sb.eng.reset_pending && sim_hal_sw_resets() == r0;
+        sbsim_run(&x, x.t + 1500u, er_hook, &e);
+        bool reset = sim_hal_sw_resets() == r0 + 1u && e.reset_t != 0u;
+        bool ev_first = e.r.p.ev_restart > ev0 && e.r.p.ev_reset_t != 0u && e.r.p.ev_reset_t <= e.reset_t;
+        sbsim_run(&x, x.t + 500u, er_hook, &e);
+        bool fresh = !hal_outputs_forced() && !x.sb.mon_tripped && hal_reset_reason(NULL) == HAL_RESET_APPLICATION &&
+                     x.sb.plim.fwd_pct <= 30.01f && x.sb.plim.rev_pct <= 5.01f && x.sb.relays.power_ups == 0u &&
+                     x.sb.eng.restarts == 0u;
+        sbsim_run(&x, x.t + 8000u, er_hook, &e);
+        bool armed = x.sb.armed;
+        g_mon.test_trip = MON_TEST_TRIP;                                        /* the monitor works again */
+        sbsim_run(&x, x.t + 600u, er_hook, &e);
+        bool rearmed = hal_outputs_forced() && x.sb.mon_tripped;
+        x.log_on = false;
+        sim_hal_sd_power_cut();                         /* the card's files closed (the next tests open their own) */
+        /* cancelled: the e-stop pressed between the RESTART and the reset */
+        static sbsim_t y;
+        static ersim_t f;
+        bool set2 = er_setup(&y, &f, 1812u, true, NULL);
+        g_mon.test_trip = MON_TEST_TRIP;
+        sbsim_run(&y, y.t + 600u, er_hook, &f);
+        uint32_t r1 = sim_hal_sw_resets();
+        uint8_t rs2 = er_cmd(&y, &f, 2u, ENG_ACT_RESTART);
+        sim_hal_set_estop(true, true);
+        sbsim_run(&y, y.t + 2000u, er_hook, &f);
+        bool cancelled = sim_hal_sw_resets() == r1 && !y.sb.eng.reset_pending && y.sb.eng.last_action == ENG_LOG_RESET_CANCEL &&
+                         hal_outputs_forced();
+        sim_hal_set_estop(false, false);
+        snprintf(d, sizeof d, "set up %s; tripped %s; START while tripped -> %u (why %u); RESTART -> %u, reset pending (not yet) %s; "
+                 "software reset %s; log event RESTART in the gateway's copy before the reset %s (%u events); after the reboot: "
+                 "latch gone, reason APPLICATION, power limit 30 / 5, no relay power_up %s; armed again %s; a new trip trips %s; "
+                 "second boat %s: RESTART %u then e-stop -> reset cancelled, latch kept %s",
+                 set ? "yes" : "NO", tripped ? "yes" : "NO", ck, why_ck, rs, pending ? "yes" : "NO", reset ? "yes" : "NO",
+                 ev_first ? "yes" : "NO", (unsigned)(e.r.p.ev_restart - ev0), fresh ? "yes" : "NO", armed ? "yes" : "NO",
+                 rearmed ? "yes" : "NO", set2 ? "yes" : "NO", rs2, cancelled ? "yes" : "NO");
+        test_report("ER5 after a monitor trip: RESTART = software reset (event first), all starts again, the trip re-arms",
+                    set && tripped && ck == PROTO_R_PRECOND && why_ck == ENG_WHY_TRIPPED && rs == PROTO_R_OK && pending && reset &&
+                    ev_first && fresh && armed && rearmed && set2 && rs2 == PROTO_R_OK && cancelled, d);
+        memset((void *)&g_mon, 0, sizeof g_mon);
+    }
+
+    /* ER6 no attempt limit, no code, no CONFIRM: three kills, three restarts in a row; the log header lists event 27
+     * and is complete (not cut); a CREWED boat never has a kill to clear */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        static ersim_t e;
+        int ok = 0;
+        bool drv = ll_drive(&x, &l, 1813u, false, 50u);
+        memset(&e, 0, sizeof e);
+        e.resets = sim_hal_sw_resets();
+        for (int i = 0; i < 3; i++) {
+            l.killed = false;
+            ll_cut(&x, &l);
+            sbsim_run(&x, x.t + 4000u, ll_hook, &l);
+            e.r = l.r;
+            pi_cmd(&x, &e.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+            e.r.rj_on = true;
+            sbsim_run(&x, x.t + 300u, er_hook, &e);
+            uint32_t c0 = x.sb.confirm.accepted;
+            bool k = x.sb.ll.state == SB_LL_KILLED;
+            ok += k && er_cmd(&x, &e, 2u, ENG_ACT_RESTART) == PROTO_R_OK && !sim_hal_engine_killed() &&
+                  x.sb.confirm.accepted == c0 && x.sb.confirm.kind == CONF_NONE;
+            l.r = e.r;
+        }
+        static char hdr[LOGR_MAX], big[3u * LOGR_MAX];
+        uint16_t hl = logrec_header_text(hdr, sizeof hdr, 1u, 1u);
+        uint16_t full = logrec_header_text(big, sizeof big, 1u, 1u);
+        bool listed = strstr(hdr, "27:RESTART:") != NULL;
+        bool whole = hl < sizeof hdr - 1u && hl > 0u && hdr[hl - 1u] == '\n' && strstr(hdr, "\nwhy=") != NULL;
+        static sbsim_t y;
+        static ersim_t f;
+        bool set = er_setup(&y, &f, 1814u, true, NULL);
+        uint8_t cr = er_cmd(&y, &f, 2u, ENG_ACT_RESTART);
+        snprintf(d, sizeof d, "driving %s; 3 kills -> 3 RESTARTs accepted at once (no code, no CONFIRM): %d; log header %u of %u "
+                 "bytes (whole text %u), event 27 listed %s, complete %s; CREWED boat %s: RESTART -> %u (nothing latched)",
+                 drv ? "yes" : "NO", ok, (unsigned)hl, (unsigned)sizeof hdr, (unsigned)full, listed ? "yes" : "NO", whole ? "yes" : "NO",
+                 set ? "yes" : "NO", cr);
+        test_report("ER6 no attempt limit / code / CONFIRM; log event 27 in the header (complete); CREWED: no kill",
+                    drv && ok == 3 && listed && whole && set && cr == PROTO_R_PRECOND, d);
+    }
+    remove("nv7.bin");
+    sim_hal_relay_board_reset();
+}
+
+void sb_engine_tests(void)
+{
+    engine_tests();
+}
+
 void sb_nv_tests(void)
 {
     nv_tests();
@@ -9536,6 +9983,7 @@ void sb_tests(void)
 {
     generator_tests();
     relay_tests();
+    engine_tests();
     battery_tests();
     nv_tests();
     gateway_tests();

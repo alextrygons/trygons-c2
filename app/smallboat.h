@@ -70,6 +70,7 @@
 #include "joystick.h"
 #include "hal.h"
 #include "dr.h"
+#include "engine.h"
 #include "modes.h"
 #include "nav.h"
 #include "powerlim.h"
@@ -112,7 +113,8 @@
 #define SB_ALM_PROFILE            0x10000000u /* PROFILE: CREWED / UNCREWED changed (STANDBY), or a joystick appeared while
                                                  driving UNCREWED (-> STANDBY) */
 #define SB_ALM_LINK_LOST          0x20000000u /* UNCREWED: LINK LOST to the HELM shore station (idle + neutral, STANDBY) */
-#define SB_ALM_ENGINE_KILLED      0x40000000u /* UNCREWED lost link: ENGINE KILLED (latched until reset on board) */
+#define SB_ALM_ENGINE_KILLED      0x40000000u /* UNCREWED lost link: ENGINE KILLED (latched until reset on board or a
+                                                 remote restart from the HELM station, section N) */
 
 /* The first alarm word is full (0x80000000 is its last free bit): newer alarms
  * live in the second word (sb_t.alarm_bits2, TELEM2 group L, log events
@@ -127,7 +129,8 @@
 /* UNCREWED lost link (CLAUDE.md section B), sb_t.ll.state */
 #define SB_LL_OK      0u        /* link to the HELM station OK (or not armed yet, or CREWED) */
 #define SB_LL_LOST    1u        /* lost: STANDBY, idle + neutral, waiting (near shore: kill at once) */
-#define SB_LL_KILLED  2u        /* engine killed: latched until the AURIX is reset on board */
+#define SB_LL_KILLED  2u        /* engine killed: latched until the AURIX is reset on board, or the HELM station
+                                   restarts it (sb_restart: idle + neutral confirmed, e-stop released) */
 
 /* GW_SHORE flags (gateway, 1 Hz): distance to the shore / shallow water of the route check */
 #define SB_SHORE_NEAR   0x01u   /* the gateway says: near the shore */
@@ -555,6 +558,7 @@ typedef struct {
     batt_t      batt;          /* supply voltage of the 12 V bank (filtered), LOW BATTERY condition */
     gen_t       gen;           /* generator mode: throttle in NEUTRAL to charge the bank (captain-enabled) */
     relays_t    relays;        /* RS485 Modbus relay board: table (NV slot 7), interlocks, time limits (relays.c) */
+    engine_t    eng;           /* remote restart + hold-to-crank (section N, engine.c) */
     sb_gw_t     gw;            /* gateway (Raspberry Pi) link status */
     uint8_t     helm;          /* HELM holder: SB_HELM_NONE / SB_HELM_USB / gateway station id */
     bool        helm_local;    /* the holder is on the boat (USB or boat LAN) */
@@ -792,5 +796,19 @@ sb_result_t sb_generator_set(sb_t *s, bool on);
  * without a table, for the STARTER, with the pair on, with a silent board. */
 sb_result_t sb_relay_table(sb_t *s, const relay_table_t *t);
 sb_result_t sb_relay_cmd(sb_t *s, uint8_t n, uint8_t action, uint16_t ms);
+
+/* Remote restart + hold-to-crank (PROTO_T_RESTART, section N; engine.h).
+ * Only from the HELM station (station == helm, checked here too). No code, no
+ * CONFIRM, no waiting, no attempt limit; every time: throttle output idle, gear
+ * N confirmed, e-stop released, not FIRST TEST. action ENG_ACT_RESTART: clears
+ * the ENGINE KILL latch, or after a monitor trip a controlled software reset
+ * (log event RESTART first); ENG_ACT_CRANK: refresh the board-timed STARTER
+ * pulse (hold <= 5 s, 10 s cool-down); ENG_ACT_RELEASE: stop cranking.
+ * Refusals: SB_ERR_WRONG_MODE FIRST TEST, SB_ERR_NOT_ALLOWED not HELM,
+ * SB_ERR_PRECOND idle / neutral / nothing to restart / no STARTER / killed /
+ * tripped, SB_ERR_REFUSED e-stop / cool-down / relay board (eng.last_why). */
+sb_result_t sb_restart(sb_t *s, uint8_t station, uint8_t action);
+/* the restart conditions are met now (idle + neutral confirmed, e-stop released, not FIRST TEST) */
+bool sb_restart_ready(const sb_t *s);
 
 #endif /* SMALLBOAT_H */

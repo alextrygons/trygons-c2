@@ -73,6 +73,11 @@ if [ -n "$writers" ]; then echo "THROTTLE SERVO WRITTEN OUTSIDE servo.c: $writer
 # the relay board is driven ONLY by app/relays.c (table, interlocks, time limits; never CPU1 / CPU2)
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_relay_[a-z]+ *\(" app sim/sim_sb.c sim/sim_main.c sim/sim_server.c sim/sim_world.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/relays.c$")
 if [ -n "$writers" ]; then echo "RELAY BOARD DRIVEN OUTSIDE relays.c: $writers"; fail=1; else echo "relay board driven only by app/relays.c"; fi
+# the STARTER relay only through the remote-restart rules (app/engine.c, CLAUDE.md N); the software reset only from smallboat.c
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])relays_starter_(pulse|off) *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/engine.c$\|^app/relays.c$")
+if [ -n "$writers" ]; then echo "STARTER DRIVEN OUTSIDE engine.c: $writers"; fail=1; else echo "STARTER driven only by app/engine.c"; fi
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_system_reset *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/smallboat.c$")
+if [ -n "$writers" ]; then echo "SOFTWARE RESET OUTSIDE smallboat.c: $writers"; fail=1; else echo "software reset only by app/smallboat.c (remote restart)"; fi
 
 # ADS compiles every C/C++ file in the project folder: every top-level folder
 # that is not board firmware must be excluded in .cproject (all configurations)

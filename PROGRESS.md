@@ -25,7 +25,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 4b | Generator mode (the ONLY automatic throttle rise; CLAUDE.md K) | DONE (gate OK: sim 205/205 + bridge 204/204 incl. GN1-GN8, TriCore + iLLD check, NV 4/4, gateway, test_screen2 13/13, test_lang 5/5, test_driver 19/19; storm 200 episodes incl. I32-I35; acceptance quick 7/7 PASS - the "fresh build from GitHub" suite builds the pushed step-4 HEAD, every other suite this tree) | this commit |
 | 5 | Boat file v2: relay list + generator_max_pct + thruster settings; old files still load | DONE (gate OK: sim 205/205 + bridge 204/204, TriCore + iLLD check, NV 4/4, FAT32 2/2, charts 6/6, test_lang 5/5, test_boats 8/8 incl. B7 + B8, test_screen2 13/13, sound 10/10, avoidance 14/14; gateway: section C crashed in the gate (sim connection refused at its start = PC load, untouched by this step) and passed alone 11/11, the other 94 OK; acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the "fresh build from GitHub" suite builds the pushed step-4b HEAD, every other suite this tree), storm 200 episodes) | this commit |
 | 6 | RS485 Modbus RTU relay board driver on the AURIX (state machine, timeouts, no-data advisory; never on CPU1) | DONE (gate OK: sim 213/213 + bridge 212/212 incl. RB1-RB8, TriCore + iLLD check, relay-writer check, NV 4/4, FAT32 2/2, charts 6/6, test_lang 5/5, test_boats 9/9 incl. B9, test_screen2 13/13, sound 10/10, avoidance 14/14, gateway 105/105; test_driver 19/19 (see the gate note); acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the fresh-build suite builds the pushed step-5 HEAD, every other suite this tree), storm 200 episodes incl. I36 647 checks 0 fails) | this commit |
-| 7 | Engine controls + remote restart (CLAUDE.md N; I31 changed) | | |
+| 7 | Engine controls + remote restart (CLAUDE.md N; I31 changed) | DONE (gate OK: sim 219/219 + bridge 218/218 incl. ER1-ER6, TriCore + iLLD + STARTER / reset writer checks, gateway incl. CR10 (A2 at 57600, see notes); test_driver 19/19, test_screen2 13/13; acceptance quick 7/7 PASS, storm I31 / I37 / I38 0 fails) | this commit |
 | 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | | |
 | 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | | |
 | 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | | |
@@ -191,6 +191,35 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   transceiver, baud, address, channel count, the pins.
   Gate note: test_driver I1 (heading box on the tape) failed on this PC with the per-PC groundstation/gs_layout.json that a
   killed test run had rewritten ("driver": null); with the file moved aside 19/19 PASS (file put back: it is the owner's).
+- Step 7 (2026-10-27): engine controls + remote restart. app/engine.c (+ .h, pure C): engine_t in sb_t.eng, conditions
+  engine_check (FIRST TEST, e-stop, throttle output idle, gear N confirmed = gear state N + no gear fault + the neutral
+  switch if fitted, else the gear servo at N), engine_restart (a) kill latch cleared (ll.state OK, ENGINE KILLED bit gone,
+  kill pin off, STANDBY stays) / (b) after a monitor trip a pending software reset ENG_RESET_DELAY_MS 500 ms later (log
+  event 27 first, data flash idle <= 2 s, conditions re-checked every step - failing = cancelled, event 7), engine_crank /
+  engine_release / engine_step (hold-to-crank: board-timed 300 ms STARTER pulse per CRANK, <= 5 s per hold, 10 s cool-down
+  after EVERY hold, stops on release / no CRANK for 300 ms / link or HELM lost / e-stop / gear request or not N / throttle /
+  STANDBY button / kill / trip). sb_restart(s, station, action) also checks station == HELM; sb_restart_ready. relays.c:
+  relays_starter (= the engine-group momentary relay), relays_starter_pulse / _off, only called from engine.c (tools/check.sh
+  grep, also: hal_system_reset only from smallboat.c). hal.h hal_system_reset (board: IfxScuRcu_performReset application,
+  info 0x27; sim: a flag - sbsim_run, storm and sim_server reboot after the step). link.c PROTO_T_RESTART 0x2D (u8 0 RESTART /
+  1 CRANK / 2 RELEASE), TELEM2 group O (12 bytes after M: crank state, flags, hold ms, cool-down, last action / why,
+  restarts, cranks; DP's N follows it). Log event 27 RESTART. FOUND + FIXED (from step 6): the log header text was 4109 B and
+  cut at 4095 (the end of the "why=" list was lost) - the descriptions of events 23-25 + 27 are short now (their names live
+  in groundstation/tlg.py: NV / GENERATOR / RELAY / RESTART decoders), header 3972 B; sim ER6 checks it is complete. Also
+  alarms2 lists 2:RELAY_SILENT. Ground station: proto T_RESTART, ENG_* names, group O decode, is_driving_cmd (RESTART = ACCEPT
+  for a copilot; CRANK / RELEASE are not asked one by one), Tools page "Engine" (engine-group on / off relays of the boat
+  file, START hold = CRANK at 5 Hz, RESTART, the state + last reason; tab.engine, eng.*, what.engine_* / relay_onoff),
+  ov.engine_killed text. Gateway stations.py: a copilot's CRANK -> 118 (captain only). Tests: sim ER1-ER6 (`autopilot_sim
+  er`, in `all`), gateway CR10, storm I31 reworded + I37 + I38 + a new E_ENGINE event (restart / START held / release /
+  e-stop; I5 now skips while the e-stop is pressed: only STANDBY then). Test adjustments: GN8 / RB7 read groups L / M from the
+  frame end + T2_O; gateway A2 runs at 57600 (at 38400 the control traffic alone fills the line since group O, the log copy
+  got no room at all, so no gap could be noted). MANUAL 5 / 7 (ENGINE CONTROLS + REMOTE RESTART) / 17, MANUAL_EL, WIRING 3A /
+  3D, PARTS (tacho TBD), CLAUDE.md N done line. TODO on the kit: the application reset puts servo / gear / safety relay
+  in their reset state at once and the reason reads "application". No tacho (time limit only).
+  Gate: tools/check.sh OK except gateway A2 (fixed as above, section A alone 6/6 PASS); test_driver 19/19 (I1 had failed
+  with the first engine page: the state label resized the tools window every telemetry - fixed: fixed height, set only on
+  change); test_screen2 13/13, test_lang 5/5; acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the fresh-build
+  suite builds the pushed step-6 HEAD), storm 200 episodes incl. I31 / I37 / I38 0 fails.
 
 # Previous task: "Screen 2 review"
 

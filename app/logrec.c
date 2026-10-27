@@ -89,11 +89,12 @@ static const char k_events[] =
     "20:NAV:kind|reason<<8|alarm<<16|lost<<24|applied<<25,heading*100,cap_kn*10,seq;"
     "21:PROFILE:profile(0 detecting 1 CREWED 2 UNCREWED),joystick_detected,changes,-;"
     "22:LINKLOST:state(0 ok 1 lost 2 engine killed),near_shore,shore_m,losses;"
-    "23:NV:what(1 record unusable -> defaults 2 NV FAULT),slot,resets,-;"
-    "24:GENERATOR:state(0 off 1 ready 2 starting 3 running 4 stopping 5 rest 6 fault 7 done),"
-    "stop_why(1 conditions 2 off 3 request 4 no volts 5 rest 6 switch opened 7 moved)|enabled<<8,bank_v*100,pct*10;"
-    "25:RELAY:n|action<<8|result<<16|what<<24(1 command 2 table 3 states 4 board),states,known|board_ok<<31,"
-    "hash|flags<<16|count<<24;";
+    "23:NV:what(1 defaults 2 fault),slot,resets,-;"
+    "24:GENERATOR:state(GEN_),stop_why|enabled<<8,bank_v*100,pct*10;"
+    "25:RELAY:n|act<<8|res<<16|what<<24,states,known|ok<<31,hash|flags<<16|count<<24;"
+    "27:RESTART:action(ENG_LOG_),why(eng_why_t),hold_ms,restarts|cranks<<16;";
+/* (the header record is at most LOGR_MAX: keep these short - the names of the
+ * numbers above live in groundstation/tlg.py; sim test ER6 checks it fits) */
 
 static const char k_alarms[] =
     "1:COMPASS,2:GPS_LOST,4:GPS_SUSPECT,8:DR_LIMIT,16:ARRIVAL_UNCERTAIN,32:ARRIVED,64:GEAR,128:TRAINING,"
@@ -101,7 +102,7 @@ static const char k_alarms[] =
     "16384:OVERRUN,32768:LOG_FAILURE,65536:GATEWAY_LOST,131072:GATEWAY_STORAGE,262144:REMOTE_LINK_LOST,524288:CHANNEL_FALLBACK,1048576:REMOTE_DRIVING_LINK_LOST,2097152:SLAMMING,4194304:AIS_RECEIVER_SILENT,8388608:COLLISION_RISK,16777216:DRIVER_DECISION,33554432:SHALLOW_WATER,67108864:OBSTACLE_AHEAD,134217728:EMERGENCY_STOP,268435456:PROFILE,536870912:LINK_LOST,1073741824:ENGINE_KILLED";
 
 /* the second alarm word (SB_ALM2_, log events with word = 2) */
-static const char k_alarms2[] = "1:LOW_BATTERY";
+static const char k_alarms2[] = "1:LOW_BATTERY,2:RELAY_SILENT";
 
 uint16_t logrec_header_text(char *out, uint16_t max, uint32_t boot, uint32_t file_no)
 {

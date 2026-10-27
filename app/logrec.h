@@ -72,7 +72,11 @@ typedef enum {
     EV_GENERATOR,       /* generator mode: state (GEN_), stop why | enabled << 8, bank V*100, throttle demand %*10 */
     EV_RELAY,           /* relay board: n | action<<8 | result<<16 | what<<24 (1 command, 2 table, 3 states, 4 board),
                            states (readback bits), known bits | board ok<<31, table hash | flags<<16 | count<<24 */
-    EV_COUNT            /* reserved next: 27 RESTART, 28 DP (CLAUDE.md N / P) */
+    /* 26: not used (kept free) */
+    EV_RESTART = 27,    /* engine controls / remote restart (section N): action (1 kill cleared, 2 reset after a trip
+                           coming, 3 crank start, 4 crank stop, 5 restart refused, 6 crank refused, 7 reset cancelled),
+                           why (engine.h eng_why_t), hold ms, restarts | cranks << 16 */
+    EV_COUNT            /* reserved next: 28 DP (CLAUDE.md P) */
 } log_event_t;
 
 /* Build one record (with sync / len / crc) into out; returns its length. */

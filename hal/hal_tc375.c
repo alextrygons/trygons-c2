@@ -414,6 +414,17 @@ void hal_set_engine_kill(bool kill)
 #endif
 }
 
+/* Remote restart after a monitor trip (section N): an APPLICATION reset of the
+ * whole chip (all CPUs + peripherals; the next start reports
+ * HAL_RESET_APPLICATION, so the relay power_up states are NOT applied again).
+ * The user reset info 0x27 = log event RESTART. TODO on the kit: confirm the
+ * servo / gear outputs and the safety relay go to their reset state at once
+ * (WIRING.md: pull-downs) and that the reset reason reads "application". */
+void hal_system_reset(void)
+{
+    IfxScuRcu_performReset(IfxScuRcu_ResetType_application, 0x27u);
+}
+
 /* WDT counts from RELOAD up to 0xFFFF at fSPB / 16384 (default input
  * divider): timeout = (0x10000 - reload) * 16384 / fSPB. */
 void hal_watchdog_init(uint32_t timeout_ms)

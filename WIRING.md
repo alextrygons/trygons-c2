@@ -192,8 +192,10 @@ link to the captain's shore station is lost, the AURIX first goes to STANDBY
 kill-switch circuit** - at once near the shore (closer than `near_shore_m`,
 100 m, or no valid shore distance from the gateway), at open sea after
 `lostlink_grace_s` (10 s) unless the link came back. Once killed it stays
-killed until the AURIX is reset **on board** (power cycle); there is no remote
-restart. A CREWED boat never uses it.
+killed until the AURIX is reset **on board** (power cycle) or the HELM station
+sends a remote RESTART (CLAUDE.md N: only with the throttle idle, the gear in
+neutral confirmed and the e-stop released - checked on the AURIX). A CREWED
+boat never uses it. The kill stays on its own AURIX pin, never the relay board.
 
 | Item | Decision | State |
 |------|----------|-------|
@@ -202,6 +204,7 @@ restart. A CREWED boat never uses it.
 | Fail-safe direction | which state stops the engine: relay energised = kill, or de-energised = kill (then the engine stops whenever the board is unpowered / in reset) | **TBD** (`ENGINE_KILL_ACTIVE_HIGH` in hal_pins.h follows the choice) |
 | Wiring | in the kill-switch circuit, in addition to the kill cord (the cord must stay) | **TBD** |
 | Reset on board | how the crew restarts after a kill: AURIX power cycle + the outboard's normal start | **TBD** (procedure in MANUAL 7A) |
+| Remote restart | the HELM station's RESTART clears the kill (software only: the same pin goes back to "run"); then IGNITION + START through the relay board (3D) | done (software); the relay wiring TBD |
 
 Until all of this is decided and tested on the bench, **no uncrewed operation**.
 
@@ -244,7 +247,12 @@ uses it; core 0 only (never CPU1).
 
 The relays power up OFF on the board. Contact ratings per the loads (fuse each
 load); the STARTER relay only drives the starter solenoid's control wire,
-never the starter current.
+never the starter current. The STARTER is driven only by the remote-restart
+rules (app/engine.c: hold-to-crank, board-timed 300 ms pulses, at most 5 s per
+hold, 10 s cool-down, only at idle + neutral with the e-stop released). Check
+with the engine dealer that the outboard has its own neutral-start switch in
+the starter circuit (it must stay: the software check is not the only one).
+No tacho input yet (TBD): the starter is limited by time only.
 
 ## 4. microSD card (log)
 

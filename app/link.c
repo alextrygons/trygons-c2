@@ -423,6 +423,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_GENERATOR:    return 1;
     case PROTO_T_RELAY:        return 4;
     case PROTO_T_RELAY_CFG:    return -2;       /* variable: checked by relay_table_decode */
+    case PROTO_T_RESTART:      return 1;
     default:                   return -1;
     }
 }
@@ -492,6 +493,13 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
             return (f->len < 1u || f->len != 1u + (uint32_t)f->payload[0] * RELAY_FRAME_BYTES) ? PROTO_R_BAD_LENGTH
                                                                                              : PROTO_R_BAD_VALUE;
         return sb_result_to_proto(sb_relay_table(s, &t));
+    }
+    case PROTO_T_RESTART: {
+        /* remote restart / hold-to-crank (section N): the HELM station (checked by
+         * the caller, and again by sb_restart); the conditions are on the AURIX */
+        uint8_t act = proto_rd_u8(&r);
+        if (act > ENG_ACT_RELEASE) return PROTO_R_BAD_VALUE;
+        return sb_result_to_proto(sb_restart(s, s->helm, act));
     }
     case PROTO_T_RELAY: {
         uint8_t n = proto_rd_u8(&r), act = proto_rd_u8(&r);
@@ -951,6 +959,12 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      u16 fast-filtered bank V*100 (0xFFFF) | u8 battery flags (b0 measured now, b1 NO VOLTAGE DATA
  *      notice, b2 LOW BATTERY condition) | u8 generator state (GEN_: 0 off 1 ready 2 starting 3 running
  *      4 stopping 5 rest 6 fault 7 done; section K) | u8 generator throttle demand %
+ *   M: relay board (below)
+ *   O: engine controls (section N; DP's group N follows it): u8 crank state (0 off, 1 cranking,
+ *      2 cool-down) | u8 flags (b0 restart conditions met now: idle + neutral confirmed, e-stop
+ *      released, not FIRST TEST; b1 software reset pending; b2 a STARTER in the relay table; b3 ENGINE
+ *      KILL latched; b4 monitor tripped) | u16 hold ms | u16 cool-down left (0.1 s) | u8 last action
+ *      (ENG_LOG_) | u8 last why (eng_why_t) | u16 restarts | u16 cranks
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1067,6 +1081,20 @@ static void telemetry2(link_t *l, sb_t *s)
         proto_wr_u8(&w, relays_flags(rl));
         proto_wr_u8(&w, rl->have_table ? rl->table.count : 0u);
         proto_wr_u32(&w, rl->cmd_on);
+    }
+    /* O: engine controls (section N) */
+    {
+        const engine_t *e = &s->eng;
+        proto_wr_u8(&w, e->crank);
+        proto_wr_u8(&w, (uint8_t)((sb_restart_ready(s) ? 1u : 0u) | (e->reset_pending ? 2u : 0u) |
+                                  (relays_starter(&s->relays) ? 4u : 0u) | (s->ll.state == SB_LL_KILLED ? 8u : 0u) |
+                                  (s->mon_tripped ? 16u : 0u)));
+        proto_wr_u16(&w, (uint16_t)(e->hold_ms > 65535u ? 65535u : e->hold_ms));
+        proto_wr_u16(&w, (uint16_t)(engine_cool_left_s(e, s->now_ms) * 10.0f + 0.5f));
+        proto_wr_u8(&w, e->last_action);
+        proto_wr_u8(&w, e->last_why);
+        proto_wr_u16(&w, (uint16_t)e->restarts);
+        proto_wr_u16(&w, (uint16_t)e->cranks);
     }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);

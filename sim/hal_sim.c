@@ -717,6 +717,19 @@ void hal_set_engine_kill(bool kill)
     s_engine_kill = kill;
 }
 bool sim_hal_engine_killed(void) { return s_engine_kill; }
+
+/* hal_system_reset (remote restart after a trip): the harness sees the
+ * request after the step and reboots the chip (HAL_RESET_APPLICATION). */
+static uint32_t s_sw_resets;
+static bool     s_sw_reset_req;
+void hal_system_reset(void) { s_sw_reset_req = true; s_sw_resets++; }
+bool sim_hal_reset_requested(void)
+{
+    bool r = s_sw_reset_req;
+    s_sw_reset_req = false;
+    return r;
+}
+uint32_t sim_hal_sw_resets(void) { return s_sw_resets; }
 uint32_t sim_hal_engine_kills(void) { return s_engine_kills; }
 
 /* The simulator's watchdog is modelled by the test harness (sim_sb.c). */
