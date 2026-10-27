@@ -3620,8 +3620,164 @@ def section_rl():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------------------------------ section DP --
+
+DP_THRUSTERS = {"bow": {"max_pct": 100, "run_s": 1800, "rest_s": 600},
+                "stern": {"max_pct": 100, "run_s": 1800, "rest_s": 600}, "jog_m": 1.5, "spot_alarm_m": 15}
+
+
+def section_dp():
+    """CLAUDE.md P, step 11: a DP TRIP is checked by the gateway like AUTO - shallow water (114), the geofence
+    (120), collision avoidance (the navreq cap / heading applied in TRIP); in DP SPOT / JOG / CRUISE a collision
+    danger = the DRIVER DECISION alarm only."""
+    print("\n=== Section DP: DP TRIP checked like AUTO (shallow 114, geofence 120, collision avoidance) ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_dp_")
+    sim = gw = asim = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        charts = os.path.join(tmp, "charts")
+        sim_chart(charts, n_lat=400, n_lon=400)             # deep water, a 1.5 m shoal 2 km east of the boat
+        aport = free_port()
+        asim = AisSim(aport, seed=7, noise_m=5.0, start_offset=0.2).start()
+        cfg = gw_cfg_b(sim, root, charts_dir=charts, avoid=CA_AVOID, stations={"driver_timeout_s": 5.0},
+                       shallow={"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0, "clearance_m": 50.0},
+                       ais={"enabled": True, "source": "tcp:127.0.0.1:%d" % aport, "silent_s": 600.0, "tick_s": 0.25})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+        alice.pump(1.0)
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        beat = DriverBeat(alice)                            # the captain's screen 1 is open
+
+        def joy(x=0.0, y=0.0, **kw):
+            link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, x, y, **kw))
+
+        def dp(action, arg=0, value=0):
+            return alice.result(alice.cmd(proto.T_DP, proto.p_dp(action, arg, value)))
+
+        def confirm():
+            joy(confirm=True)
+            time.sleep(0.2)
+            joy()
+
+        w.until(lambda d: d.get("pos_source", 0) != 0, 10)
+        r_thr = alice.result(alice.cmd(proto.T_THRUSTER_CFG, proto.p_thruster_cfg(DP_THRUSTERS)))
+        thr = w.until(lambda d: d.get("thr_cfg") and d.get("thr_fitted_bow") and d.get("thr_fitted_stern"), 4)
+
+        # DP1 a DP TRIP whose way from the boat crosses the shoal: refused (114) before the boat is even asked;
+        # "continue" and the same program's AUTO start too; a DP SPOT start is not a route (passed on: it waits)
+        a_one = upload(alice, [east_of(3500)], kn=3.0)                          # one waypoint behind the shoal
+        n0 = len(g.audit.recent)
+        r_trip = dp(proto.DP_START, proto.DP_TRIP, 300)
+        r_cont = dp(proto.DP_START, proto.DP_TRIP | proto.DP_TRIP_CONTINUE, 300)
+        w.pump(0.5)
+        pend1 = w.telem.get("dp_pending")
+        r_auto = alice.result(alice.cmd(proto.T_AUTO_START))
+        aud1 = [e for e in list(g.audit.recent)[n0:] if e["kind"] == "dp_trip_refused"]
+        r_spot = dp(proto.DP_START, proto.DP_SPOT, 0)
+        pend_spot = w.until(lambda d: d.get("dp_pending"), 2)
+        r_stop = dp(proto.DP_STOP)                                              # cancels the waiting request
+        unpend = w.until(lambda d: not d.get("dp_pending"), 2)
+        report("DP1 a DP TRIP across shallow water refused by the gateway (114, audited, nothing waits on the boat), "
+               "\"continue\" too; a DP SPOT start (no route) is passed on",
+               r_thr == 0 and thr is not None and a_one and a_one["result"] == 0 and r_trip == 114 and r_cont == 114
+               and not pend1 and r_auto == 114 and len(aud1) == 2 and r_spot == 0 and pend_spot is not None and
+               r_stop == 0 and unpend is not None,
+               "thruster settings %s (taken %s); program %s; TRIP %s, continue %s, waiting on the boat %s; AUTO start "
+               "%s; audited %d; SPOT %s (waits for the CONFIRM %s), STOP %s (cancelled %s)" % (
+                   r_thr, thr is not None, a_one and a_one["result"], r_trip, r_cont, pend1, r_auto, len(aud1),
+                   r_spot, pend_spot is not None, r_stop, unpend is not None))
+
+        # DP2 the geofence: a program in deep water, then a fence that leaves its waypoint outside -> a DP TRIP
+        # start refused (120); the fence cleared -> passed on (the CONFIRM then waits)
+        a_two = upload(alice, [east_of(1500)], kn=3.0)
+        alice.l.send_msg({"t": "geofence", "poly": [list(p_) for p_ in fence_around(1000.0)],
+                          "what": "geofence: 4 corners"})
+        k, ack_f = next_event(alice, ("geofence_ack",), 4.0)
+        r_fence = dp(proto.DP_START, proto.DP_TRIP, 300)
+        alice.l.send_msg({"t": "geofence", "poly": [], "what": "geofence: clear"})
+        k, ack_c = next_event(alice, ("geofence_ack",), 4.0)
+        r_free = dp(proto.DP_START, proto.DP_TRIP, 300)
+        pend2 = w.until(lambda d: d.get("dp_pending"), 2)
+        dp(proto.DP_STOP)
+        w.until(lambda d: not d.get("dp_pending"), 2)
+        report("DP2 a DP TRIP that leaves the geofence refused (120); without the fence the same TRIP start goes "
+               "to the boat (waits for the CONFIRM)",
+               a_two and a_two["result"] == 0 and ack_f and ack_f["ok"] and r_fence == 120 and ack_c and ack_c["ok"]
+               and r_free == 0 and pend2 is not None,
+               "program %s; fence %s; TRIP %s; fence cleared %s; TRIP %s, waiting %s" % (
+                   a_two and a_two["result"], ack_f and ack_f.get("text"), r_fence, ack_c and ack_c.get("text"),
+                   r_free, pend2 is not None))
+
+        # DP3 collision avoidance: in a DP TRIP like AUTO (slow down = the navreq cap, applied by the boat); in
+        # DP SPOT the same danger = the DRIVER DECISION alarm only (no cap, no heading, DP keeps its spot)
+        wp = east_of(0, 3000)                                                   # due north, deep water
+        a_n = upload(alice, [wp], kn=3.0)
+        r_go = dp(proto.DP_START, proto.DP_TRIP, 300)
+        alice.pump(0.3)
+        confirm()
+        trip = w.until(lambda d: d["mode"] == proto.MODE_DP and d.get("dp_sub") == proto.DP_TRIP, 4)
+        moving = w.until(lambda d: d.get("est_sog", 0) > 1.2, 90)              # (DP TRIP: <= 3 kn)
+        d0 = w.telem
+        n_log = len(g.audit.recent)
+        asim.add(crossing_ship(d0, 239400011, 8.0, 150.0, "DP CROSSER"))
+        slow = w.until(lambda d: d.get("nav_applied") and d.get("nav_kind") in (proto.NAV_CAP, proto.NAV_HEADING)
+                       and d.get("nav_cap_kn") is not None, 40)
+        st_trip = g.nav_state.get("state")
+        texts = avoid_log(g, n_log)
+        asim.remove(239400011)
+        g.ais.targets.pop(239400011, None)
+        r_hold = dp(proto.DP_START, proto.DP_SPOT, 0)                           # in DP: SPOT here at once
+        spot = w.until(lambda d: d["mode"] == proto.MODE_DP and d.get("dp_sub") == proto.DP_SPOT, 4)
+        clear = wait_for(lambda: g.nav_state.get("state") == "CLEAR", 30)
+        w.until(lambda d: d.get("est_sog", 9) < 0.8, 60)
+        d1 = w.telem
+        s_lat, s_lon = aismod.move(d1["est_lat"], d1["est_lon"], 90.0, 10.0, 90.0)   # 0.25 nm east, at us at 10 kn
+        asim.add(Ship(239400012, s_lat, s_lon, 10.0, 270.0, name="DP SPOT VISITOR"))
+        dec = w.until(lambda d: d["alarm_bits"] & DECIS_BIT and d["alarm_bits"] & COLL_BIT, 30)
+        st_spot = g.nav_state.get("state")
+        w.pump(1.0)
+        d2 = w.telem
+        asim.remove(239400012)
+        g.ais.targets.pop(239400012, None)
+        r_end = dp(proto.DP_STOP)
+        stby = w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 6)
+        report("DP3 collision avoidance in a DP TRIP like AUTO (the slow-down cap applied by the boat, audited); in DP "
+               "SPOT a danger = COLLISION + DRIVER DECISION alarm only (nothing applied, still SPOT); DP STOP -> STANDBY",
+               a_n and a_n["result"] == 0 and r_go == 0 and trip is not None and moving is not None and
+               slow is not None and slow["mode"] == proto.MODE_DP and slow.get("dp_sub") == proto.DP_TRIP and
+               slow["nav_cap_kn"] <= 3.0 and st_trip in ("SLOW", "AVOID", "DRIVER DECISION") and texts and
+               r_hold == 0 and spot is not None and dec is not None and st_spot == "DRIVER DECISION" and
+               d2["mode"] == proto.MODE_DP and d2.get("dp_sub") == proto.DP_SPOT and not d2.get("nav_applied") and
+               d2.get("nav_kind") == proto.NAV_NONE and r_end == 0 and stby is not None,
+               "TRIP %s (start %s), moving %s (%.1f kn, %03.0f); crossing ship -> request applied %s (kind %s, cap %s kn, planner %s, "
+               "%d decisions logged); SPOT %s (cleared %s); ship at the spot -> alarms %s, planner %s, mode %s/%s, "
+               "applied %s, kind %s; STOP %s -> STANDBY %s" % (
+                   trip is not None, r_go, moving is not None, d0.get("est_sog", 0), d0.get("est_cog", 0),
+                   slow is not None, slow and slow.get("nav_kind"),
+                   slow and slow.get("nav_cap_kn"), st_trip, len(texts), spot is not None, clear,
+                   "yes" if dec else "NO", st_spot, d2["mode_name"], d2.get("dp_sub_name"), d2.get("nav_applied"),
+                   d2.get("nav_kind"), r_end, stby is not None))
+
+        beat.stop()
+        alice.close()
+        link.stop()
+    finally:
+        if asim:
+            asim.stop()
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
-            "G": section_g, "GF": section_gf, "RL": section_rl}
+            "G": section_g, "GF": section_gf, "RL": section_rl, "DP": section_dp}
 
 
 def main():

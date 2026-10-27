@@ -141,7 +141,8 @@ class Gateway:
         d = self.telem or {}
         now = time.time()
         if d and ((d.get("est_sog") or 0.0) > self.cfg["ais"].get("at_sea_kn", 2.0) or
-                  d.get("mode") in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK, proto.MODE_AUTO, proto.MODE_REMOTE)):
+                  d.get("mode") in (proto.MODE_MANUAL, proto.MODE_HDG_LOCK, proto.MODE_AUTO, proto.MODE_REMOTE,
+                                    proto.MODE_DP)):
             self.at_sea_until = now + 300.0
         return now < self.at_sea_until
 
@@ -191,11 +192,16 @@ class Gateway:
         if not d or d.get("pos_source", 0) == 0:
             return {"lat": None}
         return {"lat": d.get("est_lat"), "lon": d.get("est_lon"), "sog": d.get("est_sog"), "cog": d.get("est_cog"),
-                "heading": d.get("heading"), "mode": d.get("mode")}
+                "heading": d.get("heading"), "mode": d.get("mode"),
+                "dp_sub": d.get("dp_sub") if d.get("mode") == proto.MODE_DP else None}
+
+    def nav_auto(self, o):
+        """The navigation request applies like in AUTO: AUTO, or a DP TRIP (CLAUDE.md P; the AURIX's nav_applies)."""
+        return o.get("mode") == proto.MODE_AUTO or (o.get("mode") == proto.MODE_DP and o.get("dp_sub") == proto.DP_TRIP)
 
     def check_prog(self, st, ftype, payload):
-        """Program upload / AUTO start through the gateway: refused across shallow water (114) or out of
-        the geofence (120). -> None (fine), the refusal text (114) or (code, text)."""
+        """Program upload / AUTO start / DP TRIP start through the gateway: refused across shallow water (114)
+        or out of the geofence (120). -> None (fine), the refusal text (114) or (code, text)."""
         import struct as _st
         if ftype == proto.T_PROG_BEGIN and len(payload) >= 2:
             st.prog_up = {"n": payload[0], "wps": {}}
@@ -214,20 +220,29 @@ class Gateway:
                 self.audit("program_refused", station=st.id, user=st.user, why=why)
                 return 120, why
             self.prog_wps = wps
-        elif ftype in (proto.T_AUTO_START, proto.T_AUTO_RESUME):
+        elif ftype in (proto.T_AUTO_START, proto.T_AUTO_RESUME) or (
+                ftype == proto.T_DP and len(payload) >= 2 and payload[0] == proto.DP_START and
+                payload[1] & 0x7F == proto.DP_TRIP):
             o, d = self.own(), self.telem or {}
             if o["lat"] is None:
                 return None                                 # the AURIX refuses without a position anyway
             wps = self.prog_wps or []
-            k = d.get("auto_wp", 0) or 0
-            rest = wps[k:] if wps and k < len(wps) else ([(d["wp_lat"], d["wp_lon"])] if d.get("wp_set") else [])
+            dp = ftype == proto.T_DP
+            if dp:
+                # a DP TRIP (CLAUDE.md P) is checked like AUTO: from waypoint 1, or "continue" from the DP's waypoint
+                k = (d.get("dp_wp", 0) or 0) if payload[1] & proto.DP_TRIP_CONTINUE else 0
+                rest = wps[k:] if wps and k < len(wps) else []
+            else:
+                k = d.get("auto_wp", 0) or 0
+                rest = wps[k:] if wps and k < len(wps) else ([(d["wp_lat"], d["wp_lon"])] if d.get("wp_set") else [])
+            kind = "dp_trip_refused" if dp else "auto_refused"
             bad = self.shallow.check_program(rest, start=(o["lat"], o["lon"])) if rest else None
             if bad:
-                self.audit("auto_refused", station=st.id, user=st.user, why=bad[0])
+                self.audit(kind, station=st.id, user=st.user, why=bad[0])
                 return bad[0]
             why = self.geofence.check(rest, start=(o["lat"], o["lon"])) if rest else None
             if why:
-                self.audit("auto_refused", station=st.id, user=st.user, why=why)
+                self.audit(kind, station=st.id, user=st.user, why=why)
                 return 120, why
         return None
 
@@ -258,7 +273,7 @@ class Gateway:
         if o.get("mode") != proto.MODE_HDG_LOCK and self.avoider.hdg_set is not None:
             self.avoider.hdg_set_sent()                     # left HDG LOCK: an accepted heading is dropped
             self.hdg_set_until = 0.0
-        req = self.avoider.update(now, o, self.ais.list(), o.get("mode"))
+        req = self.avoider.update(now, o, self.ais.list(), o.get("mode"), o.get("dp_sub"))
         if req["kind"] == proto.NAV_HDG_SET:
             if not self.hdg_set_until:
                 self.hdg_set_until = now + 3.0              # repeated for 3 s (same number: applied once)
@@ -266,7 +281,7 @@ class Gateway:
                 self.avoider.hdg_set_sent()
                 self.hdg_set_until = 0.0
         sh = self.shallow.watch(o) if o["lat"] is not None else None
-        if sh and o.get("mode") == proto.MODE_AUTO:
+        if sh and self.nav_auto(o):                        # AUTO or a DP TRIP: slow down (SHALLOW alarm)
             req["cap_kn"] = min(req["cap_kn"] if req["cap_kn"] is not None else 1e9, self.shallow.cfg["slow_kn"])
             if req["kind"] == proto.NAV_NONE:
                 req["kind"] = proto.NAV_CAP

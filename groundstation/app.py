@@ -79,6 +79,8 @@ MODE_COLORS = theme.MODE_COLOURS
 PLOT_S = 120.0              # seconds shown in the plot
 RELAY_PUSH_S = 15.0         # the boat file's relay table: no re-send to the AURIX before this (CLAUDE.md M)
 THRUSTER_PUSH_S = 15.0      # the boat file's DP thruster settings: no re-send before this (CLAUDE.md P)
+DP_MAX_KN = 3.0             # DP CRUISE / TRIP speed ceiling (the AURIX's dp_max_kn, TO CONFIRM; it refuses more)
+DP_KN_STEP = 0.5
 CRANK_PERIOD_MS = 200       # engine START held: CRANK to the AURIX at 5 Hz (it releases after 300 ms without one)
 LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
 P_MAX_LEG = 4               # parameter "max_leg_kn" (app/link.c): the highest leg speed of a program
@@ -257,6 +259,7 @@ class App:
         self.fence_dirty = False
         self.new_wp = {"kn": 8.0, "radius": 25.0}   # speed / radius of a waypoint added on the map
         self.maxkn_edit = None          # the max leg speed being set (None = the boat's value)
+        self.dp_kn = 1.0                # DP CRUISE / TRIP speed asked by this station (screen 2 "dp" panel)
         self.decisions = collections.deque(maxlen=8)    # copilot actions -> the captain's answer (shown)
         self.pdlg = None                # power raise dialog
         self.prog_dl = []               # PROG_WP_VALUE frames being downloaded
@@ -3045,6 +3048,8 @@ class App:
         p.badge(T("mode." + mode), MODE_COLORS.get(mode, MODE_COLORS["STANDBY"]), tag="mode")
         if d["mode"] in (proto.MODE_HDG_LOCK, proto.MODE_AUTO):
             p.text("→ %05.1f°" % d["target"], "value", tag="target")
+        elif d["mode"] == proto.MODE_DP and "dp_heading" in d:
+            p.text("→ %05.1f°" % d["dp_heading"], "value", tag="target")
         p.br()
         p.text(T("cap.power_lbl", f="%.0f" % d["power_fwd"], r="%.0f" % d["power_rev"]), "label",
                colour=C["note_txt"] if d["power_raised"] else None, bold=True, tag="power")
@@ -3060,7 +3065,8 @@ class App:
         src = T("pos.%d" % d["pos_source"]) if d["pos_source"] < 4 else "?"
         rows = [([T("cap.v_heading"), "%05.1f°" % d["heading"] if d["compass_ok"] else T("cap.no_compass")],
                  None if d["compass_ok"] else bad),
-                ([T("cap.v_target"), "%05.1f°" % d["target"]], None),
+                ([T("cap.v_dp"), self.dp_status_text(d)], C["bad_txt"] if d.get("dp_offspot") else None)
+                if d["mode"] == proto.MODE_DP else ([T("cap.v_target"), "%05.1f°" % d["target"]], None),
                 ([T("cap.v_yaw"), "%+.1f °/s" % d["yaw_rate"]], None),
                 ([T("cap.v_gear"), T("gear.%d" % gear) if gear is not None else "?"],
                  {1: ok, 2: bad}.get(gear)),
@@ -3086,28 +3092,28 @@ class App:
         p = self.ov.panel("control", T("ov.control"), "sw")
         d = self.t or {}
         mode = d.get("mode_name")
-        p.button(T("cap.btn_hdg_lock"), self.info_hdg, on=mode == "HDG_LOCK", tag="btn_hdg")
-        p.button(T("cap.btn_auto"), self.auto_start, on=mode == "AUTO", tag="btn_auto")
-        if self.manual_here():
-            p.button(T("cap.btn_manual"), self.remote_request, "info", on=mode == "REMOTE_MANUAL", tag="btn_manual")
-            p.button(T("cap.btn_maneuver"), self.maneuver_request, "info", on=mode == "MANEUVER", tag="btn_maneuver")
-        p.br()
-        p.text(self.auto_text(), "label", tag="auto")
-        p.br(stretch=True)
-        p.button(T("cap.pause"), lambda: self.cmd(proto.T_AUTO_PAUSE, b"", TE("what.auto_pause")))
-        p.button(T("cap.resume"), lambda: self.cmd(proto.T_AUTO_RESUME, b"", TE("what.auto_resume")))
-        p.button(T("cap.skip"), lambda: self.cmd(proto.T_AUTO_SKIP, b"", TE("what.auto_skip")))
-        # generator auto (CLAUDE.md K): the captain switches it on / off (a copilot's ON needs the captain's
-        # ACCEPT - the gateway holds it); the boat itself decides when it runs (STANDBY, neutral, low bank);
-        # its state is in the status panel
-        gs = d.get("gen_state", 0)
-        if gs == 0:
-            p.button(T("cap.btn_gen_on"), lambda: self.cmd(proto.T_GENERATOR, bytes([1]), TE("what.generator_on")),
-                     tag="btn_gen")
+        if d.get("mode") == proto.MODE_DP:
+            # DP replaces the mode buttons and the AUTO rows (CLAUDE.md P, step 11): none of those modes can be
+            # entered from DP (the AURIX's mode table), STANDBY / DP STOP / the joystick leave it
+            self.dp_rows(p, d)
         else:
-            p.button(T("cap.btn_gen_off"), lambda: self.cmd(proto.T_GENERATOR, bytes([0]), TE("what.generator_off")),
-                     on=True, tag="btn_gen")
-        p.br()
+            p.button(T("cap.btn_hdg_lock"), self.info_hdg, on=mode == "HDG_LOCK", tag="btn_hdg")
+            p.button(T("cap.btn_auto"), self.auto_start, on=mode == "AUTO", tag="btn_auto")
+            if self.manual_here():
+                p.button(T("cap.btn_manual"), self.remote_request, "info", on=mode == "REMOTE_MANUAL",
+                         tag="btn_manual")
+                p.button(T("cap.btn_maneuver"), self.maneuver_request, "info", on=mode == "MANEUVER",
+                         tag="btn_maneuver")
+            p.br()
+            p.text(self.auto_text(), "label", tag="auto")
+            p.br(stretch=True)
+            p.button(T("cap.pause"), lambda: self.cmd(proto.T_AUTO_PAUSE, b"", TE("what.auto_pause")))
+            p.button(T("cap.resume"), lambda: self.cmd(proto.T_AUTO_RESUME, b"", TE("what.auto_resume")))
+            p.button(T("cap.skip"), lambda: self.cmd(proto.T_AUTO_SKIP, b"", TE("what.auto_skip")))
+            self.gen_button(p, d)
+            p.br()
+            if self.dp_available():
+                self.dp_rows(p, d)
         wps = self.prog["wps"]
         p.text(T("ov.route", n=len(wps), nm="%.1f" % self.route_nm(), kn="%.0f" % self.new_wp["kn"]) +
                (T("ov.not_sent") if self.route_dirty else ""), "label",
@@ -3443,6 +3449,129 @@ class App:
             if d.get("eng_killed") or d.get("eng_tripped"):
                 p.text(T("eng.killed") if d.get("eng_killed") else T("eng.tripped"), "small", colour=C["bad_txt"],
                        bold=True, tag="relay_eng", wrap=0.18)
+            p.br()
+
+    # --- DP (CLAUDE.md P, step 11): the DP rows of screen 2's control panel + the status line; requests only -------
+    def dp_available(self):
+        """The DP rows of the control panel: in DP, or when the AURIX has both thrusters fitted (the boat file's
+        settings taken)."""
+        d = self.t or {}
+        return d.get("mode") == proto.MODE_DP or bool(d.get("thr_fitted_bow") and d.get("thr_fitted_stern"))
+
+    def dp_status_text(self, d):
+        """'SPOT · 2.3 m' / 'CRUISE · 1.5 kn' / 'TRIP · WP 3 · 2.0 kn': the DP sub-state and its main number."""
+        sub = d.get("dp_sub", 0)
+        name = T("dp.sub_%d" % sub) if 0 <= sub < len(proto.DP_SUBS) else "?"
+        if sub in (proto.DP_SPOT, proto.DP_JOG):
+            return "%s · %s" % (name, T("dp.err", m="%.1f" % d.get("dp_err_m", 0.0)))
+        if sub == proto.DP_CRUISE:
+            return "%s · %.1f kn" % (name, d.get("dp_set_kn", 0.0))
+        if sub == proto.DP_TRIP:
+            return "%s · %s · %.1f kn" % (name, T("dp.wp", n=d.get("dp_wp", 0) + 1), d.get("dp_trip_kn", 0.0))
+        return name
+
+    def dp_err_text(self, d):
+        """Where the spot is from the boat: '1.2 m ahead, 0.4 m to port'."""
+        f, sb = d.get("dp_err_fwd", 0.0), d.get("dp_err_stbd", 0.0)
+        return T("dp.err_dir", f="%.1f" % abs(f), fd=T("dp.ahead") if f >= 0 else T("dp.astern"),
+                 s="%.1f" % abs(sb), sd=T("dp.stbd") if sb >= 0 else T("dp.port"))
+
+    def dp_start(self, sub, cont=False):
+        """START SPOT / CRUISE / TRIP (TRIP "continue" = from the DP's waypoint after a STOP waypoint). From STANDBY
+        the boat waits for the joystick CONFIRM (onboard CREWED / shore UNCREWED); in DP a SPOT is at once. The
+        gateway checks a TRIP like AUTO (shallow 114, geofence 120); a copilot's start waits for the captain."""
+        kn = self.dp_kn if sub in (proto.DP_CRUISE, proto.DP_TRIP) else 0.0
+        arg = sub | (proto.DP_TRIP_CONTINUE if cont else 0)
+        if sub == proto.DP_CRUISE:
+            what = TE("what.dp_cruise", kn="%.1f" % kn)
+        elif sub == proto.DP_TRIP:
+            what = TE("what.dp_trip_cont" if cont else "what.dp_trip", kn="%.1f" % kn)
+        else:
+            what = TE("what.dp_spot")
+        self.cmd(proto.T_DP, proto.p_dp(proto.DP_START, arg, int(round(kn * 100))), what)
+
+    def dp_stop(self):
+        """DP STOP: thrusters 0, STANDBY (also cancels a waiting DP request). A copilot's goes straight."""
+        self.cmd(proto.T_DP, proto.p_dp(proto.DP_STOP), TE("what.dp_stop"))
+
+    def dp_jog(self, direction):
+        key = ("what.dp_jog_ahead", "what.dp_jog_astern", "what.dp_jog_port", "what.dp_jog_stbd")[direction]
+        self.cmd(proto.T_DP, proto.p_dp(proto.DP_JOG_ACT, direction), TE(key, m="%.1f" % self.dp_jog_m()))
+
+    def dp_kn_step(self, dd):
+        self.dp_kn = max(DP_KN_STEP, min(DP_MAX_KN, round((self.dp_kn + dd * DP_KN_STEP) / DP_KN_STEP) * DP_KN_STEP))
+        self.render(force=True)
+
+    def dp_speed_send(self):
+        """CRUISE / TRIP: the new speed set point (DP only)."""
+        self.cmd(proto.T_DP, proto.p_dp(proto.DP_SPEED, 0, int(round(self.dp_kn * 100))),
+                 TE("what.dp_speed", kn="%.1f" % self.dp_kn))
+
+    def dp_jog_m(self):
+        b = self.boat
+        t = getattr(b, "thrusters", None) if b is not None and not getattr(b, "error", None) else None
+        try:
+            return float((t or {}).get("jog_m", 1.5))
+        except (TypeError, ValueError, AttributeError):
+            return 1.5
+
+    def gen_button(self, p, d):
+        """Generator auto (CLAUDE.md K): the captain switches it on / off (a copilot's ON needs the captain's ACCEPT -
+        the gateway holds it); the boat itself decides when it runs (STANDBY / DP, neutral, low bank); its state is in
+        the status panel."""
+        if d.get("gen_state", 0) == 0:
+            p.button(T("cap.btn_gen_on"), lambda: self.cmd(proto.T_GENERATOR, bytes([1]), TE("what.generator_on")),
+                     tag="btn_gen")
+        else:
+            p.button(T("cap.btn_gen_off"), lambda: self.cmd(proto.T_GENERATOR, bytes([0]), TE("what.generator_off")),
+                     on=True, tag="btn_gen")
+
+    def dp_rows(self, p, d):
+        """The DP part of the control panel (CLAUDE.md P, step 11): in DP it replaces the mode buttons and the AUTO
+        rows - the state, DP
+        STOP, generator; SPOT / CRUISE / TRIP (+ continue after a STOP waypoint) and the CRUISE / TRIP speed; in SPOT /
+        JOG the JOG arrows + where the spot is. The heading = the panel's +-1 / +-10 (HEADING_ADJ, a DP heading change
+        in DP). Outside DP (both thrusters fitted) one line: SPOT / CRUISE / TRIP + the speed. Requests only - the
+        AURIX decides every time (HELM, CONFIRM, GPS, thrusters, heat budget)."""
+        in_dp = d.get("mode") == proto.MODE_DP
+        sub = d.get("dp_sub", 0) if in_dp else 0
+        if in_dp:
+            p.badge("DP " + self.dp_status_text(d), MODE_COLORS.get("DP", MODE_COLORS["STANDBY"]), level="label",
+                    tag="dp_state")
+            p.button(T("dp.stop"), self.dp_stop, "warn", level="small", tag="dp_stop")
+            self.gen_button(p, d)
+            p.br()
+        else:
+            p.text(T("dp.label"), "small", colour=C["dim"], bold=True, tag="dp_state")
+        p.button(T("dp.spot"), lambda: self.dp_start(proto.DP_SPOT), on=sub in (proto.DP_SPOT, proto.DP_JOG),
+                 level="small", tag="dp_spot")
+        p.button(T("dp.cruise"), lambda: self.dp_start(proto.DP_CRUISE), on=sub == proto.DP_CRUISE, level="small",
+                 tag="dp_cruise")
+        p.button(T("dp.trip"), lambda: self.dp_start(proto.DP_TRIP), on=sub == proto.DP_TRIP, level="small",
+                 tag="dp_trip")
+        if in_dp and sub == proto.DP_SPOT and d.get("dp_wp", 0) > 0 and not d.get("dp_trip_done"):
+            p.button(T("dp.trip_cont"), lambda: self.dp_start(proto.DP_TRIP, cont=True), level="small",
+                     tag="dp_trip_cont")
+        cur = d.get("dp_set_kn") if sub == proto.DP_CRUISE else d.get("dp_trip_kn") if sub == proto.DP_TRIP else None
+        p.text(T("dp.speed", kn="%.1f" % self.dp_kn), "small",
+               colour=C["note_txt"] if cur is not None and abs(cur - self.dp_kn) > 0.05 else None, tag="dp_kn")
+        p.button("−", lambda: self.dp_kn_step(-1), level="small", tag="dp_kn_minus")
+        p.button("+", lambda: self.dp_kn_step(1), level="small", tag="dp_kn_plus")
+        if in_dp and sub in (proto.DP_CRUISE, proto.DP_TRIP):
+            p.button(T("ov.set"), self.dp_speed_send, "ok", level="small",
+                     enabled=cur is None or abs(cur - self.dp_kn) > 0.05, tag="dp_kn_set")
+        if not in_dp and d.get("dp_pending"):
+            p.button(T("dp.stop"), self.dp_stop, "warn", level="small", tag="dp_stop")     # cancels the request
+        p.br()
+        if d.get("dp_pending"):
+            p.text(T("dp.pending"), "small", colour=theme.CAUTION, bold=True, tag="dp_pending")
+            p.br()
+        if in_dp and sub in (proto.DP_SPOT, proto.DP_JOG):
+            p.text(T("dp.jog", m="%.1f" % self.dp_jog_m()), "small", colour=C["dim"], tag="dp_jog_lbl")
+            for k, lab in ((proto.DP_JOG_AHEAD, "▲"), (proto.DP_JOG_ASTERN, "▼"), (proto.DP_JOG_PORT, "◀"),
+                           (proto.DP_JOG_STBD, "▶")):
+                p.button(lab, lambda k=k: self.dp_jog(k), level="small", tag="dp_jog_%d" % k)
+            p.text(self.dp_err_text(d), "small", colour=C["bad_txt"] if d.get("dp_offspot") else None, tag="dp_err")
             p.br()
 
     def panel_traffic(self, H):

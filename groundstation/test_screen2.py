@@ -28,6 +28,9 @@
   S13 boat dropdown (CLAUDE.md H): the FIRST line of the status panel = the dropdown + the lamp
       (CONNECTED green only when found + connected + welcome name check passed, else grey), choosing
       a boat opens the login / confirm step with it selected, the line fits in the S1 matrix
+  S15 DP (CLAUDE.md P, step 11): the DP rows of the control panel (only with both thrusters fitted or in DP),
+      SPOT / CRUISE / TRIP / STOP + speed, JOG arrows + the heading buttons in DP, "continue", CRUISE speed SET,
+      the status panel's DP line, off spot colour, copilot (start asked, STOP free), the S1 matrix in DP, Greek
   S14 relay buttons (CLAUDE.md O): the "relays" panel (boat file relays by group, placed by the fit
       test - the S1 matrix includes it), an interlocked pair on one line, the engine line with START
       (hold) + RESTART, lit = on / grey = unknown from the readback, momentary = press-and-hold (pulse,
@@ -125,6 +128,14 @@ class Rig:
         self.root = tk.Tk()
         self.errors = []
         self.root.report_callback_exception = lambda *a: self.errors.append(repr(a[1]))
+        # a posted menu / a question box blocks the Tk loop until a human answers (on Windows): in the tests that is
+        # a click that hit the wrong place - record it as an error instead of hanging the gate (seen once at step 11)
+        from tkinter import messagebox, simpledialog
+        tk.Menu.tk_popup = lambda m, *a, **k: self.errors.append("a menu was posted (blocking)")
+        for mod, names in ((messagebox, ("askyesno", "askokcancel", "showinfo", "showwarning", "showerror")),
+                           (simpledialog, ("askstring", "askinteger", "askfloat"))):
+            for n in names:
+                setattr(mod, n, lambda *a, _n=n, **k: self.errors.append("dialog %s opened (blocking)" % _n))
         self.ap = A.App(self.root, "tcp:127.0.0.1:%d" % self.port, layout=os.path.join(TMP, "layout.json"))
         self.root.state("normal")
         self.extra = {}
@@ -993,6 +1004,176 @@ def s14_relays(rig):
                bool(groups_known), free_extra, asked_engine, unknown_asked, gone, rig.errors[:2]))
 
 
+# DP (CLAUDE.md P, step 11): both thrusters fitted (TELEM2 group N) + a DP SPOT state
+DP_THR = dict(thr_cfg=True, thr_active=True, thr_fitted_bow=True, thr_fitted_stern=True, thr_bow=-35, thr_stern=60,
+              thr_heat_b=40, thr_heat_s=20, thr_hot_bow=False, thr_hot_stern=False)
+DP_SPOT_T = dict(mode=proto.MODE_DP, mode_name="DP", dp_sub=proto.DP_SPOT, dp_err_fwd=2.0, dp_err_stbd=-1.5,
+                 dp_err_m=2.5, dp_heading=123.0, dp_set_kn=0.0, dp_trip_kn=0.0, dp_wp=0, dp_offspot=False,
+                 dp_pending=False, dp_trip_done=False, dp_overpower=False)
+
+
+def dp_clear(rig):
+    for k in list(DP_THR) + list(DP_SPOT_T):
+        rig.extra.pop(k, None)
+    rig.pump(0.3)
+
+
+def s15_dp(rig):
+    """CLAUDE.md P step 11: the DP rows of screen 2's control panel + the DP line of the status panel (DISPLAY +
+    requests only)."""
+    ap = rig.ap
+    rig.gateway_like(True)
+    ap.gw_status = fake_gw(ap.t)
+    rig.size(1366, 768, 1.25)
+    dp_clear(rig)
+    ap.render(force=True)
+    ops = lambda: [o for o in ap.ov.ops if o.get("panel") == "control" and str(o.get("tag")).startswith("dp_")]  # noqa
+    absent = not ops()
+    sent = []
+    orig_cmd, orig_send = ap.cmd, ap._send_cmd
+    ap.cmd = lambda f, p, w: sent.append((f, p))
+
+    def buttons():
+        ap.render(force=True)
+        return {o["tag"]: o for o in ops() if o["k"] == "button"}
+
+    def click(tag):
+        b = buttons()
+        if tag not in b:
+            return ["no button %s" % tag]
+        r = b[tag]["r"]
+        e = type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})()
+        ap.cv_press(e)
+        ap.cv_release(e)
+        out = list(sent)
+        sent.clear()
+        return out
+    D = proto.T_DP
+    try:
+        # STANDBY, thrusters fitted: SPOT / CRUISE / TRIP / STOP + the speed; no JOG, no heading
+        rig.extra.update(DP_THR)
+        rig.pump(0.4)
+        b = buttons()
+        stb_ok = bool({"dp_spot", "dp_cruise", "dp_trip", "dp_kn_minus", "dp_kn_plus"} <= set(b)) and \
+            not [t for t in b if t.startswith(("dp_jog_", "dp_kn_set", "dp_stop"))] and \
+            bool([o for o in ap.ov.ops if o.get("panel") == "control" and o.get("tag") == "auto"])   # AUTO rows stay
+        ap.dp_kn = 1.0
+        c_spot = click("dp_spot")
+        c_plus = click("dp_kn_plus") + click("dp_kn_plus") + click("dp_kn_plus") + click("dp_kn_plus") + \
+            click("dp_kn_plus") + click("dp_kn_plus")                     # 1.0 -> 3.0 (the ceiling), nothing sent
+        top = ap.dp_kn
+        c_minus = click("dp_kn_minus") + click("dp_kn_minus")             # 2.0
+        c_cruise = click("dp_cruise")
+        c_trip = click("dp_trip")
+        rig.extra.update(dp_pending=True)                                 # a request waits: STOP cancels it
+        rig.pump(0.3)
+        pend_txt = [o for o in ops() if o.get("tag") == "dp_pending"]
+        c_stop = click("dp_stop")
+        rig.extra.update(dp_pending=False)
+        start_ok = c_spot == [(D, proto.p_dp(proto.DP_START, proto.DP_SPOT, 0))] and c_plus == [] and top == 3.0 and \
+            c_minus == [] and c_cruise == [(D, proto.p_dp(proto.DP_START, proto.DP_CRUISE, 200))] and \
+            c_trip == [(D, proto.p_dp(proto.DP_START, proto.DP_TRIP, 200))] and \
+            c_stop == [(D, proto.p_dp(proto.DP_STOP))] and bool(pend_txt)
+        # in DP SPOT: the state + where the spot is, JOG arrows, DP STOP; the AUTO rows gone; the panel's +-1 / +-10 =
+        # HEADING_ADJ (a DP heading change on the boat); the status panel's DP line
+        rig.extra.update(DP_SPOT_T)
+        rig.pump(0.4)
+        b = buttons()
+        st_txt = " ".join(o.get("s", "") for o in ops() if o.get("tag") in ("dp_state", "dp_err"))
+        status_txt = " ".join(str(o.get("s", "")) for o in ap.ov.ops if o.get("panel") == "status")
+        no_auto = not [o for o in ap.ov.ops if o.get("panel") == "control" and o.get("tag") == "auto"]
+        spot_ok = all("dp_jog_%d" % k in b for k in range(4)) and "dp_stop" in b and no_auto \
+            and A.T("dp.sub_1") in st_txt and "2.5" in st_txt and A.T("dp.ahead") in st_txt and \
+            A.T("dp.port") in st_txt and A.T("dp.sub_1") in status_txt and "123.0" in status_txt and \
+            "dp_trip_cont" not in b and b["dp_spot"]["on"]
+        c_jog = click("dp_jog_%d" % proto.DP_JOG_PORT)
+        hb = [o for o in ap.ov.ops if o.get("panel") == "control" and o["k"] == "button" and o.get("s") == "+10"]
+        c_hdg = []
+        if hb:
+            r = hb[0]["r"]
+            e = type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})()
+            ap.cv_press(e)
+            ap.cv_release(e)
+            c_hdg, sent[:] = list(sent), []
+        jog_ok = c_jog == [(D, proto.p_dp(proto.DP_JOG_ACT, proto.DP_JOG_PORT))] and \
+            c_hdg == [(proto.T_HEADING_ADJ, proto.p_heading(10))]
+        # SPOT after a STOP waypoint of a TRIP: "continue"
+        rig.extra.update(dp_wp=2)
+        rig.pump(0.3)
+        c_cont = click("dp_trip_cont")
+        cont_ok = c_cont == [(D, proto.p_dp(proto.DP_START, proto.DP_TRIP | proto.DP_TRIP_CONTINUE, 200))]
+        # CRUISE at 1.0 kn: the speed SET sends 2.0 kn; no JOG in CRUISE
+        rig.extra.update(dp_sub=proto.DP_CRUISE, dp_set_kn=1.0, dp_wp=0)
+        rig.pump(0.3)
+        b = buttons()
+        c_set = click("dp_kn_set")
+        cruise_ok = not [t for t in b if t.startswith("dp_jog_")] and b["dp_cruise"]["on"] and \
+            c_set == [(D, proto.p_dp(proto.DP_SPEED, 0, 200))]
+        # off the spot: the error in the bad colour
+        rig.extra.update(DP_SPOT_T, dp_offspot=True, dp_err_m=17.0, dp_err_fwd=17.0, dp_err_stbd=0.0)
+        rig.pump(0.3)
+        ap.render(force=True)
+        err_op = [o for o in ops() if o.get("tag") == "dp_err"]
+        off_ok = bool(err_op) and err_op[0].get("colour") == A.C["bad_txt"]
+    finally:
+        ap.cmd = orig_cmd
+    # a copilot (through the gateway): a DP start waits for the captain, DP STOP goes straight
+    rig.extra.update(DP_SPOT_T)
+    ap.gw_status = fake_gw(ap.t, captain=False)
+    rig.pump(0.3)
+    seqs = []
+    ap._send_cmd = lambda f, p, w, confirm=None: seqs.append(f) or len(seqs)
+    try:
+        n0 = len(ap.decisions)
+        ap.dp_stop()
+        stop_free = len(ap.decisions) == n0 and seqs == [proto.T_DP]
+        ap.dp_start(proto.DP_SPOT)
+        start_asked = len(ap.decisions) == n0 + 1 and ap.decisions[-1]["state"] == "wait"
+    finally:
+        ap._send_cmd = orig_send
+    ap.decisions.clear()
+    ap.gw_status = fake_gw(ap.t)
+    # the S1 matrix with the DP rows (every panel full; STANDBY with both thrusters fitted, then DP SPOT): 7 panels,
+    # nothing clipped / over the boat; the Greek DP rows have no English words
+    fill_everything(rig)
+    rig.extra.update(DP_THR)
+    cases = []
+    greek_en = []
+    for state in ("standby", "spot"):
+        if state == "spot":
+            rig.extra.update(DP_SPOT_T)
+        for lang in ("el", "en"):
+            i18n.set_lang(lang, save=False)
+            for W, H in ((1366, 768), (1366, 658), (1920, 1080), (1920, 970)):
+                for dpi in (1.0, 1.25, 1.5):
+                    rig.size(W, H, dpi)
+                    cases.append(((state, lang, W, H, dpi), len(ap.ov.panels), layout_problems(ap)))
+                    if lang == "el" and W == 1920 and dpi == 1.0:
+                        for o in ops() + [o for o in ap.ov.ops if o.get("panel") == "status"]:
+                            greek_en += english_words(o.get("s", ""))
+    bad = [c for c in cases if c[2] or c[1] != 7]
+    i18n.set_lang("el", save=False)
+    rig.size(1366, 768, 1.25)
+    no_relay_boat(rig)
+    dp_clear(rig)
+    ap.render(force=True)
+    gone = not ops()
+    report("S15 DP on screen 2's control panel: the DP rows only with both thrusters fitted (or in DP); SPOT / CRUISE / "
+           "TRIP (+ the speed, ceiling 3 kn) from STANDBY, STOP cancels a waiting request; in DP (instead of the AUTO "
+           "rows) the state + where the spot is, DP STOP, JOG arrows, the panel's heading +-1 / +-10 (HEADING_ADJ), "
+           "\"continue\" after a STOP waypoint, the CRUISE speed SET; the status panel's DP line; off spot in the bad "
+           "colour; a copilot's start waits for the captain, DP STOP goes straight; the S1 matrix in DP fits; no "
+           "English in the Greek rows",
+           absent and stb_ok and start_ok and spot_ok and jog_ok and cont_ok and cruise_ok and off_ok and stop_free and
+           start_asked and not bad and not greek_en and gone and not rig.errors,
+           "absent first %s; STANDBY buttons %s; starts %s (spot %s, cruise %s, trip %s, stop %s, ceiling %.1f); DP SPOT %s "
+           "(\"%s\"); JOG / heading %s %s; continue %s %s; CRUISE SET %s %s; off spot %s; copilot: STOP free %s, start "
+           "asked %s; matrix problems %s; English in Greek %s; gone %s; errors %s" % (
+               absent, stb_ok, start_ok, c_spot, c_cruise, c_trip, c_stop, top, spot_ok, st_txt[:80], jog_ok,
+               c_jog + c_hdg, cont_ok, c_cont, cruise_ok, c_set, off_ok, stop_free, start_asked,
+               [(c[0], c[1], c[2][:3]) for c in bad][:4], greek_en[:8], gone, rig.errors[:2]))
+
+
 
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
@@ -1002,7 +1183,7 @@ def main():
     rig = Rig()
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
-                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays):
+                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp):
             try:
                 fn(rig)
             except Exception as e:

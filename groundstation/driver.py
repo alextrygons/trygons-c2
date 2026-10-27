@@ -652,6 +652,11 @@ class DriverScreen:
         hud_rows = [dict(r, click=active and r["group"] != "engine" and r["state"] != "unknown")
                     for r in rows if r.get("show_hud")]
         s["relay_lines"] = [ln for _g, ln in a.relay_lines(hud_rows)]
+        thr = getattr(a.boat, "thrusters", None) if a.boat is not None and not a.boat.error else None
+        try:                                                    # DP box: the square's edge = DP OFF SPOT distance
+            s["dp_scale_m"] = float((thr or {}).get("spot_alarm_m", 15.0))
+        except (TypeError, ValueError, AttributeError):
+            s["dp_scale_m"] = 15.0
         s["mv_ask"] = None
         if d is not None and "rjoy_lever1000" in d and d.get("rjoy_age_ms", 99999) < 1000:
             lv = d["rjoy_lever1000"] / 1000.0                   # the captain's lever: REV / N / FWD zone

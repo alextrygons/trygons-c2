@@ -102,6 +102,7 @@ def families():
     f += ["menu.theme_" + k for k in ("dark", "light")] + ["map.layer_rings"]
     f += ["prof.%d" % i for i in range(3)] + ["tab." + k for k in ("connection", "control")]
     f += ["ov.relay_grp_" + g for g in proto.RELAY_GROUPS]
+    f += ["dp.sub_%d" % i for i in range(len(proto.DP_SUBS))]
     return f
 
 

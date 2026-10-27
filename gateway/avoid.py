@@ -26,12 +26,17 @@ HEADING LOCK: the same route as a PROPOSAL (heading + suggested speed) for
   the driver; ACCEPT -> the locked heading changes; when clear: a return
   proposal (also ACCEPT). The throttle stays with the driver.
 MANUAL / REMOTE MANUAL: alarm only.
+DP (CLAUDE.md P, step 11): a DP TRIP is handled like AUTO (slow, route astern,
+  rejoin; the slowest speed = dp_min_kn, DP runs at <= 3 kn); in DP SPOT / JOG /
+  CRUISE a DANGER target = the DRIVER DECISION alarm only (no heading, no cap).
 """
 import math
 
 from ais import KN, NM, bearing, from_xy, to_xy
 
 MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE = range(6)
+MODE_DP = 8                             # app/smallboat.h MODE_DP
+DP_TRIP = 4                             # app/dp.h DP_TRIP (TELEM2 group N "dp_sub")
 
 # navreq kinds / reasons / alarm bits (app/smallboat.h SB_NAV_*)
 KIND_NONE, KIND_CAP, KIND_HEADING, KIND_HDG_SET = 0, 1, 2, 3
@@ -45,6 +50,7 @@ DEFAULTS = {
     "starboard": [10, 20, 30, 40, 50, 60, 70, 80, 90], "port": [-10, -20, -30, -40, -50, -60],
     "side_m": 100.0,                    # "crossing ahead": from one side of its heading line to the other (> this)
     "repropose_s": 60.0,                # HDG LOCK: after a REJECT no new proposal for this long (the alarm stays)
+    "dp_min_kn": 1.0,                   # DP TRIP: the slowest speed asked (instead of min_kn: DP runs at <= 3 kn)
 }
 
 
@@ -271,8 +277,9 @@ class Avoider:
             self.since = now
         self.state, self.why = state, why
 
-    def update(self, now, own, targets, mode):
-        """own: {"lat", "lon", "sog", "cog", "heading"}; returns the navreq part for the AURIX:
+    def update(self, now, own, targets, mode, dp_sub=None):
+        """own: {"lat", "lon", "sog", "cog", "heading"}; dp_sub = the DP sub-state in MODE_DP (TELEM2 group N);
+        returns the navreq part for the AURIX:
         {"kind", "heading", "cap_kn", "reason", "alarm"} and fills threats / proposal / route."""
         c = self.cfg
         req = {"kind": KIND_NONE, "heading": None, "cap_kn": None, "reason": 0, "alarm": 0}
@@ -292,6 +299,24 @@ class Avoider:
                     if not t["stale"])
         if mode == MODE_AUTO:
             self._auto(now, own, targets, ref, danger, warn, clear, horizon, req)
+        elif mode == MODE_DP and dp_sub == DP_TRIP:
+            # a DP TRIP = like AUTO (the AURIX applies the cap / heading in TRIP), at DP speeds
+            base = self.cfg
+            self.cfg = dict(base, min_kn=min(base["min_kn"], base["dp_min_kn"]))
+            try:
+                self._auto(now, own, targets, ref, danger, warn, clear, horizon, req)
+            finally:
+                self.cfg = base
+        elif mode == MODE_DP:
+            # DP SPOT / JOG / CRUISE: never a heading or a cap - a DANGER target = DRIVER DECISION alarm only
+            self.route, self.proposal, self.heading = [], None, None
+            self.slow_kn = None
+            if danger:
+                self._set("DRIVER DECISION", "DP %s: the driver decides (no avoidance in SPOT / JOG / CRUISE)" % (
+                    {1: "SPOT", 2: "JOG", 3: "CRUISE"}.get(dp_sub, "?")), now)
+                req["alarm"] |= ALM_COLLISION | ALM_DECISION
+            else:
+                self._set("CLEAR", "DP: no danger", now)
         elif mode == MODE_HDG_LOCK:
             self._hdg_lock(now, own, targets, ref, danger, warn, clear, horizon, req)
         else:

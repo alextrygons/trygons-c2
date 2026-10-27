@@ -30,7 +30,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | DONE (gate OK: sim 225/225 + bridge 224/224, TriCore + iLLD checks, lang 5/5, boats 9/9, screen 2 14/14 incl. S14 + S1 with the relays panel, sound 10/10, avoidance 14/14, gateway 108/108 incl. RL1-RL2; test_driver 20/20 incl. I21; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-7b HEAD, every other suite this tree), stations storm I16 30 s 0 violations) | this commit |
 | 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | DONE (gate OK except gateway B3 under PC load - section B alone 12/12 PASS; sim 229/229 + bridge 228/228 incl. DP1-DP4, TriCore + iLLD + thruster-writer / safe-output checks, boats 10/10 incl. B10, screen 2, lang, sound, avoidance; test_driver 20/20; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-8 HEAD, every other suite this tree), storm 200 episodes I39 4.28 M checks 0 fails) | this commit |
 | 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A) incl. DP5-DP14 + GN9, TriCore + iLLD + writer checks, gateway 108/108, screen 2 14/14, lang 5/5; test_driver 20/20 (twice); acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-9 HEAD, every other suite this tree), storm 200 episodes I39 4.28 M checks, I40-I43 10 k DP steps, 0 fails) | this commit |
-| 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | | |
+| 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A), TriCore + iLLD + writer checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15 incl. S15, sound 10/10, avoidance 14/14, gateway 111/111 incl. DP1-DP3; test_driver 21/21 incl. I22; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-10 HEAD, every other suite this tree), storm 200 episodes) | this commit |
 | 12 | Gateway on a rugged x86 mini PC: remove Pi-only parts, 3.3 V USB-UART (never RS232), USB AIS receiver; README / PARTS / WIRING | | |
 | 13 | Open items: AUTO return, docs/screens pictures (tools/demo_screens.py), paddlewheel, analog joystick | | |
 | 14 | Final check: full acceptance + 24 h soak, TEST_REPORT | | |
@@ -364,6 +364,26 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   test_driver I1 waits until the HUD was drawn at the real window size (on a busy PC the first HUD was still the one
   drawn at 200 x 150 - also seen once at the step-9 HEAD). Gate: the first run had gateway F1e fail (section F1 alone
   5/5 PASS, PC load), the second run GATE OK.
+- Step 11 (2026-10-27): DP part 3 = ground station + gateway (DISPLAY + requests only; no AURIX change).
+  Screen 2 (app.py): dp_rows in the control panel - with both thrusters fitted (TELEM2 thr_fitted_*) one "DP:" line
+  SPOT / CRUISE / TRIP + the speed (- / +, 0.5 .. 3 kn = DP_MAX_KN, the AURIX's dp_max_kn); "waiting for CONFIRM" + DP
+  STOP (cancels) while dp_pending; in DP the rows replace the mode buttons + AUTO rows: state badge, DP STOP, generator,
+  SPOT / CRUISE / TRIP (+ "TRIP: continue" after a STOP waypoint = DP_TRIP | DP_TRIP_CONTINUE), speed SET (DP_SPEED), in
+  SPOT / JOG the JOG arrows (jog_m from the boat file) + where the spot is (red when off spot); the panel's +-1 / +-10 =
+  HEADING_ADJ. Status panel: the DP line instead of "target" + the held heading. Screen 1 (hud.Hud.dp): the DP box in
+  the CDI place (mode 8, like MANEUVER): title, spot vector (square edge = spot_alarm_m, driver.py dp_scale_m), thrust
+  bars B / S, amber when hot / off spot. Gateway: check_prog for T_DP START TRIP (shallow 114 / geofence 120, audit
+  "dp_trip_refused", "continue" from dp_wp), stations.prog_check includes T_DP; nav_compose / nav_auto: shallow cap +
+  avoider._auto in AUTO or a DP TRIP (dp_min_kn 1 kn as the slowest asked); DP SPOT / JOG / CRUISE danger = COLLISION +
+  DRIVER DECISION alarm only (kind NONE); DP counts as "at sea" for AIS. proto.decode_telemetry: in DP with the GPS
+  trusted est_sog / est_cog = the GPS values (the DR velocity comes from the idle outboard; DR values in dr_sog /
+  dr_cog). Lang el + en (dp.*, what.dp_*, cap.v_dp), MANUAL 7 DP + MANUAL_EL, CLAUDE.md P "Done (step 11)".
+  Tests: test_screen2 S15, test_driver I22, gateway DP1-DP3 (section DP).
+  Test robustness (no app change): the screen 2 rig turns a posted tk menu / question box into a recorded error
+  instead of blocking (on Windows tk_popup waits for a human): the interrupted runs of this step had test_screen2 hang
+  once after S14 for an hour in the gate (not reproduced: alone 15/15 twice); now such a click fails the test with a
+  reason instead of stalling the gate. An earlier interrupted gate also stood still in test_boats (an agent killed
+  meanwhile; not reproduced: test_boats 10/10 alone and in the gate since) - watch for it (PC load / Tk).
 
 # Previous task: "Screen 2 review"
 

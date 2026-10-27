@@ -740,6 +740,8 @@ class Hud:
     def cdi(self, name, s):
         if s.t is not None and s.t["mode"] == 7:                        # MANEUVER: the gear state instead
             return self.maneuver(name, s)
+        if s.t is not None and s.t["mode"] == 8:                        # DP: the spot + the thrusters instead
+            return self.dp(name, s)
         x0, y0, x1, y1 = self.R(name)
         r = (x0, y0, x1, y1)
         self.panel(r, name)
@@ -781,6 +783,64 @@ class Hud:
             self.rect(b, "mv_box", outline=col if (on or ask == g) else self.pal["dim"], w=4 if ask == g else 1)
             self.text(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2), T(key), "mv_" + ("on" if on else "off"),
                       size=self.f_norm, bold=True, fill=theme.BLACK if on else col, anchor="c", max_w=w - 6, box=r)
+
+    def dp(self, name, s):
+        """DP (CLAUDE.md P, step 11) in the CDI place, DISPLAY ONLY: the title (sub-state, spot distance), the spot
+        vector (the boat in the middle, bow up; the dot = where the spot is: up = ahead, right = starboard; the
+        square's edge = the DP OFF SPOT distance) and the thrust bars (bow sideways, stern fore / aft, -100..100 %
+        from the middle; amber = hot / off spot)."""
+        d = s.t
+        x0, y0, x1, y1 = self.R(name)
+        r = (x0, y0, x1, y1)
+        self.panel(r, "dp", alpha=min(230, self.pal["alpha"] + 50))
+        sub = d.get("dp_sub", 0)
+        subname = T("dp.sub_%d" % sub) if 0 <= sub < 5 else "?"
+        err = d.get("dp_err_m", 0.0)
+        warn = bool(d.get("dp_offspot") or d.get("thr_hot_bow") or d.get("thr_hot_stern") or d.get("dp_overpower"))
+        col = self.pal["caution"] if warn else self.pal["main"]
+        title = T("dp.hud_title", sub=subname, m="%.1f" % err) if sub in (1, 2) else T("dp.hud_title_sub", sub=subname)
+        th = self.f_small * 1.5
+        self.text(((x0 + x1) / 2, y0 + 2), title, "dp_title", size=self.f_small, bold=True, anchor="n",
+                  fill=col, max_w=x1 - x0 - 8, box=r)
+        # the spot vector: a square left, the boat in its middle
+        top = y0 + th + 2
+        sq = max(10.0, min(y1 - top - 3, (x1 - x0) * 0.4))
+        bx0, by0 = x0 + 4, top
+        cx, cy = bx0 + sq / 2, by0 + sq / 2
+        self.rect((bx0, by0, bx0 + sq, by0 + sq), "dp", outline=self.pal["dim"], w=1)
+        self.line((cx, by0 + 2, cx, by0 + sq - 2), "dp", fill=self.pal["dim"], w=1)
+        self.line((bx0 + 2, cy, bx0 + sq - 2, cy), "dp", fill=self.pal["dim"], w=1)
+        bs = max(3.0, sq * 0.09)
+        self.poly((cx, cy - bs * 1.6, cx - bs, cy + bs, cx + bs, cy + bs), "dp_boat", fill=self.pal["main"])
+        scale = max(1.0, float(s.dp_scale_m or 15.0))
+        if sub in (1, 2):
+            half = sq / 2 - 3
+            fx = max(-1.0, min(1.0, d.get("dp_err_stbd", 0.0) / scale))
+            fy = max(-1.0, min(1.0, d.get("dp_err_fwd", 0.0) / scale))
+            px, py = cx + fx * half, cy - fy * half
+            self.line((cx, cy, px, py), "dp_vec", fill=col, w=3)
+            self.oval((px - 4, py - 4, px + 4, py + 4), "dp_spot", fill=col, outline=col, w=1)
+        # the thrust bars: right of the square, bow above stern
+        lx = bx0 + sq + 6
+        lw = self.f_small * 1.6
+        bx_0, bx_1 = lx + lw, x1 - 5
+        rows = ((T("dp.bow"), d.get("thr_bow", 0), "dp_bar_bow", d.get("thr_hot_bow")),
+                (T("dp.stern"), d.get("thr_stern", 0), "dp_bar_stern", d.get("thr_hot_stern")))
+        bh = max(6.0, min(self.f_small * 1.3, (y1 - top - 6) / 2.0 - 2))
+        for i, (lab, v, tag, hot) in enumerate(rows):
+            yy = top + 2 + i * (bh + 6)
+            self.text((lx, yy + bh / 2), lab, "dp_lbl", size=self.f_small, bold=True, fill=self.pal["dim"],
+                      anchor="w", max_w=lw, box=r)
+            mid = (bx_0 + bx_1) / 2
+            self.rect((bx_0, yy, bx_1, yy + bh), "dp_bar", outline=self.pal["dim"], w=1)
+            self.line((mid, yy - 1, mid, yy + bh + 1), "dp_bar", fill=self.pal["dim"], w=1)
+            f = max(-1.0, min(1.0, (v or 0) / 100.0))
+            if abs(f) > 0.005:
+                a, b = sorted((mid, mid + f * (bx_1 - bx_0) / 2))
+                self.rect((a, yy + 1, b, yy + bh - 1), tag, fill=self.pal["caution"] if hot else self.pal["main"],
+                          alpha=220)
+            self.text((mid, yy + bh / 2), "%+d %%" % (v or 0), "dp_val", size=self.f_small * 0.85, bold=True,
+                      fill=theme.BLACK if abs(f) > 0.3 else self.pal["main"], anchor="c", max_w=bx_1 - bx_0, box=r)
 
     def drive(self, name, s):
         """Manual driving from this station (CLAUDE.md D): REMOTE MANUAL and MANEUVER for the captain with the

@@ -437,7 +437,7 @@ class StationServer:
             # FREE HELM and so becomes the captain
             return self.refuse(st, seq, ftype, 117)
         if self.prog_check and ftype in (proto.T_PROG_BEGIN, proto.T_PROG_WP, proto.T_PROG_COMMIT,
-                                         proto.T_AUTO_START, proto.T_AUTO_RESUME):
+                                         proto.T_AUTO_START, proto.T_AUTO_RESUME, proto.T_DP):
             why = self.prog_check(st, ftype, payload)
             if why:
                 code, why = why if isinstance(why, tuple) else (114, why)

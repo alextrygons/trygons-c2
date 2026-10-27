@@ -54,6 +54,10 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
      trim / extra = buttons (momentary = press-and-hold: pulse, OFF at the
      release), the engine group a lamp only
 
+  I22 DP on screen 1 (CLAUDE.md P, step 11): the DP box in the CDI place: the spot
+     vector (ahead = up, starboard = right), the bow / stern thrust bars from the
+     middle, amber when hot / off the spot, display only
+
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
 import os
@@ -842,6 +846,58 @@ def main():
                "overlaps %s; centre %s; levels %s; shown %s; buttons %s; lit %s; pair line %s; inside %s; hold sent %s; "
                "MINIMAL hidden %s; no boat nothing %s" % (over21, centre21, levels21, sorted(boxes), hit_acts, lit21,
                                                          pair21, inside21, sent21, minimal21, none21))
+
+
+        # I22 DP on screen 1 (CLAUDE.md P, step 11): the DP box in the CDI place - the spot vector + the thrust bars
+        dp_t = dict(mode=A.proto.MODE_DP, mode_name="DP", dp_sub=A.proto.DP_SPOT, dp_err_fwd=6.0, dp_err_stbd=-3.0,
+                    dp_err_m=6.7, dp_offspot=False, dp_overpower=False, thr_bow=-40, thr_stern=60, thr_hot_bow=False,
+                    thr_hot_stern=False)
+        app.on_telem = lambda d_: orig_t(dict(d_, **dp_t))
+        pump(0.8)
+        cdi_px = dv.layout.px("cdi", dv.cv.winfo_width(), dv.cv.winfo_height())
+        dp_ops = [o for o in dv.ops if str(o.get("tag", "")).startswith("dp")]
+        inside22 = bool(dp_ops) and all(cdi_px[0] - 1 <= o["r"][0] and o["r"][2] <= cdi_px[2] + 1 and
+                                        cdi_px[1] - 1 <= o["r"][1] and o["r"][3] <= cdi_px[3] + 1
+                                        for o in dp_ops if "r" in o)
+        no_cdi = not dv.has("cdi_needle") and not dv.has("mv_box")
+        title22 = " ".join(dv.texts("dp_title"))
+        boat = [o for o in dv.ops if o.get("tag") == "dp_boat"]
+        spot = [o for o in dv.ops if o.get("tag") == "dp_spot"]
+        vec_ok = bool(boat and spot) and dv.has("dp_vec")
+        if vec_ok:
+            bp = boat[0].get("pts") or boat[0].get("r")
+            bx, by = (bp[0], bp[1] + 5) if bp is not None and len(bp) > 4 else (0, 0)
+            sx, sy = (spot[0]["r"][0] + spot[0]["r"][2]) / 2, (spot[0]["r"][1] + spot[0]["r"][3]) / 2
+            vec_ok = sy < by and sx < bx                  # the spot ahead (up) and to port (left) of the boat
+        bars = {t_: [o for o in dv.ops if o.get("tag") == t_] for t_ in ("dp_bar_bow", "dp_bar_stern")}
+        frame = [o for o in dv.ops if o.get("tag") == "dp_bar"]
+        bars_ok = all(bars.values()) and len(frame) >= 4
+        if bars_ok:
+            mids = sorted({round((f_["r"][0] + f_["r"][2]) / 2) for f_ in frame if "r" in f_ and f_["k"] == "rect"})
+            mid = mids[0] if mids else 0
+            bb, sb_ = bars["dp_bar_bow"][0]["r"], bars["dp_bar_stern"][0]["r"]
+            bars_ok = bb[2] <= mid + 1 and sb_[0] >= mid - 1 and (sb_[2] - sb_[0]) > (bb[2] - bb[0])   # -40 left, +60 right
+        hits22 = [a_ for r_, a_ in dv.hits if overlay.overlaps(r_, cdi_px)]
+        fill_ok = bars_ok and bars["dp_bar_bow"][0].get("fill") == dv.hud.pal["main"]
+        app.on_telem = lambda d_: orig_t(dict(d_, **dict(dp_t, dp_offspot=True, thr_hot_bow=True)))
+        pump(0.6)
+        hot_bar = [o for o in dv.ops if o.get("tag") == "dp_bar_bow"]
+        hot_ok = bool(hot_bar) and hot_bar[0].get("fill") == dv.hud.pal["caution"]
+        app.on_telem = lambda d_: orig_t(dict(d_, **dict(dp_t, dp_sub=A.proto.DP_CRUISE)))
+        pump(0.6)
+        cruise_ok = dv.has("dp_bar_bow") and not dv.has("dp_spot") and \
+            A.T("dp.sub_3") in " ".join(dv.texts("dp_title"))
+        app.on_telem = orig_t
+        pump(0.8)
+        gone22 = not [o for o in dv.ops if str(o.get("tag", "")).startswith("dp")]
+        report("I22 DP on screen 1: the DP box in the CDI place (inside it, no CDI / MANEUVER there), the title with the "
+               "sub-state + spot distance, the spot vector (ahead = up, port = left), the thrust bars from the middle (bow "
+               "-40 left, stern +60 right), amber when hot, no vector in CRUISE, display only (no button), gone after DP",
+               inside22 and no_cdi and A.T("dp.sub_1") in title22 and "6.7" in title22 and vec_ok and bars_ok and
+               fill_ok and hot_ok and cruise_ok and not hits22 and gone22 and not errors,
+               "inside %s; CDI / MANEUVER gone %s; title %r; vector %s; bars %s (fill %s); hot %s; CRUISE %s; buttons in "
+               "the box %s; gone after DP %s" % (inside22, no_cdi, title22, vec_ok, bars_ok, fill_ok, hot_ok, cruise_ok,
+                                                 hits22, gone22))
 
         # I9 BENCH TEST tab (USB-style link): enter, live sensors, a steering pulse, a button, leave
         app.bench(A.proto.BENCH_ENTER, 0, "bench test: enter")

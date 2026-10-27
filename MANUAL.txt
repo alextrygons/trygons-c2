@@ -1230,8 +1230,38 @@ DP MODE (SPOT / JOG / CRUISE / TRIP) - the thrusters hold or move the boat
     DP ends.
   TELEM2 group N (sub-state, spot error ahead / to starboard, held heading,
   speeds, waypoint, why it ended); log event 28 DP (start / sub-state, JOG,
-  TRIP end, stop + why). The ground-station controls come with the next
-  part (step 11); until then the station sends the frames.
+  TRIP end, stop + why).
+  On the ground station (step 11):
+  * Screen 2, the bottom-left control panel: with both thrusters set up
+    (the boat file's thruster settings taken) a line "DP:" with SPOT /
+    CRUISE / TRIP and the speed for CRUISE / TRIP (- / +, 0.5 .. 3 kn).
+    While a start waits for the joystick CONFIRM the panel says so; DP STOP
+    cancels it. In DP the mode buttons and the AUTO rows are replaced by:
+    the DP state (sub-state + distance from the spot), DP STOP, the
+    generator button; SPOT / CRUISE / TRIP (+ "TRIP: continue" after a STOP
+    waypoint) and the speed (SET sends a new CRUISE / TRIP speed); in SPOT /
+    JOG the JOG arrows (up = ahead, down = astern, left = port, right =
+    starboard; one step = jog_m) and where the spot is ("spot 2.0 m ahead,
+    1.5 m to port", red when DP OFF SPOT). The panel's +1 / -1 / +10 / -10
+    turn the DP heading. The status panel shows the DP line (sub-state and
+    the main number) and the held heading. A copilot's SPOT / CRUISE / TRIP /
+    JOG / speed waits for the captain's ACCEPT; DP STOP never waits.
+  * Screen 1: the DP box in the CDI place (bottom middle, like MANEUVER):
+    the title (sub-state, distance from the spot), the spot vector (the boat
+    in the middle with its bow up; the dot = the spot: up = ahead, right =
+    starboard; the square's edge = spot_alarm_m) and the thrust bars B (bow,
+    sideways) and S (stern, fore / aft) from the middle, -100 .. +100 %;
+    amber when a thruster is hot or the boat is off the spot. Display only.
+  * The gateway checks a TRIP start like an AUTO start: across or near
+    shallow water refused (code 114), out of the geofence refused (120)
+    (also "continue": from the DP's next waypoint). In a TRIP the collision
+    avoidance works as in AUTO (slow down, route astern, DRIVER DECISION;
+    the slowest speed asked in DP is 1 kn); in SPOT / JOG / CRUISE a
+    collision danger is the COLLISION RISK + DRIVER DECISION alarm only -
+    nothing is steered or slowed, the driver decides (DP STOP, the joystick).
+  * Speed on the screens in DP: the boat's dead reckoning takes its speed
+    from the outboard (idle in DP), so in DP with the GPS trusted the screens
+    and the gateway use the GPS speed / course.
 
 -------------------------------------------------------------------------------
 8. THE USB JOYSTICK (THRUSTMASTER T.16000M + TWCS)

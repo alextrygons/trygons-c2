@@ -579,6 +579,12 @@ def decode_telemetry(payload: bytes) -> dict:
     d["speed_limited"] = bool(d["power_flags"] & 1)
     d["power_raised"] = bool(d["power_flags"] & 2)
     d["mode_name"] = MODES[d["mode"]] if d["mode"] < len(MODES) else "?"
+    # DP (step 11): the AURIX's dead-reckoning velocity (est_sog / est_cog) comes from the outboard, which is at idle
+    # in DP - the thrusters move the boat. With the GPS trusted, the screens and the gateway (collision avoidance
+    # in a DP TRIP) use the GPS speed / course in DP; the DR's own values stay in dr_sog / dr_cog.
+    d["dr_sog"], d["dr_cog"] = d["est_sog"], d["est_cog"]
+    if d["mode"] == MODE_DP and d["pos_source"] == 1 and d["gps_fix"]:
+        d["est_sog"], d["est_cog"] = d["gps_sog"], d["gps_cog"]
     u = d["usb_flags"]
     d["usb"] = d["joy_source"] == 1
     d["usb_dev0"] = bool(u & 0x01)

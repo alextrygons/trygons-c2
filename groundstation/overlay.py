@@ -377,6 +377,7 @@ class Overlay:
         r = (x, y + (lh - it.h) / 2, x + w, y + (lh + it.h) / 2)
         op = {"k": it.kind, "r": r, "panel": p.key, "s": getattr(it, "s", ""), "tag": getattr(it, "tag", None)}
         if it.kind == "text":
+            op["colour"] = it.colour                    # (the tests check meaning colours)
             b = theme.BOLD.get(it.level, False) if it.bold is None else it.bold
             c.create_text(x, cy, text=it.shown, anchor="w", fill=it.colour or C["fg"], font=self.font(fs, b), tags="ov")
             if it.action:
