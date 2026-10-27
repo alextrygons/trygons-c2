@@ -222,6 +222,30 @@ from it: LOW BATTERY is an advisory (no mode change, the power limit stays).
 | Protection | NEVER more than 3.3 V on the pin: the divider must be fitted before the bank is connected; a 3.3 V zener / Schottky clamp to 3.3 V on A2 is cheap insurance; 1 A fuse in the sense wire at the battery end | **TBD** |
 | Starter isolator | battery isolator / split-charge relay rated for the outboard's starter current: the bank stays connected to the electronics while cranking, the starter battery is isolated; type and wiring with the engine dealer | **TBD** (PARTS.md) |
 | Where it shows | screen 2 status panel "Battery", screen 1 bottom line; log field `bank_v`; TELEM2 group L; parameter `batt_low_v` (11.8 V TO CONFIRM, 10..13.5) | done |
+### 3D. RS485 Modbus RTU relay board (CLAUDE.md M) - hardware TBD
+
+An 8-16 channel **Modbus RTU relay board** (with board-timed pulses, e.g. the
+"flash on" command) switches the boat file's relays: lights, pumps, trim and
+the engine switches (IGNITION / STARTER / SHUTOFF). **No relay is in a
+control or safety path**: the engine kill (3A) and the e-stop contactor stop
+the engine / actuators, never this board. Driver: `hal/tc_modbus.c` (master,
+one request in flight, CRC-16, functions 0x01 / 0x05 / 0x0F, readback every
+100 ms, no reply 3 s = RELAY BOARD SILENT advisory); only `app/relays.c`
+uses it; core 0 only (never CPU1).
+
+| Item | Decision | State |
+|------|----------|-------|
+| UART | **ASCLIN4** (ASCLIN0-3 = USB, gateway, GPS, bridge): TX **P00.9**, RX **P00.12** (`RELAY_TX` / `RELAY_RX` in hal/hal_pins.h) | **TBD** (CHECK on the X1/X2 headers) |
+| Driver enable | DE and /RE of the transceiver tied together on **P00.11** (`PIN_RELAY_DE`, high = transmit, released when the last bit is out) | **TBD** (CHECK) |
+| Transceiver | 3.3 V RS485 (MAX3485 class) at the AURIX end, 120 Ohm termination at both ends of the line, A / B twisted pair, common GND | **TBD** (PARTS.md) |
+| Board | 8-16 channel Modbus RTU relay board, 12 V supply from the bank, address `RELAY_SLAVE_ADDR` (1), channels `RELAY_CHANNELS` (8) | **TBD** |
+| Baud | 9600-115200 8N1 per the board (`RELAY_BAUD`, 9600 now) | **TBD** |
+| Fitted | `HAL_RELAY_FITTED 0` until the board is wired: the driver is not started; a boat file with relays then shows RELAY BOARD SILENT (advisory only) | done |
+
+The relays power up OFF on the board. Contact ratings per the loads (fuse each
+load); the STARTER relay only drives the starter solenoid's control wire,
+never the starter current.
+
 ## 4. microSD card (log)
 
 A **microSD click** board (MikroElektronika MIKROE-924, 3.3 V) plugged into the

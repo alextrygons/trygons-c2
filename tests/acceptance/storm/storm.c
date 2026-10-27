@@ -64,7 +64,7 @@ typedef enum {
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
-    E_GEN, E_SUPPLY,
+    E_GEN, E_SUPPLY, E_RELAY,
     E_COUNT
 } ev_kind_t;
 
@@ -78,7 +78,7 @@ static const char *EV_NAMES[E_COUNT] = {
     "inject gear change under load", "shore CONFIRM (captain's joystick)", "MANEUVER request",
     "onboard joystick plugged / unplugged", "HELM station dropped (link lost)", "HELM station back",
     "shore info (near / far / none / invalid)", "generator auto on (+ ACK, bank low) / off",
-    "bank voltage (low / fine / no data / just low)"
+    "bank voltage (low / fine / no data / just low)", "relay board (table offer / relay command / board fault / back)"
 };
 
 typedef struct {
@@ -147,6 +147,7 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         else if (p < 0.80f) k = E_NAVREQ;
         else if (p < 0.81f) k = E_GEN;
         else if (p < 0.82f) k = E_SUPPLY;
+        else if (p < 0.835f) k = E_RELAY;
         else if (p < 0.87f) k = E_FUZZ_USB;
         else if (p < 0.92f) k = E_FUZZ_GW;
         else if (p < 0.935f) k = E_FREEZE;
@@ -367,6 +368,26 @@ static void push_frame(bool gw, uint8_t type, const uint8_t *pl, uint8_t len)
     else sim_hal_link_rx_push(fr, (uint32_t)n);
 }
 
+/* the sample relay table of boats/rf49d.json (7 relays); variant = a different one (the same with
+ * the bilge pump's time changed), so the AURIX sees a table that differs from the stored one */
+static void relay_sample_table(relay_table_t *t, bool variant)
+{
+    static const relay_def_t R[7] = {
+        { 1, RELAY_ONOFF,     RELAY_GRP_ENGINE, 0, 0,    RELAY_F_SHOW_HUD, 0 },   /* IGNITION */
+        { 2, RELAY_MOMENTARY, RELAY_GRP_ENGINE, 0, 10,   0, 0 },                  /* STARTER */
+        { 3, RELAY_ONOFF,     RELAY_GRP_ENGINE, 0, 0,    RELAY_F_SHOW_HUD, 0 },   /* SHUTOFF */
+        { 4, RELAY_MOMENTARY, RELAY_GRP_TRIM,   5, 30,   RELAY_F_SHOW_HUD, 0 },   /* TRIM UP */
+        { 5, RELAY_MOMENTARY, RELAY_GRP_TRIM,   4, 30,   RELAY_F_SHOW_HUD, 0 },   /* TRIM DOWN */
+        { 6, RELAY_ONOFF,     RELAY_GRP_EXTRA,  0, 0,    RELAY_F_KEEP, 0 },       /* NAV LIGHTS */
+        { 7, RELAY_TIMED,     RELAY_GRP_EXTRA,  0, 1200, 0, 0 },                  /* BILGE PUMP */
+    };
+    memset(t, 0, sizeof *t);
+    t->count = 7u;
+    memcpy(t->r, R, sizeof R);
+    if (variant) t->r[6].max_ds = 600u;
+    relay_table_seal(t);
+}
+
 static void navreq(uint8_t kind, uint8_t reason, uint8_t alarm, float hdg, float cap, uint16_t lease)
 {
     uint8_t pl[11];
@@ -408,7 +429,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 36
+#define NINV 37
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -441,7 +462,8 @@ static const char *INV_NAMES[NINV] = { "",
     "I32 generator: throttle above idle in neutral only while the generator is active, gear N confirmed by the switch",
     "I33 generator throttle <= min(generator cap, power limit)",
     "I34 generator only in STANDBY (not stopping), armed, neutral switch closed, no kill / e-stop / trip / FIRST TEST",
-    "I35 every generator stop idle first: no throttle rise while stopping" };
+    "I35 every generator stop idle first: no throttle rise while stopping",
+    "I36 relays never change the mode, the throttle, the gear, the steering or the thrust (no relay in a control path)" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -511,6 +533,16 @@ typedef struct {
     uint32_t safe_since;            /* outputs idle + neutral since (0 = not) */
     uint32_t lost_t;                /* the link loss the AURIX saw (its ll.lost_ms) */
     float    gen_env;               /* I33: the generator cap envelope (coming down at the closing rate) */
+    uint32_t relay_t;               /* I36: a relay event was applied (0 = none pending) */
+    sb_mode_t relay_mode_at;        /* ... the mode at the event */
+    float    relay_thr_mode;        /* ... what the mode asked for, the step before it */
+    gear_t   relay_gear_demand;
+    uint8_t  relay_ap_mode;
+    uint32_t relay_alm, relay_alm2;
+    float    thr_mode_prev;
+    gear_t   gear_demand_prev;
+    uint8_t  ap_mode_prev;
+    uint32_t alm_prev, alm2_prev;
 } chk_t;
 
 static chk_t C;
@@ -867,6 +899,30 @@ static void check_step(void)
         C.inj_t = 0u;
     }
 
+    /* I36: the control step right after a relay event (table offer, relay command, board fault /
+     * back): the mode, the gear demand, the steering engagement and what the mode asks of the
+     * throttle are what they were, and no alarm that is not an advisory appeared - unless another
+     * event of this step may change them legitimately (then this one is not judged) */
+    if (C.relay_t && AT_OR_AFTER(S.t, C.relay_t)) {
+        if (C.last_action_t < C.relay_t && !forced && !inj && !S.boot_until) {
+            bool mode_same = m == C.relay_mode_at;
+            bool gear_same = s->gear_demand == C.relay_gear_demand || m != C.relay_mode_at;
+            bool steer_same = s->ap.mode == C.relay_ap_mode;
+            float dthr = fabsf(s->throttle_mode - C.relay_thr_mode);
+            bool thr_ok = m != MODE_MANUAL ? dthr <= fmaxf(2.0f, s->cfg.throttle.rate_up_pct_s * dt * 2.0f) : true;
+            /* alarms: only the word the relay code can touch (its SILENT is an advisory); the first
+             * word holds timers that fire on their own (NOT ARMED 3 s after a trip, link / sensor
+             * timeouts) and is not judged here */
+            uint32_t new_alm = 0u;
+            uint32_t new_alm2 = s->alarm_bits2 & ~C.relay_alm2 & ~SB_ALM2_ADVISORY;
+            if (mode_same && gear_same && steer_same && thr_ok && new_alm == 0u && new_alm2 == 0u) ok(36);
+            else fail(36, "a relay event changed the driving: what %.0f (1 gear 2 steering 4 throttle 8 alarm; + mode*16), "
+                      "new alarm bits %.0f (word 2 x 2^32)",
+                      (double)((gear_same ? 0 : 1) | (steer_same ? 0 : 2) | (thr_ok ? 0 : 4) | ((new_alm || new_alm2) ? 8 : 0)) +
+                      16.0 * (double)m, (double)new_alm + 4294967296.0 * (double)new_alm2);
+        }
+        C.relay_t = 0u;
+    }
     C.mode_prev = m;
     C.thr_prev = thr;
     C.gear_prev = gp;
@@ -875,6 +931,11 @@ static void check_step(void)
     C.plim_r_prev = s->plim.rev_pct;
     C.target_prev = s->ap.target_heading;
     C.prof_prev = s->profile;
+    C.thr_mode_prev = s->throttle_mode;
+    C.gear_demand_prev = s->gear_demand;
+    C.ap_mode_prev = (uint8_t)s->ap.mode;
+    C.alm_prev = s->alarm_bits;
+    C.alm2_prev = s->alarm_bits2;
 }
 
 /* during a frozen core 0: the monitor must trip by itself */
@@ -1016,6 +1077,29 @@ static void apply(const ev_t *e)
     case E_SUPPLY: {
         static const float V[4] = { 11.5f, 12.6f, 0.0f, 11.9f };
         sim_hal_set_supply(e->a % 4 != 2, V[e->a % 4]);
+        break;
+    }
+    case E_RELAY: {
+        /* the relay board is no control path: whatever happens here, I36 expects the driving unchanged */
+        C.relay_t = S.t + 1u;
+        C.relay_mode_at = sb_mode(s);
+        C.relay_thr_mode = C.thr_mode_prev;
+        C.relay_gear_demand = C.gear_demand_prev;
+        C.relay_ap_mode = C.ap_mode_prev;
+        C.relay_alm = C.alm_prev;
+        C.relay_alm2 = C.alm2_prev;
+        if (e->a < 200) {                                                  /* the boat file's table (a CONFIRM follows or not) */
+            static relay_table_t t;
+            relay_sample_table(&t, e->b % 3 == 0);
+            (void)sb_relay_table(s, &t);
+        } else if (e->a < 750) {                                           /* a relay command of the HELM station */
+            (void)sb_relay_cmd(s, (uint8_t)(1u + e->b % 9u), (uint8_t)(e->c % 3), (uint16_t)(e->c * 3));
+        } else if (e->a < 900) {                                           /* the board: slow / silent / corrupt replies */
+            uint32_t f = (e->c % 3 == 1) ? SIM_RB_SILENT : (e->c % 3 == 2) ? SIM_RB_CORRUPT_SOME : 0u;
+            sim_hal_relay_board(true, 5u + (uint32_t)e->b % 200u, f);
+        } else {
+            sim_hal_relay_board(true, 5u, 0u);                             /* back to normal */
+        }
         break;
     }
     case E_CURRENT: sim_hal_set_motor_current(e->a < 500, (float)e->b * 0.02f); break;

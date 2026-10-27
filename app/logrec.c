@@ -91,7 +91,9 @@ static const char k_events[] =
     "22:LINKLOST:state(0 ok 1 lost 2 engine killed),near_shore,shore_m,losses;"
     "23:NV:what(1 record unusable -> defaults 2 NV FAULT),slot,resets,-;"
     "24:GENERATOR:state(0 off 1 ready 2 starting 3 running 4 stopping 5 rest 6 fault 7 done),"
-    "stop_why(1 conditions 2 off 3 request 4 no volts 5 rest 6 switch opened 7 moved)|enabled<<8,bank_v*100,pct*10;";
+    "stop_why(1 conditions 2 off 3 request 4 no volts 5 rest 6 switch opened 7 moved)|enabled<<8,bank_v*100,pct*10;"
+    "25:RELAY:n|action<<8|result<<16|what<<24(1 command 2 table 3 states 4 board),states,known|board_ok<<31,"
+    "hash|flags<<16|count<<24;";
 
 static const char k_alarms[] =
     "1:COMPASS,2:GPS_LOST,4:GPS_SUSPECT,8:DR_LIMIT,16:ARRIVAL_UNCERTAIN,32:ARRIVED,64:GEAR,128:TRAINING,"

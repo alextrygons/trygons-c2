@@ -283,6 +283,7 @@ def b4_app_end_to_end():
         report("B5 one monitor: F11 shows screen 1, F11 again screen 2; the map IS screen 2 (no map window)",
                s1 and s2 and embedded, "screen 1 %s, screen 2 %s, the map fills screen 2 %s" % (s1, s2, embedded))
         b8_push(ap, pump, pushed_before_helm)
+        b9_relay_push(ap, pump, sim)
         b6_dropdown(ap, pump, good)
     finally:
         ap.quit()
@@ -312,6 +313,49 @@ def b8_push(ap, pump, pushed_before_helm):
            not pushed_before_helm and pushed and held and capped,
            "before HELM pushed %s; after HELM gen_max_pct = %s (file 20) %s; MANUAL: held %s; file 40 -> %s (max 30) %s"
            % (pushed_before_helm, v20, pushed, held, val(), capped))
+
+
+def b9_relay_push(ap, pump, sim):
+    """CLAUDE.md M + owner clarification (step 6): the boat file's relay table reaches the AURIX (PROTO_T_RELAY_CFG)
+    once HELM is held in STANDBY; a table that differs from the AURIX's stored one waits there for the joystick
+    CONFIRM (TELEM2 group M "relay_pending") and only then becomes active (its hash = the file's); the same table is
+    never sent again; a file without relays (v1) = the empty table = nothing to send to a boat without a table."""
+    import proto
+    t2 = lambda: ap.link.t2 if ap.link is not None else {}
+    empty = t2().get("relay_hash") == proto.relay_table_hash([]) and not t2().get("relay_table")
+    seq0 = ap.relay_push_seq
+    nothing_for_empty = seq0 is None                             # the file had no relays: nothing sent
+    ap.boat.relays = boats._parse_relays([
+        {"n": 1, "name_el": "ΑΝΑΦΛΕΞΗ", "name_en": "IGNITION", "type": "onoff", "group": "engine"},
+        {"n": 4, "name_el": "TRIM ΠΑΝΩ", "name_en": "TRIM UP", "type": "momentary", "group": "trim", "pair": 5,
+         "max_s": 3},
+        {"n": 5, "name_el": "TRIM ΚΑΤΩ", "name_en": "TRIM DOWN", "type": "momentary", "group": "trim", "pair": 4,
+         "max_s": 3},
+        {"n": 6, "name_el": "ΦΩΤΑ", "name_en": "NAV LIGHTS", "type": "onoff", "group": "extra", "power_up": "keep"}])
+    want = proto.relay_table_hash(ap.boat.relays)
+    ap.relay_push_at = 0.0
+    pending = pump(8, lambda: t2().get("relay_pending") and ap.t and ap.t.get("confirm_kind") == 7)
+    active_before = t2().get("relay_table")
+    link, _w = sim.station()                                     # the person on board: joystick CONFIRM
+    try:
+        time.sleep(0.5)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
+        time.sleep(0.3)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        active = pump(8, lambda: t2().get("relay_table") and t2().get("relay_hash") == want and
+                      t2().get("relay_count") == 4 and not t2().get("relay_pending"))
+    finally:
+        link.stop()
+    seq1 = ap.relay_push_seq
+    ap.relay_push_at = 0.0
+    pump(2.0)
+    no_resend = ap.relay_push_seq == seq1                        # the same table: never sent again
+    report("B9 boat file relay table -> AURIX: sent with HELM in STANDBY, waits for the joystick CONFIRM, then "
+           "active (hash = the file's); the same table never re-sent; no relays = nothing to send",
+           empty and nothing_for_empty and pending and not active_before and active and no_resend,
+           "empty table on the boat %s, nothing sent for a file without relays %s; 4 relays sent -> CONFIRM pending %s "
+           "(not active yet %s); after CONFIRM active, hash %s = file %s: %s; no re-send %s" % (
+               empty, nothing_for_empty, pending, not active_before, t2().get("relay_hash"), want, active, no_resend))
 
 
 def b6_dropdown(ap, pump, good):

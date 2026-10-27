@@ -62,6 +62,22 @@ void     sim_hal_set_water_speed(bool fitted, float kn);
 /* Supply voltage of the 12 V bank (default: measured, 12.6 V). */
 void     sim_hal_set_supply(bool fitted, float volts);
 
+/* RS485 Modbus relay board (16 coils, address 1): present with a reply
+ * latency (default 5 ms), faults; its true states; what it received. The
+ * board keeps its states across an AURIX reboot (hal_init); board_reset =
+ * its own power cycle (every relay off). force = a relay changed by itself
+ * (a hand switch on the board). */
+#define SIM_RB_SILENT       0x1u    /* never answers (bus cut / board dead) */
+#define SIM_RB_CORRUPT      0x2u    /* every reply has a bad CRC */
+#define SIM_RB_CORRUPT_SOME 0x4u    /* one reply in 7 has a bad CRC */
+void     sim_hal_relay_board(bool present, uint32_t latency_ms, uint32_t fault);
+void     sim_hal_relay_board_reset(void);
+bool     sim_hal_relay_state(uint8_t n);
+void     sim_hal_relay_force(uint8_t n, bool on);
+uint32_t sim_hal_relay_requests(void);     /* frames the board received */
+uint32_t sim_hal_relay_writes(void);       /* coil writes + pulses carried out */
+uint32_t sim_hal_relay_pulses(void);       /* board-timed pulses started */
+
 /* Joystick (raw 12-bit ADC values and buttons). */
 void     sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob);
 void     sim_hal_joystick_confirm(bool pressed);     /* CONFIRM button held */

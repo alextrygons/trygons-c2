@@ -202,6 +202,30 @@ bool hal_nv_ok(void);
 bool hal_read_water_speed(float *kn);
 
 /*
+ * RS485 Modbus RTU relay board (CLAUDE.md section M; board: hal/tc_modbus.c
+ * on RELAY_ASC + the DE pin of hal_pins.h; sim: a simulated board). ONLY
+ * app/relays.c may call these (the build check greps for it): it holds the
+ * relay table, the interlocks and the time limits. Nothing here is in any
+ * control path (never on CPU1).
+ *   service: one bounded step of the driver's state machine, every control
+ *            step (one request in flight, replies collected, time limits).
+ *   set:     relay n (1..HAL_RELAY_MAX) on / off (queued; false = no room /
+ *            no board fitted).
+ *   pulse:   a BOARD-timed pulse of ms (100 ms steps, <= 25.5 s): the board
+ *            switches the relay off by itself, even if the AURIX dies.
+ *   read:    the last readback of relay n: false = unknown (no valid reply
+ *            within HAL_RELAY_LOST_MS, or n beyond the board).
+ *   ok:      the board answered within HAL_RELAY_LOST_MS (false = SILENT).
+ */
+#define HAL_RELAY_MAX       32u
+#define HAL_RELAY_LOST_MS   3000u
+void hal_relay_service(void);
+bool hal_relay_set(uint8_t n, bool on);
+bool hal_relay_pulse(uint8_t n, uint16_t ms);
+bool hal_relay_read(uint8_t n, bool *on);
+bool hal_relay_ok(void);
+
+/*
  * Ground-station link: a plain byte stream (board: USB virtual COM =
  * ASCLIN0 at 921600 baud; sim: TCP socket). Framing is done by the app
  * (proto.c).

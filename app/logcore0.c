@@ -26,6 +26,8 @@ static struct {
     uint8_t  gen_state;
     bool     gen_enabled;
     float    gen_pct;
+    uint32_t relay_seq, relay_states, relay_known;
+    bool     relay_ok;
     uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -311,6 +313,23 @@ static void changes(const sb_t *s)
         k.gen_state = s->gen.state;
         k.gen_enabled = s->gen.enabled;
         k.gen_pct = s->gen.demand_pct;
+    }
+    /* relay board: every command / table event, readback change, board lost / back (events only) */
+    {
+        const relays_t *rl = &s->relays;
+        int32_t cd = (int32_t)(rl->hash | ((uint32_t)relays_flags(rl) << 16) | ((uint32_t)(rl->have_table ? rl->table.count : 0u) << 24));
+        int32_t cc = (int32_t)((rl->known & 0x7FFFFFFFu) | (rl->board_ok ? 0x80000000u : 0u));
+        if (rl->log_seq != k.relay_seq)
+            ev(s, EV_RELAY, (int32_t)(rl->last_n | ((uint32_t)rl->last_action << 8) | ((uint32_t)rl->last_result << 16) |
+                                      ((uint32_t)rl->last_what << 24)), (int32_t)rl->states, cc, cd);
+        else if (rl->states != k.relay_states || rl->known != k.relay_known)
+            ev(s, EV_RELAY, 3 << 24, (int32_t)rl->states, cc, cd);
+        else if (rl->board_ok != k.relay_ok)
+            ev(s, EV_RELAY, 4 << 24, (int32_t)rl->states, cc, cd);
+        k.relay_seq = rl->log_seq;
+        k.relay_states = rl->states;
+        k.relay_known = rl->known;
+        k.relay_ok = rl->board_ok;
     }
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);

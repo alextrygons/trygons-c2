@@ -104,6 +104,20 @@
 #define BRIDGE_ASC          MODULE_ASCLIN3      /* Teensy USB joystick bridge, receive only, 230400 */
 #define BRIDGE_TX           IfxAsclin3_TX_P20_0_OUT
 #define BRIDGE_RX           IfxAsclin3_RXC_P20_3_IN
+/* RS485 Modbus RTU relay board (WIRING.md 3D, CLAUDE.md M): TBD - the board, its baud rate and the
+ * pins are not chosen yet. ASCLIN4 is free (ASCLIN0-3 = USB, gateway, GPS, bridge); its only LQFP176
+ * pins are TX P00.9 / RX P00.12 (CHECK on the X1/X2 headers). The transceiver (MAX3485 class, 3.3 V)
+ * needs a driver-enable pin: DE and /RE tied together on PIN_RELAY_DE (high = transmit). HAL_RELAY_FITTED
+ * 0 until the board is wired: the driver is then never started (the boat shows RELAY BOARD SILENT as
+ * soon as a boat file with relays is loaded - an advisory, nothing else changes). */
+#define RELAY_ASC           MODULE_ASCLIN4
+#define RELAY_TX            IfxAsclin4_TX_P00_9_OUT     /* CHECK X1/X2 */
+#define RELAY_RX            IfxAsclin4_RXA_P00_12_IN    /* CHECK X1/X2 */
+#define PIN_RELAY_DE        &MODULE_P00, 11u            /* CHECK X1/X2: RS485 DE + /RE, high = drive the bus */
+#define HAL_RELAY_FITTED    0                           /* TBD: 1 when the board + transceiver are wired */
+#define RELAY_BAUD          9600.0f                     /* TBD: per the board (9600-115200 8N1) */
+#define RELAY_SLAVE_ADDR    1u                          /* TBD: the board's Modbus address */
+#define RELAY_CHANNELS      8u                          /* TBD: coils the board has (8-16); read back per poll */
 
 /* --- interrupt priorities (unique per CPU; 1 = lowest) ----------------------------- */
 #define PRIO_LINK_TX   10
@@ -118,6 +132,9 @@
 #define PRIO_BR_TX     19
 #define PRIO_BR_RX     20
 #define PRIO_BR_ER     21
+#define PRIO_RL_TX     22                       /* RS485 relay board (ASCLIN4) */
+#define PRIO_RL_RX     23
+#define PRIO_RL_ER     24
 #define PRIO_BNO_TX    30                       /* QSPI1, CPU0 (the control loop reads the IMU) */
 #define PRIO_BNO_RX    31
 #define PRIO_BNO_ER    32

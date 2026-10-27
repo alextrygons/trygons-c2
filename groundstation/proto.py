@@ -42,6 +42,9 @@ T_POWER_RAISE = 0x29       # u8 dir, u16 typed code; then joystick CONFIRM withi
 T_POWER_LOWER = 0x2A       # back to 30 % / 5 % at once
 T_BENCH = 0x2B             # u8 action, u16 arg - BENCH TEST, only from the laptop on the USB cable
 T_GENERATOR = 0x2C         # u8 0 off / 1 on: generator auto (HELM station; a copilot's ON needs the captain's ACCEPT)
+T_RELAY = 0x1E             # u8 n, u8 action (0 off / 1 on / 2 pulse), u16 pulse ms: switch a relay of the table (HELM station)
+T_RELAY_CFG = 0x2F         # u8 count, count x {u8 n, u8 type, u8 group, u8 pair, u16 max_s*10, u8 flags}: the boat file's
+                           # relay table (HELM station; a different table than the stored one: STANDBY + joystick CONFIRM)
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
@@ -65,7 +68,9 @@ T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor 
 # after the own confirmation). Never STANDBY. PROG_COMMIT = a new AUTO route (the frames
 # before it only fill the AURIX's staging area; COMMIT makes it the route).
 DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_HEADING_ADJ, T_SEA_STATE,
-                T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR}
+                T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR, T_RELAY, T_RELAY_CFG}
+# (T_RELAY / T_RELAY_CFG: every relay switch and the relay table need the captain's ACCEPT from a copilot until
+#  step 8 tells the engine group (ACCEPT) from trim / extra (straight through) - conservative meanwhile)
 
 
 def is_driving_cmd(ftype, payload=b""):
@@ -90,7 +95,7 @@ TYPE_NAMES = {
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data",
-    T_GENERATOR: "generator auto",
+    T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -154,6 +159,36 @@ def p_bench(action, arg=0):
     return struct.pack("<BH", action, arg)
 
 
+# relay board (app/relays.h): the table's frame encoding and the relay command
+RELAY_TYPES = ["onoff", "momentary", "latching", "timed"]
+RELAY_GROUPS = ["engine", "trim", "extra"]
+RELAY_TABLE_MAX = 16
+RELAY_CMD_OFF, RELAY_CMD_ON, RELAY_CMD_PULSE = 0, 1, 2
+
+
+def p_relay_cfg(relays):
+    """The relay table as the AURIX takes it (PROTO_T_RELAY_CFG): a list of boats.py relay dicts
+    (n, type, group, pair, max_s, show_hud, power_up). Names stay on the PC."""
+    if len(relays) > RELAY_TABLE_MAX:
+        raise ValueError("at most %d relays" % RELAY_TABLE_MAX)
+    out = bytearray([len(relays)])
+    for r in relays:
+        flags = (1 if r.get("show_hud") else 0) | (2 if r.get("power_up") == "on" else 0) | (
+            4 if r.get("power_up") == "keep" else 0)
+        out += struct.pack("<BBBBHB", int(r["n"]), RELAY_TYPES.index(r["type"]), RELAY_GROUPS.index(r["group"]),
+                           int(r.get("pair") or 0), int(round(float(r.get("max_s") or 0) * 10)), flags)
+    return bytes(out)
+
+
+def relay_table_hash(relays):
+    """What TELEM2 group M "relay_hash" shows for this table (CRC-16 of the frame encoding)."""
+    return crc16(p_relay_cfg(relays))
+
+
+def p_relay(n, action, ms=0):
+    return struct.pack("<BBH", n, action, ms)
+
+
 _BENCH = struct.Struct("<BBIH5f5B2ffBBBII4HB6B2HBbfBI")      # 86 bytes, link.c bench_diag()
 
 
@@ -180,7 +215,8 @@ def decode_bench_diag(payload: bytes) -> dict:
         "idle_left_s": idle_left / 1000.0,
     }
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
-CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING"]
+CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING", "MANEUVER",
+                 "RELAY TABLE"]
 REMOTE_STATES = ["off", "DRIVING", "LINK LOST"]
 REMOTE_LOST_WHY = ["", "no data (gap > 300 ms)", "data too old", "latency too high"]
 WP_ACTIONS = ["continue", "slow", "stop"]
@@ -243,6 +279,7 @@ ALM_PC_LINK = 0x800
 # the second alarm word (app/smallboat.h SB_ALM2_, TELEM2 group L "alarm_bits2"): the first one is full
 ALARMS2 = [
     (0x001, "LOW BATTERY"),
+    (0x002, "RELAY BOARD SILENT"),
 ]
 
 
@@ -705,6 +742,7 @@ _T2_GROUPS = [
     (struct.Struct("<BBBH"), "profile probe_flags shore_flags profile_changes".split()),
     (struct.Struct("<BBHHHH"), "ll_state ll_flags coast_m coast_age_ms ll_left10 near_shore_m".split()),
     (struct.Struct("<IHHBBB"), "alarm_bits2 bank_v100 bank_fast100 batt_flags gen_state gen_pct".split()),
+    (struct.Struct("<IIHBBI"), "relay_states relay_known relay_hash relay_flags relay_count relay_cmd_on".split()),
 ]
 LL_STATES = ["OK", "LINK LOST", "ENGINE KILLED"]
 # generator mode (app/generator.h GEN_, TELEM2 group L "gen_state"): the throttle opens in NEUTRAL to charge the bank
@@ -773,6 +811,16 @@ def decode_telem2(payload: bytes) -> dict:
         d["bank_v_fast"] = None if d["bank_fast100"] == 0xFFFF else d["bank_fast100"] / 100.0
         d["gen_state_name"] = GEN_STATES[d["gen_state"]] if d["gen_state"] < len(GEN_STATES) else "?"
         d["gen_active"] = d["gen_state"] in (3, 4)          # RUNNING / STOPPING: throttle above idle in neutral
+    if "relay_flags" in d:
+        f = d["relay_flags"]
+        d["relay_ok"] = bool(f & 1)                     # the board answers (false = RELAY BOARD SILENT, states unknown)
+        d["relay_table"] = bool(f & 2)                  # a relay table is active on the AURIX
+        d["relay_from_nv"] = bool(f & 4)                # ... loaded from the data flash at boot
+        d["relay_pending"] = bool(f & 8)                # a different table waits for the joystick CONFIRM
+        d["relay_power_up"] = bool(f & 16)              # the power_up states were applied (this boot)
+        d["relay_first_test"] = bool(f & 32)            # FIRST TEST: no relay changes
+        d["relay_on"] = [n for n in range(1, 33) if d["relay_known"] >> (n - 1) & 1 and d["relay_states"] >> (n - 1) & 1]   # lists: the gateway forwards it as JSON
+        d["relay_unknown"] = [n for n in range(1, 33) if not d["relay_known"] >> (n - 1) & 1]
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

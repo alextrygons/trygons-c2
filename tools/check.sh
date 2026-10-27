@@ -2,7 +2,7 @@
 # The test gate: run it before every commit (Git Bash, from anywhere):
 #     sh tools/check.sh
 # sim build without warnings, all sim tests (analog + USB bridge), TriCore
-# compile of app/ + hal/ + Cpu*_Main.c, HAL / throttle-writer checks, the
+# compile of app/ + hal/ + Cpu*_Main.c, HAL / throttle-writer / relay-writer checks, the
 # expected memory per core (CPU1 RAM must stay below 60 %), the board's FAT32
 # writer on PC disk images, the board's data-flash record log on a PC flash
 # image, Python syntax, the gateway tests.
@@ -59,7 +59,7 @@ if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (FIRS
 missing=$(comm -23 "$TEMP/hal_used.txt" "$TEMP/hal_def.txt")
 if [ -n "$missing" ]; then echo "MISSING in hal_tc375.c: $missing"; fail=1; else echo "hal_tc375.c provides every HAL function used"; fi
 # the board drivers (hal/tc_*.c): every driver function used is defined
-"$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^(uart|spi|bno|gps|sd|fat32|adc|nvlog)_/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
+"$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^(uart|spi|bno|gps|sd|fat32|adc|nvlog|mb)_/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
 "$B/tricore-elf-nm.exe" "$OUT"/tc_*.o | awk '$2=="T" {print $3}' | sort -u > "$TEMP/drv_def.txt"
 missing=$(comm -23 "$TEMP/drv_used.txt" "$TEMP/drv_def.txt")
 if [ -n "$missing" ]; then echo "MISSING driver functions: $missing"; fail=1; else echo "every board driver function used is defined"; fi
@@ -70,6 +70,9 @@ if [ -n "$missing" ]; then echo "MISSING driver functions: $missing"; fail=1; el
 # the throttle servo is written ONLY by app/servo.c (power limit clamp in the lowest layer)
 writers=$(grep -rln --include=*.c "hal_set_throttle_pwm *(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/servo.c$")
 if [ -n "$writers" ]; then echo "THROTTLE SERVO WRITTEN OUTSIDE servo.c: $writers"; fail=1; else echo "throttle servo written only by app/servo.c"; fi
+# the relay board is driven ONLY by app/relays.c (table, interlocks, time limits; never CPU1 / CPU2)
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_relay_[a-z]+ *\(" app sim/sim_sb.c sim/sim_main.c sim/sim_server.c sim/sim_world.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/relays.c$")
+if [ -n "$writers" ]; then echo "RELAY BOARD DRIVEN OUTSIDE relays.c: $writers"; fail=1; else echo "relay board driven only by app/relays.c"; fi
 
 # ADS compiles every C/C++ file in the project folder: every top-level folder
 # that is not board firmware must be excluded in .cproject (all configurations)

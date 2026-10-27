@@ -421,6 +421,8 @@ static int cmd_len(uint8_t type)
     case PROTO_T_POWER_LOWER:  return 0;
     case PROTO_T_BENCH:        return 3;
     case PROTO_T_GENERATOR:    return 1;
+    case PROTO_T_RELAY:        return 4;
+    case PROTO_T_RELAY_CFG:    return -2;       /* variable: checked by relay_table_decode */
     default:                   return -1;
     }
 }
@@ -439,6 +441,9 @@ static uint8_t sb_result_to_proto(sb_result_t r)
     case SB_ERR_AT_MAX:        return PROTO_R_AT_MAX;
     case SB_ERR_ALARM:         return PROTO_R_ALARM_ACTIVE;
     case SB_ERR_NOT_CENTERED:  return PROTO_R_NOT_CENTERED;
+    case SB_ERR_STANDBY_ONLY:  return PROTO_R_STANDBY_ONLY;
+    case SB_ERR_BAD_VALUE:     return PROTO_R_BAD_VALUE;
+    case SB_ERR_NOT_ALLOWED:   return PROTO_R_NOT_ALLOWED;
     default:                   return PROTO_R_REFUSED;
     }
 }
@@ -478,6 +483,21 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         uint8_t on = proto_rd_u8(&r);
         if (on > 1u) return PROTO_R_BAD_VALUE;
         return sb_result_to_proto(sb_generator_set(s, on == 1u));
+    }
+    case PROTO_T_RELAY_CFG: {
+        /* the boat file's relay table (section M): HELM station (checked by the
+         * caller); a table that differs from the stored one waits for the CONFIRM */
+        static relay_table_t t;                 /* not on the stack (140 bytes) */
+        if (!relay_table_decode(f->payload, f->len, &t))
+            return (f->len < 1u || f->len != 1u + (uint32_t)f->payload[0] * RELAY_FRAME_BYTES) ? PROTO_R_BAD_LENGTH
+                                                                                             : PROTO_R_BAD_VALUE;
+        return sb_result_to_proto(sb_relay_table(s, &t));
+    }
+    case PROTO_T_RELAY: {
+        uint8_t n = proto_rd_u8(&r), act = proto_rd_u8(&r);
+        uint16_t ms = proto_rd_u16(&r);
+        if (n == 0u || n > RELAY_N_MAX || act > RELAY_CMD_PULSE) return PROTO_R_BAD_VALUE;
+        return sb_result_to_proto(sb_relay_cmd(s, n, act, ms));
     }
     case PROTO_T_SET_MODE: {
         uint8_t m = proto_rd_u8(&r);
@@ -802,11 +822,11 @@ static void command(link_t *l, sb_t *s, const proto_frame_t *f, uint8_t station,
                                                           : sb_remote_release(s, station));
     } else if (f->type == PROTO_T_BENCH && station != SB_HELM_USB) {
         r = PROTO_R_NOT_ALLOWED;                         /* BENCH TEST: only the laptop on the USB cable */
-    } else if (want < 0) {
+    } else if (want == -1) {
         r = PROTO_R_UNKNOWN;
-    } else if ((int)f->len != want) {
+    } else if (want >= 0 && (int)f->len != want) {
         r = PROTO_R_BAD_LENGTH;
-    } else {
+    } else {                                                /* want == -2: variable length, checked inside */
         if (!read_only(f->type) && s->helm == SB_HELM_NONE && station == SB_HELM_USB) {
             helm_set(s, SB_HELM_USB, true);             /* the USB laptop takes a free HELM by itself */
             logcore0_helm(s->now_ms, station, 3u, 0u, station);
@@ -1034,6 +1054,19 @@ static void telemetry2(link_t *l, sb_t *s)
         proto_wr_u8(&w, (uint8_t)((b->valid ? 1u : 0u) | (b->no_data ? 2u : 0u) | (b->low ? 4u : 0u)));
         proto_wr_u8(&w, s->gen.state);      /* generator mode (section K) */
         proto_wr_u8(&w, (uint8_t)(s->gen.demand_pct + 0.5f));
+    }
+    /* M: relay board (section M): u32 states (bit n-1, readback) | u32 known (readback valid) |
+     *    u16 table hash (CRC-16 of the RELAY_CFG encoding; the station compares its file) |
+     *    u8 flags (b0 board ok, b1 table active, b2 from NV, b3 CONFIRM pending, b4 power_up applied,
+     *    b5 FIRST TEST: no relay changes) | u8 count | u32 commanded on (bit n-1) */
+    {
+        const relays_t *rl = &s->relays;
+        proto_wr_u32(&w, rl->states);
+        proto_wr_u32(&w, rl->known);
+        proto_wr_u16(&w, rl->hash);
+        proto_wr_u8(&w, relays_flags(rl));
+        proto_wr_u8(&w, rl->have_table ? rl->table.count : 0u);
+        proto_wr_u32(&w, rl->cmd_on);
     }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);

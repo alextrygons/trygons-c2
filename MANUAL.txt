@@ -375,8 +375,10 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   engine relay with power_up on / keep ...) is listed as INVALID FILE with
   the reason and is never connected: fix the file.
   When this station holds HELM (in STANDBY) it pushes the file's settings to
-  the boat (generator cap now; the relay table and the thruster settings
-  when steps 6 / 9 add them): RAM only - a boat restart gets them again.
+  the boat (generator cap, the relay table; the thruster settings when
+  step 9 adds them): the cap is RAM only - a boat restart gets it again;
+  the relay table is kept in the boat's data flash and a DIFFERENT one
+  needs the joystick CONFIRM (chapter 7, RELAY BOARD).
   The event list shows "boat file RF49D: generator max 25 %".
   "Other address ..." (Tools - Connection): the connection box (COM5,
   tcp:..., gw:host:port) for the board on USB, the simulator, the demo and
@@ -1036,6 +1038,44 @@ GENERATOR MODE (the engine charges the 12 V bank at a fast idle in NEUTRAL)
   station connects, chapter 5), gen_start_v
   11.5..13 V, gen_idle_pct 3..15 %. Log: event 24 GENERATOR (every state
   change and throttle step), TELEM2 group L.
+
+RELAY BOARD (RS485 Modbus RTU: lights, pumps, trim, engine switches)
+  The relays of the boat file (chapter 5) are switched by an 8-16 channel
+  Modbus RTU relay board on an RS485 line from the AURIX (hal/tc_modbus.c,
+  app/relays.c; board, pins and baud rate TBD: WIRING.md 3D). NO relay is
+  in any control path: a relay never changes the mode, the throttle, the
+  gear, the steering or a thruster.
+  * The relay TABLE (which channel is what) comes from the boat file: the
+    HELM station sends it when it connects in STANDBY. The AURIX keeps it in
+    its data flash. The same table as the stored one = taken at once. A
+    DIFFERENT table is taken only in STANDBY and only after the joystick
+    CONFIRM within 10 s (the banner "CONFIRM: RELAY TABLE"; CREWED: the
+    onboard joystick, UNCREWED: the shore joystick) - until then the stored
+    table stays in use (a wrong boat file must not move the STARTER out of
+    the engine rules). No CONFIRM = the station offers it again later.
+    Without any table no relay can be switched.
+  * onoff / latching: on / off. momentary: a pulse timed BY THE BOARD
+    (at most max_s, never more than 5 s - it ends even if the AURIX stops).
+    timed: on, and switched off by the AURIX after max_s. An interlocked
+    pair (TRIM UP / TRIM DOWN): never both - the second request is refused
+    while the other one is on.
+  * The STARTER (engine group, momentary) is never pulsed by a plain relay
+    command: only the remote-restart rules (step 7). IGNITION / SHUTOFF are
+    ordinary switches.
+  * power_up "on" is applied only ONCE, only with the first table after the
+    AURIX's own power-on (never after a watchdog / software reset or a
+    reconnect: then the board's states are read back and kept), and it only
+    switches ON. Nothing is ever switched OFF by itself; engine relays are
+    never switched automatically.
+  * The board is read back every 100 ms. No valid reply for 3 s ->
+    RELAY BOARD SILENT (an advisory: states shown unknown, no new relay
+    command, nothing else changes). It clears by itself when the board
+    answers again; an OFF that was waiting is then carried out.
+  * FIRST TEST: no relay changes at all. A monitor trip / the e-stop leave
+    the relays as they are (the board is not a safety path).
+  The buttons come with step 8; today the station only pushes the table.
+  Log: event 25 RELAY (commands, table events, readback changes, board
+  lost / back); TELEM2 group M.
 
 -------------------------------------------------------------------------------
 8. THE USB JOYSTICK (THRUSTMASTER T.16000M + TWCS)
@@ -1700,10 +1740,15 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          first word is full.) Not measured at all (divider not wired,
                          converter dead): the NOTICE "NO VOLTAGE DATA" after
                          5 s - no alarm, nothing else changes.
+  RELAY BOARD SILENT     the RS485 relay board gave no valid reply for 3 s
+                         while a relay table is loaded. ADVISORY: states
+                         shown unknown, no new relay command; no mode
+                         change, the power limit stays. Clears by itself
+                         when the board answers (second alarm word, bit 2).
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
-  DECISION, OBSTACLE AHEAD and AIS RECEIVER SILENT, and LOW BATTERY: they
+  DECISION, OBSTACLE AHEAD, AIS RECEIVER SILENT, LOW BATTERY and RELAY BOARD SILENT: they
   never change the power limit). Acknowledge: STANDBY button in STANDBY, or "ACK ALARM" in
   the ALARMS panel (top right of screen 2). Both screens list every active
   alarm in ONE place (screen 1: under the right mirror; screen 2: top
@@ -1718,7 +1763,7 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
              TRIPPED, REMOTE DRIVING LINK LOST, COLLISION RISK (+ DRIVER
              DECISION), SHALLOW WATER, EMERGENCY STOP, NO DATA FROM THE BOAT
     ADVISORY ARRIVED, TRAINING, JOYSTICK TOOK CONTROL, AIS RECEIVER SILENT,
-             LOW BATTERY
+             LOW BATTERY, RELAY BOARD SILENT
     CAUTION  all the others
   (groundstation\alerts.py). The GENERAL WARNING / CAUTION lamps of the
   driver screen only silence this PC - they are not the boat's ALARM ACK.
@@ -1916,6 +1961,11 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c, drivers hal/tc_*.c)
      [x] generator mode (app/generator.c, chapter 7): needs the neutral
          switch wired (HAL_NEUTRAL_SW_FITTED 1) and the voltage divider -
          until then it never starts (no switch = never, no data = never)
+     [x] RS485 Modbus relay board driver (hal/tc_modbus.c, app/relays.c,
+         chapter 7): relay table in data flash slot 7. The board, the
+         transceiver, the ASCLIN4 pins and the DE pin are TBD (WIRING.md
+         3D): HAL_RELAY_FITTED 0 until wired - a boat file with relays then
+         shows RELAY BOARD SILENT (advisory).
    Still stubs:
      [ ] joystick ADC + 3 buttons (the USB bridge works), neutral switch
          (input done, HAL_NEUTRAL_SW_FITTED 0), paddlewheel

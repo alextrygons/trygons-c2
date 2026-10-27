@@ -24,7 +24,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 4 | Supply voltage input (12 V bank), filtered ~30 s, low-battery alarm | DONE (gate OK: sim 197/197 + bridge 196/196 incl. BV1-BV4, TriCore + iLLD check, NV 4/4, gateway 105/105, test_screen2 13/13, test_driver 19/19, test_lang 5/5, sound 10/10; acceptance quick 7/7 PASS on a fresh clone of this commit, incl. START_DEMO, storm 200 episodes) | this commit |
 | 4b | Generator mode (the ONLY automatic throttle rise; CLAUDE.md K) | DONE (gate OK: sim 205/205 + bridge 204/204 incl. GN1-GN8, TriCore + iLLD check, NV 4/4, gateway, test_screen2 13/13, test_lang 5/5, test_driver 19/19; storm 200 episodes incl. I32-I35; acceptance quick 7/7 PASS - the "fresh build from GitHub" suite builds the pushed step-4 HEAD, every other suite this tree) | this commit |
 | 5 | Boat file v2: relay list + generator_max_pct + thruster settings; old files still load | DONE (gate OK: sim 205/205 + bridge 204/204, TriCore + iLLD check, NV 4/4, FAT32 2/2, charts 6/6, test_lang 5/5, test_boats 8/8 incl. B7 + B8, test_screen2 13/13, sound 10/10, avoidance 14/14; gateway: section C crashed in the gate (sim connection refused at its start = PC load, untouched by this step) and passed alone 11/11, the other 94 OK; acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the "fresh build from GitHub" suite builds the pushed step-4b HEAD, every other suite this tree), storm 200 episodes) | this commit |
-| 6 | RS485 Modbus RTU relay board driver on the AURIX (state machine, timeouts, no-data advisory; never on CPU1) | | |
+| 6 | RS485 Modbus RTU relay board driver on the AURIX (state machine, timeouts, no-data advisory; never on CPU1) | DONE (gate OK: sim 213/213 + bridge 212/212 incl. RB1-RB8, TriCore + iLLD check, relay-writer check, NV 4/4, FAT32 2/2, charts 6/6, test_lang 5/5, test_boats 9/9 incl. B9, test_screen2 13/13, sound 10/10, avoidance 14/14, gateway 105/105; test_driver 19/19 (see the gate note); acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the fresh-build suite builds the pushed step-5 HEAD, every other suite this tree), storm 200 episodes incl. I36 647 checks 0 fails) | this commit |
 | 7 | Engine controls + remote restart (CLAUDE.md N; I31 changed) | | |
 | 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | | |
 | 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | | |
@@ -162,6 +162,35 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   link.send in gateway_like mode (the push would have reached a plain Link with gateway kwargs). MANUAL chapter 5 + 7,
   MANUAL_EL: the boat file paragraph. Gate note: gateway section C (channels) crashed once in the full gate with
   "connection refused" when its simulator started (PC load); alone 11/11.
+- Step 6 (2026-10-27): RS485 Modbus RTU relay board. hal/tc_modbus.c (+ .h) = the master (pure C over a port: one
+  request in flight, state machine SEND -> WAIT <= 100 ms -> IDLE, CRC-16/MODBUS, 0x01 readback every 100 ms, 0x05
+  set / board-timed pulse 0x02xx, 0x0F several coils, write queue of 8, no valid reply 3 s = SILENT, keeps polling);
+  hal_tc375.c = the port on ASCLIN4 (TX P00.9, RX P00.12, DE + /RE P00.11, all CHECK; tc_uart.c UART_RELAY +
+  uart_tx_done for the DE release), HAL_RELAY_FITTED 0 until the board is wired (driver never started -> a boat file with
+  relays shows RELAY BOARD SILENT). hal.h: hal_relay_service / set / pulse / read / ok. app/relays.c = the ONLY caller
+  (tools/check.sh grep, word-bounded so the sim's sim_hal_relay_* test hooks don't match): table (<= 16 relays, NV slot 7,
+  version + CRC-32), offer / CONFIRM (CONF_RELAY_TABLE = confirm kind 7: a DIFFERENT table only in STANDBY + joystick
+  CONFIRM, onboard in CREWED / shore in UNCREWED; the stored table stays until then; the same table = OK at once; any other
+  CONFIRM request or leaving STANDBY drops the offer), commands (PROTO_T_RELAY 0x1E: off / on / pulse; interlocked pair
+  never both, momentary = board-timed <= max_s <= 5 s, timed = OFF by the AURIX after max_s, re-sent until the readback
+  shows it off, STARTER refused (section N only), nothing in FIRST TEST, nothing new on a silent board), power_up = only ON,
+  once, only with the first table after the AURIX's own POWER-ON reset, never the engine group, waits for the board.
+  smallboat: sb_relay_table / sb_relay_cmd, relays_step in sb_step 8b, SB_ALM2_RELAY_SILENT (0x2, advisory: no mode
+  change, power limit stays; kept by the ACK while silent), the confirmed table saved in STANDBY. link.c: PROTO_T_RELAY_CFG
+  0x2F (variable length), PROTO_T_RELAY, TELEM2 group M (states, known, table hash, flags, count, commanded on). Log event
+  25 RELAY (commands, table events, readback changes, board lost / back; events only - the 20 Hz sample is untouched).
+  Sim: a simulated board in hal_sim.c (latency, SILENT / CORRUPT / CORRUPT_SOME, board-timed pulses that run on with core 0
+  frozen), `autopilot_sim rb` = RB1-RB8 (in `all`). Storm: E_RELAY + I36 (relays never change mode / throttle / gear /
+  steering / thrust). Ground station: proto T_RELAY / T_RELAY_CFG (both in DRIVING_CMDS: conservative until step 8 splits
+  engine / trim / extra), p_relay_cfg, relay_table_hash, group M decode (relay_on / relay_unknown are LISTS: the gateway
+  forwards telemetry as JSON - a set broke it and flooded the station with "bad message" lines), CONFIRM_KINDS + confirm.6 /
+  .7, alarm relay_silent (ADVISORY, both words), app.relay_push (HELM + STANDBY, sent when the TELEM2 M hash differs from
+  the file's table, again after 15 s while it still differs and no CONFIRM is pending), boats.py max 16 relays. Tests:
+  test_boats B9 (end to end through the gateway + sim: pending, CONFIRM, active hash = file, never re-sent). Docs: MANUAL 5 /
+  7 (RELAY BOARD) / 11 / 17, MANUAL_EL, WIRING.md 3D (new), PARTS.md, CLAUDE.md M (done line). TBD: the board, the
+  transceiver, baud, address, channel count, the pins.
+  Gate note: test_driver I1 (heading box on the tape) failed on this PC with the per-PC groundstation/gs_layout.json that a
+  killed test run had rewritten ("driver": null); with the file moved aside 19/19 PASS (file put back: it is the owner's).
 
 # Previous task: "Screen 2 review"
 

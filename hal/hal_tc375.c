@@ -47,11 +47,13 @@
 #include "tc_sd.h"
 #include "tc_uart.h"
 #include "tc_nv.h"
+#include "tc_modbus.h"
 #include "IfxFlash.h"      /* data flash command sequences (inline; Flash/Std built by ADS) */
 
 #include <string.h>
 
 static void nv_port_init(void);      /* below, with the data flash port */
+static void relay_port_init(void);   /* below, with the RS485 Modbus port */
 
 #define LINK_BAUD    921600.0f
 #define GW_BAUD      921600.0f
@@ -211,6 +213,7 @@ void hal_init(void)
     gps_init();                                 /* its UART + configuration (state machine) */
     bno_init();                                 /* SPI + reset pulse (state machine) */
     nv_port_init();                             /* data flash record log: scan only (no command) */
+    relay_port_init();                          /* RS485 Modbus relay board (only if HAL_RELAY_FITTED) */
     /* the SD card is started by CPU2 (hal_sd_present), the only core that uses it */
 }
 
@@ -657,6 +660,94 @@ bool hal_read_water_speed(float *kn)
 {
     (void)kn;
     return false;    /* TODO: paddlewheel pulse input (GPT12 / GTM TIM), if fitted */
+}
+
+/* --- RS485 Modbus RTU relay board: tc_modbus.c on RELAY_ASC ------------------
+ * Half duplex: the DE pin (DE + /RE of the transceiver) is driven high before
+ * a request goes out and released once the last bit has left the shift
+ * register (uart_tx_done, checked from the driver's read, i.e. every control
+ * step - a 16-byte frame at 9600 baud takes ~17 ms, less than a step). Only
+ * app/relays.c calls the hal_relay_* functions; nothing here touches an
+ * actuator, and CPU1 never sees this port. HAL_RELAY_FITTED 0 (hardware TBD):
+ * the driver is never started, every call answers "no board" and the relay
+ * code sees SILENT (an advisory). */
+static volatile boolean s_relay_up, s_relay_de;
+
+static bool relay_port_write(const uint8_t *buf, uint32_t len)
+{
+#if HAL_RELAY_FITTED
+    if (!s_relay_up) return false;
+    IfxPort_setPinHigh(PIN_RELAY_DE);           /* drive the bus */
+    s_relay_de = TRUE;
+    if (!uart_write(UART_RELAY, buf, len)) {
+        IfxPort_setPinLow(PIN_RELAY_DE);
+        s_relay_de = FALSE;
+        return false;
+    }
+    return true;
+#else
+    (void)buf; (void)len;
+    return false;
+#endif
+}
+
+static uint32_t relay_port_read(uint8_t *buf, uint32_t max)
+{
+#if HAL_RELAY_FITTED
+    if (!s_relay_up) return 0u;
+    if (s_relay_de && uart_tx_done(UART_RELAY)) {   /* request out: listen */
+        IfxPort_setPinLow(PIN_RELAY_DE);
+        s_relay_de = FALSE;
+    }
+    return uart_read(UART_RELAY, buf, max);
+#else
+    (void)buf; (void)max;
+    return 0u;
+#endif
+}
+
+static const mb_port_t s_relay_port = { relay_port_write, relay_port_read, hal_millis };
+
+static void relay_port_init(void)
+{
+    s_relay_up = FALSE;
+    s_relay_de = FALSE;
+#if HAL_RELAY_FITTED
+    pin_low_output(PIN_RELAY_DE);               /* receive until a request goes out */
+    uart_init(UART_RELAY, RELAY_BAUD);
+    {
+        mb_config_t c = { RELAY_SLAVE_ADDR, RELAY_CHANNELS, 100u, HAL_RELAY_LOST_MS, 100u };
+        mb_init(&s_relay_port, &c);
+    }
+    s_relay_up = TRUE;
+#else
+    (void)s_relay_port;                         /* not wired yet: the driver is never started */
+#endif
+}
+
+void hal_relay_service(void)
+{
+    if (s_relay_up) mb_service();
+}
+
+bool hal_relay_set(uint8_t n, bool on)
+{
+    return s_relay_up && mb_set_coil(n, on);
+}
+
+bool hal_relay_pulse(uint8_t n, uint16_t ms)
+{
+    return s_relay_up && mb_pulse_coil(n, ms);
+}
+
+bool hal_relay_read(uint8_t n, bool *on)
+{
+    return s_relay_up && mb_coil(n, on);
+}
+
+bool hal_relay_ok(void)
+{
+    return s_relay_up && mb_ok();
 }
 
 /* Panel buttons, sampled once per control step (50 ms): a level that is the

@@ -77,6 +77,7 @@ F_MONO = theme.font("label", bold=False, mono=True)
 F_SMALL = theme.font("small")
 MODE_COLORS = theme.MODE_COLOURS
 PLOT_S = 120.0              # seconds shown in the plot
+RELAY_PUSH_S = 15.0         # the boat file's relay table: no re-send to the AURIX before this (CLAUDE.md M)
 LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
 P_MAX_LEG = 4               # parameter "max_leg_kn" (app/link.c): the highest leg speed of a program
 AIS_ROWS = (2, 4, 8)        # AIS rows in the corner panel: low (< 720 px) / small / big screen
@@ -297,6 +298,8 @@ class App:
         self.boat_pushed = False        # the boat file's settings pushed to the AURIX (CLAUDE.md L): HELM + STANDBY
         self.boat_push_seq = None       # the seq of that PARAM_SET (a NACK re-arms the push)
         self.boat_push_at = 0.0         # no retry before this time
+        self.relay_push_at = 0.0        # the relay table (PROTO_T_RELAY_CFG): no re-send before this time
+        self.relay_push_seq = None
         self.boatsel = None             # the boat list dialog
         self.boatconf = None            # the boat confirmation dialog
         self.screen_shown = 2           # one monitor: which screen F11 shows (1 driving, 2 navigation)
@@ -1416,6 +1419,7 @@ class App:
             return T("cap.cannot_connect", err=i18n.from_en(str(e)))
         self.boat, self.boat_ok = bt, False
         self.boat_pushed, self.boat_push_seq, self.boat_push_at = False, None, 0.0
+        self.relay_push_at, self.relay_push_seq = 0.0, None
         self.boat_pick = bt
         self.prober.found(bt)                       # the gateway answered: found (screen 2's lamp)
         self.port_var.set(bt.address())
@@ -1848,6 +1852,8 @@ class App:
                         self.root.after(300, self.read_params)
                     if d["seq"] == self.boat_push_seq and not d["ok"]:
                         self.boat_pushed, self.boat_push_at = False, time.time() + 5.0   # e.g. left STANDBY: again later
+                    if d["seq"] == self.relay_push_seq and not d["ok"]:
+                        self.relay_push_at = time.time() + 5.0      # the relay table: again later (STANDBY, CONFIRM ready)
                     if what is not None or not d["ok"]:
                         txt = "%s: %s" % (i18n.from_en(what) if what else d["cmd_name"], alerts.result_text(d))
                         self.say(txt, GREEN if d["ok"] else RED)
@@ -1948,6 +1954,7 @@ class App:
         if self.hist and ts < self.hist[-1][0]:
             self.hist.clear()               # boat restarted
             self.boat_pushed = False        # its RAM-only boat file settings are gone: push them again
+            self.relay_push_at = 0.0        # (the relay table is in its data flash: sent only if it differs)
         self.boat_push(d)
         self.hist.append((ts, d["heading"], d["target"], d["outboard"]))
         while self.hist and self.hist[0][0] < ts - PLOT_S:
@@ -3251,20 +3258,39 @@ class App:
         a boat restart (t_ms back to 0) re-arms it too. The relay table (step 6, PROTO_T_RELAY_CFG) and the
         thruster settings (step 9) join here when the AURIX takes them. Never from a copilot (it never holds
         HELM); the captain's own setting, so no ACCEPT; single-operator mode = its own confirmation."""
-        if self.boat is None or not self.boat_ok or self.boat_pushed or self.link is None or \
-                time.time() < self.boat_push_at:
+        if self.boat is None or not self.boat_ok or self.link is None:
             return                                  # only a confirmed boat (name + live camera) gets its settings
         if not self.helm_mine() or d.get("mode_name") != "STANDBY":
             return
-        pid = next((k for k, p in self.params.items() if p.get("name") == "gen_max_pct"), None)
-        if pid is None:
-            return                                  # the parameter list is not read yet
-        st = boats.aurix_settings(self.boat, self.params[pid].get("max", boats.GEN_MAX_CEILING))
-        v = st["gen_max_pct"]
-        self.boat_pushed = True
-        self.boat_push_seq = self._send_cmd(proto.T_PARAM_SET, proto.p_param_set(pid, v),
-                                            TE("what.boat_gen", v="%g" % v, name=self.boat.name),
-                                            confirm="self" if self.single_op else None)
+        if not self.boat_pushed and time.time() >= self.boat_push_at:
+            pid = next((k for k, p in self.params.items() if p.get("name") == "gen_max_pct"), None)
+            if pid is None:
+                return                              # the parameter list is not read yet
+            st = boats.aurix_settings(self.boat, self.params[pid].get("max", boats.GEN_MAX_CEILING))
+            v = st["gen_max_pct"]
+            self.boat_pushed = True
+            self.boat_push_seq = self._send_cmd(proto.T_PARAM_SET, proto.p_param_set(pid, v),
+                                                TE("what.boat_gen", v="%g" % v, name=self.boat.name),
+                                                confirm="self" if self.single_op else None)
+            return
+        self.relay_push(d)
+
+    def relay_push(self, d):
+        """CLAUDE.md M (step 6): the boat file's relay table (PROTO_T_RELAY_CFG). TELEM2 group M carries the
+        hash of the table the AURIX uses: the same one = nothing to send; a different one is sent again every
+        RELAY_PUSH_S while no CONFIRM is pending - the AURIX takes it only in STANDBY and only after the
+        joystick CONFIRM (its stored table stays until then), so the captain sees the CONFIRM banner each time.
+        A v1 file (no relays) pushes the EMPTY table (the file is the source: the stored table is then cleared,
+        after the CONFIRM). HELM + STANDBY as the generator cap."""
+        if d.get("relay_hash") is None or d.get("relay_pending") or time.time() < self.relay_push_at:
+            return
+        relays = [] if self.boat.error else self.boat.relays
+        if proto.relay_table_hash(relays) == d["relay_hash"]:
+            return
+        self.relay_push_at = time.time() + RELAY_PUSH_S
+        self.relay_push_seq = self._send_cmd(proto.T_RELAY_CFG, proto.p_relay_cfg(relays),
+                                             TE("what.boat_relays", n=len(relays), name=self.boat.name),
+                                             confirm="self" if self.single_op else None)
 
     def helm_text(self):
         """Who holds HELM, in the screen language (the gateway's own name of it is English)."""

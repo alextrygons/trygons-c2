@@ -20,6 +20,7 @@
 #include "smallboat.h"
 #include "nv.h"
 #include "tc_nv.h"
+#include "tc_modbus.h"
 
 /* ------------------------------------------------------------ harness -- */
 
@@ -145,6 +146,9 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     remove("nv1.bin");                              /* default joystick calibration */
     remove("nv2.bin");                              /* no stored AUTO program */
     remove("nv4.bin");                              /* default joystick map (analog) */
+    remove("nv7.bin");                              /* no relay table */
+    sim_hal_relay_board(true, 5u, 0u);              /* a fresh relay board, every relay off */
+    sim_hal_relay_board_reset();
     sim_hal_unforce();
     memset((void *)&g_mon, 0, sizeof g_mon);
     world_publish(&x->w, 0);
@@ -8886,13 +8890,14 @@ static void generator_tests(void)
         p.heartbeat = true;
         p.next_hb = p.x.t;
         pc_run(&p, 15000u);
-        uint8_t st1 = p.t2_len >= 2u ? p.t2[p.t2_len - 2u] : 99u, pc1 = p.t2_len >= 1u ? p.t2[p.t2_len - 1u] : 99u;
+        /* group L ends 16 bytes (group M, the relay board) before the end of the frame */
+        uint8_t st1 = p.t2_len >= 18u ? p.t2[p.t2_len - 18u] : 99u, pc1 = p.t2_len >= 17u ? p.t2[p.t2_len - 17u] : 99u;
         const char *sbst1 = gen_state_name(p.x.sb.gen.state);
         bool t2 = p.t2_len >= 11u && st1 == GEN_RUNNING && pc1 == 8u;
         v = 0u;
         bool off = pc_cmd(&p, PROTO_T_GENERATOR, &v, 1u) == PROTO_R_OK && !p.x.sb.gen.enabled;
         pc_run(&p, 2000u);
-        bool t2off = p.t2_len >= 11u && p.t2[p.t2_len - 2u] == GEN_OFF && p.t2[p.t2_len - 1u] == 0u &&
+        bool t2off = p.t2_len >= 27u && p.t2[p.t2_len - 18u] == GEN_OFF && p.t2[p.t2_len - 17u] == 0u &&
                      p.x.sb.thr.out_pct == 0.0f;
         /* FIRST TEST over the link: refused */
         {
@@ -9086,6 +9091,432 @@ static void battery_tests(void)
     }
 }
 
+/* ------------------------------------------------ RS485 relay board (M) -- */
+
+/* the sample table of boats/rf49d.json (IGNITION / STARTER / SHUTOFF engine, TRIM UP / DOWN pair,
+ * NAV LIGHTS, BILGE PUMP timed 120 s); power_on: NAV LIGHTS power_up "on"; variant: the bilge pump 60 s */
+static void rb_table(relay_table_t *t, bool variant, bool power_on)
+{
+    static const relay_def_t R[7] = {
+        { 1, RELAY_ONOFF,     RELAY_GRP_ENGINE, 0, 0,    RELAY_F_SHOW_HUD, 0 },   /* IGNITION */
+        { 2, RELAY_MOMENTARY, RELAY_GRP_ENGINE, 0, 10,   0, 0 },                  /* STARTER */
+        { 3, RELAY_ONOFF,     RELAY_GRP_ENGINE, 0, 0,    RELAY_F_SHOW_HUD, 0 },   /* SHUTOFF */
+        { 4, RELAY_MOMENTARY, RELAY_GRP_TRIM,   5, 30,   RELAY_F_SHOW_HUD, 0 },   /* TRIM UP */
+        { 5, RELAY_MOMENTARY, RELAY_GRP_TRIM,   4, 30,   RELAY_F_SHOW_HUD, 0 },   /* TRIM DOWN */
+        { 6, RELAY_ONOFF,     RELAY_GRP_EXTRA,  0, 0,    RELAY_F_KEEP, 0 },       /* NAV LIGHTS */
+        { 7, RELAY_TIMED,     RELAY_GRP_EXTRA,  0, 1200, 0, 0 },                  /* BILGE PUMP */
+    };
+    memset(t, 0, sizeof *t);
+    t->count = 7u;
+    memcpy(t->r, R, sizeof R);
+    if (variant) t->r[6].max_ds = 600u;
+    if (power_on) t->r[5].flags = RELAY_F_POWER_ON;
+    relay_table_seal(t);
+}
+
+/* a fresh boat (CREWED, armed) with a fresh relay board; table loaded through the real path
+ * (offer in STANDBY + joystick CONFIRM) when t != NULL */
+static bool rb_setup(sbsim_t *x, uint32_t seed, const sb_config_t *cfg, const relay_table_t *t)
+{
+    sbsim_init(x, seed, 90.0f, 0.0f, cfg);          /* (also: no nv7.bin, a fresh board) */
+    sbsim_run(x, 8000u, NULL, NULL);                 /* profile detected (CREWED), armed */
+    if (t == NULL) return true;
+    if (sb_relay_table(&x->sb, t) != SB_OK) return false;
+    bool ok = confirm_press(x) && x->sb.relays.have_table;
+    sbsim_run(x, x->t + 1000u, NULL, NULL);
+    return ok;
+}
+
+/* the AURIX's own reset (the board on its own supply keeps its relays): the data flash files stay */
+static void rb_power_cycle(sbsim_t *x, hal_reset_t why)
+{
+    memset((void *)&g_mon, 0, sizeof g_mon);
+    if (why == HAL_RESET_POWER_ON) sim_hal_unforce(); else sim_hal_chip_reset(why);
+    hal_init();
+    sb_init(&x->sb, &x->cfg);
+    monitor_init(&x->mon, x->t);
+    x->next_ctrl = x->t;
+    x->last_kick = x->t;
+}
+
+static uint32_t rb_bit(int n)
+{
+    return 1u << (n - 1);
+}
+
+static void relay_tests(void)
+{
+    char d[1200];
+    printf("\n=== RB RS485 Modbus relay board (tc_modbus.c + relays.c): advisory only, never a control path ===\n");
+
+    /* RB1 the driver: readback, a command reaches the board, a slow board (reply > 100 ms) = timeouts,
+     * after 3 s RELAY BOARD SILENT (advisory), states unknown; back = found by itself, the ACK clears it */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1701u, NULL, &t);
+        const mb_stats_t *st = mb_stats();
+        bool known = x.sb.relays.board_ok && (x.sb.relays.known & 0x7Fu) == 0x7Fu && x.sb.relays.states == 0u;
+        bool on = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        bool on_board = sim_hal_relay_state(6u) && (x.sb.relays.states & rb_bit(6));
+        bool off = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_OFF, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        bool off_board = !sim_hal_relay_state(6u) && !(x.sb.relays.states & rb_bit(6)) && x.sb.relays.off_pending == 0u;
+        uint32_t to0 = st->timeouts;
+        sim_hal_relay_board(true, 150u, 0u);         /* replies later than the 100 ms limit */
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool still_ok = x.sb.relays.board_ok && !(x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        bool silent = !x.sb.relays.board_ok && x.sb.relays.known == 0u && (x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT) &&
+                      st->timeouts > to0 + 10u && sb_mode(&x.sb) == MODE_STANDBY;
+        sim_hal_relay_board(true, 5u, 0u);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool back = x.sb.relays.board_ok && (x.sb.relays.known & 0x7Fu) == 0x7Fu;
+        sb_alarm_ack(&x.sb);
+        sbsim_run(&x, x.t + 100u, NULL, NULL);
+        bool cleared = !(x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT);
+        snprintf(d, sizeof d, "table loaded %s, readback %s, ON on board %s, OFF %s; slow board: ok for 2 s %s, SILENT after "
+                 "3.5 s %s (timeouts %u), back %s, ACK clears %s",
+                 loaded ? "yes" : "NO", known ? "ok" : "NO", on && on_board ? "yes" : "NO", off && off_board ? "yes" : "NO",
+                 still_ok ? "yes" : "NO", silent ? "yes" : "NO", (unsigned)(st->timeouts - to0), back ? "yes" : "NO",
+                 cleared ? "yes" : "NO");
+        test_report("RB1 driver: readback, commands reach the board, timeouts -> SILENT after 3 s (advisory), back by itself",
+                    loaded && known && on && on_board && off && off_board && still_ok && silent && back && cleared, d);
+    }
+
+    /* RB2 CRC errors: every reply bad -> counted, never used, SILENT; one in 7 bad -> the board stays OK */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1702u, NULL, &t);
+        const mb_stats_t *st = mb_stats();
+        uint32_t c0 = st->crc_errors;
+        sim_hal_relay_board(true, 5u, SIM_RB_CORRUPT);
+        sim_hal_relay_force(6u, true);              /* a hand switch on the board: the bad replies must not show it */
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool all_bad = st->crc_errors > c0 + 10u && !x.sb.relays.board_ok && x.sb.relays.known == 0u &&
+                       !(x.sb.relays.states & rb_bit(6)) && (x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT);
+        uint32_t c1 = st->crc_errors;
+        sim_hal_relay_board(true, 5u, SIM_RB_CORRUPT_SOME);
+        sbsim_run(&x, x.t + 10000u, NULL, NULL);
+        bool some = st->crc_errors > c1 && x.sb.relays.board_ok && (x.sb.relays.states & rb_bit(6));
+        sim_hal_relay_board(true, 5u, 0u);
+        snprintf(d, sizeof d, "all replies bad: %u CRC errors, SILENT + states unknown %s; 1 in 7 bad: %u errors, board ok %s, "
+                 "readback shows the hand-switched relay %s", (unsigned)(c1 - c0), all_bad ? "yes" : "NO",
+                 (unsigned)(st->crc_errors - c1), x.sb.relays.board_ok ? "yes" : "NO", some ? "yes" : "NO");
+        test_report("RB2 CRC errors: bad replies counted and never used (SILENT); occasional errors tolerated",
+                    loaded && all_bad && some, d);
+    }
+
+    /* RB3 a silent board is an ADVISORY only: driving in HDG LOCK, the board dies -> same mode, same power limit,
+     * same throttle, no first-word alarm; new commands refused; an OFF is kept and re-sent when the board is back */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1703u, NULL, &t);
+        bool on = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        bool hdg = hdg_lock(&x);
+        sb_test_drive(&x.sb, true, GEAR_F, 40.0f);
+        sbsim_run(&x, x.t + 15000u, NULL, NULL);
+        float plim0 = x.sb.plim.fwd_pct, thr0 = x.sb.thr.out_pct;
+        uint32_t alm0 = x.sb.alarm_bits;
+        sim_hal_relay_board(false, 5u, 0u);          /* the bus is cut */
+        sbsim_run(&x, x.t + 5000u, NULL, NULL);
+        bool advisory = sb_mode(&x.sb) == MODE_HDG_LOCK && x.sb.plim.fwd_pct == plim0 &&
+                        fabsf(x.sb.thr.out_pct - thr0) < 0.5f && x.sb.alarm_bits == alm0 &&
+                        (x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT) && relays_silent(&x.sb.relays);
+        bool refused = sb_relay_cmd(&x.sb, 7u, RELAY_CMD_ON, 0u) == SB_ERR_REFUSED &&
+                       sb_relay_cmd(&x.sb, 4u, RELAY_CMD_PULSE, 1000u) == SB_ERR_REFUSED;
+        bool off_asked = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_OFF, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool still_on = sim_hal_relay_state(6u) && (x.sb.relays.off_pending & rb_bit(6));
+        sim_hal_relay_board(true, 5u, 0u);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool off_done = !sim_hal_relay_state(6u) && x.sb.relays.off_pending == 0u;
+        snprintf(d, sizeof d, "HDG LOCK %s at %.0f %% (limit %.0f %%); board cut: mode %s, limit %.0f %%, throttle %.0f %%, alarm word 1 "
+                 "unchanged %s, SILENT %s; new ON / pulse refused %s; OFF kept while silent %s, carried out when back %s",
+                 hdg ? "yes" : "NO", thr0, plim0, mode_name(sb_mode(&x.sb)), x.sb.plim.fwd_pct, x.sb.thr.out_pct,
+                 x.sb.alarm_bits == alm0 ? "yes" : "NO", advisory ? "yes" : "NO", refused ? "yes" : "NO",
+                 off_asked && still_on ? "yes" : "NO", off_done ? "yes" : "NO");
+        sb_test_drive(&x.sb, false, GEAR_N, 0.0f);
+        test_report("RB3 silent board = advisory only: no mode / power limit / throttle change, no new command, OFF kept",
+                    loaded && on && hdg && thr0 > 10.0f && advisory && refused && off_asked && still_on && off_done, d);
+    }
+
+    /* RB4 interlocked pair (TRIM UP / DOWN): never both - refused while the partner is commanded on or read
+     * back on (a hand switch on the board); allowed once it is off */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1704u, NULL, &t);
+        bool up = sb_relay_cmd(&x.sb, 4u, RELAY_CMD_PULSE, 2000u) == SB_OK;
+        sbsim_run(&x, x.t + 300u, NULL, NULL);
+        bool down_refused = sb_relay_cmd(&x.sb, 5u, RELAY_CMD_PULSE, 2000u) == SB_ERR_REFUSED && !sim_hal_relay_state(5u);
+        sbsim_run(&x, x.t + 2500u, NULL, NULL);
+        bool down_ok = !sim_hal_relay_state(4u) && sb_relay_cmd(&x.sb, 5u, RELAY_CMD_PULSE, 500u) == SB_OK;
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        sim_hal_relay_force(5u, true);               /* TRIM DOWN stuck on at the board */
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool up_refused = sb_relay_cmd(&x.sb, 4u, RELAY_CMD_ON, 0u) == SB_ERR_REFUSED && !sim_hal_relay_state(4u);
+        sim_hal_relay_force(5u, false);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool never_both = true;
+        for (int i = 0; i < 60; i++) {
+            (void)sb_relay_cmd(&x.sb, (uint8_t)(4 + (i & 1)), RELAY_CMD_PULSE, 300u);
+            sbsim_run(&x, x.t + 50u, NULL, NULL);
+            if (sim_hal_relay_state(4u) && sim_hal_relay_state(5u)) never_both = false;
+        }
+        snprintf(d, sizeof d, "UP pulse %s; DOWN refused while UP on %s; DOWN after UP ended %s; UP refused while DOWN read back on %s; "
+                 "alternating requests never both %s", up ? "ok" : "NO", down_refused ? "yes" : "NO", down_ok ? "yes" : "NO",
+                 up_refused ? "yes" : "NO", never_both ? "yes" : "NO");
+        test_report("RB4 interlocked pair: never both on (commanded or read back)",
+                    loaded && up && down_refused && down_ok && up_refused && never_both, d);
+    }
+
+    /* RB5 time limits: a momentary relay = a BOARD-timed pulse <= max_s (a 20 s request is cut to 3 s; the board
+     * ends it even with core 0 frozen); a timed relay is switched OFF by the AURIX after max_s */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1705u, NULL, &t);
+        uint32_t p0 = sim_hal_relay_pulses();
+        bool asked = sb_relay_cmd(&x.sb, 4u, RELAY_CMD_PULSE, 20000u) == SB_OK;
+        sbsim_run(&x, x.t + 300u, NULL, NULL);
+        bool pulsing = sim_hal_relay_state(4u) && sim_hal_relay_pulses() == p0 + 1u;
+        x.wdt_ms = 0u;                               /* core 0 frozen, no reset: only the board can end it */
+        x.frozen = true;
+        uint32_t t0 = x.t, t_off = 0u;
+        while (x.t < t0 + 6000u) {
+            sbsim_run(&x, x.t + 50u, NULL, NULL);
+            if (!t_off && !sim_hal_relay_state(4u)) t_off = x.t - t0 + 300u;
+        }
+        x.frozen = false;
+        x.wdt_ms = 100u;
+        x.next_ctrl = x.t;
+        x.last_kick = x.t;
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool timed = sb_relay_cmd(&x.sb, 7u, RELAY_CMD_ON, 0u) == SB_OK;
+        uint32_t t1 = x.t;
+        sbsim_run(&x, t1 + 119000u, NULL, NULL);
+        bool on_119 = sim_hal_relay_state(7u);
+        sbsim_run(&x, t1 + 121000u, NULL, NULL);
+        bool off_121 = !sim_hal_relay_state(7u) && x.sb.relays.timed_offs == 1u;
+        /* the timed OFF falls while the board is silent: carried out when it is back */
+        (void)sb_relay_cmd(&x.sb, 7u, RELAY_CMD_ON, 0u);
+        uint32_t t2 = x.t;
+        sbsim_run(&x, t2 + 60000u, NULL, NULL);
+        sim_hal_relay_board(false, 5u, 0u);
+        sbsim_run(&x, t2 + 125000u, NULL, NULL);
+        bool held = sim_hal_relay_state(7u) && x.sb.relays.timed_offs == 2u;
+        sim_hal_relay_board(true, 5u, 0u);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool off_back = !sim_hal_relay_state(7u);
+        snprintf(d, sizeof d, "20 s pulse asked %s, board pulse %s, ended by the board after ~%u ms with core 0 frozen; timed relay "
+                 "on at 119 s %s, off at 121 s by the AURIX %s; OFF during silence waits %s, done when back %s",
+                 asked ? "ok" : "NO", pulsing ? "yes" : "NO", (unsigned)t_off, on_119 ? "yes" : "NO", off_121 ? "yes" : "NO",
+                 held ? "yes" : "NO", off_back ? "yes" : "NO");
+        test_report("RB5 time limits: momentary = board-timed <= max_s (also with core 0 frozen); timed OFF after max_s",
+                    loaded && asked && pulsing && t_off >= 2700u && t_off <= 3500u && timed && on_119 && off_121 && held &&
+                    off_back, d);
+    }
+
+    /* RB6 refusals: no table, unknown relay, the STARTER (section N only), FIRST TEST (no relay change at all) */
+    {
+        static sbsim_t x, y;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        (void)rb_setup(&x, 1706u, NULL, NULL);
+        bool no_table = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_ERR_PRECOND && !x.sb.relays.have_table &&
+                        !(x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT);
+        sim_hal_relay_board(false, 5u, 0u);           /* no table: a missing board is no alarm either */
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool no_alarm = !(x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT);
+        sim_hal_relay_board(true, 5u, 0u);
+        bool loaded = sb_relay_table(&x.sb, &t) == SB_OK && confirm_press(&x);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        uint32_t w0 = sim_hal_relay_writes();
+        bool unknown = sb_relay_cmd(&x.sb, 9u, RELAY_CMD_ON, 0u) == SB_ERR_BAD_VALUE;
+        bool starter = sb_relay_cmd(&x.sb, 2u, RELAY_CMD_ON, 0u) == SB_ERR_NOT_ALLOWED &&
+                       sb_relay_cmd(&x.sb, 2u, RELAY_CMD_PULSE, 300u) == SB_ERR_NOT_ALLOWED;
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool no_write = sim_hal_relay_writes() == w0 && !sim_hal_relay_state(2u);
+        /* FIRST TEST */
+        sb_config_t c;
+        sb_default_config(&c);
+        c.first_test = true;
+        (void)rb_setup(&y, 1707u, &c, NULL);
+        bool ft_store = sb_relay_table(&y.sb, &t) == SB_OK && confirm_press(&y) && y.sb.relays.have_table;
+        uint32_t w1 = sim_hal_relay_writes();
+        bool ft = sb_relay_cmd(&y.sb, 6u, RELAY_CMD_ON, 0u) == SB_ERR_WRONG_MODE &&
+                  sb_relay_cmd(&y.sb, 6u, RELAY_CMD_OFF, 0u) == SB_ERR_WRONG_MODE &&
+                  sb_relay_cmd(&y.sb, 4u, RELAY_CMD_PULSE, 500u) == SB_ERR_WRONG_MODE;
+        sbsim_run(&y, y.t + 1000u, NULL, NULL);
+        bool ft_none = sim_hal_relay_writes() == w1 && (relays_flags(&y.sb.relays) & 32u) && y.sb.relays.power_ups == 0u;
+        snprintf(d, sizeof d, "no table: refused %s, no SILENT alarm without a table %s; unknown relay %s; STARTER refused (on / pulse) "
+                 "%s, never written %s; FIRST TEST: table stored %s, ON / OFF / pulse refused %s, no write %s",
+                 no_table ? "yes" : "NO", no_alarm ? "yes" : "NO", unknown ? "yes" : "NO", starter ? "yes" : "NO",
+                 no_write ? "yes" : "NO", ft_store ? "yes" : "NO", ft ? "yes" : "NO", ft_none ? "yes" : "NO");
+        test_report("RB6 refusals: no table, unknown relay, the STARTER, FIRST TEST (no relay change)",
+                    no_table && no_alarm && loaded && unknown && starter && no_write && ft_store && ft && ft_none, d);
+    }
+
+    /* RB7 the relay table (owner clarification): NV slot 7; a different table only in STANDBY and only after the
+     * joystick CONFIRM (no CONFIRM / mode change -> the stored one stays); the same table = OK at once; a bad one
+     * refused; after a reboot the stored table is in use; the link: RELAY_CFG / RELAY frames, TELEM2 group M */
+    {
+        static pcsim_t p;
+        static relay_table_t a, b, bad;
+        rb_table(&a, false, false);
+        rb_table(&b, true, false);
+        rb_table(&bad, false, false);
+        bad.r[3].pair = 6u;                           /* TRIM UP pairs NAV LIGHTS: not mutual */
+        relay_table_seal(&bad);
+        pcsim_init(&p, 1708u);
+        p.heartbeat = true;
+        p.next_hb = p.x.t;
+        pc_run(&p, 8000u);
+        uint8_t fr[1u + RELAY_TABLE_MAX * RELAY_FRAME_BYTES];
+        uint32_t na = relay_table_encode(&a, fr, sizeof fr);
+        uint16_t empty_hash = p.t2_len >= 16u ? (uint16_t)(p.t2[p.t2_len - 8u] | (p.t2[p.t2_len - 7u] << 8)) : 0u;
+        bool empty_ok = p.t2_len >= 16u && empty_hash == p.x.sb.relays.hash && !p.x.sb.relays.have_table;
+        /* offered, no CONFIRM: dropped after 10 s, nothing active */
+        bool offered = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)na) == PROTO_R_OK && p.x.sb.relays.offer_pending &&
+                       p.x.sb.confirm.kind == CONF_RELAY_TABLE;
+        pc_run(&p, 1000u);
+        offered = offered && (p.t2[p.t2_len - 6u] & 8u);
+        pc_run(&p, 10000u);
+        bool dropped = !p.x.sb.relays.offer_pending && !p.x.sb.relays.have_table && p.x.sb.confirm.kind == CONF_NONE;
+        /* offered + CONFIRM: active, saved in slot 7 */
+        uint32_t nvw = sim_hal_nv_writes();
+        bool sent = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)na) == PROTO_R_OK;
+        bool conf = confirm_press(&p.x);
+        pc_run(&p, 1500u);
+        uint16_t t2_hash = (uint16_t)(p.t2[p.t2_len - 8u] | (p.t2[p.t2_len - 7u] << 8));
+        bool active = sent && conf && p.x.sb.relays.have_table && t2_hash == relay_table_hash(&a) && p.t2[p.t2_len - 5u] == 7u &&
+                      (p.t2[p.t2_len - 6u] & 3u) == 3u && sim_hal_nv_writes() > nvw;
+        FILE *fp = fopen("nv7.bin", "rb");
+        bool saved = fp != NULL;
+        if (fp) fclose(fp);
+        /* the same table again: OK at once, nothing pending */
+        bool same = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)na) == PROTO_R_OK && !p.x.sb.relays.offer_pending &&
+                    p.x.sb.confirm.kind == CONF_NONE;
+        /* a relay command over the link + TELEM2 readback */
+        uint8_t rc[4] = { 6u, RELAY_CMD_ON, 0u, 0u };
+        bool cmd = pc_cmd(&p, PROTO_T_RELAY, rc, 4u) == PROTO_R_OK;
+        pc_run(&p, 1500u);
+        uint32_t t2_states = (uint32_t)p.t2[p.t2_len - 16u] | ((uint32_t)p.t2[p.t2_len - 15u] << 8);
+        bool t2_on = cmd && (t2_states & rb_bit(6)) && sim_hal_relay_state(6u);
+        rc[1] = RELAY_CMD_OFF;
+        (void)pc_cmd(&p, PROTO_T_RELAY, rc, 4u);
+        uint8_t r0[4] = { 0u, 1u, 0u, 0u };
+        bool bad_n = pc_cmd(&p, PROTO_T_RELAY, r0, 4u) == PROTO_R_BAD_VALUE && pc_cmd(&p, PROTO_T_RELAY, rc, 3u) == PROTO_R_BAD_LENGTH;
+        bool bad_len = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)(na - 1u)) == PROTO_R_BAD_LENGTH;
+        uint32_t nbad = relay_table_encode(&bad, fr, sizeof fr);
+        bool bad_tab = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)nbad) == PROTO_R_BAD_VALUE && p.x.sb.relays.table.r[6].max_ds == 1200u;
+        /* a different table outside STANDBY: refused; offered in STANDBY then HDG LOCK before the CONFIRM: dropped */
+        uint32_t nb = relay_table_encode(&b, fr, sizeof fr);
+        bool hdg = hdg_lock(&p.x);
+        bool not_standby = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)nb) == PROTO_R_STANDBY_ONLY;
+        press(&p.x, HAL_BTN_STANDBY);
+        pc_run(&p, 3000u);
+        bool offered_b = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)nb) == PROTO_R_OK && p.x.sb.relays.offer_pending;
+        bool hdg2 = hdg_lock(&p.x);
+        pc_run(&p, 200u);
+        bool dropped_b = hdg2 && !p.x.sb.relays.offer_pending && p.x.sb.relays.table.r[6].max_ds == 1200u;
+        press(&p.x, HAL_BTN_STANDBY);
+        pc_run(&p, 3000u);
+        /* reboot: the stored table A is in use (from NV); B offered + CONFIRM replaces it, also after the next reboot */
+        rb_power_cycle(&p.x, HAL_RESET_SYSTEM);
+        link_init(&p.link, &p.x.sb);
+        pc_run(&p, 8000u);
+        bool from_nv = p.x.sb.relays.have_table && p.x.sb.relays.from_nv && p.x.sb.relays.hash == relay_table_hash(&a);
+        bool b_ok = pc_cmd(&p, PROTO_T_RELAY_CFG, fr, (uint8_t)nb) == PROTO_R_OK && confirm_press(&p.x);
+        pc_run(&p, 1000u);
+        rb_power_cycle(&p.x, HAL_RESET_SYSTEM);
+        link_init(&p.link, &p.x.sb);
+        pc_run(&p, 2000u);
+        bool b_nv = b_ok && p.x.sb.relays.from_nv && p.x.sb.relays.hash == relay_table_hash(&b);
+        snprintf(d, sizeof d, "no table = the empty hash %s; offered + TELEM2 pending %s, no CONFIRM -> dropped %s; CONFIRM -> active + "
+                 "TELEM2 hash / count / flags + slot 7 %s / %s; same table at once %s; RELAY over the link + TELEM2 states %s; bad n / "
+                 "length %s, bad table length %s, not mutual %s; outside STANDBY refused %s (HDG LOCK %s); a mode change drops the "
+                 "offer %s; after a reboot the stored table %s; the new one confirmed + stored %s",
+                 empty_ok ? "yes" : "NO", offered ? "yes" : "NO", dropped ? "yes" : "NO", active ? "yes" : "NO", saved ? "yes" : "NO",
+                 same ? "yes" : "NO", t2_on ? "yes" : "NO", bad_n ? "yes" : "NO", bad_len ? "yes" : "NO", bad_tab ? "yes" : "NO",
+                 not_standby ? "yes" : "NO", hdg ? "yes" : "NO", offered_b && dropped_b ? "yes" : "NO", from_nv ? "yes" : "NO",
+                 b_nv ? "yes" : "NO");
+        test_report("RB7 relay table: slot 7, a different table only in STANDBY + CONFIRM, the stored one stays until then; link + TELEM2 M",
+                    empty_ok && offered && dropped && active && saved && same && t2_on && bad_n && bad_len && bad_tab && hdg &&
+                    not_standby && offered_b && dropped_b && from_nv && b_nv, d);
+        remove("nv7.bin");
+    }
+
+    /* RB8 power_up (owner clarification): ONLY switching ON, only once, only with the first table after the AURIX's
+     * own POWER-ON reset, never the engine group (such a table is refused), never switching a relay OFF; after a
+     * watchdog / software reset the board is read back and its states kept */
+    {
+        static sbsim_t x;
+        static relay_table_t a, a2, eng;
+        rb_table(&a, false, true);                   /* NAV LIGHTS power_up "on" */
+        rb_table(&a2, true, true);
+        rb_table(&eng, false, false);
+        eng.r[0].flags = RELAY_F_POWER_ON;            /* IGNITION power_up on: never */
+        relay_table_seal(&eng);
+        bool eng_bad = !relay_table_valid(&eng);
+        /* the first table after a power-on reset: NAV LIGHTS on, once */
+        bool loaded = rb_setup(&x, 1709u, NULL, &a);
+        bool pu_first = sim_hal_relay_state(6u) && x.sb.relays.power_ups == 1u;
+        bool eng_refused = sb_relay_table(&x.sb, &eng) == SB_ERR_BAD_VALUE;
+        /* nothing more: a second (different) table, CONFIRMed - no new power_up */
+        (void)sb_relay_cmd(&x.sb, 6u, RELAY_CMD_OFF, 0u);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool second = sb_relay_table(&x.sb, &a2) == SB_OK && confirm_press(&x);
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool once = second && !sim_hal_relay_state(6u) && x.sb.relays.power_ups == 1u;
+        /* a watchdog reset with relays on the board: read back, kept, no power_up */
+        sim_hal_relay_force(3u, true);                /* SHUTOFF on (power_up off: never switched OFF by the AURIX) */
+        rb_power_cycle(&x, HAL_RESET_SYSTEM);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool wd = x.sb.relays.from_nv && x.sb.relays.power_ups == 0u && !sim_hal_relay_state(6u) && sim_hal_relay_state(3u) &&
+                  (x.sb.relays.states & rb_bit(3));
+        /* a real power-on reset with the stored table: NAV LIGHTS on again (only ON), SHUTOFF kept on, engine untouched */
+        uint32_t w0 = sim_hal_relay_writes();
+        rb_power_cycle(&x, HAL_RESET_POWER_ON);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool po = x.sb.relays.power_ups == 1u && sim_hal_relay_state(6u) && sim_hal_relay_state(3u) && !sim_hal_relay_state(1u) &&
+                  sim_hal_relay_writes() == w0 + 1u;
+        /* a board that is silent at power-on: power_up waits until it answers */
+        sim_hal_relay_board(false, 5u, 0u);
+        sim_hal_relay_board_reset();
+        rb_power_cycle(&x, HAL_RESET_POWER_ON);
+        sbsim_run(&x, x.t + 5000u, NULL, NULL);
+        bool waits = x.sb.relays.power_ups == 0u && !sim_hal_relay_state(6u);
+        sim_hal_relay_board(true, 5u, 0u);
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool late = x.sb.relays.power_ups == 1u && sim_hal_relay_state(6u);
+        snprintf(d, sizeof d, "engine power_up table invalid %s / refused %s; first table after power-on: NAV LIGHTS on once %s, not again "
+                 "with a second table %s; watchdog reset: no power_up, board states kept %s; power-on reset: only ON, one write, "
+                 "SHUTOFF kept on, IGNITION untouched %s; silent board at power-on: waits %s, applied when it answers %s",
+                 eng_bad ? "yes" : "NO", eng_refused ? "yes" : "NO", pu_first ? "yes" : "NO", once ? "yes" : "NO", wd ? "yes" : "NO",
+                 po ? "yes" : "NO", waits ? "yes" : "NO", late ? "yes" : "NO");
+        test_report("RB8 power_up: only ON, once, only after a power-on reset, never the engine group, board states kept",
+                    eng_bad && loaded && pu_first && eng_refused && once && wd && po && waits && late, d);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
+}
+
+void sb_relay_tests(void)
+{
+    relay_tests();
+}
+
 void sb_nv_tests(void)
 {
     nv_tests();
@@ -9104,6 +9535,7 @@ void sb_generator_tests(void)
 void sb_tests(void)
 {
     generator_tests();
+    relay_tests();
     battery_tests();
     nv_tests();
     gateway_tests();

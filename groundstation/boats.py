@@ -44,6 +44,7 @@ RELAY_GROUPS = ("engine", "trim", "extra")
 POWER_UP = ("off", "on", "keep")
 MOMENTARY_MAX_S = 5.0                   # a board-timed pulse is never longer (section M)
 RELAY_N_MAX = 32                        # relay channel numbers 1..32 (8-16 channel boards, TBD)
+RELAY_COUNT_MAX = 16                    # relays in one table (the AURIX's RELAY_TABLE_MAX, app/relays.h)
 GEN_MAX_CEILING = 30.0                  # the AURIX's own ceiling for the generator (parameter gen_max_pct max)
 THRUSTER_DEFAULT = {"max_pct": 0.0, "run_s": 0.0, "rest_s": 0.0}     # no thruster
 
@@ -60,6 +61,8 @@ def _parse_relays(lst):
         return []
     if not isinstance(lst, list):
         raise ValueError("relays must be a list")
+    if len(lst) > RELAY_COUNT_MAX:
+        raise ValueError("at most %d relays (the AURIX table)" % RELAY_COUNT_MAX)
     out, seen = [], set()
     for i, r in enumerate(lst):
         if not isinstance(r, dict):

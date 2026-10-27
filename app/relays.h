@@ -1,0 +1,160 @@
+/*
+ * relays.h - The RS485 Modbus relay board as the boat sees it (CLAUDE.md
+ * section M + owner clarifications). Pure C99; this module is the ONLY
+ * caller of hal_relay_* (tools/check.sh greps for it, like servo.c for the
+ * throttle). No relay is in any control path: nothing here can change the
+ * mode, the throttle, the gear, the steering or the thrust (storm I36).
+ *
+ * The relay TABLE (which channel is what) comes from the boat file through
+ * the HELM station (PROTO_T_RELAY_CFG) and lives in the data flash (NV slot
+ * 7): a table that differs from the stored one is taken only in STANDBY and
+ * only after the joystick CONFIRM (onboard in CREWED, the shore joystick in
+ * UNCREWED) - until then the stored table stays in use (R7: a wrong boat
+ * file must not move the STARTER out of the engine rules). The same table
+ * again = accepted at once, in any mode. Without a table no relay can be
+ * switched.
+ *
+ * Rules carried out here:
+ *   - onoff / latching: set / clear (driven the same way on the AURIX; the
+ *     screens draw a latching relay as a toggle that keeps its state)
+ *   - momentary: a BOARD-timed pulse <= max_s (<= 5 s): the board switches
+ *     it off by itself; the AURIX only refreshes / releases it
+ *   - timed: on, and OFF by the AURIX after max_s (also while the board is
+ *     silent: the OFF stays pending and is re-sent until the readback shows it off)
+ *   - interlocked pair: never both - the second request is refused while
+ *     the other is on (commanded or read back)
+ *   - a silent board (no valid reply for HAL_RELAY_LOST_MS): no new command
+ *     (the OFF of a timed relay still goes), states shown unknown, the
+ *     advisory RELAY BOARD SILENT (raised by smallboat.c)
+ *   - engine group: STARTER (= an engine-group MOMENTARY relay) is never
+ *     pulsed by the plain relay command - only the remote-restart rules of
+ *     section N (step 7); IGNITION / SHUTOFF (onoff) are the captain's key
+ *   - power_up: ONLY switching ON, only once, only with the FIRST active
+ *     table after the AURIX's own POWER-ON reset (never after a watchdog /
+ *     software reset or a reconnect: then the board is read back and its
+ *     states kept), never the engine group, only once the board answers
+ *   - FIRST TEST: no relay changes at all (commands refused, no power_up);
+ *     the table itself may still be stored (bench set-up)
+ *   - monitor trip / e-stop: relays are left as they are (the board is not a
+ *     safety path: the engine kill pin and the e-stop contactor are)
+ */
+#ifndef RELAYS_H
+#define RELAYS_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define RELAY_TABLE_MAX   16u       /* relays in a table (8-16 channel boards) */
+#define RELAY_N_MAX       32u       /* channel numbers 1..32 */
+#define RELAY_TABLE_VERSION 1u
+#define RELAY_PULSE_MAX_MS 5000u    /* a momentary relay: never longer */
+#define RELAY_FRAME_BYTES 7u        /* per relay in PROTO_T_RELAY_CFG */
+#define RELAY_OFF_RETRY_MS 500u     /* a pending OFF is sent again this often until the readback shows it off */
+
+/* relay_def_t.type */
+#define RELAY_ONOFF       0u
+#define RELAY_MOMENTARY   1u
+#define RELAY_LATCHING    2u
+#define RELAY_TIMED       3u
+/* relay_def_t.group */
+#define RELAY_GRP_ENGINE  0u
+#define RELAY_GRP_TRIM    1u
+#define RELAY_GRP_EXTRA   2u
+/* relay_def_t.flags */
+#define RELAY_F_SHOW_HUD  0x01u
+#define RELAY_F_POWER_ON  0x02u     /* power_up "on" */
+#define RELAY_F_KEEP      0x04u     /* power_up "keep" (= nothing is done: the board keeps its state) */
+
+typedef struct {
+    uint8_t  n;                 /* channel 1..32 */
+    uint8_t  type;              /* RELAY_ */
+    uint8_t  group;             /* RELAY_GRP_ */
+    uint8_t  pair;              /* the other relay of an interlocked pair (its n), 0 = none */
+    uint16_t max_ds;            /* momentary: pulse length; timed: on at most this (0.1 s units) */
+    uint8_t  flags;             /* RELAY_F_ */
+    uint8_t  pad;
+} relay_def_t;
+
+/* NV slot 7 record (version + CRC-32 like the other records) */
+typedef struct {
+    uint8_t     version;
+    uint8_t     count;
+    uint8_t     pad[2];
+    relay_def_t r[RELAY_TABLE_MAX];
+    uint32_t    crc;
+} relay_table_t;
+
+/* the relay command (PROTO_T_RELAY: u8 n, u8 action, u16 ms) */
+#define RELAY_CMD_OFF     0u
+#define RELAY_CMD_ON      1u        /* momentary: a pulse of max_s */
+#define RELAY_CMD_PULSE   2u        /* momentary: a pulse of min(ms, max_s); others: like ON */
+
+typedef enum {
+    RELAY_R_OK = 0,
+    RELAY_R_NO_TABLE,       /* no relay table (boat file not pushed / confirmed) */
+    RELAY_R_UNKNOWN,        /* n is not in the table / bad action */
+    RELAY_R_SILENT,         /* the board is silent: no new command */
+    RELAY_R_PAIR,           /* the interlocked partner is on */
+    RELAY_R_ENGINE,         /* STARTER: only through the remote-restart rules (section N) */
+    RELAY_R_FIRST_TEST,     /* FIRST TEST: no relay changes */
+    RELAY_R_HAL             /* the driver refused (queue full) */
+} relay_result_t;
+
+typedef enum {
+    RELAY_OFFER_SAME = 0,   /* the same table as the active one: nothing to do */
+    RELAY_OFFER_PENDING,    /* differs: stored as the offer, waiting for the joystick CONFIRM */
+    RELAY_OFFER_STANDBY,    /* differs, but not in STANDBY (not stopping): refused */
+    RELAY_OFFER_BAD         /* the table fails its checks */
+} relay_offer_t;
+
+typedef struct {
+    relay_table_t table;        /* the active table (= NV slot 7) */
+    bool     have_table;
+    bool     from_nv;           /* the active table was loaded at boot */
+    relay_table_t offer;        /* waiting for CONFIRM */
+    bool     offer_pending;
+    bool     first_test;
+    bool     power_on_reset;    /* the AURIX's own power-on reset (not a watchdog / software reset) */
+    bool     power_up_done;     /* the one-shot power_up is over (done, or never allowed) */
+    bool     board_ok;          /* hal_relay_ok() this step */
+    uint32_t states, known;     /* readback: bit n-1 (known = a valid readback) */
+    uint32_t cmd_on;            /* bit n-1: commanded on by the AURIX (pulse running / on / timed on) */
+    uint32_t off_pending;       /* bit n-1: an OFF not yet confirmed by the readback (re-sent while the board
+                                   answers and still shows the relay on: a silent board loses writes) */
+    uint32_t off_retry_ms;      /* next re-send of the pending OFFs */
+    uint32_t until_ms[RELAY_TABLE_MAX];  /* pulse end (momentary) / OFF deadline (timed); 0 = none */
+    uint16_t hash;              /* CRC-16 of the active table's frame encoding (TELEM2; the station compares) */
+    bool     table_new;         /* the active table changed: save it (NV slot 7) */
+    uint32_t commands, refused, pulses, timed_offs, power_ups;
+    uint8_t  last_n, last_action, last_result;
+    uint8_t  last_what;         /* 1 a command (also a timed OFF), 2 a table event (loaded / offered / accepted /
+                                   dropped / power_up) - for the log producer */
+    uint32_t log_seq;           /* +1 per command / table event (log producer) */
+} relays_t;
+
+/* table checks + sealing (version, CRC) */
+bool     relay_table_valid(const relay_table_t *t);
+void     relay_table_seal(relay_table_t *t);
+/* the frame encoding (PROTO_T_RELAY_CFG payload): u8 count, then per relay
+ * {n, type, group, pair, max_ds lo, max_ds hi, flags}. Returns the length. */
+uint32_t relay_table_encode(const relay_table_t *t, uint8_t *out, uint32_t max);
+bool     relay_table_decode(const uint8_t *in, uint32_t len, relay_table_t *t);
+uint16_t relay_table_hash(const relay_table_t *t);
+const relay_def_t *relay_table_find(const relay_table_t *t, uint8_t n);
+
+/* stored = the NV record (NULL = none / unusable) */
+void relays_init(relays_t *r, const relay_table_t *stored, bool power_on_reset, bool first_test);
+/* a table from the HELM station */
+relay_offer_t relays_offer(relays_t *r, const relay_table_t *t, bool standby_idle);
+/* the joystick CONFIRM (only in STANDBY, not stopping): the offer becomes the active table */
+bool     relays_accept(relays_t *r, bool standby_idle);
+void     relays_cancel_offer(relays_t *r);
+/* the relay command of the HELM station */
+relay_result_t relays_cmd(relays_t *r, uint8_t n, uint8_t action, uint16_t ms, uint32_t now_ms);
+/* every control step: the driver's step, readback, time limits, power_up */
+void     relays_step(relays_t *r, uint32_t now_ms);
+/* the advisory condition: a table with relays and the board silent */
+bool     relays_silent(const relays_t *r);
+uint8_t  relays_flags(const relays_t *r);           /* TELEM2 group M flags */
+
+#endif /* RELAYS_H */

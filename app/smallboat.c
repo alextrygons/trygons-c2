@@ -224,6 +224,48 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         }
         gen_init(&s->gen, &cfg->gen, learned);
     }
+    /* relay board: the stored table (NV slot 7) stays in use until a different one is
+     * confirmed; power_up states only after the AURIX's own power-on reset (relays.h) */
+    {
+        static relay_table_t t;     /* 140 bytes: not on the stack */
+        bool have = nv_load(HAL_NV_SLOT_RELAYS, &t, (uint32_t)sizeof t);
+        if (have && !relay_table_valid(&t)) { nv_invalid(HAL_NV_SLOT_RELAYS); have = false; }
+        relays_init(&s->relays, have ? &t : NULL, hal_reset_reason(NULL) == HAL_RESET_POWER_ON, cfg->first_test);
+    }
+}
+
+sb_result_t sb_relay_table(sb_t *s, const relay_table_t *t)
+{
+    bool standby_idle = sb_mode(s) == MODE_STANDBY && !s->stopping;
+    switch (relays_offer(&s->relays, t, standby_idle)) {
+    case RELAY_OFFER_SAME:
+        if (s->confirm.kind == CONF_RELAY_TABLE) s->confirm.kind = CONF_NONE;
+        return SB_OK;
+    case RELAY_OFFER_STANDBY: return SB_ERR_STANDBY_ONLY;
+    case RELAY_OFFER_BAD:     return SB_ERR_BAD_VALUE;
+    default: break;
+    }
+    if (!sb_confirm_ready(s)) {                 /* nobody can confirm: the offer is dropped */
+        relays_cancel_offer(&s->relays);
+        return SB_ERR_JOY_NOT_READY;
+    }
+    s->confirm.kind = CONF_RELAY_TABLE;         /* replaces any other pending request (STANDBY: none drives) */
+    s->confirm.deadline_ms = s->now_ms + s->cfg.confirm_ms;
+    return SB_OK;
+}
+
+sb_result_t sb_relay_cmd(sb_t *s, uint8_t n, uint8_t action, uint16_t ms)
+{
+    switch (relays_cmd(&s->relays, n, action, ms, s->now_ms)) {
+    case RELAY_R_OK:         return SB_OK;
+    case RELAY_R_NO_TABLE:   return SB_ERR_PRECOND;
+    case RELAY_R_UNKNOWN:    return SB_ERR_BAD_VALUE;
+    case RELAY_R_SILENT:     return SB_ERR_REFUSED;
+    case RELAY_R_PAIR:       return SB_ERR_REFUSED;
+    case RELAY_R_ENGINE:     return SB_ERR_NOT_ALLOWED;
+    case RELAY_R_FIRST_TEST: return SB_ERR_WRONG_MODE;
+    default:                 return SB_ERR_REFUSED;
+    }
 }
 
 sb_result_t sb_generator_set(sb_t *s, bool on)
@@ -271,6 +313,7 @@ void sb_alarm_ack(sb_t *s)
     s->alarm_bits &= keep;              /* (the link-lost bits are raised again while lost, link.c) */
     uint32_t keep2 = 0u;                /* the second word, the same rule */
     if (s->batt.low) keep2 |= SB_ALM2_LOW_BATTERY;
+    if (relays_silent(&s->relays)) keep2 |= SB_ALM2_RELAY_SILENT;
     s->alarm_bits2 &= keep2;
     s->alarm = s->alarm_bits != 0u || s->alarm_bits2 != 0u;
     if (!s->ap.sensor_fault) s->ap.alarm = false;
@@ -1876,6 +1919,9 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
     case CONF_RAISE_REV:
         /* one step up; never changes the mode */
         return plim_step_up(&s->plim, kind == CONF_RAISE_REV ? 1u : 0u, s->now_ms) == PLIM_OK;
+    case CONF_RELAY_TABLE:
+        /* the offered relay table becomes the active one (saved in STANDBY, below); never a mode change */
+        return relays_accept(&s->relays, sb_mode(s) == MODE_STANDBY && !s->stopping);
     default:
         return false;
     }
@@ -1928,6 +1974,9 @@ static void confirm_step(sb_t *s)
         if (is_raise(c->kind)) plim_log_attempt(&s->plim, c->kind == CONF_RAISE_REV, PLIM_ERR_LATE, s->now_ms);
         c->kind = CONF_NONE;            /* too late */
     }
+    /* a relay table waits only in STANDBY (not stopping); any other state drops the offer */
+    if (c->kind == CONF_RELAY_TABLE && (sb_mode(s) != MODE_STANDBY || s->stopping)) c->kind = CONF_NONE;
+    if (c->kind != CONF_RELAY_TABLE && s->relays.offer_pending) relays_cancel_offer(&s->relays);
     /* CREWED: the onboard joystick's CONFIRM; UNCREWED: the HELM station's
      * (shore captain's) joystick, same rules (stick centred, ready, in time) */
     bool shore = s->profile == SB_PROFILE_UNCREWED;
@@ -2557,8 +2606,18 @@ void sb_step(sb_t *s)
     /* 8. video SAVE requests for the gateway */
     save_triggers(s);
 
+    /* 8b. relay board (section M): the driver's bounded step, readback, time
+     *     limits, the one-shot power_up. Nothing of it reaches the control
+     *     path above; a silent board is an ADVISORY (states unknown) */
+    relays_step(&s->relays, s->now_ms);
+    if (relays_silent(&s->relays)) alarm2_on(s, SB_ALM2_RELAY_SILENT);
+
     /* 9. non-volatile storage: queued saves reach the data flash only in
      *    STANDBY (not stopping); one bounded step, never a wait */
+    if (s->relays.table_new && sb_mode(s) == MODE_STANDBY && !s->stopping) {
+        s->relays.table_new = false;                /* the confirmed relay table (slot 7) */
+        (void)nv_save(HAL_NV_SLOT_RELAYS, &s->relays.table, (uint32_t)sizeof s->relays.table);
+    }
     if (s->gen.learned_new && sb_mode(s) == MODE_STANDBY && !s->stopping && !s->gen.active) {
         gen_nv_t r;                                     /* the generator's learned value (slot 6) */
         memset(&r, 0, sizeof r);

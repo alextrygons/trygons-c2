@@ -56,6 +56,13 @@
 #define PROTO_T_JOYMAP_GET    0x1Bu   /* -  -> JOYMAP_VALUE                     */
 #define PROTO_T_JOYMAP_SET    0x1Cu   /* joymap body (see link.c), u8 save; STANDBY only */
 #define PROTO_T_JOY_RAW_GET   0x1Du   /* -  -> JOY_RAW (USB bridge, for the button mapping) */
+#define PROTO_T_RELAY         0x1Eu   /* u8 n (1..32), u8 action (0 off / 1 on / 2 pulse), u16 pulse ms: switch a
+                                       * relay of the table (HELM station; relays.h rules: interlock, max time,
+                                       * never the STARTER, nothing in FIRST TEST / without a table / silent board) */
+#define PROTO_T_RELAY_CFG     0x2Fu   /* u8 count (0..16), count x {u8 n, u8 type, u8 group, u8 pair, u16 max_s*10,
+                                       * u8 flags}: the boat file's relay table (HELM station). The same table as the
+                                       * active one = OK; a different one: STANDBY only, then joystick CONFIRM
+                                       * (CONF_RELAY_TABLE) - the stored table (NV slot 7) stays in use until then */
 #define PROTO_T_PROG_BEGIN    0x20u   /* u8 n (1..50), u8 final action        */
 #define PROTO_T_PROG_WP       0x21u   /* u8 index, i32 lat, i32 lon, f32 kn, f32 radius m, u8 action */
 #define PROTO_T_PROG_COMMIT   0x22u   /* -  validate + store; NACK -> PROG_ERROR frame too */

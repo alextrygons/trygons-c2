@@ -3,6 +3,7 @@
  */
 #include "hal_sim.h"
 #include "boat_model.h"
+#include "tc_modbus.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -14,6 +15,7 @@
 #define RUDDER_NOISE_DEG    0.1f
 
 static void nv_sim_reset(void);         /* non-volatile storage queue (below) */
+static void rb_driver_init(void);       /* Modbus relay board: the master restarts (below) */
 
 /* safety monitor trip latch (hal_safe_outputs) */
 static bool     s_forced;
@@ -51,6 +53,7 @@ void hal_init(void)
     s_rng = 12345u;         /* same sensor noise every run */
     s_gyro_rng = 777u;
     nv_sim_reset();         /* a reboot: queued saves are gone, the files stay */
+    rb_driver_init();       /* the Modbus master restarts; the relay board keeps its states */
 }
 
 uint32_t hal_millis(void)
@@ -812,6 +815,183 @@ void sim_hal_set_supply(bool fitted, float volts)
     s_supply_fitted = fitted;
     s_supply_v = volts;
 }
+
+/* --- RS485 Modbus RTU relay board: the real master (hal/tc_modbus.c) talks
+ *     to a simulated SLAVE here, byte for byte: the request is parsed (CRC
+ *     checked), the reply is ready after latency_ms, board-timed pulses are
+ *     switched off by the board itself. The board keeps its coil states
+ *     across an AURIX reboot (hal_init), like the real one on its own supply;
+ *     sim_hal_relay_board() with present = false models a board that is gone
+ *     (SILENT), faults corrupt the replies or make the board mute. --- */
+#define RB_COILS 16u
+static struct {
+    bool     present;
+    uint32_t latency_ms, fault;
+    uint8_t  addr;
+    uint32_t coils;                 /* true states, bit n-1 */
+    uint32_t pulse_end[RB_COILS];   /* 0 = no pulse running */
+    uint8_t  reply[32];
+    uint8_t  reply_len;
+    uint32_t reply_at_ms;
+    bool     reply_pending;
+    uint32_t requests, bad_requests, writes, pulses, polls, corrupted;
+    bool     inited;
+} s_rb;
+
+static void rb_tick(void)
+{
+    for (uint32_t i = 0; i < RB_COILS; i++) {
+        if (s_rb.pulse_end[i] && (int32_t)(s_time_ms - s_rb.pulse_end[i]) >= 0) {
+            s_rb.pulse_end[i] = 0u;
+            s_rb.coils &= ~(1u << i);
+        }
+    }
+}
+
+static void rb_reply(const uint8_t *f, uint8_t n)
+{
+    uint16_t c = mb_crc16(f, n);
+    memcpy(s_rb.reply, f, n);
+    s_rb.reply[n] = (uint8_t)c;
+    s_rb.reply[n + 1u] = (uint8_t)(c >> 8);
+    s_rb.reply_len = (uint8_t)(n + 2u);
+    if (s_rb.fault & SIM_RB_CORRUPT || ((s_rb.fault & SIM_RB_CORRUPT_SOME) && s_rb.requests % 7u == 3u)) {
+        s_rb.reply[n] ^= 0x5Au;                                    /* a bad CRC */
+        s_rb.corrupted++;
+    }
+    s_rb.reply_at_ms = s_time_ms + s_rb.latency_ms;
+    s_rb.reply_pending = !(s_rb.fault & SIM_RB_SILENT);
+}
+
+static bool rb_port_write(const uint8_t *buf, uint32_t len)
+{
+    if (!s_rb.present || len < 4u || len > 32u) return s_rb.present;   /* a missing board: the bytes just go */
+    rb_tick();
+    s_rb.requests++;
+    uint16_t c = (uint16_t)(buf[len - 2u] | ((uint16_t)buf[len - 1u] << 8));
+    if (c != mb_crc16(buf, len - 2u) || buf[0] != s_rb.addr) { s_rb.bad_requests++; return true; }
+    uint8_t f = buf[1];
+    if (f == 0x01u && len == 8u) {                                 /* read coils */
+        uint16_t start = (uint16_t)(((uint16_t)buf[2] << 8) | buf[3]);
+        uint16_t qty = (uint16_t)(((uint16_t)buf[4] << 8) | buf[5]);
+        if (start + qty > RB_COILS || qty == 0u) {
+            uint8_t e[3] = { s_rb.addr, 0x81u, 0x02u };            /* illegal data address */
+            rb_reply(e, 3u);
+            return true;
+        }
+        uint8_t r[8] = { s_rb.addr, 0x01u, (uint8_t)((qty + 7u) / 8u) };
+        uint32_t v = s_rb.coils >> start;
+        for (uint8_t i = 0; i < r[2]; i++) r[3u + i] = (uint8_t)(v >> (8u * i));
+        s_rb.polls++;
+        rb_reply(r, (uint8_t)(3u + r[2]));
+    } else if (f == 0x05u && len == 8u) {                          /* write / pulse one coil */
+        uint16_t a = (uint16_t)(((uint16_t)buf[2] << 8) | buf[3]);
+        uint16_t v = (uint16_t)(((uint16_t)buf[4] << 8) | buf[5]);
+        if (a >= RB_COILS) {
+            uint8_t e[3] = { s_rb.addr, 0x85u, 0x02u };
+            rb_reply(e, 3u);
+            return true;
+        }
+        if (v == 0xFF00u) { s_rb.coils |= 1u << a; s_rb.pulse_end[a] = 0u; s_rb.writes++; }
+        else if (v == 0x0000u) { s_rb.coils &= ~(1u << a); s_rb.pulse_end[a] = 0u; s_rb.writes++; }
+        else if ((v & 0xFF00u) == 0x0200u && (v & 0xFFu) != 0u) {  /* flash on: the board times it */
+            s_rb.coils |= 1u << a;
+            s_rb.pulse_end[a] = s_time_ms + 100u * (v & 0xFFu);
+            if (s_rb.pulse_end[a] == 0u) s_rb.pulse_end[a] = 1u;
+            s_rb.pulses++;
+        } else {
+            uint8_t e[3] = { s_rb.addr, 0x85u, 0x03u };            /* illegal data value */
+            rb_reply(e, 3u);
+            return true;
+        }
+        rb_reply(buf, 6u);                                         /* echo */
+    } else if (f == 0x0Fu && len >= 10u) {                         /* write several coils */
+        uint16_t start = (uint16_t)(((uint16_t)buf[2] << 8) | buf[3]);
+        uint16_t qty = (uint16_t)(((uint16_t)buf[4] << 8) | buf[5]);
+        uint8_t nb = buf[6];
+        if (start + qty > RB_COILS || qty == 0u || nb != (qty + 7u) / 8u || len != 9u + nb) {
+            uint8_t e[3] = { s_rb.addr, 0x8Fu, 0x02u };
+            rb_reply(e, 3u);
+            return true;
+        }
+        uint32_t v = 0u;
+        for (uint8_t i = 0; i < nb && i < 4u; i++) v |= (uint32_t)buf[7u + i] << (8u * i);
+        uint32_t mask = (qty >= 32u) ? 0xFFFFFFFFu : ((1u << qty) - 1u) << start;
+        s_rb.coils = (s_rb.coils & ~mask) | ((v << start) & mask);
+        for (uint32_t i = 0; i < RB_COILS; i++) if (mask & (1u << i)) s_rb.pulse_end[i] = 0u;
+        s_rb.writes++;
+        rb_reply(buf, 6u);
+    } else {
+        uint8_t e[3] = { s_rb.addr, (uint8_t)(f | 0x80u), 0x01u };   /* illegal function */
+        rb_reply(e, 3u);
+    }
+    return true;
+}
+
+static uint32_t rb_port_read(uint8_t *buf, uint32_t max)
+{
+    rb_tick();
+    if (!s_rb.present || !s_rb.reply_pending || (int32_t)(s_time_ms - s_rb.reply_at_ms) < 0) return 0u;
+    uint32_t n = s_rb.reply_len < max ? s_rb.reply_len : max;
+    memcpy(buf, s_rb.reply, n);
+    s_rb.reply_pending = false;
+    return n;
+}
+
+static const mb_port_t s_rb_port = { rb_port_write, rb_port_read, hal_millis };
+
+static void rb_driver_init(void)                 /* the AURIX side: at every boot */
+{
+    mb_config_t c = { 1u, RB_COILS, 100u, HAL_RELAY_LOST_MS, 100u };
+    mb_init(&s_rb_port, &c);
+    if (!s_rb.inited) {                          /* the board itself: once (it keeps its states across AURIX resets) */
+        s_rb.inited = true;
+        s_rb.present = true;
+        s_rb.latency_ms = 5u;
+        s_rb.addr = 1u;
+    }
+    s_rb.reply_pending = false;                  /* a reply in flight is lost with the reboot */
+}
+
+void hal_relay_service(void)      { mb_service(); }
+bool hal_relay_set(uint8_t n, bool on)        { return mb_set_coil(n, on); }
+bool hal_relay_pulse(uint8_t n, uint16_t ms)  { return mb_pulse_coil(n, ms); }
+bool hal_relay_read(uint8_t n, bool *on)      { return mb_coil(n, on); }
+bool hal_relay_ok(void)                        { return mb_ok(); }
+
+void sim_hal_relay_board(bool present, uint32_t latency_ms, uint32_t fault)
+{
+    s_rb.inited = true;
+    s_rb.present = present;
+    s_rb.latency_ms = latency_ms;
+    s_rb.fault = fault;
+    s_rb.addr = 1u;
+    s_rb.reply_pending = false;
+}
+
+void sim_hal_relay_board_reset(void)
+{
+    s_rb.coils = 0u;
+    memset(s_rb.pulse_end, 0, sizeof s_rb.pulse_end);
+    s_rb.reply_pending = false;
+}
+
+bool sim_hal_relay_state(uint8_t n)
+{
+    rb_tick();
+    return n >= 1u && n <= RB_COILS && ((s_rb.coils >> (n - 1u)) & 1u);
+}
+
+void sim_hal_relay_force(uint8_t n, bool on)
+{
+    if (n < 1u || n > RB_COILS) return;
+    if (on) s_rb.coils |= 1u << (n - 1u); else s_rb.coils &= ~(1u << (n - 1u));
+    s_rb.pulse_end[n - 1u] = 0u;
+}
+
+uint32_t sim_hal_relay_requests(void) { return s_rb.requests; }
+uint32_t sim_hal_relay_writes(void)   { return s_rb.writes + s_rb.pulses; }
+uint32_t sim_hal_relay_pulses(void)   { return s_rb.pulses; }
 
 /* --- microSD card: files in the folder "sdcard" ------------------------------
  * Written data is kept in RAM until hal_sd_sync / hal_sd_close, like the

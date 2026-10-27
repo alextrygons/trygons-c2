@@ -21,6 +21,7 @@ static uint8 s_link_rx[FIFO_BYTES(2048u)], s_link_tx[FIFO_BYTES(4096u)];
 static uint8 s_gw_rx[FIFO_BYTES(2048u)],   s_gw_tx[FIFO_BYTES(HAL_GW_TX_RING)];
 static uint8 s_gps_rx[FIFO_BYTES(1024u)],  s_gps_tx[FIFO_BYTES(256u)];
 static uint8 s_br_rx[FIFO_BYTES(1024u)],   s_br_tx[FIFO_BYTES(64u)];
+static uint8 s_rl_rx[FIFO_BYTES(128u)],    s_rl_tx[FIFO_BYTES(64u)];     /* Modbus: frames of <= 16 bytes */
 
 typedef struct {
     IfxAsclin_Asc asc;
@@ -44,6 +45,7 @@ static const uart_hw_t k_hw[UART_COUNT] = {
     { &GW_ASC,     &GW_TX,     &GW_RX,     PRIO_GW_TX,   PRIO_GW_RX,   PRIO_GW_ER,   s_gw_rx,   s_gw_tx,   2048u, HAL_GW_TX_RING },
     { &GPS_ASC,    &GPS_TX,    &GPS_RX,    PRIO_GPS_TX,  PRIO_GPS_RX,  PRIO_GPS_ER,  s_gps_rx,  s_gps_tx,  1024u, 256u },
     { &BRIDGE_ASC, &BRIDGE_TX, &BRIDGE_RX, PRIO_BR_TX,   PRIO_BR_RX,   PRIO_BR_ER,   s_br_rx,   s_br_tx,   1024u, 64u },
+    { &RELAY_ASC,  &RELAY_TX,  &RELAY_RX,  PRIO_RL_TX,   PRIO_RL_RX,   PRIO_RL_ER,   s_rl_rx,   s_rl_tx,   128u,  64u },
 };
 
 /* --- interrupts (CPU0) ------------------------------------------------------------ */
@@ -56,6 +58,7 @@ UART_ISRS(0, UART_LINK,   PRIO_LINK_TX, PRIO_LINK_RX, PRIO_LINK_ER)
 UART_ISRS(1, UART_GW,     PRIO_GW_TX,   PRIO_GW_RX,   PRIO_GW_ER)
 UART_ISRS(2, UART_GPS,    PRIO_GPS_TX,  PRIO_GPS_RX,  PRIO_GPS_ER)
 UART_ISRS(3, UART_BRIDGE, PRIO_BR_TX,   PRIO_BR_RX,   PRIO_BR_ER)
+UART_ISRS(4, UART_RELAY,  PRIO_RL_TX,   PRIO_RL_RX,   PRIO_RL_ER)
 
 void uart_init(uart_id_t id, float baud)
 {
@@ -124,9 +127,21 @@ bool uart_write(uart_id_t id, const uint8_t *buf, uint32_t len)
         return false;
     }
     Ifx_SizeT n = (Ifx_SizeT)len;
+    IfxAsclin_clearTransmissionCompletedFlag(u->asc.asclin);   /* uart_tx_done: this frame's end */
     (void)IfxAsclin_Asc_write(&u->asc, buf, &n, 0);
     u->st.tx_bytes += (uint32_t)n;
     return n == (Ifx_SizeT)len;
+}
+
+bool uart_tx_done(uart_id_t id)
+{
+    uart_t *u = &s_u[id];
+    if (!u->st.up) return true;
+    /* software FIFO empty, hardware TX FIFO empty, the shift register done (TC flag:
+     * cleared by uart_write before every frame) */
+    return IfxAsclin_Asc_getWriteCount(&u->asc) >= (sint32)k_hw[id].tx_size &&
+           IfxAsclin_getTxFifoFillLevel(u->asc.asclin) == 0u &&
+           IfxAsclin_getTransmissionCompletedFlagStatus(u->asc.asclin);
 }
 
 const uart_stat_t *uart_stat(uart_id_t id)

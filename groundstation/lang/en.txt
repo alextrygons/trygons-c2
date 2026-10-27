@@ -63,6 +63,7 @@ alarm.profile = PROFILE CHANGED (CREWED / UNCREWED)
 alarm.link_lost = LINK LOST (UNCREWED): STANDBY
 alarm.engine_killed = ENGINE KILLED (reset on board)
 alarm.low_battery = LOW BATTERY (12 V bank)
+alarm.relay_silent = RELAY BOARD SILENT
 alarm.no_data = NO DATA FROM THE BOAT
 
 # --- answers of the boat / gateway to a command (ACK result codes) ----------
@@ -279,6 +280,8 @@ confirm.2 = AUTO RESUME
 confirm.3 = POWER RAISE FWD
 confirm.4 = POWER RAISE REV
 confirm.5 = REMOTE DRIVING
+confirm.6 = MANEUVER
+confirm.7 = RELAY TABLE
 
 # --- captain screen: left column (values) -------------------------------------
 cap.power_none = POWER LIMIT --
@@ -1185,6 +1188,7 @@ say.alarm.profile = The operating profile changed, check crewed or uncrewed
 say.alarm.link_lost = Link lost, the boat is in standby
 say.alarm.engine_killed = The engine was killed, it must be reset on board
 say.alarm.low_battery = Low battery
+say.alarm.relay_silent = Relay board silent
 say.alarm.no_data = No data from the boat
 
 # --- boats (boats/ folder), crew, profile (CLAUDE.md A, B, D, F) ---
@@ -1347,6 +1351,7 @@ what.geofence = geofence: {n} corners
 what.geofence_clear = geofence: clear
 what.max_speed = max leg speed {v} kn
 what.boat_gen = boat file {name}: generator max {v} %
+what.boat_relays = boat file {name}: relay table, {n} relays
 result.120 = the route leaves the geofence
 gw.geofence_set = geofence set: {n} corners
 gw.geofence_cleared = geofence cleared

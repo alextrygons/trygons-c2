@@ -70,7 +70,9 @@ typedef enum {
     EV_LINKLOST,        /* UNCREWED lost link: state (0 ok 1 lost 2 killed), near shore, shore distance m, losses */
     EV_NV,              /* non-volatile storage: what (1 record unusable -> defaults, 2 NV FAULT), slot, resets, 0 */
     EV_GENERATOR,       /* generator mode: state (GEN_), stop why | enabled << 8, bank V*100, throttle demand %*10 */
-    EV_COUNT
+    EV_RELAY,           /* relay board: n | action<<8 | result<<16 | what<<24 (1 command, 2 table, 3 states, 4 board),
+                           states (readback bits), known bits | board ok<<31, table hash | flags<<16 | count<<24 */
+    EV_COUNT            /* reserved next: 27 RESTART, 28 DP (CLAUDE.md N / P) */
 } log_event_t;
 
 /* Build one record (with sync / len / crc) into out; returns its length. */

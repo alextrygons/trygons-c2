@@ -74,6 +74,7 @@
 #include "nav.h"
 #include "powerlim.h"
 #include "program.h"
+#include "relays.h"
 #include "servo.h"
 #include "throttle.h"
 
@@ -117,8 +118,11 @@
  * live in the second word (sb_t.alarm_bits2, TELEM2 group L, log events
  * ALARM_ON / OFF with word = 2). The ground station treats both words alike. */
 #define SB_ALM2_LOW_BATTERY       0x01u   /* LOW BATTERY: bank voltage below batt_low_v for 60 s (advisory) */
+#define SB_ALM2_RELAY_SILENT      0x02u   /* RELAY BOARD SILENT: the Modbus relay board gave no valid reply for
+                                             HAL_RELAY_LOST_MS while a table with relays is loaded (advisory:
+                                             relay states unknown, no new relay command; nothing else changes) */
 /* advisories of the second word: never a mode change, never lower the power limit */
-#define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY)
+#define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY | SB_ALM2_RELAY_SILENT)
 
 /* UNCREWED lost link (CLAUDE.md section B), sb_t.ll.state */
 #define SB_LL_OK      0u        /* link to the HELM station OK (or not armed yet, or CREWED) */
@@ -465,7 +469,8 @@ typedef enum {
     CONF_RAISE_FWD,         /* raise the forward power limit one step */
     CONF_RAISE_REV,         /* raise the reverse power limit one step */
     CONF_REMOTE,            /* start REMOTE MANUAL (the shore joystick drives) */
-    CONF_MANEUVER           /* start MANEUVER (captain: steering + gear, throttle idle) */
+    CONF_MANEUVER,          /* start MANEUVER (captain: steering + gear, throttle idle) */
+    CONF_RELAY_TABLE        /* take a relay table that differs from the stored one (STANDBY; never a mode change) */
 } confirm_kind_t;
 
 typedef struct {
@@ -512,7 +517,11 @@ typedef enum {
     SB_ERR_WRONG_CODE,      /* power raise: code wrong / expired */
     SB_ERR_AT_MAX,          /* power raise: already at the top */
     SB_ERR_ALARM,           /* power raise: an alarm is active (acknowledge first) */
-    SB_ERR_NOT_CENTERED     /* the onboard stick is held (not centred): centre the joystick */
+    SB_ERR_NOT_CENTERED,    /* the onboard stick is held (not centred): centre the joystick */
+    SB_ERR_STANDBY_ONLY,    /* only in STANDBY (not stopping) */
+    SB_ERR_BAD_VALUE,       /* a value / table that fails its checks */
+    SB_ERR_NOT_ALLOWED,     /* not through this command (e.g. the STARTER: section N only) */
+    SB_ERR_REFUSED          /* refused by the function (interlock, silent board) */
 } sb_result_t;
 
 typedef struct {
@@ -545,6 +554,7 @@ typedef struct {
     uint32_t    alarm_bits2_seen;
     batt_t      batt;          /* supply voltage of the 12 V bank (filtered), LOW BATTERY condition */
     gen_t       gen;           /* generator mode: throttle in NEUTRAL to charge the bank (captain-enabled) */
+    relays_t    relays;        /* RS485 Modbus relay board: table (NV slot 7), interlocks, time limits (relays.c) */
     sb_gw_t     gw;            /* gateway (Raspberry Pi) link status */
     uint8_t     helm;          /* HELM holder: SB_HELM_NONE / SB_HELM_USB / gateway station id */
     bool        helm_local;    /* the holder is on the boat (USB or boat LAN) */
@@ -772,5 +782,15 @@ float sb_lostlink_left_s(const sb_t *s);
  * no alarm (generator.h); off = a stop, idle first. The STANDBY button also
  * switches it off. */
 sb_result_t sb_generator_set(sb_t *s, bool on);
+
+/* Relay board (section M; relays.h). table: the boat file's relay table from
+ * the HELM station (PROTO_T_RELAY_CFG): the same table as the active one =
+ * OK at once; a different one only in STANDBY (not stopping) and only after
+ * the joystick CONFIRM within confirm_ms (CONF_RELAY_TABLE; CREWED: onboard,
+ * UNCREWED: the shore joystick) - until then the stored table stays in use.
+ * cmd: switch relay n (RELAY_CMD_), HELM station; refused in FIRST TEST,
+ * without a table, for the STARTER, with the pair on, with a silent board. */
+sb_result_t sb_relay_table(sb_t *s, const relay_table_t *t);
+sb_result_t sb_relay_cmd(sb_t *s, uint8_t n, uint8_t action, uint16_t ms);
 
 #endif /* SMALLBOAT_H */
