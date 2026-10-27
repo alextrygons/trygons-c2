@@ -48,6 +48,8 @@ DEFAULT_LAYOUT = {
     "controls": (0.008, 0.888, 0.380, 0.052),
     "drive": (0.095, 0.838, 0.293, 0.045),
     "bottom": (0.008, 0.948, 0.984, 0.045),
+    # the boat file's relays with "show_hud" (CLAUDE.md O): left, beside the throttle, above "drive"
+    "relays": (0.095, 0.640, 0.150, 0.190),
 }
 OVERLAYS = list(DEFAULT_LAYOUT)
 # the logo (theme.py): fixed in the free corner above the bottom bar, right of the mini map, below the
@@ -325,13 +327,15 @@ class Hud:
         return name in ALWAYS or declutter_visible(name, s.declutter or "FULL")
 
     def button(self, r, label, action, tag, on=False, colour=None):
+        """action None = a lamp only (shows a state, not clickable)."""
         x0, y0, x1, y1 = r
         col = colour or self.pal["main"]
         self.panel(r, tag, alpha=min(230, self.pal["alpha"] + 50))
         self.rect(r, tag, outline=col, w=3 if on else 1, fill=col if on else None, alpha=90 if on else 255)
         self.text(((x0 + x1) / 2, (y0 + y1) / 2), label, tag, size=self.f_small, bold=True, fill=col, anchor="c",
                   max_w=x1 - x0 - 6, box=r)
-        self.hit(r, action)
+        if action is not None:
+            self.hit(r, action)
 
     # --- the whole HUD ---------------------------------------------------------------------------------
     def build(self, W, H, s):
@@ -350,6 +354,7 @@ class Hud:
                          ("traffic", self.traffic), ("rot", self.rot), ("gmeter", self.gmeter),
                          ("steer", self.steer), ("cdi", self.cdi), ("minimap", self.minimap),
                          ("bottom", self.bottom), ("controls", self.controls), ("drive", self.drive),
+                         ("relays", self.relays),
                          ("status", self.status),
                          ("master", self.master), ("notices", self.notices), ("alarms", self.alarms)):
             if not self.shown(name, s):
@@ -796,6 +801,29 @@ class Hud:
         for i, (lab, act, on) in enumerate(btns):
             r = (x0 + i * (bw + 4), y0, x0 + i * (bw + 4) + bw, y1)
             self.button(r, lab, act, "drv_" + act, on=on, colour=self.pal["caution"] if act == "release" else None)
+
+    def relays(self, name, s):
+        """The boat file's relays with "show_hud" (CLAUDE.md O), one line per relay (an interlocked pair on one
+        line): lit = on, grey = state unknown (AURIX readback, TELEM2 group M). Trim / extra relays are buttons
+        ("relay:n"; momentary = press-and-hold, the window sends the release); the engine group is shown here
+        as a lamp only - IGNITION / START / SHUTOFF / RESTART live on screen 2. Hidden in MINIMAL."""
+        lines = s.relay_lines or []
+        if not lines:
+            return
+        x0, y0, x1, y1 = self.R(name)
+        n = len(lines)
+        gap = 4
+        lh = min((y1 - y0 - (n - 1) * gap) / n, self.f_small * 2.6)
+        y = y0
+        for line in lines:
+            k = len(line)
+            bw = (x1 - x0 - (k - 1) * gap) / k
+            for i, r in enumerate(line):
+                rr = (x0 + i * (bw + gap), y, x0 + i * (bw + gap) + bw, y + lh)
+                unknown = r["state"] == "unknown"
+                self.button(rr, r["name"], "relay:%d" % r["n"] if r.get("click") else None, "relay_%d" % r["n"],
+                            on=r["state"] == "on", colour=self.pal["grey"] if unknown else None)
+            y += lh + gap
 
     def minimap(self, name, s):
         r = self.R(name)

@@ -28,6 +28,11 @@
   S13 boat dropdown (CLAUDE.md H): the FIRST line of the status panel = the dropdown + the lamp
       (CONNECTED green only when found + connected + welcome name check passed, else grey), choosing
       a boat opens the login / confirm step with it selected, the line fits in the S1 matrix
+  S14 relay buttons (CLAUDE.md O): the "relays" panel (boat file relays by group, placed by the fit
+      test - the S1 matrix includes it), an interlocked pair on one line, the engine line with START
+      (hold) + RESTART, lit = on / grey = unknown from the readback, momentary = press-and-hold (pulse,
+      OFF at release), START hold = CRANK / RELEASE, nothing while the table is not active / pending,
+      collapsible; a copilot's trim / extra relay is not asked, an engine relay waits for the captain
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
@@ -208,10 +213,34 @@ def layout_problems(ap):
     return probs
 
 
+RELAY_EXTRA = ("relay_table", "relay_hash", "relay_pending", "relay_ok", "relay_on", "relay_unknown", "eng_crank")
+
+
+def relay_boat(rig, on=(1, 6), unknown=(), pending=False, hash_ok=True):
+    """The boat RF49D of boats/ (7 relays, format 2) with its relay table active on the boat (TELEM2 group M)."""
+    import boats
+    ap = rig.ap
+    ap.boat = [b for b in boats.load() if b.id == "rf49d"][0]
+    ap.boat_ok = True
+    h = proto.relay_table_hash(ap.boat.relays)
+    rig.extra.update(relay_table=True, relay_hash=h if hash_ok else h ^ 1, relay_pending=pending, relay_ok=True,
+                     relay_on=list(on), relay_unknown=list(unknown), eng_crank=0)
+    rig.pump(0.4)
+    return h
+
+
+def no_relay_boat(rig):
+    rig.ap.boat, rig.ap.boat_ok = None, False
+    for k in RELAY_EXTRA:
+        rig.extra.pop(k, None)
+    rig.pump(0.3)
+
+
 def fill_everything(rig):
     ap = rig.ap
     d = ap.t
     rig.gateway_like(True)
+    relay_boat(rig)                                     # the relays panel too (CLAUDE.md O)
     rig.extra.update(helm=3, profile=proto.PROFILE_UNCREWED, ll_state=1, ll_flags=0x20, near_shore=False,
                      coast_valid=True, coast_dist_m=450, ll_left_s=7.0, alarm_bits=0x1 | 0x40, alarm=True,
                      power_raised=True)
@@ -242,11 +271,15 @@ def s1_matrix(rig):
     bad = [c for c in cases if c[3]]
     report("S1 layout 1366x768 / 1920x1080 (+ maximised) at 100 / 125 / 150 %, Greek + English, every panel full: "
            "nothing clipped, STANDBY visible, the boat free, the logo under no panel",
-           not bad and all(c[2] == 6 for c in cases) and not rig.errors,
+           not bad and all(c[2] == 7 for c in cases) and not rig.errors,
            "%d layouts checked (text size factors %s); problems: %s; errors %s" % (
                len(cases), sorted({round(c[1], 2) for c in cases}), [(c[0], c[3][:3]) for c in bad][:4],
                rig.errors[:2]))
     i18n.set_lang("el", save=False)
+    rig.size(1366, 768, 1.25)
+    relays = [p for p in ap.ov.panels if p.key == "relays"]
+    s1_matrix.placed = relays[0].placed if relays else None
+    no_relay_boat(rig)
 
 
 def s2_collapsed(rig):
@@ -679,6 +712,7 @@ def s11_greek(rig):
            "el.txt)", not english and not lang_words,
            "%d texts checked; English on the screen: %s; in el.txt: %s" % (
                len(texts), sorted(english.items())[:20], sorted(lang_words.items())[:20]))
+    no_relay_boat(rig)
 
 
 def s12_alarms(rig):
@@ -847,6 +881,116 @@ def s13_boat_line(rig):
                           len(cases), [(c[0], c[2][:2]) for c in bad][:3], labels, sel, rig.errors[:2]))
 
 
+def s14_relays(rig):
+    """CLAUDE.md O: the relays panel on screen 2 (DISPLAY + requests only)."""
+    ap = rig.ap
+    rig.gateway_like(True)
+    ap.gw_status = fake_gw(ap.t)
+    h = relay_boat(rig, on=(1, 6), unknown=(7,))
+    rig.size(1366, 768, 1.25)
+    ops = lambda: [o for o in ap.ov.ops if o.get("panel") == "relays"]          # noqa: E731
+    btn = {o["tag"]: o for o in ops() if o["k"] == "button"}
+    have = all("relay_%d" % n in btn for n in range(1, 8)) and "relay_restart" in btn
+    cy = lambda t: (btn[t]["r"][1] + btn[t]["r"][3]) / 2 if t in btn else -1    # noqa: E731
+    pair = have and abs(cy("relay_4") - cy("relay_5")) < 1.0 and abs(cy("relay_4") - cy("relay_1")) > 1.0
+    engine = have and abs(cy("relay_1") - cy("relay_2")) < 1.0 and abs(cy("relay_1") - cy("relay_3")) < 1.0 and \
+        cy("relay_restart") > cy("relay_1")
+    states = have and btn["relay_1"]["on"] and btn["relay_6"]["on"] and not btn["relay_3"]["on"] and \
+        not btn["relay_7"]["enabled"] and btn["relay_6"]["enabled"]
+    groups = [o["s"] for o in ops() if o.get("tag") == "relay_grp" and o["s"]]
+    grp_ok = groups == [A.T("ov.relay_grp_engine"), A.T("ov.relay_grp_trim"), A.T("ov.relay_grp_extra")]
+
+    placed_ok = getattr(s1_matrix, "placed", None) in ("se", "sw", "ne", "nw") and not layout_problems(ap)
+    # clicks: a toggle, press-and-hold (momentary), START hold, a grey (unknown) relay
+    sent = []
+    orig_cmd, orig_send = ap.cmd, ap._send_cmd
+    ap.cmd = lambda f, p, w: sent.append((f, p))
+    ap._send_cmd = lambda f, p, w, confirm=None: sent.append((f, p))
+
+    def click(tag, hold=0.0):
+        r = btn[tag]["r"]
+        e = type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})()
+        ap.cv_press(e)
+        if hold:
+            rig.pump(hold)
+        ap.cv_release(e)
+        out = list(sent)
+        sent.clear()
+        return out
+    try:
+        c_toggle = click("relay_6")
+        c_hold = click("relay_4", 0.2)
+        c_start = click("relay_2", 0.5)
+        c_grey = click("relay_7")
+    finally:
+        ap.cmd, ap._send_cmd = orig_cmd, orig_send
+        if ap.crank_job is not None:
+            ap.root.after_cancel(ap.crank_job)
+            ap.crank_job = None
+    toggle_ok = c_toggle == [(proto.T_RELAY, proto.p_relay(6, proto.RELAY_CMD_OFF))]
+    hold_ok = c_hold == [(proto.T_RELAY, proto.p_relay(4, proto.RELAY_CMD_PULSE, 3000)),
+                         (proto.T_RELAY, proto.p_relay(4, proto.RELAY_CMD_OFF))]
+    start_ok = bool(c_start) and c_start[0] == (proto.T_RESTART, proto.p_restart(proto.ENG_CRANK)) and \
+        c_start[-1] == (proto.T_RESTART, proto.p_restart(proto.ENG_RELEASE))
+    grey_ok = c_grey == []
+    # the table not active (another hash) / waiting for the CONFIRM: a note, every button grey
+    relay_boat(rig, hash_ok=False)
+    ap.render(force=True)
+    na = [o for o in ops() if o["k"] == "button" and o["tag"].startswith("relay_") and o["tag"] != "relay_restart"]
+    note_na = [o["s"] for o in ops() if o.get("tag") == "relay_note"]
+    relay_boat(rig, hash_ok=False, pending=True)
+    ap.render(force=True)
+    note_p = [o["s"] for o in ops() if o.get("tag") == "relay_note"]
+    inactive_ok = bool(na) and not any(o["enabled"] for o in na) and note_na and \
+        A.T("ov.relay_not_active") in note_na[0].replace("\n", " ") and note_p and \
+        A.T("ov.relay_pending") in note_p[0].replace("\n", " ")
+    relay_boat(rig, on=(1, 6), unknown=(7,))
+    ap.ov.collapsed.add("relays")
+    ap.render(force=True)
+    collapsed_ok = all(o["k"] in ("panel", "text") and o.get("tag") in ("relays", "relays_head") for o in ops())
+    ap.ov.collapsed.discard("relays")
+    # a copilot (through the gateway): trim / extra not asked, an engine relay waits for the captain; only when the
+    # gateway knows the active table (gw_status "relays"), else every relay waits
+    ap.gw_status = dict(fake_gw(ap.t, captain=False), relays={"hash": h, "known": True})
+    rig.pump(0.3)
+    groups_known = ap.relay_groups_known()
+    seqs = []
+    ap._send_cmd = lambda f, p, w, confirm=None: seqs.append(f) or len(seqs)
+    try:
+        n0 = len(ap.decisions)
+        ap.relay_press(6)                              # extra
+        free_extra = len(ap.decisions) == n0
+        ap.relay_press(1)                              # engine (IGNITION)
+        asked_engine = len(ap.decisions) == n0 + 1 and ap.decisions[-1]["state"] == "wait"
+        ap.gw_status = dict(fake_gw(ap.t, captain=False), relays={"hash": h, "known": False})
+        n1 = len(ap.decisions)
+        ap.relay_press(6)
+        unknown_asked = len(ap.decisions) == n1 + 1 and ap.relay_groups_known() is None
+    finally:
+        ap._send_cmd = orig_send
+    ap.decisions.clear()
+    ap.gw_status = fake_gw(ap.t)
+    no_relay_boat(rig)
+    ap.render(force=True)
+    gone = "relays" not in {p.key for p in ap.ov.panels}
+    report("S14 relay buttons: the relays panel (by group, placed by the fit test, an interlocked pair on one line, the "
+           "engine line + START hold + RESTART), lit = on / grey = unknown, toggle / press-and-hold / START hold sent "
+           "right, nothing for a grey relay or an inactive / pending table, collapsible; a copilot's extra relay not "
+           "asked, an engine relay (or any relay of a table the gateway doesn't know) waits for the captain; no relays "
+           "= no panel",
+           have and pair and engine and states and grp_ok and placed_ok and toggle_ok and hold_ok and start_ok and
+           grey_ok and inactive_ok and collapsed_ok and groups_known == proto.groups_of(
+               [r for r in __import__("boats").load() if r.id == "rf49d"][0].relays) and free_extra and asked_engine
+           and unknown_asked and gone and not rig.errors,
+           "buttons %s; pair line %s; engine line %s; states %s; groups %s; placed %s (%s); toggle %s; hold %s; START %s; "
+           "grey %s; inactive / pending %s (%s / %s); collapsed %s; copilot: groups %s, extra free %s, engine asked %s, "
+           "unknown table asked %s; no relays no panel %s; errors %s" % (
+               sorted(btn), pair, engine, states, groups, placed_ok, getattr(s1_matrix, "placed", None), c_toggle,
+               c_hold, c_start[:1] + c_start[-1:], c_grey, inactive_ok, note_na[:1], note_p[:1], collapsed_ok,
+               bool(groups_known), free_extra, asked_engine, unknown_asked, gone, rig.errors[:2]))
+
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
@@ -855,7 +999,7 @@ def main():
     rig = Rig()
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
-                   s10_tools, s11_greek, s12_alarms, s13_boat_line):
+                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays):
             try:
                 fn(rig)
             except Exception as e:

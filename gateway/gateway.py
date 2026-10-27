@@ -510,6 +510,7 @@ class Gateway:
                 "avoid": dict(self.nav_state, shallow_limit_m=self.shallow.limit(), charts=bool(self.charts)),
                 "shore": {"flags": self.shore_now[0], "dist_m": self.shore_now[1]},
                 "geofence": self.geofence.status(),
+                "relays": self.stations.relay_status(),
                 "vision": self.vision.status(self.net.data_saver())}
 
     async def run(self):

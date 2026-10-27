@@ -27,7 +27,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 6 | RS485 Modbus RTU relay board driver on the AURIX (state machine, timeouts, no-data advisory; never on CPU1) | DONE (gate OK: sim 213/213 + bridge 212/212 incl. RB1-RB8, TriCore + iLLD check, relay-writer check, NV 4/4, FAT32 2/2, charts 6/6, test_lang 5/5, test_boats 9/9 incl. B9, test_screen2 13/13, sound 10/10, avoidance 14/14, gateway 105/105; test_driver 19/19 (see the gate note); acceptance quick 7/7 PASS incl. START_DEMO from a fresh clone (the fresh-build suite builds the pushed step-5 HEAD, every other suite this tree), storm 200 episodes incl. I36 647 checks 0 fails) | this commit |
 | 7 | Engine controls + remote restart (CLAUDE.md N; I31 changed) | DONE (gate OK: sim 219/219 + bridge 218/218 incl. ER1-ER6, TriCore + iLLD + STARTER / reset writer checks, gateway incl. CR10 (A2 at 57600, see notes); test_driver 19/19, test_screen2 13/13; acceptance quick 7/7 PASS, storm I31 / I37 / I38 0 fails) | this commit |
 | 7b | Step 6 review fixes | DONE (gate OK: sim 225/225 + bridge 224/224 incl. RB9-RB14, TriCore + iLLD + relay / engine-relay writer checks, boats 9/9, screen 2 13/13, gateway 106/106; test_driver 19/19; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-7 HEAD, every other suite this tree), storm 200 episodes I36 4.28 M checks / I37 / I38 0 fails) | this commit |
-| 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | | |
+| 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | DONE (gate OK: sim 225/225 + bridge 224/224, TriCore + iLLD checks, lang 5/5, boats 9/9, screen 2 14/14 incl. S14 + S1 with the relays panel, sound 10/10, avoidance 14/14, gateway 108/108 incl. RL1-RL2; test_driver 20/20 incl. I21; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-7b HEAD, every other suite this tree), stations storm I16 30 s 0 violations) | this commit |
 | 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | | |
 | 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | | |
 | 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | | |
@@ -259,6 +259,29 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   (channels), RB14 (reset reason patterns + no power_up after a watchdog reset); test_boats B7 (8 new INVALID role
   files) + B9 (no push while a CONFIRM is pending, single operator asked). Docs: MANUAL 5 / 7 / alarms, MANUAL_EL,
   CLAUDE.md M (step 7b line), WIRING 3D, FIRST_TEST 3h.
+- Step 8 (2026-10-27): relay buttons (ground station + gateway only; no AURIX change). proto.is_driving_cmd(ftype,
+  payload, relay_groups): T_RELAY free for a copilot only when the relay's group in the table ACTIVE on the AURIX is
+  trim / extra (proto.relay_groups(payload) / groups_of(relays); an engine role counts as engine whatever the group
+  byte); unknown relay / no or unknown table = ACCEPT (fail safe); T_RELAY_CFG always ACCEPT. Gateway: gateway/
+  relaytab.py (RelayTables: every RELAY_CFG a station sends is learned by CRC-16 = the TELEM2 group M hash, newest 8,
+  state/relay_tables.json on the SSD); stations.command uses stations.relay_groups(); gw_status "relays" {hash,
+  known}. Station: app.relay_groups_known (only when the active hash = the boat file's AND the gateway knows it - the
+  station never thinks a relay free that the gateway holds); app.relay_push re-sends the SAME table once when the
+  gateway doesn't know it (the AURIX takes the same table at once, no CONFIRM). Screen 2: panel "relays"
+  (app.panel_relays / relay_view / relay_lines / relay_press / relay_release): by group ENGINE (IGNITION, START hold =
+  crank_press / crank_release, SHUTOFF + RESTART line) / TRIM / EXTRA, a pair on one line, lit = on, grey + disabled =
+  unknown or table not active / pending (note line), momentary = PULSE max_s at press + OFF at release, onoff /
+  latching / timed = toggle by the readback. overlay.py: a panel corner given as a TUPLE = placed by the fit test in
+  the candidate corner whose side keeps the most free height (map bar still fits; RF49D -> "se" above the traffic
+  panel at 1366x768), button(release=fn) = press-and-hold (Overlay.holds / held / release(), app.cv_release), ops of
+  buttons carry "on". Screen 1: hud.py box "relays" (0.095, 0.640, 0.150, 0.190; not in MINIMAL; no layout version bump:
+  a new key takes its default), show_hud relays, trim / extra = "relay:n" buttons (driver.py: relay_hold, release on
+  mouse up), engine = lamp only (Hud.button(action=None) = no hit). Lang: ov.relays, ov.relay_grp_*, ov.relay_hold,
+  ov.relay_not_active / pending / silent / unknown, what.relay_hold ("hold relay {name}": "relay {name} held" was read
+  back as relay_onoff by from_en), hud.ov_relays. Tests: test_screen2 S1 (7 panels: RF49D's relays in every layout) +
+  S14, test_driver I21, gateway section RL (RL1 copilot extra / trim straight, engine -> ACCEPT; RL2 SSD memory,
+  unknown table = ACCEPT, broken frame), test_lang families (ov.relay_grp_*), acceptance stations_storm.py judges with
+  the gateway's relay groups. MANUAL 7 (RELAY BUTTONS), MANUAL_EL, CLAUDE.md O (done line).
 
 # Previous task: "Screen 2 review"
 

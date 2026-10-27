@@ -48,6 +48,11 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
      (right column, top half, over no other box), the notices under it; one
      alarm per line, most severe first, flashing until acknowledged on this
      PC, "+N" when more than fit; hud_layout.json version migration
+  I21 relays on screen 1 (CLAUDE.md O): the boat file's relays with "show_hud" in
+     the small "relays" box (over no other box, the centre free, hidden in
+     MINIMAL), lit = on / grey = unknown, an interlocked pair on one line;
+     trim / extra = buttons (momentary = press-and-hold: pulse, OFF at the
+     release), the engine group a lamp only
 
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
@@ -784,6 +789,56 @@ def main():
                % (place_ok, over, in_centre, col_over, every_level, order_ok, flash_ok, len(warn_fill_on),
                   len(warn_fill_off), steady_ok, more_ok, shown_n, more, live_ok,
                   [round(v) for v in live_box], len(live), migr_ok))
+
+        # I21 relays on screen 1 (CLAUDE.md O): the "relays" box, its place, MINIMAL, states, press-and-hold
+        import boats
+        rr = rect("relays")
+        others21 = dict({k: rect(k) for k in L if k != "relays"}, LOGO_BOX=others["LOGO_BOX"])
+        over21 = [k for k, r_ in others21.items() if overlay.overlaps(rr, r_)]
+        centre21 = overlay.overlaps(rr, (0.25, 0.22, 0.75, 0.75))
+        levels21 = [hud.declutter_visible("relays", lv) for lv in hud.DECLUTTER]       # FULL, NORMAL, MINIMAL
+        app.boat = [b for b in boats.load() if b.id == "rf49d"][0]
+        h21 = proto.relay_table_hash(app.boat.relays)
+        app.on_telem = lambda d_: orig_t(dict(d_, relay_table=True, relay_hash=h21, relay_pending=False, relay_ok=True,
+                                              relay_on=[1], relay_unknown=[5], eng_crank=0))
+        pump(0.8)
+        boxes = {o["tag"]: o for o in dv.ops if str(o.get("tag", "")).startswith("relay_") and o["k"] == "rect"}
+        shown21 = sorted(boxes) == ["relay_1", "relay_3", "relay_4", "relay_5"]       # show_hud only
+        hit_acts = [a_ for _r, a_ in dv.hits if str(a_).startswith("relay:")]
+        clickable = hit_acts == ["relay:4"]                    # engine = lamp, relay 5 unknown = no button
+        lit21 = bool(boxes) and boxes.get("relay_1", {}).get("fill") is not None and \
+            boxes.get("relay_3", {}).get("fill") is None
+        cyb = lambda t_: (boxes[t_]["r"][1] + boxes[t_]["r"][3]) / 2 if t_ in boxes else -1      # noqa: E731
+        pair21 = abs(cyb("relay_4") - cyb("relay_5")) < 1.0 and abs(cyb("relay_4") - cyb("relay_1")) > 1.0
+        box_px = dv.layout.px("relays", dv.cv.winfo_width(), dv.cv.winfo_height())
+        inside21 = all(box_px[0] - 1 <= o["r"][0] and o["r"][2] <= box_px[2] + 1 and box_px[1] - 1 <= o["r"][1] and
+                       o["r"][3] <= box_px[3] + 1 for o in boxes.values())
+        sent21 = []
+        orig_cmd = app.cmd
+        app.cmd = lambda f, p, w: sent21.append((f, p))
+        try:
+            dv.action("relay:4")
+            dv.on_release(None)
+        finally:
+            app.cmd = orig_cmd
+        hold21 = sent21 == [(proto.T_RELAY, proto.p_relay(4, proto.RELAY_CMD_PULSE, 3000)),
+                            (proto.T_RELAY, proto.p_relay(4, proto.RELAY_CMD_OFF))]
+        A.settings.put("declutter", "MINIMAL")
+        pump(0.5)
+        minimal21 = not [o for o in dv.ops if str(o.get("tag", "")).startswith("relay_")]
+        A.settings.put("declutter", "FULL")
+        app.on_telem = orig_t
+        app.boat = None
+        pump(0.5)
+        none21 = not [o for o in dv.ops if str(o.get("tag", "")).startswith("relay_")]
+        report("I21 relays on screen 1: the show_hud relays in the 'relays' box (over no other box, centre free, hidden "
+               "in MINIMAL), lit = on, an interlocked pair on one line, trim = press-and-hold button (pulse, OFF at the "
+               "release), engine = lamp only, unknown = no button; no relays = nothing",
+               not over21 and not centre21 and levels21 == [True, True, False] and shown21 and clickable and lit21 and
+               pair21 and inside21 and hold21 and minimal21 and none21 and not errors,
+               "overlaps %s; centre %s; levels %s; shown %s; buttons %s; lit %s; pair line %s; inside %s; hold sent %s; "
+               "MINIMAL hidden %s; no boat nothing %s" % (over21, centre21, levels21, sorted(boxes), hit_acts, lit21,
+                                                         pair21, inside21, sent21, minimal21, none21))
 
         # I9 BENCH TEST tab (USB-style link): enter, live sensors, a steering pulse, a button, leave
         app.bench(A.proto.BENCH_ENTER, 0, "bench test: enter")

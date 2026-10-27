@@ -1418,3 +1418,15 @@ what.relay_onoff = relay {name} {state}
 what.engine_restart = engine RESTART
 what.engine_start = engine START (crank)
 what.engine_release = engine START released
+# relay buttons (CLAUDE.md O): screen 2 panel + screen 1 HUD box
+ov.relays = RELAYS
+ov.relay_grp_engine = ENGINE
+ov.relay_grp_trim = TRIM
+ov.relay_grp_extra = EXTRA
+ov.relay_hold = (hold)
+ov.relay_not_active = the boat file's relay table is not active on the boat yet
+ov.relay_pending = the relay table waits for the joystick CONFIRM
+ov.relay_silent = RELAY BOARD SILENT: states unknown, no new command
+ov.relay_unknown = relay {name}: state unknown (the board does not answer)
+what.relay_hold = hold relay {name}
+hud.ov_relays = relays

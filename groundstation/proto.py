@@ -71,13 +71,40 @@ T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor 
 # before it only fill the AURIX's staging area; COMMIT makes it the route).
 DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_HEADING_ADJ, T_SEA_STATE,
                 T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR, T_RELAY, T_RELAY_CFG, T_RESTART}
-# (T_RELAY / T_RELAY_CFG: every relay switch and the relay table need the captain's ACCEPT from a copilot until
-#  step 8 tells the engine group (ACCEPT) from trim / extra (straight through) - conservative meanwhile)
+# (T_RELAY_CFG = the relay table: always the captain's ACCEPT. T_RELAY (CLAUDE.md O): an ENGINE-group relay needs
+#  the captain's ACCEPT from a copilot, a trim / extra relay goes straight - but only when the relay's group is KNOWN
+#  from the table that is active on the AURIX (relay_groups); unknown relay / unknown table = engine = ACCEPT.)
+RELAY_FREE_GROUPS = ("trim", "extra")
 
 
-def is_driving_cmd(ftype, payload=b""):
+def relay_groups(payload):
+    """{n: group} of a PROTO_T_RELAY_CFG payload (p_relay_cfg), None if it can't be read. A relay with an engine
+    role counts as engine whatever its group byte says."""
+    try:
+        cnt = payload[0]
+        if len(payload) != 1 + 8 * cnt:
+            return None
+        out = {}
+        for i in range(cnt):
+            n, _ty, grp, _pair, _ms, _fl, role = struct.unpack_from("<BBBBHBB", payload, 1 + 8 * i)
+            out[n] = RELAY_GROUPS[grp] if grp < len(RELAY_GROUPS) and not role else "engine"
+        return out
+    except (IndexError, struct.error):
+        return None
+
+
+def groups_of(relays):
+    """{n: group} of boats.py relay dicts (the same rule as relay_groups: a role = engine)."""
+    return {int(r["n"]): ("engine" if r.get("role") else r.get("group")) for r in relays or []}
+
+
+def is_driving_cmd(ftype, payload=b"", relay_groups=None):
+    """relay_groups: {n: group} of the table ACTIVE on the AURIX (None = not known: every relay = ACCEPT)."""
     if ftype not in DRIVING_CMDS:
         return False
+    if ftype == T_RELAY:
+        g = (relay_groups or {}).get(payload[0]) if payload else None
+        return g not in RELAY_FREE_GROUPS
     if ftype == T_GENERATOR:
         return payload[:1] == b"\x01"           # switching the generator ON opens the throttle (in neutral): ACCEPT; OFF is free
     if ftype == T_RESTART:

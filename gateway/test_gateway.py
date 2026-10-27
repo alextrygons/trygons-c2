@@ -3501,8 +3501,127 @@ def section_gf():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------------------------------ section RL --
+RL_TABLE = [
+    {"n": 1, "name_el": "ΑΝΑΦΛΕΞΗ", "name_en": "IGNITION", "type": "onoff", "group": "engine", "pair": None,
+     "max_s": 0, "show_hud": True, "power_up": "off", "role": "ignition"},
+    {"n": 4, "name_el": "ΤΡΙΜ ΠΑΝΩ", "name_en": "TRIM UP", "type": "momentary", "group": "trim", "pair": 5,
+     "max_s": 3.0, "show_hud": True, "power_up": "off", "role": None},
+    {"n": 5, "name_el": "ΤΡΙΜ ΚΑΤΩ", "name_en": "TRIM DOWN", "type": "momentary", "group": "trim", "pair": 4,
+     "max_s": 3.0, "show_hud": True, "power_up": "off", "role": None},
+    {"n": 6, "name_el": "ΦΩΤΑ", "name_en": "NAV LIGHTS", "type": "onoff", "group": "extra", "pair": None,
+     "max_s": 0, "show_hud": False, "power_up": "keep", "role": None}]
+
+
+def section_rl():
+    """Relay buttons (CLAUDE.md O): a copilot's ENGINE-group relay waits for the captain's ACCEPT, a trim / extra relay
+    goes straight - the group from the relay table the AURIX reports ACTIVE (TELEM2 group M hash), learned by the
+    gateway from the table a station sent (kept on the SSD); unknown table = every relay = ACCEPT (fail safe)."""
+    print("\n=== Section RL: relay buttons - engine relays need the captain's ACCEPT, trim / extra go straight ===",
+          flush=True)
+    import relaytab
+    pay = proto.p_relay_cfg(RL_TABLE)
+    h = proto.relay_table_hash(RL_TABLE)
+    grp = proto.relay_groups(pay)
+    unit = grp == {1: "engine", 4: "trim", 5: "trim", 6: "extra"} and \
+        proto.is_driving_cmd(proto.T_RELAY, proto.p_relay(1, 1), grp) and \
+        not proto.is_driving_cmd(proto.T_RELAY, proto.p_relay(6, 1), grp) and \
+        not proto.is_driving_cmd(proto.T_RELAY, proto.p_relay(4, 2, 3000), grp) and \
+        proto.is_driving_cmd(proto.T_RELAY, proto.p_relay(6, 1), None) and \
+        proto.is_driving_cmd(proto.T_RELAY, proto.p_relay(9, 1), grp) and \
+        proto.is_driving_cmd(proto.T_RELAY_CFG, pay, grp) and proto.relay_groups(pay[:-1]) is None
+    # a relay with an engine role but a non-engine group byte still counts as engine
+    odd = bytearray(pay)
+    odd[1 + 8 * 3 + 2] = 2
+    odd[1 + 8 * 3 + 7] = 2
+    unit = unit and proto.relay_groups(bytes(odd))[6] == "engine"
+
+    tmp = tempfile.mkdtemp(prefix="gwtest_rl_")
+    sim = gw = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        cfg = gw_cfg_b(sim, root, stations={"driver_timeout_s": 6.0})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+        alice.pump(1.0)
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        beat = DriverBeat(alice)
+        bob = Client(sp, "bob", PW["bob"], name="copilot")
+        bob.pump(1.0)
+        # the captain's relay table: own action (no question); a new table waits for the joystick CONFIRM on board
+        known0 = g.stations.relay_status()["known"]
+        r_cfg = alice.result(alice.cmd(proto.T_RELAY_CFG, pay))
+        time.sleep(0.5)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
+        time.sleep(0.3)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        active = until(lambda: g.telem2.get("relay_table") and g.telem2.get("relay_hash") == h and
+                       not g.telem2.get("relay_pending"), 8)
+        known1 = g.stations.relay_status()
+        # RL1 the copilot: extra (NAV LIGHTS ON) and trim (TRIM UP pulse) straight; IGNITION waits for the ACCEPT
+        n_ask0 = len(g.stations.asks)
+        a_extra = bob.cmd(proto.T_RELAY, proto.p_relay(6, proto.RELAY_CMD_ON), timeout=4.0)
+        a_trim = bob.cmd(proto.T_RELAY, proto.p_relay(4, proto.RELAY_CMD_PULSE, 1000), timeout=4.0)
+        lit = until(lambda: 6 in (g.telem2.get("relay_on") or []), 4)
+        no_ask = len(g.stations.asks) == n_ask0
+        seq = bob.l.send(proto.T_RELAY, proto.p_relay(1, proto.RELAY_CMD_ON), what="relay IGNITION ON")
+        k, ask = next_event(alice, ("driver_ask",), 4.0)
+        if ask:
+            alice.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": False})
+        r_eng = bob.result(bob.wait_ack(seq, 6.0))
+        audit = [e for e in g.audit.recent if e.get("kind") == "copilot_cmd" and e.get("type") == proto.T_RELAY]
+        report("RL1 relay switches through the gateway: the copilot's NAV LIGHTS (extra) and TRIM UP (trim) go straight "
+               "to the AURIX on the captain's behalf (audited, the relay on in the readback), its IGNITION (engine) waits "
+               "for the captain's ACCEPT (rejected -> 110); the table itself = the captain's own (no question)",
+               unit and r_cfg == 0 and active and not known0 and known1["known"] and known1["hash"] == h and
+               bob.result(a_extra) == 0 and bob.result(a_trim) == 0 and lit and no_ask and ask is not None and
+               "IGNITION" in ask["text"] and r_eng == 110 and len(audit) >= 2,
+               "proto groups %s / rules %s; table -> %s, active %s, gateway knows it before %s / after %s; extra %s, "
+               "trim %s, lit %s, no question %s; engine: asked %s, rejected -> %s; audited %d" % (
+                   grp, unit, r_cfg, bool(active), known0, known1, bob.result(a_extra), bob.result(a_trim),
+                   bool(lit), no_ask, ask and ask["text"], r_eng, len(audit)))
+
+        # RL2 the gateway's memory: a restart reads the table back from the SSD; a table it doesn't know (a new
+        # SSD) = every relay is held for the captain's ACCEPT, and the status says so
+        path = g.stations.relay_tables.path
+        reread = relaytab.RelayTables(path).active(g.telem2) if path else None
+        saved = g.stations.relay_tables.tables
+        g.stations.relay_tables.tables = {}
+        status_unknown = g.stations.relay_status()
+        seq = bob.l.send(proto.T_RELAY, proto.p_relay(6, proto.RELAY_CMD_OFF), what="relay NAV LIGHTS OFF")
+        k, ask2 = next_event(alice, ("driver_ask",), 4.0)
+        if ask2:
+            alice.l.send_msg({"t": "driver_answer", "id": ask2["id"], "yes": True})
+        r_unknown = bob.result(bob.wait_ack(seq, 6.0))
+        off = until(lambda: 6 not in (g.telem2.get("relay_on") or []), 4)
+        g.stations.relay_tables.tables = saved
+        broken = relaytab.RelayTables(None)
+        bad = broken.learn(b"\x02\x01") is None and broken.active(g.telem2) is None
+        report("RL2 the gateway keeps the relay groups on the SSD (a restart knows the active table); a table it doesn't "
+               "know = every relay waits for the captain's ACCEPT (here accepted -> NAV LIGHTS off), status known "
+               "false; a broken table frame is never learned",
+               reread == grp and not status_unknown["known"] and ask2 is not None and r_unknown == 0 and off and bad,
+               "after a restart %s; unknown: status %s, asked %s, accepted -> %s, off %s; broken frame ignored %s" % (
+                   reread, status_unknown, ask2 and ask2["text"], r_unknown, bool(off), bad))
+        beat.stop()
+        alice.close()
+        bob.close()
+        link.stop()
+    finally:
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
-            "G": section_g, "GF": section_gf}
+            "G": section_g, "GF": section_gf, "RL": section_rl}
 
 
 def main():

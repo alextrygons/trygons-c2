@@ -1801,7 +1801,7 @@ class App:
                 self.boatconf = crewui.BoatConfirm(self, self.boat)
             return
         copilot = False
-        if isinstance(self.link, GatewayLink) and proto.is_driving_cmd(ftype, payload):
+        if isinstance(self.link, GatewayLink) and proto.is_driving_cmd(ftype, payload, self.relay_groups_known()):
             if self.single_op:
                 return self.captain_confirm(what, lambda: self._send_cmd(ftype, payload, what, confirm="self"))
             if crewui.crew_of(self)[0] == "copilot" and ftype not in (proto.T_AUTO_PAUSE,):
@@ -2740,6 +2740,8 @@ class App:
             self.mapwin.motion(e.x, e.y)
 
     def cv_release(self, e):
+        if self._press_ov:
+            self.ov.release()                       # a press-and-hold button (a momentary relay, START) lets go
         if not self._press_ov:
             self.mapwin.release(e.x, e.y)
             self.render(force=True)
@@ -2991,6 +2993,7 @@ class App:
         self.panel_helm()
         self.panel_link()
         self.panel_traffic(H)
+        self.panel_relays()                 # placed by the fit test (CLAUDE.md O)
 
     def panel_alarms(self):
         """Top-right (0), ALWAYS drawn (also with every panel collapsed; no alarm = a one-line header): every
@@ -3295,6 +3298,147 @@ class App:
             if ll != 2:
                 p.text(T("ov.engine_run"), "label", colour=C["dim"], tag="engine")
 
+    # --- relay buttons (CLAUDE.md O): screen 2 panel "relays" + the HUD box on screen 1 ---------------------
+    def relay_groups_known(self):
+        """{n: group} for proto.is_driving_cmd: the boat file's groups, but only when the AURIX's ACTIVE table is
+        the file's (TELEM2 group M hash) AND the gateway knows that table too (gw_status "relays") - so this
+        station never thinks a relay free that the gateway would hold for the captain's ACCEPT. Else None
+        (every relay = a driving command)."""
+        b = self.boat
+        d = self.t or {}
+        if b is None or b.error or not b.relays or not d.get("relay_table"):
+            return None
+        h = proto.relay_table_hash(b.relays)
+        rs = (self.gw_status or {}).get("relays") or {}
+        if d.get("relay_hash") != h or rs.get("hash") != h or not rs.get("known"):
+            return None
+        return proto.groups_of(b.relays)
+
+    def relay_view(self):
+        """(active, rows): the boat file's relays as both screens show them. active = the AURIX uses exactly this
+        table (TELEM2 group M hash = the file's, nothing pending). rows: dicts of the file + "name" (screen
+        language) + "state" on / off / unknown (the AURIX readback; unknown = table not active, board silent,
+        not read) + "hold" (press-and-hold: momentary, the STARTER)."""
+        b = self.boat
+        relays = list(b.relays) if b is not None and not b.error and b.relays else []
+        d = self.t or {}
+        active = bool(relays) and bool(d.get("relay_table")) and not d.get("relay_pending") and \
+            d.get("relay_hash") == proto.relay_table_hash(relays)
+        on, unk = set(d.get("relay_on") or []), set(d.get("relay_unknown") or [])
+        el = i18n.lang() == "el"
+        rows = []
+        for r in relays:
+            name = (r.get("name_el") if el else r.get("name_en")) or r.get("name_en") or "%d" % r["n"]
+            if not active or not d.get("relay_ok") or r["n"] in unk:
+                state = "unknown"
+            else:
+                state = "on" if r["n"] in on else "off"
+            if r.get("role") == "starter" and state != "unknown":
+                state = "on" if d.get("eng_crank") == 1 else "off"
+            rows.append(dict(r, name=name, state=state, hold=r["type"] == "momentary" or r.get("role") == "starter"))
+        return active, rows
+
+    def relay_press(self, n):
+        """A relay button pressed (screen 2 or screen 1). Requests only - the AURIX decides every time (HELM,
+        the table, the pair interlock, max_s, the engine rules of section N); the gateway asks the captain for a
+        copilot's engine relay. STARTER = START hold (crank_press); momentary = a board-timed pulse of at most
+        max_s, OFF at release; onoff / latching / timed = toggle by the readback state."""
+        active, rows = self.relay_view()
+        r = next((x for x in rows if x["n"] == n), None)
+        if r is None:
+            return
+        if not active:
+            return self.say(T("ov.relay_not_active"), RED)
+        if r.get("role") == "starter":
+            return self.crank_press()
+        if r["state"] == "unknown":
+            return self.say(T("ov.relay_unknown", name=r["name"]), RED)
+        if r["hold"]:
+            self.relay_held = n
+            self.cmd(proto.T_RELAY, proto.p_relay(n, proto.RELAY_CMD_PULSE, int(r["max_s"] * 1000)),
+                     TE("what.relay_hold", name=r.get("name_en") or "%d" % n))
+            return
+        on = r["state"] != "on"
+        self.cmd(proto.T_RELAY, proto.p_relay(n, proto.RELAY_CMD_ON if on else proto.RELAY_CMD_OFF),
+                 TE("what.relay_onoff", name=r.get("name_en") or "%d" % n, state="ON" if on else "OFF"))
+
+    def relay_release(self, n):
+        """The press-and-hold relay let go: the STARTER = START released; a momentary relay = OFF now (the
+        board's own pulse timer ends it anyway at max_s if this never arrives)."""
+        _active, rows = self.relay_view()
+        r = next((x for x in rows if x["n"] == n), None)
+        if r is not None and r.get("role") == "starter":
+            if self.crank_job is not None:
+                self.crank_release()
+            return
+        if getattr(self, "relay_held", None) != n:
+            return
+        self.relay_held = None
+        self.cmd(proto.T_RELAY, proto.p_relay(n, proto.RELAY_CMD_OFF),
+                 TE("what.relay_onoff", name=(r or {}).get("name_en") or "%d" % n, state="OFF"))
+
+    def relay_lines(self, rows):
+        """[(group, [rows of one line])]: by group (engine, trim, extra), an interlocked pair on one line, other
+        relays up to 3 per line."""
+        out = []
+        for grp in proto.RELAY_GROUPS:
+            mine = [r for r in rows if r["group"] == grp]
+            lines, done = [], set()
+            for r in mine:
+                if r["n"] in done:
+                    continue
+                mate = next((m for m in mine if r.get("pair") and m["n"] == r["pair"]), None)
+                if mate is not None:
+                    lines.append([r, mate])             # an interlocked pair: one line, never both on
+                    done |= {r["n"], mate["n"]}
+                elif lines and len(lines[-1]) < 3 and not lines[-1][0].get("pair"):
+                    lines[-1].append(r)
+                    done.add(r["n"])
+                else:
+                    lines.append([r])
+                    done.add(r["n"])
+            out += [(grp, ln) for ln in lines]
+        return out
+
+    def panel_relays(self):
+        """Screen 2 "relays" (CLAUDE.md O): the boat file's relays by group (engine / trim / extra), the state from
+        the AURIX readback (TELEM2 group M: lit = on, grey = unknown), momentary = press-and-hold, an interlocked
+        pair on one line; the engine group also holds the restart page (IGNITION / START hold / SHUTOFF,
+        RESTART). Only when the boat file has relays. Requests only (relay_press / relay_release)."""
+        active, rows = self.relay_view()
+        if not rows:
+            return
+        p = self.ov.panel("relays", T("ov.relays"), ("se", "sw", "ne", "nw"))
+        d = self.t or {}
+        if not active:
+            p.text(T("ov.relay_pending") if d.get("relay_pending") else T("ov.relay_not_active"), "small",
+                   colour=C["note_txt"], tag="relay_note", wrap=0.24)
+            p.br()
+        elif not d.get("relay_ok"):
+            p.text(T("ov.relay_silent"), "small", colour=C["note_txt"], tag="relay_note", wrap=0.24)
+            p.br()
+        last = None
+        for grp, line in self.relay_lines(rows):
+            p.text(T("ov.relay_grp_" + grp) if grp != last else "", "small", colour=C["dim"], bold=True,
+                   tag="relay_grp")
+            last = grp
+            for r in line:
+                p.button(r["name"], lambda n=r["n"]: self.relay_press(n),
+                         "warn" if r.get("role") == "starter" else "normal", on=r["state"] == "on",
+                         enabled=active and (r["state"] != "unknown" or r.get("role") == "starter"),
+                         level="small", tag="relay_%d" % r["n"],
+                         release=(lambda n=r["n"]: self.relay_release(n)) if r["hold"] else None)
+            if any(r["hold"] for r in line):
+                p.text(T("ov.relay_hold"), "small", colour=C["dim"], tag="relay_hold")
+            p.br()
+        if any(r["group"] == "engine" for r in rows):
+            p.text(T("ov.relay_grp_engine") if last is None else "", "small")
+            p.button(T("eng.restart"), self.engine_restart, "info", level="small", tag="relay_restart")
+            if d.get("eng_killed") or d.get("eng_tripped"):
+                p.text(T("eng.killed") if d.get("eng_killed") else T("eng.tripped"), "small", colour=C["bad_txt"],
+                       bold=True, tag="relay_eng", wrap=0.18)
+            p.br()
+
     def panel_traffic(self, H):
         """Bottom-right (above the logo): AIS list + collision alerts."""
         rows = self.ais_rows_now()
@@ -3408,7 +3552,13 @@ class App:
             return                                  # another CONFIRM waits on the boat: not now
         relays = [] if self.boat.error else self.boat.relays
         if proto.relay_table_hash(relays) == d["relay_hash"]:
-            return
+            rs = (self.gw_status or {}).get("relays")
+            if not (relays and isinstance(self.link, GatewayLink) and rs and rs.get("hash") == d["relay_hash"] and
+                    not rs.get("known")):
+                return
+            # the AURIX has this table (from its data flash) but the gateway doesn't know its groups (a new
+            # gateway SSD): send the SAME table once more - the AURIX takes it at once (no CONFIRM), the gateway
+            # learns which relays are trim / extra (CLAUDE.md O; until then every relay = the captain's ACCEPT)
         self.relay_push_at = time.time() + RELAY_PUSH_S
         what = TE("what.boat_relays", n=len(relays), name=self.boat.name)
         payload = proto.p_relay_cfg(relays)

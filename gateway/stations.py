@@ -30,7 +30,9 @@ Crew (CLAUDE.md section D):
            the captain's behalf (the HELM station's id); the ones that affect the
            driving (proto.DRIVING_CMDS) only after the captain's ACCEPT on screen 1
            ("driver_ask" to the captain's station). STANDBY and AUTO PAUSE (hold)
-           always go straight through.
+           always go straight through. A relay switch (CLAUDE.md O): engine group =
+           the captain's ACCEPT, trim / extra straight - the group from the table the
+           AURIX reports active (relaytab.py; unknown = engine).
   login {"crew": "captain" | "copilot"} asks for a role: captain needs the licence
   and is refused while another station is captain (-> copilot, welcome "crew_note").
   A station on the boat that takes HELM becomes the captain (on board wins); so does a
@@ -58,12 +60,14 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import os
 import secrets
 import statistics
 import struct
 import time
 
 from common import log, proto
+from relaytab import RelayTables
 
 GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command out of order",
               103: "stale command", 104: "timestamp in the future", 105: "rate limited",
@@ -180,6 +184,9 @@ class StationServer:
         self.ask_id = 0
         self.driver_timeout = cfg.get("driver_timeout_s", 10.0)
         self.driver_beat_s = cfg.get("driver_beat_s", 2.5)
+        st = getattr(gw, "storage", None)
+        self.relay_tables = RelayTables(os.path.join(st.folder("state"), "relay_tables.json")
+                                        if st is not None and st.usable else None)
         a = gw.aurix
         a.on(proto.T_GW_ACK, self._on_gw_ack)
         a.on(proto.T_TELEMETRY, self._on_telem)
@@ -436,7 +443,9 @@ class StationServer:
                 code, why = why if isinstance(why, tuple) else (114, why)
                 return self.refuse(st, seq, ftype, code, ": " + why)
         what = str(m.get("what") or proto.TYPE_NAMES.get(ftype, "command %d" % ftype))[:80]
-        driving = proto.is_driving_cmd(ftype, payload)
+        if ftype == proto.T_RELAY_CFG:
+            self.relay_tables.learn(payload)                 # which relay is in which group (CLAUDE.md O)
+        driving = proto.is_driving_cmd(ftype, payload, self.relay_groups())
         if st.single_op:
             if driving and m.get("confirm") != "self":
                 return self.refuse(st, seq, ftype, 113)
@@ -454,6 +463,15 @@ class StationServer:
             self.gw.audit("copilot_cmd", station=st.id, user=st.user, type=ftype, what=what, captain=cap.id)
             return self._forward(st, seq, ftype, payload, age, env=cap)
         self._forward(st, seq, ftype, payload, age)
+
+    def relay_groups(self):
+        """{n: group} of the relay table active on the AURIX, None if the gateway doesn't know it."""
+        return self.relay_tables.active(self.gw.telem2)
+
+    def relay_status(self):
+        """gw_status "relays": does the gateway know the active table's groups (hash = TELEM2 group M)."""
+        t2 = self.gw.telem2 or {}
+        return {"hash": t2.get("relay_hash"), "known": self.relay_groups() is not None}
 
     # --- the captain's ACCEPT (screen 1) for copilot actions (section D, was F1) ------
     def drivers(self):

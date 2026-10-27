@@ -489,6 +489,11 @@ class DriverScreen:
                 a.maneuver_request()
         elif act == "release":
             a.remote_release()
+        elif act.startswith("relay:"):
+            n = int(act[6:])                    # a relay button (CLAUDE.md O): a request, the AURIX decides
+            a.relay_press(n)
+            if any(r["n"] == n and r["hold"] for r in a.relay_view()[1]):
+                self.relay_hold = n             # momentary: let go at the mouse release
         elif act == "fullscreen":
             self.w.attributes("-fullscreen", not self.w.attributes("-fullscreen"))
         elif act == "escape":
@@ -554,6 +559,9 @@ class DriverScreen:
         self.draw()
 
     def on_release(self, ev, child=None):
+        n, self.relay_hold = getattr(self, "relay_hold", None), None
+        if n is not None:
+            self.app.relay_release(n)
         if self.drag:
             self.drag = None
             self.layout.save()
@@ -640,6 +648,10 @@ class DriverScreen:
                                                 (d["mode"] in (proto.MODE_REMOTE, proto.MODE_MANUAL) and d["gear"] == 2)))
         s["notices"] = self.notices(d, gw)
         s["manual_ok"] = a.manual_allowed()                     # REMOTE MANUAL / MANEUVER buttons (captain + licence)
+        active, rows = a.relay_view()                           # the relays with "show_hud" (CLAUDE.md O)
+        hud_rows = [dict(r, click=active and r["group"] != "engine" and r["state"] != "unknown")
+                    for r in rows if r.get("show_hud")]
+        s["relay_lines"] = [ln for _g, ln in a.relay_lines(hud_rows)]
         s["mv_ask"] = None
         if d is not None and "rjoy_lever1000" in d and d.get("rjoy_age_ms", 99999) < 1000:
             lv = d["rjoy_lever1000"] / 1000.0                   # the captain's lever: REV / N / FWD zone

@@ -9,7 +9,9 @@ through them (Tk widgets can't be transparent). Like the HUD of screen 1 a displ
 
 Panels: semi-transparent (theme.ALPHA), rounded, a header with the title and a collapse mark
 (click: collapsed to the header, remembered); they stay in their corner and never cover the
-boat (keep-out circle around the centre). Everything is sized from theme.py (fonts by window
+boat (keep-out circle around the centre). A panel whose corner is a TUPLE of corners (e.g. the
+relays) is placed by the fit test: in the candidate corner whose side has the most free height.
+A button with a `release` function is press-and-hold (release() when the mouse button goes up). Everything is sized from theme.py (fonts by window
 size x Windows scaling); if the panels don't fit, the text is made smaller step by step (fit
 factor). The result of the last layout (ops: every drawn item with its rectangle and panel) is
 what the layout test checks (test_screen2.py): nothing clipped, STANDBY visible, the boat free,
@@ -107,9 +109,10 @@ class Panel:
         return self._add(Item("badge", s=str(s), level=level, fill=fill, fg=fg, bold=True, tag=tag,
                               outline=outline, wrap=wrap))
 
-    def button(self, s, action, kind="normal", on=False, enabled=True, level="button", tag=None):
+    def button(self, s, action, kind="normal", on=False, enabled=True, level="button", tag=None, release=None):
+        """release: press-and-hold - called when the mouse button goes up (Overlay.release)."""
         return self._add(Item("button", s=str(s), level=level, action=action, btn=kind, on=on, enabled=enabled,
-                              bold=True, tag=tag))
+                              bold=True, tag=tag, release=release))
 
     def space(self, em=1.0):
         return self._add(Item("space", em=em, level="label"))
@@ -128,6 +131,8 @@ class Overlay:
         self.panels = []
         self.ops = []                    # the last layout: {"k", "r", "panel", "s", "tag"}
         self.hits = []                   # [(rect, fn)]
+        self.holds = []                  # [(rect, release fn)] press-and-hold buttons
+        self.held = None                 # the release fn of the button held now
         self.collapsed = set(collapsed)
         self.k = 1.0                     # fit factor of the last layout (1 = full size)
         self.dpi = 1.0                   # Windows scaling (theme.dpi_factor)
@@ -239,12 +244,34 @@ class Overlay:
         probs = []
         rects = {}
         col = {"nw": [], "ne": [], "sw": [], "se": []}
-        for p in self.panels:
-            col[p.corner].append(p)
-            if p.w > maxw:
-                probs.append("panel %s too wide: %.0f > %.0f px" % (p.key, p.w, maxw))
         sb_w, sb_h = extras["standby"]
         lg_w, lg_h = extras["logo"]
+        for p in self.panels:
+            if isinstance(p.corner, str):
+                col[p.corner].append(p)
+        for p in self.panels:
+            if isinstance(p.corner, str):
+                continue
+            # placed by the fit test: the candidate corner whose side keeps the most free height (the map bar
+            # in the middle must still fit); top corners: below the others, bottom corners: above the others
+            def free(c):
+                side = ("nw", "sw") if c[1] == "w" else ("ne", "se")
+                used = sum(q.h + g for k in side for q in col[k])
+                bottom = H - g - (sb_h if c[1] == "w" else lg_h) - g
+                sw_ = max([q.w for k in side for q in col[k]] + [sb_w if c[1] == "w" else lg_w, p.w])
+                other = max([q.w for k in (("ne", "se") if c[1] == "w" else ("nw", "sw")) for q in col[k]] +
+                            [lg_w if c[1] == "w" else sb_w])
+                mid = W - 2 * g - min(sw_, maxw) - min(other, maxw) - 2 * g
+                return bottom - g - used - p.h - g, mid >= extras["bar"][0]
+            best = max(p.corner, key=lambda c: (free(c)[1], free(c)[0]))
+            p.placed = best
+            if best[0] == "s":
+                col[best].insert(0, p)
+            else:
+                col[best].append(p)
+        for p in self.panels:
+            if p.w > maxw:
+                probs.append("panel %s too wide: %.0f > %.0f px" % (p.key, p.w, maxw))
         left_w = max([p.w for p in col["nw"] + col["sw"]] + [sb_w])
         right_w = max([p.w for p in col["ne"] + col["se"]] + [lg_w])
         left_w, right_w = min(left_w, maxw), min(right_w, maxw)
@@ -372,9 +399,11 @@ class Overlay:
             c.create_polygon(*rrect_pts(r[0], r[1], r[2], r[3], fs * theme.BUTTON["radius"] * 2), smooth=True,
                              fill=fill, outline=C["line"], tags="ov")
             c.create_text((r[0] + r[2]) / 2, cy, text=it.s, fill=fg, font=self.font(fs, True), tags="ov")
-            op["enabled"] = it.enabled
+            op["enabled"], op["on"] = it.enabled, it.on
             if it.enabled and it.action:
                 self.hits.append((r, it.action))
+                if it.release:
+                    self.holds.append((r, it.release))
         elif it.kind == "table":
             yy = r[1]
             cols = len(it.cw)
@@ -402,7 +431,7 @@ class Overlay:
         """Lay out (largest fitting text size), then draw. extras_fn(k) -> sizes of STANDBY / logo / bar at
         fit factor k; draw_extras(rects) draws them (the app: STANDBY, logo, banners, bar)."""
         self.W, self.H = W, H
-        self.ops, self.hits = [], []
+        self.ops, self.hits, self.holds = [], [], []
         k = self.dpi
         rects, probs = None, None
         while True:
@@ -423,9 +452,16 @@ class Overlay:
     def click(self, x, y):
         for r, fn in reversed(self.hits):
             if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
+                self.held = next((rel for rr, rel in self.holds if rr == r), None)
                 fn()
                 return True
         for p in self.panels:
             if p.r and p.r[0] <= x <= p.r[2] and p.r[1] <= y <= p.r[3]:
                 return True                         # on a panel, not on a button: nothing for the map
         return False
+
+    def release(self):
+        """The mouse button went up: a held press-and-hold button lets go (its release function)."""
+        fn, self.held = self.held, None
+        if fn:
+            fn()

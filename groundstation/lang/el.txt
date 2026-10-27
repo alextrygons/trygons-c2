@@ -1422,3 +1422,15 @@ what.relay_onoff = ρελέ {name} {state}
 what.engine_restart = ΕΠΑΝΕΚΚΙΝΗΣΗ κινητήρα
 what.engine_start = ΕΚΚΙΝΗΣΗ κινητήρα (μίζα)
 what.engine_release = η ΕΚΚΙΝΗΣΗ κινητήρα αφέθηκε
+# relay buttons (CLAUDE.md O): screen 2 panel + screen 1 HUD box
+ov.relays = ΡΕΛΕ
+ov.relay_grp_engine = ΜΗΧΑΝΗ
+ov.relay_grp_trim = ΤΡΙΜ
+ov.relay_grp_extra = ΑΛΛΑ
+ov.relay_hold = (κράτα)
+ov.relay_not_active = ο πίνακας ρελέ του αρχείου σκάφους δεν είναι ακόμη ενεργός στο σκάφος
+ov.relay_pending = ο πίνακας ρελέ περιμένει CONFIRM στο χειριστήριο
+ov.relay_silent = ΠΛΑΚΕΤΑ ΡΕΛΕ ΣΙΩΠΗΛΗ: κατάσταση άγνωστη, καμία νέα εντολή
+ov.relay_unknown = ρελέ {name}: κατάσταση άγνωστη (η πλακέτα δεν απαντά)
+what.relay_hold = κράτημα ρελέ {name}
+hud.ov_relays = ρελέ

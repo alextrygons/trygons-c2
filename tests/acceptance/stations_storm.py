@@ -88,7 +88,7 @@ def main():
             if done is None and st.crew == "copilot" and not st.single_op and ftype not in stmod.READ_ONLY \
                     and ftype != proto.T_HELM and envelope is st:
                 bad("copilot station %s forwarded type 0x%02X in its own envelope" % (st.id, ftype))
-            if proto.is_driving_cmd(ftype, payload):
+            if proto.is_driving_cmd(ftype, payload, stn.relay_groups()):
                 stats["driving_forwarded"] += 1
                 why = ctx["why"]
                 if why == "captain" and st.crew == "captain":

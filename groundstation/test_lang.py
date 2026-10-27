@@ -101,6 +101,7 @@ def families():
     f += ["crew.role_" + k for k in ("captain", "copilot")] + ["cap.place_" + k for k in ("shore", "onboard")]
     f += ["menu.theme_" + k for k in ("dark", "light")] + ["map.layer_rings"]
     f += ["prof.%d" % i for i in range(3)] + ["tab." + k for k in ("connection", "control")]
+    f += ["ov.relay_grp_" + g for g in proto.RELAY_GROUPS]
     return f
 
 
