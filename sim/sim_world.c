@@ -29,6 +29,10 @@ void world_init(world_t *w, uint32_t seed, float heading_deg, float speed_kn)
     w->vmax_rev_kn = 8.0f;
     w->idle_fwd_kn = 1.5f;
     w->speed_tau_s = 6.0f;
+    w->bow_sway_ms = 0.5f;
+    w->bow_yaw_dps = 6.0f;
+    w->stern_kn = 2.5f;
+    w->thr_tau_s = 3.0f;
     w->gps_pos_noise_m = 1.5f;
     w->slam_scale = 1.0f;
     w->slam_rng = seed * 2654435761u + 12345u;
@@ -50,19 +54,25 @@ static float wrap360(float d)
     return (d < 0.0f) ? d + 360.0f : d;
 }
 
-float world_sog_kn(const world_t *w)
+/* velocity over ground, m/s east / north: surge along the heading + sway to starboard + current */
+static void ground_v(const world_t *w, float *ve, float *vn)
 {
     float h = w->heading_deg * PI_F / 180.0f;
-    float ve = w->speed_kn * KN_TO_MS * sinf(h) + w->current_e;
-    float vn = w->speed_kn * KN_TO_MS * cosf(h) + w->current_n;
+    *ve = w->speed_kn * KN_TO_MS * sinf(h) + w->sway_ms * cosf(h) + w->current_e;
+    *vn = w->speed_kn * KN_TO_MS * cosf(h) - w->sway_ms * sinf(h) + w->current_n;
+}
+
+float world_sog_kn(const world_t *w)
+{
+    float ve, vn;
+    ground_v(w, &ve, &vn);
     return sqrtf(ve * ve + vn * vn) / KN_TO_MS;
 }
 
 float world_cog_deg(const world_t *w)
 {
-    float h = w->heading_deg * PI_F / 180.0f;
-    float ve = w->speed_kn * KN_TO_MS * sinf(h) + w->current_e;
-    float vn = w->speed_kn * KN_TO_MS * cosf(h) + w->current_n;
+    float ve, vn;
+    ground_v(w, &ve, &vn);
     return wrap360(atan2f(ve, vn) * 180.0f / PI_F);
 }
 
@@ -121,7 +131,14 @@ void world_step(world_t *w, float dt_s)
     if (eng == GEAR_F) vss = w->idle_fwd_kn + (w->vmax_fwd_kn - w->idle_fwd_kn) * t_eff / 100.0f;
     if (eng == GEAR_R) vss = -(0.8f + (w->vmax_rev_kn - 0.8f) * t_eff / 100.0f);
     if (sim_hal_engine_killed()) vss = 0.0f;               /* ENGINE KILL: the outboard stopped */
+    /* DP thrusters (nothing while the e-stop contactor is open): the transom motor adds to the
+     * speed ahead, the bow tunnel thruster sways the boat and turns it (it pushes at the bow) */
+    float tb, ts;
+    sim_hal_thrust_truth(&tb, &ts);
+    vss += w->stern_kn * ts / 100.0f;
     w->speed_kn += (vss - w->speed_kn) * dt_s / w->speed_tau_s;
+    w->sway_ms += (w->bow_sway_ms * tb / 100.0f - w->sway_ms) * dt_s / w->thr_tau_s;
+    w->thr_yaw_dps += (w->bow_yaw_dps * tb / 100.0f - w->thr_yaw_dps) * dt_s / w->thr_tau_s;
 
     /* steering actuator */
     rudder_step(&w->rud, sim_hal_motor_command(), dt_s);
@@ -142,7 +159,7 @@ void world_step(world_t *w, float dt_s)
                                   + 0.6f * w->wave_filt);
     float input = w->rud.angle_deg + w->trim_deg + waves;
     w->yaw_dps += (K * input - w->yaw_dps) * (dt_s / T);
-    w->heading_deg = wrap360(w->heading_deg + w->yaw_dps * dt_s);
+    w->heading_deg = wrap360(w->heading_deg + (w->yaw_dps + w->thr_yaw_dps) * dt_s);
 
     /* GPS drag (spoofer): offset grows until the maximum */
     if (w->gps_dragging) {
@@ -153,9 +170,10 @@ void world_step(world_t *w, float dt_s)
     }
 
     /* position */
-    float h = w->heading_deg * PI_F / 180.0f;
-    w->east_m += (double)((v * KN_TO_MS * sinf(h) + w->current_e) * dt_s);
-    w->north_m += (double)((v * KN_TO_MS * cosf(h) + w->current_n) * dt_s);
+    float ve, vn;
+    ground_v(w, &ve, &vn);
+    w->east_m += (double)(ve * dt_s);
+    w->north_m += (double)(vn * dt_s);
 }
 
 /* One 100 Hz BNO085 sample: heave + noise + hull impacts. Above ~8 kn the
@@ -208,7 +226,7 @@ void world_publish(world_t *w, uint32_t t_ms)
     if (t_ms % 10u == 0u) slam_sample(w, 0.01f);
     sim_hal_set_time_ms(t_ms);
     sim_hal_set_truth(w->heading_deg, w->rud.angle_deg);
-    sim_hal_set_yaw_truth(w->yaw_dps);
+    sim_hal_set_yaw_truth(w->yaw_dps + w->thr_yaw_dps);
     sim_hal_set_neutral_switch(w->neutral_switch,
                                w->neutral_sw_force ? w->neutral_sw_force == 2
                                                    : (w->gear_pos_us > 1200.0f && w->gear_pos_us < 1800.0f));

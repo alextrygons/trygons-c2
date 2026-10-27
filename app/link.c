@@ -423,6 +423,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_GENERATOR:    return 1;
     case PROTO_T_RELAY:        return 4;
     case PROTO_T_RELAY_CFG:    return -2;       /* variable: checked by relay_table_decode */
+    case PROTO_T_THRUSTER_CFG: return (int)THR_FRAME_BYTES;
     case PROTO_T_RESTART:      return 1;
     default:                   return -1;
     }
@@ -493,6 +494,13 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
             return (f->len < 1u || f->len != 1u + (uint32_t)f->payload[0] * RELAY_FRAME_BYTES) ? PROTO_R_BAD_LENGTH
                                                                                              : PROTO_R_BAD_VALUE;
         return sb_result_to_proto(sb_relay_table(s, &t));
+    }
+    case PROTO_T_THRUSTER_CFG: {
+        /* the boat file's DP thruster settings (section P): HELM station (checked by
+         * the caller), STANDBY only, RAM only; the hash goes back in TELEM2 group N */
+        thr_cfg_t c;
+        if (!thruster_cfg_decode(f->payload, f->len, &c)) return PROTO_R_BAD_VALUE;
+        return sb_result_to_proto(sb_thruster_cfg(s, &c, proto_crc16(f->payload, f->len)));
     }
     case PROTO_T_RESTART: {
         /* remote restart / hold-to-crank (section N): the HELM station (checked by
@@ -965,6 +973,10 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      released, not FIRST TEST; b1 software reset pending; b2 a STARTER in the relay table; b3 ENGINE
  *      KILL latched; b4 monitor tripped) | u16 hold ms | u16 cool-down left (0.1 s) | u8 last action
  *      (ENG_LOG_) | u8 last why (eng_why_t) | u16 restarts | u16 cranks
+ *   N: DP thrusters (section P; step 10 appends the DP state): u8 flags (thruster_flags: b0 settings
+ *      received, b1 active, b2 bow HOT, b3 stern HOT, b4 bow fitted, b5 stern fitted) | i8 bow output % |
+ *      i8 stern output % | u8 bow heat budget used % | u8 stern heat budget used % | u8 bow max % |
+ *      u8 stern max % | u16 settings hash (CRC-16 of the THRUSTER_CFG body, 0 none) | u8 why (THR_WHY_)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1095,6 +1107,19 @@ static void telemetry2(link_t *l, sb_t *s)
         proto_wr_u8(&w, e->last_why);
         proto_wr_u16(&w, (uint16_t)e->restarts);
         proto_wr_u16(&w, (uint16_t)e->cranks);
+    }
+    /* N: DP thrusters (section P) */
+    {
+        const thruster_t *t = &s->thrust;
+        proto_wr_u8(&w, thruster_flags(t));
+        proto_wr_u8(&w, (uint8_t)(int8_t)lroundf(t->out_pct[THR_BOW]));
+        proto_wr_u8(&w, (uint8_t)(int8_t)lroundf(t->out_pct[THR_STERN]));
+        proto_wr_u8(&w, (uint8_t)lroundf(thruster_heat(t, THR_BOW) * 100.0f));
+        proto_wr_u8(&w, (uint8_t)lroundf(thruster_heat(t, THR_STERN) * 100.0f));
+        proto_wr_u8(&w, (uint8_t)lroundf(thruster_cap(t, THR_BOW)));
+        proto_wr_u8(&w, (uint8_t)lroundf(thruster_cap(t, THR_STERN)));
+        proto_wr_u16(&w, t->have_cfg ? t->cfg_hash : 0u);
+        proto_wr_u8(&w, t->why);
     }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);

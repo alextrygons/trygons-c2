@@ -62,6 +62,7 @@ ALARM_LEVELS = {
     # the second alarm word (TELEM2 "alarm_bits2", app/smallboat.h SB_ALM2_): its bits live at bit << WORD2
     0x1 << 32: ("low_battery", ADVISORY),
     0x2 << 32: ("relay_silent", ADVISORY),
+    0x4 << 32: ("dp_heat", CAUTION),
 }
 NO_DATA = "no_data"                 # the PC gets no telemetry (not an alarm bit): WARNING
 WORD2 = 32                          # the second alarm word's bits are shifted by this in every "bits" here

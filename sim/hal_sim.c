@@ -5,6 +5,7 @@
 #include "boat_model.h"
 #include "tc_modbus.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -20,6 +21,7 @@ static void rb_driver_init(void);       /* Modbus relay board: the master restar
 /* safety monitor trip latch (hal_safe_outputs) */
 static bool     s_forced;
 static uint16_t s_safe_thr_us = 1000u, s_safe_gear_us = 1500u;
+static float    s_thr_bow, s_thr_stern;      /* DP thrusters commanded, -100..100 (below) */
 
 static uint32_t s_time_ms;
 static float    s_true_heading;
@@ -693,6 +695,8 @@ void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
     s_throttle_us = throttle_idle_us;
     s_gear_pwm = gear_neutral_us;
     s_motor = 0.0f;
+    s_thr_bow = 0.0f;                   /* both thrusters stopped (latched) */
+    s_thr_stern = 0.0f;
     s_alarm = true;
     s_relay = false;
 }
@@ -754,6 +758,8 @@ void sim_hal_chip_reset(hal_reset_t why)
     s_throttle_us = 0u;
     s_gear_pwm = 0u;
     s_motor = 0.0f;
+    s_thr_bow = 0.0f;                   /* no pulses: the thruster controllers stop */
+    s_thr_stern = 0.0f;
     s_reset_reason = why;
 }
 
@@ -816,10 +822,47 @@ void hal_mem_barrier(void) { __sync_synchronize(); }
 static bool  s_supply_fitted = true;
 static float s_supply_v = 12.6f;
 
+/* --- DP thrusters: the outputs (latched to 0 by the monitor trip), the e-stop
+ *     contactor (cuts their power), the bank voltage sag per % thrust --- */
+static uint32_t s_thr_writes;                    /* hal_set_thrusters calls */
+static float    s_thr_sag_v_per_pct = 0.006f;    /* both at 100 % = 1.2 V below the bank's rest voltage */
+
+static float thr_clamp(float v)
+{
+    if (!(v == v)) return 0.0f;                  /* NaN = stop */
+    return v > 100.0f ? 100.0f : (v < -100.0f ? -100.0f : v);
+}
+
+void hal_set_thrusters(float bow_pct, float stern_pct)
+{
+    s_thr_writes++;
+    s_thr_bow = s_forced ? 0.0f : thr_clamp(bow_pct);
+    s_thr_stern = s_forced ? 0.0f : thr_clamp(stern_pct);
+}
+
+void sim_hal_thrusters(float *bow_pct, float *stern_pct)
+{
+    *bow_pct = s_thr_bow;
+    *stern_pct = s_thr_stern;
+}
+
+/* what really pushes the boat: nothing while the e-stop contactor is open */
+void sim_hal_thrust_truth(float *bow_pct, float *stern_pct)
+{
+    bool cut = s_estop_fitted && s_estop_pressed;
+    *bow_pct = cut ? 0.0f : s_thr_bow;
+    *stern_pct = cut ? 0.0f : s_thr_stern;
+}
+
+uint32_t sim_hal_thruster_writes(void) { return s_thr_writes; }
+void sim_hal_thruster_sag(float v_per_pct) { s_thr_sag_v_per_pct = v_per_pct; }
+
 bool hal_read_supply_voltage(float *volts)
 {
     if (!s_supply_fitted) return false;
-    *volts = s_supply_v;
+    float b, st;
+    sim_hal_thrust_truth(&b, &st);
+    *volts = s_supply_v - s_thr_sag_v_per_pct * (fabsf(b) + fabsf(st));    /* the thrusters load the bank */
     return true;
 }
 

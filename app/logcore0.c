@@ -29,6 +29,7 @@ static struct {
     uint32_t relay_seq, relay_states, relay_known;
     bool     relay_ok;
     uint32_t eng_seq;
+    uint32_t thr_seq;
     uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -338,6 +339,14 @@ static void changes(const sb_t *s)
         ev(s, EV_RESTART, s->eng.last_action, s->eng.last_why, (int32_t)s->eng.hold_ms,
            (int32_t)((s->eng.restarts & 0xFFFFu) | ((s->eng.cranks & 0xFFFFu) << 16)));
     k.eng_seq = s->eng.log_seq;
+    /* DP thrusters (section P): settings taken, a thruster HOT / cooled down (events only) */
+    if (s->thrust.log_seq != k.thr_seq) {
+        const thruster_t *t = &s->thrust;
+        ev(s, EV_DP, t->log_what, t->log_unit,
+           (int32_t)((uint32_t)thruster_cap(t, THR_BOW) | ((uint32_t)thruster_cap(t, THR_STERN) << 8)),
+           (int32_t)((uint32_t)(thruster_heat(t, t->log_unit) * 100.0f + 0.5f) | ((uint32_t)t->cfg_hash << 8)));
+    }
+    k.thr_seq = s->thrust.log_seq;
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
     k.save_seq = s->save.seq;

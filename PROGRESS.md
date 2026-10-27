@@ -28,7 +28,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 7 | Engine controls + remote restart (CLAUDE.md N; I31 changed) | DONE (gate OK: sim 219/219 + bridge 218/218 incl. ER1-ER6, TriCore + iLLD + STARTER / reset writer checks, gateway incl. CR10 (A2 at 57600, see notes); test_driver 19/19, test_screen2 13/13; acceptance quick 7/7 PASS, storm I31 / I37 / I38 0 fails) | this commit |
 | 7b | Step 6 review fixes | DONE (gate OK: sim 225/225 + bridge 224/224 incl. RB9-RB14, TriCore + iLLD + relay / engine-relay writer checks, boats 9/9, screen 2 13/13, gateway 106/106; test_driver 19/19; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-7 HEAD, every other suite this tree), storm 200 episodes I36 4.28 M checks / I37 / I38 0 fails) | this commit |
 | 8 | Relay buttons on screen 2 (collapsible panel) and screen 1 ("show on driving screen") | DONE (gate OK: sim 225/225 + bridge 224/224, TriCore + iLLD checks, lang 5/5, boats 9/9, screen 2 14/14 incl. S14 + S1 with the relays panel, sound 10/10, avoidance 14/14, gateway 108/108 incl. RL1-RL2; test_driver 20/20 incl. I21; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-7b HEAD, every other suite this tree), stations storm I16 30 s 0 violations) | this commit |
-| 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | | |
+| 9 | DP part 1: sim thrusters + app/thruster.c (only writer, clamp, budget), CPU1 + hal_safe_outputs -> 0, e-stop contactor in WIRING | DONE (gate OK except gateway B3 under PC load - section B alone 12/12 PASS; sim 229/229 + bridge 228/228 incl. DP1-DP4, TriCore + iLLD + thruster-writer / safe-output checks, boats 10/10 incl. B10, screen 2, lang, sound, avoidance; test_driver 20/20; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-8 HEAD, every other suite this tree), storm 200 episodes I39 4.28 M checks 0 fails) | this commit |
 | 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | | |
 | 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | | |
 | 12 | Gateway on a rugged x86 mini PC: remove Pi-only parts, 3.3 V USB-UART (never RS232), USB AIS receiver; README / PARTS / WIRING | | |
@@ -282,6 +282,28 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   S14, test_driver I21, gateway section RL (RL1 copilot extra / trim straight, engine -> ACCEPT; RL2 SSD memory,
   unknown table = ACCEPT, broken frame), test_lang families (ov.relay_grp_*), acceptance stations_storm.py judges with
   the gateway's relay groups. MANUAL 7 (RELAY BUTTONS), MANUAL_EL, CLAUDE.md O (done line).
+- Step 9 (2026-10-27): DP part 1 = the thrusters (no MODE_DP yet: dp_active only from the sim hook sb_test_thrust, so on
+  the boat the thrusters are ALWAYS 0 until step 10). app/thruster.c (+ .h): the ONLY caller of hal_set_thrusters (new
+  hal.h call, tools/check.sh grep), every step; 0 unless dp_active AND allowed (not FIRST TEST, e-stop released, no
+  monitor trip, armed, HAL not forced) AND fitted (max_pct > 0, run_s > 0) AND not HOT; clamp to max_pct (ceiling 100),
+  50 %/s rate limit, every stop 0 at once; heat budget: running (> 2 %) +1 s/s, rest -run_s/rest_s per s (rest_s 0 =
+  run_s), full = HOT until empty -> SB_ALM2_DP_HEAT 0x4 (an ORDINARY alarm: buzzer + power limit down, kept by the ACK
+  while hot, no mode change; step 10 decides what DP does with it). Settings: PROTO_T_THRUSTER_CFG 0x1F (12 bytes, HELM
+  + STANDBY not stopping, RAM only, hash = CRC-16 of the body; no settings after a reset = no thruster). link.c TELEM2
+  group N (10 bytes after O: flags, outputs, heat %, max %, hash, why; step 10 appends its DP fields), log event 28 DP
+  (settings / hot / cooled). CPU1: g_mon.dp_active + outputs + caps, MON_TRIP_THRUSTER (thrust > 0.5 % without
+  dp_active, above a cap, NaN); monitor_publish_steering_only (big boat) zeros them. Board: RC-style pulses (1500 us
+  stop +- 400) on GTM TOM0 ch 12 / 13 (P22.3 / P11.10 CHECK), HAL_THRUSTERS_FITTED 0 = pins never touched,
+  thrusters_stop() in hal_safe_outputs (shadow registers; check.sh checks it). Sim: hal_sim thrusters (latched 0 on a
+  trip / chip reset), the e-stop contactor (no thrust while pressed), bank sag 0.006 V per % ; sim_world sway (0.5
+  m/s), bow yaw (6 deg/s) and stern surge (2.5 kn) at full thrust. Generator: gi.thrust_pct = |bow| + |stern|.
+  Station: proto T_THRUSTER_CFG (DRIVING_CMDS: a copilot's = ACCEPT), p_thruster_cfg / thruster_cfg_hash, group N
+  decode, ALARMS2 DP THRUSTER HOT, alerts dp_heat CAUTION, app.thruster_push (after relay_push, HELM + STANDBY, again
+  when the TELEM2 hash differs, 15 s), tlg.py event 28. Lang: alarm.dp_heat, say.alarm.dp_heat, what.boat_thrusters.
+  Tests: sim DP1-DP4 (`autopilot_sim dp`, in `all`), test_boats B10 (end to end through gateway + sim), storm I39 (for
+  now: thrusters 0 every step). T2_O in sim_sb.c now skips O + N. Docs: WIRING 3C (new) + e-stop power contact,
+  PARTS, MANUAL 5 / 7 (DP THRUSTERS) / alarms / 17, MANUAL_EL, CLAUDE.md P (done line). TBD: thrusters, controllers
+  (RC input with "no pulses = stop" assumed; PWM + DIR would need a HAL change), pins, contactor.
 
 # Previous task: "Screen 2 review"
 

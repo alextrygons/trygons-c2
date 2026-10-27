@@ -14,6 +14,8 @@
  *   - USB link (ASCLIN0), gateway UART (ASCLIN1), USB joystick bridge (ASCLIN3)
  *     (tc_uart.c)
  *   - throttle / gear           : 50 Hz servo PWM on GTM TOM0 ch 15 / 14
+ *   - DP thrusters              : RC-style pulses on GTM TOM0 ch 12 / 13 (HAL_THRUSTERS_FITTED 0
+ *                                 until wired: pins never routed = stopped)
  * Each driver has a time limit and "no data" detection: a sensor that stops
  * answering simply returns no new data, and the app raises its timeout alarm.
  *
@@ -82,6 +84,9 @@ static volatile uint16  s_safe_thr_us = 1000u, s_safe_gear_us = 1500u;
 #define SERVO_PULSE_MIN   500u              /* any servo pulse is limited to this range */
 #define SERVO_PULSE_MAX   2500u
 
+#define THR_BOW_TOM_CH    IfxGtm_Tom_Ch_12   /* DP bow thruster (hal_pins.h: pin TBD) */
+#define THR_STERN_TOM_CH  IfxGtm_Tom_Ch_13   /* DP transom motor */
+
 static Ifx_GTM_TOM     *s_tom = NULL;
 static Ifx_GTM_TOM_TGC *s_tgc = NULL;
 static float32          s_tom_ticks_per_us = 0.0f;
@@ -122,7 +127,9 @@ static void servo_pwm_init(void)
     s_tgc = IfxGtm_Tom_Ch_getTgcPointer(s_tom, (uint32)THROTTLE_TOM_CH / 8u);   /* ch 8..15: TGC1 */
     servo_channel_init(THROTTLE_TOM_CH, (uint16)period, servo_ticks(s_safe_thr_us));
     servo_channel_init(GEAR_TOM_CH, (uint16)period, servo_ticks(s_safe_gear_us));
-    IfxGtm_Tom_Tgc_trigger(s_tgc);                                  /* start both, in step */
+    servo_channel_init(THR_BOW_TOM_CH, (uint16)period, servo_ticks(THR_STOP_US));      /* thrusters: stop */
+    servo_channel_init(THR_STERN_TOM_CH, (uint16)period, servo_ticks(THR_STOP_US));
+    IfxGtm_Tom_Tgc_trigger(s_tgc);                                  /* start them all, in step */
 }
 
 /* Write one pulse width (shadow register, taken at the period end). */
@@ -138,6 +145,22 @@ static void servo_route(IfxGtm_Tom_Ch ch, volatile boolean *routed)
     *routed = TRUE;
     IfxGtm_PinMap_setTomTout(ch == THROTTLE_TOM_CH ? &IfxGtm_TOM0_15_TOUT7_P02_7_OUT : &IfxGtm_TOM0_14_TOUT6_P02_6_OUT,
                              IfxPort_OutputMode_pushPull, IfxPort_PadDriver_cmosAutomotiveSpeed1);
+}
+
+/* --- DP thrusters (CLAUDE.md P): -100..100 % -> THR_STOP_US +- THR_SPAN_US (NaN = stop) --- */
+static volatile boolean s_dp_routed = FALSE;
+
+static uint16 thruster_us(float pct)
+{
+    if (!(pct >= -100.0f && pct <= 100.0f)) pct = (pct > 0.0f) ? 100.0f : ((pct < 0.0f) ? -100.0f : 0.0f);
+    return (uint16)((float32)THR_STOP_US + pct * (float32)THR_SPAN_US / 100.0f + 0.5f);
+}
+
+/* both thrusters to the stop pulse (shadow registers: from the next period end, never a cut pulse) */
+static void thrusters_stop(void)
+{
+    servo_write(THR_BOW_TOM_CH, THR_STOP_US);
+    servo_write(THR_STERN_TOM_CH, THR_STOP_US);
 }
 
 /* G2 PWM low with SLP high = both low-side switches on = motor braked (holds
@@ -184,6 +207,10 @@ void hal_init(void)
     pin_low_output(PIN_MOTOR_SLP);
     pin_low_output(PIN_RELAY);
     pin_low_output(PIN_BUZZER);
+    if (HAL_THRUSTERS_FITTED) {                 /* DP thrusters: no pulses = stopped */
+        pin_low_output(PIN_THR_BOW_PWM);
+        pin_low_output(PIN_THR_STERN_PWM);
+    }
     reset_latch();                              /* the reset reason, once, before anything can reset again */
 
     /* STM0 runs from reset; we only need its frequency (100 MHz by default). */
@@ -362,6 +389,7 @@ void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
     IfxPort_setPinLow(PIN_MOTOR_SLP);                   /* motor driver asleep */
     servo_write(THROTTLE_TOM_CH, throttle_idle_us);     /* idle, from the next period (<= 20 ms) */
     servo_write(GEAR_TOM_CH, gear_neutral_us);          /* neutral */
+    thrusters_stop();                                   /* both DP thrusters 0 (the same shadow registers) */
     IfxPort_setPinLow(PIN_RELAY);                       /* relay open */
     IfxPort_setPinLow(PIN_ALARM_LED);                   /* LED on */
     IfxPort_setPinHigh(PIN_BUZZER);                     /* buzzer on */
@@ -557,6 +585,25 @@ void hal_set_throttle_pwm(uint16_t pulse_us)
     servo_route(THROTTLE_TOM_CH, &s_thr_routed);
     __dsync();
     if (s_forced) servo_write(THROTTLE_TOM_CH, s_safe_thr_us);   /* tripped meanwhile: idle again */
+}
+
+/* DP thrusters: only app/thruster.c calls this (once per control step). Latched to the stop
+ * pulse after a monitor trip; the pins are routed only when HAL_THRUSTERS_FITTED. */
+void hal_set_thrusters(float bow_pct, float stern_pct)
+{
+    if (s_forced) {
+        thrusters_stop();
+        return;
+    }
+    servo_write(THR_BOW_TOM_CH, thruster_us(bow_pct));
+    servo_write(THR_STERN_TOM_CH, thruster_us(stern_pct));
+    if (HAL_THRUSTERS_FITTED && !s_dp_routed && s_tom != NULL) {
+        s_dp_routed = TRUE;
+        IfxGtm_PinMap_setTomTout(&THR_BOW_TOUT, IfxPort_OutputMode_pushPull, IfxPort_PadDriver_cmosAutomotiveSpeed1);
+        IfxGtm_PinMap_setTomTout(&THR_STERN_TOUT, IfxPort_OutputMode_pushPull, IfxPort_PadDriver_cmosAutomotiveSpeed1);
+    }
+    __dsync();
+    if (s_forced) thrusters_stop();                     /* tripped meanwhile (CPU1): stop again */
 }
 
 void hal_set_gear_pwm(uint16_t pulse_us)

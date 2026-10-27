@@ -63,6 +63,9 @@
                                        * u8 flags, u8 role (0 none, 1 starter, 2 ignition, 3 shutoff)}: the boat file's relay table (HELM station). The same table as the
                                        * active one = OK; a different one: STANDBY only, then joystick CONFIRM
                                        * (CONF_RELAY_TABLE) - the stored table (NV slot 7) stays in use until then */
+#define PROTO_T_THRUSTER_CFG  0x1Fu   /* 12 bytes: bow {u8 max_pct, u16 run_s, u16 rest_s}, stern {the same},
+                                       * u8 jog_m*10, u8 spot_alarm_m: the boat file's DP thruster settings
+                                       * (HELM station, STANDBY only, RAM only; thruster.h) */
 #define PROTO_T_PROG_BEGIN    0x20u   /* u8 n (1..50), u8 final action        */
 #define PROTO_T_PROG_WP       0x21u   /* u8 index, i32 lat, i32 lon, f32 kn, f32 radius m, u8 action */
 #define PROTO_T_PROG_COMMIT   0x22u   /* -  validate + store; NACK -> PROG_ERROR frame too */

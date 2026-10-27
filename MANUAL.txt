@@ -369,8 +369,10 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
                        role (engine relays ONLY, required): starter (a
                        momentary relay, max_s <= 5 s) | ignition | shutoff
                        (onoff / latching), each once.
-    thrusters          bow / stern: max_pct, run_s / rest_s (heat budget),
-                       jog_m (one JOG step), spot_alarm_m (DP, step 9).
+    thrusters          the DP thrusters (chapter 7, DP THRUSTERS): bow / stern:
+                       max_pct (0 = not fitted), run_s / rest_s (heat budget:
+                       the longest run, the rest after it), jog_m (one JOG
+                       step), spot_alarm_m (the off-spot alarm; both DP).
     length_m, draft_m  optional.
   A file without "format" is the old v1: it still loads, with generator
   disabled, no relays and no thrusters. A file that fails the checks (wrong
@@ -380,11 +382,12 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   role "starter" ...) is listed as INVALID FILE with the reason and is never
   connected: fix the file.
   When this station holds HELM (in STANDBY) it pushes the file's settings to
-  the boat (generator cap, the relay table; the thruster settings when
-  step 9 adds them): the cap is RAM only - a boat restart gets it again;
-  the relay table is kept in the boat's data flash and a DIFFERENT one
-  needs the joystick CONFIRM (chapter 7, RELAY BOARD).
-  The event list shows "boat file RF49D: generator max 25 %".
+  the boat (generator cap, the relay table, the DP thruster settings): the
+  cap and the thruster settings are RAM only - a boat restart gets them
+  again; the relay table is kept in the boat's data flash and a DIFFERENT
+  one needs the joystick CONFIRM (chapter 7, RELAY BOARD).
+  The event list shows "boat file RF49D: generator max 25 %" and "boat file
+  RF49D: DP thrusters, bow 100 %, stern 100 %".
   "Other address ..." (Tools - Connection): the connection box (COM5,
   tcp:..., gw:host:port) for the board on USB, the simulator, the demo and
   service; then there is no boat check.
@@ -1154,6 +1157,32 @@ ENGINE CONTROLS + REMOTE RESTART (Tools -> Engine)
   Log: event 27 RESTART (kill cleared / reset / START begins / stops /
   refused, with the reason); TELEM2 group O.
 
+DP THRUSTERS (part 1: the thrusters themselves; the DP mode comes next)
+  Dynamic positioning (Minn Kota style) uses two small electric thrusters on
+  the 12 V bank: a bow TUNNEL thruster (sideways) and a fixed transom motor
+  (fore / aft). This part only drives and protects them - the DP mode that
+  uses them (SPOT, JOG, CRUISE, TRIP) is not there yet, so today the
+  thrusters ALWAYS stay at 0.
+  * The boat file's "thrusters" block (chapter 5) reaches the boat when the
+    HELM station holds HELM in STANDBY (RAM only, again after every boat
+    restart; TELEM2 group N shows what the boat took). No settings = no
+    thruster fitted = never any thrust.
+  * Only one part of the software writes them (app/thruster.c): never more
+    than the file's max_pct, changes at most 50 %/s, 0 at once on every stop,
+    and 0 whenever DP is not active.
+  * Heat budget per thruster: running fills it (1 s per s), standing still
+    empties it (run_s / rest_s per s). Used up (run_s of running) = that
+    thruster stops until it has rested (rest_s), alarm DP THRUSTER HOT; the
+    other thruster runs on.
+  * The safety monitor (CPU1) knows when DP is active and the caps: thrust
+    without DP, or above a cap, trips it, and its safe state puts both
+    thrusters to 0 (also with core 0 frozen). The e-stop cuts the thruster
+    power with its own contactor and the software sends 0 within one step.
+  * Never in the FIRST TEST build, never before the outputs are armed, never
+    on the big boat.
+  Hardware: WIRING.md 3C (TBD: thrusters, controllers, pins, contactor).
+  Log: event 28 DP (settings taken, thruster HOT, cooled down).
+
 -------------------------------------------------------------------------------
 8. THE USB JOYSTICK (THRUSTMASTER T.16000M + TWCS)
 -------------------------------------------------------------------------------
@@ -1824,6 +1853,12 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          Clears by itself when the board answers (second
                          alarm word, bit 2). Never shown without a fitted
                          relay board.
+  DP THRUSTER HOT        a DP thruster used its heat budget (boat file
+                         run_s): it stays at 0 until it rested (rest_s),
+                         the other one runs on. An ordinary alarm (buzzer,
+                         power limit back to 30 / 5); no mode change by
+                         itself. The acknowledge keeps it while the thruster
+                         is still hot (second alarm word, bit 3).
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
@@ -2054,6 +2089,11 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c, drivers hal/tc_*.c)
          the servo / gear outputs and the safety relay go to their reset
          state at once and the reset reason reads "application"). No tacho
          input yet (TBD).
+     [x] DP thrusters (app/thruster.c, chapter 7 DP THRUSTERS): RC-style
+         pulses on GTM TOM0 ch 12 / 13, stopped in hal_safe_outputs(). The
+         thrusters, their controllers, the pins and the e-stop contactor
+         are TBD (WIRING.md 3C): HAL_THRUSTERS_FITTED 0 until wired. The DP
+         mode itself (SPOT / JOG / CRUISE / TRIP) is the next step.
    Still stubs:
      [ ] joystick ADC + 3 buttons (the USB bridge works), neutral switch
          (input done, HAL_NEUTRAL_SW_FITTED 0), paddlewheel

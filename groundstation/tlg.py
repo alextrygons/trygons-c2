@@ -149,6 +149,12 @@ class Log:
             return "RESTART %s%s, hold %d ms (restarts %d, cranks %d)" % (
                 proto.ENG_ACTIONS.get(a[0], a[0]), "" if not a[1] else " - " + proto.eng_why_text(a[1]), a[2],
                 a[3] & 0xFFFF, (a[3] >> 16) & 0xFFFF)
+        if name == "DP":
+            what = {1: "thruster settings taken", 2: "thruster HOT (heat budget used up)", 3: "thruster cooled down"}
+            unit = ("bow", "stern")[a[1]] if a[1] in (0, 1) else a[1]
+            return "DP %s%s: max bow %d %% / stern %d %%, heat %d %%, settings hash 0x%04x" % (
+                what.get(a[0], a[0]), "" if a[0] == 1 else " (%s)" % unit, a[2] & 0xFF, (a[2] >> 8) & 0xFF,
+                a[3] & 0xFF, (a[3] >> 8) & 0xFFFF)
         parts = ["%s=%d" % (n, v) for n, v in zip(args, a) if n != "-"]
         return name + " " + " ".join(parts)
 

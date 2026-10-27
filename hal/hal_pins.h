@@ -20,6 +20,22 @@
  * type and fail-safe direction not decided yet (WIRING.md 3A). Until then hal_set_engine_kill
  * drives no pin. When chosen: #define PIN_ENGINE_KILL &MODULE_Pxx, n and ENGINE_KILL_ACTIVE_HIGH. */
 
+/* DP thrusters (WIRING.md 3C, CLAUDE.md P): TBD - the bow tunnel thruster, the transom motor, their
+ * controllers and the pins are not chosen yet. Assumed: bidirectional controllers with an RC-style input
+ * (50 Hz, THR_STOP_US = stop, +-THR_SPAN_US = full one way / the other), driven like the servos from GTM
+ * TOM0 channels 12 / 13 (free on TGC1 next to the servo channels 14 / 15; shadow registers, taken at the
+ * period end). Pins CHECK X1/X2: TOM0_12 -> P22.3 (TOUT50), TOM0_13 -> P11.10 (TOUT99). HAL_THRUSTERS_FITTED
+ * 0 until they are wired: the channels run at the stop pulse but the pins are never touched / routed (no
+ * pulses = the controllers stop). A controller with PWM + DIR inputs instead needs a change here and in
+ * hal_tc375.c (TBD). The e-stop contactor cuts the thruster power itself (WIRING.md 3C). */
+#define PIN_THR_BOW_PWM     &MODULE_P22, 3u     /* CHECK X1/X2, GTM TOM0 ch 12 */
+#define PIN_THR_STERN_PWM   &MODULE_P11, 10u    /* CHECK X1/X2, GTM TOM0 ch 13 */
+#define THR_BOW_TOUT        IfxGtm_TOM0_12_TOUT50_P22_3_OUT
+#define THR_STERN_TOUT      IfxGtm_TOM0_13_TOUT99_P11_10_OUT
+#define HAL_THRUSTERS_FITTED 0                  /* TBD: 1 when the thruster controllers are wired */
+#define THR_STOP_US         1500u               /* TBD: per the controllers */
+#define THR_SPAN_US         400u                /* 1100 us = full astern / to port, 1900 us = full ahead / to starboard */
+
 /* Pololu G2 High-Power Motor Driver 18v17 (steering motor) */
 #define PIN_MOTOR_PWM       &MODULE_P02, 5u     /* D6 -> G2 PWM (on / off: full speed or stopped) */
 #define PIN_MOTOR_DIR       &MODULE_P02, 4u     /* D7 -> G2 DIR */

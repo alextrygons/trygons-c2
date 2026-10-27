@@ -2,7 +2,7 @@
 # The test gate: run it before every commit (Git Bash, from anywhere):
 #     sh tools/check.sh
 # sim build without warnings, all sim tests (analog + USB bridge), TriCore
-# compile of app/ + hal/ + Cpu*_Main.c, HAL / throttle-writer / relay-writer checks, the
+# compile of app/ + hal/ + Cpu*_Main.c, HAL / throttle-writer / relay-writer / thruster-writer checks, the
 # expected memory per core (CPU1 RAM must stay below 60 %), the board's FAT32
 # writer on PC disk images, the board's data-flash record log on a PC flash
 # image, Python syntax, the gateway tests.
@@ -73,6 +73,9 @@ if [ -n "$writers" ]; then echo "THROTTLE SERVO WRITTEN OUTSIDE servo.c: $writer
 # the relay board is driven ONLY by app/relays.c (table, interlocks, time limits; never CPU1 / CPU2)
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_relay_[a-z]+ *\(" app sim/sim_sb.c sim/sim_main.c sim/sim_server.c sim/sim_world.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/relays.c$")
 if [ -n "$writers" ]; then echo "RELAY BOARD DRIVEN OUTSIDE relays.c: $writers"; fail=1; else echo "relay board driven only by app/relays.c"; fi
+# the DP thrusters are written ONLY by app/thruster.c (clamp, rate limit, heat budget, 0 outside DP; CLAUDE.md P)
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_set_thrusters *\(" app sim/sim_sb.c sim/sim_main.c sim/sim_server.c sim/sim_world.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/thruster.c$")
+if [ -n "$writers" ]; then echo "THRUSTERS WRITTEN OUTSIDE thruster.c: $writers"; fail=1; else echo "DP thrusters written only by app/thruster.c"; fi
 # the engine relays only through the engine rules (app/engine.c, CLAUDE.md N): the STARTER (hold-to-crank) and
 # IGNITION / SHUTOFF ON (idle + neutral + e-stop released); the software reset only from smallboat.c
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])relays_(starter_pulse|starter_off|engine_set) *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/engine.c$\|^app/relays.c$")
@@ -85,8 +88,8 @@ if [ -n "$writers" ]; then echo "SOFTWARE RESET OUTSIDE smallboat.c: $writers"; 
 "$PY" tests/acceptance/check_ads_excludes.py || fail=1
 
 # the sim's test hooks (raw gear / throttle) never in the board firmware
-if "$B/tricore-elf-nm.exe" "$OUT/smallboat.o" 2>/dev/null | grep -q "sb_test_drive"; then
-    echo "sb_test_drive (sim test hook) IS IN THE FIRMWARE"; fail=1
+if "$B/tricore-elf-nm.exe" "$OUT/smallboat.o" 2>/dev/null | grep -q "sb_test_drive\|sb_test_thrust"; then
+    echo "sb_test_drive / sb_test_thrust (sim test hooks) IN THE FIRMWARE"; fail=1
 else
     echo "no sim test hooks in the firmware"
 fi
@@ -94,10 +97,16 @@ fi
 # the board's monitor trip drives the outputs itself (works with core 0 frozen)
 safe=$(sed -n '/^void hal_safe_outputs/,/^}/p' hal/hal_tc375.c)
 if echo "$safe" | grep -q "servo_write(THROTTLE_TOM_CH" && echo "$safe" | grep -q "servo_write(GEAR_TOM_CH" &&
-   echo "$safe" | grep -q "motor_off()"; then
-    echo "hal_safe_outputs (board) writes idle + neutral + motor off itself"
+   echo "$safe" | grep -q "motor_off()" && echo "$safe" | grep -q "thrusters_stop()"; then
+    echo "hal_safe_outputs (board) writes idle + neutral + motor off + thrusters 0 itself"
 else
     echo "hal_safe_outputs (board) does NOT drive the outputs itself"; fail=1
+fi
+stop=$(sed -n '/^static void thrusters_stop/,/^}/p' hal/hal_tc375.c)
+if echo "$stop" | grep -q "servo_write(THR_BOW_TOM_CH, THR_STOP_US)" && echo "$stop" | grep -q "servo_write(THR_STERN_TOM_CH, THR_STOP_US)"; then
+    echo "thrusters_stop (board) writes both thruster shadow registers to the stop pulse"
+else
+    echo "thrusters_stop (board) does NOT stop both thrusters"; fail=1
 fi
 
 # expected memory per core from the TriCore objects (CPU1 = safety monitor: max 60 %)

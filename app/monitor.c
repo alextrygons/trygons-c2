@@ -3,6 +3,7 @@
  */
 #include "monitor.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "hal.h"
@@ -66,6 +67,8 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
         bool gen = sh->gen_active != 0u;
         float gen_cap = sh->gen_cap_pct, fwd_lim = sh->fwd_limit;
         uint16_t gear_n = sh->gear_n_us;
+        bool dp = sh->dp_active != 0u;
+        float tb = sh->thr_bow_pct, ts = sh->thr_stern_pct, cb = sh->thr_bow_cap, cs = sh->thr_stern_cap;
         hal_mem_barrier();
         bool consistent = (s1 & 1u) == 0u && sh->seq == s1;
         if (!consistent) m->torn++;
@@ -109,6 +112,14 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
             } else {
                 m->over_ms = 0u;
             }
+            /* 2b. DP thrusters: thrust only while core 0 says dp_active, within each cap
+             *     (NaN counts as thrust: !(|x| <= limit)) */
+            {
+                float ab = fabsf(tb), as = fabsf(ts);
+                bool thrust = !(ab <= MON_THR_ZERO_PCT) || !(as <= MON_THR_ZERO_PCT);
+                bool over = !(ab <= cb + MON_MARGIN_PCT) || !(as <= cs + MON_MARGIN_PCT);
+                if (thrust && (!dp || over)) trip(m, sh, MON_TRIP_THRUSTER, now_ms);
+            }
             /* 3. gear only moves at idle */
             int32_t dg = (int32_t)gear - (int32_t)m->last_gear;
             if ((dg > (int32_t)MON_GEAR_DELTA || dg < -(int32_t)MON_GEAR_DELTA) &&
@@ -136,6 +147,11 @@ void monitor_publish_steering_only(mon_shared_t *sh, uint16_t thr_idle_us, uint1
     sh->gear_n_us = gear_n_us;
     sh->gen_active = 0u;                /* big boat: no generator mode */
     sh->gen_cap_pct = 0.0f;
+    sh->dp_active = 0u;                 /* big boat: no thrusters */
+    sh->thr_bow_pct = 0.0f;
+    sh->thr_stern_pct = 0.0f;
+    sh->thr_bow_cap = 0.0f;
+    sh->thr_stern_cap = 0.0f;
     monitor_write_end(sh);
     sh->heartbeat = sh->heartbeat + 1u;
     sh->running = MON_RUNNING;
@@ -145,6 +161,6 @@ const char *monitor_reason_name(mon_reason_t r)
 {
     static const char *const n[] = { "ok", "throttle above the power limit", "gear moved with throttle open",
                                      "core 0 heartbeat missing", "core 0 never started", "bench trip test",
-                                     "generator: gear not in neutral" };
-    return ((unsigned)r <= (unsigned)MON_TRIP_GENERATOR) ? n[r] : "?";
+                                     "generator: gear not in neutral", "thruster: thrust without DP / above the cap" };
+    return ((unsigned)r <= (unsigned)MON_TRIP_THRUSTER) ? n[r] : "?";
 }

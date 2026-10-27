@@ -77,6 +77,7 @@ void sb_nv_tests(void);           /* DF: data flash / non-volatile storage */
 void sb_battery_tests(void);      /* BV: supply voltage of the 12 V bank, LOW BATTERY */
 void sb_relay_tests(void);        /* RB: RS485 Modbus relay board (tc_modbus.c + relays.c) */
 void sb_engine_tests(void);       /* ER: engine controls + remote restart (engine.c, section N) */
+void sb_dp_tests(void);           /* DP: thrusters part 1 (thruster.c, CPU1, safe outputs; section P step 9) */
 void sb_generator_tests(void);    /* GN: generator mode (throttle in neutral to charge the bank) */
 void sb_slam_tests(void);         /* only the slamming tests (section H) */
 void sb_set_bridge(bool on);      /* all tests through the USB joystick bridge */

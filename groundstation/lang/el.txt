@@ -67,6 +67,7 @@ alarm.link_lost = ΧΑΘΗΚΕ Η ΣΥΝΔΕΣΗ (ΧΩΡΙΣ ΠΛΗΡΩΜΑ): ST
 alarm.engine_killed = Η ΜΗΧΑΝΗ ΣΒΗΣΤΗΚΕ (επαναφορά στο σκάφος)
 alarm.low_battery = ΧΑΜΗΛΗ ΜΠΑΤΑΡΙΑ (συστοιχία 12 V)
 alarm.relay_silent = ΠΛΑΚΕΤΑ ΡΕΛΕ ΣΙΩΠΗΛΗ
+alarm.dp_heat = ΥΠΕΡΘΕΡΜΑΝΣΗ ΠΡΟΩΣΤΗΡΑ DP
 alarm.no_data = ΚΑΝΕΝΑ ΣΤΟΙΧΕΙΟ ΑΠΟ ΤΟ ΣΚΑΦΟΣ
 
 # --- απαντήσεις σκάφους / gateway σε εντολή (κωδικοί ACK) -----------------------
@@ -1193,6 +1194,7 @@ say.alarm.link_lost = Χάθηκε η σύνδεση, το σκάφος είνα
 say.alarm.engine_killed = Η μηχανή σβήστηκε, πρέπει να γίνει επαναφορά πάνω στο σκάφος
 say.alarm.low_battery = Χαμηλή μπαταρία
 say.alarm.relay_silent = Η πλακέτα ρελέ δεν απαντά
+say.alarm.dp_heat = Ο προωστήρας υπερθερμάνθηκε και σταμάτησε
 say.alarm.no_data = Κανένα στοιχείο από το σκάφος
 
 # --- σκάφη (φάκελος boats), πλήρωμα, προφίλ (CLAUDE.md A, B, D, F) ---
@@ -1356,6 +1358,7 @@ what.geofence_clear = φράχτης: διαγραφή
 what.max_speed = μέγ. ταχύτητα σκέλους {v} kn
 what.boat_gen = αρχείο σκάφους {name}: μέγ. γεννήτριας {v} %
 what.boat_relays = αρχείο σκάφους {name}: πίνακας ρελέ, {n} ρελέ
+what.boat_thrusters = αρχείο σκάφους {name}: προωστήρες DP, πλώρη {bow} %, πρύμνη {stern} %
 result.120 = η διαδρομή βγαίνει από τον φράχτη
 gw.geofence_set = ο φράχτης ορίστηκε: {n} γωνίες
 gw.geofence_cleared = ο φράχτης διαγράφηκε

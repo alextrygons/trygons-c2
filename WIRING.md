@@ -225,6 +225,29 @@ from it: LOW BATTERY is an advisory (no mode change, the power limit stays).
 | Protection | NEVER more than 3.3 V on the pin: the divider must be fitted before the bank is connected; a 3.3 V zener / Schottky clamp to 3.3 V on A2 is cheap insurance; 1 A fuse in the sense wire at the battery end | **TBD** |
 | Starter isolator | battery isolator / split-charge relay rated for the outboard's starter current: the bank stays connected to the electronics while cranking, the starter battery is isolated; type and wiring with the engine dealer | **TBD** (PARTS.md) |
 | Where it shows | screen 2 status panel "Battery", screen 1 bottom line; log field `bank_v`; TELEM2 group L; parameter `batt_low_v` (11.8 V TO CONFIRM, 10..13.5) | done |
+
+### 3C. DP thrusters + the e-stop contactor (CLAUDE.md P) - hardware TBD
+
+Dynamic positioning (DP, Minn Kota style) uses two small electric thrusters on
+the 12 V bank: a **bow TUNNEL thruster** (sideways; + = push the bow to
+starboard) and a **fixed transom electric motor** (fore / aft; + = ahead).
+Both are proportional. Only `app/thruster.c` writes them (clamp to the boat
+file's `max_pct`, rate limit 50 %/s, heat budget `run_s` / `rest_s` per
+thruster, 0 whenever DP is not active); CPU1 trips on any thrust without DP or
+above the cap, and its safe state (`hal_safe_outputs`) sets both to the stop
+pulse in the GTM shadow registers - also with core 0 frozen. FIRST TEST and
+the big boat: never.
+
+| Item | Decision | State |
+|------|----------|-------|
+| Bow thruster | small tunnel thruster, 12 V, bidirectional | **TBD** (PARTS.md) |
+| Transom motor | small fixed electric motor (fore / aft), 12 V | **TBD** (PARTS.md) |
+| Controllers | bidirectional motor controllers with an **RC-style input** (50 Hz pulses: `THR_STOP_US` 1500 us = stop, 1100 / 1900 us = full one way / the other, `THR_SPAN_US`); "no pulses = stop" must be their fail-safe (check the datasheet; a controller that holds the last value is NOT acceptable). A PWM + DIR controller needs a HAL change (TBD) | **TBD** |
+| AURIX pins | GTM TOM0 **ch 12 -> P22.3 (TOUT50)** bow, **ch 13 -> P11.10 (TOUT99)** stern (`PIN_THR_BOW_PWM` / `PIN_THR_STERN_PWM`, `THR_BOW_TOUT` / `THR_STERN_TOUT` in hal/hal_pins.h); 10 kOhm pull-down on each signal like the servos | **TBD** (CHECK on the X1/X2 headers) |
+| Fitted | `HAL_THRUSTERS_FITTED 0` until wired: the TOM channels run at the stop pulse, the pins are never touched / routed | done |
+| E-stop contactor | a **contactor in the thruster power feed** (bank + -> fuse -> contactor -> controllers), its coil through the e-stop's power contact (like the actuator relay in section 11): pressed = no thruster power, whatever the software does; the software also sends 0 within one control step while pressed (sim test DP4) | **TBD** (rating per the thrusters' current; PARTS.md) |
+| Fuses | one fuse per thruster at the bank end, sized per the thruster | **TBD** |
+| Bank load | the thrusters pull the bank down while running: the generator (section K) pauses its voltage judgement while the thrust changes | done (software) |
 ### 3D. RS485 Modbus RTU relay board (CLAUDE.md M) - hardware TBD
 
 An 8-16 channel **Modbus RTU relay board** (with board-timed pulses, e.g. the
@@ -563,8 +586,9 @@ A red **mushroom switch with two normally closed contacts** (twist to release):
 
 1. **Power contact** - in series with the coil of a 30 A automotive relay that
    feeds the **steering motor driver** and the **servo power** (VIN of the G2,
-   the servos' 5-6 V supply). Pressed = the relay drops = no actuator power,
-   whatever the software does. (Engine kill: see section 3.)
+   the servos' 5-6 V supply), and the coil of the **DP thruster contactor**
+   (section 3C). Pressed = the relay / contactor drop = no actuator or
+   thruster power, whatever the software does. (Engine kill: see section 3.)
 2. **Signal contact** - from P33.0 (CHECK) to GND, so the software knows:
    open (high) = pressed, or the wire is broken. 4.7 kOhm to 3.3 V + 100 nF to
    GND at the board.

@@ -437,6 +437,7 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "gen") == 0) { sb_generator_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "rb") == 0) { sb_relay_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "er") == 0) { sb_engine_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "dp") == 0) { sb_dp_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "slam") == 0) { sb_slam_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "timing") == 0) return sb_timing_report();
     if (argc > 2 && strcmp(argv[1], "logtest") == 0) return sb_logtest(argv[2]);

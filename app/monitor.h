@@ -21,8 +21,12 @@
  *     forward limit) - instead of the reverse limit that applies out of
  *     forward gear; the gear pulse not at neutral with gen_active -> trip
  *     (MON_TRIP_GENERATOR). Without gen_active the existing rules apply.
+ *   - DP thrusters (CLAUDE.md P): a thrust output (|bow| or |stern| above
+ *     MON_THR_ZERO_PCT) while core 0 does not say dp_active, or above the
+ *     published cap of that thruster (+ MON_MARGIN_PCT) -> trip
+ *     (MON_TRIP_THRUSTER). The safe state sets both thrusters to 0.
  * Trip: hal_safe_outputs() forces throttle idle + gear neutral + steering
- * motor off + alarm + safety relay open, latched in the HAL until reset
+ * motor off + both thrusters 0 + alarm + safety relay open, latched in the HAL until reset
  * (core 0 can't override it), and g_mon.tripped tells core 0 (-> STANDBY).
  *
  * Kept small and simple on purpose: no floats in loops, no dependencies on
@@ -41,6 +45,7 @@
 #define MON_MARGIN_PCT   1.0f     /* tolerance on the limit */
 #define MON_GEAR_DELTA   20u      /* gear pulse change that counts as "gear moved", us */
 #define MON_TEST_TRIP    0x7E57B3C1u   /* g_mon.test_trip: bench trip test requested */
+#define MON_THR_ZERO_PCT 0.5f     /* a thruster output above this counts as "thrust" */
 
 typedef enum {
     MON_OK = 0,
@@ -49,7 +54,8 @@ typedef enum {
     MON_TRIP_HEARTBEAT,         /* core 0 stopped */
     MON_TRIP_BOOT,              /* core 0 never started its control loop */
     MON_TRIP_TEST,              /* bench trip test (operator request in BENCH TEST) */
-    MON_TRIP_GENERATOR          /* generator mode: gear not in neutral while gen_active */
+    MON_TRIP_GENERATOR,         /* generator mode: gear not in neutral while gen_active */
+    MON_TRIP_THRUSTER           /* DP thrusters: thrust without dp_active, or above the cap */
 } mon_reason_t;
 
 /* Shared memory core 0 -> CPU1 (and the trip flag back). On the TC375
@@ -70,6 +76,9 @@ typedef struct {
     volatile uint32_t test_trip;        /* MON_TEST_TRIP = bench trip test (core 0 -> monitor) */
     volatile uint8_t  gen_active;       /* generator mode runs / stops: throttle above idle in NEUTRAL allowed ... */
     volatile float    gen_cap_pct;      /* ... up to this (never above the forward limit) */
+    volatile uint8_t  dp_active;        /* DP runs: thruster outputs allowed ... */
+    volatile float    thr_bow_pct, thr_stern_pct;   /* thruster outputs sent (-100..100) */
+    volatile float    thr_bow_cap, thr_stern_cap;   /* ... at most these (boat file max_pct; 0 = not fitted) */
 } mon_shared_t;
 
 extern mon_shared_t g_mon;

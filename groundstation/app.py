@@ -78,6 +78,7 @@ F_SMALL = theme.font("small")
 MODE_COLORS = theme.MODE_COLOURS
 PLOT_S = 120.0              # seconds shown in the plot
 RELAY_PUSH_S = 15.0         # the boat file's relay table: no re-send to the AURIX before this (CLAUDE.md M)
+THRUSTER_PUSH_S = 15.0      # the boat file's DP thruster settings: no re-send before this (CLAUDE.md P)
 CRANK_PERIOD_MS = 200       # engine START held: CRANK to the AURIX at 5 Hz (it releases after 300 ms without one)
 LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
 P_MAX_LEG = 4               # parameter "max_leg_kn" (app/link.c): the highest leg speed of a program
@@ -301,6 +302,8 @@ class App:
         self.boat_push_at = 0.0         # no retry before this time
         self.relay_push_at = 0.0        # the relay table (PROTO_T_RELAY_CFG): no re-send before this time
         self.relay_push_seq = None
+        self.thr_push_at = 0.0          # the DP thruster settings (PROTO_T_THRUSTER_CFG): no re-send before this time
+        self.thr_push_seq = None
         self.boatsel = None             # the boat list dialog
         self.boatconf = None            # the boat confirmation dialog
         self.screen_shown = 2           # one monitor: which screen F11 shows (1 driving, 2 navigation)
@@ -1534,6 +1537,7 @@ class App:
         self.boat, self.boat_ok = bt, False
         self.boat_pushed, self.boat_push_seq, self.boat_push_at = False, None, 0.0
         self.relay_push_at, self.relay_push_seq = 0.0, None
+        self.thr_push_at, self.thr_push_seq = 0.0, None
         self.boat_pick = bt
         self.prober.found(bt)                       # the gateway answered: found (screen 2's lamp)
         self.port_var.set(bt.address())
@@ -1968,6 +1972,8 @@ class App:
                         self.boat_pushed, self.boat_push_at = False, time.time() + 5.0   # e.g. left STANDBY: again later
                     if d["seq"] == self.relay_push_seq and not d["ok"]:
                         self.relay_push_at = time.time() + 5.0      # the relay table: again later (STANDBY, CONFIRM ready)
+                    if d["seq"] == self.thr_push_seq and not d["ok"]:
+                        self.thr_push_at = time.time() + 5.0        # the thruster settings: again later (STANDBY)
                     if what is not None or not d["ok"]:
                         txt = "%s: %s" % (i18n.from_en(what) if what else d["cmd_name"], alerts.result_text(d))
                         self.say(txt, GREEN if d["ok"] else RED)
@@ -3515,8 +3521,8 @@ class App:
         """CLAUDE.md L: once this station holds HELM, it pushes the boat file's settings to the AURIX (RAM only):
         the generator cap gen_max_pct = min(file, the AURIX's own ceiling) - a v1 / invalid file pushes 0 =
         generator disabled. PARAM_SET is STANDBY only, so the push waits for STANDBY; a NACK re-arms it (5 s);
-        a boat restart (t_ms back to 0) re-arms it too. The relay table (step 6, PROTO_T_RELAY_CFG) and the
-        thruster settings (step 9) join here when the AURIX takes them. Never from a copilot (it never holds
+        a boat restart (t_ms back to 0) re-arms it too. Then the relay table (relay_push, PROTO_T_RELAY_CFG) and
+        the DP thruster settings (thruster_push, PROTO_T_THRUSTER_CFG). Never from a copilot (it never holds
         HELM); the captain's own setting, so no ACCEPT; single-operator mode = its own confirmation."""
         if self.boat is None or not self.boat_ok or self.link is None:
             return                                  # only a confirmed boat (name + live camera) gets its settings
@@ -3534,6 +3540,33 @@ class App:
                                                 confirm="self" if self.single_op else None)
             return
         self.relay_push(d)
+        self.thruster_push(d)
+
+    def thruster_push(self, d):
+        """CLAUDE.md L / P (step 9): the boat file's DP thruster settings (PROTO_T_THRUSTER_CFG: max_pct, run_s,
+        rest_s per thruster, jog_m, spot_alarm_m). RAM only on the AURIX - after every AURIX restart they are gone
+        (TELEM2 group N "thr_hash" None) and are sent again. The same hash as the file = nothing to send; a
+        different one is sent at most every THRUSTER_PUSH_S (HELM + STANDBY: boat_push; the AURIX refuses it
+        outside STANDBY). No CONFIRM on the boat (thrust only ever comes with DP, which needs its own CONFIRM);
+        a v1 / invalid file pushes "no thrusters". Single-operator mode: the own-confirmation question first,
+        like the relay table."""
+        if "thr_flags" not in d or time.time() < self.thr_push_at:
+            return
+        thr = boats.aurix_settings(self.boat)["thrusters"]
+        payload = proto.p_thruster_cfg(thr)
+        if d.get("thr_hash") == proto.crc16(payload):
+            return
+        self.thr_push_at = time.time() + THRUSTER_PUSH_S
+        what = TE("what.boat_thrusters", name=self.boat.name, bow="%g" % thr["bow"]["max_pct"],
+                  stern="%g" % thr["stern"]["max_pct"])
+        if self.single_op:
+            if self.cconf is None:                  # (one question at a time; asked again after THRUSTER_PUSH_S)
+                self.captain_confirm(what, lambda: self._thr_push_send(payload, what, "self"))
+            return
+        self._thr_push_send(payload, what, None)
+
+    def _thr_push_send(self, payload, what, confirm):
+        self.thr_push_seq = self._send_cmd(proto.T_THRUSTER_CFG, payload, what, confirm=confirm)
 
     def relay_push(self, d):
         """CLAUDE.md M (step 6): the boat file's relay table (PROTO_T_RELAY_CFG). TELEM2 group M carries the

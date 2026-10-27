@@ -61,6 +61,12 @@ void     sim_hal_set_water_speed(bool fitted, float kn);
 
 /* Supply voltage of the 12 V bank (default: measured, 12.6 V). */
 void     sim_hal_set_supply(bool fitted, float volts);
+/* DP thrusters: what hal_set_thrusters got (0 after a trip), what really pushes (0 while the e-stop
+ * contactor is open), calls so far, the bank sag (V per % of |bow| + |stern|, 0.006) */
+void     sim_hal_thrusters(float *bow_pct, float *stern_pct);
+void     sim_hal_thrust_truth(float *bow_pct, float *stern_pct);
+uint32_t sim_hal_thruster_writes(void);
+void     sim_hal_thruster_sag(float v_per_pct);
 
 /* RS485 Modbus relay board (16 coils, address 1): present with a reply
  * latency (default 5 ms), faults; its true states; what it received. The

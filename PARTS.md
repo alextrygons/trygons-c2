@@ -25,6 +25,7 @@ why each part is needed: MANUAL.txt.
 - [ ] ENGINE KILL relay for the UNCREWED lost-link rule (WIRING.md 3A): relay + transistor driver + fuse in the outboard kill-switch circuit - TYPE, PIN AND FAIL-SAFE DIRECTION TBD (decide with the engine dealer). (The remote RESTART clears it in software - no extra part.)
 - [ ] Tacho / rpm input for the remote START (CLAUDE.md N: "engine running" detection, today time limit only) - TBD.
 - [ ] RS485 Modbus RTU relay board, 8-16 channels, 12 V, with board-timed pulses ("flash on"), + a 3.3 V RS485 transceiver module (MAX3485 class), 2 x 120 Ohm termination, twisted pair cable, a fuse per load (WIRING.md 3D) - BOARD, BAUD RATE AND PINS TBD.
+- [ ] DP thrusters (CLAUDE.md P, WIRING.md 3C): a small 12 V bow TUNNEL thruster (sideways) + a small fixed 12 V transom electric motor (fore / aft), each with a bidirectional controller with an RC-style input (1500 us = stop, "no pulses = stop" fail-safe), a fuse per thruster, a contactor in the thruster feed whose coil goes through the e-stop's power contact, 2 x 10 kOhm pull-downs - MODELS, CONTROLLERS, CONTACTOR RATING AND PINS TBD.
 
 ## Gateway (remote access)
 

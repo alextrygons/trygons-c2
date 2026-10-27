@@ -45,6 +45,8 @@ T_GENERATOR = 0x2C         # u8 0 off / 1 on: generator auto (HELM station; a co
 T_RELAY = 0x1E             # u8 n, u8 action (0 off / 1 on / 2 pulse), u16 pulse ms: switch a relay of the table (HELM station)
 T_RELAY_CFG = 0x2F         # u8 count, count x {u8 n, u8 type, u8 group, u8 pair, u16 max_s*10, u8 flags, u8 role}: the boat file's
                            # relay table (HELM station; a different table than the stored one: STANDBY + joystick CONFIRM)
+T_THRUSTER_CFG = 0x1F      # 12 bytes: bow {u8 max_pct, u16 run_s, u16 rest_s}, stern {...}, u8 jog_m*10, u8 spot_alarm_m:
+                           # the boat file's DP thruster settings (HELM station, STANDBY only, RAM only; app/thruster.h)
 T_RESTART = 0x2D           # u8 action: 0 RESTART (clear the ENGINE KILL / software reset after a monitor trip), 1 CRANK
                            # (START held, 5 Hz), 2 RELEASE - HELM station; idle + neutral, e-stop released (app/engine.h)
 T_SIM_JOYSTICK = 0x70   # simulator only
@@ -70,7 +72,9 @@ T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor 
 # after the own confirmation). Never STANDBY. PROG_COMMIT = a new AUTO route (the frames
 # before it only fill the AURIX's staging area; COMMIT makes it the route).
 DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_HEADING_ADJ, T_SEA_STATE,
-                T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR, T_RELAY, T_RELAY_CFG, T_RESTART}
+                T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR, T_RELAY, T_RELAY_CFG, T_RESTART,
+                T_THRUSTER_CFG}
+# (T_THRUSTER_CFG = the DP thruster settings: a copilot's always needs the captain's ACCEPT, like the relay table)
 # (T_RELAY_CFG = the relay table: always the captain's ACCEPT. T_RELAY (CLAUDE.md O): an ENGINE-group relay needs
 #  the captain's ACCEPT from a copilot, a trim / extra relay goes straight - but only when the relay's group is KNOWN
 #  from the table that is active on the AURIX (relay_groups); unknown relay / unknown table = engine = ACCEPT.)
@@ -129,6 +133,7 @@ TYPE_NAMES = {
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data",
     T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table", T_RESTART: "engine restart / start",
+    T_THRUSTER_CFG: "thruster settings",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -218,6 +223,24 @@ def p_relay_cfg(relays):
 def relay_table_hash(relays):
     """What TELEM2 group M "relay_hash" shows for this table (CRC-16 of the frame encoding)."""
     return crc16(p_relay_cfg(relays))
+
+
+def p_thruster_cfg(thrusters):
+    """The DP thruster settings as the AURIX takes them (PROTO_T_THRUSTER_CFG, app/thruster.h): a boats.py
+    "thrusters" dict (bow / stern {max_pct, run_s, rest_s}, jog_m, spot_alarm_m). No / missing block = no thruster."""
+    t = thrusters or {}
+    out = bytearray()
+    for k in ("bow", "stern"):
+        u = t.get(k) or {}
+        out += struct.pack("<BHH", int(round(float(u.get("max_pct", 0)))), int(round(float(u.get("run_s", 0)))),
+                           int(round(float(u.get("rest_s", 0)))))
+    out += struct.pack("<BB", int(round(float(t.get("jog_m", 1.5)) * 10)), int(round(float(t.get("spot_alarm_m", 15)))))
+    return bytes(out)
+
+
+def thruster_cfg_hash(thrusters):
+    """What TELEM2 group N "thr_hash" shows once the AURIX took these settings (CRC-16 of the frame body)."""
+    return crc16(p_thruster_cfg(thrusters))
 
 
 def p_relay(n, action, ms=0):
@@ -315,6 +338,7 @@ ALM_PC_LINK = 0x800
 ALARMS2 = [
     (0x001, "LOW BATTERY"),
     (0x002, "RELAY BOARD SILENT"),
+    (0x004, "DP THRUSTER HOT"),
 ]
 
 
@@ -780,6 +804,8 @@ _T2_GROUPS = [
     (struct.Struct("<IIHBBI"), "relay_states relay_known relay_hash relay_flags relay_count relay_cmd_on".split()),
     (struct.Struct("<BBHHBBHH"), "eng_crank eng_flags eng_hold_ms eng_cool10 eng_action eng_why eng_restarts "
                                  "eng_cranks".split()),
+    (struct.Struct("<BbbBBBBHB"), "thr_flags thr_bow thr_stern thr_heat_b thr_heat_s thr_max_b thr_max_s thr_hash "
+                                  "thr_why".split()),
 ]
 LL_STATES = ["OK", "LINK LOST", "ENGINE KILLED"]
 # engine controls (app/engine.h, TELEM2 group O, log event RESTART)
@@ -885,6 +911,16 @@ def decode_telem2(payload: bytes) -> dict:
         d["eng_tripped"] = bool(f & 16)                 # the safety monitor tripped
         d["eng_crank_name"] = ENG_CRANK_STATES[d["eng_crank"]] if d["eng_crank"] < 3 else "?"
         d["eng_cool_s"] = d["eng_cool10"] / 10.0
+    if "thr_flags" in d:
+        f = d["thr_flags"]
+        d["thr_cfg"] = bool(f & 1)                      # the AURIX has the boat file's thruster settings
+        d["thr_active"] = bool(f & 2)                   # DP thrust allowed now
+        d["thr_hot_bow"] = bool(f & 4)                  # heat budget used up: held at 0 until rested
+        d["thr_hot_stern"] = bool(f & 8)
+        d["thr_fitted_bow"] = bool(f & 16)
+        d["thr_fitted_stern"] = bool(f & 32)
+        if not d["thr_cfg"]:
+            d["thr_hash"] = None                        # nothing taken yet (the station pushes its file)
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

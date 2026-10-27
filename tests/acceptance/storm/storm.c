@@ -441,7 +441,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 39
+#define NINV 40
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -477,7 +477,8 @@ static const char *INV_NAMES[NINV] = { "",
     "I35 every generator stop idle first: no throttle rise while stopping",
     "I36 relays: no control path (mode / throttle / gear / steering / alarms), pair never both, pulse <= 5 s, engine relays never automatic, none in FIRST TEST, no power_up after a watchdog reset",
     "I37 STARTER only with idle + neutral confirmed and the e-stop released, <= 5 s per hold",
-    "I38 the engine-kill / monitor latch is cleared only by a reset or the HELM station's restart under its conditions" };
+    "I38 the engine-kill / monitor latch is cleared only by a reset or the HELM station's restart under its conditions",
+    "I39 DP thrusters 0 outside MODE_DP (step 9: no MODE_DP yet = 0 every step; step 10 adds: within one step of every fault / STANDBY / e-stop)" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -1021,6 +1022,13 @@ static void check_step(void)
         if (s->alarm && !C.alarm_flag_prev && new1 == 0u && new2 != 0u && (new2 & ~SB_ALM2_QUIET) == 0u)
             fail(36, "an advisory (word 2 bits %.0f) set the alarm flag%.0f", (double)new2, 0.0);
         else if (new2) ok(36);
+    }
+    /* I39 (step 9): no MODE_DP exists yet, so both thruster outputs are 0 every step, whatever the storm does */
+    {
+        float tb, ts;
+        sim_hal_thrusters(&tb, &ts);
+        if (tb != 0.0f || ts != 0.0f || s->thrust.active) fail(39, "thrusters %.1f / %.1f %% without MODE_DP", tb, ts);
+        else ok(39);
     }
     C.alarm_flag_prev = s->alarm;
     C.mode_prev = m;

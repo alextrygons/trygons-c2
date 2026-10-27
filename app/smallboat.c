@@ -199,6 +199,7 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     s->boot_ms = s->now_ms;
     hal_set_engine_kill(false);                 /* a reset clears the kill (or the HELM station's restart) */
     engine_init(&s->eng);
+    thruster_init(&s->thrust);                  /* no settings = no thruster fitted (the station pushes them) */
     /* FIRST TEST is always CREWED (steering only, its own arming rule; no lost-link kill) */
     s->profile = cfg->first_test ? SB_PROFILE_CREWED : SB_PROFILE_DETECTING;
     if (nv_load(HAL_NV_SLOT_JOYMAP, &s->jmap, (uint32_t)sizeof s->jmap)) {
@@ -233,6 +234,13 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         if (have && (!relay_table_valid(&t) || !relays_table_fits(&t))) { nv_invalid(HAL_NV_SLOT_RELAYS); have = false; }
         relays_init(&s->relays, have ? &t : NULL, hal_reset_reason(NULL) == HAL_RESET_POWER_ON, cfg->first_test);
     }
+}
+
+sb_result_t sb_thruster_cfg(sb_t *s, const thr_cfg_t *c, uint16_t hash)
+{
+    if (sb_mode(s) != MODE_STANDBY || s->stopping || s->thrust.active) return SB_ERR_STANDBY_ONLY;
+    thruster_cfg_set(&s->thrust, c, hash);
+    return SB_OK;
 }
 
 sb_result_t sb_relay_table(sb_t *s, const relay_table_t *t)
@@ -338,6 +346,7 @@ void sb_alarm_ack(sb_t *s)
     uint32_t keep2 = 0u;                /* the second word, the same rule */
     if (s->batt.low) keep2 |= SB_ALM2_LOW_BATTERY;
     if (relays_silent(&s->relays)) keep2 |= SB_ALM2_RELAY_SILENT;
+    if (thruster_any_hot(&s->thrust)) keep2 |= SB_ALM2_DP_HEAT;
     s->alarm_bits2 &= keep2;
     s->alarm = s->alarm_bits != 0u || (s->alarm_bits2 & ~SB_ALM2_QUIET) != 0u;
     if (!s->ap.sensor_fault) s->ap.alarm = false;
@@ -349,6 +358,13 @@ void sb_test_drive(sb_t *s, bool on, gear_t gear, float throttle_pct)
     s->test_drive.on = on;
     s->test_drive.gear = gear;
     s->test_drive.throttle_pct = throttle_pct;
+}
+
+void sb_test_thrust(sb_t *s, bool on, float bow_pct, float stern_pct)
+{
+    s->test_thrust.on = on;
+    s->test_thrust.bow_pct = bow_pct;
+    s->test_thrust.stern_pct = stern_pct;
 }
 #endif
 
@@ -2539,7 +2555,7 @@ void sb_step(sb_t *s)
                           (s->profile == SB_PROFILE_CREWED && s->joy.off_centre);
         gi.gps_trusted = sb_gps_ok(s);
         gi.sog_kn = s->gps.last.sog_kn;
-        gi.thrust_pct = 0.0f;                           /* thrusters come with DP (section P) */
+        gi.thrust_pct = thruster_load_pct(&s->thrust);  /* DP thruster load (last step): pauses the judgement */
         gi.throttle_out_pct = s->thr.out_pct;
         gi.idle_max_pct = s->cfg.gear.idle_max_pct;
         gi.dt_ms = dt_ms;
@@ -2668,6 +2684,28 @@ void sb_step(sb_t *s)
             sb_request_mode(s, MODE_STANDBY, WHY_GEAR_FAULT);
     }
     hal_set_gear_pwm(s->gear.pwm_us);
+    /* 6a. DP thrusters (section P; thruster.c is their only writer): 0 unless DP
+     *     is active (MODE_DP: step 10) AND allowed - not FIRST TEST, e-stop
+     *     released (its contactor also cuts their power), no monitor trip,
+     *     outputs armed; clamped to the boat file's max_pct, rate limited,
+     *     heat budget per thruster (used up = that one 0 + DP THRUSTER HOT) */
+    {
+        thr_input_t ti;
+        memset(&ti, 0, sizeof ti);
+        ti.dp_active = false;                       /* no MODE_DP yet (step 10) */
+#ifdef SB_TEST_HOOKS
+        if (s->test_thrust.on) {
+            ti.dp_active = true;
+            ti.demand_pct[THR_BOW] = s->test_thrust.bow_pct;
+            ti.demand_pct[THR_STERN] = s->test_thrust.stern_pct;
+        }
+#endif
+        ti.allowed = !s->cfg.first_test && s->estop_state != 2u && !s->mon_tripped && s->armed &&
+                     !hal_outputs_forced();
+        ti.dt_ms = dt_ms;
+        thruster_step(&s->thrust, &ti);
+        if (thruster_any_hot(&s->thrust)) alarm2_on(s, SB_ALM2_DP_HEAT);
+    }
     hal_set_rudder_motor(s->ap.motor_cmd);
     if (s->chirp_ms > 0u) s->chirp_ms = (s->chirp_ms > dt_ms) ? s->chirp_ms - dt_ms : 0u;
     hal_set_alarm(s->alarm || s->ap.alarm || s->chirp_ms > 0u);
@@ -2694,6 +2732,11 @@ void sb_step(sb_t *s)
     g_mon.gear_n_us = s->cfg.gear.pwm_n_us;
     g_mon.gen_active = s->gen.active ? 1u : 0u;     /* throttle above idle in neutral allowed up to the cap */
     g_mon.gen_cap_pct = s->gen.cap_pct;
+    g_mon.dp_active = s->thrust.active ? 1u : 0u;   /* thrust allowed only while DP runs, within the caps */
+    g_mon.thr_bow_pct = s->thrust.out_pct[THR_BOW];
+    g_mon.thr_stern_pct = s->thrust.out_pct[THR_STERN];
+    g_mon.thr_bow_cap = thruster_cap(&s->thrust, THR_BOW);
+    g_mon.thr_stern_cap = thruster_cap(&s->thrust, THR_STERN);
     monitor_write_end(&g_mon);
     if (s->bench.trip_req) g_mon.test_trip = MON_TEST_TRIP;     /* BENCH TEST: trip test (latched) */
     g_mon.heartbeat = g_mon.heartbeat + 1u;

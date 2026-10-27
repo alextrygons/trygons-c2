@@ -49,8 +49,9 @@ struct sbsim {
 static logger_t s_logger;   /* core 2 logger (sim: a separate step) */
 
 /* TELEM2: the tests that read groups L / M from the end of the frame skip the
- * groups appended after them: O (engine controls, 12 bytes) */
-#define T2_O 12u
+ * groups appended after them: O (engine controls, 12 bytes) + N (DP thrusters, T2_N bytes) */
+#define T2_N 10u
+#define T2_O (12u + T2_N)
 
 /* "all --bridge": every test drives the boat through the USB joystick
  * bridge (simulated Teensy frames) instead of the analog joystick. */
@@ -10217,6 +10218,417 @@ static void engine_tests(void)
     sim_hal_relay_board_reset();
 }
 
+/* ------------------------------------------- DP thrusters (CLAUDE.md P, step 9) -- */
+
+/* What the thruster outputs did, measured after every control step. */
+typedef struct {
+    pcsim_t *pc;                /* the USB laptop (NULL = no link) */
+    uint32_t steps;
+    float    max_off;           /* largest |output| while DP is not active */
+    float    max_rise;          /* fastest growth of |output|, %/s */
+    float    max_over;          /* largest |output| - cap */
+    float    prev_b, prev_s;
+    uint32_t hot_on;            /* steps with a HOT thruster's output != 0 */
+    bool     clear_dp;          /* "core 0 forgets dp_active" right after every step (monitor test) */
+} dpw_t;
+
+static void dp_hook(sbsim_t *x, void *ctx)
+{
+    dpw_t *w = (dpw_t *)ctx;
+    if (w->pc) pc_hook(x, w->pc);
+    float b, s;
+    sim_hal_thrusters(&b, &s);
+    const thruster_t *t = &x->sb.thrust;
+    w->steps++;
+    if (!t->active) w->max_off = fmaxf(w->max_off, fmaxf(fabsf(b), fabsf(s)));
+    float rb = (fabsf(b) - fabsf(w->prev_b)) / 0.05f, rs = (fabsf(s) - fabsf(w->prev_s)) / 0.05f;
+    w->max_rise = fmaxf(w->max_rise, fmaxf(rb, rs));
+    w->max_over = fmaxf(w->max_over, fmaxf(fabsf(b) - thruster_cap(t, THR_BOW), fabsf(s) - thruster_cap(t, THR_STERN)));
+    if ((t->hot[THR_BOW] && b != 0.0f) || (t->hot[THR_STERN] && s != 0.0f)) w->hot_on++;
+    w->prev_b = b;
+    w->prev_s = s;
+    if (w->clear_dp) g_mon.dp_active = 0u;
+}
+
+/* PROTO_T_THRUSTER_CFG body */
+static void dp_body(uint8_t *b, uint8_t bmax, uint16_t brun, uint16_t brest, uint8_t smax, uint16_t srun,
+                    uint16_t srest, uint8_t jog10, uint8_t spot)
+{
+    b[0] = bmax; b[1] = (uint8_t)brun; b[2] = (uint8_t)(brun >> 8); b[3] = (uint8_t)brest; b[4] = (uint8_t)(brest >> 8);
+    b[5] = smax; b[6] = (uint8_t)srun; b[7] = (uint8_t)(srun >> 8); b[8] = (uint8_t)srest; b[9] = (uint8_t)(srest >> 8);
+    b[10] = jog10; b[11] = spot;
+}
+
+/* an armed boat in STANDBY, the USB laptop connected (heartbeat), optionally the settings sent */
+static bool dp_setup(pcsim_t *p, uint32_t seed, bool settings, uint8_t bmax, uint16_t brun, uint16_t brest,
+                     uint8_t smax, uint16_t srun, uint16_t srest)
+{
+    pcsim_init(p, seed);
+    p->heartbeat = true;
+    pc_run(p, 2500u);
+    sb_alarm_ack(&p->x.sb);
+    if (!settings) return p->x.sb.armed;
+    uint8_t b[THR_FRAME_BYTES];
+    dp_body(b, bmax, brun, brest, smax, srun, srest, 15u, 15u);
+    return p->x.sb.armed && pc_cmd(p, PROTO_T_THRUSTER_CFG, b, sizeof b) == PROTO_R_OK;
+}
+
+/* one monitor case on its own shared block: true = tripped (reason in *why) */
+static bool dp_mon_case(uint8_t dp, float bow, float stern, float cap_b, float cap_s, mon_reason_t *why)
+{
+    static mon_shared_t sh;
+    mon_t m;
+    memset((void *)&sh, 0, sizeof sh);
+    monitor_init(&m, 0u);
+    sh.running = MON_RUNNING;
+    sh.fwd_limit = 30.0f;
+    sh.rev_limit = 5.0f;
+    sh.idle_max_pct = 1.0f;
+    sh.gear_pwm_us = 1500u;
+    sh.gear_n_us = 1500u;
+    sh.thr_idle_us = 1000u;
+    sh.dp_active = dp;
+    sh.thr_bow_pct = bow;
+    sh.thr_stern_pct = stern;
+    sh.thr_bow_cap = cap_b;
+    sh.thr_stern_cap = cap_s;
+    for (uint32_t t = 0u; t <= 300u; t++) {
+        if (t % 50u == 0u) sh.heartbeat++;
+        (void)monitor_step(&m, &sh, t);
+    }
+    *why = m.reason;
+    sim_hal_unforce();                      /* the case tripped the sim's latch: undo it for the next case */
+    return m.tripped;
+}
+
+static void dp_tests(void)
+{
+    char d[1400];
+    printf("\n=== DP thrusters part 1 (section P, step 9): app/thruster.c, CPU1, safe outputs ===\n");
+
+    /* DP1 settings frame (HELM, STANDBY only, checked values, RAM only, hash in TELEM2 N); thruster.c the
+     * only writer - every step, 0 outside DP; clamp to max_pct, rate limit, a stop is 0 at once */
+    {
+        static pcsim_t p;
+        static dpw_t w;
+        bool armed = dp_setup(&p, 1901u, false, 0u, 0u, 0u, 0u, 0u, 0u);
+        sbsim_t *x = &p.x;
+        memset(&w, 0, sizeof w);
+        w.pc = &p;
+        /* no settings = no thruster fitted: DP asking for full thrust gets nothing */
+        bool none0 = !x->sb.thrust.have_cfg && p.t2_len >= T2_N && (p.t2[p.t2_len - T2_N] & 1u) == 0u;
+        sb_test_thrust(&x->sb, true, 100.0f, 100.0f);
+        sbsim_run(x, x->t + 1000u, dp_hook, &w);
+        float b, s;
+        sim_hal_thrusters(&b, &s);
+        bool unfitted = b == 0.0f && s == 0.0f && x->sb.thrust.active;
+        float ub = b, us = s;
+        sb_test_thrust(&x->sb, false, 0.0f, 0.0f);
+        /* refused frames */
+        uint8_t body[THR_FRAME_BYTES];
+        dp_body(body, 40u, 10u, 20u, 80u, 60u, 60u, 15u, 15u);
+        uint8_t r_len = pc_cmd(&p, PROTO_T_THRUSTER_CFG, body, 11u);
+        uint8_t bad[THR_FRAME_BYTES];
+        int n_bad = 0;
+        dp_body(bad, 101u, 10u, 20u, 80u, 60u, 60u, 15u, 15u); n_bad += pc_cmd(&p, PROTO_T_THRUSTER_CFG, bad, 12u) == PROTO_R_BAD_VALUE;
+        dp_body(bad, 40u, 0u, 20u, 80u, 60u, 60u, 15u, 15u);   n_bad += pc_cmd(&p, PROTO_T_THRUSTER_CFG, bad, 12u) == PROTO_R_BAD_VALUE;
+        dp_body(bad, 40u, 10u, 3601u, 80u, 60u, 60u, 15u, 15u); n_bad += pc_cmd(&p, PROTO_T_THRUSTER_CFG, bad, 12u) == PROTO_R_BAD_VALUE;
+        dp_body(bad, 40u, 10u, 20u, 80u, 60u, 60u, 2u, 15u);   n_bad += pc_cmd(&p, PROTO_T_THRUSTER_CFG, bad, 12u) == PROTO_R_BAD_VALUE;
+        dp_body(bad, 40u, 10u, 20u, 80u, 60u, 60u, 15u, 101u); n_bad += pc_cmd(&p, PROTO_T_THRUSTER_CFG, bad, 12u) == PROTO_R_BAD_VALUE;
+        x->sb.helm = 3u;                                        /* a gateway station holds HELM */
+        uint8_t r_helm = pc_cmd(&p, PROTO_T_THRUSTER_CFG, body, sizeof body);
+        x->sb.helm = SB_HELM_USB;
+        joy_set(0.0f, 0.5f, false, false);                      /* MANUAL, driving ahead */
+        sbsim_run(x, x->t + 3000u, dp_hook, &w);
+        bool manual = sb_mode(&x->sb) == MODE_MANUAL;
+        uint8_t r_mode = pc_cmd(&p, PROTO_T_THRUSTER_CFG, body, sizeof body);
+        bool none1 = !x->sb.thrust.have_cfg;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(x, x->t + 4000u, dp_hook, &w);
+        press(x, HAL_BTN_STANDBY);
+        sbsim_run(x, x->t + 3000u, dp_hook, &w);
+        sb_alarm_ack(&x->sb);
+        /* taken: STANDBY, HELM */
+        uint8_t r_ok = pc_cmd(&p, PROTO_T_THRUSTER_CFG, body, sizeof body);
+        pc_run(&p, 300u);
+        uint16_t want = proto_crc16(body, sizeof body);
+        const uint8_t *n = &p.t2[p.t2_len - T2_N];
+        uint16_t t2_hash = (uint16_t)(n[7] | (n[8] << 8));
+        bool taken = r_ok == PROTO_R_OK && x->sb.thrust.have_cfg && x->sb.thrust.cfg_hash == want && t2_hash == want &&
+                     (n[0] & 0x31u) == 0x31u && n[5] == 40u && n[6] == 80u && fabsf(x->sb.thrust.cfg.jog_m - 1.5f) < 0.01f;
+        /* the only writer: one hal_set_thrusters per control step, 0 the whole time without DP */
+        uint32_t w0 = sim_hal_thruster_writes(), s0 = w.steps;
+        joy_set(0.0f, 0.6f, false, false);
+        sbsim_run(x, x->t + 4000u, dp_hook, &w);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(x, x->t + 4000u, dp_hook, &w);
+        sim_hal_press(HAL_BTN_STANDBY);                         /* (counted: the hook runs every step) */
+        sbsim_run(x, x->t + 3000u, dp_hook, &w);
+        uint32_t writes = sim_hal_thruster_writes() - w0, steps = w.steps - s0;
+        float off = w.max_off;
+        sb_alarm_ack(&x->sb);
+        /* DP "active" (test hook): clamped to 40 / 80 %, rate limited, a reversal through 0 */
+        memset(&w, 0, sizeof w);
+        w.pc = &p;
+        sb_test_thrust(&x->sb, true, 100.0f, -100.0f);
+        uint32_t t0 = x->t, t_cap = 0u;
+        while (x->t < t0 + 4000u) {
+            sbsim_run(x, x->t + 50u, dp_hook, &w);
+            sim_hal_thrusters(&b, &s);
+            if (!t_cap && b >= 40.0f) t_cap = x->t - t0;
+        }
+        sim_hal_thrusters(&b, &s);
+        bool capped = b == 40.0f && s == -80.0f;
+        sb_test_thrust(&x->sb, true, -100.0f, 100.0f);
+        sbsim_run(x, x->t + 4000u, dp_hook, &w);
+        float b2, s2;
+        sim_hal_thrusters(&b2, &s2);
+        bool reversed = b2 == -40.0f && s2 == 80.0f;
+        sb_test_thrust(&x->sb, false, 0.0f, 0.0f);              /* DP ends: 0 within one step */
+        sbsim_run(x, x->t + AP_PERIOD_MS, dp_hook, &w);
+        float b3, s3;
+        sim_hal_thrusters(&b3, &s3);
+        bool stop = b3 == 0.0f && s3 == 0.0f;
+        snprintf(d, sizeof d, "armed %s; no settings: TELEM2 N flag clear %s, DP asks 100 %% -> %.0f / %.0f (not fitted); "
+                 "11 bytes -> %u, %d of 5 bad values refused, not HELM -> %u, MANUAL %s -> %u (nothing taken %s); STANDBY -> %u, "
+                 "hash 0x%04x (TELEM2 0x%04x, want 0x%04x), max %u / %u; %lu writes in %lu steps, max |thrust| without DP %.1f; "
+                 "DP: 40 %% after %lu ms, at the end %.0f / %.0f, reversed %.0f / %.0f, fastest rise %.1f %%/s (limit %.0f), "
+                 "over the cap %.2f, off -> %.0f / %.0f in one step; monitor %s",
+                 armed ? "yes" : "NO", none0 ? "yes" : "NO", ub, us, r_len, n_bad, r_helm, manual ? "yes" : "NO", r_mode,
+                 none1 ? "yes" : "NO", r_ok, x->sb.thrust.cfg_hash, t2_hash, want, n[5], n[6], (unsigned long)writes,
+                 (unsigned long)steps, off, (unsigned long)t_cap, b, s, b2, s2, w.max_rise, THR_RATE_PCT_S, w.max_over,
+                 b3, s3, x->mon.tripped ? monitor_reason_name(x->mon.reason) : "quiet");
+        test_report("DP1 thruster settings (HELM, STANDBY, checked); thruster.c the only writer: every step, 0 outside DP, "
+                    "clamp, rate limit, stop at once",
+                    armed && none0 && unfitted && r_len == PROTO_R_BAD_LENGTH && n_bad == 5 && r_helm == PROTO_R_NOT_HELM &&
+                    manual && r_mode == PROTO_R_STANDBY_ONLY && none1 && taken && writes == steps && steps > 100u &&
+                    off == 0.0f && capped && t_cap >= 750u && t_cap <= 1000u && reversed &&
+                    w.max_rise <= THR_RATE_PCT_S + 0.5f && w.max_over <= 0.0f && stop && !x->mon.tripped, d);
+    }
+
+    /* DP2 CPU1 + hal_safe_outputs: thrust without dp_active / above the cap trips the monitor; a trip sets
+     * both thrusters to 0 at once and keeps them there (latched); a reset forgets the settings (RAM only) */
+    {
+        mon_reason_t why[8];
+        bool c1 = dp_mon_case(0u, 10.0f, 0.0f, 40.0f, 80.0f, &why[0]);        /* thrust without DP */
+        bool c2 = dp_mon_case(1u, 30.0f, -70.0f, 40.0f, 80.0f, &why[1]);      /* inside the caps: fine */
+        bool c3 = dp_mon_case(1u, 45.0f, 0.0f, 40.0f, 80.0f, &why[2]);        /* above the bow cap */
+        bool c4 = dp_mon_case(1u, 0.0f, -85.0f, 40.0f, 80.0f, &why[3]);       /* above the stern cap (astern) */
+        bool c5 = dp_mon_case(1u, NAN, 0.0f, 40.0f, 80.0f, &why[4]);          /* a broken value */
+        bool c6 = dp_mon_case(0u, 0.3f, -0.3f, 0.0f, 0.0f, &why[5]);          /* below the "thrust" threshold */
+        bool c7 = dp_mon_case(1u, 5.0f, 0.0f, 0.0f, 0.0f, &why[6]);           /* not fitted (cap 0) */
+        bool mon_ok = c1 && why[0] == MON_TRIP_THRUSTER && !c2 && c3 && why[2] == MON_TRIP_THRUSTER && c4 &&
+                      why[3] == MON_TRIP_THRUSTER && c5 && why[4] == MON_TRIP_THRUSTER && !c6 && c7;
+        /* the big boat publishes no thrust */
+        static mon_shared_t bb;
+        memset((void *)&bb, 0, sizeof bb);
+        bb.thr_bow_pct = 50.0f; bb.dp_active = 1u; bb.thr_stern_cap = 9.0f;
+        monitor_publish_steering_only(&bb, 1000u, 1500u);
+        bool big = bb.dp_active == 0u && bb.thr_bow_pct == 0.0f && bb.thr_stern_pct == 0.0f && bb.thr_bow_cap == 0.0f &&
+                   bb.thr_stern_cap == 0.0f;
+        /* core 0 thrusting "forgets" dp_active (the shared block right after every step): trip */
+        static pcsim_t p;
+        static dpw_t w;
+        bool set1 = dp_setup(&p, 1902u, true, 60u, 120u, 120u, 60u, 120u, 120u);
+        sbsim_t *x = &p.x;
+        memset(&w, 0, sizeof w);
+        w.pc = &p;
+        sb_test_thrust(&x->sb, true, 40.0f, 40.0f);
+        sbsim_run(x, x->t + 2000u, dp_hook, &w);
+        bool running = !x->mon.tripped;
+        uint32_t t0 = x->t;
+        w.clear_dp = true;
+        while (!x->mon.tripped && x->t < t0 + 1000u) sbsim_run(x, x->t + 10u, dp_hook, &w);
+        uint32_t t_forget = x->t - t0;
+        float b, s;
+        sim_hal_thrusters(&b, &s);
+        bool forget = x->mon.tripped && x->mon.reason == MON_TRIP_THRUSTER && b == 0.0f && s == 0.0f;
+        /* core 0 frozen while thrusting: heartbeat trip, both 0 (hal_safe_outputs), latched afterwards */
+        bool set2 = dp_setup(&p, 1903u, true, 60u, 120u, 120u, 60u, 120u, 120u);
+        memset(&w, 0, sizeof w);
+        w.pc = &p;
+        sb_test_thrust(&x->sb, true, 50.0f, -50.0f);
+        sbsim_run(x, x->t + 2500u, dp_hook, &w);
+        sim_hal_thrusters(&b, &s);
+        bool thrusting = b == 50.0f && s == -50.0f;
+        x->wdt_ms = 0u;                                         /* (no watchdog reset: the monitor must do it) */
+        x->frozen = true;
+        t0 = x->t;
+        float b_mid = 0.0f, s_mid = 0.0f;
+        while (!x->mon.tripped && x->t < t0 + 1000u) sbsim_run(x, x->t + 10u, NULL, NULL);
+        uint32_t t_trip = x->t - t0;
+        sim_hal_thrusters(&b_mid, &s_mid);
+        x->frozen = false;                                      /* core 0 back, still asking for thrust */
+        sbsim_run(x, x->t + 2000u, dp_hook, &w);
+        sim_hal_thrusters(&b, &s);
+        bool latched = x->mon.tripped && x->mon.reason == MON_TRIP_HEARTBEAT && b_mid == 0.0f && s_mid == 0.0f &&
+                       b == 0.0f && s == 0.0f && !x->sb.thrust.active && x->sb.mon_tripped && hal_outputs_forced();
+        /* a chip reset (watchdog): the settings are gone (RAM only), the thrusters 0 */
+        x->wdt_ms = 100u;
+        x->frozen = true;
+        uint32_t resets0 = x->resets;
+        sbsim_run(x, x->t + 600u, NULL, NULL);
+        x->frozen = false;
+        sbsim_run(x, x->t + 1500u, NULL, NULL);
+        sim_hal_thrusters(&b, &s);
+        bool reset = x->resets > resets0 && !x->sb.thrust.have_cfg && b == 0.0f && s == 0.0f;
+        sb_test_thrust(&x->sb, false, 0.0f, 0.0f);
+        snprintf(d, sizeof d, "monitor cases: no DP + 10 %% %s (%s), inside the caps %s, bow 45 > 40 %s, stern -85 > 80 %s, "
+                 "NaN %s, 0.3 %% %s, cap 0 %s; big boat publishes 0 %s; core 0 forgets dp_active (set up %s, running %s): "
+                 "trip after %lu ms %s; frozen core 0 while thrusting (set up %s, %s): trip after %lu ms, at the trip %.0f / %.0f, "
+                 "core 0 back asking for thrust -> %.0f / %.0f latched %s; watchdog reset: settings gone + 0 %s",
+                 c1 ? "trip" : "NO TRIP", monitor_reason_name(why[0]), c2 ? "TRIP" : "ok", c3 ? "trip" : "NO TRIP",
+                 c4 ? "trip" : "NO TRIP", c5 ? "trip" : "NO TRIP", c6 ? "TRIP" : "ok", c7 ? "trip" : "NO TRIP",
+                 big ? "yes" : "NO", set1 ? "yes" : "NO", running ? "yes" : "NO", (unsigned long)t_forget,
+                 forget ? "ok" : "FAILED", set2 ? "yes" : "NO", thrusting ? "50 / -50" : "NOT THRUSTING",
+                 (unsigned long)t_trip, b_mid, s_mid, b, s, latched ? "yes" : "NO", reset ? "yes" : "NO");
+        test_report("DP2 CPU1: thrust without DP / above the cap -> trip; hal_safe_outputs sets both thrusters 0 (latched); "
+                    "settings RAM only",
+                    mon_ok && big && set1 && running && forget && t_forget <= 100u && set2 && thrusting &&
+                    t_trip <= MON_HB_MS + 60u && latched && reset, d);
+    }
+
+    /* DP3 heat budget per thruster (run_s / rest_s): used up -> that thruster 0 + DP THRUSTER HOT (an alarm,
+     * kept by the ACK while hot), the other runs on; rested -> runs again. The simulated boat: the bow
+     * thruster sways + turns it, the stern motor drives it ahead, the bank sags with the thrust */
+    {
+        static pcsim_t p;
+        static dpw_t w;
+        bool set = dp_setup(&p, 1904u, true, 50u, 10u, 20u, 50u, 60u, 30u);
+        sbsim_t *x = &p.x;
+        memset(&w, 0, sizeof w);
+        w.pc = &p;
+        float v0 = 0.0f;
+        (void)hal_read_supply_voltage(&v0);
+        double n0 = x->w.north_m, e0 = x->w.east_m;
+        float h0 = x->w.heading_deg;
+        sb_mode_t m0 = sb_mode(&x->sb);
+        sb_test_thrust(&x->sb, true, 50.0f, 50.0f);
+        sbsim_run(x, x->t + 8000u, dp_hook, &w);
+        float v1 = 0.0f;
+        (void)hal_read_supply_voltage(&v1);
+        float turned = x->w.heading_deg - h0;
+        if (turned < -180.0f) turned += 360.0f;
+        /* the boat (heading 90 = east): ahead = east, to starboard = south */
+        double ahead = x->w.east_m - e0, starboard = -(x->w.north_m - n0);
+        float sway = x->w.sway_ms, kn = x->w.speed_kn;
+        bool cool8 = !x->sb.thrust.hot[THR_BOW] && (x->sb.alarm_bits2 & SB_ALM2_DP_HEAT) == 0u;
+        uint32_t t0 = x->t, t_hot = 0u;
+        while (x->t < t0 + 5000u && !t_hot) {
+            sbsim_run(x, x->t + 50u, dp_hook, &w);
+            if (x->sb.thrust.hot[THR_BOW]) t_hot = x->t - t0 + 8000u;
+        }
+        float b, s;
+        sim_hal_thrusters(&b, &s);
+        float hb = b, hs = s;
+        bool hot = t_hot >= 9800u && t_hot <= 10600u && b == 0.0f && s == 50.0f && (x->sb.alarm_bits2 & SB_ALM2_DP_HEAT) &&
+                   x->sb.alarm && sim_hal_alarm() && sb_mode(&x->sb) == m0;
+        sb_alarm_ack(&x->sb);
+        bool kept = (x->sb.alarm_bits2 & SB_ALM2_DP_HEAT) != 0u;
+        /* rest: 20 s (budget 10 s used, cooled at 10 / 20 s per s) */
+        t0 = x->t;
+        uint32_t t_cool = 0u;
+        while (x->t < t0 + 25000u && !t_cool) {
+            sbsim_run(x, x->t + 50u, dp_hook, &w);
+            if (!x->sb.thrust.hot[THR_BOW]) t_cool = x->t - t0;
+        }
+        sbsim_run(x, x->t + 2000u, dp_hook, &w);
+        sim_hal_thrusters(&b, &s);
+        bool again = t_cool >= 19500u && t_cool <= 20500u && b == 50.0f;
+        sb_alarm_ack(&x->sb);
+        bool cleared = (x->sb.alarm_bits2 & SB_ALM2_DP_HEAT) == 0u;
+        uint8_t heat_s = (uint8_t)(thruster_heat(&x->sb.thrust, THR_STERN) * 100.0f + 0.5f);
+        sb_test_thrust(&x->sb, false, 0.0f, 0.0f);
+        snprintf(d, sizeof d, "set up %s; 8 s at 50 / 50 %%: turned %+.1f deg, %.1f m to starboard (sway %.2f m/s), %.1f m ahead "
+                 "(%.2f kn), bank %.2f -> %.2f V, not hot yet %s; bow HOT after %lu ms (budget 10 s): outputs %.0f / %.0f, "
+                 "alarm DP HEAT + buzzer, mode unchanged %s; ACK while hot keeps it %s; cooled after %lu ms (rest 20 s), "
+                 "bow at %.0f %% again %s; ACK then clears it %s; stern budget used %u %% (60 s); HOT outputs not 0: %lu steps",
+                 set ? "yes" : "NO", turned, starboard, sway, ahead, kn, v0, v1, cool8 ? "yes" : "NO", (unsigned long)t_hot,
+                 hb, hs, hot ? "yes" : "NO", kept ? "yes" : "NO", (unsigned long)t_cool, b, again ? "yes" : "NO",
+                 cleared ? "yes" : "NO", heat_s, (unsigned long)w.hot_on);
+        test_report("DP3 heat budget per thruster: used up -> 0 + DP THRUSTER HOT (alarm), rested -> again; the sim boat "
+                    "sways / turns / moves ahead, the bank sags",
+                    set && turned > 8.0f && starboard > 0.5 && sway > 0.1f && ahead > 1.0 && kn > 0.5f &&
+                    v0 - v1 > 0.5f && cool8 && hot && kept && again && cleared && w.hot_on == 0u && !x->mon.tripped, d);
+    }
+
+    /* DP4 the e-stop (its contactor cuts the thruster power AND the software sends 0 within one step, while
+     * pressed), FIRST TEST (never), outputs not armed (never) */
+    {
+        static pcsim_t p;
+        static dpw_t w;
+        bool set = dp_setup(&p, 1905u, true, 60u, 120u, 120u, 60u, 120u, 120u);
+        sbsim_t *x = &p.x;
+        memset(&w, 0, sizeof w);
+        w.pc = &p;
+        sb_test_thrust(&x->sb, true, 60.0f, -60.0f);
+        sbsim_run(x, x->t + 3000u, dp_hook, &w);
+        float b, s, tb, ts;
+        sim_hal_thrusters(&b, &s);
+        bool run = b == 60.0f && s == -60.0f;
+        sim_hal_set_estop(true, true);
+        sim_hal_thrust_truth(&tb, &ts);                         /* the contactor: at once, before any software */
+        sbsim_run(x, x->t + AP_PERIOD_MS, dp_hook, &w);
+        float b1, s1;
+        sim_hal_thrusters(&b1, &s1);
+        sbsim_run(x, x->t + 3000u, dp_hook, &w);
+        float b2, s2;
+        sim_hal_thrusters(&b2, &s2);
+        uint8_t why_es = x->sb.thrust.why;
+        bool es = tb == 0.0f && ts == 0.0f && b1 == 0.0f && s1 == 0.0f && b2 == 0.0f && s2 == 0.0f &&
+                  x->sb.thrust.why == THR_WHY_BLOCKED && (x->sb.alarm_bits & SB_ALM_ESTOP);
+        sim_hal_set_estop(true, false);
+        sbsim_run(x, x->t + 500u, dp_hook, &w);
+        sb_test_thrust(&x->sb, false, 0.0f, 0.0f);
+        sim_hal_set_estop(false, false);
+        /* FIRST TEST: never, whatever DP asks */
+        sb_config_t c;
+        sb_default_config(&c);
+        c.first_test = true;
+        static sbsim_t y;
+        static dpw_t v;
+        sbsim_init(&y, 1906u, 90.0f, 0.0f, &c);
+        sbsim_run(&y, 2500u, NULL, NULL);
+        thr_cfg_t tc;
+        uint8_t body[THR_FRAME_BYTES];
+        dp_body(body, 100u, 600u, 600u, 100u, 600u, 600u, 15u, 15u);
+        bool dec = thruster_cfg_decode(body, sizeof body, &tc);
+        sb_result_t fr = sb_thruster_cfg(&y.sb, &tc, 1u);
+        memset(&v, 0, sizeof v);
+        sb_test_thrust(&y.sb, true, 100.0f, 100.0f);
+        sbsim_run(&y, y.t + 3000u, dp_hook, &v);
+        float ft_max = v.max_off;
+        bool ft = dec && fr == SB_OK && v.max_off == 0.0f && !y.sb.thrust.active && y.sb.thrust.why == THR_WHY_BLOCKED &&
+                  !y.mon.tripped;
+        sb_test_thrust(&y.sb, false, 0.0f, 0.0f);
+        /* not armed (the joystick held at power-up): never */
+        sbsim_init(&y, 1907u, 90.0f, 0.0f, NULL);
+        joy_set(0.0f, 0.6f, false, false);
+        sbsim_run(&y, 2500u, NULL, NULL);
+        bool unarmed = !y.sb.armed;
+        (void)sb_thruster_cfg(&y.sb, &tc, 1u);
+        memset(&v, 0, sizeof v);
+        sb_test_thrust(&y.sb, true, 100.0f, 100.0f);
+        sbsim_run(&y, y.t + 2000u, dp_hook, &v);
+        bool na = unarmed && v.max_off == 0.0f && !y.sb.thrust.active;
+        sb_test_thrust(&y.sb, false, 0.0f, 0.0f);
+        joy_set(0.0f, 0.0f, false, false);
+        snprintf(d, sizeof d, "set up %s, thrusting 60 / -60 %s; e-stop: contactor %.0f / %.0f at once, software %.0f / %.0f "
+                 "after one step, %.0f / %.0f after 3 s (why %u, alarm EMERGENCY STOP) %s; FIRST TEST (settings %s / %d): "
+                 "max %.1f %% %s; not armed %s: max %.1f %% %s",
+                 set ? "yes" : "NO", run ? "yes" : "NO", tb, ts, b1, s1, b2, s2, why_es, es ? "ok" : "FAILED",
+                 dec ? "ok" : "BAD", (int)fr, ft_max, ft ? "ok" : "FAILED", unarmed ? "yes" : "NO", v.max_off,
+                 na ? "ok" : "FAILED");
+        test_report("DP4 e-stop: thrusters 0 (contactor + software within one step); never in FIRST TEST or not armed",
+                    set && run && es && ft && na, d);
+    }
+}
+
+void sb_dp_tests(void)
+{
+    dp_tests();
+}
+
 void sb_engine_tests(void)
 {
     engine_tests();
@@ -10239,6 +10651,7 @@ void sb_generator_tests(void)
 
 void sb_tests(void)
 {
+    dp_tests();
     generator_tests();
     relay_tests();
     engine_tests();

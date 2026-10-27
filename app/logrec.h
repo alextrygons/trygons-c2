@@ -76,7 +76,9 @@ typedef enum {
     EV_RESTART = 27,    /* engine controls / remote restart (section N): action (1 kill cleared, 2 reset after a trip
                            coming, 3 crank start, 4 crank stop, 5 restart refused, 6 crank refused, 7 reset cancelled),
                            why (engine.h eng_why_t), hold ms, restarts | cranks << 16 */
-    EV_COUNT            /* reserved next: 28 DP (CLAUDE.md P) */
+    EV_DP = 28,         /* DP (section P; step 9: the thrusters): what (1 settings taken, 2 thruster HOT, 3 cooled
+                           down), unit (0 bow 1 stern), bow max % | stern max % << 8, heat used % | settings hash << 8 */
+    EV_COUNT
 } log_event_t;
 
 /* Build one record (with sync / len / crc) into out; returns its length. */

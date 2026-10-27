@@ -78,6 +78,7 @@
 #include "relays.h"
 #include "servo.h"
 #include "throttle.h"
+#include "thruster.h"
 
 #define SB_LIMIT_N 4        /* points in the steering-limit-by-speed table */
 
@@ -123,6 +124,9 @@
 #define SB_ALM2_RELAY_SILENT      0x02u   /* RELAY BOARD SILENT: the Modbus relay board gave no valid reply for
                                              HAL_RELAY_LOST_MS while a table with relays is loaded (advisory:
                                              relay states unknown, no new relay command; nothing else changes) */
+#define SB_ALM2_DP_HEAT           0x04u   /* DP THRUSTER HOT: a thruster used its heat budget (boat file run_s): held at
+                                             0 until it rested (rest_s). An ordinary alarm (buzzer, power limit down);
+                                             it never changes the mode by itself (step 10 decides what DP does) */
 /* advisories of the second word: never a mode change, never lower the power limit */
 #define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY | SB_ALM2_RELAY_SILENT)
 /* ... and of those the ones that never set sb alarm either (no buzzer, no power-raise block; step 7b).
@@ -562,6 +566,7 @@ typedef struct {
     gen_t       gen;           /* generator mode: throttle in NEUTRAL to charge the bank (captain-enabled) */
     relays_t    relays;        /* RS485 Modbus relay board: table (NV slot 7), interlocks, time limits (relays.c) */
     engine_t    eng;           /* remote restart + hold-to-crank (section N, engine.c) */
+    thruster_t  thrust;        /* DP thrusters (section P, thruster.c): settings from the boat file, heat budget */
     sb_gw_t     gw;            /* gateway (Raspberry Pi) link status */
     uint8_t     helm;          /* HELM holder: SB_HELM_NONE / SB_HELM_USB / gateway station id */
     bool        helm_local;    /* the holder is on the boat (USB or boat LAN) */
@@ -658,6 +663,8 @@ typedef struct {
 
     /* sim tests only: raw gear/throttle demand in the driving modes */
     struct { bool on; gear_t gear; float throttle_pct; } test_drive;
+    /* sim tests only (step 9, before MODE_DP): DP "active" with a raw thrust demand */
+    struct { bool on; float bow_pct, stern_pct; } test_thrust;
 } sb_t;
 
 void sb_default_config(sb_config_t *cfg);
@@ -713,6 +720,9 @@ float sb_steer_limit_for(const sb_config_t *cfg, float sog_kn);
 #if !defined(__TASKING__) && !defined(__tricore__)
 #define SB_TEST_HOOKS 1
 void sb_test_drive(sb_t *s, bool on, gear_t gear, float throttle_pct);
+/* DP active with this thrust demand (MODE_DP comes with step 10); the
+ * thruster rules (allowed, clamp, rate, heat budget) still apply */
+void sb_test_thrust(sb_t *s, bool on, float bow_pct, float stern_pct);
 #endif
 
 /* Status for displays (e.g. the ground station). */
@@ -811,6 +821,11 @@ sb_result_t sb_relay_cmd(sb_t *s, uint8_t n, uint8_t action, uint16_t ms);
  * SB_ERR_PRECOND idle / neutral / nothing to restart / no STARTER / killed /
  * tripped, SB_ERR_REFUSED e-stop / cool-down / relay board (eng.last_why). */
 sb_result_t sb_restart(sb_t *s, uint8_t station, uint8_t action);
+/* DP thruster settings from the boat file (PROTO_T_THRUSTER_CFG, the HELM station; section P): RAM
+ * only, STANDBY (not stopping) only - SB_ERR_STANDBY_ONLY otherwise. hash = CRC-16 of the frame body
+ * (TELEM2 group N: the station compares its file). The AURIX keeps its own ceiling (THR_CEILING_PCT). */
+sb_result_t sb_thruster_cfg(sb_t *s, const thr_cfg_t *c, uint16_t hash);
+
 /* the restart conditions are met now (idle + neutral confirmed, e-stop released, not FIRST TEST) */
 bool sb_restart_ready(const sb_t *s);
 

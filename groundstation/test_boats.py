@@ -297,6 +297,7 @@ def b4_app_end_to_end():
                s1 and s2 and embedded, "screen 1 %s, screen 2 %s, the map fills screen 2 %s" % (s1, s2, embedded))
         b8_push(ap, pump, pushed_before_helm)
         b9_relay_push(ap, pump, sim)
+        b10_thruster_push(ap, pump)
         b6_dropdown(ap, pump, good)
     finally:
         ap.quit()
@@ -385,6 +386,41 @@ def b9_relay_push(ap, pump, sim):
            "(not active yet %s); after CONFIRM active, hash %s = file %s: %s; no re-send %s" % (
                empty, nothing_for_empty, skip_confirm, asked, pending, not active_before, t2().get("relay_hash"), want,
                active, no_resend))
+
+
+def b10_thruster_push(ap, pump):
+    """CLAUDE.md L / P (step 9): the boat file's DP thruster settings reach the AURIX (PROTO_T_THRUSTER_CFG, RAM
+    only) once HELM is held in STANDBY - a file without thrusters = "no thrusters"; TELEM2 group N shows the hash
+    of what the AURIX took (= the file's); a changed file is sent again, the same settings never; nothing outside
+    STANDBY; a copilot's settings need the captain's ACCEPT (driving command)."""
+    import proto
+    t2 = lambda: ap.link.t2 if ap.link is not None else {}
+    none_hash = proto.thruster_cfg_hash(boats.aurix_settings(ap.boat)["thrusters"])
+    first = pump(8, lambda: t2().get("thr_cfg") and t2().get("thr_hash") == none_hash)
+    unfitted = not t2().get("thr_fitted_bow") and not t2().get("thr_fitted_stern")
+    ap.boat.thrusters = boats._parse_thrusters({"bow": {"max_pct": 60, "run_s": 90, "rest_s": 120},
+                                                "stern": {"max_pct": 80, "run_s": 120, "rest_s": 60},
+                                                "jog_m": 2.0, "spot_alarm_m": 20})
+    want = proto.thruster_cfg_hash(ap.boat.thrusters)
+    # outside STANDBY: nothing sent (the AURIX takes it only in STANDBY)
+    seq0 = ap.thr_push_seq
+    ap.thr_push_at = 0.0
+    ap.boat_push(dict(ap.t, mode_name="MANUAL"))
+    held = ap.thr_push_seq == seq0
+    ap.thr_push_at = 0.0
+    taken = pump(8, lambda: t2().get("thr_hash") == want and t2().get("thr_max_b") == 60 and
+                 t2().get("thr_max_s") == 80 and t2().get("thr_fitted_bow") and t2().get("thr_fitted_stern"))
+    seq1 = ap.thr_push_seq
+    ap.thr_push_at = 0.0
+    pump(2.0)
+    no_resend = ap.thr_push_seq == seq1
+    accept = proto.is_driving_cmd(proto.T_THRUSTER_CFG, proto.p_thruster_cfg(ap.boat.thrusters))
+    report("B10 boat file DP thrusters -> AURIX: sent with HELM in STANDBY (none = \"no thrusters\"), TELEM2 N hash "
+           "= the file's, a change sent again, the same never; nothing outside STANDBY; copilot = captain's ACCEPT",
+           first and unfitted and held and taken and no_resend and accept,
+           "no thrusters in the file -> taken %s (hash 0x%04x, unfitted %s); MANUAL: nothing sent %s; 60 / 80 %% -> "
+           "taken %s (TELEM2 hash %s, want 0x%04x); no re-send %s; driving command %s" % (
+               first, none_hash, unfitted, held, taken, t2().get("thr_hash"), want, no_resend, accept))
 
 
 def b6_dropdown(ap, pump, good):

@@ -55,8 +55,16 @@ typedef struct {
     gear_t hand_gear;
     float hand_throttle;        /* % */
 
+    /* DP thrusters (CLAUDE.md P): full thrust (100 %) gives, at rest, ... */
+    float bow_sway_ms;          /* ... this sideways speed from the bow tunnel thruster (0.5 m/s) */
+    float bow_yaw_dps;          /* ... and this yaw rate (it pushes at the bow: 6 deg/s) */
+    float stern_kn;             /* ... this speed ahead / astern from the transom motor (2.5 kn) */
+    float thr_tau_s;            /* their response time (3 s) */
+
     /* state */
     float heading_deg, yaw_dps, wave_filt;
+    float sway_ms;              /* sideways speed through water, + = to starboard */
+    float thr_yaw_dps;          /* yaw rate part from the bow thruster */
     float speed_kn;             /* through water, + forward */
     double north_m, east_m;
     rudder_actuator_t rud;

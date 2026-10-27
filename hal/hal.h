@@ -197,6 +197,18 @@ void hal_nv_service(bool allowed);
 bool hal_nv_pending(void);
 bool hal_nv_ok(void);
 
+/*
+ * DP thrusters (CLAUDE.md section P): a bow TUNNEL thruster (bow_pct: + =
+ * push the bow to starboard) and a fixed transom electric motor (stern_pct:
+ * + = ahead), -100..100 % (clamped by the HAL; NaN = 0). ONLY app/thruster.c
+ * calls this, once per control step (clamp, rate limit, heat budget, 0
+ * outside DP; the build check greps for it). Board: RC-style pulses to
+ * bidirectional controllers on GTM TOM0 (1500 us = stop, shadow registers
+ * like the servos; pins / controllers TBD, HAL_THRUSTERS_FITTED 0 = no pulses
+ * = stopped). The e-stop contactor cuts the thruster power in hardware. After
+ * hal_safe_outputs both stay at 0 (latched). The big boat never calls it. */
+void hal_set_thrusters(float bow_pct, float stern_pct);
+
 /* Optional speed sensor (paddlewheel): speed through water, kn.
  * Returns false if not fitted. */
 bool hal_read_water_speed(float *kn);
@@ -255,7 +267,7 @@ uint32_t hal_gw_tx_free(void);
 /* ---- Hardening ----------------------------------------------------------- */
 
 /* Safety monitor (CPU1) trip: throttle servo to idle_us, gear servo to
- * neutral_us, steering motor off, alarm on, safety relay open. LATCHED
+ * neutral_us, steering motor off, both DP thrusters 0, alarm on, safety relay open. LATCHED
  * until reset: after this the normal output functions can't change these
  * outputs any more (core 0 can't override the monitor). */
 void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us);

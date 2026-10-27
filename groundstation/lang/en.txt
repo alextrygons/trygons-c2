@@ -64,6 +64,7 @@ alarm.link_lost = LINK LOST (UNCREWED): STANDBY
 alarm.engine_killed = ENGINE KILLED (reset on board)
 alarm.low_battery = LOW BATTERY (12 V bank)
 alarm.relay_silent = RELAY BOARD SILENT
+alarm.dp_heat = DP THRUSTER HOT
 alarm.no_data = NO DATA FROM THE BOAT
 
 # --- answers of the boat / gateway to a command (ACK result codes) ----------
@@ -1189,6 +1190,7 @@ say.alarm.link_lost = Link lost, the boat is in standby
 say.alarm.engine_killed = The engine was killed, it must be reset on board
 say.alarm.low_battery = Low battery
 say.alarm.relay_silent = Relay board silent
+say.alarm.dp_heat = A thruster is hot and has stopped
 say.alarm.no_data = No data from the boat
 
 # --- boats (boats/ folder), crew, profile (CLAUDE.md A, B, D, F) ---
@@ -1352,6 +1354,7 @@ what.geofence_clear = geofence: clear
 what.max_speed = max leg speed {v} kn
 what.boat_gen = boat file {name}: generator max {v} %
 what.boat_relays = boat file {name}: relay table, {n} relays
+what.boat_thrusters = boat file {name}: DP thrusters, bow {bow} %, stern {stern} %
 result.120 = the route leaves the geofence
 gw.geofence_set = geofence set: {n} corners
 gw.geofence_cleared = geofence cleared
