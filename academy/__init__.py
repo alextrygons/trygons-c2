@@ -8,8 +8,10 @@ simulator (autopilot_sim server, the demo) or recorded files - never a real-boat
                name) or a recorded file (test_academy.py AC1-AC7 prove it)
   banner.py    the banner «ΕΚΠΑΙΔΕΥΣΗ – ΠΡΟΣΟΜΟΙΩΣΗ» every academy screen shows
   text.py      screen texts from lang/el.txt (default) + lang/en.txt
-  accounts.py  levels OBSERVER -> DRIVER -> CAPTAIN (step 15: the model only; storage + the
-               gateway push = step 16)
+  accounts.py  levels OBSERVER -> DRIVER -> CAPTAIN, accounts + logbook on the shore PC, the
+               instructor view, the SIGNED levels file for the gateway, backup (step 16)
+  academy_app.py  the academy window (started by the ground station's menu Academy in its own
+               process, or alone)
   content.py   loads + checks the commented content files under content/
 
 The PRACTICAL TEST (spec G, step 21) is the one exception: it will live in academy/practical/

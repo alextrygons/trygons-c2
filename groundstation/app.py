@@ -46,6 +46,7 @@ import theme
 import alerts
 import boats
 import crewui
+import academymenu
 import monitors
 import overlay
 from i18n import T, TE
@@ -428,6 +429,7 @@ class App:
         wm.add_command(label=T("menu.swap"), command=self.swap_screens)
         mb.add_cascade(label=T("menu.windows"), menu=wm)
         mb.add_cascade(label=T("menu.tools"), menu=self.tools_menu(mb))
+        academymenu.add_menu(self, mb)          # Academy: its own window (simulator only) + the levels file
         vm = tk.Menu(mb, tearoff=0)
         vm.add_command(label=T("menu.theme_dark") if theme.name() == "light" else T("menu.theme_light"),
                        command=theme.toggle)
@@ -2066,6 +2068,8 @@ class App:
                     self.event(T("cap.ev_proposal", text=i18n.from_en(d.get("text", ""))))
                 elif kind == "geofence_ack":
                     self.on_fence_ack(d)
+                elif kind == "academy_levels_ack":
+                    academymenu.on_ack(self, d)
                 elif kind == "driver_ask":
                     self.on_driver_ask(d)
                 elif kind == "driver_ask_done":

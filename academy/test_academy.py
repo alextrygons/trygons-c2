@@ -22,10 +22,20 @@
        tools/chartprep.py) reads docs/daskalio or the academy; the test area is marked
        not_for_navigation + PLACEHOLDER
   AC12 levels: OBSERVER < DRIVER < CAPTAIN, licence = CAPTAIN only, expired = OBSERVER, an
-       unknown level = OBSERVER; the gateway push is not in step 15
+       unknown level = OBSERVER; the push document is signed
   AC13 academy/ is excluded from the ADS build in every configuration (check_ads_excludes.py)
   AC14 the PRACTICAL TEST exception (academy/practical/, step 21) is imported by no other
        academy module and has its own test file when it exists
+  AC15 accounts storage (step 16): one file per account, append-only logbook (a cut line is
+       skipped), default expiry from limits.json, reload, refused on a gateway PC
+  AC16 instructor view: progress, weak areas, hours, currency, expiry reminder
+  AC17 the gateway push = a SIGNED file the gateway accepts (gateway/trainlevels.py): no key = no
+       file; expired / unknown = OBSERVER without licence; a changed byte = refused
+  AC18 backup (W28): a copy to a chosen folder without the key; never inside the data folder, a
+       boats/ address, the Tailscale range or on a gateway PC
+  AC19 the academy window: the banner is the first thing at the top (exact text, CAUTION colour)
+  AC20 the ground-station menu "Academy": its own process with only --lang (never a link / host /
+       port), the levels file only over a gateway login, the gateway's answer shown
 
 Run:  python academy/test_academy.py      (exit code 0 = all passed)
 """
@@ -360,6 +370,8 @@ def ac9():
         used |= set(re.findall(r"\bT\(\s*[\"']([A-Za-z0-9_.\-]+)[\"']", open(path, encoding="utf-8").read()))
     import accounts
     used |= {"level." + lv for lv in accounts.LEVELS}
+    import academy_app
+    used |= {"acc.col_" + c for c in academy_app.COLUMNS}
     missing = sorted(k for k in used if k not in el or k not in en)
     if missing:
         wrong.append("used but missing: %s" % missing)
@@ -440,11 +452,10 @@ def ac12():
     r = a.gateway_record(d + datetime.timedelta(days=1))
     if r["licence"] or r["level"] != "OBSERVER":
         wrong.append("expired captain pushed with the licence")
-    try:
-        accounts.push_to_gateway([a])
-        wrong.append("push exists in step 15")
-    except NotImplementedError:
-        pass
+    doc = accounts.push_to_gateway([a], "k" * 32, d)
+    if not doc.get("mac") or doc["records"][0] != {"user": "u", "level": "CAPTAIN", "licence": True,
+                                                    "expiry": d.isoformat()}:
+        wrong.append("push document")
     report("AC12 level model", not wrong, "; ".join(wrong) or "OBSERVER < DRIVER < CAPTAIN, licence = CAPTAIN, expired / unknown = OBSERVER")
 
 
@@ -483,8 +494,284 @@ def ac14():
            ("academy/practical/ isolated" if exists else "academy/practical/ not created yet (step 21); nothing imports it"))
 
 
+def _store(tmp=None):
+    import accounts
+    return accounts.Store(tmp or tempfile.mkdtemp(prefix="trygons_acst_"), env={"PROGRAMDATA": tempfile.mkdtemp()})
+
+
+def json_load(p):
+    import json
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def gateway_pc():
+    """A PROGRAMDATA folder that looks like a gateway PC (its gateway.json exists)."""
+    d = tempfile.mkdtemp(prefix="trygons_gwpc_")
+    os.makedirs(os.path.join(d, "trygons"))
+    open(os.path.join(d, "trygons", "gateway.json"), "w").close()
+    return {"PROGRAMDATA": d}
+
+
+# --- AC15 -------------------------------------------------------------------------------------
+def ac15():
+    import accounts
+    import simguard
+    wrong = []
+    tmp = tempfile.mkdtemp(prefix="trygons_ac15_")
+    st = _store(tmp)
+    st.add("anna", "Anna P.")
+    st.add("nik", "Nikos")
+    for bad in ("anna", "../evil", ""):
+        try:
+            st.add(bad)
+            wrong.append("account %r taken" % bad)
+        except ValueError:
+            pass
+    d = datetime.date(2026, 10, 28)
+    a = st.set_level("anna", "CAPTAIN", by="instr", today=d)
+    months = accounts.limits().get("validity_months")
+    if not months or not (a.expiry - d).days >= 28 * months:
+        wrong.append("default expiry %s (validity %s months)" % (a.expiry, months))
+    st.log("anna", "hours", h=2.5)
+    with open(st.logbook_path, "a", encoding="utf-8") as f:
+        f.write('{"user": "anna", "kind": "hou')          # a power loss mid-line
+    st2 = _store(tmp)
+    if sorted(st2.accounts) != ["anna", "nik"] or st2.accounts["anna"].level != "CAPTAIN" or \
+            st2.accounts["anna"].expiry != a.expiry:
+        wrong.append("reload %s" % sorted(st2.accounts))
+    kinds = [e["kind"] for e in st2.accounts["anna"].logbook]
+    if kinds != ["level", "level", "hours"]:
+        wrong.append("logbook %s" % kinds)
+    if not os.path.isfile(os.path.join(tmp, "accounts", "anna.json")):
+        wrong.append("one file per account")
+    try:
+        st.log("anna", "nonsense")
+        wrong.append("unknown logbook kind taken")
+    except ValueError:
+        pass
+    try:
+        accounts.Store(tmp, env=gateway_pc())
+        wrong.append("store works on a gateway PC")
+    except simguard.Refused:
+        pass
+    if "academy/data/" not in open(os.path.join(REPO, ".gitignore"), encoding="utf-8").read():
+        wrong.append("academy/data/ not gitignored")
+    report("AC15 accounts storage", not wrong, "; ".join(wrong) or
+           "one file per account, append-only logbook (cut line skipped), expiry %s from limits.json, refused on a "
+           "gateway PC" % a.expiry)
+
+
+# --- AC16 -------------------------------------------------------------------------------------
+def ac16():
+    wrong = []
+    st = _store()
+    d = datetime.date.today()
+    st.add("anna")
+    st.add("nik")
+    st.set_level("anna", "DRIVER", d + datetime.timedelta(days=10))
+    st.log("anna", "lesson", id="L1", done=True)
+    st.log("anna", "lesson", id="L2", done=True)
+    st.log("anna", "quiz", topic="colregs", score=50)
+    st.log("anna", "quiz", topic="colregs", score=60)
+    st.log("anna", "quiz", topic="gear", score=95)
+    st.log("anna", "exam", id="E1", score=80, passed=True)
+    st.log("anna", "attempt", id="E1")
+    st.log("anna", "hours", h=1.5)
+    st.log("anna", "hours", h=2.0)
+    rows = {r["user"]: r for r in st.summary(d)}
+    r = rows["anna"]
+    got = (r["lessons"], r["exams_passed"], r["attempts"], r["hours"], r["weak"], r["current"], r["days_left"],
+           r["reminder"], r["effective"])
+    if got != (2, 1, 1, 3.5, ["colregs"], True, 10, True, "DRIVER"):
+        wrong.append("anna %s" % (got,))
+    n = rows["nik"]
+    if (n["effective"], n["current"], n["hours"], n["days_left"]) != ("OBSERVER", False, 0, None):
+        wrong.append("nik %s" % n)
+    report("AC16 instructor view", not wrong, "; ".join(wrong) or
+           "lessons / exams / attempts / hours / weak areas / currency / expiry reminder per trainee")
+
+
+# --- AC17 -------------------------------------------------------------------------------------
+def ac17():
+    import accounts
+    sys.path.insert(0, os.path.join(REPO, "gateway"))
+    import trainlevels
+    wrong = []
+    st = _store()
+    d = datetime.date.today()
+    for u in ("anna", "nik", "old", "drv"):
+        st.add(u)
+    st.set_level("anna", "CAPTAIN", d + datetime.timedelta(days=30))
+    st.set_level("old", "CAPTAIN", d + datetime.timedelta(days=30))
+    st.accounts["old"].expiry = d - datetime.timedelta(days=1)          # expired since
+    st.set_level("drv", "DRIVER", d + datetime.timedelta(days=30))
+    try:
+        st.make_push()
+        wrong.append("a push file without a key")
+    except ValueError:
+        pass
+    key = st.key(create=True)
+    if st.key() != key or len(key) < 16:
+        wrong.append("key not kept")
+    path, _doc = st.make_push()
+    on_disk = json_load(path)
+    recs, why = trainlevels.verify(on_disk, key, 0)
+    if recs is None:
+        wrong.append("the gateway refuses the academy's file: %s" % why)
+    else:
+        want = {"anna": (True, "CAPTAIN"), "nik": (False, "OBSERVER"), "old": (False, "OBSERVER"),
+                "drv": (False, "DRIVER")}
+        got = {u: (r["licence"], r["level"]) for u, r in recs.items()}
+        if got != want:
+            wrong.append("records %s" % got)
+    bad = dict(on_disk, records=[dict(x, level="CAPTAIN", licence=True,
+                                      expiry=(d + datetime.timedelta(days=9)).isoformat())
+                                 for x in on_disk["records"]])
+    if trainlevels.verify(bad, key, 0)[0] is not None:
+        wrong.append("a changed file accepted")
+    if trainlevels.verify(on_disk, "x" * 32, 0)[0] is not None:
+        wrong.append("another key accepted")
+    if accounts.canonical(on_disk) != trainlevels.canonical(on_disk):
+        wrong.append("the two sides sign different bytes")
+    report("AC17 the gateway push = a signed file the gateway accepts", not wrong, "; ".join(wrong) or
+           "no key = no file; the gateway's checker accepts it; expired / unknown = OBSERVER; a changed file refused")
+
+
+# --- AC18 -------------------------------------------------------------------------------------
+def ac18():
+    import accounts
+    import simguard
+    wrong = []
+    tmp = tempfile.mkdtemp(prefix="trygons_ac18_")
+    st = _store(tmp)
+    st.add("anna")
+    st.key(create=True)
+    st.make_push()
+    target = tempfile.mkdtemp(prefix="trygons_ac18t_")
+    env = {"PROGRAMDATA": tempfile.mkdtemp()}
+    dst = st.backup(target, env=env, stamp="x")
+    have = sorted(os.listdir(dst))
+    if have != ["accounts", "levels.json", "logbook.jsonl"] or \
+            not os.path.isfile(os.path.join(dst, "accounts", "anna.json")):
+        wrong.append("backup content %s" % have)
+    boats = tempfile.mkdtemp(prefix="trygons_ac18b_")
+    with open(os.path.join(boats, "x.json"), "w", encoding="utf-8") as f:
+        f.write('{"id": "x1", "name": "X1", "tailscale_ip": "100.101.102.103", "gateway_port": 5761}')
+    os.makedirs(os.path.join(tmp, "inside"))
+    for t in (os.path.join(tmp, "inside"), tmp, os.path.join(target, "missing"), "",
+              r"\\100.101.102.103\share", r"\\100.70.1.2\backup", r"\\x1\share", "//100.101.102.103/share"):
+        if accounts.backup_refused(t, tmp, env, boats) is None:
+            wrong.append("allowed %r" % t)
+    try:
+        st.backup(target, env=gateway_pc(), stamp="y")
+        wrong.append("backup on a gateway PC")
+    except simguard.Refused:
+        pass
+    report("AC18 backup", not wrong, "; ".join(wrong) or
+           "accounts + logbook + push file copied (never the key); data folder, boats / Tailscale address, gateway PC "
+           "refused")
+
+
+# --- AC19 -------------------------------------------------------------------------------------
+def ac19():
+    import banner
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+    except Exception as e:                                  # no display: the static AC8 check still holds
+        report("AC19 academy window banner", True, "no display here (%s): checked statically by AC8" % e)
+        return
+    wrong = []
+    try:
+        root.withdraw()
+        import academy_app
+        app = academy_app.AcademyApp(root, _store())
+        first = root.pack_slaves()[0]
+        if first is not app.banner or app.banner.cget("text") != banner.banner_text():
+            wrong.append("the banner is not the first widget at the top")
+        if app.banner.cget("bg").lower() != academy_app.CAUTION.lower():
+            wrong.append("banner colour %s" % app.banner.cget("bg"))
+        if str(app.banner.pack_info().get("side")) != "top":
+            wrong.append("banner not at the top")
+    finally:
+        root.destroy()
+    report("AC19 academy window banner", not wrong, "; ".join(wrong) or
+           "first widget at the top, %r, CAUTION colour" % banner.banner_text())
+
+
+# --- AC20 -------------------------------------------------------------------------------------
+def ac20():
+    wrong = []
+    gs = os.path.join(REPO, "groundstation")
+    os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(tempfile.mkdtemp(), "gs_settings.json"))
+    os.environ.setdefault("TRYGONS_SOUND", "off")
+    sys.path.insert(0, gs)
+    import academymenu
+    cmd = academymenu.academy_command()
+    if cmd[1:] != [os.path.join(REPO, "academy", "academy_app.py"), "--lang", cmd[-1]] or cmd[-1] not in ("el", "en"):
+        wrong.append("academy command %s" % cmd)
+    names, _ = imports_of(os.path.join(gs, "academymenu.py"))
+    risky = names & {"link", "boats", "socket", "serial", "shorejoy", "app"}
+    if risky:
+        wrong.append("academymenu imports %s" % sorted(risky))
+    src = open(os.path.join(gs, "academymenu.py"), encoding="utf-8").read()
+    opener = src.split("def open_academy")[1].split("def send_levels")[0]
+    if "link" in opener or "academy_command()" not in opener:
+        wrong.append("open_academy hands the link over")
+    app_src = open(os.path.join(gs, "app.py"), encoding="utf-8").read()
+    if "academymenu.add_menu(self, mb)" not in app_src or '"academy_levels_ack"' not in app_src:
+        wrong.append("app.py: menu / answer not wired")
+
+    class FakeApp(object):
+        def __init__(self, link):
+            self.link, self.said, self.events, self.root = link, [], [], None
+
+        def say(self, t, c=None):
+            self.said.append((t, c))
+
+        def event(self, t):
+            self.events.append(t)
+    started = []
+    academymenu.open_academy(FakeApp(None), popen=lambda c, cwd=None: started.append(c) or "proc")
+    if started != [cmd]:
+        wrong.append("open_academy started %s" % started)
+    sent = []
+    from gwclient import GatewayLink
+
+    class FakeGw(GatewayLink):
+        def __init__(self):
+            pass
+
+        def send_msg(self, m):
+            sent.append(m)
+    tmp = tempfile.mkdtemp(prefix="trygons_ac20_")
+    good = os.path.join(tmp, "levels.json")
+    with open(good, "w", encoding="utf-8") as f:
+        f.write('{"kind": "academy_levels", "records": [], "seq": 1, "format": 1, "mac": "x"}')
+    other = os.path.join(tmp, "other.json")
+    with open(other, "w", encoding="utf-8") as f:
+        f.write('{"kind": "lesson"}')
+    usb = FakeApp(object())
+    academymenu.send_levels(usb, good)                       # USB / no gateway: refused, nothing sent
+    gw = FakeApp(FakeGw())
+    academymenu.send_levels(gw, other)                       # not a levels file: refused
+    academymenu.send_levels(gw, good)
+    if not usb.said or sent != [{"t": "academy_levels", "doc": json_load(good)}]:
+        wrong.append("send: usb %s, sent %s" % (usb.said, sent))
+    import i18n
+    i18n.set_lang("el", save=False)
+    academymenu.on_ack(gw, {"ok": False, "text": "academy levels refused: wrong signature (not made with this "
+                                                 "gateway's academy key)"})
+    if not gw.said or "academy" in gw.said[-1][0].lower() or "signature" in gw.said[-1][0]:
+        wrong.append("the answer not translated: %s" % (gw.said[-1:],))
+    report("AC20 ground-station menu Academy", not wrong, "; ".join(wrong) or
+           "own process with only --lang; the levels file only over a gateway login; the answer shown in Greek")
+
+
 if __name__ == "__main__":
-    for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14):
+    for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
+              ac19, ac20):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run

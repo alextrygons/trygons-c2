@@ -992,6 +992,30 @@ THE MANUAL LICENCE
   MANUAL or MANEUVER; others get "no manual licence" (code 116).
   Add it with: python3 users.py add NAME HELM licence
 
+THE ACADEMY LEVELS (menu Academy on the ground station)
+  The academy keeps training accounts on the SHORE PC: OBSERVER -> DRIVER
+  -> CAPTAIN, an expiry, and a logbook (lessons, scores, attempts, exams,
+  driving hours). Only CAPTAIN gives the manual licence; an expired level
+  counts as OBSERVER.
+  Menu Academy -> "Open the academy" opens it in its OWN window. It only
+  ever uses the simulator or recordings - never this station's boat link.
+  The banner "TRAINING - SIMULATION" is always at its top.
+  How a level reaches the boat:
+   1. Academy window: "Academy key" once (copied to the clipboard). Put the
+      same text into the gateway's secrets.json as "academy_key" (never in
+      git).
+   2. Academy window: set the level, then "Make the gateway file".
+   3. Ground station logged in to the gateway: menu Academy -> "Send the
+      academy levels to the gateway" (HELM users only).
+  The gateway checks the signature, ignores users it doesn't know (it never
+  makes a new user), keeps its last copy on its SSD (used when the academy
+  can't be reached) and uses the level at the NEXT LOGIN only - a station
+  already logged in keeps its licence (never taken away mid-trip). A user
+  without an academy level keeps the "licence" flag of secrets.json.
+  Backup: "Backup" copies the accounts + logbook to a folder you choose (a
+  second shore PC or a USB disk; never a boat's gateway). The key is not
+  copied - keep it safe separately.
+
 CAPTAIN AND COPILOT (the gateway decides, every station shows it)
   CAPTAIN   holds the manual licence and sits at screen 1 (cameras +
             joystick). Holds HELM. The ONLY one who can start REMOTE

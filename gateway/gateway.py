@@ -32,6 +32,7 @@ from audit import Audit
 from ais import AisTargets, OnlineFeed
 from shallow import Shallow
 from geofence import Geofence
+from trainlevels import AcademyLevels
 from avoid import Avoider
 from vision.manager import VisionManager
 import chart
@@ -70,6 +71,12 @@ class Gateway:
         self._stop = None
         sec = cfg.get("secrets", {})
         self.users = Users(sec.get("users") or cfg.get("users", {}))
+        # academy levels (CLAUDE.md S, step 16): a signed push from the shore PC's academy; the user list
+        # above stays the authority; the last copy on the SSD; read at login only (never mid-trip)
+        self.academy = AcademyLevels(os.path.join(self.storage.folder("state"), "academy_levels.json")
+                                     if self.storage.usable else None,
+                                     sec.get("academy_key") or cfg.get("academy_key"))
+        self.users.academy = self.academy
         self.audit = Audit(self.storage, self.clock, cfg.get("audit_fallback"))
         self.stations = StationServer(self, cfg["stations"])
         self.web = WebServer(self, cfg)
@@ -119,6 +126,7 @@ class Gateway:
         self.geofence = Geofence(os.path.join(self.storage.folder("state"), "geofence.json")
                                  if self.storage.usable else None)
         self.stations.ext["geofence"] = self._geofence_msg
+        self.stations.ext["academy_levels"] = self._academy_msg
         # collision avoidance (section D): every decision into the audit log
         self.avoider = Avoider(cfg.get("avoid"), self.shallow,
                                log=lambda text, **kw: self.audit("avoid", text=text, **kw))
@@ -293,6 +301,17 @@ class Gateway:
                 ok2, text = False, "refused: %s" % GW_RESULTS.get(code, proto.RESULTS.get(code, code))
             st.send({"t": "geofence_ack", "ok": ok2, "code": code, "text": text})
         self.stations.ask_local(st, m, what, done)
+
+    def _academy_msg(self, st, m):
+        """Academy levels from a station (CLAUDE.md S, step 16): the file is signed by the shore PC's academy
+        (trainlevels.py checks it); only a HELM-role user's station may hand it in; known users only; it
+        changes nothing for a station already logged in (next login)."""
+        if st.role != "HELM":
+            ok, text, n, ign = False, "academy levels refused: HELM users only", 0, 0
+        else:
+            ok, text, n, ign = self.academy.apply(m.get("doc"), set(self.users.users), by=st.user)
+        self.audit("academy_levels", station=st.id, user=st.user, ok=ok, users=n, ignored=ign, text=text)
+        st.send({"t": "academy_levels_ack", "ok": ok, "text": text, "n": n, "ignored": ign})
 
     def nav_compose(self):
         """The navigation request for the AURIX: collision avoidance (section D) + shallow water
@@ -554,6 +573,7 @@ class Gateway:
                 "avoid": dict(self.nav_state, shallow_limit_m=self.shallow.limit(), charts=bool(self.charts)),
                 "shore": {"flags": self.shore_now[0], "dist_m": self.shore_now[1]},
                 "geofence": self.geofence.status(),
+                "academy": self.academy.status(),
                 "relays": self.stations.relay_status(),
                 "vision": self.vision.status(self.net.data_saver())}
 

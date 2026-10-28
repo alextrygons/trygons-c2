@@ -669,3 +669,22 @@ the gateway total ~2-3 logical CPUs of 8 (25-40 %), RAM ~0.8 GB of 8 GB (fine). 
 the ThinkPad shows VISION DEGRADED: `"vision": {"max_fps": 1.0}`, or the INT8 model
 (vision/README.md), or 3 threads. **Run `python tools/gateway_load.py` once on the
 ThinkPad itself and keep its summary** (PROGRESS.md WAITING FOR OWNER W26).
+
+## 22. Academy levels (step 16)
+
+The shore PC's academy (academy/, never on a gateway PC) keeps training levels OBSERVER / DRIVER /
+CAPTAIN (CAPTAIN = the "licence" flag). The levels reach the gateway as a SIGNED file that a ground
+station sends over its normal login (menu Academy -> "Send the academy levels to the gateway",
+message `{"t": "academy_levels", "doc": ...}` -> `academy_levels_ack`). trainlevels.py checks it:
+
+1. secrets.json `"academy_key": "<the same text as the academy key>"` - without it every push is refused.
+2. HMAC-SHA256 signature, format 1, a `seq` newer than the last accepted one (no replay), licence only
+   for CAPTAIN and only with an expiry; only HELM-role users' stations may send it; users not in
+   secrets.json are ignored (the academy never creates a user, role or password).
+3. The accepted copy = `state/academy_levels.json` on the SSD (kept across restarts, used while the
+   academy is unreachable), audit kind `academy_levels`, gw_status `"academy"`.
+4. users.Users.licence: a user WITH an academy record has the licence only as CAPTAIN until the expiry
+   (inclusive, the gateway's clock); a user WITHOUT one keeps the secrets.json flag. It is read at
+   LOGIN only: a push never changes a logged-in station (never revoked mid-trip).
+
+Tests: test_gateway.py section AL (AL1-AL4), academy/test_academy.py AC17.

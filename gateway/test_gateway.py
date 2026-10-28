@@ -3823,8 +3823,123 @@ def section_dp():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+AL_KEY = "academy-key-0123456789abcdefghij"
+
+
+def section_al():
+    """Academy levels (CLAUDE.md S, ACADEMY_SPEC A, step 16): the shore PC's academy signs a levels file, a station
+    hands it in, the gateway checks it (trainlevels.py), keeps its last copy on the SSD and uses it at the NEXT login
+    only (never mid-trip); the user list stays the authority (unknown users ignored, no new user)."""
+    print("\n=== Section AL: academy levels - signed push, last copy, next login only ===", flush=True)
+    import datetime as dt
+    import trainlevels as TL
+    sys.path.insert(0, os.path.join(HERE, "..", "academy"))
+    import accounts as ACC
+    today = dt.date.today()
+    later = today + dt.timedelta(days=200)
+    accs = [ACC.Account("alice", "CAPTAIN", later), ACC.Account("bob", "OBSERVER"), ACC.Account("zed", "CAPTAIN", later)]
+    doc = ACC.make_push_doc(accs, AL_KEY, today, seq=1000)
+    # AL1 the rules on their own: signature, replay, licence = CAPTAIN only, expiry needed, expired -> OBSERVER
+    v_ok, _ = TL.verify(doc, AL_KEY, 0)
+    bad_key = TL.verify(doc, "another-key-0123456789", 0)[1]
+    no_key = TL.verify(doc, None, 0)[1]
+    replay = TL.verify(doc, AL_KEY, 1000)[1]
+    t = dict(doc, records=[dict(doc["records"][1], level="CAPTAIN", licence=True, expiry=later.isoformat())])
+    tampered = TL.verify(t, AL_KEY, 0)[1]
+    drv = ACC.make_push_doc([ACC.Account("bob", "DRIVER", later)], AL_KEY, today, seq=5)
+    drv_lic = TL.verify(drv, AL_KEY, 0)[0]["bob"]["licence"]
+    odd = {k: v for k, v in drv.items() if k != "mac"}
+    odd["records"] = [{"user": "bob", "level": "DRIVER", "licence": True, "expiry": later.isoformat()}]
+    odd["mac"] = TL.sign(odd, AL_KEY)
+    odd_why = TL.verify(odd, AL_KEY, 0)[1]
+    nexp = {k: v for k, v in drv.items() if k != "mac"}
+    nexp["records"] = [{"user": "bob", "level": "CAPTAIN", "licence": True, "expiry": None}]
+    nexp["mac"] = TL.sign(nexp, AL_KEY)
+    nexp_why = TL.verify(nexp, AL_KEY, 0)[1]
+    old = ACC.Account("carl", "CAPTAIN", today - dt.timedelta(days=1)).gateway_record(today)
+    lv = TL.AcademyLevels(None, AL_KEY, today=lambda: today)
+    lv.records = {"a": {"level": "CAPTAIN", "licence": True, "expiry": today.isoformat()},
+                  "b": {"level": "CAPTAIN", "licence": True, "expiry": (today - dt.timedelta(days=1)).isoformat()},
+                  "c": {"level": "DRIVER", "licence": False, "expiry": later.isoformat()}}
+    lic = (lv.licence("a", False), lv.licence("b", True), lv.licence("c", True), lv.licence("n", True), lv.licence("n", False))
+    report("AL1 levels file: signed with the academy key (wrong / no key / tampered refused), no replay, licence = "
+           "CAPTAIN only with an expiry, an expired captain pushed as OBSERVER, the expiry checked on the gateway's "
+           "clock, no record = the secrets.json flag",
+           v_ok is not None and set(v_ok) == {"alice", "bob", "zed"} and "signature" in bad_key and "no academy key" in no_key
+           and "older" in replay and "signature" in tampered and drv_lic is False and "licence" in odd_why and
+           "expiry" in nexp_why and old == {"user": "carl", "level": "OBSERVER", "licence": False, "expiry": None} and
+           lic == (True, False, False, True, False),
+           "wrong key %r; no key %r; replay %r; tampered %r; DRIVER licence %s; %r; %r; expired %s; licence a/b/c/n/n %s" % (
+               bad_key, no_key, replay, tampered, drv_lic, odd_why, nexp_why, old, lic))
+
+    tmp = tempfile.mkdtemp(prefix="gwtest_al_")
+    sim = gw = gw2 = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        cfg = gw_cfg_b(sim, root, academy_key=AL_KEY)
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+        bob = Client(sp, "bob", PW["bob"], name="copilot")
+        vic = Client(sp, "vic", PW["vic"], name="viewer")
+        alice.pump(1.0)
+        before = (alice.welcome.get("licence"), bob.welcome.get("licence"))
+        # AL2 a viewer can't hand it in; the captain's station can: known users taken, the unknown one ignored
+        vic.l.send_msg({"t": "academy_levels", "doc": doc})
+        k, a_vic = next_event(vic, ("academy_levels_ack",), 4.0)
+        alice.l.send_msg({"t": "academy_levels", "doc": doc})
+        k, a_ok = next_event(alice, ("academy_levels_ack",), 4.0)
+        alice.pump(1.5)
+        stat = (alice.status or {}).get("academy") or {}
+        audited = [e for e in g.audit.recent if e["kind"] == "academy_levels"]
+        saved = os.path.isfile(os.path.join(g.storage.folder("state"), "academy_levels.json"))
+        report("AL2 a viewer's push refused; the captain's station hands in the signed file: 2 known users taken, the "
+               "unknown one ignored (no new user), audited, kept on the SSD, shown in the gateway status",
+               a_vic is not None and not a_vic["ok"] and a_ok is not None and a_ok["ok"] and a_ok["n"] == 2 and
+               a_ok["ignored"] == 1 and "zed" not in g.users.users and stat.get("n") == 2 and stat.get("seq") == 1000
+               and len(audited) == 2 and saved,
+               "viewer %s; captain %s; status %s; audit %d; saved %s" % (
+                   a_vic and a_vic["text"], a_ok and a_ok["text"], stat, len(audited), saved))
+        # AL3 never mid-trip: the logged-in stations keep their licence; the next login uses the levels
+        st_bob = g.stations.stations[bob.welcome["id"]]
+        mid = st_bob.licence
+        bob2 = Client(sp, "bob", PW["bob"], name="copilot2")
+        alice2 = Client(sp, "alice", PW["alice"], name="captain2")
+        nxt = (alice2.welcome.get("licence"), bob2.welcome.get("licence"))
+        alice.l.send_msg({"t": "academy_levels", "doc": doc})
+        k, a_rep = next_event(alice, ("academy_levels_ack",), 4.0)
+        report("AL3 never revoked mid-trip: bob's logged-in station keeps the licence; at the NEXT login alice = CAPTAIN "
+               "(licence), bob = OBSERVER (no licence); the same file again = refused (replay)",
+               before == (True, True) and mid is True and nxt == (True, False) and a_rep is not None and not a_rep["ok"],
+               "before %s; bob logged in %s; next login %s; replay %s" % (before, mid, nxt, a_rep and a_rep["text"]))
+        for c in (alice, bob, vic, bob2, alice2):
+            c.close()
+        gw.stop()
+        gw = None
+        # AL4 the last copy: a gateway restart without the academy keeps the levels
+        cfg2 = gw_cfg_b(sim, root, academy_key=AL_KEY)
+        gw2 = GwRunner(cfg2)
+        bob3 = Client(cfg2["stations"]["port"], "bob", PW["bob"], name="copilot3")
+        alice3 = Client(cfg2["stations"]["port"], "alice", PW["alice"], name="captain3")
+        kept = (gw2.gw.academy.seq, alice3.welcome.get("licence"), bob3.welcome.get("licence"))
+        bob3.close()
+        alice3.close()
+        report("AL4 the gateway's last copy: after a restart (academy not reachable) the levels still apply at login",
+               kept == (1000, True, False), "seq, alice, bob = %s" % (kept,))
+    finally:
+        for r in (gw, gw2):
+            if r:
+                r.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
-            "G": section_g, "GF": section_gf, "RL": section_rl, "DP": section_dp}
+            "G": section_g, "GF": section_gf, "RL": section_rl, "DP": section_dp, "AL": section_al}
 
 
 def main():

@@ -12,11 +12,11 @@
   "ramp_bottom": [37.7858, 24.0362],
   "_note_ramp": "PLACEHOLDER ramp top / bottom points",
   "max_wind_kn": 12,
-  "_note_wind": "TO CONFIRM (W27): 12 kn; the wind is typed in and confirmed by the examiner",
+  "_note_wind": "owner 2026-10-28 (W27): 12 kn; the wind is typed in and confirmed by the examiner",
   "blocked_wind_from": ["N", "ramp_right"],
   "_note_blocked": "spec default: strong north AND from the right side at the ramp (ramp_right = from the right when looking down the ramp to the sea)",
   "allowed_hours": [8, 19],
-  "_note_hours": "TO CONFIRM (W27): local time 08-19",
+  "_note_hours": "owner 2026-10-28 (W27): local time 08-19",
   "photos": ["docs/daskalio/IMG_0516.jpg", "docs/daskalio/IMG_0517.jpg", "docs/daskalio/IMG_0518.jpg", "docs/daskalio/IMG_0519.jpg", "docs/daskalio/IMG_0520.jpg"],
   "_note_photos": "chart PHOTOS for the test area picture / demo map / 3D sim ONLY - NOT a navigation chart (docs/daskalio/README.txt)"
 }

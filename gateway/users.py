@@ -55,6 +55,7 @@ class Users:
         self.max_fail = max_fail
         self.lock_s = lock_s
         self.fails = {}             # ip -> [count, until]
+        self.academy = None         # trainlevels.AcademyLevels (step 16) or None
 
     def locked(self, ip):
         f = self.fails.get(ip)
@@ -80,9 +81,15 @@ class Users:
         return u["role"], None
 
     def licence(self, user):
-        """True if the user holds a manual (driving) licence - only flagged users."""
+        """True if the user holds a manual (driving) licence - only flagged users. With academy levels
+        (trainlevels.py) a user that has an academy record gets the licence only as CAPTAIN within
+        its expiry; a user without one keeps the flag. Only users of this list (never a new one).
+        Read at LOGIN only: a push never changes a logged-in station (never revoked mid-trip)."""
         u = self.users.get(user)
-        return bool(u and u.get("licence") is True)
+        base = bool(u and u.get("licence") is True)
+        if not u or self.academy is None:
+            return base
+        return self.academy.licence(user, base)
 
 
 def main():

@@ -16,7 +16,7 @@ steps) may continue.
 
 Answered and NOT listed: LOW BATTERY stays an ordinary alarm with the buzzer (owner 2026-10-27);
 OD-1..OD-12 (owner 2026-10-28, docs/dronecan_design.md 13); OA-1..OA-4 are recorded (owner
-2026-10-28, docs/dronecan_design.md 14 - their open hardware details are W2 / W3 below). W18-W22 and W24 answered
+2026-10-28, docs/dronecan_design.md 14 - their open hardware details are W2 / W3 below). W18-W22, W24, W25-W29 and W31 answered
 (owner 2026-10-28): see "Owner answers log" under the step table.
 
 | # | What is asked | Blocks | Recommended default |
@@ -37,14 +37,8 @@ OD-1..OD-12 (owner 2026-10-28, docs/dronecan_design.md 13); OA-1..OA-4 are recor
 | W15 | Data flash bring-up check on the kit: an erased DFLASH page reads 0 and a cut write gives no ECC trap (step 3 note) | nothing in software; NV on the real board | check at the first board bring-up |
 | W16 | Board checks: the kill latch survives a real watchdog reset (FIRST_TEST.md 3i); RS485 TX-enable (DE) timing on the scope (FIRST_TEST.md 3h) | uncrewed operation (3i); the Modbus relay board on the boat (3h) | do them at the bench test |
 | W17 | Step 12 hardware details (C20), documented with both options: (a) RJ45 ports on this ThinkPad L390 Yoga and its free USB ports (USB-UART, AIS, 1-2 USB-Ethernet adapters, charger -> a hub?); (b) the 12 V USB-C PD car charger model (65 W, 20 V PD) + its fuse; (c) the USB AIS receiver model; (d) the exact USB-UART adapter (FTDI TTL-232R-3V3 recommended) | the gateway wiring / purchase only (software done: any adapter by its stable name) | (a) two USB 3 Gigabit adapters (RTL8153) if no RJ45; (b) a 65 W USB-C PD car charger, fuse per its manual; (c) a dAISy USB / Quark-elec class NMEA-over-USB receiver; (d) FTDI TTL-232R-3V3 |
-| W25 | Windows gateway: the camera network needs DHCP + time (NTP) for the cameras; Ubuntu has dnsmasq + chrony (README 14), Windows has neither built in. Options: fixed IPs in the cameras (if the Tapo app allows it), a small DHCP server program on Windows (a new dependency), or the camera network only with Ubuntu | camera network on a Windows gateway only | use Ubuntu for the gateway (recommended at sea anyway); decide only if Windows stays |
-| W26 | The step 12 CPU / RAM numbers were measured on this dev PC (i7-13700H), NOT on the ThinkPad: run `python tools/gateway_load.py --minutes 10` once on the ThinkPad (README 21) | nothing in software; the vision frame rate at sea | if vision < 1 fps or the gateway total > 70 % of the PC: vision max_fps 1, INT8 model, or 1 thread |
 | W23 | Step 11f readings of design section 9 - owner 2026-10-28: keep (a)-(d), PENDING the owner's 11e/11f safety review: (a) after ANY reset the AURIX sends NO relay frame until a relay is commanded; (b) a new state = 10 frames at 50 Hz, then silence; (c) a board without hardpoint.Status: the commanded states shown ("no readback"), unknown after an AURIX-only power-on, all OFF when the board booted after the AURIX (uptime rule, R-2); (d) relays.c: an interlocked partner that is UNKNOWN and not momentary blocks the other relay | nothing (the code does it this way; a change is small) | keep (a)-(d) - pending the owner's safety review |
-| W27 | Academy limits not in the spec (step 15, academy/content/limits.json + test_area.json): exam attempts before the cool-down, the cool-down, the practical test's max wind and allowed hours | step 21 (exams + practical test); blocks nothing before | 3 attempts, then 24 h; max wind 12 kn; 08:00-19:00 local |
-| W28 | Academy accounts "in backup / sync" (spec A): where should the shore PC's academy/data/ be backed up (a USB disk, a second shore PC, the gateway SSD, a cloud folder)? | step 16 (storage); blocks nothing before | a copy to a folder you choose (default: a second PC / USB disk), never a boat gateway |
-| W29 | Academy 2FA for CAPTAIN + instructor (spec J): which second factor | step 21 (online academy) | an offline TOTP app (6-digit codes, e.g. Google Authenticator / Aegis), no SMS |
 | W30 | Academy test area (spec J): the real Daskalio bay polygon + ramp top / bottom points (academy/content/test_area.json is a clearly marked PLACEHOLDER) | the practical test on the real boat only (it refuses a placeholder area); blocks no code step | set them with the instructor tool (step 21) on site: boat GPS "add point" at the ramp top / bottom |
-| W31 | Academy start: the ground-station menu "Academy" opens the academy in its OWN window/process using only the simulator, never the station's boat link (decision D10) - confirm | step 16 (the menu entry) | yes |
 
 Current task: "C2 extensions + Academy" (design = CLAUDE.md section "C2 extensions + Academy", parts
 G-S; academy spec = docs/ACADEMY_SPEC.md). Steps 0-14 = C2 extensions (alarms in one place, boat
@@ -87,7 +81,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 13 | Open items: AUTO return, docs/screens pictures (tools/demo_screens.py), paddlewheel, analog joystick; W18 (owner 2026-10-28): the false GPS SUSPECT of the dr.c slow-drag check at the new 50 %/s throttle slow-down (rate_down 50). **Waits for the HOLD (owner's 11e/11f safety review)** | | |
 | 14 | Final check: full acceptance + 24 h soak, TEST_REPORT. **Waits for the HOLD (owner's 11e/11f safety review)** | | |
 | 15 | Academy design + "no boat link" tests | DONE (Python / docs only - no app / hal / gateway / groundstation code touched. Gate OK: sim + bridge + DroneCAN all exit 0, TriCore + iLLD + writer checks, FAT32 2/2, NV 4/4, DroneCAN 19/19, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15, sound 10/10, avoidance 14/14, OS 12/12, academy 14/14 (new, AC1-AC14), gateway 112/112; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-12 HEAD, every other suite this tree), storm 200 episodes. Design D1-D11 in docs/ACADEMY_SPEC.md + CLAUDE.md S; new W27-W31; notes) | this commit |
-| 16 | Academy A (accounts, levels, gateway push) | | |
+| 16 | Academy A (accounts, levels, gateway push) | DONE (no app / hal / 11e-11f code touched. Gate: sim + bridge + DroneCAN x 2 exit 0, TriCore + iLLD + writer checks, FAT32 2/2, NV 4/4, DroneCAN 19/19, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15 (S11 fixed, re-run alone), sound 10/10, avoidance 14/14, OS 12/12, academy 20/20 (new AC15-AC20), gateway 113/116 in the full run - E1-E3 cameras DOWN, section E passed alone (PC load) - incl. new AL1-AL4; acceptance quick 7/7 PASS. W25-W29, W31 answered and removed; notes) | this commit |
 | 17 | Academy B (guided tour) | | |
 | 18 | Academy C + D (sim lessons, quizzes) | | |
 | 19 | Academy E (emergency scenarios) | | |
@@ -104,9 +98,36 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 - W22 (owner 2026-10-28): MODBUS stays the default RELAY_BUS until a DroneCAN relay board passes the bench tests R-1..R-3 ("not yet" note in docs/dronecan_design.md 9).
 - W23 (owner 2026-10-28): keep (a)-(d) of 11f - still listed, pending the owner's 11e/11f safety review.
 - W24 (owner 2026-10-28): only relevant if "only the relay board on CAN, servos on PWM" is chosen - kept as a note in docs/dronecan_design.md 9.
+- W25 (owner 2026-10-28): Ubuntu for the gateway (the camera network's DHCP + NTP = dnsmasq + chrony, README 14); no Windows DHCP work.
+- W26 (owner 2026-10-28): the owner runs `python tools/gateway_load.py --minutes 10` on the ThinkPad later (README 21).
+- W27 (owner 2026-10-28): the recommended defaults - 3 exam attempts, then 24 h cool-down; practical test max wind 12 kn; 08:00-19:00 local (academy/content/limits.json + test_area.json notes updated).
+- W28 (owner 2026-10-28): the recommended default - backup = a copy to a folder the instructor chooses (a second shore PC / a USB disk), never a boat gateway (step 16: accounts.Store.backup).
+- W29 (owner 2026-10-28): the recommended default - an offline TOTP app (6-digit codes), no SMS (step 21).
+- W31 (owner 2026-10-28): yes - the ground-station menu Academy opens the academy in its OWN window / process, simulator only, never the station's boat link (step 16).
+- W30: on site later (the real test area with the instructor tool, step 21) - still listed.
 
 ## Notes
 
+- Step 16 (2026-10-28): Academy A - accounts, levels, gateway push, menu "Academy". No app / hal / 11e-11f code
+  touched; no safety rule changed (the licence can only be narrowed / granted through the existing gateway flag,
+  read at login only). academy/accounts.py Store (academy/data/ gitignored or TRYGONS_ACADEMY_DATA: one JSON per
+  account, append-only logbook.jsonl - a cut last line is skipped -, push/levels.json, academy_key.txt; refused on a
+  gateway PC), default expiry = validity_months of limits.json, instructor view Store.summary (lessons, weak areas
+  = topics averaging < 70 %, attempts, exams, hours, currency, expiry reminder), backup (W28: chosen folder, never
+  inside the data folder / a boats/ name or IP / Tailscale UNC / a gateway PC; the key is never copied).
+  academy/academy_app.py = the window (banner first at the top, CAUTION colour). The push keeps D2 (no boat link
+  from the academy): a SIGNED file (HMAC-SHA256 over the canonical JSON) that the ground station sends over its own
+  gateway login - groundstation/academymenu.py: menu Academy "Open the academy" (own process, only --lang: W31) +
+  "Send the academy levels to the gateway" (GatewayLink only; answer academy_levels_ack shown, gw.acad_* templates
+  translated). gateway/trainlevels.py (named so the AC11 "no safety code imports the academy" check stays exact):
+  secrets.json "academy_key" (none = refused), seq replay check, licence = CAPTAIN only and only with an expiry,
+  HELM-role stations only, unknown users ignored (never a new user / role / password), last copy
+  state/academy_levels.json, audit academy_levels, gw_status "academy"; users.Users.licence: academy record =
+  CAPTAIN within the expiry (gateway clock), no record = the secrets.json flag; read at login only (stations.py /
+  web.py) = never revoked mid-trip (the spec's "next login / HELM take" implemented as the next login). Certificate
+  PDF of the instructor view = step 21 (exams). Tests: academy AC15-AC20 (+ AC9 / AC12 updated), gateway AL1-AL4.
+  Gate: sim / bridge / DroneCAN suites exit 0; screen 2 S11 caught a Greek text ("Gateway:"), fixed, 15/15 alone;
+  gateway E1-E3 failed in the full run (cameras DOWN), passed alone (PC load); every other suite passed.
 - Step 15 (2026-10-28): Academy design + "no boat link" tests. New top-level academy/ (excluded from the ADS build
   in all 4 .cproject configurations; academy/data/ gitignored for step 16): simguard.py (the ONLY academy module
   allowed a socket / recording: sim on THIS PC = loopback + 5760 / 5761, gateway welcome name "trygons-demo" and
