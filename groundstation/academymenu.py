@@ -8,11 +8,17 @@ DISPLAY + one file hand-over only - nothing here changes the driving:
     (academy/data/push/levels.json, made in the academy window) over this station's gateway login
     ({"t": "academy_levels", "doc": ...}). The gateway checks the signature (gateway/trainlevels.py),
     keeps its last copy and uses the levels at the next login only (never mid-trip).
+  * "Guided tour" (step 17, ACADEMY_SPEC B) starts academy/tour_app.py in its OWN process (only --lang)
+    and prepares the tour's Greek / English voice with THIS station's offline TTS (sound.Library.make,
+    in the background): the academy itself runs no process, it only plays the cached .wav files.
+    The sentences come from academy/tour.py, loaded by its path (its display tables only, no link).
 """
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+import threading
 import tkinter as tk
 from tkinter import filedialog
 
@@ -23,6 +29,9 @@ from i18n import T
 HERE = os.path.dirname(os.path.abspath(__file__))
 ACADEMY_DIR = os.path.join(os.path.dirname(HERE), "academy")
 ACADEMY_APP = os.path.join(ACADEMY_DIR, "academy_app.py")
+TOUR_APP = os.path.join(ACADEMY_DIR, "tour_app.py")
+TOUR_MODEL = os.path.join(ACADEMY_DIR, "tour.py")
+_tour = None
 
 
 def push_file(env=None):
@@ -37,9 +46,58 @@ def academy_command():
     return [sys.executable, ACADEMY_APP, "--lang", i18n.lang()]
 
 
+def tour_command():
+    """The tour's own process: the script + the screen language, NOTHING about the link."""
+    return [sys.executable, TOUR_APP, "--lang", i18n.lang()]
+
+
+def tour_model():
+    """academy/tour.py, loaded by its path under its own name (no academy folder on sys.path)."""
+    global _tour
+    if _tour is None:
+        spec = importlib.util.spec_from_file_location("academy_tour", TOUR_MODEL)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _tour = mod
+    return _tour
+
+
+def tour_sentences(lang):
+    return tour_model().sentences(lang)
+
+
+def prepare_tour_voice(app, lang=None, run=None):
+    """Make the missing tour sentences with this station's TTS, in the background (never blocks the
+    screen). No sound system (TRYGONS_SOUND=off, tests) = nothing. Returns the thread (or None)."""
+    snd = getattr(app, "sound", None)
+    if snd is None or os.environ.get("TRYGONS_SOUND") == "off":
+        return None
+    lang = lang or i18n.lang()
+    try:
+        texts = tour_sentences(lang)
+    except Exception as e:                                  # a broken tour file: the tour shows text only
+        app.say(T("acad.tour_bad", why=str(e)), theme.WARN)
+        return None
+    th = threading.Thread(target=run or snd.lib.make, args=(lang, texts), daemon=True)
+    th.start()
+    return th
+
+
+def open_tour(app, popen=subprocess.Popen):
+    prepare_tour_voice(app)
+    try:
+        p = popen(tour_command(), cwd=ACADEMY_DIR)
+        app.say(T("acad.tour_opened"))
+        return p
+    except OSError as e:
+        app.say(T("acad.open_failed", why=str(e)), theme.WARN)
+        return None
+
+
 def add_menu(app, mb):
     m = tk.Menu(mb, tearoff=0)
     m.add_command(label=T("menu.academy_open"), command=lambda: open_academy(app))
+    m.add_command(label=T("menu.academy_tour"), command=lambda: open_tour(app))
     m.add_command(label=T("menu.academy_send"), command=lambda: send_levels(app))
     mb.add_cascade(label=T("menu.academy"), menu=m)
     return m

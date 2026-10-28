@@ -150,3 +150,15 @@ D12 Step 16 (owner answers 2026-10-28: W27-W29, W31 = the recommended defaults; 
    secrets.json flag. Backup (W28): a folder the instructor chooses (second shore PC / USB disk),
    never a boat gateway; the key is not copied. The menu (W31) starts academy/academy_app.py as its
    own process with only --lang. The instructor view's certificate PDF comes with the exams (step 21).
+D13 Step 17 guided tour (spec B). Content = content/tour.json (one stop per item, el + en; an alarm
+   stop's title is the ground station's own alarm text, its level from alerts.py). Coverage is not
+   a hand list: tour.required_items() reads every HUD box (hud.OVERLAYS + logo) and button
+   (hud.Hud.controls / drive + SAVE + ACCEPT), every screen-2 panel (app.py ov.panel) + STANDBY /
+   banners / map bar / boat / editing, every tools page (app.py tab), every mode (proto.MODES),
+   every alarm of both words + NO DATA, the MASTER lamps, the joystick parts and the panel buttons;
+   AC22 fails on a new screen item without a stop. The pictures are DRAWINGS of the screen (boxes
+   from hud.DEFAULT_LAYOUT; screen 2 = schematic corners), never a live screen or a boat link.
+   Voice (D2 / D3 kept: no process in the academy): the GROUND STATION makes it with its own offline
+   TTS (sound.Library.make in the background when the menu opens the tour; sentences from tour.py
+   loaded by its path), the academy only plays the cached .wav (same file names as sound.Library,
+   checked by simguard.check_recording; Windows winsound; elsewhere / TRYGONS_SOUND=off = text only).

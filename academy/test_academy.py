@@ -36,6 +36,17 @@
   AC19 the academy window: the banner is the first thing at the top (exact text, CAUTION colour)
   AC20 the ground-station menu "Academy": its own process with only --lang (never a link / host /
        port), the levels file only over a gateway login, the gateway's answer shown
+  AC21 guided tour content (step 17, spec B): content/tour.json passes content.check + tour.check;
+       the tour checker catches the bad cases (double id, unknown show / target / item, no text)
+  AC22 tour coverage: every HUD box + button, every screen-2 panel, every tools page, every mode,
+       every alarm (both words + NO DATA), the MASTER lamps, the joystick and every panel button has
+       a stop (the list is read from the ground station's own sources); both languages complete
+  AC23 tour voice: the same file names as the ground station's TTS cache (sound.Library); the
+       station's menu "Guided tour" = its own process with only --lang + the voice made in the
+       background with exactly the tour's sentences (the academy runs no TTS / process itself)
+  AC24 the tour window: banner first, next / back / chapter jump through every stop in el + en,
+       the voice played only from an existing file through simguard (none = text only, off = quiet,
+       on a gateway PC = refused); the academy window's "Guided tour" button opens it
 
 Run:  python academy/test_academy.py      (exit code 0 = all passed)
 """
@@ -372,6 +383,8 @@ def ac9():
     used |= {"level." + lv for lv in accounts.LEVELS}
     import academy_app
     used |= {"acc.col_" + c for c in academy_app.COLUMNS}
+    import tour_app
+    used |= {"tour.s2_" + n for n in tour_app.S2_BOXES}
     missing = sorted(k for k in used if k not in el or k not in en)
     if missing:
         wrong.append("used but missing: %s" % missing)
@@ -388,7 +401,7 @@ def ac10():
         d = content.load(f)
         kinds.add(d.get("kind"))
         probs += content.check(d, os.path.relpath(f, HERE))
-    need = {"lesson", "quiz", "scenario", "exam", "limits", "test_area"}
+    need = {"lesson", "quiz", "scenario", "exam", "limits", "test_area", "tour"}
     if kinds != need:
         probs.append("example kinds %s, expected %s" % (sorted(k for k in kinds if k), sorted(need)))
     bad_docs = [
@@ -769,9 +782,247 @@ def ac20():
            "own process with only --lang; the levels file only over a gateway login; the answer shown in Greek")
 
 
+# --- AC21 -------------------------------------------------------------------------------------
+def ac21():
+    import copy
+    import content
+    import tour
+    doc = tour.load()
+    wrong = content.check(doc, "tour.json") + tour.check(doc)
+    st0 = doc["chapters"][1]["stops"][1]
+    bad = []
+    d = copy.deepcopy(doc)
+    d["chapters"][1]["stops"].append(copy.deepcopy(st0))                         # double id
+    bad.append(d)
+    d = copy.deepcopy(doc)
+    d["chapters"][1]["stops"][1]["show"] = "boat"                                # unknown show
+    bad.append(d)
+    d = copy.deepcopy(doc)
+    d["chapters"][1]["stops"][1]["target"] = "nonsense"                          # unknown target
+    bad.append(d)
+    d = copy.deepcopy(doc)
+    d["chapters"][1]["stops"][1]["covers"] = ["hud:nonsense"]                    # unknown item
+    bad.append(d)
+    d = copy.deepcopy(doc)
+    d["chapters"][1]["stops"][1]["text_en"] = " "                                # no English text
+    bad.append(d)
+    d = copy.deepcopy(doc)
+    d["kind"] = "lesson"
+    bad.append(d)
+    missed = [i for i, b in enumerate(bad) if not tour.check(b)]
+    if missed:
+        wrong.append("tour checker missed bad case(s) %s" % missed)
+    n = sum(len(c["stops"]) for c in doc["chapters"])
+    report("AC21 guided tour content", not wrong, "; ".join(wrong) or
+           "%d chapters, %d stops OK; %d bad cases caught" % (len(doc["chapters"]), n, len(bad)))
+
+
+# --- AC22 -------------------------------------------------------------------------------------
+def ac22():
+    import copy
+    import alerts
+    import hud
+    import i18n
+    import proto
+    import tour
+    doc = tour.load()
+    wrong = []
+    miss = tour.missing(doc)
+    if miss:
+        wrong.append("not covered: %s" % miss)
+    btn, pan, pages = tour.hud_buttons(), tour.s2_panels(), tour.tools_pages()
+    if not {"lang", "night", "declutter", "scale", "ar_menu", "edit", "vision_clear", "remote_req",
+            "maneuver_req", "release"} <= set(btn):
+        wrong.append("the HUD button list reads %s" % btn)
+    if not {"status", "alarms", "helm", "link", "control", "traffic", "relays"} <= set(pan):
+        wrong.append("the screen-2 panel list reads %s" % pan)
+    if len(pages) < 15 or "tab.engine" not in pages:
+        wrong.append("the tools page list reads %s" % pages)
+    req = tour.required_items()
+    want = (len(hud.OVERLAYS) + 1 + len(btn) + len(tour.HUD_BUTTONS_EXTRA) + len(pan) + len(tour.S2_EXTRA) +
+            len(pages) + len(proto.MODES) + len(alerts.ALARM_LEVELS) + 1 + len(tour.LAMPS) + len(tour.JOYSTICK) +
+            len(tour.PANEL))
+    if len(req) != want or len(alerts.ALARM_LEVELS) < 38:
+        wrong.append("required %d items, expected %d" % (len(req), want))
+    # the checker is not blind: a chapter taken away is reported
+    d = copy.deepcopy(doc)
+    d["chapters"] = [c for c in d["chapters"] if c["id"] != "alarms"]
+    if len(tour.missing(d)) != len(alerts.ALARM_LEVELS) + 1:
+        wrong.append("removing the alarm chapter was not seen")
+    greek = re.compile(u"[Ͱ-Ͽ]")
+    for lc in ("el", "en"):
+        for s in tour.stops(lc, doc):
+            if not s["title"].strip() or s["title"].startswith("[") or not s["text"].strip():
+                wrong.append("%s %s: empty or missing text" % (lc, s["id"]))
+            if lc == "el" and not greek.search(s["text"]):
+                wrong.append("el %s: not Greek" % s["id"])
+            if s["show"] == "alarm" and s["title"] != i18n.TL(lc, "alarm." + s["target"]):
+                wrong.append("%s %s: not the screen's alarm text" % (lc, s["id"]))
+    report("AC22 tour covers every screen item", not wrong, "; ".join(wrong[:8]) or
+           "%d items covered (%d HUD boxes, %d HUD buttons, %d screen-2 parts, %d tools pages, %d modes, %d alarms, "
+           "lamps, joystick, panel); el + en complete" % (len(req), len(hud.OVERLAYS) + 1, len(btn) + 2,
+                                                          len(pan) + 5, len(pages), len(proto.MODES),
+                                                          len(alerts.ALARM_LEVELS) + 1))
+
+
+# --- AC23 -------------------------------------------------------------------------------------
+def ac23():
+    wrong = []
+    gs = os.path.join(REPO, "groundstation")
+    os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(tempfile.mkdtemp(), "gs_settings.json"))
+    os.environ.setdefault("TRYGONS_SOUND", "off")
+    if gs not in sys.path:
+        sys.path.insert(0, gs)
+    import tour
+    import sound
+    import academymenu
+    tmp = tempfile.mkdtemp(prefix="trygons_ac23_")
+    lib = sound.Library(tmp)
+    for lc in ("el", "en"):
+        ss = tour.sentences(lc)
+        if academymenu.tour_sentences(lc) != ss:
+            wrong.append("%s: the station's sentences differ" % lc)
+        for t in ss[:5] + ss[-5:]:
+            if tour.voice_path(lc, t, tmp) != lib.sentence_path(lc, t):
+                wrong.append("%s: voice file name differs" % lc)
+                break
+        if len(set(ss)) != len(ss):
+            wrong.append("%s: two stops say the same sentence" % lc)
+    saved = os.environ.pop("TRYGONS_SOUND_CACHE", None)
+    if tour.voice_cache() != sound.Library().cache:
+        wrong.append("default cache %s != %s" % (tour.voice_cache(), sound.Library().cache))
+    if saved is not None:
+        os.environ["TRYGONS_SOUND_CACHE"] = saved
+    cmd = academymenu.tour_command()
+    if cmd[1:] != [os.path.join(REPO, "academy", "tour_app.py"), "--lang", cmd[-1]] or cmd[-1] not in ("el", "en"):
+        wrong.append("tour command %s" % cmd)
+    src = open(os.path.join(gs, "academymenu.py"), encoding="utf-8").read()
+    opener = src.split("def open_tour")[1].split("\ndef ")[0]
+    if "link" in opener or "tour_command()" not in opener:
+        wrong.append("open_tour hands the link over")
+    made = []
+
+    class Lib(object):
+        def make(self, lang, texts):
+            made.append((lang, list(texts)))
+
+    class Snd(object):
+        lib = Lib()
+
+    class FakeApp(object):
+        def __init__(self, snd):
+            self.sound, self.said = snd, []
+
+        def say(self, t, c=None):
+            self.said.append(t)
+    started = []
+    p = None
+    old = os.environ.get("TRYGONS_SOUND")
+    try:
+        os.environ["TRYGONS_SOUND"] = "on"
+        app = FakeApp(Snd())
+        p = academymenu.open_tour(app, popen=lambda c, cwd=None: started.append(c) or "proc")
+        th = academymenu.prepare_tour_voice(app, "el")
+        if th:
+            th.join(5)
+        if academymenu.prepare_tour_voice(FakeApp(None)) is not None:
+            wrong.append("voice without a sound system")
+        os.environ["TRYGONS_SOUND"] = "off"
+        if academymenu.prepare_tour_voice(FakeApp(Snd())) is not None:
+            wrong.append("voice made with TRYGONS_SOUND=off")
+    finally:
+        if old is None:
+            os.environ.pop("TRYGONS_SOUND", None)
+        else:
+            os.environ["TRYGONS_SOUND"] = old
+    if p != "proc" or started != [cmd]:
+        wrong.append("open_tour started %s" % started)
+    if not made or made[-1] != ("el", tour.sentences("el")):
+        wrong.append("the voice was not made with the tour's sentences (%d calls)" % len(made))
+    names, _ = imports_of(os.path.join(HERE, "tour_app.py"))
+    names2, _ = imports_of(os.path.join(HERE, "tour.py"))
+    if (names | names2) & {"sound", "tts", "subprocess"}:
+        wrong.append("the academy tour imports the TTS / a process module")
+    report("AC23 tour voice", not wrong, "; ".join(wrong) or
+           "same cache names as the station's TTS; menu = own process (--lang only) + the voice made in the "
+           "background with the %d tour sentences" % len(tour.sentences("el")))
+
+
+# --- AC24 -------------------------------------------------------------------------------------
+def ac24():
+    import banner
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+    except Exception as e:
+        report("AC24 tour window", True, "no display here (%s): content checked by AC21-AC23" % e)
+        return
+    import sound
+    import tour
+    import tour_app
+    wrong = []
+    tmp = tempfile.mkdtemp(prefix="trygons_ac24_")
+    try:
+        root.withdraw()
+        for lc in ("el", "en"):
+            top = tk.Toplevel(root)
+            pl = tour_app.NullPlayer()
+            w = tour_app.TourWindow(top, lc, player=pl, cache=tmp)
+            top.update()
+            if top.pack_slaves()[0] is not w.banner or w.banner.cget("text") != banner.banner_text(lc) or \
+                    w.banner.cget("bg").lower() != tour_app.CAUTION.lower():
+                wrong.append("%s: banner not first / text / colour" % lc)
+            n = len(w.stops)
+            seen = {w.stops[0]["show"]}
+            for _ in range(n + 2):                       # every stop drawn, past the end stays at the end
+                w.next()
+                seen.add(w.stops[w.index]["show"])
+            if w.index != n - 1 or seen != set(tour.SHOWS):
+                wrong.append("%s: walk ended at %d of %d, shows %s" % (lc, w.index, n, sorted(seen)))
+            w.back()
+            if w.index != n - 2:
+                wrong.append("%s: back" % lc)
+            w.jump("alarms")
+            if w.stops[w.index]["show"] != "alarm" or w.stops[w.index - 1]["show"] == "alarm":
+                wrong.append("%s: chapter jump" % lc)
+            if w.voice_state != "missing":
+                wrong.append("%s: no voice file but %s" % (lc, w.voice_state))
+            path = tour.voice_path(lc, tour.sentence(w.stops[w.index]), tmp)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            sound.write_wav(path, sound._silence(50))
+            w.speak()
+            if w.voice_state != "played" or pl.played[-1] != os.path.abspath(path):
+                wrong.append("%s: the prepared voice not played (%s)" % (lc, w.voice_state))
+            saved = os.environ.get("PROGRAMDATA")
+            os.environ["PROGRAMDATA"] = gateway_pc()["PROGRAMDATA"]
+            try:
+                w.speak()
+                if w.voice_state != "missing":
+                    wrong.append("%s: played on a gateway PC" % lc)
+            finally:
+                if saved is None:
+                    os.environ.pop("PROGRAMDATA", None)
+                else:
+                    os.environ["PROGRAMDATA"] = saved
+            w.toggle_voice()
+            if w.voice_state != "off" or pl.played[-1] is not None:
+                wrong.append("%s: voice off" % lc)
+            top.destroy()
+        import academy_app
+        app = academy_app.AcademyApp(tk.Toplevel(root), _store())
+        tw = app.open_tour()
+        if not isinstance(tw, tour_app.TourWindow):
+            wrong.append("academy window: no tour")
+    finally:
+        root.destroy()
+    report("AC24 tour window", not wrong, "; ".join(wrong) or
+           "banner first; every stop drawn in el + en; back / jump; voice only from a prepared file via simguard; "
+           "academy button opens it")
+
+
 if __name__ == "__main__":
     for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
-              ac19, ac20):
+              ac19, ac20, ac21, ac22, ac23, ac24):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run

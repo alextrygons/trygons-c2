@@ -10,6 +10,7 @@ every file has "kind" and "_help"; every text a trainee sees is given in BOTH la
   content/exams/*.json      kind "exam"     exams per level (spec G, step 21)
   content/limits.json       kind "limits"   validity, reminder, currency, attempts (spec J)
   content/test_area.json    kind "test_area" practical test area (spec J) - PLACEHOLDER
+  content/tour.json         kind "tour"     the guided tour of the screens (spec B, step 17; tour.py checks it)
 
 check(doc) returns a list of problems (empty = OK); test_academy.py AC10 checks every file.
 """
@@ -19,7 +20,7 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTENT_DIR = os.path.join(HERE, "content")
 KINDS = {"lesson": "lessons", "quiz": "quizzes", "scenario": "scenarios", "exam": "exams",
-         "limits": None, "test_area": None}
+         "limits": None, "test_area": None, "tour": None}
 LEVELS = ("OBSERVER", "DRIVER", "CAPTAIN")
 
 

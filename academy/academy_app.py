@@ -66,7 +66,8 @@ class AcademyApp(object):
         self.buttons = {}
         for key, fn in (("acc.new", self.new_account), ("acc.set_level", self.set_level),
                         ("acc.log_hours", self.log_hours), ("acc.make_push", self.make_push),
-                        ("acc.key", self.show_key), ("acc.backup", self.backup), ("acc.refresh", self.refresh)):
+                        ("acc.key", self.show_key), ("acc.backup", self.backup), ("acc.refresh", self.refresh),
+                        ("acc.tour", self.open_tour)):
             b = tk.Button(bar, text=T(key), command=fn)
             b.pack(side="left", padx=3)
             self.buttons[key] = b
@@ -168,6 +169,12 @@ class AcademyApp(object):
         self.root.clipboard_clear()
         self.root.clipboard_append(k)
         self.say(T("acc.key_shown", path=self.store.key_path))
+
+    def open_tour(self):
+        """The guided tour (step 17) in its own window of THIS process (no process, no link)."""
+        import tour_app
+        self.tour = tour_app.TourWindow(tk.Toplevel(self.root), text.lang())
+        return self.tour
 
     def backup(self):
         d = filedialog.askdirectory(parent=self.root, title=T("acc.backup"))

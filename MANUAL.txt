@@ -1016,6 +1016,19 @@ THE ACADEMY LEVELS (menu Academy on the ground station)
   second shore PC or a USB disk; never a boat's gateway). The key is not
   copied - keep it safe separately.
 
+THE GUIDED TOUR (menu Academy -> Guided tour)
+  A tour of everything on the station, one item at a time on a drawing of
+  the screen: screen 1 (every HUD box and button), screen 2 (the map and
+  every corner panel), every page of the tools window, every mode, every
+  alarm with its level, the MASTER lamps, the joystick and the panel
+  buttons. Next / Back (or the arrow keys, space = next), the chapter list
+  on the left jumps, "Say again" repeats the voice, "Voice: ON / OFF".
+  The voice (Greek, or English with the English screen) is made by this
+  station's offline voice (Piper) in the background the first time you open
+  the tour from the menu - a few minutes; until then the tour shows the text
+  only. The academy window's "Guided tour" button opens the same tour.
+  The tour only explains: it never connects to a boat (banner at the top).
+
 CAPTAIN AND COPILOT (the gateway decides, every station shows it)
   CAPTAIN   holds the manual licence and sits at screen 1 (cameras +
             joystick). Holds HELM. The ONLY one who can start REMOTE
