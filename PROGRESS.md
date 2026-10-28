@@ -40,6 +40,11 @@ OD-1..OD-12 (owner 2026-10-28, docs/dronecan_design.md 13); OA-1..OA-4 are recor
 | W25 | Windows gateway: the camera network needs DHCP + time (NTP) for the cameras; Ubuntu has dnsmasq + chrony (README 14), Windows has neither built in. Options: fixed IPs in the cameras (if the Tapo app allows it), a small DHCP server program on Windows (a new dependency), or the camera network only with Ubuntu | camera network on a Windows gateway only | use Ubuntu for the gateway (recommended at sea anyway); decide only if Windows stays |
 | W26 | The step 12 CPU / RAM numbers were measured on this dev PC (i7-13700H), NOT on the ThinkPad: run `python tools/gateway_load.py --minutes 10` once on the ThinkPad (README 21) | nothing in software; the vision frame rate at sea | if vision < 1 fps or the gateway total > 70 % of the PC: vision max_fps 1, INT8 model, or 1 thread |
 | W23 | Step 11f readings of design section 9 - owner 2026-10-28: keep (a)-(d), PENDING the owner's 11e/11f safety review: (a) after ANY reset the AURIX sends NO relay frame until a relay is commanded; (b) a new state = 10 frames at 50 Hz, then silence; (c) a board without hardpoint.Status: the commanded states shown ("no readback"), unknown after an AURIX-only power-on, all OFF when the board booted after the AURIX (uptime rule, R-2); (d) relays.c: an interlocked partner that is UNKNOWN and not momentary blocks the other relay | nothing (the code does it this way; a change is small) | keep (a)-(d) - pending the owner's safety review |
+| W27 | Academy limits not in the spec (step 15, academy/content/limits.json + test_area.json): exam attempts before the cool-down, the cool-down, the practical test's max wind and allowed hours | step 21 (exams + practical test); blocks nothing before | 3 attempts, then 24 h; max wind 12 kn; 08:00-19:00 local |
+| W28 | Academy accounts "in backup / sync" (spec A): where should the shore PC's academy/data/ be backed up (a USB disk, a second shore PC, the gateway SSD, a cloud folder)? | step 16 (storage); blocks nothing before | a copy to a folder you choose (default: a second PC / USB disk), never a boat gateway |
+| W29 | Academy 2FA for CAPTAIN + instructor (spec J): which second factor | step 21 (online academy) | an offline TOTP app (6-digit codes, e.g. Google Authenticator / Aegis), no SMS |
+| W30 | Academy test area (spec J): the real Daskalio bay polygon + ramp top / bottom points (academy/content/test_area.json is a clearly marked PLACEHOLDER) | the practical test on the real boat only (it refuses a placeholder area); blocks no code step | set them with the instructor tool (step 21) on site: boat GPS "add point" at the ramp top / bottom |
+| W31 | Academy start: the ground-station menu "Academy" opens the academy in its OWN window/process using only the simulator, never the station's boat link (decision D10) - confirm | step 16 (the menu entry) | yes |
 
 Current task: "C2 extensions + Academy" (design = CLAUDE.md section "C2 extensions + Academy", parts
 G-S; academy spec = docs/ACADEMY_SPEC.md). Steps 0-14 = C2 extensions (alarms in one place, boat
@@ -81,7 +86,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 12 | Gateway on a Lenovo ThinkPad L390 Yoga (i5-8265U, 8 GB RAM, 500 GB SSD, Win11 now): support BOTH Ubuntu 24.04 LTS (recommended at sea: no forced updates / restarts) and Windows 11; remove Pi-only parts; 3.3 V USB-UART to the AURIX (never RS232); USB AIS receiver; README / PARTS / WIRING with install steps for both OSes; measure CPU / RAM with 4 camera streams + vision on the CPU (no NVIDIA); power from the 12 V bank via a USB-C PD car charger, built-in battery = UPS, battery charge limit 80 % (Vantage on Windows / TLP on Ubuntu), lid closed must keep running, Ethernet to the PoE switch (USB-Ethernet adapter if no RJ45) - put this in PARTS / README | DONE (gate OK: sim 283/283 + bridge 282/282 (1 N/A) + DroneCAN 275/275 x 2, TriCore + iLLD checks, CPU1 RAM OK, FAT32 2/2, NV 4/4, DroneCAN 19/19, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15, sound 10/10, avoidance 14/14, OS 12/12 (new test_osdep.py OS1-OS12), gateway 112/112 (F5 failed once in a run during the docs work, passed alone and in the gate: timing); acceptance quick 7/7 PASS (fresh build of the pushed 11f HEAD incl. test_driver 21/21). Load measured on the dev PC, not the ThinkPad: gateway 1.55 CPUs / 726 MB, vision 1.95 fps (README 21); new W25, W26, W17 updated; notes) | this commit |
 | 13 | Open items: AUTO return, docs/screens pictures (tools/demo_screens.py), paddlewheel, analog joystick; W18 (owner 2026-10-28): the false GPS SUSPECT of the dr.c slow-drag check at the new 50 %/s throttle slow-down (rate_down 50). **Waits for the HOLD (owner's 11e/11f safety review)** | | |
 | 14 | Final check: full acceptance + 24 h soak, TEST_REPORT. **Waits for the HOLD (owner's 11e/11f safety review)** | | |
-| 15 | Academy design + "no boat link" tests | | |
+| 15 | Academy design + "no boat link" tests | DONE (Python / docs only - no app / hal / gateway / groundstation code touched. Gate OK: sim + bridge + DroneCAN all exit 0, TriCore + iLLD + writer checks, FAT32 2/2, NV 4/4, DroneCAN 19/19, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15, sound 10/10, avoidance 14/14, OS 12/12, academy 14/14 (new, AC1-AC14), gateway 112/112; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-12 HEAD, every other suite this tree), storm 200 episodes. Design D1-D11 in docs/ACADEMY_SPEC.md + CLAUDE.md S; new W27-W31; notes) | this commit |
 | 16 | Academy A (accounts, levels, gateway push) | | |
 | 17 | Academy B (guided tour) | | |
 | 18 | Academy C + D (sim lessons, quizzes) | | |
@@ -102,6 +107,22 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 
 ## Notes
 
+- Step 15 (2026-10-28): Academy design + "no boat link" tests. New top-level academy/ (excluded from the ADS build
+  in all 4 .cproject configurations; academy/data/ gitignored for step 16): simguard.py (the ONLY academy module
+  allowed a socket / recording: sim on THIS PC = loopback + 5760 / 5761, gateway welcome name "trygons-demo" and
+  never a boats/ name; boats/ IPs, Tailscale, LAN, host names, port 5762 refused; recordings = ordinary files, never
+  COM / /dev / tcp: / usb:; nothing at all on a gateway PC = gateway.json present), banner.py + lang/el.txt / en.txt
+  (academy.banner = «ΕΚΠΑΙΔΕΥΣΗ – ΠΡΟΣΟΜΟΙΩΣΗ» exact, EN DASH), text.py, accounts.py (levels model only: expired /
+  unknown = OBSERVER, licence = CAPTAIN; push_to_gateway = step 16), content.py + content/ (README + commented
+  example_* lesson / quiz / scenario / exam + limits.json + test_area.json PLACEHOLDER, not_for_navigation, the
+  daskalio photos listed for display only). academy/test_academy.py AC1-AC14 in tools/check.sh: static + transitive +
+  runtime proof that no academy module reaches a boat link (the checker is shown to see link / gwclient / boats /
+  aurix / gateway as boat links), simguard tables, gateway-PC refusal, banner, lang keys, content checker incl. bad
+  cases, photo rule (no safety code mentions docs/daskalio or reads the academy), levels, ADS exclude, practical
+  test kept apart (academy/practical/ = step 21, own test required). NO ground-station menu entry yet (D10: the spec
+  gives none for step 15; step 16 adds it, W31) - so no MANUAL change in this step (nothing user-visible; the academy
+  chapter = step 22). Open: W27 (attempts / cool-down / wind / hours), W28 (backup target), W29 (2FA), W30 (real test
+  area), W31 (menu = own window, never the station's boat link).
 - Step 12 (2026-10-28): gateway on the ThinkPad L390 Yoga, Ubuntu 24.04 LTS AND Windows 11. NO AURIX / app /
   hal change. New gateway/osdep.py = the only OS-specific module: resolve_serial (usb:VID:PID[:SERIAL] by
   pyserial's port list on both OSes, /dev/serial/by-id -> the real device on Ubuntu, COMn on Windows, tcp: for

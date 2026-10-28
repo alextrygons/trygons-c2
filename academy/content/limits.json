@@ -1,0 +1,14 @@
+{
+  "_help": "Academy limits (spec J). The defaults below are the owner's spec values; the ones marked TO CONFIRM are recommended defaults (PROGRESS.md WAITING FOR OWNER W27).",
+  "kind": "limits",
+  "validity_months": 12,
+  "reminder_days": 30,
+  "currency_days": 90,
+  "_note_currency": "no logged driving in currency_days -> a supervised refresher trip (a CAPTAIN on board approves + onboard CONFIRM) before solo rights return",
+  "captain_check_ride_months": 24,
+  "expired_full_test_months": 3,
+  "exam_attempts": 3,
+  "_note_attempts": "TO CONFIRM (W27): 3 attempts, then the cool-down",
+  "exam_cooldown_h": 24,
+  "_note_cooldown": "TO CONFIRM (W27): 24 h between failed attempts after the last allowed one"
+}

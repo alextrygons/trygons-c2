@@ -1,0 +1,23 @@
+# =============================================================================
+#  Trygons C2 Academy - ENGLISH screen texts (Greek el.txt is the default)
+# =============================================================================
+#  Same rules as groundstation/lang/en.txt: one "key = text" per line, keep every
+#  {name}, # = comment. academy/test_academy.py checks that el.txt and en.txt have
+#  the same keys and that the banner is exactly "TRAINING – SIMULATION".
+# =============================================================================
+
+# the banner on EVERY academy screen (do NOT change it: the test checks it)
+academy.banner = TRAINING – SIMULATION
+academy.title = Trygons C2 Academy
+academy.sim_only = Only with the simulator or recordings - never with a real boat.
+academy.photo_note = Chart photo for training - NOT for navigation.
+
+# levels (accounts)
+level.OBSERVER = OBSERVER
+level.DRIVER = DRIVER
+level.CAPTAIN = CAPTAIN
+
+# refusals (the English reason stays in the log)
+refuse.not_sim = The academy connects only to the simulator on this PC.\n{why}
+refuse.on_gateway = The academy never runs on a boat's gateway PC.
+refuse.recording = This is not a recorded file: {why}

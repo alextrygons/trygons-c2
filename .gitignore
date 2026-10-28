@@ -36,3 +36,6 @@ test_results/
 gateway/vision/models/
 gateway/vision/data/
 demo/media/
+
+# academy accounts / logbook on the shore PC (step 16+): never in git
+academy/data/

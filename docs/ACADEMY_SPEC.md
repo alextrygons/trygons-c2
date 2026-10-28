@@ -81,3 +81,61 @@ ramp), allowed hours; wind is typed in + confirmed by the examiner; instructor t
 taps, boat GPS "add point", .geojson import; CAPTAIN only, audit-logged); the test refuses outside the
 area / limits and says why, and refuses until the area is set; leaving the area during a test = alert +
 test stopped, never a mode change.
+
+## Design decisions (step 15, 2026-10-28) - where the owner's text above leaves things open
+Recorded by step 15; the owner's text above stays binding. Open owner questions: PROGRESS.md
+"WAITING FOR OWNER" W27-W31 (recommended defaults used until answered).
+
+D1 Folder + build. academy/ = Python only (flat modules like groundstation/, run with academy/ on
+   sys.path), excluded from the ADS build in every .cproject configuration (check_ads_excludes.py +
+   test AC13). Its tests academy/test_academy.py run in tools/check.sh.
+D2 ONE door out: academy/simguard.py is the only academy module allowed to import a network module
+   or open a recording. Allowed: the simulator on THIS PC only = host 127.0.0.1 / localhost / ::1 AND
+   port 5760 (autopilot_sim server, USB link) or 5761 (the demo gateway's station port); on 5761 the
+   gateway welcome's boat name must be a simulator name (SIM_BOAT_NAMES = "trygons-demo", demo/demo.py)
+   and never a boats/ name - so a real gateway tunnelled to localhost is still refused. Refused: LAN,
+   Tailscale 100.64.0.0/10, every boats/*.json address, host names, every other port (5762 = the sim
+   AURIX's gateway UART: the academy never plays gateway). Recordings: ordinary files with a recording
+   extension (.tlg, .csv, .jsonl, .json, .mp4, .mkv, .wav, .log, .txt) - never COMn, /dev/..., tcp:,
+   usb:, a folder. On a gateway PC (its config file gateway.json exists in %PROGRAMDATA%\trygons or
+   /etc/trygons) the academy refuses everything (spec J "never runs on a boat gateway").
+D3 The proof (tests AC1-AC3): (1) static - no academy module except simguard imports socket / ssl /
+   serial / http / urllib / requests / asyncio / subprocess / multiprocessing / selectors ... nor loads
+   code by name (__import__, importlib, exec, eval, os.system ...); (2) transitive - no academy import
+   reaches such a module through ground-station / gateway / demo / tools modules (the checker is
+   proven to see link.py, gwclient.py, boats.py, aurix.py, gateway.py as boat links); (3) runtime -
+   loading every academy module + its content with socket.connect / create_connection patched makes
+   0 connection attempts and loads no boat-link module. Starting the simulator from the academy (a
+   process) will go through simguard too (a later step adds it there, tested).
+D4 PRACTICAL TEST exception (spec G, step 21): its own folder academy/practical/, the ONLY academy
+   code allowed on the normal boat link, read-only (telemetry + audit log) + the one confirm-only
+   request (PROTO_T_CONFIRM_ONLY 0x30); no other academy module may import it (AC14) and it must
+   ship its own academy/practical/test_practical.py (no bypass of any safety rule).
+D5 Banner: the text lives in academy/lang/el.txt / en.txt key academy.banner = exactly
+   «ΕΚΠΑΙΔΕΥΣΗ – ΠΡΟΣΟΜΟΙΩΣΗ» (EN DASH U+2013) / "TRAINING – SIMULATION"; academy/banner.py holds the
+   same text as constants and AC8 checks both. Every academy screen draws banner_text() at the top,
+   always visible, in the theme's CAUTION colour (groundstation/theme.py, one look); AC8 fails for an
+   academy module that uses tkinter without it.
+D6 Languages: academy/lang/el.txt (default) + en.txt, the ground station's file format; same keys
+   and {names} (AC9). Content files carry their own trainee texts in both languages ("<name>_el" +
+   "<name>_en"); English stays in logs / audit.
+D7 Content format: JSON with "_help" / "_note..." keys as comments (the boats/*.json convention), one
+   file per lesson / quiz pool / scenario / exam + limits.json + test_area.json under academy/content/
+   (lessons/, quizzes/, scenarios/, exams/); academy/content.py checks every file (AC10): kind, _help,
+   both languages, lessons + scenarios "runs_on": "sim", quiz answers index their choices. Step 15
+   ships commented EXAMPLE files (names example_*); the real content comes in steps 18 / 19 / 21.
+D8 Levels (step 15 = model only, academy/accounts.py): OBSERVER < DRIVER < CAPTAIN; licence = CAPTAIN
+   only; an unknown level or an expired one (or a level without an expiry) = OBSERVER; the record
+   pushed to the gateway = user, level, licence, expiry. Storage, logbook, instructor view and the
+   push itself = step 16 (push_to_gateway raises NotImplementedError until then).
+D9 Chart photos (docs/daskalio/): the test area picture, the demo map and the 3D sim only.
+   content/test_area.json carries "not_for_navigation": true and "placeholder": true (the Daskalio /
+   Keratea polygon and the ramp points are NOT surveyed); the practical test refuses while the area is
+   a placeholder. AC11: no safety code (app/, hal/, gateway/, groundstation/chart.py,
+   tools/chartprep.py) mentions docs/daskalio or reads the academy.
+D10 Ground station menu "Academy": NOT added in step 15 (the spec gives no screen for this step);
+   step 16 adds it (display only: it starts the academy window, which shows the banner and uses
+   simguard - the station's own boat link is never handed to the academy).
+D11 Academy data on the shore PC (step 16): academy/data/ (inside the excluded academy/ folder,
+   gitignored, never in git; TRYGONS_ACADEMY_DATA overrides it for tests), one JSON file per account
+   + an append-only logbook; the backup / sync target = W28.

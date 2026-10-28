@@ -1,0 +1,13 @@
+{
+  "_help": "EXAMPLE emergency scenario (format only, step 15; the real scenarios come in step 19). A scenario runs on the simulator only (runs_on sim): at at_s seconds the fault is injected into the SIMULATOR (sim fault names, step 19), the trainee's reaction is scored (expected action + max reaction time), then replay + debrief.",
+  "kind": "scenario",
+  "id": "example_compass_fail",
+  "level": "DRIVER",
+  "runs_on": "sim",
+  "title_el": "Βλάβη πυξίδας σε HDG LOCK",
+  "title_en": "Compass failure in HDG LOCK",
+  "fault": {"at_s": 60, "sim_fault": "compass_lost"},
+  "expect": {"max_reaction_s": 10, "action": "throttle_idle"},
+  "debrief_el": "Σε HDG LOCK η πυξίδα χάθηκε: το σκάφος κρατά την πορεία με το γυροσκόπιο. Κόψτε το γκάζι· στο ρελαντί + νεκρό το σύστημα πηγαίνει σε STANDBY.",
+  "debrief_en": "The compass was lost in HDG LOCK: the boat holds on the gyro. Close the throttle; at idle + neutral the system goes to STANDBY."
+}

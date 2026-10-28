@@ -159,7 +159,7 @@ sed -n '/RAM PER CORE/,$p' "$TEMP/mem_report.txt"
 [ $mrc -ne 0 ] && { echo "MEMORY CHECK FAILED"; fail=1; }
 
 # every Python file of the ground station / tools must at least parse
-for f in groundstation/*.py tools/*.py; do
+for f in groundstation/*.py tools/*.py academy/*.py; do
     "$PY" -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$f" 2>/dev/null || { echo "PYTHON SYNTAX ERROR: $f"; fail=1; }
 done
 echo "python files parse"
@@ -193,6 +193,9 @@ grep -E "^\[FAIL\]|AVOIDANCE TESTS" "$TEMP/avoid_tests.txt"
 echo "== gateway PC on Ubuntu + Windows (serial names, config, install files)"
 ( cd gateway && "$PY" test_osdep.py > "$TEMP/osdep_tests.txt" 2>&1 ) || { echo "OS TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|OS TESTS" "$TEMP/osdep_tests.txt"
+echo "== academy (step 15+): no boat link - only the simulator on this PC or recorded files; banner; content; ADS exclude"
+PYTHONIOENCODING=utf-8 "$PY" academy/test_academy.py > "$TEMP/academy_tests.txt" 2>&1 || { echo "ACADEMY TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|ACADEMY TESTS" "$TEMP/academy_tests.txt"
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS" "$TEMP/gw_tests.txt"
