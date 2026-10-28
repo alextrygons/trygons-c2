@@ -193,8 +193,17 @@ kill relay wired (engine OFF, a test lamp on the kill relay output).
 Engine OFF, the DroneCAN GUI Tool on a laptop directly on the bus (WIRING.md 3E). Write every
 measured value / answer here.
 
-- [ ] Node command timeouts: throttle goes to IDLE (NOT the middle), gear HOLDS (OD-5), steering
-      HOLDS, within the timeout (WIRING.md 3E).
+- [ ] Pixhawk UNPLUGGED from the CAN bus (it is node 10 too, like the AURIX: never both on the
+      bus - OA-4).
+- [ ] Node command timeouts, every node with `SRV_CMD_TIME_OUT` 0 (AP_Periph has NO "idle on
+      timeout" - OA-1): command a position, stop the commands: gear HOLDS (OD-5), steering HOLDS,
+      throttle HOLDS.
+- [ ] Throttle node with a TEST timeout (e.g. 300 ms), engine OFF: command mid throttle, stop the
+      commands, scope the node output. After the timeout: pulses STOP ____ / go to 1500 us
+      (= half throttle) ____ / other ____ . Then: does the return spring pull the lever to idle?
+      ____ . ONLY "pulses stop AND spring to idle" allows a throttle timeout on the boat (value
+      ____ ms, owner signs ________); otherwise the throttle node stays at 0 (hold). Until this
+      line is filled in, nothing in the docs or the code may assume "node timeout = idle".
 - [ ] Servo speeds: steering lock to lock ____ s, throttle idle to full ____ s. A value shorter
       than 6 s is used for the safety waits ONLY if the owner signs it here (OD-4):
       signed ________ date ______.
@@ -207,6 +216,10 @@ measured value / answer here.
 - [ ] E-stop: pressed = the engine kill circuit opens (test lamp), CREWED and UNCREWED (OD-1); the
       servo nodes stay powered (OD-2).
 - [ ] UNCREWED monitor trip test: P10.5 opens the kill circuit (test lamp); CREWED: it does not (OD-2).
+- [ ] UNCREWED dead-man (OA-3, once the timer relay is fitted - part TO CONFIRM): UNCREWED, stop
+      the AURIX's pulses (halt core 0 / CPU1 in ADS, or pull the pulse wire): the kill circuit
+      opens by itself after ____ s (~1.5 s). A real watchdog reset alone: killed? ____ . CREWED:
+      the dead-man is out of the circuit (no kill without pulses).
 - [ ] STARTER time-limit relay (OD-9): hold START on the relay output longer than its time: the
       timer relay opens by itself (test lamp off) after ____ s.
 

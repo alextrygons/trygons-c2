@@ -2,8 +2,9 @@
 
 Status: DESIGN ONLY. No firmware code in this step. Implementation: steps 11d (CAN driver +
 libcanard + messages), 11e (servos + the new CPU1 safety path + the steering model / TRAINING),
-11f (relay board over DroneCAN). The build loop STOPS after 11c and after 11f for the owner's
-safety review.
+11f (relay board over DroneCAN). Owner safety reviews after 11c and after 11f: a review stop blocks
+ONLY the steps that depend on it (owner rule 2026-10-28, top of PROGRESS.md) - the loop goes on with
+the next independent step and picks the blocked ones up when the owner answers.
 
 Source of truth for the rules: CLAUDE.md section "T. DroneCAN actuators". This document holds the
 reasons, the options, the failure analysis and every open item. Where this document says
@@ -25,6 +26,8 @@ Contents
 11. Chart photos (docs/daskalio) - the photo rule
 12. TO CONFIRM list
 13. Owner decisions (2026-10-28, OD-1..OD-12)
+14. Owner additions (2026-10-28, OA-1..OA-4): node timeouts, throttle node lost, dead-man, node ID 10
+15. Consistency points (a)-(e) waiting for the owner
 
 ---------------------------------------------------------------------------------------------------
 
@@ -163,6 +166,14 @@ the AURIX's compile-time table; never taken from a boat file or the PC, R7):
 | relay board | TO CONFIRM (proposal 30) | hardpoints 0-5 |
 | GPS + compass | 124 (from the parameter file) | not used now |
 
+**Node ID 10 rule (owner addition OA-4):** the Pixhawk (ArduPilot) is ALSO node 10 on this bus
+(CAN_D1_UC_NODE 10). The Pixhawk must NEVER be on the bus together with the AURIX: two nodes with
+the same static ID = colliding transfers, both "masters" commanding the same actuators. The
+Pixhawk is disconnected from the CAN bus (and its CAN port no longer powers the nodes) before the
+AURIX is connected; a bench session with the Pixhawk (e.g. to read node parameters) is done with
+the AURIX unplugged. Proposal for 11d: a NodeStatus received FROM node 10 (our own ID) = alarm SB_ALM2_CAN_BUS
+(ID conflict) + no actuator command leaves STANDBY (interlock) - WIRING.md 3E carries the warning.
+
 Whether one node drives several actuators (one Matek node can have several outputs) is unknown:
 the design supports both (the AURIX watches the node IDs that carry the actuators it needs; a
 shared node lost = all its actuators lost).
@@ -209,9 +220,12 @@ Reaction (owner rule: node silent / not OPERATIONAL = alarm + STANDBY): alarm SB
 the normal STANDBY order (idle at once, neutral when the modelled throttle is idle, steering per
 the safe-stop rules), and the mode may not leave STANDBY while a required node is lost
 (neutral-start interlock: "all required nodes OPERATIONAL" is added). Per lost node:
-- throttle node lost: the AURIX can't command idle - the node's own timeout must (below). Gear:
-  wait the worst-case throttle travel time (`thr_travel_s`, 6 s) before commanding neutral (the
-  throttle may still be coming down). UNCREWED: ENGINE KILL AT ONCE (owner decision OD-3 - an
+- throttle node lost: the AURIX can't command idle and can't know where the throttle is (the node
+  HOLDS its last pulse or does whatever its own timeout does - OA-1, below). Gear: **HOLD, never an
+  automatic neutral** (owner addition OA-2): no gear frame changes the gear while the throttle node
+  is lost - a neutral shift with the throttle possibly open is the shift under load the gear rules
+  forbid. The gear is shifted again only after the throttle node is back OPERATIONAL and has been
+  commanded idle for `thr_travel_s`. UNCREWED: ENGINE KILL AT ONCE (owner decision OD-3 - an
   explicit exception to "kill only after idle + neutral": the throttle may be stuck open, nobody is
   on board; the gear is NOT shifted). CREWED: alarm, the crew stops the engine (kill cord / e-stop)
   if needed - no automatic kill (CLAUDE.md B).
@@ -222,15 +236,29 @@ the safe-stop rules), and the mode may not leave STANDBY while a required node i
 - relay board lost: RELAY BOARD SILENT (advisory, unchanged from step 6 - section 9).
 
 The AURIX sends every actuator command at 100 Hz from a 10 ms core-0 timer task (the 20 Hz control
-step publishes the demands; the task only encodes and queues - never blocking). The node-side
-**command timeout** (no command for `node_cmd_timeout_ms`, proposal 300 ms, TO CONFIRM what the
-node firmware offers) must be set on every node and BENCH-TESTED before the boat moves:
+step publishes the demands; the task only encodes and queues - never blocking).
 
-| Node | On command timeout | Why |
-|------|--------------------|-----|
-| throttle | **IDLE** (-1.0 = 1000 us, the node's configured failsafe pulse) | the only safe throttle; must NOT be "0" (= ~50 %) or "hold" |
-| gear | **HOLD** (keep the last position) | see below |
-| steering | **HOLD** | a position servo that holds keeps the boat on its course; a jump to centre at speed is a turn the AURIX did not ask for |
+**Node-side command timeout (owner addition OA-1, 2026-10-28): AP_Periph has NO "go to idle on
+timeout".** Its only setting is `SRV_CMD_TIME_OUT` (ms, 0 = never time out): with 0 the node HOLDS
+the last commanded pulse for ever; with a value it holds for that time and then "zeros" the output.
+What "zeros" means on the PWM pin is **NOT KNOWN - TO CONFIRM on the bench** (scope on the node
+output): either (i) the pulses STOP (the pin stays low), or (ii) the output goes to the value 0.0 =
+1500 us = **~50 % THROTTLE** (section 2). This design therefore NEVER claims "node timeout ->
+idle" until the bench has confirmed it (FIRST_TEST.md 3j).
+
+| Node | `SRV_CMD_TIME_OUT` | Result on lost commands | Why |
+|------|--------------------|-------------------------|-----|
+| gear | **0** (= hold) | HOLDS the last gear | a timeout hits every node at once; see below |
+| steering | **0** (= hold) | HOLDS the last position | a position servo that holds keeps the boat on its course; a jump to centre at speed is a turn the AURIX did not ask for |
+| throttle | **0 (= hold) by default.** A timeout value only if the bench shows BOTH (i) the pulses STOP after the timeout AND the throttle return spring then pulls the lever to idle (OD-11) | default: HOLDS the last throttle; with a bench-proven timeout: back to idle by the spring | "0.0 on the wire" = ~50 % throttle would be worse than holding; holding is the known behaviour |
+
+So with the default settings **lost commands = every servo HOLDS, the throttle included**. What
+brings the throttle down then: (1) the AURIX after a reset (its first CAN frame is throttle IDLE,
+section 6.4) - a watchdog reset + boot is ~0.3 s; (2) CPU1's safe frames on a trip (section 6.3);
+(3) if nothing can send (bus-off, cable cut, transceiver dead, AURIX dead): ONLY the engine stop -
+CREWED: the crew (kill cord, e-stop, which also opens the kill circuit: OD-1); UNCREWED: the
+hardware dead-man (OA-3, section 14) stops the engine when the AURIX's pulses stop, plus the
+OD-3 kill when the AURIX itself sees the throttle node lost.
 
 Gear: HOLD, not NEUTRAL. Reasons:
 1. Gear change only at idle (CLAUDE.md safety rule). A command timeout hits all nodes at the same
@@ -245,12 +273,15 @@ Gear: HOLD, not NEUTRAL. Reasons:
 4. Propulsion is stopped by the throttle going idle and, if needed, by the engine stop (kill
    cord / kill pin / e-stop) - never by the gear alone.
 
-Bench test (FIRST_TEST.md, engine OFF, done with the DroneCAN GUI Tool on a laptop connected
-directly to the bus - the AURIX never commands throttle above idle in BENCH): for each node, set
-its timeout + failsafe, command a position, unplug / stop the command source, check with a scope /
-by eye that throttle goes to idle (and NOT to mid), gear holds, steering holds, within the
-timeout. Record the measured times in FIRST_TEST.md. Until this passes: no engine running with
-the DroneCAN servos (hardware flag HAL_CAN_FITTED stays 0 and the servos are not "required").
+Bench test (FIRST_TEST.md 3j, engine OFF, done with the DroneCAN GUI Tool on a laptop connected
+directly to the bus - the AURIX never commands throttle above idle in BENCH): (1) every node with
+`SRV_CMD_TIME_OUT` 0: command a position, stop the command source - every servo HOLDS (gear,
+steering, throttle); (2) the throttle node with a test timeout (e.g. 300 ms): command mid
+throttle, stop the commands, scope the node output: do the pulses STOP, or does it go to 1500 us
+(= mid)? Does the return spring then pull the lever to idle? Only "pulses stop AND the spring
+returns to idle" allows a throttle timeout; otherwise the throttle stays at 0 (hold). Record the
+results in FIRST_TEST.md 3j. Until this is done: no engine running with the DroneCAN servos
+(hardware flag HAL_CAN_FITTED stays 0 and the servos are not "required").
 
 ## 6. The new safety path (CPU1 can no longer write the servo pins)
 
@@ -287,7 +318,8 @@ the DroneCAN servos (hardware flag HAL_CAN_FITTED stays 0 and the servos are not
   pending actuator frames (TXBCR, write-1 bits), (3) sends its safe frames every 20 ms from its
   buffer: throttle IDLE at once; steering = the last steering command core 0 published (hold);
   gear = HOLD the last published gear position until `thr_travel_s` (6 s worst case) has passed,
-  then NEUTRAL; (4) buzzer on; in UNCREWED it also opens the engine kill circuit on P10.5 (owner
+  then NEUTRAL - but only while the throttle node is OPERATIONAL (CPU1's idle frames reach it);
+  with the throttle node lost the gear is HELD (OA-2: never an automatic neutral); (4) buzzer on; in UNCREWED it also opens the engine kill circuit on P10.5 (owner
   decision OD-2: P10.5 no longer cuts the servo power - nothing ever cuts it); in CREWED P10.5 is
   not used for a trip (the crew has the kill cord + e-stop).
 - Every core-0 CAN queue call checks the latch BEFORE and AFTER writing (the existing pattern:
@@ -312,16 +344,16 @@ the DroneCAN servos (hardware flag HAL_CAN_FITTED stays 0 and the servos are not
 
 | Failure | What happens | Backstop |
 |---------|--------------|----------|
-| core 0 control loop frozen | its watchdog (100 ms) resets the chip -> ALL CAN silent during reset + boot (~0.3 s + driver start) -> node timeouts: throttle IDLE, gear HOLD, steering HOLD; at boot (below) | node timeout bench-tested; throttle return spring; kill cord / kill pin / e-stop |
-| core 0 alive but wrong commands (above the limit, gear with the throttle up) | CPU1 trip -> latch -> CPU1 safe frames | node timeouts if CPU1's frames don't arrive |
-| core 0 loop alive, its CAN path stuck | MON_TRIP_CAN_TX after 100 ms -> CPU1 safe frames | node timeouts |
-| CPU1 frozen | its own watchdog resets the chip (as today) | node timeouts |
-| CAN controller bus-off / transceiver dead / STB stuck in stand-by | nobody can send -> node timeouts (throttle idle, gear + steering hold); AURIX: all nodes lost -> alarm + STANDBY | engine stop is hard-wired |
+| core 0 control loop frozen | its watchdog (100 ms) resets the chip -> ALL CAN silent during reset + boot (~0.3 s + driver start) -> every node HOLDS (SRV_CMD_TIME_OUT 0, OA-1; the throttle too unless the bench proved "pulses stop + spring to idle"); at boot the first frame is throttle IDLE (below) | UNCREWED dead-man (OA-3: ~1.5 s, longer than the reset); kill cord / kill pin / e-stop |
+| core 0 alive but wrong commands (above the limit, gear with the throttle up) | CPU1 trip -> latch -> CPU1 safe frames | if CPU1's frames don't arrive the nodes HOLD: UNCREWED dead-man / kill circuit (P10.5), CREWED crew |
+| core 0 loop alive, its CAN path stuck | MON_TRIP_CAN_TX after 100 ms -> CPU1 safe frames | as above |
+| CPU1 frozen | its own watchdog resets the chip (as today) | nodes HOLD for the reset; dead-man in UNCREWED |
+| CAN controller bus-off / transceiver dead / STB stuck in stand-by | nobody can send -> every node HOLDS (throttle included, OA-1); AURIX: all nodes lost -> alarm + STANDBY; UNCREWED: throttle node lost = kill at once (OD-3) | engine stop is hard-wired (CREWED crew, UNCREWED dead-man OA-3) |
 | CAN cable cut / short | as bus-off for the nodes behind the cut | as above |
 | one node loses power | that servo HOLDS where it is (TO CONFIRM per servo: a position servo without power may also be back-driven); node lost -> alarm + STANDBY | throttle return spring (if fitted and strong enough); engine stop |
-| node firmware falls back to "0" on timeout | THROTTLE ~50 %: NOT acceptable -> the bench test of section 5 must pass first | engine stop |
+| node firmware "zeros" to 0.0 on timeout | THROTTLE ~50 %: NOT acceptable -> the throttle node keeps SRV_CMD_TIME_OUT 0 (hold) unless the bench proved "pulses stop + spring to idle" (OA-1) | engine stop |
 | node reboot (brown-out) | outputs go through the node's boot state; uptime goes back -> node lost (latched) -> STANDBY | |
-| chip reset (watchdog / SMU / software / power-on) | boot order: (1) throttle IDLE commanded as the very first CAN frame; (2) gear: NO gear frame (node HOLDS) until thr_travel_s has passed since the boot, then NEUTRAL; (3) steering (owner decision OD-7): NO steering frame at all after the boot until a mode commands steering (the node holds where it is); NO auto-centre at a power-on; after a power-on p_est is UNKNOWN (every rule that needs the steering position uses the worst-case travel steer_travel_s); after a warm reset p_est = the last command kept in reset-surviving RAM (like the kill latch); (4) the neutral-start interlock as today + all required nodes OPERATIONAL | |
+| chip reset (watchdog / SMU / software / power-on) | boot order: (1) throttle IDLE commanded as the very first CAN frame; (2) gear: NO gear frame (node HOLDS) until thr_travel_s has passed since the boot AND the throttle node is OPERATIONAL (idle commanded), then NEUTRAL; throttle node lost = gear HOLD (OA-2); (3) steering (owner decision OD-7): NO steering frame at all after the boot until a mode commands steering (the node holds where it is); NO auto-centre at a power-on; after a power-on p_est is UNKNOWN (every rule that needs the steering position uses the worst-case travel steer_travel_s); after a warm reset p_est = the last command kept in reset-surviving RAM (like the kill latch); (4) the neutral-start interlock as today + all required nodes OPERATIONAL | |
 | e-stop pressed | software: STANDBY + idle at once (CAN); hardware: the e-stop STOPS THE ENGINE through the kill circuit in EVERY profile, CREWED too (owner decision OD-1), and cuts the thruster contactor. It does NOT cut the servo node power any more (OD-2: never cut servo power - a cut would freeze the throttle where it is) | hard-wired |
 | monitor trip (P10.5) | owner decision OD-2: P10.5 drives the engine kill circuit and is used ONLY in UNCREWED (a trip stops the engine); in CREWED a trip = CPU1's safe frames + alarm, P10.5 stays "run". The servo power is never cut | hard-wired kill circuit |
 
@@ -382,8 +414,10 @@ Tests that change in 11e (today's checks use rate_down 40 / rate_stop 100 or "id
     slow servo runs).
   - I50 a required node lost / not OPERATIONAL / rebooted -> alarm + STANDBY within
     can_node_lost_ms + one step; never out of STANDBY while one is lost.
-  - I51 commands stopped (reset / bus fault) -> the simulated nodes go throttle idle, gear hold,
-    steering hold within their timeout; after the boot no gear frame before thr_travel_s.
+  - I51 commands stopped (reset / bus fault) -> the simulated nodes HOLD (gear, steering and, by
+    default, the throttle: SRV_CMD_TIME_OUT 0, OA-1; a sim variant "pulses stop + spring" only
+    when the bench proves it); after the boot the first frame is throttle IDLE and no gear frame
+    before thr_travel_s; throttle node lost -> never a gear frame that changes the gear (OA-2).
   - I52 monitor trip (also with core 0 frozen in the sim): CPU1's safe frames within 20 ms,
     core 0's actuator frames stop (latched).
   - I53 the steering adaptation never leaves the TRAINING bounds (section 8) and falls back to the
@@ -556,7 +590,7 @@ PC in step 11c: it is committed when the owner copies the photos in.)
 | C5 | Actuators 4 / 5 (fixed TRIM 1500 us in ArduPilot): what they drive | owner / wiring |
 | C6 | Steering wire sign (REVERSED in ArduPilot): AURIX "right" = negative wire value? | bench: command right, check the boat turns to starboard |
 | C7 | Unitless mapping on the node: -1 = 1000 us, +1 = 2000 us; throttle idle = -1.0 | scope on the node PWM |
-| C8 | Node command timeout + failsafe options and values (throttle -> idle, NOT 0 / mid; gear hold; steering hold) | node parameters + bench test (section 5) |
+| C8 | AP_Periph `SRV_CMD_TIME_OUT` on the throttle node: after the timeout do the pulses STOP or go to 0.0 (= 1500 us = ~50 %)? Gear + steering = 0 (hold) (OA-1) | scope on the node output, bench test (section 5, FIRST_TEST.md 3j) |
 | C9 | NodeStatus rate of each node (-> can_node_lost_ms) | GUI Tool bus monitor |
 | C10 | Servo speeds: steering lock to lock, throttle idle to full (worst case now 12 s / 6 s) | bench stopwatch / video, then TRAINING |
 | C11 | Servo behaviour without power / without pulses (hold, limp, back-drivable?) | bench |
@@ -570,6 +604,8 @@ PC in step 11c: it is committed when the owner copies the photos in.)
 | C19 | Transfer-ID hand-over core 0 -> CPU1 accepted by the nodes | bench in 11e |
 | C20 | ThinkPad L390 Yoga gateway details (step 12): RJ45 or USB-Ethernet, USB-C PD input power, lid-closed operation, battery charge limit tool | step 12 |
 | C21 | Throttle rate parameter limits (up 2..30 %/s, down 20..200 %/s) | owner |
+| C22 | UNCREWED dead-man timer relay (OA-3): part (retriggerable timer / watchdog relay, 12 V), timeout (~1.5 s), contact type for the outboard's kill circuit, fail-safe direction, how it is armed only in UNCREWED, which pin pulses it (P10.5 or its own) | owner + engine dealer + bench (section 14) |
+| C23 | Pixhawk removed from the CAN bus before the AURIX is connected (both are node 10, OA-4) | wiring check before every bench session |
 
 ## 13. Owner decisions (2026-10-28, OD-1..OD-12)
 
@@ -640,3 +676,69 @@ the one 11c gave.
 | OD-10 | 11e | STANDBY = hold the last steering command | sim STANDBY steering tests; storm I51 |
 | OD-11 | bench | FIRST_TEST.md 3j | the bench result decides whether a return spring is fitted (WIRING.md 3, PARTS.md) |
 | OD-12 | - | big boat unchanged | tools/check.sh big-boat build |
+
+## 14. Owner additions (2026-10-28, OA-1..OA-4)
+
+Binding (CLAUDE.md section T "Owner additions 2026-10-28"). They correct the 11c text above (already
+edited in sections 4, 5, 6.3, 6.4, 7 and 12).
+
+| # | Owner addition | What it means |
+|---|----------------|---------------|
+| OA-1 | AP_Periph has NO "idle on timeout": `SRV_CMD_TIME_OUT` (ms, 0 = never) holds, then "zeros" the output - no pulses, or 0.0 (= ~50 % throttle)? **TO CONFIRM on the bench.** Gear + steering: 0 (= hold). Throttle: the node timeout only if the bench shows the pulses STOP AND the spring returns the lever to idle, else 0. | Nowhere in the design is "node timeout -> idle" claimed until FIRST_TEST.md 3j confirms it. Default = every servo HOLDS on lost commands; the throttle comes down by the AURIX (boot: idle first; trip: CPU1 frames) or the engine is stopped (crew / dead-man / kill circuit). Sim (11e): nodes hold by default (I51). |
+| OA-2 | Throttle node lost -> gear HOLD, never an automatic neutral. | Replaces the 11c text "wait thr_travel_s, then neutral" (section 5). Also CPU1's trip frames and the boot order shift to neutral only while the throttle node is OPERATIONAL. 11e test: sim node-loss set + storm I51 ("throttle node lost -> no gear-changing frame"). |
+| OA-3 | UNCREWED hardware dead-man: an engine-kill timer relay held by an AURIX pulse (~1.5 s), armed only in UNCREWED. | See 14.1. Parts / wiring TO CONFIRM (WIRING.md 3A, PARTS.md). |
+| OA-4 | The Pixhawk is node ID 10 too: NEVER on the bus together with the AURIX (static node ID 10 = the AURIX). | Design rule in section 4 + WIRING.md 3E warning; proposal for 11d: our own node ID seen on the bus = SB_ALM2_CAN_BUS + no mode leaves STANDBY. |
+
+### 14.1 The UNCREWED dead-man (OA-3) - design, every hardware item TO CONFIRM
+
+Purpose: if the AURIX (or its CAN path) dies while the boat is UNCREWED, the servos HOLD (OA-1) and
+nobody is on board to stop the engine. A retriggerable timer relay ("watchdog" / "missing pulse"
+relay, 12 V) sits in the outboard's kill circuit: while it gets a pulse at least every ~1.5 s its
+contact stays "run"; when the pulses stop for longer, the contact goes to "kill" BY ITSELF (no
+software needed - fail-safe by nature: a dead, frozen or unpowered AURIX stops the engine).
+
+- Pulse source (proposal, TO CONFIRM): CPU1 (the independent monitor) toggles the pulse pin each
+  monitor period ONLY while ALL hold: profile UNCREWED (latched, published by core 0 in g_mon),
+  no monitor trip latched, core-0 heartbeat fresh, core 0 publishes "throttle node OPERATIONAL +
+  actuator frames going out", software ENGINE KILL not latched. Any of these false -> no pulses ->
+  the timer relay kills after its time.
+- Time ~1.5 s (owner): longer than a watchdog reset + boot (~0.3 s) so a warm reset alone does not
+  kill, short enough that a held throttle can't run far. TO CONFIRM on the bench with the real
+  boot time (a warm reset must re-start the pulses from the reset-surviving latched profile before
+  the time runs out, else the reset kills the engine - acceptable in UNCREWED, TO CONFIRM).
+- Armed ONLY in UNCREWED: in CREWED the AURIX never pulses, so the dead-man contact must be OUT of
+  the kill circuit in CREWED. How (TO CONFIRM): (A) an arming output from the AURIX (set only in
+  UNCREWED; a reset drops it -> disarmed) - weak: a stuck arming pin disables the dead-man; or (B)
+  a physical on-board "UNCREWED" switch / key that puts the timer relay into the kill circuit, read
+  by the AURIX: switch and detected profile must agree, else no mode leaves STANDBY (fits the
+  operating rule "unplug the onboard joystick before any uncrewed operation"). Recommended: B.
+- Relation to the kill circuit of OD-2 / OD-3 and the P10.5 question: the kill circuit then has up
+  to four contacts in series: the kill cord, the e-stop kill contact (OD-1, every profile), the
+  software ENGINE KILL relay (PIN_ENGINE_KILL: UNCREWED lost link, OD-3 throttle node lost) and the
+  dead-man contact (UNCREWED). P10.5 (OD-2: "monitor trip -> kill, UNCREWED only") options:
+  (1) P10.5 BECOMES the dead-man pulse output - one pin, one relay, no separate fail-safe-direction
+  question for it; a trip = CPU1 stops pulsing = kill after <= ~1.5 s (not "within one monitor
+  period": storm I54 wording changes to "within the dead-man time"); (2) P10.5 stays a level relay
+  output (kill at once on a trip) and the dead-man gets its own pin. Recommended: (1). TO CONFIRM
+  (WAITING FOR OWNER in PROGRESS.md, together with point (b) of section 15).
+- Fail-safe direction: the dead-man itself is "no pulses = kill". The contact type (opens to kill
+  vs closes to ground the kill wire) follows the outboard's kill circuit: with the engine dealer.
+- Never in FIRST TEST (always CREWED) and never on the big boat.
+- Tests (when implemented, 11e or later): sim (UNCREWED: pulses stop on trip / frozen core 0 /
+  throttle node lost / kill latched; CREWED: never pulses, dead-man disarmed), storm invariant
+  (reserved I57: UNCREWED and any stop condition -> no dead-man pulse within one monitor period;
+  CREWED -> never a pulse), FIRST_TEST.md 3j bench (stop the pulses -> the test lamp shows kill
+  after ____ s).
+
+## 15. Consistency points (a)-(e) waiting for the owner
+
+Found by the docs review after 11c / OD-1..OD-12. Each one is recorded here with the reading the
+docs use now; every one is in "WAITING FOR OWNER" at the top of PROGRESS.md. Nothing is coded.
+
+| # | Point | Reading used in the docs now (recommended default) | Blocks |
+|---|-------|----------------------------------------------------|--------|
+| (a) | E-stop power contact (WIRING.md 11) no longer feeds the DroneCAN servo nodes from 11e (OD-2 "never cut servo power") | YES: from 11e the e-stop power contact feeds only the thruster contactor (and the old steering-motor driver / big boat); the servo nodes have their own fused 5 V; the e-stop stops the engine through the kill circuit (OD-1) | 11e wiring, first engine run with DroneCAN servos |
+| (b) | P10.5 = PIN_ENGINE_KILL or a second relay in the kill circuit; the kill relay must NOT cut the engine on a CREWED reset (fail-safe direction TBD: a "de-energised = kill" relay would kill a CREWED engine at every reset); CPU1 needs the latched profile from core 0 (g_mon.profile, in core 0's DSPR, SHARED_BEGIN / SHARED_END) | separate functions: PIN_ENGINE_KILL = software kill latch ("energised = kill" so a reset / dead board never kills a CREWED engine), P10.5 = the UNCREWED dead-man pulse (14.1 option 1); CPU1 reads g_mon.profile (published once the profile is latched; until then = CREWED = no kill) | 11e (OD-2 implementation), kill-circuit wiring |
+| (c) | OD-3 "kill at once" vs CLAUDE.md B / storm I27-I28 "kill only after idle + neutral" | an EXPLICIT exception (CLAUDE.md B + T, section 13.1 #4): UNCREWED + throttle node lost = kill at once, gear held; I27 / I28 get the exception wording, I55 checks it | 11e (I27 / I28 / I55) |
+| (d) | OD-7 read as "no steering frame after a WARM reset either" (not only after a power-on) | YES: after any boot no steering frame until a mode commands steering; after a warm reset p_est = the last command from reset-surviving RAM | 11e boot order, I56 |
+| (e) | STARTER hardware time-limit relay 6 s vs the software crank_max_s 5 s | 6 s (a little longer than 5 s so it never cuts a normal crank; the software limit acts first, the relay only if the software / board fails) | the time-limit relay part (hardware), nothing in software |

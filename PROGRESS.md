@@ -1,10 +1,43 @@
 # PROGRESS
 
+## RULE FOR REVIEW STOPS (owner, 2026-10-28)
+
+A "LOOP STOPS" / review step only blocks the steps that DEPEND on it. While the owner's answer is
+pending, the loop goes on with the next INDEPENDENT step (e.g. 12 gateway, 13 open items, 15
+academy design) and picks the blocked steps up when the owner answers. Every open question is in
+"WAITING FOR OWNER" below, with the steps it blocks.
+
+## WAITING FOR OWNER (every open question; answered ones are removed)
+
+Answered and NOT listed: LOW BATTERY stays an ordinary alarm with the buzzer (owner 2026-10-27);
+OD-1..OD-12 (owner 2026-10-28, docs/dronecan_design.md 13); OA-1..OA-4 are recorded (owner
+2026-10-28, docs/dronecan_design.md 14 - their open hardware details are W2 / W3 below).
+
+| # | What is asked | Blocks | Recommended default |
+|---|---------------|--------|---------------------|
+| W1 | DroneCAN TO CONFIRM list C1-C23 (docs/dronecan_design.md section 12; summary: servo node model / AP_Periph version, which node carries actuators 1-5, static node IDs (AURIX 10, 20 / 21 / 22, relays 30), gear F / N / R values, steering wire sign, unitless mapping, SRV_CMD_TIME_OUT behaviour, NodeStatus rate, servo speeds, servos unpowered, kit CAN pins / STB / connector / termination / transceiver supply, node 5 V supply, MCMCAN CPU1 access + transfer-ID hand-over, ThinkPad details, throttle rate limits, dead-man relay, Pixhawk removed) | 11d: only HAL_CAN_FITTED 1 (C12-C15) - the code is written with the flag 0. 11e: C1-C11, C16, C18, C19, C21 before the servos are "required" / the first engine run. 11f: C17. C20: step 12 details. C22 / C23: hardware only | everything stays TO CONFIRM; hardware flags 0; worst-case values (12 s / 6 s, 1500 ms; rate limits up 2..30 / down 20..200 %/s) |
+| W2 | Throttle node `SRV_CMD_TIME_OUT` (OA-1): after the timeout do the pulses STOP or go to 0.0 (= ~50 %)? Does the spring then return the lever to idle? Bench, FIRST_TEST.md 3j | the first engine run with the DroneCAN servos (not the 11d / 11e code: the code assumes HOLD) | throttle 0 = HOLD (gear + steering 0 = HOLD: decided) |
+| W3 | UNCREWED dead-man (OA-3): timer relay part, time (~1.5 s), contact type, fail-safe direction, arming only in UNCREWED (AURIX arming output vs an on-board UNCREWED switch), pulse source | 11e dead-man code + storm I57; any uncrewed operation | CPU1 pulses while UNCREWED + no trip + core-0 heartbeat + throttle node OPERATIONAL + no kill latch; armed by an on-board UNCREWED switch checked against the profile (docs/dronecan_design.md 14.1) |
+| W4 | (a) From 11e the e-stop power contact no longer feeds the DroneCAN servo nodes (only the thruster contactor + the old steering driver / big boat) - confirm | 11e wiring / the first engine run with the DroneCAN servos | yes (OD-2 "never cut servo power"; the e-stop stops the engine through the kill circuit, OD-1) |
+| W5 | (b) P10.5 = PIN_ENGINE_KILL, a second relay, or the dead-man pulse output (OA-3)? The ENGINE KILL relay must not cut the engine on a CREWED reset (fail-safe direction TBD). CPU1 needs the latched profile from core 0 (g_mon.profile) | 11e OD-2 implementation (P10.5, I54); kill-circuit wiring | P10.5 = the dead-man pulse output; PIN_ENGINE_KILL separate, "energised = kill"; CPU1 reads g_mon.profile (not yet latched = CREWED = no kill) |
+| W6 | (c) OD-3 "kill at once" vs section B / storm I27-I28 "kill only after idle + neutral": recorded as an EXPLICIT exception - confirm | 11e I27 / I28 / I55 | the exception as written (CLAUDE.md B + T) |
+| W7 | (d) OD-7 read as "no steering frame after a WARM reset either" (not only after a power-on) - confirm | 11e boot order / I56 | yes |
+| W8 | (e) STARTER hardware time-limit relay 6 s vs the software crank_max_s 5 s - confirm | the relay part only (hardware) | 6 s |
+| W9 | The docs/daskalio/ chart photos are NOT on this PC: copy them into docs/daskalio/ (they are then committed) | academy test area / demo map / 3D sim (steps 18-22); nothing before | - |
+| W10 | Two pythonw processes have been running on this PC since the afternoon of 2026-10-27 (13:56 / 14:53, probably your ground stations): please check / close them - they may cause the test_driver I4 / I12 / I19 failures | nothing (acceptance results only) | close them, re-run test_driver alone |
+| W11 | Flaky acceptance results: storm I36 failed once (seed 108 "engine relay 3 switched on"; --replay 108 holds, a re-run passed: episodes not reproducible run to run, suspect shared sim NV files); test_driver I4 / I12 / I19 fail here AND in a clean clone of the pushed 11b HEAD (11b passed 21/21) | nothing; the storm point is looked at with 11f (relay work) | storm workers with their own NV folder (11f); test_driver on a quiet PC |
+| W12 | AUTO start checks only the active waypoint when the gateway has no checked copy of the program (the DP TRIP check is stricter: code 121 "route not checked by the gateway") - should AUTO start get the same check? | nothing (an extra check = its own small step) | yes, the same rule as DP TRIP (121) |
+| W13 | Step 10 choices: a HOT thruster ends DP (STANDBY); the generator runs only in DP SPOT / JOG (CRUISE / TRIP stop it); dp_max_kn 3, entry < 2 kn, off spot > 50 m or 2 min -> STANDBY; the DP gains (step 10 note below) | nothing (parameters / constants) | keep as implemented |
+| W14 | Steps 4 / 4b defaults: LOW BATTERY 11.8 V for 60 s; generator 25 % default, 30 % AURIX ceiling, 8 % fast idle, start below 12.1 V, +-2 % per 30 s, 20 min run + 1 min rest | nothing | keep |
+| W15 | Data flash bring-up check on the kit: an erased DFLASH page reads 0 and a cut write gives no ECC trap (step 3 note) | nothing in software; NV on the real board | check at the first board bring-up |
+| W16 | Board checks: the kill latch survives a real watchdog reset (FIRST_TEST.md 3i); RS485 TX-enable (DE) timing on the scope (FIRST_TEST.md 3h) | uncrewed operation (3i); the Modbus relay board on the boat (3h) | do them at the bench test |
+| W17 | Step 12 hardware details (C20): ThinkPad L390 Yoga RJ45 or a USB-Ethernet adapter, USB-C PD input power from the 12 V bank, lid-closed operation, battery charge limit tool | step 12 install details only (the step documents both options) | USB-Ethernet adapter if no RJ45; USB-C PD car charger (65 W); charge limit 80 % |
+
 Current task: "C2 extensions + Academy" (design = CLAUDE.md section "C2 extensions + Academy", parts
 G-S; academy spec = docs/ACADEMY_SPEC.md). Steps 0-14 = C2 extensions (alarms in one place, boat
 dropdown, data flash, supply voltage, generator mode, boat file v2, Modbus relay board, engine controls +
-remote restart, relay buttons, DP parts 1-3, 11c-11f DroneCAN actuators (design + review stop after 11c and
-after 11f), ThinkPad gateway, open items, final check), 15-22 = Academy.
+remote restart, relay buttons, DP parts 1-3, 11c-11f DroneCAN actuators (design + owner reviews after 11c and
+after 11f: a review blocks only the dependent steps), ThinkPad gateway, open items, final check), 15-22 = Academy.
 If interrupted: /clear, then "continue from PROGRESS.md" - do ONLY the first step not DONE, then stop.
 
 Rules for every step: the owner decisions (CLAUDE.md G-S) are binding; the safety rules in CLAUDE.md
@@ -33,10 +66,10 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 10 | DP part 2: MODE_DP (SPOT / JOG / CRUISE / TRIP) + control, invariants I39-I43 | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A) incl. DP5-DP14 + GN9, TriCore + iLLD + writer checks, gateway 108/108, screen 2 14/14, lang 5/5; test_driver 20/20 (twice); acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-9 HEAD, every other suite this tree), storm 200 episodes I39 4.28 M checks, I40-I43 10 k DP steps, 0 fails) | this commit |
 | 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A), TriCore + iLLD + writer checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15 incl. S15, sound 10/10, avoidance 14/14, gateway 111/111 incl. DP1-DP3; test_driver 21/21 incl. I22; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-10 HEAD, every other suite this tree), storm 200 episodes) | this commit |
 | 11b | Steps 7-10 review fixes | DONE (all 8 points re-checked; point 1 was already covered for TRIP / continue / boat leg / current geofence - only the unchecked-program gap fixed (code 121); see notes. Gate OK: sim 244/244 + bridge 243/243 (1 N/A) incl. ER7-ER8, DP15-DP16, RB9 updated, TriCore + iLLD + writer checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, sound 10/10, avoidance 14/14, gateway 112/112 incl. DP4; test_driver 21/21; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-11 HEAD, every other suite this tree), storm 200 episodes I31 / I38 across resets, I44-I46 0 fails) | this commit |
-| 11c | DroneCAN design, NO firmware code (CLAUDE.md T + docs/dronecan_design.md): the AURIX replaces the ArduPilot; servos (throttle / steering 360 deg position servo / gear) + relay board on DroneCAN; ardupilot.param read-out; kit CAN pins; node health + command timeouts; the new CPU1 safety path; asymmetric throttle rates + the slow servo; steering model / TRAINING; relay rules on DroneCAN; TO CONFIRM list + open decisions. **LOOP STOPS HERE for the owner's safety review** | DONE (docs only. Gate OK: sim 244/244 + bridge 243/243 (1 N/A), TriCore + iLLD checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15, sound 10/10, avoidance 14/14, gateway 112/112. Acceptance quick 5/7: storm 200 FAILED once on I36 seed 108 ("engine relay 3 switched on"), --replay 108 holds and a re-run of the 200 episodes passed 0 fails - the storm is not deterministic across runs (check counts differ): finding, see notes; fresh build: test_driver 18/21 (I4 / I12 / I19 live HUD) on the pushed 11b HEAD AND this tree - not caused by this step, see notes. Open decisions OD-1..OD-12 ANSWERED by the owner 2026-10-28 (binding: CLAUDE.md T "Owner decisions 2026-10-28" + docs/dronecan_design.md 13; rule changes for 11e / 11f, new storm I54-I56 reserved) + TO CONFIRM C1-C21: notes + docs/dronecan_design.md 12) | this commit |
+| 11c | DroneCAN design, NO firmware code (CLAUDE.md T + docs/dronecan_design.md): the AURIX replaces the ArduPilot; servos (throttle / steering 360 deg position servo / gear) + relay board on DroneCAN; ardupilot.param read-out; kit CAN pins; node health + command timeouts; the new CPU1 safety path; asymmetric throttle rates + the slow servo; steering model / TRAINING; relay rules on DroneCAN; TO CONFIRM list + open decisions. **Owner safety review here: it blocks only the steps that depend on it (rule at the top); independent steps (12, 13, 15) go on** | DONE (docs only. Gate OK: sim 244/244 + bridge 243/243 (1 N/A), TriCore + iLLD checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15, sound 10/10, avoidance 14/14, gateway 112/112. Acceptance quick 5/7: storm 200 FAILED once on I36 seed 108 ("engine relay 3 switched on"), --replay 108 holds and a re-run of the 200 episodes passed 0 fails - the storm is not deterministic across runs (check counts differ): finding, see notes; fresh build: test_driver 18/21 (I4 / I12 / I19 live HUD) on the pushed 11b HEAD AND this tree - not caused by this step, see notes. Open decisions OD-1..OD-12 ANSWERED by the owner 2026-10-28 (binding: CLAUDE.md T "Owner decisions 2026-10-28" + docs/dronecan_design.md 13; rule changes for 11e / 11f, new storm I54-I56 reserved) + TO CONFIRM C1-C21: notes + docs/dronecan_design.md 12) | this commit |
 | 11d | CAN driver (MultiCAN / iLLD) + libcanard (MIT, vendored with its licence), DroneCAN messages needed; sim + host tests | | |
 | 11e | Servos over DroneCAN + the new CPU1 safety path + the steering model / TRAINING from 11c; storm invariants for node loss and command timeout | | |
-| 11f | Relay board over DroneCAN (all relay rules and tests kept). **LOOP STOPS HERE for the owner's safety review** | | |
+| 11f | Relay board over DroneCAN (all relay rules and tests kept). **Owner safety review here: it blocks only the steps that depend on 11f (e.g. 14 final check); independent steps go on** | | |
 | 12 | Gateway on a Lenovo ThinkPad L390 Yoga (i5-8265U, 8 GB RAM, 500 GB SSD, Win11 now): support BOTH Ubuntu 24.04 LTS (recommended at sea: no forced updates / restarts) and Windows 11; remove Pi-only parts; 3.3 V USB-UART to the AURIX (never RS232); USB AIS receiver; README / PARTS / WIRING with install steps for both OSes; measure CPU / RAM with 4 camera streams + vision on the CPU (no NVIDIA); power from the 12 V bank via a USB-C PD car charger, built-in battery = UPS, battery charge limit 80 % (Vantage on Windows / TLP on Ubuntu), lid closed must keep running, Ethernet to the PoE switch (USB-Ethernet adapter if no RJ45) - put this in PARTS / README | | |
 | 13 | Open items: AUTO return, docs/screens pictures (tools/demo_screens.py), paddlewheel, analog joystick | | |
 | 14 | Final check: full acceptance + 24 h soak, TEST_REPORT | | |
@@ -467,6 +500,15 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   of the pushed 11b HEAD: I4 (HUD mirror left / right None), I12 (MINIMAL without the alarms box), I19 ("live False
   (... 0 texts)"); 11b passed 21/21 - something on this PC changed (two pythonw processes running since 13:56 /
   14:53 = probably the owner's ground stations; not touched). Re-run test_driver alone on a quiet PC.
+- Step 11c owner additions (2026-10-28, docs only): OA-1 AP_Periph SRV_CMD_TIME_OUT has no "idle on timeout" (holds,
+  then "zeros": pulses stop or 0.0 = ~50 %? bench) - gear / steering 0 = hold, throttle 0 unless the bench proves "pulses
+  stop + spring to idle"; every "node timeout -> idle" claim removed (design 5, 6.3, 6.4, 7 I51, 12 C8; CLAUDE.md T;
+  WIRING 3E; FIRST_TEST 3j bench check). OA-2 throttle node lost -> gear HOLD, never an automatic neutral (CPU1's trip
+  frames and the boot order shift to neutral only with the throttle node OPERATIONAL). OA-3 UNCREWED hardware dead-man
+  timer relay (~1.5 s, AURIX pulse, UNCREWED only; design 14.1, WIRING 3A, PARTS, FIRST_TEST 3j; reserved storm I57).
+  OA-4 the Pixhawk is node 10 too: never on the bus with the AURIX (design 4, WIRING 3E warning, PARTS, FIRST_TEST 3j).
+  Consistency points (a)-(e): design section 15 + WAITING FOR OWNER W4-W8. New rule for review stops + WAITING FOR OWNER
+  at the top of this file. Next step: 11d (C12-C15 only block HAL_CAN_FITTED 1, not the code).
 
 # Previous task: "Screen 2 review"
 

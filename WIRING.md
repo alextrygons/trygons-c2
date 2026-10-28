@@ -222,6 +222,13 @@ The SOFTWARE kill is still never used in CREWED.
 | Wiring | in the kill-switch circuit, in addition to the kill cord (the cord must stay) | **TBD** |
 | Reset on board | how the crew restarts after a kill: AURIX power cycle + the outboard's normal start | **TBD** (procedure in MANUAL 7A) |
 | Remote restart | the HELM station's RESTART clears the kill (software only: the same pin goes back to "run"); then IGNITION + START through the relay board (3D) | done (software); the relay wiring TBD |
+| UNCREWED dead-man (owner addition OA-3) | a **retriggerable timer relay** ("watchdog" / missing-pulse relay, 12 V) in series in the kill circuit, held "run" by an AURIX pulse; no pulse for ~1.5 s = kill BY ITSELF (a dead / frozen / unpowered AURIX stops the engine; the DroneCAN servos HOLD when the commands stop). Armed ONLY in UNCREWED (CREWED: out of the circuit - by an AURIX arming output or, recommended, an on-board UNCREWED switch the AURIX checks against the profile). Pulse output: P10.5 itself (recommended: a trip = no pulses = kill within ~1.5 s) or its own pin. docs/dronecan_design.md 14.1 | **TO CONFIRM** (part, time, contact type, fail-safe direction, arming, pin) |
+
+The kill circuit then has, in series: the kill cord, the e-stop kill contact
+(every profile), the software ENGINE KILL relay (PIN_ENGINE_KILL) and the
+UNCREWED dead-man contact. The ENGINE KILL relay's fail-safe direction must
+make sure a reset / dead board never kills a **CREWED** engine (recommended:
+"energised = kill"); the "dead board = kill" job in UNCREWED is the dead-man's.
 
 Until all of this is decided and tested on the bench, **no uncrewed operation**.
 
@@ -311,6 +318,13 @@ and the boat file must agree.)
 
 ### 3E. DroneCAN bus: servos + relay board (CLAUDE.md T, docs/dronecan_design.md) - DESIGN, hardware TO CONFIRM
 
+> **WARNING - node ID 10 (owner addition OA-4):** the Pixhawk (ArduPilot) is
+> ALSO DroneCAN node **10** (CAN_D1_UC_NODE), and node 10 is the AURIX's
+> static ID. The Pixhawk must **NEVER be on the CAN bus together with the
+> AURIX**: unplug the Pixhawk's CAN cable (it no longer powers the nodes
+> either) BEFORE the AURIX is connected. A bench session with the Pixhawk
+> (e.g. to read the nodes' parameters) is done with the AURIX unplugged.
+
 The AURIX replaces the ArduPilot (Pixhawk): the throttle, steering (360 deg
 position servo) and gear servos stay on their **DroneCAN servo nodes**
 (Matek CAN-L431), the relay board becomes a DroneCAN node too. From step 11e
@@ -329,16 +343,20 @@ below (`HAL_CAN_FITTED 0` in hal/hal_pins.h).
 | Bus | 1 Mbit/s (ArduPilot CAN_P1_BITRATE), twisted pair, short stubs, common GND, away from the steering / starter cables | design |
 | Node IDs | STATIC (no dynamic-ID server): proposal AURIX 10, throttle 20, steering 21, gear 22, relay board 30 (GPS + compass node 124 not used) | **TO CONFIRM** (set with the DroneCAN GUI Tool) |
 | Node power | the nodes were powered with 5 V through the Pixhawk's CAN port: now their **own fused 5 V supply** (12 V -> 5 V converter from the bank, fuse at the bank end, a fuse per branch), NEVER from the AURIX kit | **TO CONFIRM** converter rating; how each node powers its servo (the servos can draw amps) |
-| Command timeouts (set on each node) | throttle -> **IDLE** (-1.0 = 1000 us; NEVER "0" = half throttle), gear -> **HOLD**, steering -> **HOLD** | **TO CONFIRM** + bench test, engine OFF, before the boat moves (FIRST_TEST.md) |
+| Command timeouts (set on each node: AP_Periph `SRV_CMD_TIME_OUT`, ms, 0 = never) | AP_Periph has **no "idle on timeout"**: after the timeout it "zeros" the output - the pulses stop, OR 0.0 = 1500 us = **~50 % throttle** (unknown!). Gear **0 = HOLD**, steering **0 = HOLD**; throttle **0 = HOLD** unless the bench shows the pulses STOP AND the return spring pulls the lever to idle (owner addition OA-1) | **TO CONFIRM** on the bench, engine OFF, before the boat moves (FIRST_TEST.md 3j) |
+| Throttle node lost | gear **HOLD**, never an automatic neutral (OA-2); UNCREWED: engine kill at once (OD-3) | decided |
 | E-stop / engine kill / STANDBY | stay hard-wired GPIO, never over CAN; stopping the engine never depends on the throttle servo | owner decisions 2026-10-28: the e-stop stops the engine through the kill circuit in every profile (OD-1); the servo node power is NEVER cut; P10.5 -> the engine kill circuit, UNCREWED only (OD-2); throttle node lost in UNCREWED = engine kill at once (OD-3) |
 | Steering at power-up | no steering frame until a mode commands steering, no auto-centre (OD-7); STANDBY = hold (OD-10) | decided |
 | STARTER | always behind a hardware time-limit relay, on either relay bus (OD-9, section 3D) | **TBD** part |
 
 **Bench test of the command timeouts (engine OFF, DroneCAN GUI Tool on a
-laptop directly on the bus, not through the AURIX):** for each servo node
-set the timeout and failsafe, command a position, stop the commands, and
-check with a scope / by eye: throttle goes to IDLE (not to the middle!),
-gear HOLDS, steering HOLDS, within the timeout. Write the measured times
+laptop directly on the bus, not through the AURIX):** every node with
+`SRV_CMD_TIME_OUT` 0: command a position, stop the commands - every servo
+HOLDS. Then the throttle node with a test timeout (e.g. 300 ms): command mid
+throttle, stop the commands, scope the node output: do the pulses STOP or
+does it go to 1500 us (= half throttle)? Does the return spring then pull
+the lever to idle? Only "pulses stop AND spring to idle" allows a throttle
+timeout; otherwise it stays 0 (hold). Never assume "timeout = idle". Write the measured times
 and the servo speeds (steering lock to lock, throttle idle to full) into
 FIRST_TEST.md. Until then the software uses 12 s / 6 s as the worst case.
 
