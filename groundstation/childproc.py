@@ -6,7 +6,7 @@ keeps encoding in the background and eating the PC.
 
 Windows: the child is put into a Job object of this process with KILL_ON_JOB_CLOSE - when
 this process ends for any reason the OS closes the job and kills everything in it. Elsewhere
-(the Pi: systemd already kills a service's children) it does nothing.
+(Ubuntu gateway PC: systemd already kills a service's children) it does nothing.
 """
 import sys
 

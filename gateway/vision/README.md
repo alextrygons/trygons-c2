@@ -26,10 +26,10 @@ The model file and the dataset are downloaded by the tools below, never stored i
 - Output `prediction`: 1 x 3 x 96 x 128 class scores: 0 obstacle, 1 water, 2 sky.
 - Speed (ONNX Runtime, CPU, 2 threads): this PC about 120-190 ms per picture. **Important**:
   the session option `session.set_denormal_as_zero` (in worker.py) - without it the same model
-  takes ~1500 ms on x86 (tiny "denormal" weights). **The Pi 5 must be measured** (see below);
-  expect several hundred ms. An INT8 (quantised) version took 75 ms instead of 115 ms here and
+  takes ~1500 ms on x86 (tiny "denormal" weights). **The gateway PC (ThinkPad L390 Yoga,
+  i5-8265U) must be measured** (`tools/gateway_load.py`, gateway/README.md section 21). An INT8 (quantised) version took 75 ms instead of 115 ms here and
   gave the same class for 99.8 % of the pixels on 4 test pictures - not used yet (it needs
-  calibration pictures from your own camera; on the Pi's ARM cores INT8 helps more).
+  calibration pictures from your own camera; INT8 helps most on small CPUs).
 
 ## The steps (worker.py, then manager.py)
 
@@ -62,8 +62,10 @@ The model file and the dataset are downloaded by the tools below, never stored i
 
 - Own process, `IDLE` priority (Windows) / `nice 19` (Linux), only on the last `threads` cores
   (default 2 of 4), ONNX Runtime with `threads` threads, no spinning.
-- Paused when the gateway's event loop runs late (> 150 ms), the CPU is above 90 %, the Pi is
-  above 78 °C or throttles (`vcgencmd get_throttled`); resumed after 10 s OK. Status PAUSED.
+- Paused when the gateway's event loop runs late (> 150 ms), the CPU is above 90 %, the CPU is
+  above 78 °C or thermal-throttles (Ubuntu: the hottest thermal zone + the Intel throttle
+  counters, gateway/osdep.py; Windows: CPU % and loop lag only); resumed after 10 s OK.
+  Status PAUSED.
 - Below `min_fps` (1.0) -> VISION DEGRADED. Crash / no model / no camera -> VISION OFFLINE and a
   restart (5 s, 10 s, ... 60 s). A notice on the screens and in the audit log, never an alarm.
 
@@ -83,18 +85,21 @@ distance, confidence, stage action), `<SSD>/vision/worker.log`. Samples (frame .
 .pgm, off by default, `vision.samples`): `<SSD>/vision/samples/`, oldest deleted above
 `max_mb`, none while the SSD is low / full - for a later own Saronic dataset.
 
-## On the Raspberry Pi 5
+## On the gateway PC (Ubuntu 24.04 LTS or Windows 11, CPU only - no NVIDIA)
 
-1. **Active cooler: required** (the official Pi 5 Active Cooler). Without it the Pi throttles
-   and vision pauses all the time.
-2. `sudo apt install ffmpeg` (already there for the recording), then in the gateway's Python:
-   `pip install onnxruntime==1.20.1 numpy==2.1.3` (aarch64 wheels exist).
+1. ffmpeg (already there for the recording: Ubuntu `sudo apt install ffmpeg`, Windows MSYS2 /
+   the PATH, gateway/toolpaths.py).
+2. The worker's Python: Ubuntu `pip install onnxruntime==1.20.1 numpy==2.1.3` in the gateway's
+   Python (x86-64 wheels); Windows `python tools/get_vision_python.py` (an own embedded Python
+   in tools/bin/vision-python/, found by toolpaths.vision_python()).
 3. Model: `python3 tools/get_vision_model.py` (241 MB into gateway/vision/models/).
-4. Nothing else to start: the gateway service starts the worker itself (`vision.enabled`).
-5. Check: the captain screen, Cameras tab, "VISION ACTIVE x fps" - **measure the fps on the Pi**.
+4. Nothing else to start: the gateway service / task starts the worker itself (`vision.enabled`),
+   at the lowest priority (Ubuntu nice 19, Windows IDLE class) on its own 2 cores.
+5. Check: the captain screen, Cameras tab, "VISION ACTIVE x fps", and run
+   `python tools/gateway_load.py` once on the gateway PC (CPU / RAM / fps with 4 cameras).
    Below 1 fps it shows DEGRADED: lower `max_fps`, or the INT8 model, or the upgrade below.
 
-Later upgrade (not implemented): a Raspberry Pi AI HAT+ (Hailo NPU) or an OAK-D camera (eWaSR
+Later upgrade (not implemented): a USB NPU or an OAK-D camera (eWaSR
 exports to its .blob directly) would run the model many times faster; fine-tuning on own
 Saronic recordings (the samples above) would make it fit these waters.
 

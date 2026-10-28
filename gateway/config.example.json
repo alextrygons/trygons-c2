@@ -1,13 +1,19 @@
 {
-  "_help": "Copy to /etc/trygons/gateway.json. Passwords go into secrets.json (never into git).",
+  "_help": "Ubuntu: copy to /etc/trygons/gateway.json; Windows: %PROGRAMDATA%\\trygons\\gateway.json. Passwords go into secrets.json (never into git). Serial names: python gateway.py --list-serial. Check: python gateway.py --config <this file> --check-config",
   "boat": "trygons-c2",
-  "aurix": "/dev/ttyAMA0",
+  "_aurix": "the 3.3 V TTL USB-UART adapter (NEVER RS232: +-12 V destroys the AURIX pins). Both OSes: usb:VID:PID:SERIAL; Ubuntu also /dev/serial/by-id/usb-...; Windows also COMn (the number can change)",
+  "aurix": "usb:VID:PID:SERIAL",
   "baud": 921600,
   "set_clock": true,
   "status_s": 1.0,
+  "ais": {
+    "enabled": true,
+    "_source": "the USB AIS receiver, named like the AURIX adapter",
+    "source": "usb:VID:PID:SERIAL",
+    "baud": 38400
+  },
   "storage": {
-    "root": "/mnt/ssd/trygons",
-    "require_mount": true,
+    "_root": "leave out = the PC's own SSD (/var/lib/trygons/data or %PROGRAMDATA%\\trygons\\data); an external SSD: its folder + require_mount true",
     "check_s": 30,
     "low_free_gb": 20.0,
     "full_free_gb": 2.0

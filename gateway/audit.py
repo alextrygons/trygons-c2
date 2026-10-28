@@ -2,7 +2,7 @@
 every command with its result, channel changes, SAVE presses, sync runs.
 
 One JSON line per entry in <ssd>/audit/YYYYMMDD.jsonl (UTC, GPS time).
-If the SSD is missing it goes to the Pi's own disk (fallback) so nothing is
+If the data drive is missing it goes to the gateway PC's system disk (fallback) so nothing is
 lost. The last entries are kept in memory for the stations' event list.
 """
 import collections

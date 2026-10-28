@@ -1,4 +1,4 @@
-"""Ground station <-> gateway (Raspberry Pi) over the VPN or the boat LAN.
+"""Ground station <-> gateway PC over the VPN or the boat LAN.
 
 GatewayLink has the same interface as link.Link (start, stop, send, events),
 so the ground station works the same through the gateway as on the USB

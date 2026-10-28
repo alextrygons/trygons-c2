@@ -2,7 +2,7 @@
 
 Runs in its OWN process, at low priority, on a limited number of CPU cores /
 threads, started and watched by gateway/vision/manager.py. Needs numpy and
-onnxruntime (on a Windows PC: tools/get_vision_python.py; on the Pi: pip).
+onnxruntime (on a Windows PC: tools/get_vision_python.py; on Ubuntu: pip).
 
     python worker.py --url rtsp://127.0.0.1:8554/cam_front1_lo --model models/ewasr_resnet18.onnx
 

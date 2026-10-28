@@ -1,27 +1,33 @@
-"""Trygons C2 gateway (Raspberry Pi 5) - the boat's door to the internet.
+"""Trygons C2 gateway (the gateway PC: Ubuntu 24.04 LTS or Windows 11) - the
+boat's door to the internet.
 
-    python3 gateway.py --config /etc/trygons/gateway.json
+    python3 gateway.py --config /etc/trygons/gateway.json     (Ubuntu)
+    python gateway.py --config %PROGRAMDATA%/trygons/gateway.json   (Windows)
     python3 gateway.py --sim                  (PC: talk to autopilot_sim server)
+    python3 gateway.py --list-serial          (the stable names of the USB adapters)
+    python3 gateway.py --config ... --check-config   (exit code 1 = an error in it)
 
-The AURIX is never on the network: it talks only to this Pi, over a UART,
+The AURIX is never on the network: it talks only to this PC, over a UART
+(a 3.3 V TTL USB-UART adapter - NEVER RS232),
 with the same framed protocol (CRC) as the USB laptop link. This program:
   A  keeps the full copy of the AURIX log on the USB SSD, sets the clock from
      GPS, watches the SSD, sends a 1 Hz status/heartbeat to the AURIX
   (later sections add: stations + roles, internet channels, remote driving,
    cameras, recording, sync)
-Runs as a systemd service (see README.md). Every part keeps running when
+Runs as a systemd service (Ubuntu) or a Task Scheduler task (Windows, gateway/windows/;
+see README.md). Every part keeps running when
 another one fails; a problem is reported, never hidden.
 """
 import argparse
 import asyncio
 import json
 import os
-import signal
 import sys
 import threading
 import time
 
 from common import Clock, load_config, log, proto, setup_logging
+import osdep
 from audit import Audit
 from ais import AisTargets, OnlineFeed
 from shallow import Shallow
@@ -571,6 +577,8 @@ class Gateway:
         tasks.append(asyncio.create_task(self.vision_loop()))
         if self.ais_reader:
             tasks.append(asyncio.create_task(self.ais_reader.run()))
+        if self.cfg.get("print_status_s"):
+            tasks.append(asyncio.create_task(self.print_status_loop(self.cfg["print_status_s"])))
         tasks += self.extra_tasks()
         try:
             await self._stop.wait()
@@ -589,6 +597,23 @@ class Gateway:
     def extra_tasks(self):
         return []
 
+    async def print_status_loop(self, every_s):
+        """--status: one summary line in the log every every_s seconds (also used by
+        tools/gateway_load.py to read the vision frame rate while it measures CPU / RAM)."""
+        while True:
+            await asyncio.sleep(every_s)
+            try:
+                v = self.vision.status(True)
+                cams = self.cams.status() if self.cfg["cameras"].get("enabled", True) else {}
+                log.info("STATUS aurix %s, storage %s, cameras %s, vision %s fps %.2f infer_ms %s lag_ms %s",
+                         "connected" if self.aurix.connected else "NOT connected (%s)" % (self.aurix.error or "-"),
+                         self.storage.state, "%d/%d OK" % (sum(1 for c in cams.get("cameras", []) if c["state"] == "OK"),
+                                                           len(cams.get("cameras", []))),
+                         v.get("state"), v.get("fps") or 0.0, v.get("infer_ms"),
+                         int(getattr(self.vision, "lag_ms", 0) or 0))
+            except Exception:
+                log.exception("status line")
+
     def stop(self):
         if self._stop:
             self._stop.set()
@@ -597,9 +622,9 @@ class Gateway:
 # --- the AIS receiver (section A) ------------------------------------------------------------
 
 class AisReader:
-    """NMEA lines from the AIS receiver: "/dev/serial0" (dAISy HAT, 38400),
-    "/dev/ttyUSB0" (USB receiver), or "tcp:host:port" (network receiver,
-    tests). Reconnects by itself; every line goes to AisTargets.feed_line."""
+    """NMEA lines from the USB AIS receiver (a stable name like the AURIX's:
+    "usb:VID:PID:SERIAL", "/dev/serial/by-id/...", "COMn"; 38400 baud), or
+    "tcp:host:port" (network receiver, tests). Reconnects by itself; every line goes to AisTargets.feed_line."""
 
     def __init__(self, source, baud, targets):
         self.source = source
@@ -637,7 +662,7 @@ class AisReader:
     async def _serial(self):
         import serial                                   # pyserial
         loop = asyncio.get_running_loop()
-        port = serial.Serial(self.source, self.baud, timeout=0.5)
+        port = serial.Serial(osdep.resolve_serial(self.source), self.baud, timeout=0.5)
         self.connected, self.error = True, ""
         dead = asyncio.Event()
 
@@ -664,8 +689,20 @@ def main():
     ap.add_argument("--sim", action="store_true",
                     help="PC test: AURIX = autopilot_sim server on tcp:127.0.0.1:5762, data in ./gw_data")
     ap.add_argument("--status", action="store_true", help="print the status once a minute")
+    ap.add_argument("--list-serial", action="store_true",
+                    help="list the serial ports with the stable names for gateway.json, then exit")
+    ap.add_argument("--check-config", action="store_true",
+                    help="check gateway.json (exit code 1 = an error), then exit")
     a = ap.parse_args()
     setup_logging()
+    if a.list_serial:
+        try:
+            for line in osdep.list_serial():
+                print(line)
+        except ImportError:
+            print("pyserial is missing (Ubuntu: sudo apt install python3-serial; Windows: pip install pyserial)")
+            sys.exit(1)
+        return
     extra = {}
     if a.sim:
         extra = {"aurix": "tcp:127.0.0.1:5762", "set_clock": False,
@@ -674,12 +711,19 @@ def main():
                  "audit_fallback": os.path.abspath("gw_data/audit_fallback"),
                  "storage": {"root": os.path.abspath("gw_data"), "require_mount": False}}
         os.makedirs("gw_data", exist_ok=True)
+    if a.status:
+        extra = dict(extra, print_status_s=60.0)
     cfg = load_config(a.config, extra)
+    problems = osdep.check_config(cfg)
+    for level, text in problems:
+        (log.error if level == "error" else log.warning)("config: %s", text)
+    if a.check_config:
+        print("config %s: %d error(s), %d warning(s)" % (a.config or "(defaults)",
+              sum(1 for p in problems if p[0] == "error"), sum(1 for p in problems if p[0] != "error")))
+        sys.exit(1 if any(p[0] == "error" for p in problems) else 0)
     gw = Gateway(cfg)
     loop = asyncio.new_event_loop()
-    if sys.platform != "win32":
-        for s in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(s, gw.stop)
+    osdep.install_stop(loop, gw.stop)
     try:
         loop.run_until_complete(gw.run())
     except KeyboardInterrupt:

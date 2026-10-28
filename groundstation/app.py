@@ -3,7 +3,7 @@
     python app.py                      choose the boat / port in the window
     python app.py tcp:127.0.0.1:5760   connect to the simulator at once
     python app.py COM5                 connect to the board at once
-    python app.py gw:trygons-gw:5761   through the gateway (Raspberry Pi), asks for the login
+    python app.py gw:trygons-gw:5761   through the gateway PC, asks for the login
 Options (the demo uses them): --login user:password (no login window),
 --driver (open screen 1, the driving screen, too), --charts FOLDER (other chart files),
 --place shore | onboard (shown in the window title).
@@ -510,7 +510,7 @@ class App:
         self.cam_cv.pack(side="top", anchor="w", padx=4, pady=4)
         self.cam_lbl = lbl(mid, "cap.cam_connect_gw", font=F_MONO, bg=C["bg"], justify="left", anchor="nw")
         self.cam_lbl.pack(side="top", fill="x", padx=6)
-        # obstacle detection (eWaSR on the Pi): stages + status
+        # obstacle detection (eWaSR on the gateway PC): stages + status
         vf = tk.Frame(ct, bg=C["bg"], bd=2, relief="groove")
         vf.pack(fill="x", padx=4, pady=4)
         lbl(vf, "cap.vis_title", font=F_MED, bg=C["bg"]).pack(anchor="w", padx=4)

@@ -1,6 +1,6 @@
 [Unit]
-Description=Trygons C2 gateway (AURIX <-> boat LAN / VPN)
-After=network-online.target mnt-ssd.mount
+Description=Trygons C2 gateway (AURIX <-> boat LAN / VPN) - gateway PC, Ubuntu 24.04 LTS
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -13,10 +13,11 @@ RestartSec=2
 AmbientCapabilities=CAP_SYS_TIME
 CapabilityBoundingSet=CAP_SYS_TIME
 NoNewPrivileges=yes
-# the UART
+# the USB-UART adapter (AURIX) and the USB AIS receiver
 SupplementaryGroups=dialout
 ProtectSystem=strict
-ReadWritePaths=/mnt/ssd /etc/trygons /var/lib/trygons
+# data on the PC's own SSD (/var/lib/trygons); "-" = an optional external SSD
+ReadWritePaths=/etc/trygons /var/lib/trygons -/mnt/ssd
 StateDirectory=trygons
 ProtectHome=read-only
 

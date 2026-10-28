@@ -1,125 +1,208 @@
-# Trygons C2 gateway (Raspberry Pi 5)
+# Trygons C2 gateway (gateway PC: Lenovo ThinkPad L390 Yoga - Ubuntu 24.04 LTS or Windows 11)
 
-The Pi is the boat's door to the internet. **The AURIX is never on the
-network**: it talks only to the Pi, over a UART with the same framed protocol
+The gateway PC is the boat's door to the internet. **The AURIX is never on the
+network**: it talks only to the gateway PC, over a UART with the same framed protocol
 (CRC) as the USB laptop link. The local USB laptop, the onboard joystick and
-the STANDBY button keep working whatever happens to the Pi.
+the STANDBY button keep working whatever happens to the gateway PC.
 
 ```
- AURIX ──UART 921600──► Raspberry Pi 5 ──LAN──► Teltonika router ──► 4G / RF / Starlink
-   │                       │  USB SSD (logs, video)                      │
-   └─ USB laptop (local)   └─ boat LAN: cameras, local stations          └─ VPN (Tailscale) ──► shore PC, iPhone
+ AURIX ──UART 921600──► 3.3 V USB-UART ──► gateway PC ──LAN──► Teltonika router ──► 4G / RF / Starlink
+   │                                         │  own SSD (logs, video)                      │
+   └─ USB laptop (local)                     └─ PoE switch: cameras; boat LAN: stations    └─ VPN (Tailscale) ──► shore PC, iPhone
 ```
+
+> **WARNING - the AURIX link is a 3.3 V TTL USB-UART adapter (FTDI / CP2102 set to
+> 3.3 V). NEVER an RS232 port, a "USB to RS232 / DB9" cable or a PC COM port:
+> RS232 uses +-12 V and DESTROYS the AURIX pins.** (WIRING.md section 7.)
 
 What the gateway does (section by section of the project):
 
 | | |
 |---|---|
-| A | full copy of the AURIX log on the USB SSD, GPS time for the whole boat, SSD watchdog, 1 Hz heartbeat to the AURIX |
+| A | full copy of the AURIX log on the SSD, GPS time for the whole boat, SSD watchdog, 1 Hz heartbeat to the AURIX |
 | B | stations log in (VIEWER / HELM), commands checked and forwarded, audit log, iPhone web page |
 | C | internet channels (4G, 4G SIM 2, RF, Starlink = emergency only) |
 | D | remote joystick from the shore PC |
 | E/F | cameras: relay, health checks, ring recording, SAVE |
 | G | sync of logs and saved video to the shore PC |
 
-Try it on the PC first (no Pi needed):
+Try it on the PC first (no hardware needed):
 
 ```
 cd sim
-autopilot_sim.exe server 5760 1          (the ground station on 5760, the "Pi UART" on 5762)
+autopilot_sim.exe server 5760 1          (the ground station on 5760, the "gateway UART" on 5762)
 cd ..\gateway
 python gateway.py --sim                  (data goes to gateway\gw_data)
 python test_gateway.py                   (all gateway tests)
+python test_osdep.py                     (Ubuntu / Windows bits: serial names, config, install files)
 ```
 
 ---
 
 ## 1. What to buy
 
-See MANUAL.txt "Wiring and what to buy". In short: Raspberry Pi 5 (8 GB),
-official active cooler, 12 V → 5.1 V **5 A** USB-C supply, a **USB 3 SSD
-512 GB - 1 TB** (with its own USB-C/A cable, not a stick; video ~3-4 GB/h), a 32 GB microSD
-card (A2 class) for the system only, a small IP65 box.
+PARTS.md section "Gateway PC" has the full list. In short:
 
-## 2. Install the operating system (on your PC)
+* **Lenovo ThinkPad L390 Yoga** (i5-8265U 4 cores / 8 threads, 8 GB RAM, 500 GB SSD) - you have it.
+  Its own SSD holds the logs and the video (~3-4 GB/h); no extra SSD needed
+  (an external one is still possible: section 4).
+* **12 V -> USB-C PD car charger, 65 W** (fused, from the 12 V bank) + a USB-C cable
+  rated for 3 A / 5 A. The built-in battery is the UPS: if the bank power drops, the
+  laptop keeps running on its battery.
+* **3.3 V TTL USB-UART adapter** for the AURIX (FTDI FT232R / FT231X "3V3" or CP2102
+  with a 3.3 V jumper; the FTDI "TTL-232R-3V3" cable is the safe choice). **Not RS232.**
+* **USB AIS receiver** (receive only, NMEA 0183 over USB, 38400 baud; model TBD, PARTS.md).
+* **Ethernet**: the boat LAN (router) and the camera network (PoE switch) are two
+  cables. If the laptop has no RJ45 port (or only one): **USB 3 Gigabit Ethernet
+  adapters** (Realtek RTL8153 class, driver built into Ubuntu and Windows).
+* A USB hub only if the ports run out (USB-UART, AIS, 1-2 Ethernet adapters, charger).
 
-1. Install **Raspberry Pi Imager** (raspberrypi.com/software).
-2. Device "Raspberry Pi 5", OS **Raspberry Pi OS Lite (64-bit)**, storage = the microSD card.
-3. Click **Edit settings** (the gear):
-   * hostname `trygons-gw`
-   * username `trygons` and a **strong password** (write it in your password manager)
-   * Wi-Fi: leave empty (the Pi uses the cable)
-   * Services: **Enable SSH**, "Allow public-key authentication only", paste your PC's public key
-     (on Windows: `type %USERPROFILE%\.ssh\id_ed25519.pub`; if missing, first `ssh-keygen -t ed25519`)
-4. Write, put the card in the Pi, connect the Ethernet cable to the Teltonika, power on.
-5. From the PC (same network): `ssh trygons@trygons-gw.local`
+## 2. Which operating system
 
-## 3. Basic settings on the Pi
+Both work with the same gateway code. **Ubuntu 24.04 LTS is recommended at sea**:
+no forced updates and no forced restarts. Windows 11 (what the laptop has now) works
+too, but Windows Update must be tamed (section 3W) - a restart at sea stops the
+gateway for minutes (the boat then shows GATEWAY LOST; control is not affected).
 
+| | Ubuntu 24.04 LTS | Windows 11 |
+|---|---|---|
+| start at boot, restart if it stops | systemd service (`systemd/trygons-gateway.service`) | Task Scheduler task (`windows/install_gateway.ps1`, `run_gateway.bat`) |
+| serial port names | `/dev/serial/by-id/...` or `usb:VID:PID:SERIAL` | `usb:VID:PID:SERIAL` (or `COMn`) |
+| clock from GPS | the system clock is set | an offset is kept (logs / video still GPS time) |
+| firewall | nftables (`systemd/nftables.conf`) | Windows Defender Firewall rules (the install script) |
+| camera network DHCP / time | dnsmasq + chrony (section 14) | TBD (section 14, PROGRESS.md WAITING FOR OWNER) |
+| camera internet button | yes (`tools/camera_internet.sh`) | no (update the cameras at home) |
+| battery charge limit 80 % | TLP (`systemd/tlp-trygons.conf`) | Lenovo Vantage |
+| lid closed keeps running | logind (`systemd/logind-trygons.conf`) | powercfg lid action "do nothing" (the install script) |
+| vision worker priority | nice 19 + its own CPU cores | IDLE priority class + its own CPU cores |
+| CPU temperature for the vision guard | yes | no (CPU % only) |
+
+## 3. Install the operating system and basic settings
+
+### 3U. Ubuntu 24.04 LTS
+
+1. On any PC: download **Ubuntu Server 24.04 LTS** (ubuntu.com/download/server; Desktop
+   also works), write it to a USB stick with **balenaEtcher** or **Rufus**.
+2. ThinkPad: F1 at power-on = BIOS (Secure Boot may stay on). F12 = boot menu -> the
+   USB stick.
+3. Install: hostname `trygons-gw`, user `trygons` + a **strong password** (password
+   manager), "Install OpenSSH server" **yes**, import your SSH key if offered.
+   (It erases Windows. Want to keep Windows? Use another SSD, or section 3W instead.)
+4. After the restart, from your PC: `ssh trygons@trygons-gw.local`, then
+   ```
+   sudo apt update && sudo apt full-upgrade -y
+   sudo timedatectl set-timezone UTC          # logs are in UTC
+   cd ~ && git clone https://github.com/alextrygons/trygons-c2.git
+   ip -br link                                # the Ethernet ports and their MAC addresses
+   sudo LAN_MAC=<router port MAC> CAM_MAC=<PoE switch port MAC> sh ~/trygons-c2/gateway/systemd/install_ubuntu.sh
+   sudo reboot
+   ```
+   `install_ubuntu.sh` does (read it - it is short): packages (python3-serial, ffmpeg,
+   nftables, TLP), the user in the `dialout` group (serial ports), the folders
+   `/etc/trygons` + `/var/lib/trygons`, **lid closed = keep running**
+   (`logind-trygons.conf`, sleep / suspend / hibernate masked), **battery charge
+   limit 80 %** (`tlp-trygons.conf`: start 75 %, stop 80 %, USB never suspended),
+   security updates without automatic restarts, snaps never refresh by themselves,
+   the interface names **boatlan0** (router) and **cam0** (PoE switch) from the MACs,
+   and the systemd service (enabled, not started).
+5. Check the battery limit: `sudo tlp-stat -b` shows the stop threshold 80. Close the
+   lid: `ssh` must keep working.
+
+### 3W. Windows 11
+
+1. Windows Update first (in harbour). Settings -> Windows Update -> Advanced options ->
+   Active hours: cover the trip times. The install script also sets "ask before
+   download, never restart by itself" (a Windows 11 **Pro** policy; the Home edition
+   ignores it - another reason for Ubuntu).
+2. Install **Python 3** (python.org, "Add to PATH") or MSYS2 like the ground station
+   (MANUAL.txt chapter 3), then `python -m pip install pyserial`, and **git**.
+3. `git clone https://github.com/alextrygons/trygons-c2.git C:\trygons\trygons-c2`
+4. **Admin PowerShell** (right click Start -> Terminal (Admin)):
+   ```
+   cd C:\trygons\trygons-c2
+   powershell -ExecutionPolicy Bypass -File gateway\windows\install_gateway.ps1
+   ```
+   It does (read it - it is short): the folder `%PROGRAMDATA%\trygons` (gateway.json,
+   secrets.json readable only by SYSTEM / administrators, data, logs), the Task
+   Scheduler task **"Trygons Gateway"** (at boot, as SYSTEM, restarts after a crash,
+   no time limit, **keeps running on battery** - the battery is the UPS), power:
+   **never sleep, lid closed = do nothing, USB selective suspend off, hibernate off**
+   (on mains AND on battery), firewall rules (gateway ports only from Tailscale
+   100.64.0.0/10 and the boat LAN 10.42.0.0/24), Windows Update "ask, never restart".
+5. **Battery charge limit 80 %** (by hand): Lenovo Vantage -> Device -> Power ->
+   Battery Charge Threshold: on, start 75 %, stop 80 %.
+6. Check: close the lid with the charger in, `ping trygons-gw` from another PC must
+   keep answering; Settings -> System -> Power: "When I close the lid: Do nothing".
+
+## 4. Where the data goes
+
+The laptop's own SSD: Ubuntu `/var/lib/trygons/data`, Windows
+`%PROGRAMDATA%\trygons\data` (the default - nothing to set). The gateway checks it
+every 30 s (write test, free space) and raises **GATEWAY STORAGE** if it fails.
+
+Optional external USB SSD (more space): Ubuntu - format it ext4 with the label
+`TRYGONS_SSD`, add
+`LABEL=TRYGONS_SSD /mnt/ssd ext4 defaults,noatime,nofail,x-systemd.device-timeout=10 0 2`
+to `/etc/fstab`, `sudo mkdir -p /mnt/ssd/trygons && sudo chown trygons: /mnt/ssd/trygons`,
+and in gateway.json `"storage": {"root": "/mnt/ssd/trygons", "require_mount": true}`
+(`nofail` = it still boots without the SSD; the gateway then raises GATEWAY STORAGE).
+Windows - NTFS, a fixed drive letter (Disk Management), `"storage": {"root": "E:\\trygons"}`.
+
+## 5. The gateway software and its serial ports
+
+1. Plug in the 3.3 V USB-UART adapter (AURIX) and the USB AIS receiver, then list the
+   ports with their **stable names** (they don't change when re-plugged):
+   ```
+   python3 ~/trygons-c2/gateway/gateway.py --list-serial              (Ubuntu)
+   python C:\trygons\trygons-c2\gateway\gateway.py --list-serial     (Windows)
+   ```
+   Example (Ubuntu):
+   ```
+   /dev/ttyUSB0   TTL232R-3V3
+       use: /dev/serial/by-id/usb-FTDI_TTL232R-3V3_A50285BI-if00-port0
+       use: usb:0403:6001:A50285BI
+   ```
+2. Edit gateway.json (Ubuntu `/etc/trygons/gateway.json`, Windows
+   `%PROGRAMDATA%\trygons\gateway.json`, made from `config.example.json`):
+   * `"aurix"`: the adapter's name - `usb:VID:PID:SERIAL` works on both OSes; Ubuntu
+     also `/dev/serial/by-id/...`. A plain `COM5` / `/dev/ttyUSB0` works but the number
+     can change (the check warns). The Raspberry Pi names (`/dev/ttyAMA0`,
+     `/dev/serial0`) are refused - the gateway PC has no such UART.
+   * `"ais": {"source": ...}`: the AIS receiver the same way, `"baud": 38400`.
+   * passwords into secrets.json (router, cameras, users - never in git).
+3. Check the file: `python3 gateway.py --config /etc/trygons/gateway.json --check-config`
+   (exit code 0 = no error; it lists every problem in plain words: not set, a Pi name,
+   a placeholder, the same device twice, a path of the other OS, a bad baud).
+4. Test by hand (stop the service / task first; Ctrl+C to stop):
+   `python3 ~/trygons-c2/gateway/gateway.py --config /etc/trygons/gateway.json --status`.
+   It must say "AURIX connected (usb:... = /dev/ttyUSB0, 921600 baud)" and "storage ...
+   ok"; `--status` adds a summary line every minute. The adapter is looked up again at
+   every reconnect: pull it out and back in (any USB port) - the link comes back.
+
+## 6. Start automatically
+
+**Ubuntu** (installed by install_ubuntu.sh):
 ```
-sudo apt update && sudo apt full-upgrade -y
-sudo apt install -y python3-serial git ffmpeg nftables unattended-upgrades
-sudo raspi-config
-```
-In raspi-config:
-* **Interface Options → Serial Port**: login shell over serial **No**, serial hardware **Yes**
-* **Localisation → Timezone**: UTC (logs are in UTC)
-* Finish, reboot.
-
-Then make sure the GPIO UART is on: `sudo nano /boot/firmware/config.txt`, add at the end
-```
-dtparam=uart0=on
-```
-reboot. `ls -l /dev/ttyAMA0` must exist (GPIO14 = pin 8 TX, GPIO15 = pin 10 RX).
-
-Automatic security updates: `sudo dpkg-reconfigure -plow unattended-upgrades` → Yes.
-
-## 4. The USB SSD
-
-The SD card holds only the OS. Logs and video go to the SSD.
-
-```
-lsblk                                    # find the SSD, e.g. /dev/sda
-sudo wipefs -a /dev/sda                  # ERASES the SSD
-sudo parted /dev/sda --script mklabel gpt mkpart data ext4 0% 100%
-sudo mkfs.ext4 -L TRYGONS_SSD /dev/sda1
-sudo mkdir -p /mnt/ssd
-echo 'LABEL=TRYGONS_SSD /mnt/ssd ext4 defaults,noatime,nofail,x-systemd.device-timeout=10 0 2' | sudo tee -a /etc/fstab
-sudo mount -a
-sudo mkdir -p /mnt/ssd/trygons && sudo chown trygons: /mnt/ssd/trygons
-```
-`nofail` = the Pi still boots without the SSD. The gateway then raises the
-alarm **GATEWAY STORAGE** and everything else keeps working.
-
-## 5. The gateway software
-
-```
-cd ~ && git clone https://github.com/alextrygons/trygons-c2.git
-sudo mkdir -p /etc/trygons
-sudo cp ~/trygons-c2/gateway/config.example.json /etc/trygons/gateway.json
-sudo cp ~/trygons-c2/gateway/secrets.example.json /etc/trygons/secrets.json
-sudo chown -R trygons: /etc/trygons && chmod 600 /etc/trygons/secrets.json
-nano /etc/trygons/gateway.json           # check the values (see the comments in config.example.json)
-nano /etc/trygons/secrets.json           # passwords: router, cameras, users (never in git)
-```
-Test by hand: `python3 ~/trygons-c2/gateway/gateway.py --config /etc/trygons/gateway.json`
-(Ctrl+C to stop). It must say "AURIX connected" and "storage ... ok".
-
-## 6. Start automatically (system service)
-
-```
-sudo cp ~/trygons-c2/gateway/systemd/trygons-gateway.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now trygons-gateway
+sudo systemctl start trygons-gateway
 systemctl status trygons-gateway         # "active (running)"
 journalctl -u trygons-gateway -f         # live log (Ctrl+C to leave)
 ```
-It restarts by itself if it ever stops, and starts at every boot. The
-service may set the clock (GPS time from the AURIX) - nothing else needs root.
+It restarts by itself if it ever stops, and starts at every boot. The service may set
+the clock (GPS time from the AURIX) - nothing else needs root.
+
+**Windows** (installed by install_gateway.ps1):
+```
+Start-ScheduledTask "Trygons Gateway"
+Get-Content $env:PROGRAMDATA\trygons\logs\gateway.log -Wait -Tail 30      # live log
+powershell -ExecutionPolicy Bypass -File gateway\windows\stop_gateway.ps1   # stop (admin)
+```
+`run_gateway.bat` restarts gateway.py 2 s after it stops (like systemd's
+`Restart=always`), the task restarts the .bat, and the task starts at boot without a
+login. `uninstall_gateway.ps1` removes the task and the firewall rules (keeps the data).
 
 ## 7. VPN: Tailscale (no open ports)
 
-Why Tailscale: the Pi connects **outward** to the Tailscale network, so it
+Why Tailscale: the gateway PC connects **outward** to the Tailscale network, so it
 works behind the 4G operator's CGNAT and behind Starlink, with **no open
 ports and no port forwarding**. Traffic is WireGuard-encrypted end to end.
 (Plain WireGuard would need a server with a public address on shore. If you
@@ -128,12 +211,15 @@ version - same client.)
 
 1. Make a free account at tailscale.com (or use yours: Tailscale is already
    installed on your shore PC).
-2. On the Pi:
+2. On the gateway PC - Ubuntu:
    ```
    curl -fsSL https://tailscale.com/install.sh | sh
    sudo tailscale up --ssh --hostname=trygons-gw
    ```
-   Open the link it prints and log in.
+   Open the link it prints and log in. Windows: install Tailscale from
+   tailscale.com/download, log in, then in an admin PowerShell
+   `tailscale set --hostname=trygons-gw --unattended` (stays connected without a
+   Windows login after a restart).
 3. In the Tailscale admin console: **Machines → trygons-gw → Disable key expiry**
    (a boat at sea must not lose its VPN after 180 days).
 4. Access controls (admin console → Access controls), example:
@@ -143,32 +229,47 @@ version - same client.)
 5. On the shore PC and the iPhone: install Tailscale, log in with the same account.
    The ground station then connects to `trygons-gw:5761`.
 
-## 8. Firewall on the Pi
+## 8. Firewall on the gateway PC
 
-Nothing may reach the Pi except over the VPN or from the boat LAN.
+Nothing may reach the gateway PC except over the VPN or from the boat LAN.
+
+Ubuntu:
 ```
 sudo cp ~/trygons-c2/gateway/systemd/nftables.conf /etc/nftables.conf
 sudo nano /etc/nftables.conf             # check "boat_lan" (default 10.42.0.0/24)
 sudo systemctl enable --now nftables
 ```
+Windows: the install script made the rules (group "Trygons gateway"); check in
+"Windows Defender Firewall with Advanced Security" that no other inbound rule opens
+these ports to everyone. Windows never forwards between the two networks by itself
+(the cameras stay without internet).
+
 The gateway ports: 5761 stations (TCP, and UDP for the remote joystick),
-8080 web page (iPhone), 8554 / 8889 video.
+8080 web page (iPhone), 8554 / 8889 / 8189 video.
 
 ## 9. Updates
 
 ```
-cd ~/trygons-c2 && git pull
-sudo systemctl restart trygons-gateway
+cd ~/trygons-c2 && git pull                       (Windows: cd C:\trygons\trygons-c2; git pull)
+sudo systemctl restart trygons-gateway            (Windows: stop_gateway.ps1, then Start-ScheduledTask)
 ```
-Only update in harbour, and only after `python3 gateway/test_gateway.py`
-passed on the PC with the same version.
+Only update in harbour, and only after `python3 gateway/test_gateway.py` and
+`python3 gateway/test_osdep.py` passed on the PC with the same version. Operating
+system updates: also only in harbour (Ubuntu: `sudo apt full-upgrade`, then reboot;
+Windows: Windows Update by hand, then restart).
 
 ## 10. Check list after setup
 
-* `journalctl -u trygons-gateway` shows "AURIX connected", "storage ok", "GPS time".
-* Ground station (USB laptop): System tab shows "gateway OK", the Pi's copy
+* The log (`journalctl -u trygons-gateway` / `%PROGRAMDATA%\trygons\logs\gateway.log`)
+  shows "AURIX connected", "storage ok", "GPS time", and no "config:" errors.
+* Ground station (USB laptop): System tab shows "gateway OK", the gateway's copy
   of the log grows, no GATEWAY alarm.
-* Pull the Pi's power: within 3 s the boat shows **GATEWAY LOST**, nothing else changes.
+* Pull the USB-UART adapter: within 3 s the boat shows **GATEWAY LOST**, nothing else
+  changes; plug it back (any USB port): the link comes back by itself.
+* Unplug the 12 V charger: the gateway keeps running on the battery (Windows: the task
+  does not stop on battery). Close the lid: it keeps running.
+* `python3 tools/gateway_load.py --minutes 10` on the gateway PC (section 21): keep the
+  summary - the ThinkPad's own CPU / RAM numbers.
 
 ## 11. Users, roles and HELM
 
@@ -188,7 +289,7 @@ Every station logs in. Roles:
 * Power raise, AUTO start / resume and remote driving still need the
   **joystick CONFIRM on the boat**. Remote can never do them alone.
 
-Add users (on the Pi):
+Add users (on the gateway PC):
 ```
 cd ~/trygons-c2/gateway
 python3 users.py add alex HELM              # asks for a password (at least 10 characters)
@@ -216,23 +317,23 @@ gateway user. View only. HELM from the web page only if you set
 
 1. **VPN only.** Nothing on the boat is reachable from the internet: no
    port forwarding on the router, no "remote access" features of the
-   router, cameras or Starlink. The Pi firewall (section 8) allows only
+   router, cameras or Starlink. The gateway PC firewall (section 8) allows only
    Tailscale and the boat LAN.
 2. **Change every default password** before the boat goes to sea:
    * Teltonika router: admin password, and turn off RMS / remote
      management unless you need it.
-   * Raspberry Pi: your user's password (SSH is key-only).
+   * gateway PC: your user's password (Ubuntu: SSH key-only; Windows: a strong login password).
    * Starlink app: the account, and the Wi-Fi password if you use its Wi-Fi.
    * Each camera: the TP-Link account and the "Camera Account".
    * Tailscale: two-factor login on the account.
 3. **Separate networks:**
-   * control network (Pi, AURIX side, cameras) on its own VLAN or switch
+   * control network (gateway PC, AURIX side, cameras) on its own VLAN or switch
      port;
    * guest / crew Wi-Fi on another VLAN, with no access to the control
      VLAN.
 4. **Cameras have NO internet access** (router firewall rule, section E).
    Allow it only briefly for a firmware update, then block it again.
-5. **Keep software updated:** Pi automatic security updates (section 3),
+5. **Keep software updated:** gateway PC security updates (section 3, never restarting by itself),
    router firmware, camera firmware - in harbour, after testing.
 6. Give users the smallest role they need (VIEWER for guests and phones).
    Remove users who don't need access any more.
@@ -284,12 +385,12 @@ Do these steps **in this order**:
    * for each: tracking = ping, hosts `1.1.1.1` and `8.8.8.8`, interval 5 s,
      "down" after 3 failures, "up" after 3 replies.
    The gateway then moves the priorities itself (AUTO / MANUAL / STRICT).
-7. **DHCP reservations:** Network → LAN → Static leases: the Pi
+7. **DHCP reservations:** Network → LAN → Static leases: the gateway PC
    (`trygons-gw`) → `10.42.0.2`. (Cameras: section 14.)
-8. **SSH for the Pi** (it reads status and sets the priority):
+8. **SSH for the gateway PC** (it reads status and sets the priority):
    * System → Administration → Access control: SSH enabled, **LAN only**,
      key authentication.
-   * On the Pi: `ssh-keygen -t ed25519` (no passphrase), then
+   * On the gateway PC: `ssh-keygen -t ed25519` (no passphrase; Windows: in the account the task runs as), then
      `ssh-copy-id root@10.42.0.1` (or paste `~/.ssh/id_ed25519.pub` into the
      router's `/etc/dropbear/authorized_keys`).
    * Test: `ssh root@10.42.0.1 mwan3 interfaces`.
@@ -299,12 +400,12 @@ Do these steps **in this order**:
    each channel of `"channels": {"list": [...]}` in gateway.json (copy the
    list from `channels.py` DEFAULT_CHANNELS).
 10. Starlink dish status (obstruction, outages) on the ground station:
-    `pip install starlink-grpc-tools` on the Pi (optional). The dish answers
+    `pip install starlink-grpc-tools` on the gateway PC (optional). The dish answers
     at 192.168.100.1. In bypass mode, add a route on the RUT901 if needed:
     Network → Routing → static route 192.168.100.1/32 via the wan interface.
 
 What the gateway does with the channels: see MANUAL.txt chapter 9 part C.
-Ports on the RUT901: WAN = Starlink, LAN1 = the Pi, LAN2 = the TSW101
+Ports on the RUT901: WAN = Starlink, LAN1 = the gateway PC (boatlan0), LAN2 = the TSW101
 switch (cameras, see section 14), LAN3 = spare (a laptop on board).
 Crew / guest devices: the router's Wi-Fi on its own guest network, never
 on the control network (section 12).
@@ -317,31 +418,32 @@ Your switch, the **TSW101**, is **unmanaged** (no VLANs). So the cameras get
 their own *physical* network:
 
 ```
- TSW101 (12 V in, 4 x PoE+)                       Raspberry Pi 5
-  port 1 PoE --> FRONT-1     (PoE splitter 9 V)     eth1 = USB 3 Gigabit adapter  10.43.0.1
+ TSW101 (12 V in, 4 x PoE+)                       gateway PC (ThinkPad)
+  port 1 PoE --> FRONT-1     (PoE splitter 9 V)     cam0 = RJ45 or USB 3 Gigabit adapter  10.43.0.1
   port 2 PoE --> REAR-LEFT   (PoE splitter 9 V)       |  DHCP + time server for the cameras,
   port 3 PoE --> REAR-RIGHT  (PoE splitter 9 V)       |  NOTHING is forwarded (no internet)
   port 5     ------------------------------------------+
-                                                    eth0 -> RUT901 LAN1 (boat LAN 10.42.0.x)
+                                                    boatlan0 -> RUT901 LAN1 (boat LAN 10.42.0.x)
  FRONT-2 (backup, its own path):
   own 12 V -> 9 V converter + own fuse, cable to RUT901 LAN3 = network "cam2" 10.43.1.x,
-  router firewall: cam2 may NOT go to the internet; the Pi may reach it.
+  router firewall: cam2 may NOT go to the internet; the gateway PC may reach it.
 ```
 
-Why FRONT-2 is separate: if the TSW101, its power or the Pi's USB adapter
+Why FRONT-2 is separate: if the TSW101, its power or the gateway PC's camera port
 fails, FRONT-2 still works (redundancy). The gateway switches to it by itself.
 
-**On the Pi (camera network on eth1):**
+**On the gateway PC, Ubuntu (camera network on cam0):**
 ```
-sudo nmcli con add type ethernet ifname eth1 con-name camnet ipv4.method manual ipv4.addresses 10.43.0.1/24 ipv6.method disabled
+sudo nmcli con add type ethernet ifname cam0 con-name camnet ipv4.method manual ipv4.addresses 10.43.0.1/24 ipv6.method disabled
 sudo apt install -y dnsmasq chrony
 sudo tee /etc/dnsmasq.d/camnet.conf <<'EOT'
-interface=eth1
+interface=cam0
 bind-interfaces
+port=0                         # DHCP only: no DNS (Ubuntu's own resolver keeps port 53)
 dhcp-range=10.43.0.100,10.43.0.150,12h
 dhcp-option=3                  # no default gateway: the cameras can't route anywhere
 dhcp-option=6                  # no DNS
-dhcp-option=42,10.43.0.1       # time from the Pi
+dhcp-option=42,10.43.0.1       # time from the gateway PC
 # fixed addresses (MAC from the camera's label / the Tapo app):
 dhcp-host=AA:BB:CC:DD:EE:01,10.43.0.11,front1
 dhcp-host=AA:BB:CC:DD:EE:03,10.43.0.13,rearleft
@@ -350,16 +452,24 @@ EOT
 echo "allow 10.43.0.0/16" | sudo tee /etc/chrony/conf.d/cameras.conf
 sudo systemctl restart dnsmasq chrony
 ```
-The Pi's firewall (section 8) never forwards eth1, so the cameras have no
-internet. (The Pi's clock comes from GPS, so the cameras get GPS time too.)
+The gateway PC's firewall (section 8) never forwards cam0, so the cameras have no
+internet. (Its clock comes from GPS, so the cameras get GPS time too.)
+
+**On the gateway PC, Windows:** give the camera port the fixed address 10.43.0.1 /
+255.255.255.0, no gateway, no DNS (Settings -> Network -> Ethernet -> IP assignment:
+Manual). Windows has no DHCP / time server for the cameras built in: how the cameras
+get their addresses there is still open (PROGRESS.md WAITING FOR OWNER W25) - until
+then use Ubuntu for the camera network. Windows never forwards between networks by
+itself, so the cameras stay without internet.
 
 **On the RUT901 (FRONT-2):** Network → Interfaces → Add `cam2`, static
 `10.43.1.1/24`, bound to the LAN3 port (port-based VLAN: take LAN3 out of the
 LAN bridge). Network → LAN → static lease FRONT-2 → `10.43.1.12`.
 Network → Firewall → zone `cam2`: input accept, output accept, forward
 REJECT, and **no** forwarding to `wan`/mobile. Allow forwarding `lan → cam2`
-(the Pi reaches the camera). Add a route on the Pi:
-`sudo nmcli con mod "Wired connection 1" +ipv4.routes "10.43.1.0/24 10.42.0.1"`.
+(the gateway PC reaches the camera). Add a route on the gateway PC:
+`sudo nmcli con mod "Wired connection 1" +ipv4.routes "10.43.1.0/24 10.42.0.1"` (Windows, admin:
+`route -p add 10.43.1.0 mask 255.255.255.0 10.42.0.1`).
 
 ### Each Tapo C310 (do this with the camera at home, on your Wi-Fi, once)
 
@@ -373,27 +483,30 @@ REJECT, and **no** forwarding to `wan`/mobile. Allow forwarding `lan → cam2`
    Frame rate 15 fps is fine. Turn the camera's audio off (not needed).
 4. Insert a **microSD card** (high-endurance, 64-128 GB) and turn on
    **continuous recording / loop recording** in the app: an independent
-   backup if the Pi fails.
+   backup if the gateway PC fails.
 5. Change the TP-Link account password to a strong one; turn off "remote
    access / cloud" features you don't need.
 6. Use the camera with the **Ethernet cable** on the boat (not Wi-Fi).
 7. Test the stream on a PC: `ffplay rtsp://USER:PASS@IP:554/stream2`.
 
 **Firmware update later:** ground station (on board) → Cameras → "Camera
-internet 30 min": the Pi lets the cameras out for 30 minutes, then closes it
+internet 30 min" (Ubuntu only): the gateway PC lets the cameras out for 30 minutes, then closes it
 by itself. Update in the Tapo app, then press "Camera internet OFF".
 (FRONT-2 on the router: allow its zone to `wan` for the update, then remove
 it again.)
 
-### The video relay (MediaMTX) on the Pi
+### The video relay (MediaMTX) on the gateway PC
 
+Both OSes: `python tools/get_mediamtx.py` (it puts the right build into `tools/bin/mediamtx/`,
+where the gateway finds it - gateway/toolpaths.py). Or by hand on Ubuntu (x86-64):
 ```
-cd /tmp && wget https://github.com/bluenviron/mediamtx/releases/download/v1.21.2/mediamtx_v1.21.2_linux_arm64.tar.gz
-tar xzf mediamtx_v1.21.2_linux_arm64.tar.gz && sudo mv mediamtx /usr/local/bin/
+cd /tmp && wget https://github.com/bluenviron/mediamtx/releases/download/v1.21.2/mediamtx_v1.21.2_linux_amd64.tar.gz
+tar xzf mediamtx_v1.21.2_linux_amd64.tar.gz && sudo mv mediamtx /usr/local/bin/
 ```
-The gateway writes its configuration (`/var/lib/trygons/mediamtx.yml`) and
+The gateway writes its configuration (`/var/lib/trygons/mediamtx.yml`, Windows
+`%PROGRAMDATA%\trygons\mediamtx.yml`) and
 starts / restarts it itself. Why MediaMTX:
-* one program, ARM64;
+* one program (Linux x86-64 and Windows builds);
 * RTSP in from the cameras, RTSP / WebRTC (iPhone) out;
 * **no transcoding** (low CPU, lowest delay);
 * streams pulled only when someone watches (an OFF stream costs nothing);
@@ -405,9 +518,10 @@ camera preset allows; on STARLINK / data saver only the front camera, LOW.
 ### Recording on the SSD (ring buffer, SAVE)
 
 The gateway records the four main streams itself (one `ffmpeg` per camera,
-no re-encoding) - install it: `sudo apt install -y ffmpeg`.
+no re-encoding) - install it: Ubuntu `sudo apt install -y ffmpeg` (install_ubuntu.sh does it), Windows
+MSYS2 `pacman -S mingw-w64-ucrt-x86_64-ffmpeg` or `ffmpeg.exe` on the PATH (gateway/toolpaths.py).
 * `<ssd>/video/ring/<CAMERA>/YYYYMMDD-HHMMSS.ts`: 1-minute files, UTC
-  names (the Pi's clock is GPS time). Older than the ring length (5-60
+  names (GPS time). Older than the ring length (5-60
   min) = deleted.
 * `<ssd>/video/events/<id>/`: SAVEs (hard links to the ring files + `event.json`).
 * Settings: `recording` in gateway.json (segment_s, ring_min, post_s,
@@ -421,7 +535,7 @@ no re-encoding) - install it: `sudo apt install -y ffmpeg`.
 ## 15. The shore PC (ground station, remote driving)
 
 1. Install the ground station like on the boat laptop (MANUAL.txt chapter 3)
-   and **Tailscale**, logged in to the same account as the Pi.
+   and **Tailscale**, logged in to the same account as the gateway PC.
 2. Start it through the gateway: `python app.py gw:trygons-gw:5761` and log
    in with your gateway user.
 3. Remote driving (MANUAL.txt chapter 9 part D): plug the USB joystick into
@@ -431,12 +545,12 @@ no re-encoding) - install it: `sudo apt install -y ffmpeg`.
 
 ## 16. Sync to the shore PC
 
-The Pi connects OUT to the shore PC over Tailscale (nothing listens on the
+The gateway PC connects OUT to the shore PC over Tailscale (nothing listens on the
 boat). On the shore PC a small receiver listens on TCP 5770.
 
 1. Make a long random key (on any PC):
    `python -c "import secrets; print(secrets.token_hex(24))"`
-2. On the Pi, `/etc/trygons/secrets.json`: add `"sync_key": "<key>"`.
+2. On the gateway PC, secrets.json (`/etc/trygons/` or `%PROGRAMDATA%\trygons\`): add `"sync_key": "<key>"`.
    `/etc/trygons/gateway.json`: `"sync": {"shore": "<shore PC Tailscale name>:5770"}`.
    Restart: `sudo systemctl restart trygons-gateway`.
 3. On the shore PC, next to app.py, make `groundstation\sync_receiver.json`
@@ -450,7 +564,7 @@ boat). On the shore PC a small receiver listens on TCP 5770.
 4. Windows firewall on the shore PC: allow TCP 5770 **only** from the
    Tailscale network (100.64.0.0/10), e.g. in an admin PowerShell:
    `New-NetFirewallRule -DisplayName "Trygons sync" -Direction Inbound -Protocol TCP -LocalPort 5770 -RemoteAddress 100.64.0.0/10 -Action Allow`
-   And in the Tailscale admin ACLs allow only the Pi -> shore PC:5770.
+   And in the Tailscale admin ACLs allow only the gateway PC -> shore PC:5770.
 5. Network tab: "SYNC to the shore PC: SYNCING / IDLE"; on the shore PC
    also "THIS PC receives: ...".
 
@@ -462,25 +576,24 @@ the cameras. STARLINK has `sync_allowed: false` - keep it that way.
 
 ## 17. AIS receiver (receive only)
 
-1. dAISy HAT: `sudo raspi-config` → Interface Options → Serial Port: login
-   shell **No**, serial hardware **Yes**; reboot. (The HAT uses
-   `/dev/serial0`: the AURIX link then goes over a USB-UART adapter,
-   `"aurix": "/dev/ttyUSB0"` - WIRING.md section 10.)
-   USB receiver instead: `ls /dev/ttyACM* /dev/ttyUSB*` to find it.
-2. `/etc/trygons/gateway.json`: `"ais": {"source": "/dev/serial0", "baud": 38400}`.
-3. Test: `cat /dev/serial0` shows `!AIVDM,...` lines when ships are around
-   (stop the gateway first: `sudo systemctl stop trygons-gateway`).
+1. A **USB AIS receiver** (receive only; PARTS.md). Plug it in, then
+   `python gateway.py --list-serial` shows its stable name (section 5).
+2. gateway.json: `"ais": {"source": "usb:VID:PID:SERIAL", "baud": 38400}` (Ubuntu also
+   `/dev/serial/by-id/...`). `--check-config` refuses the same device as the AURIX's.
+3. Test (stop the gateway first): Ubuntu `cat /dev/serial/by-id/<the receiver>`,
+   Windows `python -m serial.tools.miniterm COM6 38400` - `!AIVDM,...` lines when ships
+   are around.
 4. Ground station: map / AIS list (MANUAL chapter 9 part J).
 Online AIS (optional, OFF): an AISHub account (they ask you to share a
 receiver feed) → `"ais": {"online": {"enabled": true, "url": "http://data.aishub.net/ws.php?username=YOUR_NAME&format=1&output=json&compress=0&latmin={lat0}&latmax={lat1}&lonmin={lon0}&lonmax={lon1}"}}`.
 It is only used on 4G / RF, never on STARLINK.
-Second GPS (optional, OFF): `"ais": {"second_gps": true}` on the Pi AND
+Second GPS (optional, OFF): `"ais": {"second_gps": true}` on the gateway PC AND
 parameter `gps2_check_m` = 30 on the boat (Parameters tab).
 
-## 18. Depth charts on the Pi (offline)
+## 18. Depth charts on the gateway PC (offline)
 
 Make them on a PC with internet (MANUAL.txt chapter 9 part K):
-`python tools/chartprep.py` -> `charts/attica/`. Copy to the Pi:
+`python tools/chartprep.py` -> `charts/attica/`. Copy to the gateway PC (or run chartprep there):
 ```
 scp -r charts/attica trygons@trygons-gw:/home/trygons/trygons-c2/charts/
 ```
@@ -491,7 +604,7 @@ gateway then refuses AUTO programs ("no depth data") and the map shows
 
 ## 19. Shallow water and collision avoidance settings
 
-In `/etc/trygons/gateway.json` (restart the service after a change):
+In gateway.json (restart the service / task after a change):
 ```
 "shallow": {"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0},
 "avoid":   {"warn_nm": 0.5, "warn_min": 10, "danger_nm": 0.25, "danger_min": 6,
@@ -509,9 +622,50 @@ kayaks: keep a lookout.
 
 ## 20. Camera obstacle detection (vision)
 
-Everything is in `gateway/vision/README.md`. In short, on the Pi:
-`pip install onnxruntime==1.20.1 numpy==2.1.3`, `python3 tools/get_vision_model.py`,
-the active cooler fitted, restart the service; check "VISION ACTIVE x fps" on the
+Everything is in `gateway/vision/README.md`. In short, on the gateway PC (CPU only, no
+NVIDIA): Ubuntu `pip install onnxruntime==1.20.1 numpy==2.1.3`, Windows
+`python tools/get_vision_python.py`; then `python3 tools/get_vision_model.py`, restart
+the service / task; check "VISION ACTIVE x fps" on the
 captain screen (Cameras tab) and measure the fps. STAGE 3 (slows AUTO) stays OFF
 until after the sea trials. Settings: `"vision": {...}` in gateway.json
 (defaults in gateway/vision/manager.py).
+
+## 21. CPU / RAM with 4 cameras + vision on the CPU (measured)
+
+**Method** (`python tools/gateway_load.py --minutes 10`, results in
+`test_results/gateway_load/`): everything on one PC, no hardware. The AURIX simulator;
+4 camera generators (ffmpeg, NOT counted) that send, like a Tapo C310, a MAIN stream
+1920x1080 15 fps H.264 ~2 Mbit/s and a SUB stream 640x360 15 fps ~0.4 Mbit/s each
+(FRONT-1 = the sea video, so the model sees sea); simulated AIS. COUNTED = the gateway
+and all its child processes: gateway.py, MediaMTX (relay), the 4 ffmpeg recorders (ring
+buffer of the 4 main streams, no re-encoding), the vision worker (eWaSR
+ewasr_resnet18 ONNX, CPU only, 2 threads, max 2 fps, + its ffmpeg decoding the front
+SUB stream), and one station watching all 4 main streams through MediaMTX. 60 s
+warm-up, then a sample every 5 s (CPU time and working set per process, from the OS:
+ctypes on Windows, /proc on Ubuntu - no extra packages); the vision frame rate from the
+gateway's `--status` line.
+
+**Numbers - 2026-10-28, measured on the DEVELOPMENT PC, NOT the ThinkPad** (Intel
+i7-13700H, 20 logical CPUs, 64 GB, Windows 11; 119 samples, 10 min):
+
+| part | CPU avg / max (100 % = one logical CPU) | RAM avg |
+|---|---|---|
+| vision worker (eWaSR + its ffmpeg) | 135 / 147 % | 451 MB |
+| MediaMTX (relay, 8 streams in, 4 out) | 13 / 27 % | 50 MB |
+| gateway.py | 4 / 9 % | 45 MB |
+| 4 recorders (ffmpeg -c copy) | 2 / 9 % | 180 MB |
+| **gateway total** | **155 / 180 %** (7.7 % of that PC) | **726 MB** (max 732) |
+
+Vision 1.95 fps (the 2 fps cap), cameras 4/4 OK, the gateway's event loop at most
+16 ms late. Without vision the gateway needs only ~0.2 of one CPU: **vision is
+almost the whole load.**
+
+**Caveat - what this means for the ThinkPad L390 Yoga (i5-8265U, 4 cores / 8
+threads, 15 W, 8 GB):** this PC is NOT the ThinkPad. Its single-thread speed is
+roughly twice the i5-8265U's under a sustained load (the 8265U drops from its 3.9 GHz
+turbo to ~2-2.5 GHz when it stays busy), so expect on the ThinkPad roughly: vision
+0.8-1.5 s per picture with 2 threads = about 1 fps (the DEGRADED limit is 1.0 fps),
+the gateway total ~2-3 logical CPUs of 8 (25-40 %), RAM ~0.8 GB of 8 GB (fine). If
+the ThinkPad shows VISION DEGRADED: `"vision": {"max_fps": 1.0}`, or the INT8 model
+(vision/README.md), or 3 threads. **Run `python tools/gateway_load.py` once on the
+ThinkPad itself and keep its summary** (PROGRESS.md WAITING FOR OWNER W26).

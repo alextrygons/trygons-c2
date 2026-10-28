@@ -34,7 +34,7 @@ def ffmpeg():
 def vision_python():
     """The Python that runs the obstacle detection worker (needs numpy + onnxruntime):
     $VISION_PYTHON, <repo>/tools/bin/vision-python/ (tools/get_vision_python.py, Windows),
-    else this Python (the Pi: pip install onnxruntime numpy)."""
+    else this Python (Ubuntu: pip install onnxruntime numpy)."""
     import sys
     return _first(os.environ.get("VISION_PYTHON"), os.path.join(REPO, "tools", "bin", "vision-python", "python" + EXE),
                   sys.executable)

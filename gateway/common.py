@@ -1,4 +1,4 @@
-"""Shared helpers for the Trygons gateway (Raspberry Pi 5).
+"""Shared helpers for the Trygons gateway (the gateway PC: Ubuntu 24.04 LTS or Windows 11).
 
 The frame format is the same as the ground station's (groundstation/proto.py,
 which must match app/proto.h), so that file is imported from the repository
@@ -16,6 +16,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(REPO, "groundstation"))
 
 import proto  # noqa: E402  (groundstation/proto.py)
+import osdep  # noqa: E402  (everything that differs between Ubuntu and Windows)
 
 log = logging.getLogger("gateway")
 
@@ -23,10 +24,14 @@ log = logging.getLogger("gateway")
 
 DEFAULTS = {
     "boat": "trygons-c2",
-    # the AURIX: the Pi's UART (GPIO14/15) or, for the simulator, a TCP port
-    "aurix": "/dev/ttyAMA0",
+    # the AURIX: the 3.3 V TTL USB-UART adapter by a STABLE name (osdep.resolve_serial:
+    # "usb:VID:PID:SERIAL", Ubuntu "/dev/serial/by-id/...", Windows "COMn") - NEVER RS232
+    # (+-12 V destroys the AURIX pins); "" = not set (python gateway.py --list-serial);
+    # for the simulator a TCP port "tcp:127.0.0.1:5762"
+    "aurix": "",
     "baud": 921600,
-    # set the Pi's clock from the AURIX GPS time (needs CAP_SYS_TIME, see README)
+    # set the PC's clock from the AURIX GPS time (Ubuntu: needs CAP_SYS_TIME, see README;
+    # Windows: an offset is kept instead)
     "set_clock": True,
     # GW_STATUS to the AURIX (its "gateway alive" heartbeat; the AURIX alarms after 3 s)
     "status_s": 1.0,
@@ -42,7 +47,7 @@ DEFAULTS = {
         "lost_s": 5.0,                  # no answer this long -> station lost
     },
     "channels": {
-        "driver": "rutos",              # "rutos" (Teltonika RUT901), "policy" (the Pi routes), "sim"
+        "driver": "rutos",              # "rutos" (Teltonika RUT901), "policy" (the gateway PC routes), "sim"
         "router": {"host": "10.42.0.1", "ssh_user": "root", "ssh_key": "/home/trygons/.ssh/id_ed25519",
                    "ping_host": "1.1.1.1"},
         "check_s": 10.0,                # health / status of every channel
@@ -54,8 +59,8 @@ DEFAULTS = {
     "cameras": {
         "enabled": True,
         "list": None,                   # None = cameras.DEFAULT_CAMERAS (FRONT-1, FRONT-2, REAR-LEFT, REAR-RIGHT)
-        "mediamtx_bin": None,           # None = "mediamtx" on the PATH or /usr/local/bin/mediamtx
-        "mediamtx_conf": "/var/lib/trygons/mediamtx.yml",
+        "mediamtx_bin": None,           # None = toolpaths.mediamtx() (PATH, tools/bin/mediamtx/, /usr/local/bin)
+        "mediamtx_conf": os.path.join(osdep.data_dir(), "mediamtx.yml"),
         "api_port": 9997, "rtsp_port": 8554, "webrtc_port": 8889, "webrtc_udp_port": 8189,
         "frozen_s": 1.0,                # no new frames this long = FROZEN
         "internet_cmd": None,           # e.g. ["sudo", ".../gateway/tools/camera_internet.sh"]
@@ -83,8 +88,9 @@ DEFAULTS = {
         "chunk": 16384,
     },
     "ais": {
-        "enabled": True,                # RECEIVE ONLY (no transponder): dAISy HAT / USB receiver
-        "source": "/dev/serial0",       # dAISy HAT; USB receiver: "/dev/ttyACM0"; network: "tcp:host:port"
+        "enabled": True,                # RECEIVE ONLY (no transponder): a USB AIS receiver
+        "source": "",                   # the USB receiver by a stable name like "aurix" ("usb:VID:PID:SERIAL",
+                                        # "/dev/serial/by-id/...", "COMn"); network: "tcp:host:port"; "" = not set
         "baud": 38400,
         "stale_a_s": 180.0,             # Class A target stale after 3 min without a position
         "stale_b_s": 360.0,             # Class B after 6 min
@@ -120,12 +126,12 @@ DEFAULTS = {
         "slow_factor": 0.5, "min_kn": 4.0, "recheck_s": 20.0, "safe_nm": 0.5, "clear_nm": 1.0,
         "data_max_age_s": 90.0, "turn_limit_dpm": 10.0,
     },
-    "audit_fallback": "/var/lib/trygons/audit",   # when the SSD is missing
+    "audit_fallback": os.path.join(osdep.data_dir(), "audit"),   # when the data drive is missing
     "web_port": 8080,                   # the iPhone page (VPN only)
     "web_helm": False,                  # HELM from the web page: OFF unless you switch it on
     "storage": {
-        "root": "/mnt/ssd/trygons",     # the USB SSD; the SD card holds only the OS
-        "require_mount": True,          # root must be a mounted drive (not the SD card)
+        "root": os.path.join(osdep.data_dir(), "data"),   # the gateway PC's own SSD (logs, video)
+        "require_mount": False,         # True: root must be its own mounted drive (an external SSD)
         "check_s": 30,                  # free space / write test interval
         "low_free_gb": 20.0,            # below this: delete old synced data (section F)
         "full_free_gb": 2.0,            # below this: STORAGE FULL, only the ring buffer runs
@@ -160,7 +166,7 @@ def load_config(path=None, extra=None):
 # --- time ---------------------------------------------------------------------------
 
 class Clock:
-    """GPS-corrected time. On the Pi the system clock itself is set from the
+    """GPS-corrected time. On Ubuntu the system clock itself is set from the
     AURIX GPS time (offset then ~0); in tests / without permission the
     offset is kept here instead, so logs and video still agree."""
 

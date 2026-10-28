@@ -20,7 +20,7 @@ CONTENTS
   6B. BENCH TEST: every sensor and output on the dock
   7.  How the boat behaves: modes, buttons, joystick
   8.  The USB joystick (Thrustmaster T.16000M + TWCS)
-  9.  The gateway (Raspberry Pi) and remote access
+  9.  The gateway (gateway PC) and remote access
   10. The power limit
   11. Alarms
   12. Safety rules built into the software (incl. watchdogs, CPU1 monitor)
@@ -102,7 +102,7 @@ TWCS throttle, read by a small Teensy 4.1 "bridge" board (chapter 8).
                   generator cap, relays, thrusters; no secrets): the ground
                   station's boat list (chapter 5). Comes with every clone.
   groundstation/  PC ground station and log tools (Python).
-  gateway/        Raspberry Pi 5 gateway software (Python): remote access,
+  gateway/        gateway PC software (Python; Ubuntu 24.04 / Windows 11): remote access,
                   log copy, cameras, sync. Setup step by step:
                   gateway/README.md.
   bridge/         Teensy 4.1 firmware for the USB joystick (PlatformIO).
@@ -190,7 +190,7 @@ RUN ALL TESTS (before every commit):
     autopilot_sim.exe slam
   Only the slamming tests (SL1..SL8).
   The gateway tests of one part only, e.g.:  test_gateway.py AIS
-  The gateway (Raspberry Pi) tests, with the simulator, on the PC:
+  The gateway (gateway PC) tests, with the simulator, on the PC:
     cd ..\gateway
     C:\msys64\ucrt64\bin\python.exe test_gateway.py
     C:\msys64\ucrt64\bin\python.exe test_avoid.py    (collision avoidance
@@ -225,7 +225,7 @@ Double-click START_DEMO.bat (project folder) in Windows Explorer. It starts
 the whole C2 on this PC, in the Saronic Gulf (37.82 N 23.60 E, between
 Piraeus and Aegina):
   * the AURIX simulator (the boat), with the USB joystick as joystick source
-  * the gateway (Raspberry Pi software) in PC mode, with MediaMTX
+  * the gateway (gateway PC software) in PC mode, with MediaMTX
   * 4 camera test streams: FRONT-1, FRONT-2, REAR-LEFT, REAR-RIGHT
   * simulated AIS traffic (10 ships: ferries, cargo, yachts, fishing boats)
   * two ground station windows:
@@ -717,7 +717,7 @@ THE VOICES: Piper, a free offline neural text-to-speech (MIT licence),
   with a Greek voice (el_GR-rapunzelina-low) and an English one
   (en_GB-alan-medium). Chosen because it is free, needs no internet, has a
   Greek voice (Windows only has one after installing a Greek speech pack)
-  and also runs on the Raspberry Pi. Install: chapter 3 g). Without Piper
+  and also runs on the gateway PC. Install: chapter 3 g). Without Piper
   the ground station uses an installed Windows voice for that language, or
   tones only. Every callout is said as one sentence and all of them are
   made once in advance (groundstation\sound_cache\, not in git) so a
@@ -1417,39 +1417,51 @@ MEASURED IN THE SIMULATION (bridge + hub modelled)
 
 
 -------------------------------------------------------------------------------
-9. THE GATEWAY (RASPBERRY PI) AND REMOTE ACCESS
+9. THE GATEWAY (GATEWAY PC) AND REMOTE ACCESS
 -------------------------------------------------------------------------------
 THE IDEA
-  A Raspberry Pi 5 on the boat is the only way in from the internet. The
-  AURIX is NEVER on the network: it talks only to the Pi, over a cable
-  (UART, the same frames with checksum as the USB laptop link). The Pi sits
+  The gateway PC on the boat (a Lenovo ThinkPad L390 Yoga with Ubuntu 24.04
+  LTS or Windows 11) is the only way in from the internet. The
+  AURIX is NEVER on the network: it talks only to the gateway PC, over a cable
+  (UART, the same frames with checksum as the USB laptop link). The gateway PC sits
   on the boat LAN behind the Teltonika router; shore PCs and the iPhone
   reach it only through a VPN (Tailscale) that the boat opens itself -
   no open ports, works behind the 4G operator's CGNAT.
   The USB laptop, the onboard joystick and the STANDBY button work exactly
-  as before, with or without the Pi.
+  as before, with or without the gateway PC.
   Setup step by step: gateway\README.md.
+  The gateway PC: Ubuntu 24.04 LTS is recommended at sea (no forced updates or
+  restarts); Windows 11 works too (Windows Update set to "ask, never restart").
+  It starts by itself at boot and restarts after a crash (Ubuntu: a systemd
+  service; Windows: the Task Scheduler task "Trygons Gateway"). Power: a 12 V
+  -> USB-C PD car charger from the bank; its own battery is the UPS (charge
+  limit 80 %: TLP / Lenovo Vantage); it keeps running with the lid closed.
+  Ethernet to the router and to the camera PoE switch (USB-Ethernet adapters
+  if it has no RJ45). The AIS receiver is a USB one. The serial devices are
+  named in gateway.json by a stable id (python gateway.py --list-serial).
 
-A. THE GATEWAY LINK (AURIX <-> Pi)
-  * UART 921600 baud (AURIX ASCLIN1: P15.0 -> Pi GPIO15, P15.1 <- Pi GPIO14),
-    WIRING.md section 7.
-  * The AURIX sends the Pi: telemetry, and a COMPLETE COPY of its log (every
-    record it writes to its SD card, numbered). The Pi writes it to its USB
+A. THE GATEWAY LINK (AURIX <-> gateway PC)
+  * UART 921600 baud (AURIX ASCLIN1: P15.0 -> adapter RXD, P15.1 <- adapter TXD)
+    through a 3.3 V TTL USB-UART adapter (FTDI / CP2102 at 3.3 V) on the
+    gateway PC. NEVER an RS232 port or cable: its +-12 V destroys the AURIX
+    pins (WIRING.md section 7).
+  * The AURIX sends the gateway PC: telemetry, and a COMPLETE COPY of its log (every
+    record it writes to its SD card, numbered). The gateway PC writes it to its
     SSD as .TLG files (aurix_logs\YYYYMMDD\P<boot>_<file>.TLG) - readable with
     logview.py / log2csv.py like the SD card files.
   * If the cable is too slow at some moment, the AURIX drops records for the
-    Pi FIRST - never control traffic. The Pi notes the missing numbers in
+    gateway PC FIRST - never control traffic. The gateway PC notes the missing numbers in
     gaps.csv. The AURIX SD card is always complete: it stays the independent
     black box.
-  * The Pi sends a status once a second (its "I'm alive"). Silent for 3 s:
+  * The gateway PC sends a status once a second (its "I'm alive"). Silent for 3 s:
     alarm GATEWAY LOST. Nothing else changes (no mode change) - unless you
     are driving remotely (part D).
-  * The Pi's SSD missing / failing: alarm GATEWAY STORAGE; everything else
-    keeps running. The Pi's own SD card holds only the operating system.
-  * TIME: the AURIX sends GPS time to the Pi once a second; the Pi sets its
+  * The gateway PC's SSD missing / failing: alarm GATEWAY STORAGE; everything else
+    keeps running. The data are on the gateway PC's own SSD.
+  * TIME: the AURIX sends GPS time to the gateway PC once a second; the gateway PC sets its
     clock from it, so the boat log, the gateway logs and the video all have
     the same time.
-  * Ground station, System tab: "gateway (Pi): OK / LOST, Pi log copy up to
+  * Ground station, System tab: "gateway: OK / LOST, gateway log copy up to
     record N, gaps".
 
 B. USERS, ROLES AND HELM
@@ -1473,15 +1485,15 @@ B. USERS, ROLES AND HELM
     latency.
   * Remote HELM station lost: alarm REMOTE LINK LOST, HELM back to nobody,
     no mode change (remote driving: part D).
-  * TRUST: which station is "on the boat" is decided by the Pi (where it
-    connects from); the AURIX can't check it. A faulty or hacked Pi could
+  * TRUST: which station is "on the boat" is decided by the gateway PC (where it
+    connects from); the AURIX can't check it. A faulty or hacked gateway PC could
     therefore claim to be a station on the boat. What it still can't do:
     leave MANUAL against the joystick, override STANDBY, start AUTO /
     remote driving or raise the power without the joystick CONFIRM on
     board, steer outside AUTO, or go faster than the power limit.
   * iPhone: http://trygons-gw:8080 over the VPN, view only (HELM from the
     web page only if switched on in the gateway config).
-  * Audit log on the Pi: who connected, who held HELM, every command and
+  * Audit log on the gateway PC: who connected, who held HELM, every command and
     its answer. Security rules: gateway\README.md section 12 - please do
     all of them (change ALL default passwords, VPN only, cameras without
     internet, separate networks).
@@ -1523,7 +1535,7 @@ C. INTERNET CHANNELS (router Teltonika RUT901)
 
   Setup of the RUT901 and Starlink: gateway\README.md section 13 (LAN
   range 10.42.0.x FIRST, then Starlink in bypass mode on the WAN port,
-  failover with health checks, SSH key for the Pi).
+  failover with health checks, SSH key for the gateway PC).
 
 D. REMOTE JOYSTICK DRIVING FROM A SHORE PC (mode REMOTE MANUAL)
   RULE: somebody is ALWAYS on board while the boat is driven remotely.
@@ -1566,8 +1578,8 @@ D. REMOTE JOYSTICK DRIVING FROM A SHORE PC (mode REMOTE MANUAL)
 
 E. CAMERAS (4 x TP-Link Tapo C310)
   FRONT-1 (main), FRONT-2 (backup), REAR-LEFT, REAR-RIGHT. Cable (Ethernet),
-  on their own camera network behind the Pi; they have NO internet (the
-  cloud is not used). The Pi relays the video (MediaMTX, no re-encoding).
+  on their own camera network behind the gateway PC; they have NO internet (the
+  cloud is not used). The gateway PC relays the video (MediaMTX, no re-encoding).
   Video is never needed for safety: a camera problem never changes the mode.
 
   Ground station, Cameras tab (the big driver screen comes in part I):
@@ -1590,7 +1602,7 @@ E. CAMERAS (4 x TP-Link Tapo C310)
   WIRING.md section 8.
 
 F. VIDEO RECORDING: RING BUFFER AND SAVE
-  The Pi records all 4 cameras (full quality) all the time, in 1-minute
+  The gateway PC records all 4 cameras (full quality) all the time, in 1-minute
   files on its SSD. Only the last 5 / 10 / 20 / 30 / 60 minutes are kept
   (the "ring buffer"; Cameras tab -> ring buffer, HELM or a station on board).
   Recording never uses the internet and never affects driving.
@@ -1616,7 +1628,7 @@ F. VIDEO RECORDING: RING BUFFER AND SAVE
 
   SSD space (1 hour of video from 4 Tapo C310 at full quality is about
   3-4 GB, 4 x ~2 Mbit/s - check "GB/h" in the Cameras tab with the real
-  cameras): when the SSD runs low the Pi deletes, in this order:
+  cameras): when the SSD runs low the gateway PC deletes, in this order:
     1. the oldest ring buffer files,
     2. the oldest SAVEs that are already copied to the shore PC (part G),
   but NEVER a SAVE that is not on the shore PC yet. If that is not enough:
@@ -1627,7 +1639,7 @@ F. VIDEO RECORDING: RING BUFFER AND SAVE
   seconds; the others keep recording. "not recording: ..." shows it.
 
 G. SYNC TO THE SHORE PC
-  The Pi copies its SSD to the shore PC by itself, over the VPN, whenever
+  The gateway PC copies its SSD to the shore PC by itself, over the VPN, whenever
   the boat is on 4G / 4G SIM 2 / RF (NEVER on STARLINK). In this order:
     1. black box / alarms   AURIX logs with an alarm, fault or SAVE in them,
                             and every SAVE's description (event.json)
@@ -1640,7 +1652,7 @@ G. SYNC TO THE SHORE PC
     commands stay fast). During REMOTE MANUAL it stops completely.
   * A broken connection continues where it stopped (checked with SHA-256).
   * A file counts as "synced" only after the shore PC has checked it. Sync
-    never deletes anything; only when the SSD runs low does the Pi delete
+    never deletes anything; only when the SSD runs low does the gateway PC delete
     SYNCED data (part F).
   Network tab: SYNC state, speed, ping, what is waiting per class, the last
   confirmed file; on the shore PC also what it has received.
@@ -1714,9 +1726,9 @@ I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN
 
 
 J. AIS: OTHER SHIPS (RECEIVE ONLY)
-  The Pi listens to AIS (no transponder: other ships do NOT see us on AIS).
-  Receiver: a dAISy HAT on the Pi (or a USB AIS receiver) with its own
-  VHF/AIS antenna. The AURIX never sees AIS - the Pi decodes it:
+  The gateway PC listens to AIS (no transponder: other ships do NOT see us on AIS).
+  Receiver: a USB AIS receiver on the gateway PC with its own
+  VHF/AIS antenna. The AURIX never sees AIS - the gateway PC decodes it:
     * position reports Class A (big ships) and Class B (small craft),
     * name, size, type, destination (static data).
   Each ship shows its age; with no new position it becomes STALE after
@@ -1730,9 +1742,9 @@ J. AIS: OTHER SHIPS (RECEIVE ONLY)
   on STARLINK. Ships seen by our own receiver keep our data when it is
   newer.
   SECOND GPS: if the AIS device has its own GPS (a future Class B
-  transponder, or $GPRMC from the receiver), the Pi can send it to the
+  transponder, or $GPRMC from the receiver), the gateway PC can send it to the
   AURIX as a second, independent GPS: setting ais.second_gps = true on the
-  Pi AND parameter gps2_check_m (e.g. 30) on the boat. A main GPS more than
+  gateway PC AND parameter gps2_check_m (e.g. 30) on the boat. A main GPS more than
   that far from the second one is not trusted (spoofing). Tested: drags of
   0.2 m/s and slower are NOT found by the other checks within 10 minutes,
   the second GPS finds them at 30 m. Both OFF by default.
@@ -1764,7 +1776,7 @@ K. DEPTH CHARTS AND SEA MARKS (OFFLINE)
   MAKE THE CHARTS ONCE (needs internet, about 10 minutes):
        C:\msys64\ucrt64\bin\python.exe tools\chartprep.py
   -> charts\attica\ (depth.bin, contours.json, seamarks.json, area.json).
-  Copy that folder to the Pi too (gateway\README.md section 18): the Pi uses
+  Copy that folder to the gateway PC too (gateway\README.md section 18): the gateway PC uses
   it for the shallow-water checks. After that the map works with NO
   internet.
   Map (screen 2), View menu: Depth (shading: dark = shallow, white = deep,
@@ -1775,8 +1787,8 @@ K. DEPTH CHARTS AND SEA MARKS (OFFLINE)
   to the coast) counts as SHALLOW for every check (part L).
 
 L. SHALLOW WATER
-  Limit = the larger of 3.0 m and (draft + margin). SET THEM ON THE PI
-  (/etc/trygons/gateway.json "shallow"): draft_m = from the water line to
+  Limit = the larger of 3.0 m and (draft + margin). SET THEM ON THE GATEWAY PC
+  (gateway.json "shallow"): draft_m = from the water line to
   the lowest point of the outboard with the leg DOWN (measure it!), margin_m
   = how much water you want under it (1 m), shallow_m = at least this (3 m).
   The ground station shows the limit (Program tab profile, red line).
@@ -1786,9 +1798,9 @@ L. SHALLOW WATER
       the message gives the leg and the position, a red X on the map, the
       depth profile (red = too shallow).
     * Upload and AUTO start / resume through the gateway are REFUSED the same
-      way by the Pi ("shallow water on the route: leg ... at lat lon"), also
+      way by the gateway PC ("shallow water on the route: leg ... at lat lon"), also
       the leg from the boat to the waypoint at AUTO start. Without charts on
-      the Pi AUTO is refused ("no depth charts").
+      the gateway PC AUTO is refused ("no depth charts").
   WHILE DRIVING (any mode): if the boat will be over shallow water within
   the next 30 s (at least 200 m ahead) -> "SHALLOW WATER AHEAD" on both
   screens. In AUTO the boat also slows to 4 kn and the SHALLOW WATER alarm
@@ -1796,9 +1808,9 @@ L. SHALLOW WATER
   Every collision-avoidance route (part M) passes the same depth check.
   The charts are free data and NOT FOR NAVIGATION: near the coast, in
   harbours and where there is no data, "no data" counts as shallow.
-  How AUTO is slowed: the Pi sends a "navigation request" twice a second
+  How AUTO is slowed: the gateway PC sends a "navigation request" twice a second
   (speed cap, avoidance heading, alarms) that the boat applies only in AUTO.
-  If the Pi goes quiet in the middle of such a request, the boat holds its
+  If the gateway PC goes quiet in the middle of such a request, the boat holds its
   heading, slows to 4 kn (parameter nav_lost_kn) and sounds COLLISION RISK -
   DRIVER DECISION. Joystick and STANDBY always win.
 
@@ -1807,12 +1819,12 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
   anything without a transponder, and a ship's AIS can be wrong, late or
   switched off. Collision avoidance helps with BIG ships only. KEEP A
   LOOKOUT. A radar reflector on the boat helps big ships see YOU.
-  The Pi computes for every AIS ship the CPA (how close it will pass) and
+  The gateway PC computes for every AIS ship the CPA (how close it will pass) and
   the TCPA (in how many minutes):
     WARNING  CPA under 0.5 nm within 10 min   (yellow on the maps)
     DANGER   CPA under 0.25 nm within 6 min   (red on the maps + the
              driver screen; alarm COLLISION RISK, video SAVE)
-  (Pi settings /etc/trygons/gateway.json "avoid": warn_nm, warn_min,
+  (gateway PC settings gateway.json "avoid": warn_nm, warn_min,
   danger_nm, danger_min, safe_nm, clear_nm, min_kn ...)
   WHAT HAPPENS IN EACH MODE:
     AUTO       automatic, step by step, already at the WARNING level (early,
@@ -1824,7 +1836,7 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
                   of a ship's bow, keeps 0.5 nm, and passes the depth check
                   of part L). The route is drawn on both maps.
                3. clear (going back is safe) -> the boat rejoins its leg.
-               Every decision is written to the Pi's audit log.
+               Every decision is written to the gateway PC's audit log.
     HDG LOCK   at the WARNING level too: the same route as a PROPOSAL on the
                driver screen ("Steer
                074 and slow to 4 kn?") - ACCEPT changes the locked heading,
@@ -1835,14 +1847,14 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
     MANUAL / REMOTE MANUAL   alarm only: you steer.
     STANDBY / TRAINING       nothing.
   COLLISION RISK - DRIVER DECISION: the situation can't be solved safely by
-  the Pi (two or more dangerous ships, a ship that is turning, old / stale
+  the gateway PC (two or more dangerous ships, a ship that is turning, old / stale
   AIS data, no safe route): in AUTO the boat slows to 4 kn and KEEPS ITS
   COURSE (never an unchecked route). YOU decide: take the joystick.
-  The boat only applies what the Pi asks in AUTO (or after your ACCEPT in
+  The boat only applies what the gateway PC asks in AUTO (or after your ACCEPT in
   HDG LOCK), and only within all its own rules (power limit, joystick
-  wins, STANDBY wins). If the Pi goes silent during an avoidance, the boat
+  wins, STANDBY wins). If the gateway PC goes silent during an avoidance, the boat
   holds its heading, slows to 4 kn and sounds DRIVER DECISION.
-  The boat also checks the Pi's request itself: an avoidance heading must
+  The boat also checks the gateway PC's request itself: an avoidance heading must
   come with a speed reduction, and one more than 150 deg off the leg
   (parameter nav_max_dev) is not steered (the boat slows, DRIVER DECISION);
   an accepted HDG LOCK heading counts only if it came while HDG LOCK was on.
@@ -1852,7 +1864,7 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
   TCPA, age), click a ship for its details.
 
 N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
-  The Pi looks at the front camera (FRONT-1, FRONT-2 after a switch-over)
+  The gateway PC looks at the front camera (FRONT-1, FRONT-2 after a switch-over)
   with a small AI model (eWaSR) that colours every part of the picture as
   WATER, SKY or OBSTACLE. Things sitting on the water (boats, buoys,
   swimmers, rocks) become obstacles with a bearing and a ROUGH distance.
@@ -1881,17 +1893,18 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   "CLEAR SLOWDOWN" appears while a STAGE 3 slowdown is active.
   STATUS (a notice, never an alarm, never a mode change):
     ACTIVE     working
-    PAUSED     the Pi's main jobs need the CPU, or the Pi is hot / throttling
+    PAUSED     the gateway PC's main jobs need the CPU, or its CPU is hot / throttling
     DEGRADED   too slow (below 1 picture / s) or the camera gives no pictures
     OFFLINE    switched off, model missing, crashed (it restarts by itself)
   If vision stops working while it slows AUTO down, the slowdown STAYS until
   the driver presses CLEAR SLOWDOWN (it is never released by itself).
-  The Pi needs its ACTIVE COOLER (PARTS.md). Setup and the model file:
+  It runs on the gateway PC's CPU (no NVIDIA; measured load: gateway\README.md
+  section 21). Setup and the model file:
   gateway\vision\README.md. Your own recordings can be tested on the PC:
      tools\bin\vision-python\python.exe gateway\vision\evaluate.py FILE.ts
   -> test_results\vision_eval\report.md (speed, detections, pictures).
   Samples for an own Saronic dataset (picture + mask) can be switched on
-  (vision.samples on the Pi); they use at most 500 MB.
+  (vision.samples on the gateway PC); they use at most 500 MB.
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
@@ -1929,14 +1942,14 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          until it is released (chapter 6A)
   CONTROL LOOP OVERRUN   a control cycle took longer than 50 ms
   LOG FAILURE            SD card missing / full / failing (control goes on)
-  GATEWAY LOST           the Raspberry Pi is silent for 3 s (no mode change)
+  GATEWAY LOST           the gateway PC is silent for 3 s (no mode change)
   SHALLOW WATER          AUTO: shallow water ahead (charts); the boat slows to
                          4 kn (part L)
   COLLISION RISK         an AIS ship will pass closer than 0.25 nm within
                          6 min (part M); AUTO avoids it, HDG LOCK proposes
   OBSTACLE AHEAD         the front camera sees an obstacle in the path (part N,
                          STAGE 2 / 3); a warning - only STAGE 3 slows AUTO
-  COLLISION RISK - DRIVER DECISION  the Pi can't solve it safely (or went
+  COLLISION RISK - DRIVER DECISION  the gateway PC can't solve it safely (or went
                          silent during an avoidance): slow, keep course - YOU
                          decide (part M)
   AIS RECEIVER SILENT    no AIS message for 5 min at sea: antenna / receiver
@@ -1944,7 +1957,7 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   SLAMMING               an impact harder than slam_limit_g: throttle reduced
                          one step, video SAVE; the power limit stays (only
                          with slam_red_reset = 1 it drops to 30 %) (part H)
-  GATEWAY STORAGE        the Pi's USB SSD is missing / failing, or STORAGE FULL
+  GATEWAY STORAGE        the gateway PC's SSD is missing / failing, or STORAGE FULL
                          (no mode change; SAVE refused while full)
   REMOTE LINK LOST       the remote station holding HELM disappeared; HELM
                          goes back to nobody (no mode change)
@@ -2170,8 +2183,8 @@ The ground station saves its own copy of the telemetry in the same format
   Shield2Go connectors (STANDBY P00.4, HDG LOCK P10.8, -1 P23.4, +1 P23.5,
   -10 P32.2, +10 P32.3), throttle servo D9, gear servo D8, steering motor
   driver D6 / D7, safety relay D10, neutral switch D5, microSD click in the
-  mikroBUS socket, PC on the USB cable. Raspberry Pi gateway: P15.0 (TX) ->
-  Pi GPIO15 (pin 10), P15.1 (RX) <- Pi GPIO14 (pin 8), GND. USB joystick bridge: Teensy pin 1
+  mikroBUS socket, PC on the USB cable. Gateway PC: P15.0 (TX) -> RXD,
+  P15.1 (RX) <- TXD, GND of a 3.3 V TTL USB-UART adapter (NEVER RS232). USB joystick bridge: Teensy pin 1
   (TX) -> P20.3 (Shield2Go 2, ASCLIN3 RX), GND to GND, own 5 V supply.
 
   SHOPPING LIST: PARTS.md (one list for everything: boat electronics,
@@ -2392,13 +2405,13 @@ FUTURE IDEAS
    * Low-bandwidth video:
        (a) smart blurring without AI - use the IMU horizon to flatten the
            sky and lower the quality away from the path, re-encoding one
-           low-resolution front stream on the Pi;
+           low-resolution front stream on the gateway PC;
        (b) with the eWaSR segmentation: an ultra-low-bandwidth synthetic
            view (sea / sky / land in flat colours, sea coloured by the
            IMU-measured roughness, obstacles as sharp cut-outs).
        Never the default view: fallback only on very weak links, with a
        clear SYNTHETIC VIEW banner and a lower remote-driving speed cap.
-   * Vision hardware upgrade: Raspberry Pi AI HAT+ or OAK-D camera for a
+   * Vision hardware upgrade: an OAK-D camera or a USB NPU for a
      faster eWaSR; fine-tuning on my own Saronic recordings (the vision
      samples, chapter 9 part N).
 
@@ -2422,16 +2435,17 @@ FUTURE IDEAS
                                  stick; check the neutral switch.
   "LOG FAILURE"                  SD card missing, full or broken. Control
                                  is not affected.
-  "GATEWAY LOST"                 Pi off / crashed / UART cable. On the Pi:
-                                 systemctl status trygons-gateway
+  "GATEWAY LOST"                 gateway PC off / crashed / USB-UART adapter. On it:
+                                 Ubuntu: systemctl status trygons-gateway;
+                                 Windows: %PROGRAMDATA%\trygons\logs\gateway.log
   "shallow water on the route"   a leg (or boat -> waypoint) over / near water
                                  shallower than the limit: move the waypoint
                                  (Program tab, Check depth, red X on the map)
   "driver screen not open"       open the driver screen (Driver screen
                                  button), or switch on Single operator if
                                  you are alone at the station
-  "GATEWAY STORAGE"              the Pi's SSD: is it plugged in, mounted
-                                 (df -h /mnt/ssd), not full? STORAGE FULL:
+  "GATEWAY STORAGE"              the gateway PC's SSD (or the external one): is
+                                 it there, not full (Ubuntu: df -h)? STORAGE FULL:
                                  sync the SAVEs to the shore PC (only synced
                                  ones are deleted automatically).
   "NOT HELM: take HELM first"    press "Take HELM" (another station may hold
@@ -2471,7 +2485,7 @@ FUTURE IDEAS
   STARLINK banner                all 4G / RF channels are down (AUTO), or you
                                  chose it; it costs data - go back to AUTO.
   Camera DOWN / FROZEN           its power (PoE port / fuse), cable, or the
-                                 Pi's eth1 adapter; FRONT-2 takes over for
+                                 gateway PC's camera port (cam0); FRONT-2 takes over for
                                  the front view.
   JOYSTICK FAULT: no frames      bridge not powered / TX wire / Teensy not
                                  running. Check the 5 V and the GND wire.
@@ -2537,6 +2551,6 @@ HOW TO READ THE RESULT
   full result, every finding and what to fix first: TEST_REPORT.md (project
   folder). The large outputs (logs, coverage pages, soak data) stay in
   test_results\ - not in git; delete it any time.
-  What the PC can't test (real board timing, the Pi's speed, the sensors,
+  What the PC can't test (real board timing, the gateway PC's speed, the sensors,
   the sea): TEST_REPORT.md section 4.
 ===============================================================================

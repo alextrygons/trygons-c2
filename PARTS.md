@@ -31,17 +31,17 @@ why each part is needed: MANUAL.txt.
 
 - [ ] DroneCAN (CLAUDE.md T, WIRING.md 3E, docs/dronecan_design.md - the AURIX replaces the ArduPilot): the existing DroneCAN servo nodes (Matek CAN-L431, throttle / steering 360 deg position servo / gear) and the DroneCAN relay board are REUSED - MODELS, NODE IDS AND TIMEOUT SETTINGS TO CONFIRM (the relay board on DroneCAN, step 11f: node 30, relays 1-6 = hardpoints 0-5; it must hold its non-momentary relays and switch its momentary ones (TRIM, STARTER) off <= 300 ms after the commands stop - requirements R-1..R-3 of WIRING.md 3E; otherwise the RS485 Modbus board below stays the relay board, the build option RELAY_BUS). New: a 12 V -> 5 V DC-DC converter for the nodes (they were powered through the Pixhawk's CAN port; rating TO CONFIRM by measuring the nodes' current) + a fuse at the bank end and one per branch; CAN cable (twisted pair, JST-GH or as the nodes need) from the kit's CAN connector (pinout TO CONFIRM); 2 x 120 Ohm terminations if not on the kit / the last node (TO CONFIRM); a USB-CAN adapter for the laptop (for the DroneCAN GUI Tool: set static node IDs, timeouts, bench tests). The Pixhawk is NOT reused: it is node 10 like the AURIX and must never be on the bus with it (OA-4).
 
-## Gateway (remote access)
+## Gateway PC (remote access) - Lenovo ThinkPad L390 Yoga (gateway/README.md, WIRING.md 7)
 
-- [ ] Raspberry Pi 5, 8 GB, with the official active cooler - REQUIRED for the camera obstacle
-      detection (eWaSR on the CPU; without the cooler the Pi throttles and vision pauses).
-- [ ] Later, optional (not implemented): Raspberry Pi AI HAT+ (Hailo NPU) or a Luxonis OAK-D camera
-      to run the obstacle detection many times faster (gateway/vision/README.md).
-- [ ] 12 V -> 5.1 V 5 A USB-C supply for the Pi (car/marine grade; 5 A is needed so the Pi can power the SSD), 5 A fuse on the 12 V side.
-- [ ] USB 3 SSD 512 GB - 1 TB (e.g. Samsung T7) - logs and video (4 cameras ~3-4 GB per hour; 1 TB if you use the 60-minute ring buffer and SAVE often).
-- [ ] microSD card 32 GB (A2) - only the Pi's operating system.
-- [ ] UART cable AURIX <-> Pi: 3 wires (TX, RX, GND), shielded, < 1 m, 2 x 100 Ohm resistors.
-- [ ] IP65 box with cable glands for the Pi + SSD, ventilated / heat sink.
+- [x] Lenovo ThinkPad L390 Yoga: i5-8265U (4 cores / 8 threads), 8 GB RAM, 500 GB SSD (you have it). Ubuntu 24.04 LTS (recommended at sea) or Windows 11. Its own SSD holds the logs and video (~3-4 GB per hour). Vision runs on its CPU (no NVIDIA); measured load: gateway/README.md section 21.
+- [ ] 12 V -> USB-C PD car charger, 65 W (USB-C PD 20 V, car/marine grade) + a 5 A-rated USB-C cable, fuse at the bank per the charger's manual - MODEL TBD. The laptop's built-in battery is the UPS; charge limit 80 % (TLP on Ubuntu / Lenovo Vantage on Windows).
+- [ ] 3.3 V TTL USB-UART adapter for the AURIX link: FTDI TTL-232R-3V3 cable (or an FT232R / FT231X / CP2102(N) board set to 3.3 V, 921600 baud) - NEVER RS232 (+-12 V destroys the AURIX pins), never 5 V TTL. Mounted inside the AURIX box, 2 x 100 Ohm resistors, shielded USB cable (3-5 m) with a ferrite to the PC.
+- [ ] USB 3 Gigabit Ethernet adapters (Realtek RTL8153 class) for the boat LAN and / or the camera network, as many as the laptop lacks RJ45 ports (one per network) - RJ45 / port count TBD (WAITING FOR OWNER W17).
+- [ ] Small powered USB 3 hub - only if the laptop's USB ports run out (adapter, AIS, Ethernet adapters).
+- [ ] Optional: external USB 3 SSD 1 TB (e.g. Samsung T7) if the 500 GB SSD is too small for the ring buffer + SAVEs.
+- [ ] A dry, ventilated mount for the laptop (not waterproof), held down against vibration; strain relief for every cable.
+- [ ] Later, optional (not implemented): a Luxonis OAK-D camera or a USB NPU to run the obstacle detection faster (gateway/vision/README.md).
+- [ ] REMOVED with step 12 (not needed any more): Raspberry Pi 5 + active cooler, its 5 V 5 A supply, its microSD card, the Pi UART cable, the dAISy HAT.
 
 ## Cameras (you already have the RUT901 router and the TSW101 PoE switch)
 
@@ -49,7 +49,7 @@ why each part is needed: MANUAL.txt.
 - [ ] 3 x 802.3af PoE splitter with 9 V output (for FRONT-1 and the two rear cameras; check the C310 plug size).
 - [ ] 1 x 12 V -> 9 V DC-DC converter >= 1 A (FRONT-2, its own power).
 - [ ] Fuses + holders: 5 A (TSW101), 2 A (FRONT-2 converter).
-- [ ] USB 3 Gigabit Ethernet adapter for the Pi (camera network eth1).
+- [ ] (the camera network port on the gateway PC: see "Gateway PC" above - its RJ45 or a USB 3 Gigabit Ethernet adapter).
 - [ ] Outdoor / UV-resistant Cat6 cable, IP68 cable glands, waterproof RJ45 couplers or self-amalgamating tape, a closed box for splitters.
 - [ ] 4 x high-endurance microSD 64-128 GB (the cameras' own loop recording).
 - [ ] Microfibre cloths (lens care).
@@ -70,10 +70,9 @@ why each part is needed: MANUAL.txt.
 
 ## AIS (receive only)
 
-- [ ] dAISy HAT AIS receiver for the Raspberry Pi (Wegmatt) - or a USB AIS receiver (e.g. dAISy USB, Quark-Elec QK-A026).
+- [ ] USB AIS receiver, receive only, NMEA 0183 over USB (e.g. dAISy USB or a Quark-Elec QK-A02x class receiver) - MODEL TBD.
 - [ ] VHF/AIS antenna (marine, 162 MHz, e.g. a 1 m stainless whip) + mount, or a passive AIS/VHF splitter (e.g. Digital Yacht SPL1500) for the existing VHF antenna.
 - [ ] Coax: RG-58 (up to 5 m) or RG-8X / LMR-240 (longer) with the right connectors (BNC / SMA / PL-259), self-amalgamating tape.
-- [ ] If the dAISy HAT takes the Pi's serial port: a USB-UART adapter (3.3 V, FTDI / CP2102) for the AURIX link.
 - [ ] Radar reflector (we are NOT visible on AIS): e.g. Echomax EM230 or Tri-Lens, mounted high.
 
 ## Shore PC

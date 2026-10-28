@@ -1,5 +1,7 @@
-"""The gateway's connection to the AURIX: the Pi's UART (GPIO14 TX / GPIO15 RX,
-921600 baud) or, for the simulator, "tcp:127.0.0.1:5762".
+"""The gateway's connection to the AURIX: a 3.3 V TTL USB-UART adapter on the
+gateway PC (921600 baud; NEVER RS232: +-12 V destroys the AURIX pins), named
+by a stable id in gateway.json (osdep.resolve_serial: "usb:VID:PID:SERIAL",
+"/dev/serial/by-id/...", "COMn"), or, for the simulator, "tcp:127.0.0.1:5762".
 
 Same frames as the USB link (groundstation/proto.py). Received frames go to
 the handlers registered per frame type (and to "any" handlers, e.g. the
@@ -10,6 +12,7 @@ import threading
 import time
 
 from common import log, proto
+import osdep
 
 
 class AurixLink:
@@ -28,6 +31,7 @@ class AurixLink:
         self._writer = None         # asyncio writer (TCP) or serial port
         self._serial = None
         self._loop = None
+        self.error = ""             # last connect problem (e.g. "adapter not plugged in")
 
     def on(self, ftype, cb):
         self.handlers.setdefault(ftype, []).append(cb)
@@ -80,7 +84,9 @@ class AurixLink:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                log.warning("AURIX link: %s", e)
+                if str(e) != self.error:            # once per new problem, not every second
+                    log.warning("AURIX link: %s", e)
+                self.error = str(e)
             self.connected = False
             await asyncio.sleep(1.0)
 
@@ -88,7 +94,7 @@ class AurixLink:
         _, host, port = self.address.split(":")
         reader, writer = await asyncio.open_connection(host, int(port))
         self._writer = writer
-        self.connected = True
+        self.connected, self.error = True, ""
         log.info("AURIX connected (%s)", self.address)
         try:
             while True:
@@ -102,10 +108,11 @@ class AurixLink:
 
     async def _run_serial(self):
         import serial                               # pyserial
-        port = serial.Serial(self.address, self.baud, timeout=0.05)
+        dev = osdep.resolve_serial(self.address)    # again at every reconnect (re-plugged adapter)
+        port = serial.Serial(dev, self.baud, timeout=0.05)
         self._serial = port
-        self.connected = True
-        log.info("AURIX connected (%s, %d baud)", self.address, self.baud)
+        self.connected, self.error = True, ""
+        log.info("AURIX connected (%s = %s, %d baud)", self.address, dev, self.baud)
         stop = threading.Event()
         dead = asyncio.Event()
 

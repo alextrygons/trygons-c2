@@ -1,5 +1,5 @@
 """Time for the whole boat (section A7): the AURIX sends GPS time once a
-second. When it is valid the Pi sets its own clock from it (if allowed and
+second. When it is valid the gateway PC (Ubuntu) sets its own clock from it (if allowed and
 more than max_err_s off), so the gateway logs, the AURIX log copy and the
 camera recordings all use the same, GPS-correct time.
 

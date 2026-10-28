@@ -1,16 +1,16 @@
-"""The Pi's full copy of the AURIX log (section A2).
+"""The gateway PC's full copy of the AURIX log (section A2).
 
 The AURIX sends every record its logger handles (the same bytes it writes
 to its SD card), numbered, in LOG_CHUNK frames. Here they are put back
 together and written as .TLG files on the SSD:
 
   <ssd>/aurix_logs/YYYYMMDD/P<boot>_<file>.TLG   one per AURIX log file
-  <ssd>/aurix_logs/YYYYMMDD/gaps.csv            records the Pi never got
+  <ssd>/aurix_logs/YYYYMMDD/gaps.csv            records the gateway never got
 
 A new file starts whenever the AURIX starts one (a HEADER record); like on
 the SD card each file starts with "TLG1", the header, the boot event and the
 config, so every file can be read on its own (groundstation/tlg.py,
-logview.py). If the UART was too slow the AURIX dropped records for the Pi
+logview.py). If the UART was too slow the AURIX dropped records for the gateway
 (never control traffic); the numbers show the gap and it is noted in
 gaps.csv. The AURIX SD card stays the complete, independent black box.
 """

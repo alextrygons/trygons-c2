@@ -821,7 +821,7 @@ cap.log_writing = writing
 cap.sys_stations = stations on the gateway (latency = round trip):
 cap.sys_telemetry = telemetry
 cap.sys_you =    <- you
-cap.sys_gw = gateway (Pi): {state}, {n} station(s); Pi log copy up to record {seq}, {gaps} gaps; dropped for the Pi {dropped}, not sent (no Pi) {skipped}
+cap.sys_gw = gateway: {state}, {n} station(s); gateway log copy up to record {seq}, {gaps} gaps; dropped for the gateway {dropped}, not sent (no gateway) {skipped}
 
 # --- Bench tab ----------------------------------------------------------------------------------------
 cap.bench_enter = Enter BENCH TEST

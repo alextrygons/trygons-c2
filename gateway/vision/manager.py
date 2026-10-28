@@ -19,7 +19,7 @@ speed cap (the AURIX applies a cap as a reduction only, in AUTO only).
 
 Health (shown, logged, a notice - never an alarm, never a mode change):
   ACTIVE     results at >= min_fps
-  PAUSED     the gateway's main jobs need the CPU / the Pi is hot / throttling
+  PAUSED     the gateway's main jobs need the CPU / the CPU is hot / throttling
   DEGRADED   below min_fps, or the camera gives no new frames
   OFFLINE    switched off, no model / camera, the worker crashed or is silent
 An active STAGE 3 cap is HELD while vision is not ACTIVE, until the driver
@@ -35,6 +35,7 @@ import threading
 import time
 
 from . import geometry as geo
+import osdep  # noqa: E402  (gateway/: CPU temperature / throttling on Ubuntu and Windows)
 
 log = logging.getLogger("gateway")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -71,12 +72,14 @@ def deep(d, k, default=None):
 
 
 class SysLoad:
-    """CPU busy % (whole machine), the Pi's temperature and throttling."""
+    """CPU busy % (whole machine), the CPU temperature and thermal throttling
+    (osdep: Ubuntu thermal zones + Intel throttle counters; Windows: CPU % only)."""
 
     def __init__(self):
         self.prev = None
         self.next_thr = 0.0
-        self.throttled = 0
+        self.thr_count = None
+        self.throttled = False
 
     def cpu_pct(self):
         try:
@@ -97,21 +100,15 @@ class SysLoad:
         return 100.0 * (1.0 - (t[0] - p[0]) / float(t[1] - p[1]))
 
     def temp_c(self):
-        try:
-            with open("/sys/class/thermal/thermal_zone0/temp") as f:
-                return int(f.read()) / 1000.0
-        except (OSError, ValueError):
-            return None
+        return osdep.cpu_temp_c()
 
-    def throttle_bits(self):
-        """vcgencmd get_throttled (Pi): b0 under-voltage, b1 freq capped, b2 throttled, b3 soft temp limit."""
+    def throttling(self):
+        """True while the CPU's thermal-throttle counter grew in the last 10 s."""
         if time.time() >= self.next_thr:
             self.next_thr = time.time() + 10.0
-            try:
-                out = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=2).stdout
-                self.throttled = int(out.strip().split("=")[1], 16) & 0xF
-            except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-                self.throttled = 0
+            n = osdep.throttle_count()
+            self.throttled = n is not None and self.thr_count is not None and n > self.thr_count
+            self.thr_count = n
         return self.throttled
 
 
@@ -288,9 +285,9 @@ class VisionManager:
             why.append("CPU %d %%" % cpu)
         t = self.load.temp_c()
         if t is not None and t > p["temp_c"]:
-            why.append("Pi %.0f C" % t)
-        if os.name != "nt" and self.load.throttle_bits() & 0xE:
-            why.append("Pi throttling")
+            why.append("CPU %.0f C" % t)
+        if self.load.throttling():
+            why.append("CPU throttling")
         if why:
             self.ok_since = 0.0
             if not self.paused:

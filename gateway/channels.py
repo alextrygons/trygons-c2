@@ -26,10 +26,10 @@ Who may change it: the HELM station or a station on the boat. VIEWERs only
 see the status.
 
 Drivers (how a channel is really switched / measured):
-  "rutos"   Teltonika RUT901 (RutOS 07.06+): the Pi logs in to the router by SSH
+  "rutos"   Teltonika RUT901 (RutOS 07.06+): the gateway PC logs in to the router by SSH
             (key) and uses mwan3 (RutOS failover = OpenWrt mwan3): WAN metrics,
             interface state, ping through each WAN, gsmctl for the 4G signal.
-  "policy"  the Pi routes by itself: each provider on its own Pi port / VLAN,
+  "policy"  the gateway PC routes by itself: each provider on its own port / VLAN,
             default route + health pings per interface (ip route, ping -I).
   "sim"     tests / PC.
 """
@@ -45,7 +45,7 @@ from common import log
 AUTO, MANUAL, STRICT = "AUTO", "MANUAL", "MANUAL_STRICT"
 
 DEFAULT_CHANNELS = [
-    # name, label, router interface (RutOS) / Pi interface (policy), priority, metered, sync, emergency
+    # name, label, router interface (RutOS) / gateway PC interface (policy), priority, metered, sync, emergency
     # sync_budget_kbps: upload the sync may share with the video (section G; cameras first)
     {"name": "4G", "label": "4G (SIM 1)", "wan": "mob1s1a1", "priority": 1, "metered": False,
      "sync_allowed": True, "emergency_only": False, "sync_budget_kbps": 4000},
@@ -89,7 +89,7 @@ class RutosDriver:
     """Teltonika RUT901 over SSH (RutOS = OpenWrt; failover = mwan3).
 
     Needs: on the router, System -> Administration -> Access control: SSH on
-    LAN only, and the Pi's public key in /etc/dropbear/authorized_keys.
+    LAN only, and the gateway PC's public key in /etc/dropbear/authorized_keys.
     Active channel = the mwan3 member with the lowest metric; we give the
     wanted one metric 1 and the others 10 + priority, then reload mwan3.
     """
@@ -162,7 +162,7 @@ class RutosDriver:
 
 
 class PolicyDriver:
-    """The Pi routes by itself: each provider on its own interface (a Pi port,
+    """The gateway PC routes by itself: each provider on its own interface (a port,
     USB Ethernet adapter or VLAN), "wan" = that interface's name, "via" =
     the provider's gateway address."""
 

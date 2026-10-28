@@ -401,7 +401,7 @@ Nothing to wire. Use the board's **USB cable**: the on-board debugger
 (P14.0 = TX, P14.1 = RX), at **921600 baud, 8N1**. In Windows Device Manager
 it shows as "USB Serial Port (COMx)".
 
-Later, a Raspberry Pi or an ESP32 can use the same protocol over a 3.3 V UART.
+The gateway PC uses the same protocol over a 3.3 V UART (section 7).
 Do not use D0/D1 (P15.3/P15.2) at the same time, because they are an
 alternative pin pair of the same ASCLIN0.
 
@@ -473,42 +473,53 @@ chosen in the ground station (**Joystick** tab).
   * If the joystick was in control: throttle idle + neutral, steering
     stop, STANDBY, alarm.
 
-## 7. Raspberry Pi 5 gateway (remote access)
+## 7. Gateway PC (remote access): Lenovo ThinkPad L390 Yoga
 
-The Pi is the only device on the network; the AURIX talks to it over a UART
-(same framed protocol with CRC as the USB link). Software and setup:
-`gateway/README.md`.
+The gateway PC is the only device on the network; the AURIX talks to it over a UART
+(same framed protocol with CRC as the USB link) through a **3.3 V TTL USB-UART
+adapter**. Software and setup (Ubuntu 24.04 LTS or Windows 11): `gateway/README.md`.
 
-| Signal | AURIX | TC375 pin | Raspberry Pi 5 | Notes |
-|--------|-------|-----------|----------------|-------|
-| AURIX → Pi | ASCLIN1 TX | P15.0 (`IfxAsclin1_TX_P15_0_OUT`) | GPIO15 = RXD, header pin 10 | 921600 baud 8N1, 100 Ω in series at the AURIX end |
-| Pi → AURIX | ASCLIN1 RX | P15.1 (`IfxAsclin1_RXA_P15_1_IN`) | GPIO14 = TXD, header pin 8 | 100 Ω in series at the Pi end |
-| ground | GND | - | GND, header pin 6 | **must** be connected |
+> **WARNING: ONLY a 3.3 V TTL USB-UART adapter (FTDI FT232R / FT231X "3V3", or a
+> CP2102 set to 3.3 V). NEVER an RS232 port, a "USB to RS232 / DB9" cable or a PC
+> COM port: RS232 swings +-12 V and DESTROYS the AURIX pins at once. Never a 5 V TTL
+> adapter either.** Check with a meter before connecting: adapter TXD idle = 3.3 V
+> to GND (not 5 V, not -5..-12 V).
+
+| Signal | AURIX | TC375 pin | USB-UART adapter (3.3 V TTL) | Notes |
+|--------|-------|-----------|------------------------------|-------|
+| AURIX → PC | ASCLIN1 TX | P15.0 (`IfxAsclin1_TX_P15_0_OUT`) | RXD | 921600 baud 8N1, 100 Ω in series at the AURIX end |
+| PC → AURIX | ASCLIN1 RX | P15.1 (`IfxAsclin1_RXA_P15_1_IN`) | TXD | 100 Ω in series at the adapter end |
+| ground | GND | - | GND | **must** be connected |
+| (adapter VCC / 5 V / 3V3 out) | - | - | **leave unconnected** | the AURIX has its own supply; never feed it from the adapter |
 
 * **Pins:** P15.0 / P15.1 are not used by anything else in this pin plan.
   The iLLD pin map confirms the ASCLIN1 functions. The board manual says
   "most pins are on the expansion headers X1/X2". **Check which X1/X2
   pins carry P15.0 / P15.1 before you solder.** Not P15.2 / P15.3 (D0/D1):
   those belong to ASCLIN0, the USB laptop link.
-* **Both sides are 3.3 V.** Never connect a 5 V UART (no USB-serial
-  adapters at 5 V).
-* Cable: shielded 3-core, **< 1 m**, AURIX box to Pi box. If the Pi must be
-  further away or on a different supply, use a digital isolator (e.g.
-  ISO7721) or RS-485 transceivers at both ends.
-* **Power for the Pi:**
-  * 12 V → 5.1 V **5 A** USB-C converter (car/marine grade), 5 A fuse on
-    the 12 V side, from the same battery as the AURIX.
-  * The Pi 5 needs 5 A to give its USB ports enough current for the SSD.
-  * With a 3 A supply the Pi limits USB to 600 mA and the SSD can drop
-    out (= GATEWAY STORAGE alarm).
-* **USB SSD** directly on a blue USB 3 port of the Pi, cable tied down
-  (vibration). The Pi's own microSD card holds only the operating system.
-* Ethernet from the Pi to the Teltonika router (LAN port). The router
-  setup, VLANs and the cameras: sections C/E of the manual and
-  `gateway/README.md`.
-* Mount the Pi in a closed box with a heat sink / the active cooler, cable
-  glands facing down, away from the compass (> 50 cm).
-* **If the Pi fails** (crash, power, cable): the AURIX sees no status for
+* **Both sides are 3.3 V.** The adapter must be a 3.3 V one: a cable labelled
+  "TTL-232R-3V3", or a board whose VCCIO jumper is set to 3.3 V (check it).
+  It must do 921600 baud (FT232R / FT231X / CP2102(N): yes).
+* **Put the adapter INSIDE the AURIX box**, TTL wires < 30 cm, and run the USB
+  cable (up to 3-5 m, shielded, ferrite at the PC end) to the gateway PC. The
+  USB cable is the long part, not the 3.3 V wires.
+* The serial port name in gateway.json is a stable one (`usb:VID:PID:SERIAL`, or
+  `/dev/serial/by-id/...` on Ubuntu): `python gateway.py --list-serial` shows it.
+* **Power for the gateway PC:** a **12 V → USB-C PD car charger, 65 W** (car/marine
+  grade, fused at the bank: fuse rating per the charger's manual, model TBD), from the same bank
+  as the AURIX (common ground). The **built-in battery is the UPS**: when the bank
+  power drops or the charger fails, the laptop runs on its battery. Battery charge
+  limit **80 %** (long battery life when always on the charger): Ubuntu TLP
+  (`gateway/systemd/tlp-trygons.conf`), Windows Lenovo Vantage.
+* **Lid closed must keep running** (both OSes: the install scripts set it,
+  `gateway/README.md` section 3).
+* **Ethernet:** the boat LAN (Teltonika router LAN1) and the camera network (TSW101
+  PoE switch port 5) are two cables. The laptop's RJ45 port if it has one, else a
+  **USB 3 Gigabit Ethernet adapter** for each (Realtek RTL8153 class) - RJ45 / port
+  count on this laptop: TBD (PROGRESS.md WAITING FOR OWNER W17).
+* Mount the laptop dry (it is not waterproof), in a ventilated place, closed, held
+  down (vibration), cables with strain relief, away from the compass (> 50 cm).
+* **If the gateway PC fails** (crash, power, cable): the AURIX sees no status for
   3 s and shows **GATEWAY LOST**. There is no mode change (unless remote
   driving was active). The USB laptop, joystick and STANDBY button are
   unaffected.
@@ -521,9 +532,9 @@ camera is ever needed for a safety function.
 
 | Camera | Power | Network |
 |--------|-------|---------|
-| FRONT-1 (main) | TSW101 PoE+ port 1 → 802.3af PoE splitter **9 V** at the camera | TSW101 → Pi eth1 (camera network) |
-| REAR-LEFT | TSW101 PoE+ port 2 → PoE splitter 9 V | TSW101 → Pi eth1 |
-| REAR-RIGHT | TSW101 PoE+ port 3 → PoE splitter 9 V | TSW101 → Pi eth1 |
+| FRONT-1 (main) | TSW101 PoE+ port 1 → 802.3af PoE splitter **9 V** at the camera | TSW101 → gateway PC cam0 (camera network) |
+| REAR-LEFT | TSW101 PoE+ port 2 → PoE splitter 9 V | TSW101 → gateway PC cam0 |
+| REAR-RIGHT | TSW101 PoE+ port 3 → PoE splitter 9 V | TSW101 → gateway PC cam0 |
 | FRONT-2 (backup) | its **own** 12 V → 9 V DC-DC converter (≥ 1 A) with its **own 2 A fuse**, separate cable run | its own cable to RUT901 LAN3 (network cam2) |
 
 * **TSW101:** 9-30 V DC terminal block, from 12 V through a **5 A fuse**.
@@ -531,7 +542,8 @@ camera is ever needed for a safety function.
     about 4 × 5.4 W.
   * Each PoE port is current-limited: a short on one camera cable doesn't
     take the others down.
-  * TSW101 port 5 (no PoE) → the Pi's USB 3 Gigabit Ethernet adapter (eth1).
+  * TSW101 port 5 (no PoE) → the gateway PC's camera port cam0 (its RJ45 or a USB 3
+    Gigabit Ethernet adapter, section 7).
 * **FRONT-1 and FRONT-2 never share anything:** separate cables, separate
   power (PoE port vs. own converter + fuse), separate switch port / router
   port, separate cable entries. One failure can take out only one of them.
@@ -596,15 +608,14 @@ QSPI1 = the Arduino SPI pins; the control loop (core 0) reads it.
 
 | Part | Connection | Notes |
 |------|------------|-------|
-| dAISy HAT (Wegmatt) | sits on the Pi's 40-pin header | NMEA on the Pi's serial port `/dev/serial0` (38400 baud): enable the serial port, disable the serial console (`sudo raspi-config` → Interface → Serial: login shell NO, hardware YES) |
-| or a USB AIS receiver | Pi USB | appears as `/dev/ttyACM0` / `/dev/ttyUSB0`: set `ais.source` in gateway.json |
+| USB AIS receiver (receive only; model TBD, PARTS.md) | gateway PC USB | NMEA 0183, 38400 baud; set `ais.source` in gateway.json to its stable name (`python gateway.py --list-serial`: `usb:VID:PID:SERIAL`, Ubuntu also `/dev/serial/by-id/...`) |
 | AIS / VHF antenna | BNC / SMA on the receiver | its own antenna (best), or a passive VHF/AIS splitter on the existing VHF antenna |
 
-* The Pi's UART pins GPIO14/15 are already used for the AURIX (section 3).
-  The dAISy HAT also uses `/dev/serial0` - so with the HAT, move the AURIX
-  link to a USB-UART adapter (`aurix: "/dev/ttyUSB0"` in gateway.json) or
-  use a USB AIS receiver instead. UNVERIFIED until the parts are here:
-  check which serial port each one gets (`ls -l /dev/serial*`).
+* The AIS receiver and the AURIX's USB-UART adapter are two USB serial devices:
+  each one by its own stable name; `--check-config` refuses the same name twice. If
+  both use the same chip without a serial number, the `usb:VID:PID` name can't tell
+  them apart - use `/dev/serial/by-id/...` / the serial number (UNVERIFIED until the
+  parts are here).
 * Antenna: as high as possible, vertical, at least 1 m from the VHF
   antenna if it is a separate one; good-quality coax (RG-58 up to 5 m,
   RG-8X / LMR-240 longer), weatherproof the connectors (self-amalgamating
@@ -631,7 +642,7 @@ once.
 | GND | GND | |
 | TXD (from the GPS) | P33.8 (ASCLIN2 RX E) | Shield2Go 1 UART pins, CHECK |
 | RXD (to the GPS) | P33.9 (ASCLIN2 TX) | CHECK |
-| antenna | - | active patch antenna with a clear view of the sky, away from the cameras' and the Pi's cables |
+| antenna | - | active patch antenna with a clear view of the sky, away from the cameras' and the gateway PC's cables |
 
 * The module starts at 9600 baud. The software switches it to 38400 and turns
   on the u-blox binary messages NAV-PVT (the fix, 1 Hz), NAV-STATUS

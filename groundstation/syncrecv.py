@@ -4,7 +4,7 @@
     python syncrecv.py --root D:\\trygons_sync --port 5770 --boat trygons-c2 --key <key>
 
 sync_receiver.json (NOT in git - it holds the key, the same as sync_key in
-the Pi's /etc/trygons/secrets.json):
+the gateway PC's secrets.json):
     {"root": "D:\\\\trygons_sync", "port": 5770, "listen": "0.0.0.0",
      "boats": {"trygons-c2": "<long random key>"}}
 The ground station starts it by itself when that file exists.

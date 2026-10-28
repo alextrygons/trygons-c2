@@ -1,8 +1,8 @@
-"""The gateway's USB SSD (logs and video). The Pi's own SD card holds only
-the operating system.
+"""The gateway's data drive (logs and video): the gateway PC's own SSD (default),
+or an external SSD (require_mount: then it must be its own mounted drive).
 
 Checked every check_s seconds:
-  - the folder exists and (require_mount) is on a mounted drive, not the SD card
+  - the folder exists and (require_mount) is on a mounted drive, not the system disk
   - a small test file can be written, flushed to disk and read back
   - free space: below low_free_gb -> "low" (section F deletes old SYNCED data),
     below full_free_gb -> "full" (STORAGE FULL: only the ring buffer runs)

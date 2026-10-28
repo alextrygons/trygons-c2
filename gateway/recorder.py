@@ -1,4 +1,4 @@
-"""Video recording on the Pi (section F): ring buffer, SAVE, storage policy.
+"""Video recording on the gateway PC (section F): ring buffer, SAVE, storage policy.
 
 Ring buffer
   One ffmpeg per camera copies the camera's main stream (from the MediaMTX

@@ -1,7 +1,7 @@
 """AIS on the gateway (section A): RECEIVE ONLY. The AURIX never parses AIS.
 
-Input: NMEA 0183 sentences from a dAISy HAT (Pi serial, 38400 baud), a USB
-AIS receiver, or a TCP source (tests, network receivers):
+Input: NMEA 0183 sentences from a USB AIS receiver (38400 baud, by a stable
+name: osdep.resolve_serial), or a TCP source (tests, network receivers):
     !AIVDM  other ships          !AIVDO  our own transponder (later, Class B)
     $xxRMC / $xxGGA              GNSS of an AIS device (second, independent GPS)
 Decoded: position reports Class A (types 1, 2, 3) and Class B (18, 19),

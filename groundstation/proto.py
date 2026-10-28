@@ -780,7 +780,7 @@ def p_sim_bridge(stick_x=0.0, stick_y=0.0, lever=0.5, b0=0, b1=0, hat0=15, hat1=
     return out + struct.pack("<B", fault)
 
 
-# --- gateway (Raspberry Pi) ---------------------------------------------------------
+# --- gateway (gateway PC) -----------------------------------------------------------
 
 GWF_STORAGE, GWF_STORAGE_FULL, GWF_FALLBACK, GWF_STARLINK, GWF_SAVER = 0x01, 0x02, 0x04, 0x08, 0x10
 GWF_AIS_SILENT = 0x20
