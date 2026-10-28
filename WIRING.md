@@ -138,7 +138,7 @@ From step 11e the small boat drives the throttle, gear and steering servos over 
 | Steering motor direction | D7 | X304 pin 8 | P02.4 | to the G2 **DIR** |
 | Steering motor driver sleep | X1/X2 header | CHECK | P33.7 | to the G2 **SLP**: high = driver awake; low = asleep, outputs open (power-up, monitor trip). The G2 pulls SLP low itself |
 | Steering motor current | A3 | X301 pin 4 | P40.6 = AN36 (EVADC group 8 ch 4) | from the G2 **CS** (about 20 mV per amp + 50 mV) |
-| Safety relay driver | D10 | X303 pin 3 | P10.5 | high = relay closed (actuators allowed); through a transistor / relay driver, never the coil directly |
+| Safety relay driver | D10 | X303 pin 3 | P10.5 | high = relay closed (actuators allowed); through a transistor / relay driver, never the coil directly. **From step 11e (owner decision OD-2, 2026-10-28): P10.5 drives the ENGINE KILL CIRCUIT, used only in UNCREWED; it never cuts the servo power** |
 | Neutral switch | D5 | X304 pin 6 | P02.3 (input, pull-up) | switch to GND, CLOSED when the gearbox is in neutral; also the precondition of GENERATOR mode (CLAUDE.md K): without it the generator never runs |
 
 The Arduino SPI pins D11-D13 are used by the BNO085 (section 9); the SD card
@@ -185,6 +185,14 @@ fail-safe** (one or more of these):
 
 Recommended: 1 + 2 (servo power through the relay) + 3.
 
+**From step 11e (DroneCAN position servos, owner decisions 2026-10-28, docs/dronecan_design.md
+section 13):** the servo power is NEVER cut (OD-2: a position servo without power freezes where it
+is, the throttle may stay open). The safety relay on P10.5 goes into the **engine kill circuit**
+instead and is used **only in UNCREWED** (a monitor trip stops the engine; in CREWED the crew has
+the kill cord + e-stop). The **e-stop stops the engine through the kill circuit in every profile**,
+CREWED too (OD-1). Whether the return spring can back-drive the position servo is decided on the
+bench (OD-11, FIRST_TEST.md 3j).
+
 
 ### 3A. Engine kill relay (UNCREWED lost link) - hardware TBD
 
@@ -200,9 +208,15 @@ sends a remote RESTART (CLAUDE.md N: only with the throttle idle, the gear in
 neutral confirmed and the e-stop released - checked on the AURIX). A CREWED
 boat never uses it. The kill stays on its own AURIX pin, never the relay board.
 
+From step 11e (owner decisions 2026-10-28): the same kill circuit is also opened by the
+**e-stop in every profile** (a hard-wired e-stop contact, OD-1), by a **monitor trip in UNCREWED**
+(P10.5, OD-2) and **at once** when the throttle node is lost in UNCREWED (OD-3, no wait for idle).
+The SOFTWARE kill is still never used in CREWED.
+
 | Item | Decision | State |
 |------|----------|-------|
-| AURIX pin | `PIN_ENGINE_KILL` in hal/hal_pins.h | **TBD** (not defined: `hal_set_engine_kill` drives no pin yet) |
+| AURIX pin | `PIN_ENGINE_KILL` in hal/hal_pins.h; P10.5 (OD-2) drives the kill circuit - one pin for both or a second relay in the same circuit | **TBD** (not defined: `hal_set_engine_kill` drives no pin yet) |
+| E-stop contact | an e-stop NC contact (or a relay it drives) in series with the kill circuit, CREWED and UNCREWED (OD-1) | **TBD** (with the engine dealer) |
 | Relay type | automotive / marine relay, coil via a transistor driver (never the pin directly), contact rating for the kill circuit | **TBD** (check the outboard's kill-switch circuit with the engine dealer) |
 | Fail-safe direction | which state stops the engine: relay energised = kill, or de-energised = kill (then the engine stops whenever the board is unpowered / in reset) | **TBD** (`ENGINE_KILL_ACTIVE_HIGH` in hal_pins.h follows the choice) |
 | Wiring | in the kill-switch circuit, in addition to the kill cord (the cord must stay) | **TBD** |
@@ -279,6 +293,10 @@ hold, 10 s cool-down, only at idle + neutral with the e-stop released). Check
 with the engine dealer that the outboard has its own neutral-start switch in
 the starter circuit (it must stay: the software check is not the only one).
 No tacho input yet (TBD): the starter is limited by time only.
+**Owner decision OD-9 (2026-10-28): the STARTER is ALWAYS also behind a hardware time-limit relay**
+(a timer relay in the starter-solenoid control wire that opens after a fixed time, a little longer
+than the software limit of 5 s - proposal 6 s, TO CONFIRM - and resets only when the START signal
+goes away), whatever relay board / bus drives it (Modbus or DroneCAN). PARTS.md.
 
 **A relay wired to the starter (solenoid control wire) MUST be declared in the
 boat file in the engine group with role STARTER** (`"group": "engine"`,
@@ -312,7 +330,9 @@ below (`HAL_CAN_FITTED 0` in hal/hal_pins.h).
 | Node IDs | STATIC (no dynamic-ID server): proposal AURIX 10, throttle 20, steering 21, gear 22, relay board 30 (GPS + compass node 124 not used) | **TO CONFIRM** (set with the DroneCAN GUI Tool) |
 | Node power | the nodes were powered with 5 V through the Pixhawk's CAN port: now their **own fused 5 V supply** (12 V -> 5 V converter from the bank, fuse at the bank end, a fuse per branch), NEVER from the AURIX kit | **TO CONFIRM** converter rating; how each node powers its servo (the servos can draw amps) |
 | Command timeouts (set on each node) | throttle -> **IDLE** (-1.0 = 1000 us; NEVER "0" = half throttle), gear -> **HOLD**, steering -> **HOLD** | **TO CONFIRM** + bench test, engine OFF, before the boat moves (FIRST_TEST.md) |
-| E-stop / engine kill / STANDBY | stay hard-wired GPIO, never over CAN; stopping the engine never depends on the throttle servo | open decisions OD-1 / OD-2 (e-stop into the kill circuit; what the safety relay switches - it must not freeze the throttle by cutting servo power) |
+| E-stop / engine kill / STANDBY | stay hard-wired GPIO, never over CAN; stopping the engine never depends on the throttle servo | owner decisions 2026-10-28: the e-stop stops the engine through the kill circuit in every profile (OD-1); the servo node power is NEVER cut; P10.5 -> the engine kill circuit, UNCREWED only (OD-2); throttle node lost in UNCREWED = engine kill at once (OD-3) |
+| Steering at power-up | no steering frame until a mode commands steering, no auto-centre (OD-7); STANDBY = hold (OD-10) | decided |
+| STARTER | always behind a hardware time-limit relay, on either relay bus (OD-9, section 3D) | **TBD** part |
 
 **Bench test of the command timeouts (engine OFF, DroneCAN GUI Tool on a
 laptop directly on the bus, not through the AURIX):** for each servo node
@@ -634,6 +654,10 @@ A red **mushroom switch with two normally closed contacts** (twist to release):
    the servos' 5-6 V supply), and the coil of the **DP thruster contactor**
    (section 3C). Pressed = the relay / contactor drop = no actuator or
    thruster power, whatever the software does. (Engine kill: see section 3.)
+   **From step 11e (owner decisions OD-1 / OD-2, 2026-10-28):** the DroneCAN
+   servo nodes are NOT fed through this relay any more (never cut servo
+   power); instead the e-stop ALSO opens the **engine kill circuit** (a third
+   NC contact or a relay, section 3A), in CREWED and UNCREWED.
 2. **Signal contact** - from P33.0 (CHECK) to GND, so the software knows:
    open (high) = pressed, or the wire is broken. 4.7 kOhm to 3.3 V + 100 nF to
    GND at the board.

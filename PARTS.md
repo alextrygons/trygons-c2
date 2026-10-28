@@ -9,17 +9,18 @@ why each part is needed: MANUAL.txt.
 - [ ] Panel: 6 x IP67 push buttons (one big red STANDBY, one HDG LOCK, -1, +1, -10, +10), cable.
 - [ ] Neutral switch on the gearbox / shift linkage (closes in neutral). Also required by GENERATOR mode (the engine charges the bank in neutral only while this switch confirms neutral).
 - [ ] microSD click (MIKROE-924) + industrial microSD card 8-32 GB.
-- [ ] Throttle servo (analog, or digital with "fail-safe = idle") + a throttle return spring; gear servo. (From step 11e the small boat uses the DroneCAN servos below; whether the return spring can back-drive the position servo: TO CONFIRM.)
+- [ ] Throttle servo (analog, or digital with "fail-safe = idle") + a throttle return spring; gear servo. (From step 11e the small boat uses the DroneCAN servos below; whether the return spring can back-drive the position servo is decided on the bench: owner decision OD-11, FIRST_TEST.md 3j.)
 - [ ] Steering motor driver: Pololu G2 High-Power Motor Driver 18v17 (#2991), 20 A blade fuse + holder, 100 uF / 35 V low-ESR capacitor, 2.5 mm2 wire.
-- [ ] Safety relay module (3.3 V input via transistor driver) for the servo power and/or the engine kill circuit.
+- [ ] Safety relay module (3.3 V input via transistor driver) for the servo power and/or the engine kill circuit. (From step 11e, owner decision OD-2: ONLY in the engine kill circuit, driven by P10.5, used in UNCREWED only - it never cuts the servo power.)
 - [ ] 10 kOhm pull-down resistors for the servo / driver / relay signals.
 - [ ] GPS: u-blox MAX-M10S breakout, 3.3 V (e.g. SparkFun GPS-18037 or a similar MAX-M10S board) + active GPS patch antenna (SMA / u.FL as the board needs) - spoofing / jamming flags (WIRING.md section 11).
 - [ ] Compass + gyro: the BNO085 (see "IMU" below).
 - [ ] 2 x normally closed IP67 micro limit switches (steering end stops), 2 x 4.7 kOhm, 2 x 100 nF.
-- [ ] Emergency stop: red mushroom switch with TWO normally closed contacts (twist release), IP65 enclosure; 30 A automotive relay (12 V coil) + socket for the actuator power; 4.7 kOhm + 100 nF.
+- [ ] Emergency stop: red mushroom switch with TWO normally closed contacts (twist release), IP65 enclosure; 30 A automotive relay (12 V coil) + socket for the actuator power; 4.7 kOhm + 100 nF. (From step 11e, owner decisions OD-1 / OD-2: the e-stop also opens the engine kill circuit in every profile - a switch with a THIRD NC contact or an extra relay, TBD with the engine dealer - and it no longer feeds the DroneCAN servo power.)
 - [ ] Buzzer: 12 V active piezo buzzer > 85 dB, BC337 (or 2N7000 / AO3400), 1 kOhm, 1 A fuse.
 - [ ] Optional: paddlewheel speed sensor.
 - [ ] Supply voltage divider for A2 (WIRING.md 3B): 47 kOhm + 10 kOhm (1 %), 100 nF, 1 A fuse in the sense wire; optional 3.3 V clamp on the pin - RATIO TO MEASURE, PIN TO CHECK.
+- [ ] STARTER hardware time-limit relay (owner decision OD-9): a 12 V timer relay ("single shot" / "interval" type) in the starter-solenoid control wire, opens after a fixed time a little above the software 5 s (proposal 6 s, TO CONFIRM), resets only when START goes away; on either relay bus (Modbus / DroneCAN) - TYPE TBD (WIRING.md 3D).
 - [ ] Battery bank: 3 x 12 V in parallel (one bank for everything) + a battery isolator / split-charge relay that cuts the starter battery from the bank only while cranking - TYPE TBD (decide with the engine dealer).
 - [ ] Keep the engine kill cord fitted and worn.
 - [ ] ENGINE KILL relay for the UNCREWED lost-link rule (WIRING.md 3A): relay + transistor driver + fuse in the outboard kill-switch circuit - TYPE, PIN AND FAIL-SAFE DIRECTION TBD (decide with the engine dealer). (The remote RESTART clears it in software - no extra part.)

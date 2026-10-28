@@ -188,6 +188,28 @@ kill relay wired (engine OFF, a test lamp on the kill relay output).
 - [ ] RESTART from the HELM station (idle, neutral, e-stop released): the kill goes (lamp off).
 - [ ] Kill again, then a real power cycle of the board: the kill goes (power-on).
 
+### 3j. DroneCAN servos (later: from step 11e, HAL_CAN_FITTED 1 - owner decisions 2026-10-28)
+
+Engine OFF, the DroneCAN GUI Tool on a laptop directly on the bus (WIRING.md 3E). Write every
+measured value / answer here.
+
+- [ ] Node command timeouts: throttle goes to IDLE (NOT the middle), gear HOLDS (OD-5), steering
+      HOLDS, within the timeout (WIRING.md 3E).
+- [ ] Servo speeds: steering lock to lock ____ s, throttle idle to full ____ s. A value shorter
+      than 6 s is used for the safety waits ONLY if the owner signs it here (OD-4):
+      signed ________ date ______.
+- [ ] **Throttle return spring vs the 360 deg position servo (OD-11):** servo node unpowered (and
+      powered without pulses): does the spring pull the throttle back to idle? Answer ____ . If NOT,
+      the engine stop (kill cord, e-stop kill contact, kill circuit) is the only backstop - note it
+      in WIRING.md 3 and PARTS.md.
+- [ ] Power-on with the outboard turned off-centre: the steering does NOT move until a mode
+      commands steering (OD-7). STANDBY: the steering holds (OD-10).
+- [ ] E-stop: pressed = the engine kill circuit opens (test lamp), CREWED and UNCREWED (OD-1); the
+      servo nodes stay powered (OD-2).
+- [ ] UNCREWED monitor trip test: P10.5 opens the kill circuit (test lamp); CREWED: it does not (OD-2).
+- [ ] STARTER time-limit relay (OD-9): hold START on the relay output longer than its time: the
+      timer relay opens by itself (test lamp off) after ____ s.
+
 - [ ] Leave the bench test (button **Leave**): mode STANDBY.
 
 ## 4. Dock test (boat in the water, tied up, engine running in NEUTRAL)
