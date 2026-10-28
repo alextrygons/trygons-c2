@@ -1,0 +1,116 @@
+{
+  "_help": "Emergency scenario (ACADEMY_SPEC E, step 19; format: academy/scenario.py). runs_on sim: only the simulator on this PC. setup + prep = the normal situation before the emergency (prep steps like a lesson: do / hint / check). event = after after_s seconds: faults = SIMULATOR faults (compass, gps_spoof, slam, joy_break, gps_fail: the simulated AURIX reacts with its own code), hazard = an object the ACADEMY draws (ais / shallow / swimmer; the academy never plays the gateway), show = an alarm the ground station would show (academy picture only); say = what the trainee is told; wait_for = the faults are in but the emergency (say + the reaction clock) starts only once the simulator shows this (e.g. its alarm); clear_after_s = the simulator faults end by themselves after that long. react.any = the right reactions (any one of them; each a list of conditions on the simulator state, in_x / in_y = the trainee's stick, delta_ge / delta_le / adelta_ge = a turn since the event); good_s = full marks, max_s = too late. forbid = actions that fail at once. observe_s = how long the outcome is watched; outcome.min_m = the closest a hazard may come (shallow: metres from the edge). after = follow-up steps (untimed). right = the right action (debrief), debrief = the explanation. A new scenario also needs its trainee script in test_academy.py (SCENARIO_SCRIPTS, AC31 runs it on the real simulator).",
+  "kind": "scenario",
+  "id": "s01_compass_fail",
+  "level": "DRIVER",
+  "order": 1,
+  "runs_on": "sim",
+  "title_el": "Βλάβη πυξίδας σε HDG LOCK",
+  "title_en": "Compass failure in HDG LOCK",
+  "intro_el": "Ταξιδεύετε σε HDG LOCK. Κρατήστε την πορεία και παρακολουθήστε τις οθόνες.",
+  "intro_en": "You are travelling in HDG LOCK. Keep going and watch the screens.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "prep": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών.",
+      "hint_en": "HDG LOCK is on the panel buttons.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Σπρώξτε το joystick μπροστά (επιλέξτε «Κράτημα joystick») και κρατήστε το: το σκάφος επιταχύνει.",
+      "do_en": "Push the joystick forward (tick \"Hold the stick\") and keep it there: the boat speeds up.",
+      "hint_el": "Το γκάζι είναι ο άξονας Y (πάνω). Στο HDG LOCK η πορεία μένει στο σύστημα.",
+      "hint_en": "The throttle is the Y axis (up). In HDG LOCK the course stays with the system.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "est_sog",
+          "ge": 4
+        }
+      ],
+      "hold_s": 1,
+      "hint_s": 25
+    }
+  ],
+  "event": {
+    "after_s": 3,
+    "faults": [
+      "compass"
+    ],
+    "clear_after_s": 20,
+    "say_el": "Κάτι άλλαξε στους συναγερμούς!",
+    "say_en": "Something changed in the alarms!"
+  },
+  "react": {
+    "any": [
+      [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        }
+      ],
+      [
+        {
+          "f": "throttle",
+          "le": 2
+        },
+        {
+          "f": "in_y",
+          "le": 0.05
+        }
+      ]
+    ],
+    "good_s": 6,
+    "max_s": 15
+  },
+  "observe_s": 2,
+  "after": [
+    {
+      "do_el": "Περιμένετε να πάει το σκάφος σε STANDBY (ρελαντί + νεκρό).",
+      "do_en": "Wait for the boat to go to STANDBY (idle + neutral).",
+      "hint_el": "Joystick στο κέντρο: το γκάζι στο ρελαντί.",
+      "hint_en": "Joystick centred: throttle at idle.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        }
+      ],
+      "hint_s": 15
+    },
+    {
+      "do_el": "Η πυξίδα επανήλθε. Αναγνωρίστε τον συναγερμό (κουμπί «Αναγνώριση»).",
+      "do_en": "The compass is back. Acknowledge the alarm (button Acknowledge).",
+      "hint_el": "Η αναγνώριση σβήνει μόνο συναγερμούς που η αιτία τους έχει φύγει.",
+      "hint_en": "Acknowledge clears only alarms whose cause is gone.",
+      "check": [
+        {
+          "f": "alarm_bits",
+          "nobit": 1
+        }
+      ],
+      "hint_s": 20
+    }
+  ],
+  "right_el": "Αφήστε το γκάζι στο ρελαντί. Το σκάφος κρατά την πορεία με το γυροσκόπιο μέχρι ρελαντί + νεκρό και μετά πηγαίνει μόνο του σε STANDBY.",
+  "right_en": "Bring the throttle to idle. The boat holds its course on the gyro until idle + neutral, then goes to STANDBY by itself.",
+  "debrief_el": "COMPASS LOST σε HDG LOCK: το σύστημα δεν ξέρει πια την πορεία με βεβαιότητα. Κρατά την κατεύθυνση με το γυροσκόπιο (ρυθμός στροφής 0), το γκάζι μένει σε εσάς. Μόλις φτάσει ρελαντί + νεκρό, κλείνει το τιμόνι και περνά σε STANDBY. Οδηγήστε μετά χειροκίνητα (MANUAL δεν χρειάζεται πυξίδα).",
+  "debrief_en": "COMPASS LOST in HDG LOCK: the system no longer knows the heading for sure. It holds the direction on the gyro (turn rate 0); the throttle stays with you. At idle + neutral it switches the steering off and goes to STANDBY. Then drive by hand (MANUAL does not need the compass)."
+}

@@ -1,0 +1,93 @@
+{
+  "_help": "Emergency scenario (ACADEMY_SPEC E, step 19; format: academy/scenario.py). runs_on sim: only the simulator on this PC. setup + prep = the normal situation before the emergency (prep steps like a lesson: do / hint / check). event = after after_s seconds: faults = SIMULATOR faults (compass, gps_spoof, slam, joy_break, gps_fail: the simulated AURIX reacts with its own code), hazard = an object the ACADEMY draws (ais / shallow / swimmer; the academy never plays the gateway), show = an alarm the ground station would show (academy picture only); say = what the trainee is told; wait_for = the faults are in but the emergency (say + the reaction clock) starts only once the simulator shows this (e.g. its alarm); clear_after_s = the simulator faults end by themselves after that long. react.any = the right reactions (any one of them; each a list of conditions on the simulator state, in_x / in_y = the trainee's stick, delta_ge / delta_le / adelta_ge = a turn since the event); good_s = full marks, max_s = too late. forbid = actions that fail at once. observe_s = how long the outcome is watched; outcome.min_m = the closest a hazard may come (shallow: metres from the edge). after = follow-up steps (untimed). right = the right action (debrief), debrief = the explanation. A new scenario also needs its trainee script in test_academy.py (SCENARIO_SCRIPTS, AC31 runs it on the real simulator).",
+  "kind": "scenario",
+  "id": "s02_gps_spoof",
+  "level": "DRIVER",
+  "order": 2,
+  "runs_on": "sim",
+  "title_el": "Παραποίηση GPS (spoofing)",
+  "title_en": "GPS spoofing",
+  "intro_el": "Ταξιδεύετε σε HDG LOCK. Κρατήστε την πορεία και παρακολουθήστε τις οθόνες.",
+  "intro_en": "You are travelling in HDG LOCK. Keep going and watch the screens.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "prep": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών.",
+      "hint_en": "HDG LOCK is on the panel buttons.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Σπρώξτε το joystick μπροστά (επιλέξτε «Κράτημα joystick») και κρατήστε το: το σκάφος επιταχύνει.",
+      "do_en": "Push the joystick forward (tick \"Hold the stick\") and keep it there: the boat speeds up.",
+      "hint_el": "Το γκάζι είναι ο άξονας Y (πάνω). Στο HDG LOCK η πορεία μένει στο σύστημα.",
+      "hint_en": "The throttle is the Y axis (up). In HDG LOCK the course stays with the system.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "est_sog",
+          "ge": 4
+        }
+      ],
+      "hold_s": 1,
+      "hint_s": 25
+    }
+  ],
+  "event": {
+    "after_s": 3,
+    "faults": [
+      "gps_spoof"
+    ],
+    "say_el": "Η θέση στον χάρτη πήδηξε 400 m!",
+    "say_en": "The position on the map jumped 400 m!"
+  },
+  "react": {
+    "any": [
+      [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        }
+      ],
+      [
+        {
+          "f": "throttle",
+          "le": 10
+        }
+      ],
+      [
+        {
+          "f": "mode_name",
+          "eq": "MANUAL"
+        },
+        {
+          "f": "throttle",
+          "le": 15
+        }
+      ]
+    ],
+    "good_s": 10,
+    "max_s": 30
+  },
+  "observe_s": 3,
+  "right_el": "Μην εμπιστεύεστε τη θέση του χάρτη: κόψτε ταχύτητα και ναυσιπλοΐα με το μάτι (στεριά, σημαδούρες).",
+  "right_en": "Do not trust the map position: slow down and navigate by eye (shore, buoys).",
+  "debrief_el": "GPS SUSPECT: ο έλεγχος ακεραιότητας απέρριψε μια θέση που πήδηξε. Σε AUTO το σύστημα συνεχίζει με αναμέτρηση (dead reckoning) σε μειωμένη ταχύτητα· η θέση ξαναγίνεται έμπιστη μόνο μετά από αρκετές σωστές θέσεις. Η πυξίδα δεν επηρεάζεται: το HDG LOCK κρατά την πορεία.",
+  "debrief_en": "GPS SUSPECT: the integrity check rejected a fix that jumped. In AUTO the system continues on dead reckoning at reduced speed; the GPS is trusted again only after enough consistent fixes. The compass is not affected: HDG LOCK keeps the course."
+}

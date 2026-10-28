@@ -1,0 +1,83 @@
+{
+  "_help": "Emergency scenario (ACADEMY_SPEC E, step 19; format: academy/scenario.py). runs_on sim: only the simulator on this PC. setup + prep = the normal situation before the emergency (prep steps like a lesson: do / hint / check). event = after after_s seconds: faults = SIMULATOR faults (compass, gps_spoof, slam, joy_break, gps_fail: the simulated AURIX reacts with its own code), hazard = an object the ACADEMY draws (ais / shallow / swimmer; the academy never plays the gateway), show = an alarm the ground station would show (academy picture only); say = what the trainee is told; wait_for = the faults are in but the emergency (say + the reaction clock) starts only once the simulator shows this (e.g. its alarm); clear_after_s = the simulator faults end by themselves after that long. react.any = the right reactions (any one of them; each a list of conditions on the simulator state, in_x / in_y = the trainee's stick, delta_ge / delta_le / adelta_ge = a turn since the event); good_s = full marks, max_s = too late. forbid = actions that fail at once. observe_s = how long the outcome is watched; outcome.min_m = the closest a hazard may come (shallow: metres from the edge). after = follow-up steps (untimed). right = the right action (debrief), debrief = the explanation. A new scenario also needs its trainee script in test_academy.py (SCENARIO_SCRIPTS, AC31 runs it on the real simulator).",
+  "kind": "scenario",
+  "id": "s10_remote_link_lost",
+  "level": "DRIVER",
+  "order": 10,
+  "runs_on": "sim",
+  "title_el": "Χάθηκε η ζεύξη με τον σταθμό ξηράς",
+  "title_en": "Remote link lost",
+  "intro_el": "Ο κυβερνήτης στην ξηρά έβαλε HDG LOCK. Είστε το πλήρωμα επί του σκάφους.",
+  "intro_en": "The captain on shore set HDG LOCK. You are the crew on board.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "prep": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών.",
+      "hint_en": "HDG LOCK is on the panel buttons.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Σπρώξτε το joystick μπροστά (επιλέξτε «Κράτημα joystick») και κρατήστε το: το σκάφος επιταχύνει.",
+      "do_en": "Push the joystick forward (tick \"Hold the stick\") and keep it there: the boat speeds up.",
+      "hint_el": "Το γκάζι είναι ο άξονας Y (πάνω). Στο HDG LOCK η πορεία μένει στο σύστημα.",
+      "hint_en": "The throttle is the Y axis (up). In HDG LOCK the course stays with the system.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "est_sog",
+          "ge": 4
+        }
+      ],
+      "hold_s": 1,
+      "hint_s": 25
+    }
+  ],
+  "event": {
+    "after_s": 3,
+    "show": [
+      "remote_link_lost"
+    ],
+    "say_el": "Ο σταθμός ξηράς δεν απαντά!",
+    "say_en": "The shore station does not answer!"
+  },
+  "react": {
+    "any": [
+      [
+        {
+          "f": "mode_name",
+          "eq": "MANUAL"
+        }
+      ],
+      [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        }
+      ]
+    ],
+    "good_s": 6,
+    "max_s": 20
+  },
+  "observe_s": 2,
+  "right_el": "Πάρτε τον έλεγχο επί του σκάφους: κινήστε το joystick (MANUAL) ή πατήστε STANDBY.",
+  "right_en": "Take control on board: move the joystick (MANUAL) or press STANDBY.",
+  "debrief_el": "REMOTE LINK LOST: ο σταθμός με το ΤΙΜΟΝΙ χάθηκε και το ΤΙΜΟΝΙ δεν ανήκει σε κανέναν. Με πλήρωμα (CREWED) η λειτουργία ΔΕΝ αλλάζει: το σκάφος συνεχίζει. Το joystick επί του σκάφους κερδίζει πάντα - πάρτε τον έλεγχο. Στο UNCREWED: ρελαντί + νεκρό, μετά σβήσιμο μηχανής κοντά στην ακτή ή μετά από αναμονή.",
+  "debrief_en": "REMOTE LINK LOST: the HELM station was lost and nobody holds HELM. With a crew (CREWED) the mode does NOT change: the boat carries on. The onboard joystick always wins - take control. UNCREWED: idle + neutral, then the engine is stopped near the shore or after a wait."
+}

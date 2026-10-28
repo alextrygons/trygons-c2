@@ -1054,6 +1054,27 @@ QUIZZES (academy window -> "Quizzes")
   tones: they are prepared when you open the academy from the station's
   menu; without them the sound questions are left out (the window says so).
 
+EMERGENCY SCENARIOS (academy window -> "Emergency scenarios")
+  Emergencies on the SIMULATOR of this PC (same inputs as the lessons). A
+  scenario first sets up a normal trip (e.g. HDG LOCK at speed), then
+  something goes wrong - you are NOT told what to do: react as on the boat.
+  Your reaction time is measured from the moment the emergency starts; full
+  marks within the scenario's time, fewer points the later you react, failed
+  when too late, when you do something dangerous (e.g. a turn to port in
+  front of a ship from starboard) or when the boat gets too close to the
+  hazard / runs aground. The ten scenarios: compass failure, GPS spoofing,
+  slamming, joystick fault, power raise refused, a ship on a collision course
+  (AIS), shallow water ahead, a swimmer / kayak near the beach (no AIS!),
+  gateway lost, remote link lost. Compass, GPS, slamming, joystick and the
+  refusal are REAL faults of the simulated boat (it reacts with its own
+  safety rules); the ship, the shallows, the swimmer and the gateway /
+  remote-link alarms are drawn by the academy in its small picture of the
+  station (map, AIS list, depth, forward camera) - the academy never plays
+  the gateway. At the end: the debrief (result, reaction time, closest
+  approach, the right action, why) and "Replay" (the recorded track with a
+  time slider; the file is kept in academy/data/replays). Results with the
+  reaction time go to your logbook.
+
 CAPTAIN AND COPILOT (the gateway decides, every station shows it)
   CAPTAIN   holds the manual licence and sits at screen 1 (cameras +
             joystick). Holds HELM. The ONLY one who can start REMOTE

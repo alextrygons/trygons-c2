@@ -1,0 +1,105 @@
+{
+  "_help": "Emergency scenario (ACADEMY_SPEC E, step 19; format: academy/scenario.py). runs_on sim: only the simulator on this PC. setup + prep = the normal situation before the emergency (prep steps like a lesson: do / hint / check). event = after after_s seconds: faults = SIMULATOR faults (compass, gps_spoof, slam, joy_break, gps_fail: the simulated AURIX reacts with its own code), hazard = an object the ACADEMY draws (ais / shallow / swimmer; the academy never plays the gateway), show = an alarm the ground station would show (academy picture only); say = what the trainee is told; wait_for = the faults are in but the emergency (say + the reaction clock) starts only once the simulator shows this (e.g. its alarm); clear_after_s = the simulator faults end by themselves after that long. react.any = the right reactions (any one of them; each a list of conditions on the simulator state, in_x / in_y = the trainee's stick, delta_ge / delta_le / adelta_ge = a turn since the event); good_s = full marks, max_s = too late. forbid = actions that fail at once. observe_s = how long the outcome is watched; outcome.min_m = the closest a hazard may come (shallow: metres from the edge). after = follow-up steps (untimed). right = the right action (debrief), debrief = the explanation. A new scenario also needs its trainee script in test_academy.py (SCENARIO_SCRIPTS, AC31 runs it on the real simulator).",
+  "kind": "scenario",
+  "id": "s04_joystick_fault",
+  "level": "DRIVER",
+  "order": 4,
+  "runs_on": "sim",
+  "title_el": "Βλάβη joystick",
+  "title_en": "Joystick fault",
+  "intro_el": "Ταξιδεύετε σε HDG LOCK με το γκάζι στο joystick. Κρατήστε την πορεία και παρακολουθήστε τις οθόνες.",
+  "intro_en": "You are travelling in HDG LOCK with the throttle on the joystick. Keep going and watch the screens.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "prep": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών.",
+      "hint_en": "HDG LOCK is on the panel buttons.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Σπρώξτε το joystick μπροστά (επιλέξτε «Κράτημα joystick») και κρατήστε το: το σκάφος επιταχύνει.",
+      "do_en": "Push the joystick forward (tick \"Hold the stick\") and keep it there: the boat speeds up.",
+      "hint_el": "Το γκάζι είναι ο άξονας Y (πάνω). Στο HDG LOCK η πορεία μένει στο σύστημα.",
+      "hint_en": "The throttle is the Y axis (up). In HDG LOCK the course stays with the system.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "est_sog",
+          "ge": 4
+        }
+      ],
+      "hold_s": 1,
+      "hint_s": 25
+    }
+  ],
+  "event": {
+    "after_s": 3,
+    "faults": [
+      "joy_break"
+    ],
+    "clear_after_s": 8,
+    "say_el": "Το σκάφος σταματά μόνο του!",
+    "say_en": "The boat stops by itself!"
+  },
+  "react": {
+    "any": [
+      [
+        {
+          "f": "in_y",
+          "le": 0.05
+        },
+        {
+          "f": "in_y",
+          "ge": -0.05
+        },
+        {
+          "f": "in_x",
+          "le": 0.05
+        },
+        {
+          "f": "in_x",
+          "ge": -0.05
+        }
+      ]
+    ],
+    "good_s": 4,
+    "max_s": 12
+  },
+  "observe_s": 2,
+  "after": [
+    {
+      "do_el": "Το καλώδιο ξανασυνδέθηκε. Αναγνωρίστε τον συναγερμό JOYSTICK FAULT (joystick στο κέντρο).",
+      "do_en": "The cable is connected again. Acknowledge the JOYSTICK FAULT alarm (joystick centred).",
+      "hint_el": "Η αναγνώριση σβήνει μόνο συναγερμούς που η αιτία τους έχει φύγει.",
+      "hint_en": "Acknowledge clears only alarms whose cause is gone.",
+      "check": [
+        {
+          "f": "alarm_bits",
+          "nobit": 256
+        }
+      ],
+      "hint_s": 20
+    }
+  ],
+  "right_el": "Αφήστε το joystick στο κέντρο. Το σύστημα έχει ήδη πάει σε ρελαντί + νεκρό και STANDBY. Ελέγξτε το βύσμα· οδηγήστε ξανά μόνο όταν φύγει το σφάλμα.",
+  "right_en": "Let the joystick go to the centre. The system has already gone to idle + neutral and STANDBY. Check the connector; drive again only once the fault is gone.",
+  "debrief_el": "JOYSTICK FAULT (κομμένο καλώδιο, εκτός ορίων): πρώτα ρελαντί + νεκρό, μετά STANDBY. Ένα χαλασμένο joystick δεν μπορεί να οδηγεί, ούτε να δώσει CONFIRM. Ο συναγερμός σβήνει με αναγνώριση μόνο όταν το joystick δουλεύει ξανά.",
+  "debrief_en": "JOYSTICK FAULT (broken wire, out of range): idle + neutral first, then STANDBY. A faulty joystick can neither drive nor give CONFIRM. The alarm clears with acknowledge only once the joystick works again."
+}

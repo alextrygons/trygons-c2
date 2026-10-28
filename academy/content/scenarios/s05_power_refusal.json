@@ -1,0 +1,66 @@
+{
+  "_help": "Emergency scenario (ACADEMY_SPEC E, step 19; format: academy/scenario.py). runs_on sim: only the simulator on this PC. setup + prep = the normal situation before the emergency (prep steps like a lesson: do / hint / check). event = after after_s seconds: faults = SIMULATOR faults (compass, gps_spoof, slam, joy_break, gps_fail: the simulated AURIX reacts with its own code), hazard = an object the ACADEMY draws (ais / shallow / swimmer; the academy never plays the gateway), show = an alarm the ground station would show (academy picture only); say = what the trainee is told; wait_for = the faults are in but the emergency (say + the reaction clock) starts only once the simulator shows this (e.g. its alarm); clear_after_s = the simulator faults end by themselves after that long. react.any = the right reactions (any one of them; each a list of conditions on the simulator state, in_x / in_y = the trainee's stick, delta_ge / delta_le / adelta_ge = a turn since the event); good_s = full marks, max_s = too late. forbid = actions that fail at once. observe_s = how long the outcome is watched; outcome.min_m = the closest a hazard may come (shallow: metres from the edge). after = follow-up steps (untimed). right = the right action (debrief), debrief = the explanation. A new scenario also needs its trainee script in test_academy.py (SCENARIO_SCRIPTS, AC31 runs it on the real simulator).",
+  "kind": "scenario",
+  "id": "s05_power_refusal",
+  "level": "CAPTAIN",
+  "order": 5,
+  "runs_on": "sim",
+  "title_el": "Άρνηση αύξησης ισχύος",
+  "title_en": "Power raise refused",
+  "intro_el": "Βάζετε HDG LOCK για να φύγετε (γκάζι στο ρελαντί).",
+  "intro_en": "You set HDG LOCK to leave (throttle at idle).",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "prep": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών.",
+      "hint_en": "HDG LOCK is on the panel buttons.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    }
+  ],
+  "event": {
+    "after_s": 2,
+    "faults": [
+      "gps_fail"
+    ],
+    "wait_for": [
+      {
+        "f": "alarm_bits",
+        "bit": 2
+      }
+    ],
+    "clear_after_s": 8,
+    "say_el": "Ο συγκυβερνήτης: «Έρχεται καιρός, ανέβασε την ισχύ στο 50 % τώρα!»",
+    "say_en": "The copilot: \"Weather is coming - raise the power to 50 % now!\""
+  },
+  "react": {
+    "any": [
+      [
+        {
+          "f": "power_fwd",
+          "ge": 50
+        }
+      ]
+    ],
+    "good_s": 40,
+    "max_s": 90
+  },
+  "observe_s": 1,
+  "right_el": "Η αύξηση αρνείται όσο υπάρχει συναγερμός (εδώ GPS LOST). Περιμένετε να φύγει η αιτία, αναγνωρίστε τον συναγερμό, μετά κωδικός + «Αύξηση» + CONFIRM.",
+  "right_en": "The raise is refused while an alarm is active (here GPS LOST). Wait for the cause to go, acknowledge the alarm, then code + Raise + CONFIRM.",
+  "debrief_el": "Η ισχύς ανεβαίνει μόνο με αίτημα + κωδικό + CONFIRM στο joystick, ένα σκαλί τη φορά, και ποτέ με ενεργό συναγερμό ή joystick εκτός κέντρου. Η άρνηση είναι κανόνας ασφαλείας, όχι βλάβη: λύστε την αιτία, μην την παρακάμπτετε. Το όριο ξαναγίνεται 30 % σε κάθε εκκίνηση.",
+  "debrief_en": "Power goes up only with a request + the code + CONFIRM on the joystick, one step at a time, and never with an active alarm or the stick off centre. The refusal is a safety rule, not a fault: fix the cause, never work around it. The limit is 30 % again after every start."
+}

@@ -96,6 +96,9 @@
 #define PROTO_T_SIM_GPS       0x71u   /* u8 1 = GPS fails, 0 = GPS back       */
 #define PROTO_T_SIM_BUTTON    0x72u   /* u8 panel button (hal_button_t)       */
 #define PROTO_T_SIM_BRIDGE    0x73u   /* u8 flags, 2 x (i16 axis[8], u32 buttons, u8 hats), u8 fault bits */
+#define PROTO_T_SIM_FAULT     0x74u   /* u8 fault (1 compass lost, 2 GPS spoof = 400 m jump, 3 slamming sea,
+                                       * 4 joystick wire break), u8 1 = on / 0 = off. Simulator only (the academy's
+                                       * emergency scenarios, step 19): sim_server.c; the board has no sim_fn */
 #define PROTO_T_SIM_LAST      0x7Fu
 
 /* boat -> PC */

@@ -43,7 +43,7 @@ class AcademyApp(object):
         self.root, self.store = root, store
         root.title(T("academy.title"))
         root.configure(bg=COL["bg"])
-        root.geometry("1100x560")
+        root.geometry("1280x560")
         # the banner: top, always visible, CAUTION colour (CLAUDE.md S, AC8)
         self.banner = tk.Label(root, text=banner_text(), bg=CAUTION, fg="#000000",
                                font=(theme.FAMILY if theme else "Segoe UI", 16, "bold"), pady=6)
@@ -68,7 +68,7 @@ class AcademyApp(object):
                         ("acc.log_hours", self.log_hours), ("acc.make_push", self.make_push),
                         ("acc.key", self.show_key), ("acc.backup", self.backup), ("acc.refresh", self.refresh),
                         ("acc.tour", self.open_tour), ("acc.lessons", self.open_lessons),
-                        ("acc.quizzes", self.open_quizzes)):
+                        ("acc.quizzes", self.open_quizzes), ("acc.scenarios", self.open_scenarios)):
             b = tk.Button(bar, text=T(key), command=fn)
             b.pack(side="left", padx=3)
             self.buttons[key] = b
@@ -195,6 +195,13 @@ class AcademyApp(object):
         self.quizzes = quiz_app.QuizWindow(tk.Toplevel(self.root), text.lang(), store=self.store,
                                            user=self.chosen_user())
         return self.quizzes
+
+    def open_scenarios(self):
+        """The emergency scenarios (step 19) in a window of THIS process; the link = simguard only."""
+        import scenario_app
+        self.scenarios = scenario_app.ScenarioWindow(tk.Toplevel(self.root), text.lang(), store=self.store,
+                                                     user=self.chosen_user())
+        return self.scenarios
 
     def backup(self):
         d = filedialog.askdirectory(parent=self.root, title=T("acc.backup"))

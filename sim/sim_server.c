@@ -118,6 +118,57 @@ static uint16_t joy_raw(const joy_cal_t *c, int a, float v)
     return (uint16_t)(r + 0.5f);
 }
 
+/* PROTO_T_SIM_FAULT (the academy's emergency scenarios, step 19): faults of the simulated world /
+ * sensors only - the simulated AURIX reacts with its own unchanged code. */
+#define SIM_FAULT_COMPASS   1u
+#define SIM_FAULT_GPS_SPOOF 2u
+#define SIM_FAULT_SLAM      3u
+#define SIM_FAULT_JOY_BREAK 4u
+#define SIM_SPOOF_JUMP_M    400.0
+static bool s_joy_break;                /* joystick X wire break: raw 0 (below the fault threshold) */
+static uint16_t s_joy_y = 2048u;
+static bool s_joy_fitted = true, s_joy_take, s_joy_auto;
+static bool s_slam_on;
+static float s_slam_sea0;
+
+static void joy_apply(uint16_t x_raw)
+{
+    sim_hal_set_joystick(s_joy_fitted, s_joy_break ? 0u : x_raw, s_joy_y, s_joy_take, s_joy_auto);
+}
+
+static uint8_t sim_fault(server_t *x, uint8_t fault, bool on)
+{
+    switch (fault) {
+    case SIM_FAULT_COMPASS:
+        sim_hal_fail_heading(on);
+        return PROTO_R_OK;
+    case SIM_FAULT_GPS_SPOOF:
+        /* a spoofer: the reported position jumps (the integrity check must reject it); off = the truth again */
+        x->w.gps_dragging = false;
+        x->w.gps_off_e = 0.0;
+        x->w.gps_off_n = on ? SIM_SPOOF_JUMP_M : 0.0;
+        return PROTO_R_OK;
+    case SIM_FAULT_SLAM:
+        /* a rough head sea: hull impacts above ~8 kn, every one harder (RED) */
+        if (on && !s_slam_on) s_slam_sea0 = x->w.sea_state;
+        if (on) {
+            x->w.sea_state = 3.0f;
+            x->w.slam_extra_g = 2.5f;
+        } else if (s_slam_on) {
+            x->w.sea_state = s_slam_sea0;
+            x->w.slam_extra_g = 0.0f;
+        }
+        s_slam_on = on;
+        return PROTO_R_OK;
+    case SIM_FAULT_JOY_BREAK:
+        s_joy_break = on;
+        joy_apply(2048u);
+        return PROTO_R_OK;
+    default:
+        return PROTO_R_BAD_VALUE;
+    }
+}
+
 static uint8_t sim_cmd(void *ctx, const proto_frame_t *f)
 {
     server_t *x = (server_t *)ctx;
@@ -133,7 +184,11 @@ static uint8_t sim_cmd(void *ctx, const proto_frame_t *f)
         if (!(jx >= -1.0f && jx <= 1.0f && jy >= -1.0f && jy <= 1.0f)) return PROTO_R_BAD_VALUE;
         joy_cal_t c;
         joy_default_cal(&c);        /* the sim stick matches the default calibration */
-        sim_hal_set_joystick(fitted != 0u, joy_raw(&c, 0, jx), joy_raw(&c, 1, jy), take != 0u, autob != 0u);
+        s_joy_fitted = fitted != 0u;
+        s_joy_y = joy_raw(&c, 1, jy);
+        s_joy_take = take != 0u;
+        s_joy_auto = autob != 0u;
+        joy_apply(joy_raw(&c, 0, jx));      /* a simulated wire break (SIM_FAULT_JOY_BREAK) wins */
         sim_hal_joystick_confirm(confirm != 0u);
         return PROTO_R_OK;
     }
@@ -165,6 +220,13 @@ static uint8_t sim_cmd(void *ctx, const proto_frame_t *f)
         if (f->len != 1u) return PROTO_R_BAD_LENGTH;
         x->w.gps_fail = proto_rd_u8(&r) != 0u;
         return PROTO_R_OK;
+    case PROTO_T_SIM_FAULT: {
+        if (f->len != 2u) return PROTO_R_BAD_LENGTH;
+        uint8_t fault = proto_rd_u8(&r);
+        uint8_t on = proto_rd_u8(&r);
+        if (on > 1u) return PROTO_R_BAD_VALUE;
+        return sim_fault(x, fault, on != 0u);
+    }
     default:
         return PROTO_R_UNKNOWN;
     }
@@ -179,6 +241,10 @@ static void sim_init(server_t *x, uint32_t seed, bool usb, uint32_t gw_baud)
 {
     sb_config_t c;
     memset(x, 0, sizeof *x);
+    s_joy_break = false;                        /* no simulated fault (PROTO_T_SIM_FAULT) */
+    s_slam_on = false;
+    s_joy_fitted = !s_nojoy;
+    s_joy_y = 2048u;
     remove("nv1.bin");                          /* default joystick calibration */
     remove("nv4.bin");                          /* factory joystick map ... */
     if (usb) {                                  /* ... or the USB T.16000M + TWCS */

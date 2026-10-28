@@ -56,6 +56,7 @@ T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
 T_SIM_BRIDGE = 0x73     # simulator only: the USB joysticks behind the simulated bridge
+T_SIM_FAULT = 0x74      # simulator only: a world / sensor fault (academy emergency scenarios, step 19)
 # boat -> PC
 T_TELEMETRY = 0x80
 T_ACK = 0x81
@@ -135,7 +136,7 @@ TYPE_NAMES = {
     T_POWER_CODE: "power code", T_POWER_RAISE: "power raise", T_POWER_LOWER: "power lower",
     T_SIM_JOYSTICK: "sim joystick", T_SIM_GPS: "sim GPS", T_SIM_BUTTON: "sim button",
     T_JOYMAP_GET: "joystick map read", T_JOYMAP_SET: "joystick map write", T_JOY_RAW_GET: "joystick raw read",
-    T_SIM_BRIDGE: "sim USB joystick", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
+    T_SIM_BRIDGE: "sim USB joystick", T_SIM_FAULT: "sim fault", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data", T_CAN_NODES: "CAN nodes",
@@ -564,6 +565,14 @@ def p_sim_button(button):
 
 def p_sim_gps(fail):
     return struct.pack("<B", 1 if fail else 0)
+
+
+# PROTO_T_SIM_FAULT faults (sim/sim_server.c; simulator only, the board answers UNKNOWN)
+SIM_FAULTS = {"compass": 1, "gps_spoof": 2, "slam": 3, "joy_break": 4}
+
+
+def p_sim_fault(fault, on):
+    return struct.pack("<BB", SIM_FAULTS[fault] if isinstance(fault, str) else fault, 1 if on else 0)
 
 
 # --- decoders (boat -> PC) ---------------------------------------------------

@@ -182,3 +182,21 @@ D14 Step 18 lessons (spec C) + quizzes (spec D). Lessons = content/lessons/*.jso
    the question is left out and said); random order + shuffled choices, explanation after each answer,
    per-pool score in the logbook (topic = pool: weak areas). Tests AC25-AC29 (AC28 = every lesson done on
    the real simulator by its steps, wrong actions do not pass, a missed reaction fails, the retry passes).
+D15 Step 19 emergency scenarios (spec E). Content = content/scenarios/*.json (10: compass failure, GPS spoof,
+   slamming, joystick fault, power-limit refusal, AIS collision course, shallow water, swimmer / kayak (no AIS),
+   gateway lost, remote link lost); model academy/scenario.py (setup + prep steps like a lesson -> event -> the
+   timed reaction "react.any" (good_s full marks, linear to 50 at max_s, too late = failed) + "forbid" (a dangerous
+   action fails at once) + the outcome (a hazard's closest approach outcome.min_m, shallow = never inside) ->
+   "after" follow-up steps; -10 per retry). Two kinds of emergency, kept apart (D2): SIMULATOR faults the simulated
+   AURIX sees and handles with its own unchanged code - a new simulator-only frame PROTO_T_SIM_FAULT 0x74 (app/proto.h
+   define + sim/sim_server.c only; the board has no sim_fn and answers UNKNOWN): compass lost, GPS spoof (a 400 m
+   jump), slamming sea (sea 3 + harder impacts), joystick X wire break - plus the existing GPS fail; and HAZARDS /
+   station alarms the ACADEMY draws in its own small picture of the station (map, AIS list with CPA / TCPA, depth,
+   forward camera): an AIS ship, a shoal, a swimmer / kayak, GATEWAY LOST, REMOTE LINK LOST - the academy never
+   plays the gateway; the boat's movement (the outcome) is the simulator's own position. Frames = the lessons' +
+   PROTO_T_SIM_FAULT (scenario.ALLOWED_FRAMES). Replay = a .jsonl timeline (5 Hz samples + events) in
+   academy/data/replays, read back only through simguard.check_recording; debrief = result, reaction time, closest
+   approach, the right action + the explanation. Logbook kind "scenario" (score, reaction_s, why, min_m, replay,
+   refusals). Window academy/scenario_app.py (the lessons' inputs + the picture; Replay window). Tests AC30-AC33
+   (AC31 = every scenario on the REAL simulator by its right reaction + the wrong ones fail, AC32 = the refusal
+   cannot be bypassed).

@@ -1,0 +1,128 @@
+{
+  "_help": "Emergency scenario (ACADEMY_SPEC E, step 19; format: academy/scenario.py). runs_on sim: only the simulator on this PC. setup + prep = the normal situation before the emergency (prep steps like a lesson: do / hint / check). event = after after_s seconds: faults = SIMULATOR faults (compass, gps_spoof, slam, joy_break, gps_fail: the simulated AURIX reacts with its own code), hazard = an object the ACADEMY draws (ais / shallow / swimmer; the academy never plays the gateway), show = an alarm the ground station would show (academy picture only); say = what the trainee is told; wait_for = the faults are in but the emergency (say + the reaction clock) starts only once the simulator shows this (e.g. its alarm); clear_after_s = the simulator faults end by themselves after that long. react.any = the right reactions (any one of them; each a list of conditions on the simulator state, in_x / in_y = the trainee's stick, delta_ge / delta_le / adelta_ge = a turn since the event); good_s = full marks, max_s = too late. forbid = actions that fail at once. observe_s = how long the outcome is watched; outcome.min_m = the closest a hazard may come (shallow: metres from the edge). after = follow-up steps (untimed). right = the right action (debrief), debrief = the explanation. A new scenario also needs its trainee script in test_academy.py (SCENARIO_SCRIPTS, AC31 runs it on the real simulator).",
+  "kind": "scenario",
+  "id": "s03_slamming",
+  "level": "CAPTAIN",
+  "order": 3,
+  "runs_on": "sim",
+  "title_el": "Χτυπήματα (slamming) σε κύμα",
+  "title_en": "Slamming in a head sea",
+  "intro_el": "Αυξάνετε την ισχύ στο 50 % και τρέχετε γρήγορα σε HDG LOCK. Κρατήστε την πορεία και παρακολουθήστε τις οθόνες.",
+  "intro_en": "You raise the power to 50 % and run fast in HDG LOCK. Keep going and watch the screens.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "prep": [
+    {
+      "do_el": "Χρειάζεται περισσότερη ισχύς: ζητήστε κωδικό αύξησης (κουμπί «Ζήτηση κωδικού»).",
+      "do_en": "You need more power: ask for a power-raise code (button Ask for a code).",
+      "hint_el": "Joystick στο κέντρο, κανένας συναγερμός.",
+      "hint_en": "Joystick centred, no alarm.",
+      "check": [
+        {
+          "f": "power_code",
+          "ne": 0
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Γράψτε τον κωδικό που δείχνει το σκάφος και πατήστε «Αύξηση».",
+      "do_en": "Type the code the boat shows and press Raise.",
+      "hint_el": "Ο κωδικός φαίνεται στην κατάσταση του σκάφους.",
+      "hint_en": "The code shows in the boat state.",
+      "check": [
+        {
+          "f": "confirm_kind",
+          "eq": 3
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Πατήστε CONFIRM στο joystick μέσα σε 10 δευτερόλεπτα.",
+      "do_en": "Press CONFIRM on the joystick within 10 seconds.",
+      "hint_el": "Το κουμπί CONFIRM, με το joystick στο κέντρο.",
+      "hint_en": "The CONFIRM button, stick centred.",
+      "check": [
+        {
+          "f": "power_fwd",
+          "ge": 50
+        }
+      ],
+      "hint_s": 6
+    },
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών.",
+      "hint_en": "HDG LOCK is on the panel buttons.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Σπρώξτε το joystick μπροστά (επιλέξτε «Κράτημα joystick») και κρατήστε το: το σκάφος επιταχύνει. Τέρμα μπροστά.",
+      "do_en": "Push the joystick forward (tick \"Hold the stick\") and keep it there: the boat speeds up. All the way.",
+      "hint_el": "Το γκάζι είναι ο άξονας Y (πάνω). Στο HDG LOCK η πορεία μένει στο σύστημα.",
+      "hint_en": "The throttle is the Y axis (up). In HDG LOCK the course stays with the system.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "est_sog",
+          "ge": 8.5
+        }
+      ],
+      "hold_s": 1,
+      "hint_s": 25
+    }
+  ],
+  "event": {
+    "after_s": 2,
+    "faults": [
+      "slam"
+    ],
+    "wait_for": [
+      {
+        "f": "alarm_bits",
+        "bit": 2097152
+      }
+    ],
+    "say_el": "Μπαίνετε σε κοντό, ψηλό κύμα!",
+    "say_en": "You run into a short, steep sea!"
+  },
+  "react": {
+    "any": [
+      [
+        {
+          "f": "in_y",
+          "le": 0.5
+        }
+      ],
+      [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        }
+      ]
+    ],
+    "good_s": 5,
+    "max_s": 15
+  },
+  "observe_s": 2,
+  "right_el": "Κόψτε γκάζι αμέσως (το σύστημα έχει ήδη μειώσει ένα σκαλί) μέχρι να σταματήσουν τα χτυπήματα.",
+  "right_en": "Throttle back at once (the system has already taken one step off) until the impacts stop.",
+  "debrief_el": "SLAMMING: ο αισθητήρας BNO085 μετρά τα χτυπήματα της γάστρας. Σε ΚΟΚΚΙΝΟ το σύστημα κατεβάζει το γκάζι ένα σκαλί και δεν το ανεβάζει ποτέ μόνο του· την υπόλοιπη μείωση την κάνετε εσείς. Η ισχύς δεν μηδενίζεται απότομα (σε ακολουθούντα καιρό μπορεί να είναι επικίνδυνο).",
+  "debrief_en": "SLAMMING: the BNO085 measures the hull impacts. At RED the system takes the throttle down one step and never raises it by itself; the rest is up to you. The power is not cut suddenly (in a following sea that can be dangerous)."
+}

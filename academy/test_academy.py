@@ -65,6 +65,20 @@
        window on the simulator lands in the logbook (tick in the list), no simulator = said so; the
        quiz walks every question (choice / picture click / sound played via simguard), the score
        lands in the logbook per pool; the academy window's buttons open both
+  AC30 emergency scenarios (step 19, spec E): every scenario file passes content.check + scenario.check_doc
+       (bad cases caught); every spec E item has a scenario; the model on a made-up clock (reaction time,
+       full marks / linear score / too late, forbidden action, outcome distance, retry 90, wait_for,
+       hazard geometry); the replay file read back only through simguard; the fault frame
+       PROTO_T_SIM_FAULT = the same number in app/proto.h + proto.py, handled only by sim_server.c
+  AC31 every scenario passes on the REAL simulator by its right reaction; the simulated AURIX shows its own
+       alarms / mode changes for the simulator faults (COMPASS LOST -> STANDBY only at idle, GPS SUSPECT,
+       SLAMMING, JOYSTICK FAULT -> STANDBY, GPS LOST); no reaction / a run-over swimmer / a port turn at a
+       starboard ship fail; the retry scores 90
+  AC32 the power-limit refusal on the real simulator: refused with an alarm, CONFIRM alone raises nothing,
+       the proper raise after the fix works (the scenario adds no way around a rule)
+  AC33 the scenario window: banner first, by level, no simulator said, the academy's picture (AIS on the map
+       + list, swimmer only on the camera, gateway lost = no AIS / camera), a scenario through the window
+       on the simulator -> logbook (reaction time, replay file) + debrief; the replay window via simguard
 
 Run:  python academy/test_academy.py      (exit code 0 = all passed)
 """
@@ -403,6 +417,8 @@ def ac9():
     used |= {"acc.col_" + c for c in academy_app.COLUMNS}
     import tour_app
     used |= {"tour.s2_" + n for n in tour_app.S2_BOXES}
+    import scenario_app
+    used |= {"scen.db_failed_" + w for w in ("late", "forbid", "outcome")} | {"scen.ev_" + e for e in scenario_app.EVENT_KEYS}
     missing = sorted(k for k in used if k not in el or k not in en)
     if missing:
         wrong.append("used but missing: %s" % missing)
@@ -1689,9 +1705,601 @@ def ac29():
            "missing tones left out + said; academy buttons open both")
 
 
+# --- step 19 helpers: a scripted trainee for the emergency scenarios ---------------------------
+def _sb(name):
+    return lambda s: s.button(name)
+
+
+def _sstick(x=None, y=None):
+    return lambda s: s.stick(x, y)
+
+
+def _sconfirm(s):
+    import time
+    s.press("confirm", True)
+    for _ in range(4):
+        s.tick()
+        time.sleep(0.05)
+    s.press("confirm", False)
+
+
+class _Refused(object):
+    """s05: ask for the code (refused: GPS LOST), wait for the GPS, acknowledge, code, raise, CONFIRM."""
+
+    def __init__(self):
+        self.t, self.stage = 0.0, 0
+
+    def __call__(self, s):
+        import time
+        now = time.time()
+        if now - self.t < 1.0:
+            return
+        self.t = now
+        st = s.state
+        if self.stage == 0:
+            s.power_code()
+            self.stage = 1
+        elif self.stage == 1:
+            if not st.get("gps_fix"):
+                return
+            s.alarm_ack()
+            if not st.get("alarm_bits", 0):
+                s.power_code()
+                self.stage = 2
+        elif self.stage == 2 and st.get("power_code"):
+            _code(s)
+            self.stage = 3
+        elif self.stage == 3 and st.get("confirm_kind") == 3:
+            _sconfirm(s)
+            self.stage = 4
+
+
+_GO = [_sb("hdg_lock"), _sstick(y=1.0)]
+# what a trainee does: prep = one action per prep step, react = the reaction (a list = one after the other),
+# after = per follow-up step (None = only wait, "ack" = acknowledge every 2 s). A new scenario without a
+# script fails AC31.
+SCENARIO_SCRIPTS = {
+    "s01_compass_fail": {"prep": _GO, "react": _sstick(y=0.0), "after": [None, "ack"]},
+    "s02_gps_spoof": {"prep": _GO, "react": _sstick(y=0.0)},
+    "s03_slamming": {"prep": [lambda s: s.power_code(), _code, _sconfirm] + _GO, "react": _sstick(y=0.0)},
+    "s04_joystick_fault": {"prep": _GO, "react": _sstick(0.0, 0.0), "after": ["ack"]},
+    "s05_power_refusal": {"prep": [_sb("hdg_lock")], "react": "refused"},
+    "s06_ais_collision": {"prep": _GO, "react": [_sb("plus10")] * 6},
+    "s07_shallow_water": {"prep": _GO, "react": _sb("standby")},
+    "s08_swimmer_kayak": {"prep": _GO, "react": _sb("standby")},
+    "s09_gateway_lost": {"prep": _GO, "react": _sstick(y=0.0)},
+    "s10_remote_link_lost": {"prep": _GO, "react": _sstick(x=0.6)},
+}
+# the spec E list -> the scenario that trains it
+SPEC_E = {"remote link lost": "s10_remote_link_lost", "compass failure": "s01_compass_fail",
+          "AIS collision course": "s06_ais_collision", "shallow water": "s07_shallow_water",
+          "GPS spoof": "s02_gps_spoof", "slamming": "s03_slamming", "joystick fault": "s04_joystick_fault",
+          "power limit refusal": "s05_power_refusal", "gateway lost": "s09_gateway_lost",
+          "swimmer / kayak (no AIS) near the beach": "s08_swimmer_kayak"}
+
+
+def _drive_scen(sim, run, script, react=True, react_delay=1.5, limit=150.0, react_override=None, on_tick=None,
+                start=True):
+    """Run a scenario like a trainee. Returns the final status (or "timeout")."""
+    import time
+    if start:
+        for a in run.start(time.time()):
+            sim.do(a)
+    acted, entered, t_ack = set(), {}, 0.0
+    refused = _Refused()
+    end = time.time() + limit
+    while time.time() < end:
+        now = time.time()
+        status, acts = run.update(sim.tick(), now)
+        for a in acts:
+            sim.do(a)
+        if on_tick:
+            on_tick(status)
+        if status in ("done", "failed"):
+            return status
+        key = (status, run.index)
+        entered.setdefault(key, now)
+        since = now - entered[key]
+        if status == "prep" and key not in acted and since > 0.6:
+            acted.add(key)
+            script["prep"][run.index](sim)
+        elif status == "react" and react:
+            r = react_override or script["react"]
+            if r == "refused":
+                refused(sim)
+            elif since > react_delay and key not in acted:
+                acted.add(key)
+                for i, a in enumerate(r if isinstance(r, list) else [r]):
+                    if i:
+                        for _ in range(4):
+                            sim.tick()
+                            time.sleep(0.05)
+                    a(sim)
+        elif status == "after":
+            aft = script.get("after", [])
+            a = aft[run.index] if run.index < len(aft) else None
+            if a == "ack" and now - t_ack > 2.0:
+                sim.alarm_ack()
+                t_ack = now
+        time.sleep(0.05)
+    return "timeout"
+
+
+def _scen_clean(sim):
+    import time
+    sim.do("centre")
+    sim.do("standby")
+    for _ in range(10):
+        sim.tick()
+        time.sleep(0.05)
+
+
+# --- AC30 -------------------------------------------------------------------------------------
+def ac30():
+    import content
+    import json
+    import scenario                                     # puts groundstation/ on the path (proto)
+    import proto
+    import simguard
+    wrong = []
+    docs = scenario.scenarios()
+    ids = {d["id"] for d in docs}
+    for d in docs:
+        wrong += content.check(d, d["id"]) + scenario.check_doc(d, d["id"])
+    for item, sid in SPEC_E.items():
+        if sid not in ids:
+            wrong.append("spec E %r: scenario %s missing" % (item, sid))
+    if any(n.startswith("example_") for n in os.listdir(os.path.join(HERE, "content", "scenarios"))):
+        wrong.append("the step-15 example scenario is still there")
+    # the checker catches the bad cases
+    good = json.loads(json.dumps(next(d for d in docs if d["id"] == "s08_swimmer_kayak")))
+    bads = []
+    for mut in (lambda d: d.pop("event"), lambda d: d["event"].update(faults=["engine_fire"]),
+                lambda d: d["event"].update(hazard={"type": "whale"}), lambda d: d.pop("outcome"),
+                lambda d: d["react"].update(good_s=20), lambda d: d["react"].update(any=[]),
+                lambda d: d["react"]["any"].append([{"f": "no_such_field", "eq": 1}]),
+                lambda d: d.update(forbid=[{"check": [{"f": "mode_name", "eq": "AUTO"}]}]),
+                lambda d: d["event"].update(show=["engine_fire"]), lambda d: d.pop("right_el"),
+                lambda d: d["event"].pop("say_en"), lambda d: d["event"].update(hazard=None, show=[], faults=[]),
+                lambda d: d.update(setup=["launch"])):
+        b = json.loads(json.dumps(good))
+        mut(b)
+        bads.append(b)
+    missed = [i for i, b in enumerate(bads) if not scenario.check_doc(b, "bad")]
+    boat = dict(good, runs_on="boat")
+    if not content.check(boat, "boat"):
+        missed.append("runs_on boat")
+    if missed:
+        wrong.append("checker missed bad case(s) %s" % missed)
+    # the model, on a made-up clock and made-up simulator states
+    base = {"mode_name": "STANDBY", "alarm_bits": 0, "profile_name": "CREWED", "heading": 90.0, "target": 90.0,
+            "est_lat": 37.8, "est_lon": 23.6, "est_sog": 5.0, "throttle": 30.0, "in_x": 0.0, "in_y": 1.0}
+    doc = {"id": "t", "level": "DRIVER", "setup": [], "prep": [],
+           "event": {"after_s": 2, "faults": ["compass"], "clear_after_s": 30, "say_el": "a", "say_en": "a"},
+           "react": {"any": [[{"f": "mode_name", "eq": "MANUAL"}], [{"f": "target", "delta_ge": 20}]],
+                     "good_s": 5, "max_s": 15},
+           "forbid": [{"check": [{"f": "heading", "delta_le": -20}], "why_el": "x", "why_en": "x"}], "observe_s": 2,
+           "right_el": "r", "right_en": "r", "debrief_el": "d", "debrief_en": "d"}
+
+
+    def play(react_at=None, react_state=None, tmax=40.0, d=None, state0=None):
+        r = scenario.Run(d or doc, "en")
+        acts = r.start(0.0)
+        t, st = 0.0, dict(state0 or base)
+        seen = list(acts)
+        while t < tmax:
+            if react_at is not None and r.t_event is not None and t - r.t_event >= react_at:
+                st.update(react_state)
+            status, a = r.update(st, t)
+            seen += a
+            if status in ("done", "failed"):
+                break
+            t += 0.1
+        return r, seen
+    r, seen = play(1.0, {"mode_name": "MANUAL"})
+    if r.status != "done" or r.score() != 100 or "fault:compass" not in seen or "fault_off:compass" not in seen:
+        wrong.append("fast reaction: %s %s %s" % (r.status, r.score(), seen))
+    if seen[:len(scenario.FAULTS)] != ["fault_off:%s" % f for f in scenario.FAULTS]:
+        wrong.append("start does not clean every simulator fault first")
+    if abs((r.reaction_s() or 0) - 1.0) > 0.15:
+        wrong.append("reaction time %s" % r.reaction_s())
+    r, _ = play(10.0, {"target": 115.0})                        # half way between good and max = 75
+    if r.status != "done" or not 70 <= r.score() <= 80:
+        wrong.append("slow reaction score %s (%s)" % (r.score(), r.status))
+    r, _ = play(None, None)
+    if r.status != "failed" or r.why != "late" or r.score() != 0:
+        wrong.append("no reaction: %s %s" % (r.status, r.why))
+    r, _ = play(1.0, {"heading": 60.0})                         # turned to port: forbidden
+    if r.status != "failed" or r.why != "forbid" or not any("x" == ln for ln in r.debrief()):
+        wrong.append("forbidden turn: %s %s" % (r.status, r.why))
+    rr = scenario.Run(doc, "en")
+    rr.retries = 1
+    rr.status, rr.t_event, rr.t_react = "done", 0.0, 1.0
+    if rr.score() != 90:
+        wrong.append("one retry: score %s, expected 90" % rr.score())
+    # wait_for: the emergency starts only once the simulator shows it
+    d2 = json.loads(json.dumps(doc))
+    d2["event"]["wait_for"] = [{"f": "alarm_bits", "bit": 2}]
+    r = scenario.Run(d2, "en")
+    r.start(0.0)
+    st = dict(base)
+    for i in range(60):
+        if i == 40:
+            st["alarm_bits"] = 2
+        r.update(st, i * 0.1)
+    if r.status != "react" or abs(r.t_event - 4.0) > 0.11:
+        wrong.append("wait_for: %s at %s" % (r.status, r.t_event))
+    # a hazard: the AIS target collides when the boat keeps course + speed; the outcome is measured
+    hz = scenario.Hazard({"type": "ais", "collide_s": 60, "speed_kn": 8, "cross_deg": -90}, 90.0, 5.0)
+    c, tc = scenario.cpa((0.0, 0.0), scenario._vec(90.0, 5.0 * scenario.KN), hz.pos(0), hz.v)
+    if c > 1.0 or abs(tc - 60.0) > 0.5 or abs(scenario._wrap(hz.course - 0.0)) > 0.01:
+        wrong.append("AIS placement cpa %.1f tcpa %.1f course %.0f" % (c, tc, hz.course))
+    sh = scenario.Hazard({"type": "shallow", "edge_m": 80, "radius_m": 40}, 0.0, 5.0)
+    if abs(sh.clearance((0.0, 0.0), 0) - 80.0) > 0.01 or sh.depth((120.0, 0.0), 0) != 1.0:
+        wrong.append("shallow placement / depth")
+    d3 = {"id": "h", "level": "DRIVER", "setup": [], "prep": [], "observe_s": 30, "outcome": {"min_m": 20},
+          "event": {"after_s": 0, "hazard": {"type": "swimmer", "dist_m": 70, "off_m": 0}, "say_el": "a", "say_en": "a"},
+          "react": {"any": [[{"f": "mode_name", "eq": "STANDBY"}]], "good_s": 4, "max_s": 12},
+          "right_el": "r", "right_en": "r", "debrief_el": "d", "debrief_en": "d"}
+    r = scenario.Run(d3, "en")
+    r.start(0.0)
+    st = dict(base, est_lat=37.8, est_lon=23.6, heading=0.0)
+    t = 0.0
+    while t < 30 and r.status not in ("done", "failed"):
+        st["est_lat"] = 37.8 + (3.0 * max(0.0, t - 0.2)) / scenario.M_PER_DEG       # 3 m/s north, never stops
+        r.update(st, t)
+        t += 0.1
+    if r.status != "failed" or r.why not in ("outcome", "late") or (r.min_m is None or r.min_m > 40):
+        wrong.append("swimmer run over: %s %s min %s" % (r.status, r.why, r.min_m))
+    if not r.timeline or "clear_m" not in r.timeline[-1]:
+        wrong.append("timeline without the hazard distance")
+    # the replay file: written, read back through simguard only (a device name refused)
+    tmp = tempfile.mkdtemp(prefix="trygons_ac30_")
+    path = scenario.save_replay(r, tmp, "ann", stamp="20261028-120000")
+    head, samples = scenario.load_replay(path)
+    if head.get("id") != "h" or head.get("why") != r.why or len(samples) != len(r.timeline):
+        wrong.append("replay round trip %s %d/%d" % (head.get("id"), len(samples), len(r.timeline)))
+    try:
+        scenario.load_replay("COM3")
+        wrong.append("a replay from COM3 was read")
+    except simguard.Refused:
+        pass
+    # frames: only the simulator's inputs + the station's own commands (+ the simulator fault)
+    class _L(object):
+        def __init__(self):
+            self.out = []
+
+        def send(self, b):
+            self.out.append(b)
+
+        def recv(self):
+            return b""
+    s = scenario.Sim(_L())
+    s.do("fault:compass")
+    s.do("fault_off:joy_break")
+    try:
+        s.send(proto.T_GW_STATUS)
+        wrong.append("a scenario sent a gateway frame")
+    except ValueError:
+        pass
+    frames = [f for b in s.link.out for f in proto.Receiver().frames_from(b)]
+    if [(f.type, bytes(f.payload)) for f in frames] != [(proto.T_SIM_FAULT, b"\x01\x01"), (proto.T_SIM_FAULT, b"\x04\x00")]:
+        wrong.append("fault frames %s" % [(f.type, bytes(f.payload)) for f in frames])
+    import lesson
+    if scenario.ALLOWED_FRAMES != set(lesson.ALLOWED_FRAMES) | {proto.T_SIM_FAULT}:
+        wrong.append("scenario frames are not the lessons' + the simulator fault: %s" % sorted(scenario.ALLOWED_FRAMES))
+    # PROTO_T_SIM_FAULT: the same number on both sides, handled only by the simulator
+    hdr = open(os.path.join(REPO, "app", "proto.h"), encoding="utf-8").read()
+    m = re.search(r"#define PROTO_T_SIM_FAULT\s+0x([0-9A-Fa-f]+)u", hdr)
+    if not m or int(m.group(1), 16) != proto.T_SIM_FAULT or not 0x70 <= proto.T_SIM_FAULT <= 0x7F:
+        wrong.append("PROTO_T_SIM_FAULT differs between app/proto.h and proto.py")
+    srv = open(os.path.join(REPO, "sim", "sim_server.c"), encoding="utf-8").read()
+    if "case PROTO_T_SIM_FAULT" not in srv:
+        wrong.append("sim_server.c does not handle PROTO_T_SIM_FAULT")
+    for root_, _ds, fs in os.walk(os.path.join(REPO, "app")):
+        for f in fs:
+            if f.endswith(".c") and "PROTO_T_SIM_FAULT" in open(os.path.join(root_, f), encoding="utf-8").read():
+                wrong.append("app/%s uses the simulator fault frame" % f)
+    report("AC30 scenarios: content + model", not wrong, "; ".join(wrong) or
+           "%d scenarios (spec E all 10), %d bad cases caught; reaction time / linear score / late / forbidden / "
+           "outcome / retry 90 / wait_for / hazard geometry; replay via simguard; fault frame only in the simulator"
+           % (len(docs), len(bads) + 1))
+
+
+# --- AC31 -------------------------------------------------------------------------------------
+def ac31():
+    import threading
+    import time
+    import scenario
+    wrong = []
+    docs = {d["id"]: d for d in scenario.scenarios()}
+    for sid, d in docs.items():
+        sc = SCENARIO_SCRIPTS.get(sid)
+        if sc is None or len(sc["prep"]) != len(d.get("prep", [])) or len(sc.get("after", [])) < len(d.get("after", [])):
+            wrong.append("%s: no trainee script for every step" % sid)
+    if wrong:
+        report("AC31 scenarios on the real simulator", False, "; ".join(wrong))
+        return
+    # the real simulator: every scenario with the right reaction, then the wrong ones (two simulators at once)
+    good = sorted(docs, key=lambda i: (i == "s02_gps_spoof", i))       # the spoof last: its GPS recovery is slow
+    jobs = [[(i, "good") for i in good[0::2]], [(i, "good") for i in good[1::2]]]
+    jobs[0] += [("s01_compass_fail", "none"), ("s01_compass_fail", "retry")]
+    jobs[1] += [("s08_swimmer_kayak", "none"), ("s06_ais_collision", "port")]
+    out, times = {}, {}
+
+    def worker(job):
+        sp = _TestSim()
+        try:
+            sim = scenario.Sim(sp.link())
+            for sid, how in job:
+                t0 = time.time()
+                r = scenario.Run(docs[sid], "en")
+                seen = set()
+                if how == "good":
+                    st = _drive_scen(sim, r, SCENARIO_SCRIPTS[sid], on_tick=lambda s: seen.add(s))
+                elif how == "none":
+                    st = _drive_scen(sim, r, SCENARIO_SCRIPTS[sid], react=False)
+                elif how == "port":
+                    st = _drive_scen(sim, r, SCENARIO_SCRIPTS[sid], react_override=[_sb("minus10")] * 3)
+                else:                                       # a missed reaction, then the retry passes (90)
+                    st = _drive_scen(sim, r, SCENARIO_SCRIPTS[sid], react=False)
+                    _scen_clean(sim)
+                    for a in r.retry(time.time()):
+                        sim.do(a)
+                    st = _drive_scen(sim, r, SCENARIO_SCRIPTS[sid], start=False)
+                out[(sid, how)] = (st, r)
+                times["%s/%s" % (sid, how)] = round(time.time() - t0)
+                _scen_clean(sim)
+            sim.link.close()
+        except Exception as e:                              # reported below
+            out[("crash", repr(e))] = (None, None)
+        finally:
+            sp.stop()
+    th = [threading.Thread(target=worker, args=(j,)) for j in jobs]
+    for t in th:
+        t.start()
+    for t in th:
+        t.join(600)
+    for k, (st, r) in out.items():
+        if k[0] == "crash":
+            wrong.append("crashed: %s" % k[1])
+    for sid in good:
+        st, r = out.get((sid, "good"), (None, None))
+        if r is None or st != "done" or r.score() != 100 or r.reaction_s() is None:
+            wrong.append("%s: %s (%s, score %s)" % (sid, st, r and r.why, r and r.score()))
+    # the simulated AURIX's own reactions to the simulator faults (seen in the recorded timeline)
+    def alm(sid, bit):
+        st, r = out.get((sid, "good"), (None, None))
+        return r is not None and any(s.get("alm", 0) & bit for s in r.timeline)
+
+    def modes(sid):
+        st, r = out.get((sid, "good"), (None, None))
+        return [] if r is None else [s.get("mode") for s in r.timeline]
+    for sid, bit, what in (("s01_compass_fail", 0x1, "COMPASS LOST"), ("s02_gps_spoof", 0x4, "GPS SUSPECT"),
+                           ("s03_slamming", 0x200000, "SLAMMING"), ("s04_joystick_fault", 0x100, "JOYSTICK FAULT"),
+                           ("s05_power_refusal", 0x2, "GPS LOST")):
+        if not alm(sid, bit):
+            wrong.append("%s: the simulator never showed %s" % (sid, what))
+    st, r = out.get(("s01_compass_fail", "good"), (None, None))
+    if r is not None:                                       # compass lost in HDG LOCK: STANDBY only once at idle
+        first = next((s for s in r.timeline if s.get("mode") == "STANDBY" and s.get("t", 0) > (r.t_event - r.t0)), None)
+        if first is None or first.get("thr", 99) > 1.0:
+            wrong.append("compass lost: STANDBY not at idle (%s)" % first)
+    st, r = out.get(("s04_joystick_fault", "good"), (None, None))
+    if r is not None and "STANDBY" not in modes("s04_joystick_fault")[len(modes("s04_joystick_fault")) // 3:]:
+        wrong.append("joystick fault did not end in STANDBY")
+    for k, why in ((("s01_compass_fail", "none"), ("late",)), (("s08_swimmer_kayak", "none"), ("late", "outcome")),
+                   (("s06_ais_collision", "port"), ("forbid",))):
+        st, r = out.get(k, (None, None))
+        if r is None or st != "failed" or r.why not in why:
+            wrong.append("%s/%s should fail (%s): %s %s" % (k[0], k[1], "/".join(why), st, r and r.why))
+    st, r = out.get(("s01_compass_fail", "retry"), (None, None))
+    if r is None or st != "done" or r.score() != 90 or r.retries != 1:
+        wrong.append("compass retry: %s score %s" % (st, r and r.score()))
+    report("AC31 scenarios on the real simulator", not wrong, "; ".join(wrong) or
+           "every scenario passed by its right reaction (%s s); the simulated AURIX showed COMPASS LOST (STANDBY only at "
+           "idle), GPS SUSPECT, SLAMMING, JOYSTICK FAULT (STANDBY), GPS LOST (raise refused); no reaction = late, "
+           "run-over swimmer = failed, a port turn at a starboard ship = forbidden; the retry scores 90"
+           % ", ".join("%s %s" % kv for kv in sorted(times.items())))
+
+
+# --- AC32 -------------------------------------------------------------------------------------
+def ac32():
+    """The power-limit refusal on the REAL simulator: with GPS LOST the code request is refused (the
+    station's NACK), the raise works only after the cause is gone + acknowledge + code + CONFIRM - the
+    scenario adds no way around any rule (the same frames as the station's own)."""
+    import time
+    import scenario
+    import proto
+    wrong = []
+    doc = next(d for d in scenario.scenarios() if d["id"] == "s05_power_refusal")
+    sp = _TestSim()
+    try:
+        sim = scenario.Sim(sp.link())
+        r = scenario.Run(doc, "en")
+        for a in r.start(time.time()):
+            sim.do(a)
+        asked = False
+        end = time.time() + 30
+        pressed = False
+        while time.time() < end and r.status != "react":
+            for a in r.update(sim.tick(), time.time())[1]:
+                sim.do(a)
+            if r.status == "prep" and not pressed:
+                time.sleep(0.5)
+                sim.button("hdg_lock")
+                pressed = True
+            time.sleep(0.05)
+        if r.status == "react":
+            n0 = len(sim.nacks())
+            sim.power_code()
+            for _ in range(20):
+                for a in r.update(sim.tick(), time.time())[1]:
+                    sim.do(a)
+                time.sleep(0.05)
+            asked = True
+            nk = sim.nacks()[n0:]
+            if not any(a.get("cmd") == proto.T_POWER_CODE for a in nk) or sim.state.get("power_code"):
+                wrong.append("the code was not refused with GPS LOST (%s)" % nk)
+            # CONFIRM alone raises nothing
+            _sconfirm(sim)
+            for _ in range(10):
+                for a in r.update(sim.tick(), time.time())[1]:
+                    sim.do(a)
+                time.sleep(0.05)
+            if sim.state.get("power_fwd", 0) > 30:
+                wrong.append("CONFIRM alone raised the power")
+        if not asked:
+            wrong.append("the emergency never started (%s)" % r.status)
+        st = _drive_scen(sim, r, SCENARIO_SCRIPTS["s05_power_refusal"], start=False, limit=90)
+        if st != "done" or sim.state.get("power_fwd", 0) < 50:
+            wrong.append("the proper raise after the fix: %s %s" % (st, sim.state.get("power_fwd")))
+        sim.power_lower()
+        _scen_clean(sim)
+        sim.link.close()
+    finally:
+        sp.stop()
+    report("AC32 power refusal on the real simulator", not wrong, "; ".join(wrong) or
+           "HDG LOCK + GPS LOST: the code request refused by the simulated AURIX, CONFIRM alone raises nothing; after the GPS + "
+           "acknowledge the code + CONFIRM raise to 50 %")
+
+
+# --- AC33 -------------------------------------------------------------------------------------
+def ac33():
+    import banner
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+    except Exception as e:
+        report("AC33 scenario window + replay", True, "no display here (%s): models checked by AC30-AC32" % e)
+        return
+    import time
+    import academy_app
+    import scenario
+    import scenario_app
+    wrong = []
+    sim_p = None
+    try:
+        root.withdraw()
+        store = _store()
+        store.add("ann", "Ann")
+        rep = tempfile.mkdtemp(prefix="trygons_ac33_")
+        top = tk.Toplevel(root)
+        w = scenario_app.ScenarioWindow(top, "en", store=store, user="ann", link_factory=lambda: (_ for _ in ()).throw(OSError()),
+                                        replay_folder=rep)
+        top.update()
+        if top.pack_slaves()[0] is not w.banner or w.banner.cget("text") != banner.banner_text("en"):
+            wrong.append("scenario window: banner not first")
+        heads = [d for d in w.rows if d is None]
+        if len(heads) < 2 or w.rows[0] is not None or len([d for d in w.rows if d]) != len(scenario.scenarios()):
+            wrong.append("scenarios not listed by level")
+        w.select("s09_gateway_lost")
+        if w.start_selected() is not None or w.conn.cget("text") != scenario_app.T("lesson.no_sim", "en"):
+            wrong.append("no simulator not said")
+        # the picture: an AIS target on the map + its row; a swimmer only on the camera; gateway lost = no camera
+        run = scenario.Run(next(d for d in scenario.scenarios() if d["id"] == "s06_ais_collision"), "en")
+        run.origin, run.t_event = (37.8, 23.6), 0.0
+        run.hazard = scenario.Hazard(run.ev["hazard"], 90.0, 5.0)
+        st = {"est_lat": 37.8, "est_lon": 23.6, "heading": 90.0, "est_sog": 5.0}
+        w.draw_picture(run.picture(st, 10.0), run)
+        if not w.map.find_withtag("ais") or "CPA" not in w.l_ais.cget("text"):
+            wrong.append("AIS target not drawn / listed")
+        run2 = scenario.Run(next(d for d in scenario.scenarios() if d["id"] == "s08_swimmer_kayak"), "en")
+        run2.origin, run2.t_event = (37.8, 23.6), 0.0
+        run2.hazard = scenario.Hazard(run2.ev["hazard"], 90.0, 5.0)
+        w.draw_picture(run2.picture(st, 1.0), run2)
+        if not w.cam.find_withtag("cam_swimmer") or "CPA" in w.l_ais.cget("text"):
+            wrong.append("swimmer: not on the camera or on the AIS list")
+        run3 = scenario.Run(next(d for d in scenario.scenarios() if d["id"] == "s09_gateway_lost"), "en")
+        run3.origin, run3.shown = (37.8, 23.6), ["gateway_lost"]
+        w.draw_picture(run3.picture(st, 1.0), run3)
+        if scenario_app.T("scen.no_ais", "en") != w.l_ais.cget("text"):
+            wrong.append("gateway lost: the AIS list still shown")
+        w.close()
+        # a scenario through the window on the simulator -> logbook + replay file + debrief + replay window
+        sim_p = _TestSim()
+        top = tk.Toplevel(root)
+        w = scenario_app.ScenarioWindow(top, "el", store=store, user="ann", link_factory=sim_p.link, replay_folder=rep)
+        w.select("s09_gateway_lost")
+        if w.start_selected() is None:
+            wrong.append("scenario did not start")
+        else:
+            acted = set()
+            entered = {}
+            end = time.time() + 60
+            while time.time() < end and w.status not in ("done", "failed"):
+                w.step()
+                top.update()
+                key = (w.run.status, w.run.index)
+                entered.setdefault(key, time.time())
+                if key not in acted and time.time() - entered[key] > 0.8:
+                    if key == ("prep", 0):
+                        acted.add(key)
+                        w.button("hdg_lock")
+                    elif key == ("prep", 1):
+                        acted.add(key)
+                        w.hold.set(True)
+                        w.stick(0.0, 1.0)
+                    elif key[0] == "react":
+                        acted.add(key)
+                        if "GATEWAY" not in w.l_state.cget("text").upper() and "ΠΥΛΗ" not in w.l_state.cget("text").upper():
+                            wrong.append("the shown GATEWAY LOST is not in the alarms (%r)" % w.l_state.cget("text"))
+                        w.stick(0.0, 0.0)
+                time.sleep(0.05)
+            w.hold.set(False)
+            w._hold_changed()
+            store.load()
+            ok = [e for e in store.entries() if e.get("kind") == "scenario" and e.get("id") == "s09_gateway_lost"
+                  and e.get("user") == "ann" and e.get("done") and e.get("reaction_s") is not None]
+            row = [w.list.get(i) for i, d in enumerate(w.rows) if d and d["id"] == "s09_gateway_lost"]
+            if w.status != "done" or not ok or not row or not row[0].startswith("✓"):
+                wrong.append("window scenario: %s, logged %d, row %s" % (w.status, len(ok), row))
+            files = [f for f in os.listdir(rep) if f.endswith(".jsonl")]
+            if not files or not ok or ok[-1].get("replay") not in files:
+                wrong.append("replay file %s / logbook %s" % (files, ok and ok[-1].get("replay")))
+            if not w.debrief.cget("text").strip() or w.run.doc["right_el"] not in w.debrief.cget("text"):
+                wrong.append("no debrief")
+            rw = w.open_replay()
+            if rw is None:
+                wrong.append("replay window did not open")
+            else:
+                rw.top.update()
+                if rw.top.pack_slaves()[0] is not rw.banner or rw.banner.cget("text") != banner.banner_text("el"):
+                    wrong.append("replay window: banner not first")
+                rw.pos.set(len(rw.samples) - 1)
+                rw.show(len(rw.samples) - 1)
+                if not rw.canvas.find_withtag("boat") or not rw.canvas.find_withtag("track"):
+                    wrong.append("replay: boat / track not drawn")
+                rw.play()
+                rw.close()
+            if w.open_replay("COM4") is not None or not w.l_result.cget("text"):
+                wrong.append("a replay from COM4 opened")
+        w.close()
+        sim_p.stop()
+        sim_p = None
+        # the academy window's button opens it
+        top = tk.Toplevel(root)
+        app = academy_app.AcademyApp(top, store)
+        sw = app.open_scenarios()
+        if not isinstance(sw, scenario_app.ScenarioWindow) or "acc.scenarios" not in app.buttons:
+            wrong.append("academy window button")
+        sw.close()
+        top.destroy()
+    finally:
+        if sim_p is not None:
+            sim_p.stop()
+        root.destroy()
+    report("AC33 scenario window + replay", not wrong, "; ".join(wrong) or
+           "banner first; scenarios by level; no simulator said; AIS on the map + list, swimmer only on the camera, "
+           "gateway lost = no AIS / camera; a scenario through the window on the simulator: shown alarm, logbook with "
+           "reaction time + replay file, debrief; the replay window (banner, track, slider, play) via simguard, COM4 "
+           "refused; the academy window's button opens it")
+
+
 if __name__ == "__main__":
     for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
-              ac19, ac20, ac21, ac22, ac23, ac24, ac25, ac26, ac27, ac28, ac29):
+              ac19, ac20, ac21, ac22, ac23, ac24, ac25, ac26, ac27, ac28, ac29,
+              ac30, ac31, ac32, ac33):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run
