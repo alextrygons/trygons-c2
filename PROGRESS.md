@@ -67,7 +67,7 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
 | 11 | DP part 3: ground station controls + HUD, gateway shallow / collision / geofence checks for DP trips | DONE (gate OK: sim 240/240 + bridge 239/239 (1 N/A), TriCore + iLLD + writer checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15 incl. S15, sound 10/10, avoidance 14/14, gateway 111/111 incl. DP1-DP3; test_driver 21/21 incl. I22; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-10 HEAD, every other suite this tree), storm 200 episodes) | this commit |
 | 11b | Steps 7-10 review fixes | DONE (all 8 points re-checked; point 1 was already covered for TRIP / continue / boat leg / current geofence - only the unchecked-program gap fixed (code 121); see notes. Gate OK: sim 244/244 + bridge 243/243 (1 N/A) incl. ER7-ER8, DP15-DP16, RB9 updated, TriCore + iLLD + writer checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, sound 10/10, avoidance 14/14, gateway 112/112 incl. DP4; test_driver 21/21; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-11 HEAD, every other suite this tree), storm 200 episodes I31 / I38 across resets, I44-I46 0 fails) | this commit |
 | 11c | DroneCAN design, NO firmware code (CLAUDE.md T + docs/dronecan_design.md): the AURIX replaces the ArduPilot; servos (throttle / steering 360 deg position servo / gear) + relay board on DroneCAN; ardupilot.param read-out; kit CAN pins; node health + command timeouts; the new CPU1 safety path; asymmetric throttle rates + the slow servo; steering model / TRAINING; relay rules on DroneCAN; TO CONFIRM list + open decisions. **Owner safety review here: it blocks only the steps that depend on it (rule at the top); independent steps (12, 13, 15) go on** | DONE (docs only. Gate OK: sim 244/244 + bridge 243/243 (1 N/A), TriCore + iLLD checks, NV 4/4, FAT32 2/2, charts 6/6, lang 5/5, boats 10/10, screen 2 15/15, sound 10/10, avoidance 14/14, gateway 112/112. Acceptance quick 5/7: storm 200 FAILED once on I36 seed 108 ("engine relay 3 switched on"), --replay 108 holds and a re-run of the 200 episodes passed 0 fails - the storm is not deterministic across runs (check counts differ): finding, see notes; fresh build: test_driver 18/21 (I4 / I12 / I19 live HUD) on the pushed 11b HEAD AND this tree - not caused by this step, see notes. Open decisions OD-1..OD-12 ANSWERED by the owner 2026-10-28 (binding: CLAUDE.md T "Owner decisions 2026-10-28" + docs/dronecan_design.md 13; rule changes for 11e / 11f, new storm I54-I56 reserved) + TO CONFIRM C1-C21: notes + docs/dronecan_design.md 12) | this commit |
-| 11d | CAN driver (MultiCAN / iLLD) + libcanard (MIT, vendored with its licence), DroneCAN messages needed; sim + host tests | | |
+| 11d | CAN driver (MultiCAN / iLLD) + libcanard (MIT, vendored with its licence), DroneCAN messages needed; sim + host tests | DONE (gate OK: sim 257/257 + bridge 256/256 (1 N/A) incl. CN1-CN13, TriCore + iLLD check with the Can driver built, DroneCAN 15/15 (D1-D15), NV 4/4, FAT32 2/2, lang 5/5, boats 10/10, screen 2 15/15 (S11 after a Greek fix), sound 10/10, avoidance 14/14, gateway 112/112; acceptance quick 7/7 PASS (the fresh-build suite builds the pushed step-11c HEAD, every other suite this tree), storm 200 episodes) | this commit |
 | 11e | Servos over DroneCAN + the new CPU1 safety path + the steering model / TRAINING from 11c; storm invariants for node loss and command timeout | | |
 | 11f | Relay board over DroneCAN (all relay rules and tests kept). **Owner safety review here: it blocks only the steps that depend on 11f (e.g. 14 final check); independent steps go on** | | |
 | 12 | Gateway on a Lenovo ThinkPad L390 Yoga (i5-8265U, 8 GB RAM, 500 GB SSD, Win11 now): support BOTH Ubuntu 24.04 LTS (recommended at sea: no forced updates / restarts) and Windows 11; remove Pi-only parts; 3.3 V USB-UART to the AURIX (never RS232); USB AIS receiver; README / PARTS / WIRING with install steps for both OSes; measure CPU / RAM with 4 camera streams + vision on the CPU (no NVIDIA); power from the 12 V bank via a USB-C PD car charger, built-in battery = UPS, battery charge limit 80 % (Vantage on Windows / TLP on Ubuntu), lid closed must keep running, Ethernet to the PoE switch (USB-Ethernet adapter if no RJ45) - put this in PARTS / README | | |
@@ -509,6 +509,28 @@ screen text (lang files), MANUAL.txt + MANUAL_EL.txt updated; PARTS.md / WIRING.
   OA-4 the Pixhawk is node 10 too: never on the bus with the AURIX (design 4, WIRING 3E warning, PARTS, FIRST_TEST 3j).
   Consistency points (a)-(e): design section 15 + WAITING FOR OWNER W4-W8. New rule for review stops + WAITING FOR OWNER
   at the top of this file. Next step: 11d (C12-C15 only block HAL_CAN_FITTED 1, not the code).
+- Step 11d (2026-10-28): CAN driver + DroneCAN, the bus only (no actuator on CAN). hal/libcanard/ = DroneCAN
+  libcanard (MIT, LICENSE + VENDORED.txt with the commit, unchanged; PC builds -DCANARD_64_BIT=1). hal/dronecan.c (pure
+  C over a port dc_port_t): bus state machine (RUN / PASSIVE / BUSOFF with recovery at once + every 1 s / FAULT; off or
+  passive > 100 ms = bus fault: every node lost, the software TX queue dropped + counted), RX <= 64 frames per step, TX
+  <= 32 per step (full FIFO = waits), our NodeStatus node 10 1 Hz, GetNodeInfo server, node table (static IDs 20 / 21 /
+  22 required, 30 relay board shown only: silent > 1500 ms, never seen, not OPERATIONAL, ERROR / CRITICAL, rebooted =
+  latched until OPERATIONAL 2 s + ack in STANDBY; WARNING = notice, OD-6), a frame FROM node 10 = ID conflict (OA-4),
+  dynamic-ID request = notice; encoders NodeStatus / ArrayCommand (one UNITLESS command per frame) / hardpoint.
+  hal/tc_can.c = MCMCAN CAN0 node 0 via iLLD (1 dedicated TX buffer kept free for CPU1, 16 TX FIFO, 32 RX FIFO 0,
+  extended IDs only, STB pin); hal_tc375.c starts it only with HAL_CAN_FITTED 1 (stays 0). .cproject: the iLLD Can
+  folders un-excluded (check_ads_ifx OK). hal.h hal_can_service / bus / node / ack; app: smallboat.c can_step ->
+  SB_ALM2_CAN_NODE 0x20 / SB_ALM2_CAN_BUS 0x40 (WARNING, power limit down, CONFIRM cancelled) + STANDBY (WHY_CAN_NODE /
+  WHY_CAN_BUS, forced like a fault) + no mode but STANDBY while lost / not seen / bus bad; log event 29 CAN; TELEM2
+  group P = 6-byte summary (TELEM2 has ~24 bytes left now), the full table = new frame PROTO_T_CAN_NODES 0x8E (USB,
+  1 Hz) -> Bench page "CAN bus (nodes)"; ground station alarms / notices / voice lines el + en; tlg.py CAN events.
+  Log header: SAVE's argument text shortened ("trigger(SB_SAVE_)") so the header stays < 4096 B (ER6). Sim: hal_sim.c
+  simulated controller + bus + nodes (servo nodes with rate limit + backlash + HOLD, relay node, faults: silent,
+  unpowered, health / mode, reboot, bus-off, nobody acking, node 10, dynamic-ID request, start failure), off by
+  default. check.sh: libcanard in the TriCore compile, "no dc_send_ in the firmware" (11e / 11f), "hal_can_ only in
+  smallboat.c", dronecan_check.py. Tests: D1-D15 (signatures computed from the DSDL text, payload bit layout, float16,
+  frames, multi-frame GetNodeInfo CRC, state machine), sim CN1-CN13. Not done here (11e): cancel the HARDWARE TX FIFO
+  on a bus fault / trip (design 10 note), the 10 ms actuator task, CPU1's buffer. No new owner question.
 
 # Previous task: "Screen 2 review"
 

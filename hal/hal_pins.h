@@ -135,8 +135,9 @@
 #define RELAY_SLAVE_ADDR    1u                          /* TBD: the board's Modbus address */
 #define RELAY_CHANNELS      8u                          /* TBD: coils the board has (8-16); read back per poll */
 
-/* DroneCAN bus (WIRING.md 3E, CLAUDE.md T, docs/dronecan_design.md) - DESIGN ONLY (step 11c), nothing
- * uses these yet (driver = step 11d). CONFIRMED by the iLLD pin map: P20.8 can be CAN0 node 0 TXD,
+/* DroneCAN bus (WIRING.md 3E, CLAUDE.md T, docs/dronecan_design.md). Driver: hal/tc_can.c (step 11d, MCMCAN
+ * CAN0 node 0) + hal/dronecan.c; with HAL_CAN_FITTED 0 hal_init never starts it (the code is compiled and its
+ * iLLD files are built: tests/acceptance/check_ads_ifx.py). CONFIRMED by the iLLD pin map: P20.8 can be CAN0 node 0 TXD,
  * P20.7 can be CAN0 node 0 RXD (input B). NOT CONFIRMED (the kit user manual is not in the repo): that
  * the KIT_A2G_TC375_LITE V2 wires them to its TLE9251VSJ transceiver, that P20.6 drives the transceiver's
  * STB pin and its polarity (TLE9251V: high = stand-by, low = normal - check datasheet + kit schematic),
@@ -148,7 +149,9 @@
 #define CAN_TXD             IfxCan_TXD00_P20_8_OUT      /* TO CONFIRM on the kit schematic */
 #define CAN_RXD             IfxCan_RXD00B_P20_7_IN      /* TO CONFIRM on the kit schematic */
 #define PIN_CAN_STB         &MODULE_P20, 6u             /* TO CONFIRM: TLE9251V STB (GPIO), polarity TO CONFIRM */
+#define CAN_STB_NORMAL      0u                          /* TO CONFIRM: STB level for normal operation (TLE9251V: low) */
 #define CAN_BITRATE         1000000u
+#define CAN_SAMPLE_POINT    8750u                       /* 87.5 % (DroneCAN / CiA recommendation at 1 Mbit/s) */
 
 /* --- interrupt priorities (unique per CPU; 1 = lowest) ----------------------------- */
 #define PRIO_LINK_TX   10

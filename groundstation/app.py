@@ -49,6 +49,7 @@ import crewui
 import monitors
 import overlay
 from i18n import T, TE
+from alerts import CAN_ROLE_KEYS, CAN_STATE_KEYS, CAN_WHY_KEYS, can_roles  # noqa: E402  (DroneCAN, 11d)
 from link import Link, list_ports
 from gwclient import GatewayLink
 import shorejoy
@@ -1085,6 +1086,10 @@ class App:
         lbl(left, "cap.bench_sensors", font=F_MED, bg=C["bg"]).pack(anchor="w")
         self.bench_sens = tk.Label(left, text="-", font=F_MONO, bg=C["bg"], justify="left", anchor="nw")
         self.bench_sens.pack(anchor="w", fill="x")
+        lbl(left, "can.title", font=F_MED, bg=C["bg"]).pack(anchor="w", pady=(8, 0))      # DroneCAN node table (11d)
+        self.bench_can = tk.Label(left, text=T("can.none"), font=F_MONO, bg=C["bg"], justify="left", anchor="nw")
+        self.bench_can.pack(anchor="w", fill="x")
+        self.can_d = None
         right = tk.Frame(body, bg=C["bg"])
         right.pack(side="left", fill="both", expand=True, padx=6)
 
@@ -1141,6 +1146,33 @@ class App:
         if not messagebox.askyesno(T("cap.trip_title"), T("cap.trip_q")):
             return
         self.bench(proto.BENCH_TRIP, proto.BENCH_TRIP_CODE, TE("what.trip"))
+
+    def on_can(self, d):
+        """T_CAN_NODES (USB link, 1 Hz while a CAN bus is fitted): the DroneCAN bus + node table (bench page)."""
+        self.can_d = d
+        self.can_d_rx = time.time()
+        self.draw_can()
+
+    def draw_can(self):
+        if not hasattr(self, "bench_can"):
+            return
+        d = getattr(self, "can_d", None)
+        if d is None or time.time() - getattr(self, "can_d_rx", 0) > 3.0:
+            self.bench_can.configure(text=T("can.none"), fg=C["dim"])
+            return
+        lines = [T("can.bus", state=T(CAN_STATE_KEYS[d["state"]]) if d["state"] < len(CAN_STATE_KEYS) else "?",
+                   tec=d["tec"], rec=d["rec"], rx=d["rx"], tx=d["tx"], drops=d["tx_drops"], err=d["rx_errors"],
+                   boffs=d["busoffs"])]
+        if d["conflict"]:
+            lines.append(T("can.conflict"))
+        for n in d["nodes"]:
+            st = T("can.ok") if not n["lost"] else T(CAN_WHY_KEYS[n["why"]]) if n["why"] < len(CAN_WHY_KEYS) else "?"
+            lines.append(T("can.node", role=T(CAN_ROLE_KEYS[n["role"]]) if n["role"] < len(CAN_ROLE_KEYS) else "?",
+                           id=n["id"], state=st + (" " + T("can.warn_short") if n["warning"] else ""),
+                           health=n["health_name"], mode=n["mode_name"], up=n["uptime_s"],
+                           age="-" if n["age_ms"] is None else "%.1f" % (n["age_ms"] / 1000.0), reb=n["restarts"]))
+        bad = d["fault"] or d["conflict"] or any(n["lost"] and n["required"] for n in d["nodes"])
+        self.bench_can.configure(text="\n".join(lines), fg=RED if bad else C["fg"])
 
     def on_bench(self, d):
         self.bench_d = d
@@ -2004,6 +2036,8 @@ class App:
                     self.on_raw(d)
                 elif kind == "bench":
                     self.on_bench(d)
+                elif kind == "can":
+                    self.on_can(d)
                 elif kind == "gw_status":
                     self.gw_status = d
                     me = [s for s in d.get("stations", []) if s.get("id") == d.get("you")]
@@ -2958,6 +2992,10 @@ class App:
                 out.append(("nv_reset", T("nv.reset")) + B["pickup"] + (None,))
             if d.get("batt_no_data"):                   # a notice, never an alarm (CLAUDE.md J)
                 out.append(("batt_no_data", T("batt.no_data")) + B["pickup"] + (None,))
+            if d.get("can_fitted") and d.get("can_warn"):   # DroneCAN node health WARNING: a notice only (OD-6)
+                out.append(("can_warn", T("can.warning", nodes=can_roles(d["can_warn"]))) + B["pickup"] + (None,))
+            if d.get("can_fitted") and d.get("can_anon"):   # a node without a static node ID (never answered)
+                out.append(("can_anon", T("can.anon")) + B["pickup"] + (None,))
             gs = d.get("gen_state", 0)                  # generator mode (CLAUDE.md K): notices, the GEAR alarm is the alarm
             if gs == 2:
                 out.append(("gen_starting", T("gen.starting")) + B["pickup"] + (None,))

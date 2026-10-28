@@ -69,6 +69,7 @@ T_TIME = 0x8A              # AURIX -> gateway: GPS time, 1 Hz
 T_TELEM2 = 0x8B            # with every telemetry: gateway / helm / remote / slamming
 T_GW_ACK = 0x8C            # AURIX -> gateway: the answer to a station's command
 T_BENCH_DIAG = 0x8D        # AURIX -> USB laptop, BENCH TEST only: every sensor (link.c bench_diag)
+T_CAN_NODES = 0x8E         # AURIX -> USB laptop, 1 Hz while a CAN bus is fitted: DroneCAN bus + node table
 
 # Commands that change how the boat is driven: through the gateway a copilot's are only
 # sent to the AURIX after the captain's ACCEPT on screen 1 (or in SINGLE-OPERATOR mode
@@ -137,7 +138,7 @@ TYPE_NAMES = {
     T_SIM_BRIDGE: "sim USB joystick", T_JOYMAP_VALUE: "joystick map", T_JOY_RAW: "joystick raw",
     T_GW_STATUS: "gateway status", T_LOG_CHUNK: "log chunk", T_TIME: "GPS time", T_TELEM2: "telemetry 2",
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
-    T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data",
+    T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data", T_CAN_NODES: "CAN nodes",
     T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table", T_RESTART: "engine restart / start",
     T_THRUSTER_CFG: "thruster settings", T_DP: "DP",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
@@ -183,7 +184,7 @@ WHY = ["user", "STANDBY button", "compass fault", "GPS lost", "arrived", "traini
        "PC", "HDG LOCK button", "CONFIRM", "not armed", "safety monitor", "remote", "remote end", "remote lost",
        "emergency stop", "bench test ended (idle / link / moving / HELM)", "maneuver",
        "profile fault (joystick appeared, UNCREWED)", "link to the HELM station lost", "DP (HELM + CONFIRM)", "DP STOP",
-       "DP: off the spot", "DP: thruster hot / blocked"]
+       "DP: off the spot", "DP: thruster hot / blocked", "CAN node lost", "CAN bus fault (or our node ID on the bus)"]
 MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE, MODE_BENCH, MODE_MANEUVER, MODE_DP = range(9)
 # DP (app/dp.h): sub-states (TELEM2 group N "dp_sub"), PROTO_T_DP actions, why it ended
 DP_SUBS = ["off", "SPOT", "JOG", "CRUISE", "TRIP"]
@@ -293,6 +294,36 @@ def decode_bench_diag(payload: bytes) -> dict:
         "last_refuse": last_refuse, "pulse": pulse, "estimate": est, "mon_tripped": bool(mon),
         "idle_left_s": idle_left / 1000.0,
     }
+# DroneCAN (step 11d; app/link.c can_nodes, hal.h HAL_CAN_): bus states, node roles, why a node is lost
+CAN_STATES = ["off", "running", "error passive", "bus-off", "controller fault"]
+CAN_ROLES = ["throttle", "steering", "gear", "relay board"]
+CAN_WHY = ["ok", "never seen", "silent", "not OPERATIONAL", "health ERROR / CRITICAL", "rebooted", "bus"]
+CAN_HEALTH = ["OK", "WARNING", "ERROR", "CRITICAL"]
+CAN_MODES = {0: "OPERATIONAL", 1: "INITIALIZATION", 2: "MAINTENANCE", 3: "SOFTWARE_UPDATE", 7: "OFFLINE"}
+_CAN_HEAD = struct.Struct("<BBBBIIIIIB")
+_CAN_NODE = struct.Struct("<BBBBBBIIHI")
+
+
+def decode_can_nodes(payload: bytes) -> dict:
+    """T_CAN_NODES (link.c can_nodes): the bus + every node of the static node table."""
+    st, flags, tec, rec, rx, tx, drops, rxerr, boffs, n = _CAN_HEAD.unpack_from(payload)
+    nodes, off = [], _CAN_HEAD.size
+    for _ in range(n):
+        nid, role, f, why, health, mode, up, age, restarts, statuses = _CAN_NODE.unpack_from(payload, off)
+        off += _CAN_NODE.size
+        nodes.append({"id": nid, "role": role, "role_name": CAN_ROLES[role] if role < len(CAN_ROLES) else "?",
+                      "required": bool(f & 1), "seen": bool(f & 2), "lost": bool(f & 4), "warning": bool(f & 8),
+                      "rebooted": bool(f & 16), "why": why,
+                      "why_text": CAN_WHY[why] if why < len(CAN_WHY) else "why %d" % why,
+                      "health": health, "health_name": CAN_HEALTH[health] if health < 4 else "?", "mode": mode,
+                      "mode_name": CAN_MODES.get(mode, "mode %d" % mode), "uptime_s": up,
+                      "age_ms": None if age == 0xFFFFFFFF else age, "restarts": restarts, "statuses": statuses})
+    return {"state": st, "state_name": CAN_STATES[st] if st < len(CAN_STATES) else "?", "fault": bool(flags & 2),
+            "conflict": bool(flags & 4), "anon": bool(flags & 8), "silent": bool(flags & 16), "block": bool(flags & 32),
+            "tec": tec, "rec": rec, "rx": rx, "tx": tx, "tx_drops": drops, "rx_errors": rxerr, "busoffs": boffs,
+            "nodes": nodes}
+
+
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
 CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING", "MANEUVER",
                  "RELAY TABLE", "DP"]
@@ -362,6 +393,8 @@ ALARMS2 = [
     (0x004, "DP THRUSTER HOT"),
     (0x008, "DP OFF SPOT"),
     (0x010, "DP OVERPOWER"),
+    (0x020, "CAN NODE LOST"),
+    (0x040, "CAN BUS FAULT"),
 ]
 
 
@@ -839,6 +872,8 @@ _T2_GROUPS = [
     # group N, the DP state (step 10)
     (struct.Struct("<BBhhHBBBB"), "dp_sub dp_flags dp_err_fwd10 dp_err_stbd10 dp_hdg10 dp_set10 dp_trip10 dp_wp "
                                   "dp_stop".split()),
+    # group P, the DroneCAN summary (step 11d; the node table: T_CAN_NODES on the USB link)
+    (struct.Struct("<BBBBBB"), "can_flags can_state can_lost can_warn can_seen can_reboot".split()),
 ]
 LL_STATES = ["OK", "LINK LOST", "ENGINE KILLED"]
 # engine controls (app/engine.h, TELEM2 group O, log event RESTART)
@@ -970,6 +1005,17 @@ def decode_telem2(payload: bytes) -> dict:
         d["dp_set_kn"] = d["dp_set10"] / 10.0
         d["dp_trip_kn"] = d["dp_trip10"] / 10.0
         d["dp_stop_text"] = DP_STOP_WHY[d["dp_stop"]] if d["dp_stop"] < len(DP_STOP_WHY) else "why %d" % d["dp_stop"]
+    if "can_flags" in d:
+        f = d["can_flags"]
+        d["can_fitted"] = bool(f & 1)                   # a CAN bus is fitted (else nothing below means anything)
+        d["can_fault"] = bool(f & 2)                    # bus off / error passive > 100 ms / controller failed
+        d["can_conflict"] = bool(f & 4)                 # OUR node ID 10 seen on the bus (the Pixhawk connected)
+        d["can_anon"] = bool(f & 8)                     # notice: a node without a static ID asks for one
+        d["can_silent"] = bool(f & 16)                  # nothing received for 1.5 s
+        d["can_block"] = bool(f & 32)                   # a required node lost / not seen: STANDBY only
+        d["can_state_name"] = CAN_STATES[d["can_state"]] if d["can_state"] < len(CAN_STATES) else "?"
+        d["can_warn_nodes"] = [CAN_ROLES[i] for i in range(len(CAN_ROLES)) if d["can_warn"] >> i & 1]
+        d["can_lost_nodes"] = [CAN_ROLES[i] for i in range(len(CAN_ROLES)) if d["can_lost"] >> i & 1]
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

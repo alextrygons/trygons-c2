@@ -73,6 +73,7 @@ void test_na(const char *name, const char *why);
 void sb_tests(void);
 void sb_usb_tests(void);
 void sb_gateway_tests(void);      /* gateway link, HELM, REMOTE, SAVE requests */
+void sb_can_tests(void);          /* CN: DroneCAN bus + node table (step 11d) */
 void sb_nv_tests(void);           /* DF: data flash / non-volatile storage */
 void sb_battery_tests(void);      /* BV: supply voltage of the 12 V bank, LOW BATTERY */
 void sb_relay_tests(void);        /* RB: RS485 Modbus relay board (tc_modbus.c + relays.c) */

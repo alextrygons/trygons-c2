@@ -44,6 +44,7 @@ typedef struct {
     uint32_t    last_rx_ms;
     uint32_t    rx_idle_steps;  /* steps with bytes waiting and nothing new */
     uint32_t    next_telem_ms;
+    uint32_t    next_can_ms;    /* CAN_NODES (USB port, 1 Hz, while a CAN bus is fitted) */
     float       pc_timeout_s;   /* 3 */
     uint32_t    commands, nacks, tx_dropped;
     uint8_t     last_result;    /* last ACK result sent (tests) */

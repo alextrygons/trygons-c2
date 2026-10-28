@@ -50,9 +50,13 @@ def c_coverage(quick):
         os.remove(f)
     srcs = sorted(glob.glob(os.path.join(REPO, "app", "*.c"))) + sorted(glob.glob(os.path.join(REPO, "sim", "*.c")))
     srcs.append(os.path.join(REPO, "tests", "acceptance", "storm", "storm.c"))
+    # the pure-C board code the sim uses too (data flash log, Modbus master, DroneCAN + libcanard)
+    srcs += [os.path.join(REPO, "hal", f) for f in ("tc_nv.c", "tc_modbus.c", "dronecan.c")]
+    srcs.append(os.path.join(REPO, "hal", "libcanard", "canard.c"))
     for s in srcs:
         o = os.path.join(obj, os.path.splitext(os.path.basename(s))[0] + ".o")
-        r, _ = sh([GCC, "-std=c99", "-O0", "-g", "--coverage", "-Iapp", "-Ihal", "-Isim", "-c", s, "-o", o])
+        r, _ = sh([GCC, "-std=c99", "-O0", "-g", "--coverage", "-DCANARD_64_BIT=1", "-Iapp", "-Ihal", "-Isim", "-c", s,
+                   "-o", o])
         if r.returncode:
             return ["C coverage: compile failed: %s\n%s" % (s, r.stderr[-1500:])], {}
     objs = [os.path.join(obj, os.path.splitext(os.path.basename(s))[0] + ".o") for s in srcs]

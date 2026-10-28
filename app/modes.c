@@ -88,7 +88,7 @@ const char *mode_reason_name(mode_reason_t r)
         "remote driving (HELM + CONFIRM)", "remote driver released", "remote driving link lost",
         "emergency stop", "bench test ended (idle / link / moving / HELM)",
         "maneuver (HELM + CONFIRM)", "profile fault (joystick appeared, UNCREWED)", "link to the HELM station lost",
-        "DP", "DP stop", "DP off spot", "DP thruster"
+        "DP", "DP stop", "DP off spot", "DP thruster", "CAN node", "CAN bus"
     };
     return ((unsigned)r < WHY_COUNT) ? n[r] : "?";
 }

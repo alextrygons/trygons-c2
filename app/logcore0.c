@@ -31,6 +31,7 @@ static struct {
     uint32_t eng_seq;
     uint32_t thr_seq;
     uint32_t dp_seq;
+    uint16_t can_seq;
     uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -358,6 +359,16 @@ static void changes(const sb_t *s)
            (int32_t)((uint32_t)lroundf(d->hdg_target * 10.0f) | ((uint32_t)lroundf(d->set_kn * 10.0f) << 16)));
     }
     k.dp_seq = s->dp.log_seq;
+    /* DroneCAN (step 11d): node lost / back / WARNING / rebooted, bus fault / back, ID conflict, a node
+     * without a static ID (events only) */
+    if (s->can.log_seq != k.can_seq) {
+        const hal_can_bus_t *b = &s->can.bus;
+        ev(s, EV_CAN, (int32_t)((uint32_t)s->can.log_what | ((uint32_t)s->can.log_node << 8) |
+                                ((uint32_t)s->can.log_why << 16)),
+           (int32_t)((uint32_t)s->can.lost_mask | ((uint32_t)s->can.warn_mask << 8) | ((uint32_t)s->can.seen_mask << 16)),
+           (int32_t)((uint32_t)b->tec | ((uint32_t)b->rec << 8) | ((uint32_t)b->state << 16)), (int32_t)b->tx_drops);
+    }
+    k.can_seq = s->can.log_seq;
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
     k.save_seq = s->save.seq;

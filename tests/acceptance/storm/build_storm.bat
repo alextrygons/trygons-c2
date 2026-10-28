@@ -7,8 +7,8 @@ if not exist test_results mkdir test_results
 set SRCS=
 for %%f in (app\*.c) do set SRCS=!SRCS! %%f
 for %%f in (sim\*.c) do if /I not "%%~nxf"=="sim_main.c" set SRCS=!SRCS! %%f
-set SRCS=!SRCS! hal\tc_nv.c hal\tc_modbus.c
-gcc -std=c99 -O2 -Wall -Wextra -Iapp -Ihal -Isim %SRCS% tests\acceptance\storm\storm.c -o test_results\storm.exe -lm -lws2_32
+set SRCS=!SRCS! hal\tc_nv.c hal\tc_modbus.c hal\dronecan.c hal\libcanard\canard.c
+gcc -std=c99 -O2 -Wall -Wextra -DCANARD_64_BIT=1 -Iapp -Ihal -Isim %SRCS% tests\acceptance\storm\storm.c -o test_results\storm.exe -lm -lws2_32
 if errorlevel 1 (
     echo BUILD FAILED
     exit /b 1

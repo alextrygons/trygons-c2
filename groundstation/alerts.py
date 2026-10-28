@@ -65,10 +65,24 @@ ALARM_LEVELS = {
     0x4 << 32: ("dp_heat", CAUTION),
     0x8 << 32: ("dp_offspot", CAUTION),
     0x10 << 32: ("dp_overpower", CAUTION),
+    0x20 << 32: ("can_node", WARNING),          # DroneCAN: a required node lost -> STANDBY (step 11d)
+    0x40 << 32: ("can_bus", WARNING),           # DroneCAN: bus fault / our node ID 10 on the bus -> STANDBY
 }
 NO_DATA = "no_data"                 # the PC gets no telemetry (not an alarm bit): WARNING
 WORD2 = 32                          # the second alarm word's bits are shifted by this in every "bits" here
 ALL_ALARMS = proto.ALARMS + [(bit << WORD2, name) for bit, name in proto.ALARMS2]
+
+
+# DroneCAN (step 11d): names in the screen language (the keys: lang/*.txt "can.")
+CAN_ROLE_KEYS = ("can.role_throttle", "can.role_steering", "can.role_gear", "can.role_relay")
+CAN_STATE_KEYS = ("can.st_off", "can.st_run", "can.st_passive", "can.st_busoff", "can.st_fault")
+CAN_WHY_KEYS = ("can.ok", "can.why_never", "can.why_silent", "can.why_not_oper", "can.why_health", "can.why_rebooted",
+                "can.why_bus")
+
+
+def can_roles(mask):
+    """The node roles of a TELEM2 group P mask (bit = node table index), in the screen language."""
+    return ", ".join(i18n.T(k) for i, k in enumerate(CAN_ROLE_KEYS) if mask >> i & 1)
 
 
 def bits_of(d):

@@ -242,6 +242,85 @@ bool hal_relay_ok(void);
 uint8_t hal_relay_channels(void);
 
 /*
+ * DroneCAN bus (CLAUDE.md section T, docs/dronecan_design.md; step 11d).
+ * Board: hal/tc_can.c (MCMCAN CAN0 node 0, iLLD) + hal/dronecan.c (pure C:
+ * the bus state machine, libcanard hal/libcanard/, the messages, the node
+ * table); HAL_CAN_FITTED 0 in hal_pins.h until the kit pins are confirmed
+ * (then nothing is started: hal_can_bus() returns false). Sim: the same
+ * hal/dronecan.c on a simulated bus with simulated nodes (sim/hal_sim.c).
+ * Step 11d: the bus, the heartbeats (our own node 10 NodeStatus 1 Hz, every
+ * node's NodeStatus received) and the node table ONLY - no actuator is
+ * commanded over CAN yet (the servos stay on PWM until step 11e).
+ *   service: one bounded step every control step: received frames (at most
+ *            a fixed number), node table, our NodeStatus, queued frames into
+ *            the controller (a full FIFO = kept for the next step, a stale
+ *            queue on a dead bus = dropped + counted). Never a blocking wait.
+ *   bus:     the bus state; false = no CAN fitted (no alarm then).
+ *   node:    table entry i (0..HAL_CAN_NODES-1, the compile-time table of
+ *            static node IDs in dronecan.h, TO CONFIRM). A REQUIRED node
+ *            (throttle / steering / gear) is LOST when: silent >
+ *            HAL_CAN_NODE_LOST_MS, mode not OPERATIONAL, health ERROR /
+ *            CRITICAL, rebooted (uptime went back: latched until OPERATIONAL
+ *            for 2 s + hal_can_ack in STANDBY), or the bus is off / error
+ *            passive > 100 ms. Health WARNING = notice only (OD-6).
+ *   ack:     the alarm acknowledge in STANDBY: clears the reboot latches of
+ *            nodes OPERATIONAL again for 2 s (nothing else).
+ * Core 0 only (CPU1's reserved TX buffer comes with step 11e).
+ */
+#define HAL_CAN_NODES         4u
+#define HAL_CAN_NODE_LOST_MS  1500u     /* TO CONFIRM with the real NodeStatus rate (1.5 x the period) */
+/* why a node is lost (hal_can_node_t.why) */
+#define HAL_CAN_OK            0u
+#define HAL_CAN_NEVER         1u        /* no NodeStatus since the boot (after HAL_CAN_NODE_LOST_MS) */
+#define HAL_CAN_SILENT        2u        /* NodeStatus stopped */
+#define HAL_CAN_NOT_OPER      3u        /* mode not OPERATIONAL */
+#define HAL_CAN_HEALTH        4u        /* health ERROR / CRITICAL */
+#define HAL_CAN_REBOOTED      5u        /* uptime went backwards (latched) */
+#define HAL_CAN_BUS           6u        /* the bus is off / error passive > 100 ms / the controller failed */
+/* node roles (hal_can_node_t.role) */
+#define HAL_CAN_ROLE_THROTTLE 0u
+#define HAL_CAN_ROLE_STEERING 1u
+#define HAL_CAN_ROLE_GEAR     2u
+#define HAL_CAN_ROLE_RELAY    3u
+/* bus states (hal_can_bus_t.state) */
+#define HAL_CAN_ST_OFF        0u        /* not started */
+#define HAL_CAN_ST_RUN        1u        /* error active / warning */
+#define HAL_CAN_ST_PASSIVE    2u        /* error passive (e.g. no node acknowledges our frames) */
+#define HAL_CAN_ST_BUSOFF     3u        /* bus-off: recovery running */
+#define HAL_CAN_ST_FAULT      4u        /* the controller did not start */
+typedef struct {
+    uint8_t  id;            /* static node ID */
+    uint8_t  role;          /* HAL_CAN_ROLE_ */
+    bool     required;      /* its loss = alarm + STANDBY (throttle / steering / gear) */
+    bool     seen;          /* a NodeStatus arrived since the boot */
+    bool     lost;
+    uint8_t  why;           /* HAL_CAN_ (OK when not lost) */
+    bool     warning;       /* health WARNING (notice) */
+    bool     rebooted;      /* reboot latch */
+    uint8_t  health, mode;  /* last NodeStatus (DroneCAN numbers) */
+    uint32_t uptime_s;
+    uint32_t age_ms;        /* since the last NodeStatus (0xFFFFFFFF never) */
+    uint16_t restarts;      /* reboots seen */
+    uint32_t statuses;      /* NodeStatus received */
+} hal_can_node_t;
+typedef struct {
+    uint8_t  state;         /* HAL_CAN_ST_ */
+    bool     fault;         /* off / passive > 100 ms, or the controller failed: every node lost */
+    bool     id_conflict;   /* a frame FROM our own node ID 10 within 3 s (the Pixhawk on the bus, OA-4) */
+    bool     anon_node;     /* a node asking for a dynamic ID within 5 s (notice "CAN node without a static ID") */
+    bool     silent;        /* no frame at all received for HAL_CAN_NODE_LOST_MS */
+    uint8_t  tec, rec;      /* error counters */
+    uint32_t rx, tx;        /* frames received / sent */
+    uint32_t tx_drops;      /* frames dropped (queue full, stale queue on a dead bus) */
+    uint32_t rx_errors;     /* frames refused by the transport (bad tail / CRC / toggle) */
+    uint32_t busoffs;       /* bus-off events */
+} hal_can_bus_t;
+void hal_can_service(void);
+bool hal_can_bus(hal_can_bus_t *b);
+bool hal_can_node(uint8_t i, hal_can_node_t *n);
+void hal_can_ack(void);
+
+/*
  * Ground-station link: a plain byte stream (board: USB virtual COM =
  * ASCLIN0 at 921600 baud; sim: TCP socket). Framing is done by the app
  * (proto.c).

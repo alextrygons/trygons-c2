@@ -80,6 +80,10 @@ typedef enum {
                            1 stern), bow max % | stern max % << 8, heat used % | settings hash << 8; what 4 DP start /
                            sub-state change, 5 DP stopped, 6 JOG, 7 TRIP end (SPOT): sub | stop why << 8 | wp << 16,
                            spot error m*10, heading target*10 | set speed kn*10 << 16 */
+    EV_CAN = 29,        /* DroneCAN (step 11d): what (1 node lost, 2 node back, 3 node WARNING, 4 node rebooted,
+                           5 bus fault, 6 bus back, 7 ID conflict (our ID 10 seen), 8 node without a static ID) |
+                           node id << 8 | why << 16, lost mask | warn mask << 8 | seen mask << 16, tec | rec << 8 |
+                           bus state << 16, tx drops */
     EV_COUNT
 } log_event_t;
 

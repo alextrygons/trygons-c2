@@ -1,0 +1,20 @@
+libcanard (DroneCAN / UAVCAN v0) - vendored, unchanged
+=======================================================
+
+Source:   https://github.com/dronecan/libcanard (branch master)
+Commit:   601ed35467e0ac38819df17cd7c918de19f62d58 (2025-07-14)
+Files:    canard.c, canard.h, canard_internals.h - copied as they are (no edits)
+Licence:  MIT, see LICENSE in this folder (Copyright (c) 2015 UAVCAN). Keep the
+          LICENSE file with the sources.
+
+Used by:  hal/dronecan.c (step 11d, CLAUDE.md section T). Static memory pool
+          (DC_POOL_BYTES in hal/dronecan.h), no malloc, no CAN FD, no deadline /
+          multi-interface options (the library defaults).
+Build:    board (ADS / TASKING, TriCore gcc in tools/check.sh): the defaults;
+          PC (sim/build_sim.bat, storm, tests/hal_pc/dronecan_check.py):
+          -DCANARD_64_BIT=1 (the memory-pool index on a 64-bit PC).
+Checked:  tests/hal_pc/dronecan_check.py compares every frame with an encoder
+          written from the DroneCAN DSDL / transport rules (signatures, bit
+          layout, float16, tail bytes, multi-frame CRC).
+Updating: replace the three files from a newer libcanard commit, update the
+          commit above, run tools/check.sh.

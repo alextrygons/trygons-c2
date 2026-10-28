@@ -132,6 +132,13 @@
 #define SB_ALM2_DP_OFFSPOT        0x08u   /* DP OFF SPOT: pushed farther than spot_alarm_m (boat file, 15 m) off the spot
                                              (advisory: DP keeps trying; > 50 m or 2 min -> STANDBY) */
 #define SB_ALM2_DP_OVERPOWER      0x10u   /* DP OVERPOWER: both thrusters at their limit for 10 s (advisory) */
+#define SB_ALM2_CAN_NODE          0x20u   /* CAN NODE LOST (DroneCAN, CLAUDE.md T, step 11d): a REQUIRED node (throttle /
+                                             steering / gear servo node) silent, not OPERATIONAL, health ERROR /
+                                             CRITICAL, rebooted, or the bus dead. WARNING (not an advisory: lowers the
+                                             power limit) + STANDBY; no mode but STANDBY while one is lost */
+#define SB_ALM2_CAN_BUS           0x40u   /* CAN BUS FAULT: bus-off / error passive > 100 ms / the controller failed, or
+                                             OUR node ID 10 seen on the bus (the Pixhawk connected, OA-4). WARNING +
+                                             STANDBY; no mode but STANDBY while it lasts */
 /* advisories of the second word: never a mode change, never lower the power limit */
 #define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY | SB_ALM2_RELAY_SILENT | SB_ALM2_DP_OFFSPOT | SB_ALM2_DP_OVERPOWER)
 /* ... and of those the ones that never set sb alarm either (no buzzer, no power-raise block; step 7b).
@@ -579,6 +586,20 @@ typedef struct {
     engine_t    eng;           /* remote restart + hold-to-crank (section N, engine.c) */
     thruster_t  thrust;        /* DP thrusters (section P, thruster.c): settings from the boat file, heat budget */
     dp_t        dp;            /* DP control (section P, dp.c): SPOT / JOG / CRUISE / TRIP; DP_OFF outside MODE_DP */
+    struct {                   /* DroneCAN bus + node table (CLAUDE.md T, step 11d; hal_can_*) */
+        bool     fitted;       /* hal_can_bus() answers (false = no CAN: nothing below matters) */
+        hal_can_bus_t bus;
+        hal_can_node_t node[HAL_CAN_NODES];
+        bool     node_block;   /* a required node lost or not seen yet: no mode but STANDBY */
+        bool     node_lost;    /* a required node LOST now (alarm CAN NODE LOST) */
+        bool     bus_bad;      /* bus fault or ID conflict now (alarm CAN BUS FAULT) */
+        bool     node_seen, bus_seen;   /* alarmed (edge) */
+        bool     fault_prev, conflict_prev, anon_prev;   /* last step (events) */
+        uint8_t  lost_mask, warn_mask, seen_mask, reboot_mask;  /* bit = table index (HAL_CAN_ROLE_) */
+        uint8_t  log_what, log_node, log_why;   /* last event (log event CAN) */
+        uint16_t log_seq;
+        uint32_t losses;       /* required-node losses (events) */
+    } can;
     struct {                   /* the DP request waiting for the CONFIRM (CONF_DP) */
         uint8_t  sub;          /* DP_SPOT / DP_CRUISE / DP_TRIP */
         bool     cont;         /* TRIP: from the active waypoint (else waypoint 1) */

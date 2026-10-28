@@ -162,6 +162,16 @@ class Log:
             return "DP %s%s: max bow %d %% / stern %d %%, heat %d %%, settings hash 0x%04x" % (
                 what.get(a[0], a[0]), "" if a[0] == 1 else " (%s)" % unit, a[2] & 0xFF, (a[2] >> 8) & 0xFF,
                 a[3] & 0xFF, (a[3] >> 8) & 0xFFFF)
+        if name == "CAN":
+            what = {1: "node LOST", 2: "node back", 3: "node WARNING (notice)", 4: "node REBOOTED", 5: "BUS FAULT",
+                    6: "bus back", 7: "ID CONFLICT (our node ID 10 on the bus)", 8: "a node without a static ID"}
+            w, node, why = a[0] & 0xFF, (a[0] >> 8) & 0xFF, (a[0] >> 16) & 0xFF
+            detail = (" node %d (%s)" % (node, proto.CAN_WHY[why] if why < len(proto.CAN_WHY) else why)) \
+                if w in (1, 2, 3, 4) else (" (%s)" % (proto.CAN_STATES[why] if why < len(proto.CAN_STATES) else why)
+                                           if w in (5, 6) else "")
+            return "CAN %s%s: lost 0x%02x warning 0x%02x seen 0x%02x, TEC %d REC %d, dropped %d" % (
+                what.get(w, w), detail, a[1] & 0xFF, (a[1] >> 8) & 0xFF, (a[1] >> 16) & 0xFF, a[2] & 0xFF,
+                (a[2] >> 8) & 0xFF, a[3])
         parts = ["%s=%d" % (n, v) for n, v in zip(args, a) if n != "-"]
         return name + " " + " ".join(parts)
 

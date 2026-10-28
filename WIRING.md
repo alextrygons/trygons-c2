@@ -333,6 +333,12 @@ motor driver are no longer used on the small boat (the big boat is
 unchanged). Nothing is wired or enabled before the owner confirms the items
 below (`HAL_CAN_FITTED 0` in hal/hal_pins.h).
 
+Software (step 11d): the driver exists (hal/tc_can.c = MCMCAN CAN0 node 0 with
+the pins / STB level / 1 Mbit/s / 87.5 % sample point of hal_pins.h, hal/dronecan.c
++ libcanard): the AURIX's NodeStatus (node 10) 1 Hz, the node table, CAN NODE LOST /
+CAN BUS FAULT -> STANDBY. With `HAL_CAN_FITTED 0` it is compiled and built but never
+started; no servo is driven over CAN before step 11e.
+
 | Item | Decision | State |
 |------|----------|-------|
 | CAN controller | MCMCAN CAN0 node 0, owned by core 0 (CPU1 has one reserved TX buffer for the safe frames) | design |

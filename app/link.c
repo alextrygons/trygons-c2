@@ -995,6 +995,11 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      b2 compass lost: gyro hold, b3 TRIP done, b4 a DP request waits for the CONFIRM, b5 generator check
  *      "stern fights") | i16 spot error ahead dm | i16 spot error to starboard dm | u16 heading target*10 |
  *      u8 set speed kn*10 | u8 TRIP speed now kn*10 | u8 TRIP waypoint | u8 last stop why (DP_STOP_)
+ *   P: DroneCAN summary (step 11d; the full node table: CAN_NODES on the USB port): u8 flags (b0 a CAN bus
+ *      fitted, b1 bus fault, b2 ID conflict (our node ID 10 seen), b3 a node without a static ID (notice),
+ *      b4 bus silent, b5 STANDBY interlock: a required node lost / not seen yet) | u8 bus state (HAL_CAN_ST_) |
+ *      u8 lost mask | u8 WARNING mask (notice) | u8 seen mask | u8 rebooted mask (bit = node table index:
+ *      0 throttle 1 steering 2 gear 3 relay board)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1153,6 +1158,19 @@ static void telemetry2(link_t *l, sb_t *s)
         proto_wr_u8(&w, d->wp);
         proto_wr_u8(&w, d->stop_why);
     }
+    /* P: DroneCAN summary */
+    {
+        const hal_can_bus_t *b = &s->can.bus;
+        bool f = s->can.fitted;
+        proto_wr_u8(&w, (uint8_t)((f ? 1u : 0u) | (f && b->fault ? 2u : 0u) | (f && b->id_conflict ? 4u : 0u) |
+                                  (f && b->anon_node ? 8u : 0u) | (f && b->silent ? 16u : 0u) |
+                                  (f && s->can.node_block ? 32u : 0u)));
+        proto_wr_u8(&w, f ? b->state : HAL_CAN_ST_OFF);
+        proto_wr_u8(&w, f ? s->can.lost_mask : 0u);
+        proto_wr_u8(&w, f ? s->can.warn_mask : 0u);
+        proto_wr_u8(&w, f ? s->can.seen_mask : 0u);
+        proto_wr_u8(&w, f ? s->can.reboot_mask : 0u);
+    }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
     else l->telem_overflows++;
@@ -1169,6 +1187,46 @@ static void telemetry2(link_t *l, sb_t *s)
  *   u16 throttle pulse us | u16 gear pulse us | u16 throttle idle us | u16 gear neutral us |
  *   u8 buttons seen | 6 x u8 count per button (hal_button_t) | u16 pulses | u16 refused | u8 last refuse |
  *   i8 pulse running | f32 outboard estimate deg | u8 monitor tripped | u32 idle ms left */
+/* CAN_NODES (USB port, 1 Hz while a CAN bus is fitted; groundstation/proto.py decode_can_nodes):
+ *   u8 bus state (HAL_CAN_ST_) | u8 flags (TELEM2 group P) | u8 TEC | u8 REC | u32 rx | u32 tx | u32 tx drops |
+ *   u32 rx errors | u32 bus-offs | u8 n | n x { u8 node id | u8 role (HAL_CAN_ROLE_) | u8 flags (b0 required,
+ *   b1 seen, b2 lost, b3 WARNING, b4 rebooted) | u8 why (HAL_CAN_) | u8 health | u8 mode | u32 uptime s |
+ *   u32 NodeStatus age ms (0xFFFFFFFF never) | u16 reboots | u32 NodeStatus received } */
+static void can_nodes(link_t *l, sb_t *s)
+{
+    uint8_t buf[PROTO_MAX_PAYLOAD];
+    proto_wr_t w;
+    const hal_can_bus_t *b = &s->can.bus;
+    proto_wr_init(&w, buf, sizeof buf);
+    proto_wr_u8(&w, b->state);
+    proto_wr_u8(&w, (uint8_t)(1u | (b->fault ? 2u : 0u) | (b->id_conflict ? 4u : 0u) | (b->anon_node ? 8u : 0u) |
+                              (b->silent ? 16u : 0u) | (s->can.node_block ? 32u : 0u)));
+    proto_wr_u8(&w, b->tec);
+    proto_wr_u8(&w, b->rec);
+    proto_wr_u32(&w, b->rx);
+    proto_wr_u32(&w, b->tx);
+    proto_wr_u32(&w, b->tx_drops);
+    proto_wr_u32(&w, b->rx_errors);
+    proto_wr_u32(&w, b->busoffs);
+    proto_wr_u8(&w, (uint8_t)HAL_CAN_NODES);
+    for (uint32_t i = 0; i < HAL_CAN_NODES; i++) {
+        const hal_can_node_t *n = &s->can.node[i];
+        proto_wr_u8(&w, n->id);
+        proto_wr_u8(&w, n->role);
+        proto_wr_u8(&w, (uint8_t)((n->required ? 1u : 0u) | (n->seen ? 2u : 0u) | (n->lost ? 4u : 0u) |
+                                  (n->warning ? 8u : 0u) | (n->rebooted ? 16u : 0u)));
+        proto_wr_u8(&w, n->why);
+        proto_wr_u8(&w, n->health);
+        proto_wr_u8(&w, n->mode);
+        proto_wr_u32(&w, n->uptime_s);
+        proto_wr_u32(&w, n->age_ms);
+        proto_wr_u16(&w, n->restarts);
+        proto_wr_u32(&w, n->statuses);
+    }
+    if (!w.overflow) send(l, PROTO_T_CAN_NODES, l->tx_seq++, buf, w.n);
+    else l->telem_overflows++;
+}
+
 static void bench_diag(link_t *l, sb_t *s)
 {
     uint8_t buf[PROTO_MAX_PAYLOAD];
@@ -1412,6 +1470,10 @@ void link_step(link_t *l, sb_t *s)
         telemetry2(l, s);                               /* first: the PC merges it into the next telemetry */
         telemetry(l, s);
         if (l->port != LINK_PORT_GW && sb_mode(s) == MODE_BENCH) bench_diag(l, s);
+    }
+    if (l->port != LINK_PORT_GW && s->can.fitted && (int32_t)(s->now_ms - l->next_can_ms) >= 0) {
+        l->next_can_ms = s->now_ms + 1000u;
+        can_nodes(l, s);
     }
     if (l->port == LINK_PORT_GW) {
         if ((int32_t)(s->now_ms - l->next_time_ms) >= 0) {

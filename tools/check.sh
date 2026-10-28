@@ -5,7 +5,8 @@
 # compile of app/ + hal/ + Cpu*_Main.c, HAL / throttle-writer / relay-writer / thruster-writer checks, the
 # expected memory per core (CPU1 RAM must stay below 60 %), the board's FAT32
 # writer on PC disk images, the board's data-flash record log on a PC flash
-# image, Python syntax, the gateway tests.
+# image, the DroneCAN layer (dronecan.c + libcanard) against an independent
+# encoder, Python syntax, the gateway tests.
 # Ends with "GATE: OK" or "GATE: FAILED".
 cd "$(dirname "$0")/.." || exit 1
 # Python: $PYTHON, else MSYS2's (MANUAL chapter 3), else "python" on the PATH
@@ -43,7 +44,7 @@ INC=$(grep -o 'ProjName}/[^&]*' .cproject | sed 's#}$##; s#ProjName}/#-I#; s#^-I
 # the TriCore gcc of AURIX Development Studio: $TRICORE_BIN, else the newest ADS under C:\Infineon
 B=${TRICORE_BIN:-$(ls -d /c/Infineon/AURIX-Studio-*/tools/Compilers/tricore-gcc*/bin 2>/dev/null | sort -V | tail -1)}
 [ -x "$B/tricore-elf-gcc.exe" ] || { echo "TriCore gcc NOT FOUND (install ADS or set TRICORE_BIN)"; fail=1; }
-for f in app/*.c hal/*.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c; do
+for f in app/*.c hal/*.c hal/libcanard/*.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c; do
     msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -I. $INC -c "$f" -o "$OUT/$(basename "$f" .c).o" 2>&1)
     if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN $f"; echo "$msg" | head -20; fail=1; else echo "TriCore OK $f"; fi
 done
@@ -59,8 +60,8 @@ if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (FIRS
 missing=$(comm -23 "$TEMP/hal_used.txt" "$TEMP/hal_def.txt")
 if [ -n "$missing" ]; then echo "MISSING in hal_tc375.c: $missing"; fail=1; else echo "hal_tc375.c provides every HAL function used"; fi
 # the board drivers (hal/tc_*.c): every driver function used is defined
-"$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^(uart|spi|bno|gps|sd|fat32|adc|nvlog|mb)_/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
-"$B/tricore-elf-nm.exe" "$OUT"/tc_*.o | awk '$2=="T" {print $3}' | sort -u > "$TEMP/drv_def.txt"
+"$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^((uart|spi|bno|gps|sd|fat32|adc|nvlog|mb|can|dc)_|canard[A-Z])/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
+"$B/tricore-elf-nm.exe" "$OUT"/tc_*.o "$OUT"/dronecan.o "$OUT"/canard.o | awk '$2=="T" {print $3}' | sort -u > "$TEMP/drv_def.txt"
 missing=$(comm -23 "$TEMP/drv_used.txt" "$TEMP/drv_def.txt")
 if [ -n "$missing" ]; then echo "MISSING driver functions: $missing"; fail=1; else echo "every board driver function used is defined"; fi
 # every iLLD (Ifx*) function used has its .c file present and NOT excluded in .cproject (else the ADS link fails)
@@ -82,6 +83,14 @@ writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])relays_(starter_pulse|start
 if [ -n "$writers" ]; then echo "ENGINE RELAYS DRIVEN OUTSIDE engine.c: $writers"; fail=1; else echo "STARTER / IGNITION / SHUTOFF driven only by app/engine.c"; fi
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_system_reset *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/smallboat.c$")
 if [ -n "$writers" ]; then echo "SOFTWARE RESET OUTSIDE smallboat.c: $writers"; fail=1; else echo "software reset only by app/smallboat.c (remote restart)"; fi
+
+# DroneCAN (step 11d): the bus + heartbeats + node table only. NOTHING in the firmware commands an
+# actuator or a relay over CAN yet (the servos move to CAN in step 11e, the relay board in 11f), and
+# only app/smallboat.c services the bus / reads the node table (core 0)
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])dc_send_[a-z]+ *\(" app hal/hal_tc375.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null)
+if [ -n "$writers" ]; then echo "ACTUATOR / RELAY COMMANDS OVER CAN (not before step 11e / 11f): $writers"; fail=1; else echo "no actuator / relay command over CAN in the firmware (step 11d)"; fi
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_can_[a-z]+ *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/smallboat.c$")
+if [ -n "$writers" ]; then echo "CAN BUS USED OUTSIDE smallboat.c: $writers"; fail=1; else echo "CAN bus serviced / read only by app/smallboat.c (core 0)"; fi
 
 # ADS compiles every C/C++ file in the project folder: every top-level folder
 # that is not board firmware must be excluded in .cproject (all configurations)
@@ -127,6 +136,9 @@ grep -E "^\[FAIL\]|FAT32 TESTS|BUILD PROBLEM" "$TEMP/fat32_tests.txt"
 echo "== data flash record log of the board (PC flash image: power losses, swaps, corruption)"
 "$PY" tests/hal_pc/nv_check.py > "$TEMP/nv_tests.txt" 2>&1 || { echo "NV TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|NV TESTS|BUILD PROBLEM" "$TEMP/nv_tests.txt"
+echo "== DroneCAN layer of the board (dronecan.c + libcanard vs an independent encoder; driver state machine)"
+"$PY" tests/hal_pc/dronecan_check.py > "$TEMP/dronecan_tests.txt" 2>&1 || { echo "DRONECAN TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|DRONECAN TESTS|BUILD PROBLEM" "$TEMP/dronecan_tests.txt"
 echo "== chart tests"
 ( cd groundstation && "$PY" test_charts.py > "$TEMP/chart_tests.txt" 2>&1 ) || { echo "CHART TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"

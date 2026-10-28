@@ -284,6 +284,7 @@ sb_result_t sb_relay_table(sb_t *s, const relay_table_t *t)
 }
 
 static void eng_cond(const sb_t *s, eng_cond_t *c, bool standby_button);
+static void can_poll(sb_t *s);
 
 sb_result_t sb_relay_cmd(sb_t *s, uint8_t n, uint8_t action, uint16_t ms)
 {
@@ -365,6 +366,12 @@ void sb_alarm_ack(sb_t *s)
     if (thruster_any_hot(&s->thrust)) keep2 |= SB_ALM2_DP_HEAT;
     if (s->dp.offspot) keep2 |= SB_ALM2_DP_OFFSPOT;
     if (s->dp.overpower) keep2 |= SB_ALM2_DP_OVERPOWER;
+    if (sb_mode(s) == MODE_STANDBY) {   /* a rebooted CAN node: its latch goes only in STANDBY, OPERATIONAL 2 s */
+        hal_can_ack();
+        can_poll(s);
+    }
+    if (s->can.node_lost) keep2 |= SB_ALM2_CAN_NODE;
+    if (s->can.bus_bad) keep2 |= SB_ALM2_CAN_BUS;
     s->alarm_bits2 &= keep2;
     s->alarm = s->alarm_bits != 0u || (s->alarm_bits2 & ~SB_ALM2_QUIET) != 0u;
     if (!s->ap.sensor_fault) s->ap.alarm = false;
@@ -551,7 +558,7 @@ static bool fault_why(mode_reason_t w)
     return w == WHY_COMPASS_FAULT || w == WHY_GPS_LOST || w == WHY_GEAR_FAULT || w == WHY_DR_LIMIT ||
            w == WHY_JOY_FAULT || w == WHY_NOT_ARMED || w == WHY_MONITOR || w == WHY_REMOTE_LOST ||
            w == WHY_TRAINING_ABORT || w == WHY_PROFILE || w == WHY_LINK_LOST || w == WHY_DP_OFFSPOT ||
-           w == WHY_DP_THRUSTER;
+           w == WHY_DP_THRUSTER || w == WHY_CAN_NODE || w == WHY_CAN_BUS;
 }
 
 /* Rising edges only; the AURIX never waits for the Pi. */
@@ -667,8 +674,11 @@ static bool bench_moving(const sb_t *s)
 static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
 {
     bool forced = why == WHY_STANDBY_BUTTON || why == WHY_JOY_FAULT || why == WHY_GEAR_FAULT ||
-                  why == WHY_NOT_ARMED || why == WHY_MONITOR || why == WHY_ESTOP;
+                  why == WHY_NOT_ARMED || why == WHY_MONITOR || why == WHY_ESTOP || why == WHY_CAN_NODE ||
+                  why == WHY_CAN_BUS;
     if (s->estop_state == 2u && to != MODE_STANDBY) return false;     /* emergency stop pressed */
+    /* DroneCAN: a required node lost / not seen yet, a bus fault, our ID on the bus -> STANDBY only */
+    if ((s->can.node_block || s->can.bus_bad) && to != MODE_STANDBY) return false;
     if (s->ll.state != SB_LL_OK && to != MODE_STANDBY) return false;  /* UNCREWED link lost / engine killed */
     /* FIRST TEST: steering only - STANDBY, TRAINING, HDG LOCK */
     if (s->cfg.first_test && (to == MODE_MANUAL || to == MODE_AUTO || to == MODE_REMOTE || to == MODE_MANEUVER ||
@@ -2419,8 +2429,94 @@ static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
     if (s->unarmed_ms >= s->cfg.arm_alarm_ms && !(s->alarm_bits & SB_ALM_NOT_ARMED)) alarm_on(s, SB_ALM_NOT_ARMED);
 }
 
+/* DroneCAN (CLAUDE.md T, docs/dronecan_design.md section 5; step 11d): the bus state + the node table
+ * from the HAL. A REQUIRED node LOST, a bus fault or OUR node ID on the bus = an alarm (WARNING, lowers
+ * the power limit, cancels a pending CONFIRM) + STANDBY (idle + neutral first, like every fault); no mode
+ * but STANDBY while it lasts (precondition). A required node not seen since the boot blocks too (no
+ * alarm before HAL_CAN_NODE_LOST_MS). Health WARNING / a node without a static ID = notices only (OD-6).
+ * No CAN fitted (hal_can_bus false) = nothing. Step 11d: nothing is commanded over CAN yet. */
+static void can_event(sb_t *s, uint8_t what, uint8_t node, uint8_t why)
+{
+    s->can.log_what = what;
+    s->can.log_node = node;
+    s->can.log_why = why;
+    s->can.log_seq++;
+}
+
+static void can_poll(sb_t *s)
+{
+    s->can.fitted = hal_can_bus(&s->can.bus);
+    if (!s->can.fitted) {
+        s->can.node_block = s->can.node_lost = s->can.bus_bad = false;
+        return;
+    }
+    uint8_t lost = 0u, warn = 0u, seen = 0u, reb = 0u;
+    bool block = false, req_lost = false;
+    for (uint8_t i = 0; i < HAL_CAN_NODES; i++) {
+        hal_can_node_t *n = &s->can.node[i];
+        if (!hal_can_node(i, n)) continue;
+        uint8_t b = (uint8_t)(1u << i);
+        if (n->lost) lost |= b;
+        if (n->warning) warn |= b;
+        if (n->seen) seen |= b;
+        if (n->rebooted) reb |= b;
+        if (n->required && n->lost) req_lost = true;
+        if (n->required && (n->lost || !n->seen)) block = true;
+        if ((n->lost ? 1u : 0u) != ((s->can.lost_mask & b) ? 1u : 0u))
+            can_event(s, n->lost ? 1u : 2u, n->id, n->why);
+        else if (n->warning && !(s->can.warn_mask & b))
+            can_event(s, 3u, n->id, n->why);
+        if (n->rebooted && !(s->can.reboot_mask & b)) can_event(s, 4u, n->id, n->why);
+    }
+    const hal_can_bus_t *bus = &s->can.bus;
+    bool bad = bus->fault || bus->id_conflict;
+    if (bus->fault && !s->can.fault_prev) can_event(s, 5u, 0u, bus->state);
+    if (!bus->fault && s->can.fault_prev) can_event(s, 6u, 0u, bus->state);
+    if (bus->id_conflict && !s->can.conflict_prev) can_event(s, 7u, 10u, 0u);     /* our own node ID 10 */
+    if (bus->anon_node && !s->can.anon_prev) can_event(s, 8u, 0u, 0u);
+    s->can.fault_prev = bus->fault;
+    s->can.conflict_prev = bus->id_conflict;
+    s->can.anon_prev = bus->anon_node;
+    s->can.lost_mask = lost;
+    s->can.warn_mask = warn;
+    s->can.seen_mask = seen;
+    s->can.reboot_mask = reb;
+    s->can.node_block = block;
+    if (req_lost && !s->can.node_lost) s->can.losses++;
+    s->can.node_lost = req_lost;
+    s->can.bus_bad = bad;
+}
+
+static void can_step(sb_t *s)
+{
+    hal_can_service();
+    can_poll(s);
+    if (!s->can.fitted) return;
+    bool req_lost = s->can.node_lost, bad = s->can.bus_bad;
+    if (req_lost && !s->can.node_seen) {
+        s->can.node_seen = true;
+        alarm2_on(s, SB_ALM2_CAN_NODE);
+        plim_drop(&s->plim, PLIM_SRC_FAULT, s->now_ms);
+        s->confirm.kind = CONF_NONE;
+    }
+    if (!req_lost) s->can.node_seen = false;
+    if (bad && !s->can.bus_seen) {
+        s->can.bus_seen = true;
+        alarm2_on(s, SB_ALM2_CAN_BUS);
+        plim_drop(&s->plim, PLIM_SRC_FAULT, s->now_ms);
+        s->confirm.kind = CONF_NONE;
+    }
+    if (!bad) s->can.bus_seen = false;
+    if (sb_mode(s) != MODE_STANDBY) {
+        if (bad) sb_request_mode(s, MODE_STANDBY, WHY_CAN_BUS);
+        else if (req_lost) sb_request_mode(s, MODE_STANDBY, WHY_CAN_NODE);
+    }
+}
+
 static void events_step(sb_t *s, uint32_t buttons)
 {
+    can_step(s);
+
     /* EMERGENCY STOP (its contact; the switch itself cuts the actuator power):
      * every mode -> STANDBY + alarm, nothing leaves STANDBY while pressed */
     {

@@ -433,6 +433,7 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "usb") == 0) { sb_usb_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "gw") == 0) { sb_gateway_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "df") == 0) { sb_nv_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "cn") == 0) { sb_can_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "bv") == 0) { sb_battery_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "gen") == 0) { sb_generator_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "rb") == 0) { sb_relay_tests(); return 0; }

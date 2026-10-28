@@ -84,7 +84,7 @@ static const char k_events[] =
     "15:LOG:what,a,b,c;"
     "16:TIME:date,time_of_day_ms,t_ms,-;"
     "17:HELM:station,action(0 take 1 release 2 lost 3 auto 4 gw lost 5 handed over),refused,holder;"
-    "18:SAVE:trigger(1 button 2 alarm 3 fault 4 takeover 5 standby fault 6 slam),arg,seq,-;"
+    "18:SAVE:trigger(SB_SAVE_),arg,seq,-;"
     "19:SLAM:peak_g*100,level_g*100,impacts_per_min,cap%*10|state<<16|override<<20;"
     "20:NAV:kind|reason<<8|alarm<<16|lost<<24|applied<<25,heading*100,cap_kn*10,seq;"
     "21:PROFILE:profile(0 detecting 1 CREWED 2 UNCREWED),joystick_detected,changes,-;"
@@ -93,7 +93,8 @@ static const char k_events[] =
     "24:GENERATOR:state(GEN_),stop_why|enabled<<8,bank_v*100,pct*10;"
     "25:RELAY:n|act<<8|res<<16|what<<24,states,known|ok<<31,hash|flags<<16|count<<24;"
     "27:RESTART:action(ENG_LOG_),why(eng_why_t),hold_ms,restarts|cranks<<16;"
-    "28:DP:what,a,b,c;";
+    "28:DP:what,a,b,c;"
+    "29:CAN:what,masks,tec,drops;";
 /* (the header record is at most LOGR_MAX: keep these short - the names of the
  * numbers above live in groundstation/tlg.py; sim test ER6 checks it fits) */
 
@@ -103,7 +104,7 @@ static const char k_alarms[] =
     "16384:OVERRUN,32768:LOG_FAILURE,65536:GATEWAY_LOST,131072:GATEWAY_STORAGE,262144:REMOTE_LINK_LOST,524288:CHANNEL_FALLBACK,1048576:REMOTE_DRIVING_LINK_LOST,2097152:SLAMMING,4194304:AIS_RECEIVER_SILENT,8388608:COLLISION_RISK,16777216:DRIVER_DECISION,33554432:SHALLOW_WATER,67108864:OBSTACLE_AHEAD,134217728:EMERGENCY_STOP,268435456:PROFILE,536870912:LINK_LOST,1073741824:ENGINE_KILLED";
 
 /* the second alarm word (SB_ALM2_, log events with word = 2) */
-static const char k_alarms2[] = "1:LOW_BATTERY,2:RELAY_SILENT,4:DP_HEAT,8:DP_OFFSPOT,16:DP_OVERPOWER";
+static const char k_alarms2[] = "1:LOW_BATTERY,2:RELAY_SILENT,4:DP_HEAT,8:DP_OFFSPOT,16:DP_OVERPOWER,32:CAN_NODE,64:CAN_BUS";
 
 uint16_t logrec_header_text(char *out, uint16_t max, uint32_t boot, uint32_t file_no)
 {

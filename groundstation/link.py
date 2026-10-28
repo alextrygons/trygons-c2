@@ -234,6 +234,9 @@ class Link:
             elif f.type == proto.T_BENCH_DIAG:
                 d = proto.decode_bench_diag(f.payload)    # 10 Hz in the bench test: not logged
                 self.events.put(("bench", d))
+            elif f.type == proto.T_CAN_NODES:
+                d = proto.decode_can_nodes(f.payload)     # 1 Hz while a CAN bus is fitted: not logged (TELEM2 P is)
+                self.events.put(("can", d))
             elif f.type == proto.T_PROG_ERROR:
                 d = proto.decode_prog_error(f.payload)
                 if self.logger:

@@ -1957,6 +1957,33 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          min off -> thrusters 0, STANDBY (second word, bit 4).
   DP OVERPOWER           both DP thrusters at their limit for 10 s: the wind
                          / current is too strong. ADVISORY (bit 5).
+  CAN NODE LOST          (DroneCAN servo nodes, only when a CAN bus is fitted)
+                         a REQUIRED node (throttle 20 / steering 21 / gear 22)
+                         sent no heartbeat for 1.5 s, is not OPERATIONAL,
+                         reports ERROR / CRITICAL, or REBOOTED (its uptime
+                         went back), or the bus is dead. An ordinary alarm
+                         (buzzer, power limit 30 / 5) + STANDBY (idle +
+                         neutral first); no mode but STANDBY while a required
+                         node is lost or not seen yet. A rebooted node stays
+                         lost until it ran 2 s and you acknowledge in STANDBY.
+                         The relay board node (30) is only shown, never this
+                         alarm. A node reporting WARNING = a notice only.
+                         (Second alarm word, bit 6.)
+  CAN BUS FAULT          the CAN bus is off / error passive for more than
+                         100 ms (cable, termination, every node unpowered,
+                         transceiver), the CAN controller did not start, or
+                         a frame FROM OUR OWN NODE ID 10 is on the bus: the
+                         old Pixhawk is still connected - it is node 10 too
+                         and must NEVER be on the bus with the AURIX
+                         (WIRING.md 3E). Same reaction as CAN NODE LOST; it
+                         clears 3 s after the last such frame. A node asking
+                         for a dynamic node ID (no fixed ID set) = a notice
+                         only - set its ID with the DroneCAN GUI Tool.
+                         (Second word, bit 7.) The node table (health, mode,
+                         uptime, reboots, counters) is on the Bench page of
+                         the USB laptop. In step 11d no servo is driven over
+                         CAN yet (still PWM); HAL_CAN_FITTED stays 0 on the
+                         board until the kit's CAN pins are confirmed.
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
@@ -1974,7 +2001,8 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   ON THE PC every alarm has a LEVEL (sounds, lamps: chapters 5B / 5D):
     WARNING  COMPASS LOST, GEAR FAULT, JOYSTICK FAULT, SAFETY MONITOR
              TRIPPED, REMOTE DRIVING LINK LOST, COLLISION RISK (+ DRIVER
-             DECISION), SHALLOW WATER, EMERGENCY STOP, NO DATA FROM THE BOAT
+             DECISION), SHALLOW WATER, EMERGENCY STOP, CAN NODE LOST, CAN BUS
+             FAULT, NO DATA FROM THE BOAT
     ADVISORY ARRIVED, TRAINING, JOYSTICK TOOK CONTROL, AIS RECEIVER SILENT,
              LOW BATTERY, RELAY BOARD SILENT
     CAUTION  all the others

@@ -91,6 +91,31 @@ uint32_t sim_hal_relay_edges(uint8_t n);   /* coil n: off -> on changes on the b
  * effect at the next hal_init (the AURIX's boot). */
 void     sim_hal_relay_fitted(uint8_t channels);
 
+/* DroneCAN bus (step 11d): the real hal/dronecan.c on a simulated controller + bus + nodes
+ * (throttle 20 / steering 21 / gear 22 = servo nodes, actuators 1 / 2 / 3, relay node 30 =
+ * hardpoints 0..5; NodeStatus 1 Hz each). fitted: taken at the next hal_init (default off,
+ * like HAL_CAN_FITTED 0). reset: every node powered, OK, OPERATIONAL, worst-case servo speeds. */
+#define SIM_CAN_BUSOFF      0x1u    /* our controller goes bus-off (recovers 50 ms after the fault ends) */
+#define SIM_CAN_FOREIGN10   0x2u    /* a node with OUR ID 10 sends NodeStatus (the Pixhawk on the bus) */
+#define SIM_CAN_ANON        0x4u    /* a node asks for a dynamic node ID (no static ID set) */
+#define SIM_CAN_START_FAIL  0x8u    /* the controller does not start (at the next hal_init) */
+void     sim_hal_can_fitted(bool on);
+void     sim_hal_can_reset(void);
+void     sim_hal_can_fault(uint32_t bits);
+/* a node powered / its health + mode in NodeStatus (power back = a node boot: uptime 0, INIT 1 s) */
+void     sim_hal_can_node(uint8_t id, bool present, uint8_t health, uint8_t mode);
+void     sim_hal_can_node_silent(uint8_t id, bool silent);   /* powered, acts on commands, no NodeStatus */
+void     sim_hal_can_node_reboot(uint8_t id);                /* uptime back to 0 (brown-out) */
+void     sim_hal_can_servo_speed(uint8_t id, float travel_s, float backlash);
+/* servo node: last command, servo position, output after the play (units -1..1), commands taken;
+ * returns false while it never got a command (it holds its power-up position) */
+bool     sim_hal_can_servo(uint8_t id, float *cmd, float *pos, float *out, uint32_t *cmds);
+uint16_t sim_hal_can_hardpoint(uint8_t hp, uint32_t *cmds);  /* relay node: last command of hardpoint hp */
+uint32_t sim_hal_can_bus_frames(uint32_t kind);  /* frames from the AURIX: 0 NodeStatus 1 ArrayCommand 2 hardpoint 3 other */
+uint32_t sim_hal_can_status_period_ms(void);    /* between our last two NodeStatus on the bus */
+uint32_t sim_hal_can_tx_waiting(void);          /* frames in our controller's TX FIFO (not acknowledged) */
+uint32_t sim_hal_can_node_statuses(uint8_t id);
+
 /* Joystick (raw 12-bit ADC values and buttons). */
 void     sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob);
 void     sim_hal_joystick_confirm(bool pressed);     /* CONFIRM button held */

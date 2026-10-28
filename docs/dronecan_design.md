@@ -560,6 +560,24 @@ meets R-1..R-3, else MODBUS - the owner decides at the 11f review.
 - telemetry TELEM2 group P (node table: present, health, mode, uptime, restarts; bus errors), log
   event 29 CAN, alarms SB_ALM2_CAN_NODE (0x20, WARNING) + SB_ALM2_CAN_BUS (0x40, WARNING), notice
   "CAN node without a static ID"; ground station: node table on the Bench / system page.
+  **Implemented in step 11d** (what differs from the plan above): TELEM2 group P is a 6-byte summary
+  (flags, bus state, lost / WARNING / seen / rebooted masks - TELEM2 has only ~30 bytes left, group Q
+  comes in 11e); the full node table (id, role, health, mode, uptime, NodeStatus age, reboots, frame
+  and error counters) goes in a new frame PROTO_T_CAN_NODES 0x8E on the USB link at 1 Hz (bench page).
+  The bus state machine lives in hal/dronecan.c behind a small port (dc_port_t), so the same code runs
+  on the board (tc_can.c = the iLLD port), in the sim and in the host tests. The host test compares
+  every frame with its own encoder written from the DSDL text and the transport rules (pydronecan is
+  not needed; the data type signatures are computed from the DSDL definitions). A required node not
+  seen since the boot blocks every mode but STANDBY at once (alarm only after can_node_lost_ms). A frame
+  FROM node ID 10 = SB_ALM2_CAN_BUS + the STANDBY interlock for 3 s after the last such frame (OA-4).
+  dc_send_actuator (one UNITLESS command per transfer, clamped to +-1, NaN refused) and
+  dc_send_hardpoint exist and drive the simulated nodes in the tests, but no firmware code calls them
+  yet (tools/check.sh) - 11e / 11f. Tests: tests/hal_pc/dronecan_check.py D1-D15, sim CN1-CN13.
+  Left for 11e: on a bus fault only the SOFTWARE queue is dropped - frames already in the MCMCAN TX FIFO
+  keep being retried by the controller (today only our NodeStatus); before actuator commands go on the
+  bus, 11e must also cancel the hardware TX FIFO (TXBCR) on a bus fault / a trip so that no stale
+  ArrayCommand leaves the controller late; the 10 ms actuator task and CPU1's reserved buffer 0 (already
+  kept free: tc_can.c configures 1 dedicated TX buffer that core 0 never writes).
 11e - servos + CPU1 path + steering model: hal_set_throttle / hal_set_gear -> DroneCAN; new
   hal_set_steer_pos (the small-boat steering HAL changes from motor on / off to a position;
   AP_STEER_OUTBOARD keeps the outboard logic, the big boat unchanged); servo models in the sim

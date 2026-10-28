@@ -21,6 +21,7 @@
 #include "nv.h"
 #include "tc_nv.h"
 #include "tc_modbus.h"
+#include "dronecan.h"
 #include "tc_rstcause.h"
 
 /* ------------------------------------------------------------ harness -- */
@@ -48,11 +49,16 @@ struct sbsim {
 
 static logger_t s_logger;   /* core 2 logger (sim: a separate step) */
 
+/* CN tests: the next sbsim_init boots with the simulated CAN bus fitted (+ these sim faults) */
+static bool     s_can_on;
+static uint32_t s_can_fault;
+
 /* TELEM2: the tests that read groups L / M from the end of the frame skip the
  * groups appended after them: O (engine controls, 12 bytes) + N (DP thrusters 10 bytes + the DP state
- * T2_DP bytes = T2_N) */
+ * T2_DP bytes) + P (DroneCAN summary T2_P bytes) = T2_N */
 #define T2_DP 12u
-#define T2_N (10u + T2_DP)
+#define T2_P 6u                 /* group P (DroneCAN summary, step 11d) after N */
+#define T2_N (10u + T2_DP + T2_P)
 #define T2_O (12u + T2_N)
 
 /* "all --bridge": every test drives the boat through the USB joystick
@@ -161,6 +167,9 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     sim_hal_unforce();
     memset((void *)&g_mon, 0, sizeof g_mon);
     world_publish(&x->w, 0);
+    sim_hal_can_reset();                            /* DroneCAN: every node fresh; not fitted unless a CN test */
+    sim_hal_can_fault(s_can_fault);
+    sim_hal_can_fitted(s_can_on);
     hal_init();
     sim_hal_bridge_mode(s_bridge);
     if (s_bridge) {
@@ -2759,6 +2768,9 @@ typedef struct {
     uint8_t     raw[PROTO_MAX_PAYLOAD], raw_len;    /* last JOY_RAW */
     uint8_t     t2[PROTO_MAX_PAYLOAD];              /* last TELEM2 */
     uint16_t    t2_len;
+    uint8_t     can[PROTO_MAX_PAYLOAD];             /* last CAN_NODES */
+    uint16_t    can_len;
+    int         can_frames;
 } pcsim_t;
 
 static void pc_send(pcsim_t *p, uint8_t type, const uint8_t *payload, uint8_t len)
@@ -2813,6 +2825,10 @@ static void pc_hook(sbsim_t *x, void *ctx)
         } else if (f.type == PROTO_T_TELEM2) {
             memcpy(p->t2, f.payload, f.len);
             p->t2_len = f.len;
+        } else if (f.type == PROTO_T_CAN_NODES) {
+            memcpy(p->can, f.payload, f.len);
+            p->can_len = f.len;
+            p->can_frames++;
         }
     }
 }
@@ -11578,6 +11594,431 @@ static void dp_mode_tests(void)
     }
 }
 
+
+/* ================================================================ DroneCAN (CN) ==
+ * Step 11d (CLAUDE.md T, docs/dronecan_design.md sections 4 + 5): the real hal/dronecan.c + libcanard
+ * on the simulated bus (hal_sim.c). The servos are NOT on CAN yet (11e): nothing is commanded over
+ * CAN by the app; the node table / bus faults give the alarms + the STANDBY interlock. */
+
+static mode_reason_t cn_why(const sb_t *s)          /* the reason of the last accepted mode change */
+{
+    uint32_t kept = s->modes.log_count < MODE_LOG_N ? s->modes.log_count : MODE_LOG_N;
+    for (uint32_t k = kept; k > 0u; k--) {
+        const mode_log_entry_t *e = mode_log_get(&s->modes, k - 1u);
+        if (e && e->verdict == MODE_OK) return e->why;
+    }
+    return WHY_COUNT;
+}
+
+static uint8_t cn_p(const pcsim_t *p, uint32_t i)     /* TELEM2 group P byte i (P = the last 6 bytes) */
+{
+    return p->t2_len >= T2_P ? p->t2[p->t2_len - T2_P + i] : 0xEEu;
+}
+
+/* a boat with the simulated CAN bus fitted (every node powered, OK, OPERATIONAL), armed (CREWED) */
+static void cn_setup(pcsim_t *p, uint32_t seed, uint32_t fault)
+{
+    s_can_on = true;
+    s_can_fault = fault;
+    pcsim_init(p, seed);
+    s_can_on = false;
+    s_can_fault = 0u;
+    pc_run(p, 8000u);
+}
+
+static bool cn_hdg(pcsim_t *p)                       /* HDG LOCK on the panel */
+{
+    sim_hal_press(HAL_BTN_HDG_LOCK);
+    pc_run(p, 200u);
+    return sb_mode(&p->x.sb) == MODE_HDG_LOCK;
+}
+
+static void can_tests(void)
+{
+    char d[900];
+    printf("\n=== CN DroneCAN bus (dronecan.c + libcanard on the simulated bus): heartbeats, node table, "
+           "CAN NODE LOST / CAN BUS FAULT -> STANDBY ===\n");
+
+    /* CN1 healthy bus: our NodeStatus 1 Hz on the bus, every node seen, no alarm, modes work; NOTHING is
+     * commanded over CAN in step 11d (no ArrayCommand, no hardpoint); not fitted = nothing at all */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1101u, 0u);
+        uint32_t per = sim_hal_can_status_period_ms();
+        bool seen = p.x.sb.can.fitted && p.x.sb.can.seen_mask == 0x0Fu && p.x.sb.can.lost_mask == 0u &&
+                    !p.x.sb.can.node_block && !p.x.sb.can.bus_bad;
+        bool quiet = p.x.sb.alarm_bits2 == 0u && p.x.sb.armed;
+        bool hdg = cn_hdg(&p);
+        pc_run(&p, 3000u);
+        uint32_t acmd = sim_hal_can_bus_frames(1u), hp = sim_hal_can_bus_frames(2u), st = sim_hal_can_bus_frames(0u);
+        bool t2 = cn_p(&p, 0) == 1u && cn_p(&p, 1) == HAL_CAN_ST_RUN && cn_p(&p, 4) == 0x0Fu;
+        uint32_t nst = sim_hal_can_node_statuses(DC_NODE_STEERING);
+        static pcsim_t q;
+        pcsim_init(&q, 1102u);                         /* default: no CAN fitted (like HAL_CAN_FITTED 0) */
+        pc_run(&q, 8000u);
+        bool none = !q.x.sb.can.fitted && q.x.sb.can.seen_mask == 0u && q.x.sb.alarm_bits2 == 0u &&
+                    sim_hal_can_bus_frames(0u) == 0u && q.t2_len >= T2_P && cn_p(&q, 0) == 0u && q.can_frames == 0;
+        snprintf(d, sizeof d, "our NodeStatus every %u ms (%u on the bus), node statuses (steering) %u, all seen + none "
+                 "lost %s, no alarm + armed %s, HDG LOCK %s, ArrayCommand %u / hardpoint %u frames (want 0), TELEM2 P %s, "
+                 "CAN_NODES frames %d; not fitted: nothing %s",
+                 (unsigned)per, (unsigned)st, (unsigned)nst, seen ? "yes" : "NO", quiet ? "yes" : "NO", hdg ? "yes" : "NO",
+                 (unsigned)acmd, (unsigned)hp, t2 ? "ok" : "WRONG", p.can_frames, none ? "yes" : "NO");
+        test_report("CN1 healthy bus: heartbeats both ways, no alarm, modes work, nothing commanded over CAN (11d); "
+                    "not fitted = nothing", per == 1000u && st >= 10u && nst >= 10u && seen && quiet && hdg &&
+                    acmd == 0u && hp == 0u && t2 && p.can_frames >= 8 && none, d);
+    }
+
+    /* CN2 a required node goes silent while driving (HDG LOCK): CAN NODE LOST after 1.5 s, STANDBY, the
+     * power limit at the startup values, no mode but STANDBY while lost; back = the interlock goes, the
+     * acknowledge clears the alarm */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1103u, 0u);
+        bool hdg = cn_hdg(&p);
+        uint32_t t0 = p.x.t;
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, true);
+        while (sb_mode(&p.x.sb) == MODE_HDG_LOCK && p.x.t < t0 + 5000u) pc_run(&p, AP_PERIOD_MS);
+        uint32_t dt = p.x.t - t0;
+        bool alarm = (p.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) && p.x.sb.alarm && sb_mode(&p.x.sb) == MODE_STANDBY &&
+                     cn_why(&p.x.sb) == WHY_CAN_NODE && p.x.sb.can.node[HAL_CAN_ROLE_THROTTLE].why == HAL_CAN_SILENT;
+        bool plim = p.x.sb.plim.fwd_pct == 30.0f;
+        pc_run(&p, 1000u);
+        bool refused = !cn_hdg(&p);
+        sb_alarm_ack(&p.x.sb);
+        bool kept = (p.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) != 0u;          /* still lost: the ack can't clear it */
+        bool t2 = (cn_p(&p, 0) & 32u) && (cn_p(&p, 2) & 1u);
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, false);
+        pc_run(&p, 1500u);
+        bool back = !p.x.sb.can.node_lost && !p.x.sb.can.node_block;
+        sb_alarm_ack(&p.x.sb);
+        pc_run(&p, 100u);
+        bool cleared = !(p.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE);
+        bool hdg2 = cn_hdg(&p);
+        snprintf(d, sizeof d, "HDG LOCK %s; throttle node silent: STANDBY after %u ms (CAN NODE LOST, why CAN node, "
+                 "SILENT) %s, power limit 30 %% %s, HDG LOCK refused %s, ack keeps it %s, TELEM2 P %s; back: interlock "
+                 "off %s, ack clears %s, HDG LOCK %s",
+                 hdg ? "yes" : "NO", (unsigned)dt, alarm ? "yes" : "NO", plim ? "yes" : "NO", refused ? "yes" : "NO",
+                 kept ? "yes" : "NO", t2 ? "ok" : "WRONG", back ? "yes" : "NO", cleared ? "yes" : "NO", hdg2 ? "yes" : "NO");
+        test_report("CN2 required node silent: CAN NODE LOST 1.5 s after its last NodeStatus -> STANDBY, power limit "
+                    "down, STANDBY-only interlock, ack only when back", hdg && dt >= 400u && dt <= 1700u && alarm && plim && refused &&
+                    kept && t2 && back && cleared && hdg2, d);
+    }
+
+    /* CN3 health / mode: gear node MAINTENANCE = lost, steering node ERROR = lost, CRITICAL = lost; WARNING =
+     * a notice only (no alarm, no mode change: OD-6) */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1104u, 0u);
+        bool hdg = cn_hdg(&p);
+        sim_hal_can_node(DC_NODE_STEERING, true, DC_HEALTH_WARNING, DC_MODE_OPERATIONAL);
+        pc_run(&p, 2500u);
+        bool warn = sb_mode(&p.x.sb) == MODE_HDG_LOCK && p.x.sb.alarm_bits2 == 0u && !p.x.sb.alarm &&
+                    (p.x.sb.can.warn_mask & 2u) && (cn_p(&p, 3) & 2u) && !p.x.sb.can.node_lost;
+        sim_hal_can_node(DC_NODE_GEAR, true, DC_HEALTH_OK, DC_MODE_MAINTENANCE);
+        pc_run(&p, 1500u);
+        bool maint = sb_mode(&p.x.sb) == MODE_STANDBY && (p.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) &&
+                     p.x.sb.can.node[HAL_CAN_ROLE_GEAR].why == HAL_CAN_NOT_OPER;
+        sim_hal_can_node(DC_NODE_GEAR, true, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sim_hal_can_node(DC_NODE_STEERING, true, DC_HEALTH_ERROR, DC_MODE_OPERATIONAL);
+        pc_run(&p, 1500u);
+        bool err = p.x.sb.can.node[HAL_CAN_ROLE_STEERING].why == HAL_CAN_HEALTH && p.x.sb.can.node_block &&
+                   !cn_hdg(&p);
+        sim_hal_can_node(DC_NODE_STEERING, true, DC_HEALTH_CRITICAL, DC_MODE_OPERATIONAL);
+        pc_run(&p, 1500u);
+        bool crit = p.x.sb.can.node[HAL_CAN_ROLE_STEERING].why == HAL_CAN_HEALTH;
+        sim_hal_can_node(DC_NODE_STEERING, true, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        pc_run(&p, 1500u);
+        sb_alarm_ack(&p.x.sb);
+        pc_run(&p, 100u);
+        bool ok = !p.x.sb.can.node_block && !(p.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) && cn_hdg(&p);
+        snprintf(d, sizeof d, "HDG LOCK %s; steering WARNING: notice only (stays in HDG LOCK, no alarm) %s; gear "
+                 "MAINTENANCE: STANDBY + CAN NODE LOST %s; steering ERROR: lost + refused %s; CRITICAL: lost %s; all OK: "
+                 "ack + HDG LOCK %s", hdg ? "yes" : "NO", warn ? "yes" : "NO", maint ? "yes" : "NO", err ? "yes" : "NO",
+                 crit ? "yes" : "NO", ok ? "yes" : "NO");
+        test_report("CN3 node health / mode: not OPERATIONAL, ERROR, CRITICAL = lost -> STANDBY; WARNING = notice only",
+                    hdg && warn && maint && err && crit && ok, d);
+    }
+
+    /* CN4 a node reboots (uptime back): lost + LATCHED, STANDBY; an ack before 2 s OPERATIONAL keeps it,
+     * after 2 s in STANDBY it clears; an ack outside STANDBY never clears it */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1105u, 0u);
+        bool hdg = cn_hdg(&p);
+        sim_hal_can_node_reboot(DC_NODE_STEERING);
+        pc_run(&p, 600u);
+        bool lost = sb_mode(&p.x.sb) == MODE_STANDBY && p.x.sb.can.node[HAL_CAN_ROLE_STEERING].rebooted &&
+                    p.x.sb.can.node[HAL_CAN_ROLE_STEERING].restarts == 1u && (p.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE);
+        pc_run(&p, 1500u);                            /* the node OPERATIONAL again since ~1 s */
+        sb_alarm_ack(&p.x.sb);
+        bool early = p.x.sb.can.node[HAL_CAN_ROLE_STEERING].rebooted && (p.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE);
+        pc_run(&p, 2500u);
+        bool still = p.x.sb.can.node[HAL_CAN_ROLE_STEERING].rebooted && p.x.sb.can.node_block;   /* no ack: latched */
+        sb_alarm_ack(&p.x.sb);
+        pc_run(&p, 100u);
+        bool cleared = !p.x.sb.can.node[HAL_CAN_ROLE_STEERING].rebooted && !(p.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) &&
+                       cn_hdg(&p);
+        /* in HDG LOCK: a reboot -> STANDBY first, the ack happens only in STANDBY (an ack while driving would
+         * be outside STANDBY: the mode is already STANDBY by then - checked: the latch needs STANDBY) */
+        snprintf(d, sizeof d, "HDG LOCK %s; steering node reboot: STANDBY + latched + CAN NODE LOST %s; ack after ~1 s "
+                 "OPERATIONAL keeps it %s; without an ack still latched %s; ack after 2 s: cleared + HDG LOCK %s",
+                 hdg ? "yes" : "NO", lost ? "yes" : "NO", early ? "yes" : "NO", still ? "yes" : "NO", cleared ? "yes" : "NO");
+        test_report("CN4 node reboot: lost + latched until OPERATIONAL 2 s AND the acknowledge in STANDBY",
+                    hdg && lost && early && still && cleared, d);
+    }
+
+    /* CN5 the relay node (30) lost: not a required node - no alarm, no STANDBY (the relay board rules stay
+     * those of step 6 until 11f) */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1106u, 0u);
+        bool hdg = cn_hdg(&p);
+        sim_hal_can_node(DC_NODE_RELAY, false, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        pc_run(&p, 3000u);
+        bool ok = sb_mode(&p.x.sb) == MODE_HDG_LOCK && (p.x.sb.can.lost_mask & 8u) && !p.x.sb.can.node_lost &&
+                  !(p.x.sb.alarm_bits2 & (SB_ALM2_CAN_NODE | SB_ALM2_CAN_BUS)) && (cn_p(&p, 2) & 8u);
+        snprintf(d, sizeof d, "HDG LOCK %s; relay node unpowered: shown lost (mask 0x%02x), no alarm, still HDG LOCK %s",
+                 hdg ? "yes" : "NO", p.x.sb.can.lost_mask, ok ? "yes" : "NO");
+        test_report("CN5 relay node lost: shown, not required (no alarm, no mode change)", hdg && ok, d);
+    }
+
+    /* CN6 bus-off: CAN BUS FAULT after 100 ms (every node lost: CAN NODE LOST too), STANDBY, interlock;
+     * the recovery brings it back by itself, the ack then clears both */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1107u, 0u);
+        bool hdg = cn_hdg(&p);
+        uint32_t t0 = p.x.t;
+        sim_hal_can_fault(SIM_CAN_BUSOFF);
+        while (sb_mode(&p.x.sb) == MODE_HDG_LOCK && p.x.t < t0 + 2000u) pc_run(&p, AP_PERIOD_MS);
+        uint32_t dt = p.x.t - t0;
+        bool fault = sb_mode(&p.x.sb) == MODE_STANDBY && (p.x.sb.alarm_bits2 & SB_ALM2_CAN_BUS) &&
+                     (p.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) && cn_why(&p.x.sb) == WHY_CAN_BUS &&
+                     p.x.sb.can.bus.state == HAL_CAN_ST_BUSOFF && p.x.sb.can.lost_mask == 0x0Fu &&
+                     p.x.sb.can.node[0].why == HAL_CAN_BUS;
+        pc_run(&p, 2000u);
+        bool refused = !cn_hdg(&p) && (cn_p(&p, 0) & 2u) && cn_p(&p, 1) == HAL_CAN_ST_BUSOFF;
+        uint32_t boffs = p.x.sb.can.bus.busoffs;
+        sim_hal_can_fault(0u);
+        pc_run(&p, 2500u);
+        bool back = !p.x.sb.can.bus_bad && !p.x.sb.can.node_block && p.x.sb.can.bus.state == HAL_CAN_ST_RUN;
+        sb_alarm_ack(&p.x.sb);
+        pc_run(&p, 100u);
+        bool cleared = !(p.x.sb.alarm_bits2 & (SB_ALM2_CAN_BUS | SB_ALM2_CAN_NODE)) && cn_hdg(&p);
+        snprintf(d, sizeof d, "HDG LOCK %s; bus-off: STANDBY after %u ms with CAN BUS FAULT + CAN NODE LOST, every node "
+                 "lost (BUS) %s; HDG LOCK refused, TELEM2 P %s (bus-offs %u); fault gone: recovered by itself %s, ack "
+                 "clears + HDG LOCK %s", hdg ? "yes" : "NO", (unsigned)dt, fault ? "yes" : "NO", refused ? "ok" : "WRONG",
+                 (unsigned)boffs, back ? "yes" : "NO", cleared ? "yes" : "NO");
+        test_report("CN6 bus-off > 100 ms: CAN BUS FAULT + every node lost -> STANDBY; recovery by itself, ack clears",
+                    hdg && dt >= 100u && dt <= 300u && fault && refused && boffs >= 1u && back && cleared, d);
+    }
+
+    /* CN7 every node unpowered (nobody acknowledges): error passive > 100 ms = bus fault; our frames wait
+     * in the controller (never a flood), the stale queue is dropped; power back = the bus recovers */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1108u, 0u);
+        bool hdg = cn_hdg(&p);
+        for (uint8_t id = 20u; id <= 22u; id++) sim_hal_can_node(id, false, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sim_hal_can_node(DC_NODE_RELAY, false, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        pc_run(&p, 4000u);
+        bool passive = sb_mode(&p.x.sb) == MODE_STANDBY && p.x.sb.can.bus.state == HAL_CAN_ST_PASSIVE &&
+                       p.x.sb.can.bus.fault && (p.x.sb.alarm_bits2 & SB_ALM2_CAN_BUS) &&
+                       sim_hal_can_tx_waiting() <= 16u;
+        for (uint8_t id = 20u; id <= 22u; id++) sim_hal_can_node(id, true, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        pc_run(&p, 4000u);
+        /* the nodes were power-cycled: their uptime went back = REBOOTED (latched until the ack in STANDBY) */
+        bool back = !p.x.sb.can.bus.fault && p.x.sb.can.bus.state == HAL_CAN_ST_RUN && p.x.sb.can.reboot_mask == 0x0Fu &&
+                    p.x.sb.can.node_block;
+        sb_alarm_ack(&p.x.sb);
+        pc_run(&p, 100u);
+        bool cleared = !(p.x.sb.alarm_bits2 & (SB_ALM2_CAN_BUS | SB_ALM2_CAN_NODE)) && !p.x.sb.can.node_block &&
+                       cn_hdg(&p);
+        snprintf(d, sizeof d, "HDG LOCK %s; every node unpowered: error passive (TEC %u) -> bus fault + STANDBY %s, "
+                 "controller FIFO %u frames (<= 16); power back (node boot: INITIALIZATION 1 s): bus OK, every node "
+                 "REBOOTED (latched) %s, ack clears + HDG LOCK %s", hdg ? "yes" : "NO", p.x.sb.can.bus.tec,
+                 passive ? "yes" : "NO", (unsigned)sim_hal_can_tx_waiting(), back ? "yes" : "NO", cleared ? "yes" : "NO");
+        test_report("CN7 nobody acknowledges: error passive -> bus fault -> STANDBY; power back = recovered",
+                    hdg && passive && back && cleared, d);
+    }
+
+    /* CN8 OUR node ID 10 on the bus (the Pixhawk connected, OA-4): CAN BUS FAULT + STANDBY + interlock while
+     * it is there; gone for 3 s = the interlock goes, the ack clears; log event CAN 7 */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1109u, 0u);
+        bool hdg = cn_hdg(&p);
+        uint16_t seq0 = p.x.sb.can.log_seq;
+        sim_hal_can_fault(SIM_CAN_FOREIGN10);
+        pc_run(&p, 1500u);
+        bool conflict = sb_mode(&p.x.sb) == MODE_STANDBY && p.x.sb.can.bus.id_conflict &&
+                        (p.x.sb.alarm_bits2 & SB_ALM2_CAN_BUS) && cn_why(&p.x.sb) == WHY_CAN_BUS &&
+                        p.x.sb.can.log_seq != seq0 && (cn_p(&p, 0) & 4u);
+        pc_run(&p, 3000u);
+        bool refused = !cn_hdg(&p) && p.x.sb.can.bus_bad;
+        sim_hal_can_fault(0u);
+        pc_run(&p, 3500u);
+        bool gone = !p.x.sb.can.bus_bad;
+        sb_alarm_ack(&p.x.sb);
+        pc_run(&p, 100u);
+        bool cleared = !(p.x.sb.alarm_bits2 & SB_ALM2_CAN_BUS) && cn_hdg(&p);
+        snprintf(d, sizeof d, "HDG LOCK %s; a node 10 on the bus: STANDBY + CAN BUS FAULT + log event %s; still there: "
+                 "refused %s; gone 3.5 s: interlock off %s, ack clears + HDG LOCK %s",
+                 hdg ? "yes" : "NO", conflict ? "yes" : "NO", refused ? "yes" : "NO", gone ? "yes" : "NO",
+                 cleared ? "yes" : "NO");
+        test_report("CN8 our own node ID 10 seen on the bus (Pixhawk): CAN BUS FAULT + STANDBY interlock while seen",
+                    hdg && conflict && refused && gone && cleared, d);
+    }
+
+    /* CN9 a node asking for a dynamic node ID (no static ID set): a notice only (no alarm, no mode change,
+     * never answered: no ID server on the AURIX) */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1110u, 0u);
+        bool hdg = cn_hdg(&p);
+        uint32_t other0 = sim_hal_can_bus_frames(3u);
+        sim_hal_can_fault(SIM_CAN_ANON);
+        pc_run(&p, 3000u);
+        bool notice = sb_mode(&p.x.sb) == MODE_HDG_LOCK && p.x.sb.can.bus.anon_node && p.x.sb.alarm_bits2 == 0u &&
+                      (cn_p(&p, 0) & 8u) && sim_hal_can_bus_frames(3u) == other0;
+        sim_hal_can_fault(0u);
+        pc_run(&p, 6000u);
+        bool gone = !p.x.sb.can.bus.anon_node && !(cn_p(&p, 0) & 8u);
+        snprintf(d, sizeof d, "HDG LOCK %s; dynamic-ID requests: notice only, never answered %s; gone after 5 s %s",
+                 hdg ? "yes" : "NO", notice ? "yes" : "NO", gone ? "yes" : "NO");
+        test_report("CN9 a node without a static ID: notice only (never answered)", hdg && notice && gone, d);
+    }
+
+    /* CN10 the CAN controller does not start: CAN BUS FAULT, nothing leaves STANDBY; a required node never
+     * seen since the boot blocks from the start (alarm only after 1.5 s) */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1111u, SIM_CAN_START_FAIL);
+        bool fault = p.x.sb.can.bus.state == HAL_CAN_ST_FAULT && (p.x.sb.alarm_bits2 & SB_ALM2_CAN_BUS) &&
+                     sim_hal_can_bus_frames(0u) == 0u && !cn_hdg(&p);
+        static pcsim_t q;
+        s_can_on = true;
+        pcsim_init(&q, 1112u);
+        s_can_on = false;
+        sim_hal_can_node(DC_NODE_GEAR, false, DC_HEALTH_OK, DC_MODE_OPERATIONAL);   /* the gear node never powered */
+        pc_run(&q, 1000u);
+        bool early = q.x.sb.can.node_block && !(q.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE);
+        pc_run(&q, 7000u);
+        bool later = (q.x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) && q.x.sb.can.node[HAL_CAN_ROLE_GEAR].why == HAL_CAN_NEVER &&
+                     !cn_hdg(&q);
+        snprintf(d, sizeof d, "controller start failed: FAULT + CAN BUS FAULT, no frame, HDG LOCK refused %s; gear node "
+                 "never seen: blocked from the start without an alarm %s, CAN NODE LOST (NEVER) after the limit %s",
+                 fault ? "yes" : "NO", early ? "yes" : "NO", later ? "yes" : "NO");
+        test_report("CN10 controller start failure / a required node never seen: STANDBY only (alarm after 1.5 s)",
+                    fault && early && later, d);
+    }
+
+    /* CN11 the simulated servo / relay nodes (for steps 11e / 11f), driven by dronecan.c's own encoder:
+     * a command moves the servo at its rate limit (steering 12 s lock to lock), the play (backlash) shows on
+     * a reversal, lost commands = HOLD (OA-1); hardpoint commands reach the relay node; the app sends none */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1113u, 0u);
+        bool q1 = dc_send_actuator(2u, DC_CMD_UNITLESS, 1.0f);       /* steering full right */
+        pc_run(&p, 3000u);
+        float c, pos, out;
+        uint32_t n;
+        bool got = sim_hal_can_servo(DC_NODE_STEERING, &c, &pos, &out, &n);
+        bool rate = got && fabsf(c - 1.0f) < 1e-3f && pos > 0.40f && pos < 0.60f;   /* 2 / 12 s x 3 s = 0.5 */
+        float pos3 = pos;
+        pc_run(&p, 4000u);
+        (void)sim_hal_can_servo(DC_NODE_STEERING, &c, &pos, &out, &n);
+        float hold = pos;                                            /* no more commands: holds there */
+        bool held = pos >= 0.99f;
+        bool q2 = dc_send_actuator(2u, DC_CMD_UNITLESS, 0.9f);       /* a small reversal: inside the play */
+        pc_run(&p, 1000u);
+        float pos2, out2;
+        (void)sim_hal_can_servo(DC_NODE_STEERING, &c, &pos2, &out2, &n);
+        bool play = fabsf(pos2 - 0.9f) < 0.02f && out2 > pos2 + 0.01f;   /* the output lags by half the play */
+        bool q3 = dc_send_hardpoint(4u, 1u);
+        pc_run(&p, 200u);
+        uint32_t hpc;
+        uint16_t hp = sim_hal_can_hardpoint(4u, &hpc);
+        float tc;
+        bool thr = sim_hal_can_servo(DC_NODE_THROTTLE, &tc, NULL, NULL, NULL);   /* never commanded: holds idle */
+        snprintf(d, sizeof d, "steering: queued %d, after 3 s at 12 s lock-to-lock pos %.2f (want ~0.5), then holds at "
+                 "%.2f without commands, reversal 0.9: servo %.2f, output %.2f (play) ; hardpoint 4 = %u (%u commands); "
+                 "throttle node never commanded %s",
+                 q1 && q2, (double)pos3, (double)hold, (double)pos2, (double)out2, hp, (unsigned)hpc, thr ? "NO" : "yes");
+        test_report("CN11 simulated servo nodes (rate limit, backlash, HOLD on lost commands) + relay node decode",
+                    q1 && q2 && q3 && rate && held && play && hp == 1u && hpc == 1u && !thr, d);
+    }
+
+    /* CN12 telemetry + log: CAN_NODES frame (USB, 1 Hz) with the node table, TELEM2 group P, log event CAN */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1114u, 0u);
+        int f0 = p.can_frames;
+        pc_run(&p, 3000u);
+        int fn = p.can_frames - f0;
+        proto_rd_t r;
+        proto_rd_init(&r, p.can, p.can_len);
+        uint8_t st = proto_rd_u8(&r), fl = proto_rd_u8(&r);
+        (void)proto_rd_u8(&r); (void)proto_rd_u8(&r);
+        uint32_t rx = proto_rd_u32(&r);
+        r.n += 16u;
+        uint8_t nn = proto_rd_u8(&r), id0 = proto_rd_u8(&r), role0 = proto_rd_u8(&r), nf0 = proto_rd_u8(&r);
+        bool frame = st == HAL_CAN_ST_RUN && (fl & 1u) && rx > 0u && nn == HAL_CAN_NODES && id0 == DC_NODE_THROTTLE &&
+                     role0 == HAL_CAN_ROLE_THROTTLE && (nf0 & 3u) == 3u && p.can_len == 25u + HAL_CAN_NODES * 20u;
+        uint16_t s0 = p.x.sb.can.log_seq;
+        sim_hal_can_node_silent(DC_NODE_GEAR, true);
+        pc_run(&p, 2000u);
+        bool ev = p.x.sb.can.log_seq != s0 && p.x.sb.can.log_what == 1u && p.x.sb.can.log_node == DC_NODE_GEAR &&
+                  p.x.sb.can.log_why == HAL_CAN_SILENT;
+        sim_hal_can_node_silent(DC_NODE_GEAR, false);
+        pc_run(&p, 1500u);
+        bool ev2 = p.x.sb.can.log_what == 2u;
+        snprintf(d, sizeof d, "CAN_NODES frames in 3 s: %d (len %u), state %u flags 0x%02x rx %u n %u first id %u role %u "
+                 "flags 0x%02x; log event: gear lost (SILENT) %s, back %s",
+                 fn, p.can_len, st, fl, (unsigned)rx, nn, id0, role0, nf0, ev ? "yes" : "NO", ev2 ? "yes" : "NO");
+        test_report("CN12 CAN_NODES frame (USB 1 Hz) + TELEM2 group P + log event CAN (29)",
+                    fn >= 2 && fn <= 4 && frame && ev && ev2, d);
+    }
+
+    /* CN13 MANUAL with the stick held: a node lost -> STANDBY anyway (a fault always wins); the held stick
+     * can't take MANUAL back while the node is lost (no mode but STANDBY) */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1115u, 0u);
+        joy_set(0.5f, 0.0f, false, false);
+        pc_run(&p, 1000u);
+        bool manual = sb_mode(&p.x.sb) == MODE_MANUAL;
+        sim_hal_can_node_silent(DC_NODE_STEERING, true);
+        uint32_t t0 = p.x.t;
+        while (sb_mode(&p.x.sb) == MODE_MANUAL && p.x.t < t0 + 3000u) pc_run(&p, AP_PERIOD_MS);
+        bool standby = sb_mode(&p.x.sb) == MODE_STANDBY && cn_why(&p.x.sb) == WHY_CAN_NODE;
+        pc_run(&p, 1000u);
+        joy_set(0.0f, 0.0f, false, false);
+        pc_run(&p, 500u);
+        joy_set(0.6f, 0.0f, false, false);
+        pc_run(&p, 1000u);
+        bool stays = sb_mode(&p.x.sb) == MODE_STANDBY;
+        joy_set(0.0f, 0.0f, false, false);
+        sim_hal_can_node_silent(DC_NODE_STEERING, false);
+        pc_run(&p, 1500u);
+        joy_set(0.6f, 0.0f, false, false);
+        pc_run(&p, 1000u);
+        bool again = sb_mode(&p.x.sb) == MODE_MANUAL;
+        joy_set(0.0f, 0.0f, false, false);
+        snprintf(d, sizeof d, "MANUAL %s; steering node silent: STANDBY (CAN node) %s; stick takeover refused while lost "
+                 "%s; node back: the stick takes MANUAL %s", manual ? "yes" : "NO", standby ? "yes" : "NO",
+                 stays ? "yes" : "NO", again ? "yes" : "NO");
+        test_report("CN13 MANUAL: a node lost -> STANDBY (forced), no takeover while lost, back = MANUAL possible",
+                    manual && standby && stays && again, d);
+    }
+}
+
+void sb_can_tests(void)
+{
+    can_tests();
+}
+
 void sb_dp_tests(void)
 {
     dp_tests();
@@ -11606,6 +12047,7 @@ void sb_generator_tests(void)
 
 void sb_tests(void)
 {
+    can_tests();
     dp_tests();
     dp_mode_tests();
     generator_tests();

@@ -4,6 +4,7 @@
 #include "hal_sim.h"
 #include "boat_model.h"
 #include "tc_modbus.h"
+#include "dronecan.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -17,6 +18,7 @@
 
 static void nv_sim_reset(void);         /* non-volatile storage queue (below) */
 static void rb_driver_init(void);       /* Modbus relay board: the master restarts (below) */
+static void sc_driver_init(void);       /* DroneCAN: the AURIX side restarts, the nodes keep running (below) */
 
 /* safety monitor trip latch (hal_safe_outputs) */
 static bool     s_forced;
@@ -56,6 +58,7 @@ void hal_init(void)
     s_gyro_rng = 777u;
     nv_sim_reset();         /* a reboot: queued saves are gone, the files stay */
     rb_driver_init();       /* the Modbus master restarts; the relay board keeps its states */
+    sc_driver_init();       /* DroneCAN: our controller + dronecan.c restart; the nodes keep running */
 }
 
 uint32_t hal_millis(void)
@@ -1182,4 +1185,339 @@ void sim_hal_sd_power_cut(void)
         fclose(s_sd[h].f);
         s_sd[h].open = false;
     }
+}
+
+/* ---- DroneCAN bus (step 11d): a simulated MCMCAN controller + bus + nodes ----------------------------
+ * The AURIX side is the REAL hal/dronecan.c (+ libcanard) on a simulated controller port: a TX FIFO, an
+ * RX FIFO, error counters, bus-off. The nodes decode / encode raw frames themselves: servo nodes
+ * (throttle 20 = actuator 1, steering 21 = actuator 2, gear 22 = actuator 3: ArrayCommand UNITLESS ->
+ * a servo moving at its rate limit, then a backlash play; lost commands = HOLD, OA-1), the relay node
+ * 30 (hardpoint.Command 0..5). Every node sends NodeStatus at 1 Hz. Faults: a node unpowered / silent
+ * / not OPERATIONAL / health WARNING..CRITICAL / rebooted; the bus off; nobody acknowledging (every
+ * node unpowered -> error passive); a node with OUR ID 10 (the Pixhawk, OA-4); a node asking for a
+ * dynamic ID; the controller not starting. Not fitted by default (like HAL_CAN_FITTED 0). */
+#define SC_TX_FIFO   16u
+#define SC_RX_FIFO   32u
+#define SC_NODES     4u
+typedef struct {
+    uint8_t  id, actuator;          /* actuator 0 = the relay node (hardpoints) */
+    bool     present, silent;
+    uint8_t  health, mode;
+    uint32_t boot_ms, next_status_ms, init_until_ms;
+    uint8_t  tid;
+    float    rate, backlash;        /* servo units / s (2 / full travel s), play (units) */
+    float    cmd, pos, out;         /* last command, servo position, output after the play */
+    bool     have_cmd;
+    uint32_t cmds, statuses;
+    uint16_t hp[6];
+    uint32_t hp_cmds;
+} sc_node_t;
+static sc_node_t s_sc[SC_NODES];
+static bool      s_sc_fitted, s_sc_boot_fitted;
+static uint32_t  s_sc_fault;
+static dc_frame_t s_sc_tx[SC_TX_FIFO], s_sc_rx[SC_RX_FIFO];
+static uint32_t  s_sc_tx_n, s_sc_rx_head, s_sc_rx_n, s_sc_rx_lost;
+static uint32_t  s_sc_last_ms, s_sc_foreign_ms, s_sc_anon_ms;
+static uint8_t   s_sc_tec, s_sc_rec, s_sc_foreign_tid, s_sc_anon_tid;
+static bool      s_sc_busoff, s_sc_started;
+static uint32_t  s_sc_recover_at;
+static uint32_t  s_sc_types[4];     /* frames from the AURIX on the bus: NodeStatus, ArrayCommand, hardpoint, other */
+static uint32_t  s_sc_status_ms[2]; /* our NodeStatus: the last two times seen on the bus */
+
+static sc_node_t *sc_find(uint8_t id)
+{
+    for (uint32_t i = 0; i < SC_NODES; i++) if (s_sc[i].id == id) return &s_sc[i];
+    return NULL;
+}
+
+void sim_hal_can_reset(void)
+{
+    static const uint8_t ids[SC_NODES] = { DC_NODE_THROTTLE, DC_NODE_STEERING, DC_NODE_GEAR, DC_NODE_RELAY };
+    static const float travel[SC_NODES] = { 6.0f, 12.0f, 2.0f, 1.0f };     /* the worst-case servo speeds (11c) */
+    memset(s_sc, 0, sizeof s_sc);
+    for (uint32_t i = 0; i < SC_NODES; i++) {
+        sc_node_t *n = &s_sc[i];
+        n->id = ids[i];
+        n->actuator = (i < 3u) ? (uint8_t)(i + 1u) : 0u;
+        n->present = true;
+        n->health = DC_HEALTH_OK;
+        n->mode = DC_MODE_OPERATIONAL;
+        n->boot_ms = s_time_ms - 60000u;            /* running for a minute already */
+        n->next_status_ms = s_time_ms + 100u * i;
+        n->rate = 2.0f / travel[i];
+        n->backlash = (i == 1u) ? 0.03f : 0.0f;     /* the steering linkage has play */
+        n->cmd = n->pos = n->out = (i == 0u) ? -1.0f : 0.0f;
+    }
+    s_sc_fault = 0u;
+    s_sc_tx_n = s_sc_rx_n = s_sc_rx_head = s_sc_rx_lost = 0u;
+    s_sc_tec = s_sc_rec = 0u;
+    s_sc_busoff = false;
+    s_sc_recover_at = 0u;
+    memset(s_sc_types, 0, sizeof s_sc_types);
+    memset(s_sc_status_ms, 0, sizeof s_sc_status_ms);
+    s_sc_last_ms = s_time_ms;
+}
+
+void sim_hal_can_fitted(bool on) { s_sc_fitted = on; }
+void sim_hal_can_fault(uint32_t bits) { s_sc_fault = bits; }
+
+void sim_hal_can_node(uint8_t id, bool present, uint8_t health, uint8_t mode)
+{
+    sc_node_t *n = sc_find(id);
+    if (!n) return;
+    if (present && !n->present) {               /* power comes back = a node boot */
+        n->boot_ms = s_time_ms;
+        n->init_until_ms = s_time_ms + 1000u;
+        n->next_status_ms = s_time_ms + 50u;
+    }
+    n->present = present;
+    n->health = health;
+    n->mode = mode;
+}
+
+void sim_hal_can_node_silent(uint8_t id, bool silent)
+{
+    sc_node_t *n = sc_find(id);
+    if (n) n->silent = silent;
+}
+
+void sim_hal_can_node_reboot(uint8_t id)
+{
+    sc_node_t *n = sc_find(id);
+    if (!n) return;
+    n->boot_ms = s_time_ms;                      /* uptime back to 0, INITIALIZATION for 1 s */
+    n->init_until_ms = s_time_ms + 1000u;
+    n->next_status_ms = s_time_ms + 50u;
+}
+
+void sim_hal_can_servo_speed(uint8_t id, float travel_s, float backlash)
+{
+    sc_node_t *n = sc_find(id);
+    if (!n || travel_s <= 0.0f) return;
+    n->rate = 2.0f / travel_s;
+    n->backlash = backlash;
+}
+
+bool sim_hal_can_servo(uint8_t id, float *cmd, float *pos, float *out, uint32_t *cmds)
+{
+    sc_node_t *n = sc_find(id);
+    if (!n) return false;
+    if (cmd) *cmd = n->cmd;
+    if (pos) *pos = n->pos;
+    if (out) *out = n->out;
+    if (cmds) *cmds = n->cmds;
+    return n->have_cmd;
+}
+
+uint16_t sim_hal_can_hardpoint(uint8_t hp, uint32_t *cmds)
+{
+    sc_node_t *n = sc_find(DC_NODE_RELAY);
+    if (cmds) *cmds = n ? n->hp_cmds : 0u;
+    return (n && hp < 6u) ? n->hp[hp] : 0u;
+}
+
+uint32_t sim_hal_can_bus_frames(uint32_t kind) { return kind < 4u ? s_sc_types[kind] : 0u; }
+uint32_t sim_hal_can_status_period_ms(void) { return s_sc_status_ms[1] - s_sc_status_ms[0]; }
+uint32_t sim_hal_can_tx_waiting(void) { return s_sc_tx_n; }
+uint32_t sim_hal_can_node_statuses(uint8_t id) { sc_node_t *n = sc_find(id); return n ? n->statuses : 0u; }
+
+static void sc_rx_push(const dc_frame_t *f)      /* a frame from the bus into our RX FIFO (full: the oldest goes) */
+{
+    if (s_sc_busoff) return;
+    if (s_sc_rx_n == SC_RX_FIFO) {
+        s_sc_rx_head = (s_sc_rx_head + 1u) % SC_RX_FIFO;
+        s_sc_rx_n--;
+        s_sc_rx_lost++;
+    }
+    s_sc_rx[(s_sc_rx_head + s_sc_rx_n) % SC_RX_FIFO] = *f;
+    s_sc_rx_n++;
+}
+
+static void sc_status_frame(uint8_t src, uint8_t *tid, uint32_t uptime_s, uint8_t health, uint8_t mode)
+{
+    dc_status_t st = { uptime_s, health, mode, 0u, 0u };
+    dc_frame_t f;
+    dc_encode_status(f.data, &st);
+    f.data[DC_NODESTATUS_LEN] = dc_tail(true, true, false, *tid);
+    *tid = (uint8_t)((*tid + 1u) & 0x1Fu);
+    f.len = DC_NODESTATUS_LEN + 1u;
+    f.id = dc_msg_id(DC_PRIO_STATUS, DC_NODESTATUS_ID, src);
+    sc_rx_push(&f);
+}
+
+static bool sc_anyone_acks(void)
+{
+    for (uint32_t i = 0; i < SC_NODES; i++) if (s_sc[i].present) return true;
+    return false;
+}
+
+static void sc_deliver(const dc_frame_t *f)      /* one of our frames on the wire: every powered node sees it */
+{
+    uint16_t type = (uint16_t)((f->id >> 8) & 0xFFFFu);
+    bool msg = !(f->id & 0x80u);
+    s_sc_types[(msg && type == DC_NODESTATUS_ID) ? 0 : (msg && type == DC_ARRAYCMD_ID) ? 1 :
+               (msg && type == DC_HARDPOINT_ID) ? 2 : 3]++;
+    if (msg && type == DC_NODESTATUS_ID) {
+        s_sc_status_ms[0] = s_sc_status_ms[1];
+        s_sc_status_ms[1] = s_time_ms;
+    }
+    if (f->len < 1u) return;
+    uint8_t tail = f->data[f->len - 1u];
+    if ((tail & 0xC0u) != 0xC0u) return;         /* the nodes take single-frame transfers only (all we send them) */
+    for (uint32_t i = 0; i < SC_NODES; i++) {
+        sc_node_t *n = &s_sc[i];
+        if (!n->present) continue;
+        if (msg && type == DC_ARRAYCMD_ID && n->actuator) {
+            dc_cmd_t c[15];
+            uint32_t k = dc_decode_array_command(f->data, f->len - 1u, c, 15u);
+            for (uint32_t j = 0; j < k; j++) {
+                if (c[j].actuator_id != n->actuator || c[j].type != DC_CMD_UNITLESS) continue;
+                float v = c[j].value;
+                n->cmd = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
+                n->have_cmd = true;
+                n->cmds++;
+            }
+        } else if (msg && type == DC_HARDPOINT_ID && !n->actuator) {
+            uint8_t hp;
+            uint16_t cmd;
+            if (dc_decode_hardpoint(f->data, f->len - 1u, &hp, &cmd) && hp < 6u) {
+                n->hp[hp] = cmd;
+                n->hp_cmds++;
+            }
+        }
+    }
+}
+
+static void sc_tick(void)
+{
+    uint32_t now = s_time_ms;
+    float dt = (float)(uint32_t)(now - s_sc_last_ms) * 0.001f;
+    s_sc_last_ms = now;
+    /* the bus: bus-off (fault) / recovery; frames out only with someone to acknowledge them */
+    if (s_sc_fault & SIM_CAN_BUSOFF) {
+        if (!s_sc_busoff) s_sc_tec = 255u;
+        s_sc_busoff = true;
+        s_sc_recover_at = 0u;
+    } else if (s_sc_busoff && s_sc_recover_at && now >= s_sc_recover_at) {
+        s_sc_busoff = false;                     /* 128 x 11 recessive bits seen: error active again */
+        s_sc_tec = s_sc_rec = 0u;
+        s_sc_recover_at = 0u;
+    }
+    if (!s_sc_busoff && s_sc_tx_n) {
+        if (sc_anyone_acks()) {
+            for (uint32_t i = 0; i < s_sc_tx_n; i++) sc_deliver(&s_sc_tx[i]);
+            s_sc_tx_n = 0u;
+            s_sc_tec = (uint8_t)(s_sc_tec > 8u ? s_sc_tec - 8u : 0u);
+        } else if (s_sc_tec < 136u) {
+            s_sc_tec = (uint8_t)(s_sc_tec + 8u);  /* ACK errors: up to error passive, never bus-off (CAN rule) */
+        }
+    }
+    /* the nodes */
+    for (uint32_t i = 0; i < SC_NODES; i++) {
+        sc_node_t *n = &s_sc[i];
+        if (n->actuator) {                       /* servo: rate limit, then the play; no commands = HOLD */
+            float step = n->rate * dt, d = n->cmd - n->pos;
+            if (n->present) n->pos += (d > step) ? step : ((d < -step) ? -step : d);
+            float h = 0.5f * n->backlash;
+            if (n->pos > n->out + h) n->out = n->pos - h;
+            if (n->pos < n->out - h) n->out = n->pos + h;
+        }
+        if (!n->present || n->silent || (int32_t)(now - n->next_status_ms) < 0) continue;
+        n->next_status_ms = now + 1000u;
+        uint8_t mode = ((int32_t)(now - n->init_until_ms) < 0) ? DC_MODE_INIT : n->mode;
+        sc_status_frame(n->id, &n->tid, (now - n->boot_ms) / 1000u, n->health, mode);
+        n->statuses++;
+    }
+    if ((s_sc_fault & SIM_CAN_FOREIGN10) && now - s_sc_foreign_ms >= 1000u) {   /* the Pixhawk: node 10 too */
+        s_sc_foreign_ms = now;
+        sc_status_frame(DC_OWN_NODE_ID, &s_sc_foreign_tid, now / 1000u, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+    }
+    if ((s_sc_fault & SIM_CAN_ANON) && now - s_sc_anon_ms >= 1000u) {          /* a node without a static ID */
+        s_sc_anon_ms = now;
+        dc_frame_t f;
+        memset(&f, 0, sizeof f);
+        f.data[0] = 0x01u;                       /* node_id 0 (any), first part of the unique ID */
+        for (uint32_t k = 1; k < 7u; k++) f.data[k] = (uint8_t)(0x10u + k);
+        f.data[7] = dc_tail(true, true, false, s_sc_anon_tid);
+        s_sc_anon_tid = (uint8_t)((s_sc_anon_tid + 1u) & 0x1Fu);
+        f.len = 8u;
+        /* anonymous message: priority, a discriminator in bits 10..23, type ID 1 in bits 8..9, source 0 */
+        f.id = ((uint32_t)DC_PRIO_STATUS << 24) | (0x1234u << 10) | ((uint32_t)DC_ALLOCATION_ID << 8);
+        sc_rx_push(&f);
+    }
+}
+
+/* the controller port dronecan.c drives (the same calls as hal/tc_can.c on the board) */
+static bool sc_start(void)
+{
+    s_sc_started = !(s_sc_fault & SIM_CAN_START_FAIL);
+    s_sc_tx_n = 0u;                              /* the controller restarts: its FIFOs are empty */
+    s_sc_rx_n = s_sc_rx_head = 0u;
+    return s_sc_started;
+}
+
+static bool sc_send(const dc_frame_t *f)
+{
+    if (!s_sc_started || s_sc_busoff || s_sc_tx_n >= SC_TX_FIFO) return false;
+    s_sc_tx[s_sc_tx_n++] = *f;
+    return true;
+}
+
+static bool sc_recv(dc_frame_t *f)
+{
+    if (!s_sc_started || s_sc_rx_n == 0u) return false;
+    *f = s_sc_rx[s_sc_rx_head];
+    s_sc_rx_head = (s_sc_rx_head + 1u) % SC_RX_FIFO;
+    s_sc_rx_n--;
+    return true;
+}
+
+static uint8_t sc_state(uint8_t *tec, uint8_t *rec)
+{
+    *tec = s_sc_tec;
+    *rec = s_sc_rec;
+    if (s_sc_busoff) return DC_CTRL_BUSOFF;
+    return s_sc_tec >= 128u ? DC_CTRL_PASSIVE : DC_CTRL_ACTIVE;
+}
+
+static void sc_recover(void)
+{
+    if (s_sc_busoff && !(s_sc_fault & SIM_CAN_BUSOFF) && !s_sc_recover_at) s_sc_recover_at = s_time_ms + 50u;
+}
+
+static uint32_t sc_millis(void) { return s_time_ms; }
+
+static const dc_port_t s_sc_port = { sc_start, sc_send, sc_recv, sc_state, sc_recover, sc_millis };
+
+static void sc_driver_init(void)
+{
+    s_sc_boot_fitted = s_sc_fitted;
+    if (s_sc_fitted) {
+        s_sc_last_ms = s_time_ms;
+        dc_init(&s_sc_port);
+    }
+}
+
+void hal_can_service(void)
+{
+    if (!s_sc_boot_fitted) return;
+    sc_tick();
+    dc_service();
+}
+
+bool hal_can_bus(hal_can_bus_t *b)
+{
+    if (!s_sc_boot_fitted) return false;
+    dc_bus(b);
+    return true;
+}
+
+bool hal_can_node(uint8_t i, hal_can_node_t *n)
+{
+    return s_sc_boot_fitted && dc_node(i, n);
+}
+
+void hal_can_ack(void)
+{
+    if (s_sc_boot_fitted) dc_ack();
 }

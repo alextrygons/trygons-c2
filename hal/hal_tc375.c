@@ -50,6 +50,8 @@
 #include "tc_uart.h"
 #include "tc_nv.h"
 #include "tc_modbus.h"
+#include "tc_can.h"
+#include "dronecan.h"
 #include "tc_rstcause.h"
 #include "IfxFlash.h"      /* data flash command sequences (inline; Flash/Std built by ADS) */
 
@@ -57,6 +59,7 @@
 
 static void nv_port_init(void);      /* below, with the data flash port */
 static void relay_port_init(void);   /* below, with the RS485 Modbus port */
+static void can_port_init(void);     /* below, with the DroneCAN bus */
 static void reset_latch(void);       /* below, with the reset reason */
 
 #define LINK_BAUD    921600.0f
@@ -244,6 +247,7 @@ void hal_init(void)
     bno_init();                                 /* SPI + reset pulse (state machine) */
     nv_port_init();                             /* data flash record log: scan only (no command) */
     relay_port_init();                          /* RS485 Modbus relay board (only if HAL_RELAY_FITTED) */
+    can_port_init();                            /* DroneCAN bus (only if HAL_CAN_FITTED) */
     /* the SD card is started by CPU2 (hal_sd_present), the only core that uses it */
 }
 
@@ -886,6 +890,43 @@ uint8_t hal_relay_channels(void)
 #else
     return 0u;                                  /* no board wired: nothing to switch, no SILENT alarm */
 #endif
+}
+
+/* --- DroneCAN bus (CLAUDE.md T, step 11d): MCMCAN CAN0 node 0 (tc_can.c) + dronecan.c -------------- */
+static bool s_can_up;
+static const dc_port_t s_can_port = { can_start, can_send, can_recv, can_state, can_recover, hal_millis };
+
+static void can_port_init(void)
+{
+    s_can_up = FALSE;
+#if HAL_CAN_FITTED
+    dc_init(&s_can_port);                       /* starts the controller (bounded iLLD handshakes, before the loop) */
+    s_can_up = TRUE;
+#else
+    (void)s_can_port;                           /* pins not confirmed yet: the bus is never started */
+#endif
+}
+
+void hal_can_service(void)
+{
+    if (s_can_up) dc_service();
+}
+
+bool hal_can_bus(hal_can_bus_t *b)
+{
+    if (!s_can_up) return false;                /* no CAN fitted: no alarm */
+    dc_bus(b);
+    return true;
+}
+
+bool hal_can_node(uint8_t i, hal_can_node_t *n)
+{
+    return s_can_up && dc_node(i, n);
+}
+
+void hal_can_ack(void)
+{
+    if (s_can_up) dc_ack();
 }
 
 /* Panel buttons, sampled once per control step (50 ms): a level that is the

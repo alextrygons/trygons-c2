@@ -48,6 +48,7 @@ import settings
 import theme
 import video
 from i18n import T
+from alerts import can_roles  # noqa: E402  (DroneCAN, 11d)
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageTk
@@ -748,6 +749,10 @@ class DriverScreen:
                 out.append(("nv_reset", T("nv.reset"), "caution"))
             if d.get("batt_no_data"):                   # a notice, never an alarm (CLAUDE.md J)
                 out.append(("batt_no_data", T("batt.no_data"), "caution"))
+            if d.get("can_fitted") and d.get("can_warn"):   # DroneCAN node health WARNING: a notice only (OD-6)
+                out.append(("can_warn", T("can.warning", nodes=can_roles(d["can_warn"])), "caution"))
+            if d.get("can_fitted") and d.get("can_anon"):   # a node without a static node ID (never answered)
+                out.append(("can_anon", T("can.anon"), "caution"))
             gs = d.get("gen_state", 0)                  # generator mode (CLAUDE.md K)
             if gs == 2:
                 out.append(("gen_starting", T("gen.starting"), "caution"))

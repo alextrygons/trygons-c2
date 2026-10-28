@@ -111,6 +111,7 @@
 #define PROTO_T_TELEM2        0x8Bu   /* with every telemetry: gateway / helm / remote / slamming (link.c) */
 #define PROTO_T_GW_ACK        0x8Cu   /* gateway only: u8 station, u16 command seq, u8 type, u8 result */
 #define PROTO_T_BENCH_DIAG    0x8Du   /* USB only, with every telemetry in BENCH TEST: every sensor (link.c bench_diag) */
+#define PROTO_T_CAN_NODES     0x8Eu   /* USB only, 1 Hz while a CAN bus is fitted: DroneCAN bus + node table (link.c can_nodes) */
 
 /* ACK result: 0 = accepted, else why refused (NACK) */
 #define PROTO_R_OK            0u

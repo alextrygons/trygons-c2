@@ -84,6 +84,8 @@ typedef enum {
     WHY_DP_STOP,            /* DP STOP from the station */
     WHY_DP_OFFSPOT,         /* DP: too far / too long off the spot */
     WHY_DP_THRUSTER,        /* DP: a thruster HOT (heat budget) / blocked */
+    WHY_CAN_NODE,           /* DroneCAN: a required node lost (silent / not OPERATIONAL / ERROR / rebooted) */
+    WHY_CAN_BUS,            /* DroneCAN: bus fault (off / passive / controller) or our node ID 10 on the bus */
     WHY_COUNT
 } mode_reason_t;
 
