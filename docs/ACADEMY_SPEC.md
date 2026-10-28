@@ -84,7 +84,7 @@ test stopped, never a mode change.
 
 ## Design decisions (step 15, 2026-10-28) - where the owner's text above leaves things open
 Recorded by step 15; the owner's text above stays binding. Open owner questions: PROGRESS.md
-"WAITING FOR OWNER" W27-W31 (recommended defaults used until answered).
+"WAITING FOR OWNER" (W27-W29 and W31 answered 2026-10-28 = the recommended defaults; W30 open).
 
 D1 Folder + build. academy/ = Python only (flat modules like groundstation/, run with academy/ on
    sys.path), excluded from the ADS build in every .cproject configuration (check_ads_excludes.py +
@@ -139,3 +139,14 @@ D10 Ground station menu "Academy": NOT added in step 15 (the spec gives no scree
 D11 Academy data on the shore PC (step 16): academy/data/ (inside the excluded academy/ folder,
    gitignored, never in git; TRYGONS_ACADEMY_DATA overrides it for tests), one JSON file per account
    + an append-only logbook; the backup / sync target = W28.
+D12 Step 16 (owner answers 2026-10-28: W27-W29, W31 = the recommended defaults; W30 on site later).
+   The push (spec A "the academy pushes level + expiry") keeps D2: the academy never talks to a boat.
+   It writes a SIGNED file (HMAC-SHA256 over the canonical JSON; key = academy/data/academy_key.txt
+   = the gateway's secrets.json "academy_key"); the ground station (menu Academy) sends it over its
+   own gateway login; gateway/trainlevels.py checks signature, replay (seq), licence = CAPTAIN only
+   with an expiry, known users only (never a new user / role / password), keeps the last copy
+   (state/academy_levels.json) and the licence is read at LOGIN only (never revoked mid-trip; spec
+   "next login / HELM take" = the next login). A user without an academy record keeps the
+   secrets.json flag. Backup (W28): a folder the instructor chooses (second shore PC / USB disk),
+   never a boat gateway; the key is not copied. The menu (W31) starts academy/academy_app.py as its
+   own process with only --lang. The instructor view's certificate PDF comes with the exams (step 21).
