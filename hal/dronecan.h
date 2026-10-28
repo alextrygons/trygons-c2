@@ -23,9 +23,8 @@
  *     rules of docs/dronecan_design.md section 5 (hal.h hal_can_node_t).
  *   - encoders / decoders of the messages of section 4: NodeStatus, ArrayCommand
  *     (UNITLESS, one command per transfer = one CAN frame), hardpoint.Command.
- *     Step 11d: dc_send_actuator / dc_send_hardpoint exist and are tested (sim
- *     nodes, host tests) but NO app code calls them yet (tools/check.sh) - the
- *     servos move to CAN in step 11e, the relay board in 11f.
+ *     The servos are commanded by hal/can_act.c (step 11e), the relay board by
+ *     hal/can_relay.c (step 11f: hardpoint.Command out, hardpoint.Status in).
  * Signatures and IDs are checked against values computed from the DSDL text by
  * tests/hal_pc/dronecan_check.py (CRC-64-WE, the DroneCAN rule).
  */
@@ -61,6 +60,8 @@
 #define DC_ARRAYCMD_SIG     0xD8A7486238EC3AF3ull
 #define DC_HARDPOINT_ID     1070u
 #define DC_HARDPOINT_SIG    0xA1A036268B0C3455ull
+#define DC_HPSTATUS_ID      1071u   /* uavcan.equipment.hardpoint.Status (relay readback, if the board sends it: R-4) */
+#define DC_HPSTATUS_SIG     0x624A519D42553D82ull
 #define DC_GETNODEINFO_ID   1u      /* service */
 #define DC_GETNODEINFO_SIG  0xEE468A8121C46A9Eull
 #define DC_ALLOCATION_ID    1u      /* message (anonymous dynamic node ID request) */
@@ -133,13 +134,20 @@ void dc_cancel_tx(void);
 /* the next ArrayCommand transfer ID (CPU1 continues the counter for its safe frames: OUR node ID, the same
  * data type - a node must not drop them as duplicates; TO CONFIRM C19) */
 uint8_t dc_cmd_tid(void);
-/* one hardpoint.Command (relay board): false = not queued */
+/* one hardpoint.Command (relay board): false = not queued. Only the relay back-end hal/can_relay.c
+ * calls it (step 11f; tools/check.sh). */
 bool dc_send_hardpoint(uint8_t hardpoint_id, uint16_t command);
+/* the relay board's readback (step 11f): the last uavcan.equipment.hardpoint.Status of hardpoint hp FROM the
+ * relay node (DC_NODE_RELAY; other sources ignored). false = never received since dc_init (hp < DC_HP_MAX);
+ * age_ms = since it arrived. Whether the real board sends it at all: TO CONFIRM (C17, requirement R-4). */
+#define DC_HP_MAX           32u
+bool dc_hardpoint_status(uint8_t hp, uint16_t *status, uint32_t *age_ms);
 
 /* --- pure encode / decode helpers (also used by the sim nodes + host tests) -- */
 /* payload (no tail byte) sizes */
 #define DC_NODESTATUS_LEN   7u
 #define DC_HARDPOINT_LEN    3u
+#define DC_HPSTATUS_LEN     7u      /* hardpoint_id, float16 payload_weight, float16 variance, uint16 status */
 #define DC_NODEINFO_NAME    "org.trygons.c2.aurix"
 typedef struct {
     uint32_t uptime_s;
@@ -157,6 +165,8 @@ uint32_t dc_encode_array_command(uint8_t *out, const dc_cmd_t *c, uint32_t n);
 uint32_t dc_decode_array_command(const uint8_t *p, uint32_t len, dc_cmd_t *c, uint32_t max);
 void     dc_encode_hardpoint(uint8_t *out3, uint8_t id, uint16_t command);
 bool     dc_decode_hardpoint(const uint8_t *p, uint32_t len, uint8_t *id, uint16_t *command);
+void     dc_encode_hp_status(uint8_t *out7, uint8_t id, uint16_t status);   /* (the sim relay node; weight 0) */
+bool     dc_decode_hp_status(const uint8_t *p, uint32_t len, uint8_t *id, uint16_t *status);
 /* the GetNodeInfo response payload: returns its length (<= out size 128) */
 uint32_t dc_encode_node_info(uint8_t *out, uint32_t max, const dc_status_t *st);
 /* identifier of a single message frame + its tail byte (sim nodes) */
@@ -172,6 +182,7 @@ uint16_t dc_crc_signature(uint64_t sig);
 typedef struct {
     uint32_t rx, tx, tx_drops, rx_errors, busoffs, recoveries, conflicts, anon;
     uint32_t nodeinfo_replies, pool_peak;
+    uint32_t hp_status;     /* hardpoint.Status taken from the relay node (step 11f) */
     uint8_t  state;         /* HAL_CAN_ST_ */
 } dc_stats_t;
 const dc_stats_t *dc_stats(void);

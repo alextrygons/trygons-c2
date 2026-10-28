@@ -1,0 +1,83 @@
+/*
+ * can_relay.h - The relay board on DroneCAN: the second back-end of the hal_relay_*
+ * API (CLAUDE.md T "Relay board over DroneCAN (11f)", docs/dronecan_design.md
+ * section 9; step 11f). Pure C99 over hal/dronecan.c (no iLLD): the same code on the
+ * TC375 (hal_tc375.c with RELAY_BUS == RELAY_BUS_DRONECAN) and in the PC simulation
+ * (sim/hal_sim.c, the simulated relay node 30). The RS485 Modbus back-end
+ * (hal/tc_modbus.c) stays as the other build option (owner decision OD-9); app/relays.c
+ * sees the SAME hal_relay_* calls and keeps EVERY relay rule (it does not know the bus).
+ *
+ * Core 0 only. The board: node DC_NODE_RELAY (30, TO CONFIRM C3 / C17), relay n =
+ * hardpoint n - 1 (ArduPilot RELAY1..6_PIN 1000..1005 = hardpoints 0-5), command 1 = on,
+ * 0 = off (uavcan.equipment.hardpoint.Command).
+ *
+ * What is sent, and when (ArduPilot CAN_D1_UC_RLY_RT 50 Hz):
+ *   - NOTHING after a boot (power-on or warm reset): no frame for a relay until relays.c
+ *     commands it - the board HOLDS its states (requirement R-2), so a reset never
+ *     switches anything (the rules: never OFF by itself, power_up only ON and only after
+ *     the AURIX's own power-on reset - relays.c decides that, not this file).
+ *   - set (on / off): the new state CR_BURST_FRAMES times at 50 Hz, then no more frames
+ *     (the board holds it, R-2; a hand switch on the board is never overwritten). The
+ *     burst counts only frames sent while the board is there: an OFF asked while the board
+ *     is silent goes when it is back.
+ *   - pulse (momentary relays, the STARTER's hold-to-crank): ON at 50 Hz until the pulse
+ *     end (AURIX-timed: hardpoint.Command has no board-timed pulse), then the OFF burst.
+ *     When the AURIX stops sending (frozen core 0, reset, cable) the BOARD switches the
+ *     relay off by its own command timeout (<= 300 ms, requirement R-3); the STARTER is
+ *     always also behind a hardware time-limit relay (OD-9).
+ * Readback: the board's uavcan.equipment.hardpoint.Status (status != 0 = on) if it sends
+ *   it (R-4, TO CONFIRM C17) - then exactly like the Modbus coil readback (valid for
+ *   HAL_RELAY_LOST_MS). A board that sends no Status at all: cr_readback() false and the
+ *   COMMANDED states are the readback (the screens say "no readback"): known only once
+ *   commanded since the boot, kept across a warm reset (no-clear RAM, cr_keep), or all
+ *   OFF when the board itself booted after the AURIX's power-on (R-2: it powers up OFF).
+ * ok: the bus works and the relay node's NodeStatus is younger than HAL_RELAY_LOST_MS,
+ *   mode OPERATIONAL, health below ERROR (WARNING = ok: a notice, OD-6). Like the Modbus
+ *   master, the first HAL_RELAY_LOST_MS after the start give the board time to be seen.
+ *   A board that rebooted (its uptime went back) powered up OFF (R-2): every state OFF,
+ *   nothing re-sent.
+ */
+#ifndef CAN_RELAY_H
+#define CAN_RELAY_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define CR_CH_MAX        32u     /* relays 1..32 = hardpoints 0..31 */
+#define CR_PERIOD_MS     20u     /* 50 Hz (ArduPilot CAN_D1_UC_RLY_RT) */
+#define CR_BURST_FRAMES  10u     /* a new on / off state: 10 frames (200 ms), then the board holds it (R-2) */
+#define CR_BOOT_MARGIN_MS 2000u  /* the board booted after us when its uptime <= ours + this */
+
+typedef struct {
+    uint8_t  channels;           /* the board's hardpoints (hal_pins.h CAN_RELAY_CHANNELS, TO CONFIRM; sim: fitted) */
+    uint32_t lost_ms;            /* HAL_RELAY_LOST_MS */
+    bool     power_on;           /* the AURIX's own POWER-ON reset (a board booting after it is all OFF) */
+    bool     keep_valid;         /* the commanded states of before a warm reset (no-clear RAM) */
+    uint32_t keep_known, keep_on;
+} cr_config_t;
+
+void cr_init(const cr_config_t *c);
+/* every control step (hal_relay_service): the board's node state, pulse ends */
+void cr_service(void);
+/* core 0's 10 ms task (hal_can_tick): the frames at 50 Hz; never blocks */
+void cr_tick(void);
+/* the hal_relay_* back-end (n = 1..channels; false = bad n / not started) */
+bool cr_set(uint8_t n, bool on);
+bool cr_pulse(uint8_t n, uint16_t ms);
+bool cr_read(uint8_t n, bool *on);
+bool cr_ok(void);
+bool cr_readback(void);          /* the board sends hardpoint.Status (else: the commanded states, "no readback") */
+/* the commanded states to keep across a warm reset (a running pulse = off: the board's timeout ends it) */
+void cr_keep(uint32_t *known, uint32_t *on);
+
+typedef struct {
+    uint32_t frames;             /* hardpoint.Command frames queued */
+    uint32_t refused;            /* not queued (bus fault / no room) */
+    uint32_t sets, pulses;       /* commands from relays.c */
+    uint32_t max_pulse_ms;       /* the longest pulse ever asked */
+    uint32_t board_reboots;      /* the board's uptime went back: every state OFF */
+    uint32_t ticks;
+} cr_stats_t;
+const cr_stats_t *cr_stats(void);
+
+#endif /* CAN_RELAY_H */

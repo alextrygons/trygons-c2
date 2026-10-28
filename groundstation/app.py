@@ -3434,7 +3434,9 @@ class App:
             return self.say(T("ov.relay_not_active"), RED)
         if r.get("role") == "starter":
             return self.crank_press()
-        if r["state"] == "unknown":
+        d = self.t or {}
+        if r["state"] == "unknown" and not (d.get("relay_no_readback") and d.get("relay_ok")):
+            # (a DroneCAN board without readback: the state is known only once commanded - the press sends ON)
             return self.say(T("ov.relay_unknown", name=r["name"]), RED)
         if r["hold"]:
             self.relay_held = n
@@ -3500,6 +3502,9 @@ class App:
         elif not d.get("relay_ok"):
             p.text(T("ov.relay_silent"), "small", colour=C["note_txt"], tag="relay_note", wrap=0.24)
             p.br()
+        elif d.get("relay_no_readback"):
+            p.text(T("ov.relay_no_readback"), "small", colour=C["note_txt"], tag="relay_note", wrap=0.24)
+            p.br()
         last = None
         for grp, line in self.relay_lines(rows):
             p.text(T("ov.relay_grp_" + grp) if grp != last else "", "small", colour=C["dim"], bold=True,
@@ -3508,7 +3513,8 @@ class App:
             for r in line:
                 p.button(r["name"], lambda n=r["n"]: self.relay_press(n),
                          "warn" if r.get("role") == "starter" else "normal", on=r["state"] == "on",
-                         enabled=active and (r["state"] != "unknown" or r.get("role") == "starter"),
+                         enabled=active and (r["state"] != "unknown" or r.get("role") == "starter" or
+                                             bool(d.get("relay_no_readback") and d.get("relay_ok"))),
                          level="small", tag="relay_%d" % r["n"],
                          release=(lambda n=r["n"]: self.relay_release(n)) if r["hold"] else None)
             if any(r["hold"] for r in line):

@@ -216,7 +216,10 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         }
         /* what a crew does: a program before AUTO, the remote data before its request, and the
            joystick CONFIRM 1-3 s after a request (mostly) */
-        if ((k == E_PC_AUTO_START || k == E_PC_RAISE || k == E_REMOTE_REQ || k == E_MAN_REQ) && s->n + 3 < MAX_EV) {
+        /* (step 11f: the boat file's relay table offer is confirmed too - mostly - so that the relays and the
+           STARTER rules of I36 / I37 are reached in the episodes, not only refused) */
+        if ((k == E_PC_AUTO_START || k == E_PC_RAISE || k == E_REMOTE_REQ || k == E_MAN_REQ ||
+             (k == E_RELAY && e->a < 200)) && s->n + 3 < MAX_EV) {
             if (k == E_PC_AUTO_START && rnd(&r) < 0.6f) {
                 ev_t pe = *e;
                 pe.kind = E_PC_PROG;
@@ -406,6 +409,9 @@ static void sim_init(const sched_t *sc)
     sim_hal_relay_board(true, 5u, 0u);  /* a fresh relay board (every relay off), 16 channels */
     sim_hal_relay_board_reset();
     sim_hal_relay_fitted(16u);
+    /* step 11f: the DroneCAN episodes also have the relay board on DroneCAN (can_relay.c + the simulated node 30):
+     * I36 / I37 / I38 are judged on both buses */
+    sim_hal_relay_bus(sc->can ? SIM_RELAY_DRONECAN : SIM_RELAY_MODBUS);
     S.joy_fitted = !sc->uncrewed;
     S.uncrewed = sc->uncrewed;
     S.jx = sc->boot_deflected ? 0.8f : 0.0f;

@@ -7,6 +7,7 @@
 #include "dronecan.h"
 #include "can_act.h"
 #include "can_safe.h"
+#include "can_relay.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -23,6 +24,9 @@ static void rb_driver_init(void);       /* Modbus relay board: the master restar
 static void sc_driver_init(void);       /* DroneCAN: the AURIX side restarts, the nodes keep running (below) */
 static void sc_tick(void);              /* DroneCAN: the bus + the nodes, every physics step (below) */
 static bool s_sc_boot_fitted;           /* the CAN bus was fitted at the last hal_init */
+static bool s_sc_fitted;                /* ... fitted from the next hal_init (below) */
+static void crb_tick(void);             /* DroneCAN relay board (step 11f, below) */
+static void crb_frame(const uint8_t *data, uint8_t len);
 static bool s_servos_can;               /* ... with the servos on it (step 11e) */
 static void dm_tick(void);              /* the UNCREWED dead-man timer relay (below) */
 
@@ -954,14 +958,34 @@ static struct {
     uint32_t requests, bad_requests, writes, pulses, polls, corrupted;
     uint32_t max_pulse_ms;          /* the longest "flash on" asked */
     uint32_t edges[RB_COILS];       /* off -> on per coil */
+    uint32_t on_since[RB_COILS];    /* when the coil went on (the STARTER time-limit relay) */
     bool     inited;
+    /* the DroneCAN board (step 11f) */
+    uint32_t timeout_mask;          /* coils with the board's command timeout (R-3) */
+    uint32_t weld;                  /* welded contacts */
+    uint32_t forced;                /* switched by hand (no command since): the timeout does not apply */
+    uint32_t last_cmd_ms[RB_COILS];
+    struct { uint8_t hp, v; uint32_t at; } q[256];
+    uint32_t q_head, q_n, q_lost;
+    uint32_t next_status_ms, frames_out;
+    uint8_t  st_tid;
 } s_rb;
+static uint8_t  s_rb_bus = SIM_RELAY_MODBUS, s_rb_bus_boot;  /* the relay bus (taken at hal_init) */
+static bool     s_cr_up;                     /* the AURIX runs the DroneCAN back-end (can_relay.c) */
+static bool     s_cr_keep;                   /* its commanded states across a warm reset (no-clear RAM) */
+static uint32_t s_cr_keep_known, s_cr_keep_on;
+static uint8_t  s_starter_n = 2u;
+static uint32_t s_starter_limit_ms = 6000u;
 static uint8_t s_rb_channels = RB_COILS;     /* hal_relay_channels(); 0 = no board fitted */
 static uint8_t s_rb_channels_boot = RB_COILS; /* what the driver was started with (hal_init) */
 
 static void rb_set(uint32_t i, bool on)
 {
-    if (on && !(s_rb.coils & (1u << i))) s_rb.edges[i]++;
+    if (s_rb.weld & (1u << i)) return;          /* a welded contact stays as it is */
+    if (on && !(s_rb.coils & (1u << i))) {
+        s_rb.edges[i]++;
+        s_rb.on_since[i] = s_time_ms;
+    }
     if (on) s_rb.coils |= 1u << i; else s_rb.coils &= ~(1u << i);
 }
 
@@ -1072,25 +1096,70 @@ static void rb_driver_init(void)                 /* the AURIX side: at every boo
 {
     mb_config_t c = { 1u, s_rb_channels ? s_rb_channels : RB_COILS, 100u, HAL_RELAY_LOST_MS, 100u };
     s_rb_channels_boot = s_rb_channels;
-    mb_init(&s_rb_port, &c);
+    s_rb_bus_boot = s_rb_bus;
+    s_cr_up = false;
+    if (s_rb_bus_boot == SIM_RELAY_DRONECAN) {
+        /* the DroneCAN back-end (like hal_tc375.c with RELAY_BUS_DRONECAN): only with the CAN bus fitted */
+        if (!s_sc_fitted) s_rb_channels_boot = 0u;
+        if (s_rb_channels_boot) {
+            cr_config_t cc;
+            memset(&cc, 0, sizeof cc);
+            cc.channels = s_rb_channels_boot;
+            cc.lost_ms = HAL_RELAY_LOST_MS;
+            cc.power_on = s_reset_reason == HAL_RESET_POWER_ON;
+            cc.keep_valid = s_cr_keep && !cc.power_on;
+            cc.keep_known = s_cr_keep_known;
+            cc.keep_on = s_cr_keep_on;
+            cr_init(&cc);
+            s_cr_up = true;
+        }
+    } else {
+        mb_init(&s_rb_port, &c);
+    }
     if (!s_rb.inited) {                          /* the board itself: once (it keeps its states across AURIX resets) */
         s_rb.inited = true;
         s_rb.present = true;
         s_rb.latency_ms = 5u;
         s_rb.addr = 1u;
+        s_rb.timeout_mask = 0x1Au;               /* relays 2 / 4 / 5 */
     }
     s_rb.reply_pending = false;                  /* a reply in flight is lost with the reboot */
 }
 
 /* (no board fitted: like the TC375 with HAL_RELAY_FITTED 0 - the driver never runs) */
-void hal_relay_service(void)      { if (s_rb_channels_boot) mb_service(); }
-bool hal_relay_set(uint8_t n, bool on)        { return s_rb_channels_boot && mb_set_coil(n, on); }
-bool hal_relay_pulse(uint8_t n, uint16_t ms)  { return s_rb_channels_boot && mb_pulse_coil(n, ms); }
-bool hal_relay_read(uint8_t n, bool *on)      { return s_rb_channels_boot && mb_coil(n, on); }
-bool hal_relay_ok(void)                        { return s_rb_channels_boot && mb_ok(); }
+void hal_relay_service(void)
+{
+    if (!s_rb_channels_boot) return;
+    if (s_cr_up) {
+        cr_service();
+        s_cr_keep = true;
+        cr_keep(&s_cr_keep_known, &s_cr_keep_on);
+    } else {
+        mb_service();
+    }
+}
+bool hal_relay_set(uint8_t n, bool on)        { return s_rb_channels_boot && (s_cr_up ? cr_set(n, on) : mb_set_coil(n, on)); }
+bool hal_relay_pulse(uint8_t n, uint16_t ms)  { return s_rb_channels_boot && (s_cr_up ? cr_pulse(n, ms) : mb_pulse_coil(n, ms)); }
+bool hal_relay_read(uint8_t n, bool *on)      { return s_rb_channels_boot && (s_cr_up ? cr_read(n, on) : mb_coil(n, on)); }
+bool hal_relay_ok(void)                        { return s_rb_channels_boot && (s_cr_up ? cr_ok() : mb_ok()); }
+bool hal_relay_readback(void)                  { return !s_cr_up || cr_readback(); }
 uint8_t hal_relay_channels(void)               { return s_rb_channels_boot; }
+void sim_hal_relay_bus(uint8_t bus)            { s_rb_bus = bus == SIM_RELAY_DRONECAN ? SIM_RELAY_DRONECAN : SIM_RELAY_MODBUS; }
+uint8_t sim_hal_relay_bus_now(void)            { return s_rb_channels_boot ? s_rb_bus_boot : 0u; }
+void sim_hal_relay_timeout_mask(uint32_t mask) { s_rb.timeout_mask = mask; }
+void sim_hal_relay_weld(uint8_t n, bool w)
+{
+    if (n >= 1u && n <= RB_COILS) { if (w) s_rb.weld |= 1u << (n - 1u); else s_rb.weld &= ~(1u << (n - 1u)); }
+}
+void sim_hal_starter_limit(uint8_t n, uint32_t limit_ms) { s_starter_n = n; s_starter_limit_ms = limit_ms; }
+bool sim_hal_starter_cranking(void)
+{
+    uint8_t n = s_starter_n;
+    if (n < 1u || n > RB_COILS || !((s_rb.coils >> (n - 1u)) & 1u)) return false;
+    return (uint32_t)(s_time_ms - s_rb.on_since[n - 1u]) < s_starter_limit_ms;   /* the time-limit relay cuts it */
+}
 void sim_hal_relay_fitted(uint8_t channels)    { s_rb_channels = channels > RB_COILS ? RB_COILS : channels; }
-uint32_t sim_hal_relay_max_pulse_ms(void)      { return s_rb.max_pulse_ms; }
+uint32_t sim_hal_relay_max_pulse_ms(void)      { return s_cr_up ? cr_stats()->max_pulse_ms : s_rb.max_pulse_ms; }
 uint32_t sim_hal_relay_edges(uint8_t n)        { return (n >= 1u && n <= RB_COILS) ? s_rb.edges[n - 1u] : 0u; }
 
 void sim_hal_relay_board(bool present, uint32_t latency_ms, uint32_t fault)
@@ -1106,6 +1175,11 @@ void sim_hal_relay_board(bool present, uint32_t latency_ms, uint32_t fault)
 void sim_hal_relay_board_reset(void)
 {
     s_rb.coils = 0u;
+    s_rb.weld = s_rb.forced = 0u;
+    s_rb.q_n = s_rb.q_head = 0u;
+    s_rb.timeout_mask = 0x1Au;
+    s_rb.next_status_ms = 0u;
+    memset(s_rb.last_cmd_ms, 0, sizeof s_rb.last_cmd_ms);
     s_rb.max_pulse_ms = 0u;
     memset(s_rb.edges, 0, sizeof s_rb.edges);
     memset(s_rb.pulse_end, 0, sizeof s_rb.pulse_end);
@@ -1123,6 +1197,7 @@ void sim_hal_relay_force(uint8_t n, bool on)
     if (n < 1u || n > RB_COILS) return;
     rb_set(n - 1u, on);
     s_rb.pulse_end[n - 1u] = 0u;
+    s_rb.forced |= 1u << (n - 1u);               /* (a hand switch: the DroneCAN board's command timeout does not apply) */
 }
 
 uint32_t sim_hal_relay_requests(void) { return s_rb.requests; }
@@ -1265,7 +1340,7 @@ typedef struct {
     uint32_t hp_cmds;
 } sc_node_t;
 static sc_node_t s_sc[SC_NODES];
-static bool      s_sc_fitted;
+static bool      s_sc_fitted;           /* (declared at the top) */
 static bool      s_sc_servos = true;    /* a fitted bus carries the servos (step 11e; tests may switch it off) */
 static bool      s_sc_stuck;            /* fault: core 0's actuator task does not run (its CAN path stuck) */
 static uint32_t  s_sc_fault;
@@ -1329,6 +1404,10 @@ void sim_hal_can_node(uint8_t id, bool present, uint8_t health, uint8_t mode)
     n->present = present;
     n->health = health;
     n->mode = mode;
+    if (!present && !n->actuator && s_rb_bus_boot == SIM_RELAY_DRONECAN) {    /* the relay board unpowered: all OFF */
+        for (uint32_t i = 0; i < RB_COILS; i++) if (!(s_rb.weld & (1u << i))) rb_set(i, false);
+        s_rb.q_n = 0u;
+    }
 }
 
 void sim_hal_can_node_silent(uint8_t id, bool silent)
@@ -1344,6 +1423,10 @@ void sim_hal_can_node_reboot(uint8_t id)
     n->boot_ms = s_time_ms;                      /* uptime back to 0, INITIALIZATION for 1 s */
     n->init_until_ms = s_time_ms + 1000u;
     n->next_status_ms = s_time_ms + 50u;
+    if (!n->actuator && s_rb_bus_boot == SIM_RELAY_DRONECAN) {   /* the relay board powers up OFF (R-2) */
+        for (uint32_t i = 0; i < RB_COILS; i++) if (!(s_rb.weld & (1u << i))) rb_set(i, false);
+        s_rb.q_n = 0u;
+    }
 }
 
 void sim_hal_can_servo_speed(uint8_t id, float travel_s, float backlash)
@@ -1464,6 +1547,7 @@ static void sc_deliver(const dc_frame_t *f)      /* one of our frames on the wir
                 n->hp[hp] = cmd;
                 n->hp_cmds++;
             }
+            if (s_rb_bus_boot == SIM_RELAY_DRONECAN) crb_frame(f->data, f->len);
         }
     }
 }
@@ -1503,11 +1587,22 @@ static void sc_tick(void)
             if (n->pos < n->out - h) n->out = n->pos + h;
         }
         if (!n->present || n->silent || (int32_t)(now - n->next_status_ms) < 0) continue;
+        bool crb = !n->actuator && s_rb_bus_boot == SIM_RELAY_DRONECAN;    /* the relay board of step 11f */
+        if (crb && (!s_rb.present || (s_rb.fault & SIM_RB_SILENT))) continue;  /* cut off the bus / silent */
         n->next_status_ms = now + 1000u;
         uint8_t mode = ((int32_t)(now - n->init_until_ms) < 0) ? DC_MODE_INIT : n->mode;
+        uint32_t rx0 = s_sc_rx_n;
         sc_status_frame(n->id, &n->tid, (now - n->boot_ms) / 1000u, n->health, mode);
+        if (crb && s_sc_rx_n > rx0) {                                   /* its frames arrive broken (CORRUPT) */
+            s_rb.frames_out++;
+            if ((s_rb.fault & SIM_RB_CORRUPT) || ((s_rb.fault & SIM_RB_CORRUPT_SOME) && s_rb.frames_out % 7u == 3u)) {
+                s_sc_rx[(s_sc_rx_head + s_sc_rx_n - 1u) % SC_RX_FIFO].len = 0u;   /* a broken frame: refused */
+                s_rb.corrupted++;
+            }
+        }
         n->statuses++;
     }
+    if (s_rb_bus_boot == SIM_RELAY_DRONECAN) crb_tick();
     if ((s_sc_fault & SIM_CAN_FOREIGN10) && now - s_sc_foreign_ms >= 1000u) {   /* the Pixhawk: node 10 too */
         s_sc_foreign_ms = now;
         sc_status_frame(DC_OWN_NODE_ID, &s_sc_foreign_tid, now / 1000u, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
@@ -1523,6 +1618,74 @@ static void sc_tick(void)
         f.len = 8u;
         /* anonymous message: priority, a discriminator in bits 10..23, type ID 1 in bits 8..9, source 0 */
         f.id = ((uint32_t)DC_PRIO_STATUS << 24) | (0x1234u << 10) | ((uint32_t)DC_ALLOCATION_ID << 8);
+        sc_rx_push(&f);
+    }
+}
+
+/* --- the DroneCAN relay board (step 11f): node 30, hardpoint h = relay h + 1 of s_rb.coils ---------------- */
+static bool crb_powered(void)
+{
+    sc_node_t *n = sc_find(DC_NODE_RELAY);
+    return n != NULL && n->present;
+}
+
+static void crb_frame(const uint8_t *data, uint8_t len)  /* a hardpoint.Command on the wire */
+{
+    uint8_t hp;
+    uint16_t cmd;
+    if (!crb_powered() || !s_rb.present) return;            /* unpowered / its drop cable cut: hears nothing */
+    if (!dc_decode_hardpoint(data, (uint32_t)len - 1u, &hp, &cmd) || hp >= RB_COILS || hp >= s_rb_channels_boot) return;
+    s_rb.requests++;
+    if (s_rb.q_n == 256u) { s_rb.q_lost++; return; }
+    uint32_t k = (s_rb.q_head + s_rb.q_n) % 256u;
+    s_rb.q[k].hp = hp;
+    s_rb.q[k].v = cmd != 0u;
+    s_rb.q[k].at = s_time_ms + s_rb.latency_ms;                /* a slow board: it acts later */
+    s_rb.q_n++;
+}
+
+static void crb_tick(void)
+{
+    uint32_t now = s_time_ms;
+    if (!crb_powered()) return;
+    while (s_rb.q_n && (int32_t)(now - s_rb.q[s_rb.q_head].at) >= 0) {     /* commands take effect */
+        uint8_t hp = s_rb.q[s_rb.q_head].hp, v = s_rb.q[s_rb.q_head].v;
+        s_rb.q_head = (s_rb.q_head + 1u) % 256u;
+        s_rb.q_n--;
+        uint32_t b = 1u << hp;
+        s_rb.last_cmd_ms[hp] = now;
+        s_rb.forced &= ~b;
+        if (s_rb.weld & b) continue;                            /* a welded contact */
+        bool was = (s_rb.coils & b) != 0u;
+        if (was == (v != 0u)) continue;
+        rb_set(hp, v != 0u);
+        s_rb.writes++;
+        if (v && (s_rb.timeout_mask & b)) s_rb.pulses++;
+    }
+    /* R-3: a relay of the timeout mask goes OFF 300 ms after the last command (unless that timer is broken) */
+    for (uint32_t i = 0; i < RB_COILS && !(s_rb.fault & SIM_RB_NO_PULSE_END); i++) {
+        uint32_t b = 1u << i;
+        if ((s_rb.coils & b) && (s_rb.timeout_mask & b) && !(s_rb.forced & b) && !(s_rb.weld & b) &&
+            now - s_rb.last_cmd_ms[i] > 300u)
+            rb_set(i, false);
+    }
+    /* the readback (R-4): hardpoint.Status of every relay every 200 ms (status = 1 on / 0 off) */
+    if ((int32_t)(s_rb.next_status_ms - now) > 200) s_rb.next_status_ms = now;   /* (the sim clock was reset) */
+    if (!s_rb.present || (s_rb.fault & (SIM_RB_SILENT | SIM_RB_NO_READBACK)) || (int32_t)(now - s_rb.next_status_ms) < 0)
+        return;
+    s_rb.next_status_ms = now + 200u;
+    for (uint8_t hp = 0; hp < s_rb_channels_boot && hp < RB_COILS; hp++) {
+        dc_frame_t f;
+        dc_encode_hp_status(f.data, hp, (uint16_t)((s_rb.coils >> hp) & 1u));
+        f.data[DC_HPSTATUS_LEN] = dc_tail(true, true, false, s_rb.st_tid);
+        s_rb.st_tid = (uint8_t)((s_rb.st_tid + 1u) & 0x1Fu);
+        f.len = DC_HPSTATUS_LEN + 1u;
+        f.id = dc_msg_id(DC_PRIO_HARDPOINT, DC_HPSTATUS_ID, DC_NODE_RELAY);
+        s_rb.frames_out++;
+        if ((s_rb.fault & SIM_RB_CORRUPT) || ((s_rb.fault & SIM_RB_CORRUPT_SOME) && s_rb.frames_out % 7u == 3u)) {
+            f.len = 0u;                                          /* a broken frame: refused by the driver */
+            s_rb.corrupted++;
+        }
         sc_rx_push(&f);
     }
 }
@@ -1596,8 +1759,9 @@ void hal_can_service(void)
 /* the 10 ms actuator task (the harness calls it; a "stuck" CAN path: never runs) */
 void hal_can_tick(void)
 {
-    if (!s_servos_can || s_sc_stuck) return;
-    ca_tick();
+    if (s_sc_stuck) return;
+    if (s_cr_up) cr_tick();                      /* step 11f: the relay hardpoints at 50 Hz */
+    if (s_servos_can) ca_tick();
 }
 
 uint32_t hal_can_act_count(void) { return s_servos_can ? ca_ticks() : 0u; }

@@ -54,6 +54,7 @@
 #include "dronecan.h"
 #include "can_act.h"       /* step 11e: the servos' CAN output layer (pure C, core 0) */
 #include "can_safe.h"      /* step 11e: CPU1's own safe-frame encoder */
+#include "can_relay.h"     /* step 11f: the relay board on DroneCAN (RELAY_BUS_DRONECAN) */
 #include "memplace.h"
 #include "tc_rstcause.h"
 #include "IfxFlash.h"      /* data flash command sequences (inline; Flash/Std built by ADS) */
@@ -257,8 +258,8 @@ void hal_init(void)
     gps_init();                                 /* its UART + configuration (state machine) */
     bno_init();                                 /* SPI + reset pulse (state machine) */
     nv_port_init();                             /* data flash record log: scan only (no command) */
-    relay_port_init();                          /* RS485 Modbus relay board (only if HAL_RELAY_FITTED) */
     can_port_init();                            /* DroneCAN bus (only if HAL_CAN_FITTED) */
+    relay_port_init();                          /* the relay board (only if HAL_RELAY_FITTED; RELAY_BUS: Modbus or CAN) */
     /* the SD card is started by CPU2 (hal_sd_present), the only core that uses it */
 }
 
@@ -842,20 +843,21 @@ bool hal_read_water_speed(float *kn)
     return false;    /* TODO: paddlewheel pulse input (GPT12 / GTM TIM), if fitted */
 }
 
-/* --- RS485 Modbus RTU relay board: tc_modbus.c on RELAY_ASC ------------------
- * Half duplex: the DE pin (DE + /RE of the transceiver) is driven high before
- * a request goes out and released once the last bit has left the shift
- * register (uart_tx_done, checked from the driver's read, i.e. every control
- * step - a 16-byte frame at 9600 baud takes ~17 ms, less than a step). Only
- * app/relays.c calls the hal_relay_* functions; nothing here touches an
- * actuator, and CPU1 never sees this port. HAL_RELAY_FITTED 0 (hardware TBD):
- * the driver is never started, every call answers "no board" and the relay
- * code sees SILENT (an advisory). */
+/* --- The relay board: RELAY_BUS (hal_pins.h, OD-9) = the RS485 Modbus board (tc_modbus.c on RELAY_ASC) or the
+ * DroneCAN relay node (can_relay.c, step 11f). Only app/relays.c calls the hal_relay_* functions (it keeps every
+ * relay rule and does not know the bus); nothing here touches an actuator, CPU1 never sees it. HAL_RELAY_FITTED 0
+ * (hardware TBD): no back-end is started, every call answers "no board" (relays.c: channels 0, no SILENT).
+ *
+ * Modbus: half duplex - the DE pin (DE + /RE of the transceiver) is driven high before a request goes out and
+ * released once the last bit has left the shift register (uart_tx_done, checked from the driver's read, i.e.
+ * every control step - a 16-byte frame at 9600 baud takes ~17 ms, less than a step). */
 static volatile boolean s_relay_up, s_relay_de;
+static boolean s_relay_can;                     /* the DroneCAN back-end runs (RELAY_BUS_DRONECAN + HAL_CAN_FITTED) */
+static boolean s_can_up;                        /* (the DroneCAN bus, below) */
 
 static bool relay_port_write(const uint8_t *buf, uint32_t len)
 {
-#if HAL_RELAY_FITTED
+#if HAL_RELAY_FITTED && RELAY_BUS == RELAY_BUS_MODBUS
     if (!s_relay_up) return false;
     IfxPort_setPinHigh(PIN_RELAY_DE);           /* drive the bus */
     s_relay_de = TRUE;
@@ -873,7 +875,7 @@ static bool relay_port_write(const uint8_t *buf, uint32_t len)
 
 static uint32_t relay_port_read(uint8_t *buf, uint32_t max)
 {
-#if HAL_RELAY_FITTED
+#if HAL_RELAY_FITTED && RELAY_BUS == RELAY_BUS_MODBUS
     if (!s_relay_up) return 0u;
     if (s_relay_de && uart_tx_done(UART_RELAY)) {   /* (fallback only: the TX-complete interrupt released it) */
         IfxPort_setPinLow(PIN_RELAY_DE);
@@ -888,7 +890,7 @@ static uint32_t relay_port_read(uint8_t *buf, uint32_t max)
 
 static const mb_port_t s_relay_port = { relay_port_write, relay_port_read, hal_millis };
 
-#if HAL_RELAY_FITTED
+#if HAL_RELAY_FITTED && RELAY_BUS == RELAY_BUS_MODBUS
 /* the TX-complete interrupt (tc_uart.c): the last stop bit of the request is out -
  * release the bus at once, so a fast board's reply (<< one control step) is heard */
 static void relay_de_release(void)
@@ -898,11 +900,38 @@ static void relay_de_release(void)
 }
 #endif
 
+/* DroneCAN back-end: the COMMANDED relay states across a warm reset (no-clear RAM like the kill latch; only the
+ * readback of a board without hardpoint.Status - nothing is re-sent after a reset). Magic + both masks + the
+ * complement of their sum; after a power-on it is garbage and is not used. */
+#define RELAY_KEEP_ON 0x52454C59u       /* "RELY" */
+#if defined(__TASKING__)
+#pragma section farbss bss_cpu0
+#pragma noclear
+#endif
+static volatile uint32 s_relay_keep[4];
+#if defined(__TASKING__)
+#pragma clear
+#pragma section farbss restore
+#endif
+
+static void relay_keep_store(void)
+{
+    uint32 known = 0u, on = 0u;
+    cr_keep(&known, &on);
+    if (s_relay_keep[0] == RELAY_KEEP_ON && s_relay_keep[1] == known && s_relay_keep[2] == on) return;
+    s_relay_keep[0] = 0u;                       /* (invalid while it is written) */
+    s_relay_keep[1] = known;
+    s_relay_keep[2] = on;
+    s_relay_keep[3] = ~(known + on);
+    s_relay_keep[0] = RELAY_KEEP_ON;
+}
+
 static void relay_port_init(void)
 {
     s_relay_up = FALSE;
     s_relay_de = FALSE;
-#if HAL_RELAY_FITTED
+    s_relay_can = FALSE;
+#if HAL_RELAY_FITTED && RELAY_BUS == RELAY_BUS_MODBUS
     pin_low_output(PIN_RELAY_DE);               /* receive until a request goes out */
     uart_init(UART_RELAY, RELAY_BAUD);
     uart_on_tx_done(UART_RELAY, relay_de_release);
@@ -911,6 +940,22 @@ static void relay_port_init(void)
         mb_init(&s_relay_port, &c);
     }
     s_relay_up = TRUE;
+#elif HAL_RELAY_FITTED && RELAY_BUS == RELAY_BUS_DRONECAN
+    (void)s_relay_port;
+    if (s_can_up) {                             /* (no CAN fitted: no relay board) */
+        cr_config_t c;
+        memset(&c, 0, sizeof c);
+        c.channels = (uint8_t)CAN_RELAY_CHANNELS;
+        c.lost_ms = HAL_RELAY_LOST_MS;
+        c.power_on = hal_reset_reason(NULL) == HAL_RESET_POWER_ON;
+        c.keep_valid = !c.power_on && s_relay_keep[0] == RELAY_KEEP_ON &&
+                       s_relay_keep[3] == ~(s_relay_keep[1] + s_relay_keep[2]);
+        c.keep_known = s_relay_keep[1];
+        c.keep_on = s_relay_keep[2];
+        cr_init(&c);                            /* nothing is sent until relays.c commands a relay (R-2: the board holds) */
+        s_relay_can = TRUE;
+        s_relay_up = TRUE;
+    }
 #else
     (void)s_relay_port;                         /* not wired yet: the driver is never started */
 #endif
@@ -918,40 +963,56 @@ static void relay_port_init(void)
 
 void hal_relay_service(void)
 {
-    if (s_relay_up) mb_service();
+    if (!s_relay_up) return;
+    if (s_relay_can) {
+        cr_service();
+        relay_keep_store();
+    } else {
+        mb_service();
+    }
 }
 
 bool hal_relay_set(uint8_t n, bool on)
 {
-    return s_relay_up && mb_set_coil(n, on);
+    if (!s_relay_up) return false;
+    return s_relay_can ? cr_set(n, on) : mb_set_coil(n, on);
 }
 
 bool hal_relay_pulse(uint8_t n, uint16_t ms)
 {
-    return s_relay_up && mb_pulse_coil(n, ms);
+    if (!s_relay_up) return false;
+    return s_relay_can ? cr_pulse(n, ms) : mb_pulse_coil(n, ms);
 }
 
 bool hal_relay_read(uint8_t n, bool *on)
 {
-    return s_relay_up && mb_coil(n, on);
+    if (!s_relay_up) return false;
+    return s_relay_can ? cr_read(n, on) : mb_coil(n, on);
 }
 
 bool hal_relay_ok(void)
 {
-    return s_relay_up && mb_ok();
+    if (!s_relay_up) return false;
+    return s_relay_can ? cr_ok() : mb_ok();
+}
+
+bool hal_relay_readback(void)
+{
+    return !s_relay_can || cr_readback();       /* (Modbus: the coils are always read back) */
 }
 
 uint8_t hal_relay_channels(void)
 {
-#if HAL_RELAY_FITTED
+#if HAL_RELAY_FITTED && RELAY_BUS == RELAY_BUS_MODBUS
     return (uint8_t)RELAY_CHANNELS;
+#elif HAL_RELAY_FITTED && RELAY_BUS == RELAY_BUS_DRONECAN
+    return s_relay_can ? (uint8_t)CAN_RELAY_CHANNELS : 0u;
 #else
     return 0u;                                  /* no board wired: nothing to switch, no SILENT alarm */
 #endif
 }
 
 /* --- DroneCAN bus (CLAUDE.md T, step 11d): MCMCAN CAN0 node 0 (tc_can.c) + dronecan.c -------------- */
-static bool s_can_up;
 static const dc_port_t s_can_port = { can_start, can_send, can_recv, can_state, can_recover, hal_millis,
                                        can_cancel_fifo };
 static uint8 s_trip_drops;                      /* core 0: its software queue dropped after a trip (twice) */
@@ -1000,6 +1061,7 @@ void hal_set_steer_pos(bool command, float pos)
 /* core 0's main loop, every 10 ms between the control steps */
 void hal_can_tick(void)
 {
+    if (s_relay_can) cr_tick();                 /* step 11f: the relay hardpoints at 50 Hz (also with PWM servos) */
     if (!s_servos_can) return;
     ca_tick();
     s_can_tid = dc_cmd_tid();

@@ -449,7 +449,11 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "sm") == 0) { sb_steer_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "bv") == 0) { sb_battery_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "gen") == 0) { sb_generator_tests(); return 0; }
-    if (argc > 1 && strcmp(argv[1], "rb") == 0) { sb_relay_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "rb") == 0) {
+        if (argc > 2 && strcmp(argv[2], "--can") == 0) sb_set_can(true, false);   /* (the DroneCAN servos too) */
+        sb_relay_tests();
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "er") == 0) { sb_engine_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "dp") == 0) { sb_dp_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "slam") == 0) { sb_slam_tests(); return 0; }

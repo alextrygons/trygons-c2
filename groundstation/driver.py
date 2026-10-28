@@ -650,7 +650,8 @@ class DriverScreen:
         s["notices"] = self.notices(d, gw)
         s["manual_ok"] = a.manual_allowed()                     # REMOTE MANUAL / MANEUVER buttons (captain + licence)
         active, rows = a.relay_view()                           # the relays with "show_hud" (CLAUDE.md O)
-        hud_rows = [dict(r, click=active and r["group"] != "engine" and r["state"] != "unknown")
+        nrb = bool(d is not None and d.get("relay_no_readback") and d.get("relay_ok"))    # (no readback: commanded states)
+        hud_rows = [dict(r, click=active and r["group"] != "engine" and (r["state"] != "unknown" or nrb))
                     for r in rows if r.get("show_hud")]
         s["relay_lines"] = [ln for _g, ln in a.relay_lines(hud_rows)]
         thr = getattr(a.boat, "thrusters", None) if a.boat is not None and not a.boat.error else None

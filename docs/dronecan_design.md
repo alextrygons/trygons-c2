@@ -594,8 +594,9 @@ photos are for the academy test area, the demo map and the 3D sim ONLY. A photo 
 navigation chart: it is NEVER used for the shallow-water check (gateway shallow.py / chart.py),
 the collision / route checks or any other safety check - unless it has been georeferenced AND
 checked against an official chart, and that is a separate, reviewed step. The safety checks use
-only charts/ (tools/chartprep.py data) with "no data = shallow". (The folder was not found on this
-PC in step 11c: it is committed when the owner copies the photos in.)
+only charts/ (tools/chartprep.py data) with "no data = shallow". Step 11f: the five photos are committed
+as docs/daskalio/IMG_0516.jpg .. IMG_0520.jpg (converted from the owner's HEIC files, long side <= 4032 px,
+metadata removed) with the rule in docs/daskalio/README.txt.
 
 ## 12. TO CONFIRM list (nothing below is guessed in code; hardware flags stay 0)
 
@@ -792,3 +793,45 @@ docs use now; every one is in "WAITING FOR OWNER" at the top of PROGRESS.md. Not
   a lag fit, large steps, reversal staircase by bisection, verify run with confidence; < 0.6 not used); NV slot 5 v2.
 - Tests: sim SM1-SM9, CN14-CN23, "all --can" + "all --can-fast" (the motor-only tests N/A there), D16-D17, storm
   I47-I57 (about a third of the episodes on the DroneCAN servos, worst case or fast, with node / bus / task faults).
+
+## 17. Step 11f - the relay board on DroneCAN (what is implemented; the board keeps the flags 0)
+
+- Build option (OD-9): hal_pins.h `RELAY_BUS` = `RELAY_BUS_MODBUS` (default until the owner chooses the board, C17)
+  or `RELAY_BUS_DRONECAN` (+ `HAL_CAN_FITTED` 1, `HAL_RELAY_FITTED` 1). Both behind the same hal_relay_* API
+  (+ the new `hal_relay_readback`): app/relays.c keeps every rule of section 9 and does not know the bus.
+- hal/can_relay.c (pure C, core 0, the only sender of hardpoint.Command - tools/check.sh): node 30, relay n =
+  hardpoint n - 1, `CAN_RELAY_CHANNELS` 6 (TO CONFIRM).
+  - Nothing is sent after ANY boot, power-on or warm reset, until relays.c commands a relay. This is stricter than
+    section 9's "commanded states re-sent unchanged after a reset": with R-2 the board holds them anyway, and a frame
+    that is never sent can never switch anything (a hand switch at the board after the last command is kept too).
+    The commanded states ARE kept in reset-surviving RAM (hal_tc375.c `s_relay_keep`, magic + complement) - only as the
+    readback of a board without hardpoint.Status.
+  - A new on / off state = 10 frames at 50 Hz (`CR_BURST_FRAMES`), then silence (the board holds it, R-2). The burst
+    counts only while the board is there (NodeStatus young, OPERATIONAL, below ERROR), so an OFF asked while the board
+    is silent / cut off / the bus is down goes when it is back (relays.c also re-sends a pending OFF).
+  - Pulses (momentary relays, the STARTER's hold-to-crank: 300 ms pulses refreshed at 5 Hz by engine.c) are
+    AURIX-timed: ON at 50 Hz from core 0's 10 ms task (`hal_can_tick` - it now runs also with the PWM servos), then
+    the OFF burst. When core 0 freezes or resets the frames stop and the board's own command timeout (R-3, <= 300 ms)
+    ends the pulse; the STARTER is always also behind the hardware time-limit relay (OD-9).
+  - Readback (R-4): uavcan.equipment.hardpoint.Status (ID 1071, signature 0x624A519D42553D82 from the DSDL text,
+    status != 0 = on) taken only from node 30 (hal/dronecan.c `dc_hardpoint_status`). A board that sends no Status:
+    the COMMANDED states are the readback (TELEM2 group M flag 64 "no readback", shown on screen 2's relays panel);
+    a relay is known only once commanded since the boot, from the kept RAM after a warm reset, or all OFF when the
+    board itself booted after the AURIX's power-on (its NodeStatus uptime <= ours + 2 s) or rebooted (uptime back).
+  - ok (RELAY BOARD SILENT = advisory, unchanged): the bus works and node 30's NodeStatus is younger than 3 s,
+    OPERATIONAL, health below ERROR (WARNING = the CAN NODE WARNING notice only). The relay node stays not required
+    (never CAN NODE LOST / STANDBY). A board reboot or power loss = every relay OFF (R-2); nothing is re-sent.
+- relays.c (one tightening, no change with the Modbus board): an interlocked partner whose state is UNKNOWN and that is
+  not momentary blocks the other relay (a board without readback after an AURIX-only power-on); a momentary partner is
+  off by the board's timeout.
+- Sim: the simulated node 30 is driven by the new back-end - true states, command latency, R-2 hold / R-3 timeout
+  (momentary relays 2 / 4 / 5 of the sample table), Status readback every 200 ms, faults (silent, broken frames, no
+  readback, R-3 timer broken, not OPERATIONAL / WARNING / ERROR, reboot, unpowered, drop cable cut, bus-off), a welded
+  contact, and the STARTER time-limit relay model (6 s). Tests: RB1-RB14 on Modbus in "all" / "all --bridge" and on
+  DroneCAN in "all --can" / "all --can-fast" ("rb" runs both), RB15 (time-limit relay, both buses), RB16-RB20
+  (DroneCAN: the wire, no readback, node health, bus loss + board power, the STARTER with core 0 frozen / reset);
+  tests/hal_pc/dronecan_check.py D18 (Status) + D19 (can_relay.c frames vs the independent encoder); the ER tests run on
+  both buses through the suites; storm: the DroneCAN episodes have the DroneCAN relay board (I36-I38 on both buses).
+- Open for the owner (PROGRESS.md WAITING FOR OWNER): the board (C17, R-1..R-4), the default RELAY_BUS, the 11f
+  readings above (nothing after a reset, bursts instead of a continuous 50 Hz stream, the unknown-partner rule), and
+  the servo nodes 20 / 21 / 22 still required when only the relay board is on CAN.

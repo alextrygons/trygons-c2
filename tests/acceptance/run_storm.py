@@ -52,8 +52,15 @@ def main():
         if n <= 0:
             break
         log = open(os.path.join(OUT, "storm_worker_%d.txt" % w), "w")
+        # every worker in its OWN folder: the simulated data flash (nv*.bin) and SD card are files in the working
+        # folder - shared between parallel workers they made episodes depend on each other (W11, step 11f)
+        wdir = os.path.join(OUT, "storm_w%d" % w)
+        os.makedirs(wdir, exist_ok=True)
+        for f in os.listdir(wdir):
+            if f.startswith("nv") and f.endswith(".bin"):
+                os.remove(os.path.join(wdir, f))
         procs.append((subprocess.Popen([EXE, str(n), str(a.seed + w * per)], stdout=log, stderr=subprocess.STDOUT,
-                                       cwd=os.path.join(OUT)), log))
+                                       cwd=wdir), log))
     for p, log in procs:
         p.wait()
         log.close()

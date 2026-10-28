@@ -27,6 +27,13 @@
  *   SAFE <act> <float> <tid>    CPU1's safe frame (hal/can_safe.c cs_frame): "SAFE <id> <data>"
  *   CANCELTX               dc_cancel_tx (step 11e: a trip / the latch came in between)
  *   TID                    dc_cmd_tid: "TID <n>"
+ *   HPST <hp>              dc_hardpoint_status (step 11f): "HPST <seen> <status> <age>"
+ *   ENC_HPST <id> <status> payload of dc_encode_hp_status
+ *   SIGHP                  "SIGHP <sig hex> <id>" (hardpoint.Status)
+ *   CRINIT <ch> <power_on> <keep 0|1> <known hex> <on hex>   cr_init (hal/can_relay.c, the relay back-end)
+ *   CRSET <n> <0|1> / CRPULSE <n> <ms> / CRREAD <n> / CRSVC   cr_set / cr_pulse / cr_read / cr_service
+ *   CRTICK                 cr_tick + dc_tx_flush (the 10 ms task at the current time): prints the frames
+ *   CROK                   "CROK <ok> <readback>"
  * The controller's FIFO cancel (port cancel, step 11e) prints "CANCEL".
  * Output: "TX <id> <data>" for every frame the controller took, then the
  * answer of the command ("NODE ...", "BUS ...", "PAYLOAD ...", ...).
@@ -37,6 +44,7 @@
 
 #include "dronecan.h"
 #include "can_safe.h"
+#include "can_relay.h"
 #include "libcanard/canard.h"
 
 static uint32_t s_ms;
@@ -74,6 +82,8 @@ static void p_recover(void) { s_recovers++; }
 static uint32_t p_millis(void) { return s_ms; }
 static void p_cancel(void) { printf("CANCEL\n"); }
 static const dc_port_t s_port = { p_start, p_send, p_recv, p_state, p_recover, p_millis, p_cancel };
+
+uint32_t hal_millis(void) { return s_ms; }      /* (hal/can_relay.c's clock) */
 
 static uint32_t hexbytes(const char *h, uint8_t *out, uint32_t max)
 {
@@ -233,6 +243,47 @@ int main(void)
             }
         } else if (!strcmp(cmd, "CANCELTX")) {
             dc_cancel_tx();
+        } else if (!strcmp(cmd, "HPST")) {
+            unsigned hp = 0u;
+            uint16_t st = 0u;
+            uint32_t age = 0u;
+            sscanf(a, "%u", &hp);
+            bool seen = dc_hardpoint_status((uint8_t)hp, &st, &age);
+            printf("HPST %d %u %u\n", seen, (unsigned)st, (unsigned)age);
+        } else if (!strcmp(cmd, "ENC_HPST")) {
+            unsigned id = 0, v = 0;
+            sscanf(a, "%u %u", &id, &v);
+            uint8_t out[DC_HPSTATUS_LEN];
+            dc_encode_hp_status(out, (uint8_t)id, (uint16_t)v);
+            dump("PAYLOAD", out, DC_HPSTATUS_LEN);
+        } else if (!strcmp(cmd, "SIGHP")) {
+            printf("SIGHP %016llX %u\n", (unsigned long long)DC_HPSTATUS_SIG, DC_HPSTATUS_ID);
+        } else if (!strcmp(cmd, "CRINIT")) {
+            unsigned ch = 0, po = 0, kv = 0, kk = 0, ko = 0;
+            sscanf(a, "%u %u %u %x %x", &ch, &po, &kv, &kk, &ko);
+            cr_config_t c = { (uint8_t)ch, 3000u, po != 0u, kv != 0u, kk, ko };
+            cr_init(&c);
+        } else if (!strcmp(cmd, "CRSET")) {
+            unsigned n = 0, v = 0;
+            sscanf(a, "%u %u", &n, &v);
+            printf("CR %d\n", cr_set((uint8_t)n, v != 0u));
+        } else if (!strcmp(cmd, "CRPULSE")) {
+            unsigned n = 0, ms = 0;
+            sscanf(a, "%u %u", &n, &ms);
+            printf("CR %d\n", cr_pulse((uint8_t)n, (uint16_t)ms));
+        } else if (!strcmp(cmd, "CRREAD")) {
+            unsigned n = 0;
+            bool on = false;
+            sscanf(a, "%u", &n);
+            bool k = cr_read((uint8_t)n, &on);
+            printf("CRREAD %d %d\n", k, k && on);
+        } else if (!strcmp(cmd, "CRSVC")) {
+            cr_service();
+        } else if (!strcmp(cmd, "CRTICK")) {
+            cr_tick();
+            dc_tx_flush();
+        } else if (!strcmp(cmd, "CROK")) {
+            printf("CROK %d %d\n", cr_ok(), cr_readback());
         } else if (!strcmp(cmd, "TID")) {
             printf("TID %u\n", (unsigned)dc_cmd_tid());
         } else if (!strcmp(cmd, "F16")) {

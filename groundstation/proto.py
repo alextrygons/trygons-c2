@@ -975,6 +975,7 @@ def decode_telem2(payload: bytes) -> dict:
         d["relay_pending"] = bool(f & 8)                # a different table waits for the joystick CONFIRM
         d["relay_power_up"] = bool(f & 16)              # the power_up states were applied (this boot)
         d["relay_first_test"] = bool(f & 32)            # FIRST TEST: no relay changes
+        d["relay_no_readback"] = bool(f & 64)           # DroneCAN board without readback: the COMMANDED states (11f)
         d["relay_on"] = [n for n in range(1, 33) if d["relay_known"] >> (n - 1) & 1 and d["relay_states"] >> (n - 1) & 1]   # lists: the gateway forwards it as JSON
         d["relay_unknown"] = [n for n in range(1, 33) if not d["relay_known"] >> (n - 1) & 1]
     if "eng_flags" in d:

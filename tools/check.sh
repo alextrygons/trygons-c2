@@ -65,18 +65,26 @@ if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (big 
 # the FIRST TEST build (steering only; empty value = same as "#define FIRST_TEST" in Cpu0_Main.c, no redefinition warning)
 msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -DFIRST_TEST= -I. $INC -c Cpu0_Main.c -o "$TEMP/cpu0_ft.o" 2>&1)
 if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (FIRST TEST)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK Cpu0_Main.c (FIRST TEST)"; fi
+# step 11f: the board paths behind the hardware flags (the flags stay 0 in hal_pins.h until the owner confirms):
+# the DroneCAN relay board + the DroneCAN servos (RELAY_BUS_DRONECAN), and the RS485 Modbus relay board fitted
+OUTV="$TEMP/tricore_obj_variants"; mkdir -p "$OUTV"
+for v in "can:-DHAL_CAN_FITTED=1 -DHAL_CAN_SERVOS=1 -DHAL_RELAY_FITTED=1 -DRELAY_BUS=2" "modbus:-DHAL_RELAY_FITTED=1 -DRELAY_BUS=1"; do
+    name=${v%%:*}; defs=${v#*:}
+    msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 $defs -I. $INC -c hal/hal_tc375.c -o "$OUTV/hal_tc375_$name.o" 2>&1)
+    if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN hal_tc375.c (relay board on $name, flags 1)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK hal_tc375.c (relay board on $name, flags 1)"; fi
+done
 # all HAL functions used by app/ must exist in hal_tc375.c (link check)
 "$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^hal_/ {print $2}' | sort -u > "$TEMP/hal_used.txt"
 "$B/tricore-elf-nm.exe" "$OUT/hal_tc375.o" | grep ' T hal_' | grep -o 'hal_[a-z_0-9]*' | sort -u > "$TEMP/hal_def.txt"
 missing=$(comm -23 "$TEMP/hal_used.txt" "$TEMP/hal_def.txt")
 if [ -n "$missing" ]; then echo "MISSING in hal_tc375.c: $missing"; fail=1; else echo "hal_tc375.c provides every HAL function used"; fi
 # the board drivers (hal/tc_*.c): every driver function used is defined
-"$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^((uart|spi|bno|gps|sd|fat32|adc|nvlog|mb|can|dc)_|canard[A-Z])/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
-"$B/tricore-elf-nm.exe" "$OUT"/tc_*.o "$OUT"/dronecan.o "$OUT"/canard.o | awk '$2=="T" {print $3}' | sort -u > "$TEMP/drv_def.txt"
+"$B/tricore-elf-nm.exe" -u "$OUT"/*.o "$OUTV"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^((uart|spi|bno|gps|sd|fat32|adc|nvlog|mb|can|dc|cr)_|canard[A-Z])/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
+"$B/tricore-elf-nm.exe" "$OUT"/tc_*.o "$OUT"/dronecan.o "$OUT"/canard.o "$OUT"/can_relay.o | awk '$2=="T" {print $3}' | sort -u > "$TEMP/drv_def.txt"
 missing=$(comm -23 "$TEMP/drv_used.txt" "$TEMP/drv_def.txt")
 if [ -n "$missing" ]; then echo "MISSING driver functions: $missing"; fail=1; else echo "every board driver function used is defined"; fi
 # every iLLD (Ifx*) function used has its .c file present and NOT excluded in .cproject (else the ADS link fails)
-"$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^Ifx/ {print $2}' | sort -u > "$TEMP/ifx_used.txt"
+"$B/tricore-elf-nm.exe" -u "$OUT"/*.o "$OUTV"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^Ifx/ {print $2}' | sort -u > "$TEMP/ifx_used.txt"
 "$PY" tests/acceptance/check_ads_ifx.py --symbols "$TEMP/ifx_used.txt" || fail=1
 
 # the throttle servo is written ONLY by app/servo.c (power limit clamp in the lowest layer)
@@ -97,11 +105,15 @@ if [ -n "$writers" ]; then echo "SOFTWARE RESET OUTSIDE smallboat.c: $writers"; 
 
 # DroneCAN servos (step 11e): ONLY app/servo.c writes the servos (throttle / gear / steering position, power-limit
 # clamp in the lowest layer) and ONLY the CAN output layer hal/can_act.c turns them into ArrayCommands (CPU1's
-# safe frames: hal/can_safe.c through hal_can_safe_send); no relay command over CAN yet (step 11f)
+# safe frames: hal/can_safe.c through hal_can_safe_send); the relay hardpoints ONLY by hal/can_relay.c (step 11f)
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])dc_send_actuator *\(" app hal Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^hal/can_act.c$\|^hal/dronecan.c$")
 if [ -n "$writers" ]; then echo "SERVO COMMANDS OVER CAN OUTSIDE hal/can_act.c: $writers"; fail=1; else echo "servo ArrayCommands sent only by hal/can_act.c (the CAN output layer)"; fi
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])dc_send_[a-z]+ *\(" app hal/hal_tc375.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null)
-if [ -n "$writers" ]; then echo "COMMANDS OVER CAN IN THE FIRMWARE OUTSIDE THE CAN LAYER (relays: not before step 11f): $writers"; fail=1; else echo "no relay command over CAN in the firmware (step 11f)"; fi
+if [ -n "$writers" ]; then echo "COMMANDS OVER CAN IN THE FIRMWARE OUTSIDE THE CAN LAYER: $writers"; fail=1; else echo "no CAN command outside the CAN layer (hal/can_act.c, hal/can_relay.c)"; fi
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])dc_send_hardpoint *\(" app hal Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^hal/can_relay.c$\|^hal/dronecan.c$")
+if [ -n "$writers" ]; then echo "RELAY HARDPOINTS OVER CAN OUTSIDE hal/can_relay.c: $writers"; fail=1; else echo "relay hardpoint.Command sent only by hal/can_relay.c (behind hal_relay_*, i.e. app/relays.c)"; fi
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])cr_(set|pulse|init|tick|service) *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null)
+if [ -n "$writers" ]; then echo "THE CAN RELAY BACK-END DRIVEN OUTSIDE THE HAL: $writers"; fail=1; else echo "the CAN relay back-end is reached only through hal_relay_* (app/relays.c)"; fi
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])(hal_set_gear_pwm|hal_set_steer_pos|ca_set_[a-z_]+) *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/servo.c$")
 if [ -n "$writers" ]; then echo "GEAR / STEERING SERVO WRITTEN OUTSIDE servo.c: $writers"; fail=1; else echo "gear servo + steering position servo written only by app/servo.c"; fi
 # the bus is serviced / read by app/smallboat.c (core 0); the 10 ms actuator task by Cpu0_Main.c; CPU1's monitor

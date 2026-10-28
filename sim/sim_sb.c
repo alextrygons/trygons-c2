@@ -23,6 +23,7 @@
 #include "tc_modbus.h"
 #include "dronecan.h"
 #include "can_act.h"
+#include "can_relay.h"
 #include "tc_rstcause.h"
 
 /* ------------------------------------------------------------ harness -- */
@@ -53,6 +54,9 @@ static logger_t s_logger;   /* core 2 logger (sim: a separate step) */
 /* CN tests: the next sbsim_init boots with the simulated CAN bus fitted (+ these sim faults) */
 static bool     s_can_on;
 static uint32_t s_can_fault;
+/* step 11f: the next sbsim_init boots with the relay board on DroneCAN (the CAN bus fitted, the relay node 30
+ * driven by hal/can_relay.c). "all --can" / "--can-fast" always use the DroneCAN relay board. */
+static bool     s_rb_can;
 
 /* TELEM2: the tests that read groups L / M from the end of the frame skip the
  * groups appended after them: O (engine controls, 12 bytes) + N (DP thrusters 10 bytes + the DP state
@@ -175,12 +179,14 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     sim_hal_relay_board(true, 5u, 0u);              /* a fresh relay board, every relay off */
     sim_hal_relay_board_reset();
     sim_hal_relay_fitted(16u);                      /* (taken by hal_init below) */
+    sim_hal_relay_bus((s_can_all || s_rb_can) ? SIM_RELAY_DRONECAN : SIM_RELAY_MODBUS);   /* step 11f */
+    sim_hal_starter_limit(2u, 6000u);
     sim_hal_unforce();
     memset((void *)&g_mon, 0, sizeof g_mon);
     world_publish(&x->w, 0);
     sim_hal_can_reset();                            /* DroneCAN: every node fresh; not fitted unless a CN test */
     sim_hal_can_fault(s_can_fault);
-    sim_hal_can_fitted(s_can_on || s_can_all);
+    sim_hal_can_fitted(s_can_on || s_can_all || s_rb_can);
     sb_test_boot_idle(s_can_all && !s_can_on);      /* (the CN tests: the real boot order) */
     if (s_can_fast) {
         sim_hal_can_servo_speed(DC_NODE_THROTTLE, 2.0f, 0.0f);
@@ -9265,15 +9271,24 @@ static void rb_power_cycle(sbsim_t *x, hal_reset_t why)
     x->last_kick = x->t;
 }
 
+static void relay_bus_tests(void);
+
 static uint32_t rb_bit(int n)
 {
     return 1u << (n - 1);
 }
 
+/* the relay board of this boot is the DroneCAN one (step 11f: "all --can", or the RB15.. tests) */
+static bool rb_can(void)
+{
+    return sim_hal_relay_bus_now() == SIM_RELAY_DRONECAN;
+}
+
 static void relay_tests(void)
 {
     char d[1200];
-    printf("\n=== RB RS485 Modbus relay board (tc_modbus.c + relays.c): advisory only, never a control path ===\n");
+    printf("\n=== RB relay board on %s (relays.c): advisory only, never a control path ===\n",
+           (s_can_all || s_rb_can) ? "DroneCAN (can_relay.c, node 30)" : "RS485 Modbus (tc_modbus.c)");
 
     /* RB1 the driver: readback, a command reaches the board, a slow board (reply > 100 ms) = timeouts,
      * after 3 s RELAY BOARD SILENT (advisory), states unknown; back = found by itself, the ACK clears it */
@@ -9283,6 +9298,7 @@ static void relay_tests(void)
         rb_table(&t, false, false);
         bool loaded = rb_setup(&x, 1701u, NULL, &t);
         const mb_stats_t *st = mb_stats();
+        bool can = rb_can();
         bool known = x.sb.relays.board_ok && (x.sb.relays.known & 0x7Fu) == 0x7Fu && x.sb.relays.states == 0u;
         bool on = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
         sbsim_run(&x, x.t + 400u, NULL, NULL);
@@ -9291,12 +9307,13 @@ static void relay_tests(void)
         sbsim_run(&x, x.t + 400u, NULL, NULL);
         bool off_board = !sim_hal_relay_state(6u) && !(x.sb.relays.states & rb_bit(6)) && x.sb.relays.off_pending == 0u;
         uint32_t to0 = st->timeouts;
-        sim_hal_relay_board(true, 150u, 0u);         /* replies later than the 100 ms limit */
+        /* Modbus: replies later than the 100 ms limit; DroneCAN: the board stops sending (NodeStatus + Status) */
+        if (can) sim_hal_relay_board(true, 5u, SIM_RB_SILENT); else sim_hal_relay_board(true, 150u, 0u);
         sbsim_run(&x, x.t + 2000u, NULL, NULL);
         bool still_ok = x.sb.relays.board_ok && !(x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT);
         sbsim_run(&x, x.t + 1500u, NULL, NULL);
         bool silent = !x.sb.relays.board_ok && x.sb.relays.known == 0u && (x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT) &&
-                      st->timeouts > to0 + 10u && sb_mode(&x.sb) == MODE_STANDBY;
+                      (can || st->timeouts > to0 + 10u) && sb_mode(&x.sb) == MODE_STANDBY;
         sim_hal_relay_board(true, 5u, 0u);
         sbsim_run(&x, x.t + 500u, NULL, NULL);
         bool back = x.sb.relays.board_ok && (x.sb.relays.known & 0x7Fu) == 0x7Fu;
@@ -9319,21 +9336,26 @@ static void relay_tests(void)
         rb_table(&t, false, false);
         bool loaded = rb_setup(&x, 1702u, NULL, &t);
         const mb_stats_t *st = mb_stats();
-        uint32_t c0 = st->crc_errors;
+        bool can = rb_can();                        /* (DroneCAN: the transport refuses the broken frames) */
+#define RB2_ERRS() (can ? dc_stats()->rx_errors : st->crc_errors)
+        uint32_t c0 = RB2_ERRS();
         sim_hal_relay_board(true, 5u, SIM_RB_CORRUPT);
         sim_hal_relay_force(6u, true);              /* a hand switch on the board: the bad replies must not show it */
         sbsim_run(&x, x.t + 4000u, NULL, NULL);
-        bool all_bad = st->crc_errors > c0 + 10u && !x.sb.relays.board_ok && x.sb.relays.known == 0u &&
+        bool all_bad = RB2_ERRS() > c0 + 10u && !x.sb.relays.board_ok && x.sb.relays.known == 0u &&
                        !(x.sb.relays.states & rb_bit(6)) && (x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT);
-        uint32_t c1 = st->crc_errors;
+        uint32_t c1 = RB2_ERRS();
         sim_hal_relay_board(true, 5u, SIM_RB_CORRUPT_SOME);
         sbsim_run(&x, x.t + 10000u, NULL, NULL);
-        bool some = st->crc_errors > c1 && x.sb.relays.board_ok && (x.sb.relays.states & rb_bit(6));
+        bool some = RB2_ERRS() > c1 && x.sb.relays.board_ok && (x.sb.relays.states & rb_bit(6));
         sim_hal_relay_board(true, 5u, 0u);
-        snprintf(d, sizeof d, "all replies bad: %u CRC errors, SILENT + states unknown %s; 1 in 7 bad: %u errors, board ok %s, "
-                 "readback shows the hand-switched relay %s", (unsigned)(c1 - c0), all_bad ? "yes" : "NO",
-                 (unsigned)(st->crc_errors - c1), x.sb.relays.board_ok ? "yes" : "NO", some ? "yes" : "NO");
-        test_report("RB2 CRC errors: bad replies counted and never used (SILENT); occasional errors tolerated",
+        snprintf(d, sizeof d, "all %s bad: %u errors, SILENT + states unknown %s; 1 in 7 bad: %u errors, board ok %s, "
+                 "readback shows the hand-switched relay %s", can ? "frames" : "replies", (unsigned)(c1 - c0),
+                 all_bad ? "yes" : "NO", (unsigned)(RB2_ERRS() - c1), x.sb.relays.board_ok ? "yes" : "NO",
+                 some ? "yes" : "NO");
+#undef RB2_ERRS
+        test_report(can ? "RB2 broken frames: refused by the transport, never used (SILENT); occasional errors tolerated"
+                        : "RB2 CRC errors: bad replies counted and never used (SILENT); occasional errors tolerated",
                     loaded && all_bad && some, d);
     }
 
@@ -9444,13 +9466,15 @@ static void relay_tests(void)
         sim_hal_relay_board(true, 5u, 0u);
         sbsim_run(&x, x.t + 2000u, NULL, NULL);
         bool off_back = !sim_hal_relay_state(7u);
-        snprintf(d, sizeof d, "20 s pulse asked %s, board pulse %s, ended by the board after ~%u ms with core 0 frozen; timed relay "
+        snprintf(d, sizeof d, "20 s pulse asked %s, pulse %s, ended by the board after ~%u ms with core 0 frozen; timed relay "
                  "on at 119 s %s, off at 121 s by the AURIX %s; OFF during silence waits %s, done when back %s",
                  asked ? "ok" : "NO", pulsing ? "yes" : "NO", (unsigned)t_off, on_119 ? "yes" : "NO", off_121 ? "yes" : "NO",
                  held ? "yes" : "NO", off_back ? "yes" : "NO");
-        test_report("RB5 time limits: momentary = board-timed <= max_s (also with core 0 frozen); timed OFF after max_s",
-                    loaded && asked && pulsing && t_off >= 2700u && t_off <= 3500u && timed && on_119 && off_121 && held &&
-                    off_back, d);
+        /* Modbus: the board's own pulse timer ends it at 3 s; DroneCAN: the AURIX stops sending with core 0
+         * frozen at 0.3 s - the board's command timeout (R-3, 300 ms) ends it */
+        bool t_ok = rb_can() ? (t_off >= 450u && t_off <= 900u) : (t_off >= 2700u && t_off <= 3500u);
+        test_report("RB5 time limits: momentary <= max_s, ended by the board also with core 0 frozen; timed OFF after max_s",
+                    loaded && asked && pulsing && t_ok && timed && on_119 && off_121 && held && off_back, d);
     }
 
     /* RB6 refusals: no table, unknown relay, the STARTER (section N only), FIRST TEST (no relay change at all) */
@@ -9759,7 +9783,10 @@ static void relay_tests(void)
             sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
             if (!t_off && x.t > t0 + 200u && !sim_hal_relay_state(4u)) t_off = x.t - t0;
         }
-        bool off = t_off >= 1400u && t_off <= 1900u && x.sb.relays.pulse_offs == 1u && !(x.sb.relays.off_pending & rb_bit(4));
+        /* Modbus: the board's pulse timer is broken - the AURIX's own OFF at the deadline + margin (1.5 s);
+         * DroneCAN: the pulse is AURIX-timed anyway (its OFF at 1 s), the AURIX's extra OFF follows at 1.5 s */
+        bool t_ok = rb_can() ? (t_off >= 950u && t_off <= 1300u) : (t_off >= 1400u && t_off <= 1900u);
+        bool off = t_ok && x.sb.relays.pulse_offs == 1u && !(x.sb.relays.off_pending & rb_bit(4));
         /* the bus cut while the pulse runs: the OFF waits (pending), goes when the board is back */
         bool asked2 = sb_relay_cmd(&x.sb, 4u, RELAY_CMD_PULSE, 1000u) == SB_OK;
         sbsim_run(&x, x.t + 300u, NULL, NULL);
@@ -9844,7 +9871,8 @@ static void relay_tests(void)
                        x.sb.relays.channels == 8u;
         bool refused = sb_relay_table(&x.sb, &big) == SB_ERR_BAD_VALUE;
         bool fits = sb_relay_table(&x.sb, &t) == SB_OK && confirm_press(&x) && x.sb.relays.have_table;
-        bool drv = !mb_set_coil(9u, true) && !mb_pulse_coil(12u, 500u) && mb_set_coil(8u, false);
+        bool drv = rb_can() ? (!cr_set(9u, true) && !cr_pulse(12u, 500u) && cr_set(8u, false))
+                            : (!mb_set_coil(9u, true) && !mb_pulse_coil(12u, 500u) && mb_set_coil(8u, false));
         bool cmd9 = sb_relay_cmd(&x.sb, 9u, RELAY_CMD_ON, 0u) == SB_ERR_BAD_VALUE;
         sim_hal_relay_fitted(16u);
         rb_power_cycle(&x, HAL_RESET_SYSTEM);
@@ -9905,7 +9933,13 @@ static void relay_tests(void)
 
 void sb_relay_tests(void)
 {
-    relay_tests();
+    relay_tests();                  /* RB1-RB14 on the Modbus board (or on DroneCAN with "--can") */
+    if (!s_can_all) {
+        s_rb_can = true;
+        relay_tests();              /* ... and again on the DroneCAN board (step 11f) */
+        s_rb_can = false;
+    }
+    relay_bus_tests();              /* RB15-RB20 */
 }
 
 /* ------------------------------ engine controls + remote restart (CLAUDE.md N) -- */
@@ -13083,6 +13117,310 @@ void sb_phase5_tests(void)
     phase5();
 }
 
+
+/* -------------------------------- relay board on DroneCAN (step 11f, CLAUDE.md T, design section 9) -- */
+
+/* RB15-RB20: the DroneCAN relay board (can_relay.c + the simulated node 30) - in every suite (the RB1-RB14 run
+ * on the Modbus board in "all" / "all --bridge" and on the DroneCAN board in "all --can" / "--can-fast"; "rb"
+ * runs both) - and the STARTER's hardware time-limit relay (OD-9) on both buses */
+static void relay_bus_tests(void)
+{
+    char d[1400];
+    bool keep_rb_can = s_rb_can;
+    printf("\n=== RB15-RB20 relay board on DroneCAN (can_relay.c, node 30) + the STARTER time-limit relay (OD-9) ===\n");
+
+    /* RB15 the STARTER's hardware time-limit relay (6 s, OD-9 / W8), on BOTH buses: a normal 5 s hold is never
+     * cut by it (6 s > crank_max_s 5 s); a welded STARTER contact (the AURIX's OFF has no effect) - the starter
+     * motor is cut by the time-limit relay after 6 s */
+    {
+        bool good[2] = { false, false };
+        char part[2][300];
+        for (int b = 0; b < 2; b++) {
+            static sbsim_t x;
+            static ersim_t e;
+            s_rb_can = b == 1;
+            bool set = er_setup(&x, &e, 1725u + (uint32_t)b, true, NULL);
+            bool can = rb_can();
+            uint8_t ign[4] = { 1u, RELAY_CMD_ON, 0u, 0u };
+            (void)pi_cmd(&x, &e.r.p, 2u, false, PROTO_T_RELAY, ign, 4u);
+            sbsim_run(&x, x.t + 300u, er_hook, &e);
+            bool cut_early = false;
+            uint32_t t0 = x.t;
+            while (x.t < t0 + 4800u) {
+                (void)er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+                if (x.t > t0 + 400u && sim_hal_relay_state(2u) && !sim_hal_starter_cranking()) cut_early = true;
+            }
+            (void)er_cmd(&x, &e, 2u, ENG_ACT_RELEASE);
+            sbsim_run(&x, x.t + 11000u, er_hook, &e);                          /* the cool-down */
+            uint32_t t1 = x.t;
+            (void)er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+            (void)er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+            bool on = sim_hal_relay_state(2u);
+            sim_hal_relay_weld(2u, true);                                      /* the contact welds */
+            (void)er_cmd(&x, &e, 2u, ENG_ACT_RELEASE);
+            sbsim_run(&x, t1 + 5500u, er_hook, &e);
+            bool still = sim_hal_relay_state(2u) && sim_hal_starter_cranking();
+            sbsim_run(&x, t1 + 6400u, er_hook, &e);
+            bool cut = sim_hal_relay_state(2u) && !sim_hal_starter_cranking();
+            sim_hal_relay_weld(2u, false);
+            sim_hal_relay_board_reset();
+            good[b] = set && !cut_early && on && still && cut;
+            snprintf(part[b], sizeof part[b], "%s: set up %s, 4.8 s hold never cut %s; welded: on %s, cranking at 5.5 s %s, "
+                     "cut by the time-limit relay at 6.4 s %s", can ? "DroneCAN" : "Modbus", set ? "yes" : "NO",
+                     !cut_early ? "yes" : "NO", on ? "yes" : "NO", still ? "yes" : "NO", cut ? "yes" : "NO");
+            remove("nv7.bin");
+        }
+        s_rb_can = keep_rb_can;
+        snprintf(d, sizeof d, "%s; %s", part[0], part[1]);
+        test_report("RB15 STARTER hardware time-limit relay (OD-9, both buses): a 5 s hold never cut, a welded contact cut at 6 s",
+                    good[0] && good[1], d);
+    }
+
+    s_rb_can = true;
+
+    /* RB16 the wire: nothing after the boot; a new state = a 50 Hz burst of 10 frames, then the board holds it
+     * (R-2) - no more frames, a hand switch at the board is never overwritten; a pulse = ON at 50 Hz until its
+     * end (AURIX-timed), then the OFF burst */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1720u, NULL, &t) && rb_can();
+        uint32_t f0 = sim_hal_can_bus_frames(2u);
+        bool none_boot = f0 == 0u;
+        bool cmd = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        uint32_t burst = sim_hal_can_bus_frames(2u) - f0;
+        bool on = sim_hal_relay_state(6u) && (x.sb.relays.states & rb_bit(6)) && (relays_flags(&x.sb.relays) & 64u) == 0u;
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool quiet = sim_hal_can_bus_frames(2u) - f0 == burst && sim_hal_relay_state(6u);
+        sim_hal_relay_force(6u, false);                                    /* switched off by hand at the board */
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool hand = !sim_hal_relay_state(6u) && !(x.sb.relays.states & rb_bit(6)) &&
+                    sim_hal_can_bus_frames(2u) - f0 == burst;
+        uint32_t f1 = sim_hal_can_bus_frames(2u);
+        bool pulse = sb_relay_cmd(&x.sb, 4u, RELAY_CMD_PULSE, 1000u) == SB_OK;
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool p_on = sim_hal_relay_state(4u);
+        uint32_t half = sim_hal_can_bus_frames(2u) - f1;
+        sbsim_run(&x, x.t + 900u, NULL, NULL);                             /* (before relays.c's own OFF at 1.5 s) */
+        uint32_t pf = sim_hal_can_bus_frames(2u) - f1;
+        bool p_off = !sim_hal_relay_state(4u);
+        snprintf(d, sizeof d, "table %s; frames after the boot %u; ON: %u frames, on + readback %s, then quiet 2 s %s; hand "
+                 "switch kept %s; 1 s pulse %s: %u frames in 0.5 s, on %s, %u frames in all (50 + the OFF burst 10), off %s",
+                 loaded ? "yes" : "NO", (unsigned)f0, (unsigned)burst, on ? "yes" : "NO", quiet ? "yes" : "NO",
+                 hand ? "yes" : "NO", pulse ? "ok" : "NO", (unsigned)half, p_on ? "yes" : "NO", (unsigned)pf,
+                 p_off ? "yes" : "NO");
+        test_report("RB16 DroneCAN wire: nothing after a boot, 10-frame burst at 50 Hz then the board holds, pulse = ON at 50 Hz",
+                    loaded && none_boot && cmd && burst == CR_BURST_FRAMES && on && quiet && hand && pulse && p_on &&
+                    half >= 22u && half <= 27u && pf >= 55u && pf <= 64u && p_off, d);
+        remove("nv7.bin");
+    }
+
+    /* RB17 a board WITHOUT readback (no hardpoint.Status, R-4 not met): the COMMANDED states (TELEM2 M flag 64 "no
+     * readback"), unknown after an AURIX power-on while the board kept running; an interlocked partner that is
+     * unknown and not momentary blocks; a warm reset keeps the commanded states (no-clear RAM) and sends nothing;
+     * a board reboot = every relay OFF (R-2), nothing re-sent; a board booting with the AURIX = all OFF known, the
+     * power_up states applied */
+    {
+        static sbsim_t x;
+        static relay_table_t t, tp;
+        rb_table(&t, false, false);
+        t.r[5].pair = 7u;                                                  /* NAV LIGHTS / BILGE PUMP interlocked */
+        t.r[6].pair = 6u;
+        relay_table_seal(&t);
+        tp = t;
+        tp.r[5].flags = RELAY_F_POWER_ON;
+        relay_table_seal(&tp);
+        bool loaded = rb_setup(&x, 1721u, NULL, &t) && rb_can();
+        sim_hal_relay_board(true, 5u, SIM_RB_NO_READBACK);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool cmd_only = x.sb.relays.board_ok && (relays_flags(&x.sb.relays) & 64u) && x.sb.relays.known == 0u;
+        bool pair_unknown = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_ERR_REFUSED;
+        bool trim = sb_relay_cmd(&x.sb, 4u, RELAY_CMD_PULSE, 500u) == SB_OK;   /* momentary partner: off by R-3 */
+        bool off7 = sb_relay_cmd(&x.sb, 7u, RELAY_CMD_OFF, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool on6 = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool shown = sim_hal_relay_state(6u) && (x.sb.relays.states & rb_bit(6)) && (x.sb.relays.known & 0x60u) == 0x60u;
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        /* a warm reset: the kept states, nothing sent */
+        rb_power_cycle(&x, HAL_RESET_SYSTEM);
+        uint32_t f0 = sim_hal_can_bus_frames(2u);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool kept = (x.sb.relays.known & 0x60u) == 0x60u && (x.sb.relays.states & rb_bit(6)) && sim_hal_relay_state(6u) &&
+                    sim_hal_can_bus_frames(2u) == f0 && x.sb.relays.power_ups == 0u;
+        /* the board reboots: every relay OFF, nothing re-sent */
+        uint32_t e6 = sim_hal_relay_edges(6u);
+        sim_hal_can_node_reboot(DC_NODE_RELAY);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool reboot = !sim_hal_relay_state(6u) && sim_hal_relay_edges(6u) == e6 && (x.sb.relays.known & 0x7Fu) == 0x7Fu &&
+                      x.sb.relays.states == 0u && sim_hal_can_bus_frames(2u) == f0 && cr_stats()->board_reboots == 1u;
+        /* the power_up table, then a power-on with the board booting at the same time: all OFF known, power_up ON */
+        bool tp_ok = sb_relay_table(&x.sb, &tp) == SB_OK && confirm_press(&x);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        sim_hal_can_node_reboot(DC_NODE_RELAY);
+        rb_power_cycle(&x, HAL_RESET_POWER_ON);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool po = tp_ok && x.sb.relays.power_ups == 1u && sim_hal_relay_state(6u) && (x.sb.relays.known & 0x7Fu) == 0x7Fu;
+        /* a power-on while the board kept running: unknown, no power_up */
+        rb_power_cycle(&x, HAL_RESET_POWER_ON);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool po2 = x.sb.relays.power_ups == 0u && x.sb.relays.known == 0u && sim_hal_relay_state(6u);
+        sim_hal_relay_board(true, 5u, 0u);
+        snprintf(d, sizeof d, "table %s; no Status: board ok, flag 64, all unknown %s; NAV LIGHTS refused while the BILGE PUMP "
+                 "(not momentary) is unknown %s; TRIM pulse ok %s; BILGE OFF %s -> NAV LIGHTS ON %s, shown as commanded %s; "
+                 "warm reset: kept, nothing sent %s; board reboot: OFF, not re-sent, all known OFF %s; power-on with the board "
+                 "booting: all OFF known + power_up %s; power-on, board kept running: unknown, no power_up %s",
+                 loaded ? "yes" : "NO", cmd_only ? "yes" : "NO", pair_unknown ? "yes" : "NO", trim ? "yes" : "NO",
+                 off7 ? "ok" : "NO", on6 ? "ok" : "NO", shown ? "yes" : "NO", kept ? "yes" : "NO", reboot ? "yes" : "NO",
+                 po ? "yes" : "NO", po2 ? "yes" : "NO");
+        test_report("RB17 DroneCAN board without readback: commanded states, unknown partner blocks, kept over a warm reset, "
+                    "reboot = OFF", loaded && cmd_only && pair_unknown && trim && off7 && on6 && shown && kept && reboot && po &&
+                    po2, d);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
+
+    /* RB18 the board's node health: not OPERATIONAL / ERROR = RELAY BOARD SILENT (advisory: no mode change, the
+     * relay node is not a required node), WARNING = a notice only (the relays work) */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1722u, NULL, &t) && rb_can();
+        bool hdg = hdg_lock(&x);
+        uint32_t alm0 = x.sb.alarm_bits;
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_OK, DC_MODE_MAINTENANCE);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        bool maint = !x.sb.relays.board_ok && (x.sb.alarm_bits2 & SB_ALM2_RELAY_SILENT) && sb_mode(&x.sb) == MODE_HDG_LOCK &&
+                     !(x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) && x.sb.alarm_bits == alm0 &&
+                     sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_ERR_REFUSED;
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_WARNING, DC_MODE_OPERATIONAL);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        bool warn = x.sb.relays.board_ok && sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        warn = warn && sim_hal_relay_state(6u) && x.sb.can.node[HAL_CAN_ROLE_RELAY].warning && sb_mode(&x.sb) == MODE_HDG_LOCK;
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_ERROR, DC_MODE_OPERATIONAL);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        bool err = !x.sb.relays.board_ok && relays_silent(&x.sb.relays) && sb_mode(&x.sb) == MODE_HDG_LOCK &&
+                   x.sb.alarm_bits == alm0;
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        bool back = x.sb.relays.board_ok;
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        snprintf(d, sizeof d, "table %s, HDG LOCK %s; MAINTENANCE: SILENT advisory, mode / alarm word 1 kept, no CAN NODE LOST, "
+                 "ON refused %s; WARNING: notice, the relay works %s; ERROR: SILENT, still HDG LOCK %s; OPERATIONAL: back %s",
+                 loaded ? "yes" : "NO", hdg ? "yes" : "NO", maint ? "yes" : "NO", warn ? "yes" : "NO", err ? "yes" : "NO",
+                 back ? "yes" : "NO");
+        test_report("RB18 DroneCAN board health: not OPERATIONAL / ERROR = RELAY BOARD SILENT advisory only, WARNING = notice",
+                    loaded && hdg && maint && warn && err && back, d);
+        remove("nv7.bin");
+    }
+
+    /* RB19 bus loss and board power: bus-off = SILENT, an OFF asked meanwhile goes when the bus is back; the board
+     * unpowered = its relays drop OFF (states unknown); powered again = it rebooted: all OFF known, nothing switched
+     * back ON by itself */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1723u, NULL, &t) && rb_can();
+        (void)sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool on = sim_hal_relay_state(6u);
+        sim_hal_can_fault(SIM_CAN_BUSOFF);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool off_asked = !x.sb.relays.board_ok && sb_relay_cmd(&x.sb, 6u, RELAY_CMD_OFF, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool held = sim_hal_relay_state(6u) && (x.sb.relays.off_pending & rb_bit(6)) && relays_silent(&x.sb.relays);
+        sim_hal_can_fault(0u);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool done = !sim_hal_relay_state(6u) && x.sb.relays.off_pending == 0u && x.sb.relays.board_ok;
+        sb_alarm_ack(&x.sb);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        (void)sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool on2 = sim_hal_relay_state(6u);
+        uint32_t e6 = sim_hal_relay_edges(6u);
+        sim_hal_can_node(DC_NODE_RELAY, false, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool dropped = !sim_hal_relay_state(6u) && !x.sb.relays.board_ok && x.sb.relays.known == 0u &&
+                       relays_silent(&x.sb.relays);
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sbsim_run(&x, x.t + 5000u, NULL, NULL);
+        bool rebooted = x.sb.relays.board_ok && (x.sb.relays.known & 0x7Fu) == 0x7Fu && x.sb.relays.states == 0u &&
+                        !sim_hal_relay_state(6u) && sim_hal_relay_edges(6u) == e6 && cr_stats()->board_reboots == 1u;
+        snprintf(d, sizeof d, "table %s, ON %s; bus-off: SILENT, OFF asked %s, held + pending %s, done when the bus is back %s; "
+                 "ON again %s; board unpowered: relay OFF, unknown, SILENT %s; powered again (reboot): all OFF known, "
+                 "never back ON %s", loaded ? "yes" : "NO", on ? "yes" : "NO", off_asked ? "yes" : "NO",
+                 held ? "yes" : "NO", done ? "yes" : "NO", on2 ? "yes" : "NO", dropped ? "yes" : "NO",
+                 rebooted ? "yes" : "NO");
+        test_report("RB19 DroneCAN bus loss + board power: SILENT, the OFF waits for the bus; unpowered / rebooted = OFF, "
+                    "never back ON", loaded && on && off_asked && held && done && on2 && dropped && rebooted, d);
+        remove("nv7.bin");
+    }
+
+    /* RB20 the STARTER on DroneCAN: hold-to-crank = ON at 50 Hz, the AURIX stops sending when core 0 freezes - the
+     * board's command timeout (R-3, 300 ms) ends the crank; a watchdog reset while cranking: the STARTER off by
+     * the board, NO frame after the boot, no power_up */
+    {
+        static sbsim_t x;
+        static ersim_t e;
+        bool set = er_setup(&x, &e, 1724u, true, NULL) && rb_can();
+        uint8_t ign[4] = { 1u, RELAY_CMD_ON, 0u, 0u };
+        (void)pi_cmd(&x, &e.r.p, 2u, false, PROTO_T_RELAY, ign, 4u);
+        sbsim_run(&x, x.t + 300u, er_hook, &e);
+        int ok = er_hold(&x, &e, 1000u);
+        (void)er_cmd(&x, &e, 2u, ENG_ACT_CRANK);
+        bool cranking = sim_hal_relay_state(2u);
+        x.wdt_ms = 0u;                                   /* core 0 frozen, no watchdog */
+        x.frozen = true;
+        uint32_t t0 = x.t, t_off = 0u;
+        while (x.t < t0 + 1500u) {
+            sbsim_run(&x, x.t + 10u, NULL, NULL);
+            if (!t_off && !sim_hal_relay_state(2u)) t_off = x.t - t0;
+        }
+        bool tripped = x.sb.eng.crank == ENG_CRANK_OFF || hal_outputs_forced();   /* (CPU1 trips on the frozen loop) */
+        x.frozen = false;
+        x.wdt_ms = 100u;
+        x.next_ctrl = x.t;
+        x.last_kick = x.t;
+        remove("nv7.bin");
+        /* a watchdog reset while cranking (a fresh boat) */
+        static sbsim_t y;
+        static ersim_t f;
+        bool set2 = er_setup(&y, &f, 1726u, true, NULL);
+        (void)pi_cmd(&y, &f.r.p, 2u, false, PROTO_T_RELAY, ign, 4u);
+        sbsim_run(&y, y.t + 300u, er_hook, &f);
+        int ok2 = er_hold(&y, &f, 600u);
+        (void)er_cmd(&y, &f, 2u, ENG_ACT_CRANK);
+        bool cranking2 = sim_hal_relay_state(2u);
+        y.frozen = true;                                 /* frozen with the watchdog: a reset */
+        uint32_t t1 = y.t, t_off2 = 0u, r0 = y.resets;
+        while (y.t < t1 + 1500u) {
+            sbsim_run(&y, y.t + 10u, NULL, NULL);
+            if (!t_off2 && !sim_hal_relay_state(2u)) t_off2 = y.t - t1;
+        }
+        uint32_t f0 = sim_hal_can_bus_frames(2u);
+        sbsim_run(&y, y.t + 3000u, NULL, NULL);
+        bool after = y.resets == r0 + 1u && sim_hal_can_bus_frames(2u) == f0 && !sim_hal_relay_state(2u) &&
+                     y.sb.relays.power_ups == 0u && sim_hal_relay_state(1u);
+        snprintf(d, sizeof d, "set up %s; hold %d CRANKs, STARTER on %s; core 0 frozen: off after %u ms (R-3), the crank over "
+                 "(monitor trip) %s; a fresh boat %s: hold %d, on %s; watchdog reset: off after %u ms, IGNITION kept, "
+                 "nothing sent after the boot, no power_up %s",
+                 set ? "yes" : "NO", ok, cranking ? "yes" : "NO", (unsigned)t_off, tripped ? "yes" : "NO",
+                 set2 ? "yes" : "NO", ok2, cranking2 ? "yes" : "NO", (unsigned)t_off2, after ? "yes" : "NO");
+        test_report("RB20 DroneCAN STARTER: AURIX-timed, the board's timeout ends it when core 0 freezes / resets; nothing "
+                    "sent after the boot", set && ok >= 3 && cranking && t_off > 0u && t_off <= 400u && tripped && set2 &&
+                    ok2 >= 2 && cranking2 && t_off2 > 0u && t_off2 <= 400u && after, d);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
+    s_rb_can = keep_rb_can;
+}
+
 void sb_can_tests(void)
 {
     can_tests();
@@ -13125,6 +13463,7 @@ void sb_tests(void)
     generator_tests();
     relay_tests();
     engine_tests();
+    relay_bus_tests();
     battery_tests();
     nv_tests();
     gateway_tests();

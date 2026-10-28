@@ -1,6 +1,7 @@
 /*
- * relays.h - The RS485 Modbus relay board as the boat sees it (CLAUDE.md
- * section M + owner clarifications). Pure C99; this module is the ONLY
+ * relays.h - The relay board as the boat sees it (CLAUDE.md section M + owner
+ * clarifications; step 11f: the RS485 Modbus board OR the DroneCAN relay node -
+ * RELAY_BUS in hal_pins.h, the same hal_relay_* calls, every rule here unchanged). Pure C99; this module is the ONLY
  * caller of hal_relay_* (tools/check.sh greps for it, like servo.c for the
  * throttle). No relay is in any control path: nothing here can change the
  * mode, the throttle, the gear, the steering or the thrust (storm I36).
@@ -17,12 +18,14 @@
  * Rules carried out here:
  *   - onoff / latching: set / clear (driven the same way on the AURIX; the
  *     screens draw a latching relay as a toggle that keeps its state)
- *   - momentary: a BOARD-timed pulse <= max_s (<= 5 s): the board switches
- *     it off by itself; the AURIX only refreshes / releases it
+ *   - momentary: a pulse <= max_s (<= 5 s) that ends by itself: Modbus =
+ *     BOARD-timed; DroneCAN = AURIX-timed + the board's own command timeout
+ *     (<= 300 ms, R-3) when the AURIX stops; the AURIX only refreshes / releases it
  *   - timed: on, and OFF by the AURIX after max_s (also while the board is
  *     silent: the OFF stays pending and is re-sent until the readback shows it off)
  *   - interlocked pair: never both - the second request is refused while
- *     the other is on (commanded or read back)
+ *     the other is on (commanded or read back) or its state is unknown (a
+ *     non-momentary partner on a DroneCAN board without readback)
  *   - a silent board (no valid reply for HAL_RELAY_LOST_MS): no new command
  *     (the OFF of a timed relay still goes), states shown unknown, the
  *     advisory RELAY BOARD SILENT (raised by smallboat.c)
@@ -135,6 +138,8 @@ typedef struct {
     bool     power_on_reset;    /* the AURIX's own power-on reset (not a watchdog / software reset) */
     bool     power_up_done;     /* the one-shot power_up is over (done, or never allowed) */
     bool     board_ok;          /* hal_relay_ok() this step */
+    bool     readback;          /* the states are the board's own readback (false: a DroneCAN board without
+                                   hardpoint.Status - the COMMANDED states, TELEM2 M flag 64 "no readback") */
     uint8_t  channels;          /* hal_relay_channels(): the fitted board's coils, 0 = no board */
     uint32_t pulse_offs;        /* OFFs the AURIX sent itself after a pulse should have ended */
     uint32_t states, known;     /* readback: bit n-1 (known = a valid readback) */

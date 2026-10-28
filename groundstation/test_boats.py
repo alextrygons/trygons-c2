@@ -222,6 +222,11 @@ def b4_app_end_to_end():
     import app as A
     import proto
     tmp = tempfile.mkdtemp(prefix="boats_e2e_")
+    # the simulator keeps its data flash as files in sim/ (nv7.bin = the stored relay table): a table left by an
+    # earlier run would make B9's CONFIRM step never come (W11) - start without it, and clean up after the test
+    nv7 = os.path.join(TG.SIM_DIR, "nv7.bin")
+    if os.path.exists(nv7):
+        os.remove(nv7)
     sim = TG.Sim(1.0)
     root_dir = os.path.join(tmp, "ssd")
     os.makedirs(root_dir)
@@ -303,6 +308,10 @@ def b4_app_end_to_end():
         ap.quit()
         gw.stop()
         sim.stop()
+        try:
+            os.remove(nv7)                                       # (the table B9 confirmed: not for the next run)
+        except OSError:
+            pass
 
 
 def b8_push(ap, pump, pushed_before_helm):

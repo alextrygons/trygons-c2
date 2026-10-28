@@ -130,10 +130,23 @@
 #define RELAY_TX            IfxAsclin4_TX_P00_9_OUT     /* CHECK X1/X2 */
 #define RELAY_RX            IfxAsclin4_RXA_P00_12_IN    /* CHECK X1/X2 */
 #define PIN_RELAY_DE        &MODULE_P00, 11u            /* CHECK X1/X2: RS485 DE + /RE, high = drive the bus */
+#ifndef HAL_RELAY_FITTED                                /* (-D only for the gate's compile of the board path) */
 #define HAL_RELAY_FITTED    0                           /* TBD: 1 when the board + transceiver are wired */
+#endif
 #define RELAY_BAUD          9600.0f                     /* TBD: per the board (9600-115200 8N1) */
 #define RELAY_SLAVE_ADDR    1u                          /* TBD: the board's Modbus address */
 #define RELAY_CHANNELS      8u                          /* TBD: coils the board has (8-16); read back per poll */
+/* Which relay board (owner decision OD-9, step 11f): the RS485 Modbus board above, or the DroneCAN relay node
+ * (hal/can_relay.c: node 30 = DC_NODE_RELAY, hardpoints 0-5 = relays 1-6 at 50 Hz, WIRING.md 3E). Both behind
+ * the same hal_relay_* API (app/relays.c keeps every rule). The default stays MODBUS until the owner has chosen
+ * the board (DroneCAN only if it meets R-1..R-3, docs/dronecan_design.md 9) - TO CONFIRM C17. DRONECAN needs
+ * HAL_CAN_FITTED 1 (else: no relay board). HAL_RELAY_FITTED 0 = no relay board on either bus. */
+#define RELAY_BUS_MODBUS    1
+#define RELAY_BUS_DRONECAN  2
+#ifndef RELAY_BUS
+#define RELAY_BUS           RELAY_BUS_MODBUS            /* TO CONFIRM C17 (the owner decides at the 11f review) */
+#endif
+#define CAN_RELAY_CHANNELS  6u                          /* TO CONFIRM C17: hardpoints 0-5 (ArduPilot RELAY1..6) */
 
 /* DroneCAN bus (WIRING.md 3E, CLAUDE.md T, docs/dronecan_design.md). Driver: hal/tc_can.c (step 11d, MCMCAN
  * CAN0 node 0) + hal/dronecan.c; with HAL_CAN_FITTED 0 hal_init never starts it (the code is compiled and its
@@ -145,7 +158,9 @@
  * the owner confirms all of it. Bus: 1 Mbit/s (docs/ardupilot.param CAN_P1_BITRATE), 120 Ohm at both ends.
  * Static node IDs TO CONFIRM (proposal: AURIX 10 = ArduPilot's CAN_D1_UC_NODE, throttle 20, steering 21,
  * gear 22, relay board 30; GPS + compass 124 not used): set on the nodes with the DroneCAN GUI Tool. */
+#ifndef HAL_CAN_FITTED                                  /* (-D only for the gate's compile of the board path) */
 #define HAL_CAN_FITTED      0                           /* TO CONFIRM: 1 only after the pins / termination are checked */
+#endif
 #define CAN_TXD             IfxCan_TXD00_P20_8_OUT      /* TO CONFIRM on the kit schematic */
 #define CAN_RXD             IfxCan_RXD00B_P20_7_IN      /* TO CONFIRM on the kit schematic */
 #define PIN_CAN_STB         &MODULE_P20, 6u             /* TO CONFIRM: TLE9251V STB (GPIO), polarity TO CONFIRM */
@@ -155,7 +170,9 @@
 /* Step 11e: throttle, steering and gear as DroneCAN servo nodes (hal/can_act.c, CPU1 safe frames in the reserved
  * TX buffers). Only with HAL_CAN_FITTED; 0 = the PWM servos + the steering motor of the old hardware (FIRST TEST,
  * the board today). TO CONFIRM by the owner (bench: FIRST_TEST.md 3j) before it becomes 1. */
+#ifndef HAL_CAN_SERVOS                                  /* (-D only for the gate's compile of the board path) */
 #define HAL_CAN_SERVOS      0
+#endif
 /* The UNCREWED dead-man pulse (OA-3, docs/dronecan_design.md 14.1 option 1 = the recommended default, WAITING FOR
  * OWNER W5): with the DroneCAN servos P10.5 no longer drives the safety relay (OD-2: the servo power is never
  * cut) - CPU1 toggles it for the retriggerable timer relay in the kill circuit. Pin / relay / time TO CONFIRM. */

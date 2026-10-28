@@ -80,6 +80,10 @@ SIG_NODEINFO = dsdl_sig("uavcan.protocol.GetNodeInfo", None, [SIG_STATUS, SIG_SW
 SIG_ALLOC = dsdl_sig("uavcan.protocol.dynamic_node_id.Allocation", [
     "saturated uint7 node_id", "saturated bool first_part_of_unique_id", "saturated uint8[<=16] unique_id"])
 ID_STATUS, ID_ARRAYCMD, ID_HARDPOINT, ID_NODEINFO, ID_ALLOC = 341, 1010, 1070, 1, 1   # the DSDL file names
+SIG_HPSTATUS = dsdl_sig("uavcan.equipment.hardpoint.Status", [
+    "saturated uint8 hardpoint_id", "saturated float16 payload_weight", "saturated float16 payload_weight_variance",
+    "saturated uint16 status"])
+ID_HPSTATUS = 1071
 
 
 def crc16(data, crc=0xFFFF):
@@ -107,6 +111,10 @@ def enc_hp(i, c):
 
 
 NAME = b"org.trygons.c2.aurix"
+
+
+def enc_hpst(i, status):
+    return struct.pack("<BHHH", i, 0, 0, status)          # weight / variance float16 0.0 = 0x0000
 
 
 def enc_info(up):
@@ -452,10 +460,73 @@ def t_cancel():
           "cancels %d" % (tid, cancelled, after, third, fault_cancels))
 
 
+def t_hp_status():
+    """D18 (step 11f): the relay board's readback uavcan.equipment.hardpoint.Status: the signature from the DSDL text,
+    the payload layout, taken ONLY from the relay node 30 (another source is not even accepted), age."""
+    def rx(src, hp, st, tid):
+        return "RX %08X %s" % (msg_id(16, ID_HPSTATUS, src), (enc_hpst(hp, st) + bytes([tail(True, True, False, tid)])).hex())
+    b = run(["SIGHP", "ENC_HPST 5 1", "ENC_HPST 0 65535", "INIT", "T 0", rx(30, 3, 1, 0), rx(21, 4, 1, 0),
+             "RX %08X %s" % (msg_id(16, ID_HPSTATUS, 30), bytes([2, 0, tail(True, True, False, 1)]).hex()),
+             "T 100", "HPST 3", "HPST 4", "HPST 2", "T 600", "HPST 3"])
+    sig = b[0][0].split()
+    ok_sig = int(sig[1], 16) == SIG_HPSTATUS and int(sig[2]) == ID_HPSTATUS
+    ok_enc = payload(b[1]) == enc_hpst(5, 1) and payload(b[2]) == enc_hpst(0, 65535)
+    h3, h4, h2, h3b = (b[i][-1].split() for i in (9, 10, 11, 13))
+    # (taken when dc_service runs: at T 100 -> age 0 there, 500 at T 600)
+    ok_rx = h3[1:3] == ["1", "1"] and int(h3[3]) == 0 and h4[1] == "0" and h2[1] == "0" and int(h3b[3]) == 500
+    check("D18 hardpoint.Status (relay readback): signature %016X from the DSDL text, payload layout, only from node 30, "
+          "short payload refused, age" % SIG_HPSTATUS, ok_sig and ok_enc and ok_rx, "%s %s %s %s %s" % (sig, h3, h4, h2, h3b))
+
+
+def t_can_relay():
+    """D19 (step 11f): the relay back-end hal/can_relay.c on the wire - nothing after the init; a set = 10
+    hardpoint.Command frames 20 ms apart (50 Hz) then nothing (the board holds); a pulse = ON every 20 ms until its
+    end, then the OFF burst; every frame = the independent encoder (priority 16, node 10, hardpoint n-1)."""
+    cmds = ["INIT", "T 0", rx_status(30, 100), "T 1", "CRINIT 6 1 0 0 0"]
+    for t in range(10, 300, 10):
+        cmds += ["T %d" % t, "CRTICK"]
+    cmds += ["CRSET 2 1"]
+    for t in range(300, 700, 10):
+        cmds += ["T %d" % t, "CRTICK"]
+    cmds += ["CRPULSE 4 100", "CROK", "CRREAD 2"]
+    for t in range(700, 1200, 10):
+        cmds += ["T %d" % t, "CRTICK"]
+    cmds += ["CRSET 9 1", "CRPULSE 0 100", "CRPULSE 3 0"]
+    b = run(cmds)
+    hp, now = [], 0
+    for k, blk in enumerate(b):
+        if cmds[k].startswith("T "):
+            now = int(cmds[k].split()[1])
+        for i, d in tx(blk):
+            if (i >> 8) & 0xFFFF == ID_HARDPOINT:
+                hp.append((now, i, d))
+    boot = [x for x in hp if x[0] < 300]
+    first = [x for x in hp if 300 <= x[0] < 700]
+    pulse = [x for x in hp if x[0] >= 700]
+    good_ids = all(i == msg_id(16, ID_HARDPOINT, 10) for _, i, _ in hp)
+    # payload (without the tail) = the encoder; tids count up per transfer
+    pay = [d[:-1] for _, _, d in hp]
+    tids = [d[-1] & 0x1F for _, _, d in hp]
+    single = all(d[-1] & 0xC0 == 0xC0 for _, _, d in hp)
+    ok_first = len(first) == 10 and all(p == enc_hp(1, 1) for p in pay[:10])
+    times = [x[0] for x in first]
+    ok_rate = all(b2 - a2 == 20 for a2, b2 in zip(times, times[1:]))
+    on_p = [p for p in pay[10:] if p == enc_hp(3, 1)]
+    off_p = [p for p in pay[10:] if p == enc_hp(3, 0)]
+    ok_pulse = 4 <= len(on_p) <= 6 and len(off_p) == 10 and len(pulse) == len(on_p) + len(off_p)
+    ok_tid = tids == [k % 32 for k in range(len(tids))]
+    flat = [l for blk in b for l in blk]
+    ok_misc = "CROK 1 0" in flat and "CRREAD 1 1" in flat and flat.count("CR 0") == 3
+    check("D19 hal/can_relay.c on the wire: nothing after the init, a set = 10 frames at 50 Hz then quiet, a pulse = ON "
+          "every 20 ms + the OFF burst, frames = the independent encoder", not boot and good_ids and single and ok_first and
+          ok_rate and ok_pulse and ok_tid and ok_misc, "boot %d, first %d %s, pulse on %d off %d, tids %s, misc %s" % (
+              len(boot), len(first), times, len(on_p), len(off_p), ok_tid, ok_misc))
+
+
 def main():
     hal = os.path.join(REPO, "hal")
     srcs = [os.path.join(HERE, "test_dronecan.c"), os.path.join(hal, "dronecan.c"), os.path.join(hal, "can_safe.c"),
-            os.path.join(hal, "libcanard", "canard.c")]
+            os.path.join(hal, "can_relay.c"), os.path.join(hal, "libcanard", "canard.c")]
     r = subprocess.run(["gcc", "-std=c99", "-O2", "-Wall", "-Wextra", "-DCANARD_64_BIT=1", "-I" + hal] + srcs +
                        ["-o", EXE, "-lm"], capture_output=True, text=True)
     if r.returncode != 0 or r.stderr.strip():
@@ -464,7 +535,7 @@ def main():
             return 1
     for t in (t_signatures, t_payloads, t_tx_frames, t_nodeinfo, t_node_table, t_silence, t_reboot, t_conflict_anon,
               t_busoff, t_passive_stale, t_fifo_wait, t_bounded_rx, t_start_fail, t_bad_frames, t_safe_frames,
-              t_cancel):
+              t_cancel, t_hp_status, t_can_relay):
         try:
             t()
         except Exception as e:          # a crash of one test is a FAIL, the others still run

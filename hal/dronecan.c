@@ -36,6 +36,9 @@ static bool     s_conflict_seen, s_anon_seen;
 static uint8_t  s_tec, s_rec;
 static uint8_t  s_own_health = DC_HEALTH_OK, s_own_mode = DC_MODE_OPERATIONAL;
 static uint8_t  s_tid_status, s_tid_cmd, s_tid_hp;
+static uint16_t s_hp_status[DC_HP_MAX];  /* the relay board's readback (hardpoint.Status from DC_NODE_RELAY) */
+static uint32_t s_hp_ms[DC_HP_MAX];
+static uint32_t s_hp_seen;               /* bit hp: a Status arrived since dc_init */
 
 static const uint8_t k_ids[HAL_CAN_NODES]  = { DC_NODE_THROTTLE, DC_NODE_STEERING, DC_NODE_GEAR, DC_NODE_RELAY };
 static const bool    k_req[HAL_CAN_NODES]  = { true, true, true, false };
@@ -136,6 +139,24 @@ bool dc_decode_hardpoint(const uint8_t *p, uint32_t len, uint8_t *id, uint16_t *
     return true;
 }
 
+void dc_encode_hp_status(uint8_t *out7, uint8_t id, uint16_t status)
+{
+    uint16_t w = canardConvertNativeFloatToFloat16(0.0f);
+    memset(out7, 0, DC_HPSTATUS_LEN);
+    canardEncodeScalar(out7, 0, 8, &id);
+    canardEncodeScalar(out7, 8, 16, &w);
+    canardEncodeScalar(out7, 24, 16, &w);
+    canardEncodeScalar(out7, 40, 16, &status);
+}
+
+bool dc_decode_hp_status(const uint8_t *p, uint32_t len, uint8_t *id, uint16_t *status)
+{
+    if (len < DC_HPSTATUS_LEN) return false;
+    *id = p[0];
+    *status = (uint16_t)(p[5] | (p[6] << 8));
+    return true;
+}
+
 uint32_t dc_encode_node_info(uint8_t *out, uint32_t max, const dc_status_t *st)
 {
     static const char name[] = DC_NODEINFO_NAME;
@@ -203,6 +224,10 @@ static bool should_accept(const CanardInstance *ins, uint64_t *sig, uint16_t typ
         *sig = DC_GETNODEINFO_SIG;
         return true;
     }
+    if (tt == CanardTransferTypeBroadcast && type_id == DC_HPSTATUS_ID && src == DC_NODE_RELAY) {
+        *sig = DC_HPSTATUS_SIG;             /* the relay board's readback only (step 11f) */
+        return true;
+    }
     return false;
 }
 
@@ -221,6 +246,18 @@ static void on_reception(CanardInstance *ins, CanardRxTransfer *t)
         dc_status_t st;
         if (t->payload_len >= DC_NODESTATUS_LEN && dc_decode_status(t->payload_head, t->payload_len, &st))
             on_status(t->source_node_id, &st);
+        return;
+    }
+    if (t->transfer_type == CanardTransferTypeBroadcast && t->data_type_id == DC_HPSTATUS_ID) {
+        uint8_t hp;
+        uint16_t v;
+        if (t->source_node_id == DC_NODE_RELAY && t->payload_len >= DC_HPSTATUS_LEN &&
+            dc_decode_hp_status(t->payload_head, t->payload_len, &hp, &v) && hp < DC_HP_MAX) {
+            s_hp_status[hp] = v;
+            s_hp_ms[hp] = now_ms();
+            s_hp_seen |= 1u << hp;
+            s_st.hp_status++;
+        }
         return;
     }
     if (t->transfer_type == CanardTransferTypeBroadcast && t->data_type_id == DC_ALLOCATION_ID) {
@@ -295,6 +332,9 @@ void dc_init(const dc_port_t *port)
     s_tec = s_rec = 0u;
     s_own_health = DC_HEALTH_OK;
     s_own_mode = DC_MODE_OPERATIONAL;
+    memset(s_hp_status, 0, sizeof s_hp_status);
+    memset(s_hp_ms, 0, sizeof s_hp_ms);
+    s_hp_seen = 0u;
     s_started = P->start();
     s_st.state = s_started ? HAL_CAN_ST_RUN : HAL_CAN_ST_FAULT;
 }
@@ -516,5 +556,13 @@ bool dc_send_hardpoint(uint8_t hardpoint_id, uint16_t command)
         s_st.tx_drops++;
         return false;
     }
+    return true;
+}
+
+bool dc_hardpoint_status(uint8_t hp, uint16_t *status, uint32_t *age_ms)
+{
+    if (hp >= DC_HP_MAX || !(s_hp_seen & (1u << hp))) return false;
+    if (status) *status = s_hp_status[hp];
+    if (age_ms) *age_ms = s_last_ms - s_hp_ms[hp];
     return true;
 }

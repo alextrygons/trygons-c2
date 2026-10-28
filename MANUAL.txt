@@ -1102,6 +1102,29 @@ RELAY BOARD (RS485 Modbus RTU: lights, pumps, trim, engine switches)
     no board fitted at all (HAL_RELAY_FITTED 0) there is no such alarm.
   * FIRST TEST: no relay changes at all. A monitor trip / the e-stop leave
     the relays as they are (the board is not a safety path).
+  * THE RELAY BOARD ON DRONECAN (step 11f - a BUILD OPTION, hal_pins.h
+    RELAY_BUS; the default stays the RS485 board until the board is chosen):
+    the relay board can also be the DroneCAN node 30 on the servo bus
+    (relays 1-6 = hardpoints 0-5). Every rule above stays exactly the same
+    (the AURIX's relay code does not know the bus). What is different:
+    - the AURIX sends a new state 10 times at 50 Hz, then nothing (the board
+      holds it); after ANY reset of the AURIX it sends nothing until you
+      switch a relay - a reset never switches anything.
+    - momentary relays (TRIM, the STARTER) are timed by the AURIX: ON
+      frames at 50 Hz while the pulse / START hold lasts. If the AURIX stops
+      (frozen, reset, cable) the board's own command timeout (<= 300 ms)
+      switches the relay off. The STARTER is always also behind the
+      hardware time-limit relay (about 6 s: WIRING.md 3D / 3E).
+    - readback = the board's hardpoint.Status, if the board sends it. A
+      board that does not: the relays panel says "no readback from the relay
+      board: the COMMANDED states are shown"; after an AURIX power-on while
+      the board kept running the states are unknown until you switch them
+      (a relay paired with an unknown, not momentary partner is refused
+      until the partner was switched once - switch it OFF first).
+    - RELAY BOARD SILENT also when node 30 is not OPERATIONAL, reports
+      ERROR, or the CAN bus is down; health WARNING = a notice only. A board
+      that loses power or reboots has every relay OFF afterwards; the AURIX
+      never switches them back on by itself.
   RELAY BUTTONS (the stations; requests only - the AURIX decides every time)
   * Screen 2: the panel "RELAYS" (collapsible; the station puts it in the
     corner with the most room, never over the boat) shows the boat file's
@@ -1939,7 +1962,9 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          first word is full.) Not measured at all (divider not wired,
                          converter dead): the NOTICE "NO VOLTAGE DATA" after
                          5 s - no alarm, nothing else changes.
-  RELAY BOARD SILENT     the RS485 relay board gave no valid reply for 3 s
+  RELAY BOARD SILENT     the relay board gave no valid reply for 3 s (RS485)
+                         / its node 30 silent, not OPERATIONAL, ERROR or
+                         the CAN bus down (DroneCAN board, step 11f)
                          while a relay table is loaded. ADVISORY: states
                          shown unknown, no new relay command; no mode
                          change, the power limit stays, no buzzer.

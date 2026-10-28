@@ -187,6 +187,17 @@ static bool relay_on(const relays_t *r, uint8_t n)
     return (r->cmd_on & bit) != 0u || ((r->known & bit) && (r->states & bit));
 }
 
+/* the interlock: the partner may be on - commanded / read back on, or its state UNKNOWN while it is not a
+ * momentary relay (step 11f: a DroneCAN board without readback after a reset; a momentary partner is off by the
+ * board's own timeout). With the Modbus board a fitted relay is always read back while the board answers. */
+static bool pair_maybe_on(const relays_t *r, uint8_t n)
+{
+    const relay_def_t *p = relay_table_find(&r->table, n);
+    uint32_t bit = 1u << (n - 1u);
+    if (relay_on(r, n)) return true;
+    return !(r->known & bit) && p != NULL && p->type != RELAY_MOMENTARY;
+}
+
 relay_result_t relays_note(relays_t *r, uint8_t n, uint8_t action, relay_result_t res)
 {
     r->last_n = n;
@@ -220,7 +231,7 @@ relay_result_t relays_cmd(relays_t *r, uint8_t n, uint8_t action, uint16_t ms, u
      * only through engine.c with idle + neutral + e-stop released (section N; the ROLE decides, not the type) */
     if (d->group == RELAY_GRP_ENGINE || d->role != RELAY_ROLE_NONE) return relays_note(r, n, action, RELAY_R_ENGINE);
     if (!r->board_ok) return relays_note(r, n, action, RELAY_R_SILENT);
-    if (d->pair != 0u && relay_on(r, d->pair)) return relays_note(r, n, action, RELAY_R_PAIR);
+    if (d->pair != 0u && pair_maybe_on(r, d->pair)) return relays_note(r, n, action, RELAY_R_PAIR);
     if (d->type == RELAY_MOMENTARY) {
         uint32_t len = (uint32_t)d->max_ds * 100u;
         if (action == RELAY_CMD_PULSE && ms != 0u && ms < len) len = ms;
@@ -261,7 +272,7 @@ relay_result_t relays_engine_set(relays_t *r, uint8_t n, bool on)
         return relays_note(r, n, action, RELAY_R_OK);
     }
     if (!r->board_ok) return relays_note(r, n, action, RELAY_R_SILENT);
-    if (d->pair != 0u && relay_on(r, d->pair)) return relays_note(r, n, action, RELAY_R_PAIR);
+    if (d->pair != 0u && pair_maybe_on(r, d->pair)) return relays_note(r, n, action, RELAY_R_PAIR);
     if (!hal_relay_set(n, true)) return relays_note(r, n, action, RELAY_R_HAL);
     r->cmd_on |= bit;
     r->off_pending &= ~bit;
@@ -274,6 +285,7 @@ void relays_step(relays_t *r, uint32_t now_ms)
     hal_relay_service();
     r->channels = hal_relay_channels();
     r->board_ok = r->channels != 0u && hal_relay_ok();
+    r->readback = r->board_ok && hal_relay_readback();
     /* readback of every relay of the table */
     r->known = 0u;
     r->states = 0u;
@@ -336,7 +348,7 @@ void relays_step(relays_t *r, uint32_t now_ms)
             const relay_def_t *d = &r->table.r[i];
             if (d->group == RELAY_GRP_ENGINE || !(d->flags & RELAY_F_POWER_ON)) continue;   /* never the engine */
             if (d->type == RELAY_MOMENTARY) continue;                    /* a pulse at power-up makes no sense */
-            if (d->pair != 0u && relay_on(r, d->pair)) continue;         /* never both of a pair */
+            if (d->pair != 0u && pair_maybe_on(r, d->pair)) continue;    /* never both of a pair */
             if (r->states & (1u << (d->n - 1u))) continue;              /* already on: nothing to do */
             if (hal_relay_set(d->n, true)) {
                 r->cmd_on |= 1u << (d->n - 1u);
@@ -358,7 +370,8 @@ bool relays_silent(const relays_t *r)
 uint8_t relays_flags(const relays_t *r)
 {
     return (uint8_t)((r->board_ok ? 1u : 0u) | (r->have_table ? 2u : 0u) | (r->from_nv ? 4u : 0u) |
-                     (r->offer_pending ? 8u : 0u) | (r->power_ups ? 16u : 0u) | (r->first_test ? 32u : 0u));
+                     (r->offer_pending ? 8u : 0u) | (r->power_ups ? 16u : 0u) | (r->first_test ? 32u : 0u) |
+                     ((r->board_ok && !r->readback) ? 64u : 0u));
 }
 
 uint8_t relays_starter(const relays_t *r)

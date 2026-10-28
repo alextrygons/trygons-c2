@@ -76,7 +76,28 @@ void     sim_hal_thruster_sag(float v_per_pct);
 #define SIM_RB_SILENT       0x1u    /* never answers (bus cut / board dead) */
 #define SIM_RB_CORRUPT      0x2u    /* every reply has a bad CRC */
 #define SIM_RB_CORRUPT_SOME 0x4u    /* one reply in 7 has a bad CRC */
-#define SIM_RB_NO_PULSE_END 0x8u    /* the board's pulse timer is broken: a "flash on" stays ON */
+#define SIM_RB_NO_PULSE_END 0x8u    /* the board's pulse timer is broken: a "flash on" stays ON (DroneCAN board: its
+                                       command timeout R-3 is broken - a momentary relay stays as last commanded) */
+#define SIM_RB_NO_READBACK  0x10u   /* DroneCAN board: sends no hardpoint.Status (the AURIX shows the commanded states) */
+/* Step 11f: the SAME calls drive the DroneCAN relay board (node 30, hardpoints 0..15 = relays 1..16) when the
+ * relay bus is DroneCAN (sim_hal_relay_bus, taken at the next hal_init; needs the CAN bus fitted). There:
+ * present false = the board's CAN drop cable cut (it hears nothing, sends nothing, its relays hold); SILENT =
+ * it acts on commands but sends no NodeStatus / Status; CORRUPT(_SOME) = its frames arrive broken (refused by
+ * the transport); latency = how late a command takes effect; requests = hardpoint frames received; writes =
+ * relay changes made by commands; pulses = relays of the timeout mask switched on; max_pulse = the longest
+ * pulse the AURIX asked. The board's command timeout (R-3, 300 ms) applies to the timeout mask only (default
+ * relays 2 / 4 / 5 = the momentary ones of the sample table); every other relay HOLDS (R-2). Unpowered
+ * (sim_hal_can_node(30, false ...)) or rebooted = every relay OFF. */
+#define SIM_RELAY_MODBUS    1u
+#define SIM_RELAY_DRONECAN  2u
+void     sim_hal_relay_bus(uint8_t bus);
+uint8_t  sim_hal_relay_bus_now(void);       /* the back-end the AURIX started with (0 = no board) */
+void     sim_hal_relay_timeout_mask(uint32_t mask_n);   /* bit n-1: relay n has the board's command timeout */
+void     sim_hal_relay_weld(uint8_t n, bool welded);    /* relay n's contact welded: stays as it is whatever comes */
+/* The STARTER's hardware time-limit relay (OD-9, both buses): the starter motor is cut when the STARTER relay
+ * (default relay 2) has been on longer than limit_ms (default 6000) in one go. cranking = the motor turns. */
+void     sim_hal_starter_limit(uint8_t n, uint32_t limit_ms);
+bool     sim_hal_starter_cranking(void);
 void     sim_hal_relay_board(bool present, uint32_t latency_ms, uint32_t fault);
 void     sim_hal_relay_board_reset(void);
 bool     sim_hal_relay_state(uint8_t n);

@@ -293,23 +293,34 @@ void hal_set_thrusters(float bow_pct, float stern_pct);
 bool hal_read_water_speed(float *kn);
 
 /*
- * RS485 Modbus RTU relay board (CLAUDE.md section M; board: hal/tc_modbus.c
- * on RELAY_ASC + the DE pin of hal_pins.h; sim: a simulated board). ONLY
+ * The relay board (CLAUDE.md sections M + T). Two back-ends behind the SAME
+ * calls, chosen at build time (hal_pins.h RELAY_BUS, owner decision OD-9):
+ *   RELAY_BUS_MODBUS   RS485 Modbus RTU board (hal/tc_modbus.c on RELAY_ASC +
+ *                      the DE pin): board-timed pulses ("flash on"), coil readback.
+ *   RELAY_BUS_DRONECAN the DroneCAN relay node (hal/can_relay.c over
+ *                      hal/dronecan.c, step 11f): hardpoint.Command at 50 Hz,
+ *                      AURIX-timed pulses + the board's own command timeout
+ *                      (<= 300 ms, R-3), readback = hardpoint.Status if the board
+ *                      sends it (else the commanded states: hal_relay_readback).
+ * Sim: both (a simulated Modbus slave and the simulated relay node 30). ONLY
  * app/relays.c may call these (the build check greps for it): it holds the
- * relay table, the interlocks and the time limits. Nothing here is in any
- * control path (never on CPU1).
+ * relay table, the interlocks and the time limits - and does not know the
+ * bus. Nothing here is in any control path (never on CPU1).
  *   service: one bounded step of the driver's state machine, every control
  *            step (one request in flight, replies collected, time limits).
  *   set:     relay n (1..HAL_RELAY_MAX) on / off (queued; false = no room /
  *            no board fitted).
- *   pulse:   a BOARD-timed pulse of ms (100 ms steps, <= 25.5 s): the board
- *            switches the relay off by itself, even if the AURIX dies.
+ *   pulse:   a pulse of ms that ends by itself: Modbus = BOARD-timed (100 ms
+ *            steps, <= 25.5 s), DroneCAN = AURIX-timed, and the board's own
+ *            command timeout switches it off when the AURIX stops sending.
  *   read:    the last readback of relay n: false = unknown (no valid reply
  *            within HAL_RELAY_LOST_MS, or n beyond the board).
  *   ok:      the board answered within HAL_RELAY_LOST_MS (false = SILENT).
- *   channels: the coils the fitted board has (hal_pins.h RELAY_CHANNELS);
- *            0 = no board fitted (HAL_RELAY_FITTED 0): then nothing can be
- *            switched and a silent board is NOT an alarm (nothing is there).
+ *   readback: the states of read are the board's own (false: a DroneCAN board
+ *            without hardpoint.Status - read gives the COMMANDED states).
+ *   channels: the relays the fitted board has (hal_pins.h RELAY_CHANNELS /
+ *            CAN_RELAY_CHANNELS); 0 = no board fitted (HAL_RELAY_FITTED 0): then
+ *            nothing can be switched and a silent board is NOT an alarm.
  */
 #define HAL_RELAY_MAX       32u
 #define HAL_RELAY_LOST_MS   3000u
@@ -318,6 +329,7 @@ bool hal_relay_set(uint8_t n, bool on);
 bool hal_relay_pulse(uint8_t n, uint16_t ms);
 bool hal_relay_read(uint8_t n, bool *on);
 bool hal_relay_ok(void);
+bool hal_relay_readback(void);
 uint8_t hal_relay_channels(void);
 
 /*
