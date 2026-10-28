@@ -80,6 +80,22 @@
        + list, swimmer only on the camera, gateway lost = no AIS / camera), a scenario through the window
        on the simulator -> logbook (reaction time, replay file) + debrief; the replay window via simguard
 
+  AC34 real-trip video lessons (step 20, spec F): the lesson checker catches the bad cases (clip length, points
+       outside / out of order, bad areas / blur boxes, unknown camera, a media path out of the lesson folder,
+       runs_on, a missing language); the player model (pause points, decision + spot-the-hazard answers, one
+       answer per point, explanation, score, logbook entry); the HUD timeline synced to UTC from the log's TIME
+       events; the editor model (trim limits, cameras, times event -> clip)
+  AC35 simguard step 20: ffmpeg only on recorded files ("-protocol_whitelist file" before every input), copies
+       only as .mp4 inside the video-lesson folder, URLs / COM / folders / other types refused, nothing on a
+       gateway PC, the concat list holds only checked files and is removed; the player opens only the
+       lesson's own copies (never the event's originals)
+  AC36 the lesson editor on REAL ffmpeg: a saved event (2 cameras, 1-minute .ts files) + its log -> the small
+       trimmed copies (length = the clip, smaller than the originals, the blur box blurred, the rest not) + the
+       HUD timeline in sync; the lesson passes check_doc with its files
+  AC37 the video lesson windows: banner first in the player + the editor; the editor opens an event, trims, adds
+       a decision point + a hazard area + a blur box and makes the lesson; the player lists it, plays it with the
+       HUD redrawn over the picture, stops at the points, takes the answers (choice / click) and logs
+       kind "videolesson"; a COM port as event refused; the academy window's buttons open both
 Run:  python academy/test_academy.py      (exit code 0 = all passed)
 """
 import ast
@@ -417,6 +433,8 @@ def ac9():
     used |= {"acc.col_" + c for c in academy_app.COLUMNS}
     import tour_app
     used |= {"tour.s2_" + n for n in tour_app.S2_BOXES}
+    import videolesson_app
+    used |= videolesson_app.TEXT_KEYS
     import scenario_app
     used |= {"scen.db_failed_" + w for w in ("late", "forbid", "outcome")} | {"scen.ev_" + e for e in scenario_app.EVENT_KEYS}
     missing = sorted(k for k in used if k not in el or k not in en)
@@ -2296,10 +2314,527 @@ def ac33():
            "refused; the academy window's button opens it")
 
 
+
+# --- step 20: real-trip video lessons ------------------------------------------------------------
+VL_T0 = 1792914000                      # 2026-10-25 07:40:00 UTC = the first video file of the test event
+
+
+def _ppm_pixels(data):
+    """(w, h, bytes) of a binary PPM."""
+    parts = data.split(b"\n", 3)
+    w, h = (int(v) for v in parts[1].split())
+    return w, h, parts[3]
+
+
+def _roughness(data, box):
+    """Mean absolute difference of neighbouring pixels (all channels) inside box (parts 0..1): blur = low."""
+    w, h, px = _ppm_pixels(data)
+    x0, y0, x1, y1 = int(box[0] * w), int(box[1] * h), int(box[2] * w), int(box[3] * h)
+    tot = n = 0
+    for y in range(y0, y1, 2):
+        row = y * w * 3
+        for x in range(x0, x1 - 1, 3):                                 # odd step: crosses the 4 px cell edges
+            for c in range(3):
+                tot += abs(px[row + x * 3 + c] - px[row + (x + 1) * 3 + c])
+                n += 1
+    return tot / float(max(n, 1))
+
+
+def _make_event(tmp, video=True):
+    """A saved event as the gateway writes it + its AURIX log (TIME events: GPS time) under a sync root.
+    video = real 1-minute .ts files made by ffmpeg (a game-of-life picture), else empty placeholders."""
+    import json
+    import struct
+    import time as _t
+    import simguard
+    import videolesson  # noqa: F401  (puts groundstation/ on the path)
+    import tlg
+    root = os.path.join(tmp, "sync", "boat")
+    ev = os.path.join(root, "video", "events", "20261025-074100_alarm")
+    ff = simguard.ffmpeg_exe()
+    life = ("life=s=160x90:mold=10:rate=5:ratio=0.5:seed=%d:death_color=#203040:life_color=#f0e0a0,"
+            "scale=640:360:flags=neighbor")                            # fine detail everywhere: blur is measurable
+    for cam, src in (("FRONT-1", life % 7), ("REAR-LEFT", life % 11)):
+        os.makedirs(os.path.join(ev, cam))
+        for k in range(2):
+            n = _t.strftime("%Y%m%d-%H%M%S", _t.gmtime(VL_T0 + 60 * k)) + ".ts"
+            out = os.path.join(ev, cam, n)
+            if video:
+                subprocess.run([ff, "-loglevel", "error", "-y", "-f", "lavfi", "-i", src,
+                                "-t", "60", "-c:v", "libx264", "-preset", "ultrafast", "-g", "5", "-f", "mpegts", out],
+                               check=True, timeout=120)
+            else:
+                open(out, "wb").close()
+    lp = os.path.join(root, "aurix_logs", "20261025", "P00001_001.TLG")
+    os.makedirs(os.path.dirname(lp))
+    hdr = ("fields=heading:H:100,target:H:100,mode:B:1,thr_out:H:100,est_sog:H:100,alarm_bits:I:1\n"
+           "events=16:TIME:date,tod_ms,t_ms,-\nmodes=STANDBY,MANUAL,HDG LOCK\n")
+    boot = 1000000
+    with open(lp, "wb") as f:
+        f.write(b"TLG1" + tlg.record(1, 0, hdr.encode()))
+        f.write(tlg.record(0x20, boot, struct.pack("<Hiiii", 16, 20261025, (7 * 3600 + 40 * 60) * 1000, boot, 0)))
+        for i in range(120 * 20):                                       # 20 Hz: heading 90 + 0.2 deg/s
+            f.write(tlg.record(0x10, boot + i * 50, struct.pack("<HHBHHI", int(round((90 + i * 0.01) * 100)), 9000,
+                                                                  2 if i > 600 else 0, 1500, 500,
+                                                                  1 if i > 1300 else 0)))
+    with open(os.path.join(ev, "event.json"), "w", encoding="utf-8") as f:
+        json.dump({"id": "20261025-074100_alarm", "state": "complete", "start_t": VL_T0, "end_t": VL_T0 + 120,
+                   "segment_s": 60, "triggers": [{"t": VL_T0 + 60, "kind": "alarm", "text": "alarm GPS LOST"}],
+                   "boat": {"log": {"file": "aurix_logs\\20261025\\P00001_001.TLG"}}}, f)
+    return os.path.join(ev, "event.json")
+
+
+def _vl_doc():
+    return {"_help": "test", "kind": "videolesson", "id": "v_test", "level": "DRIVER", "runs_on": "recording",
+            "title_el": "Δοκιμή", "title_en": "Test", "intro_el": "εισαγωγή", "intro_en": "intro",
+            "clip": {"start_utc": 1000.0, "end_utc": 1030.0}, "cameras": ["FRONT-1", "REAR-LEFT"],
+            "main_camera": "FRONT-1", "media": {"FRONT-1": "FRONT-1.mp4", "REAR-LEFT": "REAR-LEFT.mp4"},
+            "timeline": "hud.jsonl",
+            "blur": [{"camera": "FRONT-1", "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2, "from_s": 1.0, "to_s": 9.0}],
+            "points": [
+                {"t_s": 5.0, "type": "decision", "q_el": "τι;", "q_en": "what?", "why_el": "γιατί", "why_en": "why",
+                 "choices": [{"text_el": "α", "text_en": "a"}, {"text_el": "β", "text_en": "b"}], "answer": 1},
+                {"t_s": 12.0, "type": "hazard", "camera": "REAR-LEFT", "q_el": "πού;", "q_en": "where?",
+                 "why_el": "εκεί", "why_en": "there", "areas": [{"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.3}]}]}
+
+
+# --- AC34 -------------------------------------------------------------------------------------
+def ac34():
+    import copy
+    import videolesson as vl
+    wrong = []
+    good = _vl_doc()
+    if vl.check_doc(good):
+        wrong.append("good lesson refused: %s" % vl.check_doc(good))
+    bad = []
+    for why, fn in (("clip too long", lambda d: d["clip"].update(end_utc=1000.0 + vl.MAX_CLIP_S + 1)),
+                    ("clip too short", lambda d: d["clip"].update(end_utc=1001.0)),
+                    ("point outside", lambda d: d["points"][1].update(t_s=31.0)),
+                    ("points out of order", lambda d: d["points"][0].update(t_s=13.0)),
+                    ("bad area", lambda d: d["points"][1]["areas"][0].update(x=0.9, w=0.3)),
+                    ("no area", lambda d: d["points"][1].update(areas=[])),
+                    ("hazard camera unknown", lambda d: d["points"][1].update(camera="MAST")),
+                    ("answer out of range", lambda d: d["points"][0].update(answer=2)),
+                    ("bad blur", lambda d: d["blur"][0].update(to_s=40.0)),
+                    ("media path out", lambda d: d["media"].update({"FRONT-1": "../x.mp4"})),
+                    ("main camera", lambda d: d.update(main_camera="MAST")),
+                    ("runs_on", lambda d: d.update(runs_on="boat")),
+                    ("no English", lambda d: d["points"][0].pop("q_en")),
+                    ("bad id", lambda d: d.update(id="a/b"))):
+        d = copy.deepcopy(good)
+        fn(d)
+        if not vl.check_doc(d):
+            bad.append(why)
+    if bad:
+        wrong.append("checker missed: %s" % bad)
+    if not vl.check_doc(good, tempfile.mkdtemp()):
+        wrong.append("missing media files not seen")
+    # the player model
+    r = vl.Run(good, "en")
+    if r.advance(3.0) is not None or r.t != 3.0:
+        wrong.append("stopped before the first point")
+    if r.advance(6.0) != 0 or r.t != 5.0 or r.point()["q_en"] != "what?":
+        wrong.append("no stop at the decision point")
+    if r.advance(20.0) is not None or r.t != 5.0:
+        wrong.append("the clock ran on while asking")
+    if r.click("REAR-LEFT", 0.2, 0.3) is not None:
+        wrong.append("a click answered a decision")
+    if r.answer_choice(1) is not True or r.explanation() != "why" or r.answer_choice(0) is not None:
+        wrong.append("decision answer / one answer per point / explanation")
+    r.resume()
+    if r.advance(12.5) != 1:
+        wrong.append("no stop at the hazard point")
+    if r.click("FRONT-1", 0.2, 0.3) is not False:
+        wrong.append("a click on the wrong camera counted")
+    r.resume()
+    r.advance(40.0)
+    e = r.log_entry()
+    if not r.finished or e["score"] != 50 or e["done"] or e["right"] != 1 or e["of"] != 2:
+        wrong.append("score / done: %s finished %s" % (e, r.finished))
+    r2 = vl.Run(good, "el")
+    r2.advance(5.0)
+    r2.answer_choice(1)
+    r2.resume()
+    r2.advance(12.0)
+    if r2.click("REAR-LEFT", 0.25, 0.35) is not True or r2.explanation() != "εκεί":
+        wrong.append("hazard click inside the area / Greek explanation")
+    r2.resume()
+    r2.advance(30.0)
+    e2 = r2.log_entry()
+    if not e2["done"] or e2["score"] != 100 or e2["id"] != "v_test":
+        wrong.append("full marks not passed: %s" % e2)
+    # HUD timeline from a log (UTC from its TIME events) + the HUD state
+    tmp = tempfile.mkdtemp(prefix="trygons_ac34_")
+    evp = _make_event(tmp, video=False)
+    ev = vl.Event(evp)
+    log = vl.read_log(ev.log_path())
+    tl = vl.hud_timeline(log, VL_T0 + 50.0, VL_T0 + 60.0)
+    if len(tl) != 51 or abs(tl[0]["d"]["heading"] - 100.0) > 0.02 or abs(tl[-1]["d"]["heading"] - 102.0) > 0.02:
+        wrong.append("HUD timeline not in sync: %d samples, %s .. %s" % (len(tl), tl and tl[0], tl and tl[-1]))
+    st = vl.hud_state(tl[0]["d"]) if tl else {}
+    import proto
+    if st.get("mode_name") != proto.MODES[2] or st.get("throttle") != 15.0 or "power_fwd" not in st:
+        wrong.append("HUD state: %s %s" % (st.get("mode_name"), st.get("throttle")))
+    if tl and vl.at_time(tl, 3.33)["heading"] != tl[16]["d"]["heading"]:
+        wrong.append("at_time")
+    # the editor model
+    if ev.cameras() != ["FRONT-1", "REAR-LEFT"] or abs(ev.end_utc - ev.start_utc - 120.0) > 0.01:
+        wrong.append("event: %s %s" % (ev.cameras(), ev.end_utc - ev.start_utc))
+    d = vl.Draft(ev)
+    if (d.start, d.end) != (30.0, 90.0):
+        wrong.append("default trim around the trigger: %s" % ((d.start, d.end),))
+    for a, b in ((10.0, 11.0), (20.0, 20.5)):
+        try:
+            d.trim(a, b)
+            wrong.append("trim %s..%s allowed" % (a, b))
+        except ValueError:
+            pass
+    d.trim(50.0, 80.0)
+    d.add_decision(60.0, {"el": "τι;", "en": "what?"}, [{"el": "α", "en": "a"}, {"el": "β", "en": "b"}], 0,
+                   {"el": "γιατί", "en": "why"})
+    d.add_hazard(95.0, "FRONT-1", {"el": "πού;", "en": "where?"}, {"el": "εκεί", "en": "there"},
+                 [{"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}])
+    d.add_blur("FRONT-1", {"x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}, 40.0, 70.0)
+    try:
+        d.set_cameras([])
+        wrong.append("no camera allowed")
+    except ValueError:
+        pass
+    d.set_cameras(["REAR-LEFT", "FRONT-1"], "REAR-LEFT")
+    doc = d.to_doc()
+    if (doc["clip"]["start_utc"] != VL_T0 + 50.0 or len(doc["points"]) != 1 or doc["points"][0]["t_s"] != 10.0 or
+            doc["blur"][0]["from_s"] != 0.0 or doc["blur"][0]["to_s"] != 20.0 or doc["main_camera"] != "REAR-LEFT"):
+        wrong.append("draft -> doc times: %s %s %s" % (doc["clip"], doc["points"], doc["blur"]))
+    if [p for p in vl.check_doc(doc) if "missing" not in p]:
+        wrong.append("the editor's doc fails the checker: %s" % vl.check_doc(doc))
+    txt = os.path.join(tmp, "notes.txt")
+    open(txt, "w").close()
+    for p in ("COM4", txt, "rtsp://10.0.0.5/event.json"):
+        try:
+            vl.Event(p)
+            wrong.append("event %s opened" % p)
+        except Exception:
+            pass
+    report("AC34 video lessons: checker, player, HUD timeline, editor model", not wrong, "; ".join(wrong) or
+           "bad lessons caught (14 cases + missing media); pause points stop the clock, one answer per point, "
+           "decision + hazard click, explanation el / en, score 50 / 100, logbook entry; HUD timeline in sync from "
+           "the log's GPS time; editor trim limits + event -> clip times; COM4 / a text file / rtsp refused as event")
+
+
+# --- AC35 -------------------------------------------------------------------------------------
+def ac35():
+    import simguard
+    import videolesson as vl
+    wrong = []
+    tmp = tempfile.mkdtemp(prefix="trygons_ac35_")
+    data = os.path.join(tmp, "data")
+    env = {"TRYGONS_ACADEMY_DATA": data, "PROGRAMDATA": tempfile.mkdtemp()}
+    seg = os.path.join(tmp, "20261025-074000.ts")
+    open(seg, "wb").close()
+    folder = os.path.join(tmp, "x")
+    os.makedirs(folder)
+    if simguard.ffmpeg_exe():
+        cmd = simguard.frame_command(seg, 2.0, 320, env=env)
+        if cmd[cmd.index("-protocol_whitelist") + 1] != "file" or cmd.index("-protocol_whitelist") > cmd.index("-i"):
+            wrong.append("frame: no whitelist before the input")
+        cc = simguard.copy_command("l.txt", 1.0, 5.0, "o.mp4", 640, [{"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}])
+        if cc[cc.index("-protocol_whitelist") + 1] != "file" or cc.index("-protocol_whitelist") > cc.index("-i") or \
+                "boxblur" not in cc[cc.index("-filter_complex") + 1] or "-an" not in cc:
+            wrong.append("copy: whitelist / blur / no sound missing")
+    for p in ("rtsp://10.0.0.5/cam", "http://x/y.mp4", "COM3", "tcp:127.0.0.1:5760", folder,
+              os.path.join(tmp, "a.exe"), os.path.join(tmp, "nothere.ts")):
+        try:
+            simguard.check_video(p, env)
+            wrong.append("video %s allowed" % p)
+        except simguard.Refused:
+            pass
+    calls = []
+
+    class R(object):
+        returncode, stderr = 0, b""
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        lst = cmd[cmd.index("-i") + 1]
+        if lst.endswith(".txt"):
+            with open(lst, encoding="utf-8") as f:
+                calls.append(f.read())
+        with open(cmd[-1], "wb") as f:
+            f.write(b"x")
+        return R()
+    lessons = simguard.videolessons_dir(env)
+    out_ok = os.path.join(lessons, "v1", "FRONT-1.mp4")
+    try:
+        simguard.video_copy([seg], 1.0, 5.0, out_ok, run=fake_run, env=env)
+    except Exception as e:
+        wrong.append("a good copy refused: %s" % e)
+    if len(calls) < 2 or "file '%s'" % os.path.abspath(seg).replace("\\", "/") not in calls[1] or \
+            os.path.exists(out_ok[:-4] + "_list.txt"):
+        wrong.append("concat list: %s" % calls[1:2])
+    for out in (os.path.join(tmp, "elsewhere.mp4"), os.path.join(lessons, "v1", "x.avi"),
+                os.path.join(lessons, "..", "escape.mp4")):
+        try:
+            simguard.video_copy([seg], 1.0, 5.0, out, run=fake_run, env=env)
+            wrong.append("copy to %s allowed" % out)
+        except simguard.Refused:
+            pass
+    for segs in ([], ["rtsp://10.0.0.5/cam"], ["COM3"]):
+        try:
+            simguard.video_copy(segs, 1.0, 5.0, out_ok, run=fake_run, env=env)
+            wrong.append("copy from %s allowed" % segs)
+        except simguard.Refused:
+            pass
+    genv = dict(gateway_pc(), TRYGONS_ACADEMY_DATA=data)
+    for fn in (lambda: simguard.video_copy([seg], 1.0, 5.0, out_ok, run=fake_run, env=genv),
+               lambda: simguard.video_frame(seg, 1.0, run=fake_run, env=genv)):
+        try:
+            fn()
+            wrong.append("ffmpeg on a gateway PC")
+        except simguard.Refused:
+            pass
+    # the player opens only the lesson's own copies
+    doc = _vl_doc()
+    own = os.path.join(lessons, "v_test")
+    os.makedirs(own, exist_ok=True)
+    open(os.path.join(own, "FRONT-1.mp4"), "wb").close()
+    try:
+        if vl.media_path(doc, own, "FRONT-1", env) != os.path.abspath(os.path.join(own, "FRONT-1.mp4")):
+            wrong.append("own copy path")
+    except simguard.Refused as e:
+        wrong.append("own copy refused: %s" % e)
+    for d2, f2, cam in ((dict(doc, media={"FRONT-1": "../../x.mp4"}), own, "FRONT-1"),
+                        (doc, os.path.dirname(seg), "FRONT-1"), (doc, own, "MAST")):
+        try:
+            vl.media_path(d2, f2, cam, env)
+            wrong.append("player opened %s / %s" % (f2, cam))
+        except simguard.Refused:
+            pass
+    report("AC35 simguard: ffmpeg only on recorded files", not wrong, "; ".join(wrong) or
+           "-protocol_whitelist file before every input; URLs / COM / tcp / folders / other types refused; copies "
+           "only .mp4 inside the video-lesson folder; the concat list = checked files only, removed; nothing on a "
+           "gateway PC; the player opens only the lesson's own copies")
+
+
+# --- AC36 -------------------------------------------------------------------------------------
+def ac36():
+    import simguard
+    import videolesson as vl
+    if not simguard.ffmpeg_exe():
+        report("AC36 editor on real ffmpeg", True, "no ffmpeg on this PC: the model is checked by AC34 / AC35")
+        return
+    wrong = []
+    nums = ""
+    tmp = tempfile.mkdtemp(prefix="trygons_ac36_")
+    old = os.environ.get("TRYGONS_ACADEMY_DATA")
+    os.environ["TRYGONS_ACADEMY_DATA"] = os.path.join(tmp, "data")
+    try:
+        ev = vl.Event(_make_event(tmp))
+        d = vl.Draft(ev, "v_ac36")
+        d.trim(50.0, 75.0)                                              # across the two 1-minute files
+        d.title = {"el": "Δοκιμή", "en": "Test"}
+        d.add_decision(55.0, {"el": "τι;", "en": "what?"}, [{"el": "α", "en": "a"}, {"el": "β", "en": "b"}], 1,
+                       {"el": "γιατί", "en": "why"})
+        d.add_blur("FRONT-1", {"x": 0.5, "y": 0.5, "w": 0.3, "h": 0.3}, 50.0, 75.0)
+        folder, doc, notes = d.make()
+        probs = vl.check_doc(doc, folder)
+        if probs or notes:
+            wrong.append("made lesson: %s %s" % (probs, notes))
+        orig = sum(os.path.getsize(p) for p in ev.segments("FRONT-1", ev.start_utc + 50, ev.start_utc + 75)[0])
+        small = os.path.getsize(os.path.join(folder, "FRONT-1.mp4"))
+        if not 0 < small < orig:
+            wrong.append("copy not smaller: %d vs %d" % (small, orig))
+        f_end = simguard.video_frame(os.path.join(folder, "FRONT-1.mp4"), 24.0, 640)
+        f_after = simguard.video_frame(os.path.join(folder, "FRONT-1.mp4"), 27.0, 640)
+        if not f_end or f_after:
+            wrong.append("copy length: a frame at 24 s %s, at 27 s %s (clip = 25 s)" % (bool(f_end), bool(f_after)))
+        cp = simguard.video_frame(os.path.join(folder, "FRONT-1.mp4"), 5.0, 640)
+        src, off = ev.locate("FRONT-1", ev.start_utc + 55.0)
+        og = simguard.video_frame(src, off, 640)
+        rear = simguard.video_frame(os.path.join(folder, "REAR-LEFT.mp4"), 5.0, 640)
+        rsrc, roff = ev.locate("REAR-LEFT", ev.start_utc + 55.0)
+        rog = simguard.video_frame(rsrc, roff, 640)
+        if not (cp and og and rear and rog):
+            wrong.append("frames missing")
+        else:
+            inner = (0.55, 0.55, 0.75, 0.75)
+            outer = (0.05, 0.05, 0.40, 0.40)
+            rb, ro = _roughness(cp, inner), _roughness(og, inner)
+            ob, oo = _roughness(cp, outer), _roughness(og, outer)
+            nums = " (roughness inside %.1f vs %.1f, outside %.1f vs %.1f)" % (rb, ro, ob, oo)
+            if not rb < 0.5 * ro or not ob > 0.6 * oo:
+                wrong.append("blur: inside %.1f vs original %.1f, outside %.1f vs %.1f" % (rb, ro, ob, oo))
+            if _roughness(rear, inner) < 0.6 * _roughness(rog, inner):
+                wrong.append("the rear camera (no blur box) blurred too")
+        tl = vl.read_timeline(doc, folder)
+        if len(tl) != 126 or abs(tl[0]["d"]["heading"] - 100.0) > 0.02 or not doc.get("hud"):
+            wrong.append("HUD timeline: %d, %s" % (len(tl), tl and tl[0]))
+        if not [x for x in vl.load_lessons() if x[0].get("id") == "v_ac36" and not x[2]]:
+            wrong.append("lesson not listed")
+    finally:
+        if old is None:
+            os.environ.pop("TRYGONS_ACADEMY_DATA", None)
+        else:
+            os.environ["TRYGONS_ACADEMY_DATA"] = old
+    report("AC36 editor on real ffmpeg", not wrong, "; ".join(wrong) or
+           "event (2 cameras x 2 files) + log -> 25 s copies across the file boundary, smaller than the originals, "
+           "the blur box blurred and the rest sharp%s, HUD timeline 126 samples in sync; listed + checked" % nums)
+
+
+# --- AC37 -------------------------------------------------------------------------------------
+def ac37():
+    import banner
+    import simguard
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+    except Exception as e:
+        report("AC37 video lesson windows", True, "no display here (%s): models checked by AC34-AC36" % e)
+        return
+    if not simguard.ffmpeg_exe():
+        root.destroy()
+        report("AC37 video lesson windows", True, "no ffmpeg on this PC: models checked by AC34 / AC35")
+        return
+    import time
+    import academy_app
+    import videolesson_app as va
+    wrong = []
+    tmp = tempfile.mkdtemp(prefix="trygons_ac37_")
+    old = os.environ.get("TRYGONS_ACADEMY_DATA")
+    os.environ["TRYGONS_ACADEMY_DATA"] = os.path.join(tmp, "data")
+    try:
+        root.withdraw()
+        store = _store()
+        store.add("ann", "Ann")
+        evp = _make_event(tmp)
+        top = tk.Toplevel(root)
+        ed = va.EditorWindow(top, "en")
+        top.update()
+        if top.pack_slaves()[0] is not ed.banner or ed.banner.cget("text") != banner.banner_text("en"):
+            wrong.append("editor: banner not first")
+        if ed.open_event("COM4") is not None:
+            wrong.append("COM4 opened as an event")
+        if ed.open_event(evp) is None:
+            wrong.append("event not opened")
+        else:
+            ed.pos.set(50.0)
+            ed.set_trim("start")
+            ed.pos.set(80.0)
+            ed.set_trim("end")
+            if (ed.draft.start, ed.draft.end) != (50.0, 80.0):
+                wrong.append("trim: %s" % ((ed.draft.start, ed.draft.end),))
+            for k, v in (("q_el", "Τι κάνετε;"), ("q_en", "What do you do?"), ("choices_el", "Τίποτα;STANDBY"),
+                         ("choices_en", "Nothing;STANDBY"), ("answer", "2"), ("why_el", "Το STANDBY κερδίζει."),
+                         ("why_en", "STANDBY wins.")):
+                ed.qv[k].set(v)
+            ed.pos.set(55.0)
+            if ed.add_decision() is None:
+                wrong.append("decision not added")
+            ed.pos.set(62.0)
+            ed.pcam.set("REAR-LEFT")
+            ed.draw_mode.set("hazard")
+            if ed.add_hazard() is not None:
+                wrong.append("a hazard question without an area")
+            ed.add_box(0.1, 0.2, 0.4, 0.5)
+            for k, v in (("q_el", "Πού είναι ο κίνδυνος;"), ("q_en", "Where is the hazard?"),
+                         ("why_el", "Το σκάφος πίσω αριστερά."), ("why_en", "The boat astern to port.")):
+                ed.qv[k].set(v)
+            if ed.add_hazard() is None:
+                wrong.append("hazard not added")
+            ed.pcam.set("FRONT-1")
+            ed.draw_mode.set("blur")
+            ed.blur_s.set("8")
+            ed.add_box(0.5, 0.5, 0.8, 0.8)
+            ed.v_tel.set("Δοκιμαστικό μάθημα")
+            ed.v_ten.set("Test lesson")
+            ed.v_id.set("v_ac37")
+            if len(ed.draft.points) != 2 or len(ed.draft.blur) != 1 or ed.l_points.size() != 2:
+                wrong.append("points %d blur %d" % (len(ed.draft.points), len(ed.draft.blur)))
+            ed.make(wait=True)
+            if "v_ac37" not in ed.msg.cget("text"):
+                wrong.append("make: %s" % ed.msg.cget("text"))
+        ed.close()
+        # the player
+        top = tk.Toplevel(root)
+        clock = [1000.0]
+        pl = va.VideoLessonWindow(top, "el", store=store, user="ann", clock=lambda: clock[0])
+        top.update()
+        if top.pack_slaves()[0] is not pl.banner or pl.banner.cget("text") != banner.banner_text("el"):
+            wrong.append("player: banner not first")
+        if not pl.select("v_ac37"):
+            wrong.append("lesson not listed")
+        elif pl.start_selected() is None:
+            wrong.append("lesson did not start: %s" % pl.l_result.cget("text"))
+        else:
+            pl.playing = False
+            hit = None
+            for _ in range(40):
+                hit = pl.step(0.5)
+                if hit is not None:
+                    break
+            if hit != 0 or not pl.choice_buttons:
+                wrong.append("no stop at the decision")
+            end = time.time() + 20
+            while time.time() < end and pl.photo is None:
+                top.update()
+                time.sleep(0.05)
+            if not pl.canvas.find_withtag("hud") or not pl.canvas.find_withtag("frame") or pl.photo is None:
+                wrong.append("picture / HUD not drawn (hud %d, frame %d, photo %s, timeline %d, %s)" % (
+                    len(pl.canvas.find_withtag("hud")), len(pl.canvas.find_withtag("frame")), pl.photo is not None,
+                    len(pl.timeline), pl.l_result.cget("text")))
+            pl.choose(1)
+            if "Το STANDBY κερδίζει." not in pl.l_fb.cget("text"):
+                wrong.append("no explanation after the answer")
+            pl.resume()
+            pl.playing = False
+            for _ in range(40):
+                hit = pl.step(0.5)
+                if hit is not None:
+                    break
+            if hit != 1 or pl.cam != "REAR-LEFT":
+                wrong.append("no stop at the hazard / camera not switched")
+
+            class Ev(object):
+                x, y = int(0.25 * va.VW), int(0.35 * va.VH)
+            pl.on_click(Ev())
+            if not pl.run.results or pl.run.results[-1] != (1, True):
+                wrong.append("hazard click: %s" % pl.run.results)
+            pl.resume()
+            pl.playing = False
+            for _ in range(80):
+                pl.step(0.5)
+                if pl.logged:
+                    break
+            store.load()
+            ok = [e for e in store.entries() if e.get("kind") == "videolesson" and e.get("id") == "v_ac37"
+                  and e.get("user") == "ann" and e.get("done") and e.get("score") == 100]
+            row = [pl.list.get(i) for i, r in enumerate(pl.rows) if r and r[0].get("id") == "v_ac37"]
+            if not ok or not row or not row[0].startswith("✓"):
+                wrong.append("logbook %d, row %s" % (len(ok), row))
+        pl.close()
+        top = tk.Toplevel(root)
+        app = academy_app.AcademyApp(top, store)
+        w1, w2 = app.open_videolessons(), app.open_editor()
+        if not isinstance(w1, va.VideoLessonWindow) or not isinstance(w2, va.EditorWindow) or \
+                "acc.videolessons" not in app.buttons or "acc.editor" not in app.buttons:
+            wrong.append("academy window buttons")
+        w1.close()
+        w2.close()
+        top.destroy()
+    finally:
+        if old is None:
+            os.environ.pop("TRYGONS_ACADEMY_DATA", None)
+        else:
+            os.environ["TRYGONS_ACADEMY_DATA"] = old
+        root.destroy()
+    report("AC37 video lesson windows", not wrong, "; ".join(wrong) or
+           "banner first in both; the editor: COM4 refused, event opened, trim, decision + hazard area + blur box, "
+           "lesson made; the player: listed, picture + HUD drawn, stops at both points, choice + click answers with "
+           "the explanation, 100 % in the logbook (kind videolesson, tick); the academy window's buttons open both")
+
 if __name__ == "__main__":
     for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
               ac19, ac20, ac21, ac22, ac23, ac24, ac25, ac26, ac27, ac28, ac29,
-              ac30, ac31, ac32, ac33):
+              ac30, ac31, ac32, ac33, ac34, ac35, ac36, ac37):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run

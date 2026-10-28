@@ -1075,6 +1075,37 @@ EMERGENCY SCENARIOS (academy window -> "Emergency scenarios")
   time slider; the file is kept in academy/data/replays). Results with the
   reaction time go to your logbook.
 
+VIDEO LESSONS FROM REAL TRIPS (academy window -> "Video lessons")
+  Lessons made from the boat's SAVED EVENTS (the SAVE recordings that the
+  sync brings to the shore PC): the camera picture of a real trip with the
+  station's HUD redrawn over it from the trip's log, in step with the video
+  (switch cameras with the buttons under the picture, HUD on / off). The
+  video stops at the decision points: a DECISION question (pick what you do)
+  or SPOT THE HAZARD (click on the danger in the picture). After every answer
+  the explanation; at the end the score (70 % to pass) goes to your logbook.
+  The lessons play only their own small trimmed copies, with faces and number
+  plates blurred - never a live camera, never a boat (banner at the top).
+  LESSON EDITOR (academy window -> "Lesson editor", for the instructor):
+    1. "Open a saved event..." -> the event.json in the synced folder
+       video/events/<event>/ (its log is found by itself; a log without GPS
+       time = video only, no HUD).
+    2. Move the cursor (picture of the chosen camera at that moment), "Start
+       here" / "End here" = the clip (3 s .. 10 min). Tick the cameras for the
+       lesson and the main one.
+    3. Questions at the cursor: fill in the question + explanation in Greek
+       AND English. Decision: the choices separated by ";" (the same number in
+       both languages) + the number of the right one -> "Add decision point".
+       Hazard: draw the area(s) on the picture (Box = hazard area) -> "Add
+       hazard question".
+    4. Blur: Box = blur area, draw it over a face / number plate; it is
+       blurred from the cursor for the given seconds (list "Blur areas").
+       Check every person and number plate in the clip.
+    5. Title (Greek + English), level, "Make lesson": the small copies (640 px
+       wide, no sound, blurred) + the HUD data go to academy/data/videolessons/
+       <id>/ on THIS PC (never into git). The original event stays untouched.
+  The video lessons stay on the PC where they were made (copy the folder
+  academy/data/videolessons to another shore PC to use them there).
+
 CAPTAIN AND COPILOT (the gateway decides, every station shows it)
   CAPTAIN   holds the manual licence and sits at screen 1 (cameras +
             joystick). Holds HELM. The ONLY one who can start REMOTE

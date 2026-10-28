@@ -200,3 +200,23 @@ D15 Step 19 emergency scenarios (spec E). Content = content/scenarios/*.json (10
    refusals). Window academy/scenario_app.py (the lessons' inputs + the picture; Replay window). Tests AC30-AC33
    (AC31 = every scenario on the REAL simulator by its right reaction + the wrong ones fail, AC32 = the refusal
    cannot be bypassed).
+D16 Step 20 real-trip video lessons (spec F). Source = a SAVED EVENT as the gateway writes it and the sync brings it
+   to shore (video/events/<id>/event.json + <CAMERA>/YYYYMMDD-HHMMSS.ts 1-minute files) + the AURIX log it names
+   (boat.log.file; its TIME events = UTC, the same sync rule as groundstation/videolog.py, about 1 s). The LESSON
+   EDITOR (academy/videolesson.py Draft + videolesson_app.EditorWindow): preview any camera at any time, trim
+   (3 s .. 10 min), the cameras + the main one, pause points = DECISION (choices + the right one) or SPOT THE HAZARD
+   (areas drawn on a camera's picture), every text el + en, BLUR boxes (faces / number plates: a box on a camera
+   from / to a time; MANUAL - no automatic detection, W35), then "Make lesson" = the SMALL TRIMMED COPIES (one .mp4
+   per camera: 640 px, no sound, the blur boxes applied, H.264 / MPEG-4) + hud.jsonl (the log's HUD values at 5 Hz
+   over the clip) + lesson.json (kind "videolesson", runs_on "recording", written last) in
+   academy/data/videolessons/<id>/ - gitignored: real trip video (people, plates) never goes into git; the original
+   event is never changed. The PLAYER (VideoLessonWindow) plays ONLY the lesson's own copies (videolesson.media_path:
+   inside the video-lesson folder), redraws the station's own HUD (groundstation/hud.py, the DEFAULT layout - never
+   this PC's hud_layout.json -, station-only boxes hidden) from hud.jsonl in sync, stops at every point (one answer,
+   then the explanation), score = right / points, 70 % = passed, logbook kind "videolesson" (topic = the lesson id:
+   weak areas). D2 / D3 kept: ffmpeg is the academy's second and last process and runs ONLY inside simguard:
+   video_frame (one picture -> PPM) and video_copy (the copies; inputs via a concat list of files that each passed
+   check_recording, which now also takes .ts) with "-protocol_whitelist file" before every input (no network
+   protocol, also not from inside the concat list), output only .mp4 inside the video-lesson folder, everything
+   refused on a gateway PC. Tests AC34-AC37 (AC36 = real ffmpeg on a made-up event: the copy length, smaller than
+   the originals, the blur box measurably blurred and the rest sharp, the HUD in sync; AC37 = both windows).

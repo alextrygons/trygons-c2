@@ -37,7 +37,7 @@ LEVELS = ("OBSERVER", "DRIVER", "CAPTAIN")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PUSH_FORMAT = 1
 PUSH_KIND = "academy_levels"
-LOG_KINDS = ("lesson", "quiz", "scenario", "exam", "attempt", "hours", "level", "note")
+LOG_KINDS = ("lesson", "quiz", "scenario", "videolesson", "exam", "attempt", "hours", "level", "note")
 USER_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 
 
@@ -232,7 +232,7 @@ class Store(object):
             lessons = {e.get("id") for e in a.logbook if e.get("kind") == "lesson" and e.get("done")}
             scores = {}
             for e in a.logbook:
-                if e.get("kind") in ("quiz", "exam", "scenario") and isinstance(e.get("score"), (int, float)):
+                if e.get("kind") in ("quiz", "exam", "scenario", "videolesson") and isinstance(e.get("score"), (int, float)):
                     scores.setdefault(e.get("topic") or e.get("id") or "?", []).append(float(e["score"]))
             weak = sorted(t for t, s in scores.items() if sum(s) / len(s) < 70.0)
             hours = sum(float(e.get("h", 0) or 0) for e in a.logbook if e.get("kind") == "hours")

@@ -21,10 +21,18 @@ Step 18 (lessons, ACADEMY_SPEC C): SimLink = the lessons' frame link to the simu
 the academy), and start_simulator() = the ONE process the academy may start: this repo's own
 sim/autopilot_sim with the fixed arguments "server 5760 1" (loopback only, analog sim joystick),
 working folder academy/data/sim (its data-flash files never touch sim/). Nothing else is started.
+
+Step 20 (real-trip video lessons, ACADEMY_SPEC F): ffmpeg is the academy's second (and last) process, run
+ONLY through video_frame() (one picture of a recorded file -> PPM bytes) and video_copy() (the lesson
+editor's small trimmed copy). Both take only RECORDED files checked by check_recording (saved-event .ts /
+the lesson's .mp4), with "-protocol_whitelist file" before every input (no network protocol can be opened,
+also not from inside a concat list), and video_copy writes only .mp4 inside the video-lesson folder
+(academy/data/videolessons). Never a camera stream, a URL or a device.
 """
 import ipaddress
 import json
 import os
+import shutil
 import socket                      # only here (test_academy AC1)
 import subprocess                  # only here: start_simulator() (test_academy AC1 / AC25)
 import sys
@@ -37,7 +45,7 @@ SIM_PORTS = {5760: "sim", 5761: "demo gateway"}
 GATEWAY_PORTS = {5761}                         # a welcome name check is needed on these
 SIM_BOAT_NAMES = {"trygons-demo"}              # demo/demo.py gateway config "boat"
 LOOPBACK_NAMES = {"localhost"}
-RECORDING_EXT = (".tlg", ".csv", ".jsonl", ".json", ".mp4", ".mkv", ".wav", ".log", ".txt")
+RECORDING_EXT = (".tlg", ".csv", ".jsonl", ".json", ".mp4", ".mkv", ".ts", ".wav", ".log", ".txt")
 TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
 
 
@@ -212,5 +220,128 @@ class SimLink(object):
         self.closed = True
         try:
             self.sock.close()
+        except OSError:
+            pass
+
+
+# --- step 20: ffmpeg for the real-trip video lessons (recorded files only) ---------------------------
+FFMPEG_WHITELIST = ("-protocol_whitelist", "file")     # before every input: local files only
+VIDEO_IN_EXT = (".ts", ".mp4", ".mkv")
+FRAME_TIMEOUT_S = 20.0
+COPY_TIMEOUT_S = 900.0
+
+
+def ffmpeg_exe():
+    """The same places as gateway/toolpaths.py (not imported: the academy keeps its own door)."""
+    for c in (os.environ.get("FFMPEG_BIN"), shutil.which("ffmpeg"), r"C:\msys64\ucrt64\bin\ffmpeg.exe",
+              "/usr/bin/ffmpeg"):
+        if c and os.path.isfile(c):
+            return os.path.abspath(c)
+    return None
+
+
+def videolessons_dir(env=None):
+    """Where the video lessons + their small copies live: academy/data/videolessons (gitignored - real trip
+    video never goes into git)."""
+    env = os.environ if env is None else env
+    return os.path.join(env.get("TRYGONS_ACADEMY_DATA") or os.path.join(HERE, "data"), "videolessons")
+
+
+def check_video(path, env=None):
+    p = check_recording(path, env)
+    if not p.lower().endswith(VIDEO_IN_EXT):
+        raise Refused("%s is not a recorded video file" % path)
+    return p
+
+
+def _inside(path, folder):
+    a, b = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    return a.startswith(b.rstrip("\\/") + os.sep)
+
+
+def frame_command(path, offset_s, width=640, env=None):
+    """ffmpeg arguments for one picture of a recorded video file (PPM on stdout)."""
+    p = check_video(path, env)
+    exe = ffmpeg_exe()
+    if not exe:
+        raise Refused("ffmpeg not found")
+    return [exe, "-hide_banner", "-loglevel", "quiet"] + list(FFMPEG_WHITELIST) + [
+        "-ss", "%.3f" % max(0.0, float(offset_s)), "-i", p, "-frames:v", "1", "-vf", "scale=%d:-2" % int(width),
+        "-f", "image2pipe", "-vcodec", "ppm", "-"]
+
+
+def video_frame(path, offset_s, width=640, run=None, env=None):
+    """One picture of a recorded video file as PPM bytes (tk.PhotoImage), None if there is none."""
+    cmd = frame_command(path, offset_s, width, env)
+    run = run or subprocess.run
+    try:
+        r = run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=FRAME_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.stdout and r.stdout[:2] == b"P6" else None
+
+
+def blur_filter(width, blur):
+    """The filter graph: scaled to `width`, every blur box (x, y, w, h = parts of the picture 0..1, from_s / to_s
+    = seconds into the copy) blurred hard (faces, number plates)."""
+    parts = ["[0:v]scale=%d:-2,format=yuv420p[v0]" % int(width)]
+    cur = "v0"
+    for i, b in enumerate(blur or []):
+        x, y, w, h = (min(max(float(b[k]), 0.0), 1.0) for k in ("x", "y", "w", "h"))
+        w, h = max(0.01, min(w, 1.0 - x)), max(0.01, min(h, 1.0 - y))
+        t0, t1 = float(b.get("from_s", 0.0)), float(b.get("to_s", 1e9))
+        parts.append("[%s]split[m%d][s%d]" % (cur, i, i))
+        parts.append("[s%d]crop=iw*%.4f:ih*%.4f:iw*%.4f:ih*%.4f,boxblur=20:3[b%d]" % (i, w, h, x, y, i))
+        parts.append("[m%d][b%d]overlay=W*%.4f:H*%.4f:enable='between(t,%.2f,%.2f)'[v%d]" % (i, i, x, y, t0, t1, i + 1))
+        cur = "v%d" % (i + 1)
+    return ";".join(parts), "[%s]" % cur
+
+
+def copy_command(list_path, start_s, dur_s, out_path, width, blur, encoder="libx264"):
+    exe = ffmpeg_exe()
+    if not exe:
+        raise Refused("ffmpeg not found")
+    graph, last = blur_filter(width, blur)
+    enc = (["-c:v", "libx264", "-preset", "veryfast", "-crf", "30"] if encoder == "libx264" else
+           ["-c:v", "mpeg4", "-q:v", "8"])
+    return [exe, "-hide_banner", "-loglevel", "error", "-y"] + list(FFMPEG_WHITELIST) + [
+        "-f", "concat", "-safe", "0", "-ss", "%.3f" % max(0.0, float(start_s)), "-i", list_path,
+        "-t", "%.3f" % float(dur_s), "-an", "-filter_complex", graph, "-map", last] + enc + [
+        "-movflags", "+faststart", out_path]
+
+
+def video_copy(segments, start_s, dur_s, out_path, width=640, blur=None, run=None, env=None):
+    """The lesson editor's SMALL TRIMMED COPY: the recorded segments (in time order) joined, `start_s` into
+    them for `dur_s`, scaled to `width`, blur boxes applied, no sound, H.264 (MPEG-4 if this ffmpeg has no
+    libx264). out_path must be an .mp4 inside videolessons_dir(). Returns out_path; raises Refused / OSError."""
+    if running_on_gateway(env):
+        raise Refused("academy never runs on a gateway PC")
+    segs = [check_video(s, env) for s in segments]
+    if not segs:
+        raise Refused("no video")
+    out = os.path.abspath(str(out_path))
+    if not out.lower().endswith(".mp4") or not _inside(out, videolessons_dir(env)):
+        raise Refused("%s: a copy goes only into the video-lesson folder as .mp4" % out_path)
+    if not 0.0 < float(dur_s) <= 3600.0:
+        raise Refused("clip length %r s" % dur_s)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    lst = out[:-4] + "_list.txt"
+    with open(lst, "w", encoding="utf-8") as f:
+        for s in segs:
+            f.write("file '%s'\n" % s.replace("\\", "/").replace("'", "'\''"))
+    run = run or subprocess.run
+    try:
+        for enc in ("libx264", "mpeg4"):
+            cmd = copy_command(lst, start_s, dur_s, out, width, blur, enc)
+            try:
+                r = run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=COPY_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                raise OSError("ffmpeg took too long")
+            if r.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0:
+                return out
+        raise OSError("ffmpeg failed: %s" % ((r.stderr or b"")[-300:].decode("utf-8", "replace").strip()))
+    finally:
+        try:
+            os.remove(lst)
         except OSError:
             pass

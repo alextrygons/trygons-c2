@@ -34,6 +34,7 @@ except Exception:                                                       # pragma
     CAUTION = "#ffb000"
     COL = {"bg": "#0e141b", "fg": "#e6edf3", "panel": "#101a24", "dim": "#8fa3b5"}
 
+ADMIN_KEYS = ("acc.new", "acc.set_level", "acc.log_hours", "acc.make_push", "acc.key", "acc.backup", "acc.refresh")
 COLUMNS = ("user", "name", "level", "effective", "expiry", "days_left", "lessons", "exams_passed", "hours",
            "current", "weak")
 
@@ -43,7 +44,7 @@ class AcademyApp(object):
         self.root, self.store = root, store
         root.title(T("academy.title"))
         root.configure(bg=COL["bg"])
-        root.geometry("1280x560")
+        root.geometry("1280x600")
         # the banner: top, always visible, CAUTION colour (CLAUDE.md S, AC8)
         self.banner = tk.Label(root, text=banner_text(), bg=CAUTION, fg="#000000",
                                font=(theme.FAMILY if theme else "Segoe UI", 16, "bold"), pady=6)
@@ -63,13 +64,16 @@ class AcademyApp(object):
         self.tree.configure(yscrollcommand=sb.set)
         bar = tk.Frame(root, bg=COL["bg"])
         bar.pack(side="top", fill="x", padx=10, pady=4)
+        bar2 = tk.Frame(root, bg=COL["bg"])                             # the training buttons: their own row
+        bar2.pack(side="top", fill="x", padx=10, pady=(0, 4))
         self.buttons = {}
         for key, fn in (("acc.new", self.new_account), ("acc.set_level", self.set_level),
                         ("acc.log_hours", self.log_hours), ("acc.make_push", self.make_push),
                         ("acc.key", self.show_key), ("acc.backup", self.backup), ("acc.refresh", self.refresh),
                         ("acc.tour", self.open_tour), ("acc.lessons", self.open_lessons),
-                        ("acc.quizzes", self.open_quizzes), ("acc.scenarios", self.open_scenarios)):
-            b = tk.Button(bar, text=T(key), command=fn)
+                        ("acc.quizzes", self.open_quizzes), ("acc.scenarios", self.open_scenarios),
+                        ("acc.videolessons", self.open_videolessons), ("acc.editor", self.open_editor)):
+            b = tk.Button(bar if key in ADMIN_KEYS else bar2, text=T(key), command=fn)
             b.pack(side="left", padx=3)
             self.buttons[key] = b
         self.msg = tk.Label(root, text="", bg=COL["bg"], fg=COL["fg"], anchor="w", justify="left")
@@ -202,6 +206,19 @@ class AcademyApp(object):
         self.scenarios = scenario_app.ScenarioWindow(tk.Toplevel(self.root), text.lang(), store=self.store,
                                                      user=self.chosen_user())
         return self.scenarios
+
+    def open_videolessons(self):
+        """The real-trip video lessons (step 20) in a window of THIS process; recorded files via simguard only."""
+        import videolesson_app
+        self.videolessons = videolesson_app.VideoLessonWindow(tk.Toplevel(self.root), text.lang(), store=self.store,
+                                                              user=self.chosen_user())
+        return self.videolessons
+
+    def open_editor(self):
+        """The video lesson editor (step 20): saved events -> lessons (small trimmed, blurred copies)."""
+        import videolesson_app
+        self.editor = videolesson_app.EditorWindow(tk.Toplevel(self.root), text.lang())
+        return self.editor
 
     def backup(self):
         d = filedialog.askdirectory(parent=self.root, title=T("acc.backup"))

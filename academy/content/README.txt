@@ -28,5 +28,10 @@ outcome.min_m, "after" (untimed follow-up steps), right_el / right_en + debrief_
 Every rule: academy/scenario.py. A new scenario also needs its trainee script in test_academy.py
 (SCENARIO_SCRIPTS, AC31 runs it on the real simulator).
 
+Video lessons (step 20) are NOT here: they are made by the Lesson editor from the boat's saved
+events and kept in academy/data/videolessons/<id>/ (lesson.json kind "videolesson" + the small blurred
+copies + hud.jsonl) - never in git, because real trip video shows people and number plates. Every
+rule: academy/videolesson.py (check_doc).
+
 Chart photos (docs/daskalio/): for the test area picture, the demo map and the 3D sim ONLY.
 A photo is NOT a navigation chart - never used by any safety check (docs/daskalio/README.txt).
