@@ -544,6 +544,14 @@ RAM when not selected; (3) the relay board is NOT a safety path, so a second bus
 safety risk; (4) removing it later is one commit. Default after 11f: DRONECAN if the chosen board
 meets R-1..R-3, else MODBUS - the owner decides at the 11f review.
 
+Owner answer 2026-10-28 (W22): RELAY_BUS stays MODBUS (the default) until a DroneCAN relay board passes
+the bench tests R-1..R-3. Not yet: no DroneCAN relay board has been bench-tested.
+
+Note (W24, only for one hardware combination): the servo nodes 20 / 21 / 22 stay "required" in the
+DroneCAN node table whenever the CAN bus is fitted. A boat with ONLY the relay board on CAN
+(HAL_CAN_SERVOS 0 + RELAY_BUS_DRONECAN) would sit in STANDBY with CAN NODE LOST. If that combination
+is ever chosen: make "required" follow HAL_CAN_SERVOS (a small change) in that step.
+
 ## 10. Software structure (11d / 11e / 11f), tests and invariants
 
 11d - CAN driver + DroneCAN (no actuator use yet):
@@ -724,7 +732,8 @@ software needed - fail-safe by nature: a dead, frozen or unpowered AURIX stops t
 - Time ~1.5 s (owner): longer than a watchdog reset + boot (~0.3 s) so a warm reset alone does not
   kill, short enough that a held throttle can't run far. TO CONFIRM on the bench with the real
   boot time (a warm reset must re-start the pulses from the reset-surviving latched profile before
-  the time runs out, else the reset kills the engine - acceptable in UNCREWED, TO CONFIRM).
+  the time runs out, else the reset kills the engine - ACCEPTED by the owner 2026-10-28 (W20): a warm
+  reset in UNCREWED stopping the engine is acceptable; restart from the shore).
 - Armed ONLY in UNCREWED: in CREWED the AURIX never pulses, so the dead-man contact must be OUT of
   the kill circuit in CREWED. How (TO CONFIRM): (A) an arming output from the AURIX (set only in
   UNCREWED; a reset drops it -> disarmed) - weak: a stuck arming pin disables the dead-man; or (B)
@@ -789,7 +798,7 @@ docs use now; every one is in "WAITING FOR OWNER" at the top of PROGRESS.md. Not
   hysteresis, compensation target +- b/2, rate limit; adaptation RAM only by least squares on high-passed
   sensitivities over a 300 s memory, K / tau within 0.7..1.3 x TRAINING, b only smaller (parallel model, >= 0.5 x),
   the speed never faster; resets on residual / bound / sensor / node / new TRAINING) - adaptation only in calm steady
-  water (yaw-rate wobble < SB_STEER_CALM_DPS 0.3 deg/s, TO CONFIRM); TRAINING app/trainsrv.c (centre, small steps with
+  water (yaw-rate wobble < SB_STEER_CALM_DPS 0.3 deg/s, owner 2026-10-28: keep 0.3); TRAINING app/trainsrv.c (centre, small steps with
   a lag fit, large steps, reversal staircase by bisection, verify run with confidence; < 0.6 not used); NV slot 5 v2.
 - Tests: sim SM1-SM9, CN14-CN23, "all --can" + "all --can-fast" (the motor-only tests N/A there), D16-D17, storm
   I47-I57 (about a third of the episodes on the DroneCAN servos, worst case or fast, with node / bus / task faults).
