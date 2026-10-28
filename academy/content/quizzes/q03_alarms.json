@@ -1,0 +1,163 @@
+{
+  "_help": "Quiz pool (ACADEMY_SPEC D, step 18). type = choice (default: choices + answer = the index of the right one, 0 = the first), picture (show s1 / s2 / panel + area = the part to click on the DRAWING; nothing is lit), sound (sound = warning / caution / advisory, the ground station's alarm tones, + choices). why_el / why_en = the explanation shown after the answer. The questions and the choices are shown in random order (academy/quiz.py).",
+  "kind": "quiz",
+  "id": "q03_alarms",
+  "level": "DRIVER",
+  "title_el": "Συναγερμοί και ήχοι",
+  "title_en": "Alarms and sounds",
+  "questions": [
+    {
+      "q_el": "Ακούστε τον ήχο. Τι επίπεδο συναγερμού είναι;",
+      "q_en": "Listen to the sound. Which alarm level is it?",
+      "choices": [
+        {
+          "text_el": "WARNING (προειδοποίηση)",
+          "text_en": "WARNING"
+        },
+        {
+          "text_el": "CAUTION (προσοχή)",
+          "text_en": "CAUTION"
+        },
+        {
+          "text_el": "ADVISORY (ενημέρωση)",
+          "text_en": "ADVISORY"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Ο επείγων διπλός ήχος τρεις φορές = WARNING (κόκκινο): ενεργήστε αμέσως.",
+      "why_en": "The urgent two-tone sound three times = WARNING (red): act at once.",
+      "type": "sound",
+      "sound": "warning"
+    },
+    {
+      "q_el": "Ακούστε τον ήχο. Τι επίπεδο συναγερμού είναι;",
+      "q_en": "Listen to the sound. Which alarm level is it?",
+      "choices": [
+        {
+          "text_el": "WARNING (προειδοποίηση)",
+          "text_en": "WARNING"
+        },
+        {
+          "text_el": "CAUTION (προσοχή)",
+          "text_en": "CAUTION"
+        },
+        {
+          "text_el": "ADVISORY (ενημέρωση)",
+          "text_en": "ADVISORY"
+        }
+      ],
+      "answer": 1,
+      "why_el": "Η καμπάνα δύο νότες = CAUTION (πορτοκαλί): προσοχή, ελέγξτε.",
+      "why_en": "The two-note chime = CAUTION (amber): attention, check.",
+      "type": "sound",
+      "sound": "caution"
+    },
+    {
+      "q_el": "Ακούστε τον ήχο. Τι επίπεδο συναγερμού είναι;",
+      "q_en": "Listen to the sound. Which alarm level is it?",
+      "choices": [
+        {
+          "text_el": "WARNING (προειδοποίηση)",
+          "text_en": "WARNING"
+        },
+        {
+          "text_el": "CAUTION (προσοχή)",
+          "text_en": "CAUTION"
+        },
+        {
+          "text_el": "ADVISORY (ενημέρωση)",
+          "text_en": "ADVISORY"
+        }
+      ],
+      "answer": 2,
+      "why_el": "Το απαλό κλικ = ADVISORY (ενημέρωση): δεν αλλάζει ποτέ τον τρόπο λειτουργίας.",
+      "why_en": "The soft click = ADVISORY: it never changes the mode.",
+      "type": "sound",
+      "sound": "advisory"
+    },
+    {
+      "q_el": "Τι κάνει η αναγνώριση (ALARM ACK) ενός συναγερμού;",
+      "q_en": "What does acknowledging an alarm (ALARM ACK) do?",
+      "choices": [
+        {
+          "text_el": "Σβήνει μόνο συναγερμούς που η αιτία τους έχει φύγει",
+          "text_en": "It clears only alarms whose cause is gone"
+        },
+        {
+          "text_el": "Σβήνει όλους τους συναγερμούς",
+          "text_en": "It clears every alarm"
+        },
+        {
+          "text_el": "Αυξάνει το όριο ισχύος",
+          "text_en": "It raises the power limit"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Ένας ενεργός συναγερμός μένει μέχρι να φύγει η αιτία του.",
+      "why_en": "An active alarm stays until its cause is gone."
+    },
+    {
+      "q_el": "Χάνεται το GPS στο AUTO. Τι κάνει το σκάφος;",
+      "q_en": "The GPS is lost in AUTO. What does the boat do?",
+      "choices": [
+        {
+          "text_el": "Συναγερμός, συνεχίζει με εκτίμηση θέσης (dead reckoning) σε μειωμένη ταχύτητα",
+          "text_en": "Alarm, it continues by dead reckoning at reduced speed"
+        },
+        {
+          "text_el": "Σταματά αμέσως τη μηχανή",
+          "text_en": "It stops the engine at once"
+        },
+        {
+          "text_el": "Τίποτα",
+          "text_en": "Nothing"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Με αβεβαιότητα πάνω από 200 m ή μετά από 10 λεπτά κρατά την πορεία, αργά, με συναγερμό.",
+      "why_en": "With an uncertainty above 200 m or after 10 minutes it holds the heading, slowly, with an alarm."
+    },
+    {
+      "q_el": "Χάνεται η πυξίδα στο MANUAL. Τι γίνεται;",
+      "q_en": "The compass is lost in MANUAL. What happens?",
+      "choices": [
+        {
+          "text_el": "Μόνο συναγερμός, μένει στο MANUAL",
+          "text_en": "Only an alarm, it stays in MANUAL"
+        },
+        {
+          "text_el": "STANDBY αμέσως",
+          "text_en": "STANDBY at once"
+        },
+        {
+          "text_el": "Αλλάζει σε AUTO",
+          "text_en": "It switches to AUTO"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Η χειροκίνητη οδήγηση δεν χρειάζεται την πυξίδα.",
+      "why_en": "Manual steering doesn't need the compass."
+    },
+    {
+      "q_el": "Τι σημαίνει ο συναγερμός JOYSTICK TOOK CONTROL;",
+      "q_en": "What does the JOYSTICK TOOK CONTROL alarm mean?",
+      "choices": [
+        {
+          "text_el": "Το joystick πήρε τον έλεγχο: τρόπος MANUAL",
+          "text_en": "The joystick took over: mode MANUAL"
+        },
+        {
+          "text_el": "Το joystick χάλασε",
+          "text_en": "The joystick is broken"
+        },
+        {
+          "text_el": "Ο υπολογιστής οδηγεί",
+          "text_en": "The PC is driving"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Για επιστροφή: joystick στο κέντρο και HDG LOCK (ή αίτημα + CONFIRM).",
+      "why_en": "To hand back: stick centred and HDG LOCK (or a request + CONFIRM)."
+    }
+  ]
+}

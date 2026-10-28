@@ -1,0 +1,107 @@
+{
+  "_help": "Quiz pool (ACADEMY_SPEC D, step 18). type = choice (default: choices + answer = the index of the right one, 0 = the first), picture (show s1 / s2 / panel + area = the part to click on the DRAWING; nothing is lit), sound (sound = warning / caution / advisory, the ground station's alarm tones, + choices). why_el / why_en = the explanation shown after the answer. The questions and the choices are shown in random order (academy/quiz.py).",
+  "kind": "quiz",
+  "id": "q05_captain",
+  "level": "CAPTAIN",
+  "title_el": "Κυβερνήτης: ισχύς, οδήγηση από ξηρά, ρόλοι",
+  "title_en": "Captain: power, remote driving, roles",
+  "questions": [
+    {
+      "q_el": "Τι χρειάζεται για αύξηση του ορίου ισχύος;",
+      "q_en": "What does raising the power limit need?",
+      "choices": [
+        {
+          "text_el": "Αίτημα + τον κωδικό του σκάφους + CONFIRM στο joystick μέσα σε 10 δευτερόλεπτα",
+          "text_en": "A request + the boat's code + the joystick CONFIRM within 10 seconds"
+        },
+        {
+          "text_el": "Μόνο τον κωδικό",
+          "text_en": "Only the code"
+        },
+        {
+          "text_el": "Τίποτα: είναι αυτόματη",
+          "text_en": "Nothing: it is automatic"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Ένα βήμα τη φορά: 30, 50, 75, 100 %. Το χαμήλωμα είναι πάντα άμεσο.",
+      "why_en": "One step at a time: 30, 50, 75, 100 %. Lowering is always instant."
+    },
+    {
+      "q_el": "Ποιος μπορεί να οδηγήσει από την ξηρά (REMOTE MANUAL) ή να κάνει MANEUVER;",
+      "q_en": "Who may drive from shore (REMOTE MANUAL) or do MANEUVER?",
+      "choices": [
+        {
+          "text_el": "Μόνο ο κυβερνήτης με δίπλωμα",
+          "text_en": "Only the captain with a licence"
+        },
+        {
+          "text_el": "Ο συγκυβερνήτης",
+          "text_en": "The copilot"
+        },
+        {
+          "text_el": "Κάθε θεατής",
+          "text_en": "Any viewer"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Μόνο ο κυβερνήτης (δίπλωμα) κρατά το HELM για χειροκίνητη οδήγηση.",
+      "why_en": "Only the captain (licence) holds HELM for manual driving."
+    },
+    {
+      "q_el": "Τι ισχύει για το γκάζι στο REMOTE MANUAL;",
+      "q_en": "What holds for the throttle in REMOTE MANUAL?",
+      "choices": [
+        {
+          "text_el": "Όριο 20 % μπροστά / 5 % όπισθεν, ποτέ πάνω από το όριο ισχύος",
+          "text_en": "A cap of 20 % forward / 5 % reverse, never above the power limit"
+        },
+        {
+          "text_el": "100 % χωρίς όριο",
+          "text_en": "100 % without a limit"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Παλιά ή καθυστερημένα δεδομένα = ρελαντί + νεκρό + συναγερμός, STANDBY μετά από 5 s.",
+      "why_en": "Old or late data = idle + neutral + alarm, STANDBY after 5 s."
+    },
+    {
+      "q_el": "Στο MANEUVER (τρέιλερ, ράμπα), τι κάνει το γκάζι;",
+      "q_en": "In MANEUVER (trailer, ramp), what does the throttle do?",
+      "choices": [
+        {
+          "text_el": "Μένει πάντα στο ρελαντί· μόνο τιμόνι και ταχύτητα",
+          "text_en": "It always stays at idle; steering and gear only"
+        },
+        {
+          "text_el": "Ακολουθεί τον μοχλό",
+          "text_en": "It follows the lever"
+        }
+      ],
+      "answer": 0,
+      "why_el": "MANEUVER = τιμόνι + FWD / N / REV, γκάζι πάντα ρελαντί.",
+      "why_en": "MANEUVER = steering + FWD / N / REV, throttle always idle."
+    },
+    {
+      "q_el": "Ένας συγκυβερνήτης στέλνει νέα διαδρομή AUTO. Τι χρειάζεται;",
+      "q_en": "A copilot sends a new AUTO route. What does it need?",
+      "choices": [
+        {
+          "text_el": "Την αποδοχή (ACCEPT) του κυβερνήτη στην οθόνη 1",
+          "text_en": "The captain's ACCEPT on screen 1"
+        },
+        {
+          "text_el": "Τίποτα",
+          "text_en": "Nothing"
+        },
+        {
+          "text_el": "Το CONFIRM του συγκυβερνήτη",
+          "text_en": "The copilot's CONFIRM"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Ό,τι αλλάζει την οδήγηση από τον συγκυβερνήτη θέλει την αποδοχή του κυβερνήτη (εκτός STANDBY, παύση, DP STOP, επιστροφή).",
+      "why_en": "Copilot actions that change the driving need the captain's ACCEPT (except STANDBY, hold, DP STOP, return)."
+    }
+  ]
+}

@@ -15,11 +15,19 @@ Allowed (and nothing else):
 Refused: every other address (LAN, Tailscale 100.64.0.0/10, the IPs of boats/*.json, host names),
 every other port (5762 = the simulated AURIX's gateway UART: the academy never plays gateway),
 and the whole academy on a gateway PC (the gateway's config file exists: spec J).
+
+Step 18 (lessons, ACADEMY_SPEC C): SimLink = the lessons' frame link to the simulator's USB-link port
+5760 ONLY (never the demo gateway port: lessons send simulator frames, a gateway is never driven by
+the academy), and start_simulator() = the ONE process the academy may start: this repo's own
+sim/autopilot_sim with the fixed arguments "server 5760 1" (loopback only, analog sim joystick),
+working folder academy/data/sim (its data-flash files never touch sim/). Nothing else is started.
 """
 import ipaddress
 import json
 import os
 import socket                      # only here (test_academy AC1)
+import subprocess                  # only here: start_simulator() (test_academy AC1 / AC25)
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -129,3 +137,80 @@ def check_recording(path, env=None):
     if not os.path.isfile(p):
         raise Refused("%s is not an ordinary file" % p)
     return os.path.abspath(p)
+
+
+# --- step 18: the lessons' link to the simulator + starting the simulator --------------------------
+LESSON_PORT = 5760                              # the simulator's USB-link port (autopilot_sim server)
+SIM_ARGS = ("server", str(LESSON_PORT), "1")    # fixed: loopback, real time, analog sim joystick
+SIM_DIR = os.path.join(REPO, "sim")
+
+
+def sim_exe():
+    return os.path.join(SIM_DIR, "autopilot_sim.exe" if sys.platform.startswith("win") else "autopilot_sim")
+
+
+def sim_workdir(env=None):
+    """The simulator's working folder (its data-flash files nv*.bin): academy/data/sim (gitignored)."""
+    env = os.environ if env is None else env
+    return os.path.join(env.get("TRYGONS_ACADEMY_DATA") or os.path.join(HERE, "data"), "sim")
+
+
+def sim_command():
+    """The ONLY process the academy may start: this repo's simulator, fixed arguments."""
+    return [sim_exe()] + list(SIM_ARGS)
+
+
+def start_simulator(popen=None, env=None):
+    """Start the simulator for the lessons (refused on a gateway PC or without the built simulator).
+    Returns the process. popen = for the tests only (same command)."""
+    if running_on_gateway(env):
+        raise Refused("academy never runs on a gateway PC")
+    exe = sim_exe()
+    if popen is None:
+        if not os.path.isfile(exe):
+            raise Refused("simulator not built (%s): run sim/build_sim.bat" % exe)
+        popen = subprocess.Popen
+    wd = sim_workdir(env)
+    os.makedirs(wd, exist_ok=True)
+    return popen(sim_command(), cwd=wd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class SimLink(object):
+    """The lessons' byte link to the simulator on THIS PC, port 5760 only (checked before connecting).
+    send(data) / recv() -> bytes (non-blocking, b"" = nothing yet); closed = the connection ended."""
+
+    def __init__(self, host="127.0.0.1", port=LESSON_PORT, timeout=2.0, boats_dir=None):
+        if port != LESSON_PORT:
+            raise Refused("lessons use only the simulator's port %d" % LESSON_PORT)
+        self.sock = connect(host, port, timeout, boats_dir)
+        self.sock.setblocking(False)
+        self.closed = False
+
+    def send(self, data):
+        if self.closed:
+            return
+        try:
+            self.sock.sendall(data)
+        except OSError:
+            self.close()
+
+    def recv(self):
+        if self.closed:
+            return b""
+        try:
+            d = self.sock.recv(65536)
+        except (BlockingIOError, InterruptedError):
+            return b""
+        except OSError:
+            self.close()
+            return b""
+        if not d:
+            self.close()
+        return d
+
+    def close(self):
+        self.closed = True
+        try:
+            self.sock.close()
+        except OSError:
+            pass

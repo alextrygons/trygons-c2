@@ -1,0 +1,82 @@
+{
+  "_help": "Quiz pool (ACADEMY_SPEC D, step 18). type = choice (default: choices + answer = the index of the right one, 0 = the first), picture (show s1 / s2 / panel + area = the part to click on the DRAWING; nothing is lit), sound (sound = warning / caution / advisory, the ground station's alarm tones, + choices). why_el / why_en = the explanation shown after the answer. The questions and the choices are shown in random order (academy/quiz.py).",
+  "kind": "quiz",
+  "id": "q02_screens",
+  "level": "OBSERVER",
+  "title_el": "Οι οθόνες",
+  "title_en": "The screens",
+  "questions": [
+    {
+      "type": "picture",
+      "q_el": "Πατήστε στο σημείο της οθόνης 1 όπου εμφανίζονται οι συναγερμοί.",
+      "q_en": "Click the part of screen 1 where the alarms are shown.",
+      "show": "s1",
+      "area": "alarms",
+      "why_el": "Οι συναγερμοί είναι σε ένα σημείο, δεξιά κάτω από τον δεξιό καθρέφτη, ο σοβαρότερος πρώτος.",
+      "why_en": "The alarms are in one place, on the right under the right mirror, the most severe first."
+    },
+    {
+      "type": "picture",
+      "q_el": "Πατήστε στη μπάρα του γκαζιού στην οθόνη 1.",
+      "q_en": "Click the throttle bar on screen 1.",
+      "show": "s1",
+      "area": "throttle",
+      "why_el": "Αριστερά: η θέση του γκαζιού, το όριο ισχύος σαν γραμμή και η ταχύτητα.",
+      "why_en": "On the left: the throttle position, the power limit as a line and the gear."
+    },
+    {
+      "type": "picture",
+      "q_el": "Πατήστε στον μικρό χάρτη της οθόνης 1.",
+      "q_en": "Click the mini map on screen 1.",
+      "show": "s1",
+      "area": "minimap",
+      "why_el": "Ο μικρός χάρτης είναι κάτω δεξιά από το κέντρο.",
+      "why_en": "The mini map is bottom right of the centre."
+    },
+    {
+      "type": "picture",
+      "q_el": "Πατήστε στις λάμπες MASTER WARNING / MASTER CAUTION της οθόνης 1.",
+      "q_en": "Click the MASTER WARNING / MASTER CAUTION lamps on screen 1.",
+      "show": "s1",
+      "area": "master",
+      "why_el": "Δεξιά από τον τρόπο λειτουργίας. Πατώντας τη λάμπα σιωπά μόνο αυτός ο υπολογιστής.",
+      "why_en": "Right of the mode. Clicking the lamp silences only this PC."
+    },
+    {
+      "type": "picture",
+      "q_el": "Πατήστε στο κουμπί STANDBY της οθόνης 2.",
+      "q_en": "Click the STANDBY button on screen 2.",
+      "show": "s2",
+      "area": "standby",
+      "why_el": "Κάτω αριστερά, πάντα ορατό, ακόμη και με όλα τα πάνελ κλειστά.",
+      "why_en": "Bottom left, always shown, even with every panel collapsed."
+    },
+    {
+      "type": "picture",
+      "q_el": "Πατήστε στο πάνελ συναγερμών της οθόνης 2.",
+      "q_en": "Click the alarms panel on screen 2.",
+      "show": "s2",
+      "area": "alarms",
+      "why_el": "Πάνω δεξιά, πάντα ορατό.",
+      "why_en": "Top right, always shown."
+    },
+    {
+      "type": "picture",
+      "q_el": "Πατήστε το κουμπί HDG LOCK του πίνακα του σκάφους.",
+      "q_en": "Click the HDG LOCK button of the boat's panel.",
+      "show": "panel",
+      "area": "hdg_lock",
+      "why_el": "Το HDG LOCK κλειδώνει την τρέχουσα πορεία· το γκάζι μένει στο joystick.",
+      "why_en": "HDG LOCK locks the current heading; the throttle stays on the joystick."
+    },
+    {
+      "type": "picture",
+      "q_el": "Πατήστε το κουμπί έκτακτης ανάγκης (E-STOP).",
+      "q_en": "Click the emergency stop (E-STOP).",
+      "show": "panel",
+      "area": "estop",
+      "why_el": "Το κόκκινο μανιτάρι σε κίτρινο φόντο.",
+      "why_en": "The red mushroom button on yellow."
+    }
+  ]
+}

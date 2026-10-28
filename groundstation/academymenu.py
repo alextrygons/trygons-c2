@@ -12,6 +12,9 @@ DISPLAY + one file hand-over only - nothing here changes the driving:
     and prepares the tour's Greek / English voice with THIS station's offline TTS (sound.Library.make,
     in the background): the academy itself runs no process, it only plays the cached .wav files.
     The sentences come from academy/tour.py, loaded by its path (its display tables only, no link).
+  * "Open the academy" also writes this station's alarm tones (sound.tone: warning / caution / advisory)
+    into its sound cache (<cache>/tones/<name>.wav) for the academy's alarm-sound quiz questions (step 18,
+    ACADEMY_SPEC D); the academy only plays them (academy/quiz.py tone_path, simguard.check_recording).
 """
 import importlib.util
 import json
@@ -32,6 +35,8 @@ ACADEMY_APP = os.path.join(ACADEMY_DIR, "academy_app.py")
 TOUR_APP = os.path.join(ACADEMY_DIR, "tour_app.py")
 TOUR_MODEL = os.path.join(ACADEMY_DIR, "tour.py")
 _tour = None
+ACADEMY_TONES = ("warning", "caution", "advisory")      # = academy/quiz.py SOUNDS (test_academy AC27)
+TONE_DIR = "tones"                                       # = academy/quiz.py TONE_DIR
 
 
 def push_file(env=None):
@@ -103,7 +108,33 @@ def add_menu(app, mb):
     return m
 
 
+def tone_file(cache, name):
+    return os.path.join(cache, TONE_DIR, name + ".wav")
+
+
+def prepare_academy_sounds(app):
+    """The alarm tones for the academy's sound questions, from THIS station's sound module (made in code,
+    no TTS): written once into its sound cache. No sound system (TRYGONS_SOUND=off) = nothing. Returns the
+    files written."""
+    snd = getattr(app, "sound", None)
+    if snd is None or os.environ.get("TRYGONS_SOUND") == "off":
+        return []
+    import sound
+    out = []
+    for name in ACADEMY_TONES:
+        path = tone_file(snd.lib.cache, name)
+        if not os.path.exists(path):
+            try:
+                sound.write_wav(path, sound.tone(name))
+                out.append(path)
+            except OSError as e:
+                app.say(T("acad.open_failed", why=str(e)), theme.WARN)
+                break
+    return out
+
+
 def open_academy(app, popen=subprocess.Popen):
+    prepare_academy_sounds(app)
     try:
         p = popen(academy_command(), cwd=ACADEMY_DIR)
         app.say(T("acad.opened"))

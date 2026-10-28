@@ -47,6 +47,24 @@
   AC24 the tour window: banner first, next / back / chapter jump through every stop in el + en,
        the voice played only from an existing file through simguard (none = text only, off = quiet,
        on a gateway PC = refused); the academy window's "Guided tour" button opens it
+  AC25 lessons (step 18, spec C): every lesson file passes content.check + lesson.check_doc; the
+       checker catches the bad cases; the model (ready, checks, delta with wrap, hold, hint, time
+       limit, retry, score, logbook entry); grouped by level; required lessons before the exam; a
+       lesson sends only the simulator's / station's own frames (never a gateway frame)
+  AC26 simguard step 18: SimLink = port 5760 of this PC only (refused before any socket);
+       start_simulator = exactly this repo's sim + "server 5760 1" in academy/data/sim, refused on a
+       gateway PC / without the built simulator; no other academy module starts a process
+  AC27 quizzes (spec D): every pool passes content.check + quiz.check_doc (bad cases caught); choice,
+       picture (every show) and sound (every alarm level) questions present; random order + shuffled
+       choices; picture clicks inside / outside; scores per pool for the logbook; a sound question
+       without its file is left out; the station writes exactly the tones the quiz plays
+  AC28 every lesson passes on the REAL simulator by doing what its steps say (spec C: HDG LOCK,
+       course +10, takeover, hand-back, power raise with CONFIRM, alarm reaction); wrong actions do
+       not pass a step; a missed reaction time fails and the retry passes
+  AC29 the lesson + quiz windows: banner first, lessons grouped by level, a lesson run through the
+       window on the simulator lands in the logbook (tick in the list), no simulator = said so; the
+       quiz walks every question (choice / picture click / sound played via simguard), the score
+       lands in the logbook per pool; the academy window's buttons open both
 
 Run:  python academy/test_academy.py      (exit code 0 = all passed)
 """
@@ -155,7 +173,7 @@ def ac1():
     for name, path in mods:
         names, dyn = imports_of(path)
         if name == GUARD:
-            names -= {"socket"}                 # the guard itself may hold the socket (AC4)
+            names -= {"socket", "subprocess"}   # the guard itself: the socket (AC4) + the simulator start (AC26)
         hit = sorted(names & NET)
         if hit or dyn:
             bad.append("%s: %s" % (name, ", ".join(hit + sorted(dyn))))
@@ -1020,9 +1038,660 @@ def ac24():
            "academy button opens it")
 
 
+# --- step 18 helpers --------------------------------------------------------------------------
+def _free_port_pair():
+    """A port p with p and p + 2 free on 127.0.0.1 (the simulator listens on both)."""
+    for _ in range(50):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        if p + 2 > 65535:
+            continue
+        t = socket.socket()
+        try:
+            t.bind(("127.0.0.1", p + 2))
+            t.close()
+            return p
+        except OSError:
+            t.close()
+    raise RuntimeError("no free port pair")
+
+
+class _TcpLink(object):
+    """TEST ONLY: a byte link to a test simulator on a free port (the academy itself only gets
+    simguard.SimLink = port 5760; this proves the lessons against the real simulator)."""
+
+    def __init__(self, port):
+        self.s = socket.create_connection(("127.0.0.1", port), timeout=3)
+        self.s.setblocking(False)
+        self.closed = False
+
+    def send(self, d):
+        try:
+            self.s.sendall(d)
+        except OSError:
+            self.closed = True
+
+    def recv(self):
+        try:
+            d = self.s.recv(65536)
+            if not d:
+                self.closed = True
+            return d
+        except (BlockingIOError, InterruptedError):
+            return b""
+        except OSError:
+            self.closed = True
+            return b""
+
+    def close(self):
+        self.closed = True
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
+
+class _TestSim(object):
+    """TEST ONLY: sim/autopilot_sim server on a free port in a temp folder."""
+
+    def __init__(self):
+        exe = os.path.join(REPO, "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
+        self.port = _free_port_pair()
+        self.dir = tempfile.mkdtemp(prefix="trygons_acsim_")
+        self.p = subprocess.Popen([exe, "server", str(self.port), "1"], cwd=self.dir, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL)
+        import time
+        end = time.time() + 10
+        while True:
+            try:
+                socket.create_connection(("127.0.0.1", self.port + 2), timeout=0.5).close()
+                break
+            except OSError:
+                if time.time() > end:
+                    raise
+                time.sleep(0.2)
+
+    def link(self):
+        return _TcpLink(self.port)
+
+    def stop(self):
+        self.p.kill()
+        try:
+            self.p.wait(5)
+        except Exception:
+            pass
+
+
+# what a trainee does in each step of each lesson (None = only watch; "confirm" = press + release CONFIRM;
+# "ack" = acknowledge every 2 s until the step passes). A new lesson without a script fails AC28.
+def _code(sim):
+    sim.power_raise(sim.state.get("power_code", 0))
+
+
+LESSON_SCRIPTS = {
+    "l01_hdg_lock": [lambda s: s.button("hdg_lock"), lambda s: s.button("plus10"), lambda s: s.button("minus1"),
+                     lambda s: s.button("standby")],
+    "l02_takeover": [lambda s: s.button("hdg_lock"), lambda s: s.stick(x=0.6), lambda s: s.stick(x=0.0),
+                     lambda s: s.button("hdg_lock"), lambda s: s.button("standby")],
+    "l03_standby_wins": [lambda s: s.button("hdg_lock"), lambda s: s.stick(y=0.6), lambda s: s.button("standby"),
+                         lambda s: s.stick(y=0.0)],
+    "l04_alarm_reaction": [lambda s: s.button("hdg_lock"), None, lambda s: s.button("standby"), "ack"],
+    "l05_power_raise": [lambda s: s.power_code(), _code, "confirm", lambda s: s.power_lower()],
+}
+# the spec C list -> the lesson that teaches it
+SPEC_C = {"HDG LOCK": "l01_hdg_lock", "course +10": "l01_hdg_lock", "takeover": "l02_takeover",
+          "hand-back": "l02_takeover", "power raise with CONFIRM": "l05_power_raise",
+          "alarm reaction": "l04_alarm_reaction"}
+
+
+def _drive(sim, run, script, limit=90.0, skip=(), on_step=None):
+    """Run a lesson like a trainee: each step's action 0.6 s after the step shows. skip = step indexes
+    where the trainee does nothing. Returns the final status."""
+    import time
+    for a in run.start(time.time()):
+        sim.do(a)
+    acted, entered, last_ack = -2, (None, 0.0), 0.0
+    end = time.time() + limit
+    while time.time() < end:
+        now = time.time()
+        status, acts = run.update(sim.tick(), now)
+        for a in acts:
+            sim.do(a)
+        if status in ("done", "failed"):
+            return status
+        i = run.index
+        if i >= 0:
+            if entered[0] != i:
+                entered = (i, now)
+            act = script[i]
+            if i not in skip and acted != i and now - entered[1] > 0.6:
+                acted = i
+                if on_step:
+                    on_step(i)
+                if act == "confirm":
+                    sim.press("confirm", True)
+                    for _ in range(4):
+                        sim.tick()
+                        time.sleep(0.05)
+                    sim.press("confirm", False)
+                elif callable(act):
+                    act(sim)
+            if act == "ack" and i not in skip and now - last_ack > 2.0:
+                sim.alarm_ack()
+                last_ack = now
+        time.sleep(0.05)
+    return "timeout"
+
+
+# --- AC25 -------------------------------------------------------------------------------------
+def ac25():
+    import content
+    import lesson
+    import proto
+    wrong = []
+    docs = lesson.lessons()
+    for d in docs:
+        wrong += content.check(d, d["id"]) + lesson.check_doc(d, d["id"])
+    if len(docs) < 5:
+        wrong.append("only %d lessons" % len(docs))
+    base = {"kind": "lesson", "id": "x", "_help": "x", "runs_on": "sim", "title_el": "a", "title_en": "b"}
+
+    def stp(**kw):
+        d = {"do_el": "a", "do_en": "b", "hint_el": "c", "hint_en": "d", "check": [{"f": "mode_name", "eq": "HDG_LOCK"}]}
+        d.update(kw)
+        return d
+    bad = [dict(base, steps=[]), dict(base, steps=[stp(check=[])]), dict(base, steps=[stp(check=[{"f": "nonsense", "eq": 1}])]),
+           dict(base, steps=[stp(check=[{"f": "mode_name", "eq": "A", "ne": "B"}])]),
+           dict(base, steps=[stp(at_start="engine_kill")]), dict(base, setup=["raise_power"], steps=[stp()]),
+           dict(base, steps=[stp(hint_el="")]), dict(base, steps=[stp(fail_s=0)])]
+    missed = [i for i, d in enumerate(bad) if not lesson.check_doc(d, "bad%d" % i)]
+    if missed:
+        wrong.append("lesson checker missed %s" % missed)
+    # the model on made-up simulator states
+    doc = dict(base, setup=["standby"], steps=[
+        stp(hint_s=5),
+        stp(check=[{"f": "target", "delta": 10, "tol": 0.5}], hold_s=1.0),
+        stp(check=[{"f": "mode_name", "eq": "STANDBY"}], fail_s=8)])
+    r = lesson.Run(doc, "en")
+    if r.start(0.0) != ["standby"]:
+        wrong.append("setup actions")
+    ready = {"mode_name": "STANDBY", "alarm_bits": 0, "profile_name": "CREWED", "target": 355.0}
+    if r.update({"mode_name": "STANDBY", "alarm_bits": 0x1000, "profile_name": "CREWED"}, 1.0)[0] != "waiting":
+        wrong.append("not armed = not ready")
+    if r.update(dict(ready, profile_name="DETECTING"), 1.1)[0] != "waiting":
+        wrong.append("profile not latched = not ready")
+    r.update(ready, 2.0)
+    if r.index != 0:
+        wrong.append("ready did not start step 1")
+    r.update(ready, 8.0)
+    if not r.hint_shown or r.hints != 1:
+        wrong.append("hint after hint_s")
+    hl = dict(ready, mode_name="HDG_LOCK")
+    r.update(hl, 9.0)
+    if r.index != 1:
+        wrong.append("step 1 not passed on HDG_LOCK")
+    r.update(dict(hl, target=4.0), 9.5)               # 355 -> 4 = +9: not yet
+    r.update(dict(hl, target=5.2), 10.0)              # 355 -> 5.2 = +10.2 (wrap) but must hold 1 s
+    if r.index != 1:
+        wrong.append("hold_s not respected")
+    r.update(dict(hl, target=5.2), 11.1)
+    if r.index != 2:
+        wrong.append("delta with 360 wrap / hold")
+    if r.update(dict(hl, target=5.2), 20.0)[0] != "failed" or r.failed_step != 2:
+        wrong.append("fail_s")
+    r.retry(21.0)
+    for t, st in ((22.0, ready), (23.0, hl), (23.5, dict(hl, target=5.0)), (24.6, dict(hl, target=5.0)),
+                  (25.0, dict(ready, target=5.0))):
+        r.update(st, t)
+    e = r.log_entry()
+    if r.status != "done" or e["retries"] != 1 or e["score"] != 90 or not e["done"]:
+        wrong.append("retry / score %s %s" % (r.status, e))
+    # grouping, required lessons, the exam's list
+    g = lesson.by_level(docs)
+    if list(g) != ["OBSERVER", "DRIVER", "CAPTAIN"] or not g["DRIVER"] or not g["CAPTAIN"]:
+        wrong.append("by level %s" % {k: len(v) for k, v in g.items()})
+    req_d, req_c = lesson.required_for("DRIVER", docs), lesson.required_for("CAPTAIN", docs)
+    if not set(req_d) < set(req_c) or "l05_power_raise" in req_d:
+        wrong.append("required by level")
+    exam = json_load(os.path.join(HERE, "content", "exams", "example_driver_exam.json"))
+    ids = {d["id"] for d in docs}
+    if not set(exam["required"]) <= ids:
+        wrong.append("exam requires unknown lessons")
+    log = [{"user": "ann", "kind": "lesson", "id": "l01_hdg_lock", "done": True},
+           {"user": "ann", "kind": "lesson", "id": "l02_takeover", "done": False},
+           {"user": "bob", "kind": "lesson", "id": "l02_takeover", "done": True}]
+    miss = lesson.missing_required(log, "ann", exam)
+    if "l01_hdg_lock" in miss or "l02_takeover" not in miss:
+        wrong.append("missing_required %s" % miss)
+    # only simulator inputs + the station's own commands go out
+    class Sink(object):
+        def __init__(self):
+            self.out = []
+
+        def send(self, d):
+            self.out.append(d)
+
+        def recv(self):
+            return b""
+    sim = lesson.Sim(Sink())
+    for ft in (proto.T_GW_CMD, proto.T_GW_STATUS, proto.T_HELM, proto.T_REMOTE, proto.T_SET_MODE, proto.T_AUTO_START,
+               proto.T_RESTART, proto.T_RELAY, proto.T_PARAM_SET):
+        try:
+            sim.send(ft)
+            wrong.append("frame 0x%02X allowed" % ft)
+        except ValueError:
+            pass
+    if lesson.ALLOWED_FRAMES & set(range(0x30, 0x3F)):
+        wrong.append("a gateway frame in ALLOWED_FRAMES")
+    sim.tick()
+    for a in lesson.SETUP + lesson.EVENTS:
+        sim.do(a)
+    report("AC25 lessons: content + model", not wrong, "; ".join(wrong) or
+           "%d lessons (%s) OK; %d bad cases caught; ready / delta wrap / hold / hint / time limit / retry / score; "
+           "required before the exam; only simulator + station frames" % (len(docs), ", ".join(sorted(ids)), len(bad)))
+
+
+# --- AC26 -------------------------------------------------------------------------------------
+def ac26():
+    import simguard
+    wrong = []
+    made = []
+    orig = socket.create_connection
+    socket.create_connection = lambda *a, **k: made.append(a)
+    tmp = tempfile.mkdtemp(prefix="trygons_ac26_")
+    with open(os.path.join(tmp, "x.json"), "w", encoding="utf-8") as f:
+        f.write('{"id": "x1", "name": "X1", "tailscale_ip": "100.101.102.103", "gateway_port": 5761}')
+    try:
+        for h, p in (("127.0.0.1", 5761), ("127.0.0.1", 5762), ("192.168.1.10", 5760), ("100.101.102.103", 5760),
+                     ("100.64.0.9", 5760), ("boat.local", 5760), ("127.0.0.1", 6000)):
+            try:
+                simguard.SimLink(h, p, boats_dir=tmp)
+                wrong.append("SimLink allowed %s:%s" % (h, p))
+            except simguard.Refused:
+                pass
+    finally:
+        socket.create_connection = orig
+    if made:
+        wrong.append("a socket was made for a refused SimLink")
+    calls = []
+
+    def fake_popen(cmd, **kw):
+        calls.append((cmd, kw))
+        return "proc"
+    data = tempfile.mkdtemp(prefix="trygons_ac26d_")
+    env = {"PROGRAMDATA": tempfile.mkdtemp(), "TRYGONS_ACADEMY_DATA": data}
+    if simguard.start_simulator(popen=fake_popen, env=env) != "proc":
+        wrong.append("start_simulator result")
+    cmd, kw = calls[-1]
+    exe = os.path.join(REPO, "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
+    if cmd != [exe, "server", "5760", "1"]:
+        wrong.append("command %s" % cmd)
+    if os.path.normcase(kw.get("cwd", "")) != os.path.normcase(os.path.join(data, "sim")) or not os.path.isdir(kw["cwd"]):
+        wrong.append("working folder %s" % kw.get("cwd"))
+    try:
+        simguard.start_simulator(popen=fake_popen, env=gateway_pc())
+        wrong.append("started on a gateway PC")
+    except simguard.Refused:
+        pass
+    saved = simguard.sim_exe
+    simguard.sim_exe = lambda: os.path.join(tmp, "no_such_sim.exe")
+    try:
+        simguard.start_simulator(env=env)
+        wrong.append("started without the built simulator")
+    except simguard.Refused:
+        pass
+    finally:
+        simguard.sim_exe = saved
+    # only simguard starts a process (AC1 lets it import subprocess; nobody else may)
+    for name, path in academy_modules():
+        src = open(path, encoding="utf-8").read()
+        if name != GUARD and re.search(r"\b(Popen|subprocess|os\.system|startfile|spawn)\b", src):
+            wrong.append("%s starts a process" % name)
+    report("AC26 simguard: lessons link + simulator start", not wrong, "; ".join(wrong) or
+           "SimLink only 127.0.0.1:5760 (refused before a socket); start = %s in academy/data/sim; refused on a "
+           "gateway PC / without the simulator; no other module starts a process" % " ".join(["autopilot_sim"] + list(simguard.SIM_ARGS)))
+
+
+# --- AC27 -------------------------------------------------------------------------------------
+def ac27():
+    import content
+    import quiz
+    import academymenu
+    import sound
+    wrong = []
+    pools = quiz.pools()
+    for d in pools:
+        wrong += content.check(d, d["id"]) + quiz.check_doc(d, d["id"])
+        if len(d.get("questions", [])) < 5:
+            wrong.append("%s: fewer than 5 questions" % d["id"])
+    qs = [q for d in pools for q in d["questions"]]
+    types = {q.get("type", "choice") for q in qs}
+    shows = {q["show"] for q in qs if q.get("type") == "picture"}
+    sounds = {q["sound"] for q in qs if q.get("type") == "sound"}
+    if types != set(quiz.TYPES) or shows != set(quiz.SHOWS) or sounds != set(quiz.SOUNDS):
+        wrong.append("coverage types %s shows %s sounds %s" % (sorted(types), sorted(shows), sorted(sounds)))
+    if {d.get("level") for d in pools} != {"OBSERVER", "DRIVER", "CAPTAIN"}:
+        wrong.append("a level without a pool")
+    base = {"kind": "quiz", "id": "x", "_help": "x"}
+    q0 = {"q_el": "a", "q_en": "b", "why_el": "c", "why_en": "d", "choices": [{"text_el": "1", "text_en": "1"},
+                                                                         {"text_el": "2", "text_en": "2"}], "answer": 0}
+    bad = [dict(base, questions=[]), dict(base, questions=[dict(q0, type="essay")]),
+           dict(base, questions=[dict(q0, answer=5)]), dict(base, questions=[dict(q0, why_en="")]),
+           dict(base, questions=[{"type": "picture", "q_el": "a", "q_en": "b", "why_el": "c", "why_en": "d",
+                                  "show": "s1", "area": "nowhere"}]),
+           dict(base, questions=[dict(q0, type="sound", sound="cavalry")])]
+    missed = [i for i, d in enumerate(bad) if not (quiz.check_doc(d, "b") or content.check(d, "b"))]
+    if missed:
+        wrong.append("quiz checker missed %s" % missed)
+    # the sounds: the station's alarm-level tones, written where the quiz looks
+    lv = {v for v in sound.LEVEL_TONE.values() if v}
+    if set(quiz.SOUNDS) != lv or tuple(academymenu.ACADEMY_TONES) != tuple(quiz.SOUNDS) or \
+            not set(quiz.SOUNDS) <= set(sound.TONE_NAMES) or academymenu.TONE_DIR != quiz.TONE_DIR:
+        wrong.append("tone names / folder differ between the station and the quiz")
+    cache = tempfile.mkdtemp(prefix="trygons_ac27_")
+
+    class Lib(object):
+        pass
+
+    class Snd(object):
+        lib = Lib()
+
+    class App(object):
+        sound = Snd()
+
+        def say(self, *a):
+            pass
+    Snd.lib.cache = cache
+    saved = os.environ.pop("TRYGONS_SOUND", None)
+    try:
+        written = academymenu.prepare_academy_sounds(App())
+        again = academymenu.prepare_academy_sounds(App())
+    finally:
+        if saved is not None:
+            os.environ["TRYGONS_SOUND"] = saved
+    for n in quiz.SOUNDS:
+        p = quiz.tone_path(n, cache)
+        if p not in written or not os.path.isfile(p) or sound.read_wav(p).tobytes() != sound.tone(n).tobytes():
+            wrong.append("tone %s not the station's" % n)
+    if again:
+        wrong.append("tones rewritten")
+    os.environ["TRYGONS_SOUND"] = "off"
+    try:
+        if academymenu.prepare_academy_sounds(App()) != []:
+            wrong.append("tones made with the sound off")
+    finally:
+        if saved is None:
+            os.environ.pop("TRYGONS_SOUND", None)
+        else:
+            os.environ["TRYGONS_SOUND"] = saved
+    # the run: random order, shuffled choices, every type answered
+    r1, r2 = quiz.Run(pools, "el", seed=1), quiz.Run(pools, "el", seed=2)
+    o1 = [(it["pool"], it["q"]["q_en"]) for it in r1.items]
+    o2 = [(it["pool"], it["q"]["q_en"]) for it in r2.items]
+    if o1 == o2 or sorted(o1) != sorted(o2) or len(o1) != len(qs):
+        wrong.append("random order")
+    if all(it["order"] == sorted(it["order"]) for it in r1.items if len(it["order"]) > 2):
+        wrong.append("choices never shuffled")
+    wrong_first = True
+    while not r1.finished():
+        q = r1.current()
+        it = r1.items[r1.index]
+        if q["type"] == "picture":
+            x, y, w, h = quiz.area_rect(q["show"], q["area"])
+            if wrong_first:
+                fx = x + w + 0.15 if x + w + 0.15 <= 1.0 else x - 0.15
+                res = r1.click(fx, y + h / 2)
+                if res["correct"]:
+                    wrong.append("a click outside counted")
+                wrong_first = False
+            else:
+                res = r1.click(x + w / 2, y + h / 2)
+                if not res["correct"]:
+                    wrong.append("a click inside %s missed" % q["area"])
+        else:
+            right = it["order"].index(it["q"]["answer"])
+            if q["choices"][right] != r1.tx(it["q"]["choices"][it["q"]["answer"]], "text"):
+                wrong.append("shuffle lost the answer")
+            res = r1.answer(right)
+            if not res["correct"] or not res["why"]:
+                wrong.append("right answer not right / no explanation")
+            if r1.answer((right + 1) % len(q["choices"]))["correct"] is not True:
+                wrong.append("answer changed after it was given")
+        r1.next()
+    ents = r1.log_entries()
+    if r1.score() != int(round(100.0 * (len(qs) - 1) / len(qs))) or {e["topic"] for e in ents} != {d["id"] for d in pools}:
+        wrong.append("score %s / log %s" % (r1.score(), ents))
+    r3 = quiz.Run(pools, "en", seed=3, sound_ok=lambda n: False)
+    if r3.left_out != len([q for q in qs if q.get("type") == "sound"]) or any(it["q"].get("type") == "sound" for it in r3.items):
+        wrong.append("sound questions without a file not left out")
+    report("AC27 quizzes: content + model + sounds", not wrong, "; ".join(wrong) or
+           "%d pools, %d questions (choice / picture %s / sound %s); %d bad cases caught; random order + shuffled "
+           "choices; clicks in / out; per-pool scores; the station's tones = what the quiz plays"
+           % (len(pools), len(qs), "+".join(sorted(shows)), "+".join(sorted(sounds)), len(bad)))
+
+
+# --- AC28 -------------------------------------------------------------------------------------
+def ac28():
+    import lesson
+    import time
+    wrong = []
+    docs = lesson.lessons()
+    ids = {d["id"] for d in docs}
+    for item, lid in SPEC_C.items():
+        if lid not in ids:
+            wrong.append("spec C %r: lesson %s missing" % (item, lid))
+    for d in docs:
+        if d["id"] not in LESSON_SCRIPTS or len(LESSON_SCRIPTS[d["id"]]) != len(d["steps"]):
+            wrong.append("%s: no trainee script for every step" % d["id"])
+    if wrong:
+        report("AC28 lessons on the real simulator", False, "; ".join(wrong))
+        return
+    sim_p = _TestSim()
+    times = {}
+    try:
+        sim = lesson.Sim(sim_p.link())
+        for d in docs:
+            t0 = time.time()
+            r = lesson.Run(d, "el")
+            st = _drive(sim, r, LESSON_SCRIPTS[d["id"]])
+            times[d["id"]] = round(time.time() - t0, 1)
+            if st != "done" or r.score() != 100:
+                wrong.append("%s: %s at step %d (score %d)" % (d["id"], st, r.index + 1, r.score()))
+        by = {d["id"]: d for d in docs}
+        # wrong actions do not pass a step: +10 instead of moving the stick (takeover step stays)
+        r = lesson.Run(by["l02_takeover"], "en")
+        bad = [LESSON_SCRIPTS["l02_takeover"][0], lambda s: s.button("plus10")] + LESSON_SCRIPTS["l02_takeover"][2:]
+        if _drive(sim, r, bad, limit=4.0) != "timeout" or r.index != 1:
+            wrong.append("l02: +10 passed the takeover step (step %d)" % (r.index + 1))
+        # CONFIRM without a code typed: no raise
+        r = lesson.Run(by["l05_power_raise"], "en")
+        bad = [LESSON_SCRIPTS["l05_power_raise"][0], "confirm", "confirm", None]
+        if _drive(sim, r, bad, limit=5.0) != "timeout" or r.index != 1 or sim.state.get("power_fwd", 0) > 30:
+            wrong.append("l05: CONFIRM without the code passed (step %d, limit %s)" % (r.index + 1, sim.state.get("power_fwd")))
+        # the reaction time: no STANDBY -> failed; the retry passes (one retry = 90)
+        r = lesson.Run(by["l04_alarm_reaction"], "en")
+        st = _drive(sim, r, LESSON_SCRIPTS["l04_alarm_reaction"], skip=(2,), limit=60.0)
+        if st != "failed" or r.failed_step != 2:
+            wrong.append("l04: no STANDBY did not fail (%s, step %s)" % (st, r.failed_step))
+        else:
+            r.retry(time.time())
+            st = _drive_retry(sim, r, LESSON_SCRIPTS["l04_alarm_reaction"])
+            if st != "done" or r.log_entry()["retries"] != 1 or r.score() != 90:
+                wrong.append("l04 retry: %s %s" % (st, r.log_entry()))
+        sim.do("centre")
+        sim.do("standby")
+        sim.link.close()
+    finally:
+        sim_p.stop()
+    report("AC28 lessons on the real simulator", not wrong, "; ".join(wrong) or
+           "every lesson done by its steps (%s s); spec C items covered; +10 is no takeover; CONFIRM without the "
+           "code raises nothing; a missed reaction fails, the retry passes (score 90)"
+           % ", ".join("%s %s" % (k, v) for k, v in times.items()))
+
+
+def _drive_retry(sim, run, script):
+    """Continue a retried run (start() already called by retry())."""
+    saved = run.start
+    run.start = lambda now: list(run.doc.get("setup", []))
+    try:
+        return _drive(sim, run, script)
+    finally:
+        run.start = saved
+
+
+# --- AC29 -------------------------------------------------------------------------------------
+def ac29():
+    import banner
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+    except Exception as e:
+        report("AC29 lesson + quiz windows", True, "no display here (%s): models checked by AC25-AC28" % e)
+        return
+    import time
+    import lesson
+    import lesson_app
+    import quiz
+    import quiz_app
+    import tour_app
+    import sound
+    wrong = []
+    sim_p = None
+    try:
+        root.withdraw()
+        store = _store()
+        store.add("ann", "Ann")
+        # no simulator: said so, nothing crashes
+        def no_sim():
+            raise OSError("refused")
+        top = tk.Toplevel(root)
+        w = lesson_app.LessonWindow(top, "en", store=store, user="ann", link_factory=no_sim)
+        top.update()
+        if top.pack_slaves()[0] is not w.banner or w.banner.cget("text") != banner.banner_text("en") or \
+                w.banner.cget("bg").lower() != lesson_app.CAUTION.lower():
+            wrong.append("lesson window: banner not first")
+        heads = [w.list.get(i) for i, d in enumerate(w.rows) if d is None]
+        if len(heads) < 2 or w.rows[0] is not None:
+            wrong.append("lessons not grouped by level (%s)" % heads)
+        w.select("l01_hdg_lock")
+        if w.start_selected() is not None or w.conn.cget("text") != lesson_app.T("lesson.no_sim", "en"):
+            wrong.append("no simulator not said")
+        w.close()
+        # a lesson through the window on the simulator -> logbook + tick
+        sim_p = _TestSim()
+        top = tk.Toplevel(root)
+        w = lesson_app.LessonWindow(top, "el", store=store, user="ann", link_factory=sim_p.link)
+        w.select("l01_hdg_lock")
+        if w.start_selected() is None:
+            wrong.append("lesson did not start")
+        else:
+            acts = {0: lambda: w.button("hdg_lock"), 1: lambda: w.button("plus10"), 2: lambda: w.button("minus1"),
+                    3: lambda: w.button("standby")}
+            done, entered = set(), (None, 0)
+            end = time.time() + 40
+            while time.time() < end and w.status != "done":
+                w.step()
+                top.update()
+                i = w.run.index
+                if i >= 0:
+                    if entered[0] != i:
+                        entered = (i, time.time())
+                    if i not in done and time.time() - entered[1] > 0.6:
+                        done.add(i)
+                        acts[i]()
+                time.sleep(0.05)
+            store.load()
+            ok = [e for e in store.entries() if e.get("kind") == "lesson" and e.get("id") == "l01_hdg_lock"
+                  and e.get("user") == "ann" and e.get("done")]
+            row = [w.list.get(i) for i, d in enumerate(w.rows) if d and d["id"] == "l01_hdg_lock"]
+            if w.status != "done" or not ok or not row or not row[0].startswith("✓"):
+                wrong.append("window lesson: %s, logged %d, row %s" % (w.status, len(ok), row))
+            # the joystick pad + hold: let go = centre; held = stays
+            w.stick(0.0, 0.5)
+            w._pad_release()
+            if w.sim.joy["y"] != 0.0:
+                wrong.append("released stick not centred")
+            w.hold.set(True)
+            w.stick(0.0, 0.5)
+            w._pad_release()
+            if w.sim.joy["y"] != 0.5:
+                wrong.append("held stick not kept")
+            w.hold.set(False)
+            w._hold_changed()
+            if w.sim.joy["y"] != 0.0:
+                wrong.append("unticking hold did not centre")
+        w.close()
+        sim_p.stop()
+        sim_p = None
+        # the quiz window: every question, sounds through simguard from the station's tones
+        cache = tempfile.mkdtemp(prefix="trygons_ac29_")
+        for n in quiz.SOUNDS:
+            sound.write_wav(quiz.tone_path(n, cache), sound.tone(n))
+        for lc in ("el", "en"):
+            top = tk.Toplevel(root)
+            pl = tour_app.NullPlayer()
+            qw = quiz_app.QuizWindow(top, lc, store=store, user="ann", player=pl, cache=cache, seed=7)
+            top.update()
+            if top.pack_slaves()[0] is not qw.banner or qw.banner.cget("text") != banner.banner_text(lc):
+                wrong.append("%s quiz window: banner not first" % lc)
+            run = qw.start([d["id"] for d in qw.docs])
+            if run.left_out:
+                wrong.append("%s: sounds left out with the files there" % lc)
+            seen = set()
+            while not run.finished():
+                q = run.current()
+                seen.add(q["type"])
+                it = run.items[run.index]
+                if q["type"] == "picture":
+                    x, y, ww, hh = quiz.area_rect(q["show"], q["area"])
+                    top.update()
+                    x0, y0, fw, fh = qw.frame
+                    res = qw._on_click(type("E", (), {"x": x0 + (x + ww / 2) * fw, "y": y0 + (y + hh / 2) * fh})())
+                else:
+                    if q["type"] == "sound" and (qw.sound_state != "played" or not pl.played or
+                                                 pl.played[-1] != os.path.abspath(quiz.tone_path(q["sound"], cache))):
+                        wrong.append("%s: sound %s not played" % (lc, q["sound"]))
+                    res = qw.answer(it["order"].index(it["q"]["answer"]))
+                if not res or not res["correct"]:
+                    wrong.append("%s: %s question not answered right" % (lc, q["type"]))
+                    break
+                qw.next()
+            if seen != set(quiz.TYPES) or run.score() != 100:
+                wrong.append("%s: types %s score %d" % (lc, sorted(seen), run.score()))
+            top.destroy()
+        store.load()
+        qe = [e for e in store.entries() if e.get("kind") == "quiz" and e.get("user") == "ann"]
+        if len(qe) != 2 * len(quiz.pools()) or any(e.get("score") != 100 for e in qe):
+            wrong.append("quiz logbook %d entries" % len(qe))
+        # no tone files: the sound questions are left out and the window says so
+        top = tk.Toplevel(root)
+        qw = quiz_app.QuizWindow(top, "en", player=tour_app.NullPlayer(), cache=tempfile.mkdtemp(), seed=1)
+        run = qw.start([d["id"] for d in qw.docs])
+        if not run.left_out or not qw.l_note.cget("text"):
+            wrong.append("missing tones not said")
+        top.destroy()
+        import academy_app
+        app = academy_app.AcademyApp(tk.Toplevel(root), store)
+        lw = app.open_lessons()
+        qw = app.open_quizzes()
+        if not isinstance(lw, lesson_app.LessonWindow) or not isinstance(qw, quiz_app.QuizWindow) or lw.user is not None:
+            wrong.append("academy window buttons")
+        lw.close()
+    finally:
+        if sim_p is not None:
+            sim_p.stop()
+        root.destroy()
+    report("AC29 lesson + quiz windows", not wrong, "; ".join(wrong) or
+           "banner first; lessons by level; no simulator said; a lesson through the window on the simulator logged + "
+           "ticked; stick hold / let go; quiz el + en every type, sounds played via simguard, logbook per pool; "
+           "missing tones left out + said; academy buttons open both")
+
+
 if __name__ == "__main__":
     for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
-              ac19, ac20, ac21, ac22, ac23, ac24):
+              ac19, ac20, ac21, ac22, ac23, ac24, ac25, ac26, ac27, ac28, ac29):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run

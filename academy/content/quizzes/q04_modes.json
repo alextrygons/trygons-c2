@@ -1,0 +1,115 @@
+{
+  "_help": "Quiz pool (ACADEMY_SPEC D, step 18). type = choice (default: choices + answer = the index of the right one, 0 = the first), picture (show s1 / s2 / panel + area = the part to click on the DRAWING; nothing is lit), sound (sound = warning / caution / advisory, the ground station's alarm tones, + choices). why_el / why_en = the explanation shown after the answer. The questions and the choices are shown in random order (academy/quiz.py).",
+  "kind": "quiz",
+  "id": "q04_modes",
+  "level": "DRIVER",
+  "title_el": "Τρόποι λειτουργίας",
+  "title_en": "Driving modes",
+  "questions": [
+    {
+      "q_el": "Στο HDG LOCK, ποιος ελέγχει το γκάζι;",
+      "q_en": "In HDG LOCK, who controls the throttle?",
+      "choices": [
+        {
+          "text_el": "Το joystick (άξονας Y)",
+          "text_en": "The joystick (Y axis)"
+        },
+        {
+          "text_el": "Ο αυτόματος πιλότος",
+          "text_en": "The autopilot"
+        },
+        {
+          "text_el": "Κανείς: μένει στο ρελαντί",
+          "text_en": "Nobody: it stays at idle"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Στο HDG LOCK κλειδώνει μόνο η πορεία· το γκάζι μένει στο joystick.",
+      "why_en": "In HDG LOCK only the heading is locked; the throttle stays on the joystick."
+    },
+    {
+      "q_el": "Πώς φεύγει το σκάφος από το MANUAL;",
+      "q_en": "How does the boat leave MANUAL?",
+      "choices": [
+        {
+          "text_el": "Μόνο με το joystick στο κέντρο (+ HDG LOCK ή αίτημα + CONFIRM)",
+          "text_en": "Only with the stick centred (+ HDG LOCK or a request + CONFIRM)"
+        },
+        {
+          "text_el": "Μόνο του μετά από 10 δευτερόλεπτα",
+          "text_en": "By itself after 10 seconds"
+        },
+        {
+          "text_el": "Με το κουμπί +10",
+          "text_en": "With the +10 button"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Ένα κρατημένο joystick πρέπει πάντα να μπορεί να πάρει τον έλεγχο.",
+      "why_en": "A held stick must always be able to take over."
+    },
+    {
+      "q_el": "Πώς ξεκινά ένα πρόγραμμα AUTO;",
+      "q_en": "How does an AUTO program start?",
+      "choices": [
+        {
+          "text_el": "Αίτημα από τον υπολογιστή + CONFIRM στο joystick μέσα σε 10 δευτερόλεπτα",
+          "text_en": "A PC request + the joystick CONFIRM within 10 seconds"
+        },
+        {
+          "text_el": "Μόνο από τον υπολογιστή",
+          "text_en": "From the PC alone"
+        },
+        {
+          "text_el": "Με το HDG LOCK",
+          "text_en": "With HDG LOCK"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Έναρξη και συνέχεια του AUTO θέλουν πάντα CONFIRM.",
+      "why_en": "AUTO start and resume always need CONFIRM."
+    },
+    {
+      "q_el": "Σε ποιον τρόπο είναι το σκάφος μετά από κάθε εκκίνηση;",
+      "q_en": "Which mode is the boat in after every power-up?",
+      "choices": [
+        {
+          "text_el": "STANDBY",
+          "text_en": "STANDBY"
+        },
+        {
+          "text_el": "MANUAL",
+          "text_en": "MANUAL"
+        },
+        {
+          "text_el": "Στον τελευταίο τρόπο",
+          "text_en": "The last mode"
+        }
+      ],
+      "answer": 0,
+      "why_el": "STANDBY: ρελαντί, νεκρό, πηδάλιο σταματημένο. Οι έξοδοι οπλίζουν μόνο με ρελαντί, νεκρό και joystick στο κέντρο.",
+      "why_en": "STANDBY: idle, neutral, steering off. The outputs arm only with idle, neutral and the joystick centred."
+    },
+    {
+      "q_el": "Στο HDG LOCK κινείτε το joystick στο πλάι. Τι γίνεται;",
+      "q_en": "In HDG LOCK you move the joystick sideways. What happens?",
+      "choices": [
+        {
+          "text_el": "MANUAL",
+          "text_en": "MANUAL"
+        },
+        {
+          "text_el": "Η πορεία αλλάζει κατά 10 μοίρες",
+          "text_en": "The course changes by 10 degrees"
+        },
+        {
+          "text_el": "Τίποτα",
+          "text_en": "Nothing"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Άξονας X του joystick = ανάληψη σε MANUAL από κάθε τρόπο.",
+      "why_en": "Joystick X = takeover to MANUAL from any mode."
+    }
+  ]
+}

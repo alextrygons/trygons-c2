@@ -1,0 +1,96 @@
+{
+  "_help": "Simulator lesson (ACADEMY_SPEC C, step 18). runs_on sim: it only ever runs against the simulator on this PC. setup = what the academy does first (simulator inputs: stick centred, GPS ok, STANDBY button, start power limit, alarms acknowledged). Each step: do_el / do_en = what the trainee does, check = the SIMULATOR STATE that proves it (telemetry field + condition, academy/lesson.py), hint_el / hint_en shown after hint_s seconds, fail_s = a time limit (too late = failed, retry), hold_s = the state must hold that long, at_start = a simulator event the lesson starts first. required = must be passed before the exam of this level.",
+  "kind": "lesson",
+  "id": "l02_takeover",
+  "level": "DRIVER",
+  "order": 2,
+  "required": true,
+  "runs_on": "sim",
+  "title_el": "Ανάληψη με το joystick και επιστροφή",
+  "title_en": "Joystick takeover and hand-back",
+  "intro_el": "Το joystick του σκάφους κερδίζει πάντα τον αυτόματο πιλότο. Μαθαίνετε να παίρνετε τον έλεγχο και να τον επιστρέφετε μόνο με το joystick στο κέντρο.",
+  "intro_en": "The onboard joystick always wins over the autopilot. You learn to take over and to hand back only with the stick centred.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "steps": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών. Μην αγγίζετε το joystick.",
+      "hint_en": "HDG LOCK is on the panel buttons. Do not touch the joystick.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Πάρτε τον έλεγχο: κινήστε το joystick δεξιά ή αριστερά.",
+      "do_en": "Take over: move the joystick to the right or to the left.",
+      "hint_el": "Σύρετε τη λαβή του joystick στο πλάι και κρατήστε τη λίγο. Ο τρόπος γίνεται MANUAL.",
+      "hint_en": "Drag the joystick knob sideways and hold it a moment. The mode becomes MANUAL.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "MANUAL"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Αφήστε το joystick να γυρίσει στο κέντρο και κρατήστε το εκεί.",
+      "do_en": "Let the joystick return to the centre and keep it there.",
+      "hint_el": "Αφήστε τη λαβή. Το MANUAL μένει: μόνο εσείς επιστρέφετε τον έλεγχο.",
+      "hint_en": "Let go of the knob. MANUAL stays: only you hand control back.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "MANUAL"
+        },
+        {
+          "f": "joy_x",
+          "ge": -0.05
+        },
+        {
+          "f": "joy_x",
+          "le": 0.05
+        }
+      ],
+      "hint_s": 20,
+      "hold_s": 1.0
+    },
+    {
+      "do_el": "Επιστρέψτε τον έλεγχο: πατήστε HDG LOCK (joystick στο κέντρο).",
+      "do_en": "Hand back: press HDG LOCK (joystick centred).",
+      "hint_el": "Μόνο με το joystick στο κέντρο φεύγει το MANUAL.",
+      "hint_en": "MANUAL is left only with the stick centred.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Τελειώστε με STANDBY.",
+      "do_en": "Finish with STANDBY.",
+      "hint_el": "Το κόκκινο κουμπί STANDBY του πίνακα.",
+      "hint_en": "The red STANDBY panel button.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        }
+      ],
+      "hint_s": 20
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "_help": "Simulator lesson (ACADEMY_SPEC C, step 18). runs_on sim: it only ever runs against the simulator on this PC. setup = what the academy does first (simulator inputs: stick centred, GPS ok, STANDBY button, start power limit, alarms acknowledged). Each step: do_el / do_en = what the trainee does, check = the SIMULATOR STATE that proves it (telemetry field + condition, academy/lesson.py), hint_el / hint_en shown after hint_s seconds, fail_s = a time limit (too late = failed, retry), hold_s = the state must hold that long, at_start = a simulator event the lesson starts first. required = must be passed before the exam of this level.",
+  "kind": "lesson",
+  "id": "l03_standby_wins",
+  "level": "DRIVER",
+  "order": 3,
+  "required": true,
+  "runs_on": "sim",
+  "title_el": "Το STANDBY κερδίζει πάντα",
+  "title_en": "STANDBY always wins",
+  "intro_el": "Με γκάζι μπροστά, το STANDBY φέρνει αμέσως το γκάζι στο ρελαντί. Το joystick αγνοείται μέχρι να γυρίσει στο κέντρο.",
+  "intro_en": "With the throttle forward, STANDBY brings the throttle to idle at once. The joystick is ignored until it is centred again.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "steps": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών. Μην αγγίζετε το joystick.",
+      "hint_en": "HDG LOCK is on the panel buttons. Do not touch the joystick.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Δώστε γκάζι μπροστά: σπρώξτε το joystick προς τα πάνω (μπροστά) και κρατήστε το.",
+      "do_en": "Give forward throttle: push the joystick up (forward) and hold it.",
+      "hint_el": "Σύρετε τη λαβή προς τα πάνω και σημειώστε «Κράτημα joystick» ώστε να μείνει εκεί. Το γκάζι ανεβαίνει αργά: περιμένετε λίγο.",
+      "hint_en": "Drag the knob up and tick \"Hold the stick\" so that it stays there. The throttle rises slowly: wait a moment.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "throttle",
+          "ge": 5
+        }
+      ],
+      "hint_s": 25
+    },
+    {
+      "do_el": "Κρατώντας το γκάζι, πατήστε STANDBY.",
+      "do_en": "Still holding the throttle, press STANDBY.",
+      "hint_el": "Το STANDBY του πίνακα κερδίζει σε κάθε τρόπο.",
+      "hint_en": "The panel STANDBY wins in every mode.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        },
+        {
+          "f": "throttle",
+          "le": 1
+        }
+      ],
+      "hint_s": 15
+    },
+    {
+      "do_el": "Τώρα φέρτε το joystick στο κέντρο.",
+      "do_en": "Now bring the joystick back to the centre.",
+      "hint_el": "Βγάλτε το «Κράτημα joystick» ή αφήστε τη λαβή. Μετά το STANDBY το joystick αγνοείται μέχρι να κεντραριστεί.",
+      "hint_en": "Untick \"Hold the stick\" or let go of the knob. After STANDBY the stick is ignored until it is centred.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        },
+        {
+          "f": "joy_y",
+          "ge": -0.05
+        },
+        {
+          "f": "joy_y",
+          "le": 0.05
+        }
+      ],
+      "hint_s": 15,
+      "hold_s": 1.0
+    }
+  ]
+}

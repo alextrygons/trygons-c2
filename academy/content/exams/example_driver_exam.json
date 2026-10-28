@@ -4,8 +4,18 @@
   "id": "example_driver_exam",
   "level": "DRIVER",
   "pass_pct": 80,
-  "required": ["example_hdg_lock"],
-  "pools": ["example_alarms"],
+  "required": [
+    "l01_hdg_lock",
+    "l02_takeover",
+    "l03_standby_wins",
+    "l04_alarm_reaction"
+  ],
+  "pools": [
+    "q01_safety_basics",
+    "q02_screens",
+    "q03_alarms",
+    "q04_modes"
+  ],
   "questions": 10,
   "title_el": "Εξέταση ΟΔΗΓΟΥ (παράδειγμα)",
   "title_en": "DRIVER exam (example)"

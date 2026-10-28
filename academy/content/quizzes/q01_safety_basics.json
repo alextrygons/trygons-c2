@@ -1,0 +1,212 @@
+{
+  "_help": "Quiz pool (ACADEMY_SPEC D, step 18). type = choice (default: choices + answer = the index of the right one, 0 = the first), picture (show s1 / s2 / panel + area = the part to click on the DRAWING; nothing is lit), sound (sound = warning / caution / advisory, the ground station's alarm tones, + choices). why_el / why_en = the explanation shown after the answer. The questions and the choices are shown in random order (academy/quiz.py).",
+  "kind": "quiz",
+  "id": "q01_safety_basics",
+  "level": "OBSERVER",
+  "title_el": "Βασικοί κανόνες ασφάλειας",
+  "title_en": "Basic safety rules",
+  "questions": [
+    {
+      "q_el": "Ποιο κουμπί κερδίζει πάντα, σε κάθε τρόπο λειτουργίας;",
+      "q_en": "Which button always wins, in every mode?",
+      "choices": [
+        {
+          "text_el": "Το STANDBY του πίνακα",
+          "text_en": "The panel STANDBY button"
+        },
+        {
+          "text_el": "Το HDG LOCK",
+          "text_en": "HDG LOCK"
+        },
+        {
+          "text_el": "Το AUTO στον υπολογιστή",
+          "text_en": "AUTO on the PC"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Το STANDBY του πίνακα κερδίζει πάντα· ο υπολογιστής δεν μπορεί ποτέ να το παρακάμψει.",
+      "why_en": "The panel STANDBY button always wins; the PC can never override it."
+    },
+    {
+      "q_el": "Ποιος κερδίζει όταν ο αυτόματος πιλότος οδηγεί και κινήσετε το joystick του σκάφους;",
+      "q_en": "Who wins when the autopilot steers and you move the onboard joystick?",
+      "choices": [
+        {
+          "text_el": "Το joystick",
+          "text_en": "The joystick"
+        },
+        {
+          "text_el": "Ο αυτόματος πιλότος",
+          "text_en": "The autopilot"
+        },
+        {
+          "text_el": "Ο υπολογιστής της ξηράς",
+          "text_en": "The shore PC"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Το joystick του σκάφους κερδίζει πάντα τον αυτόματο πιλότο και τον υπολογιστή: ο τρόπος γίνεται MANUAL.",
+      "why_en": "The onboard joystick always wins over the autopilot and the PC: the mode becomes MANUAL."
+    },
+    {
+      "q_el": "Ποιο είναι το όριο ισχύος μετά από κάθε εκκίνηση;",
+      "q_en": "What is the power limit after every power-up?",
+      "choices": [
+        {
+          "text_el": "30 % μπροστά, 5 % όπισθεν",
+          "text_en": "30 % forward, 5 % reverse"
+        },
+        {
+          "text_el": "100 % μπροστά, 15 % όπισθεν",
+          "text_en": "100 % forward, 15 % reverse"
+        },
+        {
+          "text_el": "Ό,τι ήταν πριν το σβήσιμο",
+          "text_en": "Whatever it was before the power-down"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Κάθε εκκίνηση αρχίζει στο 30 / 5 %. Το αυξημένο όριο δεν αποθηκεύεται ποτέ.",
+      "why_en": "Every power-up starts at 30 / 5 %. A raised limit is never saved."
+    },
+    {
+      "q_el": "Πότε αλλάζει η ταχύτητα (μπροστά / νεκρό / όπισθεν);",
+      "q_en": "When does the gear change (forward / neutral / reverse)?",
+      "choices": [
+        {
+          "text_el": "Μόνο με το γκάζι στο ρελαντί",
+          "text_en": "Only with the throttle at idle"
+        },
+        {
+          "text_el": "Οποτεδήποτε",
+          "text_en": "Any time"
+        },
+        {
+          "text_el": "Μόνο πάνω από 5 κόμβους",
+          "text_en": "Only above 5 knots"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Ρελαντί, αναμονή, νεκρό, αναμονή, νέα ταχύτητα, αναμονή, μετά γκάζι. Ποτέ με γκάζι.",
+      "why_en": "Idle, wait, neutral, wait, new gear, wait, then throttle. Never under throttle."
+    },
+    {
+      "q_el": "Πόσο χρόνο έχετε για το CONFIRM στο joystick μετά από ένα αίτημα;",
+      "q_en": "How long do you have for the joystick CONFIRM after a request?",
+      "choices": [
+        {
+          "text_el": "10 δευτερόλεπτα",
+          "text_en": "10 seconds"
+        },
+        {
+          "text_el": "1 λεπτό",
+          "text_en": "1 minute"
+        },
+        {
+          "text_el": "Χωρίς όριο",
+          "text_en": "No limit"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Το CONFIRM απαντά μόνο σε εκκρεμές αίτημα, μέσα σε 10 δευτερόλεπτα, με το joystick στο κέντρο.",
+      "why_en": "CONFIRM only answers a pending request, within 10 seconds, with the stick centred."
+    },
+    {
+      "q_el": "Τι κάνει το CONFIRM όταν δεν υπάρχει εκκρεμές αίτημα;",
+      "q_en": "What does CONFIRM do when no request is pending?",
+      "choices": [
+        {
+          "text_el": "Τίποτα",
+          "text_en": "Nothing"
+        },
+        {
+          "text_el": "Ξεκινά το AUTO",
+          "text_en": "It starts AUTO"
+        },
+        {
+          "text_el": "Αυξάνει το όριο ισχύος",
+          "text_en": "It raises the power limit"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Το CONFIRM δεν αλλάζει ποτέ μόνο του τον τρόπο λειτουργίας.",
+      "why_en": "CONFIRM never changes the mode on its own."
+    },
+    {
+      "q_el": "Τι γίνεται πρώτα σε κάθε βλάβη ή STANDBY;",
+      "q_en": "What happens first on every fault or STANDBY?",
+      "choices": [
+        {
+          "text_el": "Γκάζι στο ρελαντί και νεκρό, μετά σταματά το πηδάλιο",
+          "text_en": "Throttle idle and neutral, then the steering stops"
+        },
+        {
+          "text_el": "Σταματά πρώτα το πηδάλιο",
+          "text_en": "The steering stops first"
+        },
+        {
+          "text_el": "Σβήνει η μηχανή",
+          "text_en": "The engine stops"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Πρώτα ρελαντί και νεκρό· μέχρι τότε το σκάφος συνεχίζει να κατευθύνεται.",
+      "why_en": "Idle and neutral first; until then the boat is still steered."
+    },
+    {
+      "q_el": "Δείχνει το AIS κάθε σκάφος γύρω σας;",
+      "q_en": "Does AIS show every boat around you?",
+      "choices": [
+        {
+          "text_el": "Όχι - τα μικρά σκάφη, οι κολυμβητές και τα καγιάκ συχνά δεν φαίνονται",
+          "text_en": "No - small craft, swimmers and kayaks are often not shown"
+        },
+        {
+          "text_el": "Ναι, όλα",
+          "text_en": "Yes, all of them"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Το AIS δεν δείχνει μικρά σκάφη. Κοιτάτε πάντα τις κάμερες και γύρω σας.",
+      "why_en": "AIS does not show small craft. Always watch the cameras and around you."
+    },
+    {
+      "q_el": "Οι χάρτες της εφαρμογής είναι για ναυσιπλοΐα;",
+      "q_en": "Are the application's charts for navigation?",
+      "choices": [
+        {
+          "text_el": "Όχι - ελεύθερα δεδομένα, μπορεί να είναι ανακριβή κοντά στην ακτή",
+          "text_en": "No - free data, may be inaccurate near the coast"
+        },
+        {
+          "text_el": "Ναι, επίσημοι χάρτες",
+          "text_en": "Yes, official charts"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Πάντα η σημείωση: όχι για ναυσιπλοΐα. Χωρίς δεδομένα = ρηχά.",
+      "why_en": "Always the note: not for navigation. No data = shallow."
+    },
+    {
+      "q_el": "Τι κάνει το κουμπί έκτακτης ανάγκης (E-STOP);",
+      "q_en": "What does the emergency stop (E-STOP) do?",
+      "choices": [
+        {
+          "text_el": "STANDBY και σβήνει τη μηχανή· μόνο STANDBY όσο είναι πατημένο",
+          "text_en": "STANDBY and stops the engine; only STANDBY while it is pressed"
+        },
+        {
+          "text_el": "Μόνο ένα ηχητικό σήμα",
+          "text_en": "Only a sound"
+        },
+        {
+          "text_el": "Αυξάνει την ταχύτητα",
+          "text_en": "It speeds up"
+        }
+      ],
+      "answer": 0,
+      "why_el": "Το E-STOP είναι καλωδιωμένο: STANDBY, συναγερμός, και η μηχανή σβήνει μέσω του κυκλώματος κράτησης.",
+      "why_en": "The e-stop is hard-wired: STANDBY, alarm, and the engine stops through the kill circuit."
+    }
+  ]
+}

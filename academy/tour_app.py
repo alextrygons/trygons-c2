@@ -48,23 +48,9 @@ except ImportError:                                                     # pragma
 LEVEL_COLOUR = {"WARNING": WARN, "CAUTION": CAUTION, "ADVISORY": ADVISORY}
 HILITE_FILL = "#5a3f00"                                                 # the lit part's fill (dark amber)
 BOX = "#5c7080"                                                         # every other part's outline
-# screen 2 drawing: where each part sits (fractions; the real places are decided by app.py / overlay.py)
-S2_BOXES = {
-    "status": (0.010, 0.010, 0.250, 0.300),
-    "banners": (0.300, 0.010, 0.400, 0.060),
-    "alarms": (0.740, 0.010, 0.250, 0.140),
-    "helm": (0.740, 0.160, 0.250, 0.120),
-    "link": (0.740, 0.290, 0.250, 0.140),
-    "relays": (0.010, 0.330, 0.200, 0.200),
-    "control": (0.010, 0.550, 0.300, 0.340),
-    "standby": (0.010, 0.905, 0.150, 0.085),
-    "traffic": (0.740, 0.600, 0.250, 0.260),
-    "logo": (0.840, 0.875, 0.150, 0.110),
-    "mapbar": (0.330, 0.905, 0.380, 0.085),
-}
-# the panel buttons drawing (label, target)
-PANEL_BTNS = (("STANDBY", "standby"), ("HDG LOCK", "hdg_lock"), ("-10", "minus10"), ("-1", "minus1"),
-              ("+1", "plus1"), ("+10", "plus10"))
+# the drawings' layout lives in tour.py (shared with the quiz picture questions, step 18)
+S2_BOXES = tour.S2_BOXES
+PANEL_BTNS = tour.PANEL_BTNS
 
 
 class NullPlayer(object):
@@ -100,140 +86,14 @@ def default_player():
     return WinPlayer()
 
 
-class TourWindow(object):
-    """The tour on a Tk root or Toplevel. index / show(i) / next() / back() / jump(chapter)."""
+class Drawing(object):
+    """The DRAWINGS of the screens on a canvas (self.cv, self.lang): draw_stop(s) with s = a tour stop
+    (show, target, title, level, level_text). Used by the tour and by the quiz picture questions
+    (target None = nothing lit). self.frame = the 16:9 picture (x0, y0, w, h) on the canvas."""
 
-    def __init__(self, root, lang=None, player=None, cache=None, doc=None):
-        self.root = root
-        self.lang = lang if lang in tour.LANGS else text.lang()
-        self.player = player or default_player()
-        self.cache = cache
-        self.stops = tour.stops(self.lang, doc)
-        self.index = 0
-        self.voice_on = True
-        self.voice_state = None             # "played" / "missing" / "off" (the tests read it)
-        root.title(T("tour.title", self.lang))
-        root.configure(bg=COL["bg"])
-        try:
-            root.geometry("1180x760")
-        except tk.TclError:
-            pass
-        # the banner: top, always visible, CAUTION colour (CLAUDE.md S, AC8)
-        self.banner = tk.Label(root, text=banner_text(self.lang), bg=CAUTION, fg="#000000",
-                               font=(FAMILY, 16, "bold"), pady=6)
-        self.banner.pack(side="top", fill="x")
-        self.head = tk.Label(root, text="", bg=COL["bg"], fg=COL["dim"], anchor="w", font=(FAMILY, 11))
-        self.head.pack(side="top", fill="x", padx=10)
-        mid = tk.Frame(root, bg=COL["bg"])
-        mid.pack(side="top", fill="both", expand=True, padx=10, pady=4)
-        self.chapters = []
-        for s in self.stops:
-            if not self.chapters or self.chapters[-1][0] != s["chapter"]:
-                self.chapters.append((s["chapter"], s["chapter_title"]))
-        self.chlist = tk.Listbox(mid, width=26, bg=COL["panel"], fg=COL["fg"], selectbackground=CAUTION,
-                                 selectforeground="#000000", activestyle="none", font=(FAMILY, 11),
-                                 exportselection=False, highlightthickness=0)
-        for _cid, title in self.chapters:
-            self.chlist.insert("end", title)
-        self.chlist.pack(side="left", fill="y")
-        self.chlist.bind("<<ListboxSelect>>", self._on_chapter)
-        right = tk.Frame(mid, bg=COL["bg"])
-        right.pack(side="left", fill="both", expand=True, padx=(10, 0))
-        self.cv = tk.Canvas(right, bg="#000000", highlightthickness=0, width=800, height=450)
-        self.cv.pack(side="top", fill="both", expand=True)
-        self.cv.bind("<Configure>", lambda e: self.draw())
-        self.title = tk.Label(right, text="", bg=COL["bg"], fg=COL["fg"], anchor="w", font=(FAMILY, 16, "bold"))
-        self.title.pack(side="top", fill="x", pady=(6, 0))
-        self.body = tk.Label(right, text="", bg=COL["bg"], fg=COL["fg"], anchor="nw", justify="left",
-                             font=(FAMILY, 12), wraplength=820)
-        self.body.pack(side="top", fill="x")
-        bar = tk.Frame(root, bg=COL["bg"])
-        bar.pack(side="top", fill="x", padx=10, pady=6)
-        self.b_back = tk.Button(bar, text=T("tour.back", self.lang), width=12, command=self.back)
-        self.b_back.pack(side="left")
-        self.b_next = tk.Button(bar, text=T("tour.next", self.lang), width=12, command=self.next)
-        self.b_next.pack(side="left", padx=6)
-        self.b_again = tk.Button(bar, text=T("tour.again", self.lang), command=self.speak)
-        self.b_again.pack(side="left", padx=6)
-        self.b_voice = tk.Button(bar, text="", command=self.toggle_voice)
-        self.b_voice.pack(side="left", padx=6)
-        self.msg = tk.Label(bar, text="", bg=COL["bg"], fg=COL["dim"], anchor="w")
-        self.msg.pack(side="left", padx=10, fill="x", expand=True)
-        for key, fn in (("<Right>", self.next), ("<space>", self.next), ("<Left>", self.back)):
-            root.bind(key, lambda e, f=fn: f())
-        self._voice_label()
-        self.show(0)
+    frame = (0, 0, 320, 180)
 
-    # --- navigation
-    def show(self, i):
-        self.index = max(0, min(len(self.stops) - 1, i))
-        s = self.stops[self.index]
-        self.head.configure(text=T("tour.where", self.lang, chapter=s["chapter_title"], n=self.index + 1,
-                                   of=len(self.stops)))
-        title = s["title"]
-        if s["level"]:
-            title = "%s  (%s)" % (title, s["level_text"])
-        self.title.configure(text=title, fg=LEVEL_COLOUR.get(s["level"], COL["fg"]))
-        self.body.configure(text=s["text"])
-        self.b_back.configure(state="normal" if self.index > 0 else "disabled")
-        self.b_next.configure(text=T("tour.next" if self.index < len(self.stops) - 1 else "tour.done", self.lang))
-        ci = [c for c, _ in self.chapters].index(s["chapter"])
-        self.chlist.selection_clear(0, "end")
-        self.chlist.selection_set(ci)
-        self.draw()
-        self.speak()
-
-    def next(self):
-        if self.index >= len(self.stops) - 1:
-            self.player.stop()
-            self.msg.configure(text=T("tour.finished", self.lang))
-            return
-        self.show(self.index + 1)
-
-    def back(self):
-        if self.index > 0:
-            self.show(self.index - 1)
-
-    def jump(self, chapter):
-        for i, s in enumerate(self.stops):
-            if s["chapter"] == chapter:
-                return self.show(i)
-
-    def _on_chapter(self, _e=None):
-        sel = self.chlist.curselection()
-        if sel and self.chapters[sel[0]][0] != self.stops[self.index]["chapter"]:
-            self.jump(self.chapters[sel[0]][0])
-
-    # --- voice (plays only the ground station's prepared files)
-    def _voice_label(self):
-        self.b_voice.configure(text=T("tour.voice_on" if self.voice_on else "tour.voice_off", self.lang))
-
-    def toggle_voice(self):
-        self.voice_on = not self.voice_on
-        if not self.voice_on:
-            self.player.stop()
-        self._voice_label()
-        self.speak()
-
-    def speak(self):
-        if not self.voice_on:
-            self.voice_state = "off"
-            self.msg.configure(text="")
-            return
-        path = tour.voice_path(self.lang, tour.sentence(self.stops[self.index]), self.cache)
-        try:
-            ok = simguard.check_recording(path)
-        except simguard.Refused:
-            self.player.stop()
-            self.voice_state = "missing"
-            self.msg.configure(text=T("tour.no_voice", self.lang))
-            return
-        self.player.play(ok)
-        self.voice_state = "played"
-        self.msg.configure(text="")
-
-    # --- the drawing
-    def draw(self):
+    def draw_stop(self, s):
         cv = self.cv
         cv.delete("all")
         W = max(cv.winfo_width(), 320)
@@ -243,8 +103,12 @@ class TourWindow(object):
         else:
             w, h = W, W * 9 / 16.0
         self.frame = ((W - w) / 2, (H - h) / 2, w, h)
-        s = self.stops[self.index]
         getattr(self, "draw_" + s["show"])(s)
+
+    def to_frac(self, x, y):
+        """Canvas point -> fractions of the picture."""
+        x0, y0, w, h = self.frame
+        return (x - x0) / float(w), (y - y0) / float(h)
 
     def R(self, fx, fy, fw, fh):
         x0, y0, w, h = self.frame
@@ -399,18 +263,153 @@ class TourWindow(object):
         x0, y0, w, h = self.frame
         self.cv.create_rectangle(x0, y0, x0 + w, y0 + h, fill=COL["panel"], outline="")
         t = s["target"]
-        n = len(PANEL_BTNS)
-        bw = 0.70 / n
-        for i, (lab, key) in enumerate(PANEL_BTNS):
+        for lab, key in PANEL_BTNS:
             fill = "#7a1010" if key == "standby" else "#202a33"
-            self.box(self.R(0.04 + i * bw, 0.35, bw - 0.015, 0.25), lab, t == key, fill=fill, size=12)
+            self.box(self.R(*tour.panel_rect(key)), lab, t == key, fill=fill, size=12)
         lit = t == "estop"                                   # the red mushroom button
-        cx, cy, rr = x0 + w * 0.86, y0 + h * 0.48, h * 0.17
+        cx, cy, rr = x0 + w * tour.ESTOP_C[0], y0 + h * tour.ESTOP_C[1], h * tour.ESTOP_R
         self.cv.create_oval(cx - rr * 1.3, cy - rr * 1.3, cx + rr * 1.3, cy + rr * 1.3, fill="#ffd000", outline="")
         self.cv.create_oval(cx - rr, cy - rr, cx + rr, cy + rr, fill=WARN, outline=CAUTION if lit else "#000000",
                             width=6 if lit else 2)
         self.cv.create_text(cx, cy + rr * 1.3 + 12, text="E-STOP", fill=COL["fg"], font=(FAMILY, 11, "bold"),
                             anchor="n")
+
+
+class TourWindow(Drawing):
+    """The tour on a Tk root or Toplevel. index / show(i) / next() / back() / jump(chapter)."""
+
+    def __init__(self, root, lang=None, player=None, cache=None, doc=None):
+        self.root = root
+        self.lang = lang if lang in tour.LANGS else text.lang()
+        self.player = player or default_player()
+        self.cache = cache
+        self.stops = tour.stops(self.lang, doc)
+        self.index = 0
+        self.voice_on = True
+        self.voice_state = None             # "played" / "missing" / "off" (the tests read it)
+        root.title(T("tour.title", self.lang))
+        root.configure(bg=COL["bg"])
+        try:
+            root.geometry("1180x760")
+        except tk.TclError:
+            pass
+        # the banner: top, always visible, CAUTION colour (CLAUDE.md S, AC8)
+        self.banner = tk.Label(root, text=banner_text(self.lang), bg=CAUTION, fg="#000000",
+                               font=(FAMILY, 16, "bold"), pady=6)
+        self.banner.pack(side="top", fill="x")
+        self.head = tk.Label(root, text="", bg=COL["bg"], fg=COL["dim"], anchor="w", font=(FAMILY, 11))
+        self.head.pack(side="top", fill="x", padx=10)
+        mid = tk.Frame(root, bg=COL["bg"])
+        mid.pack(side="top", fill="both", expand=True, padx=10, pady=4)
+        self.chapters = []
+        for s in self.stops:
+            if not self.chapters or self.chapters[-1][0] != s["chapter"]:
+                self.chapters.append((s["chapter"], s["chapter_title"]))
+        self.chlist = tk.Listbox(mid, width=26, bg=COL["panel"], fg=COL["fg"], selectbackground=CAUTION,
+                                 selectforeground="#000000", activestyle="none", font=(FAMILY, 11),
+                                 exportselection=False, highlightthickness=0)
+        for _cid, title in self.chapters:
+            self.chlist.insert("end", title)
+        self.chlist.pack(side="left", fill="y")
+        self.chlist.bind("<<ListboxSelect>>", self._on_chapter)
+        right = tk.Frame(mid, bg=COL["bg"])
+        right.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        self.cv = tk.Canvas(right, bg="#000000", highlightthickness=0, width=800, height=450)
+        self.cv.pack(side="top", fill="both", expand=True)
+        self.cv.bind("<Configure>", lambda e: self.draw())
+        self.title = tk.Label(right, text="", bg=COL["bg"], fg=COL["fg"], anchor="w", font=(FAMILY, 16, "bold"))
+        self.title.pack(side="top", fill="x", pady=(6, 0))
+        self.body = tk.Label(right, text="", bg=COL["bg"], fg=COL["fg"], anchor="nw", justify="left",
+                             font=(FAMILY, 12), wraplength=820)
+        self.body.pack(side="top", fill="x")
+        bar = tk.Frame(root, bg=COL["bg"])
+        bar.pack(side="top", fill="x", padx=10, pady=6)
+        self.b_back = tk.Button(bar, text=T("tour.back", self.lang), width=12, command=self.back)
+        self.b_back.pack(side="left")
+        self.b_next = tk.Button(bar, text=T("tour.next", self.lang), width=12, command=self.next)
+        self.b_next.pack(side="left", padx=6)
+        self.b_again = tk.Button(bar, text=T("tour.again", self.lang), command=self.speak)
+        self.b_again.pack(side="left", padx=6)
+        self.b_voice = tk.Button(bar, text="", command=self.toggle_voice)
+        self.b_voice.pack(side="left", padx=6)
+        self.msg = tk.Label(bar, text="", bg=COL["bg"], fg=COL["dim"], anchor="w")
+        self.msg.pack(side="left", padx=10, fill="x", expand=True)
+        for key, fn in (("<Right>", self.next), ("<space>", self.next), ("<Left>", self.back)):
+            root.bind(key, lambda e, f=fn: f())
+        self._voice_label()
+        self.show(0)
+
+    # --- navigation
+    def show(self, i):
+        self.index = max(0, min(len(self.stops) - 1, i))
+        s = self.stops[self.index]
+        self.head.configure(text=T("tour.where", self.lang, chapter=s["chapter_title"], n=self.index + 1,
+                                   of=len(self.stops)))
+        title = s["title"]
+        if s["level"]:
+            title = "%s  (%s)" % (title, s["level_text"])
+        self.title.configure(text=title, fg=LEVEL_COLOUR.get(s["level"], COL["fg"]))
+        self.body.configure(text=s["text"])
+        self.b_back.configure(state="normal" if self.index > 0 else "disabled")
+        self.b_next.configure(text=T("tour.next" if self.index < len(self.stops) - 1 else "tour.done", self.lang))
+        ci = [c for c, _ in self.chapters].index(s["chapter"])
+        self.chlist.selection_clear(0, "end")
+        self.chlist.selection_set(ci)
+        self.draw()
+        self.speak()
+
+    def next(self):
+        if self.index >= len(self.stops) - 1:
+            self.player.stop()
+            self.msg.configure(text=T("tour.finished", self.lang))
+            return
+        self.show(self.index + 1)
+
+    def back(self):
+        if self.index > 0:
+            self.show(self.index - 1)
+
+    def jump(self, chapter):
+        for i, s in enumerate(self.stops):
+            if s["chapter"] == chapter:
+                return self.show(i)
+
+    def _on_chapter(self, _e=None):
+        sel = self.chlist.curselection()
+        if sel and self.chapters[sel[0]][0] != self.stops[self.index]["chapter"]:
+            self.jump(self.chapters[sel[0]][0])
+
+    # --- voice (plays only the ground station's prepared files)
+    def _voice_label(self):
+        self.b_voice.configure(text=T("tour.voice_on" if self.voice_on else "tour.voice_off", self.lang))
+
+    def toggle_voice(self):
+        self.voice_on = not self.voice_on
+        if not self.voice_on:
+            self.player.stop()
+        self._voice_label()
+        self.speak()
+
+    def speak(self):
+        if not self.voice_on:
+            self.voice_state = "off"
+            self.msg.configure(text="")
+            return
+        path = tour.voice_path(self.lang, tour.sentence(self.stops[self.index]), self.cache)
+        try:
+            ok = simguard.check_recording(path)
+        except simguard.Refused:
+            self.player.stop()
+            self.voice_state = "missing"
+            self.msg.configure(text=T("tour.no_voice", self.lang))
+            return
+        self.player.play(ok)
+        self.voice_state = "played"
+        self.msg.configure(text="")
+
+    # --- the drawing
+    def draw(self):
+        self.draw_stop(self.stops[self.index])
 
 
 def main(argv=None):

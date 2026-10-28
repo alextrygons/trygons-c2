@@ -162,3 +162,23 @@ D13 Step 17 guided tour (spec B). Content = content/tour.json (one stop per item
    TTS (sound.Library.make in the background when the menu opens the tour; sentences from tour.py
    loaded by its path), the academy only plays the cached .wav (same file names as sound.Library,
    checked by simguard.check_recording; Windows winsound; elsewhere / TRYGONS_SOUND=off = text only).
+D14 Step 18 lessons (spec C) + quizzes (spec D). Lessons = content/lessons/*.json: steps with do / hint
+   texts (el + en) and a CHECK on the simulator's own telemetry (academy/lesson.py: field + eq / ne / ge /
+   le / gt / lt / bit / nobit / delta-since-the-step-started, hold_s, hint_s, fail_s = reaction time ->
+   failed -> retry), setup + at_start = simulator events (STANDBY button, start power limit, GPS fail / ok,
+   alarm ack, stick centred); a lesson starts only when the simulated boat is ready (STANDBY, armed,
+   CREWED). The link = simguard.SimLink (port 5760 of this PC only, never the demo gateway port) and the
+   frames sent are only the simulator's inputs + the station's own commands (lesson.ALLOWED_FRAMES: no
+   gateway frame). D3's "starting the simulator" is simguard.start_simulator: exactly this repo's
+   sim/autopilot_sim + "server 5760 1", working folder academy/data/sim, refused on a gateway PC - the
+   academy's ONLY process. The trainee's inputs = on-screen simulator inputs (panel buttons, a
+   self-centring joystick pad with "Hold the stick", TAKE / CONFIRM, the PC's power code / raise / lower /
+   acknowledge); every safety check stays the simulated AURIX's own. Results -> the logbook (kind lesson,
+   done, score 100 - 10 per hint / retry); lesson.missing_required = the exam gate (step 21). Quizzes =
+   content/quizzes/*.json pools: choice, picture (click the asked part on the tour's DRAWING of screen 1 /
+   screen 2 / the panel; tour.S2_BOXES / panel_rect / hud.DEFAULT_LAYOUT are the one layout) and sound
+   (warning / caution / advisory = the station's sound.tone, written by the station into
+   <sound cache>/tones when it opens the academy; the academy only plays them via simguard; missing =
+   the question is left out and said); random order + shuffled choices, explanation after each answer,
+   per-pool score in the logbook (topic = pool: weak areas). Tests AC25-AC29 (AC28 = every lesson done on
+   the real simulator by its steps, wrong actions do not pass, a missed reaction fails, the retry passes).

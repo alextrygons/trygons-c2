@@ -37,6 +37,37 @@ HUD_BUTTONS_EXTRA = ("save", "accept")      # SAVE (bottom line) + the ACCEPT / 
 LAMPS = ("master_warning", "master_caution")
 JOYSTICK = ("x", "y", "take", "auto", "confirm", "usb")
 PANEL = ("standby", "hdg_lock", "minus1", "plus1", "minus10", "plus10", "estop")
+# the DRAWINGS' layout (fractions of a 16:9 picture) - shared by the tour window and the quiz picture
+# questions (step 18: quiz.area_rect); the real places are decided by app.py / overlay.py
+S2_BOXES = {
+    "status": (0.010, 0.010, 0.250, 0.300),
+    "banners": (0.300, 0.010, 0.400, 0.060),
+    "alarms": (0.740, 0.010, 0.250, 0.140),
+    "helm": (0.740, 0.160, 0.250, 0.120),
+    "link": (0.740, 0.290, 0.250, 0.140),
+    "relays": (0.010, 0.330, 0.200, 0.200),
+    "control": (0.010, 0.550, 0.300, 0.340),
+    "standby": (0.010, 0.905, 0.150, 0.085),
+    "traffic": (0.740, 0.600, 0.250, 0.260),
+    "logo": (0.840, 0.875, 0.150, 0.110),
+    "mapbar": (0.330, 0.905, 0.380, 0.085),
+}
+# the panel buttons drawing (label, target), left to right, then the e-stop
+PANEL_BTNS = (("STANDBY", "standby"), ("HDG LOCK", "hdg_lock"), ("-10", "minus10"), ("-1", "minus1"),
+              ("+1", "plus1"), ("+10", "plus10"))
+ESTOP_C, ESTOP_R = (0.86, 0.48), 0.17      # centre (fractions), radius (fraction of the height)
+
+
+def panel_rect(key):
+    """(x, y, w, h) fractions of a panel button (or the e-stop) in the drawing."""
+    if key == "estop":
+        rx, ry = ESTOP_R * 1.3 * 9 / 16.0, ESTOP_R * 1.3
+        return (ESTOP_C[0] - rx, ESTOP_C[1] - ry, 2 * rx, 2 * ry)
+    bw = 0.70 / len(PANEL_BTNS)
+    for i, (_lab, k) in enumerate(PANEL_BTNS):
+        if k == key:
+            return (0.04 + i * bw, 0.35, bw - 0.015, 0.25)
+    raise KeyError(key)
 
 
 def load(path=None):

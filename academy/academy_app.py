@@ -67,7 +67,8 @@ class AcademyApp(object):
         for key, fn in (("acc.new", self.new_account), ("acc.set_level", self.set_level),
                         ("acc.log_hours", self.log_hours), ("acc.make_push", self.make_push),
                         ("acc.key", self.show_key), ("acc.backup", self.backup), ("acc.refresh", self.refresh),
-                        ("acc.tour", self.open_tour)):
+                        ("acc.tour", self.open_tour), ("acc.lessons", self.open_lessons),
+                        ("acc.quizzes", self.open_quizzes)):
             b = tk.Button(bar, text=T(key), command=fn)
             b.pack(side="left", padx=3)
             self.buttons[key] = b
@@ -175,6 +176,25 @@ class AcademyApp(object):
         import tour_app
         self.tour = tour_app.TourWindow(tk.Toplevel(self.root), text.lang())
         return self.tour
+
+    def chosen_user(self):
+        """The selected account (lessons / quizzes are logged for it), or None = practice (nothing logged)."""
+        sel = self.tree.selection()
+        return sel[0] if sel else None
+
+    def open_lessons(self):
+        """The simulator lessons (step 18) in a window of THIS process; the link = simguard only."""
+        import lesson_app
+        self.lessons = lesson_app.LessonWindow(tk.Toplevel(self.root), text.lang(), store=self.store,
+                                               user=self.chosen_user())
+        return self.lessons
+
+    def open_quizzes(self):
+        """The quizzes (step 18) in a window of THIS process (no link at all)."""
+        import quiz_app
+        self.quizzes = quiz_app.QuizWindow(tk.Toplevel(self.root), text.lang(), store=self.store,
+                                           user=self.chosen_user())
+        return self.quizzes
 
     def backup(self):
         d = filedialog.askdirectory(parent=self.root, title=T("acc.backup"))

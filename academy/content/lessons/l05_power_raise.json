@@ -1,0 +1,75 @@
+{
+  "_help": "Simulator lesson (ACADEMY_SPEC C, step 18). runs_on sim: it only ever runs against the simulator on this PC. setup = what the academy does first (simulator inputs: stick centred, GPS ok, STANDBY button, start power limit, alarms acknowledged). Each step: do_el / do_en = what the trainee does, check = the SIMULATOR STATE that proves it (telemetry field + condition, academy/lesson.py), hint_el / hint_en shown after hint_s seconds, fail_s = a time limit (too late = failed, retry), hold_s = the state must hold that long, at_start = a simulator event the lesson starts first. required = must be passed before the exam of this level.",
+  "kind": "lesson",
+  "id": "l05_power_raise",
+  "level": "CAPTAIN",
+  "order": 1,
+  "required": true,
+  "runs_on": "sim",
+  "title_el": "Αύξηση ορίου ισχύος με κωδικό και CONFIRM",
+  "title_en": "Raising the power limit with the code and CONFIRM",
+  "intro_el": "Μετά από κάθε εκκίνηση το όριο είναι 30 % μπροστά και 5 % όπισθεν. Η αύξηση θέλει αίτημα από τον υπολογιστή, τον κωδικό που δείχνει το σκάφος και CONFIRM στο joystick μέσα σε 10 δευτερόλεπτα. Ένα βήμα τη φορά.",
+  "intro_en": "After every power-up the limit is 30 % forward and 5 % reverse. Raising it needs a request from the PC, the code the boat shows and CONFIRM on the joystick within 10 seconds. One step at a time.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "steps": [
+    {
+      "do_el": "Ζητήστε κωδικό για αύξηση του ορίου (κουμπί Ζήτηση κωδικού).",
+      "do_en": "Ask for a power-raise code (button Ask for a code).",
+      "hint_el": "Το κουμπί είναι στην ομάδα του υπολογιστή.",
+      "hint_en": "The button is in the PC group.",
+      "check": [
+        {
+          "f": "power_code",
+          "ne": 0
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Γράψτε τον κωδικό που δείχνει το σκάφος και πατήστε Αύξηση.",
+      "do_en": "Type the code the boat shows and press Raise.",
+      "hint_el": "Ο κωδικός φαίνεται στην κατάσταση του σκάφους. Αν λήξει, ζητήστε νέο.",
+      "hint_en": "The code shows in the boat status. If it expires, ask for a new one.",
+      "check": [
+        {
+          "f": "confirm_kind",
+          "eq": 3
+        }
+      ],
+      "hint_s": 25
+    },
+    {
+      "do_el": "Πατήστε CONFIRM στο joystick μέσα σε 10 δευτερόλεπτα.",
+      "do_en": "Press CONFIRM on the joystick within 10 seconds.",
+      "hint_el": "Το CONFIRM απαντά μόνο σε εκκρεμές αίτημα και μόνο με το joystick στο κέντρο.",
+      "hint_en": "CONFIRM only answers a pending request, and only with the stick centred.",
+      "check": [
+        {
+          "f": "power_fwd",
+          "ge": 50
+        }
+      ],
+      "hint_s": 5,
+      "fail_s": 12
+    },
+    {
+      "do_el": "Χαμηλώστε ξανά το όριο (κουμπί Χαμήλωμα ορίου).",
+      "do_en": "Lower the limit again (button Lower the limit).",
+      "hint_el": "Το χαμήλωμα είναι πάντα άμεσο και δεν θέλει CONFIRM.",
+      "hint_en": "Lowering is always instant and needs no CONFIRM.",
+      "check": [
+        {
+          "f": "power_fwd",
+          "le": 30
+        }
+      ],
+      "hint_s": 15
+    }
+  ]
+}

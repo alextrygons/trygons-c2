@@ -1029,6 +1029,31 @@ THE GUIDED TOUR (menu Academy -> Guided tour)
   only. The academy window's "Guided tour" button opens the same tour.
   The tour only explains: it never connects to a boat (banner at the top).
 
+SIMULATOR LESSONS (academy window -> "Simulator lessons")
+  Hands-on lessons on the SIMULATOR of this PC - never a boat (banner at the
+  top). Press "Start the simulator" (or have sim/autopilot_sim server 5760
+  running), pick a lesson (grouped by level) and press Start. You drive with
+  the simulated panel buttons, the joystick pad (drag the knob; it springs
+  back to the centre when you let go, unless "Hold the stick" is ticked),
+  TAKE / CONFIRM (held while pressed) and the PC buttons (ask for a code,
+  raise, lower the limit, acknowledge). Every step is checked from the
+  simulated boat itself, not from your clicks; a hint shows after a while;
+  a step with a time limit (e.g. the STANDBY reaction) fails when you are
+  too late - press Retry. Lessons: HDG LOCK + course changes, joystick
+  takeover + hand-back, STANDBY always wins, reacting to an alarm (DRIVER),
+  raising the power limit with the code + CONFIRM (CAPTAIN). Select your
+  account in the academy window first: the results go to your logbook
+  (lessons passed = required before the exam); without one it is practice.
+
+QUIZZES (academy window -> "Quizzes")
+  Pick question pools (none = all) and start. Multiple choice, picture
+  questions (click the asked part on a drawing of the screen) and alarm
+  sounds (which level is it?). Random order, the explanation after every
+  answer, the score per pool in your logbook (pools under 70 % show as weak
+  areas in the instructor view). The alarm sounds are the station's own
+  tones: they are prepared when you open the academy from the station's
+  menu; without them the sound questions are left out (the window says so).
+
 CAPTAIN AND COPILOT (the gateway decides, every station shows it)
   CAPTAIN   holds the manual licence and sits at screen 1 (cameras +
             joystick). Holds HELM. The ONLY one who can start REMOTE

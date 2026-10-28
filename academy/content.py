@@ -70,6 +70,10 @@ def check(doc, name="?"):
     _texts(doc, name, p)
     if kind == "quiz":
         for i, q in enumerate(doc.get("questions", [])):
+            if q.get("type") == "picture":         # a click on a drawing: no choices (quiz.check_doc)
+                if not q.get("show") or not q.get("area"):
+                    p.append("%s: question %d: a picture question needs show + area" % (name, i))
+                continue
             n = len(q.get("choices", []))
             if n < 2 or not isinstance(q.get("answer"), int) or not 0 <= q["answer"] < n:
                 p.append("%s: question %d: answer must index its %d choices" % (name, i, n))

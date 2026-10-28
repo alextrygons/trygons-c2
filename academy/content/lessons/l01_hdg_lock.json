@@ -1,0 +1,84 @@
+{
+  "_help": "Simulator lesson (ACADEMY_SPEC C, step 18). runs_on sim: it only ever runs against the simulator on this PC. setup = what the academy does first (simulator inputs: stick centred, GPS ok, STANDBY button, start power limit, alarms acknowledged). Each step: do_el / do_en = what the trainee does, check = the SIMULATOR STATE that proves it (telemetry field + condition, academy/lesson.py), hint_el / hint_en shown after hint_s seconds, fail_s = a time limit (too late = failed, retry), hold_s = the state must hold that long, at_start = a simulator event the lesson starts first. required = must be passed before the exam of this level.",
+  "kind": "lesson",
+  "id": "l01_hdg_lock",
+  "level": "DRIVER",
+  "order": 1,
+  "required": true,
+  "runs_on": "sim",
+  "title_el": "Κλείδωμα πορείας (HDG LOCK) και αλλαγή πορείας",
+  "title_en": "Heading lock (HDG LOCK) and course changes",
+  "intro_el": "Μαθαίνετε να κλειδώνετε την πορεία με το κουμπί HDG LOCK του πίνακα και να την αλλάζετε με τα κουμπιά +10 και -1. Το γκάζι μένει πάντα στο joystick.",
+  "intro_en": "You learn to lock the heading with the panel HDG LOCK button and to change it with +10 and -1. The throttle always stays on the joystick.",
+  "setup": [
+    "centre",
+    "gps_ok",
+    "standby",
+    "power_lower",
+    "alarm_ack"
+  ],
+  "steps": [
+    {
+      "do_el": "Με το joystick στο κέντρο, πατήστε HDG LOCK στον πίνακα.",
+      "do_en": "With the joystick centred, press HDG LOCK on the panel.",
+      "hint_el": "Το κουμπί HDG LOCK είναι στον πίνακα κουμπιών. Μην αγγίζετε το joystick.",
+      "hint_en": "HDG LOCK is on the panel buttons. Do not touch the joystick.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Αλλάξτε την πορεία κατά +10 μοίρες (κουμπί +10).",
+      "do_en": "Change the course by +10 degrees (button +10).",
+      "hint_el": "Ένα πάτημα του +10 = 10 μοίρες δεξιά. Κοιτάξτε την πορεία στόχο.",
+      "hint_en": "One press of +10 = 10 degrees to starboard. Watch the target course.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "target",
+          "delta": 10,
+          "tol": 0.5
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Διορθώστε κατά -1 μοίρα (κουμπί -1).",
+      "do_en": "Correct by -1 degree (button -1).",
+      "hint_el": "Ένα πάτημα του -1 = 1 μοίρα αριστερά.",
+      "hint_en": "One press of -1 = 1 degree to port.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "HDG_LOCK"
+        },
+        {
+          "f": "target",
+          "delta": -1,
+          "tol": 0.3
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Τελειώστε με STANDBY (το κόκκινο κουμπί του πίνακα).",
+      "do_en": "Finish with STANDBY (the red panel button).",
+      "hint_el": "Το STANDBY κερδίζει πάντα: γκάζι στο ρελαντί, νεκρό σημείο, μετά σταματά το πηδάλιο.",
+      "hint_en": "STANDBY always wins: throttle idle, neutral, then the steering stops.",
+      "check": [
+        {
+          "f": "mode_name",
+          "eq": "STANDBY"
+        }
+      ],
+      "hint_s": 20
+    }
+  ]
+}
