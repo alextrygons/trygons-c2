@@ -318,6 +318,7 @@ sb_result_t sb_thr_travel_set(sb_t *s, float seconds)
     if (seconds >= s->servo.cfg.travel_s) {     /* longer = safer: at once */
         s->servo.cfg.travel_s = seconds;
         s->travel.changes++;
+        s->steer.log_why = 0u;
         s->steer.log_what = 4u;
         s->steer.log_seq++;
         return SB_OK;
@@ -328,6 +329,10 @@ sb_result_t sb_thr_travel_set(sb_t *s, float seconds)
     s->travel.pending_s = seconds;
     s->confirm.kind = CONF_THR_TRAVEL;
     s->confirm.deadline_ms = s->now_ms + s->cfg.confirm_ms;
+    /* step 11g: the asked (shorter, still pending) value is logged too - why = the value in 0.1 s */
+    s->steer.log_what = 5u;
+    s->steer.log_why = (uint8_t)lroundf(seconds * 10.0f);
+    s->steer.log_seq++;
     return SB_OK;
 }
 
@@ -747,6 +752,11 @@ static bool dp_ok(const sb_t *s, uint8_t sub, bool cont, bool entry)
     if (!thruster_fitted(&s->thrust, THR_BOW) || !thruster_fitted(&s->thrust, THR_STERN) ||
         thruster_any_hot(&s->thrust)) return false;
     if (entry && !(s->gps.last.sog_kn < s->cfg.dp_max_entry_kn)) return false;
+    /* step 11g: the outboard at the MODELLED idle (thr_est: DroneCAN unknown after a boot / a lost throttle node =
+     * not idle) and in neutral - the one exception is the generator's own neutral run into SPOT (it may run in
+     * SPOT / JOG, section K; gear N confirmed by the switch, CPU1 knows its cap) */
+    if (entry && !gear_is(&s->gear, GEAR_N)) return false;
+    if (entry && !thr_idle(s) && !(sub == DP_SPOT && s->gen.state == GEN_RUNNING && s->neutral_sw == 1)) return false;
     if (sub == DP_TRIP) return dp_trip_ok(s, cont ? s->dp.wp : 0u);
     return sub == DP_SPOT || sub == DP_CRUISE;
 }
@@ -999,6 +1009,15 @@ static uint8_t dp_stop_why(mode_reason_t why, sb_mode_t to)
     }
 }
 
+/* an emergency in this step (step 11g): idle AT ONCE whatever stop is running - also when the boat is already
+ * in STANDBY during a planned arrival stop or a normal generator stop (they keep rate_down only without one) */
+static void emergency(sb_t *s)
+{
+    s->emerg = true;
+    s->stop_planned = false;
+    gen_emergency(&s->gen);
+}
+
 bool sb_request_mode(sb_t *s, sb_mode_t to, mode_reason_t why)
 {
     sb_mode_t from = s->modes.mode;
@@ -1170,6 +1189,7 @@ static void lostlink_step(sb_t *s)
 {
     if (s->ll.state == SB_LL_KILLED) {
         hal_set_engine_kill(true);
+        emergency(s);
         if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_LINK_LOST);
         return;
     }
@@ -1188,6 +1208,7 @@ static void lostlink_step(sb_t *s)
         s->ll.losses++;
         alarm_on(s, SB_ALM_LINK_LOST);
         s->confirm.kind = CONF_NONE;
+        emergency(s);
         if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_LINK_LOST);
         return;
     }
@@ -1197,6 +1218,7 @@ static void lostlink_step(sb_t *s)
         s->ll.returns++;
         return;
     }
+    emergency(s);
     if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_LINK_LOST);
     bool safe = s->mon_tripped || (thr_idle(s) && (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear)));
     bool near = sb_near_shore(s);
@@ -2233,6 +2255,7 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
         if (!(s->travel.pending_s >= SERVO_THR_TRAVEL_MIN)) return false;
         s->servo.cfg.travel_s = s->travel.pending_s;
         s->travel.changes++;
+        s->steer.log_why = 0u;
         s->steer.log_what = 4u;
         s->steer.log_seq++;
         return true;
@@ -2529,6 +2552,9 @@ static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
     if (s->profile == SB_PROFILE_DETECTING) stick = false;            /* not decided yet: wait */
     if (s->cfg.first_test) stick = true;                              /* no joystick needed (no MANUAL) */
     bool idle = thr_idle(s);
+    /* DroneCAN: idle on the wire is -1.0 = 1000 us (the boot frame, CPU1's safe frames); a throttle calibration
+     * with another idle pulse never arms (step 11g: NOT ARMED, the throttle stays at the wire idle) */
+    if (s->servo.cfg_bad) idle = false;
     /* DroneCAN: neutral counts only once the gear frame really went out (the boot order holds it until
      * the modelled throttle is idle with the throttle node OPERATIONAL) */
     if (s->servo.can && (!s->servo.gear_sent || s->servo.gear_hold)) neutral = false;
@@ -2622,6 +2648,7 @@ static void can_step(sb_t *s)
         s->confirm.kind = CONF_NONE;
     }
     if (!bad) s->can.bus_seen = false;
+    if (bad || req_lost) emergency(s);
     if (sb_mode(s) != MODE_STANDBY) {
         if (bad) sb_request_mode(s, MODE_STANDBY, WHY_CAN_BUS);
         else if (req_lost) sb_request_mode(s, MODE_STANDBY, WHY_CAN_NODE);
@@ -2639,6 +2666,7 @@ static void can_step(sb_t *s)
         s->ll.kills++;
         alarm_on(s, SB_ALM_ENGINE_KILLED);
         s->confirm.kind = CONF_NONE;
+        emergency(s);
         hal_kill_keep_set(true);                        /* (kept through a watchdog / software reset) */
         hal_set_engine_kill(true);
         if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_CAN_NODE);
@@ -2661,6 +2689,7 @@ static void events_step(sb_t *s, uint32_t buttons)
                 plim_drop(&s->plim, PLIM_SRC_FAULT, s->now_ms);
                 s->confirm.kind = CONF_NONE;
             }
+            emergency(s);
             if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_ESTOP);
         } else {
             s->estop_seen = false;
@@ -2678,6 +2707,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     }
 
     /* independent safety monitor tripped: outputs are forced safe by the HAL */
+    if (g_mon.tripped) emergency(s);
     if (g_mon.tripped && !s->mon_tripped) {
         s->mon_tripped = true;
         alarm_on(s, SB_ALM_MONITOR);
@@ -2755,6 +2785,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     /* STANDBY button: works in every mode, the PC can't override it */
     if (buttons & HAL_BTN_BIT(HAL_BTN_STANDBY)) {
         s->confirm.kind = CONF_NONE;
+        emergency(s);                   /* idle at once, also in STANDBY (a planned / generator stop) */
         plim_drop(&s->plim, PLIM_SRC_STANDBY_BUTTON, s->now_ms);
         gen_set(&s->gen, false);        /* generator auto OFF until re-enabled (a running one stops idle first) */
         /* a held stick can't grab control right back - also when the press is the ACK in STANDBY (step 11e: a
@@ -2934,6 +2965,7 @@ void sb_step(sb_t *s)
 
     s->last_ms = s->now_ms;
     s->now_ms = hal_millis();
+    s->emerg = false;                   /* set again by every emergency of this step (emergency()) */
     uint32_t dt_ms = s->now_ms - s->last_ms;
     float dt = (float)dt_ms * 0.001f;
 
@@ -3236,7 +3268,8 @@ void sb_step(sb_t *s)
      * link loss ...) - not a planned arrival stop, not a normal generator stop - and the REMOTE / MANEUVER
      * link-loss failsafe (stale data) */
     s->thr.stop = (sb_mode(s) == MODE_STANDBY && !s->stop_planned && !(s->gen.active && !s->gen.fast_stop)) ||
-                  (remote_like(sb_mode(s)) && s->remote.state == SB_REMOTE_LOST);
+                  (remote_like(sb_mode(s)) && s->remote.state == SB_REMOTE_LOST) ||
+                  s->emerg;                     /* step 11g: an emergency in STANDBY too (arrival / generator stop) */
     s->thr.neutral_run_pct = gen_neutral ? s->gen.cap_pct : 0.0f;   /* 0 = the normal rule: idle in neutral */
     s->throttle_rate = throttle_step(&s->thr, s->throttle_demand, s->gear.current, gear_throttle_allowed(&s->gear), dt);
 

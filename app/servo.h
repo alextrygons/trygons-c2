@@ -45,6 +45,10 @@
 #define SERVO_THR_TRAVEL_MIN 1.0f    /* an owner-signed value never below this */
 #define SERVO_THR_TRAVEL_MAX 30.0f
 
+/* DroneCAN servos: the UNITLESS wire convention (docs/ardupilot.param) - idle = -1.0 = 1000 us; the node does any
+ * mapping / reversal. Core 0's boot frame and CPU1's safe frames send -1.0, so idle_us must be this (step 11g). */
+#define SERVO_CAN_IDLE_US 1000u
+
 typedef struct {
     uint16_t idle_us;           /* pulse at idle (calibrated) (1000) */
     uint16_t full_us;           /* pulse at full throttle (calibrated) (2000); may be < idle_us */
@@ -60,6 +64,9 @@ typedef struct {
     bool     clamped;           /* the command was above the limit */
     /* the model + the DroneCAN boot order (step 11e) */
     bool     can;               /* the servos are DroneCAN nodes (hal_servos_can at init) */
+    bool     cfg_bad;           /* DroneCAN: idle_us is not SERVO_CAN_IDLE_US (step 11g): the throttle pulse is
+                                 * then ALWAYS SERVO_CAN_IDLE_US (wire -1.0 = idle, like the boot frame and CPU1's
+                                 * safe frames) and the outputs never arm (smallboat.c interlock, NOT ARMED) */
     float    est_pct;           /* modelled throttle servo position (upper bound), % */
     bool     node_ok;           /* the throttle node OPERATIONAL (DroneCAN; always true otherwise) */
     bool     gear_sent;         /* a gear command went out since the boot */

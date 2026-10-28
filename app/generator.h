@@ -119,6 +119,8 @@ void gen_default_config(gen_config_t *c);
 void gen_init(gen_t *g, const gen_config_t *c, float learned_pct);
 /* The captain's switch (also the STANDBY button: off). Switching off while
  * running = a stop (idle first). */
+/* an emergency in this step (step 11g): a running / stopping generator stops at the STANDBY rate (idle at once) */
+void gen_emergency(gen_t *g);
 void gen_set(gen_t *g, bool on);
 /* One control step. */
 void gen_step(gen_t *g, const gen_input_t *in);

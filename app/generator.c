@@ -48,7 +48,7 @@ static void stop(gen_t *g, uint8_t why, bool fault)
 {
     g->demand_pct = 0.0f;
     g->stop_why = why;
-    g->fast_stop = fault;
+    g->fast_stop = g->fast_stop || fault;   /* (an emergency of this step stays fast: gen_emergency, 11g) */
     g->state = GEN_STOPPING;
     g->timer_ms = 0u;
     g->move_ms = 0u;
@@ -58,6 +58,11 @@ static void stop(gen_t *g, uint8_t why, bool fault)
         g->fault_edge = true;
         g->enabled = false;             /* auto off until re-enabled */
     }
+}
+
+void gen_emergency(gen_t *g)
+{
+    if (g->active || g->state == GEN_RUNNING || g->state == GEN_STOPPING) g->fast_stop = true;
 }
 
 void gen_set(gen_t *g, bool on)

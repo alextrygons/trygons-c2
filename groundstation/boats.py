@@ -112,6 +112,9 @@ def _parse_relays(lst):
                 raise ValueError("relay %d: the %s must be %s" % (n, role.upper(), " / ".join(ROLE_TYPES[role])))
         elif role is not None:
             raise ValueError("relay %d: only an engine relay has a role" % n)
+        if grp == "engine" and pair is not None:
+            # step 11g: an engine relay is never interlocked (SHUTOFF ON must never be refused by a pair)
+            raise ValueError("relay %d: an engine relay can't be in a pair" % n)
         if role != "starter" and (name_en.upper() in ("STARTER", "START", "CRANK") or name_el.upper() in ("ΜΙΖΑ", "ΜΊΖΑ")):
             raise ValueError("relay %d: named like the STARTER but not the role \"starter\" (engine group, "
                              "momentary)" % n)

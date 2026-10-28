@@ -1138,8 +1138,16 @@ void hal_relay_service(void)
         mb_service();
     }
 }
-bool hal_relay_set(uint8_t n, bool on)        { return s_rb_channels_boot && (s_cr_up ? cr_set(n, on) : mb_set_coil(n, on)); }
-bool hal_relay_pulse(uint8_t n, uint16_t ms)  { return s_rb_channels_boot && (s_cr_up ? cr_pulse(n, ms) : mb_pulse_coil(n, ms)); }
+/* the DroneCAN back-end: the keep store right after every command too (step 11g, as hal_tc375.c) */
+static bool cr_kept(bool ok)
+{
+    s_cr_keep = true;
+    cr_keep(&s_cr_keep_known, &s_cr_keep_on);
+    return ok;
+}
+bool hal_relay_set(uint8_t n, bool on)        { return s_rb_channels_boot && (s_cr_up ? cr_kept(cr_set(n, on)) : mb_set_coil(n, on)); }
+bool sim_hal_cr_keep(uint32_t *known, uint32_t *on) { *known = s_cr_keep_known; *on = s_cr_keep_on; return s_cr_keep; }
+bool hal_relay_pulse(uint8_t n, uint16_t ms)  { return s_rb_channels_boot && (s_cr_up ? cr_kept(cr_pulse(n, ms)) : mb_pulse_coil(n, ms)); }
 bool hal_relay_read(uint8_t n, bool *on)      { return s_rb_channels_boot && (s_cr_up ? cr_read(n, on) : mb_coil(n, on)); }
 bool hal_relay_ok(void)                        { return s_rb_channels_boot && (s_cr_up ? cr_ok() : mb_ok()); }
 bool hal_relay_readback(void)                  { return !s_cr_up || cr_readback(); }
@@ -1750,10 +1758,20 @@ static void sc_driver_init(void)
     }
 }
 
+/* as hal_tc375.c: after a trip core 0 drops its own software queue too (twice: a flush that ran across the
+ * trip), and the latch is checked again after the flush (step 11g) */
+static uint8_t s_sc_trip_drops;
 void hal_can_service(void)
 {
     if (!s_sc_boot_fitted) return;
+    bool was = s_forced;
+    if (!was) s_sc_trip_drops = 0u;
+    if (was && s_sc_trip_drops < 2u) {
+        dc_cancel_tx();
+        s_sc_trip_drops++;
+    }
     dc_service();
+    if (!was && s_forced) dc_cancel_tx();
 }
 
 /* the 10 ms actuator task (the harness calls it; a "stuck" CAN path: never runs) */

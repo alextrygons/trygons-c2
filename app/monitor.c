@@ -191,7 +191,11 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
             hal_can_safe_t f;
             bool alive = m->started && now_ms - m->last_hb_ms <= MON_HB_MS;     /* core 0 can still say the node is OK */
             bool neutral = alive && m->node_ok && now_ms - m->trip_ms >= m->travel_ms;
-            f.thr_wire = -1.0f;                                                  /* IDLE at once */
+            /* once CPU1 sent neutral it HOLDS neutral (hold = what the node has now, never the pre-trip gear again;
+             * found by storm I51 on the gear node, step 11g) */
+            if (neutral) m->safe_neutral = true;
+            neutral = m->safe_neutral;
+            f.thr_wire = -1.0f;     /* IDLE at once: -1.0 = SERVO_CAN_IDLE_US (servo.c refuses another idle_us on CAN) */
             f.steer = m->steer_have;                                             /* hold (none if never commanded) */
             f.steer_wire = m->steer_wire;
             f.gear = neutral || m->gear_have;                                    /* hold, then neutral (OA-2) */

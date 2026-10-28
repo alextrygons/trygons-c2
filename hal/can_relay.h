@@ -19,7 +19,10 @@
  *   - set (on / off): the new state CR_BURST_FRAMES times at 50 Hz, then no more frames
  *     (the board holds it, R-2; a hand switch on the board is never overwritten). The
  *     burst counts only frames sent while the board is there: an OFF asked while the board
- *     is silent goes when it is back.
+ *     is silent goes when it is back. An ON is never queued for a board that is not there
+ *     (step 11g): cr_set ON / cr_pulse refuse it, and an ON burst or a running pulse is
+ *     dropped when the board goes (bus fault / silent / not OPERATIONAL) - the pulse ends
+ *     with an OFF burst, a dropped ON leaves the state unknown.
  *   - pulse (momentary relays, the STARTER's hold-to-crank): ON at 50 Hz until the pulse
  *     end (AURIX-timed: hardpoint.Command has no board-timed pulse), then the OFF burst.
  *     When the AURIX stops sending (frozen core 0, reset, cable) the BOARD switches the
@@ -29,8 +32,10 @@
  *   it (R-4, TO CONFIRM C17) - then exactly like the Modbus coil readback (valid for
  *   HAL_RELAY_LOST_MS). A board that sends no Status at all: cr_readback() false and the
  *   COMMANDED states are the readback (the screens say "no readback"): known only once
- *   commanded since the boot, kept across a warm reset (no-clear RAM, cr_keep), or all
- *   OFF when the board itself booted after the AURIX's power-on (R-2: it powers up OFF).
+ *   commanded since the boot, kept across a warm reset (no-clear RAM, cr_keep: stored by
+ *   the HAL after every cr_set / cr_pulse and every step), or all OFF when the board
+ *   itself booted after the AURIX's start - a power-on or a warm reset (R-2: it powers
+ *   up OFF; step 11g: the uptime test runs after a warm reset too).
  * ok: the bus works and the relay node's NodeStatus is younger than HAL_RELAY_LOST_MS,
  *   mode OPERATIONAL, health below ERROR (WARNING = ok: a notice, OD-6). Like the Modbus
  *   master, the first HAL_RELAY_LOST_MS after the start give the board time to be seen.
@@ -73,6 +78,7 @@ void cr_keep(uint32_t *known, uint32_t *on);
 typedef struct {
     uint32_t frames;             /* hardpoint.Command frames queued */
     uint32_t refused;            /* not queued (bus fault / no room) */
+    uint32_t dropped;            /* ON bursts dropped: the board was not there (step 11g; only OFF waits for it) */
     uint32_t sets, pulses;       /* commands from relays.c */
     uint32_t max_pulse_ms;       /* the longest pulse ever asked */
     uint32_t board_reboots;      /* the board's uptime went back: every state OFF */

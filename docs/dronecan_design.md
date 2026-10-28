@@ -406,8 +406,9 @@ Tests that change in 11e (today's checks use rate_down 40 / rate_stop 100 or "id
   I33 (generator envelope), I37.
 - New storm invariants (11e):
   - I47 no software limit ever slows a move toward idle in an emergency (STANDBY / e-stop /
-    link-loss / node-loss / trip: idle commanded in that same step); a normal decrease is never
-    slower than rate_down.
+    link-loss / node-loss / trip: idle commanded in that same step - step 11g: also while already
+    in STANDBY during a planned arrival stop or a normal generator stop); a normal decrease is
+    never slower than rate_down.
   - I48 the throttle command never rises faster than rate_up (and the generator's steps stay
     inside it).
   - I49 a gear change is only commanded while the SIMULATED throttle servo is at idle (fast and
@@ -417,9 +418,11 @@ Tests that change in 11e (today's checks use rate_down 40 / rate_stop 100 or "id
   - I51 commands stopped (reset / bus fault) -> the simulated nodes HOLD (gear, steering and, by
     default, the throttle: SRV_CMD_TIME_OUT 0, OA-1; a sim variant "pulses stop + spring" only
     when the bench proves it); after the boot the first frame is throttle IDLE and no gear frame
-    before thr_travel_s; throttle node lost -> never a gear frame that changes the gear (OA-2).
-  - I52 monitor trip (also with core 0 frozen in the sim): CPU1's safe frames within 20 ms,
-    core 0's actuator frames stop (latched).
+    before thr_travel_s; throttle node lost -> never a gear frame that changes the gear (OA-2;
+    step 11g: checked on the simulated gear node's received command).
+  - I52 monitor trip (also with core 0 frozen in the sim): CPU1's safe frames every 20 ms, the
+    first within 120 ms of the trip (20 ms + the monitor / control step); no core-0 actuator frame
+    goes onto the wire after it (latched; step 11g: counted on the wire, not in the queue).
   - I53 the steering adaptation never leaves the TRAINING bounds (section 8) and falls back to the
     stored values on doubt.
 
@@ -830,9 +833,10 @@ docs use now; every one is in "WAITING FOR OWNER" at the top of PROGRESS.md. Not
   - ok (RELAY BOARD SILENT = advisory, unchanged): the bus works and node 30's NodeStatus is younger than 3 s,
     OPERATIONAL, health below ERROR (WARNING = the CAN NODE WARNING notice only). The relay node stays not required
     (never CAN NODE LOST / STANDBY). A board reboot or power loss = every relay OFF (R-2); nothing is re-sent.
-- relays.c (one tightening, no change with the Modbus board): an interlocked partner whose state is UNKNOWN and that is
-  not momentary blocks the other relay (a board without readback after an AURIX-only power-on); a momentary partner is
-  off by the board's timeout.
+- relays.c (one tightening, on both buses): an interlocked partner whose state is UNKNOWN and that is not momentary
+  blocks the other relay (a board without readback after an AURIX-only power-on; with the Modbus board only before
+  the first coil read after the start or after a lost readback - corrected in 11g); a momentary partner is off by the
+  board's timeout.
 - Sim: the simulated node 30 is driven by the new back-end - true states, command latency, R-2 hold / R-3 timeout
   (momentary relays 2 / 4 / 5 of the sample table), Status readback every 200 ms, faults (silent, broken frames, no
   readback, R-3 timer broken, not OPERATIONAL / WARNING / ERROR, reboot, unpowered, drop cable cut, bus-off), a welded
@@ -844,3 +848,43 @@ docs use now; every one is in "WAITING FOR OWNER" at the top of PROGRESS.md. Not
 - Open for the owner (PROGRESS.md WAITING FOR OWNER): the board (C17, R-1..R-4), the default RELAY_BUS, the 11f
   readings above (nothing after a reset, bursts instead of a continuous 50 Hz stream, the unknown-partner rule), and
   the servo nodes 20 / 21 / 22 still required when only the relay board is on CAN.
+
+## 18. Step 11g - the owner's 11e/11f safety review fixes (2026-10-29)
+
+The owner's own review of the 11e / 11f code found 9 points; all fixed (they block only the first engine run on the
+CAN servos):
+
+1. (MED) An emergency while the boat is ALREADY in STANDBY - during a planned arrival stop (`stop_planned`, rate_down)
+   or a normal generator stop (`fast_stop` false) - now gives idle AT ONCE: smallboat.c `emergency()` sets the
+   per-step flag `sb emerg` (e-stop pressed, a required node / the bus lost, the UNCREWED link lost / engine killed,
+   a monitor trip, any STANDBY press), clears `stop_planned` and makes a running generator stop fast
+   (`gen_emergency`); `thr.stop` includes `emerg`. Storm I47 treats these conditions as emergencies in STANDBY too.
+2. (MED) SHUTOFF ON is never refused by the pair rule (`relays_engine_set`), and a relay with an engine role can not
+   be in an interlocked pair at all (`table_consistent`, groundstation/boats.py).
+3. (MED) can_relay.c: only an OFF burst waits for an absent board ("goes when it is back"). `cr_set` ON and `cr_pulse`
+   are refused while the board is not there (bus fault, NodeStatus old, not OPERATIONAL, ERROR); an ON burst still
+   running when the board goes is dropped (state unknown), a running pulse ends with the OFF burst. `cr_read` is known
+   only while the board is there (so relays.c's power_up never meets a refused ON).
+4. hal_can_service (board + sim) re-checks the latch after `dc_service`'s TX flush and cancels what that flush moved
+   in; the sim now also drops core 0's software queue after a trip like the board. Storm I52 counts core 0's
+   ArrayCommands that really went onto the wire (none after the trip) and states the real limit for CPU1's first safe
+   frame: 120 ms (20 ms period + the monitor / control step).
+5. CPU1's safe frames and core 0's boot frame send the throttle wire -1.0 = 1000 us. With the servos on CAN a throttle
+   calibration whose `idle_us` is not 1000 (SERVO_CAN_IDLE_US) is refused: `servo.cfg_bad`, the throttle pulse stays
+   1000 us and the outputs never arm (NOT ARMED). Any mapping / reversal belongs in the node (FIRST_TEST.md 3j).
+6. DP entry needs the MODELLED idle (thr_est) and gear N; the one exception kept: a RUNNING generator may carry its
+   neutral throttle into SPOT (neutral switch closed, section K).
+7. Storm I51 checks the simulated gear NODE's received command (core 0 + CPU1 frames), not servo.gear_us. It found a
+   real bug (storm seed 14), fixed here: after a trip CPU1 shifted to NEUTRAL after thr_travel_s; a throttle node lost
+   AFTER that switched CPU1 back to "hold" = the PRE-trip gear wire, i.e. it put the gear back into forward / reverse
+   with the throttle position unknown. Now `safe_neutral`: once CPU1 sent neutral it keeps sending neutral (sim CN27).
+8. A shorter thr_trav_s waiting for its CONFIRM is logged (STEERMODEL what 5, why = the value in 0.1 s); taking it
+   stays what 4.
+9. can_relay.c: the board-uptime test runs after a warm reset too (a board that booted after our start = all OFF
+   known, the kept states are stale); the keep store follows every `cr_set` / `cr_pulse` at once (hal_tc375.c
+   `relay_keep_store`, the sim the same).
+
+Tests: sim CN27 (CPU1 stays neutral), CN25 (arrival stop + STANDBY / e-stop / node lost), GN10 (generator stop + STANDBY / e-stop), CN26
+(idle_us 1100 on CAN), DP5 (throttle not idle), CN22 (the pending log), RB9 (engine pairs, SHUTOFF with a forced
+partner), RB21 (ON never waits for an absent board, keep store, warm-reset uptime), test_boats B7 (engine pairs);
+storm I47 / I51 / I52 changed.

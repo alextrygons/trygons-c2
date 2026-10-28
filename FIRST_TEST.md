@@ -213,6 +213,12 @@ measured value / answer here.
       in WIRING.md 3 and PARTS.md.
 - [ ] Power-on with the outboard turned off-centre: the steering does NOT move until a mode
       commands steering (OD-7). STANDBY: the steering holds (OD-10).
+- [ ] **Throttle idle on the wire (step 11g):** the AURIX sends idle as -1.0 (= 1000 us) - in its
+      boot frame, every idle step and CPU1's trip frames; servo.idle_us must stay 1000 with the
+      servos on CAN (otherwise the outputs never arm: NOT ARMED). Engine OFF: with -1.0 on the
+      wire the lever sits exactly at idle ____ (any offset / reversal is set IN THE NODE, never in
+      the AURIX calibration). Also: STANDBY press during a planned arrival stop -> the throttle
+      command goes to -1.0 at once ____ .
 - [ ] E-stop: pressed = the engine kill circuit opens (test lamp), CREWED and UNCREWED (OD-1); the
       servo nodes stay powered (OD-2).
 - [ ] UNCREWED monitor trip test: P10.5 opens the kill circuit (test lamp); CREWED: it does not (OD-2).

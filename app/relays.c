@@ -44,6 +44,9 @@ static bool table_consistent(const relay_table_t *t)
         if ((d->role == RELAY_ROLE_IGNITION || d->role == RELAY_ROLE_SHUTOFF) &&
             d->type != RELAY_ONOFF && d->type != RELAY_LATCHING) return false;
         for (uint8_t j = 0; j < i && d->role != RELAY_ROLE_NONE; j++) if (t->r[j].role == d->role) return false;
+        /* an engine role is never in an interlocked pair (step 11g): nothing may ever refuse SHUTOFF ON, and the
+         * STARTER / IGNITION rules are engine.c's alone (the partner's role is caught by "mutual" below) */
+        if (d->role != RELAY_ROLE_NONE && d->pair != 0u) return false;
         if (d->pair != 0u) {                                                           /* mutual, another relay */
             const relay_def_t *p = relay_table_find(t, d->pair);
             if (p == NULL || p == d || p->pair != d->n) return false;
@@ -189,7 +192,9 @@ static bool relay_on(const relays_t *r, uint8_t n)
 
 /* the interlock: the partner may be on - commanded / read back on, or its state UNKNOWN while it is not a
  * momentary relay (step 11f: a DroneCAN board without readback after a reset; a momentary partner is off by the
- * board's own timeout). With the Modbus board a fitted relay is always read back while the board answers. */
+ * board's own timeout). The Modbus board: its coils are read back every cycle, so a partner is unknown only in
+ * the first moments after the start (before the first coil read; mb_ok is already true then) or after a lost
+ * readback - then it blocks too (a small change from step 11f on, on both buses; step 11g comment fix). */
 static bool pair_maybe_on(const relays_t *r, uint8_t n)
 {
     const relay_def_t *p = relay_table_find(&r->table, n);
@@ -272,7 +277,10 @@ relay_result_t relays_engine_set(relays_t *r, uint8_t n, bool on)
         return relays_note(r, n, action, RELAY_R_OK);
     }
     if (!r->board_ok) return relays_note(r, n, action, RELAY_R_SILENT);
-    if (d->pair != 0u && pair_maybe_on(r, d->pair)) return relays_note(r, n, action, RELAY_R_PAIR);
+    /* the pair rule never refuses SHUTOFF ON (= stop the engine, always allowed; step 11g) - a valid table has no
+     * engine relay in a pair anyway (table_consistent) */
+    if (d->role != RELAY_ROLE_SHUTOFF && d->pair != 0u && pair_maybe_on(r, d->pair))
+        return relays_note(r, n, action, RELAY_R_PAIR);
     if (!hal_relay_set(n, true)) return relays_note(r, n, action, RELAY_R_HAL);
     r->cmd_on |= bit;
     r->off_pending &= ~bit;

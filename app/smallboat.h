@@ -610,7 +610,8 @@ typedef struct {
         uint32_t reset_ms;     /* STEERING MODEL RESET notice: when (0 = never) */
         uint8_t  reset_why;    /* SM_RESET_ of the last reset */
         uint8_t  log_what, log_why;  /* last log event STEERMODEL (30): 1 adaptation reset, 2 TRAINING stored,
-                                        3 v1 record refused, 4 thr_travel_s changed */
+                                        3 v1 record refused, 4 thr_travel_s changed, 5 a shorter thr_travel_s
+                                        asked = pending the CONFIRM (why = the value in 0.1 s; step 11g) */
         uint16_t log_seq;
         float    hring[30];    /* heading once a second (no turn > 5 deg in 30 s) */
         uint8_t  hn, hi;
@@ -699,6 +700,9 @@ typedef struct {
     sb_stop_steer_t stop_steer; /* steering during the safe stop / HDG_LOCK compass loss */
     bool     stop_from_auto;    /* the stop started in HDG_LOCK / AUTO / TRAINING */
     bool     stop_planned;      /* STANDBY at the end of a program (arrival): normal closing rate */
+    bool     emerg;             /* an emergency in THIS step (e-stop, node / bus loss, link loss, trip, a STANDBY
+                                 * press - also while already in STANDBY): idle AT ONCE, ends a planned / generator
+                                 * stop's normal rate (step 11g) */
     bool     hdg_compass_lost;  /* HDG_LOCK: compass failed, fault steering until stopped */
     bool     hdg_reverse;       /* heading hold paused (reverse / no propulsion): outboard held at hold_angle */
     float    hdg_target;        /* heading kept while paused */

@@ -975,13 +975,19 @@ void hal_relay_service(void)
 bool hal_relay_set(uint8_t n, bool on)
 {
     if (!s_relay_up) return false;
-    return s_relay_can ? cr_set(n, on) : mb_set_coil(n, on);
+    if (!s_relay_can) return mb_set_coil(n, on);
+    bool ok = cr_set(n, on);
+    relay_keep_store();                         /* step 11g: a reset right after the command keeps it */
+    return ok;
 }
 
 bool hal_relay_pulse(uint8_t n, uint16_t ms)
 {
     if (!s_relay_up) return false;
-    return s_relay_can ? cr_pulse(n, ms) : mb_pulse_coil(n, ms);
+    if (!s_relay_can) return mb_pulse_coil(n, ms);
+    bool ok = cr_pulse(n, ms);
+    relay_keep_store();
+    return ok;
 }
 
 bool hal_relay_read(uint8_t n, bool *on)
@@ -1039,11 +1045,16 @@ void hal_can_service(void)
     /* tripped: CPU1 cancelled the controller FIFO; core 0 drops what still waits in its software queue (twice: a
      * flush that ran across the trip moved frames in after CPU1's cancel - they are cancelled too; ca_tick
      * queues nothing any more) */
-    if (s_forced && s_trip_drops < 2u) {
+    boolean was = s_forced;
+    if (was && s_trip_drops < 2u) {
         dc_cancel_tx();
         s_trip_drops++;
     }
     dc_service();
+    /* step 11g: the latch came during dc_service's TX flush - cancel what that flush moved into the controller
+     * after CPU1's cancel, at once (not only in the next step) */
+    __dsync();
+    if (!was && s_forced) dc_cancel_tx();
 }
 
 /* --- DroneCAN servos (step 11e): hal/can_act.c on core 0, CPU1's safe frames in the reserved buffers ------ */

@@ -9,7 +9,8 @@
 #include "dronecan.h"
 #include "hal.h"
 
-static float    s_thr = -1.0f;          /* throttle wire value: IDLE from the boot */
+static float    s_thr = -1.0f;          /* throttle wire value: IDLE from the boot (-1.0 = 1000 us = SERVO_CAN_IDLE_US:
+                                         * app/servo.c sends only that while idle_us differs, and never arms) */
 static bool     s_gear_on, s_steer_on;  /* a frame is commanded */
 static float    s_gear, s_steer;
 static ca_state_t s_st;

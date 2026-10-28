@@ -377,8 +377,9 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   A file without "format" is the old v1: it still loads, with generator
   disabled, no relays and no thrusters. A file that fails the checks (wrong
   type, a pair that is not mutual, a momentary relay longer than 5 s, an
-  engine relay with power_up on / keep, an engine relay without its role, a
-  STARTER that is not momentary, a relay named STARTER / ΜΙΖΑ without the
+  engine relay with power_up on / keep, an engine relay without its role, an
+  engine relay in a pair (SHUTOFF must never be blocked), a STARTER that is
+  not momentary, a relay named STARTER / ΜΙΖΑ without the
   role "starter" ...) is listed as INVALID FILE with the reason and is never
   connected: fix the file.
   When this station holds HELM (in STANDBY) it pushes the file's settings to
@@ -1347,8 +1348,10 @@ DP MODE (SPOT / JOG / CRUISE / TRIP) - the thrusters hold or move the boat
     captain's ACCEPT) and the joystick CONFIRM follows within 10 s (CREWED:
     the onboard joystick; UNCREWED: the shore captain's joystick). Only from
     STANDBY (not stopping), outputs armed, GPS trusted, compass working,
-    slower than 2 kn, both thrusters set up by the boat file and not hot.
-    Never in the FIRST TEST build. In DP: SPOT starts at once (it only holds
+    slower than 2 kn, both thrusters set up by the boat file and not hot,
+    the outboard at idle (the modelled throttle servo position) and in
+    neutral - only a running generator may carry its neutral throttle into
+    SPOT. Never in the FIRST TEST build. In DP: SPOT starts at once (it only holds
     the boat where it is); CRUISE / TRIP need the CONFIRM again.
   * The end - the thrusters go to 0 FIRST, then STANDBY:
       DP STOP (a copilot may always send it, without the captain's ACCEPT),

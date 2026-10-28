@@ -159,6 +159,9 @@ def b7_file_formats():
         "two_starters.json": bad(relay_mut(0, role="starter", type="momentary", max_s=1)),
         "ign_momentary.json": bad(relay_mut(0, type="momentary", max_s=1)),
         "named_starter.json": bad(relay_mut(4, name_en="STARTER", type="momentary", max_s=1)),  # extra "STARTER"
+        # step 11g: an engine relay is never in an interlocked pair (mutual pairs, so only this rule refuses them)
+        "eng_pair.json": bad(lambda x: (x["relays"][0].update(pair=2), x["relays"][1].update(pair=1))),
+        "eng_pair_extra.json": bad(lambda x: (x["relays"][0].update(pair=7), x["relays"][4].update(pair=1))),
     }
     for n, v in files.items():
         with open(os.path.join(d, n), "w", encoding="utf-8") as f:
@@ -193,7 +196,7 @@ def b7_file_formats():
                   for b in repo)
     report("B7 boat file v2: v1 loads with defaults (generator off, no relays / thrusters); v2 parsed, generator "
            "capped at the AURIX ceiling; %d bad files INVALID (format, generator, pair not mutual, momentary > 5 s, "
-           "engine power_up, type, group, duplicate n, thrusters, engine roles, broken JSON); repo files valid v2"
+           "engine power_up, type, group, duplicate n, thrusters, engine roles, engine pairs, broken JSON); repo files valid v2"
            % len(invalid),
            v1_ok and v2_ok and inv_ok and defaults and repo_ok,
            "v1 %s; v2 %s (gen 40 -> push %s); invalid %s; bad file = defaults %s; repo %s" % (

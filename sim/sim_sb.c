@@ -9055,6 +9055,37 @@ static void generator_tests(void)
         }
         sim_hal_set_supply(true, 12.6f);
     }
+
+    /* GN10 (step 11g, owner review finding 1) a normal generator stop comes down at rate_down - an emergency DURING
+     * that stop (the STANDBY button, the e-stop) = idle AT ONCE in that same step */
+    {
+        static sbsim_t x;
+        static gensup_t g;
+        int n_ok = 0, len = 0;
+        d[0] = 0;
+        for (int k = 0; k < 2; k++) {
+            gen_setup(&x, 1620u + (uint32_t)k, NULL, 11.8f);
+            (void)sb_generator_set(&x.sb, true);
+            gensup_fixed(&g, 11.8f);
+            sbsim_run(&x, x.t + 15000u, gen_hook, &g);
+            bool r1 = gen_running_at(&x, 8.0f);
+            (void)sb_generator_set(&x.sb, false);           /* the captain: a normal stop (rate_down) */
+            sbsim_run(&x, x.t + AP_PERIOD_MS - 1u, gen_hook, &g);
+            float o1 = x.sb.thr.out_pct;
+            bool normal = x.sb.gen.state == GEN_STOPPING && !x.sb.gen.fast_stop && o1 > 1.0f && o1 < 8.0f;
+            if (k == 0) sim_hal_press(HAL_BTN_STANDBY); else sim_hal_set_estop(true, true);
+            sbsim_run(&x, x.t + AP_PERIOD_MS - 1u, gen_hook, &g);
+            float o2 = x.sb.thr.out_pct;
+            bool at_once = o2 == 0.0f && x.sb.thr.stop;
+            sim_hal_set_estop(false, false);
+            if (r1 && normal && at_once) n_ok++;
+            len += snprintf(d + len, sizeof d - (size_t)len, "%s: running %s, normal stop %.1f %% %s, emergency -> %.1f %% %s; ",
+                            k ? "e-stop" : "STANDBY button", r1 ? "yes" : "NO", (double)o1, normal ? "ok" : "NO", (double)o2,
+                            at_once ? "ok" : "FAILED");
+        }
+        test_report("GN10 an emergency during a normal generator stop: idle at once (STANDBY button, e-stop)", n_ok == 2, d);
+        sim_hal_set_supply(true, 12.6f);
+    }
 }
 
 static void battery_tests(void)
@@ -9682,6 +9713,9 @@ static void relay_tests(void)
         invalid += !relay_table_valid(&bad);                                                               /* IGNITION pulse */
         bad = t; bad.r[1].role = RELAY_ROLE_NONE; bad.r[1].group = RELAY_GRP_EXTRA; bad.r[3].role = RELAY_ROLE_STARTER;
         relay_table_seal(&bad); invalid += !relay_table_valid(&bad);                                       /* trim as STARTER */
+        /* step 11g: an engine relay is never in a pair (SHUTOFF ON must never be refused by the pair rule) */
+        bad = t; bad.r[2].pair = 1u; bad.r[0].pair = 3u; relay_table_seal(&bad); invalid += !relay_table_valid(&bad); /* SHUTOFF-IGN */
+        bad = t; bad.r[2].pair = 6u; bad.r[5].pair = 3u; relay_table_seal(&bad); invalid += !relay_table_valid(&bad); /* SHUTOFF-extra */
         bool loaded = rb_setup(&x, 1710u, NULL, &t);
         bool link_bad = sb_relay_table(&x.sb, &bad) == SB_ERR_BAD_VALUE && relays_starter(&x.sb.relays) == 2u;
         /* STANDBY, idle, neutral: IGNITION on / off through the engine rules */
@@ -9718,6 +9752,21 @@ static void relay_tests(void)
         shut_es = shut_es && sim_hal_relay_state(3u) && sim_hal_relay_edges(3u) == e3 + 2u;
         (void)sb_relay_cmd(&x.sb, 3u, RELAY_CMD_OFF, 0u);
         bool never = sim_hal_relay_edges(1u) == e1;
+        /* step 11g: even a table that slipped a pair onto SHUTOFF (forced into RAM here: a valid table can't) - the
+         * pair rule never refuses SHUTOFF ON while its partner is on */
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        x.sb.relays.table.r[2].pair = 6u;
+        x.sb.relays.table.r[5].pair = 3u;
+        bool nav_on = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        bool shut_pair = nav_on && sim_hal_relay_state(6u) && sb_relay_cmd(&x.sb, 3u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        shut_pair = shut_pair && sim_hal_relay_state(3u);
+        (void)sb_relay_cmd(&x.sb, 3u, RELAY_CMD_OFF, 0u);
+        (void)sb_relay_cmd(&x.sb, 6u, RELAY_CMD_OFF, 0u);
+        sbsim_run(&x, x.t + 400u, NULL, NULL);
+        x.sb.relays.table.r[2].pair = 0u;
+        x.sb.relays.table.r[5].pair = 0u;
         sim_hal_set_estop(true, false);
         sbsim_run(&x, x.t + 500u, NULL, NULL);
         bool again = sb_relay_cmd(&x.sb, 1u, RELAY_CMD_ON, 0u) == SB_OK;
@@ -9725,16 +9774,18 @@ static void relay_tests(void)
         again = again && sim_hal_relay_state(1u);
         (void)sb_relay_cmd(&x.sb, 1u, RELAY_CMD_OFF, 0u);
         sim_hal_set_estop(false, false);
-        snprintf(d, sizeof d, "bad tables INVALID %d / 8 (STARTER onoff / timed / 6 s, engine without role, role outside the "
-                 "engine, two STARTERs, IGNITION momentary, a trim relay as STARTER), refused over the link %s; STANDBY: "
+        snprintf(d, sizeof d, "bad tables INVALID %d / 10 (STARTER onoff / timed / 6 s, engine without role, role outside the "
+                 "engine, two STARTERs, IGNITION momentary, a trim relay as STARTER, SHUTOFF paired with IGNITION / an "
+                 "extra), refused over the link %s; SHUTOFF ON with a forced pair partner on %s; STANDBY: "
                  "IGNITION on %s / off %s, STARTER by the plain command refused %s; driving (HDG LOCK %s): IGNITION ON "
                  "refused %s, SHUTOFF ON (engine stop) + OFF ok, still HDG LOCK %s; e-stop: IGNITION refused %s, SHUTOFF ON "
                  "ok %s, IGNITION coil never on meanwhile %s; released: ON again %s",
-                 invalid, link_bad ? "yes" : "NO", ign_on ? "yes" : "NO", ign_off ? "yes" : "NO", starter ? "yes" : "NO",
+                 invalid, link_bad ? "yes" : "NO", shut_pair ? "yes" : "NO", ign_on ? "yes" : "NO", ign_off ? "yes" : "NO", starter ? "yes" : "NO",
                  hdg ? "yes" : "NO", drive_ref ? "yes" : "NO", shut_drive ? "yes" : "NO", estop_ref ? "yes" : "NO",
                  shut_es ? "yes" : "NO", never ? "yes" : "NO", again ? "yes" : "NO");
         test_report("RB9 engine roles: STARTER only by role (momentary <= 5 s, else INVALID); IGNITION ON only idle + neutral "
-                    "+ e-stop released; SHUTOFF ON (engine stop) always", invalid == 8 && loaded && link_bad && ign_on &&
+                    "+ e-stop released; SHUTOFF ON (engine stop) always, never in a pair", invalid == 10 && loaded &&
+                    link_bad && shut_pair && ign_on &&
                     ign_off && starter && hdg && drive_ref && shut_drive && estop_ref && shut_es && never && again, d);
         remove("nv7.bin");
     }
@@ -9939,7 +9990,7 @@ void sb_relay_tests(void)
         relay_tests();              /* ... and again on the DroneCAN board (step 11f) */
         s_rb_can = false;
     }
-    relay_bus_tests();              /* RB15-RB20 */
+    relay_bus_tests();              /* RB15-RB21 */
 }
 
 /* ------------------------------ engine controls + remote restart (CLAUDE.md N) -- */
@@ -11110,6 +11161,18 @@ static void dp_mode_tests(void)
         a.x.w.current_e = 0.0f;
         dpx_run(&a, 3000u);
         sb_alarm_ack(&a.x.sb);
+        /* step 11g (review finding 6): the MODELLED throttle not at idle (thr_est) -> refused, at the request and
+         * at the CONFIRM (the precondition again) */
+        a.x.sb.servo.est_pct = 40.0f;
+        bool ref_req = sb_dp_cmd(&a.x.sb, a.x.sb.helm, DP_ACT_START, DP_SPOT, 0) == SB_ERR_PRECOND;
+        dpx_run(&a, 4000u);
+        bool ok_req = sb_dp_cmd(&a.x.sb, a.x.sb.helm, DP_ACT_START, DP_SPOT, 0) == SB_OK && a.x.sb.confirm.kind == CONF_DP;
+        a.x.sb.servo.est_pct = 100.0f;                           /* (as after a CAN boot: unknown = not idle) */
+        bool ref_conf = !onboard_confirm(&a.x, &a.r) || sb_mode(&a.x.sb) == MODE_STANDBY;
+        ref_conf = ref_conf && sb_mode(&a.x.sb) == MODE_STANDBY;
+        a.x.sb.confirm.kind = CONF_NONE;
+        dpx_run(&a, 8000u);
+        DP5_CASE("throttle not at the modelled idle -> PRECOND (request + CONFIRM)", ref_req && ok_req && ref_conf);
         /* no CONFIRM within 10 s: nothing */
         uint8_t r_req = dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0);
         bool pend = a.x.sb.confirm.kind == CONF_DP;
@@ -11153,7 +11216,7 @@ static void dp_mode_tests(void)
         }
 #undef DP5_CASE
         test_report("DP5 DP entry: HELM + PC request + CONFIRM (onboard / shore) from STANDBY only; refused without "
-                    "settings, in FIRST TEST, MANUAL / HDG LOCK, stick held, GPS / compass lost, moving, no program",
+                    "settings, in FIRST TEST, MANUAL / HDG LOCK, stick held, GPS / compass lost, moving, no program, throttle not idle",
                     n_ok == n_all, d);
     }
 
@@ -12595,7 +12658,7 @@ static bool can_remote_drive(sbsim_t *x, llsim_t *l, uint32_t seed, bool crewed)
 static void can_servo_tests(void)
 {
     char d[1000];
-    printf("\n=== CN14-CN23: the servos on DroneCAN - boot order, node loss, CPU1 safe frames, dead-man, rates (step 11e) ===\n");
+    printf("\n=== CN14-CN27: the servos on DroneCAN - boot order, node loss, CPU1 safe frames, dead-man, rates (step 11e) ===\n");
 
     /* CN14 boot order (OD-7 / OA-2): the first frame is throttle IDLE; no gear frame before thr_travel_s with the
      * throttle node OPERATIONAL, then NEUTRAL; no steering frame until a mode commands steering (no auto-centre:
@@ -13007,7 +13070,9 @@ static void can_servo_tests(void)
         uint16_t lg0 = p.x.sb.steer.log_seq;
         proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id); proto_wr_f32(&w, 3.0f);
         uint8_t r3 = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u);
-        bool pending = r3 == PROTO_R_OK && p.x.sb.servo.cfg.travel_s == 8.0f && p.x.sb.confirm.kind == CONF_THR_TRAVEL;
+        bool pending = r3 == PROTO_R_OK && p.x.sb.servo.cfg.travel_s == 8.0f && p.x.sb.confirm.kind == CONF_THR_TRAVEL &&
+                       p.x.sb.steer.log_what == 5u && p.x.sb.steer.log_why == 30u && p.x.sb.steer.log_seq != lg0;   /* 11g */
+        lg0 = p.x.sb.steer.log_seq;
         pc_run(&p, 11000u);
         bool late = p.x.sb.servo.cfg.travel_s == 8.0f && p.x.sb.confirm.kind == CONF_NONE;
         (void)pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u);
@@ -13027,7 +13092,7 @@ static void can_servo_tests(void)
         pc_run(&p, 2000u);
         bool reboot = p.x.sb.servo.cfg.travel_s == SERVO_THR_TRAVEL_S;
         snprintf(d, sizeof d, "param id %u: 8 s -> %u (taken at once %s); 3 s -> %u (CONFIRM pending, 8 s kept %s); no "
-                 "CONFIRM in 10 s: still 8 s %s; again + CONFIRM: 3 s, logged (STEERMODEL 4) %s; 0.5 s -> %u (bad value); in "
+                 "CONFIRM in 10 s: still 8 s %s; again + CONFIRM: 3 s, logged (STEERMODEL 5 asked, 4 taken) %s; 0.5 s -> %u (bad value); in "
                  "HDG LOCK (%s) -> %u (STANDBY only); after a reset %.1f s (worst case) %s",
                  id, r8, longer ? "yes" : "NO", r3, pending ? "yes" : "NO", late ? "yes" : "NO", signed_ok ? "yes" : "NO",
                  r05, hdg ? "yes" : "NO", rh, (double)p.x.sb.servo.cfg.travel_s, reboot ? "yes" : "NO");
@@ -13098,6 +13163,99 @@ static void can_servo_tests(void)
         test_report("CN24 the STANDBY button's ACK never hands MANUAL to a stick held through a node interlock",
                     latched && refused && acked && stays && manual, d);
     }
+
+    /* CN25 (step 11g, owner review finding 1) a planned arrival stop (WHY_ARRIVED) comes down at rate_down; an
+     * emergency while it runs - the STANDBY button, the e-stop, a required node lost - = idle AT ONCE in that step
+     * (the boat is already in STANDBY: no mode change carries it) and the stop is no longer "planned" */
+    {
+        int n_ok = 0, len = 0;
+        d[0] = 0;
+        for (int k = 0; k < 3; k++) {
+            static sbsim_t x;
+            bool drv = can_drive(&x, 2325u + (uint32_t)k, 12.0f, 40.0f);
+            sb_test_drive(&x.sb, false, GEAR_F, 0.0f);
+            float o0 = x.sb.thr.out_pct;
+            bool req = sb_request_mode(&x.sb, MODE_STANDBY, WHY_ARRIVED);
+            sbsim_run(&x, x.t + 3u * AP_PERIOD_MS - 1u, NULL, NULL);
+            float o1 = x.sb.thr.out_pct;
+            bool planned = req && x.sb.stop_planned && o1 > 1.0f && o1 < o0 && !x.sb.thr.stop;
+            if (k == 0) sim_hal_press(HAL_BTN_STANDBY);
+            else if (k == 1) sim_hal_set_estop(true, true);
+            else sim_hal_can_node_silent(DC_NODE_GEAR, true);
+            uint32_t t0 = x.t;
+            /* (a node is lost only after can_node_lost_ms: wait for it, then the very next step) */
+            while (k == 2 && !x.sb.can.node_lost && x.t < t0 + 3000u) {
+                o1 = x.sb.thr.out_pct;
+                sbsim_run(&x, x.t + AP_PERIOD_MS - 1u, NULL, NULL);
+            }
+            if (k != 2) sbsim_run(&x, x.t + AP_PERIOD_MS - 1u, NULL, NULL);
+            float o2 = x.sb.thr.out_pct;
+            bool at_once = o2 == 0.0f && x.sb.thr.stop && !x.sb.stop_planned;
+            sim_hal_set_estop(false, false);
+            if (k == 2) sim_hal_can_node_silent(DC_NODE_GEAR, false);
+            if (drv && planned && at_once) n_ok++;
+            len += snprintf(d + len, sizeof d - (size_t)len, "%s: driving %s, arrival stop %.1f -> %.1f %% %s, emergency -> "
+                            "%.1f %% %s; ", k == 0 ? "STANDBY button" : k == 1 ? "e-stop" : "gear node lost",
+                            drv ? "yes" : "NO", (double)o0, (double)o1, planned ? "ok" : "NO", (double)o2,
+                            at_once ? "ok" : "FAILED");
+        }
+        test_report("CN25 an emergency during a planned arrival stop: idle at once (STANDBY button, e-stop, node lost)",
+                    n_ok == 3, d);
+    }
+
+    /* CN26 (step 11g, owner review finding 5) DroneCAN servos with a throttle calibration whose idle is not 1000 us:
+     * the wire idle -1.0 (the boot frame, CPU1's safe frames) would not be its idle - the outputs never arm (NOT
+     * ARMED), core 0 sends only the wire idle -1.0, a driving request is refused */
+    {
+        static sbsim_t x;
+        static sb_config_t c;
+        sb_default_config(&c);
+        c.servo.idle_us = 1100u;
+        sm_boot(&x, 2330u, 12.0f, 0.03f, &c);
+        sim_hal_can_act_clear();
+        sbsim_run(&x, 15000u, NULL, NULL);
+        sim_can_act_t a;
+        sim_hal_can_act(CA_ACT_THROTTLE, &a);
+        bool hdg = hdg_lock(&x);
+        bool unarmed = !x.sb.armed && (x.sb.alarm_bits & SB_ALM_NOT_ARMED) && x.sb.servo.cfg_bad;
+        bool wire = a.any && a.n_core0 > 100u && a.first <= -0.999f && a.last <= -0.999f;
+        snprintf(d, sizeof d, "idle_us 1100 on CAN: armed %s, NOT ARMED %s, cfg_bad %s; throttle frames %u, first %.3f last "
+                 "%.3f (wire idle -1.0); HDG LOCK %s (mode %u)", x.sb.armed ? "YES" : "no",
+                 (x.sb.alarm_bits & SB_ALM_NOT_ARMED) ? "yes" : "NO", x.sb.servo.cfg_bad ? "yes" : "NO",
+                 (unsigned)a.n_core0, (double)a.first, (double)a.last, hdg ? "TAKEN" : "refused", (unsigned)sb_mode(&x.sb));
+        test_report("CN26 DroneCAN throttle idle_us != 1000: never armed, the wire stays at idle -1.0", unarmed && wire &&
+                    sb_mode(&x.sb) == MODE_STANDBY, d);
+    }
+
+    /* CN27 (step 11g, found by the new storm I51 on the gear node, seed 14) after a trip CPU1 shifted to NEUTRAL (thr_travel_s,
+     * throttle node OK); the throttle node lost AFTER that: the gear stays NEUTRAL - CPU1 never sends the pre-trip gear
+     * (forward) again */
+    {
+        static sbsim_t x;
+        inject_t j = { 1, 0u, false, 0u };
+        bool drv = can_drive(&x, 2331u, 12.0f, 50.0f);
+        sb_power_lower(&x.sb);
+        sbsim_run(&x, x.t + 600u, NULL, NULL);
+        j.at_ms = x.t + 1u;
+        uint32_t t0 = x.t;
+        while (!hal_outputs_forced() && x.t < t0 + 500u) sbsim_run(&x, x.t + 10u, inject_hook, &j);
+        uint32_t t_trip = x.t;
+        sbsim_run(&x, t_trip + 8000u, inject_hook, &j);
+        float g1 = 0.0f, g2 = 0.0f;
+        (void)sim_hal_can_servo(DC_NODE_GEAR, &g1, NULL, NULL, NULL);
+        bool neutral = fabsf(g1 - wire_of(x.sb.cfg.gear.pwm_n_us)) < 1e-3f;
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, true);
+        sbsim_run(&x, x.t + 5000u, inject_hook, &j);
+        (void)sim_hal_can_servo(DC_NODE_GEAR, &g2, NULL, NULL, NULL);
+        bool lost = (x.sb.can.lost_mask & (1u << HAL_CAN_ROLE_THROTTLE)) != 0u;
+        bool stays = fabsf(g2 - wire_of(x.sb.cfg.gear.pwm_n_us)) < 1e-3f && hal_outputs_forced();
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, false);
+        snprintf(d, sizeof d, "driving %s; trip: the gear node at %.3f after the travel time (neutral %s); throttle node lost "
+                 "%s: the gear node at %.3f (stays neutral %s)", drv ? "yes" : "NO", (double)g1, neutral ? "yes" : "NO",
+                 lost ? "yes" : "NO", (double)g2, stays ? "yes" : "NO");
+        test_report("CN27 CPU1 after a trip: once in NEUTRAL the gear stays NEUTRAL when the throttle node is lost",
+                    drv && neutral && lost && stays, d);
+    }
 }
 
 void sb_steer_tests(void)
@@ -13120,14 +13278,14 @@ void sb_phase5_tests(void)
 
 /* -------------------------------- relay board on DroneCAN (step 11f, CLAUDE.md T, design section 9) -- */
 
-/* RB15-RB20: the DroneCAN relay board (can_relay.c + the simulated node 30) - in every suite (the RB1-RB14 run
+/* RB15-RB21: the DroneCAN relay board (can_relay.c + the simulated node 30) - in every suite (the RB1-RB14 run
  * on the Modbus board in "all" / "all --bridge" and on the DroneCAN board in "all --can" / "--can-fast"; "rb"
  * runs both) - and the STARTER's hardware time-limit relay (OD-9) on both buses */
 static void relay_bus_tests(void)
 {
     char d[1400];
     bool keep_rb_can = s_rb_can;
-    printf("\n=== RB15-RB20 relay board on DroneCAN (can_relay.c, node 30) + the STARTER time-limit relay (OD-9) ===\n");
+    printf("\n=== RB15-RB21 relay board on DroneCAN (can_relay.c, node 30) + the STARTER time-limit relay (OD-9) ===\n");
 
     /* RB15 the STARTER's hardware time-limit relay (6 s, OD-9 / W8), on BOTH buses: a normal 5 s hold is never
      * cut by it (6 s > crank_max_s 5 s); a welded STARTER contact (the AURIX's OFF has no effect) - the starter
@@ -13415,6 +13573,62 @@ static void relay_bus_tests(void)
         test_report("RB20 DroneCAN STARTER: AURIX-timed, the board's timeout ends it when core 0 freezes / resets; nothing "
                     "sent after the boot", set && ok >= 3 && cranking && t_off > 0u && t_off <= 400u && tripped && set2 &&
                     ok2 >= 2 && cranking2 && t_off2 > 0u && t_off2 <= 400u && after, d);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
+
+    /* RB21 (step 11g, owner review findings 3 + 9) DroneCAN: an ON never waits for an absent board - a bus-off right
+     * after an ON drops its burst (the relay never switches ON late when the bus is back; only an OFF waits); an ON
+     * to a board that is not there is refused; the keep store follows every command at once (cr_set / cr_pulse);
+     * the uptime test also after a WARM reset: a board that rebooted during the AURIX's warm reset = all OFF known
+     * (the kept states are stale) */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1725u, NULL, &t) && rb_can();
+        sim_hal_relay_board(true, 5u, SIM_RB_NO_READBACK);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        /* the keep store at once (no control step in between) */
+        uint32_t kk = 0u, ko = 0u;
+        bool c1 = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        bool store = c1 && sim_hal_cr_keep(&kk, &ko) && (kk & rb_bit(6)) && (ko & rb_bit(6));
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool on6 = sim_hal_relay_state(6u);
+        (void)sb_relay_cmd(&x.sb, 6u, RELAY_CMD_OFF, 0u);
+        store = store && sim_hal_cr_keep(&kk, &ko) && (kk & rb_bit(6)) && !(ko & rb_bit(6));
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        /* ON, then the bus goes at once: the ON burst is dropped, never sent late */
+        uint32_t e6 = sim_hal_relay_edges(6u), dr0 = cr_stats()->dropped;
+        bool c2 = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sim_hal_can_fault(SIM_CAN_BUSOFF);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool absent_ref = sb_relay_cmd(&x.sb, 7u, RELAY_CMD_ON, 0u) != SB_OK;    /* (SILENT: refused) */
+        bool absent_hal = !cr_set(7u, true) && !cr_pulse(4u, 300u);              /* the back-end refuses too */
+        sim_hal_can_fault(0u);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool dropped = c2 && cr_stats()->dropped > dr0 && !sim_hal_relay_state(6u) && sim_hal_relay_edges(6u) == e6 &&
+                       !sim_hal_relay_state(7u);
+        sb_alarm_ack(&x.sb);
+        /* NAV LIGHTS ON, then the board reboots DURING a warm reset of the AURIX: all OFF known after the boot */
+        (void)sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool on_again = sim_hal_relay_state(6u) && (x.sb.relays.states & rb_bit(6));
+        sim_hal_can_node_reboot(DC_NODE_RELAY);
+        rb_power_cycle(&x, HAL_RESET_SYSTEM);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool warm = !sim_hal_relay_state(6u) && (x.sb.relays.known & 0x7Fu) == 0x7Fu && x.sb.relays.states == 0u &&
+                    x.sb.relays.power_ups == 0u;
+        sim_hal_relay_board(true, 5u, 0u);
+        snprintf(d, sizeof d, "table %s; keep store at once on ON / OFF %s; ON %s; ON + bus-off at once: burst dropped, never "
+                 "ON late %s (dropped %u); ON to an absent board refused (relays %s, back-end %s); board rebooted during a "
+                 "warm reset: ON before %s, all OFF known after %s",
+                 loaded ? "yes" : "NO", store ? "yes" : "NO", on6 ? "yes" : "NO", dropped ? "yes" : "NO",
+                 (unsigned)(cr_stats()->dropped - dr0), absent_ref ? "yes" : "NO", absent_hal ? "yes" : "NO",
+                 on_again ? "yes" : "NO", warm ? "yes" : "NO");
+        test_report("RB21 DroneCAN: an ON never waits for an absent board, the keep store at every command, the uptime "
+                    "test after a warm reset", loaded && store && on6 && dropped && absent_ref && absent_hal && on_again &&
+                    warm, d);
         remove("nv7.bin");
         sim_hal_relay_board_reset();
     }

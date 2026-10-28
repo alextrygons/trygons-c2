@@ -26,6 +26,7 @@ void servo_init(servo_t *sv, const servo_config_t *c)
     sv->limit_pct = 0.0f;
     sv->clamped = false;
     sv->can = hal_servos_can();
+    sv->cfg_bad = sv->can && c->idle_us != SERVO_CAN_IDLE_US;
     /* DroneCAN: after a boot the throttle position is UNKNOWN (the node held whatever it had) */
     sv->est_pct = sv->can ? 100.0f : 0.0f;
     sv->node_ok = !sv->can;
@@ -65,9 +66,10 @@ float servo_throttle_write(servo_t *sv, const plim_t *lim, bool forward_engaged,
     sv->clamped = pct > limit;
     if (!(pct >= 0.0f)) pct = 0.0f;     /* negative or NaN -> idle */
     if (pct > allowed) pct = allowed;
+    if (sv->cfg_bad) pct = 0.0f;        /* DroneCAN with idle_us != 1000: idle only (never armed) */
     sv->limit_pct = limit;
     sv->out_pct = pct;
-    sv->out_us = servo_pulse_for(&sv->cfg, pct);
+    sv->out_us = sv->cfg_bad ? (uint16_t)SERVO_CAN_IDLE_US : servo_pulse_for(&sv->cfg, pct);
     hal_set_throttle_pwm(sv->out_us);
     return pct;
 }

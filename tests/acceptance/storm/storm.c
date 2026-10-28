@@ -551,12 +551,12 @@ static const char *INV_NAMES[NINV] = { "",
     "I44 DP SPOT / JOG more than 50 m or 2 min off the spot -> DP ends (in that step)",
     "I45 the DP set speed (CRUISE / TRIP) never above dp_max_kn",
     "I46 a HOT thruster ends DP (never a DP step with a thruster HOT)",
-    "I47 an emergency (STANDBY / e-stop / link loss / node loss / trip) commands idle in that same step; a normal decrease never slower than rate_down",
+    "I47 an emergency (STANDBY / e-stop / link loss / node loss / trip, also during a planned or generator stop) commands idle in that same step; a normal decrease never slower than rate_down",
     "I48 the throttle command never rises faster than rate_up (the generator's steps too)",
     "I49 DroneCAN: the gear servo only moves while the SIMULATED throttle servo is at idle",
     "I50 DroneCAN: a required node lost -> alarm + STANDBY within the node-lost time + a step; never out of STANDBY while one is lost",
     "I51 DroneCAN: commands stopped -> the nodes HOLD; after a boot the first frame is throttle IDLE, no gear frame before thr_travel_s; throttle node lost -> no gear change",
-    "I52 DroneCAN: a monitor trip -> CPU1's safe frames within 20 ms, core 0's actuator frames stop (latched)",
+    "I52 DroneCAN: a monitor trip -> CPU1's safe frames within 120 ms (20 ms period + the monitor / control step), no core-0 actuator frame on the bus after it (latched)",
     "I53 DroneCAN: the steering adaptation never leaves the TRAINING bounds",
     "I54 DroneCAN UNCREWED: a monitor trip -> no dead-man pulse, the engine stopped within the dead-man time; CREWED: never a pulse",
     "I55 DroneCAN UNCREWED: throttle node lost -> ENGINE KILL in the same step; never in CREWED",
@@ -659,6 +659,8 @@ typedef struct {
     bool     node_lost_prev;                /* I50 */
     uint32_t node_silenced_t;               /* I50: a required node made silent / unpowered (0 none) */
     uint16_t gear_sent_prev;                /* I51 */
+    float    gear_node_prev;                /* I51 (step 11g): the gear node's received command */
+    bool     gear_node_have_prev;
     bool     thr_node_lost_prev;
     uint32_t boot_t;                        /* I51 / I56: the boot of this episode's last start */
     bool     boot_first_checked;
@@ -717,6 +719,18 @@ static void worst(int inv, float v)
 /* step 11e: the DroneCAN servos (the episode runs on them) */
 static bool can_ep(void) { return S.can != 0u && sim_hal_servos_can(); }
 
+/* I52: core 0's ArrayCommands on the wire (priority 8; CPU1's safe frames are priority 0) */
+static uint32_t core0_wire_frames(void)
+{
+    uint32_t n = 0u;
+    for (uint8_t k = 1u; k <= 3u; k++) {
+        sim_can_act_t a;
+        sim_hal_can_act(k, &a);
+        n += a.n_core0;
+    }
+    return n;
+}
+
 /* I47-I57: every control step (after the old invariants) */
 static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, float dt)
 {
@@ -729,7 +743,12 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
             const mode_log_entry_t *e = mode_log_get(&s->modes, k - 1u);
             if (e->verdict == MODE_OK && e->to == MODE_STANDBY) { arrived = e->why == WHY_ARRIVED; break; }
         }
-        bool emergency = ((m == MODE_STANDBY && C.mode_prev != MODE_STANDBY) || s->stopping) && !arrived;
+        /* step 11g: an emergency condition in THIS step (e-stop, a required node / the bus lost, the link lost /
+         * killed, a STANDBY press) = idle at once also while already in STANDBY - during a planned arrival stop or
+         * a normal generator stop too (the storm's own view, not sb emerg) */
+        bool cond = s->estop_state == 2u || s->can.node_lost || s->can.bus_bad || s->ll.state == SB_LL_LOST ||
+                    s->ll.state == SB_LL_KILLED || (s->buttons_now & HAL_BTN_BIT(HAL_BTN_STANDBY)) != 0u;
+        bool emergency = (((m == MODE_STANDBY && C.mode_prev != MODE_STANDBY) || s->stopping) && !arrived) || cond;
         if (emergency) {
             if (s->throttle_demand <= 0.01f && thr <= 0.6f) ok(47);
             else fail(47, "emergency / STANDBY but the throttle command %.1f %% (demand %.1f %%)", thr, s->throttle_demand);
@@ -781,30 +800,33 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
         else fail(51, "a gear frame %.2f s after the boot (travel %.1f s)", since, s->servo.cfg.travel_s);
     }
     bool thr_lost = (s->can.lost_mask & (1u << HAL_CAN_ROLE_THROTTLE)) != 0u;
-    if (thr_lost && C.thr_node_lost_prev && C.gear_sent_prev != 0u && s->servo.gear_us != 0u &&
-        s->servo.gear_us != C.gear_sent_prev)
-        fail(51, "throttle node lost but the gear command changed %.0f -> %.0f us", (double)C.gear_sent_prev,
-             (double)s->servo.gear_us);
+    /* step 11g: what the simulated GEAR NODE really got (core 0's frames AND CPU1's safe frames), not servo.gear_us */
+    float gnode = 0.0f;
+    bool ghave = sim_hal_can_servo(DC_NODE_GEAR, &gnode, NULL, NULL, NULL);
+    if (thr_lost && C.thr_node_lost_prev && C.gear_node_have_prev && ghave && fabsf(gnode - C.gear_node_prev) > 1e-4f)
+        fail(51, "throttle node lost but the gear node's command changed %.3f -> %.3f", (double)C.gear_node_prev,
+             (double)gnode);
     else if (thr_lost) ok(51);
     C.thr_node_lost_prev = thr_lost;
+    C.gear_node_prev = gnode;
+    C.gear_node_have_prev = ghave;
     C.gear_sent_prev = s->servo.gear_sent ? s->servo.gear_us : 0u;
     /* I52: a trip -> CPU1's safe frames within 20 ms (+ a monitor tick), core 0's actuator frames stop */
     if (forced && !C.trip_t) {
-        hal_can_act_t a;
         C.trip_t = S.t ? S.t : 1u;
         C.safe_frames_at_trip = sim_hal_can_safe_frames();
-        C.act_frames_at_trip = hal_can_act_state(&a) ? a.frames : 0u;
+        C.act_frames_at_trip = core0_wire_frames();
         C.safe_seen = false;
     }
     if (forced && C.trip_t) {
-        hal_can_act_t a;
-        uint32_t frames = hal_can_act_state(&a) ? a.frames : 0u;
+        /* step 11g: core 0's ArrayCommands that really went onto the WIRE (not only queued) */
+        uint32_t frames = core0_wire_frames();
         if (!C.safe_seen && sim_hal_can_safe_frames() != C.safe_frames_at_trip) { C.safe_seen = true; ok(52); }
         bool bus_ok = !s->can.bus_bad && (s->can.lost_mask & 7u) != 7u;
         if (!C.safe_seen && bus_ok && S.t - C.trip_t > MON_SAFE_FRAME_MS + 2u * AP_PERIOD_MS)
             fail(52, "no CPU1 safe frame %.0f ms after the trip%.0f", (double)(S.t - C.trip_t), 0.0);
-        if (frames > C.act_frames_at_trip + 3u)
-            fail(52, "core 0 queued %.0f actuator frames after the trip%.0f", (double)(frames - C.act_frames_at_trip), 0.0);
+        if (frames > C.act_frames_at_trip)
+            fail(52, "core 0 sent %.0f actuator frames onto the bus after the trip%.0f", (double)(frames - C.act_frames_at_trip), 0.0);
         else ok(52);
     }
     /* I53: the adaptation inside the TRAINING bounds */

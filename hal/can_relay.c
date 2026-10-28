@@ -93,10 +93,15 @@ void cr_service(void)
         if (!s_seen) {
             s_seen = true;
             s_restarts = n.restarts;
-            /* the board booted after the AURIX's power-on (its uptime is not longer than ours): it powered up
-             * with every relay OFF (R-2) - known OFF unless commanded meanwhile */
-            if (s_cfg.power_on && (uint64_t)n.uptime_s * 1000u <= (uint64_t)(uint32_t)(now - s_t0) + CR_BOOT_MARGIN_MS)
+            /* the board booted after the AURIX's start - its power-on OR a warm reset (step 11g: the states kept
+             * from before a warm reset are stale then) - its uptime is not longer than ours: it powered up with
+             * every relay OFF (R-2). Nothing ON can have been commanded meanwhile (cr_set / cr_pulse refuse ON
+             * while the board is not there), so every state is known OFF. */
+            if ((uint64_t)n.uptime_s * 1000u <= (uint64_t)(uint32_t)(now - s_t0) + CR_BOOT_MARGIN_MS) {
                 s_known = s_mask;
+                s_on = 0u;
+                memset(s_until, 0, sizeof s_until);
+            }
         } else if (n.restarts != s_restarts) {
             /* the board rebooted (its uptime went back): it powered up OFF (R-2) - every state OFF, nothing re-sent
              * (a relay is never switched back ON by itself) */
@@ -121,6 +126,22 @@ void cr_tick(void)
     s_last_tx = now;
     bool there = present();
     for (uint8_t i = 0; i < s_cfg.channels; i++) {
+        if (!there && s_until[i] != 0u) {
+            /* step 11g: a pulse (ON at 50 Hz) to a board that is not there (bus fault, silent, not OPERATIONAL)
+             * ends NOW - never an ON that arrives late when the board is back; the OFF burst follows */
+            s_until[i] = 0u;
+            s_on &= ~bit(i);
+            s_burst[i] = CR_BURST_FRAMES;
+        }
+        if (!there && s_burst[i] != 0u && (s_on & bit(i))) {
+            /* step 11g: only an OFF burst waits for the board ("goes when it is back"); an ON burst is dropped
+             * and the state is unknown (some frames may have reached it) */
+            s_burst[i] = 0u;
+            s_on &= ~bit(i);
+            s_known &= ~bit(i);
+            s_st.dropped++;
+            continue;
+        }
         bool pulse = s_until[i] != 0u;
         if (!pulse && s_burst[i] == 0u) continue;
         if (dc_send_hardpoint(i, (s_on & bit(i)) ? 1u : 0u)) {
@@ -135,6 +156,7 @@ void cr_tick(void)
 bool cr_set(uint8_t n, bool on)
 {
     if (!s_up || n < 1u || n > s_cfg.channels) return false;
+    if (on && !present()) return false;                 /* step 11g: never an ON to a board that is not there */
     uint8_t i = (uint8_t)(n - 1u);
     s_until[i] = 0u;
     if (on) s_on |= bit(i); else s_on &= ~bit(i);
@@ -147,6 +169,7 @@ bool cr_set(uint8_t n, bool on)
 bool cr_pulse(uint8_t n, uint16_t ms)
 {
     if (!s_up || n < 1u || n > s_cfg.channels || ms == 0u) return false;
+    if (!present()) return false;                       /* step 11g: a pulse only to a board that is there */
     uint8_t i = (uint8_t)(n - 1u);
     uint32_t end = hal_millis() + ms;
     s_until[i] = end ? end : 1u;                        /* ON at 50 Hz until then (AURIX-timed), then OFF */
@@ -173,13 +196,16 @@ bool cr_read(uint8_t n, bool *on)
     uint8_t i = (uint8_t)(n - 1u);
     uint16_t st;
     uint32_t age;
+    /* step 11g: known only while the board is there (its NodeStatus, OPERATIONAL) - the same moment an ON can be
+     * sent (cr_set / cr_pulse refuse it otherwise), so relays.c's power_up never meets a refused ON */
+    if (!present()) return false;
     if (dc_hardpoint_status(i, &st, &age) && age <= s_cfg.lost_ms) {   /* the board's readback (R-4) */
         *on = st != 0u;
         return true;
     }
     if (cr_readback()) return false;                    /* the board reads back, but not this one: unknown */
     /* no readback at all: the commanded state, while the board is there */
-    if (!present() || !(s_known & bit(i))) return false;
+    if (!(s_known & bit(i))) return false;
     *on = (s_on & bit(i)) != 0u;
     return true;
 }

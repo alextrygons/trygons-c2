@@ -149,6 +149,7 @@ float    sim_hal_steer_truth(void);
 float    sim_hal_steer_cmd(bool *have);     /* what the app commanded (have = a steering command at all) */
 void     sim_hal_can_servo_set(uint8_t id, float pos);   /* a servo's position before the boot (tests) */
 uint32_t sim_hal_can_safe_frames(void);     /* CPU1's safe frames on the bus */
+bool     sim_hal_cr_keep(uint32_t *known, uint32_t *on);   /* the DroneCAN relay keep store (no-clear RAM, step 11g) */
 /* the ArrayCommands that went onto the wire, per actuator (1 throttle, 2 steering, 3 gear): from core 0
  * (priority 8) and from CPU1 (priority 0), the first and the last value + time; cleared by hand */
 typedef struct {

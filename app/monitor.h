@@ -139,6 +139,8 @@ typedef struct {
     uint32_t     act_prev, act_ms;      /* core 0's actuator task: last tick count / when it changed */
     uint32_t     safe_ms;       /* the last safe frame set */
     uint32_t     safe_sets;     /* safe frame sets sent */
+    bool         safe_neutral;  /* CPU1 has sent NEUTRAL since the trip: it stays neutral (step 11g - a throttle node
+                                 * lost afterwards must never bring back the old pre-trip gear) */
     bool         dm_level;      /* the dead-man pulse level */
     uint32_t     dm_ms;
     uint32_t     dm_edges;
