@@ -24,6 +24,10 @@
  *   F16 <float>            canardConvertNativeFloatToFloat16
  *   START_FAIL             the next INIT fails
  *   INIT                   dc_init (time unchanged)
+ *   SAFE <act> <float> <tid>    CPU1's safe frame (hal/can_safe.c cs_frame): "SAFE <id> <data>"
+ *   CANCELTX               dc_cancel_tx (step 11e: a trip / the latch came in between)
+ *   TID                    dc_cmd_tid: "TID <n>"
+ * The controller's FIFO cancel (port cancel, step 11e) prints "CANCEL".
  * Output: "TX <id> <data>" for every frame the controller took, then the
  * answer of the command ("NODE ...", "BUS ...", "PAYLOAD ...", ...).
  */
@@ -32,6 +36,7 @@
 #include <string.h>
 
 #include "dronecan.h"
+#include "can_safe.h"
 #include "libcanard/canard.h"
 
 static uint32_t s_ms;
@@ -67,7 +72,8 @@ static uint8_t p_state(uint8_t *tec, uint8_t *rec)
 }
 static void p_recover(void) { s_recovers++; }
 static uint32_t p_millis(void) { return s_ms; }
-static const dc_port_t s_port = { p_start, p_send, p_recv, p_state, p_recover, p_millis };
+static void p_cancel(void) { printf("CANCEL\n"); }
+static const dc_port_t s_port = { p_start, p_send, p_recv, p_state, p_recover, p_millis, p_cancel };
 
 static uint32_t hexbytes(const char *h, uint8_t *out, uint32_t max)
 {
@@ -215,6 +221,20 @@ int main(void)
         } else if (!strcmp(cmd, "CRCSIG")) {
             unsigned long long sig = strtoull(a, NULL, 16);
             printf("CRC %04X\n", dc_crc_signature(sig));
+        } else if (!strcmp(cmd, "SAFE")) {
+            unsigned act = 0u, tid = 0u;
+            char v[64] = "";
+            if (sscanf(a, "%u %63s %u", &act, v, &tid) == 3) {
+                dc_frame_t f;
+                cs_frame(&f, (uint8_t)act, strtof(v, NULL), (uint8_t)tid);
+                printf("SAFE %08X ", (unsigned)f.id);
+                for (uint32_t i = 0; i < f.len; i++) printf("%02X", f.data[i]);
+                printf("\n");
+            }
+        } else if (!strcmp(cmd, "CANCELTX")) {
+            dc_cancel_tx();
+        } else if (!strcmp(cmd, "TID")) {
+            printf("TID %u\n", (unsigned)dc_cmd_tid());
         } else if (!strcmp(cmd, "F16")) {
             printf("F16 %04X\n", canardConvertNativeFloatToFloat16(strtof(a, NULL)));
         } else if (!strcmp(cmd, "SIGS")) {

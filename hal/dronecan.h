@@ -83,6 +83,7 @@
 #define DC_CMD_PWM          4u
 
 /* transfer priorities (0 = highest; the CPU1 safety frames of step 11e get the top) */
+#define DC_PRIO_SAFE        0u      /* CPU1's safe frames (hal/can_safe.c): win the arbitration over everything */
 #define DC_PRIO_ACTUATOR    8u
 #define DC_PRIO_HARDPOINT   16u
 #define DC_PRIO_STATUS      24u
@@ -106,6 +107,9 @@ typedef struct {
     uint8_t  (*state)(uint8_t *tec, uint8_t *rec);  /* DC_CTRL_ */
     void     (*recover)(void);                      /* bus-off: start the recovery (returns at once) */
     uint32_t (*millis)(void);
+    void     (*cancel)(void);                       /* cancel every pending frame of OUR TX FIFO (the hardware
+                                                       queue; step 11e: a bus fault / a monitor trip - no stale
+                                                       ArrayCommand leaves the controller late). NULL = none */
 } dc_port_t;
 
 /* the compile-time node table (hal_can_node(i)): i = HAL_CAN_ROLE_ */
@@ -117,10 +121,18 @@ bool dc_node(uint8_t i, hal_can_node_t *n);
 /* our own NodeStatus health / mode (default OK / OPERATIONAL) */
 void dc_set_own_status(uint8_t health, uint8_t mode);
 
-/* --- sending (step 11d: tests only; 11e servos, 11f relays) ------------------ */
+/* --- sending (11e: the servos through hal/can_act.c ONLY; 11f relays) ---------- */
 /* one ArrayCommand with ONE command (4 bytes + tail = a single CAN frame):
- * false = not queued (no room / bus fault / bad value) */
+ * false = not queued (no room / bus fault / bad value). Only the CAN output
+ * layer hal/can_act.c calls it (tools/check.sh). */
 bool dc_send_actuator(uint8_t actuator_id, uint8_t type, float value);
+/* the TX part of dc_service alone (the 10 ms actuator task: queued frames into the controller now) */
+void dc_tx_flush(void);
+/* drop every queued frame (software queue + the controller's TX FIFO through port->cancel) */
+void dc_cancel_tx(void);
+/* the next ArrayCommand transfer ID (CPU1 continues the counter for its safe frames: OUR node ID, the same
+ * data type - a node must not drop them as duplicates; TO CONFIRM C19) */
+uint8_t dc_cmd_tid(void);
 /* one hardpoint.Command (relay board): false = not queued */
 bool dc_send_hardpoint(uint8_t hardpoint_id, uint16_t command);
 

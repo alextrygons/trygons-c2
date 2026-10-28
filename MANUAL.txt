@@ -886,9 +886,11 @@ USB lever has a few extra ones, chapter 8)
 
 THE STANDBY BUTTON ALWAYS WINS
   Every mode -> STANDBY (idle + neutral first, then steering off). The
-  throttle closes fast in STANDBY: idle within about 1 s from full
-  (parameter stop_rate_pc_s, 100 %/s; normal driving and a planned arrival
-  stop keep 40 %/s). Until idle + neutral is reached the boat is still
+  throttle is commanded to IDLE AT ONCE in STANDBY (no rate limit, step 11e;
+  normal driving, a lowered power limit and a planned arrival stop come down
+  at thr_dn_pc_s, 50 %/s). The gear goes to neutral once the throttle servo
+  must be at idle (thr_trav_s, the worst-case 6 s from full). Until idle +
+  neutral is reached the boat is still
   steered:
     * from MANUAL: your stick keeps steering the outboard (even if you
       still hold it), then the steering stops;
@@ -1981,9 +1983,10 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          only - set its ID with the DroneCAN GUI Tool.
                          (Second word, bit 7.) The node table (health, mode,
                          uptime, reboots, counters) is on the Bench page of
-                         the USB laptop. In step 11d no servo is driven over
-                         CAN yet (still PWM); HAL_CAN_FITTED stays 0 on the
-                         board until the kit's CAN pins are confirmed.
+                         the USB laptop. The servos over CAN (step 11e,
+                         chapter 12) stay off on the board (HAL_CAN_FITTED /
+                         HAL_CAN_SERVOS 0) until the kit's CAN pins are
+                         confirmed.
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER
@@ -2014,8 +2017,9 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
 12. SAFETY RULES BUILT INTO THE SOFTWARE
 -------------------------------------------------------------------------------
   * Gear changes only at idle: idle -> wait -> neutral -> wait -> gear.
-  * Every fault / STANDBY: idle + neutral FIRST, then steering off. In
-    STANDBY the throttle closes at 100 %/s (idle within 1 s); until idle +
+  * Every fault / STANDBY: idle + neutral FIRST, then steering off (the
+    DroneCAN position servo: HOLD). Idle is commanded AT ONCE; neutral once
+    the throttle servo must be at idle (thr_trav_s); until idle +
     neutral the onboard stick (from MANUAL) or the gyro (from REMOTE, or a
     joystick fault) keeps steering.
     Compass lost while moving (AUTO / TRAINING): gyro steering until
@@ -2040,6 +2044,65 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   * Heading hold pauses (outboard held still) when there is no propulsion,
     so the angle estimate can't drift while you are stopped.
   * Logging can never block control (chapter 13).
+
+DRONECAN SERVOS (STEP 11e - THE CODE IS READY, THE BOARD STILL USES PWM)
+  The boat's throttle, steering and gear servos can be DroneCAN nodes
+  (throttle 20, steering 21 = a 360 deg position servo, gear 22). The code
+  for it is complete and tested in the simulator ("autopilot_sim all --can"
+  = worst-case servos, throttle 6 s / steering 12 s lock to lock;
+  "all --can-fast" = 2 s / 3 s). On the board it stays OFF
+  (hal/hal_pins.h HAL_CAN_FITTED 0 and HAL_CAN_SERVOS 0) until the owner
+  has checked the kit's CAN pins and the servo nodes on the bench
+  (FIRST_TEST.md 3j). What changes with the DroneCAN servos:
+  * Throttle UP is gentle (15 %/s), DOWN is faster (50 %/s); STANDBY, the
+    e-stop, a lost link, a lost node, every fault and a monitor trip
+    command IDLE AT ONCE (no rate limit - only the servo's own speed).
+  * "Idle" for every rule that waits for it (gear change, steering off,
+    ENGINE KILL, STARTER, generator, DP, restart) = where the throttle servo
+    MUST be by now: the software assumes the slowest servo (thr_trav_s,
+    6 s from full to idle). The gear servo moves only after that. A longer
+    thr_trav_s is taken at once (STANDBY); a SHORTER one needs a joystick
+    CONFIRM (it is logged) and is never saved.
+  * After every boot the first command is THROTTLE IDLE; the gear gets no
+    command for the throttle travel time; the steering gets NO command
+    until a mode steers (no automatic centring). After a power-on the
+    steering position is unknown: the first moves run at the worst-case
+    speed without play compensation.
+  * Lost commands (reset, bus fault, a dead AURIX): every servo HOLDS where
+    it is. The throttle comes down by the AURIX (idle first after a boot),
+    by CPU1's safe frames, or the engine is stopped (kill cord / e-stop /
+    UNCREWED dead-man).
+  * Throttle node lost: the gear is HELD (never an automatic neutral);
+    CREWED = alarm + STANDBY; UNCREWED = ENGINE KILL at once (owner
+    decision OD-3, the one exception to "kill only after idle + neutral").
+  * Monitor trip: CPU1 sends its own safe frames every 20 ms (throttle
+    idle, steering held, gear held until the throttle travel time, then
+    neutral while the throttle node works); core 0's frames are cancelled.
+    The servo power is never cut. Core 0's 10 ms actuator task stopping for
+    100 ms is a trip too (MON_TRIP_CAN_TX).
+  * The e-stop stops the ENGINE in every profile (hard-wired kill circuit
+    contact, WIRING.md); the software ENGINE KILL stays UNCREWED only.
+  * UNCREWED dead-man: a timer relay in the kill circuit, held "run" by
+    pulses from CPU1 (P10.5, ~1.5 s): no pulses = the engine stops by
+    itself (trip, frozen AURIX, throttle node lost, kill latched). Part,
+    time and arming switch: TO CONFIRM (WIRING.md 3A). A warm reset in
+    UNCREWED may stop the engine (the pulses restart only after the profile
+    detection) - TO CONFIRM.
+  * STEERING TRAINING for the position servo (TRAINING, from STANDBY, slow
+    ahead in calm water): centre, small steps, large steps, a reversal
+    staircase, a check run - it measures the servo speed per direction,
+    the play (backlash), the turn gain K and the boat's time constant.
+    Accept = saved in data-flash slot 5 (format 2; an old DC-motor result
+    is refused: "NV DATA RESET" + "TRAINING NEEDED"). Without TRAINING the
+    steering uses the worst-case speed and no play compensation.
+  * With TRAINING: every direction change adds the measured play, the
+    command never moves faster than the servo, and in steady calm-water
+    HDG LOCK / AUTO the model adapts slowly (RAM only, K / tau within 0.7 -
+    1.3 x TRAINING, the play only smaller, the speed never faster). On any
+    doubt (sensor fault, node lost, a bound reached, a large model error)
+    it goes back to the TRAINING values at once: notice STEERING MODEL
+    RESET. The Control page shows the stored / adapted values, the
+    confidence, the last reset reason and the throttle model.
 
 
 -------------------------------------------------------------------------------
@@ -2100,8 +2163,11 @@ The ground station saves its own copy of the telemetry in the same format
   Throttle servo           1000 us = idle, 2000 us = full (calibrate!)
   Gear servo pulses        F 1900 us, N 1500 us, R 1100 us
   Gear waits               idle 1.0 s, neutral 1.0 s, engage 0.8 s
-  Throttle                 +15 %/s up, -40 %/s down, reverse max 30 %;
-                           STANDBY -100 %/s (stop_rate_pc_s, 40..300)
+  Throttle                 +15 %/s up (thr_up_pc_s, 2..30), -50 %/s down
+                           (thr_dn_pc_s, 20..200), reverse max 30 %; STANDBY /
+                           faults / trip: idle AT ONCE; the servo travel for
+                           every "idle" wait 6 s (thr_trav_s, 1..30: longer
+                           at once, shorter only with a CONFIRM, RAM only)
   Joystick                 deadband 15 % (PC), engage 0.1 s, full stick =
                            100 % demand (PC; the power limit applies)
   USB joystick             neutral zone 45-55 %, lever override 10 %,
@@ -2268,8 +2334,8 @@ C) TO DECIDE / CHECK ON THE BOAT
      [ ] Try the power-limit steps and the low-speed drop at sea.
 
 D) KNOWN LIMITATIONS / JUDGEMENT CALLS
-     * After a power-limit drop the throttle comes down at 40 %/s (not a
-       sudden cut), which takes up to ~1.8 s from 100 % to 30 %.
+     * After a power-limit drop the throttle comes down at 50 %/s (not a
+       sudden cut), which takes up to ~1.4 s from 100 % to 30 %.
      * The STANDBY button works even with the stick held (the stick is
        then ignored until centred). The PC can't leave MANUAL at all.
      * A STOP waypoint only chirps; the "ARRIVED" alarm is for the end.

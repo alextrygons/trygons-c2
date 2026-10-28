@@ -11,7 +11,7 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0.."
 
 set SRCS=
-for %%f in (app\*.c sim\*.c hal\tc_nv.c hal\tc_modbus.c hal\dronecan.c hal\libcanard\canard.c) do set SRCS=!SRCS! %%f
+for %%f in (app\*.c sim\*.c hal\tc_nv.c hal\tc_modbus.c hal\dronecan.c hal\can_act.c hal\can_safe.c hal\libcanard\canard.c) do set SRCS=!SRCS! %%f
 
 echo Compiling:%SRCS%
 gcc -std=c99 -O2 -Wall -Wextra -DCANARD_64_BIT=1 -Iapp -Ihal %SRCS% -o sim\autopilot_sim.exe -lm -lws2_32

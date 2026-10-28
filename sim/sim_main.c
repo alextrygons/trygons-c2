@@ -427,6 +427,12 @@ int main(int argc, char **argv)
             sb_set_bridge(true);
             printf("JOYSTICK SOURCE: USB bridge (all tests through bridge frames)\n");
         }
+        if (argc > 2 && (strcmp(argv[2], "--can") == 0 || strcmp(argv[2], "--can-fast") == 0)) {
+            bool fast = strcmp(argv[2], "--can-fast") == 0;
+            sb_set_can(true, fast);
+            printf("SERVOS: DroneCAN (%s: throttle %s, steering %s lock to lock)\n", fast ? "fast" : "worst case",
+                   fast ? "2 s" : "6 s", fast ? "3 s" : "12 s");
+        }
         return run_all();
     }
 
@@ -434,6 +440,13 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "gw") == 0) { sb_gateway_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "df") == 0) { sb_nv_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "cn") == 0) { sb_can_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "p4") == 0) { sb_phase4_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "p5") == 0) {
+        if (argc > 2 && strcmp(argv[2], "--can") == 0) sb_set_can(true, false);
+        sb_phase5_tests();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "sm") == 0) { sb_steer_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "bv") == 0) { sb_battery_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "gen") == 0) { sb_generator_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "rb") == 0) { sb_relay_tests(); return 0; }

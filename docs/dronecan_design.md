@@ -760,3 +760,35 @@ docs use now; every one is in "WAITING FOR OWNER" at the top of PROGRESS.md. Not
 | (c) | OD-3 "kill at once" vs CLAUDE.md B / storm I27-I28 "kill only after idle + neutral" | an EXPLICIT exception (CLAUDE.md B + T, section 13.1 #4): UNCREWED + throttle node lost = kill at once, gear held; I27 / I28 get the exception wording, I55 checks it | 11e (I27 / I28 / I55) |
 | (d) | OD-7 read as "no steering frame after a WARM reset either" (not only after a power-on) | YES: after any boot no steering frame until a mode commands steering; after a warm reset p_est = the last command from reset-surviving RAM | 11e boot order, I56 |
 | (e) | STARTER hardware time-limit relay 6 s vs the software crank_max_s 5 s | 6 s (a little longer than 5 s so it never cuts a normal crank; the software limit acts first, the relay only if the software / board fails) | the time-limit relay part (hardware), nothing in software |
+
+## 16. Step 11e - what is implemented (the code; the board keeps HAL_CAN_FITTED 0 + HAL_CAN_SERVOS 0)
+
+- Writers: app/servo.c is the only writer of throttle / gear / steering (hal_set_throttle_pwm, hal_set_gear_pwm with
+  0 = no gear frame = HOLD, hal_set_steer_pos); hal/can_act.c the only sender of the servo ArrayCommands (10 ms task
+  hal_can_tick, Cpu0_Main.c / the sim harness), hal/can_safe.c CPU1's encoder (D16 checks it against the independent
+  encoder of dronecan_check.py). tools/check.sh greps all three.
+- Throttle model (section 5 / 7): servo.est_pct = an upper bound (follows the command up at once, decays at
+  100 % / thr_trav_s); unknown (100 %) after a CAN boot and while the throttle node is lost; "idle" for the gear, the
+  steering off, ENGINE KILL, STARTER, generator, DP and restart = est_pct at idle. throttle.c: rate_up 15, rate_down
+  50, a stop (STANDBY / fault / e-stop / link loss / node loss) = idle at once.
+- Boot order (6.4, OD-7, OA-2): first frame throttle IDLE; the first gear frame only once the model is at idle with
+  the throttle node OPERATIONAL; no steering frame until a mode steers; a warm reset keeps the last steering command in
+  no-clear RAM (known position), a power-on = unknown (worst-case speed, no play compensation, the direction decided
+  on the command).
+- CPU1 (6.3): latch first, the controller FIFO cancelled (core 0 drops its software queue twice after the latch),
+  safe frames every 20 ms from 3 reserved TX buffers (board: tc_can.c can_send_reserved writes only its own TXBAR bit),
+  throttle idle, steering = the last command core 0 published, gear HOLD until thr_trav_s then N only while core 0
+  reports the throttle node OK (a frozen core 0 = hold for good); MON_TRIP_CAN_TX when the actuator task stops for
+  100 ms while core 0 runs; CPU1's own gear-vs-throttle envelope (the modelled servo, not the command).
+- Dead-man (14.1 option 1 = W5 default): P10.5 toggles every 50 ms from CPU1 only while UNCREWED (g_mon.profile) + no
+  trip + core 0 alive + throttle node OK + actuator frames going out + no kill latch; in CAN mode hal_set_safety_relay
+  does nothing (OD-2). A warm reset in UNCREWED stops the pulses until the profile is detected again (6 s > 1.5 s):
+  the dead-man then stops the engine - TO CONFIRM (W3).
+- Steering model (section 8): app/steermodel.c (interval position, symmetric play b = mean(b_lr, b_rl), deadband
+  hysteresis, compensation target +- b/2, rate limit; adaptation RAM only by least squares on high-passed
+  sensitivities over a 300 s memory, K / tau within 0.7..1.3 x TRAINING, b only smaller (parallel model, >= 0.5 x),
+  the speed never faster; resets on residual / bound / sensor / node / new TRAINING) - adaptation only in calm steady
+  water (yaw-rate wobble < SB_STEER_CALM_DPS 0.3 deg/s, TO CONFIRM); TRAINING app/trainsrv.c (centre, small steps with
+  a lag fit, large steps, reversal staircase by bisection, verify run with confidence; < 0.6 not used); NV slot 5 v2.
+- Tests: sim SM1-SM9, CN14-CN23, "all --can" + "all --can-fast" (the motor-only tests N/A there), D16-D17, storm
+  I47-I57 (about a third of the episodes on the DroneCAN servos, worst case or fast, with node / bus / task faults).

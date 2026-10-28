@@ -48,6 +48,12 @@ static bool is_outboard(const autopilot_t *ap)
     return ap->cfg.steering == AP_STEER_OUTBOARD;
 }
 
+/* the DroneCAN position servo (step 11e) */
+static bool is_servo(const autopilot_t *ap)
+{
+    return ap->cfg.steering == AP_STEER_OUTBOARD && ap->servo;
+}
+
 static float clampf(float x, float lo, float hi)
 {
     if (x < lo) return lo;
@@ -198,6 +204,26 @@ void autopilot_init(autopilot_t *ap, const ap_config_t *cfg)
     ap->stall_timer_ms = 0u;
     ap->stop_block = 0;
     ap->stops_hit = 0u;
+    ap->servo = false;
+    ap->servo_have = false;
+    ap->servo_u = 0.0f;
+    ap->servo_steering = false;
+    memset(&ap->trs, 0, sizeof ap->trs);
+    {
+        sm_params_t d;
+        sm_defaults(&d);
+        sm_init(&ap->sm, &d, SM_HALF_DEG, ap->cfg.outboard.max_angle_deg, false, 0.0f);
+    }
+}
+
+void autopilot_set_servo(autopilot_t *ap, const sm_params_t *p, float half_deg, bool known, float p0)
+{
+    if (!is_outboard(ap)) return;               /* the big boat is unchanged */
+    ap->servo = true;
+    sm_init(&ap->sm, p, half_deg, ap->cfg.outboard.max_angle_deg, known, p0);
+    ap->est_angle = sm_angle_deg(&ap->sm);
+    ap->servo_have = false;                     /* no frame until a mode commands steering (OD-7) */
+    ap->servo_u = ap->sm.u;
 }
 
 /* --- sensors ------------------------------------------------------------ */
@@ -273,7 +299,9 @@ static void enter_auto(autopilot_t *ap)
     ap->integrator = 0.0f;
     ap->off_course_ms = 0u;
     ap->motor_moving = false;
-    if (is_outboard(ap)) {
+    if (is_servo(ap)) {
+        ap->rudder_target = ap->est_angle;      /* the position servo knows where it is: bumpless */
+    } else if (is_outboard(ap)) {
         /* The user has centred the outboard by hand. */
         outboard_reset(ap);
         ap->rudder_target = 0.0f;
@@ -369,7 +397,7 @@ static void heading_loop(autopilot_t *ap)
      * from the true angle. Assumes the boat needs ~0 rudder on average, so
      * the estimate ends up off by the real weather helm - bounded, unlike
      * drift. */
-    if (is_outboard(ap)) {
+    if (is_outboard(ap) && !is_servo(ap)) {
         float shift = ap->integrator * (AP_DT_S / AP_OUTBOARD_RECENTER_TAU_S);
         ap->integrator -= shift;
         ap->rudder_target -= shift;
@@ -480,6 +508,30 @@ static float outboard_loop(autopilot_t *ap)
     return (float)ap->motor_dir;
 }
 
+/* Inner loop, DroneCAN position servo (step 11e): outboard target (deg) -> servo command through the
+ * model (never faster than the servo, play compensation on a direction change). */
+static float servo_out(autopilot_t *ap, float dt)
+{
+    float db = 0.5f * sea(ap)->ob_deadband_on_deg / ap->sm.half_deg;
+    ap->servo_u = sm_drive(&ap->sm, ap->rudder_target / ap->sm.half_deg, db, dt);
+    ap->servo_steering = true;
+    return 0.0f;
+}
+
+/* the inner loop of the steering in use */
+static float inner_loop(autopilot_t *ap, float dt)
+{
+    if (is_servo(ap)) return servo_out(ap, dt);
+    return is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
+}
+
+/* the speed the outboard angle may move at, deg/s */
+static float steer_rate_dps(const autopilot_t *ap)
+{
+    if (is_servo(ap)) return fminf(ap->sm.use.r_right, ap->sm.use.r_left) * ap->sm.half_deg;
+    return is_outboard(ap) ? ap->cfg.outboard.turn_speed_deg_s : AP_RUDDER_RATE_DPS;
+}
+
 /* --- training / calibration ---------------------------------------------- */
 
 /* One TRAINING step. Returns the motor command. On abort: motor off,
@@ -556,15 +608,76 @@ bool autopilot_start_training(autopilot_t *ap)
         return false;
     }
     training_start(&ap->train, ap->last_step_ms, ap->heading);
+    if (is_servo(ap)) {
+        trs_start(&ap->trs, ap->last_step_ms, ap->heading);
+        ap->train.phase = TR_CENTER;            /* (mirrored for the mode logic + telemetry) */
+    }
     outboard_stop(ap);
     ap->alarm = false;
     ap->mode = AP_MODE_TRAINING;
     return true;
 }
 
+/* the position servo's TRAINING result: confidence below TRS_MIN_CONFIDENCE is shown, never used */
+static bool servo_confirm(autopilot_t *ap, bool accept, float full_angle_deg)
+{
+    const trs_t *t = &ap->trs;
+    if (accept && t->phase == TRS_RESULT && t->confidence >= TRS_MIN_CONFIDENCE) {
+        calib2_t c;
+        memset(&c, 0, sizeof c);
+        c.r_right = t->out.r_right;
+        c.r_left = t->out.r_left;
+        c.b_lr = t->out.b_lr;
+        c.b_rl = t->out.b_rl;
+        c.k = t->out.k;
+        c.tau = t->out.tau;
+        c.a0 = clampf(t->out.a0, -0.5f, 0.5f);
+        c.gyro_bias_dps = t->bias;
+        c.fit_r2 = clampf(t->r2, 0.0f, 1.0f);
+        c.confidence = clampf(t->confidence, 0.0f, 1.0f);
+        c.v_ref_kn = t->out.v_ref;
+        c.res_dps = clampf(t->out.res, 0.0f, 20.0f);
+        c.full_angle_deg = (full_angle_deg >= 10.0f && full_angle_deg <= 180.0f) ? full_angle_deg : 0.0f;
+        c.boot = ap->servo_boot;
+        calib2_seal(&c);
+        if (calib2_valid(&c)) {
+            ap->servo_calib = c;
+            (void)calib2_save(&c);              /* queued: written in STANDBY (NV slot 5, version 2) */
+            sm_params_t p = t->out;
+            p.trained = true;
+            autopilot_apply_servo_params(ap, &p, c.full_angle_deg > 0.0f ? 0.5f * c.full_angle_deg : SM_HALF_DEG);
+            ap->sm.reset_why = SM_RESET_TRAINING;
+            enter_standby(ap);
+            return true;
+        }
+    }
+    training_abort(&ap->train, TR_ABORT_REJECTED);
+    enter_standby(ap);
+    return false;
+}
+
+void autopilot_apply_servo_params(autopilot_t *ap, const sm_params_t *p, float half_deg)
+{
+    if (!is_servo(ap)) return;
+    sm_set_stored(&ap->sm, p, half_deg, ap->cfg.outboard.max_angle_deg);
+    if (!p->trained) return;                    /* the defaults: the configured gains */
+    ap_config_t d;
+    autopilot_default_config_outboard(&d);
+    /* the same gain scheduling as a DC-motor calibration (AP_CALIB_REF_K): K in deg/s per outboard deg */
+    float k = p->k / ap->sm.half_deg;
+    float scale = clampf(AP_CALIB_REF_K / fmaxf(k, 1e-3f), 0.25f, 4.0f);
+    float turn = fminf(d.turn_rate_dps, AP_CALIB_TURN_FRACTION * k * ap->cfg.outboard.max_angle_deg);
+    ap->cfg.kp = d.kp * scale;
+    ap->cfg.ki = d.ki * scale;
+    ap->cfg.kd = d.kd * scale;
+    ap->cfg.turn_rate_dps = fmaxf(0.5f, turn);
+    ap->calibrated = true;
+}
+
 bool autopilot_confirm_training(autopilot_t *ap, bool accept, float full_angle_deg)
 {
     if (ap->mode != AP_MODE_TRAINING || ap->train.phase != TR_RESULT) return false;
+    if (is_servo(ap)) return servo_confirm(ap, accept, full_angle_deg);
 
     if (accept) {
         calib_data_t c = ap->train.calib;
@@ -623,6 +736,7 @@ void autopilot_apply_calibration(autopilot_t *ap, const calib_data_t *c)
 bool autopilot_load_calibration(autopilot_t *ap)
 {
     calib_data_t c;
+    if (is_servo(ap)) return ap->calibrated;    /* the position servo: loaded at sb_init (record version 2) */
     if (!is_outboard(ap) || !calib_load(&c)) return false;
     autopilot_apply_calibration(ap, &c);
     return ap->calibrated;
@@ -650,7 +764,9 @@ void autopilot_manual(autopilot_t *ap, bool keep_estimate)
     if (ap->mode == AP_MODE_TRAINING) return;
     float est = ap->est_angle, slack = ap->slack_deg;
     enter_standby(ap);
-    if (is_outboard(ap)) {
+    if (is_servo(ap)) {
+        ap->rudder_target = est;                /* the position servo: the model knows (no hand centring) */
+    } else if (is_outboard(ap)) {
         if (keep_estimate) {
             ap->est_angle = est;
             ap->slack_deg = slack;
@@ -661,9 +777,16 @@ void autopilot_manual(autopilot_t *ap, bool keep_estimate)
     ap->mode = AP_MODE_MANUAL;
 }
 
-/* Manual steering: run while held, stop at the angle limit. */
-static float manual_loop(autopilot_t *ap, int8_t want)
+/* Manual steering: run while held, stop at the angle limit. Position servo: the target moves while held
+ * (BENCH TEST steps); nothing is commanded before the first move (OD-7). */
+static float manual_loop(autopilot_t *ap, int8_t want, float dt)
 {
+    if (is_servo(ap)) {
+        float lim = ap->cfg.outboard.max_angle_deg;
+        if (want != 0) ap->rudder_target = clampf(ap->rudder_target + (float)want * steer_rate_dps(ap) * dt, -lim, lim);
+        if (want == 0 && !ap->sm.have) return 0.0f;
+        return servo_out(ap, dt);
+    }
     if (!is_outboard(ap)) {
         /* big boat: rudder sensor gives the limit */
         if (want > 0 && ap->rudder_angle >=  AP_RUDDER_LIMIT_DEG) want = 0;
@@ -710,7 +833,14 @@ void autopilot_gyro_hold(autopilot_t *ap)
 
 void autopilot_center(autopilot_t *ap)
 {
-    if (ap->mode == AP_MODE_TRAINING) training_abort(&ap->train, TR_ABORT_SENSOR);
+    if (ap->mode == AP_MODE_TRAINING) {
+        training_abort(&ap->train, TR_ABORT_SENSOR);
+        if (is_servo(ap)) {
+            trs_abort(&ap->trs, TR_ABORT_SENSOR);
+            ap->train.phase = TR_ABORTED;
+            ap->train.result = ap->trs.result;  /* (USER when the caller stopped it first) */
+        }
+    }
     ap->motor_moving = false;
     outboard_stop(ap);
     ap->rudder_target = 0.0f;
@@ -719,7 +849,10 @@ void autopilot_center(autopilot_t *ap)
 
 void autopilot_angle(autopilot_t *ap)
 {
-    if (ap->mode == AP_MODE_TRAINING) training_abort(&ap->train, TR_ABORT_USER);
+    if (ap->mode == AP_MODE_TRAINING) {
+        training_abort(&ap->train, TR_ABORT_USER);
+        if (is_servo(ap)) trs_abort(&ap->trs, TR_ABORT_USER);
+    }
     ap->motor_moving = false;
     outboard_stop(ap);
     ap->rudder_target = is_outboard(ap) ? ap->est_angle : ap->rudder_angle;
@@ -728,26 +861,27 @@ void autopilot_angle(autopilot_t *ap)
 
 /* Joystick: commanded angle, slewed at the motor's speed (so the
  * estimate can follow), full range. */
-static float angle_loop(autopilot_t *ap, float cmd)
+static float angle_loop(autopilot_t *ap, float cmd, float dt)
 {
     float lim = is_outboard(ap) ? ap->cfg.outboard.max_angle_deg : AP_RUDDER_LIMIT_DEG;
-    float rate = is_outboard(ap) ? ap->cfg.outboard.turn_speed_deg_s : AP_RUDDER_RATE_DPS;
-    float step = rate * AP_DT_S;
+    float step = steer_rate_dps(ap) * (is_servo(ap) ? dt : AP_DT_S);
     cmd = clampf(cmd, -lim, lim);
     ap->rudder_target += clampf(cmd - ap->rudder_target, -step, step);
-    return is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
+    return inner_loop(ap, dt);
 }
 
 bool autopilot_centered(const autopilot_t *ap)
 {
     if (ap->mode != AP_MODE_CENTER) return false;
+    if (is_servo(ap))                           /* position known (worst-case travel after a power-on) and there */
+        return sm_at(&ap->sm, 0.0f, sea(ap)->ob_deadband_on_deg / ap->sm.half_deg);
     if (!is_outboard(ap)) return fabsf(ap->rudder_angle) <= sea(ap)->deadband_on_deg && !ap->motor_moving;
     /* inside the deadband the motor won't move any more */
     return ap->motor_dir == 0 && fabsf(ap->est_angle) <= sea(ap)->ob_deadband_on_deg;
 }
 
 /* Gyro hold: steer for zero turn rate (no compass). */
-static float gyro_hold_loop(autopilot_t *ap)
+static float gyro_hold_loop(autopilot_t *ap, float dt)
 {
     if (!autopilot_gyro_ok(ap)) {               /* gyro gone too: hold still */
         ap->motor_moving = false;
@@ -759,7 +893,7 @@ static float gyro_hold_loop(autopilot_t *ap)
     float gs = ap->gain_scale;
     ap->gyro_integ = clampf(ap->gyro_integ + AP_GYRO_HOLD_KI * gs * r * AP_DT_S, -2.0f * lim, 2.0f * lim);
     ap->rudder_target = clampf(ap->gyro_base - AP_GYRO_HOLD_KP * gs * r - ap->gyro_integ, -lim, lim);
-    return is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
+    return inner_loop(ap, dt);
 }
 
 void autopilot_disengage(autopilot_t *ap)
@@ -773,13 +907,50 @@ void autopilot_set_target(autopilot_t *ap, float heading_deg)
     ap->target_heading = autopilot_wrap360(heading_deg);
 }
 
+/* TRAINING of the position servo (trainsrv.c): its command goes straight to the model (no compensation).
+ * Abort: the servo back to the centre estimate (AP_MODE_CENTER: the caller's safe stop finishes it), alarm
+ * unless the user stopped it. The DC-motor phase / result are mirrored for the mode logic + telemetry. */
+static void servo_training_step(autopilot_t *ap, uint32_t now, bool stale, float dt)
+{
+    trs_t *t = &ap->trs;
+    trs_in_t in;
+    in.now_ms = now;
+    in.gyro_dps = ap->gyro_dps;
+    in.gyro_ok = autopilot_gyro_ok(ap);
+    in.heading_deg = ap->heading;
+    in.heading_new = ap->heading_new;
+    in.heading_ok = ap->heading_valid && !stale;
+    in.v_kn = ap->servo_v_kn;
+    float u = trs_step(t, &in, &ap->sm);
+    if (t->phase == TRS_ABORTED) {
+        ap->train.phase = TR_ABORTED;
+        ap->train.result = t->result;
+        if (t->result != TR_ABORT_USER) ap->alarm = true;
+        ap->mode = AP_MODE_CENTER;              /* back to the centre, then the STANDBY rules */
+        ap->rudder_target = 0.0f;
+        servo_out(ap, dt);
+        return;
+    }
+    static const tr_phase_t map[] = { TR_IDLE, TR_RETURN, TR_CENTER, TR_STEP, TR_SWEEP, TR_FIT, TR_GAP, TR_FIT,
+                                      TR_RETURN, TR_RESULT, TR_ABORTED };
+    ap->train.phase = map[t->phase <= TRS_ABORTED ? t->phase : TRS_ABORTED];
+    ap->train.result = t->result;
+    sm_direct(&ap->sm, u, dt);
+    ap->servo_u = ap->sm.u;
+    ap->servo_steering = true;
+    ap->rudder_target = sm_angle_deg(&ap->sm);
+}
+
 void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
 {
     uint32_t now = in->now_ms;
+    float dt = (float)(uint32_t)(now - ap->last_step_ms) * 0.001f;
+    if (!(dt > 0.0f) || dt > 0.5f) dt = AP_DT_S;
 
     int8_t hit = 0;
     uint32_t hit_lag = 0u;
-    if (is_outboard(ap)) {
+    ap->servo_steering = false;
+    if (is_outboard(ap) && !is_servo(ap)) {
         outboard_account(ap, now);
         hit = end_stop_hit(ap, in, now - ap->last_step_ms, &hit_lag);
         if (hit != 0 && ap->mode != AP_MODE_TRAINING) end_stop_react(ap, hit);
@@ -792,7 +963,10 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
     /* Sensor timeout: STANDBY + alarm, once at the moment it happens. */
     bool fault = sensors_older_than(ap, now, AP_SENSOR_TIMEOUT_MS);
     if (fault && !ap->sensor_fault) {
-        if (ap->mode == AP_MODE_TRAINING) training_abort(&ap->train, TR_ABORT_SENSOR);
+        if (ap->mode == AP_MODE_TRAINING) {
+            training_abort(&ap->train, TR_ABORT_SENSOR);
+            if (is_servo(ap)) trs_abort(&ap->trs, TR_ABORT_SENSOR);
+        }
         /* manual steering, gyro hold and centring don't need the compass */
         if (ap->mode != AP_MODE_MANUAL && ap->mode != AP_MODE_GYRO_HOLD &&
             ap->mode != AP_MODE_CENTER && ap->mode != AP_MODE_ANGLE)
@@ -809,16 +983,21 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
     bool stale = sensors_older_than(ap, now, AP_SENSOR_STALE_MS);
 
     if (ap->mode == AP_MODE_TRAINING) {
-        ap->motor_cmd = training_mode_step(ap, now, stale, hit, hit_lag);
+        if (is_servo(ap)) {
+            servo_training_step(ap, now, stale, dt);
+            ap->motor_cmd = 0.0f;
+        } else {
+            ap->motor_cmd = training_mode_step(ap, now, stale, hit, hit_lag);
+        }
     } else if (ap->mode == AP_MODE_ANGLE) {
-        ap->motor_cmd = angle_loop(ap, in->angle_cmd_deg);       /* no compass needed */
+        ap->motor_cmd = angle_loop(ap, in->angle_cmd_deg, dt);   /* no compass needed */
     } else if (ap->mode == AP_MODE_GYRO_HOLD) {
-        ap->motor_cmd = gyro_hold_loop(ap);             /* no compass needed */
+        ap->motor_cmd = gyro_hold_loop(ap, dt);         /* no compass needed */
     } else if (ap->mode == AP_MODE_CENTER) {
         ap->rudder_target = 0.0f;
-        ap->motor_cmd = is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
+        ap->motor_cmd = inner_loop(ap, dt);
     } else if (ap->mode == AP_MODE_MANUAL) {
-        ap->motor_cmd = manual_loop(ap, in->manual_steer);     /* no compass needed */
+        ap->motor_cmd = manual_loop(ap, in->manual_steer, dt);     /* no compass needed */
     } else if (ap->mode == AP_MODE_AUTO && stale) {
         if (is_outboard(ap) && ap->gyro_assist && autopilot_gyro_ok(ap)) {
             /* compass data stale: steer for zero yaw rate on the gyro
@@ -828,7 +1007,7 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
                 ap->gyro_base = ap->est_angle;
                 ap->gyro_integ = 0.0f;
             }
-            ap->motor_cmd = gyro_hold_loop(ap);
+            ap->motor_cmd = gyro_hold_loop(ap, dt);
         } else {
             ap->motor_moving = false;
             outboard_stop(ap);
@@ -837,9 +1016,19 @@ void autopilot_update(autopilot_t *ap, const ap_inputs_t *in)
     } else if (ap->mode == AP_MODE_AUTO) {
         ap->stale_gyro = false;
         heading_loop(ap);
-        ap->motor_cmd = is_outboard(ap) ? outboard_loop(ap) : rudder_loop(ap);
+        ap->motor_cmd = inner_loop(ap, dt);
     } else {
         outboard_stop(ap);
+        ap->motor_cmd = 0.0f;
+    }
+
+    if (is_servo(ap)) {
+        /* no mode commanded the steering this step: HOLD the last command (STANDBY = hold, OD-10; nothing
+         * at all before the first command after a boot, OD-7) - the model runs on */
+        if (!ap->servo_steering) sm_hold(&ap->sm, dt);
+        ap->est_angle = sm_angle_deg(&ap->sm);
+        ap->servo_have = ap->sm.have;
+        ap->servo_u = ap->sm.u;
         ap->motor_cmd = 0.0f;
     }
 }

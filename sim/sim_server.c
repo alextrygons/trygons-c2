@@ -270,6 +270,7 @@ static void sim_advance(server_t *x, uint32_t until_ms)
             (void)cyc_record(&g_timing.core0, hal_micros() - t0);
             if (sim_hal_reset_requested()) sim_reboot(x);
         }
+        if (x->t % 10u == 0u) hal_can_tick();       /* core 0's 10 ms DroneCAN actuator task (step 11e) */
         if (x->t % 10u == 0u) {                     /* the logger (core 2) */
             uint32_t t2 = hal_micros();
             logger_step(&g_lg, x->t);

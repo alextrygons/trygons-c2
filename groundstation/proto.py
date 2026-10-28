@@ -874,7 +874,14 @@ _T2_GROUPS = [
                                   "dp_stop".split()),
     # group P, the DroneCAN summary (step 11d; the node table: T_CAN_NODES on the USB link)
     (struct.Struct("<BBBBBB"), "can_flags can_state can_lost can_warn can_seen can_reboot".split()),
+    # group Q, the DroneCAN steering position servo + the throttle model (step 11e)
+    (struct.Struct("<BbbBBBBHBBBBBBH"), "sv_flags sv_cmd100 sv_pos100 sv_r_right100 sv_r_left100 sv_b_stored1000 "
+                                         "sv_b_use1000 sv_k100 sv_k_pct sv_tau10 sv_conf sv_reset_why thr_est_pct "
+                                         "thr_travel10 sv_train_boot".split()),
 ]
+# app/steermodel.h SM_RESET_: why the steering model went back to the TRAINING values (TELEM2 Q, log event 30)
+SM_RESET_WHY = ["-", "model residual too large", "an adapted value reached its bound", "compass / gyro / GPS doubt",
+                "steering node lost", "new TRAINING values"]
 LL_STATES = ["OK", "LINK LOST", "ENGINE KILLED"]
 # engine controls (app/engine.h, TELEM2 group O, log event RESTART)
 ENG_RESTART, ENG_CRANK, ENG_RELEASE = 0, 1, 2           # PROTO_T_RESTART actions
@@ -1016,6 +1023,27 @@ def decode_telem2(payload: bytes) -> dict:
         d["can_state_name"] = CAN_STATES[d["can_state"]] if d["can_state"] < len(CAN_STATES) else "?"
         d["can_warn_nodes"] = [CAN_ROLES[i] for i in range(len(CAN_ROLES)) if d["can_warn"] >> i & 1]
         d["can_lost_nodes"] = [CAN_ROLES[i] for i in range(len(CAN_ROLES)) if d["can_lost"] >> i & 1]
+    if "sv_flags" in d:
+        f = d["sv_flags"]
+        d["sv_servo"] = bool(f & 1)                     # the steering is a DroneCAN position servo
+        d["sv_known"] = bool(f & 2)                     # its position is known (after a power-on: worst-case travel)
+        d["sv_commanded"] = bool(f & 4)                 # a mode commanded steering since the boot (OD-7)
+        d["sv_trained"] = bool(f & 8)                   # TRAINING values in use (else the worst-case defaults)
+        d["sv_adapted"] = bool(f & 16)                  # slowly adapted values in use (RAM only)
+        d["sv_needs_training"] = bool(f & 32)
+        d["sv_reset_notice"] = bool(f & 64)             # STEERING MODEL RESET (30 s notice)
+        d["sv_v1_refused"] = bool(f & 128)              # an old (DC-motor) record in slot 5: not used
+        d["sv_cmd"] = d["sv_cmd100"] / 100.0
+        d["sv_pos"] = None if d["sv_pos100"] == -128 else d["sv_pos100"] / 100.0
+        d["sv_r_right"] = d["sv_r_right100"] / 100.0    # servo speed, units (-1..+1) per s
+        d["sv_r_left"] = d["sv_r_left100"] / 100.0
+        d["sv_play_stored"] = d["sv_b_stored1000"] / 1000.0
+        d["sv_play_use"] = d["sv_b_use1000"] / 1000.0
+        d["sv_k"] = d["sv_k100"] / 100.0
+        d["sv_tau"] = d["sv_tau10"] / 10.0
+        d["sv_reset_text"] = SM_RESET_WHY[d["sv_reset_why"]] if d["sv_reset_why"] < len(SM_RESET_WHY) else \
+            "why %d" % d["sv_reset_why"]
+        d["thr_travel_s"] = d["thr_travel10"] / 10.0
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

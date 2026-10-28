@@ -69,9 +69,27 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
         uint16_t gear_n = sh->gear_n_us;
         bool dp = sh->dp_active != 0u;
         float tb = sh->thr_bow_pct, ts = sh->thr_stern_pct, cb = sh->thr_bow_cap, cs = sh->thr_stern_cap;
+        bool can = sh->can_servos != 0u, sth = sh->steer_have != 0u, gh = sh->gear_have != 0u;
+        float sw = sh->steer_wire, gw = sh->gear_wire, gnw = sh->gear_n_wire;
+        bool nok = sh->thr_node_ok != 0u, kil = sh->killed != 0u;
+        uint8_t prof = sh->profile;
+        uint32_t trav = sh->thr_travel_ms;
         hal_mem_barrier();
         bool consistent = (s1 & 1u) == 0u && sh->seq == s1;
         if (!consistent) m->torn++;
+        if (consistent) {                       /* the DroneCAN values of the last consistent set */
+            m->can = can;
+            m->steer_have = sth;
+            m->steer_wire = sw;
+            m->gear_have = gh;
+            m->gear_wire = gw;
+            m->gear_n_wire = gnw;
+            m->node_ok = nok;
+            m->killed = kil;
+            m->profile = prof;
+            m->travel_ms = (trav < MON_THR_TRAVEL_MIN_MS) ? MON_THR_TRAVEL_MIN_MS
+                         : (trav > MON_THR_TRAVEL_MAX_MS) ? MON_THR_TRAVEL_MAX_MS : trav;
+        }
 
         /* 1. core 0 alive? Before its control loop runs only the boot
          *    timeout counts (a slow start must not trip), then the heartbeat */
@@ -82,6 +100,10 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
                 m->last_hb_ms = now_ms;
                 m->last_thr = thr;
                 m->last_gear = gear;
+                /* DroneCAN: after a boot the servo position is unknown - the envelope starts at full */
+                m->env = (can && !m->boot_known) ? 100.0f : (thr > 0.0f ? thr : 0.0f);
+                m->act_prev = hal_can_act_count();
+                m->act_ms = now_ms;
             } else if (now_ms - m->init_ms > MON_BOOT_MS) {
                 trip(m, sh, MON_TRIP_BOOT, now_ms);
             }
@@ -92,6 +114,17 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
             trip(m, sh, MON_TRIP_HEARTBEAT, now_ms);
         }
         if (!m->tripped && sh->test_trip == MON_TEST_TRIP) trip(m, sh, MON_TRIP_TEST, now_ms);
+
+        /* 1c. DroneCAN: core 0's actuator task must keep running (its loop alive, its CAN path stuck = trip) */
+        if (m->started && !m->tripped && m->can) {
+            uint32_t ac = hal_can_act_count();
+            if (ac != m->act_prev) {
+                m->act_prev = ac;
+                m->act_ms = now_ms;
+            } else if (now_ms - m->act_ms > MON_CAN_TX_MS) {
+                trip(m, sh, MON_TRIP_CAN_TX, now_ms);
+            }
+        }
 
         if (m->started && !m->tripped && consistent) {
             /* 1b. generator mode: throttle above idle in NEUTRAL only while core 0
@@ -120,17 +153,69 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
                 bool over = !(ab <= cb + MON_MARGIN_PCT) || !(as <= cs + MON_MARGIN_PCT);
                 if (thrust && (!dp || over)) trip(m, sh, MON_TRIP_THRUSTER, now_ms);
             }
-            /* 3. gear only moves at idle */
+            /* 3. gear only moves at idle - of CPU1's own envelope: the command decayed at the worst-case servo
+             *    speed (a slow servo is still open after the command went to idle) */
+            {
+                float down = m->env - 100.0f * (float)dt / (float)(m->travel_ms ? m->travel_ms : MON_THR_TRAVEL_MS);
+                m->env = (thr > down) ? thr : down;
+                if (m->env < 0.0f) m->env = 0.0f;
+            }
             int32_t dg = (int32_t)gear - (int32_t)m->last_gear;
             if ((dg > (int32_t)MON_GEAR_DELTA || dg < -(int32_t)MON_GEAR_DELTA) &&
-                thr > idle_max + 0.5f) trip(m, sh, MON_TRIP_GEAR, now_ms);
+                (thr > idle_max + 0.5f || m->env > idle_max + 0.5f)) trip(m, sh, MON_TRIP_GEAR, now_ms);
             m->last_thr = thr;
             m->last_gear = gear;
         }
     }
 
+    /* tripped: core 0 may still run (it is in STANDBY now): its heartbeat and the throttle node state it
+     * publishes decide the gear frame (NEUTRAL only while it can still say the throttle node is OPERATIONAL) */
+    if (m->tripped) {
+        uint32_t s1 = sh->seq;
+        hal_mem_barrier();
+        uint32_t hb = sh->heartbeat;
+        bool nok = sh->thr_node_ok != 0u;
+        hal_mem_barrier();
+        if ((s1 & 1u) == 0u && sh->seq == s1) m->node_ok = nok;
+        if (hb != m->last_hb) {
+            m->last_hb = hb;
+            m->last_hb_ms = now_ms;
+        }
+    }
+
     /* tripped: force the safe outputs (every time, latched in the HAL) */
-    if (m->tripped) hal_safe_outputs(sh->thr_idle_us, sh->gear_n_us);
+    if (m->tripped) {
+        hal_safe_outputs(sh->thr_idle_us, sh->gear_n_us);
+        /* DroneCAN servos: CPU1's own safe frames (core 0's are cancelled by now) */
+        if (m->can && (m->safe_sets == 0u || now_ms - m->safe_ms >= MON_SAFE_FRAME_MS)) {
+            hal_can_safe_t f;
+            bool alive = m->started && now_ms - m->last_hb_ms <= MON_HB_MS;     /* core 0 can still say the node is OK */
+            bool neutral = alive && m->node_ok && now_ms - m->trip_ms >= m->travel_ms;
+            f.thr_wire = -1.0f;                                                  /* IDLE at once */
+            f.steer = m->steer_have;                                             /* hold (none if never commanded) */
+            f.steer_wire = m->steer_wire;
+            f.gear = neutral || m->gear_have;                                    /* hold, then neutral (OA-2) */
+            f.gear_wire = neutral ? m->gear_n_wire : m->gear_wire;
+            hal_can_safe_send(&f);
+            m->safe_ms = now_ms;
+            m->safe_sets++;
+        }
+    }
+
+    /* the UNCREWED dead-man (OA-3): edges only while everything is right - else the timer relay stops the
+     * engine by itself (also when CPU1 / the chip is dead or in reset: no edges either) */
+    {
+        bool alive = m->started && now_ms - m->last_hb_ms <= MON_HB_MS;
+        bool frames = m->can && now_ms - m->act_ms <= MON_CAN_TX_MS;
+        m->dm_on = m->profile == MON_PROFILE_UNCREWED && m->can && !m->tripped && alive && m->node_ok && frames &&
+                   !m->killed;
+        if (m->dm_on && now_ms - m->dm_ms >= MON_DM_TOGGLE_MS) {
+            m->dm_ms = now_ms;
+            m->dm_level = !m->dm_level;
+            m->dm_edges++;
+            hal_deadman_pulse(m->dm_level);
+        }
+    }
     return m->tripped;
 }
 
@@ -152,6 +237,13 @@ void monitor_publish_steering_only(mon_shared_t *sh, uint16_t thr_idle_us, uint1
     sh->thr_stern_pct = 0.0f;
     sh->thr_bow_cap = 0.0f;
     sh->thr_stern_cap = 0.0f;
+    sh->can_servos = 0u;                /* big boat: no DroneCAN servos, no dead-man (OD-12: unchanged) */
+    sh->steer_have = 0u;
+    sh->gear_have = 0u;
+    sh->thr_node_ok = 0u;
+    sh->thr_travel_ms = MON_THR_TRAVEL_MS;
+    sh->profile = 0u;
+    sh->killed = 0u;
     monitor_write_end(sh);
     sh->heartbeat = sh->heartbeat + 1u;
     sh->running = MON_RUNNING;
@@ -161,6 +253,7 @@ const char *monitor_reason_name(mon_reason_t r)
 {
     static const char *const n[] = { "ok", "throttle above the power limit", "gear moved with throttle open",
                                      "core 0 heartbeat missing", "core 0 never started", "bench trip test",
-                                     "generator: gear not in neutral", "thruster: thrust without DP / above the cap" };
-    return ((unsigned)r <= (unsigned)MON_TRIP_THRUSTER) ? n[r] : "?";
+                                     "generator: gear not in neutral", "thruster: thrust without DP / above the cap",
+                                     "DroneCAN: actuator frames stopped" };
+    return ((unsigned)r <= (unsigned)MON_TRIP_CAN_TX) ? n[r] : "?";
 }

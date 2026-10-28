@@ -33,6 +33,7 @@ void world_init(world_t *w, uint32_t seed, float heading_deg, float speed_kn)
     w->bow_yaw_dps = 6.0f;
     w->stern_kn = 2.5f;
     w->thr_tau_s = 3.0f;
+    w->steer_half_deg = 30.0f;
     w->gps_pos_noise_m = 1.5f;
     w->slam_scale = 1.0f;
     w->slam_rng = seed * 2654435761u + 12345u;
@@ -91,12 +92,17 @@ void world_from_latlon(double lat, double lon, double *north_m, double *east_m)
 /* Gear servo: moves at 2000 us/s; the gearbox engages near the ends. */
 static void gear_model(world_t *w, float dt_s)
 {
-    /* no pulses (chip in reset): a normal RC servo holds where it is */
-    float cmd = (w->servo_stuck || sim_hal_gear_pwm() == 0u) ? w->gear_pos_us : (float)sim_hal_gear_pwm();
-    float step = 2000.0f * dt_s;
-    if (cmd > w->gear_pos_us + step) w->gear_pos_us += step;
-    else if (cmd < w->gear_pos_us - step) w->gear_pos_us -= step;
-    else w->gear_pos_us = cmd;
+    if (sim_hal_servos_can()) {
+        /* DroneCAN (step 11e): the gear servo node moves by itself (its rate, HOLD on lost commands) */
+        if (!w->servo_stuck) w->gear_pos_us = sim_hal_gear_truth_us();
+    } else {
+        /* no pulses (chip in reset): a normal RC servo holds where it is */
+        float cmd = (w->servo_stuck || sim_hal_gear_pwm() == 0u) ? w->gear_pos_us : (float)sim_hal_gear_pwm();
+        float step = 2000.0f * dt_s;
+        if (cmd > w->gear_pos_us + step) w->gear_pos_us += step;
+        else if (cmd < w->gear_pos_us - step) w->gear_pos_us -= step;
+        else w->gear_pos_us = cmd;
+    }
 
     gear_t now = (w->gear_pos_us >= 1800.0f) ? GEAR_F
                : (w->gear_pos_us <= 1200.0f) ? GEAR_R : GEAR_N;
@@ -112,8 +118,8 @@ void world_step(world_t *w, float dt_s)
 {
     w->t_ms += (uint32_t)lrintf(dt_s * 1000.0f);
 
-    /* throttle servo + watch */
-    float thr = sim_hal_throttle();
+    /* throttle servo + watch (DroneCAN: the node's real position - its own speed, HOLD on lost commands) */
+    float thr = sim_hal_thr_truth();
     if (w->t_ms % 50u == 0u) {          /* the controller updates every 50 ms */
         float rate = fabsf(thr - w->last_throttle) / 0.05f;
         if (rate > w->max_thr_rate) w->max_thr_rate = rate;
@@ -130,7 +136,9 @@ void world_step(world_t *w, float dt_s)
     float vss = 0.0f;
     if (eng == GEAR_F) vss = w->idle_fwd_kn + (w->vmax_fwd_kn - w->idle_fwd_kn) * t_eff / 100.0f;
     if (eng == GEAR_R) vss = -(0.8f + (w->vmax_rev_kn - 0.8f) * t_eff / 100.0f);
-    if (sim_hal_engine_killed()) vss = 0.0f;               /* ENGINE KILL: the outboard stopped */
+    /* ENGINE KILL: the outboard stopped - the software kill relay, the UNCREWED dead-man timer relay (OA-3)
+     * or the e-stop's own contact in the kill circuit (OD-1, every profile) */
+    if (sim_hal_engine_killed() || sim_hal_deadman_killed() || sim_hal_estop_pressed()) vss = 0.0f;
     /* DP thrusters (nothing while the e-stop contactor is open): the transom motor adds to the
      * speed ahead, the bow tunnel thruster sways the boat and turns it (it pushes at the bow) */
     float tb, ts;
@@ -140,8 +148,12 @@ void world_step(world_t *w, float dt_s)
     w->sway_ms += (w->bow_sway_ms * tb / 100.0f - w->sway_ms) * dt_s / w->thr_tau_s;
     w->thr_yaw_dps += (w->bow_yaw_dps * tb / 100.0f - w->thr_yaw_dps) * dt_s / w->thr_tau_s;
 
-    /* steering actuator */
-    rudder_step(&w->rud, sim_hal_motor_command(), dt_s);
+    /* steering actuator: the DC motor, or the DroneCAN position servo (its outboard after the play) */
+    if (sim_hal_servos_can()) {
+        w->rud.angle_deg = sim_hal_steer_truth() * w->steer_half_deg;
+    } else {
+        rudder_step(&w->rud, sim_hal_motor_command(), dt_s);
+    }
 
     /* yaw: turn gain and time constant follow speed; reversed in reverse */
     float v = w->speed_kn;

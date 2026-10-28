@@ -416,9 +416,45 @@ def t_bad_frames():
           ok, str(s))
 
 
+def t_safe_frames():
+    """D16 (step 11e): CPU1's own safe-frame encoder (hal/can_safe.c, no libcanard) = one single-frame ArrayCommand
+    with one UNITLESS command, priority 0, our node ID 10 - against this file's encoder."""
+    cases = [(1, -1.0, 0), (1, 0.0, 7), (2, 0.25, 31), (2, -0.333, 12), (3, 0.8, 5), (1, 1.5, 3), (1, -7.0, 4),
+             (1, float("nan"), 9), (2, 6.1e-5, 1), (3, -0.0, 2)]
+    cmds = ["SAFE %d %r %d" % (a, v, t) for a, v, t in cases]
+    b = run(cmds)
+    bad = []
+    for (a, v, t), blk in zip(cases, b):
+        line = next((l for l in blk if l.startswith("SAFE ")), "SAFE 0 ")
+        i, d = int(line.split()[1], 16), bytes.fromhex(line.split()[2])
+        vv = -1.0 if v != v else max(-1.0, min(1.0, v))          # NaN -> idle, clamped
+        want_d = enc_cmd([(a, 0, vv)]) + bytes([tail(True, True, False, t)])
+        want_i = msg_id(0, ID_ARRAYCMD, 10)
+        if i != want_i or d != want_d:
+            bad.append((a, v, t, hex(i), d.hex(), hex(want_i), want_d.hex()))
+    check("D16 CPU1 safe frames (hal/can_safe.c): single-frame ArrayCommand, priority 0, node 10, float16 clamped "
+          "(NaN = idle), the transfer ID it is given - = the independent encoder", not bad, str(bad))
+
+
+def t_cancel():
+    """D17 (step 11e): dc_cancel_tx drops the software queue AND cancels the controller FIFO; a bus fault cancels
+    the controller FIFO once (no stale ArrayCommand goes out late); dc_cmd_tid counts the ArrayCommands."""
+    b = run(["INIT", "T 0", "ROOM 0", "ACT 1 0 0.2", "ACT 2 0 0.3", "TID", "CANCELTX", "ROOM 100", "T 10",
+             "ACT 3 0 0.4", "T 20", "STATE 1 136 0", "T 30", "T 200", "T 300"])
+    tid = next((int(l.split()[1]) for l in b[5] if l.startswith("TID ")), -1)
+    cancelled = "CANCEL" in b[6]
+    after = [i for i, _ in tx(b[8]) if (i >> 8) & 0xFFFF == ID_ARRAYCMD]
+    third = [i for i, _ in tx(b[10]) if (i >> 8) & 0xFFFF == ID_ARRAYCMD]
+    fault_cancels = sum(blk.count("CANCEL") for blk in b[12:15])
+    ok = tid == 2 and cancelled and not after and len(third) == 1 and fault_cancels == 1
+    check("D17 dc_cancel_tx = queue dropped + controller FIFO cancelled; a bus fault cancels the FIFO once; the "
+          "ArrayCommand transfer ID (dc_cmd_tid) for CPU1", ok, "tid %d, cancel %s, after %s, third %s, fault "
+          "cancels %d" % (tid, cancelled, after, third, fault_cancels))
+
+
 def main():
     hal = os.path.join(REPO, "hal")
-    srcs = [os.path.join(HERE, "test_dronecan.c"), os.path.join(hal, "dronecan.c"),
+    srcs = [os.path.join(HERE, "test_dronecan.c"), os.path.join(hal, "dronecan.c"), os.path.join(hal, "can_safe.c"),
             os.path.join(hal, "libcanard", "canard.c")]
     r = subprocess.run(["gcc", "-std=c99", "-O2", "-Wall", "-Wextra", "-DCANARD_64_BIT=1", "-I" + hal] + srcs +
                        ["-o", EXE, "-lm"], capture_output=True, text=True)
@@ -427,7 +463,8 @@ def main():
         if r.returncode != 0:
             return 1
     for t in (t_signatures, t_payloads, t_tx_frames, t_nodeinfo, t_node_table, t_silence, t_reboot, t_conflict_anon,
-              t_busoff, t_passive_stale, t_fifo_wait, t_bounded_rx, t_start_fail, t_bad_frames):
+              t_busoff, t_passive_stale, t_fifo_wait, t_bounded_rx, t_start_fail, t_bad_frames, t_safe_frames,
+              t_cancel):
         try:
             t()
         except Exception as e:          # a crash of one test is a FAIL, the others still run

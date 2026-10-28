@@ -28,6 +28,7 @@ static uint32_t s_status_ms, s_cleanup_ms;
 static uint32_t s_bad_since_ms;         /* bus not RUN since (0 = RUN) */
 static bool     s_bad;
 static bool     s_was_busoff;
+static bool     s_fault_cancelled;       /* the controller FIFO was cancelled at the start of this bus fault */
 static uint32_t s_recover_ms;
 static uint32_t s_last_rx_ms;
 static uint32_t s_conflict_ms, s_anon_ms;
@@ -254,6 +255,14 @@ static void drop_queue(void)
     }
 }
 
+/* a dead bus / a trip: nothing stale in the software queue AND nothing in the controller's TX FIFO
+ * (step 11e: the hardware FIFO is cancelled too, so no old ArrayCommand goes out late) */
+static void drop_all(void)
+{
+    drop_queue();
+    if (P != NULL && P->cancel != NULL) P->cancel();
+}
+
 static bool bus_fault(void)
 {
     return s_st.state == HAL_CAN_ST_FAULT || s_st.state == HAL_CAN_ST_OFF ||
@@ -280,6 +289,7 @@ void dc_init(const dc_port_t *port)
     s_cleanup_ms = s_t0_ms;
     s_bad = false;
     s_was_busoff = false;
+    s_fault_cancelled = false;
     s_last_rx_ms = s_t0_ms;
     s_conflict_seen = s_anon_seen = false;
     s_tec = s_rec = 0u;
@@ -401,20 +411,17 @@ void dc_service(void)
     }
 
     /* TX: queued frames into the controller FIFO (full = they wait for the next step) */
-    if (s_started && s_st.state != HAL_CAN_ST_BUSOFF) {
-        for (uint32_t k = 0; k < DC_TX_PER_STEP; k++) {
-            const CanardCANFrame *q = canardPeekTxQueue(&s_ins);
-            if (q == NULL) break;
-            dc_frame_t f;
-            f.id = q->id & CANARD_CAN_EXT_ID_MASK;
-            f.len = q->data_len;
-            memcpy(f.data, q->data, q->data_len);
-            if (!P->send(&f)) break;
-            canardPopTxQueue(&s_ins);
-            s_st.tx++;
-        }
+    dc_tx_flush();
+    if (bus_fault()) {
+        drop_queue();
+        /* the bus just went bad: cancel what waits in the controller's TX FIFO once (step 11e: no stale
+         * ArrayCommand goes out late; dc_send_actuator refuses while the fault lasts, only our NodeStatus is
+         * queued meanwhile - it is the frame that brings the error counter down again) */
+        if (!s_fault_cancelled && P->cancel != NULL) P->cancel();
+        s_fault_cancelled = true;
+    } else {
+        s_fault_cancelled = false;
     }
-    if (bus_fault()) drop_queue();
     CanardPoolAllocatorStatistics ps = canardGetPoolAllocatorStatistics(&s_ins);
     if (ps.peak_usage_blocks > s_st.pool_peak) s_st.pool_peak = ps.peak_usage_blocks;
 }
@@ -452,6 +459,32 @@ bool dc_node(uint8_t i, hal_can_node_t *n)
     if (i >= HAL_CAN_NODES) return false;
     *n = s_node[i].pub;
     return true;
+}
+
+void dc_tx_flush(void)
+{
+    if (P == NULL || !s_started || s_st.state == HAL_CAN_ST_BUSOFF) return;
+    for (uint32_t k = 0; k < DC_TX_PER_STEP; k++) {
+        const CanardCANFrame *q = canardPeekTxQueue(&s_ins);
+        if (q == NULL) break;
+        dc_frame_t f;
+        f.id = q->id & CANARD_CAN_EXT_ID_MASK;
+        f.len = q->data_len;
+        memcpy(f.data, q->data, q->data_len);
+        if (!P->send(&f)) break;
+        canardPopTxQueue(&s_ins);
+        s_st.tx++;
+    }
+}
+
+void dc_cancel_tx(void)
+{
+    if (P != NULL) drop_all();
+}
+
+uint8_t dc_cmd_tid(void)
+{
+    return (uint8_t)(s_tid_cmd & 0x1Fu);
 }
 
 static bool can_send(void)

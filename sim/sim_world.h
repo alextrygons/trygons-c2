@@ -60,6 +60,7 @@ typedef struct {
     float bow_yaw_dps;          /* ... and this yaw rate (it pushes at the bow: 6 deg/s) */
     float stern_kn;             /* ... this speed ahead / astern from the transom motor (2.5 kn) */
     float thr_tau_s;            /* their response time (3 s) */
+    float steer_half_deg;       /* DroneCAN steering position servo: outboard degrees at servo +1 (30) */
 
     /* state */
     float heading_deg, yaw_dps, wave_filt;

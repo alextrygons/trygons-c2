@@ -8,6 +8,10 @@
  * gateway UART, gateway loss, navigation requests incl. obstacle caps,
  * slamming, chip resets, frozen core 0, injected unsafe outputs for the
  * CPU1 monitor). After EVERY control step the safety invariants are checked.
+ * Step 11e: about a third of the episodes run on the DroneCAN servos (the
+ * worst-case 6 s / 12 s or the fast 2 s / 3 s servos, chosen from the seed
+ * without changing the other draws) with CAN faults (node lost / silent /
+ * rebooted, bus-off, the actuator task stuck); invariants I47-I57.
  * A failing episode is replayed with fewer events until the shortest
  * schedule that still fails remains (the "minimal reproduction").
  *
@@ -36,6 +40,8 @@
 #include "sim_world.h"
 #include "hal_sim.h"
 #include "logcore0.h"
+#include "dronecan.h"
+#include "can_act.h"
 void sim_hal_real_micros(bool on);   /* hal_sim.c: the PC clock for hal_micros() (timing) */
 #include "sim_run.h"
 
@@ -64,7 +70,7 @@ typedef enum {
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
-    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP,
+    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN,
     E_COUNT
 } ev_kind_t;
 
@@ -81,7 +87,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "bank voltage (low / fine / no data / just low)", "relay board (table offer / relay command / board fault / back)",
     "engine (RESTART / START held / released / e-stop pressed or released)",
     "watchdog reset (the chip restarts: system reset, not a power-on)",
-    "DP (thruster settings / START SPOT, CRUISE, TRIP / JOG / SPEED / HEADING / STOP; a current)"
+    "DP (thruster settings / START SPOT, CRUISE, TRIP / JOG / SPEED / HEADING / STOP; a current)",
+    "DroneCAN (a servo node lost / silent / rebooted, bus-off, the actuator task stuck; back after a while)"
 };
 
 typedef struct {
@@ -97,6 +104,7 @@ typedef struct {
     float    sea0;
     bool     boot_deflected;    /* joystick held at power-up (I11) */
     bool     uncrewed;          /* no onboard joystick at power-up: UNCREWED profile (I22) */
+    uint8_t  can;               /* step 11e: 0 PWM servos, 1 DroneCAN worst-case servos, 2 DroneCAN fast servos */
     int      n;
     ev_t     ev[MAX_EV];
     bool     on[MAX_EV];        /* used while shrinking */
@@ -111,6 +119,14 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
     s->sea0 = (float)rndi(&r, 5);
     s->boot_deflected = rnd(&r) < 0.15f;
     s->uncrewed = rnd(&r) < 0.25f;
+    {   /* (from its own hash: the other draws - and so the PWM episodes - stay what they were) */
+        uint32_t h = (seed * 2246822519u + 374761393u) ^ 0x5bd1e995u;
+        h ^= h >> 15;
+        h *= 2654435761u;
+        h ^= h >> 13;
+        uint32_t c = h % 100u;
+        s->can = c < 20u ? 1u : (c < 35u ? 2u : 0u);
+    }
     uint32_t t = 2000u;
     /* the boat should be doing something: a program and a power raise early on */
     while (t < dur_ms && s->n < MAX_EV) {
@@ -172,6 +188,7 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         e->c = rndi(&r, 1000);
         e->f = rnd(&r) * 2.0f - 1.0f;
         e->g = rnd(&r) * 2.0f - 1.0f;
+        if (s->can && k == E_FUZZ_GW && e->c < 450) e->kind = E_CAN;    /* DroneCAN episodes: CAN faults */
         s->on[s->n] = true;
         s->n++;
         /* DP: mostly a START (centre the stick, STANDBY, let the boat slow down first) + the CONFIRM */
@@ -298,6 +315,10 @@ typedef struct {
     uint32_t    crank_until, crank_next;    /* the station's START button held until (0 = not): CRANK at 5 Hz */
     uint8_t     crank_station;
     bool        estop;              /* the e-stop is pressed (its contact is fitted from the first E_ENGINE e-stop event) */
+    uint8_t     can;                /* step 11e: the episode's servos (sched_t.can) */
+    uint32_t    can_back_t;         /* a CAN fault ends (0 = none) */
+    uint8_t     can_fault_kind, can_fault_node;
+    bool        dm_armed;           /* UNCREWED: the dead-man timer relay is in the kill circuit */
 } sim_t;
 
 static sim_t S;
@@ -322,6 +343,7 @@ static void joy_apply(void)
 
 static void boot(void)
 {
+    sim_hal_can_act_clear();            /* I51: the first ArrayCommand of this boot */
     hal_init();
     sb_init(&S.sb, &S.cfg);
     link_init(&S.usb, &S.sb);
@@ -348,6 +370,17 @@ static void boot(void)
 static void sim_init(const sched_t *sc)
 {
     memset(&S, 0, sizeof S);
+    S.can = sc->can;
+    sim_hal_set_time_ms(0u);            /* (first: the CAN reset times the nodes from "now") */
+    sim_hal_can_reset();                /* step 11e: the DroneCAN bus + servo nodes, or no bus at all */
+    sim_hal_can_fault(0u);
+    sim_hal_can_task_stuck(false);
+    sim_hal_can_fitted(sc->can != 0u);
+    if (sc->can == 2u) {
+        sim_hal_can_servo_speed(DC_NODE_THROTTLE, 2.0f, 0.0f);
+        sim_hal_can_servo_speed(DC_NODE_STEERING, 3.0f, 0.03f);
+    }
+    sim_hal_deadman_arm(false);
     S.sched_seed = sc->seed;
     world_init(&S.w, sc->seed | 1u, 0.0f, 0.0f);
     S.w.sea_state = sc->sea0;
@@ -369,6 +402,7 @@ static void sim_init(const sched_t *sc)
     remove("nv2.bin");
     remove("nv4.bin");
     remove("nv7.bin");                  /* no relay table from an earlier episode */
+    remove("nv5.bin");                  /* no TRAINING result from an earlier episode */
     sim_hal_relay_board(true, 5u, 0u);  /* a fresh relay board (every relay off), 16 channels */
     sim_hal_relay_board_reset();
     sim_hal_relay_fitted(16u);
@@ -466,7 +500,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 47
+#define NINV 58
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -491,8 +525,8 @@ static const char *INV_NAMES[NINV] = { "",
     "I24 MANEUVER never commands throttle above idle",
     "I25 MANEUVER gear changes only at idle",
     "I26 (gateway: MANEUVER / REMOTE refused without a manual licence)",
-    "I27 ENGINE KILL only after idle + neutral",
-    "I28 lost link near shore or with missing / stale shore info: ENGINE KILL at once (once idle + neutral)",
+    "I27 ENGINE KILL only after idle + neutral (one exception, OD-3: UNCREWED + throttle node lost = kill at once)",
+    "I28 lost link near shore or with missing / stale shore info: ENGINE KILL at once (once idle + neutral; OD-3: node loss at once)",
     "I29 lost link at open sea: no kill before the grace time; kill after it unless the link returned",
     "I30 never an ENGINE KILL in CREWED",
     "I31 the ENGINE KILL stays latched until a POWER-ON reset OR the HELM station's restart (idle + neutral, e-stop released); a watchdog / software reset keeps it",
@@ -510,7 +544,18 @@ static const char *INV_NAMES[NINV] = { "",
     "I43 thrust <= cap and within the heat budget (a HOT thruster at 0)",
     "I44 DP SPOT / JOG more than 50 m or 2 min off the spot -> DP ends (in that step)",
     "I45 the DP set speed (CRUISE / TRIP) never above dp_max_kn",
-    "I46 a HOT thruster ends DP (never a DP step with a thruster HOT)" };
+    "I46 a HOT thruster ends DP (never a DP step with a thruster HOT)",
+    "I47 an emergency (STANDBY / e-stop / link loss / node loss / trip) commands idle in that same step; a normal decrease never slower than rate_down",
+    "I48 the throttle command never rises faster than rate_up (the generator's steps too)",
+    "I49 DroneCAN: the gear servo only moves while the SIMULATED throttle servo is at idle",
+    "I50 DroneCAN: a required node lost -> alarm + STANDBY within the node-lost time + a step; never out of STANDBY while one is lost",
+    "I51 DroneCAN: commands stopped -> the nodes HOLD; after a boot the first frame is throttle IDLE, no gear frame before thr_travel_s; throttle node lost -> no gear change",
+    "I52 DroneCAN: a monitor trip -> CPU1's safe frames within 20 ms, core 0's actuator frames stop (latched)",
+    "I53 DroneCAN: the steering adaptation never leaves the TRAINING bounds",
+    "I54 DroneCAN UNCREWED: a monitor trip -> no dead-man pulse, the engine stopped within the dead-man time; CREWED: never a pulse",
+    "I55 DroneCAN UNCREWED: throttle node lost -> ENGINE KILL in the same step; never in CREWED",
+    "I56 DroneCAN: no steering frame after a boot until a mode commands steering; worst-case speed while the position is unknown",
+    "I57 DroneCAN UNCREWED: any stop condition (trip / frozen core 0 / throttle node lost / kill) -> no dead-man pulse within a monitor period" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -602,6 +647,26 @@ typedef struct {
     uint32_t eng_on_t[4];                   /* I36: an accepted engine-relay ON command (relay 1 / 3) */
     bool     alarm_flag_prev;
     float    dp_tgt_prev;                   /* I20: DP heading target last step */
+    /* step 11e */
+    float    standby_est;                   /* I4: the modelled throttle at the STANDBY press */
+    float    gear_truth_prev, thr_truth_prev;   /* I49 */
+    bool     node_lost_prev;                /* I50 */
+    uint32_t node_silenced_t;               /* I50: a required node made silent / unpowered (0 none) */
+    uint16_t gear_sent_prev;                /* I51 */
+    bool     thr_node_lost_prev;
+    uint32_t boot_t;                        /* I51 / I56: the boot of this episode's last start */
+    bool     boot_first_checked;
+    bool     steered_since_boot;            /* I56: a mode commanded steering since the boot */
+    float    steer_u_prev;
+    bool     steer_have_prev;
+    uint32_t trip_t;                        /* I52 / I54: the latch seen (0 none) */
+    uint32_t safe_frames_at_trip, act_frames_at_trip;
+    bool     safe_seen;
+    uint32_t dm_edges_prev;                 /* I54 / I57 */
+    uint32_t dm_stop_t;                     /* I57: a stop condition began (0 none) */
+    bool     thr_node_lost_prev_kill;       /* I55 */
+    uint8_t  ll_prev55;
+    uint8_t  prof_prev54;
 } chk_t;
 
 static chk_t C;
@@ -641,6 +706,158 @@ static void worst(int inv, float v)
         ST.worst[inv] = v;
         ST.worst_seed[inv] = S.sched_seed;
     }
+}
+
+/* step 11e: the DroneCAN servos (the episode runs on them) */
+static bool can_ep(void) { return S.can != 0u && sim_hal_servos_can(); }
+
+/* I47-I57: every control step (after the old invariants) */
+static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, float dt)
+{
+    float up = s->cfg.throttle.rate_up_pct_s, down = s->cfg.throttle.rate_down_pct_s;
+    /* I47: an emergency stop commands idle in that same step; a normal decrease never slower than rate_down */
+    if (!forced && !inj) {
+        /* (a planned arrival stop, WHY_ARRIVED, keeps rate_down: not an emergency) */
+        bool arrived = false;
+        for (uint32_t n = mode_log_size(&s->modes), k = n; k > 0u && k + 8u > n; k--) {
+            const mode_log_entry_t *e = mode_log_get(&s->modes, k - 1u);
+            if (e->verdict == MODE_OK && e->to == MODE_STANDBY) { arrived = e->why == WHY_ARRIVED; break; }
+        }
+        bool emergency = ((m == MODE_STANDBY && C.mode_prev != MODE_STANDBY) || s->stopping) && !arrived;
+        if (emergency) {
+            if (s->throttle_demand <= 0.01f && thr <= 0.6f) ok(47);
+            else fail(47, "emergency / STANDBY but the throttle command %.1f %% (demand %.1f %%)", thr, s->throttle_demand);
+        } else if (s->throttle_demand < C.thr_prev - 0.01f) {
+            float want = fmaxf(s->throttle_demand, C.thr_prev - down * dt);
+            if (thr <= want + 0.6f) ok(47);
+            else fail(47, "throttle coming down too slowly: %.1f %% (at rate_down at most %.1f %%)", thr, want);
+        }
+        /* I48: never up faster than rate_up */
+        if (thr <= C.thr_prev + up * dt + 0.6f || thr <= 0.6f) ok(48);
+        else fail(48, "throttle rose %.1f -> %.1f %% in one step (rate_up)", C.thr_prev, thr);
+    }
+    if (!can_ep()) return;
+    float gt = sim_hal_gear_truth_us(), tt = sim_hal_thr_truth();
+    /* I49: the gear servo moves only while the simulated throttle servo is at idle (also after a trip: CPU1's
+     * neutral frame only after the throttle travel time) */
+    if (!S.boot_until && C.gear_truth_prev > 0.0f && fabsf(gt - C.gear_truth_prev) > 2.0f) {
+        if (tt <= 1.0f && C.thr_truth_prev <= 1.0f) ok(49);
+        else fail(49, "the gear servo moved with the throttle servo at %.1f %% (before %.1f %%)", tt, C.thr_truth_prev);
+    }
+    /* I50: a required node lost -> alarm + STANDBY; never out of STANDBY while one is lost */
+    if (s->can.node_lost) {
+        if (!(s->alarm_bits2 & SB_ALM2_CAN_NODE)) fail(50, "a required node lost without the CAN NODE LOST alarm%.0f%.0f", 0.0, 0.0);
+        else if (m != MODE_STANDBY && (C.node_lost_prev || C.mode_prev == MODE_STANDBY))
+            fail(50, "a required node lost but mode %.0f%.0f", (double)m, 0.0);
+        else ok(50);
+    }
+    if (C.node_silenced_t && !S.boot_until) {
+        if (s->can.node_lost) { ok(50); C.node_silenced_t = 0u; }
+        else if (S.t - C.node_silenced_t > HAL_CAN_NODE_LOST_MS + 300u) {
+            fail(50, "a node silent %.0f ms but not lost (limit %.0f)", (double)(S.t - C.node_silenced_t),
+                 (double)HAL_CAN_NODE_LOST_MS);
+            C.node_silenced_t = 0u;
+        }
+    }
+    C.node_lost_prev = s->can.node_lost;
+    /* I51: after a boot the first ArrayCommand is throttle IDLE; no gear frame before thr_travel_s; the throttle
+     * node lost -> no gear change sent */
+    if (!C.boot_first_checked && sim_hal_can_first_act() != 0u) {
+        sim_can_act_t a;
+        sim_hal_can_act(CA_ACT_THROTTLE, &a);
+        if (sim_hal_can_first_act() == CA_ACT_THROTTLE && a.first <= -0.99f) ok(51);
+        else fail(51, "the first frame after the boot: actuator %.0f, value %.2f", (double)sim_hal_can_first_act(), a.first);
+        C.boot_first_checked = true;
+    }
+    if (s->servo.gear_sent && C.gear_sent_prev == 0u) {
+        float since = (S.t - C.boot_t) * 0.001f;
+        if (since + 0.06f >= s->servo.cfg.travel_s || s->servo.est_pct <= 0.0f) ok(51);
+        else fail(51, "a gear frame %.2f s after the boot (travel %.1f s)", since, s->servo.cfg.travel_s);
+    }
+    bool thr_lost = (s->can.lost_mask & (1u << HAL_CAN_ROLE_THROTTLE)) != 0u;
+    if (thr_lost && C.thr_node_lost_prev && C.gear_sent_prev != 0u && s->servo.gear_us != 0u &&
+        s->servo.gear_us != C.gear_sent_prev)
+        fail(51, "throttle node lost but the gear command changed %.0f -> %.0f us", (double)C.gear_sent_prev,
+             (double)s->servo.gear_us);
+    else if (thr_lost) ok(51);
+    C.thr_node_lost_prev = thr_lost;
+    C.gear_sent_prev = s->servo.gear_sent ? s->servo.gear_us : 0u;
+    /* I52: a trip -> CPU1's safe frames within 20 ms (+ a monitor tick), core 0's actuator frames stop */
+    if (forced && !C.trip_t) {
+        hal_can_act_t a;
+        C.trip_t = S.t ? S.t : 1u;
+        C.safe_frames_at_trip = sim_hal_can_safe_frames();
+        C.act_frames_at_trip = hal_can_act_state(&a) ? a.frames : 0u;
+        C.safe_seen = false;
+    }
+    if (forced && C.trip_t) {
+        hal_can_act_t a;
+        uint32_t frames = hal_can_act_state(&a) ? a.frames : 0u;
+        if (!C.safe_seen && sim_hal_can_safe_frames() != C.safe_frames_at_trip) { C.safe_seen = true; ok(52); }
+        bool bus_ok = !s->can.bus_bad && (s->can.lost_mask & 7u) != 7u;
+        if (!C.safe_seen && bus_ok && S.t - C.trip_t > MON_SAFE_FRAME_MS + 2u * AP_PERIOD_MS)
+            fail(52, "no CPU1 safe frame %.0f ms after the trip%.0f", (double)(S.t - C.trip_t), 0.0);
+        if (frames > C.act_frames_at_trip + 3u)
+            fail(52, "core 0 queued %.0f actuator frames after the trip%.0f", (double)(frames - C.act_frames_at_trip), 0.0);
+        else ok(52);
+    }
+    /* I53: the adaptation inside the TRAINING bounds */
+    if (s->ap.servo_have || s->ap.servo_steering) {
+        if (sm_within_bounds(&s->ap.sm)) ok(53);
+        else fail(53, "the steering model left the TRAINING bounds (K %.2f, play %.4f)", s->ap.sm.use.k, sm_play(&s->ap.sm));
+    }
+    /* I54 / I57: the dead-man pulses (CPU1). CREWED: never a pulse. UNCREWED: no pulse after a stop condition
+     * (trip / frozen core 0 / throttle node lost / kill latched) - one monitor period of grace */
+    uint32_t edges = sim_hal_deadman_edges();
+    bool stop_cond = forced || S.frozen || thr_lost || s->ll.state == SB_LL_KILLED;
+    if (s->profile == SB_PROFILE_CREWED && C.prof_prev54 == SB_PROFILE_CREWED) {   /* (CPU1 sees a change a step later) */
+        if (edges != C.dm_edges_prev) fail(54, "a dead-man pulse in CREWED%.0f%.0f", 0.0, 0.0);
+        else ok(54);
+    }
+    if (stop_cond) {
+        if (!C.dm_stop_t) C.dm_stop_t = S.t ? S.t : 1u;
+        else if (S.t - C.dm_stop_t > MON_DM_TOGGLE_MS + 30u && edges != C.dm_edges_prev)
+            fail(forced ? 54 : 57, "dead-man pulses %.0f ms after a stop condition (trip / frozen / node lost / kill)%.0f",
+                 (double)(S.t - C.dm_stop_t), 0.0);
+        else if (S.t - C.dm_stop_t > MON_DM_TOGGLE_MS + 30u) ok(forced ? 54 : 57);
+    } else {
+        C.dm_stop_t = 0u;
+    }
+    if (forced && S.dm_armed && C.trip_t && S.t - C.trip_t > 1500u + 300u) {
+        if (sim_hal_deadman_killed()) ok(54);
+        else fail(54, "UNCREWED trip %.0f ms ago, the dead-man relay has not stopped the engine%.0f", (double)(S.t - C.trip_t), 0.0);
+    }
+    C.dm_edges_prev = edges;
+    C.prof_prev54 = s->profile;
+    /* I55: UNCREWED throttle node lost -> the kill latch in that same step (and never in CREWED: I30) */
+    if (thr_lost && s->profile == SB_PROFILE_UNCREWED && !C.thr_node_lost_prev_kill) {
+        if (s->ll.state == SB_LL_KILLED) ok(55);
+        else fail(55, "UNCREWED throttle node lost, no ENGINE KILL in that step (state %.0f)%.0f", (double)s->ll.state, 0.0);
+    }
+    if (thr_lost && s->profile == SB_PROFILE_CREWED) {      /* (a kill latched earlier in UNCREWED may stay) */
+        if (s->ll.state == SB_LL_KILLED && C.ll_prev55 != SB_LL_KILLED)
+            fail(55, "CREWED throttle node lost and an ENGINE KILL%.0f%.0f", 0.0, 0.0);
+        else ok(55);
+    }
+    C.thr_node_lost_prev_kill = thr_lost;
+    C.ll_prev55 = s->ll.state;
+    /* I56: no steering frame after a boot until a mode commands steering; the worst-case speed while the position
+     * is unknown */
+    bool have = false;
+    float u = sim_hal_steer_cmd(&have);
+    if (m != MODE_STANDBY) C.steered_since_boot = true;
+    if (have && !C.steer_have_prev && !C.steered_since_boot)
+        fail(56, "a steering frame after the boot in STANDBY (no mode steered)%.0f%.0f", 0.0, 0.0);
+    else if (!C.steered_since_boot) ok(56);
+    if (have && C.steer_have_prev && !sm_known(&s->ap.sm) && !forced) {
+        if (fabsf(u - C.steer_u_prev) <= SM_RATE_WORST * dt * 1.05f + 1e-4f) ok(56);
+        else fail(56, "steering command moved %.4f in a step while the position is unknown (worst case %.4f)",
+                  fabsf(u - C.steer_u_prev), SM_RATE_WORST * dt);
+    }
+    C.steer_u_prev = u;
+    C.steer_have_prev = have;
+    C.gear_truth_prev = gt;
+    C.thr_truth_prev = tt;
 }
 
 /* after every control step */
@@ -689,6 +906,26 @@ static void check_step(void)
         C.ll_prev = s->ll.state;
         C.forced_prev = forced;
         C.kc_prev = s->eng.kill_clears;
+        /* step 11e */
+        C.boot_t = S.t;
+        C.boot_first_checked = false;
+        C.steered_since_boot = false;
+        C.steer_have_prev = false;
+        C.gear_sent_prev = 0u;
+        C.trip_t = 0u;
+        C.thr_node_lost_prev = C.thr_node_lost_prev_kill = false;
+        C.node_lost_prev = false;
+        C.gear_truth_prev = sim_hal_gear_truth_us();
+        C.thr_truth_prev = sim_hal_thr_truth();
+        C.dm_edges_prev = sim_hal_deadman_edges();
+        C.dm_stop_t = 0u;
+        C.prof_prev54 = s->profile;
+        C.relay_t = 0u;                 /* I36: a relay event across a reboot is not judged (the boot changes it all) */
+        C.thr_mode_prev = s->throttle_mode;     /* ... and one right after it compares with the booted state */
+        C.gear_demand_prev = s->gear_demand;
+        C.ap_mode_prev = (uint8_t)s->ap.mode;
+        C.alm_prev = s->alarm_bits;
+        C.alm2_prev = s->alarm_bits2;
         return;
     }
 
@@ -738,7 +975,9 @@ static void check_step(void)
     if (C.standby_press_t) {
         int32_t dms = (int32_t)(S.t - C.standby_press_t);
         float el = (dms > 0 ? dms : 0) * 0.001f;
-        float bound = C.standby_thr / down + s->cfg.gear.idle_wait_ms * 0.001f + 0.8f;
+        /* step 11e: idle at once, the gear to neutral once the MODELLED throttle servo is at idle (est_pct, the
+         * worst-case travel thr_travel_s) */
+        float bound = C.standby_est * 0.01f * s->servo.cfg.travel_s + s->cfg.gear.idle_wait_ms * 0.001f + 0.8f;
         if (el > 0.15f && m != MODE_STANDBY && !forced) fail(4, "%.2f s after STANDBY still mode %.0f", el, (double)m);
         if (thr <= 0.6f && (gp == 0 || gp == -1)) {
             ok(4);
@@ -752,6 +991,7 @@ static void check_step(void)
 
     /* I5 / I6: the onboard joystick */
     bool joy_ok = S.joy_fitted && !S.joy_broken && s->armed && !forced && !s->joy.fault && !s->mon_tripped &&
+                  !s->can.node_block &&                                     /* DroneCAN: a node lost / rebooted: STANDBY only */
                   s->profile == SB_PROFILE_CREWED && s->joy.present && s->ll.state == SB_LL_OK &&   /* killed: STANDBY only */
                   s->estop_state != 2u;                                     /* e-stop pressed: STANDBY only */
     if (C.defl_pending && joy_ok) {
@@ -836,7 +1076,7 @@ static void check_step(void)
         bool safe_now = forced || (thr <= 0.6f && (gp == 0 || gp == -1));
         if (safe_now) { if (!C.safe_since) C.safe_since = S.t ? S.t : 1u; } else C.safe_since = 0u;
         if (kill && !C.killed) {
-            if (safe_now) ok(27);
+            if (safe_now || s->ll.node_kill) ok(27);       /* OD-3: UNCREWED throttle node lost = at once (I55) */
             else fail(27, "ENGINE KILL with the throttle at %.1f %% / gear %.0f", thr, (double)gp);
             if (s->profile == SB_PROFILE_CREWED) fail(30, "ENGINE KILL started in a CREWED boat%.0f%.0f", 0.0, 0.0);
             else ok(30);
@@ -1136,6 +1376,7 @@ static void check_step(void)
             else ok(46);
         }
     }
+    check_can(s, m, thr, forced, inj, dt);
     C.dp_tgt_prev = s->dp.hdg_target;
     C.alarm_flag_prev = s->alarm;
     C.mode_prev = m;
@@ -1176,7 +1417,7 @@ static void apply(const ev_t *e)
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
     case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK: case E_GEN: case E_ENGINE:
-    case E_WDT: case E_DP:
+    case E_WDT: case E_DP: case E_CAN:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -1202,6 +1443,7 @@ static void apply(const ev_t *e)
             int g = gear_pos(sim_hal_gear_pwm());
             C.standby_press_t = S.t + 1u;
             C.standby_thr = sim_hal_throttle();
+            C.standby_est = s->servo.est_pct;
             /* already idle + neutral (e.g. the CPU1 monitor holds the safe state while core 0
              * is frozen / rebooting): nothing to wait for, reaction time 0 */
             C.standby_safe = C.standby_thr <= 0.6f && (g == 0 || g == -1);
@@ -1345,7 +1587,10 @@ static void apply(const ev_t *e)
             C.rs_t = S.t ? S.t : 1u;
             C.rs_ok = st != 0u && st == s->helm && sim_hal_throttle() <= 0.6f && gear_pos(sim_hal_gear_pwm()) == 0 &&
                       !S.estop;
-            (void)sb_restart(s, st, ENG_ACT_RESTART);
+            if (sb_restart(s, st, ENG_ACT_RESTART) == SB_OK && C.rs_ok) {
+                sim_hal_deadman_restart();                                 /* the operator restarts the engine */
+                C.trip_t = 0u;                                             /* (I54: judged again from here) */
+            }
         } else if (e->a < 850) {                                           /* START held 0.2 .. 8 s */
             S.crank_until = S.t + 200u + (uint32_t)e->c * 8u;
             S.crank_next = S.t;
@@ -1395,6 +1640,34 @@ static void apply(const ev_t *e)
                             (int16_t)(e->b % 2 ? e->c * 3 - 1500 : e->c * 3));
         } else {
             (void)sb_dp_cmd(s, (e->b % 4 == 0) ? (uint8_t)(2u + (uint32_t)e->c % 3u) : s->helm, DP_ACT_STOP, 0u, 0);
+        }
+        break;
+    }
+    case E_CAN: {
+        if (!can_ep() || S.can_back_t) break;
+        static const uint8_t N[3] = { DC_NODE_THROTTLE, DC_NODE_STEERING, DC_NODE_GEAR };
+        uint8_t id = N[e->b % 3];
+        S.can_fault_node = id;
+        S.can_back_t = S.t + 300u + (uint32_t)e->c * 12u;
+        if (e->a < 250) {                                   /* a node loses power: no status, no action (holds) */
+            S.can_fault_kind = 1u;
+            sim_hal_can_node(id, false, 0u, 0u);
+            C.node_silenced_t = S.t ? S.t : 1u;
+        } else if (e->a < 400) {                            /* powered + acting, its NodeStatus stops */
+            S.can_fault_kind = 2u;
+            sim_hal_can_node_silent(id, true);
+            C.node_silenced_t = S.t ? S.t : 1u;
+        } else if (e->a < 520) {                            /* a brown-out reboot */
+            S.can_fault_kind = 0u;
+            sim_hal_can_node_reboot(id);
+            S.can_back_t = 0u;
+        } else if (e->a < 700) {                            /* our controller bus-off */
+            S.can_fault_kind = 3u;
+            sim_hal_can_fault(SIM_CAN_BUSOFF);
+        } else {                                            /* core 0's actuator task stuck (MON_TRIP_CAN_TX) */
+            S.can_fault_kind = 4u;
+            S.can_back_t = S.t + 400u;
+            sim_hal_can_task_stuck(true);
         }
         break;
     }
@@ -1488,6 +1761,21 @@ static void run_until(uint32_t until)
             sim_hal_chip_reset(HAL_RESET_POWER_ON);
             S.boot_until = (S.t + 200u) ? S.t + 200u : 1u;
             C.freeze_t = 0u;
+        }
+        /* step 11e: core 0's 10 ms actuator task (frozen / booting: it does not run) */
+        if (!S.boot_until && !S.frozen && S.t % 10u == 0u) hal_can_tick();
+        if (S.can_back_t && AT_OR_AFTER(S.t, S.can_back_t)) {
+            S.can_back_t = 0u;
+            if (S.can_fault_kind == 1u) sim_hal_can_node(S.can_fault_node, true, 0u, 0u);
+            if (S.can_fault_kind == 2u) sim_hal_can_node_silent(S.can_fault_node, false);
+            if (S.can_fault_kind == 3u) sim_hal_can_fault(0u);
+            if (S.can_fault_kind == 4u) sim_hal_can_task_stuck(false);
+            C.node_silenced_t = 0u;
+        }
+        /* UNCREWED: the crew switches the dead-man relay into the kill circuit once the pulses run (OA-3) */
+        if (S.uncrewed && can_ep() && !S.dm_armed && sim_hal_deadman_edges() > 2u) {
+            S.dm_armed = true;
+            sim_hal_deadman_arm(true);
         }
         if (!S.boot_until && AT_OR_AFTER(S.t, S.next_ctrl)) {
             S.next_ctrl += AP_PERIOD_MS;

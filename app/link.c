@@ -25,7 +25,8 @@ typedef enum {
     P_SLOW_R, P_APPROACH_KN, P_TRAINING_THR,
     P_DR_MAX_UNC, P_DR_SPEED_F, P_DR_SLOW_KN,
     P_JOY_MAX_THR, P_JOY_DEADBAND, P_PC_TIMEOUT, P_SLAM_LIMIT, P_SLAM_RED_RESET, P_GPS2_CHECK, P_NAV_LOST_KN,
-    P_STOP_RATE, P_NAV_MAX_DEV, P_NEAR_SHORE, P_LL_GRACE, P_BATT_LOW, P_GEN_MAX, P_GEN_START_V, P_GEN_IDLE,
+    P_THR_DN, P_NAV_MAX_DEV, P_NEAR_SHORE, P_LL_GRACE, P_BATT_LOW, P_GEN_MAX, P_GEN_START_V, P_GEN_IDLE,
+    P_THR_UP, P_THR_TRAVEL,
     P_COUNT
 } param_id_t;
 
@@ -50,7 +51,8 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "slam_red_reset",  0.0f,    1.0f },     /* slamming RED: 0 = STEP (default), 1 = LIMIT_RESET */
     { "gps2_check_m",    0.0f, 2000.0f },     /* GPS fix vs the second GPS (AIS device); 0 = off */
     { "nav_lost_kn",     2.0f,   10.0f },     /* avoidance request lost (gateway gone): slow to this */
-    { "stop_rate_pc_s", 40.0f,  300.0f },     /* STANDBY safe stop: throttle closing rate (100 = idle in 1 s) */
+    { "thr_dn_pc_s",    20.0f,  200.0f },     /* throttle DOWN rate (50 %/s; step 11e: emergencies = idle at once, no
+                                                 rate; replaces stop_rate_pc_s) - limits TO CONFIRM C21 */
     { "nav_max_dev",    30.0f,  180.0f },     /* avoidance heading: max deg off the leg track (150) */
     { "near_shore_m",   20.0f, 2000.0f },     /* UNCREWED lost link: closer = engine kill at once (100, TO CONFIRM) */
     { "lostlink_grc_s",  0.0f,  120.0f },     /* UNCREWED lost link, open sea: kill after this (10, TO CONFIRM) */
@@ -58,6 +60,9 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "gen_max_pct",     0.0f,   30.0f },     /* generator: throttle cap in neutral (25, TO CONFIRM; 0 = disabled; boat file) */
     { "gen_start_v",    11.5f,   13.0f },     /* generator runs while the bank is below this (12.1 V) */
     { "gen_idle_pct",    3.0f,   15.0f },     /* generator: the fast idle, first step (8 %, TO CONFIRM) */
+    { "thr_up_pc_s",     2.0f,   30.0f },     /* throttle UP rate (15 %/s, step 11e) - limits TO CONFIRM C21 */
+    { "thr_trav_s",      1.0f,   30.0f },     /* worst-case throttle servo travel for every "idle" wait (6 s; shorter
+                                                 = an owner-signed value: STANDBY + CONFIRM, OD-4) */
 };
 
 uint8_t link_param_count(void)
@@ -94,7 +99,7 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_SLAM_RED_RESET: return &s->slam.cfg.red_reset;
     case P_GPS2_CHECK:   return &s->dr.cfg.gps2_max_m;
     case P_NAV_LOST_KN:  return &s->cfg.nav_lost_kn;
-    case P_STOP_RATE:    return &s->thr.cfg.rate_stop_pct_s;
+    case P_THR_DN:       return &s->thr.cfg.rate_down_pct_s;
     case P_NAV_MAX_DEV:  return &s->cfg.nav_max_dev_deg;
     case P_NEAR_SHORE:   return &s->cfg.near_shore_m;
     case P_LL_GRACE:     return &s->cfg.lostlink_grace_s;
@@ -102,6 +107,8 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
     case P_GEN_MAX:      return &s->gen.cfg.max_pct;
     case P_GEN_START_V:  return &s->gen.cfg.start_v;
     case P_GEN_IDLE:     return &s->gen.cfg.idle_pct;
+    case P_THR_UP:       return &s->thr.cfg.rate_up_pct_s;
+    case P_THR_TRAVEL:   return &s->servo.cfg.travel_s;
     default:             return NULL;
     }
 }
@@ -574,10 +581,21 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         if (id >= P_COUNT) return PROTO_R_BAD_PARAM;
         if (sb_mode(s) != MODE_STANDBY) return PROTO_R_STANDBY_ONLY;
         if (!(v >= s_params[id].min && v <= s_params[id].max)) return PROTO_R_BAD_VALUE;
+        if (id == P_THR_TRAVEL) {
+            /* OD-4: longer at once; SHORTER only as an owner-signed value - the joystick CONFIRM (OK = waiting) */
+            float before = s->servo.cfg.travel_s;
+            sb_result_t tr = sb_thr_travel_set(s, v);
+            if (tr != SB_OK) return sb_result_to_proto(tr);
+            logcore0_param(s, id, before, v);
+            s->cfg_version++;
+            send_param(l, s, id);
+            return PROTO_R_OK;
+        }
         logcore0_param(s, id, *param_ptr(l, s, id), v);
         *param_ptr(l, s, id) = v;
         s->cfg_version++;
         if (id == P_CRUISE_MAX) s->cfg.prog.max_speed_kn = v;   /* program validation uses it too */
+        if (id == P_THR_DN) s->servo.cfg.rate_down_pct_s = v;   /* the servo clamp's limit-drop rate = the same */
         send_param(l, s, id);
         return PROTO_R_OK;
     }
@@ -1000,6 +1018,14 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      b4 bus silent, b5 STANDBY interlock: a required node lost / not seen yet) | u8 bus state (HAL_CAN_ST_) |
  *      u8 lost mask | u8 WARNING mask (notice) | u8 seen mask | u8 rebooted mask (bit = node table index:
  *      0 throttle 1 steering 2 gear 3 relay board)
+ *   Q: the DroneCAN steering position servo + the throttle model (step 11e, docs/dronecan_design.md 7 / 8):
+ *      u8 flags (b0 position servo (DroneCAN), b1 position known, b2 steering commanded since the boot, b3 TRAINING
+ *      values in use, b4 adapted values in use, b5 TRAINING needed, b6 STEERING MODEL RESET notice (30 s), b7 a
+ *      version-1 (DC-motor) record refused) | i8 servo command*100 | i8 position estimate*100 (-128 unknown) |
+ *      u8 servo speed right*100 (units/s) | u8 left*100 | u8 play stored*1000 | u8 play in use*1000 |
+ *      u16 K stored*100 (deg/s per unit) | u8 K in use / stored % | u8 tau stored*10 | u8 TRAINING confidence % |
+ *      u8 last adaptation reset why (SM_RESET_) | u8 modelled throttle % (est) | u8 thr_travel_s*10 |
+ *      u16 boot number of the TRAINING (0 none)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1170,6 +1196,32 @@ static void telemetry2(link_t *l, sb_t *s)
         proto_wr_u8(&w, f ? s->can.warn_mask : 0u);
         proto_wr_u8(&w, f ? s->can.seen_mask : 0u);
         proto_wr_u8(&w, f ? s->can.reboot_mask : 0u);
+    }
+    /* Q: the steering position servo + the throttle model */
+    {
+        const steer_t *m = &s->ap.sm;
+        bool sv = s->ap.servo, known = sv && sm_known(m);
+        bool notice = s->steer.reset_ms != 0u && s->now_ms - s->steer.reset_ms < 30000u;
+        float ks = m->stored.k > 0.0f ? m->stored.k : 1.0f;
+        proto_wr_u8(&w, (uint8_t)((sv ? 1u : 0u) | (known ? 2u : 0u) | (sv && m->have ? 4u : 0u) |
+                                  (sv && m->stored.trained ? 8u : 0u) | (sv && m->adapted ? 16u : 0u) |
+                                  (sv && s->steer.needs_training ? 32u : 0u) | (sv && notice ? 64u : 0u) |
+                                  (sv && s->steer.v1_refused ? 128u : 0u)));
+        proto_wr_u8(&w, (uint8_t)(int8_t)lroundf(fmaxf(-1.0f, fminf(1.0f, m->u)) * 100.0f));
+        proto_wr_u8(&w, known ? (uint8_t)(int8_t)lroundf(fmaxf(-1.0f, fminf(1.0f, 0.5f * (m->p_lo + m->p_hi))) * 100.0f)
+                              : (uint8_t)(int8_t)-128);
+        proto_wr_u8(&w, (uint8_t)lroundf(fminf(2.55f, m->stored.r_right) * 100.0f));
+        proto_wr_u8(&w, (uint8_t)lroundf(fminf(2.55f, m->stored.r_left) * 100.0f));
+        proto_wr_u8(&w, (uint8_t)lroundf(fminf(0.255f, 0.5f * (m->stored.b_lr + m->stored.b_rl)) * 1000.0f));
+        proto_wr_u8(&w, (uint8_t)lroundf(fminf(0.255f, sm_play(m)) * 1000.0f));
+        proto_wr_u16(&w, (uint16_t)lroundf(fminf(655.0f, m->stored.k) * 100.0f));
+        proto_wr_u8(&w, (uint8_t)lroundf(fminf(255.0f, m->use.k / ks * 100.0f)));
+        proto_wr_u8(&w, (uint8_t)lroundf(fminf(25.5f, m->stored.tau) * 10.0f));
+        proto_wr_u8(&w, m->stored.trained ? (uint8_t)lroundf(s->ap.servo_calib.confidence * 100.0f) : 0u);
+        proto_wr_u8(&w, s->steer.reset_why);
+        proto_wr_u8(&w, (uint8_t)lroundf(fmaxf(0.0f, fminf(100.0f, s->servo.est_pct))));
+        proto_wr_u8(&w, (uint8_t)lroundf(fminf(25.5f, s->servo.cfg.travel_s) * 10.0f));
+        proto_wr_u16(&w, m->stored.trained ? (uint16_t)s->ap.servo_calib.boot : 0u);
     }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);

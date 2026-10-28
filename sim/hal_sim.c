@@ -5,6 +5,8 @@
 #include "boat_model.h"
 #include "tc_modbus.h"
 #include "dronecan.h"
+#include "can_act.h"
+#include "can_safe.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -19,6 +21,10 @@
 static void nv_sim_reset(void);         /* non-volatile storage queue (below) */
 static void rb_driver_init(void);       /* Modbus relay board: the master restarts (below) */
 static void sc_driver_init(void);       /* DroneCAN: the AURIX side restarts, the nodes keep running (below) */
+static void sc_tick(void);              /* DroneCAN: the bus + the nodes, every physics step (below) */
+static bool s_sc_boot_fitted;           /* the CAN bus was fitted at the last hal_init */
+static bool s_servos_can;               /* ... with the servos on it (step 11e) */
+static void dm_tick(void);              /* the UNCREWED dead-man timer relay (below) */
 
 /* safety monitor trip latch (hal_safe_outputs) */
 static bool     s_forced;
@@ -105,7 +111,25 @@ void hal_set_rudder_motor(float command)
 {
     if (command > 1.0f) command = 1.0f;
     if (command < -1.0f) command = -1.0f;
-    s_motor = s_forced ? 0.0f : command;
+    s_motor = (s_forced || s_servos_can) ? 0.0f : command;    /* (the DroneCAN boat has no steering motor) */
+}
+
+/* the steering position servo (DroneCAN): what the app commanded */
+static bool  s_steer_have;
+static float s_steer_pos;
+void hal_set_steer_pos(bool command, float pos)
+{
+    if (!s_servos_can || s_forced) return;      /* tripped: CPU1's safe frames (latched) */
+    s_steer_have = command;
+    s_steer_pos = pos;
+    ca_set_steer(command, pos);
+}
+
+bool hal_servos_can(void) { return s_servos_can; }
+float sim_hal_steer_cmd(bool *have)
+{
+    if (have) *have = s_steer_have;
+    return s_steer_pos;
 }
 
 uint32_t hal_get_button_presses(void)
@@ -122,7 +146,12 @@ void hal_set_alarm(bool on)
 
 /* ---- simulation control ------------------------------------------------ */
 
-void sim_hal_set_time_ms(uint32_t t_ms)  { s_time_ms = t_ms; }
+void sim_hal_set_time_ms(uint32_t t_ms)
+{
+    s_time_ms = t_ms;
+    if (s_sc_boot_fitted) sc_tick();    /* the bus and the servo nodes run on their own (also with core 0 frozen) */
+    dm_tick();
+}
 
 void sim_hal_set_truth(float heading_deg, float rudder_deg)
 {
@@ -159,9 +188,14 @@ void hal_set_throttle_pwm(uint16_t pulse_us)
     if (pulse_us < HAL_THROTTLE_PWM_MIN) pulse_us = HAL_THROTTLE_PWM_MIN;
     if (pulse_us > HAL_THROTTLE_PWM_MAX) pulse_us = HAL_THROTTLE_PWM_MAX;
     s_throttle_us = pulse_us;
+    if (s_servos_can && !s_forced) ca_set_throttle_us(pulse_us);
 }
 
-void hal_set_gear_pwm(uint16_t pulse_us) { s_gear_pwm = s_forced ? s_safe_gear_us : pulse_us; }
+void hal_set_gear_pwm(uint16_t pulse_us)
+{
+    s_gear_pwm = s_forced ? s_safe_gear_us : pulse_us;
+    if (s_servos_can && !s_forced) ca_set_gear_us(pulse_us);  /* 0 = no gear frame: the node holds */
+}
 
 bool hal_read_gps(hal_gps_t *gps)
 {
@@ -184,6 +218,7 @@ void     sim_hal_gps_message(const hal_gps_t *g) { s_gps = *g; s_gps_new = true;
 void     sim_hal_reset_engine(void)
 {
     s_engine_kill = false;                  /* a new boat / the engine restarted on board */
+    sim_hal_deadman_restart();
     s_throttle_us = 1000u;
     s_gear_pwm = 1500u;
     s_gps_new = false;
@@ -589,7 +624,8 @@ uint32_t sim_hal_nv_lost(void)           { return s_nv_lost; }
 
 /* --- ground-station link: two byte rings, filled / emptied by the sim
  *     TCP server (sim_server.c) or directly by the tests --- */
-#define LINK_BUF 8192u
+#define LINK_BUF 16384u    /* (the PC side's serial buffer: a test that does not read for a few seconds
+                              must not lose the next ACK - TELEM2 grew in step 11e, CAN_NODES on the CAN boat) */
 typedef struct { uint8_t b[LINK_BUF]; uint32_t head, tail; } link_ring_t;
 static link_ring_t s_link_rx, s_link_tx;   /* rx: PC -> boat, tx: boat -> PC */
 
@@ -632,7 +668,10 @@ void sim_hal_link_reset(void)
 /* --- gateway UART (Raspberry Pi): two rings like the PC link, plus a
  *     baud-rate model: the boat -> Pi side only moves as many bytes as the
  *     UART could have sent since the last pop (921600 baud = 92 bytes/ms) --- */
-static link_ring_t s_gw_rx, s_gw_tx;
+#define GW_BUF 8192u      /* = HAL_GW_TX_RING: the board's gateway transmit buffer */
+typedef struct { uint8_t b[GW_BUF]; uint32_t head, tail; } gw_ring_t;
+static gw_ring_t s_gw_rx, s_gw_tx;
+static uint32_t gw_used(const gw_ring_t *r) { return r->head - r->tail; }
 static uint32_t s_gw_bytes_per_s = 92160u;
 static uint32_t s_gw_last_ms;
 static uint64_t s_gw_credit_mb;            /* milli-bytes the UART may still send */
@@ -640,26 +679,26 @@ static uint64_t s_gw_credit_mb;            /* milli-bytes the UART may still sen
 uint32_t hal_gw_read(uint8_t *buf, uint32_t max)
 {
     uint32_t n = 0u;
-    while (n < max && ring_used(&s_gw_rx) > 0u) buf[n++] = s_gw_rx.b[s_gw_rx.tail++ % LINK_BUF];
+    while (n < max && gw_used(&s_gw_rx) > 0u) buf[n++] = s_gw_rx.b[s_gw_rx.tail++ % GW_BUF];
     return n;
 }
 
 bool hal_gw_write(const uint8_t *buf, uint32_t len)
 {
-    if (LINK_BUF - ring_used(&s_gw_tx) < len) return false;
-    for (uint32_t i = 0u; i < len; i++) s_gw_tx.b[s_gw_tx.head++ % LINK_BUF] = buf[i];
+    if (GW_BUF - gw_used(&s_gw_tx) < len) return false;
+    for (uint32_t i = 0u; i < len; i++) s_gw_tx.b[s_gw_tx.head++ % GW_BUF] = buf[i];
     return true;
 }
 
 uint32_t hal_gw_tx_free(void)
 {
-    return LINK_BUF - ring_used(&s_gw_tx);
+    return GW_BUF - gw_used(&s_gw_tx);
 }
 
 uint32_t sim_hal_gw_rx_push(const uint8_t *buf, uint32_t len)
 {
     uint32_t n = 0u;
-    while (n < len && ring_used(&s_gw_rx) < LINK_BUF) s_gw_rx.b[s_gw_rx.head++ % LINK_BUF] = buf[n++];
+    while (n < len && gw_used(&s_gw_rx) < GW_BUF) s_gw_rx.b[s_gw_rx.head++ % GW_BUF] = buf[n++];
     return n;
 }
 
@@ -668,10 +707,10 @@ uint32_t sim_hal_gw_tx_pop(uint8_t *buf, uint32_t max)
     uint32_t dt = s_time_ms - s_gw_last_ms;
     s_gw_last_ms = s_time_ms;
     s_gw_credit_mb += (uint64_t)dt * s_gw_bytes_per_s;
-    if (s_gw_credit_mb > (uint64_t)LINK_BUF * 1000u) s_gw_credit_mb = (uint64_t)LINK_BUF * 1000u;
+    if (s_gw_credit_mb > (uint64_t)GW_BUF * 1000u) s_gw_credit_mb = (uint64_t)GW_BUF * 1000u;
     uint32_t n = 0u;
-    while (n < max && ring_used(&s_gw_tx) > 0u && s_gw_credit_mb >= 1000u) {
-        buf[n++] = s_gw_tx.b[s_gw_tx.tail++ % LINK_BUF];
+    while (n < max && gw_used(&s_gw_tx) > 0u && s_gw_credit_mb >= 1000u) {
+        buf[n++] = s_gw_tx.b[s_gw_tx.tail++ % GW_BUF];
         s_gw_credit_mb -= 1000u;
     }
     return n;
@@ -690,9 +729,19 @@ void sim_hal_gw_reset(uint32_t baud)
 static bool     s_relay;
 static hal_reset_t s_reset_reason = HAL_RESET_POWER_ON;
 
+static bool     s_safe_purged;          /* CPU1 cancelled core 0's pending actuator frames (after the trip) */
+static uint8_t  s_safe_tid;
+static uint32_t s_safe_frames;
+static void sc_purge(void);
+
 void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
 {
-    s_forced = true;
+    s_forced = true;                    /* the latch FIRST (core 0's CAN layer checks it before + after) */
+    if (s_servos_can && !s_safe_purged) {
+        sc_purge();                     /* core 0's pending actuator frames never go out after the trip */
+        s_safe_purged = true;
+        s_safe_tid = dc_cmd_tid();      /* continue core 0's transfer-ID counter */
+    }
     s_safe_thr_us = throttle_idle_us;
     s_safe_gear_us = gear_neutral_us;
     s_throttle_us = throttle_idle_us;
@@ -707,6 +756,7 @@ void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
 bool hal_outputs_forced(void) { return s_forced; }
 static bool s_estop_fitted, s_estop_pressed;
 void sim_hal_set_estop(bool fitted, bool pressed) { s_estop_fitted = fitted; s_estop_pressed = pressed; }
+bool sim_hal_estop_pressed(void) { return s_estop_fitted && s_estop_pressed; }
 bool hal_read_estop(bool *pressed)
 {
     if (!s_estop_fitted) return false;
@@ -763,6 +813,7 @@ hal_reset_t hal_reset_reason(uint32_t *raw)
 void sim_hal_chip_reset(hal_reset_t why)
 {
     s_forced = false;
+    s_safe_purged = false;
     s_relay = false;
     s_throttle_us = 0u;
     s_gear_pwm = 0u;
@@ -775,6 +826,7 @@ void sim_hal_chip_reset(hal_reset_t why)
 void sim_hal_unforce(void)
 {
     s_forced = false;
+    s_safe_purged = false;
     s_reset_reason = HAL_RESET_POWER_ON;
 }
 
@@ -1213,7 +1265,9 @@ typedef struct {
     uint32_t hp_cmds;
 } sc_node_t;
 static sc_node_t s_sc[SC_NODES];
-static bool      s_sc_fitted, s_sc_boot_fitted;
+static bool      s_sc_fitted;
+static bool      s_sc_servos = true;    /* a fitted bus carries the servos (step 11e; tests may switch it off) */
+static bool      s_sc_stuck;            /* fault: core 0's actuator task does not run (its CAN path stuck) */
 static uint32_t  s_sc_fault;
 static dc_frame_t s_sc_tx[SC_TX_FIFO], s_sc_rx[SC_RX_FIFO];
 static uint32_t  s_sc_tx_n, s_sc_rx_head, s_sc_rx_n, s_sc_rx_lost;
@@ -1256,6 +1310,8 @@ void sim_hal_can_reset(void)
     memset(s_sc_types, 0, sizeof s_sc_types);
     memset(s_sc_status_ms, 0, sizeof s_sc_status_ms);
     s_sc_last_ms = s_time_ms;
+    sim_hal_can_act_clear();
+    s_sc_stuck = false;
 }
 
 void sim_hal_can_fitted(bool on) { s_sc_fitted = on; }
@@ -1351,10 +1407,34 @@ static bool sc_anyone_acks(void)
     return false;
 }
 
+/* the actuator frames on the wire (tests): per actuator 1..3, core 0's (priority 8) and CPU1's (priority 0) */
+static sim_can_act_t s_act[4];
+static uint8_t       s_act_first;
+void sim_hal_can_act_clear(void) { memset(s_act, 0, sizeof s_act); s_act_first = 0u; }
+void sim_hal_can_act(uint8_t act, sim_can_act_t *a)
+{
+    if (act < 4u) *a = s_act[act]; else memset(a, 0, sizeof *a);
+}
+uint8_t sim_hal_can_first_act(void) { return s_act_first; }
+
 static void sc_deliver(const dc_frame_t *f)      /* one of our frames on the wire: every powered node sees it */
 {
     uint16_t type = (uint16_t)((f->id >> 8) & 0xFFFFu);
     bool msg = !(f->id & 0x80u);
+    if (msg && type == DC_ARRAYCMD_ID && f->len >= 5u) {
+        dc_cmd_t c;
+        if (dc_decode_array_command(f->data, f->len - 1u, &c, 1u) == 1u && c.actuator_id >= 1u && c.actuator_id <= 3u) {
+            sim_can_act_t *a = &s_act[c.actuator_id];
+            bool cpu1 = ((f->id >> 24) & 0x1Fu) == DC_PRIO_SAFE;
+            if (cpu1) a->n_cpu1++; else a->n_core0++;
+            if (!a->any) { a->any = true; a->first = c.value; a->first_ms = s_time_ms; }
+            if (!s_act_first) s_act_first = c.actuator_id;
+            a->last = c.value;
+            a->last_ms = s_time_ms;
+            if (cpu1) { a->last_cpu1 = c.value; a->cpu1_ms = s_time_ms; }
+            else a->core0_ms = s_time_ms;
+        }
+    }
     s_sc_types[(msg && type == DC_NODESTATUS_ID) ? 0 : (msg && type == DC_ARRAYCMD_ID) ? 1 :
                (msg && type == DC_HARDPOINT_ID) ? 2 : 3]++;
     if (msg && type == DC_NODESTATUS_ID) {
@@ -1487,11 +1567,20 @@ static void sc_recover(void)
 
 static uint32_t sc_millis(void) { return s_time_ms; }
 
-static const dc_port_t s_sc_port = { sc_start, sc_send, sc_recv, sc_state, sc_recover, sc_millis };
+static const dc_port_t s_sc_port = { sc_start, sc_send, sc_recv, sc_state, sc_recover, sc_millis, sc_purge };
+
+/* the controller cancels every pending frame of its TX FIFO (port->cancel; CPU1's purge after a trip) */
+static void sc_purge(void)
+{
+    s_sc_tx_n = 0u;
+}
 
 static void sc_driver_init(void)
 {
     s_sc_boot_fitted = s_sc_fitted;
+    s_servos_can = s_sc_fitted && s_sc_servos;
+    s_steer_have = false;
+    ca_init();                                   /* boot: throttle IDLE is the only demand */
     if (s_sc_fitted) {
         s_sc_last_ms = s_time_ms;
         dc_init(&s_sc_port);
@@ -1501,9 +1590,139 @@ static void sc_driver_init(void)
 void hal_can_service(void)
 {
     if (!s_sc_boot_fitted) return;
-    sc_tick();
     dc_service();
 }
+
+/* the 10 ms actuator task (the harness calls it; a "stuck" CAN path: never runs) */
+void hal_can_tick(void)
+{
+    if (!s_servos_can || s_sc_stuck) return;
+    ca_tick();
+}
+
+uint32_t hal_can_act_count(void) { return s_servos_can ? ca_ticks() : 0u; }
+
+bool hal_can_act_state(hal_can_act_t *a)
+{
+    if (!s_servos_can) return false;
+    ca_state_t st;
+    ca_get(&st);
+    a->thr_wire = st.thr_wire;
+    a->gear_have = st.gear_have;
+    a->gear_wire = st.gear_wire;
+    a->steer_have = st.steer_have;
+    a->steer_wire = st.steer_wire;
+    a->frames = st.frames;
+    return true;
+}
+
+float hal_can_wire_us(uint16_t us) { return ca_us_to_wire(us); }
+
+/* CPU1's safe frames from its RESERVED buffer: straight onto the bus (they win the arbitration), our node
+ * ID, core 0's transfer-ID counter continued */
+static void sc_deliver(const dc_frame_t *f);
+static bool sc_anyone_acks(void);
+void hal_can_safe_send(const hal_can_safe_t *f)
+{
+    if (!s_servos_can) return;
+    if (!s_safe_purged) {
+        sc_purge();
+        s_safe_purged = true;
+        s_safe_tid = dc_cmd_tid();
+    }
+    if (s_sc_busoff || !s_sc_started || !sc_anyone_acks()) return;
+    dc_frame_t fr;
+    cs_frame(&fr, CA_ACT_THROTTLE, f->thr_wire, s_safe_tid);
+    s_safe_tid = (uint8_t)((s_safe_tid + 1u) & 0x1Fu);
+    sc_deliver(&fr);
+    s_safe_frames++;
+    if (f->steer) {
+        cs_frame(&fr, CA_ACT_STEERING, f->steer_wire, s_safe_tid);
+        s_safe_tid = (uint8_t)((s_safe_tid + 1u) & 0x1Fu);
+        sc_deliver(&fr);
+        s_safe_frames++;
+    }
+    if (f->gear) {
+        cs_frame(&fr, CA_ACT_GEAR, f->gear_wire, s_safe_tid);
+        s_safe_tid = (uint8_t)((s_safe_tid + 1u) & 0x1Fu);
+        sc_deliver(&fr);
+        s_safe_frames++;
+    }
+}
+
+uint32_t sim_hal_can_safe_frames(void) { return s_safe_frames; }
+void     sim_hal_can_task_stuck(bool stuck) { s_sc_stuck = stuck; }
+void     sim_hal_can_servos(bool on) { s_sc_servos = on; }
+bool     sim_hal_servos_can(void) { return s_servos_can; }
+
+static float sc_node_out(uint8_t id, bool pos)
+{
+    sc_node_t *n = sc_find(id);
+    if (!n) return 0.0f;
+    return pos ? n->pos : n->out;
+}
+
+/* what the servos REALLY do (the world model): the throttle node's position as %, the gear node's output as
+ * an RC pulse, the steering node's outboard (after the play) in the app's sign (+ = starboard) */
+float sim_hal_thr_truth(void)
+{
+    if (!s_servos_can) return sim_hal_throttle();
+    float pct = (sc_node_out(DC_NODE_THROTTLE, true) + 1.0f) * 50.0f;
+    return pct < 0.0f ? 0.0f : (pct > 100.0f ? 100.0f : pct);
+}
+
+float sim_hal_gear_truth_us(void)
+{
+    return s_servos_can ? ca_wire_to_us(sc_node_out(DC_NODE_GEAR, false)) : (float)s_gear_pwm;
+}
+
+float sim_hal_steer_truth(void)
+{
+    return s_servos_can ? CA_STEER_SIGN * sc_node_out(DC_NODE_STEERING, false) : 0.0f;
+}
+
+void sim_hal_can_servo_set(uint8_t id, float pos)
+{
+    sc_node_t *n = sc_find(id);
+    if (!n) return;
+    n->cmd = n->pos = n->out = pos;             /* (a test: where the servo is before the boot) */
+}
+
+/* the last steering command across a reset (no-clear RAM, like the kill latch) */
+static bool  s_steer_keep;
+static float s_steer_keep_pos;
+void hal_steer_keep_set(bool valid, float pos) { s_steer_keep = valid; s_steer_keep_pos = pos; }
+bool hal_steer_keep_get(float *pos)
+{
+    if (s_steer_keep && pos) *pos = s_steer_keep_pos;
+    return s_steer_keep;
+}
+
+/* --- the UNCREWED dead-man timer relay (OA-3, TO CONFIRM): no edge for SIM_DM_MS = the engine stops ---- */
+#define SIM_DM_MS 1500u
+static bool     s_dm_armed, s_dm_level, s_dm_killed;
+static uint32_t s_dm_edge_ms, s_dm_edges;
+void hal_deadman_pulse(bool level)
+{
+    if (level != s_dm_level) {
+        s_dm_level = level;
+        s_dm_edge_ms = s_time_ms;
+        s_dm_edges++;
+    }
+}
+static void dm_tick(void)
+{
+    if (s_dm_armed && !s_dm_killed && s_time_ms - s_dm_edge_ms > SIM_DM_MS) s_dm_killed = true;
+}
+void     sim_hal_deadman_arm(bool armed)
+{
+    if (armed && !s_dm_armed) s_dm_edge_ms = s_time_ms;    /* (switched into the kill circuit now) */
+    s_dm_armed = armed;
+    if (!armed) s_dm_killed = false;
+}
+bool     sim_hal_deadman_killed(void) { return s_dm_killed; }
+uint32_t sim_hal_deadman_edges(void) { return s_dm_edges; }
+void     sim_hal_deadman_restart(void) { s_dm_killed = false; s_dm_edge_ms = s_time_ms; }
 
 bool hal_can_bus(hal_can_bus_t *b)
 {

@@ -117,8 +117,87 @@ void hal_set_throttle_pwm(uint16_t pulse_us);
 
 /* Gear servo position as an RC-style PWM pulse width in microseconds
  * (e.g. 1100 = R, 1500 = N, 1900 = F; the positions are configured in the
- * app, see gear.h). */
+ * app, see gear.h). ONLY app/servo.c calls it. DroneCAN servos (step 11e):
+ * 0 = no gear command at all (no frame: the node HOLDS - the boot order and a
+ * lost throttle node, docs/dronecan_design.md 5 / 6.4). */
 void hal_set_gear_pwm(uint16_t pulse_us);
+
+/*
+ * DroneCAN servos (CLAUDE.md T, docs/dronecan_design.md; step 11e). true =
+ * throttle, gear and steering are DroneCAN servo nodes (decided at hal_init:
+ * board HAL_CAN_FITTED && HAL_CAN_SERVOS in hal_pins.h, both 0 until the owner
+ * confirms; sim: the simulated CAN bus fitted). Then hal_set_throttle_pwm /
+ * hal_set_gear_pwm become ArrayCommands (unitless = (us - 1000) / 500 - 1,
+ * hal/can_act.c), the steering is a 360 deg POSITION servo (hal_set_steer_pos;
+ * hal_set_rudder_motor does nothing) and the CPU1 trip path sends its own safe
+ * frames (hal_can_safe_send). false = the PWM servos + the steering motor of
+ * the old hardware (FIRST TEST, the board today).
+ */
+bool hal_servos_can(void);
+
+/* The steering POSITION servo (DroneCAN): pos -1..+1 of the servo travel,
+ * + = the boat turns to STARBOARD (the HAL puts the wire sign on, TO CONFIRM
+ * C6). command = false: NO steering frame (the node holds where it is) - after
+ * every boot until a mode commands steering (owner decision OD-7: no
+ * auto-centre). ONLY app/servo.c calls it. */
+void hal_set_steer_pos(bool command, float pos);
+
+/* The 10 ms actuator task (DroneCAN): core 0's main loop calls it between the
+ * control steps (the sim harness every 10 ms): one ArrayCommand per commanded
+ * servo, never a blocking wait (hal/can_act.c). Nothing when not fitted. */
+void hal_can_tick(void);
+
+/* Ticks of the actuator task so far (CPU1 reads it: no tick for 100 ms while
+ * core 0 runs = MON_TRIP_CAN_TX; board: a word in core 0's DSPR). */
+uint32_t hal_can_act_count(void);
+
+/* What the actuator task last SENT (core 0 publishes it for CPU1's safe frames:
+ * the steering / gear wire values are replayed, never made up). false = no
+ * DroneCAN servos. */
+typedef struct {
+    float    thr_wire;
+    bool     gear_have;         /* a gear frame went out since the boot */
+    float    gear_wire;
+    bool     steer_have;        /* a steering frame went out since the boot (OD-7) */
+    float    steer_wire;
+    uint32_t frames;            /* ArrayCommands queued */
+} hal_can_act_t;
+bool hal_can_act_state(hal_can_act_t *a);
+/* the DroneCAN wire value of an RC pulse (us): (us - 1000) / 500 - 1 (TO CONFIRM C7) */
+float hal_can_wire_us(uint16_t us);
+
+/* CPU1's safe frames (monitor trip, DroneCAN servos; design 6.3): the first
+ * call cancels core 0's pending actuator frames (the latch is already set by
+ * hal_safe_outputs); every call sends from the RESERVED TX buffer (never core
+ * 0's FIFO) throttle = thr_wire, steering = steer_wire if steer, gear =
+ * gear_wire if gear (false = HOLD: no frame), with OUR node ID and core 0's
+ * transfer-ID counter continued. CPU1 calls it every MON_SAFE_FRAME_MS. */
+typedef struct {
+    float thr_wire;             /* -1.0 = idle */
+    bool  steer;                /* a steering frame (only if core 0 ever commanded steering: OD-7) */
+    float steer_wire;
+    bool  gear;                 /* a gear frame (false = HOLD) */
+    float gear_wire;
+} hal_can_safe_t;
+void hal_can_safe_send(const hal_can_safe_t *f);
+
+/* The last steering command across a reset (step 11e, OD-7): a warm reset
+ * (watchdog / SMU / software) keeps it in RAM the startup does not clear (like
+ * hal_kill_keep_*): the node HELD that position, so the model starts there
+ * (still no frame until a mode commands steering). After a power-on it is not
+ * valid (written "none"): the position is UNKNOWN (worst-case travel). */
+void hal_steer_keep_set(bool valid, float pos);
+bool hal_steer_keep_get(float *pos);
+
+/* UNCREWED hardware dead-man (owner addition OA-3, docs/dronecan_design.md
+ * 14.1; part / time / pin TO CONFIRM - WAITING FOR OWNER W3 / W5): a
+ * retriggerable timer relay in the outboard's kill circuit, held "run" by
+ * pulses; no edge for ~1.5 s = the engine stops BY ITSELF. CPU1 (monitor.c)
+ * toggles the level only while UNCREWED + no trip + core 0 alive + the throttle
+ * node OPERATIONAL + actuator frames going out + no kill latch. Board: P10.5
+ * on the DroneCAN boat (recommended default of W5), nothing on the old PWM
+ * hardware; sim: a simulated timer relay. */
+void hal_deadman_pulse(bool level);
 
 /* Optional neutral switch on the gearbox / shift linkage. Writes true if
  * the gear is in neutral. Returns false if no switch is fitted. */
@@ -348,13 +427,19 @@ uint32_t hal_gw_tx_free(void);
 /* Safety monitor (CPU1) trip: throttle servo to idle_us, gear servo to
  * neutral_us, steering motor off, both DP thrusters 0, alarm on, safety relay open. LATCHED
  * until reset: after this the normal output functions can't change these
- * outputs any more (core 0 can't override the monitor). */
+ * outputs any more (core 0 can't override the monitor). DroneCAN servos (step
+ * 11e): the latch is set FIRST and core 0's pending actuator frames are
+ * cancelled; the servo commands then come from CPU1's safe frames
+ * (hal_can_safe_send: throttle idle at once, steering hold, gear hold until the
+ * throttle travel time, then neutral); the servo power is NEVER cut (OD-2). */
 void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us);
 bool hal_outputs_forced(void);
 
 /* Safety relay: closed = actuators may be powered (engine kill / servo
  * power, see WIRING.md). Opened by the monitor trip; closed by core 0 once
- * the outputs are armed (neutral-start interlock). */
+ * the outputs are armed (neutral-start interlock). DroneCAN servos (step 11e,
+ * OD-2: never cut the servo power): nothing - P10.5 is the UNCREWED dead-man
+ * pulse there (hal_deadman_pulse). */
 void hal_set_safety_relay(bool closed);
 
 /* ENGINE KILL (UNCREWED lost link, CLAUDE.md section B): true = the relay in

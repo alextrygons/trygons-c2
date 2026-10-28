@@ -145,6 +145,9 @@
  * LOW BATTERY keeps its buzzer (step 4 design, test BV2) - TO CONFIRM by the owner. */
 #define SB_ALM2_QUIET             (SB_ALM2_RELAY_SILENT)
 
+/* the steering model's slow adaptation only in calm water: the yaw-rate wobble below this (deg/s, TO CONFIRM) */
+#define SB_STEER_CALM_DPS 0.3f
+
 /* UNCREWED lost link (CLAUDE.md section B), sb_t.ll.state */
 #define SB_LL_OK      0u        /* link to the HELM station OK (or not armed yet, or CREWED) */
 #define SB_LL_LOST    1u        /* lost: STANDBY, idle + neutral, waiting (near shore: kill at once) */
@@ -498,7 +501,8 @@ typedef enum {
     CONF_REMOTE,            /* start REMOTE MANUAL (the shore joystick drives) */
     CONF_MANEUVER,          /* start MANEUVER (captain: steering + gear, throttle idle) */
     CONF_RELAY_TABLE,       /* take a relay table that differs from the stored one (STANDBY; never a mode change) */
-    CONF_DP                 /* start DP (from STANDBY), or CRUISE / TRIP while in DP (sb_t.dp_req) */
+    CONF_DP,                /* start DP (from STANDBY), or CRUISE / TRIP while in DP (sb_t.dp_req) */
+    CONF_THR_TRAVEL         /* a SHORTER thr_travel_s (owner-signed value, OD-4; STANDBY, never a mode change) */
 } confirm_kind_t;
 
 typedef struct {
@@ -600,6 +604,24 @@ typedef struct {
         uint16_t log_seq;
         uint32_t losses;       /* required-node losses (events) */
     } can;
+    struct {                   /* DroneCAN steering position servo (step 11e): model notices, adaptation conditions */
+        bool     v1_refused;   /* NV slot 5 held a version-1 (DC-motor) record: not used (NV DATA RESET) */
+        bool     needs_training; /* no usable TRAINING result: the defaults (worst-case speed, no play compensation) */
+        uint32_t reset_ms;     /* STEERING MODEL RESET notice: when (0 = never) */
+        uint8_t  reset_why;    /* SM_RESET_ of the last reset */
+        uint8_t  log_what, log_why;  /* last log event STEERMODEL (30): 1 adaptation reset, 2 TRAINING stored,
+                                        3 v1 record refused, 4 thr_travel_s changed */
+        uint16_t log_seq;
+        float    hring[30];    /* heading once a second (no turn > 5 deg in 30 s) */
+        uint8_t  hn, hi;
+        uint32_t hms;
+        bool     steady;       /* the adaptation conditions this step */
+        float    yaw_lp, yaw_var;   /* the yaw-rate wobble (calm water for the adaptation) */
+    } steer;
+    struct {                   /* thr_travel_s (owner decision OD-4): shorter than the worst case only with CONFIRM */
+        float    pending_s;    /* the value waiting for the CONFIRM (CONF_THR_TRAVEL) */
+        uint32_t changes;
+    } travel;
     struct {                   /* the DP request waiting for the CONFIRM (CONF_DP) */
         uint8_t  sub;          /* DP_SPOT / DP_CRUISE / DP_TRIP */
         bool     cont;         /* TRIP: from the active waypoint (else waypoint 1) */
@@ -628,6 +650,7 @@ typedef struct {
         uint32_t lost_ms;      /* when the link was lost */
         bool     near_at_kill; /* the kill: near shore (immediate) or after the grace time */
         bool     kept;         /* the kill came through a watchdog / software reset (step 11b) */
+        bool     node_kill;    /* the kill was the UNCREWED throttle-node loss (OD-3: at once, not after idle + neutral) */
         uint32_t losses, returns, kills;
     } ll;
     struct {                   /* distance to the shore from the gateway (GW_SHORE) */
@@ -764,6 +787,10 @@ void sb_test_drive(sb_t *s, bool on, gear_t gear, float throttle_pct);
 /* DP active with this thrust demand (MODE_DP comes with step 10); the
  * thruster rules (allowed, clamp, rate, heat budget) still apply */
 void sb_test_thrust(sb_t *s, bool on, float bow_pct, float stern_pct);
+/* DroneCAN servos: the next boots start with the throttle KNOWN at idle (the "all --can" runs keep the old tests'
+ * timing; the boot order itself - position unknown, no gear frame before the throttle travel time - is
+ * tested by the CN tests and the storm with this off) */
+void sb_test_boot_idle(bool on);
 #endif
 
 /* Status for displays (e.g. the ground station). */
@@ -874,6 +901,13 @@ sb_result_t sb_thruster_cfg(sb_t *s, const thr_cfg_t *c, uint16_t hash);
  * SPOT at once (a hold), CRUISE / TRIP again with the CONFIRM. JOG / SPEED / HEADING in DP only. STOP: DP
  * off (thrusters 0 first), STANDBY. Never in FIRST TEST. */
 sb_result_t sb_dp_cmd(sb_t *s, uint8_t station, uint8_t action, uint8_t arg, int16_t value);
+
+/* thr_travel_s (owner decision OD-4, docs/dronecan_design.md 7): the worst-case throttle servo travel used
+ * for every "idle" wait. LONGER: at once (STANDBY, not stopping). SHORTER than the current value: only an
+ * owner-signed value - STANDBY + the joystick CONFIRM within confirm_ms (CREWED onboard / UNCREWED shore;
+ * CONF_THR_TRAVEL), logged (event STEERMODEL 4); never below SERVO_THR_TRAVEL_MIN. RAM only: every reset
+ * starts at the worst case (SERVO_THR_TRAVEL_S). Nothing measures it shorter by itself. */
+sb_result_t sb_thr_travel_set(sb_t *s, float seconds);
 
 /* the restart conditions are met now (idle + neutral confirmed, e-stop released, not FIRST TEST) */
 bool sb_restart_ready(const sb_t *s);

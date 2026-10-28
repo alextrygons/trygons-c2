@@ -19,6 +19,27 @@ static float clampf(float x, float lo, float hi)
     return x;
 }
 
+#ifdef SB_TEST_HOOKS
+static bool s_test_boot_idle;   /* sim tests only (sb_test_boot_idle) */
+#endif
+
+/* "Idle" for every rule that waits for it (gear change, steering off after a stop, ENGINE KILL, STARTER,
+ * generator, DP, restart): the MODELLED throttle servo position at idle (servo.c est_pct: the command at
+ * idle AND long enough for the worst-case servo speed; DroneCAN: unknown after a boot / with the throttle
+ * node lost) - never the command alone (CLAUDE.md Safety rules, docs/dronecan_design.md 7, step 11e). */
+static bool thr_idle(const sb_t *s)
+{
+    return servo_idle(&s->servo, s->cfg.gear.idle_max_pct);
+}
+
+/* DroneCAN: the throttle node OPERATIONAL (seen and not lost); always true on the PWM hardware */
+static bool thr_node_ok(const sb_t *s)
+{
+    if (!s->servo.can) return true;
+    const hal_can_node_t *n = &s->can.node[HAL_CAN_ROLE_THROTTLE];
+    return s->can.fitted && n->seen && !n->lost;
+}
+
 void sb_default_config(sb_config_t *cfg)
 {
     static const float lkn[SB_LIMIT_N]  = { 3.0f, 8.0f, 14.0f, 20.0f };
@@ -182,6 +203,9 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
     plim_init(&s->plim, &cfg->plim, s->now_ms * 2654435761u + 12345u);     /* always 30 / 5 */
     hal_set_safety_relay(false);                /* closed once armed (interlock) */
     servo_init(&s->servo, &cfg->servo);
+#ifdef SB_TEST_HOOKS
+    if (s_test_boot_idle && s->servo.can) s->servo.est_pct = 0.0f;  /* sim tests only: the throttle known at idle */
+#endif
     s->gear_demand = GEAR_N;
     dr_init(&s->dr, &cfg->dr);
     s->dr.cfg.gps_timeout_ms = cfg->gps_timeout_ms;
@@ -248,6 +272,63 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         if (have && (!relay_table_valid(&t) || !relays_table_fits(&t))) { nv_invalid(HAL_NV_SLOT_RELAYS); have = false; }
         relays_init(&s->relays, have ? &t : NULL, hal_reset_reason(NULL) == HAL_RESET_POWER_ON, cfg->first_test);
     }
+    /* DroneCAN steering POSITION servo (step 11e): the model from the TRAINING record (NV slot 5 version 2;
+     * a version-1 DC-motor record = defaults + NV DATA RESET + TRAINING needed); the position after a WARM
+     * reset from reset-surviving RAM (the node held it), after a power-on UNKNOWN - no steering frame either
+     * way until a mode commands steering (OD-7) */
+    s->steer.needs_training = false;
+    if (s->servo.can) {
+        sm_params_t p;
+        float half = SM_HALF_DEG;
+        calib2_t c;
+        bool v1 = false;
+        sm_defaults(&p);
+        s->steer.needs_training = true;
+        if (calib2_load(&c, &v1)) {
+            p.r_right = c.r_right;
+            p.r_left = c.r_left;
+            p.b_lr = c.b_lr;
+            p.b_rl = c.b_rl;
+            p.k = c.k;
+            p.tau = c.tau;
+            p.a0 = c.a0;
+            p.v_ref = c.v_ref_kn;
+            p.res = c.res_dps;
+            p.trained = true;
+            if (c.full_angle_deg > 0.0f) half = 0.5f * c.full_angle_deg;
+            s->ap.servo_calib = c;
+            s->steer.needs_training = false;
+        }
+        s->steer.v1_refused = v1;
+        if (v1) { s->steer.log_what = 3u; s->steer.log_seq++; }
+        float p0 = 0.0f;
+        bool warm = hal_reset_reason(NULL) != HAL_RESET_POWER_ON;
+        bool known = warm && hal_steer_keep_get(&p0);
+        if (!warm) hal_steer_keep_set(false, 0.0f);
+        autopilot_set_servo(&s->ap, &p, half, known, p0);
+        if (p.trained) autopilot_apply_servo_params(&s->ap, &p, half);
+        s->ap.servo_boot = g_logstat.boot;
+    }
+}
+
+sb_result_t sb_thr_travel_set(sb_t *s, float seconds)
+{
+    if (!(seconds >= SERVO_THR_TRAVEL_MIN && seconds <= SERVO_THR_TRAVEL_MAX)) return SB_ERR_BAD_VALUE;
+    if (sb_mode(s) != MODE_STANDBY || s->stopping) return SB_ERR_STANDBY_ONLY;
+    if (seconds >= s->servo.cfg.travel_s) {     /* longer = safer: at once */
+        s->servo.cfg.travel_s = seconds;
+        s->travel.changes++;
+        s->steer.log_what = 4u;
+        s->steer.log_seq++;
+        return SB_OK;
+    }
+    /* shorter: only an owner-signed value - the CONFIRM on the joystick (it never changes the mode) */
+    if (s->confirm.kind != CONF_NONE && s->confirm.kind != CONF_THR_TRAVEL) return SB_ERR_REFUSED;
+    if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;
+    s->travel.pending_s = seconds;
+    s->confirm.kind = CONF_THR_TRAVEL;
+    s->confirm.deadline_ms = s->now_ms + s->cfg.confirm_ms;
+    return SB_OK;
 }
 
 sb_result_t sb_thruster_cfg(sb_t *s, const thr_cfg_t *c, uint16_t hash)
@@ -378,6 +459,11 @@ void sb_alarm_ack(sb_t *s)
 }
 
 #ifdef SB_TEST_HOOKS
+void sb_test_boot_idle(bool on)
+{
+    s_test_boot_idle = on;
+}
+
 void sb_test_drive(sb_t *s, bool on, gear_t gear, float throttle_pct)
 {
     s->test_drive.on = on;
@@ -797,7 +883,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
     switch (to) {
     case MODE_STANDBY: {
         /* safe stop: throttle idle + neutral first (below), steering last */
-        bool moving = s->thr.out_pct > s->cfg.gear.idle_max_pct || !gear_is(&s->gear, GEAR_N);
+        bool moving = !thr_idle(s) || !gear_is(&s->gear, GEAR_N);
         bool was_auto = (from == MODE_HDG_LOCK || from == MODE_AUTO || from == MODE_TRAINING ||
                          from == MODE_REMOTE || from == MODE_MANEUVER);
         s->stop_from_auto = was_auto;
@@ -807,6 +893,14 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         s->confirm.kind = CONF_NONE;
         if (hdg_fault_steer) break;                 /* keep the gyro hold / centring running */
         s->stop_steer = STOP_STEER_NONE;
+        if (s->ap.servo && from == MODE_TRAINING) {
+            /* the position servo's TRAINING stopped (STANDBY / an abort / a fault): the servo back to the centre
+             * estimate at the measured / worst-case speed, then the STANDBY rules (hold) */
+            if (s->ap.mode == AP_MODE_TRAINING) trs_abort(&s->ap.trs, TR_ABORT_USER);
+            autopilot_center(&s->ap);
+            s->stop_steer = STOP_STEER_CENTER;
+            break;
+        }
         if (from == MODE_MANUAL && moving) {
             /* the onboard stick keeps steering until idle + neutral (a held
              * stick is disarmed for taking control, not for this); stick
@@ -1104,8 +1198,7 @@ static void lostlink_step(sb_t *s)
         return;
     }
     if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_LINK_LOST);
-    bool safe = s->mon_tripped ||
-                (s->thr.out_pct <= s->cfg.gear.idle_max_pct && (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear)));
+    bool safe = s->mon_tripped || (thr_idle(s) && (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear)));
     bool near = sb_near_shore(s);
     bool late = (float)(s->now_ms - s->ll.lost_ms) >= s->cfg.lostlink_grace_s * 1000.0f;
     if (safe && (near || late)) {
@@ -1122,7 +1215,7 @@ static void lostlink_step(sb_t *s)
 static void eng_cond(const sb_t *s, eng_cond_t *c, bool standby_button)
 {
     memset(c, 0, sizeof *c);
-    c->idle = s->thr.out_pct <= s->cfg.gear.idle_max_pct && s->servo.out_pct <= s->cfg.gear.idle_max_pct;
+    c->idle = s->thr.out_pct <= s->cfg.gear.idle_max_pct && thr_idle(s);      /* the modelled servo at idle */
     /* gear N confirmed: the neutral switch if fitted, else the gear servo at N; the gear state N always */
     c->neutral = gear_is(&s->gear, GEAR_N) && !gear_fault(&s->gear) &&
                  (s->neutral_sw >= 0 ? s->neutral_sw == 1 : s->gear.pwm_us == s->cfg.gear.pwm_n_us);
@@ -1160,6 +1253,7 @@ sb_result_t sb_restart(sb_t *s, uint8_t station, uint8_t action)
             /* (a) the ENGINE KILL latch: cleared; STANDBY stays, nothing starts by itself */
             s->ll.state = SB_LL_OK;
             s->ll.kept = false;
+            s->ll.node_kill = false;
             s->alarm_bits &= ~SB_ALM_ENGINE_KILLED;
             if (s->alarm_bits == 0u && (s->alarm_bits2 & ~SB_ALM2_QUIET) == 0u && !s->ap.alarm) s->alarm = false;
             hal_kill_keep_set(false);
@@ -1635,8 +1729,7 @@ static void hdg_lock_mode(sb_t *s)
     if (!s->cfg.first_test) joystick_throttle(s);       /* FIRST TEST: throttle by hand */
 
     if (s->hdg_compass_lost) {
-        bool safe = s->thr.out_pct <= s->cfg.gear.idle_max_pct &&
-                    (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear));
+        bool safe = thr_idle(s) && (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear));
         if (s->stop_steer == STOP_STEER_GYRO && !autopilot_gyro_ok(&s->ap)) {
             autopilot_center(&s->ap);               /* gyro lost too */
             s->stop_steer = STOP_STEER_CENTER;
@@ -2134,6 +2227,15 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
     case CONF_RELAY_TABLE:
         /* the offered relay table becomes the active one (saved in STANDBY, below); never a mode change */
         return relays_accept(&s->relays, sb_mode(s) == MODE_STANDBY && !s->stopping);
+    case CONF_THR_TRAVEL:
+        /* the owner-signed shorter throttle travel time (OD-4): STANDBY only, never a mode change, logged */
+        if (sb_mode(s) != MODE_STANDBY || s->stopping) return false;
+        if (!(s->travel.pending_s >= SERVO_THR_TRAVEL_MIN)) return false;
+        s->servo.cfg.travel_s = s->travel.pending_s;
+        s->travel.changes++;
+        s->steer.log_what = 4u;
+        s->steer.log_seq++;
+        return true;
     case CONF_DP:
         /* the HELM station must still be the one that asked; the conditions again, now */
         if (s->helm != s->dp_req.station) return false;
@@ -2256,6 +2358,7 @@ static void confirm_step(sb_t *s)
     }
     /* a relay table waits only in STANDBY (not stopping); any other state drops the offer */
     if (c->kind == CONF_RELAY_TABLE && (sb_mode(s) != MODE_STANDBY || s->stopping)) c->kind = CONF_NONE;
+    if (c->kind == CONF_THR_TRAVEL && (sb_mode(s) != MODE_STANDBY || s->stopping)) c->kind = CONF_NONE;
     if (c->kind != CONF_RELAY_TABLE && s->relays.offer_pending) relays_cancel_offer(&s->relays);
     /* CREWED: the onboard joystick's CONFIRM; UNCREWED: the HELM station's
      * (shore captain's) joystick, same rules (stick centred, ready, in time) */
@@ -2391,6 +2494,13 @@ bool sb_confirm_training(sb_t *s, bool accept, float full_angle_deg)
 {
     if (sb_mode(s) != MODE_TRAINING || s->train.stage != TS_RESULT) return false;
     bool ok = autopilot_confirm_training(&s->ap, accept, full_angle_deg);
+    if (ok && s->ap.servo) {                     /* the position servo: the TRAINING record (v2) stored */
+        s->steer.needs_training = false;
+        s->steer.v1_refused = false;
+        s->steer.log_what = 2u;
+        s->steer.log_why = SM_RESET_TRAINING;
+        s->steer.log_seq++;
+    }
     if (ok && s->train.sog_n > 0u) {
         /* the scaled gains fit the training speed: steering scales from there */
         s->cfg.gain_ref_kn = (float)(s->train.sog_sum / (double)s->train.sog_n);
@@ -2418,9 +2528,14 @@ static void interlock_step(sb_t *s, int8_t neutral_sw, uint32_t dt_ms)
     if (s->profile == SB_PROFILE_UNCREWED) stick = true;              /* the onboard joystick is ignored */
     if (s->profile == SB_PROFILE_DETECTING) stick = false;            /* not decided yet: wait */
     if (s->cfg.first_test) stick = true;                              /* no joystick needed (no MANUAL) */
-    bool idle = s->thr.out_pct <= s->cfg.gear.idle_max_pct;
+    bool idle = thr_idle(s);
+    /* DroneCAN: neutral counts only once the gear frame really went out (the boot order holds it until
+     * the modelled throttle is idle with the throttle node OPERATIONAL) */
+    if (s->servo.can && (!s->servo.gear_sent || s->servo.gear_hold)) neutral = false;
     s->arm_ok_ms = (neutral && stick && idle) ? s->arm_ok_ms + dt_ms : 0u;
-    if (s->profile != SB_PROFILE_DETECTING) s->unarmed_ms += dt_ms;   /* (the detection window is no fault) */
+    /* (the detection window is no fault; nor the DroneCAN boot order: no gear frame before the modelled
+     * throttle is idle with the throttle node OPERATIONAL - a node that never comes is CAN NODE LOST) */
+    if (s->profile != SB_PROFILE_DETECTING && !(s->servo.can && !s->servo.gear_sent)) s->unarmed_ms += dt_ms;
     if (s->arm_ok_ms >= s->cfg.arm_ms && !s->mon_tripped) {
         s->armed = true;
         hal_set_safety_relay(true);
@@ -2510,6 +2625,23 @@ static void can_step(sb_t *s)
     if (sb_mode(s) != MODE_STANDBY) {
         if (bad) sb_request_mode(s, MODE_STANDBY, WHY_CAN_BUS);
         else if (req_lost) sb_request_mode(s, MODE_STANDBY, WHY_CAN_NODE);
+    }
+    /* owner decision OD-3 (an EXPLICIT exception to "ENGINE KILL only after idle + neutral"): UNCREWED and the
+     * throttle node lost = the AURIX can no longer command idle and can't know where the throttle is (the
+     * node holds) -> ENGINE KILL AT ONCE, latched like every kill; the gear is NOT shifted (servo.c holds the
+     * gear frames while the throttle node is lost, OA-2). CREWED: alarm + STANDBY only, the crew stops the
+     * engine if needed. Never in FIRST TEST (always CREWED). */
+    if (s->servo.can && s->profile == SB_PROFILE_UNCREWED && !s->cfg.first_test && s->ll.state != SB_LL_KILLED &&
+        s->can.node[HAL_CAN_ROLE_THROTTLE].lost) {
+        s->ll.state = SB_LL_KILLED;
+        s->ll.near_at_kill = false;
+        s->ll.node_kill = true;
+        s->ll.kills++;
+        alarm_on(s, SB_ALM_ENGINE_KILLED);
+        s->confirm.kind = CONF_NONE;
+        hal_kill_keep_set(true);                        /* (kept through a watchdog / software reset) */
+        hal_set_engine_kill(true);
+        if (sb_mode(s) != MODE_STANDBY) sb_request_mode(s, MODE_STANDBY, WHY_CAN_NODE);
     }
 }
 
@@ -2625,8 +2757,10 @@ static void events_step(sb_t *s, uint32_t buttons)
         s->confirm.kind = CONF_NONE;
         plim_drop(&s->plim, PLIM_SRC_STANDBY_BUTTON, s->now_ms);
         gen_set(&s->gen, false);        /* generator auto OFF until re-enabled (a running one stops idle first) */
+        /* a held stick can't grab control right back - also when the press is the ACK in STANDBY (step 11e: a
+         * DroneCAN node interlock may have held a deflected stick in STANDBY; the ACK must not hand it MANUAL) */
+        if (!joy_centered(&s->joy)) joy_disarm(&s->joy);
         if (sb_mode(s) != MODE_STANDBY) {
-            if (!joy_centered(&s->joy)) joy_disarm(&s->joy);   /* can't grab control right back */
             sb_request_mode(s, MODE_STANDBY, WHY_STANDBY_BUTTON);
         } else {
             sb_alarm_ack(s);            /* in STANDBY the button acknowledges (what is still wrong stays) */
@@ -2739,6 +2873,60 @@ sb_result_t sb_bench(sb_t *s, uint8_t action, uint16_t arg)
     }
 }
 
+/* DroneCAN position servo (step 11e): the slow adaptation (RAM only, OD-8) under its conditions -
+ * steady straight HDG LOCK / AUTO ahead, speed within +-20 % of the TRAINING speed, no turn > 5 deg in 30 s,
+ * no alarm (not even an advisory), compass + gyro healthy, GPS trusted, calm water - and the doubt resets
+ * (sensor, node lost, residual, bounds) with the notice STEERING MODEL RESET + log event 30; the last
+ * command into reset-surviving RAM (OD-7: a warm reset knows the position, a power-on does not). */
+static void steer_model_step(sb_t *s, float dt)
+{
+    autopilot_t *ap = &s->ap;
+    if (ap->servo_have) hal_steer_keep_set(true, ap->servo_u);
+    /* heading once a second: the turn in the last 30 s */
+    if (s->now_ms - s->steer.hms >= 1000u || s->steer.hn == 0u) {
+        s->steer.hms = s->now_ms;
+        s->steer.hring[s->steer.hi] = ap->heading;
+        s->steer.hi = (uint8_t)((s->steer.hi + 1u) % 30u);
+        if (s->steer.hn < 30u) s->steer.hn++;
+    }
+    float turn = 0.0f;
+    for (uint8_t i = 0; i < s->steer.hn; i++) {
+        float d = fabsf(autopilot_heading_error(ap->heading, s->steer.hring[i]));
+        if (d > turn) turn = d;
+    }
+    sb_mode_t m = sb_mode(s);
+    float v = sb_gps_ok(s) ? s->gps.last.sog_kn : 0.0f, vr = ap->sm.stored.v_ref;
+    /* calm water: the yaw-rate wobble (the gyro minus its 10 s mean) over ~30 s - in waves the controller fighting
+     * the sea would bias a closed-loop estimate, so the adaptation waits for calm water */
+    if (ap->gyro_valid) {
+        s->steer.yaw_lp += (ap->gyro_dps - s->steer.yaw_lp) * dt / 10.0f;
+        float hp = ap->gyro_dps - s->steer.yaw_lp;
+        s->steer.yaw_var += (hp * hp - s->steer.yaw_var) * dt / 30.0f;
+    }
+    bool calm = s->steer.yaw_var < SB_STEER_CALM_DPS * SB_STEER_CALM_DPS;
+    bool steady = (m == MODE_HDG_LOCK || (m == MODE_AUTO && s->autop.state == AUTO_RUN)) && ap->mode == AP_MODE_AUTO &&
+                  !s->hdg_reverse && !s->hdg_compass_lost && gear_is(&s->gear, GEAR_F) && s->steer.hn >= 30u &&
+                  turn <= 5.0f && vr > 0.5f && v >= 0.8f * vr && v <= 1.2f * vr && s->alarm_bits == 0u &&
+                  s->alarm_bits2 == 0u && !ap->alarm && !s->nerv.nervous && calm && sb_compass_ok(s) &&
+                  autopilot_gyro_ok(ap) && sb_gps_ok(s);
+    s->steer.steady = steady;
+    sm_adapt_in_t ai;
+    ai.dt = dt;
+    ai.yaw_dps = ap->gyro_dps - ap->servo_calib.gyro_bias_dps;
+    ai.v_kn = v;
+    ai.steady = steady;
+    ai.sensor_fault = ap->sensor_fault || (ap->gyro_valid && !autopilot_gyro_ok(ap));
+    ai.node_lost = s->can.fitted && s->can.node[HAL_CAN_ROLE_STEERING].lost;
+    uint8_t why = sm_adapt_step(&ap->sm, &ai);
+    if (why != SM_RESET_NONE) {
+        s->steer.reset_ms = s->now_ms ? s->now_ms : 1u;   /* notice STEERING MODEL RESET */
+        s->steer.reset_why = why;
+        s->steer.log_what = 1u;
+        s->steer.log_why = why;
+        s->steer.log_seq++;
+    }
+}
+
 void sb_step(sb_t *s)
 {
     ap_inputs_t in;
@@ -2789,7 +2977,9 @@ void sb_step(sb_t *s)
     }
 
     /* 1. steering core (also detects compass timeout) */
+    s->ap.servo_v_kn = sb_gps_ok(s) ? s->gps.last.sog_kn : 0.0f;
     autopilot_update(&s->ap, &in);
+    if (s->ap.servo) steer_model_step(s, dt);
     /* no propulsion (idle / not in forward): the heading can't be held, so
      * "off course" means nothing - don't let it build up to an alarm */
     if (!gear_is(&s->gear, GEAR_F) || s->thr.out_pct <= s->cfg.gear.idle_max_pct) s->ap.off_course_ms = 0u;
@@ -2890,7 +3080,7 @@ void sb_step(sb_t *s)
         gi.sog_kn = s->gps.last.sog_kn;
         gi.dp_fight = gm == MODE_DP && s->dp.fight;
         gi.thrust_pct = thruster_load_pct(&s->thrust);  /* DP thruster load (last step): pauses the judgement */
-        gi.throttle_out_pct = s->thr.out_pct;
+        gi.throttle_out_pct = thr_idle(s) ? 0.0f : fmaxf(s->thr.out_pct, s->cfg.gear.idle_max_pct + 1.0f);
         gi.idle_max_pct = s->cfg.gear.idle_max_pct;
         gi.dt_ms = dt_ms;
         gen_step(&s->gen, &gi);
@@ -2908,8 +3098,7 @@ void sb_step(sb_t *s)
         if (s->stopping) {
             /* a gear fault (neutral not confirmed) also ends the stop: the
              * engine is held at idle and the gear can't be commanded */
-            bool safe = s->thr.out_pct <= s->cfg.gear.idle_max_pct &&
-                        (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear));
+            bool safe = thr_idle(s) && (gear_is(&s->gear, GEAR_N) || gear_fault(&s->gear));
 
             /* compass lost during the stop of an auto-steering mode */
             if ((s->stop_steer == STOP_STEER_HEADING || s->stop_steer == STOP_STEER_NONE) &&
@@ -2934,7 +3123,9 @@ void sb_step(sb_t *s)
                 }
                 break;
             case STOP_STEER_CENTER:
-                if (autopilot_centered(&s->ap)) s->stop_steer = STOP_STEER_NONE;
+                /* centred AND idle + neutral (the slow modelled idle may come after the centring): only then
+                 * steering off - until then the outboard is held at its centre */
+                if (autopilot_centered(&s->ap) && safe) s->stop_steer = STOP_STEER_NONE;
                 break;
             default:
                 break;
@@ -3041,7 +3232,11 @@ void sb_step(sb_t *s)
     gear_request(&s->gear, s->gear_demand);
     /* STANDBY (button, fault, alarm ...): the faster closing rate; a planned
      * arrival stop and normal driving keep the normal one */
-    s->thr.stop = sb_mode(s) == MODE_STANDBY && !s->stop_planned && !(s->gen.active && !s->gen.fast_stop);
+    /* an EMERGENCY = idle AT ONCE, no rate limit (step 11e): STANDBY (button / fault / e-stop / node loss /
+     * link loss ...) - not a planned arrival stop, not a normal generator stop - and the REMOTE / MANEUVER
+     * link-loss failsafe (stale data) */
+    s->thr.stop = (sb_mode(s) == MODE_STANDBY && !s->stop_planned && !(s->gen.active && !s->gen.fast_stop)) ||
+                  (remote_like(sb_mode(s)) && s->remote.state == SB_REMOTE_LOST);
     s->thr.neutral_run_pct = gen_neutral ? s->gen.cap_pct : 0.0f;   /* 0 = the normal rule: idle in neutral */
     s->throttle_rate = throttle_step(&s->thr, s->throttle_demand, s->gear.current, gear_throttle_allowed(&s->gear), dt);
 
@@ -3050,7 +3245,10 @@ void sb_step(sb_t *s)
      *    from what was really sent. */
     s->thr.out_pct = servo_throttle_write(&s->servo, &s->plim, gear_is(&s->gear, GEAR_F), s->thr.out_pct, dt,
                                           gen_neutral ? s->gen.cap_pct : -1.0f);
-    gear_step(&s->gear, dt_ms, s->thr.out_pct, neutral_sw);
+    servo_model_step(&s->servo, thr_node_ok(s), dt);
+    /* the gear moves only when the MODELLED throttle servo is at idle (DroneCAN: never while the throttle
+     * node is lost - its position is unknown, est 100 %) */
+    gear_step(&s->gear, dt_ms, s->servo.est_pct, neutral_sw);
     if (gear_fault(&s->gear)) {
         alarm_on(s, SB_ALM_GEAR);
         /* neutral not confirmed: driving modes end in STANDBY (throttle
@@ -3058,8 +3256,8 @@ void sb_step(sb_t *s)
         if (sb_mode(s) != MODE_STANDBY && sb_mode(s) != MODE_MANUAL)
             sb_request_mode(s, MODE_STANDBY, WHY_GEAR_FAULT);
     }
-    hal_set_gear_pwm(s->gear.pwm_us);
-    hal_set_rudder_motor(s->ap.motor_cmd);
+    servo_gear_write(&s->servo, s->gear.pwm_us, s->cfg.gear.idle_max_pct);
+    servo_steer_write(&s->servo, s->ap.motor_cmd, s->ap.servo_have, s->ap.servo_u);
     if (s->chirp_ms > 0u) s->chirp_ms = (s->chirp_ms > dt_ms) ? s->chirp_ms - dt_ms : 0u;
     hal_set_alarm(s->alarm || s->ap.alarm || s->chirp_ms > 0u);
 
@@ -3079,7 +3277,7 @@ void sb_step(sb_t *s)
     g_mon.fwd_limit = s->plim.fwd_pct;
     g_mon.rev_limit = s->plim.rev_pct;
     g_mon.fwd_engaged = gear_is(&s->gear, GEAR_F) ? 1u : 0u;
-    g_mon.gear_pwm_us = s->gear.pwm_us;
+    g_mon.gear_pwm_us = s->servo.gear_sent ? s->servo.gear_us : s->gear.pwm_us;   /* what the gear servo got */
     g_mon.idle_max_pct = s->cfg.gear.idle_max_pct;
     g_mon.thr_idle_us = s->cfg.servo.idle_us;
     g_mon.gear_n_us = s->cfg.gear.pwm_n_us;
@@ -3090,6 +3288,23 @@ void sb_step(sb_t *s)
     g_mon.thr_stern_pct = s->thrust.out_pct[THR_STERN];
     g_mon.thr_bow_cap = thruster_cap(&s->thrust, THR_BOW);
     g_mon.thr_stern_cap = thruster_cap(&s->thrust, THR_STERN);
+    /* DroneCAN servos (step 11e): what CPU1 needs for its safe frames (it replays the last steering /
+     * gear wire values, never makes up a position), its own throttle envelope, MON_TRIP_CAN_TX and the
+     * UNCREWED dead-man (profile, kill latch, the throttle node) */
+    {
+        hal_can_act_t ca;
+        bool can = s->servo.can && hal_can_act_state(&ca);
+        g_mon.can_servos = can ? 1u : 0u;
+        g_mon.steer_have = (can && ca.steer_have) ? 1u : 0u;
+        g_mon.steer_wire = can ? ca.steer_wire : 0.0f;
+        g_mon.gear_have = (can && ca.gear_have) ? 1u : 0u;
+        g_mon.gear_wire = can ? ca.gear_wire : 0.0f;
+        g_mon.gear_n_wire = hal_can_wire_us(s->cfg.gear.pwm_n_us);
+        g_mon.thr_node_ok = thr_node_ok(s) ? 1u : 0u;
+        g_mon.thr_travel_ms = (uint32_t)(s->servo.cfg.travel_s * 1000.0f + 0.5f);
+        g_mon.profile = s->profile;
+        g_mon.killed = s->ll.state == SB_LL_KILLED ? 1u : 0u;
+    }
     monitor_write_end(&g_mon);
     if (s->bench.trip_req) g_mon.test_trip = MON_TEST_TRIP;     /* BENCH TEST: trip test (latched) */
     g_mon.heartbeat = g_mon.heartbeat + 1u;

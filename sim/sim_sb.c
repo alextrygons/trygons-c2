@@ -22,6 +22,7 @@
 #include "tc_nv.h"
 #include "tc_modbus.h"
 #include "dronecan.h"
+#include "can_act.h"
 #include "tc_rstcause.h"
 
 /* ------------------------------------------------------------ harness -- */
@@ -57,7 +58,8 @@ static uint32_t s_can_fault;
  * groups appended after them: O (engine controls, 12 bytes) + N (DP thrusters 10 bytes + the DP state
  * T2_DP bytes) + P (DroneCAN summary T2_P bytes) = T2_N */
 #define T2_DP 12u
-#define T2_P 6u                 /* group P (DroneCAN summary, step 11d) after N */
+#define T2_Q 17u                /* group Q (steering position servo + throttle model, step 11e) after P */
+#define T2_P (6u + T2_Q)        /* group P (DroneCAN summary, step 11d) after N: its offset from the end */
 #define T2_N (10u + T2_DP + T2_P)
 #define T2_O (12u + T2_N)
 
@@ -65,6 +67,13 @@ static uint32_t s_can_fault;
  * bridge (simulated Teensy frames) instead of the analog joystick. */
 static bool s_bridge;
 void sb_set_bridge(bool on) { s_bridge = on; }
+
+/* "all --can" / "all --can-fast" (step 11e): every test on the DroneCAN servos (the simulated bus with the
+ * throttle / steering / gear nodes; slow = the worst-case speeds 6 s / 12 s, fast = 2 s / 3 s). The tests of
+ * the old hardware only (steering motor pulses, end stops, motor current, the DC-motor TRAINING, FIRST TEST)
+ * report N/A there. */
+static bool s_can_all, s_can_fast;
+void sb_set_can(bool on, bool fast) { s_can_all = on; s_can_fast = fast; }
 
 /* Map used for the old tests in bridge mode: throttle on stick Y
  * (spring-centred, like the analog joystick), default buttons. */
@@ -160,6 +169,8 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     remove("nv1.bin");                              /* default joystick calibration */
     remove("nv2.bin");                              /* no stored AUTO program */
     remove("nv4.bin");                              /* default joystick map (analog) */
+    remove("nv5.bin");                              /* no TRAINING result (a DC-motor v1 one would be refused on the
+                                                       DroneCAN servo: NV DATA RESET in every "--can" test) */
     remove("nv7.bin");                              /* no relay table */
     sim_hal_relay_board(true, 5u, 0u);              /* a fresh relay board, every relay off */
     sim_hal_relay_board_reset();
@@ -169,7 +180,12 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     world_publish(&x->w, 0);
     sim_hal_can_reset();                            /* DroneCAN: every node fresh; not fitted unless a CN test */
     sim_hal_can_fault(s_can_fault);
-    sim_hal_can_fitted(s_can_on);
+    sim_hal_can_fitted(s_can_on || s_can_all);
+    sb_test_boot_idle(s_can_all && !s_can_on);      /* (the CN tests: the real boot order) */
+    if (s_can_fast) {
+        sim_hal_can_servo_speed(DC_NODE_THROTTLE, 2.0f, 0.0f);
+        sim_hal_can_servo_speed(DC_NODE_STEERING, 3.0f, 0.03f);
+    }
     hal_init();
     sim_hal_bridge_mode(s_bridge);
     if (s_bridge) {
@@ -185,6 +201,7 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     sb_init(&x->sb, &c);
     memset((void *)&g_mon, 0, sizeof g_mon);         /* CPU1 starts: "running" only from core 0's loop */
     monitor_init(&x->mon, 0u);
+    x->mon.boot_known = s_can_all && !s_can_on;     /* (as sb_test_boot_idle above) */
     x->mon_on = true;
     x->wdt_ms = 100u;
 }
@@ -202,10 +219,13 @@ static void sbsim_run(sbsim_t *x, uint32_t until_ms, sb_hook_t hook, void *ctx)
             hal_init();
             sb_init(&x->sb, &x->cfg);
             monitor_init(&x->mon, x->t);
+            x->mon.boot_known = s_can_all && !s_can_on;
             if (x->log_on) logcore0_init(&x->sb, g_logstat.boot);
             x->next_ctrl = x->t;
             x->last_kick = x->t;
         }
+        /* the 10 ms actuator task of core 0 (DroneCAN servos; frozen / booting: it does not run) */
+        if (!x->boot_until && !x->frozen && x->t % 10u == 0u) hal_can_tick();
         if (!x->boot_until && x->t >= x->next_ctrl) {
             x->next_ctrl += AP_PERIOD_MS;
             if (!x->frozen) {
@@ -386,9 +406,11 @@ typedef struct {
     float    t_neutral;     /* gear PWM -> neutral */
     float    t_gear;        /* gear PWM -> new gear */
     float    t_thr_open;    /* throttle > 1 % again after the new gear */
+    float    t_true_idle;   /* the REAL (simulated) throttle servo first <= 1 % (step 11e) */
     float    t_steer_off;   /* autopilot no longer steering */
     uint16_t want_pwm;
-    int      steer_after_off;  /* steering motor commands after steering off */
+    int      steer_after_off;  /* steering motor commands after steering off (position servo: command changes) */
+    float    steer_last;
     bool     armed;
 } events_t;
 
@@ -396,9 +418,10 @@ static void ev_reset(events_t *e, uint32_t t0, float thr, uint16_t want_pwm)
 {
     e->t0 = t0;
     e->thr_before = thr;
-    e->t_thr_down = e->t_idle = e->t_neutral = e->t_gear = e->t_thr_open = e->t_steer_off = -1.0f;
+    e->t_thr_down = e->t_idle = e->t_neutral = e->t_gear = e->t_thr_open = e->t_steer_off = e->t_true_idle = -1.0f;
     e->want_pwm = want_pwm;
     e->steer_after_off = 0;
+    e->steer_last = sim_hal_steer_cmd(NULL);
     e->armed = true;
 }
 
@@ -406,16 +429,22 @@ static void ev_watch(sbsim_t *x, void *ctx)
 {
     events_t *e = (events_t *)ctx;
     if (!e->armed || x->t < e->t0) return;
+    bool was_off = e->t_steer_off >= 0.0f;
     float ts = (float)(x->t - e->t0) * 0.001f;
     float thr = sim_hal_throttle();
     uint16_t pwm = sim_hal_gear_pwm();
     if (e->t_thr_down < 0.0f && thr < e->thr_before - 0.01f) e->t_thr_down = ts;
     if (e->t_idle < 0.0f && thr <= 1.0f) e->t_idle = ts;
+    if (e->t_true_idle < 0.0f && sim_hal_thr_truth() <= 1.0f) e->t_true_idle = ts;
     if (e->t_neutral < 0.0f && pwm == x->sb.cfg.gear.pwm_n_us) e->t_neutral = ts;
     if (e->t_gear < 0.0f && e->t_neutral >= 0.0f && pwm == e->want_pwm) e->t_gear = ts;
     if (e->t_thr_open < 0.0f && e->t_gear >= 0.0f && thr > 1.0f) e->t_thr_open = ts;
     if (e->t_steer_off < 0.0f && x->sb.ap.mode == AP_MODE_STANDBY) e->t_steer_off = ts;
     if (e->t_steer_off >= 0.0f && sim_hal_motor_command() != 0.0f) e->steer_after_off++;
+    /* the position servo: its command must not change after the step that turned the steering off (hold) */
+    float sc = sim_hal_steer_cmd(NULL);
+    if (was_off && sim_hal_servos_can() && fabsf(sc - e->steer_last) > 1e-4f) e->steer_after_off++;
+    e->steer_last = sc;
 }
 
 /* ------------------------------------------------------------ phase 2 -- */
@@ -522,13 +551,19 @@ static void phase2(void)
         const mode_log_entry_t *le = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
         bool order = ev.t_thr_down >= 0.0f && ev.t_thr_down <= 0.1f &&
                      ev.t_idle >= 0.0f && ev.t_neutral > ev.t_idle && ev.t_steer_off >= ev.t_neutral;
-        snprintf(d, sizeof d, "at %.1f kn, throttle %.0f %%: throttle down after %.2f s, idle %.2f s (STANDBY rate "
-                 "%.0f %%/s), neutral %.2f s, steering off %.2f s (held heading within %.1f deg); under-load shifts %d; "
-                 "log: %s->%s (%s)",
-                 v0, thr0, ev.t_thr_down, ev.t_idle, x.sb.thr.cfg.rate_stop_pct_s, ev.t_neutral, ev.t_steer_off, hmax,
-                 x.w.shift_under_load, mode_name(le->from), mode_name(le->to), mode_reason_name(le->why));
-        test_report("P2 STANDBY at full throttle: idle within about 1 s, neutral, then steering off",
-                    order && thr0 > 90.0f && ev.t_idle <= thr0 / x.sb.thr.cfg.rate_stop_pct_s + 0.1f &&
+        /* step 11e: idle COMMANDED at once (no rate limit); neutral only after the MODELLED servo is at idle
+         * (thr0 / 100 x thr_travel_s) + the idle wait; the real (simulated) servo is idle within thr_travel_s */
+        float model_idle = thr0 * 0.01f * x.sb.servo.cfg.travel_s;
+        snprintf(d, sizeof d, "at %.1f kn, throttle %.0f %%: throttle down after %.2f s, idle commanded %.2f s, real "
+                 "servo idle %.2f s (travel %.0f s), neutral %.2f s (model idle %.1f s + wait), steering off %.2f s "
+                 "(held heading within %.1f deg); under-load shifts %d; log: %s->%s (%s)",
+                 v0, thr0, ev.t_thr_down, ev.t_idle, ev.t_true_idle, x.sb.servo.cfg.travel_s, ev.t_neutral, model_idle,
+                 ev.t_steer_off, hmax, x.w.shift_under_load, mode_name(le->from), mode_name(le->to),
+                 mode_reason_name(le->why));
+        test_report("P2 STANDBY at full throttle: idle commanded at once, neutral after the modelled idle, then steering off",
+                    order && thr0 > 90.0f && ev.t_idle <= 0.1f && ev.t_true_idle >= 0.0f &&
+                    ev.t_true_idle <= x.sb.servo.cfg.travel_s + 0.1f &&
+                    ev.t_neutral >= model_idle * 0.99f + x.sb.cfg.gear.idle_wait_ms * 0.001f - 0.1f &&
                     x.w.shift_under_load == 0 && ev.steer_after_off == 0 &&
                     le->to == MODE_STANDBY && le->why == WHY_STANDBY_BUTTON, d);
     }
@@ -801,23 +836,28 @@ static void phase3(void)
         float tgt_min = tgt_press;
         int motor_left = 0;
         bool steer_on_at_neutral = false, manual_again = false;
+        float steer_prev = sim_hal_steer_cmd(NULL);
         while (x.t < s.t0 + 40000u) {
             sbsim_run(&x, x.t + AP_PERIOD_MS, script_hook, &s);
             ev_watch(&x, &ev);
             if (x.sb.ap.mode == AP_MODE_ANGLE) {
                 if (x.sb.ap.rudder_target < tgt_min) tgt_min = x.sb.ap.rudder_target;
                 if (sim_hal_motor_command() < 0.0f) motor_left++;
+                if (sim_hal_servos_can() && sim_hal_steer_cmd(NULL) < steer_prev - 1e-4f) motor_left++;  /* the servo */
             }
+            steer_prev = sim_hal_steer_cmd(NULL);
             if (ev.t_neutral >= 0.0f && ev.t_steer_off < 0.0f) steer_on_at_neutral = true;
             if (sb_mode(&x.sb) == MODE_MANUAL) manual_again = true;
         }
-        snprintf(d, sizeof d, "throttle %.0f %% -> idle after %.2f s (STANDBY rate %.0f %%/s), neutral %.2f s, "
-                 "steering off %.2f s; outboard command at STANDBY %+.1f deg, followed the stick to %+.1f deg "
-                 "during the stop (motor %d steps left); motor after off %d, under-load %d, held stick took control %s",
-                 thr0, ev.t_idle, x.sb.thr.cfg.rate_stop_pct_s, ev.t_neutral, ev.t_steer_off, tgt_press, tgt_min,
+        snprintf(d, sizeof d, "throttle %.0f %% -> idle commanded after %.2f s (at once), neutral %.2f s (after the "
+                 "modelled idle), steering off %.2f s; outboard command at STANDBY %+.1f deg, followed the stick to "
+                 "%+.1f deg during the stop (motor %d steps left); motor after off %d, under-load %d, held stick took "
+                 "control %s",
+                 thr0, ev.t_idle, ev.t_neutral, ev.t_steer_off, tgt_press, tgt_min,
                  motor_left, ev.steer_after_off, x.w.shift_under_load, manual_again ? "YES" : "no");
-        test_report("P3 R1 STANDBY in MANUAL: the stick steers until idle + neutral, then steering off",
-                    was_manual && thr0 > 20.0f && ev.t_idle >= 0.0f && ev.t_idle <= thr0 / 100.0f + 0.1f &&
+        test_report("P3 R1 STANDBY in MANUAL: the stick steers until idle + neutral (the modelled idle), then steering off",
+                    was_manual && thr0 > 20.0f && ev.t_idle >= 0.0f && ev.t_idle <= 0.1f &&
+                    ev.t_neutral >= thr0 * 0.01f * x.sb.servo.cfg.travel_s &&
                     ev.t_neutral > ev.t_idle && ev.t_steer_off >= ev.t_neutral && steer_on_at_neutral &&
                     tgt_press > 5.0f && tgt_min < tgt_press - 3.0f && motor_left > 0 && ev.steer_after_off == 0 &&
                     x.w.shift_under_load == 0 && !manual_again && sb_mode(&x.sb) == MODE_STANDBY, d);
@@ -931,11 +971,14 @@ static void cruise_hook(sbsim_t *x, void *ctx)
 /* AUTO due east: legs of `leg_s` seconds at each speed in spd[] (all
  * CONTINUE, straight line), or one long leg at spd[0] (n_legs = 1) with the
  * sea schedule. */
+static bool s_cruise_paddle;    /* the next cruise_run with a paddlewheel (see P4.2) */
 static void cruise_run(sbsim_t *x, cruise_watch_t *c, uint32_t seed, const float *spd, int n_legs, float leg_s,
                        const float *at, const float *sea, int n_sea, uint32_t dur_ms)
 {
     prog_wp_t wps[16];
     sbsim_init(x, seed, 90.0f, 0.0f, NULL);
+    x->w.speed_sensor = s_cruise_paddle;
+    s_cruise_paddle = false;
     x->w.sea_state = sea[0];
     sbsim_run(x, 3000u, NULL, NULL);
     double e = x->w.east_m;
@@ -978,7 +1021,8 @@ static void phase4(void)
         snprintf(d + len, sizeof d - (size_t)len, "; steering beyond limit: cmd %.2f, true %.2f deg; "
                  "throttle rate max %.0f %%/s; gear changes after F %d; legs done %u",
                  c.limit_excess, c.true_excess, x.w.max_thr_rate, c.gear_changes - 1, x.sb.autop.legs_done);
-        ok = ok && c.limit_excess <= 0.01f && c.true_excess <= 0.0f && x.w.max_thr_rate <= 40.5f &&
+        ok = ok && c.limit_excess <= 0.01f && c.true_excess <= 0.0f &&
+             x.w.max_thr_rate <= x.sb.cfg.throttle.rate_down_pct_s + 0.5f &&     /* (step 11e: 50 %/s down) */
              c.gear_changes == 1 && x.w.shift_under_load == 0 && x.sb.autop.legs_done >= 4u;
         test_report("P4 AUTO legs 3->20 kn: speed control per leg, steering limit by speed", ok, d);
     }
@@ -990,6 +1034,11 @@ static void phase4(void)
         static const float sea[] = { 1, 2, 3, 4, 1 };
         sbsim_t x;
         cruise_watch_t c;
+        /* with a paddlewheel since step 11e: without one the dead reckoning's slow-drag check (dr.c, 300 s /
+         * 60 m) raised a false GPS SUSPECT after the long acceleration back to 18 kn at the 11e closing rate
+         * (also on the 11d code with only rate_down 50: a dr.c finding, PROGRESS.md) - this test is about
+         * the sea-state slow-down */
+        s_cruise_paddle = true;
         cruise_run(&x, &c, 42u, spd, 1, 0.0f, at, sea, 5, 2100000u);
         snprintf(d, sizeof d, "speed by sea state: ss1 %.1f-%.1f, ss2 %.1f-%.1f, ss3 %.1f-%.1f, ss4 %.1f-%.1f, "
                  "calm again %.1f-%.1f kn (end %.1f); course error max ss3 %.1f, ss4 %.1f deg; "
@@ -1177,7 +1226,11 @@ static void phase5(void)
                  w.xte_max, rms, w.crab_seen, w.t_arrive, mode_reason_name(w.why), mode_name(w.mode_after),
                  w.stop_dist, sim_hal_alarm() ? "on" : "OFF", gear_name(x.w.engaged), sim_hal_throttle(),
                  i == 3 ? (w.crossed_north ? ", heading crossed north" : ", heading did NOT cross north") : "");
-        bool ok = w.xte_n > 0 && w.xte_max <= cases[i].xmax && rms <= 6.0f &&
+        /* DroneCAN position servo without TRAINING (step 11e, changed test): the model steers at the worst-case
+         * speed (12 s lock to lock, TO CONFIRM C10) - the line capture after the 45 deg turn of the short 500 m
+         * leg is slower (PWM rms 3.6 m, worst-case servo 8.3 m: finding in PROGRESS.md); max unchanged */
+        float rms_max = (sim_hal_servos_can() && i == 0u) ? 9.0f : 6.0f;
+        bool ok = w.xte_n > 0 && w.xte_max <= cases[i].xmax && rms <= rms_max &&
                   w.why == WHY_ARRIVED && w.mode_after == MODE_STANDBY && w.stop_dist < 60.0f &&
                   sim_hal_alarm() && x.w.engaged == GEAR_N && sim_hal_throttle() <= 0.0f &&
                   x.w.shift_under_load == 0 && (i != 3 || w.crossed_north);
@@ -1426,8 +1479,10 @@ static void phase6(void)
     float hold_l_max = 0, hold_t_max = 0, over_l_max = 0, over_t_max = 0, push_max = 0, hdg_max = 0;
     bool throttle_fixed = true, gear_ok = true;
     char course_lines[10][160];
+    /* the DroneCAN position servo has its own TRAINING (trainsrv.c, tests SM): the DC-motor runs are N/A */
+    int n_boats = s_can_all ? 0 : 5;
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < n_boats; i++) {
         for (uint8_t ss = 1; ss <= 2; ss++) {
             const tset_t *s = &sets[i];
             train6_t o;
@@ -1504,17 +1559,20 @@ static void phase6(void)
              "gain %.1f %%, time const %.1f %%, travel %.1f %%, turn speed %.1f %%, gap %.2f deg",
              trained, total, accurate, total, beyond_stop, gap_off, worst_gain, worst_T, worst_travel, worst_speed,
              worst_gapdeg);
-    test_report("P6 training 5 random boats x sea state 1 + 2: learned vs true", trained == total &&
+    if (s_can_all) test_na("P6 training 5 random boats x sea state 1 + 2: learned vs true", "DC-motor TRAINING (servo: SM1)");
+    else test_report("P6 training 5 random boats x sea state 1 + 2: learned vs true", trained == total &&
                 accurate == total && beyond_stop == 0, d);
     snprintf(d, sizeof d, "worst course error learned %.1f deg vs true-value %.1f; overshoot %.1f vs %.1f; "
              "learned clearly worse in %d of %d", hold_l_max, hold_t_max, over_l_max, over_t_max, worse, trained);
-    test_report("P6 course keeping with learned values as good as with true values",
+    if (s_can_all) test_na("P6 course keeping with learned values as good as with true values", "DC-motor TRAINING (servo: SM7)");
+    else test_report("P6 course keeping with learned values as good as with true values",
                 trained == total && worse == 0 && over_l_max < 10.0f, d);
     snprintf(d, sizeof d, "throttle constant at %.0f %% while calibrating: %s, forward gear the whole time: %s, "
              "max heading change in a phase %.0f deg (limit %.0f), end-stop push max %.1f s total",
              sets[0].speed > 0 ? 20.0f : 0.0f, throttle_fixed ? "yes" : "NO", gear_ok ? "yes" : "NO",
              hdg_max, TR_MAX_PHASE_HEADING_DEG, push_max);
-    test_report("P6 training runs at fixed slow throttle in forward gear, within limits",
+    if (s_can_all) test_na("P6 training runs at fixed slow throttle in forward gear, within limits", "DC-motor TRAINING");
+    else test_report("P6 training runs at fixed slow throttle in forward gear, within limits",
                 throttle_fixed && gear_ok && hdg_max <= TR_MAX_PHASE_HEADING_DEG, d);
 
     /* safety: Standby during training */
@@ -1541,7 +1599,10 @@ static void phase6(void)
                     o.t_neutral > 0.0f && o.under_load == 0, d);
     }
     /* safety: training's own limits and plausibility end in a safe stop */
-    {
+    if (s_can_all) {
+        test_na("P6 limits / implausible results: training aborts into a safe stop", "DC-motor TRAINING (servo: SM2)");
+        test_na("P6 confirmation: reject keeps settings, accept applies + saves", "DC-motor TRAINING (servo: SM6)");
+    } else {
         tset_t fast = sets[0], gap = sets[0];
         fast.K = 0.7f; fast.speed = 6.0f; fast.T = 1.5f;
         gap.travel_r = gap.travel_l = 15.0f; gap.gap = 8.0f;
@@ -1558,7 +1619,7 @@ static void phase6(void)
                     a.under_load == 0 && b.under_load == 0, d);
     }
     /* reject keeps the old settings; accept applies + saves (checksum) */
-    {
+    if (!s_can_all) {
         train6_t r;
         sb_training(&sets[1], 1, 611u, 0u, 0u, 0, &r);     /* same run as boat 2 / sea 1 above */
         sb_config_t def;
@@ -1747,8 +1808,12 @@ static void fixes(void)
     char d[400];
     printf("\n=== Fixes ===\n");
 
-    /* Fix 4: motor current / limit switches stop the push at the end stop */
-    {
+    /* Fix 4: motor current / limit switches stop the push at the end stop (the steering MOTOR of the old
+     * hardware: N/A on the DroneCAN position servo - no end-stop push there) */
+    if (s_can_all) {
+        test_na("F4 training: end-stop push time well below before (current / switch)", "steering motor only");
+        test_na("F4 normal steering: stops pushing as soon as the current rises", "steering motor only");
+    } else {
         s6_rng = 2024u;
         tset_t boat1 = tset_random();               /* boat 1 of the phase 6 table */
         train6_t t0, tc, tl;
@@ -2130,7 +2195,8 @@ static override_t joystick_override(sb_mode_t mode, uint32_t seed)
         joy_set(0.6f, 1.0f - 2.0f * (float)k / 6.0f, false, false);
         sbsim_run(&x, x.t + 50u, NULL, NULL);
     }
-    sbsim_run(&x, x.t + 25000u, NULL, NULL);
+    /* (30 s: the DroneCAN throttle servo's own travel + the modelled idle before the shift, step 11e) */
+    sbsim_run(&x, x.t + 30000u, NULL, NULL);
     r.v_rev = x.w.speed_kn;
     r.thr_fwd_max = x.w.max_thr_fwd;
     r.thr_rev_max = x.w.max_thr_rev;
@@ -2791,44 +2857,48 @@ static void pc_hook(sbsim_t *x, void *ctx)
     uint8_t buf[512];
     uint32_t n;
     proto_frame_t f;
-    while ((n = sim_hal_link_tx_pop(buf, sizeof buf)) > 0u) proto_rx_push(&p->pc_rx, buf, n);
-    while (proto_rx_next(&p->pc_rx, &f)) {
-        if (f.type == PROTO_T_ACK && f.len == 3u) {
-            p->acks++;
-            p->ack_type = f.payload[0];
-            p->ack_seq = f.payload[1];
-            p->ack_result = f.payload[2];
-        } else if (f.type == PROTO_T_TELEMETRY) {
-            proto_rd_t r;
-            proto_rd_init(&r, f.payload, f.len);
-            (void)proto_rd_u32(&r);
-            p->telem_mode = proto_rd_u8(&r);
-            p->telem++;
-            memcpy(p->tm, f.payload, f.len);
-            p->tm_len = f.len;
-            r.n = 4u + 4u + 20u + 2u + 16u + 2u + 24u + 12u;      /* alarm_bits offset */
-            p->telem_alarms = proto_rd_u32(&r);
-        } else if (f.type == PROTO_T_JOYMAP_VALUE) {
-            memcpy(p->jm, f.payload, f.len);
-            p->jm_len = f.len;
-            p->joymaps++;
-        } else if (f.type == PROTO_T_JOY_RAW) {
-            memcpy(p->raw, f.payload, f.len);
-            p->raw_len = f.len;
-            p->raws++;
-        } else if (f.type == PROTO_T_PARAM_VALUE) {
-            proto_rd_t r;
-            proto_rd_init(&r, f.payload, f.len);
-            (void)proto_rd_u8(&r);
-            p->param_value = proto_rd_f32(&r);
-            p->params++;
-        } else if (f.type == PROTO_T_TELEM2) {
-            memcpy(p->t2, f.payload, f.len);
-            p->t2_len = f.len;
-        } else if (f.type == PROTO_T_CAN_NODES) {
-            memcpy(p->can, f.payload, f.len);
-            p->can_len = f.len;
-            p->can_frames++;
+    /* parse after every read (the receive ring holds 512 bytes: TELEM2 + TELEMETRY + CAN_NODES in one step
+     * are more than that) */
+    while ((n = sim_hal_link_tx_pop(buf, 128u)) > 0u) {
+        proto_rx_push(&p->pc_rx, buf, n);
+        while (proto_rx_next(&p->pc_rx, &f)) {
+            if (f.type == PROTO_T_ACK && f.len == 3u) {
+                p->acks++;
+                p->ack_type = f.payload[0];
+                p->ack_seq = f.payload[1];
+                p->ack_result = f.payload[2];
+            } else if (f.type == PROTO_T_TELEMETRY) {
+                proto_rd_t r;
+                proto_rd_init(&r, f.payload, f.len);
+                (void)proto_rd_u32(&r);
+                p->telem_mode = proto_rd_u8(&r);
+                p->telem++;
+                memcpy(p->tm, f.payload, f.len);
+                p->tm_len = f.len;
+                r.n = 4u + 4u + 20u + 2u + 16u + 2u + 24u + 12u;      /* alarm_bits offset */
+                p->telem_alarms = proto_rd_u32(&r);
+            } else if (f.type == PROTO_T_JOYMAP_VALUE) {
+                memcpy(p->jm, f.payload, f.len);
+                p->jm_len = f.len;
+                p->joymaps++;
+            } else if (f.type == PROTO_T_JOY_RAW) {
+                memcpy(p->raw, f.payload, f.len);
+                p->raw_len = f.len;
+                p->raws++;
+            } else if (f.type == PROTO_T_PARAM_VALUE) {
+                proto_rd_t r;
+                proto_rd_init(&r, f.payload, f.len);
+                (void)proto_rd_u8(&r);
+                p->param_value = proto_rd_f32(&r);
+                p->params++;
+            } else if (f.type == PROTO_T_TELEM2) {
+                memcpy(p->t2, f.payload, f.len);
+                p->t2_len = f.len;
+            } else if (f.type == PROTO_T_CAN_NODES) {
+                memcpy(p->can, f.payload, f.len);
+                p->can_len = f.len;
+                p->can_frames++;
+            }
         }
     }
 }
@@ -3458,9 +3528,13 @@ static void hardening_tests(void)
                  "(heartbeat limit %u ms), throttle %.0f %%, gear %u us, alarm %s",
                  before, monitor_reason_name(r.why), r.t_react, MON_HB_MS, r.thr_after, r.gear_after,
                  r.alarm ? "on" : "OFF");
+        /* (DroneCAN servos: the actuator task stops with core 0 - MON_TRIP_CAN_TX comes first, after 100 ms) */
+        bool why_ok = s_can_all ? (r.why == MON_TRIP_CAN_TX && r.t_react >= (float)MON_CAN_TX_MS - 20.0f &&
+                                   r.t_react <= (float)MON_HB_MS + 30.0f)
+                                : (r.why == MON_TRIP_HEARTBEAT && r.t_react >= (float)MON_HB_MS &&
+                                   r.t_react <= (float)MON_HB_MS + 30.0f);
         test_report("C3 frozen core 0 (no watchdog): monitor heartbeat trip -> idle + neutral + alarm",
-                    r.why == MON_TRIP_HEARTBEAT && r.t_react >= (float)MON_HB_MS && r.t_react <= (float)MON_HB_MS + 30.0f &&
-                    r.thr_after <= 0.0f && r.gear_after == x.sb.cfg.gear.pwm_n_us && r.alarm, d);
+                    why_ok && r.thr_after <= 0.0f && r.gear_after == x.sb.cfg.gear.pwm_n_us && r.alarm, d);
     }
 
     /* C3b R4: slow boot - before core 0 says "running" only the boot timeout
@@ -6110,7 +6184,9 @@ static void lostlink_tests(void)
                  l.gear_at_kill == x.sb.cfg.gear.pwm_n_us ? "N" : "not N", safe ? "yes" : "NO", x.sb.ll.state,
                  (x.sb.alarm_bits & SB_ALM_ENGINE_KILLED) ? "yes" : "NO");
         test_report("LL1 UNCREWED lost link near shore: STANDBY, idle + neutral, then ENGINE KILL at once",
-                    drv && sb && safe && t_kill > 0.0f && t_kill < 3.0f && x.sb.ll.state == SB_LL_KILLED, d);
+                    drv && sb && safe && t_kill > 0.0f &&
+                    t_kill < 3.0f + x.sb.cfg.remote_cap_fwd_pct * 0.01f * x.sb.servo.cfg.travel_s &&   /* + the modelled idle */
+                    x.sb.ll.state == SB_LL_KILLED, d);
     }
 
     /* LL2 open sea (800 m): no kill during the grace time, kill after 10 s */
@@ -6186,7 +6262,8 @@ static void lostlink_tests(void)
             idle_neutral_ok &= safe;
             kills += l.killed;
             /* gateway lost: found after 3 s (pc_timeout), then at once */
-            bool in_time = l.killed && t_kill < (k == 2 ? 6.0f : 3.0f);
+            bool in_time = l.killed && t_kill < (k == 2 ? 6.0f : 3.0f) +
+                                         x.sb.cfg.remote_cap_fwd_pct * 0.01f * x.sb.servo.cfg.travel_s;   /* modelled idle */
             good += drv && safe && in_time;
             snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s: kill after %.2f s, idle + neutral first %s", k ? "; " : "",
                      k == 0 ? "never any shore info" : k == 1 ? "shore info not valid (no charts)" :
@@ -7760,7 +7837,7 @@ static void bt_hook(sbsim_t *x, void *ctx)
     link_step(b->usb, &x->sb);
     uint8_t out[1024];
     uint32_t n;
-    while ((n = sim_hal_link_tx_pop(out, sizeof out)) > 0u) {
+    while ((n = sim_hal_link_tx_pop(out, 256u)) > 0u) {
         proto_frame_t f;
         proto_rx_push(&b->rx, out, n);
         while (proto_rx_next(&b->rx, &f)) if (f.type == PROTO_T_BENCH_DIAG) b->diag_frames++;
@@ -7854,8 +7931,12 @@ static void bench_tests(void)
     }
 
     /* BT2 steering pulses: left / right for the commanded time, estimate follows; too long, too soon,
-     * toward an active end stop: refused; throttle idle + neutral the whole time */
-    {
+     * toward an active end stop: refused; throttle idle + neutral the whole time (the steering MOTOR; the
+     * DroneCAN position servo: CN19 steering steps) */
+    if (s_can_all) {
+        test_na("BT2 BENCH TEST steering pulses: as commanded, estimate follows; too long / too soon / toward an end stop refused",
+                "steering motor only (position servo: CN19)");
+    } else {
         static sbsim_t x;
         static link_t usb;
         btwatch_t b;
@@ -8196,10 +8277,15 @@ static void nv_tests(void)
         hal_init();
         sb_init(&x.sb, &x.cfg);
         bool loaded2 = autopilot_load_calibration(&x.sb.ap);
+        bool v1_refused = x.sb.steer.v1_refused && (nv_status()->reset_mask & (1u << HAL_NV_SLOT_CALIB));
         snprintf(d, sizeof d, "TRAINING result with version %u on 'flash': loaded %s, NV DATA RESET flagged %s; the same "
-                 "record with version %u: loaded %s", CALIB_VERSION + 1u, loaded ? "YES" : "no", flagged ? "yes" : "NO",
-                 CALIB_VERSION, loaded2 ? "yes" : "NO");
-        test_report("DF3 unknown record version refused (defaults + notice), the right one loads", !loaded && flagged && loaded2, d);
+                 "record with version %u: loaded %s%s", CALIB_VERSION + 1u, loaded ? "YES" : "no", flagged ? "yes" : "NO",
+                 CALIB_VERSION, loaded2 ? "yes" : "NO",
+                 x.sb.servo.can ? (v1_refused ? " (position servo: a DC-motor record refused + flagged, as wanted)"
+                                              : " (position servo: v1 NOT refused / flagged)") : "");
+        /* the DroneCAN position servo never uses a version-1 (DC-motor) record (SM6): refused + flagged */
+        bool ok2 = x.sb.servo.can ? (!loaded2 && v1_refused) : loaded2;
+        test_report("DF3 unknown record version refused (defaults + notice), the right one loads", !loaded && flagged && ok2, d);
         remove("nv5.bin");
     }
 
@@ -10313,7 +10399,9 @@ static void engine_tests(void)
         e.resets = sim_hal_sw_resets();
         uint8_t helm = pi_cmd(&x, &e.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
         e.r.rj_on = true;
-        sbsim_run(&x, x.t + 300u, er_hook, &e);
+        /* (DroneCAN servos: after the reset the throttle position is unknown until the node is seen and the
+         * worst-case travel time has passed - only then "idle" for the restart) */
+        sbsim_run(&x, x.t + (sim_hal_servos_can() ? 8500u : 300u), er_hook, &e);
         bool stays = sb_mode(&x.sb) == MODE_STANDBY && x.sb.ll.state == SB_LL_KILLED;
         uint8_t rs = er_cmd(&x, &e, 2u, ENG_ACT_RESTART);
         bool cleared = !sim_hal_engine_killed() && x.sb.ll.state == SB_LL_OK && !x.sb.ll.kept;
@@ -10615,7 +10703,9 @@ static void dp_tests(void)
         x->frozen = false;                                      /* core 0 back, still asking for thrust */
         sbsim_run(x, x->t + 2000u, dp_hook, &w);
         sim_hal_thrusters(&b, &s);
-        bool latched = x->mon.tripped && x->mon.reason == MON_TRIP_HEARTBEAT && b_mid == 0.0f && s_mid == 0.0f &&
+        /* (DroneCAN servos: the actuator task stops with core 0 - MON_TRIP_CAN_TX is the first trip) */
+        bool latched = x->mon.tripped && (x->mon.reason == MON_TRIP_HEARTBEAT ||
+                                          (s_can_all && x->mon.reason == MON_TRIP_CAN_TX)) && b_mid == 0.0f && s_mid == 0.0f &&
                        b == 0.0f && s == 0.0f && !x->sb.thrust.active && x->sb.mon_tripped && hal_outputs_forced();
         /* a chip reset (watchdog): the settings are gone (RAM only), the thrusters 0 */
         x->wdt_ms = 100u;
@@ -11612,7 +11702,7 @@ static mode_reason_t cn_why(const sb_t *s)          /* the reason of the last ac
 
 static uint8_t cn_p(const pcsim_t *p, uint32_t i)     /* TELEM2 group P byte i (P = the last 6 bytes) */
 {
-    return p->t2_len >= T2_P ? p->t2[p->t2_len - T2_P + i] : 0xEEu;
+    return p->t2_len >= T2_P ? p->t2[p->t2_len - T2_P + i] : 0xEEu;     /* (P = 6 bytes before Q) */
 }
 
 /* a boat with the simulated CAN bus fitted (every node powered, OK, OPERATIONAL), armed (CREWED) */
@@ -11639,8 +11729,9 @@ static void can_tests(void)
     printf("\n=== CN DroneCAN bus (dronecan.c + libcanard on the simulated bus): heartbeats, node table, "
            "CAN NODE LOST / CAN BUS FAULT -> STANDBY ===\n");
 
-    /* CN1 healthy bus: our NodeStatus 1 Hz on the bus, every node seen, no alarm, modes work; NOTHING is
-     * commanded over CAN in step 11d (no ArrayCommand, no hardpoint); not fitted = nothing at all */
+    /* CN1 healthy bus: our NodeStatus 1 Hz on the bus, every node seen, no alarm, modes work; step 11e: the
+     * servos ARE commanded over CAN (ArrayCommand), still no hardpoint (the relay board is 11f); not fitted =
+     * nothing at all */
     {
         static pcsim_t p;
         cn_setup(&p, 1101u, 0u);
@@ -11654,18 +11745,21 @@ static void can_tests(void)
         bool t2 = cn_p(&p, 0) == 1u && cn_p(&p, 1) == HAL_CAN_ST_RUN && cn_p(&p, 4) == 0x0Fu;
         uint32_t nst = sim_hal_can_node_statuses(DC_NODE_STEERING);
         static pcsim_t q;
+        bool keep_all = s_can_all;
+        s_can_all = false;                             /* (also in the "all --can" run) */
         pcsim_init(&q, 1102u);                         /* default: no CAN fitted (like HAL_CAN_FITTED 0) */
+        s_can_all = keep_all;
         pc_run(&q, 8000u);
         bool none = !q.x.sb.can.fitted && q.x.sb.can.seen_mask == 0u && q.x.sb.alarm_bits2 == 0u &&
                     sim_hal_can_bus_frames(0u) == 0u && q.t2_len >= T2_P && cn_p(&q, 0) == 0u && q.can_frames == 0;
         snprintf(d, sizeof d, "our NodeStatus every %u ms (%u on the bus), node statuses (steering) %u, all seen + none "
-                 "lost %s, no alarm + armed %s, HDG LOCK %s, ArrayCommand %u / hardpoint %u frames (want 0), TELEM2 P %s, "
+                 "lost %s, no alarm + armed %s, HDG LOCK %s, ArrayCommand %u (servos, 11e) / hardpoint %u frames (want 0), TELEM2 P %s, "
                  "CAN_NODES frames %d; not fitted: nothing %s",
                  (unsigned)per, (unsigned)st, (unsigned)nst, seen ? "yes" : "NO", quiet ? "yes" : "NO", hdg ? "yes" : "NO",
                  (unsigned)acmd, (unsigned)hp, t2 ? "ok" : "WRONG", p.can_frames, none ? "yes" : "NO");
-        test_report("CN1 healthy bus: heartbeats both ways, no alarm, modes work, nothing commanded over CAN (11d); "
-                    "not fitted = nothing", per == 1000u && st >= 10u && nst >= 10u && seen && quiet && hdg &&
-                    acmd == 0u && hp == 0u && t2 && p.can_frames >= 8 && none, d);
+        test_report("CN1 healthy bus: heartbeats both ways, no alarm, modes work, the servos commanded over CAN (11e), "
+                    "no relay command (11f); not fitted = nothing", per == 1000u && st >= 10u && nst >= 10u && seen &&
+                    quiet && hdg && acmd > 0u && hp == 0u && t2 && p.can_frames >= 8 && none, d);
     }
 
     /* CN2 a required node goes silent while driving (HDG LOCK): CAN NODE LOST after 1.5 s, STANDBY, the
@@ -11916,10 +12010,12 @@ static void can_tests(void)
 
     /* CN11 the simulated servo / relay nodes (for steps 11e / 11f), driven by dronecan.c's own encoder:
      * a command moves the servo at its rate limit (steering 12 s lock to lock), the play (backlash) shows on
-     * a reversal, lost commands = HOLD (OA-1); hardpoint commands reach the relay node; the app sends none */
+     * a reversal, lost commands = HOLD (OA-1); hardpoint commands reach the relay node; the app (step 11e)
+     * commands the throttle (IDLE) and, after the boot hold, the gear - no steering in STANDBY (OD-7) */
     {
         static pcsim_t p;
         cn_setup(&p, 1113u, 0u);
+        sim_hal_can_servo_speed(DC_NODE_STEERING, 12.0f, 0.03f);     /* (the worst-case speed, also in "--can-fast") */
         bool q1 = dc_send_actuator(2u, DC_CMD_UNITLESS, 1.0f);       /* steering full right */
         pc_run(&p, 3000u);
         float c, pos, out;
@@ -11941,13 +12037,13 @@ static void can_tests(void)
         uint32_t hpc;
         uint16_t hp = sim_hal_can_hardpoint(4u, &hpc);
         float tc;
-        bool thr = sim_hal_can_servo(DC_NODE_THROTTLE, &tc, NULL, NULL, NULL);   /* never commanded: holds idle */
+        bool thr = sim_hal_can_servo(DC_NODE_THROTTLE, &tc, NULL, NULL, NULL) && tc <= -0.999f;  /* the app: IDLE */
         snprintf(d, sizeof d, "steering: queued %d, after 3 s at 12 s lock-to-lock pos %.2f (want ~0.5), then holds at "
                  "%.2f without commands, reversal 0.9: servo %.2f, output %.2f (play) ; hardpoint 4 = %u (%u commands); "
-                 "throttle node never commanded %s",
-                 q1 && q2, (double)pos3, (double)hold, (double)pos2, (double)out2, hp, (unsigned)hpc, thr ? "NO" : "yes");
+                 "throttle node commanded idle (-1.0) by the app %s",
+                 q1 && q2, (double)pos3, (double)hold, (double)pos2, (double)out2, hp, (unsigned)hpc, thr ? "yes" : "NO");
         test_report("CN11 simulated servo nodes (rate limit, backlash, HOLD on lost commands) + relay node decode",
-                    q1 && q2 && q3 && rate && held && play && hp == 1u && hpc == 1u && !thr, d);
+                    q1 && q2 && q3 && rate && held && play && hp == 1u && hpc == 1u && thr, d);
     }
 
     /* CN12 telemetry + log: CAN_NODES frame (USB, 1 Hz) with the node table, TELEM2 group P, log event CAN */
@@ -12014,6 +12110,979 @@ static void can_tests(void)
     }
 }
 
+/* ======================== SM: the DroneCAN steering position servo (step 11e) ======================= */
+
+/* a boat with the DroneCAN servos (the real boot order: position unknown, no gear frame for 6 s) */
+static void sm_boot(sbsim_t *x, uint32_t seed, float steer_travel_s, float backlash, const sb_config_t *cfg)
+{
+    bool keep = s_can_on;
+    s_can_on = true;
+    sbsim_init(x, seed, 90.0f, 0.0f, cfg);
+    s_can_on = keep;
+    sim_hal_can_servo_speed(DC_NODE_STEERING, steer_travel_s, backlash);
+    if (steer_travel_s < 6.0f) sim_hal_can_servo_speed(DC_NODE_THROTTLE, 2.0f, 0.0f);   /* the fast set */
+}
+
+typedef struct {
+    bool     result, accepted, aborted;
+    uint8_t  why;               /* tr_result_t */
+    float    v_train;
+    float    k_true, tau_true;
+    trs_t    t;                 /* the TRAINING state at the result */
+    float    max_u, max_yaw;
+    uint32_t dur_s;
+} smrun_t;
+
+/* TRAINING on the position servo: spin-up at the training throttle, the phases, the result (accept = 1,
+ * reject = 0, -1 = leave it). The truth: the world's K per servo unit = 0.05 x v x half (sim_world.c) */
+static void sm_train(sbsim_t *x, smrun_t *o, int confirm)
+{
+    memset(o, 0, sizeof *o);
+    sbsim_run(x, x->t + 10000u, NULL, NULL);
+    sb_request_mode(&x->sb, MODE_TRAINING, WHY_TEST);
+    uint32_t t0 = x->t;
+    while (x->t < t0 + 20u * 60u * 1000u) {
+        sbsim_run(x, x->t + 50u, NULL, NULL);
+        float su = fabsf(sim_hal_steer_cmd(NULL));
+        if (su > o->max_u) o->max_u = su;
+        if (fabsf(x->w.yaw_dps) > o->max_yaw) o->max_yaw = fabsf(x->w.yaw_dps);
+        if (sb_mode(&x->sb) != MODE_TRAINING) { o->aborted = true; break; }
+        if (x->sb.train.stage == TS_RESULT) { o->result = true; break; }
+    }
+    o->dur_s = (x->t - t0) / 1000u;
+    o->t = x->sb.ap.trs;
+    o->why = (uint8_t)x->sb.ap.train.result;
+    o->v_train = x->w.speed_kn;
+    o->k_true = 0.05f * fabsf(x->w.speed_kn) * x->w.steer_half_deg;
+    o->tau_true = 12.0f / fmaxf(fabsf(x->w.speed_kn), 0.3f);
+    if (o->result && confirm >= 0) o->accepted = sb_confirm_training(&x->sb, confirm == 1, 0.0f);
+}
+
+static void steer_model_tests(void)
+{
+    char d[900];
+    printf("\n=== SM: DroneCAN steering position servo - model, TRAINING, adaptation (step 11e) ===\n");
+    /* SM1 TRAINING finds r / b / K within 15 % on the model (slow 12 s and fast 3 s servos) */
+    {
+        static sbsim_t x;
+        static smrun_t a[2];
+        const float travel[2] = { 12.0f, 3.0f };
+        int good = 0;
+        int len = 0;
+        for (int k = 0; k < 2; k++) {
+            sm_boot(&x, 2101u + (uint32_t)k, travel[k], 0.03f, NULL);
+            sm_train(&x, &a[k], 1);
+            const trs_t *t = &a[k].t;
+            float r_true = 2.0f / travel[k];
+            float er = fmaxf(fabsf(t->r_right / r_true - 1.0f), fabsf(t->r_left / r_true - 1.0f));
+            float eb = fmaxf(fabsf(t->b_lr / 0.03f - 1.0f), fabsf(t->b_rl / 0.03f - 1.0f));
+            float ek = fabsf(t->k / a[k].k_true - 1.0f);
+            bool ok = a[k].result && a[k].accepted && er <= 0.15f && eb <= 0.15f && ek <= 0.15f;
+            good += ok;
+            len += snprintf(d + len, sizeof d - (size_t)len, "%s%.0f s servo: %s in %u s, r %.3f/%.3f (true %.3f), b %.4f/%.4f "
+                            "(true 0.03; small %.3f large %.3f), K %.2f (true %.2f), tau %.2f (true %.2f), R2 %.3f, conf %.2f, "
+                            "max |u| %.2f, max yaw %.1f, accepted %s", k ? "; " : "", travel[k],
+                            a[k].result ? "result" : (a[k].aborted ? "ABORTED" : "timeout"), (unsigned)a[k].dur_s,
+                            t->r_right, t->r_left, r_true, t->b_lr, t->b_rl, t->b_small, t->b_large, t->k, a[k].k_true,
+                            t->tau, a[k].tau_true, t->r2, t->confidence, a[k].max_u, a[k].max_yaw,
+                            a[k].accepted ? "yes" : "NO");
+        }
+        test_report("SM1 TRAINING (position servo) finds r / b / K within 15 % - slow 12 s and fast 3 s servos", good == 2, d);
+    }
+}
+
+
+/* the fastest change of a value per CONTROL STEP (a sbsim_run of 50 ms may hold one or two steps) */
+typedef struct { float prev, max; uint32_t prev_ms; bool have; } ratew_t;
+static void ratew(ratew_t *r, float v, uint32_t now_ms)
+{
+    if (r->have && now_ms == r->prev_ms) return;
+    if (r->have) {
+        float rr = fabsf(v - r->prev) / ((float)(now_ms - r->prev_ms) * 0.001f);
+        if (rr > r->max) r->max = rr;
+    }
+    r->prev = v;
+    r->prev_ms = now_ms;
+    r->have = true;
+}
+
+/* a trained boat in HDG LOCK at the TRAINING throttle (the adaptation's speed band) */
+static bool sm_trained_hdg(sbsim_t *x, smrun_t *o, uint32_t seed, float travel_s, float backlash)
+{
+    sm_boot(x, seed, travel_s, backlash, NULL);
+    sm_train(x, o, 1);
+    sbsim_run(x, x->t + 15000u, NULL, NULL);
+    bool hdg = hdg_lock(x);
+    sb_test_drive(&x->sb, true, GEAR_F, x->sb.cfg.training_throttle_pct);
+    sbsim_run(x, x->t + 40000u, NULL, NULL);
+    return o->accepted && hdg && sb_mode(&x->sb) == MODE_HDG_LOCK && x->sb.ap.sm.stored.trained;
+}
+
+/* SM3: every control step - the command that moved stays within target + the half play of its direction */
+typedef struct { float over, prev, play_max; uint32_t moving; bool have; } sm3w_t;
+static void sm3_hook(sbsim_t *x, void *ctx)
+{
+    sm3w_t *w = (sm3w_t *)ctx;
+    const steer_t *m = &x->sb.ap.sm;
+    float h = 0.5f * sm_play(m);
+    if (w->have && x->sb.ap.mode == AP_MODE_AUTO) {
+        if (m->u > w->prev + 1e-6f) { w->over = fmaxf(w->over, m->u - (m->target + h)); w->moving++; }
+        if (m->u < w->prev - 1e-6f) { w->over = fmaxf(w->over, (m->target - h) - m->u); w->moving++; }
+    }
+    w->play_max = fmaxf(w->play_max, sm_play(m));
+    w->prev = m->u;
+    w->have = true;
+}
+
+static void steer_model_tests2(void)
+{
+    char d[1000];
+
+    /* SM2 abort paths: yaw > 17 deg/s, STANDBY, joystick, compass lost -> the servo back to the centre (at most the
+     * measured / worst-case speed), then the STANDBY rules (hold); the joystick takes MANUAL; alarm unless the user */
+    {
+        int good = 0, len = 0;
+        for (int k = 0; k < 4; k++) {
+            static sbsim_t x;
+            sm_boot(&x, 2401u + (uint32_t)k, 12.0f, 0.03f, NULL);
+            sbsim_run(&x, 10000u, NULL, NULL);
+            sb_request_mode(&x.sb, MODE_TRAINING, WHY_TEST);
+            uint32_t t0 = x.t;
+            /* into the SMALL steps (servo away from 0) */
+            while (x.t < t0 + 200000u && !(x.sb.ap.trs.phase == TRS_SMALL && x.sb.ap.trs.sub >= 3u))
+                sbsim_run(&x, x.t + 50u, NULL, NULL);
+            bool reached = x.sb.ap.trs.phase == TRS_SMALL;
+            if (k == 0) x.w.trim_deg = 80.0f;                       /* a huge yaw */
+            if (k == 1) sim_hal_press(HAL_BTN_STANDBY);
+            if (k == 2) joy_set(0.6f, 0.0f, false, false);
+            if (k == 3) sim_hal_fail_heading(true);
+            ratew_t rw;
+            memset(&rw, 0, sizeof rw);
+            uint32_t t1 = x.t;
+            while (x.t < t1 + 25000u) {
+                sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+                if (k != 2) ratew(&rw, sim_hal_steer_cmd(NULL), x.sb.now_ms);
+                if (k == 0 && sb_mode(&x.sb) != MODE_TRAINING) x.w.trim_deg = 0.0f;   /* (the gust is over) */
+            }
+            float rate_max = rw.max;
+            uint8_t why = (uint8_t)x.sb.ap.train.result;
+            bool ok;
+            if (k == 2) ok = reached && sb_mode(&x.sb) == MODE_MANUAL && why == TR_ABORT_USER;
+            else ok = reached && sb_mode(&x.sb) == MODE_STANDBY && !x.sb.stopping && fabsf(sim_hal_steer_cmd(NULL)) < 0.02f &&
+                      rate_max <= SM_RATE_WORST * 1.05f + 0.01f &&
+                      (k == 0 ? (why == TR_ABORT_YAW && x.sb.alarm) : k == 1 ? why == TR_ABORT_USER : why == TR_ABORT_SENSOR);
+            good += ok;
+            static const char *nm[4] = { "yaw > 17", "STANDBY", "joystick", "compass lost" };
+            len += snprintf(d + len, sizeof d - (size_t)len, "%s%s: %s, mode %s, result %s, steering %.3f, fastest %.3f/s %s",
+                            k ? "; " : "", nm[k], reached ? "in SMALL" : "NOT REACHED", mode_name(sb_mode(&x.sb)),
+                            training_result_text((tr_result_t)why), (double)sim_hal_steer_cmd(NULL), (double)rate_max,
+                            ok ? "ok" : "FAIL");
+            joy_set(0.0f, 0.0f, false, false);
+            sim_hal_fail_heading(false);
+        }
+        test_report("SM2 TRAINING aborts (yaw > 17 deg/s, STANDBY, joystick, compass): servo back to the centre at the "
+                    "worst-case speed, then hold; the joystick takes MANUAL", good == 4, d);
+    }
+
+    /* SM3 play compensation on every direction change, never more than TRAINING's play; the command never moves faster
+     * than the measured servo speed (HDG LOCK in a little sea) */
+    {
+        static sbsim_t x;
+        static smrun_t o;
+        bool ok0 = sm_trained_hdg(&x, &o, 2405u, 12.0f, 0.03f);
+        x.w.sea_state = 1.5f;
+        const steer_t *m = &x.sb.ap.sm;
+        float bs = 0.5f * (m->stored.b_lr + m->stored.b_rl);
+        ratew_t rw;
+        memset(&rw, 0, sizeof rw);
+        sm3w_t w3;
+        memset(&w3, 0, sizeof w3);
+        uint16_t rev0 = m->reversals;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 120000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, sm3_hook, &w3);   /* (checked after every control step) */
+            ratew(&rw, m->u, x.sb.now_ms);
+        }
+        float over = w3.over, play_max = w3.play_max, rate = rw.max;
+        uint32_t settled = w3.moving;
+        uint16_t revs = (uint16_t)(m->reversals - rev0);
+        float rmax = fmaxf(m->use.r_right, m->use.r_left);
+        snprintf(d, sizeof d, "trained %s; 120 s HDG LOCK sea 1.5: %u reversals; moving steps %u, compensation beyond b/2 "
+                 "max %.4f; play in use max %.4f <= TRAINING %.4f; command rate max %.3f/s <= servo %.3f/s",
+                 ok0 ? "yes" : "NO", revs, (unsigned)settled, (double)over, (double)play_max, (double)bs, (double)rate,
+                 (double)rmax);
+        test_report("SM3 play compensation on every reversal, never more than TRAINING's play; the command never "
+                    "faster than the servo", ok0 && revs >= 5u && over <= 1e-3f && play_max <= bs + 1e-5f &&
+                    rate <= rmax * 1.01f + 1e-3f, d);
+    }
+
+    /* SM4 slow adaptation inside the bounds (RAM only): K follows a changed boat but never beyond 0.7..1.3 x TRAINING
+     * (a boat far out = a bound hit = back to the stored values); the play may only shrink, never below 0.5 x;
+     * the servo speed is never adapted */
+    {
+        static sbsim_t x;
+        static smrun_t o;
+        bool ok0 = sm_trained_hdg(&x, &o, 2406u, 12.0f, 0.03f);
+        const steer_t *m = &x.sb.ap.sm;
+        float k0 = m->stored.k;
+        /* the boat turns 15 % harder (load / trim): K moves toward it - calm water, the helmsman nudging the course
+         * +-1 deg every 15 s (the steering is the excitation; still "straight": no turn > 5 deg in 30 s) */
+        x.w.K_override = 1.15f * 0.05f * fabsf(x.w.speed_kn);
+        x.w.T_override = 12.0f / fmaxf(fabsf(x.w.speed_kn), 0.3f);
+        x.w.sea_state = 0.0f;
+        bool bounds = true;
+        float kmax = 0.0f;
+        uint32_t t0 = x.t, nudge = 0u;
+        while (x.t < t0 + 900000u) {
+            sbsim_run(&x, x.t + 500u, NULL, NULL);
+            if (x.t - t0 >= nudge * 15000u) { sim_hal_press((nudge & 1u) ? HAL_BTN_MINUS_1 : HAL_BTN_PLUS_1); nudge++; }
+            bounds &= sm_within_bounds(m);
+            kmax = fmaxf(kmax, m->use.k);
+        }
+        bool follows = kmax > k0 * 1.03f && kmax <= k0 * SM_ADAPT_K_HI + 1e-3f && m->use.r_right == m->stored.r_right;
+        /* far out (x 2): reaches the bound -> reset to the stored values + notice */
+        uint16_t resets0 = m->resets;
+        x.w.K_override = 2.0f * 0.05f * fabsf(x.w.speed_kn);
+        t0 = x.t;
+        nudge = 0u;
+        while (x.t < t0 + 1800000u && m->resets == resets0) {
+            sbsim_run(&x, x.t + 500u, NULL, NULL);
+            if (x.t - t0 >= nudge * 15000u) { sim_hal_press((nudge & 1u) ? HAL_BTN_MINUS_1 : HAL_BTN_PLUS_1); nudge++; }
+            bounds &= sm_within_bounds(m);
+        }
+        bool limit = m->resets > resets0 && x.sb.steer.reset_why != SM_RESET_NONE && !m->adapted;
+        x.w.K_override = 0.0f;
+        x.w.T_override = 0.0f;
+        /* the play shrinks (the linkage was tightened) but never below 0.5 x */
+        sim_hal_can_servo_speed(DC_NODE_STEERING, 12.0f, 0.004f);
+        float bmin = sm_play(m);
+        t0 = x.t;
+        nudge = 0u;
+        while (x.t < t0 + 1800000u) {
+            sbsim_run(&x, x.t + 500u, NULL, NULL);
+            if (x.t - t0 >= nudge * 15000u) { sim_hal_press((nudge & 1u) ? HAL_BTN_MINUS_1 : HAL_BTN_PLUS_1); nudge++; }
+            bounds &= sm_within_bounds(m);
+            bmin = fminf(bmin, sm_play(m));
+        }
+        float bs = 0.5f * (m->stored.b_lr + m->stored.b_rl);
+        bool shrink = bmin < bs * 0.99f && bmin >= SM_ADAPT_B_LO * bs - 1e-5f;
+        snprintf(d, sizeof d, "trained %s (K %.2f); boat +15 %%: K up to %.2f (bound %.2f) %s; boat x 2: bound -> reset (why "
+                 "%u) %s; play tightened to 0.004: the play in use down to %.4f (stored %.4f, floor %.4f) %s; inside the "
+                 "bounds every step %s", ok0 ? "yes" : "NO", (double)k0, (double)kmax, (double)(k0 * SM_ADAPT_K_HI),
+                 follows ? "yes" : "NO", x.sb.steer.reset_why, limit ? "yes" : "NO", (double)bmin, (double)bs,
+                 (double)(SM_ADAPT_B_LO * bs), shrink ? "yes" : "NO", bounds ? "yes" : "NO");
+        test_report("SM4 slow adaptation inside the TRAINING bounds: K follows a changed boat, a bound hit = the stored "
+                    "values, the play only shrinks (>= 0.5 x), the speed never adapted", ok0 && follows && limit &&
+                    shrink && bounds, d);
+    }
+
+    /* SM5 doubt -> the stored values at once (notice STEERING MODEL RESET, log event 30): a sensor fault, the steering
+     * node lost; nothing adapted = nothing to reset */
+    {
+        static sbsim_t x;
+        static smrun_t o;
+        bool ok0 = sm_trained_hdg(&x, &o, 2407u, 12.0f, 0.03f);
+        steer_t *m = &x.sb.ap.sm;
+        m->use.k = 1.1f * m->stored.k;                      /* (as if adapted) */
+        m->adapted = true;
+        uint16_t lg = x.sb.steer.log_seq;
+        sim_hal_set_gyro(false, 0.05f, 0.02f);              /* the gyro gone */
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        bool sensor = !m->adapted && m->use.k == m->stored.k && x.sb.steer.reset_why == SM_RESET_SENSOR &&
+                      x.sb.steer.log_seq != lg && x.sb.steer.log_what == 1u;
+        sim_hal_set_gyro(true, 0.05f, 0.02f);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool hdg2 = sb_mode(&x.sb) == MODE_HDG_LOCK || hdg_lock(&x);
+        m->use.k = 1.1f * m->stored.k;
+        m->adapted = true;
+        sim_hal_can_node_silent(DC_NODE_STEERING, true);
+        sbsim_run(&x, x.t + 2500u, NULL, NULL);
+        bool node = !m->adapted && x.sb.steer.reset_why == SM_RESET_NODE;
+        sim_hal_can_node_silent(DC_NODE_STEERING, false);
+        uint16_t r0 = m->resets;
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool quiet = m->resets == r0;                       /* (nothing adapted now: no more resets) */
+        snprintf(d, sizeof d, "trained %s; adapted + gyro lost: reset to the stored values (SENSOR), log event 30 %s; "
+                 "HDG LOCK again %s; adapted + steering node lost: reset (NODE) %s; nothing adapted: no more resets %s",
+                 ok0 ? "yes" : "NO", sensor ? "yes" : "NO", hdg2 ? "yes" : "NO", node ? "yes" : "NO", quiet ? "yes" : "NO");
+        test_report("SM5 doubt (sensor fault, node lost) -> the stored values at once + notice + log event 30",
+                    ok0 && sensor && node && quiet, d);
+    }
+
+    /* SM6 NV slot 5 record version 2: a version-1 (DC-motor) record = defaults + NV DATA RESET + TRAINING needed; an
+     * accepted TRAINING is saved (v2) in STANDBY and loaded after a reboot; the ADAPTED values are never saved */
+    {
+        static sbsim_t x;
+        calib_data_t c1;
+        memset(&c1, 0, sizeof c1);
+        c1.gain_dps_per_ms = 0.01f; c1.time_const_s = 2.0f; c1.travel_right_ms = 3000.0f; c1.travel_left_ms = 3000.0f;
+        c1.gap_ms = 100.0f;
+        calib_seal(&c1);
+        sm_boot(&x, 2408u, 12.0f, 0.03f, NULL);
+        FILE *f = fopen("nv5.bin", "wb");
+        if (f) { fwrite(&c1, 1, sizeof c1, f); fclose(f); }
+        hal_init();
+        sb_init(&x.sb, &x.cfg);
+        bool v1 = x.sb.steer.v1_refused && x.sb.steer.needs_training && !x.sb.ap.sm.stored.trained &&
+                  (nv_status()->reset_mask & (1u << HAL_NV_SLOT_CALIB)) &&
+                  x.sb.ap.sm.stored.r_right == SM_RATE_WORST && sm_play(&x.sb.ap.sm) == 0.0f;
+        static smrun_t o;
+        sm_train(&x, &o, 1);
+        sbsim_run(&x, x.t + 15000u, NULL, NULL);
+        long sz = -1;
+        f = fopen("nv5.bin", "rb");
+        if (f) { fseek(f, 0, SEEK_END); sz = ftell(f); fclose(f); }
+        bool saved = o.accepted && sz == (long)sizeof(calib2_t) && !x.sb.steer.needs_training;
+        float k_st = x.sb.ap.sm.stored.k;
+        x.sb.ap.sm.use.k = 1.2f * k_st;                     /* adapted ... */
+        x.sb.ap.sm.adapted = true;
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        x.frozen = true;                                    /* ... then a reset */
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool loaded = x.resets >= 1u && x.sb.ap.sm.stored.trained && fabsf(x.sb.ap.sm.use.k - k_st) < 1e-4f &&
+                      !x.sb.ap.sm.adapted && !x.sb.steer.needs_training && x.sb.ap.calibrated;
+        snprintf(d, sizeof d, "a v1 (DC-motor) record: refused, defaults (worst-case speed, no play), NV DATA RESET, "
+                 "TRAINING needed %s; TRAINING accepted %s, saved as v2 (%ld bytes) %s; adapted + reset: the stored values "
+                 "again %s", v1 ? "yes" : "NO", o.accepted ? "yes" : "NO", sz, saved ? "yes" : "NO", loaded ? "yes" : "NO");
+        test_report("SM6 NV slot 5 v2: a v1 record = defaults + NV DATA RESET + TRAINING needed; TRAINING saved + loaded "
+                    "after a reset; adapted values never saved", v1 && saved && loaded, d);
+        remove("nv5.bin");
+    }
+
+    /* SM7 course keeping on the position servo, slow (12 s) and fast (3 s): with the defaults and with the TRAINING
+     * values (a 30 deg course change + holding); the command never faster than the servo speed in use */
+    {
+        const float travel[2] = { 12.0f, 3.0f };
+        int good = 0, len = 0;
+        for (int k = 0; k < 2; k++) {
+            static sbsim_t x;
+            static smrun_t o;
+            bool ok0 = sm_trained_hdg(&x, &o, 2409u + (uint32_t)k, travel[k], 0.03f);
+            x.w.sea_state = 1.0f;
+            sb_test_drive(&x.sb, true, GEAR_F, 40.0f);
+            sbsim_run(&x, x.t + 20000u, NULL, NULL);
+            press(&x, HAL_BTN_PLUS_10); press(&x, HAL_BTN_PLUS_10); press(&x, HAL_BTN_PLUS_10);
+            float hold = 0.0f;
+            ratew_t rw;
+            memset(&rw, 0, sizeof rw);
+            uint32_t t0 = x.t;
+            while (x.t < t0 + 90000u) {
+                sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+                if (x.t > t0 + 40000u) hold = fmaxf(hold, fabsf(hdg_err(x.w.heading_deg, x.sb.ap.target_heading)));
+                ratew(&rw, x.sb.ap.sm.u, x.sb.now_ms);
+            }
+            float rate = rw.max;
+            float rmax = fmaxf(x.sb.ap.sm.use.r_right, x.sb.ap.sm.use.r_left);
+            bool ok = ok0 && hold < 5.0f && rate <= rmax * 1.01f + 1e-3f;
+            good += ok;
+            len += snprintf(d + len, sizeof d - (size_t)len, "%s%.0f s servo: trained %s, after +30 deg held within %.1f deg, "
+                            "command rate max %.3f/s (servo %.3f/s)", k ? "; " : "", (double)travel[k], ok0 ? "yes" : "NO",
+                            (double)hold, (double)rate, (double)rmax);
+        }
+        test_report("SM7 course keeping on the position servo (slow 12 s / fast 3 s): turns and holds, the command never "
+                    "faster than the servo", good == 2, d);
+    }
+
+    /* SM8 the steering node lost during TRAINING: CAN NODE LOST, TRAINING aborted, STANDBY */
+    {
+        static sbsim_t x;
+        sm_boot(&x, 2411u, 12.0f, 0.03f, NULL);
+        sbsim_run(&x, 10000u, NULL, NULL);
+        sb_request_mode(&x.sb, MODE_TRAINING, WHY_TEST);
+        sbsim_run(&x, x.t + 80000u, NULL, NULL);
+        bool running = sb_mode(&x.sb) == MODE_TRAINING && x.sb.train.stage == TS_RUN;
+        sim_hal_can_node_silent(DC_NODE_STEERING, true);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool stopped = sb_mode(&x.sb) == MODE_STANDBY && (x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) &&
+                       x.sb.ap.train.phase == TR_ABORTED && x.sb.ap.mode != AP_MODE_TRAINING;
+        sim_hal_can_node_silent(DC_NODE_STEERING, false);
+        snprintf(d, sizeof d, "TRAINING running %s; steering node silent: CAN NODE LOST + STANDBY, TRAINING aborted %s",
+                 running ? "yes" : "NO", stopped ? "yes" : "NO");
+        test_report("SM8 steering node lost during TRAINING: aborted, STANDBY + CAN NODE LOST", running && stopped, d);
+    }
+
+    /* SM9 telemetry + log: TELEM2 group Q (servo, known, commanded, trained, play, K, confidence, the throttle model,
+     * thr_travel_s) and log event 30 STEERMODEL when the TRAINING values were stored */
+    {
+        static pcsim_t p;
+        bool keep = s_can_on;
+        s_can_on = true;
+        pcsim_init(&p, 2412u);
+        s_can_on = keep;
+        pc_run(&p, 3000u);
+        const uint8_t *q = &p.t2[p.t2_len - T2_Q];
+        bool before = p.t2_len >= T2_Q && (q[0] & 1u) && !(q[0] & 2u) && !(q[0] & 4u) && (q[0] & 32u) &&
+                      (int8_t)q[2] == -128 && q[14] == 60u;
+        snprintf(d, sizeof d, "boot: TELEM2 Q flags 0x%02x (servo, unknown, no command, TRAINING needed), position %d, "
+                 "travel %.1f s, throttle model %u %% %s", q[0], (int8_t)q[2], q[14] * 0.1, q[13], before ? "ok" : "WRONG");
+        test_report("SM9 TELEM2 group Q: the position servo state + the throttle model", before, d);
+    }
+}
+
+/* ====================== CN14..CN23: the servos on DroneCAN (step 11e) ====================== */
+
+static float wire_of(uint16_t us) { return ((float)us - 1000.0f) / 500.0f - 1.0f; }
+
+/* a CAN boat (the real boot order) in HDG LOCK at a raw throttle, gear F */
+static bool can_drive(sbsim_t *x, uint32_t seed, float travel_s, float thr)
+{
+    sm_boot(x, seed, travel_s, 0.03f, NULL);
+    sbsim_run(x, 12000u, NULL, NULL);
+    bool hdg = hdg_lock(x);
+    sb_test_drive(&x->sb, true, GEAR_F, thr);
+    sbsim_run(x, x->t + 15000u, NULL, NULL);
+    return hdg && sb_mode(&x->sb) == MODE_HDG_LOCK && gear_is(&x->sb.gear, GEAR_F) && sim_hal_thr_truth() > thr - 2.0f;
+}
+
+/* REMOTE driving (CREWED or UNCREWED) on the DroneCAN servos: like ll_drive, plus the boot hold */
+static bool can_remote_drive(sbsim_t *x, llsim_t *l, uint32_t seed, bool crewed)
+{
+    const uint8_t TAKE = 0u, ASK = 0u;
+    memset(l, 0, sizeof *l);
+    bool keep = s_can_on;
+    s_can_on = true;
+    crew_init(x, &l->r, seed, crewed, NULL);
+    s_can_on = keep;
+    l->r.p.shore_on = true;
+    l->r.p.shore_flags = SB_SHORE_VALID;
+    l->r.p.shore_m = 800u;
+    sbsim_run(x, x->t + 4000u, ll_hook, l);         /* the boot hold: no gear frame before the throttle travel time */
+    pi_cmd(x, &l->r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+    l->r.rj_on = true;
+    sbsim_run(x, x->t + 300u, ll_hook, l);
+    sb_alarm_ack(&x->sb);
+    pi_cmd(x, &l->r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+    if (crewed) onboard_confirm(x, &l->r); else shore_confirm(x, &l->r);
+    rj_lever(x, &l->r, 1.0f, 1.0f);
+    sbsim_run(x, x->t + 10000u, ll_hook, l);
+    return sb_mode(&x->sb) == MODE_REMOTE && sim_hal_throttle() > 10.0f && gear_is(&x->sb.gear, GEAR_F);
+}
+
+static void can_servo_tests(void)
+{
+    char d[1000];
+    printf("\n=== CN14-CN23: the servos on DroneCAN - boot order, node loss, CPU1 safe frames, dead-man, rates (step 11e) ===\n");
+
+    /* CN14 boot order (OD-7 / OA-2): the first frame is throttle IDLE; no gear frame before thr_travel_s with the
+     * throttle node OPERATIONAL, then NEUTRAL; no steering frame until a mode commands steering (no auto-centre:
+     * the node holds where it was); STANDBY = HOLD; after a WARM reset the position is known (reset-surviving RAM)
+     * but still no frame; after a POWER-ON it is unknown */
+    {
+        static sbsim_t x;
+        sm_boot(&x, 2301u, 12.0f, 0.03f, NULL);
+        sim_hal_can_servo_set(DC_NODE_STEERING, 0.3f);                  /* the outboard was left at +0.3 */
+        sbsim_run(&x, 5000u, NULL, NULL);
+        sim_can_act_t a1, a2, a3;
+        sim_hal_can_act(1u, &a1); sim_hal_can_act(2u, &a2); sim_hal_can_act(3u, &a3);
+        bool first = sim_hal_can_first_act() == 1u && a1.any && a1.first <= -0.999f;
+        bool no_gear_early = !a3.any, no_steer = !a2.any;
+        sbsim_run(&x, 11000u, NULL, NULL);
+        sim_hal_can_act(3u, &a3); sim_hal_can_act(2u, &a2);
+        bool gear_later = a3.any && a3.first_ms >= 6000u && fabsf(a3.first - wire_of(x.sb.cfg.gear.pwm_n_us)) < 1e-3f;
+        float sp;
+        (void)sim_hal_can_servo(DC_NODE_STEERING, NULL, &sp, NULL, NULL);
+        bool held = !a2.any && fabsf(sp - 0.3f) < 1e-3f && !sm_known(&x.sb.ap.sm) && x.sb.armed;
+        bool hdg = hdg_lock(&x);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        sim_hal_can_act(2u, &a2);
+        bool steer_now = a2.any && a2.n_core0 > 0u;
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        sim_hal_can_act(2u, &a2);
+        float v_hold = a2.last;
+        uint32_t n_hold = a2.n_core0;
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        sim_hal_can_act(2u, &a2);
+        bool hold = sb_mode(&x.sb) == MODE_STANDBY && a2.n_core0 > n_hold + 100u && fabsf(a2.last - v_hold) < 1e-4f;
+        /* a watchdog reset: no frame during the boot, the nodes hold; afterwards known, still no steering frame */
+        float u_before = x.sb.ap.servo_u;
+        x.frozen = true;
+        sbsim_run(&x, x.t + 150u, NULL, NULL);
+        sim_hal_can_act_clear();
+        sbsim_run(&x, x.t + 9000u, NULL, NULL);
+        sim_hal_can_act(2u, &a2); sim_hal_can_act(1u, &a1);
+        bool warm = x.resets >= 1u && !a2.any && a1.any && sim_hal_can_first_act() == 1u && sm_known(&x.sb.ap.sm) &&
+                    fabsf(x.sb.ap.sm.u - u_before) < 1e-3f && !x.sb.ap.servo_have;
+        /* a power-on reset: the position unknown again */
+        sim_hal_chip_reset(HAL_RESET_POWER_ON);
+        x.boot_until = x.t + 200u;
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool cold = !sm_known(&x.sb.ap.sm) && !x.sb.ap.servo_have;
+        snprintf(d, sizeof d, "first frame throttle idle %s (actuator %u, %.2f); no gear frame in 5 s %s, no steering %s; gear "
+                 "first after %u ms = N %s; steering node held at +0.3 (no auto-centre), position unknown %s; HDG LOCK %s -> "
+                 "steering frames %s; STANDBY = hold (same value, still sent) %s; watchdog reset: throttle idle first, no "
+                 "steering frame, position known from reset-surviving RAM %s; power-on: unknown %s",
+                 first ? "yes" : "NO", sim_hal_can_first_act(), (double)a1.first, no_gear_early ? "yes" : "NO",
+                 no_steer ? "yes" : "NO", (unsigned)a3.first_ms, gear_later ? "yes" : "NO", held ? "yes" : "NO",
+                 hdg ? "yes" : "NO", steer_now ? "yes" : "NO", hold ? "yes" : "NO", warm ? "yes" : "NO", cold ? "yes" : "NO");
+        test_report("CN14 boot order: throttle IDLE first, no gear frame before the throttle travel time, no steering "
+                    "frame until a mode steers (no auto-centre), STANDBY = hold, warm reset known / power-on unknown",
+                    first && no_gear_early && no_steer && gear_later && held && hdg && steer_now && hold && warm && cold, d);
+    }
+
+    /* CN15 throttle node lost (OA-2 / OD-3): CREWED - CAN NODE LOST + STANDBY, the gear HELD (no gear frame), no kill;
+     * back: the gear moves again only after the throttle travel time. UNCREWED - ENGINE KILL in the same step, no gear frame */
+    {
+        static sbsim_t x;
+        bool drv = can_drive(&x, 2302u, 12.0f, 50.0f);
+        sim_can_act_t g0, g1;
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, true);
+        uint32_t t0 = x.t;
+        while (!x.sb.can.node[HAL_CAN_ROLE_THROTTLE].lost && x.t < t0 + 3000u) sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+        sim_hal_can_act(3u, &g0);
+        sbsim_run(&x, x.t + 8000u, NULL, NULL);
+        sim_hal_can_act(3u, &g1);
+        float gout;
+        (void)sim_hal_can_servo(DC_NODE_GEAR, NULL, NULL, &gout, NULL);
+        bool crewed = sb_mode(&x.sb) == MODE_STANDBY && (x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) &&
+                      g1.n_core0 == g0.n_core0 && gout > 0.5f && !sim_hal_engine_killed() &&
+                      x.sb.ll.state != SB_LL_KILLED && x.sb.servo.est_pct >= 99.0f;
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, false);
+        uint32_t tb = x.t;
+        uint32_t t_gear = 0u;
+        float f_wire = wire_of(x.sb.cfg.gear.pwm_f_us);
+        while (x.t < tb + 12000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+            sim_hal_can_act(3u, &g1);
+            if (!t_gear && g1.n_core0 > g0.n_core0 && fabsf(g1.last - f_wire) > 1e-3f) t_gear = x.t - tb;   /* a CHANGE */
+        }
+        (void)sim_hal_can_servo(DC_NODE_GEAR, NULL, NULL, &gout, NULL);
+        bool back = t_gear >= 6000u && fabsf(gout) < 0.05f && x.w.shift_under_load == 0;
+        static sbsim_t y;
+        static llsim_t l;
+        bool rdrv = can_remote_drive(&y, &l, 2303u, false);
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, true);
+        uint32_t t_lost = 0u, t_kill = 0u;
+        t0 = y.t;
+        while (y.t < t0 + 4000u) {
+            sbsim_run(&y, y.t + AP_PERIOD_MS, ll_hook, &l);
+            if (!t_lost && y.sb.can.node[HAL_CAN_ROLE_THROTTLE].lost) { t_lost = y.t; sim_hal_can_act(3u, &g0); }
+            if (!t_kill && sim_hal_engine_killed()) t_kill = y.t;
+        }
+        sim_hal_can_act(3u, &g1);
+        bool unc = rdrv && t_lost && t_kill == t_lost && y.sb.ll.node_kill && (y.sb.alarm_bits & SB_ALM_ENGINE_KILLED) &&
+                   g1.n_core0 == g0.n_core0;
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, false);
+        snprintf(d, sizeof d, "CREWED driving %s; throttle node silent: STANDBY + CAN NODE LOST, gear held in F (no gear frame "
+                 "in 8 s), no kill, throttle position unknown %s; back: the first gear CHANGE after %u ms (>= 6000), N, no shift "
+                 "under load %s; UNCREWED driving %s: lost at +%u ms, ENGINE KILL at +%u ms (same step), no gear frame %s",
+                 drv ? "yes" : "NO", crewed ? "yes" : "NO", (unsigned)t_gear, back ? "yes" : "NO", rdrv ? "yes" : "NO",
+                 (unsigned)(t_lost - t0), (unsigned)(t_kill - t0), unc ? "yes" : "NO");
+        test_report("CN15 throttle node lost: gear HOLD (never an automatic neutral), CREWED no kill; UNCREWED ENGINE KILL "
+                    "at once (OD-3)", drv && crewed && back && unc, d);
+    }
+
+    /* CN16 gear node / steering node lost: idle COMMANDED at once (the same step as STANDBY), the steering holds */
+    {
+        static sbsim_t x;
+        bool drv = can_drive(&x, 2304u, 12.0f, 60.0f);
+        sim_hal_can_node_silent(DC_NODE_GEAR, true);
+        bool idle_step = false;
+        uint32_t t0 = x.t;
+        while (sb_mode(&x.sb) != MODE_STANDBY && x.t < t0 + 3000u) sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+        idle_step = sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f;
+        bool gear_alarm = (x.sb.alarm_bits2 & SB_ALM2_CAN_NODE) && x.sb.can.node[HAL_CAN_ROLE_GEAR].lost;
+        sim_hal_can_node_silent(DC_NODE_GEAR, false);
+        static sbsim_t y;
+        bool drv2 = can_drive(&y, 2305u, 12.0f, 40.0f);
+        y.w.trim_deg = 2.0f;
+        sbsim_run(&y, y.t + 3000u, NULL, NULL);
+        sim_hal_can_node_silent(DC_NODE_STEERING, true);
+        t0 = y.t;
+        while (sb_mode(&y.sb) != MODE_STANDBY && y.t < t0 + 3000u) sbsim_run(&y, y.t + AP_PERIOD_MS, NULL, NULL);
+        bool idle2 = sb_mode(&y.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f;
+        sbsim_run(&y, y.t + 10000u, NULL, NULL);            /* the stop finishes: the steering holds */
+        float h1 = sim_hal_steer_cmd(NULL);
+        sbsim_run(&y, y.t + 3000u, NULL, NULL);
+        bool have;
+        float h2 = sim_hal_steer_cmd(&have);
+        bool hold = have && fabsf(h1 - h2) < 1e-4f && !y.sb.stopping;
+        sim_hal_can_node_silent(DC_NODE_STEERING, false);
+        snprintf(d, sizeof d, "gear node silent while driving %s: STANDBY with the throttle idle commanded in that step %s, "
+                 "CAN NODE LOST (gear) %s; steering node silent (driving %s): idle at once %s, the steering command held "
+                 "(%.3f -> %.3f) %s", drv ? "yes" : "NO", idle_step ? "yes" : "NO", gear_alarm ? "yes" : "NO",
+                 drv2 ? "yes" : "NO", idle2 ? "yes" : "NO", (double)h1, (double)h2, hold ? "yes" : "NO");
+        test_report("CN16 gear / steering node lost: STANDBY with idle commanded at once, the steering holds",
+                    drv && idle_step && gear_alarm && drv2 && idle2 && hold, d);
+    }
+
+    /* CN17 the CPU1 safety path (design 6.3): a trip latches, core 0's frames stop, CPU1's safe frames within 20 ms:
+     * throttle IDLE, steering = the last command (hold), gear HOLD until thr_travel_s then NEUTRAL (throttle node OK);
+     * with the throttle node lost the gear is held for good; core 0 frozen / its CAN path stuck = MON_TRIP_CAN_TX */
+    {
+        static sbsim_t x;
+        inject_t j = { 1, 0u, false, 0u };
+        bool drv = can_drive(&x, 2306u, 12.0f, 50.0f);
+        float steer_last = x.sb.ap.servo_u;
+        sb_power_lower(&x.sb);                              /* (30 %: the injected 90 % is above it) */
+        sbsim_run(&x, x.t + 600u, NULL, NULL);
+        j.at_ms = x.t + 1u;
+        uint32_t t0 = x.t;
+        while (!hal_outputs_forced() && x.t < t0 + 500u) sbsim_run(&x, x.t + 10u, inject_hook, &j);
+        uint32_t t_trip = x.t;
+        steer_last = CA_STEER_SIGN * x.sb.ap.servo_u;
+        sim_can_act_t a1, a2, a3, b1;
+        sbsim_run(&x, x.t + 30u, inject_hook, &j);
+        sim_hal_can_act(1u, &a1);
+        sbsim_run(&x, x.t + 3000u, inject_hook, &j);
+        sim_hal_can_act(1u, &b1); sim_hal_can_act(2u, &a2); sim_hal_can_act(3u, &a3);
+        bool fast = a1.n_cpu1 > 0u && a1.cpu1_ms <= t_trip + 30u && a1.last_cpu1 <= -0.999f;
+        bool core0_stopped = b1.core0_ms <= t_trip + 20u;
+        bool steer_hold = a2.n_cpu1 > 0u && fabsf(a2.last_cpu1 - steer_last) < 0.01f;
+        bool gear_hold = a3.n_cpu1 > 0u && fabsf(a3.last_cpu1 - wire_of(x.sb.cfg.gear.pwm_f_us)) < 1e-3f;
+        sbsim_run(&x, t_trip + 7000u, inject_hook, &j);
+        sim_hal_can_act(3u, &a3);
+        bool gear_n = fabsf(a3.last_cpu1 - wire_of(x.sb.cfg.gear.pwm_n_us)) < 1e-3f && x.w.shift_under_load == 0 &&
+                      sim_hal_thr_truth() <= 1.0f;
+        /* the throttle node lost before the trip: the gear is held for good */
+        static sbsim_t y;
+        inject_t k = { 1, 0u, false, 0u };
+        bool drv2 = can_drive(&y, 2307u, 12.0f, 50.0f);
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, true);
+        sbsim_run(&y, y.t + 1700u, NULL, NULL);
+        k.at_ms = y.t + 1u;
+        t0 = y.t;
+        while (!hal_outputs_forced() && y.t < t0 + 500u) sbsim_run(&y, y.t + 10u, inject_hook, &k);
+        sbsim_run(&y, y.t + 9000u, inject_hook, &k);
+        sim_hal_can_act(3u, &a3);
+        bool held_forever = hal_outputs_forced() && a3.n_cpu1 > 0u && fabsf(a3.last_cpu1 - wire_of(y.sb.cfg.gear.pwm_f_us)) < 1e-3f;
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, false);
+        /* core 0 frozen (watchdog off): MON_TRIP_CAN_TX ~100 ms, CPU1's frames */
+        static sbsim_t z;
+        bool drv3 = can_drive(&z, 2308u, 12.0f, 50.0f);
+        z.wdt_ms = 0u;
+        z.frozen = true;
+        t0 = z.t;
+        while (!z.mon.tripped && z.t < t0 + 1000u) sbsim_run(&z, z.t + 10u, NULL, NULL);
+        uint32_t t_fr = z.t - t0;
+        sbsim_run(&z, z.t + 100u, NULL, NULL);
+        sim_hal_can_act(1u, &a1);
+        bool frozen = z.mon.reason == MON_TRIP_CAN_TX && t_fr >= 90u && t_fr <= 140u && a1.n_cpu1 > 0u && a1.last_cpu1 <= -0.999f;
+        z.frozen = false;
+        /* core 0 alive, its actuator task stuck */
+        static sbsim_t q;
+        bool drv4 = can_drive(&q, 2309u, 12.0f, 50.0f);
+        sim_hal_can_task_stuck(true);
+        t0 = q.t;
+        while (!q.mon.tripped && q.t < t0 + 1000u) sbsim_run(&q, q.t + 10u, NULL, NULL);
+        uint32_t t_st = q.t - t0;
+        sbsim_run(&q, q.t + 300u, NULL, NULL);
+        bool stuck = q.mon.reason == MON_TRIP_CAN_TX && t_st <= 140u && q.sb.mon_tripped && sb_mode(&q.sb) == MODE_STANDBY;
+        sim_hal_can_task_stuck(false);
+        snprintf(d, sizeof d, "driving %s; injected 90 %%: trip after %u ms, CPU1 throttle IDLE frame %s, core 0's frames "
+                 "stopped %s, steering held at %.3f %s, gear held in F %s, then N after the travel time (servo idle, no shift "
+                 "under load) %s; throttle node lost (driving %s): gear held for good %s; core 0 frozen (%s): MON_TRIP_CAN_TX "
+                 "after %u ms + CPU1 frames %s; actuator task stuck (%s): trip after %u ms, STANDBY %s",
+                 drv ? "yes" : "NO", (unsigned)(t_trip - j.at_ms), fast ? "yes" : "NO", core0_stopped ? "yes" : "NO",
+                 (double)steer_last, steer_hold ? "yes" : "NO", gear_hold ? "yes" : "NO", gear_n ? "yes" : "NO",
+                 drv2 ? "yes" : "NO", held_forever ? "yes" : "NO", drv3 ? "yes" : "NO", (unsigned)t_fr, frozen ? "yes" : "NO",
+                 drv4 ? "yes" : "NO", (unsigned)t_st, stuck ? "yes" : "NO");
+        test_report("CN17 CPU1 safe frames: latch, core 0 cancelled, throttle idle within 20 ms, steering hold, gear hold "
+                    "then N (node OK), held for good with the throttle node lost; MON_TRIP_CAN_TX",
+                    drv && fast && core0_stopped && steer_hold && gear_hold && gear_n && drv2 && held_forever && drv3 &&
+                    frozen && drv4 && stuck, d);
+    }
+
+    /* CN18 the UNCREWED dead-man (OA-3, TO CONFIRM): CPU1 pulses only while UNCREWED + no trip + core 0 alive + the
+     * throttle node OPERATIONAL + frames going out + no kill latch; a trip / frozen core 0 / the throttle node lost =
+     * no pulses = the timer relay stops the engine (~1.5 s); CREWED: never a pulse */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        inject_t j = { 1, 0u, false, 0u };
+        bool drv = can_remote_drive(&x, &l, 2310u, false);
+        sim_hal_deadman_arm(true);
+        uint32_t e0 = sim_hal_deadman_edges();
+        sbsim_run(&x, x.t + 5000u, ll_hook, &l);
+        bool pulsing = sim_hal_deadman_edges() > e0 + 50u && !sim_hal_deadman_killed();
+        j.at_ms = x.t + 1u;
+        uint32_t t0 = x.t, t_trip = 0u, t_dead = 0u;
+        while (x.t < t0 + 3000u) {
+            sbsim_run(&x, x.t + 10u, inject_hook, &j);
+            if (!t_trip && hal_outputs_forced()) t_trip = x.t;
+            if (!t_dead && sim_hal_deadman_killed()) t_dead = x.t;
+        }
+        bool trip = t_trip && t_dead && t_dead - t_trip <= 1700u && t_dead - t_trip >= 1400u;
+        sim_hal_deadman_arm(false);
+        /* the throttle node lost: the kill latch (OD-3) and no more pulses */
+        static sbsim_t y;
+        static llsim_t m;
+        bool drv2 = can_remote_drive(&y, &m, 2311u, false);
+        sim_hal_deadman_arm(true);
+        sbsim_run(&y, y.t + 1000u, ll_hook, &m);
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, true);
+        sbsim_run(&y, y.t + 4000u, ll_hook, &m);
+        bool node = sim_hal_engine_killed() && sim_hal_deadman_killed();
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, false);
+        sim_hal_deadman_arm(false);
+        /* frozen core 0 (watchdog on): the reset + the detection window = no pulses: the relay stops the engine */
+        static sbsim_t z;
+        static llsim_t n;
+        bool drv3 = can_remote_drive(&z, &n, 2312u, false);
+        sim_hal_deadman_arm(true);
+        sbsim_run(&z, z.t + 1000u, ll_hook, &n);
+        z.frozen = true;
+        sbsim_run(&z, z.t + 3000u, ll_hook, &n);
+        bool frozen = sim_hal_deadman_killed() && z.resets >= 1u;
+        sim_hal_deadman_arm(false);
+        /* CREWED: never a pulse */
+        static sbsim_t c;
+        bool drv4 = can_drive(&c, 2313u, 12.0f, 30.0f);
+        e0 = sim_hal_deadman_edges();
+        sbsim_run(&c, c.t + 5000u, NULL, NULL);
+        bool crewed = drv4 && sim_hal_deadman_edges() == e0 && c.sb.profile == SB_PROFILE_CREWED;
+        snprintf(d, sizeof d, "UNCREWED driving %s: pulses %s; a trip: engine stopped by the relay %u ms after the trip %s; "
+                 "throttle node lost (driving %s): kill latch + relay %s; frozen core 0 (driving %s): reset, relay %s; CREWED "
+                 "(driving %s): no pulse %s", drv ? "yes" : "NO", pulsing ? "yes" : "NO",
+                 (unsigned)(t_dead ? t_dead - t_trip : 0u), trip ? "yes" : "NO", drv2 ? "yes" : "NO", node ? "yes" : "NO",
+                 drv3 ? "yes" : "NO", frozen ? "yes" : "NO", drv4 ? "yes" : "NO", crewed ? "yes" : "NO");
+        test_report("CN18 UNCREWED dead-man: pulses only while everything is right; trip / frozen core 0 / throttle node "
+                    "lost = engine stopped by the timer relay; CREWED never pulses",
+                    drv && pulsing && trip && drv2 && node && drv3 && frozen && crewed, d);
+    }
+
+    /* CN19 BENCH TEST on the position servo: steering steps (the command moves at the worst-case speed for the step
+     * time), no frame before the first step, throttle idle + gear N the whole time */
+    {
+        static sbsim_t x;
+        static link_t usb;
+        sm_boot(&x, 2314u, 12.0f, 0.03f, NULL);
+        link_init(&usb, &x.sb);
+        sbsim_run(&x, 12000u, NULL, NULL);
+        uint8_t r_in = bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool have0;
+        (void)sim_hal_steer_cmd(&have0);
+        uint8_t r_l = bench_cmd(&x, &usb, SB_BENCH_LEFT, 300u);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        bool have1;
+        float u1 = sim_hal_steer_cmd(&have1);
+        float want = -SM_RATE_WORST * 0.3f;
+        uint8_t r_r = bench_cmd(&x, &usb, SB_BENCH_RIGHT, 300u);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        float u2 = sim_hal_steer_cmd(NULL);
+        bool safe = sim_hal_throttle() <= 0.0f && sim_hal_gear_pwm() == x.sb.cfg.gear.pwm_n_us;
+        snprintf(d, sizeof d, "enter %u; no steering frame before the first step %s; left 300 ms: %u -> command %.4f (want "
+                 "%.4f); right 300 ms: %u -> %.4f; throttle idle + N %s", r_in, !have0 ? "yes" : "NO", r_l, (double)u1,
+                 (double)want, r_r, (double)u2, safe ? "yes" : "NO");
+        test_report("CN19 BENCH TEST on the DroneCAN position servo: steering steps at the worst-case speed, nothing "
+                    "before the first step, idle + neutral",
+                    r_in == PROTO_R_OK && !have0 && r_l == PROTO_R_OK && have1 && fabsf(u1 - want) < 0.012f &&
+                    r_r == PROTO_R_OK && fabsf(u2) < 0.012f && safe, d);
+        bench_cmd(&x, &usb, SB_BENCH_LEAVE, 0u);
+    }
+
+    /* CN20 e-stop (OD-1): the engine stops through the kill circuit in EVERY profile (the sim world: no thrust); the
+     * software ENGINE KILL latch is NOT set by it; STANDBY with idle commanded at once */
+    {
+        static sbsim_t x;
+        bool drv = can_drive(&x, 2315u, 12.0f, 60.0f);
+        float v0 = x.w.speed_kn;
+        sim_hal_set_estop(true, true);
+        uint32_t t0 = x.t;
+        while (sb_mode(&x.sb) != MODE_STANDBY && x.t < t0 + 1000u) sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+        bool at_once = sb_mode(&x.sb) == MODE_STANDBY && sim_hal_throttle() <= 0.0f;
+        sbsim_run(&x, x.t + 20000u, NULL, NULL);
+        bool crewed = at_once && x.w.speed_kn < 0.5f && !sim_hal_engine_killed() && x.sb.ll.state != SB_LL_KILLED;
+        sim_hal_set_estop(true, false);
+        static sbsim_t y;
+        static llsim_t l;
+        bool drv2 = can_remote_drive(&y, &l, 2316u, false);
+        sim_hal_set_estop(true, true);
+        sbsim_run(&y, y.t + 3000u, ll_hook, &l);
+        bool unc = sb_mode(&y.sb) == MODE_STANDBY && !sim_hal_engine_killed() && y.sb.ll.state != SB_LL_KILLED &&
+                   sim_hal_estop_pressed();
+        sim_hal_set_estop(false, false);
+        snprintf(d, sizeof d, "CREWED driving %s at %.1f kn: e-stop -> STANDBY with idle at once %s, the engine stopped "
+                 "(%.1f kn after 20 s), the software kill latch not set %s; UNCREWED (driving %s): STANDBY, no software kill %s",
+                 drv ? "yes" : "NO", (double)v0, at_once ? "yes" : "NO", (double)x.w.speed_kn, crewed ? "yes" : "NO",
+                 drv2 ? "yes" : "NO", unc ? "yes" : "NO");
+        test_report("CN20 e-stop: the engine stops (kill circuit) in every profile, never the software kill latch; "
+                    "STANDBY with idle at once", drv && crewed && drv2 && unc, d);
+    }
+
+    /* CN21 asymmetric throttle rates + the model (slow 6 s and fast 2 s servos): up <= 15 %/s, down 50 %/s in normal
+     * driving, an emergency = idle at once; the gear moves only when the SIMULATED servo is at idle */
+    {
+        const float travel[2] = { 12.0f, 3.0f };
+        int good = 0, len = 0;
+        for (int k = 0; k < 2; k++) {
+            static sbsim_t x;
+            bool drv = can_drive(&x, 2317u + (uint32_t)k, travel[k], 10.0f);
+            ratew_t ru, rd;
+            memset(&ru, 0, sizeof ru);
+            memset(&rd, 0, sizeof rd);
+            sb_test_drive(&x.sb, true, GEAR_F, 80.0f);
+            uint32_t t0 = x.t;
+            while (x.t < t0 + 8000u) {
+                sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+                ratew(&ru, sim_hal_throttle(), x.sb.now_ms);
+            }
+            sb_test_drive(&x.sb, true, GEAR_F, 20.0f);
+            t0 = x.t;
+            while (x.t < t0 + 3000u) {
+                sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+                ratew(&rd, sim_hal_throttle(), x.sb.now_ms);
+            }
+            float up_max = ru.max, dn_max = rd.max;
+            sb_test_drive(&x.sb, true, GEAR_F, 80.0f);
+            sbsim_run(&x, x.t + 6000u, NULL, NULL);
+            float thr0 = sim_hal_throttle();
+            events_t ev;
+            ev_reset(&ev, x.t, thr0, x.sb.cfg.gear.pwm_n_us);
+            sim_hal_press(HAL_BTN_STANDBY);
+            t0 = x.t;
+            while (x.t < t0 + 12000u) {
+                sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+                ev_watch(&x, &ev);
+            }
+            float model = (thr0 - 1.0f) * 0.01f * x.sb.servo.cfg.travel_s;
+            /* (the pulse is whole microseconds: 0.1 % per step = 2 %/s of quantisation) */
+            bool ok = drv && up_max <= x.sb.cfg.throttle.rate_up_pct_s + 2.1f && up_max >= 14.0f &&
+                      dn_max <= x.sb.cfg.throttle.rate_down_pct_s + 2.1f && dn_max >= 45.0f && ev.t_idle <= 0.1f &&
+                      ev.t_neutral >= model + 1.0f - 0.1f && ev.t_true_idle >= 0.0f && ev.t_true_idle < ev.t_neutral &&
+                      x.w.shift_under_load == 0;
+            good += ok;
+            len += snprintf(d + len, sizeof d - (size_t)len, "%sservos %.0f s steering: up max %.1f %%/s, down max %.1f %%/s; "
+                            "STANDBY at %.0f %%: idle commanded %.2f s, the real servo idle %.2f s, neutral %.2f s (model %.1f s "
+                            "+ wait), under load %d", k ? "; " : "", (double)travel[k], (double)up_max, (double)dn_max,
+                            (double)thr0, (double)ev.t_idle, (double)ev.t_true_idle, (double)ev.t_neutral, (double)model,
+                            x.w.shift_under_load);
+        }
+        test_report("CN21 asymmetric rates (up 15 / down 50 %/s, emergency at once) + the gear only at the modelled idle "
+                    "- slow and fast servos", good == 2, d);
+    }
+
+    /* CN22 thr_travel_s (OD-4): longer at once; SHORTER only as an owner-signed value - STANDBY + the joystick CONFIRM,
+     * logged; RAM only (a reboot = the worst case 6 s); nothing measures it shorter by itself */
+    {
+        static pcsim_t p;
+        bool keep = s_can_on;
+        s_can_on = true;
+        pcsim_init(&p, 2318u);
+        s_can_on = keep;
+        pc_run(&p, 12000u);
+        uint8_t id = 0xFFu;
+        for (uint8_t i = 0; i < link_param_count(); i++)
+            if (strcmp(link_param_info(i)->name, "thr_trav_s") == 0) id = i;
+        uint8_t ps[5];
+        proto_wr_t w;
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id); proto_wr_f32(&w, 8.0f);
+        uint8_t r8 = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u);
+        bool longer = r8 == PROTO_R_OK && p.x.sb.servo.cfg.travel_s == 8.0f;
+        uint16_t lg0 = p.x.sb.steer.log_seq;
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id); proto_wr_f32(&w, 3.0f);
+        uint8_t r3 = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u);
+        bool pending = r3 == PROTO_R_OK && p.x.sb.servo.cfg.travel_s == 8.0f && p.x.sb.confirm.kind == CONF_THR_TRAVEL;
+        pc_run(&p, 11000u);
+        bool late = p.x.sb.servo.cfg.travel_s == 8.0f && p.x.sb.confirm.kind == CONF_NONE;
+        (void)pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u);
+        bool conf = confirm_press(&p.x);
+        bool signed_ok = conf && p.x.sb.servo.cfg.travel_s == 3.0f && p.x.sb.steer.log_seq != lg0 &&
+                         p.x.sb.steer.log_what == 4u && sb_mode(&p.x.sb) == MODE_STANDBY;
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id); proto_wr_f32(&w, 0.5f);
+        uint8_t r05 = pc_cmd(&p, PROTO_T_PARAM_SET, ps, 5u);
+        bool hdg = hdg_lock(&p.x);
+        pc_run(&p, 1000u);                                  /* (the link's telemetry backlog out first) */
+        proto_wr_init(&w, ps, sizeof ps); proto_wr_u8(&w, id); proto_wr_f32(&w, 10.0f);
+        uint8_t rh = (uint8_t)sb_thr_travel_set(&p.x.sb, 10.0f);      /* (driving: refused) */
+        press(&p.x, HAL_BTN_STANDBY);
+        pc_run(&p, 2000u);
+        p.x.frozen = true;                                  /* a reset: the worst case again */
+        pc_run(&p, 300u);
+        pc_run(&p, 2000u);
+        bool reboot = p.x.sb.servo.cfg.travel_s == SERVO_THR_TRAVEL_S;
+        snprintf(d, sizeof d, "param id %u: 8 s -> %u (taken at once %s); 3 s -> %u (CONFIRM pending, 8 s kept %s); no "
+                 "CONFIRM in 10 s: still 8 s %s; again + CONFIRM: 3 s, logged (STEERMODEL 4) %s; 0.5 s -> %u (bad value); in "
+                 "HDG LOCK (%s) -> %u (STANDBY only); after a reset %.1f s (worst case) %s",
+                 id, r8, longer ? "yes" : "NO", r3, pending ? "yes" : "NO", late ? "yes" : "NO", signed_ok ? "yes" : "NO",
+                 r05, hdg ? "yes" : "NO", rh, (double)p.x.sb.servo.cfg.travel_s, reboot ? "yes" : "NO");
+        test_report("CN22 thr_travel_s: longer at once, shorter only with the CONFIRM (owner-signed, logged), STANDBY "
+                    "only, RAM only", id != 0xFFu && longer && pending && late && signed_ok && r05 == PROTO_R_BAD_VALUE &&
+                    hdg && rh == (uint8_t)SB_ERR_STANDBY_ONLY && reboot, d);
+    }
+
+    /* CN23 lost commands = every servo HOLDS (OA-1, the default SRV_CMD_TIME_OUT 0): during a watchdog reset no frame
+     * goes out and the nodes stay where they are (throttle too); after the boot throttle idle first, the gear only
+     * after the throttle travel time (the throttle node OPERATIONAL) - then the real throttle is idle */
+    {
+        static sbsim_t x;
+        bool drv = can_drive(&x, 2319u, 12.0f, 50.0f);
+        float t_pos, s_pos, g_out;
+        (void)sim_hal_can_servo(DC_NODE_THROTTLE, NULL, &t_pos, NULL, NULL);
+        (void)sim_hal_can_servo(DC_NODE_STEERING, NULL, &s_pos, NULL, NULL);
+        (void)sim_hal_can_servo(DC_NODE_GEAR, NULL, NULL, &g_out, NULL);
+        x.frozen = true;
+        uint32_t t0 = x.t;
+        while (!x.boot_until && x.t < t0 + 500u) sbsim_run(&x, x.t + 10u, NULL, NULL);
+        sbsim_run(&x, x.t + 150u, NULL, NULL);              /* (in the boot) */
+        float t2, s2, g2;
+        (void)sim_hal_can_servo(DC_NODE_THROTTLE, NULL, &t2, NULL, NULL);
+        (void)sim_hal_can_servo(DC_NODE_STEERING, NULL, &s2, NULL, NULL);
+        (void)sim_hal_can_servo(DC_NODE_GEAR, NULL, NULL, &g2, NULL);
+        bool hold = x.boot_until && fabsf(t2 - t_pos) < 0.02f && fabsf(s2 - s_pos) < 1e-3f && fabsf(g2 - g_out) < 1e-3f;
+        sim_hal_can_act_clear();
+        uint32_t tb = x.t;
+        sbsim_run(&x, x.t + 12000u, NULL, NULL);
+        sim_can_act_t a3;
+        sim_hal_can_act(3u, &a3);
+        bool order = sim_hal_can_first_act() == 1u && a3.any && a3.first_ms >= tb + 6000u && x.w.shift_under_load == 0 &&
+                     fabsf(a3.first - wire_of(x.sb.cfg.gear.pwm_n_us)) < 1e-3f;
+        snprintf(d, sizeof d, "driving %s at 50 %%; watchdog reset: throttle %.2f -> %.2f, steering %.3f -> %.3f, gear %.2f -> "
+                 "%.2f during the boot (hold) %s; after the boot: throttle first, gear N %u ms later (>= 6000), no shift "
+                 "under load %s", drv ? "yes" : "NO", (double)t_pos, (double)t2, (double)s_pos, (double)s2, (double)g_out,
+                 (double)g2, hold ? "yes" : "NO", (unsigned)(a3.any ? a3.first_ms - tb : 0u), order ? "yes" : "NO");
+        test_report("CN23 lost commands: every servo holds (the throttle too); after the boot throttle idle first, the gear "
+                    "after the throttle travel time", drv && hold && order, d);
+    }
+
+    /* CN24 (storm seed 22): a node interlock holds a deflected stick in STANDBY; the STANDBY button's ACK clears the
+     * interlock - the held stick must NOT get MANUAL from it (the STANDBY button always wins: a held stick is
+     * ignored until centred); centred, then deflected again = MANUAL as usual */
+    {
+        static pcsim_t p;
+        cn_setup(&p, 1124u, 0u);
+        sim_hal_can_node_reboot(DC_NODE_STEERING);
+        pc_run(&p, 3500u);                              /* lost + latched; OPERATIONAL again > 2 s */
+        bool latched = sb_mode(&p.x.sb) == MODE_STANDBY && p.x.sb.can.node_block;
+        joy_set(-0.9f, 0.0f, false, false);
+        pc_run(&p, 1000u);
+        bool refused = sb_mode(&p.x.sb) == MODE_STANDBY;
+        sim_hal_press(HAL_BTN_STANDBY);                 /* = the ACK in STANDBY */
+        pc_run(&p, 1500u);
+        bool acked = !p.x.sb.can.node_block, stays = sb_mode(&p.x.sb) == MODE_STANDBY;
+        joy_set(0.0f, 0.0f, false, false);
+        pc_run(&p, 1000u);
+        joy_set(-0.9f, 0.0f, false, false);
+        pc_run(&p, 1000u);
+        bool manual = sb_mode(&p.x.sb) == MODE_MANUAL;
+        joy_set(0.0f, 0.0f, false, false);
+        snprintf(d, sizeof d, "node rebooted: STANDBY + interlock %s; stick held: still STANDBY %s; STANDBY button = ACK: "
+                 "interlock cleared %s, the held stick ignored (STANDBY) %s; centred + deflected: MANUAL %s",
+                 latched ? "yes" : "NO", refused ? "yes" : "NO", acked ? "yes" : "NO", stays ? "yes" : "NO",
+                 manual ? "yes" : "NO");
+        test_report("CN24 the STANDBY button's ACK never hands MANUAL to a stick held through a node interlock",
+                    latched && refused && acked && stays && manual, d);
+    }
+}
+
+void sb_steer_tests(void)
+{
+    steer_model_tests();
+    steer_model_tests2();
+    can_servo_tests();
+}
+
+void sb_phase4_tests(void)
+{
+    phase4();
+}
+
+void sb_phase5_tests(void)
+{
+    phase5();
+}
+
 void sb_can_tests(void)
 {
     can_tests();
@@ -12048,6 +13117,9 @@ void sb_generator_tests(void)
 void sb_tests(void)
 {
     can_tests();
+    can_servo_tests();
+    steer_model_tests();
+    steer_model_tests2();
     dp_tests();
     dp_mode_tests();
     generator_tests();

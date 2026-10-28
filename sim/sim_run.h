@@ -74,6 +74,9 @@ void sb_tests(void);
 void sb_usb_tests(void);
 void sb_gateway_tests(void);      /* gateway link, HELM, REMOTE, SAVE requests */
 void sb_can_tests(void);          /* CN: DroneCAN bus + node table (step 11d) */
+void sb_phase4_tests(void);       /* P4: AUTO speed control (debugging) */
+void sb_phase5_tests(void);       /* P5: AUTO line following (debugging) */
+void sb_steer_tests(void);        /* SM: the DroneCAN steering position servo (step 11e) */
 void sb_nv_tests(void);           /* DF: data flash / non-volatile storage */
 void sb_battery_tests(void);      /* BV: supply voltage of the 12 V bank, LOW BATTERY */
 void sb_relay_tests(void);        /* RB: RS485 Modbus relay board (tc_modbus.c + relays.c) */
@@ -82,6 +85,7 @@ void sb_dp_tests(void);           /* DP: thrusters part 1 (thruster.c, CPU1, saf
 void sb_generator_tests(void);    /* GN: generator mode (throttle in neutral to charge the bank) */
 void sb_slam_tests(void);         /* only the slamming tests (section H) */
 void sb_set_bridge(bool on);      /* all tests through the USB joystick bridge */
+void sb_set_can(bool on, bool fast); /* all tests on the DroneCAN servos (step 11e) */
 
 /* Python log round-trip test data (sim_sb.c) */
 int sb_logtest(const char *dir);

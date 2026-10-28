@@ -1,7 +1,7 @@
 #!/bin/sh
 # The test gate: run it before every commit (Git Bash, from anywhere):
 #     sh tools/check.sh
-# sim build without warnings, all sim tests (analog + USB bridge), TriCore
+# sim build without warnings, all sim tests (analog + USB bridge + DroneCAN servos worst-case / fast), TriCore
 # compile of app/ + hal/ + Cpu*_Main.c, HAL / throttle-writer / relay-writer / thruster-writer checks, the
 # expected memory per core (CPU1 RAM must stay below 60 %), the board's FAT32
 # writer on PC disk images, the board's data-flash record log on a PC flash
@@ -35,6 +35,17 @@ else
 fi
 grep -E "^\[(FAIL|N/A )\]" "$TEMP/all_bridge.txt"
 tail -1 "$TEMP/all_bridge.txt"
+# step 11e: every test again on the DroneCAN servos - the worst-case (throttle 6 s, steering 12 s lock to lock)
+# and the fast (2 s / 3 s) servos; the PWM-motor-only tests are N/A there
+for v in can can-fast; do
+    if ./autopilot_sim.exe all --$v > "$TEMP/all_$v.txt" 2>&1; then
+        echo "all tests on the DroneCAN servos (--$v): exit 0"
+    else
+        echo "all tests on the DroneCAN servos (--$v): FAIL"; fail=1
+    fi
+    grep -E "^\[FAIL\]" "$TEMP/all_$v.txt"
+    tail -1 "$TEMP/all_$v.txt"
+done
 cd ..
 
 echo "== TriCore compile"
@@ -84,13 +95,23 @@ if [ -n "$writers" ]; then echo "ENGINE RELAYS DRIVEN OUTSIDE engine.c: $writers
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_system_reset *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/smallboat.c$")
 if [ -n "$writers" ]; then echo "SOFTWARE RESET OUTSIDE smallboat.c: $writers"; fail=1; else echo "software reset only by app/smallboat.c (remote restart)"; fi
 
-# DroneCAN (step 11d): the bus + heartbeats + node table only. NOTHING in the firmware commands an
-# actuator or a relay over CAN yet (the servos move to CAN in step 11e, the relay board in 11f), and
-# only app/smallboat.c services the bus / reads the node table (core 0)
+# DroneCAN servos (step 11e): ONLY app/servo.c writes the servos (throttle / gear / steering position, power-limit
+# clamp in the lowest layer) and ONLY the CAN output layer hal/can_act.c turns them into ArrayCommands (CPU1's
+# safe frames: hal/can_safe.c through hal_can_safe_send); no relay command over CAN yet (step 11f)
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])dc_send_actuator *\(" app hal Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^hal/can_act.c$\|^hal/dronecan.c$")
+if [ -n "$writers" ]; then echo "SERVO COMMANDS OVER CAN OUTSIDE hal/can_act.c: $writers"; fail=1; else echo "servo ArrayCommands sent only by hal/can_act.c (the CAN output layer)"; fi
 writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])dc_send_[a-z]+ *\(" app hal/hal_tc375.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null)
-if [ -n "$writers" ]; then echo "ACTUATOR / RELAY COMMANDS OVER CAN (not before step 11e / 11f): $writers"; fail=1; else echo "no actuator / relay command over CAN in the firmware (step 11d)"; fi
-writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_can_[a-z]+ *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/smallboat.c$")
-if [ -n "$writers" ]; then echo "CAN BUS USED OUTSIDE smallboat.c: $writers"; fail=1; else echo "CAN bus serviced / read only by app/smallboat.c (core 0)"; fi
+if [ -n "$writers" ]; then echo "COMMANDS OVER CAN IN THE FIRMWARE OUTSIDE THE CAN LAYER (relays: not before step 11f): $writers"; fail=1; else echo "no relay command over CAN in the firmware (step 11f)"; fi
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])(hal_set_gear_pwm|hal_set_steer_pos|ca_set_[a-z_]+) *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/servo.c$")
+if [ -n "$writers" ]; then echo "GEAR / STEERING SERVO WRITTEN OUTSIDE servo.c: $writers"; fail=1; else echo "gear servo + steering position servo written only by app/servo.c"; fi
+# the bus is serviced / read by app/smallboat.c (core 0); the 10 ms actuator task by Cpu0_Main.c; CPU1's monitor
+# only reads the task counter and sends its safe frames
+writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_can_[a-z_]+ *\(" app Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c 2>/dev/null | grep -v "^app/smallboat.c$\|^app/monitor.c$\|^Cpu0_Main.c$")
+if [ -n "$writers" ]; then echo "CAN BUS USED OUTSIDE smallboat.c / monitor.c / Cpu0_Main.c: $writers"; fail=1; else echo "CAN bus used only by app/smallboat.c + Cpu0_Main.c (core 0) and the CPU1 monitor's safe path"; fi
+bad=$(grep -nE "hal_can_[a-z_]+ *\(" app/monitor.c | grep -v "hal_can_act_count\|hal_can_safe_send")
+if [ -n "$bad" ]; then echo "CPU1 MONITOR USES MORE OF THE CAN BUS THAN ITS SAFE PATH: $bad"; fail=1; fi
+bad=$(grep -nE "hal_can_[a-z_]+ *\(" Cpu0_Main.c | grep -v "hal_can_tick")
+if [ -n "$bad" ]; then echo "Cpu0_Main.c USES MORE OF THE CAN BUS THAN THE ACTUATOR TASK: $bad"; fail=1; fi
 
 # ADS compiles every C/C++ file in the project folder: every top-level folder
 # that is not board firmware must be excluded in .cproject (all configurations)

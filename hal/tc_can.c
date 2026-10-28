@@ -9,6 +9,12 @@
 #include "IfxPort.h"
 
 #include "hal_pins.h"
+#include "memplace.h"
+
+SHARED_BEGIN()          /* core 0 writes them at the start, CPU1 reads them (can_send_reserved): not cached */
+static volatile boolean s_res_up;
+static Ifx_CAN_TXMSG * volatile s_res_elem[CAN_TX_RESERVED];
+SHARED_END()
 
 static IfxCan_Can      s_mod;
 static IfxCan_Can_Node s_node;
@@ -60,7 +66,45 @@ bool can_start(void)
     nc.pins = &s_pins;
     nc.busLoopbackEnabled = FALSE;
     s_up = IfxCan_Can_initNode(&s_node, &nc) == TRUE;
+    if (s_up) {
+        /* CPU1's reserved buffers: their message RAM elements, once (CPU1 never touches core 0's node struct) */
+        for (uint32_t b = 0; b < CAN_TX_RESERVED; b++)
+            s_res_elem[b] = IfxCan_Node_getTxBufferElementAddress(s_node.node, s_node.messageRAM.baseAddress,
+                                                                  s_node.messageRAM.txBuffersStartAddress,
+                                                                  (IfxCan_TxBufferId)b);
+        __dsync();
+        s_res_up = TRUE;
+    }
     return s_up;
+}
+
+/* every pending frame of the TX FIFO (buffers CAN_TX_RESERVED .. + CAN_TX_FIFO - 1): one write to TXBCR
+ * (writing 0 has no effect, so CPU1's reserved buffers stay) - from any core */
+void can_cancel_fifo(void)
+{
+    if (s_res_up == FALSE) return;
+    MODULE_CAN0.N[0].TX.BCR.U = ((1u << CAN_TX_FIFO) - 1u) << CAN_TX_RESERVED;
+}
+
+/* CPU1: one frame into its reserved buffer buf (0..CAN_TX_RESERVED - 1); still pending = false */
+bool can_send_reserved(uint8_t buf, const dc_frame_t *f)
+{
+    if (s_res_up == FALSE || buf >= CAN_TX_RESERVED || f->len > 8u) return false;
+    Ifx_CAN_N *n = &MODULE_CAN0.N[0];
+    if (IfxCan_Node_isTxBufferRequestPending(n, (IfxCan_TxBufferId)buf)) return false;
+    Ifx_CAN_TXMSG *e = s_res_elem[buf];
+    IfxCan_Node_setMsgId(e, f->id & 0x1FFFFFFFu, IfxCan_MessageIdLength_extended);
+    e->T0.B.RTR = 0u;
+    e->T1.B.EFC = 0u;                           /* no TX event (the element RAM is not cleared at start) */
+    e->T1.B.MM = 0u;
+    e->T1.B.DLC = f->len;
+    uint32 d[2] = { 0u, 0u };
+    for (uint32_t i = 0; i < f->len; i++) d[i / 4u] |= (uint32)f->data[i] << (8u * (i % 4u));
+    IfxCan_Node_writeTxBufData(e, (IfxCan_DataLengthCode)f->len, d);
+    IfxCan_Node_setFrameModeReq(e, IfxCan_FrameMode_standard);
+    __dsync();
+    n->TX.BAR.U = 1u << buf;                    /* only our bit (zeros have no effect) */
+    return true;
 }
 
 bool can_send(const dc_frame_t *f)

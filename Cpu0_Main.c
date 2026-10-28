@@ -115,9 +115,22 @@ void core0_main(void)
 
     /* Fixed-rate loop: one step every AP_PERIOD_MS (20 Hz). */
     uint32_t next_step_ms = hal_millis();
+#ifndef BOAT_VARIANT_BIG
+    uint32_t next_can_ms = next_step_ms;
+#endif
     while(1)
     {
         uint32_t now = hal_millis();
+#ifndef BOAT_VARIANT_BIG
+        /* the DroneCAN actuator task every 10 ms between the control steps (step 11e; nothing without the
+         * DroneCAN servos): one ArrayCommand per commanded servo, never a wait */
+        if ((int32_t)(now - next_can_ms) >= 0)
+        {
+            hal_can_tick();
+            next_can_ms += 10u;
+            if ((int32_t)(now - next_can_ms) >= 10) next_can_ms = now + 10u;
+        }
+#endif
         if ((int32_t)(now - next_step_ms) >= 0)
         {
 #ifdef BOAT_VARIANT_BIG

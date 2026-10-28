@@ -116,6 +116,38 @@ uint32_t sim_hal_can_status_period_ms(void);    /* between our last two NodeStat
 uint32_t sim_hal_can_tx_waiting(void);          /* frames in our controller's TX FIFO (not acknowledged) */
 uint32_t sim_hal_can_node_statuses(uint8_t id);
 
+/* DroneCAN servos (step 11e): a fitted bus carries the throttle / steering / gear servos (default on;
+ * off = the bus without servos, the old 11d case). What the servos REALLY do (the world uses it): the
+ * throttle node's position %, the gear node's output as an RC pulse, the steering node's outboard after the
+ * play in the app's sign (+ = starboard); PWM hardware: the commands. */
+void     sim_hal_can_servos(bool on);
+bool     sim_hal_servos_can(void);          /* the servos are DroneCAN nodes since the last hal_init */
+float    sim_hal_thr_truth(void);
+float    sim_hal_gear_truth_us(void);
+float    sim_hal_steer_truth(void);
+float    sim_hal_steer_cmd(bool *have);     /* what the app commanded (have = a steering command at all) */
+void     sim_hal_can_servo_set(uint8_t id, float pos);   /* a servo's position before the boot (tests) */
+uint32_t sim_hal_can_safe_frames(void);     /* CPU1's safe frames on the bus */
+/* the ArrayCommands that went onto the wire, per actuator (1 throttle, 2 steering, 3 gear): from core 0
+ * (priority 8) and from CPU1 (priority 0), the first and the last value + time; cleared by hand */
+typedef struct {
+    bool     any;
+    uint32_t n_core0, n_cpu1;
+    float    first, last, last_cpu1;
+    uint32_t first_ms, last_ms, core0_ms, cpu1_ms;
+} sim_can_act_t;
+void     sim_hal_can_act_clear(void);
+void     sim_hal_can_act(uint8_t act, sim_can_act_t *a);
+uint8_t  sim_hal_can_first_act(void);       /* the actuator of the first ArrayCommand since the clear (0 none) */
+void     sim_hal_can_task_stuck(bool stuck);/* core 0's actuator task stops (its CAN path stuck) */
+/* the UNCREWED dead-man timer relay (OA-3): armed = in the kill circuit (the on-board UNCREWED switch);
+ * no pulse edge for 1.5 s = the engine stops (latched until sim_hal_reset_engine / restart) */
+void     sim_hal_deadman_arm(bool armed);
+bool     sim_hal_deadman_killed(void);
+uint32_t sim_hal_deadman_edges(void);
+void     sim_hal_deadman_restart(void);
+bool     sim_hal_estop_pressed(void);       /* (OD-1: the e-stop also stops the engine, every profile) */
+
 /* Joystick (raw 12-bit ADC values and buttons). */
 void     sim_hal_set_joystick(bool fitted, uint16_t x_raw, uint16_t y_raw, bool take, bool autob);
 void     sim_hal_joystick_confirm(bool pressed);     /* CONFIRM button held */

@@ -25,9 +25,27 @@
  *     MON_THR_ZERO_PCT) while core 0 does not say dp_active, or above the
  *     published cap of that thruster (+ MON_MARGIN_PCT) -> trip
  *     (MON_TRIP_THRUSTER). The safe state sets both thrusters to 0.
+ *   - its OWN throttle envelope (step 11e): the last throttle command decayed at
+ *     the worst-case servo speed (100 % per thr_travel_s, published by core 0,
+ *     kept inside MON_THR_TRAVEL_MIN..MAX_MS): "gear moved with the throttle
+ *     up" uses the envelope, not the command (a slow servo is still open after
+ *     the command went to idle)
+ *   - DroneCAN servos (CLAUDE.md T, step 11e): core 0's actuator task stopped
+ *     (no tick for MON_CAN_TX_MS while running) -> trip (MON_TRIP_CAN_TX: its
+ *     loop alive, its CAN path stuck)
  * Trip: hal_safe_outputs() forces throttle idle + gear neutral + steering
  * motor off + both thrusters 0 + alarm + safety relay open, latched in the HAL until reset
  * (core 0 can't override it), and g_mon.tripped tells core 0 (-> STANDBY).
+ * DroneCAN servos: the latch FIRST, core 0's pending frames cancelled, then
+ * CPU1's safe frames every MON_SAFE_FRAME_MS (hal_can_safe_send): throttle IDLE
+ * at once; steering = core 0's last steering command (hold; none if it never
+ * commanded one, OD-7); gear = HOLD its last command until thr_travel_s after
+ * the trip, then NEUTRAL - only while the throttle node is OPERATIONAL and core
+ * 0 alive to say so (else HOLD for good: OA-2). The servo power is never cut.
+ * UNCREWED dead-man (OA-3, TO CONFIRM): CPU1 toggles hal_deadman_pulse every
+ * MON_DM_TOGGLE_MS only while UNCREWED + no trip + core 0 alive + the throttle
+ * node OPERATIONAL + actuator frames going out + no ENGINE KILL latched; any of
+ * them false = no pulses = the timer relay stops the engine (~1.5 s).
  *
  * Kept small and simple on purpose: no floats in loops, no dependencies on
  * the rest of the app.
@@ -46,6 +64,13 @@
 #define MON_GEAR_DELTA   20u      /* gear pulse change that counts as "gear moved", us */
 #define MON_TEST_TRIP    0x7E57B3C1u   /* g_mon.test_trip: bench trip test requested */
 #define MON_THR_ZERO_PCT 0.5f     /* a thruster output above this counts as "thrust" */
+#define MON_CAN_TX_MS    100u     /* DroneCAN: no actuator task tick this long while running -> trip */
+#define MON_SAFE_FRAME_MS 20u     /* CPU1's safe frames: this often after a trip */
+#define MON_DM_TOGGLE_MS 50u      /* the dead-man pulse: an edge this often while allowed */
+#define MON_THR_TRAVEL_MS     6000u   /* worst-case throttle servo travel (core 0 publishes the one in use) */
+#define MON_THR_TRAVEL_MIN_MS 1000u
+#define MON_THR_TRAVEL_MAX_MS 30000u
+#define MON_PROFILE_UNCREWED  2u  /* = SB_PROFILE_UNCREWED (smallboat.h) */
 
 typedef enum {
     MON_OK = 0,
@@ -55,7 +80,8 @@ typedef enum {
     MON_TRIP_BOOT,              /* core 0 never started its control loop */
     MON_TRIP_TEST,              /* bench trip test (operator request in BENCH TEST) */
     MON_TRIP_GENERATOR,         /* generator mode: gear not in neutral while gen_active */
-    MON_TRIP_THRUSTER           /* DP thrusters: thrust without dp_active, or above the cap */
+    MON_TRIP_THRUSTER,          /* DP thrusters: thrust without dp_active, or above the cap */
+    MON_TRIP_CAN_TX             /* DroneCAN: core 0's actuator task stopped (its CAN path stuck) */
 } mon_reason_t;
 
 /* Shared memory core 0 -> CPU1 (and the trip flag back). On the TC375
@@ -79,6 +105,17 @@ typedef struct {
     volatile uint8_t  dp_active;        /* DP runs: thruster outputs allowed ... */
     volatile float    thr_bow_pct, thr_stern_pct;   /* thruster outputs sent (-100..100) */
     volatile float    thr_bow_cap, thr_stern_cap;   /* ... at most these (boat file max_pct; 0 = not fitted) */
+    /* DroneCAN servos (step 11e) */
+    volatile uint8_t  can_servos;       /* the servos are DroneCAN nodes */
+    volatile uint8_t  steer_have;       /* a steering frame went out since the boot (OD-7) ... */
+    volatile float    steer_wire;       /* ... the last one (CPU1 replays it: hold) */
+    volatile uint8_t  gear_have;        /* a gear frame went out since the boot ... */
+    volatile float    gear_wire;        /* ... the last one (hold) */
+    volatile float    gear_n_wire;      /* neutral (after thr_travel_s, with the throttle node OPERATIONAL) */
+    volatile uint8_t  thr_node_ok;      /* the throttle node OPERATIONAL */
+    volatile uint32_t thr_travel_ms;    /* thr_travel_s in use (CPU1's throttle envelope) */
+    volatile uint8_t  profile;          /* the latched profile (MON_PROFILE_UNCREWED: the dead-man) */
+    volatile uint8_t  killed;           /* the software ENGINE KILL is latched */
 } mon_shared_t;
 
 extern mon_shared_t g_mon;
@@ -97,6 +134,23 @@ typedef struct {
     uint32_t     trip_ms;
     uint32_t     checks;
     uint32_t     torn;          /* checks skipped: core 0 was writing (seqlock) */
+    /* step 11e */
+    float        env;           /* CPU1's own throttle envelope (worst-case servo speed), % */
+    uint32_t     act_prev, act_ms;      /* core 0's actuator task: last tick count / when it changed */
+    uint32_t     safe_ms;       /* the last safe frame set */
+    uint32_t     safe_sets;     /* safe frame sets sent */
+    bool         dm_level;      /* the dead-man pulse level */
+    uint32_t     dm_ms;
+    uint32_t     dm_edges;
+    bool         dm_on;         /* pulsing now (the conditions held) */
+    /* the last consistent snapshot of the DroneCAN values */
+    bool         can;
+    bool         steer_have, gear_have, node_ok, killed;
+    float        steer_wire, gear_wire, gear_n_wire;
+    uint8_t      profile;
+    uint32_t     travel_ms;
+    bool         boot_known;    /* sim tests only ("all --can", sb_test_boot_idle): the throttle known at idle at
+                                   the boot - never set on the board (CPU1 can't know it there) */
 } mon_t;
 
 void monitor_init(mon_t *m, uint32_t now_ms);

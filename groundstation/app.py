@@ -2099,6 +2099,31 @@ class App:
         else:
             self.ptree.insert("", "end", iid=iid, text=d["name"], values=vals)
 
+    def draw_steer(self, d):
+        """Control page (step 11e): the steering position servo's model - DISPLAY ONLY."""
+        w = getattr(self, "steer_lbl", None)
+        if w is None:
+            return
+        if not d.get("sv_servo"):
+            txt = ""
+        else:
+            pos = T("steer.unknown") if d.get("sv_pos") is None else "%+.2f" % d["sv_pos"]
+            if d.get("sv_trained"):
+                vals = T("steer.trained", rr="%.3f" % d["sv_r_right"], rl="%.3f" % d["sv_r_left"],
+                         b="%.3f" % d["sv_play_stored"], k="%.2f" % d["sv_k"], tau="%.1f" % d["sv_tau"],
+                         conf="%d" % d["sv_conf"])
+            else:
+                vals = T("steer.untrained")
+            adapt = T("steer.adapted", k="%d" % d["sv_k_pct"], b="%.3f" % d["sv_play_use"]) if d.get("sv_adapted") \
+                else T("steer.stored")
+            txt = T("steer.info", pos=pos, cmd="%+.2f" % d["sv_cmd"], vals=vals, adapt=adapt,
+                    est="%d" % d.get("thr_est_pct", 0), travel="%.1f" % d.get("thr_travel_s", 0.0))
+            if d.get("sv_reset_why"):
+                txt += "\n" + T("steer.last_reset", why=T("steer.why_%d" % d["sv_reset_why"]) if d["sv_reset_why"] <= 5
+                                 else str(d["sv_reset_why"]))
+        if w.cget("text") != txt:
+            w.configure(text=txt)
+
     def on_telem(self, d):
         prev = self.t
         self.t = d
@@ -2114,6 +2139,7 @@ class App:
             self.relay_push_at = 0.0        # (the relay table is in its data flash: sent only if it differs)
         self.boat_push(d)
         self.draw_engine(d)
+        self.draw_steer(d)
         self.hist.append((ts, d["heading"], d["target"], d["outboard"]))
         while self.hist and self.hist[0][0] < ts - PLOT_S:
             self.hist.pop(0)
@@ -2722,6 +2748,9 @@ class App:
         btn(tr, "cap.accept", self.train_accept, kind="ok").pack(side="left", padx=6)
         btn(tr, "cap.reject", lambda: self.cmd(proto.T_TRAINING, proto.p_training(2), TE("what.training_reject")),
             kind="no").pack(side="left")
+        # step 11e: the DroneCAN steering position servo - the TRAINING values, the adapted ones, the throttle model
+        self.steer_lbl = tk.Label(f, text="", font=F_TXT, bg=C["bg"], fg=C["fg"], justify="left", anchor="w")
+        self.steer_lbl.pack(fill="x", padx=6, pady=(4, 0))
         # simulator only: the panel buttons and the joystick CONFIRM
         Y = C["btn_sim"]
         self.sim_frame = tk.Frame(f, bg=Y)
@@ -2996,6 +3025,10 @@ class App:
                 out.append(("can_warn", T("can.warning", nodes=can_roles(d["can_warn"]))) + B["pickup"] + (None,))
             if d.get("can_fitted") and d.get("can_anon"):   # a node without a static node ID (never answered)
                 out.append(("can_anon", T("can.anon")) + B["pickup"] + (None,))
+            if d.get("sv_servo") and d.get("sv_needs_training"):   # step 11e: the position servo has no TRAINING yet
+                out.append(("steer_train", T("steer.needs_training")) + B["pickup"] + (None,))
+            if d.get("sv_servo") and d.get("sv_reset_notice"):     # back to the TRAINING values (30 s notice)
+                out.append(("steer_reset", T("steer.reset_notice")) + B["pickup"] + (None,))
             gs = d.get("gen_state", 0)                  # generator mode (CLAUDE.md K): notices, the GEAR alarm is the alarm
             if gs == 2:
                 out.append(("gen_starting", T("gen.starting")) + B["pickup"] + (None,))

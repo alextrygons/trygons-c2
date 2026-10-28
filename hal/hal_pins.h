@@ -152,6 +152,14 @@
 #define CAN_STB_NORMAL      0u                          /* TO CONFIRM: STB level for normal operation (TLE9251V: low) */
 #define CAN_BITRATE         1000000u
 #define CAN_SAMPLE_POINT    8750u                       /* 87.5 % (DroneCAN / CiA recommendation at 1 Mbit/s) */
+/* Step 11e: throttle, steering and gear as DroneCAN servo nodes (hal/can_act.c, CPU1 safe frames in the reserved
+ * TX buffers). Only with HAL_CAN_FITTED; 0 = the PWM servos + the steering motor of the old hardware (FIRST TEST,
+ * the board today). TO CONFIRM by the owner (bench: FIRST_TEST.md 3j) before it becomes 1. */
+#define HAL_CAN_SERVOS      0
+/* The UNCREWED dead-man pulse (OA-3, docs/dronecan_design.md 14.1 option 1 = the recommended default, WAITING FOR
+ * OWNER W5): with the DroneCAN servos P10.5 no longer drives the safety relay (OD-2: the servo power is never
+ * cut) - CPU1 toggles it for the retriggerable timer relay in the kill circuit. Pin / relay / time TO CONFIRM. */
+#define PIN_DEADMAN         PIN_RELAY                   /* P10.5 (D10) */
 
 /* --- interrupt priorities (unique per CPU; 1 = lowest) ----------------------------- */
 #define PRIO_LINK_TX   10

@@ -52,6 +52,9 @@
 #include "tc_modbus.h"
 #include "tc_can.h"
 #include "dronecan.h"
+#include "can_act.h"       /* step 11e: the servos' CAN output layer (pure C, core 0) */
+#include "can_safe.h"      /* step 11e: CPU1's own safe-frame encoder */
+#include "memplace.h"
 #include "tc_rstcause.h"
 #include "IfxFlash.h"      /* data flash command sequences (inline; Flash/Std built by ADS) */
 
@@ -72,6 +75,14 @@ static uint32 s_stm_ticks_per_ms = 0u;
 /* Monitor trip latch (written by CPU1): normal output calls can't undo it. */
 static volatile boolean s_forced = FALSE;
 static volatile uint16  s_safe_thr_us = 1000u, s_safe_gear_us = 1500u;
+
+/* DroneCAN servos (step 11e; HAL_CAN_FITTED && HAL_CAN_SERVOS, both 0 until the owner confirms): core 0 writes,
+ * CPU1 reads (the trip path, the actuator-task check) - core 0's DSPR, not cached (memplace.h) */
+SHARED_BEGIN()
+static volatile boolean s_servos_can;
+static volatile uint32  s_can_ticks;        /* the 10 ms actuator task ran (hal_can_act_count) */
+static volatile uint8   s_can_tid;          /* core 0's ArrayCommand transfer ID after its last tick */
+SHARED_END()
 
 /* --- servo PWM (GTM TOM0, 50 Hz) --------------------------------------------
  * Each channel counts up to CM0 (period) and its output is high until CM1
@@ -364,7 +375,7 @@ bool hal_read_rudder_angle(float *rudder_deg)
 void hal_set_rudder_motor(float command)
 {
     /* the outboard steering runs as -1 / 0 / +1 (estimate from the run time) */
-    if (s_forced || !(command > 0.5f || command < -0.5f)) {    /* also NaN -> off */
+    if (s_forced || s_servos_can || !(command > 0.5f || command < -0.5f)) {    /* also NaN -> off; DroneCAN: no motor */
         motor_off();
     } else {
         IfxPort_setPinHigh(PIN_MOTOR_SLP);                      /* driver awake */
@@ -389,12 +400,15 @@ void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
     s_safe_gear_us = gear_neutral_us;
     s_forced = TRUE;
     __dsync();
+    if (s_servos_can) can_cancel_fifo();                /* core 0's pending ArrayCommands never go out (CPU1's safe
+                                                         * frames follow: hal_can_safe_send) */
     motor_off();
     IfxPort_setPinLow(PIN_MOTOR_SLP);                   /* motor driver asleep */
     servo_write(THROTTLE_TOM_CH, throttle_idle_us);     /* idle, from the next period (<= 20 ms) */
     servo_write(GEAR_TOM_CH, gear_neutral_us);          /* neutral */
     thrusters_stop();                                   /* both DP thrusters 0 (the same shadow registers) */
-    IfxPort_setPinLow(PIN_RELAY);                       /* relay open */
+    if (!s_servos_can) IfxPort_setPinLow(PIN_RELAY);    /* relay open (DroneCAN: P10.5 is the dead-man pulse -
+                                                         * CPU1 stops toggling it; the servo power is never cut, OD-2) */
     IfxPort_setPinLow(PIN_ALARM_LED);                   /* LED on */
     IfxPort_setPinHigh(PIN_BUZZER);                     /* buzzer on */
 }
@@ -428,6 +442,7 @@ bool hal_outputs_forced(void)
 
 void hal_set_safety_relay(bool closed)
 {
+    if (s_servos_can) return;                   /* OD-2: P10.5 = the UNCREWED dead-man pulse (CPU1), nothing here */
     if (closed && !s_forced) IfxPort_setPinHigh(PIN_RELAY);
     else IfxPort_setPinLow(PIN_RELAY);
 }
@@ -479,6 +494,40 @@ void hal_kill_keep_set(bool killed)
 bool hal_kill_keep_get(void)
 {
     return s_kill_keep[0] == KILL_KEEP_ON && s_kill_keep[1] == ~KILL_KEEP_ON;
+}
+
+/* The last steering command across a warm reset (step 11e, OD-7): the same no-clear RAM; magic + the float's
+ * bits + their complement (stale / random RAM never reads as a position). After a power-on sb_init writes
+ * "none" first. TODO on the kit: as the kill latch (FIRST_TEST.md 3i / 3j). */
+#define STEER_KEEP_ON 0x53544552u       /* "STER" */
+#if defined(__TASKING__)
+#pragma section farbss bss_cpu0
+#pragma noclear
+#endif
+static volatile uint32 s_steer_keep[3];
+#if defined(__TASKING__)
+#pragma clear
+#pragma section farbss restore
+#endif
+
+void hal_steer_keep_set(bool valid, float pos)
+{
+    uint32 bits = 0u;
+    if (valid) memcpy(&bits, &pos, sizeof bits);
+    s_steer_keep[0] = valid ? STEER_KEEP_ON : 0u;
+    s_steer_keep[1] = bits;
+    s_steer_keep[2] = ~bits;
+}
+
+bool hal_steer_keep_get(float *pos)
+{
+    uint32 bits = s_steer_keep[1];
+    if (s_steer_keep[0] != STEER_KEEP_ON || s_steer_keep[2] != ~bits) return false;
+    float p;
+    memcpy(&p, &bits, sizeof p);
+    if (!(p >= -1.0f && p <= 1.0f)) return false;
+    if (pos != NULL) *pos = p;
+    return true;
 }
 
 /* Remote restart after a monitor trip (section N): an APPLICATION reset of the
@@ -617,6 +666,10 @@ void hal_set_throttle_pwm(uint16_t pulse_us)
     if (s_forced) pulse_us = s_safe_thr_us;     /* monitor tripped: idle, latched */
     if (pulse_us < HAL_THROTTLE_PWM_MIN) pulse_us = HAL_THROTTLE_PWM_MIN;
     if (pulse_us > HAL_THROTTLE_PWM_MAX) pulse_us = HAL_THROTTLE_PWM_MAX;
+    if (s_servos_can) {                         /* DroneCAN: the next actuator tick sends it (it checks the latch) */
+        if (!s_forced) ca_set_throttle_us(pulse_us);
+        return;
+    }
     servo_write(THROTTLE_TOM_CH, pulse_us);
     servo_route(THROTTLE_TOM_CH, &s_thr_routed);
     __dsync();
@@ -644,6 +697,11 @@ void hal_set_thrusters(float bow_pct, float stern_pct)
 
 void hal_set_gear_pwm(uint16_t pulse_us)
 {
+    if (s_servos_can) {                         /* DroneCAN: 0 = no gear frame (the node HOLDS, OA-2) */
+        if (!s_forced) ca_set_gear_us(pulse_us);
+        return;
+    }
+    if (pulse_us == 0u) return;                 /* (only the DroneCAN servos hold; the PWM servo keeps its pulse) */
     if (s_forced) pulse_us = s_safe_gear_us;    /* monitor tripped: neutral, latched */
     servo_write(GEAR_TOM_CH, pulse_us);
     servo_route(GEAR_TOM_CH, &s_gear_routed);
@@ -894,14 +952,21 @@ uint8_t hal_relay_channels(void)
 
 /* --- DroneCAN bus (CLAUDE.md T, step 11d): MCMCAN CAN0 node 0 (tc_can.c) + dronecan.c -------------- */
 static bool s_can_up;
-static const dc_port_t s_can_port = { can_start, can_send, can_recv, can_state, can_recover, hal_millis };
+static const dc_port_t s_can_port = { can_start, can_send, can_recv, can_state, can_recover, hal_millis,
+                                       can_cancel_fifo };
+static uint8 s_trip_drops;                      /* core 0: its software queue dropped after a trip (twice) */
 
 static void can_port_init(void)
 {
     s_can_up = FALSE;
+    s_servos_can = FALSE;
 #if HAL_CAN_FITTED
     dc_init(&s_can_port);                       /* starts the controller (bounded iLLD handshakes, before the loop) */
     s_can_up = TRUE;
+#if HAL_CAN_SERVOS
+    ca_init();                                  /* the first frame = throttle IDLE; gear / steering: none (OD-7) */
+    s_servos_can = TRUE;
+#endif
 #else
     (void)s_can_port;                           /* pins not confirmed yet: the bus is never started */
 #endif
@@ -909,7 +974,92 @@ static void can_port_init(void)
 
 void hal_can_service(void)
 {
-    if (s_can_up) dc_service();
+    if (!s_can_up) return;
+    /* tripped: CPU1 cancelled the controller FIFO; core 0 drops what still waits in its software queue (twice: a
+     * flush that ran across the trip moved frames in after CPU1's cancel - they are cancelled too; ca_tick
+     * queues nothing any more) */
+    if (s_forced && s_trip_drops < 2u) {
+        dc_cancel_tx();
+        s_trip_drops++;
+    }
+    dc_service();
+}
+
+/* --- DroneCAN servos (step 11e): hal/can_act.c on core 0, CPU1's safe frames in the reserved buffers ------ */
+bool hal_servos_can(void)
+{
+    return s_servos_can != FALSE;
+}
+
+void hal_set_steer_pos(bool command, float pos)
+{
+    if (!s_servos_can || s_forced) return;      /* tripped: CPU1's safe frames (latched) */
+    ca_set_steer(command, pos);
+}
+
+/* core 0's main loop, every 10 ms between the control steps */
+void hal_can_tick(void)
+{
+    if (!s_servos_can) return;
+    ca_tick();
+    s_can_tid = dc_cmd_tid();
+    __dsync();
+    s_can_ticks = s_can_ticks + 1u;
+}
+
+uint32_t hal_can_act_count(void)
+{
+    return s_servos_can ? s_can_ticks : 0u;
+}
+
+bool hal_can_act_state(hal_can_act_t *a)
+{
+    if (!s_servos_can) return false;
+    ca_state_t st;
+    ca_get(&st);
+    a->thr_wire = st.thr_wire;
+    a->gear_have = st.gear_have;
+    a->gear_wire = st.gear_wire;
+    a->steer_have = st.steer_have;
+    a->steer_wire = st.steer_wire;
+    a->frames = st.frames;
+    return true;
+}
+
+float hal_can_wire_us(uint16_t us)
+{
+    return ca_us_to_wire(us);
+}
+
+/* CPU1 (monitor.c, every MON_SAFE_FRAME_MS after a trip): reserved buffer 0 throttle, 1 steering, 2 gear. A
+ * buffer still pending (the bus is busy / nobody acknowledges) keeps its frame of the last period. */
+static boolean s_safe_started;                  /* CPU1 only */
+static uint8   s_safe_tid;
+static void safe_one(uint8 buf, uint8 act, float wire)
+{
+    dc_frame_t fr;
+    cs_frame(&fr, act, wire, s_safe_tid);
+    if (can_send_reserved(buf, &fr)) s_safe_tid = (uint8)((s_safe_tid + 1u) & 0x1Fu);
+}
+
+void hal_can_safe_send(const hal_can_safe_t *f)
+{
+    if (!s_servos_can) return;
+    if (!s_safe_started) {
+        can_cancel_fifo();                      /* (again: hal_safe_outputs did it) */
+        s_safe_tid = s_can_tid;                 /* continue core 0's transfer-ID counter (TO CONFIRM C19) */
+        s_safe_started = TRUE;
+    }
+    safe_one(0u, (uint8)CA_ACT_THROTTLE, f->thr_wire);
+    if (f->steer) safe_one(1u, (uint8)CA_ACT_STEERING, f->steer_wire);
+    if (f->gear) safe_one(2u, (uint8)CA_ACT_GEAR, f->gear_wire);
+}
+
+/* CPU1: the UNCREWED dead-man pulse on P10.5 (OA-3, 14.1 option 1; only with the DroneCAN servos) */
+void hal_deadman_pulse(bool level)
+{
+    if (!s_servos_can) return;
+    if (level) IfxPort_setPinHigh(PIN_DEADMAN); else IfxPort_setPinLow(PIN_DEADMAN);
 }
 
 bool hal_can_bus(hal_can_bus_t *b)

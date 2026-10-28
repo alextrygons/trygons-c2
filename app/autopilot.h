@@ -5,6 +5,10 @@
  *   AP_STEER_RUDDER_FEEDBACK  big boat: rudder angle sensor, proportional motor
  *   AP_STEER_OUTBOARD         small boat: NO angle sensor, slow on/off motor
  *                             with backlash; the angle is estimated
+ *                             - or (step 11e, autopilot_set_servo) the DroneCAN
+ *                             360 deg POSITION servo: steermodel.c (servo speed,
+ *                             play compensation, slow adaptation), TRAINING in
+ *                             trainsrv.c; the outputs are servo_have / servo_u
  *
  * Usage:
  *   autopilot_t ap;
@@ -21,7 +25,9 @@
 #include <stdint.h>
 
 #include "calib.h"
+#include "steermodel.h"
 #include "training.h"
+#include "trainsrv.h"
 
 /* Fixed control loop rate: 20 Hz. */
 #define AP_RATE_HZ          20u
@@ -182,6 +188,17 @@ typedef struct {
     training_t train;
     bool     calibrated;    /* outboard settings come from a calibration */
 
+    /* DroneCAN position servo (step 11e; AP_STEER_OUTBOARD only, autopilot_set_servo) */
+    bool     servo;         /* the steering is the position servo (no motor) */
+    steer_t  sm;            /* its model: speed, play, position (unknown after a power-on: OD-7) */
+    trs_t    trs;           /* its TRAINING */
+    bool     servo_have;    /* output: a steering command since the boot (no frame before: OD-7) */
+    float    servo_u;       /* output: the servo position command, -1..+1 */
+    bool     servo_steering;/* this step a mode commanded the steering (else: hold the last command) */
+    float    servo_v_kn;    /* speed (GPS) for the TRAINING / the adaptation, set by smallboat.c (0 = unknown) */
+    uint32_t servo_boot;    /* boot number (smallboat.c): the TRAINING's "date" in the record */
+    calib2_t servo_calib;   /* the stored record (valid when sm.stored.trained) */
+
     bool     sensor_fault;  /* a sensor is currently timed out */
     bool     heading_valid;
     bool     rudder_valid;
@@ -269,6 +286,15 @@ bool autopilot_centered(const autopilot_t *ap);
 
 /* Gyro data fresh (last sample < AP_SENSOR_STALE_MS old)? */
 bool autopilot_gyro_ok(const autopilot_t *ap);
+
+/* DroneCAN position servo (step 11e): steer through steermodel.c instead of the
+ * motor. p = the stored values (NV slot 5 v2) or sm_defaults; half_deg =
+ * outboard degrees at servo unit 1; known / p0 = the position after a warm reset
+ * (hal_steer_keep_get), else unknown (power-on). */
+void autopilot_set_servo(autopilot_t *ap, const sm_params_t *p, float half_deg, bool known, float p0);
+/* new stored values (a TRAINING accepted): the model + the gains scaled like a
+ * DC-motor calibration (same loop gain as the reference boat) */
+void autopilot_apply_servo_params(autopilot_t *ap, const sm_params_t *p, float half_deg);
 
 /* Joystick: the outboard follows angle_cmd_deg (ap_inputs_t), full
  * range, rate-limited to the motor speed. Keeps the angle estimate;

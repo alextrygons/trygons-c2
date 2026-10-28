@@ -32,6 +32,7 @@ static struct {
     uint32_t thr_seq;
     uint32_t dp_seq;
     uint16_t can_seq;
+    uint16_t steer_seq;
     uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
     uint32_t plim_log_count;
@@ -130,7 +131,7 @@ uint16_t logcore0_config_text(const sb_t *s, char *out, uint16_t max)
         "steer.kp=%g\nsteer.ki=%g\nsteer.kd=%g\nsteer.turn_rate_dps=%g\nsteer.sea_state=%u\n"
         "outboard.max_angle_deg=%g\noutboard.turn_speed_deg_s=%g\noutboard.gap_deg=%g\ncalibrated=%u\n"
         "gear.pwm_f_us=%u\ngear.pwm_n_us=%u\ngear.pwm_r_us=%u\ngear.idle_wait_ms=%lu\ngear.neutral_wait_ms=%lu\n"
-        "gear.engage_wait_ms=%lu\nthrottle.max_rev_pct=%g\nthrottle.rate_up=%g\nthrottle.rate_down=%g\nthrottle.rate_stop=%g\n"
+        "gear.engage_wait_ms=%lu\nthrottle.max_rev_pct=%g\nthrottle.rate_up=%g\nthrottle.rate_down=%g\nthrottle.travel_s=%g\n"
         "servo.idle_us=%u\nservo.full_us=%u\nplim.fwd_start=%g\nplim.rev_start=%g\nplim.rev_max=%g\n"
         "cruise_max_kn=%g\nspd_kp=%g\nspd_ki=%g\ngain_ref_kn=%g\nslow_radius_m=%g\napproach_kn=%g\n"
         "dr_max_unc_m=%g\ndr_max_ms=%lu\ndr_speed_factor=%g\ndr_slow_kn=%g\ntraining_throttle_pct=%g\n"
@@ -141,7 +142,7 @@ uint16_t logcore0_config_text(const sb_t *s, char *out, uint16_t max)
         (unsigned)c->gear.pwm_f_us, (unsigned)c->gear.pwm_n_us, (unsigned)c->gear.pwm_r_us,
         (unsigned long)c->gear.idle_wait_ms, (unsigned long)c->gear.neutral_wait_ms,
         (unsigned long)c->gear.engage_wait_ms, c->throttle.max_rev_pct, c->throttle.rate_up_pct_s,
-        c->throttle.rate_down_pct_s, s->thr.cfg.rate_stop_pct_s, (unsigned)c->servo.idle_us, (unsigned)c->servo.full_us,
+        c->throttle.rate_down_pct_s, s->servo.cfg.travel_s, (unsigned)c->servo.idle_us, (unsigned)c->servo.full_us,
         c->plim.fwd_steps[0], c->plim.rev_start, c->plim.rev_max,
         c->cruise_max_kn, c->spd_kp, c->spd_ki, c->gain_ref_kn, c->slow_radius_m, c->approach_kn,
         c->dr_max_unc_m, (unsigned long)c->dr_max_ms, c->dr_speed_factor, c->dr_slow_kn, c->training_throttle_pct,
@@ -369,6 +370,18 @@ static void changes(const sb_t *s)
            (int32_t)((uint32_t)b->tec | ((uint32_t)b->rec << 8) | ((uint32_t)b->state << 16)), (int32_t)b->tx_drops);
     }
     k.can_seq = s->can.log_seq;
+    /* the DroneCAN steering model (step 11e): an adaptation reset, TRAINING values stored, a v1 record refused,
+     * thr_travel_s changed */
+    if (s->steer.log_seq != k.steer_seq) {
+        const steer_t *m = &s->ap.sm;
+        float bs = 0.5f * (m->stored.b_lr + m->stored.b_rl);
+        ev(s, EV_STEERMODEL, (int32_t)((uint32_t)s->steer.log_what | ((uint32_t)s->steer.log_why << 8)),
+           (int32_t)((uint32_t)lroundf(fminf(m->stored.k, 600.0f) * 100.0f) |
+                     ((uint32_t)lroundf(fminf(m->use.k, 600.0f) * 100.0f) << 16)),
+           (int32_t)((uint32_t)lroundf(bs * 10000.0f) | ((uint32_t)lroundf(sm_play(m) * 10000.0f) << 16)),
+           (int32_t)lroundf(s->servo.cfg.travel_s * 100.0f));
+    }
+    k.steer_seq = s->steer.log_seq;
     /* video SAVE requests */
     if (s->save.seq != k.save_seq) ev(s, EV_SAVE, s->save.trig, s->save.arg, s->save.seq, 0);
     k.save_seq = s->save.seq;

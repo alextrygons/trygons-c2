@@ -84,6 +84,10 @@ typedef enum {
                            5 bus fault, 6 bus back, 7 ID conflict (our ID 10 seen), 8 node without a static ID) |
                            node id << 8 | why << 16, lost mask | warn mask << 8 | seen mask << 16, tec | rec << 8 |
                            bus state << 16, tx drops */
+    EV_STEERMODEL = 30, /* DroneCAN steering position servo (step 11e): what (1 adaptation reset to the stored values,
+                           2 TRAINING values stored, 3 a version-1 (DC-motor) record refused, 4 thr_travel_s changed) |
+                           why (SM_RESET_) << 8, K stored*100 | K in use*100 << 16, play stored*10000 | in use*10000
+                           << 16, thr_travel_s*100 */
     EV_COUNT
 } log_event_t;
 

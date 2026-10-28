@@ -57,4 +57,39 @@ bool calib_valid(const calib_data_t *c);
 bool calib_save(calib_data_t *c);
 bool calib_load(calib_data_t *c);
 
+/*
+ * Record version 2 (step 11e, docs/dronecan_design.md 8.5): the TRAINING result
+ * of the DroneCAN steering POSITION servo, in servo units (-1..+1). The same NV
+ * slot 5, CRC-32. A v1 record (DC-motor time units) is NOT converted on a boat
+ * with the position servo: defaults + NV DATA RESET + "TRAINING needed" (and a v2
+ * record is ignored on the old DC-motor hardware). The slowly ADAPTED values are
+ * never saved (OD-8): every reset starts from these.
+ */
+#define CALIB2_VERSION 2u
+typedef struct {
+    uint32_t magic;             /* CALIB_MAGIC */
+    uint32_t version;           /* CALIB2_VERSION */
+    uint32_t size;
+    float r_right, r_left;      /* servo speed, units / s */
+    float b_lr, b_rl;           /* play reversing left -> right / right -> left, units */
+    float k;                    /* yaw deg/s per unit of outboard at v_ref */
+    float tau;                  /* s */
+    float a0;                   /* trim, units */
+    float gyro_bias_dps;        /* (info) */
+    float fit_r2, confidence;
+    float v_ref_kn;             /* TRAINING speed */
+    float res_dps;              /* model residual (VERIFY), deg/s RMS */
+    float full_angle_deg;       /* entered by the user: lock-to-lock outboard angle (0 = not entered) */
+    uint32_t boot;              /* boot number of the TRAINING (the "date": log file names) */
+    uint32_t checksum;          /* CRC-32 of all bytes above */
+} calib2_t;
+
+uint32_t calib2_checksum(const calib2_t *c);
+void calib2_seal(calib2_t *c);
+bool calib2_valid(const calib2_t *c);           /* magic, version, size, checksum, plausible values */
+bool calib2_save(calib2_t *c);                  /* queued, written in STANDBY */
+/* false = none / unusable; *v1 = the slot holds a version-1 (DC-motor) record (then NV DATA RESET is
+ * flagged here: the position servo can't use it - TRAINING needed) */
+bool calib2_load(calib2_t *c, bool *v1);
+
 #endif /* CALIB_H */
