@@ -5,6 +5,33 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 000. Academy (steps 15-22) - final report (2026-10-29)
+
+The academy of docs/ACADEMY_SPEC.md (parts A-J) is complete in the code; what is left needs the owner on site.
+
+| Part | Step | Commit | What | Tests |
+|---|---|---|---|---|
+| design + "no boat link" | 15 | 5b41988 | academy/, simguard.py = the only door (simulator on this PC / files), banner, content format, levels model | AC1-AC14 |
+| A accounts | 16 | 241ab4b | accounts + logbook on the shore PC, instructor view, signed levels file -> gateway (next login only), backup | AC15-AC20, gateway AL1-AL4 |
+| B guided tour | 17 | d93e452 | every screen item (read from the station's own sources), Greek voice | AC21-AC24 |
+| C + D lessons, quizzes | 18 | 5d82ebb | 5 lessons checked on the real simulator, 5 pools / 35 questions (choice, picture, sound) | AC25-AC29 |
+| E scenarios | 19 | e38ef2e | 10 emergencies (simulator faults + academy-drawn hazards), reaction time, replay + debrief | AC30-AC33 |
+| F video lessons | 20 | 0035e13 | lesson editor from saved events (trim, blur, questions), player with the HUD redrawn | AC34-AC37 |
+| G + J exams, practical test, online | 21 | 02470c2 | exams + cool-down, 2FA, renewal / currency, certificate PDF, practical test (watch only + CONFIRM_ONLY 0x30), online rules | AC38-AC43, practical P1-P8, sim CO1-CO3 |
+| H 3D sim interface + I manual / tests / screenshots | 22 | step 22 | academy/sim3d.py + window, docs/academy_sim_interface.md, MANUAL ch. 20 / MANUAL_EL ch. 15, docs/screens/academy/ (18 pictures) | AC44-AC50 |
+
+Safety result: the academy never reaches a boat link (static + transitive + runtime proof, AC1-AC3); the only AURIX
+change of the whole academy is the confirm-only request 0x30 that changes nothing on the boat (sim CO1-CO3, storm
+event E_PC_CONFONLY, practical P1-P8); a level goes up only through the practical test (examiner 2FA + onboard
+CONFIRM), never through an exam, a 3D mission, a quiz or anything online (AC38, AC40, AC41, AC46); the 3D simulator
+interface never replaces the simulated AURIX and never takes a command (AC44-AC47); chart and drone photos never reach
+a safety check (AC11, AC48). Every spec I rule is mapped to its tests (AC50). Gate at step 22: academy 50/50,
+practical 8/8, every other suite of tools/check.sh as in PROGRESS.md row 22.
+
+Open (owner, nothing blocks code): W30 the real Daskalio test area (on site with the instructor tool; the practical
+test refuses the placeholder), W33-W35 / W39 content and defaults review (Greek texts, scores, time limits), and the 3D
+world itself (a Godot project: docs/academy_sim_interface.md section 7 is its checklist).
+
 ## 00. Crew profiles, lost link, MANEUVER, roles, two screens, boats (2026-10-25, commits 4e3a1f8 .. this one)
 
 Code under test: commit `988a537` (sections 1-5 of the task + the fix below). Full acceptance run

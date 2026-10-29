@@ -1,0 +1,38 @@
+{
+  "_help": "Mission for the FUTURE 3D simulator (ACADEMY_SPEC H, step 22; docs/academy_sim_interface.md). runs_on sim: the boat is always the simulated AURIX (autopilot_sim on 127.0.0.1:5760); the 3D world only SHOWS it and scores the goals. world = the terrain area (data/sim3d/terrain/<world>/, drone photos for the view only - never a chart). goals use metres from the start position (n_m north, e_m east): reach / keep_clear (radius_m), heading (deg, tol_deg), mode (a mode name), time_limit (s). pass_score 1..100; max_attempts 0 = no limit. lesson = the simulator lesson whose own checks run too (optional). Edit freely; academy/test_academy.py AC45 checks every file.",
+  "kind": "mission",
+  "id": "m01_leave_bay",
+  "runs_on": "sim",
+  "level": "DRIVER",
+  "order": 1,
+  "world": "daskalio_demo",
+  "pass_score": 70,
+  "max_attempts": 0,
+  "title_el": "Έξοδος από τον όρμο",
+  "title_en": "Leaving the bay",
+  "brief_el": "Ξεκινήστε από τη ράμπα σε STANDBY, πάρτε το τιμόνι με το joystick και βγείτε αργά στο σημείο εξόδου χωρίς να πλησιάσετε τα ρηχά.",
+  "brief_en": "Start at the ramp in STANDBY, take the helm with the joystick and leave slowly to the exit point without coming near the shallows.",
+  "goals": [
+    {
+      "type": "mode",
+      "mode": "MANUAL"
+    },
+    {
+      "type": "keep_clear",
+      "n_m": 40,
+      "e_m": -30,
+      "radius_m": 25
+    },
+    {
+      "type": "reach",
+      "n_m": 150,
+      "e_m": 0,
+      "radius_m": 20
+    },
+    {
+      "type": "time_limit",
+      "s": 300
+    }
+  ],
+  "lesson": "l02_takeover"
+}

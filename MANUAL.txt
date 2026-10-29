@@ -31,6 +31,7 @@ CONTENTS
   17. WHAT IS STILL MISSING
   18. Troubleshooting
   19. Testing (the acceptance test)
+  20. Academy - for trainees and instructors (incl. the 3D simulator interface)
 
 
 -------------------------------------------------------------------------------
@@ -2788,4 +2789,118 @@ HOW TO READ THE RESULT
   test_results\ - not in git; delete it any time.
   What the PC can't test (real board timing, the gateway PC's speed, the sensors,
   the sea): TEST_REPORT.md section 4.
+
+
+-------------------------------------------------------------------------------
+20. ACADEMY - FOR TRAINEES AND INSTRUCTORS
+-------------------------------------------------------------------------------
+The academy teaches the station and the boat on the SIMULATOR of this PC and
+on recorded trips. Every academy window shows the banner "TRAINING -
+SIMULATION" at the top. The details of every part are in chapter 7A ("THE
+ACADEMY LEVELS" ... "THE TEST AREA"); this chapter is the path through it.
+Screenshots of every academy window: docs/screens/academy/ (README.md).
+The rules that never change:
+  * the academy never connects to a boat - only the simulator on this PC
+    (127.0.0.1:5760) or files; the one exception is the PRACTICAL TEST,
+    which only WATCHES the boat and asks one confirm-only question;
+  * the academy only ADDS gates: STANDBY, the onboard joystick, the 30 / 5 %
+    start power limit, the onboard CONFIRM and the captain's ACCEPT stay the
+    boat's own and can never be bypassed;
+  * a level goes up ONLY through the practical test (examiner + onboard
+    CONFIRM) - never through an exam, a mission, a quiz or anything online;
+  * the Daskalio chart photos and drone photos are pictures for training,
+    NEVER a navigation chart (the safety checks use only charts/).
+
+[ACADEMY] THE ACADEMY WINDOW
+  Ground station menu Academy -> "Open the academy" (its own window and
+  process), or "python academy/academy_app.py --lang el". The list = every
+  account with its level, expiry, lessons, exams, hours, currency and weak
+  areas. Select YOUR account before you open a lesson / quiz / scenario /
+  exam / mission - without one it is practice and nothing is logged.
+
+[GUIDED TOUR] FIRST: THE GUIDED TOUR
+  "Guided tour": every item of screen 1, screen 2, the tools window, the
+  modes, the alarms, the lamps, the joystick and the panel buttons, with the
+  Greek voice. Do it once completely before the lessons.
+
+[LESSONS] SIMULATOR LESSONS (DRIVER first, then CAPTAIN)
+  "Simulator lessons" -> "Start the simulator" -> pick a lesson -> Start.
+  The required lessons of a level must be passed before its exam (a tick in
+  the list). Checked from the simulated boat itself; Retry when too late.
+
+[QUIZZES] QUIZZES
+  "Quizzes": choice, picture and alarm-sound questions; under 70 % = a weak
+  area in the instructor view - repeat that pool.
+
+[SCENARIOS] EMERGENCY SCENARIOS
+  "Emergency scenarios": react as on the boat; the reaction time counts. Read
+  the debrief and use "Replay". One scenario every year for the renewal.
+
+[VIDEO LESSONS] VIDEO LESSONS FROM REAL TRIPS
+  "Video lessons": real trips with the HUD redrawn, decision points and
+  spot-the-hazard questions (70 % to pass). The instructor makes them with
+  the "Lesson editor" (faces / number plates blurred by hand).
+
+[EXAMS] THE EXAM OF THE LEVEL
+  "Exams": 15 questions, 80 % to pass, 3 attempts then 24 h wait. Online only
+  in a session an instructor marked supervised. Passing does NOT change the
+  level: it opens the way to the practical test.
+
+[PRACTICAL TEST] THE PRACTICAL TEST ON THE BOAT
+  Ground station on board: menu Academy -> "Practical test on THIS boat",
+  CREWED only, the examiner logs in with 2FA, the test area must be set (the
+  placeholder in git is refused), the wind / hours / calm water / start power
+  limit are checked first. Each task is seen in the telemetry and approved
+  by the examiner; at the end the ONBOARD joystick CONFIRM within 10 s. Then
+  the level goes up and the instructor sends the levels file to the gateway
+  (it takes effect at the next login, never mid-trip).
+
+[ONLINE] FROM HOME (THE ONLINE ACADEMY)
+  Remote desktop / SSH over Tailscale to the academy PC only (never a boat).
+  Lessons, quizzes, scenarios, video lessons and missions work as on the PC;
+  exams only in a supervised session; nothing online raises a level.
+
+[3D SIMULATOR] THE 3D SIMULATOR (FUTURE - THE INTERFACE IS READY)
+  Academy window -> "3D simulator". There is NO 3D world yet: this window and
+  docs/academy_sim_interface.md are the ready interface for a future Godot
+  simulator. What it does now:
+    * "Lesson simulator": built-in (2D, default) or 3D (Godot). The 3D choice
+      is used only while the 3D simulator is running (it writes a fresh
+      hello file); otherwise the window says "3D not available - built-in in
+      use". In BOTH cases the boat is the simulator on this PC (the same
+      safety code): the 3D world only SHOWS it (the academy writes the boat's
+      state at 5 Hz into academy/data/sim3d/live.jsonl).
+    * Missions (content/missions/*.json, by level): pick one, "Start in 3D"
+      writes the mission for the 3D simulator (an attempt is counted; some
+      missions have a limit), "Collect results" reads the 3D simulator's
+      results (score, passed / not passed) into the logbook - the best score
+      and the attempts show in the list. A wrong or forged result is refused
+      and said. A mission result NEVER changes a level.
+    * "Import drone photos": the owner's DJI photos of the area (with GPS)
+      become the 3D view's picture / terrain (copies without metadata in
+      academy/data/sim3d/terrain/<area>/). Photos without GPS are skipped.
+      They are NOT a chart and no safety check ever reads them.
+  The academy never starts the 3D program and never takes a command from it:
+  start it yourself (when it exists) and keep the academy window open.
+
+[INSTRUCTOR] FOR THE INSTRUCTOR
+  Once: "Academy key" -> the gateway's secrets.json "academy_key"; your own
+  password + "2FA app" (a CAPTAIN level of your own). Then, per trainee:
+    1. "New account"; the trainee follows the path above (tour -> lessons ->
+       quizzes -> scenarios -> video lessons -> exam).
+    2. Watch the instructor view: weak areas (pools / lessons under 70 %),
+       expiry (reminder 30 days before), currency (90 days).
+    3. Supervise online exams ("Supervise online session", your 2FA login).
+    4. Set the test area on site (menu Academy -> "Practical test area";
+       W30: the real Daskalio bay + ramp are still to be set) and examine
+       the practical test on the boat.
+    5. "Make the gateway file" -> the ground station sends it (menu Academy
+       -> "Send the academy levels to the gateway").
+    6. Every year: "Renew" (DRIVER refresher; CAPTAIN + a check ride every 24
+       months); "Certificate PDF"; "Backup" to a second shore PC / USB disk.
+    7. 3D missions: edit / add content/missions/*.json (commented; the test
+       academy/test_academy.py checks every file) and the 3D simulator's
+       drone photos ("Import drone photos").
+  Lowering a level is always possible ("Set level"); raising it never is,
+  except through the practical test.
 ===============================================================================

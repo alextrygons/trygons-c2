@@ -147,6 +147,29 @@ def check_recording(path, env=None):
     return os.path.abspath(p)
 
 
+# --- step 22: drone photos for the 3D view (sim3d.import_photos) - ordinary picture files only ------
+IMAGE_EXT = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
+
+
+def check_image(path, env=None):
+    """Raise Refused unless path is an ordinary picture file (a drone photo). Returns the absolute path.
+    A picture is never a chart: sim3d keeps it for the 3D training view only (ACADEMY_SPEC H)."""
+    if running_on_gateway(env):
+        raise Refused("academy never runs on a gateway PC")
+    p = str(path or "").strip()
+    low = p.lower()
+    if not p:
+        raise Refused("no file")
+    if (low.startswith(("tcp:", "udp:", "usb:", "http:", "https:", "/dev/", "\\\\.\\", "//./")) or
+            (low.startswith("com") and low[3:].rstrip(":").isdigit())):
+        raise Refused("%s is a device / address, not a picture file" % p)
+    if not low.endswith(IMAGE_EXT):
+        raise Refused("%s is not a picture file type" % p)
+    if not os.path.isfile(p):
+        raise Refused("%s is not an ordinary file" % p)
+    return os.path.abspath(p)
+
+
 # --- step 18: the lessons' link to the simulator + starting the simulator --------------------------
 LESSON_PORT = 5760                              # the simulator's USB-link port (autopilot_sim server)
 SIM_ARGS = ("server", str(LESSON_PORT), "1")    # fixed: loopback, real time, analog sim joystick

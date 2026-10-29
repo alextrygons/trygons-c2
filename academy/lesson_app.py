@@ -19,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import lesson                                                           # noqa: E402  (puts groundstation/ on the path)
+import sim3d                                                            # noqa: E402  (step 22: the 3D view feed)
 import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
 from banner import banner_text                                          # noqa: E402
@@ -269,6 +270,7 @@ class LessonWindow(object):
             self.sim = None
             return
         state = self.sim.tick()
+        self.feed_3d(state)
         if self.run is not None:
             status, acts = self.run.update(state, self.clock())
             for a in acts:
@@ -277,6 +279,26 @@ class LessonWindow(object):
             if status in ("done", "failed") and not self.logged:
                 self.finish()
         self.show()
+
+    def feed_3d(self, state):
+        """Step 22 (spec H): with the 3D backend in use, the simulated boat goes to live.jsonl for the 3D view
+        (files only; the lesson's AURIX stays the simulator on this PC). The builtin backend writes nothing."""
+        if self.run is None:
+            return None
+        if getattr(self, "_feed_run", None) is not self.run:
+            self._feed_run = self.run
+            try:
+                self.feed = sim3d.feed_for(type(self.run).__module__, self.run.doc.get("id"))
+                if self.feed is not None:
+                    self.feed.t0 = self.clock()             # sample times on the window's clock
+            except (simguard.Refused, OSError):
+                self.feed = None
+        if getattr(self, "feed", None) is not None:
+            try:
+                self.feed.write(state, self.clock())
+            except OSError:
+                self.feed = None
+        return getattr(self, "feed", None)
 
     def finish(self):
         self.logged = True

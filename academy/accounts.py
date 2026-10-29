@@ -47,7 +47,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PUSH_FORMAT = 1
 PUSH_KIND = "academy_levels"
 LOG_KINDS = ("lesson", "quiz", "scenario", "videolesson", "exam", "attempt", "hours", "level", "note",
-             "login", "supervise", "renewal", "practical", "check_ride", "refresher", "area", "certificate")
+             "login", "supervise", "renewal", "practical", "check_ride", "refresher", "area", "certificate",
+             "mission_start", "mission")                # step 22: 3D simulator missions (sim3d.py)
 # entries that count as logged driving for the currency rule (spec J): driving hours, a practical test /
 # check ride / supervised refresher trip on the real boat, a level granted by the practical test
 DRIVING_KINDS = ("hours", "practical", "check_ride", "refresher")

@@ -247,3 +247,19 @@ D17 Step 21 exams (spec G) + the practical test (G2-G4) + the online academy (J)
    the placeholder (refused); the instructor tool writes data/test_area.json (CAPTAIN 2FA, audit "area"); wind from a
    blocked direction refused from strong_wind_kn (8 kn, W39). Tests: academy AC38-AC43, academy/practical/
    test_practical.py P1-P8 (P7 on the real simulator) in tools/check.sh.
+D18 Step 22 the 3D simulator interface (spec H) + manual / tests / screenshots (spec I). academy/sim3d.py (INTERFACE_VERSION 1)
+   + sim3d_app.py (academy window button "3D simulator"); the full contract = docs/academy_sim_interface.md. No 3D world now.
+   The 3D simulator NEVER replaces the simulated AURIX: lessons / scenarios / missions keep autopilot_sim on 127.0.0.1:5760
+   (sim3d.lesson_target); the 3D world is a view + a mission scorer. FILES ONLY in academy/data/sim3d/ (no socket, no
+   process - D2 / D3 unchanged: the academy never starts Godot): settings.json (backend builtin = default | godot3d), the
+   3D sim's hello.json (kind sim3d_hello, version, t; used only while fresh <= 5 s, else builtin + the reason), live.jsonl
+   (the academy writes the simulated boat at 5 Hz while a lesson / scenario runs with godot3d in use - LessonWindow.feed_3d),
+   missions/<attempt>.json (content/missions/*.json kind "mission", runs_on sim, goals relative to the start: reach /
+   keep_clear / heading / mode / time_limit, pass_score, max_attempts; writing it = an attempt, logbook "mission_start"),
+   results/<attempt>.json from the 3D sim (accepted once, only for an issued attempt of the same mission, score 0..100,
+   never a level / role / command field; logbook "mission"; NEVER changes a level), terrain/<area>/ = the owner's DJI drone
+   photos imported by sim3d.import_photos (simguard.check_image: ordinary picture files; EXIF GPS + DJI XMP read, copies
+   without metadata <= 2048 px, manifest not_for_navigation; never a chart, no safety code mentions sim3d: AC48). Spec I:
+   MANUAL.txt chapter 20 / MANUAL_EL.txt chapter 15 (the path for trainees + the instructor's tasks, parts [ACADEMY] ..
+   [INSTRUCTOR]), tools/academy_screens.py -> docs/screens/academy/ (every window el + en + README), tests AC44-AC50 (AC50 =
+   every spec I rule mapped to its tests, the manual parts, the doc, the screenshots).

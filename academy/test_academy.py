@@ -108,6 +108,25 @@
        = no licence pushed until a refresher trip), set_level only lowers once a CAPTAIN instructor exists
   AC42 the instructor view's certificate PDF (Pillow): an instructor's 2FA session only, the level in force, logged
   AC43 the academy window's step-21 buttons (login, password, 2FA app, renew, supervise, certificate)
+  AC44 the 3D simulator interface (step 22, spec H): the backend choice (builtin default, godot3d only with a fresh
+       hello of this interface version, else builtin + the reason), the lessons' AURIX stays 127.0.0.1:5760
+       whatever the backend, nothing on a gateway PC
+  AC45 missions: every content/missions file passes content.check + sim3d.check_mission (bad cases caught, mode
+       names = proto.MODES); a mission package is written only in data/sim3d/missions, logs the attempt at the
+       start, max_attempts refuses the next one
+  AC46 3D results: a valid result is logged once (kind "mission", pass mark), forged / unknown attempts, a wrong
+       mission, a score out of range, a level / role / command field, a device path are refused; a result never
+       changes a level; read files are moved to results/done
+  AC47 the live view feed: header + 5 Hz samples of the simulated boat, written only with the godot3d backend in
+       use (builtin = no file); a lesson through the window feeds it while its link stays the simulator's
+  AC48 drone photos -> 3D terrain: EXIF GPS + DJI XMP read, the copy has NO metadata and <= 2048 px, a photo
+       without GPS / a device / a URL / a non-picture refused, manifest not_for_navigation, nothing outside
+       data/sim3d/terrain/<area>; no safety code reads sim3d / its terrain (photo rule)
+  AC49 the 3D simulator window: banner first, the backend radio buttons, start refused without the 3D simulator,
+       start + collect with it (attempts / best score in the list), photo import; the academy window's button
+  AC50 spec I: every rule of the spec has its test (the list below names them and they exist), the academy
+       chapter in MANUAL.txt + MANUAL_EL.txt (trainees + instructors, every part A-J), docs/academy_sim_interface.md,
+       the screenshots in docs/screens/academy/ with their README
 Run:  python academy/test_academy.py      (exit code 0 = all passed)
 """
 import ast
@@ -448,6 +467,8 @@ def ac9():
     used |= {"tour.s2_" + n for n in tour_app.S2_BOXES}
     import videolesson_app
     used |= videolesson_app.TEXT_KEYS
+    import sim3d_app
+    used |= sim3d_app.TEXT_KEYS
     import scenario_app
     used |= {"scen.db_failed_" + w for w in ("late", "forbid", "outcome")} | {"scen.ev_" + e for e in scenario_app.EVENT_KEYS}
     missing = sorted(k for k in used if k not in el or k not in en)
@@ -466,7 +487,7 @@ def ac10():
         d = content.load(f)
         kinds.add(d.get("kind"))
         probs += content.check(d, os.path.relpath(f, HERE))
-    need = {"lesson", "quiz", "scenario", "exam", "limits", "test_area", "tour", "practical"}
+    need = {"lesson", "quiz", "scenario", "exam", "limits", "test_area", "tour", "practical", "mission"}
     if kinds != need:
         probs.append("example kinds %s, expected %s" % (sorted(k for k in kinds if k), sorted(need)))
     bad_docs = [
@@ -477,6 +498,7 @@ def ac10():
         {"kind": "exam", "level": "ADMIRAL", "_help": "x"},
         {"kind": "limits"},
         {"kind": "test_area", "_help": "x", "placeholder": True},
+        {"kind": "mission", "_help": "x", "runs_on": "boat", "title_el": "a", "title_en": "b"},
     ]
     missed = [i for i, d in enumerate(bad_docs) if not content.check(d, "bad%d" % i)]
     if missed:
@@ -3346,10 +3368,482 @@ def ac43():
            "wrong code refused, the instructor's login; supervise + certificate through the window; renew needs the "
            "login")
 
+# --- AC44-AC50: step 22 (spec H: 3D simulator interface; spec I: manual, tests, screenshots) -------------
+def _env22(tag):
+    return {"TRYGONS_ACADEMY_DATA": tempfile.mkdtemp(prefix="trygons_%s_" % tag),
+            "PROGRAMDATA": tempfile.mkdtemp(prefix="trygons_%sp_" % tag)}
+
+
+def _hello(env, version=None, t=None, kind="sim3d_hello"):
+    import time
+    import sim3d
+    d = sim3d.sim3d_dir(env)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "hello.json"), "w", encoding="utf-8") as f:
+        json.dump({"kind": kind, "version": sim3d.INTERFACE_VERSION if version is None else version,
+                   "t": time.time() if t is None else t, "name": "test-3d"}, f)
+
+
+def _result(env, attempt, mission, name=None, **kw):
+    import sim3d
+    d = os.path.join(sim3d.sim3d_dir(env), "results")
+    os.makedirs(d, exist_ok=True)
+    r = {"kind": "sim3d_result", "version": sim3d.INTERFACE_VERSION, "attempt": attempt, "mission": mission,
+         "status": "passed", "score": 85, "duration_s": 120.0}
+    r.update(kw)
+    p = os.path.join(d, (name or attempt) + ".json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(r, f)
+    return p
+
+
+def ac44():
+    import time
+    import sim3d
+    import simguard
+    wrong = []
+    env = _env22("ac44")
+    if sim3d.chosen_backend(env) != "builtin" or sim3d.active_backend(env)[0] != "builtin":
+        wrong.append("default is not builtin")
+    sim3d.select_backend("godot3d", env)
+    if sim3d.chosen_backend(env) != "godot3d":
+        wrong.append("choice not kept")
+    b, why = sim3d.active_backend(env)
+    if b != "builtin" or "no hello" not in why:
+        wrong.append("godot3d without its hello in use (%s, %s)" % (b, why))
+    for kw, what in (({"version": 99}, "interface"), ({"t": time.time() - 60}, "stale"),
+                     ({"kind": "other"}, "not a 3D")):
+        _hello(env, **kw)
+        b, why = sim3d.active_backend(env)
+        if b != "builtin" or what not in why:
+            wrong.append("hello %s accepted (%s)" % (kw, why))
+    _hello(env)
+    if sim3d.active_backend(env) != ("godot3d", ""):
+        wrong.append("a fresh hello not used: %s" % (sim3d.active_backend(env),))
+    if sim3d.lesson_target() != ("127.0.0.1", 5760) or simguard.LESSON_PORT != 5760:
+        wrong.append("the lessons' AURIX moved: %s" % (sim3d.lesson_target(),))
+    try:
+        sim3d.select_backend("unreal", env)
+        wrong.append("unknown backend chosen")
+    except ValueError:
+        pass
+    with open(os.path.join(sim3d.sim3d_dir(env), "settings.json"), "w") as f:
+        f.write('{"backend": "rocket"}')
+    if sim3d.chosen_backend(env) != "builtin":
+        wrong.append("an unknown stored backend not builtin")
+    gw = dict(env, **gateway_pc())
+    for fn in (lambda: sim3d.select_backend("builtin", gw), lambda: sim3d.LiveFeed("x", "y", gw)):
+        try:
+            fn()
+            wrong.append("works on a gateway PC")
+        except simguard.Refused:
+            pass
+    report("AC44 3D simulator backend choice", not wrong, "; ".join(wrong) or
+           "builtin by default; godot3d only with a fresh hello of interface %d (none / old version / stale / not a "
+           "hello = builtin + why); the lessons' AURIX stays 127.0.0.1:5760; refused on a gateway PC"
+           % sim3d.INTERFACE_VERSION)
+
+
+def ac45():
+    import time
+    import accounts
+    import content
+    import lesson
+    import proto
+    import sim3d
+    import simguard
+    wrong = []
+    ms = sim3d.missions()
+    ids = {d["id"] for d in lesson.lessons()}
+    if len(ms) < 3 or {m["level"] for m in ms} != {"DRIVER", "CAPTAIN"}:
+        wrong.append("example missions missing (%d)" % len(ms))
+    for m in ms:
+        wrong += sim3d.check_mission(m, m.get("id"), ids)
+    if list(sim3d.MODE_NAMES) != list(proto.MODES):
+        wrong.append("MODE_NAMES != proto.MODES")
+    good = dict(ms[0])
+    bad = [dict(good, runs_on="boat"), dict(good, pass_score=0), dict(good, goals=[]),
+           dict(good, goals=[{"type": "fly"}]), dict(good, goals=[{"type": "reach", "n_m": 1, "e_m": 2}]),
+           dict(good, goals=[{"type": "mode", "mode": "WARP"}]), dict(good, max_attempts=-1),
+           dict(good, lesson="l99_nothing"), dict(good, id="../x"), dict(good, world="")]
+    missed = [i for i, d in enumerate(bad) if not sim3d.check_mission(d, "bad", ids)]
+    if missed:
+        wrong.append("checker missed %s" % missed)
+    env = _env22("ac45")
+    st = _store()
+    st.add("ann")
+    lim = dict(ms[0], max_attempts=2)
+    paths = [sim3d.issue(lim, "ann", st, "el", env, now=time.time() + i) for i in range(2)]
+    for p in paths:
+        if os.path.dirname(p) != os.path.join(sim3d.sim3d_dir(env), "missions"):
+            wrong.append("package outside missions/: %s" % p)
+        pkg = json_load(p)
+        if pkg.get("kind") != "sim3d_mission" or pkg["mission"]["id"] != lim["id"] or pkg["aurix"]["port"] != 5760:
+            wrong.append("package content %s" % sorted(pkg))
+    if sim3d.attempts(st, "ann", lim["id"]) != 2:
+        wrong.append("attempts %d" % sim3d.attempts(st, "ann", lim["id"]))
+    try:
+        sim3d.issue(lim, "ann", st, "el", env)
+        wrong.append("a third attempt of max 2")
+    except simguard.Refused:
+        pass
+    if sim3d.attempts(st, "bob", lim["id"]) != 0 or sim3d.refused(st, "bob", lim, env):
+        wrong.append("another trainee's attempts counted")
+    if sim3d.issue(ms[1], None, None, "en", env) is None:
+        wrong.append("practice package")
+    if "mission" not in content.KINDS or "mission_start" not in accounts.LOG_KINDS:
+        wrong.append("kinds not registered")
+    report("AC45 3D missions", not wrong, "; ".join(wrong) or
+           "%d missions pass the checker (%d bad cases caught, modes = proto.MODES); packages only in "
+           "data/sim3d/missions with the simulated AURIX 127.0.0.1:5760; the attempt logged at the start; "
+           "max_attempts refuses the next one" % (len(ms), len(bad)))
+
+
+def ac46():
+    import sim3d
+    import simguard
+    wrong = []
+    env = _env22("ac46")
+    st = _store()
+    st.add("ann")
+    before = st.accounts["ann"].level
+    n_level = len([e for e in st.entries() if e.get("kind") == "level"])
+    m = sim3d.missions()[0]
+    att = os.path.basename(sim3d.issue(m, "ann", st, "el", env))[:-5]
+    _result(env, att, m["id"])
+    _result(env, att, m["id"], name="zz_again")                      # the same attempt twice
+    _result(env, "forged_attempt", m["id"])
+    _result(env, att, "m02_course_change", name="wrong_mission")
+    _result(env, att, m["id"], name="score", score=140)
+    _result(env, att, m["id"], name="level", level="CAPTAIN")
+    _result(env, att, m["id"], name="cmd", command="throttle 100")
+    _result(env, att, m["id"], name="ver", version=7)
+    _result(env, att, m["id"], name="status", status="won")
+    ok, bad = sim3d.collect_results(st, env)
+    if len(ok) != 1 or ok[0].get("score") != 85 or not ok[0].get("passed"):
+        wrong.append("logged %s" % ok)
+    if len(bad) != 8:
+        wrong.append("refused %d of 8: %s" % (len(bad), bad))
+    ents = [e for e in st.entries() if e.get("kind") == "mission"]
+    if len(ents) != 1 or ents[0].get("user") != "ann" or sim3d.best_score(st, "ann", m["id"]) != 85:
+        wrong.append("logbook %s" % ents)
+    if st.accounts["ann"].level != before or len([e for e in st.entries() if e.get("kind") == "level"]) != n_level:
+        wrong.append("a 3D result changed a level")
+    rd = os.path.join(sim3d.sim3d_dir(env), "results")
+    if [f for f in os.listdir(rd) if f.endswith(".json")] or len(os.listdir(os.path.join(rd, "done"))) != 9:
+        wrong.append("read results not moved to done/")
+    if sim3d.collect_results(st, env) != ([], []):
+        wrong.append("a result read twice")
+    att2 = os.path.basename(sim3d.issue(m, "ann", st, "el", env))[:-5]
+    _result(env, att2, m["id"], score=50)                              # below the pass mark
+    ok, _bad = sim3d.collect_results(st, env)
+    if not ok or ok[0]["passed"]:
+        wrong.append("a score below pass_score passed")
+    if not sim3d.check_result(None, {}):
+        wrong.append("None accepted")
+    try:
+        simguard.check_recording("COM3")
+        wrong.append("COM3 read as a result")
+    except simguard.Refused:
+        pass
+    try:
+        sim3d.collect_results(st, dict(env, **gateway_pc()))
+        wrong.append("collected on a gateway PC")
+    except simguard.Refused:
+        pass
+    report("AC46 3D mission results", not wrong, "; ".join(wrong) or
+           "a valid result logged once (kind mission, pass mark applied); the same attempt again, a forged attempt, "
+           "a wrong mission, score 140, level / command fields, another version, a bad status refused; never a "
+           "level change; read files moved to done/; nothing on a gateway PC")
+
+
+def ac47():
+    import tkinter as tk
+    import lesson
+    import lesson_app
+    import sim3d
+    import simguard
+    wrong = []
+    env = _env22("ac47")
+    if sim3d.feed_for("lesson", "l01", env) is not None:
+        wrong.append("builtin backend writes a feed")
+    sim3d.select_backend("godot3d", env)
+    if sim3d.feed_for("lesson", "l01", env) is not None:
+        wrong.append("a feed without the 3D simulator's hello")
+    _hello(env)
+    f = sim3d.feed_for("lesson", "l01", env, now=None)
+    if f is None:
+        wrong.append("no feed with the godot3d backend in use")
+    else:
+        f.t0 = 1000.0
+        st = {"mode_name": "HDG_LOCK", "heading": 91.234, "est_sog": 4.5, "est_lat": 37.8201234567, "est_lon": 23.6,
+              "throttle": 22.0, "alarm_bits": 0}
+        n = sum(1 for i in range(50) if f.write(st, now=1000.0 + i * 0.05))      # 2.5 s at 20 Hz -> 5 Hz
+        head, smp = sim3d.read_live(f.path, env)
+        if head.get("id") != "l01" or head.get("version") != sim3d.INTERFACE_VERSION or n != 13 or len(smp) != 13:
+            wrong.append("feed %s, %d written, %d read" % (head, n, len(smp)))
+        if smp and (smp[0].get("mode") != "HDG_LOCK" or smp[0].get("lat") != 37.8201235 or smp[1]["t"] != 0.2):
+            wrong.append("sample %s" % smp[:2])
+
+    class FakeLink(object):
+        closed = False
+        sent = 0
+
+        def send(self, d):
+            FakeLink.sent += 1
+
+        def recv(self):
+            return b""
+
+    old = os.environ.get("TRYGONS_ACADEMY_DATA")
+    os.environ["TRYGONS_ACADEMY_DATA"] = env["TRYGONS_ACADEMY_DATA"]
+    try:
+        root = tk.Tk()
+        try:
+            clock = [5000.0]
+            w = lesson_app.LessonWindow(root, "en", link_factory=FakeLink, clock=lambda: clock[0])
+            if lesson_app.LessonWindow(tk.Toplevel(root), "en").link_factory is not simguard.SimLink:
+                wrong.append("the lesson link is not the simulator link")
+            doc = lesson.lessons()[0]
+            w.begin(doc)
+            for _ in range(20):
+                clock[0] += 0.05
+                w.step()
+            head, smp = sim3d.read_live(os.path.join(sim3d.sim3d_dir(env), "live.jsonl"), env)
+            if head.get("id") != doc["id"] or not 4 <= len(smp) <= 6:
+                wrong.append("window feed %s / %d samples" % (head, len(smp)))
+            if FakeLink.sent == 0:
+                wrong.append("the lesson sent nothing to its simulator link")
+        finally:
+            root.destroy()
+    finally:
+        if old is None:
+            os.environ.pop("TRYGONS_ACADEMY_DATA", None)
+        else:
+            os.environ["TRYGONS_ACADEMY_DATA"] = old
+    report("AC47 3D live view feed", not wrong, "; ".join(wrong) or
+           "header + 5 Hz samples (mode, heading, position ...) only with the godot3d backend in use (builtin / no "
+           "hello = no file); a lesson through the window feeds it while its frames still go to its simulator link")
+
+
+def _dji_photo(path, gps=True, size=(3000, 2000)):
+    from PIL import Image
+    im = Image.new("RGB", size, (10, 80, 120))
+    ex = Image.Exif()
+    ex[0x010F] = "DJI"
+    ex[0x0110] = "FC3582"
+    if gps:
+        ex[0x8825] = {1: "N", 2: (37.0, 49.0, 12.0), 3: "E", 4: (23.0, 36.0, 0.0), 5: b"\x00", 6: 35.5}
+    im.save(path, "JPEG", exif=ex, comment=b'<rdf drone-dji:RelativeAltitude="+60.10" '
+                                           b'drone-dji:FlightYawDegree="-12.50" drone-dji:GimbalPitchDegree="-90.00"/>')
+    return path
+
+
+def ac48():
+    import sim3d
+    import simguard
+    wrong = []
+    try:
+        from PIL import Image
+    except ImportError:
+        report("AC48 drone photos -> 3D terrain", False, "Pillow is not installed")
+        return
+    env = _env22("ac48")
+    src = tempfile.mkdtemp(prefix="trygons_ac48s_")
+    a = _dji_photo(os.path.join(src, "DJI_0001.JPG"))
+    b = _dji_photo(os.path.join(src, "DJI_0002.JPG"), gps=False)
+    txt = os.path.join(src, "notes.txt")
+    open(txt, "w").close()
+    info = sim3d.photo_info(a, env)
+    if (info.get("lat"), info.get("lon"), info.get("alt_m"), info.get("rel_alt_m"), info.get("yaw_deg"),
+            info.get("gimbal_pitch_deg")) != (37.82, 23.6, 35.5, 60.1, -12.5, -90.0):
+        wrong.append("photo info %s" % info)
+    man, skipped = sim3d.import_photos([a, b, txt, "COM4", "https://x/y.jpg"], "daskalio_demo", env)
+    if len(man["photos"]) != 1 or len(skipped) != 4:
+        wrong.append("imported %d, skipped %s" % (len(man["photos"]), skipped))
+    if man.get("not_for_navigation") is not True or "NOT a navigation chart" not in man.get("_note", ""):
+        wrong.append("manifest not marked not_for_navigation")
+    out = sim3d.terrain_dir("daskalio_demo", env)
+    files = sorted(os.listdir(out))
+    if files != ["DJI_0001.jpg", "manifest.json"]:
+        wrong.append("terrain files %s" % files)
+    else:
+        cp = os.path.join(out, "DJI_0001.jpg")
+        with Image.open(cp) as im:
+            size, nexif = im.size, len(im.getexif())
+        if max(size) > sim3d.TERRAIN_MAX_PX or nexif or b"drone-dji" in open(cp, "rb").read():
+            wrong.append("copy keeps metadata or is too big (%s, exif %d)" % (size, nexif))
+    man2, _ = sim3d.import_photos([a], "daskalio_demo", env)
+    if len(man2["photos"]) != 2 or man2["photos"][1]["file"] == man2["photos"][0]["file"]:
+        wrong.append("a second import overwrote a photo")
+    for area in ("../charts", "a/b", ""):
+        try:
+            sim3d.import_photos([a], area, env)
+            wrong.append("area %r accepted" % area)
+        except simguard.Refused:
+            pass
+    try:
+        sim3d.import_photos([a], "x", dict(env, **gateway_pc()))
+        wrong.append("imported on a gateway PC")
+    except simguard.Refused:
+        pass
+    # the photo rule: no safety code reads the 3D terrain / sim3d
+    hits = []
+    for sub, ext in (("app", (".c", ".h")), ("hal", (".c", ".h")), ("gateway", (".py",))):
+        for root, ds, fs in os.walk(os.path.join(REPO, sub)):
+            ds[:] = [d for d in ds if d not in ("__pycache__", "libcanard")]
+            for f in fs:
+                if f.endswith(ext) and not f.startswith("test_"):
+                    if "sim3d" in open(os.path.join(root, f), encoding="utf-8", errors="replace").read().lower():
+                        hits.append(f)
+    for p in ("groundstation/chart.py", "tools/chartprep.py"):
+        fp = os.path.join(REPO, p)
+        if os.path.isfile(fp) and "sim3d" in open(fp, encoding="utf-8", errors="replace").read().lower():
+            hits.append(p)
+    if hits:
+        wrong.append("safety code mentions sim3d: %s" % hits)
+    report("AC48 drone photos -> 3D terrain", not wrong, "; ".join(wrong) or
+           "EXIF GPS + height + DJI yaw / gimbal read; the copy without metadata, <= %d px; no GPS / a text file / "
+           "COM4 / a URL skipped; manifest not_for_navigation; only in data/sim3d/terrain/<area> (bad area names, "
+           "a gateway PC refused); no safety code mentions sim3d" % sim3d.TERRAIN_MAX_PX)
+
+
+def ac49():
+    import tkinter as tk
+    import accounts
+    import sim3d
+    import sim3d_app
+    import text
+    wrong = []
+    env = _env22("ac49")
+    st = _store()
+    st.add("ann")
+    root = tk.Tk()
+    try:
+        w = sim3d_app.Sim3DWindow(root, "en", store=st, user="ann", env=env)
+        kids = root.pack_slaves()
+        if not kids or kids[0] is not w.banner or w.banner.cget("text") != text.T("academy.banner", "en"):
+            wrong.append("banner not first")
+        if sorted(w.radios) != sorted(sim3d.BACKENDS) or w.backend.get() != "builtin":
+            wrong.append("backend buttons")
+        w.select("m02_course_change")
+        if "090" not in w.l_brief.cget("text") or "heading 90" not in w.l_goals.cget("text"):
+            wrong.append("brief / goals %r" % w.l_goals.cget("text"))
+        if w.start_selected() is not None or "not running" not in w.msg.cget("text"):
+            wrong.append("started without the 3D simulator")
+        w.choose("godot3d")
+        if "not available" not in w.l_backend.cget("text"):
+            wrong.append("godot3d without hello shown in use")
+        _hello(env)
+        w.update_backend()
+        p = w.start_selected()
+        if not p or sim3d.attempts(st, "ann", "m02_course_change") != 1:
+            wrong.append("start with the 3D simulator: %s" % w.msg.cget("text"))
+        else:
+            _result(env, os.path.basename(p)[:-5], "m02_course_change", score=77)
+            res = w.collect()
+            if not res or len(res[0]) != 1 or "77" not in w.msg.cget("text"):
+                wrong.append("collect %s" % w.msg.cget("text"))
+            row = [w.list.get(i) for i in range(w.list.size()) if "HDG LOCK" in w.list.get(i)]
+            if not row or "best 77" not in row[0]:
+                wrong.append("list row %s" % row)
+        try:
+            import PIL                                          # noqa: F401
+            src = tempfile.mkdtemp(prefix="trygons_ac49s_")
+            r = w.import_photos([_dji_photo(os.path.join(src, "a.jpg"), size=(400, 300))])
+            if not r or len(r[0]["photos"]) != 1 or "NOT a chart" not in w.msg.cget("text"):
+                wrong.append("photo import %s" % w.msg.cget("text"))
+        except ImportError:
+            pass
+        import academy_app
+        app = academy_app.AcademyApp(tk.Toplevel(root), accounts.Store(tempfile.mkdtemp(),
+                                                                       env={"PROGRAMDATA": tempfile.mkdtemp()}))
+        if "acc.sim3d" not in app.buttons or not isinstance(app.open_sim3d(), sim3d_app.Sim3DWindow):
+            wrong.append("academy window button")
+    finally:
+        root.destroy()
+    report("AC49 3D simulator window", not wrong, "; ".join(wrong) or
+           "banner first; builtin / 3D buttons; brief + goals; start refused without the 3D simulator, written with it "
+           "(attempt counted); a result collected -> score in the list; drone photo import says NOT a chart; the "
+           "academy window's button opens it")
+
+
+SPEC_I_TESTS = {                         # spec I: "tests for all rules above" -> the tests that prove them
+    "no boat link": ("ac1", "ac2", "ac3", "ac4", "ac5", "ac6", "ac7", "ac26", "ac35"),
+    "no bypass (lessons, scenarios, the practical test apart)": ("ac14", "ac25", "ac32"),
+    "role gating": ("ac12", "ac38", "ac39"),
+    "expired / non-current refused": ("ac12", "ac41"),
+    "upgrade only with examiner + CONFIRM": ("ac14", "ac41"),
+    "nothing online upgrades": ("ac40",),
+    "chart photos never a chart": ("ac11", "ac48"),
+    "both languages, no missing keys": ("ac8", "ac9", "ac10"),
+    "3D simulator interface (spec H)": ("ac44", "ac45", "ac46", "ac47", "ac48", "ac49"),
+}
+SPEC_I_PRACTICAL = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8")   # academy/practical/test_practical.py
+SCREENS = ("academy_main", "tour", "lessons", "quizzes", "scenarios", "videolessons", "exams", "sim3d",
+           "practical")
+MANUAL_PARTS = ("ACADEMY", "GUIDED TOUR", "LESSONS", "QUIZZES", "SCENARIOS", "VIDEO LESSONS", "EXAMS",
+                "PRACTICAL TEST", "ONLINE", "3D SIMULATOR", "INSTRUCTOR")
+MANUAL_HEAD = {"MANUAL.txt": "ACADEMY - FOR TRAINEES AND INSTRUCTORS",
+               "MANUAL_EL.txt": "ΑΚΑΔΗΜΙΑ - ΓΙΑ ΕΚΠΑΙΔΕΥΟΜΕΝΟΥΣ ΚΑΙ ΕΚΠΑΙΔΕΥΤΕΣ"}
+
+
+def ac50():
+    wrong = []
+    g = globals()
+    for rule, tests in SPEC_I_TESTS.items():
+        for t in tests:
+            if not callable(g.get(t)):
+                wrong.append("%s: %s missing" % (rule, t))
+    pt = open(os.path.join(HERE, "practical", "test_practical.py"), encoding="utf-8").read()
+    for p in SPEC_I_PRACTICAL:
+        if not re.search(r'"%s\b' % p, pt):
+            wrong.append("practical test %s missing" % p)
+    if not re.search(r"wind", pt, re.I) or not re.search(r"area", pt, re.I):
+        wrong.append("practical tests do not cover the area / wind refusals")
+    for fn, head in MANUAL_HEAD.items():
+        s = open(os.path.join(REPO, fn), encoding="utf-8").read()
+        i = s.find(head)
+        if i < 0:
+            wrong.append("%s: no academy chapter %r" % (fn, head))
+            continue
+        chap = s[i:]
+        for part in MANUAL_PARTS:
+            if "[%s]" % part not in chap:
+                wrong.append("%s: chapter part [%s] missing" % (fn, part))
+    doc = os.path.join(REPO, "docs", "academy_sim_interface.md")
+    if not os.path.isfile(doc):
+        wrong.append("docs/academy_sim_interface.md missing")
+    else:
+        d = open(doc, encoding="utf-8").read()
+        for need in ("hello.json", "live.jsonl", "sim3d_mission", "sim3d_result", "not_for_navigation",
+                     "127.0.0.1:5760", "INTERFACE_VERSION"):
+            if need not in d:
+                wrong.append("interface doc lacks %s" % need)
+    sd = os.path.join(REPO, "docs", "screens", "academy")
+    readme = os.path.join(sd, "README.md")
+    have = os.listdir(sd) if os.path.isdir(sd) else []
+    rtext = open(readme, encoding="utf-8").read() if os.path.isfile(readme) else ""
+    if not rtext:
+        wrong.append("docs/screens/academy/README.md missing")
+    for sc in SCREENS:
+        for lang in ("el", "en"):
+            f = "%s_%s.png" % (sc, lang)
+            if f not in have:
+                wrong.append("screenshot %s missing" % f)
+            elif f not in rtext:
+                wrong.append("%s not in the README" % f)
+    report("AC50 spec I: tests, manual, screenshots", not wrong, "; ".join(wrong) or
+           "%d spec rules -> their tests (+ practical P1-P8); the academy chapter in MANUAL.txt + MANUAL_EL.txt with "
+           "every part; the 3D interface doc; %d screenshots (el + en) listed in the README"
+           % (len(SPEC_I_TESTS), 2 * len(SCREENS)))
+
+
 if __name__ == "__main__":
     for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
               ac19, ac20, ac21, ac22, ac23, ac24, ac25, ac26, ac27, ac28, ac29,
-              ac30, ac31, ac32, ac33, ac34, ac35, ac36, ac37, ac38, ac39, ac40, ac41, ac42, ac43):
+              ac30, ac31, ac32, ac33, ac34, ac35, ac36, ac37, ac38, ac39, ac40, ac41, ac42, ac43,
+              ac44, ac45, ac46, ac47, ac48, ac49, ac50):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run

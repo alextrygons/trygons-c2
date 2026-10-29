@@ -3,9 +3,9 @@ academy/content/ - the Academy's lessons, quizzes, scenarios, exams and limits
 
 Every file here is JSON with comments as "_help" / "_note..." keys (the same way as boats/*.json).
 Edit them with any text editor; academy/test_academy.py (AC10) checks every file:
-  * "kind" (lesson | quiz | scenario | exam | limits | test_area | practical) and a "_help" comment;
+  * "kind" (lesson | quiz | scenario | exam | limits | test_area | practical | tour | mission) and a "_help" comment;
   * every text a trainee sees in BOTH languages: "<name>_el" (Greek, the default) + "<name>_en";
-  * lessons and scenarios: "runs_on": "sim" (the academy never drives a real boat);
+  * lessons, scenarios and missions: "runs_on": "sim" (the academy never drives a real boat);
   * quizzes: "answer" = the index (0, 1, 2 ...) of the right choice.
 
 The files whose name starts with "example_" are examples of the format (step 15). The real
@@ -45,3 +45,10 @@ station menu Academy -> Practical test area) and kept in academy/data/test_area.
 
 Chart photos (docs/daskalio/): for the test area picture, the demo map and the 3D sim ONLY.
 A photo is NOT a navigation chart - never used by any safety check (docs/daskalio/README.txt).
+
+Missions (step 22, missions/*.json, kind "mission"): for the FUTURE 3D simulator (docs/academy_sim_interface.md;
+no 3D world yet). The boat is always the simulated AURIX on this PC; the 3D world only shows it and scores the
+goals. Fields: level, title / brief (el + en), world (the terrain area of the imported drone photos), goals
+(reach / keep_clear: n_m, e_m from the start + radius_m; heading: deg + tol_deg; mode: a mode name; time_limit:
+s), pass_score 1..100, max_attempts (0 = no limit), lesson (optional). academy/sim3d.py check_mission checks them
+(test AC45). A mission result never changes a level.

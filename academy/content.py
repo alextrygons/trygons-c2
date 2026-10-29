@@ -12,6 +12,7 @@ every file has "kind" and "_help"; every text a trainee sees is given in BOTH la
   content/test_area.json    kind "test_area" practical test area (spec J) - PLACEHOLDER (the real one: the
                             instructor tool writes data/test_area.json, set_by + placeholder false)
   content/practical.json    kind "practical" the practical test's tasks + numbers (spec G, step 21)
+  content/missions/*.json   kind "mission"  missions for the future 3D simulator (spec H, step 22; sim3d.py checks them)
   content/tour.json         kind "tour"     the guided tour of the screens (spec B, step 17; tour.py checks it)
   data/videolessons/<id>/lesson.json  kind "videolesson"  real-trip video lessons (spec F, step 20): made by
                             the lesson editor from a saved event, NOT in git (real trip video); videolesson.py checks it
@@ -24,7 +25,8 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTENT_DIR = os.path.join(HERE, "content")
 KINDS = {"lesson": "lessons", "quiz": "quizzes", "scenario": "scenarios", "exam": "exams",
-         "limits": None, "test_area": None, "tour": None, "videolesson": None, "practical": None}
+         "limits": None, "test_area": None, "tour": None, "videolesson": None, "practical": None,
+         "mission": "missions"}
 LEVELS = ("OBSERVER", "DRIVER", "CAPTAIN")
 
 
@@ -81,7 +83,7 @@ def check(doc, name="?"):
             n = len(q.get("choices", []))
             if n < 2 or not isinstance(q.get("answer"), int) or not 0 <= q["answer"] < n:
                 p.append("%s: question %d: answer must index its %d choices" % (name, i, n))
-    if kind in ("lesson", "scenario") and doc.get("runs_on") != "sim":
+    if kind in ("lesson", "scenario", "mission") and doc.get("runs_on") != "sim":
         p.append("%s: runs_on must be \"sim\" (the academy never drives a real boat)" % name)
     if kind == "test_area":
         if doc.get("not_for_navigation") is not True:

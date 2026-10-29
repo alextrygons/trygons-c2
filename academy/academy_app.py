@@ -85,7 +85,7 @@ class AcademyApp(object):
                         ("acc.tour", self.open_tour), ("acc.lessons", self.open_lessons),
                         ("acc.quizzes", self.open_quizzes), ("acc.scenarios", self.open_scenarios),
                         ("acc.videolessons", self.open_videolessons), ("acc.editor", self.open_editor),
-                        ("acc.exams", self.open_exams),
+                        ("acc.exams", self.open_exams), ("acc.sim3d", self.open_sim3d),
                         ("acc.login", self.login), ("acc.password", self.set_password), ("acc.enrol", self.enrol),
                         ("acc.renew", self.renew), ("acc.supervise", self.supervise),
                         ("acc.certificate", self.certificate)):
@@ -245,6 +245,13 @@ class AcademyApp(object):
         import exam_app
         self.exams = exam_app.ExamWindow(tk.Toplevel(self.root), text.lang(), store=self.store, user=self.chosen_user())
         return self.exams
+
+    def open_sim3d(self):
+        """The 3D simulator window (step 22, spec H): lesson-simulator choice, missions, drone photos - files only."""
+        import sim3d_app
+        self.sim3d = sim3d_app.Sim3DWindow(tk.Toplevel(self.root), text.lang(), store=self.store,
+                                           user=self.chosen_user())
+        return self.sim3d
 
     # --- step 21: logins (2FA for CAPTAIN + instructor), renewals, supervised sessions, the certificate
     def need_instructor(self):

@@ -1,0 +1,37 @@
+{
+  "_help": "Mission for the FUTURE 3D simulator (ACADEMY_SPEC H, step 22; docs/academy_sim_interface.md). runs_on sim: the boat is always the simulated AURIX (autopilot_sim on 127.0.0.1:5760); the 3D world only SHOWS it and scores the goals. world = the terrain area (data/sim3d/terrain/<world>/, drone photos for the view only - never a chart). goals use metres from the start position (n_m north, e_m east): reach / keep_clear (radius_m), heading (deg, tol_deg), mode (a mode name), time_limit (s). pass_score 1..100; max_attempts 0 = no limit. lesson = the simulator lesson whose own checks run too (optional). Edit freely; academy/test_academy.py AC45 checks every file.",
+  "kind": "mission",
+  "id": "m03_ramp_approach",
+  "runs_on": "sim",
+  "level": "CAPTAIN",
+  "order": 1,
+  "world": "daskalio_demo",
+  "pass_score": 80,
+  "max_attempts": 3,
+  "title_el": "Προσέγγιση στη ράμπα",
+  "title_en": "Ramp approach",
+  "brief_el": "Επιστρέψτε στη ράμπα με χαμηλή ταχύτητα, κρατήστε απόσταση από τον μώλο και σταματήστε στο σημείο της ράμπας σε STANDBY.",
+  "brief_en": "Return to the ramp at low speed, keep clear of the jetty and stop at the ramp point in STANDBY.",
+  "goals": [
+    {
+      "type": "keep_clear",
+      "n_m": -20,
+      "e_m": 25,
+      "radius_m": 15
+    },
+    {
+      "type": "reach",
+      "n_m": -60,
+      "e_m": 0,
+      "radius_m": 8
+    },
+    {
+      "type": "mode",
+      "mode": "STANDBY"
+    },
+    {
+      "type": "time_limit",
+      "s": 420
+    }
+  ]
+}

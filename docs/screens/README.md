@@ -17,3 +17,5 @@ Made from the demo by `python tools/demo_screens.py` on 2026-10-29.
 | [screen2_dark_en.png](screen2_dark_en.png) | screen 2 (navigation & control), dark theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [tools_connection_el.png](tools_connection_el.png) | tools window, connection page, Greek |
 | [tools_sound_el.png](tools_sound_el.png) | tools window, sound page, Greek |
+
+Academy windows (step 22): [academy/README.md](academy/README.md), made by `python tools/academy_screens.py`.
