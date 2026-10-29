@@ -242,6 +242,18 @@ measured value / answer here.
       toggle / ADS trace) ____ ms - must be < 1.5 s (CPU1's MON_BOOT_MS 3 s counts from CPU1's
       start, which is ~1 ms after core 0's); also with the SD card out and after a data-flash
       sector swap ____ ms.
+- [ ] (step 13f, W43 + review 94afdc4 MED-1) Boot throttle IDLE: CAN trace from reset - core 0's
+      FIRST throttle IDLE (-1.0) frame ____ ms after reset (hal_init sends it right after dc_init,
+      before the NV boot loop + sb_init), then -1.0 every 10 ms through the NV boot loop ____ ; no
+      steering / gear frame before a mode commands one ____ . With the throttle node holding ~50 %
+      from before a warm reset (watchdog reset while driving): the lever starts closing within
+      ____ ms of the reset (not after the boot).
+- [ ] (step 13f, OPEN ITEM C19, review 94afdc4 LOW-3) Transfer-ID after a boot: CPU1 (and core 0)
+      start their ArrayCommand transfer ID at 0 after every reset. If the node's expected ID from
+      before the reset happens to be 31, libcanard on the node DROPS the first frame (the next one,
+      10 / 20 ms later, is taken). Check on the bench that the node takes the frames after a warm
+      reset at different moments (CAN trace + the servo moves to idle) ____ ; the cost is one
+      period (10-20 ms) - NOT changed in code, owner decision if the bench shows more.
 - [ ] (step 13e, review 1f7817c HIGH-1) Boot trip with the DroneCAN servos, core 0 halted in ADS
       INSIDE hal_init right after dc_init (not after the sync): CAN trace shows CPU1's throttle
       IDLE (-1.0) frames every 20 ms after ~3 s ____ ; halted BEFORE dc_init: no CAN frame at all

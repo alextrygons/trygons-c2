@@ -88,6 +88,7 @@ static volatile boolean s_servos_can;
 static volatile uint32  s_can_ticks;        /* the 10 ms actuator task ran (hal_can_act_count) */
 static volatile uint8   s_can_tid;          /* core 0's ArrayCommand transfer ID after its last tick */
 SHARED_END()
+static boolean s_no_servos;                 /* core 0: the big boat said hal_can_servos_off() before hal_init */
 
 /* --- servo PWM (GTM TOM0, 50 Hz) --------------------------------------------
  * Each channel counts up to CM0 (period) and its output is high until CM1
@@ -1112,8 +1113,17 @@ static void can_port_init(void)
     dc_init(&s_can_port);                       /* starts the controller (bounded iLLD handshakes, before the loop) */
     s_can_up = TRUE;
 #if HAL_CAN_SERVOS
-    ca_init();                                  /* the first frame = throttle IDLE; gear / steering: none (OD-7) */
-    s_servos_can = TRUE;
+    if (!s_no_servos) {                         /* the big boat: no DroneCAN servos at all (OD-12, step 13f) */
+        ca_init();                              /* the first frame = throttle IDLE; gear / steering: none (OD-7) */
+        /* step 13f (review 94afdc4 MED-1): the throttle IDLE frame NOW, not only at the first loop tick after
+         * the NV boot loop + sb_init (a node holds a pre-reset throttle, OA-1). Core 0 alone owns the bus here:
+         * CPU1 touches the reserved buffers / the transfer ID only once s_servos_can is TRUE (below, after the
+         * barrier); a latch that came first = ca_tick sends nothing (CPU1's safe frames start at the flag) */
+        ca_tick();
+        s_can_tid = dc_cmd_tid();
+        __dsync();                              /* (LOW-5) ca_init / the tick visible before CPU1 may use them */
+        s_servos_can = TRUE;
+    }
 #endif
 #else
     (void)s_can_port;                           /* pins not confirmed yet: the bus is never started */
@@ -1149,6 +1159,11 @@ void hal_set_steer_pos(bool command, float pos)
 {
     if (!s_servos_can || s_forced) return;      /* tripped: CPU1's safe frames (latched) */
     ca_set_steer(command, pos);
+}
+
+void hal_can_servos_off(void)
+{
+    s_no_servos = TRUE;
 }
 
 /* core 0's main loop, every 10 ms between the control steps */

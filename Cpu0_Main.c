@@ -75,6 +75,7 @@ void core0_main(void)
      * the running configuration), never 0 and never a constant that a different calibration would turn into FULL */
 #ifdef BOAT_VARIANT_BIG
     monitor_publish_safe(&g_mon, 1000u, 1500u);         /* = monitor_publish_steering_only below */
+    hal_can_servos_off();       /* no DroneCAN servos on the big boat (OD-12): no frame, not even CPU1's (step 13f) */
 #else
     sb_config_t cfg;
     sb_default_config(&cfg);
@@ -102,9 +103,20 @@ void core0_main(void)
         (void)hal_nv_save(HAL_NV_SLOT_BOOT, &boot, sizeof boot);
         g_logstat.boot = boot;
         uint32_t t0 = hal_millis();
+#ifndef BOAT_VARIANT_BIG
+        uint32_t next_tick = t0;
+#endif
         while (hal_nv_pending() && hal_nv_ok() && hal_millis() - t0 < NV_BOOT_MS) {
             hal_nv_service(true);
             hal_watchdog_kick();
+#ifndef BOAT_VARIANT_BIG
+            /* step 13f (review 94afdc4 MED-1): the actuator task keeps sending throttle IDLE (hal_init sent the
+             * first) while the flash works - also a frame the node dropped (C19) is repeated 10 ms later */
+            if ((int32_t)(hal_millis() - next_tick) >= 0) {
+                hal_can_tick();
+                next_tick += 10u;
+            }
+#endif
         }
     }
 

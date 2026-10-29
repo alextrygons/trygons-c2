@@ -127,7 +127,7 @@ writers=$(grep -rlnE --include=*.c "(^|[^A-Za-z0-9_])hal_can_[a-z_]+ *\(" app Cp
 if [ -n "$writers" ]; then echo "CAN BUS USED OUTSIDE smallboat.c / monitor.c / Cpu0_Main.c: $writers"; fail=1; else echo "CAN bus used only by app/smallboat.c + Cpu0_Main.c (core 0) and the CPU1 monitor's safe path"; fi
 bad=$(grep -nE "hal_can_[a-z_]+ *\(" app/monitor.c | grep -v "hal_can_act_count\|hal_can_safe_send")
 if [ -n "$bad" ]; then echo "CPU1 MONITOR USES MORE OF THE CAN BUS THAN ITS SAFE PATH: $bad"; fail=1; fi
-bad=$(grep -nE "hal_can_[a-z_]+ *\(" Cpu0_Main.c | grep -v "hal_can_tick")
+bad=$(grep -nE "hal_can_[a-z_]+ *\(" Cpu0_Main.c | grep -v "hal_can_tick\|hal_can_servos_off")   # (13f: the big boat switches the CAN servos off before hal_init)
 if [ -n "$bad" ]; then echo "Cpu0_Main.c USES MORE OF THE CAN BUS THAN THE ACTUATOR TASK: $bad"; fail=1; fi
 
 # ADS compiles every C/C++ file in the project folder: every top-level folder
@@ -161,6 +161,18 @@ if echo "$safe" | grep -q "HAL_SAFE_THR_US" && echo "$safe" | grep -q "HAL_SAFE_
     echo "safe pulses before core 0's first step: board HAL guard, monitor fallback + live hal_servos_can, published before hal_init"
 else
     echo "safe pulses before core 0's first step NOT guarded (hal_safe_outputs / monitor.c / Cpu0_Main.c)"; fail=1
+fi
+# step 13f (review 94afdc4 MED-1 / LOW-4 / LOW-5): hal_init sends the first throttle IDLE tick right after ca_init,
+# then the transfer ID + a barrier BEFORE CPU1 may use the reserved buffers; the big boat switches the servos off
+# before hal_init (OD-12); the small boat's NV boot loop keeps ticking
+cpi=$(sed -n '/^static void can_port_init/,/^}/p' hal/hal_tc375.c)
+if echo "$cpi" | tr -d '
+' | grep -q "if (!s_no_servos).*ca_init();.*ca_tick();.*s_can_tid = dc_cmd_tid();.*__dsync();.*s_servos_can = TRUE;" &&
+   [ "$(sed -n '1,/^    hal_init();/p' Cpu0_Main.c | grep -c 'hal_can_servos_off();')" -eq 1 ] &&
+   sed -n '/^    {   \/\* boot counter/,/^    }/p' Cpu0_Main.c | grep -q "hal_can_tick();"; then
+    echo "boot: throttle IDLE from hal_init + the NV boot loop, barrier before CPU1's flag, big boat without CAN servos"
+else
+    echo "boot throttle IDLE / big-boat CAN servos NOT as step 13f (hal_tc375.c can_port_init / Cpu0_Main.c)"; fail=1
 fi
 stop=$(sed -n '/^static void thrusters_stop/,/^}/p' hal/hal_tc375.c)
 if echo "$stop" | grep -q "servo_write(THR_BOW_TOM_CH, THR_STOP_US)" && echo "$stop" | grep -q "servo_write(THR_STERN_TOM_CH, THR_STOP_US)"; then

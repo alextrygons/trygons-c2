@@ -184,6 +184,10 @@ relay_offer_t relays_offer(relays_t *r, const relay_table_t *t, bool standby_idl
 bool relays_accept(relays_t *r, bool standby_idle)
 {
     if (!r->offer_pending || !standby_idle) return false;
+    /* step 13f (review 94afdc4 LOW-2): a SHUTOFF ON (= stop the engine) still queued for the board is never wiped
+     * by a table change (table_activate clears the queue): the CONFIRM is refused (the offer is dropped at the next
+     * step, the station offers again later); the queued stop runs or ends with its own note (shutoff_dropped) */
+    if (r->shutoff_pending != 0u) return false;
     r->offer_pending = false;
     table_activate(r, &r->offer, false);
     hal_relay_cut_hold(shutoff_hold(r));                 /* step 13e: the new table's SHUTOFF at once */

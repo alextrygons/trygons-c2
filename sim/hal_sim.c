@@ -1364,6 +1364,7 @@ typedef struct {
 } sc_node_t;
 static sc_node_t s_sc[SC_NODES];
 static bool      s_sc_fitted;           /* (declared at the top) */
+static bool      s_sc_no_servos;          /* hal_can_servos_off() (the big boat) before hal_init (step 13f) */
 static bool      s_sc_servos = true;    /* a fitted bus carries the servos (step 11e; tests may switch it off) */
 static bool      s_sc_stuck;            /* fault: core 0's actuator task does not run (its CAN path stuck) */
 static uint32_t  s_sc_fault;
@@ -1773,12 +1774,15 @@ static void sc_driver_init(void)
 {
     s_hal_bss = false;                           /* step 13e: dc_init done -> hal_servos_can() is the truth */
     s_sc_boot_fitted = s_sc_fitted;
-    s_servos_can = s_sc_fitted && s_sc_servos;
+    s_servos_can = s_sc_fitted && s_sc_servos && !s_sc_no_servos;
     s_steer_have = false;
     ca_init();                                   /* boot: throttle IDLE is the only demand */
     if (s_sc_fitted) {
         s_sc_last_ms = s_time_ms;
         dc_init(&s_sc_port);
+        /* step 13f (MED-1): as the board, the first tick (throttle IDLE only) inside hal_init - not only at the
+         * first loop tick after the NV boot loop + sb_init */
+        if (s_servos_can && !s_sc_stuck) ca_tick();
     }
 }
 
@@ -1858,7 +1862,8 @@ void hal_can_safe_send(const hal_can_safe_t *f)
 
 uint32_t sim_hal_can_safe_frames(void) { return s_safe_frames; }
 void     sim_hal_can_task_stuck(bool stuck) { s_sc_stuck = stuck; }
-void     sim_hal_can_servos(bool on) { s_sc_servos = on; }
+void     sim_hal_can_servos(bool on) { s_sc_servos = on; s_sc_no_servos = false; }  /* (also ends a big-boat off) */
+void     hal_can_servos_off(void) { s_sc_no_servos = true; }
 bool     sim_hal_servos_can(void) { return s_servos_can; }
 
 static float sc_node_out(uint8_t id, bool pos)

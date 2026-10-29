@@ -631,7 +631,7 @@ metadata removed) with the rule in docs/daskalio/README.txt.
 | C16 | 5 V supply for the nodes (converter rating, fuses) and the servos' own power | node / servo data, current measured |
 | C17 | Relay board model, node ID, hardpoints 0-5, timeout / hold behaviour (R-1..R-4), readback | board documentation + bench |
 | C18 | MCMCAN: CPU1 may write the TX registers (ACCEN), dedicated buffer + FIFO on one node, CPU1 frame priority | on the board in 11e |
-| C19 | Transfer-ID hand-over core 0 -> CPU1 accepted by the nodes | bench in 11e |
+| C19 | Transfer-ID hand-over core 0 -> CPU1 accepted by the nodes; OPEN (review 94afdc4 LOW-3): after a reset both start at transfer ID 0 - a node that expected 31 drops the first frame (the next is taken 10-20 ms later), FIRST_TEST.md 3 | bench in 11e |
 | C20 | ThinkPad L390 Yoga gateway details (step 12): RJ45 or USB-Ethernet, USB-C PD input power, lid-closed operation, battery charge limit tool | step 12 |
 | C21 | Throttle rate parameter limits (up 2..30 %/s, down 20..200 %/s) | owner |
 | C22 | UNCREWED dead-man timer relay (OA-3): part (retriggerable timer / watchdog relay, 12 V), timeout (~1.5 s), contact type for the outboard's kill circuit, fail-safe direction, how it is armed only in UNCREWED, which pin pulses it (P10.5 or its own) | owner + engine dealer + bench (section 14) |
@@ -977,4 +977,28 @@ CPU sync); storm I51 + the I59 coverage check.
    before the first check after a (warm) boot is negative = FAIL (it used to wrap to a huge "pass").
 4. (LOW) relays.c sets the SHUTOFF hold mask (`hal_relay_cut_hold`) when a table is activated (relays_init from NV,
    relays_accept) as well as every step, and drops stale cut bits of channels not in the table. Test RB24.
+
+## 22. Step 13f - fixes from the review of 94afdc4 (2026-10-29)
+
+1. (MED) After a reset the throttle node HOLDS the pre-reset throttle (OA-1), and core 0's first throttle IDLE frame
+   went out only at the first actuator tick of the control loop - after hal_init, the NV boot loop (up to NV_BOOT_MS
+   2 s) and sb_init. Now hal_init sends the first tick itself right after dc_init + ca_init (core 0, the normal
+   can_act path and transfer ID: throttle IDLE only - no gear frame, no steering frame, OD-7 / OA-2 unchanged), THEN
+   publishes the transfer ID, a barrier (`__dsync`, LOW-5) and only then `s_servos_can = TRUE`, so CPU1 touches the
+   reserved buffers / the transfer ID only after core 0's frame (race-free). A latch that came first = ca_tick sends
+   nothing (CPU1's safe frames start at the flag). The small boat's NV boot loop calls hal_can_tick every 10 ms
+   (also repeats a frame the node dropped, C19). Test CN31 (board order, core 0 stuck in the boot loop: the held
+   throttle closes from hal_init, no trip, no steering / gear frame) - fails without the hal_init tick. Bench:
+   FIRST_TEST.md 3 (boot time to the first IDLE frame, W43).
+2. (LOW) A SHUTOFF ON queued for a silent relay board was wiped by an accepted relay table (table_activate clears the
+   queue). relays_accept now refuses while a SHUTOFF waits (the CONFIRM is refused, the offer dropped, the station
+   offers again later). Test RB25 (both buses).
+3. (LOW, OD-12) The big boat: Cpu0_Main.c calls `hal_can_servos_off()` before hal_init, so with the HAL CAN flags on
+   `hal_servos_can()` stays false - no core-0 frame and no CPU1 trip frame. Test CN33; check.sh greps it.
+4. (LOW) Test CN32: a trip BEFORE dc_init (CPU1 tripped in core 0's bss / hal_init window), then dc_init finishes:
+   CPU1's idle frames within 40 ms of the flag, no core-0 frame (the latch wins), no steering / gear frame - fails
+   when the live read is skipped after a trip. CN30 + CN31 + CN32 cover the board order in the sim; the storm keeps
+   the harness order (I51 covers the frames after every boot).
+5. (LOW) C19 (the first frame after a reset may be dropped by the node's transfer-ID rule): no code change, an open
+   bench item (table C19, FIRST_TEST.md 3).
 

@@ -135,6 +135,12 @@ void hal_set_gear_pwm(uint16_t pulse_us);
  */
 bool hal_servos_can(void);
 
+/* The BIG boat (BOAT_VARIANT_BIG, OD-12 unchanged) has no DroneCAN servos:
+ * core 0 calls this BEFORE hal_init (Cpu0_Main.c), then hal_servos_can() stays
+ * false whatever the HAL CAN flags say - no actuator frame, also not CPU1's
+ * trip frames (step 13f, review 94afdc4 LOW-4). The small boat never calls it. */
+void hal_can_servos_off(void);
+
 /* The steering POSITION servo (DroneCAN): pos -1..+1 of the servo travel,
  * + = the boat turns to STARBOARD (the HAL puts the wire sign on, TO CONFIRM
  * C6). command = false: NO steering frame (the node holds where it is) - after
@@ -144,7 +150,10 @@ void hal_set_steer_pos(bool command, float pos);
 
 /* The 10 ms actuator task (DroneCAN): core 0's main loop calls it between the
  * control steps (the sim harness every 10 ms): one ArrayCommand per commanded
- * servo, never a blocking wait (hal/can_act.c). Nothing when not fitted. */
+ * servo, never a blocking wait (hal/can_act.c). Nothing when not fitted.
+ * hal_init already sends the first tick (throttle IDLE only: a node that held
+ * a pre-reset throttle closes at once, not after the boot - step 13f) and the
+ * small boat's NV boot loop calls it every 10 ms until the control loop runs. */
 void hal_can_tick(void);
 
 /* Ticks of the actuator task so far (CPU1 reads it: no tick for 100 ms while
