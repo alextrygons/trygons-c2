@@ -15,6 +15,8 @@ DISPLAY + one file hand-over only - nothing here changes the driving:
   * "Open the academy" also writes this station's alarm tones (sound.tone: warning / caution / advisory)
     into its sound cache (<cache>/tones/<name>.wav) for the academy's alarm-sound quiz questions (step 18,
     ACADEMY_SPEC D); the academy only plays them (academy/quiz.py tone_path, simguard.check_recording).
+  * "Practical test (this boat)" / "Test area (instructor)" (step 21, ACADEMY_SPEC G + J): practicalmenu.py -
+    the one academy part on this station's boat link, read only + the CONFIRM_ONLY question (LinkView).
 """
 import importlib.util
 import json
@@ -26,6 +28,7 @@ import tkinter as tk
 from tkinter import filedialog
 
 import i18n
+import practicalmenu
 import theme
 from i18n import T
 
@@ -104,6 +107,10 @@ def add_menu(app, mb):
     m.add_command(label=T("menu.academy_open"), command=lambda: open_academy(app))
     m.add_command(label=T("menu.academy_tour"), command=lambda: open_tour(app))
     m.add_command(label=T("menu.academy_send"), command=lambda: send_levels(app))
+    m.add_separator()
+    # step 21: the PRACTICAL TEST on THIS boat's link (read only + CONFIRM_ONLY: practicalmenu.py)
+    m.add_command(label=T("menu.academy_practical"), command=lambda: practicalmenu.open_practical(app))
+    m.add_command(label=T("menu.academy_area"), command=lambda: practicalmenu.open_area(app))
     mb.add_cascade(label=T("menu.academy"), menu=m)
     return m
 

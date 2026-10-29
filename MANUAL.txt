@@ -1021,7 +1021,8 @@ THE ACADEMY LEVELS (menu Academy on the ground station)
    1. Academy window: "Academy key" once (copied to the clipboard). Put the
       same text into the gateway's secrets.json as "academy_key" (never in
       git).
-   2. Academy window: set the level, then "Make the gateway file".
+   2. Academy window: the level (from the practical test - see below), then
+      "Make the gateway file".
    3. Ground station logged in to the gateway: menu Academy -> "Send the
       academy levels to the gateway" (HELM users only).
   The gateway checks the signature, ignores users it doesn't know (it never
@@ -1122,6 +1123,99 @@ VIDEO LESSONS FROM REAL TRIPS (academy window -> "Video lessons")
        <id>/ on THIS PC (never into git). The original event stays untouched.
   The video lessons stay on the PC where they were made (copy the folder
   academy/data/videolessons to another shore PC to use them there).
+
+EXAMS (academy window -> "Exams")
+  One exam per level: the DRIVER exam (for an OBSERVER) and the CAPTAIN exam
+  (for a valid DRIVER). Select your account first. The required simulator
+  lessons must be passed before. 15 questions from the quiz pools, random
+  order; the answers are NOT shown during the exam, only the score at the end
+  (pass mark 80 %). Starting an exam counts as an attempt; after 3 failed
+  attempts the next one waits 24 hours. PASSING AN EXAM NEVER CHANGES YOUR
+  LEVEL - the level goes up only with the PRACTICAL TEST on the boat.
+
+LOGINS AND 2FA (academy window -> "Log in", "Password", "2FA app")
+  Every account can have a password (at least 8 characters). CAPTAIN and
+  instructor accounts also need a 6-digit code from an OFFLINE authenticator
+  app on the phone (no SMS): "2FA app" with the password shows the key and
+  copies the otpauth link - type it into the app. 5 wrong logins = locked for
+  10 minutes. The passwords and 2FA keys stay on this PC (academy/data/auth/),
+  never in a backup: after restoring a backup, set them again.
+  The instructor actions need the instructor's login: renew, supervise an
+  online session, certificate, and (after the first set-up) set a level.
+
+LEVELS GO UP ONLY WITH THE PRACTICAL TEST
+  "Set level" in the academy window can only LOWER a level once an
+  instructor with a valid CAPTAIN level exists (before that, during the
+  first set-up, it sets the first levels). OBSERVER -> DRIVER -> CAPTAIN only
+  through the practical test on the boat (below). Nothing done online raises
+  a level.
+
+RENEWAL AND CURRENCY
+  A level is valid 12 months (a reminder 30 days before). Renewal (the
+  instructor presses "Renew" for the selected account): DRIVER = within the
+  last 90 days a refresher simulator lesson + a quiz (70 %) + one emergency
+  scenario; CAPTAIN = the same + a practical check ride every 24 months.
+  Expired more than 3 months = the full practical test again. An expired
+  level counts as OBSERVER.
+  Currency: no logged driving for 90 days -> the gateway file carries the
+  level WITHOUT the captain's licence until a supervised refresher trip on
+  the boat (a CAPTAIN on board approves + the onboard CONFIRM).
+
+THE ONLINE ACADEMY
+  The academy runs only on the academy PC on shore (never on a boat's
+  gateway). Trainees reach it from home with a remote desktop / SSH over
+  Tailscale; the Tailscale rules let a trainee's device reach ONLY the
+  academy PC, never a boat (example in academy/online.py; check yours with
+  online.check_acl). In an online session (shown under the banner) exams are
+  allowed only while an instructor marked the session supervised ("Supervise
+  online session", 10..480 minutes), and nothing online raises a level.
+
+CERTIFICATE (academy window -> "Certificate PDF", instructor)
+  A one-page PDF for the selected account: the level IN FORCE and its
+  expiry, the practical test, the exams passed, lessons / scenarios, driving
+  hours and currency. An expired level is printed as NOT IN FORCE. Logged.
+
+THE PRACTICAL TEST ON THE BOAT (ground station: menu Academy -> "Practical
+test on THIS boat")
+  This is the only academy part that sees a real boat - and it only WATCHES
+  (the telemetry this station receives + its event log) and grades. It never
+  sends anything that drives: every safety rule stays the boat's own.
+  CREWED profile only; the examiner (a valid CAPTAIN, his own login + 2FA,
+  never the trainee) sits at the station on board.
+   1. Examiner logs in; trainee, kind: practical test (one level up), check
+      ride (CAPTAIN, every 24 months) or supervised refresher trip.
+   2. Type the wind (kn + the direction it comes FROM), tick: calm water,
+      examiner on board, the wind is right. "Check" shows everything that is
+      missing: test area set (never the placeholder) and the boat inside it,
+      STANDBY, start power limit 30 / 5 %, calm water (sea state + slamming
+      monitor), wind <= 12 kn and not strong (>= 8 kn) from the north or from
+      the right side of the ramp, 08:00-19:00, the exam of the level passed +
+      the lessons, fresh telemetry. Then "Start" (the whole ride is recorded in
+      academy/data/practical/ and linked to the logbook).
+   3. Tasks: leave the harbour, HDG LOCK + a course change of 10 deg,
+      joystick takeover + hand-back, the examiner's ALARM (shown on this
+      screen only - the trainee must put the boat in STANDBY within 15 s),
+      return, and for CAPTAIN the trailer approach + loading in MANEUVER
+      (requested and confirmed the normal way). A task is first SEEN in the
+      telemetry, then the examiner approves it. "Abort" any time.
+      LEAVING THE TEST AREA = alert + the test STOPPED (nothing is sent to
+      the boat, no mode change).
+   4. Every task approved -> "Final approval": the boat asks for CONFIRM on
+      the ONBOARD joystick within 10 s (a confirm-only question that changes
+      NOTHING on the boat; stick centred, like every CONFIRM). Confirmed ->
+      the level goes up (logged with the examiner, the ride file and the
+      question number). Then send the academy levels file to the gateway
+      (next login).
+  The confirm-only question is refused while another CONFIRM request waits
+  (power raise, AUTO ...), in UNCREWED and in FIRST TEST; STANDBY cancels it.
+
+THE TEST AREA (ground station: menu Academy -> "Practical test area")
+  The area in git is a PLACEHOLDER (not surveyed): the practical test refuses
+  it. An instructor (a valid CAPTAIN with 2FA) sets the real one on site:
+  "Add point (boat GPS)" at each corner, the ramp top / bottom from the boat
+  GPS, or taps on the drawing, or "Import .geojson". "Save area" writes
+  academy/data/test_area.json (logged). It is NEVER a chart: no safety check
+  uses it.
 
 CAPTAIN AND COPILOT (the gateway decides, every station shows it)
   CAPTAIN   holds the manual licence and sits at screen 1 (cameras +

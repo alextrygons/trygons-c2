@@ -71,7 +71,7 @@ typedef enum {
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
-    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN,
+    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN, E_PC_CONFONLY,
     E_COUNT
 } ev_kind_t;
 
@@ -90,7 +90,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "watchdog reset (the chip restarts: system reset, not a power-on)",
     "DP (thruster settings / START SPOT, CRUISE, TRIP / JOG / SPEED / HEADING / STOP; a current)",
     "DroneCAN (a servo node lost / silent / rebooted, bus-off, the actuator task stuck; back after a while)",
-    "PC AUTO return (the program backwards to waypoint 1; then the CONFIRM)"
+    "PC AUTO return (the program backwards to waypoint 1; then the CONFIRM)",
+    "PC CONFIRM_ONLY (academy practical test: a question for the onboard CONFIRM that changes nothing)"
 };
 
 typedef struct {
@@ -193,6 +194,8 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         if (s->can && k == E_FUZZ_GW && e->c < 450) e->kind = E_CAN;    /* DroneCAN episodes: CAN faults */
         /* step 13: some AUTO start / resume draws ask for an AUTO RETURN instead (the other draws unchanged) */
         if ((k == E_PC_AUTO_START && e->a >= 800) || (k == E_PC_AUTO_RESUME && e->a >= 500)) e->kind = E_PC_RETURN;
+        /* step 21: some power-raise draws ask a CONFIRM_ONLY instead (the academy practical test's question) */
+        if (k == E_PC_RAISE && e->c >= 900) e->kind = E_PC_CONFONLY;
         s->on[s->n] = true;
         s->n++;
         /* DP: mostly a START (centre the stick, STANDBY, let the boat slow down first) + the CONFIRM */
@@ -1473,7 +1476,7 @@ static void apply(const ev_t *e)
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
     case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK: case E_GEN: case E_ENGINE:
-    case E_WDT: case E_DP: case E_CAN: case E_PC_RETURN:
+    case E_WDT: case E_DP: case E_CAN: case E_PC_RETURN: case E_PC_CONFONLY:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -1519,6 +1522,7 @@ static void apply(const ev_t *e)
     case E_PC_AUTO_START: (void)sb_auto_start(s); break;
     case E_PC_AUTO_RESUME: (void)sb_auto_resume(s); break;
     case E_PC_RETURN: (void)sb_auto_return(s); break;
+    case E_PC_CONFONLY: (void)sb_confirm_only(s, s->helm, (uint16_t)e->a); break;
     case E_PC_PAUSE: (void)sb_auto_pause(s); break;
     case E_PC_PROG: prog_random(1 + e->a % 6, &r); break;
     case E_PC_RAISE: {

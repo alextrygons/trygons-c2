@@ -7,6 +7,8 @@
   "_note_currency": "no logged driving in currency_days -> a supervised refresher trip (a CAPTAIN on board approves + onboard CONFIRM) before solo rights return",
   "captain_check_ride_months": 24,
   "expired_full_test_months": 3,
+  "renew_window_days": 90,
+  "_note_renew": "a renewal counts the refresher lesson / quiz / scenario done in the last renew_window_days (step 21 default)",
   "exam_attempts": 3,
   "_note_attempts": "owner 2026-10-28 (W27): 3 attempts, then the cool-down",
   "exam_cooldown_h": 24,

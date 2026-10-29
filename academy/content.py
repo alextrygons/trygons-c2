@@ -9,7 +9,9 @@ every file has "kind" and "_help"; every text a trainee sees is given in BOTH la
   content/scenarios/*.json  kind "scenario" emergency scenarios (spec E, step 19)
   content/exams/*.json      kind "exam"     exams per level (spec G, step 21)
   content/limits.json       kind "limits"   validity, reminder, currency, attempts (spec J)
-  content/test_area.json    kind "test_area" practical test area (spec J) - PLACEHOLDER
+  content/test_area.json    kind "test_area" practical test area (spec J) - PLACEHOLDER (the real one: the
+                            instructor tool writes data/test_area.json, set_by + placeholder false)
+  content/practical.json    kind "practical" the practical test's tasks + numbers (spec G, step 21)
   content/tour.json         kind "tour"     the guided tour of the screens (spec B, step 17; tour.py checks it)
   data/videolessons/<id>/lesson.json  kind "videolesson"  real-trip video lessons (spec F, step 20): made by
                             the lesson editor from a saved event, NOT in git (real trip video); videolesson.py checks it
@@ -22,7 +24,7 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTENT_DIR = os.path.join(HERE, "content")
 KINDS = {"lesson": "lessons", "quiz": "quizzes", "scenario": "scenarios", "exam": "exams",
-         "limits": None, "test_area": None, "tour": None, "videolesson": None}
+         "limits": None, "test_area": None, "tour": None, "videolesson": None, "practical": None}
 LEVELS = ("OBSERVER", "DRIVER", "CAPTAIN")
 
 

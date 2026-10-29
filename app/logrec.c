@@ -79,7 +79,7 @@ static const char k_events[] =
     "10:GPS:pos_source,reason,unc*10,losses;"
     "11:FAULT:kind,a,b,c;"
     "12:PROGRAM:action,a,b,c;"
-    "13:CONFIRM:kind,result,count,-;"
+    "13:CONFIRM:kind,result,count,token;"
     "14:MONITOR:reason,throttle*10,limit*10,-;"
     "15:LOG:what,a,b,c;"
     "16:TIME:date,time_of_day_ms,t_ms,-;"

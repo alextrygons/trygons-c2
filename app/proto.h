@@ -93,6 +93,11 @@
                                        * TRIP 4, | 0x80 TRIP from the active waypoint; value speed kn*100) from
                                        * STANDBY + joystick CONFIRM within 10 s (CREWED onboard, UNCREWED shore);
                                        * never FIRST TEST. A copilot's needs the captain's ACCEPT, except STOP */
+#define PROTO_T_CONFIRM_ONLY  0x30u   /* u16 token: the academy PRACTICAL TEST's final approval (ACADEMY_SPEC G, step 21):
+                                       * a pending request answered ONLY by the onboard joystick CONFIRM within 10 s
+                                       * that CHANGES NOTHING on the boat (smallboat.h sb_confirm_only; the answer =
+                                       * TELEM2 group R). HELM station; CREWED only; never FIRST TEST; never replaces
+                                       * another pending CONFIRM request */
 #define PROTO_T_SIM_FIRST     0x70u   /* 0x70..0x7F: simulator control only   */
 #define PROTO_T_SIM_JOYSTICK  0x70u   /* u8 fitted, f32 x, f32 y, u8 take, u8 auto, u8 confirm */
 #define PROTO_T_SIM_GPS       0x71u   /* u8 1 = GPS fails, 0 = GPS back       */

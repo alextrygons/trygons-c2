@@ -220,3 +220,30 @@ D16 Step 20 real-trip video lessons (spec F). Source = a SAVED EVENT as the gate
    protocol, also not from inside the concat list), output only .mp4 inside the video-lesson folder, everything
    refused on a gateway PC. Tests AC34-AC37 (AC36 = real ffmpeg on a made-up event: the copy length, smaller than
    the originals, the blur box measurably blurred and the rest sharp, the HUD in sync; AC37 = both windows).
+D17 Step 21 exams (spec G) + the practical test (G2-G4) + the online academy (J). Exams = content/exams/driver_exam.json +
+   captain_exam.json (the example removed); academy/exam.py (who may sit = the EFFECTIVE level below or the same, the
+   required lessons first, an attempt logged at the START (a half exam counts), 3 failures in a row -> 24 h cool-down
+   (W27), a pass resets; online only in a session an instructor marked supervised; passing never changes a level) +
+   exam_app.py (the quiz window without answers shown). Logins (W29) = academy/auth.py: PBKDF2 passwords + RFC 6238
+   TOTP (offline app, 6 digits) for CAPTAIN + instructor accounts, lock-out after 5, secrets in data/auth/ (never in a
+   backup); a Session is valid only in this process. Levels: accounts.Store.set_level only LOWERS once an instructor
+   with a valid CAPTAIN level exists (before = the first set-up, "bootstrap"); up only via grant_practical (the
+   examiner's 2FA session, every task approved, the CONFIRM_ONLY token confirmed, not online, one level up); renew()
+   (instructor 2FA): DRIVER = a lesson + a quiz >= 70 % + a scenario within renew_window_days (90), CAPTAIN + a check
+   ride within 24 months, expired > 3 months = the full practical test; currency = logged driving (hours / practical /
+   check ride / refresher, or a fresh level) within currency_days, else the gateway file carries the level WITHOUT the
+   licence (read at login only, as before). Certificate PDF = academy/certificate.py (Pillow, one A4 page, instructor's
+   2FA session, the level in force only). Online academy = academy/online.py: no new network code - the academy stays
+   on the shore academy host, trainees use a remote desktop / SSH over Tailscale whose policy lets tag:trainee reach
+   ONLY the academy host (check_acl proves a policy: no '*', no tag:boat, no boats/ IP, not the Tailscale range);
+   is_online = RDP / SSH / TRYGONS_ACADEMY_ONLINE. The PRACTICAL TEST = academy/practical/ (ptest.py model, ptarea.py
+   area + instructor tool, linkview.py, ptest_app.py windows), opened by the GROUND STATION (groundstation/
+   practicalmenu.py, menu Academy) in its own process with LinkView(app): read the telemetry + the station's event /
+   audit log, send ONE frame = PROTO_T_CONFIRM_ONLY 0x30 (app/proto.h; smallboat.c sb_confirm_only: CONF_CHECK,
+   CREWED only, never FIRST TEST, never replaces another pending CONFIRM, HELM station; the onboard CONFIRM only
+   answers it = TELEM2 group R u8 state | u16 token; nothing on the boat changes; sim CO1-CO3, storm event
+   E_PC_CONFONLY). Tasks are SEEN from the telemetry, then approved by the examiner; the examiner's alarm is drawn on
+   the practical screen only; leaving the area = alert + stopped (nothing sent). The area: content/test_area.json stays
+   the placeholder (refused); the instructor tool writes data/test_area.json (CAPTAIN 2FA, audit "area"); wind from a
+   blocked direction refused from strong_wind_kn (8 kn, W39). Tests: academy AC38-AC43, academy/practical/
+   test_practical.py P1-P8 (P7 on the real simulator) in tools/check.sh.

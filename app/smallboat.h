@@ -509,14 +509,31 @@ typedef enum {
     CONF_RELAY_TABLE,       /* take a relay table that differs from the stored one (STANDBY; never a mode change) */
     CONF_DP,                /* start DP (from STANDBY), or CRUISE / TRIP while in DP (sb_t.dp_req) */
     CONF_THR_TRAVEL,        /* a SHORTER thr_travel_s (owner-signed value, OD-4; STANDBY, never a mode change) */
-    CONF_AUTO_RETURN        /* AUTO RETURN: the program backwards from the current leg to waypoint 1 */
+    CONF_AUTO_RETURN,       /* AUTO RETURN: the program backwards from the current leg to waypoint 1 */
+    CONF_CHECK              /* CONFIRM_ONLY (academy practical test, step 21): changes NOTHING on the boat */
 } confirm_kind_t;
 
 typedef struct {
     confirm_kind_t kind;
+    confirm_kind_t last_kind;                      /* the kind the last CONFIRM press answered (log event 13) */
     uint32_t       deadline_ms;
     uint32_t       accepted, refused, ignored;     /* CONFIRM presses (info / tests) */
 } sb_confirm_t;
+
+/* CONFIRM_ONLY (PROTO_T_CONFIRM_ONLY, academy practical test, step 21): a pending request that changes
+ * NOTHING on the boat - the onboard joystick's CONFIRM within confirm_ms only answers it (TELEM2 group R).
+ * States: */
+#define SB_CO_NONE      0u      /* never asked since the power-up */
+#define SB_CO_PENDING   1u      /* waiting for the onboard CONFIRM */
+#define SB_CO_CONFIRMED 2u      /* the onboard CONFIRM answered it in time (stick centred, joystick armed) */
+#define SB_CO_LATE      3u      /* no CONFIRM within confirm_ms */
+#define SB_CO_CANCELLED 4u      /* STANDBY / another request / a fault took the pending request away */
+typedef struct {
+    uint16_t token;             /* the station's number for this question (echoed in TELEM2 group R) */
+    uint8_t  state;             /* SB_CO_ */
+    uint8_t  station;           /* who asked (the HELM station) */
+    uint32_t asked, confirmed;  /* counters (info / tests) */
+} sb_conf_only_t;
 
 typedef enum {
     TS_SPINUP = 0,          /* forward gear, slow throttle, settle */
@@ -575,6 +592,7 @@ typedef struct {
     sb_auto_t   autop;
     sb_train_t  train;
     sb_confirm_t confirm;
+    sb_conf_only_t conf_only;   /* CONFIRM_ONLY (academy practical test): changes nothing */
     plim_t      plim;          /* power limit (RAM only) */
     servo_t     servo;         /* throttle servo output (the only writer) */
     uint32_t    alarm_bits_seen;   /* for "new alarm" detection */
@@ -929,6 +947,13 @@ sb_result_t sb_dp_cmd(sb_t *s, uint8_t station, uint8_t action, uint8_t arg, int
  * CONF_THR_TRAVEL), logged (event STEERMODEL 4); never below SERVO_THR_TRAVEL_MIN. RAM only: every reset
  * starts at the worst case (SERVO_THR_TRAVEL_S). Nothing measures it shorter by itself. */
 sb_result_t sb_thr_travel_set(sb_t *s, float seconds);
+
+/* CONFIRM_ONLY (academy practical test, ACADEMY_SPEC G, step 21): asks for the onboard joystick's CONFIRM within
+ * confirm_ms and CHANGES NOTHING on the boat (no mode, limit, output, relay, program or setting). CREWED only (the
+ * onboard joystick; UNCREWED -> SB_ERR_NOT_ALLOWED), never in FIRST TEST (SB_ERR_WRONG_MODE), never replaces another
+ * pending CONFIRM request (SB_ERR_REFUSED; a CONFIRM_ONLY pending is replaced by the new token), the joystick must be
+ * able to confirm (SB_ERR_JOY_NOT_READY). Entering STANDBY / another request cancels it like every request. */
+sb_result_t sb_confirm_only(sb_t *s, uint8_t station, uint16_t token);
 
 /* the restart conditions are met now (idle + neutral confirmed, e-stop released, not FIRST TEST) */
 bool sb_restart_ready(const sb_t *s);

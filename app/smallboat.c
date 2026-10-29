@@ -336,6 +336,23 @@ sb_result_t sb_thr_travel_set(sb_t *s, float seconds)
     return SB_OK;
 }
 
+sb_result_t sb_confirm_only(sb_t *s, uint8_t station, uint16_t token)
+{
+    /* the academy practical test's final approval (ACADEMY_SPEC G): a question for the onboard joystick's
+     * CONFIRM that changes NOTHING - no mode, power limit, output, relay, program or setting */
+    if (s->cfg.first_test) return SB_ERR_WRONG_MODE;
+    if (s->profile != SB_PROFILE_CREWED) return SB_ERR_NOT_ALLOWED;        /* the ONBOARD joystick only */
+    if (s->confirm.kind != CONF_NONE && s->confirm.kind != CONF_CHECK) return SB_ERR_REFUSED;
+    if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;
+    s->conf_only.token = token;
+    s->conf_only.station = station;
+    s->conf_only.state = SB_CO_PENDING;
+    s->conf_only.asked++;
+    s->confirm.kind = CONF_CHECK;
+    s->confirm.deadline_ms = s->now_ms + s->cfg.confirm_ms;
+    return SB_OK;
+}
+
 sb_result_t sb_thruster_cfg(sb_t *s, const thr_cfg_t *c, uint16_t hash)
 {
     if (sb_mode(s) != MODE_STANDBY || s->stopping || s->thrust.active) return SB_ERR_STANDBY_ONLY;
@@ -2357,6 +2374,11 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
         s->steer.log_what = 4u;
         s->steer.log_seq++;
         return true;
+    case CONF_CHECK:
+        /* CONFIRM_ONLY: the answer is recorded (TELEM2 group R) - nothing else changes */
+        s->conf_only.state = SB_CO_CONFIRMED;
+        s->conf_only.confirmed++;
+        return true;
     case CONF_DP:
         /* the HELM station must still be the one that asked; the conditions again, now */
         if (s->helm != s->dp_req.station) return false;
@@ -2475,8 +2497,11 @@ static void confirm_step(sb_t *s)
     sb_confirm_t *c = &s->confirm;
     if (c->kind != CONF_NONE && (int32_t)(s->now_ms - c->deadline_ms) >= 0) {
         if (is_raise(c->kind)) plim_log_attempt(&s->plim, c->kind == CONF_RAISE_REV, PLIM_ERR_LATE, s->now_ms);
+        if (c->kind == CONF_CHECK) s->conf_only.state = SB_CO_LATE;
         c->kind = CONF_NONE;            /* too late */
     }
+    /* a pending CONFIRM_ONLY taken away by STANDBY / another request / a fault */
+    if (s->conf_only.state == SB_CO_PENDING && c->kind != CONF_CHECK) s->conf_only.state = SB_CO_CANCELLED;
     /* a relay table waits only in STANDBY (not stopping); any other state drops the offer */
     if (c->kind == CONF_RELAY_TABLE && (sb_mode(s) != MODE_STANDBY || s->stopping)) c->kind = CONF_NONE;
     if (c->kind == CONF_THR_TRAVEL && (sb_mode(s) != MODE_STANDBY || s->stopping)) c->kind = CONF_NONE;
@@ -2492,6 +2517,7 @@ static void confirm_step(sb_t *s)
         return;
     }
     if (shore ? !(shore_ready(s) && s->shore.centred) : !joy_confirm(&s->joy)) {
+        c->last_kind = c->kind;
         c->refused++;                   /* stick not centred / not armed / faulted */
         if (is_raise(c->kind)) plim_log_attempt(&s->plim, c->kind == CONF_RAISE_REV, PLIM_ERR_NOT_CENTRED, s->now_ms);
         s->chirp_ms = 300u;
@@ -2499,6 +2525,7 @@ static void confirm_step(sb_t *s)
     }
     confirm_kind_t kind = c->kind;
     c->kind = CONF_NONE;
+    c->last_kind = kind;
     if (confirm_execute(s, kind)) {
         c->accepted++;
     } else {

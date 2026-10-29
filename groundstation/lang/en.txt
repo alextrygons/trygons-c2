@@ -292,6 +292,7 @@ confirm.7 = RELAY TABLE
 confirm.8 = DP
 confirm.9 = THROTTLE TRAVEL
 confirm.10 = AUTO RETURN
+confirm.11 = CONFIRM ONLY (practical test: changes nothing)
 
 # --- captain screen: left column (values) -------------------------------------
 cap.power_none = POWER LIMIT --
@@ -1535,6 +1536,9 @@ menu.academy_open = Open the academy (simulator only, own window)
 menu.academy_send = Send the academy levels to the gateway
 acad.opened = The academy opens in its own window (simulator only - never this boat link).
 menu.academy_tour = Guided tour of the screens (academy, own window, voice)
+menu.academy_practical = Practical test on THIS boat (examiner: watches + onboard CONFIRM only)
+menu.academy_area = Practical test area (instructor tool, never a chart)
+acad.practical_opened = The practical test opens: it only watches this boat and asks for the onboard CONFIRM (nothing that drives).
 acad.tour_opened = The guided tour opens in its own window; its voice is prepared in the background (first time: a few minutes).
 acad.tour_bad = The tour file has a problem (text only): {why}
 acad.open_failed = The academy did not start: {why}

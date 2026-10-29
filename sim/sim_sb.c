@@ -63,7 +63,8 @@ static bool     s_rb_can;
  * groups appended after them: O (engine controls, 12 bytes) + N (DP thrusters 10 bytes + the DP state
  * T2_DP bytes) + P (DroneCAN summary T2_P bytes) = T2_N */
 #define T2_DP 12u
-#define T2_Q 17u                /* group Q (steering position servo + throttle model, step 11e) after P */
+#define T2_R 3u                 /* group R (CONFIRM_ONLY, academy practical test, step 21) after Q */
+#define T2_Q (17u + T2_R)       /* group Q (steering position servo + throttle model, step 11e) after P */
 #define T2_P (6u + T2_Q)        /* group P (DroneCAN summary, step 11d) after N: its offset from the end */
 #define T2_N (10u + T2_DP + T2_P)
 #define T2_O (12u + T2_N)
@@ -13607,6 +13608,197 @@ static void pulse_tests(void)
     }
 }
 
+/* -------------------- CONFIRM_ONLY (academy practical test, ACADEMY_SPEC G, step 21) -- */
+
+/* what a CONFIRM_ONLY must never change: the mode, the power limit, every output, the alarms, the config */
+typedef struct {
+    sb_mode_t mode;
+    float fwd, rev, thr, steer, target;
+    uint16_t gear;
+    uint32_t alarms, alarms2, cfg_version;
+    bool prog_ok, raised;
+    uint8_t helm;
+} cosnap_t;
+
+static cosnap_t co_snap(const sbsim_t *x)
+{
+    cosnap_t c;
+    memset(&c, 0, sizeof c);
+    c.mode = sb_mode(&x->sb);
+    c.fwd = x->sb.plim.fwd_pct;
+    c.rev = x->sb.plim.rev_pct;
+    c.thr = sim_hal_throttle();
+    c.steer = sim_hal_motor_command();
+    c.target = x->sb.ap.target_heading;
+    c.gear = sim_hal_gear_pwm();
+    c.alarms = x->sb.alarm_bits;
+    c.alarms2 = x->sb.alarm_bits2;
+    c.cfg_version = x->sb.cfg_version;
+    c.prog_ok = x->sb.autop.prog_ok;
+    c.raised = plim_raised(&x->sb.plim);
+    c.helm = x->sb.helm;
+    return c;
+}
+
+static bool co_same(const cosnap_t *a, const cosnap_t *b)
+{
+    return a->mode == b->mode && a->fwd == b->fwd && a->rev == b->rev && fabsf(a->thr - b->thr) < 0.01f &&
+           a->steer == b->steer && fabsf(a->target - b->target) < 0.01f && a->gear == b->gear &&
+           a->alarms == b->alarms && a->alarms2 == b->alarms2 && a->cfg_version == b->cfg_version &&
+           a->prog_ok == b->prog_ok && a->raised == b->raised && a->helm == b->helm;
+}
+
+/* TELEM2 group R = the last T2_R bytes: u8 state | u16 token */
+static void co_t2(const pcsim_t *p, uint8_t *state, uint16_t *token)
+{
+    *state = p->t2_len >= T2_R ? p->t2[p->t2_len - T2_R] : 0xFFu;
+    *token = p->t2_len >= T2_R ? (uint16_t)(p->t2[p->t2_len - 2u] | (p->t2[p->t2_len - 1u] << 8)) : 0u;
+}
+
+static void confirm_only_tests(void)
+{
+    char d[900];
+    printf("\n=== CONFIRM_ONLY (academy practical test, step 21) ===\n");
+
+    /* CO1 asked + answered by the onboard CONFIRM: NOTHING changes (STANDBY and HDG LOCK); TELEM2 group R shows
+     * pending, then confirmed with the token; a second press (nothing pending) does nothing */
+    {
+        static pcsim_t p;
+        pcsim_init(&p, 2101u);
+        pc_run(&p, 12000u);
+        const uint8_t TAKE = 0u;
+        uint8_t r_helm = pc_cmd(&p, PROTO_T_HELM, &TAKE, 1u);      /* the laptop holds HELM before the snapshot */
+        cosnap_t a = co_snap(&p.x);
+        uint8_t tk[2] = { 0x34u, 0x12u };
+        uint8_t r = pc_cmd(&p, PROTO_T_CONFIRM_ONLY, tk, 2u);
+        pc_run(&p, 300u);
+        uint8_t st1; uint16_t tok1;
+        co_t2(&p, &st1, &tok1);
+        bool pend = r == PROTO_R_OK && p.x.sb.confirm.kind == CONF_CHECK && st1 == SB_CO_PENDING && tok1 == 0x1234u;
+        bool conf = confirm_press(&p.x);
+        pc_run(&p, 300u);
+        uint8_t st2; uint16_t tok2;
+        co_t2(&p, &st2, &tok2);
+        cosnap_t b = co_snap(&p.x);
+        bool same1 = co_same(&a, &b) && sb_mode(&p.x.sb) == MODE_STANDBY;
+        uint32_t ign = p.x.sb.confirm.ignored;
+        (void)confirm_press(&p.x);
+        bool again = p.x.sb.confirm.ignored == ign + 1u && p.x.sb.conf_only.confirmed == 1u;
+        bool hdg = hdg_lock(&p.x);
+        pc_run(&p, 2000u);
+        tk[0] = 0x35u;
+        uint8_t r2 = pc_cmd(&p, PROTO_T_CONFIRM_ONLY, tk, 2u);
+        cosnap_t c = co_snap(&p.x);
+        bool conf2 = confirm_press(&p.x);
+        cosnap_t e = co_snap(&p.x);
+        bool same2 = e.mode == MODE_HDG_LOCK && e.fwd == c.fwd && e.rev == c.rev && e.raised == c.raised &&
+                     fabsf(e.target - c.target) < 0.01f && e.gear == c.gear && e.alarms == c.alarms &&
+                     e.cfg_version == c.cfg_version && p.x.sb.conf_only.token == 0x1235u &&
+                     p.x.sb.conf_only.state == SB_CO_CONFIRMED;
+        press(&p.x, HAL_BTN_STANDBY);
+        snprintf(d, sizeof d, "STANDBY: asked -> %u, pending + TELEM2 R (%u, 0x%04x) %s; CONFIRM -> %s, R (%u, 0x%04x); "
+                 "mode / limits / throttle / gear / steering / alarms / config unchanged %s; a second press ignored %s; "
+                 "HDG LOCK (%s): asked -> %u, CONFIRM %s, still HDG LOCK, target + limits unchanged %s",
+                 r, st1, tok1, pend ? "yes" : "NO", conf ? "accepted" : "NO", st2, tok2, same1 ? "yes" : "NO",
+                 again ? "yes" : "NO", hdg ? "yes" : "NO", r2, conf2 ? "accepted" : "NO", same2 ? "yes" : "NO");
+        test_report("CO1 CONFIRM_ONLY answered by the onboard CONFIRM changes nothing on the boat (TELEM2 group R)",
+                    r_helm == PROTO_R_OK && pend && conf && st2 == SB_CO_CONFIRMED && tok2 == 0x1234u && same1 && again && hdg &&
+                    r2 == PROTO_R_OK && conf2 && same2, d);
+    }
+
+    /* CO2 refusals: never replaces another pending CONFIRM (that one stays), never in FIRST TEST, never UNCREWED
+     * (no onboard joystick), only the HELM station, the length */
+    {
+        static pcsim_t p;
+        pcsim_init(&p, 2102u);
+        pc_run(&p, 12000u);
+        uint8_t tk[2] = { 7u, 0u };
+        sb_result_t rt = sb_thr_travel_set(&p.x.sb, 3.0f);         /* a shorter throttle travel: CONFIRM pending */
+        uint8_t r_other = pc_cmd(&p, PROTO_T_CONFIRM_ONLY, tk, 2u);
+        bool kept = p.x.sb.confirm.kind == CONF_THR_TRAVEL && p.x.sb.conf_only.state == SB_CO_NONE;
+        p.x.sb.confirm.kind = CONF_NONE;
+        uint8_t r_len = pc_cmd(&p, PROTO_T_CONFIRM_ONLY, tk, 1u);
+        static sbsim_t y;
+        sb_config_t c = cfg_first_test();
+        sbsim_init(&y, 2103u, 90.0f, 0.0f, &c);
+        sbsim_run(&y, 8000u, NULL, NULL);
+        sb_result_t r_ft = sb_confirm_only(&y.sb, SB_HELM_USB, 7u);
+        static sbsim_t z;
+        static rjsim_t rj;
+        crew_init(&z, &rj, 2104u, false, NULL);
+        const uint8_t TAKE = 0u;
+        uint8_t r_nohelm = pi_cmd(&z, &rj.p, 3u, false, PROTO_T_CONFIRM_ONLY, tk, 2u);
+        (void)pi_cmd(&z, &rj.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        rj.rj_on = true;
+        uint8_t r_unc = pi_cmd(&z, &rj.p, 2u, false, PROTO_T_CONFIRM_ONLY, tk, 2u);
+        bool unc = z.sb.profile == SB_PROFILE_UNCREWED && z.sb.confirm.kind == CONF_NONE;
+        crew_plug();
+        snprintf(d, sizeof d, "another CONFIRM pending (thr_travel %d): -> %u, the other kept %s; 1 byte -> %u; FIRST TEST "
+                 "-> %d; not the HELM station -> %u; UNCREWED (%s) -> %u", (int)rt, r_other, kept ? "yes" : "NO", r_len,
+                 (int)r_ft, r_nohelm, unc ? "yes" : "NO", r_unc);
+        test_report("CO2 CONFIRM_ONLY refused: another CONFIRM pending, FIRST TEST, UNCREWED, not HELM, bad length",
+                    rt == SB_OK && r_other == PROTO_R_REFUSED && kept && r_len == PROTO_R_BAD_LENGTH &&
+                    r_ft == SB_ERR_WRONG_MODE && r_nohelm == PROTO_R_NOT_HELM && unc && r_unc == PROTO_R_NOT_ALLOWED, d);
+    }
+
+    /* CO3 not answered in 10 s = LATE (a press after it does nothing); STANDBY entry / another request cancel it;
+     * a CONFIRM with the stick off centre is refused (the question stays) */
+    {
+        static pcsim_t p;
+        pcsim_init(&p, 2105u);
+        pc_run(&p, 12000u);
+        uint8_t tk[2] = { 9u, 0u };
+        (void)pc_cmd(&p, PROTO_T_CONFIRM_ONLY, tk, 2u);
+        pc_run(&p, 10500u);
+        bool late = p.x.sb.conf_only.state == SB_CO_LATE && p.x.sb.confirm.kind == CONF_NONE;
+        cosnap_t a = co_snap(&p.x);
+        (void)confirm_press(&p.x);
+        cosnap_t b = co_snap(&p.x);
+        bool after = p.x.sb.conf_only.state == SB_CO_LATE && co_same(&a, &b);
+        bool hdg = hdg_lock(&p.x);
+        (void)pc_cmd(&p, PROTO_T_CONFIRM_ONLY, tk, 2u);
+        press(&p.x, HAL_BTN_STANDBY);
+        pc_run(&p, 300u);
+        bool cancel1 = p.x.sb.conf_only.state == SB_CO_CANCELLED && sb_mode(&p.x.sb) == MODE_STANDBY;
+        pc_run(&p, 3000u);
+        (void)pc_cmd(&p, PROTO_T_CONFIRM_ONLY, tk, 2u);
+        uint16_t code = 0u;
+        sb_result_t rc = sb_power_code(&p.x.sb, 0u, &code);
+        sb_result_t rr = sb_power_raise(&p.x.sb, 0u, code);         /* a power raise request replaces the question */
+        pc_run(&p, 300u);
+        bool cancel2 = p.x.sb.conf_only.state == SB_CO_CANCELLED && p.x.sb.confirm.kind == CONF_RAISE_FWD;
+        sb_power_lower(&p.x.sb);
+        (void)pc_cmd(&p, PROTO_T_CONFIRM_ONLY, tk, 2u);
+        bool off = true;
+        if (!s_usb.on) {
+            joy_set(0.0f, 0.6f, false, false);                      /* stick off centre */
+            pc_run(&p, 300u);
+            uint32_t ref = p.x.sb.confirm.refused;
+            sim_hal_joystick_confirm(true);
+            pc_run(&p, 120u);
+            sim_hal_joystick_confirm(false);
+            pc_run(&p, 100u);
+            off = p.x.sb.confirm.refused == ref + 1u && p.x.sb.conf_only.state == SB_CO_PENDING;
+            joy_set(0.0f, 0.0f, false, false);
+        }
+        press(&p.x, HAL_BTN_STANDBY);
+        pc_run(&p, 2000u);
+        snprintf(d, sizeof d, "no CONFIRM in 10 s: LATE %s, a press after it changes nothing %s; HDG LOCK (%s) + asked, "
+                 "STANDBY button: CANCELLED %s; asked, then a power raise request (%d, %d): CANCELLED, the raise pending %s; "
+                 "CONFIRM with the stick off centre: refused, still pending %s",
+                 late ? "yes" : "NO", after ? "yes" : "NO", hdg ? "yes" : "NO", cancel1 ? "yes" : "NO", (int)rc, (int)rr,
+                 cancel2 ? "yes" : "NO", s_usb.on ? "(USB: not run)" : (off ? "yes" : "NO"));
+        test_report("CO3 CONFIRM_ONLY late / cancelled by STANDBY or another request / refused off centre",
+                    late && after && hdg && cancel1 && rc == SB_OK && rr == SB_OK && cancel2 && off, d);
+    }
+}
+
+/* only the CONFIRM_ONLY tests (debugging: `autopilot_sim co`) */
+void sb_confirm_only_tests(void)
+{
+    confirm_only_tests();
+}
+
 /* only the paddlewheel pulse tests (debugging: `autopilot_sim pw`) */
 void sb_pulse_tests(void)
 {
@@ -14051,6 +14243,7 @@ void sb_tests(void)
     ais_tests();
     nav_tests();
     return_tests();
+    confirm_only_tests();
     pulse_tests();
     slam_tests();
     logging_tests();

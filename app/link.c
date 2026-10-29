@@ -436,6 +436,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_THRUSTER_CFG: return (int)THR_FRAME_BYTES;
     case PROTO_T_RESTART:      return 1;
     case PROTO_T_DP:           return 4;
+    case PROTO_T_CONFIRM_ONLY: return 2;
     default:                   return -1;
     }
 }
@@ -526,6 +527,12 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         int16_t v = (int16_t)proto_rd_u16(&r);
         if (joy && act != DP_ACT_STOP) return PROTO_R_JOYSTICK;
         return sb_result_to_proto(sb_dp_cmd(s, s->helm, act, arg, v));
+    }
+    case PROTO_T_CONFIRM_ONLY: {
+        /* the academy practical test (step 21): the HELM station (checked by the caller) asks for the onboard
+         * CONFIRM; NOTHING changes on the boat (sb_confirm_only), the answer goes back in TELEM2 group R */
+        uint16_t token = proto_rd_u16(&r);
+        return sb_result_to_proto(sb_confirm_only(s, s->helm, token));
     }
     case PROTO_T_RELAY: {
         uint8_t n = proto_rd_u8(&r), act = proto_rd_u8(&r);
@@ -1030,6 +1037,8 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      u16 K stored*100 (deg/s per unit) | u8 K in use / stored % | u8 tau stored*10 | u8 TRAINING confidence % |
  *      u8 last adaptation reset why (SM_RESET_) | u8 modelled throttle % (est) | u8 thr_travel_s*10 |
  *      u16 boot number of the TRAINING (0 none)
+ *   R: CONFIRM_ONLY (academy practical test, step 21): u8 state (SB_CO_: 0 never asked, 1 pending, 2 confirmed on
+ *      the onboard joystick, 3 late, 4 cancelled) | u16 token (the station's number of the question)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1227,6 +1236,9 @@ static void telemetry2(link_t *l, sb_t *s)
         proto_wr_u8(&w, (uint8_t)lroundf(fminf(25.5f, s->servo.cfg.travel_s) * 10.0f));
         proto_wr_u16(&w, m->stored.trained ? (uint16_t)s->ap.servo_calib.boot : 0u);
     }
+    /* R: CONFIRM_ONLY (the academy practical test): changes nothing on the boat, only its answer is shown */
+    proto_wr_u8(&w, s->conf_only.state);
+    proto_wr_u16(&w, s->conf_only.token);
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
     else l->telem_overflows++;

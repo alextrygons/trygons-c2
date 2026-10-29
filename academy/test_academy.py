@@ -96,11 +96,24 @@
        a decision point + a hazard area + a blur box and makes the lesson; the player lists it, plays it with the
        HUD redrawn over the picture, stops at the points, takes the answers (choice / click) and logs
        kind "videolesson"; a COM port as event refused; the academy window's buttons open both
+  AC38 exams per level (step 21, spec G): the DRIVER + CAPTAIN exam files pass the checker (bad cases caught); who may
+       sit, the required lessons first, 3 attempts then a 24 h cool-down (W27), a pass resets, online only in a
+       supervised session; an attempt logged at the start + the result; passing never changes a level; the exam
+       window (banner, refusal said, no answers shown during the exam, score logged); the academy window's button
+  AC39 logins + 2FA (spec J, W29): RFC 6238 TOTP vectors, PBKDF2 passwords, CAPTAIN + instructor need 2FA, a trainee
+       can't examine, lock-out, old / foreign sessions refused, the secrets never in a backup
+  AC40 the online academy (spec J): online detection, the Tailscale policy checker (trainee devices reach only the
+       academy host, never a boat), nothing online upgrades, supervision only by an instructor's 2FA login
+  AC41 renewal (DRIVER refresher, CAPTAIN check ride, expired > 3 months = full test), currency (no driving in 90 days
+       = no licence pushed until a refresher trip), set_level only lowers once a CAPTAIN instructor exists
+  AC42 the instructor view's certificate PDF (Pillow): an instructor's 2FA session only, the level in force, logged
+  AC43 the academy window's step-21 buttons (login, password, 2FA app, renew, supervise, certificate)
 Run:  python academy/test_academy.py      (exit code 0 = all passed)
 """
 import ast
 import datetime
 import importlib
+import json
 import os
 import re
 import socket
@@ -453,7 +466,7 @@ def ac10():
         d = content.load(f)
         kinds.add(d.get("kind"))
         probs += content.check(d, os.path.relpath(f, HERE))
-    need = {"lesson", "quiz", "scenario", "exam", "limits", "test_area", "tour"}
+    need = {"lesson", "quiz", "scenario", "exam", "limits", "test_area", "tour", "practical"}
     if kinds != need:
         probs.append("example kinds %s, expected %s" % (sorted(k for k in kinds if k), sorted(need)))
     bad_docs = [
@@ -1289,7 +1302,7 @@ def ac25():
     req_d, req_c = lesson.required_for("DRIVER", docs), lesson.required_for("CAPTAIN", docs)
     if not set(req_d) < set(req_c) or "l05_power_raise" in req_d:
         wrong.append("required by level")
-    exam = json_load(os.path.join(HERE, "content", "exams", "example_driver_exam.json"))
+    exam = json_load(os.path.join(HERE, "content", "exams", "driver_exam.json"))
     ids = {d["id"] for d in docs}
     if not set(exam["required"]) <= ids:
         wrong.append("exam requires unknown lessons")
@@ -2831,10 +2844,512 @@ def ac37():
            "lesson made; the player: listed, picture + HUD drawn, stops at both points, choice + click answers with "
            "the explanation, 100 % in the logbook (kind videolesson, tick); the academy window's buttons open both")
 
+
+# --- step 21 helpers ----------------------------------------------------------------------------
+def _people21(st):
+    """An instructor CAPTAIN + trainees (levels set during the first set-up = bootstrap)."""
+    for u, ins in (("ins", True), ("ann", False), ("drv", False), ("cap", False)):
+        st.add(u, u.upper(), instructor=ins)
+    st.set_level("drv", "DRIVER")
+    st.set_level("cap", "CAPTAIN")
+    st.set_level("ins", "CAPTAIN")
+    return _login21(st, "ins")
+
+
+def _login21(st, user, pw="longpassword1"):
+    import auth
+    if not st.auth.has_password(user):
+        st.auth.set_password(user, pw)
+    if st.needs_2fa(user) and not st.auth.has_totp(user):
+        st.auth.enrol_totp(user, pw)
+    sec = st.auth.get(user).get("totp")
+    return st.login(user, pw, auth.totp(sec) if sec else None)
+
+
+def _stamp(st, user, kind, when, **f):
+    """A logbook entry with a chosen time (the tests' clock)."""
+    e = st.log(user, kind, **f)
+    e["t"] = time_fmt(when)
+    lines = open(st.logbook_path, encoding="utf-8").read().splitlines()
+    import json as _j
+    lines[-1] = _j.dumps(e, ensure_ascii=False)
+    with open(st.logbook_path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    st.load()
+    return e
+
+
+def time_fmt(epoch):
+    import time as _t
+    return _t.strftime("%Y-%m-%dT%H:%M:%S", _t.localtime(epoch))
+
+
+# --- AC38 -------------------------------------------------------------------------------------
+def ac38():
+    import content
+    import exam
+    import lesson
+    import quiz
+    import time as _t
+    wrong = []
+    pools = {d["id"] for d in quiz.pools()}
+    lessons = {d["id"] for d in lesson.lessons()}
+    docs = exam.exams()
+    if sorted(d["level"] for d in docs) != ["CAPTAIN", "DRIVER"]:
+        wrong.append("exams per level %s" % [d.get("level") for d in docs])
+    if any(n.startswith("example_") for n in os.listdir(os.path.join(HERE, "content", "exams"))):
+        wrong.append("the step-15 example exam is still there")
+    for d in docs:
+        p = content.check(d, d["id"]) + exam.check_doc(d, d["id"], pools, lessons)
+        if p:
+            wrong.append("; ".join(p))
+    bad = [{"kind": "exam", "id": "x", "level": "OBSERVER", "pass_pct": 80, "questions": 5, "pools": ["q01_safety_basics"]},
+           {"kind": "exam", "id": "x", "level": "DRIVER", "pass_pct": 20, "questions": 5, "pools": ["q01_safety_basics"]},
+           {"kind": "exam", "id": "x", "level": "DRIVER", "pass_pct": 80, "questions": 0, "pools": ["q01_safety_basics"]},
+           {"kind": "exam", "id": "x", "level": "DRIVER", "pass_pct": 80, "questions": 5, "pools": ["nope"]},
+           {"kind": "exam", "id": "x", "level": "DRIVER", "pass_pct": 80, "questions": 5, "pools": ["q01_safety_basics"],
+            "required": ["l99"]},
+           {"kind": "exam", "id": "x", "level": "DRIVER", "pass_pct": 80, "questions": 5, "pools": ["q01_safety_basics"],
+            "attempts": 0}]
+    missed = [i for i, d in enumerate(bad) if not exam.check_doc(d, "bad", pools, lessons)]
+    if missed:
+        wrong.append("checker missed %s" % missed)
+    st = _store(tempfile.mkdtemp(prefix="trygons_ac38_"))
+    _people21(st)
+    dd, dc = exam.by_id("driver_exam"), exam.by_id("captain_exam")
+    if exam.refused(st, "ann", dc) is None or exam.refused(st, "drv", dd) is not None and "lessons" not in exam.refused(st, "drv", dd):
+        wrong.append("who may sit: %s / %s" % (exam.refused(st, "ann", dc), exam.refused(st, "drv", dd)))
+    if "lessons" not in (exam.refused(st, "ann", dd) or ""):
+        wrong.append("lessons gate: %s" % exam.refused(st, "ann", dd))
+    for lid in dd["required"]:
+        st.log("ann", "lesson", id=lid, done=True)
+    if exam.refused(st, "ann", dd) is not None:
+        wrong.append("ready refused: %s" % exam.refused(st, "ann", dd))
+    # attempts: 3 failures, then 24 h; a pass resets
+    now = _t.time()
+    for k in range(3):
+        _stamp(st, "ann", "attempt", now - 3600 + k * 60, id="driver_exam")
+        _stamp(st, "ann", "exam", now - 3600 + k * 60 + 30, id="driver_exam", level="DRIVER", score=40, passed=False)
+    why = exam.refused(st, "ann", dd, now)
+    if not why or "cool-down" not in why or exam.attempts_left(st.entries(), "ann", dd, now) != 0:
+        wrong.append("no cool-down after 3 failures: %s" % why)
+    if exam.refused(st, "ann", dd, now + 23 * 3600 + 1000) is not None:
+        wrong.append("still closed after 24 h: %s" % exam.refused(st, "ann", dd, now + 23 * 3600 + 1000))
+    if exam.attempts_left(st.entries(), "ann", dd, now + 24 * 3600) != 3:
+        wrong.append("attempts after the cool-down %d" % exam.attempts_left(st.entries(), "ann", dd, now + 24 * 3600))
+    # online: only supervised
+    env = {"TRYGONS_ACADEMY_ONLINE": "1"}
+    st2 = _store(tempfile.mkdtemp(prefix="trygons_ac38b_"))
+    ins = _people21(st2)
+    for lid in dd["required"]:
+        st2.log("ann", "lesson", id=lid, done=True)
+    if "supervised" not in (exam.refused(st2, "ann", dd, env=env) or ""):
+        wrong.append("online without supervision: %s" % exam.refused(st2, "ann", dd, env=env))
+    st2.supervise("ann", ins, 60)
+    if exam.refused(st2, "ann", dd, env=env) is not None:
+        wrong.append("supervised refused: %s" % exam.refused(st2, "ann", dd, env=env))
+    # a run: attempt logged at the start, the result at the end, the level never changes
+    r = exam.Run(st2, "ann", dd, "el", seed=4, env=env)
+    while not r.quiz.finished():
+        it = r.quiz.items[r.quiz.index]
+        if it["q"].get("type") == "picture":
+            x, y, w_, h_ = quiz.area_rect(it["q"]["show"], it["q"]["area"])
+            r.quiz.click(x + w_ / 2, y + h_ / 2)
+        else:
+            r.quiz.answer(it["order"].index(it["q"]["answer"]))
+        r.quiz.next()
+    res = r.finish()
+    ent = [e["kind"] for e in st2.entries() if e.get("user") == "ann"][-2:]
+    if not res["passed"] or res["score"] != 100 or ent != ["attempt", "exam"] or not res["online"] or \
+            not res["supervised"] or st2.accounts["ann"].level != "OBSERVER":
+        wrong.append("run %s, logbook %s, level %s" % ({k: res.get(k) for k in ("score", "passed", "online")}, ent,
+                                                       st2.accounts["ann"].level))
+    if exam.passed(st2.entries(), "ann", "DRIVER") is None:
+        wrong.append("exam.passed")
+    # the window
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+    except Exception as e:
+        report("AC38 exams", not wrong, "; ".join(wrong) or "model checked; no display (%s)" % e)
+        return
+    try:
+        import banner
+        import exam_app
+        w = exam_app.ExamWindow(tk.Toplevel(root), "el", store=st2, user="drv", seed=2)
+        if w.root.pack_slaves()[0] is not w.banner or w.banner.cget("text") != banner.banner_text("el"):
+            wrong.append("exam window banner")
+        if w.start_exam("captain_exam") is not None or "Η εξέταση δεν ξεκίνησε" not in w.l_q.cget("text"):
+            wrong.append("window refusal %r" % w.l_q.cget("text"))
+        w2 = exam_app.ExamWindow(tk.Toplevel(root), "el", store=st, user="ann", seed=3)
+        later = _t.time() + 25 * 3600
+        st.log("ann", "note", note="(a day later)")
+        run = None
+        if exam.refused(st, "ann", dd, later) is None:
+            # the window uses the real clock: give it a fresh account instead
+            pass
+        st.add("bob")
+        for lid in dd["required"]:
+            st.log("bob", "lesson", id=lid, done=True)
+        w3 = exam_app.ExamWindow(tk.Toplevel(root), "el", store=st, user="bob", seed=3)
+        run = w3.start_exam("driver_exam")
+        n = 0
+        while run and not run.quiz.finished() and n < 40:
+            q = run.quiz.current()
+            if q["type"] == "picture":
+                w3.click_at(0.01, 0.01)
+            else:
+                w3.answer(0)
+            if "Η απάντηση καταγράφηκε" not in w3.l_res.cget("text"):
+                wrong.append("the window showed the answer during the exam: %r" % w3.l_res.cget("text"))
+                break
+            w3.next()
+            n += 1
+        logged = [e for e in st.entries() if e.get("user") == "bob" and e.get("kind") == "exam"]
+        if not run or not logged or "Βαθμός" not in w3.l_q.cget("text"):
+            wrong.append("window run: %s %r" % (len(logged), w3.l_q.cget("text")))
+        top = tk.Toplevel(root)
+        import academy_app
+        app = academy_app.AcademyApp(top, st)
+        if "acc.exams" not in app.buttons or not isinstance(app.open_exams(), exam_app.ExamWindow):
+            wrong.append("academy window: no Exams button")
+        _ = w2
+    finally:
+        root.destroy()
+    report("AC38 exams", not wrong, "; ".join(wrong) or
+           "DRIVER + CAPTAIN exams (checker catches %d bad files); who may sit, lessons first, 3 attempts then 24 h, a "
+           "pass resets, online only supervised; attempt + result logged, the level never changes; the window: banner, "
+           "refusal said, no answers shown during the exam, the score logged; the academy window's button" % len(bad))
+
+
+# --- AC39 -------------------------------------------------------------------------------------
+def ac39():
+    import auth
+    import simguard
+    wrong = []
+    # RFC 6238 test vector (SHA-1, secret "12345678901234567890"): T = 59 -> 94287082 (8 digits)
+    sec = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+    if auth.totp(sec, 59, digits=8) != "94287082" or auth.totp(sec, 1111111109, digits=8) != "07081804":
+        wrong.append("TOTP vectors %s %s" % (auth.totp(sec, 59, digits=8), auth.totp(sec, 1111111109, digits=8)))
+    t0 = 1700000000
+    if not auth.totp_ok(sec, auth.totp(sec, t0 - 30), t0) or auth.totp_ok(sec, auth.totp(sec, t0 - 90), t0) or \
+            auth.totp_ok(sec, "abc", t0) or auth.totp_ok("", "123456", t0):
+        wrong.append("TOTP window")
+    tmp = tempfile.mkdtemp(prefix="trygons_ac39_")
+    st = _store(tmp)
+    ins = _people21(st)
+    if not ins.twofa or st.session_ok(ins) is not None:
+        wrong.append("instructor session %s" % st.session_ok(ins))
+    rec = json_load(os.path.join(tmp, "auth", "ins.json"))
+    if "longpassword1" in json.dumps(rec) or rec["password"]["rounds"] < 100000:
+        wrong.append("password stored in clear / weak")
+    st.auth.set_password("ann", "anotherpass")
+    try:
+        st.auth.set_password("ann", "x" * 9, "wrong-old")
+        wrong.append("password changed without the old one")
+    except auth.AuthError:
+        pass
+    try:
+        st.auth.set_password("drv", "short")
+        wrong.append("a short password")
+    except auth.AuthError:
+        pass
+    a = st.login("ann", "anotherpass")                          # an OBSERVER: no 2FA needed
+    if a.twofa or st.session_ok(a, role="examiner") is None:
+        wrong.append("a trainee session may examine")
+    st.auth.set_password("cap", "captainpass")
+    try:
+        st.login("cap", "captainpass")
+        wrong.append("a CAPTAIN without 2FA enrolled logged in")
+    except auth.AuthError:
+        pass
+    s2 = st.auth.enrol_totp("cap", "captainpass")
+    try:
+        st.login("cap", "captainpass", "000000" if auth.totp(s2) != "000000" else "111111")
+        wrong.append("a wrong 2FA code accepted")
+    except auth.AuthError:
+        pass
+    try:
+        st.auth.enrol_totp("cap", "captainpass")
+        wrong.append("2FA replaced without the current code")
+    except auth.AuthError:
+        pass
+    st.auth.set_password("drv", "driverpass")
+    for _ in range(auth.LOCK_AFTER):
+        try:
+            st.login("drv", "bad")
+        except auth.AuthError:
+            pass
+    try:
+        st.login("drv", "driverpass")
+        wrong.append("not locked after %d wrong logins" % auth.LOCK_AFTER)
+    except auth.AuthError as e:
+        if "locked" not in str(e):
+            wrong.append("lock message %s" % e)
+    old = auth.Session("ins", True, st.auth.id, t=0)
+    other = auth.Session("ins", True, "another-store")
+    if st.session_ok(old) is None or st.session_ok(other) is None or st.session_ok(None) is None:
+        wrong.append("an old / foreign / missing session accepted")
+    target = tempfile.mkdtemp(prefix="trygons_ac39t_")
+    env = {"PROGRAMDATA": tempfile.mkdtemp()}
+    dst = st.backup(target, env=env, stamp="z")
+    if os.path.exists(os.path.join(dst, "auth")):
+        wrong.append("the secrets went into the backup")
+    if "otpauth://totp/" not in auth.otpauth_uri("ins", s2) or "secret=" + s2 not in auth.otpauth_uri("ins", s2):
+        wrong.append("otpauth link")
+    _ = simguard
+    report("AC39 logins + 2FA", not wrong, "; ".join(wrong) or
+           "RFC 6238 vectors, +-30 s window; PBKDF2 passwords (never in clear), change needs the old one; CAPTAIN + "
+           "instructor need 2FA (enrolled with the password, replaced only with the current code), a trainee doesn't "
+           "and may not examine; locked after 5 wrong logins; old / foreign sessions refused; secrets never in a backup")
+
+
+# --- AC40 -------------------------------------------------------------------------------------
+def ac40():
+    import online
+    import simguard
+    wrong = []
+    for env, want in (({}, False), ({"TRYGONS_ACADEMY_ONLINE": "1"}, True), ({"SESSIONNAME": "RDP-Tcp#3"}, True),
+                      ({"SESSIONNAME": "Console"}, False), ({"SSH_CONNECTION": "1 2 3 4"}, True)):
+        if online.is_online(env) != want:
+            wrong.append("is_online %s" % env)
+    if online.check_acl(online.EXAMPLE_ACL):
+        wrong.append("the example policy: %s" % online.check_acl(online.EXAMPLE_ACL))
+    boats = tempfile.mkdtemp(prefix="trygons_ac40b_")
+    with open(os.path.join(boats, "x.json"), "w", encoding="utf-8") as f:
+        f.write('{"id": "x1", "name": "X1", "tailscale_ip": "100.101.102.103", "gateway_port": 5761}')
+    bad = [
+        {"acls": [{"action": "accept", "src": ["tag:trainee"], "dst": ["*:*"]}]},
+        {"acls": [{"action": "accept", "src": ["tag:trainee"], "dst": ["tag:academy:3389", "tag:boat:5761"]}]},
+        {"acls": [{"action": "accept", "src": ["tag:trainee"], "dst": ["100.101.102.103:5761"]}]},
+        {"acls": [{"action": "accept", "src": ["tag:trainee"], "dst": ["100.64.0.0/10:*"]}]},
+        {"acls": [{"action": "accept", "src": ["*"], "dst": ["tag:boat:*"]},
+                  {"action": "accept", "src": ["tag:trainee"], "dst": ["tag:academy:3389"]}]},
+        {"acls": [{"action": "accept", "src": ["tag:station"], "dst": ["tag:boat:*"]}]},
+    ]
+    missed = [i for i, p in enumerate(bad) if not online.check_acl(p, boats)]
+    if missed:
+        wrong.append("policy checker missed %s" % missed)
+    st = _store(tempfile.mkdtemp(prefix="trygons_ac40_"))
+    ins = _people21(st)
+    env = {"TRYGONS_ACADEMY_ONLINE": "1"}
+    st.accounts["drv"].expiry = datetime.date.today() + datetime.timedelta(days=5)
+    for u, lv in (("ann", "DRIVER"), ("drv", "DRIVER")):
+        try:
+            st.set_level(u, lv, datetime.date.today() + datetime.timedelta(days=400), env=env)
+            wrong.append("online set_level raised %s" % u)
+        except simguard.Refused as e:
+            if "online" not in str(e):
+                wrong.append("online refusal says %s" % e)
+    try:
+        st.grant_practical({"trainee": "ann", "kind": "upgrade"}, ins, env=env)
+        wrong.append("online grant")
+    except simguard.Refused as e:
+        if "online" not in str(e):
+            wrong.append("grant refusal says %s" % e)
+    ann = _login21(st, "ann")
+    for sess in (None, ann):
+        try:
+            st.supervise("drv", sess, 60)
+            wrong.append("supervised by %s" % (sess and sess.user))
+        except simguard.Refused:
+            pass
+    import time as _t
+    st.supervise("drv", ins, 30)
+    if not st.supervised("drv") or st.supervised("drv", _t.time() + 31 * 60) or st.supervised("ann"):
+        wrong.append("supervised window")
+    src = open(os.path.join(HERE, "online.py"), encoding="utf-8").read()
+    names, _ = imports_of(os.path.join(HERE, "online.py"))
+    if names & NET:
+        wrong.append("online.py imports %s" % (names & NET))
+    _ = src
+    report("AC40 the online academy", not wrong, "; ".join(wrong) or
+           "online = RDP / SSH / TRYGONS_ACADEMY_ONLINE; the example Tailscale policy passes, %d bad policies caught "
+           "(trainee -> *, a boat tag, a boats/ IP, the Tailscale range, everyone -> boat, no trainee rule); nothing "
+           "online upgrades; supervision only by an instructor's 2FA login, for its minutes" % len(bad))
+
+
+# --- AC41 -------------------------------------------------------------------------------------
+def ac41():
+    import accounts
+    import simguard
+    wrong = []
+    st = _store(tempfile.mkdtemp(prefix="trygons_ac41_"))
+    ins = _people21(st)
+    today = datetime.date.today()
+    st.accounts["drv"].expiry = today + datetime.timedelta(days=20)
+    need = st.renewal_status("drv", today)["needs"]
+    if len(need) != 3:
+        wrong.append("DRIVER renewal needs %s" % need)
+    try:
+        st.renew("drv", ins, today)
+        wrong.append("renewed without the refresher")
+    except simguard.Refused:
+        pass
+    st.log("drv", "lesson", id="l01_hdg_lock", done=True)
+    st.log("drv", "quiz", id="q03_alarms", topic="q03_alarms", score=80)
+    st.log("drv", "scenario", id="s01_compass_fail", done=True, score=90)
+    if st.renewal_status("drv", today)["needs"]:
+        wrong.append("still needs %s" % st.renewal_status("drv", today)["needs"])
+    ann = _login21(st, "ann")
+    try:
+        st.renew("drv", ann, today)
+        wrong.append("renewed by a trainee")
+    except simguard.Refused:
+        pass
+    a = st.renew("drv", ins, today)
+    if a.level != "DRIVER" or (a.expiry - today).days < 360:
+        wrong.append("renewal expiry %s" % a.expiry)
+    for k in ("lesson", "quiz", "scenario"):
+        st.log("cap", k, id="x", topic="x", done=True, score=90)
+    cneed = st.renewal_status("cap", today)["needs"]
+    if len(cneed) != 1 or "check ride" not in cneed[0]:
+        wrong.append("CAPTAIN renewal needs %s" % cneed)
+    st.log("cap", "check_ride", passed=True, by="ins")
+    if st.renewal_status("cap", today)["needs"]:
+        wrong.append("CAPTAIN with a check ride still needs %s" % st.renewal_status("cap", today)["needs"])
+    st.accounts["cap"].expiry = today - datetime.timedelta(days=120)
+    s = st.renewal_status("cap", today)
+    if not s["full_test"]:
+        wrong.append("expired 4 months: no full test %s" % s)
+    # currency: no logged driving in 90 days = no licence in the gateway file (the level stays)
+    later = today + datetime.timedelta(days=100)
+    st.accounts["cap"].expiry = later + datetime.timedelta(days=100)
+    if st.current("cap", later):
+        wrong.append("current after 100 days without driving")
+    key = st.key(create=True)
+    _path, doc = st.make_push(today=later, key=key)
+    rec = {r["user"]: r for r in doc["records"]}["cap"]
+    if rec["licence"] or rec["level"] != "CAPTAIN":
+        wrong.append("non-current CAPTAIN pushed %s" % rec)
+    _path, doc = st.make_push(today=today, key=key)
+    if not {r["user"]: r for r in doc["records"]}["cap"]["licence"]:
+        wrong.append("current CAPTAIN pushed without licence")
+    st.log("cap", "refresher", passed=True, by="ins")
+    if not st.current("cap", today + datetime.timedelta(days=60)):
+        wrong.append("a refresher trip does not restore the currency")
+    rows = {r["user"]: r for r in st.summary(today)}
+    if not rows["cap"]["current"]:
+        wrong.append("instructor view currency")
+    # set_level: after the set-up it only lowers
+    try:
+        st.set_level("ann", "DRIVER")
+        wrong.append("set_level raised after the set-up")
+    except simguard.Refused as e:
+        if "practical test" not in str(e):
+            wrong.append("refusal says %s" % e)
+    st.set_level("drv", "OBSERVER")
+    if st.accounts["drv"].effective_level() != "OBSERVER" or st.bootstrap():
+        wrong.append("lowering / bootstrap")
+    if accounts.LOG_KINDS.count("practical") != 1:
+        wrong.append("log kinds")
+    report("AC41 renewal + currency + no upgrade outside the practical test", not wrong, "; ".join(wrong) or
+           "DRIVER renewal = refresher lesson + quiz + scenario (instructor's 2FA), CAPTAIN + a check ride, expired > "
+           "3 months = full test; no driving in 90 days = no licence in the gateway file until a refresher trip; "
+           "set_level only lowers once a CAPTAIN instructor exists")
+
+
+# --- AC42 -------------------------------------------------------------------------------------
+def ac42():
+    import certificate
+    import simguard
+    import text
+    wrong = []
+    try:
+        import PIL                                              # noqa: F401
+    except ImportError:
+        report("AC42 certificate PDF", False, "Pillow is not installed (the ground station needs it too)")
+        return
+    st = _store(tempfile.mkdtemp(prefix="trygons_ac42_"))
+    ins = _people21(st)
+    st.log("cap", "practical", passed=True, by="ins", target="CAPTAIN", test_kind="upgrade")
+    st.log("cap", "exam", id="captain_exam", level="CAPTAIN", score=93, passed=True)
+    out = os.path.join(tempfile.mkdtemp(prefix="trygons_ac42o_"), "cap.pdf")
+    for sess in (None, _login21(st, "ann")):
+        try:
+            certificate.make(st, "cap", out, sess, text.T)
+            wrong.append("made without an instructor's login")
+        except simguard.Refused:
+            pass
+    p = certificate.make(st, "cap", out, ins, text.T)
+    data = open(p, "rb").read()
+    if not data.startswith(b"%PDF") or len(data) < 5000:
+        wrong.append("not a PDF (%d bytes)" % len(data))
+    f = certificate.facts(st, "cap")
+    if f["effective"] != "CAPTAIN" or not f["practical"] or not f["exams"]:
+        wrong.append("facts %s" % f)
+    st.accounts["drv"].expiry = datetime.date.today() - datetime.timedelta(days=3)
+    if certificate.facts(st, "drv")["expiry"] is not None or certificate.facts(st, "drv")["effective"] != "OBSERVER":
+        wrong.append("an expired level printed as in force")
+    if not [e for e in st.entries() if e.get("kind") == "certificate" and e.get("user") == "cap"]:
+        wrong.append("not logged")
+    try:
+        certificate.make(st, "cap", out[:-4] + ".txt", ins, text.T)
+        wrong.append("a .txt certificate")
+    except ValueError:
+        pass
+    report("AC42 certificate PDF", not wrong, "; ".join(wrong) or
+           "an instructor's 2FA session only; a real PDF (%d bytes) with the level in force, the practical test and the "
+           "exams; an expired level never printed as in force; logged" % len(data))
+
+
+# --- AC43 -------------------------------------------------------------------------------------
+def ac43():
+    import auth
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+    except Exception as e:
+        report("AC43 academy window step 21", True, "no display (%s)" % e)
+        return
+    wrong = []
+    try:
+        import academy_app
+        st = _store(tempfile.mkdtemp(prefix="trygons_ac43_"))
+        st.add("ins", "Instr", instructor=True)
+        st.add("ann")
+        st.set_level("ins", "CAPTAIN")
+        app = academy_app.AcademyApp(tk.Toplevel(root), st)
+        for k in academy_app.AUTH_KEYS + ("acc.exams",):
+            if k not in app.buttons:
+                wrong.append("button %s" % k)
+        app.tree.selection_set("ins")
+        app.set_password(new="instructor-pw")
+        sec = app.enrol(password="instructor-pw")
+        if not sec or not st.auth.has_totp("ins"):
+            wrong.append("enrol")
+        if app.login("ins", "instructor-pw", "000000" if auth.totp(sec) != "000000" else "111111") is not None:
+            wrong.append("a wrong code logged in")
+        if not app.login("ins", "instructor-pw", auth.totp(sec)) or app.session.user != "ins":
+            wrong.append("login: %s" % app.msg.cget("text"))
+        app.tree.selection_set("ann")
+        if not app.supervise(60) or not st.supervised("ann"):
+            wrong.append("supervise")
+        app.root.after_idle(lambda: None)
+        out = os.path.join(tempfile.mkdtemp(), "ann.pdf")
+        try:
+            import PIL                                          # noqa: F401
+            if app.certificate(out) != out:
+                wrong.append("certificate: %s" % app.msg.cget("text"))
+        except ImportError:
+            pass
+        app.session = None
+        app.tree.selection_set("ann")
+        if app.renew() is not None:
+            wrong.append("renew without a login")
+    finally:
+        root.destroy()
+    report("AC43 academy window step 21", not wrong, "; ".join(wrong) or
+           "Exams / login / password / 2FA app / renew / supervise / certificate buttons; password + 2FA enrolment, a "
+           "wrong code refused, the instructor's login; supervise + certificate through the window; renew needs the "
+           "login")
+
 if __name__ == "__main__":
     for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
               ac19, ac20, ac21, ac22, ac23, ac24, ac25, ac26, ac27, ac28, ac29,
-              ac30, ac31, ac32, ac33, ac34, ac35, ac36, ac37):
+              ac30, ac31, ac32, ac33, ac34, ac35, ac36, ac37, ac38, ac39, ac40, ac41, ac42, ac43):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run

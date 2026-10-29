@@ -1,0 +1,12 @@
+{
+  "_help": "The CAPTAIN exam (spec G, step 21). Who: a valid DRIVER (or a CAPTAIN renewing). Same rules as the DRIVER exam; the CAPTAIN lesson (power raise with code + CONFIRM) is required too. Passing it does NOT give the licence: only the PRACTICAL TEST (with the trailer approach in MANEUVER) does.",
+  "kind": "exam",
+  "id": "captain_exam",
+  "level": "CAPTAIN",
+  "pass_pct": 80,
+  "questions": 15,
+  "required": ["l01_hdg_lock", "l02_takeover", "l03_standby_wins", "l04_alarm_reaction", "l05_power_raise"],
+  "pools": ["q01_safety_basics", "q03_alarms", "q04_modes", "q05_captain"],
+  "title_el": "Εξέταση ΚΥΒΕΡΝΗΤΗ",
+  "title_en": "CAPTAIN exam"
+}

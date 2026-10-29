@@ -1,0 +1,12 @@
+{
+  "_help": "The DRIVER exam (spec G, step 21). Who: an OBSERVER (or a DRIVER renewing). pass_pct = the pass mark; questions = how many are drawn at random from the pools (shuffled choices); required = the simulator lessons that must be passed first. Attempts + cool-down from limits.json (owner W27: 3 attempts, then 24 h) unless given here. Passing the exam does NOT change the level: the level comes only from the PRACTICAL TEST on the boat.",
+  "kind": "exam",
+  "id": "driver_exam",
+  "level": "DRIVER",
+  "pass_pct": 80,
+  "questions": 15,
+  "required": ["l01_hdg_lock", "l02_takeover", "l03_standby_wins", "l04_alarm_reaction"],
+  "pools": ["q01_safety_basics", "q02_screens", "q03_alarms", "q04_modes"],
+  "title_el": "Εξέταση ΟΔΗΓΟΥ",
+  "title_en": "DRIVER exam"
+}

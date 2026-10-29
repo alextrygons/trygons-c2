@@ -437,8 +437,13 @@ static void changes(const sb_t *s)
         k.auto_fin = a->finished; k.legs_done = a->legs_done; k.auto_ret = a->returning;
     }
     /* CONFIRM presses */
-    if (s->confirm.accepted != k.conf_acc) ev(s, EV_CONFIRM, s->confirm.kind, 0, (int32_t)s->confirm.accepted, 0);
-    if (s->confirm.refused != k.conf_ref) ev(s, EV_CONFIRM, s->confirm.kind, 1, (int32_t)s->confirm.refused, 0);
+    /* (kind = the request the press answered; d = the CONFIRM_ONLY token for kind CONF_CHECK) */
+    if (s->confirm.accepted != k.conf_acc)
+        ev(s, EV_CONFIRM, s->confirm.last_kind, 0, (int32_t)s->confirm.accepted,
+           s->confirm.last_kind == CONF_CHECK ? (int32_t)s->conf_only.token : 0);
+    if (s->confirm.refused != k.conf_ref)
+        ev(s, EV_CONFIRM, s->confirm.last_kind, 1, (int32_t)s->confirm.refused,
+           s->confirm.last_kind == CONF_CHECK ? (int32_t)s->conf_only.token : 0);
     if (s->confirm.ignored != k.conf_ign) ev(s, EV_CONFIRM, 0, 2, (int32_t)s->confirm.ignored, 0);
     k.conf_acc = s->confirm.accepted; k.conf_ref = s->confirm.refused; k.conf_ign = s->confirm.ignored;
     /* GPS date / time once a minute (the logger names files with it) */

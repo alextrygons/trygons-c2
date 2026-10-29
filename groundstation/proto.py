@@ -53,6 +53,9 @@ T_RESTART = 0x2D           # u8 action: 0 RESTART (clear the ENGINE KILL / softw
 T_DP = 0x2E                # u8 action (0 START, 1 JOG, 2 SPEED, 3 HEADING, 4 STOP), u8 arg, i16 value: DP (app/dp.h;
                            # HELM station; START from STANDBY + joystick CONFIRM; a copilot's needs the captain's ACCEPT
                            # except STOP)
+T_CONFIRM_ONLY = 0x30     # u16 token: the academy PRACTICAL TEST's final approval (step 21) - answered only by the
+                           # onboard joystick CONFIRM within 10 s, CHANGES NOTHING on the boat (TELEM2 group R);
+                           # HELM station, CREWED only, never FIRST TEST, never replaces another pending CONFIRM
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
@@ -142,7 +145,7 @@ TYPE_NAMES = {
     T_GW_CMD: "station command", T_HELM: "HELM", T_GW_STATION: "station event", T_GW_ACK: "station answer",
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data", T_CAN_NODES: "CAN nodes",
     T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table", T_RESTART: "engine restart / start",
-    T_THRUSTER_CFG: "thruster settings", T_DP: "DP",
+    T_THRUSTER_CFG: "thruster settings", T_DP: "DP", T_CONFIRM_ONLY: "confirm-only (practical test)",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -196,6 +199,11 @@ DP_START, DP_JOG_ACT, DP_SPEED, DP_HEADING, DP_STOP = range(5)
 DP_JOG_AHEAD, DP_JOG_ASTERN, DP_JOG_PORT, DP_JOG_STBD = range(4)
 DP_STOP_WHY = ["-", "DP STOP", "STANDBY (button / e-stop / link lost)", "joystick took over", "GPS lost / suspect",
                "compass lost", "thruster hot / blocked", "off the spot", "fault"]
+
+
+def p_confirm_only(token):
+    """PROTO_T_CONFIRM_ONLY payload: the question's number (echoed in TELEM2 group R). Changes nothing on the boat."""
+    return struct.pack("<H", int(token) & 0xFFFF)
 
 
 def p_dp(action, arg=0, value=0):
@@ -328,7 +336,10 @@ def decode_can_nodes(payload: bytes) -> dict:
 
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
 CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING", "MANEUVER",
-                 "RELAY TABLE", "DP", "THROTTLE TRAVEL", "AUTO RETURN"]
+                 "RELAY TABLE", "DP", "THROTTLE TRAVEL", "AUTO RETURN", "CONFIRM ONLY"]
+# CONFIRM_ONLY answer (TELEM2 group R, app/smallboat.h SB_CO_)
+CO_NONE, CO_PENDING, CO_CONFIRMED, CO_LATE, CO_CANCELLED = range(5)
+CO_STATES = ["never asked", "PENDING", "CONFIRMED", "LATE", "CANCELLED"]
 REMOTE_STATES = ["off", "DRIVING", "LINK LOST"]
 REMOTE_LOST_WHY = ["", "no data (gap > 300 ms)", "data too old", "latency too high"]
 WP_ACTIONS = ["continue", "slow", "stop"]
@@ -889,6 +900,8 @@ _T2_GROUPS = [
     (struct.Struct("<BbbBBBBHBBBBBBH"), "sv_flags sv_cmd100 sv_pos100 sv_r_right100 sv_r_left100 sv_b_stored1000 "
                                          "sv_b_use1000 sv_k100 sv_k_pct sv_tau10 sv_conf sv_reset_why thr_est_pct "
                                          "thr_travel10 sv_train_boot".split()),
+    # group R, CONFIRM_ONLY (academy practical test, step 21): the answer only - it changes nothing on the boat
+    (struct.Struct("<BH"), "co_state co_token".split()),
 ]
 # app/steermodel.h SM_RESET_: why the steering model went back to the TRAINING values (TELEM2 Q, log event 30)
 SM_RESET_WHY = ["-", "model residual too large", "an adapted value reached its bound", "compass / gyro / GPS doubt",
@@ -1056,6 +1069,8 @@ def decode_telem2(payload: bytes) -> dict:
         d["sv_reset_text"] = SM_RESET_WHY[d["sv_reset_why"]] if d["sv_reset_why"] < len(SM_RESET_WHY) else \
             "why %d" % d["sv_reset_why"]
         d["thr_travel_s"] = d["thr_travel10"] / 10.0
+    if "co_state" in d:
+        d["co_state_name"] = CO_STATES[d["co_state"]] if d["co_state"] < len(CO_STATES) else "?"
     if "att_age_ms" in d:
         ok = d["att_age_ms"] < 1000
         d["att_roll"] = d["att_roll100"] / 100.0 if ok else None

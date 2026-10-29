@@ -201,6 +201,9 @@ grep -E "^\[FAIL\]|OS TESTS" "$TEMP/osdep_tests.txt"
 echo "== academy (step 15+): no boat link - only the simulator on this PC or recorded files; banner; content; ADS exclude"
 PYTHONIOENCODING=utf-8 "$PY" academy/test_academy.py > "$TEMP/academy_tests.txt" 2>&1 || { echo "ACADEMY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|ACADEMY TESTS" "$TEMP/academy_tests.txt"
+echo "== academy practical test (step 21): read only + CONFIRM_ONLY (changes nothing on the boat), no bypass of any safety rule"
+PYTHONIOENCODING=utf-8 "$PY" academy/practical/test_practical.py > "$TEMP/practical_tests.txt" 2>&1 || { echo "PRACTICAL TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|PRACTICAL TESTS" "$TEMP/practical_tests.txt"
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS" "$TEMP/gw_tests.txt"

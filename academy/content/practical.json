@@ -1,0 +1,60 @@
+{
+  "_help": "The PRACTICAL TEST on the real boat (spec G + J, step 21; academy/practical/practical.py). CREWED profile only. The module only READS the boat's telemetry + the station's audit log and grades; it never sends a driving command - its one frame is CONFIRM_ONLY (PROTO_T_CONFIRM_ONLY 0x30) for the final approval, answered by the onboard joystick CONFIRM within 10 s, which changes nothing on the boat. Every task is first SEEN in the telemetry (the evidence), then APPROVED by the examiner (a valid CAPTAIN with his own login + 2FA). Leaving the test area during the test = alert + test stopped (never a mode change).",
+  "kind": "practical",
+  "_note_numbers": "distances in m from the ramp's bottom point (test_area.json); react_s = the examiner-triggered alarm's reaction time (STANDBY); fresh_s = telemetry older than this = no test",
+  "leave_m": 150,
+  "return_m": 60,
+  "ramp_m": 30,
+  "react_s": 15,
+  "course_change_deg": 10,
+  "fresh_s": 3,
+  "confirm_wait_s": 12,
+  "max_sea_state": 2,
+  "_note_sea": "calm water = the boat's sea state <= max_sea_state AND the slamming monitor CALM AND the examiner ticks 'calm water'",
+  "record_hz": 5,
+  "tasks": {
+    "leave_harbour": {
+      "title_el": "Έξοδος από το λιμάνι / τη ράμπα",
+      "title_en": "Leave the harbour / ramp",
+      "how_el": "Ο εκπαιδευόμενος βγάζει το σκάφος πάνω από leave_m από τη ράμπα, μέσα στην περιοχή εξέτασης.",
+      "how_en": "The trainee takes the boat more than leave_m from the ramp, inside the test area."
+    },
+    "hdg_lock_change": {
+      "title_el": "HDG LOCK και αλλαγή πορείας",
+      "title_en": "HDG LOCK and a course change",
+      "how_el": "HDG LOCK με το κουμπί του πάνελ, μετά αλλαγή του στόχου πορείας κατά τουλάχιστον 10° (±1 / ±10).",
+      "how_en": "HDG LOCK with the panel button, then the course target changed by at least 10 deg (+-1 / +-10)."
+    },
+    "takeover": {
+      "title_el": "Ανάληψη με το joystick και επιστροφή",
+      "title_en": "Joystick takeover + hand-back",
+      "how_el": "Από HDG LOCK / AUTO: το joystick παίρνει τον έλεγχο (MANUAL), μετά κεντραρισμένο joystick και ξανά HDG LOCK.",
+      "how_en": "From HDG LOCK / AUTO: the joystick takes over (MANUAL), then centred and back to HDG LOCK."
+    },
+    "alarm_reaction": {
+      "title_el": "Συναγερμός από τον εξεταστή",
+      "title_en": "Examiner-triggered alarm",
+      "how_el": "Ο εξεταστής πατά «Συναγερμός» (μόνο σε αυτή την οθόνη - δεν στέλνεται τίποτα στο σκάφος). Ο εκπαιδευόμενος βάζει STANDBY μέσα σε react_s.",
+      "how_en": "The examiner presses 'Alarm' (on this screen only - nothing is sent to the boat). The trainee puts the boat in STANDBY within react_s."
+    },
+    "return": {
+      "title_el": "Επιστροφή",
+      "title_en": "Return",
+      "how_el": "Πίσω σε λιγότερο από return_m από τη ράμπα, μετά την έξοδο.",
+      "how_en": "Back within return_m of the ramp, after leaving."
+    },
+    "trailer_maneuver": {
+      "title_el": "Προσέγγιση τρέιλερ + φόρτωση σε MANEUVER",
+      "title_en": "Trailer approach + loading in MANEUVER",
+      "how_el": "MANEUVER (ζήτηση του καπετάνιου + CONFIRM) μέσα σε ramp_m από το κάτω σημείο της ράμπας, μετά STANDBY σχεδόν ακίνητο.",
+      "how_en": "MANEUVER (the captain's request + CONFIRM) within ramp_m of the ramp's bottom point, then STANDBY almost stopped."
+    }
+  },
+  "kinds": {
+    "_note": "upgrade_<level> = the role upgrade to that level; check_ride = the CAPTAIN's check ride every 24 months; refresher = the supervised refresher trip after no logged driving in 90 days (currency)",
+    "upgrade_DRIVER": ["leave_harbour", "hdg_lock_change", "takeover", "alarm_reaction", "return"],
+    "upgrade_CAPTAIN": ["leave_harbour", "hdg_lock_change", "takeover", "alarm_reaction", "return", "trailer_maneuver"],
+    "check_ride": ["leave_harbour", "hdg_lock_change", "takeover", "alarm_reaction", "return", "trailer_maneuver"],
+    "refresher": ["leave_harbour", "hdg_lock_change", "return"]
+  }
+}

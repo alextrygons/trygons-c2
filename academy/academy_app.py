@@ -21,6 +21,9 @@ sys.path.insert(0, HERE)
 sys.path.append(os.path.join(os.path.dirname(HERE), "groundstation"))   # theme.py: one look
 
 import accounts                                                         # noqa: E402
+import auth                                                             # noqa: E402
+import online                                                           # noqa: E402
+import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
 from banner import banner_text                                          # noqa: E402
 from text import T                                                      # noqa: E402
@@ -35,6 +38,8 @@ except Exception:                                                       # pragma
     COL = {"bg": "#0e141b", "fg": "#e6edf3", "panel": "#101a24", "dim": "#8fa3b5"}
 
 ADMIN_KEYS = ("acc.new", "acc.set_level", "acc.log_hours", "acc.make_push", "acc.key", "acc.backup", "acc.refresh")
+# step 21: logins (2FA), renewals, supervised online sessions, the certificate PDF - their own row
+AUTH_KEYS = ("acc.login", "acc.password", "acc.enrol", "acc.renew", "acc.supervise", "acc.certificate")
 COLUMNS = ("user", "name", "level", "effective", "expiry", "days_left", "lessons", "exams_passed", "hours",
            "current", "weak")
 
@@ -50,6 +55,11 @@ class AcademyApp(object):
                                font=(theme.FAMILY if theme else "Segoe UI", 16, "bold"), pady=6)
         self.banner.pack(side="top", fill="x")
         tk.Label(root, text=T("academy.sim_only"), bg=COL["bg"], fg=COL["dim"]).pack(side="top", anchor="w", padx=10)
+        self.session = None
+        self.online = online.is_online()
+        self.l_online = tk.Label(root, text=T("acc.online") if self.online else T("acc.local"), bg=COL["bg"],
+                                 fg=CAUTION if self.online else COL["dim"])
+        self.l_online.pack(side="top", anchor="w", padx=10)
         tk.Label(root, text=T("acc.instructor_view"), bg=COL["bg"], fg=COL["fg"],
                  font=(theme.FAMILY if theme else "Segoe UI", 13, "bold")).pack(side="top", anchor="w", padx=10, pady=(6, 0))
         frame = tk.Frame(root, bg=COL["bg"])
@@ -64,6 +74,8 @@ class AcademyApp(object):
         self.tree.configure(yscrollcommand=sb.set)
         bar = tk.Frame(root, bg=COL["bg"])
         bar.pack(side="top", fill="x", padx=10, pady=4)
+        bar3 = tk.Frame(root, bg=COL["bg"])                             # logins / renewals / certificate
+        bar3.pack(side="top", fill="x", padx=10, pady=(0, 4))
         bar2 = tk.Frame(root, bg=COL["bg"])                             # the training buttons: their own row
         bar2.pack(side="top", fill="x", padx=10, pady=(0, 4))
         self.buttons = {}
@@ -72,8 +84,12 @@ class AcademyApp(object):
                         ("acc.key", self.show_key), ("acc.backup", self.backup), ("acc.refresh", self.refresh),
                         ("acc.tour", self.open_tour), ("acc.lessons", self.open_lessons),
                         ("acc.quizzes", self.open_quizzes), ("acc.scenarios", self.open_scenarios),
-                        ("acc.videolessons", self.open_videolessons), ("acc.editor", self.open_editor)):
-            b = tk.Button(bar if key in ADMIN_KEYS else bar2, text=T(key), command=fn)
+                        ("acc.videolessons", self.open_videolessons), ("acc.editor", self.open_editor),
+                        ("acc.exams", self.open_exams),
+                        ("acc.login", self.login), ("acc.password", self.set_password), ("acc.enrol", self.enrol),
+                        ("acc.renew", self.renew), ("acc.supervise", self.supervise),
+                        ("acc.certificate", self.certificate)):
+            b = tk.Button(bar if key in ADMIN_KEYS else (bar3 if key in AUTH_KEYS else bar2), text=T(key), command=fn)
             b.pack(side="left", padx=3)
             self.buttons[key] = b
         self.msg = tk.Label(root, text="", bg=COL["bg"], fg=COL["fg"], anchor="w", justify="left")
@@ -139,10 +155,14 @@ class AcademyApp(object):
                     exp = datetime.date.fromisoformat(s.strip())
                 except ValueError:
                     return self.say(T("acc.failed", why="YYYY-MM-DD"))
+        if not self.store.bootstrap() and self.need_instructor():
+            return None
         try:
-            a = self.store.set_level(u, lv, exp, by="instructor")
+            a = self.store.set_level(u, lv, exp, by=self.session.user if self.session else "instructor")
             self.say(T("acc.level_set", user=u, level=T("level.%s" % a.level),
                        expiry=a.expiry.isoformat() if a.expiry else "-"))
+        except simguard.Refused as e:
+            self.say(T("acc.only_practical", why=str(e)))
         except (ValueError, KeyError) as e:
             self.say(T("acc.failed", why=str(e)))
         self.refresh()
@@ -219,6 +239,115 @@ class AcademyApp(object):
         import videolesson_app
         self.editor = videolesson_app.EditorWindow(tk.Toplevel(self.root), text.lang())
         return self.editor
+
+    def open_exams(self):
+        """The exams (step 21) in a window of THIS process (no link at all); the selected account sits it."""
+        import exam_app
+        self.exams = exam_app.ExamWindow(tk.Toplevel(self.root), text.lang(), store=self.store, user=self.chosen_user())
+        return self.exams
+
+    # --- step 21: logins (2FA for CAPTAIN + instructor), renewals, supervised sessions, the certificate
+    def need_instructor(self):
+        why = self.store.session_ok(self.session, role="instructor")
+        if why:
+            self.say(T("acc.need_login", why=why))
+            return True
+        return False
+
+    def login(self, user=None, password=None, code=None):
+        u = user or simpledialog.askstring(T("acc.login"), T("acc.ask_user"), parent=self.root)
+        if not u:
+            return None
+        pw = password if password is not None else simpledialog.askstring(T("acc.login"), T("acc.ask_password"),
+                                                                          parent=self.root, show="*")
+        c = code
+        if c is None and self.store.needs_2fa(u.strip()):
+            c = simpledialog.askstring(T("acc.login"), T("acc.ask_code"), parent=self.root)
+        try:
+            self.session = self.store.login(u.strip(), pw or "", (c or "").strip() or None)
+        except auth.AuthError as e:
+            self.session = None
+            return self.say(T("acc.login_failed", why=str(e)))
+        self.say(T("acc.logged_in", user=self.session.user))
+        return self.session
+
+    def set_password(self, user=None, old=None, new=None):
+        u = user or self.selected()
+        if not u:
+            return None
+        if old is None and self.store.auth.has_password(u):
+            old = simpledialog.askstring(T("acc.password"), T("acc.ask_old_password"), parent=self.root, show="*")
+        if new is None:
+            new = simpledialog.askstring(T("acc.password"), T("acc.ask_new_password"), parent=self.root, show="*")
+        if not new:
+            return None
+        try:
+            self.store.auth.set_password(u, new, old)
+        except auth.AuthError as e:
+            return self.say(T("acc.failed", why=str(e)))
+        self.say(T("acc.password_set", user=u))
+        return True
+
+    def enrol(self, user=None, password=None, code=None):
+        u = user or self.selected()
+        if not u:
+            return None
+        pw = password if password is not None else simpledialog.askstring(T("acc.enrol"), T("acc.ask_password"),
+                                                                          parent=self.root, show="*")
+        if code is None and self.store.auth.has_totp(u):
+            code = simpledialog.askstring(T("acc.enrol"), T("acc.ask_code"), parent=self.root)
+        try:
+            sec = self.store.auth.enrol_totp(u, pw or "", code)
+        except auth.AuthError as e:
+            return self.say(T("acc.failed", why=str(e)))
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(auth.otpauth_uri(u, sec))
+        except tk.TclError:
+            pass
+        self.say(T("acc.enrolled", user=u, secret=sec))
+        return sec
+
+    def renew(self):
+        u = self.selected()
+        if not u or self.need_instructor():
+            return None
+        try:
+            a = self.store.renew(u, self.session)
+        except simguard.Refused as e:
+            return self.say(T("acc.failed", why=str(e)))
+        self.say(T("acc.renewed", user=u, level=T("level.%s" % a.level), expiry=a.expiry.isoformat()))
+        self.refresh()
+        return a
+
+    def supervise(self, minutes=None):
+        u = self.selected()
+        if not u or self.need_instructor():
+            return None
+        m = minutes or simpledialog.askinteger(T("acc.supervise"), T("acc.ask_minutes"), parent=self.root,
+                                               minvalue=10, maxvalue=480, initialvalue=120)
+        if not m:
+            return None
+        self.store.supervise(u, self.session, m)
+        self.say(T("acc.supervised", user=u, m=m))
+        return True
+
+    def certificate(self, path=None):
+        u = self.selected()
+        if not u or self.need_instructor():
+            return None
+        path = path or filedialog.asksaveasfilename(parent=self.root, title=T("acc.certificate"),
+                                                    defaultextension=".pdf", initialfile="certificate_%s.pdf" % u,
+                                                    filetypes=[("PDF", "*.pdf")])
+        if not path:
+            return None
+        import certificate
+        try:
+            out = certificate.make(self.store, u, path, self.session, T)
+        except Exception as e:                                  # refused / no Pillow / a disk error
+            return self.say(T("acc.failed", why=str(e)))
+        self.say(T("acc.cert_made", path=out))
+        return out
 
     def backup(self):
         d = filedialog.askdirectory(parent=self.root, title=T("acc.backup"))

@@ -14,6 +14,8 @@
   "max_wind_kn": 12,
   "_note_wind": "owner 2026-10-28 (W27): 12 kn; the wind is typed in and confirmed by the examiner",
   "blocked_wind_from": ["N", "ramp_right"],
+  "strong_wind_kn": 8,
+  "_note_strong": "a wind FROM a blocked direction is refused from strong_wind_kn up (8 kn = a default, TO CONFIRM by the owner: PROGRESS.md W39); N = from 315..45 deg; ramp_right = from the right side when looking down the ramp to the sea (the ramp bearing +45..+135 deg)",
   "_note_blocked": "spec default: strong north AND from the right side at the ramp (ramp_right = from the right when looking down the ramp to the sea)",
   "allowed_hours": [8, 19],
   "_note_hours": "owner 2026-10-28 (W27): local time 08-19",

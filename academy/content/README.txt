@@ -3,14 +3,14 @@ academy/content/ - the Academy's lessons, quizzes, scenarios, exams and limits
 
 Every file here is JSON with comments as "_help" / "_note..." keys (the same way as boats/*.json).
 Edit them with any text editor; academy/test_academy.py (AC10) checks every file:
-  * "kind" (lesson | quiz | scenario | exam | limits | test_area) and a "_help" comment;
+  * "kind" (lesson | quiz | scenario | exam | limits | test_area | practical) and a "_help" comment;
   * every text a trainee sees in BOTH languages: "<name>_el" (Greek, the default) + "<name>_en";
   * lessons and scenarios: "runs_on": "sim" (the academy never drives a real boat);
   * quizzes: "answer" = the index (0, 1, 2 ...) of the right choice.
 
 The files whose name starts with "example_" are examples of the format (step 15). The real
 content comes with the steps 18 (lessons, quizzes), 19 (scenarios) and 21 (exams); the example
-lesson / quiz / scenario files are gone (only the example exam remains until step 21).
+lesson / quiz / scenario / exam files are gone (step 21 replaced the example exam).
 
 Lessons (step 18, lessons/*.json): each step = do_el / do_en (what to do), hint_el / hint_en, and
 "check" = the SIMULATOR state that proves it, e.g. {"f": "mode_name", "eq": "HDG_LOCK"} or
@@ -32,6 +32,16 @@ Video lessons (step 20) are NOT here: they are made by the Lesson editor from th
 events and kept in academy/data/videolessons/<id>/ (lesson.json kind "videolesson" + the small blurred
 copies + hud.jsonl) - never in git, because real trip video shows people and number plates. Every
 rule: academy/videolesson.py (check_doc).
+
+Exams (step 21, exams/*.json): level DRIVER / CAPTAIN, pass_pct, questions (how many drawn), pools,
+required (lessons); attempts + cooldown_h from limits.json (3, 24 h) unless given. Every rule:
+academy/exam.py. Passing an exam never changes a level.
+
+The practical test (step 21, practical.json): the tasks (title / how in both languages), the task list
+of every kind (upgrade_DRIVER, upgrade_CAPTAIN, check_ride, refresher) and its numbers (leave_m,
+return_m, ramp_m, react_s, course_change_deg, max_sea_state ...). Every rule: academy/practical/ptest.py.
+test_area.json stays the PLACEHOLDER: the real area is set on site with the instructor tool (ground
+station menu Academy -> Practical test area) and kept in academy/data/test_area.json.
 
 Chart photos (docs/daskalio/): for the test area picture, the demo map and the 3D sim ONLY.
 A photo is NOT a navigation chart - never used by any safety check (docs/daskalio/README.txt).
