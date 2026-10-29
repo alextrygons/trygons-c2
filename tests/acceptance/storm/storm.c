@@ -694,6 +694,7 @@ typedef struct {
     float    gear_truth_prev, thr_truth_prev;   /* I49 */
     bool     node_lost_prev;                /* I50 */
     uint32_t node_silenced_t;               /* I50: a required node made silent / unpowered (0 none) */
+    uint32_t thr_fault_t;                   /* I29: the storm's own throttle-node fault / bus-off injection (0 none) */
     uint16_t gear_sent_prev;                /* I51 */
     float    gear_node_prev;                /* I51 (step 11g): the gear node's received command */
     bool     gear_node_have_prev;
@@ -1188,6 +1189,11 @@ static void check_step(void)
         fail(23, "profile CREWED -> UNCREWED without a power-up%.0f%.0f", 0.0, 0.0);
 
     /* I27-I31: UNCREWED lost link + ENGINE KILL */
+    /* I29's storm view of an OD-3 cause: kept while the injected fault runs, the AURIX still shows the
+     * throttle node lost (its latch) or the node-lost time has not passed yet; then forgotten */
+    if (C.thr_fault_t && !S.can_back_t && !s->can.node[HAL_CAN_ROLE_THROTTLE].lost &&
+        S.t - C.thr_fault_t > HAL_CAN_NODE_LOST_MS + 500u)
+        C.thr_fault_t = 0u;
     {
         bool kill = sim_hal_engine_killed();
         bool safe_now = forced || (thr <= 0.6f && (gp == 0 || gp == -1));
@@ -1200,7 +1206,11 @@ static void check_step(void)
             /* open sea with fresh far shore info (the storm's own view): never before the grace time */
             bool far = S.shore_mode == 2u && S.gw_on && s->gw.state == SB_GW_OK;
             float since = (S.t - s->ll.lost_ms) * 0.001f;
-            if (far && since < s->cfg.lostlink_grace_s - 0.1f && !s->ll.node_kill)   /* OD-3 kill = at once (I55) */
+            /* OD-3 kill = at once (I55): only when the AURIX says so (node_kill) AND the storm itself made the
+             * throttle node unavailable (its injected fault on that node or a bus-off) - a node_kill without a
+             * real cause (a healthy node marked lost, the flag set on the link-loss path) is not excused */
+            bool od3 = s->ll.node_kill && C.thr_fault_t != 0u;
+            if (far && since < s->cfg.lostlink_grace_s - 0.1f && !od3)
                 fail(29, "killed %.1f s after the loss at open sea (grace %.0f s)", since, s->cfg.lostlink_grace_s);
             else ok(29);
         }
@@ -1378,12 +1388,25 @@ static void check_step(void)
                                      SB_ALM_TRAINING | SB_ALM_OVERRUN;
             uint32_t new_alm = s->alarm_bits & ~C.relay_alm & judged1;
             uint32_t new_alm2 = s->alarm_bits2 & ~C.relay_alm2 & ~SB_ALM2_ADVISORY;
-            if (S.can_back_t || C.node_silenced_t) new_alm2 &= ~SB_ALM2_CAN_NODE;   /* a servo node event runs */
+            /* a servo node event runs: CAN NODE LOST is excused only for the injected node's role (any node
+             * only for a bus-off) - a relay event knocking out another required node is still caught */
+            if (S.can_back_t || C.node_silenced_t) {
+                /* only the REQUIRED nodes raise CAN NODE LOST (the relay board node 30 is not one) */
+                const uint8_t REQ_ROLES = (uint8_t)((1u << HAL_CAN_ROLE_THROTTLE) | (1u << HAL_CAN_ROLE_STEERING) |
+                                                    (1u << HAL_CAN_ROLE_GEAR));
+                uint8_t role = S.can_fault_node == DC_NODE_THROTTLE ? HAL_CAN_ROLE_THROTTLE :
+                               S.can_fault_node == DC_NODE_STEERING ? HAL_CAN_ROLE_STEERING : HAL_CAN_ROLE_GEAR;
+                if (S.can_fault_kind == 3u || (s->can.lost_mask & REQ_ROLES & (uint8_t)~(1u << role)) == 0u)
+                    new_alm2 &= ~SB_ALM2_CAN_NODE;
+            }
             if (mode_same && gear_same && steer_same && thr_ok && new_alm == 0u && new_alm2 == 0u) ok(36);
             else fail(36, "a relay event changed the driving: what %.0f (1 gear 2 steering 4 throttle 8 alarm; + mode*16), "
                       "new alarm bits %.0f (word 2 x 2^32)",
                       (double)((gear_same ? 0 : 1) | (steer_same ? 0 : 2) | (thr_ok ? 0 : 4) | ((new_alm || new_alm2) ? 8 : 0)) +
                       16.0 * (double)m, (double)new_alm + 4294967296.0 * (double)new_alm2);
+            if (new_alm2 & SB_ALM2_CAN_NODE)
+                printf("  (I36: CAN lost mask %u, injected node %u kind %u, window %u)\n", (unsigned)s->can.lost_mask,
+                       (unsigned)S.can_fault_node, (unsigned)S.can_fault_kind, (unsigned)(S.can_back_t || C.node_silenced_t));
         }
         C.relay_t = 0u;
     }
@@ -1689,9 +1712,11 @@ static void apply(const ev_t *e)
             }
             bool cond = sim_hal_throttle() <= 0.6f && gear_pos(sim_hal_gear_pwm()) == 0 && !S.estop;
             sb_result_t res = sb_relay_cmd(s, n, act, (uint16_t)(e->c * 3));
-            if ((n == 1u || n == 3u) && act != RELAY_CMD_OFF && res == SB_OK) {
-                C.eng_on_t[n] = S.t ? S.t : 1u;                            /* IGNITION / SHUTOFF on: the engine rules */
-                if (cond || n == 3u) ok(36);                                /* SHUTOFF ON: always allowed (11b) */
+            const relay_def_t *rd = relay_table_find(&s->relays.table, n);    /* the ACTIVE table's role, never n */
+            uint8_t role = rd ? rd->role : RELAY_ROLE_NONE;
+            if ((role == RELAY_ROLE_IGNITION || role == RELAY_ROLE_SHUTOFF) && act != RELAY_CMD_OFF && res == SB_OK) {
+                if (n < 4u) C.eng_on_t[n] = S.t ? S.t : 1u;                /* IGNITION / SHUTOFF on: the engine rules */
+                if (cond || role == RELAY_ROLE_SHUTOFF) ok(36);             /* SHUTOFF ON: always allowed (11b) */
                 else fail(36, "engine relay %.0f switched on with throttle %.1f %% / gear / e-stop", (double)n,
                           sim_hal_throttle());
             }
@@ -1786,12 +1811,14 @@ static void apply(const ev_t *e)
             S.can_back_t = 0u;
         } else if (e->a < 700) {                            /* our controller bus-off */
             S.can_fault_kind = 3u;
+            C.thr_fault_t = S.t ? S.t : 1u;                 /* I29: every node, the throttle node too */
             sim_hal_can_fault(SIM_CAN_BUSOFF);
         } else {                                            /* core 0's actuator task stuck (MON_TRIP_CAN_TX) */
             S.can_fault_kind = 4u;
             S.can_back_t = S.t + 400u;
             sim_hal_can_task_stuck(true);
         }
+        if (id == DC_NODE_THROTTLE && S.can_fault_kind <= 2u) C.thr_fault_t = S.t ? S.t : 1u;   /* I29 */
         break;
     }
     case E_CURRENT: sim_hal_set_motor_current(e->a < 500, (float)e->b * 0.02f); break;

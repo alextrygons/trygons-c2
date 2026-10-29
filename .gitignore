@@ -39,3 +39,6 @@ demo/media/
 
 # academy accounts / logbook on the shore PC (step 16+): never in git
 academy/data/
+
+# ground-station logs written in the repo root when a station is started from there (W32)
+logs/
