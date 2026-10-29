@@ -102,22 +102,18 @@ void core0_main(void)
         boot++;
         (void)hal_nv_save(HAL_NV_SLOT_BOOT, &boot, sizeof boot);
         g_logstat.boot = boot;
-        uint32_t t0 = hal_millis();
-#ifndef BOAT_VARIANT_BIG
-        uint32_t next_tick = t0;
+        /* step 13f (review 94afdc4 MED-1) + 13g (review facf265 LOW-2): the small boat's actuator task keeps sending
+         * throttle IDLE every 10 ms (hal_init sent the first) WHILE the flash works (sb_bootnv_step, the same code
+         * in the sim: test CN34). A frame the node dropped (C19) is repeated 10 ms later only while this loop runs:
+         * a fast write (or none, or NV FAULT) ends it at once, and then the next frame comes from the control loop
+         * after sb_init / link_init (gap: bench item C19 / W43, FIRST_TEST.md 3) */
+        sb_bootnv_t bn;
+#ifdef BOAT_VARIANT_BIG
+        sb_bootnv_begin(&bn, hal_millis(), NV_BOOT_MS, false);
+#else
+        sb_bootnv_begin(&bn, hal_millis(), NV_BOOT_MS, true);
 #endif
-        while (hal_nv_pending() && hal_nv_ok() && hal_millis() - t0 < NV_BOOT_MS) {
-            hal_nv_service(true);
-            hal_watchdog_kick();
-#ifndef BOAT_VARIANT_BIG
-            /* step 13f (review 94afdc4 MED-1): the actuator task keeps sending throttle IDLE (hal_init sent the
-             * first) while the flash works - also a frame the node dropped (C19) is repeated 10 ms later */
-            if ((int32_t)(hal_millis() - next_tick) >= 0) {
-                hal_can_tick();
-                next_tick += 10u;
-            }
-#endif
-        }
+        while (sb_bootnv_step(&bn, hal_millis())) { }
     }
 
     /* Wait for CPU sync event */

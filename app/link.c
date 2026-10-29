@@ -458,6 +458,7 @@ static uint8_t sb_result_to_proto(sb_result_t r)
     case SB_ERR_STANDBY_ONLY:  return PROTO_R_STANDBY_ONLY;
     case SB_ERR_BAD_VALUE:     return PROTO_R_BAD_VALUE;
     case SB_ERR_NOT_ALLOWED:   return PROTO_R_NOT_ALLOWED;
+    case SB_ERR_RELAY_STOP:    return PROTO_R_RELAY_STOP;
     default:                   return PROTO_R_REFUSED;
     }
 }

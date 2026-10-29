@@ -1002,3 +1002,23 @@ CPU sync); storm I51 + the I59 coverage check.
 5. (LOW) C19 (the first frame after a reset may be dropped by the node's transfer-ID rule): no code change, an open
    bench item (table C19, FIRST_TEST.md 3).
 
+## 23. Step 13g - fixes from the review of facf265 (2026-10-29)
+
+1. (MED-1) A relay-table change (table_activate) also cleared the pending OFFs (re-sent until the readback shows
+   off), the TIMED relays' OFF deadlines and the pulse ends - a timed relay ON or an OFF waiting for its readback
+   was left ON on the board with nothing to switch it off. Now `relays_stop_pending()` (queued SHUTOFF ON, any
+   off_pending, any until_ms) blocks every table change: relays_accept refuses the CONFIRM. Chosen over carrying the
+   entries to the new table (simpler; a stop / timer is never dropped). TELEM2 group M flag 128 shows it. Test RB26
+   (both buses).
+2. (MED-2) The offer is refused UP FRONT while a stop / timer is pending: relays_offer returns RELAY_OFFER_STOP ->
+   SB_ERR_RELAY_STOP -> NACK PROTO_R_RELAY_STOP 23 "relay stop pending" (no CONFIRM asked that could only fail); the
+   station's relay_push waits while flag 128 is set (no offer, no single-operator question). Tests RB25 / RB26,
+   test_boats B9.
+3. (LOW-1) CN30 has its precondition back: after hal_init's frame the sim throttle node is set back to wire 0.0,
+   so only CPU1's frames can close it (thr0 > 20 %).
+4. (LOW-2) Cpu0_Main.c's NV boot loop is `sb_bootnv_step` (smallboat.c), the same code in the sim: test CN34 (a
+   stuck flash: throttle IDLE every 10 ms for the whole loop; a normal write ends the loop at once). The comment is
+   corrected: a dropped frame is repeated 10 ms later only while the loop runs; after it, the next frame comes from
+   the control loop after sb_init / link_init - the gap is a bench measurement (FIRST_TEST.md 3, C19 / W43).
+5. (LOW-3) C19 stays an open bench item; W42 / MON_BOOT_MS (W43) unchanged.
+

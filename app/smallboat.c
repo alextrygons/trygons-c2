@@ -185,6 +185,29 @@ static void joymap_apply(sb_t *s)
     lever_standard(s);
 }
 
+void sb_bootnv_begin(sb_bootnv_t *b, uint32_t now_ms, uint32_t max_ms, bool can_tick)
+{
+    b->t0 = now_ms;
+    b->next_tick = now_ms;
+    b->max_ms = max_ms;
+    b->ticks = 0u;
+    b->can_tick = can_tick;
+}
+
+bool sb_bootnv_step(sb_bootnv_t *b, uint32_t now_ms)
+{
+    if (!hal_nv_pending() || !hal_nv_ok() || now_ms - b->t0 >= b->max_ms) return false;
+    hal_nv_service(true);
+    hal_watchdog_kick();
+    if (b->can_tick && (int32_t)(now_ms - b->next_tick) >= 0) {
+        hal_can_tick();                         /* throttle IDLE every 10 ms while the flash works (13f MED-1) */
+        b->ticks++;
+        b->next_tick += 10u;
+        if ((int32_t)(now_ms - b->next_tick) >= 0) b->next_tick = now_ms + 10u;   /* late: never a burst */
+    }
+    return true;
+}
+
 void sb_init(sb_t *s, const sb_config_t *cfg)
 {
     static program_t p;         /* large: not on the stack */
@@ -381,6 +404,7 @@ sb_result_t sb_relay_table(sb_t *s, const relay_table_t *t)
         return SB_OK;
     case RELAY_OFFER_STANDBY: return SB_ERR_STANDBY_ONLY;
     case RELAY_OFFER_BAD:     return SB_ERR_BAD_VALUE;
+    case RELAY_OFFER_STOP:    return SB_ERR_RELAY_STOP;   /* step 13g: no CONFIRM asked (it could only fail) */
     default: break;
     }
     if (!sb_confirm_ready(s)) {                 /* nobody can confirm: the offer is dropped */

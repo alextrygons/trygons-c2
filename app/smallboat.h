@@ -577,7 +577,8 @@ typedef enum {
     SB_ERR_STANDBY_ONLY,    /* only in STANDBY (not stopping) */
     SB_ERR_BAD_VALUE,       /* a value / table that fails its checks */
     SB_ERR_NOT_ALLOWED,     /* not through this command (e.g. the STARTER: section N only) */
-    SB_ERR_REFUSED          /* refused by the function (interlock, silent board) */
+    SB_ERR_REFUSED,         /* refused by the function (interlock, silent board) */
+    SB_ERR_RELAY_STOP       /* step 13g: relay table refused - a relay stop / timer is pending (PROTO_R_RELAY_STOP) */
 } sb_result_t;
 
 typedef struct {
@@ -762,6 +763,20 @@ typedef struct {
 
 void sb_default_config(sb_config_t *cfg);
 void sb_init(sb_t *s, const sb_config_t *cfg);
+
+/* The boot counter's data-flash write before the control loop (Cpu0_Main.c, both variants), as a step function so
+ * the sim runs the very same loop (step 13g, review facf265 LOW-2; test CN34): every pass services the flash and
+ * kicks the watchdog; with can_tick (the small boat) the 10 ms actuator task (hal_can_tick: throttle IDLE, hal_init
+ * sent the first) runs every 10 ms WHILE the loop lasts. sb_bootnv_step returns false once the flash is idle, failed
+ * (NV FAULT) or max_ms passed. After it the next actuator frame comes only from the control loop (after sb_init /
+ * link_init: the gap is a bench measurement, FIRST_TEST.md C19 / W43). Never blocks. */
+typedef struct {
+    uint32_t t0, next_tick, max_ms;
+    uint32_t ticks;             /* hal_can_tick calls (tests) */
+    bool     can_tick;
+} sb_bootnv_t;
+void sb_bootnv_begin(sb_bootnv_t *b, uint32_t now_ms, uint32_t max_ms, bool can_tick);
+bool sb_bootnv_step(sb_bootnv_t *b, uint32_t now_ms);
 
 /* One 20 Hz step: reads the HAL, writes the HAL. */
 void sb_step(sb_t *s);

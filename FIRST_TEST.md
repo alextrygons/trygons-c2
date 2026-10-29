@@ -248,12 +248,19 @@ measured value / answer here.
       steering / gear frame before a mode commands one ____ . With the throttle node holding ~50 %
       from before a warm reset (watchdog reset while driving): the lever starts closing within
       ____ ms of the reset (not after the boot).
+      (step 13g, review facf265 LOW-2) The -1.0 frames every 10 ms come only WHILE the NV boot loop
+      runs (a normal boot-counter write ends it within a few ms; NV FAULT at once): measure the
+      LONGEST gap between two core-0 throttle frames from hal_init's frame to the control loop's
+      first actuator tick (= the NV loop + sb_init + link_init) ____ ms (normal boot) / ____ ms
+      (after a data-flash sector swap) - a frame the node drops (C19) is repeated only after that gap.
 - [ ] (step 13f, OPEN ITEM C19, review 94afdc4 LOW-3) Transfer-ID after a boot: CPU1 (and core 0)
       start their ArrayCommand transfer ID at 0 after every reset. If the node's expected ID from
       before the reset happens to be 31, libcanard on the node DROPS the first frame (the next one,
       10 / 20 ms later, is taken). Check on the bench that the node takes the frames after a warm
       reset at different moments (CAN trace + the servo moves to idle) ____ ; the cost is one
-      period (10-20 ms) - NOT changed in code, owner decision if the bench shows more.
+      period (10-20 ms) - NOT changed in code, owner decision if the bench shows more. (step 13g:
+      right after a reset the next core-0 frame may come only after the boot gap measured above,
+      not 10 ms later - note it here too: ____ ms.)
 - [ ] (step 13e, review 1f7817c HIGH-1) Boot trip with the DroneCAN servos, core 0 halted in ADS
       INSIDE hal_init right after dc_init (not after the sync): CAN trace shows CPU1's throttle
       IDLE (-1.0) frames every 20 ms after ~3 s ____ ; halted BEFORE dc_init: no CAN frame at all

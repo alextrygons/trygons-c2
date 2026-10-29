@@ -174,6 +174,10 @@ relay_offer_t relays_offer(relays_t *r, const relay_table_t *t, bool standby_idl
         return RELAY_OFFER_SAME;
     }
     if (!standby_idle) return RELAY_OFFER_STANDBY;
+    if (relays_stop_pending(r)) {                        /* step 13g: refused up front, never a CONFIRM that must fail */
+        r->offer_pending = false;
+        return RELAY_OFFER_STOP;
+    }
     r->offer = *t;
     r->offer_pending = true;
     r->last_what = 2u;
@@ -184,15 +188,23 @@ relay_offer_t relays_offer(relays_t *r, const relay_table_t *t, bool standby_idl
 bool relays_accept(relays_t *r, bool standby_idle)
 {
     if (!r->offer_pending || !standby_idle) return false;
-    /* step 13f (review 94afdc4 LOW-2): a SHUTOFF ON (= stop the engine) still queued for the board is never wiped
-     * by a table change (table_activate clears the queue): the CONFIRM is refused (the offer is dropped at the next
-     * step, the station offers again later); the queued stop runs or ends with its own note (shutoff_dropped) */
-    if (r->shutoff_pending != 0u) return false;
+    /* step 13f (review 94afdc4 LOW-2) + 13g (review facf265 MED-1): a stop or timer still owed to the board (a
+     * queued SHUTOFF ON, an OFF waiting for its readback, a timed relay's OFF, a pulse's end) is never wiped by a
+     * table change (table_activate clears them): the CONFIRM is refused (the offer is dropped at the next step; a
+     * new offer is refused up front while it lasts - relays_offer); the stop runs or ends with its own note */
+    if (relays_stop_pending(r)) return false;
     r->offer_pending = false;
     table_activate(r, &r->offer, false);
     hal_relay_cut_hold(shutoff_hold(r));                 /* step 13e: the new table's SHUTOFF at once */
     r->table_new = true;
     return true;
+}
+
+bool relays_stop_pending(const relays_t *r)
+{
+    if (r->shutoff_pending != 0u || r->off_pending != 0u) return true;
+    for (uint8_t i = 0; i < RELAY_TABLE_MAX; i++) if (r->until_ms[i] != 0u) return true;
+    return false;
 }
 
 void relays_cancel_offer(relays_t *r)
@@ -455,7 +467,7 @@ uint8_t relays_flags(const relays_t *r)
 {
     return (uint8_t)((r->board_ok ? 1u : 0u) | (r->have_table ? 2u : 0u) | (r->from_nv ? 4u : 0u) |
                      (r->offer_pending ? 8u : 0u) | (r->power_ups ? 16u : 0u) | (r->first_test ? 32u : 0u) |
-                     ((r->board_ok && !r->readback) ? 64u : 0u));
+                     ((r->board_ok && !r->readback) ? 64u : 0u) | (relays_stop_pending(r) ? 128u : 0u));
 }
 
 uint8_t relays_starter(const relays_t *r)

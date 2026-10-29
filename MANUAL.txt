@@ -387,7 +387,11 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   the boat (generator cap, the relay table, the DP thruster settings): the
   cap and the thruster settings are RAM only - a boat restart gets them
   again; the relay table is kept in the boat's data flash and a DIFFERENT
-  one needs the joystick CONFIRM (chapter 7, RELAY BOARD).
+  one needs the joystick CONFIRM (chapter 7, RELAY BOARD). While a relay
+  still has to be switched off (a TIMED relay running, an OFF the board has
+  not confirmed yet, a pulse, a queued SHUTOFF) no new table is taken: the
+  boat answers "relay stop pending: the relay table changes after it" and
+  the station sends the table again (and asks for the CONFIRM) only after it.
   The event list shows "boat file RF49D: generator max 25 %" and "boat file
   RF49D: DP thrusters, bow 100 %, stern 100 %".
   "Other address ..." (Tools - Connection): the connection box (COM5,

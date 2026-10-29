@@ -364,7 +364,15 @@ def b9_relay_push(ap, pump, sim):
     ap.relay_push_at = 0.0
     ap.relay_push({"relay_hash": want ^ 1, "relay_pending": False, "confirm_kind": 1})
     skip_confirm = ap.relay_push_seq == seq_a
+    # step 13g (review facf265 MED-2): a relay stop / timer pending on the AURIX (TELEM2 M flag 128): no offer and no
+    # single-operator question at all (the AURIX would NACK 23 "relay stop pending"); the push waits for the flag
+    ap.relay_push_at = 0.0
+    ap.relay_push({"relay_hash": want ^ 1, "relay_pending": False, "confirm_kind": 0, "relay_stop": True})
+    stop_wait = ap.relay_push_seq == seq_a
     single, ap.single_op = ap.single_op, True
+    ap.relay_push_at = 0.0
+    ap.relay_push({"relay_hash": want ^ 1, "relay_pending": False, "confirm_kind": 0, "relay_stop": True})
+    stop_wait = stop_wait and ap.cconf is None and ap.relay_push_seq == seq_a
     ap.relay_push_at = 0.0
     ap.relay_push({"relay_hash": want ^ 1, "relay_pending": False, "confirm_kind": 0})
     asked = ap.cconf is not None and ap.relay_push_seq == seq_a          # the operator's question, nothing sent
@@ -391,12 +399,13 @@ def b9_relay_push(ap, pump, sim):
     no_resend = ap.relay_push_seq == seq1                        # the same table: never sent again
     report("B9 boat file relay table -> AURIX: sent with HELM in STANDBY, waits for the joystick CONFIRM, then "
            "active (hash = the file's); the same table never re-sent; no relays = nothing to send",
-           empty and nothing_for_empty and skip_confirm and asked and pending and not active_before and active and
+           empty and nothing_for_empty and skip_confirm and stop_wait and asked and pending and not active_before and active and
            no_resend,
            "empty table on the boat %s, nothing sent for a file without relays %s; not sent while another CONFIRM is "
-           "pending %s; single operator: asked, not self-confirmed %s; 4 relays sent -> CONFIRM pending %s "
+           "pending %s; a relay stop pending: no offer, no question %s; single operator: asked, not self-confirmed "
+           "%s; 4 relays sent -> CONFIRM pending %s "
            "(not active yet %s); after CONFIRM active, hash %s = file %s: %s; no re-send %s" % (
-               empty, nothing_for_empty, skip_confirm, asked, pending, not active_before, t2().get("relay_hash"), want,
+               empty, nothing_for_empty, skip_confirm, stop_wait, asked, pending, not active_before, t2().get("relay_hash"), want,
                active, no_resend))
 
 

@@ -96,6 +96,7 @@ result.19 = button map refused: TAKE, AUTO and CONFIRM must be mapped
 result.20 = button map refused: bad code or neutral zone
 result.21 = NOT HELM: take HELM first
 result.22 = another station holds HELM (only a station on the boat can take it)
+result.23 = relay stop pending: the relay table changes after it
 result.100 = VIEWER: watch only
 result.101 = duplicate command
 result.102 = command out of order

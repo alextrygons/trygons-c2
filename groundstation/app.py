@@ -3801,6 +3801,9 @@ class App:
         question first (only then it goes, with confirm "self"); otherwise the captain's push is their own."""
         if d.get("relay_hash") is None or d.get("relay_pending") or time.time() < self.relay_push_at:
             return
+        if d.get("relay_stop"):
+            return                                  # step 13g: a relay stop / timer is pending - the AURIX refuses
+                                                    # any new table (NACK 23): wait, never a question that must fail
         if d.get("confirm_kind"):
             return                                  # another CONFIRM waits on the boat: not now
         relays = [] if self.boat.error else self.boat.relays

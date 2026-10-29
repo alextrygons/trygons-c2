@@ -13488,6 +13488,10 @@ static void can_servo_tests(void)
         bool early2 = !x.mon.can_hw;
         hal_init();                                        /* core 0's hal_init (dc_init) ends ... */
         x.frozen = true;                                   /* ... and core 0 hangs before its control loop */
+        /* step 13g (review facf265 LOW-1): hal_init's IDLE frame delivered, then the throttle node set back to the
+         * pre-reset wire 0.0 (half open) - only CPU1's frames can close it now (the thr0 > 20 % precondition) */
+        sbsim_run(&x, x.t + 2u, NULL, NULL);
+        sim_hal_can_servo_set(DC_NODE_THROTTLE, 0.0f);
         while (!x.mon.tripped && x.t < t0 + MON_BOOT_MS + 500u) sbsim_run(&x, x.t + 10u, NULL, NULL);
         uint32_t t_trip = x.t;
         bool boot_trip = x.mon.tripped && x.mon.reason == MON_TRIP_BOOT;
@@ -13501,7 +13505,7 @@ static void can_servo_tests(void)
         sim_hal_can_act(1u, &a1); sim_hal_can_act(2u, &a2); sim_hal_can_act(3u, &a3);
         float thr1 = sim_hal_thr_truth();
         bool held = a2.n_cpu1 == 0u && a3.n_cpu1 == 0u;
-        bool closed = thr1 <= 1.0f;          /* (13f: core 0's hal_init frame already closes it - CN31) */
+        bool closed = thr0 > 20.0f && thr1 <= 1.0f;    /* (13g: the precondition back - the node held open) */
         x.frozen = false;
         snprintf(d, sizeof d, "monitor_init before hal_init: HAL says CAN %s (monitor %s), 40 ms later %s; core 0 hangs "
                  "after hal_init: %s after %u ms; CPU1 throttle IDLE frame %s (%u frames, core 0 %u); steering / gear "
@@ -13631,6 +13635,73 @@ static void can_servo_tests(void)
                  off ? "yes" : "NO", monitor_reason_name(x.mon.reason), (unsigned)n, (unsigned)(sim_hal_can_safe_frames() - sf0));
         test_report("CN33 big boat (OD-12) with the HAL CAN flags: no DroneCAN servos, a boot trip sends no ArrayCommand",
                     off && boot_trip && none, d);
+    }
+    /* CN34 (step 13g, review facf265 LOW-2): Cpu0_Main.c's NV boot loop = sb_bootnv_step (the same code). Board order
+     * after a reset (throttle node held half open), hal_init, then (a) a flash that never finishes (SIM_NV_STUCK, NV
+     * FAULT after its 1 s limit): core 0's throttle IDLE frames every 10 ms (max gap <= 12 ms) for as long as the
+     * loop runs, no steering / gear frame, the throttle closing; (b) a normal write: the loop ends at once (so the
+     * next frame comes from the control loop - the gap is the bench item C19 / W43) */
+    {
+        static sbsim_t x;
+        sm_boot(&x, 2361u, 12.0f, 0.03f, NULL);
+        x.frozen = true;
+        sbsim_run(&x, x.t + 2u, NULL, NULL);
+        sim_hal_can_servo_set(DC_NODE_THROTTLE, 0.0f);     /* the pre-reset throttle: half open */
+        x.wdt_ms = 0u;
+        sim_hal_board_boot_begin();
+        memset((void *)&g_mon, 0, sizeof g_mon);
+        monitor_publish_safe(&g_mon, x.cfg.servo.idle_us, x.cfg.gear.pwm_n_us);
+        monitor_init(&x.mon, x.t);
+        hal_init();
+        x.frozen = true;
+        sbsim_run(&x, x.t + 2u, NULL, NULL);               /* hal_init's own frame */
+        sim_hal_can_servo_set(DC_NODE_THROTTLE, 0.0f);     /* (only the boot loop's frames close it now) */
+        sim_hal_can_act_clear();
+        float thr0 = sim_hal_thr_truth();
+        uint32_t boot = 7u;
+        sim_hal_nv_fault(SIM_NV_STUCK);
+        (void)hal_nv_save(HAL_NV_SLOT_BOOT, &boot, sizeof boot);
+        sb_bootnv_t bn;
+        sb_bootnv_begin(&bn, hal_millis(), 2000u, true);
+        uint32_t t0 = x.t, last_n = 0u, last_t = x.t, max_gap = 0u, first_t = 0u;
+        while (sb_bootnv_step(&bn, hal_millis())) {
+            sbsim_run(&x, x.t + 1u, NULL, NULL);
+            sim_can_act_t a;
+            sim_hal_can_act(1u, &a);
+            if (a.n_core0 != last_n) {
+                if (last_n == 0u) first_t = x.t;
+                else if (x.t - last_t > max_gap) max_gap = x.t - last_t;
+                last_n = a.n_core0;
+                last_t = x.t;
+            }
+            if (x.t - t0 > 3000u) break;
+        }
+        uint32_t loop_ms = x.t - t0, ticks_a = bn.ticks;
+        sim_can_act_t a1, a2, a3;
+        sim_hal_can_act(1u, &a1); sim_hal_can_act(2u, &a2); sim_hal_can_act(3u, &a3);
+        float thr1 = sim_hal_thr_truth();
+        bool every10 = last_n >= loop_ms / 10u - 2u && ticks_a >= loop_ms / 10u - 2u && first_t != 0u && first_t - t0 <= 12u && max_gap <= 12u &&
+                       a1.last <= -0.999f && loop_ms >= 900u && loop_ms <= 2100u;
+        bool none = a2.n_core0 == 0u && a3.n_core0 == 0u && a2.n_cpu1 == 0u && a3.n_cpu1 == 0u;
+        bool closing = thr0 > 20.0f && thr1 < thr0 - 10.0f && !x.mon.tripped;
+        /* (b) a normal write: done in the first pass or two */
+        sim_hal_nv_fault(0u);
+        hal_init();
+        x.frozen = true;
+        (void)hal_nv_save(HAL_NV_SLOT_BOOT, &boot, sizeof boot);
+        sb_bootnv_begin(&bn, hal_millis(), 2000u, true);
+        uint32_t passes = 0u;
+        while (sb_bootnv_step(&bn, hal_millis()) && passes < 1000u) passes++;
+        bool quick = passes <= 2u && !hal_nv_pending();
+        x.frozen = false;
+        snprintf(d, sizeof d, "stuck flash: boot loop %u ms (NV FAULT), %u ticks, %u core-0 throttle frames, first +%d ms, "
+                 "max gap %u ms (<= 12), last %.2f; steering / gear frames %u / %u; throttle %.0f %% -> %.0f %%; a normal "
+                 "write: the loop ends after %u passes %s", (unsigned)loop_ms, (unsigned)ticks_a, (unsigned)last_n,
+                 first_t ? (int)(first_t - t0) : -1, (unsigned)max_gap, (double)a1.last, (unsigned)(a2.n_core0 +
+                 a2.n_cpu1), (unsigned)(a3.n_core0 + a3.n_cpu1), (double)thr0, (double)thr1, (unsigned)passes,
+                 quick ? "yes" : "NO");
+        test_report("CN34 the NV boot loop (sb_bootnv_step, = Cpu0_Main.c): throttle IDLE every 10 ms while the flash works",
+                    every10 && none && closing && quick, d);
     }
 }
 
@@ -14903,7 +14974,9 @@ static void relay_bus_tests(void)
             sb_result_t r_sh = sb_relay_cmd(&x.sb, 3u, RELAY_CMD_ON, 0u);
             bool queued = r_sh == SB_OK && (x.sb.relays.shutoff_pending & rb_bit(3));
             sb_result_t r_off = sb_relay_table(&x.sb, &t2);
-            bool refused = r_off == SB_OK && !confirm_press(&x);
+            /* step 13g (review facf265 MED-2): refused up front, no CONFIRM asked */
+            bool refused = r_off == SB_ERR_RELAY_STOP && x.sb.confirm.kind == CONF_NONE && !x.sb.relays.offer_pending &&
+                           !confirm_press(&x);
             bool kept = (x.sb.relays.shutoff_pending & rb_bit(3)) && x.sb.relays.hash == h0;
             sim_hal_relay_board(true, 5u, 0u);
             sbsim_run(&x, x.t + 4000u, NULL, NULL);
@@ -14927,6 +15000,78 @@ static void relay_bus_tests(void)
         snprintf(d, sizeof d, "%s; %s", part[0], part[1]);
         test_report("RB25 relays (both buses): a queued SHUTOFF ON is never lost by a table change (CONFIRM refused)",
                     good[0] && good[1], d);
+    }
+
+    /* RB26 (step 13g, review facf265 MED-1 + MED-2), BOTH buses: a table change never drops a stop or a timer the
+     * AURIX owes the board. (a) a TIMED relay (BILGE PUMP 120 s) ON: a new table offer -> NACK "relay stop pending"
+     * (SB_ERR_RELAY_STOP) at once, no CONFIRM asked, TELEM2 M flag 128; (b) an offer pending first, THEN the timed
+     * relay ON: the CONFIRM is refused, the timer survives and switches the relay OFF after max_s; (c) an OFF waiting
+     * for the readback (board silent): offer refused; board back, the OFF confirmed: the offer + CONFIRM accepted */
+    {
+        bool good[2] = { false, false };
+        char part[2][520];
+        for (int b = 0; b < 2; b++) {
+            static sbsim_t x;
+            static relay_table_t t, t2;
+            s_rb_can = b == 1;
+            rb_table(&t, false, false);
+            rb_table(&t2, true, false);                     /* a different table (BILGE PUMP 60 s) */
+            bool loaded = rb_setup(&x, 1745u + (uint32_t)b, NULL, &t);
+            bool can = rb_can();
+            uint16_t h0 = x.sb.relays.hash;
+            sb_alarm_ack(&x.sb);
+            /* (a) */
+            sb_result_t r_on = sb_relay_cmd(&x.sb, 7u, RELAY_CMD_ON, 0u);
+            sbsim_run(&x, x.t + 500u, NULL, NULL);
+            bool flag = (relays_flags(&x.sb.relays) & 128u) != 0u;
+            sb_result_t r_a = sb_relay_table(&x.sb, &t2);
+            bool a_ok = r_on == SB_OK && sim_hal_relay_state(7u) && flag && r_a == SB_ERR_RELAY_STOP &&
+                        x.sb.confirm.kind == CONF_NONE && !x.sb.relays.offer_pending && x.sb.relays.hash == h0;
+            sbsim_run(&x, x.t + 121000u, NULL, NULL);       /* the timer ends it */
+            bool a_off = !sim_hal_relay_state(7u) && !relays_stop_pending(&x.sb.relays);
+            /* (b) */
+            sb_alarm_ack(&x.sb);
+            sb_result_t r_b = sb_relay_table(&x.sb, &t2);
+            bool b_pend = r_b == SB_OK && x.sb.relays.offer_pending && x.sb.confirm.kind == CONF_RELAY_TABLE;
+            sb_result_t r_on2 = sb_relay_cmd(&x.sb, 7u, RELAY_CMD_ON, 0u);
+            bool b_ref = !confirm_press(&x) && x.sb.relays.hash == h0 && x.sb.relays.until_ms[6] != 0u;
+            sbsim_run(&x, x.t + 121000u, NULL, NULL);
+            bool b_off = r_on2 == SB_OK && !sim_hal_relay_state(7u) && x.sb.relays.hash == h0;
+            /* (c) */
+            sb_alarm_ack(&x.sb);
+            sb_result_t r_nav = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u);
+            sbsim_run(&x, x.t + 1000u, NULL, NULL);
+            sim_hal_relay_board(true, 5u, SIM_RB_SILENT);
+            sbsim_run(&x, x.t + 4000u, NULL, NULL);
+            sb_alarm_ack(&x.sb);
+            (void)sb_relay_cmd(&x.sb, 6u, RELAY_CMD_OFF, 0u);
+            sbsim_run(&x, x.t + 200u, NULL, NULL);
+            bool c_pend = (x.sb.relays.off_pending & rb_bit(6)) != 0u;
+            sb_result_t r_c = sb_relay_table(&x.sb, &t2);
+            sim_hal_relay_board(true, 5u, 0u);
+            sbsim_run(&x, x.t + 4000u, NULL, NULL);
+            sb_alarm_ack(&x.sb);
+            bool c_done = !sim_hal_relay_state(6u) && x.sb.relays.off_pending == 0u &&
+                          (relays_flags(&x.sb.relays) & 128u) == 0u;
+            bool later = sb_relay_table(&x.sb, &t2) == SB_OK && confirm_press(&x) &&
+                         x.sb.relays.hash == relay_table_hash(&t2);
+            bool c_ok = r_nav == SB_OK && c_pend && r_c == SB_ERR_RELAY_STOP && c_done && later;
+            good[b] = loaded && a_ok && a_off && b_pend && b_ref && b_off && c_ok;
+            snprintf(part[b], sizeof part[b], "%s: table %s; (a) BILGE ON -> %d, flag 128 %s, offer -> %d (want %d) "
+                     "without a CONFIRM %s, OFF by its timer %s; (b) offer pending %s, BILGE ON -> %d, CONFIRM refused + "
+                     "timer kept %s, OFF by its timer %s; (c) NAV ON -> %d, OFF pending (silent) %s, offer -> %d, board "
+                     "back: OFF confirmed %s, offer accepted %s", can ? "DroneCAN" : "Modbus", loaded ? "yes" : "NO",
+                     (int)r_on, flag ? "yes" : "NO", (int)r_a, (int)SB_ERR_RELAY_STOP, a_ok ? "yes" : "NO",
+                     a_off ? "yes" : "NO", b_pend ? "yes" : "NO", (int)r_on2, b_ref ? "yes" : "NO", b_off ? "yes" : "NO",
+                     (int)r_nav, c_pend ? "yes" : "NO", (int)r_c, c_done ? "yes" : "NO", later ? "yes" : "NO");
+            sim_hal_relay_board(true, 5u, 0u);
+            remove("nv7.bin");
+            sim_hal_relay_board_reset();
+        }
+        s_rb_can = keep_rb_can;
+        snprintf(d, sizeof d, "%s; %s", part[0], part[1]);
+        test_report("RB26 relays (both buses): no table change while a stop / timer is pending (offer NACK, CONFIRM "
+                    "refused, timer + OFF kept)", good[0] && good[1], d);
     }
     s_rb_can = keep_rb_can;
 }

@@ -147,6 +147,7 @@
 #define PROTO_R_MAP_BAD       20u     /* button map: bad code / neutral zone */
 #define PROTO_R_NOT_HELM      21u     /* this station does not hold HELM */
 #define PROTO_R_HELM_TAKEN    22u     /* another station holds HELM (only a local station can take it) */
+#define PROTO_R_RELAY_STOP    23u     /* relay table refused: a relay stop / timer is pending (step 13g; TELEM2 M flag 128) */
 
 typedef struct {
     uint8_t type;

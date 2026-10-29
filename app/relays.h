@@ -129,7 +129,9 @@ typedef enum {
     RELAY_OFFER_SAME = 0,   /* the same table as the active one: nothing to do */
     RELAY_OFFER_PENDING,    /* differs: stored as the offer, waiting for the joystick CONFIRM */
     RELAY_OFFER_STANDBY,    /* differs, but not in STANDBY (not stopping): refused */
-    RELAY_OFFER_BAD         /* the table fails its checks */
+    RELAY_OFFER_BAD,        /* the table fails its checks */
+    RELAY_OFFER_STOP        /* step 13g: differs, but a relay stop / timer is pending (relays_stop_pending): refused
+                               up front (NACK "relay stop pending"), the station waits (TELEM2 M flag 128) */
 } relay_offer_t;
 
 typedef struct {
@@ -183,8 +185,13 @@ void relays_init(relays_t *r, const relay_table_t *stored, bool power_on_reset, 
 relay_offer_t relays_offer(relays_t *r, const relay_table_t *t, bool standby_idle);
 /* t is the active table already (an offer of it changes nothing) */
 bool     relays_offer_same(const relays_t *r, const relay_table_t *t);
-/* the joystick CONFIRM (only in STANDBY, not stopping): the offer becomes the active table */
+/* the joystick CONFIRM (only in STANDBY, not stopping): the offer becomes the active table
+ * (refused while relays_stop_pending: a table change would drop the stop / timer) */
 bool     relays_accept(relays_t *r, bool standby_idle);
+/* step 13g (review facf265 MED-1): a stop or a timer the AURIX still owes the board - a queued SHUTOFF ON, an OFF
+ * not yet confirmed by the readback, a timed relay's OFF deadline or a pulse's end. A table change (table_activate)
+ * would forget it, so no table is offered / accepted while it is true (TELEM2 M flag 128) */
+bool     relays_stop_pending(const relays_t *r);
 void     relays_cancel_offer(relays_t *r);
 /* the relay command of the HELM station */
 relay_result_t relays_cmd(relays_t *r, uint8_t n, uint8_t action, uint16_t ms, uint32_t now_ms);
@@ -204,6 +211,6 @@ bool     relays_silent(const relays_t *r);
 uint8_t  relays_starter(const relays_t *r);
 relay_result_t relays_starter_pulse(relays_t *r, uint16_t ms, uint32_t now_ms);
 void     relays_starter_off(relays_t *r);
-uint8_t  relays_flags(const relays_t *r);           /* TELEM2 group M flags */
+uint8_t  relays_flags(const relays_t *r);           /* TELEM2 group M flags (128 = relays_stop_pending) */
 
 #endif /* RELAYS_H */

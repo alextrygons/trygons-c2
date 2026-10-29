@@ -174,6 +174,7 @@ RESULTS = {
     20: "button map refused: bad code or neutral zone",
     21: "NOT HELM: take HELM first",
     22: "another station holds HELM (only a station on the boat can take it)",
+    23: "relay stop pending: the relay table changes after it",
     # gateway refusals (gateway/stations.py)
     100: "VIEWER: watch only", 101: "duplicate command", 102: "command out of order", 103: "stale command",
     104: "timestamp in the future", 105: "rate limited", 106: "AURIX not connected", 107: "wrong session",
@@ -1000,6 +1001,7 @@ def decode_telem2(payload: bytes) -> dict:
         d["relay_power_up"] = bool(f & 16)              # the power_up states were applied (this boot)
         d["relay_first_test"] = bool(f & 32)            # FIRST TEST: no relay changes
         d["relay_no_readback"] = bool(f & 64)           # DroneCAN board without readback: the COMMANDED states (11f)
+        d["relay_stop"] = bool(f & 128)                 # a relay stop / timer pending: no table offer now (13g)
         d["relay_on"] = [n for n in range(1, 33) if d["relay_known"] >> (n - 1) & 1 and d["relay_states"] >> (n - 1) & 1]   # lists: the gateway forwards it as JSON
         d["relay_unknown"] = [n for n in range(1, 33) if not d["relay_known"] >> (n - 1) & 1]
     if "eng_flags" in d:
