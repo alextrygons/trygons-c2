@@ -785,7 +785,7 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
             fail(50, "a required node lost but mode %.0f%.0f", (double)m, 0.0);
         else ok(50);
     }
-    if (C.node_silenced_t && !S.boot_until) {
+    if (C.node_silenced_t && !S.boot_until && !S.frozen) {
         if (s->can.node_lost) { ok(50); C.node_silenced_t = 0u; }
         else if (S.t - C.node_silenced_t > HAL_CAN_NODE_LOST_MS + 300u) {
             fail(50, "a node silent %.0f ms but not lost (limit %.0f)", (double)(S.t - C.node_silenced_t),
@@ -1142,7 +1142,7 @@ static void check_step(void)
             /* open sea with fresh far shore info (the storm's own view): never before the grace time */
             bool far = S.shore_mode == 2u && S.gw_on && s->gw.state == SB_GW_OK;
             float since = (S.t - s->ll.lost_ms) * 0.001f;
-            if (far && since < s->cfg.lostlink_grace_s - 0.1f)
+            if (far && since < s->cfg.lostlink_grace_s - 0.1f && !s->ll.node_kill)   /* OD-3 kill = at once (I55) */
                 fail(29, "killed %.1f s after the loss at open sea (grace %.0f s)", since, s->cfg.lostlink_grace_s);
             else ok(29);
         }
@@ -1179,7 +1179,10 @@ static void check_step(void)
         const gen_t *g = &s->gen;
         if (g->active) {
             /* I32: gear at N and the switch confirming it (STOPPING: the switch may just have opened) */
-            if (gp == 0 && (g->state == GEN_STOPPING || (fitted && nsw))) ok(32);
+            /* DroneCAN: gear HOLD (no gear frame, OA-2 / node loss) of a servo standing at N counts as N */
+            bool gear_n = gp == 0 || (gp == -1 && can_ep() &&
+                                      fabsf(sim_hal_gear_truth_us() - (float)S.cfg.gear.pwm_n_us) < 60.0f);
+            if (gear_n && (g->state == GEN_STOPPING || (fitted && nsw))) ok(32);
             else fail(32, "generator active with the gear at %.0f / switch %.0f (-1 none)", (double)gp,
                       fitted ? (nsw ? 1.0 : 0.0) : -1.0);
             /* I33: under min(cap, power limit), or coming down to it at the closing rate */
@@ -1317,6 +1320,7 @@ static void check_step(void)
                                      SB_ALM_TRAINING | SB_ALM_OVERRUN;
             uint32_t new_alm = s->alarm_bits & ~C.relay_alm & judged1;
             uint32_t new_alm2 = s->alarm_bits2 & ~C.relay_alm2 & ~SB_ALM2_ADVISORY;
+            if (S.can_back_t || C.node_silenced_t) new_alm2 &= ~SB_ALM2_CAN_NODE;   /* a servo node event runs */
             if (mode_same && gear_same && steer_same && thr_ok && new_alm == 0u && new_alm2 == 0u) ok(36);
             else fail(36, "a relay event changed the driving: what %.0f (1 gear 2 steering 4 throttle 8 alarm; + mode*16), "
                       "new alarm bits %.0f (word 2 x 2^32)",
@@ -1629,7 +1633,7 @@ static void apply(const ev_t *e)
             sb_result_t res = sb_relay_cmd(s, n, act, (uint16_t)(e->c * 3));
             if ((n == 1u || n == 3u) && act != RELAY_CMD_OFF && res == SB_OK) {
                 C.eng_on_t[n] = S.t ? S.t : 1u;                            /* IGNITION / SHUTOFF on: the engine rules */
-                if (cond) ok(36);
+                if (cond || n == 3u) ok(36);                                /* SHUTOFF ON: always allowed (11b) */
                 else fail(36, "engine relay %.0f switched on with throttle %.1f %% / gear / e-stop", (double)n,
                           sim_hal_throttle());
             }
@@ -1816,6 +1820,7 @@ static void run_until(uint32_t until)
             memset((void *)&g_mon, 0, sizeof g_mon);
             sim_hal_unforce();
             boot();
+            if (C.node_silenced_t) C.node_silenced_t = S.t ? S.t : 1u;   /* I50: the new boot's node table starts now */
         }
         if (S.frozen && AT_OR_AFTER(S.t, S.frozen_until) && !S.wdt_ms) {      /* no watchdog: it stays frozen until reset */
             S.frozen = false;

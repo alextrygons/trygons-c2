@@ -5,6 +5,67 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 0000. Step 14 - final check: full acceptance + 24 h soak (2026-10-29)
+
+Code under test: commit `77f00bb` (every step DONE; fresh clone from GitHub). Run:
+`python tests/acceptance/run_acceptance.py full` (NOT shortened), 145 min, summary kept in
+`test_results/acceptance_summary_step14_full.txt`. No app/, hal/, gateway or groundstation logic was changed.
+
+**What "24 h soak" means here (said exactly):** the AURIX soak is 24 SIMULATED hours (`storm.exe --soak 24 24 --log`,
+1 726 102 control steps, 173 boots, with the core-0 log producer + core-2 logger) - it runs in 0.3 min of PC time;
+in addition 10 more 24 h simulated soaks were run with seeds 1-10 (240 h more, every one "all invariants held",
+0 overruns, 0 log drops). The REAL-TIME part is the 60 min system soak (simulator + gateway + 4 test cameras +
+vision + stations). A 24 h REAL-TIME system soak was NOT run (not feasible in this session); it stays an open item
+for the gateway PC before the first long uncrewed trip.
+
+| Part | Result |
+|---|---|
+| ADS excludes / iLLD sources | PASS (4 configurations) |
+| Fresh clone from GitHub + every suite (tools/check.sh) | FAIL on the first run, see F14-1..F14-3. Inside the gate: sim 300/300, bridge 299/299 (1 N/A), DroneCAN servos `all --can` 292/292 and `--can-fast` 292/292 (8 N/A each), TriCore + iLLD + writer checks, FAT32 2/2, NV 4/4, DroneCAN 19/19, charts 5/5, lang 5/5, boats 10/10, screen 2 15/15, sound 10/10, avoidance 14/14, **academy 50/50, practical 8/8**, OS 11/12 (F14-1), gateway 111/114 (E1-E3, PC load), e2e 10/10, logs 3/3, test_driver 18/21 (I4 / I12 / I19, W10), START_DEMO from the clone PASS |
+| Fault storm 2000 episodes (588 simulated h, ~35 % DroneCAN episodes) | FAIL on the first run: 14 seeds on I29 / I32 / I36 / I50 (F14-2). All 14 reproduce with `--replay SEED`; analysed: storm oracle gaps, no product bug. After the oracle fix: **2000 episodes, 52 invariants (I1-I58 as built) 0 fails**; self-test still catches its planted faults |
+| 32-bit time wraparound | PASS |
+| 24 h AURIX soak with logging (simulated, seed 24) | PASS - all invariants, 0 overruns, 0 log drops, longest step 15 ms PC time (Windows scheduling; 99.9 % < 100 us) |
+| System soak 60 min (real time) | PASS - AURIX step max 490 us (PC), 0 overruns, 0 log drops; every memory / handle trend "steady" |
+| Day at sea, AURIX part | PASS 15 / 15 |
+| Day at sea, whole system | PASS 12 / 12 (29.5 min; 244 / 245 files synced equal, 1 re-queued after a change) |
+| Gateway storm I14, I15, I17, I20, I21, I26 (120 episodes) | PASS |
+| Station storm I16 (300 s) | PASS, self-test caught the planted frame |
+| Coverage | PASS (smallboat.c 98 % lines / 87 % branches) |
+
+Re-runs alone (PC load): gateway section E 6/6 PASS; test_driver 18/21 again (I4 / I12 / I19 = the live-HUD tests,
+the known W10 / W11 finding - two pythonw processes of the owner on this PC, not touched); test_osdep 12/12 in this tree.
+
+### Findings of step 14
+
+- **F14-1 (packaging, real, fixed in this commit - not product logic).** `.gitattributes` has `gateway/** text eol=lf`,
+  so a FRESH CLONE gets `gateway/windows/run_gateway.bat` with LF line endings (this working tree had CRLF from an
+  older checkout, so the gate passed here). cmd.exe can mis-handle `goto` / labels in an LF-only batch file - the
+  Windows gateway's restart loop could break. Caught by gateway/test_osdep.py OS12 ("Windows restart loop") only in
+  the clone. Reproduction: `git clone <repo> x && python x/gateway/test_osdep.py` -> OS12 FAIL. Fix: `.gitattributes`
+  line `gateway/windows/*.bat text eol=crlf` (after `gateway/**`, so it wins); the index stays LF, checkouts get CRLF.
+- **F14-2 (storm oracle gaps, test code only, fixed in tests/acceptance/storm/storm.c).** Only seen with 2000 episodes
+  (the per-step gate runs 200). Each reproduces with `test_results\storm.exe --replay SEED` on the old storm.c:
+  - I29 seeds 330, 1970: "killed 6.0 s after the loss at open sea" - the kill was the OD-3 UNCREWED throttle-node-loss
+    kill at once (`ll.node_kill`), which I27 already exempts and I29 did not. Correct product behaviour (CLAUDE.md T OD-3).
+  - I32 seeds 206, 769, 1124, 1779: "generator active with the gear at -1" - on DroneCAN a node loss sends no gear
+    frame (gear HOLD, OA-2); the gear servo stands at N (the switch confirms), the generator is already STOPPING
+    (non-advisory alarm). I32 now counts HOLD with the simulated gear servo at N as N.
+  - I36 seed 493: "engine relay 3 switched on with throttle 8.5 %" - relay 3 is SHUTOFF, ALWAYS allowed since step 11b;
+    the oracle still applied the IGNITION conditions to it. (The same message as the step-11c seed 108 finding.)
+  - I36 seed 1445: "a relay event changed the driving: CAN NODE LOST" - the alarm came from a storm DroneCAN node
+    power loss 0.7 s earlier (lost 1.5 s after its last 1 Hz NodeStatus), not from the relay event; CAN NODE LOST is
+    now not judged in I36 while a storm servo-node event runs (like the timer alarms of word 1).
+  - I50 seeds 352, 651, 685, 830, 1166, 1670: "a node silent 1840 ms but not lost" - a chip / watchdog reset or a
+    frozen core 0 came within the 1.5 s; the oracle counted the silence from before the reset, the new boot's node
+    table starts at the boot (and STANDBY + the "not seen yet" interlock hold meanwhile). The silence is now counted
+    from the boot and not while core 0 is frozen.
+  After the fix all 14 seeds hold and the 2000-episode storm passes 0 fails.
+- **F14-3 (known, not new).** test_driver I4 / I12 / I19 (live HUD; W10 / W11) and gateway E1-E3 under the gate's load
+  (alone 6/6) - unchanged from steps 11c-13.
+
+Open for the owner (nothing blocks code): a 24 h REAL-TIME system soak on the gateway PC itself; the board / bench
+items of FIRST_TEST.md and the WAITING FOR OWNER list in PROGRESS.md.
+
 ## 000. Academy (steps 15-22) - final report (2026-10-29)
 
 The academy of docs/ACADEMY_SPEC.md (parts A-J) is complete in the code; what is left needs the owner on site.
