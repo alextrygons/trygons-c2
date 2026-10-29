@@ -409,6 +409,9 @@ void hal_set_rudder_motor(float command)
  * hardware - also when core 0 is frozen and never writes again. */
 void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
 {
+    /* step 13d: never 0 / the 500 us clamp as a "safe" pulse (a trip before core 0's first publish) */
+    if (throttle_idle_us < HAL_THROTTLE_PWM_MIN || throttle_idle_us > HAL_THROTTLE_PWM_MAX) throttle_idle_us = HAL_SAFE_THR_US;
+    if (gear_neutral_us < HAL_THROTTLE_PWM_MIN || gear_neutral_us > HAL_THROTTLE_PWM_MAX) gear_neutral_us = HAL_SAFE_GEAR_US;
     s_safe_thr_us = throttle_idle_us;
     s_safe_gear_us = gear_neutral_us;
     s_forced = TRUE;
@@ -1055,6 +1058,17 @@ bool hal_relay_pulse(uint8_t n, uint16_t ms)
     bool ok = cr_pulse(n, ms);
     relay_keep_store();
     return ok;
+}
+
+bool hal_relay_cut(uint8_t n)
+{
+    if (!s_relay_up || !s_relay_can) return false;      /* (Modbus: a write is one request, never cut mid-way) */
+    return cr_take_cut(n);
+}
+
+void hal_relay_cut_hold(uint32_t mask)
+{
+    if (s_relay_up && s_relay_can) cr_hold_mask(mask);
 }
 
 bool hal_relay_read(uint8_t n, bool *on)

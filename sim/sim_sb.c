@@ -206,8 +206,10 @@ static void sbsim_init(sbsim_t *x, uint32_t seed, float heading, float speed_kn,
     timing_init_all();
     logq_init_all();
     memset((void *)&g_logstat, 0, sizeof g_logstat);
+    memset((void *)&g_mon, 0, sizeof g_mon);         /* the board's bss at the boot (step 13d: before sb_init's publish) */
     sb_init(&x->sb, &c);
-    memset((void *)&g_mon, 0, sizeof g_mon);         /* CPU1 starts: "running" only from core 0's loop */
+    g_mon.running = 0u;                              /* CPU1 starts: "running" only from core 0's loop (Cpu1_Main.c) */
+    g_mon.test_trip = 0u;
     monitor_init(&x->mon, 0u);
     x->mon.boot_known = s_can_all && !s_can_on;     /* (as sb_test_boot_idle above) */
     x->mon_on = true;
@@ -3640,6 +3642,53 @@ static void hardening_tests(void)
         hal_init();                                 /* reset the latch for the next tests */
     }
 
+    /* C3e (step 13d, review f9c3752 HIGH-1): a monitor trip BEFORE core 0's first control step forces the real
+     *     idle / neutral - never 0 (the board clamps 0 to 500 us = past REVERSE on the gear, past FULL on a reversed
+     *     throttle): (a) the HAL never takes 0 / an out-of-range pulse as the safe value, (b) the monitor's own
+     *     fallback, (c) the whole simulator with a REVERSED throttle calibration (idle 2000 us) and core 0 that
+     *     never runs a step: MON_TRIP_BOOT forces 2000 us (sb_init published it), still after core 0 starts */
+    {
+        hal_init();
+        hal_safe_outputs(0u, 0u);
+        uint16_t ha_t = sim_hal_throttle_us(), ha_g = sim_hal_gear_pwm();
+        hal_set_throttle_pwm(1900u);                     /* core 0's later writes keep the safe values */
+        hal_set_gear_pwm(1100u);
+        uint16_t hb_t = sim_hal_throttle_us(), hb_g = sim_hal_gear_pwm();
+        bool hal_ok = ha_t == HAL_SAFE_THR_US && ha_g == HAL_SAFE_GEAR_US && sim_hal_throttle_us() == HAL_SAFE_THR_US &&
+                      sim_hal_gear_pwm() == HAL_SAFE_GEAR_US;
+        sim_hal_unforce();
+        hal_init();
+        bool mon_ok = monitor_safe_us(0u, MON_SAFE_THR_US) == MON_SAFE_THR_US &&
+                      monitor_safe_us(500u, MON_SAFE_GEAR_US) == MON_SAFE_GEAR_US &&
+                      monitor_safe_us(2000u, MON_SAFE_THR_US) == 2000u && monitor_safe_us(1500u, 1000u) == 1500u;
+        sb_config_t c;
+        sb_default_config(&c);
+        c.servo.idle_us = 2000u;                         /* reversed calibration (servo.h: full_us may be < idle_us) */
+        c.servo.full_us = 1000u;
+        static sbsim_t x;
+        sbsim_init(&x, 405u, 90.0f, 0.0f, &c);
+        bool pub = g_mon.thr_idle_us == 2000u && g_mon.gear_n_us == c.gear.pwm_n_us;
+        x.wdt_ms = 0u;
+        x.frozen = true;                                 /* core 0 never reaches its first step */
+        sbsim_run(&x, MON_BOOT_MS + 200u, NULL, NULL);
+        bool boot_trip = x.mon.tripped && x.mon.reason == MON_TRIP_BOOT;
+        uint16_t t1 = sim_hal_throttle_us(), g1 = sim_hal_gear_pwm();
+        x.frozen = false;                                /* core 0 starts late: its writes stay at the safe values */
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        uint16_t t2 = sim_hal_throttle_us(), g2 = sim_hal_gear_pwm();
+        bool sim_ok = boot_trip && t1 == 2000u && t2 == 2000u && g1 == c.gear.pwm_n_us && g2 == c.gear.pwm_n_us;
+        snprintf(d, sizeof d, "HAL safe_outputs(0, 0): throttle %u / gear %u us (then core 0 writes 1900 / 1100: %u / %u); "
+                 "monitor fallback %s; reversed calibration: sb_init published %s, core 0 never steps: %s, throttle %u / "
+                 "gear %u us, after core 0 starts %u / %u us (idle 2000, neutral %u)",
+                 (unsigned)ha_t, (unsigned)ha_g, (unsigned)hb_t, (unsigned)hb_g,
+                 mon_ok ? "yes" : "NO", pub ? "yes" : "NO", monitor_reason_name(x.mon.reason), (unsigned)t1, (unsigned)g1,
+                 (unsigned)t2, (unsigned)g2, (unsigned)c.gear.pwm_n_us);
+        test_report("C3e trip before core 0's first step: the real idle / neutral (never 0), also on a reversed throttle",
+                    hal_ok && mon_ok && pub && sim_ok, d);
+        sim_hal_unforce();
+        hal_init();
+    }
+
     /* C3d R22: the monitor never checks a half-written set (seqlock): a throttle
      *     above the limit while core 0 is writing is not judged; once the set is
      *     complete and still wrong, it trips */
@@ -3714,7 +3763,8 @@ static void hardening_tests(void)
         joy_set(0.0f, 0.0f, false, false);
         x.w.servo_stuck = false;                    /* fixed: the servo goes to neutral */
         sbsim_run(&x, 9000u, NULL, NULL);
-        bool armed = x.sb.armed && sim_hal_safety_relay();
+        bool armed = x.sb.armed && (sim_hal_servos_can() ? !sim_hal_safety_relay() : sim_hal_safety_relay());   /* step 13d:
+                                                     * DroneCAN servos = no safety relay (P10.5 = the dead-man, as the board) */
         snprintf(d, sizeof d, "gear stuck in F at power-up: outputs disarmed + alarm %s; stick / HDG LOCK refused %s; "
                  "servo free -> neutral confirmed -> armed %s",
                  disarmed ? "yes" : "NO", refused ? "yes" : "NO", armed ? "yes" : "NO");
@@ -8535,7 +8585,8 @@ static void generator_tests(void)
         GN1_CASE("alarm blocks, ACK -> STARTING (beep) -> RUNNING 8 %",
                  alarm_blocks && starting && gen_running_at(&x, 8.0f) && x.sb.gen.active && g_mon.gen_active == 1u &&
                  fabsf(g_mon.gen_cap_pct - 25.0f) < 0.01f && !x.mon.tripped && x.w.speed_kn < 0.2f &&
-                 x.w.engaged == GEAR_N && x.w.shift_under_load == 0 && sim_hal_safety_relay());
+                 x.w.engaged == GEAR_N && x.w.shift_under_load == 0 &&
+                 (sim_hal_servos_can() ? !sim_hal_safety_relay() : sim_hal_safety_relay()));   /* (13d: no relay on CAN) */
         /* f. e-stop: stops (idle first) and blocks a restart while pressed */
         sim_hal_set_estop(true, true);
         sbsim_run(&x, x.t + 3000u, gen_hook, &g);
@@ -13362,6 +13413,42 @@ static void can_servo_tests(void)
         test_report("CN28 CPU1 after a trip: NEUTRAL only thr_travel_s after the throttle node's return (not the trip)",
                     drv && tripped && fwd0 && held && t_back && t_neutral && after + 30 >= (int32_t)x.mon.travel_ms, d);
     }
+
+    /* CN29 (step 13d, review f9c3752 HIGH-2): MON_TRIP_BOOT on the DroneCAN servos - core 0 never reaches its first
+     * step after a reset with the throttle OPEN (the node holds it, OA-1): CPU1 still sends its safe frames (the HAL's
+     * hal_servos_can, not only core 0's publish): throttle IDLE within 30 ms of the trip, no steering / gear frame
+     * (never commanded since the boot: hold, OD-7 / OA-2), the throttle closes; no dead-man pulses */
+    {
+        static sbsim_t x;
+        sm_boot(&x, 2351u, 12.0f, 0.03f, NULL);
+        sim_hal_can_servo_set(DC_NODE_THROTTLE, 0.0f);     /* the pre-reset throttle: half open (wire 0.0 = 50 %) */
+        sim_hal_can_act_clear();
+        x.wdt_ms = 0u;
+        x.frozen = true;
+        uint32_t t0 = x.t;
+        while (!x.mon.tripped && x.t < t0 + MON_BOOT_MS + 500u) sbsim_run(&x, x.t + 10u, NULL, NULL);
+        uint32_t t_trip = x.t;
+        bool boot_trip = x.mon.tripped && x.mon.reason == MON_TRIP_BOOT;
+        float thr0 = sim_hal_thr_truth();
+        sbsim_run(&x, x.t + 30u, NULL, NULL);
+        sim_can_act_t a1, a2, a3;
+        sim_hal_can_act(1u, &a1);
+        bool fast = a1.n_cpu1 > 0u && a1.cpu1_ms <= t_trip + 30u && a1.last_cpu1 <= -0.999f && a1.n_core0 == 0u;
+        sbsim_run(&x, x.t + 7000u, NULL, NULL);
+        sim_hal_can_act(1u, &a1); sim_hal_can_act(2u, &a2); sim_hal_can_act(3u, &a3);
+        float thr1 = sim_hal_thr_truth();
+        bool held = a2.n_cpu1 == 0u && a3.n_cpu1 == 0u;
+        bool closed = thr0 > 20.0f && thr1 <= 1.0f;
+        bool no_dm = !x.mon.dm_on;
+        x.frozen = false;
+        snprintf(d, sizeof d, "core 0 never steps: %s after %u ms; CPU1 throttle IDLE frame %s (%u frames, core 0 %u); "
+                 "steering / gear frames %u / %u (none = hold); throttle %.0f %% -> %.0f %% after 7 s; dead-man off %s",
+                 monitor_reason_name(x.mon.reason), (unsigned)(t_trip - t0), fast ? "yes" : "NO", (unsigned)a1.n_cpu1,
+                 (unsigned)a1.n_core0, (unsigned)a2.n_cpu1, (unsigned)a3.n_cpu1, (double)thr0, (double)thr1,
+                 no_dm ? "yes" : "NO");
+        test_report("CN29 MON_TRIP_BOOT on DroneCAN (core 0 never steps): CPU1's safe frames, throttle idle at once",
+                    boot_trip && fast && held && closed && no_dm, d);
+    }
 }
 
 void sb_steer_tests(void)
@@ -14492,6 +14579,68 @@ static void relay_bus_tests(void)
         test_report("RB22 DroneCAN relays: a cut ON burst gets its OFF, SHUTOFF ON survives a warm reset start, a reboot "
                     "around a warm reset = unknown", loaded && a_ok && b_ok && b2_ok && c_on && unknown && pair_blocks &&
                     proven, d);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
+
+    /* RB23 (step 13d, review 49353b2 MED-1) DroneCAN relay board: the board goes silent one frame into a SHUTOFF ON
+     * burst (its last NodeStatus just under HAL_RELAY_LOST_MS old): relays.c is told the burst was cut and queues the
+     * SHUTOFF ON again (RELAY_SHUTOFF_RETRY_MS) - the board back after 1.5 s: SHUTOFF ON delivered, never an OFF in
+     * between (an automatic OFF would undo the engine stop); back only after the retry time: dropped, nothing late */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        s_rb_can = true;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1731u, NULL, &t) && rb_can();
+        sim_hal_relay_board(true, 5u, SIM_RB_NO_READBACK);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool res[2] = { false, false }, never_off[2] = { true, true }, cut[2] = { false, false };
+        for (int k = 0; k < 2; k++) {
+            uint32_t back_ms = k == 0 ? 1500u : RELAY_SHUTOFF_RETRY_MS + 2000u;
+            uint32_t cut0 = x.sb.relays.shutoff_cut, rt0 = x.sb.relays.shutoff_retried;
+            hal_can_node_t nn;
+            sim_hal_can_node_silent(DC_NODE_RELAY, true);
+            uint32_t tw = x.t;
+            do {                                        /* until the board is one frame from "lost" */
+                sbsim_run(&x, x.t + 1u, NULL, NULL);
+                (void)dc_node(HAL_CAN_ROLE_RELAY, &nn);
+            } while (nn.age_ms + CR_PERIOD_MS + 2u < HAL_RELAY_LOST_MS && x.t < tw + 5000u);
+            bool ok_before = x.sb.relays.board_ok;
+            sb_result_t r_on = sb_relay_cmd(&x.sb, 3u, RELAY_CMD_ON, 0u);   /* SHUTOFF ON (stop the engine) */
+            bool on_seen = false;
+            uint32_t t0 = x.t;
+            while (x.t < t0 + back_ms) {
+                sbsim_run(&x, x.t + 5u, NULL, NULL);
+                if (sim_hal_relay_state(3u)) on_seen = true;
+                else if (on_seen) never_off[k] = false;
+            }
+            cut[k] = x.sb.relays.shutoff_cut == cut0 + 1u;
+            sim_hal_can_node_silent(DC_NODE_RELAY, false);
+            t0 = x.t;
+            while (x.t < t0 + 4000u) {
+                sbsim_run(&x, x.t + 5u, NULL, NULL);
+                if (sim_hal_relay_state(3u)) on_seen = true;
+                else if (on_seen) never_off[k] = false;
+            }
+            if (k == 0)
+                res[k] = loaded && ok_before && r_on == SB_OK && cut[k] && sim_hal_relay_state(3u) &&
+                         x.sb.relays.shutoff_retried == rt0 + 1u && x.sb.relays.shutoff_pending == 0u && never_off[k];
+            else
+                res[k] = ok_before && r_on == SB_OK && cut[k] && x.sb.relays.shutoff_pending == 0u &&
+                         x.sb.relays.shutoff_retried == rt0 && never_off[k];
+            snprintf(d + (k ? strlen(d) : 0), sizeof d - (k ? strlen(d) : 0),
+                     "%sback after %u ms: board ok before %s, SHUTOFF ON -> %d, cut reported %s, the relay ON at the end %s, "
+                     "re-sent %s, never OFF in between %s", k ? "; " : "", (unsigned)back_ms, ok_before ? "yes" : "NO",
+                     (int)r_on, cut[k] ? "yes" : "NO", sim_hal_relay_state(3u) ? "yes" : "no",
+                     x.sb.relays.shutoff_retried > rt0 ? "yes" : "no", never_off[k] ? "yes" : "NO");
+            (void)sb_relay_cmd(&x.sb, 3u, RELAY_CMD_OFF, 0u);
+            sbsim_run(&x, x.t + 2000u, NULL, NULL);
+            sb_alarm_ack(&x.sb);
+        }
+        test_report("RB23 DroneCAN relays: a SHUTOFF ON burst cut by the board going silent is queued again (10 s), "
+                    "never an automatic OFF", res[0] && res[1], d);
+        sim_hal_relay_board(true, 5u, 0u);
         remove("nv7.bin");
         sim_hal_relay_board_reset();
     }

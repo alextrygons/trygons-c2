@@ -21,6 +21,20 @@ void monitor_init(mon_t *m, uint32_t now_ms)
     m->last_ms = now_ms;
     m->init_ms = now_ms;
     m->node_bad_ms = now_ms;
+    m->can_hw = hal_servos_can();       /* step 13d (HIGH-2): the board truth, before any publish of core 0 */
+}
+
+uint16_t monitor_safe_us(uint16_t us, uint16_t fallback)
+{
+    return (us >= MON_SAFE_MIN_US && us <= MON_SAFE_MAX_US) ? us : fallback;
+}
+
+void monitor_publish_safe(mon_shared_t *sh, uint16_t thr_idle_us, uint16_t gear_n_us)
+{
+    monitor_write_begin(sh);
+    sh->thr_idle_us = thr_idle_us;
+    sh->gear_n_us = gear_n_us;
+    monitor_write_end(sh);
 }
 
 static void trip(mon_t *m, mon_shared_t *sh, mon_reason_t r, uint32_t now_ms)
@@ -188,9 +202,13 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
 
     /* tripped: force the safe outputs (every time, latched in the HAL) */
     if (m->tripped) {
-        hal_safe_outputs(sh->thr_idle_us, sh->gear_n_us);
+        hal_safe_outputs(monitor_safe_us(sh->thr_idle_us, MON_SAFE_THR_US),     /* never 0 (step 13d, HIGH-1) */
+                         monitor_safe_us(sh->gear_n_us, MON_SAFE_GEAR_US));
         /* DroneCAN servos: CPU1's own safe frames (core 0's are cancelled by now) */
-        if (m->can && (m->safe_sets == 0u || now_ms - m->safe_ms >= MON_SAFE_FRAME_MS)) {
+        /* step 13d (HIGH-2): a trip before core 0's control loop ran (MON_TRIP_BOOT: nothing published yet) uses the
+         * HAL's own word (hal_servos_can) - the throttle node HOLDS the pre-reset command (OA-1) until CPU1's idle */
+        bool can_now = m->can || (!m->started && m->can_hw);
+        if (can_now && (m->safe_sets == 0u || now_ms - m->safe_ms >= MON_SAFE_FRAME_MS)) {
             hal_can_safe_t f;
             bool alive = m->started && now_ms - m->last_hb_ms <= MON_HB_MS;     /* core 0 can still say the node is OK */
             bool neutral = alive && m->node_ok && now_ms - m->trip_ms >= m->travel_ms &&

@@ -309,6 +309,9 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         if (p.trained) autopilot_apply_servo_params(&s->ap, &p, half);
         s->ap.servo_boot = g_logstat.boot;
     }
+    /* step 13d (HIGH-1): CPU1's safe pulses from the start - a monitor trip before the first control step
+     * forces THIS idle / neutral (Cpu0_Main.c also publishes them before the CPU sync event) */
+    monitor_publish_safe(&g_mon, s->cfg.servo.idle_us, s->cfg.gear.pwm_n_us);
 }
 
 sb_result_t sb_thr_travel_set(sb_t *s, float seconds)

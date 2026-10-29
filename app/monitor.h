@@ -71,6 +71,14 @@
 #define MON_THR_TRAVEL_MIN_MS 1000u
 #define MON_THR_TRAVEL_MAX_MS 30000u
 #define MON_PROFILE_UNCREWED  2u  /* = SB_PROFILE_UNCREWED (smallboat.h) */
+/* step 13d: the safe pulses when the published ones are not usable (0 = core 0 has not published yet, or out
+ * of MON_SAFE_MIN_US..MON_SAFE_MAX_US): the default throttle idle / gear neutral (sb_default_config) - never 0
+ * (the board clamps 0 to 500 us = past REVERSE on the gear, past FULL on a reversed throttle). Core 0 publishes
+ * its own values before the CPU sync event (monitor_publish_safe), so these are a last guard only. */
+#define MON_SAFE_THR_US  1000u
+#define MON_SAFE_GEAR_US 1500u
+#define MON_SAFE_MIN_US  800u     /* = HAL_THROTTLE_PWM_MIN */
+#define MON_SAFE_MAX_US  2200u    /* = HAL_THROTTLE_PWM_MAX */
 
 typedef enum {
     MON_OK = 0,
@@ -150,6 +158,9 @@ typedef struct {
     bool         dm_on;         /* pulsing now (the conditions held) */
     /* the last consistent snapshot of the DroneCAN values */
     bool         can;
+    bool         can_hw;        /* step 13d: the HAL says the servos are DroneCAN nodes (hal_servos_can at monitor_init:
+                                 * the board truth) - a trip BEFORE core 0's control loop runs (MON_TRIP_BOOT) sends
+                                 * the safe frames by it; once running, core 0's published can_servos as before */
     bool         steer_have, gear_have, node_ok, killed;
     float        steer_wire, gear_wire, gear_n_wire;
     uint8_t      profile;
@@ -173,5 +184,11 @@ void monitor_write_end(mon_shared_t *sh);
  * 100 %, gear pulse unchanged. The monitor then watches for a frozen core 0
  * (a trip stops the rudder motor). */
 void monitor_publish_steering_only(mon_shared_t *sh, uint16_t thr_idle_us, uint16_t gear_n_us);
+
+/* Core 0 (step 13d): the safe pulses (throttle idle, gear neutral) only - called before the CPU sync event
+ * (Cpu0_Main.c) and by sb_init, so a monitor trip before the first control step forces THESE values. */
+void monitor_publish_safe(mon_shared_t *sh, uint16_t thr_idle_us, uint16_t gear_n_us);
+/* the pulse the monitor forces: us if inside MON_SAFE_MIN_US..MAX_US, else fallback */
+uint16_t monitor_safe_us(uint16_t us, uint16_t fallback);
 
 #endif /* MONITOR_H */

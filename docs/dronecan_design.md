@@ -918,3 +918,40 @@ storm I47 / I51 / I52 changed.
 Tests: sim CN28 (neutral after the node's return), RB22 (cut ON burst -> OFF, SHUTOFF ON after a warm reset / dropped
 after the retry time, reboot around a warm reset = unknown, proven reboot = all OFF), RB21 (updated: a reboot during
 the warm reset = the kept ON unknown), CN26 (full_us 1800); storm I47 / I51 / I52 changed.
+
+## 20. Step 13d - fixes from the reviews of f9c3752 and 49353b2 (2026-10-29)
+
+1. (HIGH) A monitor trip BEFORE core 0's first control step (MON_TRIP_BOOT: core 0 passed the CPU sync but sb_init or
+   its first step hangs > 3 s) forced `g_mon.thr_idle_us = gear_n_us = 0` (bss), which the board clamps to 500 us = the
+   gear past REVERSE, a reversed throttle past FULL, latched until reset. Now: Cpu0_Main.c publishes the configured
+   idle / neutral (`monitor_publish_safe`) BEFORE the CPU sync event (both variants; sb_init publishes them too), the
+   monitor falls back to MON_SAFE_THR_US / MON_SAFE_GEAR_US (1000 / 1500) for a pulse outside 800..2200 us, and the
+   HAL (board + sim) never takes such a pulse as the safe value (HAL_SAFE_THR_US / HAL_SAFE_GEAR_US).
+2. (HIGH) MON_TRIP_BOOT on the DroneCAN servos sent NO safe frames: CPU1's gate was core 0's published
+   `can_servos`, never written when core 0 never stepped - the throttle node HOLDS the pre-reset command (OA-1), and
+   in CREWED nothing else brings it to idle. Now `monitor_init` reads `hal_servos_can()` (the HAL's own word, set in
+   hal_init before the CPU sync) and a trip before core 0's loop runs sends the safe frames by it: throttle IDLE at
+   once, no steering / gear frame (none was commanded since the boot: hold, OD-7 / OA-2). Once core 0 runs, its
+   published value counts as before (the big boat's monitor is unchanged). The dead-man needs core 0 alive anyway.
+3. (MED) Storm I51's boot clause could not fail (its `|| est_pct <= 0` escape is the condition servo.c itself sends
+   the first gear frame on): the time alone now, plus the first gear ArrayCommand the simulated bus carried (core
+   0's or CPU1's) not before thr_travel_s after the boot.
+4. (LOW) The sim modelled the safety relay with the servos on DroneCAN (the board leaves P10.5 to the dead-man): now
+   hal_safe_outputs / hal_set_safety_relay leave it alone there too (tests C5 / GN1 judge "no relay" on CAN).
+5. (MED, part) A SHUTOFF ON burst cut by the board going away: can_relay.c tells relays.c (`hal_relay_cut`), which
+   queues the SHUTOFF ON again for RELAY_SHUTOFF_RETRY_MS; the SHUTOFF channel is in the driver's hold mask
+   (`hal_relay_cut_hold`): NO automatic OFF burst for its cut (an OFF would undo the engine stop) - the state stays
+   unknown until the re-sent ON. The OTHER relays keep the 13b behaviour (an OFF burst when the board is back), which
+   conflicts with the owner rule "never switch a relay OFF by itself": WAITING FOR OWNER W42 (recommended: finish the
+   ON burst when the board is back, only while relays.c still wants it ON and within ~10 s).
+6. (LOW-2) The storm FAILS a full run (>= 1000 episodes, run_storm.py) or a soak that never reached I59's key case
+   (a DP TRIP step with an AUTO RETURN latched); a shorter run flags it.
+Open LOW notes (PROGRESS.md): a queued SHUTOFF ON is shown OFF with nothing on screen for up to 10 s (TELEM2 group M
+flag + both manuals); the one core-0 frame already in transmission at a trip (TXBCR can't retract it): CAN trace on the
+bench (FIRST_TEST.md).
+
+Tests: sim C3e (trip before the first step: the real idle / neutral, also with a reversed throttle; HAL / monitor
+fallbacks), CN29 (MON_TRIP_BOOT on DroneCAN: CPU1 idle at once, no steering / gear frame, the throttle closes), RB23
+(SHUTOFF ON cut one frame in: queued again, delivered when the board is back, never OFF in between; back after the
+retry time: nothing late); tools/check.sh greps the board path (HAL guard, monitor fallback, the publish before the
+CPU sync); storm I51 + the I59 coverage check.

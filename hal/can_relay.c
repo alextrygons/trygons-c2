@@ -18,6 +18,8 @@ static uint32_t    s_until[CR_CH_MAX];      /* pulse end (0 = no pulse) */
 static uint32_t    s_t0, s_last_tx;
 static bool        s_seen;                  /* the board's NodeStatus seen since the start */
 static uint16_t    s_restarts;
+static uint32_t    s_cut;                   /* step 13d: ON bursts cut (bit n-1), for relays.c (cr_take_cut) */
+static uint32_t    s_hold;                  /* step 13d: no OFF burst for a cut ON on these (cr_hold_mask) */
 static cr_stats_t  s_st;
 
 static uint32_t bit(uint8_t i)
@@ -43,6 +45,8 @@ void cr_init(const cr_config_t *c)
     s_last_tx = s_t0 - CR_PERIOD_MS;
     s_seen = false;
     s_restarts = 0u;
+    s_cut = 0u;
+    s_hold = 0u;
     s_up = s_cfg.channels != 0u;
 }
 
@@ -153,8 +157,11 @@ void cr_tick(void)
              * like after a pulse - it goes when the board is back, then the state is known OFF again */
             s_on &= ~bit(i);
             s_known &= ~bit(i);
-            s_burst[i] = CR_BURST_FRAMES;
+            /* step 13d: a hold channel (the SHUTOFF relay) gets no OFF: unknown, nothing sent - relays.c queues its
+             * ON again (cr_take_cut) */
+            s_burst[i] = (s_hold & bit(i)) ? 0u : CR_BURST_FRAMES;
             s_st.dropped++;
+            s_cut |= bit(i);
             continue;
         }
         bool pulse = s_until[i] != 0u;
@@ -182,6 +189,20 @@ bool cr_set(uint8_t n, bool on)
     s_burst[i] = CR_BURST_FRAMES;
     s_st.sets++;
     return true;
+}
+
+bool cr_take_cut(uint8_t n)
+{
+    if (!s_up || n < 1u || n > s_cfg.channels) return false;
+    uint32_t b = bit((uint8_t)(n - 1u));
+    if (!(s_cut & b)) return false;
+    s_cut &= ~b;
+    return true;
+}
+
+void cr_hold_mask(uint32_t mask)
+{
+    s_hold = mask & s_mask;
 }
 
 bool cr_pulse(uint8_t n, uint16_t ms)

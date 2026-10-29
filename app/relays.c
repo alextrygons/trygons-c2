@@ -345,6 +345,25 @@ void relays_step(relays_t *r, uint32_t now_ms)
             r->pulse_offs++;
         }
     }
+    /* step 13d (review 49353b2 MED-1): a SHUTOFF ON the bus driver took and then CUT (the DroneCAN board went away
+     * during its ON burst): queued again like a SHUTOFF ON the board could not take (the driver's own OFF for it is
+     * cancelled: never an automatic OFF that undoes an engine stop); every other relay: the driver's 13b behaviour
+     * (W42 - an owner decision) */
+    {
+        uint32_t hold = 0u;
+        for (uint8_t i = 0; r->have_table && i < r->table.count; i++) {
+            uint8_t n = r->table.r[i].n;
+            uint32_t bit = 1u << (n - 1u);
+            bool sh = r->table.r[i].role == RELAY_ROLE_SHUTOFF && !r->first_test;
+            if (sh) hold |= bit;
+            if (hal_relay_cut(n) && sh && (r->cmd_on & bit) && !(r->shutoff_pending & bit)) {
+                r->shutoff_pending |= bit;
+                r->shutoff_until_ms = now_ms + RELAY_SHUTOFF_RETRY_MS;
+                r->shutoff_cut++;
+            }
+        }
+        hal_relay_cut_hold(hold);
+    }
     /* step 13b: a queued SHUTOFF ON - sent once the board takes it, dropped after RELAY_SHUTOFF_RETRY_MS */
     for (uint8_t i = 0; r->have_table && r->shutoff_pending && i < r->table.count; i++) {
         uint8_t n = r->table.r[i].n;

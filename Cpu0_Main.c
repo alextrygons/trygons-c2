@@ -93,6 +93,19 @@ void core0_main(void)
         }
     }
 
+    /* CPU1's safe pulses (throttle idle, gear neutral) BEFORE the other cores start (step 13d, HIGH-1): a
+     * monitor trip before core 0's first control step forces these, never 0 */
+#ifdef BOAT_VARIANT_BIG
+    monitor_publish_safe(&g_mon, 1000u, 1500u);         /* = monitor_publish_steering_only below */
+#else
+    sb_config_t cfg;
+    sb_default_config(&cfg);
+#ifdef FIRST_TEST
+    cfg.first_test = true;
+#endif
+    monitor_publish_safe(&g_mon, cfg.servo.idle_us, cfg.gear.pwm_n_us);
+#endif
+
     /* Wait for CPU sync event */
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
@@ -101,11 +114,6 @@ void core0_main(void)
     autopilot_default_config(&cfg);
     autopilot_init(&g_autopilot, &cfg);
 #else
-    sb_config_t cfg;
-    sb_default_config(&cfg);
-#ifdef FIRST_TEST
-    cfg.first_test = true;
-#endif
     sb_init(&g_boat, &cfg);
     (void)autopilot_load_calibration(&g_boat.ap);   /* saved TRAINING result, if any */
     link_init(&g_link, &g_boat);

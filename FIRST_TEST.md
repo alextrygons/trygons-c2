@@ -234,6 +234,16 @@ measured value / answer here.
 - [ ] (step 13b, DroneCAN relay board) SHUTOFF from the Engine page right after a watchdog reset
       (within 1 s): the SHUTOFF relay switches as soon as the board is seen again ____ (never lost);
       with the board unplugged it is NOT switched when the board comes back after > 10 s ____ .
+- [ ] (step 13d) Boot trip: halt core 0 in ADS right after the CPU sync (before its first control
+      step), wait > 3 s (MON_TRIP_BOOT): scope the throttle / gear PWM = the configured idle /
+      neutral pulse ____ us / ____ us (NEVER ~500 us); with the DroneCAN servos: CAN trace shows
+      CPU1's throttle IDLE (-1.0) frames every 20 ms ____ , no steering / gear frame ____ .
+- [ ] (step 13d, review 49353b2 LOW-3) CAN trace at a monitor trip while driving (bench trip test
+      with the servos on CAN): count core 0's ArrayCommands after the trip - at most ONE (already
+      in transmission, TXBCR can't pull it back) ____ , CPU1's idle frame within 20 ms ____ .
+- [ ] (step 13d, DroneCAN relay board) SHUTOFF from the Engine page, then pull the relay board's
+      CAN cable within ~0.1 s (or power it off): plugged in again within 10 s, the SHUTOFF relay
+      is ON ____ and was never switched OFF in between ____ .
 
 - [ ] Leave the bench test (button **Leave**): mode STANDBY.
 

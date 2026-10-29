@@ -149,6 +149,17 @@ if echo "$safe" | grep -q "servo_write(THROTTLE_TOM_CH" && echo "$safe" | grep -
 else
     echo "hal_safe_outputs (board) does NOT drive the outputs itself"; fail=1
 fi
+# step 13d (HIGH-1): a trip before core 0's first step never forces 0 us: the board HAL replaces an out-of-range
+# pulse, the monitor falls back, Cpu0_Main.c publishes the safe pulses BEFORE the CPU sync event (both variants)
+if echo "$safe" | grep -q "HAL_SAFE_THR_US" && echo "$safe" | grep -q "HAL_SAFE_GEAR_US" &&
+   grep -q "monitor_safe_us(sh->thr_idle_us, MON_SAFE_THR_US)" app/monitor.c &&
+   grep -q "monitor_safe_us(sh->gear_n_us, MON_SAFE_GEAR_US)" app/monitor.c &&
+   grep -q "m->can_hw = hal_servos_can()" app/monitor.c && grep -q "(!m->started && m->can_hw)" app/monitor.c &&
+   [ "$(sed -n '1,/IfxCpu_emitEvent/p' Cpu0_Main.c | grep -c 'monitor_publish_safe(&g_mon')" -ge 2 ]; then
+    echo "safe pulses before core 0's first step: board HAL guard, monitor fallback, published before the CPU sync"
+else
+    echo "safe pulses before core 0's first step NOT guarded (hal_safe_outputs / monitor.c / Cpu0_Main.c)"; fail=1
+fi
 stop=$(sed -n '/^static void thrusters_stop/,/^}/p' hal/hal_tc375.c)
 if echo "$stop" | grep -q "servo_write(THR_BOW_TOM_CH, THR_STOP_US)" && echo "$stop" | grep -q "servo_write(THR_STERN_TOM_CH, THR_STOP_US)"; then
     echo "thrusters_stop (board) writes both thruster shadow registers to the stop pulse"

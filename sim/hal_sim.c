@@ -746,6 +746,9 @@ void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
         s_safe_purged = true;
         s_safe_tid = dc_cmd_tid();      /* continue core 0's transfer-ID counter */
     }
+    /* step 13d: as the board - never 0 / an out-of-range pulse as the safe value */
+    if (throttle_idle_us < HAL_THROTTLE_PWM_MIN || throttle_idle_us > HAL_THROTTLE_PWM_MAX) throttle_idle_us = HAL_SAFE_THR_US;
+    if (gear_neutral_us < HAL_THROTTLE_PWM_MIN || gear_neutral_us > HAL_THROTTLE_PWM_MAX) gear_neutral_us = HAL_SAFE_GEAR_US;
     s_safe_thr_us = throttle_idle_us;
     s_safe_gear_us = gear_neutral_us;
     s_throttle_us = throttle_idle_us;
@@ -754,7 +757,7 @@ void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us)
     s_thr_bow = 0.0f;                   /* both thrusters stopped (latched) */
     s_thr_stern = 0.0f;
     s_alarm = true;
-    s_relay = false;
+    if (!s_servos_can) s_relay = false;     /* step 13d (LOW-4): as the board - DroneCAN servos: P10.5 = the dead-man */
 }
 
 bool hal_outputs_forced(void) { return s_forced; }
@@ -767,7 +770,11 @@ bool hal_read_estop(bool *pressed)
     *pressed = s_estop_pressed;
     return true;
 }
-void hal_set_safety_relay(bool closed) { s_relay = closed && !s_forced; }
+void hal_set_safety_relay(bool closed)
+{
+    if (s_servos_can) return;               /* step 13d (LOW-4): as the board (OD-2: P10.5 = the dead-man pulse) */
+    s_relay = closed && !s_forced;
+}
 bool sim_hal_safety_relay(void) { return s_relay; }
 
 
@@ -1151,6 +1158,8 @@ bool hal_relay_pulse(uint8_t n, uint16_t ms)  { return s_rb_channels_boot && (s_
 bool hal_relay_read(uint8_t n, bool *on)      { return s_rb_channels_boot && (s_cr_up ? cr_read(n, on) : mb_coil(n, on)); }
 bool hal_relay_ok(void)                        { return s_rb_channels_boot && (s_cr_up ? cr_ok() : mb_ok()); }
 bool hal_relay_readback(void)                  { return !s_cr_up || cr_readback(); }
+bool hal_relay_cut(uint8_t n)                  { return s_rb_channels_boot && s_cr_up && cr_take_cut(n); }
+void hal_relay_cut_hold(uint32_t mask)         { if (s_rb_channels_boot && s_cr_up) cr_hold_mask(mask); }
 uint8_t hal_relay_channels(void)               { return s_rb_channels_boot; }
 void sim_hal_relay_bus(uint8_t bus)            { s_rb_bus = bus == SIM_RELAY_DRONECAN ? SIM_RELAY_DRONECAN : SIM_RELAY_MODBUS; }
 uint8_t sim_hal_relay_bus_now(void)            { return s_rb_channels_boot ? s_rb_bus_boot : 0u; }

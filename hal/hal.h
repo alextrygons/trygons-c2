@@ -331,6 +331,12 @@ bool hal_relay_read(uint8_t n, bool *on);
 bool hal_relay_ok(void);
 bool hal_relay_readback(void);
 uint8_t hal_relay_channels(void);
+/* step 13d: hal_relay_cut is true once when the bus driver dropped an ON it had taken for relay n (DroneCAN: the
+ * board went away during the ON burst; the Modbus board: never). hal_relay_cut_hold(mask, bit n-1): for these relays
+ * the driver sends NO automatic OFF after such a cut (app/relays.c: the SHUTOFF relay, whose ON it queues again for
+ * RELAY_SHUTOFF_RETRY_MS); the other relays keep the driver's 13b behaviour (WAITING FOR OWNER W42). */
+bool hal_relay_cut(uint8_t n);
+void hal_relay_cut_hold(uint32_t mask);
 
 /*
  * DroneCAN bus (CLAUDE.md section T, docs/dronecan_design.md; step 11d).
@@ -443,7 +449,14 @@ uint32_t hal_gw_tx_free(void);
  * 11e): the latch is set FIRST and core 0's pending actuator frames are
  * cancelled; the servo commands then come from CPU1's safe frames
  * (hal_can_safe_send: throttle idle at once, steering hold, gear hold until the
- * throttle travel time, then neutral); the servo power is NEVER cut (OD-2). */
+ * throttle travel time, then neutral); the servo power is NEVER cut (OD-2).
+ * Step 13d: a pulse outside HAL_THROTTLE_PWM_MIN..MAX (0 = core 0 never
+ * published) is replaced by HAL_SAFE_THR_US / HAL_SAFE_GEAR_US - never 0 /
+ * the 500 us clamp (= past reverse on the gear, past full on a reversed
+ * throttle); the safety relay is left alone with DroneCAN servos (P10.5 =
+ * the dead-man pulse, OD-2) on the board AND in the sim. */
+#define HAL_SAFE_THR_US   1000u
+#define HAL_SAFE_GEAR_US  1500u
 void hal_safe_outputs(uint16_t throttle_idle_us, uint16_t gear_neutral_us);
 bool hal_outputs_forced(void);
 

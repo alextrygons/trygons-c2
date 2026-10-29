@@ -67,6 +67,7 @@ def main():
     inv = {}
     run = [0, 0.0, 0, 0, 0, 0, 0]
     fails_text = []
+    i59_ret = 0         # step 13d: DP TRIP steps with an AUTO RETURN latched (I59's key case)
     for w in range(len(procs)):
         with open(os.path.join(OUT, "storm_worker_%d.txt" % w)) as f:
             for line in f:
@@ -79,6 +80,8 @@ def main():
                         d[2], d[4] = float(wst), int(wseed)
                     if int(fl) and not d[3]:
                         d[3] = int(seed)
+                elif line.startswith("DATA_I59 "):
+                    i59_ret += int(line.split()[1])
                 elif line.startswith("DATA_RUN "):
                     v = line.split()[1:]
                     run[0] += int(v[0])
@@ -111,13 +114,19 @@ def main():
         run[2], run[3], run[4]),
         "NOTE (finding, not an invariant): HDG LOCK / AUTO / REMOTE entered while the onboard joystick was held and "
         "ignored (not centred since STANDBY): %d times (first seed %d)" % (run[5], run[6])]
+    # step 13d (review 49353b2 LOW-2): a full run (>= 1000 episodes) that never reached I59's key case FAILS - I59
+    # would have passed without testing anything; a shorter run only flags it
+    i59_fail = i59_ret == 0 and run[0] >= 1000
+    lines += ["%s I59 key case: %d DP TRIP control steps with an AUTO RETURN latched%s" % (
+        "FAIL" if i59_fail else ("NOTE" if i59_ret == 0 else "PASS"), i59_ret,
+        " - NEVER REACHED, I59 not tested" if i59_ret == 0 else "")]
     if fails_text:
         lines += ["", "Failing seeds (minimal reproductions):"] + fails_text[:200]
     text = "\n".join(lines)
     with open(os.path.join(OUT, "storm_report.txt"), "w", encoding="utf-8") as f:
         f.write(text + "\n")
     print(text)
-    return 0 if (bad == 0 and selftest_ok) else 1
+    return 0 if (bad == 0 and selftest_ok and not i59_fail) else 1
 
 
 if __name__ == "__main__":

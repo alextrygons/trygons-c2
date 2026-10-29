@@ -701,6 +701,7 @@ typedef struct {
     bool     thr_node_lost_prev;
     uint32_t boot_t;                        /* I51 / I56: the boot of this episode's last start */
     bool     boot_first_checked;
+    bool     boot_gear_checked;             /* I51 (step 13d): the first gear frame on the bus of this boot judged */
     bool     steered_since_boot;            /* I56: a mode commanded steering since the boot */
     float    steer_u_prev;
     bool     steer_have_prev;
@@ -839,8 +840,23 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
     }
     if (s->servo.gear_sent && C.gear_sent_prev == 0u) {
         float since = (S.t - C.boot_t) * 0.001f;
-        if (since + 0.06f >= s->servo.cfg.travel_s || s->servo.est_pct <= 0.0f) ok(51);
+        /* step 13d (review f9c3752 MED-3): the time alone - the old "|| est_pct <= 0" escape was always true here
+         * (servo.c sends the first gear frame only at est_pct <= 0), so the clause could never fail */
+        if (since + 0.06f >= s->servo.cfg.travel_s) ok(51);
         else fail(51, "a gear frame %.2f s after the boot (travel %.1f s)", since, s->servo.cfg.travel_s);
+    }
+    /* step 13d: and what the simulated bus really carried - the first gear ArrayCommand of this boot (core 0's or
+     * CPU1's) not before thr_travel_s after the boot */
+    if (!C.boot_gear_checked) {
+        sim_can_act_t ga;
+        sim_hal_can_act(CA_ACT_GEAR, &ga);
+        if (ga.any) {
+            float since = (float)(ga.first_ms - C.boot_t) * 0.001f;
+            if (since + 0.06f >= s->servo.cfg.travel_s) ok(51);
+            else fail(51, "the first gear frame on the bus %.2f s after the boot (travel %.1f s)", since,
+                      s->servo.cfg.travel_s);
+            C.boot_gear_checked = true;
+        }
     }
     bool thr_lost = (s->can.lost_mask & (1u << HAL_CAN_ROLE_THROTTLE)) != 0u;
     /* step 11g: what the simulated GEAR NODE really got (core 0's frames AND CPU1's safe frames), not servo.gear_us */
@@ -985,6 +1001,7 @@ static void check_step(void)
         /* step 11e */
         C.boot_t = S.t;
         C.boot_first_checked = false;
+        C.boot_gear_checked = false;
         C.steered_since_boot = false;
         C.steer_have_prev = false;
         C.gear_sent_prev = 0u;
@@ -2104,6 +2121,7 @@ static void report(int episodes, double hours)
            "STANDBY): %lu times (first seed %lu)\n", (unsigned long)ST.engaged_ignored,
            (unsigned long)ST.engaged_ignored_seed);
     printf("NOTE: DP TRIP control steps with an AUTO RETURN latched (I59): %lu\n", (unsigned long)ST.dp_trip_ret);
+    printf("DATA_I59 %lu\n", (unsigned long)ST.dp_trip_ret);     /* step 13d: run_storm.py fails a full run with 0 */
     printf("AUTO entries: %lu by PC + CONFIRM, %lu by the joystick AUTO button; REMOTE entries %lu "
            "(requests: ok %lu, refused", (unsigned long)ST.auto_by_confirm, (unsigned long)ST.auto_by_button,
            (unsigned long)ST.remote_entries, (unsigned long)ST.rem_req[0]);
@@ -2515,7 +2533,11 @@ int main(int argc, char **argv)
                        s_hist[4] + s_hist[5] + s_hist[6] + s_hist[7] + s_hist[8] + s_hist[9])));
             }
             report(1, h);
-            return f ? 1 : 0;
+            /* step 13d (review 49353b2 LOW-2): I59's key case (a DP TRIP while an AUTO RETURN is latched) must be
+             * reached, else I59 passed without testing anything */
+            if (ST.dp_trip_ret == 0u)
+                printf("FAIL I59 coverage: no DP TRIP step with an AUTO RETURN latched in this soak - I59 not tested\n");
+            return (f || ST.dp_trip_ret == 0u) ? 1 : 0;
         }
         if (!strcmp(argv[i], "--min-min") && i + 1 < argc) { min_min = atoi(argv[++i]); continue; }
         if (!strcmp(argv[i], "--max-min") && i + 1 < argc) { max_min = atoi(argv[++i]); continue; }

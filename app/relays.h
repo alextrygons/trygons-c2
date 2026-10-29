@@ -154,6 +154,7 @@ typedef struct {
     uint32_t shutoff_pending;   /* bit n-1: a SHUTOFF ON waiting for the board (step 13b) ... */
     uint32_t shutoff_until_ms;  /* ... until then (RELAY_SHUTOFF_RETRY_MS) */
     uint32_t shutoff_retried, shutoff_dropped;
+    uint32_t shutoff_cut;       /* step 13d: a SHUTOFF ON burst cut by the bus driver, queued again */
     uint32_t until_ms[RELAY_TABLE_MAX];  /* pulse end (momentary) / OFF deadline (timed); 0 = none */
     uint16_t hash;              /* CRC-16 of the active table's frame encoding (TELEM2; the station compares) */
     bool     table_new;         /* the active table changed: save it (NV slot 7) */

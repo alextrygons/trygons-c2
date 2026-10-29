@@ -72,6 +72,12 @@ bool cr_pulse(uint8_t n, uint16_t ms);
 bool cr_read(uint8_t n, bool *on);
 bool cr_ok(void);
 bool cr_readback(void);          /* the board sends hardpoint.Status (else: the commanded states, "no readback") */
+/* step 13d (review 49353b2 MED-1): an ON burst the driver had taken and then cut (the board went away): cr_take_cut
+ * is true once for that relay (relays.c queues a SHUTOFF ON again). The channels of cr_hold_mask (bit n-1; relays.c:
+ * the SHUTOFF relay) get NO OFF burst for such a cut - the state stays unknown, nothing is sent (an automatic OFF
+ * would undo an engine stop); every other channel keeps the 13b behaviour (an OFF burst: W42, an owner decision). */
+bool cr_take_cut(uint8_t n);
+void cr_hold_mask(uint32_t mask);
 /* the commanded states to keep across a warm reset (a running pulse = off: the board's timeout ends it) */
 void cr_keep(uint32_t *known, uint32_t *on);
 
