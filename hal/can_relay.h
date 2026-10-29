@@ -22,7 +22,8 @@
  *     is silent goes when it is back. An ON is never queued for a board that is not there
  *     (step 11g): cr_set ON / cr_pulse refuse it, and an ON burst or a running pulse is
  *     dropped when the board goes (bus fault / silent / not OPERATIONAL) - the pulse ends
- *     with an OFF burst, a dropped ON leaves the state unknown.
+ *     with an OFF burst, a dropped ON leaves the state unknown and sends nothing (step 13h,
+ *     W42: finished when the board is back only while still wanted, within 10 s, no reboot).
  *   - pulse (momentary relays, the STARTER's hold-to-crank): ON at 50 Hz until the pulse
  *     end (AURIX-timed: hardpoint.Command has no board-timed pulse), then the OFF burst.
  *     When the AURIX stops sending (frozen core 0, reset, cable) the BOARD switches the
@@ -52,6 +53,8 @@
 #define CR_PERIOD_MS     20u     /* 50 Hz (ArduPilot CAN_D1_UC_RLY_RT) */
 #define CR_BURST_FRAMES  10u     /* a new on / off state: 10 frames (200 ms), then the board holds it (R-2) */
 #define CR_BOOT_MARGIN_MS 2000u  /* the board booted after us when its uptime <= ours + this */
+#define CR_ON_RETRY_MS   10000u  /* step 13h (W42, owner 2026-10-29 = RELAY_ON_RETRY_MS): a cut ON burst is finished
+                                    only within this time of the ON command */
 
 typedef struct {
     uint8_t  channels;           /* the board's hardpoints (hal_pins.h CAN_RELAY_CHANNELS, TO CONFIRM; sim: fitted) */
@@ -75,11 +78,20 @@ bool cr_readback(void);          /* the board sends hardpoint.Status (else: the 
 /* step 13d (review 49353b2 MED-1): an ON burst the driver had taken and then cut (the board went away): cr_take_cut
  * is true once for that relay (relays.c queues a SHUTOFF ON again). The channels of cr_hold_mask (bit n-1; relays.c:
  * the SHUTOFF relay) get NO OFF burst for such a cut - the state stays unknown, nothing is sent (an automatic OFF
- * would undo an engine stop); every other channel keeps the 13b behaviour (an OFF burst: W42, an owner decision). */
+ * would undo an engine stop); every other channel: see cr_on_want (step 13h, W42). */
 bool cr_take_cut(uint8_t n);
 void cr_hold_mask(uint32_t mask);
 uint32_t cr_hold(void);          /* step 13e: the hold mask now (tests) */
 uint32_t cr_cuts(void);          /* step 13e: the cut bits not taken yet (tests) */
+/* step 13h (W42, owner 2026-10-29 - replaces the 13b OFF burst): a cut ON burst of any other channel sends NOTHING
+ * (never an OFF by itself); it is finished when the board is back ONLY while (1) relays.c still wants it ON
+ * (cr_on_want: bit n-1 = commanded ON, not momentary, not the engine group; a new cr_set / cr_pulse replaces it),
+ * (2) within CR_ON_RETRY_MS of the ON command and (3) the board did not reboot meanwhile (its uptime went back:
+ * every state OFF, nothing sent). Given up (window over / reboot / not wanted at the cut) = the state UNKNOWN (OFF
+ * after a reboot), nothing sent, cr_take_on_drop true once so relays.c clears its command (and logs it). */
+void cr_on_want(uint32_t mask);
+bool cr_take_on_drop(uint8_t n);
+uint32_t cr_retries(void);       /* the cut ON bursts waiting for the board (tests) */
 /* the commanded states to keep across a warm reset (a running pulse = off: the board's timeout ends it) */
 void cr_keep(uint32_t *known, uint32_t *on);
 
@@ -90,6 +102,8 @@ typedef struct {
     uint32_t sets, pulses;       /* commands from relays.c */
     uint32_t max_pulse_ms;       /* the longest pulse ever asked */
     uint32_t board_reboots;      /* the board's uptime went back: every state OFF */
+    uint32_t on_retried;         /* step 13h: cut ON bursts finished when the board was back */
+    uint32_t on_given_up;        /* step 13h: cut ON bursts given up (window / reboot / not wanted) */
     uint32_t ticks;
 } cr_stats_t;
 const cr_stats_t *cr_stats(void);

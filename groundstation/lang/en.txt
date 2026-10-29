@@ -1490,6 +1490,7 @@ ov.relay_pending = the relay table waits for the joystick CONFIRM
 ov.relay_silent = RELAY BOARD SILENT: states unknown, no new command
 ov.relay_unknown = relay {name}: state unknown (the board does not answer)
 ov.relay_no_readback = no readback from the relay board: the COMMANDED states are shown
+ov.relay_stop = the relay table waits: a relay stop / timer is still pending
 what.relay_hold = hold relay {name}
 hud.ov_relays = relays
 # DP (CLAUDE.md P, step 11): screen 2 "dp" panel, the status line, the HUD DP box

@@ -942,8 +942,8 @@ the warm reset = the kept ON unknown), CN26 (full_us 1800); storm I47 / I51 / I5
    queues the SHUTOFF ON again for RELAY_SHUTOFF_RETRY_MS; the SHUTOFF channel is in the driver's hold mask
    (`hal_relay_cut_hold`): NO automatic OFF burst for its cut (an OFF would undo the engine stop) - the state stays
    unknown until the re-sent ON. The OTHER relays keep the 13b behaviour (an OFF burst when the board is back), which
-   conflicts with the owner rule "never switch a relay OFF by itself": WAITING FOR OWNER W42 (recommended: finish the
-   ON burst when the board is back, only while relays.c still wants it ON and within ~10 s).
+   conflicts with the owner rule "never switch a relay OFF by itself": W42 - ANSWERED by the owner 2026-10-29,
+   implemented in step 13h (section 24).
 6. (LOW-2) The storm FAILS a full run (>= 1000 episodes, run_storm.py) or a soak that never reached I59's key case
    (a DP TRIP step with an AUTO RETURN latched); a shorter run flags it.
 Open LOW notes (PROGRESS.md): a queued SHUTOFF ON is shown OFF with nothing on screen for up to 10 s (TELEM2 group M
@@ -1022,3 +1022,45 @@ CPU sync); storm I51 + the I59 coverage check.
    the control loop after sb_init / link_init - the gap is a bench measurement (FIRST_TEST.md 3, C19 / W43).
 5. (LOW-3) C19 stays an open bench item; W42 / MON_BOOT_MS (W43) unchanged.
 
+## 24. Step 13h - W42 + LOW cleanups (owner answers 2026-10-29)
+
+1. (W42 = option (b) with the owner's condition; review 49353b2 MED-1) A DroneCAN relay ON burst cut by the board
+   going away (bus fault / NodeStatus older than HAL_RELAY_LOST_MS / not OPERATIONAL / ERROR) of any relay EXCEPT
+   SHUTOFF: NEVER an automatic OFF (the 13b OFF burst is removed - the owner rule "never switch a relay OFF by itself"
+   stays). can_relay.c sends nothing while the board is away and keeps the channel as a retry (`s_retry`); when the
+   board is back the ON burst is sent again in full ONLY IF
+   (1) relays.c still wants it ON: `hal_relay_on_want(mask)` = cmd_on of the table's relays that are not momentary,
+       not the engine group, no role (relays.c pushes it after every command / step / table activation; an operator
+       OFF or a new command replaces the retry at once in cr_set / cr_pulse; a timer's OFF and a table change too);
+   (2) within `CR_ON_RETRY_MS` (10 s, = the owner's RELAY_ON_RETRY_MS) of the ON command (`s_on_ms`);
+   (3) the board did NOT reboot meanwhile: the existing R-2 reboot rule (its uptime went back, dronecan.c restarts)
+       in cr_service gives every retry up (all OFF known, nothing sent), and cr_tick does not finish a retry when the
+       node table already shows a restart cr_service has not handled yet (a NodeStatus taken between two steps).
+   Given up (window over / reboot / not wanted at the cut) = nothing sent, the state UNKNOWN (OFF after a reboot),
+   `hal_relay_on_drop(n)` once -> relays.c clears cmd_on (no stale command that re-sends or blocks a pair), counts
+   `on_dropped` and logs it (last action ON, result SILENT: log event 25, like a dropped SHUTOFF). The operator
+   presses again. SHUTOFF keeps its 13d behaviour (hold mask, re-queued for RELAY_SHUTOFF_RETRY_MS, no automatic OFF);
+   the STARTER and every momentary relay are pulses: never retried (a cut pulse ends with its OFF burst as before -
+   a late crank can never happen); IGNITION (engine group, conditions checked only at its command) is never finished
+   late. A TIMED relay whose ON was given up keeps its own max_s OFF (the operator's timed command). The Modbus board
+   is not affected (a write is one request, never cut). Tests: RB27 (DroneCAN sim board; cases: back after 3 s = ON
+   finished, known ON, never OFF; the board rebooted while away = nothing sent, all OFF, command cleared + logged;
+   back after > 10 s = nothing sent, unknown, cleared + logged; an operator OFF meanwhile = followed; the STARTER =
+   never late; relays.c's command gone (table re-activation) = nothing sent), RB21 (the bus back only after 10 s:
+   never ON late) and RB22 (a): the ON finished. Mutation checks: no finishing -> RB22 + RB27 (0) fail; no tick
+   reboot check -> RB27 (1) fails; no window -> RB21 + RB27 (2) fail; the want mask ignored -> RB27 (5) fails.
+2. W40 closed: (a), (b), (d) kept; (c) (the automatic OFF after a cut ON) replaced by 1. W43 closed: MON_BOOT_MS
+   stays 3 s; the boot time is measured on the bench (FIRST_TEST.md 3, unchanged).
+3. (review ce2e4d0 LOW-1) Screen 2's relays panel shows `ov.relay_stop` ("the relay table waits: a relay stop /
+   timer is still pending") in place of "not active" while TELEM2 group M flag 128 is set and the boat file's table
+   is not active; MANUAL / MANUAL_EL say that the wait has no time limit (a silent board blocks a table change until
+   it answers or the AURIX restarts). NO timeout was added (it would bring the lost-stop defect back). test_screen2
+   S14 (+ the 1366x658 .. 1920x1080 x 100-150 % x el / en matrix with the note).
+4. (LOW-2) The sim counts hal_watchdog_kick (sim_hal_wdt_kicks): CN34 requires a kick on every pass of the NV boot
+   loop; tools/check.sh greps `hal_watchdog_kick();` in sb_bootnv_step. Mutation (kick removed): CN34 + CN35 fail.
+5. (LOW-3) link.c's TELEM2 group M flags comment lists b0-b7.
+6. (LOW-4) sb_bootnv_step says that the big boat uses it too; test CN35: the big boat's loop (hal_can_servos_off,
+   can_tick false, stuck flash) sends nothing on CAN (no ArrayCommand, no CPU1 safe frame, no relay frame, no tick)
+   and kicks the watchdog every pass.
+7. (owner, ADS build of ce2e4d0) TASKING ctc W523 x 2 at hal_tc375.c relay_keep_store: `uint32` locals passed to
+   cr_keep(uint32_t *) - now uint32_t.

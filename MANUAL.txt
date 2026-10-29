@@ -392,6 +392,12 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   not confirmed yet, a pulse, a queued SHUTOFF) no new table is taken: the
   boat answers "relay stop pending: the relay table changes after it" and
   the station sends the table again (and asks for the CONFIRM) only after it.
+  Screen 2's relays panel then says "the relay table waits: a relay stop /
+  timer is still pending". There is NO time limit on this wait (a stop is
+  never dropped): switch the timed relay OFF to end it early; an OFF the
+  board must still confirm waits until a SILENT board answers again - a
+  board that stays silent blocks the table change until it answers or the
+  AURIX restarts.
   The event list shows "boat file RF49D: generator max 25 %" and "boat file
   RF49D: DP thrusters, bow 100 %, stern 100 %".
   "Other address ..." (Tools - Connection): the connection box (COM5,
@@ -1359,6 +1365,12 @@ RELAY BOARD (RS485 Modbus RTU: lights, pumps, trim, engine switches)
       ERROR, or the CAN bus is down; health WARNING = a notice only. A board
       that loses power or reboots has every relay OFF afterwards; the AURIX
       never switches them back on by itself.
+    - a relay switched ON just as the board drops off the bus (step 13h):
+      the AURIX never switches it OFF by itself. If the board is back within
+      10 s of your command, has NOT rebooted, and you did not change that
+      relay meanwhile, the ON is completed; otherwise nothing is sent, the
+      relay shows unknown (OFF after a board reboot) and you press again.
+      The STARTER and other press-and-hold relays are never completed late.
   RELAY BUTTONS (the stations; requests only - the AURIX decides every time)
   * Screen 2: the panel "RELAYS" (collapsible; the station puts it in the
     corner with the most room, never over the boat) shows the boat file's

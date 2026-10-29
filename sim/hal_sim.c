@@ -813,7 +813,9 @@ uint32_t sim_hal_engine_kills(void) { return s_engine_kills; }
 
 /* The simulator's watchdog is modelled by the test harness (sim_sb.c). */
 void hal_watchdog_init(uint32_t timeout_ms) { (void)timeout_ms; }
-void hal_watchdog_kick(void) {}
+static uint32_t s_wdt_kicks;                    /* step 13h (review ce2e4d0 LOW-2): counted for CN34 / CN35 */
+void hal_watchdog_kick(void) { s_wdt_kicks++; }
+uint32_t sim_hal_wdt_kicks(void) { return s_wdt_kicks; }
 static uint32_t s_core_kicks;
 void hal_watchdog_kick_core(void) { s_core_kicks++; }
 uint32_t sim_hal_core_kicks(void) { return s_core_kicks; }
@@ -1165,6 +1167,8 @@ bool hal_relay_ok(void)                        { return s_rb_channels_boot && (s
 bool hal_relay_readback(void)                  { return !s_cr_up || cr_readback(); }
 bool hal_relay_cut(uint8_t n)                  { return s_rb_channels_boot && s_cr_up && cr_take_cut(n); }
 void hal_relay_cut_hold(uint32_t mask)         { if (s_rb_channels_boot && s_cr_up) cr_hold_mask(mask); }
+void hal_relay_on_want(uint32_t mask)          { if (s_rb_channels_boot && s_cr_up) cr_on_want(mask); }
+bool hal_relay_on_drop(uint8_t n)              { return s_rb_channels_boot && s_cr_up && cr_take_on_drop(n); }
 uint8_t hal_relay_channels(void)               { return s_rb_channels_boot; }
 void sim_hal_relay_bus(uint8_t bus)            { s_rb_bus = bus == SIM_RELAY_DRONECAN ? SIM_RELAY_DRONECAN : SIM_RELAY_MODBUS; }
 uint8_t sim_hal_relay_bus_now(void)            { return s_rb_channels_boot ? s_rb_bus_boot : 0u; }

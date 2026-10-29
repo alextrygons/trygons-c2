@@ -171,8 +171,9 @@ if echo "$cpi" | tr -d '
    [ "$(sed -n '1,/^    hal_init();/p' Cpu0_Main.c | grep -c 'hal_can_servos_off();')" -eq 1 ] &&
    sed -n '/^    {   \/\* boot counter/,/^    }/p' Cpu0_Main.c | grep -q "sb_bootnv_begin(&bn, hal_millis(), NV_BOOT_MS, true);" &&
    sed -n '/^    {   \/\* boot counter/,/^    }/p' Cpu0_Main.c | grep -q "while (sb_bootnv_step(&bn, hal_millis()))" &&
-   sed -n '/^bool sb_bootnv_step/,/^}/p' app/smallboat.c | grep -q "hal_can_tick();"; then
-    echo "boot: throttle IDLE from hal_init + the NV boot loop, barrier before CPU1's flag, big boat without CAN servos"
+   sed -n '/^bool sb_bootnv_step/,/^}/p' app/smallboat.c | grep -q "hal_can_tick();" &&
+   sed -n '/^bool sb_bootnv_step/,/^}/p' app/smallboat.c | grep -q "hal_watchdog_kick();"; then
+    echo "boot: throttle IDLE from hal_init + the NV boot loop (watchdog kicked), barrier before CPU1's flag, big boat without CAN servos"
 else
     echo "boot throttle IDLE / big-boat CAN servos NOT as step 13f (hal_tc375.c can_port_init / Cpu0_Main.c)"; fail=1
 fi

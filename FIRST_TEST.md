@@ -271,6 +271,13 @@ measured value / answer here.
 - [ ] (step 13d, DroneCAN relay board) SHUTOFF from the Engine page, then pull the relay board's
       CAN cable within ~0.1 s (or power it off): plugged in again within 10 s, the SHUTOFF relay
       is ON ____ and was never switched OFF in between ____ .
+- [ ] (step 13h, W42, DroneCAN relay board) NAV LIGHTS (or another on/off EXTRA relay, a test lamp)
+      ON, then pull the relay board's CAN cable within ~0.1 s: (a) plugged in again within 10 s: the
+      relay ends ON ____ and was never switched OFF by the AURIX ____ ; (b) plugged in after > 10 s:
+      NOTHING is sent (CAN trace: no hardpoint.Command) ____ , the panel shows it unknown ____ ;
+      (c) power-cycle the board while unplugged, plug in within 10 s: nothing sent, the relay OFF
+      (the board's own boot state) ____ ; (d) the STARTER: START hold + cable pulled: never ON again
+      when plugged back ____ .
 
 - [ ] Leave the bench test (button **Leave**): mode STANDBY.
 

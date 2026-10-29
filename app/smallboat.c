@@ -194,6 +194,10 @@ void sb_bootnv_begin(sb_bootnv_t *b, uint32_t now_ms, uint32_t max_ms, bool can_
     b->can_tick = can_tick;
 }
 
+/* step 13h (review ce2e4d0 LOW-4): the BIG boat's Cpu0_Main.c uses sb_bootnv_begin / sb_bootnv_step too (with
+ * can_tick false: nothing at all on CAN - OD-12, sim test CN35). A change here reaches BOTH variants: keep the
+ * can_tick-false path = flash service + watchdog kick only. The watchdog kick on every pass is required (a slow
+ * flash takes up to NV_BOOT_MS 2 s, the watchdog 100 ms): CN34 / CN35 count it, tools/check.sh greps it. */
 bool sb_bootnv_step(sb_bootnv_t *b, uint32_t now_ms)
 {
     if (!hal_nv_pending() || !hal_nv_ok() || now_ms - b->t0 >= b->max_ms) return false;

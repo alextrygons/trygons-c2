@@ -987,7 +987,7 @@ static volatile uint32 s_relay_keep[4];
 
 static void relay_keep_store(void)
 {
-    uint32 known = 0u, on = 0u;
+    uint32_t known = 0u, on = 0u;
     cr_keep(&known, &on);
     if (s_relay_keep[0] == RELAY_KEEP_ON && s_relay_keep[1] == known && s_relay_keep[2] == on) return;
     s_relay_keep[0] = 0u;                       /* (invalid while it is written) */
@@ -1070,6 +1070,17 @@ bool hal_relay_cut(uint8_t n)
 void hal_relay_cut_hold(uint32_t mask)
 {
     if (s_relay_up && s_relay_can) cr_hold_mask(mask);
+}
+
+void hal_relay_on_want(uint32_t mask)
+{
+    if (s_relay_up && s_relay_can) cr_on_want(mask);    /* (step 13h, W42; Modbus: never cut) */
+}
+
+bool hal_relay_on_drop(uint8_t n)
+{
+    if (!s_relay_up || !s_relay_can) return false;
+    return cr_take_on_drop(n);
 }
 
 bool hal_relay_read(uint8_t n, bool *on)

@@ -227,10 +227,11 @@ def layout_problems(ap):
     return probs
 
 
-RELAY_EXTRA = ("relay_table", "relay_hash", "relay_pending", "relay_ok", "relay_on", "relay_unknown", "eng_crank")
+RELAY_EXTRA = ("relay_table", "relay_hash", "relay_pending", "relay_ok", "relay_on", "relay_unknown", "eng_crank",
+               "relay_stop")
 
 
-def relay_boat(rig, on=(1, 6), unknown=(), pending=False, hash_ok=True):
+def relay_boat(rig, on=(1, 6), unknown=(), pending=False, hash_ok=True, stop=False):
     """The boat RF49D of boats/ (7 relays, format 2) with its relay table active on the boat (TELEM2 group M)."""
     import boats
     ap = rig.ap
@@ -238,7 +239,7 @@ def relay_boat(rig, on=(1, 6), unknown=(), pending=False, hash_ok=True):
     ap.boat_ok = True
     h = proto.relay_table_hash(ap.boat.relays)
     rig.extra.update(relay_table=True, relay_hash=h if hash_ok else h ^ 1, relay_pending=pending, relay_ok=True,
-                     relay_on=list(on), relay_unknown=list(unknown), eng_crank=0)
+                     relay_on=list(on), relay_unknown=list(unknown), eng_crank=0, relay_stop=stop)
     rig.pump(0.4)
     return h
 
@@ -958,6 +959,34 @@ def s14_relays(rig):
     inactive_ok = bool(na) and not any(o["enabled"] for o in na) and note_na and \
         A.T("ov.relay_not_active") in note_na[0].replace("\n", " ") and note_p and \
         A.T("ov.relay_pending") in note_p[0].replace("\n", " ")
+    # step 13h (review ce2e4d0 LOW-1): TELEM2 M flag 128 (a stop / timer pending) with the boat file's table not
+    # active = the note says why the table change waits (in place of "not active": the panel keeps its height,
+    # checked in the S1 matrix below); the table active = no note; the flag gone = "not active" again
+    relay_boat(rig, hash_ok=False, stop=True)
+    ap.render(force=True)
+    note_s = [o["s"].replace("\n", " ") for o in ops() if o.get("tag") == "relay_note"]
+    relay_boat(rig, hash_ok=True, stop=True)
+    ap.render(force=True)
+    note_a = [o for o in ops() if o.get("tag") == "relay_note"]
+    relay_boat(rig, hash_ok=False, stop=False)
+    ap.render(force=True)
+    note_n = [o["s"].replace("\n", " ") for o in ops() if o.get("tag") == "relay_note"]
+    stop_ok = bool(note_s) and A.T("ov.relay_stop") in note_s[0] and not note_a and bool(note_n) and \
+        A.T("ov.relay_not_active") in note_n[0]
+    # the S1 matrix with the stop note (Greek + English, every size): nothing clipped
+    relay_boat(rig, hash_ok=False, stop=True)
+    probs = []
+    for lang in ("el", "en"):
+        i18n.set_lang(lang, save=False)
+        for W, H in ((1366, 768), (1366, 658), (1920, 1080), (1920, 970)):
+            for dpi in (1.0, 1.25, 1.5):
+                rig.size(W, H, dpi)
+                pr = layout_problems(ap)
+                if pr:
+                    probs.append(((lang, W, H, dpi), pr[:2]))
+    i18n.set_lang("el", save=False)
+    rig.size(1366, 768, 1.25)
+    stop_ok = stop_ok and not probs
     relay_boat(rig, on=(1, 6), unknown=(7,))
     ap.ov.collapsed.add("relays")
     ap.render(force=True)
@@ -993,14 +1022,15 @@ def s14_relays(rig):
            "asked, an engine relay (or any relay of a table the gateway doesn't know) waits for the captain; no relays "
            "= no panel",
            have and pair and engine and states and grp_ok and placed_ok and toggle_ok and hold_ok and start_ok and
-           grey_ok and inactive_ok and collapsed_ok and groups_known == proto.groups_of(
+           grey_ok and inactive_ok and stop_ok and collapsed_ok and groups_known == proto.groups_of(
                [r for r in __import__("boats").load() if r.id == "rf49d"][0].relays) and free_extra and asked_engine
            and unknown_asked and gone and not rig.errors,
            "buttons %s; pair line %s; engine line %s; states %s; groups %s; placed %s (%s); toggle %s; hold %s; START %s; "
-           "grey %s; inactive / pending %s (%s / %s); collapsed %s; copilot: groups %s, extra free %s, engine asked %s, "
+           "grey %s; inactive / pending %s (%s / %s); stop note %s; collapsed %s; copilot: groups %s, extra free %s, "
+           "engine asked %s, "
            "unknown table asked %s; no relays no panel %s; errors %s" % (
                sorted(btn), pair, engine, states, groups, placed_ok, getattr(s1_matrix, "placed", None), c_toggle,
-               c_hold, c_start[:1] + c_start[-1:], c_grey, inactive_ok, note_na[:1], note_p[:1], collapsed_ok,
+               c_hold, c_start[:1] + c_start[-1:], c_grey, inactive_ok, note_na[:1], note_p[:1], (stop_ok, probs[:2]), collapsed_ok,
                bool(groups_known), free_extra, asked_engine, unknown_asked, gone, rig.errors[:2]))
 
 

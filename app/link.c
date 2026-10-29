@@ -1147,7 +1147,9 @@ static void telemetry2(link_t *l, sb_t *s)
     /* M: relay board (section M): u32 states (bit n-1, readback) | u32 known (readback valid) |
      *    u16 table hash (CRC-16 of the RELAY_CFG encoding; the station compares its file) |
      *    u8 flags (b0 board ok, b1 table active, b2 from NV, b3 CONFIRM pending, b4 power_up applied,
-     *    b5 FIRST TEST: no relay changes) | u8 count | u32 commanded on (bit n-1) */
+     *    b5 FIRST TEST: no relay changes, b6 no readback (DroneCAN board without hardpoint.Status: the
+     *    commanded states, step 11f), b7 relay stop pending (a table change waits, relays_stop_pending: step 13g)) |
+     *    u8 count | u32 commanded on (bit n-1) */
     {
         const relays_t *rl = &s->relays;
         proto_wr_u32(&w, rl->states);

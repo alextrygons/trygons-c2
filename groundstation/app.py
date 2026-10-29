@@ -3508,8 +3508,12 @@ class App:
         p = self.ov.panel("relays", T("ov.relays"), ("se", "sw", "ne", "nw"))
         d = self.t or {}
         if not active:
-            p.text(T("ov.relay_pending") if d.get("relay_pending") else T("ov.relay_not_active"), "small",
-                   colour=C["note_txt"], tag="relay_note", wrap=0.24)
+            # step 13h (review ce2e4d0 LOW-1): TELEM2 group M flag 128 - a stop / timer is still owed to the board,
+            # so the AURIX refuses a table change (NACK 23, no timeout: a stop is never dropped) - say why the
+            # boat file's table is not taken (in place of "not active": the panel never grows by a line)
+            note = "ov.relay_pending" if d.get("relay_pending") else \
+                "ov.relay_stop" if d.get("relay_stop") else "ov.relay_not_active"
+            p.text(T(note), "small", colour=C["note_txt"], tag="relay_note", wrap=0.24)
             p.br()
         elif not d.get("relay_ok"):
             p.text(T("ov.relay_silent"), "small", colour=C["note_txt"], tag="relay_note", wrap=0.24)

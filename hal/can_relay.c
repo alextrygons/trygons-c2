@@ -20,6 +20,10 @@ static bool        s_seen;                  /* the board's NodeStatus seen since
 static uint16_t    s_restarts;
 static uint32_t    s_cut;                   /* step 13d: ON bursts cut (bit n-1), for relays.c (cr_take_cut) */
 static uint32_t    s_hold;                  /* step 13d: no OFF burst for a cut ON on these (cr_hold_mask) */
+static uint32_t    s_retry;                 /* step 13h (W42): cut ON bursts that may be finished when the board is back */
+static uint32_t    s_want;                  /* step 13h: relays.c still wants these ON (cr_on_want) */
+static uint32_t    s_odrop;                 /* step 13h: retries given up (window / board reboot), for relays.c */
+static uint32_t    s_on_ms[CR_CH_MAX];      /* step 13h: the time of the ON command (the retry window counts from it) */
 static cr_stats_t  s_st;
 
 static uint32_t bit(uint8_t i)
@@ -47,6 +51,8 @@ void cr_init(const cr_config_t *c)
     s_restarts = 0u;
     s_cut = 0u;
     s_hold = 0u;
+    s_retry = s_want = s_odrop = 0u;
+    memset(s_on_ms, 0, sizeof s_on_ms);
     s_up = s_cfg.channels != 0u;
 }
 
@@ -85,6 +91,21 @@ static void end_pulses(uint32_t now)
         s_until[i] = 0u;                                /* the pulse is over: OFF (a burst), then the board holds it */
         s_on &= ~bit(i);
         s_burst[i] = CR_BURST_FRAMES;
+    }
+}
+
+/* step 13h (W42, owner 2026-10-29): the cut ON bursts waiting for the board - dropped silently when relays.c no longer
+ * wants them ON (an operator OFF / a new command clears them in cr_set / cr_pulse at once; a table change or a timer
+ * through the want mask), given up after CR_ON_RETRY_MS from the ON command (the state stays UNKNOWN, nothing sent,
+ * relays.c is told: cr_take_on_drop) */
+static void retry_service(uint32_t now)
+{
+    s_retry &= s_want;
+    for (uint8_t i = 0; s_retry && i < s_cfg.channels; i++) {
+        if (!(s_retry & bit(i)) || (uint32_t)(now - s_on_ms[i]) <= CR_ON_RETRY_MS) continue;
+        s_retry &= ~bit(i);
+        s_odrop |= bit(i);
+        s_st.on_given_up++;
     }
 }
 
@@ -129,8 +150,13 @@ void cr_service(void)
             memset(s_burst, 0, sizeof s_burst);
             memset(s_until, 0, sizeof s_until);
             s_st.board_reboots++;
+            /* step 13h (W42): a cut ON is never finished on a board that rebooted meanwhile - given up, nothing sent
+             * (the relay is known OFF like every other one; the operator presses again) */
+            if (s_retry) { s_odrop |= s_retry; s_st.on_given_up += 1u; }
+            s_retry = 0u;
         }
     }
+    retry_service(now);
     end_pulses(now);
 }
 
@@ -143,6 +169,23 @@ void cr_tick(void)
     if ((uint32_t)(now - s_last_tx) < CR_PERIOD_MS) return;
     s_last_tx = now;
     bool there = present();
+    /* step 13h: the board came back with a new uptime-went-back mark cr_service has not handled yet = it rebooted:
+     * no cut ON is finished (cr_service gives them up) */
+    hal_can_node_t nd;
+    bool rebooted = node(&nd) && nd.seen && s_seen && nd.restarts != s_restarts;
+    if (there && !rebooted && s_retry) {
+        retry_service(now);
+        for (uint8_t i = 0; s_retry && i < s_cfg.channels; i++) {
+            if (!(s_retry & bit(i))) continue;
+            /* W42 (b): still wanted ON by relays.c, within CR_ON_RETRY_MS of the command, no board reboot: the ON
+             * burst is sent again in full */
+            s_retry &= ~bit(i);
+            s_on |= bit(i);
+            s_known |= bit(i);
+            s_burst[i] = CR_BURST_FRAMES;
+            s_st.on_retried++;
+        }
+    }
     for (uint8_t i = 0; i < s_cfg.channels; i++) {
         if (!there && s_until[i] != 0u) {
             /* step 11g: a pulse (ON at 50 Hz) to a board that is not there (bus fault, silent, not OPERATIONAL)
@@ -152,14 +195,17 @@ void cr_tick(void)
             s_burst[i] = CR_BURST_FRAMES;
         }
         if (!there && s_burst[i] != 0u && (s_on & bit(i))) {
-            /* step 11g: an ON burst is never finished late; the state is unknown (some frames may have reached
-             * it and the board holds what it got, R-2). Step 13b (review MED-1): an OFF burst is queued instead,
-             * like after a pulse - it goes when the board is back, then the state is known OFF again */
+            /* step 11g: the state is unknown (some frames may have reached it and the board holds what it got, R-2).
+             * Step 13h (W42, owner 2026-10-29): NEVER an OFF by itself (the 13b OFF burst is gone) - nothing is
+             * sent; the ON burst is finished when the board is back ONLY while relays.c still wants it ON, within
+             * CR_ON_RETRY_MS of the command and without a board reboot in between (cr_tick above / retry_service /
+             * cr_service), else given up: UNKNOWN, nothing sent. A hold channel (the SHUTOFF relay, step 13d) is
+             * never retried here: relays.c queues its ON again (cr_take_cut, RELAY_SHUTOFF_RETRY_MS) */
             s_on &= ~bit(i);
             s_known &= ~bit(i);
-            /* step 13d: a hold channel (the SHUTOFF relay) gets no OFF: unknown, nothing sent - relays.c queues its
-             * ON again (cr_take_cut) */
-            s_burst[i] = (s_hold & bit(i)) ? 0u : CR_BURST_FRAMES;
+            s_burst[i] = 0u;
+            if (!(s_hold & bit(i)) && (s_want & bit(i))) s_retry |= bit(i);
+            else if (!(s_hold & bit(i))) { s_odrop |= bit(i); s_st.on_given_up++; }
             s_st.dropped++;
             s_cut |= bit(i);
             continue;
@@ -184,6 +230,9 @@ bool cr_set(uint8_t n, bool on)
     if (on && !present()) return false;                 /* step 11g: never an ON to a board that is not there */
     uint8_t i = (uint8_t)(n - 1u);
     s_until[i] = 0u;
+    s_retry &= ~bit(i);                                 /* step 13h: a new command replaces a cut ON's retry */
+    s_odrop &= ~bit(i);
+    if (on) s_on_ms[i] = hal_millis();
     if (on) s_on |= bit(i); else s_on &= ~bit(i);
     s_known |= bit(i);
     s_burst[i] = CR_BURST_FRAMES;
@@ -215,12 +264,34 @@ uint32_t cr_cuts(void)
     return s_cut;
 }
 
+void cr_on_want(uint32_t mask)
+{
+    s_want = mask & s_mask;
+    s_retry &= s_want;                                  /* (no longer wanted: dropped, nothing sent) */
+}
+
+bool cr_take_on_drop(uint8_t n)
+{
+    if (!s_up || n < 1u || n > s_cfg.channels) return false;
+    uint32_t b = bit((uint8_t)(n - 1u));
+    if (!(s_odrop & b)) return false;
+    s_odrop &= ~b;
+    return true;
+}
+
+uint32_t cr_retries(void)
+{
+    return s_retry;
+}
+
 bool cr_pulse(uint8_t n, uint16_t ms)
 {
     if (!s_up || n < 1u || n > s_cfg.channels || ms == 0u) return false;
     if (!present()) return false;                       /* step 11g: a pulse only to a board that is there */
     uint8_t i = (uint8_t)(n - 1u);
     uint32_t end = hal_millis() + ms;
+    s_retry &= ~bit(i);                                 /* step 13h: a pulse is never retried (the STARTER never late) */
+    s_odrop &= ~bit(i);
     s_until[i] = end ? end : 1u;                        /* ON at 50 Hz until then (AURIX-timed), then OFF */
     s_on |= bit(i);
     s_known |= bit(i);

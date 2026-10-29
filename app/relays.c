@@ -143,6 +143,28 @@ static uint32_t shutoff_hold(const relays_t *r)
     return hold;
 }
 
+/* step 13h (W42, owner 2026-10-29): the relays whose cut ON the bus driver may finish when the board is back = still
+ * commanded ON here, not momentary (a pulse / the STARTER is never sent late), not the engine group (IGNITION's
+ * conditions were checked at the command only; SHUTOFF has its own re-queue, the STARTER never), not FIRST TEST */
+static uint32_t on_want(const relays_t *r)
+{
+    uint32_t want = 0u;
+    for (uint8_t i = 0; r->have_table && !r->first_test && i < r->table.count; i++) {
+        const relay_def_t *d = &r->table.r[i];
+        uint32_t bit = 1u << (d->n - 1u);
+        if (d->type == RELAY_MOMENTARY || d->group == RELAY_GRP_ENGINE || d->role != RELAY_ROLE_NONE) continue;
+        if (r->cmd_on & bit) want |= bit;
+    }
+    return want;
+}
+
+/* the bus driver's masks (DroneCAN; Modbus: no-ops) - after every change of the table or of cmd_on */
+static void driver_masks(const relays_t *r)
+{
+    hal_relay_cut_hold(shutoff_hold(r));
+    hal_relay_on_want(on_want(r));
+}
+
 void relays_init(relays_t *r, const relay_table_t *stored, bool power_on_reset, bool first_test)
 {
     relay_table_t empty;
@@ -156,7 +178,7 @@ void relays_init(relays_t *r, const relay_table_t *stored, bool power_on_reset, 
     relay_table_seal(&empty);
     r->hash = relay_table_hash(&empty);                 /* "no table" = the empty table's hash */
     if (stored && relay_table_valid(stored) && relays_table_fits(stored)) table_activate(r, stored, true);
-    hal_relay_cut_hold(shutoff_hold(r));                 /* step 13e: from the start (the driver's cr_init cleared it) */
+    driver_masks(r);                                     /* step 13e / 13h: from the start (the driver's cr_init cleared them) */
 }
 
 bool relays_offer_same(const relays_t *r, const relay_table_t *t)
@@ -195,7 +217,7 @@ bool relays_accept(relays_t *r, bool standby_idle)
     if (relays_stop_pending(r)) return false;
     r->offer_pending = false;
     table_activate(r, &r->offer, false);
-    hal_relay_cut_hold(shutoff_hold(r));                 /* step 13e: the new table's SHUTOFF at once */
+    driver_masks(r);                                     /* step 13e / 13h: the new table's masks at once (cmd_on cleared) */
     r->table_new = true;
     return true;
 }
@@ -240,6 +262,7 @@ relay_result_t relays_note(relays_t *r, uint8_t n, uint8_t action, relay_result_
     r->last_what = 1u;
     r->log_seq++;
     if (res == RELAY_R_OK) r->commands++; else r->refused++;
+    driver_masks(r);                                     /* step 13h: the new cmd_on before the next 10 ms tick */
     return res;
 }
 
@@ -375,8 +398,7 @@ void relays_step(relays_t *r, uint32_t now_ms)
     }
     /* step 13d (review 49353b2 MED-1): a SHUTOFF ON the bus driver took and then CUT (the DroneCAN board went away
      * during its ON burst): queued again like a SHUTOFF ON the board could not take (the driver's own OFF for it is
-     * cancelled: never an automatic OFF that undoes an engine stop); every other relay: the driver's 13b behaviour
-     * (W42 - an owner decision) */
+     * cancelled: never an automatic OFF that undoes an engine stop); every other relay: step 13h (W42) below */
     {
         uint32_t in_table = 0u;
         for (uint8_t i = 0; r->have_table && i < r->table.count; i++) {
@@ -389,12 +411,24 @@ void relays_step(relays_t *r, uint32_t now_ms)
                 r->shutoff_until_ms = now_ms + RELAY_SHUTOFF_RETRY_MS;
                 r->shutoff_cut++;
             }
+            /* step 13h (W42): the driver gave a cut ON up (more than 10 s, the board rebooted, or not one it may
+             * finish): the command is gone - not ON here any more (no stale cmd_on: nothing re-sends it, the pair
+             * rule sees the state unknown / OFF); the operator presses again. Logged like a dropped SHUTOFF. */
+            if (hal_relay_on_drop(n) && !sh && (r->cmd_on & bit)) {
+                r->cmd_on &= ~bit;
+                r->on_dropped++;
+                r->last_n = n;
+                r->last_action = RELAY_CMD_ON;
+                r->last_result = (uint8_t)RELAY_R_SILENT;
+                r->last_what = 1u;
+                r->log_seq++;
+            }
         }
         /* step 13e (review 1f7817c LOW-4): a cut reported for a channel that is not in the table (a table change
          * between the cut and this step) is stale - dropped, never consumed later by another table */
         for (uint8_t n = 1u; n <= r->channels && n <= 32u; n++)
-            if (!(in_table & (1u << (n - 1u)))) (void)hal_relay_cut(n);
-        hal_relay_cut_hold(shutoff_hold(r));
+            if (!(in_table & (1u << (n - 1u)))) { (void)hal_relay_cut(n); (void)hal_relay_on_drop(n); }
+        driver_masks(r);
     }
     /* step 13b: a queued SHUTOFF ON - sent once the board takes it, dropped after RELAY_SHUTOFF_RETRY_MS */
     for (uint8_t i = 0; r->have_table && r->shutoff_pending && i < r->table.count; i++) {
@@ -454,6 +488,7 @@ void relays_step(relays_t *r, uint32_t now_ms)
         }
         r->last_what = 2u;
         r->log_seq++;
+        driver_masks(r);                                 /* step 13h: the power_up ONs in the want mask at once */
     }
 }
 

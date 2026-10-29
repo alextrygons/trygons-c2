@@ -343,9 +343,15 @@ uint8_t hal_relay_channels(void);
 /* step 13d: hal_relay_cut is true once when the bus driver dropped an ON it had taken for relay n (DroneCAN: the
  * board went away during the ON burst; the Modbus board: never). hal_relay_cut_hold(mask, bit n-1): for these relays
  * the driver sends NO automatic OFF after such a cut (app/relays.c: the SHUTOFF relay, whose ON it queues again for
- * RELAY_SHUTOFF_RETRY_MS); the other relays keep the driver's 13b behaviour (WAITING FOR OWNER W42). */
+ * RELAY_SHUTOFF_RETRY_MS). Step 13h (W42, owner 2026-10-29): the other relays get NO automatic OFF either -
+ * hal_relay_on_want(mask, bit n-1) = the relays app/relays.c still wants ON (not momentary, not the engine group):
+ * a cut ON of one of them is finished when the board is back, only within 10 s of the command and without a board
+ * reboot; given up = hal_relay_on_drop(n) true once (relays.c clears its command; the state unknown / OFF). Modbus:
+ * never cut, both no-ops. */
 bool hal_relay_cut(uint8_t n);
 void hal_relay_cut_hold(uint32_t mask);
+void hal_relay_on_want(uint32_t mask);
+bool hal_relay_on_drop(uint8_t n);
 
 /*
  * DroneCAN bus (CLAUDE.md section T, docs/dronecan_design.md; step 11d).
