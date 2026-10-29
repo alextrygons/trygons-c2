@@ -331,7 +331,10 @@ sb_result_t sb_thr_travel_set(sb_t *s, float seconds)
     s->confirm.deadline_ms = s->now_ms + s->cfg.confirm_ms;
     /* step 11g: the asked (shorter, still pending) value is logged too - why = the value in 0.1 s */
     s->steer.log_what = 5u;
-    s->steer.log_why = (uint8_t)lroundf(seconds * 10.0f);
+    {   /* (step 13b: clamped - travel_s goes up to SERVO_THR_TRAVEL_MAX 30 s, 25.5 s and more log as 255) */
+        long v = lroundf(seconds * 10.0f);
+        s->steer.log_why = (uint8_t)(v > 255 ? 255 : (v < 0 ? 0 : v));
+    }
     s->steer.log_seq++;
     return SB_OK;
 }
@@ -2299,15 +2302,33 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
     sb_auto_t *a = &s->autop;
     switch (kind) {
     case CONF_AUTO_START:
+    {
         if (sb_mode(s) == MODE_AUTO) return false;
-        if (a->returning) {                 /* a stopped / finished AUTO RETURN: start the stored program */
+        /* step 13b: the route / waypoint change only sticks when the mode change succeeds (as AUTO RETURN) */
+        bool was_ret = a->returning, done = a->finished;
+        uint8_t wp = a->wp;
+        uint32_t legs = a->legs_done;
+        if (was_ret) {                      /* a stopped / finished AUTO RETURN: start the stored program */
+            s_ret_scratch = a->prog;        /* (the way back, put back if the start is refused) */
             a->prog = a->orig;
             a->returning = false;
         }
         a->wp = 0u;
         a->finished = false;
         a->legs_done = 0u;
-        return sb_request_mode(s, MODE_AUTO, WHY_CONFIRM);
+        bool ok = sb_request_mode(s, MODE_AUTO, WHY_CONFIRM);
+        if (!ok) {                          /* refused now: everything as it was */
+            if (was_ret) {
+                a->orig = a->prog;
+                a->prog = s_ret_scratch;
+                a->returning = true;
+            }
+            a->wp = wp;
+            a->finished = done;
+            a->legs_done = legs;
+        }
+        return ok;
+    }
     case CONF_AUTO_RESUME:
         if (sb_mode(s) == MODE_AUTO) {
             if (a->state == AUTO_RUN || !auto_leg_ok(s) || !sb_gps_ok(s)) return false;
@@ -2334,8 +2355,14 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
         if (in_auto) {
             ok = auto_leg_ok(s) && sb_gps_ok(s);
             if (ok) {
+                /* step 13b: the speed loop restarts bumpless, but the rough-water slow-down and its
+                 * memory stay (same sea: the return never jumps back to the full leg speed) */
+                sb_nerv_t keep = s->nerv;
+                float keep_target = s->cruise.target_kn;
                 a->suspended = false;
                 cruise_start(s);
+                s->nerv = keep;
+                if (keep.nervous || keep.ceiling_ms > 0u) s->cruise.target_kn = fminf(keep_target, s->cruise.set_kn);
                 auto_begin_leg(s);
             }
         } else {
@@ -2579,8 +2606,7 @@ static void dp_mode(sb_t *s, float dt, uint32_t buttons)
     in.spot_alarm_m = s->thrust.cfg.spot_alarm_m;
     in.nav_cap_kn = nav_cap(s);
     in.nav_heading_on = d->sub == DP_TRIP && nav_heading(s, d->leg.track_deg, &in.nav_heading);
-    in.prog = &s->autop.prog;
-    uint8_t r = dp_step(d, &in);
+    uint8_t r = dp_step(d, &in);                         /* (TRIP: dp_start's own copy of sb_program(s), step 13b) */
     if (d->offspot) alarm2_on(s, SB_ALM2_DP_OFFSPOT);
     if (d->overpower) alarm2_on(s, SB_ALM2_DP_OVERPOWER);
     if (r == DP_R_COMPASS) {

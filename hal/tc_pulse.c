@@ -1,6 +1,6 @@
 /*
  * tc_pulse.c - Paddlewheel pulses -> speed through water. See tc_pulse.h. Pure C: also in the PC
- * simulation build (sim tests PW1-PW4).
+ * simulation build (sim tests PW1-PW6).
  */
 #include "tc_pulse.h"
 
@@ -42,8 +42,9 @@ bool pulse_update(pulse_speed_t *p, uint16_t count, uint32_t now_ms, float *kn)
                 if (p->valid) p->no_data++;
                 p->valid = false;
             } else {
-                p->kn = 0.0f;                   /* first window of a boat at rest */
-                p->valid = true;
+                /* no edge yet (power-up at rest, or after NO DATA): not trusted until a window WITH edges
+                 * (step 13b: a wheel cut / fouled at rest would otherwise read a valid 0 kn for ever) */
+                p->kn = 0.0f;
             }
         } else if (!(raw <= p->max_kn)) {
             if (p->valid) p->no_data++;

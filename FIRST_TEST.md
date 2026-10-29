@@ -228,6 +228,12 @@ measured value / answer here.
       the dead-man is out of the circuit (no kill without pulses).
 - [ ] STARTER time-limit relay (OD-9): hold START on the relay output longer than its time: the
       timer relay opens by itself (test lamp off) after ____ s.
+- [ ] (step 13b) Monitor trip test with the throttle node unplugged right after the trip, plugged in
+      again after > 6 s: the gear node goes to NEUTRAL only ~thr_trav_s AFTER the throttle node is
+      back (gear servo arm, stopwatch) ____ s.
+- [ ] (step 13b, DroneCAN relay board) SHUTOFF from the Engine page right after a watchdog reset
+      (within 1 s): the SHUTOFF relay switches as soon as the board is seen again ____ (never lost);
+      with the board unplugged it is NOT switched when the board comes back after > 10 s ____ .
 
 - [ ] Leave the bench test (button **Leave**): mode STANDBY.
 

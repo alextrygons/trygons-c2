@@ -127,6 +127,7 @@ static void table_activate(relays_t *r, const relay_table_t *t, bool from_nv)
     r->hash = relay_table_hash(t);
     r->cmd_on = 0u;
     r->off_pending = 0u;
+    r->shutoff_pending = 0u;
     memset(r->until_ms, 0, sizeof r->until_ms);
     r->last_what = 2u;
     r->log_seq++;
@@ -272,8 +273,21 @@ relay_result_t relays_engine_set(relays_t *r, uint8_t n, bool on)
     if (!on) {
         r->cmd_on &= ~bit;
         r->until_ms[idx] = 0u;
+        r->shutoff_pending &= ~bit;                     /* (a queued SHUTOFF ON is cancelled by its OFF) */
         r->off_pending |= bit;                          /* re-sent until the readback shows it off */
         if (!hal_relay_set(n, false)) return relays_note(r, n, action, RELAY_R_HAL);
+        return relays_note(r, n, action, RELAY_R_OK);
+    }
+    if (d->role == RELAY_ROLE_SHUTOFF && (!r->board_ok || !hal_relay_set(n, true))) {
+        /* step 13b: SHUTOFF ON (= stop the engine) is never lost because the board is not there YET (silent, or
+         * not seen yet in the first seconds after a warm reset, where hal_relay_ok's start window and the
+         * driver's "present" disagree): commanded now, sent as soon as the board takes it, for
+         * RELAY_SHUTOFF_RETRY_MS (relays_step) */
+        r->cmd_on |= bit;
+        r->off_pending &= ~bit;
+        r->until_ms[idx] = 0u;
+        r->shutoff_pending |= bit;
+        r->shutoff_until_ms = hal_millis() + RELAY_SHUTOFF_RETRY_MS;
         return relays_note(r, n, action, RELAY_R_OK);
     }
     if (!r->board_ok) return relays_note(r, n, action, RELAY_R_SILENT);
@@ -281,9 +295,10 @@ relay_result_t relays_engine_set(relays_t *r, uint8_t n, bool on)
      * engine relay in a pair anyway (table_consistent) */
     if (d->role != RELAY_ROLE_SHUTOFF && d->pair != 0u && pair_maybe_on(r, d->pair))
         return relays_note(r, n, action, RELAY_R_PAIR);
-    if (!hal_relay_set(n, true)) return relays_note(r, n, action, RELAY_R_HAL);
+    if (d->role != RELAY_ROLE_SHUTOFF && !hal_relay_set(n, true)) return relays_note(r, n, action, RELAY_R_HAL);
     r->cmd_on |= bit;
     r->off_pending &= ~bit;
+    r->shutoff_pending &= ~bit;
     r->until_ms[idx] = 0u;
     return relays_note(r, n, action, RELAY_R_OK);
 }
@@ -328,6 +343,28 @@ void relays_step(relays_t *r, uint32_t now_ms)
             r->off_pending |= bit;
             (void)hal_relay_set(d->n, false);
             r->pulse_offs++;
+        }
+    }
+    /* step 13b: a queued SHUTOFF ON - sent once the board takes it, dropped after RELAY_SHUTOFF_RETRY_MS */
+    for (uint8_t i = 0; r->have_table && r->shutoff_pending && i < r->table.count; i++) {
+        uint8_t n = r->table.r[i].n;
+        uint32_t bit = 1u << (n - 1u);
+        if (!(r->shutoff_pending & bit)) continue;
+        if (r->first_test || r->table.r[i].role != RELAY_ROLE_SHUTOFF) {
+            r->shutoff_pending &= ~bit;
+            r->cmd_on &= ~bit;
+        } else if (r->board_ok && hal_relay_set(n, true)) {
+            r->shutoff_pending &= ~bit;
+            r->shutoff_retried++;
+        } else if ((int32_t)(now_ms - r->shutoff_until_ms) >= 0) {
+            r->shutoff_pending &= ~bit;
+            r->cmd_on &= ~bit;
+            r->shutoff_dropped++;
+            r->last_n = n;
+            r->last_action = RELAY_CMD_ON;
+            r->last_result = (uint8_t)RELAY_R_SILENT;
+            r->last_what = 1u;
+            r->log_seq++;
         }
     }
     /* pending OFFs: done once the readback shows the relay off; re-sent while the

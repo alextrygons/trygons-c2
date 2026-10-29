@@ -139,6 +139,9 @@ typedef struct {
     uint32_t     act_prev, act_ms;      /* core 0's actuator task: last tick count / when it changed */
     uint32_t     safe_ms;       /* the last safe frame set */
     uint32_t     safe_sets;     /* safe frame sets sent */
+    uint32_t     node_bad_ms;   /* step 13b: the last check with the throttle node NOT OK - after a trip NEUTRAL only
+                                 * travel_ms after the LATER of the trip and the node's return (a node that was
+                                 * lost could not take the idle frames: the throttle may still be open) */
     bool         safe_neutral;  /* CPU1 has sent NEUTRAL since the trip: it stays neutral (step 11g - a throttle node
                                  * lost afterwards must never bring back the old pre-trip gear) */
     bool         dm_level;      /* the dead-man pulse level */

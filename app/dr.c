@@ -85,6 +85,10 @@ void dr_default_config(dr_config_t *c)
     c->recover_along_frac_pw = 0.05f;
     c->recover_fixes_suspect = 60u;
     c->blend_tau_s = 15.0f;
+    c->pw_zero_kn = 0.3f;
+    c->pw_dead_sog_kn = 2.5f;
+    c->pw_dead_thr_pct = 15.0f;
+    c->pw_dead_ms = 5000u;
 }
 
 void dr_init(dr_t *d, const dr_config_t *cfg)
@@ -262,6 +266,27 @@ void dr_step(dr_t *d, const dr_input_t *in_raw)
     float dt = (d->last_ms == 0u) ? 0.05f : (float)(in->now_ms - d->last_ms) * 0.001f;
     d->last_ms = in->now_ms;
     dt = clampf(dt, 0.0f, 1.0f);
+
+    /* step 13b: a dead paddlewheel (cut at rest, fouled) reads a valid 0 kn: the boat clearly moving
+     * (trusted GPS SOG, or a gear with throttle) while the wheel says ~0 = not used until it reads again */
+    if (v.water_ok) {
+        bool moving = (d->state == DR_GPS && in->gps.fix && isfinite(in->gps.sog_kn) &&
+                       in->gps.sog_kn > c->pw_dead_sog_kn) ||
+                      (in->gear != 0 && in->throttle_pct > c->pw_dead_thr_pct);
+        if (fabsf(v.water_kn) < c->pw_zero_kn) {
+            if (!moving) d->pw_zero_ms = 0u;
+            else if (!d->pw_dead) {
+                d->pw_zero_ms += (uint32_t)(dt * 1000.0f + 0.5f);
+                if (d->pw_zero_ms >= c->pw_dead_ms) { d->pw_dead = true; d->pw_dead_events++; }
+            }
+        } else {
+            d->pw_zero_ms = 0u;
+            d->pw_dead = false;             /* it reads a speed again (pulses) */
+        }
+        if (d->pw_dead) v.water_ok = false;
+    } else {
+        d->pw_zero_ms = 0u;
+    }
 
     /* speed through water: paddlewheel, or table at the (delayed) throttle */
     float target = (in->gear > 0) ? dr_speed_for(d, in->throttle_pct)

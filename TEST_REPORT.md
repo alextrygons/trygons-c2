@@ -5,6 +5,21 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 00000. Step 13b - review fixes for 11g + step 13 (2026-10-29)
+
+Two independent safety reviews each of commits 3ad1e95 (step 11g) and 1c0ddc6 (step 13); every finding verified in the
+code, the real defects fixed with a sim test each (mutation-checked: each test fails with its fix reverted):
+DP17 (DP TRIP after an AUTO RETURN = the stored program, own copy; AUTO START CONFIRM in DP changes nothing), AR6
+(rough-water memory kept on an AUTO RETURN in AUTO), PW5 / PW6 (dead paddlewheel), CN28 (CPU1 neutral after the
+throttle node's return), RB22 (DroneCAN relay ON burst cut -> OFF, SHUTOFF ON after a warm reset, reboot around a warm
+reset = unknown), CN26 (full_us). Storm: new I59 (a DP TRIP drives its own copy of the stored program, also with an
+AUTO RETURN latched - the generator now puts an AUTO RETURN + STANDBY before some TRIP starts), I58 stronger (the
+CONFIRM must answer CONF_AUTO_RETURN; speed / radius / action / final STOP checked; E_PC_RETURN has its own draw), I47
+(monitor trip), I51 (every changed gear-node command), I52 (baseline from just before the tripping monitor step).
+**I52 note:** the cross-core race (core 0's TX flush running while CPU1 trips) can't happen in the single-threaded
+storm - it is covered by review only; on the board TXBCR can't retract a frame already in transmission, so 1 stale
+ArrayCommand is the hardware allowance (overwritten by CPU1's safe frame within 20 ms).
+
 ## 0000. Step 14 - final check: full acceptance + 24 h soak (2026-10-29)
 
 Code under test: commit `77f00bb` (every step DONE; fresh clone from GitHub). Run:

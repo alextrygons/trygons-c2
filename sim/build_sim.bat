@@ -3,7 +3,7 @@ rem Builds the PC simulation: app\ + sim\ (no hardware code) + hal\tc_nv.c
 rem (the board's data-flash record log, pure C: sim test DF4 drives it) + hal\tc_modbus.c
 rem (the board's Modbus RTU master, pure C: the sim's relay board talks to it, tests RB1-RB8)
 rem + hal\dronecan.c + hal\libcanard\canard.c (DroneCAN, pure C: the sim's CAN bus + nodes, tests CN).
-rem + hal\tc_pulse.c (the paddlewheel pulses -> knots, pure C: tests PW1-PW4).
+rem + hal\tc_pulse.c (the paddlewheel pulses -> knots, pure C: tests PW1-PW6).
 rem CANARD_64_BIT=1: libcanard's memory-pool index on a 64-bit PC (the TriCore is 32-bit: default).
 rem Usage: double-click, or run  sim\build_sim.bat  from any folder.
 rem Result: sim\autopilot_sim.exe

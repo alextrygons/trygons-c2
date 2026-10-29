@@ -1,7 +1,7 @@
 /*
  * tc_pulse.h - Paddlewheel speed sensor: pulses -> speed through water. Pure C (no iLLD): the board
  * (hal_tc375.c, HAL_PADDLE_FITTED) feeds it the free-running 16-bit edge counter of GPT12 timer T2 in
- * counter mode (T2INA, pin TBD in hal_pins.h); the PC simulation tests it directly (sim tests PW1-PW4).
+ * counter mode (T2INA, pin TBD in hal_pins.h); the PC simulation tests it directly (sim tests PW1-PW6).
  *
  * Every pulse_update call does a few float operations, never waits. The speed is measured over a
  * window of at least PULSE_WINDOW_MS (edges / time), filtered (tau), and judged:
@@ -10,6 +10,9 @@
  *   - no edge for a whole window: a boat that was already slow (below stop_kn) has stopped = 0 kn;
  *     from above stop_kn the pulses can't stop within one window (the boat slows over seconds): the
  *     cable is cut / the wheel is stuck = NO DATA, until pulses come again
+ *   - no edge yet (power-up, after NO DATA): NO DATA until a window WITH edges (step 13b: a wheel cut
+ *     at rest is never trusted as 0 kn; dr.c also declares a wheel that reads 0 while the boat clearly
+ *     moves DEAD - GPS SOG / throttle in gear, dr_config_t pw_*)
  *   - a gap between two calls longer than 4 windows: no judgement, NO DATA until the next window
  * NO DATA = pulse_update returns false: the dead reckoning uses its throttle table instead (dr.c).
  */

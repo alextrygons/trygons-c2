@@ -65,6 +65,10 @@
 #define RELAY_PULSE_MARGIN_MS 500u  /* after a pulse should have ended: the AURIX sends the OFF itself */
 #define RELAY_FRAME_BYTES 8u        /* per relay in PROTO_T_RELAY_CFG */
 #define RELAY_OFF_RETRY_MS 500u     /* a pending OFF is sent again this often until the readback shows it off */
+#define RELAY_SHUTOFF_RETRY_MS 10000u /* step 13b: a SHUTOFF ON (stop the engine, always allowed) the board could not take
+                                       yet (silent, or not seen yet after a warm reset) is retried this long, then
+                                       dropped (a late engine stop is never sent minutes later); the STARTER is
+                                       never queued */
 
 /* relay_def_t.type */
 #define RELAY_ONOFF       0u
@@ -147,6 +151,9 @@ typedef struct {
     uint32_t off_pending;       /* bit n-1: an OFF not yet confirmed by the readback (re-sent while the board
                                    answers and still shows the relay on: a silent board loses writes) */
     uint32_t off_retry_ms;      /* next re-send of the pending OFFs */
+    uint32_t shutoff_pending;   /* bit n-1: a SHUTOFF ON waiting for the board (step 13b) ... */
+    uint32_t shutoff_until_ms;  /* ... until then (RELAY_SHUTOFF_RETRY_MS) */
+    uint32_t shutoff_retried, shutoff_dropped;
     uint32_t until_ms[RELAY_TABLE_MAX];  /* pulse end (momentary) / OFF deadline (timed); 0 = none */
     uint16_t hash;              /* CRC-16 of the active table's frame encoding (TELEM2; the station compares) */
     bool     table_new;         /* the active table changed: save it (NV slot 7) */

@@ -106,7 +106,6 @@ typedef struct {
     float    nav_cap_kn;        /* TRIP: the navigation request's speed cap (< 0 none) */
     bool     nav_heading_on;    /* TRIP: the navigation request steers (avoidance / lease lost) */
     float    nav_heading;
-    const program_t *prog;      /* TRIP */
 } dp_in_t;
 
 /* dp_step result */
@@ -139,7 +138,9 @@ typedef struct {
     uint32_t jog_ms;
     /* TRIP */
     nav_leg_t leg;
-    uint8_t  wp;                /* the waypoint being driven to */
+    program_t route;            /* TRIP: dp_start's OWN copy of the route it was given (step 13b: the trip can
+                                   never be re-pointed mid-trip, e.g. at the AUTO RETURN's way back) */
+    uint8_t  wp;                /* the waypoint being driven to (an index into route) */
     bool     trip_done;         /* the last waypoint was reached */
     /* generator neutral check (section K): stern astern > DP_FIGHT_PCT for DP_FIGHT_MS while the spot error grows ahead */
     uint32_t fight_ms;

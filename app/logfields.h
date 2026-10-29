@@ -15,7 +15,7 @@
     X(mode,          B, 1,     sb_mode(s)) \
     X(ap_mode,       B, 1,     s->ap.mode) \
     X(auto_state,    B, 1,     s->autop.state) \
-    X(auto_wp,       B, 1,     s->autop.wp) \
+    X(auto_wp,       B, 1,     sb_auto_wp_stored(s)) \
     X(armed,         B, 1,     s->armed) \
     X(alarm_bits,    I, 1,     s->alarm_bits) \
     X(alarm_out,     B, 1,     (s->alarm || s->ap.alarm)) \

@@ -12,7 +12,8 @@
  * worst-case 6 s / 12 s or the fast 2 s / 3 s servos, chosen from the seed
  * without changing the other draws) with CAN faults (node lost / silent /
  * rebooted, bus-off, the actuator task stuck); invariants I47-I57.
- * Step 13: AUTO RETURN requests (part of the AUTO start / resume draws); invariant I58.
+ * Step 13: AUTO RETURN requests (step 13b: their own draw, part of the NAVREQ slice); invariant I58.
+ * Step 13b: invariant I59 (a DP TRIP drives its own copy of the stored program, also after an AUTO RETURN).
  * A failing episode is replayed with fewer events until the shortest
  * schedule that still fails remains (the "minimal reproduction").
  *
@@ -193,7 +194,8 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         e->g = rnd(&r) * 2.0f - 1.0f;
         if (s->can && k == E_FUZZ_GW && e->c < 450) e->kind = E_CAN;    /* DroneCAN episodes: CAN faults */
         /* step 13: some AUTO start / resume draws ask for an AUTO RETURN instead (the other draws unchanged) */
-        if ((k == E_PC_AUTO_START && e->a >= 800) || (k == E_PC_AUTO_RESUME && e->a >= 500)) e->kind = E_PC_RETURN;
+        /* (step 13b, review: a separate draw - part of the NAVREQ slice - so that AUTO START / RESUME keep their coverage) */
+        if (k == E_NAVREQ && e->b >= 850) e->kind = E_PC_RETURN;
         /* step 21: some power-raise draws ask a CONFIRM_ONLY instead (the academy practical test's question) */
         if (k == E_PC_RAISE && e->c >= 900) e->kind = E_PC_CONFONLY;
         s->on[s->n] = true;
@@ -209,6 +211,25 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
             sb->t = t + 100u;
             sb->kind = E_BTN;                              /* a < 350: STANDBY */
             s->on[s->n - 1] = true;
+            /* step 13b (I59): some TRIP starts (no new program: c >= 500) come after an AUTO RETURN that ran from
+             * STANDBY and was stopped again - the way back stays latched in RAM while the DP TRIP starts */
+            if (req.b >= 750 && req.c >= 500 && req.c < 800 && s->n + 6 < MAX_EV) {
+                ev_t *x1 = &s->ev[s->n++];
+                memset(x1, 0, sizeof *x1);
+                x1->t = t + 1500u;
+                x1->kind = E_PC_RETURN;
+                s->on[s->n - 1] = true;
+                ev_t *x2 = &s->ev[s->n++];
+                memset(x2, 0, sizeof *x2);
+                x2->t = t + 2500u;
+                x2->kind = (uint8_t)(s->uncrewed ? E_SCONFIRM : E_CONFIRM);
+                s->on[s->n - 1] = true;
+                ev_t *x3 = &s->ev[s->n++];
+                memset(x3, 0, sizeof *x3);
+                x3->t = t + 5000u;
+                x3->kind = E_BTN;                          /* STANDBY: the return stops, still latched */
+                s->on[s->n - 1] = true;
+            }
             ev_t *rq = &s->ev[s->n++];
             *rq = req;
             rq->t = t + 15000u;
@@ -513,7 +534,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 59
+#define NINV 60
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -563,13 +584,14 @@ static const char *INV_NAMES[NINV] = { "",
     "I49 DroneCAN: the gear servo only moves while the SIMULATED throttle servo is at idle",
     "I50 DroneCAN: a required node lost -> alarm + STANDBY within the node-lost time + a step; never out of STANDBY while one is lost",
     "I51 DroneCAN: commands stopped -> the nodes HOLD; after a boot the first frame is throttle IDLE, no gear frame before thr_travel_s; throttle node lost -> no gear change",
-    "I52 DroneCAN: a monitor trip -> CPU1's safe frames within 120 ms (20 ms period + the monitor / control step), no core-0 actuator frame on the bus after it (latched)",
+    "I52 DroneCAN: a monitor trip -> CPU1's safe frames within 120 ms (20 ms period + the monitor / control step), no core-0 actuator frame on the bus after it (latched; counted from just before the tripping monitor step - on the board TXBCR can't retract a frame already in transmission: 1 frame allowed there, review only)",
     "I53 DroneCAN: the steering adaptation never leaves the TRAINING bounds",
     "I54 DroneCAN UNCREWED: a monitor trip -> no dead-man pulse, the engine stopped within the dead-man time; CREWED: never a pulse",
     "I55 DroneCAN UNCREWED: throttle node lost -> ENGINE KILL in the same step; never in CREWED",
     "I56 DroneCAN: no steering frame after a boot until a mode commands steering; worst-case speed while the position is unknown",
     "I57 DroneCAN UNCREWED: any stop condition (trip / frozen core 0 / throttle node lost / kill) -> no dead-man pulse within a monitor period",
-    "I58 AUTO RETURN starts only with a fresh CONFIRM; the way back = the stored program's waypoints backwards, which it never changes" };
+    "I58 AUTO RETURN starts only with a fresh CONFIRM that answers its request; the way back = the stored program's waypoints backwards (speed of the leg driven back over, radius, action, final STOP), which it never changes",
+    "I59 a DP TRIP drives its own copy of the STORED program (also after an AUTO RETURN), never past its last waypoint" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -578,6 +600,7 @@ typedef struct {
     uint32_t first_fail_seed[NINV];
     char     first_fail_text[NINV][400];
     uint32_t auto_by_button, auto_by_confirm;
+    uint32_t dp_trip_ret;           /* I59: DP TRIP steps while an AUTO RETURN was latched */
     uint32_t rem_req[16], remote_entries;
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
@@ -621,6 +644,10 @@ typedef struct {
     uint32_t confirm_t, autobtn_t, raise_req_t;
     uint32_t confirms_prev;
     bool     returning_prev;                /* I58 */
+    uint8_t  conf_kind_prev;                /* I58 (step 13b): the request pending before this step's CONFIRM */
+    uint32_t act_frames_pre;                /* I52 (step 13b): core 0's wire frames just before the tripping monitor step */
+    bool     act_pre_valid;
+    uint32_t gear_changes_prev;             /* I51 (step 13b): the gear node's command changes (sim count) */
     uint32_t confirm_free_t;        /* a CONFIRM with nothing pending */
     sb_mode_t confirm_free_mode;
     uint32_t rem_last_fresh;        /* last fresh remote packet (0 none) */
@@ -770,6 +797,12 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
         if (thr <= C.thr_prev + up * dt + 0.6f || thr <= 0.6f) ok(48);
         else fail(48, "throttle rose %.1f -> %.1f %% in one step (rate_up)", C.thr_prev, thr);
     }
+    /* I47 (step 13b, review LOW-1): a monitor trip is an emergency too - core 0's own throttle command idle (the HAL
+     * latch forces the outputs anyway; also during a planned arrival or generator stop) */
+    if (forced && !inj && s->mon_tripped) {
+        if (s->throttle_demand <= 0.01f) ok(47);
+        else fail(47, "monitor tripped but core 0's throttle demand %.1f %%%.0f", s->throttle_demand, 0.0);
+    }
     if (!can_ep()) return;
     float gt = sim_hal_gear_truth_us(), tt = sim_hal_thr_truth();
     /* I49: the gear servo moves only while the simulated throttle servo is at idle (also after a trip: CPU1's
@@ -812,10 +845,13 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
     /* step 11g: what the simulated GEAR NODE really got (core 0's frames AND CPU1's safe frames), not servo.gear_us */
     float gnode = 0.0f;
     bool ghave = sim_hal_can_servo(DC_NODE_GEAR, &gnode, NULL, NULL, NULL);
-    if (thr_lost && C.thr_node_lost_prev && C.gear_node_have_prev && ghave && fabsf(gnode - C.gear_node_prev) > 1e-4f)
+    uint32_t gch = sim_hal_can_servo_changes(DC_NODE_GEAR);       /* (step 13b: every changed frame the node got) */
+    if (thr_lost && C.thr_node_lost_prev && C.gear_node_have_prev && ghave &&
+        (fabsf(gnode - C.gear_node_prev) > 1e-4f || gch != C.gear_changes_prev))
         fail(51, "throttle node lost but the gear node's command changed %.3f -> %.3f", (double)C.gear_node_prev,
              (double)gnode);
     else if (thr_lost) ok(51);
+    C.gear_changes_prev = gch;
     C.thr_node_lost_prev = thr_lost;
     C.gear_node_prev = gnode;
     C.gear_node_have_prev = ghave;
@@ -824,7 +860,9 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
     if (forced && !C.trip_t) {
         C.trip_t = S.t ? S.t : 1u;
         C.safe_frames_at_trip = sim_hal_can_safe_frames();
-        C.act_frames_at_trip = core0_wire_frames();
+        /* step 13b (review): the count from just BEFORE the monitor step that tripped - frames flushed by core 0 in
+         * the first tick / step after the trip are counted against it */
+        C.act_frames_at_trip = C.act_pre_valid ? C.act_frames_pre : core0_wire_frames();
         C.safe_seen = false;
     }
     if (forced && C.trip_t) {
@@ -950,6 +988,7 @@ static void check_step(void)
         C.steer_have_prev = false;
         C.gear_sent_prev = 0u;
         C.trip_t = 0u;
+        C.act_pre_valid = false;
         C.thr_node_lost_prev = C.thr_node_lost_prev_kill = false;
         C.node_lost_prev = false;
         C.gear_truth_prev = sim_hal_gear_truth_us();
@@ -1081,22 +1120,41 @@ static void check_step(void)
     {
         const sb_auto_t *au = &s->autop;
         if (au->returning && !C.returning_prev) {
-            if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(58);
-            else fail(58, "AUTO RETURN started without a fresh CONFIRM (last %.0f ms ago)",
-                      C.confirm_t ? (double)(S.t - C.confirm_t) : -1.0, 0.0);
+            if (conf_now && C.confirm_t && S.t - C.confirm_t <= 200u && C.conf_kind_prev == (uint8_t)CONF_AUTO_RETURN) ok(58);
+            else fail(58, "AUTO RETURN started without a fresh CONFIRM of its request (kind before %.0f, last %.0f ms ago)",
+                      (double)C.conf_kind_prev, C.confirm_t ? (double)(S.t - C.confirm_t) : -1.0);
         }
         if (au->returning) {
             bool same = program_checksum_ok(&au->orig) && au->ret_base < au->orig.n &&
-                        au->prog.n == (au->ret_base ? au->ret_base + 1u : 1u);
+                        au->prog.n == (au->ret_base ? au->ret_base + 1u : 1u) &&
+                        au->prog.final_action == (uint8_t)PROG_END_STOP;
             for (unsigned j = 0; same && j < au->prog.n; j++) {
-                const prog_wp_t *a1 = &au->prog.wp[j], *b1 = &au->orig.wp[au->ret_base - j];
-                same = a1->lat_e7 == b1->lat_e7 && a1->lon_e7 == b1->lon_e7;
+                unsigned i = au->ret_base - j;
+                const prog_wp_t *a1 = &au->prog.wp[j], *b1 = &au->orig.wp[i];
+                /* the speed: of the leg driven back over (i -> i+1); base 0 with one waypoint may be its own */
+                bool sp = (i + 1u < au->orig.n && a1->speed_kn == au->orig.wp[i + 1u].speed_kn) ||
+                          (au->ret_base == 0u && a1->speed_kn == b1->speed_kn);
+                same = a1->lat_e7 == b1->lat_e7 && a1->lon_e7 == b1->lon_e7 && sp && a1->radius_m == b1->radius_m &&
+                       a1->action == b1->action;
             }
             if (same) ok(58);
             else fail(58, "AUTO RETURN: the way back (%.0f waypoints from %.0f) is not the stored program backwards",
                       (double)au->prog.n, (double)au->ret_base);
         }
         C.returning_prev = au->returning;
+    }
+    /* I59 (step 13b, review H1): a DP TRIP drives its own copy of the STORED program (the one the gateway checked),
+     * also while an AUTO RETURN's way back is the active program in RAM; never past its last waypoint */
+    if (m == MODE_DP && s->dp.sub == DP_TRIP) {
+        const program_t *sp = sb_program(s), *rt = &s->dp.route;
+        bool same = rt->n == sp->n && rt->final_action == sp->final_action && s->dp.wp < rt->n;
+        for (unsigned j = 0; same && j < rt->n; j++)
+            same = rt->wp[j].lat_e7 == sp->wp[j].lat_e7 && rt->wp[j].lon_e7 == sp->wp[j].lon_e7 &&
+                   rt->wp[j].speed_kn == sp->wp[j].speed_kn && rt->wp[j].radius_m == sp->wp[j].radius_m &&
+                   rt->wp[j].action == sp->wp[j].action;
+        if (s->autop.returning) ST.dp_trip_ret++;
+        if (same) ok(59);
+        else fail(59, "DP TRIP route (%.0f waypoints, at %.0f) is not the stored program", (double)rt->n, (double)s->dp.wp);
     }
     if (m == MODE_DP && C.mode_prev != MODE_DP) {
         if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(7);
@@ -1874,6 +1932,7 @@ static void run_until(uint32_t until)
                 } else if (sb_mode(&S.sb) == MODE_REMOTE && C.rem_last_fresh == 0u) {
                     C.rem_last_fresh = S.t;
                 }
+                C.conf_kind_prev = (uint8_t)S.sb.confirm.kind;     /* I58: the request pending before this step */
                 uint32_t t0 = hal_micros();
                 sb_step(&S.sb);
                 if (s_log) logcore0_step(&S.sb);
@@ -1909,7 +1968,13 @@ static void run_until(uint32_t until)
             S.boot_until = (S.t + 200u) ? S.t + 200u : 1u;
             S.frozen = false;
         }
-        if (!S.boot_until) monitor_step(&S.mon, &g_mon, S.t);
+        if (!S.boot_until) {
+            /* I52 (step 13b): core 0's wire count just before the monitor step - the baseline if this step trips */
+            bool was = hal_outputs_forced();
+            uint32_t f0 = can_ep() ? core0_wire_frames() : 0u;
+            monitor_step(&S.mon, &g_mon, S.t);
+            if (!was && hal_outputs_forced()) { C.act_frames_pre = f0; C.act_pre_valid = true; }
+        }
         if (s_log && !S.boot_until && S.t % 10u == 0u) logger_step(&s_lg, S.t);
         if (S.pc_on && AT_OR_AFTER(S.t, S.pc_next)) {             /* the ground station's heartbeat */
             S.pc_next = S.t + 500u;
@@ -2011,6 +2076,7 @@ static void report(int episodes, double hours)
     printf("NOTE: HDG LOCK / AUTO / REMOTE entered while the onboard joystick was held and ignored (not centred since "
            "STANDBY): %lu times (first seed %lu)\n", (unsigned long)ST.engaged_ignored,
            (unsigned long)ST.engaged_ignored_seed);
+    printf("NOTE: DP TRIP control steps with an AUTO RETURN latched (I59): %lu\n", (unsigned long)ST.dp_trip_ret);
     printf("AUTO entries: %lu by PC + CONFIRM, %lu by the joystick AUTO button; REMOTE entries %lu "
            "(requests: ok %lu, refused", (unsigned long)ST.auto_by_confirm, (unsigned long)ST.auto_by_button,
            (unsigned long)ST.remote_entries, (unsigned long)ST.rem_req[0]);

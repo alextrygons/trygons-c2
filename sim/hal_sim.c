@@ -1344,6 +1344,7 @@ typedef struct {
     float    cmd, pos, out;         /* last command, servo position, output after the play */
     bool     have_cmd;
     uint32_t cmds, statuses;
+    uint32_t changes;               /* commands with a new value (step 13b: storm I51 on the gear node) */
     uint16_t hp[6];
     uint32_t hp_cmds;
 } sc_node_t;
@@ -1456,6 +1457,12 @@ bool sim_hal_can_servo(uint8_t id, float *cmd, float *pos, float *out, uint32_t 
     return n->have_cmd;
 }
 
+uint32_t sim_hal_can_servo_changes(uint8_t id)
+{
+    sc_node_t *n = sc_find(id);
+    return n ? n->changes : 0u;
+}
+
 uint16_t sim_hal_can_hardpoint(uint8_t hp, uint32_t *cmds)
 {
     sc_node_t *n = sc_find(DC_NODE_RELAY);
@@ -1544,7 +1551,9 @@ static void sc_deliver(const dc_frame_t *f)      /* one of our frames on the wir
             for (uint32_t j = 0; j < k; j++) {
                 if (c[j].actuator_id != n->actuator || c[j].type != DC_CMD_UNITLESS) continue;
                 float v = c[j].value;
-                n->cmd = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
+                float nc = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
+                if (n->have_cmd && fabsf(nc - n->cmd) > 1e-4f) n->changes++;
+                n->cmd = nc;
                 n->have_cmd = true;
                 n->cmds++;
             }

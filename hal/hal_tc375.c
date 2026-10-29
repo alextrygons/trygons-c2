@@ -878,6 +878,10 @@ static pulse_speed_t s_paddle;
 static void paddle_init(void)
 {
 #if HAL_PADDLE_FITTED
+    /* NOTE (step 13b review): the T2INA PORT PIN is NOT configured here yet - no PIN_PADDLE in hal_pins.h (pin TBD,
+     * "P00.7" is only a proposal, W38) and the T2I edge encoding is CHECK. Before HAL_PADDLE_FITTED = 1 on the
+     * board: add PIN_PADDLE, set it to input (pull as the sensor needs) and route it to T2INA, verify T2I on the
+     * bench - otherwise it compiles and counts nothing (dr.c then declares the wheel DEAD while moving: pw_*). */
     uint16 pw = IfxScuWdt_getCpuWatchdogPassword();
     IfxScuWdt_clearCpuEndinit(pw);
     MODULE_GPT120.CLC.U = 0u;                   /* module clock on (DISR = 0) */
@@ -1109,6 +1113,7 @@ void hal_can_service(void)
      * flush that ran across the trip moved frames in after CPU1's cancel - they are cancelled too; ca_tick
      * queues nothing any more) */
     boolean was = s_forced;
+    if (!was) s_trip_drops = 0u;                    /* (step 13b: as the sim - harmless, the latch clears only by a reset) */
     if (was && s_trip_drops < 2u) {
         dc_cancel_tx();
         s_trip_drops++;

@@ -888,3 +888,33 @@ Tests: sim CN27 (CPU1 stays neutral), CN25 (arrival stop + STANDBY / e-stop / no
 (idle_us 1100 on CAN), DP5 (throttle not idle), CN22 (the pending log), RB9 (engine pairs, SHUTOFF with a forced
 partner), RB21 (ON never waits for an absent board, keep store, warm-reset uptime), test_boats B7 (engine pairs);
 storm I47 / I51 / I52 changed.
+
+## 19. Step 13b - fixes from two independent reviews of 11g (2026-10-29)
+
+1. (MED) can_relay.c: an ON burst cut because the board went away (bus fault, NodeStatus old, not OPERATIONAL,
+   ERROR) may already have reached the board, which holds what it got (R-2). The state is unknown AND an OFF burst
+   is queued (like after a pulse): it goes when the board is back, then the state is known OFF again. relays.c keeps
+   the relay "commanded on" (the pair rule still blocks the partner) until the operator switches it.
+2. (MED) SHUTOFF ON (= stop the engine, always allowed) is never lost because the board is not there YET -
+   `hal_relay_ok()`'s start window (true for HAL_RELAY_LOST_MS before the board was ever seen) and can_relay.c's
+   `present()` disagree in the first seconds after a warm reset. relays.c queues it (`shutoff_pending`) and sends it
+   as soon as the board takes it, for RELAY_SHUTOFF_RETRY_MS (10 s, TO CONFIRM), then drops it (a late engine stop is
+   never sent minutes later). The STARTER is never queued (a late crank stays impossible); IGNITION ON unchanged.
+3. (MED) CPU1 after a trip: NEUTRAL only thr_travel_s after the LATER of the trip and the throttle node's return
+   (`mon_t.node_bad_ms`). A throttle node lost at the trip could not take the idle frames - the throttle may still be
+   open when it returns.
+4. (LOW-2) can_relay.c after a WARM reset: the board's NodeStatus uptime (whole seconds) proves a reboot after our
+   start only when `uptime_s * 1000 + 1000 < time since our start`: then all OFF. A board that booted AROUND the
+   warm reset (before or after can't be told): a kept OFF stays OFF, a kept ON becomes UNKNOWN (never "OFF" - the
+   pair rule blocks its partner). The power-on rule is unchanged.
+5. (LOW) servo.c `cfg_bad` also refuses `full_us != 2000` (SERVO_CAN_FULL_US) with the servos on CAN; the board's
+   `s_trip_drops` is reset while not forced, like the sim; the pending thr_trav_s log value is clamped to 255.
+6. Storm: I52 counts core 0's wire frames from just BEFORE the monitor step that tripped (frames flushed in the first
+   tick / step after the trip now count against it). The cross-core flush race (core 0's TX flush running while CPU1
+   trips) cannot happen in the single-threaded storm: it is covered by review only, and on the board TXBCR can't
+   retract a frame already in transmission (1 stale ArrayCommand at most, overwritten by CPU1 within 20 ms). I47 also
+   checks core 0's throttle demand on a monitor trip; I51 counts every changed command the gear node got (sim).
+
+Tests: sim CN28 (neutral after the node's return), RB22 (cut ON burst -> OFF, SHUTOFF ON after a warm reset / dropped
+after the retry time, reboot around a warm reset = unknown, proven reboot = all OFF), RB21 (updated: a reboot during
+the warm reset = the kept ON unknown), CN26 (full_us 1800); storm I47 / I51 / I52 changed.

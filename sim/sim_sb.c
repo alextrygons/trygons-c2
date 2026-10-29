@@ -9995,7 +9995,7 @@ void sb_relay_tests(void)
         relay_tests();              /* ... and again on the DroneCAN board (step 11f) */
         s_rb_can = false;
     }
-    relay_bus_tests();              /* RB15-RB21 */
+    relay_bus_tests();              /* RB15-RB22 */
 }
 
 /* ------------------------------ engine controls + remote restart (CLAUDE.md N) -- */
@@ -11784,6 +11784,60 @@ static void dp_mode_tests(void)
         test_report("DP16 a thruster HOT in DP: DP ends and BOTH thrusters 0 in the same step",
                     set && in && hot && fabsf(b_prev) > 0.5f && same && a.hot_on == 0u, d);
     }
+
+    /* DP17 (step 13b review H1) a DP TRIP after an AUTO RETURN (the way back still latched in RAM): the trip drives the
+     * STORED program (the one the gateway checked), from its own copy; an AUTO START CONFIRM during the trip (refused:
+     * DP -> AUTO is not allowed) changes nothing - the way back, the trip's route and waypoint stay */
+    {
+        static dpx_t a;
+        static program_t p, back, back_keep, route0;
+        bool set = dpx_init(&a, 2031u, true, NULL, true);
+        prog_wp_t w[3], b[2];
+        w[0] = wp_world(&a.x, 0.0, 120.0, 3.0f, 10.0f, WP_ACT_CONTINUE);
+        w[1] = wp_world(&a.x, -100.0, 200.0, 3.0f, 10.0f, WP_ACT_CONTINUE);
+        w[2] = wp_world(&a.x, -100.0, 320.0, 3.0f, 10.0f, WP_ACT_CONTINUE);
+        prog_make(&p, w, 3, PROG_END_STOP);
+        b[0] = wp_world(&a.x, 250.0, -150.0, 3.0f, 10.0f, WP_ACT_CONTINUE);     /* a way back somewhere else */
+        b[1] = wp_world(&a.x, 400.0, -150.0, 3.0f, 10.0f, WP_ACT_CONTINUE);
+        prog_make(&back, b, 2, PROG_END_STOP);
+        prog_error_t pe;
+        uint8_t bad;
+        bool up = sb_program_set(&a.x.sb, &p, &pe, &bad) == SB_OK;
+        /* as after a finished AUTO RETURN: the stored program in orig, the way back active in RAM */
+        a.x.sb.autop.orig = a.x.sb.autop.prog;
+        a.x.sb.autop.prog = back;
+        a.x.sb.autop.returning = true;
+        a.x.sb.autop.ret_base = 1u;
+        back_keep = back;
+        bool in = dpx_start(&a, DP_TRIP, 3.0f);
+        route0 = a.x.sb.dp.route;
+        bool route_ok = memcmp(&route0, &p, sizeof p) == 0;
+        /* drive: the first waypoint reached must be the stored one (120 m east), never the way back's */
+        double n0, e0, nb, eb;
+        world_from_latlon(program_lat(&p.wp[0]), program_lon(&p.wp[0]), &n0, &e0);
+        world_from_latlon(program_lat(&back.wp[0]), program_lon(&back.wp[0]), &nb, &eb);
+        uint32_t t0 = a.x.t;
+        float at0 = 1e9f;
+        while (a.x.t < t0 + 300000u && sb_mode(&a.x.sb) == MODE_DP && a.x.sb.dp.wp == 0u) dpx_run(&a, 500u);
+        at0 = (float)sqrt((a.x.w.north_m - n0) * (a.x.w.north_m - n0) + (a.x.w.east_m - e0) * (a.x.w.east_m - e0));
+        float atb = (float)sqrt((a.x.w.north_m - nb) * (a.x.w.north_m - nb) + (a.x.w.east_m - eb) * (a.x.w.east_m - eb));
+        bool reached = sb_mode(&a.x.sb) == MODE_DP && a.x.sb.dp.wp == 1u && at0 < 25.0f;
+        /* AUTO START + CONFIRM during the trip: refused, nothing changes */
+        uint8_t wp_before = a.x.sb.dp.wp;
+        sb_result_t rs = sb_auto_start(&a.x.sb);
+        if (rs == SB_OK) { dpx_run(&a, 300u); dpx_confirm(&a); }
+        dpx_run(&a, 300u);
+        bool kept = sb_mode(&a.x.sb) == MODE_DP && a.x.sb.dp.sub == DP_TRIP && a.x.sb.autop.returning &&
+                    memcmp(&a.x.sb.autop.prog, &back_keep, sizeof back_keep) == 0 &&
+                    memcmp(&a.x.sb.dp.route, &route0, sizeof route0) == 0 && a.x.sb.dp.wp >= wp_before;
+        snprintf(d, sizeof d, "set up %s, program %s, way back latched, TRIP %s; the trip's route = the stored program %s; "
+                 "first waypoint reached %s after %.0f s: %.1f m from the stored waypoint 1 (%.0f m from the way back's); "
+                 "AUTO START %d + CONFIRM in DP: still DP TRIP with the way back + route kept %s",
+                 set ? "yes" : "NO", up ? "ok" : "REFUSED", in ? "yes" : "NO", route_ok ? "yes" : "NO",
+                 reached ? "yes" : "NO", (a.x.t - t0) * 0.001, at0, atb, (int)rs, kept ? "yes" : "NO");
+        test_report("DP17 DP TRIP after an AUTO RETURN: the stored program (own copy); AUTO START CONFIRM in DP changes nothing",
+                    set && up && in && route_ok && reached && kept, d);
+    }
 }
 
 
@@ -13228,8 +13282,17 @@ static void can_servo_tests(void)
                  "%.3f (wire idle -1.0); HDG LOCK %s (mode %u)", x.sb.armed ? "YES" : "no",
                  (x.sb.alarm_bits & SB_ALM_NOT_ARMED) ? "yes" : "NO", x.sb.servo.cfg_bad ? "yes" : "NO",
                  (unsigned)a.n_core0, (double)a.first, (double)a.last, hdg ? "TAKEN" : "refused", (unsigned)sb_mode(&x.sb));
-        test_report("CN26 DroneCAN throttle idle_us != 1000: never armed, the wire stays at idle -1.0", unarmed && wire &&
-                    sb_mode(&x.sb) == MODE_STANDBY, d);
+        /* (step 13b) a full_us that is not 2000 us: the same (the wire map would under-command the node) */
+        static sbsim_t y;
+        sb_default_config(&c);
+        c.servo.full_us = 1800u;
+        sm_boot(&y, 2332u, 12.0f, 0.03f, &c);
+        sbsim_run(&y, 15000u, NULL, NULL);
+        bool full_bad = !y.sb.armed && (y.sb.alarm_bits & SB_ALM_NOT_ARMED) && y.sb.servo.cfg_bad;
+        size_t dl = strlen(d);
+        snprintf(d + dl, sizeof d - dl, "; full_us 1800 on CAN: never armed %s", full_bad ? "yes" : "NO");
+        test_report("CN26 DroneCAN throttle idle_us != 1000 / full_us != 2000: never armed, the wire stays at idle -1.0",
+                    unarmed && wire && sb_mode(&x.sb) == MODE_STANDBY && full_bad, d);
     }
 
     /* CN27 (step 11g, found by the new storm I51 on the gear node, seed 14) after a trip CPU1 shifted to NEUTRAL (thr_travel_s,
@@ -13260,6 +13323,44 @@ static void can_servo_tests(void)
                  lost ? "yes" : "NO", (double)g2, stays ? "yes" : "NO");
         test_report("CN27 CPU1 after a trip: once in NEUTRAL the gear stays NEUTRAL when the throttle node is lost",
                     drv && neutral && lost && stays, d);
+    }
+
+    /* CN28 (step 13b review) a trip, the throttle node lost at once (CPU1's idle frames can't reach it: it holds the open
+     * throttle), back after more than the travel time: CPU1 shifts to NEUTRAL only thr_travel_s after the node's
+     * RETURN (not after the trip) - the gear never shifts under a throttle that only now starts to close */
+    {
+        static sbsim_t x;
+        inject_t j = { 1, 0u, false, 0u };
+        bool drv = can_drive(&x, 2341u, 12.0f, 50.0f);
+        sb_power_lower(&x.sb);
+        sbsim_run(&x, x.t + 600u, NULL, NULL);
+        j.at_ms = x.t + 1u;
+        uint32_t t0 = x.t;
+        while (!hal_outputs_forced() && x.t < t0 + 500u) sbsim_run(&x, x.t + 10u, inject_hook, &j);
+        bool tripped = hal_outputs_forced();
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, true);
+        float gf = 0.0f, g = 0.0f;
+        (void)sim_hal_can_servo(DC_NODE_GEAR, &gf, NULL, NULL, NULL);
+        bool fwd0 = fabsf(gf - wire_of(x.sb.cfg.gear.pwm_n_us)) > 0.05f;
+        sbsim_run(&x, x.t + 10000u, inject_hook, &j);
+        (void)sim_hal_can_servo(DC_NODE_GEAR, &g, NULL, NULL, NULL);
+        bool held = fabsf(g - gf) < 1e-3f && !x.mon.node_ok;
+        sim_hal_can_node_silent(DC_NODE_THROTTLE, false);
+        uint32_t t_back = 0u, t_neutral = 0u, t1 = x.t;
+        while (x.t < t1 + 30000u && !t_neutral) {
+            sbsim_run(&x, x.t + 10u, inject_hook, &j);
+            if ((x.t / 10u) % 50u == 0u) sb_alarm_ack(&x.sb);
+            if (!t_back && x.mon.node_ok) t_back = x.t;
+            (void)sim_hal_can_servo(DC_NODE_GEAR, &g, NULL, NULL, NULL);
+            if (fabsf(g - wire_of(x.sb.cfg.gear.pwm_n_us)) < 1e-3f) t_neutral = x.t;
+        }
+        int32_t after = (t_back && t_neutral) ? (int32_t)(t_neutral - t_back) : -1;
+        snprintf(d, sizeof d, "driving %s, trip %s, the gear forward %s; throttle node lost at once: the gear held %s for 10 s; "
+                 "the node back (CPU1 sees it OK) %s; NEUTRAL %d ms after its return (travel %u ms)",
+                 drv ? "yes" : "NO", tripped ? "yes" : "NO", fwd0 ? "yes" : "NO", held ? "yes" : "NO",
+                 t_back ? "yes" : "NO", (int)after, (unsigned)x.mon.travel_ms);
+        test_report("CN28 CPU1 after a trip: NEUTRAL only thr_travel_s after the throttle node's return (not the trip)",
+                    drv && tripped && fwd0 && held && t_back && t_neutral && after + 30 >= (int32_t)x.mon.travel_ms, d);
     }
 }
 
@@ -13431,6 +13532,35 @@ static void return_tests(void)
                  (unsigned)sb_auto_wp_stored(&x.sb) + 1u, (int)rs, c2 ? "yes" : "NO", fwd ? "yes" : "NO");
         test_report("AR3 AUTO RETURN: the joystick wins; RESUME goes on back; AUTO START = the stored program again",
                     set && r && man && rr == SB_OK && c1 && back && rs == SB_OK && c2 && fwd, d);
+    }
+
+    /* AR6 (step 13b review) an AUTO RETURN confirmed inside AUTO keeps the rough-water slow-down and its memory:
+     * the AUTO speed never jumps back to the full leg speed in the sea it just slowed down for */
+    {
+        sbsim_t x;
+        program_t orig;
+        double e0;
+        bool set = ar_setup(&x, 1307u, &orig, &e0);
+        /* as after rough water: nervous, the target stepped down to 8 kn, remembered (14 kn leg) */
+        x.sb.nerv.nervous = true;
+        x.sb.nerv.ceiling_kn = 8.0f;
+        x.sb.nerv.ceiling_ms = x.sb.cfg.nerv_memory_ms;
+        x.sb.cruise.target_kn = 8.0f;
+        sbsim_run(&x, x.t + 200u, NULL, NULL);
+        bool r = sb_auto_return(&x.sb) == SB_OK && confirm_press(&x);
+        bool ret = x.sb.autop.returning && sb_mode(&x.sb) == MODE_AUTO;
+        float tmax = 0.0f;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 5000u) {
+            sbsim_run(&x, x.t + 50u, NULL, NULL);
+            tmax = fmaxf(tmax, x.sb.cruise.target_kn);
+        }
+        bool kept = x.sb.nerv.ceiling_ms > 0u && x.sb.nerv.ceiling_kn == 8.0f;
+        snprintf(d, sizeof d, "AUTO on the 14 kn leg %s, slowed to 8 kn by rough water; RETURN + CONFIRM %s, returning %s "
+                 "(leg speed %.0f kn); the target in the next 5 s at most %.1f kn; the rough-water memory kept %s",
+                 set ? "yes" : "NO", r ? "yes" : "NO", ret ? "yes" : "NO", x.sb.cruise.set_kn, tmax, kept ? "yes" : "NO");
+        test_report("AR6 AUTO RETURN inside AUTO keeps the rough-water slow-down + its memory (no jump to the leg speed)",
+                    set && r && ret && x.sb.cruise.set_kn > 12.0f && tmax <= 8.01f && kept, d);
     }
 
     /* AR4 the same validation as an upload: a leg speed above today's max_leg_kn = refused (BAD_PROGRAM);
@@ -13605,6 +13735,81 @@ static void pulse_tests(void)
                  w.ok_now ? "valid" : "NO DATA", w.last);
         test_report("PW4 paddlewheel: implausible pulse rates and a stalled reading = NO DATA, then back",
                     noise && back && gap && w.ok_now && fabsf(w.last - 6.0f) < 0.4f, d);
+    }
+    /* PW5 (step 13b review) a wheel cut / fouled AT REST at power-up: never a valid 0 kn; pulses later = valid */
+    {
+        pwsim_t w;
+        pw_init(&w, 0.0);
+        pw_run(&w, 20000u, 0.0f, 0.0f, true);          /* 20 s at rest, no pulse at all */
+        int valid_at_rest = w.valid_steps;
+        pw_run(&w, 3000u, 4.0f, 0.0f, false);          /* the wheel turns */
+        bool back = w.ok_now && fabsf(w.last - 4.0f) < 0.4f;
+        snprintf(d, sizeof d, "valid steps with no edge ever %d (want 0); pulses at 4 kn -> %s %.1f kn",
+                 valid_at_rest, back ? "valid" : "NO DATA", w.last);
+        test_report("PW5 paddlewheel: cut / fouled at rest = NO DATA until a window with edges (not a valid 0 kn)",
+                    valid_at_rest == 0 && back, d);
+    }
+    /* PW6 (step 13b review) dr.c: a wheel that reads a valid 0 kn while the boat clearly moves is DEAD:
+     * (a) trusted GPS SOG 6 kn, (b) dead reckoning with a gear and 30 % throttle; it is used again when it reads */
+    {
+        static dr_t dd;
+        dr_config_t dc;
+        dr_default_config(&dc);
+        dr_init(&dd, &dc);
+        dr_input_t in;
+        memset(&in, 0, sizeof in);
+        in.heading_ok = true;
+        in.water_ok = true;
+        in.water_kn = 0.0f;
+        in.gps.fix = true;
+        in.gps.sats = 10u;
+        in.gps.lat_deg = 37.8;
+        in.gps.lon_deg = 23.6;
+        in.gps.sog_kn = 6.0f;
+        in.gps.cog_deg = 0.0f;
+        uint32_t t = 1000u, dead_a = 0u;
+        bool gps_state = false;
+        for (int k = 0; k < 200 && !dead_a; k++) {     /* (a) 10 s: GPS says 6 kn north, wheel 0 */
+            t += 50u;
+            in.now_ms = t;
+            in.gps_new = (k % 4) == 0;
+            in.gps.lat_deg += 6.0 * 0.5144 * 0.05 / 111320.0;
+            dr_step(&dd, &in);
+            gps_state = gps_state || dd.state == DR_GPS;
+            if (dd.pw_dead && !dd.speed_sensor) dead_a = t - 1000u;
+        }
+        in.gps_new = false;
+        in.water_kn = 5.8f;                            /* pulses again */
+        t += 50u; in.now_ms = t; dr_step(&dd, &in);
+        bool back_a = dd.speed_sensor && !dd.pw_dead;
+        /* (b) no GPS (fix off), gear F at 30 %, wheel 0 */
+        dr_init(&dd, &dc);
+        in.gps.fix = false;
+        in.gear = 1;
+        in.throttle_pct = 30.0f;
+        in.water_kn = 0.0f;
+        uint32_t dead_b = 0u;
+        int sensor_steps_after = 0;
+        for (int k = 0; k < 400; k++) {
+            t += 50u;
+            in.now_ms = t;
+            dr_step(&dd, &in);
+            if (!dead_b && dd.pw_dead) dead_b = (uint32_t)(k + 1) * 50u;
+            if (dead_b && dd.speed_sensor) sensor_steps_after++;
+        }
+        /* (c) at rest (gear N, throttle 0, no GPS): a 0 kn wheel stays in use */
+        dr_init(&dd, &dc);
+        in.gear = 0;
+        in.throttle_pct = 0.0f;
+        for (int k = 0; k < 400; k++) { t += 50u; in.now_ms = t; dr_step(&dd, &in); }
+        bool rest_ok = dd.speed_sensor && !dd.pw_dead;
+        snprintf(d, sizeof d, "(a) GPS 6 kn (trusted %s): dead after %u ms, back when it reads %s; (b) gear F 30 %%: "
+                 "dead after %u ms, used after that %d steps; (c) at rest still used %s",
+                 gps_state ? "yes" : "NO", dead_a, back_a ? "yes" : "NO", dead_b, sensor_steps_after,
+                 rest_ok ? "yes" : "NO");
+        test_report("PW6 paddlewheel: reads 0 while the boat moves (GPS SOG / throttle in gear) = DEAD, not used",
+                    gps_state && dead_a >= dc.pw_dead_ms && dead_a <= dc.pw_dead_ms + 1000u && back_a &&
+                    dead_b >= dc.pw_dead_ms && dead_b <= dc.pw_dead_ms + 200u && sensor_steps_after == 0 && rest_ok, d);
     }
 }
 
@@ -13832,7 +14037,7 @@ void sb_phase5_tests(void)
 
 /* -------------------------------- relay board on DroneCAN (step 11f, CLAUDE.md T, design section 9) -- */
 
-/* RB15-RB21: the DroneCAN relay board (can_relay.c + the simulated node 30) - in every suite (the RB1-RB14 run
+/* RB15-RB22: the DroneCAN relay board (can_relay.c + the simulated node 30) - in every suite (the RB1-RB14 run
  * on the Modbus board in "all" / "all --bridge" and on the DroneCAN board in "all --can" / "--can-fast"; "rb"
  * runs both) - and the STARTER's hardware time-limit relay (OD-9) on both buses */
 static void relay_bus_tests(void)
@@ -14171,18 +14376,122 @@ static void relay_bus_tests(void)
         sim_hal_can_node_reboot(DC_NODE_RELAY);
         rb_power_cycle(&x, HAL_RESET_SYSTEM);
         sbsim_run(&x, x.t + 4000u, NULL, NULL);
-        bool warm = !sim_hal_relay_state(6u) && (x.sb.relays.known & 0x7Fu) == 0x7Fu && x.sb.relays.states == 0u &&
+        /* (step 13b, review LOW-2: a reboot AROUND the warm reset can't be told from one just before it - the kept ON
+         * is UNKNOWN then, never "OFF"; RB22 has the proven case) */
+        bool warm = !sim_hal_relay_state(6u) && !(x.sb.relays.known & rb_bit(6)) && x.sb.relays.states == 0u &&
                     x.sb.relays.power_ups == 0u;
         sim_hal_relay_board(true, 5u, 0u);
         snprintf(d, sizeof d, "table %s; keep store at once on ON / OFF %s; ON %s; ON + bus-off at once: burst dropped, never "
                  "ON late %s (dropped %u); ON to an absent board refused (relays %s, back-end %s); board rebooted during a "
-                 "warm reset: ON before %s, all OFF known after %s",
+                 "warm reset: ON before %s, the kept ON unknown after (not OFF) %s",
                  loaded ? "yes" : "NO", store ? "yes" : "NO", on6 ? "yes" : "NO", dropped ? "yes" : "NO",
                  (unsigned)(cr_stats()->dropped - dr0), absent_ref ? "yes" : "NO", absent_hal ? "yes" : "NO",
                  on_again ? "yes" : "NO", warm ? "yes" : "NO");
         test_report("RB21 DroneCAN: an ON never waits for an absent board, the keep store at every command, the uptime "
                     "test after a warm reset", loaded && store && on6 && dropped && absent_ref && absent_hal && on_again &&
                     warm, d);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
+
+    /* RB22 (step 13b, reviews of 11g) DroneCAN relay board: (a) an ON burst cut by a bus loss after some frames
+     * reached the board (it holds what it got: R-2) - an OFF burst is queued and goes when the bus is back, then the
+     * state is known OFF; (b) SHUTOFF ON in the first second after a warm reset (the board not seen yet) is never
+     * lost: sent when the board appears; queued longer than RELAY_SHUTOFF_RETRY_MS = dropped, never late; (c) a board
+     * that rebooted shortly BEFORE a warm reset: the kept ON is UNKNOWN (the pair partner blocked), never "OFF";
+     * a board that booted clearly AFTER the warm reset = all OFF */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        s_rb_can = true;
+        rb_table(&t, false, false);
+        t.r[5].pair = 7u;                                                  /* NAV LIGHTS / BILGE PUMP interlocked */
+        t.r[6].pair = 6u;
+        relay_table_seal(&t);
+        bool loaded = rb_setup(&x, 1727u, NULL, &t) && rb_can();
+        sim_hal_relay_board(true, 5u, SIM_RB_NO_READBACK);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        /* (a) (the partner OFF first: unknown + not momentary blocks); the ON just before the board's next
+         * NodeStatus says health ERROR: the burst is cut after its first frames */
+        (void)sb_relay_cmd(&x.sb, 7u, RELAY_CMD_OFF, 0u);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        hal_can_node_t nn;
+        uint32_t tw = x.t;
+        do {
+            sbsim_run(&x, x.t + 5u, NULL, NULL);
+            (void)dc_node(HAL_CAN_ROLE_RELAY, &nn);
+        } while (nn.age_ms > 10u && x.t < tw + 3000u);
+        sbsim_run(&x, x.t + 900u, NULL, NULL);
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_ERROR, DC_MODE_OPERATIONAL);
+        bool c1 = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        uint32_t t0 = x.t, dr0 = cr_stats()->dropped;
+        while (!sim_hal_relay_state(6u) && x.t < t0 + 300u) sbsim_run(&x, x.t + 5u, NULL, NULL);
+        bool got = sim_hal_relay_state(6u);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        /* (the board in ERROR still takes frames: the queued OFF burst, sent while it is absent, switches it off;
+         * after a bus loss it goes when the bus is back) */
+        bool still_on = cr_stats()->dropped > dr0 && !x.sb.relays.board_ok;
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool a_ok = c1 && got && still_on && !sim_hal_relay_state(6u) && (x.sb.relays.known & rb_bit(6)) &&
+                    !(x.sb.relays.states & rb_bit(6));
+        sb_alarm_ack(&x.sb);
+        /* (b) SHUTOFF ON at once after a warm reset (just after a NodeStatus: the next one ~1 s later) */
+        tw = x.t;
+        do {
+            sbsim_run(&x, x.t + 5u, NULL, NULL);
+            (void)dc_node(HAL_CAN_ROLE_RELAY, &nn);
+        } while (nn.age_ms > 10u && x.t < tw + 3000u);
+        rb_power_cycle(&x, HAL_RESET_SYSTEM);
+        sbsim_run(&x, x.t + 50u, NULL, NULL);
+        bool not_yet = !dc_node(HAL_CAN_ROLE_RELAY, &nn) || !nn.seen;      /* the board not seen yet */
+        sb_result_t r_sh = sb_relay_cmd(&x.sb, 3u, RELAY_CMD_ON, 0u);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool b_ok = not_yet && r_sh == SB_OK && sim_hal_relay_state(3u) && x.sb.relays.shutoff_pending == 0u &&
+                    x.sb.relays.shutoff_retried == 1u;
+        (void)sb_relay_cmd(&x.sb, 3u, RELAY_CMD_OFF, 0u);
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        /* (b2) the board unpowered: SHUTOFF ON queued, dropped after the retry time, never sent late */
+        sim_hal_can_node(DC_NODE_RELAY, false, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        sb_result_t r_q = sb_relay_cmd(&x.sb, 3u, RELAY_CMD_ON, 0u);
+        bool queued = r_q == SB_OK && (x.sb.relays.shutoff_pending & rb_bit(3));
+        sbsim_run(&x, x.t + RELAY_SHUTOFF_RETRY_MS + 500u, NULL, NULL);
+        bool gone = x.sb.relays.shutoff_pending == 0u && x.sb.relays.shutoff_dropped == 1u;
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sbsim_run(&x, x.t + 5000u, NULL, NULL);
+        bool b2_ok = queued && gone && !sim_hal_relay_state(3u);
+        sb_alarm_ack(&x.sb);
+        /* (c) the board reboots, NAV LIGHTS ON, a warm reset ~1.5 s later */
+        sim_hal_can_node_reboot(DC_NODE_RELAY);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        bool c_on = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 300u, NULL, NULL);
+        c_on = c_on && sim_hal_relay_state(6u);
+        rb_power_cycle(&x, HAL_RESET_SYSTEM);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool unknown = sim_hal_relay_state(6u) && !(x.sb.relays.known & rb_bit(6));
+        bool pair_blocks = sb_relay_cmd(&x.sb, 7u, RELAY_CMD_ON, 0u) == SB_ERR_REFUSED && !sim_hal_relay_state(7u);
+        /* (c2) a warm reset with the board unpowered, the board powered 4 s later (booted clearly after us): all OFF */
+        sim_hal_can_node(DC_NODE_RELAY, false, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        rb_power_cycle(&x, HAL_RESET_SYSTEM);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        sim_hal_can_node(DC_NODE_RELAY, true, DC_HEALTH_OK, DC_MODE_OPERATIONAL);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        bool proven = (x.sb.relays.known & 0x7Fu) == 0x7Fu && x.sb.relays.states == 0u && !sim_hal_relay_state(6u);
+        sim_hal_relay_board(true, 5u, 0u);
+        snprintf(d, sizeof d, "table %s; (a) ON reached the board %s, the board in ERROR: burst dropped %s, OK again: OFF delivered, "
+                 "known OFF %s; (b) SHUTOFF ON 50 ms after a warm reset (board not seen: %s) -> %d, ON when it appears %s; "
+                 "(b2) board unpowered: queued %s, dropped after %u ms %s, never ON late %s; (c) ON after a board reboot "
+                 "%s, warm reset 0.3 s later: kept ON unknown (still on) %s, partner ON refused %s; (c2) board booted 4 s "
+                 "after a warm reset: all OFF known %s",
+                 loaded ? "yes" : "NO", got ? "yes" : "NO", still_on ? "yes" : "NO", a_ok ? "yes" : "NO",
+                 not_yet ? "yes" : "NO", (int)r_sh, b_ok ? "yes" : "NO", queued ? "yes" : "NO",
+                 (unsigned)RELAY_SHUTOFF_RETRY_MS, gone ? "yes" : "NO", b2_ok ? "yes" : "NO", c_on ? "yes" : "NO",
+                 unknown ? "yes" : "NO", pair_blocks ? "yes" : "NO", proven ? "yes" : "NO");
+        test_report("RB22 DroneCAN relays: a cut ON burst gets its OFF, SHUTOFF ON survives a warm reset start, a reboot "
+                    "around a warm reset = unknown", loaded && a_ok && b_ok && b2_ok && c_on && unknown && pair_blocks &&
+                    proven, d);
         remove("nv7.bin");
         sim_hal_relay_board_reset();
     }

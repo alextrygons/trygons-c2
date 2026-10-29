@@ -131,6 +131,7 @@ void     sim_hal_can_servo_speed(uint8_t id, float travel_s, float backlash);
 /* servo node: last command, servo position, output after the play (units -1..1), commands taken;
  * returns false while it never got a command (it holds its power-up position) */
 bool     sim_hal_can_servo(uint8_t id, float *cmd, float *pos, float *out, uint32_t *cmds);
+uint32_t sim_hal_can_servo_changes(uint8_t id);  /* commands with a new value the node got (step 13b, storm I51) */
 uint16_t sim_hal_can_hardpoint(uint8_t hp, uint32_t *cmds);  /* relay node: last command of hardpoint hp */
 uint32_t sim_hal_can_bus_frames(uint32_t kind);  /* frames from the AURIX: 0 NodeStatus 1 ArrayCommand 2 hardpoint 3 other */
 uint32_t sim_hal_can_status_period_ms(void);    /* between our last two NodeStatus on the bus */

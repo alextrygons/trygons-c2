@@ -97,8 +97,22 @@ void cr_service(void)
              * from before a warm reset are stale then) - its uptime is not longer than ours: it powered up with
              * every relay OFF (R-2). Nothing ON can have been commanded meanwhile (cr_set / cr_pulse refuse ON
              * while the board is not there), so every state is known OFF. */
-            if ((uint64_t)n.uptime_s * 1000u <= (uint64_t)(uint32_t)(now - s_t0) + CR_BOOT_MARGIN_MS) {
+            uint64_t up_ms = (uint64_t)n.uptime_s * 1000u, since = (uint64_t)(uint32_t)(now - s_t0);
+            bool warm = s_cfg.keep_valid && !s_cfg.power_on;
+            if (!warm && up_ms <= since + CR_BOOT_MARGIN_MS) {
                 s_known = s_mask;
+                s_on = 0u;
+                memset(s_until, 0, sizeof s_until);
+            } else if (warm && up_ms + 1000u < since) {
+                /* step 13b: after a warm reset only a reboot PROVEN after our start (the uptime is whole seconds:
+                 * the real one is below uptime_s + 1 s) clears the kept states to OFF */
+                s_known = s_mask;
+                s_on = 0u;
+                memset(s_until, 0, sizeof s_until);
+            } else if (warm && up_ms <= since + CR_BOOT_MARGIN_MS) {
+                /* step 13b (review LOW-2): it booted around our warm reset - before or after can't be told: a kept
+                 * OFF is OFF either way, a kept ON is UNKNOWN (the pair rule blocks its partner), never "OFF" */
+                s_known &= ~s_on;
                 s_on = 0u;
                 memset(s_until, 0, sizeof s_until);
             }
@@ -134,11 +148,12 @@ void cr_tick(void)
             s_burst[i] = CR_BURST_FRAMES;
         }
         if (!there && s_burst[i] != 0u && (s_on & bit(i))) {
-            /* step 11g: only an OFF burst waits for the board ("goes when it is back"); an ON burst is dropped
-             * and the state is unknown (some frames may have reached it) */
-            s_burst[i] = 0u;
+            /* step 11g: an ON burst is never finished late; the state is unknown (some frames may have reached
+             * it and the board holds what it got, R-2). Step 13b (review MED-1): an OFF burst is queued instead,
+             * like after a pulse - it goes when the board is back, then the state is known OFF again */
             s_on &= ~bit(i);
             s_known &= ~bit(i);
+            s_burst[i] = CR_BURST_FRAMES;
             s_st.dropped++;
             continue;
         }
@@ -146,7 +161,10 @@ void cr_tick(void)
         if (!pulse && s_burst[i] == 0u) continue;
         if (dc_send_hardpoint(i, (s_on & bit(i)) ? 1u : 0u)) {
             s_st.frames++;
-            if (!pulse && there && s_burst[i] > 0u) s_burst[i]--;   /* (an absent board: sent again when it is back) */
+            if (!pulse && there && s_burst[i] > 0u) {               /* (an absent board: sent again when it is back) */
+                s_burst[i]--;
+                if (s_burst[i] == 0u && !(s_on & bit(i))) s_known |= bit(i);   /* an OFF delivered: known OFF */
+            }
         } else {
             s_st.refused++;
         }

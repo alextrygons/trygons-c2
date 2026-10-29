@@ -101,9 +101,10 @@ void dp_start(dp_t *d, uint8_t sub, double lat, double lon, float heading, float
     d->set_kn = clampf(speed_kn, 0.0f, max_kn);
     d->trip_done = false;
     set_anchor(d, lat, lon);            /* (CRUISE / TRIP: the error is only used for the generator check) */
-    if (sub == DP_TRIP && prog != NULL && prog->n > 0u) {
-        d->wp = (wp_from < prog->n) ? wp_from : (uint8_t)(prog->n - 1u);
-        trip_leg(d, prog, lat, lon);
+    if (sub == DP_TRIP && prog != NULL && prog->n > 0u && prog->n <= PROG_MAX_WP) {
+        d->route = *prog;               /* our own copy: dp_step never follows another route (step 13b) */
+        d->wp = (wp_from < d->route.n) ? wp_from : (uint8_t)(d->route.n - 1u);
+        trip_leg(d, &d->route, lat, lon);
         d->sub = DP_TRIP;
     } else if (sub == DP_CRUISE) {
         d->sub = DP_CRUISE;
@@ -226,9 +227,23 @@ uint8_t dp_step(dp_t *d, const dp_in_t *in)
 
     /* 3. TRIP: the leg, the arrival, the heading + speed of the route */
     float want_kn = d->set_kn;
-    if (d->sub == DP_TRIP && in->prog != NULL && d->wp < in->prog->n) {
-        const prog_wp_t *w = &in->prog->wp[d->wp];
-        bool last = (uint16_t)(d->wp + 1u) >= in->prog->n;
+    const program_t *rt = &d->route;
+    if (d->sub == DP_TRIP && (rt->n == 0u || rt->n > PROG_MAX_WP || d->wp >= rt->n)) {
+        /* never a TRIP without a waypoint to drive to (step 13b): hold the spot here instead of
+         * driving on with the entry heading + speed */
+        reset_loop(d);
+        double blat = d->alat - (double)d->en / M_PER_DEG;               /* the boat = anchor - error */
+        double blon = d->alon - (double)d->ee / (M_PER_DEG * (d->cos_alat > 0.01 ? d->cos_alat : 0.01));
+        set_anchor(d, blat, blon);
+        d->hdg_target = d->hdg_est;
+        d->sub = DP_SPOT;
+        d->log_what = 7u;
+        d->log_seq++;
+        res = (res == DP_R_OK) ? DP_R_TRIP_END : res;
+    }
+    if (d->sub == DP_TRIP) {
+        const prog_wp_t *w = &rt->wp[d->wp];
+        bool last = (uint16_t)(d->wp + 1u) >= rt->n;
         bool stop_wp = last || w->action == (uint8_t)WP_ACT_STOP;
         if (in->fix_new && (d->leg.dist_m <= w->radius_m || d->leg.along_m >= d->leg.length_m)) {
             if (stop_wp) {
@@ -246,14 +261,14 @@ uint8_t dp_step(dp_t *d, const dp_in_t *in)
                 res = (res == DP_R_OK) ? DP_R_TRIP_END : res;
             } else {
                 d->wp++;
-                const prog_wp_t *nw = &in->prog->wp[d->wp];
+                const prog_wp_t *nw = &rt->wp[d->wp];
                 nav_leg_init(&d->leg, program_lat(w), program_lon(w), program_lat(nw), program_lon(nw));
                 nav_leg_update(&d->leg, in->lat, in->lon);
             }
         }
         if (d->sub == DP_TRIP) {
-            const prog_wp_t *cw = &in->prog->wp[d->wp];
-            bool slows = (uint16_t)(d->wp + 1u) >= in->prog->n || cw->action != (uint8_t)WP_ACT_CONTINUE;
+            const prog_wp_t *cw = &rt->wp[d->wp];
+            bool slows = (uint16_t)(d->wp + 1u) >= rt->n || cw->action != (uint8_t)WP_ACT_CONTINUE;
             want_kn = fminf(fminf(d->set_kn, cw->speed_kn), in->max_kn);
             if (slows && d->leg.dist_m < TRIP_SLOW_M + cw->radius_m) {
                 float f = clampf((d->leg.dist_m - cw->radius_m) / TRIP_SLOW_M, 0.0f, 1.0f);

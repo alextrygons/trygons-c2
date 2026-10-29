@@ -20,6 +20,7 @@ void monitor_init(mon_t *m, uint32_t now_ms)
     m->last_hb_ms = now_ms;
     m->last_ms = now_ms;
     m->init_ms = now_ms;
+    m->node_bad_ms = now_ms;
 }
 
 static void trip(mon_t *m, mon_shared_t *sh, mon_reason_t r, uint32_t now_ms)
@@ -183,6 +184,8 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
         }
     }
 
+    if (!m->node_ok) m->node_bad_ms = now_ms;           /* step 13b (see node_bad_ms) */
+
     /* tripped: force the safe outputs (every time, latched in the HAL) */
     if (m->tripped) {
         hal_safe_outputs(sh->thr_idle_us, sh->gear_n_us);
@@ -190,7 +193,8 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
         if (m->can && (m->safe_sets == 0u || now_ms - m->safe_ms >= MON_SAFE_FRAME_MS)) {
             hal_can_safe_t f;
             bool alive = m->started && now_ms - m->last_hb_ms <= MON_HB_MS;     /* core 0 can still say the node is OK */
-            bool neutral = alive && m->node_ok && now_ms - m->trip_ms >= m->travel_ms;
+            bool neutral = alive && m->node_ok && now_ms - m->trip_ms >= m->travel_ms &&
+                           now_ms - m->node_bad_ms >= m->travel_ms;    /* (step 13b: also since the node's return) */
             /* once CPU1 sent neutral it HOLDS neutral (hold = what the node has now, never the pre-trip gear again;
              * found by storm I51 on the gear node, step 11g) */
             if (neutral) m->safe_neutral = true;

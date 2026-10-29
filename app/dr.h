@@ -96,6 +96,14 @@ typedef struct {
     uint8_t recover_fixes_suspect; /* after an integrity alarm: fixes needed (60), and the
                                    gate is 1 x uncertainty instead of 3 x */
     float blend_tau_s;          /* estimate -> GPS blend time after recovery (15) */
+    /* paddlewheel plausibility (step 13b): a wheel that reads ~0 (below pw_zero_kn) for pw_dead_ms while the
+     * boat clearly moves - trusted GPS SOG above pw_dead_sog_kn, or a gear engaged with the throttle above
+     * pw_dead_thr_pct - is DEAD (cut at rest, fouled): its speed is not used (water_ok false, the throttle
+     * table instead) until it reads a speed again (pulses). TO CONFIRM with the real sensor. */
+    float pw_zero_kn;           /* (0.3) */
+    float pw_dead_sog_kn;       /* (2.5: above a typical current, a drifting boat reads 0 legitimately) */
+    float pw_dead_thr_pct;      /* (15) */
+    uint32_t pw_dead_ms;        /* (5000) */
 } dr_config_t;
 
 typedef struct {
@@ -140,6 +148,9 @@ typedef struct {
     float    water_kn;          /* speed through water used now */
     float    thr_lp;            /* throttle delayed like the boat speed */
     bool     speed_sensor;      /* paddlewheel in use */
+    uint32_t pw_zero_ms;        /* the wheel reads ~0 while the boat moves, since (step 13b) */
+    bool     pw_dead;           /* ... long enough: the wheel is not used until it reads a speed again */
+    uint32_t pw_dead_events;
     float    heading_now;
 
     uint32_t last_ms;

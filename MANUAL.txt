@@ -1316,7 +1316,10 @@ RELAY BOARD (RS485 Modbus RTU: lights, pumps, trim, engine switches)
     with the engine conditions (throttle idle, gear neutral confirmed, e-stop
     released, no ENGINE KILL / monitor trip latched); SHUTOFF ON (= stop the
     engine) is ALWAYS allowed (also while driving, with the e-stop pressed or
-    the kill latched: stopping is never refused); OFF always.
+    the kill latched: stopping is never refused); OFF always. A SHUTOFF ON the
+    relay board can't take yet (silent, or not seen yet in the first second
+    after a reset) is kept and sent as soon as the board answers - for 10 s,
+    then it is dropped (check the engine: press SHUTOFF again).
   * power_up "on" is applied only ONCE, only with the first table after the
     AURIX's own power-on (never after a watchdog / software reset or a
     reconnect: then the board's states are read back and kept), and it only

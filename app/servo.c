@@ -26,7 +26,7 @@ void servo_init(servo_t *sv, const servo_config_t *c)
     sv->limit_pct = 0.0f;
     sv->clamped = false;
     sv->can = hal_servos_can();
-    sv->cfg_bad = sv->can && c->idle_us != SERVO_CAN_IDLE_US;
+    sv->cfg_bad = sv->can && (c->idle_us != SERVO_CAN_IDLE_US || c->full_us != SERVO_CAN_FULL_US);
     /* DroneCAN: after a boot the throttle position is UNKNOWN (the node held whatever it had) */
     sv->est_pct = sv->can ? 100.0f : 0.0f;
     sv->node_ok = !sv->can;
