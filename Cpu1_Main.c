@@ -55,7 +55,9 @@ void core1_main(void)
         IfxScuWdt_enableCpuWatchdog(pw);
     }
 
-    /* Wait for CPU sync event (core 0 has initialised the HAL) */
+    /* CPU sync event: waits 1 ms only (the iLLD starts CPU1 before core0_main) - core 0 is normally still in
+     * hal_init / the NV boot loop when the monitor starts (step 13e). The monitor needs nothing from core 0's
+     * HAL: it reads hal_servos_can() live until core 0's loop runs, MON_BOOT_MS counts from here. */
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
 

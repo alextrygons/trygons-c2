@@ -69,8 +69,23 @@ void core0_main(void)
 {
     IfxCpu_enableInterrupts();
 
-    /* Outputs to their safe state first (servo pins low, relay open), then
-     * let the other cores start (CPU1 = safety monitor needs the HAL). */
+    /* CPU1's safe pulses (throttle idle, gear neutral) as the VERY FIRST thing (step 13e, review 1f7817c LOW-2): the
+     * iLLD startup starts CPU1 BEFORE core0_main runs and CPU1 waits only 1 ms for the sync event, so the safety
+     * monitor already runs while core 0 is in hal_init / the NV boot loop - a monitor trip then forces these (from
+     * the running configuration), never 0 and never a constant that a different calibration would turn into FULL */
+#ifdef BOAT_VARIANT_BIG
+    monitor_publish_safe(&g_mon, 1000u, 1500u);         /* = monitor_publish_steering_only below */
+#else
+    sb_config_t cfg;
+    sb_default_config(&cfg);
+#ifdef FIRST_TEST
+    cfg.first_test = true;
+#endif
+    monitor_publish_safe(&g_mon, cfg.servo.idle_us, cfg.gear.pwm_n_us);
+#endif
+
+    /* Outputs to their safe state (servo pins low, relay open). NOT before the other cores start: CPU1 is
+     * already running (it reads hal_servos_can() live until core 0's loop runs - step 13e, monitor.c). */
     hal_init();
 
     /* CPU0 + safety watchdog ON (100 ms; the loop kicks every 50 ms).
@@ -92,19 +107,6 @@ void core0_main(void)
             hal_watchdog_kick();
         }
     }
-
-    /* CPU1's safe pulses (throttle idle, gear neutral) BEFORE the other cores start (step 13d, HIGH-1): a
-     * monitor trip before core 0's first control step forces these, never 0 */
-#ifdef BOAT_VARIANT_BIG
-    monitor_publish_safe(&g_mon, 1000u, 1500u);         /* = monitor_publish_steering_only below */
-#else
-    sb_config_t cfg;
-    sb_default_config(&cfg);
-#ifdef FIRST_TEST
-    cfg.first_test = true;
-#endif
-    monitor_publish_safe(&g_mon, cfg.servo.idle_us, cfg.gear.pwm_n_us);
-#endif
 
     /* Wait for CPU sync event */
     IfxCpu_emitEvent(&cpuSyncEvent);

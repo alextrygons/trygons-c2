@@ -78,6 +78,8 @@ bool cr_readback(void);          /* the board sends hardpoint.Status (else: the 
  * would undo an engine stop); every other channel keeps the 13b behaviour (an OFF burst: W42, an owner decision). */
 bool cr_take_cut(uint8_t n);
 void cr_hold_mask(uint32_t mask);
+uint32_t cr_hold(void);          /* step 13e: the hold mask now (tests) */
+uint32_t cr_cuts(void);          /* step 13e: the cut bits not taken yet (tests) */
 /* the commanded states to keep across a warm reset (a running pulse = off: the board's timeout ends it) */
 void cr_keep(uint32_t *known, uint32_t *on);
 

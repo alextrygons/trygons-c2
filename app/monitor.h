@@ -73,8 +73,10 @@
 #define MON_PROFILE_UNCREWED  2u  /* = SB_PROFILE_UNCREWED (smallboat.h) */
 /* step 13d: the safe pulses when the published ones are not usable (0 = core 0 has not published yet, or out
  * of MON_SAFE_MIN_US..MON_SAFE_MAX_US): the default throttle idle / gear neutral (sb_default_config) - never 0
- * (the board clamps 0 to 500 us = past REVERSE on the gear, past FULL on a reversed throttle). Core 0 publishes
- * its own values before the CPU sync event (monitor_publish_safe), so these are a last guard only. */
+ * (the board would clamp 0 to HAL_THROTTLE_PWM_MIN 800 us = toward REVERSE on the gear, toward FULL on a
+ * reversed throttle). MON_SAFE_* = HAL_SAFE_* = sb_default_config's servo.idle_us / gear.pwm_n_us (sim test C3f). Core 0 publishes
+ * its own values as the very first thing in core0_main (monitor_publish_safe, before hal_init - step 13e), so
+ * these are a last guard only. */
 #define MON_SAFE_THR_US  1000u
 #define MON_SAFE_GEAR_US 1500u
 #define MON_SAFE_MIN_US  800u     /* = HAL_THROTTLE_PWM_MIN */
@@ -158,8 +160,9 @@ typedef struct {
     bool         dm_on;         /* pulsing now (the conditions held) */
     /* the last consistent snapshot of the DroneCAN values */
     bool         can;
-    bool         can_hw;        /* step 13d: the HAL says the servos are DroneCAN nodes (hal_servos_can at monitor_init:
-                                 * the board truth) - a trip BEFORE core 0's control loop runs (MON_TRIP_BOOT) sends
+    bool         can_hw;        /* step 13d: the HAL says the servos are DroneCAN nodes (hal_servos_can at monitor_init
+                                 * and LIVE every step until core 0 runs - step 13e: on the board it turns TRUE only
+                                 * after core 0's dc_init, after CPU1's monitor_init) - a trip BEFORE core 0's control loop runs (MON_TRIP_BOOT) sends
                                  * the safe frames by it; once running, core 0's published can_servos as before */
     bool         steer_have, gear_have, node_ok, killed;
     float        steer_wire, gear_wire, gear_n_wire;

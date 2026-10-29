@@ -3689,6 +3689,20 @@ static void hardening_tests(void)
         hal_init();
     }
 
+    /* C3f (step 13e, review 1f7817c LOW-2): the last-guard safe pulses are the running defaults - MON_SAFE_* (monitor
+     *     fallback) and HAL_SAFE_* (the HAL's out-of-range guard) equal sb_default_config's servo.idle_us /
+     *     gear.pwm_n_us (a changed default without them = a trip before core 0 publishes forces the WRONG pulse) */
+    {
+        sb_config_t c;
+        sb_default_config(&c);
+        bool ok = MON_SAFE_THR_US == c.servo.idle_us && MON_SAFE_GEAR_US == c.gear.pwm_n_us &&
+                  HAL_SAFE_THR_US == c.servo.idle_us && HAL_SAFE_GEAR_US == c.gear.pwm_n_us;
+        snprintf(d, sizeof d, "default idle %u / neutral %u us; MON_SAFE %u / %u; HAL_SAFE %u / %u",
+                 (unsigned)c.servo.idle_us, (unsigned)c.gear.pwm_n_us, (unsigned)MON_SAFE_THR_US,
+                 (unsigned)MON_SAFE_GEAR_US, (unsigned)HAL_SAFE_THR_US, (unsigned)HAL_SAFE_GEAR_US);
+        test_report("C3f the fallback safe pulses (monitor + HAL) = the default throttle idle / gear neutral", ok, d);
+    }
+
     /* C3d R22: the monitor never checks a half-written set (seqlock): a throttle
      *     above the limit while core 0 is writing is not judged; once the set is
      *     complete and still wrong, it trips */
@@ -13449,6 +13463,50 @@ static void can_servo_tests(void)
         test_report("CN29 MON_TRIP_BOOT on DroneCAN (core 0 never steps): CPU1's safe frames, throttle idle at once",
                     boot_trip && fast && held && closed && no_dm, d);
     }
+    /* CN30 (step 13e, review 1f7817c HIGH-1): the BOARD's boot order - CPU1 runs monitor_init while core 0 is still
+     * in hal_init (the HAL's hal_servos_can() FALSE until dc_init: sim_hal_board_boot_begin), then core 0 finishes
+     * hal_init and hangs before its loop with the throttle node half open (OA-1): MON_TRIP_BOOT must still send
+     * CPU1's throttle IDLE frame (the monitor reads the HAL live until core 0 runs), and the throttle closes */
+    {
+        static sbsim_t x;
+        sm_boot(&x, 2353u, 12.0f, 0.03f, NULL);
+        sim_hal_can_servo_set(DC_NODE_THROTTLE, 0.0f);     /* the pre-reset throttle: half open (wire 0.0 = 50 %) */
+        sim_hal_can_act_clear();
+        x.wdt_ms = 0u;
+        x.frozen = true;                                   /* core 0: no control step, no actuator task */
+        sim_hal_board_boot_begin();                        /* chip reset: the HAL's flag is its bss */
+        memset((void *)&g_mon, 0, sizeof g_mon);
+        monitor_publish_safe(&g_mon, x.cfg.servo.idle_us, x.cfg.gear.pwm_n_us);  /* core0_main's first line */
+        monitor_init(&x.mon, x.t);                         /* CPU1 starts (1 ms sync wait) */
+        uint32_t t0 = x.t;
+        bool early = !hal_servos_can() && !x.mon.can_hw;
+        sbsim_run(&x, x.t + 40u, NULL, NULL);              /* CPU1 runs, core 0 still in hal_init */
+        bool early2 = !x.mon.can_hw;
+        hal_init();                                        /* core 0's hal_init (dc_init) ends ... */
+        x.frozen = true;                                   /* ... and core 0 hangs before its control loop */
+        while (!x.mon.tripped && x.t < t0 + MON_BOOT_MS + 500u) sbsim_run(&x, x.t + 10u, NULL, NULL);
+        uint32_t t_trip = x.t;
+        bool boot_trip = x.mon.tripped && x.mon.reason == MON_TRIP_BOOT;
+        float thr0 = sim_hal_thr_truth();
+        sbsim_run(&x, x.t + 30u, NULL, NULL);
+        sim_can_act_t a1, a2, a3;
+        sim_hal_can_act(1u, &a1);
+        bool fast = a1.n_cpu1 > 0u && a1.cpu1_ms <= t_trip + 30u && a1.last_cpu1 <= -0.999f && a1.n_core0 == 0u;
+        sbsim_run(&x, x.t + 7000u, NULL, NULL);
+        sim_hal_can_act(1u, &a1); sim_hal_can_act(2u, &a2); sim_hal_can_act(3u, &a3);
+        float thr1 = sim_hal_thr_truth();
+        bool held = a2.n_cpu1 == 0u && a3.n_cpu1 == 0u;
+        bool closed = thr0 > 20.0f && thr1 <= 1.0f;
+        x.frozen = false;
+        snprintf(d, sizeof d, "monitor_init before hal_init: HAL says CAN %s (monitor %s), 40 ms later %s; core 0 hangs "
+                 "after hal_init: %s after %u ms; CPU1 throttle IDLE frame %s (%u frames, core 0 %u); steering / gear "
+                 "frames %u / %u; throttle %.0f %% -> %.0f %% after 7 s",
+                 early ? "no" : "YES", early ? "no" : "YES", early2 ? "no" : "YES", monitor_reason_name(x.mon.reason),
+                 (unsigned)(t_trip - t0), fast ? "yes" : "NO", (unsigned)a1.n_cpu1, (unsigned)a1.n_core0,
+                 (unsigned)a2.n_cpu1, (unsigned)a3.n_cpu1, (double)thr0, (double)thr1);
+        test_report("CN30 board boot order (CPU1 before core 0's hal_init): MON_TRIP_BOOT still sends the idle frame",
+                    early && early2 && boot_trip && fast && held && closed, d);
+    }
 }
 
 void sb_steer_tests(void)
@@ -14640,6 +14698,60 @@ static void relay_bus_tests(void)
         }
         test_report("RB23 DroneCAN relays: a SHUTOFF ON burst cut by the board going silent is queued again (10 s), "
                     "never an automatic OFF", res[0] && res[1], d);
+        sim_hal_relay_board(true, 5u, 0u);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
+
+    /* RB24 (step 13e, review 1f7817c LOW-4) DroneCAN relay board: (a) the SHUTOFF hold mask is in the driver right
+     * after a (warm) boot with the stored table - before relays_step ever ran (cr_init clears it); (b) a cut reported
+     * for a channel that is no longer in the table (the table changed between the cut and the next step) is dropped
+     * at the next step, never left for a later table */
+    {
+        static sbsim_t x;
+        static relay_table_t t, t5;
+        s_rb_can = true;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1733u, NULL, &t) && rb_can();
+        sim_hal_relay_board(true, 5u, SIM_RB_NO_READBACK);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        rb_power_cycle(&x, HAL_RESET_SYSTEM);              /* hal_init (cr_init) + sb_init: no relays_step yet */
+        bool from_nv = x.sb.relays.have_table && x.sb.relays.from_nv;
+        bool hold_a = cr_hold() == rb_bit(3);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        sb_alarm_ack(&x.sb);
+        /* (b) NAV LIGHTS ON one frame before the board is lost: the ON burst is cut */
+        hal_can_node_t nn;
+        sim_hal_can_node_silent(DC_NODE_RELAY, true);
+        uint32_t tw = x.t;
+        do {
+            sbsim_run(&x, x.t + 1u, NULL, NULL);
+            (void)dc_node(HAL_CAN_ROLE_RELAY, &nn);
+        } while (nn.age_ms + CR_PERIOD_MS + 2u < HAL_RELAY_LOST_MS && x.t < tw + 5000u);
+        sb_result_t r_on = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u);
+        bool seen = false;
+        for (uint32_t k = 0; k < 400u && !seen; k++) {      /* the 1 ms the driver reports the cut (before a step) */
+            x.next_ctrl += 1u;                              /* (hold core 0's step: the table changes first) */
+            sbsim_run(&x, x.t + 1u, NULL, NULL);
+            seen = (cr_cuts() & rb_bit(6)) != 0u;
+        }
+        t5 = t;
+        t5.count = 5u;                                      /* the new table: NAV LIGHTS + BILGE PUMP gone */
+        relay_table_seal(&t5);
+        relays_init(&x.sb.relays, &t5, false, false);
+        bool hold_b = cr_hold() == rb_bit(3);
+        x.next_ctrl = x.t;
+        sbsim_run(&x, x.t + 60u, NULL, NULL);               /* one control step */
+        bool dropped = (cr_cuts() & rb_bit(6)) == 0u;
+        sim_hal_can_node_silent(DC_NODE_RELAY, false);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        snprintf(d, sizeof d, "table %s; (a) warm boot, table from NV %s, hold mask before the first step 0x%lx "
+                 "(SHUTOFF = 0x%lx); (b) NAV LIGHTS ON -> %d, cut reported %s, new table without it: hold 0x%lx, the "
+                 "stale cut dropped at the next step %s",
+                 loaded ? "yes" : "NO", from_nv ? "yes" : "NO", (unsigned long)cr_hold(), (unsigned long)rb_bit(3),
+                 (int)r_on, seen ? "yes" : "NO", (unsigned long)cr_hold(), dropped ? "yes" : "NO");
+        test_report("RB24 DroneCAN relays: the SHUTOFF hold mask from the table's activation; stale cut bits dropped",
+                    loaded && from_nv && hold_a && r_on == SB_OK && seen && hold_b && dropped, d);
         sim_hal_relay_board(true, 5u, 0u);
         remove("nv7.bin");
         sim_hal_relay_board_reset();

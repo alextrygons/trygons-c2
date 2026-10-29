@@ -317,6 +317,7 @@ typedef struct {
     proto_rx_t  usb_rx, gw_rx;
     mon_t       mon;
     uint32_t    t, next_ctrl, last_kick, boot_until, wdt_ms, frozen_until, resets, boots;
+    uint32_t    boot_ms;            /* step 13e (review 1f7817c LOW-3): the time of the last boot() (I51) */
     bool        frozen;
     bool        gw_on;
     uint32_t    gw_next;
@@ -375,6 +376,7 @@ static void joy_apply(void)
 static void boot(void)
 {
     sim_hal_can_act_clear();            /* I51: the first ArrayCommand of this boot */
+    S.boot_ms = S.t;                    /* (step 13e: here, not at the first check after it) */
     hal_init();
     sb_init(&S.sb, &S.cfg);
     link_init(&S.usb, &S.sb);
@@ -839,7 +841,7 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
         C.boot_first_checked = true;
     }
     if (s->servo.gear_sent && C.gear_sent_prev == 0u) {
-        float since = (S.t - C.boot_t) * 0.001f;
+        float since = (float)(int32_t)(S.t - S.boot_ms) * 0.001f;     /* step 13e: signed, from boot() itself */
         /* step 13d (review f9c3752 MED-3): the time alone - the old "|| est_pct <= 0" escape was always true here
          * (servo.c sends the first gear frame only at est_pct <= 0), so the clause could never fail */
         if (since + 0.06f >= s->servo.cfg.travel_s) ok(51);
@@ -851,7 +853,9 @@ static void check_can(sb_t *s, sb_mode_t m, float thr, bool forced, bool inj, fl
         sim_can_act_t ga;
         sim_hal_can_act(CA_ACT_GEAR, &ga);
         if (ga.any) {
-            float since = (float)(ga.first_ms - C.boot_t) * 0.001f;
+            /* step 13e (review 1f7817c LOW-3): signed, from boot() itself - a frame BEFORE the first check after
+             * the boot (or before the boot) is negative = FAIL, never a wrapped huge "pass" */
+            float since = (float)(int32_t)(ga.first_ms - S.boot_ms) * 0.001f;
             if (since + 0.06f >= s->servo.cfg.travel_s) ok(51);
             else fail(51, "the first gear frame on the bus %.2f s after the boot (travel %.1f s)", since,
                       s->servo.cfg.travel_s);
@@ -999,7 +1003,7 @@ static void check_step(void)
         C.forced_prev = forced;
         C.kc_prev = s->eng.kill_clears;
         /* step 11e */
-        C.boot_t = S.t;
+        C.boot_t = S.boot_ms;
         C.boot_first_checked = false;
         C.boot_gear_checked = false;
         C.steered_since_boot = false;

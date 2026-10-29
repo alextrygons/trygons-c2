@@ -129,7 +129,12 @@ void hal_set_steer_pos(bool command, float pos)
     ca_set_steer(command, pos);
 }
 
-bool hal_servos_can(void) { return s_servos_can; }
+/* step 13e: the board's order after a chip reset - CPU1 runs before core 0's hal_init, whose dc_init sets the
+ * flag; sim_hal_board_boot_begin() models that window (the HAL's flag FALSE = its bss), hal_init ends it. The world
+ * (sim_hal_servos_can: the nodes are fitted) is not affected. */
+static bool s_hal_bss;
+void sim_hal_board_boot_begin(void) { s_hal_bss = true; }
+bool hal_servos_can(void) { return s_servos_can && !s_hal_bss; }
 float sim_hal_steer_cmd(bool *have)
 {
     if (have) *have = s_steer_have;
@@ -1766,6 +1771,7 @@ static void sc_purge(void)
 
 static void sc_driver_init(void)
 {
+    s_hal_bss = false;                           /* step 13e: dc_init done -> hal_servos_can() is the truth */
     s_sc_boot_fitted = s_sc_fitted;
     s_servos_can = s_sc_fitted && s_sc_servos;
     s_steer_have = false;

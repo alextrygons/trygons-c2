@@ -144,6 +144,7 @@ uint32_t sim_hal_can_node_statuses(uint8_t id);
  * play in the app's sign (+ = starboard); PWM hardware: the commands. */
 void     sim_hal_can_servos(bool on);
 bool     sim_hal_servos_can(void);          /* the servos are DroneCAN nodes since the last hal_init */
+void     sim_hal_board_boot_begin(void);    /* step 13e: hal_servos_can() FALSE until the next hal_init (board bss) */
 float    sim_hal_thr_truth(void);
 float    sim_hal_gear_truth_us(void);
 float    sim_hal_steer_truth(void);

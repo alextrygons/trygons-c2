@@ -200,6 +200,11 @@ bool monitor_step(mon_t *m, mon_shared_t *sh, uint32_t now_ms)
 
     if (!m->node_ok) m->node_bad_ms = now_ms;           /* step 13b (see node_bad_ms) */
 
+    /* step 13e (review 1f7817c HIGH-1): until core 0's loop runs, the HAL's word is read LIVE every step - on the
+     * board CPU1 runs monitor_init while core 0 is still in hal_init (dc_init), so hal_servos_can() is FALSE
+     * there and becomes TRUE only once the controller is up (then hal_can_safe_send is safe) */
+    if (!m->started && !m->can_hw) m->can_hw = hal_servos_can();
+
     /* tripped: force the safe outputs (every time, latched in the HAL) */
     if (m->tripped) {
         hal_safe_outputs(monitor_safe_us(sh->thr_idle_us, MON_SAFE_THR_US),     /* never 0 (step 13d, HIGH-1) */

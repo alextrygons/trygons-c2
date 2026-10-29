@@ -205,6 +205,16 @@ void cr_hold_mask(uint32_t mask)
     s_hold = mask & s_mask;
 }
 
+uint32_t cr_hold(void)
+{
+    return s_hold;
+}
+
+uint32_t cr_cuts(void)
+{
+    return s_cut;
+}
+
 bool cr_pulse(uint8_t n, uint16_t ms)
 {
     if (!s_up || n < 1u || n > s_cfg.channels || ms == 0u) return false;

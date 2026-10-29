@@ -150,13 +150,15 @@ else
     echo "hal_safe_outputs (board) does NOT drive the outputs itself"; fail=1
 fi
 # step 13d (HIGH-1): a trip before core 0's first step never forces 0 us: the board HAL replaces an out-of-range
-# pulse, the monitor falls back, Cpu0_Main.c publishes the safe pulses BEFORE the CPU sync event (both variants)
+# pulse, the monitor falls back, Cpu0_Main.c publishes the safe pulses BEFORE hal_init (both variants; step 13e: CPU1
+# already runs then) and the monitor reads hal_servos_can() LIVE until core 0's loop runs (13e, review 1f7817c HIGH-1)
 if echo "$safe" | grep -q "HAL_SAFE_THR_US" && echo "$safe" | grep -q "HAL_SAFE_GEAR_US" &&
    grep -q "monitor_safe_us(sh->thr_idle_us, MON_SAFE_THR_US)" app/monitor.c &&
    grep -q "monitor_safe_us(sh->gear_n_us, MON_SAFE_GEAR_US)" app/monitor.c &&
    grep -q "m->can_hw = hal_servos_can()" app/monitor.c && grep -q "(!m->started && m->can_hw)" app/monitor.c &&
-   [ "$(sed -n '1,/IfxCpu_emitEvent/p' Cpu0_Main.c | grep -c 'monitor_publish_safe(&g_mon')" -ge 2 ]; then
-    echo "safe pulses before core 0's first step: board HAL guard, monitor fallback, published before the CPU sync"
+   grep -q "if (!m->started && !m->can_hw) m->can_hw = hal_servos_can();" app/monitor.c &&
+   [ "$(sed -n '1,/^    hal_init();/p' Cpu0_Main.c | grep -c 'monitor_publish_safe(&g_mon')" -ge 2 ]; then
+    echo "safe pulses before core 0's first step: board HAL guard, monitor fallback + live hal_servos_can, published before hal_init"
 else
     echo "safe pulses before core 0's first step NOT guarded (hal_safe_outputs / monitor.c / Cpu0_Main.c)"; fail=1
 fi

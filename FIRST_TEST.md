@@ -238,6 +238,14 @@ measured value / answer here.
       step), wait > 3 s (MON_TRIP_BOOT): scope the throttle / gear PWM = the configured idle /
       neutral pulse ____ us / ____ us (NEVER ~500 us); with the DroneCAN servos: CAN trace shows
       CPU1's throttle IDLE (-1.0) frames every 20 ms ____ , no steering / gear frame ____ .
+- [ ] (step 13e, W43) Boot time: core 0's time from reset to its first control step (log / GPIO
+      toggle / ADS trace) ____ ms - must be < 1.5 s (CPU1's MON_BOOT_MS 3 s counts from CPU1's
+      start, which is ~1 ms after core 0's); also with the SD card out and after a data-flash
+      sector swap ____ ms.
+- [ ] (step 13e, review 1f7817c HIGH-1) Boot trip with the DroneCAN servos, core 0 halted in ADS
+      INSIDE hal_init right after dc_init (not after the sync): CAN trace shows CPU1's throttle
+      IDLE (-1.0) frames every 20 ms after ~3 s ____ ; halted BEFORE dc_init: no CAN frame at all
+      (the controller is not started), throttle / gear pins low ____ .
 - [ ] (step 13d, review 49353b2 LOW-3) CAN trace at a monitor trip while driving (bench trip test
       with the servos on CAN): count core 0's ArrayCommands after the trip - at most ONE (already
       in transmission, TXBCR can't pull it back) ____ , CPU1's idle frame within 20 ms ____ .

@@ -133,6 +133,16 @@ static void table_activate(relays_t *r, const relay_table_t *t, bool from_nv)
     r->log_seq++;
 }
 
+/* step 13d / 13e: the SHUTOFF channel of the active table = the bus driver's hold mask (no automatic OFF burst for a
+ * cut SHUTOFF ON). Step 13e (review 1f7817c LOW-4): set at every table activation too, not only by relays_step. */
+static uint32_t shutoff_hold(const relays_t *r)
+{
+    uint32_t hold = 0u;
+    for (uint8_t i = 0; r->have_table && i < r->table.count; i++)
+        if (r->table.r[i].role == RELAY_ROLE_SHUTOFF && !r->first_test) hold |= 1u << (r->table.r[i].n - 1u);
+    return hold;
+}
+
 void relays_init(relays_t *r, const relay_table_t *stored, bool power_on_reset, bool first_test)
 {
     relay_table_t empty;
@@ -146,6 +156,7 @@ void relays_init(relays_t *r, const relay_table_t *stored, bool power_on_reset, 
     relay_table_seal(&empty);
     r->hash = relay_table_hash(&empty);                 /* "no table" = the empty table's hash */
     if (stored && relay_table_valid(stored) && relays_table_fits(stored)) table_activate(r, stored, true);
+    hal_relay_cut_hold(shutoff_hold(r));                 /* step 13e: from the start (the driver's cr_init cleared it) */
 }
 
 bool relays_offer_same(const relays_t *r, const relay_table_t *t)
@@ -175,6 +186,7 @@ bool relays_accept(relays_t *r, bool standby_idle)
     if (!r->offer_pending || !standby_idle) return false;
     r->offer_pending = false;
     table_activate(r, &r->offer, false);
+    hal_relay_cut_hold(shutoff_hold(r));                 /* step 13e: the new table's SHUTOFF at once */
     r->table_new = true;
     return true;
 }
@@ -350,19 +362,23 @@ void relays_step(relays_t *r, uint32_t now_ms)
      * cancelled: never an automatic OFF that undoes an engine stop); every other relay: the driver's 13b behaviour
      * (W42 - an owner decision) */
     {
-        uint32_t hold = 0u;
+        uint32_t in_table = 0u;
         for (uint8_t i = 0; r->have_table && i < r->table.count; i++) {
             uint8_t n = r->table.r[i].n;
             uint32_t bit = 1u << (n - 1u);
             bool sh = r->table.r[i].role == RELAY_ROLE_SHUTOFF && !r->first_test;
-            if (sh) hold |= bit;
+            in_table |= bit;
             if (hal_relay_cut(n) && sh && (r->cmd_on & bit) && !(r->shutoff_pending & bit)) {
                 r->shutoff_pending |= bit;
                 r->shutoff_until_ms = now_ms + RELAY_SHUTOFF_RETRY_MS;
                 r->shutoff_cut++;
             }
         }
-        hal_relay_cut_hold(hold);
+        /* step 13e (review 1f7817c LOW-4): a cut reported for a channel that is not in the table (a table change
+         * between the cut and this step) is stale - dropped, never consumed later by another table */
+        for (uint8_t n = 1u; n <= r->channels && n <= 32u; n++)
+            if (!(in_table & (1u << (n - 1u)))) (void)hal_relay_cut(n);
+        hal_relay_cut_hold(shutoff_hold(r));
     }
     /* step 13b: a queued SHUTOFF ON - sent once the board takes it, dropped after RELAY_SHUTOFF_RETRY_MS */
     for (uint8_t i = 0; r->have_table && r->shutoff_pending && i < r->table.count; i++) {

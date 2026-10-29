@@ -955,3 +955,26 @@ fallbacks), CN29 (MON_TRIP_BOOT on DroneCAN: CPU1 idle at once, no steering / ge
 (SHUTOFF ON cut one frame in: queued again, delivered when the board is back, never OFF in between; back after the
 retry time: nothing late); tools/check.sh greps the board path (HAL guard, monitor fallback, the publish before the
 CPU sync); storm I51 + the I59 coverage check.
+
+## 21. Step 13e - fixes from the review of 1f7817c (2026-10-29)
+
+1. (HIGH) The 13d MON_TRIP_BOOT fix (section 20 item 2) did not hold on the BOARD: the iLLD startup starts CPU1
+   BEFORE core0_main runs and CPU1's `IfxCpu_waitEvent(&cpuSyncEvent, 1)` waits 1 ms only, so `monitor_init` runs
+   while core 0 is still in hal_init (dc_init) - `hal_servos_can()` read once there was FALSE and stayed FALSE, and a
+   boot trip sent no throttle IDLE frame (the sim passed: its harness calls hal_init before monitor_init). Now the
+   monitor reads `hal_servos_can()` LIVE every step until core 0's loop runs (`mon_t.can_hw`); the flag is volatile in
+   core 0's DSPR and turns TRUE only at the end of dc_init + ca_init, so `hal_can_safe_send` is safe from then on. The
+   sim reproduces the board order (`sim_hal_board_boot_begin`: the HAL's flag FALSE until the next hal_init; test
+   CN30: monitor_init before hal_init, core 0 hangs after hal_init: CPU1's idle frame within 30 ms, the throttle
+   closes - fails without the live read). tools/check.sh greps the live read. The false comments in Cpu0_Main.c /
+   Cpu1_Main.c ("before the other cores start", "core 0 has initialised the HAL") are corrected. Timing: MON_BOOT_MS
+   (3 s) counts from CPU1's start = about core0_main's start, so hal_init + the NV boot loop (up to 2 s) + sb_init
+   must stay below 3 s on the board - unchanged, WAITING FOR OWNER W43 (bench measurement, FIRST_TEST.md 3).
+2. (LOW) The safe pulses (`monitor_publish_safe`, from sb_default_config) are now published as the VERY FIRST thing in
+   core0_main, before hal_init (the monitor already runs then); test C3f: MON_SAFE_* = HAL_SAFE_* = the default
+   servo.idle_us / gear.pwm_n_us. monitor.h comment: the board would clamp 0 to 800 us (HAL_THROTTLE_PWM_MIN).
+3. (LOW) Storm I51: the boot time is set in boot() itself (`S.boot_ms`) and the differences are signed - a gear frame
+   before the first check after a (warm) boot is negative = FAIL (it used to wrap to a huge "pass").
+4. (LOW) relays.c sets the SHUTOFF hold mask (`hal_relay_cut_hold`) when a table is activated (relays_init from NV,
+   relays_accept) as well as every step, and drops stale cut bits of channels not in the table. Test RB24.
+
