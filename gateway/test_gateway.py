@@ -3824,6 +3824,130 @@ def section_dp():
 
 
 
+def section_ar():
+    """CLAUDE.md R / D, step 13: AUTO RETURN through the gateway - the way back (the program's waypoints before the
+    active one, backwards, from the boat) checked like a DP TRIP: shallow water (114), the geofence (120), only a
+    program the gateway checked (121); a copilot's AUTO return goes straight (no captain's ACCEPT) - the boat still
+    wants the joystick CONFIRM."""
+    print("\n=== Section AR: AUTO RETURN through the gateway (checked way back, copilot without ACCEPT) ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_ar_")
+    sim = gw = None
+    try:
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        charts = os.path.join(tmp, "charts")
+        sim_chart(charts, n_lat=400, n_lon=400)             # deep water, a 1.5 m shoal 2 km east of the boat
+        cfg = gw_cfg_b(sim, root, charts_dir=charts, stations={"driver_timeout_s": 3.0},
+                       shallow={"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0, "clearance_m": 50.0})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+        alice.pump(1.0)
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        bob = Client(sp, "bob", PW["bob"], name="copilot")
+        bob.pump(1.0)
+        w.until(lambda d: d.get("pos_source", 0) != 0, 10)
+
+        # AR1 deep water: the captain's AUTO return is checked and passed on (the boat waits for the CONFIRM); the
+        # copilot's goes straight too (no captain's screen open = no question: COPILOT_FREE, like AUTO pause)
+        a_deep = upload(alice, [east_of(0, 800), east_of(0, 1600)], kn=8.0)
+        viagw = w.until(lambda d: d["prog_n"] == 2 and d.get("prog_gw"), 4)
+        r_cap = alice.result(alice.cmd(proto.T_AUTO_RETURN))
+        pend = w.until(lambda d: d["confirm_kind"] == 10, 3)
+        alice.cmd(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY))           # (cancels the request)
+        w.until(lambda d: d["confirm_kind"] == 0, 3)
+        r_cop = bob.result(bob.cmd(proto.T_AUTO_RETURN))
+        pend_c = w.until(lambda d: d["confirm_kind"] == 10, 3)
+        alice.cmd(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY))
+        w.until(lambda d: d["confirm_kind"] == 0, 3)
+        r_cop_sea = bob.result(bob.cmd(proto.T_SEA_STATE, proto.p_sea_state(3)))   # a normal driving action: 109
+        report("AR1 AUTO return through the gateway: checked + passed on (the boat waits for the CONFIRM); a copilot's "
+               "goes straight without the captain's ACCEPT (another copilot action still waits for screen 1)",
+               a_deep and a_deep["result"] == 0 and viagw is not None and r_cap == 0 and pend is not None and
+               r_cop == 0 and pend_c is not None and r_cop_sea == 109,
+               "program %s (through the gateway %s); captain -> %s, waiting for the CONFIRM %s; copilot -> %s, waiting "
+               "%s; copilot sea state -> %s (109 = the captain's screen 1 not open)" % (
+                   a_deep and a_deep["result"], viagw is not None, r_cap, pend is not None, r_cop,
+                   pend_c is not None, r_cop_sea))
+
+        # AR2 the way back crosses the shoal: refused (114, audited, nothing waits on the boat); the geofence (120)
+        a_sh = upload(alice, [east_of(3500)], kn=8.0)                       # waypoint 1 behind the shoal
+        w.until(lambda d: d["prog_n"] == 1 and d.get("prog_gw"), 4)
+        n0 = len(g.audit.recent)
+        r_sh = alice.result(alice.cmd(proto.T_AUTO_RETURN))
+        w.pump(0.5)
+        pend_sh = w.telem.get("confirm_kind")
+        aud = [e for e in list(g.audit.recent)[n0:] if e["kind"] == "auto_return_refused"]
+        a_two = upload(alice, [east_of(0, 1500)], kn=8.0)
+        w.until(lambda d: d["prog_n"] == 1 and d.get("prog_gw"), 4)
+        alice.l.send_msg({"t": "geofence", "poly": [list(p_) for p_ in fence_around(1000.0)],
+                          "what": "geofence: 4 corners"})
+        k, ack_f = next_event(alice, ("geofence_ack",), 4.0)
+        r_fence = alice.result(alice.cmd(proto.T_AUTO_RETURN))
+        alice.l.send_msg({"t": "geofence", "poly": [], "what": "geofence: clear"})
+        next_event(alice, ("geofence_ack",), 4.0)
+        report("AR2 AUTO return whose way back crosses shallow water refused (114, audited, nothing waits on the "
+               "boat); leaving the geofence refused (120)",
+               a_sh and a_sh["result"] == 0 and r_sh == 114 and pend_sh == 0 and len(aud) == 1 and
+               a_two and a_two["result"] == 0 and ack_f and ack_f["ok"] and r_fence == 120,
+               "program behind the shoal %s: return %s, waiting %s, audited %d; fence %s: return %s" % (
+                   a_sh and a_sh["result"], r_sh, pend_sh, len(aud), ack_f and ack_f.get("text"), r_fence))
+
+        # AR3 the way back the gateway checks = the waypoints before the active one, backwards, from the boat;
+        # without a checked copy (USB / the boat's memory / a gateway restart) -> 121
+        seen = []
+
+        class Fake:
+            pass
+        f = Fake()
+        f.prog_wps = [east_of(0, 500), east_of(0, 1000), east_of(0, 1500), east_of(0, 2000)]
+        f.prog_ack_new = False
+        f.telem = {"auto_wp": 2, "prog_gw": True, "prog_n": 4, "prog_returning": False}
+        f.own = lambda: {"lat": SIM_LAT, "lon": SIM_LON + 0.01}
+
+        class Rec:
+            def check_program(self, wps, start=None):
+                seen.append((list(wps), start))
+                return None
+
+            def check(self, wps, start=None):
+                return None
+        f.shallow = Rec()
+        f.geofence = Rec()
+        f.audit = lambda *a, **kw: None
+        st = Fake()
+        st.id, st.user = 1, "alice"
+        r_mid = g.__class__.check_prog(f, st, proto.T_AUTO_RETURN, b"")
+        f.telem = dict(f.telem, auto_wp=0)
+        r_first = g.__class__.check_prog(f, st, proto.T_AUTO_RETURN, b"")
+        f.telem = dict(f.telem, prog_gw=False)
+        r_usb = g.__class__.check_prog(f, st, proto.T_AUTO_RETURN, b"")
+        f.telem = dict(f.telem, prog_gw=True, prog_n=3)
+        r_stale = g.__class__.check_prog(f, st, proto.T_AUTO_RETURN, b"")
+        want_mid = [f.prog_wps[1], f.prog_wps[0]]
+        report("AR3 the way back the gateway checks: waypoints before the active one backwards from the boat (on the "
+               "first leg: waypoint 1); a program the gateway did not check (USB / stale) -> 121",
+               r_mid is None and r_first is None and len(seen) == 2 and seen[0][0] == want_mid and
+               seen[0][1] == (SIM_LAT, SIM_LON + 0.01) and seen[1][0] == [f.prog_wps[0]] and
+               isinstance(r_usb, tuple) and r_usb[0] == 121 and isinstance(r_stale, tuple) and r_stale[0] == 121,
+               "active waypoint 3 -> checked %s; first leg -> %s; USB -> %s; stale -> %s" % (
+                   seen[0][0] if seen else None, seen[1][0] if len(seen) > 1 else None,
+                   r_usb and r_usb[0], r_stale and r_stale[0]))
+
+        alice.close()
+        bob.close()
+        link.stop()
+    finally:
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 AL_KEY = "academy-key-0123456789abcdefghij"
 
 
@@ -3939,7 +4063,8 @@ def section_al():
         shutil.rmtree(tmp, ignore_errors=True)
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
-            "G": section_g, "GF": section_gf, "RL": section_rl, "DP": section_dp, "AL": section_al}
+            "G": section_g, "GF": section_gf, "RL": section_rl, "DP": section_dp, "AR": section_ar,
+            "AL": section_al}
 
 
 def main():

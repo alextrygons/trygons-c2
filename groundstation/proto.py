@@ -37,6 +37,7 @@ T_AUTO_START = 0x24        # then joystick CONFIRM within 10 s
 T_AUTO_PAUSE = 0x25
 T_AUTO_RESUME = 0x26       # then joystick CONFIRM within 10 s
 T_AUTO_SKIP = 0x27
+T_AUTO_RETURN = 0x13       # AUTO RETURN: the program backwards from the current leg to waypoint 1; then CONFIRM
 T_POWER_CODE = 0x28        # u8 dir (0 fwd, 1 rev): the boat shows a code
 T_POWER_RAISE = 0x29       # u8 dir, u16 typed code; then joystick CONFIRM within 10 s
 T_POWER_LOWER = 0x2A       # back to 30 % / 5 % at once
@@ -76,7 +77,7 @@ T_CAN_NODES = 0x8E         # AURIX -> USB laptop, 1 Hz while a CAN bus is fitted
 # sent to the AURIX after the captain's ACCEPT on screen 1 (or in SINGLE-OPERATOR mode
 # after the own confirmation). Never STANDBY. PROG_COMMIT = a new AUTO route (the frames
 # before it only fill the AURIX's staging area; COMMIT makes it the route).
-DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_HEADING_ADJ, T_SEA_STATE,
+DRIVING_CMDS = {T_SET_MODE, T_AUTO_START, T_AUTO_PAUSE, T_AUTO_RESUME, T_AUTO_SKIP, T_AUTO_RETURN, T_HEADING_ADJ, T_SEA_STATE,
                 T_TRAINING, T_PARAM_SET, T_POWER_CODE, T_PROG_COMMIT, T_GENERATOR, T_RELAY, T_RELAY_CFG, T_RESTART,
                 T_THRUSTER_CFG, T_DP}
 # (T_THRUSTER_CFG = the DP thruster settings: a copilot's always needs the captain's ACCEPT, like the relay table)
@@ -132,7 +133,7 @@ TYPE_NAMES = {
     T_PARAM_SET: "param write", T_JOY_CAL: "joystick calibration", T_ALARM_ACK: "alarm ack",
     T_PROG_BEGIN: "program begin", T_PROG_WP: "program waypoint", T_PROG_COMMIT: "program upload",
     T_PROG_GET: "program read", T_AUTO_START: "AUTO start", T_AUTO_PAUSE: "AUTO pause",
-    T_AUTO_RESUME: "AUTO resume", T_AUTO_SKIP: "AUTO skip",
+    T_AUTO_RESUME: "AUTO resume", T_AUTO_SKIP: "AUTO skip", T_AUTO_RETURN: "AUTO return",
     T_POWER_CODE: "power code", T_POWER_RAISE: "power raise", T_POWER_LOWER: "power lower",
     T_SIM_JOYSTICK: "sim joystick", T_SIM_GPS: "sim GPS", T_SIM_BUTTON: "sim button",
     T_JOYMAP_GET: "joystick map read", T_JOYMAP_SET: "joystick map write", T_JOY_RAW_GET: "joystick raw read",
@@ -327,7 +328,7 @@ def decode_can_nodes(payload: bytes) -> dict:
 
 AUTO_STATES = ["running", "PAUSED", "STOPPED AT WAYPOINT", "HOLDING (fallback)"]
 CONFIRM_KINDS = ["", "AUTO START", "AUTO RESUME", "POWER RAISE FWD", "POWER RAISE REV", "REMOTE DRIVING", "MANEUVER",
-                 "RELAY TABLE", "DP"]
+                 "RELAY TABLE", "DP", "THROTTLE TRAVEL", "AUTO RETURN"]
 REMOTE_STATES = ["off", "DRIVING", "LINK LOST"]
 REMOTE_LOST_WHY = ["", "no data (gap > 300 ms)", "data too old", "latency too high"]
 WP_ACTIONS = ["continue", "slow", "stop"]
@@ -617,6 +618,7 @@ def decode_telemetry(payload: bytes) -> dict:
     d["prog_suspended"] = bool(d["auto_flags"] & 2)
     d["prog_finished"] = bool(d["auto_flags"] & 4)
     d["prog_gw"] = bool(d["auto_flags"] & 8)        # loaded over the gateway link (its route was checked there)
+    d["prog_returning"] = bool(d["auto_flags"] & 16)    # AUTO RETURN: driving the program back (auto_wp = its waypoint)
     d["confirm_left_s"] = d["confirm_left_ds"] / 10.0
     d["power_code_left_s"] = d["power_code_left_ds"] / 10.0
     d["speed_limited"] = bool(d["power_flags"] & 1)

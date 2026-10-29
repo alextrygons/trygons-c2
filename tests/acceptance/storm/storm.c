@@ -12,6 +12,7 @@
  * worst-case 6 s / 12 s or the fast 2 s / 3 s servos, chosen from the seed
  * without changing the other draws) with CAN faults (node lost / silent /
  * rebooted, bus-off, the actuator task stuck); invariants I47-I57.
+ * Step 13: AUTO RETURN requests (part of the AUTO start / resume draws); invariant I58.
  * A failing episode is replayed with fewer events until the shortest
  * schedule that still fails remains (the "minimal reproduction").
  *
@@ -70,7 +71,7 @@ typedef enum {
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
-    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN,
+    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN,
     E_COUNT
 } ev_kind_t;
 
@@ -88,7 +89,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "engine (RESTART / START held / released / e-stop pressed or released)",
     "watchdog reset (the chip restarts: system reset, not a power-on)",
     "DP (thruster settings / START SPOT, CRUISE, TRIP / JOG / SPEED / HEADING / STOP; a current)",
-    "DroneCAN (a servo node lost / silent / rebooted, bus-off, the actuator task stuck; back after a while)"
+    "DroneCAN (a servo node lost / silent / rebooted, bus-off, the actuator task stuck; back after a while)",
+    "PC AUTO return (the program backwards to waypoint 1; then the CONFIRM)"
 };
 
 typedef struct {
@@ -189,6 +191,8 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         e->f = rnd(&r) * 2.0f - 1.0f;
         e->g = rnd(&r) * 2.0f - 1.0f;
         if (s->can && k == E_FUZZ_GW && e->c < 450) e->kind = E_CAN;    /* DroneCAN episodes: CAN faults */
+        /* step 13: some AUTO start / resume draws ask for an AUTO RETURN instead (the other draws unchanged) */
+        if ((k == E_PC_AUTO_START && e->a >= 800) || (k == E_PC_AUTO_RESUME && e->a >= 500)) e->kind = E_PC_RETURN;
         s->on[s->n] = true;
         s->n++;
         /* DP: mostly a START (centre the stick, STANDBY, let the boat slow down first) + the CONFIRM */
@@ -506,7 +510,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 58
+#define NINV 59
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -561,7 +565,8 @@ static const char *INV_NAMES[NINV] = { "",
     "I54 DroneCAN UNCREWED: a monitor trip -> no dead-man pulse, the engine stopped within the dead-man time; CREWED: never a pulse",
     "I55 DroneCAN UNCREWED: throttle node lost -> ENGINE KILL in the same step; never in CREWED",
     "I56 DroneCAN: no steering frame after a boot until a mode commands steering; worst-case speed while the position is unknown",
-    "I57 DroneCAN UNCREWED: any stop condition (trip / frozen core 0 / throttle node lost / kill) -> no dead-man pulse within a monitor period" };
+    "I57 DroneCAN UNCREWED: any stop condition (trip / frozen core 0 / throttle node lost / kill) -> no dead-man pulse within a monitor period",
+    "I58 AUTO RETURN starts only with a fresh CONFIRM; the way back = the stored program's waypoints backwards, which it never changes" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -612,6 +617,7 @@ typedef struct {
     bool     centred_prev;
     uint32_t confirm_t, autobtn_t, raise_req_t;
     uint32_t confirms_prev;
+    bool     returning_prev;                /* I58 */
     uint32_t confirm_free_t;        /* a CONFIRM with nothing pending */
     sb_mode_t confirm_free_mode;
     uint32_t rem_last_fresh;        /* last fresh remote packet (0 none) */
@@ -1067,6 +1073,28 @@ static void check_step(void)
         else fail(7, "AUTO entered from mode %.0f without CONFIRM (last %.0f ms ago)", (double)C.mode_prev,
                   C.confirm_t ? (double)(S.t - C.confirm_t) : -1.0);
     }
+    /* I58: AUTO RETURN only with a CONFIRM (also inside AUTO: no mode change), the way back = the stored
+     * program backwards from ret_base, the stored program itself never touched (checksum still valid) */
+    {
+        const sb_auto_t *au = &s->autop;
+        if (au->returning && !C.returning_prev) {
+            if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(58);
+            else fail(58, "AUTO RETURN started without a fresh CONFIRM (last %.0f ms ago)",
+                      C.confirm_t ? (double)(S.t - C.confirm_t) : -1.0, 0.0);
+        }
+        if (au->returning) {
+            bool same = program_checksum_ok(&au->orig) && au->ret_base < au->orig.n &&
+                        au->prog.n == (au->ret_base ? au->ret_base + 1u : 1u);
+            for (unsigned j = 0; same && j < au->prog.n; j++) {
+                const prog_wp_t *a1 = &au->prog.wp[j], *b1 = &au->orig.wp[au->ret_base - j];
+                same = a1->lat_e7 == b1->lat_e7 && a1->lon_e7 == b1->lon_e7;
+            }
+            if (same) ok(58);
+            else fail(58, "AUTO RETURN: the way back (%.0f waypoints from %.0f) is not the stored program backwards",
+                      (double)au->prog.n, (double)au->ret_base);
+        }
+        C.returning_prev = au->returning;
+    }
     if (m == MODE_DP && C.mode_prev != MODE_DP) {
         if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(7);
         else fail(7, "DP entered from mode %.0f without CONFIRM (last %.0f ms ago)", (double)C.mode_prev,
@@ -1445,7 +1473,7 @@ static void apply(const ev_t *e)
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
     case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK: case E_GEN: case E_ENGINE:
-    case E_WDT: case E_DP: case E_CAN:
+    case E_WDT: case E_DP: case E_CAN: case E_PC_RETURN:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -1490,6 +1518,7 @@ static void apply(const ev_t *e)
     case E_PC_MODE: (void)sb_request_mode(s, (sb_mode_t)(e->a % MODE_COUNT), WHY_USER); break;
     case E_PC_AUTO_START: (void)sb_auto_start(s); break;
     case E_PC_AUTO_RESUME: (void)sb_auto_resume(s); break;
+    case E_PC_RETURN: (void)sb_auto_return(s); break;
     case E_PC_PAUSE: (void)sb_auto_pause(s); break;
     case E_PC_PROG: prog_random(1 + e->a % 6, &r); break;
     case E_PC_RAISE: {

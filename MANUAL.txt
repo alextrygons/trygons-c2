@@ -851,6 +851,22 @@ MODES
              resume (+ CONFIRM) and skip from the PC. Line following,
              speed control, rough-water slow-down, dead reckoning without
              GPS, GPS integrity check: all as before.
+             AUTO RETURN ("Return" in the control panel of screen 2): the
+             boat drives the program BACKWARDS from the leg it is on to
+             waypoint 1 and stops there in neutral (STANDBY + ARRIVED).
+             Each leg back at the speed of that leg, the waypoints keep
+             their slow / stop actions. Like AUTO START it needs the
+             joystick CONFIRM within 10 s (stick centred; UNCREWED: the
+             shore joystick) - from STANDBY, HDG LOCK, MANUAL (stick
+             centred) or AUTO itself (running, paused, stopped, finished).
+             The copilot may ask for it WITHOUT the captain's ACCEPT (like
+             AUTO pause). The gateway checks the way back like a route:
+             shallow water (114), the geofence (120); only a program the
+             gateway checked itself (uploaded through it) can be driven
+             back (121 otherwise: upload it again). The stored program is
+             not changed: AUTO START afterwards drives it forward from
+             waypoint 1 again; a new upload ends the return. The joystick
+             still wins (MANUAL; RESUME + CONFIRM goes on back).
   TRAINING   outboard calibration, started from STANDBY by the PC.
 
   Mode changes allowed (all others are refused and logged):
@@ -1116,8 +1132,9 @@ CAPTAIN AND COPILOT (the gateway decides, every station shows it)
             adjustments, maximum speed, AIS / collision, status - also while
             the captain drives. Every copilot action that changes the
             driving appears on the CAPTAIN'S SCREEN 1 as a question: ACCEPT
-            -> sent, REJECT / 10 s / screen 1 closed -> refused. STANDBY and
-            HOLD (AUTO pause) never wait. The copilot can't take HELM
+            -> sent, REJECT / 10 s / screen 1 closed -> refused. STANDBY,
+            HOLD (AUTO pause) and AUTO RETURN never wait (the return still
+            needs the joystick CONFIRM on the boat). The copilot can't take HELM
             (code 117) or ask for manual driving (code 118).
   The first licensed user who logs in is the captain; everybody else is a
   copilot (a viewer only watches). A station on the boat can always take
@@ -2444,8 +2461,15 @@ A) THE REAL HARDWARE FUNCTIONS (hal/hal_tc375.c, drivers hal/tc_*.c)
          gains are TO CONFIRM on the water (first SPOT in calm water at the
          dock, the e-stop at hand).
    Still stubs:
-     [ ] joystick ADC + 3 buttons (the USB bridge works), neutral switch
-         (input done, HAL_NEUTRAL_SW_FITTED 0), paddlewheel
+     [ ] analog joystick: the code is done (step 13: EVADC AN39 / AN38 =
+         X / Y, buttons P02.0 / P02.1 / P10.4, hal_pins.h CHECK) -
+         HAL_JOY_FITTED 0 until it is wired (the USB bridge works);
+         neutral switch (input done, HAL_NEUTRAL_SW_FITTED 0);
+         paddlewheel: the code is done (step 13: GPT12 T2 counts the
+         pulses on T2INA = P00.7 TBD, hal/tc_pulse.c: stopped / cut cable /
+         noise) - HAL_PADDLE_FITTED 0 until wired, K factor (pulses per
+         second at 1 kn, PADDLE_HZ_PER_KN 4.9) TBD with the real sensor.
+         NEVER 12 V pulses or 5 V pots on these 3.3 V pins (WIRING.md)
      [ ] supply voltage divider (47 k / 10 k, TBD) on A2 + the starter
          battery isolator (WIRING.md 3B)
      [ ] safety relay hardware (pin done)

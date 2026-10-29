@@ -1,6 +1,6 @@
 # Ground station screenshots (review)
 
-Made from the demo by `python tools/demo_screens.py` on 2026-10-25.
+Made from the demo by `python tools/demo_screens.py` on 2026-10-29.
 
 | File | What it shows |
 |---|---|
@@ -12,8 +12,8 @@ Made from the demo by `python tools/demo_screens.py` on 2026-10-25.
 | [driver_night_en.png](driver_night_en.png) | driver HUD, NIGHT mode (dim red), en |
 | [driver_minimal_el.png](driver_minimal_el.png) | driver HUD, declutter MINIMAL (speed, heading, mode, gear, alarms) |
 | [driver_edit_layout_el.png](driver_edit_layout_el.png) | driver HUD, edit-layout mode (drag / resize / hide every box) |
-| [map_dark_el.png](map_dark_el.png) | MAP window, dark theme, el, north-up: chart, AIS + list, route, avoidance, range rings |
-| [map_day_en.png](map_day_en.png) | MAP window, day theme, en, north-up: chart, AIS + list, route, avoidance, range rings |
-| [map_night_el_courseup.png](map_night_el_courseup.png) | MAP window, night theme, el, course-up: chart, AIS + list, route, avoidance, range rings |
-| [captain_map_el.png](captain_map_el.png) | captain screen, map tab, Greek |
-| [captain_sound_el.png](captain_sound_el.png) | captain screen, sound tab, Greek |
+| [screen2_dark_el.png](screen2_dark_el.png) | screen 2 (navigation & control), dark theme, el: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
+| [screen2_light_en.png](screen2_light_en.png) | screen 2 (navigation & control), light theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
+| [screen2_dark_en.png](screen2_dark_en.png) | screen 2 (navigation & control), dark theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
+| [tools_connection_el.png](tools_connection_el.png) | tools window, connection page, Greek |
+| [tools_sound_el.png](tools_sound_el.png) | tools window, sound page, Greek |

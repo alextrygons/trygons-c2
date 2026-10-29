@@ -1845,7 +1845,7 @@ class App:
         if isinstance(self.link, GatewayLink) and proto.is_driving_cmd(ftype, payload, self.relay_groups_known()):
             if self.single_op:
                 return self.captain_confirm(what, lambda: self._send_cmd(ftype, payload, what, confirm="self"))
-            if crewui.crew_of(self)[0] == "copilot" and ftype not in (proto.T_AUTO_PAUSE,):
+            if crewui.crew_of(self)[0] == "copilot" and ftype not in (proto.T_AUTO_PAUSE, proto.T_AUTO_RETURN):
                 # the gateway asks the captain's screen 1 (CLAUDE.md D)
                 copilot = True
                 self.say(T("cap.wait_captain", what=i18n.from_en(what)), ORANGE)
@@ -1917,6 +1917,11 @@ class App:
 
     def auto_start(self):
         self.cmd(proto.T_AUTO_START, b"", TE("what.auto_start"))
+
+    def auto_return(self):
+        """AUTO RETURN (CLAUDE.md R): the program backwards from the current leg to waypoint 1; the boat waits for
+        the joystick CONFIRM. A copilot's goes straight (no captain's ACCEPT), like AUTO pause."""
+        self.cmd(proto.T_AUTO_RETURN, b"", TE("what.auto_return"))
 
     def sim_confirm(self):
         """Simulator: press and release the joystick CONFIRM (stick centred)."""
@@ -3185,6 +3190,7 @@ class App:
             p.button(T("cap.pause"), lambda: self.cmd(proto.T_AUTO_PAUSE, b"", TE("what.auto_pause")))
             p.button(T("cap.resume"), lambda: self.cmd(proto.T_AUTO_RESUME, b"", TE("what.auto_resume")))
             p.button(T("cap.skip"), lambda: self.cmd(proto.T_AUTO_SKIP, b"", TE("what.auto_skip")))
+            p.button(T("cap.return"), self.auto_return, tag="btn_return")
             self.gen_button(p, d)
             p.br()
             if self.dp_available():
@@ -3369,8 +3375,10 @@ class App:
                     level="label")
         if d:
             if d.get("coast_valid"):
-                txt = T("ov.near_shore", m="%.0f" % d["coast_dist_m"]) if d.get("near_shore") else \
-                    T("ov.open_sea", m="%.0f" % d["coast_dist_m"])
+                # (the boat sends 0xFFFE / 0xFFFF beyond the 16-bit range: farther than 65 km = no number)
+                dm = d.get("coast_dist_m")
+                ms = "%.0f" % dm if dm is not None else "> 65000"
+                txt = T("ov.near_shore", m=ms) if d.get("near_shore") else T("ov.open_sea", m=ms)
             else:
                 txt = T("ov.shore_unknown")
             p.text(txt, "label", colour=C["note_txt"] if d.get("near_shore") or not d.get("coast_valid") else None,
@@ -3712,6 +3720,8 @@ class App:
             txt = T("cap.no_program_boat")
         elif d["mode"] == proto.MODE_AUTO:
             txt = T("cap.auto_wp", n=d["auto_wp"] + 1, of=d["prog_n"], state=st)
+            if d.get("prog_returning"):
+                txt += "\n" + T("cap.returning")
             if d["speed_limited"]:
                 txt += "\n" + T("cap.speed_limited")
         elif d["prog_suspended"]:

@@ -489,6 +489,12 @@ typedef struct {
     uint32_t   next_dr_ms;      /* 1 Hz updates in DR */
     bool       arrival_uncertain;
     uint32_t   legs_done;       /* waypoints reached (info) */
+    /* AUTO RETURN (CLAUDE.md R, step 13): the program driven backwards from the current leg to waypoint 1.
+     * While it runs prog = the way back (RAM only, never saved) and orig = the stored program; a new
+     * program, an AUTO START or a DP TRIP use the stored one (sb_program). */
+    bool       returning;
+    uint8_t    ret_base;        /* stored-program index of the way back's first waypoint (= ret_base - wp) */
+    program_t  orig;
 } sb_auto_t;
 
 /* Pending PC request waiting for the joystick CONFIRM button */
@@ -502,7 +508,8 @@ typedef enum {
     CONF_MANEUVER,          /* start MANEUVER (captain: steering + gear, throttle idle) */
     CONF_RELAY_TABLE,       /* take a relay table that differs from the stored one (STANDBY; never a mode change) */
     CONF_DP,                /* start DP (from STANDBY), or CRUISE / TRIP while in DP (sb_t.dp_req) */
-    CONF_THR_TRAVEL         /* a SHORTER thr_travel_s (owner-signed value, OD-4; STANDBY, never a mode change) */
+    CONF_THR_TRAVEL,        /* a SHORTER thr_travel_s (owner-signed value, OD-4; STANDBY, never a mode change) */
+    CONF_AUTO_RETURN        /* AUTO RETURN: the program backwards from the current leg to waypoint 1 */
 } confirm_kind_t;
 
 typedef struct {
@@ -764,6 +771,16 @@ sb_result_t sb_auto_start(sb_t *s);
 sb_result_t sb_auto_resume(sb_t *s);
 sb_result_t sb_auto_pause(sb_t *s);     /* idle + neutral, heading held, stays in AUTO */
 sb_result_t sb_auto_skip(sb_t *s);      /* go on to the next waypoint */
+/* AUTO RETURN (step 13): drive the program backwards from the current leg to waypoint 1 (final: stop in
+ * neutral there), leg speeds of the legs it drives back over, the waypoint actions kept. Like AUTO START:
+ * the conditions, then the joystick CONFIRM within confirm_ms (onboard in CREWED, the shore joystick in
+ * UNCREWED). From any mode AUTO START allows and from AUTO itself (running / paused / held / stopped at
+ * a waypoint, or the program finished); not while a return already runs, not in FIRST TEST. */
+sb_result_t sb_auto_return(sb_t *s);
+/* The stored (forward) program - the one being driven back over while an AUTO RETURN runs - and the
+ * active waypoint as its index in it (telemetry, PROG_GET, the gateway's route checks). */
+const program_t *sb_program(const sb_t *s);
+uint8_t sb_auto_wp_stored(const sb_t *s);
 /* Seconds left for the pending CONFIRM, 0 if none. */
 float sb_confirm_left_s(const sb_t *s);
 

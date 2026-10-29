@@ -57,6 +57,36 @@
 #define HAL_SUPPLY_FITTED   0                   /* TBD: 1 when the divider is wired and the ratio measured */
 #define SUPPLY_DIV_RATIO    5.7f                /* (47 k + 10 k) / 10 k, measure the real one */
 
+/* Hard-wired ANALOG joystick (WIRING.md section 1; step 13): X on Arduino A0 = P40.9 / AN39, Y on A1 =
+ * P40.8 / AN38 CHECK (iLLD: EVADC group 8 channels 7 / 6 - IfxEvadc_G8CH7_P40_9_IN / G8CH6_P40_8_IN, the
+ * group of the motor current + supply), a 0..3.3 V potentiometer each (NEVER 5 V on these pins); the
+ * buttons TAKE D2 = P02.0, AUTO D3 = P02.1, CONFIRM D4 = P10.4 CHECK, normally open to GND, pull-up,
+ * pressed = low. HAL_JOY_FITTED 0 = hal_read_joystick says "not fitted" (the USB bridge or no joystick).
+ * The app (joystick.c) calibrates and checks the raw values (wire break, jumps). */
+#ifndef HAL_JOY_FITTED                                  /* (-D only for the gate's compile of the board path) */
+#define HAL_JOY_FITTED      0                           /* TBD: 1 when the analog joystick is wired */
+#endif
+#define ADC_JOY_GROUP       IfxEvadc_GroupId_8
+#define ADC_JOY_X_CHANNEL   IfxEvadc_ChannelId_7        /* AN39, P40.9 (A0) CHECK */
+#define ADC_JOY_Y_CHANNEL   IfxEvadc_ChannelId_6        /* AN38, P40.8 (A1) CHECK */
+#define PIN_JOY_TAKE        &MODULE_P02, 0u             /* D2 CHECK */
+#define PIN_JOY_AUTO        &MODULE_P02, 1u             /* D3 CHECK */
+#define PIN_JOY_CONFIRM     &MODULE_P10, 4u             /* D4 CHECK */
+#define JOY_FRESH_MS        200u                        /* no new conversion this long = no data (not fitted) */
+
+/* Paddlewheel (speed through water, step 13): its open-collector pulse output (pull-up to 3.3 V on the
+ * board side, NEVER 12 V on the pin: a level shifter / opto if the sensor gives 12 V pulses) on GPT12 timer
+ * T2 in counter mode, input T2INA = P00.7 TBD (CHECK X1/X2), rising edges counted by the hardware (no
+ * interrupt, read once per control step; tc_pulse.c turns them into knots). K factor TBD with the sensor.
+ * HAL_PADDLE_FITTED 0 = hal_read_water_speed "not fitted" (dead reckoning on the throttle table). */
+#ifndef HAL_PADDLE_FITTED
+#define HAL_PADDLE_FITTED   0                           /* TBD: 1 when the paddlewheel is wired */
+#endif
+#define PADDLE_HZ_PER_KN    4.9f                        /* TBD: pulses per second at 1 kn (the sensor's K factor) */
+#define PADDLE_MAX_KN       40.0f                       /* above = implausible = no data */
+#define PADDLE_STOP_KN      1.0f                        /* below: no pulse in a window = stopped */
+#define PADDLE_TAU_S        1.0f                        /* speed filter */
+
 #define PIN_BUZZER          &MODULE_P33, 3u     /* CHECK X1/X2 -> transistor -> 12 V piezo buzzer, high = on */
 
 /* --- inputs (internal pull-up) ------------------------------------------------ */

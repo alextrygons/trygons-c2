@@ -58,6 +58,14 @@ typedef struct {
     float speed_tau_s;          /* boat speed response to throttle (6) */
     float default_v0_kn;        /* table before learning: v = v0 + k * throttle (1.0) */
     float default_kn_per_pct;   /* (0.15) */
+    float learn_thr_dev_pct;    /* without a paddlewheel the current + the table do not learn while the
+                                 * throttle is coming DOWN fast: delayed throttle more than this (3 %)
+                                 * above the throttle. In the 50 %/s slow-down (step 11e) the boat
+                                 * decelerates faster than the GPS speed follows: what DR learned there
+                                 * leaked into its current along the heading and into the table, and the
+                                 * slow-drag check then raised a false GPS SUSPECT minutes later (W18,
+                                 * sim P4.1-P4.3). The rise (15 %/s) keeps learning as before 11e. Only
+                                 * learning pauses - every integrity check runs as always. */
     /* integrity */
     float jump_m;               /* fix more than this + 3 x uncertainty from the prediction (40) */
     float gps2_max_m;           /* fix more than this from the second GPS = suspect; 0 = check off (default) */

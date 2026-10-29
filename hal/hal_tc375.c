@@ -24,7 +24,9 @@
  *                                 boot counter), written only in STANDBY
  *   - supply voltage           : divider on A2 / AN37 (tc_adc.c, HAL_SUPPLY_FITTED
  *                                 0 until the divider is wired: "not measured")
- * Not yet: analog joystick, paddlewheel, roll rate - they return "not fitted".
+ *   - analog joystick (step 13): EVADC AN39 / AN38 + 3 buttons (HAL_JOY_FITTED 0 until wired)
+ *   - paddlewheel (step 13): GPT12 T2 edge counter + tc_pulse.c (HAL_PADDLE_FITTED 0 until wired)
+ * Not yet: roll rate - it returns "not fitted".
  *
  * This file is only built by ADS. The PC simulation uses sim/hal_sim.c.
  */
@@ -44,6 +46,8 @@
 
 #include "hal_pins.h"
 #include "tc_adc.h"
+#include "tc_pulse.h"      /* step 13: the paddlewheel's pulses -> knots (pure C) */
+#include "IfxGpt12_reg.h"  /* step 13: GPT12 T2 as the paddlewheel's edge counter (registers only) */
 #include "tc_bno085.h"
 #include "tc_gps.h"
 #include "tc_sd.h"
@@ -210,6 +214,8 @@ static uint64 stm0_ticks(void)
     return t;
 }
 
+static void paddle_init(void);     /* (below, with hal_read_water_speed) */
+
 void hal_init(void)
 {
     /* FIRST: actuator pins to a defined safe state (no pulses, motor off,
@@ -247,6 +253,12 @@ void hal_init(void)
     pin_input_pullup(PIN_LIMIT_RIGHT);
     pin_input_pullup(PIN_ESTOP);
     pin_input_pullup(PIN_NEUTRAL_SW);
+#if HAL_JOY_FITTED
+    pin_input_pullup(PIN_JOY_TAKE);             /* the analog joystick's buttons (pressed = low) */
+    pin_input_pullup(PIN_JOY_AUTO);
+    pin_input_pullup(PIN_JOY_CONFIRM);
+#endif
+    paddle_init();                              /* the paddlewheel's edge counter (only if HAL_PADDLE_FITTED) */
 
     /* servo PWM generators running (idle / neutral pulses), pins not yet routed */
     servo_pwm_init();
@@ -726,12 +738,31 @@ bool hal_read_gps(hal_gps_t *gps)
     return gps_poll(gps);
 }
 
+/* The hard-wired analog joystick (hal_pins.h, WIRING.md section 1): X / Y = the newest EVADC results (raw
+ * 12 bit), the buttons pressed = low. No new conversion for JOY_FRESH_MS = no data (false: the app treats
+ * it like a joystick that is not there - a fault in CREWED). The app judges the values (wire break, jump). */
 bool hal_read_joystick(hal_joystick_t *j)
 {
+#if HAL_JOY_FITTED
+    static uint16_t x = 0u, y = 0u;
+    static uint32_t x_ms = 0u, y_ms = 0u;
+    static boolean have_x = FALSE, have_y = FALSE;
+    uint16_t raw;
+    uint32_t now = hal_millis();
+    if (adc_read(ADC_JOY_X, &raw)) { x = raw; x_ms = now; have_x = TRUE; }
+    if (adc_read(ADC_JOY_Y, &raw)) { y = raw; y_ms = now; have_y = TRUE; }
+    if (!have_x || !have_y || (uint32_t)(now - x_ms) > JOY_FRESH_MS || (uint32_t)(now - y_ms) > JOY_FRESH_MS)
+        return false;
+    j->x_raw = x;
+    j->y_raw = y;
+    j->take = !pin_high(PIN_JOY_TAKE);
+    j->autob = !pin_high(PIN_JOY_AUTO);
+    j->confirm = !pin_high(PIN_JOY_CONFIRM);
+    return true;
+#else
     (void)j;
-    return false;    /* TODO: EVADC AN39 (P40.9, Arduino A0) = X, AN38 (P40.8, A1) = Y;
-                        P02.0 (D2) = TAKE, P02.1 (D3) = AUTO, P10.4 (D4) = CONFIRM, inputs with pull-up,
-                        pressed = low. See WIRING.md. */
+    return false;    /* not wired (HAL_JOY_FITTED 0): the USB bridge or no onboard joystick */
+#endif
 }
 
 uint32_t hal_bridge_read(uint8_t *buf, uint32_t max)
@@ -837,10 +868,42 @@ bool hal_nv_ok(void)
     return nvlog_ok();
 }
 
+/* Paddlewheel: GPT12 timer T2 counts the sensor's rising edges on T2INA (hal_pins.h) by itself - no
+ * interrupt; every call reads the 16-bit count and tc_pulse.c makes knots of it over 0.5 s windows (stopped
+ * vs. a cut cable / stuck wheel, implausible rates = no data). Core 0 only (the control loop). */
+#if HAL_PADDLE_FITTED
+static pulse_speed_t s_paddle;
+#endif
+
+static void paddle_init(void)
+{
+#if HAL_PADDLE_FITTED
+    uint16 pw = IfxScuWdt_getCpuWatchdogPassword();
+    IfxScuWdt_clearCpuEndinit(pw);
+    MODULE_GPT120.CLC.U = 0u;                   /* module clock on (DISR = 0) */
+    (void)MODULE_GPT120.CLC.U;                  /* (read back: the write has taken effect) */
+    IfxScuWdt_setCpuEndinit(pw);
+    MODULE_GPT120.PISEL.B.IST2IN = 0u;          /* T2IN = T2INA */
+    MODULE_GPT120.T2.U = 0u;
+    Ifx_GPT12_T2CON t2;
+    t2.U = 0u;
+    t2.B.T2M = 1u;                              /* counter mode */
+    t2.B.T2I = 1u;                              /* count the rising edges on T2IN */
+    t2.B.T2UD = 0u;                             /* up */
+    t2.B.T2R = 1u;                              /* run */
+    MODULE_GPT120.T2CON.U = t2.U;
+    pulse_init(&s_paddle, PADDLE_HZ_PER_KN, PADDLE_MAX_KN, PADDLE_STOP_KN, PADDLE_TAU_S);
+#endif
+}
+
 bool hal_read_water_speed(float *kn)
 {
+#if HAL_PADDLE_FITTED
+    return pulse_update(&s_paddle, (uint16_t)MODULE_GPT120.T2.B.T2, hal_millis(), kn);
+#else
     (void)kn;
-    return false;    /* TODO: paddlewheel pulse input (GPT12 / GTM TIM), if fitted */
+    return false;    /* no paddlewheel wired (HAL_PADDLE_FITTED 0): dead reckoning on the throttle table */
+#endif
 }
 
 /* --- The relay board: RELAY_BUS (hal_pins.h, OD-9) = the RS485 Modbus board (tc_modbus.c on RELAY_ASC) or the

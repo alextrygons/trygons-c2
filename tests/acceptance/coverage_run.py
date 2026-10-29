@@ -51,7 +51,7 @@ def c_coverage(quick):
     srcs = sorted(glob.glob(os.path.join(REPO, "app", "*.c"))) + sorted(glob.glob(os.path.join(REPO, "sim", "*.c")))
     srcs.append(os.path.join(REPO, "tests", "acceptance", "storm", "storm.c"))
     # the pure-C board code the sim uses too (data flash log, Modbus master, DroneCAN + libcanard)
-    srcs += [os.path.join(REPO, "hal", f) for f in ("tc_nv.c", "tc_modbus.c", "dronecan.c", "can_act.c", "can_safe.c", "can_relay.c")]
+    srcs += [os.path.join(REPO, "hal", f) for f in ("tc_nv.c", "tc_modbus.c", "dronecan.c", "can_act.c", "can_safe.c", "can_relay.c", "tc_pulse.c")]
     srcs.append(os.path.join(REPO, "hal", "libcanard", "canard.c"))
     for s in srcs:
         o = os.path.join(obj, os.path.splitext(os.path.basename(s))[0] + ".o")

@@ -18,7 +18,7 @@ why each part is needed: MANUAL.txt.
 - [ ] 2 x normally closed IP67 micro limit switches (steering end stops), 2 x 4.7 kOhm, 2 x 100 nF.
 - [ ] Emergency stop: red mushroom switch with TWO normally closed contacts (twist release), IP65 enclosure; 30 A automotive relay (12 V coil) + socket for the actuator power; 4.7 kOhm + 100 nF. (From step 11e, owner decisions OD-1 / OD-2: the e-stop also opens the engine kill circuit in every profile - a switch with a THIRD NC contact or an extra relay, TBD with the engine dealer - and it no longer feeds the DroneCAN servo power.)
 - [ ] Buzzer: 12 V active piezo buzzer > 85 dB, BC337 (or 2N7000 / AO3400), 1 kOhm, 1 A fuse.
-- [ ] Optional: paddlewheel speed sensor.
+- [ ] Optional: paddlewheel speed sensor with a pulse output (K factor ~4.9 Hz per kn - MODEL TBD; the code is ready, WIRING.md 3F) + a 4.7 kOhm pull-up / 100 nF, an optocoupler or level shifter if its pulses are 12 V, its fuse.
 - [ ] Supply voltage divider for A2 (WIRING.md 3B): 47 kOhm + 10 kOhm (1 %), 100 nF, 1 A fuse in the sense wire; optional 3.3 V clamp on the pin - RATIO TO MEASURE, PIN TO CHECK.
 - [ ] STARTER hardware time-limit relay (owner decision OD-9): a 12 V timer relay ("single shot" / "interval" type) in the starter-solenoid control wire, opens after a fixed time a little above the software 5 s (proposal 6 s, TO CONFIRM), resets only when START goes away; on either relay bus (Modbus / DroneCAN) - TYPE TBD (WIRING.md 3D).
 - [ ] Battery bank: 3 x 12 V in parallel (one bank for everything) + a battery isolator / split-charge relay that cuts the starter battery from the bank only while cranking - TYPE TBD (decide with the engine dealer).

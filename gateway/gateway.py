@@ -217,8 +217,8 @@ class Gateway:
         return o.get("mode") == proto.MODE_AUTO or (o.get("mode") == proto.MODE_DP and o.get("dp_sub") == proto.DP_TRIP)
 
     def check_prog(self, st, ftype, payload):
-        """Program upload / AUTO start / DP TRIP start through the gateway: refused across shallow water (114)
-        or out of the geofence (120). -> None (fine), the refusal text (114) or (code, text)."""
+        """Program upload / AUTO start / AUTO return / DP TRIP start through the gateway: refused across shallow
+        water (114) or out of the geofence (120). -> None (fine), the refusal text (114) or (code, text)."""
         import struct as _st
         if ftype == proto.T_PROG_BEGIN and len(payload) >= 2:
             st.prog_up = {"n": payload[0], "wps": {}}
@@ -237,7 +237,7 @@ class Gateway:
                 self.audit("program_refused", station=st.id, user=st.user, why=why)
                 return 120, why
             self.prog_pending = wps                         # the AURIX's ACK makes it the program (prog_committed)
-        elif ftype in (proto.T_AUTO_START, proto.T_AUTO_RESUME) or (
+        elif ftype in (proto.T_AUTO_START, proto.T_AUTO_RESUME, proto.T_AUTO_RETURN) or (
                 ftype == proto.T_DP and len(payload) >= 2 and payload[0] == proto.DP_START and
                 payload[1] & 0x7F == proto.DP_TRIP):
             o, d = self.own(), self.telem or {}
@@ -245,7 +245,22 @@ class Gateway:
                 return None                                 # the AURIX refuses without a position anyway
             wps = self.prog_wps or []
             dp = ftype == proto.T_DP
-            if dp:
+            ret = ftype == proto.T_AUTO_RETURN
+            if ret:
+                # AUTO RETURN (CLAUDE.md R, step 13): the way back = the program's waypoints before the active one,
+                # backwards (on the first leg: waypoint 1), the boat -> first of them included. Checked like a DP
+                # TRIP: only a program the gateway itself checked and the AURIX still holds (121 otherwise)
+                fresh = self.prog_ack_new
+                if not wps or not (fresh or (d.get("prog_gw") and len(wps) == d.get("prog_n"))):
+                    why = "upload the route again through the gateway (loaded over USB, from the boat's memory or " \
+                          "before a gateway restart)"
+                    self.audit("auto_return_refused", station=st.id, user=st.user, why=why)
+                    return 121, why
+                if d.get("prog_returning"):
+                    return None                             # already on the way back: the AURIX refuses it
+                k = min(d.get("auto_wp", 0) or 0, len(wps) - 1)
+                rest = list(reversed(wps[:k])) if k > 0 else wps[:1]
+            elif dp:
                 # a DP TRIP (CLAUDE.md P) is checked like AUTO: from waypoint 1, or "continue" from the DP's waypoint;
                 # the boat -> first waypoint leg included (start=). Only a program the gateway itself checked and
                 # the AURIX still holds (loaded over the gateway link, same count) can be checked - a USB-loaded one,
@@ -264,7 +279,7 @@ class Gateway:
             else:
                 k = d.get("auto_wp", 0) or 0
                 rest = wps[k:] if wps and k < len(wps) else ([(d["wp_lat"], d["wp_lon"])] if d.get("wp_set") else [])
-            kind = "dp_trip_refused" if dp else "auto_refused"
+            kind = "dp_trip_refused" if dp else "auto_return_refused" if ret else "auto_refused"
             bad = self.shallow.check_program(rest, start=(o["lat"], o["lon"])) if rest else None
             if bad:
                 self.audit(kind, station=st.id, user=st.user, why=bad[0])

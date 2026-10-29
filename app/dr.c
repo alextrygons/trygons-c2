@@ -64,6 +64,7 @@ void dr_default_config(dr_config_t *c)
     c->speed_tau_s = 6.0f;
     c->default_v0_kn = 1.0f;
     c->default_kn_per_pct = 0.15f;
+    c->learn_thr_dev_pct = 3.0f;
     c->jump_m = 40.0f;
     c->gps2_max_m = 0.0f;               /* second GPS check off until configured */
     c->max_sog_kn = 40.0f;
@@ -386,7 +387,9 @@ void dr_step(dr_t *d, const dr_input_t *in_raw)
 
         /* trusted fix: learn, then correct the estimate */
         float h2 = in->heading_deg * DEG2RAD_F;
-        if (in->gear > 0 && sog > 1.0f && in->heading_ok && fabsf(in->yaw_dps) < 5.0f &&
+        /* (W18: no learning in a fast throttle slow-down without a paddlewheel - see learn_thr_dev_pct) */
+        bool steady = d->speed_sensor || d->thr_lp - in->throttle_pct < c->learn_thr_dev_pct;
+        if (in->gear > 0 && sog > 1.0f && in->heading_ok && fabsf(in->yaw_dps) < 5.0f && steady &&
             fabsf(d->blend_n) + fabsf(d->blend_e) < 10.0f) {
             float cg = in->gps.cog_deg * DEG2RAD_F;
             float gn = sog * KN_MS * cosf(cg), ge = sog * KN_MS * sinf(cg);

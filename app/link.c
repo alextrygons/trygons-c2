@@ -348,11 +348,12 @@ static void telemetry(link_t *l, sb_t *s)
     proto_wr_u16(&w, (uint16_t)(l->rx.frames & 0xFFFFu));
     proto_wr_u16(&w, (uint16_t)(l->rx.crc_errors & 0xFFFFu));
 
-    proto_wr_u8(&w, a->prog_ok ? (uint8_t)a->prog.n : 0u);
-    proto_wr_u8(&w, a->wp);
+    /* the stored program's count + the active waypoint as its index in it (also on an AUTO RETURN: b4) */
+    proto_wr_u8(&w, a->prog_ok ? (uint8_t)sb_program(s)->n : 0u);
+    proto_wr_u8(&w, sb_auto_wp_stored(s));
     proto_wr_u8(&w, (uint8_t)a->state);
     proto_wr_u8(&w, (uint8_t)((a->prog_ok ? 1u : 0u) | (a->suspended ? 2u : 0u) | (a->finished ? 4u : 0u) |
-                              (a->prog_ok && a->via_gw ? 8u : 0u)));
+                              (a->prog_ok && a->via_gw ? 8u : 0u) | (a->prog_ok && a->returning ? 16u : 0u)));
     proto_wr_u8(&w, (uint8_t)s->confirm.kind);
     proto_wr_u16(&w, (uint16_t)(sb_confirm_left_s(s) * 10.0f + 0.5f));
 
@@ -424,6 +425,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_AUTO_PAUSE:   return 0;
     case PROTO_T_AUTO_RESUME:  return 0;
     case PROTO_T_AUTO_SKIP:    return 0;
+    case PROTO_T_AUTO_RETURN:  return 0;
     case PROTO_T_POWER_CODE:   return 1;
     case PROTO_T_POWER_RAISE:  return 3;
     case PROTO_T_POWER_LOWER:  return 0;
@@ -679,8 +681,8 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
     case PROTO_T_PROG_GET: {
         uint8_t i = proto_rd_u8(&r);
         if (!s->autop.prog_ok) return PROTO_R_NO_PROGRAM;
-        if (i >= s->autop.prog.n) return PROTO_R_BAD_VALUE;
-        send_prog_wp(l, &s->autop.prog, i);
+        if (i >= sb_program(s)->n) return PROTO_R_BAD_VALUE;
+        send_prog_wp(l, sb_program(s), i);         /* the stored program (also during an AUTO RETURN) */
         return PROTO_R_OK;
     }
 
@@ -694,6 +696,8 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         return sb_result_to_proto(sb_auto_pause(s));
     case PROTO_T_AUTO_SKIP:
         return sb_result_to_proto(sb_auto_skip(s));
+    case PROTO_T_AUTO_RETURN:
+        return sb_result_to_proto(sb_auto_return(s));
 
     /* --- power limit --- */
     case PROTO_T_POWER_CODE: {

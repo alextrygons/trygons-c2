@@ -52,7 +52,8 @@ typedef enum {
     EV_GPS,             /* position source (dr_state), reason, uncertainty*10, gps losses */
     EV_FAULT,           /* kind (1 gear, 2 compass, 3 joystick, 4 monitor, 5 overrun, 6 log), a, b, c */
     EV_PROGRAM,         /* action (0 stored, 1 started, 2 paused, 3 resumed, 4 skipped, 5 finished,
-                           6 waypoint reached), waypoints / wp, state, legs done */
+                           6 waypoint reached, 7 other, 8 AUTO RETURN started: wp = the way back's), waypoints / wp,
+                           state, legs done */
     EV_CONFIRM,         /* kind, result (0 accepted, 1 refused, 2 ignored), counts */
     EV_MONITOR,         /* reason (CPU1), throttle*10, limit*10, 0 */
     EV_LOG,             /* what (1 file, 2 sync, 3 black box start, 4 black box end, 5 failure, 6 drops),

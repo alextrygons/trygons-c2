@@ -722,22 +722,38 @@ bool sb_confirm_ready(const sb_t *s)
 
 /* The active waypoint can be reached from here (position known, leg not
  * absurdly long). */
+static bool wp_reachable(const sb_t *s, const prog_wp_t *w)
+{
+    double lat, lon;
+    if (!s->autop.prog_ok || !dr_have_position(&s->dr)) return false;
+    dr_latlon(&s->dr, &lat, &lon);
+    return program_dist_m(lat, lon, program_lat(w), program_lon(w)) <= s->cfg.prog.max_leg_m;
+}
+
 static bool auto_leg_ok(const sb_t *s)
 {
     const sb_auto_t *a = &s->autop;
-    double lat, lon;
-    if (!a->prog_ok || a->wp >= a->prog.n || !dr_have_position(&s->dr)) return false;
-    dr_latlon(&s->dr, &lat, &lon);
-    const prog_wp_t *w = &a->prog.wp[a->wp];
-    return program_dist_m(lat, lon, program_lat(w), program_lon(w)) <= s->cfg.prog.max_leg_m;
+    return a->prog_ok && a->wp < a->prog.n && wp_reachable(s, &a->prog.wp[a->wp]);
+}
+
+const program_t *sb_program(const sb_t *s)
+{
+    return s->autop.returning ? &s->autop.orig : &s->autop.prog;
+}
+
+uint8_t sb_auto_wp_stored(const sb_t *s)
+{
+    const sb_auto_t *a = &s->autop;
+    if (!a->returning) return a->wp;
+    return a->wp <= a->ret_base ? (uint8_t)(a->ret_base - a->wp) : 0u;
 }
 
 /* DP TRIP: waypoint wp can be reached from here (a valid program, position known, leg not absurd) */
 static bool dp_trip_ok(const sb_t *s, uint8_t wp)
 {
-    const sb_auto_t *a = &s->autop;
-    if (!a->prog_ok || wp >= a->prog.n || !sb_gps_ok(s)) return false;
-    const prog_wp_t *w = &a->prog.wp[wp];
+    const program_t *p = sb_program(s);              /* (the stored program also during an AUTO RETURN) */
+    if (!s->autop.prog_ok || wp >= p->n || !sb_gps_ok(s)) return false;
+    const prog_wp_t *w = &p->wp[wp];
     return program_dist_m(s->gps.last.lat_deg, s->gps.last.lon_deg, program_lat(w), program_lon(w)) <=
            s->cfg.prog.max_leg_m;
 }
@@ -966,7 +982,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         autopilot_disengage(&s->ap);
         uint8_t from_wp = s->dp_req.cont ? s->dp.wp : 0u;
         dp_start(&s->dp, s->dp_req.sub, s->gps.last.lat_deg, s->gps.last.lon_deg, s->ap.heading, s->dp_req.kn,
-                 s->cfg.dp_max_kn, &s->autop.prog, from_wp);
+                 s->cfg.dp_max_kn, sb_program(s), from_wp);
         break;
     }
     case MODE_BENCH:
@@ -2146,9 +2162,11 @@ sb_result_t sb_program_set(sb_t *s, const program_t *p, prog_error_t *err, uint8
     s->autop.finished = false;
     s->autop.legs_done = 0u;
     s->autop.via_gw = false;                                /* (link.c sets it for a gateway upload) */
+    s->autop.returning = false;                             /* a new program ends an AUTO RETURN (its way back) */
     s->dp.wp = 0u;                                          /* a DP TRIP "continue" starts the new one at waypoint 1 */
     s->cfg_version++;
     if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
+        s->confirm.kind == CONF_AUTO_RETURN ||
         (s->confirm.kind == CONF_DP && s->dp_req.sub == DP_TRIP)) s->confirm.kind = CONF_NONE;
     (void)nv_save(HAL_NV_SLOT_PROGRAM, p, (uint32_t)sizeof *p);   /* written in STANDBY */
     return SB_OK;
@@ -2159,11 +2177,7 @@ sb_result_t sb_auto_start(sb_t *s)
     if (sb_mode(s) == MODE_AUTO || sb_mode(s) == MODE_TRAINING) return SB_ERR_WRONG_MODE;
     sb_result_t r = auto_common_checks(s);
     if (r != SB_OK) return r;
-    uint8_t save = s->autop.wp;
-    s->autop.wp = 0u;
-    bool leg = auto_leg_ok(s);
-    s->autop.wp = save;
-    if (!leg) return SB_ERR_PRECOND;
+    if (!wp_reachable(s, &sb_program(s)->wp[0])) return SB_ERR_PRECOND;     /* the stored program's waypoint 1 */
     confirm_arm(s, CONF_AUTO_START);
     return SB_OK;
 }
@@ -2209,6 +2223,52 @@ sb_result_t sb_auto_skip(sb_t *s)
     return SB_OK;
 }
 
+/* AUTO RETURN: the way back into rp from the program p with the active waypoint k (finished: k = the last
+ * one, where the boat is): waypoints k-1, k-2 ... 1 (index 0); on the first leg (k = 0) just waypoint 1.
+ * The way back to waypoint i drives back over the leg i -> i+1: that leg's speed; radius + action of
+ * waypoint i; at waypoint 1 stop in neutral (PROG_END_STOP). The same validation as an upload (the
+ * limits may have changed since: max_leg_kn). */
+static program_t s_ret_scratch;     /* (core 0 only; no 1 KB program on the stack) */
+
+static bool return_build(const sb_t *s, const program_t *p, uint8_t k, program_t *rp, uint8_t *base)
+{
+    uint8_t bad;
+    if (p->n == 0u) return false;
+    if (k >= p->n) k = (uint8_t)(p->n - 1u);
+    program_clear(rp);
+    rp->final_action = (uint8_t)PROG_END_STOP;
+    if (k == 0u) {
+        rp->n = 1u;
+        rp->wp[0] = p->wp[0];
+        *base = 0u;
+    } else {
+        rp->n = k;
+        for (uint8_t j = 0u; j < k; j++) {
+            uint8_t i = (uint8_t)(k - 1u - j);
+            rp->wp[j] = p->wp[i];
+            rp->wp[j].speed_kn = p->wp[i + 1u].speed_kn;
+        }
+        *base = (uint8_t)(k - 1u);
+    }
+    program_seal(rp);
+    return program_validate(rp, &s->cfg.prog, &bad) == PROG_OK;
+}
+
+sb_result_t sb_auto_return(sb_t *s)
+{
+    const sb_auto_t *a = &s->autop;
+    sb_mode_t m = sb_mode(s);
+    if (m == MODE_TRAINING || m == MODE_BENCH || m == MODE_DP) return SB_ERR_WRONG_MODE;
+    if (a->returning) return SB_ERR_WRONG_MODE;                      /* already on the way back */
+    sb_result_t r = auto_common_checks(s);
+    if (r != SB_OK) return r;
+    uint8_t base;
+    if (!return_build(s, &a->prog, a->wp, &s_ret_scratch, &base)) return SB_ERR_BAD_PROGRAM;
+    if (!wp_reachable(s, &s_ret_scratch.wp[0])) return SB_ERR_PRECOND;
+    confirm_arm(s, CONF_AUTO_RETURN);
+    return SB_OK;
+}
+
 float sb_confirm_left_s(const sb_t *s)
 {
     if (s->confirm.kind == CONF_NONE) return 0.0f;
@@ -2223,6 +2283,10 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
     switch (kind) {
     case CONF_AUTO_START:
         if (sb_mode(s) == MODE_AUTO) return false;
+        if (a->returning) {                 /* a stopped / finished AUTO RETURN: start the stored program */
+            a->prog = a->orig;
+            a->returning = false;
+        }
         a->wp = 0u;
         a->finished = false;
         a->legs_done = 0u;
@@ -2235,6 +2299,40 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
             return true;
         }
         return sb_request_mode(s, MODE_AUTO, WHY_CONFIRM);
+    case CONF_AUTO_RETURN: {
+        /* the way back replaces the active program in RAM (the stored one kept in orig, never saved) */
+        uint8_t base, wp = a->wp;
+        bool done = a->finished;
+        uint32_t legs = a->legs_done;
+        if (a->returning || !return_build(s, &a->prog, a->wp, &s_ret_scratch, &base)) return false;
+        bool in_auto = sb_mode(s) == MODE_AUTO;
+        a->orig = a->prog;
+        a->prog = s_ret_scratch;
+        a->returning = true;
+        a->ret_base = base;
+        a->wp = 0u;
+        a->finished = false;
+        a->legs_done = 0u;
+        bool ok;
+        if (in_auto) {
+            ok = auto_leg_ok(s) && sb_gps_ok(s);
+            if (ok) {
+                a->suspended = false;
+                cruise_start(s);
+                auto_begin_leg(s);
+            }
+        } else {
+            ok = sb_request_mode(s, MODE_AUTO, WHY_CONFIRM);
+        }
+        if (!ok) {                          /* refused now: everything as it was */
+            a->prog = a->orig;
+            a->returning = false;
+            a->wp = wp;
+            a->finished = done;
+            a->legs_done = legs;
+        }
+        return ok;
+    }
     case CONF_REMOTE:
         /* the HELM station must still be the one that asked */
         if (s->helm != s->remote.station) return false;
@@ -2265,7 +2363,7 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
         if (sb_mode(s) == MODE_DP) {
             if (!dp_ok(s, s->dp_req.sub, s->dp_req.cont, false)) return false;
             dp_start(&s->dp, s->dp_req.sub, s->gps.last.lat_deg, s->gps.last.lon_deg, s->dp.hdg_est, s->dp_req.kn,
-                     s->cfg.dp_max_kn, &s->autop.prog, s->dp_req.cont ? s->dp.wp : 0u);
+                     s->cfg.dp_max_kn, sb_program(s), s->dp_req.cont ? s->dp.wp : 0u);
             return true;
         }
         return sb_request_mode(s, MODE_DP, WHY_DP);
@@ -2774,6 +2872,7 @@ static void events_step(sb_t *s, uint32_t buttons)
     if (s->joy.take_edge) plim_drop(&s->plim, PLIM_SRC_OVERRIDE, s->now_ms);      /* TAKE always lowers */
     if (grab && sb_mode(s) != MODE_MANUAL && !s->cfg.first_test) {     /* FIRST TEST: no MANUAL */
         if (s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
+            s->confirm.kind == CONF_AUTO_RETURN ||
             s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER || s->confirm.kind == CONF_DP)
             s->confirm.kind = CONF_NONE;
         sb_request_mode(s, MODE_MANUAL, WHY_JOYSTICK);
@@ -3090,7 +3189,7 @@ void sb_step(sb_t *s)
         gen_input_t gi;
         sb_mode_t gm = sb_mode(s);
         bool kind_stop = s->confirm.kind == CONF_AUTO_START || s->confirm.kind == CONF_AUTO_RESUME ||
-                         s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER ||
+                         s->confirm.kind == CONF_AUTO_RETURN || s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER ||
                          (s->confirm.kind == CONF_DP && s->dp_req.sub != DP_SPOT);      /* a DP trip / cruise start */
         /* DP: the generator may run while DP holds the boat (SPOT / JOG); CRUISE / TRIP move the boat */
         bool dp_hold = gm == MODE_DP && (s->dp.sub == DP_SPOT || s->dp.sub == DP_JOG);

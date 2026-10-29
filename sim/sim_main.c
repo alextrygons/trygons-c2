@@ -440,6 +440,9 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "gw") == 0) { sb_gateway_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "df") == 0) { sb_nv_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "cn") == 0) { sb_can_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "pw") == 0) { sb_pulse_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "ar") == 0) { sb_return_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "dr") == 0) { sb_dr_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "p4") == 0) { sb_phase4_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "p5") == 0) {
         if (argc > 2 && strcmp(argv[2], "--can") == 0) sb_set_can(true, false);

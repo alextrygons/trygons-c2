@@ -81,9 +81,9 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               117: "only the captain (or a station on the boat) holds HELM",
               118: "captain only: REMOTE MANUAL / MANEUVER / engine START",
               119: "no captain holds HELM"}
-# copilot commands that never wait for the captain's ACCEPT (CLAUDE.md D: STANDBY, hold;
-# AUTO return does not exist yet)
-COPILOT_FREE = (proto.T_AUTO_PAUSE,)
+# copilot commands that never wait for the captain's ACCEPT (CLAUDE.md D: STANDBY, hold, AUTO return - the AURIX
+# still wants the joystick CONFIRM for the return; DP STOP: proto.is_driving_cmd)
+COPILOT_FREE = (proto.T_AUTO_PAUSE, proto.T_AUTO_RETURN)
 READ_ONLY = (proto.T_PARAM_GET, proto.T_PROG_GET, proto.T_JOYMAP_GET, proto.T_JOY_RAW_GET)
 LITE_FIELDS = ("t_ms", "mode", "mode_name", "heading", "target", "throttle", "gear", "gps_fix", "compass_ok",
                "est_lat", "est_lon", "est_sog", "est_cog", "unc_m", "pos_source", "alarm_bits", "power_fwd",
@@ -438,7 +438,7 @@ class StationServer:
             # FREE HELM and so becomes the captain
             return self.refuse(st, seq, ftype, 117)
         if self.prog_check and ftype in (proto.T_PROG_BEGIN, proto.T_PROG_WP, proto.T_PROG_COMMIT,
-                                         proto.T_AUTO_START, proto.T_AUTO_RESUME, proto.T_DP):
+                                         proto.T_AUTO_START, proto.T_AUTO_RESUME, proto.T_AUTO_RETURN, proto.T_DP):
             why = self.prog_check(st, ftype, payload)
             if why:
                 code, why = why if isinstance(why, tuple) else (114, why)

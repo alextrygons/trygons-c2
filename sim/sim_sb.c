@@ -24,6 +24,7 @@
 #include "dronecan.h"
 #include "can_act.h"
 #include "can_relay.h"
+#include "tc_pulse.h"     /* (hal/: the paddlewheel pulses, tests PW) */
 #include "tc_rstcause.h"
 
 /* ------------------------------------------------------------ harness -- */
@@ -977,7 +978,7 @@ static void cruise_hook(sbsim_t *x, void *ctx)
 /* AUTO due east: legs of `leg_s` seconds at each speed in spd[] (all
  * CONTINUE, straight line), or one long leg at spd[0] (n_legs = 1) with the
  * sea schedule. */
-static bool s_cruise_paddle;    /* the next cruise_run with a paddlewheel (see P4.2) */
+static bool s_cruise_paddle;    /* the next cruise_run with a paddlewheel (none since step 13: see P4.2) */
 static void cruise_run(sbsim_t *x, cruise_watch_t *c, uint32_t seed, const float *spd, int n_legs, float leg_s,
                        const float *at, const float *sea, int n_sea, uint32_t dur_ms)
 {
@@ -1025,11 +1026,13 @@ static void phase4(void)
             if (err > 0.5f || c.seg_over[i] > 1.5f || c.seg_hold[i] > 12.0f) ok = false;
         }
         snprintf(d + len, sizeof d - (size_t)len, "; steering beyond limit: cmd %.2f, true %.2f deg; "
-                 "throttle rate max %.0f %%/s; gear changes after F %d; legs done %u",
-                 c.limit_excess, c.true_excess, x.w.max_thr_rate, c.gear_changes - 1, x.sb.autop.legs_done);
+                 "throttle rate max %.0f %%/s; gear changes after F %d; legs done %u; GPS suspects %u",
+                 c.limit_excess, c.true_excess, x.w.max_thr_rate, c.gear_changes - 1, x.sb.autop.legs_done,
+                 (unsigned)x.sb.dr.suspects);
         ok = ok && c.limit_excess <= 0.01f && c.true_excess <= 0.0f &&
              x.w.max_thr_rate <= x.sb.cfg.throttle.rate_down_pct_s + 0.5f &&     /* (step 11e: 50 %/s down) */
-             c.gear_changes == 1 && x.w.shift_under_load == 0 && x.sb.autop.legs_done >= 4u;
+             c.gear_changes == 1 && x.w.shift_under_load == 0 && x.sb.autop.legs_done >= 4u &&
+             x.sb.dr.suspects == 0u;
         test_report("P4 AUTO legs 3->20 kn: speed control per leg, steering limit by speed", ok, d);
     }
 
@@ -1040,23 +1043,23 @@ static void phase4(void)
         static const float sea[] = { 1, 2, 3, 4, 1 };
         sbsim_t x;
         cruise_watch_t c;
-        /* with a paddlewheel since step 11e: without one the dead reckoning's slow-drag check (dr.c, 300 s /
-         * 60 m) raised a false GPS SUSPECT after the long acceleration back to 18 kn at the 11e closing rate
-         * (also on the 11d code with only rate_down 50: a dr.c finding, PROGRESS.md) - this test is about
-         * the sea-state slow-down */
-        s_cruise_paddle = true;
+        /* WITHOUT a paddlewheel again (step 13, W18): in steps 11e-11g it ran with one, because the dead
+         * reckoning's slow-drag check (dr.c, 300 s / 60 m) raised a false GPS SUSPECT after the long
+         * acceleration back to 18 kn: what DR learned in the 50 %/s slow-downs leaked into its current along
+         * the heading. dr.c now pauses that learning while the throttle comes down fast (learn_thr_dev_pct) */
         cruise_run(&x, &c, 42u, spd, 1, 0.0f, at, sea, 5, 2100000u);
         snprintf(d, sizeof d, "speed by sea state: ss1 %.1f-%.1f, ss2 %.1f-%.1f, ss3 %.1f-%.1f, ss4 %.1f-%.1f, "
                  "calm again %.1f-%.1f kn (end %.1f); course error max ss3 %.1f, ss4 %.1f deg; "
-                 "rough-water episodes %u, changes %u, shortest gap %.0f s",
+                 "rough-water episodes %u, changes %u, shortest gap %.0f s; no paddlewheel: GPS suspects %u",
                  c.seg_vmin[0], c.seg_vmax[0], c.seg_vmin[1], c.seg_vmax[1], c.seg_vmin[2], c.seg_vmax[2],
                  c.seg_vmin[3], c.seg_vmax[3], c.seg_vmin[4], c.seg_vmax[4], world_sog_kn(&x.w),
                  c.seg_hold[2], c.seg_hold[3], x.sb.nerv.episodes, x.sb.nerv.transitions,
-                 c.min_gap_ms * 0.001f);
+                 c.min_gap_ms * 0.001f, (unsigned)x.sb.dr.suspects);
         bool ok = c.seg_vmin[0] > 17.0f && c.seg_vmin[1] > 17.0f &&         /* no reaction in ss1-2 */
                   x.sb.nerv.episodes >= 1u && c.seg_vmin[3] <= 14.5f &&     /* slowed down in ss4 */
                   world_sog_kn(&x.w) > 17.0f &&                               /* recovered */
-                  x.sb.nerv.transitions <= 4u && auto_running(&x);
+                  x.sb.nerv.transitions <= 4u && auto_running(&x) &&
+                  x.sb.dr.suspects == 0u && x.sb.dr.state == DR_GPS;         /* W18: no false GPS SUSPECT */
         test_report("P4 sea state 1->4->1: slows down when rough, recovers when calm", ok, d);
     }
 
@@ -1069,10 +1072,11 @@ static void phase4(void)
         cruise_watch_t c;
         cruise_run(&x, &c, 43u, spd, 1, 0.0f, at, sea, 1, 1800000u);
         snprintf(d, sizeof d, "30 min at sea state 3.5, 18 kn leg: episodes %u, nervous/calm changes %u, "
-                 "shortest time between changes %.0f s, speed %.1f-%.1f kn",
-                 x.sb.nerv.episodes, x.sb.nerv.transitions, c.min_gap_ms * 0.001f, c.seg_vmin[0], c.seg_vmax[0]);
+                 "shortest time between changes %.0f s, speed %.1f-%.1f kn; GPS suspects %u (W18: 0)",
+                 x.sb.nerv.episodes, x.sb.nerv.transitions, c.min_gap_ms * 0.001f, c.seg_vmin[0], c.seg_vmax[0],
+                 (unsigned)x.sb.dr.suspects);
         bool ok = x.sb.nerv.transitions <= 6u &&
-                  (x.sb.nerv.transitions < 2u || c.min_gap_ms >= 30000u);
+                  (x.sb.nerv.transitions < 2u || c.min_gap_ms >= 30000u) && x.sb.dr.suspects == 0u;
         test_report("P4 no oscillation between nervous and calm", ok, d);
     }
 
@@ -13265,6 +13269,364 @@ void sb_steer_tests(void)
     can_servo_tests();
 }
 
+/* ------------------------------------------- AUTO RETURN (step 13, AR) -- */
+
+/* AUTO due east from the start: waypoints 1-4 at 400 / 800 / 1200 / 1600 m, legs 10 / 12 / 14 / 16 kn,
+ * radius 25 m, CONTINUE; the boat runs until waypoint 3 is the active one, 1000 m out (on leg 2 -> 3). */
+static bool ar_setup(sbsim_t *x, uint32_t seed, program_t *orig, double *e0)
+{
+    static const float kn[4] = { 10.0f, 12.0f, 14.0f, 16.0f };
+    prog_wp_t w[4];
+    sbsim_init(x, seed, 90.0f, 0.0f, NULL);
+    x->w.sea_state = 1.0f;
+    sbsim_run(x, 3000u, NULL, NULL);
+    *e0 = x->w.east_m;
+    for (int i = 0; i < 4; i++)
+        w[i] = wp_world(x, x->w.north_m, *e0 + 400.0 * (i + 1), kn[i], 25.0f, WP_ACT_CONTINUE);
+    if (!auto_go(x, w, 4, PROG_END_STOP)) return false;
+    while (x->t < 400000u && !(x->sb.autop.wp == 2u && x->w.east_m > *e0 + 1000.0)) sbsim_run(x, x->t + 100u, NULL, NULL);
+    *orig = *sb_program(&x->sb);
+    return sb_mode(&x->sb) == MODE_AUTO && x->sb.autop.wp == 2u;
+}
+
+static void return_tests(void)
+{
+    char d[700];
+    printf("\n=== AUTO RETURN (step 13) ===\n");
+
+    /* AR1 the way back: waypoint 2 then 1 at the speeds of the legs it drives back over, stop in neutral at
+     * waypoint 1; nothing before the CONFIRM; the stored program never changes */
+    {
+        sbsim_t x;
+        program_t orig;
+        double e0;
+        bool set = ar_setup(&x, 1301u, &orig, &e0);
+        sb_result_t r = sb_auto_return(&x.sb);
+        bool pend = x.sb.confirm.kind == CONF_AUTO_RETURN && !x.sb.autop.returning;
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        bool still_fwd = !x.sb.autop.returning && x.sb.autop.wp == 2u && sb_mode(&x.sb) == MODE_AUTO;
+        bool conf = confirm_press(&x);
+        bool ret = x.sb.autop.returning && sb_auto_wp_stored(&x.sb) == 1u && x.sb.autop.prog.n == 2u &&
+                   sb_mode(&x.sb) == MODE_AUTO && x.sb.autop.state == AUTO_RUN;
+        float set1 = x.sb.cruise.set_kn;
+        float min_e = 1e9f, set0 = -1.0f;
+        bool passed2 = false;
+        while (x.t < 900000u && sb_mode(&x.sb) == MODE_AUTO) {
+            sbsim_run(&x, x.t + 100u, NULL, NULL);
+            float e = (float)(x.w.east_m - e0);
+            if (e < min_e) min_e = e;
+            if (x.sb.autop.returning && sb_auto_wp_stored(&x.sb) == 0u) {
+                if (!passed2) set0 = x.sb.cruise.set_kn;
+                passed2 = true;
+            }
+        }
+        float end_e = (float)(x.w.east_m - e0);
+        bool same = memcmp(sb_program(&x.sb), &orig, sizeof orig) == 0;
+        bool nv_same = false;
+        {
+            static program_t nvp;
+            if (hal_nv_load(HAL_NV_SLOT_PROGRAM, &nvp, (uint32_t)sizeof nvp))
+                nv_same = memcmp(&nvp, &orig, sizeof orig) == 0;
+        }
+        snprintf(d, sizeof d, "on leg 2 -> 3 %s; request %d, pending CONFIRM %s, before it still forward %s; CONFIRM %s -> "
+                 "returning to waypoint 2 %s at %.0f kn (leg 2 -> 3: 14); waypoint 2 passed %s, then to waypoint 1 at "
+                 "%.0f kn (leg 1 -> 2: 12); end %s (%s) %.0f m east of the start (waypoint 1 at 400 m), at %.1f kn, gear %s; "
+                 "stored program unchanged %s, saved one unchanged %s",
+                 set ? "yes" : "NO", (int)r, pend ? "yes" : "NO", still_fwd ? "yes" : "NO", conf ? "yes" : "NO",
+                 ret ? "yes" : "NO", set1, passed2 ? "yes" : "NO", set0, mode_name(sb_mode(&x.sb)),
+                 mode_reason_name(auto_end_why(&x)), end_e, x.w.speed_kn, x.w.engaged == GEAR_N ? "N" : "not N",
+                 same ? "yes" : "NO", nv_same ? "yes" : "NO");
+        test_report("AR1 AUTO RETURN: back over the legs to waypoint 1 after the CONFIRM, stop there; stored program kept",
+                    set && r == SB_OK && pend && still_fwd && conf && ret && fabsf(set1 - 14.0f) < 0.01f && passed2 &&
+                    fabsf(set0 - 12.0f) < 0.01f && sb_mode(&x.sb) == MODE_STANDBY && auto_end_why(&x) == WHY_ARRIVED &&
+                    fabsf(end_e - 400.0f) < 80.0f && min_e > 300.0f && same && nv_same, d);
+    }
+
+    /* AR2 refusals: no program, FIRST TEST, a held stick, already returning, DP / TRAINING; a CONFIRM after 10 s
+     * does nothing; the STANDBY button cancels a pending request */
+    {
+        sbsim_t x;
+        program_t orig;
+        double e0;
+        sbsim_init(&x, 1302u, 90.0f, 0.0f, NULL);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        sb_result_t r_noprog = sb_auto_return(&x.sb);
+        sb_config_t c = cfg_first_test();
+        sbsim_t y;
+        sbsim_init(&y, 1303u, 90.0f, 0.0f, &c);
+        sbsim_run(&y, 3000u, NULL, NULL);
+        sb_result_t r_ft = sb_auto_return(&y.sb);
+
+        bool set = ar_setup(&x, 1304u, &orig, &e0);
+        joy_set(0.0f, 0.5f, false, false);                  /* stick held: MANUAL */
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        sb_result_t r_held = sb_auto_return(&x.sb);
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        sb_mode_t m_man = sb_mode(&x.sb);
+        /* in MANUAL with the stick centred: the request is allowed (CONFIRM leaves MANUAL like AUTO START) */
+        sb_result_t r_ok = sb_auto_return(&x.sb);
+        sbsim_run(&x, x.t + 10500u, NULL, NULL);                    /* the CONFIRM window passes */
+        bool expired = x.sb.confirm.kind == CONF_NONE;
+        bool late = confirm_press(&x);
+        bool not_ret = !x.sb.autop.returning && sb_mode(&x.sb) == MODE_MANUAL;
+        sb_result_t r2 = sb_auto_return(&x.sb);
+        press(&x, HAL_BTN_STANDBY);                                 /* STANDBY: the pending request goes */
+        bool cancelled = x.sb.confirm.kind == CONF_NONE;
+        sbsim_run(&x, x.t + 15000u, NULL, NULL);
+        bool late2 = confirm_press(&x);
+        /* in STANDBY: a new request, CONFIRM -> AUTO on the way back; then a second request is refused */
+        sb_result_t r3 = sb_auto_return(&x.sb);
+        bool c3 = confirm_press(&x);
+        bool ret = x.sb.autop.returning && sb_mode(&x.sb) == MODE_AUTO;
+        sb_result_t r_again = sb_auto_return(&x.sb);
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, x.t + 15000u, NULL, NULL);
+        sb_result_t r_ret_stby = sb_auto_return(&x.sb);              /* a stopped return: still the way back */
+        snprintf(d, sizeof d, "no program -> %d (%d), FIRST TEST -> %d (%d); stick held -> %d (%d), MANUAL %s; centred "
+                 "-> %d, CONFIRM window passed %s, a late CONFIRM accepted %s, still forward in MANUAL %s; request %d, "
+                 "STANDBY button cancels it %s, CONFIRM after it %s; from STANDBY %d + CONFIRM %s -> AUTO back %s; "
+                 "again -> %d (%d); stopped return asked again -> %d (%d)",
+                 (int)r_noprog, (int)SB_ERR_NO_PROGRAM, (int)r_ft, (int)SB_ERR_WRONG_MODE, (int)r_held,
+                 (int)SB_ERR_NOT_CENTERED, m_man == MODE_MANUAL ? "yes" : "NO", (int)r_ok, expired ? "yes" : "NO",
+                 late ? "YES" : "no", not_ret ? "yes" : "NO", (int)r2, cancelled ? "yes" : "NO", late2 ? "YES" : "no",
+                 (int)r3, c3 ? "yes" : "NO", ret ? "yes" : "NO", (int)r_again, (int)SB_ERR_WRONG_MODE,
+                 (int)r_ret_stby, (int)SB_ERR_WRONG_MODE);
+        test_report("AR2 AUTO RETURN refusals: no program, FIRST TEST, held stick, CONFIRM window, STANDBY cancels, once",
+                    r_noprog == SB_ERR_NO_PROGRAM && r_ft == SB_ERR_WRONG_MODE && set && r_held == SB_ERR_NOT_CENTERED &&
+                    m_man == MODE_MANUAL && r_ok == SB_OK && expired && !late && not_ret && r2 == SB_OK && cancelled &&
+                    !late2 && r3 == SB_OK && c3 && ret && r_again == SB_ERR_WRONG_MODE &&
+                    r_ret_stby == SB_ERR_WRONG_MODE, d);
+    }
+
+    /* AR3 the joystick wins: takeover on the way back -> MANUAL (suspended), RESUME + CONFIRM goes on BACK;
+     * then STANDBY + AUTO START + CONFIRM = the stored program forward from waypoint 1 again */
+    {
+        sbsim_t x;
+        program_t orig;
+        double e0;
+        bool set = ar_setup(&x, 1305u, &orig, &e0);
+        bool r = sb_auto_return(&x.sb) == SB_OK && confirm_press(&x);
+        sbsim_run(&x, x.t + 20000u, NULL, NULL);
+        joy_set(0.6f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 600u, NULL, NULL);
+        bool man = sb_mode(&x.sb) == MODE_MANUAL && x.sb.autop.suspended && x.sb.autop.returning;
+        joy_set(0.0f, 0.0f, false, false);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        sb_result_t rr = sb_auto_resume(&x.sb);
+        bool c1 = confirm_press(&x);
+        bool back = sb_mode(&x.sb) == MODE_AUTO && x.sb.autop.returning && sb_auto_wp_stored(&x.sb) <= 1u;
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, x.t + 15000u, NULL, NULL);
+        sb_result_t rs = sb_auto_start(&x.sb);
+        bool c2 = confirm_press(&x);
+        bool fwd = sb_mode(&x.sb) == MODE_AUTO && !x.sb.autop.returning && x.sb.autop.wp == 0u &&
+                   memcmp(&x.sb.autop.prog, &orig, sizeof orig) == 0 &&
+                   x.sb.autop.prog.wp[0].lat_e7 == orig.wp[0].lat_e7;
+        snprintf(d, sizeof d, "return started %s; stick -> MANUAL, return suspended %s; RESUME %d + CONFIRM %s -> on the "
+                 "way back again %s (target waypoint %u); STANDBY, AUTO START %d + CONFIRM %s -> the stored program from "
+                 "waypoint 1 %s",
+                 set && r ? "yes" : "NO", man ? "yes" : "NO", (int)rr, c1 ? "yes" : "NO", back ? "yes" : "NO",
+                 (unsigned)sb_auto_wp_stored(&x.sb) + 1u, (int)rs, c2 ? "yes" : "NO", fwd ? "yes" : "NO");
+        test_report("AR3 AUTO RETURN: the joystick wins; RESUME goes on back; AUTO START = the stored program again",
+                    set && r && man && rr == SB_OK && c1 && back && rs == SB_OK && c2 && fwd, d);
+    }
+
+    /* AR4 the same validation as an upload: a leg speed above today's max_leg_kn = refused (BAD_PROGRAM);
+     * a new program upload ends a stopped return (the new one is the program) */
+    {
+        sbsim_t x;
+        program_t orig;
+        double e0;
+        bool set = ar_setup(&x, 1306u, &orig, &e0);
+        float keep = x.sb.cfg.prog.max_speed_kn;
+        x.sb.cfg.prog.max_speed_kn = 13.0f;                 /* the way back to waypoint 2 runs at 14 kn */
+        sb_result_t r_lim = sb_auto_return(&x.sb);
+        x.sb.cfg.prog.max_speed_kn = keep;
+        sb_result_t r_ok = sb_auto_return(&x.sb);
+        bool c = confirm_press(&x);
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, x.t + 15000u, NULL, NULL);
+        prog_error_t err;
+        uint8_t bad;
+        sb_result_t up = sb_program_set(&x.sb, &orig, &err, &bad);
+        bool cleared = !x.sb.autop.returning && memcmp(&x.sb.autop.prog, &orig, sizeof orig) == 0;
+        snprintf(d, sizeof d, "max_leg_kn 13 -> %d (%d = refused: the way back to waypoint 2 at 14 kn); back to %.0f -> "
+                 "%d, CONFIRM %s; STANDBY, a program upload %d ends the return %s",
+                 (int)r_lim, (int)SB_ERR_BAD_PROGRAM, keep, (int)r_ok, c ? "yes" : "NO", (int)up, cleared ? "yes" : "NO");
+        test_report("AR4 AUTO RETURN: the way back is validated like an upload; a new program ends it",
+                    set && r_lim == SB_ERR_BAD_PROGRAM && r_ok == SB_OK && c && up == SB_OK && cleared, d);
+    }
+
+    /* AR5 the link: PROTO_T_AUTO_RETURN -> the request; telemetry = the stored program's count, the active waypoint
+     * as its index in it, auto_flags b4; PROG_GET reads the stored program */
+    {
+        pcsim_t *p = (pcsim_t *)calloc(1, sizeof *p);
+        pcsim_init(p, 1307u);
+        p->heartbeat = true;
+        pc_run(p, 3000u);
+        double e0 = p->x.w.east_m;
+        prog_wp_t w[4];
+        for (int i = 0; i < 4; i++)
+            w[i] = wp_world(&p->x, p->x.w.north_m, e0 + 400.0 * (i + 1), 10.0f, 25.0f, WP_ACT_CONTINUE);
+        bool go = auto_go(&p->x, w, 4, PROG_END_STOP);
+        while (p->x.t < 400000u && !(p->x.sb.autop.wp == 2u && p->x.w.east_m > e0 + 1000.0)) pc_run(p, 100u);
+        uint8_t r = pc_cmd(p, PROTO_T_AUTO_RETURN, NULL, 0u);
+        uint8_t kind = p->tm_len > 130u ? p->tm[130] : 0xFFu;
+        bool c = confirm_press(&p->x);
+        pc_run(p, 500u);
+        uint8_t n = p->tm[126], wp = p->tm[127], flags = p->tm[129];
+        int before = p->acks;
+        uint8_t i3 = 3u;
+        uint8_t rg = pc_cmd(p, PROTO_T_PROG_GET, &i3, 1u);
+        snprintf(d, sizeof d, "AUTO %s, AUTO_RETURN -> %u, confirm kind %u (%d); CONFIRM %s; telemetry: program count %u "
+                 "(4), active waypoint %u (1 = waypoint 2), flags 0x%02X (b4 returning); PROG_GET 4 -> %u (acks %d)",
+                 go ? "yes" : "NO", r, kind, (int)CONF_AUTO_RETURN, c ? "yes" : "NO", n, wp, flags, rg, p->acks - before);
+        test_report("AR5 AUTO RETURN over the link: request, telemetry in stored-program terms, PROG_GET",
+                    go && r == PROTO_R_OK && kind == (uint8_t)CONF_AUTO_RETURN && c && n == 4u && wp == 1u &&
+                    (flags & 16u) && rg == PROTO_R_OK, d);
+        free(p);
+    }
+}
+
+/* ------------------------------------- paddlewheel pulses (step 13, PW) -- */
+
+/* hal/tc_pulse.c on synthetic pulses: the board's GPT12 counter = the integral of speed x K, 16 bits */
+typedef struct {
+    pulse_speed_t p;
+    double edges;               /* exact edge count (fractional) */
+    uint32_t t;
+    int valid_steps, steps;
+    float last;
+    bool ok_now;
+} pwsim_t;
+
+static void pw_init(pwsim_t *w, double start_count)
+{
+    memset(w, 0, sizeof *w);
+    pulse_init(&w->p, 4.9f, 40.0f, 1.0f, 1.0f);
+    w->edges = start_count;
+    w->t = 1000u;
+}
+
+/* run ms at speed kn (hz_override > 0: that pulse rate instead, e.g. noise; cut: no pulses) */
+static void pw_run(pwsim_t *w, uint32_t ms, float kn, float hz_override, bool cut)
+{
+    for (uint32_t k = 0; k < ms; k += 50u) {
+        w->t += 50u;
+        if (!cut) w->edges += (hz_override > 0.0f ? hz_override : kn * 4.9f) * 0.05;
+        float v;
+        w->ok_now = pulse_update(&w->p, (uint16_t)((uint32_t)w->edges & 0xFFFFu), w->t, &v);
+        w->steps++;
+        if (w->ok_now) { w->valid_steps++; w->last = v; }
+    }
+}
+
+static void pulse_tests(void)
+{
+    char d[400];
+    printf("\n=== Paddlewheel pulses -> knots (hal/tc_pulse.c, step 13) ===\n");
+
+    /* PW1 steady speeds, the 16-bit counter wraps */
+    {
+        pwsim_t w;
+        float got[3];
+        static const float kn[3] = { 10.0f, 0.5f, 25.0f };
+        pw_init(&w, 65000.0);
+        bool ok = true;
+        for (int i = 0; i < 3; i++) {
+            pw_run(&w, 6000u, kn[i], 0.0f, false);
+            got[i] = w.ok_now ? w.last : -1.0f;
+            ok = ok && w.ok_now && fabsf(got[i] - kn[i]) <= 0.03f * kn[i] + 0.15f;
+        }
+        snprintf(d, sizeof d, "10 kn -> %.2f, 0.5 kn -> %.2f, 25 kn -> %.2f (counter from 65000: wrapped %s)",
+                 got[0], got[1], got[2], w.edges > 65536.0 ? "yes" : "NO");
+        test_report("PW1 paddlewheel: steady speeds measured, 16-bit counter wrap", ok && w.edges > 65536.0, d);
+    }
+    /* PW2 a boat that stops (5 kn -> 0 over seconds): valid all the way, ends at 0 kn */
+    {
+        pwsim_t w;
+        pw_init(&w, 0.0);
+        pw_run(&w, 4000u, 5.0f, 0.0f, false);
+        int bad = 0;
+        float v = 5.0f;
+        for (int k = 0; k < 600; k++) {          /* 30 s, tau 6 s */
+            v += (0.0f - v) * 0.05f / 6.0f;
+            pw_run(&w, 50u, v < 0.05f ? 0.0f : v, 0.0f, false);
+            if (!w.ok_now) bad++;
+        }
+        pw_run(&w, 3000u, 0.0f, 0.0f, true);
+        snprintf(d, sizeof d, "no-data steps while stopping %d; at rest %s %.2f kn; no-data events %lu",
+                 bad, w.ok_now ? "valid" : "NO DATA", w.last, (unsigned long)w.p.no_data);
+        test_report("PW2 paddlewheel: a stopping boat reads down to 0 kn (no false NO DATA)",
+                    bad == 0 && w.ok_now && w.last < 0.05f && w.p.no_data == 0u, d);
+    }
+    /* PW3 the cable cut at 8 kn: NO DATA within two windows, stays so; pulses back: valid again */
+    {
+        pwsim_t w;
+        pw_init(&w, 0.0);
+        pw_run(&w, 4000u, 8.0f, 0.0f, false);
+        bool before = w.ok_now;
+        uint32_t t_cut = w.t, t_lost = 0u;
+        for (int k = 0; k < 200 && !t_lost; k++) {
+            pw_run(&w, 50u, 0.0f, 0.0f, true);
+            if (!w.ok_now) t_lost = w.t - t_cut;
+        }
+        pw_run(&w, 10000u, 0.0f, 0.0f, true);
+        bool stays = !w.ok_now;
+        uint32_t t_back0 = w.t, t_back = 0u;
+        for (int k = 0; k < 100 && !t_back; k++) {
+            pw_run(&w, 50u, 8.0f, 0.0f, false);
+            if (w.ok_now) t_back = w.t - t_back0;
+        }
+        snprintf(d, sizeof d, "valid before %s; NO DATA %u ms after the cut, still after 10 s %s; back %u ms after the "
+                 "pulses returned (%.1f kn)", before ? "yes" : "NO", t_lost, stays ? "yes" : "NO", t_back, w.last);
+        test_report("PW3 paddlewheel: cut cable / stuck wheel at speed = NO DATA (not 0 kn); back when pulses return",
+                    before && t_lost > 0u && t_lost <= 2u * PULSE_WINDOW_MS && stays && t_back > 0u &&
+                    t_back <= 2u * PULSE_WINDOW_MS && fabsf(w.last - 8.0f) < 0.5f, d);
+    }
+    /* PW4 implausible pulse rates (noise: 100 kn) and a long gap between the calls = NO DATA */
+    {
+        pwsim_t w;
+        pw_init(&w, 0.0);
+        pw_run(&w, 3000u, 6.0f, 0.0f, false);
+        pw_run(&w, 1500u, 0.0f, 490.0f, false);
+        bool noise = !w.ok_now;
+        pw_run(&w, 3000u, 6.0f, 0.0f, false);
+        bool back = w.ok_now;
+        w.t += 3000u;                              /* the loop stalled 3 s */
+        w.edges += 6.0 * 4.9 * 3.0;
+        float v;
+        bool gap = !pulse_update(&w.p, (uint16_t)((uint32_t)w.edges & 0xFFFFu), w.t, &v);
+        pw_run(&w, 1500u, 6.0f, 0.0f, false);
+        snprintf(d, sizeof d, "100 kn of pulses -> %s; 6 kn again -> %s; a 3 s gap -> %s, then %s (%.1f kn)",
+                 noise ? "NO DATA" : "VALID", back ? "valid" : "NO DATA", gap ? "NO DATA" : "VALID",
+                 w.ok_now ? "valid" : "NO DATA", w.last);
+        test_report("PW4 paddlewheel: implausible pulse rates and a stalled reading = NO DATA, then back",
+                    noise && back && gap && w.ok_now && fabsf(w.last - 6.0f) < 0.4f, d);
+    }
+}
+
+/* only the paddlewheel pulse tests (debugging: `autopilot_sim pw`) */
+void sb_pulse_tests(void)
+{
+    pulse_tests();
+}
+
+/* only the AUTO RETURN tests (debugging: `autopilot_sim ar`) */
+void sb_return_tests(void)
+{
+    return_tests();
+}
+
+/* only the dead-reckoning / GPS integrity tests (debugging: `autopilot_sim dr`) */
+void sb_dr_tests(void)
+{
+    gps_denied();
+    gps_invalid_tests();
+    gps_retrust_tests();
+}
+
 void sb_phase4_tests(void)
 {
     phase4();
@@ -13688,6 +14050,8 @@ void sb_tests(void)
     save_tests();
     ais_tests();
     nav_tests();
+    return_tests();
+    pulse_tests();
     slam_tests();
     logging_tests();
     timing_tests();

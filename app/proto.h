@@ -74,6 +74,8 @@
 #define PROTO_T_AUTO_PAUSE    0x25u   /* -                                    */
 #define PROTO_T_AUTO_RESUME   0x26u   /* -  then joystick CONFIRM within 10 s */
 #define PROTO_T_AUTO_SKIP     0x27u   /* -                                    */
+#define PROTO_T_AUTO_RETURN   0x13u   /* -  AUTO RETURN: the program backwards from the current leg to waypoint 1
+                                       *    (smallboat.h sb_auto_return); then joystick CONFIRM within 10 s */
 #define PROTO_T_POWER_CODE    0x28u   /* u8 dir (0 fwd, 1 rev): boat makes a code (telemetry) */
 #define PROTO_T_POWER_RAISE   0x29u   /* u8 dir, u16 typed code; then joystick CONFIRM within 10 s */
 #define PROTO_T_POWER_LOWER   0x2Au   /* -  back to 30 % / 5 % at once        */

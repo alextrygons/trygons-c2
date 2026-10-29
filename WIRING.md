@@ -27,6 +27,11 @@ the board before you connect anything.**
 Direction: X right = steer to starboard (positive). Y forward (away from you) =
 ahead. If an axis works the wrong way round, swap the two outer wires of that pot.
 
+Software (step 13): hal_read_joystick reads EVADC group 8 channels 7 (X, P40.9) and 6 (Y, P40.8) - the
+same group as the motor current and the supply divider - and the three buttons; it is switched on with
+`HAL_JOY_FITTED 1` in hal/hal_pins.h once the joystick is wired (0 today: the USB bridge or no joystick).
+The pins are marked CHECK there: compare them with the board before setting the flag.
+
 ### Why the 1 k resistors? (wire-break detection)
 
 Put a **1 kΩ resistor between 3V3 and the top of each pot**, and another
@@ -366,6 +371,25 @@ the lever to idle? Only "pulses stop AND spring to idle" allows a throttle
 timeout; otherwise it stays 0 (hold). Never assume "timeout = idle". Write the measured times
 and the servo speeds (steering lock to lock, throttle idle to full) into
 FIRST_TEST.md. Until then the software uses 12 s / 6 s as the worst case.
+
+### 3F. Paddlewheel speed sensor (optional, step 13) - hardware TBD
+
+The dead reckoning (app/dr.c) uses a paddlewheel's speed through water when it is fitted (better DR, the
+faster GPS re-trust of part T3). Sensor TBD (PARTS.md): a paddlewheel with a pulse output, K factor =
+pulses per second at 1 kn (typical ~4.9 Hz per kn, `PADDLE_HZ_PER_KN` in hal_pins.h - set the real one).
+
+| Signal            | Board pin (CHECK X1/X2)        | TC375 pin            | Note |
+|-------------------|--------------------------------|----------------------|------|
+| Pulse output      | X1/X2 header (TBD)             | P00.7 = GPT12 T2INA  | counted by the GPT12 timer T2 in hardware (no interrupt) |
+| Sensor supply     | its own fused supply (TBD)     | -                    | as the sensor needs (often 12 V) |
+| GND               | GND                            | GND                  | common with the board |
+
+* **3.3 V on the pin, never more.** An open-collector output: pull-up to the board's 3V3 (4.7 kOhm) on the
+  pin side. A sensor that gives 12 V pulses: an optocoupler or a level shifter (TBD) - never 12 V on P00.7.
+* 100 nF to GND near the board against noise on a long cable.
+* Software: hal/tc_pulse.c (pure C, sim tests PW1-PW4) - 0.5 s windows, a boat that slows to a stop reads
+  0 kn; pulses that stop at once from speed (cut cable, stuck wheel) or an implausible rate (> 40 kn)
+  = NO DATA (the DR then uses its throttle table). `HAL_PADDLE_FITTED 1` in hal_pins.h once it is wired.
 
 ## 4. microSD card (log)
 

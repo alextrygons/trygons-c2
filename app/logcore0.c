@@ -41,7 +41,7 @@ static struct {
     bool     gear_fault, compass_fault, joy_fault, mon_tripped;
     uint32_t overruns;
     uint8_t  auto_state, auto_wp;
-    bool     auto_susp, auto_fin;
+    bool     auto_susp, auto_fin, auto_ret;
     uint32_t legs_done;
     uint32_t conf_acc, conf_ref, conf_ign;
     uint32_t cfg_version;
@@ -163,11 +163,12 @@ uint16_t logcore0_config_text(const sb_t *s, char *out, uint16_t max)
                       (unsigned)m->btn[8], m->nz_lo, m->nz_hi, m->lever_delta, m->pickup_win);
     }
     if (n > 0 && n < (int)max) {
-        const sb_auto_t *p = &s->autop;
+        const program_t *pg = sb_program(s);          /* the stored program (also during an AUTO RETURN) */
+        bool pok = s->autop.prog_ok;
         n += snprintf(out + n, (size_t)(max - n), "program.n=%u\nprogram.final=%u\n",
-                      p->prog_ok ? (unsigned)p->prog.n : 0u, (unsigned)p->prog.final_action);
-        for (unsigned i = 0; p->prog_ok && i < p->prog.n && n > 0 && n < (int)max - 80; i++) {
-            const prog_wp_t *w = &p->prog.wp[i];
+                      pok ? (unsigned)pg->n : 0u, (unsigned)pg->final_action);
+        for (unsigned i = 0; pok && i < pg->n && n > 0 && n < (int)max - 80; i++) {
+            const prog_wp_t *w = &pg->wp[i];
             n += snprintf(out + n, (size_t)(max - n), "program.wp%u=%.7f,%.7f,%.1f,%.0f,%u\n", i + 1u,
                           program_lat(w), program_lon(w), w->speed_kn, w->radius_m, (unsigned)w->action);
         }
@@ -426,13 +427,14 @@ static void changes(const sb_t *s)
     /* AUTO program */
     const sb_auto_t *a = &s->autop;
     if ((uint8_t)a->state != k.auto_state || a->wp != k.auto_wp || a->suspended != k.auto_susp ||
-        a->finished != k.auto_fin || a->legs_done != k.legs_done) {
-        int32_t action = a->finished && !k.auto_fin ? 5 : a->legs_done != k.legs_done ? 6 :
+        a->finished != k.auto_fin || a->legs_done != k.legs_done || a->returning != k.auto_ret) {
+        int32_t action = a->returning && !k.auto_ret ? 8 :
+                         a->finished && !k.auto_fin ? 5 : a->legs_done != k.legs_done ? 6 :
                          a->state == AUTO_PAUSED ? 2 : (a->wp != k.auto_wp && a->legs_done == k.legs_done) ? 4 :
                          (uint8_t)a->state == AUTO_RUN && k.auto_state != AUTO_RUN ? 3 : 7;
         ev(s, EV_PROGRAM, action, a->wp, a->state, (int32_t)a->legs_done);
         k.auto_state = (uint8_t)a->state; k.auto_wp = a->wp; k.auto_susp = a->suspended;
-        k.auto_fin = a->finished; k.legs_done = a->legs_done;
+        k.auto_fin = a->finished; k.legs_done = a->legs_done; k.auto_ret = a->returning;
     }
     /* CONFIRM presses */
     if (s->confirm.accepted != k.conf_acc) ev(s, EV_CONFIRM, s->confirm.kind, 0, (int32_t)s->confirm.accepted, 0);

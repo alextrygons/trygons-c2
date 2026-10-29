@@ -73,13 +73,18 @@ for v in "can:-DHAL_CAN_FITTED=1 -DHAL_CAN_SERVOS=1 -DHAL_RELAY_FITTED=1 -DRELAY
     msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 $defs -I. $INC -c hal/hal_tc375.c -o "$OUTV/hal_tc375_$name.o" 2>&1)
     if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN hal_tc375.c (relay board on $name, flags 1)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK hal_tc375.c (relay board on $name, flags 1)"; fi
 done
+# step 13: the analog joystick + paddlewheel board paths (HAL_JOY_FITTED / HAL_PADDLE_FITTED stay 0 until wired)
+for f in hal_tc375 tc_adc; do
+    msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -DHAL_JOY_FITTED=1 -DHAL_PADDLE_FITTED=1 -I. $INC -c hal/$f.c -o "$OUTV/${f}_sensors.o" 2>&1)
+    if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN $f.c (analog joystick + paddlewheel, flags 1)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK $f.c (analog joystick + paddlewheel, flags 1)"; fi
+done
 # all HAL functions used by app/ must exist in hal_tc375.c (link check)
 "$B/tricore-elf-nm.exe" -u "$OUT"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^hal_/ {print $2}' | sort -u > "$TEMP/hal_used.txt"
 "$B/tricore-elf-nm.exe" "$OUT/hal_tc375.o" | grep ' T hal_' | grep -o 'hal_[a-z_0-9]*' | sort -u > "$TEMP/hal_def.txt"
 missing=$(comm -23 "$TEMP/hal_used.txt" "$TEMP/hal_def.txt")
 if [ -n "$missing" ]; then echo "MISSING in hal_tc375.c: $missing"; fail=1; else echo "hal_tc375.c provides every HAL function used"; fi
 # the board drivers (hal/tc_*.c): every driver function used is defined
-"$B/tricore-elf-nm.exe" -u "$OUT"/*.o "$OUTV"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^((uart|spi|bno|gps|sd|fat32|adc|nvlog|mb|can|dc|cr)_|canard[A-Z])/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
+"$B/tricore-elf-nm.exe" -u "$OUT"/*.o "$OUTV"/*.o 2>/dev/null | awk '$1=="U" && $2 ~ /^((uart|spi|bno|gps|sd|fat32|adc|nvlog|mb|can|dc|cr|pulse)_|canard[A-Z])/ {print $2}' | sort -u > "$TEMP/drv_used.txt"
 "$B/tricore-elf-nm.exe" "$OUT"/tc_*.o "$OUT"/dronecan.o "$OUT"/canard.o "$OUT"/can_relay.o | awk '$2=="T" {print $3}' | sort -u > "$TEMP/drv_def.txt"
 missing=$(comm -23 "$TEMP/drv_used.txt" "$TEMP/drv_def.txt")
 if [ -n "$missing" ]; then echo "MISSING driver functions: $missing"; fail=1; else echo "every board driver function used is defined"; fi

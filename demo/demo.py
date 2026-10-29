@@ -94,7 +94,7 @@ def wait_port(port, timeout):
 # --- preparation ---------------------------------------------------------------------
 def build_sim():
     if os.path.exists(EXE):
-        newest = max(os.path.getmtime(os.path.join(d, f)) for d in ("app", "sim")
+        newest = max(os.path.getmtime(os.path.join(REPO, d, f)) for d in ("app", "sim", "hal")
                      for f in os.listdir(os.path.join(REPO, d)) if f.endswith((".c", ".h")))
         if os.path.getmtime(EXE) >= newest:
             return True
