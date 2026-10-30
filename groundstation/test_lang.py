@@ -30,7 +30,7 @@ import proto  # noqa: E402
 
 results = []
 SCREEN_MODULES = ["app.py", "mapview.py", "driver.py", "hud.py", "hudar.py", "mapwin.py", "soundtest.py", "monitors.py",
-                  "sound.py", "crewui.py", "overlay.py", "theme.py"]
+                  "sound.py", "crewui.py", "overlay.py", "theme.py", "splash.py", "about.py"]
 
 
 def report(name, ok, detail):
@@ -49,7 +49,7 @@ def code_keys():
         if not fn.endswith(".py") or fn.startswith("test_"):
             continue
         s = open(os.path.join(HERE, fn), encoding="utf-8").read()
-        keys |= set(re.findall(r'''(?:\bT|\bTE|i18n\.T|i18n\.TE)\(\s*"([a-zA-Z0-9_.]+)"''', s))
+        keys |= set(re.findall(r'''(?:\bT|\bTE|i18n\.T|i18n\.TE|i18n\.W)\(\s*"([a-zA-Z0-9_.]+)"''', s))
         keys |= set(re.findall(r'''(?:\blbl|\bbtn|\bchk|i18n\.bind)\([^"\n]*?"([a-z]+\.[a-zA-Z0-9_.]+)"''', s))
         keys |= set(k for k in re.findall(r'''"((?:cap|tab|menu|map|ais|drv|hud|what|wiz|joy|bench|plot|snd|say|ar|lay|mw)'''
                                           r'''\.[a-zA-Z0-9_]+)"''', s) if not k.endswith("_"))
@@ -164,7 +164,8 @@ def main():
     fit = all(v[4] for vs in seen.values() for v in vs)
     ok = lang0 == "el" and el_t[0] != en_t[0] and en_t[1] == "Connect" and el_t[1] == "Σύνδεση" and \
         en_t[2] == "Connection" and el_t[3] == "Έλεγχος" and en_t[3] == "Control" and \
-        el_t[0].startswith("Πλοήγηση & έλεγχος") and en_t[0].startswith("navigation & control") and \
+        el_t[0].startswith("Trygons C2 – ") and "Πλοήγηση & έλεγχος" in el_t[0] and \
+        en_t[0].startswith("Trygons C2 – ") and "Navigation & control" in en_t[0] and \
         seen["el"][1][:4] == el_t[:4] and remembered and fit and el_t[5] == ["STANDBY"] and \
         not i18n.MISSING and not errors
     report("L4 Greek by default; live switch EL <-> EN (titles, buttons, tabs, panels); remembered; screen 2 fits "

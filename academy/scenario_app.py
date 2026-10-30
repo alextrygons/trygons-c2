@@ -24,6 +24,7 @@ import lesson_app                                                       # noqa: 
 import scenario                                                         # noqa: E402
 import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
+import look                                                             # noqa: E402  (13i: the station's look)
 from banner import banner_text                                          # noqa: E402
 from lesson_app import CAUTION, COL, FAMILY, GOOD, WARN                 # noqa: E402
 from text import T                                                      # noqa: E402
@@ -55,7 +56,8 @@ class ScenarioWindow(lesson_app.LessonWindow):
         self._refused_t, self._refused_text = -1e9, ""
         lesson_app.LessonWindow.__init__(self, root, lang, store, user, link_factory, starter, clock, docs)
         L = self.lang
-        root.title(T("scen.title", L))
+        look.install(root)                  # the station's look (13i)
+        look.title(root, "scen.title", L)
         try:
             root.geometry("1320x900")
         except tk.TclError:
@@ -325,9 +327,10 @@ class ReplayWindow(object):
         docs = {d["id"]: d for d in scenario.scenarios()}
         self.doc = docs.get(self.head.get("id"), {})
         L = lang
-        top.title(T("scen.replay_title", L))
+        look.install(top)
+        look.title(top, "scen.replay_title", L)
         top.configure(bg=COL["bg"])
-        self.banner = tk.Label(top, text=banner_text(L), bg=CAUTION, fg="#000000", font=(FAMILY, 16, "bold"), pady=6)
+        self.banner = look.banner(top, L)
         self.banner.pack(side="top", fill="x")
         tk.Label(top, text=self.doc.get("title_" + L) or self.head.get("id"), bg=COL["bg"], fg=COL["fg"],
                  font=(FAMILY, 14, "bold"), anchor="w").pack(side="top", fill="x", padx=10)

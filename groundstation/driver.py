@@ -358,7 +358,7 @@ class DriverScreen:
     def __init__(self, app, geometry=None):
         self.app = app
         self.w = tk.Toplevel(app.root, bg=BG)
-        self.w.title(T("drv.title"))
+        self.w.title(i18n.W("drv.title"))
         self.w.geometry(geometry or "1600x900")
         self.w.protocol("WM_DELETE_WINDOW", app.close_driver)
         self.photos = {}
@@ -425,7 +425,7 @@ class DriverScreen:
     # --- settings / actions ---------------------------------------------------------------------------------
     def lang_changed(self):
         try:
-            self.w.title(T("drv.title"))
+            self.w.title(i18n.W("drv.title"))
             self.q_yes.configure(text=T("drv.accept"))
             self.q_no.configure(text=T("drv.reject"))
         except tk.TclError:

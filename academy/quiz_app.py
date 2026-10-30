@@ -19,6 +19,7 @@ sys.path.insert(0, HERE)
 import quiz                                                             # noqa: E402  (puts groundstation/ on the path)
 import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
+import look                                                             # noqa: E402  (13i: the station's look)
 import tour_app                                                         # noqa: E402
 from banner import banner_text                                          # noqa: E402
 from text import T                                                      # noqa: E402
@@ -42,14 +43,15 @@ class QuizWindow(tour_app.Drawing):
         self.logged = False
         self.sound_state = None             # "played" / "missing" (the tests read it)
         L = self.lang
-        root.title(T("quiz.title", L))
+        look.install(root)                  # the station's look (13i)
+        look.title(root, "quiz.title", L)
         root.configure(bg=COL["bg"])
         try:
             root.geometry("1180x760")
         except tk.TclError:
             pass
         # the banner: top, always visible, CAUTION colour (CLAUDE.md S, AC8)
-        self.banner = tk.Label(root, text=banner_text(L), bg=CAUTION, fg="#000000", font=(FAMILY, 16, "bold"), pady=6)
+        self.banner = look.banner(root, L)
         self.banner.pack(side="top", fill="x")
         who = T("lesson.who", L, user=user) if user else T("lesson.practice", L)
         tk.Label(root, text=who, bg=COL["bg"], fg=COL["dim"], anchor="w").pack(side="top", fill="x", padx=10)

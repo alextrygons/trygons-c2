@@ -1,6 +1,6 @@
 # Academy screenshots (review)
 
-Made by `python tools/academy_screens.py` on 2026-10-29 with made-up demo accounts (a temporary data folder) and the simulator on this PC. Every academy window shows the banner «ΕΚΠΑΙΔΕΥΣΗ – ΠΡΟΣΟΜΟΙΩΣΗ» / TRAINING – SIMULATION; the practical test window shows its own banner (real boat - it only watches).
+Made by `python tools/academy_screens.py` on 2026-10-30 with made-up demo accounts (a temporary data folder) and the simulator on this PC. Every academy window shows the banner «ΕΚΠΑΙΔΕΥΣΗ – ΠΡΟΣΟΜΟΙΩΣΗ» / TRAINING – SIMULATION; the practical test window shows its own banner (real boat - it only watches).
 
 | File | What it shows |
 |---|---|

@@ -1,6 +1,8 @@
 """One-click demo: the whole C2 on this PC, no boat hardware.
 
-    python demo/demo.py start     (START_DEMO.bat)
+    python demo/demo.py start     (START_DEMO.bat: pythonw demo/demo.py start --splash = no console window,
+                                   the start-up screen shows the progress / an error; the Desktop shortcut
+                                   "Trygons C2 Demo" of tools/make_shortcuts.py does the same)
     python demo/demo.py stop      (STOP_DEMO.bat)
     python demo/demo.py check     only check the tools
     python demo/demo.py ship      a ferry on a collision course with the boat (DEMO_SHIP.bat)
@@ -14,7 +16,8 @@ Starts, each in the background with a log in demo_run/logs/:
   3. the demo world        demo/demo_world.py: 4 camera test streams + AIS traffic (5790)
   4. the ground stations   SHORE: through the gateway, captain + driver screen
                             ON BOARD: straight on the simulator (panel buttons, joystick, CONFIRM)
-Everything it makes goes into demo_run/ (not in git). Users: captain / demo.
+Everything it makes goes into demo_run/ (not in git), its own messages into demo_run/logs/demo.log too.
+Users: captain / demo.
 """
 import json
 import os
@@ -37,11 +40,31 @@ PORTS = {"sim USB link": 5760, "gateway stations": 5761, "sim gateway UART": 576
          "MediaMTX RTSP": 8554, "MediaMTX API": 9997, "gateway web": 8080}
 USER, PASSWORD = "captain", "demo"
 EXE = os.path.join(REPO, "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
-NO_WINDOW = 0x08000000 if os.name == "nt" else 0     # CREATE_NO_WINDOW
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0     # CREATE_NO_WINDOW: no black console window (13i)
+READY_WAIT_S = 25.0                 # the start-up screen waits this long for the stations' windows
+STATIONS = ("onboard", "shore")
+_said = []                          # the last messages: an error on the start-up screen
 
 
 def say(text):
-    print(text, flush=True)
+    """A message: the console (if there is one: pythonw has none) + demo_run/logs/demo.log."""
+    _said.append(text)
+    del _said[:-12]
+    if sys.stdout is not None:
+        try:
+            print(text, flush=True)
+        except (OSError, ValueError):
+            pass
+    try:
+        os.makedirs(LOGS, exist_ok=True)
+        with open(os.path.join(LOGS, "demo.log"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%H:%M:%S ") + text + "\n")
+    except OSError:
+        pass
+
+
+def ready_file(name):
+    return os.path.join(RUN, "ready_%s" % name)
 
 
 # --- checks --------------------------------------------------------------------------
@@ -102,9 +125,10 @@ def build_sim():
     if os.name == "nt":
         # cmd needs backslashes (MSYS2's Python joins paths with "/")
         bat = os.path.join(REPO, "sim", "build_sim.bat").replace("/", "\\")
-        r = subprocess.run(["cmd", "/c", bat], cwd=REPO, capture_output=True, text=True)
+        r = subprocess.run(["cmd", "/c", bat], cwd=REPO, capture_output=True, text=True, creationflags=NO_WINDOW)
     else:
-        r = subprocess.run(["sh", os.path.join("sim", "build_sim.sh")], cwd=REPO, capture_output=True, text=True)
+        r = subprocess.run(["sh", os.path.join("sim", "build_sim.sh")], cwd=REPO, capture_output=True, text=True,
+                           creationflags=NO_WINDOW)
     if not os.path.exists(EXE) or "BUILD OK" not in r.stdout:
         say(r.stdout[-2000:] + r.stderr[-2000:])
         return False
@@ -139,7 +163,8 @@ def vision_config():
     import toolpaths
     model = os.path.join(REPO, "gateway", "vision", "models", "ewasr_resnet18.onnx")
     py = toolpaths.vision_python()
-    ok = os.path.exists(model) and os.path.exists(os.path.join(HERE, "media", "sea.mp4")) and py and         subprocess.run([py, "-c", "import onnxruntime, numpy"], capture_output=True).returncode == 0
+    ok = os.path.exists(model) and os.path.exists(os.path.join(HERE, "media", "sea.mp4")) and py and         subprocess.run([py, "-c", "import onnxruntime, numpy"], capture_output=True,
+                       creationflags=NO_WINDOW).returncode == 0
     say("vision   %s" % ("eWaSR on the sea video (FRONT-1)" if ok else
                          "synthetic detections only (for the real model: tools\\get_vision_python.py, "
                          "get_vision_model.py, get_vision_samples.py)"))
@@ -197,7 +222,7 @@ def launch(name, args, cwd, pids):
 
 def kill_tree(pid):
     if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, creationflags=NO_WINDOW)
     else:
         try:
             os.killpg(pid, 9)
@@ -218,8 +243,12 @@ def stop():
     return 0
 
 
-def start():
+def start(progress=None):
+    """Starts everything. progress(key) = the start-up screen's steps (splash.p_*); with it, start waits
+    until both ground stations report their windows open (or READY_WAIT_S)."""
+    step = progress or (lambda key: None)
     say("=== Trygons C2 demo ===")
+    step("splash.p_check")
     if os.path.exists(PIDS):
         say("an old demo is still registered: stopping it first")
         stop()
@@ -240,7 +269,11 @@ def start():
     charts = demo_charts()
     cfg = gateway_config(mtx, charts)
     py = sys.executable
+    if os.path.basename(py).lower() == "pythonw.exe":    # the children log through stdout: python.exe, no window
+        cand = os.path.join(os.path.dirname(py), "python.exe")
+        py = cand if os.path.exists(cand) else py
     pids = {}
+    step("splash.p_sim")
 
     # "usb": the onboard joystick = the simulated USB joystick (lever + stick sliders in the ON BOARD window)
     launch("simulator", [EXE, "server", "5760", "1", "usb", "origin=%.4f,%.4f" % ORIGIN], os.path.join(REPO, "sim"), pids)
@@ -249,6 +282,7 @@ def start():
         stop()
         return 1
     say("started  simulator (Saronic Gulf %.2f N %.2f E)" % ORIGIN)
+    step("splash.p_gateway")
     launch("gateway", [py, os.path.join(REPO, "gateway", "gateway.py"), "--config", cfg],
            os.path.join(REPO, "gateway"), pids)
     if not wait_port(5761, 15) or not wait_port(8554, 15):
@@ -256,6 +290,7 @@ def start():
         stop()
         return 1
     say("started  gateway + MediaMTX")
+    step("splash.p_cameras")
     video = os.path.join(HERE, "media", "sea.mp4")
     launch("world", [py, os.path.join(HERE, "demo_world.py"), "--lat", str(ORIGIN[0]), "--lon", str(ORIGIN[1]),
                      "--cmd", CMD] + (["--front-video", video] if os.path.exists(video) else []), HERE, pids)
@@ -264,19 +299,46 @@ def start():
         stop()
         return 1
     say("started  4 camera test streams + AIS traffic")
+    step("splash.p_stations")
     gs = os.path.join(REPO, "groundstation", "app.py")
-    launch("onboard", [py, gs, "tcp:127.0.0.1:5760", "--place", "onboard",
+    for name in STATIONS:
+        try:
+            os.remove(ready_file(name))
+        except OSError:
+            pass
+    # the demo's own start-up screen covers the start: no second one per station; each station writes its
+    # ready file once its window is open (the start-up screen then closes)
+    launch("onboard", [py, gs, "tcp:127.0.0.1:5760", "--place", "onboard", "--no-splash",
+                       "--ready-file", ready_file("onboard"),
                        "--charts", charts, "--layout", os.path.join(RUN, "layout_onboard.json")],
            os.path.join(REPO, "groundstation"), pids)
     time.sleep(1.0)
     launch("shore", [py, gs, "gw:127.0.0.1:5761", "--login", "%s:%s" % (USER, PASSWORD), "--driver", "--cams", "Full",
-                     "--place", "shore", "--charts", charts,
+                     "--place", "shore", "--charts", charts, "--no-splash", "--ready-file", ready_file("shore"),
                      "--layout", os.path.join(RUN, "layout_shore.json")],
            os.path.join(REPO, "groundstation"), pids)
     say("started  ground stations: SHORE (captain + driver screen) and ON BOARD\n\n"
         "The demo is running. MANUAL.txt chapter 'DEMO' says what to try.\n"
         "A ferry on a collision course: DEMO_SHIP.bat.   Stop everything: STOP_DEMO.bat.")
+    if progress is not None:
+        end = time.time() + READY_WAIT_S
+        while time.time() < end and not all(os.path.exists(ready_file(n)) for n in STATIONS):
+            time.sleep(0.2)
     return 0
+
+
+def start_splash():
+    """START_DEMO / the Desktop shortcut: the start-up screen while the demo starts (closes when the
+    stations' windows are open, at most 30 s; an error is shown on it)."""
+    sys.path.insert(0, os.path.join(REPO, "groundstation"))
+    import splash
+
+    def task(progress):
+        rc = start(progress)
+        return (rc == 0, "" if rc == 0 else "\n".join(_said[-4:]) + "\n(demo_run/logs/demo.log)")
+    ok, _msg = splash.run_task(task, ["splash.p_check", "splash.p_sim", "splash.p_gateway", "splash.p_cameras",
+                                      "splash.p_stations"], what="splash.what_demo")
+    return 0 if ok else 1
 
 
 def ship():
@@ -336,7 +398,7 @@ def kayak():
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "start"
     if cmd == "start":
-        return start()
+        return start_splash() if "--splash" in sys.argv[2:] else start()
     if cmd == "stop":
         return stop()
     if cmd == "check":

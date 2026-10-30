@@ -16,6 +16,8 @@ Everything visual comes from here - no screen module has its own fonts or colour
                                   dim red of the HUD and the map
   the logo                        logo_path(dark) / logo_image(height, dark): assets/
   Windows scaling                 dpi_aware() (sharp text), dpi_factor(root) = 1.0 / 1.25 / 1.5 ...
+  the app icon + splash (13i)     set_app_icon(window): assets/trygons_c2.ico (the logo MARK, no text) on
+                                  every window + the taskbar; SPLASH = the start-up screen's colours
 DISPLAY ONLY: nothing in here talks to the boat.
 """
 import os
@@ -359,6 +361,53 @@ def logo_pil(height, dark=None):
 def logo_size(height, dark=None):
     im = logo_pil(height, dark)
     return (im.width, im.height) if im is not None else (int(height * 3.85), int(height))
+
+
+# --- the app icon + the start-up screen (step 13i) ------------------------------------------------------
+APP_NAME = "Trygons C2"             # the product name (never translated): window titles, splash, About
+APP_ID = "TrygonsDrones.TrygonsC2"  # Windows: one taskbar group with our icon (not python.exe's)
+ICON_ICO = "trygons_c2.ico"         # tools/make_icon.py from assets/trygonsdrones_mark.svg
+ICON_PNG = "trygonsdrones_mark.png"
+SPLASH = {"bg": "#0b1a2e", "fg": "#e6edf3", "dim": "#8fa3b5", "accent": "#4aa8ff", "bar": "#1c3350",
+          "error": "#ff6b6b"}
+
+
+def icon_path(kind="ico"):
+    """assets/trygons_c2.ico ("ico") or the 256 px PNG ("png"); None when the file is missing."""
+    p = os.path.join(ASSETS, ICON_ICO if kind == "ico" else ICON_PNG)
+    return p if os.path.exists(p) else None
+
+
+def set_app_id():
+    """Windows: the taskbar shows OUR icon and groups our windows (before the first window). Harmless elsewhere."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except Exception:
+        pass
+
+
+def set_app_icon(win):
+    """The app icon on this window AND every window made after it (Tk default): the .ico on Windows
+    (title bar + taskbar), the PNG elsewhere. A missing file / no display: nothing (never an error)."""
+    try:
+        root = win._root()              # the Tk of this application: one icon for all its windows
+        if getattr(root, "_trygons_icon", None) is not None:
+            return root._trygons_icon
+        ico, png = icon_path("ico"), icon_path("png")
+        img = None
+        if png:
+            import tkinter as tk
+            img = tk.PhotoImage(master=root, file=png)
+            root.iconphoto(True, img)
+        if ico and sys.platform == "win32":
+            root.iconbitmap(default=ico)
+        root._trygons_icon = img or ico or False
+        return root._trygons_icon
+    except Exception:
+        return None
 
 
 _load()

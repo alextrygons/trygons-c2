@@ -240,6 +240,32 @@ STOP_DEMO.bat closes all of it. DEMO_SHIP.bat sends a ferry on a collision
 course. Everything the demo makes is in demo_run\ (logs in demo_run\logs\,
 recordings in demo_run\ssd\); delete that folder any time.
 
+START-UP SCREEN, ICON, NO CONSOLE WINDOWS (step 13i)
+  * START_DEMO.bat now starts the demo with pythonw: no black console window.
+    A full-screen dark start-up screen shows the logo, "Trygons C2", the
+    version + commit and the progress ("Starting simulator... gateway...
+    cameras... stations..."). It closes by itself when both ground stations
+    are open (at most 30 s). If something fails it shows the message (and
+    "Close" / Esc) instead of hanging; the same messages are in
+    demo_run\logs\demo.log. Without pythonw the old console window is used.
+  * The ground station and the academy show the same start-up screen while
+    they load (never over an open window).
+  * Every window has the Trygons icon (the logo mark) in its title bar and in
+    the taskbar, and the same kind of title: "Trygons C2 – Ground station –
+    Navigation & control", "Trygons C2 – Screen 1 – driving", "Trygons C2 –
+    Academy – Quizzes" ...
+  * Help -> About (ground station and academy): logo, version, commit,
+    licences and credits.
+  * The academy now looks like the ground station (dark theme, the same fonts
+    and buttons); the accounts table shows whole headings; the orange
+    "TRAINING – SIMULATION" banner stays.
+  * Desktop shortcuts "Trygons C2 Demo" and "Trygons Ακαδημία" with the icon
+    (they start without a console): run ONCE, when you want them,
+        C:\msys64\ucrt64\bin\python.exe tools\make_shortcuts.py
+    (--dest FOLDER for another folder, --dry-run to only see what it would do).
+    Running it again replaces the two shortcuts. tools\make_icon.py remakes
+    the icon (assets\trygons_c2.ico) after a logo change.
+
 FIRST TIME
   * Python + ffmpeg as in chapter 3 (MSYS2). Missing -> the window says what
     to install.

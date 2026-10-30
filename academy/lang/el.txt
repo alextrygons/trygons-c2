@@ -12,7 +12,8 @@
 
 # το banner σε ΚΑΘΕ οθόνη της ακαδημίας (ΜΗΝ το αλλάξετε: το ελέγχει το τεστ)
 academy.banner = ΕΚΠΑΙΔΕΥΣΗ – ΠΡΟΣΟΜΟΙΩΣΗ
-academy.title = Ακαδημία Trygons C2
+academy.title = Ακαδημία
+win.title = Trygons C2 – {name}
 academy.sim_only = Μόνο με τον προσομοιωτή ή καταγραφές - ποτέ με πραγματικό σκάφος.
 academy.photo_note = Φωτογραφία χάρτη για εκπαίδευση - ΟΧΙ για ναυσιπλοΐα.
 
@@ -416,3 +417,6 @@ sim3d.goal_time_limit = μέσα σε {s} s
 sim3d.pass = βάση {score}, προσπάθειες: {tries}
 sim3d.no_limit = χωρίς όριο
 acc.sim3d = 3D προσομοιωτής
+# step 13i: Help -> About
+menu.help = Βοήθεια
+menu.about = Σχετικά με το Trygons C2

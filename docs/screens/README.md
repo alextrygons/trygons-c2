@@ -1,6 +1,6 @@
 # Ground station screenshots (review)
 
-Made from the demo by `python tools/demo_screens.py` on 2026-10-29.
+Made from the demo by `python tools/demo_screens.py` on 2026-10-30.
 
 | File | What it shows |
 |---|---|
@@ -17,5 +17,6 @@ Made from the demo by `python tools/demo_screens.py` on 2026-10-29.
 | [screen2_dark_en.png](screen2_dark_en.png) | screen 2 (navigation & control), dark theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [tools_connection_el.png](tools_connection_el.png) | tools window, connection page, Greek |
 | [tools_sound_el.png](tools_sound_el.png) | tools window, sound page, Greek |
-
-Academy windows (step 22): [academy/README.md](academy/README.md), made by `python tools/academy_screens.py`.
+| [about_el.png](about_el.png) | Help -> About, el: logo, version, commit, licences / credits |
+| [about_en.png](about_en.png) | Help -> About, en: logo, version, commit, licences / credits |
+| [splash_el.png](splash_el.png) | the start-up screen of START_DEMO (Greek), while the gateway starts |

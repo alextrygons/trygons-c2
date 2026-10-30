@@ -47,6 +47,7 @@ import alerts
 import boats
 import crewui
 import academymenu
+import about
 import monitors
 import overlay
 from i18n import T, TE
@@ -322,6 +323,7 @@ class App:
         self.boat_list = boats.load()
         self.prober = boats.Prober(self.boat_list).start()
         root.title(self.window_title())
+        theme.set_app_icon(root)        # the app icon on every window of this station + the taskbar (13i)
         i18n.on_change(self.lang_changed)
         theme.on_change(self.theme_changed)
         root.configure(bg=C["bg"])
@@ -377,7 +379,7 @@ class App:
     def lang_changed(self):
         """Live language switch: titles, tabs, list headings and the values drawn every second."""
         self.root.title(self.window_title())
-        self.tools.title(T("tools.title"))
+        self.tools.title(i18n.W("tools.title"))
         for i, key in enumerate(self.tab_keys):
             self.nb.tab(i, text=T(key))
         self.ptree.heading("#0", text=T("cap.param"))
@@ -442,8 +444,16 @@ class App:
         for code in i18n.LANGS:
             lm.add_command(label=T("menu.lang_" + code), command=lambda c=code: self.set_lang(c))
         mb.add_cascade(label=T("menu.language"), menu=lm)
+        hm = tk.Menu(mb, tearoff=0)
+        hm.add_command(label=T("menu.about"), command=self.open_about)
+        mb.add_cascade(label=T("menu.help"), menu=hm)
         self.root.configure(menu=mb)
         self.menubar = mb
+
+    def open_about(self):
+        """Help -> About: logo, version, commit, licences / credits (13i, display only)."""
+        self.about = about.open_about(self.root, i18n.lang(), getattr(self, "about", None))
+        return self.about
 
     SIM_FAULTS = {"cap.sim_f_ok": 0, "cap.sim_f_noframes": 1, "cap.sim_f_corrupt": 2, "cap.sim_f_stuck": 4}
 
@@ -1796,7 +1806,7 @@ class App:
         if self.cconf is not None:
             self.cconf.destroy()
         w = tk.Toplevel(self.root, bg=C["head"])
-        w.title(T("cap.cc_title"))
+        w.title(i18n.W("cap.cc_title"))
         w.transient(self.root)
         self.cconf = w
         tk.Label(w, text=T("cap.cc_q"), font=F_BIG, bg=C["head"]).pack(padx=20, pady=10)
@@ -1878,7 +1888,7 @@ class App:
             self.pdlg.destroy()
         self.cmd(proto.T_POWER_CODE, proto.p_power_code(direction), TE("what.power_code", dir=("fwd", "rev")[direction]))
         d = tk.Toplevel(self.root, bg=C["bg"])
-        d.title(T("cap.pw_title"))
+        d.title(i18n.W("cap.pw_title"))
         d.transient(self.root)
         self.pdlg = d
         self.pdlg_dir = direction
@@ -2602,11 +2612,10 @@ class App:
         self.root.destroy()
 
     def window_title(self):
-        """ "Πλοήγηση & έλεγχος" / "navigation & control" (+ where the station is)."""
-        t = T("cap.title")
-        if self.place and i18n.has("cap.place_" + self.place, "en"):
-            t += " - " + T("cap.place_" + self.place)
-        return self.title_extra + t
+        """ "Trygons C2 – Σταθμός ξηράς – Πλοήγηση & έλεγχος" (step 13i: the same titles everywhere; the
+        station's place: shore by default, "Σταθμός σκάφους" with --place onboard)."""
+        where = T("win.station_onboard") if self.place == "onboard" else T("win.station_shore")
+        return self.title_extra + T("win.title", name=where + " – " + T("cap.title"))
 
     def theme_changed(self, old):
         """Dark / light switched (both screens): the widgets get the new colours, the map + panels redraw."""
@@ -2631,7 +2640,7 @@ class App:
     # --- the tools window: every page that is not on the map ------------------------------------------
     def _build_tools(self):
         w = tk.Toplevel(self.root, bg=C["bg"])
-        w.title(T("tools.title"))
+        w.title(i18n.W("tools.title"))
         w.geometry(self.layout.get("tools") or "1180x780")
         w.withdraw()
         w.protocol("WM_DELETE_WINDOW", w.withdraw)
@@ -4017,6 +4026,7 @@ class App:
 
 def main():
     import argparse
+    import splash
     ap = argparse.ArgumentParser(description="Trygons C2 ground station")
     ap.add_argument("address", nargs="?", help="tcp:host:port, COM5 or gw:host:port")
     ap.add_argument("--login", help="user:password for the gateway (else a login window)")
@@ -4026,12 +4036,38 @@ def main():
     ap.add_argument("--place", choices=("shore", "onboard"), help="where this station is (window title)")
     ap.add_argument("--title", help=argparse.SUPPRESS)        # old: free text, replaced by --place
     ap.add_argument("--cams", help="camera preset to start with (e.g. Full)")
+    ap.add_argument("--no-splash", action="store_true", help="no start-up screen (the demo shows its own)")
+    ap.add_argument("--ready-file", help="written once the window is open (the demo's start-up screen closes)")
     a = ap.parse_args()
     login = tuple(a.login.split(":", 1)) if a.login and ":" in a.login else None
+    theme.set_app_id()
     root = tk.Tk()
+    root.withdraw()                     # shown only once it is built: the start-up screen never covers it
     place = a.place or ({"shore": "shore", "on board": "onboard"}.get((a.title or "").split(" (")[0].lower()))
-    App(root, a.address, login=login, charts_dir=a.charts, open_driver=a.driver, layout=a.layout, cams=a.cams,
-        place=place)
+    sp = None
+    if not a.no_splash:
+        sp = splash.Splash(root, what="splash.what_station", steps=["splash.p_station"])
+        sp.step("splash.p_station")
+    try:
+        App(root, a.address, login=login, charts_dir=a.charts, open_driver=a.driver, layout=a.layout, cams=a.cams,
+            place=place)
+    except Exception as e:              # shown on the start-up screen (never a silent hang), then the traceback
+        if sp is None:
+            raise
+        sp.fail("%s: %s" % (type(e).__name__, e))
+        root.wait_window(sp.w)
+        raise
+    if sp is not None:
+        sp.close()
+    root.deiconify()
+    if a.ready_file:
+        def ready():
+            try:
+                with open(a.ready_file, "w", encoding="utf-8") as f:
+                    f.write("%.3f\n" % time.time())
+            except OSError:
+                pass
+        root.after(300, ready)
     root.mainloop()
 
 

@@ -97,6 +97,11 @@ def TL(lang_, key, *args, **kw):
     return s
 
 
+def W(key, *args, **kw):
+    """A window title (step 13i: the same everywhere): "Trygons C2 – <the key's text>"."""
+    return T("win.title", name=T(key, *args, **kw))
+
+
 def TE(key, *args, **kw):
     """The ENGLISH text of a key: for what goes into the protocol / audit / logs (E3)."""
     s = load("en").get(key, "[%s]" % key)

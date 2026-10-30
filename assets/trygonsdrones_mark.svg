@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The Trygons Drones logo MARK only (no lettering): the two paths of trygonsdrones_logo.svg, in a
+     square frame. Source of the app icon assets/trygons_c2.ico + trygonsdrones_mark.png (tools/make_icon.py). -->
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="137 -88 900 900">
+  <defs>
+    <style>
+      .st0 { fill: #047db0; }
+      .st2 { fill: #4d6f39; }
+    </style>
+  </defs>
+  <path class="st0" d="M525.5,322.15c40.68-25.41,81.52-59.42,117.26-104.95,0,0-19.95,112.67,102.54,233.68-111.01-33.74-178.66-82.71-219.8-128.73Z"/>
+  <path class="st2" d="M434.27,213.44c-86.99,197.71-282.87,258.01-282.87,258.01,458.22,129.6,871.19,38.82,871.19,38.82-566.65-10.22-588.32-296.83-588.32-296.83Z"/>
+</svg>

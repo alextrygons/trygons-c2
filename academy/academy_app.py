@@ -25,6 +25,7 @@ import auth                                                             # noqa: 
 import online                                                           # noqa: E402
 import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
+import look                                                             # noqa: E402  (13i: the station's look)
 from banner import banner_text                                          # noqa: E402
 from text import T                                                      # noqa: E402
 
@@ -47,12 +48,12 @@ COLUMNS = ("user", "name", "level", "effective", "expiry", "days_left", "lessons
 class AcademyApp(object):
     def __init__(self, root, store):
         self.root, self.store = root, store
-        root.title(T("academy.title"))
-        root.configure(bg=COL["bg"])
-        root.geometry("1280x600")
+        look.install(root)                  # the station's look: dark theme, its fonts + buttons (13i)
+        look.title(root, "academy.title", main=True)
+        root.geometry("1360x640")
+        self._menu()
         # the banner: top, always visible, CAUTION colour (CLAUDE.md S, AC8)
-        self.banner = tk.Label(root, text=banner_text(), bg=CAUTION, fg="#000000",
-                               font=(theme.FAMILY if theme else "Segoe UI", 16, "bold"), pady=6)
+        self.banner = look.banner(root)
         self.banner.pack(side="top", fill="x")
         tk.Label(root, text=T("academy.sim_only"), bg=COL["bg"], fg=COL["dim"]).pack(side="top", anchor="w", padx=10)
         self.session = None
@@ -61,17 +62,19 @@ class AcademyApp(object):
                                  fg=CAUTION if self.online else COL["dim"])
         self.l_online.pack(side="top", anchor="w", padx=10)
         tk.Label(root, text=T("acc.instructor_view"), bg=COL["bg"], fg=COL["fg"],
-                 font=(theme.FAMILY if theme else "Segoe UI", 13, "bold")).pack(side="top", anchor="w", padx=10, pady=(6, 0))
+                 font=look.theme.font("value")).pack(side="top", anchor="w", padx=10, pady=(6, 0))
         frame = tk.Frame(root, bg=COL["bg"])
         frame.pack(side="top", fill="both", expand=True, padx=10, pady=4)
         self.tree = ttk.Treeview(frame, columns=COLUMNS, show="headings", height=14)
         for c in COLUMNS:
             self.tree.heading(c, text=T("acc.col_%s" % c))
             self.tree.column(c, width=150 if c in ("name", "weak") else 90, anchor="w")
-        self.tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        sbx = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)   # a narrow window: scroll
+        sbx.pack(side="bottom", fill="x")
+        self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.configure(yscrollcommand=sb.set, xscrollcommand=sbx.set)
         bar = tk.Frame(root, bg=COL["bg"])
         bar.pack(side="top", fill="x", padx=10, pady=4)
         bar3 = tk.Frame(root, bg=COL["bg"])                             # logins / renewals / certificate
@@ -96,6 +99,20 @@ class AcademyApp(object):
         self.msg.pack(side="top", fill="x", padx=10, pady=(0, 6))
         self.refresh()
 
+    def _menu(self):
+        """Help -> About (13i, the same window as the ground station's)."""
+        mb = tk.Menu(self.root)
+        hm = tk.Menu(mb, tearoff=0)
+        hm.add_command(label=T("menu.about"), command=self.open_about)
+        mb.add_cascade(label=T("menu.help"), menu=hm)
+        self.root.configure(menu=mb)
+        self.menubar = mb
+
+    def open_about(self):
+        import about                        # groundstation/about.py (display only)
+        self.about = about.open_about(self.root, text.lang(), getattr(self, "about", None))
+        return self.about
+
     # --- view
     def refresh(self):
         self.store.load()
@@ -114,6 +131,7 @@ class AcademyApp(object):
                     v = "-"
                 vals.append(v)
             self.tree.insert("", "end", iid=r["user"], values=vals)
+        look.fit_columns(self.tree)         # every heading readable (13i)
 
     def say(self, s):
         self.msg.configure(text=s)
@@ -382,10 +400,27 @@ def main(argv=None):
     if theme is not None:
         try:
             theme.dpi_aware()
+            theme.set_app_id()
         except Exception:
             pass
     root = tk.Tk()
-    AcademyApp(root, store)
+    root.withdraw()                     # shown only once it is built: the start-up screen never covers it
+    sp = None
+    if "--no-splash" not in argv:
+        import splash                   # groundstation/splash.py (display only)
+        sp = splash.Splash(root, lang=text.lang(), what="splash.what_academy", steps=["splash.p_academy"])
+        sp.step("splash.p_academy")
+    try:
+        AcademyApp(root, store)
+    except Exception as e:              # shown on the start-up screen, never a silent hang
+        if sp is None:
+            raise
+        sp.fail("%s: %s" % (type(e).__name__, e))
+        root.wait_window(sp.w)
+        raise
+    if sp is not None:
+        sp.close()
+    root.deiconify()
     root.mainloop()
     return 0
 

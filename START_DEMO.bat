@@ -1,5 +1,7 @@
 @echo off
 rem The whole C2 on this PC (simulator, gateway, cameras, AIS, ground stations). MANUAL.txt: DEMO.
+rem Started with pythonw (no console window): the start-up screen shows the progress and any error;
+rem the messages also go to demo_run\logs\demo.log. Without pythonw: the old way, in this window.
 title Trygons C2 demo
 rem Python: %PYTHON%, else MSYS2's (MANUAL chapter 3), else "python" on the PATH
 cd /d "%~dp0"
@@ -11,7 +13,14 @@ if not defined PY (
   pause
   exit /b 1
 )
-"%PY%" demo\demo.py start
+set "PYW="
+for %%I in ("%PY%") do if exist "%%~dpIpythonw.exe" set "PYW=%%~dpIpythonw.exe"
+if not defined PYW for /f "delims=" %%I in ('where pythonw 2^>nul') do if not defined PYW set "PYW=%%I"
+if defined PYW (
+  start "" "%PYW%" demo\demo.py start --splash
+  exit /b 0
+)
+"%PY%" demo\demo.py start --splash
 if errorlevel 1 (
   echo.
   echo The demo did not start - see the messages above.

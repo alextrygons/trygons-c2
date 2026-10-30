@@ -200,6 +200,22 @@ def main():
         pump(1.5)
         grab(ap.tools, "tools_%s_el" % key.split(".")[1], "tools window, %s page, Greek" % key.split(".")[1])
     ap.tools.withdraw()
+    # --- step 13i: Help -> About and the start-up screen ---------------------------------------------------
+    import splash
+    for lang in ("el", "en"):
+        i18n.set_lang(lang)
+        ab = ap.open_about()
+        pump(1.0)
+        grab(ab.w, "about_%s" % lang, "Help -> About, %s: logo, version, commit, licences / credits" % lang)
+        ab.close()
+    i18n.set_lang("el")
+    sp = splash.Splash(root, what="splash.what_demo", steps=["splash.p_check", "splash.p_sim", "splash.p_gateway",
+                                                              "splash.p_cameras", "splash.p_stations"])
+    for k in ("splash.p_check", "splash.p_sim", "splash.p_gateway"):
+        sp.step(k)
+    pump(1.0)
+    grab(sp.w, "splash_el", "the start-up screen of START_DEMO (Greek), while the gateway starts")
+    sp.close()
     sim.stop()
     ap.quit()
     with open(os.path.join(OUT, "README.md"), "w", encoding="utf-8") as f:

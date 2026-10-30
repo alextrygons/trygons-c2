@@ -217,6 +217,9 @@ grep -E "^\[FAIL\]|BOAT TESTS" "$TEMP/boat_tests.txt"
 echo "== screen 2 (navigation & control): layout 1366x768 / 1920x1080 at 100-150 %, roles, map editing, one look"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_screen2.py > "$TEMP/screen2_tests.txt" 2>&1 ) || { echo "SCREEN 2 TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|SCREEN 2 TESTS" "$TEMP/screen2_tests.txt"
+echo "== professional look (13i): start-up screen, app icon, window titles, About, academy theme, shortcuts, no consoles"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_look.py > "$TEMP/look_tests.txt" 2>&1 ) || { echo "LOOK TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|LOOK TESTS" "$TEMP/look_tests.txt"
 echo "== ground station sound + voice tests"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sound.py > "$TEMP/sound_tests.txt" 2>&1 ) || { echo "SOUND TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A )\]|SOUND TESTS" "$TEMP/sound_tests.txt"

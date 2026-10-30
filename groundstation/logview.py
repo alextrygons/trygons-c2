@@ -58,7 +58,7 @@ class Viewer:
         self.root = root
         self.log = None
         self.cursor = 0
-        root.title("Trygons C2 log viewer")
+        root.title("Trygons C2 – log viewer")
         root.geometry("1400x880")
         root.configure(bg=BG)
         top = tk.Frame(root, bg=BG)

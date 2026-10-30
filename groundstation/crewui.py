@@ -52,7 +52,7 @@ class BoatSelector:
         self.boats = list(lst) if folder is None and lst else boats.load(folder)    # the same list as screen 2
         self.prober = boats.Prober(self.boats).start()
         self.w = tk.Toplevel(app.root, bg=C["bg"])
-        self.w.title(T("boat.title"))
+        self.w.title(i18n.W("boat.title"))
         self.w.protocol("WM_DELETE_WINDOW", self.close)
         lab(self.w, T("boat.head"), FH).pack(anchor="w", padx=10, pady=(10, 2))
         lab(self.w, T("boat.help"), justify="left", wraplength=620).pack(anchor="w", padx=10)
@@ -156,7 +156,7 @@ class BoatConfirm:
         self.boat = boat
         Y = C["btn_sim"]
         self.w = tk.Toplevel(app.root, bg=Y)
-        self.w.title(T("boat.confirm_title"))
+        self.w.title(i18n.W("boat.confirm_title"))
         self.w.attributes("-topmost", True)
         lab(self.w, T("boat.confirm_head", name=boat.name), FH, bg=Y).pack(padx=14, pady=(12, 4))
         lab(self.w, T("boat.confirm_help", name=boat.name), bg=Y, wraplength=560, justify="left").pack(padx=14)

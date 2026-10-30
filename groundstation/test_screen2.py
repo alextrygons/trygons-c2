@@ -581,7 +581,8 @@ LITERAL = re.compile(r'''["']#[0-9a-fA-F]{6}["']|["'](?:Segoe UI|Consolas|Arial|
 def s9_look(rig):
     ap = rig.ap
     found = []
-    for fn in ("app.py", "driver.py", "hud.py", "hudar.py", "mapwin.py", "overlay.py", "crewui.py", "soundtest.py"):
+    for fn in ("app.py", "driver.py", "hud.py", "hudar.py", "mapwin.py", "overlay.py", "crewui.py", "soundtest.py",
+               "splash.py", "about.py"):
         for n, line in enumerate(open(os.path.join(HERE, fn), encoding="utf-8"), 1):
             if LITERAL.search(line):
                 found.append("%s:%d" % (fn, n))
@@ -661,7 +662,7 @@ ALLOWED = {"STANDBY", "AUTO", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG", "USB", 
            "Ctrl", "Shift", "Tab", "Esc", "Space", "x", "v", "on", "off", "lat", "lon", "WP", "Tools", "AURIX",
            "English", "png", "json", "txt", "tlg", "TLG", "CSV", "csv", "Not", "for", "navigation", "free", "data",
            "may", "be", "inaccurate", "near", "the", "coast", "GATEWAY", "FRONT-", "UART", "kHz", "python", "PWM",
-           "CPU", "alice", "bob"}
+           "CPU", "alice", "bob", "DroneCAN", "Drones"}
 
 
 def english_words(text):

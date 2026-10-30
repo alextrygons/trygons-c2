@@ -8,7 +8,8 @@
 
 # the banner on EVERY academy screen (do NOT change it: the test checks it)
 academy.banner = TRAINING – SIMULATION
-academy.title = Trygons C2 Academy
+academy.title = Academy
+win.title = Trygons C2 – {name}
 academy.sim_only = Only with the simulator or recordings - never with a real boat.
 academy.photo_note = Chart photo for training - NOT for navigation.
 
@@ -412,3 +413,6 @@ sim3d.goal_time_limit = within {s} s
 sim3d.pass = pass mark {score}, attempts: {tries}
 sim3d.no_limit = no limit
 acc.sim3d = 3D simulator
+# step 13i: Help -> About
+menu.help = Help
+menu.about = About Trygons C2

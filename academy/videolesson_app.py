@@ -24,6 +24,7 @@ sys.path.insert(0, HERE)
 import content                                                          # noqa: E402
 import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
+import look                                                             # noqa: E402  (13i: the station's look)
 import videolesson as vl                                                # noqa: E402  (groundstation/ on the path)
 from banner import banner_text                                          # noqa: E402
 from text import T                                                      # noqa: E402
@@ -53,7 +54,7 @@ TEXT_KEYS = set(DRAW_KEYS.values()) | set(POINT_KEYS.values()) | set(FIELD_KEYS.
 
 
 def _banner(root, lang):
-    b = tk.Label(root, text=banner_text(lang), bg=CAUTION, fg="#000000", font=(FAMILY, 16, "bold"), pady=6)
+    b = look.banner(root, lang)
     b.pack(side="top", fill="x")
     return b
 
@@ -166,7 +167,8 @@ class VideoLessonWindow(object):
         self.root, self.lang, self.store, self.user = root, lang or text.lang(), store, user
         self.folder, self.clock = folder, clock
         L = self.lang
-        root.title(T("vl.title", L))
+        look.install(root)                  # the station's look (13i)
+        look.title(root, "vl.title", L)
         root.configure(bg=COL["bg"])
         try:
             root.geometry("1180x760")
@@ -469,7 +471,8 @@ class EditorWindow(object):
         self.root, self.lang = root, lang or text.lang()
         self.folder = folder
         L = self.lang
-        root.title(T("ve.title", L))
+        look.install(root)
+        look.title(root, "ve.title", L)
         root.configure(bg=COL["bg"])
         try:
             root.geometry("1280x860")

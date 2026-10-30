@@ -19,6 +19,7 @@ import content                                                          # noqa: 
 import sim3d                                                            # noqa: E402
 import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
+import look                                                             # noqa: E402  (13i: the station's look)
 import tour_app                                                         # noqa: E402
 from banner import banner_text                                          # noqa: E402
 from text import T                                                      # noqa: E402
@@ -36,14 +37,15 @@ class Sim3DWindow(object):
         self.store, self.user, self.env = store, user, env
         self.docs = sim3d.missions() if docs is None else docs
         L = self.lang
-        root.title(T("sim3d.title", L))
+        look.install(root)                  # the station's look (13i)
+        look.title(root, "sim3d.title", L)
         root.configure(bg=COL["bg"])
         try:
             root.geometry("1100x640")
         except tk.TclError:
             pass
         # the banner: top, always visible, CAUTION colour (CLAUDE.md S, AC8)
-        self.banner = tk.Label(root, text=banner_text(L), bg=CAUTION, fg="#000000", font=(FAMILY, 16, "bold"), pady=6)
+        self.banner = look.banner(root, L)
         self.banner.pack(side="top", fill="x")
         tk.Label(root, text=T("sim3d.note", L), bg=COL["bg"], fg=COL["dim"], anchor="w", justify="left",
                  wraplength=1060).pack(side="top", fill="x", padx=10)

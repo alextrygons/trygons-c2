@@ -20,6 +20,7 @@ sys.path.append(os.path.join(os.path.dirname(HERE), "groundstation"))
 
 import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
+import look                                                             # noqa: E402  (13i: the station's look)
 import tour                                                             # noqa: E402
 from banner import banner_text                                          # noqa: E402
 from text import T                                                      # noqa: E402
@@ -177,7 +178,7 @@ class Drawing(object):
         self.cv.create_rectangle(x0, y0, x0 + w, y0 + h, fill=COL["panel"], outline="")
         pages = tour.tools_pages()
         lh = h / (len(pages) + 1)
-        self.cv.create_text(x0 + 12, y0 + lh / 2, text=i18n.TL(self.lang, "tools.title"), anchor="w",
+        self.cv.create_text(x0 + 12, y0 + lh / 2, text=i18n.TL(self.lang, "win.title", name=i18n.TL(self.lang, "tools.title")), anchor="w",
                             fill=COL["fg"], font=(FAMILY, 12, "bold"))
         for i, key in enumerate(pages):
             r = (x0 + 8, y0 + lh * (i + 1), x0 + w * 0.28, y0 + lh * (i + 2) - 3)
@@ -287,15 +288,15 @@ class TourWindow(Drawing):
         self.index = 0
         self.voice_on = True
         self.voice_state = None             # "played" / "missing" / "off" (the tests read it)
-        root.title(T("tour.title", self.lang))
+        look.install(root)                  # the station's look (13i)
+        look.title(root, "tour.title", self.lang)
         root.configure(bg=COL["bg"])
         try:
             root.geometry("1180x760")
         except tk.TclError:
             pass
         # the banner: top, always visible, CAUTION colour (CLAUDE.md S, AC8)
-        self.banner = tk.Label(root, text=banner_text(self.lang), bg=CAUTION, fg="#000000",
-                               font=(FAMILY, 16, "bold"), pady=6)
+        self.banner = look.banner(root, self.lang)
         self.banner.pack(side="top", fill="x")
         self.head = tk.Label(root, text="", bg=COL["bg"], fg=COL["dim"], anchor="w", font=(FAMILY, 11))
         self.head.pack(side="top", fill="x", padx=10)

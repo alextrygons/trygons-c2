@@ -87,7 +87,7 @@ class PracticalWindow(object):
         self.test = None
         self.closed = False
         self.granted = None
-        top.title(T("pt.title"))
+        top.title(T("win.title", name=T("pt.title")))
         top.configure(bg=BG)
         self.banner = tk.Label(top, text=banner_text(), bg=WARN, fg="#ffffff", font=("Segoe UI", 15, "bold"), pady=5)
         self.banner.pack(side="top", fill="x")
@@ -308,7 +308,7 @@ class AreaWindow(object):
         self.c_lon = sum(p[1] for p in pts) / len(pts)
         self.m_per_px = 5.0
         self.tap = "corner"
-        top.title(T("ar.title"))
+        top.title(T("win.title", name=T("ar.title")))
         top.configure(bg=BG)
         self.banner = tk.Label(top, text=banner_text(), bg=WARN, fg="#ffffff", font=("Segoe UI", 15, "bold"), pady=5)
         self.banner.pack(side="top", fill="x")

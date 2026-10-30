@@ -22,6 +22,7 @@ import lesson                                                           # noqa: 
 import sim3d                                                            # noqa: E402  (step 22: the 3D view feed)
 import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
+import look                                                             # noqa: E402  (13i: the station's look)
 from banner import banner_text                                          # noqa: E402
 from text import T                                                      # noqa: E402
 
@@ -66,14 +67,15 @@ class LessonWindow(object):
         self.logged = False
         self.alive = True
         L = self.lang
-        root.title(T("lesson.title", L))
+        look.install(root)                  # the station's look (13i)
+        look.title(root, "lesson.title", L)
         root.configure(bg=COL["bg"])
         try:
             root.geometry("1240x720")
         except tk.TclError:
             pass
         # the banner: top, always visible, CAUTION colour (CLAUDE.md S, AC8)
-        self.banner = tk.Label(root, text=banner_text(L), bg=CAUTION, fg="#000000", font=(FAMILY, 16, "bold"), pady=6)
+        self.banner = look.banner(root, L)
         self.banner.pack(side="top", fill="x")
         who = T("lesson.who", L, user=user) if user else T("lesson.practice", L)
         tk.Label(root, text=T("lesson.sim_only", L) + "   " + who, bg=COL["bg"], fg=COL["dim"],

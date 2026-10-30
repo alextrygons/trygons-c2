@@ -19,6 +19,7 @@ import exam                                                             # noqa: 
 import quiz_app                                                         # noqa: E402
 import simguard                                                         # noqa: E402
 import text                                                             # noqa: E402
+import look                                                             # noqa: E402  (13i: the station's look)
 from banner import banner_text                                          # noqa: E402,F401  (AC8: the banner)
 from text import T                                                      # noqa: E402
 
@@ -34,7 +35,7 @@ class ExamWindow(quiz_app.QuizWindow):
         self.exam_run = None
         super(ExamWindow, self).__init__(root, lang, store, user, player, cache, docs=self.exams, seed=seed)
         L = self.lang
-        root.title(T("exam.title", L))
+        look.title(root, "exam.title", L)
         self.list.configure(selectmode="browse")
         self.l_q.configure(text=T("exam.pick", L) if user else T("exam.no_user", L))
         self.refresh_list()
