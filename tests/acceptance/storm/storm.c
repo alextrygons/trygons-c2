@@ -357,6 +357,9 @@ typedef struct {
     uint8_t     w42_n;              /* 0 = no such scenario running */
     uint32_t    w42_t0, w42_cmd_t, w42_away;
     bool        w42_reboot, w42_rebooted, w42_cable;
+    /* step 13k (W44; review c162aad LOW-3): a YOUNG board - rebooted at the scenario's start, the silence begins
+     * w42_young ms later (so a reboot while away does not send the uptime back: only the clock test sees it) */
+    uint32_t    w42_young_t;
 } sim_t;
 
 static sim_t S;
@@ -1766,6 +1769,19 @@ static void apply(const ev_t *e)
             /* half: its NodeStatus stops (it still hears: a part of the ON burst arrives); half: its drop cable
              * cut (statuses stop, it hears nothing: none of the ON arrives) */
             S.w42_cable = (e->c / 2) % 2 == 1;
+            /* step 13k (W44): the board's first NodeStatus after the silence sometimes waited in its TX mailbox
+             * (delivered 0.5-1 s late) and / or is followed by a STALE older one (sim node faults; kept on for the
+             * rest of the episode: every later quiet time of the board too) */
+            if (e->c % 5 == 1 || e->c % 5 == 2)
+                sim_hal_can_node_late(DC_NODE_RELAY, 500u + ((uint32_t)e->c * 37u) % 501u, e->c % 5 == 2);
+            else if (e->c % 7 == 3) sim_hal_can_node_late(DC_NODE_RELAY, 0u, true);
+            /* step 13k (review c162aad LOW-3): sometimes a young board (rebooted 1.2 s before the silence) */
+            S.w42_young_t = 0u;
+            if (S.w42_reboot && e->c % 2 == 0) {
+                sim_hal_can_node_reboot(DC_NODE_RELAY);
+                S.w42_young_t = S.t ? S.t : 1u;
+                break;
+            }
             if (S.w42_cable) sim_hal_relay_board(false, 5u, 0u);
             else sim_hal_can_node_silent(DC_NODE_RELAY, true);
             break;                                                         /* (this event is only that) */
@@ -2004,7 +2020,14 @@ static void run_until(uint32_t until)
             if (S.can_fault_kind == 4u) sim_hal_can_task_stuck(false);
             C.node_silenced_t = 0u;
         }
-        if (S.w42_n) {                                  /* step 13h2: the cut-ON scenario (I36 W42) */
+        if (S.w42_n && S.w42_young_t) {                 /* step 13k: the young board's silence begins */
+            if (S.t - S.w42_young_t >= 1200u) {
+                S.w42_young_t = 0u;
+                S.w42_t0 = S.t;
+                if (S.w42_cable) sim_hal_relay_board(false, 5u, 0u);
+                else sim_hal_can_node_silent(DC_NODE_RELAY, true);
+            }
+        } else if (S.w42_n) {                           /* step 13h2: the cut-ON scenario (I36 W42) */
             hal_can_node_t nn;
             if (!S.w42_cmd_t) {
                 bool there = dc_node(HAL_CAN_ROLE_RELAY, &nn) && nn.seen;

@@ -1095,3 +1095,47 @@ CPU sync); storm I51 + the I59 coverage check.
    events also reboot the DroneCAN relay node sometimes. Mutations caught on 2000 episodes: the 13b automatic OFF
    back, the 10 s window removed, the reboot give-up removed.
 
+## 26. Step 13k - W44 relay-board reboot detection (owner answer 2026-10-30, review of c162aad)
+
+Owner answer to W44 (binding): the recommended default. W42 stays as decided: never switch a relay OFF by
+itself; a cut ON is finished only while relays.c still wants it, within 10 s, and only when the board did NOT
+reboot. A real reboot must still be caught (nothing sent, the relays OFF / unknown).
+
+1. (MED-1) A late NodeStatus is no reboot. After a bus disturbance the board's last NodeStatus may wait in its
+   TX mailbox and be delivered 0.5-1 s late (AP_Periph's TX deadline: TO CONFIRM on the bench, FIRST_TEST.md 3j).
+   Its uptime then lags our clock by more than the 300 ms jitter margin, and 13h2 called that a reboot (the
+   retry dropped, the relays that are still ON shown UNKNOWN). can_relay.c now never judges ONE lagging status:
+   it waits (`lag_waits`), keeps the last status that did NOT lag as the reference and judges the NEXT status
+   received at least CR_UPTIME_SECOND_MS (500 ms) later (so not one of the same late burst) and not itself the
+   first after a new gap > lost_ms. That second status lags too = a reboot by the clock (every ON UNKNOWN, every
+   cut ON given up, nothing sent, `board_reboots_t`); it does not lag = no reboot, the new reference. The
+   owner's "equivalent alternative" (two lagging statuses in a row) was chosen: it also covers a late status
+   after a gap shorter than lost_ms. While a status waits for its judgement, and while the 10 ms tick sees a
+   status cr_service has not handled yet, no cut ON is finished; the CR_ON_RETRY_MS window keeps running (no
+   judgement in time = given up, nothing sent, UNKNOWN - as before). A real reboot still lags on every later
+   status (the uptime grows from the new boot), so it is caught one status (~1 s) later.
+2. (LOW-2) The drift allowance is `min(elapsed / 256, CR_UPTIME_DRIFT_MAX_MS 2000)` (was elapsed / 32 with no
+   limit: after a 1 h silence it hid a reboot in the first ~110 s of it).
+3. (LOW-4) "The uptime went back" by only 1-2 s (`hal_can_node_t.back_s` <= CR_UPTIME_BACK_PROVEN_S 2, set by
+   dronecan.c at each restart) can be a stale status delivered after a newer one (two pending in different
+   mailboxes after a stall). It is NOT a proven reboot: a commanded ON becomes UNKNOWN (never "known OFF" - on a
+   board without readback the pair rule then keeps blocking an unknown, non-momentary partner), an OFF stays
+   OFF, every cut ON is given up, nothing is sent (`board_reboots_u`). Back by more than 2 s = a proven reboot as
+   before (every state known OFF, R-2, `board_reboots`). dronecan.c's reboot latch of the REQUIRED nodes
+   (throttle / steering / gear) is unchanged: there a false "rebooted" = CAN NODE LOST + STANDBY = fail-safe.
+4. Sim: node faults `sim_hal_can_node_late(id, late_ms, stale)` - the first NodeStatus after a quiet time
+   (silent / cut off; not after a power-up: the mailboxes are empty) carries the uptime of late_ms ago (never
+   before its own boot), and with `stale` an older status (uptime - 1 s) follows it at once.
+5. Tests: RB29 (a) a 1 s late status after a gap, no reboot: the retry waits for the second status (finished
+   ~1 s after the late one, never OFF in between); (b) a late status + a real reboot of a young board (the uptime
+   not back): nothing sent, not known ON, the command cleared, a reboot by the clock. RB30 (board without
+   readback, an on/off pair): a stale status after a newer one = the ON relay UNKNOWN (really still ON), the
+   partner refused (pair), unproven counted, nothing sent; a real reboot (back > 2 s) = known OFF. RB31: a board
+   silent 20 min that rebooted 10 s into it (uptime ~1190 s vs ~12 s) = caught by the clock test (ON -> unknown).
+   Mutations (each caught): the first lagging status judged -> RB29; the tick not waiting for the judgement ->
+   RB27 + RB29; the second status never judged -> RB27 + RB29 + RB31; no drift cap (elapsed / 32) -> RB31; every
+   uptime back proven -> RB30. Storm I36 W42 (the check itself unchanged: the sim truth): the cut-ON scenario now
+   sometimes has the late / stale status faults (kept on for the rest of the episode) and sometimes a young board
+   (rebooted 1.2 s before the silence, so a reboot while away is only visible to the clock test). No exception of
+   the check was widened.
+6. Unchanged: SHUTOFF / STARTER / IGNITION behaviour, MON_BOOT_MS, the Modbus board, the big boat.

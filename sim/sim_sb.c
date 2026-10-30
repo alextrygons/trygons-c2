@@ -15313,6 +15313,236 @@ static void relay_bus_tests(void)
         remove("nv7.bin");
         sim_hal_relay_board_reset();
     }
+
+    /* RB29 (step 13k, W44 - owner 2026-10-30; review c162aad MED-1) DroneCAN relay board: a NodeStatus delivered
+     * 1 s LATE after a bus disturbance (it waited in the board's TX mailbox) lags the clock but is NOT a reboot - the
+     * judgement waits for a SECOND status. (a) no reboot: the cut ON retry is kept (not finished before the second
+     * status, >= CR_UPTIME_SECOND_MS after the late one) and finished once the second status confirms: known ON, never
+     * OFF in between; (b) a late status + a REAL reboot while away (a young board, its uptime not back by much):
+     * nothing sent, the ON not known ON, relays.c's command cleared. The late frame's phase is set so it lags for
+     * sure (the board rebooted at a known time; the uptime is truncated to whole seconds) */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        s_rb_can = true;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1757u, NULL, &t) && rb_can();
+        sim_hal_relay_board(true, 5u, SIM_RB_NO_READBACK);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        sim_hal_can_node_reboot(DC_NODE_RELAY);                     /* (a known boot time: the phase of its uptime) */
+        uint32_t b0 = x.t;
+        sbsim_run(&x, x.t + 6000u, NULL, NULL);
+        sb_alarm_ack(&x.sb);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        sb_alarm_ack(&x.sb);
+        sim_hal_can_node_late(DC_NODE_RELAY, 1000u, false);
+        bool ok[2];
+        char part[2][400];
+        for (int k = 0; k < 2; k++) {
+            hal_can_node_t nn;
+            memset(&nn, 0, sizeof nn);
+            if (k == 1) {                                           /* (b): a young board (~1 s up) */
+                sim_hal_can_node_reboot(DC_NODE_RELAY);
+                uint32_t tr = x.t;
+                do {
+                    sbsim_run(&x, x.t + 5u, NULL, NULL);
+                    (void)dc_node(HAL_CAN_ROLE_RELAY, &nn);
+                } while ((nn.mode != DC_MODE_OPERATIONAL || nn.uptime_s < 1u || nn.uptime_s > 3u) && x.t < tr + 5000u);
+                sbsim_run(&x, x.t + 200u, NULL, NULL);
+                sb_alarm_ack(&x.sb);
+            }
+            uint32_t od0 = x.sb.relays.on_dropped, lw0 = cr_stats()->lag_waits, rt0 = cr_stats()->on_retried;
+            uint32_t bt0 = cr_stats()->board_reboots_t, bu0 = cr_stats()->board_reboots_u;
+            uint32_t br0 = cr_stats()->board_reboots;
+            sim_hal_can_node_silent(DC_NODE_RELAY, true);
+            uint32_t tw = x.t;
+            do {
+                sbsim_run(&x, x.t + 1u, NULL, NULL);
+                (void)dc_node(HAL_CAN_ROLE_RELAY, &nn);
+            } while (nn.age_ms + CR_PERIOD_MS + 2u < HAL_RELAY_LOST_MS && x.t < tw + 5000u);
+            uint32_t tc = x.t;
+            bool cmd = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+            sbsim_run(&x, x.t + 300u, NULL, NULL);
+            bool cut = (cr_retries() & rb_bit(6)) != 0u && !x.sb.relays.board_ok;
+            if (k == 1) sim_hal_can_node_reboot(DC_NODE_RELAY);    /* (relays OFF, R-2) */
+            /* back >= 2 s after the cut, at a moment where the late frame's uptime (of 1 s before) is truncated by
+             * 0.85 s: it lags our clock by more than the margins (k 0: board boot b0, statuses at b0 + 50 ms + n s) */
+            /* (k 1: back 4 s after the cut - the late frame's uptime (2 s) is not below the one before the silence
+             * (1 s): no "uptime back", only the clock test can see this reboot - on the SECOND status) */
+            while (x.t < tc + (k ? 4000u : 2000u) || (k == 0 && (x.t - b0) % 1000u != 850u))
+                sbsim_run(&x, x.t + 1u, NULL, NULL);
+            bool on_back = sim_hal_relay_state(6u);
+            uint32_t late0 = sim_hal_can_node_late_sent(DC_NODE_RELAY, NULL), fr0 = cr_stats()->frames;
+            uint32_t t_late = 0u, t_rise = 0u, rises = 0u, falls = 0u, rt_now = rt0;
+            bool prev = on_back;
+            sim_hal_can_node_silent(DC_NODE_RELAY, false);
+            uint32_t t0 = x.t;
+            while (x.t < t0 + 3000u) {
+                sbsim_run(&x, x.t + 1u, NULL, NULL);
+                hal_can_service();                                  /* (the RX also between the control steps) */
+                if (!t_late && sim_hal_can_node_late_sent(DC_NODE_RELAY, NULL) != late0) t_late = x.t;
+                bool st = sim_hal_relay_state(6u);
+                if (st && !prev) rises++;
+                if (!t_rise && cr_stats()->on_retried != rt_now) t_rise = x.t;     /* (the retry finished) */
+                if (!st && prev) falls++;
+                prev = st;
+            }
+            uint32_t sent = cr_stats()->frames - fr0;
+            bool fin = sim_hal_relay_state(6u), kn = (x.sb.relays.known & rb_bit(6)) != 0u;
+            bool kon = kn && (x.sb.relays.states & rb_bit(6));
+            bool cmd_on = (x.sb.relays.cmd_on & rb_bit(6)) != 0u;
+            bool lagged = cr_stats()->lag_waits > lw0 && t_late != 0u;
+            if (k == 0) {
+                /* (the first frame of the cut burst reached the board: it may be ON already - never OFF in between) */
+                ok[k] = loaded && cmd && cut && lagged && fin && kon && cmd_on && falls == 0u && t_rise != 0u &&
+                        t_rise >= t_late + CR_UPTIME_SECOND_MS && sent >= CR_BURST_FRAMES && cr_retries() == 0u &&
+                        cr_stats()->on_retried == rt0 + 1u && x.sb.relays.on_dropped == od0 &&
+                        cr_stats()->board_reboots_t == bt0 && cr_stats()->board_reboots_u == bu0 &&
+                        cr_stats()->board_reboots == br0;
+            } else {
+                ok[k] = loaded && cmd && cut && lagged && !on_back && !fin && rises == 0u && sent == 0u && !kon &&
+                        !cmd_on && x.sb.relays.on_dropped == od0 + 1u && cr_retries() == 0u &&
+                        cr_stats()->board_reboots_t == bt0 + 1u && cr_stats()->board_reboots_u == bu0 &&
+                        cr_stats()->board_reboots == br0;
+            }
+            snprintf(part[k], sizeof part[k], "(%s) cmd %s cut %s, late status %s (lag waits +%u), retry finished %d ms "
+                     "after it, rises %u falls %u, frames %u, on %s known ON %s, cmd_on %s, reboots %u / clock %u / unproven %u "
+                     "-> %s", k ? "b: late + reboot" : "a: late, no reboot", cmd ? "ok" : "NO", cut ? "yes" : "NO",
+                     t_late ? "sent" : "NOT sent", (unsigned)(cr_stats()->lag_waits - lw0),
+                     t_rise ? (int)(t_rise - t_late) : -1, (unsigned)rises, (unsigned)falls, (unsigned)sent,
+                     fin ? "yes" : "no", kon ? "yes" : "no", cmd_on ? "yes" : "no",
+                     (unsigned)(cr_stats()->board_reboots - br0), (unsigned)(cr_stats()->board_reboots_t - bt0),
+                     (unsigned)(cr_stats()->board_reboots_u - bu0), ok[k] ? "ok" : "FAIL");
+            (void)sb_relay_cmd(&x.sb, 6u, RELAY_CMD_OFF, 0u);
+            sbsim_run(&x, x.t + 2000u, NULL, NULL);
+            sb_alarm_ack(&x.sb);
+        }
+        snprintf(d, sizeof d, "%s; %s", part[0], part[1]);
+        test_report("RB29 DroneCAN relays (W44): a LATE NodeStatus after a gap is no reboot - the cut ON waits for the "
+                    "second status and is finished; a late status + a real reboot = nothing sent", ok[0] && ok[1], d);
+        sim_hal_can_node_late(DC_NODE_RELAY, 0u, false);
+        sim_hal_relay_board(true, 5u, 0u);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
+
+    /* RB30 (step 13k, W44; review c162aad LOW-4) DroneCAN board WITHOUT readback: a STALE NodeStatus delivered right
+     * after a newer one (uptime back by 1 s) is not a proven reboot - the relay that is ON (and really still ON on the
+     * board) becomes UNKNOWN, never "known OFF"; its interlocked partner (not momentary) stays BLOCKED; nothing is
+     * sent. A board whose uptime went back by more than 2 s is still a proven reboot (known OFF) */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        s_rb_can = true;
+        rb_table(&t, false, false);
+        t.r[5].pair = 7u;                                           /* NAV LIGHTS <-> relay 7 (on / off): a pair */
+        t.r[6].type = RELAY_ONOFF;
+        t.r[6].max_ds = 0u;
+        t.r[6].pair = 6u;
+        relay_table_seal(&t);
+        bool valid = relay_table_valid(&t);
+        bool loaded = valid && rb_setup(&x, 1759u, NULL, &t) && rb_can();
+        sim_hal_relay_board(true, 5u, SIM_RB_NO_READBACK);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        sb_alarm_ack(&x.sb);
+        (void)sb_relay_cmd(&x.sb, 7u, RELAY_CMD_OFF, 0u);           /* (the partner known OFF: else it blocks) */
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool on6 = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool known_on = on6 && sim_hal_relay_state(6u) && (x.sb.relays.known & rb_bit(6)) &&
+                        (x.sb.relays.states & rb_bit(6));
+        bool blocked0 = sb_relay_cmd(&x.sb, 7u, RELAY_CMD_ON, 0u) != SB_OK;    /* (the partner is ON) */
+        uint32_t bu0 = cr_stats()->board_reboots_u, br0 = cr_stats()->board_reboots, fr0 = cr_stats()->frames;
+        uint32_t ss0 = 0u;
+        (void)sim_hal_can_node_late_sent(DC_NODE_RELAY, &ss0);
+        sim_hal_can_node_late(DC_NODE_RELAY, 0u, true);
+        sim_hal_can_node_silent(DC_NODE_RELAY, true);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        sim_hal_can_node_silent(DC_NODE_RELAY, false);
+        sbsim_run(&x, x.t + 1500u, NULL, NULL);
+        uint32_t ss = 0u;
+        (void)sim_hal_can_node_late_sent(DC_NODE_RELAY, &ss);
+        bool stale = ss == ss0 + 1u;
+        bool unk = !(x.sb.relays.known & rb_bit(6)) && !(x.sb.relays.cmd_on & rb_bit(6));
+        bool still_on = sim_hal_relay_state(6u);                    /* (the board did not reboot: the relay is ON) */
+        sb_result_t r7 = sb_relay_cmd(&x.sb, 7u, RELAY_CMD_ON, 0u);
+        sbsim_run(&x, x.t + 500u, NULL, NULL);
+        bool blocked = r7 != SB_OK && !sim_hal_relay_state(7u) && x.sb.relays.last_result == (uint8_t)RELAY_R_PAIR;
+        bool counted = cr_stats()->board_reboots_u == bu0 + 1u && cr_stats()->board_reboots == br0;
+        bool nothing = cr_stats()->frames == fr0;                   /* (nothing sent for the stale status) */
+        /* a real reboot (uptime back by far more than 2 s) is still proven: every state known OFF */
+        sim_hal_can_node_late(DC_NODE_RELAY, 0u, false);
+        (void)sb_relay_cmd(&x.sb, 6u, RELAY_CMD_OFF, 0u);
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        bool on6b = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 1000u, NULL, NULL);
+        sim_hal_can_node_reboot(DC_NODE_RELAY);
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        bool proven = on6b && cr_stats()->board_reboots == br0 + 1u && (x.sb.relays.known & rb_bit(6)) &&
+                      !(x.sb.relays.states & rb_bit(6)) && !sim_hal_relay_state(6u);
+        snprintf(d, sizeof d, "table %s (valid %s); NAV ON known ON %s, partner refused %s; stale status %s: NAV unknown "
+                 "+ command cleared %s, really still ON %s, partner ON -> %d refused (pair) %s, unproven counted %s, "
+                 "nothing sent %s; a real reboot: known OFF %s", loaded ? "yes" : "NO", valid ? "yes" : "NO",
+                 known_on ? "yes" : "NO", blocked0 ? "yes" : "NO", stale ? "sent" : "NOT sent", unk ? "yes" : "NO",
+                 still_on ? "yes" : "NO", (int)r7, blocked ? "yes" : "NO", counted ? "yes" : "NO",
+                 nothing ? "yes" : "NO", proven ? "yes" : "NO");
+        test_report("RB30 DroneCAN relays (W44): a stale NodeStatus after a newer one (uptime back 1 s) = UNKNOWN, never "
+                    "known OFF - the interlocked partner stays blocked; back > 2 s = a proven reboot",
+                    loaded && known_on && blocked0 && stale && unk && still_on && blocked && counted && nothing && proven,
+                    d);
+        sim_hal_relay_board(true, 5u, 0u);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
+
+    /* RB31 (step 13k, W44; review c162aad LOW-2) DroneCAN board WITHOUT readback: the clock-drift allowance is capped
+     * (min(elapsed / 256, 2 s)) - a board silent for 20 min that rebooted 10 s into the silence (its uptime does not
+     * go back: ~1190 s against ~12 s before) is still caught by the clock test: the relay commanded ON (now really
+     * OFF) becomes UNKNOWN, never stays "known ON" (the old elapsed / 32 = 37 s allowance hid it) */
+    {
+        static sbsim_t x;
+        static relay_table_t t;
+        s_rb_can = true;
+        rb_table(&t, false, false);
+        bool loaded = rb_setup(&x, 1761u, NULL, &t) && rb_can();
+        sim_hal_relay_board(true, 5u, SIM_RB_NO_READBACK);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        sim_hal_can_node_reboot(DC_NODE_RELAY);                     /* (a board up ~12 s at the silence) */
+        sbsim_run(&x, x.t + 6000u, NULL, NULL);
+        sb_alarm_ack(&x.sb);
+        bool on6 = sb_relay_cmd(&x.sb, 6u, RELAY_CMD_ON, 0u) == SB_OK;
+        sbsim_run(&x, x.t + 5000u, NULL, NULL);
+        sb_alarm_ack(&x.sb);
+        hal_can_node_t nn;
+        memset(&nn, 0, sizeof nn);
+        (void)dc_node(HAL_CAN_ROLE_RELAY, &nn);
+        uint32_t up0 = nn.uptime_s;
+        bool known_on = on6 && sim_hal_relay_state(6u) && (x.sb.relays.known & rb_bit(6)) &&
+                        (x.sb.relays.states & rb_bit(6));
+        uint32_t bt0 = cr_stats()->board_reboots_t, br0 = cr_stats()->board_reboots, bu0 = cr_stats()->board_reboots_u;
+        sim_hal_can_node_silent(DC_NODE_RELAY, true);
+        sbsim_run(&x, x.t + 10000u, NULL, NULL);
+        sim_hal_can_node_reboot(DC_NODE_RELAY);                     /* (relays OFF, R-2) */
+        sbsim_run(&x, x.t + 1190000u, NULL, NULL);
+        sim_hal_can_node_silent(DC_NODE_RELAY, false);
+        sbsim_run(&x, x.t + 4000u, NULL, NULL);
+        (void)dc_node(HAL_CAN_ROLE_RELAY, &nn);
+        bool off = !sim_hal_relay_state(6u);
+        bool unk = !(x.sb.relays.known & rb_bit(6)) && !(x.sb.relays.cmd_on & rb_bit(6));
+        bool by_clock = cr_stats()->board_reboots_t == bt0 + 1u && cr_stats()->board_reboots == br0 &&
+                        cr_stats()->board_reboots_u == bu0 && nn.uptime_s > up0;
+        snprintf(d, sizeof d, "table %s; NAV ON known ON %s (board up %u s); 20 min silent, rebooted 10 s into it: uptime "
+                 "now %u s (not back), relay really OFF %s, NAV unknown + command cleared %s, a reboot by the clock %s "
+                 "(clock %u, back %u, unproven %u)", loaded ? "yes" : "NO", known_on ? "yes" : "NO", (unsigned)up0,
+                 (unsigned)nn.uptime_s, off ? "yes" : "NO", unk ? "yes" : "NO", by_clock ? "yes" : "NO",
+                 (unsigned)(cr_stats()->board_reboots_t - bt0), (unsigned)(cr_stats()->board_reboots - br0),
+                 (unsigned)(cr_stats()->board_reboots_u - bu0));
+        test_report("RB31 DroneCAN relays (W44): the drift allowance is capped - a reboot early in a 20 min silence is "
+                    "still caught (ON -> unknown)", loaded && known_on && off && unk && by_clock, d);
+        sim_hal_relay_board(true, 5u, 0u);
+        remove("nv7.bin");
+        sim_hal_relay_board_reset();
+    }
     s_rb_can = keep_rb_can;
 }
 

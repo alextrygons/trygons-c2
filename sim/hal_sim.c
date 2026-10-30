@@ -1394,6 +1394,10 @@ typedef struct {
     uint32_t changes;               /* commands with a new value (step 13b: storm I51 on the gear node) */
     uint16_t hp[6];
     uint32_t hp_cmds;
+    uint32_t late_ms;               /* step 13k (W44) fault: the first NodeStatus after a quiet time is late_ms late */
+    bool     stale;                 /* step 13k fault: ... and followed by a STALE one (uptime 1 s older) */
+    bool     quiet;                 /* a NodeStatus was due while it could not reach the bus (silent / cut off) */
+    uint32_t late_sent, stale_sent;
 } sc_node_t;
 static sc_node_t s_sc[SC_NODES];
 static bool      s_sc_fitted;           /* (declared at the top) */
@@ -1454,6 +1458,7 @@ void sim_hal_can_node(uint8_t id, bool present, uint8_t health, uint8_t mode)
     sc_node_t *n = sc_find(id);
     if (!n) return;
     if (present && !n->present) {               /* power comes back = a node boot */
+        n->quiet = false;                        /* (its TX mailboxes are empty) */
         n->boot_ms = s_time_ms;
         n->init_until_ms = s_time_ms + 1000u;
         n->next_status_ms = s_time_ms + 50u;
@@ -1472,6 +1477,21 @@ void sim_hal_can_node_silent(uint8_t id, bool silent)
 {
     sc_node_t *n = sc_find(id);
     if (n) n->silent = silent;
+}
+
+void sim_hal_can_node_late(uint8_t id, uint32_t late_ms, bool stale)
+{
+    sc_node_t *n = sc_find(id);
+    if (!n) return;
+    n->late_ms = late_ms;
+    n->stale = stale;
+}
+
+uint32_t sim_hal_can_node_late_sent(uint8_t id, uint32_t *stale_sent)
+{
+    sc_node_t *n = sc_find(id);
+    if (stale_sent) *stale_sent = n ? n->stale_sent : 0u;
+    return n ? n->late_sent : 0u;
 }
 
 void sim_hal_can_node_reboot(uint8_t id)
@@ -1653,13 +1673,32 @@ static void sc_tick(void)
             if (n->pos > n->out + h) n->out = n->pos - h;
             if (n->pos < n->out - h) n->out = n->pos + h;
         }
-        if (!n->present || n->silent || (int32_t)(now - n->next_status_ms) < 0) continue;
+        if (!n->present || (int32_t)(now - n->next_status_ms) < 0) continue;
         bool crb = !n->actuator && s_rb_bus_boot == SIM_RELAY_DRONECAN;    /* the relay board of step 11f */
-        if (crb && (!s_rb.present || (s_rb.fault & SIM_RB_SILENT))) continue;  /* cut off the bus / silent */
+        if (n->silent || (crb && (!s_rb.present || (s_rb.fault & SIM_RB_SILENT)))) {   /* cut off the bus / silent */
+            n->quiet = true;
+            continue;
+        }
         n->next_status_ms = now + 1000u;
         uint8_t mode = ((int32_t)(now - n->init_until_ms) < 0) ? DC_MODE_INIT : n->mode;
         uint32_t rx0 = s_sc_rx_n;
-        sc_status_frame(n->id, &n->tid, (now - n->boot_ms) / 1000u, n->health, mode);
+        uint32_t up_s = (now - n->boot_ms) / 1000u;
+        if (n->quiet && n->late_ms) {
+            /* step 13k (W44) fault: the status waited in the node's TX mailbox and is delivered late_ms late (its
+             * uptime is of then; never before its own boot: after a reboot meanwhile it is the new boot's status) */
+            uint32_t ts = now - n->late_ms;
+            if ((int32_t)(ts - n->boot_ms) < 0) ts = n->boot_ms;
+            up_s = (ts - n->boot_ms) / 1000u;
+            n->late_sent++;
+        }
+        bool stale = n->quiet && n->stale && up_s >= 1u;
+        n->quiet = false;
+        sc_status_frame(n->id, &n->tid, up_s, n->health, mode);
+        if (stale) {                             /* step 13k fault: an older status from another mailbox after it */
+            sc_status_frame(n->id, &n->tid, up_s - 1u, n->health, mode);
+            n->stale_sent++;
+            n->statuses++;
+        }
         if (crb && s_sc_rx_n > rx0) {                                   /* its frames arrive broken (CORRUPT) */
             s_rb.frames_out++;
             if ((s_rb.fault & SIM_RB_CORRUPT) || ((s_rb.fault & SIM_RB_CORRUPT_SOME) && s_rb.frames_out % 7u == 3u)) {

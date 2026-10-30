@@ -25,7 +25,12 @@ static uint32_t    s_want;                  /* step 13h: relays.c still wants th
 static uint32_t    s_odrop;                 /* step 13h: retries given up (window / board reboot), for relays.c */
 static uint32_t    s_on_ms[CR_CH_MAX];      /* step 13h: the time of the ON command (the retry window counts from it) */
 static uint32_t    s_ref_up_s, s_ref_ms, s_ref_stat;   /* step 13h2: the last NodeStatus handled: its uptime, our time
-                                                          of its reception, the status count */
+                                                          of its reception, the status count. Step 13k: the uptime /
+                                                          time are of the last status that did NOT lag (the judgement
+                                                          reference); s_ref_stat = the last status handled */
+static uint32_t    s_last_rx;               /* step 13k: our reception time of the last status handled (gap check) */
+static bool        s_lag_wait;              /* step 13k (W44): a first lagging status waits for a second one */
+static uint32_t    s_lag_ms;                /* step 13k: our reception time of that first lagging status */
 static cr_stats_t  s_st;
 
 static uint32_t bit(uint8_t i)
@@ -56,6 +61,8 @@ void cr_init(const cr_config_t *c)
     s_retry = s_want = s_odrop = 0u;
     memset(s_on_ms, 0, sizeof s_on_ms);
     s_ref_up_s = s_ref_ms = s_ref_stat = 0u;
+    s_last_rx = s_lag_ms = 0u;
+    s_lag_wait = false;
     s_up = s_cfg.channels != 0u;
 }
 
@@ -119,23 +126,26 @@ static uint32_t popcount(uint32_t v)
     return c;
 }
 
-/* step 13h2 (review 3bef4c8 MED-1): a NodeStatus newer than the last one handled whose uptime did not grow with our
- * clock = the board rebooted (also when the uptime is not below the old one: a young board, silent after its reboot
- * for longer than it had been up). Margins: CR_UPTIME_* in can_relay.h (a false "rebooted" only makes ON states
- * unknown and drops cut ONs = fail-safe) */
-static bool uptime_lag(const hal_can_node_t *n, uint32_t now)
+/* step 13h2 (review 3bef4c8 MED-1): a NodeStatus whose uptime did not grow with our clock since the reference = the
+ * board MAY have rebooted (also when the uptime is not below the old one: a young board, silent after its reboot for
+ * longer than it had been up). Margins: CR_UPTIME_* in can_relay.h; step 13k (W44): the drift allowance is capped at
+ * CR_UPTIME_DRIFT_MAX_MS, and ONE lagging status is never a reboot (cr_service waits for a second one). rx = our
+ * reception time of the status (a false "rebooted" only makes ON states unknown and drops cut ONs = fail-safe) */
+static bool uptime_lag(const hal_can_node_t *n, uint32_t rx)
 {
-    if (!s_seen || !n->seen || n->statuses == s_ref_stat || n->age_ms == 0xFFFFFFFFu) return false;
-    uint64_t el = (uint32_t)((now - n->age_ms) - s_ref_ms);
-    uint64_t got = (uint64_t)n->uptime_s * 1000u + CR_UPTIME_RES_MS + CR_UPTIME_JITTER_MS + el / CR_UPTIME_DRIFT_DIV;
+    uint64_t el = (uint32_t)(rx - s_ref_ms);
+    uint64_t drift = el / CR_UPTIME_DRIFT_DIV;
+    if (drift > CR_UPTIME_DRIFT_MAX_MS) drift = CR_UPTIME_DRIFT_MAX_MS;
+    uint64_t got = (uint64_t)n->uptime_s * 1000u + CR_UPTIME_RES_MS + CR_UPTIME_JITTER_MS + drift;
     return got < (uint64_t)s_ref_up_s * 1000u + el;
 }
 
-static void ref_take(const hal_can_node_t *n, uint32_t now)
+/* the status becomes the judgement reference (it did not lag / a reboot was handled) */
+static void ref_take(const hal_can_node_t *n, uint32_t rx)
 {
     s_ref_up_s = n->uptime_s;
-    s_ref_ms = now - n->age_ms;
-    s_ref_stat = n->statuses;
+    s_ref_ms = rx;
+    s_lag_wait = false;
 }
 
 /* a board reboot: no burst / pulse / cut ON goes on; EVERY channel that was ON (or a cut ON waiting) is reported
@@ -155,10 +165,12 @@ void cr_service(void)
     if (!s_up) return;
     uint32_t now = hal_millis();
     hal_can_node_t n;
-    if (node(&n) && n.seen) {
+    if (node(&n) && n.seen && n.age_ms != 0xFFFFFFFFu) {
+        uint32_t rx = now - n.age_ms;
         if (!s_seen) {
             s_seen = true;
             s_restarts = n.restarts;
+            ref_take(&n, rx);
             /* the board booted after the AURIX's start - its power-on OR a warm reset (step 11g: the states kept
              * from before a warm reset are stale then) - its uptime is not longer than ours: it powered up with
              * every relay OFF (R-2). Nothing ON can have been commanded meanwhile (cr_set / cr_pulse refuse ON
@@ -182,26 +194,52 @@ void cr_service(void)
                 s_on = 0u;
                 memset(s_until, 0, sizeof s_until);
             }
+        } else if (n.statuses == s_ref_stat) {
+            /* (no new NodeStatus since the last call) */
         } else if (n.restarts != s_restarts) {
-            /* the board rebooted (its uptime went back): it powered up OFF (R-2) - every state OFF, nothing re-sent
-             * (a relay is never switched back ON by itself) */
             s_restarts = n.restarts;
             /* step 13h (W42): a cut ON is never finished on a board that rebooted meanwhile - given up, nothing sent
-             * (the relay is known OFF like every other one; the operator presses again) */
+             * (the operator presses again) */
             board_rebooted();
-            s_on = 0u;
-            s_known = s_mask;
-            s_st.board_reboots++;
-        } else if (uptime_lag(&n, now)) {
-            /* step 13h2 (review 3bef4c8 MED-1): its uptime did not grow with our clock = it rebooted although the
-             * uptime did not go back. Not PROVEN like an uptime back (a clock fault could look alike): a commanded
-             * ON is UNKNOWN, an OFF stays OFF (OFF either way); no cut ON is finished, nothing sent */
+            if (n.back_s > CR_UPTIME_BACK_PROVEN_S) {
+                /* the board rebooted (its uptime went back by more than CR_UPTIME_BACK_PROVEN_S): it powered up OFF
+                 * (R-2) - every state known OFF, nothing re-sent (a relay is never switched back ON by itself) */
+                s_on = 0u;
+                s_known = s_mask;
+                s_st.board_reboots++;
+            } else {
+                /* step 13k (W44, review c162aad LOW-4): back by only 1-2 s = maybe a stale status delivered after a
+                 * newer one (two pending in different mailboxes after a stall) - NOT proven: a commanded ON is
+                 * UNKNOWN (never "known OFF": on a board without readback the pair rule then keeps blocking its
+                 * partner), an OFF stays OFF (OFF either way) */
+                s_known &= ~s_on;
+                s_on = 0u;
+                s_st.board_reboots_u++;
+            }
+            ref_take(&n, rx);
+        } else if (!uptime_lag(&n, rx)) {
+            ref_take(&n, rx);                           /* grew with our clock: the new reference */
+        } else if (!s_lag_wait || (uint32_t)(rx - s_last_rx) > s_cfg.lost_ms ||
+                   (uint32_t)(rx - s_lag_ms) < CR_UPTIME_SECOND_MS) {
+            /* step 13k (W44, owner 2026-10-30): the FIRST lagging status (or the first after a new gap, or one of the
+             * same late burst) is not judged - it may have waited in the board's TX mailbox and arrive late. The
+             * reference stays the last status that did not lag; no cut ON is finished meanwhile (cr_tick) */
+            if (!s_lag_wait || (uint32_t)(rx - s_last_rx) > s_cfg.lost_ms) s_lag_ms = rx;
+            s_lag_wait = true;
+            s_st.lag_waits++;
+        } else {
+            /* step 13h2 (review 3bef4c8 MED-1) + 13k: a SECOND lagging status = its uptime did not grow with our
+             * clock = it rebooted although the uptime did not go back. Not PROVEN like an uptime back (a clock fault
+             * could look alike): a commanded ON is UNKNOWN, an OFF stays OFF (OFF either way); no cut ON is finished,
+             * nothing sent */
             board_rebooted();
             s_known &= ~s_on;
             s_on = 0u;
             s_st.board_reboots_t++;
+            ref_take(&n, rx);
         }
-        ref_take(&n, now);
+        s_ref_stat = n.statuses;
+        s_last_rx = rx;
     }
     retry_service(now);
     end_pulses(now);
@@ -216,10 +254,12 @@ void cr_tick(void)
     if ((uint32_t)(now - s_last_tx) < CR_PERIOD_MS) return;
     s_last_tx = now;
     bool there = present();
-    /* step 13h: the board came back with a new uptime-went-back mark cr_service has not handled yet = it rebooted:
-     * no cut ON is finished (cr_service gives them up) */
+    /* step 13h: the board came back with a NodeStatus cr_service has not handled yet (it may show a reboot), or
+     * step 13k (W44): a first lagging status waits for its second one = no cut ON is finished yet (cr_service judges
+     * them; the CR_ON_RETRY_MS window still runs) */
     hal_can_node_t nd;
-    bool rebooted = node(&nd) && nd.seen && s_seen && (nd.restarts != s_restarts || uptime_lag(&nd, now));
+    bool rebooted = node(&nd) && nd.seen && s_seen && (nd.restarts != s_restarts || nd.statuses != s_ref_stat ||
+                                                      s_lag_wait);
     if (there && !rebooted && s_retry) {
         retry_service(now);
         for (uint8_t i = 0; s_retry && i < s_cfg.channels; i++) {

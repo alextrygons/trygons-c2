@@ -193,6 +193,8 @@ static void on_status(uint8_t src, const dc_status_t *st)
                                                                    its own boot state - latched */
             n->pub.rebooted = true;
             n->pub.restarts++;
+            n->pub.back_s = n->pub.uptime_s - st->uptime_s;     /* step 13k (W44): can_relay.c tells a small step
+                                                                   (maybe a stale status) from a proven reboot */
             n->op = false;
         }
         n->pub.seen = true;

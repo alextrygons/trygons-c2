@@ -280,6 +280,14 @@ measured value / answer here.
       when plugged back ____ ; (e) (step 13h2) power the board up, switch the relay ON within 2 s of
       the board answering, pull the cable, power-cycle the board, plug in after ~5 s: nothing sent,
       the relay OFF, the panel shows it unknown ____ .
+- [ ] (step 13k, W44, DroneCAN relay board) AP_Periph NodeStatus TX deadline / late delivery: CAN
+      trace (DroneCAN GUI Tool, timestamps) while the board's CAN cable is pulled for ~5 s and plugged
+      back: is a NodeStatus queued during the outage delivered late (its uptime older than the bus
+      time)? how late ____ ms (the AURIX waits for a SECOND status before it calls such a lag a
+      reboot: a delay up to ~1 s is expected) ; are two queued statuses ever delivered out of order
+      (an uptime 1 s lower after a higher one) ____ ; the NodeStatus period ____ ms and its jitter
+      ____ ms. Then NAV LIGHTS ON, cable pulled within ~0.1 s, plugged in after ~4 s: the relay ends
+      ON ____ (finished ~1 s after the board answers, never OFF in between) ____ .
 
 - [ ] Leave the bench test (button **Leave**): mode STANDBY.
 

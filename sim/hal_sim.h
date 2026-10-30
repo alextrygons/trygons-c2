@@ -135,6 +135,11 @@ void     sim_hal_can_fault(uint32_t bits);
 void     sim_hal_can_node(uint8_t id, bool present, uint8_t health, uint8_t mode);
 void     sim_hal_can_node_silent(uint8_t id, bool silent);   /* powered, acts on commands, no NodeStatus */
 void     sim_hal_can_node_reboot(uint8_t id);                /* uptime back to 0 (brown-out) */
+/* step 13k (W44) fault: the first NodeStatus after a quiet time (silent / cut off; not after a power-up) is
+ * delivered late_ms late (its uptime is of late_ms ago: it waited in the node's TX mailbox); stale = then also an
+ * OLDER status (uptime 1 s less) right after it. late_ms 0 + stale false = off. late_sent / stale_sent: counts */
+void     sim_hal_can_node_late(uint8_t id, uint32_t late_ms, bool stale);
+uint32_t sim_hal_can_node_late_sent(uint8_t id, uint32_t *stale_sent);
 void     sim_hal_can_servo_speed(uint8_t id, float travel_s, float backlash);
 /* servo node: last command, servo position, output after the play (units -1..1), commands taken;
  * returns false while it never got a command (it holds its power-up position) */

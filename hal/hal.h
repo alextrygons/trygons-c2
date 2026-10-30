@@ -414,6 +414,8 @@ typedef struct {
     uint32_t age_ms;        /* since the last NodeStatus (0xFFFFFFFF never) */
     uint16_t restarts;      /* reboots seen */
     uint32_t statuses;      /* NodeStatus received */
+    uint32_t back_s;        /* step 13k (W44): how far the uptime went back at the last restart (s) - a 1-2 s step
+                               can be a stale NodeStatus delivered after a newer one, not a proven reboot */
 } hal_can_node_t;
 typedef struct {
     uint8_t  state;         /* HAL_CAN_ST_ */

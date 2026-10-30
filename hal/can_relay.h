@@ -59,10 +59,25 @@
  * too (also when its new uptime is not below the old one: a young board silent after its reboot for longer than it
  * had been up). Rebooted when uptime_new*1000 + CR_UPTIME_RES_MS + CR_UPTIME_JITTER_MS + elapsed/CR_UPTIME_DRIFT_DIV
  * < uptime_old*1000 + elapsed (elapsed = our time between the two receptions): the 1 s resolution of uptime_s, the
- * reception jitter and a 3 % clock difference never read as a reboot */
+ * reception jitter and the clock drift never read as a reboot (step 13k: the drift allowance capped, and only a
+ * SECOND lagging status counts - see below) */
 #define CR_UPTIME_RES_MS    1000u
 #define CR_UPTIME_JITTER_MS  300u
-#define CR_UPTIME_DRIFT_DIV   32u
+/* step 13k (W44, owner 2026-10-30; review c162aad LOW-2): the clock-drift allowance is min(elapsed / 256, 2000 ms)
+ * (was elapsed / 32 with no limit: it hid a real reboot after a long silence) */
+#define CR_UPTIME_DRIFT_DIV  256u
+#define CR_UPTIME_DRIFT_MAX_MS 2000u
+/* step 13k (W44, owner 2026-10-30; review c162aad MED-1): ONE lagging NodeStatus is never judged - it may have waited
+ * in the board's TX mailbox during a bus disturbance and arrive 0.5-1 s late. A reboot "by the clock" needs a SECOND
+ * lagging status, received at least CR_UPTIME_SECOND_MS after the first and not itself the first after a new gap
+ * > lost_ms, both judged against the last status that did NOT lag (the reference before the gap). Until the second
+ * status has been judged no cut ON is finished (the CR_ON_RETRY_MS window still runs: no judgement in time = given
+ * up, nothing sent, UNKNOWN). */
+#define CR_UPTIME_SECOND_MS   500u
+/* step 13k (W44, review c162aad LOW-4): an uptime that went back by at most this many seconds is NOT a proven reboot
+ * (a stale status delivered after a newer one): every ON state UNKNOWN (never "known OFF"), cut ONs given up, nothing
+ * sent. More than this = a proven reboot (every state known OFF, R-2). */
+#define CR_UPTIME_BACK_PROVEN_S 2u
 
 typedef struct {
     uint8_t  channels;           /* the board's hardpoints (hal_pins.h CAN_RELAY_CHANNELS, TO CONFIRM; sim: fitted) */
@@ -95,8 +110,8 @@ uint32_t cr_cuts(void);          /* step 13e: the cut bits not taken yet (tests)
  * (never an OFF by itself); it is finished when the board is back ONLY while (1) relays.c still wants it ON
  * (cr_on_want: bit n-1 = commanded ON, not momentary, not the engine group; a new cr_set / cr_pulse replaces it),
  * (2) within CR_ON_RETRY_MS of the ON command and (3) the board did not reboot meanwhile (its uptime went back:
- * every state OFF, nothing sent; step 13h2: or its uptime did not grow with our clock: every ON state UNKNOWN,
- * nothing sent; either way EVERY channel that was ON is reported through cr_take_on_drop). Given up (window over / reboot / not wanted at the cut) = the state UNKNOWN (OFF
+ * every state OFF, nothing sent; step 13h2: or its uptime did not grow with our clock - step 13k: on TWO statuses -: every ON state
+ * UNKNOWN, nothing sent; step 13k: an uptime back by <= 2 s: every ON state UNKNOWN, nothing sent; either way EVERY channel that was ON is reported through cr_take_on_drop). Given up (window over / reboot / not wanted at the cut) = the state UNKNOWN (OFF
  * after a reboot), nothing sent, cr_take_on_drop true once so relays.c clears its command (and logs it). */
 void cr_on_want(uint32_t mask);
 bool cr_take_on_drop(uint8_t n);
@@ -112,6 +127,8 @@ typedef struct {
     uint32_t max_pulse_ms;       /* the longest pulse ever asked */
     uint32_t board_reboots;      /* the board's uptime went back: every state OFF */
     uint32_t board_reboots_t;    /* step 13h2: its uptime did not grow with our clock: every ON state unknown */
+    uint32_t board_reboots_u;    /* step 13k: its uptime went back by <= CR_UPTIME_BACK_PROVEN_S: every ON state unknown */
+    uint32_t lag_waits;          /* step 13k: a first lagging NodeStatus not judged (waits for a second one) */
     uint32_t on_retried;         /* step 13h: cut ON bursts finished when the board was back */
     uint32_t on_given_up;        /* step 13h: cut ON bursts given up (window / reboot / not wanted) */
     uint32_t ticks;
