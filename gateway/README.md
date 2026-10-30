@@ -35,7 +35,66 @@ cd ..\gateway
 python gateway.py --sim                  (data goes to gateway\gw_data)
 python test_gateway.py                   (all gateway tests)
 python test_osdep.py                     (Ubuntu / Windows bits: serial names, config, install files)
+python test_setup.py                     (setup_all.sh with fake answers + stubbed commands: nothing changes)
 ```
+
+---
+
+## 0. Quick setup (Ubuntu 24.04 on the ThinkPad, one command)
+
+After installing Ubuntu 24.04 LTS (section 3U steps 1-3: user `trygons`, OpenSSH), log in
+(console or `ssh -t trygons@trygons-gw.local`) and run:
+
+```
+curl -sL https://raw.githubusercontent.com/alextrygons/trygons-c2/main/gateway/setup_all.sh | sudo bash
+```
+
+(The repository is `https://github.com/alextrygons/trygons-c2.git`, branch `main`. If it is
+private, the raw link gives "404": then `git clone` it first and run
+`sudo bash ~/trygons-c2/gateway/setup_all.sh` - the same script. Want to read it before running
+it? `curl -sL <link> -o setup_all.sh`, read it, `sudo bash setup_all.sh`.)
+
+Options: `| sudo bash -s -- --dry-run` (prints every action, changes nothing),
+`--lang en` (English; Greek is the default), `--checks` (only the final check list).
+
+It first asks everything (Greek by default), then runs by itself (20-60 min):
+
+| Question | Where it goes |
+|---|---|
+| boat name (as in `boats/`) | gateway.json `"boat"` (the station refuses a different name) |
+| gateway users: name, HELM / VIEWER, licence, password (twice, >= 10 characters, **not shown**) | `/etc/trygons/secrets.json` as pbkdf2 hashes, mode 600, owner trygons - never in git, never in the log |
+| Tailscale auth key (`tskey-...`, **not shown**; Enter = later) | `tailscale up --auth-key=file:...` from a root-only temp file, deleted after |
+| which Ethernet port is the router, which the cameras: it shows `ip -br link` (port, state, MAC, cable) and does a **plug-in test** (cable out -> Enter -> cable in -> Enter -> "found port X, right?") | `install_ubuntu.sh` LAN_MAC / CAM_MAC -> names `boatlan0` / `cam0` (after a reboot) |
+| chart area (default: the boat area `attica`) | `tools/chartprep.py --area ...` -> `charts/<area>/` (offline afterwards) |
+| which USB adapter is the AURIX, which the AIS receiver (from `gateway.py --list-serial`: listed only, never opened) | gateway.json `"aurix"` / `"ais"` (`usb:VID:PID:SERIAL`); not plugged in = left **TBD** with a note, AIS off |
+
+Then: `apt full-upgrade`, time zone UTC, `git clone` / `git pull` into `~trygons/trygons-c2`,
+`install_ubuntu.sh` with the MACs, Tailscale install + up, `tools/get_mediamtx.py`, the vision
+Python (Ubuntu: a venv in `tools/bin/vision-python/` with the pinned packages of
+`tools/get_vision_python.py`, which itself is the Windows way) + `tools/get_vision_model.py`,
+the charts, gateway.json from `config.example.json`, `--check-config`, `systemctl start`, and a
+**check list** with OK / FAIL lines: service, gateway.json, AURIX link (from the service's own
+log), storage (>= 20 GB free), lid, battery 80 %, Tailscale, camera network (cam0), time (UTC,
+synchronised), depth charts. Log: `/var/log/trygons-setup.log` (no passwords or keys in it).
+
+Safe to run again: an existing secrets.json, gateway.json, port choice or charts are KEPT unless
+you answer otherwise (Enter = keep); with nothing changed the service is not restarted. A config
+with errors (e.g. the AURIX adapter TBD) is not started - plug the adapter in and run it again.
+After the first run: `sudo reboot` (the port names apply after it), then
+`sudo bash ~trygons/trygons-c2/gateway/setup_all.sh --checks` - every line must say OK.
+Not done by the script: Tailscale "Disable key expiry" + access controls (section 7), the
+firewall (8), the router (13), the cameras (14), the shore PC (15).
+
+Safety (as in the rest of this README):
+* **The AURIX link is a 3.3 V TTL USB-UART adapter (FTDI / CP2102 set to 3.3 V) - NEVER RS232**
+  (+-12 V destroys the AURIX pins). The script only LISTS the serial adapters; it never opens the
+  AURIX UART or anything on the boat.
+* **The AURIX is never on the network**: only the gateway PC talks to it, over that UART.
+* The ThinkPad keeps running with the **lid** closed and charges its battery to **80 %** at most
+  (the built-in battery is the UPS) - set by `install_ubuntu.sh`, checked in the check list.
+* Run it in harbour with the boat in STANDBY: restarting the gateway service shows GATEWAY LOST
+  for a few seconds on the boat (an alarm only, no mode change).
+* Windows 11 gateway: not this script - `gateway/windows/install_gateway.ps1` (section 3W).
 
 ---
 
@@ -88,7 +147,8 @@ gateway for minutes (the boat then shows GATEWAY LOST; control is not affected).
 3. Install: hostname `trygons-gw`, user `trygons` + a **strong password** (password
    manager), "Install OpenSSH server" **yes**, import your SSH key if offered.
    (It erases Windows. Want to keep Windows? Use another SSD, or section 3W instead.)
-4. After the restart, from your PC: `ssh trygons@trygons-gw.local`, then
+4. After the restart, from your PC: `ssh trygons@trygons-gw.local`, then (or all of steps 4-7
+   and 18 in one go: section 0, `setup_all.sh`)
    ```
    sudo apt update && sudo apt full-upgrade -y
    sudo timedatectl set-timezone UTC          # logs are in UTC

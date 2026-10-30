@@ -1714,6 +1714,21 @@ THE IDEA
   The USB laptop, the onboard joystick and the STANDBY button work exactly
   as before, with or without the gateway PC.
   Setup step by step: gateway\README.md.
+  QUICK SETUP (Ubuntu 24.04, one command, gateway\README.md section 0): on the
+  gateway PC, after installing Ubuntu, run
+    curl -sL https://raw.githubusercontent.com/alextrygons/trygons-c2/main/gateway/setup_all.sh | sudo bash
+  (or, from a clone: sudo bash ~/trygons-c2/gateway/setup_all.sh). It asks only:
+  the boat name, the gateway users and their passwords (not shown; stored as
+  hashes in /etc/trygons/secrets.json, never in git or in the log), the
+  Tailscale key (not shown), which Ethernet port goes to the router and which
+  to the cameras (unplug / plug in the cable when it says so), the chart area
+  and which USB adapter is the AURIX / the AIS receiver (an adapter that isn't
+  plugged in stays "TBD": plug it in and run it again). Then it installs and
+  checks everything by itself and ends with a check list of OK / FAIL lines.
+  Safe to run again (Enter keeps what is there). --dry-run shows what it would
+  do without changing anything; --lang en = English (Greek is the default);
+  --checks = only the check list (after the reboot it asks for: all OK).
+  It never opens the AURIX UART. Run it in harbour, the boat in STANDBY.
   The gateway PC: Ubuntu 24.04 LTS is recommended at sea (no forced updates or
   restarts); Windows 11 works too (Windows Update set to "ask, never restart").
   It starts by itself at boot and restarts after a crash (Ubuntu: a systemd

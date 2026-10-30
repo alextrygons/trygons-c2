@@ -229,6 +229,9 @@ grep -E "^\[FAIL\]|AVOIDANCE TESTS" "$TEMP/avoid_tests.txt"
 echo "== gateway PC on Ubuntu + Windows (serial names, config, install files)"
 ( cd gateway && "$PY" test_osdep.py > "$TEMP/osdep_tests.txt" 2>&1 ) || { echo "OS TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|OS TESTS" "$TEMP/osdep_tests.txt"
+echo "== gateway one-command setup (13j): setup_all.sh with fake answers + stubbed commands (nothing changes), shellcheck / bash -n, no secret in the log"
+( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_setup.py > "$TEMP/setup_tests.txt" 2>&1 ) || { echo "SETUP TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|^ST1: shellcheck|SETUP TESTS" "$TEMP/setup_tests.txt"
 echo "== academy (step 15+): no boat link - only the simulator on this PC or recorded files; banner; content; ADS exclude"
 PYTHONIOENCODING=utf-8 "$PY" academy/test_academy.py > "$TEMP/academy_tests.txt" 2>&1 || { echo "ACADEMY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|ACADEMY TESTS" "$TEMP/academy_tests.txt"
