@@ -236,16 +236,48 @@ def stop():
         return 0
     with open(PIDS, encoding="utf-8") as f:
         pids = json.load(f)
-    for name, pid in reversed(list(pids.items())):          # ground stations first, the simulator last
+    order = list(pids.items())
+    # the starting demo process itself first (13i2: STOP_DEMO during the start - it starts nothing more),
+    # then the ground stations ... the simulator last; never this process (start() calls stop on an error)
+    order = [x for x in order if x[0] == "demo"] + [x for x in reversed(order) if x[0] != "demo"]
+    for name, pid in order:
+        if pid == os.getpid():
+            continue
         kill_tree(pid)
         say("stopped %s (pid %d)" % (name, pid))
     os.remove(PIDS)
     return 0
 
 
+def _write_pids(pids):
+    os.makedirs(RUN, exist_ok=True)
+    with open(PIDS, "w", encoding="utf-8") as f:
+        json.dump(pids, f, indent=1)
+
+
+def _forget_self():
+    """start() is over: this process leaves pids.json (its pid could be reused by another program)."""
+    try:
+        with open(PIDS, encoding="utf-8") as f:
+            pids = json.load(f)
+    except (OSError, ValueError):
+        return
+    if pids.get("demo") != os.getpid():
+        return
+    del pids["demo"]
+    if pids:
+        _write_pids(pids)
+    else:
+        try:
+            os.remove(PIDS)
+        except OSError:
+            pass
+
+
 def start(progress=None):
     """Starts everything. progress(key) = the start-up screen's steps (splash.p_*); with it, start waits
-    until both ground stations report their windows open (or READY_WAIT_S)."""
+    until both ground stations report their windows open (or READY_WAIT_S). While it runs, this process
+    is in pids.json as "demo" (STOP_DEMO during the start stops it too, 13i2)."""
     step = progress or (lambda key: None)
     say("=== Trygons C2 demo ===")
     step("splash.p_check")
@@ -253,6 +285,15 @@ def start(progress=None):
         say("an old demo is still registered: stopping it first")
         stop()
         time.sleep(1.0)
+    pids = {"demo": os.getpid()}
+    _write_pids(pids)
+    try:
+        return _start(step, progress, pids)
+    finally:
+        _forget_self()
+
+
+def _start(step, progress, pids):
     ok, mtx = check_tools(interactive=sys.stdin is not None and sys.stdin.isatty())
     if not ok:
         say("\nSOMETHING IS MISSING (see above) - the demo can't start.")
@@ -272,7 +313,7 @@ def start(progress=None):
     if os.path.basename(py).lower() == "pythonw.exe":    # the children log through stdout: python.exe, no window
         cand = os.path.join(os.path.dirname(py), "python.exe")
         py = cand if os.path.exists(cand) else py
-    pids = {}
+    # pids: {"demo": this process} already (start)
     step("splash.p_sim")
 
     # "usb": the onboard joystick = the simulated USB joystick (lever + stick sliders in the ON BOARD window)
@@ -329,16 +370,92 @@ def start(progress=None):
 
 def start_splash():
     """START_DEMO / the Desktop shortcut: the start-up screen while the demo starts (closes when the
-    stations' windows are open, at most 30 s; an error is shown on it)."""
+    stations' windows are open, at most 30 s; an error is shown on it, or after it in a window / message
+    box). pythonw has no console: NOTHING may fail silently (13i2, review 473694b M1 / M2) - a start-up
+    screen that can't be made (no tkinter / Pillow / display) = the traceback in demo_run/logs/demo.log,
+    a message box, and the demo starts without the screen."""
     sys.path.insert(0, os.path.join(REPO, "groundstation"))
-    import splash
+    log = os.path.join(LOGS, "demo.log")
+    try:
+        import splash
+    except Exception:
+        _log_traceback("the start-up screen could not be loaded")
+        return _start_without_splash(log)
+
+    began = []
 
     def task(progress):
-        rc = start(progress)
-        return (rc == 0, "" if rc == 0 else "\n".join(_said[-4:]) + "\n(demo_run/logs/demo.log)")
-    ok, _msg = splash.run_task(task, ["splash.p_check", "splash.p_sim", "splash.p_gateway", "splash.p_cameras",
-                                      "splash.p_stations"], what="splash.what_demo")
+        began.append(1)
+        try:
+            rc = start(progress)
+        except Exception:
+            _log_traceback("the demo start failed")
+            raise
+        return (rc == 0, "" if rc == 0 else "\n".join(_said[-4:]) + "\n" + _text("splash.log", "Messages: {path}",
+                                                                                 path=log))
+    try:
+        ok, _msg = splash.run_task(task, ["splash.p_check", "splash.p_sim", "splash.p_gateway", "splash.p_cameras",
+                                          "splash.p_stations"], what="splash.what_demo",
+                                   log_hint=_text("splash.log", "Messages: {path}", path=log))
+    except Exception:                                   # e.g. no display: the Tk window itself failed
+        _log_traceback("the start-up screen could not be shown")
+        if began:                                       # the start already ran: say so, never start twice
+            MESSAGE_BOX(_text("splash.failed", "Start-up failed:"), _text("splash.log", "Messages: {path}", path=log))
+            return 1
+        return _start_without_splash(log)
     return 0 if ok else 1
+
+
+def _log_traceback(what):
+    import traceback
+    say("%s:\n%s" % (what, traceback.format_exc().rstrip()))
+
+
+def _text(key, fallback, **kw):
+    """A screen text from lang/ (the station's language); the English fallback only when even i18n can't load."""
+    try:
+        import i18n
+        return i18n.T(key, **kw)
+    except Exception:
+        return fallback.format(**kw)
+
+
+def _message_box(title, text):
+    """A Windows message box (pythonw: no console); elsewhere stderr. Never raises."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, str(text), str(title), 0x10 | 0x10000)
+            return
+    except Exception:
+        pass
+    try:
+        sys.stderr.write("%s\n%s\n" % (title, text))
+    except Exception:
+        pass
+
+
+MESSAGE_BOX = _message_box          # the tests replace it
+
+
+def _start_without_splash(log):
+    """M1 fallback: the plain start; the message box (in its own thread: the start goes on meanwhile) says
+    the screen is missing; an error of the start gets its own box."""
+    import threading
+    note = threading.Thread(target=MESSAGE_BOX, args=("Trygons C2", _text(
+        "splash.no_screen", "The start-up screen could not be shown - the demo starts without it.") + "\n" +
+        _text("splash.log", "Messages: {path}", path=log)), daemon=True)
+    note.start()
+    try:
+        rc = start()
+    except Exception:
+        _log_traceback("the demo start failed")
+        rc = 1
+    if rc != 0:
+        MESSAGE_BOX(_text("splash.failed", "Start-up failed:"),
+                    "\n".join(_said[-4:]) + "\n" + _text("splash.log", "Messages: {path}", path=log))
+    note.join()
+    return rc
 
 
 def ship():

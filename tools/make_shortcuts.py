@@ -4,7 +4,8 @@
     python tools/make_shortcuts.py --dest FOLDER   another folder (the tests: a temporary one)
     python tools/make_shortcuts.py --dry-run       only print what would be made
 
-Windows: .lnk files (made through PowerShell's WScript.Shell) that start pythonw (no console window):
+Windows: .lnk files (made through PowerShell's WScript.Shell) that start pythonw (no console window) - the
+pythonw next to the Python that runs this tool, only when it has tkinter + Pillow (else that Python itself):
   Trygons C2 Demo     pythonw demo\\demo.py start --splash   (= START_DEMO.bat: the start-up screen, then the demo)
   Trygons Ακαδημία    pythonw academy\\academy_app.py         (the academy: simulator only)
 icon assets\\trygons_c2.ico (tools/make_icon.py). Other systems: .desktop files (python3, the PNG icon).
@@ -30,15 +31,25 @@ SHORTCUTS = (
 )
 
 
-def pythonw():
-    """pythonw.exe next to this Python (or MSYS2's / on the PATH); python itself elsewhere."""
+def has_gui(exe):
+    """True when this Python has tkinter + Pillow (the start-up screen, the stations)."""
+    try:
+        r = subprocess.run([exe, "-c", "import tkinter, PIL"], capture_output=True, timeout=60, creationflags=NO_WINDOW)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def pythonw(exe=None):
+    """pythonw.exe next to the CHECKED Python (this one by default: it must have tkinter + Pillow) - never
+    another Python found elsewhere (13i2, review 473694b M3); otherwise that Python itself (a console)."""
+    exe = exe or sys.executable
     if os.name != "nt":
-        return sys.executable or shutil.which("python3") or "python3"
-    for cand in (os.path.join(os.path.dirname(sys.executable), "pythonw.exe"), r"C:\msys64\ucrt64\bin\pythonw.exe",
-                 shutil.which("pythonw") or ""):
-        if cand and os.path.exists(cand):
-            return cand
-    return sys.executable
+        return exe or shutil.which("python3") or "python3"
+    cand = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    if os.path.exists(cand) and has_gui(exe):
+        return cand
+    return exe
 
 
 def desktop():
@@ -94,10 +105,19 @@ def make(dest, exe=None, dry=False):
                       "$l.IconLocation = %s" % _ps_quote(it["icon"] + ",0"),
                       "$l.Save()"]
         enc = base64.b64encode("\n".join(lines).encode("utf-16-le")).decode("ascii")    # Greek names intact
-        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", enc],
-                           capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW)
-        if r.returncode != 0 or not all(os.path.exists(t) for t in tmp):
-            raise RuntimeError("PowerShell: %s" % (r.stderr or r.stdout).strip()[-400:])
+        try:
+            r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", enc],
+                               capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW)
+            err = "" if r.returncode == 0 and all(os.path.exists(t) for t in tmp) else (r.stderr or r.stdout)
+        except (OSError, subprocess.SubprocessError) as e:
+            err = str(e) or type(e).__name__
+        if err:
+            for t in tmp:                       # no leftover temp shortcut (13i2, review L5)
+                try:
+                    os.remove(t)
+                except OSError:
+                    pass
+            raise RuntimeError("PowerShell: %s" % err.strip()[-400:])
         for it, t in zip(items, tmp):
             os.replace(t, it["path"])
     else:

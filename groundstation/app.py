@@ -4046,7 +4046,8 @@ def main():
     place = a.place or ({"shore": "shore", "on board": "onboard"}.get((a.title or "").split(" (")[0].lower()))
     sp = None
     if not a.no_splash:
-        sp = splash.Splash(root, what="splash.what_station", steps=["splash.p_station"])
+        # its own thread + Tk: the 30 s watchdog also runs while App() is built here (13i2, M4)
+        sp = splash.BackgroundSplash(what="splash.what_station", steps=["splash.p_station"])
         sp.step("splash.p_station")
     try:
         App(root, a.address, login=login, charts_dir=a.charts, open_driver=a.driver, layout=a.layout, cams=a.cams,
@@ -4055,7 +4056,7 @@ def main():
         if sp is None:
             raise
         sp.fail("%s: %s" % (type(e).__name__, e))
-        root.wait_window(sp.w)
+        sp.wait()                       # Close / Esc / its hold time
         raise
     if sp is not None:
         sp.close()

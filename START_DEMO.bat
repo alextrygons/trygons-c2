@@ -13,9 +13,12 @@ if not defined PY (
   pause
   exit /b 1
 )
+rem pythonw (no console) ONLY next to the checked Python - the one that has tkinter + Pillow for the
+rem start-up screen (13i2: never another Python found on the PATH); otherwise the console way below
 set "PYW="
-for %%I in ("%PY%") do if exist "%%~dpIpythonw.exe" set "PYW=%%~dpIpythonw.exe"
-if not defined PYW for /f "delims=" %%I in ('where pythonw 2^>nul') do if not defined PYW set "PYW=%%I"
+set "PYEXE="
+for /f "delims=" %%I in ('call "%PY%" -c "import sys, tkinter, PIL; print(sys.executable)" 2^>nul') do set "PYEXE=%%I"
+if defined PYEXE for %%I in ("%PYEXE%") do if exist "%%~dpIpythonw.exe" set "PYW=%%~dpIpythonw.exe"
 if defined PYW (
   start "" "%PYW%" demo\demo.py start --splash
   exit /b 0

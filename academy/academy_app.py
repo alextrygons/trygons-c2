@@ -408,7 +408,8 @@ def main(argv=None):
     sp = None
     if "--no-splash" not in argv:
         import splash                   # groundstation/splash.py (display only)
-        sp = splash.Splash(root, lang=text.lang(), what="splash.what_academy", steps=["splash.p_academy"])
+        # its own thread + Tk: the 30 s watchdog also runs while AcademyApp() is built (13i2, M4)
+        sp = splash.BackgroundSplash(lang=text.lang(), what="splash.what_academy", steps=["splash.p_academy"])
         sp.step("splash.p_academy")
     try:
         AcademyApp(root, store)
@@ -416,7 +417,7 @@ def main(argv=None):
         if sp is None:
             raise
         sp.fail("%s: %s" % (type(e).__name__, e))
-        root.wait_window(sp.w)
+        sp.wait()                       # Close / Esc / its hold time
         raise
     if sp is not None:
         sp.close()

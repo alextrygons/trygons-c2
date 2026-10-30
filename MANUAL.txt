@@ -248,8 +248,18 @@ START-UP SCREEN, ICON, NO CONSOLE WINDOWS (step 13i)
     are open (at most 30 s). If something fails it shows the message (and
     "Close" / Esc) instead of hanging; the same messages are in
     demo_run\logs\demo.log. Without pythonw the old console window is used.
+    An error that comes after the 30 s (or a start still running 5 minutes
+    later) opens a small error window with the message and the log path; if
+    the start-up screen itself can't be shown (no tkinter / Pillow), a
+    message box says so and the demo starts without it - an error is never
+    silent. pythonw is used only when it sits next to the Python that has
+    tkinter + Pillow; otherwise the console window. The commit shows
+    "+dirty" when files were changed since that commit. STOP_DEMO.bat also
+    stops a demo that is still starting.
   * The ground station and the academy show the same start-up screen while
-    they load (never over an open window).
+    they load (never over an open window, never "always on top"). After 30 s
+    it turns into a small window "The start is taking long" until the window
+    is ready (or shows the error).
   * Every window has the Trygons icon (the logo mark) in its title bar and in
     the taskbar, and the same kind of title: "Trygons C2 – Ground station –
     Navigation & control", "Trygons C2 – Screen 1 – driving", "Trygons C2 –
