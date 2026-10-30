@@ -809,7 +809,7 @@ def ac20():
     sys.path.insert(0, gs)
     import academymenu
     cmd = academymenu.academy_command()
-    if cmd[1:] != [os.path.join(REPO, "academy", "academy_app.py"), "--lang", cmd[-1]] or cmd[-1] not in ("el", "en"):
+    if cmd[1:] != [os.path.join(REPO, "academy", "academy_app.py"), "--lang", cmd[-2], "--no-splash"] or             cmd[-2] not in ("el", "en"):
         wrong.append("academy command %s" % cmd)
     names, _ = imports_of(os.path.join(gs, "academymenu.py"))
     risky = names & {"link", "boats", "socket", "serial", "shorejoy", "app"}

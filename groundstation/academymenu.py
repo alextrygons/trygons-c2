@@ -50,8 +50,11 @@ def push_file(env=None):
 
 
 def academy_command():
-    """The academy's own process: the script + the screen language, NOTHING about the link."""
-    return [sys.executable, ACADEMY_APP, "--lang", i18n.lang()]
+    """The academy's own process: the script + the screen language, NOTHING about the link.
+    --no-splash (13i3, review 835187d M-A): opened from a RUNNING station, so no full-screen start-up
+    screen (frameless, focus taken) over the live station's ALARM / STANDBY - the splash is only for the
+    academy started on its own (shortcut) and START_DEMO."""
+    return [sys.executable, ACADEMY_APP, "--lang", i18n.lang(), "--no-splash"]
 
 
 def tour_command():

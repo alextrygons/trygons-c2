@@ -215,9 +215,58 @@ def launch(name, args, cwd, pids):
     p = subprocess.Popen(args, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                          creationflags=NO_WINDOW)
     pids[name] = p.pid
+    remember(pids, name, p.pid)
     with open(PIDS, "w", encoding="utf-8") as f:
         json.dump(pids, f, indent=1)
     return p
+
+
+def proc_ident(pid):
+    """The process's creation time as a string (13i3, review 835187d L2), or None when no such process runs
+    / it can't be read. Same pid + same creation time = the SAME process (a pid alone may be reused by
+    another program after a crash / power loss)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.windll.kernel32
+            k32.OpenProcess.restype = wintypes.HANDLE
+            h = k32.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                code = wintypes.DWORD()
+                if not k32.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:   # STILL_ACTIVE
+                    return None
+                t = [wintypes.FILETIME() for _ in range(4)]
+                if not k32.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+                    return None
+                return "%d" % ((t[0].dwHighDateTime << 32) | t[0].dwLowDateTime)
+            finally:
+                k32.CloseHandle(h)
+        except Exception:
+            return None
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8") as f:
+            return f.read().rsplit(")", 1)[1].split()[19]        # field 22: start time
+    except (OSError, IndexError):
+        return None
+
+
+def remember(pids, name, pid):
+    """Stores the creation time of the process next to its pid (pids["_id"][name])."""
+    ident = proc_ident(pid)
+    ids = pids.setdefault("_id", {})
+    if ident is not None:
+        ids[name] = ident
+    else:
+        ids.pop(name, None)
 
 
 def kill_tree(pid):
@@ -236,12 +285,23 @@ def stop():
         return 0
     with open(PIDS, encoding="utf-8") as f:
         pids = json.load(f)
+    ids = pids.pop("_id", None)
+    ids = ids if isinstance(ids, dict) else {}
     order = list(pids.items())
     # the starting demo process itself first (13i2: STOP_DEMO during the start - it starts nothing more),
     # then the ground stations ... the simulator last; never this process (start() calls stop on an error)
     order = [x for x in order if x[0] == "demo"] + [x for x in reversed(order) if x[0] != "demo"]
     for name, pid in order:
         if pid == os.getpid():
+            continue
+        # 13i3 (review 835187d L2): only the SAME process (pid + creation time) - never a pid alone: after a
+        # crash / power loss the pid may belong to another program now
+        now = proc_ident(pid)
+        if now is None:
+            say("%s (pid %s) is not running" % (name, pid))
+            continue
+        if ids.get(name) != now:
+            say("NOT stopped: pid %s is not the demo's %s any more (another program uses it)" % (pid, name))
             continue
         kill_tree(pid)
         say("stopped %s (pid %d)" % (name, pid))
@@ -265,6 +325,10 @@ def _forget_self():
     if pids.get("demo") != os.getpid():
         return
     del pids["demo"]
+    if isinstance(pids.get("_id"), dict):
+        pids["_id"].pop("demo", None)
+        if not pids["_id"]:
+            del pids["_id"]
     if pids:
         _write_pids(pids)
     else:
@@ -286,6 +350,7 @@ def start(progress=None):
         stop()
         time.sleep(1.0)
     pids = {"demo": os.getpid()}
+    remember(pids, "demo", os.getpid())
     _write_pids(pids)
     try:
         return _start(step, progress, pids)

@@ -5,6 +5,8 @@ straight from the .git folder (no git program, no process: the academy may impor
 AC1), "" when it is not a git clone.
 """
 import os
+import threading
+import time
 
 VERSION = "2026.10"
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,12 +34,39 @@ def _blob_sha(data):
     return hashlib.sha1(b"blob %d\0" % len(data) + data).digest()
 
 
-def dirty(repo=REPO, max_files=20000):
+DIRTY_LIMIT_S = 0.5                 # 13i3 (review 835187d M-B): dirty() gives up after this = no mark
+_clock = time.monotonic             # tests replace it
+_cache = {}                         # repo -> dirty() result, once per process (the station start, About)
+_lock = threading.Lock()
+
+
+def clear_cache():
+    """Forget the cached "+dirty" results (tests)."""
+    with _lock:
+        _cache.clear()
+
+
+def dirty_cached(repo=REPO):
+    """dirty(repo), computed ONCE per process (13i3): every Splash / About calls text(), never a second scan."""
+    key = os.path.normcase(os.path.abspath(repo))
+    with _lock:
+        if key in _cache:
+            return _cache[key]
+    d = dirty(repo)
+    with _lock:
+        _cache[key] = d
+    return d
+
+
+def dirty(repo=REPO, max_files=20000, limit_s=None):
     """True when a tracked file differs from the commit's index (13i2, review 473694b L3) - read from
     .git/index like git does, no git program: a file whose size / mtime match the index is clean, else
     its content is hashed (also with CRLF -> LF, core.autocrlf). Deleted = dirty. Untracked files don't
-    count (like git describe --dirty). Unknown index format / no index: False."""
+    count (like git describe --dirty). Unknown index format / no index: False.
+    13i3 (review 835187d M-B): stops after limit_s (DIRTY_LIMIT_S, 0.5 s) = unknown = False (no mark, never
+    a wrong one): a copied / unzipped clone (every mtime differs) is never hashed for seconds at a start."""
     import struct
+    deadline = _clock() + (DIRTY_LIMIT_S if limit_s is None else limit_s)
     try:
         with open(os.path.join(_gitdir(repo), "index"), "rb") as f:
             data = f.read()
@@ -51,6 +80,8 @@ def dirty(repo=REPO, max_files=20000):
     pos, prev = 12, b""
     try:
         for _ in range(count):
+            if _clock() > deadline:
+                return False                                    # too slow: unknown, no mark
             start = pos
             (_cs, _cn, ms, _mn, _dev, _ino, mode, _uid, _gid, size) = struct.unpack(">10I", data[pos:pos + 40])
             sha = data[pos + 40:pos + 60]
@@ -101,7 +132,7 @@ def commit(repo=REPO, n=7, mark=True):
     packed-refs; a worktree / submodule ".git" file ("gitdir: ...") is followed too. mark: "+dirty"
     appended when the working tree differs from it (dirty(); 13i2) - the code is then NOT that commit."""
     c = _commit(repo, n)
-    return c + "+dirty" if c and mark and dirty(repo) else c
+    return c + "+dirty" if c and mark and dirty_cached(repo) else c
 
 
 def _commit(repo, n):

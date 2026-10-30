@@ -32,6 +32,16 @@ academy in the station's theme, Desktop shortcuts, no console windows in the dem
        itself; version.commit() "+dirty" on a changed tree; no leftover temp shortcut when PowerShell
        fails; Esc / focus_force on the splash; never topmost
 
+13i3 (review 835187d):
+  LK15 M-A: "Open the academy" from a running station starts it with --no-splash (no full-screen splash
+       taking the focus over the live station); the academy started alone keeps its splash
+  LK16 M-B: version "+dirty" cached per process, gives up after 0.5 s (no mark); no .git, a v4 index,
+       CRLF, a copied tree (new mtimes)
+  LK17 L1: the splash polling survives a failing message (close() still works, an error still shown)
+  LK18 L2: STOP_DEMO kills a pids.json entry only when pid + creation time match (a stale pid is never
+       killed)
+  LK19 L6: focus_force really called on the splash window; BackgroundSplash next to a busy main Tk
+
 Run:  python test_look.py        (exit code 0 = all passed)
 """
 import os
@@ -593,7 +603,8 @@ def lk14():
     demo = _demo()
     bad = []
     # STOP_DEMO during the start: the starting demo process is in pids.json, stopped first, never itself
-    saved = dict(RUN=demo.RUN, PIDS=demo.PIDS, LOGS=demo.LOGS, check_tools=demo.check_tools, kill_tree=demo.kill_tree)
+    saved = dict(RUN=demo.RUN, PIDS=demo.PIDS, LOGS=demo.LOGS, check_tools=demo.check_tools, kill_tree=demo.kill_tree,
+                 proc_ident=demo.proc_ident)
     tmp = tempfile.mkdtemp(prefix="trygons_lk14_")
     seen, killed = {}, []
     demo.RUN, demo.PIDS, demo.LOGS = tmp, os.path.join(tmp, "pids.json"), os.path.join(tmp, "logs")
@@ -604,6 +615,8 @@ def lk14():
             seen.update(json.load(f))
         return False, None
     demo.check_tools = tools
+    real_ident = demo.proc_ident
+    demo.proc_ident = lambda pid: real_ident(pid) if pid == os.getpid() else "id%s" % pid   # all "running"
     try:
         demo.start()
         if seen.get("demo") != os.getpid():
@@ -611,13 +624,14 @@ def lk14():
         if os.path.exists(demo.PIDS):
             bad.append("pids.json left after the start")
         with open(demo.PIDS, "w", encoding="utf-8") as f:
-            json.dump({"demo": 22, "simulator": 11, "gateway": 12, "shore": 33}, f)
+            json.dump({"demo": 22, "simulator": 11, "gateway": 12, "shore": 33,
+                       "_id": {"demo": "id22", "simulator": "id11", "gateway": "id12", "shore": "id33"}}, f)
         demo.stop()
         if killed != [22, 33, 12, 11]:
             bad.append("stop order %r" % killed)
         del killed[:]
         with open(demo.PIDS, "w", encoding="utf-8") as f:
-            json.dump({"demo": os.getpid(), "simulator": 11}, f)
+            json.dump({"demo": os.getpid(), "simulator": 11, "_id": {"simulator": "id11"}}, f)
         demo.stop()
         if killed != [11]:
             bad.append("stop killed itself / wrong: %r" % killed)
@@ -639,6 +653,7 @@ def lk14():
         clean = version.commit(r)
         with open(os.path.join(r, "d", "b.txt"), "w", encoding="utf-8") as f:
             f.write("changed\n")
+        version.clear_cache()                   # 13i3: the result is cached per process
         changed = version.commit(r)
         if not re.match(r"^[0-9a-f]{7}$", clean) or changed != clean + "+dirty" or not version.dirty(r):
             bad.append("dirty mark: clean %r changed %r" % (clean, changed))
@@ -682,6 +697,301 @@ def lk14():
            "no leftover temp shortcut, Esc / focus, never topmost", not bad, "; ".join(bad) or "all")
 
 
+# --- 13i3: review 835187d -------------------------------------------------------------------------------
+def lk15():
+    import academymenu
+    sys.path.insert(0, os.path.join(REPO, "academy"))
+    import academy_app
+    import text as acad_text
+    bad = []
+    cmd = academymenu.academy_command()
+    if "--no-splash" not in cmd:
+        bad.append("the station opens the academy WITH its start-up screen: %r" % cmd)
+
+    class Stop(Exception):
+        pass
+    made = []
+
+    class FakeSplash(object):
+        def __init__(self, **k):
+            made.append(k)
+
+        def step(self, key):
+            pass
+
+        def fail(self, m):
+            pass
+
+        def wait(self, timeout=None):
+            pass
+
+        def close(self, wait_s=5.0):
+            pass
+
+    def fake_app(root, store):
+        root.destroy()
+        raise Stop()
+    saved = (splash.BackgroundSplash, academy_app.AcademyApp)
+    splash.BackgroundSplash, academy_app.AcademyApp = FakeSplash, fake_app
+    lang0 = acad_text.lang()
+    try:
+        for args, want in ((cmd[2:], 0), ([], 1)):
+            del made[:]
+            try:
+                academy_app.main(list(args))
+                bad.append("main %r did not reach the window" % args)
+            except Stop:
+                pass
+            if len(made) != want:
+                bad.append("main %r made %d start-up screens (want %d)" % (args, len(made), want))
+    finally:
+        splash.BackgroundSplash, academy_app.AcademyApp = saved
+        acad_text.set_lang(lang0)
+    report("LK15 M-A: 'Open the academy' from a running station = no full-screen start-up screen (--no-splash, "
+           "never focus taken over ALARM / STANDBY); the academy started alone keeps it", not bad,
+           "; ".join(bad) or " ".join(cmd[2:]))
+
+
+def _git_repo(files, index_version=None):
+    import shutil
+    import subprocess
+    git = shutil.which("git")
+    if not git:
+        return None
+    r = tempfile.mkdtemp(prefix="trygons_lk16_")
+    for n, t in files.items():
+        p = os.path.join(r, *n.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(t)
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@t")
+    cmds = [["init", "-q"], ["config", "core.autocrlf", "false"], ["add", "."], ["commit", "-qm", "x"]]
+    if index_version:
+        cmds.append(["update-index", "--index-version", str(index_version)])
+    for c in cmds:
+        subprocess.run([git, "-C", r] + c, capture_output=True, env=env)
+    return r
+
+
+def _touch_all(r, dt=500):
+    for d, dirs, fs in os.walk(r):
+        if ".git" in d.split(os.sep):
+            continue
+        for n in fs:
+            p = os.path.join(d, n)
+            st = os.stat(p)
+            os.utime(p, (st.st_atime + dt, st.st_mtime + dt))
+
+
+def lk16():
+    import shutil
+    bad = []
+    # a copied folder without .git: no commit, no mark, no crash
+    d = tempfile.mkdtemp(prefix="trygons_lk16_copy_")
+    shutil.copytree(os.path.join(REPO, "groundstation", "lang"), os.path.join(d, "lang"))
+    version.clear_cache()
+    if version.commit(d) != "" or version.dirty(d) is not False:
+        bad.append("no .git: %r / %r" % (version.commit(d), version.dirty(d)))
+    open(os.path.join(d, ".git"), "w").close()                  # an empty ".git" file: still nothing
+    if version.commit(d) != "" or version.dirty(d) is not False:
+        bad.append("empty .git file")
+    files = {"a.txt": b"one\n", "d/b.txt": b"two\nthree\n", "d/e/c.txt": b"x" * 100}
+    r = _git_repo(files, index_version=4)
+    if r is None:
+        bad.append("git not found")
+    else:
+        with open(os.path.join(r, ".git", "index"), "rb") as f:
+            idx = f.read()
+        if idx[4:8] != b"\0\0\0\4":
+            bad.append("not a v4 index")
+        # a copy: every mtime differs, the content is the same -> hashed -> clean (v4 path compression read)
+        _touch_all(r)
+        if version.dirty(r):
+            bad.append("v4 index, copied (new mtimes): dirty")
+        # CRLF in the working tree (core.autocrlf on Windows) = the same content
+        with open(os.path.join(r, "d", "b.txt"), "wb") as f:
+            f.write(b"two\r\nthree\r\n")
+        _touch_all(r, 900)
+        if version.dirty(r):
+            bad.append("CRLF copy counted as dirty")
+        with open(os.path.join(r, "d", "e", "c.txt"), "wb") as f:
+            f.write(b"y" * 100)                                 # the same size, a new content
+        _touch_all(r, 1300)
+        if not version.dirty(r):
+            bad.append("v4: a changed file not seen")
+        # the time limit: a clock that runs 0.2 s per read -> gives up after ~0.5 s = no mark
+        calls = []
+        real = version._clock
+
+        def slow_clock():
+            calls.append(1)
+            return len(calls) * 0.2
+        version._clock = slow_clock
+        try:
+            got = version.dirty(r)
+        finally:
+            version._clock = real
+        if got is not False or len(calls) > 5:
+            bad.append("time limit: %r after %d clock reads" % (got, len(calls)))
+        if version.dirty(r, limit_s=0.0) is not False:
+            bad.append("limit 0 still marks")
+        # cached: text() / commit() scan once per repo per process
+        n = []
+        real_d = version.dirty
+        version.dirty = lambda repo=version.REPO, **k: (n.append(repo), True)[1]
+        version.clear_cache()
+        try:
+            texts = [version.text() for _ in range(4)] + [version.commit(r) for _ in range(3)]
+        finally:
+            version.dirty = real_d
+            version.clear_cache()
+        if len(n) != 2:
+            bad.append("not cached: %d scans for 7 calls" % len(n))
+        if not texts[-1].endswith("+dirty"):
+            bad.append("cached mark lost %r" % texts[-1])
+    report("LK16 M-B: version '+dirty' cached per process, gives up after %.1f s (no mark); no .git / empty .git, "
+           "a v4 index, CRLF, a copied tree" % version.DIRTY_LIMIT_S, not bad, "; ".join(bad) or "all")
+
+
+def lk17():
+    bad = []
+    real_step, real_fail, real_box = splash.Splash.step, splash.Splash.fail, splash.message_box
+
+    def broken(self, *a):
+        raise tk.TclError("bad window path name")
+    boxes = []
+    splash.Splash.step = broken
+    try:
+        bs = splash.BackgroundSplash(lang="en", fullscreen=False, max_s=20)
+        bs.step("splash.p_station")
+        time.sleep(0.4)
+        bs.close(wait_s=4)
+        if bs.th.is_alive():
+            bad.append("BackgroundSplash: close() ignored after a failing message (stray splash)")
+        t0 = time.time()
+        ok, _ = splash.run_task(lambda p: (p("splash.p_sim"), time.sleep(0.3), (True, ""))[2], ["splash.p_sim"],
+                                lang="en", fullscreen=False, max_s=20, on_error=lambda t: None)
+        if time.time() - t0 > 6 or not ok:
+            bad.append("run_task: the splash stayed %.1f s after a failing step" % (time.time() - t0))
+        splash.Splash.step = real_step
+        splash.Splash.fail = broken
+        splash.message_box = lambda title, text: boxes.append(text)
+        bs2 = splash.BackgroundSplash(lang="en", fullscreen=False, max_s=20)
+        bs2.fail("RuntimeError: no data")
+        bs2.wait(5)
+        if bs2.th.is_alive() or not boxes or "no data" not in boxes[0]:
+            bad.append("a failing error display: alive %s, boxes %r" % (bs2.th.is_alive(), boxes))
+    finally:
+        splash.Splash.step, splash.Splash.fail, splash.message_box = real_step, real_fail, real_box
+    report("LK17 L1: the splash keeps polling after a failing message (close() still closes it, an error still "
+           "shown)", not bad, "; ".join(bad) or "3 cases")
+
+
+def lk18():
+    import json
+    import subprocess
+    demo = _demo()
+    bad = []
+    saved = dict(RUN=demo.RUN, PIDS=demo.PIDS, LOGS=demo.LOGS, kill_tree=demo.kill_tree)
+    tmp = tempfile.mkdtemp(prefix="trygons_lk18_")
+    demo.RUN, demo.PIDS, demo.LOGS = tmp, os.path.join(tmp, "pids.json"), tmp
+    killed = []
+    demo.kill_tree = killed.append
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], creationflags=demo.NO_WINDOW)
+    try:
+        ident = demo.proc_ident(other.pid)
+        if not ident:
+            bad.append("no creation time for a running process")
+        # a stale pids.json after a crash: the pid now belongs to "another program" (other creation time)
+        for entry in ({"simulator": other.pid, "_id": {"simulator": "1234"}},     # another process now
+                      {"gateway": other.pid}):                                    # an old file: pid only
+            with open(demo.PIDS, "w", encoding="utf-8") as f:
+                json.dump(entry, f)
+            demo.stop()
+            if killed or other.poll() is not None:
+                bad.append("killed by pid alone: %r" % entry)
+        with open(demo.PIDS, "w", encoding="utf-8") as f:
+            json.dump({"simulator": other.pid, "_id": {"simulator": ident}}, f)
+        demo.stop()
+        if killed != [other.pid]:
+            bad.append("the demo's own process not stopped: %r" % killed)
+        # launch() stores the creation time
+        pids = {}
+        p = demo.launch("probe", [sys.executable, "-c", "import time; time.sleep(30)"], tmp, pids)
+        try:
+            if not pids.get("_id", {}).get("probe") or pids["_id"]["probe"] != demo.proc_ident(p.pid):
+                bad.append("launch did not store the creation time: %r" % pids)
+        finally:
+            p.kill()
+            p.wait()
+        if demo.proc_ident(p.pid) is not None:
+            bad.append("a finished process still has an identity")
+    finally:
+        other.kill()
+        other.wait()
+        for k, v in saved.items():
+            setattr(demo, k, v)
+    report("LK18 L2: STOP_DEMO kills a pids.json entry only when pid + creation time are the demo's (a stale pid "
+           "after a crash is never killed)", not bad, "; ".join(bad) or "stale / legacy refused, own stopped")
+
+
+def lk19():
+    bad = []
+    focused = []
+    real_ff = tk.Misc.focus_force
+
+    def rec(self):
+        focused.append(self)
+        return real_ff(self)
+    tk.Misc.focus_force = rec
+    try:
+        sp = splash.Splash(None, lang="en", fullscreen=False, max_s=20)
+        if sp.w not in focused:
+            bad.append("the splash window never takes the focus (Esc would not work)")
+        sp.close()
+    finally:
+        tk.Misc.focus_force = real_ff
+    root = tk.Tk()
+    root.withdraw()
+    frames = 0
+    try:
+        bs = splash.BackgroundSplash(lang="en", what="splash.what_station", steps=["splash.p_station"],
+                                     fullscreen=False, max_s=0.8)
+        bs.step("splash.p_station")
+        # an App()-like build on the main Tk, no update: many widgets + canvas items for ~2 s
+        t0 = time.time()
+        while time.time() - t0 < 2.0:
+            f = tk.Frame(root)
+            for i in range(40):
+                tk.Label(f, text="row %d" % i).grid(row=i, column=0)
+            c = tk.Canvas(f, width=400, height=300)
+            for i in range(400):
+                c.create_line(0, i, 400, 300 - i)
+            c.grid(row=0, column=1)
+            f.pack()
+            frames += 1
+        if bs.state != "slow" or not bs.slow_seen:
+            bad.append("watchdog did not run next to the busy main Tk: %s" % bs.state)
+        bs.close()
+        if bs.th.is_alive() or bs.state != "closed":
+            bad.append("splash not closed")
+        if tk._default_root is not root:
+            bad.append("the splash's Tk took the default root")
+        root.deiconify()
+        root.update()
+        lab = tk.Label(root, text="after")
+        lab.pack()
+        root.update()
+        if not lab.winfo_exists() or not root.winfo_viewable():
+            bad.append("the main window does not work after the splash")
+    finally:
+        root.destroy()
+    report("LK19 L6: the splash takes the focus (Esc) only for itself; BackgroundSplash runs next to a main Tk "
+           "busy building an App-like window, the main window works after it", not bad,
+           "; ".join(bad) or "%d frames built while the splash watched" % frames)
+
+
 def main():
     i18n.set_lang("el", save=False)
     lk1()
@@ -701,6 +1011,11 @@ def main():
     lk12()
     lk13()
     lk14()
+    lk15()
+    lk16()
+    lk17()
+    lk18()
+    lk19()
     n = len(results)
     print("LOOK TESTS: %d/%d %s" % (sum(results), n, "PASS" if all(results) else "FAIL"))
     return 0 if all(results) else 1

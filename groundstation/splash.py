@@ -273,18 +273,27 @@ def run_task(task, steps, lang=None, what="splash.what_demo", fullscreen=True, m
     th.start()
 
     def poll():
-        while True:
+        try:
+            while True:
+                try:
+                    m = q.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if m[0] == "step":
+                        sp.step(m[1])
+                    elif m[1]:
+                        sp.close()
+                    else:
+                        sp.fail(m[2] or "?")
+                except Exception:               # 13i3 L1: one failing message never stops the polling
+                    if m[0] == "done" and m[1]:
+                        sp.close()
+        finally:
             try:
-                m = q.get_nowait()
-            except queue.Empty:
-                break
-            if m[0] == "step":
-                sp.step(m[1])
-            elif m[1]:
+                sp.after(POLL_MS, poll)
+            except Exception:
                 sp.close()
-            else:
-                sp.fail(m[2] or "?")
-        sp.after(POLL_MS, poll)
 
     sp.after(POLL_MS, poll)
     sp.w.mainloop()
@@ -342,23 +351,38 @@ class BackgroundSplash(object):
         self.started.set()
 
         def poll():
-            while True:
+            # 13i3 (review 835187d L1): rescheduled in finally - one failing message (a TclError from a
+            # configure ...) never stops the polling, so a later close() still closes it
+            try:
+                while True:
+                    try:
+                        m = self.q.get_nowait()
+                    except queue.Empty:
+                        break
+                    try:
+                        if m[0] == "step":
+                            sp.step(m[1])
+                        elif m[0] == "fail":
+                            sp.fail(m[1])
+                        else:
+                            sp.close()
+                    except Exception:
+                        if m[0] == "close":
+                            sp.close()
+                        elif m[0] == "fail":         # the error must still be seen: a message box instead
+                            sp.error_text = sp.error_text or str(m[1])
+                            sp.close()
+                            message_box(i18n.TL(sp.lang, "splash.failed"), m[1])
+                if sp.state != "closed":
+                    self._facts(sp)
+                self.state = sp.state
+                self.error_text = sp.error_text
+                self.slow_seen = self.slow_seen or sp.state == "slow"
+            finally:
                 try:
-                    m = self.q.get_nowait()
-                except queue.Empty:
-                    break
-                if m[0] == "step":
-                    sp.step(m[1])
-                elif m[0] == "fail":
-                    sp.fail(m[1])
-                else:
+                    sp.after(POLL_MS, poll)
+                except Exception:
                     sp.close()
-            if sp.state != "closed":
-                self._facts(sp)
-            self.state = sp.state
-            self.error_text = sp.error_text
-            self.slow_seen = self.slow_seen or sp.state == "slow"
-            sp.after(POLL_MS, poll)
         sp.after(POLL_MS, poll)
         try:
             sp.w.mainloop()
