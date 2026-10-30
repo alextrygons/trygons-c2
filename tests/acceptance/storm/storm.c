@@ -44,6 +44,7 @@
 #include "logcore0.h"
 #include "dronecan.h"
 #include "can_act.h"
+#include "can_relay.h"
 void sim_hal_real_micros(bool on);   /* hal_sim.c: the PC clock for hal_micros() (timing) */
 #include "sim_run.h"
 
@@ -351,6 +352,11 @@ typedef struct {
     uint32_t    can_back_t;         /* a CAN fault ends (0 = none) */
     uint8_t     can_fault_kind, can_fault_node;
     bool        dm_armed;           /* UNCREWED: the dead-man timer relay is in the kill circuit */
+    /* step 13h2 (I36 W42): a cut DroneCAN ON - the relay board goes silent, an ON one frame before it is "lost", the
+     * board back after w42_away ms (sometimes rebooted while away) */
+    uint8_t     w42_n;              /* 0 = no such scenario running */
+    uint32_t    w42_t0, w42_cmd_t, w42_away;
+    bool        w42_reboot, w42_rebooted, w42_cable;
 } sim_t;
 
 static sim_t S;
@@ -570,7 +576,7 @@ static const char *INV_NAMES[NINV] = { "",
     "I33 generator throttle <= min(generator cap, power limit)",
     "I34 generator only in STANDBY (not stopping), armed, neutral switch closed, no kill / e-stop / trip / FIRST TEST",
     "I35 every generator stop idle first: no throttle rise while stopping",
-    "I36 relays: no control path (mode / throttle / gear / steering / alarms), pair never both, pulse <= 5 s, engine relays never automatic, none in FIRST TEST, no power_up after a watchdog reset",
+    "I36 relays: no control path (mode / throttle / gear / steering / alarms), pair never both, pulse <= 5 s, engine relays never automatic, none in FIRST TEST, no power_up after a watchdog reset; DroneCAN (W42): a trim / extra relay goes OFF only by a command / its pulse end / the board itself, ON only <= 10 s after its command and never after a board reboot",
     "I37 STARTER only with idle + neutral confirmed, e-stop released, HELM station + its link, no kill / trip, <= 5 s per hold",
     "I38 the engine-kill latch is cleared only by a power-on reset or the HELM station's restart under its conditions; the monitor latch only by a reset",
     "I39 DP thrusters 0 outside MODE_DP: within one step of every fault / STANDBY / e-stop (and the e-stop contactor)",
@@ -689,6 +695,8 @@ typedef struct {
     uint32_t eng_pulses_prev, st_pulse_t;   /* I36: STARTER pulses sent by engine.c / the last one */
     uint32_t edges_prev[4];                 /* I36: off -> on changes of the board's coils 1..3 */
     uint32_t eng_on_t[4];                   /* I36: an accepted engine-relay ON command (relay 1 / 3) */
+    bool     w42_prev[10];                  /* I36 W42 (step 13h2): the board's coils 4..9 last step */
+    uint32_t w42_on_edge[10];               /* ... when each came ON */
     bool     alarm_flag_prev;
     float    dp_tgt_prev;                   /* I20: DP heading target last step */
     /* step 11e */
@@ -1492,6 +1500,39 @@ static void check_step(void)
             fail(36, "an advisory (word 2 bits %.0f) set the alarm flag%.0f", (double)new2, 0.0);
         else if (new2) ok(36);
     }
+    /* I36 W42 (step 13h2, review 3bef4c8 LOW-1; owner 2026-10-29): on the DroneCAN relay board every step, for the
+     * trim / extra relays (4..9; the engine coils have their own check above): an ON -> OFF edge only after an
+     * accepted OFF command since the last ON command, the end of a pulse (momentary: AURIX- or board-timed), the
+     * board's own R-3 timeout or the board switching everything OFF itself (reboot / power loss) - NEVER an
+     * automatic OFF of the driver; an OFF -> ON edge only within CR_ON_RETRY_MS (+ the board latency and a step) of
+     * an accepted ON command and never after a board reboot / power loss since that command (a cut ON finished
+     * late: W42) */
+    if (sim_hal_relay_bus_now() == SIM_RELAY_DRONECAN) {
+        for (uint8_t n = 4u; n <= 9u; n++) {
+            bool on = sim_hal_relay_state(n);
+            sim_relay_w42_t w;
+            (void)sim_hal_relay_w42(n, &w);
+            if (on && !C.w42_prev[n]) {
+                C.w42_on_edge[n] = S.t ? S.t : 1u;
+                if (!w.on_cmd_ms || S.t - w.on_cmd_ms > CR_ON_RETRY_MS + 400u)
+                    fail(36, "W42: relay %.0f came ON %.0f ms after its ON command (no late ON after 10 s)", (double)n,
+                         w.on_cmd_ms ? (double)(S.t - w.on_cmd_ms) : -1.0);
+                else if (w.board_off_ms && (int32_t)(w.board_off_ms - w.on_cmd_ms) >= 0)
+                    fail(36, "W42: relay %.0f came ON after a board reboot / power loss %.0f ms after its command", (double)n,
+                         (double)(w.board_off_ms - w.on_cmd_ms));
+                else ok(36);
+            } else if (!on && C.w42_prev[n]) {
+                uint32_t e = C.w42_on_edge[n];
+                bool cmd_off = w.off_cmd_ms && (!w.on_cmd_ms || (int32_t)(w.off_cmd_ms - w.on_cmd_ms) >= 0);
+                bool board = (w.r3_off_ms && (int32_t)(w.r3_off_ms - e) >= 0) ||
+                             (w.board_off_ms && (int32_t)(w.board_off_ms - e) >= 0);
+                if (cmd_off || w.last_on_pulse || board) ok(36);
+                else fail(36, "W42: relay %.0f went OFF without a command (ON for %.0f ms) - never an automatic OFF",
+                          (double)n, (double)(S.t - e));
+            }
+            C.w42_prev[n] = on;
+        }
+    }
     /* I39-I43: DP (section P). The thruster outputs every step: 0 outside MODE_DP (so within one step of every
      * fault / STANDBY / e-stop / takeover: the mode left DP in that step), 0 at the contactor while the e-stop is
      * pressed; in DP the outboard idle + neutral, its steering off; never a DP step without a trusted GPS; the
@@ -1713,6 +1754,22 @@ static void apply(const ev_t *e)
         C.relay_ap_mode = C.ap_mode_prev;
         C.relay_alm = C.alm_prev;
         C.relay_alm2 = C.alm2_prev;
+        /* step 13h2 (I36 W42): with a table active, a cut ON - the board goes away, an ON just before it counts as lost (run_until),
+         * back after 1..15 s, sometimes rebooted while away */
+        if (sim_hal_relay_bus_now() == SIM_RELAY_DRONECAN && !S.w42_n && S.sb.relays.have_table) {
+            S.w42_n = (uint8_t)(6u + (uint32_t)e->c % 2u);
+            S.w42_t0 = S.t;
+            S.w42_cmd_t = 0u;
+            S.w42_away = 1000u + ((uint32_t)e->c * 97u) % 14000u;
+            S.w42_reboot = e->c % 3 == 0;
+            S.w42_rebooted = false;
+            /* half: its NodeStatus stops (it still hears: a part of the ON burst arrives); half: its drop cable
+             * cut (statuses stop, it hears nothing: none of the ON arrives) */
+            S.w42_cable = (e->c / 2) % 2 == 1;
+            if (S.w42_cable) sim_hal_relay_board(false, 5u, 0u);
+            else sim_hal_can_node_silent(DC_NODE_RELAY, true);
+            break;                                                         /* (this event is only that) */
+        }
         if (e->a < 200) {                                                  /* the boat file's table (a CONFIRM follows or not) */
             static relay_table_t t;
             relay_sample_table(&t, e->b % 3 == 0);
@@ -1746,6 +1803,9 @@ static void apply(const ev_t *e)
             sim_hal_relay_board(true, 5u + (uint32_t)e->b % 200u, f);
         } else {
             sim_hal_relay_board(true, 5u, 0u);                             /* back to normal */
+            /* step 13h2 (I36 W42): sometimes the DroneCAN board browns out and reboots (every relay OFF, R-2) -
+             * a cut ON must never be finished on it */
+            if (sim_hal_relay_bus_now() == SIM_RELAY_DRONECAN && e->b % 4 == 0) sim_hal_can_node_reboot(DC_NODE_RELAY);
         }
         break;
     }
@@ -1943,6 +2003,28 @@ static void run_until(uint32_t until)
             if (S.can_fault_kind == 3u) sim_hal_can_fault(0u);
             if (S.can_fault_kind == 4u) sim_hal_can_task_stuck(false);
             C.node_silenced_t = 0u;
+        }
+        if (S.w42_n) {                                  /* step 13h2: the cut-ON scenario (I36 W42) */
+            hal_can_node_t nn;
+            if (!S.w42_cmd_t) {
+                bool there = dc_node(HAL_CAN_ROLE_RELAY, &nn) && nn.seen;
+                if (there && nn.age_ms <= HAL_RELAY_LOST_MS && nn.age_ms + 80u >= HAL_RELAY_LOST_MS) {
+                    (void)sb_relay_cmd(&S.sb, S.w42_n, RELAY_CMD_ON, 0u);
+                    S.w42_cmd_t = S.t ? S.t : 1u;
+                } else if (!there || nn.age_ms > HAL_RELAY_LOST_MS || S.t - S.w42_t0 > 5000u) {
+                    if (S.w42_cable) sim_hal_relay_board(true, 5u, 0u); else sim_hal_can_node_silent(DC_NODE_RELAY, false);
+                    S.w42_n = 0u;
+                }
+            } else {
+                if (S.w42_reboot && !S.w42_rebooted && S.t - S.w42_cmd_t >= 300u) {
+                    sim_hal_can_node_reboot(DC_NODE_RELAY);
+                    S.w42_rebooted = true;
+                }
+                if (S.t - S.w42_cmd_t >= S.w42_away) {
+                    if (S.w42_cable) sim_hal_relay_board(true, 5u, 0u); else sim_hal_can_node_silent(DC_NODE_RELAY, false);
+                    S.w42_n = 0u;
+                }
+            }
         }
         /* UNCREWED: the crew switches the dead-man relay into the kill circuit once the pulses run (OA-3) */
         if (S.uncrewed && can_ep() && !S.dm_armed && sim_hal_deadman_edges() > 2u) {

@@ -107,6 +107,14 @@ uint32_t sim_hal_relay_writes(void);       /* coil writes + pulses carried out *
 uint32_t sim_hal_relay_pulses(void);       /* board-timed pulses started */
 uint32_t sim_hal_relay_max_pulse_ms(void); /* the longest board-timed pulse ever asked (0 = none) */
 uint32_t sim_hal_relay_edges(uint8_t n);   /* coil n: off -> on changes on the board (any cause) */
+/* step 13h2 (review 3bef4c8 LOW-1, storm W42): per coil the last ACCEPTED relays.c command (hal_relay_set ON / OFF,
+ * hal_relay_pulse = ON with last_on_pulse), the board's own R-3 timeout OFF and the board switching every coil OFF by
+ * itself (DroneCAN reboot / power loss); times in sim ms, 0 = never */
+typedef struct {
+    uint32_t on_cmd_ms, off_cmd_ms, r3_off_ms, board_off_ms;
+    bool     last_on_pulse;
+} sim_relay_w42_t;
+bool     sim_hal_relay_w42(uint8_t n, sim_relay_w42_t *w);
 /* the board fitted with this many coils (hal_relay_channels; default 16); 0 = no board
  * fitted (like HAL_RELAY_FITTED 0 on the TC375: the driver is never started). Takes
  * effect at the next hal_init (the AURIX's boot). */

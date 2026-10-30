@@ -1064,3 +1064,34 @@ CPU sync); storm I51 + the I59 coverage check.
    and kicks the watchdog every pass.
 7. (owner, ADS build of ce2e4d0) TASKING ctc W523 x 2 at hal_tc375.c relay_keep_store: `uint32` locals passed to
    cr_keep(uint32_t *) - now uint32_t.
+
+## 25. Step 13h2 - fixes from the review of 3bef4c8 (2026-10-30)
+
+1. (MED-1) Condition (3) of W42 ("the board did not reboot meanwhile") only tested "the uptime went back". A board
+   that reboots and then stays silent for at least as long as it had been up at the command (a young board: the
+   power_up ON goes out as soon as it first answers; a brown-out reboot caused by the load) comes back with an
+   uptime that is NOT below the old one - the reboot was missed and the cut ON finished on a board that powered up
+   OFF. can_relay.c now keeps the last NodeStatus it handled (uptime, our time of its reception = now - age_ms, the
+   status count) and treats a newer NodeStatus as a reboot also when the uptime did not grow with our clock:
+   `uptime_new*1000 + CR_UPTIME_RES_MS (1000) + CR_UPTIME_JITTER_MS (300) + elapsed/32 < uptime_old*1000 + elapsed`
+   (the 1 s resolution of uptime_s, the reception jitter and a 3 % clock difference never read as a reboot; between
+   two normal 1 Hz statuses it only fires when the uptime went back by more than ~0.3 s). Checked in cr_service and
+   in the 10 ms tick before a retry is finished. Because it is not PROVEN like an uptime that went back (a clock
+   fault could look alike), a commanded ON becomes UNKNOWN (an OFF stays OFF - OFF either way, the pair rule blocks
+   on unknown), every cut ON is given up, nothing is sent (`board_reboots_t`). A false "rebooted" only drops ONs and
+   makes states unknown = fail-safe. Test RB27 (6): a board rebooted ~1 s before, silent ~3 s, rebooted again while
+   away, back after 3 s (new uptime > old): nothing sent, unknown, command cleared + logged. Mutations: no clock test
+   -> RB27 (6) fails (the relay came ON late); no clock test in the tick only -> RB27 (6) fails.
+2. (LOW-2) A board reboot (both kinds) reports EVERY relay that was ON (`s_on | s_retry`) through
+   `hal_relay_on_drop`, not only the cut retries: relays.c clears cmd_on for all of them (no stale "commanded on"
+   in TELEM2 M, no pair partner refused for a relay that is OFF). SHUTOFF unchanged (relays.c skips it, as before).
+   Test RB28 (a). Mutation (only the retries reported): RB28 fails.
+3. (LOW-3) `on_given_up` counts the relays given up by a reboot (popcount of the retry set), like the other two
+   places. Test RB28 (b) (two cut ONs, one reboot = 2). Mutation (+1 per reboot): RB28 fails.
+4. (LOW-1) Storm I36 W42 (DroneCAN episodes, coils 4..9): an ON -> OFF edge only after an accepted OFF command
+   since the last ON command, a pulse end, the board's R-3 timeout or the board switching everything OFF itself
+   (reboot / power loss); an OFF -> ON edge only within CR_ON_RETRY_MS + 0.4 s of an accepted ON command and never
+   after a board reboot / power loss since it. The sim board records these (`sim_hal_relay_w42`); the storm's relay
+   events also reboot the DroneCAN relay node sometimes. Mutations caught on 2000 episodes: the 13b automatic OFF
+   back, the 10 s window removed, the reboot give-up removed.
+

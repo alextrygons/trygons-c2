@@ -277,7 +277,9 @@ measured value / answer here.
       NOTHING is sent (CAN trace: no hardpoint.Command) ____ , the panel shows it unknown ____ ;
       (c) power-cycle the board while unplugged, plug in within 10 s: nothing sent, the relay OFF
       (the board's own boot state) ____ ; (d) the STARTER: START hold + cable pulled: never ON again
-      when plugged back ____ .
+      when plugged back ____ ; (e) (step 13h2) power the board up, switch the relay ON within 2 s of
+      the board answering, pull the cable, power-cycle the board, plug in after ~5 s: nothing sent,
+      the relay OFF, the panel shows it unknown ____ .
 
 - [ ] Leave the bench test (button **Leave**): mode STANDBY.
 

@@ -24,6 +24,8 @@ static uint32_t    s_retry;                 /* step 13h (W42): cut ON bursts tha
 static uint32_t    s_want;                  /* step 13h: relays.c still wants these ON (cr_on_want) */
 static uint32_t    s_odrop;                 /* step 13h: retries given up (window / board reboot), for relays.c */
 static uint32_t    s_on_ms[CR_CH_MAX];      /* step 13h: the time of the ON command (the retry window counts from it) */
+static uint32_t    s_ref_up_s, s_ref_ms, s_ref_stat;   /* step 13h2: the last NodeStatus handled: its uptime, our time
+                                                          of its reception, the status count */
 static cr_stats_t  s_st;
 
 static uint32_t bit(uint8_t i)
@@ -53,6 +55,7 @@ void cr_init(const cr_config_t *c)
     s_hold = 0u;
     s_retry = s_want = s_odrop = 0u;
     memset(s_on_ms, 0, sizeof s_on_ms);
+    s_ref_up_s = s_ref_ms = s_ref_stat = 0u;
     s_up = s_cfg.channels != 0u;
 }
 
@@ -109,6 +112,44 @@ static void retry_service(uint32_t now)
     }
 }
 
+static uint32_t popcount(uint32_t v)
+{
+    uint32_t c = 0u;
+    for (; v; v &= v - 1u) c++;
+    return c;
+}
+
+/* step 13h2 (review 3bef4c8 MED-1): a NodeStatus newer than the last one handled whose uptime did not grow with our
+ * clock = the board rebooted (also when the uptime is not below the old one: a young board, silent after its reboot
+ * for longer than it had been up). Margins: CR_UPTIME_* in can_relay.h (a false "rebooted" only makes ON states
+ * unknown and drops cut ONs = fail-safe) */
+static bool uptime_lag(const hal_can_node_t *n, uint32_t now)
+{
+    if (!s_seen || !n->seen || n->statuses == s_ref_stat || n->age_ms == 0xFFFFFFFFu) return false;
+    uint64_t el = (uint32_t)((now - n->age_ms) - s_ref_ms);
+    uint64_t got = (uint64_t)n->uptime_s * 1000u + CR_UPTIME_RES_MS + CR_UPTIME_JITTER_MS + el / CR_UPTIME_DRIFT_DIV;
+    return got < (uint64_t)s_ref_up_s * 1000u + el;
+}
+
+static void ref_take(const hal_can_node_t *n, uint32_t now)
+{
+    s_ref_up_s = n->uptime_s;
+    s_ref_ms = now - n->age_ms;
+    s_ref_stat = n->statuses;
+}
+
+/* a board reboot: no burst / pulse / cut ON goes on; EVERY channel that was ON (or a cut ON waiting) is reported
+ * through cr_take_on_drop (review 3bef4c8 LOW-2: relays.c clears its command for all of them) */
+static void board_rebooted(void)
+{
+    uint32_t was = (s_on | s_retry) & s_mask;
+    memset(s_burst, 0, sizeof s_burst);
+    memset(s_until, 0, sizeof s_until);
+    s_odrop |= was;
+    s_st.on_given_up += popcount(s_retry);              /* (review LOW-3: per relay, like the other places) */
+    s_retry = 0u;
+}
+
 void cr_service(void)
 {
     if (!s_up) return;
@@ -145,16 +186,22 @@ void cr_service(void)
             /* the board rebooted (its uptime went back): it powered up OFF (R-2) - every state OFF, nothing re-sent
              * (a relay is never switched back ON by itself) */
             s_restarts = n.restarts;
-            s_on = 0u;
-            s_known = s_mask;
-            memset(s_burst, 0, sizeof s_burst);
-            memset(s_until, 0, sizeof s_until);
-            s_st.board_reboots++;
             /* step 13h (W42): a cut ON is never finished on a board that rebooted meanwhile - given up, nothing sent
              * (the relay is known OFF like every other one; the operator presses again) */
-            if (s_retry) { s_odrop |= s_retry; s_st.on_given_up += 1u; }
-            s_retry = 0u;
+            board_rebooted();
+            s_on = 0u;
+            s_known = s_mask;
+            s_st.board_reboots++;
+        } else if (uptime_lag(&n, now)) {
+            /* step 13h2 (review 3bef4c8 MED-1): its uptime did not grow with our clock = it rebooted although the
+             * uptime did not go back. Not PROVEN like an uptime back (a clock fault could look alike): a commanded
+             * ON is UNKNOWN, an OFF stays OFF (OFF either way); no cut ON is finished, nothing sent */
+            board_rebooted();
+            s_known &= ~s_on;
+            s_on = 0u;
+            s_st.board_reboots_t++;
         }
+        ref_take(&n, now);
     }
     retry_service(now);
     end_pulses(now);
@@ -172,7 +219,7 @@ void cr_tick(void)
     /* step 13h: the board came back with a new uptime-went-back mark cr_service has not handled yet = it rebooted:
      * no cut ON is finished (cr_service gives them up) */
     hal_can_node_t nd;
-    bool rebooted = node(&nd) && nd.seen && s_seen && nd.restarts != s_restarts;
+    bool rebooted = node(&nd) && nd.seen && s_seen && (nd.restarts != s_restarts || uptime_lag(&nd, now));
     if (there && !rebooted && s_retry) {
         retry_service(now);
         for (uint8_t i = 0; s_retry && i < s_cfg.channels; i++) {

@@ -55,6 +55,14 @@
 #define CR_BOOT_MARGIN_MS 2000u  /* the board booted after us when its uptime <= ours + this */
 #define CR_ON_RETRY_MS   10000u  /* step 13h (W42, owner 2026-10-29 = RELAY_ON_RETRY_MS): a cut ON burst is finished
                                     only within this time of the ON command */
+/* step 13h2 (review 3bef4c8 MED-1): a board whose uptime did not grow with our clock between two NodeStatus rebooted
+ * too (also when its new uptime is not below the old one: a young board silent after its reboot for longer than it
+ * had been up). Rebooted when uptime_new*1000 + CR_UPTIME_RES_MS + CR_UPTIME_JITTER_MS + elapsed/CR_UPTIME_DRIFT_DIV
+ * < uptime_old*1000 + elapsed (elapsed = our time between the two receptions): the 1 s resolution of uptime_s, the
+ * reception jitter and a 3 % clock difference never read as a reboot */
+#define CR_UPTIME_RES_MS    1000u
+#define CR_UPTIME_JITTER_MS  300u
+#define CR_UPTIME_DRIFT_DIV   32u
 
 typedef struct {
     uint8_t  channels;           /* the board's hardpoints (hal_pins.h CAN_RELAY_CHANNELS, TO CONFIRM; sim: fitted) */
@@ -87,7 +95,8 @@ uint32_t cr_cuts(void);          /* step 13e: the cut bits not taken yet (tests)
  * (never an OFF by itself); it is finished when the board is back ONLY while (1) relays.c still wants it ON
  * (cr_on_want: bit n-1 = commanded ON, not momentary, not the engine group; a new cr_set / cr_pulse replaces it),
  * (2) within CR_ON_RETRY_MS of the ON command and (3) the board did not reboot meanwhile (its uptime went back:
- * every state OFF, nothing sent). Given up (window over / reboot / not wanted at the cut) = the state UNKNOWN (OFF
+ * every state OFF, nothing sent; step 13h2: or its uptime did not grow with our clock: every ON state UNKNOWN,
+ * nothing sent; either way EVERY channel that was ON is reported through cr_take_on_drop). Given up (window over / reboot / not wanted at the cut) = the state UNKNOWN (OFF
  * after a reboot), nothing sent, cr_take_on_drop true once so relays.c clears its command (and logs it). */
 void cr_on_want(uint32_t mask);
 bool cr_take_on_drop(uint8_t n);
@@ -102,6 +111,7 @@ typedef struct {
     uint32_t sets, pulses;       /* commands from relays.c */
     uint32_t max_pulse_ms;       /* the longest pulse ever asked */
     uint32_t board_reboots;      /* the board's uptime went back: every state OFF */
+    uint32_t board_reboots_t;    /* step 13h2: its uptime did not grow with our clock: every ON state unknown */
     uint32_t on_retried;         /* step 13h: cut ON bursts finished when the board was back */
     uint32_t on_given_up;        /* step 13h: cut ON bursts given up (window / reboot / not wanted) */
     uint32_t ticks;

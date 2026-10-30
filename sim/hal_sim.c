@@ -983,7 +983,14 @@ static struct {
     uint32_t q_head, q_n, q_lost;
     uint32_t next_status_ms, frames_out;
     uint8_t  st_tid;
+    sim_relay_w42_t w42[RB_COILS];  /* step 13h2 (storm W42): what may switch each coil (sim_hal_relay_w42) */
 } s_rb;
+
+static uint32_t w42_now(void) { return s_time_ms ? s_time_ms : 1u; }
+static void w42_board_off(void)                 /* the board itself switched every coil OFF (reboot / power loss) */
+{
+    for (uint32_t i = 0; i < RB_COILS; i++) s_rb.w42[i].board_off_ms = w42_now();
+}
 static uint8_t  s_rb_bus = SIM_RELAY_MODBUS, s_rb_bus_boot;  /* the relay bus (taken at hal_init) */
 static bool     s_cr_up;                     /* the AURIX runs the DroneCAN back-end (can_relay.c) */
 static bool     s_cr_keep;                   /* its commanded states across a warm reset (no-clear RAM) */
@@ -1159,9 +1166,30 @@ static bool cr_kept(bool ok)
     cr_keep(&s_cr_keep_known, &s_cr_keep_on);
     return ok;
 }
-bool hal_relay_set(uint8_t n, bool on)        { return s_rb_channels_boot && (s_cr_up ? cr_kept(cr_set(n, on)) : mb_set_coil(n, on)); }
+static bool w42_cmd(uint8_t n, bool ok, uint8_t kind)   /* an ACCEPTED command of relays.c (kind 0 OFF, 1 ON, 2 pulse) */
+{
+    if (ok && n >= 1u && n <= RB_COILS) {
+        sim_relay_w42_t *w = &s_rb.w42[n - 1u];
+        if (kind == 0u) w->off_cmd_ms = w42_now(); else w->on_cmd_ms = w42_now();
+        if (kind) w->last_on_pulse = kind == 2u;
+    }
+    return ok;
+}
+bool hal_relay_set(uint8_t n, bool on)
+{
+    return w42_cmd(n, s_rb_channels_boot && (s_cr_up ? cr_kept(cr_set(n, on)) : mb_set_coil(n, on)), on ? 1u : 0u);
+}
 bool sim_hal_cr_keep(uint32_t *known, uint32_t *on) { *known = s_cr_keep_known; *on = s_cr_keep_on; return s_cr_keep; }
-bool hal_relay_pulse(uint8_t n, uint16_t ms)  { return s_rb_channels_boot && (s_cr_up ? cr_kept(cr_pulse(n, ms)) : mb_pulse_coil(n, ms)); }
+bool hal_relay_pulse(uint8_t n, uint16_t ms)
+{
+    return w42_cmd(n, s_rb_channels_boot && (s_cr_up ? cr_kept(cr_pulse(n, ms)) : mb_pulse_coil(n, ms)), 2u);
+}
+bool sim_hal_relay_w42(uint8_t n, sim_relay_w42_t *w)
+{
+    if (n < 1u || n > RB_COILS) return false;
+    *w = s_rb.w42[n - 1u];
+    return true;
+}
 bool hal_relay_read(uint8_t n, bool *on)      { return s_rb_channels_boot && (s_cr_up ? cr_read(n, on) : mb_coil(n, on)); }
 bool hal_relay_ok(void)                        { return s_rb_channels_boot && (s_cr_up ? cr_ok() : mb_ok()); }
 bool hal_relay_readback(void)                  { return !s_cr_up || cr_readback(); }
@@ -1209,6 +1237,7 @@ void sim_hal_relay_board_reset(void)
     s_rb.max_pulse_ms = 0u;
     memset(s_rb.edges, 0, sizeof s_rb.edges);
     memset(s_rb.pulse_end, 0, sizeof s_rb.pulse_end);
+    memset(s_rb.w42, 0, sizeof s_rb.w42);
     s_rb.reply_pending = false;
 }
 
@@ -1434,6 +1463,7 @@ void sim_hal_can_node(uint8_t id, bool present, uint8_t health, uint8_t mode)
     n->mode = mode;
     if (!present && !n->actuator && s_rb_bus_boot == SIM_RELAY_DRONECAN) {    /* the relay board unpowered: all OFF */
         for (uint32_t i = 0; i < RB_COILS; i++) if (!(s_rb.weld & (1u << i))) rb_set(i, false);
+        w42_board_off();
         s_rb.q_n = 0u;
     }
 }
@@ -1453,6 +1483,7 @@ void sim_hal_can_node_reboot(uint8_t id)
     n->next_status_ms = s_time_ms + 50u;
     if (!n->actuator && s_rb_bus_boot == SIM_RELAY_DRONECAN) {   /* the relay board powers up OFF (R-2) */
         for (uint32_t i = 0; i < RB_COILS; i++) if (!(s_rb.weld & (1u << i))) rb_set(i, false);
+        w42_board_off();
         s_rb.q_n = 0u;
     }
 }
@@ -1702,8 +1733,10 @@ static void crb_tick(void)
     for (uint32_t i = 0; i < RB_COILS && !(s_rb.fault & SIM_RB_NO_PULSE_END); i++) {
         uint32_t b = 1u << i;
         if ((s_rb.coils & b) && (s_rb.timeout_mask & b) && !(s_rb.forced & b) && !(s_rb.weld & b) &&
-            now - s_rb.last_cmd_ms[i] > 300u)
+            now - s_rb.last_cmd_ms[i] > 300u) {
             rb_set(i, false);
+            s_rb.w42[i].r3_off_ms = w42_now();
+        }
     }
     /* the readback (R-4): hardpoint.Status of every relay every 200 ms (status = 1 on / 0 off) */
     if ((int32_t)(s_rb.next_status_ms - now) > 200) s_rb.next_status_ms = now;   /* (the sim clock was reset) */
