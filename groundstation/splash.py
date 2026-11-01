@@ -373,11 +373,16 @@ class BackgroundSplash(object):
                             sp.error_text = sp.error_text or str(m[1])
                             sp.close()
                             message_box(i18n.TL(sp.lang, "splash.failed"), m[1])
-                if sp.state != "closed":
-                    self._facts(sp)
-                self.state = sp.state
-                self.error_text = sp.error_text
-                self.slow_seen = self.slow_seen or sp.state == "slow"
+                # 13j2 (review ef51900 LOW-2): the facts / state copy can never raise out of the poll either
+                # (Tk would report an error every POLL_MS while the splash is open)
+                try:
+                    if sp.state != "closed":
+                        self._facts(sp)
+                    self.state = sp.state
+                    self.error_text = sp.error_text
+                    self.slow_seen = self.slow_seen or sp.state == "slow"
+                except Exception:
+                    pass
             finally:
                 try:
                     sp.after(POLL_MS, poll)

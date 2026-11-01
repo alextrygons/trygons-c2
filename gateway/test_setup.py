@@ -8,7 +8,8 @@ commands that change the system are only printed ([TEST] ...), read-only queries
 journalctl, tailscale, timedatectl, df, id, python3 gateway.py --list-serial / --check-config) run the
 stub scripts of this test. Only the JSON / password-hash helpers run for real (into the fake root).
 
-  ST1  shellcheck (if installed: PATH or $SHELLCHECK) - else says so and does bash -n only
+  ST1  shellcheck (if installed: PATH or $SHELLCHECK) - else says so and does bash -n only; with
+       TRYGONS_REQUIRE_SHELLCHECK=1 a missing shellcheck is a FAIL (not a silent skip); bash -n always
   ST2  refuses non-root, non-Ubuntu and Ubuntu 22.04 with a clear message (Greek default); nothing written
   ST3  first run: every question answered from the file (boat, users + password retries, Tailscale key,
        router / camera ports by the plug-in test, chart area, serial adapters) -> secrets.json (hashes that
@@ -27,6 +28,12 @@ stub scripts of this test. Only the JSON / password-hash helpers run for real (i
        list says TBD; a bad answer to "adapter number" (not a number) is ignored
   ST10 docs + gate: README section 0 with the raw URL of `git remote get-url origin` (branch main), the
        safety notes, MANUAL.txt + MANUAL_EL.txt, tools/check.sh runs this test
+  ST11 review fixes (13j2): "ALL OK" only when no step failed (a failing stubbed step, every check line
+       OK); check lines for MediaMTX, vision Python, vision model, apt, tailscale up, a failed chartprep;
+       a stale "AURIX connected" journal line from before this run's restart is never OK; a crash-looping
+       service (NRestarts grows) is not OK; an adapter flagged RS232 is refused by default (Enter), an
+       unflagged one answered "not 3.3 V TTL" too; the users temp file is removed when the input closes
+       during the questions; Tailscale hostname trygons-gw-<boat>; NEEDRESTART_MODE=l on apt
 """
 import json
 import os
@@ -94,8 +101,14 @@ STUBS = {
     "python3": 'd=$(dirname "$0"); case "$*" in *--list-serial*) cat "$d/list_serial.txt";; '
                '*--check-config*) exit "$(cat "$d/check_rc")";; *) exit 1;; esac\n',
     "systemctl": 'd=$(dirname "$0"); case "$1 $2" in "is-active trygons-gateway") cat "$d/svc_active";; '
-                 '"is-enabled sleep.target") cat "$d/sleep_state";; *) exit 1;; esac\n',
-    "journalctl": 'cat "$(dirname "$0")/journal.txt"\n',
+                 '"is-enabled sleep.target") cat "$d/sleep_state";; '
+                 '"show -p") case "$3" in NRestarts) n=$(cat "$d/nrestarts"); echo "$n"; '
+                 '[ -f "$d/nrestarts_inc" ] && echo $((n + 1)) > "$d/nrestarts";; '
+                 'InvocationID) cat "$d/invocation";; esac;; *) exit 1;; esac\n',
+    # the whole boot's journal; with --since only the part written since the script started
+    "journalctl": 'd=$(dirname "$0"); case "$*" in *--since*) cat "$d/journal_since.txt";; *) cat "$d/journal.txt";; esac\n',
+    "python": 'exit "$(cat "$(dirname "$0")/vision_rc")"\n',     # the vision venv's python
+    "nft": 'd=$(dirname "$0"); [ -f "$d/nft.txt" ] || exit 1; cat "$d/nft.txt"\n',   # nft list ruleset
     "tailscale": 'd=$(dirname "$0"); case "$1" in status) cat "$d/ts.json";; version) echo 1.80.0;; *) exit 1;; esac\n',
     "timedatectl": 'd=$(dirname "$0"); case "$*" in *NTPSynchronized*) cat "$d/ntp";; *Timezone*) cat "$d/tz";; esac\n',
     "df": 'printf "Avail\\n %sG\\n" "$(cat "$(dirname "$0")/free_gb")"\n',
@@ -138,6 +151,10 @@ class Env:
         self.put("sleep_state", "masked")
         self.put("journal.txt", "storage /var/lib/trygons/data ok\nAURIX connected (usb:0403:6001:A50285BI = "
                                 "/dev/ttyUSB0, 921600 baud)\n")
+        self.put("journal_since.txt", open(os.path.join(self.stub, "journal.txt"), encoding="utf-8").read())
+        self.put("nrestarts", "0")
+        self.put("invocation", "4f2a9c0d")
+        self.put("vision_rc", "1")          # the vision venv is not there yet (first run)
         self.put("ts.json", '{"BackendState": "NeedsLogin"}')
         self.put("ntp", "yes")
         self.put("tz", "UTC")
@@ -151,6 +168,12 @@ class Env:
             shutil.copy(os.path.join(REPO, rel), dst)
         os.makedirs(os.path.join(self.repo, ".git"))
         open(os.path.join(self.repo, "gateway", "gateway.py"), "w").close()
+        # what get_mediamtx.py / get_vision_model.py would have downloaded (they are only printed in the test)
+        for rel in ("tools/bin/mediamtx/mediamtx", "gateway/vision/models/ewasr_resnet18.onnx"):
+            dst = os.path.join(self.repo, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "w") as f:
+                f.write("fake")
         os.makedirs(os.path.join(self.repo, "charts"))
         with open(os.path.join(self.repo, "charts", "areas.json"), "w") as f:
             json.dump({"attica": {"lat": [37.3, 38.35], "lon": [22.95, 24.65], "stride": 1}}, f)
@@ -224,7 +247,7 @@ FIRST_ANSWERS = [
     "", "", "y",                # router plug-in test: out, in, right?
     "", "", "y",                # cameras plug-in test
     "",                         # chart area (default)
-    "1", "2",                   # AURIX = 1, AIS = 2
+    "1", "y", "2",              # AURIX = 1 (confirmed: a 3.3 V TTL adapter), AIS = 2
 ]
 
 
@@ -238,9 +261,12 @@ def st1():
         p = subprocess.run([sc, "-s", "bash", "-f", "gcc", SCRIPT], capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
         report("ST1 shellcheck clean", p.returncode == 0, (p.stdout + p.stderr).strip()[:600])
+    elif os.environ.get("TRYGONS_REQUIRE_SHELLCHECK") == "1":
+        report("ST1 shellcheck installed (TRYGONS_REQUIRE_SHELLCHECK=1)", False,
+               "not found: apt install shellcheck / pip install shellcheck-py, or set SHELLCHECK")
     else:
         print("ST1: shellcheck not available (install: apt install shellcheck / pip install shellcheck-py, or set "
-              "SHELLCHECK) - bash -n syntax check only")
+              "SHELLCHECK; TRYGONS_REQUIRE_SHELLCHECK=1 makes this a FAIL) - bash -n syntax check only")
     p = subprocess.run([BASH, "-n", fwd(SCRIPT)], capture_output=True, text=True)
     report("ST1 bash -n syntax", p.returncode == 0, p.stderr.strip())
     with open(SCRIPT, "rb") as f:
@@ -300,7 +326,8 @@ def st3_st4_st5():
         acts = actions(e.out)
         want = ["apt-get update", "apt-get install -y git python3-serial python3-venv",
                 "git -C %s pull --ff-only origin main" % fwd(e.repo),
-                "apt-get -y -o Dpkg::Options::=--force-confold full-upgrade", "timedatectl set-timezone UTC",
+                "NEEDRESTART_MODE=l apt-get -y -o Dpkg::Options::=--force-confold full-upgrade",
+                "timedatectl set-timezone UTC",
                 "LAN_MAC=8c:16:45:aa:bb:01 CAM_MAC=00:e0:4c:68:00:02 GWU=trygons sh %s/gateway/systemd/install_ubuntu.sh"
                 % fwd(e.repo),
                 "tailscale up --auth-key=file:", "get_mediamtx.py", "-m venv", "pip install --no-warn-script-location "
@@ -315,6 +342,9 @@ def st3_st4_st5():
                 pos = idx
         report("ST3 every step, in order (upgrade, install_ubuntu.sh with the MACs, Tailscale, MediaMTX, vision, "
                "charts, start)", not missing, "missing / out of order: %s\n%s" % (missing, "\n".join(acts)))
+        report("ST3 Tailscale machine name per boat: --ssh --hostname=trygons-gw-rf49d (boat RF49D)",
+               any("tailscale up" in a and a.endswith("--ssh --hostname=trygons-gw-rf49d") for a in acts)
+               and "Machines -> trygons-gw-rf49d -> Disable key expiry" in e.out, "\n".join(acts))
         report("ST3 the plug-in test found router = enp0s31f6, cameras = enx00e04c680002 (Wi-Fi / lo never listed)",
                "Found port enp0s31f6" in e.prompts and "Found port enx00e04c680002" in e.prompts
                and "wlp4s0" not in e.prompts and not re.search(r"^  lo ", e.prompts, re.M), e.prompts[-600:])
@@ -371,6 +401,7 @@ def st3_st4_st5():
         e.put("ip_static", "lo UNKNOWN 00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP>\n"
                            "boatlan0 UP 8c:16:45:aa:bb:01 <BROADCAST,MULTICAST,UP,LOWER_UP>\n"
                            "cam0 UP 00:e0:4c:68:00:02 <BROADCAST,MULTICAST,UP,LOWER_UP>\n")
+        e.put("vision_rc", "0")
         rc3 = e.run([], args=("--lang", "en", "--checks"))
         report("ST7 --checks: no question, every line OK, exit 0", rc3 == 0 and "ALL OK" in e.out
                and "FAIL" not in e.out and not e.prompts, "rc %s\n%s" % (rc3, e.out[-900:]))
@@ -467,7 +498,7 @@ def st9():
     try:
         e.put("list_serial.txt", "no serial ports found (plug the USB adapter in)\nAURIX: ONLY a 3.3 V TTL ...\n")
         e.put("check_rc", "1")
-        ans = [a for a in FIRST_ANSWERS[:-2]]
+        ans = [a for a in FIRST_ANSWERS[:-3]]
         e.run(ans)
         c = json.loads(e.read("etc/trygons/gateway.json") or "{}")
         report("ST9 adapters not plugged in: AURIX stays TBD with a note, AIS disabled",
@@ -481,13 +512,145 @@ def st9():
         e.close()
     e = Env()
     try:
-        ans = FIRST_ANSWERS[:-2] + ["1;w /tmp/x", "abc"]
+        ans = FIRST_ANSWERS[:-3] + ["1;w /tmp/x", "abc"]
         e.run(ans)
         c = json.loads(e.read("etc/trygons/gateway.json") or "{}")
         report("ST9 a non-number answer to 'adapter number' is ignored (TBD)",
                "VID:PID" in c.get("aurix", "") and c.get("ais", {}).get("enabled") is False, json.dumps(c)[:300])
     finally:
         e.close()
+
+
+def all_ok_env():
+    """An installed gateway where every check line is OK (first run + the state after the reboot)."""
+    e = Env()
+    e.run(FIRST_ANSWERS)
+    e.write_root("etc/systemd/network/10-trygons-boatlan.link", "[Match]\nMACAddress=8c:16:45:aa:bb:01\n")
+    e.write_root("etc/systemd/network/11-trygons-cam.link", "[Match]\nMACAddress=00:e0:4c:68:00:02\n")
+    os.makedirs(os.path.join(e.repo, "charts", "attica"), exist_ok=True)
+    open(os.path.join(e.repo, "charts", "attica", "meta.json"), "w").close()
+    e.put("ts.json", '{"BackendState": "Running"}')
+    e.put("vision_rc", "0")
+    e.put("ip_static", "boatlan0 UP 8c:16:45:aa:bb:01 <BROADCAST,MULTICAST,UP,LOWER_UP>\n"
+                       "cam0 UP 00:e0:4c:68:00:02 <BROADCAST,MULTICAST,UP,LOWER_UP>\n")
+    return e
+
+
+KEEP_ALL = ["", "", "", "", "", "", "", ""]      # run again: keep config, users, ports, area, charts
+
+
+def st11():
+    # (1) ALL OK only when FAILED_STEPS is empty
+    e = all_ok_env()
+    try:
+        rc = e.run(KEEP_ALL)
+        report("ST11 control: a clean re-run on an installed gateway says ALL OK, exit 0",
+               rc == 0 and "ALL OK" in e.out and "FAIL" not in e.out, "rc %s\n%s" % (rc, e.out[-900:]))
+        bad = []
+        for pat, line in (("get_vision_model.py", "tools/get_vision_model.py"),   # the model file is still there
+                          ("get_mediamtx.py", "tools/get_mediamtx.py"),
+                          ("full-upgrade", "FAIL  system packages (apt, this run)"),
+                          ("apt-get update", "FAIL  system packages (apt, this run)")):
+            e.put("fail_run", pat + "\n")
+            r = e.run(KEEP_ALL)
+            if r == 0 or "ALL OK" in e.out or "Steps that failed" not in e.out or line not in e.out:
+                bad.append("%s: rc %s\n%s" % (pat, r, e.out[-700:]))
+        e.put("fail_run", "chartprep.py\n")
+        r = e.run(["", "", "", "", "y"])              # make the charts again -> chartprep fails (files still there)
+        if r == 0 or "ALL OK" in e.out or "FAIL  depth charts (attica) - missing or partial" not in e.out:
+            bad.append("chartprep: rc %s\n%s" % (r, e.out[-700:]))
+        os.remove(os.path.join(e.stub, "fail_run"))
+        report("ST11 a failing step (model, MediaMTX, apt, chartprep) -> no ALL OK, exit 1, its FAIL line + "
+               "'Steps that failed'", not bad, "\n".join(bad))
+        bad = []
+        for what, act in (("vision Python", lambda: e.put("vision_rc", "1")),
+                          ("vision model", lambda: os.remove(os.path.join(e.repo, "gateway", "vision", "models",
+                                                                          "ewasr_resnet18.onnx"))),
+                          ("MediaMTX", lambda: os.remove(os.path.join(e.repo, "tools", "bin", "mediamtx", "mediamtx")))):
+            act()
+            r = e.run([], args=("--lang", "en", "--checks"))
+            if r != 1 or ("FAIL  " + what) not in e.out or "ALL OK" in e.out:
+                bad.append("%s: rc %s\n%s" % (what, r, e.out[-500:]))
+        report("ST11 check lines: vision Python, vision model, MediaMTX each FAIL when missing", not bad, "\n".join(bad))
+        # the firewall: never applied by the script = a WARN line (not counted), OK once the ruleset is loaded
+        e.put("vision_rc", "0")
+        for rel in ("tools/bin/mediamtx/mediamtx", "gateway/vision/models/ewasr_resnet18.onnx"):
+            with open(os.path.join(e.repo, rel), "w") as f:
+                f.write("fake")
+        r1 = e.run([], args=("--lang", "en", "--checks"))
+        warned = r1 == 0 and "WARN  firewall (nftables) - NOT applied" in e.out and "ALL OK" in e.out
+        e.put("nft.txt", 'table inet filter {\n chain input {\n  iifname "tailscale0" tcp dport { 22, 5761 } accept\n')
+        r2 = e.run([], args=("--lang", "en", "--checks"))
+        applied = r2 == 0 and "OK    firewall (nftables)" in e.out and "WARN" not in e.out
+        with open(SCRIPT, encoding="utf-8") as f:
+            no_apply = not re.search(r"^\s*(run|q)\s+nft\s+-f", f.read(), re.M)
+        report("ST11 firewall: not applied = a WARN line (not counted), applied = OK; the script never runs nft -f",
+               warned and applied and no_apply, "rc %s/%s\n%s" % (r1, r2, e.out[-600:]))
+    finally:
+        e.close()
+    # (2) a stale journal line and a crash loop
+    e = Env()
+    try:
+        e.put("journal_since.txt", "storage ok\n")   # the restarted service has not connected (yet)
+        e.run(FIRST_ANSWERS)
+        stale = "FAIL  AURIX link" in e.out and "OK    AURIX link" not in e.out
+    finally:
+        e.close()
+    e = Env()
+    try:
+        e.run(FIRST_ANSWERS)
+        fresh = "OK    AURIX link" in e.out
+        report("ST11 after this run's restart an old 'AURIX connected' line is NOT OK (journal --since start)",
+               stale and fresh, e.out[-600:])
+        e.put("nrestarts_inc", "1")
+        r = e.run([], args=("--lang", "en", "--checks"))
+        loop = r == 1 and "FAIL  service trygons-gateway" in e.out and "restarting" in e.out
+        os.remove(os.path.join(e.stub, "nrestarts_inc"))
+        r = e.run([], args=("--lang", "en", "--checks"))
+        report("ST11 a crash-looping service (active, NRestarts grows) is FAIL; a steady one OK",
+               loop and "OK    service trygons-gateway" in e.out, e.out[-500:])
+    finally:
+        e.close()
+    # (3) RS232 adapter refused by default, unflagged confirmed
+    rs = ("/dev/ttyUSB0   USB-Serial Controller\n    use: usb:067b:2303:XYZ\n"
+          "    CAUTION: Prolific PL2303 chips are mostly in RS232 (+-12 V) cables - the AURIX needs a 3.3 V TTL adapter\n"
+          + LIST_SERIAL.split("\n", 3)[3])
+    bad = []
+    for listing, ans, want_aurix, label in (
+            (rs, ["1", "", ""], None, "flagged + Enter"),
+            (rs, ["1", "n", ""], None, "flagged + no"),
+            (rs, ["1", "y", ""], "usb:067b:2303:XYZ", "flagged + an explicit yes"),
+            (LIST_SERIAL, ["1", "n", ""], None, "unflagged + 'not 3.3 V TTL'")):
+        e = Env()
+        try:
+            e.put("list_serial.txt", listing)
+            e.run(FIRST_ANSWERS[:-3] + ans)
+            c = json.loads(e.read("etc/trygons/gateway.json") or "{}")
+            got = c.get("aurix", "")
+            ok = (got == want_aurix) if want_aurix else ("VID:PID" in got and "TBD" in c.get("_aurix_tbd", "")
+                                                         and "Refused" in e.prompts)
+            if listing is rs and "probably RS232" not in e.prompts:
+                ok = False
+            if not ok:
+                bad.append("%s: aurix %r\n%s" % (label, got, e.prompts[-500:]))
+        finally:
+            e.close()
+    report("ST11 an adapter flagged RS232 is refused unless an explicit yes; 'not 3.3 V TTL' refused too",
+           not bad, "\n".join(bad))
+    # (4) the users temp file is removed when the input closes during the questions
+    e = Env()
+    try:
+        rc = e.run(["RF49D", "alex", "", "y"])        # the password question gets EOF -> stop
+        left = [n for n in os.listdir(e.path("run")) if n.startswith("trygons-")] if os.path.isdir(e.path("run")) else []
+        report("ST11 input closed during the user questions: stopped (exit 4), no users temp file left",
+               rc == 4 and not left, "rc %s left %s" % (rc, left))
+    finally:
+        e.close()
+    with open(SCRIPT, encoding="utf-8") as f:
+        src = f.read()
+    report("ST11 the EXIT trap is set before any temp file is made",
+           0 < src.index("trap cleanup EXIT") < src.index('mktemp "$RUNDIR/trygons-users') < src.index(
+               'mktemp "$RUNDIR/trygons-ts'))
 
 
 def st10():
@@ -505,6 +668,13 @@ def st10():
     report("ST10 the script names the same URLs (raw + clone)", bool(raw) and raw in src and url in src, url)
     report("ST10 README safety notes: 3.3 V adapter NEVER RS232, AURIX off the network, lid + 80 %",
            "NEVER RS232" in sec0 and "never on the network" in sec0 and "lid" in sec0 and "80 %" in sec0)
+    man0 = open(os.path.join(REPO, "MANUAL.txt"), encoding="utf-8").read()
+    man0_el = open(os.path.join(REPO, "MANUAL_EL.txt"), encoding="utf-8").read()
+    report("ST10 curl -fsSL everywhere (a 404 page is never piped to bash), no curl -sL left",
+           "curl -fsSL" in sec0 and "curl -fsSL" in src and not any("curl -sL" in x for x in (rd, src, man0, man0_el)))
+    report("ST10 README: NEEDRESTART_MODE=l + the final reboot, Tailscale trygons-gw-<boat> + --ssh, "
+           "TRYGONS_REQUIRE_SHELLCHECK", "NEEDRESTART_MODE=l" in sec0 and "trygons-gw-<boat>" in sec0
+           and "--ssh" in sec0 and "TRYGONS_REQUIRE_SHELLCHECK" in rd)
     man = open(os.path.join(REPO, "MANUAL.txt"), encoding="utf-8").read()
     man_el = open(os.path.join(REPO, "MANUAL_EL.txt"), encoding="utf-8").read()
     report("ST10 MANUAL.txt + MANUAL_EL.txt describe setup_all.sh", "setup_all.sh" in man and "setup_all.sh" in man_el
@@ -524,6 +694,7 @@ def main():
     st8()
     st9()
     st10()
+    st11()
     n_fail = sum(1 for _n, ok in results if not ok)
     print("SETUP TESTS: %d/%d passed" % (len(results) - n_fail, len(results)))
     return 1 if n_fail else 0

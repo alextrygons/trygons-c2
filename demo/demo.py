@@ -291,6 +291,7 @@ def stop():
     # the starting demo process itself first (13i2: STOP_DEMO during the start - it starts nothing more),
     # then the ground stations ... the simulator last; never this process (start() calls stop on an error)
     order = [x for x in order if x[0] == "demo"] + [x for x in reversed(order) if x[0] != "demo"]
+    kept, kept_ids = {}, {}
     for name, pid in order:
         if pid == os.getpid():
             continue
@@ -302,10 +303,22 @@ def stop():
             continue
         if ids.get(name) != now:
             say("NOT stopped: pid %s is not the demo's %s any more (another program uses it)" % (pid, name))
+            # 13j2 (review ef51900 LOW-1): kept in pids.json (a second STOP_DEMO tries again), never forgotten
+            kept[name] = pid
+            if name in ids:
+                kept_ids[name] = ids[name]
             continue
         kill_tree(pid)
         say("stopped %s (pid %d)" % (name, pid))
-    os.remove(PIDS)
+    if kept:
+        if kept_ids:
+            kept["_id"] = kept_ids
+        _write_pids(kept)
+        say("still in demo_run/pids.json (NOT stopped, STOP_DEMO tries again): %s - if one of them IS the demo, "
+            "stop it by hand (Task Manager / taskkill /PID <pid> /T /F)"
+            % ", ".join("%s pid %s" % (n, p) for n, p in kept.items() if n != "_id"))
+    else:
+        os.remove(PIDS)
     return 0
 
 

@@ -38,6 +38,10 @@ python test_osdep.py                     (Ubuntu / Windows bits: serial names, c
 python test_setup.py                     (setup_all.sh with fake answers + stubbed commands: nothing changes)
 ```
 
+test_setup.py runs shellcheck when it is installed (PATH or `SHELLCHECK=...`), otherwise only
+`bash -n`; set `TRYGONS_REQUIRE_SHELLCHECK=1` to make a missing shellcheck a FAIL (e.g. on the
+gateway PC or a CI machine that has it).
+
 ---
 
 ## 0. Quick setup (Ubuntu 24.04 on the ThinkPad, one command)
@@ -46,13 +50,13 @@ After installing Ubuntu 24.04 LTS (section 3U steps 1-3: user `trygons`, OpenSSH
 (console or `ssh -t trygons@trygons-gw.local`) and run:
 
 ```
-curl -sL https://raw.githubusercontent.com/alextrygons/trygons-c2/main/gateway/setup_all.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/alextrygons/trygons-c2/main/gateway/setup_all.sh | sudo bash
 ```
 
 (The repository is `https://github.com/alextrygons/trygons-c2.git`, branch `main`. If it is
 private, the raw link gives "404": then `git clone` it first and run
 `sudo bash ~/trygons-c2/gateway/setup_all.sh` - the same script. Want to read it before running
-it? `curl -sL <link> -o setup_all.sh`, read it, `sudo bash setup_all.sh`.)
+it? `curl -fsSL <link> -o setup_all.sh`, read it, `sudo bash setup_all.sh`.)
 
 Options: `| sudo bash -s -- --dry-run` (prints every action, changes nothing),
 `--lang en` (English; Greek is the default), `--checks` (only the final check list).
@@ -66,24 +70,43 @@ It first asks everything (Greek by default), then runs by itself (20-60 min):
 | Tailscale auth key (`tskey-...`, **not shown**; Enter = later) | `tailscale up --auth-key=file:...` from a root-only temp file, deleted after |
 | which Ethernet port is the router, which the cameras: it shows `ip -br link` (port, state, MAC, cable) and does a **plug-in test** (cable out -> Enter -> cable in -> Enter -> "found port X, right?") | `install_ubuntu.sh` LAN_MAC / CAM_MAC -> names `boatlan0` / `cam0` (after a reboot) |
 | chart area (default: the boat area `attica`) | `tools/chartprep.py --area ...` -> `charts/<area>/` (offline afterwards) |
-| which USB adapter is the AURIX, which the AIS receiver (from `gateway.py --list-serial`: listed only, never opened) | gateway.json `"aurix"` / `"ais"` (`usb:VID:PID:SERIAL`); not plugged in = left **TBD** with a note, AIS off |
+| which USB adapter is the AURIX, which the AIS receiver (from `gateway.py --list-serial`: listed only, never opened). The AURIX choice is confirmed: "usb:... = a 3.3 V TTL USB-UART adapter (NOT RS232)?" - **no = refused**; an adapter the list flags as probably RS232 (e.g. PL2303) is **refused unless you answer an explicit yes** (Enter = no) | gateway.json `"aurix"` / `"ais"` (`usb:VID:PID:SERIAL`); not plugged in / refused = left **TBD** with a note, AIS off |
 
-Then: `apt full-upgrade`, time zone UTC, `git clone` / `git pull` into `~trygons/trygons-c2`,
-`install_ubuntu.sh` with the MACs, Tailscale install + up, `tools/get_mediamtx.py`, the vision
+Then: `apt full-upgrade` (with `NEEDRESTART_MODE=l`: needrestart only LISTS the services that
+need a restart - nothing is restarted automatically during the setup, not sshd, not the gateway;
+the final `sudo reboot` restarts them, and a new kernel also needs that reboot), time zone UTC, `git clone` / `git pull` into `~trygons/trygons-c2`,
+`install_ubuntu.sh` with the MACs, Tailscale install + `tailscale up --ssh
+--hostname=trygons-gw-<boat>` (one machine name per boat, e.g. `trygons-gw-rf49d`, so two boats
+in one tailnet never collide; `--ssh` = Tailscale SSH is ON: shell access as the tailnet ACL
+allows - kept for now, owner decision W45), `tools/get_mediamtx.py`, the vision
 Python (Ubuntu: a venv in `tools/bin/vision-python/` with the pinned packages of
 `tools/get_vision_python.py`, which itself is the Windows way) + `tools/get_vision_model.py`,
 the charts, gateway.json from `config.example.json`, `--check-config`, `systemctl start`, and a
-**check list** with OK / FAIL lines: service, gateway.json, AURIX link (from the service's own
-log), storage (>= 20 GB free), lid, battery 80 %, Tailscale, camera network (cam0), time (UTC,
-synchronised), depth charts. Log: `/var/log/trygons-setup.log` (no passwords or keys in it).
+**check list** with OK / FAIL lines: service (active over ~6 s with no restart in between - a
+crash loop is FAIL), gateway.json, AURIX link (from the service's own log of THIS run: since the
+script started when it restarted the service, only the current service instance - an old
+"connected" line never counts), storage (>= 20 GB free), lid, battery 80 %, Tailscale (+ "tailscale
+up" of this run), camera network (cam0), time (UTC, synchronised), depth charts (FAIL also when
+chartprep failed in this run: maybe partial), MediaMTX, vision Python (onnxruntime + numpy), vision
+model, system packages (apt of this run). **"ALL OK" only when every line is OK AND no step
+failed** (otherwise "FAIL" + "Steps that failed"; exit code 1). Log: `/var/log/trygons-setup.log`
+(no passwords or keys in it).
 
 Safe to run again: an existing secrets.json, gateway.json, port choice or charts are KEPT unless
-you answer otherwise (Enter = keep); with nothing changed the service is not restarted. A config
+you answer otherwise (Enter = keep); with nothing changed the service is not restarted.
+MANAGED files (written again by `install_ubuntu.sh` on EVERY run - edit them in the repository, not
+on the PC, or your change is lost): the systemd unit `trygons-gateway.service`, the logind lid file,
+the TLP battery file; the time zone is set to UTC every run. The check list also shows a **WARN**
+line "firewall (nftables) - NOT applied" until you apply `nftables.conf` by hand (a WARN is not
+counted in ALL OK; open owner decision W45). A config
 with errors (e.g. the AURIX adapter TBD) is not started - plug the adapter in and run it again.
 After the first run: `sudo reboot` (the port names apply after it), then
 `sudo bash ~trygons/trygons-c2/gateway/setup_all.sh --checks` - every line must say OK.
 Not done by the script: Tailscale "Disable key expiry" + access controls (section 7), the
-firewall (8), the router (13), the cameras (14), the shore PC (15).
+firewall (8: `nftables.conf` is NOT applied - ports 5761 / 8080 / 8554 / 8889 and SSH stay open
+on the router and camera networks until you apply it by hand; applying it flushes the ruleset and
+allows SSH only from tailscale0 / 10.42.0.0/24, so do it only with Tailscale running - open owner
+decision W45), the router (13), the cameras (14), the shore PC (15).
 
 Safety (as in the rest of this README):
 * **The AURIX link is a 3.3 V TTL USB-UART adapter (FTDI / CP2102 set to 3.3 V) - NEVER RS232**

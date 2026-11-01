@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Trygons C2 - gateway PC one-command setup (step 13j). Ubuntu 24.04 LTS on the ThinkPad L390 Yoga.
 #
-#   curl -sL https://raw.githubusercontent.com/alextrygons/trygons-c2/main/gateway/setup_all.sh | sudo bash
-#   curl -sL ...setup_all.sh | sudo bash -s -- --dry-run          (shows every action, changes nothing)
-#   curl -sL ...setup_all.sh | sudo bash -s -- --lang en          (English; Greek is the default)
+#   curl -fsSL https://raw.githubusercontent.com/alextrygons/trygons-c2/main/gateway/setup_all.sh | sudo bash
+#   curl -fsSL ...setup_all.sh | sudo bash -s -- --dry-run          (shows every action, changes nothing)
+#   curl -fsSL ...setup_all.sh | sudo bash -s -- --lang en          (English; Greek is the default)
 #   sudo bash ~trygons/trygons-c2/gateway/setup_all.sh --checks   (only the final check list)
 #
 # It asks ONLY: the boat name, the gateway users + passwords (-> /etc/trygons/secrets.json, hashed,
@@ -83,9 +83,23 @@ T0=$(date +%s)
 FAILED_STEPS=""
 CHANGED=0
 REBOOT_NOTE=0
+RESTARTED=0          # 1 = this run restarted the service: the AURIX link is judged only on its log since T0
+STEP_APT=""; STEP_TSUP=""; STEP_CHARTS=""   # ok / fail when the step ran in this run ("" = not run)
+STABLE_N=4; STABLE_SLEEP=2                     # "active" must hold over 4 samples 2 s apart (RestartSec=2)
+[ "${TRYGONS_SETUP_TEST:-0}" = 1 ] && STABLE_SLEEP=0
+VP="$REPO/tools/bin/vision-python"
+MODEL_FILE="$REPO/gateway/vision/models/ewasr_resnet18.onnx"
+MEDIAMTX_FILE="$REPO/tools/bin/mediamtx/mediamtx"
 
 # --- language: Greek default, English with --lang en ------------------------------------------------
 t() { if [ "$LANG_SEL" = en ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
+# Tailscale machine name per boat: trygons-gw-<boat> (lower case, letters / digits / -), else trygons-gw
+ts_host() {
+  local b
+  b=$(printf '%s' "${1-}" | tr '[:upper:]' '[:lower:]' | tr '_' '-' | tr -cd 'a-z0-9-' | cut -c1-40)
+  if [ -n "$b" ]; then printf 'trygons-gw-%s' "$b"; else printf 'trygons-gw'; fi
+}
 
 # --- output + log (the log never gets a secret: secrets are never passed to say / run / q) -----------
 logline() { [ "$MODE" = dry ] || [ "$MODE" = testdry ] || printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
@@ -100,7 +114,12 @@ run() {
   logline "+ $*"
   case "$MODE" in
     dry|testdry) printf '[DRY-RUN] %s\n' "$*"; return 0 ;;
-    test) printf '[TEST] %s\n' "$*"; return 0 ;;
+    test)
+      # tests only: a stubbed step can be made to fail (each line of $STUB/fail_run = a text in the command)
+      if [ -f "$STUB/fail_run" ] && printf '%s\n' "$*" | grep -qF -f "$STUB/fail_run"; then
+        printf '[TEST-FAIL] %s\n' "$*"; return 1
+      fi
+      printf '[TEST] %s\n' "$*"; return 0 ;;
   esac
   "$@" </dev/null 2>&1 | tee -a "$LOG"
   return "${PIPESTATUS[0]}"
@@ -320,25 +339,51 @@ plug_test() {   # plug_test VAR "what" exclude-port
   printf -v "$__v" '%s' "$pick"
 }
 
+# the service state, judged over a few seconds: "active" every sample AND no restart in between
+svc_stable() {
+  local a n0 n1 k
+  n0=$(q systemctl show -p NRestarts --value trygons-gateway)
+  for k in $(seq 1 "$STABLE_N"); do
+    a=$(q systemctl is-active trygons-gateway)
+    [ "$a" = active ] || { printf '%s' "${a:-?}"; return; }
+    [ "$k" -lt "$STABLE_N" ] && [ "$STABLE_SLEEP" -gt 0 ] && sleep "$STABLE_SLEEP"
+  done
+  n1=$(q systemctl show -p NRestarts --value trygons-gateway)
+  if [ "$n0" != "$n1" ]; then printf 'restarting: NRestarts %s -> %s' "${n0:-?}" "${n1:-?}"; return; fi
+  printf 'active'
+}
+
 # --- the final check list: OK / FAIL lines -------------------------------------------------------
 CHECK_FAILS=0
 chk() {   # chk 0|1 "label" "why if FAIL"
   if [ "$1" = 0 ]; then say "  OK    $2"; else say "  FAIL  $2 - $3"; CHECK_FAILS=$((CHECK_FAILS + 1)); fi
 }
+warn_line() {   # warn_line 0|1 "label" "why if WARN" - shown, never counted (an open owner decision)
+  if [ "$1" = 0 ]; then say "  OK    $2"; else say "  WARN  $2 - $3"; fi
+}
 checklist() {
   CHECK_FAILS=0
   head1 "$(t "Λίστα ελέγχου" "Check list")"
-  local s r v m n
-  # service
-  s=$(q systemctl is-active trygons-gateway)
+  local s r v m n jsince inv
+  # service: "active" must STAY active (a crash loop with Restart=always is "active" between its crashes)
+  s=$(svc_stable)
   chk "$([ "$s" = active ]; echo $?)" "$(t "υπηρεσία trygons-gateway" "service trygons-gateway")" \
-      "$(t "δεν τρέχει" "not running") ($s): journalctl -u trygons-gateway"
+      "$(t "δεν τρέχει σταθερά" "not running steadily") ($s): journalctl -u trygons-gateway"
   # config
   q python3 "$REPO/gateway/gateway.py" --config "$CONFIG" --check-config >/dev/null; r=$?
   chk "$([ "$r" = 0 ]; echo $?)" "gateway.json (--check-config)" \
       "$(t "λάθη" "errors"): python3 $REPO/gateway/gateway.py --config $CONFIG --check-config"
   # AURIX link: the service's own log (this script never opens the UART)
-  v=$(q journalctl -u trygons-gateway -b --no-pager -o cat | grep -E "AURIX (connected|link:)" | tail -1)
+  # only THIS instance of the service: since this script's start when it restarted the service, else this
+  # boot, and only the current invocation when systemd tells it (an old "connected" line never counts)
+  jsince=-b
+  [ "$RESTARTED" = 1 ] && jsince="--since=@$T0"
+  inv=$(q systemctl show -p InvocationID --value trygons-gateway | tr -dc '0-9a-f')
+  if [ -n "$inv" ]; then
+    v=$(q journalctl -u trygons-gateway "$jsince" "_SYSTEMD_INVOCATION_ID=$inv" --no-pager -o cat | grep -E "AURIX (connected|link:)" | tail -1)
+  else
+    v=$(q journalctl -u trygons-gateway "$jsince" --no-pager -o cat | grep -E "AURIX (connected|link:)" | tail -1)
+  fi
   if grep -q '"_aurix_tbd"' "$CONFIG" 2>/dev/null; then
     chk 1 "$(t "σύνδεση AURIX" "AURIX link")" "$(t "ο προσαρμογέας δεν ορίστηκε (TBD): βάλτε τον και τρέξτε ξανά" "adapter not set (TBD): plug it in and run again")"
   else
@@ -363,7 +408,9 @@ checklist() {
       "$(t "όριο" "limit") ${v:-?} (sudo tlp-stat -b)"
   # Tailscale
   chk "$(q tailscale status --json | grep -q '"BackendState": *"Running"'; echo $?)" "Tailscale (VPN)" \
-      "$(t "δεν είναι συνδεδεμένο" "not connected"): sudo tailscale up --ssh --hostname=trygons-gw"
+      "$(t "δεν είναι συνδεδεμένο" "not connected"): sudo tailscale up --ssh --hostname=$(ts_host "${BOAT:-}")"
+  [ -n "$STEP_TSUP" ] && chk "$([ "$STEP_TSUP" = ok ]; echo $?)" "tailscale up ($(t "αυτή η εκτέλεση" "this run"))" \
+      "$(t "απέτυχε (κλειδί; internet;)" "failed (key? internet?)")"
   # cameras network
   m=$(link_mac "$LINK_CAM")
   n=$(eth_table | awk -F'\t' '$1=="cam0"')
@@ -380,18 +427,37 @@ checklist() {
   v=$(q timedatectl show -p Timezone --value)
   chk "$([ "$s" = yes ] && [ "$v" = UTC ]; echo $?)" "$(t "ώρα (UTC, συγχρονισμένη)" "time (UTC, synchronised)")" \
       "$(t "ζώνη" "zone") ${v:-?}, NTP ${s:-?} - $(t "η πύλη τη ρυθμίζει από το GPS όταν το AURIX έχει fix" "the gateway sets it from GPS once the AURIX has a fix")"
-  # charts
-  chk "$([ -n "$(ls -A "$REPO/charts/${AREA:-attica}" 2>/dev/null)" ]; echo $?)" "$(t "χάρτες βάθους" "depth charts") (${AREA:-attica})" \
-      "$(t "λείπουν: τρέξτε ξανά με internet" "missing: run again with internet")"
+  # charts (a chartprep that failed in this run = FAIL even when the folder has some files: maybe partial)
+  chk "$([ -n "$(ls -A "$REPO/charts/${AREA:-attica}" 2>/dev/null)" ] && [ "$STEP_CHARTS" != fail ]; echo $?)" \
+      "$(t "χάρτες βάθους" "depth charts") (${AREA:-attica})" \
+      "$(t "λείπουν ή μισοί: τρέξτε ξανά με internet" "missing or partial: run again with internet")"
+  # video relay, vision Python, vision model
+  chk "$([ -f "$MEDIAMTX_FILE" ] || [ -f "$R/usr/local/bin/mediamtx" ]; echo $?)" "MediaMTX ($(t "βίντεο" "video relay"))" \
+      "$(t "λείπει: python3 tools/get_mediamtx.py (internet)" "missing: python3 tools/get_mediamtx.py (internet)")"
+  chk "$(q "$VP/python" -c "import onnxruntime, numpy" >/dev/null; echo $?)" "$(t "Python όρασης" "vision Python") (onnxruntime, numpy)" \
+      "$(t "λείπει / χαλασμένο" "missing / broken"): $VP"
+  chk "$([ -s "$MODEL_FILE" ]; echo $?)" "$(t "μοντέλο όρασης" "vision model") (ewasr_resnet18.onnx)" \
+      "$(t "λείπει: python3 tools/get_vision_model.py (internet)" "missing: python3 tools/get_vision_model.py (internet)")"
+  # firewall (13j2, review dd9d47f MED-3): this script never applies nftables.conf (lock-out risk, owner
+  # decision W45) - said plainly as a WARN line (not counted in ALL OK) so nobody thinks the ports are closed
+  warn_line "$(q nft list ruleset 2>/dev/null | grep -q 'iifname "tailscale0" tcp dport'; echo $?)" \
+      "$(t "τείχος προστασίας (nftables)" "firewall (nftables)")" \
+      "$(t "ΔΕΝ εφαρμόστηκε: οι θύρες 5761 / 8080 / 8554 / 8889 και το SSH είναι ανοιχτές στο δίκτυο δρομολογητή και καμερών (gateway/README.md ενότητα 8, απόφαση W45)" "NOT applied: ports 5761 / 8080 / 8554 / 8889 and SSH are open on the router and camera networks (gateway/README.md section 8, decision W45)")"
+  # system packages (this run only)
+  [ -n "$STEP_APT" ] && chk "$([ "$STEP_APT" = ok ]; echo $?)" "$(t "πακέτα συστήματος (apt, αυτή η εκτέλεση)" "system packages (apt, this run)")" \
+      "$(t "apt απέτυχε (internet; δείτε το log)" "apt failed (internet? see the log)")"
   say ""
-  if [ "$CHECK_FAILS" = 0 ]; then say "$(t "ΟΛΑ ΟΚ" "ALL OK")"; else say "FAIL: $CHECK_FAILS"; fi
+  # ALL OK only when every check passed AND no step of this run failed
+  if [ "$CHECK_FAILS" = 0 ] && [ -z "$FAILED_STEPS" ]; then say "$(t "ΟΛΑ ΟΚ" "ALL OK")"
+  elif [ "$CHECK_FAILS" = 0 ]; then say "FAIL: $(t "βήματα απέτυχαν (δείτε παρακάτω)" "steps failed (see below)")"
+  else say "FAIL: $CHECK_FAILS"; fi
 }
 
 # ===================================================================================================
 # 0. preflight: root, Ubuntu 24.04, log
 if [ "$MODE" = test ] || [ "$MODE" = testdry ]; then UID_NOW=$(q id -u); else UID_NOW=$(id -u); fi
 if [ "$UID_NOW" != 0 ] && [ "$MODE" != dry ] && [ "$MODE" != testdry ]; then
-  t "Χρειάζεται root: τρέξτε το με sudo  (curl -sL ... | sudo bash)" "Needs root: run it with sudo  (curl -sL ... | sudo bash)"; echo
+  t "Χρειάζεται root: τρέξτε το με sudo  (curl -fsSL ... | sudo bash)" "Needs root: run it with sudo  (curl -fsSL ... | sudo bash)"; echo
   exit 3
 fi
 OSID=$(sed -n 's/^ID=//p' "$R/etc/os-release" 2>/dev/null | tr -d '"')
@@ -410,15 +476,25 @@ say "$(t "Τρέξτε το στο λιμάνι, σκάφος σε STANDBY (η �
 
 if [ "$CHECKS_ONLY" = 1 ]; then
   AREA=$(sed -n 's/^area=//p' "$ETC/setup.state" 2>/dev/null | head -1)
+  BOAT=$(pyrun -c "$PY_CFG_INFO" "$CONFIG" 2>/dev/null | cut -f2 -s)
   checklist
   [ "$CHECK_FAILS" = 0 ]; return
 fi
 open_tty
+# temp files with a hash / the key: removed on every exit (the trap is set BEFORE they are made)
+TS_KEYFILE=""
+ENTRIES=""
+# shellcheck disable=SC2329  # called by the EXIT trap
+cleanup() { [ -n "${TS_KEYFILE:-}" ] && [ -f "$TS_KEYFILE" ] && rm -f "$TS_KEYFILE"; [ -n "${ENTRIES:-}" ] && [ -f "$ENTRIES" ] && rm -f "$ENTRIES"; }
+trap cleanup EXIT
 
 # 1. basic packages, the user, the repository (needed for the questions: boats/, the serial list)
 head1 "$(t "1. βασικά πακέτα, χρήστης, αποθετήριο" "1. basic packages, user, repository")"
-run apt-get update || fail_step "apt-get update"
-run env DEBIAN_FRONTEND=noninteractive apt-get install -y git python3-serial python3-venv curl || fail_step "apt-get install git python3-serial python3-venv"
+# NEEDRESTART_MODE=l: needrestart only LISTS what needs a restart (no automatic service restarts during
+# the setup - the final reboot does it; a new kernel needs that reboot too)
+STEP_APT=ok
+run apt-get update || { fail_step "apt-get update"; STEP_APT=fail; }
+run env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y git python3-serial python3-venv curl || { fail_step "apt-get install git python3-serial python3-venv"; STEP_APT=fail; }
 if ! q id "$GWU" >/dev/null; then run adduser --disabled-password --gecos "" "$GWU" || fail_step "adduser $GWU"; fi
 if [ -d "$REPO/.git" ]; then
   as_user git -C "$REPO" pull --ff-only origin "$BRANCH" || fail_step "$(t "git pull (τοπικές αλλαγές; κρατήθηκε ο τωρινός κώδικας)" "git pull (local changes? the current code is kept)")"
@@ -467,7 +543,6 @@ case "$SEC_INFO" in
     show "$(t "ΠΡΟΣΟΧΗ: το secrets.json δεν διαβάζεται - δεν αγγίζεται (διορθώστε το με το χέρι)" "CAUTION: secrets.json can't be read - left alone (fix it by hand)")"
     SEC_HOW=keep ;;
 esac
-ENTRIES=""
 NUSERS=0
 if [ "$SEC_HOW" != keep ]; then
   if writes; then mkdir -p "$RUNDIR"; ENTRIES=$(umask 077; mktemp "$RUNDIR/trygons-users.XXXXXX"); fi
@@ -502,7 +577,6 @@ if [ "$SEC_HOW" != keep ]; then
   fi
 fi
 # 2c Tailscale
-TS_KEYFILE=""
 if q tailscale status --json | grep -q '"BackendState": *"Running"'; then
   show "$(t "Το Tailscale είναι ήδη συνδεδεμένο - μένει." "Tailscale is already connected - kept.")"
 else
@@ -513,9 +587,6 @@ else
   fi
   TSKEY=""
 fi
-# shellcheck disable=SC2329  # called by the EXIT trap
-cleanup() { [ -n "${TS_KEYFILE:-}" ] && [ -f "$TS_KEYFILE" ] && rm -f "$TS_KEYFILE"; [ -n "${ENTRIES:-}" ] && [ -f "$ENTRIES" ] && rm -f "$ENTRIES"; }
-trap cleanup EXIT
 # 2d Ethernet ports
 LAN_MAC=$(link_mac "$LINK_LAN"); CAM_MAC=$(link_mac "$LINK_CAM")
 KEEP_NET=0
@@ -560,6 +631,17 @@ if [ "$KEEP_CFG" = 0 ]; then
     show "$(t "AURIX = ΜΟΝΟ 3.3 V TTL USB-UART (FTDI / CP2102 στα 3.3 V). ΠΟΤΕ RS232." "AURIX = ONLY a 3.3 V TTL USB-UART (FTDI / CP2102 at 3.3 V). NEVER RS232.")"
     ask k "$(t "Αριθμός του προσαρμογέα AURIX (Enter = TBD)" "Number of the AURIX adapter (Enter = TBD)")" ""
     case "$k" in ''|*[!0-9]*) ;; *) AURIX_NAME=$(printf '%s\n' "$SER" | sed -n "${k}p" | cut -f3) ;; esac
+    if [ -n "$AURIX_NAME" ]; then
+      # the AURIX pins die on RS232: a flagged adapter is refused unless the user says yes (default NO);
+      # an unflagged one is confirmed as a 3.3 V TTL adapter (no = refused)
+      if [ -n "$(printf '%s\n' "$SER" | sed -n "${k}p" | cut -f4)" ]; then
+        show "$(t "ΠΡΟΣΟΧΗ: ο" "CAUTION:") $AURIX_NAME $(t "είναι μάλλον RS232 (+-12 V καταστρέφει τα pins του AURIX)." "is probably RS232 (+-12 V destroys the AURIX pins).")"
+        yesno "$(t "Να χρησιμοποιηθεί ΟΜΩΣ; Μόνο αν ελέγξατε ότι είναι 3.3 V TTL" "Use it ANYWAY? Only if you checked that it is 3.3 V TTL")" N || AURIX_NAME=""
+      else
+        yesno "$AURIX_NAME = $(t "προσαρμογέας 3.3 V TTL USB-UART (ΟΧΙ RS232);" "a 3.3 V TTL USB-UART adapter (NOT RS232)?")" Y || AURIX_NAME=""
+      fi
+      [ -n "$AURIX_NAME" ] || show "$(t "Απορρίφθηκε: ο προσαρμογέας AURIX μένει TBD" "Refused: the AURIX adapter stays TBD")"
+    fi
     ask k "$(t "Αριθμός του δέκτη AIS (Enter = κανένας / TBD)" "Number of the AIS receiver (Enter = none / TBD)")" ""
     case "$k" in ''|*[!0-9]*) ;; *) AIS_NAME=$(printf '%s\n' "$SER" | sed -n "${k}p" | cut -f3) ;; esac
     if [ -n "$AIS_NAME" ] && [ "$AIS_NAME" = "$AURIX_NAME" ]; then show "$(t "Ίδια συσκευή - το AIS μένει TBD" "Same device - AIS stays TBD")"; AIS_NAME=""; fi
@@ -571,7 +653,7 @@ logline "answers: boat=$BOAT keep_cfg=$KEEP_CFG users=$SEC_HOW/$NUSERS tailscale
 
 # 3. full upgrade + time zone
 head1 "$(t "3. ενημέρωση συστήματος" "3. system upgrade")"
-run env DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confold full-upgrade || fail_step "apt-get full-upgrade"
+run env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -y -o Dpkg::Options::=--force-confold full-upgrade || { fail_step "apt-get full-upgrade"; STEP_APT=fail; }
 run timedatectl set-timezone UTC || fail_step "timedatectl set-timezone UTC"
 
 # 4. install_ubuntu.sh (packages, user, folders, lid, battery 80 %, updates, interface names, service)
@@ -626,9 +708,11 @@ if ! q tailscale version >/dev/null; then
   run sh -c "curl -fsSL https://tailscale.com/install.sh | sh" || fail_step "Tailscale install"
 fi
 if [ -n "$TS_KEYFILE" ]; then
-  run tailscale up --auth-key="file:$TS_KEYFILE" --ssh --hostname=trygons-gw || fail_step "tailscale up"
+  TS_HOST=$(ts_host "$BOAT")   # one name per boat (two boats in one tailnet never collide)
+  STEP_TSUP=ok
+  run tailscale up --auth-key="file:$TS_KEYFILE" --ssh --hostname="$TS_HOST" || { fail_step "tailscale up"; STEP_TSUP=fail; }
   [ "$MODE" = real ] && rm -f "$TS_KEYFILE"
-  say "  $(t "Στο Tailscale admin console: Machines -> trygons-gw -> Disable key expiry" "In the Tailscale admin console: Machines -> trygons-gw -> Disable key expiry")"
+  say "  $(t "Στο Tailscale admin console: Machines ->" "In the Tailscale admin console: Machines ->") $TS_HOST -> Disable key expiry"
 fi
 
 # 7. video relay, vision, charts (as the gateway user, into the repository: tools/bin/, charts/)
@@ -636,7 +720,6 @@ head1 "$(t "7. MediaMTX, όραση, χάρτες" "7. MediaMTX, vision, charts"
 as_user python3 "$REPO/tools/get_mediamtx.py" || fail_step "tools/get_mediamtx.py"
 # tools/get_vision_python.py is the Windows way; on Ubuntu the same pinned packages go into a venv
 # at tools/bin/vision-python/ (toolpaths.vision_python() runs tools/bin/vision-python/python)
-VP="$REPO/tools/bin/vision-python"
 if ! q "$VP/python" -c "import onnxruntime, numpy" >/dev/null; then
   PKGS=$(pyrun -c "$PY_VISION_PKGS" "$REPO/tools" 2>/dev/null)
   [ -n "$PKGS" ] || PKGS="onnxruntime==1.20.1 numpy==2.1.3"
@@ -647,7 +730,8 @@ if ! q "$VP/python" -c "import onnxruntime, numpy" >/dev/null; then
 fi
 as_user python3 "$REPO/tools/get_vision_model.py" || fail_step "tools/get_vision_model.py"
 if [ "$MAKE_CHARTS" = 1 ]; then
-  as_user python3 "$REPO/tools/chartprep.py" --area "$AREA" || fail_step "$(t "χάρτες" "charts") $AREA (internet?)"
+  STEP_CHARTS=ok
+  as_user python3 "$REPO/tools/chartprep.py" --area "$AREA" || { fail_step "$(t "χάρτες" "charts") $AREA (internet?)"; STEP_CHARTS=fail; }
 else
   say "  $(t "χάρτες" "charts") $AREA: $(t "υπάρχουν, χωρίς αλλαγή" "present, unchanged")"
 fi
@@ -661,6 +745,7 @@ if [ "$CC" = 0 ]; then
   else
     run systemctl enable trygons-gateway || fail_step "systemctl enable"
     run systemctl restart trygons-gateway || fail_step "systemctl restart trygons-gateway"
+    RESTARTED=1
     if [ "$MODE" = real ]; then
       for k in $(seq 1 15); do
         q journalctl -u trygons-gateway --since "@$T0" --no-pager -o cat | grep -q "AURIX connected" && break

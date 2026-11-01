@@ -38,6 +38,8 @@ DIRTY_LIMIT_S = 0.5                 # 13i3 (review 835187d M-B): dirty() gives u
 _clock = time.monotonic             # tests replace it
 _cache = {}                         # repo -> dirty() result, once per process (the station start, About)
 _lock = threading.Lock()
+_repo_locks = {}                    # 13j2 (review ef51900 LOW-3): repo -> lock, ONE scan even with two threads
+HASH_MAX_BYTES = 8 * 1024 * 1024    # 13j2: a changed file bigger than this is never read = unknown (no mark)
 
 
 def clear_cache():
@@ -52,9 +54,14 @@ def dirty_cached(repo=REPO):
     with _lock:
         if key in _cache:
             return _cache[key]
-    d = dirty(repo)
-    with _lock:
-        _cache[key] = d
+        rl = _repo_locks.setdefault(key, threading.Lock())
+    with rl:                        # the splash thread and the main thread: the second one waits for the first
+        with _lock:
+            if key in _cache:
+                return _cache[key]
+        d = dirty(repo)
+        with _lock:
+            _cache[key] = d
     return d
 
 
@@ -64,7 +71,9 @@ def dirty(repo=REPO, max_files=20000, limit_s=None):
     its content is hashed (also with CRLF -> LF, core.autocrlf). Deleted = dirty. Untracked files don't
     count (like git describe --dirty). Unknown index format / no index: False.
     13i3 (review 835187d M-B): stops after limit_s (DIRTY_LIMIT_S, 0.5 s) = unknown = False (no mark, never
-    a wrong one): a copied / unzipped clone (every mtime differs) is never hashed for seconds at a start."""
+    a wrong one): a copied / unzipped clone (every mtime differs) is never hashed for seconds at a start.
+    13j2 (review ef51900 LOW-3): a changed file above HASH_MAX_BYTES is never read (unknown = False) - the
+    deadline is only checked between files."""
     import struct
     deadline = _clock() + (DIRTY_LIMIT_S if limit_s is None else limit_s)
     try:
@@ -118,6 +127,8 @@ def dirty(repo=REPO, max_files=20000, limit_s=None):
                 return True                                     # a tracked file deleted
             if st.st_size == size and int(st.st_mtime) == ms:
                 continue
+            if st.st_size > HASH_MAX_BYTES:
+                return False                                    # too big to hash at a start: unknown, no mark
             with open(fp, "rb") as g:
                 body = g.read()
             if _blob_sha(body) != sha and _blob_sha(body.replace(b"\r\n", b"\n")) != sha:

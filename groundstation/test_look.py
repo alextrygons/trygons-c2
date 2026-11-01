@@ -42,6 +42,14 @@ academy in the station's theme, Desktop shortcuts, no console windows in the dem
        killed)
   LK19 L6: focus_force really called on the splash window; BackgroundSplash next to a busy main Tk
 
+13j2 (review ef51900):
+  LK20 LOW-1: STOP_DEMO keeps the refused pids.json entries (and prints their pids) so a second STOP_DEMO
+       can try again; the file goes only when nothing was refused
+  LK21 LOW-2: a failing _facts() / state copy in BackgroundSplash.poll never raises out of the Tk
+       callback (no error every 100 ms) and close() still closes it
+  LK22 LOW-3: version.dirty_cached scans ONCE with two threads at the same time (per-repo lock); a changed
+       file above HASH_MAX_BYTES is never read (unknown = no mark)
+
 Run:  python test_look.py        (exit code 0 = all passed)
 """
 import os
@@ -992,6 +1000,141 @@ def lk19():
            "; ".join(bad) or "%d frames built while the splash watched" % frames)
 
 
+def lk20():
+    import json
+    import subprocess
+    demo = _demo()
+    bad = []
+    saved = dict(RUN=demo.RUN, PIDS=demo.PIDS, LOGS=demo.LOGS, kill_tree=demo.kill_tree, say=demo.say)
+    tmp = tempfile.mkdtemp(prefix="trygons_lk20_")
+    demo.RUN, demo.PIDS, demo.LOGS = tmp, os.path.join(tmp, "pids.json"), tmp
+    killed, said = [], []
+    demo.kill_tree = killed.append
+    demo.say = said.append
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], creationflags=demo.NO_WINDOW)
+    own = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], creationflags=demo.NO_WINDOW)
+    try:
+        own_id = demo.proc_ident(own.pid)
+        with open(demo.PIDS, "w", encoding="utf-8") as f:
+            json.dump({"simulator": other.pid, "gateway": own.pid, "station": 999999,
+                       "_id": {"simulator": "1234", "gateway": own_id}}, f)
+        demo.stop()
+        if killed != [own.pid]:
+            bad.append("killed %r (want only the matching one)" % killed)
+        left = json.load(open(demo.PIDS, encoding="utf-8")) if os.path.exists(demo.PIDS) else None
+        if left != {"simulator": other.pid, "_id": {"simulator": "1234"}}:
+            bad.append("pids.json after a refusal: %r" % left)
+        if not any(str(other.pid) in t and "tries again" in t for t in said):
+            bad.append("the refused pid not printed: %r" % said)
+        del killed[:]
+        demo.stop()                                  # the second STOP_DEMO sees it again (still refused)
+        if killed or not os.path.exists(demo.PIDS):
+            bad.append("second stop: killed %r, file %s" % (killed, os.path.exists(demo.PIDS)))
+        with open(demo.PIDS, "w", encoding="utf-8") as f:
+            json.dump({"gateway": own.pid, "_id": {"gateway": own_id}}, f)
+        demo.stop()
+        if os.path.exists(demo.PIDS):
+            bad.append("nothing refused but pids.json kept")
+    finally:
+        other.kill()
+        other.wait()
+        own.kill()
+        own.wait()
+        for k, v in saved.items():
+            setattr(demo, k, v)
+    report("LK20 LOW-1: STOP_DEMO keeps refused pids.json entries + prints their pids (a second STOP_DEMO "
+           "tries again); removed when nothing was refused", not bad, "; ".join(bad) or "3 cases")
+
+
+def lk21():
+    bad = []
+    errors = []
+    real_facts, real_rce = splash.BackgroundSplash._facts, tk.Tk.report_callback_exception
+    calls = []
+
+    def facts(self, sp):
+        calls.append(1)
+        if len(calls) > 1:                           # the first one (before the poll) works
+            raise RuntimeError("facts broken")
+        return real_facts(self, sp)
+
+    def rce(self, *a):
+        errors.append(a[1] if len(a) > 1 else a)
+    splash.BackgroundSplash._facts = facts
+    tk.Tk.report_callback_exception = rce
+    try:
+        bs = splash.BackgroundSplash(lang="en", fullscreen=False, max_s=20)
+        bs.step("splash.p_station")
+        time.sleep(0.8)
+        bs.close(wait_s=4)
+        if bs.th.is_alive():
+            bad.append("close() did not close it")
+        if len(calls) < 3:
+            bad.append("poll not running (%d facts calls)" % len(calls))
+        if errors:
+            bad.append("%d Tk callback errors: %r" % (len(errors), errors[:2]))
+    finally:
+        splash.BackgroundSplash._facts = real_facts
+        tk.Tk.report_callback_exception = real_rce
+    report("LK21 LOW-2: a failing _facts() in BackgroundSplash.poll never raises out of the Tk callback, "
+           "close() still works", not bad, "; ".join(bad) or "%d polls, no error" % len(calls))
+
+
+def lk22():
+    import threading as th
+    bad = []
+    n = []
+    real_d = version.dirty
+
+    def slow(repo=version.REPO, **k):
+        n.append(repo)
+        time.sleep(0.3)
+        return True
+    version.dirty = slow
+    version.clear_cache()
+    try:
+        out = []
+        ts = [th.Thread(target=lambda: out.append(version.dirty_cached(REPO))) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(5)
+        if len(n) != 1 or out != [True, True]:
+            bad.append("two threads: %d scans, results %r" % (len(n), out))
+    finally:
+        version.dirty = real_d
+        version.clear_cache()
+    r = _git_repo({"small.txt": b"one\n", "big.bin": b"z" * 200})
+    if r is None:
+        bad.append("git not found")
+    else:
+        with open(os.path.join(r, "big.bin"), "wb") as f:
+            f.write(b"y" * 200)                              # changed, same size, new mtime
+        _touch_all(r, 700)
+        cap = version.HASH_MAX_BYTES
+        if not version.dirty(r):
+            bad.append("a changed file below the cap not seen")
+        version.HASH_MAX_BYTES = 100
+        reads = []
+        real_open = open
+        import builtins
+
+        def spy(fp, *a, **k):
+            if str(fp).endswith("big.bin"):
+                reads.append(fp)
+            return real_open(fp, *a, **k)
+        builtins.open = spy
+        try:
+            got = version.dirty(r)
+        finally:
+            builtins.open = real_open
+            version.HASH_MAX_BYTES = cap
+        if got is not False or reads:
+            bad.append("above the cap: %r, read %d times" % (got, len(reads)))
+    report("LK22 LOW-3: dirty_cached = ONE scan with two threads (per-repo lock); a changed file above "
+           "HASH_MAX_BYTES is never read (unknown, no mark)", not bad, "; ".join(bad) or "both")
+
+
 def main():
     i18n.set_lang("el", save=False)
     lk1()
@@ -1016,6 +1159,9 @@ def main():
     lk17()
     lk18()
     lk19()
+    lk20()
+    lk21()
+    lk22()
     n = len(results)
     print("LOOK TESTS: %d/%d %s" % (sum(results), n, "PASS" if all(results) else "FAIL"))
     return 0 if all(results) else 1
