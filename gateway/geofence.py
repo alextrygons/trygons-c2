@@ -11,6 +11,7 @@ The fence never steers and never changes the throttle: it only refuses routes.
 
     valid(poly)                     -> (ok, why, cleaned [(lat, lon)])
     inside(poly, lat, lon)          -> bool
+    edge_m(poly, lat, lon)          -> distance (m) to the nearest fence edge (step 13q2d: the position uncertainty)
     check_route(poly, wps, start)   -> None or the reason (English: audit / protocol)
     Geofence(path).set(poly, user)  -> status() {"poly", "by", "t"}
 """
@@ -69,6 +70,22 @@ def inside(poly, lat, lon):
             if lon < x:
                 c = not c
     return c
+
+
+def edge_m(poly, lat, lon):
+    """Distance (m) from the point to the nearest edge of the fence (local flat x / y: fine for a boat's area)."""
+    kx = math.cos(math.radians(lat)) * 111320.0
+    best = float("inf")
+    n = len(poly)
+    for i in range(n):
+        (a0, o0), (a1, o1) = poly[i], poly[(i + 1) % n]
+        ax, ay = (o0 - lon) * kx, (a0 - lat) * 111320.0
+        bx, by = (o1 - lon) * kx, (a1 - lat) * 111320.0
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        f = 0.0 if L2 <= 0.0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / L2))
+        best = min(best, math.hypot(ax + f * dx, ay + f * dy))
+    return best
 
 
 def check_route(poly, wps, start=None, step_m=STEP_M):

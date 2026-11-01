@@ -946,6 +946,21 @@ MODES
              the usual ones (near the shore always 3 s, chapter 9 B). A
              copilot asking for HDG LOCK = a question on the captain's
              screen 1 (ACCEPT); STANDBY is always free.
+             NO DATA = SHALLOW (step 13q2d): HDG LOCK is refused (like an
+             AUTO start, code 114 / 6) when the gateway has no position, no
+             depth charts, a position too uncertain (more than 100 m), or
+             shallow water / the shore closer than 100 m ahead, and when the
+             GPS is not trusted. If the charts, the position or the shore
+             data from the gateway are lost while it runs: STOP (idle +
+             neutral, alarm SHALLOW WATER) - the boat checks this itself,
+             even if the gateway still answers. GPS lost / suspect while it
+             runs: like AUTO - it carries on by dead reckoning with the held
+             throttle cut to 70 %; dead reckoning too uncertain (200 m) or
+             longer than 10 min: STANDBY (idle + neutral first) + alarm.
+             Note: the shore stop works on what lies AHEAD (the gateway's
+             look-ahead of the course); the boat has no separate "shore
+             within 100 m all round" stop - a shore beside or behind the
+             boat does not stop it.
   AUTO       a waypoint program (up to 50 waypoints). Each waypoint has a
              leg speed, an arrival radius and an action: continue / slow
              down / stop in neutral. At the end: stop + alarm (or hold the

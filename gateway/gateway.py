@@ -122,6 +122,7 @@ class Gateway:
         self.shore_now = (0, 0xFFFF)    # last GW_SHORE: (flags, distance m)
         self.nav_last = None
         self.nav_sent = 0
+        self.nav_skipped = 0                # navreqs not sent: no fresh telemetry (step 13q2d)
         self.nav_state = {"shallow": None, "threats": [], "route": [], "state": "CLEAR", "why": ""}
         self.stations.prog_check = self.check_prog
         # geofence (CLAUDE.md D): routes must stay inside; a copilot's change waits for the captain's ACCEPT
@@ -219,19 +220,44 @@ class Gateway:
 
     # --- shallow water (section C) + navigation requests ------------------------------
     def own(self):
-        d = self.telem or {}
-        if not d or d.get("pos_source", 0) == 0:
-            return {"lat": None}
-        return {"lat": d.get("est_lat"), "lon": d.get("est_lon"), "sog": d.get("est_sog"), "cog": d.get("est_cog"),
-                "heading": d.get("heading"), "mode": d.get("mode"),
-                "dp_sub": d.get("dp_sub") if d.get("mode") == proto.MODE_DP else None,
-                "profile": (self.telem2 or {}).get("profile", d.get("profile"))}
+        """The boat from the FRESH telemetry (telem_fresh, step 13q2d review LOW-1: a frozen copy never renews a
+        'no danger' lease). No fresh telemetry = nothing known (no mode either); no position (pos_source 0) =
+        lat None but the mode / profile still known (MED-1: UNCREWED HDG LOCK then = cannot evaluate = STOP)."""
+        d = self.telem_fresh() or {}
+        if not d:
+            return {"lat": None, "fresh": False}
+        o = {"lat": None, "fresh": True, "mode": d.get("mode"),
+             "dp_sub": d.get("dp_sub") if d.get("mode") == proto.MODE_DP else None,
+             "profile": (self.telem2 or {}).get("profile", d.get("profile"))}
+        if d.get("pos_source", 0) == 0:
+            return o
+        o.update({"lat": d.get("est_lat"), "lon": d.get("est_lon"), "sog": d.get("est_sog"), "cog": d.get("est_cog"),
+                  "heading": d.get("heading"), "unc": d.get("unc_m")})
+        return o
 
     @staticmethod
     def hdg_uncrewed(o):
         """UNCREWED HDG LOCK (step 13q2c, owner 2026-11-01): the navigation request acts like AUTO but only slows /
         stops (never a heading); a geofence breach -> the AURIX goes to STANDBY."""
         return o.get("mode") == proto.MODE_HDG_LOCK and o.get("profile") == proto.PROFILE_UNCREWED
+
+    def uh_check(self, o):
+        """UNCREWED HDG LOCK (step 13q2d, review MED-1 / MED-2): -> (why, fence_out). why = the reason to STOP
+        (English) when the gateway cannot evaluate (no position, no charts, the position too uncertain) or shallow
+        water / water without chart data lies within the position uncertainty; fence_out = outside the geofence
+        or closer to its edge than the uncertainty (None = no fence / no position)."""
+        unc = o.get("unc") or 0.0
+        fence = None
+        if self.geofence.poly and o.get("lat") is not None:
+            from geofence import inside, edge_m
+            fence = (not inside(self.geofence.poly, o["lat"], o["lon"]) or
+                     edge_m(self.geofence.poly, o["lat"], o["lon"]) <= unc)
+        why = self.shallow.uh_unknown(o)
+        if why:
+            return why, fence
+        if unc > 0.0 and self.shallow.near_m(o, unc) is not None:
+            return "shallow water within the position uncertainty (%.0f m)" % unc, fence
+        return None, fence
 
     def nav_auto(self, o):
         """The navigation request applies like in AUTO: AUTO, or a DP TRIP (CLAUDE.md P; the AURIX's nav_applies)."""
@@ -241,6 +267,8 @@ class Gateway:
         """Program upload / AUTO start / AUTO return / DP TRIP start through the gateway: refused across shallow
         water (114) or out of the geofence (120). -> None (fine), the refusal text (114) or (code, text)."""
         import struct as _st
+        if ftype == proto.T_SET_MODE:
+            return self.check_hdg_shore(st, payload)
         if ftype == proto.T_PROG_BEGIN and len(payload) >= 2:
             st.prog_up = {"n": payload[0], "wps": {}}
         elif ftype == proto.T_PROG_WP and len(payload) >= 18 and getattr(st, "prog_up", None):
@@ -311,6 +339,31 @@ class Gateway:
                 return 120, why
         return None
 
+    def check_hdg_shore(self, st, payload):
+        """SET_MODE HDG LOCK (step 13q2d, review MED-1): the UNCREWED entry from REMOTE / MANEUVER is refused like an
+        AUTO start (114) when the gateway can't evaluate the water (no fresh telemetry / position, no charts, the
+        position too uncertain) or shallow water / the shore is closer than stop_m ahead; 120 outside (or at the
+        edge of) the geofence. CREWED (fresh telemetry) or another mode: the AURIX decides (it refuses those)."""
+        if payload[:1] != bytes([proto.MODE_HDG_LOCK]):
+            return None
+        o = self.own()
+        if o.get("fresh") and (o.get("profile") == proto.PROFILE_CREWED or
+                               o.get("mode") not in (proto.MODE_REMOTE, proto.MODE_MANEUVER)):
+            return None
+        why, fence = (("no fresh telemetry from the boat", None) if not o.get("fresh") else self.uh_check(o))
+        if not why and o["lat"] is not None:
+            sh = self.shallow.watch(o)
+            if sh and sh.get("dist_m", 1e9) <= self.shallow.cfg["stop_m"] + (o.get("unc") or 0.0):
+                why = "shallow water / the shore %.0f m ahead (depth %s)" % (sh["dist_m"], sh.get("depth"))
+        if why:
+            self.audit("hdg_lock_refused", station=st.id, user=st.user, why=why)
+            return why
+        if fence:
+            why = "outside / at the edge of the geofence"
+            self.audit("hdg_lock_refused", station=st.id, user=st.user, why=why)
+            return 120, why
+        return None
+
     def prog_committed(self, result):
         """The AURIX's answer to a PROG_COMMIT sent through the gateway: accepted = the checked waypoints are
         the boat's program now (the DP TRIP / AUTO checks use them)."""
@@ -366,9 +419,14 @@ class Gateway:
                 self.avoider.hdg_set_sent()
                 self.hdg_set_until = 0.0
         sh = self.shallow.watch(o) if o["lat"] is not None else None
+        uh_why, fence = self.uh_check(o) if uh else (None, None)
+        if uh_why:
+            # UNCREWED HDG LOCK and the gateway can't evaluate (no position / charts / too uncertain) or shallow water
+            # within the uncertainty: no data = shallow = STOP (never a 'no danger' lease built on missing data)
+            sh = dict(sh or {}, why=uh_why, dist_m=0.0)
         if sh and (self.nav_auto(o) or uh):                # AUTO / a DP TRIP / UNCREWED HDG LOCK: slow down (SHALLOW)
             slow = self.shallow.cfg["slow_kn"]
-            if uh and sh.get("dist_m", 1e9) <= self.shallow.cfg["stop_m"]:
+            if uh and (uh_why or sh.get("dist_m", 1e9) <= self.shallow.cfg["stop_m"] + (o.get("unc") or 0.0)):
                 slow = 0.0                                 # UNCREWED HDG LOCK: shallow / shore close ahead = STOP
             req["cap_kn"] = min(req["cap_kn"] if req["cap_kn"] is not None else 1e9, slow)
             if req["kind"] == proto.NAV_NONE:
@@ -384,12 +442,8 @@ class Gateway:
         req["alarm"] |= v_alarm
         req["reason"] |= v_why
         # UNCREWED HDG LOCK outside the geofence: the AURIX goes to STANDBY (alarm bit 16; ignored in other modes)
-        fence = None
-        if uh and o["lat"] is not None and self.geofence.poly:
-            from geofence import inside
-            if not inside(self.geofence.poly, o["lat"], o["lon"]):
-                fence = True
-                req["alarm"] |= ALM_FENCE
+        if fence:                                          # (uh_check: outside, or nearer the edge than the uncertainty)
+            req["alarm"] |= ALM_FENCE
         self.nav_state = dict(self.avoider.status(), shallow=sh, fence_out=fence)
         return req
 
@@ -470,10 +524,21 @@ class Gateway:
                                                              req["heading"], req["cap_kn"], 3000))
         self.nav_sent += 1
 
+    def nav_tick(self):
+        """One navigation request. No fresh AURIX telemetry = nothing is known, so no lease is renewed (step 13q2d,
+        review LOW-1): the AURIX's lease runs out (a slowdown held, DRIVER DECISION; in UNCREWED HDG LOCK every lapsed
+        lease) instead of a 'no danger' built on old data. -> True when sent."""
+        req = self.nav_compose()
+        if self.telem_fresh() is None:
+            self.nav_skipped += 1
+            return False
+        self.nav_send(req)
+        return True
+
     async def nav_loop(self):
         while True:
             try:
-                self.nav_send(self.nav_compose())
+                self.nav_tick()
             except Exception:
                 log.exception("navigation request")
             await asyncio.sleep(self.cfg.get("nav_s", 0.5))

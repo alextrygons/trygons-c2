@@ -461,6 +461,9 @@ typedef struct {
     bool     lost;              /* shore data stale: idle + neutral, STANDBY after remote_lost_ms */
     uint32_t lost_ms;
     uint32_t entries, refused, nav_cuts, stops, fence_stops, losses;
+    /* step 13q2d: STOPs because the gateway's shore data is missing / not valid, entries refused for it (or for an
+     * untrusted GPS), held-throttle cuts on dead reckoning, STANDBYs for the DR limit / no position */
+    uint32_t nodata_stops, nodata_refused, dr_cuts, dr_stops;
 } sb_shdg_t;
 
 /* The HELM station's (shore captain's) joystick as a CONFIRM source in
@@ -954,7 +957,9 @@ sb_result_t sb_maneuver_request(sb_t *s, uint8_t station);
  * REMOTE / MANEUVER (SB_ERR_WRONG_MODE otherwise), shore data fresh (SB_ERR_JOY_NOT_READY) and not stale in REMOTE
  * (SB_ERR_PRECOND), the shore stick X / Y centred (SB_ERR_NOT_CENTERED; the lever is NOT checked: it becomes the
  * ceiling), compass, no gear fault, gear settled in F or N (SB_ERR_PRECOND). Locks the current heading, holds the
- * throttle (see sb_shdg_t). CREWED: SB_ERR_NOT_ALLOWED (the panel button only, unchanged). */
+ * throttle (see sb_shdg_t). CREWED: SB_ERR_NOT_ALLOWED (the panel button only, unchanged).
+ * Step 13q2d: also SB_ERR_PRECOND without valid fresh shore data from the gateway (sb_shore_valid: charts + a
+ * position) or without a trusted GPS. */
 sb_result_t sb_hdg_lock_shore(sb_t *s, uint8_t station);
 /* true while UNCREWED HDG LOCK runs */
 bool sb_shore_hdg(const sb_t *s);
@@ -976,6 +981,8 @@ void sb_gw_shore(sb_t *s, uint8_t flags, uint16_t dist_m);
 /* Near shore for the lost-link rule: closer than near_shore_m, or the shore
  * information is missing / stale / not valid (fail safe). */
 bool sb_near_shore(const sb_t *s);
+/* Step 13q2d: the shore data is fresh (shore_max_age_ms, gateway OK) and valid (chart data + a position). */
+bool sb_shore_valid(const sb_t *s);
 /* Seconds left before the open-sea kill (0 if not counting). */
 float sb_lostlink_left_s(const sb_t *s);
 /* LINK TIME (step 13q1): the HELM captain's link-loss detection time, 3..60 s (PROTO_T_LINK_TIME; link.c checks

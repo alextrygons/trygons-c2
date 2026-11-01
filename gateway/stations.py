@@ -157,6 +157,12 @@ class Station:
                 "crew": self.crew}
 
 
+# the commands the gateway checks itself before forwarding (Gateway.check_prog: shallow water 114, geofence 120,
+# route not checked 121); step 13q2d: SET_MODE (HDG LOCK = the UNCREWED entry from REMOTE / MANEUVER)
+PROG_CHECK_TYPES = (proto.T_PROG_BEGIN, proto.T_PROG_WP, proto.T_PROG_COMMIT, proto.T_AUTO_START, proto.T_AUTO_RESUME,
+                    proto.T_AUTO_RETURN, proto.T_DP, proto.T_SET_MODE)
+
+
 class StationServer:
     def __init__(self, gw, cfg):
         self.gw = gw
@@ -444,8 +450,7 @@ class StationServer:
             # a copilot never takes HELM from the captain (that is the role swap); a licensed user may take a
             # FREE HELM and so becomes the captain
             return self.refuse(st, seq, ftype, 117)
-        if self.prog_check and ftype in (proto.T_PROG_BEGIN, proto.T_PROG_WP, proto.T_PROG_COMMIT,
-                                         proto.T_AUTO_START, proto.T_AUTO_RESUME, proto.T_AUTO_RETURN, proto.T_DP):
+        if self.prog_check and ftype in PROG_CHECK_TYPES:
             why = self.prog_check(st, ftype, payload)
             if why:
                 code, why = why if isinstance(why, tuple) else (114, why)

@@ -4173,15 +4173,31 @@ def section_uh():
         def depth(self, la, lo):
             return 1.0 if la >= self.shoal_lat else 30.0
 
+        def nearest_shallow_m(self, la, lo, limit, max_m):
+            d = (self.shoal_lat - la) * 111120.0
+            return max(0.0, d) if d <= max_m else None
+
     class Fence:
         def __init__(self, poly):
             self.poly = poly
 
-    def stub(mode, profile, shoal_m=None, fence=None, sog=6.0):
+    def stub(mode, profile, shoal_m=None, fence=None, sog=6.0, pos=1, unc=5.0, age=0.0, link=True, cog=0.0):
         s = types.SimpleNamespace()
-        s.telem = {"pos_source": 1, "est_lat": lat0, "est_lon": lon0, "est_sog": sog, "est_cog": 0.0,
-                   "heading": 0.0, "mode": mode}
+        s.telem = {"pos_source": pos, "est_lat": lat0, "est_lon": lon0, "est_sog": sog, "est_cog": cog,
+                   "heading": cog, "mode": mode, "unc_m": unc}
         s.telem2 = {"profile": profile}
+        s.TELEM_MAX_AGE_S = G.TELEM_MAX_AGE_S
+        s.telem_rx = time.time() - age
+        s.aurix = types.SimpleNamespace(connected=link)
+        s.telem_fresh = types.MethodType(G.telem_fresh, s)
+        s.uh_check = types.MethodType(G.uh_check, s)
+        s.check_hdg_shore = types.MethodType(G.check_hdg_shore, s)
+        s.nav_compose = types.MethodType(G.nav_compose, s)
+        s.audits = []
+        s.audit = lambda kind, **kw: s.audits.append((kind, kw))
+        s.sent = []
+        s.nav_send = lambda req: s.sent.append(req)
+        s.nav_skipped = 0
         s.avoider = Avoider()
         s.ais = types.SimpleNamespace(list=lambda: [])
         s.hdg_set_until = 0.0
@@ -4268,6 +4284,90 @@ def section_uh():
            "the captain's ACCEPT; AUTO pause stays free",
            fresh and not old and not down and pause,
            "fresh STANDBY free %s; 5 s old %s; AURIX down %s; AUTO pause %s" % (fresh, old, down, pause))
+
+    # UH6 (step 13q2d, review MED-1 / MED-2) "no data = shallow" in UNCREWED HDG LOCK: no position (pos_source 0), no
+    # charts, a position uncertainty above unc_max_m, or shallow water within the uncertainty = cannot evaluate = STOP
+    # (cap 0, SHALLOW alarm) - never a 'no danger' lease; the look-ahead stop distance grows by the uncertainty.
+    # CREWED HDG LOCK / AUTO / REMOTE without a position or charts: unchanged (no cap)
+    def sh(r):
+        return (r["kind"], r["cap_kn"], r["alarm"] & 4)
+    nopos = G.nav_compose(stub(H, U, shoal_m=5000.0, pos=0))
+    nochart = G.nav_compose(stub(H, U))
+    bigunc = G.nav_compose(stub(H, U, shoal_m=5000.0, unc=150.0))
+    within = G.nav_compose(stub(H, U, shoal_m=40.0, unc=60.0, cog=180.0))   # (near_m: shallow 40 m astern)
+    behind = G.nav_compose(stub(H, U, shoal_m=40.0, unc=5.0, cog=180.0))    # (astern, unc 5 m: not ahead = none)
+    ahead = G.nav_compose(stub(H, U, shoal_m=130.0, unc=60.0))             # ~130 m <= stop_m 100 + 60
+    ahead_small = G.nav_compose(stub(H, U, shoal_m=130.0, unc=5.0))        # ~130 m > 105: slow only
+    clear = G.nav_compose(stub(H, U, shoal_m=5000.0, unc=5.0))
+    c_nopos = G.nav_compose(stub(H, C, pos=0))
+    c_nochart = G.nav_compose(stub(H, C))
+    a_nochart = G.nav_compose(stub(proto.MODE_AUTO, U))
+    r_nopos = G.nav_compose(stub(proto.MODE_REMOTE, U, pos=0))
+    stop = (proto.NAV_CAP, 0.0, 4)
+    report("UH6 (13q2d) UNCREWED HDG LOCK: no position / no charts / uncertainty > unc_max_m / shallow within the "
+           "uncertainty = STOP (cap 0); the stop distance grows by the uncertainty; CREWED / AUTO / REMOTE unchanged",
+           sh(nopos) == stop and sh(nochart) == stop and sh(bigunc) == stop and sh(within) == stop and
+           behind["kind"] == proto.NAV_NONE and sh(ahead) == stop and ahead_small["cap_kn"] == 4.0 and clear["kind"] == proto.NAV_NONE and
+           c_nopos["kind"] == proto.NAV_NONE and c_nochart["kind"] == proto.NAV_NONE and
+           a_nochart["kind"] == proto.NAV_NONE and r_nopos["kind"] == proto.NAV_NONE,
+           "no position %s, no charts %s, unc 150 m %s, shoal 40 m astern with unc 60 m %s / unc 5 m %s, 130 m ahead unc 60 %s / unc 5 "
+           "%s, clear %s; CREWED no position %s / no charts %s; AUTO no charts %s; REMOTE no position %s" % (
+               sh(nopos), sh(nochart), sh(bigunc), sh(within), sh(behind), sh(ahead), sh(ahead_small), sh(clear), sh(c_nopos),
+               sh(c_nochart), sh(a_nochart), sh(r_nopos)))
+
+    # UH7 (step 13q2d, review LOW-1) a frozen telemetry copy (older than 3 s / the AURIX link down) is NOT used: own()
+    # knows nothing, and the navigation request is NOT sent (no 'no danger' lease renewed on old data); fresh = sent
+    st_fresh, st_old, st_down = stub(H, U, shoal_m=5000.0), stub(H, U, shoal_m=5000.0, age=5.0), \
+        stub(H, U, shoal_m=5000.0, link=False)
+    o_old = G.own(st_old)
+    sent_fresh, sent_old, sent_down = G.nav_tick(st_fresh), G.nav_tick(st_old), G.nav_tick(st_down)
+    report("UH7 (13q2d LOW-1) a frozen telemetry copy: own() knows nothing, no navreq lease is sent; fresh = sent",
+           o_old.get("lat") is None and not o_old.get("fresh") and o_old.get("mode") is None and sent_fresh and
+           len(st_fresh.sent) == 1 and not sent_old and not st_old.sent and st_old.nav_skipped == 1 and
+           not sent_down and not st_down.sent,
+           "old own() %s; sent fresh %s (%d), 5 s old %s (%d, skipped %d), AURIX down %s (%d)" % (
+               o_old, sent_fresh, len(st_fresh.sent), sent_old, len(st_old.sent), st_old.nav_skipped, sent_down,
+               len(st_down.sent)))
+
+    # UH8 (step 13q2d, review MED-1) the UNCREWED SET_MODE HDG LOCK from REMOTE / MANEUVER is refused like an AUTO
+    # start (114) when the gateway can't evaluate (no fresh telemetry / position / charts, uncertainty too big) or
+    # shallow water / the shore is closer than stop_m ahead; 120 outside the geofence; fine = forwarded; CREWED /
+    # STANDBY / another mode: the AURIX decides
+    hl, sbm = proto.p_set_mode(H), proto.p_set_mode(proto.MODE_STANDBY)
+    R, M = proto.MODE_REMOTE, proto.MODE_MANEUVER
+    who = types.SimpleNamespace(id=2, user="alice")
+
+    def chk(s_, pl=hl):
+        return G.check_prog(s_, who, proto.T_SET_MODE, pl)
+    cases = {"ok": chk(stub(R, U, shoal_m=5000.0)), "maneuver_ok": chk(stub(M, U, shoal_m=5000.0)),
+             "no_pos": chk(stub(R, U, shoal_m=5000.0, pos=0)), "no_charts": chk(stub(R, U)),
+             "unc": chk(stub(R, U, shoal_m=5000.0, unc=150.0)), "shoal": chk(stub(R, U, shoal_m=60.0)),
+             "stale": chk(stub(R, U, shoal_m=5000.0, age=5.0)),
+             "fence": chk(stub(R, U, shoal_m=5000.0, fence=box_out)),
+             "crewed": chk(stub(R, C)), "standby_cmd": chk(stub(R, U), sbm), "from_auto": chk(stub(proto.MODE_AUTO, U))}
+    st_a = stub(R, U, pos=0)
+    chk(st_a)
+    txt = lambda v: isinstance(v, str)
+    report("UH8 (13q2d MED-1) UNCREWED HDG LOCK entry refused without a position / charts / fresh telemetry, too "
+           "uncertain or shallow close ahead (114), outside the geofence (120); CREWED / STANDBY / AUTO -> the AURIX",
+           cases["ok"] is None and cases["maneuver_ok"] is None and txt(cases["no_pos"]) and txt(cases["no_charts"]) and
+           txt(cases["unc"]) and txt(cases["shoal"]) and txt(cases["stale"]) and
+           isinstance(cases["fence"], tuple) and cases["fence"][0] == 120 and cases["crewed"] is None and
+           cases["standby_cmd"] is None and cases["from_auto"] is None and
+           [k for k, _ in st_a.audits] == ["hdg_lock_refused"] and proto.T_SET_MODE in stmod.PROG_CHECK_TYPES,
+           "; ".join("%s %s" % (k, v) for k, v in cases.items()) + "; audit %s" % st_a.audits)
+
+    # UH9 (step 13q2d, review MED-2) the geofence with the position uncertainty: inside but nearer the edge than the
+    # uncertainty = a breach (alarm 16); far enough inside = none
+    box_tight = [(lat0 - 0.01, lon0 - 0.01), (lat0 - 0.01, lon0 + 0.01), (lat0 + 50.0 / 111320.0, lon0 + 0.01),
+                 (lat0 + 50.0 / 111320.0, lon0 - 0.01)]                  # the north edge 50 m from the boat
+    e_big = G.nav_compose(stub(H, U, shoal_m=5000.0, fence=box_tight, unc=60.0, sog=0.0))
+    e_small = G.nav_compose(stub(H, U, shoal_m=5000.0, fence=box_tight, unc=10.0, sog=0.0))
+    import geofence as gfmod
+    em = gfmod.edge_m(box_tight, lat0, lon0)
+    report("UH9 (13q2d MED-2) geofence: nearer the edge than the position uncertainty = breach (alarm 16)",
+           e_big["alarm"] & 16 and not e_small["alarm"] & 16 and 45.0 < em < 55.0,
+           "edge %.1f m; unc 60 m alarm %s; unc 10 m alarm %s" % (em, e_big["alarm"], e_small["alarm"]))
 
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,

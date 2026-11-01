@@ -20,7 +20,8 @@
  * Step 13q2: UNCREWED REMOTE / MANEUVER start at once on the request (shore stick centred + lever neutral), no
  * release; REMOTE / MANEUVER -> AUTO / DP straight; invariants I63-I64 (I7 for REMOTE / MANEUVER = CREWED only); step 13q2b: I65 (no AUTO RETURN out of REMOTE / MANEUVER).
  * Step 13q2c: UNCREWED HDG LOCK from REMOTE / MANEUVER by the HELM captain's command (E_SHDG, after some UNCREWED
- * REMOTE / MANEUVER requests; navigation requests with a STOP cap / a geofence breach); invariants I66-I68.
+ * REMOTE / MANEUVER requests; navigation requests with a STOP cap / a geofence breach); invariants I66-I68;
+ * step 13q2d: I69 (no shore data / GPS lost in UNCREWED HDG LOCK).
  * A failing episode is replayed with fewer events until the shortest
  * schedule that still fails remains (the "minimal reproduction").
  *
@@ -343,6 +344,17 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                     s->on[s->n - 1] = true;
                     t = lv->t;
                 }
+                /* step 13q2d (I69): in half of them the GPS lost (dead reckoning) or the gateway's shore data gone /
+                 * not valid 1-2 s into the HDG LOCK (before any navreq below) */
+                if (eb % 2 == 0 && s->n + 2 < MAX_EV) {
+                    ev_t *g0 = &s->ev[s->n++];
+                    memset(g0, 0, sizeof *g0);
+                    g0->t = t + 1000u + (uint32_t)(ec % 3) * 500u;
+                    g0->kind = ((eb / 2) % 2 == 0) ? E_GPS : E_SHORE;
+                    g0->a = ((eb / 2) % 2 == 0) ? ec % 400 : (ec % 2 == 0 ? 0 : 3);
+                    s->on[s->n - 1] = true;
+                    t = g0->t;
+                }
                 /* ... and mostly a gateway request a few seconds later: a STOP (cap 0) or a geofence breach (I68) */
                 if ((ea + ec) % 3 != 0 && s->n + 1 < MAX_EV) {
                     ev_t *nr = &s->ev[s->n++];
@@ -355,6 +367,16 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                     nr->f = 0.3f;
                     s->on[s->n - 1] = true;
                     t = nr->t;
+                } else if (s->n + 1 < MAX_EV) {
+                    /* step 13q2d (I69): otherwise the GPS lost (dead reckoning) or the gateway's shore data gone /
+                     * not valid a few seconds later */
+                    ev_t *gl = &s->ev[s->n++];
+                    memset(gl, 0, sizeof *gl);
+                    gl->t = t + 2000u + (uint32_t)(eb % 5) * 1000u;
+                    gl->kind = (eb % 3 == 0) ? E_SHORE : E_GPS;
+                    gl->a = (eb % 3 == 0) ? (eb % 2 == 0 ? 0 : 3) : eb % 400;   /* shore none / not valid; GPS fail */
+                    s->on[s->n - 1] = true;
+                    t = gl->t;
                 }
             }
         }
@@ -628,7 +650,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 69
+#define NINV 70
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -694,7 +716,8 @@ static const char *INV_NAMES[NINV] = { "",
     "I65 AUTO RETURN never out of REMOTE / MANEUVER: refused there (nothing pending), never started from them",
     "I66 HDG LOCK straight from REMOTE / MANEUVER only UNCREWED by the HELM captain's command (fresh shore data, stick centred); CREWED never (the panel button only)",
     "I67 UNCREWED HDG LOCK: the throttle never above its value at the entry (never rises by itself), never reverse, the gear only the entry gear or N",
-    "I68 UNCREWED HDG LOCK: a navreq STOP (cap 0) = idle + neutral for the rest of it; a geofence breach = STANDBY in that step; stale shore data = idle + neutral" };
+    "I68 UNCREWED HDG LOCK: a navreq STOP (cap 0) = idle + neutral for the rest of it; a geofence breach = STANDBY in that step; stale shore data = idle + neutral",
+    "I69 UNCREWED HDG LOCK (13q2d): never entered without valid fresh GW_SHORE / a trusted GPS; GW_SHORE missing / not valid = idle + neutral; GPS lost = held x dr_speed_factor; the DR limit = STANDBY" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -706,6 +729,8 @@ typedef struct {
     uint32_t dp_trip_ret;           /* I59: DP TRIP steps while an AUTO RETURN was latched */
     uint32_t rem_req[16], remote_entries, remote_direct, release_tries;
     uint32_t uh_entries, uh_refused, uh_stops, uh_fence, uh_stale;    /* step 13q2c (I66-I68) */
+    uint32_t uh_nodata, uh_dr, uh_drlim;                              /* step 13q2d (I69): steps checked */
+    uint32_t uh_nodata_hot, uh_dr_hot;                                /* ... of them with a held throttle > 2 % */
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
 } stats_t;
@@ -832,6 +857,12 @@ typedef struct {
     float    uh_cap, uh_thr0;               /* I67: the entry throttle (demand cap / output) */
     int      uh_gear0;                      /* I67: the gear at the entry (gear_pos: 0 N, 1 F) */
     bool     uh_stopped;                    /* I68: a STOP seen in this HDG LOCK */
+    bool     uh_entry_bad;                  /* I69 (13q2d): entered while the storm's shore data / GPS was clearly bad */
+    uint32_t uh_entry_t;
+    bool     uh_nodata;                     /* I69: the shore data clearly bad in this HDG LOCK (latched) */
+    uint32_t uh_nodata_t;
+    int      uh_drlim_n;                    /* I69: consecutive HDG LOCK steps past the DR limit */
+    int      uh_dr_n;                       /* I69: consecutive HDG LOCK steps without a trusted GPS */
     uint32_t near_since61;                  /* I60 */
     uint32_t gear_n_since28;                /* I28: the gear machine settled in N since (0 = not) */
     uint32_t rem_direct_t;                  /* I7 / I63: an UNCREWED REMOTE / MANEUVER request that started it at once */
@@ -854,6 +885,14 @@ static void fail(int inv, const char *fmt, double a, double b)
 }
 
 static void ok(int inv) { ST.checks[inv]++; }
+
+/* I69 (step 13q2d): the shore data the storm's gateway sent is clearly NOT valid on the AURIX now - nothing sent for
+ * longer than shore_max_age_ms + 200 ms, or the last frame said "not valid" (mode 3) and had 100 ms to arrive */
+static bool shore_clearly_bad(const sb_t *s)
+{
+    if (!S.shore_tx_t || S.t - S.shore_tx_t > s->cfg.shore_max_age_ms + 200u) return true;
+    return S.shore_tx_mode == 3u && S.t - S.shore_tx_t >= 100u;
+}
 
 /* one GW_RJOY packet of the HELM station's (shore) joystick, as the storm sends it (I63 remembers it) */
 static void shore_packet(sb_t *s)
@@ -1341,6 +1380,13 @@ static void check_step(void)
         }
         C.uh_session = s->profile == SB_PROFILE_UNCREWED;
         C.uh_stopped = false;
+        C.uh_nodata = false;
+        C.uh_drlim_n = C.uh_dr_n = 0;
+        if (C.uh_session && C.uh_entry_t && S.t - C.uh_entry_t <= 100u) {
+            if (C.uh_entry_bad) fail(69, "UNCREWED HDG LOCK entered without valid shore data / a trusted GPS%.0f%.0f",
+                                     0.0, 0.0);
+            else ok(69);
+        }
     }
     if (m != MODE_HDG_LOCK) C.uh_session = false;
     if (C.uh_session && C.mode_prev == MODE_HDG_LOCK && m == MODE_HDG_LOCK && !forced && !inj) {
@@ -1375,9 +1421,43 @@ static void check_step(void)
                       (double)(S.t - C.rem_last_fresh), s->throttle_demand);
         }
     }
+    if (C.uh_session && C.mode_prev == MODE_HDG_LOCK && m == MODE_HDG_LOCK && !forced && !inj) {
+        /* I69 (step 13q2d): the AURIX's own "no data = shallow" - shore data clearly bad = idle + N from 2 steps on
+         * (latched for this HDG LOCK) */
+        if (!C.uh_nodata && shore_clearly_bad(s)) { C.uh_nodata = true; C.uh_nodata_t = S.t; }
+        if (C.uh_nodata && S.t - C.uh_nodata_t >= 2u * AP_PERIOD_MS) {
+            ST.uh_nodata++;
+            if (C.uh_cap > 2.0f && C.uh_gear0 == 1) ST.uh_nodata_hot++;
+            if (s->throttle_demand <= 0.0f && s->gear_demand == GEAR_N) ok(69);
+            else fail(69, "UNCREWED HDG LOCK without valid shore data: throttle demand %.2f %%, gear demand %.0f",
+                      s->throttle_demand, (double)s->gear_demand);
+        }
+        /* GPS not trusted: dead reckoning at reduced power; past the DR limit: STANDBY (2 steps allowed) */
+        if (!sb_gps_ok(s)) {
+            C.uh_dr_n++;
+            bool lim = s->dr.unc_m > s->cfg.dr_max_unc_m ||
+                       dr_dr_time_s(&s->dr, s->now_ms) * 1000.0f > (float)s->cfg.dr_max_ms;
+            C.uh_drlim_n = lim ? C.uh_drlim_n + 1 : 0;
+            if (C.uh_dr_n >= 2) {
+                ST.uh_dr++;
+                if (C.uh_cap > 2.0f && C.uh_gear0 == 1) ST.uh_dr_hot++;
+                if (s->throttle_demand <= C.uh_cap * s->cfg.dr_speed_factor + 0.01f) ok(69);
+                else fail(69, "UNCREWED HDG LOCK on dead reckoning: throttle demand %.2f %% above %.2f %%",
+                          s->throttle_demand, C.uh_cap * s->cfg.dr_speed_factor);
+            }
+            if (C.uh_drlim_n >= 3) {
+                fail(69, "UNCREWED HDG LOCK still running %.0f steps past the DR limit (unc %.0f m)",
+                     (double)C.uh_drlim_n, s->dr.unc_m);
+            }
+        } else {
+            C.uh_dr_n = 0;
+            C.uh_drlim_n = 0;
+        }
+    }
     if (m == MODE_STANDBY && C.mode_prev == MODE_HDG_LOCK) {
         const mode_log_entry_t *le = mode_log_get(&s->modes, mode_log_size(&s->modes) - 1u);
         if (le && le->why == WHY_GEOFENCE) { ok(68); ST.uh_fence++; }
+        if (le && (le->why == WHY_DR_LIMIT || le->why == WHY_GPS_LOST) && C.uh_session) { ok(69); ST.uh_drlim++; }
     }
 
     /* I22: UNCREWED - the onboard joystick has no effect */
@@ -2038,7 +2118,10 @@ static void apply(const ev_t *e)
         sb_mode_t before = sb_mode(s);
         float thr_before = fmaxf(sim_hal_throttle(), s->thr.out_pct);
         int gp_before = gear_pos(sim_hal_gear_pwm());
+        bool bad_before = shore_clearly_bad(s) || !sb_gps_ok(s);      /* I69 (13q2d) */
         sb_result_t rr = sb_hdg_lock_shore(s, s->helm);
+        C.uh_entry_t = S.t ? S.t : 1u;
+        C.uh_entry_bad = bad_before;
         if (sb_mode(s) != before) {
             bool fresh = C.sent_t && C.sent_fresh && S.t - C.sent_t <= 300u && fabsf(C.sent_x) <= 0.10f &&
                          C.rem_last_fresh && S.t - C.rem_last_fresh <= 300u;
@@ -2600,6 +2683,10 @@ static void report(int episodes, double hours)
     printf("UNCREWED HDG LOCK (step 13q2c): %lu entries, %lu commands refused, %lu STOPs, %lu geofence STANDBYs, "
            "%lu stale-data steps\n", (unsigned long)ST.uh_entries, (unsigned long)ST.uh_refused,
            (unsigned long)ST.uh_stops, (unsigned long)ST.uh_fence, (unsigned long)ST.uh_stale);
+    printf("UNCREWED HDG LOCK no-data / GPS (step 13q2d, I69): %lu no-shore-data steps, %lu dead-reckoning steps, %lu "
+           "DR-limit STANDBYs; %lu / %lu of the steps with a held throttle\n", (unsigned long)ST.uh_nodata,
+           (unsigned long)ST.uh_dr, (unsigned long)ST.uh_drlim, (unsigned long)ST.uh_nodata_hot,
+           (unsigned long)ST.uh_dr_hot);
 }
 
 /* 32-bit time wraparound: the clock starts 3 minutes before 2^32 ms */

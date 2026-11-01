@@ -691,12 +691,14 @@ static void nav_step(sb_t *s)
             autopilot_set_target(&s->ap, n->heading);
         }
     } else if (nav_applies(s) && !n->lost && n->rx_ms != 0u &&
-               (n->kind == SB_NAV_CAP || n->kind == SB_NAV_HEADING)) {
-        /* the gateway went quiet in the middle of an avoidance: don't carry on blindly */
+               (n->kind == SB_NAV_CAP || n->kind == SB_NAV_HEADING || sb_shore_hdg(s))) {
+        /* the gateway went quiet in the middle of an avoidance: don't carry on blindly (step 13q2d: in UNCREWED HDG
+         * LOCK every lapsed lease, also one that said "no danger" - nobody on board watches the water) */
+        bool capped = n->kind == SB_NAV_CAP || n->kind == SB_NAV_HEADING;
         n->lost = true;
         n->losses++;
         n->lost_heading = (sb_mode(s) == MODE_DP) ? s->dp.hdg_est : s->ap.heading;
-        n->lost_cap_kn = n->cap_kn;
+        n->lost_cap_kn = capped ? n->cap_kn : -1.0f;
         alarm_on(s, SB_ALM_DECISION);
     }
 }
@@ -1261,6 +1263,15 @@ bool sb_near_shore(const sb_t *s)
     return s->coast.dist_m == 0xFFFFu || (float)s->coast.dist_m <= s->cfg.near_shore_m;
 }
 
+/* Step 13q2d (review MED-1): the gateway's shore data is fresh AND valid (charts + a position: GW_SHORE flags b1)
+ * - the AURIX's own check, independent of the navigation request lease. Missing / old / not valid = no data. */
+bool sb_shore_valid(const sb_t *s)
+{
+    if (s->coast.rx_ms == 0u || s->now_ms - s->coast.rx_ms > s->cfg.shore_max_age_ms || s->gw.state != SB_GW_OK)
+        return false;
+    return (s->coast.flags & SB_SHORE_VALID) != 0u && s->coast.dist_m != 0xFFFFu;
+}
+
 float sb_lostlink_left_s(const sb_t *s)
 {
     if (s->ll.state != SB_LL_LOST) return 0.0f;
@@ -1398,6 +1409,10 @@ static void eng_cond(const sb_t *s, eng_cond_t *c, bool standby_button)
     /* gear N confirmed: the neutral switch if fitted, else the gear servo at N; the gear state N always */
     c->neutral = gear_is(&s->gear, GEAR_N) && !gear_fault(&s->gear) &&
                  (s->neutral_sw >= 0 ? s->neutral_sw == 1 : s->gear.pwm_us == s->cfg.gear.pwm_n_us);
+    /* step 13q2d (storm seed 636, I37): DroneCAN without a neutral switch - the gear servo HOLDS its pre-reset
+     * position until the boot order sends the first gear frame, so neutral is NOT confirmed before that (the same
+     * rule as the neutral-start interlock) */
+    if (s->neutral_sw < 0 && s->servo.can && (!s->servo.gear_sent || s->servo.gear_hold)) c->neutral = false;
     c->gear_request = s->gear_demand != GEAR_N;
     c->estop_pressed = s->estop_state == 2u;
     c->first_test = s->cfg.first_test;
@@ -1980,6 +1995,12 @@ sb_result_t sb_hdg_lock_shore(sb_t *s, uint8_t station)
     /* a settled gear F or N (not reverse, not shifting): the held gear never changes except to N */
     if (!(gear_is(&s->gear, GEAR_F) || gear_is(&s->gear, GEAR_N)) || s->gear_demand == GEAR_R) return SB_ERR_PRECOND;
     if (s->probe_ok_ms >= s->cfg.profile_ok_ms) return SB_ERR_PRECOND;   /* a joystick found on board: a profile fault */
+    /* step 13q2d (review MED-1 / MED-2): the water must be known - the gateway's shore data fresh + valid (charts and
+     * a position; "no data = shallow", like the AUTO start's 114) and the GPS trusted (no entry on dead reckoning) */
+    if (!sb_shore_valid(s) || !sb_gps_ok(s)) {
+        h->nodata_refused++;
+        return SB_ERR_PRECOND;
+    }
     if (!sb_request_mode(s, MODE_HDG_LOCK, WHY_HDG_SHORE)) return SB_ERR_PRECOND;
     h->refused--;
     s->confirm.kind = CONF_NONE;         /* the new mode replaces a pending request (as 13q2) */
@@ -2015,6 +2036,42 @@ static void shdg_throttle(sb_t *s)
         s->throttle_demand = 0.0f;
         if (s->now_ms - h->lost_ms >= c->remote_lost_ms) sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_LOST);
         return;
+    }
+    /* step 13q2d (review MED-1): the AURIX's own "no data = shallow" - the gateway's shore data missing, old or not
+     * valid (no charts / no position on the gateway) = STOP (idle + neutral for the rest of this HDG LOCK),
+     * whatever the navigation request lease says */
+    if (!sb_shore_valid(s)) {
+        if (!h->stopped) {
+            h->stops++;
+            h->nodata_stops++;
+        }
+        h->stopped = true;
+        h->hold_pct = 0.0f;
+        h->hold_gear = GEAR_N;
+        alarm_on(s, SB_ALM_SHALLOW);
+    }
+    /* step 13q2d (review MED-2): GPS lost / suspect = the AUTO rule - carry on by dead reckoning at reduced
+     * power (the held throttle x dr_speed_factor, only lowered); no estimate, the uncertainty above dr_max_unc_m or
+     * DR longer than dr_max_ms -> STANDBY (idle + neutral first): nobody on board can take over */
+    if (!sb_gps_ok(s)) {
+        bool lost = s->dr.state == DR_GPS || s->dr.why == DR_WHY_LOST;
+        alarm_on(s, lost ? SB_ALM_GPS_LOST : SB_ALM_GPS_SUSPECT);
+        if (!dr_have_position(&s->dr)) {
+            h->dr_stops++;
+            sb_request_mode(s, MODE_STANDBY, WHY_GPS_LOST);
+            return;
+        }
+        if (s->dr.unc_m > c->dr_max_unc_m || dr_dr_time_s(&s->dr, s->now_ms) * 1000.0f > (float)c->dr_max_ms) {
+            alarm_on(s, SB_ALM_DR_LIMIT);
+            h->dr_stops++;
+            sb_request_mode(s, MODE_STANDBY, WHY_DR_LIMIT);
+            return;
+        }
+        float dr_max = h->hold0_pct * c->dr_speed_factor;
+        if (h->hold_pct > dr_max) {
+            h->hold_pct = dr_max;
+            h->dr_cuts++;
+        }
     }
     /* a lowered power limit / REMOTE cap: the held value follows down (never back up) */
     float cap = (h->hold_gear == GEAR_F) ? remote_cap_f(s) : 0.0f;

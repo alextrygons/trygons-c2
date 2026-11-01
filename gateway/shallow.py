@@ -11,6 +11,9 @@ limit = max(shallow_m, draft_m + margin_m)   (default 3.0 m; draft: measure it,
     also slow down (navreq speed cap) and the SHALLOW WATER alarm.
   * UNCREWED HDG LOCK (step 13q2c, owner 2026-11-01): like AUTO a slow-down (slow_kn), and shallow water / the
     shore closer than stop_m ahead = STOP (cap 0: the AURIX goes to idle + neutral; the heading is never changed).
+    Step 13q2d (review MED-1 / MED-2): "no data = shallow" there too - no position, no charts, or a position
+    uncertainty above unc_max_m = cannot evaluate = STOP (uh_unknown); shallow water within the uncertainty of the
+    position = STOP (near_m); the look-ahead stop distance grows by the uncertainty.
   * Every avoidance route (section D) uses the same check (check_leg).
   * Shore distance (CLAUDE.md section B, UNCREWED lost link): the distance from the
     boat to the nearest water shallower than the limit (or without chart data) -
@@ -23,7 +26,8 @@ from ais import KN, from_xy
 
 DEFAULTS = {"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0, "clearance_m": 50.0, "look_s": 30.0,
             "look_min_m": 200.0, "slow_kn": 4.0, "require_charts": True,
-            "near_shore_m": 50.0, "shore_search_m": 2000.0, "stop_m": 100.0}
+            "near_shore_m": 50.0, "shore_search_m": 2000.0, "stop_m": 100.0,
+            "unc_max_m": 100.0}
 
 
 class Shallow:
@@ -66,6 +70,24 @@ class Shallow:
         if d is None:
             return 2, 0xFFFE
         return 2 | (1 if d <= c["near_shore_m"] else 0), int(min(65000, round(d)))
+
+    def uh_unknown(self, own):
+        """UNCREWED HDG LOCK (step 13q2d): the reason the gateway CANNOT evaluate the water here (English text:
+        audit / navreq state) or None. No position, no charts or a position too uncertain = no data = shallow."""
+        if own.get("lat") is None:
+            return "no position"
+        if not self.charts:
+            return "no depth charts on the gateway"
+        unc = own.get("unc")
+        if unc is None or not (unc <= self.cfg["unc_max_m"]):
+            return "position uncertainty %s m (max %.0f m)" % ("?" if unc is None else "%.0f" % unc, self.cfg["unc_max_m"])
+        return None
+
+    def near_m(self, own, radius_m):
+        """Distance (m) to shallow water / water without chart data within radius_m of the boat, or None."""
+        if own.get("lat") is None or not self.charts:
+            return 0.0
+        return self.charts.nearest_shallow_m(own["lat"], own["lon"], self.limit(), max(1.0, radius_m))
 
     def watch(self, own):
         """Predicted shallow water ahead -> {"lat", "lon", "depth", "in_s", "limit"} or None."""
