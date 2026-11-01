@@ -36,6 +36,9 @@
       (hold) + RESTART, lit = on / grey = unknown from the readback, momentary = press-and-hold (pulse,
       OFF at release), START hold = CRANK / RELEASE, nothing while the table is not active / pending,
       collapsible; a copilot's trim / extra relay is not asked, an engine relay waits for the captain
+  S16 silence on this PC (step 13m): screen-2 ACK ALARM / Space / A = the MASTER acknowledge here, the
+      fallback beep only while MASTER WARNING is lit, a newer warning sounds again, disconnect = no old
+      telemetry / alarm rows / sound, reconnect = fresh alarms only
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
@@ -1205,6 +1208,128 @@ def s15_dp(rig):
                [(c[0], c[1], c[2][:3]) for c in bad][:4], greek_en[:8], gone, rig.errors[:2]))
 
 
+def shot(win, path):
+    """A picture of a window as on the screen (docs/screens)."""
+    try:
+        from PIL import ImageGrab
+    except ImportError:                                 # a Python without Pillow: no picture (the test still runs)
+        print("(no Pillow: %s not made)" % path)
+        return
+    win.attributes("-topmost", True)                   # in front of every other window, or the grab shows them
+    win.deiconify()
+    win.lift()
+    win.focus_force()
+    end = time.time() + 1.0
+    while time.time() < end:
+        win.update()
+        time.sleep(0.02)
+    x, y, w, h = win.winfo_rootx(), win.winfo_rooty(), win.winfo_width(), win.winfo_height()
+    ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True).save(path)
+    win.attributes("-topmost", False)
+
+
+def s16_silence(rig):
+    """Step 13m (owner 2026-10-31 B): an alarm this station could not silence. Screen 2's ACK ALARM silences THIS
+    PC first (MASTER lamps + the repeating sound) and then sends the boat's ack; Space / A on screen 2 = the same
+    MASTER acknowledge (not while typing into a field); the fallback beep (no sound system) only while the MASTER
+    WARNING lamp is lit; a newer warning sounds again; disconnect -> no telemetry, no alarm rows, silence, the
+    HUD says "not connected"; reconnect -> alarms from fresh data only. Runs LAST (it disconnects)."""
+    ap = rig.ap
+    import alerts
+    import hud
+    rig.gateway_like(False)
+    if ap.driver:
+        ap.close_driver()
+    rig.size(1366, 768, 1.0)
+    beeps = []
+    ap._beep = lambda f: beeps.append(f)
+    ap.root.bell = lambda *a: beeps.append(0)
+    sent = []
+    orig_cmd = ap.cmd
+    ap.cmd = lambda f, p, w: sent.append(f)
+    rig.extra.update(alarm_bits=0x001, alarm=True)                     # COMPASS LOST (WARNING)
+    ap.lamps = alerts.MasterLamps()
+    rig.pump(2.6)
+    beeping = len(beeps) >= 1 and ap.lamps.on(alerts.WARNING)
+    ap.render(force=True)
+    ack = [o for o in ap.ov.ops if o.get("tag") == "ack"]
+    if ack:
+        r = ack[0]["r"]
+        e = type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})()
+        ap.cv_press(e)
+        ap.cv_release(e)
+    acked = not ap.lamps.on(alerts.WARNING) and sent == [proto.T_ALARM_ACK]
+    rows = ap.lamps.rows()
+    steady = bool(rows) and all(st for _t, _lv, st in rows)
+    n0 = len(beeps)
+    rig.pump(2.6)
+    quiet_after_ack = len(beeps) == n0
+    shots = os.environ.get("TRYGONS_SHOT_DIR")         # docs/screens (step 13m pictures)
+    if shots:
+        shot(ap.root, os.path.join(shots, "screen2_acked_el.png"))
+    # a newer warning lights the lamp and sounds again; Space / A on screen 2 acknowledge it
+    rig.extra.update(alarm_bits=0x001 | 0x040)                          # + GEAR FAULT (WARNING)
+    rig.pump(2.6)
+    again = len(beeps) > n0 and ap.lamps.on(alerts.WARNING)
+    keys_bound = all(ap.root.bind(k) for k in ("<space>", "a", "A"))
+    ent = tk.Entry(ap.root)
+    ap.key_ack(type("E", (), {"widget": ent})())                        # typing an 'a' in a field: not an ack
+    typing_ignored = ap.lamps.on(alerts.WARNING)
+    ent.destroy()
+    ap.key_ack(type("E", (), {"widget": ap.root})())
+    key_acked = not ap.lamps.on(alerts.WARNING)
+    n1 = len(beeps)
+    rig.pump(2.6)
+    quiet_after_key = len(beeps) == n1 and len(sent) == 1              # Space / A: nothing sent to the boat
+    # disconnect: no boat = no telemetry, no rows, no NO DATA, silence (the old data never rings again)
+    rig.extra.update(alarm_bits=0x001 | 0x040)
+    ap.lamps = alerts.MasterLamps()
+    rig.pump(1.2)
+    lit_before = ap.lamps.on(alerts.WARNING)
+    ap.cmd = orig_cmd
+    ap.disconnect()
+    n2 = len(beeps)
+    rig.pump(4.0)                                                       # past the 3 s NO DATA time too
+    gone = ap.t is None and not ap.t_rx and ap.lamps.rows() == [] and not ap.lamps.on(alerts.WARNING) and \
+        len(beeps) == n2 and not (ap.sound and ap.sound.sched.active)
+    ap.render(force=True)
+    no_rows = not any(o.get("tag") == "alarm_row" for o in ap.ov.ops) and \
+        {p.key: p for p in ap.ov.panels}["alarms"].title == A.T("ov.no_alarms")
+    status_nc = any(o.get("s") == A.T("cap.not_connected") for o in ap.ov.ops if o.get("panel") == "status")
+    if shots:
+        rig.pump(0.5)
+        shot(ap.root, os.path.join(shots, "screen2_disconnected_el.png"))
+        ap.open_driver()
+        rig.pump(3.0, lambda: ap.driver is not None and ap.driver.last_frame is not None)
+        rig.pump(1.0)
+        if ap.driver is not None and ap.driver.last_frame is not None:
+            ap.driver.last_frame.save(os.path.join(shots, "driver_disconnected_el.png"))
+        ap.close_driver()
+    hd = hud.Hud(hud.Layout(os.path.join(TMP, "nc_layout.json")))
+    hops, _ = hd.build(1600, 900, hud.Snapshot(t=None, gw={}, lamps=ap.lamps, flash=True, not_connected=True,
+                                               declutter="FULL", alarm_rows=[]))
+    hud_nc = any(o.get("s") == A.T("cap.not_connected") for o in hops) and \
+        not any(o.get("s") == A.T("alarm.no_data") for o in hops)
+    # reconnect: only the fresh data's alarms (the injected ones are gone with the old data)
+    rig.extra.clear()
+    ap.connect()
+    rig.pump(15, lambda: ap.t is not None)
+    rig.pump(1.2)
+    fresh = ap.t is not None and not alerts.bits_of(ap.t) & 0x041 and \
+        A.T("alarm.compass_lost") not in [t for t, _l, _s in ap.lamps.rows()]
+    report("S16 silence on this PC (13m): screen-2 ACK ALARM = MASTER ack + the boat's ack, the fallback beep stops "
+           "after the ack, a newer warning sounds again, Space / A on screen 2 = MASTER ack (not while typing, nothing "
+           "sent), disconnect = no telemetry / rows / NO DATA / sound, HUD + status 'not connected', reconnect = "
+           "fresh alarms only",
+           beeping and acked and steady and quiet_after_ack and again and keys_bound and typing_ignored and key_acked
+           and quiet_after_key and lit_before and gone and no_rows and status_nc and hud_nc and fresh
+           and not rig.errors,
+           "beeping %s acked %s (sent %s) steady %s quiet %s again %s keys %s typing %s key ack %s quiet2 %s lit %s "
+           "gone %s no rows %s status %s hud %s fresh %s errors %s" % (
+               beeping, acked, sent, steady, quiet_after_ack, again, keys_bound, typing_ignored, key_acked,
+               quiet_after_key, lit_before, gone, no_rows, status_nc, hud_nc, fresh, rig.errors[:2]))
+
+
 
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
@@ -1214,7 +1339,7 @@ def main():
     rig = Rig()
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
-                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp):
+                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s16_silence):
             try:
                 fn(rig)
             except Exception as e:

@@ -13,6 +13,9 @@ Made from the demo by `python tools/demo_screens.py` on 2026-10-30.
 | [driver_minimal_el.png](driver_minimal_el.png) | driver HUD, declutter MINIMAL (speed, heading, mode, gear, alarms) |
 | [driver_edit_layout_el.png](driver_edit_layout_el.png) | driver HUD, edit-layout mode (drag / resize / hide every box) |
 | [driver_hidpi_en.png](driver_hidpi_en.png) | step 13l: screen 1 in a 3840 x 2400 window (high-DPI laptop) = the picture composed at 1920 x 1200 (render_max_px) that is shown x2; before the fix only a 200 x 150 corner was drawn and the windows froze. Made by groundstation/test_driver.py I23 (TRYGONS_SHOT_DIR) |
+| [screen2_acked_el.png](screen2_acked_el.png) | step 13m: screen 2 after ACK ALARM - the alarm rows steady (this PC silenced), the boat's ack sent. Made by groundstation/test_screen2.py S16 (TRYGONS_SHOT_DIR) |
+| [screen2_disconnected_el.png](screen2_disconnected_el.png) | step 13m: screen 2 after a disconnect - no old alarm rows, no NO DATA, "not connected" (S16) |
+| [driver_disconnected_el.png](driver_disconnected_el.png) | step 13m: screen 1 with no boat - "not connected" in the mode box instead of the red NO DATA alarm (S16) |
 | [screen2_dark_el.png](screen2_dark_el.png) | screen 2 (navigation & control), dark theme, el: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [screen2_light_en.png](screen2_light_en.png) | screen 2 (navigation & control), light theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [screen2_dark_en.png](screen2_dark_en.png) | screen 2 (navigation & control), dark theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |

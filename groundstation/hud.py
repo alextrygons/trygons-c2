@@ -416,6 +416,10 @@ class Hud:
         self.panel(r, name)
         d = s.t
         if d is None:
+            if s.not_connected:                 # no boat at all (step 13m): no alarm, only the plain state
+                self.text((cx, y0 + (y1 - y0) * 0.35), T("cap.not_connected"), "mode", size=self.f_mode, bold=True,
+                          fill=self.pal["main"], anchor="c", max_w=w - 12, box=r)
+                return
             self.text((cx, y0 + (y1 - y0) * 0.35), T("alarm.no_data"), "mode", size=self.f_mode, bold=True,
                       fill=self.pal["warn"], anchor="c", max_w=w - 12, box=r)
             return

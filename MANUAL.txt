@@ -476,8 +476,14 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
                 (the same clock as the GENERAL lamps on screen 1; the text
                 stays, only the fill blinks); acknowledged ones and advisories
                 are steady. "+N more" when more are active than fit. ACK ALARM
-                = the boat's acknowledge (clears only alarms whose cause is
-                gone; from any station). Under it:
+                = first silences THIS PC (lamps + repeating sound, like the
+                GENERAL lamp of screen 1), then the boat's acknowledge (clears
+                only alarms whose cause is gone; from any station). Space / A
+                on screen 2 = silence this PC only (also with screen 1 closed;
+                not while you type in a field). Disconnected (or "not this
+                boat"): the old data is dropped - no alarms, no sound, "Not
+                connected"; after a new connection only that boat's alarms.
+                Under it:
                 HELM / ROLES: who holds HELM, your role
                 (CAPTAIN / COPILOT, licence), the captain's name; Take HELM,
                 Release (UNCREWED: releasing = a lost link, you are asked
@@ -738,8 +744,9 @@ driving. The boat's own BUZZER is separate: it sounds the boat's alarms by
 itself (also with no PC at all); this PC never switches it.
 
 LEVELS
-  WARNING   urgent two-tone + voice, REPEATS until acknowledged (GENERAL
-            WARNING lamp on the driver screen, or Space). Can't be muted;
+  WARNING   urgent two-tone + voice, REPEATS until acknowledged on THIS PC
+            (GENERAL WARNING lamp on the driver screen, ACK ALARM on screen 2,
+            or Space / A on either screen). Can't be muted;
             never quieter than 60 %.
   CAUTION   one chime + the voice once
   ADVISORY  a soft click or a short voice (can be muted)
@@ -2798,8 +2805,9 @@ FUTURE IDEAS
                                  en.txt (whole phrase, numbers as words), or
                                  put a recording in groundstation\sounds\.
   The warning sound repeats      acknowledge: GENERAL WARNING lamp on the
-                                 driver screen (or Space). It comes back
-                                 only for a new warning.
+                                 driver screen, ACK ALARM on screen 2, or
+                                 Space / A. It comes back only for a new
+                                 warning. Disconnecting silences it too.
   "AR: camera calibration        set "vision": {"camera": {...}} in the
   unknown"                       gateway config (chapter 5B).
   AR horizon not on the sea's    tilt_down_deg in the gateway config (and

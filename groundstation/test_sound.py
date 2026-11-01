@@ -201,6 +201,27 @@ def main():
            "in 12 s: %d times; after ACK +%d in 12 s; a new warning played %s; gone + back -> played again %s" % (
                n1, n2 - n1, new, n3 == n2 + 1))
 
+    # S6b step 13m: the station disconnected = reset: a sounding warning stops, nothing repeats or waits, and the
+    # next boat's same warning sounds again (its acknowledge is not carried over)
+    sc, clk, pl, built = make(3.0)
+    sc.set_warnings(["compass_lost"])
+    run(sc, clk, 0.5)
+    sc.request(it("cau_q", C))                          # waits behind the warning
+    ss = sound.SoundSystem.__new__(sound.SoundSystem)
+    ss.sched = sc
+    ss.reset()
+    stopped = pl.log[-1][1] is None and sc.current is None and not sc.queue and not sc.active and not sc.acked
+    m1 = len([h for h in sc.history if h[3] == "played"])
+    sc.set_warnings([])
+    run(sc, clk, 6.0)
+    silent = len([h for h in sc.history if h[3] == "played"]) == m1
+    sc.set_warnings(["compass_lost"])
+    run(sc, clk, 0.5)
+    fresh = len([h for h in sc.history if h[1] == "alarm.compass_lost" and h[3] == "played"]) == 2
+    report("S6b disconnect (13m): reset stops the sounding warning, drops the queue, nothing repeats; the next boat's "
+           "warning sounds again", stopped and silent and fresh, "stopped %s silent %s fresh %s" % (stopped, silent,
+                                                                                                   fresh))
+
     # S7 quiet
     sc, clk, pl, built = make(1.0)
     sc.quiet = True

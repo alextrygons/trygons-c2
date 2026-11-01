@@ -653,6 +653,7 @@ class DriverScreen:
                          video_scale=settings.get("video_scale") or "fill",
                          ar_on=any((settings.get("ar") or {}).values()), have_charts=bool(a.charts))
         s["age_s"] = now - a.t_rx if a.t_rx else None
+        s["not_connected"] = a.link is None                    # no boat: "not connected", never an alarm (13m)
         me = [st for st in gw.get("stations", []) if st.get("id") == gw.get("you")]
         s["latency_ms"] = me[0].get("rtt_ms") if me else None
         no_data = bool(a.link is not None and a.t_rx and now - a.t_rx > 3.0)       # as the captain screen

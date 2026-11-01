@@ -578,6 +578,15 @@ class SoundSystem:
     def ack(self):
         self.sched.ack()
 
+    def reset(self):
+        """No boat any more (the station disconnected, step 13m): every repeating warning, its acknowledge and the
+        queued callouts are forgotten and a warning still sounding stops - the next boat's alarms start fresh."""
+        sc = self.sched
+        sc.ack()
+        sc.active.clear()
+        sc.acked.clear()
+        sc.queue = []
+
     def _tick(self):
         try:
             if self.app is not None:

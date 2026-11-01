@@ -358,6 +358,8 @@ class App:
                       ("KP_Add", lambda: self.mapwin.zoom(0.6)), ("KP_Subtract", lambda: self.mapwin.zoom(1 / 0.6)),
                       ("b", self.mapwin.back_to_boat), ("B", self.mapwin.back_to_boat)):
             root.bind("<%s>" % k if len(k) > 1 else k, lambda e, fn=fn: fn())
+        for k in ("<space>", "a", "A"):                 # MASTER acknowledge on this PC, as on screen 1 (step 13m)
+            root.bind(k, self.key_ack)
 
         if address:
             self.port_var.set(address)
@@ -411,6 +413,43 @@ class App:
         self.lamps.ack()
         if self.sound:
             self.sound.ack()
+
+    def key_ack(self, ev=None):
+        """Space / A on screen 2 = master_ack() (step 13m: also with screen 1 closed). Not while typing into
+        a text field of this window (an 'a' typed there is a letter)."""
+        w = getattr(ev, "widget", None)
+        try:
+            if w is not None and w.winfo_class() in ("Entry", "TEntry", "Text", "Spinbox", "TSpinbox", "TCombobox"):
+                return
+        except (tk.TclError, AttributeError):
+            pass
+        self.master_ack()
+
+    def ack_alarm(self):
+        """Screen 2's ACK ALARM (step 13m): silences THIS PC first (MASTER lamps + the repeating sound, as screen
+        1's lamp), then sends the boat's alarm acknowledge (clears only alarms whose cause is gone)."""
+        self.master_ack()
+        self.cmd(proto.T_ALARM_ACK, b"", TE("what.alarm_ack"))
+
+    def clear_telemetry(self):
+        """No boat any more (disconnect, step 13m): forget the last telemetry so no old alarm / NO DATA keeps
+        ringing - the screens show "not connected", the plots are empty, no alarm rows, the sound's warnings and
+        the callouts start fresh. The next connection shows alarms from its own fresh data only."""
+        self.t = None
+        self.t_rx = 0.0
+        self.gw_status = None
+        self.hist.clear()
+        self.slam_hist.clear()
+        self.lamps = alerts.MasterLamps()
+        if self.sound:
+            self.sound.reset()
+        if self.callouts is not None:
+            import sound
+            self.callouts = sound.Callouts(self.sound, self)
+        try:
+            self.link_lbl.configure(text=T("cap.link_none"), fg=C["fg"])
+        except (tk.TclError, AttributeError):
+            pass
 
     def _build_menu(self):
         """Menu bar: Windows (screens, monitors), Tools (the pages), View (theme, map layers), Language."""
@@ -1556,8 +1595,10 @@ class App:
         self.boat, self.boat_ok = None, False
         if self.boatconf:
             self.boatconf.close()
+        self.clear_telemetry()
         self.conn_btn.configure(text=T("cap.connect"), **theme.button_opts("ok"))
         self.say(why or T("cap.disconnected"), RED if why else None)
+        self.render(force=True)
 
     def open_boats(self):
         """The boat list (boats/ in git): choose, log in, connect (CLAUDE.md F)."""
@@ -2581,9 +2622,10 @@ class App:
         self.lamps.update(alerts.bits_of(d), no_data=bool(stale))
         if self.callouts and self.link is not None and self.t_rx:
             self.callouts.link(not stale)
-        if (d and (d["alarm"] or alerts.bits_of(d))) or stale:
+        if self.lamps.on(alerts.WARNING):
             if time.time() - self.last_beep > 1.0 and not (self.sound and self.sound.enabled()):
-                # without the sound system (section D) only: it plays the warnings itself
+                # without the sound system (section D) only: it plays the warnings itself. Only while the
+                # MASTER WARNING lamp is lit: an acknowledge on this PC silences it until a newer warning (13m)
                 self.last_beep = time.time()
                 if winsound:     # in a thread: Beep blocks while it sounds
                     f = 2000 if (d and d["mode"] == proto.MODE_MANUAL) else 1500
@@ -3117,7 +3159,7 @@ class App:
             else:
                 p.text(txt, "label", colour=col, bold=True, tag="alarm_row", wrap=0.26)
             if i == 0:                      # ACK ALARM beside the first row (the panel stays low)
-                p.button(T("ov.ack_alarm"), lambda: self.cmd(proto.T_ALARM_ACK, b"", TE("what.alarm_ack")), "warn",
+                p.button(T("ov.ack_alarm"), self.ack_alarm, "warn",
                          level="small", tag="ack")
             p.br()
         if len(rows) > n:
