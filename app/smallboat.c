@@ -1754,6 +1754,7 @@ static void remote_enter(sb_t *s, sb_mode_t from)
     r->state = SB_REMOTE_DRIVING;
     r->entered_ms = s->now_ms;
     r->have = false;
+    r->x = r->y = 0.0f;                               /* 13q2b (LOW-2): never chase the previous session's stick */
     r->steer_cmd = s->ap.est_angle;                   /* no steering jump */
     lever_pickup_start_v(s, &r->lev, from);
     r->lev.fwd.u = r->lev.rev.u = 1.0f;
@@ -1766,6 +1767,7 @@ static float remote_steer(sb_t *s, float dt)
 {
     sb_remote_t *r = &s->remote;
     if (r->state != SB_REMOTE_DRIVING) return r->steer_cmd;
+    if (!r->have) return r->steer_cmd;                /* 13q2b: no packet of this session yet = hold */
     float x = r->x, db = s->joy.cfg.deadband;
     float xs = (fabsf(x) <= db) ? 0.0f : (x - copysignf(db, x)) / (1.0f - db);
     float want = xs * s->ap.cfg.outboard.max_angle_deg;
@@ -2411,6 +2413,10 @@ sb_result_t sb_auto_return(sb_t *s)
     const sb_auto_t *a = &s->autop;
     sb_mode_t m = sb_mode(s);
     if (m == MODE_TRAINING || m == MODE_BENCH || m == MODE_DP) return SB_ERR_WRONG_MODE;
+    /* step 13q2b (MED-1): never out of REMOTE / MANEUVER - the return is a copilot-free command (gateway
+     * COPILOT_FREE) and the AURIX can't see roles (R7): the captain driving by hand leaves by AUTO START or
+     * another mode, never by a copilot's AUTO RETURN */
+    if (m == MODE_REMOTE || m == MODE_MANEUVER) return SB_ERR_WRONG_MODE;
     if (a->returning) return SB_ERR_WRONG_MODE;                      /* already on the way back */
     sb_result_t r = auto_common_checks(s);
     if (r != SB_OK) return r;
@@ -2475,6 +2481,7 @@ static bool confirm_execute(sb_t *s, confirm_kind_t kind)
         bool done = a->finished;
         uint32_t legs = a->legs_done;
         if (a->returning || !return_build(s, &a->prog, a->wp, &s_ret_scratch, &base)) return false;
+        if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_MANEUVER) return false;   /* 13q2b: as sb_auto_return */
         bool in_auto = sb_mode(s) == MODE_AUTO;
         a->orig = a->prog;
         a->prog = s_ret_scratch;

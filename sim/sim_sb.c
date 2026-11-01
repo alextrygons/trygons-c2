@@ -16198,6 +16198,95 @@ static void remote_direct_tests(void)
                     g1 == SB_ERR_PRECOND && g2 == SB_ERR_PRECOND && j1 == SB_ERR_PRECOND && st && pr == SB_OK && pend && ok == SB_OK && repl &&
                     !cf && lim && nh == PROTO_R_NOT_HELM, d);
     }
+
+    /* RQ7 (13q2b MED-1) AUTO RETURN is never started out of REMOTE / MANEUVER (a copilot-free command: the AURIX
+     * can't see roles, R7): WRONG_MODE, nothing pending, the driving goes on; UNCREWED + CREWED; from STANDBY it
+     * still works (request pending) */
+    {
+        static sbsim_t x, y;
+        static rjsim_t r, q;
+        static program_t p;
+        prog_error_t err;
+        uint8_t bad;
+        rq_boat(&x, &r, 1612u, false);
+        prog_wp_t wp = wp_world(&x, x.w.north_m + 2000.0, x.w.east_m, 6.0f, 25.0f, WP_ACT_STOP);
+        prog_make(&p, &wp, 1, PROG_END_STOP);
+        sb_program_set(&x.sb, &p, &err, &bad);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool rem = sb_mode(&x.sb) == MODE_REMOTE;
+        uint8_t u_rem = pi_cmd(&x, &r.p, 2u, false, PROTO_T_AUTO_RETURN, NULL, 0u);
+        bool u_kept = sb_mode(&x.sb) == MODE_REMOTE && x.sb.confirm.kind == CONF_NONE && !x.sb.autop.returning;
+        bool u_cf = shore_confirm(&x, &r);
+        u_kept = u_kept && sb_mode(&x.sb) == MODE_REMOTE;
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        bool man = sb_mode(&x.sb) == MODE_MANEUVER;
+        uint8_t u_man = pi_cmd(&x, &r.p, 2u, false, PROTO_T_AUTO_RETURN, NULL, 0u);
+        bool m_kept = sb_mode(&x.sb) == MODE_MANEUVER && x.sb.confirm.kind == CONF_NONE;
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_SET_MODE, &STBY, 1u);
+        sbsim_run(&x, x.t + 3000u, rj_hook, &r);
+        sb_alarm_ack(&x.sb);
+        uint8_t u_sb = pi_cmd(&x, &r.p, 2u, false, PROTO_T_AUTO_RETURN, NULL, 0u);
+        bool u_pend = x.sb.confirm.kind == CONF_AUTO_RETURN;
+        /* CREWED REMOTE (onboard CONFIRM) */
+        rq_boat(&y, &q, 1613u, true);
+        prog_wp_t w2 = wp_world(&y, y.w.north_m + 2000.0, y.w.east_m, 6.0f, 25.0f, WP_ACT_STOP);
+        prog_make(&p, &w2, 1, PROG_END_STOP);
+        sb_program_set(&y.sb, &p, &err, &bad);
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        onboard_confirm(&y, &q);
+        bool crem = sb_mode(&y.sb) == MODE_REMOTE;
+        uint8_t c_rem = pi_cmd(&y, &q.p, 2u, false, PROTO_T_AUTO_RETURN, NULL, 0u);
+        bool c_kept = sb_mode(&y.sb) == MODE_REMOTE && y.sb.confirm.kind == CONF_NONE;
+        bool c_cf = onboard_confirm(&y, &q);
+        c_kept = c_kept && sb_mode(&y.sb) == MODE_REMOTE && !y.sb.autop.returning;
+        crew_plug();
+        snprintf(d, sizeof d, "UNCREWED REMOTE %s: AUTO RETURN %u (7) still REMOTE, nothing pending %s, shore CONFIRM %s; "
+                 "MANEUVER %s: AUTO RETURN %u (7) kept %s; STANDBY: AUTO RETURN %u, pending %s; CREWED REMOTE %s: "
+                 "AUTO RETURN %u (7) kept %s, onboard CONFIRM %s", rem ? "yes" : "NO", u_rem, u_kept ? "yes" : "NO",
+                 u_cf ? "ACCEPTED" : "nothing", man ? "yes" : "NO", u_man, m_kept ? "yes" : "NO", u_sb,
+                 u_pend ? "yes" : "NO", crem ? "yes" : "NO", c_rem, c_kept ? "yes" : "NO", c_cf ? "ACCEPTED" : "nothing");
+        test_report("RQ7 AUTO RETURN refused out of REMOTE / MANEUVER (UNCREWED + CREWED), still possible from STANDBY",
+                    rem && u_rem == PROTO_R_WRONG_MODE && u_kept && !u_cf && man && u_man == PROTO_R_WRONG_MODE && m_kept &&
+                    u_sb == PROTO_R_OK && u_pend && crem && c_rem == PROTO_R_WRONG_MODE && c_kept && !c_cf, d);
+    }
+
+    /* RQ8 (13q2b LOW-2) a new REMOTE session never chases the previous session's stick X: remote_enter clears it
+     * and the steering holds the outboard estimate until this session's first packet */
+    {
+        static sbsim_t y;
+        static rjsim_t q;
+        rq_boat(&y, &q, 1614u, true);
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        onboard_confirm(&y, &q);
+        bool rem1 = sb_mode(&y.sb) == MODE_REMOTE;
+        q.x = 0.6f;                                              /* stick held to starboard */
+        sbsim_run(&y, y.t + 3000u, rj_hook, &q);
+        float held = y.sb.remote.steer_cmd;
+        q.x = -0.6f;                                             /* one last packet hard to port ... */
+        sbsim_run(&y, y.t + AP_PERIOD_MS, rj_hook, &q);
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_SET_MODE, &STBY, 1u);   /* ... and left at once (outboard still starboard) */
+        sbsim_run(&y, y.t + 4000u, rj_hook, &q);
+        sb_alarm_ack(&y.sb);
+        q.rj_on = false;                                         /* the new session: no packet yet */
+        q.x = 0.0f;
+        uint8_t a2 = pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        float est0 = y.sb.ap.est_angle;
+        bool cf = onboard_confirm(&y, &q);
+        bool rem2 = sb_mode(&y.sb) == MODE_REMOTE || y.sb.remote.state == SB_REMOTE_LOST;
+        float xs = y.sb.remote.x, dev = fabsf(y.sb.remote.steer_cmd - est0);
+        for (int i = 0; i < 20 && y.sb.remote.state == SB_REMOTE_DRIVING; i++) {
+            sbsim_run(&y, y.t + AP_PERIOD_MS, rj_hook, &q);
+            dev = fmaxf(dev, fabsf(y.sb.remote.steer_cmd - est0));
+        }
+        crew_plug();
+        snprintf(d, sizeof d, "first session REMOTE %s, stick 0.6 -> steering %.1f deg; outboard estimate before the new "
+                 "session %.1f deg; REMOTE asked %u + CONFIRM %s -> REMOTE %s; stick X now %.2f (0), steering moved %.2f deg "
+                 "before the first packet", rem1 ? "yes" : "NO", held, est0, a2, cf ? "yes" : "NO", rem2 ? "yes" : "NO",
+                 xs, dev);
+        test_report("RQ8 a new REMOTE session never chases the previous session's stick X (cleared, hold until a packet)",
+                    rem1 && held > 5.0f && fabsf(est0 - held) > 3.0f && a2 == PROTO_R_OK && cf && rem2 && xs == 0.0f &&
+                    dev < 0.5f, d);   /* (DroneCAN: the estimate may still settle ~0.1 deg; chasing = > 4 deg) */
+    }
 }
 
 void sb_tests(void)

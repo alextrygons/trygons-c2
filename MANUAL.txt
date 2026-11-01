@@ -934,8 +934,11 @@ MODES
              joystick CONFIRM within 10 s (stick centred; UNCREWED: the
              shore joystick) - from STANDBY, HDG LOCK, MANUAL (stick
              centred) or AUTO itself (running, paused, stopped, finished).
+             NEVER out of REMOTE MANUAL / MANEUVER (refused, code 7): the
+             captain driving by hand chooses AUTO START or another mode.
              The copilot may ask for it WITHOUT the captain's ACCEPT (like
-             AUTO pause). The gateway checks the way back like a route:
+             AUTO pause) - except while the captain drives in REMOTE /
+             MANEUVER: then it is a question on screen 1. The gateway checks the way back like a route:
              shallow water (114), the geofence (120); only a program the
              gateway checked itself (uploaded through it) can be driven
              back (121 otherwise: upload it again). The stored program is
@@ -1330,7 +1333,8 @@ CAPTAIN AND COPILOT (the gateway decides, every station shows it)
             driving appears on the CAPTAIN'S SCREEN 1 as a question: ACCEPT
             -> sent, REJECT / 10 s / screen 1 closed -> refused. STANDBY,
             HOLD (AUTO pause) and AUTO RETURN never wait (the return still
-            needs the joystick CONFIRM on the boat). The copilot can't take HELM
+            needs the joystick CONFIRM on the boat; in REMOTE / MANEUVER the
+            return waits for the ACCEPT too and the boat refuses it there). The copilot can't take HELM
             (code 117) or ask for manual driving (code 118).
   The first licensed user who logs in is the captain; everybody else is a
   copilot (a viewer only watches). A station on the boat can always take

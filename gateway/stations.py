@@ -466,11 +466,22 @@ class StationServer:
             cap = self.stations.get(helm)
             if cap is None:
                 return self.refuse(st, seq, ftype, 119)
-            if driving and ftype not in COPILOT_FREE:
+            if driving and not self.copilot_free(ftype):
                 return self._ask_driver(st, seq, ftype, payload, age, what, target=cap)
             self.gw.audit("copilot_cmd", station=st.id, user=st.user, type=ftype, what=what, captain=cap.id)
             return self._forward(st, seq, ftype, payload, age, env=cap)
         self._forward(st, seq, ftype, payload, age)
+
+    def copilot_free(self, ftype):
+        """A copilot command forwarded without the captain's ACCEPT (COPILOT_FREE). Step 13q2b (MED-1): AUTO RETURN
+        only while the captain is NOT driving by hand - in REMOTE / MANEUVER (or with no telemetry yet) it is a mode
+        change out of the captain's hands = the captain's ACCEPT (the AURIX refuses it there anyway: WRONG_MODE)."""
+        if ftype not in COPILOT_FREE:
+            return False
+        if ftype == proto.T_AUTO_RETURN:
+            mode = (self.gw.telem or {}).get("mode")
+            return mode is not None and mode not in (proto.MODE_REMOTE, proto.MODE_MANEUVER)
+        return True
 
     def relay_groups(self):
         """{n: group} of the relay table active on the AURIX, None if the gateway doesn't know it."""

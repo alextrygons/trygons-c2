@@ -1792,15 +1792,22 @@ def section_g():
         b3 = sc.sent_b
         time.sleep(2)
         quiet6 = sc.sent_b - b3 < 64 * 1024
-        alice.cmd(proto.T_REMOTE, proto.p_remote(1))
+        # step 13q2b (LOW-4): there is no release any more (refused while driving); REMOTE ends here by the
+        # freshness rule - the shore joystick data stops: LOST (idle + neutral, gyro hold) at once, STANDBY after 5 s
+        r_rel = alice.result(alice.cmd(proto.T_REMOTE, proto.p_remote(1)))
+        still = w.until(lambda d: d["mode"] == proto.MODE_REMOTE, 1)
         snd.stop()
-        off = w.until(lambda d: d["mode"] != proto.MODE_REMOTE, 3)
+        lost6 = w.until(lambda d: d.get("remote_state") == 2, 2)
+        off = w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 8)
         again = wait_for(lambda: sc.state in ("SYNCING", "IDLE", "CONNECTING"), 8)
-        report("G6 REMOTE MANUAL driving: sync pauses; when it ends sync continues",
-               on is not None and p6 and quiet6 and off is not None and again,
-               "remote driving %s -> sync %s (\"%s\"), bytes in 2 s %d; driving ended -> sync %s" % (
-                   "on" if on else "NOT on", "PAUSED" if p6 else sc.state, why6, sc.sent_b - b3,
-                   sc.state))
+        report("G6 REMOTE MANUAL driving: sync pauses; the release is refused; the data stops -> LOST, STANDBY, sync "
+               "continues",
+               on is not None and p6 and quiet6 and r_rel == 7 and still is not None and
+               lost6 is not None and off is not None and again,
+               "remote driving %s -> sync %s (\"%s\"), bytes in 2 s %d; release -> %s (7), still REMOTE %s; data "
+               "stopped -> LOST %s, STANDBY %s -> sync %s" % (
+                   "on" if on else "NOT on", "PAUSED" if p6 else sc.state, why6, sc.sent_b - b3, r_rel,
+                   still is not None, lost6 is not None, off is not None, sc.state))
         link.stop()
         alice.close()
         s = sc.status()
@@ -3968,6 +3975,47 @@ def section_ar():
                "active waypoint 3 -> checked %s; first leg -> %s; USB -> %s; stale -> %s" % (
                    seen[0][0] if seen else None, seen[1][0] if len(seen) > 1 else None,
                    r_usb and r_usb[0], r_stale and r_stale[0]))
+
+        # AR4 (step 13q2b MED-1) while the captain drives by hand (REMOTE / MANEUVER) a copilot's AUTO return is a
+        # mode change out of the captain's hands: it needs the captain's ACCEPT (here no screen 1 open = 109); the
+        # captain's own is passed on and the AURIX refuses it there (7 WRONG_MODE: never AUTO RETURN out of REMOTE /
+        # MANEUVER); MANEUVER / no telemetry = not free either, STANDBY / AUTO = free
+        stick = {"x": 0.0, "lever": 0.5}
+        snd = RemoteSender(alice.l, lambda: dict(stick))
+        snd.start()
+        alice.cmd(proto.T_REMOTE, proto.p_remote(0))
+        time.sleep(1.0)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
+        time.sleep(0.2)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        on = w.until(lambda d: d["mode"] == proto.MODE_REMOTE, 3)
+        w.until(lambda d: g.telem and g.telem.get("mode") == proto.MODE_REMOTE, 2)
+        r_cop_rem = bob.result(bob.cmd(proto.T_AUTO_RETURN))
+        r_cap_rem = alice.result(alice.cmd(proto.T_AUTO_RETURN))
+        w.pump(0.5)
+        kept = w.telem.get("mode") == proto.MODE_REMOTE and w.telem.get("confirm_kind") == 0
+        alice.cmd(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY))
+        snd.stop()
+        w.until(lambda d: d["mode"] == proto.MODE_STANDBY, 3)
+
+        class StubGw:
+            telem = None
+        stub = Fake()
+        stub.gw = StubGw()
+        free = {}
+        for name, mode in (("none", None), ("maneuver", proto.MODE_MANEUVER), ("remote", proto.MODE_REMOTE),
+                           ("standby", proto.MODE_STANDBY), ("auto", proto.MODE_AUTO)):
+            stub.gw.telem = None if mode is None else {"mode": mode}
+            free[name] = g.stations.__class__.copilot_free(stub, proto.T_AUTO_RETURN)
+        pause_free = g.stations.__class__.copilot_free(stub, proto.T_AUTO_PAUSE)
+        report("AR4 in REMOTE / MANEUVER a copilot's AUTO return needs the captain's ACCEPT; the boat refuses an "
+               "AUTO return out of REMOTE (7); free only in the other modes",
+               on is not None and r_cop_rem == 109 and r_cap_rem == 7 and kept and
+               free == {"none": False, "maneuver": False, "remote": False, "standby": True, "auto": True} and
+               pause_free,
+               "REMOTE %s: copilot's AUTO return -> %s (109 = waits for the captain's screen 1), captain's -> %s (7), "
+               "still REMOTE + nothing pending %s; free by mode %s, AUTO pause free %s" % (
+                   on is not None, r_cop_rem, r_cap_rem, kept, free, pause_free))
 
         alice.close()
         bob.close()

@@ -18,7 +18,7 @@
  * 3 of 4 episodes; its own draw (part of the gateway-fuzz slice) sets the LINK TIME, silences the HELM station
  * or brings it back; invariants I60-I62.
  * Step 13q2: UNCREWED REMOTE / MANEUVER start at once on the request (shore stick centred + lever neutral), no
- * release; REMOTE / MANEUVER -> AUTO / DP straight; invariants I63-I64 (I7 for REMOTE / MANEUVER = CREWED only).
+ * release; REMOTE / MANEUVER -> AUTO / DP straight; invariants I63-I64 (I7 for REMOTE / MANEUVER = CREWED only); step 13q2b: I65 (no AUTO RETURN out of REMOTE / MANEUVER).
  * A failing episode is replayed with fewer events until the shortest
  * schedule that still fails remains (the "minimal reproduction").
  *
@@ -584,7 +584,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 65
+#define NINV 66
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -646,7 +646,8 @@ static const char *INV_NAMES[NINV] = { "",
     "I61 UNCREWED LINK TIME: at open sea with the gateway's report the lost link never comes before the captain's LINK TIME (- 1.5 s)",
     "I62 LINK TIME always 3..60 s, 3 s after every reset and HELM grant, never in force near the shore / without shore information",
     "I63 REMOTE / MANEUVER entry: UNCREWED only at once on the HELM station's request with its stick centred + lever neutral (fresh); CREWED never without the onboard CONFIRM",
-    "I64 there is no release: a release (command / old flag) never ends REMOTE / MANEUVER, never changes the mode" };
+    "I64 there is no release: a release (command / old flag) never ends REMOTE / MANEUVER, never changes the mode",
+    "I65 AUTO RETURN never out of REMOTE / MANEUVER: refused there (nothing pending), never started from them" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -1220,6 +1221,8 @@ static void check_step(void)
     {
         const sb_auto_t *au = &s->autop;
         if (au->returning && !C.returning_prev) {
+            if (C.mode_prev == MODE_REMOTE || C.mode_prev == MODE_MANEUVER)
+                fail(65, "AUTO RETURN started out of mode %.0f (now %.0f)", (double)C.mode_prev, (double)m);
             if (conf_now && C.confirm_t && S.t - C.confirm_t <= 200u && C.conf_kind_prev == (uint8_t)CONF_AUTO_RETURN) ok(58);
             else fail(58, "AUTO RETURN started without a fresh CONFIRM of its request (kind before %.0f, last %.0f ms ago)",
                       (double)C.conf_kind_prev, C.confirm_t ? (double)(S.t - C.confirm_t) : -1.0);
@@ -1808,7 +1811,18 @@ static void apply(const ev_t *e)
     case E_PC_MODE: (void)sb_request_mode(s, (sb_mode_t)(e->a % MODE_COUNT), WHY_USER); break;
     case E_PC_AUTO_START: (void)sb_auto_start(s); break;
     case E_PC_AUTO_RESUME: (void)sb_auto_resume(s); break;
-    case E_PC_RETURN: (void)sb_auto_return(s); break;
+    case E_PC_RETURN: {
+        /* step 13q2b (I65): a copilot-free command must never take the captain out of REMOTE / MANEUVER */
+        sb_mode_t before = sb_mode(s);
+        sb_result_t rr = sb_auto_return(s);
+        if (before == MODE_REMOTE || before == MODE_MANEUVER) {
+            if (rr != SB_ERR_WRONG_MODE || s->confirm.kind == CONF_AUTO_RETURN || sb_mode(s) != before)
+                fail(65, "AUTO RETURN in mode %.0f not refused / left pending (result %.0f)", (double)before,
+                     (double)rr + 100.0 * (s->confirm.kind == CONF_AUTO_RETURN));
+            else ok(65);
+        }
+        break;
+    }
     case E_PC_CONFONLY: (void)sb_confirm_only(s, s->helm, (uint16_t)e->a); break;
     case E_PC_PAUSE: (void)sb_auto_pause(s); break;
     case E_PC_PROG: prog_random(1 + e->a % 6, &r); break;
