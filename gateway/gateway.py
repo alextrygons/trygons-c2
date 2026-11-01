@@ -123,6 +123,7 @@ class Gateway:
         self.nav_last = None
         self.nav_sent = 0
         self.nav_skipped = 0                # navreqs not sent: no fresh telemetry (step 13q2d)
+        self.nav_errors = 0                 # nav_compose exceptions (step 13q2e)
         self.nav_state = {"shallow": None, "threats": [], "route": [], "state": "CLEAR", "why": ""}
         self.stations.prog_check = self.check_prog
         # geofence (CLAUDE.md D): routes must stay inside; a copilot's change waits for the captain's ACCEPT
@@ -527,8 +528,20 @@ class Gateway:
     def nav_tick(self):
         """One navigation request. No fresh AURIX telemetry = nothing is known, so no lease is renewed (step 13q2d,
         review LOW-1): the AURIX's lease runs out (a slowdown held, DRIVER DECISION; in UNCREWED HDG LOCK every lapsed
-        lease) instead of a 'no danger' built on old data. -> True when sent."""
-        req = self.nav_compose()
+        lease) instead of a 'no danger' built on old data. -> True when sent.
+        Step 13q2e (review): nav_compose failing (a bug, bad chart data ...) is logged + counted; in UNCREWED HDG
+        LOCK the gateway then sends an explicit STOP (cap 0, SHALLOW + DRIVER DECISION = "cannot evaluate") instead
+        of leaving the lease un-renewed; elsewhere (AUTO / DP TRIP) nothing is sent = the AURIX's lost-lease rule."""
+        try:
+            req = self.nav_compose()
+        except Exception:
+            self.nav_errors += 1
+            log.exception("navigation request: nav_compose failed")
+            o = self.own()
+            if not (o.get("fresh") and self.hdg_uncrewed(o)):
+                raise
+            req = {"kind": proto.NAV_CAP, "heading": None, "cap_kn": 0.0, "reason": 2, "alarm": 4 | 2}
+            self.audit("navreq_error", text="nav_compose failed: cannot evaluate = STOP (UNCREWED HDG LOCK)")
         if self.telem_fresh() is None:
             self.nav_skipped += 1
             return False

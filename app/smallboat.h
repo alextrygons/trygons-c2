@@ -450,6 +450,9 @@ typedef struct {
  * Step 13q3 adds the shore stick X / trigger rules (C3) on top of this: the steering stays with the heading hold. */
 #define SB_SHDG_STOP_KN    0.05f    /* a navreq cap below this = STOP: idle + neutral */
 #define SB_SHDG_CUT_PCT_S  2.0f     /* the held throttle comes down this fast while the speed is above the cap */
+/* Step 13q2e (review of 13q2d): the AURIX's own shore backstop - GW_SHORE's distance to shallow water / the shore
+ * (any direction) at or below this = STOP, and no entry (= the gateway's stop_m default, gateway/shallow.py) */
+#define SB_SHDG_STOP_M     100.0f
 typedef struct {
     bool     on;                /* UNCREWED HDG LOCK running (entered by sb_hdg_lock_shore) */
     gear_t   hold_gear;         /* the gear at the entry (F or N); N after a stop / lost data */
@@ -464,6 +467,9 @@ typedef struct {
     /* step 13q2d: STOPs because the gateway's shore data is missing / not valid, entries refused for it (or for an
      * untrusted GPS), held-throttle cuts on dead reckoning, STANDBYs for the DR limit / no position */
     uint32_t nodata_stops, nodata_refused, dr_cuts, dr_stops;
+    /* step 13q2e (review MED-A / LOW-B): STOPs because the navreq lease lapsed (or never came) / GW_SHORE's distance
+     * was within SB_SHDG_STOP_M; entries refused without a fresh navreq / that close to the shore */
+    uint32_t lease_stops, shore_stops, lease_refused, shore_refused;
 } sb_shdg_t;
 
 /* The HELM station's (shore captain's) joystick as a CONFIRM source in
@@ -959,7 +965,9 @@ sb_result_t sb_maneuver_request(sb_t *s, uint8_t station);
  * ceiling), compass, no gear fault, gear settled in F or N (SB_ERR_PRECOND). Locks the current heading, holds the
  * throttle (see sb_shdg_t). CREWED: SB_ERR_NOT_ALLOWED (the panel button only, unchanged).
  * Step 13q2d: also SB_ERR_PRECOND without valid fresh shore data from the gateway (sb_shore_valid: charts + a
- * position) or without a trusted GPS. */
+ * position) or without a trusted GPS.
+ * Step 13q2e: also SB_ERR_PRECOND without a fresh navigation request lease (never received since the boot = none)
+ * or with GW_SHORE's distance within SB_SHDG_STOP_M. */
 sb_result_t sb_hdg_lock_shore(sb_t *s, uint8_t station);
 /* true while UNCREWED HDG LOCK runs */
 bool sb_shore_hdg(const sb_t *s);

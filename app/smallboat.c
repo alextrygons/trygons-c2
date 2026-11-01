@@ -690,10 +690,11 @@ static void nav_step(sb_t *s)
             s->hdg_target = n->heading;
             autopilot_set_target(&s->ap, n->heading);
         }
-    } else if (nav_applies(s) && !n->lost && n->rx_ms != 0u &&
+    } else if (nav_applies(s) && !n->lost && (n->rx_ms != 0u || sb_shore_hdg(s)) &&   /* 13q2e: never = lapsed */
                (n->kind == SB_NAV_CAP || n->kind == SB_NAV_HEADING || sb_shore_hdg(s))) {
         /* the gateway went quiet in the middle of an avoidance: don't carry on blindly (step 13q2d: in UNCREWED HDG
-         * LOCK every lapsed lease, also one that said "no danger" - nobody on board watches the water) */
+         * LOCK every lapsed lease, also one that said "no danger" - nobody on board watches the water; step 13q2e: there
+         * shdg_throttle STOPs the boat on it, nav_lost_kn / the held heading are AUTO's / a DP TRIP's rule only) */
         bool capped = n->kind == SB_NAV_CAP || n->kind == SB_NAV_HEADING;
         n->lost = true;
         n->losses++;
@@ -2001,6 +2002,16 @@ sb_result_t sb_hdg_lock_shore(sb_t *s, uint8_t station)
         h->nodata_refused++;
         return SB_ERR_PRECOND;
     }
+    /* step 13q2e (review LOW-B / MED-A): a FRESH navigation request (the gateway's look-ahead shallow / AIS check is
+     * running - never-received = no lease that could lapse) and the shore farther than the stop distance */
+    if (!nav_fresh(s)) {
+        h->lease_refused++;
+        return SB_ERR_PRECOND;
+    }
+    if ((float)s->coast.dist_m <= SB_SHDG_STOP_M) {
+        h->shore_refused++;
+        return SB_ERR_PRECOND;
+    }
     if (!sb_request_mode(s, MODE_HDG_LOCK, WHY_HDG_SHORE)) return SB_ERR_PRECOND;
     h->refused--;
     s->confirm.kind = CONF_NONE;         /* the new mode replaces a pending request (as 13q2) */
@@ -2049,6 +2060,31 @@ static void shdg_throttle(sb_t *s)
         h->hold_pct = 0.0f;
         h->hold_gear = GEAR_N;
         alarm_on(s, SB_ALM_SHALLOW);
+    } else if ((float)s->coast.dist_m <= SB_SHDG_STOP_M) {
+        /* step 13q2e (review MED-A): the AURIX's own backstop - shallow water / the shore within the stop distance
+         * (GW_SHORE, any direction) = STOP, whatever the navigation request says */
+        if (!h->stopped) {
+            h->stops++;
+            h->shore_stops++;
+        }
+        h->stopped = true;
+        h->hold_pct = 0.0f;
+        h->hold_gear = GEAR_N;
+        alarm_on(s, SB_ALM_SHALLOW);
+    }
+    /* step 13q2e (review MED-A / LOW-B): the navigation request lease lapsed (or never came) = the gateway's
+     * look-ahead (shallow ahead, AIS, camera) is gone - nobody on board: STOP (idle + neutral for the rest of this
+     * HDG LOCK) + DRIVER DECISION, never "carry on at nav_lost_kn" (that stays AUTO's rule). The lease time itself
+     * (3 s) is the grace. */
+    if (!nav_fresh(s)) {
+        if (!h->stopped) {
+            h->stops++;
+            h->lease_stops++;
+        }
+        h->stopped = true;
+        h->hold_pct = 0.0f;
+        h->hold_gear = GEAR_N;
+        alarm_on(s, SB_ALM_DECISION);
     }
     /* step 13q2d (review MED-2): GPS lost / suspect = the AUTO rule - carry on by dead reckoning at reduced
      * power (the held throttle x dr_speed_factor, only lowered); no estimate, the uncertainty above dr_max_unc_m or

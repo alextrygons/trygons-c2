@@ -4198,6 +4198,7 @@ def section_uh():
         s.sent = []
         s.nav_send = lambda req: s.sent.append(req)
         s.nav_skipped = 0
+        s.nav_errors = 0
         s.avoider = Avoider()
         s.ais = types.SimpleNamespace(list=lambda: [])
         s.hdg_set_until = 0.0
@@ -4368,6 +4369,37 @@ def section_uh():
     report("UH9 (13q2d MED-2) geofence: nearer the edge than the position uncertainty = breach (alarm 16)",
            e_big["alarm"] & 16 and not e_small["alarm"] & 16 and 45.0 < em < 55.0,
            "edge %.1f m; unc 60 m alarm %s; unc 10 m alarm %s" % (em, e_big["alarm"], e_small["alarm"]))
+
+    # UH10 (step 13q2e, review) nav_compose fails (a bug / bad chart data): logged + counted; in UNCREWED HDG LOCK an
+    # explicit STOP request is sent (cap 0, SHALLOW + DRIVER DECISION = cannot evaluate, audit navreq_error) - never a
+    # silently un-renewed lease; AUTO / CREWED HDG LOCK: nothing sent (the exception goes on to nav_loop's log = the
+    # AURIX's lost-lease rule); without fresh telemetry: nothing sent either
+    def boom():
+        raise RuntimeError("test: nav_compose broken")
+
+    def tick(s_):
+        s_.nav_compose = boom
+        try:
+            return G.nav_tick(s_), None
+        except RuntimeError as e:
+            return None, e
+    import logging as _lg
+    _lg.disable(_lg.CRITICAL)
+    try:
+        st_u, st_a2, st_c, st_old2 = stub(H, U, shoal_m=5000.0), stub(proto.MODE_AUTO, U, shoal_m=5000.0),             stub(H, C, shoal_m=5000.0), stub(H, U, shoal_m=5000.0, age=5.0)
+        res = {k: tick(v) for k, v in (("uh", st_u), ("auto", st_a2), ("crewed", st_c), ("old", st_old2))}
+    finally:
+        _lg.disable(_lg.NOTSET)
+    rq = st_u.sent[0] if st_u.sent else {}
+    report("UH10 (13q2e) nav_compose failing in UNCREWED HDG LOCK = an explicit STOP request (cap 0, alarm 4 + 2); "
+           "AUTO / CREWED / old telemetry: nothing sent, the error goes on",
+           res["uh"][0] is True and rq.get("kind") == proto.NAV_CAP and rq.get("cap_kn") == 0.0 and
+           rq.get("alarm", 0) & 6 == 6 and st_u.nav_errors == 1 and [k for k, _ in st_u.audits] == ["navreq_error"] and
+           res["auto"][1] is not None and not st_a2.sent and res["crewed"][1] is not None and not st_c.sent and
+           res["old"][1] is not None and not st_old2.sent,
+           "UNCREWED HDG LOCK %s sent %s errors %d audits %s; AUTO %s sent %d; CREWED %s sent %d; old telemetry %s sent %d" % (
+               res["uh"], rq, st_u.nav_errors, st_u.audits, res["auto"], len(st_a2.sent), res["crewed"],
+               len(st_c.sent), res["old"], len(st_old2.sent)))
 
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,

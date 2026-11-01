@@ -22,6 +22,10 @@
  * Step 13q2c: UNCREWED HDG LOCK from REMOTE / MANEUVER by the HELM captain's command (E_SHDG, after some UNCREWED
  * REMOTE / MANEUVER requests; navigation requests with a STOP cap / a geofence breach); invariants I66-I68;
  * step 13q2d: I69 (no shore data / GPS lost in UNCREWED HDG LOCK).
+ * Step 13q2e: the storm's gateway sends its "no danger" navigation request at 2 Hz (like nav_loop) while an
+ * UNCREWED boat is in REMOTE / MANEUVER / HDG LOCK; E_NAVBEAT stops it for a while (nav_compose broken / frames
+ * lost on the UART) and some shore reports say 40 m; invariant I70 (lapsed / never lease, the shore within the stop
+ * distance = STOP; never entered without them).
  * A failing episode is replayed with fewer events until the shortest
  * schedule that still fails remains (the "minimal reproduction").
  *
@@ -82,6 +86,7 @@ typedef enum {
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
     E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN, E_PC_CONFONLY, E_LINK, E_SHDG,
+    E_NAVBEAT,
     E_COUNT
 } ev_kind_t;
 
@@ -103,7 +108,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "PC AUTO return (the program backwards to waypoint 1; then the CONFIRM)",
     "PC CONFIRM_ONLY (academy practical test: a question for the onboard CONFIRM that changes nothing)",
     "LINK TIME (the captain sets 1..70 s / the HELM station goes silent / is heard again / open sea)",
-    "shore HDG LOCK (UNCREWED: the HELM captain's mode command from REMOTE / MANEUVER; stick centred mostly)"
+    "shore HDG LOCK (UNCREWED: the HELM captain's mode command from REMOTE / MANEUVER; stick centred mostly)",
+    "gateway navreq heartbeat stops for a while (nav_compose broken / frames lost)"
 };
 
 typedef struct {
@@ -322,6 +328,17 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
             }
             /* step 13q2c: UNCREWED, half of the REMOTE / MANEUVER requests are followed by the captain's HDG LOCK */
             if ((k == E_REMOTE_REQ || k == E_MAN_REQ) && s->uncrewed && (ea * 31 + eb) % 10 < 5 && s->n + 1 < MAX_EV) {
+                /* step 13q2e (I70): sometimes the gateway's navreq heartbeat has stopped just before the command
+                 * (the entry must be refused once the lease has run out) */
+                if ((ea * 7 + ec) % 5 == 0 && s->n + 2 < MAX_EV) {
+                    ev_t *pb = &s->ev[s->n++];
+                    memset(pb, 0, sizeof *pb);
+                    pb->t = t + 100u;
+                    pb->kind = E_NAVBEAT;
+                    pb->a = 7;                                     /* off 10.5 s */
+                    s->on[s->n - 1] = true;
+                    t = pb->t;
+                }
                 ev_t *hl = &s->ev[s->n++];
                 memset(hl, 0, sizeof *hl);
                 hl->t = t + 2000u + (uint32_t)(ec % 6) * 1000u;
@@ -344,6 +361,19 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                     s->on[s->n - 1] = true;
                     t = lv->t;
                 }
+                /* step 13q2e (I70): in some of the others (no GPS / shore event below, no navreq) the gateway's navreq
+                 * heartbeat stops for a while (nav_compose broken / frames lost on the UART) or the shore is 40 m
+                 * away, 1.5-4.5 s into the HDG LOCK */
+                bool i70 = (ea + eb + ec) % 3 == 0 && eb % 2 == 1;
+                if (i70 && s->n + 1 < MAX_EV) {
+                    ev_t *nb = &s->ev[s->n++];
+                    memset(nb, 0, sizeof *nb);
+                    nb->t = t + 1500u + (uint32_t)(ec % 4) * 1000u;
+                    nb->kind = ((ea + ec) % 4 == 0) ? E_SHORE : E_NAVBEAT;
+                    nb->a = ((ea + ec) % 4 == 0) ? 1 : ea;                       /* shore mode 1 = 40 m */
+                    s->on[s->n - 1] = true;
+                    t = nb->t;
+                }
                 /* step 13q2d (I69): in half of them the GPS lost (dead reckoning) or the gateway's shore data gone /
                  * not valid 1-2 s into the HDG LOCK (before any navreq below) */
                 if (eb % 2 == 0 && s->n + 2 < MAX_EV) {
@@ -356,7 +386,9 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                     t = g0->t;
                 }
                 /* ... and mostly a gateway request a few seconds later: a STOP (cap 0) or a geofence breach (I68) */
-                if ((ea + ec) % 3 != 0 && s->n + 1 < MAX_EV) {
+                if (i70) {
+                    /* (13q2e: nothing more in this one) */
+                } else if ((ea + ec) % 3 != 0 && s->n + 1 < MAX_EV) {
                     ev_t *nr = &s->ev[s->n++];
                     memset(nr, 0, sizeof *nr);
                     nr->t = t + 3000u + (uint32_t)(ea % 6) * 1000u;
@@ -446,6 +478,11 @@ typedef struct {
     uint32_t    shore_tx_t;         /* the last GW_SHORE pushed */
     uint8_t     shore_tx_mode;      /* ... and what it said (shore_mode changes reach the AURIX only with the next push) */
     uint32_t    fuzz_link_t;        /* a CRC-valid random GW_STATUS / GW_CMD / HELM / GW_STATION frame (I60-I62 wait) */
+    /* step 13q2e (I70): the gateway's 2 Hz navreq heartbeat + what the storm last sent */
+    uint32_t    nav_beat_next, nav_beat_off_until;
+    uint32_t    nav_tx_t;           /* the last VALID navreq pushed (0 = none since the boot) */
+    uint16_t    nav_tx_lease;
+    uint32_t    fuzz_gw_t;          /* a CRC-valid random gateway frame of any type (I70 waits) */
 } sim_t;
 
 static sim_t S;
@@ -496,6 +533,7 @@ static void boot(void)
     S.last_kick = S.t;
     S.boots++;
     S.lt_expect = SB_LINK_TIME_MIN_S;   /* LINK TIME: 3 s after every reset (step 13q1) */
+    S.nav_tx_t = 0u;                    /* I70: the AURIX's navreq lease is gone with the reset */
     S.helm_silent = false;
     S.heard_t = S.t;
     S.rep_since_grant = false;
@@ -619,6 +657,14 @@ static void navreq(uint8_t kind, uint8_t reason, uint8_t alarm, float hdg, float
     pl[6] = (uint8_t)c; pl[7] = (uint8_t)(c >> 8);
     pl[8] = (uint8_t)lease; pl[9] = (uint8_t)(lease >> 8);
     push_frame(true, PROTO_T_GW_NAVREQ, pl, 10u);
+    /* I70 (13q2e): the storm's own copy of link.c's validity rule (an invalid one is ignored by the AURIX) */
+    bool valid = kind <= SB_NAV_HDG_SET && !(kind != SB_NAV_NONE && kind != SB_NAV_CAP && h >= 36000u) &&
+                 !(kind == SB_NAV_HEADING && c == 0xFFFFu) && !(c != 0xFFFFu && c > 600u) && lease >= 500u &&
+                 lease <= 10000u;
+    if (valid) {                        /* (pushed = delivered, also while the storm's status is off) */
+        S.nav_tx_t = S.t ? S.t : 1u;
+        S.nav_tx_lease = lease;
+    }
 }
 
 static void prog_random(int n, uint32_t *r)
@@ -650,7 +696,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 70
+#define NINV 71
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -717,7 +763,8 @@ static const char *INV_NAMES[NINV] = { "",
     "I66 HDG LOCK straight from REMOTE / MANEUVER only UNCREWED by the HELM captain's command (fresh shore data, stick centred); CREWED never (the panel button only)",
     "I67 UNCREWED HDG LOCK: the throttle never above its value at the entry (never rises by itself), never reverse, the gear only the entry gear or N",
     "I68 UNCREWED HDG LOCK: a navreq STOP (cap 0) = idle + neutral for the rest of it; a geofence breach = STANDBY in that step; stale shore data = idle + neutral",
-    "I69 UNCREWED HDG LOCK (13q2d): never entered without valid fresh GW_SHORE / a trusted GPS; GW_SHORE missing / not valid = idle + neutral; GPS lost = held x dr_speed_factor; the DR limit = STANDBY" };
+    "I69 UNCREWED HDG LOCK (13q2d): never entered without valid fresh GW_SHORE / a trusted GPS; GW_SHORE missing / not valid = idle + neutral; GPS lost = held x dr_speed_factor; the DR limit = STANDBY",
+    "I70 UNCREWED HDG LOCK (13q2e): never entered without a fresh navreq lease / with the shore within the stop distance; a lapsed (or never) lease or the shore within it = idle + neutral" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -731,6 +778,8 @@ typedef struct {
     uint32_t uh_entries, uh_refused, uh_stops, uh_fence, uh_stale;    /* step 13q2c (I66-I68) */
     uint32_t uh_nodata, uh_dr, uh_drlim;                              /* step 13q2d (I69): steps checked */
     uint32_t uh_nodata_hot, uh_dr_hot;                                /* ... of them with a held throttle > 2 % */
+    uint32_t uh_lapsed, uh_near, uh_lapsed_hot, uh_entry70;           /* step 13q2e (I70): steps checked, entries */
+    uint32_t uh_ref_code[32];                                         /* step 13q2e: why the shore HDG LOCK was refused */
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
 } stats_t;
@@ -863,6 +912,9 @@ typedef struct {
     uint32_t uh_nodata_t;
     int      uh_drlim_n;                    /* I69: consecutive HDG LOCK steps past the DR limit */
     int      uh_dr_n;                       /* I69: consecutive HDG LOCK steps without a trusted GPS */
+    bool     uh_entry_bad70;                /* I70 (13q2e): entered with no fresh lease / the shore 40 m away */
+    bool     uh_lapsed, uh_near;            /* I70: latched in this HDG LOCK */
+    uint32_t uh_lapsed_t, uh_near_t;
     uint32_t near_since61;                  /* I60 */
     uint32_t gear_n_since28;                /* I28: the gear machine settled in N since (0 = not) */
     uint32_t rem_direct_t;                  /* I7 / I63: an UNCREWED REMOTE / MANEUVER request that started it at once */
@@ -892,6 +944,23 @@ static bool shore_clearly_bad(const sb_t *s)
 {
     if (!S.shore_tx_t || S.t - S.shore_tx_t > s->cfg.shore_max_age_ms + 200u) return true;
     return S.shore_tx_mode == 3u && S.t - S.shore_tx_t >= 100u;
+}
+
+/* I70 (step 13q2e): the AURIX's navreq lease has clearly run out (or never came since the boot): the last valid
+ * request the storm pushed is older than its lease + 2 steps; a CRC-valid random gateway frame in the last 11 s
+ * (it may have been a navreq) = not judged */
+static bool i70_fuzzed(void) { return S.fuzz_gw_t && S.t - S.fuzz_gw_t < 11000u; }
+
+static bool lease_clearly_gone(void)
+{
+    return !S.nav_tx_t || S.t - S.nav_tx_t > (uint32_t)S.nav_tx_lease + 2u * AP_PERIOD_MS;
+}
+
+/* I70: the last GW_SHORE said 40 m (valid, within SB_SHDG_STOP_M) and had 100 ms to arrive, still fresh */
+static bool shore_clearly_near(const sb_t *s)
+{
+    return S.shore_tx_mode == 1u && S.shore_tx_t && S.t - S.shore_tx_t >= 100u &&
+           S.t - S.shore_tx_t <= s->cfg.shore_max_age_ms;
 }
 
 /* one GW_RJOY packet of the HELM station's (shore) joystick, as the storm sends it (I63 remembers it) */
@@ -1382,10 +1451,16 @@ static void check_step(void)
         C.uh_stopped = false;
         C.uh_nodata = false;
         C.uh_drlim_n = C.uh_dr_n = 0;
+        C.uh_lapsed = C.uh_near = false;
         if (C.uh_session && C.uh_entry_t && S.t - C.uh_entry_t <= 100u) {
             if (C.uh_entry_bad) fail(69, "UNCREWED HDG LOCK entered without valid shore data / a trusted GPS%.0f%.0f",
                                      0.0, 0.0);
             else ok(69);
+            ST.uh_entry70++;
+            if (C.uh_entry_bad70) fail(70, "UNCREWED HDG LOCK entered without a fresh navreq lease (last %.0f ms ago) / "
+                                       "with the shore 40 m away (shore mode %.0f)",
+                                       S.nav_tx_t ? (double)(S.t - S.nav_tx_t) : -1.0, (double)S.shore_tx_mode);
+            else ok(70);
         }
     }
     if (m != MODE_HDG_LOCK) C.uh_session = false;
@@ -1431,6 +1506,20 @@ static void check_step(void)
             if (s->throttle_demand <= 0.0f && s->gear_demand == GEAR_N) ok(69);
             else fail(69, "UNCREWED HDG LOCK without valid shore data: throttle demand %.2f %%, gear demand %.0f",
                       s->throttle_demand, (double)s->gear_demand);
+        }
+        /* I70 (step 13q2e): a lapsed / never lease, or the shore within the stop distance = idle + N from 2 steps on
+         * (latched for this HDG LOCK) */
+        if (!i70_fuzzed()) {
+            if (!C.uh_lapsed && lease_clearly_gone()) { C.uh_lapsed = true; C.uh_lapsed_t = S.t; }
+            if (!C.uh_near && shore_clearly_near(s)) { C.uh_near = true; C.uh_near_t = S.t; }
+        }
+        if ((C.uh_lapsed && S.t - C.uh_lapsed_t >= 2u * AP_PERIOD_MS) ||
+            (C.uh_near && S.t - C.uh_near_t >= 2u * AP_PERIOD_MS)) {
+            if (C.uh_lapsed) ST.uh_lapsed++; else ST.uh_near++;
+            if (C.uh_lapsed && C.uh_cap > 2.0f && C.uh_gear0 == 1) ST.uh_lapsed_hot++;
+            if (s->throttle_demand <= 0.0f && s->gear_demand == GEAR_N) ok(70);
+            else fail(70, "UNCREWED HDG LOCK with the navreq lease gone / the shore 40 m away: throttle demand %.2f %%, "
+                      "gear demand %.0f", s->throttle_demand, (double)s->gear_demand);
         }
         /* GPS not trusted: dead reckoning at reduced power; past the DR limit: STANDBY (2 steps allowed) */
         if (!sb_gps_ok(s)) {
@@ -2119,9 +2208,11 @@ static void apply(const ev_t *e)
         float thr_before = fmaxf(sim_hal_throttle(), s->thr.out_pct);
         int gp_before = gear_pos(sim_hal_gear_pwm());
         bool bad_before = shore_clearly_bad(s) || !sb_gps_ok(s);      /* I69 (13q2d) */
+        bool bad70 = !i70_fuzzed() && (lease_clearly_gone() || shore_clearly_near(s));   /* I70 (13q2e) */
         sb_result_t rr = sb_hdg_lock_shore(s, s->helm);
         C.uh_entry_t = S.t ? S.t : 1u;
         C.uh_entry_bad = bad_before;
+        C.uh_entry_bad70 = bad70;
         if (sb_mode(s) != before) {
             bool fresh = C.sent_t && C.sent_fresh && S.t - C.sent_t <= 300u && fabsf(C.sent_x) <= 0.10f &&
                          C.rem_last_fresh && S.t - C.rem_last_fresh <= 300u;
@@ -2136,6 +2227,7 @@ static void apply(const ev_t *e)
             ST.uh_entries++;
         } else {
             ST.uh_refused++;
+            ST.uh_ref_code[(unsigned)rr & 31u]++;
         }
         if (s->profile != SB_PROFILE_UNCREWED) {          /* CREWED: refused, nothing changes (the panel button only) */
             if (rr == SB_ERR_NOT_ALLOWED && sb_mode(s) == before) ok(66);
@@ -2361,8 +2453,10 @@ static void apply(const ev_t *e)
         if (e->a >= 900) alarm |= SB_NAV_ALM_FENCE;                        /* step 13q2c: a geofence breach */
         if (e->a >= 820 && e->a < 900 && cap >= 0.0f && kind != 0u) cap = 0.0f;   /* ... and a STOP */
         navreq(kind, reason, alarm, fabsf(e->f) * 359.0f, cap, lease);
+        S.nav_beat_next = S.t + 1000u;                                     /* (13q2e: the heartbeat waits a bit) */
         break;
     }
+    case E_NAVBEAT: S.nav_beat_off_until = (S.t + 3500u + (uint32_t)(e->a % 8) * 1000u) | 1u; break;
     case E_FUZZ_USB:
     case E_FUZZ_GW: {
         bool gw = e->kind == E_FUZZ_GW;
@@ -2377,10 +2471,12 @@ static void apply(const ev_t *e)
         } else if (e->a < 600) {                                           /* a valid frame, random type */
             uint8_t ty = (uint8_t)(rng_next(&r) % 0x40u);
             push_frame(gw, ty, pl, len);
+            if (gw) S.fuzz_gw_t = S.t ? S.t : 1u;                                                       /* I70 */
             if (gw && ty >= PROTO_T_GW_STATUS && ty <= PROTO_T_GW_STATION) S.fuzz_link_t = S.t ? S.t : 1u;  /* I60-I62 */
             if (e->c < 300) {
                 ty = (uint8_t)(rng_next(&r) % 0x40u);
                 push_frame(gw, ty, pl, len);                                    /* duplicated */
+                if (gw) S.fuzz_gw_t = S.t ? S.t : 1u;
                 if (gw && ty >= PROTO_T_GW_STATUS && ty <= PROTO_T_GW_STATION) S.fuzz_link_t = S.t ? S.t : 1u;
             }
         } else {                                                           /* a corrupted frame */
@@ -2587,6 +2683,14 @@ static void run_until(uint32_t until)
                 push_frame(true, PROTO_T_GW_SHORE, sp, 3u);
             }
         }
+        /* step 13q2e: the gateway's nav_loop - a "no danger" request at 2 Hz while an UNCREWED boat is in REMOTE /
+         * MANEUVER / HDG LOCK (UNCREWED HDG LOCK needs the lease), except while E_NAVBEAT stopped it */
+        if (S.gw_on && S.uncrewed && AT_OR_AFTER(S.t, S.nav_beat_next) &&
+            (sb_mode(&S.sb) == MODE_REMOTE || sb_mode(&S.sb) == MODE_MANEUVER || sb_mode(&S.sb) == MODE_HDG_LOCK) &&
+            !(S.nav_beat_off_until && !AT_OR_AFTER(S.t, S.nav_beat_off_until))) {
+            S.nav_beat_next = S.t + 500u;
+            navreq(SB_NAV_NONE, 0u, 0u, 0.0f, -1.0f, 3000u);
+        }
         if (S.gw_on) S.gw_off_t = 0u;
         else if (!S.gw_off_t) S.gw_off_t = S.t ? S.t : 1u;
         uint8_t buf[512];
@@ -2687,6 +2791,12 @@ static void report(int episodes, double hours)
            "DR-limit STANDBYs; %lu / %lu of the steps with a held throttle\n", (unsigned long)ST.uh_nodata,
            (unsigned long)ST.uh_dr, (unsigned long)ST.uh_drlim, (unsigned long)ST.uh_nodata_hot,
            (unsigned long)ST.uh_dr_hot);
+    printf("UNCREWED HDG LOCK lease / shore (step 13q2e, I70): %lu entries judged, %lu lapsed-lease steps (%lu with a "
+           "held throttle), %lu shore-near steps\n", (unsigned long)ST.uh_entry70, (unsigned long)ST.uh_lapsed,
+           (unsigned long)ST.uh_lapsed_hot, (unsigned long)ST.uh_near);
+    printf("UNCREWED HDG LOCK refused by result code:");
+    for (int i = 0; i < 32; i++) if (ST.uh_ref_code[i]) printf(" %d: %lu", i, (unsigned long)ST.uh_ref_code[i]);
+    printf("\n");
 }
 
 /* 32-bit time wraparound: the clock starts 3 minutes before 2^32 ms */

@@ -16348,6 +16348,7 @@ static bool uh_remote(sbsim_t *x, rjsim_t *r, uhsim_t *u, uint32_t seed, float l
     u->r = r;
     u->n.lease = 3000u;
     u->n.cap = -1.0f;
+    u->nav_on = true;                    /* the gateway's "no danger" request at 2 Hz (13q2e: UNCREWED HDG LOCK needs it) */
     uh_shore(r, SB_SHORE_VALID, 1500u);
     if (pi_cmd(x, &r->p, 2u, false, PROTO_T_REMOTE, &ASK, 1u) != PROTO_R_OK) return false;
     rj_lever(x, r, lever, 1.0f);
@@ -16501,8 +16502,8 @@ static void shore_hdg_tests(void)
         u.nav_on = true;
         uh_run(&x, &u, 3000u);
         float thr_rem = x.sb.thr.out_pct;
-        u.nav_on = false;
-        uh_run(&x, &u, 3500u);                                         /* the lease runs out */
+        u.n.kind = SB_NAV_NONE; u.n.reason = 0u; u.n.alarm = 0u; u.n.cap = -1.0f;   /* (13q2e: "no danger", kept fresh) */
+        uh_run(&x, &u, 3500u);
         uint8_t ok = uh_lock(&x, &r);
         float held = x.sb.shdg.hold0_pct, sog0 = x.sb.gps.last.sog_kn;
         /* an AIS avoidance heading 60 deg to starboard + a cap below the speed */
@@ -16516,7 +16517,7 @@ static void shore_hdg_tests(void)
         float thr_cap = x.sb.thr.out_pct, hold_cap = x.sb.shdg.hold_pct, sog_cap = x.sb.gps.last.sog_kn;
         bool not_steered = fabsf(autopilot_heading_error(tgt0, x.sb.ap.target_heading)) < 0.01f;
         bool coll = (x.sb.alarm_bits & SB_ALM_COLLISION) != 0u;
-        u.nav_on = false;                                               /* the cap goes: never back up */
+        u.n.kind = SB_NAV_NONE; u.n.reason = 0u; u.n.alarm = 0u; u.n.cap = -1.0f;   /* the cap goes: never back up */
         float mo = 0.0f;
         (void)uh_run_max(&x, &u, 6000u, &mo);
         bool lost = x.sb.nav.lost;
@@ -16553,11 +16554,11 @@ static void shore_hdg_tests(void)
         u.nav_on = true;
         uh_run(&x, &u, 2000u);
         bool rem_kept = sb_mode(&x.sb) == MODE_REMOTE && !(x.sb.alarm_bits2 & SB_ALM2_GEOFENCE);
-        u.nav_on = false;
-        uh_run(&x, &u, 3500u);
+        u.n.alarm = 0u;                                                 /* (13q2e: the lease kept fresh) */
+        uh_run(&x, &u, 1000u);
         uint8_t ok = uh_lock(&x, &r);
         bool on = sb_shore_hdg(&x.sb);
-        u.nav_on = true;
+        u.n.alarm = SB_NAV_ALM_FENCE;
         u.n.next = x.t;
         float t_idle = -1.0f;
         uint32_t t0 = x.t;
@@ -16649,6 +16650,9 @@ static void shore_hdg_tests(void)
         rq_boat(&x, &r, 1711u, false);
         memset(&u, 0, sizeof u);
         u.r = &r;
+        u.n.lease = 3000u;
+        u.n.cap = -1.0f;
+        u.nav_on = true;
         uh_shore(&r, SB_SHORE_VALID, 1500u);
         pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
         rj_lever(&x, &r, 1.0f, 2.0f);                                  /* MANEUVER: forward gear at idle */
@@ -16760,7 +16764,10 @@ static void shore_hdg_tests(void)
         bool fresh_ok = !z.sb.nav.lost;
         uu.nav_on = false;
         uh_run(&z, &uu, 4000u);
-        bool lapsed = z.sb.nav.lost && (z.sb.alarm_bits & SB_ALM_DECISION) && sb_shore_hdg(&z.sb);
+        /* step 13q2e (review MED-A): a lapsed lease in UNCREWED HDG LOCK = STOP (idle + neutral), not nav_lost_kn */
+        bool lapsed = z.sb.nav.lost && (z.sb.alarm_bits & SB_ALM_DECISION) && sb_shore_hdg(&z.sb) &&
+                      z.sb.shdg.stopped && z.sb.shdg.lease_stops == 1u && z.sb.thr.out_pct <= 0.01f &&
+                      z.sb.gear_demand == GEAR_N;
         /* CREWED REMOTE: invalid shore data changes nothing */
         static sbsim_t c;
         static rjsim_t cw;
@@ -16776,7 +16783,7 @@ static void shore_hdg_tests(void)
         snprintf(d, sizeof d, "REMOTE %s at %.1f %%; shore not valid: REMOTE unchanged %s, HDG LOCK %u (6) kept REMOTE %s; "
                  "no shore data: %u (6) kept %s, refused %u; valid: %u -> on %s (%.1f %%); invalid in HDG LOCK -> STOP idle + "
                  "N + SHALLOW %s, valid again -> still stopped %s; new HDG LOCK (%s, %u), GW_SHORE stops -> STOP after "
-                 "%.2f s, idle + N %s; NONE lease (%s, %u): fresh no loss %s, lapsed -> lost + DECISION %s; CREWED REMOTE "
+                 "%.2f s, idle + N %s; NONE lease (%s, %u): fresh no loss %s, lapsed -> lost + DECISION + STOP %s; CREWED REMOTE "
                  "with invalid shore data drives on %s", rem ? "yes" : "NO", thr0, rem_kept ? "yes" : "NO", r_inv,
                  inv_kept ? "yes" : "NO", r_none, none_kept ? "yes" : "NO", (unsigned)refused, r_ok, on ? "yes" : "NO",
                  thr_on, stop ? "yes" : "NO", kept ? "yes" : "NO", rem2 ? "ok" : "NO", ok2, t_stop,
@@ -16851,6 +16858,111 @@ static void shore_hdg_tests(void)
                     "no entry without a trusted GPS",
                     rem && r_gps == PROTO_R_PRECOND && gps_kept && trusted && r_ok == PROTO_R_OK && held > 8.0f && dr &&
                     t_sb >= 0.0f && t_idle >= 0.0f && t_idle <= 0.6f && sb && rs, d);
+    }
+
+    /* UH10 (step 13q2e, review MED-A / LOW-B of 13q2d) the gateway's look-ahead (the navigation request lease) is
+     * REQUIRED in UNCREWED HDG LOCK, independent of GW_SHORE: (a) no entry without a fresh navreq (never received
+     * since the boot = no lease that could lapse) -> 6, nothing changes; (b) no entry with GW_SHORE's distance within
+     * SB_SHDG_STOP_M; (c) a lapsed lease while GW_SHORE stays fresh + valid = STOP (idle + neutral, DRIVER DECISION),
+     * never "carry on at nav_lost_kn"; the request back: still stopped; (d) GW_SHORE's distance dropping to the stop
+     * distance = STOP (SHALLOW); (e) after a reset the old lease is gone: no entry until a new request arrives;
+     * (f) AUTO's lost lease unchanged: held heading at nav_lost_kn, not stopped */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool rem = uh_remote(&x, &r, &u, 1718u, 1.0f);
+        float thr0 = x.sb.thr.out_pct;
+        /* (a) the gateway never sent a request since this boot: clear what came and stop it */
+        u.nav_on = false;
+        x.sb.nav.rx_ms = 0u;
+        uh_run(&x, &u, 300u);
+        uint8_t r_never = uh_lock(&x, &r);
+        bool never_kept = sb_mode(&x.sb) == MODE_REMOTE && x.sb.thr.out_pct > thr0 - 1.0f;
+        /* (b) fresh request, the shore 80 m away */
+        u.nav_on = true;
+        u.n.next = x.t;
+        uh_shore(&r, SB_SHORE_VALID, 80u);
+        uh_run(&x, &u, 1500u);
+        uint8_t r_near = uh_lock(&x, &r);
+        bool near_kept = sb_mode(&x.sb) == MODE_REMOTE;
+        unsigned lref = (unsigned)x.sb.shdg.lease_refused, sref = (unsigned)x.sb.shdg.shore_refused;
+        uh_shore(&r, SB_SHORE_VALID, 1500u);
+        uh_run(&x, &u, 1500u);
+        uint8_t r_ok = uh_lock(&x, &r);
+        bool on = sb_shore_hdg(&x.sb);
+        uh_run(&x, &u, 2000u);
+        float thr_on = x.sb.thr.out_pct;
+        /* (c) the requests stop (nav_compose broken / frames lost on the UART), GW_SHORE stays fresh + valid */
+        u.nav_on = false;
+        float t_stop = -1.0f, t_idle = -1.0f;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 6000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            if (t_stop < 0.0f && x.sb.shdg.stopped) t_stop = (float)(x.t - t0) * 0.001f;
+            if (t_stop >= 0.0f && t_idle < 0.0f && x.sb.thr.out_pct <= 0.01f) t_idle = (float)(x.t - t0) * 0.001f;
+        }
+        bool lstop = sb_shore_hdg(&x.sb) && x.sb.shdg.stopped && x.sb.shdg.lease_stops == 1u &&
+                     x.sb.gear_demand == GEAR_N && gear_is(&x.sb.gear, GEAR_N) && (x.sb.alarm_bits & SB_ALM_DECISION) &&
+                     x.sb.thr.out_pct <= 0.01f;
+        u.nav_on = true;
+        u.n.next = x.t;
+        float mo = 0.0f;
+        float md = uh_run_max(&x, &u, 3000u, &mo);
+        bool lkept = md <= 0.0f && mo <= 0.01f && gear_is(&x.sb.gear, GEAR_N) && sb_shore_hdg(&x.sb);
+        /* (d) GW_SHORE's distance comes within the stop distance in a new HDG LOCK */
+        static sbsim_t y;
+        static rjsim_t q;
+        static uhsim_t v;
+        bool rem2 = uh_remote(&y, &q, &v, 1719u, 1.0f);
+        uint8_t ok2 = uh_lock(&y, &q);
+        uh_run(&y, &v, 1500u);
+        float thr2 = y.sb.thr.out_pct;
+        uh_shore(&q, SB_SHORE_VALID, 90u);
+        uh_run(&y, &v, 3000u);
+        bool sstop = sb_shore_hdg(&y.sb) && y.sb.shdg.stopped && y.sb.shdg.shore_stops == 1u &&
+                     y.sb.thr.out_pct <= 0.01f && y.sb.gear_demand == GEAR_N && (y.sb.alarm_bits & SB_ALM_SHALLOW);
+        /* (e) a reset: the lease is gone with it */
+        sim_hal_chip_reset(HAL_RESET_SYSTEM);
+        y.boot_until = y.t + 200u;
+        v.nav_on = false;
+        uh_shore(&q, SB_SHORE_VALID, 1500u);
+        uh_run(&y, &v, 8000u);
+        bool rs_sb = sb_mode(&y.sb) == MODE_STANDBY && y.sb.nav.rx_ms == 0u;
+        link_init_port(&q.p.link, &y.sb, LINK_PORT_GW);                /* (the chip's RAM: its link state starts again) */
+        const uint8_t TAKE = 0u, ASK = 0u;
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        uh_run(&y, &v, 500u);
+        sb_alarm_ack(&y.sb);
+        rj_lever(&y, &q, 0.5f, 2.0f);                                  /* (lever neutral for the REMOTE entry) */
+        uint8_t r_rem = pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        rj_lever(&y, &q, 1.0f, 1.0f);
+        uh_run(&y, &v, 4000u);
+        uint8_t r_rs = uh_lock(&y, &q);
+        bool rs_kept = sb_mode(&y.sb) == MODE_REMOTE;
+        v.nav_on = true;
+        v.n.next = y.t;
+        uh_run(&y, &v, 1500u);
+        uint8_t r_rs2 = uh_lock(&y, &q);
+        bool rs_on = sb_shore_hdg(&y.sb);
+        /* (f) AUTO: a lapsed lease = held heading at nav_lost_kn, never this STOP (sim NV2, unchanged) */
+        crew_plug();
+        snprintf(d, sizeof d, "REMOTE %s at %.1f %%: never a navreq -> HDG LOCK %u (6) kept REMOTE %s; shore 80 m -> %u (6) "
+                 "kept %s (refused lease %u / shore %u); fresh + 1500 m -> %u on %s (%.1f %%); requests stop -> STOP after "
+                 "%.2f s, idle at %.2f s, N + DECISION %s; request back -> still idle + N %s (max %.2f / %.2f); new HDG LOCK "
+                 "(%s, %u, %.1f %%) shore 90 m -> STOP + SHALLOW %s; reset: STANDBY, lease gone %s; REMOTE %u, no request "
+                 "-> HDG LOCK %u (6) kept %s; request -> %u on %s",
+                 rem ? "yes" : "NO", thr0, r_never, never_kept ? "yes" : "NO", r_near, near_kept ? "yes" : "NO", lref, sref,
+                 r_ok, on ? "yes" : "NO", thr_on, t_stop, t_idle, lstop ? "yes" : "NO", lkept ? "yes" : "NO", md, mo,
+                 rem2 ? "ok" : "NO", ok2, thr2, sstop ? "yes" : "NO", rs_sb ? "yes" : "NO", r_rem, r_rs,
+                 rs_kept ? "yes" : "NO", r_rs2, rs_on ? "yes" : "NO");
+        test_report("UH10 (13q2e MED-A / LOW-B) UNCREWED HDG LOCK: no entry without a fresh navreq / near the shore; a "
+                    "lapsed lease = STOP (idle + neutral); shore within the stop distance = STOP; reset = no old lease",
+                    rem && thr0 > 8.0f && r_never == PROTO_R_PRECOND && never_kept && r_near == PROTO_R_PRECOND &&
+                    near_kept && lref == 1u && sref == 1u && r_ok == PROTO_R_OK && on && thr_on > 8.0f &&
+                    t_stop >= 2.4f && t_stop <= 3.2f && t_idle >= 0.0f && t_idle <= t_stop + 1.0f && lstop && lkept &&
+                    rem2 && ok2 == PROTO_R_OK && thr2 > 8.0f && sstop && rs_sb && r_rem == PROTO_R_OK &&
+                    r_rs == PROTO_R_PRECOND && rs_kept && r_rs2 == PROTO_R_OK && rs_on, d);
     }
 }
 

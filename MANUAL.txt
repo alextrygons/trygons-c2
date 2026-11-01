@@ -957,10 +957,17 @@ MODES
              runs: like AUTO - it carries on by dead reckoning with the held
              throttle cut to 70 %; dead reckoning too uncertain (200 m) or
              longer than 10 min: STANDBY (idle + neutral first) + alarm.
-             Note: the shore stop works on what lies AHEAD (the gateway's
-             look-ahead of the course); the boat has no separate "shore
-             within 100 m all round" stop - a shore beside or behind the
-             boat does not stop it.
+             THE GATEWAY'S LOOK-AHEAD IS REQUIRED (step 13q2e): HDG LOCK is
+             also refused (code 6) while the gateway's navigation check is
+             not running (no fresh navigation request) and when the shore /
+             shallow water is 100 m or closer in any direction. While it
+             runs: the gateway's navigation check stops arriving for 3 s
+             (gateway fault, link trouble) = STOP (idle + neutral, alarm
+             DRIVER DECISION) - with nobody on board the boat never carries
+             on without the look-ahead (AUTO keeps its old rule: hold the
+             heading at 4 kn). The shore / shallow water 100 m or closer in
+             any direction (also beside or behind) = STOP (alarm SHALLOW
+             WATER). The STOP lasts until you choose another mode.
   AUTO       a waypoint program (up to 50 waypoints). Each waypoint has a
              leg speed, an arrival radius and an action: continue / slow
              down / stop in neutral. At the end: stop + alarm (or hold the
