@@ -70,6 +70,7 @@ alarm.dp_offspot = DP OFF SPOT
 alarm.dp_overpower = DP OVERPOWER
 alarm.can_node = CAN NODE LOST (servo node silent / not ready): STANDBY
 alarm.can_bus = CAN BUS FAULT (bus off, or our node ID 10 on the bus): STANDBY
+alarm.geofence = OUTSIDE THE GEOFENCE: STANDBY
 alarm.no_data = NO DATA FROM THE BOAT
 
 # --- answers of the boat / gateway to a command (ACK result codes) ----------
@@ -371,6 +372,7 @@ cap.accept = Accept
 cap.reject = Reject
 cap.info_manual = MANUAL: move the joystick or press TAKE (the PC can't select it)
 cap.info_hdg = HDG LOCK: press the HDG LOCK button on the panel (the PC can't select it)
+cap.info_hdg_uncrewed = Uncrewed HDG LOCK: only from REMOTE or MANEUVER, with the stick centred. The throttle stays where it was and only comes down (the lever is a ceiling)
 cap.no_program_boat = no program on the boat
 cap.auto_wp = waypoint {n} of {of}, {state}
 cap.speed_limited = SPEED LIMITED BY POWER LIMIT
@@ -743,7 +745,7 @@ cap.joysticks = joysticks: {list}
 cap.none_found = none found
 cap.remote_request = REQUEST REMOTE DRIVING
 cap.maneuver_request = MANEUVER (DOCK / TRAILER)
-cap.remote_help = Remote driving / MANEUVER: chosen on screen 1 (the HELM station, a captain with the licence). Uncrewed boat: one press, it starts at once, only with the joystick centred and the lever at neutral. Crewed boat: the joystick CONFIRM pressed by the person on board within 10 s. There is no release button: to stop, choose another mode (STANDBY, AUTO, DP). The onboard joystick and STANDBY always win.
+cap.remote_help = Remote driving / MANEUVER: chosen on screen 1 (the HELM station, a captain with the licence). Uncrewed boat: one press, it starts at once, only with the joystick centred and the lever at neutral. Crewed boat: the joystick CONFIRM pressed by the person on board within 10 s. There is no release button: to stop, choose another mode (STANDBY, HDG LOCK when uncrewed, AUTO, DP). The onboard joystick and STANDBY always win.
 cap.remote_only_gw = Remote driving only through the gateway (gw:...)
 cap.rm_boat = boat: {mode}, remote {state}{why}
 cap.rm_state_0 = off
@@ -1244,6 +1246,7 @@ say.alarm.dp_offspot = The boat is off the spot
 say.alarm.dp_overpower = The thrusters are at their limit
 say.alarm.can_node = A servo node on the CAN bus is lost
 say.alarm.can_bus = CAN bus fault
+say.alarm.geofence = Outside the geofence, the boat stops
 say.alarm.no_data = No data from the boat
 
 # --- boats (boats/ folder), crew, profile (CLAUDE.md A, B, D, F) ---

@@ -473,6 +473,10 @@ static uint8_t pc_mode(sb_t *s, sb_mode_t to)
         (void)sb_request_mode(s, to, WHY_PC);                    /* refused + logged */
         return PROTO_R_JOYSTICK;
     }
+    /* step 13q2c (owner 2026-11-01): UNCREWED, the HELM captain's HDG LOCK from REMOTE / MANEUVER (CREWED: the
+     * panel button only, unchanged -> refused below) */
+    if (to == MODE_HDG_LOCK && s->profile == SB_PROFILE_UNCREWED)
+        return sb_result_to_proto(sb_hdg_lock_shore(s, s->helm));
     if (to != MODE_STANDBY && to != MODE_TRAINING) {
         (void)sb_request_mode(s, to, WHY_PC);                    /* refused + logged */
         return PROTO_R_NOT_ALLOWED;

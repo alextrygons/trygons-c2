@@ -8505,6 +8505,7 @@ void sb_usb_tests(void)
 }
 
 static void remote_direct_tests(void);   /* (step 13q2, below: it uses the DP helpers) */
+static void shore_hdg_tests(void);       /* (step 13q2c, below) */
 
 void sb_gateway_tests(void)
 {
@@ -8513,6 +8514,7 @@ void sb_gateway_tests(void)
     remote_tests();
     crew_tests();
     remote_direct_tests();
+    shore_hdg_tests();
     lostlink_tests();
     link_time_tests();
     save_tests();
@@ -16289,6 +16291,404 @@ static void remote_direct_tests(void)
     }
 }
 
+/* ------------------- step 13q2c: HDG LOCK in UNCREWED (owner 2026-11-01, W47 (b)) -- */
+
+/* the shore joystick stream + a "gateway" navigation request at 2 Hz while u->nav_on */
+typedef struct {
+    rjsim_t  *r;
+    navsim_t  n;
+    bool      nav_on;
+} uhsim_t;
+
+static void uh_hook(sbsim_t *x, void *ctx)
+{
+    uhsim_t *u = (uhsim_t *)ctx;
+    rj_hook(x, u->r);
+    if (u->nav_on && x->t >= u->n.next) {
+        u->n.next = x->t + 500u;
+        u->n.seq++;
+        nav_push(&u->n, u->n.kind, u->n.reason, u->n.alarm, u->n.heading, u->n.cap, u->n.lease);
+    }
+}
+
+static void uh_run(sbsim_t *x, uhsim_t *u, uint32_t ms)
+{
+    sbsim_run(x, x->t + ms, uh_hook, u);
+}
+
+/* the boat's max throttle demand / output over ms (stepping) */
+static float uh_run_max(sbsim_t *x, uhsim_t *u, uint32_t ms, float *max_out)
+{
+    float md = 0.0f, mo = 0.0f;
+    uint32_t t0 = x->t;
+    while (x->t < t0 + ms) {
+        sbsim_run(x, x->t + AP_PERIOD_MS, uh_hook, u);
+        md = fmaxf(md, x->sb.throttle_demand);
+        mo = fmaxf(mo, x->sb.thr.out_pct);
+    }
+    if (max_out) *max_out = mo;
+    return md;
+}
+
+/* UNCREWED, HELM station 2, REMOTE driving forward with the lever at `lever` for 8 s, stick centred */
+static bool uh_remote(sbsim_t *x, rjsim_t *r, uhsim_t *u, uint32_t seed, float lever)
+{
+    const uint8_t ASK = 0u;
+    rq_boat(x, r, seed, false);
+    memset(u, 0, sizeof *u);
+    u->r = r;
+    u->n.lease = 3000u;
+    u->n.cap = -1.0f;
+    if (pi_cmd(x, &r->p, 2u, false, PROTO_T_REMOTE, &ASK, 1u) != PROTO_R_OK) return false;
+    rj_lever(x, r, lever, 1.0f);
+    uh_run(x, u, 8000u);
+    return sb_mode(&x->sb) == MODE_REMOTE && gear_is(&x->sb.gear, GEAR_F);
+}
+
+static uint8_t uh_lock(sbsim_t *x, rjsim_t *r)
+{
+    const uint8_t HL = (uint8_t)MODE_HDG_LOCK;
+    return pi_cmd(x, &r->p, 2u, false, PROTO_T_SET_MODE, &HL, 1u);
+}
+
+static void shore_hdg_tests(void)
+{
+    char d[1400];
+    const uint8_t ASK = 0u, STBY = 0u;
+    printf("\n=== UH step 13q2c: HDG LOCK in UNCREWED (shore HELM captain, from REMOTE / MANEUVER) ===\n");
+
+    /* UH1 entry: only UNCREWED, only from REMOTE / MANEUVER, the HELM station, fresh shore data, the stick
+     * centred (the lever is NOT checked: it becomes the ceiling); locks the current heading, holds the throttle;
+     * refused from STANDBY, with the stick held, without data, from another station; CREWED: refused (the panel
+     * button only) and the panel button never enters HDG LOCK straight from REMOTE */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        const uint8_t HL = (uint8_t)MODE_HDG_LOCK;
+        rq_boat(&x, &r, 1701u, false);
+        uint8_t r_sb = uh_lock(&x, &r);                                 /* from STANDBY: nothing to hold */
+        bool st_sb = sb_mode(&x.sb) == MODE_STANDBY;
+        bool rem = uh_remote(&x, &r, &u, 1702u, 0.9f);
+        float thr0 = x.sb.thr.out_pct;
+        r.x = 0.4f;                                                     /* the stick held */
+        uh_run(&x, &u, 300u);
+        uint8_t r_x = uh_lock(&x, &r);
+        bool kept_x = sb_mode(&x.sb) == MODE_REMOTE;
+        r.x = 0.0f;
+        uh_run(&x, &u, 300u);
+        uint8_t r_st = pi_cmd(&x, &r.p, 3u, false, PROTO_T_SET_MODE, &HL, 1u);   /* not HELM */
+        float hdg0 = x.sb.ap.heading;
+        uint8_t r_ok = uh_lock(&x, &r);
+        bool on = sb_mode(&x.sb) == MODE_HDG_LOCK && sb_shore_hdg(&x.sb) && x.sb.confirm.kind == CONF_NONE;
+        float tgt = x.sb.ap.target_heading;
+        bool locked = fabsf(autopilot_heading_error(hdg0, tgt)) < 3.0f;
+        float held = x.sb.shdg.hold0_pct;
+        uint8_t r_again = uh_lock(&x, &r);
+        /* the data stops in REMOTE: refused */
+        static sbsim_t y;
+        static rjsim_t q;
+        static uhsim_t v;
+        bool rem2 = uh_remote(&y, &q, &v, 1703u, 0.9f);
+        q.rj_on = false;
+        uint8_t r_nd = 0xFFu;
+        {
+            uint32_t t0 = y.t;
+            while (y.t < t0 + 260u) sbsim_run(&y, y.t + AP_PERIOD_MS, uh_hook, &v);
+            r_nd = uh_lock(&y, &q);                                    /* (the 200 ms command window: > 0.3 s) */
+        }
+        bool nd_kept = sb_mode(&y.sb) != MODE_HDG_LOCK;
+        /* CREWED */
+        static sbsim_t z;
+        static rjsim_t w;
+        rq_boat(&z, &w, 1704u, true);
+        pi_cmd(&z, &w.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        onboard_confirm(&z, &w);
+        bool crem = sb_mode(&z.sb) == MODE_REMOTE;
+        uint8_t c_pc = uh_lock(&z, &w);
+        sim_hal_press(HAL_BTN_HDG_LOCK);                                /* the panel button in CREWED REMOTE */
+        sbsim_run(&z, z.t + 300u, rj_hook, &w);
+        bool c_kept = sb_mode(&z.sb) == MODE_REMOTE;
+        crew_plug();
+        snprintf(d, sizeof d, "STANDBY: HDG LOCK %u (7) still STANDBY %s; REMOTE %s at %.1f %%: stick 0.4 -> %u (8) still "
+                 "REMOTE %s; station 3 %u (21); centred (lever forward) %u -> UNCREWED HDG LOCK %s, target %.1f vs heading "
+                 "%.1f %s, held %.1f %%; again %u (0); data stopped: %s %u (14 / 6), not HDG LOCK %s; CREWED REMOTE %s: PC HDG "
+                 "LOCK %u (5), panel button -> still REMOTE %s", r_sb, st_sb ? "yes" : "NO", rem ? "yes" : "NO", thr0,
+                 r_x, kept_x ? "yes" : "NO", r_st, r_ok, on ? "yes" : "NO", tgt, hdg0, locked ? "locked" : "NOT locked",
+                 held, r_again, rem2 ? "REMOTE" : "NO", r_nd, nd_kept ? "yes" : "NO", crem ? "yes" : "NO", c_pc,
+                 c_kept ? "yes" : "NO");
+        test_report("UH1 UNCREWED HDG LOCK: only from REMOTE / MANEUVER, HELM, fresh + centred; locks the heading, holds "
+                    "the throttle; CREWED refused (panel button only)",
+                    r_sb == PROTO_R_WRONG_MODE && st_sb && rem && thr0 > 8.0f && r_x == PROTO_R_NOT_CENTERED && kept_x &&
+                    r_st == PROTO_R_NOT_HELM && r_ok == PROTO_R_OK && on && locked && held > 8.0f &&
+                    held <= thr0 + 0.01f && held <= 20.01f && r_again == PROTO_R_OK && rem2 &&
+                    (r_nd == PROTO_R_JOY_NOT_READY || r_nd == PROTO_R_PRECOND) && nd_kept && crem && c_pc == PROTO_R_NOT_ALLOWED && c_kept, d);
+    }
+
+    /* UH2 the throttle never rises by itself: the shore lever is only a CEILING (lever forward to the end = the
+     * held value, never more; lever back = less; lever up again = back to the held value; neutral zone = idle in
+     * forward gear - the lever never shifts); the heading is held; +-1 / +-10 from the HELM station work, the panel's
+     * course buttons are ignored (nobody on board) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        const int8_t P10 = 10;
+        bool rem = uh_remote(&x, &r, &u, 1705u, 0.85f);
+        uint8_t ok = uh_lock(&x, &r);
+        float held = x.sb.shdg.hold0_pct;
+        rj_lever(&x, &r, 1.0f, 1.0f);                                  /* lever to the end */
+        float mo_full = 0.0f;
+        float md_full = uh_run_max(&x, &u, 6000u, &mo_full);
+        rj_lever(&x, &r, 0.70f, 1.0f);                                 /* lever back: the ceiling lowers it */
+        uh_run(&x, &u, 4000u);
+        float thr_low = x.sb.thr.out_pct;
+        rj_lever(&x, &r, 1.0f, 1.0f);                                  /* up again: back to the held value only */
+        float mo_up = 0.0f;
+        float md_up = uh_run_max(&x, &u, 6000u, &mo_up);
+        rj_lever(&x, &r, 0.5f, 1.0f);                                  /* neutral zone: idle, still forward */
+        uh_run(&x, &u, 4000u);
+        float thr_n = x.sb.thr.out_pct;
+        bool still_f = gear_is(&x.sb.gear, GEAR_F) && sb_mode(&x.sb) == MODE_HDG_LOCK;
+        rj_lever(&x, &r, 0.0f, 1.0f);                                  /* reverse zone: never reverse */
+        uh_run(&x, &u, 3000u);
+        bool no_rev = x.sb.gear_demand != GEAR_R && !gear_is(&x.sb.gear, GEAR_R) && sb_mode(&x.sb) == MODE_HDG_LOCK;
+        rj_lever(&x, &r, 1.0f, 1.0f);
+        uh_run(&x, &u, 8000u);
+        float herr = fabsf(autopilot_heading_error(x.sb.ap.heading, x.sb.ap.target_heading));
+        float t0 = x.sb.ap.target_heading;
+        sim_hal_press(HAL_BTN_PLUS_10);                                 /* panel: ignored */
+        uh_run(&x, &u, 300u);
+        float t_panel = x.sb.ap.target_heading;
+        uint8_t adj = pi_cmd(&x, &r.p, 2u, false, PROTO_T_HEADING_ADJ, (const uint8_t *)&P10, 1u);
+        uh_run(&x, &u, 300u);
+        float t_pc = x.sb.ap.target_heading;
+        crew_plug();
+        snprintf(d, sizeof d, "REMOTE %s, HDG LOCK %u, held %.1f %%; lever full: max demand %.2f / out %.2f %%; lever 0.70: "
+                 "%.1f %%; full again: max demand %.2f / out %.2f %%; neutral zone: %.2f %% still F + HDG LOCK %s; reverse "
+                 "zone: no reverse %s; heading error %.1f deg; target %.1f, panel +10 -> %.1f (ignored), PC +10 %u -> %.1f",
+                 rem ? "yes" : "NO", ok, held, md_full, mo_full, thr_low, md_up, mo_up, thr_n, still_f ? "yes" : "NO",
+                 no_rev ? "yes" : "NO", herr, t0, t_panel, adj, t_pc);
+        test_report("UH2 UNCREWED HDG LOCK: the lever is only a ceiling (never above the held throttle), never shifts; "
+                    "heading held, +-10 from the HELM station only",
+                    rem && ok == PROTO_R_OK && held > 8.0f && md_full <= held + 0.01f && mo_full <= held + 0.01f &&
+                    thr_low < held - 2.0f && md_up <= held + 0.01f && mo_up <= held + 0.01f && thr_n <= 0.5f && still_f &&
+                    no_rev && herr < 5.0f && fabsf(autopilot_heading_error(t0, t_panel)) < 0.01f && adj == PROTO_R_OK &&
+                    fabsf(autopilot_heading_error(t0 + 10.0f, t_pc)) < 0.01f, d);
+    }
+
+    /* UH3 the navigation requests act like AUTO but only slow: a speed cap brings the held throttle down while the
+     * boat is faster (never back up when the cap goes); an avoidance HEADING is never steered (the cap applies); a
+     * cap 0 (shallow / shore ahead: stop) = idle + NEUTRAL for the rest of this HDG LOCK; in REMOTE the same request
+     * is an alarm only */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool rem = uh_remote(&x, &r, &u, 1706u, 1.0f);
+        /* REMOTE: a cap is an alarm only */
+        u.n.kind = SB_NAV_CAP; u.n.reason = 2u; u.n.alarm = 4u; u.n.cap = 1.0f;
+        u.nav_on = true;
+        uh_run(&x, &u, 3000u);
+        float thr_rem = x.sb.thr.out_pct;
+        u.nav_on = false;
+        uh_run(&x, &u, 3500u);                                         /* the lease runs out */
+        uint8_t ok = uh_lock(&x, &r);
+        float held = x.sb.shdg.hold0_pct, sog0 = x.sb.gps.last.sog_kn;
+        /* an AIS avoidance heading 60 deg to starboard + a cap below the speed */
+        float tgt0 = x.sb.ap.target_heading;
+        u.n.kind = SB_NAV_HEADING; u.n.reason = 1u; u.n.alarm = 1u;
+        u.n.heading = autopilot_wrap360(tgt0 + 60.0f);
+        u.n.cap = fmaxf(0.5f, sog0 - 1.0f);
+        float cap1 = u.n.cap;
+        u.nav_on = true;
+        uh_run(&x, &u, 10000u);
+        float thr_cap = x.sb.thr.out_pct, hold_cap = x.sb.shdg.hold_pct, sog_cap = x.sb.gps.last.sog_kn;
+        bool not_steered = fabsf(autopilot_heading_error(tgt0, x.sb.ap.target_heading)) < 0.01f;
+        bool coll = (x.sb.alarm_bits & SB_ALM_COLLISION) != 0u;
+        u.nav_on = false;                                               /* the cap goes: never back up */
+        float mo = 0.0f;
+        (void)uh_run_max(&x, &u, 6000u, &mo);
+        bool lost = x.sb.nav.lost;
+        /* cap 0: STOP = idle + neutral, kept after the request goes */
+        u.n.kind = SB_NAV_CAP; u.n.reason = 2u; u.n.alarm = 4u; u.n.cap = 0.0f;
+        u.nav_on = true;
+        uh_run(&x, &u, 3000u);
+        bool stop = x.sb.thr.out_pct <= 0.01f && x.sb.gear_demand == GEAR_N && x.sb.shdg.stopped &&
+                    sb_mode(&x.sb) == MODE_HDG_LOCK && (x.sb.alarm_bits & SB_ALM_SHALLOW);
+        u.nav_on = false;
+        uh_run(&x, &u, 5000u);
+        bool stays = x.sb.thr.out_pct <= 0.01f && gear_is(&x.sb.gear, GEAR_N) && sb_mode(&x.sb) == MODE_HDG_LOCK;
+        crew_plug();
+        snprintf(d, sizeof d, "REMOTE %s: cap 1 kn = alarm only, throttle %.1f %%; HDG LOCK %u held %.1f %% at %.1f kn; "
+                 "avoidance heading +60 + cap %.1f kn: throttle %.1f %% (held %.1f, %.1f kn), target unchanged %s, COLLISION %s; "
+                 "cap gone (lost lease %s): max out %.2f %% (never above %.2f); cap 0: idle + N + stopped + SHALLOW %s; "
+                 "request gone: still idle + N in HDG LOCK %s", rem ? "yes" : "NO", thr_rem, ok, held, sog0, cap1,
+                 thr_cap, hold_cap, sog_cap, not_steered ? "yes" : "NO", coll ? "yes" : "NO", lost ? "yes" : "no", mo, hold_cap,
+                 stop ? "yes" : "NO", stays ? "yes" : "NO");
+        test_report("UH3 UNCREWED HDG LOCK: navreq caps slow (never back up), never steer, cap 0 = idle + neutral (kept); "
+                    "REMOTE alarm only",
+                    rem && thr_rem > 15.0f && ok == PROTO_R_OK && held > 15.0f && thr_cap < held - 3.0f && thr_cap > 1.0f && not_steered &&
+                    coll && mo <= hold_cap + 0.01f && stop && stays, d);
+    }
+
+    /* UH4 a geofence breach (gateway navreq alarm 16) in UNCREWED HDG LOCK = STANDBY, idle + neutral first,
+     * alarm GEOFENCE (kept by an acknowledge while still reported); the same report in REMOTE changes nothing */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool rem = uh_remote(&x, &r, &u, 1707u, 0.9f);
+        u.n.kind = SB_NAV_NONE; u.n.reason = 0u; u.n.alarm = SB_NAV_ALM_FENCE; u.n.cap = -1.0f;
+        u.nav_on = true;
+        uh_run(&x, &u, 2000u);
+        bool rem_kept = sb_mode(&x.sb) == MODE_REMOTE && !(x.sb.alarm_bits2 & SB_ALM2_GEOFENCE);
+        u.nav_on = false;
+        uh_run(&x, &u, 3500u);
+        uint8_t ok = uh_lock(&x, &r);
+        bool on = sb_shore_hdg(&x.sb);
+        u.nav_on = true;
+        u.n.next = x.t;
+        float t_idle = -1.0f;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 4000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            if (t_idle < 0.0f && sim_hal_throttle() <= 0.5f) t_idle = (float)(x.t - t0) * 0.001f;
+        }
+        const mode_log_entry_t *e = mode_log_get(&x.sb.modes, mode_log_size(&x.sb.modes) - 1u);
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY && e && e->why == WHY_GEOFENCE && gear_is(&x.sb.gear, GEAR_N) &&
+                  (x.sb.alarm_bits2 & SB_ALM2_GEOFENCE);
+        sb_alarm_ack(&x.sb);
+        bool kept = (x.sb.alarm_bits2 & SB_ALM2_GEOFENCE) != 0u;
+        u.nav_on = false;
+        uh_run(&x, &u, 3500u);
+        sb_alarm_ack(&x.sb);
+        bool gone = !(x.sb.alarm_bits2 & SB_ALM2_GEOFENCE);
+        crew_plug();
+        snprintf(d, sizeof d, "REMOTE %s: breach reported -> REMOTE unchanged, no alarm %s; HDG LOCK %u %s; breach -> idle "
+                 "after %.2f s, STANDBY (why %s) + N + GEOFENCE %s; ack while reported keeps it %s; report gone + ack -> "
+                 "cleared %s", rem ? "yes" : "NO", rem_kept ? "yes" : "NO", ok, on ? "yes" : "NO", t_idle,
+                 e ? mode_reason_name((mode_reason_t)e->why) : "?", sb ? "yes" : "NO", kept ? "yes" : "NO",
+                 gone ? "yes" : "NO");
+        test_report("UH4 UNCREWED HDG LOCK: a geofence breach = STANDBY (idle at once, neutral) + GEOFENCE alarm; REMOTE "
+                    "unchanged", rem && rem_kept && ok == PROTO_R_OK && on && t_idle >= 0.0f && t_idle <= 0.6f && sb &&
+                    kept && gone, d);
+    }
+
+    /* UH5 the shore data stops (the REMOTE 0.3 s rule) = idle + neutral AT ONCE + REMOTE DRIVING LINK LOST, STANDBY
+     * after 5 s, never back by itself; compass lost = STANDBY (nobody on board to bring the throttle down); the HELM
+     * station lost = LINK LOST -> STANDBY (the lost-link procedure) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool rem = uh_remote(&x, &r, &u, 1708u, 1.0f);
+        uint8_t ok = uh_lock(&x, &r);
+        uh_run(&x, &u, 500u);                                          /* (fresh packets again after the command) */
+        r.rj_on = false;
+        float t_idle = -1.0f;
+        uint32_t t0 = x.t, t_sb = 0u;
+        bool back = false;
+        while (x.t < t0 + 7000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            if (t_idle < 0.0f && x.sb.throttle_demand <= 0.0f && x.sb.gear_demand == GEAR_N && x.sb.shdg.lost)
+                t_idle = (float)(x.t - t0) * 0.001f;
+            if (!t_sb && sb_mode(&x.sb) == MODE_STANDBY) t_sb = x.t - t0;
+            if (x.t > t0 + 1500u && !r.rj_on && !t_sb) r.rj_on = true;   /* data back: never resumes */
+            if (x.t > t0 + 1500u && x.sb.throttle_demand > 0.0f) back = true;
+        }
+        bool alarm = (x.sb.alarm_bits & SB_ALM_REMOTE_DRIVE) != 0u;
+        /* compass */
+        static sbsim_t y;
+        static rjsim_t q;
+        static uhsim_t v;
+        bool rem2 = uh_remote(&y, &q, &v, 1709u, 1.0f);
+        uint8_t ok2 = uh_lock(&y, &q);
+        sim_hal_fail_heading(true);
+        uh_run(&y, &v, 3000u);
+        bool c_sb = sb_mode(&y.sb) == MODE_STANDBY;
+        sim_hal_fail_heading(false);
+        /* the HELM station leaves */
+        static sbsim_t z;
+        static rjsim_t w;
+        static uhsim_t uu;
+        bool rem3 = uh_remote(&z, &w, &uu, 1710u, 1.0f);
+        uint8_t ok3 = uh_lock(&z, &w);
+        pi_station_left(2u);
+        uh_run(&z, &uu, 2000u);
+        bool ll = sb_mode(&z.sb) == MODE_STANDBY && (z.sb.alarm_bits & SB_ALM_LINK_LOST);
+        crew_plug();
+        snprintf(d, sizeof d, "REMOTE %s, HDG LOCK %u; data stops: idle + N demanded after %.2f s, STANDBY after %.1f s, "
+                 "throttle back when the data came back %s, REMOTE DRIVING LINK LOST %s; compass lost (%s, %u): STANDBY %s; "
+                 "HELM station left (%s, %u): LINK LOST + STANDBY %s", rem ? "yes" : "NO", ok, t_idle, t_sb * 0.001,
+                 back ? "YES" : "no", alarm ? "yes" : "NO", rem2 ? "ok" : "NO", ok2, c_sb ? "yes" : "NO",
+                 rem3 ? "ok" : "NO", ok3, ll ? "yes" : "NO");
+        test_report("UH5 UNCREWED HDG LOCK: stale shore data = idle + neutral at once, STANDBY after 5 s; compass lost / "
+                    "HELM lost = STANDBY",
+                    rem && ok == PROTO_R_OK && t_idle >= 0.25f && t_idle <= 0.45f && t_sb >= 5000u && t_sb <= 5600u &&
+                    !back && alarm && rem2 && ok2 == PROTO_R_OK && c_sb && rem3 && ok3 == PROTO_R_OK && ll, d);
+    }
+
+    /* UH6 MANEUVER -> HDG LOCK: its throttle was idle, so HDG LOCK holds idle (forward gear: heading hold at idle),
+     * the lever never opens it; leaving: REMOTE again (13q2 rules: lever neutral) / STANDBY from the PC; a copilot
+     * case is the gateway's (captain's ACCEPT) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        rq_boat(&x, &r, 1711u, false);
+        memset(&u, 0, sizeof u);
+        u.r = &r;
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        rj_lever(&x, &r, 1.0f, 2.0f);                                  /* MANEUVER: forward gear at idle */
+        uh_run(&x, &u, 4000u);
+        bool mf = sb_mode(&x.sb) == MODE_MANEUVER && gear_is(&x.sb.gear, GEAR_F);
+        uint8_t ok = uh_lock(&x, &r);
+        float mo = 0.0f;
+        float md = uh_run_max(&x, &u, 5000u, &mo);
+        bool f_kept = gear_is(&x.sb.gear, GEAR_F) && sb_mode(&x.sb) == MODE_HDG_LOCK;
+        uint8_t r_rem_lev = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);   /* lever forward: 8 */
+        rj_lever(&x, &r, 0.5f, 2.0f);
+        uint8_t r_rem = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool back_rem = sb_mode(&x.sb) == MODE_REMOTE && !sb_shore_hdg(&x.sb);
+        uh_run(&x, &u, 3000u);                                         /* (packets of this session, gear settled in N) */
+        uint8_t ok2 = uh_lock(&x, &r);
+        uint8_t r_sb = pi_cmd(&x, &r.p, 2u, false, PROTO_T_SET_MODE, &STBY, 1u);
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY && !sb_shore_hdg(&x.sb);
+        crew_plug();
+        snprintf(d, sizeof d, "MANEUVER forward %s; HDG LOCK %u: max demand %.2f / out %.2f %% (idle), still F + HDG LOCK %s; "
+                 "REMOTE with the lever forward %u (8), lever neutral %u -> REMOTE %s; HDG LOCK again %u; STANDBY %u -> %s",
+                 mf ? "yes" : "NO", ok, md, mo, f_kept ? "yes" : "NO", r_rem_lev, r_rem, back_rem ? "yes" : "NO", ok2,
+                 r_sb, sb ? "yes" : "NO");
+        test_report("UH6 MANEUVER -> UNCREWED HDG LOCK holds idle (lever never opens it); back to REMOTE / STANDBY",
+                    mf && ok == PROTO_R_OK && md <= 0.0f && mo <= 0.01f && f_kept && r_rem_lev == PROTO_R_NOT_CENTERED &&
+                    r_rem == PROTO_R_OK && back_rem && ok2 == PROTO_R_OK && r_sb == PROTO_R_OK && sb, d);
+    }
+
+    /* UH7 a reset (the chip restarts) in UNCREWED HDG LOCK: STANDBY, the held throttle gone - nothing comes back by
+     * itself; the HDG LOCK button on the panel stays ignored in UNCREWED */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool rem = uh_remote(&x, &r, &u, 1712u, 1.0f);
+        uint8_t ok = uh_lock(&x, &r);
+        sim_hal_chip_reset(HAL_RESET_SYSTEM);           /* a watchdog reset: the chip restarts */
+        x.boot_until = x.t + 200u;
+        uh_run(&x, &u, 8000u);
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY && !sb_shore_hdg(&x.sb) && x.sb.thr.out_pct <= 0.01f &&
+                  x.sb.profile == SB_PROFILE_UNCREWED;
+        sim_hal_press(HAL_BTN_HDG_LOCK);
+        uh_run(&x, &u, 300u);
+        bool btn = sb_mode(&x.sb) == MODE_STANDBY;
+        crew_plug();
+        snprintf(d, sizeof d, "REMOTE %s, HDG LOCK %u; after a reset: UNCREWED STANDBY idle, no held throttle %s; panel "
+                 "HDG LOCK button ignored %s", rem ? "yes" : "NO", ok, sb ? "yes" : "NO", btn ? "yes" : "NO");
+        test_report("UH7 a reset in UNCREWED HDG LOCK = STANDBY (nothing held); the panel HDG LOCK button stays ignored",
+                    rem && ok == PROTO_R_OK && sb && btn, d);
+    }
+}
+
 void sb_tests(void)
 {
     can_tests();
@@ -16308,6 +16708,7 @@ void sb_tests(void)
     remote_tests();
     crew_tests();
     remote_direct_tests();
+    shore_hdg_tests();
     lostlink_tests();
     link_time_tests();
     save_tests();

@@ -555,12 +555,13 @@ class VisionManager:
             return True
         return False
 
-    def nav(self, mode):
+    def nav(self, mode, hdg_uncrewed=False):
         """This module's part of the navigation request: (cap_kn or None, alarm bits, reason bits).
-        Never a heading. Never more speed (a cap is only ever a reduction on the AURIX)."""
+        Never a heading. Never more speed (a cap is only ever a reduction on the AURIX). The cap applies in AUTO
+        and (step 13q2c) in UNCREWED HDG LOCK, where the AURIX only ever lowers its held throttle."""
         c = self.cfg
         alarm = ALM_OBSTACLE if self.threats and (c["stage2"] or c["stage3"]) else 0
-        cap = self.cap_kn if (c["stage3"] and mode == MODE_AUTO) else None
+        cap = self.cap_kn if (c["stage3"] and (mode == MODE_AUTO or hdg_uncrewed)) else None
         if cap is not None and self.cap_held:
             alarm |= ALM_OBSTACLE
         return cap, alarm, (WHY_VISION if (cap is not None or alarm) else 0)

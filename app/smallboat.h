@@ -139,6 +139,9 @@
 #define SB_ALM2_CAN_BUS           0x40u   /* CAN BUS FAULT: bus-off / error passive > 100 ms / the controller failed, or
                                              OUR node ID 10 seen on the bus (the Pixhawk connected, OA-4). WARNING +
                                              STANDBY; no mode but STANDBY while it lasts */
+#define SB_ALM2_GEOFENCE          0x80u   /* GEOFENCE BREACH (step 13q2c, owner 2026-11-01): the gateway says the boat is
+                                             outside the geofence (navreq alarm SB_NAV_ALM_FENCE) while in UNCREWED HDG
+                                             LOCK -> STANDBY (idle + neutral first). WARNING (an ordinary alarm) */
 /* advisories of the second word: never a mode change, never lower the power limit */
 #define SB_ALM2_ADVISORY          (SB_ALM2_LOW_BATTERY | SB_ALM2_RELAY_SILENT | SB_ALM2_DP_OFFSPOT | SB_ALM2_DP_OVERPOWER)
 /* ... and of those the ones that never set sb alarm either (no buzzer, no power-raise block; step 7b).
@@ -188,6 +191,8 @@
 #define SB_NAV_CAP       1u     /* AUTO: speed cap only */
 #define SB_NAV_HEADING   2u     /* AUTO: steer this heading (avoidance) + speed cap */
 #define SB_NAV_HDG_SET   3u     /* HDG LOCK: set the locked heading once (driver ACCEPTED) */
+#define SB_NAV_ALM_FENCE 0x10u  /* navreq alarm bit 16 (step 13q2c): the boat is OUTSIDE the geofence (gateway) - in
+                                   UNCREWED HDG LOCK the AURIX goes to STANDBY; elsewhere ignored */
 typedef struct {
     uint8_t  seq, kind, reason, alarm;  /* alarm: 1 collision, 2 driver decision, 4 shallow, 8 obstacle */
     float    heading;
@@ -433,6 +438,30 @@ typedef struct {
      * release attempts refused while driving (there is no release) */
     uint32_t direct, refused_centre, release_refused;
 } sb_remote_t;
+
+/* Step 13q2c (owner 2026-11-01, W47 answer (b)): HDG LOCK in UNCREWED for the shore HELM captain, entered only
+ * from REMOTE / MANEUVER by the HELM station's mode command (sb_hdg_lock_shore). Nobody on board and no onboard
+ * stick: the throttle HOLDS what it was at the entry (never above the REMOTE cap) and is only ever LOWERED - the
+ * shore lever is a power CEILING (reduction only, pickup: it engages once moved below the throttle; lever up =
+ * back up to the held value, never above it), the navigation request (shallow / shore ahead, AIS collision risk,
+ * camera obstacle) only slows (cap below SB_SHDG_STOP_KN = idle + NEUTRAL for the rest of this HDG LOCK) and never
+ * steers, a geofence breach = STANDBY, stale shore data = idle + neutral at once + STANDBY after remote_lost_ms
+ * (the REMOTE rule). Without a lever (stick Y stations) there is no safe throttle source: the held value only.
+ * Step 13q3 adds the shore stick X / trigger rules (C3) on top of this: the steering stays with the heading hold. */
+#define SB_SHDG_STOP_KN    0.05f    /* a navreq cap below this = STOP: idle + neutral */
+#define SB_SHDG_CUT_PCT_S  2.0f     /* the held throttle comes down this fast while the speed is above the cap */
+typedef struct {
+    bool     on;                /* UNCREWED HDG LOCK running (entered by sb_hdg_lock_shore) */
+    gear_t   hold_gear;         /* the gear at the entry (F or N); N after a stop / lost data */
+    float    hold0_pct;         /* the throttle at the entry (<= the REMOTE cap) */
+    float    hold_pct;          /* held throttle: only ever LOWERED */
+    bool     ceil_on;           /* the shore lever ceiling has engaged (pickup) */
+    float    ceil_pct;          /* the lever ceiling (when engaged) */
+    bool     stopped;           /* a navreq STOP: idle + neutral until the mode ends */
+    bool     lost;              /* shore data stale: idle + neutral, STANDBY after remote_lost_ms */
+    uint32_t lost_ms;
+    uint32_t entries, refused, nav_cuts, stops, fence_stops, losses;
+} sb_shdg_t;
 
 /* The HELM station's (shore captain's) joystick as a CONFIRM source in
  * UNCREWED: every GW_RJOY packet of the HELM station, in any mode. */
@@ -712,6 +741,7 @@ typedef struct {
     jb_t        jb;            /* USB joystick bridge input */
     sb_lever_t  lev;           /* USB throttle lever: mapping and pickup */
     sb_remote_t remote;        /* REMOTE MANUAL: the shore joystick */
+    sb_shdg_t   shdg;          /* step 13q2c: UNCREWED HDG LOCK (the shore captain's held throttle) */
     sb_save_t   save;          /* video SAVE requests for the gateway */
     struct {                   /* second GPS from the gateway (AIS device), section A */
         double   lat, lon;
@@ -919,6 +949,15 @@ void sb_remote_input(sb_t *s, uint8_t station, uint16_t seq, uint16_t age_ms, ui
  * UNCREWED: at once with the shore stick centred + lever neutral (step 13q2); from STANDBY / REMOTE.
  * Throttle always idle; steering + gear from the remote joystick. */
 sb_result_t sb_maneuver_request(sb_t *s, uint8_t station);
+
+/* Step 13q2c (owner 2026-11-01): the HELM station's HDG LOCK in UNCREWED (link.c SET_MODE HDG_LOCK). Only from
+ * REMOTE / MANEUVER (SB_ERR_WRONG_MODE otherwise), shore data fresh (SB_ERR_JOY_NOT_READY) and not stale in REMOTE
+ * (SB_ERR_PRECOND), the shore stick X / Y centred (SB_ERR_NOT_CENTERED; the lever is NOT checked: it becomes the
+ * ceiling), compass, no gear fault, gear settled in F or N (SB_ERR_PRECOND). Locks the current heading, holds the
+ * throttle (see sb_shdg_t). CREWED: SB_ERR_NOT_ALLOWED (the panel button only, unchanged). */
+sb_result_t sb_hdg_lock_shore(sb_t *s, uint8_t station);
+/* true while UNCREWED HDG LOCK runs */
+bool sb_shore_hdg(const sb_t *s);
 
 /* The HELM station's joystick (every GW_RJOY packet, any mode): the CONFIRM
  * source in UNCREWED. x, y -1..1, lever 0..1. */

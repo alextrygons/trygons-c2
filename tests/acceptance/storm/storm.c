@@ -19,6 +19,8 @@
  * or brings it back; invariants I60-I62.
  * Step 13q2: UNCREWED REMOTE / MANEUVER start at once on the request (shore stick centred + lever neutral), no
  * release; REMOTE / MANEUVER -> AUTO / DP straight; invariants I63-I64 (I7 for REMOTE / MANEUVER = CREWED only); step 13q2b: I65 (no AUTO RETURN out of REMOTE / MANEUVER).
+ * Step 13q2c: UNCREWED HDG LOCK from REMOTE / MANEUVER by the HELM captain's command (E_SHDG, after some UNCREWED
+ * REMOTE / MANEUVER requests; navigation requests with a STOP cap / a geofence breach); invariants I66-I68.
  * A failing episode is replayed with fewer events until the shortest
  * schedule that still fails remains (the "minimal reproduction").
  *
@@ -78,7 +80,7 @@ typedef enum {
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
-    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN, E_PC_CONFONLY, E_LINK,
+    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN, E_PC_CONFONLY, E_LINK, E_SHDG,
     E_COUNT
 } ev_kind_t;
 
@@ -99,7 +101,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "DroneCAN (a servo node lost / silent / rebooted, bus-off, the actuator task stuck; back after a while)",
     "PC AUTO return (the program backwards to waypoint 1; then the CONFIRM)",
     "PC CONFIRM_ONLY (academy practical test: a question for the onboard CONFIRM that changes nothing)",
-    "LINK TIME (the captain sets 1..70 s / the HELM station goes silent / is heard again / open sea)"
+    "LINK TIME (the captain sets 1..70 s / the HELM station goes silent / is heard again / open sea)",
+    "shore HDG LOCK (UNCREWED: the HELM captain's mode command from REMOTE / MANEUVER; stick centred mostly)"
 };
 
 typedef struct {
@@ -208,6 +211,8 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         /* step 13q1: some gateway-fuzz draws are LINK TIME events (CAN episodes take c < 450 for E_CAN) */
         if (k == E_FUZZ_GW && e->c >= 860) e->kind = E_LINK;
         if (k == E_GW && e->b >= 700) e->kind = E_LINK;                   /* (and some gateway-status draws) */
+        /* step 13q2c (I66): CREWED, some release draws are the shore HDG LOCK command instead (it must be refused) */
+        if (k == E_REMOTE_RELEASE && !s->uncrewed && e->a >= 600) e->kind = E_SHDG;
         s->on[s->n] = true;
         s->n++;
         /* DP: mostly a START (centre the stick, STANDBY, let the boat slow down first) + the CONFIRM */
@@ -270,6 +275,7 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                 st->kind = E_PC_AUTO_START;
                 s->on[s->n - 1] = true;
             }
+            int ea = e->a, eb = e->b, ec = e->c;          /* (step 13q2c: E_SHDG below, no new rng draw) */
             if (k == E_REMOTE_REQ || k == E_MAN_REQ) {
                 ev_t req = *e;
                 if (rnd(&r) < 0.6f) {                      /* stick to the centre + STANDBY first */
@@ -311,6 +317,44 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                     dr->kind = rnd(&r) < 0.6f ? E_REMOTE_OFF : E_REMOTE_STALE;
                     s->on[s->n - 1] = true;
                     t = dr->t;
+                }
+            }
+            /* step 13q2c: UNCREWED, half of the REMOTE / MANEUVER requests are followed by the captain's HDG LOCK */
+            if ((k == E_REMOTE_REQ || k == E_MAN_REQ) && s->uncrewed && (ea * 31 + eb) % 10 < 5 && s->n + 1 < MAX_EV) {
+                ev_t *hl = &s->ev[s->n++];
+                memset(hl, 0, sizeof *hl);
+                hl->t = t + 2000u + (uint32_t)(ec % 6) * 1000u;
+                hl->kind = E_SHDG;
+                hl->a = ea;
+                hl->b = eb;
+                hl->c = ec;
+                hl->g = (float)(eb % 100) * 0.01f;
+                s->on[s->n - 1] = true;
+                t = hl->t;
+                /* ... the lever pushed to the end soon after (I67: the ceiling never lifts the throttle above the held
+                 * value) ... */
+                if ((ea + eb) % 2 == 0 && s->n + 1 < MAX_EV) {
+                    ev_t *lv = &s->ev[s->n++];
+                    memset(lv, 0, sizeof *lv);
+                    lv->t = t + 1500u;
+                    lv->kind = E_REMOTE_ON;
+                    lv->f = 0.0f;
+                    lv->g = 1.0f;                                  /* lever 0.5 + 0.5 g = full */
+                    s->on[s->n - 1] = true;
+                    t = lv->t;
+                }
+                /* ... and mostly a gateway request a few seconds later: a STOP (cap 0) or a geofence breach (I68) */
+                if ((ea + ec) % 3 != 0 && s->n + 1 < MAX_EV) {
+                    ev_t *nr = &s->ev[s->n++];
+                    memset(nr, 0, sizeof *nr);
+                    nr->t = t + 3000u + (uint32_t)(ea % 6) * 1000u;
+                    nr->kind = E_NAVREQ;
+                    nr->a = ((ea + ec) % 3 == 1) ? 821 + 4 * (ec % 19) : 901 + ec % 90;   /* STOP (kind 1) / fence */
+                    nr->b = 100 + eb % 700;                                            /* a valid lease */
+                    nr->c = 300 + ec % 600;
+                    nr->f = 0.3f;
+                    s->on[s->n - 1] = true;
+                    t = nr->t;
                 }
             }
         }
@@ -584,7 +628,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 66
+#define NINV 69
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -647,7 +691,10 @@ static const char *INV_NAMES[NINV] = { "",
     "I62 LINK TIME always 3..60 s, 3 s after every reset and HELM grant, never in force near the shore / without shore information",
     "I63 REMOTE / MANEUVER entry: UNCREWED only at once on the HELM station's request with its stick centred + lever neutral (fresh); CREWED never without the onboard CONFIRM",
     "I64 there is no release: a release (command / old flag) never ends REMOTE / MANEUVER, never changes the mode",
-    "I65 AUTO RETURN never out of REMOTE / MANEUVER: refused there (nothing pending), never started from them" };
+    "I65 AUTO RETURN never out of REMOTE / MANEUVER: refused there (nothing pending), never started from them",
+    "I66 HDG LOCK straight from REMOTE / MANEUVER only UNCREWED by the HELM captain's command (fresh shore data, stick centred); CREWED never (the panel button only)",
+    "I67 UNCREWED HDG LOCK: the throttle never above its value at the entry (never rises by itself), never reverse, the gear only the entry gear or N",
+    "I68 UNCREWED HDG LOCK: a navreq STOP (cap 0) = idle + neutral for the rest of it; a geofence breach = STANDBY in that step; stale shore data = idle + neutral" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -658,6 +705,7 @@ typedef struct {
     uint32_t auto_by_button, auto_by_confirm;
     uint32_t dp_trip_ret;           /* I59: DP TRIP steps while an AUTO RETURN was latched */
     uint32_t rem_req[16], remote_entries, remote_direct, release_tries;
+    uint32_t uh_entries, uh_refused, uh_stops, uh_fence, uh_stale;    /* step 13q2c (I66-I68) */
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
 } stats_t;
@@ -674,10 +722,11 @@ static bool spec_allowed(sb_mode_t f, sb_mode_t t)
     case MODE_AUTO:     return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_HDG_LOCK || t == MODE_REMOTE;
     case MODE_TRAINING: return t == MODE_STANDBY || t == MODE_MANUAL;
     /* step 13q2 (owner 2026-10-31): REMOTE / MANEUVER are left by choosing another mode: STANDBY, AUTO, DP (their
-       own start rules), the other one; the onboard joystick (MANUAL). HDG LOCK: not yet (WAITING FOR OWNER W47) */
-    case MODE_REMOTE:   return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_MANEUVER || t == MODE_AUTO || t == MODE_DP;
+       own start rules), the other one; the onboard joystick (MANUAL). Step 13q2c: HDG LOCK (UNCREWED only: I66) */
+    case MODE_REMOTE:   return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_MANEUVER || t == MODE_AUTO || t == MODE_DP ||
+                               t == MODE_HDG_LOCK;
     case MODE_MANEUVER: return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_REMOTE || t == MODE_AUTO ||
-                               t == MODE_DP;   /* captain: dock */
+                               t == MODE_DP || t == MODE_HDG_LOCK;   /* captain: dock */
     case MODE_BENCH:    return t == MODE_STANDBY || t == MODE_MANUAL;              /* dock test: back, or the joystick */
     case MODE_DP:       return t == MODE_STANDBY || t == MODE_MANUAL;              /* thrusters 0 first; the joystick */
     default:            return false;
@@ -777,6 +826,12 @@ typedef struct {
     uint8_t  ll_prev61;                     /* I61 */
     uint8_t  helm_prev61;                   /* I62 */
     uint32_t lt_sets_prev;                  /* I62 */
+    uint32_t uh_cmd_t;                      /* I66 (13q2c): the storm's shore HDG LOCK command changed the mode (0 none) */
+    bool     uh_cmd_ok;                     /* ... with its conditions as the storm sees them */
+    bool     uh_session;                    /* I67 / I68: UNCREWED HDG LOCK running */
+    float    uh_cap, uh_thr0;               /* I67: the entry throttle (demand cap / output) */
+    int      uh_gear0;                      /* I67: the gear at the entry (gear_pos: 0 N, 1 F) */
+    bool     uh_stopped;                    /* I68: a STOP seen in this HDG LOCK */
     uint32_t near_since61;                  /* I60 */
     uint32_t gear_n_since28;                /* I28: the gear machine settled in N since (0 = not) */
     uint32_t rem_direct_t;                  /* I7 / I63: an UNCREWED REMOTE / MANEUVER request that started it at once */
@@ -1273,9 +1328,62 @@ static void check_step(void)
                   (double)C.mode_prev, (double)m);
     }
 
+    /* I66 (step 13q2c): HDG LOCK straight from REMOTE / MANEUVER = UNCREWED, the HELM captain's command, fresh +
+     * centred (CREWED: never; UNCREWED: never from another mode) */
+    if (m == MODE_HDG_LOCK && C.mode_prev != MODE_HDG_LOCK) {
+        bool from_rem = C.mode_prev == MODE_REMOTE || C.mode_prev == MODE_MANEUVER;
+        if (from_rem || s->profile == SB_PROFILE_UNCREWED) {
+            if (s->profile == SB_PROFILE_UNCREWED && from_rem && C.uh_cmd_t && S.t - C.uh_cmd_t <= 100u && C.uh_cmd_ok)
+                ok(66);
+            else
+                fail(66, "HDG LOCK entered from mode %.0f (profile %.0f) without the HELM captain's shore command / its "
+                     "conditions (fresh data, stick centred)", (double)C.mode_prev, (double)s->profile);
+        }
+        C.uh_session = s->profile == SB_PROFILE_UNCREWED;
+        C.uh_stopped = false;
+    }
+    if (m != MODE_HDG_LOCK) C.uh_session = false;
+    if (C.uh_session && C.mode_prev == MODE_HDG_LOCK && m == MODE_HDG_LOCK && !forced && !inj) {
+        /* I67: never above the entry throttle, never reverse, the entry gear or N */
+        float dem = s->throttle_demand;
+        if (dem <= C.uh_cap + 0.01f && thr <= C.uh_thr0 + 0.1f) ok(67);
+        else fail(67, "UNCREWED HDG LOCK throttle demand %.2f / output %.2f %% above the entry value", dem,
+                  fmaxf(thr - C.uh_thr0, dem - C.uh_cap) + (C.uh_thr0 > C.uh_cap ? C.uh_thr0 : C.uh_cap));
+        if (s->gear_demand == GEAR_R || gp == 2 || (C.uh_gear0 != 1 && s->gear_demand != GEAR_N))
+            fail(67, "UNCREWED HDG LOCK gear demand %.0f / position %.0f (not the entry gear or N)", (double)s->gear_demand,
+                 (double)gp);
+        else ok(67);
+        /* I68: a fresh STOP (cap 0) = idle + N from now on; a fresh geofence breach = no HDG LOCK step; stale data */
+        /* (a request the gateway link took in after this step - rx_ms == now_ms - is applied by the NEXT step) */
+        bool navf = s->nav.rx_ms != 0u && s->nav.rx_ms != s->now_ms && s->now_ms - s->nav.rx_ms <= s->nav.lease_ms;
+        if (navf && (s->nav.kind == SB_NAV_CAP || s->nav.kind == SB_NAV_HEADING) && s->nav.cap_kn >= 0.0f &&
+            s->nav.cap_kn < SB_SHDG_STOP_KN) {
+            if (!C.uh_stopped) ST.uh_stops++;
+            C.uh_stopped = true;
+        }
+        if (C.uh_stopped) {
+            if (s->throttle_demand <= 0.0f && s->gear_demand == GEAR_N) ok(68);
+            else fail(68, "UNCREWED HDG LOCK after a STOP: throttle demand %.2f %%, gear demand %.0f", s->throttle_demand,
+                      (double)s->gear_demand);
+        }
+        if (navf && (s->nav.alarm & SB_NAV_ALM_FENCE))
+            fail(68, "UNCREWED HDG LOCK goes on with a geofence breach reported (alarm %.0f)%.0f", (double)s->nav.alarm, 0.0);
+        if (C.rem_last_fresh && S.t - C.rem_last_fresh > s->cfg.remote_max_age_ms + 2u * AP_PERIOD_MS) {
+            ST.uh_stale++;
+            if (s->throttle_demand <= 0.0f && s->gear_demand == GEAR_N) ok(68);
+            else fail(68, "UNCREWED HDG LOCK: shore data %.0f ms old, throttle demand %.2f %%",
+                      (double)(S.t - C.rem_last_fresh), s->throttle_demand);
+        }
+    }
+    if (m == MODE_STANDBY && C.mode_prev == MODE_HDG_LOCK) {
+        const mode_log_entry_t *le = mode_log_get(&s->modes, mode_log_size(&s->modes) - 1u);
+        if (le && le->why == WHY_GEOFENCE) { ok(68); ST.uh_fence++; }
+    }
+
     /* I22: UNCREWED - the onboard joystick has no effect */
     if (s->profile == SB_PROFILE_UNCREWED) {
-        if (m == MODE_MANUAL || m == MODE_HDG_LOCK) fail(22, "UNCREWED but mode %.0f (onboard control)%.0f", (double)m, 0.0);
+        if (m == MODE_MANUAL || (m == MODE_HDG_LOCK && !C.uh_session))
+            fail(22, "UNCREWED but mode %.0f (onboard control)%.0f", (double)m, 0.0);
         else ok(22);
         if (conf_now) {
             if (C.sconf_t && S.t - C.sconf_t <= 300u) ok(22);
@@ -1516,7 +1624,8 @@ static void check_step(void)
         if (out <= ask + 0.5f || (ask == 0.0f && out <= 0.6f)) ok(13);
         else fail(13, "throttle demand %.1f %% above what the mode asked (%.1f %%)", out, ask);
         bool changed = fabsf(s->ap.target_heading - C.target_prev) > 0.01f;
-        if (changed && m != MODE_AUTO && m != MODE_HDG_LOCK && s->nav.kind == SB_NAV_HEADING &&
+        if (changed && m != MODE_AUTO && (m != MODE_HDG_LOCK || s->profile == SB_PROFILE_UNCREWED) &&
+            s->nav.kind == SB_NAV_HEADING &&
             fabsf(s->ap.target_heading - s->nav.heading) < 0.01f) {
             fail(20, "navigation heading %.1f applied in mode %.0f", s->nav.heading, (double)m);
         } else ok(20);
@@ -1766,7 +1875,7 @@ static void apply(const ev_t *e)
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
     case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK: case E_GEN: case E_ENGINE:
-    case E_WDT: case E_DP: case E_CAN: case E_PC_RETURN: case E_PC_CONFONLY: case E_LINK:
+    case E_WDT: case E_DP: case E_CAN: case E_PC_RETURN: case E_PC_CONFONLY: case E_LINK: case E_SHDG:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -1913,6 +2022,45 @@ static void apply(const ev_t *e)
         if (S.rem_stream && sb_mode(s) == MODE_REMOTE && s->remote.state == 1u) C.rem_check = true;
         S.rem_stale = true;
         break;
+    case E_SHDG: {
+        /* step 13q2c (I66): the HELM captain's HDG LOCK - mostly with the stick centred, the lever where it was (or
+         * forward: then the held throttle is what REMOTE drove) */
+        if (e->b < 700) S.rx_x = 0.0f;
+        if (e->c < 500) S.rx_lever = 0.5f + 0.5f * fabsf(e->g);
+        if (S.rem_stream) {
+            shore_packet(s);
+            if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_MANEUVER || sb_shore_hdg(s)) {
+                sb_remote_input(s, S.rem_station, ++S.rem_seq, S.rem_stale ? 900u : 40u, 30u, S.rx_x, 0.0f, S.rx_lever,
+                                true);
+                if (!S.rem_stale) C.rem_last_fresh = S.t;
+            }
+        }
+        sb_mode_t before = sb_mode(s);
+        float thr_before = fmaxf(sim_hal_throttle(), s->thr.out_pct);
+        int gp_before = gear_pos(sim_hal_gear_pwm());
+        sb_result_t rr = sb_hdg_lock_shore(s, s->helm);
+        if (sb_mode(s) != before) {
+            bool fresh = C.sent_t && C.sent_fresh && S.t - C.sent_t <= 300u && fabsf(C.sent_x) <= 0.10f &&
+                         C.rem_last_fresh && S.t - C.rem_last_fresh <= 300u;
+            bool right = s->profile == SB_PROFILE_UNCREWED && (before == MODE_REMOTE || before == MODE_MANEUVER) &&
+                         rr == SB_OK && sb_mode(s) == MODE_HDG_LOCK && s->helm == S.rem_station;
+            C.uh_cmd_t = S.t ? S.t : 1u;
+            C.uh_cmd_ok = fresh && right;
+            C.uh_cap = fminf(thr_before, s->cfg.remote_cap_fwd_pct);
+            C.uh_thr0 = thr_before;
+            C.uh_gear0 = gp_before;
+            C.steered_since_boot = true;                  /* (I56: a mode that steers, entered between two steps) */
+            ST.uh_entries++;
+        } else {
+            ST.uh_refused++;
+        }
+        if (s->profile != SB_PROFILE_UNCREWED) {          /* CREWED: refused, nothing changes (the panel button only) */
+            if (rr == SB_ERR_NOT_ALLOWED && sb_mode(s) == before) ok(66);
+            else fail(66, "CREWED: the shore HDG LOCK command was not refused (result %.0f, mode %.0f)", (double)rr,
+                      (double)sb_mode(s));
+        }
+        break;
+    }
     case E_REMOTE_RELEASE: {
         /* step 13q2 (I64): there is no release - it never ends REMOTE / MANEUVER, never changes the mode */
         sb_mode_t before = sb_mode(s);
@@ -2126,7 +2274,10 @@ static void apply(const ev_t *e)
         float cap = (e->c < 300) ? -1.0f : (float)(e->c % 160) * 0.1f;
         if (reason == 8u) kind = (uint8_t)(e->a % 2);                      /* vision: none / cap only */
         uint16_t lease = (uint16_t)(e->b < 50 ? 60000u : 500u + (uint32_t)e->c * 9u);   /* some invalid */
-        navreq(kind, reason, (uint8_t)(1u << (e->c % 4)), fabsf(e->f) * 359.0f, cap, lease);
+        uint8_t alarm = (uint8_t)(1u << (e->c % 4));
+        if (e->a >= 900) alarm |= SB_NAV_ALM_FENCE;                        /* step 13q2c: a geofence breach */
+        if (e->a >= 820 && e->a < 900 && cap >= 0.0f && kind != 0u) cap = 0.0f;   /* ... and a STOP */
+        navreq(kind, reason, alarm, fabsf(e->f) * 359.0f, cap, lease);
         break;
     }
     case E_FUZZ_USB:
@@ -2278,7 +2429,8 @@ static void run_until(uint32_t until)
                     }
                 }
                 if (S.rem_stream) shore_packet(&S.sb);     /* every packet: the shore CONFIRM source */
-                if (S.rem_stream && (sb_mode(&S.sb) == MODE_REMOTE || sb_mode(&S.sb) == MODE_MANEUVER)) {
+                if (S.rem_stream && (sb_mode(&S.sb) == MODE_REMOTE || sb_mode(&S.sb) == MODE_MANEUVER ||
+                                     sb_shore_hdg(&S.sb))) {      /* (13q2c: the lever ceiling in UNCREWED HDG LOCK) */
                     uint16_t age = S.rem_stale ? 900u : 40u;
                     sb_remote_input(&S.sb, S.rem_station, ++S.rem_seq, age, 30u, S.rx_x, 0.0f, S.rx_lever, true);
                     if (!S.rem_stale) C.rem_last_fresh = S.t;
@@ -2445,6 +2597,9 @@ static void report(int episodes, double hours)
     printf(")\n");
     printf("REMOTE / MANEUVER started at once (UNCREWED, step 13q2): %lu; release tries (never end it): %lu\n",
            (unsigned long)ST.remote_direct, (unsigned long)ST.release_tries);
+    printf("UNCREWED HDG LOCK (step 13q2c): %lu entries, %lu commands refused, %lu STOPs, %lu geofence STANDBYs, "
+           "%lu stale-data steps\n", (unsigned long)ST.uh_entries, (unsigned long)ST.uh_refused,
+           (unsigned long)ST.uh_stops, (unsigned long)ST.uh_fence, (unsigned long)ST.uh_stale);
 }
 
 /* 32-bit time wraparound: the clock starts 3 minutes before 2^32 ms */

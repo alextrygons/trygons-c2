@@ -86,6 +86,8 @@ typedef enum {
     WHY_DP_THRUSTER,        /* DP: a thruster HOT (heat budget) / blocked */
     WHY_CAN_NODE,           /* DroneCAN: a required node lost (silent / not OPERATIONAL / ERROR / rebooted) */
     WHY_CAN_BUS,            /* DroneCAN: bus fault (off / passive / controller) or our node ID 10 on the bus */
+    WHY_HDG_SHORE,          /* step 13q2c: UNCREWED HDG LOCK from REMOTE / MANEUVER (the HELM captain's mode command) */
+    WHY_GEOFENCE,           /* step 13q2c: UNCREWED HDG LOCK left the geofence (gateway) -> STANDBY */
     WHY_COUNT
 } mode_reason_t;
 

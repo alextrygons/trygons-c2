@@ -67,6 +67,7 @@ ALARM_LEVELS = {
     0x10 << 32: ("dp_overpower", CAUTION),
     0x20 << 32: ("can_node", WARNING),          # DroneCAN: a required node lost -> STANDBY (step 11d)
     0x40 << 32: ("can_bus", WARNING),           # DroneCAN: bus fault / our node ID 10 on the bus -> STANDBY
+    0x80 << 32: ("geofence", WARNING),          # step 13q2c: UNCREWED HDG LOCK left the geofence -> STANDBY
 }
 NO_DATA = "no_data"                 # the PC gets no telemetry (not an alarm bit): WARNING
 WORD2 = 32                          # the second alarm word's bits are shifted by this in every "bits" here

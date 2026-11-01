@@ -195,7 +195,8 @@ WHY = ["user", "STANDBY button", "compass fault", "GPS lost", "arrived", "traini
        "PC", "HDG LOCK button", "CONFIRM", "not armed", "safety monitor", "remote", "remote end", "remote lost",
        "emergency stop", "bench test ended (idle / link / moving / HELM)", "maneuver",
        "profile fault (joystick appeared, UNCREWED)", "link to the HELM station lost", "DP (HELM + CONFIRM)", "DP STOP",
-       "DP: off the spot", "DP: thruster hot / blocked", "CAN node lost", "CAN bus fault (or our node ID on the bus)"]
+       "DP: off the spot", "DP: thruster hot / blocked", "CAN node lost", "CAN bus fault (or our node ID on the bus)",
+       "HDG LOCK from the shore (UNCREWED)", "geofence breach (UNCREWED HDG LOCK)"]
 MODE_STANDBY, MODE_MANUAL, MODE_HDG_LOCK, MODE_AUTO, MODE_TRAINING, MODE_REMOTE, MODE_BENCH, MODE_MANEUVER, MODE_DP = range(9)
 # DP (app/dp.h): sub-states (TELEM2 group N "dp_sub"), PROTO_T_DP actions, why it ended
 DP_SUBS = ["off", "SPOT", "JOG", "CRUISE", "TRIP"]
@@ -419,6 +420,7 @@ ALARMS2 = [
     (0x010, "DP OVERPOWER"),
     (0x020, "CAN NODE LOST"),
     (0x040, "CAN BUS FAULT"),
+    (0x080, "GEOFENCE BREACH"),
 ]
 
 

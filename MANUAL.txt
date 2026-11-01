@@ -917,7 +917,35 @@ MODES
              the boat has now. -1/+1/-10/+10 (panel or PC) change it. The
              throttle stays on the stick (ahead and astern) - you stay in
              HDG LOCK. In reverse the outboard is held straight. Moving the
-             stick sideways takes over (MANUAL).
+             stick sideways takes over (MANUAL). With people on board
+             (CREWED) only the panel button starts it - never the PC.
+             UNCREWED HDG LOCK (owner 2026-11-01): nobody on board, so the
+             captain at the shore holding HELM (with the licence) chooses
+             HDG LOCK on screen 2 ("HDG LOCK" in the control panel) - ONLY
+             while REMOTE MANUAL or MANEUVER runs, with the shore stick
+             centred (the lever may stay where it is). It starts at once
+             (no CONFIRM) and locks the heading the boat has at that moment;
+             +-1 / +-10 come from the station.
+             THE THROTTLE: it stays at what it was when you switched (never
+             more than the REMOTE limit of 20 %; from MANEUVER: idle) and
+             can only come DOWN. The TWCS lever is a ceiling: pull it back
+             and the boat slows down; push it forward again and it goes back
+             up to the value it held - never above it. The lever never
+             changes gear and never reverses. To get more power choose
+             REMOTE MANUAL again. A station without a lever (stick Y as the
+             throttle): the held value only.
+             What still acts (like in AUTO, but only by slowing down - it
+             NEVER steers): shallow water / the shore ahead (slows down;
+             closer than 100 m = STOP: idle + neutral until you choose
+             another mode), an AIS ship on a collision course (slows down;
+             no avoidance turn, no proposal), the camera obstacle detection
+             (only if its stage 3 is ON). Outside the geofence: STANDBY
+             (idle + neutral first) + alarm GEOFENCE. Shore joystick data
+             older than 0.3 s: idle + neutral at once, STANDBY after 5 s
+             (as in REMOTE). Compass lost: STANDBY. The lost-link rules are
+             the usual ones (near the shore always 3 s, chapter 9 B). A
+             copilot asking for HDG LOCK = a question on the captain's
+             screen 1 (ACCEPT); STANDBY is always free.
   AUTO       a waypoint program (up to 50 waypoints). Each waypoint has a
              leg speed, an arrival radius and an action: continue / slow
              down / stop in neutral. At the end: stop + alarm (or hold the
@@ -954,14 +982,15 @@ MODES
      HDG_LOCK      yes     yes      -     yes    no      yes     no
      AUTO          yes     yes     yes     -     no      yes     no
      TRAINING      yes     yes     no     no      -      no      no
-     REMOTE        yes     yes     no     yes    no       -      yes
-     MANEUVER      yes     yes     no     yes    no      yes      -
+     REMOTE        yes     yes    yes*   yes    no       -      yes
+     MANEUVER      yes     yes    yes*   yes    no      yes      -
   (REMOTE = REMOTE MANUAL, the shore joystick, chapter 9 part D;
    MANEUVER = steering + gear at idle for the dock / trailer, chapter 7A;
    REMOTE / MANEUVER -> AUTO with the AUTO start rules (request + CONFIRM),
    -> DP (not in the table above) only at idle, in neutral and slow, with
-   the DP start rules; -> HDG LOCK directly: not yet - the owner decides
-   first (STANDBY, then HDG LOCK))
+   the DP start rules; * -> HDG LOCK directly ONLY UNCREWED, by the shore
+   HELM captain (owner 2026-11-01, see HDG LOCK above); CREWED: STANDBY first,
+   then the panel HDG LOCK button)
   Extra rules: only the joystick enters MANUAL; MANUAL is left only with
   the stick centred; AUTO needs compass, GPS, a valid program and CONFIRM;
   TRAINING only from STANDBY by the PC; nothing but STANDBY until the
@@ -1026,7 +1055,9 @@ THE PROFILE (decided by the boat, never by a PC)
   UNCREWED   no onboard joystick at power-up (or it failed its self-check
              within 6 s). The onboard joystick is ignored completely: no
              MANUAL, no CONFIRM, no joystick buttons; the panel HDG LOCK and
-             course buttons do nothing (nobody is on board). Every CONFIRM
+             course buttons do nothing (nobody is on board). HDG LOCK comes
+             only from the shore captain, out of REMOTE / MANEUVER, with the
+             throttle held and only lowered (chapter 7, HDG LOCK). Every CONFIRM
              (power raise, AUTO start / resume / return, DP) is pressed on
              the shore captain's joystick instead: same rules - stick
              centred, within 10 s, only for a pending request. REMOTE
@@ -2220,6 +2251,9 @@ M. COLLISION AVOIDANCE (AIS SHIPS)
                When clear: "Back to heading 344?" (ACCEPT / REJECT). The
                throttle stays with you. Only the driver screen (or the
                captain in SINGLE-OPERATOR mode) can answer.
+               UNCREWED HDG LOCK (owner 2026-11-01): NO proposal and NO
+               turn - the boat only slows down (DRIVER DECISION when it
+               can't be solved: the slowest speed).
     MANUAL / REMOTE MANUAL   alarm only: you steer.
     STANDBY / TRAINING       nothing.
   COLLISION RISK - DRIVER DECISION: the situation can't be solved safely by
@@ -2401,6 +2435,11 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          chapter 12) stay off on the board (HAL_CAN_FITTED /
                          HAL_CAN_SERVOS 0) until the kit's CAN pins are
                          confirmed.
+  GEOFENCE BREACH        UNCREWED HDG LOCK only (owner 2026-11-01): the
+                         gateway says the boat is outside the geofence ->
+                         STANDBY (idle + neutral first). It stays while the
+                         gateway still reports the boat outside. (Second
+                         word, bit 8.)
 
   Every new alarm drops the power limit to 30 / 5 and starts a black-box
   file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER

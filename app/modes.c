@@ -10,11 +10,13 @@ static const bool k_allowed[MODE_COUNT][MODE_COUNT] = {
     /* HDG_LOCK */ { true,  true,  false,   true,  false,   true,  false, false,   false },
     /* AUTO     */ { true,  true,  true,    false, false,   true,  false, false,   false },
     /* TRAINING */ { true,  true,  false,   false, false,   false, false, false,   false },
-    /* REMOTE   */ { true,  true,  false,   true,  false,   false, false, true,    true  },   /* onboard joystick takes over;
+    /* REMOTE   */ { true,  true,  true,    true,  false,   false, false, true,    true  },   /* onboard joystick takes over;
                                                                                                13q2: another mode chosen (AUTO / DP
-                                                                                               with their own start rules) */
+                                                                                               with their own start rules);
+                                                                                               13q2c: HDG LOCK = UNCREWED only */
     /* BENCH    */ { true,  true,  false,   false, false,   false, false, false,   false },   /* dock test: back to STANDBY */
-    /* MANEUVER */ { true,  true,  false,   true,  false,   true,  false, false,   true  },   /* captain: dock / trailer */
+    /* MANEUVER */ { true,  true,  true,    true,  false,   true,  false, false,   true  },   /* captain: dock / trailer
+                                                                                               (13q2c: HDG LOCK = UNCREWED only) */
     /* DP       */ { true,  true,  false,   false, false,   false, false, false,   false },   /* thrusters 0 first, then STANDBY;
                                                                                                the onboard joystick: MANUAL */
 };
@@ -87,10 +89,11 @@ const char *mode_reason_name(mode_reason_t r)
         "training done", "training aborted", "test", "gear fault", "DR limit",
         "arrival uncertain", "joystick", "joystick hand-back", "joystick fault", "PC",
         "HDG LOCK button", "PC + CONFIRM", "outputs not armed", "safety monitor",
-        "remote driving (HELM + CONFIRM)", "remote driver released", "remote driving link lost",
-        "emergency stop", "bench test ended (idle / link / moving / HELM)",
-        "maneuver (HELM + CONFIRM)", "profile fault (joystick appeared, UNCREWED)", "link to the HELM station lost",
-        "DP", "DP stop", "DP off spot", "DP thruster", "CAN node", "CAN bus"
+        "remote driving", "remote driver released", "remote driving link lost",
+        "emergency stop", "bench test ended",
+        "maneuver", "profile fault", "link to the HELM station lost",
+        "DP", "DP stop", "DP off spot", "DP thruster", "CAN node", "CAN bus",
+        "HDG LOCK from shore", "geofence breach"
     };
     return ((unsigned)r < WHY_COUNT) ? n[r] : "?";
 }

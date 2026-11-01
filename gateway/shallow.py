@@ -9,6 +9,8 @@ limit = max(shallow_m, draft_m + margin_m)   (default 3.0 m; draft: measure it,
   * Driving (any mode): the predicted position in the next look_s (at least
     look_min_m ahead) over shallow water -> warning on both screens; in AUTO
     also slow down (navreq speed cap) and the SHALLOW WATER alarm.
+  * UNCREWED HDG LOCK (step 13q2c, owner 2026-11-01): like AUTO a slow-down (slow_kn), and shallow water / the
+    shore closer than stop_m ahead = STOP (cap 0: the AURIX goes to idle + neutral; the heading is never changed).
   * Every avoidance route (section D) uses the same check (check_leg).
   * Shore distance (CLAUDE.md section B, UNCREWED lost link): the distance from the
     boat to the nearest water shallower than the limit (or without chart data) -
@@ -21,7 +23,7 @@ from ais import KN, from_xy
 
 DEFAULTS = {"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0, "clearance_m": 50.0, "look_s": 30.0,
             "look_min_m": 200.0, "slow_kn": 4.0, "require_charts": True,
-            "near_shore_m": 50.0, "shore_search_m": 2000.0}
+            "near_shore_m": 50.0, "shore_search_m": 2000.0, "stop_m": 100.0}
 
 
 class Shallow:
@@ -80,5 +82,5 @@ class Shallow:
             la, lo = from_xy(s * math.sin(cog), s * math.cos(cog), own["lat"], own["lon"])
             dep = self.charts.depth(la, lo)
             if dep is None or dep < lim:
-                return {"lat": la, "lon": lo, "depth": dep, "in_s": round(s / v, 1), "limit": lim}
+                return {"lat": la, "lon": lo, "depth": dep, "in_s": round(s / v, 1), "limit": lim, "dist_m": round(s, 1)}
         return None

@@ -4000,12 +4000,20 @@ def section_ar():
 
         class StubGw:
             telem = None
+            telem_rx = 0.0
+            TELEM_MAX_AGE_S = 3.0
+            aurix = Fake()
+
+            def telem_fresh(self):
+                return gwmod.Gateway.telem_fresh(self)
         stub = Fake()
         stub.gw = StubGw()
+        stub.gw.aurix.connected = True
         free = {}
         for name, mode in (("none", None), ("maneuver", proto.MODE_MANEUVER), ("remote", proto.MODE_REMOTE),
                            ("standby", proto.MODE_STANDBY), ("auto", proto.MODE_AUTO)):
             stub.gw.telem = None if mode is None else {"mode": mode}
+            stub.gw.telem_rx = time.time()
             free[name] = g.stations.__class__.copilot_free(stub, proto.T_AUTO_RETURN)
         pause_free = g.stations.__class__.copilot_free(stub, proto.T_AUTO_PAUSE)
         report("AR4 in REMOTE / MANEUVER a copilot's AUTO return needs the captain's ACCEPT; the boat refuses an "
@@ -4142,9 +4150,129 @@ def section_al():
             sim.stop()
         shutil.rmtree(tmp, ignore_errors=True)
 
+# ------------------------------------------------------------------ section UH --
+
+def section_uh():
+    """Step 13q2c (owner 2026-11-01): UNCREWED HDG LOCK on the gateway - the navigation request acts like AUTO but
+    only slows / stops (never a heading), a geofence breach = alarm bit 16 (the AURIX goes to STANDBY); CREWED HDG LOCK
+    unchanged; a copilot's HDG LOCK = the captain's ACCEPT (a driving command); review LOW-1: an old telemetry copy =
+    unknown mode. Unit level: the gateway's own nav_compose on a stub (no simulator)."""
+    print("\n=== Section UH: UNCREWED HDG LOCK (step 13q2c) ===", flush=True)
+    import types
+    from avoid import Avoider
+    from shallow import Shallow
+    from vision.manager import VisionManager
+    G = gwmod.Gateway
+    lat0, lon0 = 37.80, 23.60
+
+    class Charts:
+        """Deep water, but shallower than the limit north of lat0 + shoal_m."""
+        def __init__(self, shoal_m):
+            self.shoal_lat = lat0 + shoal_m / 111120.0
+
+        def depth(self, la, lo):
+            return 1.0 if la >= self.shoal_lat else 30.0
+
+    class Fence:
+        def __init__(self, poly):
+            self.poly = poly
+
+    def stub(mode, profile, shoal_m=None, fence=None, sog=6.0):
+        s = types.SimpleNamespace()
+        s.telem = {"pos_source": 1, "est_lat": lat0, "est_lon": lon0, "est_sog": sog, "est_cog": 0.0,
+                   "heading": 0.0, "mode": mode}
+        s.telem2 = {"profile": profile}
+        s.avoider = Avoider()
+        s.ais = types.SimpleNamespace(list=lambda: [])
+        s.hdg_set_until = 0.0
+        s.shallow = Shallow({}, Charts(shoal_m) if shoal_m is not None else None)
+        s.vision = types.SimpleNamespace(nav=lambda mode, hdg_uncrewed=False: (None, 0, 0))
+        s.geofence = Fence(fence or [])
+        s.own = types.MethodType(G.own, s)
+        s.nav_auto = types.MethodType(G.nav_auto, s)
+        s.hdg_uncrewed = G.hdg_uncrewed
+        s.nav_state = {}
+        return s
+
+    U, C = proto.PROFILE_UNCREWED, proto.PROFILE_CREWED
+    H = proto.MODE_HDG_LOCK
+    # UH1 shallow water / the shore ahead: UNCREWED HDG LOCK slows (slow_kn), closer than stop_m = STOP (cap 0);
+    # CREWED HDG LOCK: warning only (no cap); REMOTE: no cap
+    far = G.nav_compose(stub(H, U, shoal_m=180.0))
+    near = G.nav_compose(stub(H, U, shoal_m=60.0))
+    crew = G.nav_compose(stub(H, C, shoal_m=60.0))
+    rem = G.nav_compose(stub(proto.MODE_REMOTE, U, shoal_m=60.0))
+    report("UH1 UNCREWED HDG LOCK: shallow / shore ahead -> slow (slow_kn), close ahead -> STOP (cap 0); CREWED HDG "
+           "LOCK / REMOTE: no cap",
+           far["kind"] == proto.NAV_CAP and far["cap_kn"] == 4.0 and far["alarm"] & 4 and
+           near["kind"] == proto.NAV_CAP and near["cap_kn"] == 0.0 and crew["cap_kn"] is None and
+           crew["kind"] == proto.NAV_NONE and rem["cap_kn"] is None,
+           "180 m ahead: kind %s cap %s alarm %s; 60 m ahead: kind %s cap %s; CREWED HDG LOCK: kind %s cap %s; REMOTE: "
+           "cap %s" % (far["kind"], far["cap_kn"], far["alarm"], near["kind"], near["cap_kn"], crew["kind"],
+                       crew["cap_kn"], rem["cap_kn"]))
+
+    # UH2 the geofence: UNCREWED HDG LOCK outside -> alarm bit 16; inside -> none; CREWED HDG LOCK / REMOTE outside ->
+    # none (the AURIX would ignore it there anyway); no fence -> none
+    box_in = [(lat0 - 0.01, lon0 - 0.01), (lat0 - 0.01, lon0 + 0.01), (lat0 + 0.01, lon0 + 0.01), (lat0 + 0.01, lon0 - 0.01)]
+    box_out = [(lat0 + 0.02, lon0 - 0.01), (lat0 + 0.02, lon0 + 0.01), (lat0 + 0.04, lon0 + 0.01), (lat0 + 0.04, lon0 - 0.01)]
+    o_out = G.nav_compose(stub(H, U, fence=box_out))
+    o_in = G.nav_compose(stub(H, U, fence=box_in))
+    c_out = G.nav_compose(stub(H, C, fence=box_out))
+    r_out = G.nav_compose(stub(proto.MODE_REMOTE, U, fence=box_out))
+    none = G.nav_compose(stub(H, U))
+    report("UH2 UNCREWED HDG LOCK outside the geofence -> navreq alarm 16 (the AURIX: STANDBY); inside / CREWED / "
+           "REMOTE / no fence -> nothing",
+           o_out["alarm"] & 16 and not o_in["alarm"] & 16 and not c_out["alarm"] & 16 and not r_out["alarm"] & 16 and
+           not none["alarm"] & 16,
+           "outside %s, inside %s, CREWED outside %s, REMOTE outside %s, no fence %s" % (
+               o_out["alarm"], o_in["alarm"], c_out["alarm"], r_out["alarm"], none["alarm"]))
+
+    # UH3 the camera obstacle cap (stage 3) applies in AUTO and in UNCREWED HDG LOCK, never in CREWED HDG LOCK
+    vm = types.SimpleNamespace(cfg={"stage2": True, "stage3": True}, threats=[1], cap_kn=1.5, cap_held=False)
+    v_auto = VisionManager.nav(vm, proto.MODE_AUTO)
+    v_uh = VisionManager.nav(vm, H, hdg_uncrewed=True)
+    v_hdg = VisionManager.nav(vm, H)
+    report("UH3 vision speed cap in AUTO and UNCREWED HDG LOCK (never a heading); CREWED HDG LOCK alarm only",
+           v_auto[0] == 1.5 and v_uh[0] == 1.5 and v_hdg[0] is None and v_hdg[1] == 8,
+           "AUTO %s, UNCREWED HDG LOCK %s, CREWED HDG LOCK %s" % (v_auto, v_uh, v_hdg))
+
+    # UH4 a copilot's HDG LOCK (SET_MODE) is a driving command = the captain's ACCEPT; STANDBY stays free
+    hl = proto.is_driving_cmd(proto.T_SET_MODE, proto.p_set_mode(H))
+    sb = proto.is_driving_cmd(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY))
+    report("UH4 a copilot's HDG LOCK = the captain's ACCEPT (driving command); STANDBY free",
+           hl and not sb, "HDG LOCK driving %s, STANDBY driving %s" % (hl, sb))
+
+    # UH5 (review LOW-1) the gateway's telemetry copy is aged: older than 3 s or the AURIX link down = unknown mode ->
+    # a copilot's AUTO return is not free any more (the captain's ACCEPT)
+    import stations as stmod
+
+    class StubGw:
+        TELEM_MAX_AGE_S = 3.0
+
+        def __init__(self):
+            self.telem = {"mode": proto.MODE_STANDBY}
+            self.telem_rx = time.time()
+            self.aurix = types.SimpleNamespace(connected=True)
+
+        def telem_fresh(self):
+            return G.telem_fresh(self)
+    st = types.SimpleNamespace(gw=StubGw())
+    fresh = stmod.StationServer.copilot_free(st, proto.T_AUTO_RETURN)
+    st.gw.telem_rx = time.time() - 5.0
+    old = stmod.StationServer.copilot_free(st, proto.T_AUTO_RETURN)
+    st.gw.telem_rx = time.time()
+    st.gw.aurix.connected = False
+    down = stmod.StationServer.copilot_free(st, proto.T_AUTO_RETURN)
+    pause = stmod.StationServer.copilot_free(st, proto.T_AUTO_PAUSE)
+    report("UH5 (LOW-1) an old telemetry copy (> 3 s / AURIX link down) = unknown mode: a copilot's AUTO return needs "
+           "the captain's ACCEPT; AUTO pause stays free",
+           fresh and not old and not down and pause,
+           "fresh STANDBY free %s; 5 s old %s; AURIX down %s; AUTO pause %s" % (fresh, old, down, pause))
+
+
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
             "G": section_g, "GF": section_gf, "RL": section_rl, "DP": section_dp, "AR": section_ar,
-            "AL": section_al}
+            "AL": section_al, "UH": section_uh}
 
 
 def main():

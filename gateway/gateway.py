@@ -34,6 +34,7 @@ from shallow import Shallow
 from geofence import Geofence
 from trainlevels import AcademyLevels
 from avoid import Avoider
+ALM_FENCE = 16                      # navreq alarm bit: outside the geofence (app/smallboat.h SB_NAV_ALM_FENCE)
 from vision.manager import VisionManager
 import chart
 from cameras import CameraManager, path_name
@@ -63,6 +64,7 @@ class Gateway:
         self.aurix.on(proto.T_TELEMETRY, self._on_telem)
         self.aurix.on(proto.T_TELEM2, self._on_telem2)
         self.telem = None               # latest AURIX telemetry (dict)
+        self.telem_rx = 0.0             # when it arrived (time.time(); 13q2c LOW-1: telem_fresh)
         self.telem2 = {}
         self.extra_flags = 0            # set by later sections (channels, recording)
         self.channel_id = 0
@@ -145,7 +147,19 @@ class Gateway:
             return
         d.update(self.telem2)
         self.telem = d
+        self.telem_rx = time.time()
         self.prog_ack_new = False           # (this telemetry was sent after the last PROG_COMMIT ACK: it knows)
+
+    TELEM_MAX_AGE_S = 3.0
+
+    def telem_fresh(self):
+        """The AURIX telemetry if it is fresh (younger than TELEM_MAX_AGE_S and the AURIX link up), else None:
+        an old copy is an UNKNOWN mode (step 13q2c, review LOW-1) - never a reason to skip the captain's ACCEPT."""
+        if not self.telem or time.time() - self.telem_rx > self.TELEM_MAX_AGE_S:
+            return None
+        if not getattr(self.aurix, "connected", False):
+            return None
+        return self.telem
 
     # --- AIS (section A) ---------------------------------------------------------------
     def _ais_online_allowed(self):
@@ -210,7 +224,14 @@ class Gateway:
             return {"lat": None}
         return {"lat": d.get("est_lat"), "lon": d.get("est_lon"), "sog": d.get("est_sog"), "cog": d.get("est_cog"),
                 "heading": d.get("heading"), "mode": d.get("mode"),
-                "dp_sub": d.get("dp_sub") if d.get("mode") == proto.MODE_DP else None}
+                "dp_sub": d.get("dp_sub") if d.get("mode") == proto.MODE_DP else None,
+                "profile": (self.telem2 or {}).get("profile", d.get("profile"))}
+
+    @staticmethod
+    def hdg_uncrewed(o):
+        """UNCREWED HDG LOCK (step 13q2c, owner 2026-11-01): the navigation request acts like AUTO but only slows /
+        stops (never a heading); a geofence breach -> the AURIX goes to STANDBY."""
+        return o.get("mode") == proto.MODE_HDG_LOCK and o.get("profile") == proto.PROFILE_UNCREWED
 
     def nav_auto(self, o):
         """The navigation request applies like in AUTO: AUTO, or a DP TRIP (CLAUDE.md P; the AURIX's nav_applies)."""
@@ -336,7 +357,8 @@ class Gateway:
         if o.get("mode") != proto.MODE_HDG_LOCK and self.avoider.hdg_set is not None:
             self.avoider.hdg_set_sent()                     # left HDG LOCK: an accepted heading is dropped
             self.hdg_set_until = 0.0
-        req = self.avoider.update(now, o, self.ais.list(), o.get("mode"), o.get("dp_sub"))
+        uh = self.hdg_uncrewed(o)
+        req = self.avoider.update(now, o, self.ais.list(), o.get("mode"), o.get("dp_sub"), uncrewed=uh)
         if req["kind"] == proto.NAV_HDG_SET:
             if not self.hdg_set_until:
                 self.hdg_set_until = now + 3.0              # repeated for 3 s (same number: applied once)
@@ -344,21 +366,31 @@ class Gateway:
                 self.avoider.hdg_set_sent()
                 self.hdg_set_until = 0.0
         sh = self.shallow.watch(o) if o["lat"] is not None else None
-        if sh and self.nav_auto(o):                        # AUTO or a DP TRIP: slow down (SHALLOW alarm)
-            req["cap_kn"] = min(req["cap_kn"] if req["cap_kn"] is not None else 1e9, self.shallow.cfg["slow_kn"])
+        if sh and (self.nav_auto(o) or uh):                # AUTO / a DP TRIP / UNCREWED HDG LOCK: slow down (SHALLOW)
+            slow = self.shallow.cfg["slow_kn"]
+            if uh and sh.get("dist_m", 1e9) <= self.shallow.cfg["stop_m"]:
+                slow = 0.0                                 # UNCREWED HDG LOCK: shallow / shore close ahead = STOP
+            req["cap_kn"] = min(req["cap_kn"] if req["cap_kn"] is not None else 1e9, slow)
             if req["kind"] == proto.NAV_NONE:
                 req["kind"] = proto.NAV_CAP
             req["reason"] |= 2
             req["alarm"] |= 4
         # camera obstacle detection: only a speed cap (the lower one wins) + the OBSTACLE AHEAD alarm
-        v_cap, v_alarm, v_why = self.vision.nav(o.get("mode"))
+        v_cap, v_alarm, v_why = self.vision.nav(o.get("mode"), hdg_uncrewed=uh)
         if v_cap is not None:
             req["cap_kn"] = min(req["cap_kn"] if req["cap_kn"] is not None else 1e9, v_cap)
             if req["kind"] == proto.NAV_NONE:
                 req["kind"] = proto.NAV_CAP
         req["alarm"] |= v_alarm
         req["reason"] |= v_why
-        self.nav_state = dict(self.avoider.status(), shallow=sh)
+        # UNCREWED HDG LOCK outside the geofence: the AURIX goes to STANDBY (alarm bit 16; ignored in other modes)
+        fence = None
+        if uh and o["lat"] is not None and self.geofence.poly:
+            from geofence import inside
+            if not inside(self.geofence.poly, o["lat"], o["lon"]):
+                fence = True
+                req["alarm"] |= ALM_FENCE
+        self.nav_state = dict(self.avoider.status(), shallow=sh, fence_out=fence)
         return req
 
     # --- camera obstacle detection (Part 2) -------------------------------------------

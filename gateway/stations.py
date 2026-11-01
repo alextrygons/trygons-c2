@@ -479,7 +479,10 @@ class StationServer:
         if ftype not in COPILOT_FREE:
             return False
         if ftype == proto.T_AUTO_RETURN:
-            mode = (self.gw.telem or {}).get("mode")
+            # (13q2c, review LOW-1: an OLD copy of the telemetry - older than 3 s or the AURIX link down - is an
+            # unknown mode = the captain's ACCEPT)
+            t = self.gw.telem_fresh() if hasattr(self.gw, "telem_fresh") else None
+            mode = (t or {}).get("mode")
             return mode is not None and mode not in (proto.MODE_REMOTE, proto.MODE_MANEUVER)
         return True
 

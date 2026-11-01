@@ -1954,6 +1954,13 @@ class App:
             self.pdlg = None
 
     def info_hdg(self):
+        """HDG LOCK: CREWED = the panel button on board only (the PC can't select it); UNCREWED (step 13q2c, owner
+        2026-11-01) = the HELM captain's mode command from REMOTE / MANEUVER (the AURIX checks it: stick centred,
+        throttle held and only lowered; a copilot's goes to the captain's ACCEPT like every driving change)."""
+        d = self.t or {}
+        if d.get("profile") == proto.PROFILE_UNCREWED:
+            self.say(T("cap.info_hdg_uncrewed"))
+            return self.mode(proto.MODE_HDG_LOCK)
         self.say(T("cap.info_hdg"))
 
     def auto_start(self):

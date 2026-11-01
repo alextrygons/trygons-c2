@@ -403,6 +403,48 @@ def main():
            all(a and n for a, n in rr), "MANUAL: alarm %s, requests only 'none' %s; REMOTE: alarm %s, %s" % (
                rr[0][0], rr[0][1], rr[1][0], rr[1][1]))
 
+    # CA11 (step 13q2c, owner 2026-11-01) UNCREWED HDG LOCK: AIS collision risk -> a speed cap only (never a heading,
+    # never a proposal, never a HDG_SET), alarm at DANGER; unsolvable (two dangers) -> DRIVER DECISION at min_kn;
+    # CREWED HDG LOCK keeps its proposal (CA9)
+    x, y = collision_course(420, 10.0, 12.0, 270.0)
+    ship = Ship(239000009, x, y, 12.0, 270.0, name="CROSSER")
+    boat = Boat(0, 0, 0.0, 10.0, (0, 12000), mode=A.MODE_HDG_LOCK)
+    av = A.Avoider()
+    kinds, caps, props, alarm = set(), [], 0, 0
+    t = 0.0
+    while t < 900:
+        req = av.update(t, boat.own(), [ship.info()], A.MODE_HDG_LOCK, uncrewed=True)
+        kinds.add(req["kind"])
+        if req["kind"] == A.KIND_CAP:
+            caps.append(req["cap_kn"])
+            boat.sog += (min(boat.sog, req["cap_kn"]) - boat.sog) * 0.1     # the AURIX only lowers the throttle
+        props += av.proposal is not None
+        alarm |= req["alarm"]
+        boat.lat, boat.lon = move(boat.lat, boat.lon, boat.cog, boat.sog, 1.0)
+        ship.step(1.0)
+        t += 1.0
+    two = [Ship(239000010, *collision_course(400, 10.0, 12.0, 270.0), 12.0, 270.0),
+           Ship(239000011, *collision_course(380, 10.0, 11.0, 90.0), 11.0, 90.0)]
+    b2 = Boat(0, 0, 0.0, 10.0, (0, 12000), mode=A.MODE_HDG_LOCK)
+    av2 = A.Avoider()
+    dd, dd_caps = False, []
+    for k in range(400):
+        r2 = av2.update(float(k), b2.own(), [s.info() for s in two], A.MODE_HDG_LOCK, uncrewed=True)
+        assert r2["kind"] in (A.KIND_NONE, A.KIND_CAP)
+        if av2.state == "DRIVER DECISION":
+            dd = True
+            dd_caps.append(r2["cap_kn"])
+        b2.lat, b2.lon = move(b2.lat, b2.lon, b2.cog, b2.sog, 1.0)
+        for s in two:
+            s.step(1.0)
+    report("CA11 UNCREWED HDG LOCK: collision risk -> speed cap only (no heading, no proposal); two dangers -> "
+           "DRIVER DECISION at min_kn",
+           kinds <= {A.KIND_NONE, A.KIND_CAP} and A.KIND_CAP in kinds and props == 0 and
+           caps and min(caps) >= av.cfg["min_kn"] - 1e-6 and dd and dd_caps and max(dd_caps) <= av2.cfg["min_kn"],
+           "request kinds %s, caps %.1f..%.1f kn, proposals %d, COLLISION alarm (at DANGER only) %s; two dangers: DRIVER DECISION %s "
+           "at %s kn" % (sorted(kinds), min(caps) if caps else -1, max(caps) if caps else -1, props,
+                         bool(alarm & A.ALM_COLLISION), dd, sorted(set(dd_caps))[:2]))
+
     e1_traffic()
 
     bad = results.count(False)

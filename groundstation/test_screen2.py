@@ -1314,6 +1314,72 @@ def s17_link_time(rig):
                                  cop_ok, none_ok, fits))
 
 
+def s18_uncrewed_hdg(rig):
+    """Step 13q2c (owner 2026-11-01): UNCREWED, screen 2's HDG LOCK button sends the HELM captain's mode command
+    (PROTO_T_SET_MODE HDG_LOCK - the AURIX checks it: only from REMOTE / MANEUVER, stick centred, throttle held);
+    CREWED it only says "the panel button on board" (nothing sent). The new alarm GEOFENCE BREACH (second word, bit
+    0x80) is a WARNING row in the alarms panel (Greek text) and on screen 1."""
+    ap = rig.ap
+    import alerts
+    rig.gateway_like(True)
+    rig.size(1366, 768, 1.0)
+    ap.gw_status = fake_gw(ap.t)
+    sent = []
+    orig_cmd = ap.cmd
+    ap.cmd = lambda f, p, w: sent.append((f, p, w))
+    try:
+        rig.extra.update(profile=proto.PROFILE_UNCREWED, mode=proto.MODE_REMOTE, mode_name="REMOTE_MANUAL", helm=3)
+        rig.pump(0.6)
+        ap.render(force=True)
+        btn = [o for o in ap.ov.ops if o.get("k") == "button" and o.get("tag") == "btn_hdg"]
+
+        def click():
+            r = btn[0]["r"]
+            e = type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})()
+            ap.cv_press(e)
+            ap.cv_release(e)
+            out = list(sent)
+            sent.clear()
+            return out
+        un = click() if btn else []
+        un_ok = [(f, p) for f, p, _w in un] == [(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_HDG_LOCK))]
+        rig.extra.update(profile=proto.PROFILE_CREWED)
+        rig.pump(0.4)
+        ap.render(force=True)
+        btn = [o for o in ap.ov.ops if o.get("k") == "button" and o.get("tag") == "btn_hdg"]
+        cr = click() if btn else ["no button"]
+        # UNCREWED HDG LOCK running + the geofence alarm (WARNING, Greek)
+        rig.extra.update(profile=proto.PROFILE_UNCREWED, mode=proto.MODE_STANDBY, mode_name="STANDBY",
+                         alarm_bits2=0x80, alarm=True)
+        ap.lamps.acked = {alerts.WARNING: 0, alerts.CAUTION: 0}
+        rig.pump(1.2)
+        ap.render(force=True)
+        rows = [o.get("s") for o in ap.ov.ops if o.get("tag") == "alarm_row"]
+        lv = alerts.ALARM_LEVELS.get(0x80 << alerts.WORD2)
+        al_ok = A.T("alarm.geofence") in rows and lv == ("geofence", alerts.WARNING)
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots:
+            shot(ap.root, os.path.join(shots, "screen2_geofence_el.png"))
+            ap.open_driver()
+            dv = ap.driver
+            dv.w.geometry("1600x900+0+0")
+            rig.pump(1.5)
+            if dv.last_frame is not None:
+                dv.last_frame.save(os.path.join(shots, "driver_geofence_el.png"))
+            ap.close_driver()
+        fits = not layout_problems(ap)
+    finally:
+        ap.cmd = orig_cmd
+        for k in ("alarm_bits2", "helm"):
+            rig.extra.pop(k, None)
+        rig.extra.update(profile=proto.PROFILE_CREWED, mode=proto.MODE_STANDBY, mode_name="STANDBY", alarm=False)
+    report("S18 UNCREWED HDG LOCK (13q2c): screen 2's HDG LOCK button = the mode command (UNCREWED), nothing sent "
+           "CREWED; the GEOFENCE BREACH alarm is a WARNING row",
+           un_ok and cr == [] and al_ok and fits,
+           "UNCREWED REMOTE: sent %s; CREWED: sent %s; alarm rows %s (level %s); fits %s" % (
+               [(f, p) for f, p, _w in un], cr, rows[:3], lv, fits))
+
+
 def s16_silence(rig):
     """Step 13m (owner 2026-10-31 B): an alarm this station could not silence. Screen 2's ACK ALARM silences THIS
     PC first (MASTER lamps + the repeating sound) and then sends the boat's ack; Space / A on screen 2 = the same
@@ -1425,7 +1491,8 @@ def main():
     rig = Rig()
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
-                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s16_silence):
+                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg,
+                   s16_silence):
             try:
                 fn(rig)
             except Exception as e:

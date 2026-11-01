@@ -277,8 +277,9 @@ class Avoider:
             self.since = now
         self.state, self.why = state, why
 
-    def update(self, now, own, targets, mode, dp_sub=None):
+    def update(self, now, own, targets, mode, dp_sub=None, uncrewed=False):
         """own: {"lat", "lon", "sog", "cog", "heading"}; dp_sub = the DP sub-state in MODE_DP (TELEM2 group N);
+        uncrewed = the AURIX profile is UNCREWED (step 13q2c: HDG LOCK there = slow only, never a heading / proposal);
         returns the navreq part for the AURIX:
         {"kind", "heading", "cap_kn", "reason", "alarm"} and fills threats / proposal / route."""
         c = self.cfg
@@ -317,6 +318,8 @@ class Avoider:
                 req["alarm"] |= ALM_COLLISION | ALM_DECISION
             else:
                 self._set("CLEAR", "DP: no danger", now)
+        elif mode == MODE_HDG_LOCK and uncrewed:
+            self._slow_only(now, own, danger, warn, clear, req)
         elif mode == MODE_HDG_LOCK:
             self._hdg_lock(now, own, targets, ref, danger, warn, clear, horizon, req)
         else:
@@ -328,7 +331,7 @@ class Avoider:
                     req["alarm"] |= ALM_COLLISION
             else:
                 self._set("CLEAR", "no driving mode", now)
-        if self.hdg_set is not None and mode == MODE_HDG_LOCK:
+        if self.hdg_set is not None and mode == MODE_HDG_LOCK and not uncrewed:
             req["kind"] = KIND_HDG_SET
             req["heading"] = self.hdg_set
             req["reason"] |= WHY_COLLISION
@@ -416,6 +419,31 @@ class Avoider:
             req.update(kind=KIND_HEADING, heading=self.heading, cap_kn=self.slow_kn,
                        reason=WHY_COLLISION | (WHY_DECISION if self.avoid_best else 0),
                        alarm=(ALM_COLLISION if danger else 0) | (ALM_DECISION if self.avoid_best else 0))
+
+    def _slow_only(self, now, own, danger, warn, clear, req):
+        """UNCREWED HDG LOCK (step 13q2c, owner 2026-11-01): nobody on board to answer a proposal and the owner's rule
+        "AIS collision risk -> slow, never steer": a WARN / DANGER target = a speed cap only (slow_factor x the speed,
+        at least min_kn); unsolvable (>= 2 dangers, turning, stale) = DRIVER DECISION at min_kn. The AURIX lowers its
+        held throttle while the boat is faster and never raises it again (the captain chooses another mode)."""
+        c = self.cfg
+        self.proposal, self.route, self.heading = None, [], None
+        threats = danger + warn
+        if not threats:
+            self.slow_kn = None
+            return self._set("CLEAR", "uncrewed HDG LOCK: no danger", now)
+        alarm = ALM_COLLISION if danger else 0
+        unsafe = self.unsafe_reason(threats)
+        if unsafe:
+            req.update(kind=KIND_CAP, cap_kn=c["min_kn"], reason=WHY_COLLISION | WHY_DECISION,
+                       alarm=ALM_COLLISION | ALM_DECISION)
+            return self._set("DRIVER DECISION", "uncrewed HDG LOCK: %s - slow to %.1f kn, never a heading" % (
+                unsafe, c["min_kn"]), now)
+        if self.state != "SLOW" or self.slow_kn is None:
+            self.slow_kn = max(c["min_kn"], (own["sog"] or 0.0) * c["slow_factor"])
+            t0 = threats[0]
+            self._set("SLOW", "uncrewed HDG LOCK: %s %s CPA %.2f nm in %.1f min - slow down to %.1f kn (never steered)" % (
+                t0["level"], t0["name"], t0["cpa_nm"], t0["tcpa_min"], self.slow_kn), now)
+        req.update(kind=KIND_CAP, cap_kn=self.slow_kn, reason=WHY_COLLISION, alarm=alarm)
 
     def _hdg_lock(self, now, own, targets, ref, danger, warn, clear, horizon, req):
         """Proposes early, at the WARN level like AUTO (at DANGER a slow boat often can't get

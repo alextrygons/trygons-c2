@@ -34,7 +34,8 @@
 
 /* PC -> boat */
 #define PROTO_T_HEARTBEAT     0x01u   /* -                                    */
-#define PROTO_T_SET_MODE      0x10u   /* u8 mode: only STANDBY and TRAINING   */
+#define PROTO_T_SET_MODE      0x10u   /* u8 mode: STANDBY and TRAINING; HDG_LOCK only UNCREWED from REMOTE /
+                                         MANEUVER (step 13q2c, sb_hdg_lock_shore) */
 #define PROTO_T_HEADING_ADJ   0x12u   /* i8 delta: -10, -1, +1, +10 (HDG_LOCK) */
 #define PROTO_T_LINK_TIME     0x14u   /* u8 seconds 3..60: LINK TIME = the UNCREWED link-loss detection time (HELM gateway
                                          station, the captain; RAM only, back to 3 s at a HELM grant / reset; step 13q1) */
