@@ -373,6 +373,11 @@ buttons and panels - groundstation\theme.py - and switch dark / light together)
   Size: screen 2 fits from a 1366 x 768 screen up, at 100 - 150 % Windows
   scaling (the panel text gets a little smaller when it must; checked by
   groundstation\test_screen2.py).
+  High-DPI laptops (e.g. 3840 x 2400): screen 1 is drawn internally at most
+  1920 pixels on its long side and then shown scaled to the window, so it
+  stays smooth and the windows do not freeze. Setting "render_max_px" in
+  gs_settings.json (default 1920; lower = faster, a little less sharp).
+  The Windows "System DPI" compatibility workaround is no longer needed.
 
 CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   The first line of STATUS is the boat dropdown: the boat's name with ▾, a

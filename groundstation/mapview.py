@@ -194,6 +194,7 @@ class ChartView:
             # one bitmap per view (depth shading + the contours drawn into it with Pillow): every redraw only
             # places it; it is made again when the scale / size / theme / layers change or the boat moved 20 %
             step = 6 if small else 4
+            step *= max(1, int(round(max(w, h) / 1920.0)))      # a high-DPI window: the same number of samples
             key = (round(m, 3), w, h, round(opacity, 2), step, theme, round(rot, 1), bool(layers.get("depth")),
                    bool(layers.get("contours")) and Image is not None, small)
             if self.key != key or self.img_at is None or \

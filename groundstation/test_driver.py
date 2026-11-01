@@ -899,6 +899,83 @@ def main():
                "the box %s; gone after DP %s" % (inside22, no_cdi, title22, vec_ok, bars_ok, fill_ok, hot_ok, cruise_ok,
                                                  hits22, gone22))
 
+        # I23 high-DPI window (step 13l, display only): composed at most render_max_px wide, shown scaled; mouse hits
+        # right at 1600x900 and 3840x2400; nothing drawn before the first real size; the frame time
+        fresh = driver.DriverScreen(app, geometry="640x360+0+0")
+        none_first = not fresh.sized and fresh.last_frame is None and not fresh.ops
+        fresh.draw()
+        none_first = none_first and fresh.last_frame is None and not fresh.ops          # (still no <Configure> seen)
+        pump(1.5)
+        sized_after = fresh.sized and fresh.last_frame is not None
+        fresh.w.destroy()
+        real_w, real_h = dv.cv.winfo_width, dv.cv.winfo_height
+        acked = []
+        orig_ack = app.master_ack
+        app.master_ack = lambda *a, **k: acked.append(1)
+
+        class Ev:
+            def __init__(self, x, y):
+                self.x, self.y, self.x_root, self.y_root = int(x), int(y), int(x), int(y)
+
+        def click_ack(W, H):
+            """Press the middle of the MASTER ack lamp's hit box (in window pixels); True if it was taken."""
+            dv.cv.winfo_width, dv.cv.winfo_height = (lambda: W), (lambda: H)
+            dv.draw()
+            hit = [r for r, act in dv.hits if act == "ack"]
+            if not hit:
+                return None
+            r = hit[0]
+            n = len(acked)
+            dv.on_press(Ev((r[0] + r[2]) / 2 * dv.zoom, (r[1] + r[3]) / 2 * dv.zoom))
+            return len(acked) == n + 1
+        try:
+            hit_small = click_ack(1600, 900)
+            zoom_small, size_small = dv.zoom, dv.size_int
+            hit_sys = click_ack(1920, 1200)              # the Windows "System" DPI override: Tk sees 1920 x 1200
+            zoom_sys, size_sys = dv.zoom, dv.size_int
+            hit_big = click_ack(3840, 2400)
+            zoom_big, size_big, frame_big = dv.zoom, dv.size_int, dv.last_frame
+            shots = os.environ.get("TRYGONS_SHOT_DIR")
+            if shots and frame_big is not None:          # (docs/screens: the 3840 x 2400 window's composed picture)
+                frame_big.save(os.path.join(shots, "driver_hidpi_3840x2400.png"))
+            ts, cs = [], []
+            for _ in range(7):
+                t0 = time.perf_counter()
+                dv.draw()
+                ts.append((time.perf_counter() - t0) * 1000.0)
+                cs.append(ts[-1] - dv.show_ms)            # composing alone (without the scale + Tk hand-over)
+            ms_big = sorted(ts)[len(ts) // 2]
+            ms_comp = sorted(cs)[len(cs) // 2]
+            saved_rm = dv.render_ms
+            dv.render_ms = 90.0                          # a slow frame: the next one waits >= 2 x its time
+            spacing_ok = 180 <= dv.tick_ms() <= 1000
+            dv.render_ms = saved_rm
+            if ms_comp >= 60.0:                           # (a diagnosis for a slow PC: where the time goes)
+                import cProfile
+                import pstats
+                pr = cProfile.Profile()
+                pr.enable()
+                for _ in range(3):
+                    dv.draw()
+                pr.disable()
+                pstats.Stats(pr).sort_stats("cumulative").print_stats(25)
+        finally:
+            dv.cv.winfo_width, dv.cv.winfo_height = real_w, real_h
+            app.master_ack = orig_ack
+        dv.draw()
+        report("I23 high-DPI screen 1: composed at <= render_max_px (1920, x1.35 slack) and shown scaled, mouse hits right at 1600x900 "
+               "and 3840x2400, also with the Windows \"System\" DPI override (1920x1200), no frame before the first real size, 3840x2400: composing < 60 ms, the whole frame incl. the scale + Tk hand-over < 150 ms (Tk alone needs ~40-50 ms to take a displayed 3840x2400 picture), the next tick >= 2 x a slow frame",
+               none_first and sized_after and hit_small and hit_big and zoom_small == 1.0 and size_small == (1600, 900)
+               and hit_sys and zoom_sys == 1.0 and size_sys == (1920, 1200)
+               and abs(zoom_big - 2.0) < 1e-6 and size_big == (1920, 1200) and frame_big is not None
+               and frame_big.size == (1920, 1200) and ms_comp < 60.0 and ms_big < 150.0 and spacing_ok and not errors,
+               "nothing before <Configure> %s, drawn after it %s; 1600x900: zoom %.2f composed %s, ack lamp hit %s; "
+               "System override 1920x1200: zoom %.2f composed %s, hit %s; "
+               "3840x2400: zoom %.2f composed %s (frame %s, Tk zoom x%d), ack lamp hit %s; composing %.0f ms, frame %.0f ms (medians of 7); slow-frame spacing %s" % (
+                   none_first, sized_after, zoom_small, size_small, hit_small, zoom_sys, size_sys, hit_sys,
+                   zoom_big, size_big,
+                   frame_big.size if frame_big is not None else None, zoom_big, hit_big, ms_comp, ms_big, spacing_ok))
+
         # I9 BENCH TEST tab (USB-style link): enter, live sensors, a steering pulse, a button, leave
         app.bench(A.proto.BENCH_ENTER, 0, "bench test: enter")
         in_bench = pump(3.0, lambda: app.t and app.t.get("mode") == A.proto.MODE_BENCH and app.bench_d is not None)

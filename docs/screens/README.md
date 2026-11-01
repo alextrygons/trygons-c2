@@ -12,6 +12,7 @@ Made from the demo by `python tools/demo_screens.py` on 2026-10-30.
 | [driver_night_en.png](driver_night_en.png) | driver HUD, NIGHT mode (dim red), en |
 | [driver_minimal_el.png](driver_minimal_el.png) | driver HUD, declutter MINIMAL (speed, heading, mode, gear, alarms) |
 | [driver_edit_layout_el.png](driver_edit_layout_el.png) | driver HUD, edit-layout mode (drag / resize / hide every box) |
+| [driver_hidpi_en.png](driver_hidpi_en.png) | step 13l: screen 1 in a 3840 x 2400 window (high-DPI laptop) = the picture composed at 1920 x 1200 (render_max_px) that is shown x2; before the fix only a 200 x 150 corner was drawn and the windows froze. Made by groundstation/test_driver.py I23 (TRYGONS_SHOT_DIR) |
 | [screen2_dark_el.png](screen2_dark_el.png) | screen 2 (navigation & control), dark theme, el: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [screen2_light_en.png](screen2_light_en.png) | screen 2 (navigation & control), light theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [screen2_dark_en.png](screen2_dark_en.png) | screen 2 (navigation & control), dark theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |

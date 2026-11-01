@@ -24,6 +24,7 @@ DEFAULTS = {
     "video_scale": "fill",      # fill (cover, crop evenly) / fit (whole picture, black bars)
     "ar": {"horizon": True, "velocity": True, "waypoint": True, "ribbon": True, "ais": True, "path": True,
            "shallow": True},
+    "render_max_px": 1920,      # screen 1 is composed at most this wide / high, shown scaled (high-DPI, step 13l)
     "vision_overlay": True,     # obstacle mask on the front video
     "vision_opacity": 1,        # 0 / 1 / 2 = 25 / 50 / 75 %
     "volume": 80,               # master volume 0..100 (warnings never below WARN_MIN_VOLUME)

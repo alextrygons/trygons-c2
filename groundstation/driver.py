@@ -378,7 +378,11 @@ class DriverScreen:
         self.leg = {}                           # active waypoint -> where the leg started (no program copy)
         self.mission_t0 = None
         self.depth_cache = (0.0, None)
-        self.render_ms = 0.0
+        self.render_ms = 0.0                    # moving average: compose + scale + PhotoImage (tick spacing)
+        self.show_ms = 0.0                      # the last frame's scale + PhotoImage part alone
+        self.zoom = 1.0                         # window px per composed px (> 1 on a high-DPI window, step 13l)
+        self.size_int = (0, 0)                  # the composed size; ops / hits / pic are in these coordinates
+        self.sized = False                      # a real <Configure> size has been seen (no 200x150 first frame)
         self.last_frame = None                  # the last composed picture (screenshots / tests)
         self.drag = None
         self._map_t = 0.0
@@ -410,6 +414,7 @@ class DriverScreen:
                 "<Escape>": "escape"}
         for k, act in keys.items():
             w.bind(k, lambda e, act=act: self.action(act, e))
+        self.cv.bind("<Configure>", self.on_canvas_size)
         self.cv.bind("<ButtonPress-1>", self.on_press)
         self.cv.bind("<B1-Motion>", self.on_motion)
         self.cv.bind("<ButtonRelease-1>", self.on_release)
@@ -528,10 +533,19 @@ class DriverScreen:
             m.grab_release()
 
     # --- mouse: buttons; in the edit mode drag / resize / show-hide -------------------------------------------
-    def on_press(self, ev, child=None):
+    def on_canvas_size(self, ev):
+        if ev.width > 1 and ev.height > 1:
+            self.sized = True
+
+    def mouse_xy(self, ev, child=None):
+        """A mouse position in the composed picture's coordinates (the window's divided by the zoom)."""
         x, y = ev.x, ev.y
         if child is not None:
             x, y = x + child.winfo_x(), y + child.winfo_y()
+        return x / self.zoom, y / self.zoom
+
+    def on_press(self, ev, child=None):
+        x, y = self.mouse_xy(ev, child)
         if self.hud.edit:
             for r, act in self.hits:
                 if act in ("edit", "edit_reset") and r[0] <= x <= r[2] and r[1] <= y <= r[3]:
@@ -550,11 +564,9 @@ class DriverScreen:
     def on_motion(self, ev, child=None):
         if not (self.hud.edit and self.drag):
             return
-        x, y = ev.x, ev.y
-        if child is not None:
-            x, y = x + child.winfo_x(), y + child.winfo_y()
+        x, y = self.mouse_xy(ev, child)
         name, what, x0, y0 = self.drag
-        W, H = max(1, self.cv.winfo_width()), max(1, self.cv.winfo_height())
+        W, H = max(1, self.size_int[0]), max(1, self.size_int[1])
         (self.layout.move if what == "move" else self.layout.resize)(name, (x - x0) / W, (y - y0) / H)
         self.drag = (name, what, x, y)
         self.draw()
@@ -612,7 +624,12 @@ class DriverScreen:
         except Exception:
             self.w.after(500, self.tick)            # keep the HUD alive, but report the error
             raise
-        self.w.after(200 if self.render_ms > 120 else 100, self.tick)
+        self.w.after(self.tick_ms(), self.tick)
+
+    def tick_ms(self):
+        """The wait before the next frame: >= twice the measured frame time (compose + scale + PhotoImage), so a
+        slow frame leaves the other windows (and the link) their turn; 50 ms while no real size is known yet."""
+        return int(min(1000, max(100, 2.0 * self.render_ms))) if self.sized else 50
 
     def frame_of(self, name):
         """The newest picture of a camera as a Pillow image (None without picture)."""
@@ -794,7 +811,20 @@ class DriverScreen:
             else:
                 self.qtime.configure(text=T("drv.q_left", s="%.0f" % math.ceil(left)))
         a = self.app
-        W, H = max(200, self.cv.winfo_width()), max(150, self.cv.winfo_height())
+        if not self.sized and self.cv.winfo_width() <= 1:
+            return                                      # nothing drawn before the first real window size
+        WW, WH = max(200, self.cv.winfo_width()), max(150, self.cv.winfo_height())
+        # compose at most render_max_px on the long side, show scaled to the window (high-DPI laptops, step 13l)
+        try:
+            cap = max(640, int(settings.get("render_max_px") or 1920))
+        except (TypeError, ValueError):
+            cap = 1920
+        if Image is None:
+            cap = 1 << 30                               # the canvas fallback draws at window size
+        # a whole-number zoom, only once the window is > 1.35 x the cap (2560 x 1440 stays sharp): Tk repeats the pixels in C (a Pillow resize to 3840 x 2400 costs ~45 ms, this ~5)
+        self.zoom = float(max(1, int(math.ceil(max(WW, WH) / (1.35 * cap) - 1e-9))))
+        W, H = (WW, WH) if self.zoom == 1.0 else (int(math.ceil(WW / self.zoom)), int(math.ceil(WH / self.zoom)))
+        self.size_int = (W, H)
         vs = getattr(a, "vstreams", {})
         f1, f2 = vs.get("FRONT-1"), vs.get("FRONT-2")
         use = a.front_sel.update(f1, f2) if (f1 or f2) else "FRONT-1"
@@ -856,10 +886,23 @@ class DriverScreen:
                 im = im.transpose(Image.FLIP_LEFT_RIGHT)          # a mirror
                 images[name] = im.point(lambda v: int(v * k)) if k < 1.0 else im
         out = self.renderer.render(base, self.ops, images)
-        self.last_frame = out
-        self.photos["hud"] = ImageTk.PhotoImage(out)
-        self.cv.delete("all")
-        self.cv.create_image(0, 0, image=self.photos["hud"], anchor="nw", tags="hud")
+        self.last_frame = out                                       # the composed picture (zoom x smaller than the window)
+        # whole-number zoom by repeating pixels: measured cheaper than Tk's PhotoImage.zoom (~8 + 27 ms vs ~50 ms
+        # at 3840 x 2400) and than a smooth resize (~45 ms)
+        t_show = time.perf_counter()
+        shown = out if self.zoom == 1.0 else out.resize((int(W * self.zoom), int(H * self.zoom)), Image.NEAREST)
+        ph = self.photos.get("hud")
+        if ph is not None and ph.width() == shown.width and ph.height() == shown.height and shown.mode == "RGB" \
+                and self.cv.find_withtag("hud_img"):
+            # the same Tk image + the same canvas item again: Tk repaints the window once (~30 ms cheaper at 4K
+            # than a new PhotoImage, and a deleted + re-created item would repaint it a second time)
+            self.cv.delete("tagmark")
+            ph.paste(shown)
+        else:
+            ph = self.photos["hud"] = ImageTk.PhotoImage(shown)
+            self.cv.delete("all")
+            self.cv.create_image(0, 0, image=ph, anchor="nw", tags=("hud", "hud_img"))
+        self.show_ms = (time.perf_counter() - t_show) * 1000.0     # scale + hand to Tk (the rest = composing)
         self.tag_items()
 
     def render_canvas(self, W, H, use, fvs):
@@ -964,7 +1007,8 @@ class DriverScreen:
             if self.map.winfo_manager():
                 self.map.place_forget()
             return
-        x0, y0, x1, y1 = op["r"]
+        z = self.zoom                                   # the box is in composed px; the Tk canvas in window px
+        x0, y0, x1, y1 = [v * z for v in op["r"]]
         self.map.place(x=int(x0), y=int(y0), width=int(x1 - x0), height=int(y1 - y0))
         now = time.time()
         if now - self._map_t >= 0.45 or self.hud.edit:
