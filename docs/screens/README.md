@@ -18,6 +18,8 @@ Made from the demo by `python tools/demo_screens.py` on 2026-10-30.
 | [driver_disconnected_el.png](driver_disconnected_el.png) | step 13m: screen 1 with no boat - "not connected" in the mode box instead of the red NO DATA alarm (S16) |
 | [screen2_linktime_el.png](screen2_linktime_el.png) | step 13q1: screen 2 with LINK TIME 30 s - the amber banner "ΧΡΟΝΟΣ ΧΩΡΙΣ ΣΥΝΔΕΣΗ 30 s (ΠΑΡΑΚΑΜΨΗ)" and, in the "Link" panel, the value with - / + (HELM captain only). Made by groundstation/test_screen2.py S17 (TRYGONS_SHOT_DIR) |
 | [driver_linktime_el.png](driver_linktime_el.png) | step 13q1: screen 1 with LINK TIME 30 s - the same banner in the notices (S17) |
+| [driver_maneuver_el.png](driver_maneuver_el.png) | step 13q2: screen 1 in MANEUVER - the drive box shows ΤΗΛΕΧΕΙΡΙΣΜΟΣ and ΜΑΝΟΥΒΡΑ (the running one lit, the other one a straight switch), no RELEASE any more (owner 2026-10-31). Made by groundstation/test_screen2.py S4 (TRYGONS_SHOT_DIR) |
+| [tools_remote_el.png](tools_remote_el.png) | step 13q2: Tools -> the shore-joystick page without the RELEASE button, the new help (UNCREWED one press with the stick centred + lever neutral; CREWED onboard CONFIRM; to stop choose another mode) (S4) |
 | [screen2_dark_el.png](screen2_dark_el.png) | screen 2 (navigation & control), dark theme, el: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [screen2_light_en.png](screen2_light_en.png) | screen 2 (navigation & control), light theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [screen2_dark_en.png](screen2_dark_en.png) | screen 2 (navigation & control), dark theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |

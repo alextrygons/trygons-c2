@@ -354,8 +354,9 @@ class StationServer:
         st.rjoy_seq = seq
         age_ms = int(min(65535, max(0, age * 1000)))
         lat_ms = int(min(65535, (st.rtt_ms or 0) / 2))
-        # b2: the captain's CONFIRM button (counts on the AURIX only in UNCREWED)
-        flags = (1 if lever is not None else 0) | (2 if m.get("release") else 0) | (4 if m.get("confirm") else 0)
+        # b2: the captain's CONFIRM button (counts on the AURIX only in UNCREWED); b1 (the old "release") is never
+        # set - step 13q2 (owner 2026-10-31): there is no release, an old station's "release" is dropped here
+        flags = (1 if lever is not None else 0) | (4 if m.get("confirm") else 0)
         lv = int(min(1000, max(0, float(lever if lever is not None else 0.5) * 1000)))
         self.gw.aurix.send(proto.T_GW_RJOY, struct.pack(
             "<BHHHhhHBB", st.id, seq, age_ms, lat_ms, int(max(-1000, min(1000, x * 1000))),

@@ -850,15 +850,16 @@ class Hud:
 
     def drive(self, name, s):
         """Manual driving from this station (CLAUDE.md D): REMOTE MANUAL and MANEUVER for the captain with the
-        manual licence (or single-operator + licence); RELEASE while one runs. The gateway (licence, captain)
-        and the AURIX (CONFIRM on the joystick, priorities, watchdogs) check every request again."""
+        manual licence (or single-operator + licence). Step 13q2 (owner 2026-10-31): there is NO release - the
+        running one is lit and the other one switches straight over; driving ends by choosing another mode
+        (STANDBY, AUTO, DP on screen 2). The gateway (licence, captain) and the AURIX (UNCREWED: shore stick
+        centred + lever neutral; CREWED: the onboard CONFIRM; priorities, watchdogs) check every request again."""
         d = s.t
         mode = d["mode"] if d is not None else None
         btns = []
-        if s.manual_ok and mode not in (5, 7):
-            btns += [(T("hud.manual_req"), "remote_req", False), (T("hud.maneuver_req"), "maneuver_req", False)]
-        if mode in (5, 7):
-            btns.append((T("hud.release"), "release", True))
+        if s.manual_ok:
+            btns += [(T("hud.manual_req"), "remote_req", bool(mode == 5)),
+                     (T("hud.maneuver_req"), "maneuver_req", bool(mode == 7))]
         if not btns:
             return
         x0, y0, x1, y1 = self.R(name)
@@ -866,7 +867,7 @@ class Hud:
         bw = (x1 - x0 - (n - 1) * 4) / n
         for i, (lab, act, on) in enumerate(btns):
             r = (x0 + i * (bw + 4), y0, x0 + i * (bw + 4) + bw, y1)
-            self.button(r, lab, act, "drv_" + act, on=on, colour=self.pal["caution"] if act == "release" else None)
+            self.button(r, lab, act, "drv_" + act, on=on)
 
     def relays(self, name, s):
         """The boat file's relays with "show_hud" (CLAUDE.md O), one line per relay (an interlocked pair on one

@@ -429,6 +429,9 @@ typedef struct {
     float    steer_cmd;         /* rate-limited outboard angle command */
     sb_lever_t lev;             /* the remote lever: neutral zone + pickup */
     uint32_t packets, ignored, requests, losses;
+    /* step 13q2: UNCREWED entries without CONFIRM, refused because the shore stick / lever was not centred,
+     * release attempts refused while driving (there is no release) */
+    uint32_t direct, refused_centre, release_refused;
 } sb_remote_t;
 
 /* The HELM station's (shore captain's) joystick as a CONFIRM source in
@@ -894,23 +897,26 @@ bool sb_joystick_cal_finish(sb_t *s);
  * False with *err = JM_OK: not in STANDBY. */
 bool sb_joymap_set(sb_t *s, const joymap_t *m, bool save, jm_error_t *err);
 
-/* REMOTE MANUAL (section D). request: the HELM gateway station asks; the
- * joystick CONFIRM on board within confirm_ms starts it. release: back to
- * STANDBY. input: one remote joystick packet (gateway, 30 Hz). */
+/* REMOTE MANUAL (section D). request: the HELM gateway station asks; CREWED: the
+ * joystick CONFIRM on board within confirm_ms starts it; UNCREWED (step 13q2, owner
+ * 2026-10-31): starts AT ONCE, only with the shore stick centred + the lever at neutral
+ * (else SB_ERR_NOT_CENTERED, nothing starts). There is no release: REMOTE / MANEUVER end
+ * by choosing another mode. input: one remote joystick packet (gateway, 30 Hz). */
 /* BENCH TEST (only the USB laptop calls it, link.c): action SB_BENCH_..., arg ms / code.
  * ENTER only from STANDBY, not moving; the others only in BENCH TEST. */
 sb_result_t sb_bench(sb_t *s, uint8_t action, uint16_t arg);
 
 sb_result_t sb_remote_request(sb_t *s, uint8_t station);
-/* release: ends REMOTE or MANEUVER of that station (-> STANDBY) */
+/* release (step 13q2): only withdraws a PENDING request of that station; while driving it is
+ * refused (SB_ERR_WRONG_MODE) - there is no release, another mode is chosen instead */
 sb_result_t sb_remote_release(sb_t *s, uint8_t station);
 /* input: also drives MANEUVER (X steering, Y / lever = gear F / N / R) */
 void sb_remote_input(sb_t *s, uint8_t station, uint16_t seq, uint16_t age_ms, uint16_t lat_ms,
                      float x, float y, float lever, bool has_lever);
 
 /* MANEUVER (captain only - the gateway checks the role + manual licence):
- * the HELM station asks, CONFIRM within confirm_ms (onboard joystick in
- * CREWED, the shore joystick in UNCREWED) starts it; from STANDBY / REMOTE.
+ * the HELM station asks; CREWED: the onboard CONFIRM within confirm_ms starts it;
+ * UNCREWED: at once with the shore stick centred + lever neutral (step 13q2); from STANDBY / REMOTE.
  * Throttle always idle; steering + gear from the remote joystick. */
 sb_result_t sb_maneuver_request(sb_t *s, uint8_t station);
 

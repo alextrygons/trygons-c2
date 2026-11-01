@@ -746,8 +746,8 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
 static void gw_status(sb_t *s, const proto_frame_t *f);
 
 /* GW_RJOY, 15 bytes: u8 station | u16 seq | u16 data age ms | u16 one-way latency ms |
- * i16 x*1000 | i16 y*1000 | u16 lever*1000 | u8 reserved | u8 flags (b0 lever, b1 release,
- * b2 CONFIRM held - counts only in UNCREWED) */
+ * i16 x*1000 | i16 y*1000 | u16 lever*1000 | u8 reserved | u8 flags (b0 lever, b1 unused (was release,
+ * ignored since step 13q2), b2 CONFIRM held - counts only in UNCREWED) */
 static void gw_rjoy(sb_t *s, const proto_frame_t *f)
 {
     const uint8_t *p = f->payload;
@@ -757,10 +757,8 @@ static void gw_rjoy(sb_t *s, const proto_frame_t *f)
     int16_t x = (int16_t)(p[7] | (p[8] << 8)), y = (int16_t)(p[9] | (p[10] << 8));
     uint16_t lev = (uint16_t)(p[11] | (p[12] << 8));
     uint8_t flags = p[14];
-    if (flags & 2u) {
-        (void)sb_remote_release(s, st);
-        return;
-    }
+    /* step 13q2 (owner 2026-10-31): b1 "release" is gone - an old station's release flag does nothing (an
+     * accidental release mid-manoeuvre is dangerous); the packet counts like any other */
     /* every packet of the HELM station: its CONFIRM button counts in UNCREWED */
     sb_shore_joy(s, st, age, x * 0.001f, y * 0.001f, lev * 0.001f, (flags & 1u) != 0u, (flags & 4u) != 0u);
     sb_remote_input(s, st, seq, age, lat, x * 0.001f, y * 0.001f, lev * 0.001f, (flags & 1u) != 0u);

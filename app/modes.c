@@ -10,9 +10,11 @@ static const bool k_allowed[MODE_COUNT][MODE_COUNT] = {
     /* HDG_LOCK */ { true,  true,  false,   true,  false,   true,  false, false,   false },
     /* AUTO     */ { true,  true,  true,    false, false,   true,  false, false,   false },
     /* TRAINING */ { true,  true,  false,   false, false,   false, false, false,   false },
-    /* REMOTE   */ { true,  true,  false,   false, false,   false, false, true,    false },   /* onboard joystick takes over */
+    /* REMOTE   */ { true,  true,  false,   true,  false,   false, false, true,    true  },   /* onboard joystick takes over;
+                                                                                               13q2: another mode chosen (AUTO / DP
+                                                                                               with their own start rules) */
     /* BENCH    */ { true,  true,  false,   false, false,   false, false, false,   false },   /* dock test: back to STANDBY */
-    /* MANEUVER */ { true,  true,  false,   false, false,   true,  false, false,   false },   /* captain: dock / trailer */
+    /* MANEUVER */ { true,  true,  false,   true,  false,   true,  false, false,   true  },   /* captain: dock / trailer */
     /* DP       */ { true,  true,  false,   false, false,   false, false, false,   false },   /* thrusters 0 first, then STANDBY;
                                                                                                the onboard joystick: MANUAL */
 };

@@ -17,6 +17,8 @@
  * Step 13q1: LINK TIME (the UNCREWED link-loss detection time): the gateway reports the HELM station's age in
  * 3 of 4 episodes; its own draw (part of the gateway-fuzz slice) sets the LINK TIME, silences the HELM station
  * or brings it back; invariants I60-I62.
+ * Step 13q2: UNCREWED REMOTE / MANEUVER start at once on the request (shore stick centred + lever neutral), no
+ * release; REMOTE / MANEUVER -> AUTO / DP straight; invariants I63-I64 (I7 for REMOTE / MANEUVER = CREWED only).
  * A failing episode is replayed with fewer events until the shortest
  * schedule that still fails remains (the "minimal reproduction").
  *
@@ -582,7 +584,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 63
+#define NINV 65
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -642,7 +644,9 @@ static const char *INV_NAMES[NINV] = { "",
     "I59 a DP TRIP drives its own copy of the STORED program (also after an AUTO RETURN), never past its last waypoint",
     "I60 UNCREWED LINK TIME: the lost link comes no later than the detection time in force (3 s; the captain's LINK TIME only at open sea) + 1.5 s after the HELM station was last heard",
     "I61 UNCREWED LINK TIME: at open sea with the gateway's report the lost link never comes before the captain's LINK TIME (- 1.5 s)",
-    "I62 LINK TIME always 3..60 s, 3 s after every reset and HELM grant, never in force near the shore / without shore information" };
+    "I62 LINK TIME always 3..60 s, 3 s after every reset and HELM grant, never in force near the shore / without shore information",
+    "I63 REMOTE / MANEUVER entry: UNCREWED only at once on the HELM station's request with its stick centred + lever neutral (fresh); CREWED never without the onboard CONFIRM",
+    "I64 there is no release: a release (command / old flag) never ends REMOTE / MANEUVER, never changes the mode" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -652,7 +656,7 @@ typedef struct {
     char     first_fail_text[NINV][400];
     uint32_t auto_by_button, auto_by_confirm;
     uint32_t dp_trip_ret;           /* I59: DP TRIP steps while an AUTO RETURN was latched */
-    uint32_t rem_req[16], remote_entries;
+    uint32_t rem_req[16], remote_entries, remote_direct, release_tries;
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
 } stats_t;
@@ -668,8 +672,11 @@ static bool spec_allowed(sb_mode_t f, sb_mode_t t)
     case MODE_HDG_LOCK: return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_AUTO || t == MODE_REMOTE;
     case MODE_AUTO:     return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_HDG_LOCK || t == MODE_REMOTE;
     case MODE_TRAINING: return t == MODE_STANDBY || t == MODE_MANUAL;
-    case MODE_REMOTE:   return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_MANEUVER;
-    case MODE_MANEUVER: return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_REMOTE;   /* captain: dock */
+    /* step 13q2 (owner 2026-10-31): REMOTE / MANEUVER are left by choosing another mode: STANDBY, AUTO, DP (their
+       own start rules), the other one; the onboard joystick (MANUAL). HDG LOCK: not yet (WAITING FOR OWNER W47) */
+    case MODE_REMOTE:   return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_MANEUVER || t == MODE_AUTO || t == MODE_DP;
+    case MODE_MANEUVER: return t == MODE_STANDBY || t == MODE_MANUAL || t == MODE_REMOTE || t == MODE_AUTO ||
+                               t == MODE_DP;   /* captain: dock */
     case MODE_BENCH:    return t == MODE_STANDBY || t == MODE_MANUAL;              /* dock test: back, or the joystick */
     case MODE_DP:       return t == MODE_STANDBY || t == MODE_MANUAL;              /* thrusters 0 first; the joystick */
     default:            return false;
@@ -770,6 +777,11 @@ typedef struct {
     uint8_t  helm_prev61;                   /* I62 */
     uint32_t lt_sets_prev;                  /* I62 */
     uint32_t near_since61;                  /* I60 */
+    uint32_t gear_n_since28;                /* I28: the gear machine settled in N since (0 = not) */
+    uint32_t rem_direct_t;                  /* I7 / I63: an UNCREWED REMOTE / MANEUVER request that started it at once */
+    float    sent_x, sent_lever;            /* I63: the last shore joystick packet the storm sent */
+    uint32_t sent_t;
+    bool     sent_fresh;
 } chk_t;
 
 static chk_t C;
@@ -786,6 +798,17 @@ static void fail(int inv, const char *fmt, double a, double b)
 }
 
 static void ok(int inv) { ST.checks[inv]++; }
+
+/* one GW_RJOY packet of the HELM station's (shore) joystick, as the storm sends it (I63 remembers it) */
+static void shore_packet(sb_t *s)
+{
+    uint16_t age = S.rem_stale ? 900u : 40u;
+    sb_shore_joy(s, S.rem_station, age, S.rx_x, 0.0f, S.rx_lever, true, S.sconf_held);
+    C.sent_x = S.rx_x;
+    C.sent_lever = S.rx_lever;
+    C.sent_t = S.t ? S.t : 1u;
+    C.sent_fresh = !S.rem_stale;
+}
 
 /* I37: the STARTER's other conditions as the storm sees them (smallboat.c helm_link_ok + no kill / trip) */
 static bool crank_link_ok(const sb_t *s)
@@ -1240,9 +1263,11 @@ static void check_step(void)
     }
     if ((m == MODE_REMOTE || m == MODE_MANEUVER) && C.mode_prev != m) {
         ST.remote_entries++;
-        if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(7);
-        else fail(7, "REMOTE / MANEUVER entered without CONFIRM (mode before %.0f, now %.0f)", (double)C.mode_prev,
-                  (double)m);
+        /* step 13q2: CREWED = the CONFIRM (I7); UNCREWED = at once on the request (I63, checked at the request) */
+        if (C.rem_direct_t && S.t - C.rem_direct_t <= 100u) { ok(63); ST.remote_direct++; }
+        else if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(7);
+        else fail(7, "REMOTE / MANEUVER entered without CONFIRM / direct request (mode before %.0f, now %.0f)",
+                  (double)C.mode_prev, (double)m);
     }
 
     /* I22: UNCREWED - the onboard joystick has no effect */
@@ -1298,6 +1323,8 @@ static void check_step(void)
             C.killed = false;
         } else if (C.killed) ok(31);
         if (kill) C.killed = true;
+        if (!gear_is(&s->gear, GEAR_N)) C.gear_n_since28 = 0u;
+        else if (!C.gear_n_since28) C.gear_n_since28 = S.t ? S.t : 1u;
         if (s->ll.state == SB_LL_LOST && !kill && C.safe_since && S.t - C.safe_since > 1500u && !s->mon_tripped) {
             /* near shore (the storm's view): the Pi said near / nothing / not valid, or it is quiet */
             uint32_t cage = s->coast.rx_ms ? S.t - s->coast.rx_ms : 0xFFFFFFFFu;
@@ -1306,7 +1333,13 @@ static void check_step(void)
                         (fresh && (S.shore_mode == 1u || S.shore_mode == 3u)) || (S.gw_off_t && S.t - S.gw_off_t > 4500u);
             bool far = S.shore_mode == 2u && S.gw_on && s->gw.state == SB_GW_OK && fresh;
             float since = (S.t - s->ll.lost_ms) * 0.001f;
-            if (near && !far && S.t - s->ll.lost_ms > 1000u)
+            /* (step 13q2, seed 709: the AURIX's "neutral confirmed" = the gear machine settled in N - a gear change
+             * asked just before (a REMOTE lever) takes its idle + neutral dwell although the pulse never left N) */
+            uint32_t allow = 1000u;
+            if (!C.gear_n_since28) allow = 1000u + S.cfg.gear.idle_wait_ms + S.cfg.gear.neutral_wait_ms + 200u;
+            else if ((int32_t)(C.gear_n_since28 - s->ll.lost_ms) + 200 > (int32_t)allow)
+                allow = (uint32_t)((int32_t)(C.gear_n_since28 - s->ll.lost_ms) + 200);
+            if (near && !far && S.t - s->ll.lost_ms > allow)
                 fail(28, "lost %.1f s ago, near shore / no shore info, idle + neutral - but no kill", since, 0.0);
             else if (near && !far) ok(28);
             if (far && since > s->cfg.lostlink_grace_s + 0.5f)
@@ -1790,10 +1823,37 @@ static void apply(const ev_t *e)
     }
     case E_PC_LOWER: sb_power_lower(s); break;
     case E_REMOTE_REQ:
+    case E_MAN_REQ: {
         if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->a % 3);
         st_helm(s, S.rem_station);                        /* the shore station took HELM first (gateway) */
-        ST.rem_req[(int)sb_remote_request(s, S.rem_station) & 15]++;
+        /* step 13q2: UNCREWED the captain mostly centres the shore stick + lever first (the 30 Hz stream: one
+           packet just before the request); otherwise whatever the stick is doing (must be refused) */
+        if (S.uncrewed && e->b < 650) {
+            S.rx_x = 0.0f;
+            S.rx_lever = 0.5f;
+            S.rem_stream = true;
+            S.rem_stale = false;
+            shore_packet(s);
+        }
+        sb_mode_t before = sb_mode(s);
+        sb_result_t rr = e->kind == E_REMOTE_REQ ? sb_remote_request(s, S.rem_station) : sb_maneuver_request(s, S.rem_station);
+        if (e->kind == E_REMOTE_REQ) ST.rem_req[(int)rr & 15]++;
+        sb_mode_t after = sb_mode(s);
+        if (after != before) {
+            /* I63: only UNCREWED, only the HELM station, its last packet fresh with the stick centred + lever neutral */
+            bool centred = C.sent_t && C.sent_fresh && S.t - C.sent_t <= 300u && fabsf(C.sent_x) <= 0.10f &&
+                           C.sent_lever >= 0.45f && C.sent_lever <= 0.55f;
+            bool right = s->profile == SB_PROFILE_UNCREWED && s->helm == S.rem_station && rr == SB_OK &&
+                         (after == MODE_REMOTE || after == MODE_MANEUVER) && s->confirm.kind == CONF_NONE;
+            C.steered_since_boot = true;                  /* (I56: a mode that steers, entered between two steps) */
+            if (centred && right) { ok(63); C.rem_direct_t = S.t ? S.t : 1u; }
+            else fail(63, "REMOTE / MANEUVER started at once (mode %.0f) with the shore stick / lever not centred, "
+                      "not fresh, CREWED or not HELM (x %.2f)", (double)after, (double)C.sent_x);
+        } else if (s->profile == SB_PROFILE_CREWED) {
+            ok(63);                                       /* CREWED: never at once */
+        }
         break;
+    }
     case E_SCONFIRM:
         if (e->a < 700) { S.rx_x = 0.0f; S.rx_lever = 0.5f; }             /* the captain centres first (mostly) */
         if (s->confirm.kind == CONF_NONE && S.uncrewed) {
@@ -1803,11 +1863,6 @@ static void apply(const ev_t *e)
         S.sconf_held = true;
         S.sconf_release = S.t + 150u;
         C.sconf_t = S.t;
-        break;
-    case E_MAN_REQ:
-        if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->a % 3);
-        st_helm(s, S.rem_station);
-        (void)sb_maneuver_request(s, S.rem_station);
         break;
     case E_JOY_PLUG: S.joy_fitted = !S.joy_fitted; joy_apply(); break;
     case E_HELM_DROP: st_helm(s, SB_HELM_NONE); S.rem_stream = false; break;  /* gateway dropped it */
@@ -1844,7 +1899,17 @@ static void apply(const ev_t *e)
         if (S.rem_stream && sb_mode(s) == MODE_REMOTE && s->remote.state == 1u) C.rem_check = true;
         S.rem_stale = true;
         break;
-    case E_REMOTE_RELEASE: (void)sb_remote_release(s, S.rem_station); break;
+    case E_REMOTE_RELEASE: {
+        /* step 13q2 (I64): there is no release - it never ends REMOTE / MANEUVER, never changes the mode */
+        sb_mode_t before = sb_mode(s);
+        sb_result_t rr = sb_remote_release(s, S.rem_station);
+        ST.release_tries++;
+        if (sb_mode(s) != before) fail(64, "a release changed the mode %.0f -> %.0f", (double)before, (double)sb_mode(s));
+        else if ((before == MODE_REMOTE || before == MODE_MANEUVER) && rr != SB_ERR_WRONG_MODE)
+            fail(64, "a release in mode %.0f was not refused (%.0f)", (double)before, (double)rr);
+        else ok(64);
+        break;
+    }
     case E_COMPASS: sim_hal_fail_heading(e->a < 500); break;
     case E_GYRO: sim_hal_set_gyro(e->a >= 300, 0.05f, 0.02f); break;
     case E_GPS: S.w.gps_fail = e->a < 500; break;
@@ -2198,10 +2263,7 @@ static void run_until(uint32_t until)
                                   (double)gear_pos(sim_hal_gear_pwm()));
                     }
                 }
-                if (S.rem_stream) {                         /* every packet: the shore CONFIRM source */
-                    uint16_t age = S.rem_stale ? 900u : 40u;
-                    sb_shore_joy(&S.sb, S.rem_station, age, S.rx_x, 0.0f, S.rx_lever, true, S.sconf_held);
-                }
+                if (S.rem_stream) shore_packet(&S.sb);     /* every packet: the shore CONFIRM source */
                 if (S.rem_stream && (sb_mode(&S.sb) == MODE_REMOTE || sb_mode(&S.sb) == MODE_MANEUVER)) {
                     uint16_t age = S.rem_stale ? 900u : 40u;
                     sb_remote_input(&S.sb, S.rem_station, ++S.rem_seq, age, 30u, S.rx_x, 0.0f, S.rx_lever, true);
@@ -2367,6 +2429,8 @@ static void report(int episodes, double hours)
            (unsigned long)ST.remote_entries, (unsigned long)ST.rem_req[0]);
     for (int i = 1; i < 16; i++) if (ST.rem_req[i]) printf(" code %d: %lu", i, (unsigned long)ST.rem_req[i]);
     printf(")\n");
+    printf("REMOTE / MANEUVER started at once (UNCREWED, step 13q2): %lu; release tries (never end it): %lu\n",
+           (unsigned long)ST.remote_direct, (unsigned long)ST.release_tries);
 }
 
 /* 32-bit time wraparound: the clock starts 3 minutes before 2^32 ms */

@@ -373,8 +373,15 @@ def s4_maneuver(rig):
     rig.pump(1.0)
     lit = [o for o in dv.ops if o.get("tag") == "mv_gear"]
     on_txt = dv.texts("mv_on")
-    rel = dv.has("drv_release")
-    no_req = not dv.has("drv_remote_req")
+    shots = os.environ.get("TRYGONS_SHOT_DIR")
+    if shots and dv.last_frame is not None:             # step 13q2: MANEUVER lit, REMOTE MANUAL beside it, no RELEASE
+        dv.last_frame.save(os.path.join(shots, "driver_maneuver_el.png"))
+    if shots:                                           # the Remote tools page: no RELEASE, the new help text
+        ap.open_tab("tab.remote")
+        shot(ap.tools, os.path.join(shots, "tools_remote_el.png"))
+        ap.tools.withdraw()
+    rel = not dv.has("drv_release")                     # step 13q2: there is no RELEASE
+    no_req = dv.has("drv_remote_req") and dv.has("drv_maneuver_req")   # MANEUVER lit, REMOTE = a straight switch
     rig.extra.update(gear=2)
     rig.pump(0.8)
     rev = dv.texts("mv_on")
@@ -383,11 +390,11 @@ def s4_maneuver(rig):
     rig.extra.update(mode=proto.MODE_STANDBY, mode_name="STANDBY", gear=0)
     rig.pump(0.6)
     gone = not dv.has("mv_box")
-    report("S4 MANEUVER on screen 1: REV / N / FWD, the engaged gear lit (FWD, then REV), RELEASE instead of the "
-           "request buttons; gone in other modes",
+    report("S4 MANEUVER on screen 1: REV / N / FWD, the engaged gear lit (FWD, then REV), no RELEASE (13q2): MANEUVER "
+           "and REMOTE MANUAL stay (the other one = a straight switch); gone in other modes",
            len(lit) == 1 and on_txt == [A.T("mv.fwd")] and rev == [A.T("mv.rev")] and rel and no_req and
            len(boxes) == 3 and gone and not rig.errors,
-           "lit %d, text %s then %s; boxes %d; RELEASE %s; requests hidden %s; gone after %s" % (
+           "lit %d, text %s then %s; boxes %d; no RELEASE %s; both drive buttons %s; gone after %s" % (
                len(lit), on_txt, rev, len(boxes), rel, no_req, gone))
 
 

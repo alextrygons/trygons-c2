@@ -878,7 +878,7 @@ static bool precondition(const sb_t *s, sb_mode_t to, mode_reason_t why)
     case MODE_TRAINING:
         return (why == WHY_PC || why == WHY_USER || why == WHY_TEST) &&
                sb_compass_ok(s) && s->ap.mode != AP_MODE_TRAINING && !gear_fault(&s->gear);
-    case MODE_DP:           /* HELM station request + CONFIRM, from STANDBY (not stopping) */
+    case MODE_DP:           /* HELM station request + CONFIRM, from STANDBY (not stopping) / REMOTE / MANEUVER (13q2) */
         return why == WHY_DP && !s->stopping && dp_ok(s, s->dp_req.sub, s->dp_req.cont, true);
     case MODE_BENCH:        /* the USB laptop (link.c), boat not moving; no sensor needed (it shows them) */
         return why == WHY_PC && !bench_moving(s) && s->ap.mode != AP_MODE_TRAINING;
@@ -1003,7 +1003,9 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
         break;
     case MODE_AUTO:
         s->stopping = false;
-        if (s->ap.mode != AP_MODE_AUTO) autopilot_engage(&s->ap, from == MODE_MANUAL || from == MODE_HDG_LOCK);
+        /* (13q2: from REMOTE / MANEUVER too - the outboard is where the shore stick left it) */
+        if (s->ap.mode != AP_MODE_AUTO)
+            autopilot_engage(&s->ap, from == MODE_MANUAL || from == MODE_HDG_LOCK || remote_like(from));
         s->autop.suspended = false;
         cruise_start(s);
         auto_begin_leg(s);
@@ -1641,6 +1643,36 @@ static float remote_cap_r(const sb_t *s)
     return fminf(s->cfg.remote_cap_rev_pct, s->plim.rev_pct);
 }
 
+/* Step 13q2 (owner 2026-10-31): UNCREWED = NO request / CONFIRM - the HELM captain's choice of REMOTE /
+ * MANEUVER is one action and starts it at once, only with the shore stick centred AND the lever at neutral
+ * at that moment (fresh packets of the HELM station: sb_shore_joy). Caps, rate limits, the 0.3 s freshness
+ * and STANDBY are unchanged. CREWED keeps the request + the onboard CONFIRM. */
+static sb_result_t remote_now(sb_t *s, uint8_t station, sb_mode_t to)
+{
+    if (!mode_allowed(sb_mode(s), to)) return SB_ERR_WRONG_MODE;
+    if (!shore_ready(s)) return SB_ERR_JOY_NOT_READY;             /* no fresh shore joystick data */
+    if (!s->shore.centred) {                                      /* centre the stick: nothing starts */
+        s->remote.refused_centre++;
+        return SB_ERR_NOT_CENTERED;
+    }
+    /* the generator holds the throttle open in neutral (CPU1 allows that only in STANDBY / DP): switch it
+     * off first - it never hands an open throttle to a driving mode */
+    if (s->gen.state == GEN_STARTING || s->gen.state == GEN_RUNNING || s->gen.state == GEN_STOPPING)
+        return SB_ERR_PRECOND;
+    /* a joystick found on board while UNCREWED: driving would be a profile fault at once (STANDBY + alarm) */
+    if (s->probe_ok_ms >= s->cfg.profile_ok_ms) return SB_ERR_PRECOND;
+    uint8_t keep = s->remote.station;
+    s->remote.station = station;
+    if (!sb_request_mode(s, to, to == MODE_REMOTE ? WHY_REMOTE : WHY_MANEUVER)) {
+        s->remote.station = keep;
+        return SB_ERR_PRECOND;
+    }
+    s->remote.requests++;
+    s->remote.direct++;
+    s->confirm.kind = CONF_NONE;          /* the new mode replaces a pending request (as a CREWED request does) */
+    return SB_OK;
+}
+
 sb_result_t sb_remote_request(sb_t *s, uint8_t station)
 {
     if (s->cfg.first_test) return SB_ERR_WRONG_MODE;              /* FIRST TEST: steering only */
@@ -1648,6 +1680,7 @@ sb_result_t sb_remote_request(sb_t *s, uint8_t station)
     if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_TRAINING) return SB_ERR_WRONG_MODE;
     if (!s->armed || s->mon_tripped) return SB_ERR_PRECOND;
     if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
+    if (s->profile == SB_PROFILE_UNCREWED) return remote_now(s, station, MODE_REMOTE);
     if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;              /* nobody could press CONFIRM */
     s->remote.station = station;
     s->confirm.kind = CONF_REMOTE;
@@ -1663,6 +1696,7 @@ sb_result_t sb_maneuver_request(sb_t *s, uint8_t station)
     if (sb_mode(s) != MODE_STANDBY && sb_mode(s) != MODE_REMOTE) return SB_ERR_WRONG_MODE;
     if (!s->armed || s->mon_tripped) return SB_ERR_PRECOND;
     if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;            /* centre the joystick */
+    if (s->profile == SB_PROFILE_UNCREWED) return remote_now(s, station, MODE_MANEUVER);
     if (!sb_confirm_ready(s)) return SB_ERR_JOY_NOT_READY;        /* nobody could press CONFIRM */
     s->remote.station = station;
     s->confirm.kind = CONF_MANEUVER;
@@ -1676,13 +1710,18 @@ static bool remote_like(sb_mode_t m)
     return m == MODE_REMOTE || m == MODE_MANEUVER;
 }
 
+/* Step 13q2 (owner 2026-10-31): there is NO "release" - an accidental release in the middle of a manoeuvre
+ * is dangerous (nobody on board). This only withdraws a PENDING (CREWED) request of that station; REMOTE /
+ * MANEUVER end by choosing another mode (STANDBY, AUTO, DP, the other one), the onboard joystick, a fault. */
 sb_result_t sb_remote_release(sb_t *s, uint8_t station)
 {
-    if ((s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER) && s->remote.station == station)
+    if ((s->confirm.kind == CONF_REMOTE || s->confirm.kind == CONF_MANEUVER) && s->remote.station == station) {
         s->confirm.kind = CONF_NONE;
+        return SB_OK;
+    }
     if (!remote_like(sb_mode(s))) return SB_OK;
-    if (station != s->remote.station) return SB_ERR_WRONG_MODE;
-    return sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_END) ? SB_OK : SB_ERR_PRECOND;
+    s->remote.release_refused++;
+    return SB_ERR_WRONG_MODE;                                     /* choose another mode instead */
 }
 
 void sb_remote_input(sb_t *s, uint8_t station, uint16_t seq, uint16_t age_ms, uint16_t lat_ms,
@@ -2579,7 +2618,9 @@ sb_result_t sb_dp_cmd(sb_t *s, uint8_t station, uint8_t action, uint8_t arg, int
         }
         if (!in_dp) {
             if (sb_mode(s) == MODE_MANUAL) return SB_ERR_JOYSTICK;  /* the onboard joystick has it */
-            if (sb_mode(s) != MODE_STANDBY || s->stopping) return SB_ERR_STANDBY_ONLY;
+            /* from STANDBY (not stopping); step 13q2: also straight from REMOTE / MANEUVER (the mode bar) - dp_ok
+             * below still needs the outboard at the modelled idle + gear N + slow, then the CONFIRM */
+            if (!((sb_mode(s) == MODE_STANDBY && !s->stopping) || remote_like(sb_mode(s)))) return SB_ERR_STANDBY_ONLY;
         }
         if (!s->armed || s->mon_tripped) return SB_ERR_PRECOND;
         if (s->joy.off_centre) return SB_ERR_NOT_CENTERED;        /* centre the joystick */

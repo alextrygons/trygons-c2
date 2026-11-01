@@ -5788,7 +5788,8 @@ static void remote_tests(void)
                     on && pend && held <= fmaxf(thr_auto, 20.0f) + 0.5f && held >= thr_auto - 1.0f && picked, d);
     }
 
-    /* RD7 release / STANDBY button / a station on board takes HELM -> STANDBY */
+    /* RD7 STANDBY button / a station on board takes HELM -> STANDBY; step 13q2: the old remote "release" flag
+     * (b1 of GW_RJOY, an old station) and the release command do nothing - there is no release */
     {
         int ok = 0;
         char t[400] = "";
@@ -5797,17 +5798,26 @@ static void remote_tests(void)
             static rjsim_t r;
             rjsim_init(&r, &x, 930u + (uint32_t)k);
             rj_enable(&x, &r);
-            if (k == 0) { rj_send(&r, 2u); sbsim_run(&x, x.t + 200u, rj_hook, &r); }
+            uint8_t rel = 0xFFu;
+            if (k == 0) {
+                const uint8_t REL = 1u;
+                rj_send(&r, 2u);
+                sbsim_run(&x, x.t + 200u, rj_hook, &r);
+                rel = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &REL, 1u);
+            }
             else if (k == 1) press(&x, HAL_BTN_STANDBY);
             else pi_cmd(&x, &r.p, 9u, true, PROTO_T_HELM, &TAKE, 1u);
             sbsim_run(&x, x.t + 200u, rj_hook, &r);
-            bool sb = sb_mode(&x.sb) == MODE_STANDBY;
+            bool sb = k == 0 ? (sb_mode(&x.sb) == MODE_REMOTE && rel == PROTO_R_WRONG_MODE &&
+                                x.sb.remote.release_refused == 1u && x.sb.remote.state == SB_REMOTE_DRIVING)
+                             : sb_mode(&x.sb) == MODE_STANDBY;
             ok += sb;
             snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s -> %s", k ? "; " : "",
-                     k == 0 ? "remote driver releases" : k == 1 ? "STANDBY button" : "station on board takes HELM",
+                     k == 0 ? "old release flag + release command (refused, 7)" : k == 1 ? "STANDBY button"
+                                                                                       : "station on board takes HELM",
                      mode_name(sb_mode(&x.sb)));
         }
-        test_report("RD7 remote driving ends: released, STANDBY button, HELM taken on board -> STANDBY", ok == 3, t);
+        test_report("RD7 remote driving ends: STANDBY button, HELM taken on board -> STANDBY; no release (13q2)", ok == 3, t);
     }
 }
 
@@ -5906,13 +5916,19 @@ static void crew_tests(void)
         sbsim_run(&x, x.t + 500u, rj_hook, &r);
         press(&x, HAL_BTN_HDG_LOCK);
         bool no_hdg = sb_mode(&x.sb) == MODE_STANDBY;
-        uint8_t ask = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        /* the onboard CONFIRM pressed with a power raise pending: nothing (UNCREWED) */
+        uint16_t pcode = 0u;
+        sb_alarm_ack(&x.sb);
+        (void)sb_power_code(&x.sb, 0u, &pcode);
+        (void)sb_power_raise(&x.sb, 0u, pcode);
         sim_hal_joystick_confirm(true);                    /* someone presses the onboard CONFIRM: nothing */
         sbsim_run(&x, x.t + 200u, rj_hook, &r);
         sim_hal_joystick_confirm(false);
         sbsim_run(&x, x.t + 200u, rj_hook, &r);
-        bool not_onboard = sb_mode(&x.sb) == MODE_STANDBY && x.sb.confirm.kind == CONF_REMOTE;
-        bool sc = shore_confirm(&x, &r);
+        bool not_onboard = x.sb.plim.fwd_pct == 30.0f && x.sb.confirm.kind == CONF_RAISE_FWD;
+        /* step 13q2: REMOTE starts at once on the request (shore stick centred), no CONFIRM */
+        uint8_t ask = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool sc = x.sb.confirm.kind == CONF_NONE;
         bool remote = sb_mode(&x.sb) == MODE_REMOTE;
         sbsim_run(&x, x.t + 2000u, rj_hook, &r);
         /* a joystick appears on board while driving and is pushed hard: never MANUAL, a profile fault */
@@ -5935,15 +5951,14 @@ static void crew_tests(void)
         q.rj_on = true;
         sbsim_run(&y, y.t + 300u, rj_hook, &q);
         pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
-        shore_confirm(&y, &q);
         bool rem2 = sb_mode(&y.sb) == MODE_REMOTE;
         press(&y, HAL_BTN_STANDBY);
         bool sbb = sb_mode(&y.sb) == MODE_STANDBY;
         crew_plug();
-        snprintf(d, sizeof d, "UNCREWED: panel HDG LOCK ignored %s; REMOTE asked %u, onboard CONFIRM ignored %s, shore "
-                 "CONFIRM %s -> REMOTE %s; joystick plugged in + pushed while driving: MANUAL %s, STANDBY + PROFILE alarm "
+        snprintf(d, sizeof d, "UNCREWED: panel HDG LOCK ignored %s; onboard CONFIRM (power raise pending) ignored %s; "
+                 "REMOTE asked %u: at once, no CONFIRM pending %s -> REMOTE %s; joystick plugged in + pushed while driving: MANUAL %s, STANDBY + PROFILE alarm "
                  "(why %s) %s, still UNCREWED; STANDBY button in REMOTE %s -> %s",
-                 no_hdg ? "yes" : "NO", ask, not_onboard ? "yes" : "NO", sc ? "accepted" : "NO", remote ? "yes" : "NO",
+                 no_hdg ? "yes" : "NO", not_onboard ? "yes" : "NO", ask, sc ? "yes" : "NO", remote ? "yes" : "NO",
                  manual ? "YES" : "never", mode_reason_name(auto_end_why(&x)), fault ? "yes" : "NO",
                  rem2 ? "yes" : "NO", mode_name(sb_mode(&y.sb)));
         test_report("PR2 UNCREWED: the onboard joystick (stick, CONFIRM, buttons) has no effect; STANDBY button wins",
@@ -6135,7 +6150,7 @@ static void crew_tests(void)
                     sb_mode(&y.sb) == MODE_STANDBY, d);
     }
 
-    /* MV3 UNCREWED MANEUVER: confirmed on the shore joystick */
+    /* MV3 UNCREWED MANEUVER: at once on the request (step 13q2: no CONFIRM; shore stick centred) */
     {
         static sbsim_t x;
         static rjsim_t r;
@@ -6144,15 +6159,15 @@ static void crew_tests(void)
         r.rj_on = true;
         sbsim_run(&x, x.t + 300u, rj_hook, &r);
         uint8_t ask = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
-        bool cf = shore_confirm(&x, &r);
+        bool cf = sb_mode(&x.sb) == MODE_MANEUVER && x.sb.confirm.kind == CONF_NONE;
         rj_lever(&x, &r, 1.0f, 2.0f);
         float thr_max = 0.0f;
         for (int i = 0; i < 100; i++) { sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r); thr_max = fmaxf(thr_max, sim_hal_throttle()); }
         bool on = sb_mode(&x.sb) == MODE_MANEUVER && gear_is(&x.sb.gear, GEAR_F);
         crew_plug();
-        snprintf(d, sizeof d, "UNCREWED: asked %u, shore CONFIRM %s, MANEUVER + forward gear %s, highest throttle %.2f %%",
-                 ask, cf ? "accepted" : "NO", on ? "yes" : "NO", thr_max);
-        test_report("MV3 UNCREWED MANEUVER: confirmed on the shore captain's joystick, throttle idle",
+        snprintf(d, sizeof d, "UNCREWED: asked %u, MANEUVER at once without CONFIRM %s, MANEUVER + forward gear %s, "
+                 "highest throttle %.2f %%", ask, cf ? "yes" : "NO", on ? "yes" : "NO", thr_max);
+        test_report("MV3 UNCREWED MANEUVER: at once on the request (no CONFIRM, 13q2), throttle idle",
                     ask == PROTO_R_OK && cf && on && thr_max <= 0.01f, d);
     }
 
@@ -6309,13 +6324,13 @@ static void lostlink_tests(void)
         sbsim_run(&x, t0 + 25000u, ll_hook, &l);
         bool ok = !l.killed && x.sb.ll.state == SB_LL_OK && sb_mode(&x.sb) == MODE_STANDBY &&
                   (x.sb.alarm_bits & SB_ALM_LINK_LOST) && x.sb.ll.returns == 1u;
-        /* and it can drive again (a new request + CONFIRM) */
+        /* and it can drive again (a new request: UNCREWED at once, step 13q2) */
         sb_alarm_ack(&x.sb);
         rj_lever(&x, &l.r, 0.5f, 2.0f);                          /* the captain centres the lever */
         uint8_t again = pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
-        bool cf = shore_confirm(&x, &l.r);
+        bool cf = sb_mode(&x.sb) == MODE_REMOTE;
         snprintf(d, sizeof d, "driving %s; lost at sea, HELM back after 5 s (%u): killed %s, state %d, mode %s, LINK LOST "
-                 "alarm for the station %s; never resumed by itself; new REMOTE request %u + CONFIRM %s -> %s",
+                 "alarm for the station %s; never resumed by itself; new REMOTE request %u (UNCREWED: at once) %s -> %s",
                  drv ? "yes" : "NO", back, l.killed ? "YES" : "no", x.sb.ll.state, mode_name(sb_mode(&x.sb)),
                  ok ? "yes" : "NO", again, cf ? "yes" : "NO", mode_name(sb_mode(&x.sb)));
         test_report("LL3 UNCREWED link back within the grace time: no kill, stays in STANDBY at idle / neutral, alarm",
@@ -8489,12 +8504,15 @@ void sb_usb_tests(void)
     usb_joystick_tests();
 }
 
+static void remote_direct_tests(void);   /* (step 13q2, below: it uses the DP helpers) */
+
 void sb_gateway_tests(void)
 {
     gateway_tests();
     helm_tests();
     remote_tests();
     crew_tests();
+    remote_direct_tests();
     lostlink_tests();
     link_time_tests();
     save_tests();
@@ -15868,6 +15886,320 @@ void sb_generator_tests(void)
     generator_tests();
 }
 
+/* ------------------- step 13q2: REMOTE / MANEUVER entry + exit (owner 2026-10-31) -- */
+
+/* a boat (CREWED or UNCREWED), HELM station 2, the shore joystick streaming (centred), alarms acknowledged */
+static void rq_boat(sbsim_t *x, rjsim_t *r, uint32_t seed, bool crewed)
+{
+    const uint8_t TAKE = 0u;
+    crew_init(x, r, seed, crewed, NULL);
+    pi_cmd(x, &r->p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+    r->rj_on = true;
+    sbsim_run(x, x->t + 500u, rj_hook, r);
+    sb_alarm_ack(&x->sb);
+}
+
+static void remote_direct_tests(void)
+{
+    char d[1200];
+    const uint8_t ASK = 0u, REL = 1u, STBY = 0u;
+    printf("\n=== RQ step 13q2: REMOTE / MANEUVER entry + exit (UNCREWED one action, no release) ===\n");
+
+    /* RQ1 UNCREWED REMOTE = one action, at once: only with fresh shore data, the stick centred AND the lever at
+     * neutral at that moment (else NACK 8, nothing starts, nothing pending); caps + 0.3 s freshness unchanged.
+     * CREWED unchanged: request + the onboard CONFIRM (the shore CONFIRM does nothing) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        const uint8_t TAKE = 0u;
+        crew_init(&x, &r, 1601u, false, NULL);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        sbsim_run(&x, x.t + 500u, rj_hook, &r);
+        sb_alarm_ack(&x.sb);
+        uint8_t r_nodata = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);   /* no shore joystick data */
+        r.rj_on = true;
+        r.x = 0.5f;                                              /* stick held */
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        uint8_t r_x = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool st_x = sb_mode(&x.sb) == MODE_STANDBY && x.sb.confirm.kind == CONF_NONE;
+        r.x = 0.0f;
+        r.lever = 0.8f;                                          /* lever forward */
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        uint8_t r_lev = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool st_lev = sb_mode(&x.sb) == MODE_STANDBY && x.sb.confirm.kind == CONF_NONE && x.sb.remote.refused_centre == 2u;
+        r.lever = 0.5f;
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        uint8_t r_ok = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool now = sb_mode(&x.sb) == MODE_REMOTE && x.sb.confirm.kind == CONF_NONE && x.sb.remote.direct == 1u &&
+                   x.sb.remote.state == SB_REMOTE_DRIVING;
+        rj_lever(&x, &r, 1.0f, 1.0f);
+        sbsim_run(&x, x.t + 8000u, rj_hook, &r);
+        float thr = sim_hal_throttle();
+        bool fwd = gear_is(&x.sb.gear, GEAR_F);
+        r.rj_on = false;                                         /* the data stops: 0.3 s rule unchanged */
+        uint32_t t0 = x.t, t_lost = 0u;
+        while (x.t < t0 + 1000u && !t_lost) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);
+            if (x.sb.remote.state == SB_REMOTE_LOST) t_lost = x.t - t0;
+        }
+        /* CREWED: request + onboard CONFIRM as before */
+        static sbsim_t y;
+        static rjsim_t q;
+        rq_boat(&y, &q, 1602u, true);
+        uint8_t c_ask = pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool c_wait = sb_mode(&y.sb) == MODE_STANDBY && y.sb.confirm.kind == CONF_REMOTE;
+        bool c_shore = shore_confirm(&y, &q);
+        bool c_on = onboard_confirm(&y, &q) && sb_mode(&y.sb) == MODE_REMOTE;
+        crew_plug();
+        snprintf(d, sizeof d, "UNCREWED: no shore data %u (14); stick 0.5 %u (8) STANDBY + nothing pending %s; lever 80 %% %u "
+                 "(8) %s; centred %u -> REMOTE at once, no CONFIRM %s; full lever %.1f %% (cap 20) gear F %s; data stop -> "
+                 "LOST after %lu ms; CREWED: asked %u, waits for the onboard CONFIRM %s, shore CONFIRM %s, onboard CONFIRM "
+                 "-> REMOTE %s", r_nodata, r_x, st_x ? "yes" : "NO", r_lev, st_lev ? "yes" : "NO", r_ok, now ? "yes" : "NO",
+                 thr, fwd ? "yes" : "NO", (unsigned long)t_lost, c_ask, c_wait ? "yes" : "NO",
+                 c_shore ? "ACCEPTED" : "nothing", c_on ? "yes" : "NO");
+        test_report("RQ1 UNCREWED REMOTE at once on the request (shore stick centred + lever neutral, else NACK 8); "
+                    "CREWED request + onboard CONFIRM",
+                    r_nodata == PROTO_R_JOY_NOT_READY && r_x == PROTO_R_NOT_CENTERED && st_x &&
+                    r_lev == PROTO_R_NOT_CENTERED && st_lev && r_ok == PROTO_R_OK && now && thr >= 15.0f && thr <= 20.01f &&
+                    fwd && t_lost >= 300u && t_lost <= 400u && c_ask == PROTO_R_OK && c_wait && !c_shore && c_on, d);
+    }
+
+    /* RQ2 UNCREWED MANEUVER at once; REMOTE <-> MANEUVER switched at once (centred); a switch with the lever off
+     * neutral is refused and the driving goes on unchanged */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        rq_boat(&x, &r, 1603u, false);
+        uint8_t a1 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        bool man = sb_mode(&x.sb) == MODE_MANEUVER && x.sb.confirm.kind == CONF_NONE;
+        sbsim_run(&x, x.t + 500u, rj_hook, &r);
+        uint8_t a2 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool rem = sb_mode(&x.sb) == MODE_REMOTE;
+        rj_lever(&x, &r, 0.8f, 1.0f);
+        sbsim_run(&x, x.t + 5000u, rj_hook, &r);
+        float thr0 = sim_hal_throttle();
+        uint8_t a3 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        sbsim_run(&x, x.t + 500u, rj_hook, &r);
+        bool kept = sb_mode(&x.sb) == MODE_REMOTE && x.sb.remote.state == SB_REMOTE_DRIVING && sim_hal_throttle() > 5.0f;
+        rj_lever(&x, &r, 0.5f, 1.0f);
+        sbsim_run(&x, x.t + 3000u, rj_hook, &r);
+        uint8_t a4 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        float thr_max = 0.0f;
+        for (int i = 0; i < 60; i++) { sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r); thr_max = fmaxf(thr_max, sim_hal_throttle()); }
+        bool man2 = sb_mode(&x.sb) == MODE_MANEUVER && thr_max <= 0.01f;
+        uint8_t a5 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);       /* already in it */
+        crew_plug();
+        snprintf(d, sizeof d, "MANEUVER asked %u -> at once %s; REMOTE asked %u -> at once %s; lever 80 %% (%.1f %%), "
+                 "MANEUVER asked %u (8): REMOTE driving on %s; lever neutral, MANEUVER %u -> %s (throttle max %.2f %%); "
+                 "MANEUVER again %u (7)", a1, man ? "yes" : "NO", a2, rem ? "yes" : "NO", thr0, a3, kept ? "yes" : "NO", a4,
+                 man2 ? "MANEUVER, idle" : "NO", thr_max, a5);
+        test_report("RQ2 UNCREWED MANEUVER at once; REMOTE <-> MANEUVER at once when centred, refused (driving on) when not",
+                    a1 == PROTO_R_OK && man && a2 == PROTO_R_OK && rem && thr0 > 10.0f && a3 == PROTO_R_NOT_CENTERED &&
+                    kept && a4 == PROTO_R_OK && man2 && a5 == PROTO_R_WRONG_MODE, d);
+    }
+
+    /* RQ3 there is NO release: the old b1 flag of GW_RJOY and the release command never end REMOTE / MANEUVER;
+     * another mode (here STANDBY from the PC) ends it, idle + neutral first. CREWED: "release" only withdraws a
+     * pending request */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        rq_boat(&x, &r, 1604u, false);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        rj_lever(&x, &r, 1.0f, 1.0f);
+        sbsim_run(&x, x.t + 6000u, rj_hook, &r);
+        float thr0 = sim_hal_throttle();
+        for (int i = 0; i < 10; i++) { rj_send(&r, 2u); sbsim_run(&x, x.t + AP_PERIOD_MS, pi_hook, &r.p); }   /* old station */
+        bool flag = sb_mode(&x.sb) == MODE_REMOTE && x.sb.remote.state == SB_REMOTE_DRIVING;
+        uint8_t c1 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &REL, 1u);
+        sbsim_run(&x, x.t + 150u, rj_hook, &r);
+        uint8_t c2 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &REL, 1u);
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        bool still = sb_mode(&x.sb) == MODE_REMOTE && sim_hal_throttle() >= thr0 - 1.0f && x.sb.remote.release_refused == 2u;
+        uint8_t c3 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_SET_MODE, &STBY, 1u);
+        float t_idle = -1.0f;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 3000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);
+            if (t_idle < 0.0f && sim_hal_throttle() <= 0.5f) t_idle = (x.t - t0) * 0.001f;
+        }
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY && gear_is(&x.sb.gear, GEAR_N);
+        /* MANEUVER: the same */
+        r.lever = 0.5f;
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        sb_alarm_ack(&x.sb);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        bool man = sb_mode(&x.sb) == MODE_MANEUVER;
+        uint8_t c4 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &REL, 1u);
+        bool man_kept = sb_mode(&x.sb) == MODE_MANEUVER;
+        /* CREWED: a pending request withdrawn, the CONFIRM afterwards starts nothing */
+        static sbsim_t y;
+        static rjsim_t q;
+        rq_boat(&y, &q, 1605u, true);
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        uint8_t w = pi_cmd(&y, &q.p, 2u, false, PROTO_T_REMOTE, &REL, 1u);
+        bool gone = y.sb.confirm.kind == CONF_NONE;
+        bool cf = onboard_confirm(&y, &q);
+        crew_plug();
+        snprintf(d, sizeof d, "REMOTE at %.1f %%: old release flag x10 -> still driving %s; release REMOTE %u / MANEUVER %u "
+                 "(7) -> still REMOTE at speed %s; STANDBY from the PC %u -> idle after %.2f s, STANDBY + N %s; MANEUVER %s, "
+                 "release %u (7) -> still MANEUVER %s; CREWED pending request withdrawn %u %s, CONFIRM after it %s",
+                 thr0, flag ? "yes" : "NO", c1, c2, still ? "yes" : "NO", c3, t_idle, sb ? "yes" : "NO", man ? "yes" : "NO",
+                 c4, man_kept ? "yes" : "NO", w, gone ? "yes" : "NO", cf ? "ACCEPTED" : "nothing");
+        test_report("RQ3 no release: the old flag / release command never end REMOTE or MANEUVER; another mode does",
+                    thr0 > 15.0f && flag && c1 == PROTO_R_WRONG_MODE && c2 == PROTO_R_WRONG_MODE && still &&
+                    c3 == PROTO_R_OK && t_idle >= 0.0f && t_idle <= 1.0f && sb && man && c4 == PROTO_R_WRONG_MODE &&
+                    man_kept && w == PROTO_R_OK && gone && !cf && sb_mode(&y.sb) == MODE_STANDBY, d);
+    }
+
+    /* RQ4 REMOTE / MANEUVER -> AUTO straight (the AUTO start rules: request + CONFIRM - UNCREWED on the shore
+     * joystick, centred incl. the lever; CREWED onboard); no steering jump (the outboard estimate kept) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static program_t p;
+        prog_error_t err;
+        uint8_t bad;
+        rq_boat(&x, &r, 1606u, false);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        rj_lever(&x, &r, 1.0f, 1.0f);
+        r.x = 0.25f;                                             /* a little starboard */
+        sbsim_run(&x, x.t + 6000u, rj_hook, &r);
+        r.x = 0.0f;
+        sbsim_run(&x, x.t + 2000u, rj_hook, &r);
+        double hr = x.w.heading_deg * 3.14159265358979 / 180.0;
+        prog_wp_t wp = wp_world(&x, x.w.north_m + 3000.0 * cos(hr), x.w.east_m + 3000.0 * sin(hr), 6.0f, 25.0f,
+                                WP_ACT_STOP);
+        prog_make(&p, &wp, 1, PROG_END_STOP);
+        sb_program_set(&x.sb, &p, &err, &bad);
+        uint8_t as = pi_cmd(&x, &r.p, 2u, false, PROTO_T_AUTO_START, NULL, 0u);
+        bool pend = sb_mode(&x.sb) == MODE_REMOTE && x.sb.confirm.kind == CONF_AUTO_START;
+        bool off = !shore_confirm(&x, &r) && sb_mode(&x.sb) == MODE_REMOTE;      /* lever still forward: refused */
+        rj_lever(&x, &r, 0.5f, 2.0f);
+        (void)pi_cmd(&x, &r.p, 2u, false, PROTO_T_AUTO_START, NULL, 0u);
+        float est0 = x.sb.ap.est_angle;
+        bool cf = shore_confirm(&x, &r);
+        bool in_auto = sb_mode(&x.sb) == MODE_AUTO;
+        float jump = fabsf(x.sb.ap.est_angle - est0);
+        sbsim_run(&x, x.t + 20000u, rj_hook, &r);
+        bool drives = sb_mode(&x.sb) == MODE_AUTO && sim_hal_throttle() > 5.0f && gear_is(&x.sb.gear, GEAR_F);
+        /* MANEUVER -> AUTO */
+        static sbsim_t y;
+        static rjsim_t q;
+        rq_boat(&y, &q, 1607u, false);
+        pi_cmd(&y, &q.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        sbsim_run(&y, y.t + 1000u, rj_hook, &q);
+        prog_wp_t w2 = wp_world(&y, y.w.north_m + 2000.0, y.w.east_m, 6.0f, 25.0f, WP_ACT_STOP);
+        prog_make(&p, &w2, 1, PROG_END_STOP);
+        sb_program_set(&y.sb, &p, &err, &bad);
+        uint8_t as2 = pi_cmd(&y, &q.p, 2u, false, PROTO_T_AUTO_START, NULL, 0u);
+        bool cf2 = shore_confirm(&y, &q) && sb_mode(&y.sb) == MODE_AUTO;
+        /* CREWED REMOTE -> AUTO with the onboard CONFIRM */
+        static sbsim_t z;
+        static rjsim_t u;
+        rq_boat(&z, &u, 1608u, true);
+        pi_cmd(&z, &u.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        onboard_confirm(&z, &u);
+        bool zr = sb_mode(&z.sb) == MODE_REMOTE;
+        prog_wp_t w3 = wp_world(&z, z.w.north_m + 2000.0, z.w.east_m, 6.0f, 25.0f, WP_ACT_STOP);
+        prog_make(&p, &w3, 1, PROG_END_STOP);
+        sb_program_set(&z.sb, &p, &err, &bad);
+        uint8_t as3 = pi_cmd(&z, &u.p, 2u, false, PROTO_T_AUTO_START, NULL, 0u);
+        bool cf3 = onboard_confirm(&z, &u) && sb_mode(&z.sb) == MODE_AUTO;
+        crew_plug();
+        snprintf(d, sizeof d, "UNCREWED REMOTE: AUTO START %u, pending while still REMOTE %s; CONFIRM with the lever forward "
+                 "refused %s; lever neutral + CONFIRM %s -> AUTO %s, outboard estimate jump %.2f deg; 20 s later AUTO "
+                 "driving %s; MANEUVER -> AUTO START %u + CONFIRM %s; CREWED REMOTE %s -> AUTO START %u + onboard CONFIRM %s",
+                 as, pend ? "yes" : "NO", off ? "yes" : "NO", cf ? "yes" : "NO", in_auto ? "yes" : "NO", jump,
+                 drives ? "yes" : "NO", as2, cf2 ? "yes" : "NO", zr ? "yes" : "NO", as3, cf3 ? "yes" : "NO");
+        test_report("RQ4 REMOTE / MANEUVER -> AUTO straight with the AUTO start rules (CONFIRM, centred); no steering jump",
+                    as == PROTO_R_OK && pend && off && cf && in_auto && jump < 1.0f && drives && as2 == PROTO_R_OK && cf2 &&
+                    zr && as3 == PROTO_R_OK && cf3, d);
+    }
+
+    /* RQ5 REMOTE / MANEUVER -> DP straight: only at the modelled idle + gear N + slow (the DP entry rules), then
+     * the CONFIRM; at speed / in gear refused (PRECOND), the driving goes on */
+    {
+        static dpx_t a;
+        bool set = dpx_init(&a, 1609u, false, NULL, true);
+        pi_cmd(&a.x, &a.r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        bool rem = sb_mode(&a.x.sb) == MODE_REMOTE;
+        rj_lever(&a.x, &a.r, 1.0f, 1.0f);
+        dpx_run(&a, 6000u);
+        uint8_t r_fast = dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0);
+        bool on = sb_mode(&a.x.sb) == MODE_REMOTE && a.x.sb.remote.state == SB_REMOTE_DRIVING;
+        rj_lever(&a.x, &a.r, 0.5f, 2.0f);
+        dpx_run(&a, 25000u);                                     /* idle + neutral, the boat slows down */
+        uint8_t r_ok = dpx_cmd(&a, DP_ACT_START, DP_SPOT, 0);
+        bool pend = sb_mode(&a.x.sb) == MODE_REMOTE && a.x.sb.confirm.kind == CONF_DP;
+        bool cf = dpx_confirm(&a);
+        bool dp = sb_mode(&a.x.sb) == MODE_DP && a.x.sb.dp.sub == DP_SPOT;
+        /* MANEUVER in gear: refused; neutral: DP */
+        static dpx_t b;
+        bool set2 = dpx_init(&b, 1610u, false, NULL, true);
+        pi_cmd(&b.x, &b.r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        rj_lever(&b.x, &b.r, 1.0f, 2.0f);
+        dpx_run(&b, 3000u);
+        bool gf = gear_is(&b.x.sb.gear, GEAR_F);
+        uint8_t m_gear = dpx_cmd(&b, DP_ACT_START, DP_SPOT, 0);
+        rj_lever(&b.x, &b.r, 0.5f, 2.0f);
+        dpx_run(&b, 15000u);
+        uint8_t m_ok = dpx_cmd(&b, DP_ACT_START, DP_SPOT, 0);
+        bool cf2 = dpx_confirm(&b) && sb_mode(&b.x.sb) == MODE_DP;
+        crew_plug();
+        snprintf(d, sizeof d, "set up %s / %s; REMOTE %s at speed: DP START %u (6) driving on %s; idle + neutral + slow: %u, "
+                 "pending %s, CONFIRM %s -> DP SPOT %s; MANEUVER gear F %s: DP START %u (6); neutral: %u + CONFIRM -> DP %s",
+                 set ? "ok" : "NO", set2 ? "ok" : "NO", rem ? "yes" : "NO", r_fast, on ? "yes" : "NO", r_ok,
+                 pend ? "yes" : "NO", cf ? "yes" : "NO", dp ? "yes" : "NO", gf ? "yes" : "NO", m_gear, m_ok,
+                 cf2 ? "yes" : "NO");
+        test_report("RQ5 REMOTE / MANEUVER -> DP straight only at idle + neutral + slow, then the CONFIRM",
+                    set && set2 && rem && r_fast == PROTO_R_PRECOND && on && r_ok == PROTO_R_OK && pend && cf && dp && gf &&
+                    m_gear == PROTO_R_PRECOND && m_ok == PROTO_R_OK && cf2, d);
+    }
+
+    /* RQ6 UNCREWED: refused while the generator holds the throttle open in neutral (CPU1 allows that only in
+     * STANDBY / DP); the new mode replaces a pending request; only the HELM station */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        rq_boat(&x, &r, 1611u, false);
+        uint8_t keep = x.sb.gen.state;
+        x.sb.gen.state = GEN_RUNNING;
+        sb_result_t g1 = sb_remote_request(&x.sb, 2u);
+        sb_result_t g2 = sb_maneuver_request(&x.sb, 2u);
+        bool st = sb_mode(&x.sb) == MODE_STANDBY;
+        x.sb.gen.state = keep;
+        /* a joystick found on board (UNCREWED): driving would be a profile fault at once - refused up front */
+        uint32_t pk = x.sb.probe_ok_ms;
+        x.sb.probe_ok_ms = x.sb.cfg.profile_ok_ms;
+        sb_result_t j1 = sb_remote_request(&x.sb, 2u);
+        x.sb.probe_ok_ms = pk;
+        st = st && sb_mode(&x.sb) == MODE_STANDBY;
+        /* a pending power raise is replaced by the mode change */
+        uint16_t code = 0u;
+        (void)sb_power_code(&x.sb, 0u, &code);
+        sb_result_t pr = sb_power_raise(&x.sb, 0u, code);
+        bool pend = x.sb.confirm.kind == CONF_RAISE_FWD;
+        sb_result_t ok = sb_remote_request(&x.sb, 2u);
+        bool repl = sb_mode(&x.sb) == MODE_REMOTE && x.sb.confirm.kind == CONF_NONE;
+        bool cf = shore_confirm(&x, &r);                          /* nothing pending: no raise */
+        bool lim = x.sb.plim.fwd_pct == 30.0f;
+        /* a station that is not HELM: refused by link.c */
+        uint8_t nh = pi_cmd(&x, &r.p, 3u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        crew_plug();
+        snprintf(d, sizeof d, "generator running: REMOTE %d / MANEUVER %d (%d = PRECOND); onboard joystick found %d; "
+                 "still STANDBY %s; power raise "
+                 "pending %d %s, REMOTE %d -> REMOTE + request replaced %s, shore CONFIRM afterwards %s, limit 30 %% %s; "
+                 "station 3 (not HELM) MANEUVER %u (21)", (int)g1, (int)g2, (int)SB_ERR_PRECOND, (int)j1,
+                 st ? "yes" : "NO",
+                 (int)pr, pend ? "yes" : "NO", (int)ok, repl ? "yes" : "NO", cf ? "ACCEPTED" : "nothing",
+                 lim ? "yes" : "NO", nh);
+        test_report("RQ6 UNCREWED direct entry refused while the generator runs / a joystick is found on board; replaces a pending request; HELM only",
+                    g1 == SB_ERR_PRECOND && g2 == SB_ERR_PRECOND && j1 == SB_ERR_PRECOND && st && pr == SB_OK && pend && ok == SB_OK && repl &&
+                    !cf && lim && nh == PROTO_R_NOT_HELM, d);
+    }
+}
+
 void sb_tests(void)
 {
     can_tests();
@@ -15886,6 +16218,7 @@ void sb_tests(void)
     helm_tests();
     remote_tests();
     crew_tests();
+    remote_direct_tests();
     lostlink_tests();
     link_time_tests();
     save_tests();

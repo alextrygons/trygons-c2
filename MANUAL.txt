@@ -330,11 +330,14 @@ WHAT TO TRY
        shows the ship line; COLLISION RISK starts a SAVE. In HDG LOCK the
        driver screen PROPOSES a heading: ACCEPT / REJECT.
   6. Remote driving with a USB joystick
-       Plug the joystick into this PC. Screen 2, Remote tab: Find
-       joysticks, choose it, Take HELM, REQUEST REMOTE DRIVING, then ON BOARD:
-       CONFIRM within 10 s. Mode REMOTE MANUAL: the shore joystick drives
-       (max 20 % / 5 %). Any move of the ON BOARD stick or lever, or STANDBY,
-       takes control back at once; RELEASE ends it.
+       Plug the joystick into this PC. Tools, Remote tab: Find joysticks,
+       choose it, Take HELM, then REMOTE MANUAL on screen 1; ON BOARD:
+       CONFIRM within 10 s (an UNCREWED boat - no CONFIRM: it starts at
+       once, only with the shore stick centred and the lever at neutral).
+       Mode REMOTE MANUAL: the shore joystick drives (max 20 % / 5 %). Any
+       move of the ON BOARD stick or lever, or STANDBY, takes control back
+       at once. There is no RELEASE: to end it, choose another mode
+       (STANDBY, AUTO, DP).
   7. The joystick always wins
        During AUTO move the ON BOARD stick X slider or press TAKE: MANUAL at
        once, and an automatic SAVE. Resume the program: AUTO resume (captain)
@@ -521,7 +524,7 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
                 simulator's panel + USB joystick), Program (the route as a
                 table, save / load a file), AIS (details), Plot, Config,
                 Joystick (+ the stick / lever picture), Cameras, Remote (the
-                shore joystick: device, axes, "send joystick", release),
+                shore joystick: device, axes, "send joystick"),
                 Network, System, Bench, Engine (IGNITION / START / SHUTOFF,
                 RESTART - chapter 7, ENGINE CONTROLS), Sound, Events
                 Where this manual says "... tab" (Program tab, Joystick tab,
@@ -671,11 +674,17 @@ Questions from the captain / the gateway appear in the middle (ACCEPT /
   REJECT, a countdown; no answer = rejected) - as before (part I).
 MANUAL DRIVING STARTS HERE (the captain with the manual licence; also a
   single operator with the licence): REMOTE MANUAL and MANEUVER (the buttons
-  above the bottom-left row) ask the boat; then press CONFIRM on the joystick
-  (on board, or the shore joystick on an UNCREWED boat). While one runs:
-  RELEASE. A copilot doesn't get these buttons. The gateway (licence,
-  captain) and the AURIX (CONFIRM, priorities, watchdogs) check every request
-  again.
+  above the bottom-left row). UNCREWED boat: ONE press - it starts at once,
+  only with the shore stick centred and the TWCS lever at neutral at that
+  moment (otherwise "centre the joystick", nothing starts). CREWED boat
+  (someone on board): the person on board presses CONFIRM on the onboard
+  joystick within 10 s. The one that runs is lit; the other one switches
+  straight over (REMOTE MANUAL <-> MANEUVER). THERE IS NO RELEASE (an
+  accidental release in the middle of a manoeuvre is dangerous): to end it,
+  choose another mode - STANDBY (always), AUTO or DP (screen 2, with their
+  own start rules). A copilot doesn't get these buttons. The gateway
+  (licence, captain) and the AURIX (centred stick / CONFIRM, priorities,
+  watchdogs) check every request again.
 MANEUVER (trailer, ramp, dock): instead of the CDI three boxes REV | N | FWD -
   the lit one = the gear engaged now, the outlined one = what your lever
   asks for. The throttle stays at idle.
@@ -942,10 +951,14 @@ MODES
      HDG_LOCK      yes     yes      -     yes    no      yes     no
      AUTO          yes     yes     yes     -     no      yes     no
      TRAINING      yes     yes     no     no      -      no      no
-     REMOTE        yes     yes     no     no     no       -      yes
-     MANEUVER      yes     yes     no     no     no      yes      -
+     REMOTE        yes     yes     no     yes    no       -      yes
+     MANEUVER      yes     yes     no     yes    no      yes      -
   (REMOTE = REMOTE MANUAL, the shore joystick, chapter 9 part D;
-   MANEUVER = steering + gear at idle for the dock / trailer, chapter 7A)
+   MANEUVER = steering + gear at idle for the dock / trailer, chapter 7A;
+   REMOTE / MANEUVER -> AUTO with the AUTO start rules (request + CONFIRM),
+   -> DP (not in the table above) only at idle, in neutral and slow, with
+   the DP start rules; -> HDG LOCK directly: not yet - the owner decides
+   first (STANDBY, then HDG LOCK))
   Extra rules: only the joystick enters MANUAL; MANUAL is left only with
   the stick centred; AUTO needs compass, GPS, a valid program and CONFIRM;
   TRAINING only from STANDBY by the PC; nothing but STANDBY until the
@@ -1011,9 +1024,12 @@ THE PROFILE (decided by the boat, never by a PC)
              within 6 s). The onboard joystick is ignored completely: no
              MANUAL, no CONFIRM, no joystick buttons; the panel HDG LOCK and
              course buttons do nothing (nobody is on board). Every CONFIRM
-             (power raise, AUTO start / resume, REMOTE MANUAL, MANEUVER) is
-             pressed on the shore captain's joystick instead: same rules -
-             stick centred, within 10 s, only for a pending request.
+             (power raise, AUTO start / resume / return, DP) is pressed on
+             the shore captain's joystick instead: same rules - stick
+             centred, within 10 s, only for a pending request. REMOTE
+             MANUAL and MANEUVER need NO CONFIRM here (owner 2026-10-31):
+             the captain's choice starts them at once, only with the shore
+             stick centred and the lever at neutral at that moment.
   Both profiles: the STANDBY button and the emergency stop always work.
   The profile is shown on every screen and in the log.
   It changes only in STANDBY with the boat stopped, and only one way:
@@ -1036,12 +1052,15 @@ MANEUVER (trailer, ramp, dock approach) - captain only
     REVERSE. The throttle is ALWAYS at idle - no rpm control at all.
   * Gear changes go idle -> neutral -> gear, as always.
   * Start: button MANEUVER (DOCK / TRAILER) on the captain's station (it
-    must hold HELM and the user must hold a manual licence), then CONFIRM
-    within 10 s (onboard joystick when CREWED, the captain's joystick when
-    UNCREWED). From STANDBY or REMOTE MANUAL.
-  * Ends: RELEASE, STANDBY button, the onboard joystick (CREWED), any
-    fault, HELM lost. Joystick data old / missing: neutral + course held,
-    STANDBY after 5 s (as REMOTE MANUAL).
+    must hold HELM and the user must hold a manual licence). CREWED: then
+    CONFIRM on the onboard joystick within 10 s. UNCREWED: at once, only
+    with the captain's stick centred and the lever at neutral. From
+    STANDBY or REMOTE MANUAL (and back to REMOTE MANUAL the same way).
+  * Ends: another mode chosen (STANDBY, AUTO, DP - there is no RELEASE),
+    STANDBY button, the onboard joystick (CREWED), any fault, HELM lost.
+    Joystick data old / missing: neutral + course held, STANDBY after 5 s
+    (as REMOTE MANUAL). While the generator runs (chapter 7, GENERATOR)
+    an UNCREWED start is refused: switch it off first.
   * Not in the FIRST TEST build.
 
 LOST LINK (UNCREWED ONLY) AND THE ENGINE KILL
@@ -1550,7 +1569,8 @@ DP MODE (SPOT / JOG / CRUISE / TRIP) - the thrusters hold or move the boat
   * Start: the HELM station asks (PROTO_T_DP; a copilot's request needs the
     captain's ACCEPT) and the joystick CONFIRM follows within 10 s (CREWED:
     the onboard joystick; UNCREWED: the shore captain's joystick). Only from
-    STANDBY (not stopping), outputs armed, GPS trusted, compass working,
+    STANDBY (not stopping) - or straight from REMOTE MANUAL / MANEUVER
+    (owner 2026-10-31) - outputs armed, GPS trusted, compass working,
     slower than 2 kn, both thrusters set up by the boat file and not hot,
     the outboard at idle (the modelled throttle servo position) and in
     neutral - only a running generator may carry its neutral throttle into
@@ -1895,14 +1915,20 @@ D. REMOTE JOYSTICK DRIVING FROM A SHORE PC (mode REMOTE MANUAL)
        device + axis for steering and for the throttle, "invert" if it goes
        the wrong way, "lever" for the TWCS. Save.
     2. Take HELM. Tick "send my joystick (30 Hz)".
-    3. REQUEST REMOTE DRIVING. The boat shows "PRESS JOYSTICK CONFIRM -
-       REMOTE DRIVING": the person ON BOARD presses CONFIRM within 10 s.
-       The mode becomes REMOTE MANUAL (blue).
+    3. REMOTE MANUAL on screen 1. CREWED: the boat shows "PRESS JOYSTICK
+       CONFIRM - REMOTE DRIVING": the person ON BOARD presses CONFIRM
+       within 10 s. UNCREWED (owner 2026-10-31): no CONFIRM - it starts at
+       once, only with your stick centred and the lever at neutral (else
+       "centre the joystick" and nothing starts). The mode becomes REMOTE
+       MANUAL (blue).
     4. Drive: stick X = outboard angle (rate-limited, 20 deg/s), lever =
        throttle with the neutral zone and THROTTLE PICKUP like on board
        (chapter 8). Maximum 20 % forward / 5 % reverse (and never above the
        power limit). Slamming reduction applies (part H).
-    5. RELEASE when done (-> STANDBY: idle, neutral, steering off).
+    5. When done: choose another mode - STANDBY (idle, neutral, steering
+       off), AUTO or DP (their start rules), or MANEUVER. There is NO
+       RELEASE (not on the screen, not on the joystick): a release by
+       accident in the middle of a manoeuvre would be dangerous.
   STANDBY button while driving remotely: the shore stick is ignored at
   once; the gyro holds the course until idle + neutral, then steering off.
   It also ends when: the onboard joystick moves or TAKE is pressed
@@ -1912,8 +1938,8 @@ D. REMOTE JOYSTICK DRIVING FROM A SHORE PC (mode REMOTE MANUAL)
   LINK PROBLEMS: joystick data older than 0.3 s, a gap of 0.3 s, or a link
   latency over 0.4 s -> at once: throttle to idle, neutral, the outboard
   holds the heading on the gyro, alarm REMOTE DRIVING LINK LOST. After 5 s
-  without the link: STANDBY. It NEVER starts again by itself - the request
-  + CONFIRM on board is needed again.
+  without the link: STANDBY. It NEVER starts again by itself - a new
+  REMOTE MANUAL (CREWED: + CONFIRM on board) is needed.
   The joystick packets travel by UDP (signed with a key the gateway gives
   at login): a lost packet is simply replaced by the next one 33 ms later.
   (By TCP, one lost packet would hold everything for 0.2-0.6 s and the boat

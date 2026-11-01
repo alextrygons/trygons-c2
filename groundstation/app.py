@@ -731,7 +731,8 @@ class App:
         self.root.after(100, self.cam_tick)
 
     def _build_remote(self, rt):
-        """REMOTE MANUAL from this (shore) PC: its USB joystick, request / release."""
+        """REMOTE MANUAL from this (shore) PC: its USB joystick (the requests are on screen 1; there is no
+        release - step 13q2: another mode is chosen instead)."""
         self.sj = shorejoy.Joysticks()
         self.sj_cfg = shorejoy.load_config()
         self.rsender = None
@@ -759,11 +760,8 @@ class App:
         self.sj_lever = tk.BooleanVar(value=self.sj_cfg["thr"].get("lever", True))
         chk(m, "cap.sj_lever", variable=self.sj_lever, font=F_TXT, bg=C["bg"]).grid(row=1, column=5, padx=8)
         btn(m, "cap.save_settings", self.remote_save_cfg, font=F_TXT).grid(row=0, column=5, sticky="w", padx=8)
-        b = tk.Frame(rt, bg=C["bg"])
-        b.pack(fill="x", pady=6)
-        # REMOTE MANUAL / MANEUVER are asked for on screen 1 (the captain with the manual licence, CLAUDE.md D);
-        # releasing is always possible here
-        btn(b, "cap.remote_release", self.remote_release, kind="no", font=F_BIG).pack(side="left", padx=4)
+        # REMOTE MANUAL / MANEUVER are chosen on screen 1 (the captain with the manual licence, CLAUDE.md D);
+        # step 13q2 (owner 2026-10-31): no RELEASE button - driving ends by choosing another mode
         lbl(rt, "cap.remote_help", font=F_TXT, bg=C["bg"], wraplength=900, justify="left").pack(anchor="w", padx=6)
         self.remote_lbl = tk.Label(rt, text="-", font=F_MONO, bg=C["bg"], justify="left", anchor="w")
         self.remote_lbl.pack(fill="x", padx=6, pady=4)
@@ -791,15 +789,6 @@ class App:
         elif self.rsender:
             self.rsender.stop()
             self.rsender = None
-
-    def remote_release(self):
-        if self.t and self.t.get("mode") == proto.MODE_MANEUVER:
-            self.cmd(proto.T_MANEUVER, proto.p_remote(1), TE("what.maneuver_release"))
-        else:
-            self.cmd(proto.T_REMOTE, proto.p_remote(1), TE("what.remote_release"))
-        if self.rsender and self.link:
-            self.link.send_rjoy({"t": "rjoy", "seq": (self.rsender.seq + 1) & 0xFFFF, "ts": self.link.now(),
-                                 "x": 0.0, "release": True})
 
     def draw_remote(self, d):
         if "remote_state" not in d:
@@ -3946,18 +3935,26 @@ class App:
 
     # --- REMOTE MANUAL / MANEUVER requests (screen 1, or screen 2 in single-operator mode) ----------------------
     def remote_request(self):
-        self.sender_on()
-        self.cmd(proto.T_REMOTE, proto.p_remote(0), TE("what.remote_request"))
+        self._manual_ask(proto.T_REMOTE, TE("what.remote_request"))
 
     def maneuver_request(self):
-        self.sender_on()
-        self.cmd(proto.T_MANEUVER, proto.p_remote(0), TE("what.maneuver_request"))
+        self._manual_ask(proto.T_MANEUVER, TE("what.maneuver_request"))
+
+    def _manual_ask(self, ftype, what):
+        """Step 13q2: an UNCREWED boat starts REMOTE / MANEUVER at once, only with FRESH packets of this station's
+        joystick (centred): a sender just switched on gets 0.4 s to deliver its first packets before the request."""
+        if self.sender_on():
+            self.root.after(400, lambda: self.cmd(ftype, proto.p_remote(0), what))
+        else:
+            self.cmd(ftype, proto.p_remote(0), what)
 
     def sender_on(self):
-        """The shore joystick must be sent for REMOTE / MANEUVER (and for the shore CONFIRM)."""
+        """The shore joystick must be sent for REMOTE / MANEUVER (and for the shore CONFIRM). True = switched on now."""
         if isinstance(self.link, GatewayLink) and not self.rsend_var.get():
             self.rsend_var.set(True)
             self.remote_send_toggle()
+            return bool(self.rsend_var.get())
+        return False
 
     # --- editing on the map: route, geofence, max speed (CLAUDE.md D: the copilot's work) -------------------------
     def set_edit(self, what):

@@ -3143,21 +3143,27 @@ def section_cr():
         alice.result(alice.cmd(proto.T_HELM, proto.p_helm(0)))
         time.sleep(0.5)
         alice.result(alice.cmd(proto.T_ALARM_ACK))
-        r_ask = alice.result(alice.cmd(proto.T_REMOTE, proto.p_remote(0)))
-        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))   # onboard: ignored
-        time.sleep(0.3)
-        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(False, 0.0, 0.0))
-        w.pump(0.5)
+        # step 13q2 (owner 2026-10-31): UNCREWED = one action, REMOTE at once (shore stick centred + lever neutral),
+        # no CONFIRM; an off-centre stick is refused (NACK 8); an old station's "release" never ends it
+        stick["x"] = 0.6
+        time.sleep(0.4)
+        r_off = alice.result(alice.cmd(proto.T_REMOTE, proto.p_remote(0)))
+        w.pump(0.4)
         ignored = w.telem and w.telem["mode"] == proto.MODE_STANDBY
-        stick["confirm"] = True                          # the captain's CONFIRM button
-        time.sleep(0.3)
-        stick["confirm"] = False
+        stick["x"] = 0.0
+        time.sleep(0.4)
+        r_ask = alice.result(alice.cmd(proto.T_REMOTE, proto.p_remote(0)))
         on = w.until(lambda d: d["mode"] == proto.MODE_REMOTE, 3)
-        report("CR3 UNCREWED: the onboard joystick is ignored, the shore captain's CONFIRM (through the gateway) "
-               "starts REMOTE",
-               unc is not None and r_ask == 0 and ignored and on is not None,
-               "profile %s; REMOTE asked %s; onboard CONFIRM: still STANDBY %s; shore CONFIRM -> %s" % (
-                   unc and unc.get("profile_name"), r_ask, ignored, on and on["mode_name"]))
+        stick["release"] = True                          # an old station's release button: dropped
+        time.sleep(0.6)
+        stick["release"] = False
+        w.pump(0.4)
+        kept = w.telem and w.telem["mode"] == proto.MODE_REMOTE
+        report("CR3 UNCREWED: REMOTE at once on the captain's request with the shore stick centred (off centre: NACK "
+               "8, nothing starts); an old \"release\" never ends it (step 13q2)",
+               unc is not None and r_off == 8 and ignored and r_ask == 0 and on is not None and kept,
+               "profile %s; stick off centre %s (8), still STANDBY %s; centred %s -> %s; old release -> still REMOTE "
+               "%s" % (unc and unc.get("profile_name"), r_off, ignored, r_ask, on and on["mode_name"], kept))
         # CR5 the same boat: the captain's station disappears near the shore (no charts on this gateway =
         # no valid shore distance = near) -> STANDBY, idle + neutral, ENGINE KILLED, latched
         snd.stop()

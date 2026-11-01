@@ -919,7 +919,7 @@ def ac22():
         wrong.append("not covered: %s" % miss)
     btn, pan, pages = tour.hud_buttons(), tour.s2_panels(), tour.tools_pages()
     if not {"lang", "night", "declutter", "scale", "ar_menu", "edit", "vision_clear", "remote_req",
-            "maneuver_req", "release"} <= set(btn):
+            "maneuver_req"} <= set(btn) or "release" in btn:          # (13q2: no RELEASE any more)
         wrong.append("the HUD button list reads %s" % btn)
     if not {"status", "alarms", "helm", "link", "control", "traffic", "relays"} <= set(pan):
         wrong.append("the screen-2 panel list reads %s" % pan)

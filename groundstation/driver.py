@@ -489,13 +489,11 @@ class DriverScreen:
         elif act == "vision_clear":
             a.vision_send({"t": "vision_clear"})
         elif act == "remote_req":
-            if a.manual_allowed():
+            if a.manual_allowed() and not (a.t and a.t.get("mode") == proto.MODE_REMOTE):
                 a.remote_request()
         elif act == "maneuver_req":
-            if a.manual_allowed():
+            if a.manual_allowed() and not (a.t and a.t.get("mode") == proto.MODE_MANEUVER):
                 a.maneuver_request()
-        elif act == "release":
-            a.remote_release()
         elif act.startswith("relay:"):
             n = int(act[6:])                    # a relay button (CLAUDE.md O): a request, the AURIX decides
             a.relay_press(n)

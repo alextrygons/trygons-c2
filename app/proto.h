@@ -50,8 +50,10 @@
                                          u8 2, u8 station, u8 local: the holder hands it over in one step */
 #define PROTO_T_GW_STATION    0x34u   /* gateway only: u8 station, u8 event (0 joined, 1 left / lost), u8 local */
 #define PROTO_T_GW_RJOY       0x36u   /* gateway only, 30 Hz, no ACK: remote joystick (link.c gw_rjoy) */
-#define PROTO_T_REMOTE        0x37u   /* u8 0 ask for remote driving (then joystick CONFIRM on board) / 1 release */
-#define PROTO_T_MANEUVER      0x38u   /* u8 0 ask for MANEUVER (captain; then CONFIRM) / 1 release */
+#define PROTO_T_REMOTE        0x37u   /* u8 0 ask for remote driving (CREWED: then the joystick CONFIRM on board;
+                                       * UNCREWED: at once, shore stick centred) / 1 withdraw a
+                                       * pending request (13q2: never ends the driving) */
+#define PROTO_T_MANEUVER      0x38u   /* u8 0 ask for MANEUVER (captain; as T_REMOTE) / 1 withdraw */
 #define PROTO_T_GW_GPS2       0x39u   /* gateway only: i32 lat*1e7, i32 lon*1e7, u16 age ms (second GPS, AIS device) */
 #define PROTO_T_GW_SHORE      0x3Bu   /* gateway only, 1 Hz: u8 flags (b0 near, b1 valid), u16 distance to the shore m */
 #define PROTO_T_GW_NAVREQ     0x3Au   /* gateway only, 2 Hz: navigation request (link.c gw_navreq, smallboat.h SB_NAV_) */
