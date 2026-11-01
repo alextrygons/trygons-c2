@@ -16,6 +16,8 @@ Made from the demo by `python tools/demo_screens.py` on 2026-10-30.
 | [screen2_acked_el.png](screen2_acked_el.png) | step 13m: screen 2 after ACK ALARM - the alarm rows steady (this PC silenced), the boat's ack sent. Made by groundstation/test_screen2.py S16 (TRYGONS_SHOT_DIR) |
 | [screen2_disconnected_el.png](screen2_disconnected_el.png) | step 13m: screen 2 after a disconnect - no old alarm rows, no NO DATA, "not connected" (S16) |
 | [driver_disconnected_el.png](driver_disconnected_el.png) | step 13m: screen 1 with no boat - "not connected" in the mode box instead of the red NO DATA alarm (S16) |
+| [screen2_linktime_el.png](screen2_linktime_el.png) | step 13q1: screen 2 with LINK TIME 30 s - the amber banner "ΧΡΟΝΟΣ ΧΩΡΙΣ ΣΥΝΔΕΣΗ 30 s (ΠΑΡΑΚΑΜΨΗ)" and, in the "Link" panel, the value with - / + (HELM captain only). Made by groundstation/test_screen2.py S17 (TRYGONS_SHOT_DIR) |
+| [driver_linktime_el.png](driver_linktime_el.png) | step 13q1: screen 1 with LINK TIME 30 s - the same banner in the notices (S17) |
 | [screen2_dark_el.png](screen2_dark_el.png) | screen 2 (navigation & control), dark theme, el: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [screen2_light_en.png](screen2_light_en.png) | screen 2 (navigation & control), light theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |
 | [screen2_dark_en.png](screen2_dark_en.png) | screen 2 (navigation & control), dark theme, en: the map with the boat in the centre, the four corner panels, STANDBY, the logo |

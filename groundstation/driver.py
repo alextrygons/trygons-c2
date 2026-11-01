@@ -49,6 +49,7 @@ import theme
 import video
 from i18n import T
 from alerts import can_roles  # noqa: E402  (DroneCAN, 11d)
+from alerts import link_time_text  # noqa: E402  (LINK TIME, step 13q1)
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageTk
@@ -755,6 +756,9 @@ class DriverScreen:
                             "warn"))
             if d.get("profile") == proto.PROFILE_UNCREWED:
                 out.append(("uncrewed", T("drv.uncrewed"), theme.NOTICE["uncrewed"]))
+            lt = link_time_text(d)                      # LINK TIME above 3 s: shown all the time (step 13q1)
+            if lt:
+                out.append(("linktime", lt, "caution"))
             if d["mode"] == proto.MODE_MANEUVER:
                 out.append(("maneuver", T("drv.maneuver"), "caution"))
             if d.get("confirm_kind"):

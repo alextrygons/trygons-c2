@@ -126,7 +126,7 @@ void sb_default_config(sb_config_t *cfg)
     cfg->profile_ok_ms = 200u;
     cfg->profile_detect_ms = 6000u;
     cfg->profile_switch_ms = 10000u;
-    cfg->near_shore_m = 100.0f;                 /* TO CONFIRM */
+    cfg->near_shore_m = 50.0f;                  /* owner 2026-10-31 (was 100) */
     cfg->lostlink_grace_s = 10.0f;              /* TO CONFIRM */
     cfg->shore_max_age_ms = 3000u;
     batt_default_config(&cfg->batt);
@@ -262,6 +262,8 @@ void sb_init(sb_t *s, const sb_config_t *cfg)
         hal_kill_keep_set(false);
         hal_set_engine_kill(false);
     }
+    s->ll.link_time_s = SB_LINK_TIME_MIN_S;     /* LINK TIME: 3 s after every reset (RAM only, step 13q1) */
+    s->ll.limit_s = SB_LINK_TIME_MIN_S;
     engine_init(&s->eng);
     thruster_init(&s->thrust);                  /* no settings = no thruster fitted (the station pushes them) */
     dp_init(&s->dp);
@@ -1246,6 +1248,43 @@ static bool helm_link_ok(const sb_t *s)
     return s->helm >= 2u && s->gw.state == SB_GW_OK;
 }
 
+/* The gateway's report of the HELM station's age (GW_STATUS, step 13q1): 0 = no report for this station (an
+ * older gateway, or the report is still for the previous holder), 1 = heard at *heard, 2 = the gateway says it
+ * is gone / silent 63.75 s or more. */
+static int helm_rep(const sb_t *s, uint32_t *heard)
+{
+    const sb_gw_t *g = &s->gw;
+    if (s->helm < 2u || g->state != SB_GW_OK || g->status_rx_ms == 0u || g->rep_station != s->helm) return 0;
+    if (g->rep_age_ms == SB_GW_AGE_LOST) return 2;
+    *heard = g->status_rx_ms - g->rep_age_ms;
+    return 1;
+}
+
+sb_result_t sb_link_time_set(sb_t *s, uint8_t seconds)
+{
+    if (seconds < SB_LINK_TIME_MIN_S || seconds > SB_LINK_TIME_MAX_S) return SB_ERR_BAD_VALUE;
+    s->ll.link_time_s = seconds;                       /* RAM only: back to 3 s at the next HELM grant / reset */
+    s->ll.lt_sets++;
+    return SB_OK;
+}
+
+void sb_helm_changed(sb_t *s, uint8_t old_holder, uint8_t new_holder, bool voluntary)
+{
+    if (new_holder != SB_HELM_NONE && new_holder != old_holder) {
+        s->ll.link_time_s = SB_LINK_TIME_MIN_S;       /* a HELM change: LINK TIME back to 3 s (owner 2026-10-31) */
+        s->ll.heard_ms = s->now_ms;
+        s->ll.rep = false;
+        s->ll.gave_up = false;
+    } else if (new_holder == SB_HELM_NONE && old_holder != SB_HELM_NONE) {
+        s->ll.gave_up = voluntary;                     /* given up to nobody: no waiting (CLAUDE.md B) */
+    }
+}
+
+uint32_t sb_link_age_ms(const sb_t *s)
+{
+    return s->now_ms - s->ll.heard_ms;
+}
+
 /* Every step, UNCREWED only: link lost -> STANDBY (idle + neutral first);
  * then ENGINE KILL near shore (or without fresh shore info) as soon as idle +
  * neutral, at open sea after lostlink_grace_s unless the link came back. The
@@ -1254,6 +1293,8 @@ static bool helm_link_ok(const sb_t *s)
  * (sb_restart, section N); CREWED never kills. */
 static void lostlink_step(sb_t *s)
 {
+    if (s->ll.state == SB_LL_KILLED || s->profile != SB_PROFILE_UNCREWED)
+        s->ll.limit_s = SB_LINK_TIME_MIN_S;             /* no detection running: nothing in force (TELEM2 S) */
     if (s->ll.state == SB_LL_KILLED) {
         hal_set_engine_kill(true);
         emergency(s);
@@ -1266,10 +1307,31 @@ static void lostlink_step(sb_t *s)
         s->ll.armed = false;
         return;
     }
-    bool ok = helm_link_ok(s);
+    /* LINK TIME (step 13q1): with the gateway's age report the loss counts only once the HELM station has been
+     * silent for the detection time in force (3 s; the captain's LINK TIME at open sea); without the report, or
+     * HELM given up to nobody, at once (the rule before 13q1: the gateway's own drop / GATEWAY LOST decide) */
+    bool link = helm_link_ok(s);
+    uint32_t heard = 0u;
+    int rep = link ? helm_rep(s, &heard) : 0;
+    if (link) {
+        if (rep == 0) {
+            s->ll.heard_ms = s->now_ms;
+            s->ll.rep = false;
+        } else {
+            if (rep == 1 && (int32_t)(heard - s->ll.heard_ms) > 0 && (int32_t)(s->now_ms - heard) >= 0)
+                s->ll.heard_ms = heard;
+            s->ll.rep = true;
+        }
+    }
+    uint32_t age = s->now_ms - s->ll.heard_ms;
+    bool open_sea = !sb_near_shore(s);
+    s->ll.limit_s = (s->ll.rep && open_sea && s->ll.link_time_s > SB_LINK_TIME_MIN_S) ? s->ll.link_time_s
+                                                                                       : (uint8_t)SB_LINK_TIME_MIN_S;
+    bool ok = link && (rep == 0 || (rep == 1 && age < SB_LINK_TIME_MIN_S * 1000u));
+    bool gone = !ok && (!s->ll.rep || s->ll.gave_up || age >= (uint32_t)s->ll.limit_s * 1000u);
     if (ok) s->ll.armed = true;
     if (s->ll.state == SB_LL_OK) {
-        if (!s->ll.armed || ok) return;
+        if (!s->ll.armed || !gone) return;
         s->ll.state = SB_LL_LOST;
         s->ll.lost_ms = s->now_ms;
         s->ll.losses++;

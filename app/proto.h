@@ -36,6 +36,8 @@
 #define PROTO_T_HEARTBEAT     0x01u   /* -                                    */
 #define PROTO_T_SET_MODE      0x10u   /* u8 mode: only STANDBY and TRAINING   */
 #define PROTO_T_HEADING_ADJ   0x12u   /* i8 delta: -10, -1, +1, +10 (HDG_LOCK) */
+#define PROTO_T_LINK_TIME     0x14u   /* u8 seconds 3..60: LINK TIME = the UNCREWED link-loss detection time (HELM gateway
+                                         station, the captain; RAM only, back to 3 s at a HELM grant / reset; step 13q1) */
 #define PROTO_T_SEA_STATE     0x15u   /* u8 1..5                              */
 #define PROTO_T_TRAINING      0x16u   /* u8 0 start / 1 accept / 2 reject, f32 full angle (0 = unknown) */
 #define PROTO_T_PARAM_GET     0x17u   /* u8 id                                */

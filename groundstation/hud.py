@@ -451,6 +451,8 @@ class Hud:
                           self.pal["caution"], False))
         parts.append((T("hud.power", f="%.0f" % d["power_fwd"]), self.pal["caution"] if d.get("power_raised")
                       else self.pal["main"], False))
+        if d.get("lt_override"):                   # LINK TIME above 3 s: shown all the time (step 13q1, owner C1)
+            parts.append((T("lt.banner", s=d.get("lt_set")), self.pal["caution"], False))
         # lay the parts out in one line, centred; shrink together if the line is too long
         size = self.f_comm
         while True:

@@ -1228,6 +1228,85 @@ def shot(win, path):
     win.attributes("-topmost", False)
 
 
+def s17_link_time(rig):
+    """Step 13q1 (owner 2026-10-31 C1): LINK TIME. Screen 2's control panel (geofence line) shows the AURIX's value with - / + for the
+    HELM captain only (one step of alerts.LINK_TIME_STEPS, sent as PROTO_T_LINK_TIME); above 3 s the banner
+    "LINK TIME 30 s (OVERRIDE)" on screen 2 AND screen 1 all the time, with "not in force now: near the shore" when
+    the boat says so; at 3 s no banner. The S1 matrix still fits (the panel line is there in every S1 case)."""
+    ap = rig.ap
+    rig.gateway_like(True)
+    rig.size(1366, 768, 1.0)
+    ap.gw_status = fake_gw(ap.t)
+    sent = []
+    orig_cmd = ap.cmd
+    ap.cmd = lambda f, p, w: sent.append((f, p, w))
+    rig.extra.update(helm=3, profile=proto.PROFILE_UNCREWED, ll_state=0, near_shore=False, coast_valid=True,
+                     coast_dist_m=800, lt_set=30, lt_flags=0, lt_override=True, lt_in_force=True, lt_limit_s=30,
+                     lt_silent_s=None, lt_reported=True)
+    try:
+        rig.pump(0.6)
+        ap.render(force=True)
+        ban = [b[1] for b in ap.banner_list() if b[0] == "linktime"]
+        lab = [o["s"] for o in ap.ov.ops if o.get("tag") == "lt_label"]
+        btn = {o["tag"]: o for o in ap.ov.ops if o.get("k") == "button" and o.get("tag") in ("lt_up", "lt_down")}
+
+        def click(tag):
+            r = btn[tag]["r"]
+            e = type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})()
+            ap.cv_press(e)
+            ap.cv_release(e)
+            out = list(sent)
+            sent.clear()
+            return out
+        up = click("lt_up") if "lt_up" in btn else []
+        down = click("lt_down") if "lt_down" in btn else []
+        cap_ok = ban == [A.T("lt.banner", s=30)] and ap.banner_on("linktime") and lab == [A.T("lt.label", s=30)] and             all(btn[k]["enabled"] for k in btn) and len(btn) == 2 and             [(f, p) for f, p, _w in up] == [(proto.T_LINK_TIME, proto.p_link_time(45))] and             [(f, p) for f, p, _w in down] == [(proto.T_LINK_TIME, proto.p_link_time(20))]
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots:
+            shot(ap.root, os.path.join(shots, "screen2_linktime_el.png"))
+        # screen 1: the same banner in the notices
+        ap.open_driver()
+        dv = ap.driver
+        dv.w.geometry("1600x900+0+0")
+        rig.pump(1.5)
+        s1 = [n[1] for n in dv.notices(ap.t, ap.gw_status) if n[0] == "linktime"]
+        s1_box = any(o.get("s") == A.T("lt.banner", s=30) for o in dv.ops)     # the mode box line too
+        if shots and dv.last_frame is not None:
+            dv.last_frame.save(os.path.join(shots, "driver_linktime_el.png"))
+        # near the shore: still shown, "not in force now"
+        rig.extra.update(near_shore=True, coast_dist_m=40, lt_in_force=False, lt_flags=2, lt_limit_s=3)
+        rig.pump(0.6)
+        ap.render(force=True)
+        near = [b[1] for b in ap.banner_list() if b[0] == "linktime"]
+        near_ok = near == [A.T("lt.banner_off", s=30, why=A.T("lt.why_near"))]
+        # the copilot: shown, but - / + disabled (the gateway refuses it too: 118)
+        ap.gw_status = fake_gw(ap.t, captain=False)
+        ap.render(force=True)
+        cop = [o for o in ap.ov.ops if o.get("k") == "button" and o.get("tag") in ("lt_up", "lt_down")]
+        cop_ok = len(cop) == 2 and not any(o["enabled"] for o in cop)
+        # 3 s: no banner on either screen
+        ap.gw_status = fake_gw(ap.t)
+        rig.extra.update(lt_set=3, lt_override=False, lt_in_force=False, lt_flags=2, near_shore=False)
+        rig.pump(0.6)
+        ap.render(force=True)
+        none_ok = not ap.banner_on("linktime") and not [n for n in dv.notices(ap.t, ap.gw_status) if n[0] == "linktime"]
+        ap.close_driver()
+        fits = not layout_problems(ap)
+    finally:
+        ap.cmd = orig_cmd
+        for k in ("lt_set", "lt_flags", "lt_override", "lt_in_force", "lt_limit_s", "lt_silent_s", "lt_reported",
+                  "helm", "coast_valid", "coast_dist_m"):
+            rig.extra.pop(k, None)
+        rig.extra.update(profile=proto.PROFILE_CREWED, near_shore=False)
+    report("S17 LINK TIME (13q1): screen 2 control panel value + - / + for the HELM captain (one step, PROTO_T_LINK_TIME), "
+           "the copilot's disabled; above 3 s 'LINK TIME 30 s (OVERRIDE)' on screens 2 + 1, 'not in force' near the "
+           "shore; none at 3 s",
+           cap_ok and s1 == [A.T("lt.banner", s=30)] and s1_box and near_ok and cop_ok and none_ok and fits,
+           "banner %s, label %s, buttons %s, + sent %s, - sent %s; screen 1 %s (mode box %s); near %s; copilot disabled %s; at 3 s "
+           "none %s; fits %s" % (ban, lab, sorted(btn), [p for _f, p, _w in up], [p for _f, p, _w in down], s1, s1_box, near,
+                                 cop_ok, none_ok, fits))
+
+
 def s16_silence(rig):
     """Step 13m (owner 2026-10-31 B): an alarm this station could not silence. Screen 2's ACK ALARM silences THIS
     PC first (MASTER lamps + the repeating sound) and then sends the boat's ack; Space / A on screen 2 = the same
@@ -1339,7 +1418,7 @@ def main():
     rig = Rig()
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
-                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s16_silence):
+                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s16_silence):
             try:
                 fn(rig)
             except Exception as e:

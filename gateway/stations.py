@@ -79,7 +79,7 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               121: "route not checked by the gateway",
               116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
               117: "only the captain (or a station on the boat) holds HELM",
-              118: "captain only: REMOTE MANUAL / MANEUVER / engine START",
+              118: "captain only: REMOTE MANUAL / MANEUVER / engine START / LINK TIME",
               119: "no captain holds HELM"}
 # copilot commands that never wait for the captain's ACCEPT (CLAUDE.md D: STANDBY, hold, AUTO return - the AURIX
 # still wants the joystick CONFIRM for the return; DP STOP: proto.is_driving_cmd)
@@ -107,6 +107,7 @@ class Station:
         self.offsets = collections.deque(maxlen=15)
         self.pings = {}                     # id -> sent time
         self.last_pong = time.time()
+        self.last_rx = self.last_pong       # any message from it (step 13q1: the HELM station's age for the AURIX)
         self.tokens = 0.0
         self.refill = time.time()
         self.rtokens = 60.0                 # read-only requests (parameter / program reads): their own allowance
@@ -312,6 +313,7 @@ class StationServer:
 
     # --- messages ----------------------------------------------------------------------
     def _handle(self, st, m):
+        st.last_rx = time.time()
         t = m.get("t")
         if t == "gpong":
             sent = st.pings.pop(m.get("id"), None)
@@ -432,6 +434,10 @@ class StationServer:
         if ftype == proto.T_RESTART and payload[:1] == bytes([proto.ENG_CRANK]) and st.crew != "captain" \
                 and not st.single_op:
             return self.refuse(st, seq, ftype, 118)          # hold-to-crank (engine START): the captain only (section N)
+        if ftype == proto.T_LINK_TIME and st.crew != "captain" and not st.single_op:
+            return self.refuse(st, seq, ftype, 118)          # LINK TIME: the HELM captain only (step 13q1)
+        if ftype == proto.T_LINK_TIME:
+            self.gw.audit("link_time", station=st.id, user=st.user, seconds=payload[0] if payload else None)
         if ftype == proto.T_HELM and payload[:1] == bytes([0]) and st.crew != "captain" and not st.local \
                 and not st.single_op and not (st.licence and not self.gw.telem2.get("helm")):
             # a copilot never takes HELM from the captain (that is the role swap); a licensed user may take a
@@ -709,6 +715,25 @@ class StationServer:
         for st in list(self.stations.values()):
             st.send(msg)
 
+    def lost_for(self, st):
+        """Seconds without an answer before a station is dropped: lost_s; the HELM station is kept at least 2 s
+        longer than the AURIX's LINK TIME (step 13q1: the boat decides the lost link, the captain keeps HELM
+        through a short outage within it). UNCREWED only: CREWED keeps its REMOTE LINK LOST after lost_s."""
+        t2 = self.gw.telem2 or {}
+        if t2.get("helm") == st.id and t2.get("lt_set") and t2.get("profile") == proto.PROFILE_UNCREWED:
+            return max(self.lost_s, float(t2["lt_set"]) + 2.0)
+        return self.lost_s
+
+    def helm_age(self):
+        """(HELM station id, seconds since this gateway last heard it) for GW_STATUS (step 13q1); (0, 0) when the
+        HELM is not a gateway station; age None = the HELM station is not connected here."""
+        h = (self.gw.telem2 or {}).get("helm")
+        if not h or h < 2:
+            return 0, 0
+        st = self.stations.get(h)
+        return h, (None if st is None or st.closed else
+                   max(0.0, time.time() - max(st.last_pong, getattr(st, "last_rx", st.last_pong))))
+
     def helm_name(self, helm):
         if helm in (None, 0):
             return "nobody"
@@ -724,8 +749,9 @@ class StationServer:
         saver = self.gw.data_saver() if hasattr(self.gw, "data_saver") else False
         self.ping_id += 1
         for st in list(self.stations.values()):
-            if now - st.last_pong > self.lost_s:
-                self._drop(st, "lost (no answer for %.0f s)" % self.lost_s)
+            lost_s = self.lost_for(st)
+            if now - st.last_pong > lost_s:
+                self._drop(st, "lost (no answer for %.0f s)" % lost_s)
                 continue
             st.pings[self.ping_id] = now
             if len(st.pings) > 20:

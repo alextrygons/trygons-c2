@@ -63,7 +63,8 @@ static bool     s_rb_can;
  * groups appended after them: O (engine controls, 12 bytes) + N (DP thrusters 10 bytes + the DP state
  * T2_DP bytes) + P (DroneCAN summary T2_P bytes) = T2_N */
 #define T2_DP 12u
-#define T2_R 3u                 /* group R (CONFIRM_ONLY, academy practical test, step 21) after Q */
+#define T2_S 2u                 /* group S (LINK TIME, step 13q1) after R: the last group */
+#define T2_R (3u + T2_S)        /* group R (CONFIRM_ONLY, academy practical test, step 21) after Q */
 #define T2_Q (17u + T2_R)       /* group Q (steering position servo + throttle model, step 11e) after P */
 #define T2_P (6u + T2_Q)        /* group P (DroneCAN summary, step 11d) after N: its offset from the end */
 #define T2_N (10u + T2_DP + T2_P)
@@ -5082,6 +5083,10 @@ typedef struct {
     int32_t    ev_restart_a;
     uint32_t   ev_restart_t;
     uint32_t   ev_reset_t;      /* first RESTART event with action 2 (reset coming) */
+    uint8_t    rep_st;          /* GW_STATUS bytes 10-11 (step 13q1): the HELM station whose age is reported (0 none) */
+    bool       rep_silent;      /* ... it stopped answering the gateway at rep_silent_t */
+    uint32_t   rep_silent_t;
+    bool       rep_gone;        /* ... the gateway reports it gone (255) */
 } pisim_t;
 
 static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
@@ -5158,6 +5163,11 @@ static void pi_hook(sbsim_t *x, void *ctx)
         p->next_status = x->t + 1000u;
         uint8_t pl[12] = { 1u, p->flags, 1u, 1u };
         memcpy(&pl[4], &p->last_seq, 4);
+        if (p->rep_st) {                            /* the HELM station's age as the gateway measures it */
+            uint32_t age = 500u + (p->rep_silent ? x->t - p->rep_silent_t : 0u);    /* pongs ~0.5 s old */
+            pl[10] = p->rep_st;
+            pl[11] = p->rep_gone ? 255u : (uint8_t)(age / 250u > 254u ? 254u : age / 250u);
+        }
         uint8_t fr[PROTO_MAX_FRAME];
         size_t n = proto_encode(fr, PROTO_T_GW_STATUS, 0u, pl, sizeof pl);
         sim_hal_gw_rx_push(fr, (uint32_t)n);
@@ -6397,6 +6407,286 @@ static void lostlink_tests(void)
     snprintf(d, sizeof d, "%d kills in LL1-LL6: every one with the throttle at idle and the gear in neutral %s",
              kills, idle_neutral_ok ? "yes" : "NO");
     test_report("LL7 every engine kill only after idle + neutral", kills >= 6 && idle_neutral_ok, d);
+}
+
+/* ------------------------------- LINK TIME (step 13q1, owner 2026-10-31) -- */
+
+/* An UNCREWED boat at dist_m from the shore (GW_SHORE), station 2 holding HELM with the gateway's age report,
+ * the shore joystick sending, optionally in AUTO towards a waypoint 3 km north at 6 kn. True if ready. */
+static bool lt_boat(sbsim_t *x, llsim_t *l, uint32_t seed, uint16_t dist_m, bool in_auto)
+{
+    const uint8_t TAKE = 0u;
+    static program_t p;
+    prog_error_t err;
+    uint8_t bad;
+    memset(l, 0, sizeof *l);
+    crew_init(x, &l->r, seed, false, NULL);
+    l->r.p.shore_on = true;
+    l->r.p.shore_flags = (uint8_t)(SB_SHORE_VALID | (dist_m <= 50u ? SB_SHORE_NEAR : 0u));
+    l->r.p.shore_m = dist_m;
+    l->r.p.rep_st = 2u;
+    pi_cmd(x, &l->r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+    l->r.rj_on = true;
+    sbsim_run(x, x->t + 1500u, ll_hook, l);
+    sb_alarm_ack(&x->sb);
+    if (!in_auto) return sb_mode(&x->sb) == MODE_STANDBY && x->sb.ll.armed && x->sb.ll.rep;
+    prog_wp_t w = wp_world(x, x->w.north_m + 3000.0, x->w.east_m, 6.0f, 25.0f, WP_ACT_STOP);
+    prog_make(&p, &w, 1, PROG_END_STOP);
+    sb_program_set(&x->sb, &p, &err, &bad);
+    if (sb_auto_start(&x->sb) != SB_OK || !shore_confirm(x, &l->r)) return false;
+    sbsim_run(x, x->t + 8000u, ll_hook, l);
+    return sb_mode(&x->sb) == MODE_AUTO && x->sb.ll.armed && x->sb.ll.rep && sim_hal_throttle() > 5.0f;
+}
+
+/* the HELM station stops answering (internet gone): no joystick packets, the gateway's age grows */
+static void lt_silence(sbsim_t *x, llsim_t *l)
+{
+    l->r.rj_on = false;
+    l->r.p.rep_silent = true;
+    l->r.p.rep_silent_t = x->t;
+}
+
+static void lt_back(llsim_t *l)
+{
+    l->r.rj_on = true;
+    l->r.p.rep_silent = false;
+}
+
+/* run until the lost link (or `until`): the time of the loss after t0 (s, -1 = none) */
+static float lt_run_to_loss(sbsim_t *x, llsim_t *l, uint32_t t0, uint32_t until)
+{
+    while (x->t < until) {
+        sbsim_run(x, x->t + AP_PERIOD_MS, ll_hook, l);
+        if (x->sb.ll.state != SB_LL_OK) return (x->t - t0) * 0.001f;
+    }
+    return -1.0f;
+}
+
+static uint8_t lt_set(sbsim_t *x, llsim_t *l, uint8_t st, uint8_t sec)
+{
+    return pi_cmd(x, &l->r.p, st, false, PROTO_T_LINK_TIME, &sec, 1u);
+}
+
+static void link_time_tests(void)
+{
+    char d[900];
+    const uint8_t TAKE = 0u, ASK = 0u, RELEASE = 1u;
+    printf("\n=== LINK TIME (step 13q1): the UNCREWED link-loss detection time ===\n");
+    bool safe_kills = true;
+    int kills = 0;
+
+    /* LT1 default 3 s with the gateway's report: the station silent -> LOST ~3 s after it was last heard
+     * (not the gateway's 5 s drop), kill 10 s later at open sea (unchanged), only after idle + neutral */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        bool ok = lt_boat(&x, &l, 1401u, 800u, false);
+        uint32_t t0 = x.t;
+        lt_silence(&x, &l);
+        float t_lost = lt_run_to_loss(&x, &l, t0, t0 + 8000u);
+        sbsim_run(&x, t0 + 16000u, ll_hook, &l);
+        float t_kill = l.killed ? (l.t_kill - t0) * 0.001f : -1.0f;
+        bool safe = l.killed && l.thr_at_kill <= 1.0f && l.gear_at_kill == x.sb.cfg.gear.pwm_n_us;
+        safe_kills &= safe; kills += l.killed;
+        snprintf(d, sizeof d, "ready %s (LINK TIME %u s, gateway report %s); HELM station silent: LINK LOST after %.2f s "
+                 "(heard 0.5 s before), kill after %.2f s (lost + %.2f s, grace 10 s), idle + neutral %s",
+                 ok ? "yes" : "NO", x.sb.ll.link_time_s, x.sb.ll.rep ? "yes" : "NO", t_lost, t_kill,
+                 t_kill - t_lost, safe ? "yes" : "NO");
+        test_report("LT1 LINK TIME default 3 s: silent HELM station -> LINK LOST ~3 s after last heard, kill 10 s later",
+                    ok && x.sb.ll.link_time_s == 3u && t_lost >= 2.3f && t_lost <= 2.8f && t_kill - t_lost >= 9.9f &&
+                    t_kill - t_lost <= 10.3f && safe, d);
+    }
+
+    /* LT2 LINK TIME 30 s at open sea in AUTO: the boat keeps its route while silent < 30 s; then STANDBY, idle +
+     * neutral, alarm, kill 10 s later = max total LINK TIME + 10 s */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        bool ok = lt_boat(&x, &l, 1402u, 800u, true);
+        uint8_t r = lt_set(&x, &l, 2u, 30u);
+        uint32_t t0 = x.t;
+        lt_silence(&x, &l);
+        bool kept = true;
+        while (x.t < t0 + 28000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, ll_hook, &l);
+            if (sb_mode(&x.sb) != MODE_AUTO || x.sb.ll.state != SB_LL_OK) kept = false;
+        }
+        float spd = x.w.speed_kn;
+        float t_lost = lt_run_to_loss(&x, &l, t0, t0 + 35000u);
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY && (x.sb.alarm_bits & SB_ALM_LINK_LOST);
+        sbsim_run(&x, t0 + 45000u, ll_hook, &l);
+        float t_kill = l.killed ? (l.t_kill - t0) * 0.001f : -1.0f;
+        bool safe = l.killed && l.thr_at_kill <= 1.0f && l.gear_at_kill == x.sb.cfg.gear.pwm_n_us;
+        safe_kills &= safe; kills += l.killed;
+        snprintf(d, sizeof d, "AUTO %s, LINK TIME 30 s %u; silent: still AUTO + no LINK LOST for 28 s %s (%.1f kn); "
+                 "LINK LOST after %.2f s, STANDBY + alarm %s; kill after %.2f s (<= 30 + 10 + 0.5) idle + neutral %s",
+                 ok ? "yes" : "NO", r, kept ? "yes" : "NO", spd, t_lost, sb ? "yes" : "NO", t_kill, safe ? "yes" : "NO");
+        test_report("LT2 LINK TIME 30 s at open sea: AUTO goes on while silent < 30 s, then STANDBY, kill <= 30 + 10 s",
+                    ok && r == PROTO_R_OK && kept && spd > 3.0f && t_lost >= 29.3f && t_lost <= 29.8f && sb &&
+                    t_kill >= t_lost + 9.9f && t_kill <= 40.5f && safe, d);
+    }
+
+    /* LT3 near the shore LINK TIME is not applied: 3 s (also when the boat comes near during the silence) */
+    {
+        static sbsim_t x, y;
+        static llsim_t l, m;
+        bool ok = lt_boat(&x, &l, 1403u, 30u, true);
+        uint8_t r = lt_set(&x, &l, 2u, 30u);
+        uint32_t t0 = x.t;
+        lt_silence(&x, &l);
+        float t_near = lt_run_to_loss(&x, &l, t0, t0 + 8000u);
+        sbsim_run(&x, x.t + 6000u, ll_hook, &l);
+        bool k1 = l.killed;
+        bool safe = l.killed && l.thr_at_kill <= 1.0f && l.gear_at_kill == x.sb.cfg.gear.pwm_n_us;
+        safe_kills &= safe; kills += l.killed;
+        /* open sea at the start, near the shore after 10 s of silence: lost at once then */
+        bool ok2 = lt_boat(&y, &m, 1404u, 800u, true);
+        lt_set(&y, &m, 2u, 30u);
+        uint32_t t1 = y.t;
+        lt_silence(&y, &m);
+        sbsim_run(&y, t1 + 10000u, ll_hook, &m);
+        bool waiting = y.sb.ll.state == SB_LL_OK && sb_mode(&y.sb) == MODE_AUTO;
+        m.r.p.shore_flags = SB_SHORE_VALID | SB_SHORE_NEAR;
+        m.r.p.shore_m = 45u;
+        float t_came = lt_run_to_loss(&y, &m, t1, t1 + 14000u);
+        snprintf(d, sizeof d, "30 m from the shore, LINK TIME 30 s %u: LINK LOST after %.2f s (3 s), kill once idle + neutral "
+                 "%s; open sea %s, 10 s silent still AUTO %s, then 45 m from the shore: LINK LOST at %.2f s",
+                 r, t_near, k1 ? "yes" : "NO", ok2 ? "yes" : "NO", waiting ? "yes" : "NO", t_came);
+        test_report("LT3 near the shore (< 50 m) LINK TIME is not applied: always 3 s, also when coming near",
+                    ok && r == PROTO_R_OK && t_near >= 2.3f && t_near <= 2.8f && k1 && safe && ok2 && waiting &&
+                    t_came >= 10.0f && t_came <= 11.2f, d);
+    }
+
+    /* LT4 the link back within LINK TIME: AUTO never stopped, no LINK LOST, no kill */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        bool ok = lt_boat(&x, &l, 1405u, 800u, true);
+        lt_set(&x, &l, 2u, 30u);
+        uint32_t t0 = x.t;
+        lt_silence(&x, &l);
+        bool kept = true;
+        while (x.t < t0 + 20000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, ll_hook, &l);
+            if (sb_mode(&x.sb) != MODE_AUTO || x.sb.ll.state != SB_LL_OK) kept = false;
+        }
+        lt_back(&l);
+        while (x.t < t0 + 60000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, ll_hook, &l);
+            if (sb_mode(&x.sb) != MODE_AUTO || x.sb.ll.state != SB_LL_OK) kept = false;
+        }
+        snprintf(d, sizeof d, "AUTO %s; 20 s silent, then heard again, 40 s more: AUTO the whole time, no LINK LOST %s, "
+                 "losses %lu, kill %s, LINK TIME still %u s", ok ? "yes" : "NO", kept ? "yes" : "NO",
+                 (unsigned long)x.sb.ll.losses, l.killed ? "YES" : "no", x.sb.ll.link_time_s);
+        test_report("LT4 link back within LINK TIME: the boat goes on, no LINK LOST, no kill",
+                    ok && kept && x.sb.ll.losses == 0u && !l.killed && x.sb.ll.link_time_s == 30u, d);
+    }
+
+    /* LT5 the setting: 3..60 only, only the HELM station through the gateway; back to 3 s at a HELM change
+     * (a role swap, a new take after a drop) and at every AURIX reset */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        static link_t usb;
+        bool ok = lt_boat(&x, &l, 1406u, 800u, false);
+        uint8_t r2 = lt_set(&x, &l, 2u, 2u), r61 = lt_set(&x, &l, 2u, 61u), rn = lt_set(&x, &l, 3u, 20u);
+        link_init(&usb, &x.sb);
+        uint8_t sec = 20u;
+        uint8_t ru = usb_cmd(&x, &usb, PROTO_T_LINK_TIME, &sec, 1u);
+        uint8_t r60 = lt_set(&x, &l, 2u, 60u);
+        uint8_t v60 = x.sb.ll.link_time_s;
+        uint8_t swap[3] = { 2u, 3u, 0u };
+        pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_HELM, swap, 3u);           /* role swap: HELM to station 3 */
+        uint8_t v_swap = x.sb.ll.link_time_s;
+        pi_cmd(&x, &l.r.p, 3u, false, PROTO_T_HELM, &RELEASE, 1u);
+        pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        lt_set(&x, &l, 2u, 45u);
+        pi_station_left(2u);                                               /* dropped ... */
+        sbsim_run(&x, x.t + 500u, ll_hook, &l);
+        uint8_t v_drop = x.sb.ll.link_time_s;                              /* (the outage keeps its time) */
+        pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);           /* ... and back: a new take */
+        uint8_t v_take = x.sb.ll.link_time_s;
+        lt_set(&x, &l, 2u, 45u);
+        sim_hal_chip_reset(HAL_RESET_SYSTEM);
+        sb_init(&x.sb, &x.cfg);
+        uint8_t v_wdt = x.sb.ll.link_time_s;
+        usb_cmd(&x, &usb, PROTO_T_HELM, &TAKE, 1u);                        /* the USB laptop holds HELM: on board */
+        uint8_t ru2 = usb_cmd(&x, &usb, PROTO_T_LINK_TIME, &sec, 1u);
+        snprintf(d, sizeof d, "ready %s; 2 s -> %u, 61 s -> %u (3 = out of range), not HELM -> %u (21), USB laptop -> %u "
+                 "(21 / 5); 60 s -> %u = %u; role swap -> %u s; dropped -> %u s (kept for the outage), taken again -> %u s; "
+                 "watchdog reset -> %u s; the USB laptop holding HELM -> %u (5)", ok ? "yes" : "NO", r2, r61, rn, ru, r60, v60,
+                 v_swap, v_drop, v_take, v_wdt, ru2);
+        test_report("LT5 LINK TIME 3..60 s from the HELM station only; back to 3 s at a HELM change / take and a reset",
+                    ok && r2 == PROTO_R_BAD_VALUE && r61 == PROTO_R_BAD_VALUE && rn == PROTO_R_NOT_HELM &&
+                    (ru == PROTO_R_NOT_ALLOWED || ru == PROTO_R_NOT_HELM) && r60 == PROTO_R_OK && v60 == 60u && v_swap == 3u && v_drop == 45u &&
+                    v_take == 3u && v_wdt == 3u && ru2 == PROTO_R_NOT_ALLOWED && x.sb.ll.link_time_s == 3u, d);
+    }
+
+    /* LT6 LINK TIME 30 s never delays: HELM given up to nobody (lost at once), the gateway lost (3 s: no shore
+     * information = near), an older gateway without the report (the station's drop = lost at once) */
+    {
+        char t[700] = "";
+        int good = 0;
+        for (int k = 0; k < 3; k++) {
+            static sbsim_t x;
+            static llsim_t l;
+            bool ok = lt_boat(&x, &l, 1407u + (uint32_t)k, 800u, k != 0);
+            uint8_t r = lt_set(&x, &l, 2u, 30u);
+            uint32_t t0 = x.t;
+            if (k == 0) {
+                pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_HELM, &RELEASE, 1u);     /* given up */
+                t0 = x.t - 200u;
+            } else if (k == 1) {
+                l.r.p.pi_on = false;                                            /* the whole gateway quiet */
+                l.r.p.shore_on = false;
+                l.r.rj_on = false;
+            } else {
+                l.r.p.rep_st = 0u;                                              /* an older gateway: no report */
+                sbsim_run(&x, x.t + 1500u, ll_hook, &l);
+                t0 = x.t;
+                l.r.rj_on = false;
+                pi_station_left(2u);
+            }
+            float tl = x.sb.ll.state != SB_LL_OK ? (x.t - t0) * 0.001f : lt_run_to_loss(&x, &l, t0, t0 + 10000u);
+            float lim = k == 1 ? 3.5f : 0.4f;
+            good += ok && r == PROTO_R_OK && tl >= 0.0f && tl <= lim;
+            snprintf(t + strlen(t), sizeof t - strlen(t), "%s%s: LINK LOST after %.2f s (<= %.1f)", k ? "; " : "",
+                     k == 0 ? "HELM given up" : k == 1 ? "gateway lost" : "no age report + station dropped", tl, lim);
+        }
+        test_report("LT6 LINK TIME never delays a given-up HELM, a lost gateway or a link without the gateway's report",
+                    good == 3, t);
+    }
+
+    /* LT7 REMOTE MANUAL keeps its 0.3 s data freshness with LINK TIME 30 s: neutral at once, STANDBY after 5 s,
+     * LINK LOST only after 30 s (CREWED: never - LL5) */
+    {
+        static sbsim_t x;
+        static llsim_t l;
+        bool ok = lt_boat(&x, &l, 1410u, 800u, false);
+        uint8_t r = lt_set(&x, &l, 2u, 30u);
+        pi_cmd(&x, &l.r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        shore_confirm(&x, &l.r);
+        rj_lever(&x, &l.r, 1.0f, 1.0f);
+        sbsim_run(&x, x.t + 5000u, ll_hook, &l);
+        bool drv = sb_mode(&x.sb) == MODE_REMOTE && sim_hal_throttle() > 10.0f;
+        uint32_t t0 = x.t;
+        lt_silence(&x, &l);
+        float t_idle = -1.0f, t_sb = -1.0f;
+        while (x.t < t0 + 8000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, ll_hook, &l);
+            if (t_idle < 0.0f && x.sb.remote.state == SB_REMOTE_LOST) t_idle = (x.t - t0) * 0.001f;
+            if (t_sb < 0.0f && sb_mode(&x.sb) == MODE_STANDBY) t_sb = (x.t - t0) * 0.001f;
+        }
+        float t_lost = lt_run_to_loss(&x, &l, t0, t0 + 35000u);
+        snprintf(d, sizeof d, "REMOTE %s, LINK TIME 30 s %u; silent: remote data LOST (idle + neutral) after %.2f s, "
+                 "STANDBY after %.2f s, LINK LOST after %.2f s", drv && ok ? "yes" : "NO", r, t_idle, t_sb, t_lost);
+        test_report("LT7 REMOTE MANUAL data freshness unchanged with LINK TIME 30 s (0.3 s -> neutral, 5 s -> STANDBY)",
+                    ok && drv && r == PROTO_R_OK && t_idle > 0.0f && t_idle <= 0.5f && t_sb >= 5.0f && t_sb <= 6.0f &&
+                    t_lost >= 29.3f && t_lost <= 30.2f, d);
+    }
+
+    snprintf(d, sizeof d, "%d kills in LT1-LT3: every one at idle + neutral %s", kills, safe_kills ? "yes" : "NO");
+    test_report("LT8 every LINK TIME engine kill only after idle + neutral", kills == 3 && safe_kills, d);
 }
 
 /* ------------------------------------------ video SAVE requests (section F) -- */
@@ -8206,6 +8496,7 @@ void sb_gateway_tests(void)
     remote_tests();
     crew_tests();
     lostlink_tests();
+    link_time_tests();
     save_tests();
     ais_tests();
     nav_tests();
@@ -14254,7 +14545,7 @@ static bool co_same(const cosnap_t *a, const cosnap_t *b)
 static void co_t2(const pcsim_t *p, uint8_t *state, uint16_t *token)
 {
     *state = p->t2_len >= T2_R ? p->t2[p->t2_len - T2_R] : 0xFFu;
-    *token = p->t2_len >= T2_R ? (uint16_t)(p->t2[p->t2_len - 2u] | (p->t2[p->t2_len - 1u] << 8)) : 0u;
+    *token = p->t2_len >= T2_R ? (uint16_t)(p->t2[p->t2_len - T2_R + 1u] | (p->t2[p->t2_len - T2_R + 2u] << 8)) : 0u;
 }
 
 static void confirm_only_tests(void)
@@ -15596,6 +15887,7 @@ void sb_tests(void)
     remote_tests();
     crew_tests();
     lostlink_tests();
+    link_time_tests();
     save_tests();
     ais_tests();
     nav_tests();

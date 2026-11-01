@@ -54,7 +54,8 @@ static const link_param_info_t s_params[P_COUNT] = {
     { "thr_dn_pc_s",    20.0f,  200.0f },     /* throttle DOWN rate (50 %/s; step 11e: emergencies = idle at once, no
                                                  rate; replaces stop_rate_pc_s) - limits TO CONFIRM C21 */
     { "nav_max_dev",    30.0f,  180.0f },     /* avoidance heading: max deg off the leg track (150) */
-    { "near_shore_m",   20.0f, 2000.0f },     /* UNCREWED lost link: closer = engine kill at once (100, TO CONFIRM) */
+    { "near_shore_m",   50.0f, 2000.0f },     /* UNCREWED lost link: closer = engine kill at once + no LINK TIME (50 = also the
+                                                 lowest: owner 2026-10-31 "< 50 m: always 3 s") */
     { "lostlink_grc_s",  0.0f,  120.0f },     /* UNCREWED lost link, open sea: kill after this (10, TO CONFIRM) */
     { "batt_low_v",     10.0f,   13.5f },     /* LOW BATTERY below this for 60 s (11.8 V, TO CONFIRM; advisory) */
     { "gen_max_pct",     0.0f,   30.0f },     /* generator: throttle cap in neutral (25, TO CONFIRM; 0 = disabled; boat file) */
@@ -437,6 +438,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_RESTART:      return 1;
     case PROTO_T_DP:           return 4;
     case PROTO_T_CONFIRM_ONLY: return 2;
+    case PROTO_T_LINK_TIME:    return 1;
     default:                   return -1;
     }
 }
@@ -534,6 +536,13 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
          * CONFIRM; NOTHING changes on the boat (sb_confirm_only), the answer goes back in TELEM2 group R */
         uint16_t token = proto_rd_u16(&r);
         return sb_result_to_proto(sb_confirm_only(s, s->helm, token));
+    }
+    case PROTO_T_LINK_TIME: {
+        /* LINK TIME (step 13q1, owner 2026-10-31): the HELM captain's link-loss detection time, 3..60 s, RAM only;
+         * only a gateway station (the USB laptop is on board) */
+        uint8_t sec = proto_rd_u8(&r);
+        if (s->helm < 2u) return PROTO_R_NOT_ALLOWED;
+        return sb_result_to_proto(sb_link_time_set(s, sec));
     }
     case PROTO_T_RELAY: {
         uint8_t n = proto_rd_u8(&r), act = proto_rd_u8(&r);
@@ -796,11 +805,13 @@ static bool read_only(uint8_t type)
            type == PROTO_T_JOY_RAW_GET;
 }
 
-static void helm_set(sb_t *s, uint8_t holder, bool local)
+static void helm_set(sb_t *s, uint8_t holder, bool local, bool voluntary)
 {
+    uint8_t old = s->helm;
     s->helm = holder;
     s->helm_local = local;
     s->helm_changes++;
+    sb_helm_changed(s, old, holder, voluntary);     /* LINK TIME back to 3 s on a grant (step 13q1) */
 }
 
 /* HELM take (0) / release (1) / hand over (2, payload u8 2, u8 station, u8
@@ -813,7 +824,7 @@ static uint8_t helm_cmd(sb_t *s, uint8_t station, bool local, uint8_t action, ui
     if (action == 2u) {
         if (s->helm != station) return PROTO_R_NOT_HELM;
         if (to < 2u || to == 0xFFu || station < 2u) return PROTO_R_BAD_VALUE;
-        helm_set(s, to, to_local);
+        helm_set(s, to, to_local, true);
         logcore0_helm(s->now_ms, station, 5u, 0u, to);
         return PROTO_R_OK;
     }
@@ -823,7 +834,7 @@ static uint8_t helm_cmd(sb_t *s, uint8_t station, bool local, uint8_t action, ui
             return PROTO_R_HELM_TAKEN;
         }
         if (s->helm != station) {
-            helm_set(s, station, local);
+            helm_set(s, station, local, true);
             if (local) s->alarm_bits &= ~SB_ALM_REMOTE_LINK;
         }
         logcore0_helm(s->now_ms, station, 0u, 0u, station);
@@ -831,7 +842,7 @@ static uint8_t helm_cmd(sb_t *s, uint8_t station, bool local, uint8_t action, ui
     }
     if (action == 1u) {
         if (s->helm != station) return PROTO_R_NOT_HELM;
-        helm_set(s, SB_HELM_NONE, false);
+        helm_set(s, SB_HELM_NONE, false, true);
         logcore0_helm(s->now_ms, station, 1u, 0u, SB_HELM_NONE);
         return PROTO_R_OK;
     }
@@ -844,7 +855,7 @@ static void helm_lost(sb_t *s, uint8_t station, uint8_t action)
 {
     if (s->helm != station || station == SB_HELM_NONE) return;
     bool remote = !s->helm_local;
-    helm_set(s, SB_HELM_NONE, false);
+    helm_set(s, SB_HELM_NONE, false, false);
     logcore0_helm(s->now_ms, station, action, 0u, SB_HELM_NONE);
     if (remote) {
         s->alarm = true;
@@ -888,7 +899,7 @@ static void command(link_t *l, sb_t *s, const proto_frame_t *f, uint8_t station,
         r = PROTO_R_BAD_LENGTH;
     } else {                                                /* want == -2: variable length, checked inside */
         if (!read_only(f->type) && s->helm == SB_HELM_NONE && station == SB_HELM_USB) {
-            helm_set(s, SB_HELM_USB, true);             /* the USB laptop takes a free HELM by itself */
+            helm_set(s, SB_HELM_USB, true, true);             /* the USB laptop takes a free HELM by itself */
             logcore0_helm(s->now_ms, station, 3u, 0u, station);
         }
         r = (read_only(f->type) || s->helm == station) ? do_command(l, s, f) : PROTO_R_NOT_HELM;
@@ -1040,6 +1051,9 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      u16 boot number of the TRAINING (0 none)
  *   R: CONFIRM_ONLY (academy practical test, step 21): u8 state (SB_CO_: 0 never asked, 1 pending, 2 confirmed on
  *      the onboard joystick, 3 late, 4 cancelled) | u16 token (the station's number of the question)
+ *   S: LINK TIME (step 13q1): u8 the captain's setting s (3..60; above 3 = OVERRIDE) | u8 flags: b0 the gateway
+ *      reports the HELM station's age, b1 the setting is NOT in force now (near shore / no report: 3 s),
+ *      b2..b7 the HELM station silent for (whole s, 0..62; 63 = not counting: CREWED, not armed, already lost)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1242,6 +1256,14 @@ static void telemetry2(link_t *l, sb_t *s)
     /* R: CONFIRM_ONLY (the academy practical test): changes nothing on the boat, only its answer is shown */
     proto_wr_u8(&w, s->conf_only.state);
     proto_wr_u16(&w, s->conf_only.token);
+    /* S: LINK TIME (step 13q1; TELEM2 had 2 bytes left) */
+    {
+        uint32_t sil = sb_link_age_ms(s) / 1000u;
+        bool counting = s->profile == SB_PROFILE_UNCREWED && s->ll.armed && s->ll.state == SB_LL_OK;
+        proto_wr_u8(&w, s->ll.link_time_s);
+        proto_wr_u8(&w, (uint8_t)((s->ll.rep ? 1u : 0u) | (s->ll.limit_s < s->ll.link_time_s ? 2u : 0u) |
+                                  ((counting ? (sil > 62u ? 62u : sil) : 63u) << 2)));
+    }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);
     else l->telem_overflows++;
@@ -1350,7 +1372,9 @@ static void bench_diag(link_t *l, sb_t *s)
 
 /* GW_STATUS from the Pi (1 Hz, also its heartbeat), 12 bytes:
  *   u8 version | u8 flags (SB_GWF_) | u8 channel | u8 stations |
- *   u32 last log record the Pi has | u16 log gaps | u16 reserved */
+ *   u32 last log record the Pi has | u16 log gaps | u8 HELM station id (0 = not reported) |
+ *   u8 that station's age in 0.25 s (time since the gateway last heard it; 255 = gone / 63.75 s or more) -
+ *   step 13q1 (was u16 reserved 0): the LINK TIME rule measures the HELM station's silence with it */
 static void gw_status(sb_t *s, const proto_frame_t *f)
 {
     proto_rd_t r;
@@ -1375,6 +1399,10 @@ static void gw_status(sb_t *s, const proto_frame_t *f)
     g->stations = proto_rd_u8(&r);
     g->pi_log_seq = proto_rd_u32(&r);
     g->pi_log_gaps = proto_rd_u16(&r);
+    uint8_t st = proto_rd_u8(&r), age = proto_rd_u8(&r);
+    g->status_rx_ms = s->now_ms ? s->now_ms : 1u;
+    g->rep_station = (st >= 2u && st != 0xFFu) ? st : 0u;
+    g->rep_age_ms = (age == 0xFFu) ? SB_GW_AGE_LOST : (uint32_t)age * 250u;
 }
 
 /* GPS time for the Pi (it sets its clock from it, so logs and video agree),

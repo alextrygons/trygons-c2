@@ -52,6 +52,7 @@ import monitors
 import overlay
 from i18n import T, TE
 from alerts import CAN_ROLE_KEYS, CAN_STATE_KEYS, CAN_WHY_KEYS, can_roles  # noqa: E402  (DroneCAN, 11d)
+from alerts import LINK_TIME_STEPS, link_time_text  # noqa: E402  (LINK TIME, step 13q1)
 from link import Link, list_ports
 from gwclient import GatewayLink
 import shorejoy
@@ -3098,6 +3099,9 @@ class App:
                 out.append(("gen_done", T("gen.done")) + B["pickup"] + (None,))
             if d.get("profile") == proto.PROFILE_UNCREWED:
                 out.append(("uncrewed", T("cap.unc_banner")) + B["uncrewed"] + (None,))
+            lt = link_time_text(d)                      # LINK TIME above 3 s: shown all the time (step 13q1)
+            if lt:
+                out.append(("linktime", lt) + B["pickup"] + (None,))
         av = (self.gw_status or {}).get("avoid") or {}
         sh = av.get("shallow")
         if sh:
@@ -3274,6 +3278,15 @@ class App:
         else:
             ft = T("ov.fence_none")
         p.text(ft, "label", colour=C["note_txt"] if self.fence_dirty else None, tag="fence")
+        if isinstance(self.link, GatewayLink) and d.get("lt_set"):
+            # LINK TIME (step 13q1, owner 2026-10-31): the HELM captain only; the gateway (118) + AURIX check it again
+            p.text(T("lt.label", s=d["lt_set"]), "label", bold=d.get("lt_override", False), tag="lt_label",
+                   colour=C["note_txt"] if d.get("lt_override") else None)
+            can = self.link_time_allowed()
+            p.button("−", lambda: self.link_time_step(-1), enabled=can and d["lt_set"] > proto.LINK_TIME_MIN_S,
+                     tag="lt_down")
+            p.button("+", lambda: self.link_time_step(1), enabled=can and d["lt_set"] < proto.LINK_TIME_MAX_S,
+                     tag="lt_up")
         p.br()
         p.button(T("ov.edit_fence"), lambda: self.set_edit("fence"), on=ed == "fence", tag="edit_fence")
         p.button(T("ov.send_fence"), self.fence_send, "ok", enabled=self.fence_dirty, tag="send_fence")
@@ -3443,6 +3456,23 @@ class App:
                 p.badge(T("ov.engine_killed"), theme.WARN, tag="engine", level="label")
             if ll != 2:
                 p.text(T("ov.engine_run"), "label", colour=C["dim"], tag="engine")
+
+    def link_time_allowed(self):
+        """LINK TIME: only the HELM captain (or a single operator holding HELM) through the gateway."""
+        if not isinstance(self.link, GatewayLink):
+            return False
+        crew = crewui.crew_of(self)[0]
+        me = (self.gw_status or {}).get("you") or (getattr(self.link, "welcome", None) or {}).get("id")
+        return (crew == "captain" or self.single_op) and me is not None and (self.t or {}).get("helm") == me
+
+    def link_time_step(self, direction):
+        """One step of LINK_TIME_STEPS up / down from the AURIX's value (RAM only on the boat)."""
+        cur = (self.t or {}).get("lt_set") or proto.LINK_TIME_MIN_S
+        if direction > 0:
+            nxt = next((v for v in LINK_TIME_STEPS if v > cur), proto.LINK_TIME_MAX_S)
+        else:
+            nxt = next((v for v in reversed(LINK_TIME_STEPS) if v < cur), proto.LINK_TIME_MIN_S)
+        self.cmd(proto.T_LINK_TIME, proto.p_link_time(nxt), TE("what.link_time", s=nxt))
 
     # --- relay buttons (CLAUDE.md O): screen 2 panel "relays" + the HUD box on screen 1 ---------------------
     def relay_groups_known(self):

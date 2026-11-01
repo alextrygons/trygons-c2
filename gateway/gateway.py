@@ -560,9 +560,10 @@ class Gateway:
             self.storage.check()
             self.logs.flush()
             self.station_count = len(self.stations.stations)
+            helm_id, helm_age = self.stations.helm_age()     # the LINK TIME rule on the AURIX (step 13q1)
             self.aurix.send(proto.T_GW_STATUS, proto.p_gw_status(
                 self.status_flags(), self.channel_id, self.station_count,
-                self.logs.last_seq or 0, self.logs.gaps))
+                self.logs.last_seq or 0, self.logs.gaps, helm_id, helm_age))
             self.shore_send()
             self.stations.tick()
             await asyncio.sleep(self.cfg.get("status_s", 1.0))

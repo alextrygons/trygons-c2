@@ -56,6 +56,10 @@ T_DP = 0x2E                # u8 action (0 START, 1 JOG, 2 SPEED, 3 HEADING, 4 ST
 T_CONFIRM_ONLY = 0x30     # u16 token: the academy PRACTICAL TEST's final approval (step 21) - answered only by the
                            # onboard joystick CONFIRM within 10 s, CHANGES NOTHING on the boat (TELEM2 group R);
                            # HELM station, CREWED only, never FIRST TEST, never replaces another pending CONFIRM
+T_LINK_TIME = 0x14         # u8 seconds 3..60: LINK TIME = the UNCREWED link-loss detection time (step 13q1): the
+                           # HELM captain only (gateway: a copilot = 118), RAM only, back to 3 s at a HELM grant / AURIX
+                           # reset; never in force near shore (TELEM2 group S)
+LINK_TIME_MIN_S, LINK_TIME_MAX_S = 3, 60
 T_SIM_JOYSTICK = 0x70   # simulator only
 T_SIM_GPS = 0x71        # simulator only
 T_SIM_BUTTON = 0x72     # simulator only: panel button
@@ -146,6 +150,7 @@ TYPE_NAMES = {
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data", T_CAN_NODES: "CAN nodes",
     T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table", T_RESTART: "engine restart / start",
     T_THRUSTER_CFG: "thruster settings", T_DP: "DP", T_CONFIRM_ONLY: "confirm-only (practical test)",
+    T_LINK_TIME: "LINK TIME",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -179,7 +184,7 @@ RESULTS = {
     100: "VIEWER: watch only", 101: "duplicate command", 102: "command out of order", 103: "stale command",
     104: "timestamp in the future", 105: "rate limited", 106: "AURIX not connected", 107: "wrong session",
     108: "bad command", 116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
-    117: "only the captain (or a station on the boat) holds HELM", 118: "captain only: REMOTE MANUAL / MANEUVER / engine START",
+    117: "only the captain (or a station on the boat) holds HELM", 118: "captain only: REMOTE MANUAL / MANEUVER / engine START / LINK TIME",
     119: "no captain holds HELM",
 }
 
@@ -200,6 +205,11 @@ DP_START, DP_JOG_ACT, DP_SPEED, DP_HEADING, DP_STOP = range(5)
 DP_JOG_AHEAD, DP_JOG_ASTERN, DP_JOG_PORT, DP_JOG_STBD = range(4)
 DP_STOP_WHY = ["-", "DP STOP", "STANDBY (button / e-stop / link lost)", "joystick took over", "GPS lost / suspect",
                "compass lost", "thruster hot / blocked", "off the spot", "fault"]
+
+
+def p_link_time(seconds):
+    """PROTO_T_LINK_TIME payload: the link-loss detection time in whole seconds (3..60)."""
+    return bytes([int(seconds) & 0xFF])
 
 
 def p_confirm_only(token):
@@ -846,10 +856,16 @@ def p_helm_hand(station, local=False):
     return struct.pack("<BBB", 2, station, 1 if local else 0)
 
 
-def p_gw_status(flags, channel=0, stations=0, pi_log_seq=0, pi_log_gaps=0):
-    """GW_STATUS (gateway -> AURIX, 1 Hz): link.c gw_status()."""
-    return struct.pack("<BBBBIHH", 1, flags & 0xFF, channel & 0xFF, stations & 0xFF,
-                       pi_log_seq & 0xFFFFFFFF, min(pi_log_gaps, 0xFFFF), 0)
+def p_gw_status(flags, channel=0, stations=0, pi_log_seq=0, pi_log_gaps=0, helm_station=0, helm_age_s=None):
+    """GW_STATUS (gateway -> AURIX, 1 Hz): link.c gw_status(). helm_station / helm_age_s (step 13q1): the HELM
+    station and the time since the gateway last heard it (None = gone); station 0 = not reported."""
+    if not (2 <= int(helm_station or 0) <= 254):
+        st, age = 0, 0
+    else:
+        st = int(helm_station)
+        age = 255 if helm_age_s is None else max(0, min(255, int(float(helm_age_s) / 0.25)))
+    return struct.pack("<BBBBIHBB", 1, flags & 0xFF, channel & 0xFF, stations & 0xFF,
+                       pi_log_seq & 0xFFFFFFFF, min(pi_log_gaps, 0xFFFF), st, age)
 
 
 def decode_time(payload: bytes) -> dict:
@@ -903,6 +919,9 @@ _T2_GROUPS = [
                                          "thr_travel10 sv_train_boot".split()),
     # group R, CONFIRM_ONLY (academy practical test, step 21): the answer only - it changes nothing on the boat
     (struct.Struct("<BH"), "co_state co_token".split()),
+    # group S, LINK TIME (step 13q1): the captain's setting + flags (b0 age reported by the gateway, b1 not in force
+    # now: near shore / no report, b2..b7 HELM station silent for whole s, 63 = not counting)
+    (struct.Struct("<BB"), "lt_set lt_flags".split()),
 ]
 # app/steermodel.h SM_RESET_: why the steering model went back to the TRAINING values (TELEM2 Q, log event 30)
 SM_RESET_WHY = ["-", "model residual too large", "an adapted value reached its bound", "compass / gyro / GPS doubt",
@@ -983,6 +1002,14 @@ def decode_telem2(payload: bytes) -> dict:
         d["ll_left_s"] = d["ll_left10"] / 10.0
         d["coast_valid"] = bool(d["ll_flags"] & 0x20)
         d["coast_dist_m"] = None if d["coast_m"] >= 0xFFFE else d["coast_m"]
+    if "lt_set" in d:
+        f = d["lt_flags"]
+        d["lt_reported"] = bool(f & 1)                  # the gateway reports the HELM station's age (else the old rule)
+        d["lt_override"] = d["lt_set"] > LINK_TIME_MIN_S  # LINK TIME above 3 s: shown "LINK TIME 30 s (OVERRIDE)"
+        d["lt_in_force"] = d["lt_override"] and not (f & 2)   # false near shore / without the report: 3 s
+        d["lt_limit_s"] = d["lt_set"] if d["lt_in_force"] else LINK_TIME_MIN_S
+        sil = f >> 2
+        d["lt_silent_s"] = None if sil == 63 else sil   # the HELM station silent this long (UNCREWED, armed)
     if "alarm_bits2" in d:
         f = d["batt_flags"]
         d["batt_measured"] = bool(f & 1)                # the bank voltage is measured (fresh)

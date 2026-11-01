@@ -14,6 +14,9 @@
  * rebooted, bus-off, the actuator task stuck); invariants I47-I57.
  * Step 13: AUTO RETURN requests (step 13b: their own draw, part of the NAVREQ slice); invariant I58.
  * Step 13b: invariant I59 (a DP TRIP drives its own copy of the stored program, also after an AUTO RETURN).
+ * Step 13q1: LINK TIME (the UNCREWED link-loss detection time): the gateway reports the HELM station's age in
+ * 3 of 4 episodes; its own draw (part of the gateway-fuzz slice) sets the LINK TIME, silences the HELM station
+ * or brings it back; invariants I60-I62.
  * A failing episode is replayed with fewer events until the shortest
  * schedule that still fails remains (the "minimal reproduction").
  *
@@ -73,7 +76,7 @@ typedef enum {
     E_GW, E_NAVREQ, E_FUZZ_USB, E_FUZZ_GW,
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
-    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN, E_PC_CONFONLY,
+    E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN, E_PC_CONFONLY, E_LINK,
     E_COUNT
 } ev_kind_t;
 
@@ -93,7 +96,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "DP (thruster settings / START SPOT, CRUISE, TRIP / JOG / SPEED / HEADING / STOP; a current)",
     "DroneCAN (a servo node lost / silent / rebooted, bus-off, the actuator task stuck; back after a while)",
     "PC AUTO return (the program backwards to waypoint 1; then the CONFIRM)",
-    "PC CONFIRM_ONLY (academy practical test: a question for the onboard CONFIRM that changes nothing)"
+    "PC CONFIRM_ONLY (academy practical test: a question for the onboard CONFIRM that changes nothing)",
+    "LINK TIME (the captain sets 1..70 s / the HELM station goes silent / is heard again / open sea)"
 };
 
 typedef struct {
@@ -199,6 +203,9 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         if (k == E_NAVREQ && e->b >= 850) e->kind = E_PC_RETURN;
         /* step 21: some power-raise draws ask a CONFIRM_ONLY instead (the academy practical test's question) */
         if (k == E_PC_RAISE && e->c >= 900) e->kind = E_PC_CONFONLY;
+        /* step 13q1: some gateway-fuzz draws are LINK TIME events (CAN episodes take c < 450 for E_CAN) */
+        if (k == E_FUZZ_GW && e->c >= 860) e->kind = E_LINK;
+        if (k == E_GW && e->b >= 700) e->kind = E_LINK;                   /* (and some gateway-status draws) */
         s->on[s->n] = true;
         s->n++;
         /* DP: mostly a START (centre the stick, STANDBY, let the boat slow down first) + the CONFIRM */
@@ -360,9 +367,35 @@ typedef struct {
     /* step 13k (W44; review c162aad LOW-3): a YOUNG board - rebooted at the scenario's start, the silence begins
      * w42_young ms later (so a reboot while away does not send the uptime back: only the clock test sees it) */
     uint32_t    w42_young_t;
+    /* step 13q1: LINK TIME - the gateway reports the HELM station's age (GW_STATUS bytes 10-11) in this episode */
+    bool        rep_on;
+    bool        helm_silent;        /* the HELM station stopped answering at silent_t */
+    uint32_t    silent_t;
+    uint32_t    heard_t;            /* the storm's view: the HELM station last heard (its pong ~0.5 s old) */
+    uint8_t     lt_expect;          /* the LINK TIME the AURIX should hold (3 after a boot / a HELM grant) */
+    bool        rep_since_grant;    /* a GW_STATUS with the report went out since the last HELM grant */
+    uint32_t    far_since;          /* open sea (fresh far GW_SHORE, gateway talking) since (0 = not) */
+    uint32_t    shore_tx_t;         /* the last GW_SHORE pushed */
+    uint8_t     shore_tx_mode;      /* ... and what it said (shore_mode changes reach the AURIX only with the next push) */
+    uint32_t    fuzz_link_t;        /* a CRC-valid random GW_STATUS / GW_CMD / HELM / GW_STATION frame (I60-I62 wait) */
 } sim_t;
 
 static sim_t S;
+
+/* step 13q1: HELM to `to` like link.c helm_set (a grant = LINK TIME back to 3 s, the station counts as heard) */
+static void st_helm(sb_t *s, uint8_t to)
+{
+    uint8_t old = s->helm;
+    s->helm = to;
+    s->helm_local = false;
+    sb_helm_changed(s, old, to, false);
+    if (to != SB_HELM_NONE && to != old) {
+        S.lt_expect = SB_LINK_TIME_MIN_S;
+        S.heard_t = S.t;
+        S.rep_since_grant = false;
+    }
+    if (to != SB_HELM_NONE) S.helm_silent = false;              /* it talks: its command came through */
+}
 static bool s_log;              /* soak: core 0 log producer + core 2 logger (SD card in test_results/soak_sd) */
 static logger_t s_lg;
 static uint32_t s_ctrl_max_us, s_ctrl_n;
@@ -394,10 +427,13 @@ static void boot(void)
     S.next_ctrl = S.t;
     S.last_kick = S.t;
     S.boots++;
+    S.lt_expect = SB_LINK_TIME_MIN_S;   /* LINK TIME: 3 s after every reset (step 13q1) */
+    S.helm_silent = false;
+    S.heard_t = S.t;
+    S.rep_since_grant = false;
     if (S.uncrewed) {                   /* the shore captain holds HELM, its joystick sends (gateway) */
         S.rem_station = 2u;
-        S.sb.helm = 2u;
-        S.sb.helm_local = false;
+        st_helm(&S.sb, 2u);
         S.rem_stream = true;
         S.rx_x = 0.0f;
         S.rx_lever = 0.5f;
@@ -468,6 +504,7 @@ static void sim_init(const sched_t *sc)
     S.wdt_ms = 100u;
     S.gw_on = true;
     S.shore_mode = (uint8_t)(sc->seed % 4u);
+    S.rep_on = ((sc->seed * 2654435761u) >> 20) % 4u != 0u;     /* step 13q1: 3 of 4 episodes, from the seed only */
     if (s_log) {
         (void)system("mkdir soak_sd 2>nul & del /q soak_sd\\*.TLG 2>nul");
         sim_hal_sd_setup("soak_sd", true, 64000000u, false);
@@ -545,7 +582,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 60
+#define NINV 63
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -602,7 +639,10 @@ static const char *INV_NAMES[NINV] = { "",
     "I56 DroneCAN: no steering frame after a boot until a mode commands steering; worst-case speed while the position is unknown",
     "I57 DroneCAN UNCREWED: any stop condition (trip / frozen core 0 / throttle node lost / kill) -> no dead-man pulse within a monitor period",
     "I58 AUTO RETURN starts only with a fresh CONFIRM that answers its request; the way back = the stored program's waypoints backwards (speed of the leg driven back over, radius, action, final STOP), which it never changes",
-    "I59 a DP TRIP drives its own copy of the STORED program (also after an AUTO RETURN), never past its last waypoint" };
+    "I59 a DP TRIP drives its own copy of the STORED program (also after an AUTO RETURN), never past its last waypoint",
+    "I60 UNCREWED LINK TIME: the lost link comes no later than the detection time in force (3 s; the captain's LINK TIME only at open sea) + 1.5 s after the HELM station was last heard",
+    "I61 UNCREWED LINK TIME: at open sea with the gateway's report the lost link never comes before the captain's LINK TIME (- 1.5 s)",
+    "I62 LINK TIME always 3..60 s, 3 s after every reset and HELM grant, never in force near the shore / without shore information" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -726,6 +766,10 @@ typedef struct {
     bool     thr_node_lost_prev_kill;       /* I55 */
     uint8_t  ll_prev55;
     uint8_t  prof_prev54;
+    uint8_t  ll_prev61;                     /* I61 */
+    uint8_t  helm_prev61;                   /* I62 */
+    uint32_t lt_sets_prev;                  /* I62 */
+    uint32_t near_since61;                  /* I60 */
 } chk_t;
 
 static chk_t C;
@@ -1272,6 +1316,66 @@ static void check_step(void)
         }
     }
 
+    /* I60-I62: LINK TIME (step 13q1) - the storm's own view of the HELM station and the shore */
+    {
+        bool far_now = S.shore_tx_mode == 2u && S.gw_on && s->gw.state == SB_GW_OK && S.shore_tx_t &&
+                       S.t - S.shore_tx_t < 1500u;
+        if (far_now) { if (!S.far_since) S.far_since = S.t ? S.t : 1u; } else S.far_since = 0u;
+        bool helm_changed = s->helm != C.helm_prev61;
+        if (helm_changed && s->helm != SB_HELM_NONE) {             /* a grant (also by a fuzzed frame): heard now */
+            S.heard_t = S.t;
+            S.rep_since_grant = false;
+            /* I62: a HELM grant = LINK TIME 3 s (unless a LINK TIME command came in the same step) */
+            if (s->ll.lt_sets != C.lt_sets_prev) { }
+            else if (s->ll.link_time_s == SB_LINK_TIME_MIN_S) ok(62);
+            else fail(62, "HELM granted to station %.0f, LINK TIME still %.0f s", (double)s->helm, (double)s->ll.link_time_s);
+        }
+        if (s->helm >= 2u && S.gw_on && !S.helm_silent) S.heard_t = S.t - 500u;
+        if (!S.gw_on) S.rep_since_grant = false;      /* the AURIX judges by the report only once one came again */
+        uint32_t silent = S.t - S.heard_t;
+        bool unc = s->profile == SB_PROFILE_UNCREWED && !s->cfg.first_test;
+        bool fuzzed = S.fuzz_link_t && S.t - S.fuzz_link_t < 65000u;      /* a CRC-valid random gateway frame */
+        uint8_t lt = s->ll.link_time_s;
+        /* I62: the setting in range; never in force near the shore / without fresh shore information */
+        if (lt >= SB_LINK_TIME_MIN_S && lt <= SB_LINK_TIME_MAX_S) ok(62);
+        else fail(62, "LINK TIME %.0f s on the AURIX (3..60)%.0f", (double)lt, 0.0);
+        /* (the push is read by the link after the next control step: 100 ms) */
+        bool near_now = S.gw_on && S.shore_tx_t && S.t - S.shore_tx_t < 1500u && S.t - S.shore_tx_t >= 100u &&
+                        (S.shore_tx_mode == 1u || S.shore_tx_mode == 3u);
+        bool none_now = !S.gw_on ? (S.gw_off_t && S.t - S.gw_off_t > 4500u) :
+                        (S.shore_mode == 0u && (!S.shore_tx_t || S.t - S.shore_tx_t > s->cfg.shore_max_age_ms + 1500u));
+        if (unc && s->ll.limit_s > SB_LINK_TIME_MIN_S && !fuzzed) {
+            if (near_now || none_now) fail(62, "LINK TIME %.0f s in force near the shore / without shore info%.0f",
+                                           (double)s->ll.limit_s, 0.0);
+            else ok(62);
+        }
+        if (unc && S.rep_on && S.rep_since_grant && !fuzzed && !forced && s->ll.armed && s->ll.state == SB_LL_OK &&
+            C.ll_prev61 == SB_LL_OK && s->helm != SB_HELM_USB) {
+            /* I60: no later than the time in force (+ 1.5 s for the 1 Hz status and the step) */
+            uint32_t lim = (uint32_t)(lt > SB_LINK_TIME_MIN_S ? lt : SB_LINK_TIME_MIN_S) * 1000u;
+            if (silent > lim + 1500u)
+                fail(60, "the HELM station silent %.1f s, LINK TIME %.0f s - no lost link", silent * 0.001, lt);
+            else ok(60);
+            if (silent > SB_LINK_TIME_MIN_S * 1000u + 1500u && (near_now || none_now) && !S.far_since &&
+                C.near_since61 && S.t - C.near_since61 > 1500u)
+                fail(60, "near the shore: the HELM station silent %.1f s - no lost link after 3 s%.0f", silent * 0.001, 0.0);
+        }
+        if (near_now || none_now) { if (!C.near_since61) C.near_since61 = S.t ? S.t : 1u; } else C.near_since61 = 0u;
+        if (unc && s->ll.state == SB_LL_LOST && C.ll_prev61 == SB_LL_OK) {
+            /* I61: a new loss at open sea with the gateway's report: not before the captain's LINK TIME */
+            bool open = S.far_since && S.t - S.far_since > (uint32_t)lt * 1000u + 3000u;
+            if (S.rep_on && S.rep_since_grant && lt > SB_LINK_TIME_MIN_S && open && S.gw_on && !S.gw_off_t &&
+                !s->ll.gave_up && !fuzzed && s->ll.lt_sets == C.lt_sets_prev) {
+                if (silent + 1500u < (uint32_t)lt * 1000u)
+                    fail(61, "lost link at open sea after %.1f s of silence, LINK TIME %.0f s", silent * 0.001, lt);
+                else ok(61);
+            }
+        }
+        C.ll_prev61 = s->ll.state;
+        C.helm_prev61 = s->helm;
+        C.lt_sets_prev = s->ll.lt_sets;
+    }
+
     /* I32-I35: generator mode (CLAUDE.md K) - the one automatic throttle rise, in neutral only */
     if (!forced && !inj) {
         bool nsw = false;
@@ -1626,7 +1730,7 @@ static void apply(const ev_t *e)
     case E_PC_AUTO_RESUME: case E_REMOTE_REQ: case E_REMOTE_RELEASE: case E_RESET: case E_FREEZE: case E_COMPASS:
     case E_JOY_WIRE: case E_GPS: case E_NSW: case E_INJ_THR: case E_INJ_GEAR: case E_FUZZ_USB: case E_FUZZ_GW:
     case E_SCONFIRM: case E_MAN_REQ: case E_JOY_PLUG: case E_HELM_DROP: case E_HELM_BACK: case E_GEN: case E_ENGINE:
-    case E_WDT: case E_DP: case E_CAN: case E_PC_RETURN: case E_PC_CONFONLY:
+    case E_WDT: case E_DP: case E_CAN: case E_PC_RETURN: case E_PC_CONFONLY: case E_LINK:
         C.last_action_t = S.t + 1u;
         break;
     default:
@@ -1687,8 +1791,7 @@ static void apply(const ev_t *e)
     case E_PC_LOWER: sb_power_lower(s); break;
     case E_REMOTE_REQ:
         if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->a % 3);
-        s->helm = S.rem_station;                          /* the shore station took HELM first (gateway) */
-        s->helm_local = false;
+        st_helm(s, S.rem_station);                        /* the shore station took HELM first (gateway) */
         ST.rem_req[(int)sb_remote_request(s, S.rem_station) & 15]++;
         break;
     case E_SCONFIRM:
@@ -1703,18 +1806,34 @@ static void apply(const ev_t *e)
         break;
     case E_MAN_REQ:
         if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->a % 3);
-        s->helm = S.rem_station;
-        s->helm_local = false;
+        st_helm(s, S.rem_station);
         (void)sb_maneuver_request(s, S.rem_station);
         break;
     case E_JOY_PLUG: S.joy_fitted = !S.joy_fitted; joy_apply(); break;
-    case E_HELM_DROP: s->helm = SB_HELM_NONE; s->helm_local = false; S.rem_stream = false; break;  /* gateway dropped it */
+    case E_HELM_DROP: st_helm(s, SB_HELM_NONE); S.rem_stream = false; break;  /* gateway dropped it */
     case E_HELM_BACK:
         if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->a % 3);
-        s->helm = S.rem_station;
-        s->helm_local = false;
+        st_helm(s, S.rem_station);
         S.rem_stream = e->b < 700;
         break;
+    case E_LINK: {
+        /* step 13q1: LINK TIME. The command path (link.c): only a gateway station holding HELM */
+        int k = e->a % 5;
+        if (k <= 1) {
+            uint8_t v = (uint8_t)(1 + e->b % 70);                         /* 1..70: some out of range */
+            if (s->helm >= 2u) (void)sb_link_time_set(s, v);
+        } else if (k == 2) {
+            if (!S.helm_silent) { S.helm_silent = true; S.silent_t = S.t; }   /* its internet is gone */
+            S.rem_stream = false;
+        } else if (k == 3) {
+            S.helm_silent = false;                                         /* heard again */
+            S.rem_stream = e->c < 700;
+        } else {
+            S.shore_mode = 2u;                                             /* open sea + a LINK TIME 10..60 s */
+            if (s->helm >= 2u) (void)sb_link_time_set(s, (uint8_t)(10 + e->b % 51));
+        }
+        break;
+    }
     case E_SHORE: S.shore_mode = (uint8_t)(e->a % 4); break;
     case E_REMOTE_ON: S.rem_stream = true; S.rem_stale = false; S.rx_x = e->f; S.rx_lever = 0.5f + 0.5f * e->g; break;
     case E_REMOTE_OFF:
@@ -1852,8 +1971,7 @@ static void apply(const ev_t *e)
     case E_DP: {
         /* section P: the HELM station (CREWED: it takes HELM first, like the remote requests) */
         if (!S.uncrewed) S.rem_station = (uint8_t)(2 + e->c % 3);
-        s->helm = S.rem_station;
-        s->helm_local = false;
+        st_helm(s, S.rem_station);
         if (!s->thrust.have_cfg || e->a < 150) {               /* the boat file's thrusters (STANDBY only) */
             thr_cfg_t c;
             memset(&c, 0, sizeof c);
@@ -1944,8 +2062,14 @@ static void apply(const ev_t *e)
             for (uint32_t i = 0; i < n; i++) g[i] = (uint8_t)rng_next(&r);
             if (gw) sim_hal_gw_rx_push(g, n); else sim_hal_link_rx_push(g, n);
         } else if (e->a < 600) {                                           /* a valid frame, random type */
-            push_frame(gw, (uint8_t)(rng_next(&r) % 0x40u), pl, len);
-            if (e->c < 300) push_frame(gw, (uint8_t)(rng_next(&r) % 0x40u), pl, len);   /* duplicated */
+            uint8_t ty = (uint8_t)(rng_next(&r) % 0x40u);
+            push_frame(gw, ty, pl, len);
+            if (gw && ty >= PROTO_T_GW_STATUS && ty <= PROTO_T_GW_STATION) S.fuzz_link_t = S.t ? S.t : 1u;  /* I60-I62 */
+            if (e->c < 300) {
+                ty = (uint8_t)(rng_next(&r) % 0x40u);
+                push_frame(gw, ty, pl, len);                                    /* duplicated */
+                if (gw && ty >= PROTO_T_GW_STATUS && ty <= PROTO_T_GW_STATION) S.fuzz_link_t = S.t ? S.t : 1u;
+            }
         } else {                                                           /* a corrupted frame */
             uint8_t fr[PROTO_MAX_FRAME];
             size_t n = proto_encode(fr, (uint8_t)(rng_next(&r) % 0x40u), 0u, pl, len);
@@ -2137,7 +2261,14 @@ static void run_until(uint32_t until)
         if (S.gw_on && AT_OR_AFTER(S.t, S.gw_next)) {
             uint8_t pl[12] = { 1u, 0u, 1u, 1u };
             S.gw_next = S.t + 1000u;
+            if (S.rep_on && S.sb.helm >= 2u) {          /* step 13q1: the HELM station's age (pongs ~0.5 s old) */
+                uint32_t age = 500u + (S.helm_silent ? S.t - S.silent_t : 0u);
+                pl[10] = S.sb.helm;
+                pl[11] = (uint8_t)(age / 250u > 254u ? 254u : age / 250u);
+                S.rep_since_grant = true;
+            }
             push_frame(true, PROTO_T_GW_STATUS, pl, sizeof pl);
+            if (S.shore_mode != 0u) { S.shore_tx_t = S.t ? S.t : 1u; S.shore_tx_mode = S.shore_mode; }
             if (S.shore_mode != 0u) {
                 uint16_t m = S.shore_mode == 1u ? 40u : S.shore_mode == 2u ? 900u : 0xFFFFu;
                 uint8_t sp[3] = { (uint8_t)(S.shore_mode == 3u ? 0u : (S.shore_mode == 1u ? 3u : 2u)), (uint8_t)m,

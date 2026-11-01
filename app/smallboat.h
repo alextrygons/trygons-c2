@@ -155,6 +155,10 @@
                                    software reset keeps it: hal_kill_keep_*), or the HELM station restarts it
                                    (sb_restart: idle + neutral confirmed, e-stop released) */
 
+/* LINK TIME (step 13q1, owner 2026-10-31): UNCREWED link-loss detection time */
+#define SB_LINK_TIME_MIN_S  3u      /* default + always near shore / without the gateway's age report */
+#define SB_LINK_TIME_MAX_S  60u     /* the most the HELM captain may set */
+
 /* GW_SHORE flags (gateway, 1 Hz): distance to the shore / shallow water of the route check */
 #define SB_SHORE_NEAR   0x01u   /* the gateway says: near the shore */
 #define SB_SHORE_VALID  0x02u   /* chart data and a position: the distance means something */
@@ -226,7 +230,12 @@ typedef struct {
     uint16_t pi_log_gaps;       /* gaps the Pi noted */
     uint32_t log_sent_seq;      /* last log record sent to the Pi */
     uint32_t log_skipped;       /* records not sent: no gateway connected */
+    /* the HELM station's age as the gateway measured it (GW_STATUS bytes 10-11, step 13q1) */
+    uint32_t status_rx_ms;      /* the last GW_STATUS (0 = never) */
+    uint8_t  rep_station;       /* the station the age is for (0 = not reported: an older gateway) */
+    uint32_t rep_age_ms;        /* its age when the status was sent; SB_GW_AGE_LOST = gone / 63.75 s or more */
 } sb_gw_t;
+#define SB_GW_AGE_LOST 0xFFFFFFFFu
 
 /* Video SAVE requests for the gateway (section F). The AURIX only numbers
  * them; the Pi records. Carried in TELEM2 group E as the LATEST request
@@ -372,7 +381,7 @@ typedef struct {
     uint32_t profile_switch_ms;         /* in STANDBY: the other state this long -> profile changes (10000) */
 
     /* UNCREWED lost link (section B) - defaults TO CONFIRM */
-    float    near_shore_m;              /* closer to the shore than this: ENGINE KILL at once (100, NEAR_SHORE_M) */
+    float    near_shore_m;              /* closer to the shore than this: ENGINE KILL at once + no LINK TIME (50, owner 2026-10-31) */
     float    lostlink_grace_s;          /* open sea: kill after this unless the link returns (10, LOSTLINK_GRACE_S) */
     uint32_t shore_max_age_ms;          /* shore info older than this = missing = near shore (3000) */
 
@@ -679,6 +688,16 @@ typedef struct {
         bool     kept;         /* the kill came through a watchdog / software reset (step 11b) */
         bool     node_kill;    /* the kill was the UNCREWED throttle-node loss (OD-3: at once, not after idle + neutral) */
         uint32_t losses, returns, kills;
+        /* LINK TIME (step 13q1, owner 2026-10-31): the link-loss detection time, SB_LINK_TIME_MIN_S 3 s, the HELM
+         * captain may set up to SB_LINK_TIME_MAX_S 60 s (sb_link_time_set); RAM only, back to 3 s at every HELM
+         * grant (another station / a new take) and every AURIX reset; never applied near shore or without the
+         * gateway's report of the HELM station's age (then the old rule: the loss counts at once) */
+        uint8_t  link_time_s;  /* the captain's setting (3..60) */
+        uint32_t heard_ms;     /* the HELM station last heard (the gateway's report, or "now" while ok) */
+        bool     rep;          /* the last good step was measured by the gateway's age report */
+        bool     gave_up;      /* HELM released to nobody by its holder: lost at once (no waiting) */
+        uint8_t  limit_s;      /* the detection time in force this step (3 near shore / no report) */
+        uint32_t lt_sets;      /* LINK TIME commands taken */
     } ll;
     struct {                   /* distance to the shore from the gateway (GW_SHORE) */
         uint32_t rx_ms;        /* 0 = never */
@@ -914,6 +933,14 @@ void sb_gw_shore(sb_t *s, uint8_t flags, uint16_t dist_m);
 bool sb_near_shore(const sb_t *s);
 /* Seconds left before the open-sea kill (0 if not counting). */
 float sb_lostlink_left_s(const sb_t *s);
+/* LINK TIME (step 13q1): the HELM captain's link-loss detection time, 3..60 s (PROTO_T_LINK_TIME; link.c checks
+ * HELM + a gateway station). RAM only. SB_ERR_BAD_VALUE outside 3..60. */
+sb_result_t sb_link_time_set(sb_t *s, uint8_t seconds);
+/* A HELM change (link.c helm_set): a grant to a station (another one, or a new take) = LINK TIME back to 3 s and
+ * the station counts as heard now; a voluntary release to nobody = lost at once (UNCREWED). */
+void sb_helm_changed(sb_t *s, uint8_t old_holder, uint8_t new_holder, bool voluntary);
+/* The HELM station's silence now (ms since last heard; 0 while ok without the gateway's report). */
+uint32_t sb_link_age_ms(const sb_t *s);
 
 /* Generator auto on / off (PROTO_T_GENERATOR, the HELM station; section K).
  * On: refused in FIRST TEST and with gen_max_pct 0 (disabled). The generator

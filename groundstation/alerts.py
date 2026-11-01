@@ -85,6 +85,27 @@ def can_roles(mask):
     return ", ".join(i18n.T(k) for i, k in enumerate(CAN_ROLE_KEYS) if mask >> i & 1)
 
 
+# LINK TIME (step 13q1): the steps of screen 2's - / + buttons (the AURIX takes any whole second 3..60)
+LINK_TIME_STEPS = (3, 5, 10, 15, 20, 30, 45, 60)
+
+
+def link_time_text(d):
+    """"LINK TIME 30 s (OVERRIDE)" while the captain's LINK TIME is above 3 s (screens 1 + 2, all the time), with
+    why it is not in force now (near the shore / no gateway measurement / CREWED: 3 s); None at 3 s / no data."""
+    if not d or not d.get("lt_override"):
+        return None
+    s = d["lt_set"]
+    if d.get("lt_in_force"):
+        return i18n.T("lt.banner", s=s)
+    if d.get("profile") != proto.PROFILE_UNCREWED:
+        why = i18n.T("lt.why_crewed")
+    elif d.get("near_shore"):
+        why = i18n.T("lt.why_near")
+    else:
+        why = i18n.T("lt.why_norep")
+    return i18n.T("lt.banner_off", s=s, why=why)
+
+
 def bits_of(d):
     """Both alarm words of a telemetry dict (TELEM2 merged in) as one int: word 2 at bit << WORD2.
     Every alarm function here takes these combined bits; the ground station treats both words alike."""

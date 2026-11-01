@@ -21,7 +21,7 @@ from ais import KN, from_xy
 
 DEFAULTS = {"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0, "clearance_m": 50.0, "look_s": 30.0,
             "look_min_m": 200.0, "slow_kn": 4.0, "require_charts": True,
-            "near_shore_m": 100.0, "shore_search_m": 2000.0}
+            "near_shore_m": 50.0, "shore_search_m": 2000.0}
 
 
 class Shallow:

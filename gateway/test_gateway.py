@@ -3223,6 +3223,32 @@ def section_cr():
                "captain RESTART %s -> kill cleared %s, STANDBY idle %s; copilot START %s (118), RESTART %s (109 = no "
                "captain screen to ACCEPT), RELEASE %s" % (r_rs, freed is not None, calm, r_bob_crank, r_bob_rs, r_bob_rel))
 
+        # LT1 LINK TIME (step 13q1): the HELM captain only; the AURIX keeps it (TELEM2 group S); the gateway keeps the
+        # HELM station LINK TIME + 2 s before it drops it and reports its age in GW_STATUS
+        r_bob_lt = bob.result(bob.cmd(proto.T_LINK_TIME, proto.p_link_time(30)))
+        r_al_bad = alice.result(alice.cmd(proto.T_LINK_TIME, proto.p_link_time(61)))
+        r_al_lt = alice.result(alice.cmd(proto.T_LINK_TIME, proto.p_link_time(30)))
+        lt_got = w.until(lambda d: d.get("lt_set") == 30 and d.get("lt_override"), 3)
+        g.stations.tick()
+        st_al = g.stations.stations.get(alice.welcome["id"])
+        st_bob = g.stations.stations.get(bob.welcome["id"])
+        keep_al = g.stations.lost_for(st_al) if st_al else None
+        keep_bob = g.stations.lost_for(st_bob) if st_bob else None
+        hid, hage = g.stations.helm_age()
+        pl = proto.p_gw_status(0, 0, 0, 0, 0, hid, hage)
+        pl_gone = proto.p_gw_status(0, 0, 0, 0, 0, hid, None)
+        pl_none = proto.p_gw_status(0, 0, 0, 0, 0, 1, 0.5)
+        r_al_lt3 = alice.result(alice.cmd(proto.T_LINK_TIME, proto.p_link_time(3)))
+        report("LT1 LINK TIME through the gateway: the HELM captain only (copilot 118), 3..60 s on the AURIX (TELEM2 S), "
+               "the HELM station kept LINK TIME + 2 s, its age in GW_STATUS",
+               r_bob_lt == 118 and r_al_bad == 3 and r_al_lt == 0 and lt_got is not None and keep_al == 32.0 and
+               keep_bob == g.stations.lost_s and hid == alice.welcome["id"] and len(pl) == 12 and pl[10] == hid and
+               pl[11] <= 8 and pl_gone[11] == 255 and pl_none[10:] == bytes(2) and r_al_lt3 == 0,
+               "copilot %s (118), captain 61 s %s (3), 30 s %s -> TELEM2 %s; kept %s s (bob %s s); GW_STATUS station "
+               "%s age %s (x 0.25 s), gone %s, USB helm %r; back to 3 s %s" % (
+                   r_bob_lt, r_al_bad, r_al_lt, lt_got and lt_got.get("lt_set"), keep_al, keep_bob, pl[10], pl[11],
+                   pl_gone[11], pl_none[10:], r_al_lt3))
+
         # CR7 role swap (both licensed): HELM moves to the new captain in one step - no LINK LOST (UNCREWED);
         # with an unlicensed partner refused
         alice.pump(1.0)
@@ -3290,7 +3316,7 @@ def section_cr():
         ch = chartmod.Charts(charts)
         sh = shmod.Shallow({}, ch)
         f_boat, d_boat = sh.shore({"lat": SIM_LAT, "lon": SIM_LON})
-        la, lo = east_of(2000.0 - 250.0 - 60.0)                   # 60 m from the edge of the shoal
+        la, lo = east_of(2000.0 - 250.0 - 5.0)                    # 5 m from the edge of the shoal (~36 m from the cell: near 50 m)
         f_near, d_near = sh.shore({"lat": la, "lon": lo})
         f_none, d_none = shmod.Shallow({}, chartmod.Charts(os.path.join(tmp, "nothing"))).shore(
             {"lat": SIM_LAT, "lon": SIM_LON})
@@ -3302,10 +3328,10 @@ def section_cr():
         gw = GwRunner(cfg)
         got = w.until(lambda d: d.get("coast_valid") and d.get("coast_dist_m") is not None, 10)
         report("CR4 shore distance from the charts (same data as the route check) reaches the AURIX once a second",
-               f_boat == 2 and 1500 <= d_boat <= 1900 and f_near == 3 and 20 <= d_near <= 100 and
+               f_boat == 2 and 1500 <= d_boat <= 1900 and f_near == 3 and 20 <= d_near <= 50 and
                (f_none, d_none) == (0, 0xFFFF) and got is not None and abs(got["coast_dist_m"] - d_boat) <= 60 and
                not got["near_shore"],
-               "boat: flags %d, %d m from the shoal; 60 m from its edge: flags %d (near), %d m; no charts: flags %d, "
+               "boat: flags %d, %d m from the shoal; 5 m from its edge: flags %d (near), %d m; no charts: flags %d, "
                "%d (= not valid -> near on the AURIX); AURIX telemetry: %s m, near %s" % (
                    f_boat, d_boat, f_near, d_near, f_none, d_none, got and got["coast_dist_m"],
                    got and got["near_shore"]))
