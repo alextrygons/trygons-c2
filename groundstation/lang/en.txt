@@ -1403,6 +1403,12 @@ lt.label = LINK TIME: {s} s
 lt.silent = the HELM station silent for {s} s
 lt.shorter = LINK TIME shorter
 lt.longer = LINK TIME longer
+sovr.auto = MANUAL STEERING – AUTO waiting
+sovr.hdg = MANUAL STEERING – HDG LOCK waiting (trigger = new heading)
+sovr.back = back in 2 s
+sovr.newhdg = NEW HEADING {h}°
+sovr.ceiling = The lever limits the power (reduction only)
+sovr.lost = STICK DATA LOST – idle + neutral, STANDBY in 5 s
 ov.station = {user} ({where})
 ov.status = Status
 ov.tools = Tools

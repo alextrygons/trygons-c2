@@ -968,6 +968,19 @@ MODES
              heading at 4 kn). The shore / shallow water 100 m or closer in
              any direction (also beside or behind) = STOP (alarm SHALLOW
              WATER). The STOP lasts until you choose another mode.
+             STEERING BY HAND IN HDG LOCK (step 13q3, owner 2026-10-31):
+             move the shore stick sideways (more than 15 %) and the boat
+             turns with it, like REMOTE (same steering speed) - HDG LOCK
+             stays, the throttle stays as it is (screen 1 / 2: "MANUAL
+             STEERING - HDG LOCK waiting"). Let the stick go: 2 s later the
+             boat turns back to the OLD locked heading. To keep the new
+             course press the stick's TRIGGER (shore_joystick.json
+             "trigger_button", default stick button 1) while you steer (or within the
+             2 s after letting go): the heading at that moment becomes the
+             locked heading ("NEW HEADING 245°" for 3 s, the mark on the
+             heading tape moves). The trigger does nothing when you are not
+             steering, and nothing while a question waits for your answer.
+             Shore stick data lost while you steer = the 0.3 s rule above.
   AUTO       a waypoint program (up to 50 waypoints). Each waypoint has a
              leg speed, an arrival radius and an action: continue / slow
              down / stop in neutral. At the end: stop + alarm (or hold the
@@ -995,6 +1008,34 @@ MODES
              not changed: AUTO START afterwards drives it forward from
              waypoint 1 again; a new upload ends the return. The joystick
              still wins (MANUAL; RESUME + CONFIRM goes on back).
+             STEERING BY HAND IN AUTO - UNCREWED (step 13q3, owner
+             2026-10-31: "In AUTO I can always drive by hand, except
+             throttle up; to stop AUTO totally I choose another mode"):
+             the HELM captain moves the shore stick sideways (more than
+             15 %) and steers by hand with the REMOTE steering speed; AUTO
+             stays the mode and keeps its speed (screen 1 / 2: "MANUAL
+             STEERING - AUTO waiting"). Your steering wins over a collision
+             avoidance turn while you hold the stick (the speed limits of
+             the gateway still slow the boat). Let the stick go: 2 s later
+             AUTO steers again and comes back to the line to the active
+             waypoint (like after an avoidance turn). Steering out of the
+             geofence by hand = STANDBY + alarm GEOFENCE (while AUTO steers
+             itself the geofence is its route check). Shore stick data
+             older than 0.3 s while you steer by hand = idle + neutral at
+             once, the heading held, alarm REMOTE DRIVING LINK LOST,
+             STANDBY after 5 s (never back by itself); while you do not
+             steer, AUTO does not need the stick.
+             THE TWCS LEVER IN AUTO (UNCREWED) = a power CEILING: it only
+             takes power away, never adds. It starts doing something once
+             it meets the throttle AUTO uses (at the AUTO start it is in
+             neutral: no effect until you push it up past the throttle and
+             then pull it back). Pulled back = less power, in the neutral
+             zone = idle (still in forward gear), the reverse zone = idle
+             too - the lever never changes gear or mode. Pushed fully
+             forward = AUTO's own throttle again (never more). The same in
+             UNCREWED HDG LOCK (above). With people on board (CREWED)
+             nothing changes: the onboard joystick takes full MANUAL at
+             once, the shore stick does nothing in AUTO / HDG LOCK.
   TRAINING   outboard calibration, started from STANDBY by the PC.
 
   Mode changes allowed (all others are refused and logged):

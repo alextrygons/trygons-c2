@@ -5488,6 +5488,7 @@ typedef struct {
     pisim_t  p;
     bool     rj_on;
     bool     conf;              /* the shore joystick's CONFIRM held (flags b2) */
+    bool     trig;              /* step 13q3: the shore joystick's TRIGGER held (flags b3) */
     uint8_t  st;
     uint16_t seq;
     float    x, y, lever;
@@ -5519,7 +5520,7 @@ static void rj_send(rjsim_t *r, uint8_t flags)
 static void rj_hook(sbsim_t *x, void *ctx)
 {
     rjsim_t *r = (rjsim_t *)ctx;
-    if (r->rj_on) rj_send(r, r->conf ? 4u : 0u);
+    if (r->rj_on) rj_send(r, (uint8_t)((r->conf ? 4u : 0u) | (r->trig ? 8u : 0u)));
     pi_hook(x, &r->p);
     if (sb_mode(&x->sb) == MODE_REMOTE) {
         float t = sim_hal_throttle();
@@ -8506,6 +8507,7 @@ void sb_usb_tests(void)
 
 static void remote_direct_tests(void);   /* (step 13q2, below: it uses the DP helpers) */
 static void shore_hdg_tests(void);       /* (step 13q2c, below) */
+static void override_tests(void);        /* (step 13q3, below) */
 
 void sb_gateway_tests(void)
 {
@@ -8515,6 +8517,7 @@ void sb_gateway_tests(void)
     crew_tests();
     remote_direct_tests();
     shore_hdg_tests();
+    override_tests();
     lostlink_tests();
     link_time_tests();
     save_tests();
@@ -16966,6 +16969,447 @@ static void shore_hdg_tests(void)
     }
 }
 
+/* ------------------- step 13q3: the shore stick override in UNCREWED AUTO / HDG LOCK (owner 2026-10-31, C3) -- */
+
+/* UNCREWED (or CREWED), HELM station 2, the shore stick streaming centred with the lever at neutral, AUTO towards a
+ * waypoint 3 km ahead at kn (the AUTO start + the shore / onboard CONFIRM), then 15 s of driving */
+static bool ov_auto(sbsim_t *x, rjsim_t *r, uhsim_t *u, uint32_t seed, bool crewed, float kn)
+{
+    static program_t p;
+    prog_error_t err;
+    uint8_t bad;
+    rq_boat(x, r, seed, crewed);
+    memset(u, 0, sizeof *u);
+    u->r = r;
+    u->n.lease = 3000u;
+    u->n.cap = -1.0f;
+    r->x = 0.0f;
+    r->lever = 0.5f;
+    double hr = x->w.heading_deg * 3.14159265358979 / 180.0;
+    prog_wp_t w = wp_world(x, x->w.north_m + 3000.0 * cos(hr), x->w.east_m + 3000.0 * sin(hr), kn, 25.0f,
+                           WP_ACT_STOP);
+    prog_make(&p, &w, 1, PROG_END_STOP);
+    sb_program_set(&x->sb, &p, &err, &bad);
+    if (pi_cmd(x, &r->p, 2u, false, PROTO_T_AUTO_START, NULL, 0u) != PROTO_R_OK) return false;
+    if (!(crewed ? onboard_confirm(x, r) : shore_confirm(x, r))) return false;
+    uh_run(x, u, 15000u);
+    return sb_mode(&x->sb) == MODE_AUTO && gear_is(&x->sb.gear, GEAR_F) && x->sb.thr.out_pct > 3.0f;
+}
+
+/* run ms with the stick at sx: the largest outboard command rate (deg/s) and command (deg) while steering by hand */
+static void ov_steer(sbsim_t *x, uhsim_t *u, float sx, uint32_t ms, float *max_rate, float *max_cmd)
+{
+    u->r->x = sx;
+    uint32_t t0 = x->t;
+    float last = x->sb.sovr.steer_cmd;
+    bool was = x->sb.sovr.active;
+    uint32_t last_ms = x->sb.now_ms;
+    float est = x->sb.ap.est_angle;
+    while (x->t < t0 + ms) {
+        sbsim_run(x, x->t + AP_PERIOD_MS, uh_hook, u);
+        if (x->sb.sovr.active && x->sb.now_ms != last_ms) {
+            /* (the first step by hand: from the outboard estimate) */
+            float from = was ? last : est;
+            float rate = fabsf(x->sb.sovr.steer_cmd - from) / ((float)(x->sb.now_ms - last_ms) * 0.001f);
+            if (max_rate && rate > *max_rate) *max_rate = rate;
+        }
+        est = x->sb.ap.est_angle;
+        last_ms = x->sb.now_ms;
+        if (x->sb.sovr.active && max_cmd && fabsf(x->sb.sovr.steer_cmd) > *max_cmd) *max_cmd = fabsf(x->sb.sovr.steer_cmd);
+        was = x->sb.sovr.active;
+        last = x->sb.sovr.steer_cmd;
+    }
+}
+
+/* run ms with the stick at sx: the largest heading deviation from ref (deg) */
+static float ov_steer_dev(sbsim_t *x, uhsim_t *u, float sx, uint32_t ms, float ref)
+{
+    float dev = 0.0f;
+    u->r->x = sx;
+    uint32_t t0 = x->t;
+    while (x->t < t0 + ms) {
+        sbsim_run(x, x->t + AP_PERIOD_MS, uh_hook, u);
+        dev = fmaxf(dev, fabsf(autopilot_heading_error(ref, x->sb.ap.heading)));
+    }
+    return dev;
+}
+
+/* a trigger press on the shore stick (0.15 s) */
+static void ov_trigger(sbsim_t *x, uhsim_t *u)
+{
+    u->r->trig = true;
+    uh_run(x, u, 150u);
+    u->r->trig = false;
+    uh_run(x, u, 100u);
+}
+
+static void override_tests(void)
+{
+    char d[1400];
+    const uint8_t STBY = 0u;
+    printf("\n=== OV step 13q3: the shore stick override in UNCREWED AUTO / HDG LOCK (C3) ===\n");
+
+    /* OV1 UNCREWED AUTO: stick X beyond 15 % = steering by hand (the core in angle mode, the REMOTE rate limit, the
+     * outboard from where it was), AUTO stays the mode, the gear stays F; a small deflection (12 %) does nothing;
+     * centred: still by hand at 1.5 s, back to AUTO's own steering at 2.5 s, and AUTO rejoins the line to the active
+     * waypoint */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1801u, false, 5.0f);
+        float h0 = x.sb.ap.heading;
+        ov_steer(&x, &u, 0.12f, 3000u, NULL, NULL);
+        bool small_none = !x.sb.sovr.active && x.sb.ap.mode == AP_MODE_AUTO && x.sb.sovr.starts == 0u;
+        float max_rate = 0.0f, max_cmd = 0.0f;
+        ov_steer(&x, &u, 0.8f, 20000u, &max_rate, &max_cmd);
+        bool hand = x.sb.sovr.active && x.sb.ap.mode == AP_MODE_ANGLE && sb_mode(&x.sb) == MODE_AUTO &&
+                    gear_is(&x.sb.gear, GEAR_F) && x.sb.sovr.starts == 1u;
+        float turned = fabsf(autopilot_heading_error(h0, x.sb.ap.heading));
+        ov_steer(&x, &u, 0.0f, 1500u, &max_rate, NULL);
+        bool still = x.sb.sovr.active && x.sb.sovr.back;
+        uh_run(&x, &u, 1000u);
+        bool back = !x.sb.sovr.active && x.sb.ap.mode == AP_MODE_AUTO && x.sb.sovr.backs == 1u;
+        float xte0 = 0.0f;                                              /* the largest cross-track after the turn */
+        uint32_t tr = x.t;
+        while (x.t < tr + 120000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            xte0 = fmaxf(xte0, fabsf(x.sb.autop.leg.xte_m));
+        }
+        float xte1 = fabsf(x.sb.autop.leg.xte_m);
+        bool rejoined = sb_mode(&x.sb) == MODE_AUTO && xte0 > 10.0f && xte1 < 8.0f && xte1 < xte0 * 0.3f;
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO %s; stick 12 %%: no override %s; stick 80 %% 20 s: by hand %s (angle mode, AUTO, F), "
+                 "turned %.1f deg, steering rate max %.1f deg/s (limit %.0f), command max %.1f deg; centred 1.5 s: still "
+                 "by hand %s, 2.5 s: back to AUTO %s; cross-track up to %.0f m -> %.1f m after 120 s %s", in ? "yes" : "NO",
+                 small_none ? "yes" : "NO", hand ? "yes" : "NO", turned, max_rate, x.sb.cfg.remote_steer_rate_dps,
+                 max_cmd, still ? "yes" : "NO", back ? "yes" : "NO", xte0, xte1, rejoined ? "rejoined" : "NOT rejoined");
+        test_report("OV1 UNCREWED AUTO: stick X > 15 % = steering by hand (REMOTE rate limit, AUTO kept); centred 2 s = "
+                    "back to AUTO, which rejoins the route line",
+                    in && small_none && hand && turned > 10.0f && max_rate <= x.sb.cfg.remote_steer_rate_dps + 0.01f &&
+                    max_cmd > 5.0f && still && back && rejoined, d);
+    }
+
+    /* OV2 CREWED AUTO: the shore stick does nothing (the onboard joystick takes MANUAL, unchanged); UNCREWED AUTO: the
+     * hand steering overrides an avoidance heading while held, the navreq speed cap still slows, centred = back to the
+     * avoidance heading */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool cin = ov_auto(&x, &r, &u, 1802u, true, 5.0f);
+        float ch0 = x.sb.ap.heading;
+        ov_steer(&x, &u, 0.8f, 15000u, NULL, NULL);
+        bool c_none = !x.sb.sovr.active && x.sb.sovr.starts == 0u && x.sb.ap.mode == AP_MODE_AUTO &&
+                      sb_mode(&x.sb) == MODE_AUTO && fabsf(autopilot_heading_error(ch0, x.sb.ap.heading)) < 12.0f;
+        crew_plug();
+        static sbsim_t y;
+        static rjsim_t q;
+        static uhsim_t v;
+        bool in = ov_auto(&y, &q, &v, 1803u, false, 5.0f);
+        float avoid = autopilot_wrap360(y.sb.autop.leg.track_deg + 40.0f);
+        v.n.kind = SB_NAV_HEADING;
+        v.n.reason = 1u;
+        v.n.alarm = 1u;
+        v.n.heading = avoid;
+        v.n.cap = 3.0f;
+        v.nav_on = true;
+        uh_run(&y, &v, 20000u);
+        float e_av = fabsf(autopilot_heading_error(avoid, y.sb.ap.heading));
+        float e_hand = ov_steer_dev(&y, &v, -0.8f, 20000u, avoid);
+        bool hand = y.sb.sovr.active && y.sb.ap.mode == AP_MODE_ANGLE;
+        float cap_kn = y.sb.nav.cap_kn;
+        float sog = y.sb.gps.last.sog_kn;
+        ov_steer(&y, &v, 0.0f, 2500u, NULL, NULL);
+        bool back = !y.sb.sovr.active && y.sb.ap.mode == AP_MODE_AUTO;
+        uh_run(&y, &v, 45000u);
+        float e_back = fabsf(autopilot_heading_error(avoid, y.sb.ap.heading));
+        crew_plug();
+        snprintf(d, sizeof d, "CREWED AUTO %s: shore stick 80 %% -> no override %s; UNCREWED AUTO %s: on the avoidance "
+                 "heading (error %.1f deg); stick -80 %% 20 s: by hand %s, up to %.1f deg off it, cap %.1f kn, SOG %.1f kn; "
+                 "centred: back %s, %.1f deg off the avoidance heading after 45 s", cin ? "yes" : "NO",
+                 c_none ? "yes" : "NO", in ? "yes" : "NO", e_av, hand ? "yes" : "NO", e_hand, cap_kn, sog,
+                 back ? "yes" : "NO", e_back);
+        test_report("OV2 CREWED AUTO: the shore stick does nothing; UNCREWED: the hand overrides an avoidance heading "
+                    "while held (the navreq cap still slows), then back to it",
+                    cin && c_none && in && e_av < 8.0f && hand && e_hand > 10.0f && cap_kn <= 3.01f && sog < 3.8f &&
+                    back && e_back < 8.0f, d);
+    }
+
+    /* OV3 UNCREWED HDG LOCK: stick X turns the boat; released WITHOUT the trigger = after 2 s back to the OLD locked
+     * heading; the trigger while steering (no request pending) = the heading at the press is the new locked heading
+     * (NEW HEADING shown); the trigger while not steering / with a request pending does nothing */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool rem = uh_remote(&x, &r, &u, 1804u, 0.9f);
+        uint8_t ok = uh_lock(&x, &r);
+        uh_run(&x, &u, 3000u);
+        float t0 = x.sb.ap.target_heading;
+        ov_trigger(&x, &u);                                             /* not steering: nothing */
+        bool t_none = fabsf(autopilot_heading_error(t0, x.sb.ap.target_heading)) < 0.01f && x.sb.sovr.newhdgs == 0u &&
+                      x.sb.sovr.trig_ignored >= 1u;
+        ov_steer(&x, &u, 0.8f, 15000u, NULL, NULL);
+        bool hand = x.sb.sovr.active && x.sb.ap.mode == AP_MODE_ANGLE && sb_shore_hdg(&x.sb);
+        float turned = fabsf(autopilot_heading_error(t0, x.sb.ap.heading));
+        bool tgt_kept = fabsf(autopilot_heading_error(t0, x.sb.ap.target_heading)) < 0.01f;
+        ov_steer(&x, &u, 0.0f, 2500u, NULL, NULL);
+        bool back = !x.sb.sovr.active && x.sb.ap.mode == AP_MODE_AUTO;
+        uh_run(&x, &u, 45000u);
+        float e_old = fabsf(autopilot_heading_error(t0, x.sb.ap.heading));
+        /* the trigger while steering */
+        ov_steer(&x, &u, 0.8f, 15000u, NULL, NULL);
+        float h_press = x.sb.ap.heading;
+        ov_trigger(&x, &u);
+        float t_new = x.sb.ap.target_heading;
+        bool newh = x.sb.sovr.newhdgs == 1u && fabsf(autopilot_heading_error(h_press, t_new)) < 6.0f &&
+                    fabsf(autopilot_heading_error(t0, t_new)) > 15.0f && x.sb.sovr.active;
+        unsigned notice = (x.sb.sovr.newhdg_ms != 0u) ? 1u : 0u;
+        ov_steer(&x, &u, 0.0f, 2500u, NULL, NULL);
+        uh_run(&x, &u, 45000u);
+        float e_new = fabsf(autopilot_heading_error(t_new, x.sb.ap.heading));
+        bool tgt_new = fabsf(autopilot_heading_error(t_new, x.sb.ap.target_heading)) < 0.01f;
+        /* the trigger once the stick is let go (still within the 2 s): the new heading held at once */
+        ov_steer(&x, &u, -0.8f, 6000u, NULL, NULL);
+        ov_steer(&x, &u, 0.0f, 300u, NULL, NULL);
+        bool act2 = x.sb.sovr.active;
+        float h2 = x.sb.ap.heading;
+        ov_trigger(&x, &u);
+        bool at_once = act2 && !x.sb.sovr.active && fabsf(autopilot_heading_error(h2, x.sb.ap.target_heading)) < 6.0f &&
+                       x.sb.sovr.newhdgs == 2u;
+        /* a request pending (a power raise waiting for the shore CONFIRM): the trigger does nothing */
+        uh_run(&x, &u, 5000u);
+        sb_alarm_ack(&x.sb);
+        uint16_t code = 0u;
+        bool pend = sb_power_code(&x.sb, 0u, &code) == SB_OK && sb_power_raise(&x.sb, 0u, code) == SB_OK &&
+                    x.sb.confirm.kind == CONF_RAISE_FWD;
+        ov_steer(&x, &u, 0.6f, 2000u, NULL, NULL);
+        float t_p = x.sb.ap.target_heading;
+        ov_trigger(&x, &u);
+        bool p_none = fabsf(autopilot_heading_error(t_p, x.sb.ap.target_heading)) < 0.01f && x.sb.sovr.newhdgs == 2u &&
+                      x.sb.confirm.kind == CONF_RAISE_FWD;
+        crew_plug();
+        snprintf(d, sizeof d, "REMOTE %s, HDG LOCK %u, target %.1f; trigger not steering: nothing %s; stick 80 %% 15 s: by "
+                 "hand %s, turned %.1f deg, target kept %s; centred: back %s, %.1f deg off the OLD heading after 45 s; "
+                 "trigger while steering at %.1f -> target %.1f (new %s, notice %u), released: %.1f deg off it after 45 s, "
+                 "target %s; trigger just after letting go: held at once %s; with a request pending (%s): nothing %s",
+                 rem ? "yes" : "NO", ok, t0, t_none ? "yes" : "NO", hand ? "yes" : "NO", turned,
+                 tgt_kept ? "yes" : "NO", back ? "yes" : "NO", e_old, h_press, t_new, newh ? "yes" : "NO", notice,
+                 e_new, tgt_new ? "kept" : "CHANGED", at_once ? "yes" : "NO", pend ? "yes" : "NO",
+                 p_none ? "yes" : "NO");
+        test_report("OV3 UNCREWED HDG LOCK: stick X turns; let go without the trigger = back to the OLD heading after 2 "
+                    "s; the trigger while steering = the new heading; not steering / a request pending: nothing",
+                    rem && ok == PROTO_R_OK && t_none && hand && turned > 15.0f && tgt_kept && back && e_old < 6.0f &&
+                    newh && notice && e_new < 6.0f && tgt_new && at_once && pend && p_none, d);
+    }
+
+    /* OV4 UNCREWED AUTO: the TWCS lever = a power CEILING (pickup: no effect from neutral until it meets the throttle;
+     * lever back = less, neutral = idle in forward, reverse zone = never reverse, AUTO kept; lever up = AUTO's own
+     * throttle again, no wind-up jump above it) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1805u, false, 3.0f);
+        uh_run(&x, &u, 20000u);
+        float dem0 = x.sb.throttle_demand;
+        bool no_pick = !x.sb.sovr.ceil_on && x.sb.thr.out_pct > 3.0f;    /* lever at neutral since the start */
+        rj_lever(&x, &r, 1.0f, 0.5f);                                    /* up past the throttle: engages, no cut */
+        uh_run(&x, &u, 3000u);
+        bool on_nocut = x.sb.sovr.ceil_on && !x.sb.sovr.ceil_cut;
+        rj_lever(&x, &r, 0.6f, 0.5f);                                    /* back: the ceiling 3.3 % */
+        float dmax_low = 0.0f;
+        uh_run(&x, &u, 2000u);
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 12000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            dmax_low = fmaxf(dmax_low, x.sb.throttle_demand);
+        }
+        float thr_low = x.sb.thr.out_pct;
+        bool cut = x.sb.sovr.ceil_cut && sb_mode(&x.sb) == MODE_AUTO;
+        rj_lever(&x, &r, 0.5f, 0.5f);                                    /* neutral zone: idle, still forward */
+        uh_run(&x, &u, 3000u);
+        bool idle_f = x.sb.thr.out_pct <= 0.5f && gear_is(&x.sb.gear, GEAR_F) && sb_mode(&x.sb) == MODE_AUTO;
+        rj_lever(&x, &r, 0.0f, 0.5f);                                    /* reverse zone: never reverse */
+        uh_run(&x, &u, 3000u);
+        bool no_rev = x.sb.gear_demand != GEAR_R && !gear_is(&x.sb.gear, GEAR_R) && sb_mode(&x.sb) == MODE_AUTO;
+        rj_lever(&x, &r, 1.0f, 0.5f);                                    /* full: AUTO's own throttle again */
+        float omax = 0.0f;
+        t0 = x.t;
+        while (x.t < t0 + 25000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            omax = fmaxf(omax, x.sb.thr.out_pct);
+        }
+        float dem1 = x.sb.throttle_demand;
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO 3 kn %s, demand %.1f %%; lever at neutral: no ceiling %s; up past it: engaged, no cut "
+                 "%s; lever 0.6: demand max %.2f %% (3.3), throttle %.2f %%, AUTO kept %s; neutral zone: idle in F %s; "
+                 "reverse zone: no reverse %s; full again: throttle max %.1f %% (AUTO demand %.1f -> %.1f, limit %.0f)",
+                 in ? "yes" : "NO", dem0, no_pick ? "yes" : "NO", on_nocut ? "yes" : "NO", dmax_low, thr_low,
+                 cut ? "yes" : "NO", idle_f ? "yes" : "NO", no_rev ? "yes" : "NO", omax, dem0, dem1, x.sb.plim.fwd_pct);
+        test_report("OV4 UNCREWED AUTO: the lever is only a power ceiling (pickup, reduction only, never a gear / mode "
+                    "change); lever up = AUTO's throttle again without a jump",
+                    in && dem0 > 4.0f && dem0 < x.sb.plim.fwd_pct - 2.0f && no_pick && on_nocut && dmax_low <= 3.4f &&
+                    thr_low <= 3.5f && cut && idle_f && no_rev && omax <= fmaxf(dem0, dem1) + 3.0f &&
+                    omax <= x.sb.plim.fwd_pct + 0.01f, d);
+    }
+
+    /* OV5 UNCREWED AUTO: the shore data stale WHILE steering by hand = idle at once + neutral, REMOTE DRIVING LINK
+     * LOST, the heading held, STANDBY after 5 s, never back by itself; stale while NOT steering by hand: AUTO goes on */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1806u, false, 5.0f);
+        r.rj_on = false;                                                /* no packets: AUTO goes on */
+        uh_run(&x, &u, 6000u);
+        bool goes_on = sb_mode(&x.sb) == MODE_AUTO && x.sb.thr.out_pct > 3.0f && !x.sb.sovr.lost;
+        r.rj_on = true;
+        uh_run(&x, &u, 1000u);
+        ov_steer(&x, &u, 0.5f, 3000u, NULL, NULL);
+        bool hand = x.sb.sovr.active;
+        float thr_h = x.sb.thr.out_pct;
+        r.rj_on = false;                                                /* the data stops while steering */
+        float t_idle = -1.0f, t_sb = -1.0f;
+        bool hdg_hold = true;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 7000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            if (t_idle < 0.0f && x.sb.thr.out_pct <= 0.01f) t_idle = (float)(x.t - t0) * 0.001f;
+            if (t_sb < 0.0f && sb_mode(&x.sb) == MODE_STANDBY) t_sb = (float)(x.t - t0) * 0.001f;
+            if (sb_mode(&x.sb) == MODE_AUTO && x.sb.sovr.lost && x.sb.ap.mode != AP_MODE_AUTO) hdg_hold = false;
+        }
+        bool alarm = (x.sb.alarm_bits & SB_ALM_REMOTE_DRIVE) != 0u && x.sb.sovr.losses == 1u;
+        r.rj_on = true;
+        uh_run(&x, &u, 3000u);
+        bool stays = sb_mode(&x.sb) == MODE_STANDBY;
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO %s; no packets, not steering: AUTO goes on %s; by hand %s at %.1f %%; data stopped: "
+                 "idle after %.2f s, STANDBY after %.2f s, heading held %s, alarm %s; data back: STANDBY kept %s",
+                 in ? "yes" : "NO", goes_on ? "yes" : "NO", hand ? "yes" : "NO", thr_h, t_idle, t_sb,
+                 hdg_hold ? "yes" : "NO", alarm ? "yes" : "NO", stays ? "yes" : "NO");
+        test_report("OV5 UNCREWED AUTO: stale shore data while steering by hand = idle + neutral at once, heading held, "
+                    "STANDBY after 5 s; while not steering: AUTO goes on",
+                    in && goes_on && hand && thr_h > 3.0f && t_idle >= 0.0f && t_idle <= 0.6f && t_sb >= 5.0f &&
+                    t_sb <= 6.0f && hdg_hold && alarm && stays, d);
+    }
+
+    /* OV6 a mode change while steering by hand: STANDBY keeps a heading hold until idle + neutral (never a loose
+     * outboard), nothing carries over; a geofence breach while steering AUTO by hand = STANDBY + GEOFENCE; the same
+     * breach report while AUTO steers itself = ignored (AUTO unchanged) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1807u, false, 5.0f);
+        ov_steer(&x, &u, 0.5f, 3000u, NULL, NULL);
+        bool hand = x.sb.sovr.active;
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_SET_MODE, &STBY, 1u);
+        bool hold = sb_mode(&x.sb) == MODE_STANDBY && !x.sb.sovr.active && x.sb.ap.mode == AP_MODE_AUTO &&
+                    x.sb.stop_steer == STOP_STEER_HEADING;
+        uh_run(&x, &u, 5000u);
+        bool stopped = x.sb.thr.out_pct <= 0.01f && gear_is(&x.sb.gear, GEAR_N) && !x.sb.sovr.active;
+        crew_plug();
+        static sbsim_t y;
+        static rjsim_t q;
+        static uhsim_t v;
+        bool in2 = ov_auto(&y, &q, &v, 1808u, false, 5.0f);
+        v.n.kind = SB_NAV_NONE;
+        v.n.alarm = SB_NAV_ALM_FENCE;
+        v.nav_on = true;
+        uh_run(&y, &v, 3000u);
+        bool ignored = sb_mode(&y.sb) == MODE_AUTO && !(y.sb.alarm_bits2 & SB_ALM2_GEOFENCE);
+        ov_steer(&y, &v, 0.5f, 1000u, NULL, NULL);
+        bool fence = sb_mode(&y.sb) == MODE_STANDBY && (y.sb.alarm_bits2 & SB_ALM2_GEOFENCE) &&
+                     y.sb.sovr.fence_stops == 1u;
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO %s, by hand %s; STANDBY: heading hold until stopped %s, idle + N %s; AUTO %s with a "
+                 "geofence breach reported: ignored while AUTO steers %s; steering by hand -> STANDBY + GEOFENCE %s",
+                 in ? "yes" : "NO", hand ? "yes" : "NO", hold ? "yes" : "NO", stopped ? "yes" : "NO",
+                 in2 ? "yes" : "NO", ignored ? "yes" : "NO", fence ? "yes" : "NO");
+        test_report("OV6 STANDBY while steering by hand = heading hold until idle + neutral; a geofence breach while "
+                    "steering AUTO by hand = STANDBY (ignored while AUTO steers)",
+                    in && hand && hold && stopped && in2 && ignored && fence, d);
+    }
+
+    /* OV7 a reset while steering by hand = STANDBY, nothing held; UNCREWED HDG LOCK stale data while steering by hand
+     * = the 13q2c rule (idle + neutral, STANDBY after 5 s) with the OLD heading held */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1809u, false, 5.0f);
+        ov_steer(&x, &u, 0.5f, 3000u, NULL, NULL);
+        bool hand = x.sb.sovr.active;
+        sim_hal_chip_reset(HAL_RESET_SYSTEM);
+        x.boot_until = x.t + 200u;
+        uh_run(&x, &u, 8000u);
+        bool sb = sb_mode(&x.sb) == MODE_STANDBY && !x.sb.sovr.active && x.sb.thr.out_pct <= 0.01f;
+        crew_plug();
+        static sbsim_t y;
+        static rjsim_t q;
+        static uhsim_t v;
+        bool rem = uh_remote(&y, &q, &v, 1810u, 0.9f);
+        uint8_t ok = uh_lock(&y, &q);
+        uh_run(&y, &v, 2000u);
+        float t0 = y.sb.ap.target_heading;
+        ov_steer(&y, &v, 0.6f, 3000u, NULL, NULL);
+        bool hand2 = y.sb.sovr.active;
+        q.rj_on = false;
+        float t_idle = -1.0f, t_sb = -1.0f;
+        bool old = true;
+        uint32_t ts = y.t;
+        while (y.t < ts + 7000u) {
+            sbsim_run(&y, y.t + AP_PERIOD_MS, uh_hook, &v);
+            if (t_idle < 0.0f && y.sb.thr.out_pct <= 0.01f) t_idle = (float)(y.t - ts) * 0.001f;
+            if (t_sb < 0.0f && sb_mode(&y.sb) == MODE_STANDBY) t_sb = (float)(y.t - ts) * 0.001f;
+            if (sb_shore_hdg(&y.sb) && y.t > ts + 400u &&
+                (y.sb.sovr.active || fabsf(autopilot_heading_error(t0, y.sb.ap.target_heading)) > 0.01f)) old = false;
+        }
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO %s, by hand %s; reset: STANDBY idle, nothing held %s; HDG LOCK %s/%u, by hand %s; "
+                 "data stopped: idle after %.2f s, STANDBY after %.2f s, the old heading held %s", in ? "yes" : "NO",
+                 hand ? "yes" : "NO", sb ? "yes" : "NO", rem ? "yes" : "NO", ok, hand2 ? "yes" : "NO", t_idle, t_sb,
+                 old ? "yes" : "NO");
+        test_report("OV7 a reset while steering by hand = STANDBY; UNCREWED HDG LOCK stale data while steering by hand = "
+                    "idle + neutral, the OLD heading held, STANDBY after 5 s",
+                    in && hand && sb && rem && ok == PROTO_R_OK && hand2 && t_idle >= 0.0f && t_idle <= 0.6f &&
+                    t_sb >= 5.0f && t_sb <= 6.0f && old, d);
+    }
+
+    /* OV8 never a held stick: HELM moves to another captain's station (swap) in UNCREWED AUTO while that station's
+     * stick is already deflected: it does not steer until it has been seen centred; then a deflection steers */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1811u, false, 5.0f);
+        const uint8_t SWAP[3] = { 2u, 3u, 0u };
+        uint8_t sw = pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, SWAP, 3u);
+        r.st = 3u;                                                      /* the new captain's stick, already held */
+        r.x = 0.6f;
+        uh_run(&x, &u, 4000u);
+        bool held = x.sb.helm == 3u && !x.sb.sovr.active && x.sb.sovr.starts == 0u && !x.sb.sovr.armed &&
+                    x.sb.ap.mode == AP_MODE_AUTO && sb_mode(&x.sb) == MODE_AUTO && x.sb.remote.station == 3u;
+        ov_steer(&x, &u, 0.0f, 500u, NULL, NULL);
+        bool armed = x.sb.sovr.armed && !x.sb.sovr.active;
+        ov_steer(&x, &u, 0.6f, 1000u, NULL, NULL);
+        bool hand = x.sb.sovr.active && x.sb.sovr.starts == 1u;
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO %s; HELM swap to station 3 %u (helm %u); its stick held from the first packet: no "
+                 "override %s; centred: armed %s; deflected: by hand %s", in ? "yes" : "NO", sw, x.sb.helm,
+                 held ? "yes" : "NO", armed ? "yes" : "NO", hand ? "yes" : "NO");
+        test_report("OV8 a new captain's stick already held (HELM swap in UNCREWED AUTO) never steers until seen centred",
+                    in && sw == PROTO_R_OK && held && armed && hand, d);
+    }
+}
+
+void sb_override_tests(void)
+{
+    override_tests();
+}
+
 void sb_tests(void)
 {
     can_tests();
@@ -16986,6 +17430,7 @@ void sb_tests(void)
     crew_tests();
     remote_direct_tests();
     shore_hdg_tests();
+    override_tests();
     lostlink_tests();
     link_time_tests();
     save_tests();

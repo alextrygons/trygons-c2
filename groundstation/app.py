@@ -53,6 +53,7 @@ import overlay
 from i18n import T, TE
 from alerts import CAN_ROLE_KEYS, CAN_STATE_KEYS, CAN_WHY_KEYS, can_roles  # noqa: E402  (DroneCAN, 11d)
 from alerts import LINK_TIME_STEPS, link_time_text  # noqa: E402  (LINK TIME, step 13q1)
+from alerts import override_texts  # noqa: E402  (the shore stick override, step 13q3)
 from link import Link, list_ports
 from gwclient import GatewayLink
 import shorejoy
@@ -3098,6 +3099,8 @@ class App:
             lt = link_time_text(d)                      # LINK TIME above 3 s: shown all the time (step 13q1)
             if lt:
                 out.append(("linktime", lt) + B["pickup"] + (None,))
+            for tag, txt, lvl in override_texts(d):     # the shore stick override (step 13q3), DISPLAY ONLY
+                out.append((tag, txt) + ((theme.WHITE, theme.WARN) if lvl == "warn" else B["pickup"]) + (None,))
         av = (self.gw_status or {}).get("avoid") or {}
         sh = av.get("shallow")
         if sh:

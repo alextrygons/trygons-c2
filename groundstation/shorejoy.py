@@ -8,9 +8,12 @@ shore_joystick.json (next to app.py, written by the ground station):
   {"steer": {"dev": 0, "axis": "X", "invert": false},
    "thr":   {"dev": 1, "axis": "Z", "invert": true, "lever": true},
    "save_button": {"dev": 0, "button": 3},
-   "confirm_button": {"dev": 1, "button": 4}}
+   "confirm_button": {"dev": 1, "button": 4},
+   "trigger_button": {"dev": 0, "button": 1}}
 "confirm_button": the captain's CONFIRM (UNCREWED boat: power raise, AUTO / REMOTE /
 MANEUVER start are confirmed here instead of on the onboard joystick).
+"trigger_button": the stick's TRIGGER (step 13q3): in UNCREWED HDG LOCK, pressed while steering by hand
+with the stick (no request pending) = the boat's current heading becomes the locked heading.
 "save_button": video SAVE on the gateway (works any time, not only while driving).
 "lever": true = non-returning throttle lever (TWCS, 0 back .. 1 forward);
 false = spring-centred stick Y (-1 .. +1).
@@ -18,9 +21,11 @@ false = spring-centred stick Y (-1 .. +1).
 There is NO release button (step 13q2, owner 2026-10-31: an accidental release in the middle of a
 manoeuvre is dangerous; driving ends by choosing another mode); an old file's "release_button" is ignored.
 
-RemoteSender sends {"t":"rjoy", "seq", "ts", "x", "lever" | "y", "confirm"}
+RemoteSender sends {"t":"rjoy", "seq", "ts", "x", "lever" | "y", "confirm", "trigger"}
 at 30 Hz through the gateway. The AURIX only uses it while this station holds
-HELM: steering / throttle in REMOTE MANUAL and MANEUVER, CONFIRM in UNCREWED.
+HELM: steering / throttle in REMOTE MANUAL and MANEUVER, CONFIRM in UNCREWED; step 13q3: in an
+UNCREWED AUTO / HDG LOCK stick X > 15 % = steering by hand inside the mode (back after 2 s centred),
+the lever a power ceiling (reduction only), the trigger = the new HDG LOCK heading.
 """
 import ctypes
 import json
@@ -34,7 +39,8 @@ CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shore_joystic
 DEFAULT = {"steer": {"dev": 0, "axis": "X", "invert": False},
            "thr": {"dev": 1, "axis": "Z", "invert": True, "lever": True},
            "save_button": {"dev": 0, "button": 3},
-           "confirm_button": {"dev": 1, "button": 4}}
+           "confirm_button": {"dev": 1, "button": 4},
+           "trigger_button": {"dev": 0, "button": 1}}
 
 
 # --- reading ---------------------------------------------------------------------------
@@ -157,7 +163,7 @@ def save_config(c):
 
 
 def to_remote(js, cfg):
-    """Joystick readings -> {"x", "lever" or "y", "confirm"} or None if a device is missing."""
+    """Joystick readings -> {"x", "lever" or "y", "confirm", "trigger"} or None if a device is missing."""
     s, t = cfg["steer"], cfg["thr"]
     a, b = js.read(s["dev"]), js.read(t["dev"])
     if not a["ok"] or not b["ok"]:
@@ -169,7 +175,7 @@ def to_remote(js, cfg):
         out["lever"] = max(0.0, min(1.0, (v + 1.0) / 2.0))
     else:
         out["y"] = max(-1.0, min(1.0, v))
-    for key, name in (("confirm_button", "confirm"),):
+    for key, name in (("confirm_button", "confirm"), ("trigger_button", "trigger")):
         rb = cfg.get(key)
         if rb:
             r = js.read(rb["dev"])

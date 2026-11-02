@@ -242,17 +242,28 @@ class Gateway:
         stops (never a heading); a geofence breach -> the AURIX goes to STANDBY."""
         return o.get("mode") == proto.MODE_HDG_LOCK and o.get("profile") == proto.PROFILE_UNCREWED
 
+    @staticmethod
+    def auto_uncrewed(o):
+        """UNCREWED AUTO (step 13q3, owner 2026-10-31 C3): the captain may steer by hand with the shore stick; steering
+        out of the geofence by hand -> the AURIX goes to STANDBY (the fence bit; ignored while AUTO steers itself)."""
+        return o.get("mode") == proto.MODE_AUTO and o.get("profile") == proto.PROFILE_UNCREWED
+
+    def fence_out(self, o):
+        """Outside the geofence, or closer to its edge than the position uncertainty (None = no fence / no position)."""
+        if not self.geofence.poly or o.get("lat") is None:
+            return None
+        from geofence import inside, edge_m
+        unc = o.get("unc") or 0.0
+        return (not inside(self.geofence.poly, o["lat"], o["lon"]) or
+                edge_m(self.geofence.poly, o["lat"], o["lon"]) <= unc)
+
     def uh_check(self, o):
         """UNCREWED HDG LOCK (step 13q2d, review MED-1 / MED-2): -> (why, fence_out). why = the reason to STOP
         (English) when the gateway cannot evaluate (no position, no charts, the position too uncertain) or shallow
         water / water without chart data lies within the position uncertainty; fence_out = outside the geofence
         or closer to its edge than the uncertainty (None = no fence / no position)."""
         unc = o.get("unc") or 0.0
-        fence = None
-        if self.geofence.poly and o.get("lat") is not None:
-            from geofence import inside, edge_m
-            fence = (not inside(self.geofence.poly, o["lat"], o["lon"]) or
-                     edge_m(self.geofence.poly, o["lat"], o["lon"]) <= unc)
+        fence = self.fence_out(o)
         why = self.shallow.uh_unknown(o)
         if why:
             return why, fence
@@ -420,7 +431,7 @@ class Gateway:
                 self.avoider.hdg_set_sent()
                 self.hdg_set_until = 0.0
         sh = self.shallow.watch(o) if o["lat"] is not None else None
-        uh_why, fence = self.uh_check(o) if uh else (None, None)
+        uh_why, fence = self.uh_check(o) if uh else (None, self.fence_out(o) if self.auto_uncrewed(o) else None)
         if uh_why:
             # UNCREWED HDG LOCK and the gateway can't evaluate (no position / charts / too uncertain) or shallow water
             # within the uncertainty: no data = shallow = STOP (never a 'no danger' lease built on missing data)
@@ -442,7 +453,8 @@ class Gateway:
                 req["kind"] = proto.NAV_CAP
         req["alarm"] |= v_alarm
         req["reason"] |= v_why
-        # UNCREWED HDG LOCK outside the geofence: the AURIX goes to STANDBY (alarm bit 16; ignored in other modes)
+        # UNCREWED HDG LOCK outside the geofence: the AURIX goes to STANDBY (alarm bit 16); step 13q3: also UNCREWED AUTO
+        # (STANDBY only while the captain steers by hand, ignored while AUTO steers itself); ignored in other modes
         if fence:                                          # (uh_check: outside, or nearer the edge than the uncertainty)
             req["alarm"] |= ALM_FENCE
         self.nav_state = dict(self.avoider.status(), shallow=sh, fence_out=fence)

@@ -472,6 +472,39 @@ typedef struct {
     uint32_t lease_stops, shore_stops, lease_refused, shore_refused;
 } sb_shdg_t;
 
+/* Step 13q3 (owner 2026-10-31, docs/owner_findings_2026-10-31.md C3): the SHORE STICK OVERRIDE inside AUTO / HDG
+ * LOCK - UNCREWED only, the HELM station's shore joystick only (CREWED unchanged: the onboard joystick takes full
+ * MANUAL at once). Stick X beyond SB_SOVR_X_ON = temporary hand steering (the REMOTE rate limit, the outboard from
+ * where it is); centred (|x| < the centre tolerance) for SB_SOVR_BACK_MS = back to the mode's own steering: AUTO
+ * rejoins the line to the active waypoint (its own guidance), HDG LOCK goes back to the OLD locked heading - unless
+ * the TRIGGER (GW_RJOY flags b3) was pressed while steering with no CONFIRM pending: then the heading at the press is
+ * the new locked heading. The throttle is never touched by the stick (AUTO's speed control / the held UNCREWED HDG
+ * LOCK throttle go on); the TWCS lever is a power CEILING in AUTO too (reduction only, pickup, never a mode / gear
+ * change). Shore data stale while steering by hand (the REMOTE 0.3 s rule) = idle + neutral at once + REMOTE DRIVING
+ * LINK LOST, the heading held, STANDBY after remote_lost_ms. A geofence breach while steering by hand in AUTO =
+ * STANDBY (as in UNCREWED HDG LOCK). Navreq caps, vision, STANDBY, faults: unchanged. */
+#define SB_SOVR_X_ON       0.15f    /* |stick X| above this = the override starts (owner: 15 %) */
+#define SB_SOVR_BACK_MS    2000u    /* stick centred this long = back to the mode's steering */
+#define SB_SOVR_NEWHDG_MS  3000u    /* "NEW HEADING 245" shown this long after a trigger */
+typedef struct {
+    bool     armed;             /* the shore stick X was seen centred (fresh) since the mode began */
+    bool     active;            /* steering by hand now (the core in angle mode) */
+    bool     back;              /* active + the stick centred: counting SB_SOVR_BACK_MS */
+    bool     lost;              /* AUTO: the shore data went stale while steering by hand (idle + N, STANDBY after 5 s) */
+    bool     ceil_on;           /* AUTO: the lever ceiling has engaged (pickup) */
+    float    ceil_pct;          /* AUTO: the lever ceiling */
+    bool     ceil_cut;          /* AUTO: the ceiling lowers the throttle demand now */
+    int8_t   ceil_side;         /* AUTO pickup: the lever above (1) / below (0) the throttle last step, -1 not yet */
+    float    steer_cmd;         /* the rate-limited outboard angle command */
+    uint32_t centred_ms;        /* when the stick came back to the centre */
+    uint32_t lost_ms;
+    uint32_t newhdg_ms;         /* the last trigger heading (0 none) */
+    float    newhdg_deg;
+    bool     trig_edge;         /* the trigger pressed since the last step (HELM station, fresh press) */
+    bool     trig_held;
+    uint32_t starts, backs, newhdgs, trig_ignored, losses, fence_stops, ceil_cuts;
+} sb_sovr_t;
+
 /* The HELM station's (shore captain's) joystick as a CONFIRM source in
  * UNCREWED: every GW_RJOY packet of the HELM station, in any mode. */
 typedef struct {
@@ -751,6 +784,7 @@ typedef struct {
     sb_lever_t  lev;           /* USB throttle lever: mapping and pickup */
     sb_remote_t remote;        /* REMOTE MANUAL: the shore joystick */
     sb_shdg_t   shdg;          /* step 13q2c: UNCREWED HDG LOCK (the shore captain's held throttle) */
+    sb_sovr_t   sovr;          /* step 13q3: the shore stick override in UNCREWED AUTO / HDG LOCK */
     sb_save_t   save;          /* video SAVE requests for the gateway */
     struct {                   /* second GPS from the gateway (AIS device), section A */
         double   lat, lon;
@@ -971,6 +1005,11 @@ sb_result_t sb_maneuver_request(sb_t *s, uint8_t station);
 sb_result_t sb_hdg_lock_shore(sb_t *s, uint8_t station);
 /* true while UNCREWED HDG LOCK runs */
 bool sb_shore_hdg(const sb_t *s);
+/* step 13q3: true in AUTO with the UNCREWED profile (the shore stick override + lever ceiling apply) */
+bool sb_shore_auto(const sb_t *s);
+/* step 13q3: the HELM station's shore joystick TRIGGER (GW_RJOY flags b3): a fresh press in UNCREWED HDG LOCK while
+ * steering by hand with no CONFIRM pending = the current heading becomes the locked heading (sb_sovr_t) */
+void sb_shore_trigger(sb_t *s, uint8_t station, bool held);
 
 /* The HELM station's joystick (every GW_RJOY packet, any mode): the CONFIRM
  * source in UNCREWED. x, y -1..1, lever 0..1. */

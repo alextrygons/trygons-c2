@@ -979,6 +979,14 @@ def decode_telem2(payload: bytes) -> dict:
         off += st.size
     if "gw_state" in d:
         d["gw_state_name"] = GW_STATES[d["gw_state"]] if d["gw_state"] < 3 else "?"
+    if "rjoy_flags" in d:
+        # step 13q3 (owner 2026-10-31 C3): the shore stick override in UNCREWED AUTO / HDG LOCK (link.c group D flags)
+        f = d["rjoy_flags"]
+        d["ov_hand"] = bool(f & 8)          # steering by hand with the shore stick (the mode waits)
+        d["ov_back"] = bool(f & 16)         # the stick centred: back to the mode's steering in 2 s
+        d["ov_newhdg"] = bool(f & 32)       # NEW HEADING (the trigger, 3 s; the value = the target heading)
+        d["ov_ceiling"] = bool(f & 64)      # the lever ceiling lowers the throttle now
+        d["ov_lost"] = bool(f & 128)        # AUTO: the shore data lost while steering by hand (idle + N, STANDBY 5 s)
     if "nav_flags" in d:
         d["nav_fresh"] = bool(d["nav_flags"] & 1)
         d["nav_lost"] = bool(d["nav_flags"] & 2)

@@ -4191,6 +4191,8 @@ def section_uh():
         s.aurix = types.SimpleNamespace(connected=link)
         s.telem_fresh = types.MethodType(G.telem_fresh, s)
         s.uh_check = types.MethodType(G.uh_check, s)
+        s.fence_out = types.MethodType(G.fence_out, s)
+        s.auto_uncrewed = G.auto_uncrewed
         s.check_hdg_shore = types.MethodType(G.check_hdg_shore, s)
         s.nav_compose = types.MethodType(G.nav_compose, s)
         s.audits = []
@@ -4400,6 +4402,29 @@ def section_uh():
            "UNCREWED HDG LOCK %s sent %s errors %d audits %s; AUTO %s sent %d; CREWED %s sent %d; old telemetry %s sent %d" % (
                res["uh"], rq, st_u.nav_errors, st_u.audits, res["auto"], len(st_a2.sent), res["crewed"],
                len(st_c.sent), res["old"], len(st_old2.sent)))
+
+
+    # UH11 (step 13q3, owner 2026-10-31 C3) UNCREWED AUTO: the shore captain may steer by hand inside AUTO - the fence
+    # bit (16) is sent outside the geofence also in UNCREWED AUTO (the AURIX: STANDBY only while steering by hand);
+    # CREWED AUTO: none; the stick's TRIGGER is forwarded as GW_RJOY flags b3 (the AURIX: the new HDG LOCK heading)
+    a = proto.MODE_AUTO
+    au_out = G.nav_compose(stub(a, U, fence=box_out))
+    au_in = G.nav_compose(stub(a, U, fence=box_in))
+    ac_out = G.nav_compose(stub(a, C, fence=box_out))
+    import struct as _st
+    import stations as stmod
+    sent = []
+    fake = types.SimpleNamespace(gw=types.SimpleNamespace(telem2={"helm": 5}, aurix=types.SimpleNamespace(
+        send=lambda t, b: sent.append((t, b)))), age=lambda st_, ts: 0.05)
+    st5 = types.SimpleNamespace(id=5, role="PILOT", rtt_ms=40)
+    stmod.StationServer._rjoy(fake, st5, {"seq": 1, "ts": 0.0, "x": 0.4, "lever": 0.6, "trigger": True})
+    stmod.StationServer._rjoy(fake, st5, {"seq": 2, "ts": 0.0, "x": 0.4, "lever": 0.6})
+    fl = [_st.unpack("<BHHHhhHBB", b)[-1] for t, b in sent if t == proto.T_GW_RJOY]
+    report("UH11 (13q3) UNCREWED AUTO outside the geofence -> alarm 16 (STANDBY only while steering by hand); "
+           "CREWED AUTO none; the TRIGGER -> GW_RJOY flags b3",
+           au_out["alarm"] & 16 and not au_in["alarm"] & 16 and not ac_out["alarm"] & 16 and fl == [1 | 8, 1],
+           "UNCREWED AUTO outside %s inside %s, CREWED AUTO outside %s; flags %s" % (
+               au_out["alarm"], au_in["alarm"], ac_out["alarm"], fl))
 
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,

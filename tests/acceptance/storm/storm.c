@@ -22,6 +22,9 @@
  * Step 13q2c: UNCREWED HDG LOCK from REMOTE / MANEUVER by the HELM captain's command (E_SHDG, after some UNCREWED
  * REMOTE / MANEUVER requests; navigation requests with a STOP cap / a geofence breach); invariants I66-I68;
  * step 13q2d: I69 (no shore data / GPS lost in UNCREWED HDG LOCK).
+ * Step 13q3: the shore stick override in UNCREWED AUTO / HDG LOCK (stick X > 15 % = steering by hand inside the mode,
+ * the lever a power ceiling in AUTO, the TRIGGER = the new HDG LOCK heading; E_TRIG, the shore stream also in UNCREWED
+ * AUTO); invariants I71-I74.
  * Step 13q2e: the storm's gateway sends its "no danger" navigation request at 2 Hz (like nav_loop) while an
  * UNCREWED boat is in REMOTE / MANEUVER / HDG LOCK; E_NAVBEAT stops it for a while (nav_compose broken / frames
  * lost on the UART) and some shore reports say 40 m; invariant I70 (lapsed / never lease, the shore within the stop
@@ -86,7 +89,7 @@ typedef enum {
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
     E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN, E_PC_CONFONLY, E_LINK, E_SHDG,
-    E_NAVBEAT,
+    E_NAVBEAT, E_TRIG,
     E_COUNT
 } ev_kind_t;
 
@@ -109,7 +112,8 @@ static const char *EV_NAMES[E_COUNT] = {
     "PC CONFIRM_ONLY (academy practical test: a question for the onboard CONFIRM that changes nothing)",
     "LINK TIME (the captain sets 1..70 s / the HELM station goes silent / is heard again / open sea)",
     "shore HDG LOCK (UNCREWED: the HELM captain's mode command from REMOTE / MANEUVER; stick centred mostly)",
-    "gateway navreq heartbeat stops for a while (nav_compose broken / frames lost)"
+    "gateway navreq heartbeat stops for a while (nav_compose broken / frames lost)",
+    "shore TRIGGER (13q3: the stick moved first in half of them; UNCREWED HDG LOCK steering by hand = new heading)"
 };
 
 typedef struct {
@@ -149,6 +153,64 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         s->can = c < 20u ? 1u : (c < 35u ? 2u : 0u);
     }
     uint32_t t = 2000u;
+    /* step 13q3 (I71-I74): half of the UNCREWED episodes start with the shore captain's own drive (no rng draw: the
+     * other draws stay what they were) - half of those in AUTO (below), the others: HELM, REMOTE, the lever forward,
+     * HDG LOCK, steering by hand with the stick +
+     * the TRIGGER (the new heading), the trigger while not steering, steering + letting go (the old heading), steering
+     * + stale data (idle + neutral, STANDBY) */
+    if (s->uncrewed && ((seed * 2246822519u) >> 7) % 2u == 0u) {
+        static const struct { uint32_t dt; uint8_t kind; int a, b, c; float f, g; } SCRIPT[] = {
+            {  9000u, E_HELM_BACK, 0, 0, 0, 0.0f, 0.0f },
+            {   100u, E_SHORE, 2, 0, 0, 0.0f, 0.0f },
+            {   100u, E_REMOTE_ON, 0, 0, 0, 0.0f, 0.0f },       /* stick centred, lever neutral */
+            {  1300u, E_REMOTE_REQ, 0, 0, 0, 0.0f, 0.0f },
+            {  1000u, E_REMOTE_ON, 0, 0, 0, 0.0f, 0.6f },       /* lever 0.8 */
+            {  6500u, E_SHDG, 0, 0, 600, 0.0f, 0.6f },
+            {  1500u, E_REMOTE_ON, 0, 0, 0, 0.7f, 0.6f },       /* steering by hand */
+            {  3500u, E_TRIG, 900, 0, 0, 0.0f, 0.0f },          /* the new heading */
+            {  1000u, E_REMOTE_ON, 0, 0, 0, 0.0f, 0.6f },
+            {  5000u, E_TRIG, 900, 0, 0, 0.0f, 0.0f },          /* not steering: nothing */
+            {  2000u, E_REMOTE_ON, 0, 0, 0, -0.7f, 0.6f },
+            {  5000u, E_REMOTE_ON, 0, 0, 0, 0.0f, 0.6f },       /* let go: the old heading */
+            {  5000u, E_REMOTE_ON, 0, 0, 0, 0.7f, 0.6f },
+            {  3000u, E_REMOTE_STALE, 0, 0, 0, 0.0f, 0.0f },    /* stale while steering: idle + N, STANDBY */
+            {  7000u, E_REMOTE_ON, 0, 0, 0, 0.0f, 0.0f },
+        };
+        /* the other half: UNCREWED AUTO - the lever up past the throttle and back (the ceiling cuts), steering by hand,
+         * stale data while steering (idle + neutral at once, STANDBY) */
+        static const struct { uint32_t dt; uint8_t kind; int a, b, c; float f, g; } SCRIPT_A[] = {
+            {  9000u, E_HELM_BACK, 0, 0, 0, 0.0f, 0.0f },
+            {   100u, E_SHORE, 2, 0, 0, 0.0f, 0.0f },
+            {   100u, E_REMOTE_ON, 0, 0, 0, 0.0f, 0.0f },
+            {   300u, E_PC_PROG, 2, 0, 0, 0.0f, 0.0f },
+            {   500u, E_PC_AUTO_START, 0, 0, 0, 0.0f, 0.0f },
+            {  1000u, E_SCONFIRM, 0, 0, 0, 0.0f, 0.0f },
+            { 12000u, E_REMOTE_ON, 0, 0, 0, 0.0f, 1.0f },       /* lever full: up past the throttle */
+            {  4000u, E_REMOTE_ON, 0, 0, 0, 0.0f, 0.25f },      /* lever back: the ceiling cuts */
+            {  6000u, E_REMOTE_ON, 0, 0, 0, 0.7f, 0.25f },      /* steering by hand */
+            {  4000u, E_REMOTE_ON, 0, 0, 0, 0.0f, 1.0f },       /* let go, lever up */
+            {  6000u, E_REMOTE_ON, 0, 0, 0, -0.7f, 1.0f },
+            {  3000u, E_REMOTE_STALE, 0, 0, 0, 0.0f, 0.0f },    /* stale while steering: idle + N, STANDBY */
+            {  7000u, E_REMOTE_ON, 0, 0, 0, 0.0f, 0.0f },
+        };
+        bool auto_drive = ((seed * 2246822519u) >> 9) % 2u == 0u;
+        size_t ns = auto_drive ? sizeof SCRIPT_A / sizeof SCRIPT_A[0] : sizeof SCRIPT / sizeof SCRIPT[0];
+        for (size_t i = 0; i < ns && s->n < MAX_EV; i++) {
+            ev_t *e = &s->ev[s->n];
+            memset(e, 0, sizeof *e);
+            uint32_t dt = auto_drive ? SCRIPT_A[i].dt : SCRIPT[i].dt;
+            t += dt;
+            e->t = t;
+            e->kind = auto_drive ? SCRIPT_A[i].kind : SCRIPT[i].kind;
+            e->a = auto_drive ? SCRIPT_A[i].a : SCRIPT[i].a;
+            e->b = auto_drive ? SCRIPT_A[i].b : SCRIPT[i].b;
+            e->c = auto_drive ? SCRIPT_A[i].c : SCRIPT[i].c;
+            e->f = auto_drive ? SCRIPT_A[i].f : SCRIPT[i].f;
+            e->g = auto_drive ? SCRIPT_A[i].g : SCRIPT[i].g;
+            s->on[s->n] = true;
+            s->n++;
+        }
+    }
     /* the boat should be doing something: a program and a power raise early on */
     while (t < dur_ms && s->n < MAX_EV) {
         t += 200u + (uint32_t)rndi(&r, 9000);
@@ -220,6 +282,8 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         if (k == E_GW && e->b >= 700) e->kind = E_LINK;                   /* (and some gateway-status draws) */
         /* step 13q2c (I66): CREWED, some release draws are the shore HDG LOCK command instead (it must be refused) */
         if (k == E_REMOTE_RELEASE && !s->uncrewed && e->a >= 600) e->kind = E_SHDG;
+        /* step 13q3 (I74): some stale-data draws are a shore TRIGGER press instead */
+        if (k == E_REMOTE_STALE && e->c >= 450) e->kind = E_TRIG;
         s->on[s->n] = true;
         s->n++;
         /* DP: mostly a START (centre the stick, STANDBY, let the boat slow down first) + the CONFIRM */
@@ -361,6 +425,31 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                     s->on[s->n - 1] = true;
                     t = lv->t;
                 }
+                /* step 13q3 (I71 / I74): in a third of them the captain steers by hand with the stick (HDG LOCK
+                 * waits), presses the TRIGGER while steering (the new heading) and lets the stick go */
+                if ((ea + ec) % 3 == 1 && s->n + 3 < MAX_EV) {
+                    ev_t *sx = &s->ev[s->n++];
+                    memset(sx, 0, sizeof *sx);
+                    sx->t = t + 800u;
+                    sx->kind = E_REMOTE_ON;
+                    sx->f = (eb % 2 == 0) ? 0.7f : -0.7f;
+                    sx->g = 1.0f;                                  /* (the lever full: no cut) */
+                    s->on[s->n - 1] = true;
+                    ev_t *tg = &s->ev[s->n++];
+                    memset(tg, 0, sizeof *tg);
+                    tg->t = sx->t + 2500u + (uint32_t)(eb % 4) * 500u;
+                    tg->kind = E_TRIG;
+                    tg->a = 900;                                   /* (the stick stays where it is) */
+                    s->on[s->n - 1] = true;
+                    ev_t *sc = &s->ev[s->n++];
+                    memset(sc, 0, sizeof *sc);
+                    sc->t = tg->t + 1000u;
+                    sc->kind = E_REMOTE_ON;
+                    sc->f = 0.0f;
+                    sc->g = 1.0f;
+                    s->on[s->n - 1] = true;
+                    t = sc->t;
+                }
                 /* step 13q2e (I70): in some of the others (no GPS / shore event below, no navreq) the gateway's navreq
                  * heartbeat stops for a while (nav_compose broken / frames lost on the UART) or the shore is 40 m
                  * away, 1.5-4.5 s into the HDG LOCK */
@@ -440,6 +529,8 @@ typedef struct {
     uint32_t    btn_release;
     bool        rem_stream, rem_stale;
     bool        sconf_held;         /* the shore captain's CONFIRM button */
+    bool        trig_held;          /* step 13q3: the shore stick's TRIGGER */
+    uint32_t    trig_release;
     uint8_t     shore_mode;         /* GW_SHORE the Pi sends: 0 none, 1 near (40 m), 2 far (900 m), 3 not valid */
     uint32_t    gw_off_t;           /* when the Pi went quiet (0 = it talks) */
     uint32_t    sconf_release;
@@ -696,7 +787,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 71
+#define NINV 75
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -764,7 +855,11 @@ static const char *INV_NAMES[NINV] = { "",
     "I67 UNCREWED HDG LOCK: the throttle never above its value at the entry (never rises by itself), never reverse, the gear only the entry gear or N",
     "I68 UNCREWED HDG LOCK: a navreq STOP (cap 0) = idle + neutral for the rest of it; a geofence breach = STANDBY in that step; stale shore data = idle + neutral",
     "I69 UNCREWED HDG LOCK (13q2d): never entered without valid fresh GW_SHORE / a trusted GPS; GW_SHORE missing / not valid = idle + neutral; GPS lost = held x dr_speed_factor; the DR limit = STANDBY",
-    "I70 UNCREWED HDG LOCK (13q2e): never entered without a fresh navreq lease / with the shore within the stop distance; a lapsed (or never) lease or the shore within it = idle + neutral" };
+    "I70 UNCREWED HDG LOCK (13q2e): never entered without a fresh navreq lease / with the shore within the stop distance; a lapsed (or never) lease or the shore within it = idle + neutral",
+    "I71 shore stick override (13q3): only UNCREWED in AUTO / UNCREWED HDG LOCK (never CREWED), the core in angle mode, the command within the outboard range and the REMOTE rate limit",
+    "I72 UNCREWED AUTO (13q3): the shore lever is only a ceiling (a cut demand never above it), never reverse",
+    "I73 UNCREWED AUTO (13q3): shore data lost while steering by hand = idle at once + neutral, STANDBY by remote_lost_ms; never steering by hand on stale data",
+    "I74 the TRIGGER (13q3): a new heading only in UNCREWED HDG LOCK while steering by hand, no CONFIRM pending, = the heading at the press" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -780,6 +875,7 @@ typedef struct {
     uint32_t uh_nodata_hot, uh_dr_hot;                                /* ... of them with a held throttle > 2 % */
     uint32_t uh_lapsed, uh_near, uh_lapsed_hot, uh_entry70;           /* step 13q2e (I70): steps checked, entries */
     uint32_t uh_ref_code[32];                                         /* step 13q2e: why the shore HDG LOCK was refused */
+    uint32_t ov_steps_auto, ov_steps_hdg, ov_starts, ov_newhdgs, ov_lost, ov_cut, ov_trig;  /* step 13q3 (I71-I74) */
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
 } stats_t;
@@ -919,6 +1015,9 @@ typedef struct {
     uint32_t gear_n_since28;                /* I28: the gear machine settled in N since (0 = not) */
     uint32_t rem_direct_t;                  /* I7 / I63: an UNCREWED REMOTE / MANEUVER request that started it at once */
     float    sent_x, sent_lever;            /* I63: the last shore joystick packet the storm sent */
+    bool     ov_active_prev;                /* I71-I74 (13q3): the shore stick override before this step */
+    float    ov_cmd_prev, ov_hdg_prev;
+    uint32_t ov_now_prev, ov_newhdgs_prev, ov_starts_prev;
     uint32_t sent_t;
     bool     sent_fresh;
 } chk_t;
@@ -968,6 +1067,7 @@ static void shore_packet(sb_t *s)
 {
     uint16_t age = S.rem_stale ? 900u : 40u;
     sb_shore_joy(s, S.rem_station, age, S.rx_x, 0.0f, S.rx_lever, true, S.sconf_held);
+    sb_shore_trigger(s, S.rem_station, S.trig_held);          /* step 13q3 (link.c: the same GW_RJOY, flags b3) */
     C.sent_x = S.rx_x;
     C.sent_lever = S.rx_lever;
     C.sent_t = S.t ? S.t : 1u;
@@ -1461,6 +1561,56 @@ static void check_step(void)
                                        "with the shore 40 m away (shore mode %.0f)",
                                        S.nav_tx_t ? (double)(S.t - S.nav_tx_t) : -1.0, (double)S.shore_tx_mode);
             else ok(70);
+        }
+    }
+    /* I71-I74 (step 13q3, owner 2026-10-31 C3): the shore stick override in UNCREWED AUTO / HDG LOCK */
+    {
+        const sb_sovr_t *o = &s->sovr;
+        if (o->active) {
+            if (m == MODE_AUTO) ST.ov_steps_auto++; else ST.ov_steps_hdg++;
+            bool where = s->profile == SB_PROFILE_UNCREWED && (sb_shore_auto(s) || sb_shore_hdg(s));
+            float lim = s->ap.cfg.outboard.max_angle_deg;
+            float step = s->cfg.remote_steer_rate_dps * (float)(s->now_ms - C.ov_now_prev) * 0.001f;
+            bool rate = !C.ov_active_prev || fabsf(o->steer_cmd - C.ov_cmd_prev) <= step + 0.01f;
+            if (where && s->ap.mode == AP_MODE_ANGLE && fabsf(o->steer_cmd) <= lim + 0.01f && rate) ok(71);
+            else fail(71, "steering by hand with the shore stick in mode %.0f (profile / core mode / range / rate), "
+                      "command %.2f deg", (double)m + 10.0 * (double)s->profile, (double)o->steer_cmd);
+        }
+        if (o->starts != C.ov_starts_prev) ST.ov_starts++;
+        if (s->profile == SB_PROFILE_CREWED && o->starts != C.ov_starts_prev)
+            fail(71, "a shore stick override started CREWED (mode %.0f)%.0f", (double)m, 0.0);
+        if (sb_shore_auto(s) && !forced && !inj) {
+            if (s->gear_demand == GEAR_R) fail(72, "UNCREWED AUTO gear demand reverse%.0f%.0f", 0.0, 0.0);
+            else ok(72);
+            if (o->ceil_cut) {
+                ST.ov_cut++;
+                if (s->throttle_demand <= o->ceil_pct + 0.01f) ok(72);
+                else fail(72, "UNCREWED AUTO throttle demand %.2f %% above the lever ceiling %.2f %%",
+                          (double)s->throttle_demand, (double)o->ceil_pct);
+            }
+            if (o->lost) {
+                ST.ov_lost++;
+                bool idle = s->throttle_demand <= 0.0f && s->gear_demand == GEAR_N && s->thr.stop;
+                bool late = s->now_ms - o->lost_ms > s->cfg.remote_lost_ms + 2u * AP_PERIOD_MS;
+                if (idle && !late) ok(73);
+                else fail(73, "UNCREWED AUTO after the shore data was lost while steering by hand: demand %.2f %%, "
+                          "%.0f ms since (STANDBY due)", (double)s->throttle_demand, (double)(s->now_ms - o->lost_ms));
+            }
+        }
+        /* never steering by hand on data the storm stopped (fuzzed gateway frames may carry GW_RJOY: skipped then) */
+        if (o->active && !i70_fuzzed() && C.rem_last_fresh &&
+            S.t - C.rem_last_fresh > s->cfg.remote_max_age_ms + 2u * AP_PERIOD_MS)
+            fail(73, "steering by hand with the shore stick on data %.0f ms old (mode %.0f)",
+                 (double)(S.t - C.rem_last_fresh), (double)m);
+        else if (o->active) ok(73);
+        if (o->newhdgs != C.ov_newhdgs_prev) {
+            ST.ov_newhdgs++;
+            bool by_hand = C.ov_active_prev || o->starts != C.ov_starts_prev;
+            bool right = sb_shore_hdg(s) && by_hand && C.conf_kind_prev == (uint8_t)CONF_NONE &&
+                         fabsf(autopilot_heading_error(autopilot_wrap360(C.ov_hdg_prev), o->newhdg_deg)) < 0.01f;
+            if (right) ok(74);
+            else fail(74, "a trigger heading %.1f (heading %.1f before the step) not in UNCREWED HDG LOCK steering "
+                      "by hand / with a request pending", (double)o->newhdg_deg, (double)C.ov_hdg_prev);
         }
     }
     if (m != MODE_HDG_LOCK) C.uh_session = false;
@@ -2198,7 +2348,7 @@ static void apply(const ev_t *e)
         if (e->c < 500) S.rx_lever = 0.5f + 0.5f * fabsf(e->g);
         if (S.rem_stream) {
             shore_packet(s);
-            if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_MANEUVER || sb_shore_hdg(s)) {
+            if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_MANEUVER || sb_shore_hdg(s) || sb_shore_auto(s)) {
                 sb_remote_input(s, S.rem_station, ++S.rem_seq, S.rem_stale ? 900u : 40u, 30u, S.rx_x, 0.0f, S.rx_lever,
                                 true);
                 if (!S.rem_stale) C.rem_last_fresh = S.t;
@@ -2456,6 +2606,13 @@ static void apply(const ev_t *e)
         S.nav_beat_next = S.t + 1000u;                                     /* (13q2e: the heartbeat waits a bit) */
         break;
     }
+    case E_TRIG:
+        /* step 13q3 (I74): the shore stick's TRIGGER - in half of them the stick moved first (steering by hand) */
+        if (e->a < 500) S.rx_x = (e->f >= 0.0f ? 0.3f : -0.3f) + 0.6f * e->f;
+        S.trig_held = true;
+        S.trig_release = S.t + 150u;
+        ST.ov_trig++;
+        break;
     case E_NAVBEAT: S.nav_beat_off_until = (S.t + 3500u + (uint32_t)(e->a % 8) * 1000u) | 1u; break;
     case E_FUZZ_USB:
     case E_FUZZ_GW: {
@@ -2594,6 +2751,7 @@ static void run_until(uint32_t until)
                 if (S.confirm_held && AT_OR_AFTER(S.t, S.confirm_release)) { S.confirm_held = false; joy_apply(); }
                 if ((S.take_held || S.auto_held) && AT_OR_AFTER(S.t, S.btn_release)) { S.take_held = S.auto_held = false; joy_apply(); }
                 if (S.sconf_held && AT_OR_AFTER(S.t, S.sconf_release)) S.sconf_held = false;
+                if (S.trig_held && AT_OR_AFTER(S.t, S.trig_release)) S.trig_held = false;     /* 13q3 */
                 if (S.crank_until && AT_OR_AFTER(S.t, S.crank_until)) S.crank_until = 0u;
                 if (S.crank_until && AT_OR_AFTER(S.t, S.crank_next)) {
                     S.crank_next = S.t + 200u;
@@ -2609,7 +2767,8 @@ static void run_until(uint32_t until)
                 }
                 if (S.rem_stream) shore_packet(&S.sb);     /* every packet: the shore CONFIRM source */
                 if (S.rem_stream && (sb_mode(&S.sb) == MODE_REMOTE || sb_mode(&S.sb) == MODE_MANEUVER ||
-                                     sb_shore_hdg(&S.sb))) {      /* (13q2c: the lever ceiling in UNCREWED HDG LOCK) */
+                                     sb_shore_hdg(&S.sb) || sb_shore_auto(&S.sb))) {
+                    /* (13q2c: the lever ceiling in UNCREWED HDG LOCK; 13q3: the override + ceiling in UNCREWED AUTO) */
                     uint16_t age = S.rem_stale ? 900u : 40u;
                     sb_remote_input(&S.sb, S.rem_station, ++S.rem_seq, age, 30u, S.rx_x, 0.0f, S.rx_lever, true);
                     if (!S.rem_stale) C.rem_last_fresh = S.t;
@@ -2617,6 +2776,12 @@ static void run_until(uint32_t until)
                     C.rem_last_fresh = S.t;
                 }
                 C.conf_kind_prev = (uint8_t)S.sb.confirm.kind;     /* I58: the request pending before this step */
+                C.ov_active_prev = S.sb.sovr.active;              /* I71-I74 (13q3): the override before this step */
+                C.ov_cmd_prev = S.sb.sovr.steer_cmd;
+                C.ov_now_prev = S.sb.now_ms;
+                C.ov_hdg_prev = S.sb.ap.heading;
+                C.ov_newhdgs_prev = S.sb.sovr.newhdgs;
+                C.ov_starts_prev = S.sb.sovr.starts;
                 uint32_t t0 = hal_micros();
                 sb_step(&S.sb);
                 if (s_log) logcore0_step(&S.sb);
@@ -2794,6 +2959,10 @@ static void report(int episodes, double hours)
     printf("UNCREWED HDG LOCK lease / shore (step 13q2e, I70): %lu entries judged, %lu lapsed-lease steps (%lu with a "
            "held throttle), %lu shore-near steps\n", (unsigned long)ST.uh_entry70, (unsigned long)ST.uh_lapsed,
            (unsigned long)ST.uh_lapsed_hot, (unsigned long)ST.uh_near);
+    printf("Shore stick override (step 13q3, I71-I74): %lu steps by hand in AUTO, %lu in HDG LOCK, %lu starts, %lu new "
+           "headings (%lu trigger presses), %lu stale-data stops, %lu lever-ceiling steps\n", (unsigned long)ST.ov_steps_auto,
+           (unsigned long)ST.ov_steps_hdg, (unsigned long)ST.ov_starts, (unsigned long)ST.ov_newhdgs,
+           (unsigned long)ST.ov_trig, (unsigned long)ST.ov_lost, (unsigned long)ST.ov_cut);
     printf("UNCREWED HDG LOCK refused by result code:");
     for (int i = 0; i < 32; i++) if (ST.uh_ref_code[i]) printf(" %d: %lu", i, (unsigned long)ST.uh_ref_code[i]);
     printf("\n");

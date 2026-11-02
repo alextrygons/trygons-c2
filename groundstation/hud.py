@@ -20,6 +20,7 @@ import os
 
 import i18n
 import theme
+from alerts import override_texts
 from i18n import T
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -455,6 +456,9 @@ class Hud:
             parts.append((T("lt.banner", s=d.get("lt_set")), self.pal["caution"], False))
         # lay the parts out in one line, centred; shrink together if the line is too long
         size = self.f_comm
+        ov = override_texts(d)                     # step 13q3: a second line below it - both must fit the box
+        if ov:
+            size = max(9, min(size, int((y1 - yl - 4) / 2.6)))
         while True:
             gap = size * 0.9
             widths = [self.measure(p[0], size, True) for p in parts]
@@ -469,6 +473,15 @@ class Hud:
                           alpha=110)
             self.text((xs, yl), txt, "comm", size=size, bold=True, fill=col, max_w=x1 - xs - 4, box=r)
             xs += tw + gap
+        # step 13q3 (owner 2026-10-31 C3): the shore stick override - "MANUAL STEERING - AUTO waiting", "NEW HEADING
+        # 245°" ... in the mode box itself (the driver looks here first), under the comm line; DISPLAY ONLY
+        if ov:
+            yo = yl + size * 1.35
+            fs = size
+            if yo + fs * 1.2 <= y1:
+                col = self.pal["warn"] if any(lv == "warn" for _t, _x, lv in ov) else self.pal["caution"]
+                self.text((cx, yo), "   ".join(x for _t, x, _lv in ov), "override", size=fs, bold=True, fill=col,
+                          anchor="n", max_w=w - 12, box=r)
 
     def master(self, name, s):
         x0, y0, x1, y1 = self.R(name)

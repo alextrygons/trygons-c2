@@ -163,6 +163,10 @@ static bool remote_like(sb_mode_t m);
 static float remote_steer(sb_t *s, float dt);
 static void shdg_enter(sb_t *s, sb_mode_t from);
 static float remote_cap_f(const sb_t *s);
+static float lever_ceiling_pct(const sb_t *s, const sb_lever_side_t *side);
+static void sovr_reset(sb_t *s, sb_mode_t to);
+static void sovr_step(sb_t *s, float dt);
+static void sovr_auto(sb_t *s);
 
 static void lever_standard(sb_t *s)
 {
@@ -681,6 +685,12 @@ static void nav_step(sb_t *s)
             alarm2_on(s, SB_ALM2_GEOFENCE);
             s->shdg.fence_stops++;
             sb_request_mode(s, MODE_STANDBY, WHY_GEOFENCE);
+        } else if ((n->alarm & SB_NAV_ALM_FENCE) && sb_shore_auto(s) && s->sovr.active) {
+            /* step 13q3: steering AUTO by hand out of the geofence = the same STANDBY (AUTO's own route was checked
+             * inside it; not steering by hand: the bit is ignored, AUTO unchanged) */
+            alarm2_on(s, SB_ALM2_GEOFENCE);
+            s->sovr.fence_stops++;
+            sb_request_mode(s, MODE_STANDBY, WHY_GEOFENCE);
         }
         if (n->kind == SB_NAV_HDG_SET && (!n->hdg_any || n->seq != n->hdg_seq_done) && sb_mode(s) == MODE_HDG_LOCK &&
             n->rx_mode == (uint8_t)MODE_HDG_LOCK && !s->hdg_compass_lost) {
@@ -978,6 +988,7 @@ static void on_enter(sb_t *s, sb_mode_t from, sb_mode_t to)
     if (from == MODE_AUTO && !s->autop.finished) s->autop.suspended = true;   /* resume: PC + CONFIRM */
     if (from == MODE_REMOTE || from == MODE_MANEUVER) s->remote.state = SB_REMOTE_OFF;
     s->shdg.on = false;                     /* (UNCREWED HDG LOCK: set again below when it is entered) */
+    sovr_reset(s, to);                      /* step 13q3: an override never carries over (heading hold first) */
     bool hdg_fault_steer = s->hdg_compass_lost &&
                            (s->stop_steer == STOP_STEER_GYRO || s->stop_steer == STOP_STEER_CENTER);
     s->hdg_compass_lost = false;
@@ -1518,8 +1529,10 @@ static void read_inputs(sb_t *s, ap_inputs_t *in, uint32_t buttons)
     }
 
     if (sb_mode(s) != MODE_MANUAL && s->hdg_reverse) in->angle_cmd_deg = s->hold_angle;   /* hold still */
-    if (sb_mode(s) == MODE_HDG_LOCK && s->hdg_reverse && !s->hdg_compass_lost) {
-        /* heading hold paused: the course buttons still move the locked heading */
+    if (s->sovr.active) in->angle_cmd_deg = s->sovr.steer_cmd;   /* step 13q3: the shore stick steers by hand */
+    if (sb_mode(s) == MODE_HDG_LOCK && (s->hdg_reverse || s->sovr.active) && !s->hdg_compass_lost) {
+        /* heading hold paused (or the shore stick steering by hand): the course buttons still move the locked
+         * heading */
         float dlt = 0.0f;
         if (buttons & HAL_BTN_BIT(HAL_BTN_MINUS_1))  dlt -= 1.0f;
         if (buttons & HAL_BTN_BIT(HAL_BTN_PLUS_1))   dlt += 1.0f;
@@ -1770,7 +1783,14 @@ void sb_remote_input(sb_t *s, uint8_t station, uint16_t seq, uint16_t age_ms, ui
                      float x, float y, float lever, bool has_lever)
 {
     sb_remote_t *r = &s->remote;
-    if (!(remote_like(sb_mode(s)) || sb_shore_hdg(s)) || station != r->station) {   /* (13q2c: the lever ceiling) */
+    if (sb_shore_auto(s) && station >= 2u && station == s->helm && station != r->station) {
+        /* step 13q3: UNCREWED AUTO follows the HELM station (a new captain: its own packet sequence, no old stick) */
+        r->station = station;
+        r->have = false;
+        r->x = r->y = 0.0f;
+    }
+    /* (13q2c: the lever ceiling in UNCREWED HDG LOCK; 13q3: the override + the lever ceiling in UNCREWED AUTO) */
+    if (!(remote_like(sb_mode(s)) || sb_shore_hdg(s) || sb_shore_auto(s)) || station != r->station) {
         r->ignored++;
         return;
     }
@@ -2133,15 +2153,218 @@ static void shdg_throttle(sb_t *s)
     /* the shore lever = a power CEILING (reduction only; it engages once it is at / below the throttle) */
     float out = h->hold_pct;
     if (r->has_lever && h->hold_gear == GEAR_F) {
-        float hi = s->joy.cfg.nz_hi;
-        float uf = (r->lever > hi) ? (r->lever - hi) / (1.0f - hi) : 0.0f;
-        float ceil = lever_side(&r->lev.fwd, uf);
+        float ceil = lever_ceiling_pct(s, &r->lev.fwd);
         if (!h->ceil_on && ceil <= out + 0.5f) h->ceil_on = true;
         h->ceil_pct = ceil;
         if (h->ceil_on && ceil < out) out = ceil;
     }
     s->gear_demand = h->hold_gear;
     s->throttle_demand = (h->hold_gear == GEAR_F) ? fmaxf(out, 0.0f) : 0.0f;
+}
+
+/* --- the shore stick override in UNCREWED AUTO / HDG LOCK (step 13q3, owner 2026-10-31, C3) -------------------
+ *
+ * Nobody on board: the HELM captain's shore stick X may steer by hand inside AUTO / HDG LOCK without leaving the
+ * mode (sb_sovr_t). The throttle is never touched by the stick; in AUTO the lever is a power ceiling (as in UNCREWED
+ * HDG LOCK). CREWED: none of this (the onboard joystick takes full MANUAL at once, unchanged). */
+
+bool sb_shore_auto(const sb_t *s)
+{
+    return sb_mode(s) == MODE_AUTO && s->profile == SB_PROFILE_UNCREWED;
+}
+
+static bool sovr_mode(const sb_t *s)
+{
+    return sb_shore_auto(s) || sb_shore_hdg(s);
+}
+
+void sb_shore_trigger(sb_t *s, uint8_t station, bool held)
+{
+    sb_sovr_t *o = &s->sovr;
+    if (station < 2u || station != s->helm) return;             /* only the HELM station's joystick */
+    if (held && !o->trig_held) o->trig_edge = true;              /* a fresh press only (never a held trigger) */
+    o->trig_held = held;
+}
+
+/* the HELM station's stick data fresh now (the REMOTE rule: gap / old / slow) */
+static bool sovr_fresh(const sb_t *s)
+{
+    const sb_remote_t *r = &s->remote;
+    const sb_config_t *c = &s->cfg;
+    return r->have && s->helm >= 2u && r->station == s->helm && s->now_ms - r->rx_ms <= c->remote_max_age_ms &&
+           r->age_ms <= c->remote_max_age_ms && r->lat_ms <= c->remote_max_lat_ms;
+}
+
+/* back to the mode's own steering: HDG LOCK = the locked heading (old, or the trigger's), AUTO = its guidance */
+static void sovr_end(sb_t *s)
+{
+    sb_sovr_t *o = &s->sovr;
+    if (!o->active) return;
+    o->active = o->back = false;
+    float t = (sb_mode(s) == MODE_HDG_LOCK) ? s->hdg_target : s->ap.target_heading;
+    if (sb_compass_ok(s) && autopilot_engage(&s->ap, true)) autopilot_set_target(&s->ap, t);
+    else if (autopilot_gyro_ok(&s->ap)) autopilot_gyro_hold(&s->ap);
+    else autopilot_center(&s->ap);
+}
+
+/* every mode change: a running override hands the steering back to a heading hold on the current heading first (a
+ * STANDBY then keeps steering until idle + neutral, CLAUDE.md safe stop); nothing carries over into the new mode */
+static void sovr_reset(sb_t *s, sb_mode_t to)
+{
+    sb_sovr_t *o = &s->sovr;
+    if (o->active && sb_compass_ok(s) && autopilot_engage(&s->ap, true)) autopilot_set_target(&s->ap, s->ap.heading);
+    o->active = o->back = o->lost = false;
+    o->armed = false;
+    o->ceil_on = o->ceil_cut = false;
+    o->ceil_side = -1;
+    o->trig_edge = false;
+    o->newhdg_ms = 0u;
+    if (to == MODE_AUTO && s->profile == SB_PROFILE_UNCREWED) {
+        /* UNCREWED AUTO: the HELM station's stick from its next packet (never an earlier session's stick) */
+        s->remote.station = s->helm;
+        s->remote.have = false;
+        s->remote.x = s->remote.y = 0.0f;
+    }
+}
+
+/* Every step before read_inputs: start / steer / end the override, the trigger. */
+static void sovr_step(sb_t *s, float dt)
+{
+    sb_sovr_t *o = &s->sovr;
+    const sb_remote_t *r = &s->remote;
+    bool trig = o->trig_edge;
+    o->trig_edge = false;
+    if (!sovr_mode(s) || o->lost) {
+        if (trig) o->trig_ignored++;
+        return;
+    }
+    if (r->station != s->helm) {                    /* HELM moved (AUTO): the new captain's stick from its packets */
+        sovr_end(s);
+        o->armed = false;
+        if (trig) o->trig_ignored++;
+        return;
+    }
+    bool fresh = sovr_fresh(s);
+    float tol = s->joy.cfg.center_tol;
+    if (!o->armed) {                                /* the stick must be seen centred first (never a held stick) */
+        if (fresh && fabsf(r->x) < tol) o->armed = true;
+        if (trig) o->trig_ignored++;
+        return;
+    }
+    /* AUTO: only on a leg / holding (PAUSED / a STOP waypoint: idle + neutral, nothing to steer); HDG LOCK: not on the
+     * compass-lost gyro hold */
+    bool can = sb_compass_ok(s) && (sb_shore_hdg(s) ? !s->hdg_compass_lost
+                                                    : (s->autop.state == AUTO_RUN || s->autop.state == AUTO_HOLD));
+    if (!o->active) {
+        if (!(can && fresh && fabsf(r->x) > SB_SOVR_X_ON)) {
+            if (trig) o->trig_ignored++;             /* not steering: the trigger does nothing */
+            return;
+        }
+        if (sb_mode(s) == MODE_HDG_LOCK && !s->hdg_reverse) s->hdg_target = s->ap.target_heading;
+        s->hdg_reverse = false;                     /* (a paused heading hold: the hand steers now) */
+        o->active = true;
+        o->back = false;
+        o->starts++;
+        o->steer_cmd = s->ap.est_angle;             /* no steering jump */
+        autopilot_angle(&s->ap);
+    }
+    if (!can) {
+        sovr_end(s);
+        return;
+    }
+    if (!fresh) {
+        /* the shore data went stale while steering by hand: the heading held; HDG LOCK = shdg_throttle's rule (idle +
+         * neutral, STANDBY after 5 s), AUTO = the same here (sovr_auto) - never resumes by itself */
+        sovr_end(s);
+        if (sb_shore_auto(s)) {
+            autopilot_set_target(&s->ap, s->ap.heading);
+            o->lost = true;
+            o->lost_ms = s->now_ms;
+            o->losses++;
+            alarm_on(s, SB_ALM_REMOTE_DRIVE);
+        }
+        return;
+    }
+    if (trig) {
+        /* HDG LOCK: the heading NOW becomes the locked heading (never with a request pending: the trigger answers that
+         * on the station, owner D "one press never does two things") */
+        if (sb_shore_hdg(s) && s->confirm.kind == CONF_NONE) {
+            s->hdg_target = autopilot_wrap360(s->ap.heading);
+            autopilot_set_target(&s->ap, s->hdg_target);
+            o->newhdg_deg = s->hdg_target;
+            o->newhdg_ms = s->now_ms ? s->now_ms : 1u;
+            o->newhdgs++;
+            if (fabsf(r->x) <= SB_SOVR_X_ON) {       /* let go already: hold the new heading at once */
+                sovr_end(s);
+                o->backs++;
+                return;
+            }
+        } else {
+            o->trig_ignored++;
+        }
+    }
+    /* steering by hand: X -> outboard angle (deadband), the REMOTE rate limit */
+    float step = s->cfg.remote_steer_rate_dps * dt;
+    o->steer_cmd += clampf(stick_angle(s, r->x) - o->steer_cmd, -step, step);
+    if (fabsf(r->x) < tol) {
+        if (!o->back) {
+            o->back = true;
+            o->centred_ms = s->now_ms;
+        } else if (s->now_ms - o->centred_ms >= SB_SOVR_BACK_MS) {
+            sovr_end(s);
+            o->backs++;
+        }
+    } else {
+        o->back = false;
+    }
+}
+
+/* the shore lever's travel above its neutral zone -> a power ceiling on `side` (the REMOTE lever curve in UNCREWED
+ * HDG LOCK, full lever = the power limit in AUTO). Shared by 13q2c (HDG LOCK) and 13q3 (AUTO). */
+static float lever_ceiling_pct(const sb_t *s, const sb_lever_side_t *side)
+{
+    float hi = s->joy.cfg.nz_hi;
+    float L = s->remote.lever;
+    float uf = (L > hi) ? (L - hi) / (1.0f - hi) : 0.0f;
+    return lever_side(side, uf);
+}
+
+/* UNCREWED AUTO after auto_mode: the lever ceiling (reduction only, never a gear / mode change) and the stale-data
+ * stop of an override. */
+static void sovr_auto(sb_t *s)
+{
+    sb_sovr_t *o = &s->sovr;
+    const sb_remote_t *r = &s->remote;
+    o->ceil_cut = false;
+    if (o->lost) {
+        s->gear_demand = GEAR_N;
+        s->throttle_demand = 0.0f;
+        if (s->now_ms - o->lost_ms >= s->cfg.remote_lost_ms) sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_LOST);
+        return;
+    }
+    if (!(r->have && r->station == s->helm && r->has_lever)) return;
+    sb_lever_side_t full = { 1.0f, s->plim.fwd_pct, s->plim.fwd_pct };
+    float ceil = lever_ceiling_pct(s, &full);
+    float out = s->throttle_demand;
+    /* pickup: the lever starts at neutral (the AUTO start's CONFIRM) - it engages only once it meets / crosses the
+     * throttle above idle (moved below it from above, or the throttle came down to it) */
+    o->ceil_pct = ceil;
+    if (!o->ceil_on) {
+        if (out > s->cfg.gear.idle_max_pct) {
+            int8_t side = (ceil > out) ? 1 : 0;
+            if (fabsf(ceil - out) <= 0.5f || (o->ceil_side >= 0 && side != o->ceil_side)) o->ceil_on = true;
+            o->ceil_side = side;
+        } else {
+            o->ceil_side = -1;                       /* idle: no side yet */
+        }
+        if (!o->ceil_on) return;
+    }
+    if (ceil < out) {
+        s->throttle_demand = fmaxf(ceil, 0.0f);
+        if (s->cruise.integ > s->throttle_demand) s->cruise.integ = s->throttle_demand;   /* no wind-up */
+        o->ceil_cut = true;
+        o->ceil_cuts++;
+    }
 }
 
 /* --- HDG_LOCK ------------------------------------------------------------------ */
@@ -2170,6 +2393,7 @@ static void hdg_lock_mode(sb_t *s)
         }
         return;
     }
+    if (s->sovr.active) return;                     /* step 13q3: the shore stick steers by hand (sovr_step) */
 
     bool reverse = s->gear_demand == GEAR_R || s->gear.current == GEAR_R ||
                    (s->gear.phase == GS_TO_GEAR && s->gear.engaging == GEAR_R);
@@ -2442,6 +2666,7 @@ static void dr_speed(sb_t *s, float dt, uint32_t dt_ms, bool roll_new, float rol
 /* AUTO running a leg / holding: heading hold on (after a pause). */
 static void auto_steer_when_moving(sb_t *s)
 {
+    if (s->sovr.active) return;                     /* step 13q3: the shore stick steers by hand (sovr_step) */
     steer_pause(s, false, 0.0f);
 }
 
@@ -3511,6 +3736,7 @@ void sb_step(sb_t *s)
                   (sb_shore_hdg(s) ? (ext & (HAL_BTN_BIT(HAL_BTN_MINUS_1) | HAL_BTN_BIT(HAL_BTN_PLUS_1) |
                                              HAL_BTN_BIT(HAL_BTN_MINUS_10) | HAL_BTN_BIT(HAL_BTN_PLUS_10))) : 0u);
     int8_t bench_steer = bench_step(s, &buttons, dt_ms);
+    sovr_step(s, dt);                   /* step 13q3: the shore stick override (before the steering input) */
     read_inputs(s, &in, buttons);
     if (sb_mode(s) == MODE_BENCH) in.manual_steer = bench_steer;
     bool roll_new = hal_read_roll_rate(&roll);
@@ -3592,7 +3818,10 @@ void sb_step(sb_t *s)
     s->gear_demand = GEAR_N;
     if (sb_mode(s) == MODE_MANUAL) joystick_throttle(s);
     else if (sb_mode(s) == MODE_HDG_LOCK) hdg_lock_mode(s);
-    else if (sb_mode(s) == MODE_AUTO) auto_mode(s, dt, dt_ms, roll_new, roll);
+    else if (sb_mode(s) == MODE_AUTO) {
+        if (!s->sovr.lost) auto_mode(s, dt, dt_ms, roll_new, roll);   /* (13q3: lost = the heading held) */
+        if (sb_shore_auto(s)) sovr_auto(s);         /* step 13q3: the lever ceiling / the stale-data stop */
+    }
     else if (sb_mode(s) == MODE_TRAINING) training_mode(s, dt_ms);
     else if (remote_like(sb_mode(s))) remote_mode(s);
     else if (sb_mode(s) == MODE_DP) dp_mode(s, dt, buttons);
@@ -3804,6 +4033,7 @@ void sb_step(sb_t *s)
     s->thr.stop = (sb_mode(s) == MODE_STANDBY && !s->stop_planned && !(s->gen.active && !s->gen.fast_stop)) ||
                   (remote_like(sb_mode(s)) && s->remote.state == SB_REMOTE_LOST) ||
                   (sb_shore_hdg(s) && s->shdg.lost) ||   /* 13q2c: the same failsafe in UNCREWED HDG LOCK */
+                  (sb_shore_auto(s) && s->sovr.lost) ||  /* 13q3: ... and after a hand-steering override in AUTO */
                   s->emerg;                     /* step 11g: an emergency in STANDBY too (arrival / generator stop) */
     s->thr.neutral_run_pct = gen_neutral ? s->gen.cap_pct : 0.0f;   /* 0 = the normal rule: idle in neutral */
     s->throttle_rate = throttle_step(&s->thr, s->throttle_demand, s->gear.current, gear_throttle_allowed(&s->gear), dt);

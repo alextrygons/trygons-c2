@@ -76,6 +76,7 @@ void sb_gateway_tests(void);      /* gateway link, HELM, REMOTE, SAVE requests *
 void sb_can_tests(void);          /* CN: DroneCAN bus + node table (step 11d) */
 void sb_pulse_tests(void);        /* only the paddlewheel pulse tests PW1-PW6 */
 void sb_confirm_only_tests(void); /* only the CONFIRM_ONLY tests CO1-CO3 (academy practical test) */
+void sb_override_tests(void);     /* only the shore stick override tests OV1-OV8 (step 13q3) */
 void sb_return_tests(void);       /* only the AUTO RETURN tests AR1-AR5 */
 void sb_dr_tests(void);           /* only the GPS-denied / integrity / re-trust tests (debugging) */
 void sb_phase4_tests(void);       /* P4: AUTO speed control (debugging) */

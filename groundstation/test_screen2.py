@@ -39,6 +39,8 @@
   S16 silence on this PC (step 13m): screen-2 ACK ALARM / Space / A = the MASTER acknowledge here, the
       fallback beep only while MASTER WARNING is lit, a newer warning sounds again, disconnect = no old
       telemetry / alarm rows / sound, reconnect = fresh alarms only
+  S19 shore stick override (step 13q3): MANUAL STEERING - AUTO / HDG LOCK waiting, NEW HEADING, the lever
+      ceiling, the AUTO data-lost stop on screens 2 + 1 (UNCREWED only)
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
@@ -1380,6 +1382,64 @@ def s18_uncrewed_hdg(rig):
                [(f, p) for f, p, _w in un], cr, rows[:3], lv, fits))
 
 
+def s19_override(rig):
+    """Step 13q3 (owner 2026-10-31 C3, DISPLAY ONLY): the shore stick override in UNCREWED AUTO / HDG LOCK on both
+    screens - "MANUAL STEERING - AUTO waiting" / "... HDG LOCK waiting (trigger = new heading)" (+ "back in 2 s" once
+    the stick is centred), "NEW HEADING 245°" after the trigger, the lever ceiling notice, the AUTO stale-data stop
+    (warning colour); CREWED: nothing (the onboard joystick takes MANUAL); the S1 layout still fits."""
+    ap = rig.ap
+    rig.gateway_like(True)
+    rig.size(1366, 768, 1.0)
+    ap.gw_status = fake_gw(ap.t)
+    keys = ("ov_hand", "ov_back", "ov_newhdg", "ov_ceiling", "ov_lost", "helm")
+    tags = ("sovr_hand", "sovr_newhdg", "sovr_ceiling", "sovr_lost")
+    try:
+        def screen2():
+            rig.pump(0.4)
+            ap.render(force=True)
+            return {b[0]: b[1] for b in ap.banner_list() if b[0] in tags}
+        rig.extra.update(profile=proto.PROFILE_UNCREWED, mode=proto.MODE_AUTO, mode_name="AUTO", helm=3, ov_hand=True,
+                         ov_back=False, ov_newhdg=False, ov_ceiling=True, ov_lost=False, target=245.0)
+        auto = screen2()
+        auto_ok = auto == {"sovr_hand": A.T("sovr.auto"), "sovr_ceiling": A.T("sovr.ceiling")}
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots:
+            shot(ap.root, os.path.join(shots, "screen2_override_el.png"))
+        rig.extra.update(mode=proto.MODE_HDG_LOCK, mode_name="HDG_LOCK", ov_back=True, ov_newhdg=True, ov_ceiling=False)
+        hdg = screen2()
+        hdg_ok = hdg == {"sovr_hand": A.T("sovr.hdg") + " – " + A.T("sovr.back"),
+                         "sovr_newhdg": A.T("sovr.newhdg", h="245")}
+        # screen 1: the same lines in the notices
+        ap.open_driver()
+        dv = ap.driver
+        dv.w.geometry("1600x900+0+0")
+        rig.pump(1.5)
+        s1 = {n[0]: n[1] for n in dv.notices(ap.t, ap.gw_status) if n[0] in tags}
+        box = [o.get("s") for o in dv.ops if o.get("tag") == "override"]     # the mode box line (driver looks here)
+        s1_ok = s1 == hdg and box == ["   ".join([hdg["sovr_hand"], hdg["sovr_newhdg"]])]
+        if shots and dv.last_frame is not None:
+            dv.last_frame.save(os.path.join(shots, "driver_override_el.png"))
+        ap.close_driver()
+        rig.extra.update(mode=proto.MODE_AUTO, mode_name="AUTO", ov_hand=False, ov_back=False, ov_newhdg=False,
+                         ov_lost=True)
+        rig.pump(0.4)
+        ap.render(force=True)
+        lost = [b for b in ap.banner_list() if b[0] == "sovr_lost"]
+        lost_ok = len(lost) == 1 and lost[0][1] == A.T("sovr.lost") and lost[0][3] == theme.WARN
+        rig.extra.update(profile=proto.PROFILE_CREWED, ov_hand=True, ov_newhdg=True, ov_ceiling=True, ov_lost=True)
+        crew = screen2()
+        fits = not layout_problems(ap)
+    finally:
+        for k in keys:
+            rig.extra.pop(k, None)
+        rig.extra.update(profile=proto.PROFILE_CREWED, mode=proto.MODE_STANDBY, mode_name="STANDBY")
+    report("S19 shore stick override (13q3): MANUAL STEERING - AUTO / HDG LOCK waiting, back in 2 s, NEW HEADING, the "
+           "lever ceiling, the AUTO data-lost stop (warning) on screens 2 + 1; CREWED nothing",
+           auto_ok and hdg_ok and s1_ok and lost_ok and crew == {} and fits,
+           "AUTO %s; HDG LOCK %s; screen 1 %s, mode box %s; lost %s; CREWED %s; fits %s" % (auto, hdg, s1, box, lost, crew,
+                                                                                         fits))
+
+
 def s16_silence(rig):
     """Step 13m (owner 2026-10-31 B): an alarm this station could not silence. Screen 2's ACK ALARM silences THIS
     PC first (MASTER lamps + the repeating sound) and then sends the boat's ack; Space / A on screen 2 = the same
@@ -1491,7 +1551,7 @@ def main():
     rig = Rig()
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
-                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg,
+                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg, s19_override,
                    s16_silence):
             try:
                 fn(rig)

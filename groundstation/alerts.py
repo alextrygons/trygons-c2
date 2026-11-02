@@ -107,6 +107,27 @@ def link_time_text(d):
     return i18n.T("lt.banner_off", s=s, why=why)
 
 
+def override_texts(d):
+    """The shore stick override in UNCREWED AUTO / HDG LOCK (step 13q3, owner 2026-10-31 C3; TELEM2 group D flags):
+    [(tag, text, level)] for both screens, level "caution" / "warn". DISPLAY ONLY - the AURIX decides everything."""
+    if not d or d.get("profile") != proto.PROFILE_UNCREWED or d.get("mode") not in (proto.MODE_AUTO,
+                                                                                    proto.MODE_HDG_LOCK):
+        return []
+    out = []
+    if d.get("ov_lost") and d.get("mode") == proto.MODE_AUTO:
+        out.append(("sovr_lost", i18n.T("sovr.lost"), "warn"))
+    elif d.get("ov_hand"):
+        t = i18n.T("sovr.auto" if d.get("mode") == proto.MODE_AUTO else "sovr.hdg")
+        if d.get("ov_back"):
+            t += " – " + i18n.T("sovr.back")
+        out.append(("sovr_hand", t, "caution"))
+    if d.get("ov_newhdg") and d.get("mode") == proto.MODE_HDG_LOCK and d.get("target") is not None:
+        out.append(("sovr_newhdg", i18n.T("sovr.newhdg", h="%03.0f" % (d["target"] % 360.0)), "caution"))
+    if d.get("ov_ceiling"):
+        out.append(("sovr_ceiling", i18n.T("sovr.ceiling"), "caution"))
+    return out
+
+
 def bits_of(d):
     """Both alarm words of a telemetry dict (TELEM2 merged in) as one int: word 2 at bit << WORD2.
     Every alarm function here takes these combined bits; the ground station treats both words alike."""
