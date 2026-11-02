@@ -125,6 +125,11 @@ def override_texts(d):
         out.append(("sovr_newhdg", i18n.T("sovr.newhdg", h="%03.0f" % (d["target"] % 360.0)), "caution"))
     if d.get("ov_ceiling"):
         out.append(("sovr_ceiling", i18n.T("sovr.ceiling"), "caution"))
+    elif d.get("ov_lever_wait") and d.get("mode") == proto.MODE_AUTO:
+        # step 13q3b (review MED-2): the lever is below the throttle but does not limit it yet
+        tgt = d.get("rjoy_pickup1000")
+        to = "%.0f %%" % (tgt / 10.0) if tgt is not None and tgt != 0xFFFF else "-"
+        out.append(("sovr_lever", i18n.T("sovr.lever_wait", to=to), "caution"))
     return out
 
 

@@ -167,6 +167,7 @@ static float lever_ceiling_pct(const sb_t *s, const sb_lever_side_t *side);
 static void sovr_reset(sb_t *s, sb_mode_t to);
 static void sovr_step(sb_t *s, float dt);
 static void sovr_auto(sb_t *s);
+static void sovr_log(sb_t *s, uint8_t what, float hdg);
 
 static void lever_standard(sb_t *s)
 {
@@ -690,6 +691,7 @@ static void nav_step(sb_t *s)
              * inside it; not steering by hand: the bit is ignored, AUTO unchanged) */
             alarm2_on(s, SB_ALM2_GEOFENCE);
             s->sovr.fence_stops++;
+            sovr_log(s, SB_SOVR_LOG_FENCE, s->ap.heading);
             sb_request_mode(s, MODE_STANDBY, WHY_GEOFENCE);
         }
         if (n->kind == SB_NAV_HDG_SET && (!n->hdg_any || n->seq != n->hdg_seq_done) && sb_mode(s) == MODE_HDG_LOCK &&
@@ -2182,8 +2184,29 @@ void sb_shore_trigger(sb_t *s, uint8_t station, bool held)
 {
     sb_sovr_t *o = &s->sovr;
     if (station < 2u || station != s->helm) return;             /* only the HELM station's joystick */
-    if (held && !o->trig_held) o->trig_edge = true;              /* a fresh press only (never a held trigger) */
+    if (station != o->trig_station) {
+        /* step 13q3b (review LOW-1): a new HELM station - its trigger held from its first packet is no press */
+        o->trig_station = station;
+        o->trig_held = held;
+        o->trig_edge = false;
+        return;
+    }
+    if (held && !o->trig_held) {                                 /* a fresh press only (never a held trigger) */
+        /* step 13q3b (review LOW-2, owner D "one press never does two things"): a request pending at the press (the
+         * trigger answers it on the station) or the CONFIRM button held in the same packet = no new heading */
+        if (s->confirm.kind != CONF_NONE || s->shore.confirm) o->trig_ignored++;
+        else o->trig_edge = true;
+    }
     o->trig_held = held;
+}
+
+/* the black box (log event 26 SOVR, step 13q3b LOW-4) */
+static void sovr_log(sb_t *s, uint8_t what, float hdg)
+{
+    sb_sovr_t *o = &s->sovr;
+    o->log_what = what;
+    o->log_hdg = hdg;
+    o->log_seq++;
 }
 
 /* the HELM station's stick data fresh now (the REMOTE rule: gap / old / slow) */
@@ -2196,12 +2219,13 @@ static bool sovr_fresh(const sb_t *s)
 }
 
 /* back to the mode's own steering: HDG LOCK = the locked heading (old, or the trigger's), AUTO = its guidance */
-static void sovr_end(sb_t *s)
+static void sovr_end(sb_t *s, uint8_t why)
 {
     sb_sovr_t *o = &s->sovr;
     if (!o->active) return;
     o->active = o->back = false;
     float t = (sb_mode(s) == MODE_HDG_LOCK) ? s->hdg_target : s->ap.target_heading;
+    sovr_log(s, why, t);
     if (sb_compass_ok(s) && autopilot_engage(&s->ap, true)) autopilot_set_target(&s->ap, t);
     else if (autopilot_gyro_ok(&s->ap)) autopilot_gyro_hold(&s->ap);
     else autopilot_center(&s->ap);
@@ -2212,6 +2236,7 @@ static void sovr_end(sb_t *s)
 static void sovr_reset(sb_t *s, sb_mode_t to)
 {
     sb_sovr_t *o = &s->sovr;
+    if (o->active) sovr_log(s, SB_SOVR_LOG_END, s->ap.heading);
     if (o->active && sb_compass_ok(s) && autopilot_engage(&s->ap, true)) autopilot_set_target(&s->ap, s->ap.heading);
     o->active = o->back = o->lost = false;
     o->armed = false;
@@ -2219,6 +2244,11 @@ static void sovr_reset(sb_t *s, sb_mode_t to)
     o->ceil_side = -1;
     o->trig_edge = false;
     o->newhdg_ms = 0u;
+    o->stopped = false;                     /* 13q3b MED-1: a STOP lasts for the rest of that AUTO only */
+    o->stop_why = 0u;
+    o->lever_ref_ok = o->lever_wait = false;
+    o->frozen = false;
+    o->station = s->helm;
     if (to == MODE_AUTO && s->profile == SB_PROFILE_UNCREWED) {
         /* UNCREWED AUTO: the HELM station's stick from its next packet (never an earlier session's stick) */
         s->remote.station = s->helm;
@@ -2234,15 +2264,38 @@ static void sovr_step(sb_t *s, float dt)
     const sb_remote_t *r = &s->remote;
     bool trig = o->trig_edge;
     o->trig_edge = false;
+    if (o->station != s->helm) {
+        /* step 13q3b (review LOW-1): HELM moved (a swap in AUTO) - sb_remote_input has already switched to the new
+         * station's packets, so the override ends + disarms HERE, never steered on by the new captain's stick; a lever
+         * ceiling that was engaged keeps its value (frozen) until the new captain's lever engages - never a rise */
+        if (o->active) o->helm_ends++;
+        sovr_end(s, SB_SOVR_LOG_HELM);
+        o->armed = o->back = false;
+        if (o->ceil_on) {
+            float f = o->ceil_pct;
+            o->frozen_pct = o->frozen ? fminf(o->frozen_pct, f) : f;
+            o->frozen = true;
+        }
+        o->ceil_on = false;
+        o->ceil_side = -1;
+        o->lever_ref_ok = false;
+        o->station = s->helm;
+        if (trig) o->trig_ignored++;
+        return;
+    }
     if (!sovr_mode(s) || o->lost) {
         if (trig) o->trig_ignored++;
         return;
     }
     if (r->station != s->helm) {                    /* HELM moved (AUTO): the new captain's stick from its packets */
-        sovr_end(s);
+        sovr_end(s, SB_SOVR_LOG_HELM);
         o->armed = false;
         if (trig) o->trig_ignored++;
         return;
+    }
+    if (trig && s->confirm.edge_ms && s->now_ms - s->confirm.edge_ms < SB_SOVR_TRIG_GUARD_MS) {
+        trig = false;                               /* 13q3b LOW-2: the same press answered / was a CONFIRM */
+        o->trig_ignored++;
     }
     bool fresh = sovr_fresh(s);
     float tol = s->joy.cfg.center_tol;
@@ -2267,15 +2320,16 @@ static void sovr_step(sb_t *s, float dt)
         o->starts++;
         o->steer_cmd = s->ap.est_angle;             /* no steering jump */
         autopilot_angle(&s->ap);
+        sovr_log(s, SB_SOVR_LOG_START, s->ap.heading);
     }
     if (!can) {
-        sovr_end(s);
+        sovr_end(s, SB_SOVR_LOG_END);
         return;
     }
     if (!fresh) {
         /* the shore data went stale while steering by hand: the heading held; HDG LOCK = shdg_throttle's rule (idle +
          * neutral, STANDBY after 5 s), AUTO = the same here (sovr_auto) - never resumes by itself */
-        sovr_end(s);
+        sovr_end(s, SB_SOVR_LOG_LOST);
         if (sb_shore_auto(s)) {
             autopilot_set_target(&s->ap, s->ap.heading);
             o->lost = true;
@@ -2294,8 +2348,9 @@ static void sovr_step(sb_t *s, float dt)
             o->newhdg_deg = s->hdg_target;
             o->newhdg_ms = s->now_ms ? s->now_ms : 1u;
             o->newhdgs++;
+            sovr_log(s, SB_SOVR_LOG_NEWHDG, s->hdg_target);
             if (fabsf(r->x) <= SB_SOVR_X_ON) {       /* let go already: hold the new heading at once */
-                sovr_end(s);
+                sovr_end(s, SB_SOVR_LOG_BACK);
                 o->backs++;
                 return;
             }
@@ -2311,7 +2366,7 @@ static void sovr_step(sb_t *s, float dt)
             o->back = true;
             o->centred_ms = s->now_ms;
         } else if (s->now_ms - o->centred_ms >= SB_SOVR_BACK_MS) {
-            sovr_end(s);
+            sovr_end(s, SB_SOVR_LOG_BACK);
             o->backs++;
         }
     } else {
@@ -2329,38 +2384,97 @@ static float lever_ceiling_pct(const sb_t *s, const sb_lever_side_t *side)
     return lever_side(side, uf);
 }
 
-/* UNCREWED AUTO after auto_mode: the lever ceiling (reduction only, never a gear / mode change) and the stale-data
- * stop of an override. */
+/* step 13q3b (review MED-1): steering UNCREWED AUTO by hand = the mandatory protections of UNCREWED HDG LOCK (13q2d /
+ * 13q2e): the reason to STOP now (SB_SOVR_STOP_), 0 = none. AUTO's own route was checked across the shallows and the
+ * geofence; a hand-steered course was not - so the AURIX's own backstops apply while the captain steers. */
+static uint8_t sovr_stop_why(const sb_t *s)
+{
+    if (!sb_shore_valid(s)) return SB_SOVR_STOP_NODATA;                     /* no data = shallow */
+    if ((float)s->coast.dist_m <= SB_SHDG_STOP_M) return SB_SOVR_STOP_SHORE; /* the shore within the stop distance */
+    if (!nav_fresh(s)) return SB_SOVR_STOP_LEASE;                           /* lapsed / never: no look-ahead */
+    if (!sb_gps_ok(s)) return SB_SOVR_STOP_GPS;                             /* the position not trusted */
+    float kn = nav_cap(s);
+    if (kn >= 0.0f && kn < SB_SHDG_STOP_KN) return SB_SOVR_STOP_CAP;        /* the gateway asks to stop */
+    return 0u;
+}
+
+/* UNCREWED AUTO after auto_mode: the stale-data stop of an override, the hand-steering protections (MED-1) and the
+ * lever ceiling (reduction only, never a gear / mode change). */
 static void sovr_auto(sb_t *s)
 {
     sb_sovr_t *o = &s->sovr;
     const sb_remote_t *r = &s->remote;
     o->ceil_cut = false;
+    o->lever_wait = false;
     if (o->lost) {
         s->gear_demand = GEAR_N;
         s->throttle_demand = 0.0f;
         if (s->now_ms - o->lost_ms >= s->cfg.remote_lost_ms) sb_request_mode(s, MODE_STANDBY, WHY_REMOTE_LOST);
         return;
     }
-    if (!(r->have && r->station == s->helm && r->has_lever)) return;
-    sb_lever_side_t full = { 1.0f, s->plim.fwd_pct, s->plim.fwd_pct };
-    float ceil = lever_ceiling_pct(s, &full);
-    float out = s->throttle_demand;
-    /* pickup: the lever starts at neutral (the AUTO start's CONFIRM) - it engages only once it meets / crosses the
-     * throttle above idle (moved below it from above, or the throttle came down to it) */
-    o->ceil_pct = ceil;
-    if (!o->ceil_on) {
-        if (out > s->cfg.gear.idle_max_pct) {
-            int8_t side = (ceil > out) ? 1 : 0;
-            if (fabsf(ceil - out) <= 0.5f || (o->ceil_side >= 0 && side != o->ceil_side)) o->ceil_on = true;
-            o->ceil_side = side;
-        } else {
-            o->ceil_side = -1;                       /* idle: no side yet */
+    /* step 13q3b (review MED-1): steering by hand with the water / the look-ahead / the position not known = STOP
+     * (idle + neutral for the rest of this AUTO: the captain chooses a mode again; the steering stays by hand) */
+    if (o->active || o->stopped) {
+        uint8_t why = sovr_stop_why(s);
+        if (why && o->active && !o->stopped) {
+            o->stopped = true;
+            o->stop_why = why;
+            o->stops++;
+            if (why == SB_SOVR_STOP_NODATA) o->nodata_stops++;
+            else if (why == SB_SOVR_STOP_SHORE) o->shore_stops++;
+            else if (why == SB_SOVR_STOP_LEASE) o->lease_stops++;
+            else if (why == SB_SOVR_STOP_GPS) o->gps_stops++;
+            else o->cap_stops++;
+            sovr_log(s, (uint8_t)(SB_SOVR_LOG_STOP | (why << 4)), s->ap.heading);
         }
-        if (!o->ceil_on) return;
+        if (why == SB_SOVR_STOP_NODATA || why == SB_SOVR_STOP_SHORE) alarm_on(s, SB_ALM_SHALLOW);
+        else if (why == SB_SOVR_STOP_LEASE) alarm_on(s, SB_ALM_DECISION);
+        if (o->stopped) {
+            s->gear_demand = GEAR_N;
+            s->throttle_demand = 0.0f;
+            if (s->cruise.integ > 0.0f) s->cruise.integ = 0.0f;     /* no wind-up */
+            return;
+        }
     }
-    if (ceil < out) {
-        s->throttle_demand = fmaxf(ceil, 0.0f);
+    float out = s->throttle_demand;
+    float lim = out;                                 /* the ceiling that applies now */
+    if (r->have && r->station == s->helm && r->station == o->station && r->has_lever) {
+        sb_lever_side_t full = { 1.0f, s->plim.fwd_pct, s->plim.fwd_pct };
+        float ceil = lever_ceiling_pct(s, &full);
+        float L = r->lever;
+        o->ceil_pct = ceil;
+        if (!o->ceil_on) {
+            /* pickup: the lever starts at neutral (the AUTO start's CONFIRM) - it engages once it meets / crosses the
+             * throttle above idle (moved below it from above, or the throttle came down to it), or (13q3b MED-2) once
+             * it is pulled DOWN from where it was (the highest position since the AUTO start / a HELM change) to below
+             * the throttle: lever back = less, lever at idle = steers at idle */
+            bool down = o->lever_ref_ok && L < o->lever_ref - SB_SOVR_LEVER_MOVE && ceil < out - 0.5f;
+            if (out > s->cfg.gear.idle_max_pct) {
+                int8_t side = (ceil > out) ? 1 : 0;
+                if (fabsf(ceil - out) <= 0.5f || (o->ceil_side >= 0 && side != o->ceil_side)) o->ceil_on = true;
+                o->ceil_side = side;
+            } else {
+                o->ceil_side = -1;                   /* idle: no side yet */
+            }
+            if (down) o->ceil_on = true;
+            if (!o->lever_ref_ok || L > o->lever_ref) {
+                o->lever_ref = L;
+                o->lever_ref_ok = true;
+            }
+            if (o->ceil_on) o->frozen = false;       /* the new captain's lever has it now */
+        }
+        if (o->ceil_on) {
+            if (ceil < lim) lim = ceil;
+        } else if (out > s->cfg.gear.idle_max_pct && ceil < out - 0.5f) {
+            /* the lever is below the throttle but does not limit it yet: both screens say "move the lever" */
+            float hi = s->joy.cfg.nz_hi, f = fmaxf(s->plim.fwd_pct, 1.0f);
+            o->lever_wait = true;
+            o->lever_tgt = clampf(hi + (out / f) * (1.0f - hi), 0.0f, 1.0f);
+        }
+    }
+    if (o->frozen && o->frozen_pct < lim) lim = o->frozen_pct;   /* (LOW-1: the old captain's ceiling, kept) */
+    if (lim < out) {
+        s->throttle_demand = fmaxf(lim, 0.0f);
         if (s->cruise.integ > s->throttle_demand) s->cruise.integ = s->throttle_demand;   /* no wind-up */
         o->ceil_cut = true;
         o->ceil_cuts++;
@@ -3139,6 +3253,7 @@ static void confirm_step(sb_t *s)
     bool edge = shore ? s->shore.confirm_edge : s->joy.confirm_edge;
     s->shore.confirm_edge = false;
     if (!edge) return;
+    c->edge_ms = s->now_ms ? s->now_ms : 1u;   /* 13q3b LOW-2: no trigger heading from the same press */
     if (c->kind == CONF_NONE) {
         c->ignored++;                   /* nothing pending: does nothing */
         return;

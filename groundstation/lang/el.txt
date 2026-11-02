@@ -763,6 +763,7 @@ cap.rm_pickup = ΦΕΡΤΕ ΤΟ ΓΚΑΖΙ ΣΤΗ ΘΕΣΗ: μοχλός στο 
 cap.neutral = ΝΕΚΡΑ
 cap.rm_wait_confirm = ΑΝΑΜΟΝΗ ΓΙΑ CONFIRM ΣΤΟ ΧΕΙΡΙΣΤΗΡΙΟ ΤΟΥ ΣΚΑΦΟΥΣ ({s} s)
 cap.rm_sending = αποστολή: {n} πακέτα{missing}   x {x}  μοχλός {lever}
+cap.rm_trigger_conflict = Η σκανδάλη έχει το ίδιο κουμπί με το CONFIRM / SAVE: δεν στέλνεται (ένα πάτημα = ένα πράγμα)
 cap.rm_joy_missing =    ΔΕΝ ΒΡΕΘΗΚΕ ΧΕΙΡΙΣΤΗΡΙΟ
 cap.rm_no_front = ΠΡΟΣΟΧΗ: ΚΑΜΙΑ ΖΩΝΤΑΝΗ ΜΠΡΟΣΤΙΝΗ ΚΑΜΕΡΑ
 
@@ -1412,6 +1413,7 @@ sovr.hdg = ΧΕΙΡΟΚΙΝΗΤΟ ΤΙΜΟΝΙ – HDG LOCK σε αναμονή 
 sovr.back = επιστροφή σε 2 s
 sovr.newhdg = ΝΕΑ ΠΟΡΕΙΑ {h}°
 sovr.ceiling = Ο μοχλός περιορίζει την ισχύ (μόνο μείωση)
+sovr.lever_wait = Ο μοχλός δεν περιορίζει ακόμα την ισχύ – κινήστε τον (τραβήξτε πίσω για λιγότερη, ταιριάζει στο {to})
 sovr.lost = ΧΑΘΗΚΑΝ ΤΑ ΔΕΔΟΜΕΝΑ ΤΟΥ ΧΕΙΡΙΣΤΗΡΙΟΥ – ρελαντί + νεκρό, STANDBY σε 5 s
 ov.station = {user} ({where})
 ov.status = Κατάσταση

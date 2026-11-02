@@ -987,6 +987,9 @@ def decode_telem2(payload: bytes) -> dict:
         d["ov_newhdg"] = bool(f & 32)       # NEW HEADING (the trigger, 3 s; the value = the target heading)
         d["ov_ceiling"] = bool(f & 64)      # the lever ceiling lowers the throttle now
         d["ov_lost"] = bool(f & 128)        # AUTO: the shore data lost while steering by hand (idle + N, STANDBY 5 s)
+        # step 13q3b (review MED-2): in UNCREWED AUTO b1 = the lever is below the throttle but not engaged yet ("move
+        # the lever"; the pickup target = where it meets the throttle) - in REMOTE / MANEUVER b1 is the lever pickup
+        d["ov_lever_wait"] = bool(f & 2)
     if "nav_flags" in d:
         d["nav_fresh"] = bool(d["nav_flags"] & 1)
         d["nav_lost"] = bool(d["nav_flags"] & 2)

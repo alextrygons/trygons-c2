@@ -32,6 +32,7 @@ static struct {
     uint32_t thr_seq;
     uint32_t dp_seq;
     uint16_t can_seq;
+    uint16_t sovr_seq;          /* step 13q3b: the shore stick override (event 26 SOVR) */
     uint16_t steer_seq;
     uint32_t alarm_bits, alarm_bits2;
     bool     ap_alarm;
@@ -337,6 +338,14 @@ static void changes(const sb_t *s)
         k.relay_known = rl->known;
         k.relay_ok = rl->board_ok;
     }
+    /* the shore stick override in UNCREWED AUTO / HDG LOCK (step 13q3b LOW-4): start / back / new heading / data lost /
+     * STOP / geofence / HELM change / mode change (events only) */
+    if (s->sovr.log_seq != k.sovr_seq) {
+        const sb_sovr_t *o = &s->sovr;
+        ev(s, EV_SOVR, (int32_t)((uint32_t)o->log_what | ((uint32_t)sb_mode(s) << 8)), (int32_t)lroundf(o->log_hdg * 10.0f),
+           (int32_t)lroundf(s->remote.x * 1000.0f), (int32_t)((o->starts & 0xFFFFu) | ((o->stops & 0xFFFFu) << 16)));
+    }
+    k.sovr_seq = s->sovr.log_seq;
     /* engine controls / remote restart (section N): every restart, crank start / stop, refusal.
      * The reset after a trip waits ENG_RESET_DELAY_MS so this event is in the queue first. */
     if (s->eng.log_seq != k.eng_seq)

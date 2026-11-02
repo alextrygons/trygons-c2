@@ -229,7 +229,8 @@ class Gateway:
             return {"lat": None, "fresh": False}
         o = {"lat": None, "fresh": True, "mode": d.get("mode"),
              "dp_sub": d.get("dp_sub") if d.get("mode") == proto.MODE_DP else None,
-             "profile": (self.telem2 or {}).get("profile", d.get("profile"))}
+             "profile": (self.telem2 or {}).get("profile", d.get("profile")),
+             "ov_hand": bool((self.telem2 or {}).get("ov_hand"))}   # 13q3b: the shore stick steers UNCREWED AUTO
         if d.get("pos_source", 0) == 0:
             return o
         o.update({"lat": d.get("est_lat"), "lon": d.get("est_lon"), "sog": d.get("est_sog"), "cog": d.get("est_cog"),
@@ -247,6 +248,13 @@ class Gateway:
         """UNCREWED AUTO (step 13q3, owner 2026-10-31 C3): the captain may steer by hand with the shore stick; steering
         out of the geofence by hand -> the AURIX goes to STANDBY (the fence bit; ignored while AUTO steers itself)."""
         return o.get("mode") == proto.MODE_AUTO and o.get("profile") == proto.PROFILE_UNCREWED
+
+    @classmethod
+    def uh_strict(cls, o):
+        """The UNCREWED HDG LOCK protections apply (step 13q3b, review MED-1): UNCREWED HDG LOCK, or UNCREWED AUTO
+        while the captain steers it by hand with the shore stick (TELEM2 D b3) - a hand-steered course was never
+        checked like AUTO's route: no data / too uncertain = STOP, shallow / the shore within stop_m ahead = STOP."""
+        return cls.hdg_uncrewed(o) or (cls.auto_uncrewed(o) and bool(o.get("ov_hand")))
 
     def fence_out(self, o):
         """Outside the geofence, or closer to its edge than the position uncertainty (None = no fence / no position)."""
@@ -423,6 +431,7 @@ class Gateway:
             self.avoider.hdg_set_sent()                     # left HDG LOCK: an accepted heading is dropped
             self.hdg_set_until = 0.0
         uh = self.hdg_uncrewed(o)
+        strict = self.uh_strict(o)                         # 13q3b MED-1: also UNCREWED AUTO steered by hand
         req = self.avoider.update(now, o, self.ais.list(), o.get("mode"), o.get("dp_sub"), uncrewed=uh)
         if req["kind"] == proto.NAV_HDG_SET:
             if not self.hdg_set_until:
@@ -431,15 +440,16 @@ class Gateway:
                 self.avoider.hdg_set_sent()
                 self.hdg_set_until = 0.0
         sh = self.shallow.watch(o) if o["lat"] is not None else None
-        uh_why, fence = self.uh_check(o) if uh else (None, self.fence_out(o) if self.auto_uncrewed(o) else None)
+        uh_why, fence = self.uh_check(o) if strict else (None, self.fence_out(o) if self.auto_uncrewed(o) else None)
         if uh_why:
-            # UNCREWED HDG LOCK and the gateway can't evaluate (no position / charts / too uncertain) or shallow water
-            # within the uncertainty: no data = shallow = STOP (never a 'no danger' lease built on missing data)
+            # UNCREWED HDG LOCK (or UNCREWED AUTO steered by hand, 13q3b) and the gateway can't evaluate (no position /
+            # charts / too uncertain) or shallow water within the uncertainty: no data = shallow = STOP (never a 'no
+            # danger' lease built on missing data)
             sh = dict(sh or {}, why=uh_why, dist_m=0.0)
         if sh and (self.nav_auto(o) or uh):                # AUTO / a DP TRIP / UNCREWED HDG LOCK: slow down (SHALLOW)
             slow = self.shallow.cfg["slow_kn"]
-            if uh and (uh_why or sh.get("dist_m", 1e9) <= self.shallow.cfg["stop_m"] + (o.get("unc") or 0.0)):
-                slow = 0.0                                 # UNCREWED HDG LOCK: shallow / shore close ahead = STOP
+            if strict and (uh_why or sh.get("dist_m", 1e9) <= self.shallow.cfg["stop_m"] + (o.get("unc") or 0.0)):
+                slow = 0.0                                 # shallow / shore close ahead = STOP (UNCREWED, by hand too)
             req["cap_kn"] = min(req["cap_kn"] if req["cap_kn"] is not None else 1e9, slow)
             if req["kind"] == proto.NAV_NONE:
                 req["kind"] = proto.NAV_CAP
@@ -550,10 +560,10 @@ class Gateway:
             self.nav_errors += 1
             log.exception("navigation request: nav_compose failed")
             o = self.own()
-            if not (o.get("fresh") and self.hdg_uncrewed(o)):
+            if not (o.get("fresh") and self.uh_strict(o)):     # (13q3b: UNCREWED AUTO steered by hand too)
                 raise
             req = {"kind": proto.NAV_CAP, "heading": None, "cap_kn": 0.0, "reason": 2, "alarm": 4 | 2}
-            self.audit("navreq_error", text="nav_compose failed: cannot evaluate = STOP (UNCREWED HDG LOCK)")
+            self.audit("navreq_error", text="nav_compose failed: cannot evaluate = STOP (UNCREWED HDG LOCK / AUTO steered by hand)")
         if self.telem_fresh() is None:
             self.nav_skipped += 1
             return False

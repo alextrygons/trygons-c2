@@ -1003,7 +1003,7 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *      u16 helm_changes
  *   D: u8 remote_state (0 off, 1 driving, 2 LINK LOST) | u8 remote_station | u16 data age ms |
  *      u16 latency ms | i16 x*1000 | u16 lever*1000 | u8 flags (b0 lever, b1 pickup pending, b2 confirm
- *      pending; step 13q3 shore stick override in UNCREWED AUTO / HDG LOCK: b3 steering by hand, b4 stick centred =
+ *      pending - step 13q3b: in UNCREWED AUTO b1 = the lever below the throttle, not engaged yet; step 13q3 shore stick override in UNCREWED AUTO / HDG LOCK: b3 steering by hand, b4 stick centred =
  *      going back in 2 s, b5 NEW HEADING (trigger, 3 s; the value = the target heading), b6 the lever ceiling lowers
  *      the throttle, b7 AUTO: the shore data lost while steering by hand (idle + neutral, STANDBY after 5 s)) | u16 pickup target*1000 (0xFFFF neutral zone) | u8 cap fwd % | u8 cap rev % |
  *      u32 packets | u8 lost_why
@@ -1089,13 +1089,18 @@ static void telemetry2(link_t *l, sb_t *s)
     proto_wr_u16(&w, (uint16_t)lroundf(r->lever * 1000.0f));
     const sb_sovr_t *ov = &s->sovr;
     bool hdg_cut = sb_shore_hdg(s) && s->shdg.ceil_on && s->shdg.ceil_pct < s->shdg.hold_pct - 0.05f;
-    proto_wr_u8(&w, (uint8_t)((r->has_lever ? 1u : 0u) | (r->lev.pickup ? 2u : 0u) |
+    /* b1 + the pickup target: REMOTE / MANEUVER = the lever pickup; UNCREWED AUTO (step 13q3b MED-2) = the lever is
+     * below the throttle but not engaged yet ("move the lever"), the target = where the ceiling meets the throttle */
+    bool auto_wait = sb_shore_auto(s) && ov->lever_wait;
+    bool pick = auto_wait || (!sb_shore_auto(s) && r->lev.pickup);
+    proto_wr_u8(&w, (uint8_t)((r->has_lever ? 1u : 0u) | (pick ? 2u : 0u) |
                               (s->confirm.kind == CONF_REMOTE ? 4u : 0u) |
                               (ov->active ? 8u : 0u) | (ov->active && ov->back ? 16u : 0u) |
                               (ov->newhdg_ms && s->now_ms - ov->newhdg_ms < SB_SOVR_NEWHDG_MS ? 32u : 0u) |
                               ((ov->ceil_cut && sb_shore_auto(s)) || hdg_cut ? 64u : 0u) |
                               (ov->lost && sb_shore_auto(s) ? 128u : 0u)));
-    proto_wr_u16(&w, (r->lev.pickup && r->lev.target >= 0.0f) ? (uint16_t)lroundf(r->lev.target * 1000.0f) : 0xFFFFu);
+    proto_wr_u16(&w, auto_wait ? (uint16_t)lroundf(ov->lever_tgt * 1000.0f)
+                     : (pick && r->lev.target >= 0.0f) ? (uint16_t)lroundf(r->lev.target * 1000.0f) : 0xFFFFu);
     proto_wr_u8(&w, (uint8_t)lroundf(fminf(s->cfg.remote_cap_fwd_pct, s->plim.fwd_pct)));
     proto_wr_u8(&w, (uint8_t)lroundf(fminf(s->cfg.remote_cap_rev_pct, s->plim.rev_pct)));
     proto_wr_u32(&w, r->packets);

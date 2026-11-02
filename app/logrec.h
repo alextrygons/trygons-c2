@@ -73,7 +73,10 @@ typedef enum {
     EV_GENERATOR,       /* generator mode: state (GEN_), stop why | enabled << 8, bank V*100, throttle demand %*10 */
     EV_RELAY,           /* relay board: n | action<<8 | result<<16 | what<<24 (1 command, 2 table, 3 states, 4 board),
                            states (readback bits), known bits | board ok<<31, table hash | flags<<16 | count<<24 */
-    /* 26: not used (kept free) */
+    EV_SOVR = 26,       /* the shore stick override in UNCREWED AUTO / HDG LOCK (step 13q3b LOW-4): what (SB_SOVR_LOG_:
+                           1 start, 2 back, 3 new heading, 4 data lost, 5 STOP | why (SB_SOVR_STOP_) << 4, 6 geofence
+                           STANDBY, 7 HELM changed, 8 ended by a mode change) | mode << 8, heading*10, stick x*1000,
+                           starts | stops << 16 */
     EV_RESTART = 27,    /* engine controls / remote restart (section N): action (1 kill cleared, 2 reset after a trip
                            coming, 3 crank start, 4 crank stop, 5 restart refused, 6 crank refused, 7 reset cancelled),
                            why (engine.h eng_why_t), hold ms, restarts | cranks << 16 */

@@ -145,6 +145,17 @@ class Log:
             return "RELAY %s n %d action %d result %d, states 0x%x, board %s" % (
                 RELAY_WHAT.get(what, what), a[0] & 0xFF, (a[0] >> 8) & 0xFF, (a[0] >> 16) & 0xFF, a[1] & 0xFFFFFFFF,
                 "ok" if (a[2] >> 31) & 1 else "SILENT")
+        if name == "SOVR":
+            # the shore stick override in UNCREWED AUTO / HDG LOCK (step 13q3b LOW-4)
+            w = a[0] & 0x0F
+            what = {1: "steering by hand", 2: "back to the mode's steering", 3: "NEW HEADING (trigger)",
+                    4: "stick data lost (idle + neutral, STANDBY in 5 s)", 5: "STOP (idle + neutral)",
+                    6: "out of the geofence -> STANDBY", 7: "HELM changed (ended)", 8: "ended by a mode change"}
+            why = {1: "no shore / chart data", 2: "shore within the stop distance", 3: "navigation request lapsed",
+                   4: "GPS not trusted", 5: "the gateway asks to stop"}.get((a[0] >> 4) & 0x0F)
+            return "SHORE STICK %s%s in %s, heading %.1f, stick x %+.2f (starts %d, stops %d)" % (
+                what.get(w, w), " - " + why if w == 5 and why else "", self.mode_name((a[0] >> 8) & 0xFF), a[1] / 10.0,
+                a[2] / 1000.0, a[3] & 0xFFFF, (a[3] >> 16) & 0xFFFF)
         if name == "RESTART":
             return "RESTART %s%s, hold %d ms (restarts %d, cranks %d)" % (
                 proto.ENG_ACTIONS.get(a[0], a[0]), "" if not a[1] else " - " + proto.eng_why_text(a[1]), a[2],

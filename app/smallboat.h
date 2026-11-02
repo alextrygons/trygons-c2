@@ -502,8 +502,37 @@ typedef struct {
     float    newhdg_deg;
     bool     trig_edge;         /* the trigger pressed since the last step (HELM station, fresh press) */
     bool     trig_held;
+    uint8_t  trig_station;      /* 13q3b LOW-1: the station whose trigger trig_held is (a new one: no edge from it) */
     uint32_t starts, backs, newhdgs, trig_ignored, losses, fence_stops, ceil_cuts;
+    /* step 13q3b (review MED-1): steering UNCREWED AUTO by hand gets the UNCREWED HDG LOCK protections - the gateway's
+     * shore data missing / not valid, the shore within SB_SHDG_STOP_M, the navreq lease lapsed / never, the GPS not
+     * trusted, a navreq cap below SB_SHDG_STOP_KN = STOP (idle + neutral for the rest of this AUTO) */
+    bool     stopped;
+    uint8_t  stop_why;          /* SB_SOVR_STOP_ */
+    uint32_t stops, nodata_stops, shore_stops, lease_stops, gps_stops, cap_stops;
+    /* step 13q3b (review MED-2): the AUTO lever pickup also engages when the lever is pulled DOWN from where it was
+     * (lever_ref = the highest lever seen since the AUTO start / a HELM change; lever_ref_ok false = none yet) below
+     * the throttle */
+    bool     lever_ref_ok;
+    float    lever_ref;
+    bool     lever_wait;        /* AUTO / HDG LOCK: the lever below the throttle but not engaged (TELEM2 D b1) */
+    float    lever_tgt;         /* the lever position where the ceiling meets the throttle (shown with lever_wait) */
+    /* step 13q3b (review LOW-1): the HELM station the override / its arming / the lever ceiling belong to; a HELM
+     * change ends + disarms it; a ceiling that cut keeps cutting at frozen_pct until the new captain's lever engages */
+    uint8_t  station;
+    bool     frozen;
+    float    frozen_pct;
+    uint32_t helm_ends;
+    /* step 13q3b (review LOW-4): the black box (log event 26 SOVR): what (SB_SOVR_LOG_), the heading */
+    uint8_t  log_what;
+    float    log_hdg;
+    uint16_t log_seq;
 } sb_sovr_t;
+#define SB_SOVR_LEVER_MOVE    0.05f  /* the lever pulled down this much (0..1 travel) from lever_ref = "moved down" */
+#define SB_SOVR_TRIG_GUARD_MS 500u   /* no trigger heading within this of a CONFIRM press (one press, one thing) */
+enum { SB_SOVR_LOG_START = 1, SB_SOVR_LOG_BACK, SB_SOVR_LOG_NEWHDG, SB_SOVR_LOG_LOST, SB_SOVR_LOG_STOP,
+       SB_SOVR_LOG_FENCE, SB_SOVR_LOG_HELM, SB_SOVR_LOG_END };
+enum { SB_SOVR_STOP_NODATA = 1, SB_SOVR_STOP_SHORE, SB_SOVR_STOP_LEASE, SB_SOVR_STOP_GPS, SB_SOVR_STOP_CAP };
 
 /* The HELM station's (shore captain's) joystick as a CONFIRM source in
  * UNCREWED: every GW_RJOY packet of the HELM station, in any mode. */
@@ -601,6 +630,7 @@ typedef struct {
     confirm_kind_t last_kind;                      /* the kind the last CONFIRM press answered (log event 13) */
     uint32_t       deadline_ms;
     uint32_t       accepted, refused, ignored;     /* CONFIRM presses (info / tests) */
+    uint32_t       edge_ms;                        /* 13q3b LOW-2: the last CONFIRM press seen by confirm_step (0 none) */
 } sb_confirm_t;
 
 /* CONFIRM_ONLY (PROTO_T_CONFIRM_ONLY, academy practical test, step 21): a pending request that changes

@@ -810,6 +810,8 @@ class App:
             v = s.last or {}
             lines.append(T("cap.rm_sending", n=s.sent, missing=T("cap.rm_joy_missing") if s.missing else "",
                            x="%+.2f" % v.get("x", 0.0), lever="%.0f %%" % (100 * v["lever"]) if "lever" in v else "-"))
+        if shorejoy.trigger_conflict(self.sj_cfg):      # 13q3b LOW-2: the trigger shares a button: never sent
+            lines.append(T("cap.rm_trigger_conflict"))
         cams = (self.gw_status or {}).get("cameras") or {}
         if d["mode"] == proto.MODE_REMOTE and cams and not cams.get("front_live", True):
             lines.append(T("cap.rm_no_front"))

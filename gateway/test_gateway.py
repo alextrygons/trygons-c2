@@ -4181,11 +4181,11 @@ def section_uh():
         def __init__(self, poly):
             self.poly = poly
 
-    def stub(mode, profile, shoal_m=None, fence=None, sog=6.0, pos=1, unc=5.0, age=0.0, link=True, cog=0.0):
+    def stub(mode, profile, shoal_m=None, fence=None, sog=6.0, pos=1, unc=5.0, age=0.0, link=True, cog=0.0, ov=False):
         s = types.SimpleNamespace()
         s.telem = {"pos_source": pos, "est_lat": lat0, "est_lon": lon0, "est_sog": sog, "est_cog": cog,
                    "heading": cog, "mode": mode, "unc_m": unc}
-        s.telem2 = {"profile": profile}
+        s.telem2 = {"profile": profile, "ov_hand": ov}
         s.TELEM_MAX_AGE_S = G.TELEM_MAX_AGE_S
         s.telem_rx = time.time() - age
         s.aurix = types.SimpleNamespace(connected=link)
@@ -4210,6 +4210,7 @@ def section_uh():
         s.own = types.MethodType(G.own, s)
         s.nav_auto = types.MethodType(G.nav_auto, s)
         s.hdg_uncrewed = G.hdg_uncrewed
+        s.uh_strict = G.uh_strict
         s.nav_state = {}
         return s
 
@@ -4425,6 +4426,65 @@ def section_uh():
            au_out["alarm"] & 16 and not au_in["alarm"] & 16 and not ac_out["alarm"] & 16 and fl == [1 | 8, 1],
            "UNCREWED AUTO outside %s inside %s, CREWED AUTO outside %s; flags %s" % (
                au_out["alarm"], au_in["alarm"], ac_out["alarm"], fl))
+
+    # UH12 (step 13q3b, review MED-1) UNCREWED AUTO steered BY HAND with the shore stick (TELEM2 D b3 = ov_hand) gets
+    # the UNCREWED HDG LOCK protections: no position / no charts / too uncertain = STOP (cap 0), shallow / the shore
+    # within stop_m ahead = STOP, farther = slow_kn; a broken nav_compose = the explicit STOP. Not steering by hand
+    # (AUTO on its checked route) / CREWED: unchanged (no charts = nothing, 60 m = slow_kn only)
+    h_nochart = G.nav_compose(stub(a, U, ov=True))
+    h_nopos = G.nav_compose(stub(a, U, shoal_m=5000.0, pos=0, ov=True))
+    h_unc = G.nav_compose(stub(a, U, shoal_m=5000.0, unc=150.0, ov=True))
+    h_near = G.nav_compose(stub(a, U, shoal_m=60.0, ov=True))
+    h_far = G.nav_compose(stub(a, U, shoal_m=180.0, ov=True))
+    h_clear = G.nav_compose(stub(a, U, shoal_m=5000.0, ov=True))
+    n_nochart = G.nav_compose(stub(a, U))
+    n_near = G.nav_compose(stub(a, U, shoal_m=60.0))
+    c_near = G.nav_compose(stub(a, C, shoal_m=60.0, ov=True))
+    o_hand = G.own(stub(a, U, shoal_m=5000.0, ov=True))
+    _lg.disable(_lg.CRITICAL)
+    try:
+        st_h = stub(a, U, shoal_m=5000.0, ov=True)
+        res_h = tick(st_h)
+    finally:
+        _lg.disable(_lg.NOTSET)
+    rq_h = st_h.sent[0] if st_h.sent else {}
+    report("UH12 (13q3b MED-1) UNCREWED AUTO steered by hand: no data / too uncertain / shallow within stop_m = STOP "
+           "(cap 0), farther = slow; a broken nav_compose = STOP; not by hand / CREWED: unchanged",
+           sh(h_nochart) == stop and sh(h_nopos) == stop and sh(h_unc) == stop and sh(h_near) == stop and
+           h_far["cap_kn"] == 4.0 and h_clear["kind"] == proto.NAV_NONE and n_nochart["kind"] == proto.NAV_NONE and
+           n_near["cap_kn"] == 4.0 and c_near["cap_kn"] == 4.0 and o_hand.get("ov_hand") is True and
+           res_h[0] is True and rq_h.get("cap_kn") == 0.0,
+           "by hand: no charts %s, no position %s, unc 150 %s, 60 m %s, 180 m %s, clear %s; not by hand: no charts %s, "
+           "60 m %s; CREWED 60 m %s; own() ov_hand %s; nav_compose broken %s -> %s" % (
+               sh(h_nochart), sh(h_nopos), sh(h_unc), sh(h_near), h_far["cap_kn"], h_clear["kind"],
+               n_nochart["kind"], n_near["cap_kn"], c_near["cap_kn"], o_hand.get("ov_hand"), res_h, rq_h))
+
+    # UH13 (step 13q3b, review LOW-2) one press never does two things: a trigger mapped to the same button as the
+    # CONFIRM (or SAVE) is never sent as the trigger (shorejoy.trigger_conflict); different buttons: both sent
+    import shorejoy as sj
+
+    class FakeJs:
+        def __init__(self, held):
+            self.held = held
+
+        def read(self, dev):
+            b = 0
+            for d_, n in self.held:
+                if d_ == dev:
+                    b |= 1 << (n - 1)
+            return {"ok": True, "axes": {"X": 0.0, "Z": 0.0}, "buttons": b}
+    cfg_ok = dict(sj.DEFAULT)
+    cfg_same = dict(sj.DEFAULT, trigger_button=dict(sj.DEFAULT["confirm_button"]))
+    cfg_save = dict(sj.DEFAULT, trigger_button=dict(sj.DEFAULT["save_button"]))
+    cb, tb = sj.DEFAULT["confirm_button"], sj.DEFAULT["trigger_button"]
+    both = sj.to_remote(FakeJs([(cb["dev"], cb["button"]), (tb["dev"], tb["button"])]), cfg_ok)
+    same = sj.to_remote(FakeJs([(cb["dev"], cb["button"])]), cfg_same)
+    save = sj.to_remote(FakeJs([(sj.DEFAULT["save_button"]["dev"], sj.DEFAULT["save_button"]["button"])]), cfg_save)
+    report("UH13 (13q3b LOW-2) a trigger on the CONFIRM / SAVE button is never sent as the trigger; separate buttons: both",
+           both.get("confirm") and both.get("trigger") and same.get("confirm") and not same.get("trigger") and
+           not save.get("trigger") and sj.trigger_conflict(cfg_same) and sj.trigger_conflict(cfg_save) and
+           not sj.trigger_conflict(cfg_ok),
+           "separate %s; trigger = CONFIRM %s; trigger = SAVE %s" % (both, same, save))
 
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,

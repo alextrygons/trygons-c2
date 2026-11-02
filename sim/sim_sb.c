@@ -5087,6 +5087,9 @@ typedef struct {
     bool       rep_silent;      /* ... it stopped answering the gateway at rep_silent_t */
     uint32_t   rep_silent_t;
     bool       rep_gone;        /* ... the gateway reports it gone (255) */
+    uint32_t   ev_sovr, ev_sovr_mask, ev_sovr_why;   /* step 13q3b: event 26 SOVR records, the what / why bits seen */
+    uint8_t    d_flags;         /* step 13q3b: TELEM2 group D flags (byte 40) + the pickup target (41-42) */
+    uint16_t   d_pick;
 } pisim_t;
 
 static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
@@ -5102,7 +5105,9 @@ static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
         p->telem++;
     } else if (f->type == PROTO_T_TELEM2) {
         p->telem2++;
-        if (f->len >= 59u) {                        /* group E at byte 50 */
+        if (f->len >= 59u) {                        /* group D flags at byte 40 (13q3b), group E at byte 50 */
+            p->d_flags = f->payload[40];
+            p->d_pick = (uint16_t)(f->payload[41] | (f->payload[42] << 8));
             uint16_t sq = (uint16_t)(f->payload[50] | (f->payload[51] << 8));
             if (sq != p->save_seq) {
                 p->save_seq = sq;
@@ -5147,6 +5152,10 @@ static void pi_frame(pisim_t *p, sbsim_t *x, const proto_frame_t *f)
                 p->ev_restart_a = (int32_t)(p->cur[10] | (p->cur[11] << 8) | (p->cur[12] << 16) | ((uint32_t)p->cur[13] << 24));
                 p->ev_restart_t = x->t;
                 if (p->ev_restart_a == (int32_t)ENG_LOG_RESET && !p->ev_reset_t) p->ev_reset_t = x->t;
+            } else if (L >= LOGR_HDR + 6u && p->cur[1] == LOGR_EVENT && (p->cur[8] | (p->cur[9] << 8)) == EV_SOVR) {
+                p->ev_sovr++;                       /* step 13q3b (LOW-4): the shore stick override events */
+                p->ev_sovr_mask |= 1u << (p->cur[10] & 0x0Fu);
+                p->ev_sovr_why |= 1u << ((p->cur[10] >> 4) & 0x0Fu);
             }
             p->recs++;
             p->last_seq = seq;
@@ -16973,7 +16982,7 @@ static void shore_hdg_tests(void)
 
 /* UNCREWED (or CREWED), HELM station 2, the shore stick streaming centred with the lever at neutral, AUTO towards a
  * waypoint 3 km ahead at kn (the AUTO start + the shore / onboard CONFIRM), then 15 s of driving */
-static bool ov_auto(sbsim_t *x, rjsim_t *r, uhsim_t *u, uint32_t seed, bool crewed, float kn)
+static bool ov_auto_start(sbsim_t *x, rjsim_t *r, uhsim_t *u, uint32_t seed, bool crewed, float kn)
 {
     static program_t p;
     prog_error_t err;
@@ -16983,6 +16992,10 @@ static bool ov_auto(sbsim_t *x, rjsim_t *r, uhsim_t *u, uint32_t seed, bool crew
     u->r = r;
     u->n.lease = 3000u;
     u->n.cap = -1.0f;
+    /* the gateway as at sea (13q3b MED-1: steering UNCREWED AUTO by hand needs them): the "no danger" request at
+     * 2 Hz, GW_SHORE valid with the shore 1.5 km away */
+    u->nav_on = true;
+    uh_shore(r, SB_SHORE_VALID, 1500u);
     r->x = 0.0f;
     r->lever = 0.5f;
     double hr = x->w.heading_deg * 3.14159265358979 / 180.0;
@@ -16991,7 +17004,12 @@ static bool ov_auto(sbsim_t *x, rjsim_t *r, uhsim_t *u, uint32_t seed, bool crew
     prog_make(&p, &w, 1, PROG_END_STOP);
     sb_program_set(&x->sb, &p, &err, &bad);
     if (pi_cmd(x, &r->p, 2u, false, PROTO_T_AUTO_START, NULL, 0u) != PROTO_R_OK) return false;
-    if (!(crewed ? onboard_confirm(x, r) : shore_confirm(x, r))) return false;
+    return crewed ? onboard_confirm(x, r) : shore_confirm(x, r);
+}
+
+static bool ov_auto(sbsim_t *x, rjsim_t *r, uhsim_t *u, uint32_t seed, bool crewed, float kn)
+{
+    if (!ov_auto_start(x, r, u, seed, crewed, kn)) return false;
     uh_run(x, u, 15000u);
     return sb_mode(&x->sb) == MODE_AUTO && gear_is(&x->sb.gear, GEAR_F) && x->sb.thr.out_pct > 3.0f;
 }
@@ -17402,6 +17420,270 @@ static void override_tests(void)
                  held ? "yes" : "NO", armed ? "yes" : "NO", hand ? "yes" : "NO");
         test_report("OV8 a new captain's stick already held (HELM swap in UNCREWED AUTO) never steers until seen centred",
                     in && sw == PROTO_R_OK && held && armed && hand, d);
+    }
+
+    /* OV9 (step 13q3b, review MED-1) steering UNCREWED AUTO by hand toward the shore (a frozen-but-fresh stick at 30 %
+     * too): the shore within SB_SHDG_STOP_M = STOP (idle + neutral, SHALLOW) for the rest of this AUTO - the steering
+     * stays by hand, letting go = AUTO steers again at idle; NOT steering: AUTO unchanged (its own route was checked);
+     * a new AUTO start: no STOP carried over; CREWED AUTO: nothing (the shore stick does nothing there) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1812u, false, 5.0f);
+        uh_shore(&r, SB_SHORE_VALID, 80u);
+        uh_run(&x, &u, 4000u);
+        bool goes_on = sb_mode(&x.sb) == MODE_AUTO && !x.sb.sovr.stopped && x.sb.thr.out_pct > 3.0f &&
+                       gear_is(&x.sb.gear, GEAR_F);
+        float t_stop = -1.0f, t_idle = -1.0f;
+        r.x = 0.3f;                                                      /* (a stick frozen at 30 %, still "fresh") */
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 6000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            if (t_stop < 0.0f && x.sb.sovr.stopped) t_stop = (float)(x.t - t0) * 0.001f;
+            if (t_stop >= 0.0f && t_idle < 0.0f && x.sb.thr.out_pct <= 0.01f) t_idle = (float)(x.t - t0) * 0.001f;
+        }
+        bool stop = sb_mode(&x.sb) == MODE_AUTO && x.sb.sovr.active && x.sb.sovr.stopped &&
+                    x.sb.sovr.stop_why == SB_SOVR_STOP_SHORE && x.sb.sovr.shore_stops == 1u &&
+                    x.sb.gear_demand == GEAR_N && gear_is(&x.sb.gear, GEAR_N) && (x.sb.alarm_bits & SB_ALM_SHALLOW);
+        uh_shore(&r, SB_SHORE_VALID, 1500u);                             /* the shore "far" again: still stopped */
+        ov_steer(&x, &u, 0.0f, 2500u, NULL, NULL);
+        float mo = 0.0f;
+        float md = uh_run_max(&x, &u, 10000u, &mo);
+        bool kept = sb_mode(&x.sb) == MODE_AUTO && !x.sb.sovr.active && x.sb.ap.mode == AP_MODE_AUTO && md <= 0.0f &&
+                    mo <= 0.01f && gear_is(&x.sb.gear, GEAR_N) && x.sb.sovr.stopped;
+        /* a new AUTO: STANDBY, the AUTO start + the shore CONFIRM */
+        const uint8_t SB0 = 0u;
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_SET_MODE, &SB0, 1u);
+        uh_run(&x, &u, 6000u);
+        sb_alarm_ack(&x.sb);
+        uint8_t st2 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_AUTO_START, NULL, 0u);
+        bool cf2 = shore_confirm(&x, &r);
+        uh_run(&x, &u, 15000u);
+        bool fresh_auto = sb_mode(&x.sb) == MODE_AUTO && !x.sb.sovr.stopped && x.sb.thr.out_pct > 3.0f;
+        crew_plug();
+        static sbsim_t y;
+        static rjsim_t q;
+        static uhsim_t v;
+        bool cin = ov_auto(&y, &q, &v, 1813u, true, 5.0f);
+        uh_shore(&q, SB_SHORE_VALID, 80u);
+        q.x = 0.6f;
+        uh_run(&y, &v, 5000u);
+        bool c_none = sb_mode(&y.sb) == MODE_AUTO && !y.sb.sovr.active && !y.sb.sovr.stopped && y.sb.thr.out_pct > 3.0f;
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO %s; shore 80 m, not steering: AUTO goes on %s; stick 30 %%: STOP after %.2f s, idle at "
+                 "%.2f s, N + SHALLOW, still by hand %s; shore far again + let go: AUTO steers, idle + N kept %s (max demand "
+                 "%.2f / out %.2f); new AUTO %u + CONFIRM %s: no STOP %s; CREWED AUTO %s near the shore + shore stick: "
+                 "nothing %s", in ? "yes" : "NO", goes_on ? "yes" : "NO", t_stop, t_idle, stop ? "yes" : "NO",
+                 kept ? "yes" : "NO", md, mo, st2, cf2 ? "yes" : "NO", fresh_auto ? "yes" : "NO", cin ? "yes" : "NO",
+                 c_none ? "yes" : "NO");
+        test_report("OV9 (13q3b MED-1) steering UNCREWED AUTO by hand near the shore = STOP for the rest of that AUTO; "
+                    "not steering / a new AUTO / CREWED: unchanged",
+                    in && goes_on && t_stop >= 0.0f && t_stop <= 0.3f && t_idle >= 0.0f && t_idle <= 1.0f && stop &&
+                    kept && st2 == PROTO_R_OK && cf2 && fresh_auto && cin && c_none, d);
+    }
+
+    /* OV10 (13q3b MED-1) the other STOP causes while steering UNCREWED AUTO by hand, each on its own boat: no valid
+     * shore data (no charts / position on the gateway), the navreq lease lapsed (the gateway quiet), the GPS lost, a
+     * navreq STOP cap; the same cause while NOT steering = AUTO's own rule (no STOP) */
+    {
+        static const struct { uint8_t why; const char *name; } C10[] = {
+            { SB_SOVR_STOP_NODATA, "no shore data" }, { SB_SOVR_STOP_LEASE, "lease lapsed" },
+            { SB_SOVR_STOP_GPS, "GPS lost" }, { SB_SOVR_STOP_CAP, "navreq cap 0" } };
+        bool all = true;
+        int pos = 0;
+        d[0] = '\0';
+        for (int i = 0; i < 4; i++) {
+            for (int steer = 0; steer < 2; steer++) {
+                static sbsim_t x;
+                static rjsim_t r;
+                static uhsim_t u;
+                bool in = ov_auto(&x, &r, &u, 1820u + (uint32_t)(i * 2 + steer), false, 5.0f);
+                if (steer) ov_steer(&x, &u, 0.5f, 2000u, NULL, NULL);
+                bool hand = !steer || x.sb.sovr.active;
+                if (C10[i].why == SB_SOVR_STOP_NODATA) uh_shore(&r, 0u, 0xFFFFu);
+                else if (C10[i].why == SB_SOVR_STOP_LEASE) u.nav_on = false;
+                else if (C10[i].why == SB_SOVR_STOP_GPS) x.w.gps_fail = true;
+                else { u.n.kind = SB_NAV_CAP; u.n.cap = 0.0f; u.n.reason = 2u; u.n.alarm = 4u; }
+                uh_run(&x, &u, 6000u);
+                bool ok;
+                if (steer)
+                    ok = in && hand && x.sb.sovr.stopped && x.sb.sovr.stop_why == C10[i].why &&
+                         x.sb.gear_demand == GEAR_N && x.sb.thr.out_pct <= 0.01f && sb_mode(&x.sb) == MODE_AUTO;
+                else
+                    ok = in && !x.sb.sovr.stopped && x.sb.sovr.stops == 0u;
+                all = all && ok;
+                if (pos < (int)sizeof d - 120)
+                    pos += snprintf(d + pos, sizeof d - (size_t)pos, "%s%s %s: %s (why %u, throttle %.1f %%, mode %d)",
+                                    pos ? "; " : "", C10[i].name, steer ? "by hand" : "not steering",
+                                    ok ? "ok" : "WRONG", x.sb.sovr.stop_why, x.sb.thr.out_pct, (int)sb_mode(&x.sb));
+                crew_plug();
+            }
+        }
+        test_report("OV10 (13q3b MED-1) steering UNCREWED AUTO by hand: no shore data / lease lapsed / GPS lost / a "
+                    "navreq STOP = idle + neutral; not steering: AUTO's own rules", all, d);
+    }
+
+    /* OV11 (13q3b MED-2) the AUTO lever left at neutral since the start does not limit (TELEM2 D b1 = "move the
+     * lever", the target where it meets the throttle); pulled DOWN from there = engaged: lever back = idle (gear F,
+     * AUTO kept), lever up to full = AUTO's own throttle again; a lever pulled down before the throttle came up =
+     * AUTO steers at idle */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1830u, false, 3.0f);
+        uh_run(&x, &u, 5000u);
+        bool wait = x.sb.sovr.lever_wait && !x.sb.sovr.ceil_on && (r.p.d_flags & 2u) && r.p.d_pick != 0xFFFFu &&
+                    r.p.d_pick > 550u && r.p.d_pick < 1000u;
+        unsigned pick = r.p.d_pick;
+        rj_lever(&x, &r, 0.3f, 0.5f);                                    /* pulled down (into the reverse zone) */
+        uh_run(&x, &u, 4000u);
+        bool idle = x.sb.sovr.ceil_on && x.sb.thr.out_pct <= 0.5f && gear_is(&x.sb.gear, GEAR_F) &&
+                    sb_mode(&x.sb) == MODE_AUTO && x.sb.gear_demand != GEAR_R && !(r.p.d_flags & 2u);
+        rj_lever(&x, &r, 1.0f, 0.5f);
+        uh_run(&x, &u, 15000u);
+        bool back = x.sb.thr.out_pct > 3.0f && !x.sb.sovr.ceil_cut;
+        crew_plug();
+        static sbsim_t y;
+        static rjsim_t q;
+        static uhsim_t v;
+        bool st = ov_auto_start(&y, &q, &v, 1831u, false, 3.0f);
+        rj_lever(&y, &q, 0.3f, 1.0f);                                    /* down at once (the throttle still idle) */
+        float mo = 0.0f;
+        uh_run_max(&y, &v, 15000u, &mo);
+        bool at_idle = sb_mode(&y.sb) == MODE_AUTO && y.sb.sovr.ceil_on && mo <= 1.0f;
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO 3 kn %s, lever at neutral since the start: not engaged + 'move the lever' %s (flags 0x%02x, "
+                 "target %.1f %%); pulled down to 0.3: engaged, idle in F, AUTO kept %s; full: AUTO's throttle again %s "
+                 "(%.1f %%); pulled down before the throttle came up: AUTO at idle %s (max %.2f %%)", in ? "yes" : "NO",
+                 wait ? "yes" : "NO", r.p.d_flags, pick / 10.0, idle ? "yes" : "NO", back ? "yes" : "NO",
+                 x.sb.thr.out_pct, st && at_idle ? "yes" : "NO", mo);
+        test_report("OV11 (13q3b MED-2) the AUTO lever engages when pulled down from where it was (lever at idle = "
+                    "steers at idle); not engaged = 'move the lever' on the screens",
+                    in && wait && idle && back && st && at_idle, d);
+    }
+
+    /* OV12 (13q3b LOW-1) a HELM swap in UNCREWED AUTO while steering by hand: the override ends in that step (heading
+     * hold, back to AUTO's steering), disarmed; an engaged lever ceiling keeps cutting at its value (frozen) until the
+     * new captain's lever engages - never a throttle rise from the swap */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1832u, false, 3.0f);
+        uh_run(&x, &u, 5000u);
+        rj_lever(&x, &r, 1.0f, 0.5f);                                    /* up past the throttle: engaged */
+        rj_lever(&x, &r, 0.6f, 0.5f);                                    /* the ceiling ~3.3 % */
+        uh_run(&x, &u, 6000u);
+        float cut0 = x.sb.throttle_demand;
+        ov_steer(&x, &u, 0.6f, 2000u, NULL, NULL);
+        bool hand = x.sb.sovr.active && x.sb.sovr.ceil_cut;
+        const uint8_t SWAP[3] = { 2u, 3u, 0u };
+        uint8_t sw = pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, SWAP, 3u);
+        r.st = 3u;                                                       /* the new captain: stick held, lever full */
+        r.x = 0.6f;
+        r.lever = 1.0f;
+        sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+        bool ended = x.sb.helm == 3u && !x.sb.sovr.active && x.sb.sovr.helm_ends == 1u && !x.sb.sovr.armed &&
+                     x.sb.ap.mode == AP_MODE_AUTO;
+        float md = uh_run_max(&x, &u, 6000u, NULL);
+        bool frozen = x.sb.sovr.frozen && md <= cut0 + 0.6f && !x.sb.sovr.active && x.sb.sovr.starts == 1u;
+        rj_lever(&x, &r, 0.6f, 0.5f);                                    /* the new lever down (moved): engaged */
+        uh_run(&x, &u, 3000u);
+        bool took = x.sb.sovr.ceil_on && !x.sb.sovr.frozen;
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO %s, lever ceiling cut to %.2f %%, by hand %s; HELM swap %u: ended + disarmed in that "
+                 "step %s; the new captain's lever full + stick held 6 s: max demand %.2f %% (frozen %s, no override %s); "
+                 "his lever moved down: his ceiling %s", in ? "yes" : "NO", cut0, hand ? "yes" : "NO", sw,
+                 ended ? "yes" : "NO", md, x.sb.sovr.frozen ? "yes" : "no", frozen ? "yes" : "NO", took ? "yes" : "NO");
+        test_report("OV12 (13q3b LOW-1) a HELM swap ends + disarms the override at once; the old lever ceiling holds until "
+                    "the new lever engages (no rise)",
+                    in && cut0 < 4.0f && hand && sw == PROTO_R_OK && ended && frozen && took, d);
+    }
+
+    /* OV13 (13q3b LOW-2) one press never does two things: a trigger in the same packet as the CONFIRM button, or within
+     * 0.5 s after a CONFIRM press that answered a request, sets no heading; a lone trigger later does */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool rem = uh_remote(&x, &r, &u, 1833u, 0.9f);
+        uint8_t ok = uh_lock(&x, &r);
+        uh_run(&x, &u, 3000u);
+        ov_steer(&x, &u, 0.7f, 6000u, NULL, NULL);
+        /* (a) the CONFIRM button + the trigger together (one button mapped to both): nothing pending -> no heading */
+        float t0 = x.sb.ap.target_heading;
+        r.conf = r.trig = true;
+        uh_run(&x, &u, 150u);
+        r.conf = r.trig = false;
+        uh_run(&x, &u, 100u);
+        bool a_none = x.sb.sovr.newhdgs == 0u && fabsf(autopilot_heading_error(t0, x.sb.ap.target_heading)) < 0.01f;
+        /* (b) a power raise pending: the CONFIRM answers it, the trigger 0.2 s later sets nothing */
+        uh_run(&x, &u, 2000u);
+        sb_alarm_ack(&x.sb);
+        uint16_t code = 0u;
+        bool pend = sb_power_code(&x.sb, 0u, &code) == SB_OK && sb_power_raise(&x.sb, 0u, code) == SB_OK;
+        float sx = r.x;
+        r.x = 0.0f;                         /* (the CONFIRM needs the stick centred + the lever at neutral) */
+        r.lever = 0.5f;
+        uh_run(&x, &u, 200u);
+        r.conf = true;
+        uh_run(&x, &u, 100u);
+        r.conf = false;
+        bool answered = x.sb.confirm.kind == CONF_NONE;
+        r.x = sx;
+        uh_run(&x, &u, 100u);
+        r.trig = true;
+        uh_run(&x, &u, 100u);
+        r.trig = false;
+        uh_run(&x, &u, 100u);
+        bool b_none = x.sb.sovr.newhdgs == 0u;
+        /* (c) a lone trigger later while steering: the new heading */
+        ov_steer(&x, &u, 0.7f, 1500u, NULL, NULL);
+        ov_trigger(&x, &u);
+        bool c_one = x.sb.sovr.newhdgs == 1u;
+        crew_plug();
+        snprintf(d, sizeof d, "HDG LOCK %s/%u by hand; CONFIRM + trigger in one packet: no heading %s; raise pending %s, "
+                 "CONFIRM answered %s, trigger 0.2 s later: no heading %s; a lone trigger later: new heading %s "
+                 "(ignored %u, by hand %s)", rem ? "yes" : "NO", ok, a_none ? "yes" : "NO", pend ? "yes" : "NO",
+                 answered ? "yes" : "NO", b_none ? "yes" : "NO", c_one ? "yes" : "NO", x.sb.sovr.trig_ignored,
+                 x.sb.sovr.active ? "yes" : "no");
+        test_report("OV13 (13q3b LOW-2) one press never does two things: no trigger heading with / just after a CONFIRM",
+                    rem && ok == PROTO_R_OK && a_none && pend && answered && b_none && c_one, d);
+    }
+
+    /* OV14 (13q3b LOW-4) the black box: event 26 SOVR in the log (start, back, STOP + why, mode change) and listed in
+     * the header (which still fits LOGR_MAX) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        bool in = ov_auto(&x, &r, &u, 1834u, false, 5.0f);
+        sbsim_log_start(&x, "sd_ov14", 14u);
+        uh_run(&x, &u, 1000u);
+        ov_steer(&x, &u, 0.6f, 2000u, NULL, NULL);
+        ov_steer(&x, &u, 0.0f, 3000u, NULL, NULL);                        /* back */
+        ov_steer(&x, &u, 0.6f, 2000u, NULL, NULL);
+        uh_shore(&r, SB_SHORE_VALID, 80u);                               /* STOP (shore) */
+        uh_run(&x, &u, 2000u);
+        const uint8_t SB0 = 0u;
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_SET_MODE, &SB0, 1u);        /* ended by a mode change */
+        uh_run(&x, &u, 3000u);
+        static char hdr[LOGR_MAX];
+        uint16_t hl = logrec_header_text(hdr, sizeof hdr, 1u, 1u);
+        bool listed = strstr(hdr, "26:SOVR:") != NULL && hl < sizeof hdr - 1u && strstr(hdr, "\nwhy=") != NULL;
+        uint32_t want = (1u << SB_SOVR_LOG_START) | (1u << SB_SOVR_LOG_BACK) | (1u << SB_SOVR_LOG_STOP) |
+                        (1u << SB_SOVR_LOG_END);
+        bool logged = (r.p.ev_sovr_mask & want) == want && (r.p.ev_sovr_why & (1u << SB_SOVR_STOP_SHORE));
+        logger_close(&s_logger);
+        x.log_on = false;
+        crew_plug();
+        snprintf(d, sizeof d, "AUTO %s; %u SOVR events, what mask 0x%x (want 0x%x), why mask 0x%x; header %u of %u bytes, "
+                 "listed %s", in ? "yes" : "NO", r.p.ev_sovr, r.p.ev_sovr_mask, want, r.p.ev_sovr_why, (unsigned)hl,
+                 (unsigned)sizeof hdr, listed ? "yes" : "NO");
+        test_report("OV14 (13q3b LOW-4) the shore stick override in the black box (event 26 SOVR), header fits",
+                    in && logged && listed, d);
     }
 }
 

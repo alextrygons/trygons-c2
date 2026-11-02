@@ -980,7 +980,14 @@ MODES
              locked heading ("NEW HEADING 245°" for 3 s, the mark on the
              heading tape moves). The trigger does nothing when you are not
              steering, and nothing while a question waits for your answer.
+             One press never does two things (step 13q3b): the trigger is
+             also ignored when it comes with the CONFIRM button or within
+             0.5 s after a CONFIRM press, and a trigger mapped to the same
+             button as CONFIRM / SAVE in shore_joystick.json is never sent
+             (the Remote page says so) - give it a button of its own.
              Shore stick data lost while you steer = the 0.3 s rule above.
+             Every start / end / new heading / stop of steering by hand is
+             written to the boat's black box (log event 26 SOVR).
   AUTO       a waypoint program (up to 50 waypoints). Each waypoint has a
              leg speed, an arrival radius and an action: continue / slow
              down / stop in neutral. At the end: stop + alarm (or hold the
@@ -1025,12 +1032,31 @@ MODES
              once, the heading held, alarm REMOTE DRIVING LINK LOST,
              STANDBY after 5 s (never back by itself); while you do not
              steer, AUTO does not need the stick.
+             WHILE YOU STEER AUTO BY HAND the boat protects itself like in
+             UNCREWED HDG LOCK (step 13q3b): your course was never checked
+             like AUTO's route, so the boat STOPS (idle + neutral) when the
+             shore / shallow water is 100 m or closer (alarm SHALLOW WATER),
+             when the gateway has no chart / position data or the position
+             is too uncertain, when the gateway's navigation check stops
+             arriving (alarm DRIVER DECISION), when the GPS is not trusted,
+             or when the gateway asks to stop. You keep steering by hand;
+             let the stick go and AUTO steers again - at idle. The STOP
+             lasts until you choose a mode again (AUTO START, REMOTE ...).
+             While AUTO steers itself nothing of this changes.
+             A new HELM captain (role swap) never steers on with the old
+             override: it ends at the swap and his stick must be seen
+             centred first; the old captain's lever limit stays until the
+             new captain moves his lever.
              THE TWCS LEVER IN AUTO (UNCREWED) = a power CEILING: it only
-             takes power away, never adds. It starts doing something once
-             it meets the throttle AUTO uses (at the AUTO start it is in
-             neutral: no effect until you push it up past the throttle and
-             then pull it back). Pulled back = less power, in the neutral
-             zone = idle (still in forward gear), the reverse zone = idle
+             takes power away, never adds. At the AUTO start it is in
+             neutral and does nothing yet. It starts limiting when you PULL
+             IT BACK (a real move down from where it was) - then it limits
+             at once: in the neutral zone or further back = idle, AUTO steers
+             at idle (still in forward gear). Pushing it up past AUTO's
+             throttle engages it too. While the lever is below the throttle
+             but not engaged yet, both screens say "The lever does not limit
+             the power yet - move it" with the lever position where it meets
+             the throttle. Pulled back = less power, the reverse zone = idle
              too - the lever never changes gear or mode. Pushed fully
              forward = AUTO's own throttle again (never more). The same in
              UNCREWED HDG LOCK (above). With people on board (CREWED)

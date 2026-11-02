@@ -761,6 +761,7 @@ cap.rm_pickup = MOVE THROTTLE TO PICK UP: lever to {to}
 cap.neutral = NEUTRAL
 cap.rm_wait_confirm = WAITING FOR THE JOYSTICK CONFIRM ON BOARD ({s} s)
 cap.rm_sending = sending: {n} packets{missing}   x {x}  lever {lever}
+cap.rm_trigger_conflict = The trigger shares a button with CONFIRM / SAVE: it is not sent (one press = one thing)
 cap.rm_joy_missing =    JOYSTICK NOT FOUND
 cap.rm_no_front = WARNING: NO FRONT CAMERA LIVE
 
@@ -1408,6 +1409,7 @@ sovr.hdg = MANUAL STEERING – HDG LOCK waiting (trigger = new heading)
 sovr.back = back in 2 s
 sovr.newhdg = NEW HEADING {h}°
 sovr.ceiling = The lever limits the power (reduction only)
+sovr.lever_wait = The lever does not limit the power yet – move it (pull back for less; it meets the throttle at {to})
 sovr.lost = STICK DATA LOST – idle + neutral, STANDBY in 5 s
 ov.station = {user} ({where})
 ov.status = Status

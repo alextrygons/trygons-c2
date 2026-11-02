@@ -92,6 +92,7 @@ static const char k_events[] =
     "23:NV:what(1 defaults 2 fault),slot,resets,-;"
     "24:GENERATOR:state(GEN_),stop_why|enabled<<8,bank_v*100,pct*10;"
     "25:RELAY:n|act<<8|res<<16|what<<24,states,known|ok<<31,hash|flags<<16|count<<24;"
+    "26:SOVR:what|mode<<8,hdg*10,x*1000,n;"
     "27:RESTART:action(ENG_LOG_),why(eng_why_t),hold_ms,restarts|cranks<<16;"
     "28:DP:what,a,b,c;"
     "29:CAN:what,masks,tec,drops;";

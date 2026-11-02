@@ -13,7 +13,9 @@ shore_joystick.json (next to app.py, written by the ground station):
 "confirm_button": the captain's CONFIRM (UNCREWED boat: power raise, AUTO / REMOTE /
 MANEUVER start are confirmed here instead of on the onboard joystick).
 "trigger_button": the stick's TRIGGER (step 13q3): in UNCREWED HDG LOCK, pressed while steering by hand
-with the stick (no request pending) = the boat's current heading becomes the locked heading.
+with the stick (no request pending) = the boat's current heading becomes the locked heading. It must be
+a button of its own: mapped to the CONFIRM or SAVE button it is never sent (step 13q3b: one press never
+does two things; the AURIX also ignores a trigger in the same packet as / within 0.5 s of a CONFIRM).
 "save_button": video SAVE on the gateway (works any time, not only while driving).
 "lever": true = non-returning throttle lever (TWCS, 0 back .. 1 forward);
 false = spring-centred stick Y (-1 .. +1).
@@ -162,6 +164,17 @@ def save_config(c):
         json.dump(c, f, indent=1)
 
 
+def _same_button(a, b):
+    return bool(a and b and a.get("dev") == b.get("dev") and a.get("button") == b.get("button"))
+
+
+def trigger_conflict(cfg):
+    """True when the trigger is mapped to the CONFIRM or the SAVE button (step 13q3b, review LOW-2: one press never
+    does two things) - such a trigger is never sent; the Remote tab says so."""
+    t = cfg.get("trigger_button")
+    return _same_button(t, cfg.get("confirm_button")) or _same_button(t, cfg.get("save_button"))
+
+
 def to_remote(js, cfg):
     """Joystick readings -> {"x", "lever" or "y", "confirm", "trigger"} or None if a device is missing."""
     s, t = cfg["steer"], cfg["thr"]
@@ -177,6 +190,8 @@ def to_remote(js, cfg):
         out["y"] = max(-1.0, min(1.0, v))
     for key, name in (("confirm_button", "confirm"), ("trigger_button", "trigger")):
         rb = cfg.get(key)
+        if key == "trigger_button" and trigger_conflict(cfg):
+            continue                                    # (13q3b LOW-2: the same button never also sets a heading)
         if rb:
             r = js.read(rb["dev"])
             out[name] = bool(r["ok"] and r["buttons"] & (1 << (rb["button"] - 1)))

@@ -1391,8 +1391,8 @@ def s19_override(rig):
     rig.gateway_like(True)
     rig.size(1366, 768, 1.0)
     ap.gw_status = fake_gw(ap.t)
-    keys = ("ov_hand", "ov_back", "ov_newhdg", "ov_ceiling", "ov_lost", "helm")
-    tags = ("sovr_hand", "sovr_newhdg", "sovr_ceiling", "sovr_lost")
+    keys = ("ov_hand", "ov_back", "ov_newhdg", "ov_ceiling", "ov_lost", "helm", "ov_lever_wait", "rjoy_pickup1000")
+    tags = ("sovr_hand", "sovr_newhdg", "sovr_ceiling", "sovr_lost", "sovr_lever")
     try:
         def screen2():
             rig.pump(0.4)
@@ -1426,7 +1426,24 @@ def s19_override(rig):
         ap.render(force=True)
         lost = [b for b in ap.banner_list() if b[0] == "sovr_lost"]
         lost_ok = len(lost) == 1 and lost[0][1] == A.T("sovr.lost") and lost[0][3] == theme.WARN
-        rig.extra.update(profile=proto.PROFILE_CREWED, ov_hand=True, ov_newhdg=True, ov_ceiling=True, ov_lost=True)
+        # step 13q3b (review MED-2): the AUTO lever below the throttle but not engaged yet = "move the lever" (both)
+        rig.extra.update(ov_lost=False, ov_lever_wait=True, rjoy_pickup1000=674)
+        wait = screen2()
+        wait_ok = wait == {"sovr_lever": A.T("sovr.lever_wait", to="67 %")}
+        if shots:
+            shot(ap.root, os.path.join(shots, "screen2_lever_wait_el.png"))
+        ap.open_driver()
+        dv = ap.driver
+        dv.w.geometry("1600x900+0+0")
+        rig.pump(1.5)
+        s1w = {n[0]: n[1] for n in dv.notices(ap.t, ap.gw_status) if n[0] in tags}
+        if shots and dv.last_frame is not None:
+            dv.last_frame.save(os.path.join(shots, "driver_lever_wait_el.png"))
+        ap.close_driver()
+        wait_ok = wait_ok and s1w == wait
+        rig.extra.update(ov_lever_wait=False)
+        rig.extra.update(profile=proto.PROFILE_CREWED, ov_hand=True, ov_newhdg=True, ov_ceiling=True, ov_lost=True,
+                         ov_lever_wait=True)
         crew = screen2()
         fits = not layout_problems(ap)
     finally:
@@ -1434,10 +1451,11 @@ def s19_override(rig):
             rig.extra.pop(k, None)
         rig.extra.update(profile=proto.PROFILE_CREWED, mode=proto.MODE_STANDBY, mode_name="STANDBY")
     report("S19 shore stick override (13q3): MANUAL STEERING - AUTO / HDG LOCK waiting, back in 2 s, NEW HEADING, the "
-           "lever ceiling, the AUTO data-lost stop (warning) on screens 2 + 1; CREWED nothing",
-           auto_ok and hdg_ok and s1_ok and lost_ok and crew == {} and fits,
-           "AUTO %s; HDG LOCK %s; screen 1 %s, mode box %s; lost %s; CREWED %s; fits %s" % (auto, hdg, s1, box, lost, crew,
-                                                                                         fits))
+           "lever ceiling, the AUTO data-lost stop (warning), 13q3b the lever not engaged, on screens 2 + 1; CREWED "
+           "nothing",
+           auto_ok and hdg_ok and s1_ok and lost_ok and wait_ok and crew == {} and fits,
+           "AUTO %s; HDG LOCK %s; screen 1 %s, mode box %s; lost %s; lever not engaged %s / screen 1 %s; CREWED %s; "
+           "fits %s" % (auto, hdg, s1, box, lost, wait, s1w, crew, fits))
 
 
 def s16_silence(rig):
