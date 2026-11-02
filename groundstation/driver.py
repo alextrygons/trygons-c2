@@ -489,6 +489,8 @@ class DriverScreen:
             self.toggle_overlay()
         elif act == "vision_clear":
             a.vision_send({"t": "vision_clear"})
+        elif act == "slam_restore":
+            a.slam_restore_answer(True)         # the captain's own ACCEPT (step 13q4): the AURIX checks it again
         elif act == "remote_req":
             if a.manual_allowed() and not (a.t and a.t.get("mode") == proto.MODE_REMOTE):
                 a.remote_request()
@@ -681,6 +683,10 @@ class DriverScreen:
         if d is not None and "rjoy_lever1000" in d and d.get("rjoy_age_ms", 99999) < 1000:
             lv = d["rjoy_lever1000"] / 1000.0                   # the captain's lever: REV / N / FWD zone
             s["mv_ask"] = 1 if lv > d.get("nz_hi", 0.55) else (2 if lv < d.get("nz_lo", 0.45) else 0)
+        # step 13q4: the RESTORE POWER button (the boat offers a restore after the slamming reduction; REJECT / no
+        # answer keeps it reduced) - the captain's screen only; the question itself is driver.ask (app.drv_slam)
+        s["slam_restore"] = bool(d is not None and d.get("slam_restore_ok") and not d.get("slam_ask") and
+                                 a.slam_restore_allowed())
         v = gw.get("vision")
         s["vision_cap"] = bool(v and v.get("cap_kn") is not None)
         if v:

@@ -1078,6 +1078,12 @@ uint32_t sb_link_age_ms(const sb_t *s);
  * switches it off. */
 sb_result_t sb_generator_set(sb_t *s, bool on);
 
+/* Slamming power restore (step 13q4, owner 2026-10-31; PROTO_T_SLAM_RESTORE from the HELM station): the
+ * slamming reduction NEVER goes away by itself. accept = the captain's ACCEPT: the cap rises at the normal
+ * throttle up rate (only while slam_restore_avail: reduced, calm for 30 s, sensor working - else PRECOND);
+ * reject = the question closes, the reduction stays (asked again after 2 min calm). */
+sb_result_t sb_slam_restore(sb_t *s, bool accept);
+
 /* Relay board (section M; relays.h). table: the boat file's relay table from
  * the HELM station (PROTO_T_RELAY_CFG): the same table as the active one =
  * OK at once; a different one only in STANDBY (not stopping) and only after

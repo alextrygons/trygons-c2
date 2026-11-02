@@ -388,6 +388,55 @@ def main():
         app.gw_status = None
         del app.vision_send
 
+        # I24 slamming power restore (step 13q4, owner 2026-10-31): the boat's question -> ACCEPT / REJECT on the
+        # captain's screen 1 (the AURIX decides: PROTO_T_SLAM_RESTORE); after a REJECT the framed RESTORE POWER
+        # button in the bottom bar; not on a station that may not answer (a copilot); no automatic answer
+        slr_sent = []
+        real_send = app._send_cmd
+        app._send_cmd = lambda ftype, payload, what, confirm=None: slr_sent.append((ftype, bytes(payload)))
+        if dv.question:
+            dv.answer(False, why="done elsewhere")
+        app.slam_tag = None
+        base = dict(app.t)
+        app.t = dict(base, slr_flags=1 | (8 << 4), slr_before=60, slam_ask=True, slam_restore_ok=True,
+                     slam_ask_left=8)
+        app.drv_slam(app.t)
+        q_asked = dv.question is not None and A.T("slam.head") == dv.qhead.cget("text") and \
+            "60 %" in dv.qtext.cget("text")
+        no_auto = not slr_sent                                  # nothing sent until the captain answers
+        dv.answer(True)
+        acc_sent = (proto.T_SLAM_RESTORE, bytes([1])) in slr_sent
+        app.t = dict(base, slr_flags=1, slr_before=60, slam_ask=True, slam_restore_ok=True, slam_ask_left=5)
+        app.slam_tag = None
+        app.drv_slam(app.t)
+        dv.answer(False)
+        rej_sent = (proto.T_SLAM_RESTORE, bytes([0])) in slr_sent
+        app.t = dict(base, slr_flags=2 | 8, slr_before=60, slam_ask=False, slam_restore_ok=True)
+        app.drv_slam(app.t)
+        dv.draw()
+        btn_shown = any(act == "slam_restore" for _r, act in dv.hits)
+        n0 = len(slr_sent)
+        dv.action("slam_restore")
+        btn_sent = slr_sent[n0:] == [(proto.T_SLAM_RESTORE, bytes([1]))]
+        real_allowed = app.slam_restore_allowed
+        app.slam_restore_allowed = lambda: False                # a copilot's station
+        app.t = dict(base, slr_flags=1 | 2, slr_before=60, slam_ask=True, slam_restore_ok=True, slam_ask_left=8)
+        app.slam_tag = None
+        app.drv_slam(app.t)
+        cop_q = dv.question is not None
+        dv.draw()
+        cop_btn = any(act == "slam_restore" for _r, act in dv.hits)
+        app.slam_restore_allowed = real_allowed
+        app._send_cmd = real_send
+        app.slam_tag = None
+        app.t = base
+        report("I24 slamming power restore on screen 1: the boat's question (ACCEPT / REJECT, nothing sent by itself), "
+               "the RESTORE POWER button after a REJECT, nothing for a copilot (13q4)",
+               q_asked and no_auto and acc_sent and rej_sent and btn_shown and btn_sent and not cop_q and not cop_btn,
+               "question %s, nothing sent before the answer %s, ACCEPT sent %s, REJECT sent %s; button %s, sends %s; "
+               "copilot: question %s, button %s" % (q_asked, no_auto, acc_sent, rej_sent, btn_shown, btn_sent, cop_q,
+                                                   cop_btn))
+
         # I10 full-screen camera, every text inside its box in both languages, sizes
         import settings
         import i18n

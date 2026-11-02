@@ -189,7 +189,7 @@ RUN ALL TESTS (before every commit):
     autopilot_sim.exe gw
   Only the gateway link tests (GA1.., HELM, REMOTE, SAVE requests), quick.
     autopilot_sim.exe slam
-  Only the slamming tests (SL1..SL8).
+  Only the slamming tests (SL1..SL12).
   The gateway tests of one part only, e.g.:  test_gateway.py AIS
   The gateway (gateway PC) tests, with the simulator, on the PC:
     cd ..\gateway
@@ -2173,9 +2173,23 @@ H. SLAMMING (hull impacts) AND AUTOMATIC THROTTLE REDUCTION
              ("LIMIT_RESET") brings back the old behaviour: the power
              limit also drops to 30 %, like for every other alarm.
   It only ever REDUCES the throttle, in every mode (MANUAL, HDG LOCK, AUTO,
-  REMOTE). The throttle comes down at its normal rate. After 30 s of calm
-  water the reduction goes back slowly (+5 % every 10 s). In AUTO, slamming
-  also counts as rough water (the boat slows its target speed, chapter 7).
+  REMOTE). The throttle comes down at its normal rate.
+  POWER BACK ONLY WITH THE CAPTAIN'S ACCEPT (owner 2026-10-31, step 13q4):
+  the reduction NEVER goes away by itself. After 30 s of calm water the
+  boat asks on the captain's screen 1:
+      "Calmer sea – restore power to 60 %?"   [ACCEPT] [REJECT]
+  (60 = the throttle when the reduction began). ACCEPT = the power comes
+  back gradually, at the normal throttle up rate; new impacts while it
+  rises = it stops and is reduced again. REJECT, or no answer in 10 s =
+  it stays reduced; a framed RESTORE POWER button stays in the screen 1
+  bottom bar and in the screen 2 control panel while the sea is calm, and
+  the boat asks again after the next 2 minutes of calm water. Only the
+  captain (or a single operator) can answer - a copilot can't (gateway
+  code 118). In AUTO the boat gets its speed back only after the ACCEPT.
+  After a reset there is no reduction (the boat starts in STANDBY with
+  the startup power limit anyway).
+  In AUTO, slamming also counts as rough water (the boat slows its target
+  speed, chapter 7).
   OVERRIDE (only with the joystick on board, never the remote driver):
   "kick-down" - ease the throttle off (below 85 %), then push it to full
   and hold 1 s. The reduction is lifted (warning beep, "OVERRIDE" shown)
@@ -2455,7 +2469,8 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
                          (warning only, part J)
   SLAMMING               an impact harder than slam_limit_g: throttle reduced
                          one step, video SAVE; the power limit stays (only
-                         with slam_red_reset = 1 it drops to 30 %) (part H)
+                         with slam_red_reset = 1 it drops to 30 %); power
+                         back ONLY with the captain's ACCEPT (part H)
   GATEWAY STORAGE        the gateway PC's SSD is missing / failing, or STORAGE FULL
                          (no mode change; SAVE refused while full)
   REMOTE LINK LOST       the remote station holding HELM disappeared; HELM

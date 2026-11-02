@@ -79,7 +79,7 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               121: "route not checked by the gateway",
               116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
               117: "only the captain (or a station on the boat) holds HELM",
-              118: "captain only: REMOTE MANUAL / MANEUVER / engine START / LINK TIME",
+              118: "captain only: REMOTE MANUAL / MANEUVER / engine START / LINK TIME / power restore",
               119: "no captain holds HELM"}
 # copilot commands that never wait for the captain's ACCEPT (CLAUDE.md D: STANDBY, hold, AUTO return - the AURIX
 # still wants the joystick CONFIRM for the return; DP STOP: proto.is_driving_cmd)
@@ -446,6 +446,13 @@ class StationServer:
             return self.refuse(st, seq, ftype, 118)          # LINK TIME: the HELM captain only (step 13q1)
         if ftype == proto.T_LINK_TIME:
             self.gw.audit("link_time", station=st.id, user=st.user, seconds=payload[0] if payload else None)
+        if ftype == proto.T_SLAM_RESTORE and st.crew != "captain" and not st.single_op:
+            # the slamming power restore (step 13q4, owner 2026-10-31): the captain's ACCEPT on screen 1 only - a
+            # copilot can't restore power, not even through the captain's ACCEPT (never forwarded)
+            return self.refuse(st, seq, ftype, 118)
+        if ftype == proto.T_SLAM_RESTORE:
+            self.gw.audit("slam_restore", station=st.id, user=st.user,
+                          answer="accept" if payload[:1] == bytes([proto.SLAM_ACCEPT]) else "reject")
         if ftype == proto.T_HELM and payload[:1] == bytes([0]) and st.crew != "captain" and not st.local \
                 and not st.single_op and not (st.licence and not self.gw.telem2.get("helm")):
             # a copilot never takes HELM from the captain (that is the role swap); a licensed user may take a

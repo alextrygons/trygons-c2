@@ -473,6 +473,11 @@ sb_result_t sb_generator_set(sb_t *s, bool on)
     return SB_OK;
 }
 
+sb_result_t sb_slam_restore(sb_t *s, bool accept)
+{
+    return slam_restore(&s->slam, accept) ? SB_OK : SB_ERR_PRECOND;
+}
+
 bool sb_compass_ok(const sb_t *s)
 {
     return s->ap.heading_valid && !s->ap.sensor_fault;
@@ -4052,11 +4057,14 @@ void sb_step(sb_t *s)
      * impact is an alarm (-> power limit down below, SAVE); yellow warns. */
     {
         bool was_over = s->slam.override;
+        bool was_ask = s->slam.asking;
         sb_mode_t m = sb_mode(s);
+        s->slam.cfg.up_pct_s = s->thr.cfg.rate_up_pct_s;   /* an ACCEPTED restore: never faster than the throttle up rate */
         slam_step(&s->slam, acc, n_acc, s->now_ms, dt_ms, (s->gear_demand == GEAR_F) ? s->throttle_demand : 0.0f,
                   m == MODE_MANUAL || m == MODE_HDG_LOCK);
         if (s->slam.red_edge) alarm_on(s, SB_ALM_SLAM);
         if ((s->slam.yellow_edge || (s->slam.override && !was_over)) && s->chirp_ms < 300u) s->chirp_ms = 300u;
+        if (s->slam.asking && !was_ask && s->chirp_ms < 300u) s->chirp_ms = 300u;   /* the restore question opens */
     }
 
     /* power limit: any new alarm (also from the PC link) -> startup limit

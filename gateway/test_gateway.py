@@ -3262,6 +3262,20 @@ def section_cr():
                    r_bob_lt, r_al_bad, r_al_lt, lt_got and lt_got.get("lt_set"), keep_al, keep_bob, pl[10], pl[11],
                    pl_gone[11], pl_none[10:], r_al_lt3))
 
+        # SR1 slamming power restore (step 13q4, owner 2026-10-31): the captain's ACCEPT only - a copilot's is
+        # refused by the gateway (118, never forwarded for the captain's ACCEPT); the captain's goes to the AURIX,
+        # which refuses it with nothing reduced (6 = PRECOND); TELEM2 group T decoded
+        r_bob_sr = bob.result(bob.cmd(proto.T_SLAM_RESTORE, proto.p_slam_restore(True)))
+        r_bob_rj = bob.result(bob.cmd(proto.T_SLAM_RESTORE, proto.p_slam_restore(False)))
+        r_al_sr = alice.result(alice.cmd(proto.T_SLAM_RESTORE, proto.p_slam_restore(True)))
+        t_sr = w.until(lambda d: "slr_flags" in d, 3)
+        report("SR1 slamming power restore through the gateway: the captain only (copilot 118, ACCEPT and REJECT), "
+               "the AURIX decides (nothing reduced = 6); TELEM2 group T",
+               r_bob_sr == 118 and r_bob_rj == 118 and r_al_sr == 6 and t_sr is not None and
+               not t_sr.get("slam_ask") and not t_sr.get("slam_restore_ok"),
+               "copilot ACCEPT %s / REJECT %s (118), captain ACCEPT %s (6 = nothing to restore); TELEM2 T %s" % (
+                   r_bob_sr, r_bob_rj, r_al_sr, t_sr and (t_sr.get("slr_flags"), t_sr.get("slr_before"))))
+
         # CR7 role swap (both licensed): HELM moves to the new captain in one step - no LINK LOST (UNCREWED);
         # with an unlicensed partner refused
         alice.pump(1.0)

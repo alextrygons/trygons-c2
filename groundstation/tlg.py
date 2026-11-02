@@ -120,9 +120,10 @@ class Log:
             return "GPS position source %s (reason %d), uncertainty %.1f m, losses %d" % (src, a[1], a[2] / 10, a[3])
         if name == "SLAM":
             st = ["calm", "YELLOW", "RED"][(a[3] >> 16) & 3] if ((a[3] >> 16) & 3) < 3 else "?"
-            return "SLAM %s level %.2f g, %d/min, cap %.0f %%%s, %s" % (
+            return "SLAM %s level %.2f g, %d/min, cap %.0f %%%s%s%s%s, %s" % (
                 "impact %.2f g" % (a[0] / 100) if a[0] else "change", a[1] / 100, a[2], (a[3] & 0xFFFF) / 10,
-                " OVERRIDE" if (a[3] >> 20) & 1 else "", st)
+                " OVERRIDE" if (a[3] >> 20) & 1 else "", " RESTORE ASKED" if (a[3] >> 21) & 1 else "",
+                " RESTORING (accepted)" if (a[3] >> 22) & 1 else "", " declined" if (a[3] >> 23) & 1 else "", st)
         if name == "NAV":
             kinds = {0: "none", 1: "speed cap", 2: "avoidance heading", 3: "HDG LOCK heading (accepted)"}
             return "NAV %s%s heading %.0f, cap %s, alarm %d, reason %d%s" % (

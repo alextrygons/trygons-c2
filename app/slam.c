@@ -19,8 +19,9 @@ void slam_default_config(slam_config_t *c)
     c->step_ms = 5000u;
     c->min_cap_pct = 30.0f;
     c->calm_ms = 30000u;
-    c->recover_pct = 5.0f;
-    c->recover_ms = 10000u;
+    c->ask_ms = 10000u;
+    c->ask_again_ms = 120000u;
+    c->up_pct_s = 15.0f;                /* smallboat.c sets the throttle's own up rate */
     c->override_ms = 1000u;
     c->lost_ms = 1000u;
 }
@@ -51,15 +52,45 @@ static void impact(slam_t *s, float peak, uint32_t now_ms)
 static void step_down(slam_t *s, float demand_pct)
 {
     float from = fminf(s->cap_pct, fmaxf(demand_pct, s->cfg.min_cap_pct));
+    if (s->cap_pct >= 100.0f) s->before_pct = fminf(100.0f, fmaxf(demand_pct, s->cfg.min_cap_pct));
     s->cap_pct = fmaxf(s->cfg.min_cap_pct, from - s->cfg.step_pct);
     s->steps++;
     s->kick_armed = false;              /* an override needs a new kick-down */
+    /* a new reduction: a running restore stops, an open question closes, the first question again after calm_ms */
+    s->restoring = false;
+    s->asking = false;
+    s->declined = false;
+    s->ask_at = s->cfg.calm_ms;
+}
+
+bool slam_restore_avail(const slam_t *s)
+{
+    return s->cap_pct < 100.0f && !s->restoring && !s->lost && s->seen && s->state == SLAM_CALM &&
+           s->calm_timer >= s->cfg.calm_ms;
+}
+
+bool slam_restore(slam_t *s, bool accept)
+{
+    if (!accept) {
+        if (!s->asking) return s->cap_pct < 100.0f;  /* nothing open: harmless */
+        s->asking = false;
+        s->declined = true;
+        s->rejects++;
+        s->ask_at = s->calm_timer + s->cfg.ask_again_ms;
+        return true;
+    }
+    if (!slam_restore_avail(s)) return false;
+    s->asking = false;
+    s->restoring = true;
+    s->accepts++;
+    return true;
 }
 
 void slam_step(slam_t *s, const float *samples, uint32_t n, uint32_t now_ms, uint32_t dt_ms,
                float demand_pct, bool onboard)
 {
     const slam_config_t *c = &s->cfg;
+    uint32_t imp0 = s->impacts;
     s->red_edge = s->yellow_edge = false;
     s->peak = 0.0f;
 
@@ -103,6 +134,15 @@ void slam_step(slam_t *s, const float *samples, uint32_t n, uint32_t now_ms, uin
     else s->state = yellow ? SLAM_YELLOW : SLAM_CALM;
     if (s->state != SLAM_CALM && was == SLAM_CALM) s->yellow_edge = true;
 
+    /* an ACCEPTED restore that meets a new impact (or the sensor stops): it stops at once, an impact
+     * also steps the cap down again (step 13q4) */
+    bool hit = s->impacts != imp0;
+    if (s->restoring && (hit || s->lost || s->state != SLAM_CALM)) {
+        s->restoring = false;
+        s->restore_stops++;
+        if (hit && !s->red_edge) step_down(s, demand_pct);
+    }
+
     /* reduction (only ever down here) */
     if (s->red_edge) {
         step_down(s, demand_pct);
@@ -117,18 +157,42 @@ void slam_step(slam_t *s, const float *samples, uint32_t n, uint32_t now_ms, uin
         s->step_timer = 0u;
     }
 
-    /* slow recovery after a calm time */
+    /* calm water: NO recovery by itself (step 13q4, owner 2026-10-31) - the question is offered; only
+     * slam_restore(accept) raises the cap, and then only at the normal throttle up rate */
     bool calm = s->state == SLAM_CALM && s->level < 0.8f * c->yellow_frac * c->limit_g;
-    s->calm_timer = calm ? s->calm_timer + dt_ms : 0u;
-    if (s->calm_timer >= c->calm_ms && s->cap_pct < 100.0f) {
-        s->recover_timer += dt_ms;
-        if (s->recover_timer >= c->recover_ms) {
-            s->recover_timer = 0u;
-            s->cap_pct += c->recover_pct;
-            if (s->cap_pct >= 100.0f) s->cap_pct = 100.0f;
-        }
+    if (calm) {
+        s->calm_timer += dt_ms;
     } else {
-        s->recover_timer = 0u;
+        s->calm_timer = 0u;
+        if (s->asking) s->asking = false;           /* rough again: the question closes, not an answer */
+        if (s->declined) s->ask_at = c->ask_again_ms;   /* declined once: the next question after 2 min calm */
+        else s->ask_at = c->calm_ms;
+    }
+    if (s->cap_pct >= 100.0f) {
+        s->asking = s->declined = false;
+        s->ask_at = c->calm_ms;
+    }
+    if (s->asking && (!slam_restore_avail(s) || now_ms - s->ask_t >= c->ask_ms)) {
+        bool timed_out = slam_restore_avail(s);
+        s->asking = false;
+        if (timed_out) {                           /* no answer in 10 s = REJECT */
+            s->declined = true;
+            s->timeouts++;
+            s->ask_at = s->calm_timer + c->ask_again_ms;
+        }
+    }
+    if (!s->asking && slam_restore_avail(s) && s->calm_timer >= s->ask_at) {
+        s->asking = true;
+        s->ask_t = now_ms;
+        s->asks++;
+    }
+    if (s->restoring) {
+        s->cap_pct += c->up_pct_s * (float)dt_ms * 0.001f;
+        if (s->cap_pct >= 100.0f) {
+            s->cap_pct = 100.0f;
+            s->restoring = false;
+            s->before_pct = 0.0f;
+        }
     }
 
     /* override by kick-down: the onboard driver insists (never the remote driver) */

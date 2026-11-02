@@ -269,8 +269,12 @@ static void changes(const sb_t *s)
      * in the 20 Hz sample: the black box has no room left) */
     {
         const slam_t *sl = &s->slam;
-        uint32_t code = (uint32_t)lroundf(slam_cap(sl) * 10.0f) | ((uint32_t)sl->state << 16) |
-                        ((sl->override ? 1u : 0u) << 20);
+        /* step 13q4: + the restore question / ACCEPT / REJECT (asking b21, restoring b22, declined b23); while an
+         * accepted restore raises the cap it is logged in whole 10 % (not 20 events a second) */
+        float cap = sl->restoring ? 10.0f * floorf(slam_cap(sl) / 10.0f) : slam_cap(sl);
+        uint32_t code = (uint32_t)lroundf(cap * 10.0f) | ((uint32_t)sl->state << 16) |
+                        ((sl->override ? 1u : 0u) << 20) | ((sl->asking ? 1u : 0u) << 21) |
+                        ((sl->restoring ? 1u : 0u) << 22) | ((sl->declined ? 1u : 0u) << 23);
         bool hit = sl->impacts != k.slam_impacts;
         if (hit || code != k.slam_code)
             ev(s, EV_SLAM, hit ? (int32_t)lroundf(sl->peak * 100.0f) : 0, (int32_t)lroundf(sl->level * 100.0f),

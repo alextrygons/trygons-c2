@@ -63,7 +63,8 @@ typedef enum {
                            USB laptop, 4 gateway lost), result (0 granted, 1 refused), new holder */
     EV_SAVE,            /* video SAVE request: trigger (SB_SAVE_), arg, seq, 0 */
     EV_SLAM,            /* impact / slamming change: peak g*100 (0 = no impact), level g*100, impacts per min,
-                           cap %*10 | state<<16 | override<<20 */
+                           cap %*10 | state<<16 | override<<20 | restore question open<<21 | accepted restore
+                           running<<22 | declined (REJECT / no answer)<<23 (step 13q4) */
     EV_NAV,             /* navigation request change: kind | reason<<8 | alarm<<16 | lost<<24 | applied<<25,
                            heading*100, cap kn*10 (-1 none), seq */
     EV_PROFILE,         /* operating profile change: profile (0 detecting 1 CREWED 2 UNCREWED), onboard joystick

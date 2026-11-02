@@ -439,6 +439,7 @@ static int cmd_len(uint8_t type)
     case PROTO_T_DP:           return 4;
     case PROTO_T_CONFIRM_ONLY: return 2;
     case PROTO_T_LINK_TIME:    return 1;
+    case PROTO_T_SLAM_RESTORE: return 1;
     default:                   return -1;
     }
 }
@@ -547,6 +548,13 @@ static uint8_t do_command(link_t *l, sb_t *s, const proto_frame_t *f)
         uint8_t sec = proto_rd_u8(&r);
         if (s->helm < 2u) return PROTO_R_NOT_ALLOWED;
         return sb_result_to_proto(sb_link_time_set(s, sec));
+    }
+    case PROTO_T_SLAM_RESTORE: {
+        /* step 13q4: the HELM station's answer to the slamming restore question (ACCEPT raises the cap at the
+         * normal throttle up rate; REJECT keeps the reduction) */
+        uint8_t a = proto_rd_u8(&r);
+        if (a > 1u) return PROTO_R_BAD_VALUE;
+        return sb_result_to_proto(sb_slam_restore(s, a == 1u));
     }
     case PROTO_T_RELAY: {
         uint8_t n = proto_rd_u8(&r), act = proto_rd_u8(&r);
@@ -1060,6 +1068,9 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  *   S: LINK TIME (step 13q1): u8 the captain's setting s (3..60; above 3 = OVERRIDE) | u8 flags: b0 the gateway
  *      reports the HELM station's age, b1 the setting is NOT in force now (near shore / no report: 3 s),
  *      b2..b7 the HELM station silent for (whole s, 0..62; 63 = not counting: CREWED, not armed, already lost)
+ *   T: slamming power restore (step 13q4): u8 flags (b0 the question is open on screen 1, b1 a restore may be
+ *      ACCEPTED now = the RESTORE POWER button, b2 an accepted restore runs, b3 declined (REJECT / no answer),
+ *      b4..b7 the question's seconds left) | u8 the throttle % when the reduction began (0 = none)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
@@ -1280,6 +1291,19 @@ static void telemetry2(link_t *l, sb_t *s)
         proto_wr_u8(&w, s->ll.link_time_s);
         proto_wr_u8(&w, (uint8_t)((s->ll.rep ? 1u : 0u) | (s->ll.limit_s < s->ll.link_time_s ? 2u : 0u) |
                                   ((counting ? (sil > 62u ? 62u : sil) : 63u) << 2)));
+    }
+    /* T: the slamming power restore (step 13q4; TELEM2 had 2 bytes left - it is FULL now) */
+    {
+        const slam_t *sl = &s->slam;
+        uint32_t left = 0u;
+        if (sl->asking) {
+            uint32_t el = s->now_ms - sl->ask_t;
+            left = el >= sl->cfg.ask_ms ? 0u : (sl->cfg.ask_ms - el + 999u) / 1000u;
+            if (left > 15u) left = 15u;
+        }
+        proto_wr_u8(&w, (uint8_t)((sl->asking ? 1u : 0u) | (slam_restore_avail(sl) ? 2u : 0u) |
+                                  (sl->restoring ? 4u : 0u) | (sl->declined ? 8u : 0u) | (left << 4)));
+        proto_wr_u8(&w, (uint8_t)lroundf(fmaxf(0.0f, fminf(100.0f, sl->before_pct))));
     }
     l->telem2_len = (uint16_t)w.n;
     if (!w.overflow) send(l, PROTO_T_TELEM2, l->tx_seq++, buf, w.n);

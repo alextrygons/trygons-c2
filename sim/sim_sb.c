@@ -63,7 +63,8 @@ static bool     s_rb_can;
  * groups appended after them: O (engine controls, 12 bytes) + N (DP thrusters 10 bytes + the DP state
  * T2_DP bytes) + P (DroneCAN summary T2_P bytes) = T2_N */
 #define T2_DP 12u
-#define T2_S 2u                 /* group S (LINK TIME, step 13q1) after R: the last group */
+#define T2_T 2u                 /* group T (slamming power restore, step 13q4) after S: the last group */
+#define T2_S (2u + T2_T)        /* group S (LINK TIME, step 13q1) after R */
 #define T2_R (3u + T2_S)        /* group R (CONFIRM_ONLY, academy practical test, step 21) after Q */
 #define T2_Q (17u + T2_R)       /* group Q (steering position servo + throttle model, step 11e) after P */
 #define T2_P (6u + T2_Q)        /* group P (DroneCAN summary, step 11d) after N: its offset from the end */
@@ -931,10 +932,17 @@ typedef struct {
     uint32_t transitions_seen;
 } cruise_watch_t;
 
+/* step 13q4: the captain ACCEPTs the slamming power restore question in the LAST sea segment (calm again);
+ * the slamming reduction never goes away by itself. Counts the ACCEPTs taken. */
+static bool     s_cruise_slam_acc;
+static uint32_t s_cruise_slam_accepts;
 static void cruise_hook(sbsim_t *x, void *ctx)
 {
     cruise_watch_t *c = (cruise_watch_t *)ctx;
     float ts = (float)(x->t - c->t0) * 0.001f;
+    if (s_cruise_slam_acc && c->n_legs == 1 && c->seg == c->n_sea - 1 && x->sb.slam.asking &&
+        sb_slam_restore(&x->sb, true) == SB_OK)
+        s_cruise_slam_accepts++;
     if (c->n_legs > 1) {
         int g = x->sb.autop.wp;
         if (g != c->seg && g < 16) { c->seg = g; c->seg_t0 = x->t; }
@@ -1051,15 +1059,23 @@ static void phase4(void)
          * reckoning's slow-drag check (dr.c, 300 s / 60 m) raised a false GPS SUSPECT after the long
          * acceleration back to 18 kn: what DR learned in the 50 %/s slow-downs leaked into its current along
          * the heading. dr.c now pauses that learning while the throttle comes down fast (learn_thr_dev_pct) */
+        /* step 13q4: a slamming reduction from ss4 comes back only with the captain's ACCEPT (given in the calm
+         * segment when the boat asks) */
+        s_cruise_slam_acc = true;
+        s_cruise_slam_accepts = 0u;
         cruise_run(&x, &c, 42u, spd, 1, 0.0f, at, sea, 5, 2100000u);
+        s_cruise_slam_acc = false;
         snprintf(d, sizeof d, "speed by sea state: ss1 %.1f-%.1f, ss2 %.1f-%.1f, ss3 %.1f-%.1f, ss4 %.1f-%.1f, "
                  "calm again %.1f-%.1f kn (end %.1f); course error max ss3 %.1f, ss4 %.1f deg; "
-                 "rough-water episodes %u, changes %u, shortest gap %.0f s; no paddlewheel: GPS suspects %u",
+                 "rough-water episodes %u, changes %u, shortest gap %.0f s; no paddlewheel: GPS suspects %u; "
+                 "slamming restore ACCEPTs %lu (cap %.0f %%)",
                  c.seg_vmin[0], c.seg_vmax[0], c.seg_vmin[1], c.seg_vmax[1], c.seg_vmin[2], c.seg_vmax[2],
                  c.seg_vmin[3], c.seg_vmax[3], c.seg_vmin[4], c.seg_vmax[4], world_sog_kn(&x.w),
                  c.seg_hold[2], c.seg_hold[3], x.sb.nerv.episodes, x.sb.nerv.transitions,
-                 c.min_gap_ms * 0.001f, (unsigned)x.sb.dr.suspects);
-        bool ok = c.seg_vmin[0] > 17.0f && c.seg_vmin[1] > 17.0f &&         /* no reaction in ss1-2 */
+                 c.min_gap_ms * 0.001f, (unsigned)x.sb.dr.suspects, (unsigned long)s_cruise_slam_accepts,
+                 slam_cap(&x.sb.slam));
+        bool ok = slam_cap(&x.sb.slam) >= 100.0f &&                          /* 13q4: back only after an ACCEPT */
+                  c.seg_vmin[0] > 17.0f && c.seg_vmin[1] > 17.0f &&         /* no reaction in ss1-2 */
                   x.sb.nerv.episodes >= 1u && c.seg_vmin[3] <= 14.5f &&     /* slowed down in ss4 */
                   world_sog_kn(&x.w) > 17.0f &&                               /* recovered */
                   x.sb.nerv.transitions <= 4u && auto_running(&x) &&
@@ -6985,23 +7001,171 @@ static void slam_tests(void)
                     !(x.sb.alarm_bits & SB_ALM_SLAM) && wt.rise_over_cap == 0 &&
                     x.sb.servo.out_pct <= slam_cap(&x.sb.slam) + 0.5f, d);
 
-        /* SL4 calm water: after 30 s calm the cap comes back slowly (+5 % / 10 s) */
+        /* SL4 calm water (step 13q4, owner 2026-10-31): the cap NEVER comes back by itself; after 30 s calm
+         * the boat asks (the question on screen 1, 10 s); no answer = REJECT (stays reduced), asked again only
+         * after 2 min more calm; nothing raises it in 6 min of flat water */
         x.w.sea_state = 0.0f;
         wt.steps_up = 0; wt.max_cap_jump = 0.0f; wt.rise_over_cap = 0;
-        float cap0 = slam_cap(&x.sb.slam);
-        uint32_t t0 = x.t, t_first = 0u;
-        while (x.t < t0 + 400000u && slam_cap(&x.sb.slam) < 100.0f) {
-            sbsim_run(&x, x.t + 500u, slam_hook, &wt);
-            if (!t_first && wt.steps_up) t_first = x.t;
+        float cap0 = slam_cap(&x.sb.slam), out_max = 0.0f;
+        uint32_t t0 = x.t, t_ask1 = 0u, t_ask2 = 0u, t_close1 = 0u, calm_at_ask = 0u;
+        uint32_t asks0 = x.sb.slam.asks;
+        bool was = x.sb.slam.asking;
+        while (x.t < t0 + 360000u) {
+            sbsim_run(&x, x.t + 100u, slam_hook, &wt);
+            bool ak = x.sb.slam.asking;
+            if (ak && !was) {
+                if (!t_ask1) { t_ask1 = x.t; calm_at_ask = x.sb.slam.calm_timer; }
+                else if (!t_ask2) t_ask2 = x.t;
+            }
+            if (!ak && was && !t_close1) t_close1 = x.t;
+            was = ak;
+            if (x.sb.servo.out_pct > out_max) out_max = x.sb.servo.out_pct;
         }
-        float rate_max = 0.0f;
-        snprintf(d, sizeof d, "cap %.0f %% -> first raise after %.0f s of calm water, back to 100 %% %.0f s after the sea "
-                 "went flat; biggest single raise %.1f %%; throttle rose above the cap: %d %s",
-                 cap0, wt.first_up_gap / 1000.0, (x.t - t0) / 1000.0,
-                 wt.max_cap_jump, wt.rise_over_cap, rate_max > 0.0f ? "" : "");
-        test_report("SL4 recovery: only after a calm time, slowly (+5 % every 10 s), throttle at its normal rate",
-                    t_first && wt.first_up_gap >= 30000u && slam_cap(&x.sb.slam) >= 100.0f && wt.max_cap_jump <= 5.01f &&
-                    wt.rise_over_cap == 0, d);
+        snprintf(d, sizeof d, "cap %.0f %% -> %.0f %% after 6 min of flat water (raises %d); question 1 at %.0f s of "
+                 "calm (%.0f s of flat water), closed by no answer after %.1f s (time-outs %lu, declined %s), question 2 %.0f s after "
+                 "the first closed; questions %lu; throttle at most %.0f %% (above the cap: %d); before the reduction %.0f %%",
+                 cap0, slam_cap(&x.sb.slam), wt.steps_up, calm_at_ask / 1000.0, t_ask1 ? (t_ask1 - t0) / 1000.0 : -1.0,
+                 t_close1 && t_ask1 ? (t_close1 - t_ask1) / 1000.0 : -1.0, (unsigned long)x.sb.slam.timeouts,
+                 x.sb.slam.declined ? "yes" : "no", t_ask2 && t_close1 ? (t_ask2 - t_close1) / 1000.0 : -1.0,
+                 (unsigned long)(x.sb.slam.asks - asks0), out_max, wt.rise_over_cap, x.sb.slam.before_pct);
+        test_report("SL4 calm water: the reduction never goes away by itself; asked after 30 s calm, no answer in 10 s "
+                    "= stays reduced, asked again after 2 min calm (13q4)",
+                    wt.steps_up == 0 && slam_cap(&x.sb.slam) <= cap0 + 0.01f && t_ask1 && calm_at_ask >= 30000u &&
+                    t_close1 && t_close1 - t_ask1 >= 9900u && t_close1 - t_ask1 <= 10200u &&
+                    x.sb.slam.timeouts >= 1u && t_ask2 && t_ask2 - t_close1 >= 119000u &&
+                    wt.rise_over_cap == 0 && out_max <= cap0 + 0.5f && x.sb.slam.before_pct >= 99.0f, d);
+
+        /* SL9 the captain's ACCEPT through the link (PROTO_T_SLAM_RESTORE from the HELM station): the cap rises
+         * at the normal throttle up rate only, the throttle follows at that rate, back to full */
+        {
+            static link_t usb;
+            link_init(&usb, &x.sb);
+            const uint8_t TAKE = 0u, ACC = 1u;
+            usb_cmd(&x, &usb, PROTO_T_HELM, &TAKE, 1u);
+            bool avail = slam_restore_avail(&x.sb.slam);
+            uint8_t r = usb_cmd(&x, &usb, PROTO_T_SLAM_RESTORE, &ACC, 1u);
+            float up = x.sb.thr.cfg.rate_up_pct_s, prev_out = x.sb.servo.out_pct, max_rate = 0.0f;
+            uint32_t ta = x.t, prev_t = x.sb.now_ms;
+            wt.steps_up = 0; wt.max_cap_jump = 0.0f;
+            while (x.t < ta + 15000u) {
+                usb_cmd(&x, &usb, PROTO_T_HEARTBEAT, NULL, 0u);
+                sbsim_run(&x, x.t + 100u, slam_hook, &wt);
+                if (x.sb.now_ms != prev_t) {
+                    float rate = (x.sb.servo.out_pct - prev_out) * 1000.0f / (float)(x.sb.now_ms - prev_t);
+                    if (rate > max_rate) max_rate = rate;
+                }
+                prev_out = x.sb.servo.out_pct;
+                prev_t = x.sb.now_ms;
+            }
+            snprintf(d, sizeof d, "available %s, answer %u (0 = OK); cap -> %.0f %% after 15 s, biggest raise in one step "
+                     "%.2f %% (up rate %.0f %%/s = %.2f per step), throttle %.0f %% rising at most %.1f %%/s",
+                     avail ? "yes" : "NO", r, slam_cap(&x.sb.slam), wt.max_cap_jump, up, up * 0.05f,
+                     x.sb.servo.out_pct, max_rate);
+            test_report("SL9 the captain's ACCEPT: power back gradually at the normal up rate, to full (13q4)",
+                        avail && r == PROTO_R_OK && slam_cap(&x.sb.slam) >= 100.0f && wt.max_cap_jump <= up * 0.05f + 0.05f &&
+                        max_rate <= up + 1.0f && x.sb.servo.out_pct > 90.0f, d);
+        }
+    }
+
+    /* SL10 refusals: ACCEPT while rough / not reduced / sensor lost = PRECOND, nothing changes; REJECT keeps it
+     * reduced; rough water again closes an open question */
+    {
+        static sbsim_t x;
+        slam_go(&x, 970u, 3.0f);
+        x.sb.slam.cfg.limit_g = 9.0f;
+        x.sb.slam.cfg.yellow_frac = 0.12f;
+        sb_result_t r_full = sb_slam_restore(&x.sb, true);          /* nothing reduced yet */
+        sbsim_run(&x, 60000u, NULL, NULL);
+        float cap1 = slam_cap(&x.sb.slam);
+        sb_result_t r_rough = sb_slam_restore(&x.sb, true);         /* still rough */
+        bool rough_kept = slam_cap(&x.sb.slam) == cap1 && !x.sb.slam.restoring;
+        x.w.sea_state = 0.0f;
+        while (!x.sb.slam.asking && x.t < 200000u) sbsim_run(&x, x.t + 100u, NULL, NULL);
+        bool asked = x.sb.slam.asking;
+        sb_result_t r_rej = sb_slam_restore(&x.sb, false);
+        sbsim_run(&x, x.t + 60000u, NULL, NULL);
+        bool rej_kept = slam_cap(&x.sb.slam) <= cap1 + 0.01f && !x.sb.slam.asking && x.sb.slam.declined;
+        sim_hal_set_accel(false);                                    /* the sensor stops */
+        sbsim_run(&x, x.t + 3000u, NULL, NULL);
+        sb_result_t r_lost = sb_slam_restore(&x.sb, true);
+        bool lost_kept = slam_cap(&x.sb.slam) <= cap1 + 0.01f && !x.sb.slam.restoring;
+        sim_hal_set_accel(true);
+        sbsim_run(&x, x.t + 2000u, NULL, NULL);
+        /* asked again (2 min calm after the REJECT); rough again while it is open: it closes (not an answer) */
+        while (!x.sb.slam.asking && x.t < 900000u) sbsim_run(&x, x.t + 100u, NULL, NULL);
+        bool asked2 = x.sb.slam.asking;
+        x.w.sea_state = 3.0f;
+        uint32_t tr = x.t;
+        while (x.sb.slam.asking && x.t < tr + 20000u) sbsim_run(&x, x.t + 50u, NULL, NULL);
+        bool closed = !x.sb.slam.asking && !x.sb.slam.restoring && x.t - tr < 10000u;
+        snprintf(d, sizeof d, "ACCEPT with nothing reduced %d, while rough %d (cap kept %s), question opened %s, REJECT %d "
+                 "-> 60 s later still reduced %s (declined), sensor lost: ACCEPT %d (kept %s); asked again %s, rough "
+                 "again -> question closed %s after %.1f s",
+                 r_full, r_rough, rough_kept ? "yes" : "NO", asked ? "yes" : "NO", r_rej, rej_kept ? "yes" : "NO",
+                 r_lost, lost_kept ? "yes" : "NO", asked2 ? "yes" : "NO", closed ? "yes" : "NO", (x.t - tr) / 1000.0);
+        test_report("SL10 restore refused when not calm / nothing reduced / sensor lost; REJECT keeps it reduced; "
+                    "rough again closes the question (13q4)",
+                    r_full == SB_ERR_PRECOND && r_rough == SB_ERR_PRECOND && rough_kept && asked && r_rej == SB_OK &&
+                    rej_kept && r_lost == SB_ERR_PRECOND && lost_kept && asked2 && closed, d);
+    }
+
+    /* SL11 new impacts during an accepted restore: it stops at once and steps down again */
+    {
+        static sbsim_t x;
+        static slamwatch_t wt;
+        memset(&wt, 0, sizeof wt);
+        slam_go(&x, 971u, 3.0f);
+        x.sb.slam.cfg.limit_g = 9.0f;
+        x.sb.slam.cfg.yellow_frac = 0.12f;
+        x.sb.thr.cfg.rate_up_pct_s = 2.0f;                          /* a slow restore: room for the impact */
+        sbsim_run(&x, 60000u, slam_hook, &wt);
+        x.w.sea_state = 0.0f;
+        while (!slam_restore_avail(&x.sb.slam) && x.t < 200000u) sbsim_run(&x, x.t + 100u, slam_hook, &wt);
+        sb_result_t r = sb_slam_restore(&x.sb, true);
+        sbsim_run(&x, x.t + 4000u, slam_hook, &wt);
+        float cap_mid = slam_cap(&x.sb.slam);
+        bool rising = x.sb.slam.restoring;
+        uint32_t stops0 = x.sb.slam.restore_stops, steps0 = x.sb.slam.steps;
+        x.w.sea_state = 3.0f;
+        uint32_t ti = x.t;
+        while (x.sb.slam.restoring && x.t < ti + 30000u) sbsim_run(&x, x.t + 50u, slam_hook, &wt);
+        sbsim_run(&x, x.t + 100u, slam_hook, &wt);
+        float cap_after = slam_cap(&x.sb.slam);
+        snprintf(d, sizeof d, "ACCEPT %d, cap %.1f %% after 4 s and rising %s; sea up -> restore stopped %s after %.1f s, "
+                 "steps down %lu, cap %.1f -> %.1f %%; throttle above the cap %d",
+                 r, cap_mid, rising ? "yes" : "NO", x.sb.slam.restore_stops > stops0 ? "yes" : "NO", (x.t - ti) / 1000.0,
+                 (unsigned long)(x.sb.slam.steps - steps0), cap_mid, cap_after, wt.rise_over_cap);
+        test_report("SL11 new impacts during the restore: it stops at once and the cap steps down again (13q4)",
+                    r == SB_OK && rising && x.sb.slam.restore_stops > stops0 && x.sb.slam.steps > steps0 &&
+                    cap_after < cap_mid && !x.sb.slam.restoring && wt.rise_over_cap == 0, d);
+    }
+
+    /* SL12 AUTO gets its speed back only after the ACCEPT: calm water alone keeps the throttle capped */
+    {
+        static sbsim_t x;
+        sbsim_init(&x, 972u, 90.0f, 0.0f, NULL);
+        x.w.sea_state = 3.0f;
+        sbsim_run(&x, 2000u, NULL, NULL);
+        bool started = auto_to(&x, 20000.0f, 90.0f, 25.0f);
+        x.sb.slam.cfg.limit_g = 9.0f;
+        x.sb.slam.cfg.yellow_frac = 0.12f;
+        sbsim_run(&x, 70000u, NULL, NULL);
+        float cap = slam_cap(&x.sb.slam);
+        x.w.sea_state = 0.0f;
+        sbsim_run(&x, x.t + 200000u, NULL, NULL);                    /* 3+ min flat, nobody answers */
+        float out_calm = x.sb.servo.out_pct, cap_calm = slam_cap(&x.sb.slam);
+        bool mode_ok = sb_mode(&x.sb) == MODE_AUTO;
+        while (!slam_restore_avail(&x.sb.slam) && x.t < 900000u) sbsim_run(&x, x.t + 100u, NULL, NULL);
+        sb_result_t r = sb_slam_restore(&x.sb, true);
+        sbsim_run(&x, x.t + 30000u, NULL, NULL);
+        snprintf(d, sizeof d, "AUTO: cap %.0f %%; 200 s calm without an answer: cap %.0f %%, throttle %.0f %%; ACCEPT %d -> "
+                 "30 s later cap %.0f %%, throttle %.0f %%, %.1f kn, mode %s",
+                 cap, cap_calm, out_calm, r, slam_cap(&x.sb.slam), x.sb.servo.out_pct, x.w.speed_kn,
+                 mode_name(sb_mode(&x.sb)));
+        test_report("SL12 AUTO: the speed comes back only after the captain's ACCEPT (13q4)",
+                    started && cap < 100.0f && mode_ok && cap_calm <= cap + 0.01f && out_calm <= cap + 0.5f && r == SB_OK &&
+                    slam_cap(&x.sb.slam) >= 100.0f && x.sb.servo.out_pct > out_calm + 5.0f &&
+                    sb_mode(&x.sb) == MODE_AUTO, d);
     }
 
     /* SL5 every driving mode: HDG LOCK and AUTO are capped the same way */

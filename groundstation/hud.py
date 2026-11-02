@@ -982,12 +982,14 @@ class Hud:
                 (T("hud.layout"), "edit", self.edit)]
         if s.vision_cap:
             btns.append((T("hud.clear_slowdown"), "vision_clear", True))
+        if getattr(s, "slam_restore", False):
+            btns.append((T("slam.btn"), "slam_restore", True))     # framed RESTORE POWER (step 13q4)
         n = len(btns)
         bw = (x1 - x0 - (n - 1) * 4) / n
         for i, (lab, act, on) in enumerate(btns):
             r = (x0 + i * (bw + 4), y0, x0 + i * (bw + 4) + bw, y1)
             self.button(r, lab, act, "ctl_" + act, on=on,
-                        colour=self.pal["caution"] if act == "vision_clear" else None)
+                        colour=self.pal["caution"] if act in ("vision_clear", "slam_restore") else None)
 
     # --- edit-layout mode ---------------------------------------------------------------------------------------
     def edit_frames(self, s):

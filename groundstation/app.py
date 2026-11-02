@@ -2192,6 +2192,7 @@ class App:
             self.draw_bench()                   # entered / left the bench test
         if "slam_peak" in d:
             self.slam_hist.append((d["t_ms"], d["slam_peak"]))
+        self.drv_slam(d)
         ts = d["t_ms"] / 1000.0
         if self.hist and ts < self.hist[-1][0]:
             self.hist.clear()               # boat restarted
@@ -3292,6 +3293,10 @@ class App:
         p.button(T("ov.edit_fence"), lambda: self.set_edit("fence"), on=ed == "fence", tag="edit_fence")
         p.button(T("ov.send_fence"), self.fence_send, "ok", enabled=self.fence_dirty, tag="send_fence")
         p.button(T("ov.clear_fence"), self.fence_clear, enabled=bool(fl or self.fence_draft), tag="clear_fence")
+        if d.get("slam_restore_ok") and not d.get("slam_ask") and self.slam_restore_allowed():
+            # step 13q4: REJECT / no answer -> the reduction stays; the captain may still restore while it is calm
+            p.br()
+            p.button(T("slam.btn"), lambda: self.slam_restore_answer(True), "info", tag="slam_restore")
         p.br(stretch=True)
         for dd in (-10, -1, 1, 10):
             p.button("%+d" % dd, lambda dd=dd: self.cmd(proto.T_HEADING_ADJ, proto.p_heading(dd),
@@ -3457,6 +3462,43 @@ class App:
                 p.badge(T("ov.engine_killed"), theme.WARN, tag="engine", level="label")
             if ll != 2:
                 p.text(T("ov.engine_run"), "label", colour=C["dim"], tag="engine")
+
+    def slam_restore_allowed(self):
+        """Slamming power restore (step 13q4, owner 2026-10-31): only the captain's screen 1 (or a single operator)
+        answers it - never a copilot (the gateway refuses 118). The USB laptop (on board) is its own captain; the
+        AURIX takes it only from the HELM station."""
+        if not isinstance(self.link, GatewayLink):
+            return self.link is not None
+        crew = crewui.crew_of(self)[0]
+        me = (self.gw_status or {}).get("you") or (getattr(self.link, "welcome", None) or {}).get("id")
+        return (crew == "captain" or self.single_op) and me is not None and (self.t or {}).get("helm") == me
+
+    def slam_restore_answer(self, yes):
+        """ACCEPT (the cap rises at the normal throttle up rate) / REJECT (stays reduced) to the boat."""
+        if not self.slam_restore_allowed():
+            return self.say(T("slam.captain_only"), RED)
+        d = self.t or {}
+        self.event(T("slam.ev_accept" if yes else "slam.ev_reject", pct=d.get("slr_before") or "-"))
+        self._send_cmd(proto.T_SLAM_RESTORE, proto.p_slam_restore(yes),
+                       TE("what.slam_accept" if yes else "what.slam_reject"))
+
+    def drv_slam(self, d):
+        """The boat's question after 30 s of calm water -> ACCEPT / REJECT on the captain's screen 1 (the AURIX
+        times it: 10 s, no answer = REJECT; it closes the question itself when the sea gets rough again)."""
+        tag = "slam" if d.get("slam_ask") and self.slam_restore_allowed() else None
+        old = getattr(self, "slam_tag", None)
+        if old and old != tag and self.driver:
+            self.driver.cancel(old)                 # closed on the boat (answered / timed out / rough again)
+        self.slam_tag = tag
+        if not tag or old == tag or not self.driver:
+            return
+        if self.screen_shown != 1 and len(monitors.list_monitors(self.root)) < 2:
+            self.show_screen(1)                     # one monitor: the question must be seen
+        pct = d.get("slr_before") or 0
+        self.event(T("slam.ev_ask", pct=pct))
+        self.driver.ask(T("slam.ask", pct=pct), lambda why: self.slam_restore_answer(True),
+                        lambda why: self.slam_restore_answer(False) if "closed" not in why and "done" not in why
+                        else None, max(1, d.get("slam_ask_left") or 10), tag=tag, head=T("slam.head"))
 
     def link_time_allowed(self):
         """LINK TIME: only the HELM captain (or a single operator holding HELM) through the gateway."""

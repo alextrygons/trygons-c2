@@ -56,6 +56,10 @@ T_DP = 0x2E                # u8 action (0 START, 1 JOG, 2 SPEED, 3 HEADING, 4 ST
 T_CONFIRM_ONLY = 0x30     # u16 token: the academy PRACTICAL TEST's final approval (step 21) - answered only by the
                            # onboard joystick CONFIRM within 10 s, CHANGES NOTHING on the boat (TELEM2 group R);
                            # HELM station, CREWED only, never FIRST TEST, never replaces another pending CONFIRM
+T_SLAM_RESTORE = 0x11      # u8 1 ACCEPT / 0 REJECT: the slamming power restore (step 13q4, owner 2026-10-31) - the
+                           # HELM station's answer to the boat's question (TELEM2 group T); the gateway: the captain /
+                           # a single operator only (a copilot = 118); the reduction never goes away by itself
+SLAM_REJECT, SLAM_ACCEPT = 0, 1
 T_LINK_TIME = 0x14         # u8 seconds 3..60: LINK TIME = the UNCREWED link-loss detection time (step 13q1): the
                            # HELM captain only (gateway: a copilot = 118), RAM only, back to 3 s at a HELM grant / AURIX
                            # reset; never in force near shore (TELEM2 group S)
@@ -150,7 +154,7 @@ TYPE_NAMES = {
     T_GW_RJOY: "remote joystick", T_REMOTE: "remote driving", T_MANEUVER: "maneuver", T_BENCH: "bench test", T_BENCH_DIAG: "bench data", T_CAN_NODES: "CAN nodes",
     T_GENERATOR: "generator auto", T_RELAY: "relay", T_RELAY_CFG: "relay table", T_RESTART: "engine restart / start",
     T_THRUSTER_CFG: "thruster settings", T_DP: "DP", T_CONFIRM_ONLY: "confirm-only (practical test)",
-    T_LINK_TIME: "LINK TIME",
+    T_LINK_TIME: "LINK TIME", T_SLAM_RESTORE: "slamming power restore",
     T_TELEMETRY: "telemetry", T_ACK: "ack", T_PARAM_VALUE: "param value",
     T_PROG_WP_VALUE: "program waypoint", T_PROG_ERROR: "program error",
 }
@@ -184,7 +188,7 @@ RESULTS = {
     100: "VIEWER: watch only", 101: "duplicate command", 102: "command out of order", 103: "stale command",
     104: "timestamp in the future", 105: "rate limited", 106: "AURIX not connected", 107: "wrong session",
     108: "bad command", 116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
-    117: "only the captain (or a station on the boat) holds HELM", 118: "captain only: REMOTE MANUAL / MANEUVER / engine START / LINK TIME",
+    117: "only the captain (or a station on the boat) holds HELM", 118: "captain only: REMOTE MANUAL / MANEUVER / engine START / LINK TIME / power restore",
     119: "no captain holds HELM",
 }
 
@@ -211,6 +215,11 @@ DP_STOP_WHY = ["-", "DP STOP", "STANDBY (button / e-stop / link lost)", "joystic
 def p_link_time(seconds):
     """PROTO_T_LINK_TIME payload: the link-loss detection time in whole seconds (3..60)."""
     return bytes([int(seconds) & 0xFF])
+
+
+def p_slam_restore(accept):
+    """PROTO_T_SLAM_RESTORE payload: 1 ACCEPT (the cap rises at the normal throttle up rate) / 0 REJECT."""
+    return bytes([SLAM_ACCEPT if accept else SLAM_REJECT])
 
 
 def p_confirm_only(token):
@@ -924,6 +933,9 @@ _T2_GROUPS = [
     # group S, LINK TIME (step 13q1): the captain's setting + flags (b0 age reported by the gateway, b1 not in force
     # now: near shore / no report, b2..b7 HELM station silent for whole s, 63 = not counting)
     (struct.Struct("<BB"), "lt_set lt_flags".split()),
+    # group T, the slamming power restore (step 13q4): b0 question open, b1 ACCEPT possible now (RESTORE POWER
+    # button), b2 restoring, b3 declined, b4..b7 seconds left | the throttle % before the reduction
+    (struct.Struct("<BB"), "slr_flags slr_before".split()),
 ]
 # app/steermodel.h SM_RESET_: why the steering model went back to the TRAINING values (TELEM2 Q, log event 30)
 SM_RESET_WHY = ["-", "model residual too large", "an adapted value reached its bound", "compass / gyro / GPS doubt",
@@ -1126,4 +1138,11 @@ def decode_telem2(payload: bytes) -> dict:
         d["slam_override"] = bool(f & 0x10)
         d["slam_lost"] = bool(f & 0x20)
         d["slam_sensor"] = bool(f & 0x40)
+    if "slr_flags" in d:                        # group T: the slamming power restore (step 13q4)
+        f = d["slr_flags"]
+        d["slam_ask"] = bool(f & 1)             # the question is open: ACCEPT / REJECT on the captain's screen 1
+        d["slam_restore_ok"] = bool(f & 2)      # an ACCEPT is possible now (the RESTORE POWER button)
+        d["slam_restoring"] = bool(f & 4)
+        d["slam_declined"] = bool(f & 8)
+        d["slam_ask_left"] = f >> 4
     return d

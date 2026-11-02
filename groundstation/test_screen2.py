@@ -1382,6 +1382,80 @@ def s18_uncrewed_hdg(rig):
                [(f, p) for f, p, _w in un], cr, rows[:3], lv, fits))
 
 
+def s20_slam_restore(rig):
+    """Step 13q4 (owner 2026-10-31 C4): the slamming reduction never goes away by itself. Screen 2's control panel
+    shows the framed RESTORE POWER button (TELEM2 T b1, after a REJECT / no answer) for the captain only - a click
+    sends PROTO_T_SLAM_RESTORE ACCEPT; the boat's question opens on screen 1 (driver.ask, ACCEPT / REJECT); a copilot
+    sees neither; the layout still fits at the small sizes in both languages."""
+    ap = rig.ap
+    rig.gateway_like(True)
+    rig.size(1366, 768, 1.0)
+    ap.gw_status = fake_gw(ap.t)
+    sent = []
+    orig_send = ap._send_cmd
+    ap._send_cmd = lambda f, p, w, confirm=None: sent.append((f, bytes(p)))
+    keys = ("helm", "slr_flags", "slr_before", "slam_ask", "slam_restore_ok", "slam_restoring", "slam_declined",
+            "slam_ask_left", "slam_cap")
+    rig.extra.update(helm=3, slr_flags=2 | 8, slr_before=60, slam_ask=False, slam_restore_ok=True,
+                     slam_restoring=False, slam_declined=True, slam_ask_left=0, slam_cap=50)
+    shots = os.environ.get("TRYGONS_SHOT_DIR")
+    try:
+        rig.pump(0.6)
+        ap.render(force=True)
+        btn = [o for o in ap.ov.ops if o.get("k") == "button" and o.get("tag") == "slam_restore"]
+        clicked = []
+        if btn:
+            r = btn[0]["r"]
+            e = type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})()
+            ap.cv_press(e)
+            ap.cv_release(e)
+            clicked = list(sent)
+            sent.clear()
+        btn_ok = len(btn) == 1 and btn[0]["s"] == A.T("slam.btn") and clicked == [(proto.T_SLAM_RESTORE, b"\x01")]
+        if shots:
+            shot(ap.root, os.path.join(shots, "screen2_slam_restore_el.png"))
+        fits = []
+        for W, H in ((1366, 658), (1920, 970)):
+            for lang in ("el", "en"):
+                i18n.set_lang(lang)
+                rig.size(W, H, 1.0)
+                fits.append(not layout_problems(ap))
+        i18n.set_lang("el")
+        rig.size(1366, 768, 1.0)
+        # screen 1: the boat's question
+        ap.open_driver()
+        dv = ap.driver
+        dv.w.geometry("1600x900+0+0")
+        rig.extra.update(slr_flags=1 | 2 | (9 << 4), slam_ask=True, slam_ask_left=9, slam_declined=False)
+        rig.pump(1.5, lambda: dv.question is not None)
+        asked = dv.question is not None and dv.qhead.cget("text") == A.T("slam.head") and \
+            A.T("slam.ask", pct=60) == dv.qtext.cget("text")
+        if shots:
+            rig.pump(0.5)
+            shot(dv.w, os.path.join(shots, "driver_slam_ask_el.png"))
+        dv.answer(True)
+        acc = (proto.T_SLAM_RESTORE, b"\x01") in sent
+        ap.close_driver()
+        # a copilot: no button, no question
+        sent.clear()
+        ap.gw_status = fake_gw(ap.t, captain=False)
+        rig.extra.update(slr_flags=2 | 8, slam_ask=False, slam_declined=True)
+        rig.pump(0.6)
+        ap.render(force=True)
+        cop_btn = any(o.get("tag") == "slam_restore" for o in ap.ov.ops)
+    finally:
+        for k in keys:
+            rig.extra.pop(k, None)
+        ap._send_cmd = orig_send
+        ap.slam_tag = None
+        ap.gw_status = fake_gw(ap.t)
+    report("S20 slamming power restore (13q4): RESTORE POWER on screen 2 for the captain (sends ACCEPT), the boat's "
+           "question on screen 1, nothing for a copilot, fits",
+           btn_ok and all(fits) and asked and acc and not cop_btn,
+           "button %s, click sent %s; fits %s; screen 1 question %s, ACCEPT sent %s; copilot button %s" % (
+               [b["s"] for b in btn], clicked, fits, asked, acc, cop_btn))
+
+
 def s19_override(rig):
     """Step 13q3 (owner 2026-10-31 C3, DISPLAY ONLY): the shore stick override in UNCREWED AUTO / HDG LOCK on both
     screens - "MANUAL STEERING - AUTO waiting" / "... HDG LOCK waiting (trigger = new heading)" (+ "back in 2 s" once
@@ -1569,7 +1643,7 @@ def main():
     rig = Rig()
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
-                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg, s19_override,
+                   s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg, s19_override, s20_slam_restore,
                    s16_silence):
             try:
                 fn(rig)

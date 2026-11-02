@@ -26,6 +26,8 @@
  * the lever a power ceiling in AUTO, the TRIGGER = the new HDG LOCK heading; E_TRIG, the shore stream also in UNCREWED
  * AUTO); invariants I71-I74. Step 13q3b: the navreq heartbeat also in UNCREWED AUTO; I75 (steering AUTO by hand without shore
  * data / lease / near the shore = idle + neutral), I76 (a HELM change ends the override).
+ * Step 13q4: the slamming reduction never goes away by itself - only the HELM station's ACCEPT (E_SLAMRES, some
+ * power-raise draws: ACCEPT / REJECT) restores it; invariant I77.
  * Step 13q2e: the storm's gateway sends its "no danger" navigation request at 2 Hz (like nav_loop) while an
  * UNCREWED boat is in REMOTE / MANEUVER / HDG LOCK; E_NAVBEAT stops it for a while (nav_compose broken / frames
  * lost on the UART) and some shore reports say 40 m; invariant I70 (lapsed / never lease, the shore within the stop
@@ -90,7 +92,7 @@ typedef enum {
     E_FREEZE, E_RESET, E_INJ_THR, E_INJ_GEAR,
     E_SCONFIRM, E_MAN_REQ, E_JOY_PLUG, E_HELM_DROP, E_HELM_BACK, E_SHORE,
     E_GEN, E_SUPPLY, E_RELAY, E_ENGINE, E_WDT, E_DP, E_CAN, E_PC_RETURN, E_PC_CONFONLY, E_LINK, E_SHDG,
-    E_NAVBEAT, E_TRIG,
+    E_NAVBEAT, E_TRIG, E_SLAMRES, E_SLAMHIT,
     E_COUNT
 } ev_kind_t;
 
@@ -114,7 +116,9 @@ static const char *EV_NAMES[E_COUNT] = {
     "LINK TIME (the captain sets 1..70 s / the HELM station goes silent / is heard again / open sea)",
     "shore HDG LOCK (UNCREWED: the HELM captain's mode command from REMOTE / MANEUVER; stick centred mostly)",
     "gateway navreq heartbeat stops for a while (nav_compose broken / frames lost)",
-    "shore TRIGGER (13q3: the stick moved first in half of them; UNCREWED HDG LOCK steering by hand = new heading)"
+    "shore TRIGGER (13q3: the stick moved first in half of them; UNCREWED HDG LOCK steering by hand = new heading)",
+    "slamming power restore (13q4: the HELM station's ACCEPT mostly / REJECT)",
+    "a hard wave hit (13q4: one red impact at any speed; the restore answer 35..65 s later)"
 };
 
 typedef struct {
@@ -281,6 +285,12 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
         if (k == E_NAVREQ && e->b >= 850) e->kind = E_PC_RETURN;
         /* step 21: some power-raise draws ask a CONFIRM_ONLY instead (the academy practical test's question) */
         if (k == E_PC_RAISE && e->c >= 900) e->kind = E_PC_CONFONLY;
+        /* step 13q4 (I77): some power-raise draws answer the slamming restore question instead */
+        if (k == E_PC_RAISE && e->c >= 780 && e->c < 900) e->kind = E_SLAMRES;
+        if (k == E_SEA && e->c >= 700) e->kind = E_SLAMRES;
+        /* ... and some sea-state draws are a hard wave hit (a red impact at any speed: the cap steps down) with the
+         * HELM station's answer 35..65 s later (S.slam_ans_t; no rng draw: the other draws stay what they were) */
+        if (k == E_SEA && e->c >= 600 && e->c < 700) e->kind = E_SLAMHIT;
         /* step 13q1: some gateway-fuzz draws are LINK TIME events (CAN episodes take c < 450 for E_CAN) */
         if (k == E_FUZZ_GW && e->c >= 860) e->kind = E_LINK;
         if (k == E_GW && e->b >= 700) e->kind = E_LINK;                   /* (and some gateway-status draws) */
@@ -578,6 +588,8 @@ typedef struct {
     uint32_t    nav_tx_t;           /* the last VALID navreq pushed (0 = none since the boot) */
     uint16_t    nav_tx_lease;
     uint32_t    fuzz_gw_t;          /* a CRC-valid random gateway frame of any type (I70 waits) */
+    uint32_t    slam_ans_t;         /* step 13q4 (I77): the captain answers the restore question then (0 = no) */
+    bool        slam_ans_acc;
 } sim_t;
 
 static sim_t S;
@@ -791,7 +803,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 77
+#define NINV 78
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -865,7 +877,8 @@ static const char *INV_NAMES[NINV] = { "",
     "I73 UNCREWED AUTO (13q3): shore data lost while steering by hand = idle at once + neutral, STANDBY by remote_lost_ms; never steering by hand on stale data",
     "I74 the TRIGGER (13q3): a new heading only in UNCREWED HDG LOCK while steering by hand, no CONFIRM pending, = the heading at the press",
     "I75 UNCREWED AUTO steered by hand (13q3b): shore data bad / the navreq lease gone / the shore within the stop distance = idle + neutral for the rest of that AUTO",
-    "I76 a HELM change ends a running shore stick override within one step (13q3b)" };
+    "I76 a HELM change ends a running shore stick override within one step (13q3b)",
+    "I77 the slamming cap rises only after the HELM station's ACCEPT, never faster than the throttle up rate (13q4)" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -883,6 +896,7 @@ typedef struct {
     uint32_t uh_ref_code[32];                                         /* step 13q2e: why the shore HDG LOCK was refused */
     uint32_t ov_steps_auto, ov_steps_hdg, ov_starts, ov_newhdgs, ov_lost, ov_cut, ov_trig;  /* step 13q3 (I71-I74) */
     uint32_t ov_stop_steps, ov_helm;                                  /* step 13q3b (I75 / I76) */
+    uint32_t slam_acc, slam_rej, slam_refused, slam_rises, slam_asks; /* step 13q4 (I77) */
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
 } stats_t;
@@ -1026,6 +1040,9 @@ typedef struct {
     float    ov_cmd_prev, ov_hdg_prev;
     bool     ov75, ov76;                    /* I75 / I76 (13q3b): latched / a HELM change while steering by hand */
     uint32_t ov75_t, ov76_t, ov76_starts;
+    float    slam_cap_prev;                 /* I77 (13q4): the slamming cap before this step */
+    uint32_t slam_now_prev, slam_boots, slam_asks_prev;
+    bool     slam_acc;                      /* the storm's ACCEPT was taken (OK) since the last reduction */
     uint8_t  helm_prev76;
     uint32_t ov_now_prev, ov_newhdgs_prev, ov_starts_prev;
     uint32_t sent_t;
@@ -1656,6 +1673,28 @@ static void check_step(void)
                      (double)(S.t - C.ov76_t), (double)s->helm);
         }
         C.helm_prev76 = s->helm;
+    }
+    /* I77 (step 13q4, owner 2026-10-31): the slamming cap never rises by itself - only after the HELM station's
+     * ACCEPT (the storm's own E_SLAMRES that the AURIX took), and never faster than the throttle up rate */
+    {
+        const slam_t *sl = &s->slam;
+        if (C.slam_boots != S.boots) {          /* a reset: slam_init (RAM), no reduction - nothing to judge */
+            C.slam_boots = S.boots;
+            C.slam_acc = false;
+        } else {
+            if (sl->cap_pct < C.slam_cap_prev - 0.001f) C.slam_acc = false;     /* a new reduction: a new ACCEPT */
+            if (sl->cap_pct > C.slam_cap_prev + 0.001f) {
+                ST.slam_rises++;
+                float lim = s->thr.cfg.rate_up_pct_s * (float)(s->now_ms - C.slam_now_prev) * 0.001f + 0.01f;
+                if (C.slam_acc && sl->cap_pct - C.slam_cap_prev <= lim) ok(77);
+                else fail(77, "slamming cap %.2f -> %.2f %% without an accepted restore / faster than the up rate",
+                          (double)C.slam_cap_prev, (double)sl->cap_pct);
+            }
+            if (sl->asks != C.slam_asks_prev) ST.slam_asks++;
+        }
+        C.slam_cap_prev = sl->cap_pct;
+        C.slam_now_prev = s->now_ms;
+        C.slam_asks_prev = sl->asks;
     }
     if (m != MODE_HDG_LOCK) C.uh_session = false;
     if (C.uh_session && C.mode_prev == MODE_HDG_LOCK && m == MODE_HDG_LOCK && !forced && !inj) {
@@ -2296,6 +2335,14 @@ static void apply(const ev_t *e)
         break;
     }
     case E_PC_CONFONLY: (void)sb_confirm_only(s, s->helm, (uint16_t)e->a); break;
+    case E_SLAMRES: {                   /* step 13q4 (I77): the HELM station's answer to the restore question */
+        bool acc = e->a < 800;
+        sb_result_t rr = sb_slam_restore(s, acc);
+        if (acc && rr == SB_OK) { C.slam_acc = true; ST.slam_acc++; }
+        else if (acc) ST.slam_refused++;
+        else ST.slam_rej++;
+        break;
+    }
     case E_PC_PAUSE: (void)sb_auto_pause(s); break;
     case E_PC_PROG: prog_random(1 + e->a % 6, &r); break;
     case E_PC_RAISE: {
@@ -2639,6 +2686,13 @@ static void apply(const ev_t *e)
     case E_JOY_WIRE: S.joy_broken = e->a < 300; joy_apply(); break;
     case E_ACCEL: sim_hal_set_accel(e->a >= 300); break;
     case E_SEA: S.w.sea_state = (float)(e->a % 6); S.w.slam_extra_g = e->b < 200 ? 2.0f : 0.0f; break;
+    case E_SLAMHIT:                     /* step 13q4: one hard wave hit (the boat model's 40 ms pulse) */
+        S.slam_ans_t = S.t + 35000u + (uint32_t)e->b * 30u;     /* ... and the captain's answer 35..65 s later */
+        S.slam_ans_acc = e->a < 850;
+        S.w.slam_left[0] = 3.5f + (float)(e->b % 10) * 0.1f;
+        S.w.slam_left[1] = 0.5f * S.w.slam_left[0];
+        S.w.slam_left[2] = 0.2f * S.w.slam_left[0];
+        break;
     case E_GW: S.gw_on = e->a >= 300; break;
     case E_NAVREQ: {
         uint8_t kind = (uint8_t)(e->a % 4), reason = (uint8_t)(1u << (e->b % 4));
@@ -2903,6 +2957,14 @@ static void run_until(uint32_t until)
             S.nav_beat_next = S.t + 500u;
             navreq(SB_NAV_NONE, 0u, 0u, 0.0f, -1.0f, 3000u);
         }
+        if (S.slam_ans_t && AT_OR_AFTER(S.t, S.slam_ans_t)) {     /* step 13q4: the captain answers the question */
+            S.slam_ans_t = 0u;
+            ev_t an;
+            memset(&an, 0, sizeof an);
+            an.kind = E_SLAMRES;
+            an.a = S.slam_ans_acc ? 100 : 900;
+            apply(&an);
+        }
         if (S.gw_on) S.gw_off_t = 0u;
         else if (!S.gw_off_t) S.gw_off_t = S.t ? S.t : 1u;
         uint8_t buf[512];
@@ -3012,6 +3074,10 @@ static void report(int episodes, double hours)
            (unsigned long)ST.ov_trig, (unsigned long)ST.ov_lost, (unsigned long)ST.ov_cut);
     printf("Shore stick override protections (step 13q3b, I75 / I76): %lu stopped steps checked, %lu HELM changes while "
            "steering by hand\n", (unsigned long)ST.ov_stop_steps, (unsigned long)ST.ov_helm);
+    printf("Slamming power restore (step 13q4, I77): %lu questions, %lu ACCEPTs taken, %lu refused (not calm / "
+           "nothing reduced), %lu REJECTs, %lu cap rises checked\n", (unsigned long)ST.slam_asks,
+           (unsigned long)ST.slam_acc, (unsigned long)ST.slam_refused, (unsigned long)ST.slam_rej,
+           (unsigned long)ST.slam_rises);
     printf("UNCREWED HDG LOCK refused by result code:");
     for (int i = 0; i < 32; i++) if (ST.uh_ref_code[i]) printf(" %d: %lu", i, (unsigned long)ST.uh_ref_code[i]);
     printf("\n");
@@ -3214,12 +3280,27 @@ static int day_at_sea(void)
     run_s(30.0);
     S.w.sea_state = 4.0f;
     S.w.slam_scale = getenv("STORM_SLAM") ? (float)atof(getenv("STORM_SLAM")) : 2.6f;
-    uint32_t imp0 = b->slam.impacts;
+    uint32_t imp0 = b->slam.impacts, asks_before = b->slam.asks;
     float cap_min = 100.0f;
     for (int i = 0; i < 1800; i++) { run_until(S.t + 100u); cap_min = fminf(cap_min, b->slam.cap_pct); }
     row("sea state 4, slamming on the fast leg", b->slam.impacts > imp0 && cap_min < 100.0f && b->plim.fwd_pct == 75.0f,
         "impacts, throttle reduced in steps, power limit kept", "impacts %lu, lowest cap %.0f %%, power limit %.0f %%, "
         "state %d", (unsigned long)(b->slam.impacts - imp0), cap_min, b->plim.fwd_pct, (int)b->slam.state);
+    /* 6b. (step 13q4) the sea calms down: the reduction stays until the captain's ACCEPT, then back at the up rate */
+    S.w.sea_state = 0.0f;
+    float cap_hold = b->slam.cap_pct;
+    bool asked6 = false;
+    for (int i = 0; i < 1200 && !slam_restore_avail(&b->slam); i++) { run_until(S.t + 100u); asked6 |= b->slam.asking; }
+    for (int i = 0; i < 20 && !b->slam.asking; i++) run_until(S.t + 100u);
+    asked6 |= b->slam.asking || b->slam.asks > asks_before;   /* (asked already in a calm spell of the sea 4) */
+    float cap_calm = b->slam.cap_pct;
+    sb_result_t sr = sb_slam_restore(b, true);
+    if (sr == SB_OK) C.slam_acc = true;
+    run_s(15.0);
+    row("calm sea after slamming (13q4)", cap_calm <= cap_hold + 0.01f && asked6 && sr == SB_OK &&
+        b->slam.cap_pct >= 100.0f, "reduced until the captain's ACCEPT, asked on screen 1, then back",
+        "cap %.0f %% -> %.0f %% in calm water (asked %d), ACCEPT %d, cap %.0f %% 15 s later", cap_hold, cap_calm,
+        asked6, (int)sr, b->slam.cap_pct);
     S.w.sea_state = 2.0f;
 
     /* 7. GPS lost for 4 minutes: dead reckoning, AUTO goes on */
