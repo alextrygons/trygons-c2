@@ -782,7 +782,8 @@ class Hud:
 
     def maneuver(self, name, s):
         """MANEUVER (CLAUDE.md C): throttle always idle - only REV / N / FWD. The lit box = the gear engaged
-        now (telemetry); the outlined box = what the captain's lever asks for."""
+        now (telemetry); the outlined box = what the captain's stick Y asks for (step 13q5: full forward / back held
+        0.3 s, centre = N - the AURIX's ask); a full deflection still being held = a medium outline."""
         d = s.t
         x0, y0, x1, y1 = self.R(name)
         r = (x0, y0, x1, y1)
@@ -799,7 +800,9 @@ class Hud:
             col = self.pal["caution"] if g == 2 else self.pal["main"]
             if on:
                 self.rect(b, "mv_gear", fill=col, alpha=220)
-            self.rect(b, "mv_box", outline=col if (on or ask == g) else self.pal["dim"], w=4 if ask == g else 1)
+            held = {1: 1, 2: 2}.get(getattr(s, "mv_hold", 0) or 0) == g and ask != g     # 13q5: being held
+            self.rect(b, "mv_box", outline=col if (on or ask == g or held) else self.pal["dim"],
+                      w=4 if ask == g else (2 if held else 1))
             self.text(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2), T(key), "mv_" + ("on" if on else "off"),
                       size=self.f_norm, bold=True, fill=theme.BLACK if on else col, anchor="c", max_w=w - 6, box=r)
 

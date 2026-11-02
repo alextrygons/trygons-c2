@@ -1325,7 +1325,7 @@ cap.wait_captain = αναμονή για ΑΠΟΔΟΧΗ του κυβερνήτ�
 cap.ev_captain_asked = ? ερώτηση στον κυβερνήτη: {what}
 hud.rear_maneuver = (ΜΑΝΟΥΒΡΑ)
 drv.uncrewed = ΧΩΡΙΣ ΠΛΗΡΩΜΑ: κάθε CONFIRM στο δικό σας χειριστήριο - χάσιμο σύνδεσης σβήνει τη μηχανή
-drv.maneuver = ΜΑΝΟΥΒΡΑ: μόνο τιμόνι + ταχύτητα, γκάζι στο ρελαντί
+drv.maneuver = ΜΑΝΟΥΒΡΑ: μόνο τιμόνι + σχέση (χειριστήριο μπρος / πίσω κρατημένο), γκάζι στο ρελαντί
 
 # --- screen 2 = navigation & control: the map + corner panels, tools window, geofence, MANEUVER on screen 1 ---
 cap.place_shore = ΞΗΡΑ
@@ -1352,7 +1352,7 @@ menu.theme_light = Ανοιχτό θέμα (και οι δύο οθόνες)
 menu.toggle_screen = Οθόνη 1 / οθόνη 2 (F11)
 menu.tools = Εργαλεία
 menu.view = Προβολή
-mv.title = ΜΑΝΟΥΒΡΑ - γκάζι στο ρελαντί
+mv.title = ΜΑΝΟΥΒΡΑ - σχέση με το χειριστήριο, γκάζι στο ρελαντί
 mv.rev = ΠΙΣΩ
 mv.n = N
 mv.fwd = ΜΠΡΟΣΤΑ

@@ -680,9 +680,12 @@ class DriverScreen:
         except (TypeError, ValueError, AttributeError):
             s["dp_scale_m"] = 15.0
         s["mv_ask"] = None
-        if d is not None and "rjoy_lever1000" in d and d.get("rjoy_age_ms", 99999) < 1000:
-            lv = d["rjoy_lever1000"] / 1000.0                   # the captain's lever: REV / N / FWD zone
-            s["mv_ask"] = 1 if lv > d.get("nz_hi", 0.55) else (2 if lv < d.get("nz_lo", 0.45) else 0)
+        s["mv_hold"] = 0
+        if d is not None and d.get("mv_stick_ask") is not None and d.get("rjoy_age_ms", 99999) < 1000:
+            # step 13q5 (owner 2026-10-31 C5): the AURIX's gear ask from the captain's stick Y (full forward / back
+            # held 0.3 s; centre = N) - the lever is not used in MANEUVER; mv_hold = a full deflection being held
+            s["mv_ask"] = d["mv_stick_ask"] if d["mv_stick_ask"] in (0, 1, 2) else None
+            s["mv_hold"] = d.get("mv_stick_hold", 0)
         # step 13q4: the RESTORE POWER button (the boat offers a restore after the slamming reduction; REJECT / no
         # answer keeps it reduced) - the captain's screen only; the question itself is driver.ask (app.drv_slam)
         s["slam_restore"] = bool(d is not None and d.get("slam_restore_ok") and not d.get("slam_ask") and

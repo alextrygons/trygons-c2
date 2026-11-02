@@ -1321,7 +1321,7 @@ cap.wait_captain = waiting for the captain's ACCEPT on screen 1: {what}
 cap.ev_captain_asked = ? captain asked: {what}
 hud.rear_maneuver = (MANEUVER)
 drv.uncrewed = UNCREWED: every CONFIRM on your joystick - a lost link stops the engine
-drv.maneuver = MANEUVER: steering + gear only, throttle at idle
+drv.maneuver = MANEUVER: steering + gear only (stick forward / back held), throttle at idle
 
 # --- screen 2 = navigation & control: the map + corner panels, tools window, geofence, MANEUVER on screen 1 ---
 cap.place_shore = SHORE
@@ -1348,7 +1348,7 @@ menu.theme_light = Light theme (both screens)
 menu.toggle_screen = Screen 1 / screen 2 (F11)
 menu.tools = Tools
 menu.view = View
-mv.title = MANEUVER - throttle at idle
+mv.title = MANEUVER - gear on the stick, throttle at idle
 mv.rev = REV
 mv.n = N
 mv.fwd = FWD

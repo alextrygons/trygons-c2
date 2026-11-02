@@ -437,7 +437,18 @@ typedef struct {
     /* step 13q2: UNCREWED entries without CONFIRM, refused because the shore stick / lever was not centred,
      * release attempts refused while driving (there is no release) */
     uint32_t direct, refused_centre, release_refused;
+    /* step 13q5 (owner 2026-10-31 C5): MANEUVER gear on the shore STICK Y (the lever is not used in MANEUVER):
+     * full forward (>= SB_MNV_Y_FULL) held SB_MNV_HOLD_MS = FORWARD, centre = NEUTRAL at once (spring-centred: let
+     * go = neutral), full back held = REVERSE; the stick the other way = NEUTRAL at once. The gear state machine
+     * does every shift (idle -> neutral -> gear, F <-> R always through N with its dwell). */
+    uint8_t  mv_ask;            /* gear_t asked by the stick now (GEAR_N / F / R) */
+    uint8_t  mv_zone;           /* 0 between, 1 full forward, 2 full back (this step's packet) */
+    uint32_t mv_since_ms;       /* the packet that began the zone (rx_ms; the hold counts from here) */
+    uint32_t mv_asks_f, mv_asks_r, mv_short;   /* F / R asks taken; full deflections let go before the hold */
 } sb_remote_t;
+
+#define SB_MNV_Y_FULL   0.80f   /* step 13q5: "full" stick Y in MANEUVER (forward +, back -) */
+#define SB_MNV_HOLD_MS  300u    /* step 13q5: held this long (fresh packets) = the gear is asked */
 
 /* Step 13q2c (owner 2026-11-01, W47 answer (b)): HDG LOCK in UNCREWED for the shore HELM captain, entered only
  * from REMOTE / MANEUVER by the HELM station's mode command (sb_hdg_lock_shore). Nobody on board and no onboard

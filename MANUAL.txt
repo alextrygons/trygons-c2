@@ -686,8 +686,9 @@ MANUAL DRIVING STARTS HERE (the captain with the manual licence; also a
   (licence, captain) and the AURIX (centred stick / CONFIRM, priorities,
   watchdogs) check every request again.
 MANEUVER (trailer, ramp, dock): instead of the CDI three boxes REV | N | FWD -
-  the lit one = the gear engaged now, the outlined one = what your lever
-  asks for. The throttle stays at idle.
+  the lit one = the gear engaged now, the outlined one (thick) = what your
+  stick asks for (a thin outline = a full deflection you are still holding,
+  not asked yet). The throttle stays at idle.
 OTHERWISE THE HUD ONLY SHOWS: no other button or key changes the driving; it
   sends only ACCEPT / REJECT answers, SAVE (video) and CLEAR SLOWDOWN
   (vision).
@@ -1171,9 +1172,23 @@ THE PROFILE (decided by the boat, never by a PC)
 
 MANEUVER (trailer, ramp, dock approach) - captain only
   * Steering and gear only: the captain's joystick sideways = outboard
-    angle, the lever (or stick forward / back) = FORWARD / NEUTRAL /
-    REVERSE. The throttle is ALWAYS at idle - no rpm control at all.
-  * Gear changes go idle -> neutral -> gear, as always.
+    angle; the GEAR is on the STICK (owner 2026-10-31, step 13q5):
+      - stick fully FORWARD and held ~0.3 s = FORWARD,
+      - stick in the CENTRE (let go: it springs back) = NEUTRAL at once,
+      - stick fully BACK and held ~0.3 s = REVERSE.
+    A short flick asks nothing; half way asks nothing; pulling the other way
+    than the gear asked = NEUTRAL at once (then hold it for the other gear).
+    The TWCS throttle lever is NOT used in MANEUVER (it must be at neutral to
+    start). The throttle is ALWAYS at idle - no rpm control at all.
+    The station sends the stick's Y axis beside the lever (shore_joystick.json
+    "stick_y", default: the stick's own Y; check on the Tools page "Remote"
+    that pushing the stick forward shows +). Because of that, every
+    "stick centred" check (REMOTE / MANEUVER start, CONFIRM, HDG LOCK) also
+    needs the stick's forward / back centred.
+  * Gear changes go idle -> neutral -> gear, as always; FORWARD <-> REVERSE
+    always through NEUTRAL with its wait. The AURIX refuses anything unsafe.
+  * MANEUVER -> HDG LOCK (UNCREWED): the stick must be centred, so the gear
+    is NEUTRAL by then - HDG LOCK starts in neutral at idle.
   * Start: button MANEUVER (DOCK / TRAILER) on the captain's station (it
     must hold HELM and the user must hold a manual licence). CREWED: then
     CONFIRM on the onboard joystick within 10 s. UNCREWED: at once, only

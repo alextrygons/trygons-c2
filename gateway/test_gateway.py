@@ -3103,7 +3103,7 @@ def section_cr():
 
         alice = Client(sp, "alice", PW["alice"], name="alice")
         alice.pump(1.0)
-        stick = {"x": 0.0, "lever": 0.5}
+        stick = {"x": 0.0, "lever": 0.5, "y": 0.0}     # step 13q5: the stick Y beside the lever (MANEUVER gear)
         snd = RemoteSender(alice.l, lambda: dict(stick))
         snd.start()
         r_helm = alice.result(alice.cmd(proto.T_HELM, proto.p_helm(0)))
@@ -3113,20 +3113,30 @@ def section_cr():
         time.sleep(0.2)
         link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
         on = w.until(lambda d: d["mode"] == proto.MODE_MANEUVER, 3)
-        stick["lever"] = 1.0
+        stick["lever"] = 1.0                             # step 13q5: the lever is not used in MANEUVER ...
+        lever_f = False
+        t0 = time.time()
+        while time.time() - t0 < 2:
+            w.pump(0.1)
+            if w.telem:
+                lever_f = lever_f or w.telem["gear"] == 1
+        stick["lever"] = 0.5
+        stick["y"] = 1.0                                 # ... the stick full forward, held = FORWARD
         top, gear_f = 0.0, False
         t0 = time.time()
-        while time.time() - t0 < 4:
+        while time.time() - t0 < 6:
             w.pump(0.1)
             if w.telem:
                 top = max(top, w.telem["throttle"])
                 gear_f = gear_f or w.telem["gear"] == 1
         prof = w.telem.get("profile_name") if w.telem else None
-        report("CR2 MANEUVER through the gateway: licensed captain asks, CONFIRM on board; full lever = forward gear, "
-               "throttle idle",
-               r_helm == 0 and r_ask == 0 and on is not None and gear_f and top <= 0.01 and prof == "CREWED",
-               "alice: HELM %s, MANEUVER %s, after CONFIRM: %s; full lever: gear F %s, highest throttle %.2f %%; "
-               "profile %s" % (r_helm, r_ask, on and on["mode_name"], gear_f, top, prof))
+        report("CR2 MANEUVER through the gateway: licensed captain asks, CONFIRM on board; the lever does nothing, the "
+               "stick held forward = forward gear (13q5), throttle idle",
+               r_helm == 0 and r_ask == 0 and on is not None and not lever_f and gear_f and top <= 0.01 and
+               prof == "CREWED",
+               "alice: HELM %s, MANEUVER %s, after CONFIRM: %s; full lever: gear F %s (none); stick forward: gear F %s, "
+               "highest throttle %.2f %%; profile %s" % (r_helm, r_ask, on and on["mode_name"], lever_f, gear_f, top,
+                                                         prof))
         snd.stop()
         alice.close()
         link.stop()
@@ -4499,6 +4509,28 @@ def section_uh():
            not save.get("trigger") and sj.trigger_conflict(cfg_same) and sj.trigger_conflict(cfg_save) and
            not sj.trigger_conflict(cfg_ok),
            "separate %s; trigger = CONFIRM %s; trigger = SAVE %s" % (both, same, save))
+
+    # UH14 (step 13q5, owner 2026-10-31 C5) the station sends the spring-centred stick's Y BESIDE the lever (the
+    # MANEUVER gear: the AURIX decides); pushed forward = + (the default: the steer device's Y, inverted); the
+    # gateway forwards it in GW_RJOY (lever flag b0 still set)
+    class AxisJs:
+        def __init__(self, axes, ok_devs=(0, 1)):
+            self.axes, self.ok_devs = axes, ok_devs
+
+        def read(self, dev):
+            return {"ok": dev in self.ok_devs, "axes": dict(self.axes.get(dev, {})), "buttons": 0}
+    fwd = sj.to_remote(AxisJs({0: {"X": 0.0, "Y": -1.0}, 1: {"Z": 0.0}}), dict(sj.DEFAULT))
+    back = sj.to_remote(AxisJs({0: {"X": 0.0, "Y": 0.9}, 1: {"Z": 0.0}}), dict(sj.DEFAULT))
+    own = sj.to_remote(AxisJs({0: {"X": 0.0}, 2: {"V": 0.5}}, ok_devs=(0, 1, 2)),
+                       dict(sj.DEFAULT, stick_y={"dev": 2, "axis": "V", "invert": False}))
+    gone = sj.to_remote(AxisJs({0: {"X": 0.0}}, ok_devs=(0, 1)), dict(sj.DEFAULT, stick_y={"dev": 2, "axis": "Y"}))
+    nolever = sj.to_remote(AxisJs({0: {"X": 0.0, "Y": 0.3}, 1: {"Z": 0.4}}),
+                           dict(sj.DEFAULT, thr={"dev": 1, "axis": "Z", "invert": False, "lever": False}))
+    report("UH14 (13q5) the stick Y is sent beside the lever (forward +, own axis, missing device = no packet); no "
+           "lever: y = the throttle axis",
+           fwd is not None and fwd.get("y") == 1.0 and "lever" in fwd and back.get("y") == -0.9 and
+           own.get("y") == 0.5 and gone is None and nolever.get("y") == 0.4 and "lever" not in nolever,
+           "forward %s; back %s; own axis %s; missing %s; no lever %s" % (fwd, back, own, gone, nolever))
 
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,

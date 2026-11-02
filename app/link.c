@@ -1103,14 +1103,19 @@ static void telemetry2(link_t *l, sb_t *s)
     /* b1 + the pickup target: REMOTE / MANEUVER = the lever pickup; UNCREWED AUTO (step 13q3b MED-2) = the lever is
      * below the throttle but not engaged yet ("move the lever"), the target = where the ceiling meets the throttle */
     bool auto_wait = sb_shore_auto(s) && ov->lever_wait;
-    bool pick = auto_wait || (!sb_shore_auto(s) && r->lev.pickup);
+    bool mnv = sb_mode(s) == MODE_MANEUVER;          /* step 13q5: the lever is not used in MANEUVER (no pickup) */
+    bool pick = auto_wait || (!sb_shore_auto(s) && !mnv && r->lev.pickup);
     proto_wr_u8(&w, (uint8_t)((r->has_lever ? 1u : 0u) | (pick ? 2u : 0u) |
                               (s->confirm.kind == CONF_REMOTE ? 4u : 0u) |
                               (ov->active ? 8u : 0u) | (ov->active && ov->back ? 16u : 0u) |
                               (ov->newhdg_ms && s->now_ms - ov->newhdg_ms < SB_SOVR_NEWHDG_MS ? 32u : 0u) |
                               ((ov->ceil_cut && sb_shore_auto(s)) || hdg_cut ? 64u : 0u) |
                               (ov->lost && sb_shore_auto(s) ? 128u : 0u)));
+    /* the u16 after the flags: the pickup target (0..1000, 0xFFFF none); step 13q5: in MANEUVER with data =
+     * 0x8000 | the stick's gear ask (b0-b1: 0 N, 1 F, 2 R) | the full-deflection zone held now (b4-b5: 1 forward,
+     * 2 back = "hold it"); a pickup target never sets b15 */
     proto_wr_u16(&w, auto_wait ? (uint16_t)lroundf(ov->lever_tgt * 1000.0f)
+                     : (mnv && r->have) ? (uint16_t)(0x8000u | (r->mv_ask & 3u) | ((uint16_t)(r->mv_zone & 3u) << 4))
                      : (pick && r->lev.target >= 0.0f) ? (uint16_t)lroundf(r->lev.target * 1000.0f) : 0xFFFFu);
     proto_wr_u8(&w, (uint8_t)lroundf(fminf(s->cfg.remote_cap_fwd_pct, s->plim.fwd_pct)));
     proto_wr_u8(&w, (uint8_t)lroundf(fminf(s->cfg.remote_cap_rev_pct, s->plim.rev_pct)));

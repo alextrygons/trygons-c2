@@ -19,11 +19,15 @@ does two things; the AURIX also ignores a trigger in the same packet as / within
 "save_button": video SAVE on the gateway (works any time, not only while driving).
 "lever": true = non-returning throttle lever (TWCS, 0 back .. 1 forward);
 false = spring-centred stick Y (-1 .. +1).
+"stick_y" (optional, step 13q5): the spring-centred stick's Y axis, sent as "y" BESIDE the lever (default: the
+steer device's axis Y, inverted = pushed forward is +). MANEUVER takes its gear from it (owner 2026-10-31 C5:
+full forward held 0.3 s = FORWARD, centre = NEUTRAL, full back held 0.3 s = REVERSE; the AURIX decides); every
+"stick centred" check (REMOTE / MANEUVER start, CONFIRM) then includes it. Without a lever the throttle axis is Y.
 
 There is NO release button (step 13q2, owner 2026-10-31: an accidental release in the middle of a
 manoeuvre is dangerous; driving ends by choosing another mode); an old file's "release_button" is ignored.
 
-RemoteSender sends {"t":"rjoy", "seq", "ts", "x", "lever" | "y", "confirm", "trigger"}
+RemoteSender sends {"t":"rjoy", "seq", "ts", "x", "lever" + "y" | "y", "confirm", "trigger"}
 at 30 Hz through the gateway. The AURIX only uses it while this station holds
 HELM: steering / throttle in REMOTE MANUAL and MANEUVER, CONFIRM in UNCREWED; step 13q3: in an
 UNCREWED AUTO / HDG LOCK stick X > 15 % = steering by hand inside the mode (back after 2 s centred),
@@ -186,6 +190,13 @@ def to_remote(js, cfg):
     out = {"x": max(-1.0, min(1.0, x))}
     if t.get("lever", True):
         out["lever"] = max(0.0, min(1.0, (v + 1.0) / 2.0))
+        # step 13q5: the stick Y beside the lever (MANEUVER gear); a missing device = no packet (as above)
+        sy = cfg.get("stick_y") or {"dev": s["dev"], "axis": "Y", "invert": True}
+        c = a if sy.get("dev") == s["dev"] else js.read(sy["dev"])
+        if not c["ok"]:
+            return None
+        yv = c["axes"].get(sy.get("axis", "Y"), 0.0) * (-1 if sy.get("invert", True) else 1)
+        out["y"] = max(-1.0, min(1.0, yv))
     else:
         out["y"] = max(-1.0, min(1.0, v))
     for key, name in (("confirm_button", "confirm"), ("trigger_button", "trigger")):

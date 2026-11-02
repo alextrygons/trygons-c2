@@ -1002,6 +1002,13 @@ def decode_telem2(payload: bytes) -> dict:
         # step 13q3b (review MED-2): in UNCREWED AUTO b1 = the lever is below the throttle but not engaged yet ("move
         # the lever"; the pickup target = where it meets the throttle) - in REMOTE / MANEUVER b1 is the lever pickup
         d["ov_lever_wait"] = bool(f & 2)
+        # step 13q5 (owner 2026-10-31 C5): in MANEUVER the u16 after the flags = 0x8000 | the shore stick Y's gear
+        # ask (b0-b1: 0 N, 1 F, 2 R) | the full deflection held now (b4-b5: 1 forward, 2 back); else the pickup target
+        v = d.get("rjoy_pickup1000", 0xFFFF)
+        if v != 0xFFFF and v & 0x8000:
+            d["mv_stick_ask"] = v & 3
+            d["mv_stick_hold"] = (v >> 4) & 3
+            d["rjoy_pickup1000"] = 0xFFFF
     if "nav_flags" in d:
         d["nav_fresh"] = bool(d["nav_flags"] & 1)
         d["nav_lost"] = bool(d["nav_flags"] & 2)

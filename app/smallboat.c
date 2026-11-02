@@ -1824,6 +1824,9 @@ static void remote_enter(sb_t *s, sb_mode_t from)
     r->entered_ms = s->now_ms;
     r->have = false;
     r->x = r->y = 0.0f;                               /* 13q2b (LOW-2): never chase the previous session's stick */
+    r->mv_ask = (uint8_t)GEAR_N;                      /* 13q5: the MANEUVER stick asks nothing yet */
+    r->mv_zone = 0u;
+    r->mv_since_ms = s->now_ms;
     r->steer_cmd = s->ap.est_angle;                   /* no steering jump */
     lever_pickup_start_v(s, &r->lev, from);
     r->lev.fwd.u = r->lev.rev.u = 1.0f;
@@ -1843,6 +1846,44 @@ static float remote_steer(sb_t *s, float dt)
     float step = s->cfg.remote_steer_rate_dps * dt;
     r->steer_cmd += clampf(want - r->steer_cmd, -step, step);
     return r->steer_cmd;
+}
+
+/* Step 13q5 (owner 2026-10-31 C5): the MANEUVER gear from the shore STICK Y, with a lever station too (the TWCS
+ * lever is not used in MANEUVER; the station sends the stick Y beside it). Full forward held SB_MNV_HOLD_MS =
+ * FORWARD, full back held = REVERSE, centre (spring-centred: let go) = NEUTRAL at once, the stick the other way
+ * than the asked gear = NEUTRAL at once (then its own hold for the new gear). A short flick asks nothing; the hold
+ * counts between packets (the newest still full >= 0.3 s after the first), never on old data. The
+ * gear state machine keeps every gear rule (shift only at idle, F <-> R through N with its dwell). Called only
+ * with fresh data (the watchdog above: stale = LOST = neutral). */
+static void maneuver_gear(sb_t *s)
+{
+    sb_remote_t *r = &s->remote;
+    if (!r->have) {                                    /* no data of this session yet: no gear change for nothing */
+        s->gear_demand = s->gear.current;
+        return;
+    }
+    float y = r->y, db = s->joy.cfg.deadband;
+    if (!isfinite(y)) y = 0.0f;                        /* (never: clamped on input) not a number = centre */
+    uint8_t zone = (y >= SB_MNV_Y_FULL) ? 1u : (y <= -SB_MNV_Y_FULL) ? 2u : 0u;
+    if (zone != r->mv_zone) {
+        /* a full deflection let go before its hold asked the gear = a flick (counted, nothing asked) */
+        if (r->mv_zone != 0u && !(r->mv_zone == 1u ? r->mv_ask == GEAR_F : r->mv_ask == GEAR_R)) r->mv_short++;
+        r->mv_zone = zone;
+        r->mv_since_ms = r->rx_ms;                     /* the packet that showed it */
+    }
+    if (fabsf(y) <= db) r->mv_ask = GEAR_N;                                    /* centred / let go */
+    else if ((r->mv_ask == GEAR_F && y < 0.0f) || (r->mv_ask == GEAR_R && y > 0.0f)) r->mv_ask = GEAR_N;
+    /* the hold counts between PACKETS (the newest one still full that way, >= 0.3 s after the first): never on
+     * the last packet getting older while the data stops (the watchdog takes that: LOST = neutral) */
+    if (zone != 0u && r->rx_ms - r->mv_since_ms >= SB_MNV_HOLD_MS) {
+        uint8_t want = (zone == 1u) ? (uint8_t)GEAR_F : (uint8_t)GEAR_R;
+        if (r->mv_ask != want) {
+            if (want == GEAR_F) r->mv_asks_f++;
+            else r->mv_asks_r++;
+        }
+        r->mv_ask = want;
+    }
+    s->gear_demand = (gear_t)r->mv_ask;
 }
 
 /* The freshness watchdog + throttle, every step in REMOTE. */
@@ -1874,18 +1915,10 @@ static void remote_mode(sb_t *s)
         return;
     }
     if (sb_mode(s) == MODE_MANEUVER) {
-        /* MANEUVER: the throttle is ALWAYS idle; the captain's joystick only
-         * chooses the gear (forward / neutral zone / reverse) - gear changes go
-         * through the gear state machine (idle -> neutral -> gear) */
+        /* MANEUVER: the throttle is ALWAYS idle; the captain's stick Y only chooses the gear (step 13q5, owner
+         * 2026-10-31 C5) - gear changes go through the gear state machine (idle -> neutral -> gear) */
         s->throttle_demand = 0.0f;
-        if (!r->have) {
-            s->gear_demand = s->gear.current;               /* no data yet: no gear change for nothing */
-        } else if (r->has_lever) {
-            s->gear_demand = (r->lever > s->joy.cfg.nz_hi) ? GEAR_F : (r->lever < s->joy.cfg.nz_lo) ? GEAR_R : GEAR_N;
-        } else {
-            float db = s->joy.cfg.deadband;
-            s->gear_demand = (r->y > db) ? GEAR_F : (r->y < -db) ? GEAR_R : GEAR_N;
-        }
+        maneuver_gear(s);
         return;
     }
     if (!r->have) {
