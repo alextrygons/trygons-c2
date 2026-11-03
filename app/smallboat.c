@@ -2023,11 +2023,14 @@ static void steer_pause(sb_t *s, bool pause, float angle)
 static void shdg_enter(sb_t *s, sb_mode_t from)
 {
     sb_shdg_t *h = &s->shdg;
-    bool fwd = gear_is(&s->gear, GEAR_F);
+    /* step 13q5b (review LOW-2): from MANEUVER always NEUTRAL - its throttle was idle, so nothing can be held; a
+     * centred-stick packet taken in the same step as the mode command (before maneuver_gear asked N) could still
+     * find the gear settled in F: never keep F at idle there (the docs: MANEUVER -> HDG LOCK starts in N) */
+    bool fwd = gear_is(&s->gear, GEAR_F) && from == MODE_REMOTE;
     h->on = true;
     h->hold_gear = fwd ? GEAR_F : GEAR_N;
     /* REMOTE: what the engine does now, never above the REMOTE cap; MANEUVER: idle (its throttle is always idle) */
-    h->hold0_pct = (fwd && from == MODE_REMOTE) ? fminf(fmaxf(s->thr.out_pct, 0.0f), remote_cap_f(s)) : 0.0f;
+    h->hold0_pct = fwd ? fminf(fmaxf(s->thr.out_pct, 0.0f), remote_cap_f(s)) : 0.0f;
     h->hold_pct = h->hold0_pct;
     h->ceil_on = false;
     h->ceil_pct = h->hold0_pct;

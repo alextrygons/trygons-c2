@@ -379,13 +379,26 @@ def s4_maneuver(rig):
     lit = [o for o in dv.ops if o.get("tag") == "mv_gear"]
     ask_f = sorted([(o["r"][0], o["w"]) for o in dv.ops if o.get("tag") == "mv_box"])
     on_txt = dv.texts("mv_on")
+    # step 13q5b (review MED-1): the Remote tools page shows the stick's forward / back the station SENDS (+ = forward)
+    # and the boat's own view of it in MANEUVER (full forward held -> asks F)
+    import types
+    ap.rsender = types.SimpleNamespace(sent=42, missing=False, last={"x": 0.0, "lever": 0.5, "y": 1.0})
+    rig.pump(0.6)
+    rtxt = ap.remote_lbl.cget("text")
+    ap.rsender = None
+    y_ok = (A.T("cap.rm_sending_y", y="+1.00") in rtxt and
+            A.T("cap.rm_mv_sees", zone=A.T("cap.rm_mv_zone_1"), gear=A.T("gear.1")) in rtxt)
     shots = os.environ.get("TRYGONS_SHOT_DIR")
+    if shots:
+        ap.rsender = types.SimpleNamespace(sent=42, missing=False, last={"x": 0.0, "lever": 0.5, "y": 1.0})
     if shots and dv.last_frame is not None:             # step 13q2: MANEUVER lit, REMOTE MANUAL beside it, no RELEASE
         dv.last_frame.save(os.path.join(shots, "driver_maneuver_el.png"))
     if shots:                                           # the Remote tools page: no RELEASE, the new help text
         ap.open_tab("tab.remote")
+        rig.pump(0.6)
         shot(ap.tools, os.path.join(shots, "tools_remote_el.png"))
         ap.tools.withdraw()
+        ap.rsender = None
     rel = not dv.has("drv_release")                     # step 13q2: there is no RELEASE
     no_req = dv.has("drv_remote_req") and dv.has("drv_maneuver_req")   # MANEUVER lit, REMOTE = a straight switch
     rig.extra.update(gear=2, mv_stick_ask=0, mv_stick_hold=2)       # let go = N asked, ... a full back being held
@@ -404,9 +417,10 @@ def s4_maneuver(rig):
            "no RELEASE (13q2): MANEUVER "
            "and REMOTE MANUAL stay (the other one = a straight switch); gone in other modes",
            len(lit) == 1 and on_txt == [A.T("mv.fwd")] and rev == [A.T("mv.rev")] and rel and no_req and
-           len(boxes) == 3 and gone and ask_ok and not rig.errors,
+           len(boxes) == 3 and gone and ask_ok and y_ok and not rig.errors,
            "lit %d, text %s then %s; boxes %d; no RELEASE %s; both drive buttons %s; gone after %s; stick ask outlines "
-           "(13q5) F %s, N + REV held %s" % (len(lit), on_txt, rev, len(boxes), rel, no_req, gone, ask_f, ask_n))
+           "(13q5) F %s, N + REV held %s; Remote page stick Y (13q5b) %s: %r" % (
+               len(lit), on_txt, rev, len(boxes), rel, no_req, gone, ask_f, ask_n, y_ok, rtxt[-260:]))
 
 
 def boat_poly(ap):

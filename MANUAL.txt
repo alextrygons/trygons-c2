@@ -1182,13 +1182,18 @@ MANEUVER (trailer, ramp, dock approach) - captain only
     start). The throttle is ALWAYS at idle - no rpm control at all.
     The station sends the stick's Y axis beside the lever (shore_joystick.json
     "stick_y", default: the stick's own Y; check on the Tools page "Remote"
-    that pushing the stick forward shows +). Because of that, every
+    that pushing the stick forward shows + on the line "stick fwd / back
+    (sent)" - a wrong sign would ask REVERSE with the stick forward; in
+    MANEUVER the line "boat sees:" shows what the boat received: "full
+    FORWARD (+) -> gear F" - step 13q5b).
+    Because of that, every
     "stick centred" check (REMOTE / MANEUVER start, CONFIRM, HDG LOCK) also
     needs the stick's forward / back centred.
   * Gear changes go idle -> neutral -> gear, as always; FORWARD <-> REVERSE
     always through NEUTRAL with its wait. The AURIX refuses anything unsafe.
   * MANEUVER -> HDG LOCK (UNCREWED): the stick must be centred, so the gear
-    is NEUTRAL by then - HDG LOCK starts in neutral at idle.
+    is NEUTRAL by then - HDG LOCK ALWAYS starts in neutral at idle (also when
+    the gear had not shifted out of forward yet; step 13q5b).
   * Start: button MANEUVER (DOCK / TRAILER) on the captain's station (it
     must hold HELM and the user must hold a manual licence). CREWED: then
     CONFIRM on the onboard joystick within 10 s. UNCREWED: at once, only

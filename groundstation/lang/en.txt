@@ -763,6 +763,13 @@ cap.rm_pickup = MOVE THROTTLE TO PICK UP: lever to {to}
 cap.neutral = NEUTRAL
 cap.rm_wait_confirm = WAITING FOR THE JOYSTICK CONFIRM ON BOARD ({s} s)
 cap.rm_sending = sending: {n} packets{missing}   x {x}  lever {lever}
+cap.rm_sending_y = stick fwd / back (sent): {y}
+cap.rm_y_sign = (+ = FORWARD = gear F, - = BACK = gear R)
+cap.rm_sending_y_thr = stick fwd / back = throttle (sent): {y}
+cap.rm_mv_sees = boat sees: {zone} -> gear {gear}
+cap.rm_mv_zone_0 = not full
+cap.rm_mv_zone_1 = full FORWARD (+)
+cap.rm_mv_zone_2 = full BACK (-)
 cap.rm_trigger_conflict = The trigger shares a button with CONFIRM / SAVE: it is not sent (one press = one thing)
 cap.rm_joy_missing =    JOYSTICK NOT FOUND
 cap.rm_no_front = WARNING: NO FRONT CAMERA LIVE

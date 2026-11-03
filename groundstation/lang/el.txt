@@ -765,6 +765,13 @@ cap.rm_pickup = ΦΕΡΤΕ ΤΟ ΓΚΑΖΙ ΣΤΗ ΘΕΣΗ: μοχλός στο 
 cap.neutral = ΝΕΚΡΑ
 cap.rm_wait_confirm = ΑΝΑΜΟΝΗ ΓΙΑ CONFIRM ΣΤΟ ΧΕΙΡΙΣΤΗΡΙΟ ΤΟΥ ΣΚΑΦΟΥΣ ({s} s)
 cap.rm_sending = αποστολή: {n} πακέτα{missing}   x {x}  μοχλός {lever}
+cap.rm_sending_y = μπρος / πίσω (στέλνεται): {y}
+cap.rm_y_sign = (+ = ΜΠΡΟΣΤΑ = ΠΡΟΣΩ, - = ΠΙΣΩ = ΟΠΙΣΘΕΝ)
+cap.rm_sending_y_thr = μπρος / πίσω = γκάζι (στέλνεται): {y}
+cap.rm_mv_sees = σκάφος βλέπει: {zone} -> σχέση {gear}
+cap.rm_mv_zone_0 = όχι τέρμα
+cap.rm_mv_zone_1 = τέρμα ΜΠΡΟΣΤΑ (+)
+cap.rm_mv_zone_2 = τέρμα ΠΙΣΩ (-)
 cap.rm_trigger_conflict = Η σκανδάλη έχει το ίδιο κουμπί με το CONFIRM / SAVE: δεν στέλνεται (ένα πάτημα = ένα πράγμα)
 cap.rm_joy_missing =    ΔΕΝ ΒΡΕΘΗΚΕ ΧΕΙΡΙΣΤΗΡΙΟ
 cap.rm_no_front = ΠΡΟΣΟΧΗ: ΚΑΜΙΑ ΖΩΝΤΑΝΗ ΜΠΡΟΣΤΙΝΗ ΚΑΜΕΡΑ

@@ -806,10 +806,20 @@ class App:
             lines.append(T("cap.rm_pickup", to=T("cap.neutral") if tgt == 0xFFFF else "%.0f %%" % (tgt / 10)))
         if d["rjoy_flags"] & 4:
             lines.append(T("cap.rm_wait_confirm", s="%.0f" % d["confirm_left_s"]))
+        if "mv_stick_ask" in d:
+            # step 13q5b (review MED-1): the boat's own view of the stick's forward / back in MANEUVER (TELEM2 D)
+            lines.append(T("cap.rm_mv_sees", zone=T("cap.rm_mv_zone_%d" % min(d.get("mv_stick_hold", 0), 2)),
+                           gear=T("gear.%d" % min(d["mv_stick_ask"], 2))))
         if s:
             v = s.last or {}
             lines.append(T("cap.rm_sending", n=s.sent, missing=T("cap.rm_joy_missing") if s.missing else "",
                            x="%+.2f" % v.get("x", 0.0), lever="%.0f %%" % (100 * v["lever"]) if "lever" in v else "-"))
+            # step 13q5b (review MED-1): the stick's forward / back the station SENDS (the MANEUVER gear; "+" must be
+            # forward - check it here, the axis sign is a setting: shore_joystick.json "stick_y")
+            if "y" in v:
+                lines.append(T("cap.rm_sending_y" if "lever" in v else "cap.rm_sending_y_thr", y="%+.2f" % v["y"]))
+                if "lever" in v:                        # the sign on its own line (fits the narrow page)
+                    lines.append("    " + T("cap.rm_y_sign"))
         if shorejoy.trigger_conflict(self.sj_cfg):      # 13q3b LOW-2: the trigger shares a button: never sent
             lines.append(T("cap.rm_trigger_conflict"))
         cams = (self.gw_status or {}).get("cameras") or {}

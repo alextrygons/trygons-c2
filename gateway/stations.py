@@ -60,6 +60,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import secrets
 import statistics
@@ -352,7 +353,14 @@ class StationServer:
             age = self.age(st, float(m["ts"]))
             x, y = float(m.get("x", 0.0)), float(m.get("y", 0.0))
             lever = m.get("lever")
+            if lever is not None:
+                lever = float(lever)
         except (KeyError, ValueError, TypeError):
+            return
+        # step 13q5b (review LOW-3): a NaN / infinite number would pass min / max as FULL deflection (forward gear /
+        # full lever) - such a packet is invalid: dropped and counted (no packets = the AURIX's 0.3 s rule: neutral)
+        if not all(math.isfinite(v) for v in (x, y, age) + (() if lever is None else (lever,))):
+            st.rjoy_bad = getattr(st, "rjoy_bad", 0) + 1
             return
         last = getattr(st, "rjoy_seq", None)
         if last is not None and ((seq - last) & 0xFFFF) >= 0x8000 or seq == last:
@@ -364,7 +372,7 @@ class StationServer:
         # set - step 13q2 (owner 2026-10-31): there is no release, an old station's "release" is dropped here
         # b3: the TRIGGER (step 13q3: in UNCREWED HDG LOCK while steering by hand = the current heading is locked)
         flags = (1 if lever is not None else 0) | (4 if m.get("confirm") else 0) | (8 if m.get("trigger") else 0)
-        lv = int(min(1000, max(0, float(lever if lever is not None else 0.5) * 1000)))
+        lv = int(min(1000, max(0, (lever if lever is not None else 0.5) * 1000)))
         self.gw.aurix.send(proto.T_GW_RJOY, struct.pack(
             "<BHHHhhHBB", st.id, seq, age_ms, lat_ms, int(max(-1000, min(1000, x * 1000))),
             int(max(-1000, min(1000, y * 1000))), lv, 0, flags))

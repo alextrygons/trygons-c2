@@ -3114,12 +3114,14 @@ def section_cr():
         link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
         on = w.until(lambda d: d["mode"] == proto.MODE_MANEUVER, 3)
         stick["lever"] = 1.0                             # step 13q5: the lever is not used in MANEUVER ...
+        # step 13q5b (review LOW-1): a window that can fail - the boat's own gear ask (TELEM2 D mv_stick_ask) at once,
+        # and the engaged gear over 4.5 s (an N -> F shift takes >= 2.8 s)
         lever_f = False
         t0 = time.time()
-        while time.time() - t0 < 2:
+        while time.time() - t0 < 4.5:
             w.pump(0.1)
             if w.telem:
-                lever_f = lever_f or w.telem["gear"] == 1
+                lever_f = lever_f or w.telem["gear"] == 1 or w.telem.get("mv_stick_ask", 0) != 0
         stick["lever"] = 0.5
         stick["y"] = 1.0                                 # ... the stick full forward, held = FORWARD
         top, gear_f = 0.0, False
@@ -4531,6 +4533,33 @@ def section_uh():
            fwd is not None and fwd.get("y") == 1.0 and "lever" in fwd and back.get("y") == -0.9 and
            own.get("y") == 0.5 and gone is None and nolever.get("y") == 0.4 and "lever" not in nolever,
            "forward %s; back %s; own axis %s; missing %s; no lever %s" % (fwd, back, own, gone, nolever))
+
+    # UH15 (step 13q5b, review LOW-3) a NaN / infinite stick or lever never becomes a full deflection (Python's min /
+    # max would pass NaN as the limit = full forward gear / full lever): the station sends no packet, the gateway
+    # drops such a packet (counted); a normal packet still goes through
+    nan, inf = float("nan"), float("inf")
+    s_x = sj.to_remote(AxisJs({0: {"X": nan, "Y": 0.0}, 1: {"Z": 0.0}}), dict(sj.DEFAULT))
+    s_y = sj.to_remote(AxisJs({0: {"X": 0.0, "Y": nan}, 1: {"Z": 0.0}}), dict(sj.DEFAULT))
+    s_l = sj.to_remote(AxisJs({0: {"X": 0.0, "Y": 0.0}, 1: {"Z": inf}}), dict(sj.DEFAULT))
+    s_n = sj.to_remote(AxisJs({0: {"X": 0.0, "Y": nan}, 1: {"Z": 0.0}}),
+                       dict(sj.DEFAULT, thr={"dev": 0, "axis": "Y", "invert": False, "lever": False}))
+    s_ok = sj.to_remote(AxisJs({0: {"X": 0.1, "Y": 0.0}, 1: {"Z": 0.0}}), dict(sj.DEFAULT))
+    sent15 = []
+    fake15 = types.SimpleNamespace(gw=types.SimpleNamespace(telem2={"helm": 5}, aurix=types.SimpleNamespace(
+        send=lambda t, b: sent15.append((t, b)))), age=lambda st_, ts: 0.05 + (ts - ts))
+    st15 = types.SimpleNamespace(id=5, role="PILOT", rtt_ms=40)
+    bad = [{"x": nan}, {"y": nan}, {"y": -inf}, {"lever": nan}, {"lever": inf}, {"ts": nan}]
+    for i, b in enumerate(bad):
+        stmod.StationServer._rjoy(fake15, st15, dict({"seq": i + 1, "ts": 0.0, "x": 0.0, "y": 0.0, "lever": 0.5}, **b))
+    n_bad = len(sent15)
+    stmod.StationServer._rjoy(fake15, st15, {"seq": 20, "ts": 0.0, "x": 0.2, "y": 0.0, "lever": 0.5})
+    good = [_st.unpack("<BHHHhhHBB", b_) for t, b_ in sent15 if t == proto.T_GW_RJOY]
+    report("UH15 (13q5b LOW-3) NaN / infinite stick or lever: the station sends no packet, the gateway drops it "
+           "(counted); a normal packet still goes through",
+           s_x is None and s_y is None and s_l is None and s_n is None and s_ok is not None and n_bad == 0 and
+           getattr(st15, "rjoy_bad", 0) == len(bad) and len(good) == 1 and good[0][4] == 200,
+           "station: x NaN %s, y NaN %s, lever inf %s, no-lever y NaN %s, normal %s; gateway: %d bad forwarded %d "
+           "(counted %d), normal %s" % (s_x, s_y, s_l, s_n, s_ok, len(bad), n_bad, getattr(st15, "rjoy_bad", 0), good))
 
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,

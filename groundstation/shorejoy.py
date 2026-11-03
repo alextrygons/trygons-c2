@@ -35,6 +35,7 @@ the lever a power ceiling (reduction only), the trigger = the new HDG LOCK headi
 """
 import ctypes
 import json
+import math
 import os
 import sys
 import threading
@@ -179,6 +180,15 @@ def trigger_conflict(cfg):
     return _same_button(t, cfg.get("confirm_button")) or _same_button(t, cfg.get("save_button"))
 
 
+def _finite(v):
+    """A real number (step 13q5b, review LOW-3: Python's min / max let a NaN through as the LIMIT = full forward /
+    full lever; a non-finite reading = invalid joystick data = no packet, like a missing device)."""
+    try:
+        return math.isfinite(v)
+    except TypeError:
+        return False
+
+
 def to_remote(js, cfg):
     """Joystick readings -> {"x", "lever" or "y", "confirm", "trigger"} or None if a device is missing."""
     s, t = cfg["steer"], cfg["thr"]
@@ -187,6 +197,8 @@ def to_remote(js, cfg):
         return None
     x = a["axes"].get(s["axis"], 0.0) * (-1 if s.get("invert") else 1)
     v = b["axes"].get(t["axis"], 0.0) * (-1 if t.get("invert") else 1)
+    if not (_finite(x) and _finite(v)):
+        return None                                     # (step 13q5b LOW-3: never a NaN as a full deflection)
     out = {"x": max(-1.0, min(1.0, x))}
     if t.get("lever", True):
         out["lever"] = max(0.0, min(1.0, (v + 1.0) / 2.0))
@@ -196,6 +208,8 @@ def to_remote(js, cfg):
         if not c["ok"]:
             return None
         yv = c["axes"].get(sy.get("axis", "Y"), 0.0) * (-1 if sy.get("invert", True) else 1)
+        if not _finite(yv):
+            return None
         out["y"] = max(-1.0, min(1.0, yv))
     else:
         out["y"] = max(-1.0, min(1.0, v))

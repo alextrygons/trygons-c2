@@ -17109,6 +17109,51 @@ static void shore_hdg_tests(void)
                     r_rem == PROTO_R_OK && back_rem && ok2 == PROTO_R_OK && r_sb == PROTO_R_OK && sb, d);
     }
 
+    /* UH11 (step 13q5b, review LOW-2) the same-step race: MANEUVER in F (stick held forward), then the centred packet
+     * AND the HDG LOCK command are taken in the SAME step (before maneuver_gear asked N, the gear still settled in F):
+     * UNCREWED HDG LOCK from MANEUVER still starts in N at idle, and the lever (full forward) never opens a forward
+     * gear at idle there */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        rq_boat(&x, &r, 1719u, false);
+        memset(&u, 0, sizeof u);
+        u.r = &r;
+        u.n.lease = 3000u;
+        u.n.cap = -1.0f;
+        u.nav_on = true;
+        uh_shore(&r, SB_SHORE_VALID, 1500u);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        r.y = 1.0f;
+        r.lever = 1.0f;
+        uh_run(&x, &u, 6000u);
+        bool mf = sb_mode(&x.sb) == MODE_MANEUVER && gear_is(&x.sb.gear, GEAR_F);
+        r.y = 0.0f;                                                    /* let go ... */
+        rj_send(&r, 0u);                                               /* ... the centred packet, then in the SAME step */
+        uint8_t ok = uh_lock(&x, &r);                                  /* the mode command (pi_cmd: one frame batch) */
+        bool hl = sb_mode(&x.sb) == MODE_HDG_LOCK && sb_shore_hdg(&x.sb);
+        uint8_t hg = (uint8_t)x.sb.shdg.hold_gear;
+        bool f_seen = false;
+        float mo = 0.0f, md = 0.0f;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 6000u) {                                     /* the lever stays full forward */
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            md = fmaxf(md, x.sb.throttle_demand);
+            mo = fmaxf(mo, x.sb.thr.out_pct);
+            if (x.t > t0 + 2500u && !gear_is(&x.sb.gear, GEAR_N)) f_seen = true;   /* (the shift F -> N takes time) */
+        }
+        bool n_end = gear_is(&x.sb.gear, GEAR_N) && x.sb.gear_demand == GEAR_N && sb_mode(&x.sb) == MODE_HDG_LOCK;
+        crew_plug();
+        snprintf(d, sizeof d, "MANEUVER in F %s; centred packet + HDG LOCK in one step %u -> HDG LOCK %s, held gear %u (N = "
+                 "0); lever full 6 s: max demand %.2f / out %.2f %%, not N after 2.5 s %s, N at the end %s",
+                 mf ? "yes" : "NO", ok, hl ? "yes" : "NO", hg, md, mo, f_seen ? "YES" : "no", n_end ? "yes" : "NO");
+        test_report("UH11 (13q5b LOW-2) MANEUVER in F -> UNCREWED HDG LOCK in the same step as the centred packet: "
+                    "starts in N at idle, the lever never opens a forward gear",
+                    mf && ok == PROTO_R_OK && hl && hg == (uint8_t)GEAR_N && md <= 0.0f && mo <= 0.01f && !f_seen &&
+                    n_end, d);
+    }
+
     /* UH7 a reset (the chip restarts) in UNCREWED HDG LOCK: STANDBY, the held throttle gone - nothing comes back by
      * itself; the HDG LOCK button on the panel stays ignored in UNCREWED */
     {
