@@ -771,6 +771,11 @@ cap.rm_mv_zone_0 = not full
 cap.rm_mv_zone_1 = full FORWARD (+)
 cap.rm_mv_zone_2 = full BACK (-)
 cap.rm_trigger_conflict = The trigger shares a button with CONFIRM / SAVE: it is not sent (one press = one thing)
+cap.rm_yn = YES / NO answers on the stick: trigger = the selection (YES pre-selected, question shown >= 0.5 s), thumb = NO, hat ↑ YES / ↓ NO
+cap.rm_yn_y_on = stick forward = YES / back = NO: on (STANDBY / AUTO / HDG LOCK / DP; MANEUVER = gear, REMOTE = nothing)
+cap.rm_yn_y_off = stick forward / back: off - the stick Y is the throttle here: hat ↑ / ↓
+cap.rm_reject_conflict = The NO (thumb) button shares a button with another one: it is not used
+cap.rm_yn_count = answers from the stick {n}, presses before 0.5 s {g}, trigger kept from the boat {m}
 cap.rm_joy_missing =    JOYSTICK NOT FOUND
 cap.rm_no_front = WARNING: NO FRONT CAMERA LIVE
 
@@ -925,6 +930,9 @@ drv.head_avoid = COLLISION AVOIDANCE proposes:
 drv.head_vision = OBSTACLE DETECTION (camera):
 drv.throttle_yours = (the throttle is yours)
 drv.q_left = {s} s - no answer = REJECTED
+q.yes = YES
+q.no = NO
+q.hint = trigger = answer  ·  thumb = NO  ·  stick / hat ↑ YES  ↓ NO
 
 # --- words used on several screens ----------------------------------------------------------------------------
 hud.far = far

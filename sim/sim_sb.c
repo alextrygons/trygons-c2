@@ -9020,6 +9020,7 @@ static void remote_direct_tests(void);   /* (step 13q2, below: it uses the DP he
 static void shore_hdg_tests(void);       /* (step 13q2c, below) */
 static void override_tests(void);        /* (step 13q3, below) */
 static void maneuver_gear_tests(void);   /* (step 13q5, below) */
+static void stick_y_tests(void);         /* (step 13p, below) */
 
 void sb_gateway_tests(void)
 {
@@ -9031,6 +9032,7 @@ void sb_gateway_tests(void)
     remote_direct_tests();
     shore_hdg_tests();
     override_tests();
+    stick_y_tests();
     lostlink_tests();
     link_time_tests();
     save_tests();
@@ -18289,6 +18291,129 @@ static void override_tests(void)
     }
 }
 
+/* ------------------- step 13p: the shore stick Y as the station's YES / NO selection (owner 2026-10-31 D) -- */
+
+/* The station uses the spring-centred stick's Y (sent beside the lever since 13q5) to select YES / NO in STANDBY /
+ * AUTO / HDG LOCK / DP. The boat must not care: a trace of the outputs with the stick Y still, then the SAME
+ * scenario again (same seed) with the stick Y pushed full forward / back every 0.5 s - mode, gear pulse, throttle
+ * servo, the outboard estimate / steering motor and the thrusters must be identical in every step. */
+#define SY_STEPS 240u
+typedef struct {
+    uint8_t  mode[SY_STEPS];
+    uint16_t gear[SY_STEPS];
+    float    thr[SY_STEPS], steer[SY_STEPS], motor[SY_STEPS], bow[SY_STEPS], stern[SY_STEPS];
+    uint32_t n;
+} sytrace_t;
+
+static void sy_record(sbsim_t *x, rjsim_t *r, void (*hook)(sbsim_t *, void *), void *ctx, bool wiggle,
+                      sytrace_t *t)
+{
+    static const float pat[4] = { 0.0f, 1.0f, 0.0f, -1.0f };
+    t->n = 0u;
+    for (uint32_t i = 0u; i < SY_STEPS; i++) {
+        r->y = wiggle ? pat[(i / 10u) % 4u] : 0.0f;          /* 0.5 s each: centre, full forward, centre, full back */
+        sbsim_run(x, x->t + AP_PERIOD_MS, hook, ctx);
+        t->mode[i] = (uint8_t)sb_mode(&x->sb);
+        t->gear[i] = sim_hal_gear_pwm();
+        t->thr[i] = sim_hal_throttle();
+        t->steer[i] = x->sb.ap.est_angle;
+        t->motor[i] = sim_hal_motor_command();
+        sim_hal_thrusters(&t->bow[i], &t->stern[i]);
+        t->n++;
+    }
+    r->y = 0.0f;
+}
+
+static uint32_t sy_diff(const sytrace_t *a, const sytrace_t *b)
+{
+    uint32_t n = 0u;
+    for (uint32_t i = 0u; i < a->n && i < b->n; i++)
+        if (a->mode[i] != b->mode[i] || a->gear[i] != b->gear[i] || a->thr[i] != b->thr[i] ||
+            a->steer[i] != b->steer[i] || a->motor[i] != b->motor[i] || a->bow[i] != b->bow[i] ||
+            a->stern[i] != b->stern[i]) n++;
+    return n + (a->n != b->n ? 1u : 0u);
+}
+
+/* one scenario set up from scratch: 0 STANDBY, 1 REMOTE (lever station, driving), 2 UNCREWED HDG LOCK,
+ * 3 UNCREWED AUTO, 4 DP SPOT. Returns false if it did not reach its mode. */
+static bool sy_scenario(int k, bool wiggle, sytrace_t *t, uint8_t *mode_out)
+{
+    static sbsim_t x;
+    static rjsim_t r;
+    static uhsim_t u;
+    static dpx_t dp;
+    bool in = false;
+    uint32_t seed = 2101u + (uint32_t)k;
+    switch (k) {
+    case 0:
+        rq_boat(&x, &r, seed, false);
+        memset(&u, 0, sizeof u);
+        u.r = &r;
+        in = sb_mode(&x.sb) == MODE_STANDBY && x.sb.armed;
+        sy_record(&x, &r, uh_hook, &u, wiggle, t);
+        break;
+    case 1:
+        in = uh_remote(&x, &r, &u, seed, 0.8f) && x.sb.thr.out_pct > 3.0f;
+        sy_record(&x, &r, uh_hook, &u, wiggle, t);
+        break;
+    case 2:
+        in = uh_remote(&x, &r, &u, seed, 0.8f) && uh_lock(&x, &r) == PROTO_R_OK;
+        uh_run(&x, &u, 1000u);
+        in = in && sb_mode(&x.sb) == MODE_HDG_LOCK && x.sb.thr.out_pct > 3.0f;
+        sy_record(&x, &r, uh_hook, &u, wiggle, t);
+        break;
+    case 3:
+        in = ov_auto(&x, &r, &u, seed, false, 5.0f);
+        sy_record(&x, &r, uh_hook, &u, wiggle, t);
+        break;
+    default:
+        in = dpx_init(&dp, seed, false, NULL, true) && dpx_start(&dp, DP_SPOT, 0.0f);
+        dpx_run(&dp, 3000u);
+        in = in && sb_mode(&dp.x.sb) == MODE_DP;
+        sy_record(&dp.x, &dp.r, dpx_hook, &dp, wiggle, t);
+        break;
+    }
+    *mode_out = k == 4 ? (uint8_t)sb_mode(&dp.x.sb) : (uint8_t)sb_mode(&x.sb);
+    crew_plug();
+    return in;
+}
+
+static void stick_y_tests(void)
+{
+    char d[1200];
+    static sytrace_t a, b;
+    static const char *const names[5] = { "STANDBY", "REMOTE (lever)", "UNCREWED HDG LOCK", "UNCREWED AUTO", "DP SPOT" };
+    printf("\n=== SY step 13p: the shore stick Y = the station's YES / NO selection (owner 2026-10-31 D) ===\n");
+
+    /* SY1 the stick Y full forward / back (> 40 %) in STANDBY / REMOTE / UNCREWED HDG LOCK / UNCREWED AUTO / DP moves
+     * no actuator and changes no mode: the same scenario twice (same seed), once with the stick Y still, once pushed
+     * forward / back every 0.5 s - every output identical in every step */
+    {
+        bool all = true;
+        size_t len = 0u;
+        d[0] = 0;
+        for (int k = 0; k < 5; k++) {
+            uint8_t ma = 0u, mb = 0u;
+            bool ia = sy_scenario(k, false, &a, &ma);
+            bool ib = sy_scenario(k, true, &b, &mb);
+            uint32_t diff = sy_diff(&a, &b);
+            bool ok = ia && ib && diff == 0u && ma == mb && a.mode[0] == a.mode[a.n - 1u];
+            all = all && ok;
+            len += (size_t)snprintf(d + len, sizeof d - len, "%s%s: in %s/%s, %u of %u steps differ, mode %s -> %s",
+                                    k ? "; " : "", names[k], ia ? "yes" : "NO", ib ? "yes" : "NO", (unsigned)diff,
+                                    (unsigned)a.n, mode_name((sb_mode_t)a.mode[0]), mode_name((sb_mode_t)mb));
+            if (len >= sizeof d) len = sizeof d - 1u;
+        }
+        test_report("SY1 (13p) the shore stick Y forward / back (the YES / NO selection) moves no actuator and changes "
+                    "no mode in STANDBY / REMOTE / UNCREWED HDG LOCK / AUTO / DP", all, d);
+    }
+}
+
+void sb_stick_y_tests(void)
+{
+    stick_y_tests();
+}
+
 void sb_override_tests(void)
 {
     override_tests();
@@ -18316,6 +18441,7 @@ void sb_tests(void)
     remote_direct_tests();
     shore_hdg_tests();
     override_tests();
+    stick_y_tests();
     lostlink_tests();
     link_time_tests();
     save_tests();

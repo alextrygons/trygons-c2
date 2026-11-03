@@ -1469,7 +1469,11 @@ def section_f():
         hdg = w.until(lambda d: d["mode"] == 2, 5)
         link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.6, 0.0))
         man = w.until(lambda d: d["mode"] == 1, 5)
-        wait_for(lambda: rec.saves > n0, 5)
+        # step 13p: the SAVE request reaches the recorder through the GATEWAY's own TELEM2 (its UART decode), which
+        # can lag the direct sim link `w` under load (it failed twice in a full gate, before and with 13p, and passed
+        # alone) - wait for the event itself, with a time limit
+        wait_for(lambda: rec.saves > n0 and any(e["triggers"][0].get("who") == "AURIX"
+                                                for _t, _f, e in rec.list_events()), 20)
         ae = [e for _t, _f, e in rec.list_events() if e["triggers"][0].get("who") == "AURIX"]
         txt = ae[-1]["triggers"][0]["text"] if ae else None
         link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
@@ -3254,6 +3258,11 @@ def section_cr():
         r_al_bad = alice.result(alice.cmd(proto.T_LINK_TIME, proto.p_link_time(61)))
         r_al_lt = alice.result(alice.cmd(proto.T_LINK_TIME, proto.p_link_time(30)))
         lt_got = w.until(lambda d: d.get("lt_set") == 30 and d.get("lt_override"), 3)
+        # step 13p (review of b50413b): lost_for() reads the GATEWAY's own TELEM2 (its UART decode, it can lag the
+        # direct sim link `w` under load) - wait for that copy too, with a time limit
+        t_lt = time.time() + 5.0
+        while (g.telem2 or {}).get("lt_set") != 30 and time.time() < t_lt:
+            time.sleep(0.05)
         g.stations.tick()
         st_al = g.stations.stations.get(alice.welcome["id"])
         st_bob = g.stations.stations.get(bob.welcome["id"])
@@ -4442,7 +4451,8 @@ def section_uh():
     import stations as stmod
     sent = []
     fake = types.SimpleNamespace(gw=types.SimpleNamespace(telem2={"helm": 5}, aurix=types.SimpleNamespace(
-        send=lambda t, b: sent.append((t, b)))), age=lambda st_, ts: 0.05)
+        send=lambda t, b: sent.append((t, b)))), age=lambda st_, ts: 0.05,
+        question_open=lambda st_: False)           # (step 13p: no question open on the station here)
     st5 = types.SimpleNamespace(id=5, role="PILOT", rtt_ms=40)
     stmod.StationServer._rjoy(fake, st5, {"seq": 1, "ts": 0.0, "x": 0.4, "lever": 0.6, "trigger": True})
     stmod.StationServer._rjoy(fake, st5, {"seq": 2, "ts": 0.0, "x": 0.4, "lever": 0.6})

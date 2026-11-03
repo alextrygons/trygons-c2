@@ -390,23 +390,27 @@ class DriverScreen:
         self._map_t = 0.0
         self.vis_overlay = bool(settings.get("vision_overlay", True))
         self.vis_opacity = int(settings.get("vision_opacity", 1)) % 3
-        # captain -> driver question box
+        # captain -> driver question box: step 13p (owner 2026-10-31 D) = the ONE vertical Y/N layout, in the LOWER
+        # part of the screen (above the bottom bar, never over the centre): the question, [YES] on top, [NO]
+        # underneath (full width, framed, the selected one inverted), the countdown below, the stick's keys last
         QB = theme.C["panel"]
+        self.qsel = True                        # the selected answer (YES pre-selected: the trigger alone = ACCEPT)
+        self.qshown = 0.0                       # when the question appeared (the trigger's 0.5 s guard)
         self.qbox = tk.Frame(self.w, bg=QB, highlightbackground=YEL, highlightthickness=4)
         self.qhead = tk.Label(self.qbox, text="", font=F_HUD, bg=QB, fg=YEL)
-        self.qhead.pack(padx=20, pady=(12, 0))
-        self.qtext = tk.Label(self.qbox, text="", font=F_MID, bg=QB, fg=theme.C["fg"], wraplength=760, justify="center")
-        self.qtext.pack(padx=20, pady=(6, 6))
+        self.qhead.pack(padx=16, pady=(8, 0))
+        self.qtext = tk.Label(self.qbox, text="", font=F_HUD, bg=QB, fg=theme.C["fg"], wraplength=640, justify="center")
+        self.qtext.pack(padx=16, pady=(4, 6))
+        self.q_yes = tk.Button(self.qbox, text=T("q.yes"), command=lambda: self.answer(True),
+                               **dict(theme.yn_opts(True, True), font=F_MID))
+        self.q_yes.pack(fill="x", padx=24, pady=(2, 4))
+        self.q_no = tk.Button(self.qbox, text=T("q.no"), command=lambda: self.answer(False),
+                              **dict(theme.yn_opts(False, False), font=F_MID))
+        self.q_no.pack(fill="x", padx=24, pady=(4, 2))
         self.qtime = tk.Label(self.qbox, text="", font=F_HUD, bg=QB, fg=YEL)
-        self.qtime.pack()
-        qb = tk.Frame(self.qbox, bg=QB)
-        qb.pack(pady=14)
-        self.q_yes = tk.Button(qb, text=T("drv.accept"), width=10, command=lambda: self.answer(True),
-                               **dict(theme.button_opts("ok"), font=F_MID))
-        self.q_yes.pack(side="left", padx=12)
-        self.q_no = tk.Button(qb, text=T("drv.reject"), width=10, command=lambda: self.answer(False),
-                              **dict(theme.button_opts("no"), font=F_MID))
-        self.q_no.pack(side="left", padx=12)
+        self.qtime.pack(pady=(4, 0))
+        self.qhint = tk.Label(self.qbox, text=T("q.hint"), font=theme.font("small"), bg=QB, fg=theme.C["dim"])
+        self.qhint.pack(pady=(0, 6))
         w = self.w
         for k in ("<F12>", "<Control-Tab>"):
             w.bind(k, lambda e: app.swap_screens())
@@ -433,8 +437,9 @@ class DriverScreen:
     def lang_changed(self):
         try:
             self.w.title(i18n.W("drv.title"))
-            self.q_yes.configure(text=T("drv.accept"))
-            self.q_no.configure(text=T("drv.reject"))
+            self.q_yes.configure(text=T("q.yes"))
+            self.q_no.configure(text=T("q.no"))
+            self.qhint.configure(text=T("q.hint"))
         except tk.TclError:
             raise RuntimeError("driver window gone")             # i18n drops this listener
 
@@ -442,6 +447,7 @@ class DriverScreen:
         """Dark / light switched on either screen: the question box follows, the HUD redraws."""
         try:
             theme.retint(self.qbox, old)
+            self.select(self.qsel)
             self.map.configure(highlightbackground=theme.C["line"])
         except tk.TclError:
             raise RuntimeError("driver window gone")
@@ -538,6 +544,8 @@ class DriverScreen:
     def on_canvas_size(self, ev):
         if ev.width > 1 and ev.height > 1:
             self.sized = True
+            if self.question:
+                self.place_question()               # the question's sizes follow the window (step 13p)
 
     def mouse_xy(self, ev, child=None):
         """A mouse position in the composed picture's coordinates (the window's divided by the zoom)."""
@@ -592,14 +600,51 @@ class DriverScreen:
             self.answer(False, why="replaced by a newer request")
         self.question = (text, on_yes, on_no, time.time() + timeout_s)
         self.qtag = tag
+        self.qshown = time.time()
         self.qhead.configure(text=head or T("drv.head_captain"))
         self.qtext.configure(text=text)
-        self.qbox.place(relx=0.5, rely=0.45, anchor="center")
+        self.select(True)                       # YES pre-selected (step 13p)
+        self.place_question()
         self.qbox.lift()
         if self.app.sound:
             self.app.sound.feedback("fb.question")
         else:
             self.w.bell()
+
+    def place_question(self):
+        """The LOWER part of the screen, centred, its bottom just above the bottom bar (hud "bottom" box)."""
+        b = self.layout.rects.get("bottom") if hasattr(self.layout, "rects") else None
+        y1 = min(0.98, max(0.70, (b[1] if b else hud.DEFAULT_LAYOUT["bottom"][1]) - 0.006))
+        # the text sizes follow the WINDOW (like the HUD), so the box stays in the lower part on every screen size /
+        # Windows scaling: about a third of the height
+        W, H = max(400, self.w.winfo_width()), max(300, self.w.winfo_height())
+        u = min(H, W * 0.5625)
+        fs = {"head": 0.022, "text": 0.024, "btn": 0.032, "time": 0.020, "hint": 0.015}
+        f = {k: theme.tkfont("title" if k in ("head", "btn", "time") else "label", max(9, int(v * u)))
+             for k, v in fs.items()}
+        pad = max(2, int(0.006 * u))
+        self.qhead.configure(font=f["head"])
+        self.qhead.pack_configure(pady=(pad, 0))
+        self.qtext.configure(font=f["text"], wraplength=int(0.38 * W))
+        self.qtext.pack_configure(pady=(pad // 2, pad))
+        for w_ in (self.q_yes, self.q_no):
+            w_.configure(font=f["btn"], pady=max(1, pad // 2))
+        self.q_yes.pack_configure(pady=(0, pad))
+        self.q_no.pack_configure(pady=(0, 0))
+        self.qtime.configure(font=f["time"])
+        self.qtime.pack_configure(pady=(pad, 0))
+        self.qhint.configure(font=f["hint"])
+        self.qhint.pack_configure(pady=(0, pad))
+        self.qbox.place(relx=0.5, rely=y1, relwidth=0.40, anchor="s")
+
+    def select(self, yes):
+        """The selected answer shown inverted (the stick's Y / hat, step 13p); the trigger answers with it."""
+        self.qsel = bool(yes)
+        try:
+            self.q_yes.configure(**{k: v for k, v in theme.yn_opts(True, self.qsel).items() if k != "font"})
+            self.q_no.configure(**{k: v for k, v in theme.yn_opts(False, not self.qsel).items() if k != "font"})
+        except tk.TclError:
+            pass
 
     def cancel(self, tag):
         """The gateway closed the question (answered elsewhere / timed out there)."""

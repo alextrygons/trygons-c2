@@ -77,6 +77,7 @@ void sb_can_tests(void);          /* CN: DroneCAN bus + node table (step 11d) */
 void sb_pulse_tests(void);        /* only the paddlewheel pulse tests PW1-PW6 */
 void sb_confirm_only_tests(void); /* only the CONFIRM_ONLY tests CO1-CO3 (academy practical test) */
 void sb_maneuver_tests(void);     /* only the MANEUVER stick-Y gear tests MV5-MV8 (step 13q5) */
+void sb_stick_y_tests(void);      /* only the shore stick Y (YES / NO selection) test SY1 (step 13p) */
 void sb_override_tests(void);     /* only the shore stick override tests OV1-OV8 (step 13q3) */
 void sb_return_tests(void);       /* only the AUTO RETURN tests AR1-AR5 */
 void sb_dr_tests(void);           /* only the GPS-denied / integrity / re-trust tests (debugging) */

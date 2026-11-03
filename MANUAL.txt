@@ -670,8 +670,43 @@ EDIT LAYOUT (LAYOUT button or E): every box gets a blue frame. Drag a box to
   corner hides / shows it. RESET TO DEFAULT, DONE. Saved in
   groundstation\hud_layout.json (per PC). Outside the edit mode nothing can
   be moved by accident.
-Questions from the captain / the gateway appear in the middle (ACCEPT /
-  REJECT, a countdown; no answer = rejected) - as before (part I).
+QUESTIONS (step 13p, owner 2026-10-31): a copilot's action for the captain's
+  ACCEPT, a collision-avoidance proposal, the slamming power restore, an
+  obstacle note - appear in the LOWER part of screen 1, just above the
+  bottom bar (never over the centre of the picture), always the same
+  VERTICAL layout: the question, [YES] on top, [NO] underneath (full width,
+  framed; the selected one is filled = inverted), the countdown below; no
+  answer = rejected. The single operator's own confirmation (a window on
+  screen 2) has the same layout. Answer with the mouse, or on the shore
+  joystick (T.16000M stick + TWCS lever):
+    TRIGGER (stick button 1)  = answer with the selected choice. YES is
+                                pre-selected, so the trigger alone = a fast
+                                ACCEPT. It counts only when the question
+                                has been shown for at least 0.5 s and only
+                                as a NEW press (a trigger held from before
+                                must be let go and pressed again).
+    thumb button (button 2)   = a quick NO (REJECT), same 0.5 s rule.
+    stick forward / back      = select YES / NO (more than 40 %, a fresh
+                                move from the centre) - only in STANDBY,
+                                AUTO, HDG LOCK and DP. In MANEUVER the stick
+                                forward / back is the gear, in REMOTE MANUAL
+                                it does nothing (the gear is on the lever).
+    hat up / down             = select YES / NO in every mode.
+  A station that drives with the stick's Y as the throttle (no lever:
+  "lever" off in the Remote tab): the stick forward / back never selects
+  there - use the hat (the Remote tab says which).
+  ONE PRESS NEVER DOES TWO THINGS: while a question is open the trigger
+  answers it and is NOT sent to the boat (also not the press that answered,
+  until you let it go; the gateway keeps it back too). With no question
+  open the trigger works as before (UNCREWED HDG LOCK steered by hand: the
+  new locked heading, chapter 7). The CONFIRM button on the TWCS (the boat's
+  CONFIRM for AUTO start, power raise ... in UNCREWED) is unchanged. There
+  is NO release button. Moving the stick forward / back to select an
+  answer moves nothing on the boat (tested: sim SY1).
+  Default buttons (groundstation\shore_joystick.json): trigger 1, thumb
+  ("reject_button") 2, SAVE ("save_button") 4, CONFIRM = TWCS button 4,
+  hat = the stick's hat ("hat"; Linux: its axis number). An older file
+  keeps its own SAVE button. A button mapped twice is not used for answers.
 MANUAL DRIVING STARTS HERE (the captain with the manual licence; also a
   single operator with the licence): REMOTE MANUAL and MANEUVER (the buttons
   above the bottom-left row). UNCREWED boat: ONE press - it starts at once,
@@ -723,7 +758,8 @@ throttle at idle", "boat not confirmed yet", NV DATA RESET (a stored setting
 was unusable: defaults in use - chapter 15) and NV FAULT (the data flash does
 not work: nothing is saved). In MANEUVER (and going
 astern in REMOTE / MANUAL) the two rear cameras are shown much bigger. A
-copilot's question for the captain appears here (ACCEPT / REJECT).
+copilot's question for the captain appears here (YES / NO, lower part, chapter
+5B "QUESTIONS").
 
 -------------------------------------------------------------------------------
 5C. THE MAP (= SCREEN 2)
@@ -2136,7 +2172,8 @@ F. VIDEO RECORDING: RING BUFFER AND SAVE
     * the SAVE button (Cameras tab; the big driver screen in part I),
     * the SAVE button on the boat's USB joystick (default: stick button 3;
       "Map buttons" in the Joystick tab) or on the shore PC's joystick
-      (shore_joystick.json "save_button", default button 3),
+      (shore_joystick.json "save_button", default stick button 4 - step
+      13p; an older file keeps its own setting),
     * automatically: a new alarm (not "arrived"), a fault, the joystick
       taking over from HDG LOCK / AUTO / REMOTE / TRAINING, STANDBY because
       of a fault, slamming over the red limit (part H).

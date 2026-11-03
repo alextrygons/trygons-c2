@@ -1422,6 +1422,11 @@ def s20_slam_restore(rig):
     rig.extra.update(helm=3, slr_flags=2 | 8, slr_before=60, slam_ask=False, slam_restore_ok=True,
                      slam_restoring=False, slam_declined=True, slam_ask_left=0, slam_cap=50)
     shots = os.environ.get("TRYGONS_SHOT_DIR")
+    # step 13p (gate finding, also at b50413b): the copilot-answer rows of the earlier tests (GF / roles: shown 60 s
+    # after the answer, a WAITING row without an ack for ever) are not this test's subject - they added 3 lines to the
+    # control panel, so "fits" depended on how fast the run reached S20. Start without them, put them back after.
+    old_dec = list(ap.decisions)
+    ap.decisions.clear()
     try:
         rig.pump(0.6)
         ap.render(force=True)
@@ -1456,6 +1461,13 @@ def s20_slam_restore(rig):
         if shots:
             rig.pump(0.5)
             shot(dv.w, os.path.join(shots, "driver_slam_ask_el.png"))
+            dv.select(False)                            # step 13p: NO selected (the stick back / hat down)
+            shot(dv.w, os.path.join(shots, "driver_question_no_el.png"))
+            dv.select(True)
+            ap.captain_confirm(A.TE("what.auto_start"), lambda: None)   # the single operator's own confirmation
+            if ap.cconf is not None:
+                shot(ap.cconf, os.path.join(shots, "screen2_own_confirm_el.png"))
+                ap.cconf_answer(False)
         dv.answer(True)
         acc = (proto.T_SLAM_RESTORE, b"\x01") in sent
         ap.close_driver()
@@ -1472,6 +1484,7 @@ def s20_slam_restore(rig):
         ap._send_cmd = orig_send
         ap.slam_tag = None
         ap.gw_status = fake_gw(ap.t)
+        ap.decisions.extend(old_dec)
     report("S20 slamming power restore (13q4): RESTORE POWER on screen 2 for the captain (sends ACCEPT), the boat's "
            "question on screen 1, nothing for a copilot, fits",
            btn_ok and all(fits) and asked and acc and not cop_btn,

@@ -57,6 +57,7 @@ from alerts import override_texts  # noqa: E402  (the shore stick override, step
 from link import Link, list_ports
 from gwclient import GatewayLink
 import shorejoy
+import yesno
 import syncrecv
 import video
 import driver
@@ -557,6 +558,7 @@ class App:
         self.rec_lbl = tk.Label(rec, text="", font=F_TXT, bg=C["bg"], justify="left", anchor="w", wraplength=700)
         self.rec_lbl.pack(side="left", padx=10)
         self.sj_save_was = False
+        self.yn = yesno.Selector()               # step 13p: YES / NO answers on the shore stick
         mid = tk.Frame(ct, bg=C["bg"])
         mid.pack(fill="both", expand=True)
         self.cam_cv = tk.Canvas(mid, width=640, height=360, bg=theme.BLACK, highlightthickness=0)
@@ -579,6 +581,58 @@ class App:
         self.vis_lbl = tk.Label(ct, text="", font=F_TXT, bg=C["bg"], anchor="w", justify="left")
         self.vis_lbl.pack(fill="x", padx=6)
         self.root.after(100, self.cam_tick)
+        self.root.after(50, self.shore_answer_tick)
+
+    def open_question(self):
+        """(token, kind) of this station's question open now: screen 1's question box first, else the single
+        operator's own confirmation; (None, None) = none (step 13p)."""
+        dv = self.driver
+        if dv is not None and dv.question is not None:
+            return ("drv", id(dv.question)), "drv"
+        if self.cconf is not None:
+            return ("cc", id(self.cconf)), "cc"
+        return None, None
+
+    def shore_answer_tick(self):
+        """20 times a second: the shore stick answers this station's YES / NO question (step 13p, owner 2026-10-31
+        D): trigger = the selection, thumb = NO, stick Y (lever stations, STANDBY / AUTO / HDG LOCK / DP) / hat =
+        the selection. Only an answer like a mouse click - the gateway / the AURIX check it again."""
+        try:
+            now = time.time()
+            token, kind = self.open_question()
+            self.yn.question(token, now)
+            c = None
+            if getattr(self, "sj", None) is not None:
+                try:
+                    c = shorejoy.controls(self.sj, self.sj_cfg)
+                except Exception:
+                    c = None
+            self.yn_apply(self.yn.feed(c, now, (self.t or {}).get("mode")), kind)
+        finally:
+            self.root.after(50, self.shore_answer_tick)
+
+    def yn_apply(self, ev, kind):
+        if not ev or kind is None:
+            return
+        what, yes = ev
+        if kind == "drv":
+            if what == "select":
+                self.driver.select(yes)
+            else:
+                self.driver.answer(yes, why=None if yes else "rejected on the joystick")
+        elif kind == "cc" and self.cconf is not None:
+            if what == "select":
+                self.cconf_select(yes)
+            else:
+                self.cconf_answer(yes)
+
+    def rjoy_source(self):
+        """The 30 Hz packet for the boat: the trigger is kept back while it answers a question (one press never does
+        two things, step 13p)."""
+        v = shorejoy.to_remote(self.sj, self.sj_cfg)
+        if v is not None:
+            v["trigger"] = self.yn.send_trigger(bool(v.get("trigger")))
+        return v
 
     def vision_send(self, msg):
         if not isinstance(self.link, GatewayLink):
@@ -785,7 +839,7 @@ class App:
                 self.rsend_var.set(False)
                 return self.say(T("cap.remote_only_gw"), RED)
             self.remote_save_cfg()
-            self.rsender = shorejoy.RemoteSender(self.link, lambda: shorejoy.to_remote(self.sj, self.sj_cfg))
+            self.rsender = shorejoy.RemoteSender(self.link, self.rjoy_source)
             self.rsender.start()
         elif self.rsender:
             self.rsender.stop()
@@ -822,6 +876,14 @@ class App:
                     lines.append("    " + T("cap.rm_y_sign"))
         if shorejoy.trigger_conflict(self.sj_cfg):      # 13q3b LOW-2: the trigger shares a button: never sent
             lines.append(T("cap.rm_trigger_conflict"))
+        # step 13p: the YES / NO answers on the stick, and whether the stick Y selects here
+        lines.append(T("cap.rm_yn"))
+        lines.append("    " + T("cap.rm_yn_y_on" if self.sj_cfg["thr"].get("lever", True) else "cap.rm_yn_y_off"))
+        if shorejoy.reject_conflict(self.sj_cfg):
+            lines.append(T("cap.rm_reject_conflict"))
+        yn = getattr(self, "yn", None)
+        if yn is not None and (yn.answered or yn.guarded or yn.masked):
+            lines.append("    " + T("cap.rm_yn_count", n=yn.answered, g=yn.guarded, m=yn.masked))
         cams = (self.gw_status or {}).get("cameras") or {}
         if d["mode"] == proto.MODE_REMOTE and cams and not cams.get("front_live", True):
             lines.append(T("cap.rm_no_front"))
@@ -1870,9 +1932,22 @@ class App:
             else:
                 self.say(T("cap.not_confirmed", what=i18n.from_en(what)), RED)
 
-        btn(b, "cap.cc_send", lambda: done(True), kind="ok").pack(side="left", padx=8)
-        btn(b, "cap.cancel", lambda: done(False)).pack(side="left", padx=8)
+        # step 13p: the ONE vertical Y/N layout - [YES = SEND] on top, [NO = CANCEL] underneath, full width, the
+        # selected one inverted (the shore stick's trigger answers with it), the countdown below
+        b.pack_configure(fill="x", padx=20)
+        yes_b = tk.Button(b, text=T("q.yes") + " – " + T("cap.cc_send"), command=lambda: done(True), **theme.yn_opts(True, True, "title"))
+        yes_b.pack(fill="x", pady=(0, 6))
+        no_b = tk.Button(b, text=T("q.no") + " – " + T("cap.cancel"), command=lambda: done(False), **theme.yn_opts(False, False, "title"))
+        no_b.pack(fill="x")
+        left.pack_forget()
+        left.pack(pady=(0, 10))
         theme.style_tree(w)
+
+        def select(yes):
+            self.cconf_sel = bool(yes)
+            yes_b.configure(**{k: v for k, v in theme.yn_opts(True, yes, "title").items() if k != "font"})
+            no_b.configure(**{k: v for k, v in theme.yn_opts(False, not yes, "title").items() if k != "font"})
+        select(True)
 
         def tick():
             if self.cconf is not w:
@@ -1883,6 +1958,8 @@ class App:
             left.configure(text=T("cap.cc_left", s="%.0f" % s))
             w.after(250, tick)
         tick()
+        self.cconf_select = select
+        self.cconf_answer = done
         self.cconf_send = lambda: done(True)            # tests
 
     def cmd(self, ftype, payload, what):
@@ -3817,8 +3894,9 @@ class App:
             p.text(T("ais.proposal_on_driver", text=proposal_text(av["proposal"])), "label", colour=C["note_txt"],
                    tag="proposal", wrap=0.28)
             if self.single_op:
-                p.br()
+                p.br()                              # step 13p: the vertical Y/N layout (YES on top, NO underneath)
                 p.button(T("drv.accept"), lambda: self.avoid_answer(None, True), "ok")
+                p.br()
                 p.button(T("drv.reject"), lambda: self.avoid_answer(None, False), "no")
         n = AIS_ROWS[0] if H < 720 else AIS_ROWS[1] if H < 900 else AIS_ROWS[2]
         if rows:

@@ -371,12 +371,35 @@ class StationServer:
         # b2: the captain's CONFIRM button (counts on the AURIX only in UNCREWED); b1 (the old "release") is never
         # set - step 13q2 (owner 2026-10-31): there is no release, an old station's "release" is dropped here
         # b3: the TRIGGER (step 13q3: in UNCREWED HDG LOCK while steering by hand = the current heading is locked)
-        flags = (1 if lever is not None else 0) | (4 if m.get("confirm") else 0) | (8 if m.get("trigger") else 0)
+        # step 13p (owner 2026-10-31 D, "one press never does two things"): a trigger press made while this station
+        # has a question open (the captain's ACCEPT of a copilot action, an avoidance / vision proposal, the slamming
+        # restore) answers it on the station - it is never also forwarded, until it is released
+        trig = bool(m.get("trigger"))
+        if trig and (getattr(st, "trig_block", False) or self.question_open(st)):
+            st.trig_block = True
+            st.rjoy_trig_masked = getattr(st, "rjoy_trig_masked", 0) + 1
+            trig = False
+        elif not trig:
+            st.trig_block = False
+        flags = (1 if lever is not None else 0) | (4 if m.get("confirm") else 0) | (8 if trig else 0)
         lv = int(min(1000, max(0, (lever if lever is not None else 0.5) * 1000)))
         self.gw.aurix.send(proto.T_GW_RJOY, struct.pack(
             "<BHHHhhHBB", st.id, seq, age_ms, lat_ms, int(max(-1000, min(1000, x * 1000))),
             int(max(-1000, min(1000, y * 1000))), lv, 0, flags))
         st.rjoy_fwd = getattr(st, "rjoy_fwd", 0) + 1
+
+    def question_open(self, st):
+        """A YES / NO question is open on this station's screen 1 (step 13p): a copilot action waiting for its ACCEPT,
+        an avoidance proposal, a vision slow-down note (the captain / single operator), the slamming restore."""
+        if any(a.get("target") == st.id for a in self.asks.values()):
+            return True
+        if st.crew == "captain" or st.single_op:
+            if getattr(getattr(self.gw, "avoider", None), "proposal", None):
+                return True
+            vp = getattr(getattr(self.gw, "vision", None), "proposal", None)
+            if vp and not vp.get("acked"):
+                return True
+        return bool((self.gw.telem2 or {}).get("slam_ask"))
 
     def udp_packet(self, data):
         """body|mac: body = JSON {"sid", "t":"rjoy", ...}, mac = HMAC-SHA256(udp_key, body)[:16] hex."""

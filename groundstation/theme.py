@@ -290,6 +290,20 @@ def button_opts(kind="normal", level="button"):
             "cursor": "hand2"}
 
 
+def yn_opts(yes, selected, level="button"):
+    """A YES / NO answer button of the ONE vertical Y/N layout (step 13p, owner 2026-10-31 D: question, [YES] on top,
+    [NO] underneath, full width, framed; the selected one inverted = filled in its meaning colour)."""
+    col = C["btn_ok"] if yes else C["btn_no"]
+    o = button_opts("ok" if yes else "no", level)
+    if selected:
+        o.update({"bg": col, "fg": C["btn_fg"], "highlightthickness": 4, "highlightbackground": C["fg"],
+                  "highlightcolor": C["fg"], "relief": "flat", "bd": 3})
+    else:                                   # (the frame drawn by the border: a Tk highlight ring alone may not show)
+        o.update({"bg": C["panel"], "fg": C["fg"], "highlightthickness": 3, "highlightbackground": col,
+                  "highlightcolor": col, "relief": "solid", "bd": 3})
+    return o
+
+
 def label_opts(level="label", dim=False):
     return {"bg": C["bg"], "fg": C["dim"] if dim else C["fg"], "font": font(level)}
 

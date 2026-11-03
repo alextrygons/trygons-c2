@@ -58,6 +58,12 @@ Starts  sim/autopilot_sim server <port> 1  and the real ground station
      vector (ahead = up, starboard = right), the bow / stern thrust bars from the
      middle, amber when hot / off the spot, display only
 
+  I25 YES / NO on screen 1 (step 13p, owner 2026-10-31 D): the question box in the lower part, vertical
+     (YES on top, NO underneath, full width, countdown below), YES pre-selected; the shore stick (a fake
+     joystick through the station's own 20 Hz loop): trigger only after 0.5 s + a fresh press, stick Y
+     selects, thumb = REJECT, the answering trigger never in the packet to the boat; mouse + the single
+     operator's own confirmation
+
 Run:  python test_driver.py        (exit code 0 = all passed)
 """
 import os
@@ -436,6 +442,90 @@ def main():
                "question %s, nothing sent before the answer %s, ACCEPT sent %s, REJECT sent %s; button %s, sends %s; "
                "copilot: question %s, button %s" % (q_asked, no_auto, acc_sent, rej_sent, btn_shown, btn_sent, cop_q,
                                                    cop_btn))
+
+        # I25 YES / NO on screen 1 (step 13p, owner 2026-10-31 D): the question box in the LOWER part (above the bottom
+        # bar, never over the centre), VERTICAL (question, YES on top, NO underneath, full width, the countdown below),
+        # YES pre-selected + inverted; the shore stick (a fake joystick through the station's real 20 Hz loop): the
+        # trigger answers only >= 0.5 s after the question, the stick Y back selects NO (STANDBY, lever station), the
+        # thumb = REJECT; the trigger that answered is never in the joystick packet to the boat; the mouse still works;
+        # the single operator's own confirmation answered by the trigger too
+        class FakeJs:
+            def __init__(self):
+                self.d = {0: {"ok": True, "axes": {"X": 0.0, "Y": 0.0}, "buttons": 0, "pov": None},
+                          1: {"ok": True, "axes": {"Z": -1.0}, "buttons": 0, "pov": None}}
+
+            def read(self, dev):
+                return self.d.get(dev, {"ok": False, "axes": {}, "buttons": 0})
+        real_sj, real_cfg = getattr(app, "sj", None), getattr(app, "sj_cfg", None)
+        fj = FakeJs()
+        app.sj, app.sj_cfg = fj, dict(A.shorejoy.DEFAULT)
+        if dv.question:
+            dv.answer(False, why="done elsewhere")
+        got = []
+        dv.ask("I25 question?", lambda why: got.append("yes"), lambda why: got.append("no:" + why), 30.0)
+        pump(0.3)
+        Hh, Ww = dv.w.winfo_height(), dv.w.winfo_width()
+        qy0, qy1 = dv.qbox.winfo_y(), dv.qbox.winfo_y() + dv.qbox.winfo_height()
+        yb, nb, tb = dv.q_yes, dv.q_no, dv.qtime
+        low = qy0 > 0.5 * Hh and qy1 <= dv.layout.rects["bottom"][1] * Hh + 1
+        vert = yb.winfo_y() + yb.winfo_height() <= nb.winfo_y() and nb.winfo_y() + nb.winfo_height() <= tb.winfo_y() \
+            and yb.winfo_width() >= 0.8 * dv.qbox.winfo_width() and abs(yb.winfo_width() - nb.winfo_width()) <= 2
+        pre_yes = dv.qsel and yb.cget("bg") == A.theme.C["btn_ok"] and nb.cget("bg") != A.theme.C["btn_no"]
+        fj.d[0]["buttons"] = 1                                 # the trigger inside the 0.5 s guard (0.3 s shown)
+        pump(0.15)
+        early_none = not got and dv.question is not None
+        early_pkt = app.rjoy_source()["trigger"]               # never to the boat while the question is open
+        fj.d[0]["buttons"] = 0
+        pump(0.3)
+        fj.d[0]["axes"]["Y"] = 0.8                             # stick pulled back (inverted axis): NO selected
+        pump(0.2)
+        no_sel = not dv.qsel and nb.cget("bg") == A.theme.C["btn_no"]
+        fj.d[0]["axes"]["Y"] = 0.0
+        pump(0.15)
+        fj.d[0]["axes"]["Y"] = -0.8                            # forward again: YES
+        pump(0.15)
+        yes_again = dv.qsel
+        fj.d[0]["axes"]["Y"] = 0.0
+        fj.d[0]["buttons"] = 1                                 # a fresh press after 0.5 s: ACCEPT
+        pump(0.2)
+        accepted = got == ["yes"] and dv.question is None
+        held_pkt = app.rjoy_source()["trigger"]                # still held after the answer: kept from the boat
+        fj.d[0]["buttons"] = 0
+        pump(0.15)
+        app.rjoy_source()
+        fj.d[0]["buttons"] = 1
+        free_pkt = app.rjoy_source()["trigger"]                # a new press, no question: to the boat (13q3)
+        fj.d[0]["buttons"] = 0
+        app.rjoy_source()
+        pump(0.1)
+        dv.ask("I25 second?", lambda why: got.append("yes2"), lambda why: got.append("no2:" + why), 30.0)
+        pump(0.6)
+        fj.d[0]["buttons"] = 2                                 # the thumb: REJECT
+        pump(0.2)
+        fj.d[0]["buttons"] = 0
+        thumb = got[-1:] == ["no2:rejected on the joystick"]
+        dv.ask("I25 mouse?", lambda why: got.append("yes3"), lambda why: got.append("no3"), 30.0)
+        pump(0.1)
+        dv.q_no.invoke()
+        mouse = got[-1:] == ["no3"]
+        cc = []
+        app.captain_confirm("I25 own action", lambda: cc.append("sent"))
+        pump(0.6)
+        fj.d[0]["buttons"] = 1
+        pump(0.2)
+        fj.d[0]["buttons"] = 0
+        pump(0.1)
+        cc_ok = cc == ["sent"] and app.cconf is None
+        app.sj, app.sj_cfg = real_sj, real_cfg
+        report("I25 YES / NO on screen 1 (13p): lower part, vertical (YES / NO full width, countdown below), YES "
+               "pre-selected; trigger only after 0.5 s, stick Y selects, thumb REJECT, the answering trigger never sent "
+               "to the boat; mouse + single-operator confirmation",
+               low and vert and pre_yes and early_none and not early_pkt and no_sel and yes_again and accepted and
+               not held_pkt and free_pkt and thumb and mouse and cc_ok and not errors,
+               "box y %d..%d of %d (low %s), vertical %s, YES pre-selected %s; trigger at 0.3 s: none %s, packet %s; "
+               "stick back -> NO %s, forward -> YES %s; trigger -> %s; held packet %s, free press %s; thumb %s; "
+               "mouse %s; own confirmation %s" % (qy0, qy1, Hh, low, vert, pre_yes, early_none, early_pkt, no_sel,
+                                                  yes_again, got, held_pkt, free_pkt, thumb, mouse, cc))
 
         # I10 full-screen camera, every text inside its box in both languages, sizes
         import settings

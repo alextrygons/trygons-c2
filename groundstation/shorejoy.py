@@ -7,16 +7,25 @@ joystick API (winmm, nothing to install). Linux: /dev/input/js*.
 shore_joystick.json (next to app.py, written by the ground station):
   {"steer": {"dev": 0, "axis": "X", "invert": false},
    "thr":   {"dev": 1, "axis": "Z", "invert": true, "lever": true},
-   "save_button": {"dev": 0, "button": 3},
+   "save_button": {"dev": 0, "button": 4},
    "confirm_button": {"dev": 1, "button": 4},
-   "trigger_button": {"dev": 0, "button": 1}}
+   "trigger_button": {"dev": 0, "button": 1},
+   "reject_button": {"dev": 0, "button": 2},
+   "hat": {"dev": 0, "axis_num": 5}}
 "confirm_button": the captain's CONFIRM (UNCREWED boat: power raise, AUTO / REMOTE /
-MANEUVER start are confirmed here instead of on the onboard joystick).
+MANEUVER start are confirmed here instead of on the onboard joystick) - unchanged by step 13p.
+Step 13p (owner 2026-10-31 D): the YES / NO questions of this station (screen 1, the single operator's own
+confirmation) are answered on the stick too - the TRIGGER = ACCEPT the selected answer (YES pre-selected; the
+question shown >= 0.5 s, a fresh press), the thumb button ("reject_button") = a quick REJECT, the stick Y (> 40 %
+from the centre, a fresh move; only at a lever station and only in STANDBY / AUTO / HDG LOCK / DP) or the hat
+("hat": Windows = the device's POV hat, Linux = /dev/input/js raw axis "axis_num", up = -1) up = YES / down = NO.
+groundstation/yesno.py decides; a trigger press that answers a question is never also sent to the boat.
 "trigger_button": the stick's TRIGGER (step 13q3): in UNCREWED HDG LOCK, pressed while steering by hand
 with the stick (no request pending) = the boat's current heading becomes the locked heading. It must be
 a button of its own: mapped to the CONFIRM or SAVE button it is never sent (step 13q3b: one press never
 does two things; the AURIX also ignores a trigger in the same packet as / within 0.5 s of a CONFIRM).
-"save_button": video SAVE on the gateway (works any time, not only while driving).
+"save_button": video SAVE on the gateway (works any time, not only while driving); stick button 4 (owner 2026-10-31
+D; older files keep their own setting).
 "lever": true = non-returning throttle lever (TWCS, 0 back .. 1 forward);
 false = spring-centred stick Y (-1 .. +1).
 "stick_y" (optional, step 13q5): the spring-centred stick's Y axis, sent as "y" BESIDE the lever (default: the
@@ -45,9 +54,11 @@ AXES = ["X", "Y", "Z", "R", "U", "V"]
 CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shore_joystick.json")
 DEFAULT = {"steer": {"dev": 0, "axis": "X", "invert": False},
            "thr": {"dev": 1, "axis": "Z", "invert": True, "lever": True},
-           "save_button": {"dev": 0, "button": 3},
+           "save_button": {"dev": 0, "button": 4},
            "confirm_button": {"dev": 1, "button": 4},
-           "trigger_button": {"dev": 0, "button": 1}}
+           "trigger_button": {"dev": 0, "button": 1},
+           "reject_button": {"dev": 0, "button": 2},
+           "hat": {"dev": 0, "axis_num": 5}}
 
 
 # --- reading ---------------------------------------------------------------------------
@@ -98,7 +109,7 @@ class Joysticks:
         ji.dwSize = ctypes.sizeof(ji)
         ji.dwFlags = 0xFF                                   # JOY_RETURNALL
         if self.mm.joyGetPosEx(dev, ctypes.byref(ji)) != 0:
-            return {"ok": False, "axes": {}, "buttons": 0}
+            return {"ok": False, "axes": {}, "buttons": 0, "pov": None}
         c = self.caps.get(dev)
         raw = {"X": ji.dwXpos, "Y": ji.dwYpos, "Z": ji.dwZpos, "R": ji.dwRpos, "U": ji.dwUpos, "V": ji.dwVpos}
         rng = {"X": (c.wXmin, c.wXmax), "Y": (c.wYmin, c.wYmax), "Z": (c.wZmin, c.wZmax), "R": (c.wRmin, c.wRmax),
@@ -107,7 +118,8 @@ class Joysticks:
         for k, v in raw.items():
             lo, hi = rng[k]
             axes[k] = (2.0 * (v - lo) / (hi - lo) - 1.0) if hi > lo else 0.0
-        return {"ok": True, "axes": axes, "buttons": ji.dwButtons}
+        # the POV hat: hundredths of a degree clockwise from up, 65535 = centred (JOY_POVCENTERED)
+        return {"ok": True, "axes": axes, "buttons": ji.dwButtons, "pov": None if ji.dwPOV > 36000 else ji.dwPOV}
 
     def read(self, dev):
         if self.win:
@@ -126,6 +138,7 @@ class LinuxJs:
         import struct as _st
         self.st = _st
         self.axes = {}
+        self.raw = {}                   # every axis by its number (the hat's axes come after the stick's)
         self.buttons = 0
         self.ok = False
         try:
@@ -143,6 +156,8 @@ class LinuxJs:
                     break
                 _t, value, typ, num = self.st.unpack("<IhBB", ev)
                 typ &= 0x7F                                   # without the "initial state" bit
+                if typ == 2:
+                    self.raw[num] = value / 32767.0
                 if typ == 2 and num < len(AXES):
                     self.axes[AXES[num]] = value / 32767.0
                 elif typ == 1 and num < 32:
@@ -152,7 +167,7 @@ class LinuxJs:
         self.ok = False
 
     def read(self):
-        return {"ok": self.ok, "axes": dict(self.axes), "buttons": self.buttons}
+        return {"ok": self.ok, "axes": dict(self.axes), "buttons": self.buttons, "raw": dict(self.raw)}
 
 
 def load_config():
@@ -174,10 +189,59 @@ def _same_button(a, b):
 
 
 def trigger_conflict(cfg):
-    """True when the trigger is mapped to the CONFIRM or the SAVE button (step 13q3b, review LOW-2: one press never
-    does two things) - such a trigger is never sent; the Remote tab says so."""
+    """True when the trigger is mapped to the CONFIRM, the SAVE or the REJECT button (step 13q3b, review LOW-2 / 13p:
+    one press never does two things) - such a trigger is never sent and never answers; the Remote tab says so."""
     t = cfg.get("trigger_button")
-    return _same_button(t, cfg.get("confirm_button")) or _same_button(t, cfg.get("save_button"))
+    return any(_same_button(t, cfg.get(k)) for k in ("confirm_button", "save_button", "reject_button"))
+
+
+def reject_conflict(cfg):
+    """True when the REJECT (thumb) button shares the CONFIRM or the SAVE button (step 13p): it is then not used."""
+    r = cfg.get("reject_button")
+    return any(_same_button(r, cfg.get(k)) for k in ("confirm_button", "save_button", "trigger_button"))
+
+
+def _button(js, b):
+    if not b:
+        return False
+    r = js.read(b["dev"])
+    return bool(r["ok"] and r["buttons"] & (1 << (b["button"] - 1)))
+
+
+def hat_of(js, cfg):
+    """The hat up (+1, = YES) / down (-1, = NO) / centred or not fitted (0)."""
+    h = cfg.get("hat")
+    if not h:
+        return 0
+    r = js.read(h["dev"])
+    if not r.get("ok"):
+        return 0
+    pov = r.get("pov")
+    if pov is not None:                             # Windows: degrees x 100 clockwise from up
+        return 1 if (pov >= 31500 or pov <= 4500) else -1 if 13500 <= pov <= 22500 else 0
+    v = (r.get("raw") or {}).get(h.get("axis_num", 5))
+    if not _finite(v):
+        return 0
+    return 1 if v < -0.5 else -1 if v > 0.5 else 0  # Linux js: up = negative
+
+
+def controls(js, cfg):
+    """The answer controls of this station's stick (step 13p, owner 2026-10-31 D) for yesno.Selector: {"trigger",
+    "reject", "hat", "y" (the spring-centred stick's forward + / back -, None = can't be read), "lever" (this station
+    drives with a lever: the stick Y is free for the YES / NO selection)}. A button sharing another one's mapping is
+    never used for an answer (one press never does two things)."""
+    s = cfg["steer"]
+    lever = bool(cfg["thr"].get("lever", True))
+    y = None
+    if lever:
+        sy = cfg.get("stick_y") or {"dev": s["dev"], "axis": "Y", "invert": True}
+        r = js.read(sy["dev"])
+        if r.get("ok"):
+            v = r["axes"].get(sy.get("axis", "Y"), 0.0) * (-1 if sy.get("invert", True) else 1)
+            y = max(-1.0, min(1.0, v)) if _finite(v) else None
+    return {"trigger": False if trigger_conflict(cfg) else _button(js, cfg.get("trigger_button")),
+            "reject": False if reject_conflict(cfg) else _button(js, cfg.get("reject_button")),
+            "hat": hat_of(js, cfg), "y": y, "lever": lever}
 
 
 def _finite(v):

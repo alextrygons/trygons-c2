@@ -445,6 +445,7 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "co") == 0) { sb_confirm_only_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "ov") == 0) { sb_override_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "mv") == 0) { sb_maneuver_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "sy") == 0) { sb_stick_y_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "dr") == 0) { sb_dr_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "p4") == 0) { sb_phase4_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "p5") == 0) {
