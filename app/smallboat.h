@@ -443,7 +443,7 @@ typedef struct {
      * does every shift (idle -> neutral -> gear, F <-> R always through N with its dwell). */
     uint8_t  mv_ask;            /* gear_t asked by the stick now (GEAR_N / F / R) */
     uint8_t  mv_zone;           /* 0 between, 1 full forward, 2 full back (this step's packet) */
-    uint32_t mv_since_ms;       /* the packet that began the zone (rx_ms; the hold counts from here) */
+    uint32_t mv_since_ms;       /* the packet that began the zone (its SEND time rx_ms - age_ms, 13q5c; the hold counts from here) */
     uint32_t mv_asks_f, mv_asks_r, mv_short;   /* F / R asks taken; full deflections let go before the hold */
 } sb_remote_t;
 

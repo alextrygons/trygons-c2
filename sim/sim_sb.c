@@ -6271,6 +6271,8 @@ static void mv_run(sbsim_t *x, rjsim_t *r, mvrun_t *m, uint32_t ms, gear_t watch
     }
 }
 
+static void rq_boat(sbsim_t *x, rjsim_t *r, uint32_t seed, bool crewed);   /* (below: the RQ tests) */
+
 static void maneuver_gear_tests(void)
 {
     char d[900];
@@ -6467,6 +6469,97 @@ static void maneuver_gear_tests(void)
                  nothing ? "yes" : "NO", thr_max);
         test_report("MV8 (13q5) the stick Y: refused MANEUVER start when held; nothing in REMOTE with a lever",
                     held == PROTO_R_NOT_CENTERED && none && rem == PROTO_R_OK && nothing && thr_max <= 0.01f, d);
+    }
+
+    /* MV9 (step 13q5c, review MED-1) the hold is timed on the packets' SEND time: a 50 ms forward flick whose second
+     * packet is delayed 250 ms (it arrives 300 ms after the first, age 250 ms - inside both freshness limits) asks
+     * NOTHING (on arrival times it read as a 300 ms hold = FORWARD at idle); a real hold with jittering packet ages
+     * (20 / 140 ms) still asks FORWARD, not before 0.3 s of send time */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        mvrun_t m = { 0.0f, 0, false, GEAR_N, 0u };
+        bool in = mv_enter(&x, &r, 1308u, true);
+        uint32_t f0 = x.sb.remote.mv_asks_f;
+        r.age_ms = 10u;
+        r.y = 1.0f;                                              /* packet 1: full forward (sent at t) */
+        mv_run(&x, &r, &m, AP_PERIOD_MS, GEAR_F);
+        uint32_t rx1 = x.sb.remote.rx_ms;
+        r.rj_on = false;                                         /* packet 2 (sent at t + 50, still full) held back */
+        mv_run(&x, &r, &m, 4u * AP_PERIOD_MS, GEAR_F);       /* (with the arrival step: 300 ms) */
+        r.rj_on = true;
+        r.age_ms = 250u;                                         /* ... arrives 300 ms after packet 1, age 250 ms */
+        mv_run(&x, &r, &m, AP_PERIOD_MS, GEAR_F);
+        uint32_t gap = x.sb.remote.rx_ms - rx1;                  /* (>= 0.3 s: on arrival times = a "hold") */
+        bool driving = x.sb.remote.state == SB_REMOTE_DRIVING && sb_mode(&x.sb) == MODE_MANEUVER &&
+                       x.sb.remote.age_ms == 250u && gap >= SB_MNV_HOLD_MS;
+        r.age_ms = 10u;
+        r.y = 0.0f;                                              /* the stick was let go at t + 50 */
+        mv_run(&x, &r, &m, 2000u, GEAR_F);
+        bool flick = m.watch_t == 0u && x.sb.remote.mv_asks_f == f0 && gear_is(&x.sb.gear, GEAR_N);
+        /* a real hold, the packet ages jittering 20 / 140 ms */
+        uint32_t t0 = x.t, held = 0u;
+        int k = 0;
+        r.y = 1.0f;
+        m.watch_t = 0u;
+        while (x.t < t0 + 3000u) {
+            r.age_ms = (k++ % 2) ? 140u : 20u;
+            mv_run(&x, &r, &m, AP_PERIOD_MS, GEAR_F);
+        }
+        held = m.watch_t ? m.watch_t - t0 : 0u;
+        bool fwd = m.watch_t != 0u && x.sb.remote.mv_asks_f == f0 + 1u && driving;
+        r.y = 0.0f;
+        r.age_ms = 60u;
+        mv_run(&x, &r, &m, 3000u, GEAR_R);
+        bool n = gear_is(&x.sb.gear, GEAR_N);
+        crew_plug();
+        snprintf(d, sizeof d, "MANEUVER %s; 50 ms flick + a 250 ms late second packet (arrives %u ms after the first, still DRIVING %s): nothing asked %s "
+                 "(F asks %u); a real hold with ages 20 / 140 ms: FORWARD asked %s after %u ms on arrival (>= %u - 120 "
+                 "jitter); let go: N %s; highest throttle %.2f %%", in ? "yes" : "NO", (unsigned)gap, driving ? "yes" : "NO",
+                 flick ? "yes" : "NO", (unsigned)(x.sb.remote.mv_asks_f - f0), fwd ? "yes" : "NO", (unsigned)held,
+                 (unsigned)SB_MNV_HOLD_MS, n ? "yes" : "NO", m.thr_max);
+        test_report("MV9 (13q5c MED-1) MANEUVER gear hold on SEND time: a flick with a delayed packet asks nothing; "
+                    "jittering ages still ask after 0.3 s",
+                    in && driving && flick && fwd && held + 120u >= SB_MNV_HOLD_MS &&
+                    held <= SB_MNV_HOLD_MS + 120u + 3u * AP_PERIOD_MS && n && m.thr_max <= 0.01f, d);
+    }
+
+    /* MV10 (step 13q5c, review LOW-3) MANEUVER entered from REMOTE while a gear shift F -> N is half done (the gear
+     * still waits for idle: gear.current F): before the first MANEUVER packet the gear asks NEUTRAL - never the old
+     * gear back (gear.current) - and the shift finishes in N through the gear state machine */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        const uint8_t ASK = 0u;
+        rq_boat(&x, &r, 1309u, false);
+        uint8_t a = pi_cmd(&x, &r.p, 2u, false, PROTO_T_REMOTE, &ASK, 1u);
+        rj_lever(&x, &r, 0.9f, 1.0f);
+        sbsim_run(&x, x.t + 6000u, rj_hook, &r);
+        bool f = sb_mode(&x.sb) == MODE_REMOTE && gear_is(&x.sb.gear, GEAR_F);
+        rj_lever(&x, &r, 0.5f, 4.0f);                            /* lever to neutral: the shift F -> N begins */
+        for (int i = 0; i < 80 && !(x.sb.gear.target == GEAR_N && x.sb.gear.current == GEAR_F); i++)
+            sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);    /* (once the throttle is idle: N asked, F still in) */
+        bool half = x.sb.gear.current == GEAR_F && x.sb.gear.target == GEAR_N && !gear_is(&x.sb.gear, GEAR_F);
+        uint8_t mv = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);   /* (200 ms, no shore packet yet) */
+        bool in = sb_mode(&x.sb) == MODE_MANEUVER;
+        bool nopkt = !x.sb.remote.have;
+        gear_t tgt = x.sb.gear.target, dem = x.sb.gear_demand;
+        bool f_again = false;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 4000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, rj_hook, &r);
+            if (x.sb.gear.target != GEAR_N) f_again = true;
+        }
+        bool n = gear_is(&x.sb.gear, GEAR_N) && sb_mode(&x.sb) == MODE_MANEUVER;
+        crew_plug();
+        snprintf(d, sizeof d, "REMOTE %u in F %s; lever to neutral: half-done shift (current F, target N) %s; MANEUVER %u -> "
+                 "%s, no packet yet %s: demand %s, gear target %s (N); target not N later %s; N at the end %s", a,
+                 f ? "yes" : "NO", half ? "yes" : "NO", mv, in ? "yes" : "NO", nopkt ? "yes" : "NO", gear_name(dem),
+                 gear_name(tgt), f_again ? "YES" : "no", n ? "yes" : "NO");
+        test_report("MV10 (13q5c LOW-3) MANEUVER before its first packet asks N: a half-done shift from REMOTE is never "
+                    "turned back to the old gear",
+                    a == PROTO_R_OK && f && half && mv == PROTO_R_OK && in && nopkt && dem == GEAR_N && tgt == GEAR_N &&
+                    !f_again && n, d);
     }
 }
 
@@ -17152,6 +17245,53 @@ static void shore_hdg_tests(void)
                     "starts in N at idle, the lever never opens a forward gear",
                     mf && ok == PROTO_R_OK && hl && hg == (uint8_t)GEAR_N && md <= 0.0f && mo <= 0.01f && !f_seen &&
                     n_end, d);
+    }
+
+    /* UH12 (step 13q5c, review LOW-1) a STICK-Y station (no lever) in MANEUVER, the stick Y held full forward (gear F):
+     * UNCREWED HDG LOCK is refused NOT CENTRED (from MANEUVER the stick Y is the gear: it must be centred at every
+     * station, CLAUDE.md C); centred = HDG LOCK, held gear N, never a forward gear */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        static uhsim_t u;
+        rq_boat(&x, &r, 1720u, false);
+        r.has_lever = false;
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        memset(&u, 0, sizeof u);
+        u.r = &r;
+        u.n.lease = 3000u;
+        u.n.cap = -1.0f;
+        u.nav_on = true;
+        uh_shore(&r, SB_SHORE_VALID, 1500u);
+        uint8_t a = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        r.y = 1.0f;
+        uh_run(&x, &u, 6000u);
+        bool mf = sb_mode(&x.sb) == MODE_MANEUVER && gear_is(&x.sb.gear, GEAR_F) && !x.sb.remote.has_lever;
+        uint8_t held = uh_lock(&x, &r);                                /* stick Y held: refused */
+        bool still = sb_mode(&x.sb) == MODE_MANEUVER;
+        r.y = 0.0f;
+        uh_run(&x, &u, 300u);
+        for (int i = 0; i < 80 && !gear_is(&x.sb.gear, GEAR_N); i++) uh_run(&x, &u, AP_PERIOD_MS);   /* (F -> N: a settled gear) */
+        uint8_t ok = uh_lock(&x, &r);
+        bool hl = sb_mode(&x.sb) == MODE_HDG_LOCK && sb_shore_hdg(&x.sb) && x.sb.shdg.hold_gear == GEAR_N;
+        bool f_dem = false;
+        float mo = 0.0f;
+        uint32_t t0 = x.t;
+        while (x.t < t0 + 5000u) {
+            sbsim_run(&x, x.t + AP_PERIOD_MS, uh_hook, &u);
+            if (x.sb.gear_demand == GEAR_F) f_dem = true;
+            mo = fmaxf(mo, x.sb.thr.out_pct);
+        }
+        bool n_end = gear_is(&x.sb.gear, GEAR_N) && sb_mode(&x.sb) == MODE_HDG_LOCK;
+        crew_plug();
+        snprintf(d, sizeof d, "stick-Y station MANEUVER %u in F %s; HDG LOCK with the stick Y held: %u (8), still MANEUVER "
+                 "%s; centred: %u -> HDG LOCK held N %s; F demand after %s, highest throttle %.2f %%, N at the end %s",
+                 a, mf ? "yes" : "NO", held, still ? "yes" : "NO", ok, hl ? "yes" : "NO", f_dem ? "YES" : "no", mo,
+                 n_end ? "yes" : "NO");
+        test_report("UH12 (13q5c LOW-1) MANEUVER -> UNCREWED HDG LOCK at a stick-Y station needs the stick Y centred; "
+                    "starts in N",
+                    a == PROTO_R_OK && mf && held == PROTO_R_NOT_CENTERED && still && ok == PROTO_R_OK && hl && !f_dem &&
+                    mo <= 0.01f && n_end, d);
     }
 
     /* UH7 a reset (the chip restarts) in UNCREWED HDG LOCK: STANDBY, the held throttle gone - nothing comes back by

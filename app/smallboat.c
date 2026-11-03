@@ -1852,30 +1852,37 @@ static float remote_steer(sb_t *s, float dt)
  * lever is not used in MANEUVER; the station sends the stick Y beside it). Full forward held SB_MNV_HOLD_MS =
  * FORWARD, full back held = REVERSE, centre (spring-centred: let go) = NEUTRAL at once, the stick the other way
  * than the asked gear = NEUTRAL at once (then its own hold for the new gear). A short flick asks nothing; the hold
- * counts between packets (the newest still full >= 0.3 s after the first), never on old data. The
+ * counts between packets (the newest still full >= 0.3 s after the first, by their SEND times - 13q5c), never on old data. The
  * gear state machine keeps every gear rule (shift only at idle, F <-> R through N with its dwell). Called only
  * with fresh data (the watchdog above: stale = LOST = neutral). */
 static void maneuver_gear(sb_t *s)
 {
     sb_remote_t *r = &s->remote;
-    if (!r->have) {                                    /* no data of this session yet: no gear change for nothing */
-        s->gear_demand = s->gear.current;
+    if (!r->have) {
+        /* step 13q5c (review LOW-3): no data of this session yet = NEUTRAL (the throttle is idle here). Never
+         * gear.current: a half-done shift from REMOTE (gear.current still the old gear while it waits for idle) would
+         * be turned back to the old gear; N goes through the gear state machine (idle -> neutral) like every ask */
+        s->gear_demand = GEAR_N;
         return;
     }
     float y = r->y, db = s->joy.cfg.deadband;
     if (!isfinite(y)) y = 0.0f;                        /* (never: clamped on input) not a number = centre */
     uint8_t zone = (y >= SB_MNV_Y_FULL) ? 1u : (y <= -SB_MNV_Y_FULL) ? 2u : 0u;
+    /* step 13q5c (review MED-1): the hold is timed on the packets' SEND time (arrival - the gateway's data age), never
+     * on the arrival: a 50 ms flick whose second packet is delayed 250 ms (arrives 300 ms after the first, still
+     * inside the freshness limits) is a 50 ms hold, not a 300 ms one */
+    uint32_t sent = r->rx_ms - (uint32_t)r->age_ms;
     if (zone != r->mv_zone) {
         /* a full deflection let go before its hold asked the gear = a flick (counted, nothing asked) */
         if (r->mv_zone != 0u && !(r->mv_zone == 1u ? r->mv_ask == GEAR_F : r->mv_ask == GEAR_R)) r->mv_short++;
         r->mv_zone = zone;
-        r->mv_since_ms = r->rx_ms;                     /* the packet that showed it */
+        r->mv_since_ms = sent;                         /* the packet that showed it (its SEND time) */
     }
     if (fabsf(y) <= db) r->mv_ask = GEAR_N;                                    /* centred / let go */
     else if ((r->mv_ask == GEAR_F && y < 0.0f) || (r->mv_ask == GEAR_R && y > 0.0f)) r->mv_ask = GEAR_N;
     /* the hold counts between PACKETS (the newest one still full that way, >= 0.3 s after the first): never on
      * the last packet getting older while the data stops (the watchdog takes that: LOST = neutral) */
-    if (zone != 0u && r->rx_ms - r->mv_since_ms >= SB_MNV_HOLD_MS) {
+    if (zone != 0u && (int32_t)(sent - r->mv_since_ms) >= (int32_t)SB_MNV_HOLD_MS) {   /* (signed: age jitter) */
         uint8_t want = (zone == 1u) ? (uint8_t)GEAR_F : (uint8_t)GEAR_R;
         if (r->mv_ask != want) {
             if (want == GEAR_F) r->mv_asks_f++;
@@ -2052,9 +2059,12 @@ sb_result_t sb_hdg_lock_shore(sb_t *s, uint8_t station)
     if (station < 2u || station != s->helm || station != r->station) return SB_ERR_NOT_ALLOWED;
     if (r->state != SB_REMOTE_DRIVING) return SB_ERR_PRECOND;        /* the data was lost: STANDBY follows */
     if (!r->have || !shore_ready(s) || s->now_ms - r->rx_ms > s->cfg.remote_max_age_ms) return SB_ERR_JOY_NOT_READY;
-    /* the stick centred (X; and Y with a lever - without one Y is the throttle being held); the lever is not
-     * checked: it becomes the ceiling */
-    if (!(fabsf(r->x) < tol) || (r->has_lever && !(fabsf(r->y) < tol))) return SB_ERR_NOT_CENTERED;
+    /* the stick centred (X; and Y with a lever - without one Y is the throttle being held in REMOTE); the lever is
+     * not checked: it becomes the ceiling */
+    /* step 13q5c (review LOW-1): from MANEUVER the stick Y is the gear (CLAUDE.md C: "the stick centred = ALWAYS starts
+     * in N"), so it must be centred there at a stick-Y station too */
+    bool y_checked = r->has_lever || sb_mode(s) == MODE_MANEUVER;
+    if (!(fabsf(r->x) < tol) || (y_checked && !(fabsf(r->y) < tol))) return SB_ERR_NOT_CENTERED;
     if (!sb_compass_ok(s) || gear_fault(&s->gear)) return SB_ERR_PRECOND;
     /* a settled gear F or N (not reverse, not shifting): the held gear never changes except to N */
     if (!(gear_is(&s->gear, GEAR_F) || gear_is(&s->gear, GEAR_N)) || s->gear_demand == GEAR_R) return SB_ERR_PRECOND;

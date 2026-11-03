@@ -30,7 +30,9 @@
  * power-raise draws: ACCEPT / REJECT) restores it; invariant I77.
  * Step 13q5: the MANEUVER gear on the shore stick Y (full forward / back held 0.3 s = F / R, centre = N; the lever is
  * not used there): the storm's shore stick sends a Y (E_MNV_Y after MANEUVER requests: full / part / flicks /
- * centre); invariant I78.
+ * centre); invariant I78. Step 13q5c: in MANEUVER the shore packets carry a jittering data age (20-139 ms) and some
+ * flicks / holds have one packet delayed ~200 ms (it arrives with its true age: I78 times the hold on the SEND
+ * time); some E_SHDG commands from MANEUVER come from a stick-Y station packet (no lever); invariant I79.
  * Step 13q2e: the storm's gateway sends its "no danger" navigation request at 2 Hz (like nav_loop) while an
  * UNCREWED boat is in REMOTE / MANEUVER / HDG LOCK; E_NAVBEAT stops it for a while (nav_compose broken / frames
  * lost on the UART) and some shore reports say 40 m; invariant I70 (lapsed / never lease, the shore within the stop
@@ -410,7 +412,7 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
             }
             /* step 13q5 (I78): after a MANEUVER request the captain works the gear with the stick Y: forward (or a
              * flick), back (or part), then centre (no rng draw: the other draws stay what they were) */
-            if (k == E_MAN_REQ && s->n + 3 < MAX_EV) {
+            if (k == E_MAN_REQ && s->n + 5 < MAX_EV) {
                 static const int32_t A1[4] = { 300, 900, 300, 600 }, A2[3] = { 600, 750, 900 };
                 ev_t *y1 = &s->ev[s->n++];
                 memset(y1, 0, sizeof *y1);
@@ -420,6 +422,20 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                 y1->b = eb;
                 y1->f = (eb % 2) ? 0.5f : -0.5f;
                 s->on[s->n - 1] = true;
+                /* step 13q5c (I79): UNCREWED, sometimes the captain's HDG LOCK comes 0.6 s into the first stick-Y
+                 * event, the stick where it is (held = refused NOT CENTRED, also after a stick-Y station packet; a
+                 * flick let go = HDG LOCK from MANEUVER, in N) - no rng draw */
+                if (s->uncrewed && (ea + ec) % 3 != 0) {
+                    ev_t *h0 = &s->ev[s->n++];
+                    memset(h0, 0, sizeof *h0);
+                    h0->t = y1->t + 600u;
+                    h0->kind = E_SHDG;
+                    h0->a = ea;
+                    h0->b = 700 + eb % 300;                        /* (b >= 700: the stick is not centred by it) */
+                    h0->c = 500 + ec % 500;                        /* (c >= 500: the lever stays; c odd = stick-Y) */
+                    h0->g = 0.0f;
+                    s->on[s->n - 1] = true;
+                }
                 ev_t *y2 = &s->ev[s->n++];
                 memset(y2, 0, sizeof *y2);
                 y2->t = y1->t + 2500u + (uint32_t)(eb % 5) * 400u;
@@ -428,6 +444,19 @@ static void gen_schedule(sched_t *s, uint32_t seed, uint32_t dur_ms)
                 y2->b = ec;
                 y2->f = (ec % 2) ? 0.6f : -0.6f;
                 s->on[s->n - 1] = true;
+                /* ... and 1.5 s into the second (a part deflection keeps the asked gear settled: the stick Y is NOT
+                 * centred there - refused NOT CENTRED, also after a stick-Y station packet) */
+                if (s->uncrewed && (ea + eb) % 2 == 0) {
+                    ev_t *h1 = &s->ev[s->n++];
+                    memset(h1, 0, sizeof *h1);
+                    h1->t = y2->t + 1500u;
+                    h1->kind = E_SHDG;
+                    h1->a = eb;
+                    h1->b = 700 + ec % 300;
+                    h1->c = 501 + 2 * (ea % 249);                  /* (odd: a stick-Y station packet) */
+                    h1->g = 0.0f;
+                    s->on[s->n - 1] = true;
+                }
                 ev_t *y3 = &s->ev[s->n++];
                 memset(y3, 0, sizeof *y3);
                 y3->t = y2->t + 2000u + (uint32_t)(ec % 4) * 500u;
@@ -586,6 +615,10 @@ typedef struct {
     float       rx_x, rx_lever;
     float       rx_y;                    /* step 13q5: the shore stick Y (MANEUVER gear; beside the lever) */
     uint32_t    rx_y_until;              /* a flick: back to the centre then (0 = none) */
+    uint32_t    mvd_t0, mvd_until;       /* step 13q5c: a MANEUVER packet held back from t0, it arrives at until (0 = none) */
+    bool        mvd_saved;
+    float       mvd_y;                   /* ... the stick Y it carries, sent at mvd_sent */
+    uint32_t    mvd_sent;
     uint32_t    inj_kind, inj_until;
     uint32_t    nav_seq;
     uint32_t    sched_seed;
@@ -839,7 +872,7 @@ static void prog_random(int n, uint32_t *r)
 }
 
 /* --------------------------------------------------------- invariants -- */
-#define NINV 79
+#define NINV 80
 static const char *INV_NAMES[NINV] = { "",
     "I1  throttle never above the power limit (except coming down at the closing rate) / remote cap",
     "I2  after power-up / reset the power limit is 30 % fwd / 5 % rev",
@@ -915,7 +948,8 @@ static const char *INV_NAMES[NINV] = { "",
     "I75 UNCREWED AUTO steered by hand (13q3b): shore data bad / the navreq lease gone / the shore within the stop distance = idle + neutral for the rest of that AUTO",
     "I76 a HELM change ends a running shore stick override within one step (13q3b)",
     "I77 the slamming cap rises only after the HELM station's ACCEPT, never faster than the throttle up rate (13q4)",
-    "I78 MANEUVER gear (13q5): FORWARD / REVERSE asked only after the shore stick Y held full that way >= 0.3 s on taken packets; centre / the other way = NEUTRAL" };
+    "I78 MANEUVER gear (13q5): FORWARD / REVERSE asked only after the shore stick Y held full that way >= 0.3 s on taken packets (by their SEND time, 13q5c); centre / the other way = NEUTRAL",
+    "I79 UNCREWED HDG LOCK entered from MANEUVER (13q5c): only with the stick Y centred (also at a stick-Y station), held gear N, never a FORWARD demand in it" };
 
 typedef struct {
     uint32_t checks[NINV], fails[NINV];
@@ -935,6 +969,7 @@ typedef struct {
     uint32_t ov_stop_steps, ov_helm;                                  /* step 13q3b (I75 / I76) */
     uint32_t slam_acc, slam_rej, slam_refused, slam_rises, slam_asks; /* step 13q4 (I77) */
     uint32_t mv_y, mv_asks, mv_n_checks;                             /* step 13q5 (I78) */
+    uint32_t mv_delayed, mv_jitter, uh_from_mnv, uh_mnv_stick_y;      /* step 13q5c (I78 / I79) */
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
 } stats_t;
@@ -1077,7 +1112,10 @@ typedef struct {
     float    sent_y;                        /* (13q5: its stick Y) */
     uint16_t mv_seq;                        /* I78 (13q5): the AURIX's last taken packet seq */
     uint8_t  mv_zone;                       /* I78: the full-deflection zone of the taken packets (1 fwd, 2 back) */
-    uint32_t mv_zone_t, mv_pkt_t;           /* I78: the first / newest taken packet in that zone */
+    uint32_t mv_zone_t, mv_pkt_t;           /* I78: the first / newest taken packet in that zone (SEND times, 13q5c) */
+    float    mv_sent_y;                     /* I78 (13q5c): the stick Y of the last packet sent to sb_remote_input */
+    uint32_t mv_sent_t;                     /* ... its send time (S.t - its data age) */
+    bool     uh_from_mnv;                   /* I79 (13q5c): this UNCREWED HDG LOCK was entered from MANEUVER */
     int      mv_dem_prev;                   /* I78: the gear demand after the last step */
     bool     ov_active_prev;                /* I71-I74 (13q3): the shore stick override before this step */
     float    ov_cmd_prev, ov_hdg_prev;
@@ -2013,9 +2051,10 @@ static void check_step(void)
         const sb_remote_t *rr = &s->remote;
         bool taken = rr->have && rr->seq != C.mv_seq;
         if (taken) {
-            uint8_t z = S.rx_y >= SB_MNV_Y_FULL ? 1u : S.rx_y <= -SB_MNV_Y_FULL ? 2u : 0u;
-            if (z != C.mv_zone) { C.mv_zone = z; C.mv_zone_t = S.t; }
-            C.mv_pkt_t = S.t;
+            /* step 13q5c: the packet the AURIX took (its own stick Y + send time - a delayed packet carries an older Y) */
+            uint8_t z = C.mv_sent_y >= SB_MNV_Y_FULL ? 1u : C.mv_sent_y <= -SB_MNV_Y_FULL ? 2u : 0u;
+            if (z != C.mv_zone) { C.mv_zone = z; C.mv_zone_t = C.mv_sent_t; }
+            C.mv_pkt_t = C.mv_sent_t;
         }
         C.mv_seq = rr->seq;
         if (m == MODE_MANEUVER && C.mode_prev == MODE_MANEUVER && rr->state == SB_REMOTE_DRIVING && rr->have &&
@@ -2024,19 +2063,29 @@ static void check_step(void)
             if ((dem == GEAR_F || dem == GEAR_R) && dem != C.mv_dem_prev) {
                 uint8_t want = dem == GEAR_F ? 1u : 2u;
                 ST.mv_asks++;
-                if (C.mv_zone == want && C.mv_pkt_t - C.mv_zone_t + AP_PERIOD_MS >= SB_MNV_HOLD_MS) ok(78);
+                if (C.mv_zone == want && (int32_t)(C.mv_pkt_t - C.mv_zone_t) + (int32_t)AP_PERIOD_MS >= (int32_t)SB_MNV_HOLD_MS) ok(78);
                 else fail(78, "MANEUVER: a gear (1 F, 2 R: %.0f) asked before the stick Y was held full that way for "
                           "0.3 s (held %.0f ms)", (double)want,
-                          C.mv_zone == want ? (double)(C.mv_pkt_t - C.mv_zone_t) : -1.0);
+                          C.mv_zone == want ? (double)(int32_t)(C.mv_pkt_t - C.mv_zone_t) : -1.0);
             }
-            if (taken && (fabsf(S.rx_y) <= 0.14f || (dem == GEAR_F && S.rx_y < 0.0f) || (dem == GEAR_R && S.rx_y > 0.0f))) {
+            float ty = C.mv_sent_y;
+            if (taken && (fabsf(ty) <= 0.14f || (dem == GEAR_F && ty < 0.0f) || (dem == GEAR_R && ty > 0.0f))) {
                 ST.mv_n_checks++;
                 if (dem == GEAR_N) ok(78);
-                else fail(78, "MANEUVER: the stick Y %.2f (centre / the other way) but gear %.0f asked", S.rx_y, (double)dem);
+                else fail(78, "MANEUVER: the stick Y %.2f (centre / the other way) but gear %.0f asked", ty, (double)dem);
             }
         }
         C.mv_dem_prev = (int)s->gear_demand;
     }
+
+    /* I79 (step 13q5c, review LOW-1 / LOW-2): an UNCREWED HDG LOCK entered from MANEUVER holds gear N - never a
+     * FORWARD demand for the whole of it (the throttle was idle: nothing to hold, the lever never opens a gear) */
+    if (sb_shore_hdg(s) && C.uh_from_mnv && !forced && !inj) {
+        if (s->shdg.hold_gear == GEAR_N && s->gear_demand != GEAR_F) ok(79);
+        else fail(79, "UNCREWED HDG LOCK from MANEUVER: held gear %.0f, gear demand %.0f (N = 0, F = 1)",
+                  (double)s->shdg.hold_gear, (double)s->gear_demand);
+    }
+    if (!sb_shore_hdg(s)) C.uh_from_mnv = false;
 
     /* I24 / I25: MANEUVER - throttle always idle, gear changes only at idle */
     if (m == MODE_MANEUVER && !forced && !inj) {
@@ -2521,8 +2570,14 @@ static void apply(const ev_t *e)
         if (S.rem_stream) {
             shore_packet(s);
             if (sb_mode(s) == MODE_REMOTE || sb_mode(s) == MODE_MANEUVER || sb_shore_hdg(s) || sb_shore_auto(s)) {
-                sb_remote_input(s, S.rem_station, ++S.rem_seq, S.rem_stale ? 900u : 40u, 30u, S.rx_x, S.rx_y, S.rx_lever,
-                                true);
+                /* step 13q5c (I79): from MANEUVER some commands come after a stick-Y station packet (no lever: the
+                 * stick Y must still be centred - it is the gear there) */
+                bool stick_y = sb_mode(s) == MODE_MANEUVER && (e->c % 2) == 1;
+                if (stick_y) ST.uh_mnv_stick_y++;
+                uint16_t age = S.rem_stale ? 900u : 40u;
+                sb_remote_input(s, S.rem_station, ++S.rem_seq, age, 30u, S.rx_x, S.rx_y, S.rx_lever, !stick_y);
+                C.mv_sent_y = S.rx_y;
+                C.mv_sent_t = S.t - age;
                 if (!S.rem_stale) C.rem_last_fresh = S.t;
             }
         }
@@ -2547,6 +2602,13 @@ static void apply(const ev_t *e)
             C.uh_gear0 = gp_before;
             C.steered_since_boot = true;                  /* (I56: a mode that steers, entered between two steps) */
             ST.uh_entries++;
+            C.uh_from_mnv = before == MODE_MANEUVER && sb_shore_hdg(s);
+            if (C.uh_from_mnv) {                          /* I79 (13q5c): the stick Y centred at the entry */
+                ST.uh_from_mnv++;
+                if (fabsf(s->remote.y) < s->joy.cfg.center_tol && s->shdg.hold_gear == GEAR_N) ok(79);
+                else fail(79, "UNCREWED HDG LOCK entered from MANEUVER with the stick Y %.2f (lever 1 / stick-Y station 0: "
+                          "%.0f)", s->remote.y, s->remote.has_lever ? 1.0 : 0.0);
+            }
         } else {
             ST.uh_refused++;
             ST.uh_ref_code[(unsigned)rr & 31u]++;
@@ -2796,6 +2858,13 @@ static void apply(const ev_t *e)
             S.rx_y = e->f >= 0.0f ? 1.0f : -1.0f;
             S.rx_y_until = S.t + 50u + (uint32_t)(e->b % 200);
         }
+        /* step 13q5c (I78): a full deflection / flick with one packet delayed ~200 ms two steps after it began (the
+         * packet arrives with its true age; the freshness limits still hold) - no rng draw */
+        if ((e->a >= 250 && e->a < 700 && e->b % 4 == 0) || (e->a >= 800 && e->b % 3 != 0)) {
+            S.mvd_t0 = S.t + 2u * AP_PERIOD_MS;
+            S.mvd_until = S.mvd_t0 + 200u;
+            S.mvd_saved = false;
+        }
         ST.mv_y++;
         break;
     case E_TRIG:
@@ -2963,8 +3032,32 @@ static void run_until(uint32_t until)
                                      sb_shore_hdg(&S.sb) || sb_shore_auto(&S.sb))) {
                     /* (13q2c: the lever ceiling in UNCREWED HDG LOCK; 13q3: the override + ceiling in UNCREWED AUTO) */
                     uint16_t age = S.rem_stale ? 900u : 40u;
-                    sb_remote_input(&S.sb, S.rem_station, ++S.rem_seq, age, 30u, S.rx_x, S.rx_y, S.rx_lever, true);
-                    if (!S.rem_stale) C.rem_last_fresh = S.t;
+                    float py = S.rx_y;
+                    bool send = true;
+                    if (sb_mode(&S.sb) == MODE_MANEUVER && !S.rem_stale) {
+                        /* step 13q5c (I78): the data age jitters 20-139 ms; a held-back packet arrives late with
+                         * its true age and the stick Y of its send time (no rng draw) */
+                        age = (uint16_t)(20u + ((uint32_t)S.rem_seq * 37u) % 120u);
+                        ST.mv_jitter++;
+                        if (S.mvd_t0 && AT_OR_AFTER(S.t, S.mvd_t0)) {
+                            if (!S.mvd_saved) { S.mvd_saved = true; S.mvd_y = S.rx_y; S.mvd_sent = S.t; }
+                            if (!AT_OR_AFTER(S.t, S.mvd_until)) send = false;
+                            else {
+                                py = S.mvd_y;
+                                age = (uint16_t)(S.t - S.mvd_sent);
+                                S.mvd_t0 = 0u;
+                                ST.mv_delayed++;
+                            }
+                        }
+                    } else {
+                        S.mvd_t0 = 0u;                             /* (only in MANEUVER) */
+                    }
+                    if (send) {
+                        sb_remote_input(&S.sb, S.rem_station, ++S.rem_seq, age, 30u, S.rx_x, py, S.rx_lever, true);
+                        C.mv_sent_y = py;
+                        C.mv_sent_t = S.t - age;
+                        if (!S.rem_stale) C.rem_last_fresh = S.t;
+                    }
                 } else if (sb_mode(&S.sb) == MODE_REMOTE && C.rem_last_fresh == 0u) {
                     C.rem_last_fresh = S.t;
                 }
@@ -3173,6 +3266,9 @@ static void report(int episodes, double hours)
            (unsigned long)ST.slam_rises);
     printf("MANEUVER stick gear (step 13q5, I78): %lu stick-Y events, %lu F / R asks checked, %lu centre / other-way "
            "steps checked\n", (unsigned long)ST.mv_y, (unsigned long)ST.mv_asks, (unsigned long)ST.mv_n_checks);
+    printf("MANEUVER packet timing (step 13q5c, I78 / I79): %lu jittered packets, %lu delayed packets; %lu UNCREWED HDG "
+           "LOCK entries from MANEUVER (%lu commands after a stick-Y packet)\n", (unsigned long)ST.mv_jitter,
+           (unsigned long)ST.mv_delayed, (unsigned long)ST.uh_from_mnv, (unsigned long)ST.uh_mnv_stick_y);
     printf("UNCREWED HDG LOCK refused by result code:");
     for (int i = 0; i < 32; i++) if (ST.uh_ref_code[i]) printf(" %d: %lu", i, (unsigned long)ST.uh_ref_code[i]);
     printf("\n");
