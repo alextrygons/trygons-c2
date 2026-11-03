@@ -72,3 +72,15 @@ Owner: "In AUTO I can always drive by hand, except throttle up; to stop AUTO tot
 - "ταχύτητα" alone = SPEED only; gear = «σχέση» everywhere (tour, screens, MANUAL_EL, quizzes, lessons, voice), e.g. «Η σχέση (μπροστά / νεκρό / όπισθεν) αλλάζει μόνο στο ρελαντί» (the tour said «Η ταχύτητα αλλάζει μόνο στο ρελαντί» = wrong meaning).
 - Tour voice sounds "sick" in the first ~2 s of every sentence; the owner checked: the Piper files themselves (groundstation\sound_cache\el\p_*.wav) have it. Fix: lower noise_scale / noise_w, a short lead-in silence, delete + remake all sentences (tour + callouts); option in the sound settings to use the Windows Greek voice (SAPI, e.g. Stefanos, when installed) instead of Piper; 5 sample sentences per option in a folder for the owner to listen and choose.
 - Regenerate the tour voice after all the text changes of 13n / 13p / 13q.
+
+## G. 13r Loudhailer + microphone on the USV (owner 2026-11-02) - gateway + station + PARTS / WIRING; NO AURIX change
+Goal: the shore crew can talk with any contact near the USV (swimmers, fishing boats, coast guard, divers).
+- Hardware (PARTS.md + WIRING.md): marine waterproof horn speaker / loudhailer 25-40 W IP67 + 12 V class-D amplifier; outdoor waterproof microphone with wind protection, mounted away from the engine (or a loudhailer with listen-back through the horn); USB sound card on the GATEWAY PC. Nothing on the AURIX, never in any control path.
+- PUSH-TO-TALK, half duplex: while someone talks the boat mic is muted (no echo / howl). PTT = a framed SCREEN button «ΟΜΙΛΙΑ» (press and hold), in the bottom bar of BOTH screens and on the copilot's station - NOT on the joystick (owner choice). Captain AND copilot can speak, one at a time: the first wins (the gateway decides), the other sees «ΜΙΛΑ: ΚΥΒΕΡΝΗΤΗΣ / ΣΥΓΚΥΒΕΡΝΗΤΗΣ» and a greyed button; the current speaker is shown on every station.
+- LISTEN: the boat mic plays continuously on the station's headset / speakers with mute + volume and a level meter (white, colour code of 13n1).
+- Ready messages (one click, Greek + English, editable list), e.g. «Μη επανδρωμένο σκάφος – κρατηθείτε μακριά» / "Unmanned vessel - keep clear"; sound signals through the speaker (5 short blasts = danger, 1 long), clearly labelled.
+- Link: low-bitrate voice (e.g. Opus 16-24 kbps), priority above the copilot's video, never above the captain's driving data / video; drops first on a weak link with a note; latency shown.
+- Recording: both directions into the gateway ring recording and into SAVE / ⏺5' / ⏺1h events (evidence), on the camera timeline.
+- Safety: audio is its own gateway process; failures = a notice only, never an alarm or a mode change; the demo / simulator has a simulated speaker / mic on this PC (academy + tests). Volume limit setting on the gateway.
+- NO VHF radio (owner 2026-11-02).
+- Tests: PTT one at a time, mic muted while talking, recording in SAVE, link priority, no effect on driving. MANUAL / MANUAL_EL / guided tour.
