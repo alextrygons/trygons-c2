@@ -28,7 +28,7 @@ import socket
 
 from common import deep_merge, log
 import uavlink
-from . import allow, battery, flightlog, gpsassist, hatch, launch, mission, nofly, simhatch, uavai, uavcheck
+from . import allow, battery, flightlog, gpsassist, hatch, launch, mission, nofly, pilot, simhatch, uavai, uavcheck
 from .registry import Registry
 from .usbslots import slot_specs
 
@@ -110,6 +110,8 @@ DEFAULTS = {
     "video": {},                               # VIDEO_DEFAULTS
     "ai": {},                                  # uavai.DEFAULTS
     "telem_s": 0.5,                            # uav_telem to the stations that asked for it (2 Hz)
+    # --- U5: manual control (pilot.DEFAULTS: speed / climb / yaw limits, stale / lost times, the edge look-ahead) ---
+    "pilot": {},
 }
 
 
@@ -189,6 +191,8 @@ class UavManager:
         self.next_u4 = 0.0
         self.mem = {}                            # slot -> what the U4 notices remember (link, range, stage, video)
         self.land_events = []                    # (t, slot, what, why) from the router's battery rule
+        # --- U5: manual control + the pilot lock (pilot.py) -------------------------------------------------------
+        self.pilots = pilot.Pilots(self, self.cfg["pilot"] or {})
 
     # --- the processes --------------------------------------------------------------------------------------------
     def start(self, loop):
@@ -544,6 +548,7 @@ class UavManager:
                 self.send_assist(s)
         self.u3_tick(now)
         self.u4_tick(now)
+        self.pilots.tick(now)
 
     # --- GPS warm start (H4) --------------------------------------------------------------------------------------
     def _load_extra(self):
@@ -1242,6 +1247,8 @@ class UavManager:
                           "encoder": self.v_hello.get("encoder"), "starts": self.v_starts,
                           "slots": dict(self.vstatus), "run": self.v_run_sent or []},
                 "ai": self.ai.status() if self.enabled else {},
+                # U5: who flies which UAV by hand (pilot.py; the station shows «JOYSTICK → UAV n»)
+                "pilots": self.pilots.status() if self.enabled else {},
                 "flightlog": {"lines": self.flog.lines, "dropped": self.flog.dropped, "errors": self.flog.errors}}
 
     def next_slot(self):

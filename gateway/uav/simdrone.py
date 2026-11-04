@@ -343,10 +343,11 @@ class Drone:
                     self.target_alt = None
             vn = ve = 0.0
             if self.mode == M_GUIDED and now - self.guided_t < 3.0:
-                gvx, gvy, gvz, _r = self.guided_v
+                gvx, gvy, gvz, gr = self.guided_v
                 c, s = math.cos(self.yaw), math.sin(self.yaw)
                 vn, ve = gvx * c - gvy * s, gvx * s + gvy * c
                 vz = vz or -gvz
+                self.yaw = (self.yaw + gr * dt) % (2 * math.pi)   # the twist = yaw rate (step U5)
             elif self.mode == M_AUTO:
                 vn, ve, vz = self.auto_step(vz)
             elif self.mode == M_ALT_HOLD:

@@ -16,6 +16,10 @@
   UV9 (U4) a UAV's video in screen 2's camera view: only that stream asked for, bar 1, its HUD + AI boxes, close
   UV10 (U4) the battery minimum's local CAUTION once per stage; the router OFFLINE on both screens' notices
   UV11 (U4) the flight logs: list + CSV / GPX export to a file
+  UV12 (U5) uavfly.py: the stick -> x / y / z / r (lever neutral zone), take / give / answers, STANDBY rule
+  UV13 (U5) the station flying a UAV: no rjoy, the selector without the stick, the banner on both screens, RETURN TO
+       BOAT, the boat leaving STANDBY, the captain's takeover message (owner W61), the page's fly buttons
+  UV14 (U5) screen 1's UAV HUD (uavhud.py): green values, the arrow to the boat, the boat's instruments hidden
 
 Run:  python test_uavui.py      (exit code 0 = all passed)
 """
@@ -598,12 +602,193 @@ def uv11(rig):
            "sent %s; list %s; wrote %r; said %s" % (sent, items, wrote, said))
 
 
+class _Js:
+    """A fake shorejoy.Joysticks: dev 0 = the stick (X, Y, R twist, buttons), dev 1 = the TWCS lever (Z)."""
+
+    def __init__(self, x=0.0, y=0.0, r=0.0, lever_axis=0.0, buttons=0, ok=True):
+        self.v = {"X": x, "Y": y, "R": r, "Z": lever_axis}
+        self.buttons, self.ok = buttons, ok
+
+    def read(self, dev):
+        return {"ok": self.ok, "axes": dict(self.v), "buttons": self.buttons, "pov": None}
+
+
+def uv12():
+    """uavfly.py (pure): the stick -> {x, y, z, r} (the stick Y pushed forward = +, the lever's neutral zone 45-55 %
+    = hold the altitude, a station without a lever = altitude held, the twist = yaw), a NaN / a missing device = no
+    packet; take / give / the gateway's answers; the captain's control ends when the boat is not in STANDBY."""
+    import proto
+    import shorejoy
+    import uavfly
+    cfg = dict(shorejoy.DEFAULT)
+    lc = [uavfly.lever_climb(v) for v in (0.0, 0.45, 0.5, 0.55, 1.0, float("nan"))]
+    # the TWCS axis Z inverted: -1 = forward = lever 1.0
+    full = uavfly.stick(_Js(x=0.5, y=-1.0, r=0.3, lever_axis=-1.0), cfg)
+    mid = uavfly.stick(_Js(lever_axis=0.0), cfg)
+    nan = uavfly.stick(_Js(x=float("nan")), cfg)
+    gone = uavfly.stick(_Js(ok=False), cfg)
+    nolever = uavfly.stick(_Js(y=0.4), dict(cfg, thr=dict(cfg["thr"], lever=False, axis="Y", dev=0, invert=True)))
+    f = uavfly.UavFly()
+    idle_src = f.source(_Js(), cfg)
+    m_take = f.take(2)
+    act_asked = f.active()
+    f.on_ack({"what": "pilot", "ok": True, "take": True, "uav": 2, "captain": True})
+    src = f.source(_Js(y=-1.0), cfg)
+    end_auto = f.must_end(proto.MODE_AUTO, True)
+    end_cop = f.must_end(proto.MODE_AUTO, False)
+    end_sb = f.must_end(proto.MODE_STANDBY, True)
+    m_give = f.give()
+    f.take(3)
+    f.on_ack({"what": "pilot", "ok": False, "code": 127, "uav": 3})
+    refused = f.active()
+    f.take(1)
+    f.on_ack({"what": "pilot", "ok": True, "take": True, "uav": 1})
+    f.on_end({"t": "uav_pilot_end", "uav": 1, "why": "captain"})
+    ok = (lc == [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0] and full == {"x": 0.5, "y": 1.0, "z": 1.0, "r": 0.3} and
+          mid["z"] == 0.0 and nan is None and gone is None and nolever["z"] == 0.0 and abs(nolever["y"] + 0.4) < 1e-9
+          and idle_src is None and m_take == {"t": "uav_pilot", "uav": 2, "take": True} and act_asked and
+          src["t"] == "uav_ctl" and src["uav"] == 2 and src["y"] == 1.0 and end_auto and not end_cop and
+          not end_sb and m_give == {"t": "uav_pilot", "uav": 2, "take": False} and not refused and not f.active() and
+          f.last_end[1] == "captain")
+    report("UV12 uavfly.py: the stick -> x / y / z (lever neutral zone = hold the altitude) / r, NaN / missing device "
+           "= no packet, no lever = altitude held; take / give / refusal / the captain's takeover end; the captain's "
+           "control ends outside STANDBY (a copilot's not)",
+           ok, "lever %s full %s mid %s nan %s gone %s nolever %s src %s ends %s/%s/%s give %s refused %s end %s" % (
+               lc, full, mid, nan, gone, nolever, src, end_auto, end_cop, end_sb, m_give, refused, f.last_end))
+
+
+def uv13(rig):
+    """The real station flying a UAV: «ΧΕΙΡΙΣΜΟΣ UAV n» sends uav_pilot (the captain refused locally outside
+    STANDBY), the gateway's yes = the 10 Hz uav_ctl sender + its video + the banner «JOYSTICK → UAV n» on BOTH screens;
+    meanwhile NO rjoy packet to the boat and the YES / NO selector gets no stick (mouse only); the camera view's bar
+    1 = RETURN TO BOAT; the boat leaving STANDBY gives it back at once; the captain's takeover = «Ο ΚΥΒΕΡΝΗΤΗΣ ΠΗΡΕ
+    ΤΟΝ ΕΛΕΓΧΟ» + a local CAUTION; the UAV page's fly buttons (fly_view)."""
+    import proto
+    ap = rig.ap
+    i18n.set_lang("el", save=False)
+    sent = []
+    old_link, old_t, old_gs, old_sj, old_feed = ap.link, ap.t, ap.gw_status, getattr(ap, "sj", None), ap.yn.feed
+    fed = []
+    try:
+        ap.link = _GL.make(sent)
+        ap.link.send_rjoy = lambda m: sent.append(m)
+        ap.link.clock_offset = 0.0
+        ap.gw_status = {"you": 5, "stations": [{"id": 5, "crew": "captain", "licence": True}],
+                        "uav": {"enabled": True, "state": "ACTIVE", "drones": {"1": drone(1)}, "pilots": {}}}
+        ap.uav_store.update({"1": drone(1)})
+        ap.t = dict(ap.t or {}, mode=proto.MODE_AUTO, mode_name="AUTO", helm=5)
+        said = []
+        old_say = ap.say
+        ap.say = lambda text, colour=None: said.append(text)
+        ap.uav_take(1)
+        refused_local = not sent and said and "STANDBY" in said[-1]
+        ap.t["mode"], ap.t["mode_name"] = proto.MODE_STANDBY, "STANDBY"
+        ap.uav_take(1)
+        asked = sent[-1] if sent else None
+        ap.sj = _Js(buttons=1)                   # the trigger held
+        rj_asked = ap.rjoy_source()
+        ap.uav_pilot_ack({"t": "uav_ack", "what": "pilot", "ok": True, "take": True, "uav": 1, "captain": True})
+        flying = ap.uav_fly.slot
+        sender = ap.uav_sender is not None
+        ap.yn.feed = lambda c, now, mode: fed.append(c)
+        ap.shore_answer_tick()
+        rj = ap.rjoy_source()
+        ban2 = [b[1] for b in ap.banner_list() if b[0] == "uav_fly"]
+        ban1 = [n[1] for n in ap.driver.notices(ap.t, ap.gw_status) if n[0] == "uav_fly"] if ap.driver else None
+        ap.camview_open("UAV-1")
+        bar = [it[1] for it in ap.bar_items(1) if it[0] == "btn"]
+        view = [m for m in sent if m.get("t") == "uav_view"]
+        sent.clear()
+        ap.t["mode"] = proto.MODE_HDG_LOCK          # the boat leaves STANDBY: the joystick back at once
+        ap.shore_answer_tick()
+        gave = [m for m in sent if m.get("t") == "uav_pilot"]
+        back = ap.uav_fly.slot is None and ap.uav_sender is None
+        # a copilot's station: the captain took over
+        ap.uav_pilot_ack({"t": "uav_ack", "what": "pilot", "ok": True, "take": True, "uav": 1})
+        ap.uav_pilot_end({"t": "uav_pilot_end", "uav": 1, "why": "captain", "text": "the captain took control of UAV 1"})
+        took = said[-1]
+        lamp = [t for t, _lv, _s in ap.lamps.rows() if "ΚΥΒΕΡΝΗΤΗΣ" in t]
+        ap.say = old_say
+        fv = uavpanel.fly_view({"drones": {"1": drone(1), "2": drone(2, in_slot=True, armed=False, landed=True)},
+                                "pilots": {"1": {"name": "anna", "captain": False}}}, None)
+    finally:
+        ap.camview_close(send=False)
+        ap.uav_fly_stop()
+        for n in list(ap.vstreams):
+            if n.startswith("UAV-"):
+                ap.vstreams.pop(n).stop()
+        ap.link, ap.t, ap.gw_status, ap.sj, ap.yn.feed = old_link, old_t, old_gs, old_sj, old_feed
+        ap.lamps.set_local("uav_pilot", None)
+        ap.uav_store.clear()
+    ok = (refused_local and asked == {"t": "uav_pilot", "uav": 1, "take": True} and rj_asked is None and
+          flying == 1 and sender and fed[:1] == [None] and rj is None and ban2 and "JOYSTICK → UAV 1" in ban2[0] and
+          (ban1 is None or ban1) and "uav_give" in bar and gave == [{"t": "uav_pilot", "uav": 1, "take": False}] and
+          back and "Ο ΚΥΒΕΡΝΗΤΗΣ ΠΗΡΕ ΤΟΝ ΕΛΕΓΧΟ" in took and lamp and fv["can_take"] == [1] and
+          "anna" in fv["text"] and not rig.errors)
+    report("UV13 the station flying a UAV: the captain refused here outside STANDBY, uav_pilot sent, then the 10 Hz "
+           "sender, NO rjoy to the boat, the YES / NO selector gets no stick (mouse only), «JOYSTICK → UAV 1» on both "
+           "screens, RETURN TO BOAT in the camera view's bar, the boat leaving STANDBY gives it back at once, the "
+           "captain's takeover = «Ο ΚΥΒΕΡΝΗΤΗΣ ΠΗΡΕ ΤΟΝ ΕΛΕΓΧΟ» + a local CAUTION, the page's fly buttons",
+           ok, "local refusal %s asked %s rjoy %s/%s flying %s sender %s fed %s banners %s / %s bar %s views %s gave %s "
+               "back %s took %r lamp %s fly view %s errors %s" % (
+                   refused_local, asked, rj_asked, rj, flying, sender, fed, ban2, ban1, bar[-3:], view, gave, back,
+                   took, lamp, fv, rig.errors[:2]))
+
+
+def uv14():
+    """uavhud.py on screen 1: the UAV's own green HUD (banner, altitude, speed, battery, link, heading, the arrow +
+    distance to the boat, the battery stage, the gateway's clip reason, RETURN TO BOAT = hit uav_give); of the boat's
+    HUD only the mode, MASTER lamps, alarms, notices and the bottom bar stay; the arrow maths."""
+    import hud
+    import uavhud
+    i18n.set_lang("el", save=False)
+    h = hud.Hud(hud.Layout(os.path.join(os.environ.get("TEMP", "."), "uv14_layout.json")))
+    s = hud.Snapshot(t={"mode": 0, "mode_name": "STANDBY", "target": 0.0, "heading": 10.0, "compass_ok": True,
+                        "est_sog": 0.0, "throttle": 0.0, "gear": 1, "alarm_bits": 0, "power_fwd": 30,
+                        "power_rev": 5}, gw={}, lamps=None, declutter="FULL", hud_colour="green")
+    s["uav_fly"] = 1
+    s["uav"] = drone(1, hdg=90.0, lat=37.8215, lon=23.6012, stage=60)
+    s["uav_boat"] = (37.8215, 23.5990)            # west of the drone heading east: the boat is astern (arrow down)
+    s["uav_clip"] = ["minimum altitude 10 m"]
+    try:
+        ops, hits = h.build(1600, 900, s)
+    except Exception as e:                         # (a Snapshot without lamps may not draw every boat box)
+        ops, hits = [], []
+        report("UV14 uavhud", False, "build crashed: %r" % e)
+        return
+    tags = {o.get("tag") for o in ops}
+    texts = [o.get("s", "") for o in ops if o.get("k") == "text"]
+    green = hud.palette("green", False)["main"]
+    uav_txt = [o for o in ops if str(o.get("tag", "")).startswith("uav_") and o.get("k") == "text"]
+    rel = uavhud.to_boat(s["uav"], s["uav_boat"])[1]
+    arrows = [uavhud.arrow_char(a) for a in (0, 45, 90, 180, 270, 359)]
+    ok = ("JOYSTICK → UAV 1" in texts and any("52 m" in t for t in texts) and any("8.2 m/s" in t for t in texts) and
+          any("μπαταρία 78" in t for t in texts) and any("σκάφος" in t and " m" in t for t in texts) and
+          any("ελάχιστο ύψος" in t for t in texts) and any("ΠΡΟΣΓΕΙΩΣΗ" in t or "60" in t for t in texts) and
+          ("uav_give" in [a for _r, a in hits]) and "throttle" not in tags and "tape" not in tags and
+          "speed" not in tags and all(o["fill"] == green for o in uav_txt if o["tag"] not in ("uav_batt", "uav_stage"))
+          and 170 < rel < 190 and arrows == ["↑", "↗", "→", "↓", "←", "↑"])
+    report("UV14 screen 1's UAV HUD (uavhud.py): banner «JOYSTICK → UAV 1», altitude / speed / battery / link / "
+           "heading in green, the arrow + distance to the boat (relative to the UAV's heading), the battery stage, "
+           "the clip reason in Greek, RETURN TO BOAT = hit uav_give; the boat's instruments hidden (throttle, tape, "
+           "speed), the mode / lamps / alarms / bottom bar kept",
+           ok, "tags %s texts %s rel %.0f arrows %s hits %s" % (sorted(t for t in tags if t)[:30], texts[:14], rel,
+                                                               arrows, [a for _r, a in hits][:10]))
+
+
 def main():
     uv1()
     uv2()
+    for fn in (uv12, uv14):
+        try:
+            fn()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            report(fn.__name__, False, "crashed: %r" % e)
     rig = ts.Rig()
     try:
-        for fn in (uv5, uv6, uv7, uv8, uv9, uv10, uv11):
+        for fn in (uv5, uv6, uv7, uv8, uv9, uv10, uv11, uv13):
             try:
                 fn(rig)
             except Exception as e:

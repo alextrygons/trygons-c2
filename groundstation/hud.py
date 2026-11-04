@@ -62,6 +62,9 @@ MINIMAL = {"status", "master", "alarms", "speed", "throttle", "bottom", "tape", 
 NORMAL_HIDES = {"rot", "gmeter", "cdi"}                                                    # heading, alarms
 DECLUTTER = ("FULL", "NORMAL", "MINIMAL")
 ALWAYS = {"bottom", "drive"}       # never hidden by declutter: the bar (the way back to FULL, SAVE), the drive buttons
+# step U5: while this station's joystick flies a UAV, screen 1 shows the UAV's video + its own HUD (uavhud.py); of the
+# boat's HUD only these stay (the boat's mode, the MASTER lamps, the alarms, the notices, the bottom bar with SAVE)
+UAV_KEEP = {"status", "master", "alarms", "notices", "bottom"}
 # hud_layout.json carries "layout_version": a saved file without it (or older) takes the NEW defaults for the
 # boxes that moved in that version; every other box keeps the user's values; the file is saved back.
 HUD_LAYOUT_VERSION = 3
@@ -365,10 +368,15 @@ class Hud:
                          ("master", self.master), ("notices", self.notices), ("alarms", self.alarms)):
             if not self.shown(name, s):
                 continue
+            if s.uav_fly is not None and name not in UAV_KEEP:
+                continue
             if d is None and name not in ("mirror_l", "mirror_r", "status", "master", "alarms", "bottom",
                                           "minimap", "notices", "drive"):
                 continue
             fn(name, s)
+        if s.uav_fly is not None:
+            import uavhud
+            uavhud.build(self, s)
         self.logo(s)
         if self.edit:
             self.edit_frames(s)

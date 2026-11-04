@@ -32,6 +32,9 @@ Commands: {"op": "config", "slots": [{"slot", "usb", "elrs", "sysid", "capacity_
           {"op": "cmd", "slot", "id", "via", "command", "params": [7]}
                                                  -> COMMAND_LONG -> {"ev": "cmd", "id", "slot", "command", "result",
                                                     "why"} (result None = refused here / no answer)
+          {"op": "ctl", "slot", "vx", "vy", "vz", "yaw_rate"}   (step U5) a manual-flight velocity setpoint (body
+                                                 frame, pilot.py clipped it); refused while landing for the battery;
+                                                 a moving one not renewed in 0.5 s = the router's own zero setpoint
           {"op": "stop"}
 Events:   {"ev": "status", "links": {slot: usb link}, "radio": {slot: elrs link}, "drones": {slot: state},
           "stats": {...}} once a second (twice while a job runs), {"ev": "log", "text"}
@@ -64,6 +67,9 @@ CMD_TOTAL_S = 4.0
 LQ_WINDOW_S = 5.0            # the link quality: HEARTBEATs heard (1 Hz) in the last 5 s
 LAND_RESEND_S = 2.0          # the battery LAND again while the drone is not in LAND yet
 COPTER_LAND = 9
+CTL_FRAME = 9                # step U5 manual flight: MAV_FRAME_BODY_OFFSET_NED velocity + yaw rate
+CTL_MASK = 0x0007 | 0x01C0 | 0x0400
+CTL_STALE_S = 0.5            # a moving setpoint not renewed this long = a zero setpoint from the router itself
 # refused for a drone that lands for its battery (a new mode / mission / take-off would end the landing)
 NOT_WHILE_LANDING = (allow.CMD_DO_SET_MODE, allow.CMD_MISSION_START, allow.CMD_NAV_TAKEOFF,
                      allow.CMD_DO_CHANGE_SPEED)
@@ -261,6 +267,7 @@ class Router:
         self.denied = {}                                   # name -> count (what was refused, both directions)
         self.next_status = 0.0
         self.next_hb = 0.0
+        self.ctl_t, self.ctl_moving = {}, {}               # step U5: the last manual setpoint per slot
 
     def link(self, slot, kind):
         return self.links.get((slot, kind))
@@ -520,8 +527,37 @@ class Router:
                 lk, "MISSION_SET_CURRENT", dict(self.tgt_of(slot), seq=int(c["seq"])))
             out({"ev": "cmd", "id": c.get("id"), "slot": slot, "command": -1, "result": 0 if ok else None,
                  "why": "" if ok else "not sent"})
+        elif op == "ctl":
+            # step U5: a manual-flight VELOCITY setpoint (pilot.py made + clipped it; allow.py checks it again)
+            slot = int(c["slot"])
+            sp = {k: float(c.get(k, 0.0) or 0.0) for k in ("vx", "vy", "vz", "yaw_rate")}
+            if self.battery_land.get(slot):
+                self.stats["ctl_refused"] = self.stats.get("ctl_refused", 0) + 1
+                return                                     # landing for its battery: nothing ends the LAND
+            lk = self.pick(slot, "elrs", now) or self.pick(slot, "auto", now)
+            if lk is None:
+                return
+            if self.send_sp(lk, slot, sp):
+                self.ctl_t[slot] = now
+                self.ctl_moving[slot] = any(v != 0.0 for v in sp.values())
         elif op == "stop":
             raise SystemExit(0)
+
+    def send_sp(self, lk, slot, sp):
+        f = dict(self.tgt_of(slot), time_boot_ms=int(now_s() * 1000) & 0xFFFFFFFF, coordinate_frame=CTL_FRAME,
+                 type_mask=CTL_MASK, x=0.0, y=0.0, z=0.0, afx=0.0, afy=0.0, afz=0.0, yaw=0.0, **sp)
+        return self.tx(lk, "SET_POSITION_TARGET_LOCAL_NED", f)
+
+    def ctl_tick(self, now):
+        """Step U5: a MOVING setpoint not followed by another one within CTL_STALE_S (the gateway hangs / the pilot's
+        data stops) = the router sends a zero setpoint by itself (the drone holds)."""
+        for slot, t in list(self.ctl_t.items()):
+            if self.ctl_moving.get(slot) and now - t > CTL_STALE_S:
+                self.ctl_moving[slot] = False
+                self.stats["ctl_zero"] = self.stats.get("ctl_zero", 0) + 1
+                lk = self.pick(slot, "elrs", now) or self.pick(slot, "auto", now)
+                if lk is not None and not self.battery_land.get(slot):
+                    self.send_sp(lk, slot, {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw_rate": 0.0})
 
     def send_cmd(self, j):
         f = dict(self.tgt_of(j.slot), command=j.command, confirmation=1 if j.sent else 0,
@@ -591,6 +627,7 @@ class Router:
                 del self.probes[slot]
                 out({"ev": "register", "id": rid, "slot": slot, "reading": pr.result()})
         self.jobs_tick(now)
+        self.ctl_tick(now)
         if now >= self.next_batt:
             self.next_batt = now + 1.0
             self.battery_tick(now)

@@ -61,6 +61,15 @@ parameter check + the MAVLink allow-list + the own codec + the GPS warm start + 
   UA28 airspace files never raise (H1), STOP with the ARM on its way (M1), every wait timed (M5), no registration
        while flying (M4), the second alarm word (M2), no FAULT before the first switch reading (L1)
   UA29 router: one job per slot, cancel, MISSION_SET_CURRENT for an in-flight route (M1 / M6)
+  --- step U5 (manual control + the pilot lock; owner W61: the captain takes a drone over from a copilot) ---
+  UA30 pilot.py: setpoint limits (speed, altitude floor / ceiling, unknown altitude / position, yaw), the air
+       geofence / no-fly clip; the lock: first wins 127, the captain only in STANDBY 126, the captain's takeover
+       (W61), centred first, old / stale / NaN data ignored, 0.5 s = zero, 3 s / gone = end, STANDBY left = end
+       at once, BRAKE -> LOITER, only allow-listed outputs
+  UA31 stations.py with the captain's joystick on a UAV: 126 for his driving commands + the copilot's
+       ACCEPT-needing ones (never queued), STANDBY / AUTO PAUSE / DP STOP free, no rjoy to the boat
+  UA32 the router's "ctl" op flies a simulated drone (velocity + yaw rate), its own zero after 0.5 s, refused
+       while landing for the battery
 
 Run:  python test_uav.py      (exit code 0 = all passed)
 """
@@ -426,7 +435,7 @@ def ua5_no_aurix():
     used = set()
     for p in py_files([UAV_DIR]):
         used |= set(re.findall(r"uavlink\.(\w+)\(", open(p, encoding="utf-8").read()))
-    if not used <= {"boat_state", "relay_on", "hatch_relay"}:
+    if not used <= {"boat_state", "boat_mode", "relay_on", "hatch_relay"}:
         bad.append("gateway/uav uses uavlink.%s" % sorted(used))
     report("UA5 no UAV path to the AURIX (no gateway/uav module imports aurix / proto / stations or touches "
            ".aurix; the only boat action = uavlink.hatch_relay -> stations.uav_relay) and no payload / release / "
@@ -2530,6 +2539,348 @@ def ua29_review_router():
         fl.stop()
 
 
+# ------------------------------------------------------------------------------------------------------ U5 ---------
+
+class _PilotMgr:
+    """A scripted UAV manager for pilot.py (UA30 / UA31): drone records, the router ops + commands it was asked."""
+
+    def __init__(self, gw):
+        from uav import uavcheck
+        self.gw, self.enabled, self.n = gw, True, 6
+        self.ccfg = dict(uavcheck.DEFAULTS)
+        self.airspace = None
+        self.why = ""
+        self.ops, self.cmds = [], []
+        self.drones = {1: {"hb_age": 0.2, "armed": True, "landed": False, "usb_present": False, "landing": False,
+                           "lat": 37.83, "lon": 23.61, "alt": 50.0, "hdg": 90.0},
+                       2: {"hb_age": 0.2, "armed": False, "landed": True, "usb_present": True}}
+
+    def slot(self, n):
+        return dict(self.drones.get(n) or {})
+
+    def drone_view(self, n):
+        return self.slot(n)
+
+    def router_ok(self):
+        return True
+
+    def to_worker(self, obj):
+        self.ops.append(obj)
+        return True
+
+    def cmd(self, n, via, command, params, cb):
+        self.cmds.append((n, via, command, list(params)))
+        cb(0, "")
+
+
+class _PGw:
+    def __init__(self):
+        self.telem2 = {}
+        self.mode = 0
+        self.audits = []
+        self.stations = type("S", (), {"stations": {}, "age": lambda _s, st, ts: time.time() - ts})()
+
+    def telem_fresh(self):
+        return None if self.mode is None else {"mode": self.mode}
+
+    def audit(self, kind, **kw):
+        self.audits.append((kind, kw))
+
+
+def ua30_pilot():
+    """pilot.py: the setpoint limits + clipping, the lock (first wins, the captain's takeover W61, STANDBY only for the
+    captain), centred first, stale / lost, the hover on give-back, only allow-listed outputs."""
+    import common  # noqa: F401  (the path to proto, as the gateway)
+    from uav import pilot
+    cfg = dict(pilot.DEFAULTS, uav_min_alt_m=10.0, uav_max_alt_m=120.0)
+    dr = {"lat": 37.83, "lon": 23.61, "alt": 50.0, "hdg": 0.0}
+    sp = lambda st, d=None, air=None: pilot.setpoint(st, dict(dr, **(d or {})), cfg, air)   # noqa: E731
+    fwd = sp({"y": 1.0})[0]
+    diag = sp({"x": 1.0, "y": 1.0})[0]
+    dead = sp({"x": 0.05, "y": -0.07, "z": 0.06, "r": 0.02})[0]
+    floor = sp({"z": -1.0}, {"alt": 10.6})
+    at_floor = sp({"z": -1.0}, {"alt": 9.0})[0]
+    ceil = sp({"z": 1.0}, {"alt": 119.5})
+    no_alt = sp({"z": 1.0}, {"alt": None})
+    no_pos = sp({"y": 1.0}, {"lat": None})
+    yaw = sp({"r": 1.0})[0]
+
+    class Air:                                      # the fence: north of 37.8303 is outside
+        def problem(self, pts):
+            return "outside" if any(p[0] > 37.8303 for p in pts) else None
+    edge = sp({"y": 1.0}, None, Air())              # heading north, 40 m ahead: outside -> hold
+    east = sp({"x": 1.0}, None, Air())              # sideways east: fine
+    back_in = sp({"y": -1.0}, {"lat": 37.8304}, Air())   # outside already: flying south (back in) is let through
+    limits_ok = (abs(fwd["vx"] - 10.0) < 1e-6 and fwd["vy"] == 0 and abs(math.hypot(diag["vx"], diag["vy"]) - 10.0)
+                 < 1e-3 and dead == pilot.ZERO and abs(floor[0]["vz"] - 0.6) < 1e-6 and floor[1] and
+                 at_floor["vz"] == 0.0 and abs(ceil[0]["vz"] + 0.5) < 1e-6 and ceil[1] and no_alt[0]["vz"] == 0.0 and
+                 no_alt[1] and no_pos[0]["vx"] == 0.0 and no_pos[1] and abs(yaw["yaw_rate"] - math.radians(60)) < 1e-3
+                 and edge[0]["vx"] == 0.0 and "geofence" in edge[1][0] and east[0]["vy"] > 9 and
+                 back_in[0]["vx"] < -9)
+    ok_allow = all(allow.check_out("SET_POSITION_TARGET_LOCAL_NED", dict(s, target_system=11, target_component=1,
+                                                                         coordinate_frame=pilot.FRAME,
+                                                                         type_mask=pilot.MASK))[0]
+                   for s in (fwd, diag, floor[0], ceil[0], yaw))
+    report("UA30a manual flight setpoints (pilot.setpoint): horizontal <= 10 m/s (also diagonal), the dead band = "
+           "zero, the descent slows to 10 m and stops there, the climb to 120 m, an unknown altitude / position = no "
+           "vertical / horizontal speed, the yaw rate, the air geofence ahead = hold at the edge (sideways / back "
+           "in let through); every setpoint passes the allow-list",
+           limits_ok and ok_allow,
+           "fwd %s diag %s dead %s floor %s at floor %s ceil %s no alt %s no pos %s yaw %s edge %s east %s back %s "
+           "allow %s" % (fwd, diag, dead, floor, at_floor, ceil, no_alt, no_pos, yaw, edge, east, back_in, ok_allow))
+
+    gw = _PGw()
+    mgr = _PilotMgr(gw)
+    P = pilot.Pilots(mgr)
+    A, B, C = _St(3, crew="copilot"), _St(4, crew="copilot"), _St(5, crew="captain")
+    A.name, B.name, C.name = "anna", "bob", "cap"
+    for s in (A, B, C):
+        gw.stations.stations[s.id] = s
+    gw.telem2["helm"] = C.id
+    gw.mode = 3                                     # the boat in AUTO
+    P.pilot_msg(A, {"uav": 1, "take": True})        # a copilot: any time
+    a_ok = A.sent[-1]
+    guided = mgr.cmds[-1]
+    P.pilot_msg(B, {"uav": 1, "take": True})        # the first pilot wins
+    b_ref = B.sent[-1]
+    P.pilot_msg(C, {"uav": 1, "take": True})        # the captain, boat not in STANDBY
+    c_ref = C.sent[-1]
+    P.pilot_msg(A, {"uav": 2, "take": True})        # a drone in its slot is not flown
+    slot_ref = A.sent[-1]
+    gw.mode = 0                                     # STANDBY
+    n_ops = len(mgr.ops)
+    P.pilot_msg(C, {"uav": 1, "take": True})        # owner W61: the captain takes over at once
+    c_ok = C.sent[-1]
+    a_end = [m for m in A.sent if m.get("t") == "uav_pilot_end"]
+    hold_ho = [o for o in mgr.ops[n_ops:] if o.get("op") == "ctl"]
+    P.pilot_msg(A, {"uav": 1, "take": True})        # a copilot never takes it from the captain
+    a_ref = A.sent[-1]
+    on_uav = P.joystick_on_uav(C)
+    a_on = P.joystick_on_uav(A)
+    t0 = time.time()
+
+    def ctl(st, seq, ts=None, **stick):
+        n0 = len(mgr.ops)
+        P.ctl(st, dict({"uav": 1, "seq": seq, "ts": time.time() if ts is None else ts}, **stick))
+        return [o for o in mgr.ops[n0:] if o.get("op") == "ctl"]
+    held = ctl(C, 1, y=1.0)                         # deflected at the take: zero until seen centred
+    cen = ctl(C, 2)
+    go = ctl(C, 3, y=1.0, z=0.5)
+    old = ctl(C, 3, y=-1.0)                         # repeated seq: ignored
+    stale_ts = ctl(C, 4, ts=time.time() - 1.0, y=-1.0)
+    nan = ctl(C, 5, y=float("nan"))
+    a_ctl = ctl(A, 6, y=1.0)                        # the old pilot's data: ignored
+    P.locks[1].last_t = time.time() - 0.7
+    n0 = len(mgr.ops)
+    P.tick()
+    stale_zero = [o for o in mgr.ops[n0:] if o.get("op") == "ctl"]
+    stale_flag = P.locks[1].stale
+    gw.mode = 3                                     # the boat leaves STANDBY: the captain's control ends at once
+    n0c = len(mgr.cmds)
+    P.tick()
+    c_end = [m for m in C.sent if m.get("t") == "uav_pilot_end"]
+    brake = [c for c in mgr.cmds[n0c:] if c[2] == allow.CMD_DO_SET_MODE]
+    after = P.joystick_on_uav(C)
+    P.loiter[1] = time.time() - 0.1
+    P.tick()
+    loiter = mgr.cmds[-1]
+    # the copilot again (boat in AUTO: fine for him), lost after 3 s, station gone
+    P.pilot_msg(A, {"uav": 1, "take": True})
+    P.locks[1].last_t = time.time() - 3.5
+    P.tick()
+    lost = [m for m in A.sent if m.get("t") == "uav_pilot_end"][-1:]
+    P.pilot_msg(B, {"uav": 1, "take": True})
+    del gw.stations.stations[B.id]
+    P.tick()
+    gone = 1 not in P.locks
+    give_ok = None
+    P.pilot_msg(A, {"uav": 1, "take": True})
+    P.pilot_msg(A, {"uav": 1, "take": False})
+    give_ok = A.sent[-1]
+    modes = {int(c[3][1]) for c in mgr.cmds if c[2] == allow.CMD_DO_SET_MODE}
+    only_allowed = all(o.get("op") == "ctl" for o in mgr.ops) and modes <= {allow.COPTER_GUIDED, allow.COPTER_BRAKE,
+                                                                            allow.COPTER_LOITER} and \
+        {c[2] for c in mgr.cmds} == {allow.CMD_DO_SET_MODE}
+    lock_ok = (a_ok["ok"] and guided[2:] == (allow.CMD_DO_SET_MODE, [1, allow.COPTER_GUIDED]) and
+               b_ref["code"] == 127 and c_ref["code"] == 126 and slot_ref["code"] == 122 and c_ok["ok"] and
+               a_end and a_end[0]["why"] == "captain" and hold_ho and all(o["vx"] == 0 == o["vy"] for o in hold_ho)
+               and a_ref["code"] == 127 and on_uav == 1 and a_on is None and P.stats["takeover"] == 1)
+    ctl_ok = (held and held[0]["vx"] == 0.0 and cen and cen[0]["vx"] == 0.0 and go and go[0]["vx"] > 9 and
+              go[0]["vz"] < 0 and not old and not stale_ts and not nan and not a_ctl and stale_zero and
+              stale_zero[0]["vx"] == 0.0 and stale_flag)
+    end_ok = (c_end and c_end[-1]["why"] == "standby" and brake and brake[0][3][1] == allow.COPTER_BRAKE and
+              after is None and loiter[3][1] == allow.COPTER_LOITER and lost and lost[0]["why"] == "lost" and gone and
+              give_ok and give_ok["ok"] and not give_ok.get("take"))
+    report("UA30b the pilot lock: a copilot flies any time, the FIRST pilot wins (127), the captain only in STANDBY "
+           "(126), owner W61 = the captain takes a drone over from a copilot AT ONCE (the copilot told 'captain', the "
+           "drone holds), a copilot never takes it from the captain (127), a drone in its slot never (122); the stick "
+           "held deflected at the take = zero until centred, old / stale / NaN / another station's data ignored, "
+           "0.5 s stale = zero, the boat leaving STANDBY ends the captain's control at once (BRAKE -> LOITER), 3 s "
+           "lost / a station gone ends it; only GUIDED / BRAKE / LOITER + velocity setpoints are ever asked for",
+           lock_ok and ctl_ok and end_ok and only_allowed,
+           "lock %s ctl %s end %s allowed %s (a %s b %s c %s slot %s cap %s a_end %s a_ref %s; held %s cen %s go %s "
+           "old %s stale %s nan %s; stale0 %s; c_end %s brake %s loiter %s lost %s gone %s give %s modes %s)" % (
+               lock_ok, ctl_ok, end_ok, only_allowed, a_ok.get("ok"), b_ref.get("code"), c_ref.get("code"),
+               slot_ref.get("code"), c_ok.get("ok"), a_end[:1], a_ref.get("code"), held[:1], cen[:1], go[:1], old,
+               stale_ts, nan, stale_zero[:1], c_end[-1:], brake[:1], loiter, lost, gone, give_ok, modes))
+    _ = t0
+
+
+class _Writer:
+    def __init__(self):
+        self.lines = []
+
+    def write(self, b):
+        self.lines.append(json.loads(b))
+
+
+class _Aurix:
+    connected = True
+
+    def __init__(self):
+        self.sent = []
+
+    def on(self, *_a):
+        pass
+
+    def send(self, t, p):
+        self.sent.append((t, bytes(p)))
+
+
+def ua31_stations_126():
+    """stations.py while the CAPTAIN's joystick flies a UAV: his driving commands + every copilot command needing his
+    ACCEPT refused 126 at once (never queued), STANDBY / AUTO PAUSE / DP STOP free, his rjoy never reaches the boat,
+    the gateway's own ACCEPT questions refused; all back to normal when the lock ends; a COPILOT flying changes
+    nothing for the boat."""
+    import common  # noqa: F401
+    import proto
+    import stations as stm
+    from uav import pilot
+    gw = _PGw()
+    gw.aurix = _Aurix()
+    gw.storage = None
+    gw.uav = type("U", (), {})()
+    ss = stm.StationServer(gw, {})
+    gw.stations = ss
+    mgr = _PilotMgr(gw)
+    P = gw.uav.pilots = pilot.Pilots(mgr)
+
+    def mk(sid, crew, licence=True):
+        st = stm.Station(sid, "u%d" % sid, "HELM", False, "1.2.3.%d" % sid, "s%d" % sid, _Writer())
+        st.crew, st.licence = crew, licence
+        st.tokens, st.refill = 20.0, time.time()
+        ss.stations[sid] = st
+        return st
+    cap, cop = mk(5, "captain"), mk(6, "copilot")
+    gw.telem2["helm"] = cap.id
+    gw.mode = 0
+    seq = [0]
+
+    def cmd(st, ftype, payload=b""):
+        seq[0] += 1
+        n0 = len(gw.aurix.sent)
+        st.writer.lines.clear()
+        ss.command(st, {"seq": seq[0], "ts": time.time(), "type": ftype, "p": payload.hex(), "sid": st.session})
+        fwd = any(t == proto.T_GW_CMD for t, _p in gw.aurix.sent[n0:])
+        acks = [m for m in st.writer.lines if m.get("t") == "ack"]
+        return "fwd" if fwd else (acks[-1]["result"] if acks else None)
+
+    def rjoy(st, s):
+        n0 = len(gw.aurix.sent)
+        ss._rjoy(st, {"seq": s, "ts": time.time(), "x": 0.0, "y": 0.0, "lever": 0.5})
+        return any(t == proto.T_GW_RJOY for t, _p in gw.aurix.sent[n0:])
+    hdg = bytes([proto.MODE_HDG_LOCK])
+    standby = bytes([proto.MODE_STANDBY])
+    before = (cmd(cap, proto.T_SET_MODE, hdg), rjoy(cap, 1))
+    P.pilot_msg(cop, {"uav": 1, "take": True})      # the COPILOT flies: nothing changes for the captain / boat
+    cop_flying = (cmd(cap, proto.T_SET_MODE, hdg), rjoy(cap, 2))
+    P.pilot_msg(cap, {"uav": 1, "take": True})      # the captain takes it over (W61), boat in STANDBY
+    capfly = {
+        "hdg": cmd(cap, proto.T_SET_MODE, hdg),
+        "remote": cmd(cap, proto.T_REMOTE, bytes([0])),
+        "gen_on": cmd(cap, proto.T_GENERATOR, bytes([1])),
+        "standby": cmd(cap, proto.T_SET_MODE, standby),
+        "pause": cmd(cap, proto.T_AUTO_PAUSE),
+        "dp_stop": cmd(cap, proto.T_DP, bytes([proto.DP_STOP, 0, 0, 0])),
+        "cop_gen_on": cmd(cop, proto.T_GENERATOR, bytes([1])),
+        "cop_restart": cmd(cop, proto.T_RESTART, bytes([proto.ENG_RESTART])),
+        "cop_return": cmd(cop, proto.T_AUTO_RETURN),
+        "cop_standby": cmd(cop, proto.T_SET_MODE, standby),
+        "rjoy": rjoy(cap, 3),
+    }
+    asked = []
+    ss.ask_local(cop, {}, "vision stage 3", lambda ok, code: asked.append((ok, code)))
+    queued = len(ss.asks)
+    P.pilot_msg(cap, {"uav": 1, "take": False})
+    after = (cmd(cap, proto.T_SET_MODE, hdg), rjoy(cap, 4))
+    want = {"hdg": 126, "remote": 126, "gen_on": 126, "standby": "fwd", "pause": "fwd", "dp_stop": "fwd",
+            "cop_gen_on": 126, "cop_restart": 126, "cop_return": 126, "cop_standby": "fwd", "rjoy": False}
+    report("UA31 stations.py with the captain's joystick on a UAV: his driving commands (HDG LOCK, REMOTE, GENERATOR "
+           "ON) and the copilot's ACCEPT-needing ones (GENERATOR ON, RESTART, AUTO RETURN, a gateway setting) = 126 "
+           "at once, never queued; STANDBY / AUTO PAUSE / DP STOP forwarded; his rjoy dropped; a COPILOT flying "
+           "changes nothing; normal again after RETURN TO BOAT",
+           before == ("fwd", True) and cop_flying == ("fwd", True) and capfly == want and asked == [(False, 126)] and
+           queued == 0 and after == ("fwd", True) and getattr(cap, "rjoy_uav", 0) == 1,
+           "before %s copilot flying %s captain flying %s ask %s queued %d after %s" % (
+               before, cop_flying, capfly, asked, queued, after))
+
+
+def ua32_router_ctl():
+    """The router's "ctl" op flies a simulated drone in GUIDED by velocity setpoints (body frame, yaw rate), the
+    router's own zero 0.5 s after the last moving setpoint (the drone stops), refused while the drone lands for its
+    battery."""
+    base = free_base()
+    fl = simdrone.Fleet(base, 1, ttf=(1.0, 0.5, 0.3), origin=(37.82, 23.60)).start()
+    w = Worker()
+    try:
+        w.send({"op": "config", "slots": [{"slot": 1, "usb": "udp:127.0.0.1:%d" % (base + 1),
+                                           "elrs": "udp:127.0.0.1:%d" % (base + 11), "sysid": 11}]})
+        w.find(lambda e: e.get("ev") == "status" and e["links"].get("1", {}).get("present"), 8)
+        d = fl.drones[0]
+        d.sky = True
+        until(lambda: d.fix >= 3, 6)
+        seq = [0]
+
+        def req(**kw):
+            seq[0] += 1
+            w.send(dict(kw, op="cmd", id=seq[0]))
+            return w.find(lambda e, i=seq[0]: e.get("id") == i and e.get("ev") == "cmd", 10)
+        w.send({"op": "hatch", "open": True})
+        req(slot=1, via="usb", command=176, params=[1, 4])
+        req(slot=1, via="usb", command=400, params=[1, 0])
+        req(slot=1, via="usb", command=22, params=[0, 0, 0, 0, 0, 0, 30])
+        until(lambda: d.alt > 25.0, 20)
+        req(slot=1, via="elrs", command=176, params=[1, 4])
+        n0, e0, y0 = d.n, d.e, d.yaw
+        t_end = time.time() + 1.5
+        while time.time() < t_end:
+            w.send({"op": "ctl", "slot": 1, "vx": 5.0, "vy": 0.0, "vz": 0.0, "yaw_rate": 0.5})
+            time.sleep(0.1)
+        moved = math.hypot(d.n - n0, d.e - e0)
+        turned = abs(((d.yaw - y0) + math.pi) % (2 * math.pi) - math.pi)
+        time.sleep(1.2)                         # no more setpoints: the router's own zero
+        n1, e1 = d.n, d.e
+        time.sleep(0.6)
+        drift = math.hypot(d.n - n1, d.e - e1)
+        zeros = w.find(lambda e: e.get("ev") == "status" and e.get("stats", {}).get("ctl_zero", 0) >= 1, 3)
+        # the battery rule latched: no setpoint leaves the router any more
+        w.send({"op": "hatch", "open": False})
+        d.used_mah = d.capacity * 0.97
+        landing = w.find(lambda e: e.get("ev") == "status" and (e.get("drones", {}).get("1") or {}).get("landing"), 8)
+        w.send({"op": "ctl", "slot": 1, "vx": 5.0, "vy": 0.0, "vz": 0.0, "yaw_rate": 0.0})
+        refused = w.find(lambda e: e.get("ev") == "status" and e.get("stats", {}).get("ctl_refused", 0) >= 1, 3)
+        report("UA32 the router's manual setpoints: a simulated drone in GUIDED flies the velocity + yaw rate, the "
+               "router's own zero setpoint 0.5 s after the last moving one stops it, no setpoint while it lands for "
+               "its battery",
+               moved > 4.0 and turned > 0.3 and drift < 0.5 and zeros is not None and landing is not None and
+               refused is not None,
+               "moved %.1f m, turned %.2f rad, drift after the zero %.2f m, zero %s, landing %s, refused %s" % (
+                   moved, turned, drift, zeros is not None, landing is not None, refused is not None))
+    finally:
+        w.close()
+        fl.stop()
+
+
 def watchdog():
     def fire():
         print("\nSTALLED: test_uav.py still running after %d s - killed" % LIMIT_S, flush=True)
@@ -2546,7 +2897,8 @@ def main():
              ua16_launch, ua17_router_flight,
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
-             ua27_gateway_video, ua28_review_u3, ua29_review_router]
+             ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126,
+             ua32_router_ctl]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

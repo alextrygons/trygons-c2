@@ -24,6 +24,15 @@ def warning_alarms(t):
     return [c for _b, c, lv in alerts.active(alerts.bits_of(t)) if lv == alerts.WARNING]
 
 
+def boat_mode(gw):
+    """{"fresh", "standby", "mode"}: the boat's mode from FRESH telemetry only (step U5: the captain flies a UAV only
+    in STANDBY; an old copy = unknown = not STANDBY)."""
+    t = gw.telem_fresh() if hasattr(gw, "telem_fresh") else None
+    if t is None:
+        return {"fresh": False, "standby": False, "mode": None}
+    return {"fresh": True, "standby": t.get("mode") == proto.MODE_STANDBY, "mode": t.get("mode")}
+
+
 def boat_state(gw, hatch_relay, max_kn=SLOW_KN):
     """Everything the launch sequence asks of the boat. "launch_why" = [] when a launch may go on."""
     t = gw.telem_fresh() if hasattr(gw, "telem_fresh") else None

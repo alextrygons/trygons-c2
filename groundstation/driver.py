@@ -519,6 +519,8 @@ class DriverScreen:
             a.relay_press(n)
             if any(r["n"] == n and r["hold"] for r in a.relay_view()[1]):
                 self.relay_hold = n             # momentary: let go at the mouse release
+        elif act == "uav_give":
+            a.uav_give()                        # «ΕΠΙΣΤΡΟΦΗ ΣΤΟ ΣΚΑΦΟΣ» (step U5): the UAV hovers, the joystick back
         elif act == "fullscreen":
             self.w.attributes("-fullscreen", not self.w.attributes("-fullscreen"))
         elif act == "escape":
@@ -770,6 +772,13 @@ class DriverScreen:
         s["scr"] = bool(scr is not None and scr.recording())
         hl = getattr(a, "hail", None)                         # the loudhailer (step 13r): None = none on this link
         s["hail"] = hl.view() if hl is not None else None
+        # step U5: this station's joystick flies a UAV - screen 1 = its video + its own HUD (uavhud.py)
+        fly = a.uav_fly_slot() if hasattr(a, "uav_fly_slot") else None
+        s["uav_fly"] = fly
+        if fly is not None:
+            s["uav"] = a.uav_store.drones.get(fly) or {}
+            s["uav_boat"] = (d["est_lat"], d["est_lon"]) if d is not None and d.get("pos_source") else None
+            s["uav_clip"] = ((((gw.get("uav") or {}).get("pilots") or {}).get(str(fly))) or {}).get("clip") or []
         s["clock"] = time.strftime("%H:%M:%S")
         if d is not None and d["mode"] != proto.MODE_STANDBY and self.mission_t0 is None:
             self.mission_t0 = now
@@ -881,6 +890,9 @@ class DriverScreen:
             out.append(("collision", txt, "warn"))
         if a.front_sel.notice:
             out.append(("frontsel", video.notice_text(a.front_sel), "caution"))
+        fly = a.uav_fly_slot() if hasattr(a, "uav_fly_slot") else None
+        if fly is not None:
+            out.append(("uav_fly", T("uavf.banner", n=fly), "caution"))     # step U5: «JOYSTICK → UAV n»
         u = gw.get("uav") or {}
         if u.get("enabled") and u.get("state") == "OFFLINE":
             # U2 review LOW-12 (U4): the UAV router OFFLINE on screen 1's notices too (a notice, never an alarm)
@@ -912,6 +924,9 @@ class DriverScreen:
         vs = getattr(a, "vstreams", {})
         f1, f2 = vs.get("FRONT-1"), vs.get("FRONT-2")
         use = a.front_sel.update(f1, f2) if (f1 or f2) else "FRONT-1"
+        fly = a.uav_fly_slot() if hasattr(a, "uav_fly_slot") else None
+        if fly is not None:
+            use = "UAV-%d" % fly                         # step U5: the UAV's video while the joystick flies it
         fvs = vs.get(use)
         self.front_live = fvs is not None and not fvs.frozen()
         self.hud.measure = measure
@@ -927,9 +942,9 @@ class DriverScreen:
             iw, ih = (fvs.w, fvs.h) if fvs is not None and hasattr(fvs, "w") else (16, 9)
             pic = scale_rect(iw, ih, W, H, scale)
         self.pic = pic
-        if self.front_live:
+        if self.front_live and fly is None:
             under += self.vision_ops(pic)
-        if hudar is not None and a.t is not None and s.declutter != "MINIMAL":
+        if hudar is not None and a.t is not None and s.declutter != "MINIMAL" and fly is None:
             under += hudar.build(self, s, pic, W, H)
         if not self.front_live:
             cam = T("hud.video_frozen") if fvs is not None else T("hud.no_video")
@@ -939,7 +954,7 @@ class DriverScreen:
             under.append({"k": "text", "xy": (W / 2, H * 0.30), "s": cam, "tag": "frozen",
                           "size": max(14, int(H * 0.04)), "bold": True, "fill": theme.WHITE, "anchor": "c",
                           "max_w": W * 0.3, "box": None})
-        elif use != "FRONT-1":
+        elif use != "FRONT-1" and fly is None:
             under.append({"k": "text", "xy": (W / 2, H * 0.27), "s": use, "tag": "front_name",
                           "size": max(10, int(H * 0.02)), "bold": True, "fill": theme.YELLOW, "anchor": "c",
                           "max_w": None, "box": None})

@@ -67,6 +67,8 @@ import mapwin
 import track as trackmod
 import screenrec
 import hailer
+import uavfly
+import uavhud
 import uavmap
 import uavpanel
 import uavroute
@@ -333,6 +335,8 @@ class App:
         self.uav_store = uavmap.Store()  # U4: the drones on the map (gw_status "uav" drones + uav_telem)
         self.uav_telem_asked = False
         self.uav_log_save = {}          # (name, file, fmt) -> the path chosen for an export (U4 flight logs)
+        self.uav_fly = uavfly.UavFly()   # U5: which UAV this station's joystick flies (None = the boat's)
+        self.uav_sender = None           # the 10 Hz uav_ctl sender while flying
         self._cv_photo = None
         self.boat_pushed = False        # the boat file's settings pushed to the AURIX (CLAUDE.md L): HELM + STANDBY
         self.boat_push_seq = None       # the seq of that PARAM_SET (a NACK re-arms the push)
@@ -482,6 +486,7 @@ class App:
         self._uav_local = None
         self.uav_store.clear()                  # U4: the drones on the map belong to that boat
         self.uav_telem_asked = False
+        self.uav_fly_stop()                     # U5: the joystick is back on (no) boat
         if self.sound:
             self.sound.reset()
         if self.callouts is not None:
@@ -645,7 +650,10 @@ class App:
             token, kind = self.open_question()
             self.yn.question(token, now)
             c = None
-            if getattr(self, "sj", None) is not None:
+            if self.uav_fly.must_end((self.t or {}).get("mode"), self.uav_captain_like()):
+                self.uav_give(why=T("uavf.end_standby"))       # U5: the boat left STANDBY: the joystick back
+            if getattr(self, "sj", None) is not None and not self.uav_fly.active():
+                # (U5, U1 review MED-3: while the joystick flies a UAV the stick answers NO question - mouse only)
                 try:
                     c = shorejoy.controls(self.sj, self.sj_cfg)
                 except Exception:
@@ -672,6 +680,8 @@ class App:
     def rjoy_source(self):
         """The 30 Hz packet for the boat: the trigger is kept back while it answers a question (one press never does
         two things, step 13p)."""
+        if self.uav_fly.active():
+            return None                     # U5: the joystick flies a UAV - nothing of it goes to the boat
         v = shorejoy.to_remote(self.sj, self.sj_cfg)
         if v is not None:
             v["trigger"] = self.yn.send_trigger(bool(v.get("trigger")))
@@ -2641,6 +2651,10 @@ class App:
                     if getattr(self, "uav_page", None) is not None:
                         self.uav_page.on_ack(d)
                     self.event(T("uav.msg", text=i18n.from_en(d.get("text", ""))))
+                    if d.get("what") == "pilot":
+                        self.uav_pilot_ack(d)               # U5: manual control taken / given back / refused
+                elif kind == "uav_pilot_end":
+                    self.uav_pilot_end(d)
                 elif kind == "uav_telem":
                     self.uav_store.update(d.get("drones"))          # U4: the map at 2 Hz
                 elif kind == "uav_logs":
@@ -3613,6 +3627,15 @@ class App:
                 nm = "UAV-%d" % s
                 out.append(("btn", "cv_" + nm, T("uav.cv_button", n=s), lambda s=s: self.uav_view_open(s), "normal",
                             True, nm == self.camview))
+            us = self.uav_slot_of(self.camview)
+            if us is not None:
+                # U5: «ΧΕΙΡΙΣΜΟΣ UAV n» / «ΕΠΙΣΤΡΟΦΗ ΣΤΟ ΣΚΑΦΟΣ» (the gateway's pilot lock decides)
+                out.append(("gap",))
+                if self.uav_fly.slot == us:
+                    out.append(("btn", "uav_give", T("uavf.give"), self.uav_give, "normal", True, True))
+                else:
+                    out.append(("btn", "uav_take", T("uavf.take", n=us), lambda us=us: self.uav_take(us), "normal",
+                                True, False))
             out.append(("gap",))
             out.append(("btn", "cv_map", T("cv.map"), self.camview_close, "info", True, False))
             return out
@@ -4064,6 +4087,9 @@ class App:
         cams = (self.gw_status or {}).get("cameras") or {}
         if isinstance(self.link, GatewayLink) and cams and not cams.get("front_live", True):
             out.append(("no_video", T("boat.no_video")) + B["boat"] + (None,))      # 13n2: a warning only
+        if self.uav_fly.slot is not None:
+            # U5: «JOYSTICK → UAV n» on screen 2 too (screen 1: its notice + the UAV HUD's banner)
+            out.append(("uav_fly", T("uavf.banner", n=self.uav_fly.slot)) + B["pickup"] + (None,))
         u = (self.gw_status or {}).get("uav") or {}
         if isinstance(self.link, GatewayLink) and u.get("enabled") and u.get("state") == "OFFLINE":
             # U2 review LOW-12 (U4): the UAV router OFFLINE on the screens' notices (a notice, never an alarm)
@@ -5231,7 +5257,9 @@ class App:
         self.camview = None
         self.cv.delete("camview")
         if send and isinstance(self.link, GatewayLink):
-            if uav is not None:
+            if uav is not None and uav == self.uav_fly.slot and self.driver is not None:
+                pass                                # (U5: screen 1 still shows the UAV this station flies)
+            elif uav is not None:
                 self.link.send_msg({"t": "uav_view", "uav": uav, "open": False})
             else:
                 self.link.send_msg({"t": "cam_view", "cam": None})  # the stream ends: no uplink for it any more
@@ -5340,6 +5368,99 @@ class App:
         ai = ((self.gw_status or {}).get("uav") or {}).get("ai") or {}
         return ((ai.get("feeds") or {}).get(str(slot)) or {}).get("boxes") or []
 
+    # --- U5: flying a UAV with this station's joystick (uavfly.py; the gateway's pilot.py decides) -----------------
+    def uav_fly_slot(self):
+        return self.uav_fly.slot
+
+    def uav_captain_like(self):
+        """This station's joystick drives the boat: the crew captain, a single operator, the HELM holder."""
+        crew, _c, _l = crewui.crew_of(self)
+        gw = self.gw_status or {}
+        helm = (self.t or {}).get("helm")
+        return crew == "captain" or bool(self.single_op) or (helm is not None and helm == gw.get("you"))
+
+    def uav_take(self, n):
+        """«ΧΕΙΡΙΣΜΟΣ UAV n»: ask the gateway for the drone (the pilot lock; the captain only in STANDBY)."""
+        if not isinstance(self.link, GatewayLink):
+            return self.say(T("uav.not_connected"), RED)
+        if self.uav_captain_like() and (self.t or {}).get("mode") != proto.MODE_STANDBY:
+            return self.say(T("uavf.need_standby"), RED)
+        self.link.send_msg(self.uav_fly.take(n))
+        self.event(T("uavf.asked", n=n))
+
+    def uav_give(self, why=None):
+        """«ΕΠΙΣΤΡΟΦΗ ΣΤΟ ΣΚΑΦΟΣ»: the UAV hovers, the joystick is back on the boat."""
+        n = self.uav_fly.slot if self.uav_fly.slot is not None else self.uav_fly.asked
+        msg = self.uav_fly.give()
+        if msg is not None and isinstance(self.link, GatewayLink):
+            self.link.send_msg(msg)
+        self.uav_fly_stop(n)
+        if n is not None:
+            txt = why or T("uavf.given", n=n)
+            self.say(txt)
+            self.event(txt)
+
+    def uav_pilot_ack(self, d):
+        was = self.uav_fly.slot
+        self.uav_fly.on_ack(d)
+        if self.uav_fly.slot is not None and self.uav_fly.slot != was:
+            self.uav_fly_start(self.uav_fly.slot)
+        elif self.uav_fly.slot is None and was is not None:
+            self.uav_fly_stop(was)
+        if not d.get("ok"):
+            self.say(T("uav.msg", text=i18n.from_en(d.get("text", ""))), RED)
+
+    def uav_pilot_end(self, d):
+        was = self.uav_fly.slot
+        self.uav_fly.on_end(d)
+        if was is not None and self.uav_fly.slot is None:
+            self.uav_fly_stop(was)
+        if d.get("why") == "captain":
+            txt = T("uavf.captain_took", n=d.get("uav"))
+        else:
+            txt = T("uav.msg", text=i18n.from_en(d.get("text", "")))
+        self.say(txt, RED)
+        self.event(txt)
+        if d.get("why") == "captain":
+            self.lamps.set_local("uav_pilot", txt)          # a CAUTION on this PC until acknowledged here
+
+    def uav_fly_start(self, n):
+        """The joystick flies UAV n: the 10 Hz uav_ctl sender, its video (screen 1 when open, else screen 2's
+        camera view), the banner «JOYSTICK → UAV n» on both screens."""
+        self.uav_fly_sender_stop()
+        self.lamps.set_local("uav_pilot", None)
+        if isinstance(self.link, GatewayLink):
+            self.uav_sender = shorejoy.RemoteSender(
+                self.link, lambda: self.uav_fly.source(getattr(self, "sj", None), getattr(self, "sj_cfg", None)),
+                hz=10.0)
+            self.uav_sender.start()
+            if self.driver is not None:
+                if self.uav_slot_of(self.camview) != n:
+                    self.link.send_msg({"t": "uav_view", "uav": n, "open": True})
+            elif self.uav_slot_of(self.camview) != n:
+                self.uav_view_open(n)
+        self.event(T("uavf.banner", n=n))
+        try:
+            self.render(force=True)
+        except Exception:
+            pass
+
+    def uav_fly_sender_stop(self):
+        if getattr(self, "uav_sender", None) is not None:
+            self.uav_sender.stop()
+            self.uav_sender = None
+
+    def uav_fly_stop(self, n=None):
+        self.uav_fly_sender_stop()
+        self.uav_fly.slot = self.uav_fly.asked = None
+        if n is not None and isinstance(self.link, GatewayLink) and self.driver is not None and \
+                self.uav_slot_of(self.camview) != n:
+            self.link.send_msg({"t": "uav_view", "uav": n, "open": False})
+        try:
+            self.render(force=True)
+        except Exception:
+            pass
+
     def uav_log_export(self, name, file, fmt, path):
         """Ask the gateway for a flight log; the answer is written to path (uav_log_reply)."""
         if not isinstance(self.link, GatewayLink):
@@ -5383,6 +5504,14 @@ class App:
                           (T("uav.cv_hdg", hdg="%03.0f°" % u["hdg"] if u.get("hdg") is not None else "---",
                              dist=u.get("dist_m") if u.get("dist_m") is not None else "--",
                              mode=u.get("mode") or "-"), fnt)]
+                # U5: the distance + an arrow to the boat (relative to the UAV's heading); who flies it
+                bd = self.t or {}
+                dist, rel = uavhud.to_boat(u, (bd.get("est_lat"), bd.get("est_lon")) if bd.get("pos_source")
+                                           else None)
+                if dist is not None:
+                    lines.append((T("uavh.boat_arrow", a=uavhud.arrow_char(rel), m="%.0f" % dist), fnt))
+                if self.uav_fly.slot == uslot:
+                    lines.append((T("uavf.banner", n=uslot), fnt_b))
                 if u.get("stage"):
                     lines.append((T("uav.land_now", n=uslot) if u["stage"] == "land" else
                                   T("uav.land_in", n=uslot, s=u["stage"]), fnt_b))

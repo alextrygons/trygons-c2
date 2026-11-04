@@ -103,6 +103,20 @@ def log_line(r):
     return T("uav.log_line", name=r.get("name", "?"), when=when, kb=max(1, int((r.get("bytes") or 0) / 1024)))
 
 
+def fly_view(st, mine):
+    """The manual-control part of the page (pure: tests UV13): the flying UAVs that may be asked for, who flies
+    which (gw_status "uav" "pilots")."""
+    drones = (st or {}).get("drones") or {}
+    pilots = (st or {}).get("pilots") or {}
+    can = [int(k) for k, d in sorted(drones.items()) if str(k).isdigit() and d.get("armed") and not d.get("landed")
+           and not d.get("in_slot") and not d.get("landing") and int(k) != mine]
+    lines = [T("uavf.flown_by", n=k, name=p.get("name") or "?", role=T("uavf.r_captain") if p.get("captain") else
+               T("uavf.r_copilot")) for k, p in sorted(pilots.items())]
+    if mine is not None:
+        lines.insert(0, T("uavf.banner", n=mine))
+    return {"can_take": can, "mine": mine, "text": "   ".join(lines)}
+
+
 class Page:
     def __init__(self, fr, app):
         import tkinter as tk
@@ -168,6 +182,22 @@ class Page:
         self.b_gpx = tk.Button(bf, command=lambda: self.export("gpx"), **theme.button_opts())
         i18n.bind(self.b_gpx, "uav.export_gpx")
         self.b_gpx.pack(side="left")
+        # manual control (step U5): «ΧΕΙΡΙΣΜΟΣ UAV n» for every flying UAV, «ΕΠΙΣΤΡΟΦΗ ΣΤΟ ΣΚΑΦΟΣ» (the gateway's
+        # pilot lock decides: one pilot per drone, the captain only with the boat in STANDBY)
+        ff = tk.Frame(lf, bg=BG)
+        ff.pack(fill="x", pady=(4, 0))
+        self.b_fly = []
+        for i in range(ROWS):
+            b = tk.Button(ff, command=lambda n=i + 1: self.fly(n), text=T("uavf.take", n=i + 1),
+                          **theme.button_opts())
+            b.pack(side="left", padx=(0, 4))
+            self.b_fly.append(b)
+        self.b_give = tk.Button(ff, command=self.give, **theme.button_opts())
+        i18n.bind(self.b_give, "uavf.give")
+        self.b_give.pack(side="left", padx=(12, 0))
+        self.l_pilots = tk.Label(lf, font=theme.font("small"), bg=BG, fg=C["fg"], anchor="w", justify="left",
+                                 wraplength=900)
+        self.l_pilots.pack(fill="x")
         self.logs = []
         self.lb_logs = tk.Listbox(lf, height=4, font=theme.font("small"), bg=C["panel"], fg=C["fg"],
                                   exportselection=False)
@@ -220,6 +250,14 @@ class Page:
     def hatch_close(self):
         if self.connected():
             self.app.link.send_msg({"t": "uav_hatch_close"})
+
+    def fly(self, n):
+        if not self.connected():
+            return self.say(T("uav.not_connected"), False)
+        self.app.uav_take(n)
+
+    def give(self):
+        self.app.uav_give()
 
     def ask_logs(self):
         if not self.connected():
@@ -291,8 +329,9 @@ class Page:
             self.stats.configure(text="")
             for w in (self.l_hatch, self.l_seq, self.l_notes):
                 w.configure(text="")
-            for b in (self.b_prep, self.b_stop, self.b_close, self.b_logs):
+            for b in (self.b_prep, self.b_stop, self.b_close, self.b_logs, self.b_give, *self.b_fly):
                 b.configure(state="disabled")
+            self.l_pilots.configure(text="")
             for labels, b in self.rows:
                 for lb in labels.values():
                     lb.configure(text="")
@@ -315,6 +354,11 @@ class Page:
         self.b_stop.configure(state="normal" if lv["can_stop"] else "disabled")
         self.b_close.configure(state="normal" if lv["can_close"] else "disabled")
         self.b_logs.configure(state="normal")
+        fv = fly_view(st, getattr(getattr(self.app, "uav_fly", None), "slot", None))
+        for i, b in enumerate(self.b_fly):
+            b.configure(text=T("uavf.take", n=i + 1), state="normal" if on and (i + 1) in fv["can_take"] else "disabled")
+        self.b_give.configure(state="normal" if fv["mine"] is not None else "disabled")
+        self.l_pilots.configure(text=fv["text"])
         slots = {s["slot"]: s for s in st.get("slots", [])}
         for i, (labels, b) in enumerate(self.rows):
             s = slots.get(i + 1)

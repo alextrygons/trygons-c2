@@ -2762,6 +2762,39 @@ UAV MAGAZINE - MAP, TELEMETRY, VIDEO, AI (step U4)
   FLIGHT LOGS, choose one, EXPORT CSV (a spreadsheet) or EXPORT GPX (Google
   Earth, OpenCPN).
 
+UAV MAGAZINE - FLYING A UAV BY HAND (step U5)
+  Who: the COPILOT may fly a UAV from his own station at any time (his joystick
+  never drives the boat). The CAPTAIN only with the boat in STANDBY - while
+  his joystick is on a UAV the boat gets nothing from it.
+  How: open the UAV's video (a click on it on the map, or bar 1 of the camera
+  view) and press FLY UAV n (also Tools - UAV magazine). CENTRE THE STICK
+  first: until the gateway has seen it centred the UAV only holds. Then:
+  stick forward / back / left / right = fly that way relative to the UAV's
+  nose (up to 10 m/s), the TWCS lever = climb / descend (its middle 45-55 % =
+  keep the altitude; a station without a lever keeps the altitude), the twist
+  = turn. Let go = the UAV stops and holds its position. It never goes below
+  10 m or above 120 m, and it stops at the air geofence / a no-fly zone
+  ("held: ..." on the screen). It is ASSISTED flying only - the joystick never
+  works the drone's motors directly.
+  The screens: "JOYSTICK -> UAV n" on both screens; screen 1 shows the UAV's
+  video with its own green values (altitude, climb, speed, battery, link,
+  heading, the distance + an ARROW to the boat) - the boat's mode, the MASTER
+  lamps, the alarms and SAVE stay. RETURN TO BOAT (screen 1, bar 1 of the
+  camera view, the UAV page) = the UAV hovers where it is and the joystick is
+  back on the boat (it never means "fly back" - the drones never land on the
+  boat).
+  While the captain flies: his driving commands and every copilot request that
+  needs his ACCEPT are refused at once ("the joystick is on a UAV"); STANDBY,
+  AUTO PAUSE and DP STOP always work. Questions on his screen are answered with
+  the MOUSE only (the joystick buttons fly the drone). The boat leaving STANDBY
+  ends it at once: the UAV hovers, the joystick is back on the boat.
+  One pilot per UAV: the first one keeps it, another station is refused
+  ("another pilot flies this UAV") - EXCEPT the CAPTAIN, who can take a UAV over
+  from the copilot at once (owner decision): the copilot sees "THE CAPTAIN TOOK
+  CONTROL" and the UAV holds during the hand-over. A copilot cannot take one
+  from the captain. No joystick data for 0.5 s = the UAV holds; for 3 s (or the
+  station disconnects) = manual control ends, the UAV hovers.
+
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
 -------------------------------------------------------------------------------

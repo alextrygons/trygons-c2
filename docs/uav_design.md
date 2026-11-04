@@ -312,10 +312,12 @@ never an AURIX alarm). The drone's own BATT_FS_CRT_ACT Land is the backstop when
   STOP) stay free.
 - COPILOT: may fly a UAV from his own station any time (his joystick never drives the boat anyway); the
   captain keeps the boat.
-- One pilot per drone at a time (gateway pilot lock): the FIRST pilot wins, no takeover - another station (also
-  the captain) gets 127 until the pilot gives the drone back or his station is stale / lost (the default chosen
-  in the U1 review; W61 asks the owner to confirm). The pilot's station link stale
-  0.5 s / lost / logged out = the gateway sends a zero setpoint (hold) and frees the lock.
+- One pilot per drone at a time (gateway pilot lock): the FIRST pilot wins - another station gets 127 until the
+  pilot gives the drone back or his station is stale / lost. OWNER DECISION W61 (2026-11-04, replaces the U1-review
+  default "no takeover"): the CAPTAIN CAN TAKE OVER a drone from a copilot pilot AT ONCE - the copilot sees «Ο
+  ΚΥΒΕΡΝΗΤΗΣ ΠΗΡΕ ΤΟΝ ΕΛΕΓΧΟ», the drone holds position during the hand-over (zero setpoint until the captain's
+  stick has been seen centred). A copilot never takes a drone from the captain (127). The pilot's station link stale
+  0.5 s = the gateway sends a zero setpoint (hold); 3 s / lost / logged out = the lock ends (the drone hovers).
 - Assisted flying only (GUIDED velocity setpoints, POSHOLD-like): stick X / Y = direction / horizontal
   speed (<= uav_man_speed_ms, 10 m/s TO CONFIRM), TWCS lever = climb / descend (<= 2 m/s, never below
   uav_min_alt_m 10 m above the launch level, never above uav_max_alt_m), twist = yaw rate, let go = zero
@@ -324,6 +326,26 @@ never an AURIX alarm). The drone's own BATT_FS_CRT_ACT Land is the backstop when
   It never means "fly back and land on the boat" (one-way drones).
 - Lost link (drone <-> boat, or boat <-> shore) = the UAV holds (ArduPilot's GUIDED command timeout
   stops a velocity setpoint after ~3 s by itself; the gateway also sends zero when the shore is stale).
+- AS BUILT (U5): gateway/uav/pilot.py (Pilots in the UavManager: uav_pilot {uav, take}, uav_ctl {uav, seq, ts, x, y,
+  z, r} = the NORMALISED stick -1..1 at 10 Hz over UDP signed like rjoy (stations.udp_packet), uav_hold {uav}; answers
+  uav_ack what "pilot" / "hold", uav_pilot_end {uav, why: captain | standby | lost | landed | ...}; gw_status "uav"
+  "pilots"). The gateway makes the setpoint (pilot.setpoint, pure): x / y -> body-frame vx / vy <= uav_man_speed_ms 10
+  m/s (diagonal too), the lever's climb <= uav_man_climb_ms 2 m/s slowing to the floor uav_min_alt_m / the ceiling
+  uav_max_alt_m, yaw <= uav_man_yaw_dps 60 deg/s, a dead band 8 %; the air geofence / no-fly zones checked at the point
+  reached in 3 s + 10 m = no horizontal speed (hold at the edge; already outside: only back in); an unknown altitude /
+  position = no vertical / horizontal speed. Taking = DO_SET_MODE GUIDED (the lock dropped if refused); every new
+  pilot's stick must be seen centred first. Giving back / an end = zero setpoint + BRAKE, LOITER 1 s later. The router
+  op "ctl" = SET_POSITION_TARGET_LOCAL_NED frame 9 (velocity + yaw rate only), refused while landing for the battery,
+  and the router's OWN zero setpoint 0.5 s after the last moving one (a gateway hang). stations.py: 126 for the
+  captain's DRIVING_CMDs + REMOTE / MANEUVER asks while his joystick is on a UAV, for every copilot command that would
+  need his ACCEPT and for the gateway's own ACCEPT questions (_ask_driver: never queued); STANDBY / AUTO PAUSE / DP STOP
+  free; his rjoy dropped (rjoy_uav). Station: groundstation/uavfly.py (take / give / the 10 Hz sender; the lever's
+  neutral zone 45-55 % = hold the altitude; no lever = the altitude held; the twist = shore_joystick.json "twist",
+  default stick axis R), uavhud.py (screen 1: the UAV's video + its green HUD, the boat's mode / lamps / alarms /
+  notices / bottom bar kept = hud.UAV_KEEP; RETURN TO BOAT on the "drive" place), app.py (no rjoy + the selector
+  without the stick while flying, the banner on both screens, the camera view's bar 1 FLY / RETURN TO BOAT, the arrow
+  to the boat in screen 2's UAV view, «Ο ΚΥΒΕΡΝΗΤΗΣ ΠΗΡΕ ΤΟΝ ΕΛΕΓΧΟ» + a local CAUTION), uavpanel.py (FLY UAV n
+  buttons). Tests gateway UA30-UA32, station UV12-UV14.
 
 ### 6.4 The UAV never touches boat control
 UAV modules never send to the AURIX (only the hatch relay through stations.py's normal relay path),
@@ -397,8 +419,9 @@ under the data folder (uav_logs/<name>/<date>.csv).
 Station <-> gateway messages (JSON, the existing station link; English in the protocol):
 uav_register {slot}, uav_route {target: "next" | slot (AS BUILT U3: the slot, not the sysid), wps: [{lat, lon, alt}]},
 uav_launch_prepare {count, confirm}, (the captain's YES / NO = AS BUILT U3 the existing screen-1 driver_ask /
-driver_answer, always on the captain's screen; no uav_launch_answer), uav_launch_stop, uav_hatch_close, uav_pilot {uav, take |
-give}, uav_ctl {uav, vx, vy, vz, yaw_rate, seq} (10 Hz), uav_hold {uav}, uav_view {uav}; from the
+driver_answer, always on the captain's screen; no uav_launch_answer), uav_launch_stop, uav_hatch_close, uav_pilot {uav, take:
+bool}, uav_ctl {uav, seq, ts, x, y, z, r} (AS BUILT U5: the normalised stick, 10 Hz, UDP signed; the gateway makes the
+velocity setpoint), uav_hold {uav}, uav_view {uav}; from the
 gateway: gw_status "uav" (slots, hatch, sequence, pilots), uav_telem, uav_ack {code}.
 No new AURIX frame. No new app/proto.h define.
 

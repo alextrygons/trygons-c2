@@ -82,7 +82,7 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               117: "only the captain (or a station on the boat) holds HELM",
               118: "captain only: REMOTE MANUAL / MANEUVER / engine START / LINK TIME / power restore",
               119: "no captain holds HELM",
-              # UAV magazine (CLAUDE.md V; 122 from step U2, 123-127 reserved for U3-U5)
+              # UAV magazine (CLAUDE.md V; 122 U2, 123-125 U3, 126 / 127 U5)
               122: "UAV not registered / its check failed",
               123: "UAV route refused (energy / range / altitude)",
               124: "UAV route in a no-fly zone / outside the air geofence",
@@ -169,6 +169,12 @@ class Station:
 # route not checked 121); step 13q2d: SET_MODE (HDG LOCK = the UNCREWED entry from REMOTE / MANEUVER)
 PROG_CHECK_TYPES = (proto.T_PROG_BEGIN, proto.T_PROG_WP, proto.T_PROG_COMMIT, proto.T_AUTO_START, proto.T_AUTO_RESUME,
                     proto.T_AUTO_RETURN, proto.T_DP, proto.T_SET_MODE)
+
+
+def _uav_flying_captain(srv, st):
+    """Step U5: the UAV slot the captain's joystick flies now (None = none); safe on a test's fake server."""
+    pil = getattr(getattr(getattr(srv, "gw", None), "uav", None), "pilots", None)
+    return pil.joystick_on_uav(st) if pil is not None and st is not None else None
 
 
 class StationServer:
@@ -328,6 +334,9 @@ class StationServer:
             cams = getattr(self.gw, "cams", None)
             if cams is not None and hasattr(cams, "station_cams"):
                 cams.station_cams.pop(st.id, None)      # its streams + camera view end with it (13n2)
+            pil = getattr(getattr(self.gw, "uav", None), "pilots", None)
+            if pil is not None:
+                pil.station_gone(st)                    # its UAV hovers, the lock ends (step U5)
             hail = getattr(self.gw, "hail", None)
             if hail is not None and hasattr(hail, "station_gone"):
                 hail.station_gone(st)                   # its loudhailer floor ends with it (13r)
@@ -366,6 +375,11 @@ class StationServer:
         (older than 300 ms / latency over 400 ms = link lost)."""
         if st.role == "VIEWER" or self.gw.telem2.get("helm") != st.id:
             st.rjoy_dropped = getattr(st, "rjoy_dropped", 0) + 1
+            return
+        pil = getattr(getattr(self.gw, "uav", None), "pilots", None)
+        if pil is not None and pil.slot_of(st.id) is not None:
+            # step U5: this station's joystick flies a UAV - nothing of it reaches the boat (storm I83 reserved)
+            st.rjoy_uav = getattr(st, "rjoy_uav", 0) + 1
             return
         try:
             seq = int(m["seq"]) & 0xFFFF
@@ -437,6 +451,11 @@ class StationServer:
         st.udp_ok = getattr(st, "udp_ok", 0) + 1
         if m.get("t") == "rjoy":
             self._rjoy(st, m)
+        elif m.get("t") == "uav_ctl" and "uav_ctl" in self.ext:
+            try:
+                self.ext["uav_ctl"](st, m)          # step U5: manual UAV flight, 10 Hz, signed like rjoy
+            except Exception:
+                log.exception("uav_ctl")
 
     def age(self, st, ts):
         """How old a station time stamp is on the gateway's clock (s)."""
@@ -521,6 +540,9 @@ class StationServer:
             if d is not None and (d["power_up"] != "off" or d["group"] != "extra" or d["type"] != "onoff" or d["pair"]):
                 return self.refuse(st, seq, ftype, 125, ": the UAV hatch relay must be an extra on/off relay, "
                                                         "power_up off, no pair")
+        why126 = StationServer.uav_joy_refusal(self, st, ftype, payload)
+        if why126:
+            return self.refuse(st, seq, ftype, 126, why126)
         if self.prog_check and ftype in PROG_CHECK_TYPES:
             why = self.prog_check(st, ftype, payload)
             if why:
@@ -547,6 +569,34 @@ class StationServer:
             self.gw.audit("copilot_cmd", station=st.id, user=st.user, type=ftype, what=what, captain=cap.id)
             return self._forward(st, seq, ftype, payload, age, env=cap)
         self._forward(st, seq, ftype, payload, age)
+
+    # --- step U5: the captain's joystick on a UAV (CLAUDE.md V, docs/uav_design.md 6.3) ------------------------------
+    def uav_pilots(self):
+        return getattr(getattr(self.gw, "uav", None), "pilots", None)
+
+    def uav_flying_captain(self, st):
+        """The UAV slot the captain's (HELM / single operator) joystick flies now, else None."""
+        pil = getattr(getattr(self.gw, "uav", None), "pilots", None)
+        return pil.joystick_on_uav(st) if pil is not None and st is not None else None
+
+    def uav_joy_refusal(self, st, ftype, payload):
+        """126 (text) while the CAPTAIN's joystick is on a UAV: his own driving commands AND every copilot command
+        that would need his ACCEPT are refused at once (never queued: he is flying, not watching the boat); STANDBY,
+        AUTO PAUSE and DP STOP stay free (MED-3 of the U1 review). None = not refused."""
+        if getattr(getattr(self.gw, "uav", None), "pilots", None) is None or ftype == proto.T_AUTO_PAUSE:
+            return None                     # (no UAV magazine / a test's fake server: nothing to refuse)
+        manual = ftype in (proto.T_REMOTE, proto.T_MANEUVER) and payload[:1] == bytes([0])   # (a REMOTE / MANEUVER ask)
+        if not (manual or proto.is_driving_cmd(ftype, payload, StationServer.relay_groups(self))):
+            return None
+        n = _uav_flying_captain(self, st)
+        if n is not None:
+            return ": the captain's joystick flies UAV %d (STANDBY / AUTO PAUSE / DP STOP only)" % n
+        if st.crew == "copilot" and not st.single_op:
+            cap = self.stations.get(self.gw.telem2.get("helm"))
+            n = _uav_flying_captain(self, cap) if cap is not None and cap is not st else None
+            if n is not None:
+                return ": the captain flies UAV %d - no ACCEPT can be asked now" % n
+        return None
 
     def copilot_free(self, ftype):
         """A copilot command forwarded without the captain's ACCEPT (COPILOT_FREE). Step 13q2b (MED-1): AUTO RETURN
@@ -642,6 +692,11 @@ class StationServer:
 
     def _ask_driver(self, st, seq, ftype, payload, age, what, action=None, target=None):
         target = target if target is not None else self.captain()
+        if _uav_flying_captain(self, target) is not None:
+            # step U5: the captain flies a UAV - no question is queued for his ACCEPT (126 at once)
+            if action:
+                return action(False, 126)
+            return self.refuse(st, seq, ftype, 126, ": the captain flies a UAV - no ACCEPT can be asked now")
         drv = self._screens(target)
         if not drv:
             if action:

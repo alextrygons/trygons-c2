@@ -169,6 +169,10 @@ class Gateway:
         for k, fn in (("uav_telem_on", self.uav.telem_msg), ("uav_logs", self.uav.logs_msg),
                       ("uav_log", self.uav.logs_msg), ("uav_view", self.cams.uav_view_request)):
             self.stations.ext[k] = fn
+        # U5: manual control + the pilot lock (uav_ctl also arrives over UDP, signed like rjoy: stations.udp_packet)
+        for k, fn in (("uav_pilot", self.uav.pilots.pilot_msg), ("uav_ctl", self.uav.pilots.ctl),
+                      ("uav_hold", self.uav.pilots.hold_msg)):
+            self.stations.ext[k] = fn
         if self.uav.video_on:
             self.cams.uav_slots = sorted(int(s) for s in self.uav.vcfg["devices"])
         if self.rec.enabled:
