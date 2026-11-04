@@ -97,6 +97,17 @@ def resolve_serial(spec, ports=None, platform=None, exists=None, realpath=None):
         raise SerialSpecError("not set in gateway.json (python gateway.py --list-serial shows the names)")
     if spec.startswith("tcp:"):
         return spec
+    if spec.startswith("usbloc:"):
+        # the USB PORT PATH on the hub (UAV magazine slots, CLAUDE.md V: every flight controller shows the same USB id,
+        # only the hub port tells the slots apart - never taken from the device); Ubuntu + Windows (pyserial location)
+        loc = spec[len("usbloc:"):].strip()
+        found = [p.device for p in (comports() if ports is None else ports)
+                 if (getattr(p, "location", None) or "").split(":")[0] == loc]
+        if not found:
+            raise SerialSpecError("%s: nothing plugged into that USB port" % spec)
+        if len(found) > 1:
+            raise SerialSpecError("%s: %d ports at that location (%s)" % (spec, len(found), ", ".join(sorted(found))))
+        return found[0]
     u = parse_usb(spec)
     if u is not None:
         vid, pid, sn = u
@@ -176,6 +187,9 @@ def list_serial(ports=None, links=None, platform=None):
         u = usb_spec(p)
         if u:
             names.append(u)
+        loc = (getattr(p, "location", None) or "").split(":")[0]
+        if loc:
+            names.append("usbloc:%s   (the USB port itself: UAV magazine slots)" % loc)
         lines.append("%-14s %s" % (p.device, getattr(p, "description", "") or ""))
         for n in names:
             lines.append("    use: %s" % n)

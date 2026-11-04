@@ -192,7 +192,7 @@ sed -n '/RAM PER CORE/,$p' "$TEMP/mem_report.txt"
 [ $mrc -ne 0 ] && { echo "MEMORY CHECK FAILED"; fail=1; }
 
 # every Python file of the ground station / tools must at least parse
-for f in groundstation/*.py tools/*.py academy/*.py; do
+for f in groundstation/*.py tools/*.py academy/*.py gateway/uav/*.py; do
     "$PY" -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$f" 2>/dev/null || { echo "PYTHON SYNTAX ERROR: $f"; fail=1; }
 done
 echo "python files parse"
@@ -253,6 +253,12 @@ grep -E "^\[FAIL\]|PRACTICAL TESTS" "$TEMP/practical_tests.txt"
 echo "== loudhailer on the gateway (13r): first speaker wins, half duplex, recording in SAVE / KEEP, link priority, no effect on driving, failure = notice"
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_loudhailer.py > "$TEMP/loudhailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER TESTS" "$TEMP/loudhailer_tests.txt"
+echo "== UAV magazine on the gateway (U2): own MAVLink codec (+ pymavlink cross-check), ALLOW-list, writer check, no AURIX path, read-only registration check, registry, GPS warm start, simulated drones, router process, the real gateway"
+( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_uav.py > "$TEMP/uav_tests.txt" 2>&1 ) || { echo "UAV TESTS FAILED"; fail=1; }
+grep -E "^\[(FAIL|N/A )\]|UAV TESTS|STALLED" "$TEMP/uav_tests.txt"
+echo "== UAV magazine on the station (U2): pictures, the Tools page «ΜΑΓΓΕΜΑ UAV», answers in the screen language"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_uavui.py > "$TEMP/uavui_tests.txt" 2>&1 ) || { echo "UAV STATION TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|UAV STATION TESTS" "$TEMP/uavui_tests.txt"
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS|STALLED|CRASHED" "$TEMP/gw_tests.txt"   # W50s: a stalled section is killed + named

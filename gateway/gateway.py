@@ -37,6 +37,7 @@ from avoid import Avoider
 ALM_FENCE = 16                      # navreq alarm bit: outside the geofence (app/smallboat.h SB_NAV_ALM_FENCE)
 from vision.manager import VisionManager
 from loudhailer import Loudhailer
+from uav.manager import UavManager
 import chart
 from cameras import CameraManager, path_name
 from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAULT_CHANNELS
@@ -150,6 +151,10 @@ class Gateway:
             self.stations.ext[k] = fn
         if self.hail.track is not None and self.rec.enabled:
             self.rec.cams["AUDIO"] = self.hail.track    # both directions into the ring + every SAVE / KEEP event
+        # UAV magazine (CLAUDE.md V, step U2): registry + slot USB checks + GPS warm start; its router = its own
+        # process; a notice only, never the AURIX
+        self.uav = UavManager(cfg.get("uav"), self)
+        self.stations.ext["uav_register"] = self.uav.register_msg
 
     def _on_telem(self, f):
         try:
@@ -643,6 +648,14 @@ class Gateway:
                 log.exception("loudhailer")
             await asyncio.sleep(0.25)
 
+    async def uav_loop(self):
+        while True:
+            try:
+                self.uav.tick()
+            except Exception:                               # the UAV magazine never stops the gateway
+                log.exception("uav")
+            await asyncio.sleep(0.25)
+
     # --- the 1 Hz status to the AURIX (also its "gateway alive" heartbeat) ---------
     # --- internet channels (section C) ---------------------------------------------
     def may_change(self, st):
@@ -757,7 +770,8 @@ class Gateway:
                 "academy": self.academy.status(),
                 "relays": self.stations.relay_status(),
                 "vision": self.vision.status(self.net.data_saver()),
-                "hail": self.hail.status()}
+                "hail": self.hail.status(),
+                "uav": self.uav.status()}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -777,6 +791,8 @@ class Gateway:
                 rec_loop = True
         self.hail.start(asyncio.get_running_loop())
         tasks.append(asyncio.create_task(self.hail_loop()))
+        self.uav.start(asyncio.get_running_loop())
+        tasks.append(asyncio.create_task(self.uav_loop()))
         if not rec_loop and "AUDIO" in self.rec.cams:
             tasks.append(asyncio.create_task(self.recorder_loop()))     # the audio ring without cameras
         tasks.append(asyncio.create_task(self.sync.run()))
@@ -796,6 +812,7 @@ class Gateway:
             await asyncio.gather(*tasks, return_exceptions=True)
             self.vision.stop()
             self.hail.stop()
+            self.uav.stop()
             await self.stations.stop()
             await self.web.stop()
             self.sync._close()

@@ -67,6 +67,7 @@ import mapwin
 import track as trackmod
 import screenrec
 import hailer
+import uavpanel
 import collections
 import json
 from tkinter import messagebox, simpledialog
@@ -467,6 +468,8 @@ class App:
         self.t = None
         self.t_rx = 0.0
         self.gw_status = None
+        if getattr(self, "uav_page", None) is not None:
+            self.uav_page.update(None)
         self.hist.clear()
         self.slam_hist.clear()
         self.lamps = alerts.MasterLamps()
@@ -2605,6 +2608,8 @@ class App:
                     self.draw_vision()
                     self.drv_vision()
                     self.drv_proposal()
+                    if getattr(self, "uav_page", None) is not None:
+                        self.uav_page.update(d.get("uav"))    # the UAV magazine page (CLAUDE.md V, U2)
                     if self.callouts:
                         self.callouts.gw(d)
                 elif kind == "channel_ack":
@@ -2617,6 +2622,10 @@ class App:
                     self.on_keep_ack(d)
                 elif kind in ("hail_floor", "ptt_ack", "hail", "hail_signal_ack", "hail_volume_ack"):
                     self.hail.on_msg(kind, d)           # the loudhailer (step 13r)
+                elif kind == "uav_ack":
+                    if getattr(self, "uav_page", None) is not None:
+                        self.uav_page.on_ack(d)
+                    self.event(T("uav.msg", text=i18n.from_en(d.get("text", ""))))
                 elif kind == "vision_ack":
                     self.say(T("cap.vis_msg", text=i18n.from_en(d.get("text", ""))), GREEN if d.get("ok") else RED)
                     self.event(T("cap.ev_vision", text=i18n.from_en(d.get("text", ""))))
@@ -3252,6 +3261,7 @@ class App:
         tab("tab.engine", self._build_engine)
         tab("tab.sound", self._build_sound)
         tab("tab.loudhailer", lambda fr: hailer.build_page(fr, self))
+        tab("tab.uav", lambda fr: setattr(self, "uav_page", uavpanel.build_page(fr, self)))   # «ΜΑΓΓΕΜΑ UAV» (U2)
         lg = tab("tab.events")
         self.events = tk.Listbox(lg, font=F_TXT, bg=C["panel"], fg=C["fg"], selectbackground=C["sel"])
         self.events.pack(fill="both", expand=True)

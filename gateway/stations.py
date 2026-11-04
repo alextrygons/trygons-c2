@@ -81,7 +81,14 @@ GW_RESULTS = {100: "VIEWER: watch only", 101: "duplicate command", 102: "command
               116: "no manual licence: REMOTE MANUAL / MANEUVER only for a licensed captain",
               117: "only the captain (or a station on the boat) holds HELM",
               118: "captain only: REMOTE MANUAL / MANEUVER / engine START / LINK TIME / power restore",
-              119: "no captain holds HELM"}
+              119: "no captain holds HELM",
+              # UAV magazine (CLAUDE.md V; 122 from step U2, 123-127 reserved for U3-U5)
+              122: "UAV not registered / its check failed",
+              123: "UAV route refused (energy / range / altitude)",
+              124: "UAV route in a no-fly zone / outside the air geofence",
+              125: "UAV launch conditions not met",
+              126: "the joystick is on a UAV",
+              127: "another pilot flies this UAV"}
 # copilot commands that never wait for the captain's ACCEPT (CLAUDE.md D: STANDBY, hold, AUTO return - the AURIX
 # still wants the joystick CONFIRM for the return; DP STOP: proto.is_driving_cmd)
 COPILOT_FREE = (proto.T_AUTO_PAUSE, proto.T_AUTO_RETURN)

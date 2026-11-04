@@ -17,5 +17,12 @@
     "check_s": 30,
     "low_free_gb": 20.0,
     "full_free_gb": 2.0
+  },
+  "uav": {
+    "_help": "UAV magazine (CLAUDE.md V): false = no magazine on this boat. Each slot = the FIXED hub USB port of that slot (usbloc:<port path>, python gateway.py --list-serial), never the drone's own id; slot 1 = the top one",
+    "enabled": false,
+    "slots": [{"usb": "usbloc:1-2.1", "vtx": "R1", "elrs": "tx1"}, {"usb": "usbloc:1-2.2", "vtx": "R2", "elrs": "tx2"},
+              {"usb": "usbloc:1-2.3", "vtx": "R3", "elrs": "tx3"}, {"usb": "usbloc:1-2.4", "vtx": "R4", "elrs": "tx4"},
+              {"usb": "usbloc:1-3.1", "vtx": "R5", "elrs": "tx5"}, {"usb": "usbloc:1-3.2", "vtx": "R6", "elrs": "tx6"}]
   }
 }

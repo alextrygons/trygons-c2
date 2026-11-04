@@ -34,7 +34,7 @@ import proto  # noqa: E402
 
 results = []
 SCREEN_MODULES = ["app.py", "mapview.py", "driver.py", "hud.py", "hudar.py", "mapwin.py", "soundtest.py", "monitors.py",
-                  "sound.py", "crewui.py", "overlay.py", "theme.py", "splash.py", "about.py", "battleshort.py"]
+                  "sound.py", "crewui.py", "overlay.py", "theme.py", "splash.py", "about.py", "battleshort.py", "uavpanel.py", "uavpics.py"]
 
 
 def report(name, ok, detail):

@@ -720,7 +720,8 @@ ALLOWED = {"STANDBY", "AUTO", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG", "USB", 
            "English", "png", "json", "txt", "tlg", "TLG", "CSV", "csv", "Not", "for", "navigation", "free", "data",
            "may", "be", "inaccurate", "near", "the", "coast", "GATEWAY", "FRONT-", "UART", "kHz", "python", "PWM",
            "CPU", "alice", "bob", "DroneCAN", "Drones", "BATTLE", "SHORT", "Google", "Earth", "OpenCPN",  # (13n3 GPX)
-           "Windows", "Stefanos", "Microsoft"}  # (13o: the Windows voice, a product + voice name)
+           "Windows", "Stefanos", "Microsoft",
+           "ArduPilot", "MAVLink", "sysid", "UAV-"}  # (U2: the drones' autopilot / protocol / id, a drone's default name  # (13o: the Windows voice, a product + voice name)
 
 
 def english_words(text):

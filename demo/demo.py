@@ -201,6 +201,8 @@ def gateway_config(mtx, charts):
         "vision": vision_config(),
         # the loudhailer (13r): the simulated horn + microphone on this PC (sea noise, a 'contact' answers now and then)
         "loudhailer": {"backend": "sim", "sim_reply_s": 30.0},
+        # the UAV magazine (CLAUDE.md V, step U2): six simulated drones (gateway/uav/simdrone.py) in the 6 slots
+        "uav": {"enabled": True, "sim": True},
         "audit_fallback": os.path.join(RUN, "audit_fallback"),
         "storage": {"root": os.path.join(RUN, "ssd"), "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                     "full_free_gb": 0.0},

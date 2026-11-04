@@ -820,3 +820,45 @@ gateway.json:
 * Recording: `<ssd>/video/ring/AUDIO/YYYYMMDD-HHMMSS.wav` (1-minute files, UTC), both directions in one track
   (the shore's voice while talking, else the microphone); every SAVE / KEEP event holds its `AUDIO` folder.
 * Test on the PC: `python test_loudhailer.py` (LH1-LH11, the simulated card); demo: `"backend": "sim"`.
+
+## 24. UAV magazine - registry, slot USB checks, GPS warm start (step U2)
+
+Six camera / observation drones in the boat (CLAUDE.md V, docs/uav_design.md). NO payload, NO release, NO target
+function anywhere. Code: `uav/` - `manager.py` (in the gateway: station messages, registry, health, warm start),
+`router_worker.py` (its OWN process: every drone link; every frame out passes `allow.py` first), `mavlink.py`
+(an own minimal MAVLink 2 codec for the allow-listed messages only; pymavlink is only a test cross-check),
+`allow.py` (the ALLOW-list = the scope guard), `registry.py` (state/uav_registry.json + the READ-ONLY parameter
+check), `usbslots.py` (slots + the registration read sequence), `gpsassist.py` (UBX-MGA warm start through
+GPS_RTCM_DATA), `simdrone.py` (6 simulated ArduCopter-like drones over UDP). Nothing in `uav/` sends to the AURIX;
+a failure is the notice "UAV router OFFLINE" (never an alarm) and the router is restarted.
+
+gateway.json (default `"enabled": false`):
+
+```
+"uav": {"enabled": true,
+        "slots": [{"usb": "usbloc:1-2.1", "vtx": "R1", "elrs": "tx1"}, ...],   // slot 1 = the top = the next out
+        "assist_s": 60}                                                       // the GPS warm start again every 60 s
+```
+
+* A slot = the FIXED USB port of the hub (`usbloc:<port path>`: `python gateway.py --list-serial` shows it for
+  every port; Ubuntu also `/dev/serial/by-path/...`). Never the drone's own USB id (all flight controllers show
+  the same one).
+* REGISTER (Tools page «ΜΑΓΓΕΜΑ UAV» on a station, any role but a VIEWER) reads over the slot's cable: HEARTBEAT,
+  AUTOPILOT_VERSION, SYS_STATUS, BATTERY_STATUS, GPS_RAW_INT, EKF_STATUS_REPORT and the parameters of the check -
+  READ ONLY, the gateway never writes a parameter (set them with Mission Planner). Refused (code 122, every reason
+  listed): not an ArduPilot quad (FRAME_CLASS 1), armed in the slot, the failsafe set of W60 (FS_THR_ENABLE 0,
+  FS_GCS_ENABLE 0, FS_EKF_ACTION 2, FS_DR_ENABLE 0, FENCE_ACTION 0, BATT_FS_LOW_ACT 0, BATT_FS_CRT_ACT 1 with
+  BATT_CRT_VOLT or BATT_CRT_MAH set), the RC receiver not ignored (RC_OPTIONS bit 0), any output but Motor1-4
+  (SERVOn_FUNCTION, GPIO -1 too), any release path (RELAYn_FUNCTION / RELAYn_PIN / RELAY_PINn, GRIP_ENABLE,
+  CHUTE_ENABLED, WINCH_TYPE, MNT1_TYPE / MNT_TYPE, SCR_ENABLE, RCn_OPTION), a sensor missing / unhealthy, a duplicate
+  sysid. A registered slot's router drops frames of any other sysid; a different drone found in the slot = not
+  launchable until registered again.
+* GPS warm start: a registered drone in its slot (not armed) gets UBX-MGA-INI-TIME_UTC (the gateway's GPS-set
+  clock) + MGA-INI-POS_LLH (the boat's position, only from fresh telemetry with a trusted GPS) through
+  GPS_RTCM_DATA, at once after the registration and every `assist_s`. `assist_extra` = a file of extra UBX-MGA
+  bytes (ephemeris from an assist u-blox, W56). Whether ArduPilot passes the bytes to its u-blox: TO CONFIRM (W56).
+* Simulated drones (demo, tests): `"uav": {"enabled": true, "sim": true}` starts `uav/simdrone.py` (its own
+  process, UDP ports `sim_base_port` + 1..6 = the slots' USB, + 11..16 = ELRS, + 30 = control). ArduPilot SITL is
+  not practical on Windows (W67): the own simulator speaks the same MAVLink subset; pymavlink installs on Windows
+  with pip but is LGPL-3.0 and not needed (only `test_uav.py` UA2 uses it to cross-check the codec, when present).
+* Tests: `python test_uav.py` (UA1-UA12), the station: `groundstation/test_uavui.py` (UV1-UV4).

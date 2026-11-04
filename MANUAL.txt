@@ -2685,6 +2685,23 @@ LOUDHAILER AND BOAT MICROPHONE (step 13r, owner 2026-11-02)
     answers now and then) - nothing on this PC's sound card on the boat side.
   Hardware: PARTS.md (loudhailer) and WIRING.md section 3G.
 
+UAV MAGAZINE - REGISTRATION (step U2; launch, flight and video come in later steps)
+  Six small camera drones are stacked in the boat under a hatch (slot 1 = the
+  top one = the next out). OBSERVATION ONLY: no payload, no release - the
+  gateway's MAVLink allow-list has no such command at all.
+  Tools - UAV magazine shows the 6 slots with the UAV picture: name, sysid,
+  ArduPilot version, battery, GPS, video channel, ELRS radio, and READY or
+  NOT launchable with the reason. REGISTER reads the drone through the slot's
+  USB cable and checks it - READ ONLY: the gateway never changes a drone
+  setting (set them with Mission Planner). It refuses a drone with any output
+  but its 4 motors, a gripper / parachute / winch / relay / mount / script /
+  aux switch, the wrong failsafes, the RC receiver not ignored, a missing
+  sensor or a duplicate sysid. A drone that is not registered or fails a
+  check is never launched. While a drone is in its slot the gateway gives
+  its GPS the time and the boat's position (warm start: a faster fix after
+  the hatch opens). Any role but VIEWER may register. The UAV programs never
+  touch the boat's driving or alarms; a failure is a notice only.
+
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
 -------------------------------------------------------------------------------
