@@ -23,6 +23,9 @@ process loudhailer_worker.py with the SIMULATED speaker / microphone) and real g
   LH13 (review 13r MED-3) the AUDIO track keeps the clock (a frame every step, gaps filled with silence)
   LH14 (review 13r LOW-1 / LOW-8 / LOW-4) no out_dev / in_dev = not configured; volume limit 0..100
   LH15 (review 13r LOW-2 / LOW-3) the talk state resent to the worker; the first voice frame gets a slack
+  LH14b (review of 13r-r LOW-3 / LOW-4) '' / 'default' devices = not configured; a negative volume_pct = 0
+  LH16 (review of 13r-r MED-A) 80-500 ms stalls caught up back to back: the AUDIO track stays on the clock
+  LH17 (review of 13r-r MED-B / LOW-5) a restart mid-minute never truncates the file; the clock set back rolls
 
 Run:  python test_loudhailer.py      (exit code 0 = all passed)
 """
@@ -136,6 +139,7 @@ def lh12_15():
     import recorder as recmod
     import loudhailer as lhmod
     import loudhailer_worker as lw
+    import array as array_mod
     tmp = tempfile.mkdtemp(prefix="gwtest_lh12_")
     try:
         # LH12 the sync classes of a SAVE's / a KEEP's files
@@ -191,6 +195,92 @@ def lh12_15():
                lw.seg_time(fn_) == 1793000020.0 // 60 * 60,
                "file %s: %d samples, the clock says %d; silence filled %.2f s" % (fn_, n, want, w.ring.filled / vc.RATE))
 
+        # LH16 (review of 13r-r MED-A) 80-500 ms stalls: run() catches the missed steps up back to back (it resets
+        # its schedule only > 0.5 s behind) - the gap is filled once, the catch-up frames must not be written again
+        clk = [1793000100.0]                               # a minute start
+        a16 = argparse.Namespace(backend="sim", out_dev=None, in_dev=None, ring=os.path.join(tmp, "ring16"), seg_s=60,
+                                 volume_max=80, volume=70, sim_reply_s=0.0)
+        w16 = lw.Worker(a16, io.BytesIO(), clock=lambda: clk[0])
+        w16.lock_out = threading.Lock()
+        for _k in range(25):
+            w16.step(clk[0])
+            clk[0] += 0.04
+        for stall in (0.08, 0.12, 0.2, 0.3, 0.45, 0.1, 0.25, 0.5, 0.15, 0.4):
+            clk[0] += stall                                # the loop was late by this much
+            for _k in range(int(stall / 0.04) + 1):        # the missed steps run at once (a few ms apart)
+                w16.step(clk[0])
+                clk[0] += 0.002
+            for _k in range(10):                           # back on the 40 ms schedule
+                w16.step(clk[0])
+                clk[0] += 0.04
+        w16.ring.close()
+        f16 = os.path.join(a16.ring, os.listdir(a16.ring)[0])
+        with wave.open(f16, "rb") as wf:
+            n16 = wf.getnframes()
+        want16 = int((clk[0] - lw.seg_time(os.path.basename(f16))) * vc.RATE)
+        report("LH16 (review of 13r-r MED-A) ten 80-500 ms stalls caught up back to back: the AUDIO track stays on the "
+               "clock (the stall is filled once, the catch-up frames are dropped, never counted twice)",
+               abs(n16 - want16) <= vc.FRAME_N and getattr(w16.ring, 'dropped', 0) > 0,
+               "%d samples, the clock says %d (%.3f s apart); %d frames dropped" % (
+                   n16, want16, (n16 - want16) / float(vc.RATE), getattr(w16.ring, 'dropped', 0)))
+
+        # LH17 (review of 13r-r MED-B / LOW-5) a restart mid-minute never truncates; the clock set back rolls / stops
+        rdir = os.path.join(tmp, "ring17")
+        r1 = lw.WavRing(rdir, 60)
+        t = 1793000160.0                                   # a minute start
+        tone = vc.frames(vc.tone(700, 2000))               # 2 s of a tone, then quiet frames
+        for k in range(250):                               # 10 s
+            r1.write(tone[k] if k < len(tone) else vc.silence(), t)
+            t += 0.04
+        r1._header()
+        r1.f.flush()
+        name17 = os.path.basename(r1.f.name)
+        n_before = r1.n
+        r1.f.close()                                       # the worker killed (no close(), the header of 1 s ago)
+        r1.f = None
+        t += 5.0                                           # the new worker 5 s later, same minute
+        r2 = lw.WavRing(rdir, 60)
+        for _k in range(25):
+            r2.write(vc.silence(), t)
+            t += 0.04
+        r2.close()
+        with wave.open(os.path.join(rdir, name17), "rb") as wf:
+            n17 = wf.getnframes()
+            head = array_mod.array("h", wf.readframes(vc.FRAME_N * 10))
+        tone_kept = max(abs(x) for x in head) > 1000
+        want17 = int((t - lw.seg_time(name17)) * vc.RATE)
+        # the clock set back: 20 s inside the same minute (no growth), then 90 s back (a new file of that minute)
+        r3 = lw.WavRing(os.path.join(tmp, "ring17b"), 60)
+        t3 = 1793000270.0                                  # 50 s into its minute
+        for _k in range(100):
+            r3.write(vc.silence(), t3)
+            t3 += 0.04
+        t3 -= 20.0
+        for _k in range(100):
+            r3.write(vc.silence(), t3)
+            t3 += 0.04
+        first = os.path.basename(r3.f.name)
+        n_first = r3.n
+        t3 -= 90.0
+        for _k in range(50):
+            r3.write(vc.silence(), t3)
+            t3 += 0.04
+        second = os.path.basename(r3.f.name)
+        r3.close()
+        sizes = []
+        for fn3 in os.listdir(os.path.join(tmp, "ring17b")):
+            with wave.open(os.path.join(tmp, "ring17b", fn3), "rb") as wf:
+                sizes.append(wf.getnframes())
+        report("LH17 (review of 13r-r MED-B / LOW-5) a worker restart mid-minute continues the minute's file (never "
+               "truncated: hard-linked into SAVE / KEEP events) on the clock; the clock set back never grows a file past "
+               "its minute and rolls to the earlier minute's file",
+               getattr(r2, 'reopened', 0) == 1 and n17 >= n_before and tone_kept and abs(n17 - want17) <= vc.FRAME_N and
+               n_first <= int(60 * vc.RATE) + vc.FRAME_N and first != second and
+               max(sizes) <= int(60 * vc.RATE) + vc.FRAME_N,
+               "reopened %d; %s: %d samples before, %d after (the clock says %d), tone kept %s; clock back: %s %d "
+               "samples, then %s; file sizes %s" % (getattr(r2, 'reopened', 0), name17, n_before, n17, want17, tone_kept, first,
+                                                    n_first, second, sizes))
+
         # LH14 not configured / the volume limit / stop
         b = argparse.Namespace(backend="winmm", out_dev=None, in_dev=None, ring=None, seg_s=60, volume_max=80,
                                volume=70, sim_reply_s=0.0)
@@ -198,6 +288,18 @@ def lh12_15():
         st_ = wr.status()
         h = lhmod.Loudhailer({"enabled": False, "volume_max_pct": 150}, types.SimpleNamespace(storage=None))
         h2 = lhmod.Loudhailer({"enabled": False, "volume_max_pct": -5}, types.SimpleNamespace(storage=None))
+        # review of 13r-r LOW-3 / LOW-4: "" / "default" = not named either; a negative volume_pct = 0
+        nd = []
+        for od, idv in (("", "default"), ("default", " ")):
+            bx = argparse.Namespace(backend="winmm", out_dev=od, in_dev=idv, ring=None, seg_s=60, volume_max=80,
+                                    volume=70, sim_reply_s=0.0)
+            wx = lw.Worker(bx, io.BytesIO())
+            nd.append(isinstance(wx.spk, lw.audiodev.NullOut) and isinstance(wx.mic, lw.audiodev.NullIn) and
+                      "not configured" in wx.status()["error"])
+        h3 = lhmod.Loudhailer({"enabled": False, "volume_pct": -20}, types.SimpleNamespace(storage=None))
+        report("LH14b (review of 13r-r LOW-3 / LOW-4) out_dev / in_dev '' or 'default' with a real backend = not "
+               "configured (never the PC's default device); a negative volume_pct starts at 0 (no endless resends)",
+               all(nd) and h3.volume == 0, "not configured %s; volume %s" % (nd, h3.volume))
         h.worker = {"out_ok": True, "in_ok": True}
         h.proc = types.SimpleNamespace(wait=lambda t: 0, poll=lambda: 0, kill=lambda: None)
         h.stop()

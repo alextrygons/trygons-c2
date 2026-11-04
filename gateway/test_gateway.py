@@ -5277,6 +5277,75 @@ class _Job:
             self.h = None
 
 
+def _win_processes():
+    """{pid: (parent pid, exe name)} of every process (Windows ToolHelp snapshot); {} if it fails."""
+    out = {}
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class PE(ctypes.Structure):
+            _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("pid", wintypes.DWORD),
+                        ("heap", ctypes.c_size_t), ("mod", wintypes.DWORD), ("threads", wintypes.DWORD),
+                        ("ppid", wintypes.DWORD), ("prio", ctypes.c_long), ("flags", wintypes.DWORD),
+                        ("exe", ctypes.c_wchar * 260)]
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        snap = k32.CreateToolhelp32Snapshot(2, 0)              # TH32CS_SNAPPROCESS
+        if not snap or snap == wintypes.HANDLE(-1).value:
+            return out
+        try:
+            e = PE()
+            e.dwSize = ctypes.sizeof(PE)
+            ok = k32.Process32FirstW(wintypes.HANDLE(snap), ctypes.byref(e))
+            while ok:
+                out[e.pid] = (e.ppid, e.exe)
+                ok = k32.Process32NextW(wintypes.HANDLE(snap), ctypes.byref(e))
+        finally:
+            k32.CloseHandle(wintypes.HANDLE(snap))
+    except Exception:
+        return {}
+    return out
+
+
+class _Leftovers:
+    """Review of W50s LOW-2: without a job object (Windows) the processes a section started are remembered while it
+    runs (a snapshot every 2 s) and the ones still alive are killed after the section ends - also after a NORMAL
+    exit (taskkill /T can't reach an orphan whose parent is gone)."""
+
+    def __init__(self, root_pid):
+        self.root, self.seen, self.stop = root_pid, {}, threading.Event()
+        self.th = threading.Thread(target=self._run, daemon=True)
+        self.th.start()
+
+    def _scan(self):
+        procs = _win_processes()
+        tree = {self.root}
+        grew = True
+        while grew:
+            grew = False
+            for pid, (ppid, exe) in procs.items():
+                if ppid in tree and pid not in tree and pid != ppid:
+                    tree.add(pid)
+                    self.seen[pid] = exe
+                    grew = True
+
+    def _run(self):
+        while not self.stop.wait(2.0):
+            self._scan()
+
+    def kill(self):
+        self.stop.set()
+        self.th.join(5)
+        now = _win_processes()
+        for pid, exe in self.seen.items():
+            if pid in now and now[pid][1] == exe:            # still alive (the same program: not a reused pid)
+                try:
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=30)
+                except Exception:
+                    pass
+
+
 def run_section_process(k):
     """W50s: one section in its own process with the parent's time limit. Output goes to files (never a pipe a
     grandchild could hold open). Returns (status, output lines, stderr tail, seconds); status "ok" / "fail" /
@@ -5288,13 +5357,18 @@ def run_section_process(k):
     with open(po, "w", encoding="utf-8", errors="replace") as fo, \
             open(pe, "w", encoding="utf-8", errors="replace") as fe:
         p = job.popen([sys.executable, os.path.abspath(__file__), k], fo, fe)
+        left = _Leftovers(p.pid) if os.name == "nt" and not job.h else None
         try:
             rc = p.wait(timeout=SECTION_LIMIT_S)
             parent_stall = False
         except subprocess.TimeoutExpired:
             rc, parent_stall = None, True
+        if left is not None:
+            left._scan()                        # the last children before the tree is ended
         job.kill(p)                             # always: no orphan simulator / ffmpeg after a section
         job.close()
+        if left is not None:
+            left.kill()                         # review of W50s LOW-2: also after a normal exit
     dt = time.time() - t0
     with open(po, encoding="utf-8", errors="replace") as f:
         out = f.read()
@@ -5353,6 +5427,10 @@ def main():
             elif status == "crashed":
                 print("section %s CRASHED (the tests after the error did not run):\n%s" % (k, err[-1500:]), flush=True)
                 results.append(("section %s ran to the end" % k, False))
+            elif status == "fail" and not failed:
+                # review of W50s LOW-1: exit code 1 with no "[FAIL] " line parsed = still a failure, never a pass
+                print("section %s FAILED (exit code 1) without a [FAIL] line" % k, flush=True)
+                results.append(("section %s exit code 1 without a [FAIL] line" % k, False))
             break
     bad = [n for n, ok in results if not ok]
     note = ("; " + "; ".join(stalls)) if stalls else ""

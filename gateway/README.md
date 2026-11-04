@@ -801,7 +801,7 @@ gateway.json:
                "volume_max_pct": 80}                            // the VOLUME LIMIT: no station sets it louder
 ```
 
-* `out_dev` / `in_dev` MUST name the USB card for a real backend (review 13r LOW-1): without them the worker opens
+* `out_dev` / `in_dev` MUST name the USB card for a real backend (review 13r LOW-1): without them (or "" / "default") the worker opens
   no device ("speaker / microphone not configured" = OFFLINE), never the PC's default speaker / microphone. The
   `sim` / `null` backends need none. `volume_max_pct` (0..100) is a LINEAR gain of the samples; the real
   loudness is set with the amplifier's trimmer.

@@ -56,15 +56,31 @@ class WavRing:
         self.n = 0
         self.last_hdr = 0.0
         self.filled = 0                 # samples of silence written to stay on the clock (tests / status)
+        self.dropped = 0                # frames not written: the file was ahead of the clock (a catch-up / clock back)
+        self.reopened = 0               # existing files continued (never truncated)
         self.error = ""
         os.makedirs(folder, exist_ok=True)
 
     def _open(self, now):
+        """Review of 13r-r MED-B: an EXISTING file of this minute (a worker restart mid-minute, the clock set back)
+        is NEVER truncated - it may be hard-linked into a SAVE / KEEP event (permanent evidence): it is opened for
+        writing at its end and the clock rule of write() goes on from its last sample (silence up to now, or frames
+        dropped while the file is ahead of the clock)."""
         start = int(now // self.seg_s * self.seg_s)
         name = time.strftime("%Y%m%d-%H%M%S", time.gmtime(start)) + ".wav"
         self.close()
-        self.f = open(os.path.join(self.folder, name), "wb")
-        self.start, self.n = start, 0
+        path = os.path.join(self.folder, name)
+        n = 0
+        if os.path.exists(path):
+            f = open(path, "r+b")
+            size = os.path.getsize(path)
+            n = max(0, (size - 44) // 2)                # a file shorter than its header holds no audio
+            f.seek(44 + 2 * n)
+            f.truncate()                                # only an odd last byte / nothing: never a sample
+            self.reopened += 1
+        else:
+            f = open(path, "wb")
+        self.f, self.start, self.n = f, start, n
         self._header()
 
     def _header(self):
@@ -77,11 +93,18 @@ class WavRing:
     def write(self, pcm, now):
         """One frame at the time now. Review 13r MED-3: the file stays on the clock - a gap (the worker's loop was
         late / caught up, the file opened in the middle of its minute) is filled with silence up to now, so the
-        AUDIO track never drifts against the camera timeline (its name = the time of its first sample)."""
+        AUDIO track never drifts against the camera timeline (its name = the time of its first sample).
+        Review of 13r-r MED-A: the other way too - a frame while the file is already half a frame or more AHEAD of
+        the clock (the loop catching up missed steps back to back after a 80-500 ms stall, the clock set back) is
+        dropped, so a stall is never counted twice (silence + the catch-up frames). LOW-5: the clock set back before
+        this file's minute rolls to that minute's file; a file never grows past its minute (+ one frame)."""
         try:
-            if self.f is None or now >= self.start + self.seg_s:
+            if self.f is None or now >= self.start + self.seg_s or now < self.start:
                 self._open(now)
             gap = int((now - self.start) * vc.RATE) - self.n       # samples missing before this frame
+            if -gap >= vc.FRAME_N // 2 or self.n >= int(self.seg_s * vc.RATE):
+                self.dropped += 1
+                return
             if gap >= 2 * vc.FRAME_N:
                 gap = min(gap, int(self.seg_s * vc.RATE) - self.n)
                 if gap > 0:
@@ -109,6 +132,11 @@ class WavRing:
             self.f = None
 
 
+def named(dev):
+    """A sound device NAMED in gateway.json (never None, "" or "default" = the PC's own default device)."""
+    return dev is not None and str(dev).strip() != "" and str(dev).strip().lower() != "default"
+
+
 def seg_time(name):
     if len(name) != 19 or not name.endswith(".wav"):
         return None
@@ -127,11 +155,12 @@ class Worker:
         real = a.backend not in ("sim", "null")
         # review 13r LOW-1: a real backend needs the sound card NAMED (gateway.json loudhailer out_dev / in_dev):
         # never the PC's default device (the laptop's own speaker / microphone) silently
-        if real and a.out_dev is None:
+        # (review of 13r-r LOW-3: "" / "default" are no name either - they open the PC's default device)
+        if real and not named(a.out_dev):
             self.spk, e1 = audiodev.NullOut(), "speaker not configured (loudhailer out_dev)"
         else:
             self.spk, e1 = audiodev.open_output(a.backend, a.out_dev)
-        if real and a.in_dev is None:
+        if real and not named(a.in_dev):
             self.mic, e2 = audiodev.NullIn(), "microphone not configured (loudhailer in_dev)"
         else:
             self.mic, e2 = audiodev.open_input(a.backend, a.in_dev, speaker=self.spk, reply_every_s=a.sim_reply_s)
@@ -239,7 +268,8 @@ class Worker:
                 "volume_max": self.a.volume_max, "mic_db": round(self.mic_db, 1), "out_db": round(self.out_db, 1),
                 "mic_frames": self.n_mic, "played": self.n_play, "dropped": self.n_drop,
                 "playing": bool(self.queue or self.signal), "signal": self.signal_kind,
-                "ring": bool(self.ring), "ring_filled_s": round(self.ring.filled / vc.RATE, 2) if self.ring else 0, "ring_file": os.path.basename(self.ring.f.name) if self.ring and self.ring.f
+                "ring": bool(self.ring), "ring_filled_s": round(self.ring.filled / vc.RATE, 2) if self.ring else 0,
+                "ring_dropped": self.ring.dropped if self.ring else 0, "ring_file": os.path.basename(self.ring.f.name) if self.ring and self.ring.f
                 else None,
                 "sim_speaker_frames": getattr(self.spk, "frames", 0)}
 

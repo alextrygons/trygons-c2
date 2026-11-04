@@ -2669,7 +2669,8 @@ LOUDHAILER AND BOAT MICROPHONE (step 13r, owner 2026-11-02)
     voice samples, not a loudness: set the real loudness with the amplifier's
     trimmer so that 80 % is safe for a swimmer close to the boat.
   SOUND CARD: the gateway uses ONLY the sound card named in gateway.json
-    "loudhailer": "out_dev" / "in_dev" - without them the loudhailer stays
+    "loudhailer": "out_dev" / "in_dev" - without them (or with "" /
+    "default") the loudhailer stays
     OFF ("speaker / microphone not configured"), never the gateway PC's own
     speaker or microphone. (The simulator / demo needs none.)
   THE LINK: voice is small (~33 kbit/s, ~45 kbit/s on the wire). It ranks

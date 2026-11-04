@@ -124,7 +124,11 @@ class Loudhailer:
         self.starts = 0
         self.floor = None                           # {"id", "user", "crew", "what", "t0", "last"}
         self.peers = {}                             # station id -> {"addr", "until", "seq", "up_ms", "why", ...}
-        self.volume = min(int(self.cfg["volume_pct"]), int(self.cfg["volume_max_pct"]))
+        try:                                        # review W50s/13r LOW-4: 0..limit (a negative value made the worker's
+            vol = int(self.cfg["volume_pct"])       # clamped status differ for ever = endless resends)
+        except (TypeError, ValueError):
+            vol = DEFAULTS["volume_pct"]
+        self.volume = max(0, min(vol, int(self.cfg["volume_max_pct"])))
         self.n = collections.Counter()              # talk_in, talk_other, talk_stale, listen_out, listen_drop, ...
         self.bytes = collections.deque()            # (t, bytes) of voice to / from stations (kbps)
         self.next_info = 0.0
