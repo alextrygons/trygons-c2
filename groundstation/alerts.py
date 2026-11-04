@@ -184,6 +184,14 @@ class MasterLamps:
         self.bits = 0
         self.no_data = False
         self.no_data_acked = False
+        self.local = {}                 # this PC's own alarms (13n2: a boat connection / name check failed): code -> text
+
+    def set_local(self, code, text, level=None):
+        """A station-side alarm (not from the boat): text None = cleared. CAUTION; acknowledged here = gone."""
+        if text is None:
+            self.local.pop(code, None)
+        else:
+            self.local[code] = (text, CAUTION if level is None else level)
 
     def update(self, bits, no_data=False):
         self.bits = bits
@@ -196,6 +204,8 @@ class MasterLamps:
     def on(self, lv):
         if lv == WARNING and self.no_data and not self.no_data_acked:
             return True
+        if any(l_ == lv for _t, l_ in self.local.values()):
+            return True
         return bool(lamp_bits(self.bits, lv) & ~self.acked[lv])
 
     def ack(self):
@@ -203,6 +213,7 @@ class MasterLamps:
             self.acked[lv] = lamp_bits(self.bits, lv)
         if self.no_data:
             self.no_data_acked = True
+        self.local.clear()              # a station-side alarm is an event: acknowledged = gone
 
     def unacked_codes(self, lv):
         out = [c for b, c, l_ in active(self.bits) if l_ == lv and not self.acked[lv] & b]
@@ -216,6 +227,8 @@ class MasterLamps:
         out = []
         if self.no_data:
             out.append((i18n.T("alarm." + NO_DATA), WARNING, self.no_data_acked))
+        for text, lv in self.local.values():
+            out.append((text, lv, False))
         for bit, c, lv in active(self.bits):
             out.append((i18n.T("alarm." + c), lv, lv not in self.acked or bool(self.acked[lv] & bit)))
         return out

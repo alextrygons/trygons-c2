@@ -60,6 +60,10 @@ academy in the station's theme, Desktop shortcuts, no console windows in the dem
        the station's text_size_changed (not ratio squared); small / normal / large many times = no size drift; the
        question serial never repeats across two DriverScreens
 
+13n2 (owner 2026-10-31 E2):
+  LK26 TOUR.bat next to START_DEMO.bat: academy/tour_app.py --lang el, pythonw ONLY next to the checked Python (as
+       START_DEMO.bat), no demo / simulator / gateway started; the tour really opens (a window, no crash in 4 s)
+
 Run:  python test_look.py        (exit code 0 = all passed)
 """
 import os
@@ -242,7 +246,7 @@ def lk5():
             t = A.App.window_title(f)
             if not t.startswith(DASH) or i18n.T(key) not in t or i18n.T("cap.title") not in t:
                 bad.append("%s %s: %r" % (lc, place, t))
-        for key in ("drv.title", "tools.title", "boat.title", "boat.confirm_title", "cap.cc_title", "cap.pw_title"):
+        for key in ("drv.title", "tools.title", "boat.title", "boat.leave_title", "cap.cc_title", "cap.pw_title"):
             if not i18n.W(key).startswith(DASH):
                 bad.append("%s %s" % (lc, key))
     i18n.set_lang("el", save=False)
@@ -1283,6 +1287,37 @@ def lk25():
            "module counter %s" % (got_once, seq[:5], reset, sers, src_ok))
 
 
+def lk26():
+    """13n2: TOUR.bat = the guided tour on its own (Greek), no demo needed."""
+    import subprocess
+    bad = []
+    path = os.path.join(REPO, "TOUR.bat")
+    bat = src("TOUR.bat") if os.path.exists(path) else ""
+    if not bat:
+        bad.append("TOUR.bat missing")
+    if "academy\\tour_app.py --lang el" not in bat:
+        bad.append("TOUR.bat does not start academy\\tour_app.py --lang el")
+    if "where pythonw" in bat or "import sys, tkinter, PIL" not in bat or "%%~dpIpythonw.exe" not in bat:
+        bad.append("TOUR.bat does not check the Python before its pythonw")
+    if any(w in bat.lower() for w in ("demo.py", "autopilot_sim", "gateway.py")):
+        bad.append("TOUR.bat starts something besides the tour")
+    alive = None
+    if not bad:
+        env = dict(os.environ, TRYGONS_ACADEMY_DATA=os.environ["TRYGONS_ACADEMY_DATA"])
+        pr = subprocess.Popen([sys.executable, os.path.join(REPO, "academy", "tour_app.py"), "--lang", "el"], cwd=REPO,
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(4.0)
+        alive = pr.poll() is None
+        if alive:
+            pr.kill()
+        out, err = pr.communicate(timeout=10)
+        if not alive:
+            bad.append("tour_app.py ended: %s" % err.decode(errors="replace")[-300:])
+    report("LK26 (13n2) TOUR.bat: the guided tour on its own in Greek (academy\\tour_app.py --lang el), pythonw only "
+           "next to the checked Python, nothing else started; the tour opens without a crash",
+           not bad, "; ".join(bad) or "TOUR.bat ok, tour running after 4 s %s" % alive)
+
+
 def main():
     i18n.set_lang("el", save=False)
     lk1()
@@ -1313,6 +1348,7 @@ def main():
     lk23()
     lk24()
     lk25()
+    lk26()
     n = len(results)
     print("LOOK TESTS: %d/%d %s" % (sum(results), n, "PASS" if all(results) else "FAIL"))
     return 0 if all(results) else 1

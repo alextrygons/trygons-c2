@@ -95,6 +95,7 @@ class Gateway:
         self.next_net = 0.0
         self.cams = CameraManager(cfg["cameras"], self)
         self.stations.ext["cams"] = self.cams.request
+        self.stations.ext["cam_view"] = self.cams.view_request     # the copilot's camera view (13n2)
         self.stations.ext["cam_internet"] = self._cam_internet
         self._saver_was = False
         self.stations.ext["channel"] = self._channel_msg
@@ -648,7 +649,8 @@ class Gateway:
         while True:
             await loop.run_in_executor(None, self.cams.poll)
             saver = self.data_saver()
-            if saver != self._saver_was:            # data saver on / off: new stream lists
+            prio = self.cams.update_priority()      # the captain's video first: other views dropped first (13n2)
+            if saver != self._saver_was or prio:    # data saver on / off, views reduced / back: new stream lists
                 self._saver_was = saver
                 self.cams.kick_disallowed()
                 for st in list(self.stations.stations.values()):

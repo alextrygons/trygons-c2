@@ -211,7 +211,7 @@ grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"
 echo "== ground station language tests (el / en)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_lang.py > "$TEMP/lang_tests.txt" 2>&1 ) || { echo "LANGUAGE TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LANGUAGE TESTS" "$TEMP/lang_tests.txt"
-echo "== boats + two screens (boats/, boat confirm before HELM, F11, map in screen 2)"
+echo "== boats + two screens (boats/, automatic name check + HELM at once, one-move change + leave warning, F11, map in screen 2)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_boats.py > "$TEMP/boat_tests.txt" 2>&1 ) || { echo "BOAT TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|BOAT TESTS" "$TEMP/boat_tests.txt"
 echo "== screen 2 (navigation & control): layout 1366x768 / 1920x1080 at 100-150 %, roles, map editing, one look"

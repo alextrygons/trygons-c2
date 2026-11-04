@@ -16,8 +16,8 @@
   S7 link panel: channel quality, CREWED / UNCREWED, near shore / open sea + distance, the
      lost-link countdown, ENGINE KILLED
   S8 boat selector: no "boats" panel any more; the dropdown lists the boats of boats/ by name,
-     ONLINE / OFFLINE / IP not set, the IP only as a detail; "name verified" only after the confirm
-     step, small
+     ONLINE / OFFLINE / IP not set, the IP only as a detail; "name verified" only after the name
+     check (13n2: automatic at connect), small
   S9 one look: no colour / font written in a screen module (all from theme.py); dark / light
      switches BOTH screens; the meaning colours (warning / caution) are the same on both; the
      logo on both screens, under nothing on screen 1 either
@@ -46,6 +46,10 @@
   S22 the two bottom bars: their items, a sub-panel above bar 1, hide to a handle, dock top / bottom
   S23 panels draggable (saved per PC, never over the boat), RESET TO DEFAULT
   S24 BATTLE SHORT: opens from the mode bar, every code INVALID, nothing sent, the log line, the tooltip
+  S25 camera view (step 13n2, owner 2026-10-31 E2): CAMERA on bar 2 (gateway only) -> the camera full screen on
+      screen 2 (the gateway asked for it, the lighter decoding for a copilot), the four cameras + MAP on bar 1, the
+      green HUD basics, the mode bar / STANDBY / alarms stay, no map editing under it, "reduced for the captain" /
+      "no video" banners, MAP = back (the stream closed); the "no video" warning of a dead front camera
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
@@ -614,7 +618,7 @@ def s8_boats(rig):
     ap.boat, ap.boat_ok = None, False
     ap.render(force=True)
     report("S8 boat selector: no 'boats' panel; the dropdown lists the boats of boats/ by name (ER69D, RF49D) with "
-           "the status, the IP only as a detail; 'name verified' only after the confirm step, small",
+           "the status, the IP only as a detail; 'name verified' only after the name check, small",
            no_panel and names == ["ER69D", "RF49D"] and ip_detail and extra and not ver0 and
            ver1 == [A.T("ov.not_verified")] and [o["s"] for o in ver2] == [A.T("ov.verified")] and small,
            "boats panel gone %s; dropdown %s; IP as a detail %s; other address + disconnect %s; verified: none %s, "
@@ -1937,6 +1941,125 @@ def s24_battle_short(rig):
                tip_ok, opened, refused, logged, nothing, sent[:2], closed, rig.errors[:2]))
 
 
+class ViewStream:
+    """A stand-in for video.VideoStream (no ffmpeg): records its size / frame rate, delivers a test picture."""
+    made = []
+
+    def __init__(self, url, w=640, h=360, name="", fps=None):
+        self.url, self.w, self.h, self.name, self.fps = url, w, h, name, fps
+        self.frame = bytes([150, 190, 230]) * (w * h * 2 // 5) + bytes([20, 60, 110]) * (w * h - w * h * 2 // 5)
+        self.live = True
+        ViewStream.made.append(self)
+
+    def start(self):
+        return self
+
+    def stop(self):
+        self.live = False
+
+    def frozen(self):
+        return not self.live
+
+    def ppm(self):
+        return b"P6 %d %d 255\n" % (self.w, self.h) + self.frame
+
+
+def s25_camview(rig):
+    """Step 13n2 (owner 2026-10-31 E2): the copilot's camera view on screen 2."""
+    ap = rig.ap
+    rig.gateway_like(True)
+    ap.gw_status = fake_gw(ap.t, captain=False)
+    rig.size(1366, 768, 1.0)
+    msgs = []
+    ap.link.send_msg = msgs.append
+    cvm = lambda: [m for m in msgs if m.get("t") == "cam_view"]       # noqa: E731 (the heartbeats go there too)
+    ap.link.video_url = lambda d, n: ("rtsp://gw/%s" % d["streams"][n]) if n in d.get("streams", {}) else None
+    real_vs = A.video.VideoStream
+    A.video.VideoStream = ViewStream
+    presses = []
+    real_press = ap.mapwin.press
+    ap.mapwin.press = lambda x, y: presses.append((x, y))
+    try:
+        ap.render(force=True)
+        b = op(ap, "cv_open")
+        click_r(ap, b["r"])
+        opened = ap.camview == "FRONT-1" and cvm()[-1:] == [{"t": "cam_view", "cam": "FRONT-1"}]
+        # the gateway's answer for a copilot: FRONT-1 LOW + view_light -> decoded 960 x 540 at 10 fps here
+        ap.on_cams_ack({"t": "cams_ack", "ok": True, "streams": {"FRONT-1": "cam_front1_lo"}, "levels": {},
+                        "view": "FRONT-1", "view_light": True, "view_reduced": False, "notice": ""})
+        vs = ap.vstreams.get("FRONT-1")
+        light = vs is not None and (vs.w, vs.h, vs.fps) == (960, 540, 10)
+        rig.pump(0.5)
+        ap.render(force=True)
+        imgs = [i for i in ap.cv.find_withtag("camview") if ap.cv.type(i) == "image"]
+        top = ap.cv.find_all()[-1] if ap.cv.find_all() else None
+        picture = bool(imgs) and "ov" in ap.cv.gettags(top)          # the picture under the panels / bars
+        panels = sorted(p.key for p in ap.ov.panels)
+        kept = panels == ["alarms"] and op(ap, "standby") is not None and op(ap, "mode_STANDBY") is not None
+        cams = all(op(ap, "cv_" + c) for c in ap.CAMVIEW_CAMS) and op(ap, "cv_map") is not None
+        hud = [o["s"] for o in ap.ov.ops if o.get("tag") == "cv_hud"]
+        hud_ok = len(hud) >= 4 and hud[0].startswith("FRONT-1") and A.T("mode." + ap.t["mode_name"]) in hud
+        fits = not layout_problems(ap)
+        W, H = ap.cv.winfo_width(), ap.cv.winfo_height()
+        ap.cv_press(type("E", (), {"x": W // 2, "y": H // 2})())
+        ap.cv_release(type("E", (), {"x": W // 2, "y": H // 2})())
+        no_map = presses == []
+        click_r(ap, op(ap, "cv_REAR-RIGHT")["r"])
+        switched = ap.camview == "REAR-RIGHT" and cvm()[-1] == {"t": "cam_view", "cam": "REAR-RIGHT"}
+        ap.on_cams_ack({"t": "cams_ack", "ok": True, "streams": {"FRONT-1": "cam_front1_lo"}, "levels": {},
+                        "view": "REAR-RIGHT", "view_light": True, "view_reduced": True,
+                        "notice": "VIDEO REDUCED FOR THE CAPTAIN: camera view off"})
+        ap.render(force=True)
+        reduced = "camview_reduced" in ap.banner_tags
+        ap.on_cams_ack({"t": "cams_ack", "ok": True, "streams": {"FRONT-1": "cam_front1_lo"}, "levels": {},
+                        "view": "REAR-RIGHT", "view_light": True, "view_reduced": False, "notice": ""})
+        ap.render(force=True)
+        novideo = "camview_novideo" in ap.banner_tags              # REAR-RIGHT has no stream: no video (yet)
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots:
+            click_r(ap, op(ap, "cv_FRONT-1")["r"])
+            ap.on_cams_ack({"t": "cams_ack", "ok": True, "streams": {"FRONT-1": "cam_front1_lo"}, "levels": {},
+                            "view": "FRONT-1", "view_light": True, "view_reduced": False, "notice": ""})
+            rig.pump(0.4)
+            ap.render(force=True)
+            canvaspic.save(ap.cv, os.path.join(shots, "screen2_camview_el.png"))
+        click_r(ap, op(ap, "cv_map")["r"])
+        rig.pump(0.2)
+        back = ap.camview is None and cvm()[-1] == {"t": "cam_view", "cam": None} and             not ap.cv.find_withtag("camview") and "status" in {p.key for p in ap.ov.panels}
+        esc = "camview_close" in ap.root.bind("<Escape>") or bool(ap.root.bind("<Escape>"))
+        # a dead front camera: the "no video" warning only (nothing else changes)
+        ap.gw_status = dict(fake_gw(ap.t), cameras={"front_live": False, "cameras": []})
+        ap.render(force=True)
+        warn = "no_video" in ap.banner_tags
+        ap.gw_status = dict(fake_gw(ap.t), cameras={"front_live": True, "cameras": []})
+        ap.render(force=True)
+        no_warn = "no_video" not in ap.banner_tags
+        rig.gateway_like(False)
+        ap.render(force=True)
+        no_btn = op(ap, "cv_open") is None
+    finally:
+        A.video.VideoStream = real_vs
+        ap.mapwin.press = real_press
+        ap.camview = None
+        ap.cv.delete("camview")
+        for n in list(ap.vstreams):
+            ap.vstreams.pop(n).stop()
+        ap.gw_status = None
+        ap.cam_ack = None
+        rig.gateway_like(False)
+        ap.render(force=True)
+    report("S25 camera view (13n2): CAMERA on bar 2 asks the gateway, a copilot's view decoded lighter (960 x 540, "
+           "10 fps), the picture under the bars; only the alarms panel + mode bar + STANDBY stay, the 4 cameras + MAP "
+           "on bar 1, green HUD basics, no map editing under it, reduced / no-video banners, MAP = back (stream "
+           "closed), Esc bound; a dead front camera = the 'no video' warning only; no button without a gateway",
+           opened and light and picture and kept and cams and hud_ok and fits and no_map and switched and reduced and
+           novideo and back and esc and warn and no_warn and no_btn and not rig.errors,
+           "opened %s; light %s; picture %s; panels %s kept %s; cams %s; hud %s; fits %s; map press %s; switched %s; "
+           "reduced %s; no video %s; back %s; esc %s; no-video warning %s / gone %s; no button without gateway %s; "
+           "errors %s" % (opened, light, picture, panels, kept, cams, hud[:5], fits, presses, switched, reduced,
+                          novideo, back, esc, warn, no_warn, no_btn, rig.errors[:2]))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
@@ -1946,7 +2069,7 @@ def main():
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
                    s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg, s19_override, s20_slam_restore,
-                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s16_silence):
+                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s25_camview, s16_silence):
             try:
                 fn(rig)
             except Exception as e:

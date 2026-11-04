@@ -31,7 +31,8 @@ TOUR_FILE = os.path.join(HERE, "content", "tour.json")
 LANGS = ("el", "en")
 SHOWS = ("none", "s1", "s2", "tools", "modes", "alarm", "lamps", "joystick", "panel")
 # screen 2 parts that are not an ov.panel(...) in app.py (STANDBY corner, banners, map bar, the boat, editing)
-S2_EXTRA = ("standby", "banners", "modebar", "battle_short", "bar1", "bar2", "boat", "edit")   # 13n1: mode bar, bars
+S2_EXTRA = ("standby", "banners", "modebar", "battle_short", "bar1", "bar2", "boat", "edit",   # 13n1: mode bar, bars
+            "camview")                                                                  # 13n2: the camera view
 HUD_EXTRA = ("logo", "center")              # LOGO_BOX + the centre (ACCEPT / REJECT questions)
 HUD_BUTTONS_EXTRA = ("save", "accept")      # SAVE (bottom line) + the ACCEPT / REJECT answer (driver.py)
 LAMPS = ("master_warning", "master_caution")

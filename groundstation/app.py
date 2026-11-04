@@ -305,7 +305,12 @@ class App:
         self.boat = None                # the boat chosen in the boat list (boats/), None = typed address
         self.boat_pick = None           # the boat picked in screen 2's dropdown (before / while connecting)
         self.boat_menu = None           # the dropdown menu (built on click)
-        self.boat_ok = False            # its name + live camera confirmed: HELM may be taken (CLAUDE.md F)
+        self.boat_ok = False            # its welcome name check passed: HELM may be taken (CLAUDE.md F, 13n2)
+        self.session_login = None       # (user, password, crew) of the last good boat login: RAM only, never saved
+        self.helm_auto = False          # take HELM once the first data shows it free (13n2: "HELM at once")
+        self.camview = None             # screen 2's camera view (13n2): None = the map, else the camera name
+        self.camview_last = "FRONT-1"
+        self._cv_photo = None
         self.boat_pushed = False        # the boat file's settings pushed to the AURIX (CLAUDE.md L): HELM + STANDBY
         self.boat_push_seq = None       # the seq of that PARAM_SET (a NACK re-arms the push)
         self.boat_push_at = 0.0         # no retry before this time
@@ -314,7 +319,6 @@ class App:
         self.thr_push_at = 0.0          # the DP thruster settings (PROTO_T_THRUSTER_CFG): no re-send before this time
         self.thr_push_seq = None
         self.boatsel = None             # the boat list dialog
-        self.boatconf = None            # the boat confirmation dialog
         self.screen_shown = 2           # one monitor: which screen F11 shows (1 driving, 2 navigation)
         self.lamps = alerts.MasterLamps()   # MASTER WARNING / CAUTION (driver HUD): acknowledged = silenced here
         self.sound = None               # sound + voice (section D), made in _build_sound
@@ -356,7 +360,7 @@ class App:
         c.bind("<B1-Motion>", self.cv_motion)
         c.bind("<ButtonRelease-1>", self.cv_release)
         c.bind("<Motion>", self.cv_hover)              # the BATTLE SHORT tooltip (13n1)
-        c.bind("<ButtonPress-3>", lambda e: self.mapwin.right(e.x, e.y))
+        c.bind("<ButtonPress-3>", lambda e: None if self.camview else self.mapwin.right(e.x, e.y))
         c.bind("<MouseWheel>", lambda e: self.mapwin.zoom(0.8 if e.delta > 0 else 1.25))
         c.bind("<Button-4>", lambda e: self.mapwin.zoom(0.8))
         c.bind("<Button-5>", lambda e: self.mapwin.zoom(1.25))
@@ -379,6 +383,7 @@ class App:
         for k in ("<F12>", "<Control-Tab>"):
             root.bind(k, lambda e: self.swap_screens())
         root.bind("<F11>", lambda e: self.toggle_screen())
+        root.bind("<Escape>", lambda e: self.camview and self.camview_close())       # the camera view: back (13n2)
         root.bind("<Configure>", lambda e: self.layout_changed())
         monitors.bind_keys(root, self)
         if self.layout.get("driver_open") or open_driver:
@@ -736,13 +741,24 @@ class App:
             self.say(T("cap.cams_msg", text=i18n.from_en(d.get("text", ""))), GREEN if d.get("ok") else RED)
             return
         self.cam_ack = d
-        for name in list(self.vstreams):
-            self.vstreams.pop(name).stop()
+        want = {}
         for name, (w, h) in (("FRONT-1", (640, 360)), ("FRONT-2", (640, 360)), ("REAR-LEFT", (400, 225)),
                              ("REAR-RIGHT", (400, 225))):
             url = self.link.video_url(d, name)
             if url:
-                self.vstreams[name] = video.VideoStream(url, w, h, name).start()
+                fps = None
+                if name == d.get("view") and self.camview == name:
+                    # the camera view (13n2): bigger; a copilot's (view_light) at a low frame rate = lighter here too
+                    w, h = video.VIEW_SIZE
+                    fps = video.VIEW_LIGHT_FPS if d.get("view_light") else None
+                want[name] = (url, w, h, fps)
+        for name in list(self.vstreams):           # a stream that did not change keeps running (no picture gap)
+            vs = self.vstreams[name]
+            if want.get(name) != (vs.url, vs.w, vs.h, getattr(vs, "fps", None)):
+                self.vstreams.pop(name).stop()
+        for name, (url, w, h, fps) in want.items():
+            if name not in self.vstreams:
+                self.vstreams[name] = video.VideoStream(url, w, h, name, fps=fps).start()
         if d.get("notice"):
             self.say(i18n.from_en(d["notice"]), ORANGE)
 
@@ -1663,12 +1679,13 @@ class App:
 
     # --- actions -----------------------------------------------------------------
     def disconnect(self, why=None):
+        if self.camview:
+            self.camview_close(send=False)
         if self.link:
             self.link.stop()
             self.link = None
         self.boat, self.boat_ok = None, False
-        if self.boatconf:
-            self.boatconf.close()
+        self.helm_auto = False
         self.clear_telemetry()
         self.conn_btn.configure(text=T("cap.connect"), **theme.button_opts("ok"))
         self.say(why or T("cap.disconnected"), RED if why else None)
@@ -1682,21 +1699,36 @@ class App:
             self.boatsel.w.lift()
 
     def connect_boat(self, bt, user, pw, crew=None):
-        """Connect to a boat of the list: the gateway must be that boat. -> None or the error."""
+        """Connect to a boat of the list (13n2, owner 2026-10-31 E2): connect -> the gateway's welcome name check
+        (automatic) -> HELM at once (helm_tick). No live-camera step any more: a dead camera is only the warning
+        "no video". A connection / name failure = an alarm on this PC (lamps.local). -> None or the error."""
         if self.link:
             self.disconnect()
         if not user:
             return T("boat.need_login")
         if bt.error:
-            return T("boat.invalid", name=bt.name, err=bt.error, file=bt.path)     # a bad file is never connected
+            return self.boat_fail(bt, T("boat.invalid", name=bt.name, err=bt.error, file=bt.path))   # never connected
         try:
             self.link = GatewayLink("%s:%d" % (bt.ip, bt.port), user, password=pw, station="ground station (%s)" % user,
                                     log=True, crew=crew, boat=bt.name)
             w = self.link.start()
         except Exception as e:
+            if self.link is not None:
+                try:
+                    self.link.stop()
+                except Exception:
+                    pass
             self.link = None
-            return T("cap.cannot_connect", err=i18n.from_en(str(e)))
-        self.boat, self.boat_ok = bt, False
+            return self.boat_fail(bt, T("cap.cannot_connect", err=i18n.from_en(str(e))))
+        bad = boats.check_welcome(bt, w)            # (GatewayLink refuses it too: never drive the wrong boat)
+        if bad:
+            self.link.stop()
+            self.link = None
+            return self.boat_fail(bt, T("cap.cannot_connect", err=i18n.from_en(bad)))
+        self.boat, self.boat_ok = bt, True          # the name check passed: HELM may be taken at once
+        self.session_login = (user, pw, crew)       # one-move boat change (RAM only)
+        self.helm_auto = True
+        self.lamps.set_local("boat_conn", None)
         self.boat_pushed, self.boat_push_seq, self.boat_push_at = False, None, 0.0
         self.relay_push_at, self.relay_push_seq = 0.0, None
         self.thr_push_at, self.thr_push_seq = 0.0, None
@@ -1708,13 +1740,81 @@ class App:
         if w.get("crew_note"):
             self.event(i18n.from_en(w["crew_note"]))
         self._connected()
-        self.open_driver()                          # screen 1: the live camera to confirm it
-        self.boatconf = crewui.BoatConfirm(self, bt)
+        if crew != "copilot":
+            self.open_driver()                      # the captain drives on screen 1
+        self.say(T("boat.connected_ok", name=bt.name), GREEN)
+        self.event(T("boat.connected_ok", name=bt.name))
         return None
+
+    def boat_fail(self, bt, err):
+        """A connection / name check that failed = an alarm on THIS PC (CAUTION, the lamps + the alarm list) until it
+        is acknowledged here or a boat connects. -> the error text."""
+        self.lamps.set_local("boat_conn", T("alarm.boat_conn", name=bt.name, err=err))
+        self.say(err, RED)
+        self.event(T("alarm.boat_conn", name=bt.name, err=err))
+        self.render(force=True)
+        return err
+
+    def helm_tick(self):
+        """13n2 "HELM at once": once the first data after a boat connection shows HELM FREE, the captain's station
+        (a licensed captain, or a station without a crew role on the boat) takes it - one request, never from a
+        copilot, never taken from another station (the gateway + the AURIX check HELM again)."""
+        if not self.helm_auto or not isinstance(self.link, GatewayLink) or self.t is None or self.gw_status is None:
+            return
+        self.helm_auto = False
+        hid = self.t.get("helm")
+        crew, _cap, _lic = crewui.crew_of(self)
+        if self.helm_mine() or crew == "copilot" or (self.link.welcome or {}).get("role") == "VIEWER":
+            return
+        if hid:
+            return self.say(T("boat.helm_held", who=self.helm_text()), ORANGE)
+        self.cmd(proto.T_HELM, proto.p_helm(0), TE("what.take_helm"))
+
+    def leaving_moving(self):
+        """Leaving this boat now would start its lost-link procedure: UNCREWED, moving (a driving mode or > 0.5 kn)
+        and this station holds HELM."""
+        d = self.t or {}
+        if not self.link or not d or d.get("profile") != proto.PROFILE_UNCREWED or not self.helm_mine():
+            return False
+        sog = d.get("est_sog") if d.get("est_sog") is not None else d.get("gps_sog", 0.0)
+        return d.get("mode") != proto.MODE_STANDBY or (sog or 0.0) >= 0.5
+
+    def leave_boat(self, then):
+        """Leaving a boat (another boat chosen / disconnect, 13n2): UNCREWED + moving -> ONE warning + OK first
+        (it starts its lost-link procedure); otherwise at once."""
+        if not self.leaving_moving():
+            return then()
+        name = self.boat.name if self.boat is not None else self.port_var.get()
+        return self.yn_dialog("boat.leave_title", T("boat.leave_ask", name=name), T("boat.leave_ok"),
+                              T("cap.cancel"), lambda yes: then() if yes else self.say(T("boat.leave_kept", name=name)))
+
+    def yn_dialog(self, title, question, yes_text, no_text, answer):
+        """The ONE vertical Y/N layout (13p) as a small window: the question, [YES] on top (selected), [NO] under it."""
+        w = tk.Toplevel(self.root, bg=C["head"])
+        w.title(i18n.W(title))
+        w.transient(self.root)
+        tk.Label(w, text=question, font=F_BIG, bg=C["head"], fg=C["fg"], wraplength=560, justify="left").pack(
+            padx=20, pady=12)
+        b = tk.Frame(w, bg=C["head"])
+        b.pack(fill="x", padx=20, pady=(0, 14))
+
+        def done(yes):
+            if getattr(self, "yn_win", None) is w:
+                self.yn_win = None
+            w.destroy()
+            answer(yes)
+        tk.Button(b, text=yes_text, command=lambda: done(True), **theme.yn_opts(True, True, "title")).pack(
+            fill="x", pady=(0, 6))
+        tk.Button(b, text=no_text, command=lambda: done(False), **theme.yn_opts(False, False, "title")).pack(fill="x")
+        w.bind("<Escape>", lambda e: done(False))
+        theme.style_tree(w)
+        self.yn_win = w
+        self.yn_answer = done                           # tests
+        return w
 
     def connect(self):
         if self.link:
-            return self.disconnect()
+            return self.leave_boat(self.disconnect)
         addr = self.port_var.get().strip()
         try:
             if addr.startswith("gw:"):
@@ -1977,11 +2077,8 @@ class App:
             self.say(T("cap.not_connected"), RED)
             return
         if ftype == proto.T_HELM and payload[:1] == bytes([0]) and self.boat is not None and not self.boat_ok:
-            # a boat from the list: its name + live camera confirmed first (CLAUDE.md F)
-            self.say(T("boat.confirm_first", name=self.boat.name), RED)
-            if self.boatconf is None:
-                self.boatconf = crewui.BoatConfirm(self, self.boat)
-            return
+            # a boat from the list: only after its welcome name check (CLAUDE.md F, 13n2: automatic at connect)
+            return self.say(T("boat.name_first", name=self.boat.name), RED)
         copilot = False
         if isinstance(self.link, GatewayLink) and proto.is_driving_cmd(ftype, payload, self.relay_groups_known()):
             if self.single_op:
@@ -2714,6 +2811,7 @@ class App:
         c.create_text(w - 20, h - 4, text=T("plot.last", s="%.0f" % PLOT_S), anchor="se", font=F_TXT)
 
     def alarm_tick(self):
+        self.helm_tick()
         d = self.t
         stale = self.link is not None and self.t_rx and time.time() - self.t_rx > 3.0
         # MASTER lamps + the repeating warning sounds work with or without the driver screen open
@@ -2967,20 +3065,20 @@ class App:
         self._press_ov = self.ov.click(e.x, e.y)
         if self._press_ov:
             self.render(force=True)
-        else:
+        elif not self.camview:
             self.mapwin.press(e.x, e.y)
 
     def cv_motion(self, e):
         if self._press_ov:
             if self.ov.motion(e.x, e.y):            # a panel header held: the panel follows the mouse (13n1)
                 self.render(force=True)
-        else:
+        elif not self.camview:
             self.mapwin.motion(e.x, e.y)
 
     def cv_release(self, e):
         if self._press_ov:
             self.ov.release(e.x, e.y)               # a press-and-hold button lets go; a header: collapse / moved
-        if not self._press_ov:
+        if not self._press_ov and not self.camview:
             self.mapwin.release(e.x, e.y)
         self.render(force=True)
         self._press_ov = False
@@ -3156,6 +3254,14 @@ class App:
         d = self.t or {}
         sub = getattr(self, "sub_open", None)
         out = []
+        if n == 1 and self.camview:
+            # 13n2: the camera view - which camera, and MAP back (Esc too)
+            for cam in self.CAMVIEW_CAMS:
+                out.append(("btn", "cv_" + cam, T("cv.cam_" + cam.lower().replace("-", "_")),
+                            lambda cam=cam: self.camview_open(cam), "normal", True, cam == self.camview))
+            out.append(("gap",))
+            out.append(("btn", "cv_map", T("cv.map"), self.camview_close, "info", True, False))
+            return out
         if n == 1:
             for dd in (-10, -1):
                 out.append(("btn", "hdg_%+d" % dd, "%+d" % dd, lambda dd=dd: self.cmd(
@@ -3203,6 +3309,9 @@ class App:
                 out.append(("btn", "bar", T("ov.back_to_boat"), self.mapwin.back_to_boat, "warn", True, False))
             out.append(("gap",))
             out.append(("btn", "bar_boat", T("ov.b_boat"), self.boat_dropdown_bar, "normal", True, False))
+            if isinstance(self.link, GatewayLink) and not self.camview:
+                out.append(("btn", "cv_open", T("cv.button"), lambda: self.camview_open(self.camview_last),
+                            "normal", True, False))
             out.append(("btn", "bar", T("ov.tools"), self.popup_tools, "normal", True, False))
             out.append(("btn", "text_size", "Aa", theme.cycle_text_size, "normal", True, False))
             out.append(("btn", "reset_layout", T("ov.reset_layout"), self.reset_layout, "normal", True, False))
@@ -3329,6 +3438,8 @@ class App:
             ov.ops.append({"k": "banner", "r": rr, "panel": None, "s": text, "tag": tag})
             self.banner_tags.append(tag)
             y += h + g * 0.5
+        if self.camview:
+            self.draw_camview_hud(mx0, y, mx1, my1)         # under the banners (13n2)
         self.note_box = (mx0, my1 - 40 * max(0.8, theme.unit(W, H)), mx1, my1)
 
     def draw_mode_bar(self, r):
@@ -3574,13 +3685,25 @@ class App:
                         (T("cap.data_warning") if sl.get("warning") else "")) + B["starlink"] + (None,))
         if self.single_op:
             out.append(("single_op", T("cap.so_banner")) + B["single_op"] + (None,))
-        if self.boat is not None and not self.boat_ok:
-            out.append(("boat", T("boat.banner", name=self.boat.name)) + B["boat"] + (None,))
+        cams = (self.gw_status or {}).get("cameras") or {}
+        if isinstance(self.link, GatewayLink) and cams and not cams.get("front_live", True):
+            out.append(("no_video", T("boat.no_video")) + B["boat"] + (None,))      # 13n2: a warning only
+        if self.camview:
+            ack = self.cam_ack or {}
+            vs = self.vstreams.get(self.camview)
+            if ack.get("view_reduced"):
+                out.append(("camview_reduced", i18n.from_en(ack.get("notice") or "") or T("cv.reduced")) +
+                           B["boat"] + (None,))
+            elif vs is None or vs.frozen():
+                out.append(("camview_novideo", T("cv.no_video", cam=self.camview)) + B["boat"] + (None,))
         if self.mapwin.edit:
             out.append(("edit", T("ov.edit_help_" + self.mapwin.edit), theme.BLACK, theme.ADVISORY, None))
         return out
 
     def build_panels(self, W, H):
+        if self.camview:
+            self.panel_alarms()             # the camera view (13n2): the alarms stay, the other panels give way
+            return
         self.panel_status()
         self.panel_control()
         self.panel_alarms()                 # top-right, first: always drawn (CLAUDE.md G)
@@ -3801,7 +3924,7 @@ class App:
         out.append(None)
         out.append((T("ov.other_address"), lambda: self.open_tab("tab.connection")))
         if self.link is not None:
-            out.append((T("cap.disconnect"), self.disconnect))
+            out.append((T("cap.disconnect"), lambda: self.leave_boat(self.disconnect)))
         return out
 
     def boat_dropdown(self, post=True):
@@ -4576,13 +4699,137 @@ class App:
                 x["t"] = time.time()
 
     def choose_boat(self, bt):
-        """A boat chosen in screen 2's dropdown: log in + connect (the confirm step follows, CLAUDE.md F / H)."""
+        """A boat chosen in screen 2's dropdown (13n2): ONE move - with this session's login it connects at once
+        (leaving an UNCREWED moving boat asks once first); the first time the login window opens with it selected.
+        The name check + HELM follow by themselves (connect_boat)."""
+        if self.boat is not None and self.boat.id == bt.id and self.link is not None:
+            return self.say(T("boat.already", name=bt.name))
+        login = self.session_login or ((self.login[0], self.login[1], None) if self.login else None)
+        if login:
+            self.boat_pick = bt
+            return self.leave_boat(lambda: self.connect_boat(bt, *login))
         self.boat_pick = bt
         if self.boatsel is None:
             self.boatsel = crewui.BoatSelector(self)
         else:
             self.boatsel.w.lift()
         self.boatsel.select(bt)
+
+    # --- screen 2's camera view (13n2, owner 2026-10-31 E2) -------------------------------------------------------
+    CAMVIEW_CAMS = ("FRONT-1", "FRONT-2", "REAR-LEFT", "REAR-RIGHT")
+
+    def camview_open(self, cam):
+        """A camera full screen on screen 2 (the copilot's own PC): the gateway adds it to this station's streams
+        only while it is open (a copilot gets the lighter stream; the captain's video first). The mode bar, STANDBY
+        and the alarms stay; Esc / MAP = back to the map. DISPLAY ONLY."""
+        if not isinstance(self.link, GatewayLink):
+            return self.say(T("cap.cams_only_gw"), RED)
+        if cam not in self.CAMVIEW_CAMS:
+            cam = "FRONT-1"
+        if self.mapwin.edit:
+            self.set_edit(self.mapwin.edit)     # map editing ends under the camera
+        self.sub_open = None
+        self.camview = self.camview_last = cam
+        self.link.send_msg({"t": "cam_view", "cam": cam})
+        self.event(T("cv.opened", cam=cam))
+        self.render(force=True)
+        if not getattr(self, "_cv_ticking", False):
+            self._cv_ticking = True
+            self.root.after(50, self.camview_tick)
+
+    def camview_close(self, send=True):
+        if not self.camview:
+            return
+        self.camview = None
+        self.cv.delete("camview")
+        if send and isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "cam_view", "cam": None})      # the stream ends: no uplink for it any more
+        self.mapwin.redraw()
+        self.render(force=True)
+        self.cv.tag_raise("ov")
+
+    def camview_frame(self):
+        """The newest frame of the view's camera as a Pillow image, or None."""
+        vs = self.vstreams.get(self.camview) if self.camview else None
+        if vs is None:
+            return None
+        try:
+            from PIL import Image
+            if getattr(vs, "frame", None) is not None:
+                return Image.frombytes("RGB", (vs.w, vs.h), vs.frame)
+            data = vs.ppm() if hasattr(vs, "ppm") else None         # (a stand-in stream: a PPM picture)
+            if data:
+                import io
+                return Image.open(io.BytesIO(data)).convert("RGB")
+        except Exception:
+            pass
+        return None
+
+    def camview_tick(self):
+        """10 x per second: the picture fitted into screen 2 (letterbox), at most render_max_px composed, shown with
+        a whole-number zoom on a high-DPI window (like screen 1, step 13l); under the panels (tag "ov")."""
+        if not self.camview:
+            self._cv_ticking = False
+            return
+        try:
+            W, H = max(200, self.cv.winfo_width()), max(150, self.cv.winfo_height())
+            c = self.cv
+            c.delete("camview")
+            c.create_rectangle(0, 0, W, H, fill=theme.BLACK, outline="", tags="camview")
+            img = self.camview_frame()
+            if img is not None:
+                from PIL import ImageTk
+                try:
+                    cap = max(640, int(settings.get("render_max_px") or 1920))
+                except (TypeError, ValueError):
+                    cap = 1920
+                zoom = max(1, int(math.ceil(max(W, H) / (1.35 * cap) - 1e-9)))
+                k = min(W / zoom / img.width, H / zoom / img.height)
+                pw, ph = max(1, int(img.width * k)), max(1, int(img.height * k))
+                ph_img = ImageTk.PhotoImage(img.resize((pw, ph)))
+                if zoom > 1:
+                    import tkinter as _tk
+                    big = _tk.PhotoImage()
+                    big.tk.call(str(big), "copy", str(ph_img), "-zoom", zoom, zoom)
+                    self._cv_small = ph_img                 # (kept alive while the zoomed copy is shown)
+                    ph_img = big
+                self._cv_photo = ph_img
+                c.create_image(W / 2, H / 2, image=ph_img, anchor="c", tags="camview")
+            c.tag_raise("camview")
+            c.tag_raise("ov")
+        except tk.TclError:
+            self._cv_ticking = False
+            return
+        self.root.after(100, self.camview_tick)
+
+    def draw_camview_hud(self, x0, y0, x1, y1):
+        """The green HUD basics on the camera view (as screen 1: info green): the camera, mode, heading, speed,
+        throttle + gear; a dark shadow keeps them readable on any picture."""
+        ov, cv = self.ov, self.cv
+        d = self.t
+        g = theme.HUD_MAIN["green"]
+        fnt_b = ov.font(ov.size("value"), True)
+        fnt = ov.font(ov.size("label"), True)
+        lines = [(self.camview + ("  ·  " + T("cv.light") if (self.cam_ack or {}).get("view_light") else ""), fnt)]
+        if d:
+            gear = T("gear.%d" % d["gear"]) if d.get("gear", 9) < 3 else "-"
+            sog = d.get("est_sog")
+            lines += [(T("mode." + d["mode_name"]), fnt_b),
+                      (T("cv.hdg", v="%03.0f°" % d["heading"] if d.get("compass_ok") else "---"), fnt),
+                      (T("cv.sog", v="%.1f" % sog if sog is not None else "--"), fnt),
+                      (T("cv.thr", v="%.0f" % d.get("throttle", 0.0), g=gear), fnt)]
+        else:
+            lines.append((T("cap.not_connected"), fnt))
+        y = y0 + ov.size("small")
+        x = x0 + ov.size("value") * 0.4
+        sh = max(1, int(ov.size("small") / 8))
+        for text, f in lines:
+            cv.create_text(x + sh, y + sh, text=text, anchor="nw", fill=theme.BLACK, font=f, tags="ov")
+            cv.create_text(x, y, text=text, anchor="nw", fill=g, font=f, tags="ov")
+            lh = f.metrics("linespace")
+            ov.ops.append({"k": "text", "r": (x, y, x + ov.measure(text, "value", True)[0], y + lh), "panel": None,
+                           "s": text, "tag": "cv_hud"})
+            y += lh
 
 
 def main():

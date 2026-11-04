@@ -1315,6 +1315,37 @@ def section_e():
                res["LAN"][0] is not None and res["4G"][0] is not None and res["LAN"][0] < 400 and res["4G"][0] < 800,
                "LAN: median %s ms, 95 %% %s ms (%d frames); 4G simulated: median %s ms, 95 %% %s ms (%d frames). "
                "Add the Tapo's own encoder delay (not simulated)" % (res["LAN"] + res["4G"]))
+
+        # E7 (13n2) the copilot's camera view: the camera added (LOW = the lighter stream) only while it is open;
+        # closing it kicks the reader (no uplink any more)
+        a = rig.ask(alice, preset="Front only")
+        while True:
+            try:
+                alice.l.events.get_nowait()
+            except Exception:
+                break
+        alice.l.send_msg({"t": "cam_view", "cam": "REAR-RIGHT"})
+        av = rig.wait_ack(alice)
+        vvs = VideoStream(rig.url(av, "REAR-RIGHT"), 320, 240).start() if av and av.get("streams", {}).get(
+            "REAR-RIGHT") else None
+        got = wait_for(lambda: vvs is not None and vvs.frames >= 10, 10)
+        alice.l.send_msg({"t": "cam_view", "cam": None})
+        ac = rig.wait_ack(alice)
+        time.sleep(2.0)
+        n0 = vvs.frames if vvs else 0
+        time.sleep(2.0)
+        n1 = vvs.frames if vvs else 0
+        if vvs:
+            vvs.stop()
+        report("E7 (13n2) camera view: REAR-RIGHT added as LOW only while open (lighter = not the captain's: CV1), "
+               "frames arrive; closed = "
+               "the stream gone from the list and the reader kicked",
+               bool(av) and av["streams"].get("REAR-RIGHT") == "cam_rearright_lo" and av.get("view") == "REAR-RIGHT"
+               and av.get("view_light") == (not g.cams.is_priority(alice.welcome["id"])) and got and ac is not None and "REAR-RIGHT" not in ac["streams"] and
+               ac.get("view") is None and n1 - n0 <= 1,
+               "open: %s view %s light %s, frames %s; closed: %s; frames after close %d -> %d" % (
+                   (av or {}).get("streams"), (av or {}).get("view"), (av or {}).get("view_light"), got,
+                   (ac or {}).get("streams"), n0, n1))
         alice.close()
         link.stop()
     finally:
@@ -4575,9 +4606,109 @@ def section_uh():
            "(counted %d), normal %s" % (s_x, s_y, s_l, s_n, s_ok, len(bad), n_bad, getattr(st15, "rjoy_bad", 0), good))
 
 
+# ------------------------------------------------------------------- section CV --
+
+def section_cv():
+    """13n2 (owner 2026-10-31 E2): the camera view of screen 2 (gateway/cameras.py) - no MediaMTX needed."""
+    print("\n=== Section CV: camera view, the captain's video first (13n2) ===", flush=True)
+    import types
+    import stations as stmod
+    from cameras import CameraManager
+    saver = [False]
+    audits = []
+    gw = types.SimpleNamespace(cfg={}, telem2={}, net=types.SimpleNamespace(on_emergency=False),
+                               data_saver=lambda: saver[0], audit=lambda kind, **kw: audits.append((kind, kw)),
+                               stations=types.SimpleNamespace(stations={}))
+    cm = CameraManager({"copilot_budget_kbps": 6000, "view_restore_s": 10.0}, gw)
+
+    def station(sid, crew, single_op=False):
+        st = types.SimpleNamespace(id=sid, user="u%d" % sid, crew=crew, single_op=single_op, session="s%d" % sid,
+                                   video_key="k%d" % sid, sent=[])
+        st.send = st.sent.append
+        gw.stations.stations[sid] = st
+        return st
+    cap, cop = station(2, "captain"), station(3, "copilot")
+    last = lambda st: st.sent[-1] if st.sent else {}
+    # CV1 lighter stream for the copilot, only while open; the captain's own view keeps its quality
+    cm.request(cop, {"preset": "Full"})
+    full = dict(last(cop)["streams"])
+    cm.view_request(cop, {"cam": "FRONT-1"})
+    v_front = dict(last(cop)["streams"]), last(cop)["view_light"]
+    cm.view_request(cop, {"cam": "REAR-RIGHT"})
+    cm.request(cop, {"preset": "All off"})                  # a preset change keeps the open view
+    v_rear = dict(last(cop)["streams"]), last(cop)["view"]
+    cm.view_request(cop, {"cam": "NOSE"})
+    unknown = last(cop).get("ok") is False
+    cm.view_request(cop, {"cam": None})
+    closed = dict(last(cop)["streams"]), last(cop)["view"]
+    cm.request(cap, {"preset": "Full"})
+    cm.view_request(cap, {"cam": "FRONT-1"})
+    cap_v = dict(last(cap)["streams"]), last(cap)["view_light"]
+    cm.view_request(cap, {"cam": None})
+    report("CV1 camera view: the copilot gets the LOW (lighter) stream of the chosen camera, only while it is open "
+           "(a preset change keeps it, closing removes it), an unknown camera refused; the captain's own view keeps "
+           "HIGH",
+           full["FRONT-1"] == "cam_front1_hi" and v_front[0]["FRONT-1"] == "cam_front1_lo" and v_front[1] and
+           v_rear == ({"REAR-RIGHT": "cam_rearright_lo"}, "REAR-RIGHT") and unknown and closed == ({}, None) and
+           cap_v[0]["FRONT-1"] == "cam_front1_hi" and cap_v[1] is False and
+           ("camera_view", {"station": 3, "user": "u3", "cam": "FRONT-1"}) in audits,
+           "Full %s; view FRONT-1 %s; view REAR-RIGHT (preset All off) %s; unknown refused %s; closed %s; captain "
+           "view %s" % (full, v_front, v_rear, unknown, closed, cap_v))
+    # CV2 the captain's video first: over the budget -> the copilot's view dropped (never the captain's), back with
+    # hysteresis only when the captain's video + the dropped view fit 80 % for 10 s
+    cm.request(cop, {"preset": "All off"})
+    cm.view_request(cop, {"cam": "REAR-LEFT"})
+    cm.request(cap, {"preset": "Full"})
+    cm.station_kbps, cm.total_kbps = {2: 3000, 3: 3500}, 6500
+    t0 = 1000.0
+    ch1 = cm.update_priority(t0)
+    red = cm.allowed_paths(3), cm.streams_msg(cop), cm.allowed_paths(2)
+    cm.station_kbps, cm.total_kbps = {2: 3000}, 3000           # the copilot's view stopped: 3000 + 3500 > 4800
+    still = not cm.update_priority(t0 + 30) and cm.views_reduced
+    cm.station_kbps, cm.total_kbps = {2: 1000}, 1000           # the captain needs less now: 1000 + 3500 < 4800
+    early = cm.update_priority(t0 + 31) or cm.update_priority(t0 + 40)
+    back = cm.update_priority(t0 + 41.5) and not cm.views_reduced and "cam_rearleft_lo" in cm.allowed_paths(3)
+    no_cap = not cm.update_priority(t0 + 50)                    # nothing to do without the captain's video
+    cm.station_kbps, cm.total_kbps = {3: 9000}, 9000
+    no_cap_red = not cm.update_priority(t0 + 51) and not cm.views_reduced
+    report("CV2 the captain's video has priority: over copilot_budget_kbps the copilot's view drops FIRST (\"VIDEO "
+           "REDUCED FOR THE CAPTAIN\"), the captain keeps every stream; back only when it fits 80 % for 10 s; no "
+           "captain watching = no reduction",
+           ch1 and "cam_rearleft_lo" not in red[0] and red[1]["view_reduced"] and
+           red[1]["notice"].startswith("VIDEO REDUCED FOR THE CAPTAIN") and "cam_front1_hi" in red[2] and still and
+           not early and back and no_cap and no_cap_red and any(k == "camera_view_reduced" for k, _ in audits) and
+           any(k == "camera_view_restored" for k, _ in audits),
+           "reduced %s (copilot paths %s, notice %r, captain paths %s); still reduced while it does not fit %s; "
+           "not back before 10 s %s; back %s; no captain %s / %s" % (
+               ch1, sorted(red[0]), red[1]["notice"], sorted(red[2]), still, not early, back, no_cap, no_cap_red))
+    # CV3 data saver: no extra view for anybody; HELM holder = the captain's video
+    saver[0] = True
+    sv = cm.streams_msg(cop)
+    saver[0] = False
+    helper = station(4, "copilot")
+    cm.view_request(helper, {"cam": "FRONT-2"})
+    gw.telem2["helm"] = 4
+    helm_prio = cm.is_priority(4) and cm.streams_msg(helper)["view_light"] is False
+    gw.telem2["helm"] = 2
+    report("CV3 data saver / STARLINK: no camera view (the front-LOW rule stays); the HELM holder counts as the "
+           "captain's video",
+           "REAR-LEFT" not in sv["streams"] and sv["view_reduced"] and sv["notice"].startswith("DATA SAVER") and
+           helm_prio, "data saver streams %s, notice %r; HELM holder priority %s" % (sv["streams"], sv["notice"],
+                                                                                    helm_prio))
+    # CV4 the view (and the streams) end with the station: a disconnect forgets it
+    srv = types.SimpleNamespace(stations={3: cop}, gw=types.SimpleNamespace(
+        cams=cm, aurix=types.SimpleNamespace(send=lambda t, b: None), audit=lambda *a, **k: None),
+        _check_asks=lambda: None)
+    cop.closed, cop.local, cop.writer = False, False, types.SimpleNamespace(close=lambda: None)
+    stmod.StationServer._drop(srv, cop, "disconnected")
+    report("CV4 the camera view ends with the station (disconnect: nothing kept for it)",
+           3 not in cm.station_cams and "REAR-LEFT" not in cm.status()["views"].values(),
+           "station_cams %s, views %s" % (sorted(cm.station_cams), cm.status()["views"]))
+
+
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
             "G": section_g, "GF": section_gf, "RL": section_rl, "DP": section_dp, "AR": section_ar,
-            "AL": section_al, "UH": section_uh}
+            "AL": section_al, "UH": section_uh, "CV": section_cv}
 
 
 def main():

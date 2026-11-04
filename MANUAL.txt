@@ -388,19 +388,31 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   folder of the repository (boats\rf49d.json, boats\er69d.json - name +
   Tailscale address, no passwords), every boat by NAME with ONLINE /
   OFFLINE / IP NOT SET / INVALID FILE and its address only as a detail at the end, then
-  "Other address ..." and "Disconnect". Choose a boat: user name +
-  password, "captain" or "copilot", CONNECT.
+  "Other address ..." and "Disconnect". Choose a boat: the FIRST time in
+  this session user name + password, "captain" or "copilot", CONNECT; after
+  that changing boats is ONE move (dropdown -> the boat: the same login, kept
+  in memory only, never saved).
   The lamp: white CONNECTED only when this PC found the boat's gateway AND
   is connected to it AND the gateway said the right boat name. Otherwise
   grey with the reason: ONLINE (found, not connected), OFFLINE, IP NOT
   SET, checking ..., "no boat check" (connected to a typed address).
   * The station refuses to connect if the gateway is another boat (each
     gateway knows its own name - gateway config "boat").
-  * Then screen 1 opens and a yellow window asks: type the boat's name AND
-    tick "I see the LIVE front camera of <boat>" (only possible while the
-    front camera picture is live). Only after that the dropdown line shows
-    "✓ name verified" and this station can take HELM. "NOT THIS BOAT"
-    disconnects.
+  * Connect -> the name check is AUTOMATIC (the gateway's welcome must name
+    this boat) -> "✓ name verified" and this station takes HELM AT ONCE if
+    HELM is free (a captain / a station without a crew role; a copilot never
+    takes it; held by another station = a message, take it in the HELM panel
+    if you must). There is NO typed name and NO live-camera step any more
+    (owner 2026-10-31): a dead camera is only the warning "NO VIDEO from the
+    boat's front cameras" (top middle) and NO VIDEO on screen 1.
+  * A connection or name check that fails = an ALARM on this PC (amber,
+    "BOAT CONNECTION FAILED: <boat> - <why>" in the alarm list, the CAUTION
+    lamp); Space / A / ACK ALARM acknowledges it here (then it is gone).
+  * LEAVING A BOAT (another boat chosen, or Disconnect) that is UNCREWED and
+    moving (a driving mode, or faster than 0.5 kn) while this station holds
+    HELM: ONE warning "... starts its LOST-LINK procedure ..." with
+    [OK – LEAVE THE BOAT] on top and [CANCEL] under it. CANCEL = you stay
+    connected. CREWED / STANDBY and not moving = no question.
   * A NEW COMPUTER: clone the repository (chapter 16) - the boats come with
     it; nothing else to copy. A new boat = a new file in boats\ (copy one,
     change id / name / address), commit it.
@@ -498,8 +510,21 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
             above the bar while you use it; the button again closes it) ·
             LINK TIME − + (captain with HELM) · RESTORE POWER when offered
      Bar 2  the nearest AIS ship + CPA · the last message · Zoom − / Zoom +
-            (/ Back to boat) · BOAT (the boat dropdown) · Tools · Aa ·
-            RESET TO DEFAULT
+            (/ Back to boat) · BOAT (the boat dropdown) · CAMERA (through a
+            gateway) · Tools · Aa · RESET TO DEFAULT
+  CAMERA VIEW (step 13n2, for the copilot's PC above all): CAMERA on bar 2
+  shows one of the boat's cameras over the whole of screen 2. Bar 1 then
+  holds FRONT-1 / FRONT-2 / REAR-L / REAR-R and MAP; MAP or Esc = back to the
+  map. Green on the picture: the camera, the mode, heading, speed, throttle +
+  gear. The mode bar, STANDBY and the alarm panel stay; the other panels give
+  way; the map can't be edited under it. The camera is sent to this PC ONLY
+  while the view is open. A copilot gets the LIGHTER stream (the camera's low
+  stream, 10 pictures a second), and the captain's video has priority: when
+  the video to the stations is more than the gateway allows
+  (cameras.copilot_budget_kbps, 6000 kbit/s), the copilot's view is cut FIRST
+  ("VIDEO REDUCED FOR THE CAPTAIN"), back by itself when it fits again
+  (10 s). DATA SAVER / STARLINK: no camera view at all. A view never changes
+  anything on the boat.
   "AI" (a small framed white badge) is shown ONLY where a neural network
   works: the obstacle detection (eWaSR) and the Piper voice. AI only warns
   and may slow down - it never steers. Collision avoidance, the autopilot
@@ -1376,6 +1401,8 @@ THE GUIDED TOUR (menu Academy -> Guided tour)
   station's offline voice (Piper) in the background the first time you open
   the tour from the menu - a few minutes; until then the tour shows the text
   only. The academy window's "Guided tour" button opens the same tour.
+  TOUR.bat (next to START_DEMO.bat, double-click) opens the tour on its own
+  in Greek - no demo, no boat, no gateway needed.
   The tour only explains: it never connects to a boat (banner at the top).
 
 SIMULATOR LESSONS (academy window -> "Simulator lessons")

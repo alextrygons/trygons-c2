@@ -805,8 +805,6 @@ class DriverScreen:
         out = []
         if a.single_op:
             out.append(("singleop", T("drv.single_op"), theme.NOTICE["single_op"]))
-        if getattr(a, "boat", None) is not None and not getattr(a, "boat_ok", True):
-            out.append(("boatconfirm", T("boat.banner", name=a.boat.name), "caution"))
         if d is not None:
             ll = d.get("ll_state", 0)
             if ll == 2:

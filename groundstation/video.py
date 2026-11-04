@@ -20,6 +20,8 @@ import time
 import childproc
 
 FROZEN_S = 1.0
+VIEW_SIZE = (960, 540)          # screen 2's camera view (13n2): decoded size
+VIEW_LIGHT_FPS = 10             # a copilot's view (the gateway's "view_light"): a low frame rate = lighter
 
 
 def ffmpeg_bin():
@@ -27,8 +29,9 @@ def ffmpeg_bin():
 
 
 class VideoStream:
-    def __init__(self, url, width=640, height=360, name=""):
+    def __init__(self, url, width=640, height=360, name="", fps=None):
         self.url = url
+        self.fps = fps                  # None = every frame; else the decoder drops to this rate (13n2)
         self.w, self.h = width, height
         self.name = name
         self.frame = None               # newest frame, raw RGB (w*h*3 bytes)
@@ -57,7 +60,7 @@ class VideoStream:
     def _cmd(self):
         return [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp",
                 "-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32768", "-analyzeduration", "0",
-                "-i", self.url, "-an", "-vf", "scale=%d:%d" % (self.w, self.h),
+                "-i", self.url, "-an", "-vf", ("fps=%g," % self.fps if self.fps else "") + "scale=%d:%d" % (self.w, self.h),
                 "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
 
     def _run(self):

@@ -18,6 +18,15 @@ on STARLINK / data saver only the front camera LOW (no override on
 STARLINK). So the gateway forwards only what a station asked for, and an OFF
 stream uses no uplink at all.
 
+Camera VIEW (step 13n2, owner 2026-10-31 E2): a station (the copilot's screen 2) may open ONE camera full
+screen ({"t": "cam_view", "cam": name | None}): that camera is added to its streams only while the view is
+open. A station that is NOT the captain's (crew captain, single operator or the HELM holder) gets the LIGHTER
+stream (the LOW sub stream, never HIGH; the station decodes it at a low frame rate), and the captain's video has
+priority: when the video to the stations goes over copilot_budget_kbps while the captain receives video, the
+other stations' views are dropped FIRST ("VIDEO REDUCED FOR THE CAPTAIN"), back when the captain's video + the
+dropped views fit 80 % of the budget for view_restore_s. Data saver / STARLINK: no extra view at all (the
+front-LOW rule stays). A view never changes anything on the boat.
+
 Health: every 0.25 s the gateway reads the MediaMTX API: a camera whose
 main stream received no new data for 1 s is FROZEN / DOWN. All health checks
 run on the boat LAN, no internet used. Cameras are never needed for
@@ -83,7 +92,10 @@ class CameraManager:
         self.webrtc_port = cfg.get("webrtc_port", 8889)
         self.frozen_s = cfg.get("frozen_s", 1.0)
         self.proc = None
-        self.station_cams = {}              # station id -> {"preset", "levels", "override"}
+        self.station_cams = {}              # station id -> {"preset", "levels", "override", "view"}
+        self.views_reduced = False          # the non-captain camera views dropped for the captain (13n2)
+        self.reduced_kbps = 0.0             # the video the dropped views took when they were dropped
+        self.restore_since = None
         self.sessions = {}                  # MediaMTX reader id -> (path, station id, bytes, t)
         self.station_kbps = {}              # station id -> kbit/s of video it receives
         self.path_kbps = {}                 # path -> kbit/s sent to stations
@@ -233,8 +245,33 @@ class CameraManager:
         """data saver / slow link: front only, LOW."""
         return bool(self.gw and self.gw.data_saver())
 
+    def is_priority(self, st_id):
+        """The captain's video (13n2): the captain, a single operator or the station that holds HELM."""
+        st = self.gw.stations.stations.get(st_id) if self.gw and getattr(self.gw, "stations", None) else None
+        helm = (getattr(self.gw, "telem2", None) or {}).get("helm") if self.gw else None
+        return bool(st is not None and (st.crew == "captain" or st.single_op) or (helm and helm == st_id))
+
+    def view_of(self, st_id):
+        return (self.station_cams.get(st_id) or {}).get("view")
+
+    def view_reduced(self, st_id):
+        """This station's camera view is cut now: data saver, or reduced for the captain (13n2)."""
+        if not self.view_of(st_id):
+            return False
+        return self.forced_low() or (self.views_reduced and not self.is_priority(st_id))
+
     def levels_for(self, st_id):
         """What a station may receive now: camera name -> OFF / LOW / HIGH."""
+        lv = self._preset_levels(st_id)
+        view = self.view_of(st_id)
+        if view in self.cams and not self.view_reduced(st_id):
+            if self.is_priority(st_id):
+                lv[view] = lv.get(view) if lv.get(view, "OFF") != "OFF" else "LOW"
+            else:
+                lv[view] = "LOW"            # the lighter stream: never HIGH for a copilot's view
+        return lv
+
+    def _preset_levels(self, st_id):
         req = self.station_cams.get(st_id, {"preset": "Front only", "levels": None, "override": False})
         lv = self.levels_from_preset(req["preset"]) if req.get("levels") is None else dict(req["levels"])
         if self.forced_low() and not (req.get("override") and not (self.gw and self.gw.net.on_emergency)):
@@ -263,12 +300,59 @@ class CameraManager:
         levels = m.get("levels")
         if levels is not None and not all(v in ("OFF", "LOW", "HIGH") and k in self.cams for k, v in levels.items()):
             return st.send({"t": "cams_ack", "ok": False, "text": "bad camera levels"})
-        self.station_cams[st.id] = {"preset": preset, "levels": levels, "override": bool(m.get("override"))}
+        self.station_cams[st.id] = {"preset": preset, "levels": levels, "override": bool(m.get("override")),
+                                    "view": self.view_of(st.id)}
         self.kick_disallowed()
         if self.gw:
             self.gw.audit("cameras", station=st.id, user=st.user, preset=preset, levels=levels,
                           override=bool(m.get("override")))
         st.send(self.streams_msg(st))
+
+    def view_request(self, st, m):
+        """{"t": "cam_view", "cam": "FRONT-1" | ... | None} (13n2): open / close this station's camera view."""
+        cam = m.get("cam")
+        if cam is not None and cam not in self.cams:
+            return st.send({"t": "cams_ack", "ok": False, "text": "unknown camera"})
+        req = self.station_cams.setdefault(st.id, {"preset": "Front only", "levels": None, "override": False})
+        old = req.get("view")
+        req["view"] = cam
+        if old != cam:
+            self.kick_disallowed()
+            if self.gw:
+                self.gw.audit("camera_view", station=st.id, user=st.user, cam=cam)
+        st.send(self.streams_msg(st))
+
+    def update_priority(self, now=None):
+        """After every poll (13n2): drop the other stations' views first when the video to the stations goes over
+        the budget while the captain receives video; back with hysteresis. True = the state changed (the caller
+        kicks the readers + sends the new stream lists)."""
+        now = now or time.time()
+        budget = float(self.cfg.get("copilot_budget_kbps", 6000) or 0)
+        views = [sid for sid in self.station_cams if self.view_of(sid) and not self.is_priority(sid)]
+        prio_kbps = sum(v for sid, v in self.station_kbps.items() if self.is_priority(sid))
+        if not self.views_reduced:
+            if budget > 0 and views and prio_kbps > 0 and self.total_kbps > budget:
+                self.views_reduced, self.restore_since = True, None
+                self.reduced_kbps = max(0.0, self.total_kbps - prio_kbps)
+                log.warning("cameras: video %d kbit/s over the budget %d - camera views reduced for the captain",
+                            self.total_kbps, budget)
+                if self.gw:
+                    self.gw.audit("camera_view_reduced", kbps=self.total_kbps, budget=budget)
+                return True
+            return False
+        fits = budget <= 0 or not views or prio_kbps <= 0 or prio_kbps + self.reduced_kbps < 0.8 * budget
+        if not fits:
+            self.restore_since = None
+            return False
+        if self.restore_since is None:
+            self.restore_since = now
+        if now - self.restore_since >= float(self.cfg.get("view_restore_s", 10.0)):
+            self.views_reduced, self.restore_since = False, None
+            log.info("cameras: camera views back (the captain's video fits the budget)")
+            if self.gw:
+                self.gw.audit("camera_view_restored", kbps=self.total_kbps, budget=budget)
+            return True
+        return False
 
     def streams_msg(self, st):
         lv = self.levels_for(st.id)
@@ -276,7 +360,12 @@ class CameraManager:
         if self.forced_low():
             notice = "DATA SAVER: front camera only, LOW" + (" (STARLINK: no override)" if self.gw.net.on_emergency
                                                             else "")
+        reduced = self.view_reduced(st.id)
+        if reduced and not self.forced_low():
+            notice = "VIDEO REDUCED FOR THE CAPTAIN: camera view off"
         return {"t": "cams_ack", "ok": True, "levels": lv, "notice": notice,
+                "view": self.view_of(st.id), "view_reduced": reduced,
+                "view_light": bool(self.view_of(st.id)) and not self.is_priority(st.id),
                 "streams": {n: path_name(n, q) for n, q in lv.items() if q != "OFF"},
                 "rtsp_port": self.rtsp_port, "webrtc_port": self.webrtc_port, "query": "station=%d" % st.id,
                 "user": st.session, "password": st.video_key}
@@ -331,7 +420,8 @@ class CameraManager:
                     for c in self.cams.values()]
         front_live = any(c["state"] == "OK" for c in cams if c["role"].startswith("front"))
         return {"relay": self.mtx_ok, "cameras": cams, "total_kbps": self.total_kbps, "front_live": front_live,
-                "station_kbps": self.station_kbps,
+                "station_kbps": self.station_kbps, "views_reduced": self.views_reduced,
+                "views": {sid: r.get("view") for sid, r in self.station_cams.items() if r.get("view")},
                 "forced_low": self.forced_low(), "internet": self.internet_allowed()}
 
 

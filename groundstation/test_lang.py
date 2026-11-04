@@ -105,6 +105,7 @@ def families():
     f += ["dp.sub_%d" % i for i in range(len(proto.DP_SUBS))]
     f += ["mb." + k for k in ("STANDBY", "HDG_LOCK", "AUTO", "REMOTE_MANUAL", "MANEUVER", "DP", "MANUAL")]   # 13n1
     f += ["ov.sub_" + k for k in ("route", "maxkn", "fence")]
+    f += ["cv.cam_" + k for k in ("front_1", "front_2", "rear_left", "rear_right")]      # 13n2 camera view
     return f
 
 

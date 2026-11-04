@@ -1,6 +1,6 @@
 """Boats + two screens (CLAUDE.md sections E + F + H): boats/ list, online / offline,
-name check, the confirm step before HELM, screen 1 / 2 on one monitor, the map
-inside screen 2.
+name check (automatic, 13n2: HELM at once, no live-camera step), one-move boat change +
+the leave warning, screen 1 / 2 on one monitor, the map inside screen 2.
 
     python test_boats.py            (tools/check.sh runs it)
 """
@@ -19,6 +19,7 @@ os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(tempfile.mkdtemp(prefi
 os.environ.setdefault("TRYGONS_HUD_LAYOUT", os.path.join(tempfile.mkdtemp(prefix="hud_boats_"), "hud_layout.json"))
 sys.path.insert(0, HERE)
 import boats  # noqa: E402
+from i18n import T as T_  # noqa: E402
 
 results = []
 
@@ -90,11 +91,12 @@ def b3_name_and_confirm():
     b = boats.Boat("x.json", {"id": "rf49d", "name": "RF49D", "tailscale_ip": "100.101.102.103"})
     ok = boats.check_welcome(b, {"boat": "RF49D"}) is None
     bad = boats.check_welcome(b, {"boat": "ER69D"})
-    c = [boats.confirmed("rf49d", b, True), boats.confirmed(" RF 49D", b, True), boats.confirmed("RF49D", b, False),
-         boats.confirmed("ER69D", b, True), boats.confirmed("", b, True)]
-    report("B3 name check (refused when the gateway is another boat); confirm = name typed + live camera",
-           ok and bad and "wrong boat" in bad and c == [True, True, False, False, False],
-           "right %s; wrong -> %r; confirm (name ok + camera, spaces, no camera, wrong name, empty) %s" % (ok, bad, c))
+    none = boats.check_welcome(b, {})
+    gone = not hasattr(boats, "confirmed")                          # 13n2: no typed name / live-camera step
+    report("B3 name check (refused when the gateway is another boat or names none); the old confirm step is gone "
+           "(13n2, owner 2026-10-31 E2)",
+           ok and bad and "wrong boat" in bad and none and gone,
+           "right %s; wrong -> %r; no name -> %r; boats.confirmed gone %s" % (ok, bad, none, gone))
 
 
 V2 = {"format": 2, "id": "v2", "name": "VICTOR", "tailscale_ip": "127.0.0.1", "gateway_port": 5761,
@@ -216,9 +218,9 @@ class FakeStream:
 
 
 def b4_app_end_to_end():
-    """The real ground station + gateway + simulator: choose the boat, HELM refused until the name + live
-    camera are confirmed; the wrong boat is refused; one monitor: F11 toggles screen 1 / 2; the map is in
-    screen 2."""
+    """The real ground station + gateway + simulator (13n2, owner 2026-10-31 E2): choose the boat -> connect ->
+    the automatic name check -> HELM at once (no live camera needed: no video = a warning only); the wrong boat
+    is refused = an alarm on this PC; one monitor: F11 toggles screen 1 / 2; the map is in screen 2."""
     sys.path.insert(0, os.path.join(REPO, "gateway"))
     import test_gateway as TG
     import tkinter as tk
@@ -253,41 +255,31 @@ def b4_app_end_to_end():
     try:
         pump(1.0)
         err_wrong = ap.connect_boat(wrong, "alice", TG.PW["alice"], "captain")
+        alarm_rows = [r[0] for r in ap.lamps.rows()]
+        alarm = any(T_("alarm.boat_conn", name="ER69D", err="")[:20] in r for r in alarm_rows) and \
+            ap.lamps.on(A.alerts.CAUTION) and ap.link is None
+        ap.render(force=True)
+        on_screen = any(o.get("tag") == "alarm_row" and "ER69D" in o.get("s", "") for o in ap.ov.ops)
+        ap.master_ack()
+        acked = not ap.lamps.local
+        # the right boat: connected, name checked, HELM taken BY ITSELF - no dialog, no camera (no video at all)
+        ap.vstreams = {}
         err = ap.connect_boat(good, "alice", TG.PW["alice"], "captain")
-        pump(8, lambda: ap.t is not None)
-        conf_open = ap.boatconf is not None and ap.driver is not None
-        ap.cmd(proto.T_HELM, proto.p_helm(0), "take HELM")
-        pump(2.0)
-        helm_before = ap.t.get("helm") if ap.t else None
+        ok_at_once = err is None and ap.boat_ok and not hasattr(ap, "boatconf")
         pushed_before_helm = ap.boat_pushed                      # B8: nothing pushed without HELM
-        # confirm without a live camera / with the wrong name: refused
-        ap.boatconf.name.insert(0, "RF49D")
-        ap.boatconf.cam.set(True)
-        ap.boatconf.ok()
-        no_cam = not ap.boat_ok
-        ap.vstreams = {"FRONT": FakeStream(True)}                # a live front picture arrives
-        pump(1.0)
-        ap.boatconf.name.delete(0, "end")
-        ap.boatconf.name.insert(0, "ER69D")
-        ap.boatconf.cam.set(True)
-        ap.boatconf.ok()
-        wrong_name = not ap.boat_ok
-        ap.boatconf.name.delete(0, "end")
-        ap.boatconf.name.insert(0, "rf49d")
-        ap.boatconf.cam.set(True)
-        ap.boatconf.ok()
-        confirmed = ap.boat_ok and ap.boatconf is None
-        ap.cmd(proto.T_HELM, proto.p_helm(0), "take HELM")
         me = ap.link.welcome["id"]
-        took = pump(5, lambda: ap.t and ap.t.get("helm") == me)
+        took = pump(10, lambda: ap.t and ap.t.get("helm") == me)
         crew = A.crewui.crew_of(ap)[0]
-        report("B4 choose the boat: wrong boat refused; HELM refused until its name + LIVE camera are confirmed",
-               err_wrong and "wrong boat" in err_wrong and err is None and conf_open and helm_before != me and
-               no_cam and wrong_name and confirmed and took and crew == "captain",
-               "ER69D (gateway is RF49D) -> %r; RF49D -> connected %s, confirm dialog + screen 1 %s; HELM before the "
-               "confirm: holder %s (not us %s); confirm without camera refused %s, wrong name refused %s, name + live "
-               "camera -> confirmed %s; HELM taken %s; crew %s" % (
-                   err_wrong, err is None, conf_open, helm_before, me, no_cam, wrong_name, confirmed, took, crew))
+        no_dialog = not [w for w in ap.root.winfo_children() if isinstance(w, tk.Toplevel) and
+                         "onfirm" in (w.title() or "")]
+        report("B4 choose the boat (13n2): the wrong boat refused = an alarm on this PC (CAUTION, listed on screen 2, "
+               "acknowledged here = gone); the right boat: name check automatic, boat_ok at once, HELM taken BY ITSELF "
+               "with no live camera and no dialog",
+               err_wrong and "wrong boat" in err_wrong and alarm and on_screen and acked and ok_at_once and took and
+               crew == "captain" and no_dialog,
+               "ER69D (gateway is RF49D) -> %r; alarm %s (rows %s), on screen 2 %s, ack -> gone %s; RF49D -> %r, "
+               "verified at once %s; HELM taken by itself %s (us %s); crew %s; no confirm dialog %s" % (
+                   err_wrong, alarm, alarm_rows[:2], on_screen, acked, err, ok_at_once, took, me, crew, no_dialog))
         # one monitor: F11 toggles screen 1 / 2; the map is a part of screen 2
         A.monitors.list_monitors = lambda root=None: [(0, 0, 1920, 1080)]
         ap.screen_shown = 2
@@ -306,6 +298,7 @@ def b4_app_end_to_end():
         b8_push(ap, pump, pushed_before_helm)
         b9_relay_push(ap, pump, sim)
         b10_thruster_push(ap, pump)
+        b11_one_move(ap, pump, good, wrong)
         b6_dropdown(ap, pump, good)
     finally:
         ap.quit()
@@ -442,6 +435,72 @@ def b10_thruster_push(ap, pump):
            "no thrusters in the file -> taken %s (hash 0x%04x, unfitted %s); MANUAL: nothing sent %s; 60 / 80 %% -> "
            "taken %s (TELEM2 hash %s, want 0x%04x); no re-send %s; driving command %s" % (
                first, none_hash, unfitted, held, taken, t2().get("thr_hash"), want, no_resend, accept))
+
+
+def b11_one_move(ap, pump, good, wrong):
+    """13n2 (owner 2026-10-31 E2): change boat in ONE move (dropdown -> the boat: this session's login, no login
+    window); leaving a boat that is UNCREWED and moving while this station holds HELM = ONE warning + OK (NO = stay
+    connected, nothing sent); STANDBY / CREWED = no warning; a copilot never takes HELM by itself."""
+    import proto
+    T = __import__("i18n").T
+    import tkinter as tk
+    me = ap.link.welcome["id"]
+    # the wrong boat in one move: no login window, a direct attempt -> refused = the alarm; the link is gone
+    ap.choose_boat(wrong)
+    direct = ap.boatsel is None and ap.link is None and bool(ap.lamps.local)
+    ap.master_ack()
+    # back to the right boat in one move: connected + HELM again by itself
+    ap.choose_boat(good)
+    back = ap.link is not None and ap.boat_ok and ap.boatsel is None
+    me = ap.link.welcome["id"] if ap.link else None
+    helm = pump(10, lambda: ap.t and ap.t.get("helm") == me)
+    # leaving UNCREWED + moving: the warning (the telemetry made to look so for one call)
+    real = ap.t
+    ap.t = dict(real, profile=proto.PROFILE_UNCREWED, mode=proto.MODE_AUTO, est_sog=6.0)
+    asks = ap.leaving_moving()
+    ap.choose_boat(wrong)
+    warned = getattr(ap, "yn_win", None) is not None and ap.link is not None
+    ap.yn_answer(False)                                          # NO: stay
+    stayed = ap.link is not None and ap.boat is good and getattr(ap, "yn_win", None) is None
+    ap.t = dict(real, profile=proto.PROFILE_CREWED, mode=proto.MODE_AUTO, est_sog=6.0)
+    crewed = not ap.leaving_moving()
+    ap.t = dict(real, profile=proto.PROFILE_UNCREWED, mode=proto.MODE_STANDBY, est_sog=0.0)
+    still = not ap.leaving_moving()
+    ap.t = dict(real, profile=proto.PROFILE_UNCREWED, mode=proto.MODE_AUTO, est_sog=6.0)
+    ap.boat_dropdown(post=False)
+    disc = [e for e in ap.boat_menu_entries() if e is not None and e[0] == T("cap.disconnect")]
+    disc[0][1]()                                                 # the dropdown's disconnect: the same warning
+    warned_disc = getattr(ap, "yn_win", None) is not None and ap.link is not None
+    ap.yn_answer(True)                                           # OK: leave
+    left = ap.link is None
+    # a copilot: connected, never takes HELM by itself
+    err = ap.connect_boat(good, "bob", __import__("test_gateway").PW["bob"], "copilot")
+    sent = []
+    if ap.link is not None:
+        orig = ap.link.send
+        ap.link.send = lambda t, p=b"", *a, **k: (sent.append(t), orig(t, p, *a, **k))[1]
+    pump(3.0, lambda: ap.t is not None and ap.gw_status is not None)
+    pump(1.0)
+    cop_no_helm = proto.T_HELM not in sent and not ap.helm_auto
+    crew = A_crew(ap)
+    ap.disconnect()
+    err2 = ap.connect_boat(good, "alice", __import__("test_gateway").PW["alice"], "captain")
+    me = ap.link.welcome["id"] if ap.link else None
+    helm2 = pump(10, lambda: ap.t and ap.t.get("helm") == me)
+    report("B11 one-move boat change (13n2): dropdown -> boat = a direct connect with this session's login (no login "
+           "window; a failure = the alarm); leaving an UNCREWED moving boat with HELM = ONE warning + OK (NO = stays "
+           "connected), CREWED / STANDBY = no warning; a copilot never takes HELM by itself",
+           direct and back and helm and asks and warned and stayed and crewed and still and warned_disc and left and
+           err is None and cop_no_helm and crew == "copilot" and err2 is None and helm2,
+           "wrong boat directly %s; back %s, HELM %s; warning asked %s shown %s, NO = stayed %s; CREWED none %s, "
+           "STANDBY none %s; disconnect warned %s, OK = left %s; copilot %r crew %s no HELM request %s; captain again "
+           "%r HELM %s" % (direct, back, helm, asks, warned, stayed, crewed, still, warned_disc, left, err, crew,
+                          cop_no_helm, err2, helm2))
+
+
+def A_crew(ap):
+    import app as A
+    return A.crewui.crew_of(ap)[0]
 
 
 def b6_dropdown(ap, pump, good):

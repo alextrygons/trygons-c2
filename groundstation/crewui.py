@@ -4,9 +4,8 @@
                 as a detail); user name + password; connects with the boat's name (the gateway
                 and this station both refuse another boat). Screen 2's boat dropdown (first line
                 of the status panel) opens it with the chosen boat selected (select()).
-  BoatConfirm   after connecting: type the boat's name AND tick "I see its live front camera"
-                (only possible while a front camera picture is live) - only then this station
-                may take HELM (app.boat_ok).
+  (13n2, owner 2026-10-31 E2: NO confirm dialog any more - the welcome name check is automatic and
+                HELM is taken at once, app.connect_boat; a dead camera is only the warning "no video")
   crew          the gateway's captain / copilot roles: shown on screen 2 (and screen 1),
                 role swap ask / answer.
 Display and dialogs only: what the boat does is decided by the gateway and the AURIX.
@@ -127,11 +126,12 @@ class BoatSelector:
         if bt is None:
             return self.msg.configure(text=T("boat.pick"))
         if st == "invalid":
-            return self.msg.configure(text=T("boat.invalid", name=bt.name, err=bt.error, file=bt.path))
+            return self.msg.configure(text=self.app.boat_fail(bt, T("boat.invalid", name=bt.name, err=bt.error,
+                                                                     file=bt.path)))
         if st == "no_ip":
-            return self.msg.configure(text=T("boat.no_ip", name=bt.name, file=bt.path))
+            return self.msg.configure(text=self.app.boat_fail(bt, T("boat.no_ip", name=bt.name, file=bt.path)))
         if st != "online":
-            return self.msg.configure(text=T("boat.offline", name=bt.name))
+            return self.msg.configure(text=self.app.boat_fail(bt, T("boat.offline", name=bt.name)))
         err = self.app.connect_boat(bt, self.user.get().strip(), self.pw.get(), self.crew.get())
         if err:
             self.msg.configure(text=err)
@@ -146,67 +146,6 @@ class BoatSelector:
             pass
         if self.app.boatsel is self:
             self.app.boatsel = None
-
-
-class BoatConfirm:
-    """The name typed back + the live front camera seen -> app.boat_ok (HELM allowed)."""
-
-    def __init__(self, app, boat):
-        self.app = app
-        self.boat = boat
-        Y = C["btn_sim"]
-        self.w = tk.Toplevel(app.root, bg=Y)
-        self.w.title(i18n.W("boat.confirm_title"))
-        self.w.attributes("-topmost", True)
-        lab(self.w, T("boat.confirm_head", name=boat.name), FH, bg=Y).pack(padx=14, pady=(12, 4))
-        lab(self.w, T("boat.confirm_help", name=boat.name), bg=Y, wraplength=560, justify="left").pack(padx=14)
-        self.name = entry(self.w, font=FH, width=16, justify="center")
-        self.name.pack(pady=8)
-        self.cam = tk.BooleanVar(value=False)
-        self.cam_cb = tk.Checkbutton(self.w, variable=self.cam, font=FB, bg=Y, fg=C["fg"], selectcolor=C["entry"],
-                                     activebackground=Y, text=T("boat.confirm_cam", name=boat.name))
-        self.cam_cb.pack(padx=14)
-        self.cam_lbl = lab(self.w, "", bg=Y, fg=C["bad_txt"])
-        self.cam_lbl.pack()
-        b = tk.Frame(self.w, bg=Y)
-        b.pack(pady=10)
-        tk.Button(b, text=T("boat.confirm_ok"), command=self.ok, **theme.button_opts("ok")).pack(side="left", padx=6)
-        tk.Button(b, text=T("boat.confirm_no"), command=self.wrong, **theme.button_opts()).pack(side="left", padx=6)
-        self.msg = lab(self.w, "", bg=Y, fg=C["bad_txt"])
-        self.msg.pack(pady=(0, 10))
-        self.tick()
-
-    def tick(self):
-        try:
-            live = front_live(self.app)
-            self.cam_cb.configure(state="normal" if live else "disabled")
-            if not live:
-                self.cam.set(False)
-            self.cam_lbl.configure(text="" if live else T("boat.confirm_nocam"))
-            self.w.after(500, self.tick)
-        except tk.TclError:
-            pass
-
-    def ok(self):
-        if not boats.confirmed(self.name.get(), self.boat, self.cam.get() and front_live(self.app)):
-            return self.msg.configure(text=T("boat.confirm_bad", name=self.boat.name))
-        self.app.boat_ok = True
-        self.app.say(T("boat.confirmed", name=self.boat.name), theme.GOOD)
-        self.app.event(T("boat.confirmed", name=self.boat.name))
-        self.close()
-
-    def wrong(self):
-        """Not this boat: disconnect."""
-        self.close()
-        self.app.disconnect(T("boat.not_this", name=self.boat.name))
-
-    def close(self):
-        try:
-            self.w.destroy()
-        except tk.TclError:
-            pass
-        if self.app.boatconf is self:
-            self.app.boatconf = None
 
 
 def crew_of(app):

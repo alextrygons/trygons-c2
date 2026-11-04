@@ -312,6 +312,9 @@ class StationServer:
             if st.single_op:
                 self.gw.audit("single_operator", station=st.id, user=st.user, on=False, why="disconnected")
             self._check_asks()
+            cams = getattr(self.gw, "cams", None)
+            if cams is not None and hasattr(cams, "station_cams"):
+                cams.station_cams.pop(st.id, None)      # its streams + camera view end with it (13n2)
             log.info("station %d (%s) %s", st.id, st.user, why)
             try:
                 st.writer.close()

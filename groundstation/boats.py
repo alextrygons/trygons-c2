@@ -29,7 +29,7 @@ A new computer = clone the repository: the boats come with it.
                              found(boat) = the station just connected to it (online now)
   check_welcome(boat, w)  -> None, or the reason to refuse the connection (the gateway's
                              own boat name must be the file's name)
-  confirmed(name_typed, boat, camera_live) -> the selection may take HELM
+  (the 13n2 owner decision E2: the name check is all - no typed name, no live-camera step before HELM)
   aurix_settings(boat, gen_max_ceiling) -> what the HELM station pushes to the AURIX on connect
 """
 import ipaddress
@@ -303,11 +303,6 @@ def check_welcome(boat, welcome):
     if str(got) != str(boat.name):
         return "wrong boat: expected %s, the gateway is %s" % (boat.name, got)
     return None
-
-
-def confirmed(name_typed, boat, camera_live):
-    """Selecting a boat: its name typed back (case and spaces ignored) AND its live camera seen."""
-    return bool(camera_live) and (name_typed or "").replace(" ", "").upper() == boat.name.replace(" ", "").upper()
 
 
 def aurix_settings(boat, gen_max_ceiling=GEN_MAX_CEILING):
