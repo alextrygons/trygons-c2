@@ -4704,6 +4704,48 @@ def section_cv():
     report("CV4 the camera view ends with the station (disconnect: nothing kept for it)",
            3 not in cm.station_cams and "REAR-LEFT" not in cm.status()["views"].values(),
            "station_cams %s, views %s" % (sorted(cm.station_cams), cm.status()["views"]))
+    # CV5 (review 13n2 MED-2) a station that never asked for cameras (a copilot's screen 2 alone) gets the VIEW ONLY:
+    # no default "Front only" streams that would keep running after MAP / Esc; data saver = nothing
+    lone = station(5, "copilot")
+    cm.view_request(lone, {"cam": "REAR-LEFT"})
+    only = dict(last(lone)["streams"])
+    cm.view_request(lone, {"cam": None})
+    after = dict(last(lone)["streams"])
+    cm.view_request(lone, {"cam": "FRONT-2"})
+    saver[0] = True
+    lone_saver = dict(cm.streams_msg(lone)["streams"])
+    saver[0] = False
+    cm.request(lone, {"preset": "Front only"})              # asking for cameras later = the normal preset again
+    preset_back = "FRONT-1" in last(lone)["streams"] and last(lone)["view"] == "FRONT-2"
+    cm.view_request(lone, {"cam": None})
+    report("CV5 (review 13n2 MED-2) a copilot's view without its own camera request = that camera only, nothing after "
+           "MAP / Esc, nothing with data saver; a later camera request = its preset again",
+           only == {"REAR-LEFT": "cam_rearleft_lo"} and after == {} and lone_saver == {} and preset_back,
+           "view only %s; after closing %s; data saver %s; preset back %s" % (only, after, lone_saver, preset_back))
+    # CV6 (review 13n2 MED-3) a hung MediaMTX API never blocks the gateway's loop: closing readers runs in a worker
+    import threading as _th
+    posted, release = [], _th.Event()
+
+    def hung_post(path):
+        posted.append(path)
+        release.wait(3.0)
+        return 200
+    cm._post = hung_post
+    cm.request(cop, {"preset": "All off"})
+    cm.view_request(cop, {"cam": "FRONT-1"})
+    with cm.lock:
+        cm.sessions = {"r1": ("cam_rearright_hi", 3, 0, time.time()), "r2": ("cam_front1_lo", 3, 0, time.time())}
+    t = time.perf_counter()
+    cm.view_request(cop, {"cam": None})                     # FRONT-1 not allowed any more -> kick r2
+    fut = cm.kick_disallowed()                              # (and again from the camera loop)
+    cm.update_priority()
+    quick = (time.perf_counter() - t) < 0.2
+    _th.Timer(0.3, release.set).start()
+    done = fut is not None and fut.result(timeout=10) is None
+    kicked = "/v3/rtspsessions/kick/r2" in posted and "/v3/rtspsessions/kick/r1" in posted
+    report("CV6 (review 13n2 MED-3) a hung MediaMTX API: view_request / kick_disallowed / update_priority return at "
+           "once (the posts run in the worker thread, in order), the readers are still closed",
+           quick and done and kicked, "returned in %.0f ms; posts %s" % ((time.perf_counter() - t) * 1000, posted))
 
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,

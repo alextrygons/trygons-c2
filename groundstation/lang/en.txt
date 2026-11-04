@@ -1301,6 +1301,7 @@ boat.leave_title = Leave the boat
 boat.leave_ask = {name} is UNCREWED and moving, and this station holds HELM.\nLeaving it starts its LOST-LINK procedure on the boat (idle + neutral, then STANDBY and the engine stop by its rules).\nLeave the boat?
 boat.leave_ok = OK – LEAVE THE BOAT
 boat.leave_kept = Still connected to {name}
+boat.leave_answer = Answer the warning about leaving the current boat first.
 boat.already = Already connected to {name}
 boat.no_video = NO VIDEO from the boat's front cameras - a warning only (the boat's data and control still work)
 alarm.boat_conn = BOAT CONNECTION FAILED: {name} - {err}

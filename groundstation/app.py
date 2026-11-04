@@ -1704,10 +1704,20 @@ class App:
         else:
             self.boatsel.w.lift()
 
-    def connect_boat(self, bt, user, pw, crew=None):
+    def connect_boat(self, bt, user, pw, crew=None, left=False):
         """Connect to a boat of the list (13n2, owner 2026-10-31 E2): connect -> the gateway's welcome name check
         (automatic) -> HELM at once (helm_tick). No live-camera step any more: a dead camera is only the warning
-        "no video". A connection / name failure = an alarm on this PC (lamps.local). -> None or the error."""
+        "no video". A connection / name failure = an alarm on this PC (lamps.local). -> None or the error.
+        Leaving the boat connected now (UNCREWED + moving + our HELM) asks ONCE first, whatever route led here (the
+        dropdown, the boat list window, the login window - review 13n2 MED-1): then -> the "answer first" text and
+        the connection follows the YES (left = that answer was given)."""
+        if self.link and not left and self.leaving_moving():
+            def go():
+                err = self.connect_boat(bt, user, pw, crew, left=True)
+                if err is None and self.boatsel is not None:
+                    self.boatsel.close()
+            self.leave_boat(go)
+            return T("boat.leave_answer")
         if self.link:
             self.disconnect()
         if not user:
@@ -1767,8 +1777,10 @@ class App:
         copilot, never taken from another station (the gateway + the AURIX check HELM again)."""
         if not self.helm_auto or not isinstance(self.link, GatewayLink) or self.t is None or self.gw_status is None:
             return
+        if "helm" not in self.t:
+            return                                  # (review 13n2 L1: no HELM field yet = unknown, never "free")
         self.helm_auto = False
-        hid = self.t.get("helm")
+        hid = self.t["helm"]
         crew, _cap, _lic = crewui.crew_of(self)
         if self.helm_mine() or crew == "copilot" or (self.link.welcome or {}).get("role") == "VIEWER":
             return
@@ -2989,7 +3001,10 @@ class App:
         except RuntimeError:
             pass
 
-    def quit(self):
+    def quit(self, force=False):
+        """Closing the station = leaving the boat: UNCREWED + moving + our HELM asks ONCE first (review 13n2 MED-1)."""
+        if not force and self.leaving_moving():
+            return self.leave_boat(lambda: self.quit(force=True))
         if self._layout_job:
             self.root.after_cancel(self._layout_job)
         self.save_layout()
@@ -4589,7 +4604,7 @@ class App:
         the DP thruster settings (thruster_push, PROTO_T_THRUSTER_CFG). Never from a copilot (it never holds
         HELM); the captain's own setting, so no ACCEPT; single-operator mode = its own confirmation."""
         if self.boat is None or not self.boat_ok or self.link is None:
-            return                                  # only a confirmed boat (name + live camera) gets its settings
+            return                                  # only a boat whose welcome name check passed gets its settings
         if not self.helm_mine() or d.get("mode_name") != "STANDBY":
             return
         if not self.boat_pushed and time.time() >= self.boat_push_at:
@@ -4862,7 +4877,7 @@ class App:
         login = self.session_login or ((self.login[0], self.login[1], None) if self.login else None)
         if login:
             self.boat_pick = bt
-            return self.leave_boat(lambda: self.connect_boat(bt, *login))
+            return self.connect_boat(bt, *login)      # (the leave warning lives in connect_boat - review 13n2 MED-1)
         self.boat_pick = bt
         if self.boatsel is None:
             self.boatsel = crewui.BoatSelector(self)

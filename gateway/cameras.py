@@ -32,6 +32,7 @@ main stream received no new data for 1 s is FROZEN / DOWN. All health checks
 run on the boat LAN, no internet used. Cameras are never needed for
 safety: a camera problem never changes the mode (it is only shown).
 """
+import concurrent.futures
 import json
 import os
 import subprocess
@@ -104,6 +105,9 @@ class CameraManager:
         self.mtx_ok = False
         self.last_poll = 0.0
         self.lock = threading.Lock()
+        # closing readers = HTTP posts to MediaMTX: never in the asyncio loop (a slow / hung API would age the
+        # captain's rjoy packets - review 13n2 MED-3): one worker thread, in order
+        self._kicker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="cam-kick")
 
     # --- MediaMTX ---------------------------------------------------------------------
     def mediamtx_yaml(self, auth_url):
@@ -273,6 +277,8 @@ class CameraManager:
 
     def _preset_levels(self, st_id):
         req = self.station_cams.get(st_id, {"preset": "Front only", "levels": None, "override": False})
+        if req.get("view_only"):
+            return {n: "OFF" for n in self.cams}        # only the camera view (review 13n2 MED-2): no preset streams
         lv = self.levels_from_preset(req["preset"]) if req.get("levels") is None else dict(req["levels"])
         if self.forced_low() and not (req.get("override") and not (self.gw and self.gw.net.on_emergency)):
             lv = {n: ("LOW" if self.cams[n].role.startswith("front") and lv.get(n) != "OFF" else "OFF") for n in lv}
@@ -313,7 +319,10 @@ class CameraManager:
         cam = m.get("cam")
         if cam is not None and cam not in self.cams:
             return st.send({"t": "cams_ack", "ok": False, "text": "unknown camera"})
-        req = self.station_cams.setdefault(st.id, {"preset": "Front only", "levels": None, "override": False})
+        # a station that never asked for cameras (a copilot's screen 2 without screen 1) gets the VIEW ONLY - never
+        # the default "Front only" preset streams, which would keep running after the view closes (review 13n2 MED-2)
+        req = self.station_cams.setdefault(st.id, {"preset": None, "levels": None, "override": False,
+                                                   "view_only": True})
         old = req.get("view")
         req["view"] = cam
         if old != cam:
@@ -385,16 +394,26 @@ class CameraManager:
         return path in self.allowed_paths(st.id)
 
     def kick_disallowed(self):
-        """Close readers that may not read any more (preset changed, data saver)."""
+        """Close readers that may not read any more (preset changed, data saver, a view closed / reduced). Which ones
+        is decided here (cheap); the MediaMTX posts run in the worker thread - this NEVER blocks (review 13n2 MED-3).
+        -> the future of the posts (tests wait on it)."""
         with self.lock:
             sessions = list(self.sessions.items())
-        for sid, (path, st_id, _, _) in sessions:
-            if path not in self.allowed_paths(st_id):
-                try:
-                    self._post("/v3/rtspsessions/kick/%s" % sid)
-                    log.info("cameras: closed %s (station %s): not allowed any more", path, st_id)
-                except OSError:
-                    pass
+        kick = [(sid, path, st_id) for sid, (path, st_id, _, _) in sessions if path not in self.allowed_paths(st_id)]
+        if not kick:
+            return None
+        try:
+            return self._kicker.submit(self._kick, kick)
+        except RuntimeError:                        # shut down (gateway stopping)
+            return None
+
+    def _kick(self, kick):
+        for sid, path, st_id in kick:
+            try:
+                self._post("/v3/rtspsessions/kick/%s" % sid)
+                log.info("cameras: closed %s (station %s): not allowed any more", path, st_id)
+            except OSError:
+                pass
 
     # --- camera internet (firmware updates only) -------------------------------------------
     def internet(self, on, minutes=30):

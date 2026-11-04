@@ -462,6 +462,33 @@ def b11_one_move(ap, pump, good, wrong):
     warned = getattr(ap, "yn_win", None) is not None and ap.link is not None
     ap.yn_answer(False)                                          # NO: stay
     stayed = ap.link is not None and ap.boat is good and getattr(ap, "yn_win", None) is None
+    # review 13n2 MED-1: EVERY route asks - the boat list window / login window (connect_boat itself) and quit
+    pw_a = __import__("test_gateway").PW["alice"]
+    r_sel = ap.connect_boat(wrong, "alice", pw_a, "captain")
+    sel_warned = r_sel == T("boat.leave_answer") and getattr(ap, "yn_win", None) is not None and         ap.link is not None and ap.boat is good
+    ap.yn_answer(False)
+    sel_stayed = ap.link is not None and ap.boat is good
+    ap.quit()
+    quit_warned = getattr(ap, "yn_win", None) is not None and ap.link is not None and bool(ap.root.winfo_exists())
+    ap.yn_answer(False)
+    quit_stayed = ap.link is not None and bool(ap.root.winfo_exists())
+    # review 13n2 L1 / L2: HELM is taken only when the data SHOW it free - never with no HELM field, never from
+    # another station
+    took = []
+    real_cmd = ap.cmd
+    ap.cmd = lambda f, p, w: took.append(f)
+    try:
+        ap.helm_auto = True
+        ap.t = {k: v for k, v in real.items() if k != "helm"}
+        ap.helm_tick()
+        no_field = took == [] and ap.helm_auto
+        ap.t = dict(real, helm=(me or 0) + 7)
+        ap.helm_tick()
+        not_taken = took == [] and not ap.helm_auto
+    finally:
+        ap.cmd = real_cmd
+        ap.helm_auto = False
+    ap.t = dict(real, profile=proto.PROFILE_UNCREWED, mode=proto.MODE_AUTO, est_sog=6.0)
     ap.t = dict(real, profile=proto.PROFILE_CREWED, mode=proto.MODE_AUTO, est_sog=6.0)
     crewed = not ap.leaving_moving()
     ap.t = dict(real, profile=proto.PROFILE_UNCREWED, mode=proto.MODE_STANDBY, est_sog=0.0)
@@ -489,13 +516,18 @@ def b11_one_move(ap, pump, good, wrong):
     helm2 = pump(10, lambda: ap.t and ap.t.get("helm") == me)
     report("B11 one-move boat change (13n2): dropdown -> boat = a direct connect with this session's login (no login "
            "window; a failure = the alarm); leaving an UNCREWED moving boat with HELM = ONE warning + OK (NO = stays "
-           "connected), CREWED / STANDBY = no warning; a copilot never takes HELM by itself",
+           "connected) on every route (dropdown, boat list, Disconnect, quit), CREWED / STANDBY = no warning; HELM "
+           "taken only when shown free; a copilot never takes HELM by itself",
            direct and back and helm and asks and warned and stayed and crewed and still and warned_disc and left and
-           err is None and cop_no_helm and crew == "copilot" and err2 is None and helm2,
+           err is None and cop_no_helm and crew == "copilot" and err2 is None and helm2 and sel_warned and
+           sel_stayed and quit_warned and quit_stayed and no_field and not_taken,
            "wrong boat directly %s; back %s, HELM %s; warning asked %s shown %s, NO = stayed %s; CREWED none %s, "
            "STANDBY none %s; disconnect warned %s, OK = left %s; copilot %r crew %s no HELM request %s; captain again "
            "%r HELM %s" % (direct, back, helm, asks, warned, stayed, crewed, still, warned_disc, left, err, crew,
-                          cop_no_helm, err2, helm2))
+                          cop_no_helm, err2, helm2) +
+           "; review 13n2: boat list route warned %s stayed %s, quit warned %s stayed %s; no HELM field = not taken %s, "
+           "another station's HELM never taken %s" % (sel_warned, sel_stayed, quit_warned, quit_stayed, no_field,
+                                                      not_taken))
 
 
 def A_crew(ap):

@@ -408,7 +408,8 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   * A connection or name check that fails = an ALARM on this PC (amber,
     "BOAT CONNECTION FAILED: <boat> - <why>" in the alarm list, the CAUTION
     lamp); Space / A / ACK ALARM acknowledges it here (then it is gone).
-  * LEAVING A BOAT (another boat chosen, or Disconnect) that is UNCREWED and
+  * LEAVING A BOAT (another boat chosen - dropdown or boat list window -,
+    Disconnect, or closing the station window) that is UNCREWED and
     moving (a driving mode, or faster than 0.5 kn) while this station holds
     HELM: ONE warning "... starts its LOST-LINK procedure ..." with
     [OK – LEAVE THE BOAT] on top and [CANCEL] under it. CANCEL = you stay
