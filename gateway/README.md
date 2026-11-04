@@ -807,7 +807,9 @@ gateway.json:
   loudness is set with the amplifier's trimmer.
 * The AUDIO ring keeps the clock: one 40 ms frame every worker step (the shore's voice, else the microphone,
   else silence), gaps filled with silence, so the track never drifts against the cameras; a SAVE's AUDIO files
-  are uploaded like its video (a KEEP's stay on the SSD).
+  are uploaded like its video (a KEEP's stay on the SSD). After a stall the late frames are written INTO the stall's silence (their real
+  audio kept, review of 38add4b LOW-2). The PC clock set BACK (NTP / the GPS time) is not undone: the track keeps
+  the clock, so that much time stays silent / short in the files (LOW-1, accepted).
 
 * Push-to-talk = a screen button on the stations (never the joystick); the first station wins, the others
   see who speaks; a press ends after `talk_max_s` (120 s) or `frame_gap_s` (1 s) without voice.

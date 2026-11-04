@@ -26,6 +26,7 @@ process loudhailer_worker.py with the SIMULATED speaker / microphone) and real g
   LH14b (review of 13r-r LOW-3 / LOW-4) '' / 'default' devices = not configured; a negative volume_pct = 0
   LH16 (review of 13r-r MED-A) 80-500 ms stalls caught up back to back: the AUDIO track stays on the clock
   LH17 (review of 13r-r MED-B / LOW-5) a restart mid-minute never truncates the file; the clock set back rolls
+  LH18 (review of 38add4b LOW-2) the catch-up frames after a stall keep their real audio inside the stall
 
 Run:  python test_loudhailer.py      (exit code 0 = all passed)
 """
@@ -218,11 +219,43 @@ def lh12_15():
         with wave.open(f16, "rb") as wf:
             n16 = wf.getnframes()
         want16 = int((clk[0] - lw.seg_time(os.path.basename(f16))) * vc.RATE)
-        report("LH16 (review of 13r-r MED-A) ten 80-500 ms stalls caught up back to back: the AUDIO track stays on the "
-               "clock (the stall is filled once, the catch-up frames are dropped, never counted twice)",
-               abs(n16 - want16) <= vc.FRAME_N and getattr(w16.ring, 'dropped', 0) > 0,
-               "%d samples, the clock says %d (%.3f s apart); %d frames dropped" % (
-                   n16, want16, (n16 - want16) / float(vc.RATE), getattr(w16.ring, 'dropped', 0)))
+        rec16, drop16 = getattr(w16.ring, 'recovered', 0), getattr(w16.ring, 'dropped', 0)
+        report("LH16 (review of 13r-r MED-A; 38add4b LOW-2) ten 80-500 ms stalls caught up back to back: the AUDIO "
+               "track stays on the clock (the stall is counted once: the catch-up frames go INTO the stall's silence, "
+               "never after it)",
+               abs(n16 - want16) <= vc.FRAME_N and rec16 > 0,
+               "%d samples, the clock says %d (%.3f s apart); %d catch-up frames into their gap, %d dropped" % (
+                   n16, want16, (n16 - want16) / float(vc.RATE), rec16, drop16))
+
+        # LH18 (review of 38add4b LOW-2) the catch-up frames are REAL audio: kept, in order, inside their own gap
+        r18 = lw.WavRing(os.path.join(tmp, "ring18"), 60)
+        t = 1793000400.0                                   # a minute start
+        quiet = vc.silence()
+        for _k in range(25):                               # 1 s of quiet on the clock
+            r18.write(quiet, t)
+            t += 0.04
+        tone = vc.frames(vc.tone(800, 400))                # 0.4 s of tone = 10 frames, all late (a 0.4 s stall)
+        t += 0.4
+        for fr in tone:                                    # caught up back to back (a few ms apart)
+            r18.write(fr, t)
+            t += 0.002
+        t = 1793000400.0 + 1.4
+        for _k in range(25):                               # back on the clock
+            r18.write(quiet, t)
+            t += 0.04
+        r18.close()
+        with wave.open(os.path.join(tmp, "ring18", os.listdir(os.path.join(tmp, "ring18"))[0]), "rb") as wf:
+            n18 = wf.getnframes()
+            import array as _arr
+            a18 = _arr.array("h", wf.readframes(n18))
+        seg = a18[int(1.0 * vc.RATE):int(1.4 * vc.RATE)]  # where the stall was: the tone must be there
+        loud = sum(1 for k in range(0, len(seg), vc.FRAME_N) if max(abs(x) for x in seg[k:k + vc.FRAME_N]) > 1000)
+        after = max(abs(x) for x in a18[int(1.45 * vc.RATE):]) if n18 > int(1.45 * vc.RATE) else 0
+        report("LH18 (review of 38add4b LOW-2) a 0.4 s stall caught up: the catch-up frames' REAL audio is kept, in "
+               "order inside the stall (not silence + dropped), the file still on the clock",
+               loud >= 9 and after < 1000 and abs(n18 - int(2.4 * vc.RATE)) <= vc.FRAME_N and r18.dropped <= 1,   # (the first on-clock frame may still be ahead)
+               "%d of 10 tone frames heard in the stall, after it %d, %d samples (clock %d), dropped %d, kept %d" % (
+                   loud, after, n18, int(2.4 * vc.RATE), r18.dropped, r18.recovered))
 
         # LH17 (review of 13r-r MED-B / LOW-5) a restart mid-minute never truncates; the clock set back rolls / stops
         rdir = os.path.join(tmp, "ring17")
@@ -290,14 +323,15 @@ def lh12_15():
         h2 = lhmod.Loudhailer({"enabled": False, "volume_max_pct": -5}, types.SimpleNamespace(storage=None))
         # review of 13r-r LOW-3 / LOW-4: "" / "default" = not named either; a negative volume_pct = 0
         nd = []
-        for od, idv in (("", "default"), ("default", " ")):
+        for od, idv in (("", "default"), ("default", " "), ("sysdefault", "pulse"), ("PULSE", "SysDefault")):
             bx = argparse.Namespace(backend="winmm", out_dev=od, in_dev=idv, ring=None, seg_s=60, volume_max=80,
                                     volume=70, sim_reply_s=0.0)
             wx = lw.Worker(bx, io.BytesIO())
             nd.append(isinstance(wx.spk, lw.audiodev.NullOut) and isinstance(wx.mic, lw.audiodev.NullIn) and
                       "not configured" in wx.status()["error"])
         h3 = lhmod.Loudhailer({"enabled": False, "volume_pct": -20}, types.SimpleNamespace(storage=None))
-        report("LH14b (review of 13r-r LOW-3 / LOW-4) out_dev / in_dev '' or 'default' with a real backend = not "
+        report("LH14b (review of 13r-r LOW-3 / LOW-4; 38add4b LOW-3) out_dev / in_dev '' / 'default' / 'sysdefault' / "
+               "'pulse' with a real backend = not "
                "configured (never the PC's default device); a negative volume_pct starts at 0 (no endless resends)",
                all(nd) and h3.volume == 0, "not configured %s; volume %s" % (nd, h3.volume))
         h.worker = {"out_ok": True, "in_ok": True}

@@ -57,6 +57,8 @@ class WavRing:
         self.last_hdr = 0.0
         self.filled = 0                 # samples of silence written to stay on the clock (tests / status)
         self.dropped = 0                # frames not written: the file was ahead of the clock (a catch-up / clock back)
+        self.recovered = 0              # catch-up frames written into the silence of their own gap (review LOW-2)
+        self.hole = None                # [next, end) samples of silence a catch-up frame may still take
         self.reopened = 0               # existing files continued (never truncated)
         self.error = ""
         os.makedirs(folder, exist_ok=True)
@@ -81,6 +83,7 @@ class WavRing:
         else:
             f = open(path, "wb")
         self.f, self.start, self.n = f, start, n
+        self.hole = None
         self._header()
 
     def _header(self):
@@ -97,22 +100,42 @@ class WavRing:
         Review of 13r-r MED-A: the other way too - a frame while the file is already half a frame or more AHEAD of
         the clock (the loop catching up missed steps back to back after a 80-500 ms stall, the clock set back) is
         dropped, so a stall is never counted twice (silence + the catch-up frames). LOW-5: the clock set back before
-        this file's minute rolls to that minute's file; a file never grows past its minute (+ one frame)."""
+        this file's minute rolls to that minute's file; a file never grows past its minute (+ one frame).
+        Review of 38add4b LOW-2: the catch-up frames are REAL audio of the stall - the frame that finds the gap is
+        written at the START of the gap (its own time), the silence after it, and the catch-up frames that follow
+        are written into that silence in order (overwriting it) instead of being dropped; only what never came
+        stays silent. LOW-1: the clock set back by the PC (NTP / the GPS time) leaves the track silent / short for
+        that much time - the files keep the clock, never the samples (documented in gateway/README.md 23)."""
         try:
             if self.f is None or now >= self.start + self.seg_s or now < self.start:
                 self._open(now)
             gap = int((now - self.start) * vc.RATE) - self.n       # samples missing before this frame
+            nsamp = len(pcm)                                       # samples (an array of int16)
             if -gap >= vc.FRAME_N // 2 or self.n >= int(self.seg_s * vc.RATE):
-                self.dropped += 1
+                h = self.hole
+                if h is not None and h[1] - h[0] >= nsamp:           # a catch-up frame: into its gap's silence
+                    self.f.seek(44 + 2 * h[0])
+                    self.f.write(bytes(pcm))
+                    self.f.seek(0, 2)
+                    h[0] += nsamp
+                    self.filled -= nsamp
+                    self.recovered += 1
+                else:
+                    self.dropped += 1
                 return
             if gap >= 2 * vc.FRAME_N:
                 gap = min(gap, int(self.seg_s * vc.RATE) - self.n)
+                self.f.write(bytes(pcm))                             # this frame first: its own time
+                self.n += nsamp
                 if gap > 0:
+                    self.hole = [self.n, self.n + gap]
                     self.f.write(bytes(2 * gap))
                     self.n += gap
                     self.filled += gap
-            self.f.write(bytes(pcm))
-            self.n += len(pcm)
+            else:
+                self.hole = None                                     # on the clock again
+                self.f.write(bytes(pcm))
+                self.n += nsamp
             if now - self.last_hdr >= 1.0:
                 self.last_hdr = now
                 self._header()
@@ -132,9 +155,13 @@ class WavRing:
             self.f = None
 
 
+DEFAULT_NAMES = ("", "default", "sysdefault", "pulse")     # review of 38add4b LOW-3: these open the PC's own device
+
+
 def named(dev):
-    """A sound device NAMED in gateway.json (never None, "" or "default" = the PC's own default device)."""
-    return dev is not None and str(dev).strip() != "" and str(dev).strip().lower() != "default"
+    """A sound device NAMED in gateway.json (never None, "" or "default" / "sysdefault" / "pulse" = the PC's own
+    default device)."""
+    return dev is not None and str(dev).strip().lower() not in DEFAULT_NAMES
 
 
 def seg_time(name):
