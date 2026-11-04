@@ -79,6 +79,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(tempfile.mkdtemp(prefix="trygons_look_"), "gs_settings.json")
+os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
 os.environ.setdefault("TRYGONS_SOUND", "off")
 os.environ["TRYGONS_ACADEMY_DATA"] = tempfile.mkdtemp(prefix="trygons_look_acad_")
 

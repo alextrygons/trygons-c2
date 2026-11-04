@@ -805,6 +805,7 @@ def ac20():
     wrong = []
     gs = os.path.join(REPO, "groundstation")
     os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(tempfile.mkdtemp(), "gs_settings.json"))
+    os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
     os.environ.setdefault("TRYGONS_SOUND", "off")
     sys.path.insert(0, gs)
     import academymenu
@@ -957,6 +958,7 @@ def ac23():
     wrong = []
     gs = os.path.join(REPO, "groundstation")
     os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(tempfile.mkdtemp(), "gs_settings.json"))
+    os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
     os.environ.setdefault("TRYGONS_SOUND", "off")
     if gs not in sys.path:
         sys.path.insert(0, gs)

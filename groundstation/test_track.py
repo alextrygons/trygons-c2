@@ -14,6 +14,10 @@
   TR8 GPX 1.1 export + import round trip (times, speeds, heading); import of other programs' GPX (GPX 1.0 speed in
       m/s, no times, several segments); refused: not XML, a DTD / entity, no points, too big; never a crash
   TR9 a disk that fails while recording: the track goes on in RAM, the error is reported (once), nothing raises
+  TR10 (review 13n3 MED-B) 200 000 points at 0.5 m/px drawn / clicked within 50 ms, a draw budget, the live RAM
+       bounded while the file + NEW TRACK keep every point
+  TR11 (review 13n3 L1 / L4 / L5) never two boats in one file, a clock stepped back, times after 2100
+  TR12 (review 13n3 L7) the temporary folder only with TRYGONS_TEST
 
 Run:  python test_track.py        (exit code 0 = all passed)
 """
@@ -267,6 +271,26 @@ def tr8():
             refused.append((name, None))
         except ValueError as e:
             refused.append((name, str(e)))
+    # review 13n3 MED-A: the DTD refusal is in the parser - a UTF-16 file or > 64 KB of comments / blanks before
+    # the DOCTYPE (a "billion laughs") is refused too, never expanded
+    lol = ('<!DOCTYPE gpx [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
+           '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">]>')
+    trk = '<gpx version="1.1"><trk><name>&c;</name><trkseg><trkpt lat="37.1" lon="23.1"/></trkseg></trk></gpx>'
+    bypass = []
+    for name, data in (("utf16.gpx", ('<?xml version="1.0" encoding="UTF-16"?>' + lol + trk).encode("utf-16")),
+                       ("padded.gpx", ('<?xml version="1.0"?>' + "<!-- " + "x" * 70000 + " -->" + "\n" * 2000 +
+                                       lol + trk).encode("utf-8")),
+                       ("ext.gpx", ('<?xml version="1.0"?><!DOCTYPE gpx SYSTEM "http://example.invalid/x.dtd">' +
+                                    trk.replace("&c;", "x")).encode("utf-8"))):
+        fp = os.path.join(d, name)
+        with open(fp, "wb") as f:
+            f.write(data)
+        try:
+            st.import_gpx(fp)
+            bypass.append((name, None))
+        except ValueError as e:
+            bypass.append((name, str(e)))
+    no_part = not [f for f in os.listdir(st.saved_dir) if f.endswith(".part")]
     big = os.path.join(d, "big.gpx")
     with open(big, "wb") as f:
         f.truncate(track.GPX_MAX_BYTES + 1)
@@ -275,13 +299,16 @@ def tr8():
         refused.append(("big", None))
     except ValueError as e:
         refused.append(("big", str(e)))
-    codes = [c for _n, c in refused] == ["not_xml", "dtd", "no_points", "too_big"]
+    codes = [c for _n, c in refused] == ["not_xml", "dtd", "no_points", "too_big"] and \
+        [c for _n, c in bypass] == ["dtd", "dtd", "dtd"] and no_part
     st.close()
     shutil.rmtree(d, True)
     report("TR8 GPX 1.1 export + import round trip (times, speeds, heading); other programs' GPX (1.0 speed m/s, no "
            "times, segments, a bad point skipped); refused: not XML, DTD / entity, no points, too big",
-           trip and other_ok and codes, "round trip %s; other %s (%s); refused %s" % (
-               trip, other_ok, [(round(p[1], 2), p[3] and round(p[3], 2), p[4], p[0]) for p in o.pts], refused))
+           trip and other_ok and codes, "round trip %s; other %s (%s); refused %s; UTF-16 / 70 KB padding / "
+           "external DTD %s; no .part left %s" % (
+               trip, other_ok, [(round(p[1], 2), p[3] and round(p[3], 2), p[4], p[0]) for p in o.pts], refused,
+               bypass, no_part))
 
 
 def tr9():
@@ -306,8 +333,123 @@ def tr9():
            "nothing raises", ram and err and on_disk == 3, "RAM %s; error %r; on disk %d" % (ram, lv.error, on_disk))
 
 
+def tr10():
+    """Review 13n3 MED-B: a 200 000-point track drawn at 0.5 m/px within a time budget (only the visible chunks are
+    projected), a click on it answers quickly; the live track's RAM is bounded but the FILE keeps every point and
+    NEW TRACK saves all of them; GPX import limited to GPX_MAX_POINTS."""
+    tr = track.Track()
+    la0, lo0 = 37.8, 23.6
+    for i in range(200000):                 # a 400 km zig-zag: 2 m steps
+        tr.add((T0 + i, la0 + (i % 2000) * 2.0 / 111320.0, lo0 + (i // 2000) * 0.002, 5.0, 0.0))
+    m = 0.5
+    cx, cy = la0 + 500 * 2.0 / 111320.0, lo0 + 50 * 0.002
+    k = math.cos(math.radians(la0))
+
+    def P(la, lo):
+        return ((lo - cy) * k * 111320.0 / m + 800, (cx - la) * 111320.0 / m + 450)
+    tr.runs(P, 1600, 900, m)                # the first frame at this zoom builds the simplification once
+    t0 = time.perf_counter()
+    for _ in range(5):
+        runs = tr.runs(P, 1600, 900, m)
+    per = (time.perf_counter() - t0) / 5
+    drawn = sum(len(r) // 2 for r in runs)
+    x, y = P(cx, cy)
+    t1 = time.perf_counter()
+    hit = tr.nearest(P, x, y, 8, m)
+    t_hit = time.perf_counter() - t1
+    # far zoom: the whole track in view - at most MAX_DRAW points drawn
+    m2 = 400.0
+
+    def P2(la, lo):
+        return ((lo - lo0) * k * 111320.0 / m2 + 10, (la0 + 0.02 - la) * 111320.0 / m2 + 10)
+    all_pts = sum(len(r) // 2 for r in tr.runs(P2, 1600, 900, m2))
+    # live: RAM bounded, the file complete, NEW TRACK = every point
+    d, st = fresh()
+    old = track.LIVE_RAM_MAX
+    track.LIVE_RAM_MAX = 2000
+    try:
+        lv = st.select("boat_X", "X")
+        walk(lv, 5000)
+        in_ram = len(lv.track.pts)
+        with open(lv.path, encoding="utf-8") as f:
+            in_file = sum(1 for ln in f if ln.startswith("["))
+        saved = lv.save_as(st.saved_dir, "X")
+        with open(saved, encoding="utf-8") as f:
+            in_saved = sum(1 for ln in f if ln.startswith("["))
+        st.close()
+        lv2 = track.TrackStore(d).select("boat_X", "X")
+        restored_empty = len(lv2.track.pts) == 0
+        lv2.close()
+    finally:
+        track.LIVE_RAM_MAX = old
+    shutil.rmtree(d, True)
+    report("TR10 200 000 points at 0.5 m/px: drawn within 50 ms (only the visible chunks), a click within 50 ms, at most "
+           "MAX_DRAW drawn at a far zoom; the live RAM bounded, the file + NEW TRACK keep every point; GPX import "
+           "<= 200 000 points",
+           per < 0.05 and drawn > 0 and hit is not None and t_hit < 0.05 and all_pts <= track.MAX_DRAW + 50 and
+           in_ram <= 2000 + track.CHUNK and in_file == 5000 and in_saved == 5000 and restored_empty and
+           track.GPX_MAX_POINTS <= 200000,
+           "draw %.1f ms (%d points), click %.1f ms (%s), far zoom %d points; RAM %d / file %d / NEW TRACK %d" % (
+               per * 1000, drawn, t_hit * 1000, hit and round(hit["t"] - T0), all_pts, in_ram, in_file, in_saved))
+
+
+def tr11():
+    """Review 13n3 LOW 1 / 4 / 5: boats never share a file (another key with the same file name = its own file); a
+    clock that steps back never records every frame; times after 2100 are refused (and GPX export never raises)."""
+    d, st = fresh()
+    a = st.select("boat_A/B", "A/B")            # safe_name -> "boat_A-B"
+    walk(a, 3)
+    pa = a.path
+    b = st.select("boat_A-B", "A-B")            # the same file name, another boat
+    b_empty = len(b.track.pts) == 0 and b.path != pa
+    walk(b, 2, lat=38.0)
+    st.close()
+    a2 = track.TrackStore(d).select("boat_A/B", "A/B")
+    a_ok = len(a2.track.pts) == 3 and a2.path == pa
+    a2.close()
+    lv = track.TrackStore(d).select("boat_C", "C")
+    lv.feed(T0 + 100, 37.8, 23.6, 5.0, 0.0)
+    n0 = len(lv.track.pts)
+    for i in range(50):                         # the PC clock jumps back 1 h: the boat lies still
+        lv.feed(T0 + 100 - 3600 + i * 0.1, 37.8, 23.6, 5.0, 0.0)
+    still = len(lv.track.pts) - n0
+    lv.feed(T0 - 3000, 37.8 + 50 / 111320.0, 23.6, 5.0, 0.0)      # ... and then moves: recorded
+    moved = len(lv.track.pts) - n0
+    lv.close()
+    late = track.valid_point((5e10, 37.0, 23.0, None, None))
+    ok_2099 = track.valid_point((4102444700.0, 37.0, 23.0, None, None)) is not None
+    iso = track._iso(4102444799.0)
+    shutil.rmtree(d, True)
+    report("TR11 never two boats in one file; a clock stepped back records only real moves; times after 2100 refused",
+           b_empty and a_ok and still == 0 and moved == 1 and late is None and ok_2099 and iso.startswith("2099"),
+           "same file name: B empty %s, A restored %s; clock back: still %d, moved %d; t 5e10 -> %s; 2099 ok %s (%s)" % (
+               b_empty, a_ok, still, moved, late, ok_2099, iso))
+
+
+def tr12():
+    """Review 13n3 LOW 7: the temporary track folder only for a test run (TRYGONS_TEST) - a user's own
+    TRYGONS_GS_SETTINGS never moves this PC's real tracks."""
+    keep = {k: os.environ.get(k) for k in ("TRYGONS_TRACKS", "TRYGONS_TEST", "TRYGONS_GS_SETTINGS")}
+    try:
+        os.environ.pop("TRYGONS_TRACKS", None)
+        os.environ.pop("TRYGONS_TEST", None)
+        os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(tempfile.gettempdir(), "x.json")
+        real = track.root_dir()
+        os.environ["TRYGONS_TEST"] = "1"
+        tmp = track.root_dir()
+    finally:
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    report("TR12 the real track folder unless a test run: TRYGONS_GS_SETTINGS alone keeps groundstation/tracks",
+           real == os.path.join(track.HERE, "tracks") and tmp != real,
+           "GS_SETTINGS only -> %s; TRYGONS_TEST -> a temp folder %s" % (real, tmp != real))
+
+
 def main():
-    for fn in (tr1, tr2, tr3, tr4, tr5, tr6, tr7, tr8, tr9):
+    for fn in (tr1, tr2, tr3, tr4, tr5, tr6, tr7, tr8, tr9, tr10, tr11, tr12):
         try:
             fn()
         except Exception as e:

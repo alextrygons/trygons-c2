@@ -528,8 +528,8 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
   SHOW = on the map as a GREY DASHED line with its date, any day, any boat;
   HIDE; REMOVE FROM MAP (the file stays); EXPORT GPX (the selected ones) /
   CURRENT TRACK TO GPX / IMPORT GPX (GPX 1.1: Google Earth, OpenCPN,
-  plotters; a file with a DTD, without track points or over 64 MB is
-  refused). Two stations on one PC on the same boat: the first one writes
+  plotters; a file with a DTD, without track points, over 64 MB or with more than
+  200 000 points is refused). Two stations on one PC on the same boat: the first one writes
   the file, the other keeps its track in memory only. A full disk: the
   message "the track is not written to the disk" - the track goes on in
   memory. The track never changes anything on the boat.

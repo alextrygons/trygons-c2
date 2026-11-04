@@ -16,6 +16,7 @@ REPO = os.path.dirname(HERE)
 os.environ.setdefault("TRYGONS_LANG", "en")
 os.environ.setdefault("TRYGONS_SOUND", "off")
 os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(tempfile.mkdtemp(prefix="gs_boats_"), "gs_settings.json"))
+os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
 os.environ.setdefault("TRYGONS_HUD_LAYOUT", os.path.join(tempfile.mkdtemp(prefix="hud_boats_"), "hud_layout.json"))
 sys.path.insert(0, HERE)
 import boats  # noqa: E402
@@ -460,6 +461,12 @@ def b11_one_move(ap, pump, good, wrong):
     asks = ap.leaving_moving()
     ap.choose_boat(wrong)
     warned = getattr(ap, "yn_win", None) is not None and ap.link is not None
+    first_win = ap.yn_win
+    ap.choose_boat(wrong)                                        # review 13n3 L10: a second click = the same window
+    ap.connect()
+    one_win = ap.yn_win is first_win and len([w for w in ap.root.winfo_children()
+                                              if isinstance(w, __import__("tkinter").Toplevel) and w.winfo_exists()
+                                              and w.title() == first_win.title()]) == 1
     ap.yn_answer(False)                                          # NO: stay
     stayed = ap.link is not None and ap.boat is good and getattr(ap, "yn_win", None) is None
     # review 13n2 MED-1: EVERY route asks - the boat list window / login window (connect_boat itself) and quit
@@ -520,14 +527,14 @@ def b11_one_move(ap, pump, good, wrong):
            "taken only when shown free; a copilot never takes HELM by itself",
            direct and back and helm and asks and warned and stayed and crewed and still and warned_disc and left and
            err is None and cop_no_helm and crew == "copilot" and err2 is None and helm2 and sel_warned and
-           sel_stayed and quit_warned and quit_stayed and no_field and not_taken,
+           sel_stayed and quit_warned and quit_stayed and no_field and not_taken and one_win,
            "wrong boat directly %s; back %s, HELM %s; warning asked %s shown %s, NO = stayed %s; CREWED none %s, "
            "STANDBY none %s; disconnect warned %s, OK = left %s; copilot %r crew %s no HELM request %s; captain again "
            "%r HELM %s" % (direct, back, helm, asks, warned, stayed, crewed, still, warned_disc, left, err, crew,
                           cop_no_helm, err2, helm2) +
            "; review 13n2: boat list route warned %s stayed %s, quit warned %s stayed %s; no HELM field = not taken %s, "
-           "another station's HELM never taken %s" % (sel_warned, sel_stayed, quit_warned, quit_stayed, no_field,
-                                                      not_taken))
+           "another station's HELM never taken %s; review 13n3 L10: clicks while the warning is open = one window "
+           "%s" % (sel_warned, sel_stayed, quit_warned, quit_stayed, no_field, not_taken, one_win))
 
 
 def A_crew(ap):

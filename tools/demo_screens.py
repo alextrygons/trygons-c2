@@ -23,6 +23,7 @@ os.chdir(os.path.join(REPO, "groundstation"))      # the ground station writes i
 OUT = os.path.join(REPO, "docs", "screens")
 TMP = tempfile.mkdtemp(prefix="trygons_screens_")
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(TMP, "gs_settings.json")
+os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
 os.environ["TRYGONS_HUD_LAYOUT"] = os.path.join(TMP, "hud_layout.json")
 os.environ["TRYGONS_SOUND"] = "off"
 os.environ.pop("TRYGONS_LANG", None)

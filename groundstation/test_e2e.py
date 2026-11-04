@@ -24,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("TRYGONS_LANG", "en")
 os.environ.setdefault("TRYGONS_SOUND", "off")                    # silent: no sound, no voice making
 os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(__import__("tempfile").gettempdir(), "trygons_gs_test.json"))
+os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
 sys.path.insert(0, HERE)
 import program  # noqa: E402
 import proto  # noqa: E402

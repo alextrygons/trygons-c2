@@ -28,6 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 TMP = tempfile.mkdtemp(prefix="trygons_snd_")
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(TMP, "gs.json")
+os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
 os.environ["TRYGONS_SOUND_CACHE"] = os.path.join(TMP, "cache")
 os.environ["TRYGONS_LANG"] = "en"
 import alerts  # noqa: E402

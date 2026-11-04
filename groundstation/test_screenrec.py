@@ -35,6 +35,7 @@ sys.path.insert(0, HERE)
 os.environ.setdefault("TRYGONS_LANG", "el")
 os.environ["TRYGONS_SCREENREC"] = tempfile.mkdtemp(prefix="trygons_sr_")
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(tempfile.mkdtemp(prefix="trygons_sr_set_"), "gs_settings.json")
+os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
 os.environ.setdefault("TRYGONS_SOUND", "off")
 import screenrec  # noqa: E402
 

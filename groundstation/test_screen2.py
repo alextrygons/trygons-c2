@@ -72,6 +72,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 TMP = tempfile.mkdtemp(prefix="trygons_s2_")
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(TMP, "settings.json")
+os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
 os.environ["TRYGONS_HUD_LAYOUT"] = os.path.join(TMP, "hud_layout.json")
 os.environ["TRYGONS_SOUND"] = "off"
 os.environ["TRYGONS_SCREENREC"] = os.path.join(TMP, "screenrec")     # step 13n4: never this PC's real recordings
@@ -724,7 +725,8 @@ ALLOWED = {"STANDBY", "AUTO", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG", "USB", 
 def english_words(text):
     """Latin words of a screen text that are not names / units / technical tokens."""
     t = (text or "").replace("\\n", " ")
-    t = " ".join(w for w in t.split() if not any(ch in w for ch in "./\\_<>"))      # files, paths, config keys
+    # files, paths, config keys - a word's trailing punctuation is not a path (review 13n3 L8: "plotters." was missed)
+    t = " ".join(w for w in (x.rstrip(".,;:!?)»·") for x in t.split()) if not any(ch in w for ch in "./\\_<>"))
     return [w for w in LATIN.findall(t) if w not in ALLOWED and not re.fullmatch(r"[A-Z]{1,3}\d*|[A-Z]+\d+[A-Z]*", w)]
 
 

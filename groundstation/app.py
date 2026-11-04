@@ -1918,9 +1918,18 @@ class App:
         (it starts its lost-link procedure); otherwise at once."""
         if not self.leaving_moving():
             return then()
+        lw = getattr(self, "leave_win", None)
+        try:
+            if lw is not None and lw.winfo_exists():    # already asked (a second click): the same window, never two
+                lw.lift()                               # (review 13n3 L10)
+                return lw
+        except tk.TclError:
+            pass
         name = self.boat.name if self.boat is not None else self.port_var.get()
-        return self.yn_dialog("boat.leave_title", T("boat.leave_ask", name=name), T("boat.leave_ok"),
-                              T("cap.cancel"), lambda yes: then() if yes else self.say(T("boat.leave_kept", name=name)))
+        self.leave_win = self.yn_dialog("boat.leave_title", T("boat.leave_ask", name=name), T("boat.leave_ok"),
+                                        T("cap.cancel"),
+                                        lambda yes: then() if yes else self.say(T("boat.leave_kept", name=name)))
+        return self.leave_win
 
     def yn_dialog(self, title, question, yes_text, no_text, answer):
         """The ONE vertical Y/N layout (13p) as a small window: the question, [YES] on top (selected), [NO] under it."""
@@ -1950,6 +1959,7 @@ class App:
         if self.link:
             return self.leave_boat(self.disconnect)
         addr = self.port_var.get().strip()
+        self.track_addr = addr                  # the track key's address: never read again from the field per frame
         try:
             if addr.startswith("gw:"):
                 # through the gateway (VPN / boat LAN): user name + password
@@ -2355,7 +2365,7 @@ class App:
         name = (getattr(self.link, "welcome", None) or {}).get("boat") if self.link is not None else None
         if name:
             return "boat_" + str(name), str(name)
-        addr = self.port_var.get().strip()
+        addr = getattr(self, "track_addr", None) or self.port_var.get().strip()   # fixed at connect (review 13n3 L2)
         return "addr_" + addr, addr
 
     def track_select(self):

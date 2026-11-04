@@ -12,8 +12,8 @@ the boat or the gateway, nothing here changes how the boat is driven.
   * two stations of one PC on the same boat: the first one writes the file (a lock), the other keeps its track in
     RAM only (Live.shared) - never two writers of one file
 
-Folder: TRYGONS_TRACKS=<folder>; else, while TRYGONS_GS_SETTINGS is set (the tests), a temporary folder of this
-process; else groundstation/tracks/ (not in git). Inside: live/<key>.jsonl (+ .lock), saved/*.jsonl.
+Folder: TRYGONS_TRACKS=<folder>; else, while TRYGONS_TEST is set (the tests), a temporary folder of this process;
+else groundstation/tracks/ (not in git). Inside: live/<key>.jsonl (+ .lock), saved/*.jsonl.
 """
 import atexit
 import datetime
@@ -24,7 +24,6 @@ import re
 import shutil
 import tempfile
 import time
-import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,7 +34,11 @@ SLOW_S = 10.0               # (slow drift: a point every SLOW_S once it moved SL
 SLOW_M = 0.3
 FSYNC_S = 5.0               # the file is flushed at every point and fsync'ed this often
 GPX_MAX_BYTES = 64 * 1024 * 1024
-GPX_MAX_POINTS = 2000000
+GPX_MAX_POINTS = 200000      # review 13n3 MED-B: an import never makes a track the map can't draw quickly
+T_MAX = 4102444800.0        # 2100-01-01: later times are refused (Windows fromtimestamp, review 13n3 L5)
+CHUNK = 256                 # points per bounding box (the map skips whole chunks outside the window)
+MAX_DRAW = 20000            # at most this many points drawn per track (more = a coarser line)
+LIVE_RAM_MAX = 400000       # the live track keeps at most this many points in RAM (the FILE keeps every one)
 GPX_NS = "urn:trygons:track:1"
 M_PER_DEG = 111320.0
 _tmp_root = None
@@ -46,7 +49,8 @@ def root_dir():
     env = os.environ.get("TRYGONS_TRACKS")
     if env:
         return env
-    if os.environ.get("TRYGONS_GS_SETTINGS"):            # a test run: never this PC's real tracks
+    if os.environ.get("TRYGONS_TEST"):                   # a test run: never this PC's real tracks (review 13n3 L7:
+        #                                                   a user's own TRYGONS_GS_SETTINGS never moves the tracks)
         if _tmp_root is None:
             _tmp_root = tempfile.mkdtemp(prefix="trygons_tracks_")
             atexit.register(shutil.rmtree, _tmp_root, True)
@@ -79,7 +83,7 @@ def valid_point(p):
     if la is None or lo is None:
         return None
     if t is not None:
-        t = _num(t, 0.0, 1e11)
+        t = _num(t, 0.0, T_MAX)
         if t is None:
             return None
     return (t, la, lo, _num(kn, 0.0, 100.0) if kn is not None else None,
@@ -100,13 +104,38 @@ class Track:
         self.latlon = []
         self._simp = {}
         self._nm = (0, 0.0)
+        self._box = []                  # per CHUNK points: [la_min, la_max, lo_min, lo_max]
+        self.dropped = 0                # points no longer in RAM (the oldest; the file keeps them)
 
     def add(self, p):
+        i = len(self.pts)
         self.pts.append(p)
         self.latlon.append((p[1], p[2]))
+        if i % CHUNK == 0:
+            self._box.append([p[1], p[1], p[2], p[2]])
+        else:
+            b = self._box[-1]
+            b[0], b[1], b[2], b[3] = min(b[0], p[1]), max(b[1], p[1]), min(b[2], p[2]), max(b[3], p[2])
+
+    def set_points(self, pts):
+        self.clear()
+        for p in pts:
+            self.add(p)
+
+    def trim(self, keep):
+        """Only the newest `keep` points stay in RAM (whole chunks dropped; the caller's file keeps them all)."""
+        if len(self.pts) <= keep:
+            return 0
+        n = ((len(self.pts) - keep) // CHUNK + 1) * CHUNK
+        rest = self.pts[n:]
+        dropped = self.dropped + n
+        self.set_points(rest)
+        self.dropped = dropped
+        return n
 
     def clear(self):
-        self.pts, self.latlon, self._simp, self._nm = [], [], {}, (0, 0.0)
+        self.pts, self.latlon, self._simp, self._nm, self._box = [], [], {}, (0, 0.0), []
+        self.dropped = 0
 
     def __len__(self):
         return len(self.pts)
@@ -150,12 +179,50 @@ class Track:
             return kept + [len(pts) - 1]
         return kept
 
-    def runs(self, P, w, h, m_per_px, tol_px=1.5):
-        """The polylines to draw [[x0, y0, x1, y1, ...]]: the simplified points, only the segments that touch the
-        window (+ one window of margin) - however long the track, the drawing stays small."""
+    def visible(self, P, w, h, m_per_px, tol_px=1.5):
+        """(simplified indices of the chunks that touch the window + one window of margin, as runs of consecutive
+        indices) - only these points are projected: a long track far outside the window costs one box test per
+        CHUNK points (review 13n3 MED-B). At most MAX_DRAW points (more = every k-th, the last one of each run kept)."""
+        import bisect
         idx = self.simplified(m_per_px * tol_px)
-        xy = [P(*self.latlon[i]) for i in idx]
+        if not idx:
+            return []
         x0, y0, x1, y1 = -w, -h, 2 * w, 2 * h
+        runs, cur_lo = [], None
+        nb = len(self._box)
+        for k in range(nb + 1):
+            on = False
+            if k < nb:
+                la0, la1, lo0, lo1 = self._box[k]
+                xs, ys = zip(*(P(la, lo) for la in (la0, la1) for lo in (lo0, lo1)))
+                on = not (max(xs) < x0 or min(xs) > x1 or max(ys) < y0 or min(ys) > y1)
+            if on and cur_lo is None:
+                cur_lo = k
+            elif not on and cur_lo is not None:
+                a = max(0, cur_lo * CHUNK - 1)                       # the segment into the chunk too
+                b = min(len(self.pts) - 1, k * CHUNK)                # ... and out of it
+                i0, i1 = bisect.bisect_left(idx, a), bisect.bisect_right(idx, b)
+                sel = idx[max(0, i0 - 1):min(len(idx), i1 + 1)]
+                if sel:
+                    runs.append(sel)
+                cur_lo = None
+        total = sum(len(r) for r in runs)
+        if total > MAX_DRAW:
+            step = total // MAX_DRAW + 1
+            runs = [r[::step] + ([r[-1]] if (len(r) - 1) % step else []) for r in runs]
+        return runs
+
+    def runs(self, P, w, h, m_per_px, tol_px=1.5):
+        """The polylines to draw [[x0, y0, x1, y1, ...]]: the simplified points of the visible chunks only, only the
+        segments that touch the window (+ one window of margin) - however long the track, the drawing stays small."""
+        x0, y0, x1, y1 = -w, -h, 2 * w, 2 * h
+        out = []
+        for sel in self.visible(P, w, h, m_per_px, tol_px):
+            out += self._cut([P(*self.latlon[i]) for i in sel], x0, y0, x1, y1)
+        return out
+
+    @staticmethod
+    def _cut(xy, x0, y0, x1, y1):
         out, cur = [], []
         for i in range(len(xy) - 1):
             (ax, ay), (bx, by) = xy[i], xy[i + 1]
@@ -173,27 +240,36 @@ class Track:
 
     def nearest(self, P, x, y, max_px, m_per_px):
         """The place on the line nearest to the pixel (x, y), within max_px: {"lat", "lon", "t", "kn", "hdg", "px"}
-        (time + speed interpolated along the segment) or None."""
+        (time + speed interpolated along the segment) or None. Only the chunks near the click are looked at (review
+        13n3 MED-B)."""
         if len(self.pts) < 1:
             return None
-        idx = self.simplified(m_per_px * 1.5)
-        if len(idx) == 1:
-            px, py = P(*self.latlon[idx[0]])
-            d = math.hypot(px - x, py - y)
-            if d > max_px:
-                return None
-            p = self.pts[idx[0]]
-            return {"lat": p[1], "lon": p[2], "t": p[0], "kn": p[3], "hdg": p[4], "px": d}
-        best = None
-        xy = [P(*self.latlon[i]) for i in idx]
-        for j in range(len(idx) - 1):
-            d = _seg_d(xy[j], xy[j + 1], x, y)[0]
-            if d <= max_px * 3 and (best is None or d < best[0]):
-                best = (d, j)
+        w = h = max(1.0, 4.0 * max_px)
+        PP = lambda la, lo: (lambda q: (q[0] - x + w / 2, q[1] - y + h / 2))(P(la, lo))     # noqa: E731
+        runs = self.visible(PP, w, h, m_per_px)
+        if not runs:
+            return None
+        best = None                                     # (d, run, j) on the simplified line
+        for r in runs:
+            if len(r) == 1:
+                d = math.hypot(*(a - b for a, b in zip(P(*self.latlon[r[0]]), (x, y))))
+                if best is None or d < best[0]:
+                    best = (d, r, None)
+                continue
+            xy = [P(*self.latlon[i]) for i in r]
+            for jj in range(len(r) - 1):
+                d = _seg_d(xy[jj], xy[jj + 1], x, y)[0]
+                if d <= max_px * 3 and (best is None or d < best[0]):
+                    best = (d, r, jj)
         if best is None:
             return None
-        j = best[1]
-        lo_i, hi_i = idx[max(0, j - 1)], idx[min(len(idx) - 1, j + 2)]
+        d0, r, jj = best
+        if jj is None:
+            if d0 > max_px:
+                return None
+            p = self.pts[r[0]]
+            return {"lat": p[1], "lon": p[2], "t": p[0], "kn": p[3], "hdg": p[4], "px": d0}
+        lo_i, hi_i = r[max(0, jj - 1)], r[min(len(r) - 1, jj + 2)]
         found = None
         prev = P(*self.latlon[lo_i])
         for i in range(lo_i + 1, hi_i + 1):
@@ -202,6 +278,8 @@ class Track:
             if found is None or d < found[0]:
                 found = (d, i - 1, u)
             prev = cur
+        if found is None:
+            return None
         d, i, u = found
         if d > max_px:
             return None
@@ -255,6 +333,16 @@ def read_file(path):
     return tr
 
 
+def read_header(path):
+    """The header dict of a track file (its first line), {} without one."""
+    try:
+        with open(path, "rb") as f:
+            v = json.loads(f.readline().decode("utf-8"))
+        return v if isinstance(v, dict) and "trygons_track" in v else {}
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+
+
 def _lock(path):
     """An exclusive lock (held while this process runs; the OS frees it when the process dies). -> file or None."""
     try:
@@ -295,6 +383,11 @@ class Live:
         self.key, self.boat = key, boat
         d = os.path.join(root, "live")
         self.path = os.path.join(d, safe_name(key, "track") + ".jsonl")
+        hk = read_header(self.path).get("key") if os.path.exists(self.path) else None
+        if hk is not None and hk != key:        # another key with the same file name (review 13n3 L1): its own file
+            import hashlib
+            self.path = os.path.join(d, "%s_%s.jsonl" % (safe_name(key, "track"),
+                                                         hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]))
         self.error = None
         self.f = None
         self.lockf = None
@@ -312,7 +405,8 @@ class Live:
         if os.path.exists(self.path):
             try:
                 old = read_file(self.path)
-                self.track.pts, self.track.latlon = old.pts, old.latlon
+                self.track.set_points(old.pts)
+                self.track.trim(LIVE_RAM_MAX)
             except OSError as e:
                 self.error = str(e)
         if not self.shared:
@@ -346,13 +440,19 @@ class Live:
         q = self.last()
         if q is not None:
             dt = p[0] - (q[0] or 0.0)
-            if dt < MIN_S and dt >= 0:
-                return False
             dd = dist_m(q[1], q[2], p[1], p[2])
-            if dd < MIN_M and not (dt >= SLOW_S and dd >= SLOW_M) and dt >= 0:
-                return False
+            if dt < 0:                          # the PC clock stepped back (review 13n3 L4): the distance rule only
+                if dd < MIN_M:
+                    return False
+            else:
+                if dt < MIN_S:
+                    return False
+                if dd < MIN_M and not (dt >= SLOW_S and dd >= SLOW_M):
+                    return False
         self.track.add(p)
         self._write(p)
+        if len(self.track.pts) > LIVE_RAM_MAX + CHUNK:
+            self.track.trim(LIVE_RAM_MAX)       # RAM bounded; the file keeps every point (review 13n3 MED-B)
         return True
 
     def _write(self, p):
@@ -399,13 +499,24 @@ class Live:
             dst = os.path.join(saved_dir, "%s_%d.jsonl" % (base, n))
             n += 1
         tmp = dst + ".part"
-        with open(tmp, "w", encoding="utf-8") as f:            # written in full first, then renamed: never half
-            f.write(_header(boat_name, self.key))
-            for p in self.track.pts:
-                f.write(_line(p))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, dst)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:        # written in full first, then renamed: never half
+                f.write(_header(boat_name, self.key))
+                if self.track.dropped and not self.shared and os.path.exists(self.path):
+                    if self.f is not None:
+                        self.f.flush()
+                    old = read_file(self.path)                 # the RAM holds only the newest: every point from the file
+                    for p in old.pts:
+                        f.write(_line(p))
+                else:
+                    for p in self.track.pts:
+                        f.write(_line(p))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, dst)
+        except OSError:
+            _rm(tmp)
+            raise
         if self.f is not None:
             try:
                 self.f.close()
@@ -509,17 +620,22 @@ class TrackStore:
             dst = os.path.join(self.saved_dir, "%s_%d.jsonl" % (base, n))
             n += 1
         tmp = dst + ".part"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(_header(name, "", imported=True))
-            for p in pts:
-                f.write(_line(p))
-        os.replace(tmp, dst)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(_header(name, "", imported=True))
+                for p in pts:
+                    f.write(_line(p))
+            os.replace(tmp, dst)
+        except OSError:
+            _rm(tmp)
+            raise
         return dst
 
 
 # --- GPX 1.1 ---------------------------------------------------------------------------------------------------
 def _iso(t):
-    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.fromtimestamp(min(max(t, 0.0), T_MAX), datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
 
 
 def gpx_write(track, dst, name=None):
@@ -527,6 +643,23 @@ def gpx_write(track, dst, name=None):
     heading in our own extension (other programs ignore it)."""
     name = name or track.boat or "track"
     tmp = dst + ".part"
+    try:
+        _gpx_body(track, tmp, name)
+        os.replace(tmp, dst)
+    except OSError:
+        _rm(tmp)                                # never a leftover .part (review 13n3 L6)
+        raise
+    return dst
+
+
+def _rm(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _gpx_body(track, tmp, name):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n'
                 '<gpx version="1.1" creator="Trygons C2" xmlns="http://www.topografix.com/GPX/1/1" '
@@ -544,8 +677,6 @@ def gpx_write(track, dst, name=None):
                 f.write("</extensions>")
             f.write("</trkpt>\n")
         f.write("  </trkseg>\n </trk>\n</gpx>\n")
-    os.replace(tmp, dst)
-    return dst
 
 
 def _parse_time(s):
@@ -573,39 +704,65 @@ def gpx_read(src):
     ValueError(code): "too_big", "dtd" (a DTD / entity: refused), "not_xml", "too_many", "no_points"."""
     if os.path.getsize(src) > GPX_MAX_BYTES:
         raise ValueError("too_big")
-    with open(src, "rb") as f:
-        head = f.read(65536)
-    if b"<!DOCTYPE" in head or b"<!ENTITY" in head:
-        raise ValueError("dtd")
-    name, pts, cur = None, [], None
+    from xml.parsers import expat
+    st = {"name": None, "cur": None, "text": [], "depth_name": False}
+    pts = []
+
+    def refuse(*_a):
+        raise ValueError("dtd")         # a DTD / an entity anywhere (any encoding, any offset): refused by the parser
+
+    def start(tag, attrs):
+        tag = _local(tag)
+        st["text"] = []
+        if tag == "trkpt":
+            st["cur"] = {"lat": attrs.get("lat"), "lon": attrs.get("lon")}
+
+    def chars(data):
+        if len(st["text"]) < 64:
+            st["text"].append(data)
+
+    def end(tag):
+        tag = _local(tag)
+        text = "".join(st["text"]).strip()[:200]
+        st["text"] = []
+        cur = st["cur"]
+        if cur is not None and tag in ("time", "sog_kn", "speed", "hdg", "course"):
+            cur[tag] = text
+        elif tag == "name" and st["name"] is None and cur is None:
+            st["name"] = text or None
+        elif tag == "trkpt" and cur is not None:
+            kn = _num(cur.get("sog_kn"), 0.0, 100.0)
+            if kn is None and cur.get("speed"):
+                v = _num(cur.get("speed"), 0.0, 60.0)
+                kn = None if v is None else v * 3600.0 / 1852.0
+            hd = _num(cur.get("hdg"), 0.0, 360.0)
+            if hd is None:
+                hd = _num(cur.get("course"), 0.0, 360.0)
+            p = valid_point((_parse_time(cur.get("time")), cur.get("lat"), cur.get("lon"), kn, hd))
+            if p is not None:
+                pts.append(p)
+                if len(pts) > GPX_MAX_POINTS:
+                    raise ValueError("too_many")
+            st["cur"] = None
+
+    ps = expat.ParserCreate(namespace_separator="}")
+    ps.StartDoctypeDeclHandler = refuse
+    ps.EntityDeclHandler = refuse
+    ps.UnparsedEntityDeclHandler = refuse
+    ps.ExternalEntityRefHandler = refuse
+    ps.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    ps.StartElementHandler, ps.EndElementHandler, ps.CharacterDataHandler = start, end, chars
+    ps.buffer_text = True
     try:
-        for ev, el in ET.iterparse(src, events=("start", "end")):
-            tag = _local(el.tag)
-            if ev == "start":
-                if tag == "trkpt":
-                    cur = {"lat": el.get("lat"), "lon": el.get("lon")}
-                continue
-            if cur is not None and tag in ("time", "sog_kn", "speed", "hdg", "course"):
-                cur[tag] = (el.text or "").strip()
-            elif tag == "name" and name is None and cur is None:
-                name = (el.text or "").strip() or None
-            elif tag == "trkpt" and cur is not None:
-                kn = _num(cur.get("sog_kn"), 0.0, 100.0)
-                if kn is None and cur.get("speed"):
-                    v = _num(cur.get("speed"), 0.0, 60.0)
-                    kn = None if v is None else v * 3600.0 / 1852.0
-                hd = _num(cur.get("hdg"), 0.0, 360.0)
-                if hd is None:
-                    hd = _num(cur.get("course"), 0.0, 360.0)
-                p = valid_point((_parse_time(cur.get("time")), cur.get("lat"), cur.get("lon"), kn, hd))
-                if p is not None:
-                    pts.append(p)
-                    if len(pts) > GPX_MAX_POINTS:
-                        raise ValueError("too_many")
-                cur = None
-                el.clear()
-    except ET.ParseError as e:
+        with open(src, "rb") as f:
+            while True:
+                chunk = f.read(1 << 16)
+                ps.Parse(chunk, not chunk)
+                if not chunk:
+                    break
+    except expat.ExpatError as e:
         raise ValueError("not_xml") from e
+    name = st["name"]
     if not pts:
         raise ValueError("no_points")
     # speeds from the times where the file has none

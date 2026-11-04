@@ -123,7 +123,6 @@ class TracksWindow:
             return None
         out = []
         for p in sel:
-            tr = self.app.tracks.load(p)
             d = os.path.join(dst, os.path.basename(p)[:-6] + ".gpx") if dst else None     # dst = a folder (tests)
             if d is None:
                 d = filedialog.asksaveasfilename(parent=self.w, defaultextension=".gpx",
@@ -132,6 +131,7 @@ class TracksWindow:
                 if not d:
                     continue
             try:
+                tr = self.app.tracks.load(p)        # inside the try: a file gone meanwhile = a message (review 13n3 L6)
                 out.append(trackmod.gpx_write(tr, d, name=tr.boat or None))
             except OSError as e:
                 self.say(T("track.gpx_error", err=e), True)
@@ -152,7 +152,10 @@ class TracksWindow:
             if not dst:
                 return None
         try:
-            trackmod.gpx_write(lv.track, dst, name=lv.boat)
+            tr = lv.track
+            if tr.dropped and os.path.exists(lv.path):
+                tr = trackmod.read_file(lv.path)    # the RAM holds only the newest points: every one from the file
+            trackmod.gpx_write(tr, dst, name=lv.boat)
         except OSError as e:
             self.say(T("track.gpx_error", err=e), True)
             return None

@@ -22,6 +22,7 @@ import tkinter as tk
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(tempfile.gettempdir(), "trygons_gs_test_lang.json")
+os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
 os.environ.pop("TRYGONS_LANG", None)
 os.environ.setdefault("TRYGONS_SOUND", "off")                    # silent: no sound, no voice making
 import i18n  # noqa: E402
