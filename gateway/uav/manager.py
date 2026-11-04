@@ -151,7 +151,7 @@ class UavManager:
         self.hatch = hatch.Hatch(hc.get("open_s", 20.0), hc.get("close_s", 20.0))
         use_sim = hc.get("sim") if hc.get("sim") is not None else bool(self.cfg["sim"])
         self.simhatch = simhatch.SimHatch(hc.get("sim_travel_s", 6.0)) if self.enabled and use_sim else None
-        self.switches = None if self.simhatch is not None or not hc.get("port") else \
+        self.switches = None if (not self.enabled or self.simhatch is not None or not hc.get("port")) else \
             hatch.SerialSwitches(hc["port"])
         self.sky = None                          # (sim) what the simulated drones were told
         self.sim_ctl = None
@@ -496,8 +496,9 @@ class UavManager:
                             "caution")
             self.gw.audit("uav_land", slot=s, what=m.get("what"), why=m.get("why", ""))
         elif ev in ("mission", "cmd"):
-            cb = self.cbs.pop(m.get("id"), None)
-            if cb is not None:
+            kc = self.cbs.pop(m.get("id"), None)
+            if kc is not None:
+                cb = kc[1]
                 if ev == "mission":
                     cb(bool(m.get("ok")), m.get("why", ""))
                 else:
@@ -522,6 +523,7 @@ class UavManager:
         if p is not None and (p.poll() is not None or now - self.worker_t > float(self.cfg["silent_s"])):
             dead = p.poll() is not None
             self.stop(wait=False)
+            self._flush_cbs("the UAV router restarted")
             # restart after restart_s, never at once: no crash loop, and the OFFLINE notice reaches every station
             # (gw_status) before the router is back (gate U2: a restart within one tick was never shown)
             self.next_start = now + float(self.cfg["restart_s"])
@@ -592,6 +594,16 @@ class UavManager:
             return "UAV router offline (%s)" % (self.why or "-")
         return None
 
+    def slot_busy(self, slot):
+        """U3 review M4: no (un)registration while a launch runs or while that slot's drone flies (clearing / changing
+        its record would make the router drop its ELRS frames: no telemetry, no battery rule, no route)."""
+        if self.seq.busy():
+            return "a launch sequence runs"
+        d = self.slot(slot) if 1 <= slot <= self.n else {}
+        if d.get("armed") or (slot in self.flying and not d.get("usb_present")):
+            return "UAV %d is flying" % slot
+        return None
+
     def register_msg(self, st, m):
         """{"t": "uav_register", "slot": n}: read + check the drone on slot n's USB cable (read only)."""
         try:
@@ -599,7 +611,7 @@ class UavManager:
         except (TypeError, ValueError):
             slot = 0
         why = None if 1 <= slot <= self.n else "no such slot"
-        why = why or self.may_register(st)
+        why = why or self.may_register(st) or self.slot_busy(slot)
         if why is None and any(s == slot for _sid, s, _t in self.pending.values()):
             why = "slot %d is being registered" % slot
         if why:
@@ -725,18 +737,42 @@ class UavManager:
             return None, bad[1]
         return mission.build(wps, pos, take_alt, min(float(self.ccfg["uav_max_speed_ms"]), allow.MAX_SPEED_MS)), ""
 
-    def _rid(self, cb):
+    def _rid(self, cb, kind="cmd"):
         self.req_id += 1
-        self.cbs[self.req_id] = cb
+        self.cbs[self.req_id] = (kind, cb)
         return self.req_id
 
+    def _flush_cbs(self, why):
+        """U3 review M5: the router restarted / went silent - every answer still owed is answered now (never a wait
+        for ever)."""
+        cbs, self.cbs = self.cbs, {}
+        for kind, cb in cbs.values():
+            try:
+                cb(False, why) if kind == "mission" else cb(None, why)
+            except Exception:
+                log.exception("uav: a callback after the router restart")
+
+    def router_ok(self):
+        return self.state == ACTIVE and self.proc is not None
+
     def upload(self, n, items, via, cb):
-        if not self.to_worker({"op": "mission", "slot": n, "id": self._rid(cb), "via": via, "items": items}):
+        if not self.to_worker({"op": "mission", "slot": n, "id": self._rid(cb, "mission"), "via": via, "items": items}):
+            self.cbs.pop(self.req_id, None)
             cb(False, "the router is offline")
 
     def cmd(self, n, via, command, params, cb):
         if not self.to_worker({"op": "cmd", "slot": n, "id": self._rid(cb), "via": via, "command": int(command),
                                "params": [float(p) for p in params]}):
+            self.cbs.pop(self.req_id, None)
+            cb(None, "the router is offline")
+
+    def cancel(self, n, command=None):
+        """U3 review M1: a command on its way to slot n's drone is not re-sent any more (answered "cancelled")."""
+        self.to_worker({"op": "cancel", "slot": n, "command": command})
+
+    def set_current(self, n, seq, via, cb):
+        if not self.to_worker({"op": "set_current", "slot": n, "seq": int(seq), "id": self._rid(cb), "via": via}):
+            self.cbs.pop(self.req_id, None)
             cb(None, "the router is offline")
 
     def mission_loaded(self, n):
@@ -1044,7 +1080,13 @@ class UavManager:
                         f["phase"] = "mission"
                     self._ack(st, "route", ok2, uavcheck.ERR_ROUTE, "UAV %d: new mission %s" % (
                         slot, "started" if ok2 else "loaded but not started (%s)" % w), slot=slot)
-                self.cmd(slot, "elrs", allow.CMD_MISSION_START, [mission.FLY_FROM, 0], go)
+                # U3 review M6: ArduPilot ignores MISSION_START's first item while AUTO already runs - the new
+                # mission's first waypoint is chosen with MISSION_SET_CURRENT, then MISSION START (when not in AUTO)
+                def cur(result, w):
+                    if result != 0:
+                        return go(result, w)
+                    self.cmd(slot, "elrs", allow.CMD_MISSION_START, [mission.FLY_FROM, 0], go)
+                self.set_current(slot, mission.FLY_FROM, "elrs", cur)
             return self.upload(slot, items, "elrs", up)
         if self.seq.busy() and self.seq.cur == slot and self.seq.phase not in ("CHECK", ""):
             return self._ack(st, "route", False, ERR_LAUNCH, "UAV %d is being launched now" % slot, slot=slot)
@@ -1105,7 +1147,11 @@ class UavManager:
         self.seq.prepare(slots, st.id, now)
         what = "UAV LAUNCH: %s (slot %s first)" % (", ".join("UAV %d" % s for s in slots), slots[0])
 
+        gen = self.seq.gen
+
         def answer(ok, code):
+            if gen != self.seq.gen:                    # U3 review L3: an answer to an OLDER question approves nothing
+                return
             cap = st if st.single_op else self.gw.stations.captain()
             self.seq.approved(ok, cap.id if cap is not None and ok else None, time.time(),
                               "" if ok else "the captain did not approve (%s)" % code)
@@ -1121,8 +1167,8 @@ class UavManager:
             slot = int(m.get("slot"))
         except (TypeError, ValueError):
             slot = 0
-        why = "VIEWER: watch only" if st.role == "VIEWER" else ("no such slot" if not 1 <= slot <= self.n else (
-            "a launch sequence runs" if self.seq.busy() else None))
+        why = "VIEWER: watch only" if st.role == "VIEWER" else ("no such slot" if not 1 <= slot <= self.n else
+                                                                 self.slot_busy(slot))
         if why:
             return self._ack(st, "unregister", False, ERR_UAV, "UAV refused: %s" % why, slot=slot)
         self.reg.unregister(slot)

@@ -52,7 +52,12 @@ def boat_state(gw, hatch_relay, max_kn=SLOW_KN):
     out["sog_kn"] = sog
     if sog is None or sog >= max_kn:
         why.append("the boat is not slower than %.1f kn (%s)" % (max_kn, "-" if sog is None else "%.1f" % sog))
-    warn = warning_alarms(t)
+    # U3 review M2: BOTH alarm words - the second one (TELEM2 group L) from the newest TELEM2, not the copy merged into
+    # the telemetry when it arrived
+    tt = dict(t)
+    if "alarm_bits2" in t2:
+        tt["alarm_bits2"] = t2.get("alarm_bits2") or 0
+    warn = warning_alarms(tt)
     if warn:
         why.append("boat WARNING alarm: %s" % ", ".join(warn[:3]))
     out["relay_ok"] = bool(t2.get("relay_ok"))

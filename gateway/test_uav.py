@@ -57,6 +57,10 @@ parameter check + the MAVLink allow-list + the own codec + the GPS warm start + 
   UA25 cameras.py UAV streams: only open ones, data saver / STARLINK none, dropped first, auth
   UA26 the UAV AI: open feeds only, round-robin, the boat's front camera AI first, boxes + notice, never a cap
   UA27 the real gateway with MediaMTX: a station's UAV-1 stream, the ring track in a SAVE, data saver
+  --- U3 review fixes (review of 34624bd) ---
+  UA28 airspace files never raise (H1), STOP with the ARM on its way (M1), every wait timed (M5), no registration
+       while flying (M4), the second alarm word (M2), no FAULT before the first switch reading (L1)
+  UA29 router: one job per slot, cancel, MISSION_SET_CURRENT for an in-flight route (M1 / M6)
 
 Run:  python test_uav.py      (exit code 0 = all passed)
 """
@@ -1436,6 +1440,8 @@ def ua18_gateway_launch():
         bob = tg.Client(sp, "bob", tg.PW["bob"], name="copilot")
         clients.append(bob)
         bob.pump(1.0)
+        bad_t = [dict(r, power_up="on") if r["n"] == HATCH_N else r for r in UA_RELAYS]
+        r_bad = alice.result(alice.cmd(proto.T_RELAY_CFG, proto.p_relay_cfg(bad_t)))     # U3 review L5
         pay = proto.p_relay_cfg(UA_RELAYS)
         r_cfg = alice.result(alice.cmd(proto.T_RELAY_CFG, pay))
         time.sleep(0.5)
@@ -1507,7 +1513,7 @@ def ua18_gateway_launch():
                "slot 2 launched, the hatch relay ON through the AURIX (TELEM2 readback) before the first ARM and OFF "
                "after the last, the hatch CLOSED again, the boat untouched (STANDBY, no new alarm), the event loop "
                "never blocked (max %.0f ms)" % (1000 * max(lat or [0])),
-               r_helm == 0 and r_cfg == 0 and active and hatch_ok and r_h_cap == 125 and r_h_cop == 125 and
+               r_helm == 0 and r_bad == 125 and r_cfg == 0 and active and hatch_ok and r_h_cap == 125 and r_h_cop == 125 and
                r_light == 0 and up and len(regs) >= 3 and all(a["ok"] for a in regs) and
                by_slot.get(1, {}).get("ok") and by_slot.get(2, {}).get("ok") and by_slot.get(3) and
                by_slot[3]["code"] == 123 and ask is not None and "UAV LAUNCH" in ask.get("text", "") and end and
@@ -2305,6 +2311,225 @@ def ua27_gateway_video():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------------------------------------------------------- U3 review fixes -------
+
+def ua28_review_u3():
+    """U3 review (34624bd): H1 a malformed airspace file never raises (Airspace + the manager build; every route
+    refused); M1 a STOP while the ARM is on its way: the ARM cancelled in the router + DISARM, the result reported
+    (never assumed); M5 every wait timed (a command / relay answer that never comes, the router offline = stop, the
+    CLOSING not stuck); M4 (un)registration refused while a launch runs / the drone flies; M2 the second alarm word;
+    L3 an answer to an older launch question approves nothing; L1 SerialSwitches: no FAULT before the first reading."""
+    from uav import hatch, launch, manager as mgr, nofly
+    import uavlink
+    tmp = tempfile.mkdtemp(prefix="uavtest_u3r_")
+    try:
+        # H1
+        bad = []
+        for k, (zf, gf) in enumerate((("[]", None), ("5", None), ("true", None), ('{"zones": 5}', None),
+                                      ('{"zones": [7]}', None), (None, "[1, 2]"), (None, "true"), ("{oops", None))):
+            d = os.path.join(tmp, "a%d" % k)
+            os.makedirs(d)
+            for name, txt in (("uav_nofly.json", zf), ("uav_geofence.json", gf)):
+                if txt is not None:
+                    with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                        f.write(txt)
+            try:
+                a = nofly.Airspace(d)
+                bad.append(bool(a.error) and a.problem([(37.82, 23.6, 0.0), (37.83, 23.6, 50.0)]) is not None)
+            except Exception as e:
+                bad.append("raised %r" % e)
+        g = _G(tmp)
+        os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
+        with open(os.path.join(tmp, "state", "uav_nofly.json"), "w", encoding="utf-8") as f:
+            f.write("[1, 2, 3]")
+        try:
+            m = mgr.UavManager({"enabled": True, "slots": [{"usb": "udp:127.0.0.1:1"}] * 6}, g)
+            m_off = mgr.UavManager({"enabled": False, "hatch": {"port": "COM999"}}, g)
+            h1_mgr = bool(m.airspace.error) and m_off.switches is None
+        except Exception as e:
+            h1_mgr = "raised %r" % e
+        h1 = all(x is True for x in bad) and h1_mgr is True
+        # M1: the ARM answer held back (as on a slow link), STOP meanwhile
+        io = FakeIo(1, climb=False)                          # (on deck: the ACK late, the motors spinning)
+        held = []
+        cancels = []
+        real_cmd = io.cmd
+
+        def slow_cmd(n, via, command, params, cb):
+            if command == 400 and params[0] == 1:
+                io.drones[n]["armed"] = True                  # the drone DID arm, the ACK is late
+                io.sent.append((io.t, n, "arm"))
+                held.append(cb)
+                return
+            real_cmd(n, via, command, params, cb)
+        io.cmd = slow_cmd
+        io.cancel = lambda n, c=None: cancels.append((n, c))
+        seq = launch.Launch(io)
+        seq.prepare([1], 5, 0.0)
+        seq.approved(True, 7, 0.0)
+        run_seq(io, seq, 30.0, [(4.0, lambda: seq.stop("STOP by test", io.t))])
+        s1 = [w for _t, n, w in io.sent]
+        m1 = (seq.state == "STOPPED" and "arm" in s1 and s1[-1] == "disarm" and cancels == [(1, 400)] and
+              any("disarmed in the hatch" in t for t in io.notices))
+        # M5: a command never answered -> stop after cmd_s; the router offline -> stop; CLOSING relay never answered
+        io2 = FakeIo(1)
+        io2.cmd = lambda n, via, command, params, cb: io2.sent.append((io2.t, n, "lost %d" % command))
+        seq2 = launch.Launch(io2, {"cmd_s": 3.0})
+        seq2.prepare([1], 5, 0.0)
+        seq2.approved(True, 7, 0.0)
+        run_seq(io2, seq2, 40.0)
+        io3 = FakeIo(2)
+        io3.router_ok = lambda: io3.t < 3.0
+        seq3 = launch.Launch(io3)
+        seq3.prepare([1, 2], 5, 0.0)
+        seq3.approved(True, 7, 0.0)
+        run_seq(io3, seq3, 30.0)
+        io4 = FakeIo(1)
+        relays = []
+
+        def hcmd(on, cb):
+            io4.relay.append((io4.t, on))
+            io4.hatch_cmd_open = on
+            io4.hatch_t = io4.t
+            if on:
+                io4.q.append(lambda: cb(True, ""))
+            else:
+                relays.append(cb)                             # the close is never answered
+        io4.hatch_cmd = hcmd
+        seq4 = launch.Launch(io4, {"relay_s": 4.0})
+        seq4.prepare([1], 5, 0.0)
+        seq4.approved(True, 7, 0.0)
+        run_seq(io4, seq4, 120.0)
+        m5 = (seq2.state == "STOPPED" and "no answer" in seq2.why and seq3.state == "STOPPED" and
+              "router offline" in seq3.why and seq4.state == "STOPPED" and "HATCH NOT CLOSED" in seq4.why)
+        # M4 + L3 through the manager
+        m.proc = type("P", (), {"poll": lambda _s: None})()
+        m.state = "ACTIVE"
+        m.to_worker = lambda o: True
+        st = _St(3)
+        g.stations.stations = {3: st}
+        m.seq.state = "RUN"
+        m.register_msg(st, {"slot": 2})
+        r_busy = st.sent[-1]
+        m.seq.state = "IDLE"
+        m.flying[2] = {"phase": "mission"}
+        m.worker = {"links": {"2": {"present": False}}, "drones": {"2": {"armed": True, "hb_age": 0.2}}}
+        m.worker_t = time.time()
+        m.register_msg(st, {"slot": 2})
+        r_fly = st.sent[-1]
+        m.unregister_msg(st, {"slot": 2})
+        u_fly = st.sent[-1]
+        m4 = (not r_busy["ok"] and "launch" in r_busy["text"] and not r_fly["ok"] and "flying" in r_fly["text"] and
+              not u_fly["ok"] and "flying" in u_fly["text"])
+        # M2: a WARNING alarm in the SECOND word (TELEM2 group L) blocks a launch
+        class GW2:
+            telem2 = {"alarm_bits2": 0x20, "relay_ok": True}          # SB_ALM2_CAN_NODE: not an advisory
+
+            def telem_fresh(self):
+                return {"mode": 0, "mode_name": "STANDBY", "pos_source": 1, "est_lat": 37.8, "est_lon": 23.6,
+                        "est_sog": 0.0, "alarm_bits": 0, "alarm_bits2": 0}
+            stations = type("S", (), {"hatch_relay_ok": lambda _s, n: (True, ""),
+                                      "helm_station": lambda _s: (_St(1), ""), "captain": lambda _s: None})()
+        b2 = uavlink.boat_state(GW2(), 8)
+        m2 = any("WARNING" in w for w in b2["launch_why"])
+        # L1: no FAULT latched before the first switch reading
+        sw = hatch.SerialSwitches("")
+        hh = hatch.Hatch(10.0, 10.0)
+        st0 = hh.update(0.0, sw.read())
+        st1 = hh.update(6.0, sw.read())
+        l1 = st0 == "UNKNOWN" and st1 == "FAULT"
+        report("UA28 U3 review fixes: H1 a malformed airspace file (list / number / true / bad zones / broken JSON) "
+               "never raises, every route refused, a disabled magazine builds nothing that can fail; M1 a STOP while "
+               "the ARM is on its way = the ARM cancelled + DISARM, reported from its result; M5 a command / relay "
+               "answer that never comes, the router offline = stop (CLOSING never stuck); M4 no (un)registration "
+               "while a launch runs / the drone flies; M2 the second alarm word counts; L1 no FAULT before the first "
+               "switch reading",
+               h1 and m1 and m5 and m4 and m2 and l1,
+               "H1 %s / manager %s; M1 %s (sent %s, cancels %s, notices %s); M5 cmd %s / router %s / closing %s; M4 "
+               "%s / %s / %s; M2 %s; L1 %s -> %s" % (
+                   bad, h1_mgr, m1, s1, cancels, io.notices[-2:], seq2.why, seq3.why, seq4.why, r_busy.get("text"),
+                   r_fly.get("text"), u_fly.get("text"), b2["launch_why"], st0, st1))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ua29_review_router():
+    """U3 review M1 / M6 in the router process + the simulated drone: one command job per slot (an older one is
+    answered "replaced"), a "cancel" answers the pending ARM, MISSION_START's first item is IGNORED by a drone already
+    in AUTO (like ArduPilot) and MISSION_SET_CURRENT picks it; the manager's in-flight route change uses it."""
+    from uav import manager as mgr, mission
+    base = free_base()
+    fl = simdrone.Fleet(base, 1, ttf=(2.0, 1.0, 0.5), origin=(37.82, 23.60)).start()
+    w = Worker()
+    try:
+        w.send({"op": "config", "slots": [{"slot": 1, "usb": "udp:127.0.0.1:%d" % (base + 1),
+                                           "elrs": "udp:127.0.0.1:%d" % (base + 11), "sysid": 11}]})
+        w.find(lambda e: e.get("ev") == "status" and e["links"].get("1", {}).get("present"), 8)
+        seq = [500]
+
+        def send(**kw):
+            seq[0] += 1
+            w.send(dict(kw, id=seq[0]))
+            return seq[0]
+
+        def answer(i, t=10):
+            return w.find(lambda e: e.get("id") == i and e.get("ev") in ("cmd", "mission"), t)
+        # two commands for one slot: the first answered "replaced" at once
+        d0 = fl.drones[0]
+        old_ack = d0.ack
+        d0.ack = lambda *a: None                               # the drone answers nothing for a while
+        i1 = send(op="cmd", slot=1, via="usb", command=176, params=[1, 4])
+        i2 = send(op="cmd", slot=1, via="usb", command=176, params=[1, 5])
+        a1 = answer(i1, 4)
+        i3 = send(op="cancel", slot=1, command=176)
+        a2 = answer(i2, 4)
+        d0.ack = old_ack
+        # MISSION_START in AUTO ignores param1; MISSION_SET_CURRENT picks the item
+        items = mission.build([{"lat": 37.8210, "lon": 23.6, "alt": 30.0}, {"lat": 37.8220, "lon": 23.6, "alt": 30.0},
+                               {"lat": 37.8230, "lon": 23.6, "alt": 30.0}], (37.82, 23.60), 30.0, 8.0)
+        up = answer(send(op="mission", slot=1, via="usb", items=items), 15)
+        d0.sky = True
+        until(lambda: d0.fix >= 3, 6)
+        with d0.lock:
+            d0.armed, d0.mode, d0.cur = True, 3, 5
+        answer(send(op="cmd", slot=1, via="elrs", command=300, params=[2, 0]), 5)
+        cur_after_start = d0.cur
+        sc = answer(send(op="set_current", slot=1, via="elrs", seq=4), 5)
+        cur_after_set = until(lambda: d0.cur == 4 and 4, 3)
+        with d0.lock:
+            d0.armed, d0.mode = False, 5
+        # the manager's in-flight change: upload, MISSION_SET_CURRENT, MISSION START
+        g = _G()
+        m = mgr.UavManager({"enabled": True, "slots": [{"usb": "udp:127.0.0.1:1"}] * 6}, g)
+        calls = []
+        m.proc = type("P", (), {"poll": lambda _s: None})()
+        m.worker = {"links": {"1": {"present": False}}, "radio": {"1": {"present": True}},
+                    "drones": {"1": {"armed": True, "hb_age": 0.2, "lat": 37.8205, "lon": 23.6, "rel_alt": 40.0,
+                                     "batt_pct": 90}}}
+        m.worker_t = time.time()
+        m.flying[1] = {"phase": "mission", "home": (37.82, 23.60)}
+        m.boat = lambda: {"pos": (37.82, 23.60), "launch_why": []}
+        m.upload = lambda n, items, via, cb: calls.append("upload") or cb(True, "")
+        m.set_current = lambda n, s, via, cb: calls.append("set_current %d" % s) or cb(0, "")
+        m.cmd = lambda n, via, c, p, cb: calls.append("cmd %d" % c) or cb(0, "")
+        st = _St(3)
+        m.route_msg(st, {"t": "uav_route", "target": 1, "wps": [{"lat": 37.8215, "lon": 23.6005, "alt": 40}]})
+        report("UA29 U3 review M1 / M6 (router + simulated drone): one command job per slot (the older one answered "
+               "'replaced'), a cancel answers the pending command, a drone in AUTO ignores MISSION_START's first item "
+               "(like ArduPilot) and MISSION_SET_CURRENT picks it; the in-flight route change = upload -> "
+               "MISSION_SET_CURRENT -> MISSION START",
+               a1 and a1["result"] is None and "replaced" in a1["why"] and a2 and a2["result"] is None and
+               "cancelled" in a2["why"] and up and up["ok"] and cur_after_start == 5 and sc and sc["result"] == 0 and
+               cur_after_set == 4 and calls == ["upload", "set_current %d" % mission.FLY_FROM, "cmd 300"] and
+               st.sent and st.sent[-1].get("ok"),
+               "replaced %s, cancelled %s, upload %s, cur after START %s, set_current %s -> %s, manager %s %s" % (
+                   a1 and a1.get("why"), a2 and a2.get("why"), up and up.get("ok"), cur_after_start,
+                   sc and sc.get("result"), cur_after_set, calls, st.sent[-1:] if st.sent else None))
+    finally:
+        w.close()
+        fl.stop()
+
+
 def watchdog():
     def fire():
         print("\nSTALLED: test_uav.py still running after %d s - killed" % LIMIT_S, flush=True)
@@ -2321,7 +2546,7 @@ def main():
              ua16_launch, ua17_router_flight,
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
-             ua27_gateway_video]
+             ua27_gateway_video, ua28_review_u3, ua29_review_router]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

@@ -276,9 +276,20 @@ class Router:
         """What allow.check_out may know - from the router's OWN state only (U2 review LOW-3 / LOW-4)."""
         now = now_s() if now is None else now
         d = self.drone(link.slot)
-        return {"port": link.kind, "armed": d.armed(), "landed": d.landed(now),
+        return {"port": link.kind, "armed": d.armed(), "landed": self.on_deck(link.slot, d, now),
                 "hatch_open": bool(self.hatch_open and now - self.hatch_t < HATCH_FRESH_S),
                 "battery_land": bool(self.battery_land.get(link.slot))}
+
+    def on_deck(self, slot, d, now):
+        """landed for allow.py: the drone's own landed state / a fresh relative altitude (U2 review LOW-4); with NO
+        fresh data at all (U3 review M1: stale data must not block a DISARM on deck) the drone on its slot USB cable
+        right now (a fresh HEARTBEAT over the cable) counts as on deck."""
+        if d.landed(now):
+            return True
+        fresh = (d.landed_state is not None and now - d.ext_t < ALT_FRESH_S) or (
+            d.rel_alt is not None and now - d.alt_t < ALT_FRESH_S)
+        lk = self.link(slot, "usb")
+        return not fresh and lk is not None and lk.present(now)
 
     def tx(self, link, name, fields):
         ok, why = allow.check_out(name, fields, self.ctx(link))
@@ -489,7 +500,26 @@ class Router:
             job = CmdJob(c.get("id"), slot, lk, int(c["command"]), p, now)
             if not self.send_cmd(job):
                 return out(dict(res, why="refused by the allow-list"))
+            old = self.cmds.get(slot)
+            if old is not None:                            # U3 review M6: one job per slot - the old one is answered
+                out({"ev": "cmd", "id": old.id, "slot": slot, "command": old.command, "result": None,
+                     "why": "replaced by a newer command"})
             self.cmds[slot] = job
+        elif op == "cancel":
+            # U3 review M1: the launch stopped while this command was on its way: no more re-sends, answered now
+            slot = int(c["slot"])
+            j = self.cmds.get(slot)
+            if j is not None and (c.get("command") is None or int(c["command"]) == j.command):
+                del self.cmds[slot]
+                out({"ev": "cmd", "id": j.id, "slot": slot, "command": j.command, "result": None, "why": "cancelled"})
+        elif op == "set_current":
+            # U3 review M6: a running AUTO ignores MISSION_START's first item - MISSION_SET_CURRENT picks it
+            slot = int(c["slot"])
+            lk = self.pick(slot, c.get("via", "auto"), now)
+            ok = lk is not None and not self.battery_land.get(slot) and self.tx(
+                lk, "MISSION_SET_CURRENT", dict(self.tgt_of(slot), seq=int(c["seq"])))
+            out({"ev": "cmd", "id": c.get("id"), "slot": slot, "command": -1, "result": 0 if ok else None,
+                 "why": "" if ok else "not sent"})
         elif op == "stop":
             raise SystemExit(0)
 

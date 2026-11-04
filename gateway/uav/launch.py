@@ -46,6 +46,8 @@ DEFAULTS = {
     "init_alt_step_m": 5.0,
     "upload_s": 45.0,
     "ask_s": 20.0,                        # the captain's answer (the station's own 10 s question timeout is shorter)
+    "cmd_s": 10.0,                        # U3 review M5: a command / relay answer not back this long = stop
+    "relay_s": 15.0,
 }
 
 
@@ -63,6 +65,7 @@ class Launch:
         self.by = None                    # who prepared (station id)
         self.captain = None               # the station that approved (its loss stops the sequence)
         self.wait = None                  # a request out: "upload" / "cmd" / "relay"
+        self.wait_t = 0.0                 # when it went out (U3 review M5: every wait timed)
         self.cmdq = []
         self.t_arm = None
         self.t_clear = None
@@ -97,17 +100,31 @@ class Launch:
         """Any warning / a station's STOP: no further drone, no ARM; flying drones go on."""
         if not self.busy():
             return False
+        # U3 review M1: an ARM still on its way (its answer not back) may have armed the drone: it is cancelled in the
+        # router and the drone is DISARMED like one armed here; the result is reported, never assumed
+        arm_out = (self.wait == "cmd" and bool(self.cmdq) and self.cmdq[0][1] == allow.CMD_COMPONENT_ARM_DISARM and
+                   self.cmdq[0][2][0] == 1)
         self.gen += 1                      # every answer still on its way is ignored
         was, self.state, self.why = self.state, STOPPED, why
         self.wait, self.cmdq = None, []
-        if self.cur is not None and self.armed_here:
-            d = self.io.slot(self.cur)
+        if self.cur is not None and (self.armed_here or arm_out):
+            n = self.cur
+            if arm_out and hasattr(self.io, "cancel"):
+                self.io.cancel(n, allow.CMD_COMPONENT_ARM_DISARM)
+            d = self.io.slot(n)
             if d.get("landed") or d.get("usb_present"):
-                self.io.cmd(self.cur, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0], lambda r, w: None)
-                self.io.notice("UAV %d disarmed in the hatch (the launch stopped)" % self.cur, "caution")
+                self.io.cmd(n, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0], self._disarm_report(n, "the launch stopped"))
         self.log(now, "STOPPED (%s): %s" % (was, why))
         self.io.notice("UAV launch stopped: %s" % why, "caution")
         return True
+
+    def _disarm_report(self, n, why):
+        def res(result, w):
+            if result == 0:
+                self.io.notice("UAV %d disarmed in the hatch (%s)" % (n, why), "caution")
+            else:
+                self.io.notice("UAV %d: DISARM not confirmed (%s) - check the magazine" % (n, w or result), "caution")
+        return res
 
     def log(self, now, text):
         self.history.append((round(now, 1), text))
@@ -133,10 +150,22 @@ class Launch:
             why = list(boat.get("launch_why") or [])
             if self.captain is not None and not self.io.captain_ok(self.captain):
                 why.append("the captain's station is gone")
+            ro = getattr(self.io, "router_ok", None)
+            if ro is not None and not ro():
+                why.append("UAV router offline")
             if why:
                 return self.stop(why[0], now)
             return self._run(now, boat, hs)
-        # CLOSING
+        # CLOSING (U3 review M5: never stuck - the relay answer and the travel are timed)
+        if self.wait == "relay" and now - self.wait_t > float(self.cfg["relay_s"]):
+            self.gen += 1
+            self.wait, self.state, self.why = None, STOPPED, "HATCH NOT CLOSED: no answer to the relay command - "                                                               "take HELM and close it"
+            self.io.notice(self.why, "caution")
+            return
+        if self.wait is None and self.phase == "close" and hs != "CLOSED" and                 now - self.t_phase > self.io.hatch_open_s() + float(self.cfg["relay_s"]):
+            self.state, self.why = STOPPED, "the hatch did not close"
+            self.io.notice("HATCH NOT CLOSED: the hatch did not close - take HELM and close it", "caution")
+            return
         if self.wait is None and self.phase == "close":
             if hs == "CLOSED":
                 self.state, self.why = DONE, ""
@@ -159,7 +188,7 @@ class Launch:
         self.cur, self.state = None, CLOSING
         self._phase("close", now)
         g = self.gen
-        self.wait = "relay"
+        self.wait, self.wait_t = "relay", now
 
         def done(ok, why):
             if g != self.gen:
@@ -189,6 +218,10 @@ class Launch:
         if self.wait is not None:
             if self.wait == "upload" and now - self.t_phase > float(c["upload_s"]):
                 return self._fail("UAV %d: mission upload timed out" % n, now)
+            if self.wait == "cmd" and now - self.wait_t > float(c["cmd_s"]):
+                return self._fail("UAV %d: no answer to a command" % n, now)
+            if self.wait == "relay" and now - self.wait_t > float(c["relay_s"]):
+                return self._fail("HATCH NOT OPENED: no answer to the relay command", now)
             return
         d = self.io.slot(n)
         ph = self.phase
@@ -223,7 +256,7 @@ class Launch:
                 self._phase("GPS", now)
                 return
             if not self.io.hatch_commanded_open():
-                self.wait = "relay"
+                self.wait, self.wait_t = "relay", now
                 wrap = self._cb()
 
                 def rel(ok, why):
@@ -263,7 +296,7 @@ class Launch:
                 self._phase("CLIMB", now)
                 return
             label, cmd, params = self.cmdq[0]
-            self.wait = "cmd"
+            self.wait, self.wait_t = "cmd", now
             wrap = self._cb()
 
             def ack(result, why):
@@ -286,10 +319,10 @@ class Launch:
                 self._phase("CLEAR", now)
             elif now - self.t_arm > float(c["no_climb_s"]) and (not fresh or alt < 1.0):
                 self.keep_open = True
-                self.io.cmd(n, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0], lambda r, w: None)
+                self.io.cmd(n, "auto", allow.CMD_COMPONENT_ARM_DISARM, [0, 0], self._disarm_report(n, "it did not climb"))
                 self.armed_here = False
-                self.io.notice("UAV %d did not leave the hatch - DISARMED; check before closing (HATCH CLOSE = "
-                               "the captain's button)" % n, "caution")
+                self.io.notice("UAV %d did not leave the hatch - check before closing (HATCH CLOSE = the captain's "
+                               "button)" % n, "caution")
                 return self._fail("UAV %d did not leave the hatch" % n, now)
             elif now - self.t_arm > float(c["clear_s"]):
                 return self._fail("UAV %d did not reach %.0f m in %.0f s" % (n, float(c["clear_alt_m"]),
@@ -303,7 +336,7 @@ class Launch:
             if self.fallback:
                 self.io.catchup(n)
                 return self._done_drone(now)
-            self.wait = "cmd"
+            self.wait, self.wait_t = "cmd", now
             wrap = self._cb()
 
             def go(result, why):

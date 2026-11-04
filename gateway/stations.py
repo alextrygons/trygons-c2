@@ -513,6 +513,14 @@ class StationServer:
             # the UAV hatch relay (CLAUDE.md V): switched ONLY by the gateway's launch sequence / the captain's
             # HATCH CLOSE (uav_hatch_close) - never a station's relay command
             return self.refuse(st, seq, ftype, 125, ": the UAV hatch relay is switched by the launch sequence only")
+        if ftype == proto.T_RELAY_CFG and hatch:
+            # U3 review L5: a table that would switch the hatch relay ON at the AURIX's power-up (= open the hatch by
+            # itself) or makes it anything but an extra on/off relay without a pair is refused
+            import relaytab
+            d = relaytab.details_of(bytes(payload)).get(hatch)
+            if d is not None and (d["power_up"] != "off" or d["group"] != "extra" or d["type"] != "onoff" or d["pair"]):
+                return self.refuse(st, seq, ftype, 125, ": the UAV hatch relay must be an extra on/off relay, "
+                                                        "power_up off, no pair")
         if self.prog_check and ftype in PROG_CHECK_TYPES:
             why = self.prog_check(st, ftype, payload)
             if why:
@@ -575,9 +583,15 @@ class StationServer:
         st, why = self.helm_station()
         if st is None:
             return done(None, why)
+        aur = getattr(self.gw, "aurix", None)
+        if aur is not None and not getattr(aur, "connected", True):     # U3 review M5
+            return done(None, "no link to the AURIX")
         self.gw.audit("uav_hatch_relay", relay=n, on=bool(on), helm=st.id)
         self._forward(st, None, proto.T_RELAY, proto.p_relay(n, proto.RELAY_CMD_ON if on else proto.RELAY_CMD_OFF),
-                      0.0, env=st, done=lambda r: done(r, proto.RESULTS.get(r, "error %d" % r)))
+                      0.0, env=st, done=lambda r: done(r, "no answer from the AURIX" if r is None else
+                                                      proto.RESULTS.get(r, "error %d" % r)))
+        if self.gw_seq in self.pending:                 # timed: tick() answers it after UAV_RELAY_S
+            self.pending[self.gw_seq] = self.pending[self.gw_seq] + ("uav",)
 
     def hatch_relay_ok(self, n):
         """(ok, why): relay n is in the table ACTIVE on the AURIX as an extra onoff relay, power_up off, no pair."""
@@ -892,9 +906,19 @@ class StationServer:
         return "%s (%s, %s)" % (st.name, st.user, "local" if st.local else "remote") if st else "station %d" % helm
 
     # --- every second ------------------------------------------------------------------
+    UAV_RELAY_S = 5.0
+
     def tick(self):
         now = time.time()
         self._check_asks()
+        # U3 review M5: a hatch relay command the AURIX never answered = answered "no answer" (never a wait for ever)
+        for k, p in list(self.pending.items()):
+            if len(p) > 7 and p[7] == "uav" and now - p[3] > self.UAV_RELAY_S:
+                del self.pending[k]
+                try:
+                    p[6](None)
+                except Exception:
+                    log.exception("uav relay timeout")
         saver = self.gw.data_saver() if hasattr(self.gw, "data_saver") else False
         self.ping_id += 1
         for st in list(self.stations.values()):

@@ -153,7 +153,11 @@ class Gateway:
             self.rec.cams["AUDIO"] = self.hail.track    # both directions into the ring + every SAVE / KEEP event
         # UAV magazine (CLAUDE.md V, step U2): registry + slot USB checks + GPS warm start; its router = its own
         # process; a notice only, never the AURIX
-        self.uav = UavManager(cfg.get("uav"), self)
+        try:
+            self.uav = UavManager(cfg.get("uav"), self)
+        except Exception:                               # U3 review H1: the UAV part never stops the gateway
+            log.exception("uav: the magazine could not be set up - switched off")
+            self.uav = UavManager({"enabled": False}, self)
         self.stations.ext["uav_register"] = self.uav.register_msg
         # U3: routes -> missions, the launch sequence (the captain's YES / NO), STOP, the captain's HATCH CLOSE
         for k, fn in (("uav_route", self.uav.route_msg), ("uav_launch_prepare", self.uav.prepare_msg),

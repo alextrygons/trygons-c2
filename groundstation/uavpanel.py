@@ -206,8 +206,11 @@ class Page:
         if not self.connected():
             return self.say(T("uav.not_connected"), False)
         msg = {"t": "uav_launch_prepare"}
-        if getattr(self.app, "single_op", False):
-            msg["confirm"] = "self"            # a single operator answers his own question (the gateway checks)
+        if getattr(self.app, "single_op", False) and hasattr(self.app, "captain_confirm"):
+            # U3 review M3: a single operator answers his OWN YES / NO first, like every other single-operator path;
+            # only then "confirm": "self" goes to the gateway (which checks again)
+            msg["confirm"] = "self"
+            return self.app.captain_confirm(T("uav.prepare"), lambda: self.app.link.send_msg(msg))
         self.app.link.send_msg(msg)
 
     def stop(self):

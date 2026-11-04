@@ -2072,3 +2072,23 @@ gw.uav_v_saver = DATA SAVER: no UAV video
 gw.uav_v_reduced = VIDEO REDUCED FOR THE CAPTAIN: UAV video off
 gw.uav_landing_busy = battery minimum: the drone is landing
 gw.uav_no_log = no such flight log
+
+# --- U3 review fixes ---
+gw.uav_flying = UAV {n} is flying
+gw.uav_r_off = UAV router offline
+gw.uav_no_ans = UAV {n}: no answer to a command
+gw.uav_h_open_noans = HATCH NOT OPENED: no answer to the relay command
+gw.uav_h_noclose = the hatch did not close
+gw.uav_relay_noans = no answer to the relay command
+gw.uav_disarmed = UAV {n} disarmed in the hatch ({why})
+gw.uav_disarm_no = UAV {n}: DISARM not confirmed ({why}) - check the magazine
+gw.uav_left = UAV {n} did not leave the hatch - check before closing (HATCH CLOSE = the captain's button)
+gw.uav_why_stop = the launch stopped
+gw.uav_why_noclimb = it did not climb
+gw.uav_r_restart = the UAV router restarted
+gw.uav_no_aurix_ans = no answer from the AURIX
+gw.uav_no_aurix = no link to the AURIX
+gw.uav_air_files = airspace files: {why}
+gw.uav_not_obj = not a JSON object
+
+gw.uav_hatch_cfg = the UAV hatch relay must be an extra on/off relay, power_up off, no pair

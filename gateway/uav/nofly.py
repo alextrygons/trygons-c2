@@ -53,7 +53,11 @@ def _zone(z, i):
 
 
 def parse_zones(d):
-    zs = (d or {}).get("zones", [])
+    if d is None:
+        return []
+    if not isinstance(d, dict):                        # U3 review H1: a list / number / true is no zone file
+        raise ValueError("not a JSON object")
+    zs = d.get("zones", [])
     if not isinstance(zs, list):
         raise ValueError("zones must be a list")
     return [_zone(z, i) for i, z in enumerate(zs)]
@@ -105,6 +109,15 @@ class Airspace:
         return os.path.join(self.folder, "uav_nofly.json"), os.path.join(self.folder, "uav_geofence.json")
 
     def reload(self):
+        """Never raises (U3 review H1: it runs in Gateway.__init__ and in a helper thread - a crash there would stop
+        the gateway / the checks would fail OPEN): any problem = self.error = every route refused."""
+        try:
+            self._reload()
+        except Exception as e:
+            self.zones, self.fence = [], []
+            self.error = "airspace files: %s" % (str(e)[:80] or type(e).__name__)
+
+    def _reload(self):
         pz, pf = self._paths()
         if pz is None:
             return
@@ -118,16 +131,20 @@ class Airspace:
             try:
                 with open(pz, encoding="utf-8") as f:
                     zones = parse_zones(json.load(f))
-            except (OSError, ValueError, TypeError, IndexError) as e:
-                err.append("uav_nofly.json: %s" % str(e)[:80])
+            except Exception as e:                      # U3 review H1: never raise (a broken file = routes refused)
+                err.append("uav_nofly.json: %s" % (str(e)[:80] or type(e).__name__))
+                zones = []
         if mt[1] is not None:
             try:
                 with open(pf, encoding="utf-8") as f:
-                    ok, why, fence = geofence.valid(json.load(f).get("poly"))
+                    d = json.load(f)
+                if not isinstance(d, dict):
+                    raise ValueError("not a JSON object")
+                ok, why, fence = geofence.valid(d.get("poly"))
                 if not ok:
                     raise ValueError(why)
-            except (OSError, ValueError, TypeError, AttributeError) as e:
-                err.append("uav_geofence.json: %s" % str(e)[:80])
+            except Exception as e:                      # U3 review H1: never raise
+                err.append("uav_geofence.json: %s" % (str(e)[:80] or type(e).__name__))
                 fence = []
         self.zones, self.fence, self.error = zones, fence, "; ".join(err)
 

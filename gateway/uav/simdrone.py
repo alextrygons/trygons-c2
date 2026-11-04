@@ -286,8 +286,9 @@ class Drone:
                 self.ack(link, cmd, 4)
         elif cmd == 300:                                     # MISSION_START
             if self.mission and self.armed and self.fix >= 3:
+                if self.mode != M_AUTO:                      # ArduPilot: param1 is ignored while AUTO already runs
+                    self.cur = max(1, int(p[0]))             # (U3 review M6) - seq 0 = HOME: never flown
                 self.set_mode(M_AUTO)
-                self.cur = max(1, int(p[0]))                 # seq 0 = HOME: never flown (ArduPilot)
                 self.ack(link, cmd, 0)
             else:
                 self.ack(link, cmd, 4)

@@ -33,7 +33,8 @@ class SerialSwitches:
     def __init__(self, spec, poll_s=0.05):
         self.spec, self.poll_s = spec, poll_s
         self.lock = threading.Lock()
-        self.val = (False, False, False, "not opened")
+        self.val = None                    # U3 review L1: nothing read yet (no FAULT latched at the boot)
+        self.val_t = 0.0                   # when the thread last set val (stale readings = not ok)
         self.raw, self.raw_t = None, 0.0
         self.stop_ev = threading.Event()
         self.th = None
@@ -55,6 +56,7 @@ class SerialSwitches:
                 except Exception as e:                      # not plugged in: "not ok" = FAULT, retried
                     with self.lock:
                         self.val = (False, False, False, "hatch switch cable: %s" % str(e)[:60])
+                        self.val_t = time.monotonic()
                     self.stop_ev.wait(1.0)
                     continue
             try:
@@ -62,6 +64,7 @@ class SerialSwitches:
             except Exception as e:
                 with self.lock:
                     self.val = (False, False, False, "hatch switch cable: %s" % str(e)[:60])
+                    self.val_t = time.monotonic()
                 try:
                     ser.close()
                 except Exception:
@@ -74,8 +77,9 @@ class SerialSwitches:
             with self.lock:
                 if now - self.raw_t >= DEBOUNCE_S:
                     self.val = (raw[0], raw[1], True, "")
-                elif not self.val[2]:
-                    self.val = (False, False, True, "")
+                    self.val_t = now
+                elif self.val is not None and self.val[2]:
+                    self.val_t = now                # (bouncing: the last stable value stays, still fresh)
             self.stop_ev.wait(self.poll_s)
         if ser is not None:
             try:
@@ -84,7 +88,12 @@ class SerialSwitches:
                 pass
 
     def read(self, now=None):
+        """(open, closed, ok, why); ok None = not read yet (the first reading is on its way)."""
         with self.lock:
+            if self.val is None:
+                return (False, False, None, "the hatch switches are not read yet")
+            if time.monotonic() - self.val_t > 1.0:
+                return (False, False, False, "the hatch switch readings are stale")
             return self.val
 
     def stop(self):
@@ -118,6 +127,12 @@ class Hatch:
         self.sw = sw
         op, cl, ok, why = sw
         if self.state == FAULT:
+            return self.state
+        if ok is None:                                 # not read yet (U3 review L1): UNKNOWN, a FAULT only if it stays
+            if now - self.t0 > 5.0:
+                self.fault(why or "the hatch switches are not read")
+            else:
+                self.state = UNKNOWN
             return self.state
         if not ok:
             self.fault(why or "hatch switch cable unplugged")

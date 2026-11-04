@@ -234,8 +234,19 @@ def uv5(rig):
         pg.b_close.invoke()
         rows = [lb["details"].cget("text") for lb, _b in pg.rows]
         sent = list(fa.link.sent)
+        # U3 review M3: a single operator answers his OWN YES / NO first (captain_confirm), only then the request
+        fa.single_op, asked = True, []
+        fa.captain_confirm = lambda what, on_yes: asked.append((what, on_yes))
+        fa.link.sent.clear()
+        pg.update(u3_status())
+        pg.b_prep.invoke()
+        so_before = list(fa.link.sent)
+        if asked:
+            asked[0][1]()
+        so_after = list(fa.link.sent)
     finally:
         top.destroy()
+    so_ok = (len(asked) == 1 and so_before == [] and so_after == [{"t": "uav_launch_prepare", "confirm": "self"}])
     report("UV5 the launch on the «ΜΑΓΓΕΜΑ UAV» page: hatch state + sequence + the gateway's notices in Greek; PREPARE "
            "LAUNCH only idle with the hatch CLOSED / OPEN, STOP only while it runs, HATCH CLOSE after a stop with the "
            "hatch open; they send ONLY uav_launch_prepare / uav_launch_stop / uav_hatch_close (the gateway asks the "
@@ -246,8 +257,8 @@ def uv5(rig):
            "ΣΤΑΜΑΤΗΣΕ" in opened["seq"] and "σταμάτησε" in idle["notices"][0] and not eng and
            b_idle == ("normal", "disabled", "disabled") and b_run == ("disabled", "normal", "disabled") and
            sent == [{"t": "uav_launch_prepare"}, {"t": "uav_launch_stop"}, {"t": "uav_hatch_close"}] and
-           "αποστολή φορτωμένη" in rows[0] and "εκτελεί" in rows[4],
-           "idle %s; run %s; fault %s; stopped open %s; English %s; buttons %s / %s; sent %s; rows %s" % (
+           "αποστολή φορτωμένη" in rows[0] and "εκτελεί" in rows[4] and so_ok,
+           "single operator %s; idle %s; run %s; fault %s; stopped open %s; English %s; buttons %s / %s; sent %s; rows %s" % (so_ok, 
                idle, run["seq"], fault["hatch"], opened["can_close"], eng, b_idle, b_run, sent, rows[0][-40:]))
 
 
