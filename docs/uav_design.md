@@ -1,0 +1,395 @@
+# UAV magazine - design (step U1, 2026-11-04)
+
+Source of truth for the rules: CLAUDE.md section V "UAV magazine". This file holds the architecture,
+the choices and their reasons, the failure analysis and the open questions. Owner spec:
+docs/owner_findings_2026-10-31.md section H (owner 2026-11-04). Steps U2-U6: PROGRESS.md.
+
+Everything marked TO CONFIRM is not known and is never guessed in code: the code uses the default named
+here and the owner confirms it (PROGRESS.md "WAITING FOR OWNER" W56-W67).
+
+## 0. Scope (binding)
+
+- Camera / observation drones ONLY: launch, flight, observation, video, telemetry, landing.
+- NO payload carriage, NO release mechanism, NO target / strike function - not in code, UI, docs, tests,
+  content or the academy. Nothing in this design adds an output, a command or a screen element for one.
+  How this is enforced (not only promised): section 4.3 (the MAVLink ALLOW-list: only listed messages /
+  commands pass, the list holds no actuator / servo / relay / mount command) and section 3.2 (registration
+  refuses a drone with any configured output other than its 4 motors).
+- The boat: NO AURIX change. The ONLY thing the UAV function does on the boat is the hatch relay, through
+  the EXISTING relay table (an "extra" group on / off relay, step 6 / 11f rules unchanged, storm I36 keeps
+  passing). No new AURIX frame, no TELEM2 field (TELEM2 is FULL anyway), no alarm bit, no mode, no navreq,
+  no speed cap, no joystick change on the AURIX.
+- Not in this task: the UAV as an RF relay for the boat's link (later); charging (only the battery state
+  is shown).
+
+## 1. Owner's setup (spec H)
+
+Six small 7" ArduPilot quads, STACKED inside the USV under a hatch: slot 1 = the top = the next one out.
+Launch strictly in series, slot 1 first. One-way: they can NOT land on the USV. Each slot has a USB-C data
+cable to the gateway PC (through a powered hub). Each drone: an analog 5.8 GHz VTX (a fixed channel per
+slot) and an ELRS receiver bound 1:1 to an ELRS TX module on the boat.
+
+## 2. Architecture
+
+```
+ shore station(s)                      gateway PC (on the boat)                          drones
+ ---------------                       ------------------------                          ------
+ screen 2: magazine panel,     JSON    gateway.py (asyncio)                     USB-C   slot 1..6 (in the
+ UAV list, map symbols /   <-------->    uav/manager.py  (state, roles,  <-------------  magazine): register,
+ tracks, Send route target,  (existing    pilot lock, checks, launch)    hub            GPS warm start
+ right-click "send UAV here"  station     uav/hatch.py (relay + switches)
+ screen 1 / camera view:      link)          |  T_RELAY (HELM station's
+ UAV video + green UAV HUD                   |  behalf, extras group)  ---> AURIX relay table (unchanged)
+ shore stick -> UAV setpoints                |
+                                           uav/router_worker.py  (OWN process)    ELRS TX 1..6    ELRS RX
+                                             MAVLink 2 router, one sysid / drone  (UART, MAVLink) ~~~~~~~ (MAVLink)
+                                             ALLOW-list, signing, rates
+                                           uav/video_worker.py (OWN process)      VRX 1..6 +      analog VTX
+                                             capture -> ring -> MediaMTX UAV-1..6 USB capture <~~~~~~
+                                           vision/ (existing worker): UAV feeds at low priority
+```
+
+- Gateway side, new package gateway/uav/ (inside gateway/ = already excluded from the ADS build; no new
+  top-level folder). The time-critical / blocking parts run in their OWN processes like the loudhailer
+  (13r) and vision: router_worker.py (serial ports of the 6 ELRS TX modules + the 6 slot USB ports) and
+  video_worker.py (capture + encode). A crash = a notice + restart; the drones are never left in a mode
+  that needs the gateway to stay safe (section 6: they hold / follow their mission on their own).
+- Nothing in gateway/uav/ imports gateway/aurix.py or sends a frame to the AURIX itself. The hatch relay
+  command goes through the SAME path as a station's relay button (stations.py forwards T_RELAY on the HELM
+  station's behalf; the AURIX checks HELM, the relay table, FIRST TEST as always). A test proves it
+  (U3: test_uav UA-import, like academy AC1).
+- Station side: groundstation/uavpanel.py (the «ΜΑΓΓΕΜΑ UAV» panel: 6 slots), uavmap.py (symbols, routes,
+  tracks), uavhud.py (green UAV HUD), uavfly.py (shore stick -> setpoints), uavpics.py (the pictures).
+  DISPLAY + requests only; the gateway checks every request again.
+
+## 3. Registry / magazine (H1, step U2)
+
+### 3.1 Slots and identity
+- A slot = a fixed USB port path on the hub (osdep.py resolves it, like the serial names: Linux
+  /dev/serial/by-path, Windows the hub port location). The slot number is NEVER taken from the drone.
+- Registry file on the gateway: state/uav_registry.json (sysid, FC serial number / board UID, name, VTX
+  channel, ELRS binding = which TX module, firmware version, last check). Changed only by "Register" in
+  STANDBY of the launch sequence (no launch running), copilot or captain.
+- "Register" (per slot) reads over USB: HEARTBEAT, AUTOPILOT_VERSION (firmware, UID), the parameters of 3.2,
+  SYS_STATUS / BATTERY_STATUS, GPS_RAW_INT, EKF_STATUS_REPORT, the pre-arm state (STATUSTEXT). A duplicate
+  sysid, an unknown UID in a registered slot, a failed check = NOT launchable (shown red with the reason).
+- Unregistered / failing = never launched (the launch sequencer re-checks every drone right before its own
+  launch, section 5).
+
+### 3.2 Parameter check (read only, the gateway NEVER writes a parameter)
+The owner sets the drones with Mission Planner; registration only reads and refuses a mismatch (TO CONFIRM
+against the drones' ArduPilot version in SITL / on the bench - W60):
+- radio failsafe off (FS_THR_ENABLE 0: the ELRS RC channels are not a control path), GCS failsafe off
+  (FS_GCS_ENABLE 0), EKF failsafe = AltHold (FS_EKF_ACTION 2, never Land), dead-reckoning failsafe off
+  (FS_DR_ENABLE 0), fence action = report only (FENCE_ACTION 0: the gateway decides, section 6),
+  battery low action = warn only (BATT_FS_LOW_ACT 0), battery critical action = Land at a fixed backstop
+  value (BATT_FS_CRT_ACT 1 + BATT_CRT_VOLT / BATT_CRT_MAH: the last line of defence when the gateway is
+  gone). RTL / SmartRTL are never a failsafe action (the "home" is the launch point at sea: it would fly
+  there and land in the water).
+- Outputs: ONLY the 4 motors configured (every other SERVOn_FUNCTION disabled); anything else = refused.
+  (Whether a camera tilt output should be allowed: W60.)
+- MAVLink 2 signing key present (set by the owner with Mission Planner; the gateway keeps the same key in
+  secrets.json "uav_keys") - W64.
+
+### 3.3 Pictures
+- The OWNER'S UAV PICTURE: assets/uav.png (copied in U1 from the owner's file, 1024 x 1024 transparent)
+  + small sizes made by a tool like tools/make_icon.py (U2: tools/make_uav_icons.py -> assets/uav_16 /
+  24 / 32 / 48 / 64.png, committed). Used wherever a vehicle is chosen or shown: the "Send route" target
+  box, the map right-click menu, the magazine panel, the UAV list, the map symbol (turned with the drone's
+  heading).
+- The USV picture: there is NO boat picture in assets/ yet -> a simple drawn placeholder (theme colours)
+  until the owner gives one (W65).
+
+## 4. Telemetry, router, MAVLink (H5, steps U2 / U4)
+
+### 4.1 Link
+- One ELRS TX module per drone on the boat (1:1, up to 6), each on its own USB-UART (3.3 V TTL) of the
+  gateway, ELRS 3.x MAVLink mode. ELRS is low bandwidth (a few kbit/s per link, TO CONFIRM by packet rate):
+  telemetry at reduced stream rates (position / attitude 2-5 Hz, battery / EKF / GPS 1 Hz), mission
+  upload, mode / guided commands, manual velocity setpoints at 10 Hz. NEVER raw RC (W59 / 6.3).
+- The RC channels ELRS still carries are fixed neutral values from the gateway and ignored by the drone
+  (radio failsafe off, 3.2). Behaviour of ELRS MAVLink mode without a handset: TO CONFIRM (bench).
+- The shore never speaks MAVLink: stations send JSON requests (section 9) over the existing station link;
+  the gateway turns them into MAVLink and sends UAV state to the stations in gw_status "uav" (1 Hz) +
+  a "uav_telem" message (2-5 Hz, only the drones a station shows).
+
+### 4.2 Router (gateway/uav/router_worker.py, OWN process)
+- One sysid per drone (the registry), the gateway = its own GCS sysid / component. A frame from a sysid not
+  in the registry, or on the wrong port, is dropped + counted (a drone is bound to its slot / TX module).
+- Talks to the gateway process over a local pipe (JSON lines); reconnects serial ports by their stable
+  names; never blocks the gateway's event loop.
+- MAVLink codec: an OWN minimal MAVLink 2 encoder / decoder for the allow-listed messages only (no new
+  dependency; CRC_EXTRA values from the official XML, checked by tests like dronecan_check.py) - pymavlink
+  (LGPL-3.0) only as an optional cross-check in a test when installed (W64).
+
+### 4.3 ALLOW-list (the code-level scope guard)
+Only these pass in either direction; everything else is dropped and counted (router stats "denied"):
+- from the drones: HEARTBEAT, SYS_STATUS, BATTERY_STATUS, GLOBAL_POSITION_INT, ATTITUDE, VFR_HUD,
+  GPS_RAW_INT, EKF_STATUS_REPORT, STATUSTEXT, HOME_POSITION, MISSION_CURRENT, MISSION_ITEM_REACHED,
+  MISSION_REQUEST_INT, MISSION_ACK, COMMAND_ACK, PARAM_VALUE, AUTOPILOT_VERSION, TIMESYNC, SYSTEM_TIME,
+  RADIO_STATUS.
+- to the drones: HEARTBEAT, MISSION_COUNT / MISSION_ITEM_INT / MISSION_CLEAR_ALL / MISSION_SET_CURRENT,
+  PARAM_REQUEST_READ / PARAM_REQUEST_LIST (read only - never PARAM_SET), SET_POSITION_TARGET_LOCAL_NED
+  (velocity + yaw rate fields only, body frame), TIMESYNC, SYSTEM_TIME, GPS injection (GPS_RTCM_DATA /
+  GPS_INJECT_DATA, ONLY on the slot's USB port and only before ARM), and COMMAND_LONG / COMMAND_INT with
+  ONLY these commands: arm / disarm (disarm only on the ground or in the slot), set mode (GUIDED, AUTO,
+  LOITER, ALT_HOLD, BRAKE - never RTL / SmartRTL), takeoff, mission start, change speed, land (ONLY from
+  the battery rule, 6.2), set message interval / request message.
+- The list is one table in gateway/uav/allow.py; the test (U2) checks every other message id / command id
+  is dropped, and greps that no other module builds MAVLink frames (like servo.c / relays.c writer checks).
+
+## 5. Routes, missions, launch (H2, H3, step U3)
+
+### 5.1 Route -> mission
+- The station's "Send route" gets a target choice (vertical box with the pictures): ΣΚΑΦΟΣ / ΕΠΟΜΕΝΟ UAV
+  (θέση 1) / a specific UAV (a flying one = its mission changed in flight). Map right click: «Πήγαινε εδώ»
+  (BOAT: a 2-point route from the current position -> the normal prog_upload + every AUTO rule, nothing
+  new on the boat side) and «Αποστολή UAV εδώ» (the next / a chosen UAV).
+- The mission (gateway/uav/mission.py): TAKEOFF to the drone's initial altitude, then NAV_WAYPOINT per
+  route point with its own ALTITUDE (default uav_wp_alt_m 50 m, editable per point), DO_CHANGE_SPEED
+  capped at uav_max_speed_ms, and at the end LOITER_UNLIM over the last point (hover until a new route or
+  the battery minimum). Frame = relative altitude to the launch point (home = the boat's position at
+  launch, sea level + deck height).
+- In flight: a new mission is uploaded and started from item 1 (the drone hovers in GUIDED / BRAKE while
+  it uploads; a refused upload leaves the old mission running).
+
+### 5.2 UAV route checks (gateway/uav/uavcheck.py; NOT shallow water)
+Refused with a code (section 9) and the reason:
+- energy: the route length + climb at the drone's measured consumption (registry: hover / cruise current
+  from the last flights, conservative default until known) + the LANDING RESERVE + a wind margin must fit
+  the battery now (in flight: the battery left);
+- distance from the boat <= uav_rf_range_m (ELRS + VTX range, default 1500 m TO CONFIRM: EU 25 mW analog
+  video) - from the boat's position at launch and its current position; while flying, a notice when the
+  boat's own movement takes a drone towards the range limit;
+- altitude <= uav_max_alt_m (120 m default, by the authorisation - W66);
+- air no-fly zones (gateway state/uav_nofly.json: polygons / circles with an altitude band, a name and a
+  source; a hand-made file, like the charts, "not authoritative") and the AIR geofence (state/
+  uav_geofence.json, the same polygon rules as geofence.py, separate from the boat's);
+- start = the boat's position at launch (trusted GPS; no trusted boat GPS = no launch).
+- UAV routes / tracks are drawn in their own style (dashed, the UAV colour, the drone's name) - never
+  mixed with the boat's route / track.
+
+### 5.3 Launch sequence (gateway/uav/launch.py: a state machine, one step per tick, every wait timed)
+Conditions to START (checked again before EACH drone): the boat in STANDBY, or slower than
+uav_launch_max_kn (2 kn, TO CONFIRM) in a mode that keeps it slow; fresh telemetry; trusted boat GPS;
+relay board OK + the hatch relay in the ACTIVE table; hatch switches healthy; no boat WARNING alarm;
+the drone registered + checked + a mission loaded. The COPILOT (or captain) prepares (registry, routes,
+"PREPARE LAUNCH"); the CAPTAIN approves it on screen 1 (the 13p vertical YES / NO box, trigger = YES);
+a single operator answers his own question. A copilot can never launch alone.
+
+Per drone (slot n, n = the top one still in the magazine):
+1. health check (registry + live pre-arm, battery, EKF, sensors);
+2. mission upload + read back (count + items);
+3. hatch OPEN (first drone only): relay ON, wait for the OPEN switch within hatch_open_s (TO CONFIRM);
+4. GPS ready (4.4 / section 7): good fix + EKF position within uav_gps_wait_s (5 s); else, ONLY with the
+   boat in STANDBY, the fallback "climb, then catch up";
+5. ARM (only with the hatch FULLY OPEN by its switch);
+6. vertical climb (TAKEOFF / AUTO) to its initial altitude (slot-staggered, default 30 + 5 m x (n-1));
+7. "clear of the boat": relative altitude >= uav_clear_alt_m (10 m) AND climbing as commanded within
+   uav_clear_s; then the slot's USB is gone (the breakaway cable, W58);
+8. the next drone after uav_gap_s (15 s) at least.
+After the last one (or a stop with no drone still in the hatch): hatch CLOSE (relay OFF), CLOSED switch
+within hatch_close_s.
+
+ANY warning stops the sequence (drones already in the air go on with their missions): a failed check,
+the hatch fault, the boat leaving STANDBY / speeding up, boat link / telemetry stale, a boat WARNING
+alarm, relay board silent, the captain's or copilot's STOP, the station of the captain lost. A drone that
+armed but did not climb (motor / prop fault in the hatch) = DISARM at once (it is on the ground), the
+sequence stops, the hatch stays OPEN (closing on a drone is worse) + notice "UAV n did not leave the
+hatch - check before closing", the close is then the captain's own button.
+
+### 5.4 Hatch + limit switches (gateway/uav/hatch.py)
+- Relay: ONE on / off relay (ON = open) in the EXISTING boat-file relay table, group "extra", type
+  "onoff", power_up "off", show_hud false; the boat file names it: "uav": {"hatch_relay": n, ...}
+  (boats.py validates: an extras onoff relay, not in a pair). The station's relay panel shows it as a LAMP
+  only; the gateway refuses a T_RELAY for the hatch relay from any station (code 125) - only the launch
+  sequencer (and the captain's own HATCH CLOSE after a stop) sends it, on the HELM station's behalf. The
+  AURIX can't tell (R7) and doesn't need to: the hatch never touches driving.
+- Channel count: the boats already use relays 1-7; the DroneCAN relay board has 6 channels (TO CONFIRM),
+  so the hatch needs relay 8 on a board with >= 8 channels (the Modbus option) or a bigger DroneCAN board
+  (W57).
+- Limit switches: CHOICE = read by the GATEWAY, through the modem-status inputs of a 3.3 V FTDI USB-UART
+  cable (the same type as the AURIX adapter, W17): CTS = OPEN switch, DSR = CLOSED switch, each switch
+  closes to GND at its end position, the FTDI pull-up keeps the line high otherwise -> a broken wire reads
+  "not at that end" (fail safe: "fully open" can only be read with an intact wire). pyserial
+  getCTS / getDSR (already a gateway dependency), polled at 20 Hz, debounce 50 ms. Sealed (IP67) magnetic
+  reed / limit switches. Reason: an AURIX input would need firmware + a NEW frame (TELEM2 is full) - the
+  spec allows no AURIX change but the relay; a USB GPIO board would be a new part + driver. (W57.)
+- Hatch states: CLOSED (CLOSED only), OPENING, OPEN (OPEN only), CLOSING, FAULT. FAULT = no switch change
+  within the travel time / BOTH switches / NONE for longer than the travel time / a switch changing
+  without a command / the switch cable unplugged -> the sequence stops + notice HATCH FAULT. Never ARM
+  unless OPEN. Simulated hatch (gateway/uav/simhatch.py) with fault injection for tests + demo.
+
+### 5.5 Two hatch hazards (recorded, not hidden)
+- A relay-board reboot / power loss switches every relay OFF (R-2, 11f): with "ON = open" the hatch CLOSES
+  by itself, possibly onto a drone climbing out. Mitigations in the design: the sequence watches the
+  switches every tick (closing without a command = FAULT, stop, hold the remaining drones disarmed); the
+  hardware should close SLOWLY with a soft edge; the owner chooses the actuator (W57).
+- The open hatch lets spray / rain into the magazine: open only for the sequence, launch only slow /
+  STANDBY, closed at once after the last drone clear.
+
+## 6. Flight rules (H2, H6)
+
+### 6.1 No forced landing except the battery (owner)
+No GPS, lost link, warnings = HOLD / hover, never land. LOITER when the position is good, ALT_HOLD when
+it is not (drifts with the wind - accepted by the owner's rule), BRAKE for an immediate stop. RTL /
+SmartRTL / Land are never chosen for anything but 6.2.
+
+### 6.2 The battery minimum
+The gateway computes per drone every second: reserve = the energy to descend from the CURRENT altitude
+at the landing descent rate (+ uav_land_margin_pct 30 %, TO CONFIRM). Battery left <= reserve -> LAND
+where it is (over the sea = the drone is lost, accepted by the owner). 60 s and 20 s before: a CAUTION
+on every station "UAV n LANDING IN 60 s - battery minimum" (station-local alarm, MasterLamps.set_local,
+never an AURIX alarm). The drone's own BATT_FS_CRT_ACT Land is the backstop when the gateway is gone.
+
+### 6.3 Manual control (H6, step U5)
+- CAPTAIN: may fly a UAV with the shore joystick ONLY while the boat is in STANDBY: «ΧΕΙΡΙΣΜΟΣ UAV n»,
+  top banner «JOYSTICK → UAV n» on both screens. The station then sends NO GW_RJOY to the boat (so no
+  REMOTE / MANEUVER / shore CONFIRM / UNCREWED HDG LOCK can start: their AURIX rules need fresh packets)
+  and the gateway refuses the captain's driving commands while the joystick is on a UAV (code 126;
+  STANDBY always free). The boat leaving STANDBY (telemetry) ends it at once: the UAV holds, the joystick
+  goes back to the boat (packets again, the normal "centred" rules apply).
+- COPILOT: may fly a UAV from his own station any time (his joystick never drives the boat anyway); the
+  captain keeps the boat.
+- One pilot per drone at a time (gateway pilot lock; first wins - W61). The pilot's station link stale
+  0.5 s / lost / logged out = the gateway sends a zero setpoint (hold) and frees the lock.
+- Assisted flying only (GUIDED velocity setpoints, POSHOLD-like): stick X / Y = direction / horizontal
+  speed (<= uav_man_speed_ms, 10 m/s TO CONFIRM), TWCS lever = climb / descend (<= 2 m/s, never below
+  uav_min_alt_m 10 m above the launch level, never above uav_max_alt_m), twist = yaw rate, let go = zero
+  = hold position. The air geofence / no-fly zones hold the drone at the edge (the gateway clips the
+  setpoint). «ΕΠΙΣΤΡΟΦΗ ΣΤΟ ΣΚΑΦΟΣ» = the UAV hovers (BRAKE -> LOITER), joystick back to the boat.
+  It never means "fly back and land on the boat" (one-way drones).
+- Lost link (drone <-> boat, or boat <-> shore) = the UAV holds (ArduPilot's GUIDED command timeout
+  stops a velocity setpoint after ~3 s by itself; the gateway also sends zero when the shore is stale).
+
+### 6.4 The UAV never touches boat control
+UAV modules never send to the AURIX (only the hatch relay through stations.py's normal relay path),
+never a navreq, never a speed cap, never a boat alarm, never a mode change, never the boat's joystick
+data. UAV AI (section 8) gives notices / boxes only - the boat's vision stage-3 speed cap stays from
+the boat's own cameras only.
+
+## 7. GPS warm start (H4, step U2)
+
+- Goal: a fix within seconds after the hatch opens. While the drone sits in its slot (USB), the gateway
+  sends it time + position (+ ephemeris when available) through the flight controller's GPS injection
+  (GPS_RTCM_DATA / GPS_INJECT_DATA carry raw bytes the FC writes to its GPS port) as u-blox UBX-MGA
+  messages (MGA-INI-TIME_UTC, MGA-INI-POS_LLH, MGA-GPS/GAL-EPH or an MGA-DBD dump). Needs u-blox GPS on
+  the drones; whether the drones' ArduPilot forwards UBX-MGA bytes to the u-blox untouched: TO CONFIRM in
+  SITL / on the bench.
+- FINDING: the spec says "the boat's own u-blox data", but the boat's u-blox is wired to the AURIX (UART),
+  not to the gateway, and the gateway only sees the AURIX's position / time in telemetry. Reading UBX
+  ephemeris from it would need an AURIX change (forbidden here). Options (W56): (a) time + position from
+  telemetry only (MGA-INI: a WARM start, no ephemeris); (b) a small USB u-blox on the gateway as the
+  "assist receiver" (MGA-DBD / EPH dump, near the magazine) [recommended, with (a) as fallback];
+  (c) u-blox AssistNow Online / Offline cached when the gateway has internet (a u-blox token).
+- Note: the magazine top must not be metal (the drone may even get its own fix in the slot).
+- FALLBACK "climb, then catch up" (boat in STANDBY only): no good fix within uav_gps_wait_s -> ARM in
+  ALT_HOLD, climb vertically to uav_fallback_alt_m 15 m, hover until GPS + yaw are good (EKF-GSF yaw in
+  flight; the compass near the hull is not trusted; the boat's heading only as a hint), then switch to
+  AUTO and the mission. No landing because of missing GPS - it hovers until GPS or the battery minimum.
+  In ALT_HOLD it drifts with the wind: the sequence waits with the next drone until this one is clear.
+
+## 8. Video + AI (H5, step U4)
+
+- ANALOG VTX -> six analog 5.8 GHz VRX on the boat (one fixed channel per slot; no two drones on one
+  channel) -> USB capture into the gateway (video_worker.py, OWN low-priority process) -> the gateway
+  ring (video/ring/UAV-n, the recorder's tracks in every SAVE / ⏺5' / ⏺1h) and MediaMTX streams UAV-1..6
+  to the shore, lighter than the captain's main camera (LOW profile, ~300-500 kbit/s TO MEASURE), counted
+  in cameras.update_priority below the captain's video; the station pulls only the streams open on a
+  screen; data saver / STARLINK = no UAV video unless the captain opens one.
+- Capture load (TO MEASURE in U4 with tools/gateway_load.py, numbers into gateway/README.md): six
+  uncompressed USB 2 captures at 720 x 576 YUY2 25 fps (~166 Mbit/s each) do NOT fit one USB 2 bus ->
+  design target 640 x 480 at 15 fps, MJPEG-output capture devices preferred, spread over the laptop's
+  root ports; encode with Intel Quick Sync (VAAPI on Ubuntu / QSV on Windows) on the i5-8265U, x264
+  ultrafast as the fallback; only drones that are flying are encoded (a slot drone's VTX in pit mode).
+- AI: the same eWaSR worker (the "AI" badge) on the UAV video: the boat's FRONT camera ALWAYS first; UAV
+  feeds only when open on a screen, round-robin at <= 0.5 fps each, only with CPU headroom (the existing
+  temperature / throttle guard). Output = boxes + notices only. NOTE: eWaSR was trained on views from a
+  boat at water level; a top-down aerial view is outside its training - its results there may be poor
+  (U4 measures; an aerial model = W62).
+- Map: each drone's position, heading, altitude, track, battery, link quality (RADIO_STATUS / ELRS
+  LQ), its picture as the symbol.
+
+## 9. Names for U2-U6 (targets; a step may rename within its own commit and updates CLAUDE.md V)
+
+Gateway (gateway/uav/): manager.py, registry.py, usbslots.py, allow.py, mavlink.py (codec),
+router_worker.py, gpsassist.py, mission.py, uavcheck.py, nofly.py, launch.py, hatch.py, simhatch.py,
+pilot.py (manual control + pilot lock), video_worker.py, flightlog.py (per-drone flight log, CSV / GPX
+export), simdrone.py (the simulated drones). Config gateway.json "uav": {enabled, slots, tx_ports,
+vrx_devices, hatch_switch_port, ...}; boat file "uav": {"hatch_relay": n, "slots": 6}.
+State files: state/uav_registry.json, state/uav_nofly.json, state/uav_geofence.json, flight logs
+under the data folder (uav_logs/<name>/<date>.csv).
+
+Station <-> gateway messages (JSON, the existing station link; English in the protocol):
+uav_register {slot}, uav_route {target: "next" | sysid, wps: [{lat, lon, alt}]}, uav_launch_prepare,
+uav_launch_answer (the captain's YES / NO), uav_launch_stop, uav_hatch_close, uav_pilot {uav, take |
+give}, uav_ctl {uav, vx, vy, vz, yaw_rate, seq} (10 Hz), uav_hold {uav}, uav_view {uav}; from the
+gateway: gw_status "uav" (slots, hatch, sequence, pilots), uav_telem, uav_ack {code}.
+No new AURIX frame. No new app/proto.h define.
+
+Gateway refusal codes (proto.py ERR, next free): 122 UAV not registered / check failed, 123 UAV route
+refused (energy / range / altitude), 124 UAV route in a no-fly zone / outside the air geofence,
+125 launch conditions not met (boat not slow / STANDBY, hatch, relay board, captain) - also the hatch
+relay from a station, 126 the joystick is on a UAV (a driving command refused; STANDBY free), 127
+another pilot flies this UAV.
+
+Station: groundstation/uavpanel.py, uavmap.py, uavhud.py, uavfly.py, uavpics.py; lang keys uav.*;
+assets/uav.png + uav_<px>.png; tools/make_uav_icons.py.
+
+Tests: gateway/test_uav.py UA1-UA.. (registry / USB checks / parameter check / allow-list / codec CRC
+/ warm start bytes U2; mission build + checks + launch sequence + hatch faults U3; router + telemetry +
+video priority U4; pilot lock + setpoint limits + STANDBY rule U5), groundstation/test_uavui.py UV1-UV..
+(panel, pictures, map symbols + own route style, HUD, banner), academy AC51.. (the lesson on the
+simulator, U6). Gateway storm (tests/acceptance/storm_gateway.py) invariants reserved I80-I84:
+I80 no UAV module sends anything to the AURIX but the hatch relay through stations.py; I81 never ARM
+without the hatch OPEN switch; I82 never a LAND command except the battery rule, never RTL; I83 a
+captain's UAV control only with the boat in STANDBY, no GW_RJOY to the boat during it; I84 only
+allow-listed MAVLink leaves the router.
+
+Simulation (U2): gateway/uav/simdrone.py = 6 small simulated copters speaking the same MAVLink 2 subset
+(modes, mission, battery model, GPS time-to-fix incl. the warm start, faults: no fix, motor fail, link
+loss, battery), over UDP / a virtual serial pair; simhatch.py; simulated VRX = test pictures through the
+existing simcam.py. ArduPilot SITL copters are NOT practical on Windows without WSL / Cygwin builds -
+SITL only as an optional cross-check on Ubuntu (W67). `autopilot_sim server` is not changed (the drones
+are gateway-side only).
+
+## 10. Failure cases (each gets a test in its step)
+
+| Case | Reaction |
+|---|---|
+| hatch: no switch change in time / both / none / moved without a command / switch cable unplugged | FAULT: sequence stops, notice HATCH FAULT, no ARM |
+| relay board silent / table not active / hatch relay missing | no launch (125); a running sequence stops |
+| relay board reboot during launch (relay OFF = hatch closes) | FAULT seen by the switches, stop, remaining drones disarmed; 5.5 |
+| drone health / parameter / pre-arm fail | not launchable (122), the sequence stops at that drone |
+| mission upload / read-back fails | stop, the drone stays disarmed |
+| no GPS fix in uav_gps_wait_s | STANDBY: fallback climb; otherwise stop |
+| armed but no climb (motor / prop) | DISARM at once, stop, hatch stays OPEN, notice |
+| boat leaves STANDBY / speeds up / boat WARNING / telemetry stale during the sequence | stop; flying drones go on |
+| ELRS link lost to a drone | it holds / follows its mission, ends hovering; notice UAV n LINK LOST |
+| video lost | notice; nothing else changes |
+| boat <-> shore link lost | the gateway keeps the drones holding / on mission; manual control -> hold |
+| gateway / router process crash | drones go on (AUTO) or hold (GUIDED timeout); router restarted, notice |
+| boat moves away from a hovering drone | notice "UAV n towards the range limit"; the crew decides |
+| no-fly zone / air geofence reached in manual flight | setpoint clipped, hold at the edge, notice |
+| GPS lost / EKF bad in flight | ALT_HOLD (FS_EKF_ACTION 2), drift, never land; notice |
+| battery minimum | LAND where it is (60 s / 20 s CAUTION first) |
+| two stations try to fly one drone | pilot lock (127) |
+| captain flies, someone sends a driving command | refused 126 (STANDBY free) |
+| a frame from an unknown sysid / wrong port, or not allow-listed | dropped + counted |
+| duplicate sysid / unknown UID in a slot | not launchable |
+| slot n launched while slot n-1 still there | impossible: the top slot is the lowest-numbered slot still present by USB + registry; a mismatch = stop |
+
+## 11. Legal note (for MANUAL / MANUAL_EL in U6; not legal advice)
+
+EU Regulations 2019/947 and 2019/945 apply in Greece (competent authority: the Hellenic Civil Aviation
+Authority, ΥΠΑ). BVLOS flight is in the SPECIFIC category: an operational authorisation (SORA, or a PDRA
+where one fits), a registered UAS operator, a remote pilot with the required competency, insurance; take-off
+from a moving vessel and flights near people / vessels need to be covered by the authorisation. Radio:
+EU limits (analog 5.8 GHz video typically 25 mW EIRP, 2.4 GHz 100 mW EIRP) limit the range. State / Navy
+operations are outside the EASA rules (Regulation 2018/1139 Art. 2(3)) and follow their own national
+rules. Cameras: data protection (GDPR) applies to recordings of people. Responsibility stays with the
+operator and the remote pilot.
+
+## 12. Open questions
+
+PROGRESS.md "WAITING FOR OWNER" W56-W67 (each with the steps it blocks and the recommended default).
