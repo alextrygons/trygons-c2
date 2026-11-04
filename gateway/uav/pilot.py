@@ -53,6 +53,7 @@ DEFAULTS = {
     "edge_lookahead_s": 3.0,        # the geofence / no-fly clip looks this far ahead
     "edge_margin_m": 10.0,
     "loiter_after_s": 1.0,          # give back: BRAKE, LOITER this long after
+    "data_stale_s": 1.0,            # U5 review MED-2: the drone's data older than this = no motion (it holds)
 }
 R_EARTH = 6371000.0
 
@@ -77,9 +78,17 @@ def ahead(lat, lon, dist_m, brg_deg):
 
 
 def setpoint(stick, drone, cfg, airspace=None):
-    """stick {x, y, z, r} (-1..1) + the drone (map record: lat, lon, alt, hdg) -> (fields, clipped reasons).
-    fields = {vx, vy, vz (NED: + down), yaw_rate} in the body frame. Pure (tests UA30)."""
+    """stick {x, y, z, r} (-1..1) + the drone (map record: lat, lon, alt, hdg, gs, climb, alt_age) -> (fields, clipped
+    reasons). fields = {vx, vy, vz (NED: + down), yaw_rate} in the body frame. Pure (tests UA30 / UA34).
+    U5 review MED-2: the drone's data age (alt_age: the router's age + the status' age) older than data_stale_s = NO
+    motion (hold); within it the position is moved on with the drone's ground speed and the altitude limits use the
+    altitude it may have reached meanwhile (the climb rate x the age). MED-3: a climb / descent is checked against the
+    no-fly zones (with their altitude bands) like a horizontal move."""
     db = float(cfg["deadband"])
+    age = drone.get("alt_age")
+    if not _finite(age) or age > float(cfg.get("data_stale_s", 1.0)):
+        return dict(ZERO), ["drone data %s old - it holds" % ("unknown" if not _finite(age) else "%.1f s" % age)]
+    age = max(0.0, age)
     x, y, z, r = (shape(stick.get(k, 0.0) or 0.0, db) for k in ("x", "y", "z", "r"))
     spd = min(float(cfg["uav_man_speed_ms"]), allow.MAX_VXY_MS)
     clb = min(float(cfg["uav_man_climb_ms"]), allow.MAX_VZ_MS)
@@ -91,32 +100,47 @@ def setpoint(stick, drone, cfg, airspace=None):
     why = []
     alt = drone.get("alt")
     lo, hi = float(cfg["uav_min_alt_m"]), float(cfg["uav_max_alt_m"])
+    clb_now = drone.get("climb") if _finite(drone.get("climb")) else 0.0
     if up:
         if not _finite(alt):
             up = 0.0
             why.append("altitude unknown")
         elif up < 0:
-            room = max(0.0, alt - lo)               # slows down to the floor (1 s ahead)
+            alt_lo = alt - abs(clb_now) * age       # MED-2: where it may be by now (old data, either way)
+            room = max(0.0, alt_lo - lo)            # slows down to the floor (1 s ahead)
             if -up > room:
                 up = -room
                 why.append("minimum altitude %.0f m" % lo)
         else:
-            room = max(0.0, hi - alt)
+            room = max(0.0, hi - (alt + abs(clb_now) * age))
             if up > room:
                 up = room
                 why.append("maximum altitude %.0f m" % hi)
+    lat, lon, hdg = drone.get("lat"), drone.get("lon"), drone.get("hdg")
+    if _finite(lat, lon, hdg) and _finite(drone.get("gs")) and drone["gs"] > 0 and age > 0:
+        lat, lon = ahead(lat, lon, drone["gs"] * age, hdg)      # MED-2: moved on with its ground speed
+    look = float(cfg["edge_lookahead_s"])
+    a = alt if _finite(alt) else 0.0
+    if up and airspace is not None and _finite(lat, lon, alt):
+        # MED-3: a climb / descent into a zone's altitude band (the margin in the direction of the move)
+        a2 = a + up * look + math.copysign(float(cfg["edge_margin_m"]), up)
+        here_bad = airspace.problem([(lat, lon, a)])
+        bad = airspace.problem([(lat, lon, a2)]) if here_bad else airspace.problem([(lat, lon, a), (lat, lon, a2)])
+        if bad:
+            up = 0.0
+            why.append("air geofence / no-fly zone above / below: %s" % bad)
     if vx or vy:
-        lat, lon, hdg = drone.get("lat"), drone.get("lon"), drone.get("hdg")
         if not _finite(lat, lon, hdg):
             vx = vy = 0.0
             why.append("position / heading unknown")
         elif airspace is not None:
             v = math.hypot(vx, vy)
             brg = (hdg + math.degrees(math.atan2(vy, vx))) % 360.0
-            a = _finite(alt) and alt or 0.0
-            p = ahead(lat, lon, v * float(cfg["edge_lookahead_s"]) + float(cfg["edge_margin_m"]), brg)
+            a2 = a + up * look
+            p = ahead(lat, lon, v * look + float(cfg["edge_margin_m"]), brg)
             here_bad = airspace.problem([(lat, lon, a)])
-            bad = airspace.problem([(p[0], p[1], a)]) if here_bad else airspace.problem([(lat, lon, a), (p[0], p[1], a)])
+            bad = airspace.problem([(p[0], p[1], a2)]) if here_bad else \
+                airspace.problem([(lat, lon, a), (p[0], p[1], a2)])
             if bad:
                 vx = vy = 0.0
                 why.append("air geofence / no-fly zone: %s" % bad)
@@ -197,10 +221,17 @@ class Pilots:
         self.mgr.to_worker(dict({"op": "ctl", "slot": n}, **sp))
 
     def hover(self, n):
-        """Zero setpoint, BRAKE now, LOITER after loiter_after_s: the drone hovers where it is."""
+        """Zero setpoint, BRAKE now, LOITER after loiter_after_s: the drone hovers where it is. U5 review LOW: BRAKE /
+        LOITER need a GPS position - without one (no 3D fix / no position) the drone gets ALT_HOLD (holds its
+        altitude, drifts with the wind = the documented "no GPS = hold" of docs 6.1) and no LOITER later."""
         self.send_sp(n, ZERO)
-        self.mgr.cmd(n, "elrs", allow.CMD_DO_SET_MODE, [1, allow.COPTER_BRAKE], lambda _r, _w: None)
-        self.loiter[n] = time.time() + float(self.cfg["loiter_after_s"])
+        d = self.mgr.slot(n) or {}
+        if (d.get("gps_fix") or 0) >= 3 and d.get("lat") is not None:
+            self.mgr.cmd(n, "elrs", allow.CMD_DO_SET_MODE, [1, allow.COPTER_BRAKE], lambda _r, _w: None)
+            self.loiter[n] = time.time() + float(self.cfg["loiter_after_s"])
+        else:
+            self.mgr.cmd(n, "elrs", allow.CMD_DO_SET_MODE, [1, allow.COPTER_ALT_HOLD], lambda _r, _w: None)
+            self.loiter.pop(n, None)
 
     def end(self, n, why, text, tell=True):
         lk = self.locks.pop(n, None)
@@ -214,7 +245,8 @@ class Pilots:
 
     # --- station messages -----------------------------------------------------------------------------------------
     def pilot_msg(self, st, m):
-        """{"t": "uav_pilot", "uav": n, "take": true | false}."""
+        """{"t": "uav_pilot", "uav": n, "take": true | false}. Any crew station but a VIEWER may fly (U5 review LOW:
+        by design - the copilot flies from his own station; the captain only in STANDBY)."""
         try:
             n = int(m.get("uav"))
         except (TypeError, ValueError):
@@ -222,7 +254,11 @@ class Pilots:
         take = bool(m.get("take", True))
         if not take:
             lk = self.locks.get(n)
-            if lk is None or lk.sid != st.id:
+            if lk is None:
+                # U5 review LOW: the gateway ended the lock already (STANDBY left, lost, landed): nothing to refuse
+                return self.ack(st, True, 0, "UAV %d: already given back - the joystick is on the boat" % n, n,
+                                take=False)
+            if lk.sid != st.id:
                 return self.ack(st, False, ERR_PILOT, "UAV %d: you do not fly it" % n, n)
             self.end(n, "given", "UAV %d given back: it hovers, the joystick is back on the boat" % n, tell=False)
             return self.ack(st, True, 0, "UAV %d given back: it hovers, the joystick is back on the boat" % n, n,
@@ -241,6 +277,13 @@ class Pilots:
             w = self.flying(n)
             if w:
                 why = (ERR_UAV, w)
+            else:
+                # U5 review MED-1: never while the launch / its climb fallback still owns the drone (a take's GUIDED +
+                # zero setpoint could stop the climb or the mission start)
+                blk = getattr(mgr, "pilot_block", None)
+                w = blk(n) if blk is not None else None
+                if w:
+                    why = (ERR_UAV, w)
         cap = self.captain_like(st)
         if why is None and cap and not uavlink.boat_mode(mgr.gw)["standby"]:
             why = (ERR_JOY, "the captain flies a UAV only with the boat in STANDBY")
@@ -281,6 +324,11 @@ class Pilots:
                         n, w or result), n)
         mgr.cmd(n, "elrs", allow.CMD_DO_SET_MODE, [1, allow.COPTER_GUIDED], guided)
         self.note(n, "take", st.id, "captain" if cap else "copilot")
+        if cap:
+            # U5 review MED-4: questions already open for the captain's ACCEPT are refused now (126)
+            ref = getattr(getattr(mgr.gw, "stations", None), "refuse_asks_for", None)
+            if ref is not None:
+                ref(st, ERR_JOY)
         self.ack(st, True, 0, "UAV %d: the joystick flies it now - centre the stick first" % n, n, take=True,
                  captain=cap)
 

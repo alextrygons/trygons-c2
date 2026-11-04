@@ -2555,7 +2555,7 @@ class _PilotMgr:
         self.why = ""
         self.ops, self.cmds = [], []
         self.drones = {1: {"hb_age": 0.2, "armed": True, "landed": False, "usb_present": False, "landing": False,
-                           "lat": 37.83, "lon": 23.61, "alt": 50.0, "hdg": 90.0},
+                           "lat": 37.83, "lon": 23.61, "alt": 50.0, "hdg": 90.0, "alt_age": 0.3, "gps_fix": 3},
                        2: {"hb_age": 0.2, "armed": False, "landed": True, "usb_present": True}}
 
     def slot(self, n):
@@ -2596,7 +2596,7 @@ def ua30_pilot():
     import common  # noqa: F401  (the path to proto, as the gateway)
     from uav import pilot
     cfg = dict(pilot.DEFAULTS, uav_min_alt_m=10.0, uav_max_alt_m=120.0)
-    dr = {"lat": 37.83, "lon": 23.61, "alt": 50.0, "hdg": 0.0}
+    dr = {"lat": 37.83, "lon": 23.61, "alt": 50.0, "hdg": 0.0, "alt_age": 0.1}
     sp = lambda st, d=None, air=None: pilot.setpoint(st, dict(dr, **(d or {})), cfg, air)   # noqa: E731
     fwd = sp({"y": 1.0})[0]
     diag = sp({"x": 1.0, "y": 1.0})[0]
@@ -2608,18 +2608,23 @@ def ua30_pilot():
     no_pos = sp({"y": 1.0}, {"lat": None})
     yaw = sp({"r": 1.0})[0]
 
-    class Air:                                      # the fence: north of 37.8303 is outside
-        def problem(self, pts):
-            return "outside" if any(p[0] > 37.8303 for p in pts) else None
+    class Air:                                      # the fence: north of 37.8303 is outside; a zone 70..200 m
+        def problem(self, pts):                     # (U5 review MED-3: the stub has an altitude band)
+            if any(p[0] > 37.8303 for p in pts):
+                return "outside"
+            return "no-fly zone 70..200 m" if any(70.0 <= p[2] <= 200.0 for p in pts) else None
     edge = sp({"y": 1.0}, None, Air())              # heading north, 40 m ahead: outside -> hold
     east = sp({"x": 1.0}, None, Air())              # sideways east: fine
     back_in = sp({"y": -1.0}, {"lat": 37.8304}, Air())   # outside already: flying south (back in) is let through
+    band = sp({"z": 1.0}, {"alt": 55.0}, Air())     # MED-3: climbing into the zone's altitude band = no climb
+    band_ok = band[0]["vz"] == 0.0 and band[1] and "above / below" in band[1][0] and \
+        sp({"z": 1.0}, {"alt": 30.0}, Air())[0]["vz"] < 0
     limits_ok = (abs(fwd["vx"] - 10.0) < 1e-6 and fwd["vy"] == 0 and abs(math.hypot(diag["vx"], diag["vy"]) - 10.0)
                  < 1e-3 and dead == pilot.ZERO and abs(floor[0]["vz"] - 0.6) < 1e-6 and floor[1] and
                  at_floor["vz"] == 0.0 and abs(ceil[0]["vz"] + 0.5) < 1e-6 and ceil[1] and no_alt[0]["vz"] == 0.0 and
                  no_alt[1] and no_pos[0]["vx"] == 0.0 and no_pos[1] and abs(yaw["yaw_rate"] - math.radians(60)) < 1e-3
                  and edge[0]["vx"] == 0.0 and "geofence" in edge[1][0] and east[0]["vy"] > 9 and
-                 back_in[0]["vx"] < -9)
+                 back_in[0]["vx"] < -9 and band_ok)
     ok_allow = all(allow.check_out("SET_POSITION_TARGET_LOCAL_NED", dict(s, target_system=11, target_component=1,
                                                                          coordinate_frame=pilot.FRAME,
                                                                          type_mask=pilot.MASK))[0]
@@ -3019,6 +3024,165 @@ def ua33_review_u4():
                    nav_clean, navs))
 
 
+# ------------------------------------------------------------------------------------------- U5 review fixes -------
+
+def ua34_review_u5():
+    """U5 review fixes (review of 8f8441e): MED-1 the pilot lock is exclusive (a take refused while the launch / its
+    climb fallback owns the drone; uav_route refused 127 for a flown drone; catchup and the launch's CLEAR never
+    start a mission under a pilot); MED-2 old drone data = no motion, the position moved on with the ground speed,
+    the altitude floor with the climb rate x the age; MED-3 (in UA30a); MED-4 questions open for the captain's ACCEPT
+    refused 126 at his take; MED-5 BATTERY_STATUS refreshes the battery time only with a %; LOWs: batt_stale told when
+    armed with already-stale data, give-back after the gateway ended the lock = OK, hover without GPS = ALT_HOLD,
+    the per-packet STANDBY end of the captain's control."""
+    import common  # noqa: F401
+    import proto
+    import stations as stm
+    from uav import launch, manager, pilot, router_worker as rw, uavcheck
+    res = {}
+    # --- MED-2: setpoint on old / moving data
+    cfg = dict(pilot.DEFAULTS, uav_min_alt_m=10.0, uav_max_alt_m=120.0)
+    base = {"lat": 37.829896, "lon": 23.61, "alt": 50.0, "hdg": 0.0, "gs": 10.0, "climb": 0.0}
+
+    class Fence:
+        def problem(self, pts):
+            return "outside" if any(p[0] > 37.8303 for p in pts) else None
+    old = pilot.setpoint({"y": 1.0}, dict(base, alt_age=1.5), cfg)
+    unknown = pilot.setpoint({"y": 1.0}, dict(base, alt_age=None), cfg)
+    fresh = pilot.setpoint({"y": 1.0}, dict(base, alt_age=0.0), cfg, Fence())
+    moved = pilot.setpoint({"y": 1.0}, dict(base, alt_age=0.8), cfg, Fence())
+    fl0 = pilot.setpoint({"z": -1.0}, dict(base, alt=12.0, alt_age=0.0, climb=-2.0), cfg)[0]["vz"]
+    fl1 = pilot.setpoint({"z": -1.0}, dict(base, alt=12.0, alt_age=0.8, climb=-2.0), cfg)[0]["vz"]
+    res["med2"] = (old[0] == pilot.ZERO and "old" in old[1][0] and unknown[0] == pilot.ZERO and
+                   fresh[0]["vx"] > 9 and moved[0]["vx"] == 0.0 and abs(fl0 - 2.0) < 1e-6 and abs(fl1 - 0.4) < 1e-6)
+    # --- the Pilots on a scripted manager + a REAL StationServer (MED-1 take refused, MED-2 via drone_view, MED-4,
+    #     LOW give-back / hover / per-packet STANDBY end)
+    gw = _PGw()
+    gw.aurix = _Aurix()
+    gw.storage = None
+    gw.uav = type("U", (), {})()
+    ss = stm.StationServer(gw, {})
+    gw.stations = ss
+    mgr = _PilotMgr(gw)
+    block = {1: None}
+    mgr.pilot_block = lambda n: block.get(n)
+    P = gw.uav.pilots = pilot.Pilots(mgr)
+
+    def mk(sid, crew):
+        st = stm.Station(sid, "u%d" % sid, "HELM", False, "1.2.3.%d" % sid, "s%d" % sid, _Writer())
+        st.crew, st.licence = crew, True
+        st.tokens, st.refill = 20.0, time.time()
+        ss.stations[sid] = st
+        return st
+    cap, cop = mk(5, "captain"), mk(6, "copilot")
+    gw.telem2["helm"] = cap.id
+    gw.mode = 0
+    cap.driver_open, cap.driver_seen = True, time.time()
+
+    def last(st, what="pilot"):
+        a = [m for m in st.writer.lines if m.get("t") == "uav_ack" and m.get("what") == what]
+        return a[-1] if a else {}
+    block[1] = "UAV 1 is still climbing out (launching)"
+    P.pilot_msg(cop, {"uav": 1, "take": True})
+    res["med1_take"] = last(cop).get("code") == 122 and "climbing" in last(cop).get("text", "") and 1 not in P.locks
+    block[1] = None
+    # MED-4: a question open for the captain BEFORE his take
+    answers = []
+    ss.ask_local(cop, {}, "vision stage 3", lambda ok, code: answers.append((ok, code)))
+    seq = [0]
+
+    def cmd(st, ftype, payload=b""):
+        seq[0] += 1
+        ss.command(st, {"seq": seq[0], "ts": time.time(), "type": ftype, "p": payload.hex(), "sid": st.session})
+    cmd(cop, proto.T_GENERATOR, bytes([1]))
+    queued = len(ss.asks)
+    n_aur = len(gw.aurix.sent)
+    P.pilot_msg(cap, {"uav": 1, "take": True})
+    gen_ack = [m for m in cop.writer.lines if m.get("t") == "ack" and m.get("type") == proto.T_GENERATOR]
+    res["med4"] = (queued == 2 and answers == [(False, 126)] and not ss.asks and gen_ack and
+                   gen_ack[-1]["result"] == 126 and not [t for t, _p in gw.aurix.sent[n_aur:] if t == proto.T_GW_CMD])
+    # MED-2 through drone_view: old data -> the deflected stick moves nothing
+    n0 = len(mgr.ops)
+    P.ctl(cap, {"uav": 1, "seq": 1, "ts": time.time()})                       # centred first
+    mgr.drones[1]["alt_age"] = 2.5
+    P.ctl(cap, {"uav": 1, "seq": 2, "ts": time.time(), "y": 1.0})
+    sps = [o for o in mgr.ops[n0:] if o.get("op") == "ctl"]
+    mgr.drones[1]["alt_age"] = 0.3
+    P.ctl(cap, {"uav": 1, "seq": 3, "ts": time.time(), "y": 1.0})
+    sps2 = [o for o in mgr.ops[n0:] if o.get("op") == "ctl"]
+    res["med2_view"] = len(sps) == 2 and sps[-1]["vx"] == 0.0 and sps2[-1]["vx"] > 9
+    # LOW: the per-packet STANDBY end (no tick in between)
+    gw.mode = 3
+    n0 = len(mgr.ops)
+    P.ctl(cap, {"uav": 1, "seq": 4, "ts": time.time(), "y": 1.0})
+    moving = [o for o in mgr.ops[n0:] if o.get("op") == "ctl" and o.get("vx")]
+    ends = [m for m in cap.writer.lines if m.get("t") == "uav_pilot_end"]
+    res["standby_pkt"] = 1 not in P.locks and not moving and ends and ends[-1]["why"] == "standby"
+    # LOW: give back after the gateway ended the lock = OK (no red 127)
+    P.pilot_msg(cap, {"uav": 1, "take": False})
+    res["give_back"] = last(cap).get("ok") is True
+    # LOW: hover without GPS = ALT_HOLD (BRAKE / LOITER need a position)
+    gw.mode = 0
+    mgr.drones[1]["gps_fix"] = 1
+    n0c = len(mgr.cmds)
+    P.hover(1)
+    modes = [c[3][1] for c in mgr.cmds[n0c:] if c[2] == allow.CMD_DO_SET_MODE]
+    res["hover_nogps"] = modes == [allow.COPTER_ALT_HOLD] and 1 not in P.loiter
+    # --- MED-1 in the manager: route refused for a flown drone, pilot_block, catchup skipped
+    m = object.__new__(manager.UavManager)
+    m.gw, m.enabled, m.n, m.ccfg = _G(), True, 6, dict(uavcheck.DEFAULTS)
+    m.pilots = type("PL", (), {"locks": {2: pilot.Lock(9, "anna", time.time())}})()
+    io_seq = type("Q", (), {"busy": lambda _s: True, "cur": 3, "phase": "CLIMB"})()
+    m.seq = io_seq
+    m.flying = {2: {"phase": "catchup", "next_try": 0.0}, 4: {"phase": "launching"}, 5: {"phase": "mission"}}
+    m.slot = lambda n: {"gps_fix": 3, "ekf_flags": 0x1F}
+    sent = []
+    m.cmd = lambda n, via, c, p, cb: sent.append((n, c))
+    st = _St(6)
+    m.route_msg(st, {"target": 2, "wps": [{"lat": 37.83, "lon": 23.61, "alt": 50}]})
+    r = st.sent[-1]
+    m.catchup_tick(time.time())
+    res["med1_mgr"] = (r.get("code") == pilot.ERR_PILOT and "by hand" in r.get("text", "") and not sent and
+                       m.pilot_block(3) and m.pilot_block(4) and m.pilot_block(2) and m.pilot_block(5) is None)
+    # MED-1 in the launch: CLEAR with a pilot on the drone = no MISSION START
+    io = FakeIo(1)
+    io.pilot_locked = lambda n: True
+    seq_ = launch.Launch(io)
+    seq_.prepare([1], 7, 0.0)
+    seq_.approved(True, 7, 0.0)
+    run_seq(io, seq_, 120.0)
+    res["med1_clear"] = (1 in seq_.launched and not [x for x in io.sent if x[2] == "start"] and
+                         any("by hand" in t for t in io.notices))
+    # --- MED-5 + LOW batt_stale in the router (in this process, a fake link)
+    events = []
+    old_out = rw.out
+    rw.out = lambda obj: events.append(obj)
+    try:
+        r_ = rw.Router()
+        lk = _FakeLink(1, "elrs")
+        r_.links[(1, "elrs")] = lk
+        r_.expect[1] = 11
+        now = rw.now_s()
+        d = r_.drone(1)
+        d.hb, d.hb_t = {"base_mode": 0x80, "custom_mode": 3}, now
+        d.rel_alt, d.vz, d.alt_t = 30.0, 0.0, now
+        d.batt_pct, d.batt_t = 80, now - 20.0                    # stale BEFORE the arming was seen
+        r_.battery_tick(now)
+        told = [e for e in events if e.get("ev") == "batt_stale"]
+        lk.parser = mavlink.Parser()
+        r_.rx(lk, mavlink.encode("BATTERY_STATUS", {"battery_remaining": -1, "current_consumed": 300}, 1, 11, 1), now)
+        t_unk = d.batt_t
+        r_.rx(lk, mavlink.encode("BATTERY_STATUS", {"battery_remaining": 55, "current_consumed": 310}, 2, 11, 1), now)
+        res["med5"] = (len(told) == 1 and told[0]["stale"] is True and t_unk == now - 20.0 and d.batt_pct == 55 and
+                       d.batt_t == now)
+    finally:
+        rw.out = old_out
+    report("UA34 U5 review fixes: MED-1 exclusive pilot lock (take refused during a launch / climb-out, uav_route 127 "
+           "for a flown drone, no catchup / CLEAR mission start under a pilot), MED-2 old drone data = hold + position "
+           "moved on + the floor with the climb rate, MED-4 questions open for the captain refused 126 at his take, "
+           "MED-5 BATTERY_STATUS refreshes only with a %, LOWs (stale told when armed, give-back OK, hover without GPS "
+           "= ALT_HOLD, the per-packet STANDBY end)", all(res.values()), "%s" % res)
+
+
 def watchdog():
     def fire():
         print("\nSTALLED: test_uav.py still running after %d s - killed" % LIMIT_S, flush=True)
@@ -3036,7 +3200,7 @@ def main():
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126,
-             ua32_router_ctl, ua33_review_u4]
+             ua32_router_ctl, ua33_review_u4, ua34_review_u5]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

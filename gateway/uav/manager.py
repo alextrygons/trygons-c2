@@ -802,6 +802,21 @@ class UavManager:
         if n in self.flying:
             self.flying[n].update(phase="catchup", next_try=0.0)
 
+    # --- U5 review MED-1: the pilot lock is exclusive ----------------------------------------------------------------
+    def pilot_locked(self, n):
+        """A pilot (the joystick) flies slot n's drone now: no mission / route / MISSION START for it."""
+        return n in self.pilots.locks
+
+    def pilot_block(self, n):
+        """Why the joystick may NOT take slot n's drone now (None = it may): the launch sequence or its climb
+        fallback still owns it (a take's GUIDED + zero setpoint could stop the climb / the mission start)."""
+        if self.seq.busy() and self.seq.cur == n:
+            return "UAV %d is being launched (%s) - wait until it flies its mission" % (n, self.seq.phase or "-")
+        ph = (self.flying.get(n) or {}).get("phase")
+        if ph in ("launching", "catchup"):
+            return "UAV %d is still climbing out (%s) - wait until it flies its mission" % (n, ph)
+        return None
+
     def hatch_cmd(self, on, cb):
         """The hatch relay through uavlink -> stations.py (the HELM station's T_RELAY). cb(ok, why). A refusal NOT
         HELM (21) or HELM not agreeing yet (W55) = ONE retry once the gateway's grant and TELEM2 agree (<= 5 s),
@@ -880,6 +895,8 @@ class UavManager:
         for n, f in list(self.flying.items()):
             if f.get("phase") != "catchup" or f.get("busy") or now < f.get("next_try", 0.0):
                 continue
+            if self.pilot_locked(n):                     # U5 review MED-1 (a take is refused in catchup anyway)
+                continue
             d = self.slot(n)
             if (d.get("gps_fix") or 0) >= 3 and ((d.get("ekf_flags") or 0) & launch.EKF_POS) == launch.EKF_POS:
                 f["busy"] = True
@@ -914,7 +931,8 @@ class UavManager:
                "land_eta": j.get("eta_s"), "landing": bool(d.get("landing")),
                "stage": self._stage(n, battery.stage(j.get("eta_s"), bool(d.get("landing"))),
                                     bool(d.get("armed") and not d.get("landed"))),
-               "gps_fix": d.get("gps_fix"), "text": d.get("text"), "video": self.video_state(n)}
+               "gps_fix": d.get("gps_fix"), "text": d.get("text"), "video": self.video_state(n),
+               "alt_age": d.get("alt_age")}           # U5 review MED-2: pilot.setpoint holds on old data
         if d.get("lat") is not None and (d["lat"], d.get("lon")) == (0.0, 0.0):
             out["lat"] = out["lon"] = None                              # no position yet
         if boat_pos and out["lat"] is not None:
@@ -1072,6 +1090,11 @@ class UavManager:
             wps = uavcheck.clean(m.get("wps"), self.ccfg["uav_wp_alt_m"])
         except ValueError as e:
             return self._ack(st, "route", False, uavcheck.ERR_ROUTE, "UAV route refused: %s" % e, slot=slot)
+        if self.pilot_locked(slot):
+            # U5 review MED-1: the joystick flies it - no new mission / MISSION START under the pilot's hands
+            lk = self.pilots.locks.get(slot)
+            return self._ack(st, "route", False, pilot.ERR_PILOT, "UAV %d is flown by hand by %s - give it back "
+                             "first" % (slot, getattr(lk, "name", "?")), slot=slot)
         boat = self.boat()
         rec = self.reg.recs.get(slot) or {}
         d = self.slot(slot)

@@ -772,6 +772,26 @@ class StationServer:
             if cap:
                 self.refuse(cap, a["seq"], a["type"], code)
 
+    def refuse_asks_for(self, target, code=126):
+        """U5 review MED-4: the captain's joystick went onto a UAV - every question already open for HIS ACCEPT is
+        refused now (code 126), never answered later by a captain who flies a drone. -> how many."""
+        n = 0
+        for a in list(self.asks.values()):
+            if target is None or a.get("target") != target.id:
+                continue
+            del self.asks[a["id"]]
+            n += 1
+            for d in self.drivers():
+                d.send({"t": "driver_ask_done", "id": a["id"]})
+            self.gw.audit("driver_ask_refused", id=a["id"], what=a["what"], code=code)
+            if a.get("action"):
+                a["action"](False, code)
+                continue
+            cap = self.stations.get(a["st"])
+            if cap:
+                self.refuse(cap, a["seq"], a["type"], code, ": the captain flies a UAV")
+        return n
+
     def _single_op(self, st, m):
         on = bool(m.get("on")) and st.role != "VIEWER"
         if on != st.single_op:

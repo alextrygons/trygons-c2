@@ -336,6 +336,12 @@ class Launch:
             if self.fallback:
                 self.io.catchup(n)
                 return self._done_drone(now)
+            locked = getattr(self.io, "pilot_locked", None)
+            if locked is not None and locked(n):
+                # U5 review MED-1: a pilot flies it (a take is refused during a launch - defence in depth): no
+                # MISSION START under the pilot's hands; the drone counts as launched
+                self.io.notice("UAV %d is flown by hand - its mission was not started" % n, "caution")
+                return self._done_drone(now)
             self.wait, self.wait_t = "cmd", now
             wrap = self._cb()
 

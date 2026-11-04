@@ -689,7 +689,7 @@ def storm_uav_pilot(seed):
 
             def slot(self, k):
                 return {"hb_age": 0.2, "armed": True, "landed": False, "usb_present": False, "landing": False,
-                        "lat": 37.83, "lon": 23.61, "alt": 50.0, "hdg": 90.0}
+                        "lat": 37.83, "lon": 23.61, "alt": 50.0, "hdg": 90.0, "alt_age": 0.2, "gps_fix": 3}
 
             drone_view = slot
 

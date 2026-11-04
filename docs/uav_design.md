@@ -501,6 +501,22 @@ operator and the remote pilot. Also (U1 review LOW): UAS OPERATOR REGISTRATION w
 on every drone) and DIRECT REMOTE ID broadcast (EU 2019/945 / Delegated Regulation 2020/1058; a drone without a
 class mark needs an add-on Remote ID module in the Specific category, as the authorisation says).
 
+## 10a. U5 review fixes (review of 8f8441e)
+
+MED-1 the pilot lock is exclusive: a take is refused (122) while the launch sequence owns the drone (its slot is the
+sequence's current one) or it is still "launching" / in the climb-fallback "catchup"; uav_route for a flown drone =
+127 ("give it back first"); catchup_tick and the launch's CLEAR never start a mission under a pilot (CLEAR: notice,
+the drone counts as launched). MED-2 pilot.setpoint: the drone's data age (alt_age = the router's + the status' age)
+> data_stale_s 1 s = NO motion; within it the position is moved on with the ground speed and the altitude floor /
+ceiling use the climb rate x the age. MED-3 a climb / descent is checked against the no-fly zones' altitude bands (with
+the look-ahead + margin), the horizontal look-ahead at the altitude after the climb. MED-4 the captain's take refuses
+every question already open for his ACCEPT (126, stations.refuse_asks_for). MED-5 BATTERY_STATUS refreshes the battery
+time only with a battery_remaining % (-1 = not refreshed). LOWs: batt_stale told also when armed with already-stale
+data (once per arming); a give-back after the gateway ended the lock = OK; pilot_msg allows any non-VIEWER station (by
+design, documented); hover() without a GPS position = ALT_HOLD (no BRAKE / LOITER). NOT fixed (LOW, recorded in
+PROGRESS): the MISSION_SET_CURRENT confirmation still accepts a MISSION_CURRENT after the request that shows the seq
+(a drone already at that seq confirms at once). Test UA34 (+ UA30a altitude-band zone).
+
 ## 11a. Step U6 AS BUILT
 
 The academy lesson "UAV launch and observation" runs on the academy's OWN in-process UAV simulator (academy/uavsim.py):

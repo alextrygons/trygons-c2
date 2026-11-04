@@ -368,7 +368,10 @@ class Router:
                 if cb is not None and cb >= 0:
                     d.batt_a = cb / 100.0                               # cA
             elif m.name == "BATTERY_STATUS":
-                d.batt_t = now
+                # U5 review MED-5: the battery % is "fresh" only when a % itself came in (battery_remaining -1 =
+                # the drone does not know it: the time stays, the % is not refreshed)
+                if f.get("battery_remaining", -1) is not None and f.get("battery_remaining", -1) >= 0:
+                    d.batt_pct, d.batt_t = f["battery_remaining"], now
                 if f.get("current_consumed", -1) >= 0:
                     d.used_mah = int(f["current_consumed"])
                 if f.get("current_battery", -1) >= 0:
@@ -706,8 +709,13 @@ class Router:
                 continue
             # U4 review MED-1: a battery % not heard for BATT_FRESH_S is STALE - never judged on an old value
             stale = not d.batt_t or now - d.batt_t > BATT_FRESH_S
-            if stale != d.batt_stale and d.armed():
+            # U5 review LOW: told also when the drone is armed with data that was ALREADY stale (once per arming)
+            told = getattr(d, "batt_stale_told", False)
+            if d.armed() and stale != told:
                 out({"ev": "batt_stale", "slot": slot, "stale": stale})
+                d.batt_stale_told = stale
+            elif not d.armed():
+                d.batt_stale_told = False
             d.batt_stale = stale
             flying = d.armed() and not d.landed(now) and d.rel_alt is not None and now - d.alt_t < ALT_FRESH_S
             if not flying:

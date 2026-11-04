@@ -2797,6 +2797,14 @@ UAV MAGAZINE - FLYING A UAV BY HAND (step U5)
   CONTROL" and the UAV holds during the hand-over. A copilot cannot take one
   from the captain. No joystick data for 0.5 s = the UAV holds; for 3 s (or the
   station disconnects) = manual control ends, the UAV hovers.
+  Also: FLY is refused while the launch still owns the UAV (it climbs out of
+  the hatch or waits for GPS) - wait until it flies its mission. While a UAV is
+  flown by hand no new route is accepted for it ("give it back first"). When
+  the UAV's own data is older than 1 s the stick moves nothing (it holds); a
+  climb / descent into a no-fly zone's altitude band is stopped like a move
+  towards its edge. A UAV without GPS that is given back holds its altitude
+  (ALT_HOLD) instead of its position. When the captain takes a UAV, every
+  question still open for his ACCEPT is refused at once.
 
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
