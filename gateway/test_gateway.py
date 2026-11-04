@@ -59,6 +59,8 @@ def free_port():
         s.bind(("127.0.0.1", 0))
         p = s.getsockname()[1]
         s.close()
+        if p + 2 > 65535:                       # (U4 gate: an ephemeral port at the top of the range crashed CA)
+            continue
         try:                                    # the gateway port (p + 2) must be free too
             t = socket.socket()
             t.bind(("127.0.0.1", p + 2))

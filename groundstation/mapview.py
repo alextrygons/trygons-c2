@@ -35,7 +35,7 @@ THEMES = {
     "day": {"bg": "#d8ecff", "blend": "#ffffff", "bands": chart.BANDS, "nodata": "#a0a0a0", "outside": "#ffffff",
             "note_bg": "#fff8d0", "note_fg": "#a00000", "att": "#606060", "contour": ("#3070b0", "#7fa8d0"),
             "avoid": "#c000c0", "route": "#7a00a0", "track": "#000000", "track_old": "#707070", "text": "#000000", "own": "#ffffff",
-            "warn": "#e00000", "good": "#008000", "ais": COL_AIS, "mark_dark": "#202020", "vision": ("#ff6000",
+            "warn": "#e00000", "good": "#008000", "ais": COL_AIS, "mark_dark": "#202020", "uav": "#00708a", "vision": ("#ff6000",
                                                                                                   "#c08000")},
     "dark": {"bg": "#05101a", "blend": "#000000",
              "bands": [(0.0, "#3a3222"), (2.0, "#2a6f93"), (3.0, "#235f80"), (5.0, "#1d506d"), (10.0, "#17425b"),
@@ -44,7 +44,7 @@ THEMES = {
              "contour": ("#6ab0e0", "#2c5272"), "avoid": "#ff50ff", "route": "#ff70ff", "track": "#ffffff", "track_old": "#9a9a9a",
              "text": "#c8d8e8", "own": theme.GOOD, "warn": theme.WARN, "good": theme.GOOD,
              "ais": {"danger": theme.WARN, "warn": theme.CAUTION, None: "#6aa8ff", "stale": "#707070"},
-             "mark_dark": "#c0c0c0", "vision": ("#ff7020", "#d09000")},
+             "mark_dark": "#c0c0c0", "uav": "#40d8e8", "vision": ("#ff7020", "#d09000")},
     "night": {"bg": "#000000", "blend": "#000000",
               "bands": [(0.0, "#2a1408"), (2.0, "#401810"), (3.0, "#36140c"), (5.0, "#2e110a"), (10.0, "#270e08"),
                         (20.0, "#200b06"), (50.0, "#1a0905"), (100.0, "#140704"), (1e9, "#0f0503")],
@@ -52,7 +52,7 @@ THEMES = {
               "contour": ("#803020", "#401810"), "avoid": "#a03060", "route": "#a04060", "track": "#a04030", "track_old": "#602818",
               "text": "#b04030", "own": "#d84a30", "warn": "#ff2a10", "good": "#a04020",
               "ais": {"danger": "#ff2a10", "warn": "#c08000", None: "#904030", "stale": "#502820"},
-              "mark_dark": "#803020", "vision": ("#c04010", "#905000")},
+              "mark_dark": "#803020", "uav": "#c05848", "vision": ("#c04010", "#905000")},
 }
 
 

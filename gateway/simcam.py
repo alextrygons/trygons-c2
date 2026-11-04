@@ -89,6 +89,38 @@ class SimCamera:
     stop = unplug
 
 
+def aerial_frame(w, h, k, slot=1):
+    """A simulated VRX picture (step U4: the UAV video in the demo / tests, no real VRX needed), grey w x h: the sea
+    seen from above (bands drifting with k), a light hull crossing the picture, the slot number as small bars on the
+    right and the time code of decode_ts top left (so a viewer can measure the latency like a boat camera)."""
+    rows = []
+    hull_y0, hull_y1 = h // 2 - h // 12, h // 2 + h // 12
+    hx = (k * 3) % (w + w // 4) - w // 8
+    hw = max(8, w // 6)
+    for y in range(h):
+        v = 60 + (18 if ((y + k) // 12) % 2 else 0)
+        row = bytearray([v]) * w
+        if hull_y0 <= y < hull_y1:
+            x0, x1 = max(0, hx), min(w, hx + hw)
+            if x1 > x0:
+                row[x0:x1] = b"\xd2" * (x1 - x0)
+        rows.append(row)
+    for i in range(max(1, int(slot))):                        # the slot: n bars on the right
+        x0 = w - 10 - i * 8
+        for y in range(Y0, Y0 + SQ * 2):
+            if 0 <= x0 < w - 4:
+                rows[y][x0:x0 + 4] = b"\xff" * 4
+    code = now_code()
+    for i in range(BITS):
+        val = 255 if (code >> (BITS - 1 - i)) & 1 else 0
+        x0 = X0 + i * SQ
+        if x0 + SQ > w:
+            break
+        for y in range(Y0, Y0 + SQ):
+            rows[y][x0:x0 + SQ] = bytes([val]) * SQ
+    return b"".join(bytes(r) for r in rows)
+
+
 def decode_ts(frame, w, h):
     """The time code from an RGB frame (w x h x 3), or None."""
     if frame is None or len(frame) < w * h * 3:

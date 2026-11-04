@@ -27,6 +27,13 @@ other stations' views are dropped FIRST ("VIDEO REDUCED FOR THE CAPTAIN"), back 
 dropped views fit 80 % of the budget for view_restore_s. Data saver / STARLINK: no extra view at all (the
 front-LOW rule stays). A view never changes anything on the boat.
 
+UAV video (step U4, CLAUDE.md V "Telemetry / video / AI", docs/uav_design.md 8): the six VRX captures are published
+by gateway/uav/video_worker.py as MediaMTX paths uav_1..uav_6 (source: publisher). A station receives UAV-n ONLY while
+it has that UAV open on a screen ({"t": "uav_view", "uav": n, "open": bool}); the UAV streams are a light encode
+(~400 kbit/s), counted BELOW the captain's video: over the budget they are dropped FIRST (with the other stations'
+camera views, for every station - the captain's own boat cameras stay), and on data saver / STARLINK there is NO UAV
+video for anyone (the 13n2 rule for every view wins). A UAV view never changes anything on the boat.
+
 Health: every 0.25 s the gateway reads the MediaMTX API: a camera whose
 main stream received no new data for 1 s is FROZEN / DOWN. All health checks
 run on the boat LAN, no internet used. Cameras are never needed for
@@ -61,6 +68,15 @@ PRESETS = {
 
 def path_name(cam, quality):
     return "cam_%s_%s" % (cam.lower().replace("-", ""), "hi" if quality == "HIGH" else "lo")
+
+
+def uav_path(slot):
+    """The MediaMTX path of UAV slot n's video (published by gateway/uav/video_worker.py)."""
+    return "uav_%d" % int(slot)
+
+
+def uav_name(slot):
+    return "UAV-%d" % int(slot)
 
 
 class Camera:
@@ -99,9 +115,12 @@ class CameraManager:
         self.restore_since = None
         self.sessions = {}                  # MediaMTX reader id -> (path, station id, bytes, t)
         self.station_kbps = {}              # station id -> kbit/s of video it receives
+        self.sta_path_kbps = {}             # (station id, path) -> kbit/s (U4: the UAV part of the captain's load)
         self.path_kbps = {}                 # path -> kbit/s sent to stations
         self.total_kbps = 0.0
         self.internet_until = 0.0           # camera internet allowed (firmware update) until
+        self.uav_slots = []                 # the UAV video slots (U4; set by the gateway before start)
+        self.uav_running = None             # callable -> the slots whose video is encoded now (None = all)
         self.mtx_ok = False
         self.last_poll = 0.0
         self.lock = threading.Lock()
@@ -141,6 +160,8 @@ class CameraManager:
         for c in self.cams.values():
             lines += ["  %s:" % path_name(c.name, "HIGH"), "    source: %s" % c.url_main, "    sourceOnDemand: no",
                       "  %s:" % path_name(c.name, "LOW"), "    source: %s" % c.url_sub, "    sourceOnDemand: yes"]
+        for slot in self.uav_slots:                         # the UAV video (U4): published by the video worker
+            lines += ["  %s:" % uav_path(slot), "    source: publisher"]
         for extra in self.cfg.get("extra_paths", []):       # tests: the simulated cameras publish here
             lines += ["  %s:" % extra, "    source: publisher"]
         return "\n".join(lines) + "\n"
@@ -215,7 +236,7 @@ class CameraManager:
                     c.state, c.since = state, now
             # what goes to the stations: their readers carry "?station=<id>"
             # (the gateway's own readers - recording, health - carry none)
-            kb, kst = {}, {}
+            kb, kst, ksp = {}, {}, {}
             seen = set()
             for s in sess:
                 if s.get("state") != "read":
@@ -235,12 +256,14 @@ class CameraManager:
                     rate = (b - old[2]) * 8 / 1000 / max(0.05, now - old[3])
                     kb[s.get("path")] = kb.get(s.get("path"), 0.0) + rate
                     kst[st_id] = kst.get(st_id, 0.0) + rate
+                    ksp[(st_id, s.get("path"))] = ksp.get((st_id, s.get("path")), 0.0) + rate
                 self.sessions[sid] = (s.get("path"), st_id, b, now)
             for sid in list(self.sessions):
                 if sid not in seen:
                     del self.sessions[sid]
             self.path_kbps = {k: round(v) for k, v in kb.items()}
             self.station_kbps = {k: round(v) for k, v in kst.items()}
+            self.sta_path_kbps = ksp
             self.total_kbps = round(sum(kb.values()))
             self.last_poll = now
 
@@ -297,7 +320,59 @@ class CameraManager:
         return out
 
     def allowed_paths(self, st_id):
-        return {path_name(n, q) for n, q in self.levels_for(st_id).items() if q != "OFF"}
+        return {path_name(n, q) for n, q in self.levels_for(st_id).items() if q != "OFF"} | \
+            {uav_path(s) for s in self.uav_allowed(st_id)}
+
+    # --- UAV video (step U4) ------------------------------------------------------------------------------------
+    def uav_open(self, st_id):
+        """The UAV slots this station has open on a screen."""
+        return set((self.station_cams.get(st_id) or {}).get("uav") or ())
+
+    def uav_reduced(self, st_id):
+        """This station's UAV views are cut now: data saver / STARLINK (NO UAV video for anyone), or reduced for the
+        captain's video (dropped FIRST - also the captain's own UAV views: his main video = the boat cameras)."""
+        return bool(self.uav_open(st_id)) and (self.forced_low() or self.views_reduced)
+
+    def uav_allowed(self, st_id):
+        if self.forced_low() or self.views_reduced:
+            return set()
+        return {s for s in self.uav_open(st_id) if s in self.uav_slots}
+
+    def uav_views(self):
+        """Every UAV slot open on some station's screen and allowed now (the UAV AI's feeds)."""
+        out = set()
+        for sid in list(self.station_cams):
+            out |= self.uav_allowed(sid)
+        return out
+
+    def uav_view_request(self, st, m):
+        """{"t": "uav_view", "uav": n | None, "open": bool}: open / close UAV n's video on this station (None = close
+        every UAV view). Only the streams open on a screen are pulled (owner H5)."""
+        uav = m.get("uav")
+        req = self.station_cams.setdefault(st.id, {"preset": None, "levels": None, "override": False,
+                                                   "view_only": True})
+        cur = set(req.get("uav") or ())
+        old = set(cur)
+        if uav is None:
+            cur = set()
+        else:
+            try:
+                slot = int(uav)
+            except (TypeError, ValueError):
+                return st.send({"t": "cams_ack", "ok": False, "text": "unknown UAV"})
+            if slot not in self.uav_slots:
+                return st.send({"t": "cams_ack", "ok": False, "text": "no video for UAV %s" % uav})
+            (cur.add if m.get("open", True) else cur.discard)(slot)
+        req["uav"] = sorted(cur)
+        if cur != old:
+            self.kick_disallowed()
+            if self.gw:
+                self.gw.audit("uav_view", station=st.id, user=st.user, uavs=req["uav"])
+        st.send(self.streams_msg(st))
+
+    def forget(self, st_id):
+        """A station gone: its camera / UAV views end."""
+        self.station_cams.pop(st_id, None)
 
     def request(self, st, m):
         """{"t":"cams", "preset": "Full" | ..., "levels": {name: OFF/LOW/HIGH} (optional),
@@ -307,7 +382,7 @@ class CameraManager:
         if levels is not None and not all(v in ("OFF", "LOW", "HIGH") and k in self.cams for k, v in levels.items()):
             return st.send({"t": "cams_ack", "ok": False, "text": "bad camera levels"})
         self.station_cams[st.id] = {"preset": preset, "levels": levels, "override": bool(m.get("override")),
-                                    "view": self.view_of(st.id)}
+                                    "view": self.view_of(st.id), "uav": sorted(self.uav_open(st.id))}
         self.kick_disallowed()
         if self.gw:
             self.gw.audit("cameras", station=st.id, user=st.user, preset=preset, levels=levels,
@@ -337,8 +412,14 @@ class CameraManager:
         kicks the readers + sends the new stream lists)."""
         now = now or time.time()
         budget = float(self.cfg.get("copilot_budget_kbps", 6000) or 0)
-        views = [sid for sid in self.station_cams if self.view_of(sid) and not self.is_priority(sid)]
-        prio_kbps = sum(v for sid, v in self.station_kbps.items() if self.is_priority(sid))
+        views = [sid for sid in self.station_cams if (self.view_of(sid) and not self.is_priority(sid)) or
+                 self.uav_open(sid)]
+        # U4: the UAV streams are never "the captain's video" (they are dropped first, also his own UAV views)
+        uav_paths = {uav_path(s) for s in self.uav_slots}
+        prio_kbps = sum(v for sid, v in self.station_kbps.items() if self.is_priority(sid)) - sum(
+            self.sta_path_kbps.get((sid, p), 0.0) for sid in list(self.station_kbps) if self.is_priority(sid)
+            for p in uav_paths)
+        prio_kbps = max(0.0, prio_kbps)
         # the loudhailer's voice (13r, owner 2026-11-02) ranks above the copilot's video: it counts with the captain's
         # load, so the copilot's camera view drops first (only while the captain receives video)
         hail = getattr(self.gw, "hail", None) if self.gw else None
@@ -377,10 +458,17 @@ class CameraManager:
         reduced = self.view_reduced(st.id)
         if reduced and not self.forced_low():
             notice = "VIDEO REDUCED FOR THE CAPTAIN: camera view off"
+        u_red = self.uav_reduced(st.id)
+        if u_red:
+            notice = (notice + " - " if notice else "") + (
+                "DATA SAVER: no UAV video" if self.forced_low() else "VIDEO REDUCED FOR THE CAPTAIN: UAV video off")
+        streams = {n: path_name(n, q) for n, q in lv.items() if q != "OFF"}
+        streams.update({uav_name(s): uav_path(s) for s in sorted(self.uav_allowed(st.id))})
         return {"t": "cams_ack", "ok": True, "levels": lv, "notice": notice,
                 "view": self.view_of(st.id), "view_reduced": reduced,
                 "view_light": bool(self.view_of(st.id)) and not self.is_priority(st.id),
-                "streams": {n: path_name(n, q) for n, q in lv.items() if q != "OFF"},
+                "uav_open": sorted(self.uav_open(st.id)), "uav_reduced": u_red,
+                "streams": streams,
                 "rtsp_port": self.rtsp_port, "webrtc_port": self.webrtc_port, "query": "station=%d" % st.id,
                 "user": st.session, "password": st.video_key}
 
@@ -446,6 +534,8 @@ class CameraManager:
         return {"relay": self.mtx_ok, "cameras": cams, "total_kbps": self.total_kbps, "front_live": front_live,
                 "station_kbps": self.station_kbps, "views_reduced": self.views_reduced,
                 "views": {sid: r.get("view") for sid, r in self.station_cams.items() if r.get("view")},
+                "uav_views": {sid: r.get("uav") for sid, r in self.station_cams.items() if r.get("uav")},
+                "uav_kbps": {s: self.path_kbps.get(uav_path(s), 0) for s in self.uav_slots},
                 "forced_low": self.forced_low(), "internet": self.internet_allowed()}
 
 

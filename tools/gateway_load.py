@@ -2,6 +2,9 @@
 
     python tools/gateway_load.py                 (10 min, 1080p main + 360p sub streams)
     python tools/gateway_load.py --minutes 3 --viewers 0
+    python tools/gateway_load.py --uav 6 --uav-ai 2   (step U4: + the UAV magazine: 6 simulated VRX captures encoded
+                                                      640x480 15 fps ~400 kbit/s into MediaMTX + the ring, the UAV AI
+                                                      on 2 feeds - measured per part)
 
 What runs (all on this PC, nothing on the network, no boat hardware):
   - the AURIX simulator (sim/autopilot_sim server 5770 1: USB 5770, gateway UART 5772)
@@ -160,8 +163,12 @@ def system_sample():
     return (sum(v) - v[3] - v[4]) / tck, sum(v) / tck, mem["MemTotal"] - mem["MemAvailable"], mem["MemTotal"]
 
 
-def part_of(name, pid, vision_pids):
+def part_of(name, pid, vision_pids, uav=None):
     n = name.lower()
+    for k, label in (("video", "UAV video worker (+ its ffmpeg encoders)"), ("ai", "UAV AI worker (eWaSR + ffmpeg)"),
+                     ("router", "UAV MAVLink router"), ("sim", "simulated drones (NOT the gateway)")):
+        if uav and pid in uav.get(k, ()):
+            return label
     if pid in vision_pids:
         return "vision worker (eWaSR + its ffmpeg)"
     if "mediamtx" in n:
@@ -209,6 +216,9 @@ def main():
     ap.add_argument("--warmup", type=float, default=60.0)
     ap.add_argument("--viewers", type=int, default=1)
     ap.add_argument("--no-vision", action="store_true")
+    ap.add_argument("--uav", type=int, default=0, help="U4: N simulated UAV video captures (640x480 15 fps)")
+    ap.add_argument("--uav-ai", type=int, default=0, help="U4: the UAV AI on this many of the UAV feeds")
+    ap.add_argument("--uav-encoder", default="auto", help="auto (Quick Sync if it works) / x264")
     a = ap.parse_args()
     ffmpeg, mtx, vpy = toolpaths.ffmpeg(), toolpaths.mediamtx(), toolpaths.vision_python()
     model = os.path.join(REPO, "gateway", "vision", "models", "ewasr_resnet18.onnx")
@@ -244,6 +254,10 @@ def main():
         "ais": {"enabled": True, "source": "tcp:127.0.0.1:%d" % P["ais"]},
         "vision": {"enabled": True, "source": "camera" if vision_ok else "fake"},
         "print_status_s": 5.0,
+        "uav": {"enabled": bool(a.uav), "sim": True, "sim_base_port": 14700,
+                "video": {"enabled": bool(a.uav), "always": list(range(1, a.uav + 1)), "w": 640, "h": 480, "fps": 15,
+                          "kbps": 400, "encoder": a.uav_encoder},
+                "ai": {"measure_feeds": list(range(1, a.uav_ai + 1))}},
         "audit_fallback": os.path.join(OUT, "audit_fallback"),
         "storage": {"root": os.path.join(OUT, "data"), "require_mount": False, "check_s": 5, "low_free_gb": 0.0,
                     "full_free_gb": 0.0},
@@ -292,9 +306,10 @@ def main():
             time.sleep(5.0)
             now = time.time()
             members = tree(gw.pid)
+            uav = uav_pids(os.path.join(OUT, "gateway.log"))
             vis = set()
             for pid, name in members.items():                     # the worker = a python child of gateway.py
-                if pid != gw.pid and "python" in name.lower():
+                if pid != gw.pid and "python" in name.lower() and not any(pid in v for v in uav.values()):
                     vis |= set(tree(pid))
             parts, cur = {}, {}
             for pid, name in members.items():
@@ -302,7 +317,7 @@ def main():
                 if s is None:
                     continue
                 cur[pid] = s
-                k = part_of(name, pid, vis)
+                k = part_of(name, pid, vis, uav)
                 d = parts.setdefault(k, {"cpu_s": 0.0, "ram": 0, "n": 0})
                 d["cpu_s"] += max(0.0, s[0] - prev.get(pid, s)[0]) if pid in prev else 0.0
                 d["ram"] += s[1]
@@ -320,6 +335,14 @@ def main():
         cams_ok = re.findall(r"STATUS .* cameras (\d+/\d+ OK)", st)
         lag = [int(x) for x in re.findall(r"STATUS .* lag_ms (\d+)", st)]
         res = summarise(samples, ncpu, fps, infer, cams_ok, lag, vision_ok, a)
+        if a.uav:
+            u = re.findall(r"UAVSTATUS .*; video (\S+) encoder (\S+); uav_ai (\S+) ai_fps ([0-9.]+) ai_ms (\S+)", st)
+            if u:
+                vs, enc, ast, afps, ams = u[-1]
+                res["lines"].append("UAV: %d simulated VRX captures, encoder %s, states %s; UAV AI %s on %d feed(s): "
+                                    "%s fps (all feeds together), inference %s ms" % (a.uav, enc, vs, ast, a.uav_ai,
+                                                                                       afps, ams))
+            res["uav"] = {"n": a.uav, "ai_feeds": a.uav_ai, "status": u[-1] if u else None}
         with open(os.path.join(OUT, "result.json"), "w", encoding="utf-8") as f:
             json.dump(res, f, indent=1)
         with open(os.path.join(OUT, "summary.txt"), "w", encoding="utf-8") as f:
@@ -334,6 +357,21 @@ def main():
                 p.kill()
         for lf in logs.values():
             lf.close()
+
+
+def uav_pids(path):
+    """{"router" | "sim" | "video" | "ai": {pid + its children}} from the gateway's newest UAVSTATUS line (U4)."""
+    try:
+        st = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return {}
+    m = re.findall(r"UAVSTATUS pids router=(\d+) sim=(\d+) video=(\d+) ai=(\d+)", st)
+    if not m:
+        return {}
+    out = {}
+    for k, v in zip(("router", "sim", "video", "ai"), m[-1]):
+        out[k] = set(tree(int(v))) if int(v) else set()
+    return out
 
 
 def summarise(samples, ncpu, fps, infer, cams_ok, lag, vision_ok, a):

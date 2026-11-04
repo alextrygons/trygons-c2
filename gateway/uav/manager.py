@@ -28,9 +28,59 @@ import socket
 
 from common import deep_merge, log
 import uavlink
-from . import allow, gpsassist, hatch, launch, mission, nofly, simhatch, uavcheck
+from . import allow, battery, flightlog, gpsassist, hatch, launch, mission, nofly, simhatch, uavai, uavcheck
 from .registry import Registry
 from .usbslots import slot_specs
+
+COPTER_MODES = {0: "STABILIZE", 2: "ALT_HOLD", 3: "AUTO", 4: "GUIDED", 5: "LOITER", 6: "RTL", 9: "LAND",
+                16: "POSHOLD", 17: "BRAKE", 21: "SMART_RTL"}
+VIDEO_DEFAULTS = {
+    "enabled": False,                          # the six VRX + USB captures (U4); sim: the simulated VRX pictures
+    "devices": {},                             # {"1": "dshow:video=USB Video" | "v4l2:/dev/v4l/by-path/..." | "sim"}
+    "w": 640, "h": 480, "fps": 15, "kbps": 400,
+    "encoder": "auto",                         # auto = Quick Sync when the probe works, else x264 ultrafast
+    "always": [],                              # slots encoded also while the drone sits in its slot (bench)
+    "stall_s": 5.0,
+    "lost_s": 3.0,                             # a running video DOWN / STALLED this long = notice UAV n VIDEO LOST
+}
+
+
+class UavVideoTrack:
+    """The ring's UAV-n folder for gateway/recorder.py (duck-typed like CamRecorder / the loudhailer's AudioTrack):
+    its 1-minute .ts files go into every SAVE / KEEP like a camera's. The video worker writes them."""
+
+    class _Proc:
+        def __init__(self, track):
+            self.track = track
+
+        def poll(self):                         # "still being written" while that slot's capture runs
+            return None if self.track.mgr.video_state(self.track.slot) in ("RUN", "STARTING") else 0
+
+    def __init__(self, folder, mgr, slot):
+        self.name, self.folder, self.mgr, self.slot = "UAV-%d" % slot, folder, mgr, slot
+        self.state, self.restarts, self.since = "OFF", 0, time.time()
+        self.proc = self._Proc(self)
+
+    def segments(self):
+        from recorder import seg_time
+        out = []
+        try:
+            for n in os.listdir(self.folder):
+                t = seg_time(n)
+                if t is not None:
+                    out.append((t, os.path.join(self.folder, n)))
+        except OSError:
+            pass
+        out.sort()
+        return out
+
+    def tick(self, now):
+        st = {"RUN": "REC", "STARTING": "STARTING"}.get(self.mgr.video_state(self.slot), "OFF")
+        if st != self.state:
+            self.state, self.since = st, now
+
+    def stop(self):
+        pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ACTIVE, OFFLINE = "ACTIVE", "OFFLINE"
@@ -55,7 +105,11 @@ DEFAULTS = {
     "hatch_relay": None,
     "hatch": {"port": "", "sim": None, "open_s": 20.0, "close_s": 20.0, "sim_travel_s": 6.0},
     "launch": {},                              # launch.DEFAULTS
-    "check": {},                               # uavcheck.DEFAULTS
+    "check": {},                               # uavcheck.DEFAULTS (also the battery rule's numbers, battery.py)
+    # --- U4 ---
+    "video": {},                               # VIDEO_DEFAULTS
+    "ai": {},                                  # uavai.DEFAULTS
+    "telem_s": 0.5,                            # uav_telem to the stations that asked for it (2 Hz)
 }
 
 
@@ -113,6 +167,28 @@ class UavManager:
         self.relay_retry = None                  # [on, cb, until]: one retry of a hatch relay command (W55)
         self.relay_busy = False
         self._load_extra()
+        # --- U4: telemetry to the stations, the video worker, the UAV AI, the flight logs, the U4 notices ----------
+        self.vcfg = deep_merge(VIDEO_DEFAULTS, self.cfg["video"] or {})
+        if self.cfg["sim"] and not self.vcfg["devices"]:
+            self.vcfg["devices"] = {str(s): "sim" for s in range(1, self.n + 1)}
+        self.video_on = self.enabled and bool(self.vcfg["enabled"])
+        self.vproc = None
+        self.vq = queue.Queue(maxsize=50)
+        self.vstatus, self.v_t, self.v_hello = {}, 0.0, {}
+        self.v_next_start, self.v_spawning, self.v_starts = 0.0, False, 0
+        self.v_run_sent = None
+        self.tracks = {}
+        if self.video_on and st is not None and st.usable:
+            for s in range(1, self.n + 1):
+                self.tracks["UAV-%d" % s] = UavVideoTrack(os.path.join(st.root, "video", "ring", "UAV-%d" % s), self, s)
+        self.ai = uavai.UavAi(self.cfg["ai"], self)
+        self.flog = flightlog.FlightLogs(st.folder("uav_logs") if (self.enabled and st is not None and st.usable)
+                                         else None)
+        self.telem_subs = set()                  # station ids that asked for uav_telem
+        self.next_telem = 0.0
+        self.next_u4 = 0.0
+        self.mem = {}                            # slot -> what the U4 notices remember (link, range, stage, video)
+        self.land_events = []                    # (t, slot, what, why) from the router's battery rule
 
     # --- the processes --------------------------------------------------------------------------------------------
     def start(self, loop):
@@ -121,6 +197,138 @@ class UavManager:
             self._spawn_bg()
             if self.switches is not None:
                 self.switches.start()
+            self.flog.start()
+            if self.video_on:
+                self._vspawn_bg()
+
+    # --- U4: the video worker (its OWN low-priority process) -------------------------------------------------------
+    def _vspawn_bg(self):
+        if self.v_spawning:
+            return
+        self.v_spawning = True
+        self.v_next_start = time.time() + float(self.cfg["restart_s"])
+
+        def run():
+            try:
+                self._vspawn()
+            finally:
+                self.v_spawning = False
+        threading.Thread(target=run, daemon=True).start()
+
+    def _vspawn(self):
+        import toolpaths
+        v = self.vcfg
+        st = getattr(self.gw, "storage", None)
+        rec = getattr(self.gw, "rec", None)
+        ring = os.path.join(st.root, "video", "ring") if (st is not None and st.usable and rec is not None and
+                                                          rec.enabled) else ""
+        cams_on = bool((self.gw.cfg.get("cameras") or {}).get("enabled", True)) if hasattr(self.gw, "cfg") else False
+        cmd = [self.cfg["python"] or sys.executable, os.path.join(HERE, "video_worker.py"),
+               "--ffmpeg", toolpaths.ffmpeg() or "ffmpeg",
+               "--rtsp-port", str(int(((self.gw.cfg.get("cameras") or {}) if hasattr(self.gw, "cfg") else {}).get(
+                   "rtsp_port", 8554))),
+               "--publish", "1" if cams_on else "0", "--ring", ring,
+               "--seg-s", str(int(getattr(rec, "seg_s", 60) or 60)), "--w", str(int(v["w"])), "--h", str(int(v["h"])),
+               "--fps", str(int(v["fps"])), "--kbps", str(int(v["kbps"])), "--encoder", str(v["encoder"]),
+               "--stall-s", str(float(v["stall_s"]))]
+        err = self._errlog("uav_video.log")
+        try:
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, bufsize=0, cwd=HERE)
+        except OSError as e:
+            log.warning("uav: the video worker did not start: %s", e)
+            return
+        finally:
+            if err is not subprocess.DEVNULL:
+                err.close()
+        q = queue.Queue(maxsize=50)
+        self.vq = q
+        self.v_t = time.time()
+        self.v_starts += 1
+        self.vproc = p
+        self.v_run_sent = None
+        threading.Thread(target=self._vreader, args=(p,), daemon=True).start()
+        threading.Thread(target=self._writer, args=(p, q), daemon=True).start()
+        self.to_video({"op": "config", "devices": dict(self.vcfg["devices"])})
+
+    def _vreader(self, p):
+        try:
+            for line in p.stdout:
+                try:
+                    m = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    continue
+                if self.loop is not None:
+                    self.loop.call_soon_threadsafe(self._from_video, p, m)
+        except (OSError, ValueError, RuntimeError):
+            pass
+
+    def _from_video(self, p, m):
+        if p is not self.vproc:
+            return
+        if m.get("ev") == "status":
+            self.vstatus, self.v_t = m.get("slots") or {}, time.time()
+        elif m.get("ev") == "hello":
+            self.v_hello, self.v_t = m, time.time()
+
+    def to_video(self, obj):
+        if self.vproc is None:
+            return False
+        try:
+            self.vq.put_nowait((json.dumps(obj) + "\n").encode("utf-8"))
+            return True
+        except queue.Full:
+            return False
+
+    def video_state(self, slot):
+        if self.vproc is None:
+            return "OFF"
+        return (self.vstatus.get(str(slot)) or {}).get("state", "OFF")
+
+    def video_running(self):
+        """The slots whose video is encoded now (MediaMTX uav_<n> published)."""
+        return [int(s) for s, v in self.vstatus.items() if v.get("state") in ("RUN", "STARTING")] \
+            if self.vproc is not None else []
+
+    def video_want(self):
+        """Only drones that FLY are encoded (a drone in its slot = VTX pit mode) + the config's 'always' slots."""
+        out = {int(s) for s in self.vcfg.get("always") or []}
+        for s in range(1, self.n + 1):
+            d = self.slot(s)
+            if s in self.flying or (d.get("armed") and not d.get("usb_present")):
+                out.add(s)
+        return sorted(s for s in out if str(s) in {str(k) for k in self.vcfg["devices"]})
+
+    def _video_tick(self, now):
+        p = self.vproc
+        if p is not None and (p.poll() is not None or now - self.v_t > 15.0):
+            self._stop_video(wait=False)
+            self.v_next_start = now + float(self.cfg["restart_s"])
+            self.notice("UAV VIDEO process %s - restarting" % ("ended" if p.poll() is not None else "silent"), "caution")
+        if self.vproc is None and now >= self.v_next_start:
+            self._vspawn_bg()
+        want = self.video_want()
+        if want != self.v_run_sent and self.to_video({"op": "run", "slots": want}):
+            self.v_run_sent = want
+
+    def _stop_video(self, wait=True):
+        p, self.vproc = self.vproc, None
+        self.vstatus = {}
+        if p is None:
+            return
+        try:
+            self.vq.put_nowait(b'{"op": "stop"}\n')
+            self.vq.put_nowait(None)
+        except queue.Full:
+            pass
+        try:
+            if wait:
+                p.wait(4)
+            elif p.poll() is None:
+                p.kill()
+        except subprocess.TimeoutExpired:
+            p.kill()
+        except OSError:
+            pass
 
     def _spawn_bg(self):
         if self.spawning:
@@ -181,10 +389,12 @@ class UavManager:
 
     def _config(self):
         lst = self.cfg["slots"] or []
-        return {"op": "config", "slots": [{"slot": s, "usb": usb, "sysid": (self.reg.recs.get(s) or {}).get("sysid")
-                                           if (self.reg.recs.get(s) or {}).get("ok") else None,
-                                           "elrs": ((lst[s - 1] if s - 1 < len(lst) else {}) or {}).get("radio") or ""}
-                                          for s, usb, _v, _e in self.specs]}
+        return {"op": "config", "battery": dict(self.ccfg),
+                "slots": [{"slot": s, "usb": usb, "sysid": (self.reg.recs.get(s) or {}).get("sysid")
+                           if (self.reg.recs.get(s) or {}).get("ok") else None,
+                           "capacity_mah": (self.reg.recs.get(s) or {}).get("capacity_mah"),
+                           "elrs": ((lst[s - 1] if s - 1 < len(lst) else {}) or {}).get("radio") or ""}
+                          for s, usb, _v, _e in self.specs]}
 
     def _reader(self, p):
         try:
@@ -224,6 +434,10 @@ class UavManager:
         self.worker = {}
         if wait and self.switches is not None:
             self.switches.stop()
+        if wait:
+            self._stop_video(wait=True)
+            self.ai.stop()
+            self.flog.stop()
         if p is not None:
             try:
                 self.wq.put_nowait(b'{"op": "stop"}\n')
@@ -272,6 +486,15 @@ class UavManager:
         elif ev == "log":
             self.log.append(m.get("text", ""))
             del self.log[:-20]
+        elif ev == "land":
+            # the router's battery rule (U4, docs 6.2): the ONLY landing
+            s = int(m.get("slot") or 0)
+            self.land_events.append((time.time(), s, m.get("what"), m.get("why", "")))
+            del self.land_events[:-20]
+            if m.get("what") == "start":
+                self.notice("UAV %d LANDING NOW - battery minimum (where it is): %s" % (s, m.get("why", "")),
+                            "caution")
+            self.gw.audit("uav_land", slot=s, what=m.get("what"), why=m.get("why", ""))
         elif ev in ("mission", "cmd"):
             cb = self.cbs.pop(m.get("id"), None)
             if cb is not None:
@@ -318,6 +541,7 @@ class UavManager:
                 self.next_assist[s] = now + float(self.cfg["assist_s"])
                 self.send_assist(s)
         self.u3_tick(now)
+        self.u4_tick(now)
 
     # --- GPS warm start (H4) --------------------------------------------------------------------------------------
     def _load_extra(self):
@@ -621,6 +845,154 @@ class UavManager:
                         f["next_try"] = time.time() + 5.0
                 self.cmd(n, "elrs", allow.CMD_MISSION_START, [mission.START_LAUNCH, 0], go)
 
+    # --- U4: the map / telemetry / notices / flight log --------------------------------------------------------------
+    def drone_view(self, n, boat_pos=None):
+        """The map + HUD values of slot n's drone (stations: gw_status "uav" "drones" + uav_telem), or None."""
+        d = self.slot(n)
+        if not d or d.get("hb_age") is None:
+            return None
+        rd = (self.worker.get("radio") or {}).get(str(n)) or {}
+        lk = (self.worker.get("links") or {}).get(str(n)) or {}
+        j = d.get("judge") or {}
+        rec = self.reg.recs.get(n) or {}
+        out = {"slot": n, "name": rec.get("name") or "UAV %d" % n, "sysid": rec.get("sysid"),
+               "lat": d.get("lat"), "lon": d.get("lon"), "alt": d.get("rel_alt"), "hdg": d.get("hdg"),
+               "gs": d.get("gs"), "climb": d.get("climb"), "batt": d.get("battery_pct"), "batt_v": d.get("batt_v"),
+               "batt_a": d.get("batt_a"), "mode": COPTER_MODES.get(d.get("mode"), str(d.get("mode"))),
+               "armed": bool(d.get("armed")), "landed": bool(d.get("landed")), "in_slot": bool(d.get("usb_present")),
+               "flying": (self.flying.get(n) or {}).get("phase"),
+               "lq": rd.get("lq") if rd.get("present") else (0 if rd else None), "rssi": rd.get("rssi"),
+               "link_age": rd.get("hb_age"), "usb_lq": lk.get("lq"),
+               "land_eta": j.get("eta_s"), "landing": bool(d.get("landing")),
+               "stage": battery.stage(j.get("eta_s"), bool(d.get("landing"))) if (d.get("armed") and
+                                                                                  not d.get("landed")) else None,
+               "gps_fix": d.get("gps_fix"), "text": d.get("text"), "video": self.video_state(n)}
+        if d.get("lat") is not None and (d["lat"], d.get("lon")) == (0.0, 0.0):
+            out["lat"] = out["lon"] = None                              # no position yet
+        if boat_pos and out["lat"] is not None:
+            out["dist_m"] = round(uavcheck.dist_m(boat_pos, (out["lat"], out["lon"])))
+        return out
+
+    def drones(self):
+        pos = self.boat().get("pos") if self.enabled else None
+        out = {}
+        for s in range(1, self.n + 1):
+            v = self.drone_view(s, pos)
+            if v is not None:
+                out[str(s)] = v
+        return out
+
+    def u4_tick(self, now):
+        if self.video_on:
+            self._video_tick(now)
+        if now >= self.next_telem:
+            self.next_telem = now + float(self.cfg["telem_s"])
+            self.push_telem()
+        if now < self.next_u4:
+            return
+        self.next_u4 = now + 1.0
+        self.ai.tick(now)
+        rng = float(self.ccfg["uav_rf_range_m"])
+        pos = self.boat().get("pos")
+        for s in range(1, self.n + 1):
+            v = self.drone_view(s, pos)
+            m = self.mem.setdefault(s, {"armed": False, "link": True, "range": 0.0, "stage": None, "video": None,
+                                        "v_bad": None})
+            if v is None:
+                continue
+            air = v["armed"] and not v["landed"]
+            # the flight log: one file per flight (from the ARM), a line a second while armed
+            if v["armed"]:
+                self.flog.record(s, v["name"], {"sysid": v["sysid"], "lat": v["lat"], "lon": v["lon"],
+                                                "alt_m": v["alt"], "hdg": v["hdg"], "gs_ms": v["gs"],
+                                                "climb_ms": v["climb"], "batt_pct": v["batt"], "batt_v": v["batt_v"],
+                                                "batt_a": v["batt_a"], "used_mah": self.slot(s).get("used_mah"),
+                                                "mode": v["mode"], "armed": int(v["armed"]), "lq_pct": v["lq"],
+                                                "land_eta_s": v["land_eta"], "landing": int(v["landing"]),
+                                                "phase": v["flying"]}, new_flight=not m["armed"], now=now)
+            elif m["armed"]:
+                self.flog.end(s)
+            m["armed"] = v["armed"]
+            if not air:
+                m["stage"] = None
+                continue
+            # ELRS link lost / back (the drone holds or flies its mission - never lands for it)
+            ok = bool(v["lq"]) and (v["link_age"] is not None and v["link_age"] < 3.0)
+            if ok != m["link"] and not v["in_slot"]:
+                m["link"] = ok
+                self.notice("UAV %d LINK LOST - it holds / flies its mission (never lands for it)" % s if not ok else
+                            "UAV %d link back" % s, "caution" if not ok else "info")
+            # the radio range
+            dist = v.get("dist_m")
+            if dist is not None and dist > 0.9 * rng and now - m["range"] > 60.0:
+                m["range"] = now
+                self.notice("UAV %d towards the radio range limit (%d m of %d m) - the crew decides" % (
+                    s, dist, rng), "caution")
+            # the battery minimum: CAUTION 60 s / 20 s before (the stations show it as a local caution)
+            stg = v["stage"]
+            if stg != m["stage"]:
+                if stg in (60, 20):
+                    self.notice("UAV %d LANDING IN %d s - battery minimum" % (s, stg), "caution")
+                m["stage"] = stg
+            # the video
+            vs = v["video"]
+            if s in (self.v_run_sent or []):
+                bad = vs not in ("RUN", "STARTING")
+                if bad and m["v_bad"] is None:
+                    m["v_bad"] = now
+                if not bad:
+                    if m["video"] == "lost":
+                        self.notice("UAV %d video back" % s)
+                    m["v_bad"], m["video"] = None, "ok"
+                elif now - m["v_bad"] >= float(self.vcfg["lost_s"]) and m["video"] != "lost":
+                    m["video"] = "lost"
+                    self.notice("UAV %d VIDEO LOST (%s) - nothing else changes" % (s, vs), "caution")
+
+    def push_telem(self):
+        """uav_telem (2 Hz) to the stations that asked for it ({"t": "uav_telem_on", "on": true}); never on the data
+        saver (gw_status "uav" "drones" at 1 Hz is enough there)."""
+        if not self.telem_subs:
+            return
+        saver = bool(getattr(self.gw, "data_saver", lambda: False)())
+        if saver:
+            return
+        sts = self.gw.stations.stations
+        msg = None
+        for sid in list(self.telem_subs):
+            st = sts.get(sid)
+            if st is None:
+                self.telem_subs.discard(sid)
+                continue
+            if msg is None:
+                msg = {"t": "uav_telem", "t_s": round(time.time(), 2), "drones": self.drones()}
+            st.send(msg)
+
+    def telem_msg(self, st, m):
+        (self.telem_subs.add if m.get("on", True) else self.telem_subs.discard)(st.id)
+
+    def logs_msg(self, st, m):
+        """{"t": "uav_logs"} -> the list; {"t": "uav_log", "name", "file", "fmt": "csv" | "gpx"} -> the text. Read in
+        a helper thread (never file work on the event loop)."""
+        loop = self.loop
+
+        def reply(obj):
+            if loop is not None:
+                loop.call_soon_threadsafe(st.send, obj)
+            else:
+                st.send(obj)
+
+        def run():
+            if m.get("t") == "uav_logs":
+                reply({"t": "uav_logs", "logs": self.flog.list()})
+            else:
+                fmt = m.get("fmt") if m.get("fmt") in ("csv", "gpx") else "csv"
+                ok, text = self.flog.read(m.get("name"), m.get("file"), fmt)
+                reply({"t": "uav_log", "ok": ok, "name": m.get("name"), "file": m.get("file"), "fmt": fmt,
+                       "data": text if ok else "", "text": "" if ok else text})
+        if st.role == "VIEWER" and m.get("t") == "uav_log":
+            return st.send({"t": "uav_log", "ok": False, "text": "VIEWER: watch only"})
+        threading.Thread(target=run, daemon=True).start()
+
     # --- U3: station messages --------------------------------------------------------------------------------------
     def _ack(self, st, what, ok, code, text, **kw):
         st.send(dict({"t": "uav_ack", "what": what, "ok": ok, "code": 0 if ok else code, "text": text}, **kw))
@@ -817,7 +1189,14 @@ class UavManager:
                 "hatch": dict(self.hatch.status(), relay=self.hatch_relay, sim=self.simhatch is not None),
                 "launch": self.seq.status(time.time()), "notices": list(self.notices[-6:]),
                 "airspace": self.airspace.status(),
-                "flying": {str(k): {"phase": v.get("phase")} for k, v in self.flying.items()}}
+                "flying": {str(k): {"phase": v.get("phase")} for k, v in self.flying.items()},
+                # U4: the map / HUD (also via uav_telem 2 Hz), the video worker, the UAV AI, the flight logs
+                "drones": self.drones() if self.enabled else {},
+                "video": {"enabled": self.video_on, "running": self.vproc is not None,
+                          "encoder": self.v_hello.get("encoder"), "starts": self.v_starts,
+                          "slots": dict(self.vstatus), "run": self.v_run_sent or []},
+                "ai": self.ai.status() if self.enabled else {},
+                "flightlog": {"lines": self.flog.lines, "dropped": self.flog.dropped, "errors": self.flog.errors}}
 
     def next_slot(self):
         """The next drone out = the lowest-numbered slot still present (slot 1 = top)."""

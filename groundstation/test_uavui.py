@@ -12,6 +12,10 @@
       and sending only their station messages; a row's route / mission / flight
   UV6 (U3) "Send route": the vertical target box with the pictures, the map's right-click menu, uav_route
   UV7 (U3) the boat file's uav hatch_relay (validated) = a LAMP on every relay panel, a press sends nothing
+  UV8 (U4) the UAVs on the map: the picture turned with the heading, own track style, label, a click = its video
+  UV9 (U4) a UAV's video in screen 2's camera view: only that stream asked for, bar 1, its HUD + AI boxes, close
+  UV10 (U4) the battery minimum's local CAUTION once per stage; the router OFFLINE on both screens' notices
+  UV11 (U4) the flight logs: list + CSV / GPX export to a file
 
 Run:  python test_uavui.py      (exit code 0 = all passed)
 """
@@ -370,12 +374,225 @@ def uv7(rig):
                lamp and lamp[0].get("state"), said, cmds))
 
 
+# --- U4 ---------------------------------------------------------------------------------------------------------------
+
+def drone(n, **kw):
+    d = {"slot": n, "name": "UAV-%d" % n, "sysid": 10 + n, "lat": 37.8215, "lon": 23.6012, "alt": 52.0, "hdg": 90.0,
+         "gs": 8.2, "climb": 0.0, "batt": 78, "batt_v": 15.8, "batt_a": 15.0, "mode": "AUTO", "armed": True,
+         "landed": False, "in_slot": False, "flying": "mission", "lq": 100, "rssi": 200, "link_age": 0.3,
+         "land_eta": 400.0, "landing": False, "stage": None, "gps_fix": 3, "text": None, "video": "RUN",
+         "dist_m": 180}
+    d.update(kw)
+    return d
+
+
+class _GL:
+    """A gateway link stand-in (isinstance GatewayLink) that records what the station sends."""
+
+    @staticmethod
+    def make(sent):
+        import gwclient
+
+        class GL(gwclient.GatewayLink):
+            def __init__(self):
+                import queue
+                self.host, self.connected, self.events = "127.0.0.1", True, queue.Queue()
+
+            def send_msg(self, m):
+                sent.append(m)
+
+            def video_url(self, ack, cam):
+                p = (ack or {}).get("streams", {}).get(cam)
+                return "rtsp://u:p@127.0.0.1:8554/%s?station=1" % p if p else None
+        return GL()
+
+
+def uv8(rig):
+    """The UAVs on screen 2's map: the owner's picture turned with the heading at the drone's position, its own track
+    style (dashed, the map theme's "uav" colour, never the boat's track), the label with altitude / battery / link
+    (CAUTION colour with a low battery / weak link), a drone in its slot not drawn; a click on a symbol opens its video."""
+    import uavmap
+    ap = rig.ap
+    i18n.set_lang("el", save=False)
+    rig.pump(1.0)
+    ap.uav_store.clear()
+    t0 = time.time()
+    for k in range(6):
+        ap.uav_store.update({"1": drone(1, lat=37.8215 + 0.0002 * k), "2": drone(2, batt=20, lq=40, lat=37.8190),
+                             "3": drone(3, in_slot=True)}, now=t0 + 1.5 * k)
+    ap.mapwin.redraw()
+    c = ap.cv
+    syms = c.find_withtag("uav_sym")
+    imgs = [i for i in syms if c.type(i) == "image"]
+    tracks = c.find_withtag("uav_track")
+    labels = [c.itemcget(i, "text") for i in c.find_withtag("uav_label")]
+    cols = [c.itemcget(i, "fill") for i in c.find_withtag("uav_label")]
+    dashed = all(c.itemcget(i, "dash") for i in tracks)
+    in_map = all("map" in c.gettags(i) for i in syms)
+    sent = []
+    old = ap.link
+    hit = None
+    try:
+        ap.link = _GL.make(sent)
+        P = ap.mapwin.P()[0]
+        x, y = P(ap.uav_store.drones[1]["lat"], ap.uav_store.drones[1]["lon"])
+        hit = ap.uav_map_hit(x, y)
+    finally:
+        ap.camview_close(send=False)
+        ap.link = old
+    ok_lab = len(labels) == 2 and any("UAV 1" in t and "52 m" in t and "78 %" in t for t in labels) and \
+        cols.count(theme.CAUTION) == 1
+    report("UV8 the UAVs on screen 2's map: the owner's picture (turned with the heading) for every flying drone, a "
+           "drone in its slot not drawn, their own dashed track, label with altitude / battery / link (CAUTION colour "
+           "for a low battery / weak link), under the panels (tag map); a click on the symbol opens its video",
+           len(imgs) == 2 and len(tracks) == 1 and dashed and ok_lab and in_map and hit and
+           {"t": "uav_view", "uav": 1, "open": True} in sent and not rig.errors,
+           "symbols %d (images %d), tracks %d dashed %s, labels %s colours %s, in map %s, click %s sent %s" % (
+               len(syms), len(imgs), len(tracks), dashed, labels, cols, in_map, hit, sent))
+    ap.uav_store.clear()
+    ap.mapwin.redraw()
+
+
+def uv9(rig):
+    """A UAV's video in screen 2's camera view: only that stream is asked for (uav_view open; the boat camera view
+    closed), the flying UAVs in bar 1, the UAV's own green basics + the AI boxes on the picture, the stream from
+    cams_ack only while open, closing sends uav_view close; data saver = the notice banner."""
+    ap = rig.ap
+    i18n.set_lang("el", save=False)
+    sent = []
+    old = ap.link
+    ap.uav_store.clear()
+    ap.uav_store.update({"2": drone(2, stage=20, batt=24)})
+    try:
+        ap.link = _GL.make(sent)
+        ap.gw_status = dict(ap.gw_status or {}, uav={"enabled": True, "state": "ACTIVE", "drones": {},
+                                                    "ai": {"feeds": {"2": {"boxes": [[0.1, 0.2, 0.3, 0.4, 0.8]]}}}})
+        ap.uav_view_open(2)
+        opened = list(sent)
+        bar = [it[1] for it in ap.bar_items(1) if it[0] == "btn"]
+        ap.on_cams_ack({"t": "cams_ack", "ok": True, "streams": {"UAV-2": "uav_2"}, "levels": {}, "notice": "",
+                        "uav_open": [2], "uav_reduced": False, "user": "u", "password": "p", "rtsp_port": 8554,
+                        "query": "station=1"})
+        has_stream = "UAV-2" in ap.vstreams
+        ap.render(force=True)
+        texts = [o.get("s", "") for o in ap.ov.ops]
+        hud = [t for t in texts if "UAV 2" in t or "ύψος" in t or "μπαταρία" in t]
+        ai_line = any(t.startswith("AI") for t in texts)
+        ap.cam_ack = {"uav_reduced": True, "notice": "DATA SAVER: no UAV video"}
+        ban = [b for b in ap.banner_list() if b[0] == "camview_reduced"]
+        sent.clear()
+        ap.camview_close()
+        closed = list(sent)
+    finally:
+        for n in list(ap.vstreams):
+            if n.startswith("UAV-"):
+                ap.vstreams.pop(n).stop()
+        ap.link = old
+        ap.gw_status = None
+        ap.uav_store.clear()
+    report("UV9 a UAV's video on screen 2: uav_view open (+ the boat camera view closed), the flying UAVs in bar 1, the "
+           "stream started from cams_ack, the UAV's own HUD (altitude, battery, link, battery minimum) + the AI line, "
+           "data saver = the notice banner, closing = uav_view close (no uplink for it any more)",
+           opened == [{"t": "cam_view", "cam": None}, {"t": "uav_view", "uav": 2, "open": True}] and
+           "cv_UAV-2" in bar and has_stream and len(hud) >= 3 and ai_line and ban and
+           "χωρίς βίντεο UAV" in ban[0][1] and closed == [{"t": "uav_view", "uav": 2, "open": False}] and not rig.errors,
+           "opened %s; bar %s; stream %s; hud %s; ai %s; banner %s; closed %s" % (opened, bar[-3:], has_stream, hud,
+                                                                                 ai_line, ban[:1], closed))
+
+
+def uv10(rig):
+    """The battery minimum's CAUTION on THIS station (60 s / 20 s before + the landing, MasterLamps.set_local, never
+    a boat alarm) raised once per stage, gone when the drone is down; the UAV router OFFLINE on both screens'
+    notices (U2 review LOW-12)."""
+    import uavmap
+    ap = rig.ap
+    i18n.set_lang("el", save=False)
+    st = uavmap.Store()
+    rows = []
+    for stg in (None, 60, 60, 20, "land"):
+        st.update({"1": drone(1, stage=stg)})
+        rows.append(st.local_cautions())
+    st.update({"1": drone(1, stage=None, armed=False, landed=True)})
+    rows.append(st.local_cautions())
+    seq = [[(c, t is not None) for c, t in r] for r in rows]
+    texts = [t for r in rows for _c, t in r if t]
+    old_link, old_gs = ap.link, ap.gw_status
+    sent = []
+    try:
+        ap.link = _GL.make(sent)
+        ap.gw_status = {"uav": {"enabled": True, "state": "OFFLINE", "why": "the router process ended - restarting"}}
+        ban = [b[1] for b in ap.banner_list() if b[0] == "uav_offline"]
+        notes = [n[1] for n in ap.driver.notices(None, ap.gw_status)] if getattr(ap, "driver", None) else None
+        ap.uav_notices({"enabled": True, "state": "ACTIVE", "drones": {"1": drone(1, stage=60)}, "notices": []})
+        lamp = [t for t, _lv, _s in ap.lamps.rows() if "UAV 1" in t]
+        asked = {"t": "uav_telem_on", "on": True} in sent
+    finally:
+        ap.link, ap.gw_status = old_link, old_gs
+        ap.lamps.set_local("uav_land_1", None)
+        ap.uav_store.clear()
+        ap.uav_telem_asked = False
+    eng = [w for t in texts + ban for w in ts.english_words(t)]
+    report("UV10 the battery minimum's CAUTION on this station: once at 60 s, once at 20 s, at the landing, cleared "
+           "when the drone is down (station-local, never a boat alarm); the UAV router OFFLINE on screen 2's banners "
+           "and screen 1's notices; uav_telem asked once; Greek texts",
+           seq == [[], [("uav_land_1", True)], [], [("uav_land_1", True)], [("uav_land_1", True)],
+                   [("uav_land_1", False)]] and ban and "ΕΚΤΟΣ ΛΕΙΤΟΥΡΓΙΑΣ" in ban[0] and
+           (notes is None or any("ΕΚΤΟΣ ΛΕΙΤΟΥΡΓΙΑΣ" in n for n in notes)) and lamp and asked and not eng,
+           "stages %s; texts %s; banner %s; screen 1 %s; lamp %s; asked %s; English %s" % (
+               seq, texts, ban, notes, lamp, asked, eng))
+
+
+def uv11(rig):
+    """The flight logs on the «ΜΑΓΓΕΜΑ UAV» page: FLIGHT LOGS asks the gateway (uav_logs), the list shown, EXPORT
+    CSV / GPX asks for one (uav_log) and the answer is written to the chosen file; a refusal shown in Greek."""
+    import tempfile
+    import tkinter as tk
+    ap = rig.ap
+    i18n.set_lang("el", save=False)
+    sent = []
+    old = ap.link
+    tmp = tempfile.mkdtemp(prefix="uvlog_")
+    top = tk.Toplevel(rig.root)
+    try:
+        ap.link = _GL.make(sent)
+        pg = uavpanel.Page(tk.Frame(top), ap)
+        pg.connected = lambda: True
+        pg.update(status())
+        pg.ask_logs()
+        pg.on_logs({"t": "uav_logs", "logs": [{"name": "UAV-1", "file": "20261104-160924.csv", "bytes": 4096,
+                                               "t": 2.0}, {"name": "UAV-2", "file": "20261104-150000.csv",
+                                                           "bytes": 100, "t": 1.0}]})
+        items = list(pg.lb_logs.get(0, "end"))
+        pg.lb_logs.selection_set(0)
+        path = os.path.join(tmp, "f.gpx")
+        pg.export("gpx", path=path)
+        ap.uav_log_reply({"t": "uav_log", "ok": True, "name": "UAV-1", "file": "20261104-160924.csv", "fmt": "gpx",
+                          "data": "<gpx>ok</gpx>"})
+        wrote = open(path, encoding="utf-8").read() if os.path.exists(path) else None
+        said = []
+        old_say = ap.say
+        ap.say = lambda text, colour=None: said.append(text)
+        ap.uav_log_reply({"t": "uav_log", "ok": False, "text": "no such flight log"})
+        ap.say = old_say
+    finally:
+        ap.link = old
+        top.destroy()
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+    report("UV11 the flight logs on the UAV page: FLIGHT LOGS = uav_logs, the list (newest first), EXPORT GPX = uav_log "
+           "{name, file, fmt} and the answer written to the chosen file, a refusal in Greek",
+           {"t": "uav_logs"} in sent and len(items) == 2 and items[0].startswith("UAV-1") and
+           {"t": "uav_log", "name": "UAV-1", "file": "20261104-160924.csv", "fmt": "gpx"} in sent and
+           wrote == "<gpx>ok</gpx>" and said and "δεν υπάρχει τέτοιο αρχείο πτήσης" in said[0],
+           "sent %s; list %s; wrote %r; said %s" % (sent, items, wrote, said))
+
+
 def main():
     uv1()
     uv2()
     rig = ts.Rig()
     try:
-        for fn in (uv5, uv6, uv7):
+        for fn in (uv5, uv6, uv7, uv8, uv9, uv10, uv11):
             try:
                 fn(rig)
             except Exception as e:

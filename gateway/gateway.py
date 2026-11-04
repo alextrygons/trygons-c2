@@ -160,6 +160,16 @@ class Gateway:
                       ("uav_launch_stop", self.uav.stop_msg), ("uav_hatch_close", self.uav.hatch_close_msg),
                       ("uav_unregister", self.uav.unregister_msg)):
             self.stations.ext[k] = fn
+        # U4: telemetry to the stations, the flight logs, the UAV video (MediaMTX uav_1..6 + the ring tracks UAV-n in
+        # every SAVE / KEEP; a station pulls only the UAV streams open on its screens)
+        for k, fn in (("uav_telem_on", self.uav.telem_msg), ("uav_logs", self.uav.logs_msg),
+                      ("uav_log", self.uav.logs_msg), ("uav_view", self.cams.uav_view_request)):
+            self.stations.ext[k] = fn
+        if self.uav.video_on:
+            self.cams.uav_slots = sorted(int(s) for s in self.uav.vcfg["devices"])
+        if self.rec.enabled:
+            for name, track in self.uav.tracks.items():
+                self.rec.cams[name] = track
 
     def _on_telem(self, f):
         try:
@@ -798,8 +808,8 @@ class Gateway:
         tasks.append(asyncio.create_task(self.hail_loop()))
         self.uav.start(asyncio.get_running_loop())
         tasks.append(asyncio.create_task(self.uav_loop()))
-        if not rec_loop and "AUDIO" in self.rec.cams:
-            tasks.append(asyncio.create_task(self.recorder_loop()))     # the audio ring without cameras
+        if not rec_loop and ("AUDIO" in self.rec.cams or self.uav.tracks):
+            tasks.append(asyncio.create_task(self.recorder_loop()))     # the audio / UAV ring without cameras
         tasks.append(asyncio.create_task(self.sync.run()))
         tasks.append(asyncio.create_task(self.ais_loop()))
         tasks.append(asyncio.create_task(self.nav_loop()))
@@ -842,6 +852,15 @@ class Gateway:
                                                            len(cams.get("cameras", []))),
                          v.get("state"), v.get("fps") or 0.0, v.get("infer_ms"),
                          int(getattr(self.vision, "lag_ms", 0) or 0))
+                u = self.uav
+                if u.enabled:                       # (U4: tools/gateway_load.py --uav sorts the processes by these)
+                    ai = u.ai.status()
+                    log.info("UAVSTATUS pids router=%s sim=%s video=%s ai=%s; video %s encoder %s; uav_ai %s ai_fps %.2f "
+                             "ai_ms %s frames %d",
+                             *[getattr(p, "pid", 0) or 0 for p in (u.proc, u.sim_proc, u.vproc, u.ai.proc)],
+                             ",".join("%s:%s" % (s, x.get("state")) for s, x in sorted(u.vstatus.items())) or "-",
+                             u.v_hello.get("encoder"), ai.get("state"), ai.get("fps") or 0.0, ai.get("infer_ms"),
+                             ai.get("frames") or 0)
             except Exception:
                 log.exception("status line")
 

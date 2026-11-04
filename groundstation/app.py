@@ -67,6 +67,7 @@ import mapwin
 import track as trackmod
 import screenrec
 import hailer
+import uavmap
 import uavpanel
 import uavroute
 import uavpics
@@ -329,6 +330,9 @@ class App:
         self.helm_auto = False          # take HELM once the first data shows it free (13n2: "HELM at once")
         self.camview = None             # screen 2's camera view (13n2): None = the map, else the camera name
         self.camview_last = "FRONT-1"
+        self.uav_store = uavmap.Store()  # U4: the drones on the map (gw_status "uav" drones + uav_telem)
+        self.uav_telem_asked = False
+        self.uav_log_save = {}          # (name, file, fmt) -> the path chosen for an export (U4 flight logs)
         self._cv_photo = None
         self.boat_pushed = False        # the boat file's settings pushed to the AURIX (CLAUDE.md L): HELM + STANDBY
         self.boat_push_seq = None       # the seq of that PARAM_SET (a NACK re-arms the push)
@@ -476,6 +480,8 @@ class App:
         self.slam_hist.clear()
         self.lamps = alerts.MasterLamps()
         self._uav_local = None
+        self.uav_store.clear()                  # U4: the drones on the map belong to that boat
+        self.uav_telem_asked = False
         if self.sound:
             self.sound.reset()
         if self.callouts is not None:
@@ -888,6 +894,11 @@ class App:
                     w, h = video.VIEW_SIZE
                     fps = video.VIEW_LIGHT_FPS if d.get("view_light") else None
                 want[name] = (url, w, h, fps)
+        for name in d.get("streams") or {}:         # U4: a UAV's video, only while open on this screen
+            if self.uav_slot_of(name) is not None and name == self.camview:
+                url = self.link.video_url(d, name)
+                if url:
+                    want[name] = (url,) + tuple(video.VIEW_SIZE) + (None,)
         for name in list(self.vstreams):           # a stream that did not change keeps running (no picture gap)
             vs = self.vstreams[name]
             if want.get(name) != (vs.url, vs.w, vs.h, getattr(vs, "fps", None)):
@@ -2630,6 +2641,13 @@ class App:
                     if getattr(self, "uav_page", None) is not None:
                         self.uav_page.on_ack(d)
                     self.event(T("uav.msg", text=i18n.from_en(d.get("text", ""))))
+                elif kind == "uav_telem":
+                    self.uav_store.update(d.get("drones"))          # U4: the map at 2 Hz
+                elif kind == "uav_logs":
+                    if getattr(self, "uav_page", None) is not None:
+                        self.uav_page.on_logs(d)
+                elif kind == "uav_log":
+                    self.uav_log_reply(d)
                 elif kind == "vision_ack":
                     self.say(T("cap.vis_msg", text=i18n.from_en(d.get("text", ""))), GREEN if d.get("ok") else RED)
                     self.event(T("cap.ev_vision", text=i18n.from_en(d.get("text", ""))))
@@ -3590,6 +3608,11 @@ class App:
             for cam in self.CAMVIEW_CAMS:
                 out.append(("btn", "cv_" + cam, T("cv.cam_" + cam.lower().replace("-", "_")),
                             lambda cam=cam: self.camview_open(cam), "normal", True, cam == self.camview))
+            # U4: the flying UAVs' videos (only the one open here is pulled from the gateway)
+            for s in self.uav_video_slots():
+                nm = "UAV-%d" % s
+                out.append(("btn", "cv_" + nm, T("uav.cv_button", n=s), lambda s=s: self.uav_view_open(s), "normal",
+                            True, nm == self.camview))
             out.append(("gap",))
             out.append(("btn", "cv_map", T("cv.map"), self.camview_close, "info", True, False))
             return out
@@ -4041,10 +4064,18 @@ class App:
         cams = (self.gw_status or {}).get("cameras") or {}
         if isinstance(self.link, GatewayLink) and cams and not cams.get("front_live", True):
             out.append(("no_video", T("boat.no_video")) + B["boat"] + (None,))      # 13n2: a warning only
+        u = (self.gw_status or {}).get("uav") or {}
+        if isinstance(self.link, GatewayLink) and u.get("enabled") and u.get("state") == "OFFLINE":
+            # U2 review LOW-12 (U4): the UAV router OFFLINE on the screens' notices (a notice, never an alarm)
+            out.append(("uav_offline", T("uav.n_offline", why=i18n.from_en(u.get("why") or ""))) + B["pickup"] +
+                       (None,))
         if self.camview:
             ack = self.cam_ack or {}
             vs = self.vstreams.get(self.camview)
-            if ack.get("view_reduced"):
+            if self.uav_slot_of(self.camview) is not None and ack.get("uav_reduced"):
+                out.append(("camview_reduced", i18n.from_en(ack.get("notice") or "") or T("cv.reduced")) +
+                           B["boat"] + (None,))
+            elif ack.get("view_reduced"):
                 out.append(("camview_reduced", i18n.from_en(ack.get("notice") or "") or T("cv.reduced")) +
                            B["boat"] + (None,))
             elif vs is None or vs.frozen():
@@ -5007,6 +5038,14 @@ class App:
         if not uav or not uav.get("enabled"):
             self.lamps.set_local("uav_hatch", None)
             return
+        # U4: the drones on the map, the 2 Hz telemetry asked once per connection, the battery minimum's CAUTION
+        # 60 s / 20 s before + the landing = station-LOCAL alarms (never a boat alarm), raised once per stage
+        self.uav_store.update(uav.get("drones"))
+        if not self.uav_telem_asked and isinstance(self.link, GatewayLink):
+            self.uav_telem_asked = True
+            self.link.send_msg({"t": "uav_telem_on", "on": True})
+        for code, text in self.uav_store.local_cautions():
+            self.lamps.set_local(code, text)
         seen = getattr(self, "_uav_seen", 0.0)
         for n in uav.get("notices") or []:
             if n.get("t", 0) > seen:
@@ -5161,13 +5200,24 @@ class App:
         and the alarms stay; Esc / MAP = back to the map. DISPLAY ONLY."""
         if not isinstance(self.link, GatewayLink):
             return self.say(T("cap.cams_only_gw"), RED)
-        if cam not in self.CAMVIEW_CAMS:
+        uav = self.uav_slot_of(cam)
+        if cam not in self.CAMVIEW_CAMS and uav is None:
             cam = "FRONT-1"
         if self.mapwin.edit:
             self.set_edit(self.mapwin.edit)     # map editing ends under the camera
         self.sub_open = None
-        self.camview = self.camview_last = cam
-        self.link.send_msg({"t": "cam_view", "cam": cam})
+        old_uav = self.uav_slot_of(self.camview)
+        self.camview = cam
+        if uav is None:
+            self.camview_last = cam
+        # U4: a UAV video in the same view (only the stream open on this screen is pulled): the other one closed first
+        if old_uav is not None and old_uav != uav:
+            self.link.send_msg({"t": "uav_view", "uav": old_uav, "open": False})
+        if uav is not None:
+            self.link.send_msg({"t": "cam_view", "cam": None})
+            self.link.send_msg({"t": "uav_view", "uav": uav, "open": True})
+        else:
+            self.link.send_msg({"t": "cam_view", "cam": cam})
         self.event(T("cv.opened", cam=cam))
         self.render(force=True)
         if not getattr(self, "_cv_ticking", False):
@@ -5177,10 +5227,14 @@ class App:
     def camview_close(self, send=True):
         if not self.camview:
             return
+        uav = self.uav_slot_of(self.camview)
         self.camview = None
         self.cv.delete("camview")
         if send and isinstance(self.link, GatewayLink):
-            self.link.send_msg({"t": "cam_view", "cam": None})      # the stream ends: no uplink for it any more
+            if uav is not None:
+                self.link.send_msg({"t": "uav_view", "uav": uav, "open": False})
+            else:
+                self.link.send_msg({"t": "cam_view", "cam": None})  # the stream ends: no uplink for it any more
         self.mapwin.redraw()
         self.render(force=True)
         self.cv.tag_raise("ov")
@@ -5232,12 +5286,80 @@ class App:
                     ph_img = big
                 self._cv_photo = ph_img
                 c.create_image(W / 2, H / 2, image=ph_img, anchor="c", tags="camview")
+                us = self.uav_slot_of(self.camview)
+                if us is not None:
+                    # U4: the UAV AI's boxes (eWaSR, boxes only - never a boat action), tagged "AI"
+                    iw, ih = pw * zoom, ph * zoom
+                    ix, iy = W / 2 - iw / 2, H / 2 - ih / 2
+                    for b in self.uav_ai_boxes(us):
+                        bx0, by0, bx1, by1 = ix + b[0] * iw, iy + b[1] * ih, ix + b[2] * iw, iy + b[3] * ih
+                        c.create_rectangle(bx0, by0, bx1, by1, outline=theme.CAUTION, width=2, tags="camview")
+                        c.create_text(bx0 + 2, by0 - 2, text=theme.AI_BADGE["text"], anchor="sw",
+                                      fill=theme.AI_BADGE["fill"], tags="camview")
             c.tag_raise("camview")
             c.tag_raise("ov")
         except tk.TclError:
             self._cv_ticking = False
             return
         self.root.after(100, self.camview_tick)
+
+    # --- U4: UAV video in screen 2's camera view, the drones on the map, the flight logs ------------------------------
+    @staticmethod
+    def uav_slot_of(name):
+        """"UAV-3" -> 3, anything else -> None."""
+        if isinstance(name, str) and name.startswith("UAV-") and name[4:].isdigit():
+            return int(name[4:])
+        return None
+
+    def uav_view_open(self, slot):
+        """A UAV's video full screen on screen 2 (a click on its map symbol / its button in the camera view)."""
+        self.camview_open("UAV-%d" % int(slot))
+
+    def uav_flying(self):
+        """The slots of the drones shown on the map (out of the magazine)."""
+        return [d["slot"] for d in self.uav_store.shown()]
+
+    def uav_video_slots(self):
+        """The UAVs with a video now: flying (on the map) or encoded by the gateway (its "always" slots, a bench)."""
+        vs = (((self.gw_status or {}).get("uav") or {}).get("video") or {}).get("slots") or {}
+        run = {int(s) for s, v in vs.items() if str(s).isdigit() and (v or {}).get("state") == "RUN"}
+        return sorted(set(self.uav_flying()) | run)
+
+    def uav_map_hit(self, x, y):
+        """A click on the map: a UAV symbol opens its video (True = taken)."""
+        mw = self.mapwin
+        if not mw.view:
+            return False
+        s = uavmap.hit(mw.P()[0], self.uav_store, x, y)
+        if s is None:
+            return False
+        self.uav_view_open(s)
+        return True
+
+    def uav_ai_boxes(self, slot):
+        ai = ((self.gw_status or {}).get("uav") or {}).get("ai") or {}
+        return ((ai.get("feeds") or {}).get(str(slot)) or {}).get("boxes") or []
+
+    def uav_log_export(self, name, file, fmt, path):
+        """Ask the gateway for a flight log; the answer is written to path (uav_log_reply)."""
+        if not isinstance(self.link, GatewayLink):
+            return self.say(T("uav.not_connected"), RED)
+        self.uav_log_save[(name, file, fmt)] = path
+        self.link.send_msg({"t": "uav_log", "name": name, "file": file, "fmt": fmt})
+
+    def uav_log_reply(self, d):
+        path = self.uav_log_save.pop((d.get("name"), d.get("file"), d.get("fmt")), None)
+        if not d.get("ok"):
+            return self.say(T("uav.log_failed", why=i18n.from_en(d.get("text", ""))), RED)
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(d.get("data") or "")
+        except OSError as e:
+            return self.say(T("uav.log_failed", why=str(e)), RED)
+        self.say(T("uav.log_saved", path=path))
+        self.event(T("uav.log_saved", path=path))
 
     def draw_camview_hud(self, x0, y0, x1, y1):
         """The green HUD basics on the camera view (as screen 1: info green): the camera, mode, heading, speed,
@@ -5248,14 +5370,34 @@ class App:
         fnt_b = ov.font(ov.size("value"), True)
         fnt = ov.font(ov.size("label"), True)
         lines = [(self.camview + ("  ·  " + T("cv.light") if (self.cam_ack or {}).get("view_light") else ""), fnt)]
-        if d:
+        uslot = self.uav_slot_of(self.camview)
+        if uslot is not None:
+            # U4: the UAV's own basics (altitude, speed, battery, link, distance to the boat, heading)
+            u = self.uav_store.drones.get(uslot) or {}
+            lines = [(T("uav.cv_title", n=uslot, name=u.get("name") or ""), fnt)]
+            if u:
+                lines += [(T("uav.cv_alt", alt="%.0f" % u["alt"] if u.get("alt") is not None else "--",
+                             gs="%.1f" % u["gs"] if u.get("gs") is not None else "--"), fnt_b),
+                          (T("uav.cv_batt", pct=u.get("batt") if u.get("batt") is not None else "--",
+                             lq=u.get("lq") if u.get("lq") is not None else "--"), fnt),
+                          (T("uav.cv_hdg", hdg="%03.0f°" % u["hdg"] if u.get("hdg") is not None else "---",
+                             dist=u.get("dist_m") if u.get("dist_m") is not None else "--",
+                             mode=u.get("mode") or "-"), fnt)]
+                if u.get("stage"):
+                    lines.append((T("uav.land_now", n=uslot) if u["stage"] == "land" else
+                                  T("uav.land_in", n=uslot, s=u["stage"]), fnt_b))
+            boxes = self.uav_ai_boxes(uslot)
+            if boxes:
+                lines.append((theme.AI_BADGE["text"] + " · " + T("uav.cv_ai", n=len(boxes)), fnt))
+            d = None
+        if uslot is None and d:
             gear = T("gear.%d" % d["gear"]) if d.get("gear", 9) < 3 else "-"
             sog = d.get("est_sog")
             lines += [(T("mode." + d["mode_name"]), fnt_b),
                       (T("cv.hdg", v="%03.0f°" % d["heading"] if d.get("compass_ok") else "---"), fnt),
                       (T("cv.sog", v="%.1f" % sog if sog is not None else "--"), fnt),
                       (T("cv.thr", v="%.0f" % d.get("throttle", 0.0), g=gear), fnt)]
-        else:
+        elif uslot is None:
             lines.append((T("cap.not_connected"), fnt))
         y = y0 + ov.size("small")
         x = x0 + ov.size("value") * 0.4

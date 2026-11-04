@@ -48,6 +48,15 @@ parameter check + the MAVLink allow-list + the own codec + the GPS warm start + 
        the copilot's PREPARE -> the captain's YES -> 2 drones launched, the hatch relay through the AURIX, the boat
        untouched; with no HELM nothing switches the hatch (notice) and a launch is refused
   UA19 W55: the gateway's own HELM grant vs TELEM2 for the hatch relay command; 125 for a station's hatch relay
+  --- step U4 (map + telemetry + video + AI + the battery minimum + flight logs) ---
+  UA22 the battery minimum = the only landing, inside the router (pure rule + a simulated flight; LAND refused from
+       the manager, the router's own LAND, nothing else afterwards); the map telemetry fields
+  UA23 the manager's U4 part: map record, notices (battery 60 / 20 s, link, range), uav_telem subscription, the
+       per-drone flight log + CSV / GPX export
+  UA24 the video worker process: simulated VRX -> ring UAV-n + MediaMTX uav_n, only the slots told to run, stall
+  UA25 cameras.py UAV streams: only open ones, data saver / STARLINK none, dropped first, auth
+  UA26 the UAV AI: open feeds only, round-robin, the boat's front camera AI first, boxes + notice, never a cap
+  UA27 the real gateway with MediaMTX: a station's UAV-1 stream, the ring track in a SAVE, data saver
 
 Run:  python test_uav.py      (exit code 0 = all passed)
 """
@@ -1820,6 +1829,482 @@ def ua21_fixed():
                bad, frag_bad, found, caught))
 
 
+# ------------------------------------------------------------------------------------------------------ U4 ---------
+
+def ua22_battery():
+    """The battery minimum (docs 6.2): the pure rule + the router flying a simulated drone: no LAND while the battery
+    covers the descent (a NAV_LAND from the manager is refused by the allow-list), LAND by the router's own rule once
+    it does not, then every mode / mission command for that drone refused; the telemetry fields of the map."""
+    from uav import battery
+    j1 = battery.judge(30.0, 50, 3000, 15.0)
+    j2 = battery.judge(120.0, 20, 2500, None)
+    j3 = battery.judge(None, 50, 3000, 15.0)
+    st = [battery.stage(70), battery.stage(55), battery.stage(19), battery.stage(5, True), battery.stage(None)]
+    pure = (j1["state"] == "ok" and 200 < j1["eta_s"] < 400 and j2["state"] == "land" and j3["state"] == "unknown"
+            and st == [None, 60, 20, "land", None])
+    base = free_base()
+    fl = simdrone.Fleet(base, 1, ttf=(2.0, 1.0, 0.5), origin=(37.82, 23.60)).start()
+    w = Worker()
+    try:
+        cfg = {"op": "config", "slots": [{"slot": 1, "usb": "udp:127.0.0.1:%d" % (base + 1),
+                                          "elrs": "udp:127.0.0.1:%d" % (base + 11), "sysid": 11,
+                                          "capacity_mah": 3000}]}
+        w.send(cfg)
+        w.find(lambda e: e.get("ev") == "status" and e["links"].get("1", {}).get("present") and
+               e["radio"].get("1", {}).get("present"), 8)
+        seq = [100]
+
+        def req(**kw):
+            seq[0] += 1
+            w.send(dict(kw, op="cmd", id=seq[0]))
+            return w.find(lambda e, i=seq[0]: e.get("id") == i and e.get("ev") == "cmd", 10)
+        fl.drones[0].sky = True
+        until(lambda: fl.drones[0].fix >= 3, 6)
+        req(slot=1, via="usb", command=176, params=[1, 4])
+        w.send({"op": "hatch", "open": True})
+        arm = req(slot=1, via="usb", command=400, params=[1, 0])
+        tko = req(slot=1, via="usb", command=22, params=[0, 0, 0, 0, 0, 0, 30])
+        for _ in range(8):                                     # the manager's hatch op stays fresh meanwhile
+            w.send({"op": "hatch", "open": True})
+            time.sleep(0.5)
+        up = until(lambda: fl.drones[0].alt > 15.0, 12)
+        land_mgr = req(slot=1, via="elrs", command=21, params=[0] * 7)          # nobody but the rule may land
+        time.sleep(2.5)
+        no_land = fl.drones[0].mode != 9
+        tel = w.find(lambda e: e.get("ev") == "status" and (e["drones"].get("1") or {}).get("judge"), 5)
+        d1 = (tel or {}).get("drones", {}).get("1", {})
+        lq = ((tel or {}).get("radio", {}).get("1") or {}).get("lq")
+        # the battery now too low for the descent (the landing rate made tiny): the router's own rule lands it
+        cfg2 = json.loads(json.dumps(cfg))
+        cfg2["slots"][0]["capacity_mah"] = 1000
+        w.send(dict(cfg2, battery={"uav_land_ms": 0.1}))
+        ev = w.find(lambda e: e.get("ev") == "land" and e.get("what") == "start", 6)
+        landed_mode = until(lambda: fl.drones[0].mode == 9, 6)
+        mode_after = req(slot=1, via="elrs", command=176, params=[1, 3])
+        start_after = req(slot=1, via="elrs", command=300, params=[1, 0])
+        st2 = w.find(lambda e: e.get("ev") == "status" and (e["drones"].get("1") or {}).get("landing"), 5)
+        report("UA22 the battery minimum = the ONLY landing (docs 6.2, inside the router): the pure rule (eta, land, "
+               "unknown, the 60 s / 20 s stages); flying: a NAV_LAND from the manager refused (allow-list), no LAND "
+               "while the battery covers the descent; once it does not, the router lands it itself (event 'land'), "
+               "then a new mode / MISSION START for it refused; the map telemetry (heading, speed, link quality)",
+               pure and arm and arm["result"] == 0 and tko and tko["result"] == 0 and up and land_mgr and
+               land_mgr["result"] is None and no_land and d1.get("judge", {}).get("state") == "ok" and
+               d1.get("hdg") is not None and d1.get("gs") is not None and lq is not None and lq >= 60 and ev and
+               landed_mode and mode_after and mode_after["result"] is None and "battery" in (mode_after.get("why") or "")
+               and start_after and start_after["result"] is None and st2 is not None,
+               "pure %s (%s, %s, %s, %s); arm %s takeoff %s up %s; manager LAND %s; no land before %s; judge %s; hdg %s "
+               "gs %s lq %s; land event %s, LAND mode %s; mode after %s, start after %s" % (
+                   pure, j1, j2["state"], j3["state"], st, arm and arm["result"], tko and tko["result"], bool(up),
+                   land_mgr and land_mgr.get("why"), no_land, d1.get("judge"), d1.get("hdg"), d1.get("gs"), lq,
+                   ev and ev.get("why"), bool(landed_mode), mode_after and mode_after.get("why"),
+                   start_after and start_after.get("why")))
+    finally:
+        w.close()
+        fl.stop()
+
+
+class _St:
+    def __init__(self, sid=3, role="HELM", crew="copilot"):
+        self.id, self.user, self.role, self.name, self.sent = sid, "bob", role, "bob", []
+        self.crew, self.single_op, self.local = crew, False, False
+        self.session, self.video_key = "sess%d" % sid, "key%d" % sid
+
+    def send(self, m):
+        self.sent.append(m)
+
+
+class _G:
+    """A minimal gateway for the manager / cameras / AI unit tests."""
+
+    def __init__(self, root=None):
+        self.audits, self.telem2 = [], {}
+        self.cfg = {"cameras": {"enabled": True, "rtsp_port": 8554}}
+        if root:
+            self.storage = type("S", (), {"usable": True, "root": root, "folder": lambda _s, n: os.makedirs(
+                os.path.join(root, n), exist_ok=True) or os.path.join(root, n)})()
+        else:
+            self.storage = None
+        self.stations = type("X", (), {"stations": {}})()
+        self.clock = type("C", (), {"gps_valid": False, "gps_rx": 0.0, "now": lambda _s: time.time()})()
+        self.saver = False
+        self.net = type("N", (), {"on_emergency": False})()
+
+    def audit(self, kind, **kw):
+        self.audits.append((kind, kw))
+
+    def telem_fresh(self):
+        return None
+
+    def data_saver(self):
+        return self.saver
+
+
+def ua23_notices_flightlog():
+    """The manager's U4 part with a scripted router: the map record of a flying drone, the notices (battery minimum
+    60 s / 20 s, link lost / back, the radio range), the flight log (one file per flight from the ARM, CSV + GPX
+    export through uav_logs / uav_log answered from a helper thread), uav_telem only to the stations that asked."""
+    from uav import manager as mgr
+    tmp = tempfile.mkdtemp(prefix="uavtest_u4m_")
+    try:
+        g = _G(tmp)
+        m = mgr.UavManager({"enabled": True, "slots": [{"usb": "udp:127.0.0.1:1"}] * 6}, g)
+        m.flog.start()
+        m.proc = type("P", (), {"poll": lambda _s: None})()
+        m.to_worker = lambda o: True
+        m.boat = lambda: {"pos": (37.82, 23.60), "launch_why": []}
+        st, st2 = _St(3), _St(4)
+        g.stations.stations = {3: st, 4: st2}
+        now = [time.time()]
+
+        def drone(eta, lq=100, lat=37.8210, armed=True, alt=40.0):
+            m.worker = {"links": {"1": {"present": False}}, "radio": {"1": {"present": lq > 0, "lq": lq,
+                                                                              "hb_age": 0.4 if lq else 6.0}},
+                        "drones": {"1": {"mode": 3, "armed": armed, "hb_age": 0.3, "rel_alt": alt, "lat": lat,
+                                         "lon": 23.6000, "hdg": 45.0, "gs": 8.0, "climb": 0.0, "batt_pct": 40,
+                                         "batt_v": 15.1, "batt_a": 15.0, "landed": not armed, "landing": False,
+                                         "judge": {"state": "ok", "eta_s": eta} if eta is not None else None}}}
+            m.worker_t = now[0]
+
+        def step(dt=1.1):
+            now[0] += dt
+            m.u4_tick(now[0])
+        drone(200)
+        step()
+        v = m.drones().get("1") or {}
+        for eta in (90, 55, 50, 18):
+            drone(eta)
+            step()
+        drone(15, lq=0)
+        step()
+        drone(15, lq=100)
+        step()
+        drone(15, lat=37.8350)                                  # ~1550 m from the boat
+        step()
+        drone(None, armed=False, alt=0.0)
+        step()
+        texts = [n["text"] for n in m.notices]
+        ok_notes = (sum("LANDING IN 60 s" in t for t in texts) == 1 and sum("LANDING IN 20 s" in t for t in texts) == 1
+                    and any("LINK LOST" in t for t in texts) and any("link back" in t for t in texts) and
+                    any("radio range limit" in t for t in texts))
+        # uav_telem only to the station that asked
+        m.telem_msg(st, {"t": "uav_telem_on", "on": True})
+        drone(200)
+        m.next_telem = 0.0
+        m.u4_tick(now[0])
+        tel = [x for x in st.sent if x.get("t") == "uav_telem"]
+        tel2 = [x for x in st2.sent if x.get("t") == "uav_telem"]
+        # the flight log: written by the helper thread, exported
+        until(lambda: m.flog.lines >= 6, 5)
+        m.logs_msg(st, {"t": "uav_logs"})
+        lst = until(lambda: [x for x in st.sent if x.get("t") == "uav_logs"], 5)
+        logs = lst[-1]["logs"] if lst else []
+        out = {}
+        if logs:
+            for fmt in ("csv", "gpx"):
+                m.logs_msg(st, {"t": "uav_log", "name": logs[0]["name"], "file": logs[0]["file"], "fmt": fmt})
+                r = until(lambda f=fmt: [x for x in st.sent if x.get("t") == "uav_log" and x.get("fmt") == f], 5)
+                out[fmt] = r[-1] if r else {}
+        m.logs_msg(st, {"t": "uav_log", "name": "../x", "file": "a.csv", "fmt": "csv"})
+        bad = until(lambda: [x for x in st.sent if x.get("t") == "uav_log" and not x.get("ok")], 5)
+        csv_ok = out.get("csv", {}).get("ok") and out["csv"]["data"].startswith("utc,slot,sysid,lat,lon,alt_m") and \
+            out["csv"]["data"].count("\n") >= 6
+        gpx_ok = out.get("gpx", {}).get("ok") and "<trkpt" in out["gpx"]["data"] and "<ele>40.0</ele>" in \
+            out["gpx"]["data"]
+        report("UA23 the manager's U4 part (scripted router): the map record (position, heading, altitude, battery, "
+               "link, distance), notices for the battery minimum 60 s / 20 s (once each), link lost / back, the radio "
+               "range limit; uav_telem only to the station that asked; the per-drone flight log (one file per flight, "
+               "CSV + GPX export, a bad name refused)",
+               v.get("alt") == 40.0 and v.get("hdg") == 45.0 and v.get("lq") == 100 and v.get("dist_m") is not None
+               and ok_notes and tel and not tel2 and len(logs) == 1 and csv_ok and gpx_ok and bad,
+               "view %s; notices %s; telem %d / other %d; logs %s; csv %s gpx %s bad %s" % (
+                   {k: v.get(k) for k in ("alt", "hdg", "lq", "dist_m", "stage")}, texts, len(tel), len(tel2), logs,
+                   bool(csv_ok), bool(gpx_ok), bool(bad)))
+        m.flog.stop()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ua24_video_worker():
+    """The video worker (its own process): the simulated VRX -> one encode -> the ring files UAV-n (1 file per
+    segment, UTC names) AND MediaMTX uav_n (a reader gets a frame); only the slots told to run; a frozen VRX =
+    STALLED + restarted; run [] = OFF."""
+    import toolpaths
+    import cameras
+    ff, mtx = toolpaths.ffmpeg(), toolpaths.mediamtx()
+    if not ff:
+        return report("UA24 the UAV video worker", NA, "no ffmpeg on this PC")
+    tmp = tempfile.mkdtemp(prefix="uavtest_video_")
+    mp = vp = None
+    try:
+        port = None
+        if mtx:
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+            s.close()
+            api = socket.socket()
+            api.bind(("127.0.0.1", 0))
+            api_port = api.getsockname()[1]
+            api.close()
+            cm = cameras.CameraManager({"rtsp_port": port, "api_port": api_port, "list": [],
+                                        "webrtc_port": 0, "log_level": "error"})
+            cm.uav_slots = [1, 2]
+            y = cm.mediamtx_yaml("http://127.0.0.1:1/none").replace("authMethod: http", "authMethod: internal")
+            y = "\n".join(l for l in y.splitlines() if not l.startswith(("authHTTP", "  - action", "webrtc")))
+            y += "\nwebrtc: no\nauthInternalUsers:\n  - user: any\n    permissions:\n      - action: publish\n" \
+                 "      - action: read\n"
+            conf = os.path.join(tmp, "mtx.yml")
+            with open(conf, "w", encoding="utf-8") as f:
+                f.write(y)
+            mp = subprocess.Popen([mtx, conf], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.0)
+        ring = os.path.join(tmp, "ring")
+        vp = subprocess.Popen([sys.executable, os.path.join(UAV_DIR, "video_worker.py"), "--ffmpeg", ff,
+                               "--rtsp-port", str(port or 1), "--publish", "1" if port else "0", "--ring", ring,
+                               "--seg-s", "3", "--w", "320", "--h", "240", "--fps", "10", "--kbps", "300",
+                               "--encoder", "x264", "--stall-s", "3"],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=UAV_DIR)
+        ev = []
+        lock = threading.Lock()
+
+        def rd():
+            for line in vp.stdout:
+                try:
+                    with lock:
+                        ev.append(json.loads(line))
+                except ValueError:
+                    pass
+        threading.Thread(target=rd, daemon=True).start()
+
+        def send(o):
+            vp.stdin.write((json.dumps(o) + "\n").encode())
+            vp.stdin.flush()
+
+        def last(cond):
+            with lock:
+                for e in reversed(ev):
+                    if cond(e):
+                        return e
+            return None
+        send({"op": "config", "devices": {"1": "sim", "2": "sim"}})
+        send({"op": "run", "slots": [1]})
+        run1 = until(lambda: last(lambda e: e.get("ev") == "status" and e["slots"].get("1", {}).get("state") == "RUN"
+                                  and e["slots"]["1"]["frames"] > 20), 20)
+        s2 = (run1 or {}).get("slots", {}).get("2", {}).get("state")
+        files = until(lambda: [f for f in os.listdir(os.path.join(ring, "UAV-1"))
+                               if re.match(r"^\d{8}-\d{6}\.ts$", f)] if os.path.isdir(os.path.join(ring, "UAV-1"))
+                      else None, 15)
+        got = None
+        if port:
+            r = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-i",
+                                "rtsp://any:x@127.0.0.1:%d/uav_1" % port, "-frames:v", "3", "-f", "null", "-"],
+                               capture_output=True, timeout=25)
+            got = r.returncode == 0
+        send({"op": "sim", "slot": 1, "freeze": True})
+        stalled = until(lambda: last(lambda e: e.get("ev") == "status" and e["slots"].get("1", {}).get("restarts", 0)
+                                     >= 1), 15)
+        send({"op": "sim", "slot": 1, "freeze": False})
+        send({"op": "run", "slots": []})
+        off = until(lambda: last(lambda e: e.get("ev") == "status" and e["slots"].get("1", {}).get("state") == "OFF"),
+                    10)
+        report("UA24 the UAV video worker (own process, simulated VRX): only the slot told to run is encoded, the ring "
+               "files UAV-1/YYYYMMDD-HHMMSS.ts, MediaMTX uav_1 readable%s, a frozen VRX = stalled + restarted, run [] = "
+               "OFF" % ("" if port else " (N/A: no MediaMTX)"),
+               run1 and s2 == "OFF" and files and (got is None or got) and stalled and off,
+               "run %s, slot 2 %s, files %s, rtsp frame %s, restarts %s, off %s" % (
+                   bool(run1), s2, (files or [])[:3], got, stalled and stalled["slots"]["1"]["restarts"], bool(off)))
+    finally:
+        for p in (vp, mp):
+            if p is not None:
+                try:
+                    if p is vp:
+                        p.stdin.close()
+                        p.wait(5)
+                except Exception:
+                    pass
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(5)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ua25_uav_streams():
+    """cameras.py and the UAV streams: a station gets UAV-n ONLY while open on its screen, nothing on data saver /
+    STARLINK (for anyone), dropped first (also the captain's) when the video is reduced for the captain, a UAV the
+    gateway has no video for refused, MediaMTX auth only for allowed paths; the captain's UAV kbps is not counted as
+    his priority video."""
+    import cameras
+    g = _G()
+    cap, cop = _St(1, crew="captain"), _St(2, crew="copilot")
+    g.stations.stations = {1: cap, 2: cop}
+    cm = cameras.CameraManager({"list": [], "copilot_budget_kbps": 1000, "view_restore_s": 0.0}, g)
+    cm.uav_slots = [1, 2, 3]
+    cm.uav_view_request(cop, {"t": "uav_view", "uav": 2, "open": True})
+    a1 = cop.sent[-1]
+    cm.uav_view_request(cop, {"t": "uav_view", "uav": 6, "open": True})
+    bad = cop.sent[-1]
+    cm.uav_view_request(cap, {"t": "uav_view", "uav": 1, "open": True})
+    auth_ok = cm.auth({"action": "read", "path": "uav_2", "ip": "10.0.0.5", "user": cop.session,
+                       "password": cop.video_key, "query": "station=2"})
+    auth_no = cm.auth({"action": "read", "path": "uav_1", "ip": "10.0.0.5", "user": cop.session,
+                       "password": cop.video_key, "query": "station=2"})
+    feeds = cm.uav_views()
+    g.saver = True
+    sv = cm.streams_msg(cop)
+    feeds_saver = cm.uav_views()
+    g.saver = False
+    # over the budget while the captain receives video: UAV streams dropped first (the captain's too)
+    cm.station_kbps = {1: 1300, 2: 400}
+    cm.sta_path_kbps = {(1, "cam_front1_hi"): 900, (1, "uav_1"): 400, (2, "uav_2"): 400}
+    cm.total_kbps = 1700
+    changed = cm.update_priority(now=100.0)
+    red_cop, red_cap = cm.streams_msg(cop), cm.streams_msg(cap)
+    cm.uav_view_request(cop, {"t": "uav_view", "uav": None})
+    closed = cm.uav_open(cop.id)
+    report("UA25 UAV streams (cameras.py): UAV-n only while open on a screen, a UAV without video refused, MediaMTX "
+           "auth only for an open + allowed UAV path, data saver / STARLINK = no UAV video for anyone (notice), over "
+           "the budget the UAV streams go first (also the captain's own), close = no stream",
+           a1.get("streams") == {"UAV-2": "uav_2"} and not bad.get("ok", True) and auth_ok and not auth_no and
+           feeds == {1, 2} and not any(k.startswith("UAV") for k in sv["streams"]) and "no UAV video" in sv["notice"]
+           and feeds_saver == set() and changed and cm.views_reduced and
+           not any(k.startswith("UAV") for k in red_cop["streams"]) and
+           not any(k.startswith("UAV") for k in red_cap["streams"]) and red_cap["uav_reduced"] and not closed,
+           "open %s, refused %s, auth %s / %s, feeds %s, saver %s (%s), reduced %s -> copilot %s captain %s, closed %s" %
+           (a1.get("streams"), bad.get("text"), auth_ok, auth_no, feeds, sv["streams"], sv["notice"], changed,
+            red_cop["streams"], red_cap["streams"], closed))
+
+
+def ua26_uav_ai():
+    """The UAV AI (uavai.py) with a scripted worker: nothing without an open feed, round-robin over the open feeds
+    (one URL per dwell), WAITING (worker paused) while the boat's FRONT camera AI is PAUSED / DEGRADED, boxes + ONE
+    notice per feed, <= 0.5 fps; and no UAV module can give the boat a speed cap / navigation request."""
+    from uav import uavai
+    g = _G()
+
+    class V:
+        cfg, state, paused = {"enabled": True}, "ACTIVE", False
+    g.vision = V()
+    views = [set()]
+    g.cams = type("C", (), {"uav_views": lambda _s: views[0]})()
+    notes = []
+    mgr = type("M", (), {"gw": g, "video_running": lambda _s: [1, 2, 3], "notice": lambda _s, t, l="info":
+                         notes.append(t)})()
+    ai = uavai.UavAi({"cpu_pct": 1000.0, "dwell_s": 8.0}, mgr)
+    sent = []
+
+    class P:
+        def poll(self):
+            return None
+    ai._spawn_bg = lambda: setattr(ai, "proc", P())
+    ai.send = lambda o: sent.append(o) or True
+    t = 1000.0
+    ai.tick(t)
+    idle = ai.state
+    views[0] = {1, 3}
+    ai.tick(t + 1)                                  # starts the worker
+    urls = []
+    for k in range(2, 30):
+        ai.tick(t + k)
+    urls = [o["url"] for o in sent if o.get("cmd") == "url"]
+    g.vision.state = "PAUSED"
+    ai.tick(t + 31)
+    waiting, paused = ai.state, any(o.get("cmd") == "pause" for o in sent)
+    g.vision.state = "ACTIVE"
+    ai.tick(t + 32)
+    resumed = any(o.get("cmd") == "resume" for o in sent)
+    blob = {"x0": 0.1, "y0": 0.2, "x1": 0.3, "y1": 0.4, "conf": 0.8}
+    ai.result(1, [blob], t + 33)
+    ai.result(1, [blob], t + 34)
+    ai.result(1, [dict(blob, conf=0.2)], t + 35)
+    st = ai.status(t + 35.5)
+    src = "".join(open(p, encoding="utf-8").read() for p in py_files([UAV_DIR]))
+    code = re.sub(r"#.*|\"\"\"[\s\S]*?\"\"\"", "", src)
+    nav_free = not re.search(r"\bnav\(|navreq|nav_compose|cap_kn|speed_cap", code)
+    report("UA26 the UAV AI (scripted worker): IDLE without an open feed, round-robin over the open feeds (uav_1 / "
+           "uav_3, 8 s each), WAITING + worker paused while the boat's front camera AI is PAUSED (front first), boxes "
+           "+ ONE notice, max 0.5 fps; no gateway/uav code touches a speed cap / navigation request",
+           idle == "IDLE" and urls[:3] == ["rtsp://127.0.0.1:8554/uav_1", "rtsp://127.0.0.1:8554/uav_3",
+                                           "rtsp://127.0.0.1:8554/uav_1"] and waiting == "WAITING" and paused and
+           resumed and len(notes) == 1 and st["feeds"]["1"]["frames"] == 3 and st["max_fps"] <= 0.5 and nav_free,
+           "idle %s, urls %s, waiting %s (paused %s, resumed %s), notices %s, feeds %s, nav-free %s" % (
+               idle, urls[:4], waiting, paused, resumed, notes, st["feeds"], nav_free))
+
+
+def ua27_gateway_video():
+    """The real gateway with MediaMTX + the simulated drones + the video worker (slot 1 'always'): a station opens
+    UAV 1 -> its stream in cams_ack and readable with the station's own login; the ring track UAV-1 in a SAVE; data
+    saver = no UAV stream; the boat untouched."""
+    import test_gateway as tg
+    from gwclient import GatewayLink
+    if not os.path.exists(tg.EXE) or not os.path.exists(tg.MTX_BIN):
+        return report("UA27 UAV video through the real gateway", NA, "no simulator / MediaMTX")
+    tmp = tempfile.mkdtemp(prefix="uavtest_gwv_")
+    rig, links = None, []
+    try:
+        base = free_base()
+        rig = tg.CamRig(tmp, recording={"enabled": True, "segment_s": 4, "pre_s": 30, "post_s": 2, "stall_s": 60},
+                        uav={"enabled": True, "sim": True, "sim_base_port": base,
+                             "video": {"enabled": True, "always": [1], "encoder": "x264", "w": 320, "h": 240,
+                                       "fps": 10}})
+        g = rig.g
+        sp = rig.cfg["stations"]["port"]
+        a = GatewayLink("127.0.0.1:%d" % sp, "alice", password=tg.PW["alice"], station="alice")
+        a.start()
+        links.append(a)
+        seen = []
+
+        def last(kind, cond=lambda d: True):
+            while True:
+                try:
+                    seen.append(a.events.get_nowait())
+                except Exception:
+                    break
+            for k, d in reversed(seen):
+                if k == kind and cond(d):
+                    return d
+            return None
+        tel0 = until(lambda: last("telemetry"), 10)
+        run = until(lambda: g.uav.video_state(1) == "RUN", 30)
+        a.send_msg({"t": "uav_view", "uav": 1, "open": True})
+        ack = until(lambda: last("cams_ack", lambda d: "UAV-1" in (d.get("streams") or {})), 10)
+        got = None
+        if ack:
+            url = a.video_url(ack, "UAV-1")
+            r = subprocess.run([tg.ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-i",
+                                url, "-frames:v", "3", "-f", "null", "-"], capture_output=True, timeout=25)
+            got = r.returncode == 0
+        files = until(lambda: len(g.uav.tracks["UAV-1"].segments()) >= 3, 20)
+        ok, _msg, eid = g.rec.trigger("button", "UA27", who="test")
+        ev_files = until(lambda: (lambda p: [f for f in os.listdir(p) if f.endswith(".ts")] if os.path.isdir(p)
+                                  else None)(os.path.join(g.rec.events_dir(), eid or "x", "UAV-1")), 30)
+        g.data_saver = lambda: True
+        a.send_msg({"t": "uav_view", "uav": 1, "open": True})
+        sv = until(lambda: last("cams_ack", lambda d: "streams" in d and "UAV-1" not in d["streams"] and
+                                d.get("uav_reduced")), 10)
+        st = until(lambda: last("gw_status", lambda d: ((d.get("uav") or {}).get("video") or {}).get("slots")), 5)
+        tel1 = last("telemetry")
+        report("UA27 UAV video through the real gateway (MediaMTX, simulated VRX on slot 1): the video worker RUNs, "
+               "a station's uav_view -> UAV-1 in its streams and readable with its own login, the ring track UAV-1 "
+               "linked into a SAVE, data saver = no UAV stream (notice), gw_status uav video, the boat untouched",
+               run and ack and got and files and ok and ev_files and sv and st and tel0 and tel1 and
+               tel1["mode"] == tel0["mode"],
+               "run %s, ack %s, frame %s, ring %s, save %s (%s files), saver %s (%s), status %s" % (
+                   bool(run), bool(ack), got, bool(files), eid, len(ev_files or []), bool(sv), sv and sv.get("notice"),
+                   bool(st)))
+    finally:
+        for l in links:
+            try:
+                l.stop()
+            except Exception:
+                pass
+        if rig is not None:
+            try:
+                rig.stop()
+            except Exception:
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def watchdog():
     def fire():
         print("\nSTALLED: test_uav.py still running after %d s - killed" % LIMIT_S, flush=True)
@@ -1834,7 +2319,9 @@ def main():
     tests = [ua1_codec, ua2_pymavlink, ua3_allow, ua4_writer, ua5_no_aurix, ua6_check, ua7_registry, ua8_assist,
              ua9_simdrone, ua10_router, ua11_gateway, ua12_osdep, ua13_mission, ua14_checks, ua15_hatch,
              ua16_launch, ua17_router_flight,
-             ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed]
+             ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
+             ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
+             ua27_gateway_video]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

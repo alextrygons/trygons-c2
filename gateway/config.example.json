@@ -33,6 +33,11 @@
     "hatch": {"port": "usbloc:1-6", "open_s": 20.0, "close_s": 20.0},
     "_launch_help": "W59 defaults (TO CONFIRM): launch_max_kn 2, gps_wait_s 5, fallback_alt_m 15, clear_alt_m 10, gap_s 15, init_alt_base_m 30 + init_alt_step_m 5 per slot; check: uav_max_alt_m 120, uav_rf_range_m 1500, uav_wp_alt_m 50, uav_land_margin_pct 30",
     "launch": {},
-    "check": {}
+    "check": {},
+    "_video_help": "U4: the six analog VRX + USB capture devices (one per slot, its VRX on the slot's fixed channel, W63): dshow:video=<name> on Windows (ffmpeg -list_devices true -f dshow -i dummy), v4l2:/dev/v4l/by-path/<port> on Ubuntu (the USB port = the slot), sim = the simulated VRX pictures. Encoded ONCE (Quick Sync when the probe works, else x264 ultrafast) into MediaMTX uav_<n> + the ring UAV-<n> (in every SAVE / KEEP). Only flying drones are encoded; always = slots encoded also in the magazine (a bench test)",
+    "video": {"enabled": false, "devices": {"1": "dshow:video=USB Video 1", "2": "dshow:video=USB Video 2"},
+              "w": 640, "h": 480, "fps": 15, "kbps": 400, "encoder": "auto", "always": []},
+    "_ai_help": "U4: eWaSR on the UAV feeds open on a screen, round robin, 0.5 fps in all, only while the boat's front camera AI does not need the CPU; boxes + notices only (W62: aerial views are outside its training)",
+    "ai": {"enabled": true, "max_fps": 0.5, "dwell_s": 8.0}
   }
 }

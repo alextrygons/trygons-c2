@@ -886,3 +886,63 @@ gateway.json (default `"enabled": false`):
 * Notices only (gw_status "uav" notices; audit `uav_notice` / `uav_hatch` / `uav_hatch_relay` / `uav_launch` /
   `uav_route`); the station shows HATCH FAULT and "a drone left in the hatch" as a station-local caution.
 * Tests: `python test_uav.py` UA13-UA19, `groundstation/test_uavui.py` UV5-UV7.
+
+## 26. UAV magazine - map, telemetry, video, AI, the battery minimum, flight logs (step U4)
+
+**Telemetry.** The router (its own process) keeps per drone: position, heading, altitude, ground speed, climb,
+battery % / V / A / mAh used, flight mode, the newest STATUSTEXT and the link quality (the ELRS link's HEARTBEATs
+heard in the last 5 s of 5, + RADIO_STATUS rssi / remrssi when the ELRS module sends it - W70). Stations get it in
+gw_status "uav" "drones" (1 Hz) and, after `{"t": "uav_telem_on", "on": true}`, as `uav_telem` at 2 Hz (never on the
+data saver). Notices (never alarms): UAV n LINK LOST / link back, towards the radio range limit (0.9 x
+uav_rf_range_m), LANDING IN 60 / 20 s, LANDING NOW, VIDEO LOST / back, the router / video process restarted.
+
+**The battery minimum = the only landing** (docs/uav_design.md 6.2, `uav/battery.py`, inside the router): once a
+second per flying drone, left = capacity (BATT_CAPACITY from the registration) x remaining % against the reserve =
+hover current (or the drone's own higher draw) x altitude / `uav_land_ms` / 3.6 x (1 + `uav_land_margin_pct`); left <=
+reserve -> NAV_LAND where it is (again every 2 s until the drone is in LAND), and from then on the router refuses
+every mode / mission / take-off / ARM / speed command for that drone. Nothing else can send LAND (allow.py: only with
+the router's own battery_land). The numbers are uavcheck.DEFAULTS (W59 / W71 / W75, TO CONFIRM).
+
+**Video.** `"uav": {"video": {"enabled": true, "devices": {"1": "dshow:video=<name>" | "v4l2:/dev/v4l/by-path/<...>"
+| "sim"}}}` (config.example.json). `uav/video_worker.py` = its own below-normal-priority process: per RUNNING slot
+(only drones that fly; `"always"` = also in the magazine, a bench test) ONE ffmpeg captures, encodes once (a 5-frame
+probe at the start picks h264_qsv on Windows / h264_vaapi on Ubuntu, else libx264 ultrafast; 640x480 15 fps
+400 kbit/s) and writes the MediaMTX path `uav_<n>` AND the ring `video/ring/UAV-<n>/` (1-minute UTC .ts files, in
+every SAVE / KEEP like a camera). A station receives `UAV-n` only while it has it open (`{"t": "uav_view", "uav": n,
+"open": true}`), never on the data saver / STARLINK, and the UAV streams are dropped FIRST when the video is reduced
+for the captain. Six uncompressed USB 2 captures do not fit one USB 2 bus: use MJPEG capture devices and spread them
+over the root ports (docs/uav_design.md 8).
+
+**AI.** `uav/uavai.py`: a SECOND eWaSR worker (gateway/vision/worker.py, 1 thread, its own core), only on UAV feeds
+that are open on a screen, round-robin (8 s per feed), 0.5 fps for all feeds together, and only while the boat's
+front camera AI is not PAUSED / DEGRADED and the CPU is below 85 %: boxes in gw_status "uav" "ai" + one notice per
+feed per minute - never a speed cap or navigation request. W62: eWaSR is trained on water-level views; on a top-down
+aerial picture its results may be poor - only the simulated test picture was analysed here (no real aerial video
+yet), the detection quality on real UAV video is NOT measured.
+
+**Flight logs.** `<data>/uav_logs/<drone name>/<YYYYMMDD-HHMMSS>.csv` (UTC, one file per flight from the ARM, a line a
+second); the station's Tools page exports CSV / GPX (`uav_logs` / `uav_log`).
+
+**Load - 2026-11-04, measured on the DEVELOPMENT PC, NOT the ThinkPad** (i7-13700H, 20 logical CPUs, Windows 11;
+`python tools/gateway_load.py --minutes 3 --warmup 45 --viewers 0 --uav 6 --uav-ai 2`, 35 samples x 5 s; the 4 boat
+cameras + their recording + the boat's vision as in section 21, PLUS 6 simulated VRX captures 640x480 15 fps encoded
+with Quick Sync (h264_qsv, the probe worked) + the UAV AI on 2 feeds):
+
+| part | CPU avg / max (100 % = one logical CPU) | RAM avg |
+|---|---|---|
+| boat vision worker (eWaSR + its ffmpeg) | 135 / 149 % | 474 MB |
+| UAV AI worker (eWaSR, 1 thread + ffmpeg) | 39 / 68 % | 447 MB |
+| UAV video worker (6 x ffmpeg capture + QSV encode + ring + publish) | 35 / 42 % | 873 MB |
+| MediaMTX (relay) | 12 / 20 % | 50 MB |
+| gateway.py | 5 / 8 % | 47 MB |
+| 4 boat-camera recorders | 2 / 4 % | 178 MB |
+| UAV MAVLink router | 1 / 2 % | 22 MB |
+| **gateway total** | **229 / 262 %** (11.4 % of that PC) | **2114 MB** |
+
+The boat's vision kept 1.96 fps (its 2 fps cap) with the UAV part running - the front camera keeps priority; the UAV
+AI ran 0.47 fps for both feeds together (inference 780 ms on 1 thread); the event loop at most 17 ms late. The
+simulated VRX picture is a simple test pattern (the encoder's real work on a noisy analog picture is heavier).
+**ThinkPad L390 (i5-8265U, 8 GB):** expect the UAV AI ~1.5-2 s per picture (still <= 0.5 fps, it waits when the boat's
+vision needs the CPU) and ~0.9 GB RAM for the six encoders: the gateway total ~2.1 GB of 8 GB. Quick Sync exists on
+the i5-8265U (UHD 620; VAAPI on Ubuntu): without it six x264 encoders would add ~1-2 logical CPUs. Run the same
+command on the ThinkPad itself (W26).

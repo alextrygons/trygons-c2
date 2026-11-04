@@ -375,6 +375,14 @@ the boat's own cameras only.
   (U4 measures; an aerial model = W62).
 - Map: each drone's position, heading, altitude, track, battery, link quality (RADIO_STATUS / ELRS
   LQ), its picture as the symbol.
+- AS BUILT (U4): one capture + ONE encode per running slot (video_worker.py, ffmpeg tee: MediaMTX uav_<n> + the
+  ring UAV-<n>); Quick Sync when a 5-frame probe encodes, else x264; only flying drones (+ "always" slots) run; the
+  UAV AI = a SECOND eWaSR worker process (1 thread) so the boat's FRONT camera worker is never shared - it waits while
+  the boat's vision is PAUSED / DEGRADED or the CPU is busy; link quality = ELRS HEARTBEATs heard in 5 s (+ RADIO_STATUS
+  rssi when sent, TO CONFIRM W70); measured numbers: gateway/README.md section 26. W62: only the simulated aerial
+  test picture was analysed (no real aerial footage) - the detection quality on real UAV video is still open.
+- AS BUILT (U4) 6.2: the battery rule lives INSIDE the router process (it holds battery_land; the gateway process
+  cannot ask for LAND) - gateway/uav/battery.py; capacity = BATT_CAPACITY from the registration.
 
 ## 9. Names for U2-U6 (targets; a step may rename within its own commit and updates CLAUDE.md V)
 

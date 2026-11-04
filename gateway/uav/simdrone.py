@@ -459,6 +459,13 @@ class Drone:
                 if now - self.last.get(name, 0.0) >= period:
                     self.last[name] = now
                     self.both(name, self.msg(name))
+            if now - self.last.get("RADIO_STATUS", 0.0) >= 1.0:
+                # the ELRS module's link report (step U4): weaker with the distance (TO CONFIRM what ELRS 3.x puts in
+                # rssi / remrssi in MAVLink mode, W70)
+                self.last["RADIO_STATUS"] = now
+                rssi = int(max(0.0, min(254.0, 220.0 - math.hypot(self.n, self.e) / 10.0)))
+                self.send(self.elrs, "RADIO_STATUS", {"rssi": rssi, "remrssi": rssi, "noise": 40, "remnoise": 40,
+                                                      "txbuf": 100})
             if "spam_denied" in self.faults and now - self.last.get("spam", 0.0) >= 0.5:
                 self.last["spam"] = now                       # not on the allow-list: the router must drop them
                 self.both("SERVO_OUTPUT_RAW", {"servo1_raw": 1500})

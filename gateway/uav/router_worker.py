@@ -13,10 +13,17 @@ itself when the gateway closes its stdin (never a stray process).
                   ("denied_out"); tx() is the ONLY place that calls mavlink.encode (UA4). ctx is built HERE from
                   the state the router holds (U2 review LOW-3): armed / landed from the drone itself (HEARTBEAT,
                   EXTENDED_SYS_STATE, the relative altitude - LOW-4), the hatch OPEN switch from the last "hatch"
-                  op (stale after HATCH_FRESH_S = not open), battery_land: nothing sets it yet (U4's battery rule
-                  lives here) = LAND is never sent
+                  op (stale after HATCH_FRESH_S = not open), battery_land: set ONLY by the router's own battery rule
+                  (step U4, battery.judge once a second per flying drone: left <= the energy to descend from here)
+                  = the only way a LAND ever leaves the router (storm I82 reserved); while a drone lands for its
+                  battery the router refuses every mode / mission / take-off / ARM / speed command for it
 
-Commands: {"op": "config", "slots": [{"slot", "usb", "elrs", "sysid"}], "gcs": [sysid, compid]}
+Telemetry (step U4, docs/uav_design.md 4.1 / 8 "Map"): per drone position, heading, altitude, ground speed, climb,
+battery (%, V, A, mAh used), mode, the battery rule's eta, and the ELRS link quality (HEARTBEATs heard in the last
+5 s of 5 + RADIO_STATUS rssi / remrssi when the radio sends it) - in every status event.
+
+Commands: {"op": "config", "slots": [{"slot", "usb", "elrs", "sysid", "capacity_mah"}], "gcs": [sysid, compid],
+           "battery": {uavcheck.DEFAULTS keys}}
           {"op": "register", "slot", "id"}       -> {"ev": "register", "id", "slot", "reading"}
           {"op": "assist", "slot", "utc", "pos": [lat, lon, acc] | null, "extra": hex}  -> {"ev": "assist", ...}
           {"op": "hatch", "open": bool}          the hatch OPEN switch (manager, 4 Hz)
@@ -29,7 +36,9 @@ Commands: {"op": "config", "slots": [{"slot", "usb", "elrs", "sysid"}], "gcs": [
 Events:   {"ev": "status", "links": {slot: usb link}, "radio": {slot: elrs link}, "drones": {slot: state},
           "stats": {...}} once a second (twice while a job runs), {"ev": "log", "text"}
 """
+import collections
 import json
+import math
 import os
 import queue
 import socket
@@ -39,7 +48,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from uav import allow, gpsassist, mavlink, mission, usbslots  # noqa: E402
+from uav import allow, battery, gpsassist, mavlink, mission, usbslots  # noqa: E402
 
 TICK_S = 0.05
 RECONNECT_S = 2.0
@@ -52,6 +61,12 @@ JOB_TRIES = 4
 JOB_TOTAL_S = 40.0
 CMD_RESEND_S = 1.5
 CMD_TOTAL_S = 4.0
+LQ_WINDOW_S = 5.0            # the link quality: HEARTBEATs heard (1 Hz) in the last 5 s
+LAND_RESEND_S = 2.0          # the battery LAND again while the drone is not in LAND yet
+COPTER_LAND = 9
+# refused for a drone that lands for its battery (a new mode / mission / take-off would end the landing)
+NOT_WHILE_LANDING = (allow.CMD_DO_SET_MODE, allow.CMD_MISSION_START, allow.CMD_NAV_TAKEOFF,
+                     allow.CMD_DO_CHANGE_SPEED)
 
 
 def out(obj):
@@ -81,6 +96,15 @@ class Link:
         self.hb = {}
         self.info = {}
         self.foreign = None                                # (sysid, when) of a HEARTBEAT of another drone
+        self.hbs = collections.deque(maxlen=20)            # HEARTBEAT times (the link quality)
+        self.radio = {}                                    # RADIO_STATUS (rssi / remrssi / rxerrors) + its time
+
+    def lq(self, now):
+        """Link quality %: HEARTBEATs (1 Hz) heard in the last LQ_WINDOW_S; None = never heard."""
+        if not self.hbs:
+            return None
+        n = sum(1 for t in self.hbs if now - t <= LQ_WINDOW_S)
+        return int(min(100, round(100.0 * n / LQ_WINDOW_S)))
 
     def open(self, now):
         if self.up or now < self.next_open or not self.spec:
@@ -164,6 +188,11 @@ class Drone:
         self.fix = self.sats = None
         self.ekf_flags = None
         self.batt_pct = self.batt_v = None
+        # step U4: the map / HUD values + the battery rule
+        self.hdg = self.gs = self.climb = None
+        self.batt_a = self.used_mah = None
+        self.judge = None                                  # battery.judge() of the last second
+        self.statustext = None                             # (severity, text) of the drone's newest STATUSTEXT
 
     def armed(self):
         return bool(self.hb.get("base_mode", 0) & 0x80)
@@ -183,7 +212,11 @@ class Drone:
                 "vz": None if self.vz is None else round(self.vz, 2), "lat": self.lat, "lon": self.lon,
                 "alt_age": round(now - self.alt_t, 1) if self.alt_t else None, "landed": self.landed(now),
                 "gps_fix": self.fix, "sats": self.sats, "ekf_flags": self.ekf_flags, "batt_pct": self.batt_pct,
-                "batt_v": self.batt_v}
+                "batt_v": self.batt_v, "hdg": None if self.hdg is None else round(self.hdg, 1),
+                "gs": None if self.gs is None else round(self.gs, 1),
+                "climb": None if self.climb is None else round(self.climb, 1),
+                "batt_a": None if self.batt_a is None else round(self.batt_a, 1), "used_mah": self.used_mah,
+                "judge": self.judge, "text": self.statustext}
 
 
 class MissionJob:
@@ -219,7 +252,11 @@ class Router:
         self.jobs = {}                                     # slot -> MissionJob
         self.cmds = {}                                     # slot -> CmdJob
         self.hatch_open, self.hatch_t = False, 0.0
-        self.battery_land = {}                             # slot -> True: U4's battery rule (nothing sets it in U3)
+        self.battery_land = {}                             # slot -> True: the battery rule asked for LAND (U4)
+        self.land_sent = {}                                # slot -> the last time the LAND went out
+        self.capacity = {}                                 # slot -> BATT_CAPACITY mAh (the registry)
+        self.bcfg = battery.cfg_of()                       # the battery rule's numbers (uavcheck.DEFAULTS)
+        self.next_batt = 0.0
         self.stats = {"rx": 0, "tx": 0, "denied_in": 0, "denied_out": 0, "wrong_sysid": 0, "crc": 0, "unknown": 0}
         self.denied = {}                                   # name -> count (what was refused, both directions)
         self.next_status = 0.0
@@ -289,11 +326,22 @@ class Router:
             f = m.fields
             if m.name == "HEARTBEAT" and f.get("autopilot") != 8:
                 link.hb, link.hb_t, link.sysid = f, now, m.sysid
+                link.hbs.append(now)
                 d.hb, d.hb_t, d.compid = f, now, m.compid
             elif m.name == "SYS_STATUS":
                 link.info["batt_pct"] = f.get("battery_remaining")
                 link.info["batt_v"] = round(f.get("voltage_battery", 0) / 1000.0, 2)
                 d.batt_pct, d.batt_v = link.info["batt_pct"], link.info["batt_v"]
+                if f.get("battery_remaining", -1) < 0:
+                    d.batt_pct = link.info["batt_pct"] = None          # -1 = the drone does not know
+                cb = f.get("current_battery", -1)
+                if cb is not None and cb >= 0:
+                    d.batt_a = cb / 100.0                               # cA
+            elif m.name == "BATTERY_STATUS":
+                if f.get("current_consumed", -1) >= 0:
+                    d.used_mah = int(f["current_consumed"])
+                if f.get("current_battery", -1) >= 0:
+                    d.batt_a = f["current_battery"] / 100.0
             elif m.name == "GPS_RAW_INT":
                 link.info["gps_fix"] = f.get("fix_type")
                 link.info["sats"] = f.get("satellites_visible")
@@ -301,6 +349,21 @@ class Router:
             elif m.name == "GLOBAL_POSITION_INT":
                 d.rel_alt, d.vz, d.alt_t = f.get("relative_alt", 0) / 1000.0, -f.get("vz", 0) / 100.0, now
                 d.lat, d.lon = f.get("lat", 0) / 1e7, f.get("lon", 0) / 1e7
+                d.gs = math.hypot(f.get("vx", 0), f.get("vy", 0)) / 100.0
+                if f.get("hdg", 65535) != 65535:
+                    d.hdg = f["hdg"] / 100.0
+            elif m.name == "VFR_HUD":
+                d.climb = f.get("climb")
+                if d.hdg is None and f.get("heading") is not None:
+                    d.hdg = float(f["heading"]) % 360.0
+            elif m.name == "ATTITUDE":
+                if f.get("yaw") is not None and math.isfinite(f["yaw"]):
+                    d.hdg = math.degrees(f["yaw"]) % 360.0
+            elif m.name == "RADIO_STATUS":
+                link.radio = {"rssi": f.get("rssi"), "remrssi": f.get("remrssi"), "rxerrors": f.get("rxerrors"),
+                              "t": now}
+            elif m.name == "STATUSTEXT":
+                d.statustext = (f.get("severity"), (f.get("text") or "")[:50])
             elif m.name == "EXTENDED_SYS_STATE":
                 d.landed_state, d.ext_t = f.get("landed_state"), now
             elif m.name == "EKF_STATUS_REPORT":
@@ -376,12 +439,15 @@ class Router:
         op = c.get("op")
         if op == "config":
             self.gcs = tuple(c.get("gcs") or self.gcs)
+            if c.get("battery") is not None:
+                self.bcfg = battery.cfg_of(c.get("battery"))
             want = {}
             for s in c.get("slots", []):
                 for kind in ("usb", "elrs"):
                     if s.get(kind):
                         want[(int(s["slot"]), kind)] = s[kind]
                 self.expect[int(s["slot"])] = s.get("sysid")
+                self.capacity[int(s["slot"])] = s.get("capacity_mah")
             for key in list(self.links):
                 if key not in want or want[key] != self.links[key].spec:
                     self.links.pop(key).close("removed")
@@ -402,9 +468,11 @@ class Router:
         elif op == "mission":
             slot = int(c["slot"])
             lk = self.pick(slot, c.get("via", "auto"), now)
-            if lk is None or slot in self.jobs:
+            if lk is None or slot in self.jobs or self.battery_land.get(slot):
                 return out({"ev": "mission", "id": c.get("id"), "slot": slot, "ok": False,
-                            "why": "no link to the drone" if lk is None else "an upload runs already"})
+                            "why": "no link to the drone" if lk is None else (
+                                "battery minimum: the drone is landing" if self.battery_land.get(slot) else
+                                "an upload runs already")})
             j = self.jobs[slot] = MissionJob(c.get("id"), slot, lk, list(c["items"]), now)
             if not self.tx(lk, "MISSION_COUNT", dict(self.tgt_of(slot), count=len(j.items), mission_type=0)):
                 self.job_end(j, False, "refused by the allow-list")
@@ -415,6 +483,9 @@ class Router:
             if lk is None:
                 return out(dict(res, why="no link to the drone"))
             p = [float(x) for x in (list(c.get("params") or []) + [0.0] * 7)[:7]]
+            if self.battery_land.get(slot) and (int(c["command"]) in NOT_WHILE_LANDING or (
+                    int(c["command"]) == allow.CMD_COMPONENT_ARM_DISARM and p[0] == 1)):
+                return out(dict(res, why="battery minimum: the drone is landing"))
             job = CmdJob(c.get("id"), slot, lk, int(c["command"]), p, now)
             if not self.send_cmd(job):
                 return out(dict(res, why="refused by the allow-list"))
@@ -490,6 +561,9 @@ class Router:
                 del self.probes[slot]
                 out({"ev": "register", "id": rid, "slot": slot, "reading": pr.result()})
         self.jobs_tick(now)
+        if now >= self.next_batt:
+            self.next_batt = now + 1.0
+            self.battery_tick(now)
         if now >= self.next_hb:
             self.next_hb = now + 1.0
             self.n_hb = getattr(self, "n_hb", 0) + 1
@@ -509,18 +583,52 @@ class Router:
             self.next_status = now + 0.5
             self.status(now)
 
+    # --- the battery minimum (step U4, docs/uav_design.md 6.2): the ONLY landing --------------------------------
+    def battery_tick(self, now):
+        """Once a second: every flying drone (armed, not on the ground, a fresh altitude) judged by battery.judge;
+        "land" = battery_land latched + MAV_CMD_NAV_LAND (lat / lon 0 = where it is) through tx() - again every
+        LAND_RESEND_S until the drone's HEARTBEAT says LAND; the latch ends when the drone is on the ground and
+        disarmed. Nothing else sets battery_land."""
+        for slot, d in self.drones.items():
+            if not d.hb_t or now - d.hb_t > HB_LOST_S:
+                continue
+            flying = d.armed() and not d.landed(now) and d.rel_alt is not None and now - d.alt_t < ALT_FRESH_S
+            if not flying:
+                d.judge = None
+                if self.battery_land.get(slot) and not d.armed():
+                    self.battery_land.pop(slot, None)
+                    self.land_sent.pop(slot, None)
+                    out({"ev": "land", "slot": slot, "what": "down", "why": "on the ground, disarmed"})
+                continue
+            j = battery.judge(d.rel_alt, d.batt_pct, self.capacity.get(slot), d.batt_a, self.bcfg)
+            d.judge = j
+            if j["state"] == "land" and not self.battery_land.get(slot):
+                self.battery_land[slot] = True
+                out({"ev": "land", "slot": slot, "what": "start", "why": j["why"]})
+            if self.battery_land.get(slot) and d.hb.get("custom_mode") != COPTER_LAND and \
+                    now - self.land_sent.get(slot, 0.0) >= LAND_RESEND_S:
+                lk = self.pick(slot, "auto", now)
+                if lk is not None:
+                    self.land_sent[slot] = now
+                    self.tx(lk, "COMMAND_LONG", dict(self.tgt_of(slot), command=allow.CMD_NAV_LAND, confirmation=0,
+                                                     param1=0.0, param2=0.0, param3=0.0, param4=0.0, param5=0.0,
+                                                     param6=0.0, param7=0.0))
+
     def status(self, now):
         def lk(l):
             return dict({"up": l.up, "error": l.error, "present": l.present(now), "sysid": l.sysid,
                          "armed": bool(l.hb.get("base_mode", 0) & 0x80), "mode": l.hb.get("custom_mode"),
-                         "hb_age": round(now - l.hb_t, 1) if l.hb_t else None,
+                         "hb_age": round(now - l.hb_t, 1) if l.hb_t else None, "lq": l.lq(now),
+                         "rssi": l.radio.get("rssi") if l.radio and now - l.radio["t"] < 5.0 else None,
+                         "remrssi": l.radio.get("remrssi") if l.radio and now - l.radio["t"] < 5.0 else None,
                          "foreign_sysid": l.foreign[0] if l.foreign and now - l.foreign[1] < HB_LOST_S else None},
                         **l.info)
         out({"ev": "status", "stats": self.stats, "denied": self.denied, "probing": sorted(self.probes),
              "jobs": sorted(self.jobs), "hatch_open": self.ctx_hatch(now),
              "links": {str(s): lk(l) for (s, k), l in self.links.items() if k == "usb"},
              "radio": {str(s): lk(l) for (s, k), l in self.links.items() if k == "elrs"},
-             "drones": {str(s): d.view(now) for s, d in self.drones.items() if d.hb_t}})
+             "drones": {str(s): dict(d.view(now), landing=bool(self.battery_land.get(s)))
+                        for s, d in self.drones.items() if d.hb_t}})
 
     def ctx_hatch(self, now):
         return bool(self.hatch_open and now - self.hatch_t < HATCH_FRESH_S)

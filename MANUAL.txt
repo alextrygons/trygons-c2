@@ -2731,6 +2731,37 @@ UAV MAGAZINE - ROUTES AND LAUNCH (step U3)
   can switch it. Without a station holding HELM nothing can switch it
   ("HATCH NOT CLOSED - take HELM and close it").
 
+UAV MAGAZINE - MAP, TELEMETRY, VIDEO, AI (step U4)
+  Every flying UAV is on screen 2's map with its picture (turned with its
+  heading), its own dashed track and a label: UAV n, altitude, battery %, link
+  % (amber = battery below 30 %, the battery minimum near, or a weak link). A
+  click on a UAV opens its VIDEO full screen on screen 2 (bar 1 also lists the
+  UAVs with a video; MAP / Esc = back) with its own green values (altitude,
+  speed, battery, link, heading, distance to the boat). The gateway records
+  every UAV video in its ring (in every SAVE / KEEP 5' / 1 h) and sends it only
+  to a station that has it OPEN - on DATA SAVER / STARLINK there is NO UAV video
+  for anyone, and when the link is busy the UAV video goes before the
+  captain's cameras.
+  AI: the same obstacle detection ("AI") looks at the UAV videos that are open
+  on a screen, one after the other, slowly (0.5 pictures a second in all), and
+  only when the boat's own front camera AI does not need the computer. It only
+  draws boxes and gives a notice - it never slows or steers the boat. It was
+  trained on views from a boat, not from the air: its boxes on a UAV picture
+  may be poor.
+  The ONLY landing: the battery minimum. The gateway watches every flying UAV:
+  when the battery left is just enough to descend from where it is, it LANDS
+  there (over the sea the drone is lost - the owner's rule). A CAUTION on every
+  station 60 s and 20 s before ("UAV n LANDING IN 60 s - battery minimum") and
+  at the landing. Lost radio link, no GPS or any warning = it holds / goes on
+  with its mission, never a landing.
+  Notices (never boat alarms): UAV n LINK LOST / link back, UAV n towards the
+  radio range limit, UAV n VIDEO LOST, the UAV router OFFLINE (also on screen
+  1's notices).
+  Flight logs: the gateway writes one file per flight (a line a second:
+  position, altitude, speed, battery, link, mode). Tools - UAV magazine -
+  FLIGHT LOGS, choose one, EXPORT CSV (a spreadsheet) or EXPORT GPX (Google
+  Earth, OpenCPN).
+
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
 -------------------------------------------------------------------------------

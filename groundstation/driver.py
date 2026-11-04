@@ -881,6 +881,10 @@ class DriverScreen:
             out.append(("collision", txt, "warn"))
         if a.front_sel.notice:
             out.append(("frontsel", video.notice_text(a.front_sel), "caution"))
+        u = gw.get("uav") or {}
+        if u.get("enabled") and u.get("state") == "OFFLINE":
+            # U2 review LOW-12 (U4): the UAV router OFFLINE on screen 1's notices too (a notice, never an alarm)
+            out.append(("uav_offline", T("uav.n_offline", why=i18n.from_en(u.get("why") or "")), "caution"))
         return out
 
     def draw(self):

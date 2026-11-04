@@ -175,6 +175,8 @@ class MapView:
         if p is None or grabbed or abs(x - p[0]) + abs(y - p[1]) > 4 or not self.view:
             return
         la, lo = self.P()[1](x, y)
+        if not self.edit and getattr(self.app, "uav_map_hit", None) and self.app.uav_map_hit(x, y):
+            return                                  # a UAV symbol: its video (step U4)
         if self.edit:
             self.pan_t = time.time()
             self.app.map_add(self.edit, la, lo)
@@ -259,6 +261,10 @@ class MapView:
         if lv is not None:
             for pts in lv.track.runs(P, w, h, m):
                 c.create_line(*pts, fill=th["track"], width=2, tags="track")
+        # the UAVs (step U4): the owner's picture turned with the heading, their own track style + a label
+        if getattr(a, "uav_store", None) is not None:
+            import uavmap
+            uavmap.draw(c, P, a.uav_store, th, f_small, k=max(1.0, theme.unit(w, h)))
         pk = getattr(a, "track_pick", None)
         if pk:
             x, y = P(pk["lat"], pk["lon"])

@@ -6,7 +6,7 @@ ArduPilot firmware, battery, GPS, VTX channel, ELRS binding, its route / mission
 NOT launchable + why / not registered / no drone) and REGISTER = {"t": "uav_register", "slot": n} to the gateway
 (read only on the drone). Under the rows (U3): the hatch, the launch sequence, PREPARE LAUNCH (the captain's YES / NO
 on screen 1; a single operator his own), STOP (any crew station), HATCH CLOSE (the captain's own, after a stop) and
-the gateway's UAV notices.
+the gateway's UAV notices; (U4) FLIGHT LOGS = the gateway's per-drone flight logs, exported as CSV / GPX.
 The data = gw_status "uav" (1 Hz); the answers = "uav_ack". Not connected / a boat without the magazine = one line.
 """
 import i18n
@@ -96,6 +96,13 @@ def launch_view(st):
             "can_close": not busy and hs != "CLOSED"}
 
 
+def log_line(r):
+    """One flight log in the list: "UAV-1  2026-11-04 16:09 UTC  12 kB"."""
+    f = r.get("file") or ""
+    when = "%s-%s-%s %s:%s" % (f[:4], f[4:6], f[6:8], f[9:11], f[11:13]) if len(f) >= 13 else f
+    return T("uav.log_line", name=r.get("name", "?"), when=when, kb=max(1, int((r.get("bytes") or 0) / 1024)))
+
+
 class Page:
     def __init__(self, fr, app):
         import tkinter as tk
@@ -151,6 +158,20 @@ class Page:
         self.b_close = tk.Button(bf, command=self.hatch_close, **theme.button_opts())
         i18n.bind(self.b_close, "uav.hatch_close")
         self.b_close.pack(side="left")
+        # the per-drone flight logs (step U4): the gateway's list, exported as CSV / GPX to a file on this PC
+        self.b_logs = tk.Button(bf, command=self.ask_logs, **theme.button_opts())
+        i18n.bind(self.b_logs, "uav.flightlogs")
+        self.b_logs.pack(side="left", padx=(18, 6))
+        self.b_csv = tk.Button(bf, command=lambda: self.export("csv"), **theme.button_opts())
+        i18n.bind(self.b_csv, "uav.export_csv")
+        self.b_csv.pack(side="left", padx=(0, 6))
+        self.b_gpx = tk.Button(bf, command=lambda: self.export("gpx"), **theme.button_opts())
+        i18n.bind(self.b_gpx, "uav.export_gpx")
+        self.b_gpx.pack(side="left")
+        self.logs = []
+        self.lb_logs = tk.Listbox(lf, height=4, font=theme.font("small"), bg=C["panel"], fg=C["fg"],
+                                  exportselection=False)
+        self.lb_logs.pack(fill="x", pady=(2, 0))
         self.l_notes = tk.Label(lf, font=theme.font("small"), bg=BG, fg=C["fg"], anchor="w", justify="left",
                                 wraplength=900)
         self.l_notes.pack(fill="x")
@@ -197,6 +218,40 @@ class Page:
         if self.connected():
             self.app.link.send_msg({"t": "uav_hatch_close"})
 
+    def ask_logs(self):
+        if not self.connected():
+            return self.say(T("uav.not_connected"), False)
+        self.app.link.send_msg({"t": "uav_logs"})
+
+    def on_logs(self, d):
+        """"uav_logs" from the gateway: the flight logs, newest first."""
+        self.logs = sorted(d.get("logs") or [], key=lambda r: -float(r.get("t") or 0))
+        try:
+            self.lb_logs.delete(0, "end")
+            for r in self.logs:
+                self.lb_logs.insert("end", log_line(r))
+        except self.tk.TclError:
+            pass
+        if not self.logs:
+            self.say(T("uav.no_logs"))
+
+    def export(self, fmt, path=None):
+        """Export the selected flight log as CSV / GPX (a save dialog unless path is given: tests)."""
+        try:
+            sel = self.lb_logs.curselection()
+        except self.tk.TclError:
+            sel = ()
+        if not sel or sel[0] >= len(self.logs):
+            return self.say(T("uav.pick_log"), False)
+        r = self.logs[sel[0]]
+        if path is None:
+            from tkinter import filedialog
+            path = filedialog.asksaveasfilename(defaultextension="." + fmt, initialfile="%s_%s.%s" % (
+                r["name"], r["file"][:-4], fmt), filetypes=[(fmt.upper(), "*." + fmt)])
+            if not path:
+                return
+        self.app.uav_log_export(r["name"], r["file"], fmt, path)
+
     def say(self, text, ok=None):
         col = theme.CAUTION if ok is False else theme.C["fg"]      # (green only on the video; amber = a caution)
         try:
@@ -233,7 +288,7 @@ class Page:
             self.stats.configure(text="")
             for w in (self.l_hatch, self.l_seq, self.l_notes):
                 w.configure(text="")
-            for b in (self.b_prep, self.b_stop, self.b_close):
+            for b in (self.b_prep, self.b_stop, self.b_close, self.b_logs):
                 b.configure(state="disabled")
             for labels, b in self.rows:
                 for lb in labels.values():
@@ -256,6 +311,7 @@ class Page:
         self.b_prep.configure(state="normal" if on and lv["can_prepare"] else "disabled")
         self.b_stop.configure(state="normal" if lv["can_stop"] else "disabled")
         self.b_close.configure(state="normal" if lv["can_close"] else "disabled")
+        self.b_logs.configure(state="normal")
         slots = {s["slot"]: s for s in st.get("slots", [])}
         for i, (labels, b) in enumerate(self.rows):
             s = slots.get(i + 1)

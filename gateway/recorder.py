@@ -296,7 +296,7 @@ class Recorder:
         now = time.time() if now is None else now
         have = 0.0
         for n, c in self.cams.items():
-            if n == "AUDIO":                            # review 13r LOW-5: the loudhailer track is no camera
+            if n == "AUDIO" or n.startswith("UAV-"):    # review 13r LOW-5: the loudhailer / UAV tracks are no boat camera
                 continue
             segs = c.segments()
             if segs:
@@ -613,7 +613,7 @@ class Recorder:
             b = sum(os.path.getsize(p) for t, p in segs if os.path.exists(p))
             span = (now - segs[0][0]) if segs else 0.0
             ring_b += b
-            if n != "AUDIO":                            # review 13r LOW-5: "have" = the cameras' ring
+            if n != "AUDIO" and not n.startswith("UAV-"):   # review 13r LOW-5: "have" = the cameras' ring
                 ring_s = max(ring_s, span)
             cams.append({"name": n, "state": c.state, "for_s": int(now - c.since), "files": len(segs),
                          "mb": round(b / 1e6, 1), "restarts": c.restarts})
