@@ -50,6 +50,10 @@
       screen 2 (the gateway asked for it, the lighter decoding for a copilot), the four cameras + MAP on bar 1, the
       green HUD basics, the mode bar / STANDBY / alarms stay, no map editing under it, "reduced for the captain" /
       "no video" banners, MAP = back (the stream closed); the "no video" warning of a dead front camera
+  S26 track (step 13n3, owner 2026-10-31 E3): TRACKS / NEW TRACK on bar 2, the live track (every point, white / black
+      by the background), a click on the line = time + speed there, NEW TRACK = YES / NO then <date>_<HHMM>_<boat> + a
+      new line, one track per boat, the TRACKS list (show grey dashed + date / hide / remove - the file stays / GPX
+      export + import, a bad file refused), the screen 1 mini map, nothing sent to the boat
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
@@ -633,7 +637,7 @@ def s9_look(rig):
     ap = rig.ap
     found = []
     for fn in ("app.py", "driver.py", "hud.py", "hudar.py", "mapwin.py", "overlay.py", "crewui.py", "soundtest.py",
-               "splash.py", "about.py"):
+               "splash.py", "about.py", "trackui.py", "track.py"):
         for n, line in enumerate(open(os.path.join(HERE, fn), encoding="utf-8"), 1):
             if LITERAL.search(line):
                 found.append("%s:%d" % (fn, n))
@@ -713,7 +717,7 @@ ALLOWED = {"STANDBY", "AUTO", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG", "USB", 
            "Ctrl", "Shift", "Tab", "Esc", "Space", "x", "v", "on", "off", "lat", "lon", "WP", "Tools", "AURIX",
            "English", "png", "json", "txt", "tlg", "TLG", "CSV", "csv", "Not", "for", "navigation", "free", "data",
            "may", "be", "inaccurate", "near", "the", "coast", "GATEWAY", "FRONT-", "UART", "kHz", "python", "PWM",
-           "CPU", "alice", "bob", "DroneCAN", "Drones", "BATTLE", "SHORT"}
+           "CPU", "alice", "bob", "DroneCAN", "Drones", "BATTLE", "SHORT", "Google", "Earth", "OpenCPN"}  # (13n3 GPX)
 
 
 def english_words(text):
@@ -2060,6 +2064,144 @@ def s25_camview(rig):
                           novideo, back, esc, warn, no_warn, no_btn, rig.errors[:2]))
 
 
+def s26_track(rig):
+    """Step 13n3 (owner 2026-10-31 E3): the track on screen 2 (+ the mini map of screen 1)."""
+    ap = rig.ap
+    import mapview
+    import settings
+    import track as trackmod
+    rig.size(1366, 768, 1.0)
+    sent = []
+    orig = ap.cmd
+    ap.cmd = lambda f, p, w: sent.append((f, p))
+    real_boat = ap.boat
+    m0 = ap.mapwin.m
+    ap.mapwin.m, ap.mapwin.pan, ap.mapwin.edit = 10.0, None, None
+    gpx_dir = tempfile.mkdtemp(prefix="trygons_s26_")
+    try:
+        ap.render(force=True)
+        btns = op(ap, "tracks") is not None and op(ap, "track_new") is not None and \
+            overlay.inside(op(ap, "tracks")["r"], op(ap, "bar2")["r"], 1.5) and not layout_problems(ap)
+        lv = ap.track_select()
+        key0 = lv.key
+        lv.save_as(gpx_dir, "earlier")                               # (the sim's own points so far: elsewhere)
+        la, lo = ap.t["est_lat"], ap.t["est_lon"]
+        now = time.time()
+        for i in range(200):          # 200 points from 1 km south up to the boat, 5 m each, 4.0 .. 7.98 kn
+            lv.feed(now - 400 + 2 * i, la - (199 - i) * 5.0 / 111320.0, lo, 4.0 + i * 0.02, 0.0)
+        drawn = lambda tag: [i for i in ap.cv.find_withtag(tag) if ap.cv.type(i) == "line"]   # noqa: E731
+        ap.mapwin.redraw()
+        th = mapview.THEMES[theme.map_theme()]
+        live_lines = drawn("track")
+        colour = bool(live_lines) and all(ap.cv.itemcget(i, "fill") == th["track"] for i in live_lines) and \
+            th["track"] in ("#ffffff", "#000000")
+        full = len(ap.track) == 200                                  # every point kept (no 5000 limit any more)
+        # a click on the line = the time + speed there; a click away = the mark goes
+        P = ap.mapwin.P()[0]
+        x, y = P(la - 10 * 5.0 / 111320.0, lo)                        # point 189: ~ 5 px south of the boat
+        ap.cv_press(type("E", (), {"x": x + 2, "y": y})())
+        ap.cv_release(type("E", (), {"x": x + 2, "y": y})())
+        pk = ap.track_pick
+        want_kn = "%.1f" % (4.0 + 189 * 0.02)
+        click_ok = pk is not None and want_kn in pk["text"] and \
+            time.strftime("%H:%M", time.localtime(now - 400 + 2 * 189)) in pk["text"] and \
+            bool(ap.cv.find_withtag("track_pick"))
+        ap.cv_press(type("E", (), {"x": x + 90, "y": y})())
+        ap.cv_release(type("E", (), {"x": x + 90, "y": y})())
+        away = ap.track_pick is None and not ap.cv.find_withtag("track_pick")
+        # NEW TRACK: YES / NO first; NO keeps it, YES saves it as <date>_<HHMM>_<boat> and starts a new line
+        click_r(ap, op(ap, "track_new")["r"])
+        asked = getattr(ap, "yn_win", None) is not None
+        ap.yn_answer(False)
+        kept = len(ap.track) == 200 and not os.listdir(ap.tracks.saved_dir) if os.path.isdir(ap.tracks.saved_dir) \
+            else len(ap.track) == 200
+        click_r(ap, op(ap, "track_new")["r"])
+        ap.yn_answer(True)
+        files = [f for f in os.listdir(ap.tracks.saved_dir) if f.endswith(".jsonl")]
+        stamp = time.strftime("%Y-%m-%d_%H%M", time.localtime(now - 400))
+        saved = len(files) == 1 and files[0].startswith(stamp + "_") and len(ap.track) <= 1
+        path = os.path.join(ap.tracks.saved_dir, files[0]) if files else None
+        # per boat: a boat of boats/ = its own (empty) track, never the address's; back = the address's again
+        import boats
+        bt = boats.load()[0]
+        ap.boat = bt
+        rig.pump(0.4)
+        mine = ap.tracks.live.key == "boat_" + bt.name and all(abs(a - la) < 0.01 for a, _ in ap.track)
+        n_boat = len(ap.track)
+        ap.boat = real_boat
+        rig.pump(0.4)
+        back = ap.tracks.live.key == key0
+        # TRACKS: the list, SHOW = grey dashed + the date label, HIDE, REMOVE (the file stays), GPX out + in
+        win = ap.open_tracks()
+        rows = list(win.tree.get_children())
+        listed = rows == [path]
+        win.tree.selection_set(rows)
+        win.show()
+        ap.mapwin.redraw()
+        old = drawn("track_old")
+        shown = bool(old) and all(ap.cv.itemcget(i, "fill") == th["track_old"] and ap.cv.itemcget(i, "dash")
+                                  for i in old) and \
+            any(ap.cv.type(i) == "text" and ap.track_label(ap.tracks.load(path)) == ap.cv.itemcget(i, "text")
+                for i in ap.cv.find_withtag("track_old")) and settings.get("tracks_shown") == [[path, True]]
+        win.hide()
+        ap.mapwin.redraw()
+        hid = not drawn("track_old") and path in ap.track_shown
+        win.show()
+        out = win.export(gpx_dir)
+        exported = bool(out) and os.path.exists(out[0])
+        imp = win.import_gpx(out[0]) if exported else None
+        imported = imp is not None and imp in ap.track_shown and len(win.tree.get_children()) == 2
+        bad = os.path.join(gpx_dir, "bad.gpx")
+        with open(bad, "w") as f:
+            f.write("<<< not a gpx")
+        refused = win.import_gpx(bad) is None and A.T("track.err_not_xml") in win.msg.cget("text")
+        win.tree.selection_set(list(win.tree.get_children()))
+        win.remove()
+        removed = not ap.track_shown and os.path.exists(path) and imp and os.path.exists(imp)
+        # the mini map of screen 1 draws the live track too
+        ap.open_driver()
+        rig.pump(0.8)
+        lv = ap.tracks.live
+        for i in range(30):
+            lv.feed(time.time() + 10 + 2 * i, la + i * 5.0 / 111320.0, lo + i * 5.0 / 111320.0, 5.0, 45.0)
+        ap.driver.draw_map()
+        mini = any(ap.driver.map.type(i) == "line" and ap.driver.map.itemcget(i, "fill") ==
+                   mapview.THEMES["dark"]["track"] for i in ap.driver.map.find_all())
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots:
+            ap.track_show(path, True)
+            ap.mapwin.zoom(0.5)
+            ap.render(force=True)
+            ap.mapwin.redraw()
+            canvaspic.save(ap.cv, os.path.join(shots, "screen2_tracks_el.png"))
+            ap.track_remove(path)
+            ap.mapwin.zoom(2.0)
+        nothing = sent == []
+        fits = not layout_problems(ap)
+    finally:
+        ap.cmd = orig
+        ap.boat = real_boat
+        ap.mapwin.m = m0
+        if ap.tracks_win is not None:
+            ap.tracks_win.close()
+        ap.track_shown.clear()
+        ap.track_pick = None
+        settings.put("tracks_shown", [])
+        ap.render(force=True)
+    report("S26 track (13n3): TRACKS / NEW TRACK on bar 2; the live track white / black by the background, every point "
+           "kept; a click on the line = time + speed there, away = gone; NEW TRACK asks YES / NO (NO keeps it), YES "
+           "saves <date>_<HHMM>_<boat> + a new line; one track per boat; TRACKS list SHOW (grey dashed + date) / HIDE / "
+           "REMOVE (file stays) / GPX export + import (a bad file refused); the screen 1 mini map; nothing sent",
+           btns and colour and full and click_ok and away and asked and kept and saved and mine and back and listed and
+           shown and hid and exported and imported and refused and removed and mini and nothing and fits and
+           not rig.errors,
+           "buttons %s; colour %s; 200 kept %s; click %s (%s); away %s; asked %s; NO kept %s; saved %s (%s); own boat "
+           "%s (%d); back %s; listed %s; shown %s; hidden %s; GPX out %s in %s; bad refused %s; removed %s; mini map "
+           "%s; sent %s; fits %s; errors %s" % (
+               btns, colour, full, click_ok, pk and pk["text"], away, asked, kept, saved, files, mine, n_boat, back,
+               listed, shown, hid, exported, imported, refused, removed, mini, sent, fits, rig.errors[:2]))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
@@ -2069,7 +2211,7 @@ def main():
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
                    s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg, s19_override, s20_slam_restore,
-                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s25_camview, s16_silence):
+                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s25_camview, s26_track, s16_silence):
             try:
                 fn(rig)
             except Exception as e:

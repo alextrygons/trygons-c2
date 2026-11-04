@@ -64,6 +64,7 @@ import driver
 import chart
 import mapview
 import mapwin
+import track as trackmod
 import collections
 import json
 from tkinter import messagebox, simpledialog
@@ -255,7 +256,11 @@ class App:
         self.t = None                   # latest telemetry
         self.t_rx = 0.0
         self.hist = []                  # (t_s, heading, target, outboard)
-        self.track = []                 # (lat, lon)
+        self.tracks = trackmod.TrackStore()     # the live track per boat on disk + the saved ones (step 13n3)
+        self.track_shown = {}           # saved tracks on the map: path -> visible (settings "tracks_shown")
+        self.track_pick = None          # a click on a track line: {"lat", "lon", "text", "path", "at"} (13n3)
+        self.track_err = None           # the last track file error said (not repeated)
+        self.tracks_win = None          # the TRACKS list window
         self.origin = None
         self.params = {}
         self.pending = {}               # seq -> description
@@ -328,6 +333,7 @@ class App:
         self._press_ov = False
         self._render_t = 0.0
         self.boat_list = boats.load()
+        self.track_restore()
         self.prober = boats.Prober(self.boat_list).start()
         root.title(self.window_title())
         theme.set_app_icon(root)        # the app icon on every window of this station + the taskbar (13i)
@@ -2203,8 +2209,158 @@ class App:
                                                                      v="%g" % v))
 
     def map_click(self, lat, lon):
-        """A click on the map outside the editing modes: nothing (the panels' buttons start the editing)."""
-        return None
+        """A click on the map outside the editing modes: on a track line (the live one or a saved one shown) = the
+        time + speed there (13n3); elsewhere it clears that mark."""
+        return self.track_click(lat, lon)
+
+    # --- the track (step 13n3, owner 2026-10-31 E3) - DISPLAY ONLY -----------------------------------------
+    @property
+    def track(self):
+        """The live track of the boat shown now [(lat, lon)] (every point; the drawing simplifies)."""
+        return self.tracks.latlon()
+
+    def track_key(self):
+        """(key, boat name) of the live track: the boat's name (the boat list or the gateway's welcome), else the
+        typed address - one track per boat, never mixed."""
+        if self.boat is not None:
+            return "boat_" + self.boat.name, self.boat.name
+        name = (getattr(self.link, "welcome", None) or {}).get("boat") if self.link is not None else None
+        if name:
+            return "boat_" + str(name), str(name)
+        addr = self.port_var.get().strip()
+        return "addr_" + addr, addr
+
+    def track_select(self):
+        key, name = self.track_key()
+        lv = self.tracks.select(key, name)
+        if settings.get("track_last") != [key, name]:
+            settings.put("track_last", [key, name])
+        return lv
+
+    def track_restore(self):
+        """At the start: the last boat's live track from its file (crash-safe) + the saved tracks shown last time."""
+        last = settings.get("track_last")
+        if isinstance(last, list) and len(last) == 2 and all(isinstance(v, str) for v in last):
+            self.tracks.select(last[0], last[1])
+        for e in settings.get("tracks_shown") or []:
+            try:
+                path, vis = e
+                if os.path.exists(path):
+                    self.track_shown[path] = bool(vis)
+            except (TypeError, ValueError):
+                continue
+
+    def track_feed(self, d):
+        if not d.get("pos_source"):
+            return
+        lv = self.track_select()
+        self.tracks.feed_telem(d)
+        if lv.error and lv.error != self.track_err:
+            self.track_err = lv.error
+            self.say(T("track.write_error", err=lv.error), ORANGE)
+            self.event(T("track.write_error", err=lv.error))
+
+    def track_boat_name(self):
+        lv = self.tracks.live
+        return lv.boat if lv is not None else self.track_key()[1]
+
+    def track_new(self):
+        """NEW TRACK (bar 2): a YES / NO check, then the live track is saved as date_time_boat and a new one starts."""
+        lv = self.tracks.live
+        if lv is None or not lv.track.pts:
+            return self.say(T("track.nothing"), ORANGE)
+        st = lv.track.stats()
+        return self.yn_dialog("track.new_title", T("track.new_ask", boat=self.track_boat_name(), n=st["n"],
+                                                   nm="%.1f" % st["nm"]),
+                              T("track.new_yes"), T("cap.cancel"), lambda yes: yes and self.track_new_do())
+
+    def track_new_do(self):
+        try:
+            path = self.tracks.new_track(self.track_boat_name())
+        except OSError as e:
+            return self.say(T("track.save_error", err=e), RED)
+        if path:
+            name = os.path.basename(path)[:-6]
+            self.say(T("track.saved", name=name), GREEN)
+            self.event(T("track.saved", name=name))
+        self.track_pick = None
+        self.mapwin.redraw()
+        if self.tracks_win is not None and self.tracks_win.alive():
+            self.tracks_win.refresh()
+        return path
+
+    def track_show(self, path, visible=True):
+        """A saved track on the map (visible) / hidden (kept in the list); track_remove takes it off the map."""
+        self.track_shown[path] = bool(visible)
+        self.track_save_shown()
+
+    def track_remove(self, path):
+        """Off the map (the file stays)."""
+        self.track_shown.pop(path, None)
+        if self.track_pick and self.track_pick.get("path") == path:
+            self.track_pick = None
+        self.track_save_shown()
+
+    def track_save_shown(self):
+        settings.put("tracks_shown", [[p, v] for p, v in self.track_shown.items()])
+        self.mapwin.redraw()
+
+    def tracks_on_map(self):
+        """[(path, Track)] of the saved tracks shown now (a file that went away is dropped)."""
+        out = []
+        for path, vis in list(self.track_shown.items()):
+            if not vis:
+                continue
+            try:
+                out.append((path, self.tracks.load(path)))
+            except OSError:
+                self.track_shown.pop(path, None)
+        return out
+
+    def track_label(self, tr):
+        t0 = tr.times()[0]
+        when = time.strftime("%d.%m.%Y %H:%M", time.localtime(t0)) if t0 is not None else "--"
+        return "%s  %s" % (when, tr.boat or "?")
+
+    def track_click(self, lat, lon):
+        mw = self.mapwin
+        if not mw.view:
+            return None
+        P = mw.P()[0]
+        x, y = P(lat, lon)
+        best = None
+        cands = [(None, self.tracks.live.track)] if self.tracks.live is not None else []
+        for path, tr in cands + self.tracks_on_map():
+            hit = tr.nearest(P, x, y, mapwin.HIT_PX, mw.m)
+            if hit and (best is None or hit["px"] < best[0]["px"]):
+                best = (hit, path, tr)
+        if best is None:
+            if self.track_pick is not None:
+                self.track_pick = None
+                mw.redraw()
+            return None
+        hit, path, tr = best
+        when = time.strftime("%H:%M:%S", time.localtime(hit["t"])) if hit["t"] is not None else "--:--:--"
+        if path is not None and hit["t"] is not None:
+            when = time.strftime("%d.%m.%Y ", time.localtime(hit["t"])) + when
+        kn = "-" if hit["kn"] is None else "%.1f" % hit["kn"]
+        text = T("track.at", time=when, kn=kn) + ("" if hit["hdg"] is None else "  %03.0f°" % hit["hdg"])
+        if path is not None:
+            text += "  · " + (tr.boat or "?")
+        self.track_pick = {"lat": hit["lat"], "lon": hit["lon"], "text": text, "path": path, "at": time.time()}
+        self.say(text)
+        mw.redraw()
+        return self.track_pick
+
+    def open_tracks(self):
+        """TRACKS (bar 2): the list of the saved tracks (show / hide / remove from the map, GPX export / import)."""
+        import trackui
+        if self.tracks_win is not None and self.tracks_win.alive():
+            self.tracks_win.w.lift()
+            self.tracks_win.refresh()
+        else:
+            self.tracks_win = trackui.TracksWindow(self)
+        return self.tracks_win
 
     # --- feedback ----------------------------------------------------------------
     def say(self, text, color=None):
@@ -2398,11 +2554,7 @@ class App:
         self.hist.append((ts, d["heading"], d["target"], d["outboard"]))
         while self.hist and self.hist[0][0] < ts - PLOT_S:
             self.hist.pop(0)
-        if d["pos_source"] != 0:
-            if not self.track or abs(self.track[-1][0] - d["est_lat"]) + abs(self.track[-1][1] - d["est_lon"]) > 2e-6:
-                self.track.append((d["est_lat"], d["est_lon"]))
-                if len(self.track) > 5000:
-                    self.track.pop(0)
+        self.track_feed(d)
         if prev and prev["mode"] != d["mode"]:
             self.event(T("cap.ev_mode", a=T("mode." + prev["mode_name"]), b=T("mode." + d["mode_name"])))
         if prev and alerts.bits_of(prev) != alerts.bits_of(d):         # both alarm words
@@ -2847,6 +2999,7 @@ class App:
             self.driver = None
         if self.link:
             self.link.stop()
+        self.tracks.close()
         self.root.destroy()
 
     def window_title(self):
@@ -3250,7 +3403,7 @@ class App:
         """The items of bar n (1 / 2): ("btn", tag, label, action, kind, enabled, on) | ("text", tag, text, colour,
         flex) | ("gap",). Bar 1: heading -10 -1 value +1 +10, AUTO pause / resume / skip, ROUTE, MAX SPEED,
         GEOFENCE, LINK TIME, RESTORE POWER when offered; bar 2: the nearest ship + CPA, the messages, zoom, BOAT,
-        TOOLS, Aa, RESET. (TRACKS / NEW TRACK = step 13n3, the recording group = step 13n4.)"""
+        TRACKS / NEW TRACK (13n3), TOOLS, Aa, RESET. (The recording group = step 13n4.)"""
         d = self.t or {}
         sub = getattr(self, "sub_open", None)
         out = []
@@ -3309,6 +3462,8 @@ class App:
                 out.append(("btn", "bar", T("ov.back_to_boat"), self.mapwin.back_to_boat, "warn", True, False))
             out.append(("gap",))
             out.append(("btn", "bar_boat", T("ov.b_boat"), self.boat_dropdown_bar, "normal", True, False))
+            out.append(("btn", "tracks", T("track.b_tracks"), self.open_tracks, "normal", True, False))
+            out.append(("btn", "track_new", T("track.b_new"), self.track_new, "normal", True, False))
             if isinstance(self.link, GatewayLink) and not self.camview:
                 out.append(("btn", "cv_open", T("cv.button"), lambda: self.camview_open(self.camview_last),
                             "normal", True, False))

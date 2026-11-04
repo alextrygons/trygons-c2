@@ -42,3 +42,5 @@ academy/data/
 
 # ground-station logs written in the repo root when a station is started from there (W32)
 logs/
+# the boat tracks of this PC (ground station, step 13n3)
+groundstation/tracks/

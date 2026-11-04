@@ -510,8 +510,27 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
             above the bar while you use it; the button again closes it) ·
             LINK TIME − + (captain with HELM) · RESTORE POWER when offered
      Bar 2  the nearest AIS ship + CPA · the last message · Zoom − / Zoom +
-            (/ Back to boat) · BOAT (the boat dropdown) · CAMERA (through a
-            gateway) · Tools · Aa · RESET TO DEFAULT
+            (/ Back to boat) · BOAT (the boat dropdown) · TRACKS · NEW TRACK ·
+            CAMERA (through a gateway) · Tools · Aa · RESET TO DEFAULT
+  TRACK (step 13n3): the boat's track is the WHITE line on the map (BLACK on
+  a light map; dim red at night), also on screen 1's mini map. Every point
+  is kept (time, position, speed, heading) - no limit - and written at once
+  to this PC's disk (groundstation/tracks/): after a crash or a restart the
+  track is there again and goes on. ONE track PER BOAT: another boat shows
+  its own track, never a mix. Click on the line = the time and the speed
+  there (on the line + the message bar; a click elsewhere removes it).
+  NEW TRACK: a YES / NO question, then the current track is saved as
+  <date>_<time>_<boat> (e.g. 2026-10-31_0834_TRYGON-1, the time of its
+  first point) and a new line starts. TRACKS: the list of the saved tracks
+  (date, boat, duration, nm); select one or more (Ctrl / Shift + click) ->
+  SHOW = on the map as a GREY DASHED line with its date, any day, any boat;
+  HIDE; REMOVE FROM MAP (the file stays); EXPORT GPX (the selected ones) /
+  CURRENT TRACK TO GPX / IMPORT GPX (GPX 1.1: Google Earth, OpenCPN,
+  plotters; a file with a DTD, without track points or over 64 MB is
+  refused). Two stations on one PC on the same boat: the first one writes
+  the file, the other keeps its track in memory only. A full disk: the
+  message "the track is not written to the disk" - the track goes on in
+  memory. The track never changes anything on the boat.
   CAMERA VIEW (step 13n2, for the copilot's PC above all): CAMERA on bar 2
   shows one of the boat's cameras over the whole of screen 2. Bar 1 then
   holds FRONT-1 / FRONT-2 / REAR-L / REAR-R and MAP; MAP or Esc = back to the

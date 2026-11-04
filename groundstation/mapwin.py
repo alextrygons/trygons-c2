@@ -241,12 +241,26 @@ class MapView:
                 lab = "%.2g %s" % (step * i / 1852.0, T("hud.nm")) if step >= 185 else "%.0f m" % (step * i)
                 c.create_text(bx + r * 0.707 + 3, by - r * 0.707 - 3, text=lab, anchor="sw", fill=th["text"],
                               font=f_small, tags="ring")
-        tr = a.track[-3000:]
-        if len(tr) >= 2:
-            pts = []
-            for la, lo in tr[::max(1, len(tr) // 1500)]:
-                pts += P(la, lo)
-            c.create_line(*pts, fill=th["track"], width=2, tags="track")
+        # tracks (step 13n3): the saved ones shown (grey dashed + date label), the live one (white / black by the
+        # background, every point kept - only the drawing is simplified + cut to the window)
+        for path, tr in a.tracks_on_map():
+            runs = tr.runs(P, w, h, m)
+            for pts in runs:
+                c.create_line(*pts, fill=th["track_old"], width=2, dash=(6, 4), tags="track_old")
+            if runs:
+                x0, y0 = runs[0][0], runs[0][1]
+                c.create_text(x0 + 6, y0 - 6, text=a.track_label(tr), anchor="sw", fill=th["track_old"],
+                              font=f_small, tags="track_old")
+        lv = a.tracks.live
+        if lv is not None:
+            for pts in lv.track.runs(P, w, h, m):
+                c.create_line(*pts, fill=th["track"], width=2, tags="track")
+        pk = getattr(a, "track_pick", None)
+        if pk:
+            x, y = P(pk["lat"], pk["lon"])
+            c.create_oval(x - 6, y - 6, x + 6, y + 6, outline=th["text"], width=2, tags="track_pick")
+            c.create_text(x + 10, y - 8, text=pk["text"], anchor="sw", fill=th["text"], font=f_label,
+                          tags="track_pick")
         # the geofence (as sent / being edited)
         fence = a.fence_draft if (self.edit == "fence" or a.fence_dirty) else a.fence_live()
         if fence and len(fence) >= 2:

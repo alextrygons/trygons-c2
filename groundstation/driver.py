@@ -1113,11 +1113,10 @@ class DriverScreen:
         wps = (a.prog or {}).get("wps") or []
         if len(wps) >= 2:
             c.create_line(*[v for wp in wps for v in P(wp["lat"], wp["lon"])], fill=th["route"], width=2, dash=(6, 3))
-        pts = []
-        for la, lo in tr[::max(1, len(tr) // 300)]:
-            pts += P(la, lo)
-        if len(pts) >= 4:
-            c.create_line(*pts, fill=th["track"], width=2)
+        lv = getattr(a, "tracks", None) and a.tracks.live
+        if lv:                                          # the live track (13n3): all of it, simplified for the drawing
+            for pts in lv.track.runs(P, w, h, m):
+                c.create_line(*pts, fill=th["track"], width=2)
         if d.get("wp_set"):
             x, y = P(d["wp_lat"], d["wp_lon"])
             x, y = max(5, min(w - 5, x)), max(5, min(h - 5, y))
