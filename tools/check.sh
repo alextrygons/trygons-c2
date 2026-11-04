@@ -255,6 +255,6 @@ echo "== loudhailer on the gateway (13r): first speaker wins, half duplex, recor
 grep -E "^\[FAIL\]|LOUDHAILER TESTS" "$TEMP/loudhailer_tests.txt"
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
-grep -E "^\[FAIL\]|GATEWAY TESTS" "$TEMP/gw_tests.txt"
+grep -E "^\[FAIL\]|GATEWAY TESTS|STALLED|CRASHED" "$TEMP/gw_tests.txt"   # W50s: a stalled section is killed + named
 [ $fail -eq 0 ] && echo "GATE: OK" || echo "GATE: FAILED"
 exit $fail

@@ -37,6 +37,15 @@ SIM_DIR = os.path.join(HERE, "..", "sim")
 # AUTOPILOT_SIM: another simulator build (e.g. while the demo runs from sim/)
 EXE = os.environ.get("AUTOPILOT_SIM") or os.path.join(SIM_DIR, "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
 results = []
+# W50s: every simulator process and gateway runner of this process, so that (a) a section that stalls / crashes
+# never leaves an orphan autopilot_sim.exe behind (one kept writing into sim/sdcard and holding ports in 13q5c) and
+# (b) no GwRunner's event loop is ever garbage-collected: BaseEventLoop.__del__ -> close() of an unclosed Windows
+# proactor loop can wait for ever in IocpProactor.close -> _poll, in WHATEVER thread the collector runs (mid-section)
+_SIMS = []
+_RUNNERS = []
+SECTION_LIMIT_S = float(os.environ.get("TRYGONS_GW_SECTION_S", "900"))   # the parent's limit for one section
+STALL_EXIT = 3                                  # a section's exit code: its watchdog found it stalled
+CRASH_EXIT = 2                                  # a section's exit code: a Python error ended it
 
 
 def report(name, ok, detail):
@@ -67,7 +76,9 @@ class Sim:
         self.speed = speed
         self.out = open(os.path.join(tempfile.gettempdir(), "gwtest_sim_%d.log" % self.port), "w")
         self.p = subprocess.Popen([EXE, "server", str(self.port), str(speed)] + list(args), cwd=SIM_DIR,
-                                  stdout=self.out, stderr=subprocess.STDOUT)   # never a full pipe
+                                  stdout=self.out, stderr=subprocess.STDOUT,   # never a full pipe
+                                  stdin=subprocess.DEVNULL)
+        _SIMS.append(self)
         for _ in range(100):
             try:
                 socket.create_connection(("127.0.0.1", self.port + 2), timeout=0.2).close()
@@ -86,12 +97,35 @@ class Sim:
         return link, Waiter(link)
 
     def stop(self):
-        self.p.terminate()
         try:
+            self.p.terminate()
             self.p.wait(timeout=3)
         except subprocess.TimeoutExpired:
             self.p.kill()
-        self.out.close()
+            try:
+                self.p.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                print("W50s: autopilot_sim pid %d did not end after kill" % self.p.pid, file=sys.stderr, flush=True)
+        except OSError:
+            pass
+        try:
+            self.out.close()
+        except OSError:
+            pass
+        if self in _SIMS:
+            _SIMS.remove(self)
+
+
+def kill_leftovers():
+    """W50s: end every simulator this process started and did not stop (a stalled / crashed section)."""
+    for s in list(_SIMS):
+        try:
+            s.p.kill()
+            s.p.wait(timeout=3)
+        except Exception:
+            pass
+        if s in _SIMS:
+            _SIMS.remove(s)
 
 
 class GwRunner:
@@ -100,12 +134,38 @@ class GwRunner:
     def __init__(self, cfg):
         self.gw = gwmod.Gateway(cfg)
         self.loop = asyncio.new_event_loop()
+        self.closed = False
+        _RUNNERS.append(self)                   # W50s: kept for the whole process - never collected (see _RUNNERS)
         self.th = threading.Thread(target=self._run, daemon=True)
         self.th.start()
 
     def _run(self):
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self.gw.run())
+        try:
+            self.loop.run_until_complete(self.gw.run())
+        finally:
+            self._close_loop()
+
+    def _close_loop(self):
+        """W50s: close the loop EXPLICITLY in its own (daemon) thread, every step with a time limit: cancel what is
+        left, async generators, the default executor, then close(). If the proactor's close still waits for an
+        overlapped operation that never completes, only this daemon thread waits - never the section or the exit."""
+        loop = self.loop
+        try:
+            left = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for t in left:
+                t.cancel()
+            if left:
+                loop.run_until_complete(asyncio.wait(left, timeout=3.0))
+            loop.run_until_complete(asyncio.wait_for(loop.shutdown_asyncgens(), 3.0))
+            loop.run_until_complete(loop.shutdown_default_executor(timeout=3.0))
+        except Exception as e:                  # a test result never depends on the clean-up
+            print("W50s: gateway loop clean-up: %r" % (e,), file=sys.stderr, flush=True)
+        try:
+            loop.close()
+            self.closed = True
+        except Exception as e:
+            print("W50s: gateway loop close: %r" % (e,), file=sys.stderr, flush=True)
 
     def call(self, fn, *a):
         """Run fn in the gateway's loop and return its result."""
@@ -120,8 +180,14 @@ class GwRunner:
         return r
 
     def stop(self):
-        self.loop.call_soon_threadsafe(self.gw.stop)
-        self.th.join(10)
+        try:
+            self.loop.call_soon_threadsafe(self.gw.stop)
+        except RuntimeError:                    # the loop is closed already
+            pass
+        self.th.join(20)                        # run() ends + the clean-up (<= ~9 s) + close
+        if self.th.is_alive():
+            print("W50s: a gateway loop thread is still busy 20 s after stop (closed %s) - left to the daemon thread"
+                  % self.closed, file=sys.stderr, flush=True)
 
 
 def gw_cfg(sim, root, **extra):
@@ -5052,6 +5118,204 @@ SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": sectio
             "AL": section_al, "UH": section_uh, "CV": section_cv, "KS": section_ks}
 
 
+def section_stall_selftest():
+    """W50s self-test of the harness (only with TRYGONS_GW_STALL_SELFTEST=1): a section that starts a simulator,
+    passes one test and then hangs - the full run must report it STALLED (re-run once), never a pass, and leave no
+    autopilot_sim.exe behind. TRYGONS_GW_STALL_SELFTEST=hold: it hangs without letting Python threads run (the
+    parent's own limit + its job-object kill)."""
+    print("\n=== Section ZZ: harness stall self-test ===", flush=True)
+    Sim(1.0)
+    report("ZZ1 the self-test section started a simulator", True, "then it hangs")
+    if os.environ.get("TRYGONS_GW_STALL_SELFTEST") == "hold":
+        import faulthandler
+        faulthandler.cancel_dump_traceback_later()
+        import ctypes                               # a PyDLL call keeps the GIL: no watchdog thread can run any more
+        if os.name == "nt":
+            ctypes.PyDLL("kernel32").Sleep(0xFFFFFFFF)
+        else:
+            ctypes.PyDLL(None).pause()
+    while True:
+        time.sleep(1)
+
+
+if os.environ.get("TRYGONS_GW_STALL_SELFTEST"):
+    SECTIONS["ZZ"] = section_stall_selftest
+
+
+def _watchdog(name, limit_s):
+    """W50s: the section's own time limit (below the parent's): dump every thread's stack (where it hangs), end
+    the simulators it started and leave with STALL_EXIT - a stall is never reported as a pass. faulthandler's own
+    C-level timer is the backstop even if no Python thread can run any more."""
+    import faulthandler
+    faulthandler.dump_traceback_later(limit_s + 20.0, exit=True)
+
+    def fire():
+        print("\nSTALLED: section %s still running after %.0f s (its own time limit) - stacks on stderr" % (
+            name, limit_s), flush=True)
+        try:
+            faulthandler.dump_traceback(all_threads=True)
+        except Exception:
+            pass
+        kill_leftovers()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(STALL_EXIT)
+    t = threading.Timer(limit_s, fire)
+    t.daemon = True
+    t.start()
+
+
+def run_one(name):
+    """One section in THIS process (the child of the full run, or `python test_gateway.py CR`). Never returns."""
+    _watchdog(name, max(30.0, SECTION_LIMIT_S - 60.0))
+    code = None
+    try:
+        SECTIONS[name]()
+    except BaseException:
+        import traceback
+        traceback.print_exc()
+        print("SECTION CRASHED: %s (the tests after the error did not run)" % name, flush=True)
+        code = CRASH_EXIT
+    # W50 (found in step 13r with faulthandler): after every test of a section has passed, the interpreter's exit
+    # could hang for ever in BaseEventLoop.__del__ -> ProactorEventLoop.close -> _poll (an unclosed Windows
+    # proactor loop of a GwRunner waiting for an overlapped operation that never completes). The results are
+    # printed by now: end what is left (W50s) and leave at once with their exit code
+    kill_leftovers()
+    for r in list(_RUNNERS):                    # a runner a crashed section never stopped: a short stop
+        if r.th.is_alive():
+            try:
+                r.loop.call_soon_threadsafe(r.gw.stop)
+            except RuntimeError:
+                pass
+            r.th.join(5)
+    bad = [n for n, ok in results if not ok]
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code if code is not None else (1 if bad else 0))
+
+
+class _Job:
+    """W50s: a Windows job object that holds a section process and everything it starts (the simulators, ffmpeg,
+    the vision worker ...): kill() ends the whole tree, also processes whose parent has already gone. POSIX: a
+    process group."""
+
+    def __init__(self):
+        self.h = None
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.CreateJobObjectW.restype = wintypes.HANDLE
+            k32.OpenProcess.restype = wintypes.HANDLE
+            h = k32.CreateJobObjectW(None, None)
+
+            class BASIC(ctypes.Structure):
+                _fields_ = [("a", ctypes.c_int64), ("b", ctypes.c_int64), ("LimitFlags", wintypes.DWORD),
+                            ("MinWS", ctypes.c_size_t), ("MaxWS", ctypes.c_size_t),
+                            ("ActiveProcessLimit", wintypes.DWORD), ("Affinity", ctypes.c_size_t),
+                            ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+            class IOC(ctypes.Structure):
+                _fields_ = [("c%d" % i, ctypes.c_uint64) for i in range(6)]
+
+            class EXT(ctypes.Structure):
+                _fields_ = [("Basic", BASIC), ("Io", IOC), ("ProcessMemoryLimit", ctypes.c_size_t),
+                            ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                            ("PeakJobMemoryUsed", ctypes.c_size_t)]
+            info = EXT()
+            info.Basic.LimitFlags = 0x2000              # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if h and k32.SetInformationJobObject(wintypes.HANDLE(h), 9, ctypes.byref(info), ctypes.sizeof(info)):
+                self.h, self.k32, self.wt = h, k32, wintypes
+            else:
+                print("W50s: no job object (error %d): taskkill /T is used" % ctypes.get_last_error(), flush=True)
+        except Exception as e:
+            print("W50s: no job object (%r): taskkill /T is used" % (e,), flush=True)
+
+    def popen(self, args, out, err):
+        if os.name != "nt":
+            return subprocess.Popen(args, stdout=out, stderr=err, stdin=subprocess.DEVNULL, start_new_session=True)
+        p = subprocess.Popen(args, stdout=out, stderr=err, stdin=subprocess.DEVNULL)
+        if self.h:
+            hp = self.k32.OpenProcess(0x0101, False, p.pid)       # PROCESS_TERMINATE | PROCESS_SET_QUOTA
+            ok = False
+            if hp:
+                ok = bool(self.k32.AssignProcessToJobObject(self.wt.HANDLE(self.h), self.wt.HANDLE(hp)))
+                self.k32.CloseHandle(self.wt.HANDLE(hp))
+            if not ok:
+                print("W50s: section process not in the job: taskkill /T is used", flush=True)
+                self.close()
+        return p
+
+    def kill(self, p):
+        """End the section process and every process it started (always called: nothing is left behind)."""
+        if os.name != "nt":
+            try:
+                os.killpg(p.pid, 9)
+            except OSError:
+                pass
+        elif self.h:
+            self.k32.TerminateJobObject(self.wt.HANDLE(self.h), 1)
+        elif p.poll() is None:
+            try:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True, timeout=30)
+            except Exception:
+                pass
+        try:
+            p.kill()
+        except OSError:
+            pass
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def close(self):
+        if self.h:
+            self.k32.CloseHandle(self.wt.HANDLE(self.h))
+            self.h = None
+
+
+def run_section_process(k):
+    """W50s: one section in its own process with the parent's time limit. Output goes to files (never a pipe a
+    grandchild could hold open). Returns (status, output lines, stderr tail, seconds); status "ok" / "fail" /
+    "crashed" / "stalled"."""
+    tmpd = tempfile.mkdtemp(prefix="gwtest_sec_%s_" % k)
+    po, pe = os.path.join(tmpd, "out.txt"), os.path.join(tmpd, "err.txt")
+    t0 = time.time()
+    job = _Job()
+    with open(po, "w", encoding="utf-8", errors="replace") as fo, \
+            open(pe, "w", encoding="utf-8", errors="replace") as fe:
+        p = job.popen([sys.executable, os.path.abspath(__file__), k], fo, fe)
+        try:
+            rc = p.wait(timeout=SECTION_LIMIT_S)
+            parent_stall = False
+        except subprocess.TimeoutExpired:
+            rc, parent_stall = None, True
+        job.kill(p)                             # always: no orphan simulator / ffmpeg after a section
+        job.close()
+    dt = time.time() - t0
+    with open(po, encoding="utf-8", errors="replace") as f:
+        out = f.read()
+    with open(pe, encoding="utf-8", errors="replace") as f:
+        err = f.read()
+    shutil.rmtree(tmpd, ignore_errors=True)
+    lines = [ln for ln in out.splitlines()
+             if ln.startswith(("[PASS] ", "[FAIL] ", "===", "STALLED", "SECTION CRASHED"))]
+    # a Python error through the script's top level (not the harmless "Exception ignored" noise of background tasks)
+    real_tb = re.search(r'File ".*test_gateway\.py", line \d+, in (<module>|run_one)', err) is not None
+    # STALL_EXIT = the section's own watchdog; "Timeout (0:" = faulthandler's C-level backstop
+    stalled = parent_stall or rc == STALL_EXIT or "Timeout (0:" in err
+    if stalled:
+        status = "stalled"
+    elif rc == CRASH_EXIT or rc not in (0, 1) or real_tb:
+        status = "crashed"
+    else:
+        status = "ok" if rc == 0 else "fail"
+    return status, lines, err[-3000:], dt
+
+
 def main():
     setup_logging(30)                       # warnings only
     if not os.path.exists(EXE):
@@ -5059,35 +5323,40 @@ def main():
         return 2
     want = [a.upper() for a in sys.argv[1:]] or list(SECTIONS)
     if len(want) == 1:
-        SECTIONS[want[0]]()
-        # W50 (found in step 13r with faulthandler): after every test of a section has passed, the interpreter's exit
-        # could hang for ever in BaseEventLoop.__del__ -> ProactorEventLoop.close -> _poll (an unclosed Windows
-        # proactor loop of a GwRunner / client waiting for an overlapped operation that never completes). The results
-        # are printed by now: leave at once with their exit code (nothing is left to clean up in this process)
-        bad = [n for n, ok in results if not ok]
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(1 if bad else 0)
-    else:
-        # every section in its own process: timing tests must not feel the
-        # threads / proxies of the sections before them
-        for k in want:
-            r = subprocess.run([sys.executable, os.path.abspath(__file__), k], capture_output=True, text=True)
-            for line in r.stdout.splitlines():
-                if line.startswith("[PASS] ") or line.startswith("[FAIL] "):
-                    print(line, flush=True)
-                    results.append((line[7:], line.startswith("[PASS]")))
-                elif line.startswith("==="):
-                    print("\n" + line, flush=True)
-            # a Python error ends a section with exit code 1 too (like a failed test):
-            # look for its traceback (not the harmless "Exception ignored" noise at exit)
-            # (only a traceback through the script's top level: background tasks log harmless ones)
-            real_tb = re.search(r'File ".*test_gateway\.py", line \d+, in <module>', r.stderr) is not None
-            if r.returncode not in (0, 1) or real_tb:
-                print("section %s CRASHED (the tests after the error did not run):\n%s" % (k, r.stderr[-1500:]))
+        run_one(want[0])                        # never returns (os._exit)
+    # every section in its own process: timing tests must not feel the threads / proxies of the sections before them.
+    # W50s + LOOP RULE 3: a section that STALLS (its time limit hit) is killed with everything it started and reported
+    # STALLED - never a pass. Stalled without a failed test = re-run ONCE alone; a pass then is noted as "stalled
+    # once, re-run alone: PASS" in the summary. A FAILED test is never retried.
+    stalls = []
+    for k in want:
+        for attempt in (1, 2):
+            status, lines, err, dt = run_section_process(k)
+            got = [(ln[7:], ln.startswith("[PASS]")) for ln in lines if ln.startswith(("[PASS] ", "[FAIL] "))]
+            failed = any(not ok for _, ok in got)
+            if status == "stalled" and attempt == 1 and not failed:
+                print("\nsection %s STALLED after %.0f s (%d tests had passed, none failed) - killed, re-run once "
+                      "alone; where it hung:\n%s" % (k, dt, len(got), err[-2500:]), flush=True)
+                stalls.append(k)
+                continue
+            for line in lines:
+                print(("\n" + line) if line.startswith("===") else line, flush=True)
+            results.extend(got)
+            if attempt == 2:
+                stalls[-1] = "section %s stalled once, re-run alone: %s" % (k, "PASS" if status == "ok"
+                                                                         else status.upper())
+            print("section %s: %s in %.0f s" % (k, status.upper(), dt), flush=True)
+            if status == "stalled":
+                print("section %s STALLED (killed after %.0f s; the tests after it did not run); where it hung:\n%s"
+                      % (k, dt, err[-2500:]), flush=True)
+                results.append(("section %s STALLED" % k, False))
+            elif status == "crashed":
+                print("section %s CRASHED (the tests after the error did not run):\n%s" % (k, err[-1500:]), flush=True)
                 results.append(("section %s ran to the end" % k, False))
+            break
     bad = [n for n, ok in results if not ok]
-    print("\nGATEWAY TESTS: %d passed, %d failed" % (len(results) - len(bad), len(bad)))
+    note = ("; " + "; ".join(stalls)) if stalls else ""
+    print("\nGATEWAY TESTS: %d passed, %d failed%s" % (len(results) - len(bad), len(bad), note))
     return 1 if bad else 0
 
 
