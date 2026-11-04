@@ -1607,6 +1607,30 @@ def section_f():
                "cameras in the event %s; picture time - wanted time at -9/-5/-1/+2 s: %s ms; boat log time -> UTC "
                "(TIME events) vs the gateway's GPS clock: %s s" % (
                    vi.names(), errs, None if utc_err is None else round(utc_err, 2)))
+        # F9 KEEP 5' / 1h from a station (step 13n4): keep_ack with the station's id + how much was there; VIEWER no
+        def keep_wait(client, **msg):
+            client.l.send_msg(msg)
+            end = time.time() + 4.0
+            while time.time() < end:
+                try:
+                    k, d = client.l.events.get(timeout=0.1)
+                except Exception:
+                    continue
+                if k == "keep_ack":
+                    return d
+            return None
+        kid = time.strftime("%Y%m%d-%H%M%S", time.gmtime()) + "_keep5"
+        k_v = keep_wait(vic, t="save_keep", min=5, id=kid)
+        k_a = keep_wait(alice, t="save_keep", min=5, id=kid)
+        wait_for(lambda: (event_json(rec, kid) or {}).get("state") in ("complete", "incomplete"), 3 * SEG + 10)
+        kev = event_json(rec, kid) or {}
+        report("F9 KEEP 5' from a station: its id, the cameras' files, keep_ack says how much the ring had; VIEWER refused",
+               k_v and not k_v["ok"] and k_a and k_a["ok"] and k_a["id"] == kid and k_a["ask"] == kid and
+               k_a["have_min"] is not None and k_a["have_min"] < 5 and "only" in k_a["text"] and kev.get("keep") and
+               len(kev.get("cameras", {})) == 4 and all(kev["cameras"].values()),
+               "viewer: %s; alice: %s (have %s min); event %s, files per camera %s" % (
+                   k_v and k_v["text"], k_a and k_a["text"], k_a and k_a["have_min"], kev.get("state"),
+                   {n: len(v) for n, v in kev.get("cameras", {}).items()}))
         s = rec.status()
         print("    recording status: ring %s MB over %s min (%s GB/h for the simple simulated pictures)" % (
             s["ring_mb"], s["ring_have_min"], s["gb_per_hour"]), flush=True)
@@ -1616,6 +1640,135 @@ def section_f():
         if rig:
             rig.stop()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------------------------------------ section KS --
+# KEEP 5' / 1h (step 13n4, owner 2026-10-31 E4): the recorder alone (no MediaMTX, no simulator)
+
+class _KsCam:
+    def __init__(self, folder):
+        self.folder, self.proc = folder, None
+        self.state, self.since, self.restarts = "REC", time.time(), 0
+
+    def tick(self, now):
+        pass
+
+    def segments(self):
+        out = []
+        for n in sorted(os.listdir(self.folder)) if os.path.isdir(self.folder) else []:
+            t = seg_time(n)
+            if t is not None:
+                out.append((t, os.path.join(self.folder, n)))
+        return out
+
+
+class _KsGw:
+    def __init__(self, root):
+        from storage import Storage
+        self.storage = Storage({"root": root, "require_mount": False, "low_free_gb": 0.0, "full_free_gb": 0.0})
+        self.storage.check(force=True)
+        self.telem, self.telem2 = {}, {}
+        self.audits = []
+
+        class _Clock:
+            @staticmethod
+            def stamp(t=None):
+                return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() if t is None else t))
+        self.clock = _Clock()
+
+        class _Logs:
+            path, last_seq, boot = None, None, None
+        self.logs = _Logs()
+
+    def audit(self, kind, **kw):
+        self.audits.append((kind, kw))
+
+
+def section_ks():
+    print("\n=== Section KS: KEEP 5' / 1h (the last 5 / 60 min of every camera, permanent, not uploaded) ===",
+          flush=True)
+    from recorder import Recorder, is_keep
+    from sync import SyncClient
+    tmp = tempfile.mkdtemp(prefix="gwtest_ks_")
+    try:
+        g = _KsGw(tmp)
+        rec = Recorder({"segment_s": 60}, g)
+        now = time.time()
+        for cam in CAM_NAMES:
+            d = rec.ring_dir(cam)
+            os.makedirs(d, exist_ok=True)
+            for i in range(21):                     # 20 min of finished files + the one being written
+                t = now - (20 - i) * 60
+                with open(os.path.join(d, time.strftime("%Y%m%d-%H%M%S.ts", time.gmtime(t))), "wb") as f:
+                    f.write(b"x" * 1000)
+            rec.cams[cam] = _KsCam(d)
+        # KS1 the defaults: ring 60 min, a normal SAVE still 10 min before
+        st = rec.status()
+        report("KS1 defaults: ring 60 min (KEEP 1h possible), a normal SAVE keeps 10 min before + 2 min after",
+               rec.ring_min == 60 and st["pre_s"] == 600 and st["post_s"] == 120 and
+               load_config(None)["recording"]["ring_min"] == 60,
+               "ring %s min, SAVE pre %s s / post %s s" % (rec.ring_min, st["pre_s"], st["post_s"]))
+        # KS2 KEEP 5: the station's id, pre 5 min, post 0, keep flag, never merged with a SAVE
+        sid = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)) + "_keep5"
+        ok, text, eid, have = rec.keep(5, who="alice", eid=sid, now=now)
+        ev = _json.load(open(os.path.join(rec.events_dir(), eid, "event.json"), encoding="utf-8"))
+        files = ev["cameras"]["FRONT-1"]
+        ok_s, _t, eid_s = rec.trigger("button", "SAVE (bob)", who="bob", now=now + 1)
+        report("KS2 KEEP 5': the station's id, 5 min before, nothing after, permanent; a SAVE right after is its own event",
+               ok and eid == sid and ev["keep"] and ev["pre_s"] == 300 and ev["post_s"] == 0 and 5 <= len(files) <= 6 and
+               ok_s and eid_s != eid and ("save_keep", {"id": eid, "minutes": 5, "have_min": have, "user": "alice"})
+               in g.audits,
+               "%s -> %s, %d files per camera, SAVE after it -> %s" % (sid, text, len(files), eid_s))
+        # KS3 KEEP 60 with 20 min in the ring: what exists + "only 20 min"
+        ok6, text6, eid6, have6 = rec.keep(60, who="alice", eid="bad id/../x", now=now + 2)
+        ev6 = _json.load(open(os.path.join(rec.events_dir(), eid6, "event.json"), encoding="utf-8"))
+        report("KS3 KEEP 1h with a 20 min ring: what exists is kept, the answer says how much; a bad id = the gateway's own",
+               ok6 and 19.5 <= have6 <= 21.5 and "cameras: only" in text6 and len(ev6["cameras"]["REAR-LEFT"]) >= 20
+               and recorder_id_ok(eid6) and ".." not in eid6,
+               "%s (have %s min, %d files)" % (text6, have6, len(ev6["cameras"]["REAR-LEFT"])))
+        # KS4 refused: not 5 / 60, STORAGE FULL (nothing kept is touched)
+        bad = rec.keep(7, who="x")
+        g.storage.state = "FULL"
+        full = rec.keep(5, who="x")
+        g.storage.check(force=True)
+        still = os.path.isdir(os.path.join(rec.events_dir(), eid)) and os.path.isdir(os.path.join(rec.events_dir(), eid6))
+        report("KS4 refused: only 5 / 60 min; STORAGE FULL = a message, nothing kept is touched",
+               not bad[0] and "5 or 60" in bad[1] and not full[0] and "STORAGE FULL" in full[1] and still,
+               "7 min: %s; full: %s" % (bad[1], full[1]))
+        # KS5 never deleted automatically (even when synced, even when the ring deletes its own files), never uploaded
+        for _c, folder, e in rec.list_events():
+            for dp, _ds, fs in os.walk(folder):
+                for fn in fs:
+                    open(os.path.join(dp, fn) + ".synced", "w").close()
+        rec.tick(now + 1e5)                         # every event finished
+        rec.storage.low_b = 1e18                    # the disk "low": the policy deletes what it may
+        rec.housekeeping(now + 1e5)
+        kept_left = os.path.isdir(os.path.join(rec.events_dir(), eid)) and is_keep(os.path.join(rec.events_dir(), eid))
+        ring_left = sum(len(c.segments()) for c in rec.cams.values())
+        save_gone = not os.path.isdir(os.path.join(rec.events_dir(), eid_s))
+        files_left = os.listdir(os.path.join(rec.events_dir(), eid, "FRONT-1"))
+        rec.storage.low_b = 0
+        sc = SyncClient.__new__(SyncClient)
+        sc.root, sc.gw, sc._inc = tmp, g, {}
+        g.rec = rec
+        ts_rel = "video/events/%s/FRONT-1/%s" % (eid, [f for f in files_left if f.endswith(".ts")][0])
+        js_rel = "video/events/%s/event.json" % eid
+        ts_s = "video/events/%s/FRONT-1/x.ts" % eid_s
+        os.makedirs(os.path.join(tmp, "video", "events", eid_s, "FRONT-1"), exist_ok=True)
+        _json.dump({"state": "complete"}, open(os.path.join(tmp, "video", "events", eid_s, "event.json"), "w"))
+        cls = (sc.classify(ts_rel, None, None), sc.classify(js_rel, None, None), sc.classify(ts_s, None, None))
+        report("KS5 KEEP is permanent: the space policy deletes synced SAVEs and the ring, never a KEEP; its video is "
+               "not uploaded (only event.json)",
+               kept_left and save_gone and ring_left <= len(CAM_NAMES) and len(files_left) >= 6 and cls == (None, 1, 4),
+               "KEEP left %s (%d files), the synced SAVE deleted %s, ring files left %d; sync class of KEEP .ts / "
+               "event.json / a SAVE .ts: %s" % (kept_left, len(files_left), save_gone, ring_left, cls))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def recorder_id_ok(eid):
+    from recorder import EVENT_ID_RE
+    return bool(EVENT_ID_RE.match(eid))
 
 
 # ------------------------------------------------------------------- section G --
@@ -4750,7 +4903,7 @@ def section_cv():
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
             "G": section_g, "GF": section_gf, "RL": section_rl, "DP": section_dp, "AR": section_ar,
-            "AL": section_al, "UH": section_uh, "CV": section_cv}
+            "AL": section_al, "UH": section_uh, "CV": section_cv, "KS": section_ks}
 
 
 def main():

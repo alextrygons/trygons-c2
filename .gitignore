@@ -44,3 +44,5 @@ academy/data/
 logs/
 # the boat tracks of this PC (ground station, step 13n3)
 groundstation/tracks/
+# the screen recordings of this PC (REC SCREEN, SAVE / KEEP screen part, step 13n4)
+groundstation/screenrec/

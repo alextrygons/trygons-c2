@@ -103,6 +103,7 @@ class Gateway:
         self.rec = Recorder(cfg["recording"], self)
         self.stations.ext["save"] = self._save_msg
         self.stations.ext["rec"] = self._rec_msg
+        self.stations.ext["save_keep"] = self._keep_msg
         self.sync = SyncClient(cfg["sync"], self)
         # AIS (section A): receive only; the AURIX never parses AIS
         ac = cfg["ais"]
@@ -589,8 +590,21 @@ class Gateway:
         if st.role == "VIEWER":
             return st.send({"t": "save_ack", "ok": False, "text": "VIEWER: no SAVE"})
         src = str(m.get("source", "button"))[:20]
-        ok, text, eid = self.rec.trigger("button", "SAVE %s (%s)" % (src, st.user), who=st.user)
-        st.send({"t": "save_ack", "ok": ok, "text": text, "id": eid})
+        ok, text, eid = self.rec.trigger("button", "SAVE %s (%s)" % (src, st.user), who=st.user, eid=m.get("id"))
+        st.send({"t": "save_ack", "ok": ok, "text": text, "id": eid, "ask": m.get("id")})
+
+    def _keep_msg(self, st, m):
+        """KEEP 5' / 1h of a station (step 13n4): the last 5 / 60 min of every camera, permanent, not uploaded.
+        Never a VIEWER; nothing here touches the boat."""
+        ask = m.get("id") if isinstance(m.get("id"), str) else None
+        if st.role == "VIEWER":
+            return st.send({"t": "keep_ack", "ok": False, "text": "VIEWER: no SAVE", "id": None, "ask": ask})
+        try:
+            minutes = int(m.get("min"))
+        except (TypeError, ValueError):
+            minutes = None
+        ok, text, eid, have = self.rec.keep(minutes, who=st.user, eid=ask)
+        st.send({"t": "keep_ack", "ok": ok, "text": text, "id": eid, "ask": ask, "min": minutes, "have_min": have})
 
     def _rec_msg(self, st, m):
         if not self.may_change(st):

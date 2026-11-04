@@ -137,9 +137,11 @@ class SyncClient:
             parts = p.split("/")
             if len(parts) < 4:
                 return None
-            ev = self._event_state(os.path.join(self.root, "video", "events", parts[2]))
+            ev, keep = self._event_state(os.path.join(self.root, "video", "events", parts[2]))
             if ev in (None, "recording"):
                 return None                             # still being written
+            if keep and p.endswith(".ts"):
+                return None                             # KEEP 5' / 1h (step 13n4): stays on the boat SSD, not uploaded
             return 1 if parts[-1] == "event.json" else (4 if p.endswith(".ts") else None)
         if p.startswith("video/ring/") and p.endswith(".ts"):
             return 5 if self.gw.rec.ring_sync else None
@@ -147,11 +149,13 @@ class SyncClient:
 
     @staticmethod
     def _event_state(folder):
+        """(state, keep) of a saved event; (None, False) without a readable event.json."""
         try:
             with open(os.path.join(folder, "event.json"), encoding="utf-8") as f:
-                return json.load(f).get("state")
-        except (OSError, ValueError):
-            return None
+                ev = json.load(f)
+            return ev.get("state"), bool(ev.get("keep"))
+        except (OSError, ValueError, AttributeError):
+            return None, False
 
     def scan(self):
         """Unsynced, settled files, by class then oldest first."""

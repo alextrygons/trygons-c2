@@ -223,6 +223,9 @@ grep -E "^\[FAIL\]|LOOK TESTS" "$TEMP/look_tests.txt"
 echo "== track (13n3): per boat, crash-safe on disk, no point limit, NEW TRACK, saved list, GPX export / import"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_track.py > "$TEMP/track_tests.txt" 2>&1 ) || { echo "TRACK TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|TRACK TESTS" "$TEMP/track_tests.txt"
+echo "== screen recording + KEEP 5' / 1h (13n4): ring of both screens, SAVE / KEEP screen part, low disk, failures, buttons, real ffmpeg"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_screenrec.py > "$TEMP/screenrec_tests.txt" 2>&1 ) || { echo "SCREEN RECORDING TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|SCREEN RECORDING TESTS" "$TEMP/screenrec_tests.txt"
 echo "== YES / NO answers on the shore joystick (13p): trigger / thumb / stick Y / hat, 0.5 s guard, one press = one thing (station + gateway)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_yesno.py > "$TEMP/yesno_tests.txt" 2>&1 ) || { echo "YES / NO TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|YES / NO TESTS" "$TEMP/yesno_tests.txt"

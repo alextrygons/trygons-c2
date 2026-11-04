@@ -469,6 +469,10 @@ class DriverScreen:
             a.master_ack()
         elif act == "save":
             a.video_save("driver")
+        elif act == "scr":
+            a.scr_toggle()                      # REC SCREEN of this PC (step 13n4): display only
+        elif act in ("keep5", "keep60"):
+            a.keep_save(int(act[4:]))           # KEEP the last 5 / 60 min: screens here + the boat's cameras
         elif act == "lang":
             i18n.set_lang(i18n.other())
         elif act == "night":
@@ -755,6 +759,8 @@ class DriverScreen:
                            "caution" if v["state"] in ("ACTIVE", "DEGRADED", "PAUSED") else "grey")
         r = gw.get("rec")
         s["rec"] = None if not (r and r.get("enabled")) else any(c["state"] == "REC" for c in r.get("cameras", []))
+        scr = getattr(a, "scr", None)                         # REC SCREEN of this PC (step 13n4)
+        s["scr"] = bool(scr is not None and scr.recording())
         s["clock"] = time.strftime("%H:%M:%S")
         if d is not None and d["mode"] != proto.MODE_STANDBY and self.mission_t0 is None:
             self.mission_t0 = now

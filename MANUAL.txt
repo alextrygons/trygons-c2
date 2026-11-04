@@ -512,7 +512,8 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
             LINK TIME − + (captain with HELM) · RESTORE POWER when offered
      Bar 2  the nearest AIS ship + CPA · the last message · Zoom − / Zoom +
             (/ Back to boat) · BOAT (the boat dropdown) · TRACKS · NEW TRACK ·
-            CAMERA (through a gateway) · Tools · Aa · RESET TO DEFAULT
+            the recording group [SCR · ●5' · ●1h] (see SCREEN RECORDING
+            below) · CAMERA (through a gateway) · Tools · Aa · RESET TO DEFAULT
   TRACK (step 13n3): the boat's track is the WHITE line on the map (BLACK on
   a light map; dim red at night), also on screen 1's mini map. Every point
   is kept (time, position, speed, heading) - no limit - and written at once
@@ -532,6 +533,36 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
   the file, the other keeps its track in memory only. A full disk: the
   message "the track is not written to the disk" - the track goes on in
   memory. The track never changes anything on the boat.
+  SCREEN RECORDING + KEEP (step 13n4) - on BOTH screens (screen 2 bar 2,
+  screen 1's bottom bar [REC · SCR · SAVE · ●5' · ●1h]):
+    SCR      records BOTH screens of THIS PC (screen 1 + screen 2, each its
+             own window) at a lower resolution (at most 1280 wide, 5 pictures
+             a second, H.264 - NVENC when the PC has an NVIDIA card, else x264)
+             into 1-minute files; only the LAST 60 MINUTES are kept (a ring,
+             about 0.3 GB per hour). The button shows ●SCR (white) while it
+             records; press again to stop. It runs as its own low-priority
+             program: it never slows the station and never affects driving.
+             It starts again by itself at the next start if it was on. Not
+             enough free disk (under 2 GB): it does not start / stops by
+             itself with a message - nothing already kept is lost. A screen
+             that is closed (only one window) simply has no file. Needs ffmpeg
+             on this PC (as the gateway). Folder: groundstation\screenrec\
+             (ring\SCREEN-1, ring\SCREEN-2, events\<id>\).
+    SAVE     (the normal one) also keeps the screen part: the same event id
+             and time, 10 min before + 2 min after, like the cameras.
+    ●5' ●1h KEEP PERMANENTLY the last 5 / 60 minutes of BOTH screens of this
+             PC AND the boat's 4 cameras at FULL resolution (one event id /
+             time): the screen part in groundstation\screenrec\events\<id>\,
+             the camera part on the boat's SSD (video\events\<id>\, not
+             uploaded to the shore - it is big; copy it from the gateway PC
+             when needed). Kept files leave the rings and are NEVER deleted
+             automatically (delete the folders by hand). The message says
+             what was kept: "SAVED – SCREENS + CAMERAS 5 MIN / 1 HOUR"; when
+             a ring is shorter than asked, what exists is kept and the message
+             says so ("CAMERAS: only 20 min available"); no gateway / a VIEWER
+             / a full SSD = the screens are kept, the message says why the
+             cameras are not. The gateway's camera ring is 60 min by default
+             (Cameras tab).
   CAMERA VIEW (step 13n2, for the copilot's PC above all): CAMERA on bar 2
   shows one of the boat's cameras over the whole of screen 2. Bar 1 then
   holds FRONT-1 / FRONT-2 / REAR-L / REAR-R and MAP; MAP or Esc = back to the
@@ -735,8 +766,10 @@ main colour (green or white, AR menu); RED = warning, AMBER = caution only.
                    with small gaps: [ΕΛ/EN · NIGHT · DECLUTTER · FILL / FIT ·
                    Aa] [AR · OBSTACLES with the white "AI" badge + the vision
                    status] [LAYOUT (+ CLEAR SLOWDOWN / RESTORE POWER when
-                   offered)] [REC (red dot) or NOT RECORDING · SAVE (framed,
-                   big enough to hit)] [battery, generator, clock + mission
+                   offered)] [REC (red dot) or NOT RECORDING · SCR (●SCR
+                   white while this PC records its screens) · SAVE (framed,
+                   big enough to hit) · ●5' · ●1h (step 13n4, see screen 2's
+                   SCREEN RECORDING)] [battery, generator, clock + mission
                    time (since the first mode other than STANDBY)]. The bar is
                    never hidden (every declutter level); SAVE and the GENERAL
                    WARNING / CAUTION lamps never go away.
@@ -2253,10 +2286,17 @@ E. CAMERAS (4 x TP-Link Tapo C310)
 F. VIDEO RECORDING: RING BUFFER AND SAVE
   The gateway PC records all 4 cameras (full quality) all the time, in 1-minute
   files on its SSD. Only the last 5 / 10 / 20 / 30 / 60 minutes are kept
-  (the "ring buffer"; Cameras tab -> ring buffer, HELM or a station on board).
+  (the "ring buffer", 60 minutes by default since step 13n4 = about 3.6 GB
+  of the SSD; Cameras tab -> ring buffer, HELM or a station on board).
   Recording never uses the internet and never affects driving.
 
-  SAVE keeps the whole ring window before it + 2 minutes after it (all
+  KEEP 5' / 1h (the ●5' / ●1h buttons of a station, step 13n4): the last 5 /
+  60 minutes of all 4 cameras kept PERMANENTLY in <SSD>\video\events\
+  <id>\ ("keep": true in event.json): never deleted by the space rules
+  below (also not once copied), the video NOT sent to the shore PC (only
+  event.json). A shorter ring keeps what exists and says how much.
+
+  SAVE keeps 10 minutes before it + 2 minutes after it (all
   cameras), with: time, position, speed, heading, mode, alarms, what
   triggered it, and the name of the AURIX log file (record number) of that
   moment. A SAVE starts by:
@@ -2281,7 +2321,7 @@ F. VIDEO RECORDING: RING BUFFER AND SAVE
   cameras): when the SSD runs low the gateway PC deletes, in this order:
     1. the oldest ring buffer files,
     2. the oldest SAVEs that are already copied to the shore PC (part G),
-  but NEVER a SAVE that is not on the shore PC yet. If that is not enough:
+  but NEVER a SAVE that is not on the shore PC yet and NEVER a KEEP 5' / 1h. If that is not enough:
   STORAGE FULL (alarm GATEWAY STORAGE on the boat): new SAVEs are refused,
   the ring buffer keeps running. Free space: sync to the shore PC, or copy
   the events away and delete them.

@@ -65,6 +65,7 @@ import chart
 import mapview
 import mapwin
 import track as trackmod
+import screenrec
 import collections
 import json
 from tkinter import messagebox, simpledialog
@@ -89,6 +90,7 @@ THRUSTER_PUSH_S = 15.0      # the boat file's DP thruster settings: no re-send b
 DP_MAX_KN = 3.0             # DP CRUISE / TRIP speed ceiling (the AURIX's dp_max_kn, TO CONFIRM; it refuses more)
 DP_KN_STEP = 0.5
 CRANK_PERIOD_MS = 200       # engine START held: CRANK to the AURIX at 5 Hz (it releases after 300 ms without one)
+KEEP_ACK_S = 8.0            # KEEP 5' / 1h: no answer from the gateway this long = "no answer" (step 13n4)
 LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gs_layout.json")   # window places (not in git)
 P_MAX_LEG = 4               # parameter "max_leg_kn" (app/link.c): the highest leg speed of a program
 AIS_ROWS = (2, 4, 8)        # AIS rows in the corner panel: low (< 720 px) / small / big screen
@@ -257,6 +259,13 @@ class App:
         self.t_rx = 0.0
         self.hist = []                  # (t_s, heading, target, outboard)
         self.tracks = trackmod.TrackStore()     # the live track per boat on disk + the saved ones (step 13n3)
+        # REC SCREEN of this PC + the screen part of SAVE / KEEP (step 13n4): its own ffmpeg processes, display only
+        self.scr = screenrec.ScreenRec({"SCREEN-1": lambda: self.scr_handle(self.driver.w if self.driver else None),
+                                        "SCREEN-2": lambda: self.scr_handle(self.root)})
+        self.keep_pending = {}          # KEEP id -> {"min", "scr": (ok, key, have_min), "t"} until the gateway answers
+        self.root.after(1000, self.scr_tick)
+        if settings.get("screen_rec"):
+            self.root.after(3000, lambda: self.scr.recording() or self.scr_toggle())
         self.track_shown = {}           # saved tracks on the map: path -> visible (settings "tracks_shown")
         self.track_pick = None          # a click on a track line: {"lat", "lon", "text", "path", "at"} (13n3)
         self.track_err = None           # the last track file error said (not repeated)
@@ -717,12 +726,119 @@ class App:
         return ((self.gw_status or {}).get("ais") or {}).get("list") or []
 
     def video_save(self, source):
-        """SAVE: the gateway keeps the ring window + 2 min after (all cameras)."""
+        """SAVE: the gateway keeps its window before + 2 min after (all cameras); this PC keeps the screen part
+        under the same event id (step 13n4: pre + post like the cameras)."""
+        now = time.time()
+        eid = screenrec.event_id(now, "button")
+        rs = (self.gw_status or {}).get("rec") or {}
+        pre, post = float(rs.get("pre_s") or 600), float(rs.get("post_s") or 120)
+        ok, key, _have = self.scr.save(eid, pre, post, "save", now=now)
+        self.event(T("scr.ev_save", id=eid, what=T(key)))
         if not isinstance(self.link, GatewayLink):
-            return self.say(T("cap.save_only_gw"), RED)
-        self.link.send_msg({"t": "save", "source": source})
+            return self.say(T("cap.save_only_gw") + ("  " + T("scr.save_screens") if ok else ""), ORANGE if ok else RED)
+        self.link.send_msg({"t": "save", "source": source, "id": eid})
         if self.sound:
             self.sound.feedback("fb.shutter")
+
+    # --- REC SCREEN + KEEP 5' / 1h (step 13n4, owner 2026-10-31 E4) - DISPLAY ONLY ---------------------------
+    @staticmethod
+    def scr_handle(w):
+        """The native id of a window to record (None = closed / not shown: that screen just has no file)."""
+        try:
+            if w is None or not w.winfo_exists() or not w.winfo_viewable():
+                return None
+            return int(w.wm_frame(), 16)
+        except (tk.TclError, ValueError, TypeError):
+            return None
+
+    def scr_toggle(self):
+        """SCR: start / stop recording both screens of this PC."""
+        if self.scr.recording():
+            self.scr.stop()
+            settings.put("screen_rec", False)
+            self.say(T("scr.off"))
+        else:
+            ok, key = self.scr.start()
+            if ok:
+                settings.put("screen_rec", True)
+            self.say(T(key), GREEN if ok else ORANGE)
+        self.event(T("scr.ev", what=T("scr.on") if self.scr.recording() else T("scr.off")))
+        self.render(force=True)
+
+    def scr_tick(self):
+        try:
+            self.scr.tick()
+            for key, kw in self.scr.pop_notes():
+                self.say(T(key, **kw), ORANGE)
+                self.event(T(key, **kw))
+            now = time.time()
+            for eid, p in list(self.keep_pending.items()):
+                if now - p["t"] > KEEP_ACK_S:
+                    self.keep_report(eid, None)
+        except Exception as e:                  # the recorder never stops the station
+            print("screen recording:", e)
+        try:
+            self.root.after(1000, self.scr_tick)
+        except tk.TclError:
+            pass
+
+    def keep_save(self, minutes):
+        """KEEP 5' / 1h: the last 5 / 60 min of BOTH screens here AND the boat's 4 cameras (a gateway KEEP);
+        one event id / time. Nothing goes to the AURIX."""
+        if minutes not in screenrec.KEEP_CHOICES_MIN:
+            return None
+        now = time.time()
+        eid = screenrec.event_id(now, "keep%d" % minutes)
+        scr = self.scr.save(eid, minutes * 60.0, 0.0, "keep%d" % minutes, keep=True, now=now)
+        self.keep_pending[eid] = {"min": minutes, "scr": scr, "t": now}
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "save_keep", "min": minutes, "id": eid})
+            self.say(T("keep.saving"))
+        else:
+            self.keep_report(eid, {"ok": False, "text": "", "nogw": True})
+        if self.sound:
+            self.sound.feedback("fb.shutter")
+        return eid
+
+    def on_keep_ack(self, d):
+        eid = d.get("ask")
+        if eid in self.keep_pending:
+            self.keep_report(eid, d)
+
+    def keep_report(self, eid, ack):
+        """The one message of a KEEP: "ΑΠΟΘΗΚΕΥΤΗΚΕ – ΟΘΟΝΕΣ + ΚΑΜΕΡΕΣ 5 ΛΕΠΤΑ" (+ what was shorter / missing)."""
+        p = self.keep_pending.pop(eid, None)
+        if p is None:
+            return None
+        m = p["min"]
+        span = T("keep.min5") if m == 5 else T("keep.h1")
+        s_ok, s_key, s_have = p["scr"]
+        c_ok = bool(ack and ack.get("ok"))
+        parts = []
+        if s_ok and c_ok:
+            head = T("keep.saved_both", span=span)
+        elif s_ok:
+            head = T("keep.saved_screens", span=span)
+        elif c_ok:
+            head = T("keep.saved_cams", span=span)
+        else:
+            head = T("keep.not_saved")
+        if not s_ok:
+            parts.append(T("keep.screens_why", why=T(s_key)))
+        elif s_have < m - 1:
+            parts.append(T("keep.screens_only", n="%g" % s_have))
+        if ack is None:
+            parts.append(T("keep.cams_why", why=T("keep.no_answer")))
+        elif ack.get("nogw"):
+            parts.append(T("keep.cams_why", why=T("keep.no_gw")))
+        elif not c_ok:
+            parts.append(T("keep.cams_why", why=i18n.from_en(ack.get("text", ""))))
+        elif ack.get("have_min") is not None and ack["have_min"] < m - 1:
+            parts.append(T("keep.cams_only", n="%g" % ack["have_min"]))
+        text = "  ·  ".join([head] + parts)
+        self.say(text, GREEN if (s_ok and c_ok and not parts) else (ORANGE if (s_ok or c_ok) else RED))
+        self.event(text + "  [" + eid + "]")
+        return text
 
     def ring_set(self):
         if isinstance(self.link, GatewayLink):
@@ -2478,6 +2594,8 @@ class App:
                     self.on_cams_ack(d)
                 elif kind == "save_ack":
                     self.on_save_ack(d)
+                elif kind == "keep_ack":
+                    self.on_keep_ack(d)
                 elif kind == "vision_ack":
                     self.say(T("cap.vis_msg", text=i18n.from_en(d.get("text", ""))), GREEN if d.get("ok") else RED)
                     self.event(T("cap.ev_vision", text=i18n.from_en(d.get("text", ""))))
@@ -3015,6 +3133,7 @@ class App:
         if self.link:
             self.link.stop()
         self.tracks.close()
+        self.scr.close()
         self.root.destroy()
 
     def window_title(self):
@@ -3418,7 +3537,7 @@ class App:
         """The items of bar n (1 / 2): ("btn", tag, label, action, kind, enabled, on) | ("text", tag, text, colour,
         flex) | ("gap",). Bar 1: heading -10 -1 value +1 +10, AUTO pause / resume / skip, ROUTE, MAX SPEED,
         GEOFENCE, LINK TIME, RESTORE POWER when offered; bar 2: the nearest ship + CPA, the messages, zoom, BOAT,
-        TRACKS / NEW TRACK (13n3), TOOLS, Aa, RESET. (The recording group = step 13n4.)"""
+        TRACKS / NEW TRACK (13n3), the recording group SCR / KEEP 5' / KEEP 1h (13n4), TOOLS, Aa, RESET."""
         d = self.t or {}
         sub = getattr(self, "sub_open", None)
         out = []
@@ -3479,6 +3598,13 @@ class App:
             out.append(("btn", "bar_boat", T("ov.b_boat"), self.boat_dropdown_bar, "normal", True, False))
             out.append(("btn", "tracks", T("track.b_tracks"), self.open_tracks, "normal", True, False))
             out.append(("btn", "track_new", T("track.b_new"), self.track_new, "normal", True, False))
+            out.append(("gap",))
+            # the recording group (step 13n4): SCR white while this PC records its screens, KEEP 5' / 1h
+            rec = self.scr.recording()
+            out.append(("btn", "scr", T("scr.btn_on") if rec else T("scr.btn"), self.scr_toggle, "normal", True, rec))
+            out.append(("btn", "keep5", T("keep.btn5"), lambda: self.keep_save(5), "normal", True, False))
+            out.append(("btn", "keep60", T("keep.btn60"), lambda: self.keep_save(60), "normal", True, False))
+            out.append(("gap",))
             if isinstance(self.link, GatewayLink) and not self.camview:
                 out.append(("btn", "cv_open", T("cv.button"), lambda: self.camview_open(self.camview_last),
                             "normal", True, False))

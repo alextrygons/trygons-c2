@@ -74,6 +74,7 @@ TMP = tempfile.mkdtemp(prefix="trygons_s2_")
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(TMP, "settings.json")
 os.environ["TRYGONS_HUD_LAYOUT"] = os.path.join(TMP, "hud_layout.json")
 os.environ["TRYGONS_SOUND"] = "off"
+os.environ["TRYGONS_SCREENREC"] = os.path.join(TMP, "screenrec")     # step 13n4: never this PC's real recordings
 os.environ.pop("TRYGONS_LANG", None)
 import i18n  # noqa: E402
 import theme  # noqa: E402
@@ -2202,6 +2203,55 @@ def s26_track(rig):
                listed, shown, hid, exported, imported, refused, removed, mini, sent, fits, rig.errors[:2]))
 
 
+def s27_screenrec(rig):
+    """Step 13n4 (owner 2026-10-31 E4): the recording group on bar 2 [SCR · 5' · 1h] (screen 1's bar in test_driver /
+    test_screenrec): drawn inside bar 2, fits at 1366x768, SCR lit ("●SCR") while recording, the clicks reach the
+    station, KEEP sends ONE gateway message and nothing to the boat."""
+    ap = rig.ap
+    rig.size(1366, 768, 1.0)
+    sent, msgs = [], []
+    orig_cmd, orig_start, orig_rec = ap.cmd, ap.scr.start, ap.scr.recording
+    ap.cmd = lambda f, p, w: sent.append((f, p))
+    state = {"on": False}
+    ap.scr.start = lambda: (state.update(on=True) or (True, "scr.on"))
+    ap.scr.recording = lambda: state["on"]
+    try:
+        ap.render(force=True)
+        b = {t: op(ap, t) for t in ("scr", "keep5", "keep60")}
+        inside = all(o is not None and overlay.inside(o["r"], op(ap, "bar2")["r"], 1.5) for o in b.values())
+        label_off = b["scr"] is not None and b["scr"]["s"] == i18n.T("scr.btn")
+        [it for it in ap.bar_items(2) if it[0] == "btn" and it[1] == "scr"][0][3]()     # the bar's own action
+        ap.render(force=True)
+        on = op(ap, "scr")
+        label_on = on is not None and on["s"] == "●SCR"
+        ap.scr.stop = lambda why=None: state.update(on=False)
+        ap.scr_toggle()
+        ap.render(force=True)
+        off_again = op(ap, "scr")["s"] == i18n.T("scr.btn")
+        rig.gateway_like(True)
+        real_send = ap.link.send_msg
+        ap.link.send_msg = lambda m: msgs.append(m)
+        eid = ap.keep_save(60)
+        ap.link.send_msg = real_send
+        one = msgs == [{"t": "save_keep", "min": 60, "id": eid}] and not sent
+        fits = not layout_problems(ap)
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots:
+            state["on"] = True
+            ap.render(force=True)
+            canvaspic.save(ap.cv, os.path.join(shots, "screen2_screenrec_el.png"))
+            state["on"] = False
+    finally:
+        ap.cmd, ap.scr.start, ap.scr.recording = orig_cmd, orig_start, orig_rec
+        ap.keep_pending.clear()
+        rig.gateway_like(False)
+    report("S27 recording group (13n4): SCR · 5' · 1h inside bar 2 at 1366x768, ●SCR lit while recording, off again, "
+           "KEEP = ONE gateway message, nothing to the boat",
+           inside and label_off and label_on and off_again and one and fits and not rig.errors,
+           "inside bar 2 %s; label off %s / on %s / off again %s; KEEP sent %s, to the boat %s; fits %s; errors %s" % (
+               inside, label_off, label_on, off_again, msgs, sent, fits, rig.errors[:2]))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
@@ -2211,7 +2261,7 @@ def main():
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
                    s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg, s19_override, s20_slam_restore,
-                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s25_camview, s26_track, s16_silence):
+                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s25_camview, s26_track, s27_screenrec, s16_silence):
             try:
                 fn(rig)
             except Exception as e:

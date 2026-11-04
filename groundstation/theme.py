@@ -176,6 +176,7 @@ NOTICE = {"single_op": "#e080ff", "uncrewed": "#60a0ff", "first_test": MAGENTA} 
 AR = {"route": "#ff50ff", "route_text": "#ff70ff", "shallow": "#ff2020"}         # AR overlays on the video
 VISION = {"obstacle": "#f7c325", "water": "#29a7e0"}        # the obstacle-detection mask (eWaSR classes)
 REC = "#ff2020"             # the recording dot
+SCR_ON = "#ffffff"          # "●SCR": this PC records its screens (step 13n4, owner 2026-10-31 E4: white)
 FROZEN = "#c00000"          # VIDEO FROZEN box
 
 # --- colours: the two themes (every value distinct inside a theme: retint() maps them 1:1) --------------

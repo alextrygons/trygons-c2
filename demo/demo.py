@@ -192,7 +192,7 @@ def gateway_config(mtx, charts):
                              for i, (n, r) in enumerate(zip(names, roles))],
                     "extra_paths": ["simcam_%d" % i for i in range(4)]},
         # (the test pictures are nearly static: tiny bitrate, files grow slowly -> longer stall time)
-        "recording": {"enabled": True, "ring_min": 5, "stall_s": 60.0},
+        "recording": {"enabled": True, "ring_min": 60, "stall_s": 60.0},
         "sync": {"enabled": False},
         "ais": {"enabled": True, "source": "tcp:127.0.0.1:5790", "silent_s": 120.0},
         "charts_dir": charts,

@@ -958,7 +958,8 @@ class Hud:
 
     def bar_groups(self, s):
         """The ONE bottom bar of screen 1 (13n1, owner 2026-10-31 E1), in groups with small gaps:
-        [EL/EN · NIGHT · DECLUTTER · FILL/FIT · Aa] [AR · OBSTACLES AI] [LAYOUT] [REC · SAVE] [clock + mission].
+        [EL/EN · NIGHT · DECLUTTER · FILL/FIT · Aa] [AR · OBSTACLES AI] [LAYOUT] [REC · ●SCR · SAVE · ●5' · ●1h]
+        [clock + mission].
         -> [[(kind, label, action, tag, on, colour)]]; kind "btn" / "text" / "save"."""
         d = s.t
         g1 = [("btn", i18n.NAMES[i18n.other()], "lang", "ctl_lang", False, None),
@@ -980,7 +981,13 @@ class Hud:
         if rec is not None:
             g4.append(("text", T("hud.rec") if rec else T("hud.not_rec"), None, "rec", bool(rec),
                        theme.REC if rec else self.pal["caution"]))
+        # step 13n4 (owner 2026-10-31 E4): [REC · ●SCR · SAVE · ●5' · ●1h] - ●SCR white while this PC records
+        scr = bool(getattr(s, "scr", False))
+        g4.append(("btn", T("scr.btn_on") if scr else T("scr.btn"), "scr", "ctl_scr", scr,
+                   theme.SCR_ON if scr else None))
         g4.append(("save", T("hud.save"), "save", "save", False, self.pal["warn"]))
+        g4.append(("btn", T("keep.btn5"), "keep5", "ctl_keep5", False, None))
+        g4.append(("btn", T("keep.btn60"), "keep60", "ctl_keep60", False, None))
         g5 = []
         if d is not None and "bank_v" in d:              # the 12 V bank (TELEM2 group L), red while LOW BATTERY
             bv = d.get("bank_v")

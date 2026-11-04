@@ -607,6 +607,14 @@ MSYS2 `pacman -S mingw-w64-ucrt-x86_64-ffmpeg` or `ffmpeg.exe` on the PATH (gate
   names (GPS time). Older than the ring length (5-60
   min) = deleted.
 * `<ssd>/video/events/<id>/`: SAVEs (hard links to the ring files + `event.json`).
+  A SAVE keeps 10 min before (`pre_s` 600) + 2 min after.
+* KEEP 5' / 1h (step 13n4): a station's ●5' / ●1h button keeps the last 5 / 60 min of all
+  4 cameras at full resolution as a PERMANENT event (`"keep": true` in `event.json`): never
+  deleted by the space policy (also not once synced) and NOT uploaded to the shore (only its
+  `event.json` is). Delete them by hand when no longer needed. The ring is 60 min by default
+  (`ring_min` 60, ~3.6 GB per hour of SSD for 4 cameras - far inside `low_free_gb` 20 GB on
+  the ThinkPad's 500 GB SSD); a shorter ring = the KEEP holds what exists and the station says
+  how much ("CAMERAS: only 20 min available").
 * Settings: `recording` in gateway.json (segment_s, ring_min, post_s,
   pre_s, ring_sync, stall_s); `storage.low_free_gb` / `full_free_gb` /
   `quota_gb`.

@@ -68,10 +68,12 @@ DEFAULTS = {
     "recording": {
         "enabled": True,                # ring buffer of all cameras (main streams) on the SSD
         "segment_s": 60,                # 1-minute files
-        "ring_min": 10,                 # ring length (the captain picks one of ring_choices_min)
+        "ring_min": 60,                 # ring length (the captain picks one of ring_choices_min); 60 min = KEEP 1h
+                                        # (step 13n4): ~3.6 GB/h for 4 cameras, far inside storage low_free_gb
         "ring_choices_min": [5, 10, 20, 30, 60],
         "post_s": 120,                  # SAVE keeps this long after the (last) trigger
-        "pre_s": None,                  # SAVE keeps this long before it; None = the whole ring
+        "pre_s": 600,                   # SAVE keeps this long before it (10 min = the SAVE of before 13n4, when the
+                                        # ring was 10 min); None = the whole ring. KEEP 5' / 1h: its own 5 / 60 min
         "ring_sync": False,             # section G: ring video to the shore PC too (off: data!)
         "ffmpeg_bin": None,             # None = "ffmpeg" on the PATH
         "stall_s": 10.0,                # no new video this long -> restart that camera's recorder
