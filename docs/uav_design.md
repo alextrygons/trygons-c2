@@ -5,7 +5,7 @@ the choices and their reasons, the failure analysis and the open questions. Owne
 docs/owner_findings_2026-10-31.md section H (owner 2026-11-04). Steps U2-U6: PROGRESS.md.
 
 Everything marked TO CONFIRM is not known and is never guessed in code: the code uses the default named
-here and the owner confirms it (PROGRESS.md "WAITING FOR OWNER" W56-W67).
+here and the owner confirms it (PROGRESS.md "WAITING FOR OWNER" W56-W72).
 
 ## 0. Scope (binding)
 
@@ -79,15 +79,20 @@ slot) and an ELRS receiver bound 1:1 to an ELRS TX module on the boat.
 ### 3.2 Parameter check (read only, the gateway NEVER writes a parameter)
 The owner sets the drones with Mission Planner; registration only reads and refuses a mismatch (TO CONFIRM
 against the drones' ArduPilot version in SITL / on the bench - W60):
-- radio failsafe off (FS_THR_ENABLE 0: the ELRS RC channels are not a control path), GCS failsafe off
+- the RC receiver ignored (RC_OPTIONS bit 0, U1 review HIGH-1, W68) and radio failsafe off (FS_THR_ENABLE 0: the
+  ELRS RC channels are not a control path), GCS failsafe off
   (FS_GCS_ENABLE 0), EKF failsafe = AltHold (FS_EKF_ACTION 2, never Land), dead-reckoning failsafe off
   (FS_DR_ENABLE 0), fence action = report only (FENCE_ACTION 0: the gateway decides, section 6),
   battery low action = warn only (BATT_FS_LOW_ACT 0), battery critical action = Land at a fixed backstop
   value (BATT_FS_CRT_ACT 1 + BATT_CRT_VOLT / BATT_CRT_MAH: the last line of defence when the gateway is
   gone). RTL / SmartRTL are never a failsafe action (the "home" is the launch point at sea: it would fly
   there and land in the water).
-- Outputs: ONLY the 4 motors configured (every other SERVOn_FUNCTION disabled); anything else = refused.
-  (Whether a camera tilt output should be allowed: W60.)
+- Outputs: ONLY the 4 motors configured (SERVOn_FUNCTION 33-36 once each; every other output 0 - also never a GPIO
+  -1); anything else = refused. Every other release path must be off when the parameter exists (U1 review MED-1,
+  built in U2): RELAYn_FUNCTION 0, RELAYn_PIN / RELAY_PINn -1, GRIP_ENABLE 0, CHUTE_ENABLED 0, WINCH_TYPE 0,
+  MNT1_TYPE / MNT_TYPE 0 (no mount output), SCR_ENABLE 0 (no Lua scripts), RC1..16_OPTION 0 (no aux switch
+  function). (Whether a camera tilt output should be allowed: W60 - default no.)
+- Battery backstop values (BATT_CRT_VOLT / BATT_CRT_MAH, the drone's own Land when the gateway is gone): W71.
 - MAVLink 2 signing key present (set by the owner with Mission Planner; the gateway keeps the same key in
   secrets.json "uav_keys") - W64.
 
@@ -107,8 +112,13 @@ against the drones' ArduPilot version in SITL / on the bench - W60):
   gateway, ELRS 3.x MAVLink mode. ELRS is low bandwidth (a few kbit/s per link, TO CONFIRM by packet rate):
   telemetry at reduced stream rates (position / attitude 2-5 Hz, battery / EKF / GPS 1 Hz), mission
   upload, mode / guided commands, manual velocity setpoints at 10 Hz. NEVER raw RC (W59 / 6.3).
-- The RC channels ELRS still carries are fixed neutral values from the gateway and ignored by the drone
-  (radio failsafe off, 3.2). Behaviour of ELRS MAVLink mode without a handset: TO CONFIRM (bench).
+- The RC channels: in ArduCopter LOITER / ALT_HOLD / POSHOLD the RC sticks are LIVE inputs (throttle = climb /
+  descend), so "radio failsafe off" alone is NOT enough - a frozen or low ELRS throttle channel would turn a
+  "hold" into a descent into the sea (a forced landing, forbidden by the owner's rule 6.1). Review of U1 HIGH-1:
+  registration REQUIRES the drone to IGNORE its RC receiver - RC_OPTIONS bit 0 "Ignore RC Receiver" (read only,
+  3.2; built in U2) - and the bench confirms it for the drones' firmware (W68): with the bit set the drone in
+  LOITER / ALT_HOLD / GUIDED / AUTO holds altitude whatever the RC channels say, and MAVLink over ELRS keeps
+  working without a handset (ELRS MAVLink mode, W70). No RC override / MANUAL_CONTROL is on the allow-list.
 - The shore never speaks MAVLink: stations send JSON requests (section 9) over the existing station link;
   the gateway turns them into MAVLink and sends UAV state to the stations in gw_status "uav" (1 Hz) +
   a "uav_telem" message (2-5 Hz, only the drones a station shows).
@@ -128,6 +138,13 @@ Only these pass in either direction; everything else is dropped and counted (rou
   GPS_RAW_INT, EKF_STATUS_REPORT, STATUSTEXT, HOME_POSITION, MISSION_CURRENT, MISSION_ITEM_REACHED,
   MISSION_REQUEST_INT, MISSION_ACK, COMMAND_ACK, PARAM_VALUE, AUTOPILOT_VERSION, TIMESYNC, SYSTEM_TIME,
   RADIO_STATUS.
+- the mission READ-BACK (U1 review LOW): from the drones also MISSION_COUNT / MISSION_ITEM_INT, to the drones
+  MISSION_REQUEST_LIST / MISSION_REQUEST_INT / MISSION_ACK.
+- MISSION_ITEM_INT may hold ONLY NAV_TAKEOFF / NAV_WAYPOINT / DO_CHANGE_SPEED / NAV_LOITER_UNLIM (frames
+  GLOBAL_RELATIVE_ALT(_INT); MISSION for the speed) - never DO_SET_SERVO / DO_REPEAT_SERVO / DO_SET_RELAY /
+  DO_REPEAT_RELAY / DO_GRIPPER / DO_WINCH / DO_PARACHUTE / DO_MOUNT_* / DO_DIGICAM_* / scripting (U1 review MED-1).
+  ARM / DISARM with param2 != 0 (force, 21196) is refused; REQUEST_MESSAGE / SET_MESSAGE_INTERVAL only for an
+  allow-listed message; non-finite numbers are refused.
 - to the drones: HEARTBEAT, MISSION_COUNT / MISSION_ITEM_INT / MISSION_CLEAR_ALL / MISSION_SET_CURRENT,
   PARAM_REQUEST_READ / PARAM_REQUEST_LIST (read only - never PARAM_SET), SET_POSITION_TARGET_LOCAL_NED
   (velocity + yaw rate fields only, body frame), TIMESYNC, SYSTEM_TIME, GPS injection (GPS_RTCM_DATA /
@@ -170,8 +187,9 @@ Refused with a code (section 9) and the reason:
   mixed with the boat's route / track.
 
 ### 5.3 Launch sequence (gateway/uav/launch.py: a state machine, one step per tick, every wait timed)
-Conditions to START (checked again before EACH drone): the boat in STANDBY, or slower than
-uav_launch_max_kn (2 kn, TO CONFIRM) in a mode that keeps it slow; fresh telemetry; trusted boat GPS;
+Conditions to START (checked again before EACH drone): the boat in STANDBY, or in DP SPOT / JOG (the thrusters
+hold the spot) slower than uav_launch_max_kn (2 kn, TO CONFIRM) - "a mode that keeps it slow" means ONLY these
+(U1 review LOW): never AUTO (it speeds up by itself), DP CRUISE / TRIP, HDG LOCK, MANUAL, REMOTE or MANEUVER; fresh telemetry; trusted boat GPS;
 relay board OK + the hatch relay in the ACTIVE table; hatch switches healthy; no boat WARNING alarm;
 the drone registered + checked + a mission loaded. The COPILOT (or captain) prepares (registry, routes,
 "PREPARE LAUNCH"); the CAPTAIN approves it on screen 1 (the 13p vertical YES / NO box, trigger = YES);
@@ -209,7 +227,9 @@ hatch - check before closing", the close is then the captain's own button.
   so the hatch needs relay 8 on a board with >= 8 channels (the Modbus option) or a bigger DroneCAN board
   (W57).
 - Limit switches: CHOICE = read by the GATEWAY, through the modem-status inputs of a 3.3 V FTDI USB-UART
-  cable (the same type as the AURIX adapter, W17): CTS = OPEN switch, DSR = CLOSED switch, each switch
+  (U1 review LOW: the TTL-232R CABLE brings out CTS but NOT DSR - use an FT232R BREAKOUT board that brings out
+  CTS + DSR, with an external pull-up (e.g. 10 kOhm to 3.3 V) on each line: the FT232R's internal pull-ups are
+  weak - W57a) (the same chip as the AURIX adapter, W17): CTS = OPEN switch, DSR = CLOSED switch, each switch
   closes to GND at its end position, the FTDI pull-up keeps the line high otherwise -> a broken wire reads
   "not at that end" (fail safe: "fully open" can only be read with an intact wire). pyserial
   getCTS / getDSR (already a gateway dependency), polled at 20 Hz, debounce 50 ms. Sealed (IP67) magnetic
@@ -227,6 +247,25 @@ hatch - check before closing", the close is then the captain's own button.
   hardware should close SLOWLY with a soft edge; the owner chooses the actuator (W57).
 - The open hatch lets spray / rain into the magazine: open only for the sequence, launch only slow /
   STANDBY, closed at once after the last drone clear.
+
+### 5.6 The hatch when HELM is gone (U1 review MED-2)
+- Every hatch relay command is a T_RELAY on the HELM station's behalf; the AURIX refuses it (NOT HELM) when no
+  station holds HELM - the relay rules of M / N / 11f are NOT weakened for the hatch. So:
+  - HELM lost / given up, the remote HELM link lost (CREWED or UNCREWED), the UNCREWED lost-link procedure, an
+    ENGINE KILL, the e-stop, a monitor trip: the launch sequence STOPS at once (no further drone, no ARM);
+    drones already flying go on; the hatch relay is NOT switched by anything (relays are never switched
+    automatically - an open hatch stays open, a closed one closed) until a station holds HELM again and the
+    captain (or the sequence after a new approval) closes it. Spray in an open magazine is accepted rather than
+    a hatch that closes on a drone. The station shows HATCH OPEN as a notice.
+  - A relay-board reboot still closes the hatch by itself (R-2, 5.5): FAULT, as above.
+- W55 race: the gateway forwards the hatch command with the gateway's OWN HELM grant (never only gw.telem2
+  ["helm"], which lags one TELEM2) and only once TELEM2 agrees; a NOT HELM refusal = one retry after TELEM2
+  agrees, else a notice "HATCH NOT CLOSED - take HELM and close it" (U3 test).
+- The USB laptop on board bypasses the gateway's refusal 125 (it is not behind the gateway): its relay panel
+  treats the hatch relay as a LAMP too (no button) - the station knows the hatch relay from the boat file
+  "uav" (U3; U1 review LOW).
+- Owner question W72: should the hatch close by itself when the sequence stops with no drone in the hatch and
+  HELM still held? (Default: no - the captain's own HATCH CLOSE.)
 
 ## 6. Flight rules (H2, H6)
 
@@ -249,9 +288,18 @@ never an AURIX alarm). The drone's own BATT_FS_CRT_ACT Land is the backstop when
   and the gateway refuses the captain's driving commands while the joystick is on a UAV (code 126;
   STANDBY always free). The boat leaving STANDBY (telemetry) ends it at once: the UAV holds, the joystick
   goes back to the boat (packets again, the normal "centred" rules apply).
+- Input routing while the captain's joystick is on a UAV (U1 review MED-3): the 13p YES / NO selector IGNORES the
+  stick (trigger, thumb, stick Y, hat) - a question on that station is answered with the MOUSE only (the trigger
+  never answers a question and flies the drone at the same time); SAVE stays on its button. Refusal 126 covers
+  every DRIVING_CMD of the captain's station AND every copilot command that would need the captain's ACCEPT
+  (refused 126 at once, never queued for an ACCEPT: the captain is flying, not watching the boat) - incl.
+  GENERATOR ON and RESTART, which need only the ACCEPT; STANDBY and the copilot-free commands (AUTO PAUSE, DP
+  STOP) stay free.
 - COPILOT: may fly a UAV from his own station any time (his joystick never drives the boat anyway); the
   captain keeps the boat.
-- One pilot per drone at a time (gateway pilot lock; first wins - W61). The pilot's station link stale
+- One pilot per drone at a time (gateway pilot lock): the FIRST pilot wins, no takeover - another station (also
+  the captain) gets 127 until the pilot gives the drone back or his station is stale / lost (the default chosen
+  in the U1 review; W61 asks the owner to confirm). The pilot's station link stale
   0.5 s / lost / logged out = the gateway sends a zero setpoint (hold) and frees the lock.
 - Assisted flying only (GUIDED velocity setpoints, POSHOLD-like): stick X / Y = direction / horizontal
   speed (<= uav_man_speed_ms, 10 m/s TO CONFIRM), TWCS lever = climb / descend (<= 2 m/s, never below
@@ -284,7 +332,10 @@ the boat's own cameras only.
   (c) u-blox AssistNow Online / Offline cached when the gateway has internet (a u-blox token).
 - Note: the magazine top must not be metal (the drone may even get its own fix in the slot).
 - FALLBACK "climb, then catch up" (boat in STANDBY only): no good fix within uav_gps_wait_s -> ARM in
-  ALT_HOLD, climb vertically to uav_fallback_alt_m 15 m, hover until GPS + yaw are good (EKF-GSF yaw in
+  ALT_HOLD, climb vertically to uav_fallback_alt_m 15 m - the climb is the allow-listed MAV_CMD_NAV_TAKEOFF in
+  ALT_HOLD with param3 = 1 ("horizontal navigation by the pilot acceptable": ArduCopter's ALT_HOLD user takeoff
+  without position), NEVER a throttle / RC input (none is on the allow-list; the RC receiver is ignored, W68);
+  that ALT_HOLD then holds the altitude with the RC ignored: TO CONFIRM in SITL / on the bench (W68), hover until GPS + yaw are good (EKF-GSF yaw in
   flight; the compass near the hull is not trusted; the boat's heading only as a hint), then switch to
   AUTO and the mission. No landing because of missing GPS - it hovers until GPS or the battery minimum.
   In ALT_HOLD it drifts with the wind: the sequence waits with the next drone until this one is clear.
@@ -296,7 +347,7 @@ the boat's own cameras only.
   ring (video/ring/UAV-n, the recorder's tracks in every SAVE / ⏺5' / ⏺1h) and MediaMTX streams UAV-1..6
   to the shore, lighter than the captain's main camera (LOW profile, ~300-500 kbit/s TO MEASURE), counted
   in cameras.update_priority below the captain's video; the station pulls only the streams open on a
-  screen; data saver / STARLINK = no UAV video unless the captain opens one.
+  screen; data saver / STARLINK = NO UAV video for anyone (the 13n2 rule for every camera view wins; U1 review LOW).
 - Capture load (TO MEASURE in U4 with tools/gateway_load.py, numbers into gateway/README.md): six
   uncompressed USB 2 captures at 720 x 576 YUY2 25 fps (~166 Mbit/s each) do NOT fit one USB 2 bus ->
   design target 640 x 480 at 15 fps, MJPEG-output capture devices preferred, spread over the laptop's
@@ -388,8 +439,10 @@ from a moving vessel and flights near people / vessels need to be covered by the
 EU limits (analog 5.8 GHz video typically 25 mW EIRP, 2.4 GHz 100 mW EIRP) limit the range. State / Navy
 operations are outside the EASA rules (Regulation 2018/1139 Art. 2(3)) and follow their own national
 rules. Cameras: data protection (GDPR) applies to recordings of people. Responsibility stays with the
-operator and the remote pilot.
+operator and the remote pilot. Also (U1 review LOW): UAS OPERATOR REGISTRATION with the HCAA (the operator number
+on every drone) and DIRECT REMOTE ID broadcast (EU 2019/945 / Delegated Regulation 2020/1058; a drone without a
+class mark needs an add-on Remote ID module in the Specific category, as the authorisation says).
 
 ## 12. Open questions
 
-PROGRESS.md "WAITING FOR OWNER" W56-W67 (each with the steps it blocks and the recommended default).
+PROGRESS.md "WAITING FOR OWNER" W56-W72 (each with the steps it blocks and the recommended default).
