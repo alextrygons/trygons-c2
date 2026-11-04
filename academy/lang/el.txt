@@ -91,7 +91,6 @@ tour.s2_control = έλεγχος
 tour.s2_standby = STANDBY
 tour.s2_traffic = κίνηση (AIS)
 tour.s2_logo = λογότυπο
-tour.s2_mapbar = μπάρα χάρτη
 
 # --- step 18: simulator lessons (spec C) + quizzes (spec D)
 acc.lessons = Μαθήματα στον προσομοιωτή
@@ -420,3 +419,7 @@ acc.sim3d = 3D προσομοιωτής
 # step 13i: Help -> About
 menu.help = Βοήθεια
 menu.about = Σχετικά με το Trygons C2
+tour.s2_modebar = μπάρα λειτουργιών
+tour.s2_battle_short = BATTLE SHORT
+tour.s2_bar1 = μπάρα 1
+tour.s2_bar2 = μπάρα 2

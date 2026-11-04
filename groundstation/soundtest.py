@@ -86,6 +86,11 @@ def build(parent, app):
     for i, code in enumerate(i18n.LANGS):
         tk.Radiobutton(vf, text=i18n.NAMES[code], variable=vl, value=code, font=F_MED, bg=BG, indicatoron=False,
                        width=4, command=lambda: snd.set_voice_lang(vl.get())).grid(row=0, column=1 + i, padx=2)
+    # the voice is a neural network (Piper): the framed white "AI" badge (13n1, owner 2026-10-31 E1)
+    aiv = tk.Frame(vf, bg=BG)
+    aiv.grid(row=0, column=1 + len(i18n.LANGS), columnspan=3, sticky="w", padx=8)
+    theme.ai_badge(aiv, BG).pack(side="left", padx=(0, 4))
+    i18n.bind(tk.Label(aiv, font=F_TXT, bg=BG, fg=C["fg"]), "snd.ai_voice").pack(side="left")
     eng = tk.Label(vf, font=theme.font("label", bold=False, mono=True), bg=BG, fg=C["fg"], justify="left", anchor="w")
     eng.grid(row=1, column=0, columnspan=6, sticky="w", padx=4)
     bb = tk.Frame(vf, bg=BG)

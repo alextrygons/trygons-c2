@@ -30,7 +30,7 @@ import proto  # noqa: E402
 
 results = []
 SCREEN_MODULES = ["app.py", "mapview.py", "driver.py", "hud.py", "hudar.py", "mapwin.py", "soundtest.py", "monitors.py",
-                  "sound.py", "crewui.py", "overlay.py", "theme.py", "splash.py", "about.py"]
+                  "sound.py", "crewui.py", "overlay.py", "theme.py", "splash.py", "about.py", "battleshort.py"]
 
 
 def report(name, ok, detail):
@@ -103,6 +103,8 @@ def families():
     f += ["prof.%d" % i for i in range(3)] + ["tab." + k for k in ("connection", "control")]
     f += ["ov.relay_grp_" + g for g in proto.RELAY_GROUPS]
     f += ["dp.sub_%d" % i for i in range(len(proto.DP_SUBS))]
+    f += ["mb." + k for k in ("STANDBY", "HDG_LOCK", "AUTO", "REMOTE_MANUAL", "MANEUVER", "DP", "MANUAL")]   # 13n1
+    f += ["ov.sub_" + k for k in ("route", "maxkn", "fence")]
     return f
 
 

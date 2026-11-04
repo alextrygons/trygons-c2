@@ -390,7 +390,7 @@ CHOOSING THE BOAT (the first line of the top-left STATUS panel)
   OFFLINE / IP NOT SET / INVALID FILE and its address only as a detail at the end, then
   "Other address ..." and "Disconnect". Choose a boat: user name +
   password, "captain" or "copilot", CONNECT.
-  The lamp: green CONNECTED only when this PC found the boat's gateway AND
+  The lamp: white CONNECTED only when this PC found the boat's gateway AND
   is connected to it AND the gateway said the right boat name. Otherwise
   grey with the reason: ONLINE (found, not connected), OFFLINE, IP NOT
   SET, checking ..., "no boat check" (connected to a typed address).
@@ -464,8 +464,46 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
   (or the key B).
   The panels are see-through and never cover the boat or the area around it.
   A click on a panel's title folds it to the title (▸) or opens it again
-  (▾); remembered on this PC. STANDBY (big red, bottom-left corner) is
-  ALWAYS there, also with every panel folded.
+  (▾); DRAG a panel's title to put the panel anywhere (it never goes over
+  the boat or over the bars); both remembered on this PC; RESET TO DEFAULT
+  (bar 2 or the tools window) puts every panel back. STANDBY (big red,
+  bottom-left corner) is ALWAYS there, also with every panel folded.
+  THE LOOK (step 13n1, owner 2026-10-31): red = alarms (WARNING) only, amber
+  = CAUTION, STANDBY is the only red button; other information is black or
+  white by its background; the CONNECTED lamp is white. Everything you can
+  press or type into has a square frame. Only 3 text sizes everywhere (very
+  important / heading / information); "Aa" (bar 2, screen 1's bar, the
+  tools window, the academy windows) = small / normal / large text, saved
+  on this PC.
+  MODE BAR (top middle, always there, can't be hidden):
+     [STANDBY] [HDG LOCK] [AUTO] [REMOTE] [MANEUVER] [DP] [MANUAL] · [BATTLE SHORT]
+     The current mode is inverted (white, black bold, a little bigger). A
+     mode that is not allowed now is grey; a click on it says why ("no
+     route", "captain only", "MANUAL only with the joystick on board" ...).
+     A click on an allowed one changes the mode - the boat checks every
+     request again with its own rules (HELM, licence, CONFIRM, the stick
+     centred). REMOTE / MANEUVER: the captain with the manual licence (or a
+     licensed single operator); HDG LOCK from the PC only UNCREWED from
+     REMOTE / MANEUVER (CREWED: the panel button on board); AUTO = AUTO START
+     of the route on the boat; DP = SPOT; MANUAL is shown but never
+     pressable from the PC. A copilot's mode change waits for the captain's
+     ACCEPT (STANDBY never).
+     BATTLE SHORT asks for the commander's authorisation code (the tooltip
+     says so).
+  TWO BARS at the bottom (between STANDBY and the logo; ▾ at the left end
+     hides a bar to a slim handle, ⇅ moves both bars to the top under the
+     mode bar and back):
+     Bar 1  heading −10 −1 [target] +1 +10 · AUTO Pause / Resume / Skip ·
+            ROUTE · MAX SPEED · GEOFENCE (each opens its small panel just
+            above the bar while you use it; the button again closes it) ·
+            LINK TIME − + (captain with HELM) · RESTORE POWER when offered
+     Bar 2  the nearest AIS ship + CPA · the last message · Zoom − / Zoom +
+            (/ Back to boat) · BOAT (the boat dropdown) · Tools · Aa ·
+            RESET TO DEFAULT
+  "AI" (a small framed white badge) is shown ONLY where a neural network
+  works: the obstacle detection (eWaSR) and the Piper voice. AI only warns
+  and may slow down - it never steers. Collision avoidance, the autopilot
+  and the shallow-water checks are NOT AI.
   Top left      STATUS: first line = the boat dropdown + the lamp CONNECTED +
                 "✓ name verified" (see CHOOSING THE BOAT); the mode, the
                 POWER LIMIT with Raise fwd / Raise rev /
@@ -498,24 +536,22 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
                 (counts as near); while the link is lost: the seconds to the
                 engine kill (or "near the shore: engine kill at idle");
                 ENGINE KILLED - RESTART (Engine page) or reset on board
-  Bottom left   CONTROL: HDG LOCK, AUTO START (+ MANUAL and MANEUVER only in
-                single-operator mode with the manual licence - otherwise
-                they are on screen 1); the AUTO state, Pause / Resume / Skip;
-                the ROUTE, MAX SPEED and GEOFENCE editing (below); heading
-                -10 / -1 / +1 / +10; the captain's answers to your actions
-                (copilot: WAITING / ACCEPTED / REJECTED). With the simulator
-                also: panel HDG LOCK / STANDBY and the joystick CONFIRM.
+  Bottom left   CONTROL (a slim strip above the bars): the AUTO state, AUTO
+                RETURN, generator, the DP rows; the captain's answers to your
+                actions (copilot: WAITING / ACCEPTED / REJECTED). With the
+                simulator also: panel HDG LOCK / STANDBY and the joystick
+                CONFIRM. (The modes are on the MODE BAR, the heading / AUTO
+                pause / ROUTE / MAX SPEED / GEOFENCE / LINK TIME on bar 1.)
   Bottom right  TRAFFIC: the collision-avoidance state and a proposal, the
                 nearest AIS ships (name, distance, bearing, CPA, TCPA; red =
                 danger, amber = warning; a click opens the details), "AIS
                 doesn't show small craft"; under it the logo
-  Top middle    banners, only when needed (the alarms are in the ALARMS panel):
+  Top middle    under the mode bar: banners, only when needed (the alarms are in the ALARMS panel):
                 LINK LOST / ENGINE KILLED, PRESS JOYSTICK CONFIRM, REMOTE /
                 MANEUVER / JOYSTICK IN CONTROL, pickup, FIRST TEST, UNCREWED,
                 shallow water ahead, collision risk, STARLINK EMERGENCY,
                 single operator, boat not confirmed, the editing help
-  Bottom middle "Zoom −" / "Zoom +" / "Back to boat" / "Tools", the last
-                message, the chart note "Not for navigation ..."
+  Above bars    the chart note "Not for navigation ..."
   Menu bar      Windows (screen 1, F11, move to a monitor, swap F12), Tools
                 (every page), View (dark / light theme for BOTH screens, the
                 map layers + range rings), Language
@@ -649,12 +685,18 @@ main colour (green or white, AR menu); RED = warning, AMBER = caution only.
                    at least +-50 m)
   Bottom right     MINI MAP (dark, never white): depth chart, sea marks, AIS,
                    own track, the program, active waypoint, DR circle
-  Bottom line      heading tape with the target mark, REC (red dot) or
-                   NOT RECORDING, vision status, clock + mission time (since
-                   the first mode other than STANDBY), SAVE (outlined; still
-                   big enough to hit)
-  Bottom left      buttons: ΕΛ/EN, NIGHT, declutter, FILL / FIT, AR, LAYOUT
-                   (+ CLEAR SLOWDOWN while vision slows AUTO)
+  Above the bar    the HEADING TAPE with the target mark (its own box)
+  Bottom bar       (step 13n1) ONE thin bar across the whole width, in groups
+                   with small gaps: [ΕΛ/EN · NIGHT · DECLUTTER · FILL / FIT ·
+                   Aa] [AR · OBSTACLES with the white "AI" badge + the vision
+                   status] [LAYOUT (+ CLEAR SLOWDOWN / RESTORE POWER when
+                   offered)] [REC (red dot) or NOT RECORDING · SAVE (framed,
+                   big enough to hit)] [battery, generator, clock + mission
+                   time (since the first mode other than STANDBY)]. The bar is
+                   never hidden (every declutter level); SAVE and the GENERAL
+                   WARNING / CAUTION lamps never go away.
+                   Colours on the video: every information GREEN; red only for
+                   a WARNING, amber for a CAUTION; NIGHT = dim red.
 
 KEYS on the driver screen:  Space / A acknowledge   N night   D declutter
   V fill / fit   L language   E edit layout   G all AR on / off   O obstacle
@@ -665,9 +707,11 @@ FILL / FIT: fill = the picture covers the window, cropped evenly; fit = the
 NIGHT: dim red, darker picture, quieter sounds (5D). Remembered.
 DECLUTTER: FULL (all) -> NORMAL (no rate of turn, G-meter, CDI) -> MINIMAL
   (speed, heading, mode, gear, alarms only - also no AR). Remembered.
-EDIT LAYOUT (LAYOUT button or E): every box gets a blue frame. Drag a box to
-  move it, drag its bottom-right corner to resize it, the x / + in its top
-  corner hides / shows it. RESET TO DEFAULT, DONE. Saved in
+EDIT LAYOUT (LAYOUT button or E): every box gets a square frame. Drag a box
+  by its middle to move it, drag the small square at its bottom-right corner
+  to resize it (also the two mirrors: make a mirror bigger or smaller this
+  way), the x / + in its top corner hides / shows it. RESET TO DEFAULT, DONE.
+  Saved in
   groundstation\hud_layout.json (per PC). Outside the edit mode nothing can
   be moved by accident.
 QUESTIONS (step 13p, owner 2026-10-31): a copilot's action for the captain's

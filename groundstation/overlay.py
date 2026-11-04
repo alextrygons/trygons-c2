@@ -11,7 +11,13 @@ Panels: semi-transparent (theme.ALPHA), rounded, a header with the title and a c
 (click: collapsed to the header, remembered); they stay in their corner and never cover the
 boat (keep-out circle around the centre). A panel whose corner is a TUPLE of corners (e.g. the
 relays) is placed by the fit test: in the candidate corner whose side has the most free height.
-A button with a `release` function is press-and-hold (release() when the mouse button goes up). Everything is sized from theme.py (fonts by window
+A button with a `release` function is press-and-hold (release() when the mouse button goes up).
+Step 13n1 (owner 2026-10-31 E1): every button = a SQUARE frame; a panel header can be DRAGGED anywhere (a click
+without moving = collapse / open); the dragged places are saved per PC (Overlay.pos, fractions of the window) and
+RESET TO DEFAULT puts every panel back in its column; a dragged panel is still never over the boat (pushed
+sideways out of the keep-out circle) nor over the mode bar / the bottom bars. The layout keeps a TOP band (the
+mode bar) and a BOTTOM band (STANDBY bottom-left, the two bars, the logo bottom-right) free of panels.
+Everything is sized from theme.py (fonts by window
 size x Windows scaling); if the panels don't fit, the text is made smaller step by step (fit
 factor). The result of the last layout (ops: every drawn item with its rectangle and panel) is
 what the layout test checks (test_screen2.py): nothing clipped, STANDBY visible, the boat free,
@@ -126,9 +132,13 @@ class Panel:
 
 
 class Overlay:
-    def __init__(self, canvas, collapsed=()):
+    def __init__(self, canvas, collapsed=(), positions=None):
         self.cv = canvas
         self.panels = []
+        self.pos = {k: tuple(v) for k, v in (positions or {}).items() if isinstance(v, (list, tuple)) and len(v) == 2}
+        self.heads = []                  # [(header rect, panel key)] - a click toggles, a drag moves (13n1)
+        self.drag = None                 # {"key", "x", "y", "r", "moved"} while a header is held
+        self.on_move = None              # fn(pos dict) after a drag (the app saves it per PC)
         self.ops = []                    # the last layout: {"k", "r", "panel", "s", "tag"}
         self.hits = []                   # [(rect, fn)]
         self.holds = []                  # [(rect, release fn)] press-and-hold buttons
@@ -244,25 +254,30 @@ class Overlay:
         probs = []
         rects = {}
         col = {"nw": [], "ne": [], "sw": [], "se": []}
-        sb_w, sb_h = extras["standby"]
-        lg_w, lg_h = extras["logo"]
+        sb_w, _sb_h = extras["standby"]
+        lg_w, _lg_h = extras["logo"]
+        top_h = extras.get("top", 0.0)              # the mode bar band (+ the bars when docked at the top)
+        bot_h = extras.get("bottom", _sb_h)         # the bottom band: STANDBY, the bars, the logo
+        y_top = g + top_h + (g if top_h else 0.0)
+        y_bot = H - g - bot_h - g
+        sb_h, lg_h = bot_h, bot_h
+        dragged = [p for p in self.panels if p.key in self.pos]    # dragged by the user: placed where it was left
         for p in self.panels:
-            if isinstance(p.corner, str):
+            if isinstance(p.corner, str) and p not in dragged:
                 col[p.corner].append(p)
         for p in self.panels:
-            if isinstance(p.corner, str):
+            if isinstance(p.corner, str) or p in dragged:
                 continue
             # placed by the fit test: the candidate corner whose side keeps the most free height (the map bar
             # in the middle must still fit); top corners: below the others, bottom corners: above the others
             def free(c):
                 side = ("nw", "sw") if c[1] == "w" else ("ne", "se")
                 used = sum(q.h + g for k in side for q in col[k])
-                bottom = H - g - (sb_h if c[1] == "w" else lg_h) - g
-                sw_ = max([q.w for k in side for q in col[k]] + [sb_w if c[1] == "w" else lg_w, p.w])
-                other = max([q.w for k in (("ne", "se") if c[1] == "w" else ("nw", "sw")) for q in col[k]] +
-                            [lg_w if c[1] == "w" else sb_w])
+                bottom = y_bot
+                sw_ = max([q.w for k in side for q in col[k]] + [p.w])
+                other = max([q.w for k in (("ne", "se") if c[1] == "w" else ("nw", "sw")) for q in col[k]] + [0.0])
                 mid = W - 2 * g - min(sw_, maxw) - min(other, maxw) - 2 * g
-                return bottom - g - used - p.h - g, mid >= extras["bar"][0]
+                return bottom - y_top - used - p.h, mid >= extras["bar"][0]
             best = max(p.corner, key=lambda c: (free(c)[1], free(c)[0]))
             p.placed = best
             if best[0] == "s":
@@ -272,34 +287,52 @@ class Overlay:
         for p in self.panels:
             if p.w > maxw:
                 probs.append("panel %s too wide: %.0f > %.0f px" % (p.key, p.w, maxw))
-        left_w = max([p.w for p in col["nw"] + col["sw"]] + [sb_w])
-        right_w = max([p.w for p in col["ne"] + col["se"]] + [lg_w])
+        left_w = max([p.w for p in col["nw"] + col["sw"]] + [0.0])
+        right_w = max([p.w for p in col["ne"] + col["se"]] + [0.0])
         left_w, right_w = min(left_w, maxw), min(right_w, maxw)
-        sb = (g, H - g - sb_h, g + left_w, H - g)
+        sb = (g, H - g - sb_h, g + sb_w, H - g)
         lg = (W - g - lg_w, H - g - lg_h, W - g, H - g)
         rects["standby"], rects["logo"] = sb, lg
-        y = g
+        rects["top"] = (g, g, W - g, g + top_h)
+        rects["bars"] = (sb[2] + g, H - g - bot_h, lg[0] - g, H - g)
+        if top_h and W - 2 * g < extras.get("top_w", 0.0):
+            probs.append("the mode bar does not fit (%.0f < %.0f px)" % (W - 2 * g, extras["top_w"]))
+        if rects["bars"][2] - rects["bars"][0] < extras.get("bars_w", 0.0):
+            probs.append("the bottom bars do not fit (%.0f < %.0f px)" % (rects["bars"][2] - rects["bars"][0],
+                                                                         extras["bars_w"]))
+        y = y_top
         for p in col["nw"]:
             p.r = (g, y, g + p.w, y + p.h)
             y += p.h + g
         top_left = y
-        y = sb[1] - g
+        y = y_bot
         for p in reversed(col["sw"]):
             p.r = (g, y - p.h, g + p.w, y)
             y -= p.h + g
         if y < top_left - g:
             probs.append("left side: the panels don't fit (%.0f px too high)" % (top_left - g - y))
-        y = g
+        y = y_top
         for p in col["ne"]:
             p.r = (W - g - p.w, y, W - g, y + p.h)
             y += p.h + g
         top_right = y
-        y = lg[1] - g
+        y = y_bot
         for p in reversed(col["se"]):
             p.r = (W - g - p.w, y - p.h, W - g, y)
             y -= p.h + g
         if y < top_right - g:
             probs.append("right side: the panels don't fit (%.0f px too high)" % (top_right - g - y))
+        for p in dragged:                           # a dragged panel: inside the free area, never over the boat
+            fx, fy = self.pos[p.key]
+            w_, h_ = min(p.w, W - 2 * g), p.h
+            x0 = max(g, min(W - g - w_, fx * W))
+            y0 = max(y_top, min(max(y_top, y_bot - h_), fy * H))
+            r = (x0, y0, x0 + w_, y0 + h_)
+            if rect_hits_circle(r, keepout):         # pushed sideways out of the keep-out circle
+                x0 = cx - kr - g - w_ if x0 + w_ / 2 < cx else cx + kr + g
+                x0 = max(g, min(W - g - w_, x0))
+                r = (x0, y0, x0 + w_, y0 + h_)
+            p.r = r
         for p in self.panels:
             rects[p.key] = p.r
             if rect_hits_circle(p.r, keepout):
@@ -307,7 +340,7 @@ class Overlay:
         # the free middle: banners at the top (above the boat), the bar + messages at the bottom
         lx = g + left_w + g
         rx = W - g - right_w - g
-        rects["middle"] = (lx, g, rx, H - g)
+        rects["middle"] = (lx, y_top, rx, H - g - bot_h - g)
         if rx - lx < extras["bar"][0]:
             probs.append("the middle is too narrow for the map bar (%.0f < %.0f px)" % (rx - lx, extras["bar"][0]))
         return rects, probs
@@ -347,7 +380,8 @@ class Overlay:
         if p.collapsible:
             c.create_text(x1 - p.pad, hy, text="▸" if p.collapsed else "▾", anchor="e", fill=C["dim"],
                           font=self.font(fs * 1.2, True), tags="ov")
-            self.hits.append(((x0, y0, x1, y0 + p.head_h), lambda k=p.key: self.toggle(k)))
+        # the header: a click = collapse / open, a drag = move the panel (13n1; the alarms panel moves too)
+        self.heads.append(((x0, y0, x1, y0 + p.head_h), p.key, p.collapsible))
         if p.collapsed:
             return
         c.create_line(x0 + p.pad * 0.5, y0 + p.head_h, x1 - p.pad * 0.5, y0 + p.head_h, fill=C["line"], tags="ov")
@@ -397,8 +431,9 @@ class Overlay:
                 fill, fg = C["accent"], theme.WHITE
             if not it.enabled:
                 fill, fg = C["head"], C["faint"]
-            c.create_polygon(*rrect_pts(r[0], r[1], r[2], r[3], fs * theme.BUTTON["radius"] * 2), smooth=True,
-                             fill=fill, outline=C["line"], tags="ov")
+            # a SQUARE frame around everything that can be pressed (13n1)
+            c.create_rectangle(r[0], r[1], r[2], r[3], fill=fill, outline=C["faint"] if not it.enabled else C["fg"],
+                               width=theme.FRAME, tags="ov")
             c.create_text((r[0] + r[2]) / 2, cy, text=it.s, fill=fg, font=self.font(fs, True), tags="ov")
             op["enabled"], op["on"] = it.enabled, it.on
             if it.enabled and it.action:
@@ -432,7 +467,7 @@ class Overlay:
         """Lay out (largest fitting text size), then draw. extras_fn(k) -> sizes of STANDBY / logo / bar at
         fit factor k; draw_extras(rects) draws them (the app: STANDBY, logo, banners, bar)."""
         self.W, self.H = W, H
-        self.ops, self.hits, self.holds = [], [], []
+        self.ops, self.hits, self.holds, self.heads = [], [], [], []
         k = self.dpi
         rects, probs = None, None
         while True:
@@ -451,6 +486,11 @@ class Overlay:
         return rects
 
     def click(self, x, y):
+        for r, key, coll in self.heads:             # a panel header: collapse on release, or drag it (13n1)
+            if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
+                p = next((q for q in self.panels if q.key == key), None)
+                self.drag = {"key": key, "x": x, "y": y, "r": p.r if p else r, "moved": False, "coll": coll}
+                return True
         for r, fn in reversed(self.hits):
             if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
                 self.held = next((rel for rr, rel in self.holds if rr == r), None)
@@ -461,8 +501,37 @@ class Overlay:
                 return True                         # on a panel, not on a button: nothing for the map
         return False
 
-    def release(self):
-        """The mouse button went up: a held press-and-hold button lets go (its release function)."""
+    def motion(self, x, y):
+        """The mouse moved with the button down: a held panel header drags its panel. True = redraw."""
+        d = self.drag
+        if d is None:
+            return False
+        if not d["moved"] and abs(x - d["x"]) + abs(y - d["y"]) < 6:
+            return False
+        d["moved"] = True
+        W, H = max(1, self.W), max(1, self.H)
+        self.pos[d["key"]] = ((d["r"][0] + x - d["x"]) / W, (d["r"][1] + y - d["y"]) / H)
+        return True
+
+    def release(self, x=None, y=None):
+        """The mouse button went up: a held press-and-hold button lets go (its release function); a header that
+        was not moved = collapse / open; a dragged one keeps its new place (on_move saves it)."""
+        d, self.drag = self.drag, None
+        if d is not None:
+            if d["moved"]:
+                if self.on_move:
+                    self.on_move({k: list(v) for k, v in self.pos.items()})
+            elif d["coll"]:
+                self.toggle(d["key"])
         fn, self.held = self.held, None
         if fn:
             fn()
+
+    def reset_positions(self):
+        """RESET TO DEFAULT (13n1): every panel back in its column, every panel open."""
+        self.pos.clear()
+        self.collapsed.clear()
+        if self.on_move:
+            self.on_move({})
+        if self.on_collapse:
+            self.on_collapse([])

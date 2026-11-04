@@ -18,7 +18,10 @@ DEFAULTS = {
     "ui_lang": "el",            # screen language: el (default) / en
     "theme": "dark",            # dark / light: BOTH screens (theme.py)
     "voice_lang": "el",         # voice callout language (may differ from the screen)
-    "hud_colour": "green",      # main HUD colour: green / white
+    "hud_colour": "green",      # main HUD colour: green (13n1, owner 2026-10-31: all info on the video GREEN)
+    "text_size": "normal",      # "Aa" in every window: small / normal / large (theme.text_scale, 13n1)
+    "s2_panel_pos": {},         # screen 2 panels dragged by the user: key -> [x, y] fractions (13n1, RESET TO DEFAULT)
+    "s2_bars": {"hidden": [], "dock": "bottom"},   # screen 2 bottom bars: hidden ones, dock top / bottom (13n1)
     "night": False,             # night mode (dim red / dark)
     "declutter": "FULL",        # FULL / NORMAL / MINIMAL
     "video_scale": "fill",      # fill (cover, crop evenly) / fit (whole picture, black bars)

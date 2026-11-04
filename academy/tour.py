@@ -31,7 +31,7 @@ TOUR_FILE = os.path.join(HERE, "content", "tour.json")
 LANGS = ("el", "en")
 SHOWS = ("none", "s1", "s2", "tools", "modes", "alarm", "lamps", "joystick", "panel")
 # screen 2 parts that are not an ov.panel(...) in app.py (STANDBY corner, banners, map bar, the boat, editing)
-S2_EXTRA = ("standby", "banners", "mapbar", "boat", "edit")
+S2_EXTRA = ("standby", "banners", "modebar", "battle_short", "bar1", "bar2", "boat", "edit")   # 13n1: mode bar, bars
 HUD_EXTRA = ("logo", "center")              # LOGO_BOX + the centre (ACCEPT / REJECT questions)
 HUD_BUTTONS_EXTRA = ("save", "accept")      # SAVE (bottom line) + the ACCEPT / REJECT answer (driver.py)
 LAMPS = ("master_warning", "master_caution")
@@ -40,17 +40,20 @@ PANEL = ("standby", "hdg_lock", "minus1", "plus1", "minus10", "plus10", "estop")
 # the DRAWINGS' layout (fractions of a 16:9 picture) - shared by the tour window and the quiz picture
 # questions (step 18: quiz.area_rect); the real places are decided by app.py / overlay.py
 S2_BOXES = {
-    "status": (0.010, 0.010, 0.250, 0.300),
-    "banners": (0.300, 0.010, 0.400, 0.060),
-    "alarms": (0.740, 0.010, 0.250, 0.140),
-    "helm": (0.740, 0.160, 0.250, 0.120),
-    "link": (0.740, 0.290, 0.250, 0.140),
-    "relays": (0.010, 0.330, 0.200, 0.200),
-    "control": (0.010, 0.550, 0.300, 0.340),
-    "standby": (0.010, 0.905, 0.150, 0.085),
-    "traffic": (0.740, 0.600, 0.250, 0.260),
-    "logo": (0.840, 0.875, 0.150, 0.110),
-    "mapbar": (0.330, 0.905, 0.380, 0.085),
+    "modebar": (0.150, 0.008, 0.600, 0.052),
+    "battle_short": (0.760, 0.010, 0.100, 0.048),
+    "status": (0.010, 0.075, 0.230, 0.290),
+    "banners": (0.300, 0.075, 0.400, 0.055),
+    "alarms": (0.760, 0.075, 0.230, 0.130),
+    "helm": (0.760, 0.215, 0.230, 0.110),
+    "link": (0.760, 0.335, 0.230, 0.130),
+    "relays": (0.010, 0.380, 0.200, 0.170),
+    "control": (0.010, 0.565, 0.230, 0.250),
+    "traffic": (0.760, 0.560, 0.230, 0.255),
+    "standby": (0.010, 0.880, 0.120, 0.110),
+    "bar1": (0.140, 0.880, 0.700, 0.050),
+    "bar2": (0.140, 0.938, 0.700, 0.052),
+    "logo": (0.850, 0.880, 0.140, 0.110),
 }
 # the panel buttons drawing (label, target), left to right, then the e-stop
 PANEL_BTNS = (("STANDBY", "standby"), ("HDG LOCK", "hdg_lock"), ("-10", "minus10"), ("-1", "minus1"),
@@ -82,18 +85,21 @@ def _src(name):
 
 
 def hud_buttons():
-    """The action names of the HUD's screen buttons (hud.Hud.controls) and drive buttons (Hud.drive)."""
+    """The action names of the HUD's screen buttons (the ONE bottom bar, hud.Hud.bar_groups - 13n1) and drive
+    buttons (Hud.drive)."""
     src = _src("hud.py")
     acts = set()
-    for fn in ("controls", "drive"):
-        body = src.split("    def %s(self" % fn, 1)[1].split("\n    def ", 1)[0]
-        acts |= set(re.findall(r"[\)\]], \"([a-z_]+)\", (?:False|True|bool|self)", body))
+    body = src.split("    def bar_groups(self", 1)[1].split("\n    def ", 1)[0]
+    acts |= set(re.findall(r", \"([a-z_]+)\", \"ctl_[a-z_]+\"", body))      # (SAVE: HUD_BUTTONS_EXTRA)
+    body = src.split("    def drive(self", 1)[1].split("\n    def ", 1)[0]
+    acts |= set(re.findall(r"[\)\]], \"([a-z_]+)\", (?:False|True|bool|self)", body))
     return sorted(acts)
 
 
 def s2_panels():
     """The corner panels of screen 2 (app.py: self.ov.panel("<name>", ...))."""
-    return sorted(set(re.findall(r"self\.ov\.panel\(\"([a-z_]+)\"", _src("app.py"))))
+    # (the bar-1 sub-panels "sub_" + key pop up only while used - 13n1: explained with bar 1)
+    return sorted(set(p for p in re.findall(r"self\.ov\.panel\(\"([a-z_]+)\"", _src("app.py")) if not p.endswith("_")))
 
 
 def tools_pages():

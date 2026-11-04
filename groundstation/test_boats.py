@@ -490,7 +490,7 @@ def b6_dropdown(ap, pump, good):
     ap.boat_pick = None
     st["none"] = lamp()
     srv.close()
-    G, grey = theme.GOOD, theme.C["head"]
+    G, grey = theme.CONNECTED[0], theme.C["head"]     # the "connected" lamp is WHITE (13n1)
     ok = st["connected"][1] == ("● " + T("ov.connected"), G) and st["connected"][0].startswith("RF49D") and \
         st["wrong_name"][1][1] == grey and st["not_found"][1] == ("● " + T("boat.st_offline"), grey) and \
         st["again"][1][1] == G and \
@@ -499,7 +499,7 @@ def b6_dropdown(ap, pump, good):
         picked["CHARLIE"][1] == ("● " + T("boat.st_no_ip"), grey) and \
         st["none"][1] is None and st["none"][0].startswith(T("ov.choose_boat")) and \
         menu == [["ALPHA", T("boat.st_online")], ["BRAVO", T("boat.st_offline")], ["CHARLIE", T("boat.st_no_ip")]]
-    report("B6 boat dropdown + lamp: CONNECTED (green) only when found + connected + name check passed; else grey "
+    report("B6 boat dropdown + lamp: CONNECTED (white, 13n1) only when found + connected + name check passed; else grey "
            "(name check failed, not found, online but not connected, offline, IP not set); nothing chosen = no lamp",
            ok, "connected %s; wrong name %s; not found %s; found again %s; picked %s; nothing chosen %s; menu %s" % (
                st["connected"][1:], st["wrong_name"][1:], st["not_found"][1:], st["again"][1:],

@@ -178,10 +178,9 @@ def main():
 
         # I1 the HUD from live telemetry
         mode_txt = (dv.texts("mode") or [None])[0]
-        bx = dv.layout.px("bottom", dv.cv.winfo_width(), dv.cv.winfo_height())
+        bx = dv.layout.px("tape", dv.cv.winfo_width(), dv.cv.winfo_height())     # 13n1: the tape's own box
         hdg = dv.items("hdg")
-        tape_w = (bx[2] - bx[0]) * 0.52
-        hdg_ok = bool(hdg) and abs((hdg[0]["r"][0] + hdg[0]["r"][2]) / 2 - (bx[0] + 4 + tape_w / 2)) < 1
+        hdg_ok = bool(hdg) and abs((hdg[0]["r"][0] + hdg[0]["r"][2]) / 2 - (bx[0] + bx[2]) / 2) < 1
         bar = [o for o in dv.items("thr") if o["k"] == "rect" and o.get("outline")]
         plim = dv.items("plim")
         plim_ok = bool(bar and plim) and abs(plim[0]["pts"][1] - (bar[0]["r"][1] + (bar[0]["r"][3] - bar[0]["r"][1]) *
@@ -504,6 +503,24 @@ def main():
         pump(0.2)
         fj.d[0]["buttons"] = 0
         thumb = got[-1:] == ["no2:rejected on the joystick"]
+        # 13p review M1: a question REPLACED by another one in the same callback = a new question for the shore
+        # stick (the 0.5 s guard + the YES pre-selection start again; the token is a serial, never id())
+        dv.ask("I25 old?", lambda why: got.append("yes_old"), lambda why: got.append("no_old"), 30.0)
+        pump(0.7)
+        fj.d[0]["axes"]["Y"] = 0.8                             # NO selected on the old question
+        pump(0.2)
+        fj.d[0]["axes"]["Y"] = 0.0
+        pump(0.1)
+        tok_old = app.open_question()[0]
+        dv.ask("I25 new?", lambda why: got.append("yes_new"), lambda why: got.append("no_new"), 30.0)
+        tok_new = app.open_question()[0]
+        pump(0.1)
+        fj.d[0]["buttons"] = 1                                 # 0.1 s after the new question: inside its guard
+        pump(0.15)
+        fj.d[0]["buttons"] = 0
+        pump(0.1)
+        replaced = tok_old != tok_new and dv.qsel and "yes_new" not in got and "no_new" not in got and             dv.question is not None and got[-1:] == ["no_old"]
+        dv.answer(False, why="done elsewhere")
         dv.ask("I25 mouse?", lambda why: got.append("yes3"), lambda why: got.append("no3"), 30.0)
         pump(0.1)
         dv.q_no.invoke()
@@ -521,11 +538,12 @@ def main():
                "pre-selected; trigger only after 0.5 s, stick Y selects, thumb REJECT, the answering trigger never sent "
                "to the boat; mouse + single-operator confirmation",
                low and vert and pre_yes and early_none and not early_pkt and no_sel and yes_again and accepted and
-               not held_pkt and free_pkt and thumb and mouse and cc_ok and not errors,
+               not held_pkt and free_pkt and thumb and mouse and cc_ok and replaced and not errors,
                "box y %d..%d of %d (low %s), vertical %s, YES pre-selected %s; trigger at 0.3 s: none %s, packet %s; "
                "stick back -> NO %s, forward -> YES %s; trigger -> %s; held packet %s, free press %s; thumb %s; "
-               "mouse %s; own confirmation %s" % (qy0, qy1, Hh, low, vert, pre_yes, early_none, early_pkt, no_sel,
-                                                  yes_again, got, held_pkt, free_pkt, thumb, mouse, cc))
+               "mouse %s; own confirmation %s; replaced question = new guard + YES %s" % (
+                   qy0, qy1, Hh, low, vert, pre_yes, early_none, early_pkt, no_sel, yes_again, got, held_pkt, free_pkt,
+                   thumb, mouse, cc, replaced))
 
         # I10 full-screen camera, every text inside its box in both languages, sizes
         import settings
@@ -554,9 +572,10 @@ def main():
         sz = {t: max([o["size"] for o in dv.items(t) if o["k"] == "text"] or [0]) for t in ("speed", "mode", "comm",
                                                                                            "wp", "steer")}
         report("I10 full-screen camera (fill = cover cropped evenly / fit = whole picture), every text inside its box "
-               "in Greek and English, speed > mode > communication > other texts",
+               "in Greek and English, the 3 sizes (13n1): speed / mode (very important) > communication (heading) >= other "
+               "texts (info)",
                f_ok and t_ok and not outside["el"] and not outside["en"] and
-               sz["speed"] > sz["mode"] > sz["comm"] > max(sz["wp"], sz["steer"]) and not errors,
+               sz["speed"] >= sz["mode"] > sz["comm"] >= max(sz["wp"], sz["steer"]) and not errors,   # 3 sizes (13n1)
                "window %dx%d, fill picture %s, fit picture %s; texts outside their box: el %s, en %s; sizes %s" % (
                    W_, H_, [round(v) for v in fills["fill"]], [round(v) for v in fills["fit"]], outside["el"][:3],
                    outside["en"][:3], sz))

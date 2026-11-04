@@ -1465,6 +1465,8 @@ def section_f():
         # F5 automatic SAVE from the AURIX: joystick takeover of HDG LOCK (TELEM2 SAVE request)
         link, w = rig.sim.station()
         n0 = rec.saves
+        # 13p review L5: count the AURIX events before - a stale one from an earlier test never passes F5
+        a0 = len([1 for _t, _f, e in rec.list_events() if e["triggers"][0].get("who") == "AURIX"])
         link.send(proto.T_SIM_BUTTON, proto.p_sim_button(proto.BTN_HDG_LOCK))
         hdg = w.until(lambda d: d["mode"] == 2, 5)
         link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.6, 0.0))
@@ -1472,9 +1474,10 @@ def section_f():
         # step 13p: the SAVE request reaches the recorder through the GATEWAY's own TELEM2 (its UART decode), which
         # can lag the direct sim link `w` under load (it failed twice in a full gate, before and with 13p, and passed
         # alone) - wait for the event itself, with a time limit
-        wait_for(lambda: rec.saves > n0 and any(e["triggers"][0].get("who") == "AURIX"
-                                                for _t, _f, e in rec.list_events()), 20)
+        wait_for(lambda: rec.saves > n0 and len([1 for _t, _f, e in rec.list_events()
+                                                 if e["triggers"][0].get("who") == "AURIX"]) > a0, 20)
         ae = [e for _t, _f, e in rec.list_events() if e["triggers"][0].get("who") == "AURIX"]
+        ae = ae if len(ae) > a0 else []
         txt = ae[-1]["triggers"][0]["text"] if ae else None
         link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
         report("F5 automatic SAVE from the boat: joystick takeover (TELEM2 SAVE request) -> event",

@@ -41,6 +41,11 @@
       telemetry / alarm rows / sound, reconnect = fresh alarms only
   S19 shore stick override (step 13q3): MANUAL STEERING - AUTO / HDG LOCK waiting, NEW HEADING, the lever
       ceiling, the AUTO data-lost stop on screens 2 + 1 (UNCREWED only)
+  S21 mode bar (step 13n1, owner 2026-10-31 E1): top centre, always drawn, the 7 modes + BATTLE SHORT, the
+      active one inverted, STANDBY the only red button, greyed = says why + sends nothing, MANUAL never from the PC
+  S22 the two bottom bars: their items, a sub-panel above bar 1, hide to a handle, dock top / bottom
+  S23 panels draggable (saved per PC, never over the boat), RESET TO DEFAULT
+  S24 BATTLE SHORT: opens from the mode bar, every code INVALID, nothing sent, the log line, the tooltip
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
@@ -65,6 +70,7 @@ os.environ.pop("TRYGONS_LANG", None)
 import i18n  # noqa: E402
 import theme  # noqa: E402
 import overlay  # noqa: E402
+import canvaspic  # noqa: E402
 import proto  # noqa: E402
 import app as A  # noqa: E402
 
@@ -251,6 +257,7 @@ def relay_boat(rig, on=(1, 6), unknown=(), pending=False, hash_ok=True, stop=Fal
 
 def no_relay_boat(rig):
     rig.ap.boat, rig.ap.boat_ok = None, False
+    rig.ap.sub_open = None                              # (fill_everything opened bar 1's ROUTE sub-panel)
     for k in RELAY_EXTRA:
         rig.extra.pop(k, None)
     rig.pump(0.3)
@@ -270,6 +277,7 @@ def fill_everything(rig):
                       for i in range(1, 7)]
     ap.route_dirty = True
     ap.maxkn_edit = 12
+    ap.sub_open = "route"                               # bar 1's ROUTE sub-panel open too (13n1)
     now = time.time()
     for st in ("wait", "ok", "no"):
         ap.decisions.append({"what": A.TE("what.geofence", n=5), "seq": st, "state": st, "t": now, "why": ""})
@@ -291,7 +299,7 @@ def s1_matrix(rig):
     bad = [c for c in cases if c[3]]
     report("S1 layout 1366x768 / 1920x1080 (+ maximised) at 100 / 125 / 150 %, Greek + English, every panel full: "
            "nothing clipped, STANDBY visible, the boat free, the logo under no panel",
-           not bad and all(c[2] == 7 for c in cases) and not rig.errors,
+           not bad and all(c[2] == 8 for c in cases) and not rig.errors,
            "%d layouts checked (text size factors %s); problems: %s; errors %s" % (
                len(cases), sorted({round(c[1], 2) for c in cases}), [(c[0], c[3][:3]) for c in bad][:4],
                rig.errors[:2]))
@@ -347,10 +355,13 @@ def s3_roles(rig):
         ap.gw_status = fake_gw(d, captain=cap, single_op=so, licence=lic)
         ap.single_op = so
         ap.render(force=True)
-        out[name] = ("btn_manual" in tags(ap), "btn_maneuver" in tags(ap), ap.manual_allowed())
+        en = {o["tag"]: o.get("enabled") for o in ap.ov.ops if o.get("k") == "button"}
+        out[name] = (bool(en.get("mode_REMOTE_MANUAL")), bool(en.get("mode_MANEUVER")), ap.manual_allowed())
     ap.single_op = False
     ap.gw_status = fake_gw(d)
-    ok = out["captain"] == (False, False, True) and out["copilot"] == (False, False, False) and \
+    # step 13n1 (owner 2026-10-31 C2 / E1): REMOTE / MANEUVER are on screen 2's mode bar too - pressable for the
+    # captain with the licence (or a licensed single operator), greyed for a copilot / without the licence
+    ok = out["captain"] == (True, True, True) and out["copilot"] == (False, False, False) and \
         out["single-op licensed"] == (True, True, True) and out["single-op no licence"][:2] == (False, False)
     # screen 1: the buttons for the captain with the licence
     ap.open_driver()
@@ -362,8 +373,9 @@ def s3_roles(rig):
     rig.pump(0.6)
     cop1 = not dv.has("drv_remote_req") and not dv.has("drv_maneuver_req")
     ap.gw_status = fake_gw(d)
-    report("S3 roles: screen 2 has no MANUAL / MANEUVER (captain or copilot) - only single-operator with the licence; "
-           "screen 1 has REMOTE MANUAL / MANEUVER for the captain with the licence, not for the copilot",
+    report("S3 roles: the mode bar's REMOTE / MANEUVER pressable for the captain with the licence (or a licensed "
+           "single operator), greyed for the copilot / without the licence; screen 1 has REMOTE MANUAL / MANEUVER for "
+           "the captain with the licence, not for the copilot",
            ok and cap1 and cop1, "screen 2 (manual, maneuver, screen-1 allowed): %s; screen 1 captain %s, copilot "
            "none %s" % (out, cap1, cop1))
 
@@ -697,7 +709,7 @@ ALLOWED = {"STANDBY", "AUTO", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG", "USB", 
            "Ctrl", "Shift", "Tab", "Esc", "Space", "x", "v", "on", "off", "lat", "lon", "WP", "Tools", "AURIX",
            "English", "png", "json", "txt", "tlg", "TLG", "CSV", "csv", "Not", "for", "navigation", "free", "data",
            "may", "be", "inaccurate", "near", "the", "coast", "GATEWAY", "FRONT-", "UART", "kHz", "python", "PWM",
-           "CPU", "alice", "bob", "DroneCAN", "Drones"}
+           "CPU", "alice", "bob", "DroneCAN", "Drones", "BATTLE", "SHORT"}
 
 
 def english_words(text):
@@ -840,7 +852,7 @@ def s12_alarms(rig):
 
 
 def s13_boat_line(rig):
-    """CLAUDE.md H: the status panel's FIRST line = the boat dropdown + the lamp; CONNECTED (green) only
+    """CLAUDE.md H: the status panel's FIRST line = the boat dropdown + the lamp; CONNECTED (white, 13n1) only
     when the boat's gateway was found by the prober AND the station is connected AND the welcome name
     check passed, otherwise grey; choosing a boat opens the login (then the confirm step) with that boat
     selected; the line fits in the S1 matrix."""
@@ -888,7 +900,7 @@ def s13_boat_line(rig):
     ap.link.connected = False
     out["link_down"] = line()
     ap.link.connected = True
-    G, grey = A.theme.GOOD, A.theme.C["head"]
+    G, grey = A.theme.CONNECTED[0], A.theme.C["head"]     # the "connected" lamp is WHITE (13n1)
     lit = {k: v[3] for k, v in out.items()}
     ok_states = lit["address"] == ("● " + A.T("ov.no_boat_check"), grey) and \
         lit["no_ip"] == ("● " + A.T("boat.st_no_ip"), grey) and lit["offline"] == ("● " + A.T("boat.st_offline"), grey) \
@@ -923,7 +935,7 @@ def s13_boat_line(rig):
         del ap.link.welcome
     srv.close()
     ap.render(force=True)
-    report("S13 boat dropdown = the status panel's first line + the lamp: CONNECTED (green) only when found + "
+    report("S13 boat dropdown = the status panel's first line + the lamp: CONNECTED (white, 13n1) only when found + "
            "connected + name check passed, else grey (offline / IP not set / checking / online / no boat check); "
            "choosing opens the login with the boat selected; fits the S1 matrix",
            ok_states and first_ok and not bad and chosen and len(labels) >= len(ap.boat_list) and not rig.errors,
@@ -1153,7 +1165,7 @@ def s15_dp(rig):
             A.T("dp.port") in st_txt and A.T("dp.sub_1") in status_txt and "123.0" in status_txt and \
             "dp_trip_cont" not in b and b["dp_spot"]["on"]
         c_jog = click("dp_jog_%d" % proto.DP_JOG_PORT)
-        hb = [o for o in ap.ov.ops if o.get("panel") == "control" and o["k"] == "button" and o.get("s") == "+10"]
+        hb = [o for o in ap.ov.ops if o.get("tag") == "hdg_+10" and o["k"] == "button"]     # bar 1 (13n1)
         c_hdg = []
         if hb:
             r = hb[0]["r"]
@@ -1217,7 +1229,7 @@ def s15_dp(rig):
                     if lang == "el" and W == 1920 and dpi == 1.0:
                         for o in ops() + [o for o in ap.ov.ops if o.get("panel") == "status"]:
                             greek_en += english_words(o.get("s", ""))
-    bad = [c for c in cases if c[2] or c[1] != 7]
+    bad = [c for c in cases if c[2] or c[1] != 8]          # (+ bar 1's ROUTE sub-panel, 13n1)
     i18n.set_lang("el", save=False)
     rig.size(1366, 768, 1.25)
     no_relay_boat(rig)
@@ -1356,7 +1368,7 @@ def s18_uncrewed_hdg(rig):
         rig.extra.update(profile=proto.PROFILE_UNCREWED, mode=proto.MODE_REMOTE, mode_name="REMOTE_MANUAL", helm=3)
         rig.pump(0.6)
         ap.render(force=True)
-        btn = [o for o in ap.ov.ops if o.get("k") == "button" and o.get("tag") == "btn_hdg"]
+        btn = [o for o in ap.ov.ops if o.get("k") == "button" and o.get("tag") == "mode_HDG_LOCK"]     # the mode bar
 
         def click():
             r = btn[0]["r"]
@@ -1371,8 +1383,8 @@ def s18_uncrewed_hdg(rig):
         rig.extra.update(profile=proto.PROFILE_CREWED)
         rig.pump(0.4)
         ap.render(force=True)
-        btn = [o for o in ap.ov.ops if o.get("k") == "button" and o.get("tag") == "btn_hdg"]
-        cr = click() if btn else ["no button"]
+        btn = [o for o in ap.ov.ops if o.get("k") == "button" and o.get("tag") == "mode_HDG_LOCK"]
+        cr = click() if btn and not btn[0]["enabled"] else ["no greyed button"]     # CREWED: greyed, says why
         # UNCREWED HDG LOCK running + the geofence alarm (WARNING, Greek)
         rig.extra.update(profile=proto.PROFILE_UNCREWED, mode=proto.MODE_STANDBY, mode_name="STANDBY",
                          alarm_bits2=0x80, alarm=True)
@@ -1671,6 +1683,260 @@ def s16_silence(rig):
 
 
 
+def ev_at(r):
+    return type("E", (), {"x": (r[0] + r[2]) / 2, "y": (r[1] + r[3]) / 2})()
+
+
+def click_r(ap, r, dx=0, dy=0):
+    e0 = ev_at(r)
+    ap.cv_press(e0)
+    if dx or dy:
+        for k in range(1, 6):
+            ap.cv_motion(type("E", (), {"x": e0.x + dx * k / 5.0, "y": e0.y + dy * k / 5.0})())
+    ap.cv_release(type("E", (), {"x": e0.x + dx, "y": e0.y + dy})())
+
+
+def op(ap, tag):
+    o = [x for x in ap.ov.ops if x.get("tag") == tag]
+    return o[0] if o else None
+
+
+def s21_mode_bar(rig):
+    """Step 13n1 (owner 2026-10-31 E1): the MODE BAR - top centre, always drawn (also every panel collapsed), never
+    hideable: STANDBY HDG LOCK AUTO REMOTE MANEUVER DP MANUAL · BATTLE SHORT; the active mode inverted (white fill,
+    larger); STANDBY the only red button; not allowed = grey, a click says why and sends nothing; MANUAL never from
+    the PC; AUTO greyed without a route, a click on it with a route = AUTO START; STANDBY always sends."""
+    ap = rig.ap
+    rig.gateway_like(True)
+    ap.gw_status = fake_gw(ap.t)
+    rig.size(1366, 768, 1.25)
+    sent = []
+    orig = ap.cmd
+    ap.cmd = lambda f, p, w: sent.append((f, p))
+    try:
+        rig.extra.update(mode=proto.MODE_STANDBY, mode_name="STANDBY", prog_ok=False, profile=proto.PROFILE_CREWED)
+        rig.pump(0.5)
+        ap.render(force=True)
+        names = ["mode_" + n for n, _m in A.App.MODE_BAR]
+        ops = [op(ap, t) for t in names] + [op(ap, "battle_short")]
+        drawn = all(ops)
+        W, H = ap.cv.winfo_width(), ap.cv.winfo_height()
+        xs = [o["r"][0] for o in ops if o]
+        order = xs == sorted(xs)
+        top = all(o["r"][1] < H * 0.12 for o in ops if o)
+        cx = (ops[0]["r"][0] + ops[-1]["r"][2]) / 2 if drawn else 0
+        centred = abs(cx - W / 2) < W * 0.05
+        act = op(ap, "mode_STANDBY")
+        inverted = act["on"] and act["fill"].lower() == A.theme.WHITE.lower() and \
+            act["r"][3] - act["r"][1] > op(ap, "mode_AUTO")["r"][3] - op(ap, "mode_AUTO")["r"][1]
+        reds = [o["tag"] for o in ap.ov.ops if o.get("k") == "button" and str(o.get("fill", "")).lower() ==
+                A.theme.WARN.lower()]
+        only_red = reds == ["standby"]                # (the active STANDBY on the bar is white = inverted)
+        auto_grey = not op(ap, "mode_AUTO")["enabled"]
+        manual_grey = not op(ap, "mode_MANUAL")["enabled"]
+        ap.msg_text = ""
+        click_r(ap, op(ap, "mode_AUTO")["r"])
+        why = A.T("mb.why_no_route") in (ap.msg_text or "") and not sent
+        click_r(ap, op(ap, "mode_MANUAL")["r"])
+        why_man = A.T("mb.why_manual") in (ap.msg_text or "") and not sent
+        rig.extra.update(prog_ok=True)
+        rig.pump(0.4)
+        ap.render(force=True)
+        click_r(ap, op(ap, "mode_AUTO")["r"])
+        auto_sent = sent == [(proto.T_AUTO_START, b"")]
+        sent.clear()
+        click_r(ap, op(ap, "mode_STANDBY")["r"])
+        sb_sent = sent == [(proto.T_SET_MODE, proto.p_set_mode(proto.MODE_STANDBY))]
+        sent.clear()
+        # every panel collapsed: the mode bar stays; it has no hide handle
+        for p in list(ap.ov.panels):
+            ap.ov.collapsed.add(p.key)
+        ap.render(force=True)
+        stays = all(op(ap, t) for t in names)
+        ap.ov.collapsed.clear()
+        ap.render(force=True)
+        # in AUTO: AUTO inverted, STANDBY red
+        rig.extra.update(mode=proto.MODE_AUTO, mode_name="AUTO")
+        rig.pump(0.4)
+        ap.render(force=True)
+        auto_on = op(ap, "mode_AUTO")["on"] and op(ap, "mode_STANDBY")["fill"].lower() == A.theme.WARN.lower()
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots:
+            canvaspic.save(ap.cv, os.path.join(shots, "screen2_modebar_el.png"))     # (the canvas itself: no desktop needed)
+            ap.open_driver()                            # screen 1's ONE bottom bar + the heading tape above it
+            dv = ap.driver
+            dv.w.geometry("1600x900+0+0")
+            rig.pump(1.5)
+            if dv.last_frame is not None:
+                dv.last_frame.save(os.path.join(shots, "driver_bottom_bar_el.png"))
+            ap.close_driver()
+        fits = not layout_problems(ap)
+    finally:
+        ap.cmd = orig
+        rig.extra.update(mode=proto.MODE_STANDBY, mode_name="STANDBY")
+        for k in ("prog_ok", "profile"):
+            rig.extra.pop(k, None)
+        rig.pump(0.3)
+    report("S21 mode bar (13n1): top centre, the 7 modes + BATTLE SHORT in order, always drawn, active inverted + "
+           "larger, STANDBY the only red button, greyed = a click says why + nothing sent, MANUAL never from the PC, "
+           "AUTO with a route = AUTO START, STANDBY always", drawn and order and top and centred and inverted and
+           only_red and auto_grey and manual_grey and why and why_man and auto_sent and sb_sent and stays and
+           auto_on and fits and not rig.errors,
+           "drawn %s order %s top %s centred %s inverted %s red %s; AUTO grey %s MANUAL grey %s; why %s / %s; AUTO "
+           "sent %s; STANDBY sent %s; stays collapsed %s; AUTO lit %s; fits %s; errors %s" % (
+               drawn, order, top, centred, inverted, reds, auto_grey, manual_grey, why, why_man, auto_sent, sb_sent,
+               stays, auto_on, fits, rig.errors[:2]))
+
+
+def s22_bars(rig):
+    """Step 13n1: the TWO thin full-width bars at the bottom (between STANDBY and the logo): bar 1 heading -10 -1
+    value +1 +10, AUTO pause / resume / skip, ROUTE, MAX SPEED, GEOFENCE; bar 2 nearest ship + CPA, messages, zoom,
+    BOAT, TOOLS, Aa, RESET. ROUTE opens its sub-panel just above the bar (again = closed); a bar hides to its handle
+    (STANDBY stays); the bars move to the top (under the mode bar) and back."""
+    ap = rig.ap
+    rig.gateway_like(True)
+    ap.gw_status = fake_gw(ap.t)
+    rig.size(1366, 768, 1.0)
+    sent = []
+    orig = ap.cmd
+    ap.cmd = lambda f, p, w: sent.append((f, p))
+    import settings
+    try:
+        ap.sub_open = None
+        ap.render(force=True)
+        b1, b2 = op(ap, "bar1"), op(ap, "bar2")
+        sb, lg = op(ap, "standby"), op(ap, "logo")
+        W, H = ap.cv.winfo_width(), ap.cv.winfo_height()
+        placed = b1 and b2 and b1["r"][3] <= b2["r"][1] and b2["r"][3] >= H - 20 and b1["r"][0] >= sb["r"][2] and \
+            b1["r"][2] <= lg["r"][0] and b1["r"][2] - b1["r"][0] > W * 0.55
+        t1 = ["hdg_-10", "hdg_-1", "hdg_value", "hdg_+1", "hdg_+10", "auto_pause", "auto_resume", "auto_skip",
+              "b_route", "b_maxkn", "b_fence"]
+        t2 = ["nearest", "message", "bar", "bar_boat", "text_size", "reset_layout"]
+        in1 = all(op(ap, t) and overlay.inside(op(ap, t)["r"], b1["r"], 1.5) for t in t1)
+        in2 = all(op(ap, t) and overlay.inside(op(ap, t)["r"], b2["r"], 1.5) for t in t2)
+        near = A.T("ov.nearest", name="X", nm="0", cpa="0").split(":")[0] in op(ap, "nearest")["s"]
+        click_r(ap, op(ap, "hdg_+10")["r"])
+        hdg = sent == [(proto.T_HEADING_ADJ, proto.p_heading(10))]
+        sent.clear()
+        click_r(ap, op(ap, "b_route")["r"])
+        sp = [p for p in ap.ov.panels if p.key == "sub_route"]
+        sub_ok = bool(sp) and sp[0].r[3] <= op(ap, "bar1")["r"][1] + 1 and sp[0].r[0] < W * 0.3
+        click_r(ap, op(ap, "b_route")["r"])
+        sub_closed = not [p for p in ap.ov.panels if p.key == "sub_route"]
+        click_r(ap, op(ap, "bar1_hide")["r"])
+        hidden = op(ap, "hdg_+10") is None and op(ap, "bar1") is not None and op(ap, "standby") is not None and \
+            1 in ap.bars_cfg()["hidden"]
+        click_r(ap, op(ap, "bar1_hide")["r"])
+        shown = op(ap, "hdg_+10") is not None
+        click_r(ap, op(ap, "bar_dock")["r"])
+        mb = op(ap, "mode_STANDBY")
+        top = settings.get("s2_bars")["dock"] == "top" and op(ap, "bar1")["r"][1] >= mb["r"][1] and \
+            op(ap, "bar2")["r"][3] < H * 0.3 and op(ap, "standby") is not None
+        fits_top = not layout_problems(ap)
+        click_r(ap, op(ap, "bar_dock")["r"])
+        back = settings.get("s2_bars")["dock"] == "bottom" and op(ap, "bar2")["r"][3] >= H - 20
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots:
+            ap.sub_open = "route"
+            ap.render(force=True)
+            canvaspic.save(ap.cv, os.path.join(shots, "screen2_bars_el.png"))     # (the canvas itself: no desktop needed)
+            ap.sub_open = None
+            ap.render(force=True)
+        fits = not layout_problems(ap)
+    finally:
+        ap.cmd = orig
+        settings.put("s2_bars", {"hidden": [], "dock": "bottom"})
+        ap.sub_open = None
+    report("S22 bars (13n1): bar 1 + bar 2 full width between STANDBY and the logo with their items, heading +10 "
+           "sent, ROUTE sub-panel above the bar (again = closed), a bar hides to its handle (STANDBY stays), dock top "
+           "and back", placed and in1 and in2 and near and hdg and sub_ok and sub_closed and hidden and shown and
+           top and fits_top and back and fits and not rig.errors,
+           "placed %s; bar 1 items %s; bar 2 items %s; nearest %s; +10 %s; sub-panel %s / closed %s; hide %s / show "
+           "%s; top %s (fits %s); back %s; fits %s; errors %s" % (
+               placed, in1, in2, near, hdg, sub_ok, sub_closed, hidden, shown, top, fits_top, back, fits,
+               rig.errors[:2]))
+
+
+def s23_drag(rig):
+    """Step 13n1: a panel header DRAGGED moves the panel (saved per PC), never over the boat (pushed sideways), a
+    header click without moving still collapses; RESET TO DEFAULT = every panel back in its column + open."""
+    ap = rig.ap
+    import settings
+    rig.size(1366, 768, 1.0)
+    ap.render(force=True)
+    W, H = ap.cv.winfo_width(), ap.cv.winfo_height()
+    tp = [p for p in ap.ov.panels if p.key == "traffic"][0]
+    r0 = tp.r
+    head = (r0[0], r0[1], r0[2], r0[1] + tp.head_h)
+    click_r(ap, head, dx=-(r0[0] - W * 0.25), dy=-(r0[1] - H * 0.15))
+    tp = [p for p in ap.ov.panels if p.key == "traffic"][0]
+    moved = abs(tp.r[0] - r0[0]) > 50 and "traffic" not in ap.ov.collapsed
+    saved = "traffic" in (settings.get("s2_panel_pos") or {})
+    # drag onto the boat: pushed out of the keep-out circle
+    r1 = tp.r
+    click_r(ap, (r1[0], r1[1], r1[2], r1[1] + tp.head_h), dx=W / 2 - (r1[0] + r1[2]) / 2, dy=H / 2 - r1[1])
+    tp = [p for p in ap.ov.panels if p.key == "traffic"][0]
+    free = not overlay.rect_hits_circle(tp.r, ap.mapwin.keepout(W, H))
+    # a click on a header without moving = collapse
+    st = [p for p in ap.ov.panels if p.key == "status"][0]
+    click_r(ap, (st.r[0], st.r[1], st.r[2], st.r[1] + st.head_h))
+    coll = "status" in ap.ov.collapsed
+    ap.reset_layout()
+    tp = [p for p in ap.ov.panels if p.key == "traffic"][0]
+    reset = not ap.ov.pos and not ap.ov.collapsed and not settings.get("s2_panel_pos") and \
+        tp.r[2] > W - 30 and not layout_problems(ap)
+    report("S23 panels draggable (13n1): a dragged header moves the panel + saved per PC, never over the boat, a "
+           "click still collapses, RESET TO DEFAULT puts everything back", moved and saved and free and coll and
+           reset and not rig.errors,
+           "moved %s (%s -> %s) saved %s; boat free %s; click collapses %s; reset %s; errors %s" % (
+               moved, [int(v) for v in r0], [int(v) for v in tp.r], saved, free, coll, reset, rig.errors[:2]))
+
+
+def s24_battle_short(rig):
+    """Step 13n1: BATTLE SHORT on the mode bar opens the window; any code = INVALID, nothing is sent to the boat /
+    the gateway, nothing changes; the station log line "battle short attempt"; the tooltip on hover."""
+    ap = rig.ap
+    rig.gateway_like(True)
+    rig.size(1366, 768, 1.0)
+    ap.render(force=True)
+    sent = []
+    orig = (ap.cmd, ap._send_cmd, ap.link.send_msg, ap.link.send)
+    ap.cmd = lambda *a, **k: sent.append(("cmd", a))
+    ap._send_cmd = lambda *a, **k: sent.append(("send_cmd", a))
+    ap.link.send_msg = lambda *a, **k: sent.append(("msg", a))
+    ap.link.send = lambda *a, **k: sent.append(("send", a)) or 0
+    try:
+        b = op(ap, "battle_short")
+        e = ev_at(b["r"])
+        ap.cv_hover(e)
+        tip = op(ap, "bs_tooltip")
+        tip_ok = tip is not None and tip["s"] == A.T("mb.tooltip")
+        click_r(ap, b["r"])
+        w = getattr(ap, "bs_win", None)
+        opened = w is not None and w.alive()
+        mode0 = ap.t["mode"]
+        for code in ("", "1234", "BATTLE SHORT", "9" * 64):
+            w.var.set(code)
+            w.authorise()
+        rig.pump(0.8)
+        refused = w.msg.cget("text") == A.T("bs.invalid") and w.attempts == 4
+        logged = sum(1 for t in ap.ev_texts() if t == "battle short attempt") >= 4
+        # (the station's own periodic traffic - heartbeat, the screen-1 beat - is not BATTLE SHORT's)
+        sent = [x for x in sent if not (x[0] == "send" and x[1][:1] == (proto.T_HEARTBEAT,)) and
+                not (x[0] == "msg" and (x[1][0] or {}).get("t") == "driver")]
+        nothing = not sent and ap.t["mode"] == mode0
+        w.close()
+        rig.pump(0.2)
+        closed = not w.alive()
+        ap.cv_hover(type("E", (), {"x": 5, "y": 5})())
+    finally:
+        ap.cmd, ap._send_cmd, ap.link.send_msg, ap.link.send = orig
+    report("S24 BATTLE SHORT (13n1): opens from the mode bar, every code INVALID, nothing sent / changed, the log "
+           "line, the tooltip", tip_ok and opened and refused and logged and nothing and closed and not rig.errors,
+           "tooltip %s; opened %s; refused %s; logged %s; nothing sent %s (%s); closed %s; errors %s" % (
+               tip_ok, opened, refused, logged, nothing, sent[:2], closed, rig.errors[:2]))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
@@ -1680,7 +1946,7 @@ def main():
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
                    s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg, s19_override, s20_slam_restore,
-                   s16_silence):
+                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s16_silence):
             try:
                 fn(rig)
             except Exception as e:

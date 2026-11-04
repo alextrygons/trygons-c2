@@ -87,7 +87,6 @@ tour.s2_control = control
 tour.s2_standby = STANDBY
 tour.s2_traffic = traffic (AIS)
 tour.s2_logo = logo
-tour.s2_mapbar = map bar
 
 # --- step 18: simulator lessons (spec C) + quizzes (spec D)
 acc.lessons = Simulator lessons
@@ -416,3 +415,7 @@ acc.sim3d = 3D simulator
 # step 13i: Help -> About
 menu.help = Help
 menu.about = About Trygons C2
+tour.s2_modebar = mode bar
+tour.s2_battle_short = BATTLE SHORT
+tour.s2_bar1 = bar 1
+tour.s2_bar2 = bar 2

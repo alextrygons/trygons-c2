@@ -493,6 +493,8 @@ class DriverScreen:
             self.ar_menu(ev)
         elif act == "vis_overlay":
             self.toggle_overlay()
+        elif act == "text_size":
+            theme.cycle_text_size()             # "Aa" (13n1): every window of this station
         elif act == "vision_clear":
             a.vision_send({"t": "vision_clear"})
         elif act == "slam_restore":
@@ -530,9 +532,6 @@ class DriverScreen:
         m.add_checkbutton(label=T("hud.vis_overlay"), variable=vo, command=self.toggle_overlay)
         m.add_command(label=T("hud.vis_opacity", pc=(25, 50, 75)[(self.vis_opacity + 1) % 3]),
                       command=self.next_opacity)
-        m.add_separator()
-        for col in hud.HUD_COLOURS:
-            m.add_command(label=T("hud.colour_" + col), command=lambda col=col: settings.put("hud_colour", col))
         x = ev.x_root if ev is not None and hasattr(ev, "x_root") else self.w.winfo_rootx() + 100
         y = ev.y_root if ev is not None and hasattr(ev, "y_root") else self.w.winfo_rooty() + 100
         try:
@@ -599,6 +598,9 @@ class DriverScreen:
         if self.question:                       # one at a time: the older one is rejected
             self.answer(False, why="replaced by a newer request")
         self.question = (text, on_yes, on_no, time.time() + timeout_s)
+        # a serial number per question (13p review M1): app.open_question's token; id() of the tuple could be
+        # reused by CPython when one question replaces another in the same callback
+        self.qserial = getattr(self, "qserial", 0) + 1
         self.qtag = tag
         self.qshown = time.time()
         self.qhead.configure(text=head or T("drv.head_captain"))
@@ -698,7 +700,8 @@ class DriverScreen:
                          night=bool(settings.get("night")), declutter=settings.get("declutter") or "FULL",
                          hud_colour=settings.get("hud_colour") or "green",
                          video_scale=settings.get("video_scale") or "fill",
-                         ar_on=any((settings.get("ar") or {}).values()), have_charts=bool(a.charts))
+                         ar_on=any((settings.get("ar") or {}).values()), have_charts=bool(a.charts),
+                         vis_overlay=self.vis_overlay)
         s["age_s"] = now - a.t_rx if a.t_rx else None
         s["not_connected"] = a.link is None                    # no boat: "not connected", never an alarm (13m)
         me = [st for st in gw.get("stations", []) if st.get("id") == gw.get("you")]
@@ -1047,6 +1050,13 @@ class DriverScreen:
             col = theme.WARN if o.get("in_corridor") else theme.YELLOW
             r = (x0 + bx[0] * iw, y0 + bx[1] * ih, x0 + bx[2] * iw, y0 + bx[3] * ih)
             out.append({"k": "rect", "r": r, "tag": "vbox", "fill": None, "outline": col, "w": 3, "alpha": 255})
+            # the small framed white "AI" tag on every obstacle box (13n1: a neural network found it)
+            ar = (r[2] - 22, r[1], r[2], r[1] + 14)
+            out.append({"k": "rect", "r": ar, "tag": "vbox_ai", "fill": theme.AI_BADGE["fill"], "outline": theme.BLACK,
+                        "w": 1, "alpha": 235})
+            out.append({"k": "text", "xy": ((ar[0] + ar[2]) / 2, (ar[1] + ar[3]) / 2), "tag": "vbox_ai", "size": 10,
+                        "bold": True, "fill": theme.AI_BADGE["fg"], "anchor": "c", "max_w": None, "box": None,
+                        "s": theme.AI_BADGE["text"]})
             out.append({"k": "text", "xy": (r[0], r[1] - 4), "tag": "vbox", "size": 14, "bold": True, "fill": col,
                         "anchor": "sw", "max_w": None, "box": None,
                         "s": T("drv.obstacle", brg="%03.0f" % o["bearing"],

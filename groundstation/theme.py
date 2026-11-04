@@ -34,17 +34,61 @@ MONO = "Consolas"
 FONT_FILES = {False: ("segoeui.ttf", "DejaVuSans.ttf", "arial.ttf"),        # the Pillow renderer (HUD)
               True: ("segoeuib.ttf", "DejaVuSans-Bold.ttf", "arialbd.ttf")}
 LEVELS = ("title", "value", "label", "button", "small")
-PT = {"title": 16, "value": 14, "label": 11, "button": 11, "small": 9, "huge": 24, "code": 36}
+# ONLY 3 text sizes everywhere (step 13n1, owner 2026-10-31 E1): very important / heading / info. The old level
+# names stay as the callers' words; each one is one of the three sizes.
+SIZES = ("important", "heading", "info")
+SIZE_OF = {"title": "important", "huge": "important", "code": "important", "value": "heading", "label": "info",
+           "button": "info", "small": "info"}
+PT_SIZE = {"important": 16, "heading": 13, "info": 10}
+PX_SIZE = {"important": 24, "heading": 18, "info": 14}           # drawn text at a 1920 x 1080 window
+MIN_PX_SIZE = {"important": 15, "heading": 12, "info": 10}
+PT = {lv: PT_SIZE[SIZE_OF[lv]] for lv in SIZE_OF}
 BOLD = {"title": True, "value": True, "label": False, "button": True, "small": False, "huge": True, "code": True}
-# drawn text in pixels at a 1920 x 1080 window (scaled with the window, never below MIN_PX)
-PX = {"title": 24, "value": 19, "label": 15, "button": 15, "small": 13, "huge": 30}
-MIN_PX = {"title": 15, "value": 13, "label": 11, "button": 11, "small": 10, "huge": 17}
+PX = {lv: PX_SIZE[SIZE_OF[lv]] for lv in SIZE_OF}
+MIN_PX = {lv: MIN_PX_SIZE[SIZE_OF[lv]] for lv in SIZE_OF}
+# the text-size setting of every window ("Aa": small / normal / large, saved per PC = settings "text_size")
+TEXT_SIZES = ("small", "normal", "large")
+TEXT_SCALE = {"small": 0.85, "normal": 1.0, "large": 1.2}
+
+
+def text_size():
+    t = settings.get("text_size") or "normal"
+    return t if t in TEXT_SCALE else "normal"
+
+
+def text_scale():
+    return TEXT_SCALE[text_size()]
+
+
+_size_listeners = []
+
+
+def on_text_size(fn):
+    """fn(ratio) after an "Aa" change (ratio = new / old scale): every window resizes its text."""
+    _size_listeners.append(fn)
+
+
+def set_text_size(t):
+    if t not in TEXT_SCALE or t == text_size():
+        return
+    ratio = TEXT_SCALE[t] / text_scale()
+    settings.put("text_size", t)
+    for fn in list(_size_listeners):
+        try:
+            fn(ratio)
+        except Exception:               # a closed window: forget it
+            _size_listeners.remove(fn)
+
+
+def cycle_text_size():
+    """The "Aa" button: small -> normal -> large -> small."""
+    set_text_size(TEXT_SIZES[(TEXT_SIZES.index(text_size()) + 1) % len(TEXT_SIZES)])
 
 
 def font(level="label", bold=None, mono=False):
-    """A tk font for widgets: (family, points, weight). Points follow the Windows scaling."""
+    """A tk font for widgets: (family, points, weight). Points follow the Windows scaling + the "Aa" setting."""
     b = BOLD.get(level, False) if bold is None else bold
-    return (MONO if mono else FAMILY, PT.get(level, PT["label"]), "bold" if b else "normal")
+    return (MONO if mono else FAMILY, int(round(PT.get(level, PT["label"]) * text_scale())), "bold" if b else "normal")
 
 
 def unit(W, H):
@@ -53,8 +97,30 @@ def unit(W, H):
 
 
 def px(level, W, H, k=1.0):
-    """A drawn font size in pixels for a W x H window; k = Windows scaling (dpi_factor) x fit factor."""
-    return int(round(max(MIN_PX.get(level, 10), PX.get(level, 15) * unit(W, H) * k)))
+    """A drawn font size in pixels for a W x H window; k = Windows scaling (dpi_factor) x fit factor; x "Aa"."""
+    return int(round(max(MIN_PX.get(level, 10), PX.get(level, 15) * unit(W, H) * k * text_scale())))
+
+
+def rescale_tree(widget, ratio):
+    """After an "Aa" change: every tk widget's font in this window x ratio (the window keeps working)."""
+    import tkinter.font as tkf
+    stack = [widget]
+    while stack:
+        w = stack.pop()
+        try:
+            f = w.cget("font")
+            if f:
+                a = tkf.Font(root=w, font=f).actual()
+                size = a["size"]
+                new = int(round(size * ratio)) if size > 0 else -int(round(-size * ratio))
+                if new != size and new != 0:
+                    w.configure(font=(a["family"], new, a["weight"]))
+        except Exception:
+            pass
+        try:
+            stack.extend(w.winfo_children())
+        except Exception:
+            pass
 
 
 def tkfont(level, size_px, bold=None, mono=False):
@@ -64,9 +130,11 @@ def tkfont(level, size_px, bold=None, mono=False):
 
 
 def hud_sizes(H):
-    """The HUD's text sizes (pixels) for a window H high: big (speed), mode, comm, norm, small."""
-    return {"big": max(18, int(H * 0.075)), "mode": max(16, int(H * 0.050)), "comm": max(12, int(H * 0.030)),
-            "norm": max(11, int(H * 0.022)), "small": max(9, int(H * 0.0175))}
+    """The HUD's text sizes (pixels) for a window H high - the SAME 3 sizes (13n1): very important (speed, mode),
+    heading (channel / latency / power, normal lines), info (small labels); x the "Aa" setting."""
+    k = text_scale()
+    imp, head, info = max(16, int(H * 0.060 * k)), max(11, int(H * 0.022 * k)), max(9, int(H * 0.0175 * k))
+    return {"big": imp, "mode": imp, "comm": head, "norm": head, "small": info}
 
 
 # --- colours: meaning (identical everywhere) ----------------------------------------------------------
@@ -106,24 +174,35 @@ FROZEN = "#c00000"          # VIDEO FROZEN box
 THEMES = {
     "dark": {"bg": "#0e141b", "panel": "#101a24", "head": "#182634", "line": "#2c3e50", "fg": "#e6edf3",
              "dim": "#8fa3b5", "faint": "#5b6d7e", "accent": "#4aa8ff", "btn": "#22313f", "btn_fg": "#e6edf4",
-             "btn_active": "#2f4457", "btn_ok": "#1f5a32", "btn_no": "#6a2020", "btn_info": "#1f3f66",
-             "btn_warn": "#6a5010", "btn_sim": "#4a4020", "entry": "#0a1016", "entry_fg": "#f0f4f8",
-             "sel": "#2a6aa0", "row_danger": "#601010", "row_warn": "#504000", "row_stale": "#707070",
-             "ok_txt": "#5be07a", "bad_txt": "#ff6b6b", "note_txt": "#ffcc55", "lit": "#2d8a4a",
+             "btn_active": "#2f4457", "btn_ok": "#1f5a32", "btn_no": "#3a4048", "btn_info": "#1f3f66",
+             "btn_warn": "#5a4a18", "btn_sim": "#4a4020", "entry": "#0a1016", "entry_fg": "#f0f4f8",
+             "sel": "#2a6aa0", "row_danger": "#5a3a00", "row_warn": "#504000", "row_stale": "#707070",
+             "ok_txt": "#5be07a", "bad_txt": "#ffa040", "note_txt": "#ffcc55", "lit": "#2d8a4a",
              "plot_grid": "#34495e", "plot_line": "#e6edf2", "plot_target": "#4aa8fe", "plot_outboard": "#ff9a30",
-             "prof_ok": "#2a5f80", "prof_bad": "#a04040", "prof_bg": "#0b1219", "map": "dark"},
+             "prof_ok": "#2a5f80", "prof_bad": "#8a6020", "prof_bg": "#0b1219", "map": "dark"},
     "light": {"bg": "#f2f4f7", "panel": "#ffffff", "head": "#e4e9ef", "line": "#b8c2cc", "fg": "#101820",
               "dim": "#5a6b7b", "faint": "#93a1ae", "accent": "#0050c0", "btn": "#e2e7ec", "btn_fg": "#101821",
-              "btn_active": "#cfd8e0", "btn_ok": "#b8f0c4", "btn_no": "#ffc4c4", "btn_info": "#c8dcff",
+              "btn_active": "#cfd8e0", "btn_ok": "#b8f0c4", "btn_no": "#d4d8de", "btn_info": "#c8dcff",
               "btn_warn": "#ffe6a0", "btn_sim": "#fff4c0", "entry": "#fdfdfd", "entry_fg": "#000000",
-              "sel": "#9cc4ff", "row_danger": "#ffb0b0", "row_warn": "#fff0a0", "row_stale": "#888888",
-              "ok_txt": "#007a00", "bad_txt": "#d00000", "note_txt": "#a06000", "lit": "#7de07d",
+              "sel": "#9cc4ff", "row_danger": "#ffd8a0", "row_warn": "#fff0a0", "row_stale": "#888888",
+              "ok_txt": "#007a00", "bad_txt": "#b05000", "note_txt": "#a06000", "lit": "#7de07d",
               "plot_grid": "#d0d0d0", "plot_line": "#000001", "plot_target": "#0033cc", "plot_outboard": "#ff8c00",
-              "prof_ok": "#b0d8f0", "prof_bad": "#ffb0b0", "prof_bg": "#fafafa", "map": "day"},
+              "prof_ok": "#b0d8f0", "prof_bad": "#ffe0b0", "prof_bg": "#fafafa", "map": "day"},
 }
 # how much of the map / video shows through (0 = solid): the screen 2 panels and the HUD panels
 ALPHA = {"panel": 0.80, "panel_light": 0.84, "hud_panel": 0.55, "hud_panel_night": 0.73, "banner": 0.92}
-BUTTON = {"radius": 0.22, "pad_x": 0.70, "height": 1.85, "border": 1}      # x the button font size
+# A SQUARE frame around everything that can be pressed or typed into (13n1, owner 2026-10-31 E1): radius 0
+BUTTON = {"radius": 0.0, "pad_x": 0.70, "height": 1.85, "border": 2}       # x the button font size
+FRAME = 2                           # px: the square frame of a button / entry field
+# the colour code (13n1): red = alarms (WARNING) only, amber = CAUTION, STANDBY = the ONLY red button; on the
+# camera video (screen 1 HUD) every information GREEN; elsewhere information black or white by the background;
+# the "connected" lamp white; NIGHT = the dim red (NIGHT below)
+CONNECTED = ("#ffffff", "#000000")  # the "connected" lamp: fill, its text
+# the "AI" badge (13n1): a small framed white "AI" ONLY where a neural network works (vision eWaSR, the Piper
+# voice) - never on collision avoidance / the autopilot / the shallow-water checks
+AI_BADGE = {"fill": "#ffffff", "fg": "#000000", "text": "AI"}
+# BATTLE SHORT (13n1, display only): the grey bold button with black / yellow hazard stripes
+HAZARD = {"grey": "#8a8a8a", "black": "#000000", "yellow": "#ffd000", "red": "#d00000", "bg": "#120000"}
 PANEL = {"radius": 8, "border": 1, "pad": 0.55, "gap": 0.35}                # pad / gap x the label font size
 LOGO_H = (0.045, 26, 64)            # logo height: fraction of the window height, min px, max px
 
@@ -234,6 +313,9 @@ def style_tree(widget):
                         opts["activebackground"] = C["bg"]
                     opts["activeforeground"] = C["fg"]
             elif cls in ("Entry", "Spinbox", "Listbox", "Text"):
+                if cls in ("Entry", "Spinbox"):         # a square frame around a field to type into (13n1)
+                    opts["relief"] = "solid"
+                    opts["bd"] = 1
                 if sys_("bg"):
                     opts["bg"] = C["entry"]
                 if sys_("fg"):
@@ -285,8 +367,8 @@ def button_opts(kind="normal", level="button"):
     bg = {"normal": C["btn"], "ok": C["btn_ok"], "no": C["btn_no"], "info": C["btn_info"], "warn": C["btn_warn"],
           "sim": C["btn_sim"], "standby": WARN}.get(kind, C["btn"])
     return {"bg": bg, "fg": "#ffffff" if kind == "standby" else C["btn_fg"], "activebackground": C["btn_active"],
-            "activeforeground": C["btn_fg"], "font": font(level), "relief": "flat", "bd": 0,
-            "highlightthickness": BUTTON["border"], "highlightbackground": C["line"], "padx": 10, "pady": 4,
+            "activeforeground": C["btn_fg"], "font": font(level), "relief": "solid", "bd": 1,
+            "highlightthickness": BUTTON["border"] - 1, "highlightbackground": C["fg"], "padx": 10, "pady": 4,
             "cursor": "hand2"}
 
 
@@ -302,6 +384,13 @@ def yn_opts(yes, selected, level="button"):
         o.update({"bg": C["panel"], "fg": C["fg"], "highlightthickness": 3, "highlightbackground": col,
                   "highlightcolor": col, "relief": "solid", "bd": 3})
     return o
+
+
+def ai_badge(parent, bg=None):
+    """The small framed white "AI" badge as a tk Label (13n1): ONLY where a neural network works."""
+    import tkinter as tk
+    return tk.Label(parent, text=AI_BADGE["text"], font=font("small", bold=True), bg=AI_BADGE["fill"],
+                    fg=AI_BADGE["fg"], relief="solid", bd=1, padx=3, pady=0)
 
 
 def label_opts(level="label", dim=False):

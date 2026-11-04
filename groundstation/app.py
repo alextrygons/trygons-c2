@@ -343,8 +343,11 @@ class App:
         self.cv = tk.Canvas(root, highlightthickness=0, bg=C["bg"], cursor="crosshair")
         self.cv.pack(fill="both", expand=True)
         self.mapwin = mapwin.MapView(self, self.cv)
-        self.ov = overlay.Overlay(self.cv, settings.get("s2_collapsed") or [])
+        self.ov = overlay.Overlay(self.cv, settings.get("s2_collapsed") or [], settings.get("s2_panel_pos") or {})
         self.ov.on_collapse = self.collapse_changed
+        self.ov.on_move = self.positions_changed       # a dragged panel stays where it was left (13n1)
+        self.sub_open = None                           # the bar-1 sub-panel open now (ROUTE / MAX SPEED / GEOFENCE)
+        theme.on_text_size(self.text_size_changed)     # "Aa" (13n1)
         self.port_var = tk.StringVar(value="tcp:127.0.0.1:5760")
         self._build_tools()
         self._build_menu()
@@ -352,6 +355,7 @@ class App:
         c.bind("<ButtonPress-1>", self.cv_press)
         c.bind("<B1-Motion>", self.cv_motion)
         c.bind("<ButtonRelease-1>", self.cv_release)
+        c.bind("<Motion>", self.cv_hover)              # the BATTLE SHORT tooltip (13n1)
         c.bind("<ButtonPress-3>", lambda e: self.mapwin.right(e.x, e.y))
         c.bind("<MouseWheel>", lambda e: self.mapwin.zoom(0.8 if e.delta > 0 else 1.25))
         c.bind("<Button-4>", lambda e: self.mapwin.zoom(0.8))
@@ -568,7 +572,10 @@ class App:
         # obstacle detection (eWaSR on the gateway PC): stages + status
         vf = tk.Frame(ct, bg=C["bg"], bd=2, relief="groove")
         vf.pack(fill="x", padx=4, pady=4)
-        lbl(vf, "cap.vis_title", font=F_MED, bg=C["bg"]).pack(anchor="w", padx=4)
+        vh = tk.Frame(vf, bg=C["bg"])
+        vh.pack(anchor="w", padx=4)
+        theme.ai_badge(vh).pack(side="left", padx=(0, 6))       # a neural network (eWaSR): the "AI" badge (13n1)
+        lbl(vh, "cap.vis_title", font=F_MED, bg=C["bg"]).pack(side="left")
         vf = tk.Frame(vf, bg=C["bg"])
         vf.pack(fill="x")
         self.vis_vars = {}
@@ -588,9 +595,11 @@ class App:
         operator's own confirmation; (None, None) = none (step 13p)."""
         dv = self.driver
         if dv is not None and dv.question is not None:
-            return ("drv", id(dv.question)), "drv"
+            # a serial number per question, never id(): a question replaced by another one in the same callback may
+            # get the same address (13p review M1) and the 0.5 s guard / YES pre-selection would not be reset
+            return ("drv", getattr(dv, "qserial", 0)), "drv"
         if self.cconf is not None:
-            return ("cc", id(self.cconf)), "cc"
+            return ("cc", getattr(self, "cconf_serial", 0)), "cc"
         return None, None
 
     def shore_answer_tick(self):
@@ -1915,6 +1924,7 @@ class App:
         w.title(i18n.W("cap.cc_title"))
         w.transient(self.root)
         self.cconf = w
+        self.cconf_serial = getattr(self, "cconf_serial", 0) + 1    # the question token (13p review M1)
         tk.Label(w, text=T("cap.cc_q"), font=F_BIG, bg=C["head"]).pack(padx=20, pady=10)
         tk.Label(w, text=i18n.from_en(what), font=F_BIG, bg=C["head"], fg=theme.BANNERS["single_op"][1]).pack(padx=20, pady=6)
         left = tk.Label(w, text="", font=F_MED, bg=C["head"])
@@ -2777,6 +2787,11 @@ class App:
         self.tools = w
         nb = VTabs(w)
         self.nb = nb
+        # "Aa" + RESET TO DEFAULT in every window (13n1): at the foot of the page list
+        foot = tk.Frame(nb.side, bg=C["head"])
+        foot.pack(side="bottom", fill="x", pady=4)
+        tk.Button(foot, text="Aa", command=theme.cycle_text_size, **theme.button_opts()).pack(side="left", padx=4)
+        btn(foot, "ov.reset_layout", self.reset_layout).pack(side="left", padx=4)
         self.tab_keys = []
         self.tab_frames = {}
 
@@ -2956,16 +2971,26 @@ class App:
             self.mapwin.press(e.x, e.y)
 
     def cv_motion(self, e):
-        if not self._press_ov:
+        if self._press_ov:
+            if self.ov.motion(e.x, e.y):            # a panel header held: the panel follows the mouse (13n1)
+                self.render(force=True)
+        else:
             self.mapwin.motion(e.x, e.y)
 
     def cv_release(self, e):
         if self._press_ov:
-            self.ov.release()                       # a press-and-hold button (a momentary relay, START) lets go
+            self.ov.release(e.x, e.y)               # a press-and-hold button lets go; a header: collapse / moved
         if not self._press_ov:
             self.mapwin.release(e.x, e.y)
-            self.render(force=True)
+        self.render(force=True)
         self._press_ov = False
+
+    def cv_hover(self, e):
+        r = next((o["r"] for o in self.ov.ops if o.get("tag") == "battle_short"), None)
+        on = bool(r and r[0] <= e.x <= r[2] and r[1] <= e.y <= r[3])
+        if on != getattr(self, "bs_hover", False):
+            self.bs_hover = on
+            self.render(force=True)
 
     def ov_tick(self):
         try:
@@ -2974,6 +2999,25 @@ class App:
         except tk.TclError:
             return
         self.root.after(200, self.ov_tick)
+
+    def positions_changed(self, pos):
+        """A panel was dragged (13n1): its place saved per PC (fractions of the window)."""
+        settings.put("s2_panel_pos", pos)
+
+    def reset_layout(self):
+        """RESET TO DEFAULT (13n1): every screen 2 panel back in its column + open, the bars shown at the bottom,
+        the text size normal - saved per PC."""
+        self.ov.reset_positions()
+        settings.put("s2_bars", {"hidden": [], "dock": "bottom"})
+        theme.set_text_size("normal")
+        self.say(T("ov.layout_reset_done"))
+        self.render(force=True)
+
+    def text_size_changed(self, ratio):
+        """"Aa" (13n1): the tk widgets of this station get the new text size, the panels redraw."""
+        for w in (self.root, self.tools):
+            theme.rescale_tree(w, ratio)
+        self.render(force=True)
 
     # --- screen 2 panels (overlay.py) ---------------------------------------------------------------------
     def render(self, force=False):
@@ -2996,123 +3040,439 @@ class App:
                 self.mapwin.redraw()
                 self.cv.tag_raise("ov")
 
+    # --- the MODE BAR (top centre, always visible, never hideable - step 13n1, owner 2026-10-31 E1) ------------
+    MODE_BAR = (("STANDBY", proto.MODE_STANDBY), ("HDG_LOCK", proto.MODE_HDG_LOCK), ("AUTO", proto.MODE_AUTO),
+                ("REMOTE_MANUAL", proto.MODE_REMOTE), ("MANEUVER", proto.MODE_MANEUVER), ("DP", proto.MODE_DP),
+                ("MANUAL", proto.MODE_MANUAL))
+
+    def mode_bar_items(self):
+        """[{"tag", "label", "mode", "active", "enabled", "why", "action"}] of the mode bar, then BATTLE SHORT.
+        Not allowed now = greyed, a click says why (DISPLAY ONLY: the gateway + the AURIX check every request
+        again - HELM, licence, captain, CONFIRM, the stick centred, the mode table)."""
+        d = self.t or {}
+        cur = d.get("mode")
+        unc = d.get("profile") == proto.PROFILE_UNCREWED
+        ft = bool(d.get("first_test"))
+        crew = crewui.crew_of(self)[0] if isinstance(self.link, GatewayLink) else None
+        out = []
+        for name, m in self.MODE_BAR:
+            why, act = None, None
+            if m == proto.MODE_STANDBY:
+                act = lambda: self.mode(proto.MODE_STANDBY)          # always: STANDBY never needs anything
+            elif self.link is None or not d:
+                why = T("mb.why_not_connected")
+            elif cur == m:
+                why = T("mb.why_active")
+            elif m == proto.MODE_MANUAL:
+                why = T("mb.why_manual")                             # the onboard joystick only, never the PC
+            elif ft and m in (proto.MODE_AUTO, proto.MODE_REMOTE, proto.MODE_MANEUVER, proto.MODE_DP):
+                why = T("mb.why_first_test")
+            elif m == proto.MODE_HDG_LOCK:
+                if not unc:
+                    why = T("cap.info_hdg")                          # CREWED: the panel button on board
+                elif cur not in (proto.MODE_REMOTE, proto.MODE_MANEUVER):
+                    why = T("mb.why_hdg_from")
+                else:
+                    act = self.info_hdg
+            elif m == proto.MODE_AUTO:
+                if not d.get("prog_ok"):
+                    why = T("mb.why_no_route")
+                else:
+                    act = self.auto_start
+            elif m in (proto.MODE_REMOTE, proto.MODE_MANEUVER):
+                if not isinstance(self.link, GatewayLink):
+                    why = T("mb.why_gateway")
+                elif not self.manual_allowed():
+                    why = T("mb.why_captain") if crew != "captain" else T("mb.why_licence")
+                elif m == proto.MODE_MANEUVER and cur not in (proto.MODE_STANDBY, proto.MODE_REMOTE):
+                    why = T("mb.why_mnv_from")
+                elif cur == proto.MODE_MANUAL:
+                    why = T("mb.why_from_manual")
+                else:
+                    act = self.remote_request if m == proto.MODE_REMOTE else self.maneuver_request
+            elif m == proto.MODE_DP:
+                if not self.dp_available():
+                    why = T("mb.why_no_thrusters")
+                else:
+                    act = lambda: self.dp_start(proto.DP_SPOT)
+            out.append({"tag": "mode_" + name, "label": T("mb." + name), "mode": m, "active": cur == m,
+                        "enabled": act is not None, "why": why, "action": act})
+        return out
+
+    def mode_bar_click(self, it):
+        if it["enabled"]:
+            it["action"]()
+        else:
+            self.say(T("mb.why", mode=it["label"], why=it["why"] or "-"), ORANGE)
+
+    def battle_short(self):
+        """BATTLE SHORT (13n1, owner 2026-10-31 E1): a demo window only - NO code exists, NO function, nothing is
+        ever sent to the boat or the gateway (battleshort.py)."""
+        import battleshort
+        self.bs_win = battleshort.open_window(self.root, self.event, getattr(self, "bs_win", None))
+        return self.bs_win
+
+    # --- the two bottom bars (13n1): bar 1 driving settings, bar 2 the map + this station ----------------------
+    def bars_cfg(self):
+        b = settings.get("s2_bars") or {}
+        return {"hidden": set(b.get("hidden") or []), "dock": "top" if b.get("dock") == "top" else "bottom"}
+
+    def bar_hide(self, n):
+        """A bar's handle: hide / show it (STANDBY is never hidden - it is not in a bar)."""
+        b = self.bars_cfg()
+        b["hidden"] ^= {n}
+        settings.put("s2_bars", {"hidden": sorted(b["hidden"]), "dock": b["dock"]})
+        self.render(force=True)
+
+    def bar_dock(self):
+        """Move the bars: bottom <-> top (under the mode bar)."""
+        b = self.bars_cfg()
+        settings.put("s2_bars", {"hidden": sorted(b["hidden"]), "dock": "bottom" if b["dock"] == "top" else "top"})
+        self.render(force=True)
+
+    def sub(self, key):
+        """A sub-panel above the bar (ROUTE / MAX SPEED / GEOFENCE): open while used, the button again closes it."""
+        ed = self.mapwin.edit
+        shown = getattr(self, "sub_open", None) or {"route": "route", "fence": "fence"}.get(ed)
+        self.sub_open = None if shown == key else key
+        if ed and self.sub_open != ed:
+            self.set_edit(ed)                       # closing it (or another sub-panel) ends the map editing
+        self.render(force=True)
+
+    def nearest_ship_text(self):
+        rows = [r for r in self.ais_rows_now() if r.get("dist_nm") is not None]
+        if not rows:
+            return T("ov.no_ships")
+        r = min(rows, key=lambda r: r["dist_nm"])
+        cpa = "-" if r.get("cpa_nm") is None else "%.2f" % r["cpa_nm"]
+        return T("ov.nearest", name=(r.get("name") or str(r["mmsi"]))[:16], nm="%.2f" % r["dist_nm"], cpa=cpa)
+
+    def bar_items(self, n):
+        """The items of bar n (1 / 2): ("btn", tag, label, action, kind, enabled, on) | ("text", tag, text, colour,
+        flex) | ("gap",). Bar 1: heading -10 -1 value +1 +10, AUTO pause / resume / skip, ROUTE, MAX SPEED,
+        GEOFENCE, LINK TIME, RESTORE POWER when offered; bar 2: the nearest ship + CPA, the messages, zoom, BOAT,
+        TOOLS, Aa, RESET. (TRACKS / NEW TRACK = step 13n3, the recording group = step 13n4.)"""
+        d = self.t or {}
+        sub = getattr(self, "sub_open", None)
+        out = []
+        if n == 1:
+            for dd in (-10, -1):
+                out.append(("btn", "hdg_%+d" % dd, "%+d" % dd, lambda dd=dd: self.cmd(
+                    proto.T_HEADING_ADJ, proto.p_heading(dd), TE("what.heading", d="%+d" % dd)), "normal", True, False))
+            tgt = d.get("dp_heading") if d.get("mode") == proto.MODE_DP else d.get("target")
+            out.append(("text", "hdg_value", "%05.1f°" % tgt if tgt is not None else "---.-°", None, False))
+            for dd in (1, 10):
+                out.append(("btn", "hdg_%+d" % dd, "%+d" % dd, lambda dd=dd: self.cmd(
+                    proto.T_HEADING_ADJ, proto.p_heading(dd), TE("what.heading", d="%+d" % dd)), "normal", True, False))
+            out.append(("gap",))
+            out.append(("btn", "auto_pause", T("cap.pause"), lambda: self.cmd(proto.T_AUTO_PAUSE, b"",
+                        TE("what.auto_pause")), "normal", True, False))
+            out.append(("btn", "auto_resume", T("cap.resume"), lambda: self.cmd(proto.T_AUTO_RESUME, b"",
+                        TE("what.auto_resume")), "normal", True, False))
+            out.append(("btn", "auto_skip", T("cap.skip"), lambda: self.cmd(proto.T_AUTO_SKIP, b"",
+                        TE("what.auto_skip")), "normal", True, False))
+            out.append(("gap",))
+            for key, lab in (("route", "ov.b_route"), ("maxkn", "ov.b_maxkn"), ("fence", "ov.b_fence")):
+                out.append(("btn", "b_" + key, T(lab), lambda key=key: self.sub(key), "normal", True, sub == key))
+            if isinstance(self.link, GatewayLink) and d.get("lt_set"):
+                # LINK TIME (step 13q1): the HELM captain only; the gateway (118) + AURIX check it again
+                can = self.link_time_allowed()
+                out.append(("gap",))
+                out.append(("text", "lt_label", T("lt.label", s=d["lt_set"]),
+                            C["note_txt"] if d.get("lt_override") else None, False))
+                out.append(("btn", "lt_down", "−", lambda: self.link_time_step(-1), "normal",
+                            can and d["lt_set"] > proto.LINK_TIME_MIN_S, False))
+                out.append(("btn", "lt_up", "+", lambda: self.link_time_step(1), "normal",
+                            can and d["lt_set"] < proto.LINK_TIME_MAX_S, False))
+            if d.get("slam_restore_ok") and not d.get("slam_ask") and self.slam_restore_allowed():
+                # step 13q4: REJECT / no answer -> the reduction stays; the captain may still restore while it is calm
+                out.append(("gap",))
+                out.append(("btn", "slam_restore", T("slam.btn"), lambda: self.slam_restore_answer(True), "info",
+                            True, False))
+        else:
+            out.append(("text", "nearest", self.nearest_ship_text(), None, False))
+            out.append(("gap",))
+            col = self.msg_col
+            out.append(("text", "message", self.msg_text or "", theme.CAUTION if col in (RED, ORANGE) else
+                        (C["ok_txt"] if col == GREEN else None), True))
+            out.append(("gap",))
+            out.append(("btn", "bar", T("ov.zoom_out"), lambda: self.mapwin.zoom(1 / 0.6), "normal", True, False))
+            out.append(("btn", "bar", T("ov.zoom_in"), lambda: self.mapwin.zoom(0.6), "normal", True, False))
+            if not self.mapwin.follow:
+                out.append(("btn", "bar", T("ov.back_to_boat"), self.mapwin.back_to_boat, "warn", True, False))
+            out.append(("gap",))
+            out.append(("btn", "bar_boat", T("ov.b_boat"), self.boat_dropdown_bar, "normal", True, False))
+            out.append(("btn", "bar", T("ov.tools"), self.popup_tools, "normal", True, False))
+            out.append(("btn", "text_size", "Aa", theme.cycle_text_size, "normal", True, False))
+            out.append(("btn", "reset_layout", T("ov.reset_layout"), self.reset_layout, "normal", True, False))
+        return out
+
+    def boat_dropdown_bar(self):
+        """BOAT on bar 2: the same boat dropdown as the status panel's first line."""
+        return self.boat_dropdown()
+
+    def _item_w(self, it, level="button"):
+        ov = self.ov
+        fs = ov.size(level)
+        if it[0] == "gap":
+            return fs * 0.8
+        if it[0] == "text":
+            return 0.0 if it[4] else ov.measure(it[2], level, True)[0] + fs * 0.4
+        return ov.measure(it[2], level, True)[0] + 2 * fs * theme.BUTTON["pad_x"]
+
+    def bar_width(self, items):
+        gap = self.ov.size("button") * 0.35
+        return sum(self._item_w(it) for it in items) + gap * max(0, len(items) - 1) + 2.2 * self.ov.size("button")
+
+    def mode_bar_width(self):
+        ov = self.ov
+        fs = ov.size("button")
+        w = 0.0
+        for it in self.mode_bar_items():
+            lv = "value" if it["active"] else "button"
+            w += ov.measure(it["label"], lv, True)[0] + 2 * ov.size(lv) * theme.BUTTON["pad_x"] + fs * 0.35
+        return w + self.bs_width() + fs * 1.6
+
+    def bs_width(self):
+        """BATTLE SHORT: its text + the hazard stripes at both ends (never over the text)."""
+        fs = self.ov.size("button")
+        return self.ov.measure(T("mb.battle_short"), "button", True)[0] + 2 * 0.9 * fs * theme.BUTTON["height"] + fs
+
     def extras_size(self):
-        """STANDBY, the logo and the map bar at the current fit factor (overlay.layout)."""
+        """STANDBY, the logo, the mode bar band (top) and the bars band (bottom) at the current fit factor."""
         ov = self.ov
         W, H = ov.W, ov.H
         fs = ov.size("title")
+        bh = ov.size("button") * theme.BUTTON["height"]
+        mh = ov.size("value") * theme.BUTTON["height"]          # the mode bar: the active mode larger
+        gap = 4 * theme.unit(W, H)
+        bars = self.bars_cfg()
+        shown = [n for n in (1, 2) if n not in bars["hidden"]]
+        handle = ov.size("small") * 1.6                         # a hidden bar = its slim handle only
+        band = sum(bh if n in shown else handle for n in (1, 2)) + gap
         tw, _th = ov.measure(T("cap.btn_standby"), "title", True)
-        sb = (tw + 2.4 * fs, fs * 2.1)
+        sb_h = max(fs * 2.1, band if bars["dock"] == "bottom" else 0.0)
+        sb = (tw + 2.4 * fs, sb_h)
         lh = theme.logo_height(W, H)
         lw, _ = theme.logo_size(lh)
-        bar = sum(ov.measure(s, "button", True)[0] + 2 * ov.size("button") * theme.BUTTON["pad_x"]
-                  for s in self.bar_labels()) + ov.size("button") * 0.6 * len(self.bar_labels())
-        return {"standby": sb, "logo": (lw, lh), "bar": (bar, ov.size("button") * theme.BUTTON["height"])}
+        bars_w = max([self.bar_width(self.bar_items(n)) for n in shown] + [0.0])
+        top = mh + (band + gap if bars["dock"] == "top" else 0.0)
+        return {"standby": sb, "logo": (lw, lh), "bar": (ov.size("button") * 8, bh), "top": top,
+                "bottom": sb_h, "top_w": max(self.mode_bar_width(), bars_w if bars["dock"] == "top" else 0.0),
+                "bars_w": bars_w if bars["dock"] == "bottom" else 0.0}
 
     def bar_labels(self):
-        out = [T("ov.zoom_out"), T("ov.zoom_in")]
-        if not self.mapwin.follow:
-            out.append(T("ov.back_to_boat"))
-        out.append(T("ov.tools"))
-        return out
+        """The map buttons of bar 2 (tests: zoom, back to boat, tools)."""
+        return [it[2] for it in self.bar_items(2) if it[0] == "btn" and it[1] == "bar"]
 
     def draw_extras(self, rects):
-        """STANDBY (always), the logo, the banners (top middle), the map bar + message + chart note
-        (bottom middle)."""
+        """The mode bar (top, always), STANDBY (always, bottom-left), the logo, the banners (under the mode bar),
+        the two bars (bottom or top) + the chart note."""
         ov, cv = self.ov, self.cv
         W, H = ov.W, ov.H
         g = 8 * theme.unit(W, H)
-        # STANDBY - always visible, also with every panel collapsed
+        self.draw_mode_bar(rects["top"])
+        # STANDBY - always visible, also with every panel / bar collapsed: the ONLY red button (13n1)
         r = rects["standby"]
         self.ov_button(r, T("cap.btn_standby"), lambda: self.mode(proto.MODE_STANDBY), "standby", "title",
                        tag="standby")
         # the logo, bottom-right corner
         r = rects["logo"]
-        img = theme.logo_pil(int(r[3] - r[1]))
+        lh = int(min(r[3] - r[1], theme.logo_height(W, H)))
+        img = theme.logo_pil(lh)
+        lr = (r[0], r[3] - lh, r[2], r[3])
         if img is not None:
             from PIL import ImageTk
             self._logo_photo = ImageTk.PhotoImage(img)
-            cv.create_image(r[0], r[1], image=self._logo_photo, anchor="nw", tags="ov")
+            cv.create_image(lr[2] - img.width, lr[1], image=self._logo_photo, anchor="nw", tags="ov")
         else:
-            cv.create_text((r[0] + r[2]) / 2, (r[1] + r[3]) / 2, text=theme.LOGO_TEXT, fill=C["dim"],
+            cv.create_text((lr[0] + lr[2]) / 2, (lr[1] + lr[3]) / 2, text=theme.LOGO_TEXT, fill=C["dim"],
                            font=ov.font(ov.size("value"), True), tags="ov")
-        ov.ops.append({"k": "logo", "r": r, "panel": None, "s": "", "tag": "logo"})
-        mx0, _my0, mx1, my1 = rects["middle"]
+        ov.ops.append({"k": "logo", "r": lr, "panel": None, "s": "", "tag": "logo"})
+        mx0, my0, mx1, my1 = rects["middle"]
         cx, cy, kr = self.mapwin.keepout(W, H)
-        # banners: from the top down, never into the boat's circle
-        y = g
+        # the bars: at the bottom between STANDBY and the logo, or at the top under the mode bar
+        bars = self.bars_cfg()
+        bh = ov.size("button") * theme.BUTTON["height"]
+        handle = ov.size("small") * 1.6
+        gap = 4 * theme.unit(W, H)
+        if bars["dock"] == "bottom":
+            bx0, by, bx1 = rects["bars"][0], rects["bars"][1], rects["bars"][2]
+        else:
+            bx0, by, bx1 = g, rects["top"][1] + ov.size("value") * theme.BUTTON["height"] + gap, W - g
+        for n in (1, 2):
+            h = handle if n in bars["hidden"] else bh
+            self.draw_bar(n, (bx0, by, bx1, by + h), n in bars["hidden"])
+            by += h + gap
+        # banners: from under the mode bar down, never into the boat's circle
+        y = my0
         limit = cy - kr - g
         self.banner_tags = []
         bl = self.banner_list()
         fnt = ov.font(ov.size("value"), True)
         for i, (tag, text, fg, fill, act) in enumerate(bl):
-            lines = wrap(text, fnt, mx1 - mx0 - 2.2 * ov.size("value") - (ov.measure(T("cap.ack_alarm"), "button")[0] +
-                                                                          2 * ov.size("button") if act else 0))
-            lh = fnt.metrics("linespace")
-            h = lh * len(lines) + ov.size("value") * 0.5
+            lines = wrap(text, fnt, mx1 - mx0 - 2.2 * ov.size("value"))
+            lh_ = fnt.metrics("linespace")
+            h = lh_ * len(lines) + ov.size("value") * 0.5
             if y + h > limit:
                 more = len(bl) - i
-                rr = (mx0, y, mx1, min(limit, y + lh))
+                rr = (mx0, y, mx1, min(limit, y + lh_))
                 if rr[3] - rr[1] > 8:
                     cv.create_text((mx0 + mx1) / 2, (rr[1] + rr[3]) / 2, text=T("ov.more_banners", n=more),
-                                   fill=theme.WARN, font=ov.font(ov.size("small"), True), tags="ov")
+                                   fill=theme.CAUTION, font=ov.font(ov.size("small"), True), tags="ov")
                 break
             rr = (mx0, y, mx1, y + h)
-            cv.create_polygon(*overlay.rrect_pts(rr[0], rr[1], rr[2], rr[3], 6), smooth=True, fill=fill, outline="",
-                              tags="ov")
+            cv.create_rectangle(rr[0], rr[1], rr[2], rr[3], fill=fill, outline="", tags="ov")
             cv.create_text(mx0 + ov.size("value") * 0.6, (rr[1] + rr[3]) / 2, text="\n".join(lines), anchor="w",
                            fill=fg, font=fnt, tags="ov")
             ov.ops.append({"k": "banner", "r": rr, "panel": None, "s": text, "tag": tag})
             self.banner_tags.append(tag)
-            if act:
-                bw = ov.measure(T("cap.ack_alarm"), "button", True)[0] + 2 * ov.size("button")
-                bh = min(h - 6, ov.size("button") * theme.BUTTON["height"])
-                br = (mx1 - bw - 4, (rr[1] + rr[3]) / 2 - bh / 2, mx1 - 4, (rr[1] + rr[3]) / 2 + bh / 2)
-                self.ov_button(br, T("cap.ack_alarm"), act, "normal", "button", tag="ack")
             y += h + g * 0.5
-        # the map bar at the bottom: zoom, back to boat, tools
-        bh = ov.size("button") * theme.BUTTON["height"]
-        labels = self.bar_labels()
-        acts = [lambda: self.mapwin.zoom(1 / 0.6), lambda: self.mapwin.zoom(0.6)]
-        if not self.mapwin.follow:
-            acts.append(self.mapwin.back_to_boat)
-        acts.append(self.popup_tools)
-        ws = [ov.measure(s, "button", True)[0] + 2 * ov.size("button") * theme.BUTTON["pad_x"] for s in labels]
-        gap = ov.size("button") * 0.6
-        x = (mx0 + mx1) / 2 - (sum(ws) + gap * (len(ws) - 1)) / 2
-        yb = my1 - bh
-        for s, a, wd in zip(labels, acts, ws):
-            kind = "warn" if s == T("ov.back_to_boat") else "normal"
-            self.ov_button((x, yb, x + wd, my1), s, a, kind, "button", tag="bar")
-            x += wd + gap
-        # the message line above the bar
-        y1 = yb - g * 0.5
-        if self.msg_text:
-            f = ov.font(ov.size("label"), True)
-            lines = wrap(self.msg_text, f, mx1 - mx0 - 16)[:2]
-            mh = f.metrics("linespace") * len(lines) + 6
-            rr = (mx0, y1 - mh, mx1, y1)
-            col = self.msg_col or C["head"]
-            fg = theme.BLACK if col in (theme.GOOD, theme.CAUTION, theme.ADVISORY) else (theme.WHITE if col == theme.WARN
-                                                                                       else C["fg"])
-            cv.create_polygon(*overlay.rrect_pts(rr[0], rr[1], rr[2], rr[3], 5), smooth=True, fill=col, outline="",
-                              tags="ov")
-            cv.create_text(mx0 + 8, (rr[1] + rr[3]) / 2, text="\n".join(lines), anchor="w", fill=fg, font=f,
-                           tags="ov")
-            ov.ops.append({"k": "message", "r": rr, "panel": None, "s": self.msg_text, "tag": "message"})
-            y1 = rr[1] - g * 0.5
-        self.note_box = (mx0, y1 - 40 * max(0.8, theme.unit(W, H)), mx1, y1)
+        self.note_box = (mx0, my1 - 40 * max(0.8, theme.unit(W, H)), mx1, my1)
 
-    def ov_button(self, r, label, action, kind, level, tag=None):
+    def draw_mode_bar(self, r):
+        """[STANDBY] [HDG LOCK] [AUTO] [REMOTE] [MANEUVER] [DP] [MANUAL] · [BATTLE SHORT], centred at the top. The
+        active mode inverted (white fill, black bold, larger), not allowed now = grey (a click says why)."""
+        ov, cv = self.ov, self.cv
+        items = self.mode_bar_items()
+        fs = ov.size("button")
+        gap = fs * 0.35
+        ws = []
+        for it in items:
+            lv = "value" if it["active"] else "button"
+            ws.append((ov.measure(it["label"], lv, True)[0] + 2 * ov.size(lv) * theme.BUTTON["pad_x"], lv))
+        bsw = self.bs_width()
+        total = sum(w for w, _ in ws) + gap * len(ws) + fs * 1.2 + bsw
+        x = (r[0] + r[2]) / 2 - total / 2
+        y0, y1 = r[1], r[1] + ov.size("value") * theme.BUTTON["height"]
+        bh = fs * theme.BUTTON["height"]
+        for it, (w, lv) in zip(items, ws):
+            yy0, yy1 = (y0, y1) if it["active"] else ((y0 + y1) / 2 - bh / 2, (y0 + y1) / 2 + bh / 2)
+            rr = (x, yy0, x + w, yy1)
+            if it["active"]:
+                fill, fg, ol = theme.WHITE, theme.BLACK, theme.BLACK
+            elif it["mode"] == proto.MODE_STANDBY:
+                fill, fg, ol = theme.WARN, theme.WHITE, C["fg"]          # STANDBY = the only red button
+            elif it["enabled"]:
+                fill, fg, ol = C["btn"], C["btn_fg"], C["fg"]
+            else:
+                fill, fg, ol = C["head"], C["faint"], C["faint"]
+            cv.create_rectangle(rr[0], rr[1], rr[2], rr[3], fill=fill, outline=ol, width=theme.FRAME, tags="ov")
+            cv.create_text((rr[0] + rr[2]) / 2, (rr[1] + rr[3]) / 2, text=it["label"], fill=fg,
+                           font=ov.font(ov.size(lv), True), tags="ov")
+            ov.ops.append({"k": "button", "r": rr, "panel": None, "s": it["label"], "tag": it["tag"],
+                           "enabled": it["enabled"], "on": it["active"], "fill": fill})
+            ov.hits.append((rr, lambda it=it: self.mode_bar_click(it)))
+            x += w + gap
+        cv.create_text(x + fs * 0.3, (y0 + y1) / 2, text="·", fill=C["dim"], font=ov.font(fs, True), tags="ov")
+        x += fs * 1.2
+        rr = (x, (y0 + y1) / 2 - bh / 2, x + bsw, (y0 + y1) / 2 + bh / 2)
+        self.draw_hazard(rr, T("mb.battle_short"), fs)
+        ov.ops.append({"k": "button", "r": rr, "panel": None, "s": T("mb.battle_short"), "tag": "battle_short",
+                       "enabled": True})
+        ov.hits.append((rr, self.battle_short))
+        if getattr(self, "bs_hover", False):        # the tooltip under the button
+            f = ov.font(ov.size("small"), True)
+            t = T("mb.tooltip")
+            tw = f.measure(t) + 12
+            tx0 = min(rr[0], ov.W - tw - 4)
+            tr = (tx0, rr[3] + 4, tx0 + tw, rr[3] + 4 + f.metrics("linespace") + 6)
+            cv.create_rectangle(*tr, fill=theme.BLACK, outline=theme.HAZARD["yellow"], width=1, tags="ov")
+            cv.create_text(tr[0] + 6, (tr[1] + tr[3]) / 2, text=t, anchor="w", fill=theme.WHITE, font=f, tags="ov")
+            ov.ops.append({"k": "tooltip", "r": tr, "panel": None, "s": t, "tag": "bs_tooltip"})
+
+    def draw_hazard(self, r, label, fs):
+        """The BATTLE SHORT button: grey, bold, framed, black / yellow hazard stripes at both ends."""
+        cv = self.cv
+        Z = theme.HAZARD
+        cv.create_rectangle(r[0], r[1], r[2], r[3], fill=Z["grey"], outline=Z["black"], width=theme.FRAME, tags="ov")
+        h = r[3] - r[1]
+        sw = h * 0.9
+        st = h * 0.32                                   # one stripe's width
+        for x0 in (r[0], r[2] - sw):
+            k = 0
+            xs = x0 - h
+            while xs < x0 + sw:
+                pts = [xs, r[3], xs + st, r[3], xs + st + h, r[1], xs + h, r[1]]
+                pts = [min(max(v, x0), x0 + sw) if i % 2 == 0 else v for i, v in enumerate(pts)]
+                cv.create_polygon(*pts, fill=Z["black"] if k % 2 else Z["yellow"], outline="", tags="ov")
+                xs += st
+                k += 1
+        cv.create_rectangle(r[0], r[1], r[2], r[3], fill="", outline=Z["black"], width=theme.FRAME, tags="ov")
+        cv.create_text((r[0] + r[2]) / 2, (r[1] + r[3]) / 2, text=label, fill=Z["black"],
+                       font=self.ov.font(fs, True), tags="ov")
+
+    def draw_bar(self, n, r, hidden):
+        """One thin full-width bar; a handle at its left end hides / shows it; bar 1 has the dock button."""
+        ov, cv = self.ov, self.cv
+        fs = ov.size("button")
+        x0, y0, x1, y1 = r
+        if cv is not None:
+            img = ov._bg(x1 - x0, y1 - y0, C["panel"], theme.panel_alpha(), C["line"], 0)
+            if img is not None:
+                cv.create_image(x0, y0, image=img, anchor="nw", tags="ov")
+            else:
+                cv.create_rectangle(x0, y0, x1, y1, fill=C["panel"], outline=C["line"], tags="ov")
+        ov.ops.append({"k": "bar", "r": r, "panel": None, "s": "", "tag": "bar%d" % n})
+        hw = fs * 1.4
+        hr = (x0, y0, x0 + hw, y1)
+        cv.create_rectangle(hr[0], hr[1], hr[2], hr[3], fill=C["head"], outline=C["fg"], width=1, tags="ov")
+        cv.create_text((hr[0] + hr[2]) / 2, (y0 + y1) / 2, text="▸" if hidden else "▾", fill=C["fg"],
+                       font=ov.font(fs, True), tags="ov")
+        ov.ops.append({"k": "button", "r": hr, "panel": None, "s": "", "tag": "bar%d_hide" % n, "enabled": True})
+        ov.hits.append((hr, lambda: self.bar_hide(n)))
+        if hidden:
+            return
+        items = self.bar_items(n)
+        x = x0 + hw + fs * 0.4
+        if n == 1:
+            dr = (x1 - hw, y0, x1, y1)
+            self.ov_button(dr, "⇅", self.bar_dock, "normal", "button", tag="bar_dock")
+            x1 -= hw + fs * 0.4
+        gap = fs * 0.35
+        fixed = sum(self._item_w(it) for it in items) + gap * max(0, len(items) - 1)
+        flex = max(0.0, x1 - x - fixed)
+        for it in items:
+            w = self._item_w(it)
+            if it[0] == "gap":
+                cv.create_line(x + w / 2, y0 + 4, x + w / 2, y1 - 4, fill=C["line"], tags="ov")
+            elif it[0] == "text":
+                if it[4]:
+                    w = flex
+                f = ov.font(fs, True)
+                txt = it[2]
+                if it[4]:                                   # the message: one line, cut to the room it has
+                    txt = txt.replace("\n", "  ")
+                    while txt and f.measure(txt) > w - 4:
+                        txt = txt[:-2] + "…" if len(txt) > 2 else ""
+                tr = (x, y0, x + max(w, 1.0), y1)
+                cv.create_text(x + 2, (y0 + y1) / 2, text=txt, anchor="w", fill=it[3] or C["fg"], font=f, tags="ov")
+                ov.ops.append({"k": "text", "r": (x, y0, x + min(w, f.measure(txt) + 4), y1), "panel": None,
+                               "s": it[2], "tag": it[1], "colour": it[3], "bar": n, "cell": tr})
+            else:
+                _k, tag, lab, act, kind, en, on = it
+                rr = (x, y0 + 1, x + w, y1 - 1)
+                self.ov_button(rr, lab, act, kind, "button", tag=tag, enabled=en, on=on)
+            x += w + gap
+
+    def ov_button(self, r, label, action, kind, level, tag=None, enabled=True, on=False):
+        """A drawn button outside the panels: a SQUARE frame (13n1); STANDBY the only red one."""
         ov, cv = self.ov, self.cv
         fs = ov.size(level)
-        fill = {"standby": theme.WARN, "warn": C["btn_warn"]}.get(kind, C["btn"])
+        fill = {"standby": theme.WARN, "warn": C["btn_warn"], "info": C["btn_info"]}.get(kind, C["btn"])
         fg = theme.WHITE if kind == "standby" else C["btn_fg"]
-        cv.create_polygon(*overlay.rrect_pts(r[0], r[1], r[2], r[3], fs * theme.BUTTON["radius"] * 2), smooth=True,
-                          fill=fill, outline=C["line"], width=2 if kind == "standby" else 1, tags="ov")
+        ol = C["fg"]
+        if on:
+            fill, fg, ol = theme.WHITE, theme.BLACK, theme.BLACK
+        if not enabled:
+            fill, fg, ol = C["head"], C["faint"], C["faint"]
+        cv.create_rectangle(r[0], r[1], r[2], r[3], fill=fill, outline=ol,
+                            width=theme.FRAME + (1 if kind == "standby" else 0), tags="ov")
         cv.create_text((r[0] + r[2]) / 2, (r[1] + r[3]) / 2, text=label, fill=fg, font=ov.font(fs, True), tags="ov")
-        ov.ops.append({"k": "button", "r": r, "panel": None, "s": label, "tag": tag, "enabled": True})
-        ov.hits.append((r, action))
+        ov.ops.append({"k": "button", "r": r, "panel": None, "s": label, "tag": tag, "enabled": enabled, "on": on,
+                       "fill": fill})
+        if enabled:
+            ov.hits.append((r, action))
 
     def popup_tools(self):
         m = self.tools_menu(self.root)
@@ -3227,6 +3587,7 @@ class App:
         self.panel_link()
         self.panel_traffic(H)
         self.panel_relays()                 # placed by the fit test (CLAUDE.md O)
+        self.panel_sub()                    # ROUTE / MAX SPEED / GEOFENCE above bar 1, only while used (13n1)
 
     def panel_alarms(self):
         """Top-right (0), ALWAYS drawn (also with every panel collapsed; no alarm = a one-line header): every
@@ -3269,7 +3630,7 @@ class App:
             p.badge(T("cap.not_connected") if not self.link else T("alarm.no_data"), MODE_COLORS["STANDBY"])
             return
         mode = d["mode_name"]
-        p.badge(T("mode." + mode), MODE_COLORS.get(mode, MODE_COLORS["STANDBY"]), tag="mode")
+        p.badge(T("mode." + mode), MODE_COLORS.get(mode, MODE_COLORS["STANDBY"]), tag="mode", level="label")
         if d["mode"] in (proto.MODE_HDG_LOCK, proto.MODE_AUTO):
             p.text("→ %05.1f°" % d["target"], "value", tag="target")
         elif d["mode"] == proto.MODE_DP and "dp_heading" in d:
@@ -3293,7 +3654,7 @@ class App:
                 if d["mode"] == proto.MODE_DP else ([T("cap.v_target"), "%05.1f°" % d["target"]], None),
                 ([T("cap.v_yaw"), "%+.1f °/s" % d["yaw_rate"]], None),
                 ([T("cap.v_gear"), T("gear.%d" % gear) if gear is not None else "?"],
-                 {1: ok, 2: bad}.get(gear)),
+                 {1: ok}.get(gear)),
                 ([T("cap.v_throttle"), thr], None),
                 ([T("cap.v_outboard"), "%+.1f°" % d["outboard"]], None),
                 ([T("cap.v_gps"), (T("cap.fix") if d["gps_fix"] else T("cap.no_fix")) + "  " + src +
@@ -3311,83 +3672,22 @@ class App:
         p.table(None, rows, ["l", "l"], tag="values", level="label")
 
     def panel_control(self):
-        """Bottom-left: mode buttons, AUTO, the route / geofence / max speed on the map, heading lock,
-        the captain's answers to this station's actions."""
+        """Bottom-left (a slim strip above the bars): the AUTO program state, AUTO RETURN, generator, the DP rows,
+        the captain's answers to this station's actions. The MODES are on the mode bar, the heading / AUTO pause /
+        ROUTE / MAX SPEED / GEOFENCE / LINK TIME on bar 1 (step 13n1, owner 2026-10-31 E1)."""
         p = self.ov.panel("control", T("ov.control"), "sw")
         d = self.t or {}
-        mode = d.get("mode_name")
         if d.get("mode") == proto.MODE_DP:
-            # DP replaces the mode buttons and the AUTO rows (CLAUDE.md P, step 11): none of those modes can be
-            # entered from DP (the AURIX's mode table), STANDBY / DP STOP / the joystick leave it
+            # DP replaces the AUTO rows (CLAUDE.md P, step 11): STANDBY / DP STOP / the joystick leave it
             self.dp_rows(p, d)
         else:
-            p.button(T("cap.btn_hdg_lock"), self.info_hdg, on=mode == "HDG_LOCK", tag="btn_hdg")
-            p.button(T("cap.btn_auto"), self.auto_start, on=mode == "AUTO", tag="btn_auto")
-            if self.manual_here():
-                p.button(T("cap.btn_manual"), self.remote_request, "info", on=mode == "REMOTE_MANUAL",
-                         tag="btn_manual")
-                p.button(T("cap.btn_maneuver"), self.maneuver_request, "info", on=mode == "MANEUVER",
-                         tag="btn_maneuver")
-            p.br()
             p.text(self.auto_text(), "label", tag="auto")
-            p.br(stretch=True)
-            p.button(T("cap.pause"), lambda: self.cmd(proto.T_AUTO_PAUSE, b"", TE("what.auto_pause")))
-            p.button(T("cap.resume"), lambda: self.cmd(proto.T_AUTO_RESUME, b"", TE("what.auto_resume")))
-            p.button(T("cap.skip"), lambda: self.cmd(proto.T_AUTO_SKIP, b"", TE("what.auto_skip")))
+            p.br()
             p.button(T("cap.return"), self.auto_return, tag="btn_return")
             self.gen_button(p, d)
             p.br()
             if self.dp_available():
                 self.dp_rows(p, d)
-        wps = self.prog["wps"]
-        p.text(T("ov.route", n=len(wps), nm="%.1f" % self.route_nm(), kn="%.0f" % self.new_wp["kn"]) +
-               (T("ov.not_sent") if self.route_dirty else ""), "label",
-               colour=C["note_txt"] if self.route_dirty else None, tag="route")
-        p.br()
-        ed = self.mapwin.edit
-        p.button(T("ov.edit_route"), lambda: self.set_edit("route"), on=ed == "route", tag="edit_route")
-        p.button("−", lambda: self.wp_speed(-1))
-        p.button("+", lambda: self.wp_speed(1))
-        p.button(T("ov.send_route"), self.route_send, "ok", enabled=bool(wps), tag="send_route")
-        p.button(T("ov.clear"), self.prog_clear, enabled=bool(wps))
-        p.br()
-        cur = self.params.get(P_MAX_LEG, {}).get("value")
-        v = self.maxkn_edit if self.maxkn_edit is not None else cur
-        p.text(T("ov.max_speed", kn="-" if v is None else "%.0f" % v), "label",
-               colour=C["note_txt"] if self.maxkn_edit is not None and self.maxkn_edit != cur else None, tag="maxkn")
-        p.button("−", lambda: self.maxkn_step(-1))
-        p.button("+", lambda: self.maxkn_step(1))
-        p.button(T("ov.set"), self.maxkn_send, "ok", enabled=self.maxkn_edit is not None, tag="maxkn_set")
-        p.br()
-        fl = self.fence_live()
-        if self.fence_dirty:
-            ft = T("ov.fence_changed", n=len(self.fence_draft))
-        elif fl:
-            ft = T("ov.fence_set", n=len(fl), by=(((self.gw_status or {}).get("geofence") or {}).get("by") or "?"))
-        else:
-            ft = T("ov.fence_none")
-        p.text(ft, "label", colour=C["note_txt"] if self.fence_dirty else None, tag="fence")
-        if isinstance(self.link, GatewayLink) and d.get("lt_set"):
-            # LINK TIME (step 13q1, owner 2026-10-31): the HELM captain only; the gateway (118) + AURIX check it again
-            p.text(T("lt.label", s=d["lt_set"]), "label", bold=d.get("lt_override", False), tag="lt_label",
-                   colour=C["note_txt"] if d.get("lt_override") else None)
-            can = self.link_time_allowed()
-            p.button("−", lambda: self.link_time_step(-1), enabled=can and d["lt_set"] > proto.LINK_TIME_MIN_S,
-                     tag="lt_down")
-            p.button("+", lambda: self.link_time_step(1), enabled=can and d["lt_set"] < proto.LINK_TIME_MAX_S,
-                     tag="lt_up")
-        p.br()
-        p.button(T("ov.edit_fence"), lambda: self.set_edit("fence"), on=ed == "fence", tag="edit_fence")
-        p.button(T("ov.send_fence"), self.fence_send, "ok", enabled=self.fence_dirty, tag="send_fence")
-        p.button(T("ov.clear_fence"), self.fence_clear, enabled=bool(fl or self.fence_draft), tag="clear_fence")
-        if d.get("slam_restore_ok") and not d.get("slam_ask") and self.slam_restore_allowed():
-            # step 13q4: REJECT / no answer -> the reduction stays; the captain may still restore while it is calm
-            p.br()
-            p.button(T("slam.btn"), lambda: self.slam_restore_answer(True), "info", tag="slam_restore")
-        p.br(stretch=True)
-        for dd in (-10, -1, 1, 10):
-            p.button("%+d" % dd, lambda dd=dd: self.cmd(proto.T_HEADING_ADJ, proto.p_heading(dd),
-                                                        TE("what.heading", d="%+d" % dd)), level="value")
         now = time.time()
         shown = [x for x in self.decisions if x["state"] == "wait" or now - x["t"] < 60.0][-3:]
         if shown:
@@ -3406,6 +3706,48 @@ class App:
             p.button(T("cap.sim_hdg"), self.sim_hdg, "sim")
             p.button(T("cap.sim_standby"), self.sim_standby, "sim")
             p.button(T("cap.sim_confirm"), self.sim_confirm, "sim", tag="sim_confirm")
+
+    def panel_sub(self):
+        """The sub-panel of bar 1 open now (ROUTE / MAX SPEED / GEOFENCE): it pops up above the bar only while used
+        (13n1); editing on the map opens ROUTE / GEOFENCE by itself."""
+        ed = self.mapwin.edit
+        key = getattr(self, "sub_open", None) or {"route": "route", "fence": "fence"}.get(ed)
+        if key not in ("route", "maxkn", "fence"):
+            return
+        p = self.ov.panel("sub_" + key, T("ov.sub_" + key), "sw")
+        if key == "route":
+            wps = self.prog["wps"]
+            p.text(T("ov.route", n=len(wps), nm="%.1f" % self.route_nm(), kn="%.0f" % self.new_wp["kn"]) +
+                   (T("ov.not_sent") if self.route_dirty else ""), "label",
+                   colour=C["note_txt"] if self.route_dirty else None, tag="route")
+            p.br()
+            p.button(T("ov.edit_route"), lambda: self.set_edit("route"), on=ed == "route", tag="edit_route")
+            p.button("−", lambda: self.wp_speed(-1))
+            p.button("+", lambda: self.wp_speed(1))
+            p.button(T("ov.send_route"), self.route_send, "ok", enabled=bool(wps), tag="send_route")
+            p.button(T("ov.clear"), self.prog_clear, enabled=bool(wps))
+        elif key == "maxkn":
+            cur = self.params.get(P_MAX_LEG, {}).get("value")
+            v = self.maxkn_edit if self.maxkn_edit is not None else cur
+            p.text(T("ov.max_speed", kn="-" if v is None else "%.0f" % v), "label",
+                   colour=C["note_txt"] if self.maxkn_edit is not None and self.maxkn_edit != cur else None,
+                   tag="maxkn")
+            p.button("−", lambda: self.maxkn_step(-1))
+            p.button("+", lambda: self.maxkn_step(1))
+            p.button(T("ov.set"), self.maxkn_send, "ok", enabled=self.maxkn_edit is not None, tag="maxkn_set")
+        else:
+            fl = self.fence_live()
+            if self.fence_dirty:
+                ft = T("ov.fence_changed", n=len(self.fence_draft))
+            elif fl:
+                ft = T("ov.fence_set", n=len(fl), by=(((self.gw_status or {}).get("geofence") or {}).get("by") or "?"))
+            else:
+                ft = T("ov.fence_none")
+            p.text(ft, "label", colour=C["note_txt"] if self.fence_dirty else None, tag="fence")
+            p.br()
+            p.button(T("ov.edit_fence"), lambda: self.set_edit("fence"), on=ed == "fence", tag="edit_fence")
+            p.button(T("ov.send_fence"), self.fence_send, "ok", enabled=self.fence_dirty, tag="send_fence")
+            p.button(T("ov.clear_fence"), self.fence_clear, enabled=bool(fl or self.fence_draft), tag="clear_fence")
 
     def boat_state(self):
         """(the boat shown in the dropdown or None, lamp state). The lamp is "connected" ONLY when that
@@ -3434,7 +3776,8 @@ class App:
             label = T("ov.choose_boat")
         p.button(label + "  ▾", self.boat_dropdown, "info", level="value", tag="boat_dd")
         if st == "connected":
-            p.badge("● " + T("ov.connected"), theme.GOOD, fg=theme.BLACK, level="label", tag="boat_lamp")
+            p.badge("● " + T("ov.connected"), theme.CONNECTED[0], fg=theme.CONNECTED[1], level="label",
+                    tag="boat_lamp", outline=theme.BLACK)       # the "connected" lamp: WHITE (13n1)
         elif st != "none":
             txt = T("ov.no_boat_check") if st == "address" else T("boat.st_" + st)
             p.badge("● " + txt, C["head"], fg=C["dim"], level="label", tag="boat_lamp", outline=C["line"])
@@ -3507,6 +3850,12 @@ class App:
         ok = self.link is not None and self.link.connected and age is not None and age < 1.0
         p.text(T("cap.link_ok") if ok else (T("cap.link_nodata") if self.link else T("cap.link_none")), "label",
                bold=True, colour=C["ok_txt"] if ok else C["bad_txt"], tag="data")
+        v = (self.gw_status or {}).get("vision")
+        if v:                                       # obstacle detection = a neural network: the "AI" badge (13n1)
+            p.br()
+            p.badge(theme.AI_BADGE["text"], theme.AI_BADGE["fill"], fg=theme.AI_BADGE["fg"], level="small",
+                    tag="ai_badge", outline=theme.BLACK)
+            p.text(T("ov.vision", state=st_text(v.get("state"), "vis.")), "label", tag="vision")
         n = (self.gw_status or {}).get("net")
         if n and n.get("channels"):
             rows = []

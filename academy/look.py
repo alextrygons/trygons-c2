@@ -83,8 +83,20 @@ def restyle(win):
 
 def banner(parent, lang_code=None):
     """The academy banner (CLAUDE.md S, AC8): top, always visible, the theme's CAUTION colour."""
-    return tk.Label(parent, text=banner_text(lang_code), bg=theme.CAUTION, fg=theme.BLACK, font=theme.font("title"),
-                    pady=6)
+    lab = tk.Label(parent, text=banner_text(lang_code), bg=theme.CAUTION, fg=theme.BLACK, font=theme.font("title"),
+                   pady=6)
+    # "Aa" = the text size of every window (small / normal / large, step 13n1, owner 2026-10-31 E1), at the right end
+    aa = tk.Button(lab, text="Aa", command=theme.cycle_text_size,
+                   **dict(theme.button_opts(), relief="flat", bd=0, highlightthickness=1))  # (the academy's buttons)
+    aa.place(relx=1.0, rely=0.5, anchor="e", x=-6)
+    lab.aa = aa
+    top = parent.winfo_toplevel()
+    def resize(ratio, w=top):
+        if not w.winfo_exists():
+            raise RuntimeError("window closed")         # theme drops this listener
+        theme.rescale_tree(w, ratio)
+    theme.on_text_size(resize)
+    return lab
 
 
 def title(win, key, lang_code=None, main=False):

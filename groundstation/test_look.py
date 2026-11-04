@@ -50,6 +50,13 @@ academy in the station's theme, Desktop shortcuts, no console windows in the dem
   LK22 LOW-3: version.dirty_cached scans ONCE with two threads at the same time (per-repo lock); a changed
        file above HASH_MAX_BYTES is never read (unknown = no mark)
 
+13n1 (owner 2026-10-31 E1):
+  LK23 BATTLE SHORT: every input (empty, any text, any length) = INVALID AUTHORISATION CODE, no lockout, nothing
+       sent / no setting changed, only the station log line; no code / hash / link in battleshort.py; masked
+       field, AUTHORISE above CANCEL, Cancel closes
+  LK24 3 text sizes + Aa: every level = one of 3 sizes (widgets, drawn text, the HUD); Aa cycles small / normal /
+       large, saved per PC, every window told; widgets rescaled; red = STANDBY only; square frames
+
 Run:  python test_look.py        (exit code 0 = all passed)
 """
 import os
@@ -59,6 +66,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import tkinter.font  # noqa: F401  (tk.font, LK24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -1135,6 +1143,99 @@ def lk22():
            "HASH_MAX_BYTES is never read (unknown, no mark)", not bad, "; ".join(bad) or "both")
 
 
+def lk23():
+    """BATTLE SHORT (13n1): any input refused, nothing sent, nothing changes, no lockout, no code anywhere."""
+    import battleshort
+    import settings as st
+    root = tk.Tk()
+    root.withdraw()
+    logs = []
+    before = dict(st._load() if hasattr(st, "_load") else {})
+    w = battleshort.BattleShort(root, logs.append)
+    tries = ["", "0000", "1234", "BATTLESHORT", "x" * 300, "' OR 1=1 --", "ΚΩΔΙΚΟΣ", "\x00", "admin", "4711"]
+    texts, still = [], True
+    for t in tries:
+        w.var.set(t)
+        w.authorise()
+        root.update()
+        texts.append(w.msg.cget("text"))
+        still = still and str(w.entry.cget("state")) == "normal" and str(w.b_auth.cget("state")) == "normal"
+    refused = all(x == i18n.T("bs.invalid") for x in texts)
+    always_false = not any(battleshort.attempt(t) for t in tries + [str(i) for i in range(10000)])
+    logged = logs == [battleshort.LOG_LINE] * len(tries)
+    after = dict(st._load() if hasattr(st, "_load") else {})
+    unchanged = before == after
+    # nothing in the module can reach a boat / gateway, and no code is stored: no link / socket import, no hash,
+    # no comparison of the typed text
+    src = open(os.path.join(HERE, "battleshort.py"), encoding="utf-8").read()
+    code = "\n".join(ln for ln in src.split("\n") if not ln.strip().startswith("#"))
+    code = re.sub(r'"""[\s\S]*?"""', "", code)
+    imports = set(re.findall(r"^\s*(?:import|from)\s+([a-zA-Z0-9_.]+)", code, re.M))
+    no_path = imports <= {"tkinter", "i18n", "theme"}
+    no_code = not re.search(r"hashlib|sha\d|md5|hmac|==\s*[\"']|secret|password|\bsend\b|socket|link", code)
+    root.deiconify()
+    w.w.deiconify()
+    root.update()
+    vertical = w.b_auth.winfo_y() < w.b_cancel.winfo_y()
+    masked = w.entry.cget("show") != ""
+    w.close()
+    root.update()
+    closed = not w.alive()
+    root.destroy()
+    report("LK23 BATTLE SHORT (13n1): every input = INVALID AUTHORISATION CODE, no lockout, nothing sent / changed "
+           "(settings unchanged), only the log line, no code / hash / link anywhere; masked field, AUTHORISE above "
+           "CANCEL, Cancel closes", refused and always_false and still and logged and unchanged and no_path and
+           no_code and vertical and masked and closed,
+           "refused %s (texts %s), attempt() never True %s, field + button still usable %s, log %s, settings unchanged "
+           "%s, imports %s, no code / hash / link %s, vertical %s, masked %s, closed %s" % (
+               refused, sorted(set(texts)), always_false, still, logs[:2], unchanged, sorted(imports), no_code,
+               vertical, masked, closed))
+
+
+def lk24():
+    """The 3 text sizes + "Aa" (13n1): every level is one of three sizes; Aa = small / normal / large, saved per
+    PC, x 0.85 / 1 / 1.2 for widgets, drawn text and the HUD; the colour code: STANDBY the only red button kind."""
+    import settings as st
+    sizes = {theme.PT[lv] for lv in theme.SIZE_OF}
+    pxs = {theme.PX[lv] for lv in theme.SIZE_OF}
+    three = len(sizes) == 3 and len(pxs) == 3 and set(theme.SIZE_OF.values()) == set(theme.SIZES)
+    hs = theme.hud_sizes(1080)
+    hud3 = len(set(hs.values())) == 3
+    seen = []
+    theme.on_text_size(seen.append)
+    theme.set_text_size("normal")
+    f_n, p_n, h_n = theme.font("label")[1], theme.px("label", 1920, 1080), theme.hud_sizes(1080)["norm"]
+    out = []
+    for _ in range(3):
+        theme.cycle_text_size()
+        out.append((theme.text_size(), theme.font("label")[1], theme.px("label", 1920, 1080),
+                    theme.hud_sizes(1080)["norm"], st.get("text_size")))
+    cyc = [o[0] for o in out] == ["large", "small", "normal"] and all(o[0] == o[4] for o in out)
+    big = out[0][1] > f_n and out[0][2] > p_n and out[0][3] > h_n
+    small = out[1][1] < f_n and out[1][2] < p_n and out[1][3] < h_n
+    told = len(seen) == 3 and abs(seen[0] - 1.2) < 1e-6
+    # rescale_tree really changes a widget's font
+    root = tk.Tk()
+    root.withdraw()
+    lab = tk.Label(root, text="x", font=theme.font("label"))
+    s0 = tk.font.Font(root=root, font=lab.cget("font")).actual()["size"]
+    theme.rescale_tree(root, 1.5)
+    s1 = tk.font.Font(root=root, font=lab.cget("font")).actual()["size"]
+    root.destroy()
+    rescaled = s1 > s0
+    # the colour code: no button kind but STANDBY is red; the info text colours are not the warning red
+    red = {k for k in ("normal", "ok", "no", "info", "warn", "sim", "standby")
+           if theme.button_opts(k)["bg"].lower() == theme.WARN.lower()}
+    reds_ok = red == {"standby"} and all(theme.THEMES[t]["bad_txt"].lower() != theme.WARN.lower() and
+                                         theme.THEMES[t]["btn_no"].lower() != theme.WARN.lower() for t in theme.THEMES)
+    square = theme.BUTTON["radius"] == 0 and theme.FRAME >= 1 and theme.button_opts()["relief"] == "solid"
+    report("LK24 3 text sizes + Aa (13n1): every level = one of 3 sizes (widgets, drawn, HUD), Aa cycles small / "
+           "normal / large (saved per PC, every window told), rescale_tree resizes widgets; red = STANDBY only, "
+           "square frames", three and hud3 and cyc and big and small and told and rescaled and reds_ok and square,
+           "sizes pt %s px %s hud %s; cycle %s; told %s; widget %s -> %s; red kinds %s; square %s" % (
+               sorted(sizes), sorted(pxs), sorted(set(hs.values())), out, seen, s0, s1, sorted(red), square))
+
+
 def main():
     i18n.set_lang("el", save=False)
     lk1()
@@ -1162,6 +1263,8 @@ def main():
     lk20()
     lk21()
     lk22()
+    lk23()
+    lk24()
     n = len(results)
     print("LOOK TESTS: %d/%d %s" % (sum(results), n, "PASS" if all(results) else "FAIL"))
     return 0 if all(results) else 1

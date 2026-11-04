@@ -44,11 +44,13 @@ DEFAULT_LAYOUT = {
     "rot": (0.876, 0.753, 0.056, 0.058),
     "gmeter": (0.936, 0.753, 0.056, 0.058),
     "minimap": (0.655, 0.700, 0.215, 0.240),
-    "steer": (0.395, 0.775, 0.210, 0.070),
-    "cdi": (0.395, 0.850, 0.210, 0.080),
-    "controls": (0.008, 0.888, 0.380, 0.052),
-    "drive": (0.095, 0.838, 0.293, 0.045),
-    "bottom": (0.008, 0.948, 0.984, 0.045),
+    "steer": (0.395, 0.760, 0.210, 0.068),
+    "cdi": (0.395, 0.833, 0.210, 0.066),
+    "drive": (0.095, 0.895, 0.290, 0.050),
+    # step 13n1 (owner 2026-10-31 E1): ONE thin full-width bar at the bottom (the old "controls" box is in it), the
+    # heading tape in its own box just above it
+    "tape": (0.395, 0.905, 0.255, 0.042),
+    "bottom": (0.008, 0.953, 0.984, 0.040),
     # the boat file's relays with "show_hud" (CLAUDE.md O): left, beside the throttle, above "drive"
     "relays": (0.095, 0.640, 0.150, 0.190),
 }
@@ -56,14 +58,15 @@ OVERLAYS = list(DEFAULT_LAYOUT)
 # the logo (theme.py): fixed in the free corner above the bottom bar, right of the mini map, below the
 # ROT / G meters - never over an instrument, a warning or the picture's centre
 LOGO_BOX = (0.876, 0.815, 0.116, 0.125)
-MINIMAL = {"status", "master", "alarms", "speed", "throttle", "bottom", "controls", "drive"}   # mode, speed, gear,
+MINIMAL = {"status", "master", "alarms", "speed", "throttle", "bottom", "tape", "drive"}       # mode, speed, gear,
 NORMAL_HIDES = {"rot", "gmeter", "cdi"}                                                    # heading, alarms
 DECLUTTER = ("FULL", "NORMAL", "MINIMAL")
-ALWAYS = {"controls", "drive"}     # never hidden by declutter: the way back to FULL; RELEASE of manual driving
+ALWAYS = {"bottom", "drive"}       # never hidden by declutter: the bar (the way back to FULL, SAVE), the drive buttons
 # hud_layout.json carries "layout_version": a saved file without it (or older) takes the NEW defaults for the
 # boxes that moved in that version; every other box keeps the user's values; the file is saved back.
-HUD_LAYOUT_VERSION = 2
-LAYOUT_MIGRATE = {2: ("alarms", "notices", "speed", "depth", "waypoint", "traffic", "rot", "gmeter")}
+HUD_LAYOUT_VERSION = 3
+LAYOUT_MIGRATE = {2: ("alarms", "notices", "speed", "depth", "waypoint", "traffic", "rot", "gmeter"),
+                  3: ("bottom", "tape", "drive", "steer", "cdi")}       # 13n1: the one bottom bar
 
 
 def rows_that_fit(n, box_h, lh, pad=4):
@@ -147,7 +150,9 @@ def palette(colour="green", night=False):
     if night:
         return dict(theme.NIGHT, panel=theme.BLACK, alpha=int(255 * theme.ALPHA["hud_panel_night"]),
                     outline=theme.BLACK, video=0.42, map_theme="night")
-    main = HUD_COLOURS.get(colour, HUD_COLOURS["green"])
+    # on the camera video every information is GREEN (13n1, owner 2026-10-31 E1): the old "white" setting is gone
+    colour = "green"
+    main = HUD_COLOURS["green"]
     light = theme.name() == "light"
     return {"main": main, "dim": theme.HUD_LIGHT["dim"] if light else theme.HUD_DIM.get(colour, theme.HUD_DIM["green"]),
             "warn": theme.WARN, "caution": theme.CAUTION, "good": theme.GOOD, "yellow": theme.HUD_YELLOW,
@@ -328,11 +333,11 @@ class Hud:
         return name in ALWAYS or declutter_visible(name, s.declutter or "FULL")
 
     def button(self, r, label, action, tag, on=False, colour=None):
-        """action None = a lamp only (shows a state, not clickable)."""
+        """action None = a lamp only (shows a state, not clickable). A SQUARE frame (13n1)."""
         x0, y0, x1, y1 = r
         col = colour or self.pal["main"]
         self.panel(r, tag, alpha=min(230, self.pal["alpha"] + 50))
-        self.rect(r, tag, outline=col, w=3 if on else 1, fill=col if on else None, alpha=90 if on else 255)
+        self.rect(r, tag, outline=col, w=3 if on else 2, fill=col if on else None, alpha=90 if on else 255)
         self.text(((x0 + x1) / 2, (y0 + y1) / 2), label, tag, size=self.f_small, bold=True, fill=col, anchor="c",
                   max_w=x1 - x0 - 6, box=r)
         if action is not None:
@@ -354,13 +359,13 @@ class Hud:
                          ("speed", self.speed), ("depth", self.depth), ("waypoint", self.waypoint),
                          ("traffic", self.traffic), ("rot", self.rot), ("gmeter", self.gmeter),
                          ("steer", self.steer), ("cdi", self.cdi), ("minimap", self.minimap),
-                         ("bottom", self.bottom), ("controls", self.controls), ("drive", self.drive),
+                         ("bottom", self.bottom), ("tape", self.tape), ("drive", self.drive),
                          ("relays", self.relays),
                          ("status", self.status),
                          ("master", self.master), ("notices", self.notices), ("alarms", self.alarms)):
             if not self.shown(name, s):
                 continue
-            if d is None and name not in ("mirror_l", "mirror_r", "status", "master", "alarms", "controls", "bottom",
+            if d is None and name not in ("mirror_l", "mirror_r", "status", "master", "alarms", "bottom",
                                           "minimap", "notices", "drive"):
                 continue
             fn(name, s)
@@ -912,87 +917,137 @@ class Hud:
         r = self.R(name)
         self.ops.append({"k": "minimap", "r": r, "tag": name})          # a child canvas (driver.py)
 
-    def bottom(self, name, s):
+    def ai_badge(self, x, cy, h, tag="ai_badge"):
+        """The small framed white "AI" badge (13n1): ONLY where a neural network works (vision eWaSR). -> its width."""
+        fs = max(8, int(h * 0.62))
+        w = self.measure("AI", fs, True) + fs * 0.6
+        r = (x, cy - h / 2, x + w, cy + h / 2)
+        self.rect(r, tag, fill=theme.AI_BADGE["fill"], outline=theme.BLACK, w=1, alpha=235)
+        self.text(((r[0] + r[2]) / 2, cy), theme.AI_BADGE["text"], tag, size=fs, bold=True, fill=theme.AI_BADGE["fg"],
+                  anchor="c", box=r)
+        return w
+
+    def tape(self, name, s):
+        """The heading tape (its own box, just above the bottom bar - 13n1)."""
         d = s.t
+        x0, y0, x1, y1 = self.R(name)
+        r = (x0, y0, x1, y1)
+        if d is None:
+            return
+        self.panel(r, name)
+        h = y1 - y0
+        m = self.f_small * 1.2                           # the tick labels stay inside the box
+        x0 += m
+        tw = x1 - m - x0
+        hd = d["heading"]
+        span = 60.0 if tw < 600 else 90.0
+        for x, deg, lab in tape_ticks(hd, tw, span=span):
+            xx = x0 + x
+            self.line((xx, y1 - (h * 0.40 if lab else h * 0.22), xx, y1 - 2), "tape", fill=self.pal["dim"], w=1)
+            if lab:
+                self.text((xx, y0 + 1), lab, "tape", size=self.f_small, fill=self.pal["dim"], anchor="n", box=r)
+        cx = x0 + tw / 2
+        if d["mode"] in (2, 3):
+            txx = x0 + tape_x(hd, d["target"], tw, span=span)
+            self.rect((txx - 5, y0 + h * 0.45, txx + 5, y1 - 1), "target", fill=theme.ADVISORY)
+        self.rect((cx - h * 1.05, y0 + 1, cx + h * 1.05, y1 - 1), "hdg", fill=theme.BLACK, outline=self.pal["main"],
+                  w=2, alpha=230)
+        self.text((cx, (y0 + y1) / 2), "%03.0f°" % hd if d["compass_ok"] else T("hud.no_compass"), "hdg",
+                  size=int(h * 0.62), bold=True, fill=self.pal["main"] if d["compass_ok"] else self.pal["warn"],
+                  anchor="c", max_w=h * 2.0, box=r)
+
+    def bar_groups(self, s):
+        """The ONE bottom bar of screen 1 (13n1, owner 2026-10-31 E1), in groups with small gaps:
+        [EL/EN · NIGHT · DECLUTTER · FILL/FIT · Aa] [AR · OBSTACLES AI] [LAYOUT] [REC · SAVE] [clock + mission].
+        -> [[(kind, label, action, tag, on, colour)]]; kind "btn" / "text" / "save"."""
+        d = s.t
+        g1 = [("btn", i18n.NAMES[i18n.other()], "lang", "ctl_lang", False, None),
+              ("btn", T("hud.night"), "night", "ctl_night", bool(s.night), None),
+              ("btn", T("hud.decl_" + (s.declutter or "FULL")), "declutter", "ctl_declutter", False, None),
+              ("btn", T("hud.scale_" + (s.video_scale or "fill")), "scale", "ctl_scale", False, None),
+              ("btn", "Aa", "text_size", "ctl_text_size", False, None)]
+        g2 = [("btn", T("hud.ar"), "ar_menu", "ctl_ar_menu", bool(s.ar_on), None)]
+        if s.vision:                                     # obstacle detection (eWaSR, a neural network): "AI"
+            g2.append(("ai", T("hud.obstacles"), "vis_overlay", "ctl_vis_overlay", s.vis_overlay is not False, None))
+            g2.append(("text", s.vision[0], None, "vision", False, self.pal.get(s.vision[1], s.vision[1])))
+        g3 = [("btn", T("hud.layout"), "edit", "ctl_edit", self.edit, None)]
+        if s.vision_cap:
+            g3.append(("btn", T("hud.clear_slowdown"), "vision_clear", "ctl_vision_clear", True, self.pal["caution"]))
+        if getattr(s, "slam_restore", False):           # the framed RESTORE POWER (step 13q4)
+            g3.append(("btn", T("slam.btn"), "slam_restore", "ctl_slam_restore", True, self.pal["caution"]))
+        g4 = []
+        rec = s.rec
+        if rec is not None:
+            g4.append(("text", T("hud.rec") if rec else T("hud.not_rec"), None, "rec", bool(rec),
+                       theme.REC if rec else self.pal["caution"]))
+        g4.append(("save", T("hud.save"), "save", "save", False, self.pal["warn"]))
+        g5 = []
+        if d is not None and "bank_v" in d:              # the 12 V bank (TELEM2 group L), red while LOW BATTERY
+            bv = d.get("bank_v")
+            g5.append(("text", T("hud.batt", v="%.1f" % bv) if bv is not None else T("hud.batt_none"), None, "batt",
+                       False, self.pal["warn"] if d.get("batt_low") else None))
+        if d is not None and d.get("gen_state", 0) in (2, 3, 4):   # the generator opens the throttle in neutral
+            g5.append(("text", T("hud.gen", p="%d" % d.get("gen_pct", 0)), None, "gen", False, None))
+        g5.append(("text", T("hud.clock", clock=s.clock or "--:--", mission=s.mission or "--:--"), None, "clock",
+                   False, None))
+        return [g for g in (g1, g2, g3, g4, g5) if g]
+
+    def bottom(self, name, s):
+        """The ONE thin full-width bottom bar (13n1). SAVE is never hidden (the bar is in ALWAYS)."""
         x0, y0, x1, y1 = self.R(name)
         r = (x0, y0, x1, y1)
         self.panel(r, name)
         h = y1 - y0
-        w = x1 - x0
-        minimal = s.declutter == "MINIMAL"
-        tw = w * (0.98 if minimal else 0.52)                           # heading tape
-        tx0 = x0 + (w - tw) / 2 if minimal else x0 + 4
-        if d is not None:
-            hd = d["heading"]
-            for x, deg, lab in tape_ticks(hd, tw, span=60.0 if tw < 600 else 90.0):
-                xx = tx0 + x
-                self.line((xx, y1 - (h * 0.40 if lab else h * 0.22), xx, y1 - 2), "tape", fill=self.pal["dim"],
-                          w=1)
-                if lab:
-                    self.text((xx, y0 + 1), lab, "tape", size=self.f_small, fill=self.pal["dim"], anchor="n", box=r)
-            cx = tx0 + tw / 2
-            if d["mode"] in (2, 3):
-                txx = tx0 + tape_x(hd, d["target"], tw, span=60.0 if tw < 600 else 90.0)
-                self.rect((txx - 5, y0 + h * 0.45, txx + 5, y1 - 1), "target", fill=theme.ADVISORY)
-            self.rect((cx - h * 1.05, y0 + 1, cx + h * 1.05, y1 - 1), "hdg", fill=theme.BLACK, outline=self.pal["main"],
-                      w=2, alpha=230)
-            self.text((cx, (y0 + y1) / 2), "%03.0f°" % hd if d["compass_ok"] else T("hud.no_compass"), "hdg",
-                      size=int(h * 0.62), bold=True, fill=self.pal["main"] if d["compass_ok"] else self.pal["warn"],
-                      anchor="c", max_w=h * 2.0, box=r)
-        if minimal:
-            return
-        # REC, vision, mission clock, SAVE - in one line to the right of the tape
-        x = tx0 + tw + 12
-        save_w = max(70, h * 2.6)
-        rest = x1 - save_w - 8 - x
-        items = []
-        rec = s.rec
-        if rec is not None:
-            items.append((T("hud.rec") if rec else T("hud.not_rec"), self.pal["warn"] if not rec else theme.REC,
-                          "rec"))
-        if s.vision:
-            items.append((s.vision[0], self.pal.get(s.vision[1], s.vision[1]), "vision"))
-        if d is not None and "bank_v" in d:                      # the 12 V bank (TELEM2 group L), red while LOW
-            bv = d.get("bank_v")
-            items.append((T("hud.batt", v="%.1f" % bv) if bv is not None else T("hud.batt_none"),
-                          self.pal["warn"] if d.get("batt_low") else self.pal["main"], "batt"))
-        if d is not None and d.get("gen_state", 0) in (2, 3, 4):   # the generator opens the throttle in neutral
-            items.append((T("hud.gen", p="%d" % d.get("gen_pct", 0)), self.pal["main"], "gen"))
-        items.append((T("hud.clock", clock=s.clock or "--:--", mission=s.mission or "--:--"), self.pal["main"],
-                      "clock"))
-        if items:
-            cw = rest / len(items)
-            for i, (txt, col, tag) in enumerate(items):
-                xx = x + i * cw
-                if tag == "rec" and rec:
-                    self.oval((xx, y0 + h * 0.3, xx + h * 0.4, y0 + h * 0.7), "rec", fill=theme.REC)
-                    xx += h * 0.5
-                self.text((xx, (y0 + y1) / 2), txt, tag, size=self.f_small, bold=True, fill=col, anchor="w",
-                          max_w=cw - 8, box=r)
-        sr = (x1 - save_w - 4, y0 + 2, x1 - 4, y1 - 2)
-        self.rect(sr, "save", outline=self.pal["warn"], w=3)
-        self.text(((sr[0] + sr[2]) / 2, (sr[1] + sr[3]) / 2), T("hud.save"), "save", size=self.f_norm, bold=True,
-                  fill=self.pal["warn"], anchor="c", max_w=save_w - 8, box=r)
-        self.hit(sr, "save")
+        groups = self.bar_groups(s)
+        pad, ggap = 4.0, max(10.0, h * 0.5)
+        fs = self.f_small
+
+        def width(it, f):
+            if it[0] == "save":
+                return max(h * 2.6, self.measure(it[1], f, True) + f * 2.4)
+            if it[0] == "ai":
+                return self.measure(it[1], f, True) + f * 1.6 + h * 0.9
+            if it[0] == "text":
+                return self.measure(it[1], f, True) + f * 0.6
+            return self.measure(it[1], f, True) + f * 1.6
+        total = sum(sum(width(it, fs) for it in g) + pad * (len(g) - 1) for g in groups) + ggap * (len(groups) - 1)
+        if total > x1 - x0 - 8:                          # a narrow window: the bar's text a little smaller
+            fs = max(8, int(fs * (x1 - x0 - 8) / total))
+        self.f_bar = fs
+        x = x0 + 4
+        for gi, g in enumerate(groups):
+            if gi == len(groups) - 1:                    # the clock group: right-aligned
+                gw = sum(width(it, fs) for it in g) + pad * (len(g) - 1)
+                x = max(x, x1 - 4 - gw)
+            for it in g:
+                w = width(it, fs)
+                kind, lab, act, tag, on, col = it
+                br = (x, y0 + 2, x + w, y1 - 2)
+                if kind == "text":
+                    if tag == "rec" and on:
+                        self.oval((x, y0 + h * 0.3, x + h * 0.4, y0 + h * 0.7), "rec", fill=theme.REC)
+                    self.text((x + (h * 0.5 if tag == "rec" and on else 2), (y0 + y1) / 2), lab, tag, size=fs,
+                              bold=True, fill=col or self.pal["main"], anchor="w", max_w=w, box=r)
+                elif kind == "save":                     # SAVE: big enough, framed
+                    self.rect(br, "save", outline=self.pal["warn"], w=3)
+                    self.text(((br[0] + br[2]) / 2, (br[1] + br[3]) / 2), lab, "save", size=self.f_norm, bold=True,
+                              fill=self.pal["warn"], anchor="c", max_w=w - 8, box=r)
+                    self.hit(br, "save")
+                elif kind == "ai":                       # OBSTACLES + the AI badge: the obstacle overlay on / off
+                    self.button(br, "", act, tag, on=on)
+                    bw = self.ai_badge(br[0] + 4, (br[1] + br[3]) / 2, (br[3] - br[1]) * 0.7)
+                    self.text((br[0] + 8 + bw, (br[1] + br[3]) / 2), lab, tag, size=fs, bold=True,
+                              fill=self.pal["main"], anchor="w", max_w=w - bw - 10, box=br)
+                else:
+                    self.button(br, lab, act, tag, on=on, colour=col)
+                    if fs != self.f_small:               # the label in the bar's size
+                        self.ops[-1]["size"] = int(fs)
+                x += w + pad
+            x += ggap - pad
 
     def controls(self, name, s):
-        x0, y0, x1, y1 = self.R(name)
-        btns = [(i18n.NAMES[i18n.other()], "lang", False),
-                (T("hud.night"), "night", bool(s.night)),
-                (T("hud.decl_" + (s.declutter or "FULL")), "declutter", False),
-                (T("hud.scale_" + (s.video_scale or "fill")), "scale", False),
-                (T("hud.ar"), "ar_menu", bool(s.ar_on)),
-                (T("hud.layout"), "edit", self.edit)]
-        if s.vision_cap:
-            btns.append((T("hud.clear_slowdown"), "vision_clear", True))
-        if getattr(s, "slam_restore", False):
-            btns.append((T("slam.btn"), "slam_restore", True))     # framed RESTORE POWER (step 13q4)
-        n = len(btns)
-        bw = (x1 - x0 - (n - 1) * 4) / n
-        for i, (lab, act, on) in enumerate(btns):
-            r = (x0 + i * (bw + 4), y0, x0 + i * (bw + 4) + bw, y1)
-            self.button(r, lab, act, "ctl_" + act, on=on,
-                        colour=self.pal["caution"] if act in ("vision_clear", "slam_restore") else None)
+        """Old entry point (13n1: the buttons are in the bottom bar now) - nothing to draw."""
+        return None
 
     # --- edit-layout mode ---------------------------------------------------------------------------------------
     def edit_frames(self, s):
