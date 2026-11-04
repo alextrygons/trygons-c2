@@ -6,6 +6,7 @@ callouts (one sound at a time).
 """
 import os
 import subprocess
+import threading
 import tkinter as tk
 from tkinter import ttk
 
@@ -111,8 +112,58 @@ def build(parent, app):
         i18n.bind(tk.Button(bb, font=F_TXT, command=lambda lg=lg: play_all(lg)), "snd.play_all_" + lg).pack(
             side="left", padx=2)
 
+    # step 13o (owner 2026-10-31 F): the voice engine (Piper / the Windows voice) + voice samples
+    ef = tk.Frame(vf, bg=BG)
+    ef.grid(row=4, column=0, columnspan=6, sticky="w", padx=2, pady=2)
+    i18n.bind(tk.Label(ef, font=F_MED, bg=BG), "snd.engine_label").pack(side="left", padx=(2, 4))
+    ev = tk.StringVar(value=tts.prefer())
+    st["engine"] = ev
+    for name in tts.ENGINES:
+        i18n.bind(tk.Radiobutton(ef, variable=ev, value=name, font=F_TXT, bg=BG, indicatoron=False, padx=6,
+                                 command=lambda: set_engine(ev.get())), "snd.engine_" + name).pack(side="left",
+                                                                                                    padx=2)
+    note = tk.Label(vf, font=F_TXT, bg=BG, fg=C["fg"], justify="left", anchor="w", wraplength=900)
+    note.grid(row=5, column=0, columnspan=6, sticky="w", padx=4)
+    st["note"] = note
+
+    def set_engine(name):
+        """Never asks Windows for its voices on the screen's thread (PowerShell, seconds): in the background."""
+
+        def run():
+            snd.set_engine(name)
+            missing = name == "windows" and tts.engine(snd.voice_lang, "windows") != "windows"
+            try:
+                note.after(0, lambda: note.configure(text=T("snd.engine_win_none") if missing
+                                                     else T("snd.engine_changed")))
+            except (tk.TclError, RuntimeError):
+                pass
+        threading.Thread(target=run, daemon=True).start()
+    st["set_engine"] = set_engine
+
+    def samples():
+        folder = os.path.join(snd.lib.cache, "samples")
+        note.configure(text=T("snd.samples_making"))
+
+        def run():
+            try:
+                for lg in i18n.LANGS:
+                    sound.make_samples(os.path.join(folder, lg), lg)
+            finally:
+                try:
+                    note.after(0, lambda: note.configure(text=T("snd.samples_done", path=folder)))
+                except (tk.TclError, RuntimeError):
+                    pass
+                if os.name == "nt" and os.environ.get("TRYGONS_SOUND") != "off":
+                    subprocess.Popen(["explorer", os.path.normpath(folder)])
+        threading.Thread(target=run, daemon=True).start()
+    i18n.bind(tk.Button(ef, font=F_TXT, command=samples), "snd.samples").pack(side="left", padx=(14, 2))
+
     def engines():
         try:
+            if tts.prefer() == "windows" and not tts.windows_known():
+                eng.configure(text=T("snd.making"), fg=C["fg"])      # the voices are being looked up
+                eng.after(2000, engines)
+                return
             lines = []
             for lg in i18n.LANGS:
                 d = tts.describe(lg)

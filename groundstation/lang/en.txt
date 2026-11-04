@@ -1786,3 +1786,17 @@ keep.cams_why = CAMERAS: {why}
 keep.cams_only = CAMERAS: only {n} min available
 keep.no_answer = no answer from the gateway
 keep.no_gw = only through the gateway
+# --- step 13o: the voice engine + samples (owner 2026-10-31 F) ---------------
+snd.engine_label = Voice:
+snd.engine_piper = Piper (AI, offline)
+snd.engine_windows = Windows voice (e.g. Stefanos)
+snd.engine_win_none = No Windows voice for this language on this PC (Windows Settings -> Time & language -> Speech -> Add voices): Piper speaks
+snd.engine_changed = The voice changed: every phrase and the guided tour are made again in the background
+snd.samples = Voice samples (5 sentences per option)
+snd.samples_making = Making the voice samples ...
+snd.samples_done = Voice samples ready: {path}
+voice.sample_1 = The gear, forward, neutral or reverse, changes only at idle.
+voice.sample_2 = Traffic, two o'clock, eight hundred metres.
+voice.sample_3 = Compass lost, the boat holds the course on the gyro.
+voice.sample_4 = Heading lock, two hundred and forty five degrees.
+voice.sample_5 = The STANDBY button on the boat always wins, in every mode.

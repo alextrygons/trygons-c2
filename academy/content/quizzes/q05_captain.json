@@ -70,7 +70,7 @@
       "q_en": "In MANEUVER (trailer, ramp), what does the throttle do?",
       "choices": [
         {
-          "text_el": "Μένει πάντα στο ρελαντί· μόνο τιμόνι και ταχύτητα",
+          "text_el": "Μένει πάντα στο ρελαντί· μόνο τιμόνι και σχέση",
           "text_en": "It always stays at idle; steering and gear only"
         },
         {

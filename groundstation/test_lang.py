@@ -9,6 +9,9 @@
      (the full layout matrix: test_screen2.py)
   L5 command descriptions / gateway sentences travel in English (protocol,
      audit) and are shown in the screen language (from_en round trip)
+  L6 Greek wording (step 13o, owner 2026-10-31 F): the gear is «σχέση» everywhere
+     (screens, voice, tour, quizzes, lessons, scenarios, MANUAL_EL) - never
+     «σασμάν» and never «ταχύτητα» in the gear sense; «ταχύτητα» = speed only
 
 Run:  python test_lang.py        (exit code 0 = all passed)
 """
@@ -114,6 +117,39 @@ HARD = re.compile(r'''(?:\btext=|\.say\(|\.event\(|\.title\(|askyesno\(|label=)\
 ALLOWED = {"Segoe UI", "Consolas"}
 
 
+REPO = os.path.dirname(HERE)
+GEAR_BAD = ("σασμαν", "ταχυτητων", "νεα ταχυτητα.", "νεα ταχυτητα,","ταχυτητα αλλαζει", "αλλαζει η ταχυτητα", "ταχυτητα μπροστα",
+            "τιμονι και ταχυτητα", "τιμονι + ταχυτητα", "ταχυτητες 22", "βλαβη ταχυτητ", "σφαλμα ταχυτητ",
+            "στην ταχυτητα,", "βλαβη στην ταχυτητα", "προβλημα στην ταχυτητα")
+
+
+def plain(text):
+    """Lower case, no accents (Greek tonos / dialytika): the gear check matches every spelling."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", text.lower()) if not unicodedata.combining(c))
+
+
+def greek_files():
+    out = [os.path.join(HERE, "lang", "el.txt"), os.path.join(REPO, "academy", "lang", "el.txt"),
+           os.path.join(REPO, "MANUAL_EL.txt")]
+    for top, _dirs, files in os.walk(os.path.join(REPO, "academy", "content")):
+        out += [os.path.join(top, f) for f in files if f.endswith(".json")]
+    return [p for p in out if os.path.exists(p)]
+
+
+def gear_words():
+    """([file: wrong word], the tour's safety sentence right)."""
+    found = []
+    for p in greek_files():
+        for n, line in enumerate(open(p, encoding="utf-8"), 1):
+            low = plain(line)
+            for w in GEAR_BAD:
+                if w in low:
+                    found.append("%s:%d %s" % (os.path.relpath(p, REPO), n, w))
+    tour = open(os.path.join(REPO, "academy", "content", "tour.json"), encoding="utf-8").read()
+    return found, "Η σχέση (μπροστά / νεκρό / όπισθεν) αλλάζει μόνο στο ρελαντί" in tour
+
+
 def main():
     # L1
     el, en = i18n.load("el"), i18n.load("en")
@@ -144,7 +180,8 @@ def main():
     import app as A
     root = tk.Tk()
     errors = []
-    root.report_callback_exception = lambda *a: errors.append(repr(a[1]))
+    import traceback
+    root.report_callback_exception = lambda *a: errors.append(repr(a[1]) + "".join(traceback.format_tb(a[2])))
     ap = A.App(root, layout=os.path.join(tempfile.gettempdir(), "trygons_layout_test_lang.json"))
     root.state("normal")
     root.geometry("1920x1080+0+0")
@@ -194,6 +231,19 @@ def main():
     report("L5 command / gateway sentences: English in the protocol and audit, the screen language on the screen",
            not bad and sample == "πορεία +10",
            "%d sentences round-tripped, wrong %s; 'heading +10' -> '%s'" % (n, bad[:5], sample))
+    # L6 the gear = «σχέση» (13o)
+    found, tour_ok = gear_words()
+
+    def hit(text):
+        return any(w in plain(text) for w in GEAR_BAD)
+    # the check itself: the old wrong sentences are caught, speed sentences are not
+    self_ok = hit("Η ταχύτητα αλλάζει μόνο στο ρελαντί.") and hit("ΒΛΑΒΗ ΣΑΣΜΑΝ") and \
+        hit("ρελαντί, αναμονή, νεκρό, αναμονή, νέα ταχύτητα.") and not hit("Ορισμός στέλνει νέα ταχύτητα ΠΟΡΕΙΑΣ") \
+        and not hit("Πλοίο κοντά, μειώνουμε ταχύτητα.")
+    report("L6 Greek: the gear is «σχέση» everywhere (no «σασμάν», no «ταχύτητα» for the gear); the tour says "
+           "«Η σχέση (μπροστά / νεκρό / όπισθεν) αλλάζει μόνο στο ρελαντί»", not found and tour_ok and self_ok,
+           "gear-sense words found %s; tour sentence %s; the check catches the old wording %s" % (
+               found[:6], tour_ok, self_ok))
     bad_n = results.count(False)
     print("LANGUAGE TESTS: %d passed, %d failed" % (len(results) - bad_n, bad_n))
     return 1 if bad_n else 0

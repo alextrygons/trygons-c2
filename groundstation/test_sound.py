@@ -15,6 +15,10 @@
   S9 the real offline voice: a Greek and an English phrase (Piper / Windows)
   S10 sound never changes control: the sound modules never send to the boat
      (no link / protocol use), a whole callout session sends nothing
+  S11 step 13o: the voice engine is a sound setting (Piper / the Windows voice), fallback when one is missing
+  S12 a new voice / new settings remake every cached sentence (+ clips); same voice = kept; no voice = kept
+  S13 lead-in silence + fade-in in front of every sentence; Piper with the calmer 13o settings
+  S14 the voice samples: 5 sentences per option + README (the real Piper when installed)
 
 Run:  python test_sound.py        (exit code 0 = all passed)
 """
@@ -380,10 +384,159 @@ def main():
     report("S10 sound never changes control: no link / protocol use in the sound modules; a whole callout session "
            "never touches the link", not bad and touched is None,
            "found %s; session %s" % (bad, touched or "never touched the link"))
+    voice_tests()
     i18n.set_lang("en", save=False)
     bad_n = results.count(False)
     print("SOUND TESTS: %d passed, %d failed" % (len(results) - bad_n, bad_n))
     return 1 if bad_n else 0
+
+
+def wav_secs(p):
+    with wave.open(p, "rb") as w:
+        return w.getnframes() / float(w.getframerate())
+
+
+def voice_tests():
+    """S11-S14: step 13o (owner 2026-10-31 F) - the voice engine setting, a new voice remakes the cache,
+    the lead-in silence, the tuned Piper settings, the voice samples."""
+    import settings
+    saved = (tts._win, tts._prefer, tts.voice_id, tts.synth, tts.subprocess.run, tts.piper_bin, tts.piper_voice)
+    try:
+        # S11 the engine follows the setting; a missing Windows voice falls back to Piper (and back)
+        tts.piper_bin = lambda: "piper.exe"
+        tts.piper_voice = lambda lang: "el_GR-rapunzelina-low.onnx"
+        tts._win = {"el": ("rt", "Microsoft Stefanos")}
+        a = (tts.engine("el", "piper"), tts.engine("el", "windows"))
+        ida, idb = tts.voice_id("el", "piper"), tts.voice_id("el", "windows")
+        tts._win = {}
+        b = tts.engine("el", "windows")
+        tts.piper_voice = lambda lang: None
+        tts._win = {"el": ("rt", "Microsoft Stefanos")}
+        c = tts.engine("el", "piper")
+        tts.piper_voice = lambda lang: None
+        tts._win = {}
+        d = (tts.engine("el", "piper"), tts.voice_id("el"))
+        snd = sound.SoundSystem(player=sound.NullPlayer(), library=sound.Library(cache=os.path.join(TMP, "c11")))
+        os.environ["TRYGONS_SOUND"] = "off"
+        snd.set_engine("windows")
+        p1 = (settings.get("voice_engine"), tts.prefer())
+        snd.set_engine("nonsense")
+        snd.set_engine("piper")
+        p2 = (settings.get("voice_engine"), tts.prefer())
+        tts.set_prefer("bad")
+        report("S11 the voice engine is a sound setting (piper / windows): followed when it can speak the language, "
+               "else the other one; a different engine = a different voice id; saved per PC",
+               a == ("piper", "windows") and ida != idb and "Stefanos" in idb and b == "piper" and c == "windows" and
+               d == (None, None) and p1 == ("windows", "windows") and p2 == ("piper", "piper") and
+               tts.prefer() == "piper",
+               "with both %s, ids differ %s; no Windows voice -> %s; no Piper -> %s; none -> %s; setting %s / %s" % (
+                   a, ida != idb, b, c, d, p1, p2))
+
+        # S12 a new voice (engine, model, settings) deletes the old sentences + clips: all made again
+        cache = os.path.join(TMP, "c12")
+        lib = sound.Library(cache=cache)
+        os.makedirs(os.path.join(cache, "el"))
+        os.makedirs(os.path.join(cache, "clips"))
+        old = os.path.join(cache, "el", "p_old.wav")
+        clip = os.path.join(cache, "clips", "x.wav")
+        own = os.path.join(cache, "el", "keep.txt")
+        for p in (old, clip, own):
+            open(p, "w").write("x")
+        vid = {"v": "A"}
+        tts.voice_id = lambda lang, choice=None: vid["v"]
+        g1 = lib.fresh("el")                                    # a cache from before 13o (no stamp): remade
+        gone1 = not os.path.exists(old) and not os.path.exists(clip) and os.path.exists(own)
+        open(old, "w").write("x")
+        lib2 = sound.Library(cache=cache)                       # a restart with the same voice: kept
+        g2 = lib2.fresh("el")
+        kept = os.path.exists(old)
+        vid["v"] = "B"
+        g3 = lib2.fresh("el")
+        gone3 = not os.path.exists(old)
+        open(old, "w").write("x")
+        vid["v"] = None                                          # no voice on this PC: keep what is there
+        g4 = sound.Library(cache=cache).fresh("el")
+        made = []
+        vid["v"] = "C"
+        tts.synth = lambda lang, items, **k: made.extend(items) or 0
+        lib3 = sound.Library(cache=cache)
+        lib3.make("el", ["Μία πρόταση."])
+        report("S12 the voice cache belongs to one voice: a cache from before 13o or another voice / setting = every "
+               "sentence + clip deleted and made again; the same voice after a restart = kept; no voice = kept; "
+               "own files untouched", g1 == 1 and gone1 and g2 == 0 and kept and g3 == 1 and gone3 and g4 == 0 and
+               os.path.exists(old) is False and len(made) == 1 and
+               open(os.path.join(cache, "el", "voice.txt"), encoding="utf-8").read().strip() == "C",
+               "first %d (gone %s), restart %d (kept %s), new voice %d (gone %s), no voice %d, remade %d" % (
+                   g1, gone1, g2, kept, g3, gone3, g4, len(made)))
+        tts.voice_id, tts.synth = saved[2], saved[3]
+
+        # S13 lead-in silence + fade-in; Piper runs with the tuned settings (not the model's own)
+        p = os.path.join(TMP, "lead.wav")
+        sound.write_wav(p, sound._note(440, 1000, 0.8))
+        s0 = wav_secs(p)
+        tts.lead_in(p)
+        s1 = wav_secs(p)
+        smp = sound.read_wav(p)
+        rate = 22050
+        with wave.open(p, "rb") as w:
+            rate = w.getframerate()
+        lead = int(rate * tts.LEAD_IN_MS / 1000.0)
+        quiet = max(abs(x) for x in smp[:lead]) == 0
+        fade_n = int(rate * tts.FADE_MS / 1000.0)
+        ramp = max(abs(x) for x in smp[lead:lead + fade_n // 4]) < 0.3 * max(abs(x) for x in smp[lead + fade_n:])
+        calls = []
+
+        class R:
+            returncode = 0
+        tts.piper_bin = lambda: os.path.join(TMP, "piper.exe")
+        tts.piper_voice = lambda lang: "el.onnx"
+        tts._win = {}
+        tts.subprocess.run = lambda args, **k: calls.append(args) or R()
+        tts.synth("el", [("Δοκιμή.", os.path.join(TMP, "x", "t.wav"))])
+        args = calls[0] if calls else []
+        tuned = all(k in args and abs(float(args[args.index(k) + 1]) - v) < 1e-6 for k, v in (
+            ("--noise_scale", tts.PIPER_TUNE["noise_scale"]), ("--noise_w", tts.PIPER_TUNE["noise_w"]),
+            ("--length_scale", tts.PIPER_TUNE["length_scale"])))
+        report("S13 every sentence starts with %d ms of silence + a %d ms fade-in; Piper runs with the calmer 13o "
+               "settings %s (model defaults %s)" % (tts.LEAD_IN_MS, tts.FADE_MS, tts.PIPER_TUNE, tts.PIPER_DEFAULT),
+               abs(s1 - s0 - tts.LEAD_IN_MS / 1000.0) < 0.01 and quiet and ramp and tuned and
+               tts.PIPER_TUNE["noise_scale"] < tts.PIPER_DEFAULT["noise_scale"] and
+               tts.PIPER_TUNE["noise_w"] < tts.PIPER_DEFAULT["noise_w"],
+               "%.2f -> %.2f s, silent lead %s, fade %s, piper args %s" % (s0, s1, quiet, ramp, args[3:]))
+        tts.subprocess.run, tts.piper_bin, tts.piper_voice, tts._win = saved[4], saved[5], saved[6], saved[0]
+
+        # S14 the voice samples: 5 sentences per option + README (a missing Windows voice is said)
+        folder = os.path.join(TMP, "samples")
+        real = all(tts.engine(lg, "piper") == "piper" for lg in ("el",))
+        if not real:
+            def fake(lang, items, **k):
+                for _t, q in items:
+                    os.makedirs(os.path.dirname(q), exist_ok=True)
+                    sound.write_wav(q, sound._note(300, 500))
+                return len(items)
+            tts.synth = fake
+            tts.piper_bin = lambda: "piper.exe"
+            tts.piper_voice = lambda lang: "el.onnx"
+        tts._win = {}                                       # no Windows Greek voice here
+        got = sound.make_samples(folder, "el")
+        files = {o: sorted(os.listdir(os.path.join(folder, o))) if os.path.isdir(os.path.join(folder, o)) else []
+                 for o, _e, _p in sound.SAMPLE_OPTIONS}
+        readme = open(os.path.join(folder, "README.txt"), encoding="utf-8").read()
+        lead_new = lead_old = None
+        if real:
+            lead_new = max(abs(x) for x in sound.read_wav(os.path.join(folder, "1_piper_new", "sample_1.wav"))[:3000])
+            lead_old = max(abs(x) for x in sound.read_wav(os.path.join(folder, "2_piper_before", "sample_1.wav"))[:3000])
+        texts = [i18n.TL("el", k) for k in sound.SAMPLE_KEYS]
+        report("S14 voice samples: 5 sentences per option (Piper 13o, Piper before, the Windows voice) in a folder + "
+               "README; no Windows Greek voice = said, nothing made; %s Piper" % ("the REAL" if real else "a fake"),
+               got["1_piper_new"] == 5 and got["2_piper_before"] == 5 and got["3_windows"] == 0 and
+               len(files["1_piper_new"]) == 5 and "no windows voice" in readme and all(t in readme for t in texts)
+               and "σχέση" in texts[0] and (not real or (lead_new == 0 and lead_old > 0)),
+               "made %s; README names the missing voice %s; real lead-in silent %s / before %s" % (
+                   got, "no windows voice" in readme, lead_new, lead_old))
+    finally:
+        (tts._win, tts._prefer, tts.voice_id, tts.synth, tts.subprocess.run, tts.piper_bin,
+         tts.piper_voice) = saved
 
 
 if __name__ == "__main__":

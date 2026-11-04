@@ -356,7 +356,10 @@ class Overlay:
             dr = ImageDraw.Draw(im)
             rgb = tuple(int(fill[i:i + 2], 16) for i in (1, 3, 5))
             orgb = tuple(int(outline[i:i + 2], 16) for i in (1, 3, 5))
-            dr.rounded_rectangle((0, 0, int(w) - 1, int(h) - 1), radius=int(radius), fill=rgb + (int(alpha * 255),),
+            # a window still being laid out can give a bar of width / height <= 0: draw the 1 px image then
+            # (13o: test_lang L4 caught the ValueError "x1 must be greater than or equal to x0")
+            dr.rounded_rectangle((0, 0, max(0, int(w) - 1), max(0, int(h) - 1)), radius=int(radius),
+                                 fill=rgb + (int(alpha * 255),),
                                  outline=orgb + (220,), width=theme.PANEL["border"])
             img = self._imgs[key] = ImageTk.PhotoImage(im)
         return img

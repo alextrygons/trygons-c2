@@ -42,7 +42,7 @@
   S19 shore stick override (step 13q3): MANUAL STEERING - AUTO / HDG LOCK waiting, NEW HEADING, the lever
       ceiling, the AUTO data-lost stop on screens 2 + 1 (UNCREWED only)
   S21 mode bar (step 13n1, owner 2026-10-31 E1): top centre, always drawn, the 7 modes + BATTLE SHORT, the
-      active one inverted, STANDBY the only red button, greyed = says why + sends nothing, MANUAL never from the PC
+      active one inverted, red = STANDBY + SAVE only, greyed = says why + sends nothing, MANUAL never from the PC
   S22 the two bottom bars: their items, a sub-panel above bar 1, hide to a handle, dock top / bottom
   S23 panels draggable (saved per PC, never over the boat), RESET TO DEFAULT
   S24 BATTLE SHORT: opens from the mode bar, every code INVALID, nothing sent, the log line, the tooltip
@@ -719,7 +719,8 @@ ALLOWED = {"STANDBY", "AUTO", "GPS", "AIS", "CPA", "TCPA", "SOG", "COG", "USB", 
            "Ctrl", "Shift", "Tab", "Esc", "Space", "x", "v", "on", "off", "lat", "lon", "WP", "Tools", "AURIX",
            "English", "png", "json", "txt", "tlg", "TLG", "CSV", "csv", "Not", "for", "navigation", "free", "data",
            "may", "be", "inaccurate", "near", "the", "coast", "GATEWAY", "FRONT-", "UART", "kHz", "python", "PWM",
-           "CPU", "alice", "bob", "DroneCAN", "Drones", "BATTLE", "SHORT", "Google", "Earth", "OpenCPN"}  # (13n3 GPX)
+           "CPU", "alice", "bob", "DroneCAN", "Drones", "BATTLE", "SHORT", "Google", "Earth", "OpenCPN",  # (13n3 GPX)
+           "Windows", "Stefanos", "Microsoft"}  # (13o: the Windows voice, a product + voice name)
 
 
 def english_words(text):
@@ -1715,7 +1716,7 @@ def op(ap, tag):
 def s21_mode_bar(rig):
     """Step 13n1 (owner 2026-10-31 E1): the MODE BAR - top centre, always drawn (also every panel collapsed), never
     hideable: STANDBY HDG LOCK AUTO REMOTE MANEUVER DP MANUAL · BATTLE SHORT; the active mode inverted (white fill,
-    larger); STANDBY the only red button; not allowed = grey, a click says why and sends nothing; MANUAL never from
+    larger); red buttons = STANDBY + SAVE only (owner 2026-11-04); not allowed = grey, a click says why and sends nothing; MANUAL never from
     the PC; AUTO greyed without a route, a click on it with a route = AUTO START; STANDBY always sends."""
     ap = rig.ap
     rig.gateway_like(True)
@@ -1742,7 +1743,8 @@ def s21_mode_bar(rig):
             act["r"][3] - act["r"][1] > op(ap, "mode_AUTO")["r"][3] - op(ap, "mode_AUTO")["r"][1]
         reds = [o["tag"] for o in ap.ov.ops if o.get("k") == "button" and str(o.get("fill", "")).lower() ==
                 A.theme.WARN.lower()]
-        only_red = reds == ["standby"]                # (the active STANDBY on the bar is white = inverted)
+        # red = STANDBY and SAVE only (owner 2026-11-04: SAVE stays red; the active STANDBY on the bar is white)
+        only_red = "standby" in reds and set(reds) <= {"standby", "save"}
         auto_grey = not op(ap, "mode_AUTO")["enabled"]
         manual_grey = not op(ap, "mode_MANUAL")["enabled"]
         ap.msg_text = ""
@@ -1789,7 +1791,7 @@ def s21_mode_bar(rig):
             rig.extra.pop(k, None)
         rig.pump(0.3)
     report("S21 mode bar (13n1): top centre, the 7 modes + BATTLE SHORT in order, always drawn, active inverted + "
-           "larger, STANDBY the only red button, greyed = a click says why + nothing sent, MANUAL never from the PC, "
+           "larger, red buttons = STANDBY (+ SAVE) only, greyed = a click says why + nothing sent, MANUAL never from the PC, "
            "AUTO with a route = AUTO START, STANDBY always", drawn and order and top and centred and inverted and
            only_red and auto_grey and manual_grey and why and why_man and auto_sent and sb_sent and stays and
            auto_on and fits and not rig.errors,

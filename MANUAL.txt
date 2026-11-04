@@ -482,7 +482,8 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
   (bar 2 or the tools window) puts every panel back. STANDBY (big red,
   bottom-left corner) is ALWAYS there, also with every panel folded.
   THE LOOK (step 13n1, owner 2026-10-31): red = alarms (WARNING) only, amber
-  = CAUTION, STANDBY is the only red button; other information is black or
+  = CAUTION; the only red buttons are STANDBY and SAVE (owner 2026-11-04);
+  other information is black or
   white by its background; the CONNECTED lamp is white. Everything you can
   press or type into has a square frame. Only 3 text sizes everywhere (very
   important / heading / information); "Aa" (bar 2, screen 1's bar, the
@@ -957,6 +958,20 @@ THE VOICES: Piper, a free offline neural text-to-speech (MIT licence),
   tones only. Every callout is said as one sentence and all of them are
   made once in advance (groundstation\sound_cache\, not in git) so a
   callout starts at once; garbled takes are made again by themselves.
+VOICE CHOICE (step 13o): Tools - Sound - "Voice": Piper (AI, offline; the
+  default) or the Windows voice (e.g. the Greek "Microsoft Stefanos": Windows
+  Settings - Time & language - Speech - Add voices - Greek; the modern voices
+  are found too, not only the old SAPI ones). No Windows voice for the
+  language = Piper speaks (the page says so). Piper now runs with calmer
+  settings (less "wobble" at the start of a sentence) and every sentence
+  starts with a short silence. A new voice or new settings: every phrase AND
+  the guided tour are deleted and made again by themselves in the background
+  (a few minutes the first time: tones only meanwhile). "Voice samples":
+  5 sentences per option (Piper now, Piper as before, the Windows voice) in
+  groundstation\sound_cache\samples\el\ (and \en\) with a README.txt -
+  listen and choose. The same from a command window:
+    C:\msys64\ucrt64\bin\python.exe tools\make_voice.py --samples
+    C:\msys64\ucrt64\bin\python.exe tools\make_voice.py   (every phrase + tour now)
 OWN RECORDINGS: a WAV file groundstation\sounds\el\<key>.wav (or \en\)
   replaces the computer voice for that phrase, e.g.
   sounds\el\say.alarm.compass_lost.wav (groundstation\sounds\README.txt).

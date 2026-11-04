@@ -70,7 +70,7 @@
       "why_en": "Every power-up starts at 30 / 5 %. A raised limit is never saved."
     },
     {
-      "q_el": "Πότε αλλάζει η ταχύτητα (μπροστά / νεκρό / όπισθεν);",
+      "q_el": "Πότε αλλάζει η σχέση (μπροστά / νεκρό / όπισθεν);",
       "q_en": "When does the gear change (forward / neutral / reverse)?",
       "choices": [
         {
@@ -87,7 +87,7 @@
         }
       ],
       "answer": 0,
-      "why_el": "Ρελαντί, αναμονή, νεκρό, αναμονή, νέα ταχύτητα, αναμονή, μετά γκάζι. Ποτέ με γκάζι.",
+      "why_el": "Ρελαντί, αναμονή, νεκρό, αναμονή, νέα σχέση, αναμονή, μετά γκάζι. Ποτέ με γκάζι.",
       "why_en": "Idle, wait, neutral, wait, new gear, wait, then throttle. Never under throttle."
     },
     {

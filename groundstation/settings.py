@@ -36,6 +36,7 @@ DEFAULTS = {
     "quiet": False,             # night / quiet sound mode: softer, fewer advisories
     "repeat_s": 20.0,           # the same callout is not repeated within this time
     "sound": True,              # sound + voice on this PC
+    "voice_engine": "piper",    # piper (offline AI voice, default) / windows (SAPI voice, e.g. Greek Stefanos) (13o)
     "map": {"theme": "dark", "course_up": False, "m_per_px": 10.0},
 }
 _data = None

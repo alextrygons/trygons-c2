@@ -174,6 +174,8 @@ class Library:
         self.lock = threading.Lock()
         self.busy = {}                          # lang -> "making the voice cache" message
         self.made = {}                          # lang -> phrases in the cache
+        self.checked = {}                       # lang -> the voice id the cache was checked against
+        self.remade = {}                        # lang -> sentences deleted because the voice changed (13o)
 
     # A callout is spoken as ONE sentence ("Traffic, two o'clock, eight hundred metres."): neural voices
     # sound right on sentences, some garble single short words (the Greek one does).
@@ -203,11 +205,56 @@ class Library:
                 secs = w.getnframes() / float(w.getframerate())
         except (OSError, EOFError, wave.Error):
             return True
-        return secs > 0.9 + 0.11 * len(text)
+        return secs > 0.9 + tts.LEAD_IN_MS / 1000.0 + 0.11 * len(text)
+
+    STAMP = "voice.txt"
+
+    def fresh(self, lang):
+        """Step 13o: the cache belongs to ONE voice (engine, model, settings = tts.voice_id). A different one
+        (a new Piper setting, Piper <-> Windows in the sound settings) deletes every made sentence of the
+        language (and the joined clips): they are all made again with the new voice. No voice here = the
+        cache is kept as it is. Returns the number of sentences deleted."""
+        vid = tts.voice_id(lang)
+        if vid is None or self.checked.get(lang) == vid:
+            return 0
+        folder = os.path.join(self.cache, lang)
+        stamp = os.path.join(folder, self.STAMP)
+        try:
+            with open(stamp, encoding="utf-8") as f:
+                old = f.read().strip()
+        except OSError:
+            old = None
+        gone = 0
+        if old != vid:
+            if os.path.isdir(folder):
+                for fn in os.listdir(folder):
+                    if fn.startswith("p_") and fn.endswith(".wav"):
+                        try:
+                            os.remove(os.path.join(folder, fn))
+                            gone += 1
+                        except OSError:
+                            pass
+            clips = os.path.join(self.cache, "clips")
+            if os.path.isdir(clips):
+                for fn in os.listdir(clips):
+                    if fn.endswith(".wav"):
+                        try:
+                            os.remove(os.path.join(clips, fn))
+                        except OSError:
+                            pass
+            os.makedirs(folder, exist_ok=True)
+            with open(stamp + ".part", "w", encoding="utf-8") as f:
+                f.write(vid + "\n")
+            os.replace(stamp + ".part", stamp)
+            self.remade[lang] = gone
+        self.checked[lang] = vid
+        return gone
 
     def make(self, lang, texts, retries=3):
         """Make the missing sentences (one TTS run); a garbled one is made again (the voice is a little
         different every time) and the shortest take is kept."""
+        with self.lock:
+            self.fresh(lang)
         need = [(t, self.sentence_path(lang, t)) for t in texts if t]
         need = [(t, p) for t, p in need if not os.path.exists(p)]
         if not need:
@@ -248,6 +295,12 @@ class Library:
             text = self.text_of(lang, keys)
             if not text:
                 return None
+            if self.checked.get(lang) is None:
+                if not block:                   # the first check may ask Windows for its voices: not here
+                    threading.Thread(target=self.make, args=(lang, [text]), daemon=True).start()
+                    return None
+                with self.lock:
+                    self.fresh(lang)
             p = self.sentence_path(lang, text)
             if not os.path.exists(p):
                 if not block:
@@ -269,14 +322,17 @@ class Library:
         lists += [["say.nav.turning"] + heading_keys(h) for h in range(0, 360, 5)]
         return [t for t in (self.text_of(lang, ks) for ks in lists) if t]
 
-    def pregenerate(self, lang, done=None):
-        """Every voice sentence of the language, in the background (once; then cached on disk)."""
+    def pregenerate(self, lang, done=None, extra=None):
+        """Every voice sentence of the language, in the background (once; then cached on disk).
+        extra = more sentences made in the same run (the guided tour's, step 13o)."""
         def run():
             self.busy[lang] = True
             try:
                 texts = self.all_sentences(lang)
                 self.make(lang, texts)
                 self.made[lang] = sum(1 for t in texts if os.path.exists(self.sentence_path(lang, t)))
+                if extra:
+                    self.make(lang, list(extra(lang)) if callable(extra) else list(extra))
             finally:
                 self.busy[lang] = False
                 if done:
@@ -509,6 +565,53 @@ def dynamic_keys():
     return k
 
 
+def tour_texts(lang):
+    """The guided tour's sentences (academy/tour.py through academymenu; [] when it can't be read)."""
+    try:
+        import academymenu
+        return academymenu.tour_sentences(lang)
+    except Exception:
+        return []
+
+
+SAMPLE_KEYS = ["voice.sample_%d" % i for i in range(1, 6)]
+SAMPLE_OPTIONS = (("1_piper_new", "piper", None), ("2_piper_before", "piper", tts.PIPER_DEFAULT),
+                  ("3_windows", "windows", None))
+
+
+def make_samples(folder, lang="el"):
+    """Step 13o (owner 2026-10-31 F): 5 sample sentences per voice option into folder/<option>/ for the owner
+    to listen and choose: 1 Piper with the 13o settings + lead-in, 2 Piper as before (the model's own settings,
+    no lead-in), 3 the Windows voice of the language (when one is installed). Returns {option: files made};
+    folder/README.txt says what is what (and that no Windows voice was found)."""
+    texts = [i18n.TL(lang, k) for k in SAMPLE_KEYS]
+    out, notes = {}, []
+    for name, eng, prm in SAMPLE_OPTIONS:
+        sub = os.path.join(folder, name)
+        if os.path.isdir(sub):
+            for fn in os.listdir(sub):
+                if fn.endswith(".wav"):
+                    os.remove(os.path.join(sub, fn))
+        if tts.engine(lang, eng) != eng:
+            out[name] = 0
+            notes.append("%s: %s" % (name, "no %s voice for '%s' on this PC" % (eng, lang)))
+            continue
+        items = [(t, os.path.join(sub, "sample_%d.wav" % (i + 1))) for i, t in enumerate(texts)]
+        before = name == "2_piper_before"
+        out[name] = tts.synth(lang, items, choice=eng, piper_params=prm, lead_ms=0 if before else tts.LEAD_IN_MS)
+        notes.append("%s: %s, %d files%s" % (name, tts.describe(lang, eng), out[name],
+                                             " (the model's own settings, no lead-in)" if before else
+                                             (" %s, lead-in %d ms" % (tts.PIPER_TUNE, tts.LEAD_IN_MS)
+                                              if eng == "piper" else ", lead-in %d ms" % tts.LEAD_IN_MS)))
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "README.txt"), "w", encoding="utf-8") as f:
+        f.write("Voice samples (step 13o) - language %s\n\n" % lang)
+        f.write("\n".join(notes) + "\n\nSentences:\n")
+        f.write("\n".join("%d. %s" % (i + 1, t) for i, t in enumerate(texts)) + "\n")
+        f.write("\nChoose in the ground station: Tools -> Sound -> Voice (Piper / Windows voice).\n")
+    return out
+
+
 class SoundSystem:
     """The ground station's sound: settings + library + scheduler + player."""
 
@@ -525,13 +628,29 @@ class SoundSystem:
         s = cls()
         s.app = app
         if os.environ.get("TRYGONS_SOUND") != "off":
-            s.lib.pregenerate(s.voice_lang)
+            s.prepare_all([s.voice_lang])
         app.root.after(100, s._tick)
         return s
 
     app = None
 
+    def prepare_all(self, langs):
+        """Make every callout sentence of these languages + the guided tour's (step 13o: the tour voice is
+        ready for TOUR.bat too), in the background."""
+        for lg in langs:
+            self.lib.pregenerate(lg, extra=tour_texts)
+
+    def set_engine(self, name):
+        """The sound setting "voice_engine" (piper / windows, step 13o): every sentence is made again with the
+        chosen voice (the library sees the new voice id)."""
+        if name in tts.ENGINES:
+            settings.put("voice_engine", name)
+            tts.set_prefer(name)
+            if os.environ.get("TRYGONS_SOUND") != "off":
+                self.prepare_all(i18n.LANGS)
+
     def apply_settings(self):
+        tts.set_prefer(settings.get("voice_engine", "piper"))
         sc = self.sched
         sc.volume = float(settings.get("volume", 80))
         sc.mute_advisory = bool(settings.get("mute_advisory"))

@@ -203,7 +203,7 @@ ALPHA = {"panel": 0.80, "panel_light": 0.84, "hud_panel": 0.55, "hud_panel_night
 # A SQUARE frame around everything that can be pressed or typed into (13n1, owner 2026-10-31 E1): radius 0
 BUTTON = {"radius": 0.0, "pad_x": 0.70, "height": 1.85, "border": 2}       # x the button font size
 FRAME = 2                           # px: the square frame of a button / entry field
-# the colour code (13n1): red = alarms (WARNING) only, amber = CAUTION, STANDBY = the ONLY red button; on the
+# the colour code (13n1): red = alarms (WARNING) only, amber = CAUTION, red buttons = STANDBY and SAVE only (owner 2026-11-04); on the
 # camera video (screen 1 HUD) every information GREEN; elsewhere information black or white by the background;
 # the "connected" lamp white; NIGHT = the dim red (NIGHT below)
 CONNECTED = ("#ffffff", "#000000")  # the "connected" lamp: fill, its text

@@ -1202,7 +1202,7 @@ def lk23():
 
 def lk24():
     """The 3 text sizes + "Aa" (13n1): every level is one of three sizes; Aa = small / normal / large, saved per
-    PC, x 0.85 / 1 / 1.2 for widgets, drawn text and the HUD; the colour code: STANDBY the only red button kind."""
+    PC, x 0.85 / 1 / 1.2 for widgets, drawn text and the HUD; the colour code: red buttons = STANDBY (+ SAVE, owner 2026-11-04) only."""
     import settings as st
     sizes = {theme.PT[lv] for lv in theme.SIZE_OF}
     pxs = {theme.PX[lv] for lv in theme.SIZE_OF}
@@ -1231,7 +1231,8 @@ def lk24():
     s1 = tk.font.Font(root=root, font=lab.cget("font")).actual()["size"]
     root.destroy()
     rescaled = s1 > s0
-    # the colour code: no button kind but STANDBY is red; the info text colours are not the warning red
+    # the colour code: no button kind but STANDBY is red (SAVE = red too, owner 2026-11-04: its own button, not a
+    # kind); the info text colours are not the warning red
     red = {k for k in ("normal", "ok", "no", "info", "warn", "sim", "standby")
            if theme.button_opts(k)["bg"].lower() == theme.WARN.lower()}
     reds_ok = red == {"standby"} and all(theme.THEMES[t]["bad_txt"].lower() != theme.WARN.lower() and
