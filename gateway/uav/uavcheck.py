@@ -23,7 +23,10 @@ DEFAULTS = {
     "uav_rf_range_m": 1500.0,       # W59
     "uav_max_speed_ms": 10.0,       # the mission speed cap (DO_CHANGE_SPEED)
     "uav_climb_ms": 2.5,
-    "uav_land_ms": 1.0,             # the landing descent rate (ArduCopter LAND_SPEED ~0.5-1 m/s)
+    "uav_land_ms": 1.0,             # the landing descent rate high up (ArduCopter LAND_SPEED_HIGH / WPNAV_SPEED_DN)
+    # U4 review LOW: ArduCopter lands in two stages - the last LAND_ALT_LOW (~10 m) at LAND_SPEED (~0.5 m/s); W71 / W75
+    "uav_land_final_m": 10.0,
+    "uav_land_final_ms": 0.5,
     "uav_cruise_a": 20.0,           # conservative 7" quad currents until measured (registry, later)
     "uav_hover_a": 18.0,
     "uav_wind_margin_pct": 30.0,
@@ -74,7 +77,9 @@ def energy_mah(start, wps, cfg, take_alt=None):
     route = (float(cfg["uav_cruise_a"]) * t_cruise * (1.0 + float(cfg["uav_wind_margin_pct"]) / 100.0) +
              float(cfg["uav_hover_a"]) * t_vert) / 3.6
     top = max(alts)
-    reserve = float(cfg["uav_hover_a"]) * (top / float(cfg["uav_land_ms"])) / 3.6 * (
+    low = min(top, float(cfg.get("uav_land_final_m", 0.0)))           # U4 review LOW: the two-stage landing
+    t_land = (top - low) / float(cfg["uav_land_ms"]) + low / float(cfg.get("uav_land_final_ms") or cfg["uav_land_ms"])
+    reserve = float(cfg["uav_hover_a"]) * t_land / 3.6 * (
         1.0 + float(cfg["uav_land_margin_pct"]) / 100.0)
     return route, reserve
 

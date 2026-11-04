@@ -304,7 +304,9 @@ class UavManager:
 
     def _video_tick(self, now):
         p = self.vproc
-        if p is not None and (p.poll() is not None or now - self.v_t > 15.0):
+        # U4 review LOW: the worker probes the encoders first (up to 2 x PROBE_S) - more time until its final hello
+        silent_s = 15.0 if self.v_hello.get("encoder") else 30.0
+        if p is not None and (p.poll() is not None or now - self.v_t > silent_s):
             self._stop_video(wait=False)
             self.v_next_start = now + float(self.cfg["restart_s"])
             self.notice("UAV VIDEO process %s - restarting" % ("ended" if p.poll() is not None else "silent"), "caution")
@@ -499,6 +501,11 @@ class UavManager:
                 self.notice("UAV %d LANDING NOW - battery minimum (where it is): %s" % (s, m.get("why", "")),
                             "caution")
             self.gw.audit("uav_land", slot=s, what=m.get("what"), why=m.get("why", ""))
+        elif ev == "batt_stale":
+            # U4 review MED-1: the battery % of a flying drone not heard: the gateway's battery rule cannot judge it
+            s = int(m.get("slot") or 0)
+            self.notice("UAV %d BATTERY DATA STALE - only the drone's own battery backstop" % s if m.get("stale") else
+                        "UAV %d battery data back" % s, "caution" if m.get("stale") else "info")
         elif ev in ("mission", "cmd"):
             kc = self.cbs.pop(m.get("id"), None)
             if kc is not None:
@@ -905,14 +912,25 @@ class UavManager:
                "lq": rd.get("lq") if rd.get("present") else (0 if rd else None), "rssi": rd.get("rssi"),
                "link_age": rd.get("hb_age"), "usb_lq": lk.get("lq"),
                "land_eta": j.get("eta_s"), "landing": bool(d.get("landing")),
-               "stage": battery.stage(j.get("eta_s"), bool(d.get("landing"))) if (d.get("armed") and
-                                                                                  not d.get("landed")) else None,
+               "stage": self._stage(n, battery.stage(j.get("eta_s"), bool(d.get("landing"))),
+                                    bool(d.get("armed") and not d.get("landed"))),
                "gps_fix": d.get("gps_fix"), "text": d.get("text"), "video": self.video_state(n)}
         if d.get("lat") is not None and (d["lat"], d.get("lon")) == (0.0, 0.0):
             out["lat"] = out["lon"] = None                              # no position yet
         if boat_pos and out["lat"] is not None:
             out["dist_m"] = round(uavcheck.dist_m(boat_pos, (out["lat"], out["lon"])))
         return out
+
+    def _stage(self, n, raw, air):
+        """U4 review LOW: the battery stage latched per flight (the most severe reached), cleared on the ground."""
+        hold = getattr(self, "stage_hold", None)
+        if hold is None:
+            hold = self.stage_hold = {}
+        if not air:
+            hold.pop(n, None)
+            return None
+        hold[n] = battery.latch(hold.get(n), raw)
+        return hold[n]
 
     def drones(self):
         pos = self.boat().get("pos") if self.enabled else None

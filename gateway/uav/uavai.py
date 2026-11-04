@@ -16,6 +16,7 @@ from a helper thread (never on the event loop).
 """
 import collections
 import json
+import queue
 import os
 import subprocess
 import threading
@@ -90,8 +91,7 @@ class UavAi:
             return
         import toolpaths
         here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vision")
-        n = os.cpu_count() or 4
-        core = max(0, n - 3)                                    # not the boat vision's cores (the last ones)
+        core = self.core_for()
         args = [py, os.path.join(here, "worker.py"), "--model", model, "--threads", "1", "--cores", str(core),
                 "--max-fps", str(float(self.cfg["max_fps"])), "--ffmpeg", toolpaths.ffmpeg() or "ffmpeg"]
         try:
@@ -116,16 +116,45 @@ class UavAi:
             pass
         self.inbox.append({"t": "exit"})
 
-    def send(self, obj):
-        p = self.proc
+    def core_for(self):
+        """U4 review LOW: the UAV AI's one core = the highest core that the BOAT's vision worker does not use (its
+        config "cores", else its last "threads" cores - gateway/vision/manager.py), never one of them."""
+        n = os.cpu_count() or 4
+        vc = getattr(getattr(getattr(self.mgr, "gw", None), "vision", None), "cfg", None) or {}
         try:
-            if p is not None and p.poll() is None:
-                p.stdin.write(json.dumps(obj) + "\n")
-                p.stdin.flush()
-                return True
-        except (OSError, ValueError):
-            pass
-        return False
+            th = int(vc.get("threads", 2) or 2)
+            boat = set(int(x) for x in vc["cores"]) if vc.get("cores") is not None else set(range(max(0, n - th), n))
+        except (TypeError, ValueError):
+            boat = set(range(max(0, n - 2), n))
+        free = [c for c in range(n - 1, -1, -1) if c not in boat]
+        return free[0] if free else 0
+
+    def send(self, obj):
+        """U4 review LOW: never a blocking pipe write on the event loop - a writer thread per worker writes the
+        queue (full = dropped, the next frame / command follows)."""
+        p = self.proc
+        if p is None or p.poll() is not None:
+            return False
+        q = getattr(p, "_wq", None)
+        if q is None:
+            q = p._wq = queue.Queue(maxsize=50)
+
+            def writer(p=p, q=q):
+                try:
+                    while True:
+                        line = q.get()
+                        if line is None:
+                            break
+                        p.stdin.write(line)
+                        p.stdin.flush()
+                except (OSError, ValueError):
+                    pass
+            threading.Thread(target=writer, daemon=True).start()
+        try:
+            q.put_nowait(json.dumps(obj) + "\n")
+            return True
+        except queue.Full:
+            return False
 
     def stop(self):
         p, self.proc = self.proc, None

@@ -66,6 +66,9 @@ CMD_RESEND_S = 1.5
 CMD_TOTAL_S = 4.0
 LQ_WINDOW_S = 5.0            # the link quality: HEARTBEATs heard (1 Hz) in the last 5 s
 LAND_RESEND_S = 2.0          # the battery LAND again while the drone is not in LAND yet
+BATT_FRESH_S = 5.0           # U4 review MED-1: no SYS_STATUS / BATTERY_STATUS this long = the battery % is STALE
+SETCUR_RESEND_S = 1.0        # U4 review LOW: MISSION_SET_CURRENT again until MISSION_CURRENT shows the seq
+SETCUR_TOTAL_S = 4.0
 COPTER_LAND = 9
 CTL_FRAME = 9                # step U5 manual flight: MAV_FRAME_BODY_OFFSET_NED velocity + yaw rate
 CTL_MASK = 0x0007 | 0x01C0 | 0x0400
@@ -194,6 +197,9 @@ class Drone:
         self.fix = self.sats = None
         self.ekf_flags = None
         self.batt_pct = self.batt_v = None
+        self.batt_t = 0.0                                  # U4 review MED-1: when the battery state was last heard
+        self.batt_stale = False
+        self.mission_cur, self.mcur_t = None, 0.0          # MISSION_CURRENT (U4 review LOW: set_current read-back)
         # step U4: the map / HUD values + the battery rule
         self.hdg = self.gs = self.climb = None
         self.batt_a = self.used_mah = None
@@ -209,7 +215,9 @@ class Drone:
         if self.landed_state is not None and now - self.ext_t < ALT_FRESH_S:
             return self.landed_state == ON_GROUND
         if self.rel_alt is not None and now - self.alt_t < ALT_FRESH_S:
-            return self.rel_alt < 0.5
+            # U4 review LOW: the relative altitude alone is not enough (baro drift, a hover at 0.4 m): near zero AND
+            # not moving vertically
+            return abs(self.rel_alt) < 0.5 and (self.vz is None or abs(self.vz) < 0.3)
         return False
 
     def view(self, now):
@@ -268,6 +276,7 @@ class Router:
         self.next_status = 0.0
         self.next_hb = 0.0
         self.ctl_t, self.ctl_moving = {}, {}               # step U5: the last manual setpoint per slot
+        self.setcur = {}                                   # slot -> a MISSION_SET_CURRENT waiting for MISSION_CURRENT
 
     def link(self, slot, kind):
         return self.links.get((slot, kind))
@@ -296,7 +305,9 @@ class Router:
         fresh = (d.landed_state is not None and now - d.ext_t < ALT_FRESH_S) or (
             d.rel_alt is not None and now - d.alt_t < ALT_FRESH_S)
         lk = self.link(slot, "usb")
-        return not fresh and lk is not None and lk.present(now)
+        # U4 review LOW: the fallback only for a drone whose LAST known altitude was on deck (or never known)
+        low = d.rel_alt is None or abs(d.rel_alt) < 1.0
+        return not fresh and low and lk is not None and lk.present(now)
 
     def tx(self, link, name, fields):
         ok, why = allow.check_out(name, fields, self.ctx(link))
@@ -350,12 +361,14 @@ class Router:
                 link.info["batt_pct"] = f.get("battery_remaining")
                 link.info["batt_v"] = round(f.get("voltage_battery", 0) / 1000.0, 2)
                 d.batt_pct, d.batt_v = link.info["batt_pct"], link.info["batt_v"]
+                d.batt_t = now
                 if f.get("battery_remaining", -1) < 0:
                     d.batt_pct = link.info["batt_pct"] = None          # -1 = the drone does not know
                 cb = f.get("current_battery", -1)
                 if cb is not None and cb >= 0:
                     d.batt_a = cb / 100.0                               # cA
             elif m.name == "BATTERY_STATUS":
+                d.batt_t = now
                 if f.get("current_consumed", -1) >= 0:
                     d.used_mah = int(f["current_consumed"])
                 if f.get("current_battery", -1) >= 0:
@@ -386,6 +399,8 @@ class Router:
                 d.landed_state, d.ext_t = f.get("landed_state"), now
             elif m.name == "EKF_STATUS_REPORT":
                 d.ekf_flags = f.get("flags")
+            elif m.name == "MISSION_CURRENT":
+                d.mission_cur, d.mcur_t = f.get("seq"), now
             elif m.name == "AUTOPILOT_VERSION" and link.kind == "usb":
                 uid = ("%016x" % f["uid"]) if f.get("uid") else (bytes(f.get("uid2") or []).hex() or None)
                 link.info["uid"] = uid                     # the live UID (U2 review MED-1)
@@ -520,13 +535,20 @@ class Router:
                 del self.cmds[slot]
                 out({"ev": "cmd", "id": j.id, "slot": slot, "command": j.command, "result": None, "why": "cancelled"})
         elif op == "set_current":
-            # U3 review M6: a running AUTO ignores MISSION_START's first item - MISSION_SET_CURRENT picks it
+            # U3 review M6: a running AUTO ignores MISSION_START's first item - MISSION_SET_CURRENT picks it;
+            # U4 review LOW: answered OK only once the drone's MISSION_CURRENT shows that seq (re-sent each 1 s, 4 s)
             slot = int(c["slot"])
             lk = self.pick(slot, c.get("via", "auto"), now)
             ok = lk is not None and not self.battery_land.get(slot) and self.tx(
                 lk, "MISSION_SET_CURRENT", dict(self.tgt_of(slot), seq=int(c["seq"])))
-            out({"ev": "cmd", "id": c.get("id"), "slot": slot, "command": -1, "result": 0 if ok else None,
-                 "why": "" if ok else "not sent"})
+            if not ok:
+                return out({"ev": "cmd", "id": c.get("id"), "slot": slot, "command": -1, "result": None,
+                            "why": "not sent"})
+            old = self.setcur.pop(slot, None)
+            if old is not None:
+                out({"ev": "cmd", "id": old["id"], "slot": slot, "command": -1, "result": None,
+                     "why": "replaced by a newer command"})
+            self.setcur[slot] = {"id": c.get("id"), "seq": int(c["seq"]), "t0": now, "t_sent": now, "link": lk}
         elif op == "ctl":
             # step U5: a manual-flight VELOCITY setpoint (pilot.py made + clipped it; allow.py checks it again)
             slot = int(c["slot"])
@@ -542,6 +564,11 @@ class Router:
                 self.ctl_moving[slot] = any(v != 0.0 for v in sp.values())
         elif op == "stop":
             raise SystemExit(0)
+
+    @staticmethod
+    def forbidden_landing(command, params):
+        """A command that would end / disturb a battery landing (a mode / mission / take-off / speed, an ARM)."""
+        return command in NOT_WHILE_LANDING or (command == allow.CMD_COMPONENT_ARM_DISARM and params[0] == 1)
 
     def send_sp(self, lk, slot, sp):
         f = dict(self.tgt_of(slot), time_boot_ms=int(now_s() * 1000) & 0xFFFFFFFF, coordinate_frame=CTL_FRAME,
@@ -600,7 +627,25 @@ class Router:
                     self.tx(j.link, "MISSION_REQUEST_LIST", dict(self.tgt_of(j.slot), mission_type=0))
                 else:
                     self.rb_next(j)
+        for slot, sc in list(self.setcur.items()):
+            d = self.drone(slot)
+            if d.mission_cur == sc["seq"] and d.mcur_t >= sc["t0"]:
+                del self.setcur[slot]
+                out({"ev": "cmd", "id": sc["id"], "slot": slot, "command": -1, "result": 0, "why": ""})
+            elif now - sc["t0"] > SETCUR_TOTAL_S or self.battery_land.get(slot):
+                del self.setcur[slot]
+                out({"ev": "cmd", "id": sc["id"], "slot": slot, "command": -1, "result": None,
+                     "why": "the drone did not show the new current item (MISSION_CURRENT)"})
+            elif now - sc["t_sent"] > SETCUR_RESEND_S:
+                sc["t_sent"] = now
+                self.tx(sc["link"], "MISSION_SET_CURRENT", dict(self.tgt_of(slot), seq=sc["seq"]))
         for slot, c in list(self.cmds.items()):
+            if self.battery_land.get(slot) and self.forbidden_landing(c.command, c.params):
+                # U4 review MED-2: a command already on its way when the battery rule latched is never re-sent
+                del self.cmds[slot]
+                out({"ev": "cmd", "id": c.id, "slot": slot, "command": c.command, "result": None,
+                     "why": "battery minimum: the drone is landing"})
+                continue
             if now - c.t0 > CMD_TOTAL_S:
                 del self.cmds[slot]
                 out({"ev": "cmd", "id": c.id, "slot": slot, "command": c.command, "result": None,
@@ -659,6 +704,11 @@ class Router:
         for slot, d in self.drones.items():
             if not d.hb_t or now - d.hb_t > HB_LOST_S:
                 continue
+            # U4 review MED-1: a battery % not heard for BATT_FRESH_S is STALE - never judged on an old value
+            stale = not d.batt_t or now - d.batt_t > BATT_FRESH_S
+            if stale != d.batt_stale and d.armed():
+                out({"ev": "batt_stale", "slot": slot, "stale": stale})
+            d.batt_stale = stale
             flying = d.armed() and not d.landed(now) and d.rel_alt is not None and now - d.alt_t < ALT_FRESH_S
             if not flying:
                 d.judge = None
@@ -667,11 +717,20 @@ class Router:
                     self.land_sent.pop(slot, None)
                     out({"ev": "land", "slot": slot, "what": "down", "why": "on the ground, disarmed"})
                 continue
-            j = battery.judge(d.rel_alt, d.batt_pct, self.capacity.get(slot), d.batt_a, self.bcfg)
+            j = battery.judge(d.rel_alt, None if d.batt_stale else d.batt_pct, self.capacity.get(slot), d.batt_a,
+                              self.bcfg)
+            if d.batt_stale:
+                j["why"] = "battery data stale (the drone's own backstop only)"
             d.judge = j
             if j["state"] == "land" and not self.battery_land.get(slot):
                 self.battery_land[slot] = True
                 out({"ev": "land", "slot": slot, "what": "start", "why": j["why"]})
+                c = self.cmds.get(slot)
+                if c is not None and self.forbidden_landing(c.command, c.params):
+                    del self.cmds[slot]                    # U4 review MED-2: never re-sent after the latch
+                    out({"ev": "cmd", "id": c.id, "slot": slot, "command": c.command, "result": None,
+                         "why": "battery minimum: the drone is landing"})
+                self.ctl_moving[slot] = False
             if self.battery_land.get(slot) and d.hb.get("custom_mode") != COPTER_LAND and \
                     now - self.land_sent.get(slot, 0.0) >= LAND_RESEND_S:
                 lk = self.pick(slot, "auto", now)

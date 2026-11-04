@@ -89,9 +89,15 @@ def _finite(*vals):
     return all(isinstance(v, (int, float)) and math.isfinite(v) for v in vals)
 
 
+# U4 review MED-2: while the battery rule lands a drone nothing may end / disturb the landing
+NOT_WHILE_LANDING = frozenset((CMD_DO_SET_MODE, CMD_MISSION_START, CMD_NAV_TAKEOFF, CMD_DO_CHANGE_SPEED))
+
+
 def _command(cmd, p, ctx):
     if cmd not in COMMANDS:
         return False, "command %d is not on the allow-list" % cmd
+    if ctx.get("battery_land") and (cmd in NOT_WHILE_LANDING or (cmd == CMD_COMPONENT_ARM_DISARM and p[0] == 1)):
+        return False, "the drone lands for its battery: no mode / mission / take-off / speed / ARM"
     if cmd == CMD_COMPONENT_ARM_DISARM:
         if int(round(p[1])) == FORCE_MAGIC or p[1] != 0:
             return False, "force arm / disarm is never sent"
@@ -139,6 +145,9 @@ def check_out(name, fields, ctx=None):
         return False, "%s without a target system (a broadcast) is never sent" % name
     if name in TYPED and int(f.get("mission_type", 0) or 0) != 0:
         return False, "only the mission (mission_type 0) - never the fence / rally points"
+    if ctx.get("battery_land") and name in ("SET_POSITION_TARGET_LOCAL_NED", "MISSION_SET_CURRENT", "MISSION_COUNT",
+                                            "MISSION_CLEAR_ALL"):
+        return False, "the drone lands for its battery: no setpoint / mission change"
     if name == "COMMAND_LONG":
         p = [f.get("param%d" % i, 0.0) for i in range(1, 8)]
         if not _finite(*p):

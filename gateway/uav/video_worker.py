@@ -274,6 +274,9 @@ def main():
     ap.add_argument("--stall-s", type=float, default=5.0)
     a = ap.parse_args()
     prio = low_priority()
+    # U4 review LOW: a first hello BEFORE the encoder probe (up to 2 x PROBE_S) - the manager never takes the probing
+    # worker for a silent one
+    out({"ev": "hello", "pid": os.getpid(), "encoder": None, "probe": "running", "low_priority": prio})
     enc, tried = probe(a.ffmpeg, a.encoder) if a.encoder != "x264" else ("x264", {})
     out({"ev": "hello", "pid": os.getpid(), "encoder": enc, "probe": tried, "low_priority": prio})
     cq = queue.Queue()

@@ -445,6 +445,8 @@ class Drone:
                     "vendor_id": 0x1209, "product_id": 0x5741}
         if name == "EXTENDED_SYS_STATE":
             return {"vtol_state": 0, "landed_state": 1 if self.landed else 2}
+        if name == "MISSION_CURRENT":
+            return {"seq": self.cur}
         if name == "HOME_POSITION":
             return {"latitude": int(self.lat0 * 1e7), "longitude": int(self.lon0 * 1e7), "q": [1.0, 0, 0, 0]}
         return {}
@@ -457,7 +459,7 @@ class Drone:
             self.step(dt)
             for name, period in (("HEARTBEAT", 1.0), ("EXTENDED_SYS_STATE", 1.0), ("SYS_STATUS", 0.5), ("GLOBAL_POSITION_INT", 0.5),
                                  ("ATTITUDE", 0.5), ("VFR_HUD", 0.5), ("GPS_RAW_INT", 1.0), ("BATTERY_STATUS", 1.0),
-                                 ("EKF_STATUS_REPORT", 1.0)):
+                                 ("EKF_STATUS_REPORT", 1.0), ("MISSION_CURRENT", 0.5)):
                 if now - self.last.get(name, 0.0) >= period:
                     self.last[name] = now
                     self.both(name, self.msg(name))

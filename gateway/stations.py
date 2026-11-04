@@ -966,7 +966,11 @@ class StationServer:
     def tick(self):
         now = time.time()
         self._check_asks()
-        # U3 review M5: a hatch relay command the AURIX never answered = answered "no answer" (never a wait for ever)
+        # U3 review M5: a hatch relay command the AURIX never answered = answered "no answer" (never a wait for ever).
+        # (U4 review LOW, documented: an AURIX answer arriving AFTER this timeout finds no pending entry and is ignored;
+        # the relay may still have switched - the hatch's own limit switches show the truth: Hatch.command was set
+        # before the T_RELAY went out, so a hatch that moves anyway is the commanded move, not a FAULT, and one that
+        # does not move is a FAULT after open_s / close_s; the launch already stopped on the "no answer")
         for k, p in list(self.pending.items()):
             if len(p) > 7 and p[7] == "uav" and now - p[3] > self.UAV_RELAY_S:
                 del self.pending[k]

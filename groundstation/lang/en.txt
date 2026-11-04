@@ -2134,3 +2134,6 @@ gw.uavp_alt_unknown = altitude unknown
 gw.uavp_pos_unknown = position / heading unknown
 gw.uavp_edge = air geofence / no-fly zone: {why}
 gw.uavp_centre = centre the stick first
+gw.uav_batt_stale = UAV {n} BATTERY DATA STALE - only the drone's own battery backstop
+gw.uav_batt_back = UAV {n} battery data back
+gw.uav_no_mcur = the drone did not show the new current item (MISSION_CURRENT)

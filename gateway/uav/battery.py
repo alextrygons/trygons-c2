@@ -33,6 +33,15 @@ def _num(v):
     return v if math.isfinite(v) else None
 
 
+def descent_s(alt, c):
+    """U4 review LOW: the landing time in TWO stages (ArduCopter: down to LAND_ALT_LOW at uav_land_ms, the last
+    uav_land_final_m at uav_land_final_ms; numbers W71 / W75 TO CONFIRM)."""
+    alt = max(0.0, alt)
+    low = min(alt, float(c.get("uav_land_final_m", 0.0)))
+    return (alt - low) / max(0.1, float(c["uav_land_ms"])) + low / max(0.1, float(c.get("uav_land_final_ms") or
+                                                                                  c["uav_land_ms"]))
+
+
 def judge(alt_m, pct, capacity_mah, current_a, cfg=None):
     """-> {"state": "unknown" | "ok" | "land", "left_mah", "reserve_mah", "eta_s", "why"}.
     unknown (no altitude / battery %): nothing is decided (the drone's own backstop stays)."""
@@ -44,7 +53,7 @@ def judge(alt_m, pct, capacity_mah, current_a, cfg=None):
     cap = _num(capacity_mah) or float(c["uav_capacity_mah"])
     hover = float(c["uav_hover_a"])
     draw = max(hover, cur) if cur is not None and cur > 0 else hover
-    t_down = max(0.0, alt) / max(0.1, float(c["uav_land_ms"]))
+    t_down = descent_s(alt, c)
     reserve = draw * t_down / 3.6 * (1.0 + float(c["uav_land_margin_pct"]) / 100.0)
     left = cap * min(100.0, pct) / 100.0
     eta = (left - reserve) / (draw / 3.6)            # mAh / (mA per s = A / 3.6)
@@ -53,6 +62,14 @@ def judge(alt_m, pct, capacity_mah, current_a, cfg=None):
                 "why": "battery minimum: %.0f mAh left <= %.0f mAh to descend from %.0f m" % (left, reserve, alt)}
     return {"state": "ok", "left_mah": round(left), "reserve_mah": round(reserve), "eta_s": round(eta, 1),
             "why": ""}
+
+
+ORDER = {None: 0, 60: 1, 20: 2, "land": 3}
+
+
+def latch(prev, new):
+    """U4 review LOW: the stage never goes back up in the same flight (no 60 <-> None bouncing): the most severe."""
+    return new if ORDER.get(new, 0) >= ORDER.get(prev, 0) else prev
 
 
 def stage(eta_s, landing=False):

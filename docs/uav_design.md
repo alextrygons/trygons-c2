@@ -403,6 +403,17 @@ the boat's own cameras only.
   the boat's vision is PAUSED / DEGRADED or the CPU is busy; link quality = ELRS HEARTBEATs heard in 5 s (+ RADIO_STATUS
   rssi when sent, TO CONFIRM W70); measured numbers: gateway/README.md section 26. W62: only the simulated aerial
   test picture was analysed (no real aerial footage) - the detection quality on real UAV video is still open.
+- U4 review fixes (review of 4756f97): MED-1 a battery % not heard for BATT_FRESH_S 5 s is STALE = never judged (no
+  LAND on an old value; the drone's own BATT_FS_CRT_ACT backstop) + the notice "UAV n BATTERY DATA STALE"; MED-2 when
+  the battery rule latches, a command already on its way (mode / mission start / take-off / speed / ARM) is dropped and
+  never re-sent, and allow.py itself refuses those + setpoints / mission changes while ctx battery_land (LAND / DISARM
+  pass); LOW landed() needs |rel_alt| < 0.5 AND |vz| < 0.3 (or EXTENDED_SYS_STATE), the deck fallback for a DISARM only
+  from a low last altitude, MISSION_SET_CURRENT answered only once MISSION_CURRENT shows the seq (re-sent 1 s, 4 s), the
+  landing time in two stages (uav_land_final_m 10 m at uav_land_final_ms 0.5 m/s, W71 / W75 TO CONFIRM) in the battery
+  rule and the route reserve, the battery stage latched per flight (no 60 <-> none bouncing), the video worker's first
+  hello before the encoder probe (+ 30 s until its final hello), the UAV AI's core = the highest one the boat's vision
+  does not use and its pipe written by a writer thread, UA26's grep also over the gateway's nav_* code; documented: an
+  AURIX answer after the 5 s hatch-relay timeout is ignored - the limit switches show what the hatch did.
 - AS BUILT (U4) 6.2: the battery rule lives INSIDE the router process (it holds battery_land; the gateway process
   cannot ask for LAND) - gateway/uav/battery.py; capacity = BATT_CAPACITY from the registration.
 

@@ -68,6 +68,9 @@ parameter check + the MAVLink allow-list + the own codec + the GPS warm start + 
        at once, BRAKE -> LOITER, only allow-listed outputs
   UA31 stations.py with the captain's joystick on a UAV: 126 for his driving commands + the copilot's
        ACCEPT-needing ones (never queued), STANDBY / AUTO PAUSE / DP STOP free, no rjoy to the boat
+  UA33 U4 review fixes: stale battery %, a command on its way at the battery latch, the allow-list while landing,
+       landed(), the deck fallback, MISSION_SET_CURRENT confirmed, the two-stage landing, the latched stage, the UAV
+       AI core, the gateway's nav code UAV-free
   UA32 the router's "ctl" op flies a simulated drone (velocity + yaw rate), its own zero after 0.5 s, refused
        while landing for the battery
 
@@ -2881,6 +2884,141 @@ def ua32_router_ctl():
         fl.stop()
 
 
+# ------------------------------------------------------------------------------------------- U4 review fixes -------
+
+class _FakeLink:
+    def __init__(self, slot, kind):
+        self.slot, self.kind, self.seq, self.up = slot, kind, 0, True
+        self.frames = []
+        self.hb_t = time.monotonic()
+
+    def present(self, now):
+        return True
+
+    def write(self, frame):
+        self.frames.append(frame)
+        return True
+
+
+def ua33_review_u4():
+    """U4 review fixes inside the router (in this process, a fake link): MED-1 a stale battery % is never judged
+    (no LAND on an old value) + one batt_stale event; MED-2 a command already on its way when the battery rule latches
+    is dropped (never re-sent) and the allow-list refuses mode / mission / take-off / speed / ARM / setpoints while
+    landing (LAND / DISARM still pass); LOW landed() not on the altitude alone, the deck fallback only from a low last
+    altitude, MISSION_SET_CURRENT answered only after MISSION_CURRENT shows the seq; the two-stage landing time, the
+    battery stage latched per flight, the UAV AI's core never one of the boat vision's; UA26's grep also over the
+    gateway's own nav code."""
+    from uav import battery, router_worker as rw
+    events = []
+    old_out = rw.out
+    rw.out = lambda obj: events.append(obj)
+    try:
+        r = rw.Router()
+        lk = _FakeLink(1, "elrs")
+        r.links[(1, "elrs")] = lk
+        r.expect[1] = 11
+        r.capacity[1] = 2500
+        now = rw.now_s()
+        d = r.drone(1)
+        d.hb, d.hb_t = {"base_mode": 0x80, "custom_mode": 3}, now
+        d.rel_alt, d.vz, d.alt_t = 40.0, 0.0, now
+        d.batt_pct, d.batt_t = 2, now - 10.0              # 2 % - but not heard for 10 s: STALE
+        r.battery_tick(now)
+        stale_ev = [e for e in events if e.get("ev") == "batt_stale"]
+        no_land = not r.battery_land.get(1) and (d.judge or {}).get("state") == "unknown"
+        d.batt_t = now                                    # fresh again: 2 % = LAND
+        job = rw.CmdJob(7, 1, lk, allow.CMD_DO_SET_MODE, [1, allow.COPTER_AUTO, 0, 0, 0, 0, 0], now)
+        job.sent = True
+        r.cmds[1] = job
+        r.battery_tick(now + 1)
+        latched = r.battery_land.get(1)
+        dropped = [e for e in events if e.get("ev") == "cmd" and e.get("id") == 7]
+        n0 = len(lk.frames)
+        # a command re-inserted (in flight) after the latch: jobs_tick never re-sends it
+        job2 = rw.CmdJob(8, 1, lk, allow.CMD_MISSION_START, [1, 0, 0, 0, 0, 0, 0], now)
+        job2.t_sent = now - 5
+        r.cmds[1] = job2
+        r.jobs_tick(now + 2)
+        resent = [f for f in lk.frames[n0:]]
+        dropped2 = [e for e in events if e.get("ev") == "cmd" and e.get("id") == 8]
+        ctx = {"battery_land": True, "landed": True, "hatch_open": True}
+        tgt = {"target_system": 11, "target_component": 1}
+        refused = [not allow.check_out("COMMAND_LONG", dict(tgt, command=c, param1=p1, param2=p2, param7=10.0),
+                                       ctx)[0]
+                   for c, p1, p2 in ((176, 1, 4), (300, 1, 0), (22, 0, 0), (178, 1, 5), (400, 1, 0))]
+        sp_ref = not allow.check_out("SET_POSITION_TARGET_LOCAL_NED", dict(tgt, coordinate_frame=9,
+                                                                           type_mask=0x5C7), ctx)[0]
+        land_ok = allow.check_out("COMMAND_LONG", dict(tgt, command=21), ctx)[0]
+        disarm_ok = allow.check_out("COMMAND_LONG", dict(tgt, command=400, param1=0), ctx)[0]
+        # LOW: landed() - 0.3 m while descending fast is NOT on the ground
+        d2 = rw.Drone()
+        d2.rel_alt, d2.vz, d2.alt_t = 0.3, -1.2, now
+        not_landed = not d2.landed(now)
+        d2.vz = 0.0
+        landed = d2.landed(now)
+        # LOW: the deck fallback (stale data, the USB cable present) only from a low last altitude
+        usb = _FakeLink(2, "usb")
+        r.links[(2, "usb")] = usb
+        d3 = r.drone(2)
+        d3.rel_alt, d3.alt_t = 35.0, now - 10.0
+        high_deck = r.on_deck(2, d3, now)
+        d3.rel_alt = 0.2
+        low_deck = r.on_deck(2, d3, now)
+        # LOW: MISSION_SET_CURRENT answered after the drone's MISSION_CURRENT only
+        events.clear()
+        r.links[(3, "elrs")] = _FakeLink(3, "elrs")
+        r.expect[3] = 13
+        d4 = r.drone(3)
+        r.command({"op": "set_current", "slot": 3, "seq": 2, "id": 21, "via": "elrs"}, now)
+        early = [e for e in events if e.get("id") == 21]
+        d4.mission_cur, d4.mcur_t = 2, now + 0.2
+        r.jobs_tick(now + 0.3)
+        confirmed = [e for e in events if e.get("id") == 21]
+        r.command({"op": "set_current", "slot": 3, "seq": 4, "id": 22, "via": "elrs"}, now + 1)
+        r.jobs_tick(now + 6)
+        timed_out = [e for e in events if e.get("id") == 22]
+    finally:
+        rw.out = old_out
+    # the two-stage landing, the latched stage
+    t30 = battery.descent_s(30.0, battery.cfg_of())
+    t5 = battery.descent_s(5.0, battery.cfg_of())
+    seq = []
+    prev = None
+    for s in (None, 60, None, 20, 60, None, "land"):
+        prev = battery.latch(prev, s)
+        seq.append(prev)
+    # the UAV AI's core: never one of the boat vision's
+    from uav import uavai
+    g = _G()
+    g.vision = type("V", (), {"cfg": {"threads": 2, "cores": None}})()
+    ai = uavai.UavAi({}, type("M", (), {"gw": g})())
+    n = os.cpu_count() or 4
+    core = ai.core_for()
+    g.vision.cfg = {"threads": 2, "cores": [0, 1]}
+    core2 = ai.core_for()
+    # UA26's grep, extended: the gateway's own navigation code never reads the UAV magazine
+    gsrc = open(os.path.join(HERE, "gateway.py"), encoding="utf-8").read()
+    navs = re.findall(r"\n    def (nav_\w+)\(self[\s\S]*?(?=\n    def |\nclass |\Z)", gsrc)
+    bodies = [m.group(0) for m in re.finditer(r"\n    def nav_\w+\(self[\s\S]*?(?=\n    def |\nclass |\Z)", gsrc)]
+    nav_clean = bool(bodies) and not any(re.search(r"\buav\b|self\.uav|pilots", b) for b in bodies)
+    ok = (stale_ev and stale_ev[0]["stale"] and no_land and latched and dropped and dropped[0]["result"] is None and
+          not resent and dropped2 and all(refused) and sp_ref and land_ok and disarm_ok and not_landed and landed and
+          not high_deck and low_deck and not early and confirmed and confirmed[0]["result"] == 0 and timed_out and
+          timed_out[0]["result"] is None and abs(t30 - 40.0) < 1e-6 and abs(t5 - 10.0) < 1e-6 and
+          seq == [None, 60, 60, 20, 20, 20, "land"] and core not in (n - 1, n - 2) and core2 not in (0, 1) and
+          nav_clean)
+    report("UA33 U4 review fixes: a stale battery % never judged (+ the notice event), a command on its way dropped at "
+           "the battery latch and never re-sent, the allow-list refuses mode / mission / take-off / speed / ARM / "
+           "setpoints while landing (LAND / DISARM pass), landed() not on the altitude alone, the deck fallback only "
+           "from a low altitude, MISSION_SET_CURRENT confirmed by MISSION_CURRENT, the two-stage landing time, the "
+           "latched battery stage, the UAV AI core off the boat vision's cores, the gateway's nav code UAV-free",
+           ok, "stale %s no land %s latched %s dropped %s resent %d dropped2 %s refused %s sp %s land %s disarm %s "
+               "landed %s/%s deck %s/%s setcur %s/%s/%s descent %.0f/%.0f stage %s core %s/%s nav %s (%s)" % (
+                   stale_ev, no_land, latched, dropped, len(resent), dropped2, refused, sp_ref, land_ok, disarm_ok,
+                   not_landed, landed, high_deck, low_deck, early, confirmed, timed_out, t30, t5, seq, core, core2,
+                   nav_clean, navs))
+
+
 def watchdog():
     def fire():
         print("\nSTALLED: test_uav.py still running after %d s - killed" % LIMIT_S, flush=True)
@@ -2898,7 +3036,7 @@ def main():
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126,
-             ua32_router_ctl]
+             ua32_router_ctl, ua33_review_u4]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

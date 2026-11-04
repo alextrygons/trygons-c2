@@ -2755,7 +2755,9 @@ UAV MAGAZINE - MAP, TELEMETRY, VIDEO, AI (step U4)
   at the landing. Lost radio link, no GPS or any warning = it holds / goes on
   with its mission, never a landing.
   Notices (never boat alarms): UAV n LINK LOST / link back, UAV n towards the
-  radio range limit, UAV n VIDEO LOST, the UAV router OFFLINE (also on screen
+  radio range limit, UAV n VIDEO LOST, UAV n BATTERY DATA STALE (its battery
+  state not heard for 5 s: the gateway can't judge the battery minimum, only the
+  drone's own battery backstop lands it), the UAV router OFFLINE (also on screen
   1's notices).
   Flight logs: the gateway writes one file per flight (a line a second:
   position, altitude, speed, battery, link, mode). Tools - UAV magazine -

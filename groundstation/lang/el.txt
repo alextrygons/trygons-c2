@@ -2138,3 +2138,6 @@ gw.uavp_alt_unknown = άγνωστο ύψος
 gw.uavp_pos_unknown = άγνωστη θέση / πορεία
 gw.uavp_edge = εναέριος φράκτης / ζώνη απαγόρευσης: {why}
 gw.uavp_centre = πρώτα κεντράρετε το χειριστήριο
+gw.uav_batt_stale = UAV {n} ΠΑΛΙΑ ΣΤΟΙΧΕΙΑ ΜΠΑΤΑΡΙΑΣ - μόνο η δική του εφεδρική προσγείωση μπαταρίας
+gw.uav_batt_back = UAV {n} τα στοιχεία μπαταρίας επανήλθαν
+gw.uav_no_mcur = το UAV δεν έδειξε το νέο τρέχον σημείο (MISSION_CURRENT)
