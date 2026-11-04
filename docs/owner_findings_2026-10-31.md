@@ -84,3 +84,48 @@ Goal: the shore crew can talk with any contact near the USV (swimmers, fishing b
 - Safety: audio is its own gateway process; failures = a notice only, never an alarm or a mode change; the demo / simulator has a simulated speaker / mic on this PC (academy + tests). Volume limit setting on the gateway.
 - NO VHF radio (owner 2026-11-02).
 - Tests: PTT one at a time, mic muted while talking, recording in SAVE, link priority, no effect on driving. MANUAL / MANUAL_EL / guided tour.
+
+## H. UAV magazine (owner 2026-11-04) - steps U1-U6 - gateway + station + demo / sim + academy; NO AURIX change except the hatch relay through the existing relay table
+Scope: camera / observation drones only - launch, flight, observation, video, telemetry, landing. NO payload carriage / release / target-strike functions anywhere (not in code, UI, docs or tests).
+Owner's setup: 6 small 7" ArduPilot quads STACKED inside the USV under a hatch. Launch strictly in series, top drone (slot 1) first. They can NOT land on the USV (one-way).
+
+H1 Registry / magazine
+- Panel «ΜΑΓΓΕΜΑ UAV»: 6 slots (1 = top = next out); per drone: MAVLink sysid / serial, name, firmware, battery, health check (GPS, compass, sensors), VTX channel, ELRS binding, mission loaded. "Register" reads + checks over USB (USB-C data to each slot through a hub on the gateway). Unregistered / failing = never launched.
+- PICTURES: wherever the user chooses a vehicle (the "Send route" target box, the map right-click menu, the magazine panel, the UAV list, map symbols) the UAV is shown with the OWNER'S UAV PICTURE and the USV with the boat picture. Owner file: C:\trygons\private\uav.png -> copy into assets/uav.png (+ small icon sizes like 13i's make_icon). If the file is missing: a simple placeholder + a WAITING FOR OWNER item.
+
+H2 Routes and missions
+- Map right click: «Πήγαινε εδώ» (BOAT: a quick 2-point route from the current position, checked like any route, then AUTO rules) and «Αποστολή UAV εδώ».
+- "Send route" gets a target choice (vertical box, pictures): ΣΚΑΦΟΣ / ΕΠΟΜΕΝΟ UAV (θέση 1) / a specific UAV (one already flying = change its mission in flight).
+- Route -> ArduPilot mission: TAKEOFF, waypoints with ALTITUDE per waypoint (default 50 m, editable per waypoint), speeds converted / capped, end = HOVER over the last point until a new route or the battery minimum.
+- NO FORCED LANDING except a finished battery (owner): no GPS, lost link, warnings = hold / hover, never land; LAND only at the battery's absolute minimum (reserve = just enough to descend from the current altitude), where it is (over sea = drone lost, accepted).
+- UAV route checks (not shallow water): battery / range with that landing reserve, distance from the boat (RF range), max altitude, air no-fly zones / air geofence, start = boat position at launch.
+- UAV routes / tracks drawn in their own style + name, distinct from the boat's.
+
+H3 Launch sequence + hatch
+- Per drone: health check -> mission upload -> hatch OPEN (OPEN limit switch confirms) -> GPS ready (H4) -> ARM -> vertical climb -> "clear of the boat" confirmed -> next drone after a minimum gap (~15 s) at a different initial altitude; hatch closes after the last (CLOSED switch confirms).
+- Conditions: boat slow / STANDBY; COPILOT prepares (registry, routes), CAPTAIN approves the launch (Y/N box + trigger); any warning stops the sequence (drones already in the air go on).
+- Hatch: ONE relay on/off (ON = open) through the EXISTING relay table (type onoff, extras group; relays never affect driving - storm I36 keeps passing) + TWO limit switches OPEN / CLOSED read by the gateway (or an AURIX input reported in telemetry - choose the simpler, document it); no ARM unless "fully open"; hatch fault (no switch change in time / both / none) = sequence stops + notice.
+
+H4 GPS start
+- WARM START: while in the slot (USB), the gateway injects the boat's own u-blox data (time, position, ephemeris / AssistNow-style MGA data) into each drone's GPS via MAVLink GPS_INJECT_DATA -> hot start, fix within seconds after the hatch opens (needs u-blox GPS on the drones; note: magazine top not metal).
+- FALLBACK "climb, then catch up": no good fix within a few seconds after opening (boat in STANDBY only) -> ARM in an altitude-hold mode, climb vertically to ~15 m, hover until GPS + yaw are good (EKF-GSF yaw in flight; compass near the hull not trusted; boat heading only as a hint), then start the mission. No landing because of missing GPS - it keeps hovering until GPS or battery minimum.
+
+H5 Telemetry, video, AI
+- Telemetry: ELRS with MAVLink through the BOAT: one ELRS TX module per drone on the boat (1:1, up to 6) -> gateway MAVLink router (one sysid per drone) -> shore over the existing link. Low bandwidth: telemetry + mission / guided commands; manual control = position / velocity setpoints, not raw RC.
+- Video: ANALOG VTX -> SIX analog VRX on the boat (one fixed channel per slot, no two drones on one channel) -> USB capture into the gateway -> recorded in the gateway ring / SAVE / ⏺5' / ⏺1h and sent to shore as extra camera streams UAV-1..6 (lighter than the captain's main camera on a weak link; the station pulls only the streams open on a screen).
+- AI: the same obstacle / object detection (eWaSR, "AI" badge) on the received UAV video; the boat's FRONT camera AI always keeps priority; UAV AI only on the feeds open on a screen / round-robin at low fps; measure with tools/gateway_load.py and write the numbers in gateway/README.md.
+- Map: each drone's position, heading, altitude, track, battery, link quality; its picture as the symbol.
+
+H6 Manual control + UAV HUD
+- CAPTAIN: may fly a UAV with the shore joystick ONLY with the USV in STANDBY («ΧΕΙΡΙΣΜΟΣ UAV n», top banner «JOYSTICK → UAV n», the boat ignores the joystick). COPILOT: may fly a UAV from their own station any time (the captain keeps the boat). One pilot per drone at a time.
+- Assisted flying only (LOITER / POSHOLD-style setpoints): stick = direction / speed, TWCS lever = climb / descend, twist = yaw, let go = hold position; speed / altitude limits. «ΕΠΙΣΤΡΟΦΗ ΣΤΟ ΣΚΑΦΟΣ» = the UAV hovers, joystick back to the boat.
+- The screen shows the UAV video with its own green HUD (altitude, speed, battery, distance + arrow to the boat, heading); the boat's alarms stay visible. Lost link = UAV holds position.
+
+H7 Simulation, academy, docs, legal
+- Demo / tests: 6 simulated drones (ArduPilot SITL copters if practical on Windows, else a small pymavlink drone simulator with the same MAVLink behaviour) + simulated hatch switches + simulated VRX test pictures; academy lesson "UAV launch and observation" (simulator only, like the other lessons).
+- Flight log per drone (exportable). Air no-fly zones file. MANUAL / MANUAL_EL chapter + guided tour stops. Legal note in the manual: BVLOS in Greece / EU = Specific category + HCAA authorisation + licensed remote pilot; state / Navy rules differ; responsibility with the pilot.
+- PARTS.md / WIRING.md: 6 ELRS TX modules (MAVLink-capable, ELRS 3.x), 6 analog 5.8 GHz VRX + USB capture, powered USB hubs, antenna placement, hatch actuator + 2 limit switches, USB-C data to each slot. Charging: OUT OF SCOPE (only the battery state is shown).
+- UAV as RF relay for the boat's link: NOT in this task (later).
+
+Steps (each its own commit + review; rules of PROGRESS.md LOOP RULES):
+U1 design: CLAUDE.md section V "UAV magazine" (scope, rules above) + docs/uav_design.md + steps table. U2 registry + USB checks + GPS warm start + simulated drones + pictures. U3 route -> mission + launch sequence + hatch + switches. U4 map + telemetry + video streams + AI on UAV feeds. U5 manual control + UAV HUD. U6 academy lesson + MANUAL / MANUAL_EL / tour + PARTS / WIRING.
