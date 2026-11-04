@@ -27,6 +27,7 @@ process loudhailer_worker.py with the SIMULATED speaker / microphone) and real g
   LH16 (review of 13r-r MED-A) 80-500 ms stalls caught up back to back: the AUDIO track stays on the clock
   LH17 (review of 13r-r MED-B / LOW-5) a restart mid-minute never truncates the file; the clock set back rolls
   LH18 (review of 38add4b LOW-2) the catch-up frames after a stall keep their real audio inside the stall
+  LH19 (U2 review LOW-15) a file opened mid-minute: silence first, the first frame at its own time
 
 Run:  python test_loudhailer.py      (exit code 0 = all passed)
 """
@@ -256,6 +257,24 @@ def lh12_15():
                loud >= 9 and after < 1000 and abs(n18 - int(2.4 * vc.RATE)) <= vc.FRAME_N and r18.dropped <= 1,   # (the first on-clock frame may still be ahead)
                "%d of 10 tone frames heard in the stall, after it %d, %d samples (clock %d), dropped %d, kept %d" % (
                    loud, after, n18, int(2.4 * vc.RATE), r18.dropped, r18.recovered))
+
+        # LH19 (U2 review LOW-15) a file opened in the middle of its minute: silence first, the first frame at ITS time
+        r19 = lw.WavRing(os.path.join(tmp, "ring19"), 60)
+        t19 = 1793000460.0 + 30.0                          # 30 s into the minute
+        tone19 = vc.frames(vc.tone(900, 200))
+        for k, fr in enumerate(tone19):
+            r19.write(fr, t19 + 0.04 * k)
+        r19.close()
+        with wave.open(os.path.join(tmp, "ring19", os.listdir(os.path.join(tmp, "ring19"))[0]), "rb") as wf:
+            n19 = wf.getnframes()
+            a19 = array_mod.array("h", wf.readframes(n19))
+        early = max(abs(x) for x in a19[:int(29.5 * vc.RATE)])
+        at = max(abs(x) for x in a19[int(30.0 * vc.RATE):int(30.2 * vc.RATE)])
+        report("LH19 (U2 review LOW-15) a file opened / continued in the middle of its minute: the silence comes first "
+               "and the first frame lands at its own time (never up to 60 s early in the evidence audio)",
+               early < 100 and at > 1000 and abs(n19 - int(30.2 * vc.RATE)) <= vc.FRAME_N,
+               "before 29.5 s max %d, at 30.0-30.2 s max %d, %d samples (clock %d)" % (early, at, n19,
+                                                                                   int(30.2 * vc.RATE)))
 
         # LH17 (review of 13r-r MED-B / LOW-5) a restart mid-minute never truncates; the clock set back rolls / stops
         rdir = os.path.join(tmp, "ring17")

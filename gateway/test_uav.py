@@ -564,10 +564,10 @@ def ua8_assist():
     p2 = gpsassist.parse_ubx(blob)
     acc = struct.unpack_from("<I", p2[1][2], 16)[0]
     report("UA8 GPS warm start bytes: UBX-MGA-INI-TIME_UTC (24 B, the gateway's time) + POS_LLH (20 B, 1e-7 deg, "
-           "accuracy >= 10 m), checksums, GPS_RTCM_DATA fragments (<= 4 x 180 B); the boat position only from fresh "
+           "accuracy >= 50 m: sea-level height vs the ellipsoid, U2 review MED-4), checksums, GPS_RTCM_DATA fragments (<= 4 x 180 B); the boat position only from fresh "
            "telemetry with a trusted GPS and a sane uncertainty",
            ok_time and ok_tv and ok_pos and ok_ck and ok_fr and fixes[0] == (37.8, 23.6, 8.0) and
-           fixes[1:] == [None, None, None, None] and what == "time+pos" and acc == 1000,
+           fixes[1:] == [None, None, None, None] and what == "time+pos" and acc == 5000,
            "time %s / values %s, pos %s, checksum %s, fragments %s, boat fixes %s, %s acc %d cm" % (
                ok_time, ok_tv, ok_pos, ok_ck, ok_fr, fixes, what, acc))
 
@@ -776,7 +776,7 @@ def ua10_router():
                "MOUNT_CONTROL) and of another sysid on a registered slot are dropped + counted",
                regs[1] == [] and any("SERVO9_FUNCTION = 28" in p for p in regs[2]) and
                any("no MAVLink" in p for p in regs[3]) and a1 and a1["ok"] and a1["what"] == "time+pos" and got and
-               a5 and not a5["ok"] and st and st["denied"].get("in SERVO_OUTPUT_RAW") and
+               a5 and not a5["ok"] and "armed" in (a5.get("why") or "") and st and st["denied"].get("in SERVO_OUTPUT_RAW") and
                st["denied"].get("in MOUNT_CONTROL") and st2 is not None,
                "slot 1 %s, slot 2 %s, slot 3 %s; assist slot 1 %s (drone got %s), armed slot 5 %s; denied %s; "
                "wrong sysid %s" % (regs[1], regs[2][:1], regs[3], a1 and a1.get("what"), bool(got),
@@ -1643,6 +1643,183 @@ def ua19_helm_grant():
                            s5[1], refused))
 
 
+def ua20_registry_path():
+    """U2 review MED-1 / MED-2 / MED-3 / MED-4 / LOW-6 / LOW-9 / LOW-10 / LOW-11 through the manager's real path."""
+    from uav import manager as mgr
+
+    class St:
+        def __init__(self, role="HELM"):
+            self.id, self.user, self.role, self.name, self.sent = 3, "bob", role, "bob", []
+            self.crew, self.single_op, self.local = "copilot", False, False
+
+        def send(self, m):
+            self.sent.append(m)
+
+    class G:
+        def __init__(self, root):
+            self.audits, self.telem2 = [], {}
+            self.storage = type("S", (), {"usable": True, "folder": lambda _s, n: os.makedirs(
+                os.path.join(root, n), exist_ok=True) or os.path.join(root, n)})()
+            self.stations = type("X", (), {"stations": {}})()
+            self.clock = type("C", (), {"gps_valid": True, "gps_rx": time.time(), "now": lambda _s: time.time()})()
+
+        def audit(self, kind, **kw):
+            self.audits.append(kind)
+
+        def telem_fresh(self):
+            return None
+    tmp = tempfile.mkdtemp(prefix="uavtest_u2r_")
+    try:
+        extra = os.path.join(tmp, "extra.ubx")
+        with open(extra, "wb") as f:
+            f.write(gpsassist.ubx(0x13, 0x00, bytes(68)) + gpsassist.ubx(0x06, 0x04, bytes(4)) +   # CFG-RST!
+                    gpsassist.ubx(0x13, 0x20, bytes(8)))
+        g = G(tmp)
+        m = mgr.UavManager({"enabled": True, "slots": [{"usb": "udp:127.0.0.1:1"}] * 6, "assist_extra": extra}, g)
+        sent = []
+        m.proc = type("P", (), {"poll": lambda _s: None})()
+        m.to_worker = lambda o: sent.append(o) or True
+        st = St()
+        g.stations.stations[3] = st
+        # a registration that succeeds, then a re-registration with no drone: the record is CLEARED
+        m.pending[1] = (3, 1, time.time())
+        m._registered({"ev": "register", "id": 1, "slot": 1, "reading": good_reading(sysid=11)})
+        ok_first = m.reg.recs.get(1, {}).get("ok")
+        m.pending[2] = (3, 1, time.time())
+        m._registered({"ev": "register", "id": 2, "slot": 1, "reading": {"slot": 1, "why": "no MAVLink"}})
+        cleared = 1 not in m.reg.recs
+        # a late answer (timed out, not pending) never writes; slot 0 never indexes specs[-1]
+        m._registered({"ev": "register", "id": 99, "slot": 2, "reading": good_reading(sysid=12)})
+        m.pending[3] = (3, 0, time.time())
+        m._registered({"ev": "register", "id": 3, "slot": 0, "reading": good_reading(sysid=13)})
+        late_ok = 2 not in m.reg.recs and 0 not in m.reg.recs and "uav_register_late" in g.audits
+        # launchable needs the drone ON its cable; a foreign sysid / another UID = unknown drone
+        m.pending[4] = (3, 2, time.time())
+        m._registered({"ev": "register", "id": 4, "slot": 2, "reading": good_reading(sysid=12)})
+        uid2 = m.reg.recs[2].get("uid")
+        nothing = m.reg.launchable(2, m.live({}))
+        foreign = m.reg.launchable(2, m.live({"present": False, "foreign_sysid": 44}))
+        other_uid = m.reg.launchable(2, m.live({"present": True, "sysid": 12, "uid": "beef"}))
+        same = m.reg.launchable(2, m.live({"present": True, "sysid": 12, "uid": uid2}))
+        # a failed registration gets no GPS warm start (LOW-11)
+        m.pending[5] = (3, 3, time.time())
+        m._registered({"ev": "register", "id": 5, "slot": 3, "reading": good_reading(sysid=13,
+                                                                                    params={"GRIP_ENABLE": 1})})
+        m.worker = {"links": {"2": {"present": True}, "3": {"present": True}}}
+        m.worker_t = time.time()
+        m.next_assist = {}
+        sent.clear()
+        m.send_assist = lambda s: sent.append({"op": "assist", "slot": s})
+        m.u3_tick = lambda now: None
+        m.tick(time.time())
+        assisted = sorted(x["slot"] for x in sent if x.get("op") == "assist")
+        # unregister (a VIEWER refused)
+        v = St("VIEWER")
+        m.unregister_msg(v, {"slot": 2})
+        m.unregister_msg(st, {"slot": 2})
+        unreg = 2 not in m.reg.recs and not v.sent[-1]["ok"] and st.sent[-1]["ok"]
+        # MED-3: only UBX-MGA from the extra file; MED-4: the time only while the GPS time is fresh
+        mga_only = [c for c, _i, _p in gpsassist.parse_ubx(m.extra)] == [0x13, 0x13] and m.extra_dropped == 1
+        utc_fresh = m.assist_data()[0] is not None
+        g.clock.gps_rx = time.time() - 30
+        utc_stale = m.assist_data()[0] is None
+        blob, _w = gpsassist.assist_bytes(time.time(), None, gpsassist.ubx(0x06, 0x04, bytes(4)))
+        no_cfg = all(c == 0x13 for c, _i, _p in gpsassist.parse_ubx(blob))
+        t_acc = struct.unpack_from("<H", gpsassist.parse_ubx(gpsassist.mga_ini_time_utc(time.time()))[0][2], 16)[0]
+        # MED-2: wrongly shaped registry files never stop the gateway
+        shapes = []
+        for content in ("[1, 2]", '{"slots": []}', '{"slots": {"x": 1, "2": [3]}}', '"text"', "{broken"):
+            p = os.path.join(tmp, "reg_%d.json" % len(shapes))
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(content)
+            try:
+                r = registry.Registry(p)
+                shapes.append((r.recs == {}, bool(r.error) or content.startswith('{"slots": {"x"')))
+            except Exception as e:
+                shapes.append((False, repr(e)))
+        # LOW-9 a NaN parameter never raises; LOW-6 sysid 0 / 255, RELAY16, MNT2, BATT2 failsafes
+        nan = registry.check(good_reading(params={"FS_GCS_ENABLE": float("nan")}))
+        sid0 = registry.check(good_reading(sysid=0))
+        sid255 = registry.check(good_reading(sysid=255))
+        r16 = registry.check(good_reading(params={"RELAY16_FUNCTION": 1}))
+        mnt2 = registry.check(good_reading(params={"MNT2_TYPE": 1}))
+        b2 = registry.check(good_reading(params={"BATT2_FS_CRT_ACT": 2}))
+        report("UA20 (U2 review) the registry through the manager's real path: a failed / empty registration CLEARS "
+               "the old record, a late answer / slot 0 never writes, launchable needs the drone ON its cable, a "
+               "foreign sysid or another UID = unknown drone, no warm start to a failed registration, uav_unregister; "
+               "only UBX-MGA from assist_extra (a CFG-RST dropped), the time only while the GPS time is fresh "
+               "(accuracy 2 s+), wrongly shaped registry files never raise, a NaN parameter never raises, sysid 0 / "
+               "255, RELAY16 / MNT2 / BATT2 failsafes",
+               ok_first and cleared and late_ok and not nothing[0] and not foreign[0] and "unknown drone" in foreign[1]
+               and not other_uid[0] and "UID" in other_uid[1] and same == (True, "") and assisted == [2] and unreg and
+               mga_only and utc_fresh and utc_stale and no_cfg and t_acc >= 2 and
+               all(a and b for a, b in shapes) and any("not a number" in x for x in nan) and
+               any("not allowed" in x for x in sid0) and any("not allowed" in x for x in sid255) and
+               any("RELAY16_FUNCTION" in x for x in r16) and any("MNT2_TYPE" in x for x in mnt2) and
+               any("BATT2_FS_CRT_ACT" in x for x in b2),
+               "registered %s, cleared %s, late %s; nothing %s, foreign %s, other UID %s, same %s; assisted %s; "
+               "unregister %s; MGA only %s (dropped %s), time fresh %s / stale %s, CFG kept out %s, t acc %s s; "
+               "shapes %s; NaN %s; sysid 0 %s" % (
+                   ok_first, cleared, late_ok, nothing, foreign, other_uid, same, assisted, unreg, mga_only,
+                   m.extra_dropped, utc_fresh, utc_stale, no_cfg, t_acc, shapes, nan[:1], sid0[-1:]))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# frames from the MAVLink spec's rules, computed ONCE with pymavlink (ardupilotmega dialect) - fixed bytes, so
+# UA21 checks the codec against something it did not make itself even where pymavlink is not installed
+FIXED_FRAMES = [
+    ("HEARTBEAT", {"type": 2, "autopilot": 3, "base_mode": 81, "custom_mode": 0, "system_status": 4,
+                   "mavlink_version": 3}, 5, 1, 1, "fd09000005010100000000000000020351040395b8"),
+    ("COMMAND_LONG", {"target_system": 11, "target_component": 1, "command": 400, "param1": 1.0}, 7, 255, 190,
+     "fd20000007ffbe4c00000000803f00000000000000000000000000000000000000000000000090010b017fc1"),
+    ("MISSION_ITEM_INT", {"target_system": 11, "target_component": 1, "seq": 3, "frame": 3, "command": 16,
+                          "autocontinue": 1, "x": 378210000, "y": 236000000, "z": 50.0}, 8, 255, 190,
+     "fd25000008ffbe49000000000000000000000000000000000000d0068b160013110e00004842030010000b010300018a68"),
+]
+
+
+def ua21_fixed():
+    bad = []
+    for name, fields, seq, sysid, compid, hexs in FIXED_FRAMES:
+        mine = mavlink.encode(name, fields, seq, sysid, compid).hex()
+        if mine != hexs:
+            bad.append("%s %s != %s" % (name, mine, hexs))
+        got = mavlink.Parser().feed(bytes.fromhex(hexs))
+        if len(got) != 1 or any(got[0].fields[k] != v for k, v in fields.items()):
+            bad.append("%s decode" % name)
+    # independent MGA fragmentation check: reassemble the GPS_RTCM_DATA fragments by their flags only
+    rnd = random.Random(21)
+    frag_bad = []
+    for ln in (1, 100, 179, 180, 181, 359, 360, 361, 540, 700):
+        data = bytes(rnd.randrange(256) for _ in range(ln))
+        frs = gpsassist.rtcm_frames(data, 9)
+        parts = {}
+        for fr in frs:
+            assert fr["flags"] >> 3 == 9
+            if fr["flags"] & 1:
+                parts[(fr["flags"] >> 1) & 3] = bytes(fr["data"][:fr["len"]])
+            else:
+                parts[0] = bytes(fr["data"][:fr["len"]])
+        back = b"".join(parts[k] for k in sorted(parts))
+        if back != data or any(fr["len"] > 180 for fr in frs) or len(frs) > 4 or (ln > 180) != bool(frs[0]["flags"] & 1):
+            frag_bad.append(ln)
+    # UA4 aliasing: the writer check must catch "from .mavlink import encode" / "enc = mavlink.encode"
+    alias = re.compile(r"from\s+\.?(?:uav\.)?mavlink\s+import\s+[^\n]*\bencode\b|=\s*mavlink\.encode\b(?!\s*\()")
+    found = []
+    for p in py_files([HERE, os.path.join(REPO, "groundstation")]):
+        rel = os.path.relpath(p, REPO).replace("\\", "/")
+        if alias.search(open(p, encoding="utf-8", errors="replace").read()):
+            found.append(rel)
+    caught = bool(alias.search("from .mavlink import encode\n")) and bool(alias.search("enc = mavlink.encode\n"))
+    report("UA21 (U2 review LOW-14) the codec against FIXED frames from the spec's rules (made once by pymavlink), the "
+           "GPS_RTCM_DATA fragments reassembled by their flags alone (1..700 bytes), no aliased encode anywhere "
+           "(from .mavlink import encode / enc = mavlink.encode)",
+           not bad and not frag_bad and not found and caught,
+           "frames wrong %s; fragment lengths wrong %s; aliases %s; the alias check works %s" % (
+               bad, frag_bad, found, caught))
+
+
 def watchdog():
     def fire():
         print("\nSTALLED: test_uav.py still running after %d s - killed" % LIMIT_S, flush=True)
@@ -1657,7 +1834,7 @@ def main():
     tests = [ua1_codec, ua2_pymavlink, ua3_allow, ua4_writer, ua5_no_aurix, ua6_check, ua7_registry, ua8_assist,
              ua9_simdrone, ua10_router, ua11_gateway, ua12_osdep, ua13_mission, ua14_checks, ua15_hatch,
              ua16_launch, ua17_router_flight,
-             ua18_gateway_launch, ua19_helm_grant]
+             ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

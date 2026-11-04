@@ -241,7 +241,8 @@ class Page:
                 b.configure(state="disabled")
             return
         why = _tr(st.get("why") or "")
-        self.head.configure(text=T("uav.router", state=st.get("state", "-"), why=("(%s)" % why) if why else "") +
+        self.head.configure(text=T("uav.router", state=T("uav.st_" + str(st.get("state"))) if i18n.has("uav.st_" + str(
+            st.get("state"))) else st.get("state", "-"), why=("(%s)" % why) if why else "") +
                             ("  " + T("uav.sim") if st.get("sim") else ""),
                             fg=C["fg"] if st.get("state") == "ACTIVE" else theme.CAUTION)
         r = (st.get("router") or {}).get("stats") or {}

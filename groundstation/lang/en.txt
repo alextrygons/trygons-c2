@@ -2008,6 +2008,14 @@ gw.uav_hatch_closing = hatch closing
 gw.uav_hatch_not = HATCH NOT CLOSED: {why} - take HELM and close it
 gw.uav_no_leave = UAV {n} did not leave the hatch
 gw.uav_no_helm = no station holds HELM
+gw.uav_nodrone = no drone on its slot cable
+gw.uav_nan = parameters not a number: {names}
+gw.uav_sysid = sysid {s} is not allowed (0 = broadcast, 255 = a ground station)
+uav.st_ACTIVE = ACTIVE
+uav.st_OFFLINE = OFFLINE
+gw.uav_unreg = slot {slot} unregistered
+gw.uav_l_runs = a launch sequence runs
+gw.uav_l_runs2 = a launch sequence runs already
 gw.uav_h_open_t = the hatch did not open within {s} s
 gw.uav_h_close_t = the hatch did not close within {s} s
 gw.uav_h_leave = the hatch did not leave CLOSED

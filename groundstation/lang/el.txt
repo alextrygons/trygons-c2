@@ -2012,6 +2012,14 @@ gw.uav_hatch_closing = η καταπακτή κλείνει
 gw.uav_hatch_not = Η ΚΑΤΑΠΑΚΤΗ ΔΕΝ ΕΚΛΕΙΣΕ: {why} - πάρτε HELM και κλείστε την
 gw.uav_no_leave = Το UAV {n} δεν βγήκε από την καταπακτή
 gw.uav_no_helm = κανένας σταθμός δεν έχει το HELM
+gw.uav_nodrone = κανένα UAV στο καλώδιο της θέσης του
+gw.uav_nan = παράμετροι που δεν είναι αριθμός: {names}
+gw.uav_sysid = το sysid {s} δεν επιτρέπεται (0 = όλοι, 255 = σταθμός εδάφους)
+uav.st_ACTIVE = ΣΕ ΛΕΙΤΟΥΡΓΙΑ
+uav.st_OFFLINE = ΕΚΤΟΣ ΛΕΙΤΟΥΡΓΙΑΣ
+gw.uav_unreg = η θέση {slot} διαγράφηκε από το μητρώο
+gw.uav_l_runs = γίνεται εκτόξευση
+gw.uav_l_runs2 = γίνεται ήδη εκτόξευση
 gw.uav_h_open_t = η καταπακτή δεν άνοιξε μέσα σε {s} s
 gw.uav_h_close_t = η καταπακτή δεν έκλεισε μέσα σε {s} s
 gw.uav_h_leave = η καταπακτή δεν ξεκίνησε από το ΚΛΕΙΣΤΗ

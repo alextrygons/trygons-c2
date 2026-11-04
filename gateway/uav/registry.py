@@ -24,6 +24,7 @@ is NOT launchable (red, with every reason):
   - unique sysid in the registry; the registered UID in a slot = the drone found there (else "unknown drone").
 """
 import json
+import math
 import os
 import threading
 import time
@@ -34,15 +35,17 @@ FAILSAFE = [
     ("FENCE_ACTION", 0, True), ("BATT_FS_LOW_ACT", 0, True), ("BATT_FS_CRT_ACT", 1, True),
     ("BATT_CRT_VOLT", None, True), ("BATT_CRT_MAH", None, True),
     ("RC_OPTIONS", None, True), ("FRAME_CLASS", 1, True),
+    # a second battery monitor (U2 review LOW-6): its failsafes the same as the first, when it exists
+    ("BATT2_FS_LOW_ACT", 0, False), ("BATT2_FS_CRT_ACT", 1, False),
 ]
 SERVO_REQUIRED = range(1, 17)                     # SERVO1..16_FUNCTION on every ArduPilot board
 SERVO_OPTIONAL = range(17, 33)                    # SERVO17..32 on newer firmware / boards
 MOTOR_FUNCS = (33, 34, 35, 36)                    # Motor1..4
-OFF_IF_PRESENT = ([("RELAY%d_FUNCTION" % i, 0) for i in range(1, 7)] +
-                  [("RELAY%d_PIN" % i, -1) for i in range(1, 7)] +
+OFF_IF_PRESENT = ([("RELAY%d_FUNCTION" % i, 0) for i in range(1, 17)] +          # (U2 review LOW-6: up to 16)
+                  [("RELAY%d_PIN" % i, -1) for i in range(1, 17)] +
                   [("RELAY_PIN", -1)] + [("RELAY_PIN%d" % i, -1) for i in range(2, 7)] +
                   [("GRIP_ENABLE", 0), ("CHUTE_ENABLED", 0), ("WINCH_TYPE", 0), ("MNT1_TYPE", 0), ("MNT_TYPE", 0),
-                   ("SCR_ENABLE", 0)] +
+                   ("MNT2_TYPE", 0), ("SCR_ENABLE", 0)] +
                   [("RC%d_OPTION" % i, 0) for i in range(1, 17)])
 RC_IGNORE_RECEIVER = 1                            # RC_OPTIONS bit 0
 # SYS_STATUS sensor bits
@@ -65,6 +68,15 @@ def fw_text(v):
     return "%d.%d.%d" % ((v >> 24) & 0xFF, (v >> 16) & 0xFF, (v >> 8) & 0xFF)
 
 
+def _num(v):
+    """A parameter value as a finite float, None when it is not one (U2 review LOW-9: a NaN never raises)."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
 def check(reading, others=()):
     """Problems (English: protocol / audit; the station translates) of one slot's reading; [] = registrable.
     reading = usbslots.SlotProbe.result(); others = [(slot, sysid)] of the OTHER registered slots."""
@@ -78,7 +90,12 @@ def check(reading, others=()):
         p.append("armed in the slot")
     if not reading.get("version"):
         p.append("no AUTOPILOT_VERSION (firmware / UID unknown)")
-    params = reading.get("params", {})
+    raw = reading.get("params") or {}
+    params = {k: _num(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    bad = sorted(k for k, v in params.items() if v is None)
+    if bad:
+        p.append("parameters not a number: %s" % ", ".join(bad[:6]))
+    params = {k: v for k, v in params.items() if v is not None}
     missing = [n for n in reading.get("required", []) if n not in params]
     if missing:
         p.append("parameters not readable: %s" % ", ".join(missing[:6]) + (" ..." if len(missing) > 6 else ""))
@@ -123,6 +140,8 @@ def check(reading, others=()):
     if not gps or gps.get("fix_type", 0) < 1:
         p.append("no GPS receiver")
     sysid = reading.get("sysid")
+    if sysid in (0, 255) or (sysid is not None and not 1 <= int(sysid) <= 254):
+        p.append("sysid %s is not allowed (0 = broadcast, 255 = a ground station)" % sysid)   # U2 review LOW-6
     for slot, sid in others:
         if sid == sysid:
             p.append("sysid %s is also slot %s" % (sysid, slot))
@@ -166,13 +185,22 @@ class Registry:
         self.lock = threading.Lock()
         self.error = ""
         if path and os.path.exists(path):
+            # U2 review MED-2: a wrongly shaped file (a list, "slots": [], odd keys) never stops the gateway
             try:
                 with open(path, encoding="utf-8") as f:
                     d = json.load(f)
-                for k, r in (d.get("slots") or {}).items():
-                    if 1 <= int(k) <= self.slots and isinstance(r, dict):
-                        self.recs[int(k)] = r
-            except (OSError, ValueError) as e:
+                sl = d.get("slots") if isinstance(d, dict) else None
+                if not isinstance(sl, dict):
+                    raise ValueError("no slots table")
+                for k, r in sl.items():
+                    try:
+                        n = int(k)
+                    except (TypeError, ValueError):
+                        continue
+                    if 1 <= n <= self.slots and isinstance(r, dict):
+                        self.recs[n] = r
+            except Exception as e:
+                self.recs = {}
                 self.error = "registry unreadable: %s" % str(e)[:60]
 
     def others(self, slot):
@@ -192,7 +220,8 @@ class Registry:
         self.save()
 
     def launchable(self, slot, live=None):
-        """(ok, why): registered + passed its check + (when the slot's live HEARTBEAT is known) the same drone."""
+        """(ok, why): registered + passed its check + the drone ON its slot cable now (live = what the router sees
+        there; None = nothing there: U2 review MED-1) + the same drone (sysid, and the UID once the router knows it)."""
         r = self.recs.get(slot)
         if not r:
             return False, "not registered"
@@ -200,7 +229,9 @@ class Registry:
             return False, "check failed: %s" % "; ".join(r.get("problems", [])[:2])
         if any(sid == r.get("sysid") for _s, sid in self.others(slot)):
             return False, "duplicate sysid %s" % r.get("sysid")
-        if live is not None:
+        if live is None:
+            return False, "no drone on its slot cable"
+        if True:
             if live.get("sysid") is not None and live.get("sysid") != r.get("sysid"):
                 return False, "unknown drone in the slot (sysid %s, registered %s): register again" % (
                     live.get("sysid"), r.get("sysid"))

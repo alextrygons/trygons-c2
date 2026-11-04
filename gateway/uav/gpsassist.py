@@ -51,7 +51,22 @@ def parse_ubx(data):
     return out
 
 
-def mga_ini_time_utc(utc, acc_s=1.0):
+POS_ACC_MIN_M = 50.0
+TIME_ACC_S = 2.5          # the boat's GPS time reaches the gateway 1 Hz over a UART + the gateway's own jitter
+
+
+def only_mga(data):
+    """(the UBX-MGA (class 0x13) messages of data, the number of other messages dropped) - U2 review MED-3."""
+    keep, dropped = b"", 0
+    for cls, mid, p in parse_ubx(data):
+        if cls == MGA_CLASS:
+            keep += ubx(cls, mid, p)
+        else:
+            dropped += 1
+    return keep, dropped
+
+
+def mga_ini_time_utc(utc, acc_s=TIME_ACC_S):
     """UBX-MGA-INI-TIME_UTC (24 bytes): type 0x10, version 0, ref 0 (none), leapSecs -128 (unknown)."""
     t = time.gmtime(int(utc))
     ns = int((utc - int(utc)) * 1e9)
@@ -76,10 +91,13 @@ def assist_bytes(utc=None, pos=None, extra=b""):
         what.append("time")
     if pos is not None:
         lat, lon, acc = pos
-        out += mga_ini_pos_llh(lat, lon, 0.0, max(10.0, float(acc)))
+        # U2 review MED-4: height 0 = sea level, but POS_LLH wants the ELLIPSOID height (the geoid is ~+35 m in the
+        # Aegean): the accuracy is at least POS_ACC_MIN_M so the receiver never trusts a 35 m height error
+        out += mga_ini_pos_llh(lat, lon, 0.0, max(POS_ACC_MIN_M, float(acc)))
         what.append("pos")
+    extra, _dropped = only_mga(bytes(extra or b""))           # (again here: nothing but MGA ever reaches a drone)
     if extra:
-        out += bytes(extra)
+        out += extra
         what.append("eph")
     return out, "+".join(what)
 

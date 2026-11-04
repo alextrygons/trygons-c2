@@ -112,6 +112,7 @@ class UavManager:
         self.notices = []                        # {"t", "text", "level"} (last 12)
         self.relay_retry = None                  # [on, cb, until]: one retry of a hatch relay command (W55)
         self.relay_busy = False
+        self._load_extra()
 
     # --- the processes --------------------------------------------------------------------------------------------
     def start(self, loop):
@@ -311,7 +312,7 @@ class UavManager:
         links = self.worker.get("links", {}) if self.proc is not None else {}
         for s, _usb, _v, _e in self.specs:
             lk = links.get(str(s)) or {}
-            if not (lk.get("present") and not lk.get("armed") and s in self.reg.recs):
+            if not (lk.get("present") and not lk.get("armed") and (self.reg.recs.get(s) or {}).get("ok")):
                 continue
             if now >= self.next_assist.get(s, 0.0):
                 self.next_assist[s] = now + float(self.cfg["assist_s"])
@@ -319,19 +320,28 @@ class UavManager:
         self.u3_tick(now)
 
     # --- GPS warm start (H4) --------------------------------------------------------------------------------------
+    def _load_extra(self):
+        """The assist_extra file, read ONCE (U2 review LOW-1: from the start, never on the event loop) and filtered
+        to UBX-MGA messages only (MED-3: a CFG-* / any other class could reconfigure or reset the drones' GPS -
+        dropped + counted)."""
+        self.extra, self.extra_dropped = b"", 0
+        if not self.cfg["assist_extra"]:
+            return
+        try:
+            with open(self.cfg["assist_extra"], "rb") as f:
+                raw = f.read(720 * 8)
+        except OSError:
+            return
+        self.extra, self.extra_dropped = gpsassist.only_mga(raw)
+
     def assist_data(self):
         clk = getattr(self.gw, "clock", None)
-        utc = clk.now() if clk is not None and clk.gps_valid else None
+        # U2 review MED-4 / LOW-2: the time only while the boat's GPS time is fresh (TIME frames at 1 Hz)
+        gt = getattr(clk, "gps_rx", 0.0) or 0.0
+        utc = clk.now() if clk is not None and clk.gps_valid and (not gt or time.time() - gt < 5.0) else None
         fresh = self.gw.telem_fresh() if hasattr(self.gw, "telem_fresh") else None
         pos = gpsassist.boat_fix(fresh, fresh is not None)
-        extra = b""
-        if self.cfg["assist_extra"]:
-            try:
-                with open(self.cfg["assist_extra"], "rb") as f:
-                    extra = f.read(720 * 8)
-            except OSError:
-                extra = b""
-        return utc, pos, extra
+        return utc, pos, self.extra
 
     def send_assist(self, slot):
         utc, pos, extra = self.assist_data()
@@ -379,9 +389,19 @@ class UavManager:
 
     def _registered(self, m):
         rid = m.get("id")
-        sid, slot, _t0 = self.pending.pop(rid, (None, int(m.get("slot", 0)), 0.0))
+        if rid not in self.pending:
+            # U2 review LOW-10: an answer after its time-out (already refused to the station) never writes the registry
+            self.gw.audit("uav_register_late", slot=m.get("slot"), id=rid)
+            return
+        sid, slot, _t0 = self.pending.pop(rid)
+        if not 1 <= int(slot or 0) <= self.n:
+            return
         reading = m.get("reading") or {}
         if not reading.get("heartbeat"):
+            # U2 review MED-1: a failed / empty registration CLEARS the old record (never launched on an old check)
+            if slot in self.reg.recs:
+                self.reg.unregister(slot)
+                self.to_worker(self._config())
             text = "slot %d: %s" % (slot, reading.get("why") or "no drone")
             self.gw.audit("uav_register_result", slot=slot, ok=False, why=text)
             return self._answer(sid, slot, False, text, [reading.get("why") or "no drone"])
@@ -444,12 +464,22 @@ class UavManager:
             dr["battery_pct"] = dr.get("batt_pct")
         return dr
 
+    @staticmethod
+    def live(lk):
+        """What is on a slot's cable now for Registry.launchable: another drone's HEARTBEAT (the router drops its
+        frames and reports its sysid - U2 review MED-1), the registered one (+ its live UID), or None."""
+        if lk.get("foreign_sysid") is not None:
+            return {"sysid": lk["foreign_sysid"], "uid": None}
+        if lk.get("present"):
+            return {"sysid": lk.get("sysid"), "uid": lk.get("uid")}
+        return None
+
     def check_drone(self, n):
         """None = slot n may be launched now, else why."""
         d = self.slot(n)
         if not d.get("usb_present"):
             return "not on its slot USB cable"
-        ok, why = self.reg.launchable(n, {"sysid": ((self.worker.get("links") or {}).get(str(n)) or {}).get("sysid")})
+        ok, why = self.reg.launchable(n, self.live((self.worker.get("links") or {}).get(str(n)) or {}))
         if not ok:
             return why
         if d.get("armed"):
@@ -713,6 +743,22 @@ class UavManager:
                   pending=True)
         self.gw.stations.ask_captain(st, m, what, answer)
 
+    def unregister_msg(self, st, m):
+        """{"t": "uav_unregister", "slot": n} (U2 review MED-1): forget a slot's record (never while a launch runs)."""
+        try:
+            slot = int(m.get("slot"))
+        except (TypeError, ValueError):
+            slot = 0
+        why = "VIEWER: watch only" if st.role == "VIEWER" else ("no such slot" if not 1 <= slot <= self.n else (
+            "a launch sequence runs" if self.seq.busy() else None))
+        if why:
+            return self._ack(st, "unregister", False, ERR_UAV, "UAV refused: %s" % why, slot=slot)
+        self.reg.unregister(slot)
+        self.routes.pop(slot, None)
+        self.loaded.pop(slot, None)
+        self.to_worker(self._config())
+        self._ack(st, "unregister", True, 0, "slot %d unregistered" % slot, slot=slot)
+
     def stop_msg(self, st, m):
         if st.role == "VIEWER":
             return self._ack(st, "launch_stop", False, ERR_LAUNCH, "VIEWER: watch only")
@@ -742,10 +788,10 @@ class UavManager:
         for s, usb, vtx, elrs in self.specs:
             lk = links.get(str(s)) or {}
             r = self.reg.recs.get(s)
-            live = {"sysid": lk.get("sysid")} if lk.get("present") else None
+            live = self.live(lk)
             ok, why = self.reg.launchable(s, live)
             a = self.assist.get(s)
-            out.append({"slot": s, "usb": bool(usb), "present": bool(lk.get("present")), "link_error": lk.get("error"),
+            out.append({"slot": s, "usb": bool(usb), "present": live is not None, "link_error": lk.get("error"),
                         "registered": r is not None, "name": (r or {}).get("name"), "sysid": (r or {}).get("sysid"),
                         "uid": (r or {}).get("uid"), "fw": (r or {}).get("fw"),
                         "battery_pct": lk.get("batt_pct", (r or {}).get("battery_pct")),

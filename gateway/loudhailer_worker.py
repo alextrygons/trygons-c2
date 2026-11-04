@@ -61,6 +61,7 @@ class WavRing:
         self.hole = None                # [next, end) samples of silence a catch-up frame may still take
         self.reopened = 0               # existing files continued (never truncated)
         self.error = ""
+        self.fresh = False
         os.makedirs(folder, exist_ok=True)
 
     def _open(self, now):
@@ -84,6 +85,7 @@ class WavRing:
             f = open(path, "wb")
         self.f, self.start, self.n = f, start, n
         self.hole = None
+        self.fresh = True                               # the next gap comes from opening, not from a stall
         self._header()
 
     def _header(self):
@@ -123,7 +125,18 @@ class WavRing:
                 else:
                     self.dropped += 1
                 return
-            if gap >= 2 * vc.FRAME_N:
+            fresh, self.fresh = getattr(self, "fresh", False), False
+            if gap >= 2 * vc.FRAME_N and fresh:
+                # U2 review LOW-15: a gap found right after _open (a file opened / continued in the middle of its
+                # minute) is NOT a stall: silence first, then this frame at its own time (never up to 60 s early)
+                gap = min(gap, int(self.seg_s * vc.RATE) - self.n)
+                if gap > 0:
+                    self.f.write(bytes(2 * gap))
+                    self.n += gap
+                    self.filled += gap
+                self.f.write(bytes(pcm))
+                self.n += nsamp
+            elif gap >= 2 * vc.FRAME_N:
                 gap = min(gap, int(self.seg_s * vc.RATE) - self.n)
                 self.f.write(bytes(pcm))                             # this frame first: its own time
                 self.n += nsamp

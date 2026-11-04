@@ -30,6 +30,7 @@ class TimeSync:
         gps = proto.gps_epoch(d["date"], d["tod_ms"])
         self.gps_time = gps
         self.clock.gps_valid = True
+        self.clock.gps_rx = time.time()             # (the UAV GPS warm start uses the time only while this is fresh)
         err = gps - self.clock.now()
         if abs(err) <= self.max_err_s:
             return

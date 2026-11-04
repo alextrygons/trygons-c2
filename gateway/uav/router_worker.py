@@ -80,6 +80,7 @@ class Link:
         self.sysid = None
         self.hb = {}
         self.info = {}
+        self.foreign = None                                # (sysid, when) of a HEARTBEAT of another drone
 
     def open(self, now):
         if self.up or now < self.next_open or not self.spec:
@@ -279,6 +280,8 @@ class Router:
             pr = self.probes.get(link.slot) if link.kind == "usb" else None
             if exp is not None and m.sysid != exp and pr is None:
                 self.stats["wrong_sysid"] += 1
+                if m.name == "HEARTBEAT" and m.fields.get("autopilot") != 8:
+                    link.foreign = (m.sysid, now)          # U2 review MED-1: another drone on this slot's cable
                 continue
             if exp is None and link.kind == "elrs":
                 continue                                   # a radio link only for a registered drone
@@ -302,6 +305,9 @@ class Router:
                 d.landed_state, d.ext_t = f.get("landed_state"), now
             elif m.name == "EKF_STATUS_REPORT":
                 d.ekf_flags = f.get("flags")
+            elif m.name == "AUTOPILOT_VERSION" and link.kind == "usb":
+                uid = ("%016x" % f["uid"]) if f.get("uid") else (bytes(f.get("uid2") or []).hex() or None)
+                link.info["uid"] = uid                     # the live UID (U2 review MED-1)
             if pr is not None:
                 pr[0].feed(m)
             self.job_rx(link, m, now)
@@ -486,10 +492,19 @@ class Router:
         self.jobs_tick(now)
         if now >= self.next_hb:
             self.next_hb = now + 1.0
+            self.n_hb = getattr(self, "n_hb", 0) + 1
             for link in self.links.values():
                 if link.up:
                     self.tx(link, "HEARTBEAT", {"type": 6, "autopilot": 8, "base_mode": 0, "custom_mode": 0,
                                                 "system_status": 4, "mavlink_version": 3})
+                if link.kind != "usb":
+                    continue
+                if not link.present(now):
+                    link.info.pop("uid", None)             # the live UID is the drone ON the cable now
+                elif self.n_hb % 10 == 0 and link.slot not in self.probes:
+                    # U2 review MED-1: the live UID every 10 s (an unknown drone with the registered sysid)
+                    self.tx(link, "COMMAND_LONG", dict(self.tgt_of(link.slot), command=allow.CMD_REQUEST_MESSAGE,
+                                                       param1=float(mavlink.MESSAGES["AUTOPILOT_VERSION"][0])))
         if now >= self.next_status:
             self.next_status = now + 0.5
             self.status(now)
@@ -498,7 +513,9 @@ class Router:
         def lk(l):
             return dict({"up": l.up, "error": l.error, "present": l.present(now), "sysid": l.sysid,
                          "armed": bool(l.hb.get("base_mode", 0) & 0x80), "mode": l.hb.get("custom_mode"),
-                         "hb_age": round(now - l.hb_t, 1) if l.hb_t else None}, **l.info)
+                         "hb_age": round(now - l.hb_t, 1) if l.hb_t else None,
+                         "foreign_sysid": l.foreign[0] if l.foreign and now - l.foreign[1] < HB_LOST_S else None},
+                        **l.info)
         out({"ev": "status", "stats": self.stats, "denied": self.denied, "probing": sorted(self.probes),
              "jobs": sorted(self.jobs), "hatch_open": self.ctx_hatch(now),
              "links": {str(s): lk(l) for (s, k), l in self.links.items() if k == "usb"},

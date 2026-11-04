@@ -94,7 +94,8 @@ against the drones' ArduPilot version in SITL / on the bench - W60):
   function). (Whether a camera tilt output should be allowed: W60 - default no.)
 - Battery backstop values (BATT_CRT_VOLT / BATT_CRT_MAH, the drone's own Land when the gateway is gone): W71.
 - MAVLink 2 signing key present (set by the owner with Mission Planner; the gateway keeps the same key in
-  secrets.json "uav_keys") - W64.
+  secrets.json "uav_keys") - W64. AS BUILT (U2 review LOW-7): NOT a registration check yet and the router does not
+  sign / check frames yet (the codec can) - until W64 is answered (does ELRS MAVLink mode pass signed frames?).
 
 ### 3.3 Pictures
 - The OWNER'S UAV PICTURE: assets/uav.png (copied in U1 from the owner's file, 1024 x 1024 transparent)
