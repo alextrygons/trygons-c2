@@ -588,6 +588,143 @@
          "text_el": "Το κόκκινο κουμπί έκτακτης ανάγκης: STANDBY, και όσο είναι πατημένο κανένας άλλος τρόπος. Μετά την ξενάγηση, συνεχίστε με τα μαθήματα στον προσομοιωτή.",
          "text_en": "The red emergency stop: STANDBY, and no other mode while it is pressed. After the tour, go on with the simulator lessons."}
       ]
+    },
+    {
+      "id": "uav",
+      "title_el": "Το μαγγέμα UAV",
+      "title_en": "The UAV magazine",
+      "stops": [
+        {
+          "id": "uav.page",
+          "show": "tools",
+          "target": "tab.uav",
+          "covers": [
+            "uav:register"
+          ],
+          "title_el": "Καταχώριση UAV",
+          "title_en": "Registering a UAV",
+          "text_el": "Στη σελίδα Μαγγέμα UAV, το κουμπί ΚΑΤΑΧΩΡΙΣΗ κάθε θέσης διαβάζει το UAV από το καλώδιο της θέσης και ελέγχει τις ρυθμίσεις του χωρίς να αλλάζει τίποτα. Αποτυχία σημαίνει ότι το UAV δεν εκτοξεύεται.",
+          "text_en": "On the UAV magazine page, the REGISTER button of each slot reads the drone through the slot cable and checks its settings without changing anything. A failure means that drone is not launched."
+        },
+        {
+          "id": "uav.scope",
+          "show": "none",
+          "target": "",
+          "covers": [
+            "uav:scope"
+          ],
+          "title_el": "Μόνο παρατήρηση",
+          "title_en": "Observation only",
+          "text_el": "Τα UAV του σκάφους είναι μόνο κάμερες παρατήρησης. Το gateway στέλνει μόνο τα μηνύματα μιας λίστας επιτρεπόμενων και δέχεται μόνο UAV με τέσσερις κινητήρες και καμία άλλη έξοδο.",
+          "text_en": "The boat's drones are observation cameras only. The gateway sends only the messages of an allow list and accepts only drones with four motors and no other output."
+        },
+        {
+          "id": "uav.route",
+          "show": "s2",
+          "target": "boat",
+          "covers": [
+            "uav:route",
+            "uav:map"
+          ],
+          "title_el": "Διαδρομή UAV και χάρτης",
+          "title_en": "UAV route and the map",
+          "text_el": "Η αποστολή διαδρομής ρωτά πού: στο σκάφος, στο επόμενο UAV, σε ένα UAV στο μαγγέμα ή σε ένα που πετά. Το gateway ελέγχει ύψος, εμβέλεια ασυρμάτου, μπαταρία με απόθεμα προσγείωσης και ζώνες απαγόρευσης. Κάθε UAV φαίνεται στον χάρτη με την εικόνα του, το ίχνος του και ύψος, μπαταρία, σύνδεση.",
+          "text_en": "Sending a route asks where to: the boat, the next UAV, a UAV in the magazine or a flying one. The gateway checks altitude, radio range, battery with the landing reserve and no-fly zones. Every UAV is on the map with its picture, its track and altitude, battery, link."
+        },
+        {
+          "id": "uav.launch",
+          "show": "tools",
+          "target": "tab.uav",
+          "covers": [
+            "uav:prep",
+            "uav:launch"
+          ],
+          "title_el": "Προετοιμασία εκτόξευσης",
+          "title_en": "Preparing a launch",
+          "text_el": "Ο συγκυβερνήτης ή η συγκυβερνήτρια πατά ΠΡΟΕΤΟΙΜΑΣΙΑ ΕΚΤΟΞΕΥΣΗΣ και ο κυβερνήτης ή η κυβερνήτρια απαντά ΝΑΙ ή ΟΧΙ στην οθόνη 1. Μόνο σε STANDBY ή DP SPOT και κάτω από δύο κόμβους. Τα UAV βγαίνουν ένα ένα, από την πάνω θέση.",
+          "text_en": "The copilot presses PREPARE LAUNCH and the captain answers YES or NO on screen 1. Only in STANDBY or DP SPOT and below two knots. The drones go out one by one, from the top slot."
+        },
+        {
+          "id": "uav.stop",
+          "show": "tools",
+          "target": "tab.uav",
+          "covers": [
+            "uav:stop",
+            "uav:close",
+            "uav:hatch"
+          ],
+          "title_el": "STOP και καταπακτή",
+          "title_en": "STOP and the hatch",
+          "text_el": "Το STOP σταματά τη σειρά: κανένα επόμενο UAV, όσα πετούν συνεχίζουν. Το ARM γίνεται μόνο με τον διακόπτη ΑΝΟΙΧΤΟ της καταπακτής. Μετά από διακοπή η καταπακτή μένει όπως είναι, και την κλείνει μόνο ο κυβερνήτης ή η κυβερνήτρια με ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ.",
+          "text_en": "STOP ends the sequence: no further drone, the flying ones go on. ARM happens only with the hatch OPEN switch. After a stop the hatch stays as it is, and only the captain closes it with HATCH CLOSE."
+        },
+        {
+          "id": "uav.video",
+          "show": "s2",
+          "target": "camview",
+          "covers": [
+            "uav:video",
+            "uav:ai"
+          ],
+          "title_el": "Βίντεο UAV και AI",
+          "title_en": "UAV video and AI",
+          "text_el": "Ένα κλικ σε ένα UAV ανοίγει το βίντεο του σε όλη την οθόνη 2. Ο σταθμός παίρνει το βίντεο μόνο όσο είναι ανοιχτό, και ποτέ σε εξοικονόμηση δεδομένων. Η ανίχνευση εμποδίων AI δείχνει μόνο πλαίσια στο βίντεο του UAV και δεν επιβραδύνει ποτέ το σκάφος.",
+          "text_en": "A click on a drone opens its video over the whole of screen 2. The station gets the video only while it is open, and never on the data saver. The AI obstacle detection only shows boxes on the drone video and never slows the boat."
+        },
+        {
+          "id": "uav.battery",
+          "show": "none",
+          "target": "",
+          "covers": [
+            "uav:battery"
+          ],
+          "title_el": "Η μόνη προσγείωση",
+          "title_en": "The only landing",
+          "text_el": "Ένα UAV προσγειώνεται μόνο στο ελάχιστο της μπαταρίας, εκεί που βρίσκεται. Ειδοποίηση εξήντα και είκοσι δευτερόλεπτα πριν. Χωρίς GPS ή χωρίς σύνδεση απλώς κρατά θέση. Ποτέ επιστροφή, ποτέ προσγείωση στο σκάφος.",
+          "text_en": "A drone lands only at its battery minimum, where it is. A notice sixty and twenty seconds before. Without GPS or without a link it just holds. Never a return, never a landing on the boat."
+        },
+        {
+          "id": "uav.fly",
+          "show": "s1",
+          "target": "center",
+          "covers": [
+            "uav:fly",
+            "uav:give",
+            "uav:hud",
+            "uav:banner"
+          ],
+          "title_el": "Χειρισμός UAV με το joystick",
+          "title_en": "Flying a UAV with the joystick",
+          "text_el": "Το κουμπί ΧΕΙΡΙΣΜΟΣ UAV δίνει το joystick στο UAV, με την ένδειξη JOYSTICK προς UAV στις δύο οθόνες και το πράσινο HUD του UAV στην οθόνη 1. Ο κυβερνήτης ή η κυβερνήτρια πετά μόνο με το σκάφος σε STANDBY. Η ΕΠΙΣΤΡΟΦΗ ΣΤΟ ΣΚΑΦΟΣ δίνει πίσω το joystick και το UAV κρατά θέση.",
+          "text_en": "The FLY UAV button gives the joystick to the drone, with the JOYSTICK to UAV banner on both screens and the drone's green HUD on screen 1. The captain flies only with the boat in STANDBY. RETURN TO BOAT gives the joystick back and the drone holds."
+        },
+        {
+          "id": "uav.logs",
+          "show": "tools",
+          "target": "tab.uav",
+          "covers": [
+            "uav:logs",
+            "uav:csv",
+            "uav:gpx"
+          ],
+          "title_el": "Ημερολόγια πτήσης",
+          "title_en": "Flight logs",
+          "text_el": "Κάθε πτήση γράφεται σε δικό της αρχείο. ΗΜΕΡΟΛΟΓΙΑ ΠΤΗΣΗΣ τα δείχνει και η εξαγωγή γίνεται σε CSV ή GPX.",
+          "text_en": "Every flight is written to its own file. FLIGHT LOGS lists them and the export is CSV or GPX."
+        },
+        {
+          "id": "uav.legal",
+          "show": "none",
+          "target": "",
+          "covers": [
+            "uav:legal"
+          ],
+          "title_el": "Ο νόμος",
+          "title_en": "The law",
+          "text_el": "Πτήση εκτός οπτικής επαφής είναι στην ειδική κατηγορία: άδεια λειτουργίας από την ΥΠΑ, εγγεγραμμένος φορέας, ικανός χειριστής ή χειρίστρια και άμεση απομακρυσμένη ταυτοποίηση. Την ευθύνη έχουν ο φορέας και ο χειριστής ή η χειρίστρια.",
+          "text_en": "Flight beyond visual line of sight is in the specific category: an authorisation from the civil aviation authority, a registered operator, a competent remote pilot and direct remote ID. The responsibility is the operator's and the remote pilot's."
+        }
+      ]
     }
   ]
 }

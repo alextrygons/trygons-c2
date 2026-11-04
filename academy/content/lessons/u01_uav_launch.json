@@ -1,0 +1,141 @@
+{
+  "_help": "UAV magazine lesson (step U6, owner spec H7; kind uav_lesson, academy/uavlesson.py). runs_on sim: it runs ONLY on the academy's own in-process UAV simulator (academy/uavsim.py = the gateway's launch / allow-list / route / battery-rule modules with a simulated boat and magazine) - never a gateway, a drone or a boat. Same step format as the boat lessons: do_el / do_en, check = the SIMULATED state that proves the step (uavlesson.FIELDS), hint after hint_s, at_start = a simulator event. Camera / observation drones only.",
+  "kind": "uav_lesson",
+  "id": "u01_uav_launch",
+  "level": "CAPTAIN",
+  "order": 1,
+  "required": false,
+  "runs_on": "sim",
+  "title_el": "Εκτόξευση UAV και παρατήρηση",
+  "title_en": "UAV launch and observation",
+  "intro_el": "Μαθαίνετε τη σειρά μιας εκτόξευσης από το μαγγέμα: καταχώριση, διαδρομή, σκάφος σε STANDBY, προετοιμασία από τον συγκυβερνήτη ή τη συγκυβερνήτρια, ΝΑΙ από τον κυβερνήτη ή την κυβερνήτρια, και μετά παρατήρηση από την κάμερα. Τα UAV είναι μόνο για παρατήρηση. Η μόνη προσγείωση είναι το ελάχιστο της μπαταρίας.",
+  "intro_en": "You learn the order of a launch from the magazine: register, route, boat in STANDBY, the copilot prepares, the captain says YES, then you observe through the camera. The drones are for observation only. The only landing is the battery minimum.",
+  "setup": [
+    "magazine_full",
+    "boat_moving"
+  ],
+  "steps": [
+    {
+      "do_el": "Καταχωρίστε το UAV της θέσης 1 (ΚΑΤΑΧΩΡΙΣΗ).",
+      "do_en": "Register the UAV in slot 1 (REGISTER).",
+      "hint_el": "Η καταχώριση διαβάζει το UAV από το καλώδιο της θέσης του και το ελέγχει μόνο με ανάγνωση. Χωρίς καταχώριση δεν εκτοξεύεται ποτέ.",
+      "hint_en": "Register reads the drone through its slot cable and checks it, read only. A drone that is not registered is never launched.",
+      "check": [
+        {
+          "f": "registered",
+          "ge": 1
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Στείλτε τη διαδρομή παρατήρησης στο ΕΠΟΜΕΝΟ UAV.",
+      "do_en": "Send the observation route to the NEXT UAV.",
+      "hint_el": "Το επόμενο UAV είναι η πάνω θέση του μαγγέματος. Το gateway ελέγχει ύψος, εμβέλεια και μπαταρία με το απόθεμα προσγείωσης.",
+      "hint_en": "The next UAV is the top slot of the magazine. The gateway checks altitude, radio range and battery with the landing reserve.",
+      "check": [
+        {
+          "f": "routes",
+          "ge": 1
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Βάλτε το σκάφος σε STANDBY και περιμένετε να πέσει κάτω από 2 κόμβους.",
+      "do_en": "Put the boat in STANDBY and wait until it is slower than 2 knots.",
+      "hint_el": "Εκτόξευση μόνο σε STANDBY ή DP SPOT / JOG και κάτω από 2 κόμβους. Σε κίνηση η προετοιμασία απορρίπτεται.",
+      "hint_en": "A launch only in STANDBY or DP SPOT / JOG and below 2 knots. Under way the preparation is refused.",
+      "check": [
+        {
+          "f": "boat_mode",
+          "eq": "STANDBY"
+        },
+        {
+          "f": "sog_kn",
+          "lt": 2.0
+        }
+      ],
+      "hint_s": 30
+    },
+    {
+      "do_el": "Ως συγκυβερνήτης ή συγκυβερνήτρια: ΠΡΟΕΤΟΙΜΑΣΙΑ ΕΚΤΟΞΕΥΣΗΣ.",
+      "do_en": "As the copilot: PREPARE LAUNCH.",
+      "hint_el": "Ο συγκυβερνήτης ή η συγκυβερνήτρια προετοιμάζει· δεν εκτοξεύει ποτέ μόνος ή μόνη.",
+      "hint_en": "The copilot prepares; a copilot never launches alone.",
+      "check": [
+        {
+          "f": "launch",
+          "eq": "ASK"
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "do_el": "Ως κυβερνήτης ή κυβερνήτρια: απαντήστε ΝΑΙ στην ερώτηση της οθόνης 1.",
+      "do_en": "As the captain: answer YES to the screen 1 question.",
+      "hint_el": "Η ερώτηση είναι κάθετη: ΝΑΙ πάνω, ΟΧΙ από κάτω. Με ΟΧΙ δεν γίνεται τίποτα.",
+      "hint_en": "The question is vertical: YES on top, NO underneath. NO = nothing happens.",
+      "check": [
+        {
+          "f": "launch",
+          "eq": "RUN"
+        }
+      ],
+      "hint_s": 20,
+      "fail_s": 60
+    },
+    {
+      "do_el": "Παρακολουθήστε την εκτόξευση μέχρι να κλείσει η καταπακτή.",
+      "do_en": "Watch the launch until the hatch is closed.",
+      "hint_el": "Η σειρά: ανέβασμα αποστολής, άνοιγμα καταπακτής, GPS, ARM μόνο με τον διακόπτη ΑΝΟΙΧΤΟ, άνοδος, αποσύνδεση καλωδίου, κλείσιμο καταπακτής. Οποιαδήποτε προειδοποίηση τη σταματά.",
+      "hint_en": "The order: mission upload, hatch open, GPS, ARM only with the OPEN switch, climb, the cable breaks away, the hatch closes. Any warning stops it.",
+      "check": [
+        {
+          "f": "launch",
+          "eq": "DONE"
+        },
+        {
+          "f": "launched",
+          "ge": 1
+        },
+        {
+          "f": "hatch",
+          "eq": "CLOSED"
+        }
+      ],
+      "hint_s": 60
+    },
+    {
+      "do_el": "Ανοίξτε το βίντεο του UAV 1 για παρατήρηση.",
+      "do_en": "Open the video of UAV 1 to observe.",
+      "hint_el": "Ένα κλικ στο UAV στον χάρτη ή στη μπάρα 1 της προβολής κάμερας.",
+      "hint_en": "A click on the UAV on the map, or bar 1 of the camera view.",
+      "check": [
+        {
+          "f": "view",
+          "eq": 1
+        }
+      ],
+      "hint_s": 20
+    },
+    {
+      "at_start": "battery_low",
+      "do_el": "Η μπαταρία του UAV 1 έφτασε στο ελάχιστο: προσγειώνεται εκεί που βρίσκεται. Επιβεβαιώστε την ειδοποίηση.",
+      "do_en": "UAV 1 reached its battery minimum: it lands where it is. Acknowledge the notice.",
+      "hint_el": "Η μόνη προσγείωση είναι το ελάχιστο της μπαταρίας· ποτέ επιστροφή, ποτέ προσγείωση στο σκάφος. Πάνω από τη θάλασσα το UAV χάνεται.",
+      "hint_en": "The battery minimum is the only landing; never a return, never a landing on the boat. Over the sea the drone is lost.",
+      "check": [
+        {
+          "f": "landing",
+          "ge": 1
+        },
+        {
+          "f": "notices_open",
+          "eq": 0
+        }
+      ],
+      "hint_s": 30
+    }
+  ]
+}

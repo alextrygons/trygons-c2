@@ -132,6 +132,19 @@ def main():
                     pump(root, 0.05)
             grab(root, lw.root, "lessons_%s" % lang, "simulator lessons by level (HDG LOCK lesson on the simulator)")
             lw.close()
+            import uavlesson_app                   # step U6: the UAV magazine lesson (in-process UAV simulator)
+            uw = uavlesson_app.UavLessonWindow(tk.Toplevel(root), lang, store=st, user="nikos", auto_tick=False)
+            uw.start()
+            for k in ("register", "route_next"):
+                uw.act(k)
+            uw.sim.set_boat("STANDBY", 0.0)                # (the real clock: no waiting for the boat to slow)
+            for _ in range(40):
+                uw.tick()
+                pump(root, 0.02)
+            uw.act("prepare")
+            uw.tick()
+            grab(root, uw.root, "uavlesson_%s" % lang, "the UAV lesson: the captain's YES / NO for a prepared launch "
+                                                         "(the academy's own UAV simulator)")
             import quiz_app
             qw = quiz_app.QuizWindow(tk.Toplevel(root), lang, store=st, user="nikos", player=tour_app.NullPlayer(), seed=3)
             qw.start([d["id"] for d in qw.docs])

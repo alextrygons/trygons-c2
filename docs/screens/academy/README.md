@@ -22,3 +22,5 @@ Made by `python tools/academy_screens.py` on 2026-10-30 with made-up demo accoun
 | [exams_en.png](exams_en.png) | the exams per level (refusal shown: required lessons first), English |
 | [sim3d_en.png](sim3d_en.png) | the 3D simulator interface: backend, missions, drone photos (no 3D world yet), English |
 | [practical_en.png](practical_en.png) | the practical test window (made-up station: start checks refuse - no boat, placeholder area), English |
+| [uavlesson_el.png](uavlesson_el.png) | the UAV lesson (step U6): the captain's YES / NO for a prepared launch on the academy's own UAV simulator, Greek |
+| [uavlesson_en.png](uavlesson_en.png) | the UAV lesson (step U6): the captain's YES / NO for a prepared launch on the academy's own UAV simulator, English |

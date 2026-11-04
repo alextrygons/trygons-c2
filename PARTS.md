@@ -53,6 +53,24 @@ why each part is needed: MANUAL.txt.
 - [ ] Later, optional (not implemented): a Luxonis OAK-D camera or a USB NPU to run the obstacle detection faster (gateway/vision/README.md).
 - [ ] REMOVED with step 12 (not needed any more): Raspberry Pi 5 + active cooler, its 5 V 5 A supply, its microSD card, the Pi UART cable, the dAISy HAT.
 
+## UAV magazine - 6 camera / observation drones (CLAUDE.md V, docs/uav_design.md, WIRING.md 3H; step U6) - observation ONLY, NOTHING on the AURIX but the hatch relay
+
+Charging is OUT OF SCOPE (only the battery state is shown). No payload, release or any other output on a drone:
+registration refuses a drone with any configured output but its 4 motors.
+
+- [ ] 6 x small 7" ArduPilot (ArduCopter) quads with a camera + analog 5.8 GHz VTX, a GPS + compass, an ELRS 3.x receiver in MAVLink mode, a USB-C data port on the flight controller - MODEL TBD. Each one: UAS operator number on the drone; a DIRECT REMOTE ID module when it has no class mark (EU 2020/1058, as the authorisation says). Parameters set by the owner with Mission Planner (the gateway never writes one, W60): radio + GCS failsafe off, EKF failsafe AltHold, battery critical Land, RC_OPTIONS bit 0 "ignore RC receiver", only SERVOn_FUNCTION 33-36.
+- [ ] 6 x ELRS 3.x TX modules that do MAVLink over USB (one per drone, 1:1, bound to it; e.g. a RadioMaster Ranger Micro / BetaFPV class module with MAVLink mode) + its 2.4 GHz antenna - MODEL TBD (W70). EU limit 100 mW EIRP at 2.4 GHz.
+- [ ] 6 x analog 5.8 GHz video receivers (VRX) on fixed channels (proposal: 6 of Raceband R1-R8 with the widest spacing, W63) + their antennas (circular polarised, matching the VTX) - MODEL TBD. EU limit 25 mW EIRP for the video.
+- [ ] 6 x USB video capture devices for the VRX outputs (composite -> USB, MJPEG / UVC class compliant: six uncompressed USB 2 captures do not fit one USB 2 bus) - MODEL TBD. Spread over the laptop's root ports.
+- [ ] Powered USB 3 hub(s), 12 V fed, metal case: 6 slot cables + 6 ELRS modules + 6 captures + the hatch switch cable (19 ports, e.g. two 10-port hubs). The hub PORT is the slot (usbloc: in gateway.json) - label every port, never swap cables (WIRING.md 3H).
+- [ ] 6 x breakaway USB-C data cables (magnetic USB-C with data, or a short cable with a pull-apart connector at the drone end) - one per slot; the drone pulls it out when it climbs (W58). MODEL TBD.
+- [ ] Hatch actuator (linear actuator / gas strut + motor, 12 V) with its own limit stops - MODEL TBD (W57), switched by ONE "extra" on/off relay of the boat's relay board (power_up off, not in a pair). Relays 1-7 are in use: a relay board with 8 OR MORE channels (W57b).
+- [ ] 2 x hatch limit switches, waterproof, normally open to GND when reached: OPEN and CLOSED (micro switch IP67 or a magnetic reed) - MODEL TBD.
+- [ ] FT232R USB-UART BREAKOUT board at 3.3 V that brings out CTS AND DSR (the TTL-232R cable has NO DSR, W57a) + 2 x 10 kOhm pull-up resistors to 3.3 V (CTS = OPEN switch, DSR = CLOSED switch) + a 3-wire shielded cable to the switches; a pulled-up line = a broken wire = "not there" (HATCH FAULT).
+- [ ] Antenna mast / brackets: the 6 VRX antennas and the 6 ELRS antennas separated (at least 0.5 m between the 2.4 GHz and 5.8 GHz groups, away from the 4G / Starlink antennas) - layout TBD (W63).
+- [ ] Optional (W56): a u-blox assist GPS on the gateway for the drones' ephemeris warm start.
+- Gateway PC load with the magazine: measured on the development PC (gateway/README.md section 26): + ~0.9 GB RAM for six encoders and ~0.4-0.7 CPU for the UAV video + AI; the ThinkPad estimate ~2.1 GB of 8 GB in total. Quick Sync (UHD 620) needed for the six encoders.
+
 ## Cameras (you already have the RUT901 router and the TSW101 PoE switch)
 
 - [ ] 4 x TP-Link Tapo C310 (FRONT-1, FRONT-2, REAR-LEFT, REAR-RIGHT).

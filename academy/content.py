@@ -5,6 +5,8 @@ every file has "kind" and "_help"; every text a trainee sees is given in BOTH la
 "<name>_el" + "<name>_en" (Greek first). Screen chrome (buttons, titles) stays in lang/*.txt.
 
   content/lessons/*.json    kind "lesson"   simulator lessons (spec C, step 18)
+                            kind "uav_lesson" the UAV magazine lesson (step U6, uavlesson.py: the in-process
+                            UAV simulator academy/uavsim.py - never a gateway, never a drone)
   content/quizzes/*.json    kind "quiz"     question pools (spec D, step 18)
   content/scenarios/*.json  kind "scenario" emergency scenarios (spec E, step 19)
   content/exams/*.json      kind "exam"     exams per level (spec G, step 21)
@@ -24,7 +26,7 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTENT_DIR = os.path.join(HERE, "content")
-KINDS = {"lesson": "lessons", "quiz": "quizzes", "scenario": "scenarios", "exam": "exams",
+KINDS = {"lesson": "lessons", "uav_lesson": "lessons", "quiz": "quizzes", "scenario": "scenarios", "exam": "exams",
          "limits": None, "test_area": None, "tour": None, "videolesson": None, "practical": None,
          "mission": "missions"}
 LEVELS = ("OBSERVER", "DRIVER", "CAPTAIN")
@@ -83,7 +85,7 @@ def check(doc, name="?"):
             n = len(q.get("choices", []))
             if n < 2 or not isinstance(q.get("answer"), int) or not 0 <= q["answer"] < n:
                 p.append("%s: question %d: answer must index its %d choices" % (name, i, n))
-    if kind in ("lesson", "scenario", "mission") and doc.get("runs_on") != "sim":
+    if kind in ("lesson", "uav_lesson", "scenario", "mission") and doc.get("runs_on") != "sim":
         p.append("%s: runs_on must be \"sim\" (the academy never drives a real boat)" % name)
     if kind == "test_area":
         if doc.get("not_for_navigation") is not True:

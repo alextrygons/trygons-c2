@@ -32,6 +32,7 @@ CONTENTS
   18. Troubleshooting
   19. Testing (the acceptance test)
   20. Academy - for trainees and instructors (incl. the 3D simulator interface)
+  21. UAV magazine - overview, training and the law (camera / observation only)
 
 
 -------------------------------------------------------------------------------
@@ -3572,4 +3573,85 @@ The rules that never change:
        drone photos ("Import drone photos").
   Lowering a level is always possible ("Set level"); raising it never is,
   except through the practical test.
+
+===============================================================================
+21. UAV MAGAZINE - OVERVIEW, TRAINING AND THE LAW (step U6)
+===============================================================================
+The details of every part are in chapter 9 ("UAV MAGAZINE - ..." sections).
+This chapter is the whole picture, the training and the legal note.
+
+WHAT IT IS
+  Six small 7-inch camera drones (ArduPilot quads) stacked in the boat under a
+  hatch, slot 1 = the top one = the next out. They are for OBSERVATION ONLY:
+  camera, video, telemetry. No payload, no release, no other output: the
+  gateway only sends the messages of its allow-list and registers only drones
+  with four motors and nothing else. Every flight is ONE-WAY: a drone never
+  lands on the boat. Charging is not part of the system.
+
+WHO DOES WHAT
+  Copilot: registers, sends routes, prepares a launch, may fly a drone by hand
+  from the copilot's own station at any time.
+  Captain: approves every launch (YES / NO on screen 1), closes the hatch
+  after a stop, may fly a drone by hand only with the boat in STANDBY (then
+  the joystick does nothing on the boat), may take a drone over from a copilot.
+  The boat: the ONLY thing the magazine ever asks of the boat is the hatch
+  relay, through the normal relay table of the HELM station. The drones never
+  touch the boat's driving, alarms or joystick.
+
+A LAUNCH, STEP BY STEP
+  1. Tools - UAV magazine: REGISTER the drones (read-only check).
+  2. Send route -> NEXT UAV (or a slot): the gateway checks altitude 10..120 m,
+     radio range, battery with the landing reserve, no-fly zones / air geofence.
+  3. The boat in STANDBY (or DP SPOT / JOG), slower than 2 kn, GPS trusted, no
+     boat WARNING alarm, relay board OK.
+  4. PREPARE LAUNCH (copilot) -> the captain's YES on screen 1.
+  5. The sequence: mission upload + read-back -> hatch OPEN -> GPS -> ARM (only
+     with the OPEN switch) -> climb -> the slot cable breaks away -> the mission
+     starts -> the next drone after 15 s -> the hatch closes after the last.
+  6. Any warning stops it: no further drone, the flying ones go on, a drone
+     still on deck is disarmed, the hatch is switched by NOTHING (the captain
+     closes it with HATCH CLOSE).
+  In flight: the map, the video (open = streamed, never on data saver /
+  STARLINK), AI boxes on the video (never a speed cap), the flight logs.
+
+THE ONE LANDING RULE
+  A drone lands ONLY at its battery minimum, where it is (over the sea the
+  drone is lost - accepted). CAUTION 60 s and 20 s before. No GPS, no link, a
+  warning = it HOLDS. Never RTL, never SmartRTL, never a landing on the boat.
+
+TRAINING
+  Academy - "UAV lesson" = "UAV launch and observation": the academy's own UAV
+  simulator inside the academy program (it uses the gateway's real launch,
+  allow-list, route and battery rules with a simulated boat + magazine; never a
+  gateway, a drone or a boat). Steps: register, route, STANDBY, prepare, the
+  captain's YES, watch the launch until the hatch closes, open the video,
+  the battery minimum. The guided tour has a chapter "The UAV magazine".
+  Demo: START_DEMO.bat runs 6 simulated drones + the simulated hatch.
+
+HARDWARE
+  PARTS.md "UAV magazine" and WIRING.md 3H: 6 ELRS TX modules (MAVLink), 6 VRX
+  + USB captures, powered hubs (the hub port = the slot), antennas apart,
+  breakaway USB-C per slot, the hatch actuator on a relay board with 8 or more
+  channels, two hatch switches read by an FT232R breakout (CTS = OPEN, DSR =
+  CLOSED, external pull-ups). Gateway load: gateway/README.md section 26 (about
+  +0.9 GB RAM and Quick Sync for the six video encoders).
+
+THE LAW (not legal advice)
+  EU Regulations 2019/947 and 2019/945 apply in Greece; the authority is the
+  Hellenic Civil Aviation Authority (HCAA, ΥΠΑ).
+  - Flying beyond visual line of sight (BVLOS) is the SPECIFIC category: an
+    operational authorisation from the HCAA (SORA, or a PDRA where one fits).
+    Take-off from a moving vessel and flights near people / vessels must be
+    covered by that authorisation.
+  - UAS OPERATOR REGISTRATION with the HCAA: the operator number on every drone.
+  - DIRECT REMOTE ID broadcast (EU 2019/945, Delegated Regulation 2020/1058): a
+    drone without a class mark needs an add-on Remote ID module, as the
+    authorisation says.
+  - A remote pilot with the competency the authorisation requires; insurance.
+  - Radio limits: analog 5.8 GHz video 25 mW EIRP, 2.4 GHz 100 mW EIRP - they
+    limit the range.
+  - State / Navy operations are outside the EASA rules (Regulation 2018/1139
+    Art. 2(3)) and follow their own national rules.
+  - Recordings of people: data protection (GDPR) applies.
+  - The RESPONSIBILITY stays with the UAS operator and the remote pilot.
 ===============================================================================

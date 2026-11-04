@@ -418,6 +418,34 @@ in a control path: no AURIX pin, no relay of the boat, nothing it does can chang
   sound card's PTT / GPIO or the amplifier's own switch - TBD (not the AURIX's relay board).
 * No VHF radio (owner 2026-11-02).
 
+### 3H. UAV magazine: slots, radios, video, hatch (CLAUDE.md V, docs/uav_design.md; step U6) - hardware TBD, NOTHING on the AURIX but the hatch relay
+
+Everything of the magazine is wired to the GATEWAY PC; the AURIX only switches the hatch relay (one "extra" on/off
+relay of the relay board, channel 8 or higher, power_up off, no pair - boat file "uav": {"hatch_relay": n}).
+Camera / observation drones only: no payload, release or other output on a drone.
+
+```
+ gateway PC --USB--> powered hub A: slot 1..6 USB-C (breakaway) --> the drone's flight controller (slot n = hub PORT n)
+            --USB--> powered hub B: ELRS TX 1..6 (MAVLink over USB, each bound 1:1 to drone n)
+                                   USB capture 1..6 <--composite-- VRX 1..6 (fixed channels) <-- 5.8 GHz antennas
+                                   FT232R breakout: CTS <-- OPEN switch --| GND, DSR <-- CLOSED switch --| GND
+ relay board channel n (>= 8) --> hatch actuator (+12 V, own fuse) ; the AURIX switches it ONLY for the HELM station
+```
+
+| Part | Connection | Note |
+|------|------------|------|
+| Slot cable n | hub A port n -> breakaway USB-C -> drone n | the hub PORT is the slot (gateway.json slots[n].usb = "usbloc:<port path>", --list-serial shows it); label every port |
+| ELRS TX n | hub B, its own port | gateway.json slots[n].radio; bound to drone n only |
+| VRX n + capture n | VRX composite out -> capture -> hub B | fixed channel per slot (W63); gateway.json uav.video.devices |
+| Hatch switches | FT232R CTS = OPEN, DSR = CLOSED; switch closes to GND; 10 kOhm pull-up to 3.3 V on each line | both lines high = no switch / broken wire = HATCH FAULT; gateway.json uav.hatch.port |
+| Hatch actuator | relay board channel n (>= 8), own fuse at the bank | a relay-board reboot switches it OFF = the hatch closes by itself (seen as HATCH FAULT, docs/uav_design.md 5.5) |
+| Hubs | 12 V -> 5 V supply, own fuse | powered: never from the laptop's ports alone |
+
+* Antennas: 2.4 GHz (ELRS) and 5.8 GHz (video) groups apart (>= 0.5 m), clear of the 4G / Starlink antennas and the
+  crew; EU limits 100 mW (2.4 GHz) / 25 mW (5.8 GHz video) set the range (uav_rf_range_m 1500 m TO CONFIRM).
+* Strain relief on every slot cable; the breakaway connector is the only part that may come apart.
+* Never connect a drone's FC to the AURIX, the boat LAN or the relay board: the magazine has no boat control path.
+
 ## 4. microSD card (log)
 
 A **microSD click** board (MikroElektronika MIKROE-924, 3.3 V) plugged into the

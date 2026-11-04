@@ -41,6 +41,9 @@ HUD_BUTTONS_EXTRA = ("save", "accept")      # SAVE (bottom line) + the ACCEPT / 
 LAMPS = ("master_warning", "master_caution")
 JOYSTICK = ("x", "y", "take", "auto", "confirm", "usb")
 PANEL = ("standby", "hdg_lock", "minus1", "plus1", "minus10", "plus10", "estop")
+# step U6: the UAV magazine (CLAUDE.md V) - the Tools page's buttons are read from groundstation/uavpanel.py
+# (uav_buttons), plus the UAV parts of the screens and the rules a crew must know
+UAV_EXTRA = ("map", "route", "launch", "hatch", "video", "ai", "battery", "hud", "banner", "scope", "legal")
 # the DRAWINGS' layout (fractions of a 16:9 picture) - shared by the tour window and the quiz picture
 # questions (step 18: quiz.area_rect); the real places are decided by app.py / overlay.py
 S2_BOXES = {
@@ -111,6 +114,14 @@ def tools_pages():
     return re.findall(r"\btab\(\"(tab\.[a-z_]+)\"", _src("app.py"))
 
 
+def uav_buttons():
+    """The UAV magazine page's buttons (groundstation/uavpanel.py): REGISTER + FLY per slot, self.b_<x> = tk.Button."""
+    src = _src("uavpanel.py")
+    acts = ["register"] if "self.register(" in src else []
+    acts += ["fly"] if "self.fly(" in src else []
+    return acts + re.findall(r"self\.b_([a-z_]+) = tk\.Button\(", src)
+
+
 def required_items():
     """Every item the tour must explain (ACADEMY_SPEC B: every HUD item, button, lamp, alarm, mode,
     joystick, panel button; screen 2 + the tools window)."""
@@ -120,6 +131,7 @@ def required_items():
     req += ["tools:" + t for t in tools_pages()]
     req += ["mode:" + m for m in proto.MODES]
     req += ["alarm:" + code for code, _lv in alerts.ALARM_LEVELS.values()] + ["alarm:" + alerts.NO_DATA]
+    req += ["uav:" + x for x in uav_buttons()] + ["uav:" + x for x in UAV_EXTRA]
     req += ["lamp:" + x for x in LAMPS] + ["joy:" + x for x in JOYSTICK] + ["panel:" + x for x in PANEL]
     out = []
     for r in req:

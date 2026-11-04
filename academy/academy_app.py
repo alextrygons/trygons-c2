@@ -89,6 +89,7 @@ class AcademyApp(object):
                         ("acc.quizzes", self.open_quizzes), ("acc.scenarios", self.open_scenarios),
                         ("acc.videolessons", self.open_videolessons), ("acc.editor", self.open_editor),
                         ("acc.exams", self.open_exams), ("acc.sim3d", self.open_sim3d),
+                        ("acc.uavlesson", self.open_uavlesson),
                         ("acc.login", self.login), ("acc.password", self.set_password), ("acc.enrol", self.enrol),
                         ("acc.renew", self.renew), ("acc.supervise", self.supervise),
                         ("acc.certificate", self.certificate)):
@@ -230,6 +231,13 @@ class AcademyApp(object):
         self.lessons = lesson_app.LessonWindow(tk.Toplevel(self.root), text.lang(), store=self.store,
                                                user=self.chosen_user())
         return self.lessons
+
+    def open_uavlesson(self):
+        """The UAV magazine lesson (step U6) in a window of THIS process: the academy's own UAV simulator, no link."""
+        import uavlesson_app
+        self.uavlesson = uavlesson_app.UavLessonWindow(tk.Toplevel(self.root), text.lang(), store=self.store,
+                                                       user=self.chosen_user())
+        return self.uavlesson
 
     def open_quizzes(self):
         """The quizzes (step 18) in a window of THIS process (no link at all)."""

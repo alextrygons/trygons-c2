@@ -501,6 +501,17 @@ operator and the remote pilot. Also (U1 review LOW): UAS OPERATOR REGISTRATION w
 on every drone) and DIRECT REMOTE ID broadcast (EU 2019/945 / Delegated Regulation 2020/1058; a drone without a
 class mark needs an add-on Remote ID module in the Specific category, as the authorisation says).
 
+## 11a. Step U6 AS BUILT
+
+The academy lesson "UAV launch and observation" runs on the academy's OWN in-process UAV simulator (academy/uavsim.py):
+a simulated boat + magazine + hatch + 6 camera drones that drive the gateway's pure rule modules (launch.py as its
+"io", allow.check_out for every simulated command / mission item, uavcheck / mission / battery) - no network, no
+process, never a gateway (the academy's simguard rules: AC1-AC3, AC51-AC54). Tour chapter "uav" (every UAV page
+button + the UAV screen parts + the legal note). MANUAL ch. 21 / MANUAL_EL ch. 16 with the legal note of section 11.
+PARTS.md "UAV magazine" + WIRING.md 3H. Storm invariants I80-I84 in tests/acceptance/storm_gateway.py part "uav"
+(the router in this process with fake links + drones; the pilot lock + rjoy; the launch sequence + the hatch relay
+through uavlink / stations; a static scan). The gateway load numbers stay those of gateway/README.md section 26.
+
 ## 12. Open questions
 
 PROGRESS.md "WAITING FOR OWNER" W56-W72 (each with the steps it blocks and the recommended default).

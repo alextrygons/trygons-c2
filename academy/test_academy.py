@@ -124,6 +124,15 @@
        data/sim3d/terrain/<area>; no safety code reads sim3d / its terrain (photo rule)
   AC49 the 3D simulator window: banner first, the backend radio buttons, start refused without the 3D simulator,
        start + collect with it (attempts / best score in the list), photo import; the academy window's button
+  AC51 UAV lesson (step U6): content + uavlesson.check_doc (bad cases caught); the lesson runs to "done" on the
+       academy's own in-process UAV simulator (scripted trainee) with a logbook entry; no network module anywhere
+  AC52 the UAV simulator drives the gateway's REAL rule modules (launch / allow / uavcheck / mission / battery): launch
+       refused 125 under way / without a route, a route too far refused 123, ARM refused without the hatch OPEN switch,
+       a hatch FAULT stops the sequence with no ARM, LAND only by the battery rule, never RTL / SmartRTL / LAND modes
+  AC53 the UAV lesson window: banner first, every trainee button, the captain's YES / NO only while asked (YES above
+       NO), the whole lesson through the window's buttons; the academy window's button opens it
+  AC54 scope: camera / observation only - no payload / release / strike word or action in the UAV lesson, the UAV
+       simulator or its screen texts; the tour has a UAV chapter covering every UAV item (AC22) incl. the legal note
   AC50 spec I: every rule of the spec has its test (the list below names them and they exist), the academy
        chapter in MANUAL.txt + MANUAL_EL.txt (trainees + instructors, every part A-J), docs/academy_sim_interface.md,
        the screenshots in docs/screens/academy/ with their README
@@ -487,7 +496,7 @@ def ac10():
         d = content.load(f)
         kinds.add(d.get("kind"))
         probs += content.check(d, os.path.relpath(f, HERE))
-    need = {"lesson", "quiz", "scenario", "exam", "limits", "test_area", "tour", "practical", "mission"}
+    need = {"lesson", "quiz", "scenario", "exam", "limits", "test_area", "tour", "practical", "mission", "uav_lesson"}
     if kinds != need:
         probs.append("example kinds %s, expected %s" % (sorted(k for k in kinds if k), sorted(need)))
     bad_docs = [
@@ -929,7 +938,9 @@ def ac22():
     req = tour.required_items()
     want = (len(hud.OVERLAYS) + 1 + len(btn) + len(tour.HUD_BUTTONS_EXTRA) + len(pan) + len(tour.S2_EXTRA) +
             len(pages) + len(proto.MODES) + len(alerts.ALARM_LEVELS) + 1 + len(tour.LAMPS) + len(tour.JOYSTICK) +
-            len(tour.PANEL))
+            len(tour.PANEL) + len(tour.uav_buttons()) + len(tour.UAV_EXTRA))
+    if not {"register", "fly", "prep", "stop", "close", "give"} <= set(tour.uav_buttons()):     # step U6
+        wrong.append("the UAV page button list reads %s" % tour.uav_buttons())
     if len(req) != want or len(alerts.ALARM_LEVELS) < 38:
         wrong.append("required %d items, expected %d" % (len(req), want))
     # the checker is not blind: a chapter taken away is reported
@@ -3770,6 +3781,250 @@ def ac49():
            "academy window's button opens it")
 
 
+# --- AC51 - AC54: the UAV magazine lesson (step U6) -------------------------------------------------------------------
+UAV_SCRIPT = {0: "register", 1: "route_next", 2: "standby", 3: "prepare", 4: "yes", 6: "video", 7: "ack"}
+
+
+def _uav_run(script=UAV_SCRIPT, limit_s=400.0):
+    """The UAV lesson with a scripted trainee on a fake clock: (run, sim, status)."""
+    import content
+    import uavlesson
+    doc = content.load(os.path.join(HERE, "content", "lessons", "u01_uav_launch.json"))
+    t = [0.0]
+    sim = uavlesson.make_sim(lambda: t[0])
+    tr = uavlesson.Trainee(sim)
+    run = uavlesson.new_run(doc, "en")
+    for a in run.start(t[0]):
+        sim.do(a)
+    status, last = "waiting", None
+    while t[0] < limit_s:
+        sim.tick()
+        status, acts = run.update(sim.state(), t[0])
+        for a in acts:
+            sim.do(a)
+        if status in ("done", "failed"):
+            break
+        if run.index in script and (run.index, int(t[0] / 3)) != last:
+            last = (run.index, int(t[0] / 3))
+            tr.act(script[run.index])
+        t[0] += 0.25
+    return run, sim, status
+
+
+def ac51():
+    import copy
+    import content
+    import uavlesson
+    wrong = []
+    docs = uavlesson.lessons()
+    if not docs or docs[0]["id"] != "u01_uav_launch":
+        wrong.append("no UAV lesson found (%s)" % [d.get("id") for d in docs])
+    for d in docs:
+        p = content.check(d, d["id"]) + uavlesson.check_doc(d, d["id"])
+        if p:
+            wrong.append("; ".join(p))
+        if d.get("runs_on") != "sim":
+            wrong.append("%s not runs_on sim" % d["id"])
+    base = docs[0] if docs else {"kind": "uav_lesson", "steps": [{}, {"check": [{}]}]}
+    bad = []
+    for mut in (lambda d: d["steps"][0].update(check=[{"f": "mode_name", "eq": "STANDBY"}]),
+                lambda d: d["steps"][0].pop("hint_en"),
+                lambda d: d["steps"][0].update(at_start="unknown_event"),
+                lambda d: d.update(setup=["unknown_setup"]),
+                lambda d: d["steps"][1]["check"][0].update(lt=3),
+                lambda d: d.update(steps=[])):
+        x = copy.deepcopy(base)
+        mut(x)
+        bad.append(bool(uavlesson.check_doc(x, "bad")))
+    x = copy.deepcopy(base)
+    x["runs_on"] = "boat"
+    bad.append(bool(content.check(x, "bad")))
+    if not all(bad):
+        wrong.append("the checker missed bad case(s) %s" % [i for i, b in enumerate(bad) if not b])
+    run, sim, status = _uav_run()
+    e = run.log_entry()
+    if status != "done" or run.score() != 100 or e["id"] != "u01_uav_launch" or not e["done"]:
+        wrong.append("scripted lesson ended %s score %s (step %s, %s)" % (status, run.score(), run.index,
+                                                                          sim.launch.history[-3:]))
+    st = sim.state()
+    if st["launched"] != 1 or st["hatch"] != "CLOSED" or st["landing"] != 1 or st["denied"]:
+        wrong.append("simulated end state %s" % st)
+    # a NO from the captain: nothing launches, the lesson does not pass that step
+    _run2, sim2, status2 = _uav_run({**UAV_SCRIPT, 4: "no"}, limit_s=120.0)
+    if status2 == "done" or sim2.state()["launched"] or sim2.relay:
+        wrong.append("a NO still launched (%s, relay %s)" % (sim2.state(), sim2.relay))
+    report("AC51 UAV lesson content + model", not wrong, "; ".join(wrong) or
+           "u01_uav_launch: %d steps, %d bad cases caught; done in %.0f s of simulated time (score 100, %s); a "
+           "captain's NO launches nothing" % (len(base["steps"]), len(bad), sum(run.times), sim.launch.history[-1][1]))
+
+
+def ac52():
+    import uavsim
+    import uavlesson
+    from uav import allow, battery, launch, mission, uavcheck
+    wrong = []
+    gw = os.path.join(REPO, "gateway", "uav")
+    for m in (launch, allow, uavcheck, mission, battery):
+        if os.path.normcase(os.path.dirname(os.path.abspath(m.__file__))) != os.path.normcase(gw):
+            wrong.append("%s is not the gateway's module (%s)" % (m.__name__, m.__file__))
+    if uavsim.launch is not launch or uavsim.allow is not allow:
+        wrong.append("uavsim does not use the gateway's launch / allow modules")
+    t = [0.0]
+    sim = uavlesson.make_sim(lambda: t[0])
+    sim.register(1)
+    r_noroute = sim.prepare(1)
+    sim.send_route("next")
+    r_moving = sim.prepare(1)                                   # boat in HDG LOCK at 5 kn
+    far = [{"lat": uavsim.ORIGIN[0] + 0.05, "lon": uavsim.ORIGIN[1], "alt": 50.0}]
+    r_far = sim.send_route(1, far)
+    r_high = sim.send_route(1, [{"lat": uavsim.ORIGIN[0] + 0.002, "lon": uavsim.ORIGIN[1], "alt": 300.0}])
+    if r_noroute[1] != 125 or r_moving[1] != 125 or "STANDBY" not in r_moving[2]:
+        wrong.append("launch not refused 125: no route %s, under way %s" % (r_noroute, r_moving))
+    if r_far[1] != 123 or r_high[1] != 123:
+        wrong.append("routes not refused 123: far %s, high %s" % (r_far, r_high))
+    res = []
+    sim.cmd(1, "usb", allow.CMD_COMPONENT_ARM_DISARM, [1, 0], lambda r, w: res.append((r, w)))
+    t[0] += 1.0
+    sim.tick()
+    if not res or res[0][0] == 0 or sim.drones[1].armed:
+        wrong.append("ARM with the hatch closed: %s" % res)
+    for cmd, p, what in ((allow.CMD_NAV_LAND, [0] * 7, "LAND"), (allow.CMD_DO_SET_MODE, [1, allow.COPTER_RTL], "RTL"),
+                         (allow.CMD_DO_SET_MODE, [1, allow.COPTER_SMART_RTL], "SmartRTL"),
+                         (allow.CMD_DO_SET_MODE, [1, allow.COPTER_LAND], "LAND mode"),
+                         (183, [1, 1500], "DO_SET_SERVO"), (181, [0, 1], "DO_SET_RELAY"), (211, [1, 0], "GRIPPER"),
+                         (allow.CMD_COMPONENT_ARM_DISARM, [1, allow.FORCE_MAGIC], "force ARM")):
+        rr = []
+        sim.cmd(1, "usb", cmd, p, lambda r, w: rr.append(r))
+        t[0] += 0.5
+        sim.tick()
+        if not rr or rr[0] == 0:
+            wrong.append("%s was not refused by the allow-list" % what)
+    # a hatch FAULT during the sequence: STOPPED, no ARM
+    t2 = [0.0]
+    s2 = uavlesson.make_sim(lambda: t2[0])
+    s2.register(1)
+    s2.send_route("next")
+    s2.set_boat("STANDBY", 0.0)
+    s2.prepare(1)
+    s2.answer(True)
+    for _k in range(400):
+        s2.tick()
+        if s2.state()["phase"] == "HATCH" and s2.hatch == "OPENING":
+            s2.do("hatch_fault")
+        if s2.launch.state in ("STOPPED", "DONE"):
+            break
+        t2[0] += 0.25
+    armed = [x for x in s2.sent if x[2] == allow.CMD_COMPONENT_ARM_DISARM and x[3][0] == 1]
+    if s2.launch.state != "STOPPED" or armed or "HATCH FAULT" not in s2.launch.why:
+        wrong.append("hatch fault: %s %r, ARMs %s" % (s2.launch.state, s2.launch.why, armed))
+    # the full lesson: every ARM went out with the OPEN switch, the only LAND = the battery rule's
+    _run, sim3, _st = _uav_run()
+    arms = [x for x in sim3.sent if x[2] == allow.CMD_COMPONENT_ARM_DISARM and x[3][0] == 1 and x[4]]
+    lands = [x for x in sim3.sent if x[2] == allow.CMD_NAV_LAND and x[4]]
+    if len(arms) != 1 or len(lands) != 1 or not sim3.drones[1].landing:
+        wrong.append("lesson run: ARMs %s, LANDs %s" % (arms, lands))
+    report("AC52 the UAV simulator uses the gateway's real rules", not wrong, "; ".join(wrong) or
+           "gateway/uav launch / allow / uavcheck / mission / battery; 125 without a route + under way, 123 far / "
+           "high, ARM refused with the hatch closed, LAND / RTL / SmartRTL / servo / relay / gripper / force ARM "
+           "refused, a hatch FAULT stops with no ARM; one ARM (OPEN switch) + one battery LAND in the lesson")
+
+
+def ac53():
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+    except Exception as e:
+        report("AC53 UAV lesson window", True, "no display here (%s): the model is checked by AC51 / AC52" % e)
+        return
+    import banner
+    import uavlesson_app
+    import academy_app
+    wrong = []
+    try:
+        root.withdraw()
+        for lc in ("el", "en"):
+            t = [0.0]
+            top = tk.Toplevel(root)
+            w = uavlesson_app.UavLessonWindow(top, lc, clock=lambda: t[0], auto_tick=False)
+            if top.pack_slaves()[0] is not w.banner or w.banner.cget("text") != banner.banner_text(lc):
+                wrong.append("%s: the banner is not first" % lc)
+            need = {k for k, _l in uavlesson_app.BUTTONS} | {"start", "yes", "no"}
+            if set(w.buttons) != need:
+                wrong.append("%s: buttons %s" % (lc, sorted(w.buttons)))
+            q = w.q_frame.pack_slaves()
+            if q.index(w.buttons["yes"]) > q.index(w.buttons["no"]):
+                wrong.append("%s: NO above YES" % lc)
+            w.start()
+            last = None
+            for _k in range(1600):
+                w.tick()
+                top.update_idletasks()
+                if w.status in ("done", "failed"):
+                    break
+                i = w.run.index
+                if i in UAV_SCRIPT and (i, int(t[0] / 3)) != last:
+                    k = UAV_SCRIPT[i]
+                    if not (k in ("yes", "no") and w.buttons[k].cget("state") == "disabled"):
+                        last = (i, int(t[0] / 3))
+                        w.buttons[k].invoke()
+                t[0] += 0.25
+            if w.status != "done":
+                wrong.append("%s: the lesson through the buttons ended %s at step %s" % (lc, w.status, w.run.index))
+            if w.buttons["yes"].cget("state") != "disabled":
+                wrong.append("%s: YES enabled without a question" % lc)
+            top.destroy()
+        app = academy_app.AcademyApp(tk.Toplevel(root), _store())
+        if "acc.uavlesson" not in app.buttons or not isinstance(app.open_uavlesson(), uavlesson_app.UavLessonWindow):
+            wrong.append("academy window button")
+    finally:
+        root.destroy()
+    report("AC53 UAV lesson window", not wrong, "; ".join(wrong) or
+           "banner first; every trainee button; YES above NO, only while asked; the whole lesson through the buttons "
+           "in el + en; the academy window's button opens it")
+
+
+SCOPE_WORDS = re.compile(u"payload|release|deliver|drop|strike|weapon|bomb|munition|grip|winch|parachute|"
+                         u"φορτ|ρίψ|απελευθ|όπλ|βόμβ", re.I)
+
+
+def ac54():
+    import text
+    import tour
+    import uavsim
+    import uavlesson
+    wrong = []
+    for f in ("uavsim.py", "uavlesson.py", "uavlesson_app.py"):
+        names = [n.name for n in ast.walk(ast.parse(open(os.path.join(HERE, f), encoding="utf-8").read()))
+                 if isinstance(n, (ast.FunctionDef, ast.ClassDef))]
+        hit = [n for n in names if SCOPE_WORDS.search(n)]
+        if hit:
+            wrong.append("%s defines %s" % (f, hit))
+    hit = [a for a in uavlesson.ACTIONS + uavlesson.EVENTS + uavlesson.SETUP if SCOPE_WORDS.search(a)]
+    if hit:
+        wrong.append("UAV lesson actions %s" % hit)
+    raw = open(os.path.join(HERE, "content", "lessons", "u01_uav_launch.json"), encoding="utf-8").read()
+    if SCOPE_WORDS.search(raw):
+        wrong.append("the UAV lesson text says %r" % SCOPE_WORDS.search(raw).group(0))
+    for lc in ("el", "en"):
+        for k, v in text.load(lc).items():
+            if k.startswith("uavl.") and SCOPE_WORDS.search(v):
+                wrong.append("%s %s: %r" % (lc, k, v))
+    if "observation" not in uavsim.SCOPE:
+        wrong.append("uavsim scope")
+    doc = tour.load()
+    ch = [c for c in doc["chapters"] if c["id"] == "uav"]
+    covered = {c for c2 in ch for st in c2["stops"] for c in st.get("covers", [])}
+    need = {"uav:" + x for x in tour.uav_buttons() + list(tour.UAV_EXTRA)}
+    if not ch or not need <= covered:
+        wrong.append("tour UAV chapter misses %s" % sorted(need - covered))
+    legal = [st for c2 in ch for st in c2["stops"] if "uav:legal" in st.get("covers", [])]
+    if not legal or u"ΥΠΑ" not in legal[0]["text_el"] or "authorisation" not in legal[0]["text_en"]:
+        wrong.append("the tour's legal stop")
+    report("AC54 UAV scope: observation only + the tour's UAV chapter", not wrong, "; ".join(wrong[:6]) or
+           "no payload / release / strike word or action in the UAV lesson, simulator or screen texts; the tour's UAV "
+           "chapter covers %d UAV items incl. the legal note" % len(need))
+
+
 SPEC_I_TESTS = {                         # spec I: "tests for all rules above" -> the tests that prove them
     "no boat link": ("ac1", "ac2", "ac3", "ac4", "ac5", "ac6", "ac7", "ac26", "ac35"),
     "no bypass (lessons, scenarios, the practical test apart)": ("ac14", "ac25", "ac32"),
@@ -3780,6 +4035,7 @@ SPEC_I_TESTS = {                         # spec I: "tests for all rules above" -
     "chart photos never a chart": ("ac11", "ac48"),
     "both languages, no missing keys": ("ac8", "ac9", "ac10"),
     "3D simulator interface (spec H)": ("ac44", "ac45", "ac46", "ac47", "ac48", "ac49"),
+    "UAV lesson, simulator only, observation only (step U6)": ("ac51", "ac52", "ac53", "ac54"),
 }
 SPEC_I_PRACTICAL = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8")   # academy/practical/test_practical.py
 SCREENS = ("academy_main", "tour", "lessons", "quizzes", "scenarios", "videolessons", "exams", "sim3d",
@@ -3845,7 +4101,7 @@ if __name__ == "__main__":
     for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
               ac19, ac20, ac21, ac22, ac23, ac24, ac25, ac26, ac27, ac28, ac29,
               ac30, ac31, ac32, ac33, ac34, ac35, ac36, ac37, ac38, ac39, ac40, ac41, ac42, ac43,
-              ac44, ac45, ac46, ac47, ac48, ac49, ac50):
+              ac44, ac45, ac46, ac47, ac48, ac49, ac50, ac51, ac52, ac53, ac54):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run

@@ -1,7 +1,7 @@
 """Part 4.4, gateway side: random storms against the REAL gateway modules (not
 changed), each checked by its own independent rule. Every run prints its seed.
 
-    python tests/acceptance/storm_gateway.py [--episodes N] [--seed S] [--part avoid|channels|events|vision|licence]
+    python tests/acceptance/storm_gateway.py [--episodes N] [--seed S] [--part avoid|channels|events|vision|licence|uav]
 
   I14 avoidance routes / accepted AUTO programs never over water shallower than
       the limit (checked independently: the chart every 5 m), avoidance never
@@ -16,6 +16,16 @@ changed), each checked by its own independent rule. Every run prints its seed.
       the driver's CLEAR, STAGE 3 off, or leaving AUTO)          -> gateway/vision/manager.py
   I26 REMOTE MANUAL / MANEUVER are never asked of the AURIX for a user without a
       manual licence                                            -> gateway/stations.py, users.py
+  I80 no UAV module sends anything to the AURIX but the hatch relay (the HELM
+      station's T_RELAY through stations.py)                    -> gateway/uav/, uavlink.py, stations.py
+  I81 never ARM without the hatch OPEN switch (the launch sequence AND the
+      router's allow-list)                                      -> gateway/uav/launch.py, router_worker.py
+  I82 never a LAND command except the battery rule, never RTL / SmartRTL /
+      a LAND mode                                               -> gateway/uav/router_worker.py, battery.py
+  I83 the captain's joystick flies a UAV only with the boat in STANDBY; no
+      GW_RJOY to the boat meanwhile                            -> gateway/uav/pilot.py, stations.py
+  I84 only allow-listed MAVLink leaves the router (checked by this file's own
+      rules on the parsed bytes)                                -> gateway/uav/router_worker.py, allow.py
   (I16, driver ACCEPT, needs the real gateway + simulator: stations_storm.py)
 """
 import argparse
@@ -450,8 +460,520 @@ def storm_licence(seed):
                 "unlicensed %s: forwarded" % st.user)
 
 
+# --------------------------------------------------------------------- I80 - I84 (UAV magazine, step U6) --
+# Independent rules (written here, NOT allow.py's): what may ever leave the router towards a drone.
+UAV_OUT_NAMES = {"HEARTBEAT", "MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_CLEAR_ALL", "MISSION_SET_CURRENT",
+                 "MISSION_REQUEST_LIST", "MISSION_REQUEST_INT", "MISSION_ACK", "PARAM_REQUEST_READ",
+                 "PARAM_REQUEST_LIST", "SET_POSITION_TARGET_LOCAL_NED", "TIMESYNC", "SYSTEM_TIME", "GPS_RTCM_DATA",
+                 "GPS_INJECT_DATA", "COMMAND_LONG", "COMMAND_INT"}
+UAV_CMDS = {400: "ARM/DISARM", 176: "SET_MODE", 22: "TAKEOFF", 300: "MISSION_START", 511: "MSG_INTERVAL",
+            512: "REQUEST_MESSAGE", 21: "LAND", 178: "CHANGE_SPEED"}
+UAV_MODES_OK = {2, 3, 4, 5, 17}                    # ALT_HOLD AUTO GUIDED LOITER BRAKE (never RTL 6 / LAND 9 / SRTL 21)
+UAV_MISSION_CMDS = {16, 17, 22, 178}               # WAYPOINT LOITER_UNLIM TAKEOFF CHANGE_SPEED
+# frames a storm drone / station may try (anything a gateway bug could produce)
+UAV_TRY_CMDS = [400, 400, 400, 176, 176, 22, 300, 21, 21, 20, 183, 181, 211, 42600, 84, 94, 178, 511, 512, 246, 0]
+UAV_TRY_MODES = [0, 2, 3, 4, 5, 6, 9, 17, 21, 1, 16]
+
+
+def _uav_world():
+    from uav import router_worker as rw
+    return rw
+
+
+class _StormLink(object):
+    """A router link that is always up; frames written are kept (base attributes as router_worker.Link)."""
+
+    def __new__(cls, rw, slot, kind):
+        lk = rw.Link(slot, kind, "storm", rw.queue.Queue())
+        lk.up = True
+        lk.frames = []
+        lk.write = lambda frame, lk=lk: lk.frames.append(frame) or True
+        lk.open = lambda now: None
+        lk.close = lambda why: None
+        return lk
+
+
+def storm_uav_router(seed):
+    """I84 / I81 / I82 at the ROUTER (gateway/uav/router_worker.Router, in this process, fake links, fake drones):
+    random gateway ops (commands incl. forbidden ones, modes, force ARM, missions with forbidden items, setpoints
+    incl. huge / NaN, hatch switch reports, battery levels) - every byte that leaves towards a drone is parsed and
+    checked by THIS file's own rules: only allow-listed messages / commands / modes / mission items (I84), an ARM only
+    within 1 s of an OPEN switch report (I81), a LAND only for a drone the battery rule judged (I82), never RTL."""
+    from uav import allow, mavlink
+    rw = _uav_world()
+    rng = random.Random(seed)
+    clock = [1000.0]
+    real_now, real_out = rw.now_s, rw.out
+    rw.now_s = lambda: clock[0]
+    events = []
+    rw.out = lambda obj: events.append(obj)
+    try:
+        r = rw.Router()
+        n_slots = rng.randint(1, 6)
+        hatch = [None]                                 # when the router got the last OPEN report
+        land_ok = set()                                # slots the battery rule (our own judge input) may land
+        drone = {}
+        for s in range(1, n_slots + 1):
+            for kind in ("usb", "elrs"):
+                r.links[(s, kind)] = _StormLink(rw, s, kind)
+            r.expect[s] = 10 + s
+            r.capacity[s] = rng.choice([1500, 2500, None])
+            drone[s] = {"armed": False, "alt": 0.0, "pct": rng.randint(5, 100), "mode": 0, "seq": 0}
+        parsers = {k: mavlink.Parser() for k in r.links}
+        def drain(now):
+            """Check every frame that went out since the last call (independent rules), at once: the hatch state of
+            THAT moment."""
+            for key, lk in r.links.items():
+                frames, lk.frames = lk.frames, []
+                for m in parsers[key].feed(b"".join(frames)):
+                    f = m.fields
+                    ok = m.name in UAV_OUT_NAMES
+                    why = m.name
+                    if ok and "target_system" in f and m.name not in ("HEARTBEAT", "SYSTEM_TIME", "TIMESYNC"):
+                        ok, why = f["target_system"] != 0, "%s broadcast" % m.name
+                    if ok and "mission_type" in f:
+                        ok, why = f["mission_type"] == 0, "%s mission_type %s" % (m.name, f["mission_type"])
+                    if ok and m.name in ("COMMAND_LONG", "COMMAND_INT"):
+                        c = int(f.get("command", -1))
+                        ok, why = c in UAV_CMDS, "command %d" % c
+                        if ok and c == 176:
+                            ok, why = int(f.get("param2", -1)) in UAV_MODES_OK, "mode %s" % f.get("param2")
+                            res("I82", ok, seed, "slot %d: flight mode %s sent" % (key[0], f.get("param2")))
+                        if ok and c == 400 and int(f.get("param1", 0)) == 1:
+                            arm_ok = hatch[0] is not None and now - hatch[0] <= 1.0 + 1e-6 and \
+                                f.get("param2", 0) == 0
+                            res("I81", arm_ok, seed, "slot %d: ARM without a fresh OPEN switch report" % key[0])
+                        if ok and c == 21:
+                            res("I82", key[0] in land_ok, seed, "slot %d: LAND not by the battery rule" % key[0])
+                        if ok and c == 400:
+                            ok, why = f.get("param2", 0) == 0, "force ARM / DISARM"
+                    if ok and m.name == "MISSION_ITEM_INT":
+                        c = int(f.get("command", -1))
+                        if c == 178:                       # DO_CHANGE_SPEED: frame MISSION, a sane speed
+                            ok = int(f.get("frame", -1)) == 2 and 0.0 < f.get("param2", 0.0) <= 20.0
+                        else:                              # a position item: relative frame, 0..120 m
+                            ok = (c in UAV_MISSION_CMDS and int(f.get("frame", -1)) in (3, 6) and
+                                  math.isfinite(f.get("z", 0.0)) and 0.0 <= f.get("z", 0.0) <= 120.0)
+                        why = "mission item %d frame %s z %s" % (c, f.get("frame"), f.get("z"))
+                    if ok and m.name == "SET_POSITION_TARGET_LOCAL_NED":
+                        v = (f.get("vx", 0.0), f.get("vy", 0.0), f.get("vz", 0.0), f.get("yaw_rate", 0.0))
+                        ok = all(math.isfinite(x) for x in v) and math.hypot(v[0], v[1]) <= 15.0 + 1e-6 and \
+                            abs(v[2]) <= 3.0 + 1e-6 and abs(v[3]) <= 2.0 + 1e-6
+                        why = "setpoint %s" % (v,)
+                    res("I84", ok, seed, "slot %d %s: not allow-listed (%s)" % (key[0], key[1], why))
+
+        for _step in range(rng.randint(150, 400)):
+            clock[0] += rng.choice([0.05, 0.05, 0.25, 0.5, 1.2])
+            now = clock[0]
+            # the fake drones talk to the router (HEARTBEAT / position / battery / landed state / mission asks)
+            for s, d in drone.items():
+                if rng.random() < 0.15:
+                    d["armed"] = not d["armed"] if rng.random() < 0.3 else d["armed"]
+                    d["alt"] = max(0.0, d["alt"] + rng.uniform(-10, 15)) if d["armed"] else 0.0
+                    d["pct"] = max(0, min(100, d["pct"] + rng.randint(-15, 3)))
+                for kind in ("usb", "elrs"):
+                    if rng.random() < 0.6:
+                        lk = r.links[(s, kind)]
+                        sysid = 10 + s if rng.random() < 0.9 else rng.randint(1, 250)
+                        msgs = [("HEARTBEAT", {"type": 2, "autopilot": 3, "base_mode": 0x80 if d["armed"] else 0,
+                                               "custom_mode": d["mode"], "system_status": 4, "mavlink_version": 3}),
+                                ("GLOBAL_POSITION_INT", {"relative_alt": int(d["alt"] * 1000), "lat": 378200000,
+                                                         "lon": 236000000, "vz": rng.randint(-50, 50)}),
+                                ("SYS_STATUS", {"battery_remaining": d["pct"], "voltage_battery": 15000,
+                                                "current_battery": rng.choice([-1, 1800, 3000])})]
+                        if rng.random() < 0.3:
+                            msgs.append(("EXTENDED_SYS_STATE", {"landed_state": 1 if d["alt"] < 0.3 else 2}))
+                        if rng.random() < 0.4:
+                            msgs.append(("MISSION_REQUEST_INT", {"seq": rng.randint(0, 6), "target_system": 255,
+                                                                 "mission_type": 0}))
+                        if rng.random() < 0.2:
+                            msgs.append(("COMMAND_ACK", {"command": rng.choice(UAV_TRY_CMDS), "result": 0}))
+                        if rng.random() < 0.1:
+                            msgs.append(("MISSION_ACK", {"type": 0, "mission_type": 0}))
+                        if rng.random() < 0.05:
+                            msgs.append(("PARAM_SET", {"param_value": 1.0}))       # never allow-listed in
+                        data = b"".join(mavlink.encode(n, f, d["seq"] + i, sysid, 1) for i, (n, f) in enumerate(msgs))
+                        d["seq"] = (d["seq"] + len(msgs)) & 0xFF
+                        r.rx(lk, data, now)
+                        drain(now)
+            # random gateway ops
+            for _k in range(rng.randint(0, 3)):
+                s = rng.randint(1, n_slots)
+                via = rng.choice(["usb", "elrs", "auto"])
+                op = rng.random()
+                if op < 0.4:
+                    c = rng.choice(UAV_TRY_CMDS)
+                    p = [rng.choice([0, 1, 1, 2]), rng.choice([0, 0, 0, allow.FORCE_MAGIC, 1, 21196.0]),
+                         rng.choice([0, 1]), 0, 0, 0, rng.choice([10.0, 50.0, 200.0, float("nan"), 0.0])]
+                    if c == 176:
+                        p[0], p[1] = rng.choice([1, 1, 0]), rng.choice(UAV_TRY_MODES)
+                    r.command({"op": "cmd", "slot": s, "id": _step, "via": via, "command": c, "params": p}, now)
+                elif op < 0.55:
+                    items = []
+                    for q in range(rng.randint(1, 6)):
+                        items.append({"seq": q, "command": rng.choice([16, 16, 17, 22, 178, 183, 211, 94, 21, 20]),
+                                      "frame": rng.choice([3, 6, 2, 0, 1]), "x": 378200000, "y": 236000000,
+                                      "z": rng.choice([50.0, 30.0, 500.0, float("inf")]), "param1": 0.0,
+                                      "param2": rng.choice([5.0, 50.0]), "param3": 0.0, "param4": 0.0,
+                                      "current": 0, "autocontinue": 1, "mission_type": rng.choice([0, 0, 0, 1])})
+                    r.command({"op": "mission", "slot": s, "id": _step, "via": via, "items": items}, now)
+                elif op < 0.75:
+                    r.command({"op": "ctl", "slot": s, "vx": rng.choice([0.0, 3.0, 40.0, float("nan")]),
+                               "vy": rng.uniform(-20, 20), "vz": rng.choice([0.0, 1.0, -9.0]),
+                               "yaw_rate": rng.uniform(-3, 3)}, now)
+                elif op < 0.9:
+                    is_open = rng.random() < 0.5
+                    r.command({"op": "hatch", "open": is_open}, now)
+                    hatch[0] = now if is_open else None
+                elif op < 0.95:
+                    r.command({"op": "set_current", "slot": s, "id": _step, "via": via, "seq": rng.randint(0, 5)}, now)
+                else:
+                    r.command({"op": "cancel", "slot": s}, now)
+                drain(now)
+            # our own record of what the battery rule may land: battery_tick latches battery_land itself
+            r.jobs_tick(now)
+            r.ctl_tick(now)
+            before = dict(r.battery_land)
+            r.battery_tick(now)
+            land_ok |= {s for s, v in r.battery_land.items() if v}
+            land_ok |= {s for s, v in before.items() if v}
+            drain(now)
+    finally:
+        rw.now_s, rw.out = real_now, real_out
+
+
+class _UStation(object):
+    def __init__(self, sid, crew, single=False):
+        self.id, self.name, self.crew, self.single_op = sid, "s%d" % sid, crew, single
+        self.role = "HELM"
+        self.closed = False
+        self.sent = []
+
+    def send(self, m):
+        self.sent.append(m)
+
+
+def storm_uav_pilot(seed):
+    """I83 + I80 with the REAL pilot lock (gateway/uav/pilot.Pilots) and the REAL StationServer._rjoy: random boat
+    modes (fresh / stale telemetry), HELM moving, captain / copilot / single operator takes, gives, uav_ctl and rjoy
+    packets. Checked: after every 4 Hz tick no captain-like station flies a UAV unless the boat is in STANDBY (I83),
+    no moving setpoint of a captain-like pilot goes out while the boat is not in STANDBY (I83), a station flying a
+    UAV never gets a GW_RJOY to the boat (I83), and nothing reaches the AURIX but the rjoy of a station that does NOT
+    fly (I80: the UAV code sends nothing to the boat)."""
+    import stations as STN
+    import proto as P
+    from uav import pilot
+    rng = random.Random(seed)
+    clock = [1.7e9]
+    real_time = time.time
+    time.time = lambda: clock[0]
+    try:
+        gw = type("G", (), {})()
+        gw.telem2, gw.mode = {}, P.MODE_STANDBY
+        gw.aurix = _Aurix()
+        gw.cfg, gw.telem = {}, {}
+        gw.audit = lambda *a, **k: None
+        gw.telem_fresh = lambda: None if gw.mode is None else {"mode": gw.mode}
+        gw.storage = None
+        gw.uav = type("U", (), {})()
+        srv = STN.StationServer(gw, {"rate_per_s": 1e6, "rate_burst": 1e6})
+        gw.stations = srv
+        ops = []
+
+        class Mgr(object):
+            enabled, n, why, airspace = True, 6, "", None
+
+            def __init__(self):
+                self.gw = gw
+                self.ccfg = {"uav_min_alt_m": 10.0, "uav_max_alt_m": 120.0}
+
+            def slot(self, k):
+                return {"hb_age": 0.2, "armed": True, "landed": False, "usb_present": False, "landing": False,
+                        "lat": 37.83, "lon": 23.61, "alt": 50.0, "hdg": 90.0}
+
+            drone_view = slot
+
+            def router_ok(self):
+                return True
+
+            def to_worker(self, obj):
+                ops.append(obj)
+                return True
+
+            def cmd(self, k, via, command, params, cb):
+                ops.append({"op": "cmd", "slot": k, "command": command})
+                cb(0, "")
+        P_ = gw.uav.pilots = pilot.Pilots(Mgr())
+        sts = []
+        for i, (crew, single) in enumerate((("captain", False), ("copilot", False), ("copilot", False),
+                                            ("copilot", rng.random() < 0.3))):
+            st = STN.Station(2 + i, "u%d" % i, "HELM", False, "10.0.0.%d" % i, "s%d" % i, _Writer())
+            st.crew, st.single_op = crew, single
+            st.tokens = 1e6
+            srv.stations[st.id] = st
+            sts.append(st)
+        gw.telem2["helm"] = sts[0].id
+        seqs = {st.id: 0 for st in sts}
+        for _k in range(rng.randint(200, 600)):
+            clock[0] += rng.choice([0.05, 0.1, 0.25])
+            r = rng.random()
+            if r < 0.06:
+                gw.mode = rng.choice([P.MODE_STANDBY, P.MODE_STANDBY, P.MODE_HDG_LOCK, P.MODE_AUTO, P.MODE_REMOTE,
+                                      P.MODE_MANEUVER, P.MODE_DP, None])
+            elif r < 0.08:
+                gw.telem2["helm"] = rng.choice([s.id for s in sts] + [None])
+            st = rng.choice(sts)
+            n = rng.randint(1, 3)
+            a = rng.random()
+            n0 = len(gw.aurix.sent)
+            flying_before = P_.slot_of(st.id) is not None
+            if a < 0.08:
+                P_.pilot_msg(st, {"uav": n, "take": rng.random() < 0.8})
+            elif a < 0.6:
+                seqs[st.id] += 1
+                P_.ctl(st, {"uav": n, "seq": seqs[st.id], "ts": clock[0] - rng.choice([0.0, 0.0, 0.2, 1.0]),
+                            "x": rng.choice([0.0, 0.0, 0.8, -1.0]), "y": rng.uniform(-1, 1), "z": rng.uniform(-1, 1),
+                            "r": 0.0})
+            else:
+                seqs[st.id] += 1
+                srv._rjoy(st, {"seq": seqs[st.id], "ts": clock[0], "x": rng.uniform(-1, 1), "y": 0.0, "lever": 0.5})
+                got = [t for t, _p in gw.aurix.sent[n0:] if t == P.T_GW_RJOY]
+                if flying_before:
+                    res("I83", not got, seed, "station %d flies UAV %s but its rjoy reached the boat" % (
+                        st.id, P_.slot_of(st.id)))
+            for t, _p in gw.aurix.sent[n0:]:
+                res("I80", t == P.T_GW_RJOY and not flying_before, seed,
+                    "frame 0x%02X to the AURIX from a UAV path" % t)
+            if rng.random() < 0.3:
+                P_.tick(clock[0])
+                standby = gw.mode == P.MODE_STANDBY
+                for slot, lk in P_.locks.items():
+                    holder = srv.stations.get(lk.sid)
+                    res("I83", standby or not P_.captain_like(holder), seed,
+                        "captain-like station %s flies UAV %d with the boat in mode %s after a tick" % (
+                            lk.sid, slot, gw.mode))
+            for o in ops:
+                if o.get("op") == "ctl" and any(o.get(k, 0.0) for k in ("vx", "vy", "vz", "yaw_rate")):
+                    lk = P_.locks.get(o["slot"])
+                    holder = srv.stations.get(lk.sid) if lk else None
+                    if holder is not None and P_.captain_like(holder):
+                        res("I83", gw.mode == P.MODE_STANDBY, seed,
+                            "a moving setpoint of the captain's joystick with the boat in mode %s" % gw.mode)
+            del ops[:]
+    finally:
+        time.time = real_time
+
+
+class _LaunchIo(object):
+    """launch.Launch's io (like the gateway's manager) with a random magazine; the hatch relay goes through the REAL
+    uavlink.hatch_relay -> StationServer.uav_relay (a fake AURIX link records every frame)."""
+
+    def __init__(self, rng, srv, gw, relay_n):
+        self.rng, self.srv, self.gw, self.relay_n = rng, srv, gw, relay_n
+        self.t = 0.0
+        n = rng.randint(1, 6)
+        self.drones = {s: {"usb_present": True, "battery_pct": rng.choice([95, 90, 40]), "gps_fix": 1,
+                           "ekf_flags": 0x07, "rel_alt": 0.0, "alt_age": 0.1, "landed": True, "armed": False}
+                       for s in range(1, n + 1)}
+        self.boat_d = {"launch_why": [], "standby": True, "pos": (37.82, 23.60)}
+        self.hatch_st, self.cmd_open, self.hatch_t = "CLOSED", False, 0.0
+        self.fault = rng.random() < 0.3
+        self.q, self.sent = [], []
+
+    def now(self):
+        return self.t
+
+    def boat(self):
+        return self.boat_d
+
+    def hatch_state(self):
+        return self.hatch_st
+
+    def hatch_why(self):
+        return "storm"
+
+    def hatch_open_s(self):
+        return 3.0
+
+    def hatch_commanded_open(self):
+        return self.cmd_open
+
+    def captain_ok(self, sid):
+        return self.rng.random() > 0.002
+
+    def router_ok(self):
+        return self.rng.random() > 0.002
+
+    def slot(self, n):
+        return dict(self.drones[n])
+
+    def next_slot(self):
+        return next((s for s, d in sorted(self.drones.items()) if d["usb_present"]), None)
+
+    def check_drone(self, n):
+        return None if self.rng.random() > 0.01 else "storm: a check failed"
+
+    def mission_items(self, n, pos, take):
+        return ([{"seq": 0}], "") if self.rng.random() > 0.02 else (None, "storm: route refused")
+
+    def upload(self, n, items, via, cb):
+        ok = self.rng.random() > 0.05
+        self.q.append((self.t + self.rng.uniform(0.2, 3.0), lambda: cb(ok, "" if ok else "storm")))
+
+    def mission_loaded(self, n):
+        pass
+
+    def cmd(self, n, via, command, params, cb):
+        p = (list(params) + [0] * 7)[:7]
+        self.sent.append((self.t, n, command, p, self.hatch_st))
+        d = self.drones[n]
+        if command == 400 and p[0] == 1:
+            d["armed"] = True
+        elif command == 400:
+            d["armed"] = False
+        res_ = 0 if self.rng.random() > 0.05 else 4
+        if self.rng.random() > 0.02:
+            self.q.append((self.t + self.rng.uniform(0.1, 2.0), lambda: cb(res_, "")))
+
+    def cancel(self, n, command):
+        pass
+
+    def armed(self, n):
+        pass
+
+    def on_mission(self, n):
+        pass
+
+    def catchup(self, n):
+        pass
+
+    def hatch_cmd(self, on, cb):
+        import uavlink
+        self.cmd_open, self.hatch_t = on, self.t
+        n0 = len(self.gw.aurix.sent)
+        answered = []
+        uavlink.hatch_relay(self.gw, self.relay_n, on, lambda r, w: answered.append((r, w)))
+        sent = self.gw.aurix.sent[n0:]
+        if answered and answered[0][0] is None:
+            return cb(False, answered[0][1])
+        if self.rng.random() > 0.03:
+            self.q.append((self.t + 0.3, lambda: cb(bool(sent), "")))
+
+    def notice(self, text, level="info"):
+        pass
+
+    def world(self, dt):
+        if self.fault and self.rng.random() < 0.01:
+            self.hatch_st = "FAULT"
+        elif self.hatch_st != "FAULT":
+            if self.cmd_open and self.hatch_st in ("CLOSED", "CLOSING") and self.t - self.hatch_t >= 2.0:
+                self.hatch_st = "OPEN"
+            elif not self.cmd_open and self.hatch_st == "OPEN" and self.t - self.hatch_t >= 2.0:
+                self.hatch_st = "CLOSED"
+        if self.rng.random() < 0.004:
+            self.boat_d["launch_why"] = ["storm: the boat left STANDBY"]
+            self.boat_d["standby"] = False
+        for s, d in self.drones.items():
+            if self.hatch_st == "OPEN" and d["usb_present"] and self.rng.random() < 0.3:
+                d["gps_fix"], d["ekf_flags"] = 3, 0x1F
+            if d["armed"] and self.rng.random() < 0.9:
+                d["rel_alt"] += 2.5 * dt
+                d["landed"] = d["rel_alt"] < 0.3
+                if d["rel_alt"] > 0.3:
+                    d["usb_present"] = False
+
+
+def storm_uav_launch(seed):
+    """I81 / I82 / I80 at the LAUNCH SEQUENCE (the real gateway/uav/launch.py): random magazines, switch faults,
+    lost answers, refused commands, the boat leaving STANDBY, stops at random moments. Checked: every ARM the
+    sequence asks for happens with the hatch's OPEN switch (I81); it never asks for LAND / RTL / SmartRTL / a LAND
+    mode (I82); the only frames to the AURIX are the HELM station's T_RELAY of the hatch relay (I80)."""
+    import stations as STN
+    import proto as P
+    from uav import allow, launch
+    rng = random.Random(seed)
+    gw = type("G", (), {})()
+    gw.telem2, gw.telem, gw.cfg = {}, {}, {}
+    gw.aurix = _Aurix()
+    gw.audit = lambda *a, **k: None
+    srv = STN.StationServer(gw, {"rate_per_s": 1e6, "rate_burst": 1e6})
+    gw.stations = srv
+    st = STN.Station(2, "cap", "HELM", False, "10.0.0.2", "cap", _Writer())
+    st.crew = "captain"
+    srv.stations[st.id] = st
+    gw.telem2["helm"] = st.id
+    srv.helm_grant = st.id
+    relay_n = rng.randint(1, 16)
+    io = _LaunchIo(rng, srv, gw, relay_n)
+    seq = launch.Launch(io)
+    seq.prepare(sorted(io.drones), st.id, io.t)
+    seq.approved(rng.random() > 0.05, st.id, io.t)
+    stop_at = rng.uniform(0, 200) if rng.random() < 0.3 else None
+    while io.t < 400:
+        if stop_at is not None and io.t >= stop_at:
+            seq.stop("storm STOP", io.t)
+            stop_at = None
+        seq.tick(io.t)
+        due = [x for x in io.q if x[0] <= io.t]
+        io.q = [x for x in io.q if x[0] > io.t]
+        for _t, fn in due:
+            fn()
+        io.world(0.25)
+        io.t += 0.25
+        if seq.state in (launch.DONE, launch.STOPPED) and not io.q:
+            break
+    for t, n, c, p, hs in io.sent:
+        if c == allow.CMD_COMPONENT_ARM_DISARM and p[0] == 1:
+            res("I81", hs == "OPEN" and p[1] == 0, seed, "UAV %d ARM asked at t=%.1f with the hatch %s" % (n, t, hs))
+        res("I82", c != allow.CMD_NAV_LAND and not (c == allow.CMD_DO_SET_MODE and int(p[1]) in (6, 9, 21)),
+            seed, "UAV %d: the launch asked for command %d %s" % (n, c, p[:2]))
+    for t, env in gw.aurix.sent:
+        ok = t == P.T_GW_CMD and env[4] == P.T_RELAY and env[5] == relay_n and env[0] == st.id
+        res("I80", ok, seed, "frame 0x%02X %s to the AURIX from the launch (hatch relay %d)" % (t, bytes(env[:7]).hex(),
+                                                                                         relay_n))
+    if not gw.aurix.sent:
+        res("I80", True)
+
+
+def storm_uav_static(seed):
+    """I80 (static, once): no gateway/uav module imports aurix / proto / stations or names the AURIX link; I84
+    (static): mavlink.encode is called only by the router's tx() (after allow.check_out)."""
+    import ast
+    folder = os.path.join(REPO, "gateway", "uav")
+    for f in sorted(os.listdir(folder)):
+        if not f.endswith(".py"):
+            continue
+        src = open(os.path.join(folder, f), encoding="utf-8").read()
+        tree = ast.parse(src)
+        names = set()
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                names |= {a.name.split(".")[0] for a in n.names}
+            elif isinstance(n, ast.ImportFrom) and n.module and n.level == 0:
+                names.add(n.module.split(".")[0])
+            elif isinstance(n, ast.Attribute) and n.attr == "aurix":
+                names.add(".aurix")
+        res("I80", not names & {"aurix", "proto", "stations", ".aurix"}, seed, "gateway/uav/%s uses %s" % (
+            f, sorted(names & {"aurix", "proto", "stations", ".aurix"})))
+        enc = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and
+               n.func.attr == "encode" and isinstance(n.func.value, ast.Name) and n.func.value.id == "mavlink"]
+        res("I84", f in ("router_worker.py", "simdrone.py") or not enc, seed,
+            "gateway/uav/%s builds MAVLink frames itself" % f)
+        if f == "router_worker.py":
+            res("I84", len(enc) == 1 and "allow.check_out" in src.split("def tx(")[1].split("\n    def ")[0], seed,
+                "router_worker: mavlink.encode outside tx() / without allow.check_out")
+
+
+def storm_uav(seed):
+    if seed == 1 or not RES.get("I80"):
+        storm_uav_static(seed)
+    storm_uav_router(seed)
+    storm_uav_pilot(seed)
+    storm_uav_launch(seed)
+
+
 PARTS = {"avoid": storm_avoid, "channels": storm_channels, "events": storm_events, "vision": storm_vision,
-         "licence": storm_licence}
+         "licence": storm_licence, "uav": storm_uav}
 
 
 def main():
@@ -471,7 +993,12 @@ def main():
              "I17": "a not fully synced (or open) saved event is never deleted",
              "I20": "vision: a speed cap only, never more speed, none with STAGE 3 off",
              "I21": "vision crash / overload never releases an active cap by itself",
-             "I26": "REMOTE MANUAL / MANEUVER never asked for a user without a manual licence"}
+             "I26": "REMOTE MANUAL / MANEUVER never asked for a user without a manual licence",
+             "I80": "UAV: nothing to the AURIX but the hatch relay (HELM station T_RELAY)",
+             "I81": "UAV: never ARM without the hatch OPEN switch",
+             "I82": "UAV: never LAND except the battery rule, never RTL / SmartRTL",
+             "I83": "UAV: captain flies only in STANDBY, no GW_RJOY to the boat meanwhile",
+             "I84": "UAV: only allow-listed MAVLink leaves the router"}
     bad = 0
     print("\n=== GATEWAY STORM (%.1f min) ===" % ((time.time() - t0) / 60.0))
     for inv in sorted(RES):

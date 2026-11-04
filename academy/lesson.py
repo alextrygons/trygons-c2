@@ -178,8 +178,9 @@ class Run(object):
     status "waiting" (simulator not ready), "step" (doing step index), "done" (passed), "failed"
     (a time limit passed: retry()). Actions = simulator events to send (EVENTS / SETUP names)."""
 
-    def __init__(self, doc, lang="el"):
+    def __init__(self, doc, lang="el", ready_fn=None):
         self.doc = doc
+        self.ready_fn = ready_fn or ready     # step U6: the UAV lesson's own "simulator ready" (uavlesson.py)
         self.lang = lang if lang in LANGS else "el"
         self.steps = doc["steps"]
         self.retries = 0
@@ -227,7 +228,7 @@ class Run(object):
         if self.status in ("done", "failed"):
             return self.status, []
         if self.index < 0:
-            if not ready(state):
+            if not self.ready_fn(state):
                 return "waiting", []
             return "step", self._begin(0, state, now)
         st = self.steps[self.index]
