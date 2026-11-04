@@ -17,6 +17,7 @@ station's buttons (app.py / driver.py / hud.py).
       camera ring «ΚΑΜΕΡΕΣ: μόνο 20 λεπτά διαθέσιμα», no gateway / no answer / refused; SAVE carries the id too
   SR7 the buttons: screen 1's bottom bar [REC · SCR · SAVE · 5' · 1h] (●SCR white while recording, hits), screen 2's
       bar 2 group SCR · 5' · 1h; the clicks reach the station; screenrec imports no link / protocol module
+  SR10 review 13n4b L10: "merged" only for a real merge into an open camera event
   SR9 review 13n4b: -threads 2, UTC file-name check (+ fallback offset), a merged SAVE records the cameras' id,
       the kill-on-close job, quit() always closes the recorder
   SR8 real ffmpeg (when installed): a Tk window recorded for a few seconds -> playable H.264 .ts files, kept by KEEP
@@ -433,6 +434,27 @@ def sr8():
     shutil.rmtree(d, ignore_errors=True)
 
 
+def sr10():
+    """Review 13n4b L10: the station logs "the screens belong to the open camera event" only for a REAL merge (save_ack
+    "merged"); a camera event that got a "-2" name (the id was taken) is recorded the same, not called a merge."""
+    import types
+    import app as A
+    events, ids = [], []
+    fake = types.SimpleNamespace(say=lambda *a: None, event=events.append,
+                                 scr=types.SimpleNamespace(camera_id=lambda ask, got: ids.append((ask, got)) or True))
+    base = {"ok": True, "text": "SAVE x", "ask": "20261026-080000_button"}
+    A.App.on_save_ack(fake, dict(base, id="20261026-080000_button-2", merged=False))
+    n_suffix = len(events)
+    A.App.on_save_ack(fake, dict(base, id="20261026-075000_alarm", merged=True))
+    n_merge = len(events)
+    A.App.on_save_ack(fake, dict(base, id="20261026-075000_alarm"))           # an older gateway: as before
+    n_old = len(events)
+    report("SR10 review 13n4b L10: a SAVE whose camera event got another id is recorded every time, but the event "
+           "line says 'merged' only for a real merge (save_ack merged)",
+           len(ids) == 3 and n_suffix == 1 and n_merge == 3 and n_old == 5,
+           "camera ids %s; events after suffix %d / merge %d / old gateway %d" % (ids, n_suffix, n_merge, n_old))
+
+
 def sr9():
     """Review 13n4b LOW-1 / 2 / 4 / 7."""
     # LOW-2 at most 2 ffmpeg threads per screen
@@ -510,7 +532,7 @@ def sr9():
 
 
 def main():
-    for fn in (sr1, sr2, sr3, sr4, sr5, sr6_7, sr8, sr9):
+    for fn in (sr1, sr2, sr3, sr4, sr5, sr6_7, sr8, sr9, sr10):
         try:
             fn()
         except Exception as e:

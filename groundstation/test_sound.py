@@ -19,6 +19,9 @@
   S12 a new voice / new settings remake every cached sentence (+ clips); same voice = kept; no voice = kept
   S13 lead-in silence + fade-in in front of every sentence; Piper with the calmer 13o settings
   S14 the voice samples: 5 sentences per option + README (the real Piper when installed)
+  S15 review 13o M1: the sound page never waits for the voice maker (play while a slow synth holds the lock)
+  S16 review 13o L1-L4: the Windows voice lookup off the Tk thread, published whole, a failure = unknown + cache kept,
+      a quote in the temp path escaped
 
 Run:  python test_sound.py        (exit code 0 = all passed)
 """
@@ -385,6 +388,7 @@ def main():
            "never touches the link", not bad and touched is None,
            "found %s; session %s" % (bad, touched or "never touched the link"))
     voice_tests()
+    review_13o_tests()
     i18n.set_lang("en", save=False)
     bad_n = results.count(False)
     print("SOUND TESTS: %d passed, %d failed" % (len(results) - bad_n, bad_n))
@@ -401,6 +405,7 @@ def voice_tests():
     the lead-in silence, the tuned Piper settings, the voice samples."""
     import settings
     saved = (tts._win, tts._prefer, tts.voice_id, tts.synth, tts.subprocess.run, tts.piper_bin, tts.piper_voice)
+    env_sound = os.environ.get("TRYGONS_SOUND")            # (review 13o L7: restored afterwards)
     try:
         # S11 the engine follows the setting; a missing Windows voice falls back to Piper (and back)
         tts.piper_bin = lambda: "piper.exe"
@@ -537,6 +542,113 @@ def voice_tests():
     finally:
         (tts._win, tts._prefer, tts.voice_id, tts.synth, tts.subprocess.run, tts.piper_bin,
          tts.piper_voice) = saved
+        if env_sound is None:
+            os.environ.pop("TRYGONS_SOUND", None)
+        else:
+            os.environ["TRYGONS_SOUND"] = env_sound
+
+
+def review_13o_tests():
+    """S15 / S16 (review of 13o c704a7f): M1 the sound page never waits for the voice maker on the Tk thread;
+    L1-L4 the Windows voice lookup."""
+    import ast
+    import threading
+    import time as _t
+    saved = (tts._win, tts._win_retry_t, tts._ps, tts._prefer, tts.piper_bin, tts.piper_voice)
+    try:
+        # S15 (M1) a slow synth batch holds the library lock (a new voice remakes hundreds of sentences): playing a
+        # sound from the page returns at once (tone now, the voice made in the background)
+        cache = os.path.join(TMP, "c15")
+        lib = sound.Library(cache=cache)
+        lib.checked["en"] = "some voice"                    # (the cache was checked already)
+        hold, held = threading.Event(), threading.Event()
+
+        def busy():
+            with lib.lock:
+                held.set()
+                hold.wait(10)
+        threading.Thread(target=busy, daemon=True).start()
+        held.wait(5)
+        lib.make = lambda lang, texts, retries=3: (lib.lock.acquire(), lib.lock.release())   # waits like make()
+        t0 = _t.perf_counter()
+        path, secs = lib.clip("warning", ["say.alarm.compass_lost"], "en", 0.8, block=False)
+        dt = _t.perf_counter() - t0
+        hold.set()
+        src = open(os.path.join(HERE, "soundtest.py"), encoding="utf-8").read()
+        calls = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call) and
+                 isinstance(n.func, ast.Attribute) and n.func.attr == "clip"]
+        nonblock = bool(calls) and all(any(k.arg == "block" and getattr(k.value, "value", None) is False
+                                           for k in c.keywords) for c in calls)
+        report("S15 (review 13o M1) the sound page never waits for the voice maker: with a slow synth batch holding the "
+               "library lock a played sound returns at once (the tone now, the voice next time); the page plays with "
+               "block=False",
+               dt < 0.3 and os.path.exists(path) and secs > 0 and nonblock,
+               "clip returned in %.0f ms (%s), soundtest clip calls non-blocking %s" % (dt * 1000,
+                                                                                      os.path.basename(path), nonblock))
+        # S16 (L1-L4) the Windows voice lookup
+        calls_ps, gate = [], threading.Event()
+        main_th = threading.current_thread()
+
+        def slow_ps(script, timeout):
+            calls_ps.append(threading.current_thread() is main_th)
+            gate.wait(5)
+
+            class R:
+                returncode = 0
+                stdout = "rt|el-GR|Microsoft Stefanos\n".encode()
+            return R()
+        tts._ps = slow_ps
+        tts._win, tts._win_retry_t = None, 0.0
+        tts.piper_bin = lambda: "piper.exe"
+        tts.piper_voice = lambda lang: "x.onnx"
+        tts.set_prefer("piper")
+        t0 = _t.perf_counter()
+        av = tts.available("el")                            # the page asks every 2 s
+        quick = _t.perf_counter() - t0 < 0.2 and av == ["piper"]
+        _t.sleep(0.2)
+        known_during = tts.windows_known()                  # L2: never "known" while the lookup runs
+        gate.set()
+        tts._win_bg.join(5)
+        after = tts.windows_known() and tts.available("el") == ["piper", "windows"]
+        not_tk = calls_ps and not any(calls_ps)             # L1: never on the calling (Tk) thread
+        # L3 a failed lookup = unknown (not "no voices"), tried later; the cache is NOT deleted for it
+        tts._win, tts._win_retry_t = None, 0.0
+
+        def fail_ps(script, timeout):
+            raise OSError("PowerShell missing")
+        tts._ps = fail_ps
+        got = tts.windows_voices()
+        unknown = got == {} and not tts.windows_known() and tts._win_retry_t > _t.time()
+        tts.set_prefer("windows")
+        cache = os.path.join(TMP, "c16")
+        os.makedirs(os.path.join(cache, "el"))
+        with open(os.path.join(cache, "el", "voice.txt"), "w", encoding="utf-8") as f:
+            f.write("v2|windows|rt|Microsoft Stefanos|lead250\n")
+        keep = os.path.join(cache, "el", "p_keep.wav")
+        open(keep, "wb").close()
+        gone = sound.Library(cache=cache).fresh("el")
+        kept = os.path.exists(keep) and gone == 0
+        # L4 a ' in the temp list path is doubled inside the PowerShell script
+        scripts = []
+        tts._win = {"el": ("rt", "Microsoft Stefanos")}
+        tts._ps = lambda script, timeout: scripts.append(script)
+        real_mk = tts.tempfile.mkstemp
+        qdir = os.path.join(TMP, "o'brien")
+        os.makedirs(qdir, exist_ok=True)
+        tts.tempfile.mkstemp = lambda suffix="": real_mk(suffix=suffix, dir=qdir)
+        try:
+            tts.synth("el", [("Δοκιμή.", os.path.join(TMP, "x.wav"))], choice="windows")
+        finally:
+            tts.tempfile.mkstemp = real_mk
+        quoted = bool(scripts) and "o''brien" in scripts[0]
+        report("S16 (review 13o L1-L4) Windows voices: the page's check never runs PowerShell on its thread (a "
+               "background lookup), not 'known' while it runs, then known; a failed lookup = unknown + tried later, "
+               "the voice cache is NOT deleted for it; a ' in the temp path is escaped in the script",
+               quick and not known_during and after and not_tk and unknown and kept and quoted,
+               "quick %s, known during %s, after %s, PowerShell on the caller %s; failed -> %s known %s, cache kept %s; "
+               "quoted %s" % (quick, known_during, after, calls_ps, got, tts.windows_known(), kept, quoted))
+    finally:
+        (tts._win, tts._win_retry_t, tts._ps, tts._prefer, tts.piper_bin, tts.piper_voice) = saved
 
 
 if __name__ == "__main__":

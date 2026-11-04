@@ -214,6 +214,10 @@ class Library:
         (a new Piper setting, Piper <-> Windows in the sound settings) deletes every made sentence of the
         language (and the joined clips): they are all made again with the new voice. No voice here = the
         cache is kept as it is. Returns the number of sentences deleted."""
+        if tts.prefer() == "windows" and not tts.windows_known():
+            tts.windows_voices()                # (a background thread: make / pregenerate)
+            if not tts.windows_known():
+                return 0                        # review 13o L3: the lookup failed - keep the cache, try again later
         vid = tts.voice_id(lang)
         if vid is None or self.checked.get(lang) == vid:
             return 0

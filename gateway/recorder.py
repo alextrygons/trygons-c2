@@ -215,6 +215,8 @@ class Recorder:
         self.lock = threading.RLock()                   # events: the event loop (SAVE) + the worker (tick)
         self.link_file = os.link                        # (a test swaps it for a slow one: review 13n4 M1)
         self.copy_refused = 0                           # ring files not kept: no hard link + no room for a copy
+        self.refused_seen = set()                       # (event, camera, file) already counted / logged (L9)
+        self.last_merged = False                        # the last trigger merged into an open SAVE (review L10)
         if self.storage.usable:
             self.state_path = os.path.join(self.storage.folder("state"), "recording.json")
             try:
@@ -355,9 +357,11 @@ class Recorder:
                 ev["end_t"] = max(ev["end_t"], now + self.post_s)
                 ev["end_utc"] = self.gw.clock.stamp(ev["end_t"])
                 self.merged += 1
+                self.last_merged = True
                 self._write(ev)
                 self.gw.audit("save_merged", id=ev["id"], trigger=kind, text=text, user=who)
                 return True, "added to the open SAVE %s (now until %s)" % (ev["id"], ev["end_utc"][11:19]), ev["id"]
+        self.last_merged = False
         if not self.enabled or not self.storage.usable:
             self.refused += 1
             return False, "no recording (SSD %s)" % self.storage.state, None
@@ -444,9 +448,16 @@ class Recorder:
                 if free is None:
                     free = self.storage.free_now() if self.storage.usable else 0
                 if free - size < self.storage.low_b:
-                    self.copy_refused += 1
-                    log.warning("SAVE %s: %s not kept: no hard link on this drive and too little free space for "
-                                "a copy", eid, fn)
+                    # review 13n4b L9: counted per event (event.json "copy_refused") and in the status, logged ONCE
+                    # per file - the worker retries every second while the event is open
+                    key = (eid, name, fn)
+                    if key not in self.refused_seen:
+                        self.refused_seen.add(key)
+                        self.copy_refused += 1
+                        with self.lock:
+                            ev["copy_refused"] = ev.get("copy_refused", 0) + 1
+                        log.warning("SAVE %s: %s not kept: no hard link on this drive and too little free space for "
+                                    "a copy", eid, fn)
                     continue
                 try:
                     shutil.copy2(p, os.path.join(dst, fn))
@@ -539,10 +550,13 @@ class Recorder:
         """Ring length, then the storage policy."""
         now = time.time() if now is None else now
         keep_from = now - self.ring_min * 60 - self.seg_s
+        with self.lock:                                 # review 13n4b L8: a KEEP / SAVE made on the loop after this
+            windows = [(e["start_t"], e["end_t"]) for e in self.events      # worker step's linking keeps its files
+                       if "start_t" in e and "end_t" in e]
         for c in self.cams.values():
             segs = c.segments()
             for t, p in segs[:-1]:                      # never the file being written
-                if t < keep_from:
+                if t < keep_from and not any(t + self.seg_s >= a and t <= b for a, b in windows):
                     self._rm(p)
                     self.deleted["ring"] += 1
         if not self.storage.usable:
@@ -608,4 +622,4 @@ class Recorder:
                 "open": [{"id": e["id"], "until": e["end_utc"][11:19], "triggers": len(e["triggers"])}
                          for e in self.events],
                 "recent": self.recent, "saves": self.saves, "merged": self.merged, "refused": self.refused,
-                "deleted": self.deleted, "full": self.full}
+                "deleted": self.deleted, "full": self.full, "copy_refused": self.copy_refused}

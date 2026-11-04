@@ -598,7 +598,9 @@ class Gateway:
             return st.send({"t": "save_ack", "ok": False, "text": "VIEWER: no SAVE"})
         src = str(m.get("source", "button"))[:20]
         ok, text, eid = self.rec.trigger("button", "SAVE %s (%s)" % (src, st.user), who=st.user, eid=m.get("id"))
-        st.send({"t": "save_ack", "ok": ok, "text": text, "id": eid, "ask": m.get("id")})
+        # "merged" (review 13n4b L10): the station's id joined an OPEN camera event - not just a "-2" name suffix
+        st.send({"t": "save_ack", "ok": ok, "text": text, "id": eid, "ask": m.get("id"),
+                 "merged": bool(ok and self.rec.last_merged)})
 
     def _keep_msg(self, st, m):
         """KEEP 5' / 1h of a station (step 13n4): the last 5 / 60 min of every camera, permanent, not uploaded.

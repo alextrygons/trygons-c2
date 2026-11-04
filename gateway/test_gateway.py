@@ -1855,6 +1855,61 @@ def ks_worker(tmp):
            len(evc["cameras"][CAM_NAMES[0]]) >= 5 and len(copied) >= 5,
            "no room: %d listed, %d refused; room: %d copied" % (len(evf["cameras"][CAM_NAMES[0]]), refused,
                                                                  len(copied)))
+    # KS8 (review 13n4b L9) a refused copy is counted ONCE per file (not every worker second), in event.json + status
+    g7.storage.low_b = g7.storage.free_now() + 1e9
+    n0 = rec7.copy_refused
+    okr, _tr, eidr, _hr = rec7.keep(5, who="x", now=now + 2)
+    for k in range(4):                                       # the worker retries every second while it is open
+        rec7.tick(now + 2.5 + k)
+    evr = _json.load(open(os.path.join(rec7.events_dir(), eidr, "event.json"), encoding="utf-8"))
+    per_file = rec7.copy_refused - n0
+    g7.storage.low_b = 0
+    report("KS8 (review 13n4b L9) a file not kept (no hard link, no room) is counted and logged ONCE, not every worker "
+           "second; event.json copy_refused + the status show it",
+           okr and 5 <= per_file <= 6 and evr.get("copy_refused") == per_file and
+           rec7.status()["copy_refused"] == rec7.copy_refused,
+           "4 worker steps: %d counted, event.json %s, status %s" % (per_file, evr.get("copy_refused"),
+                                                                    rec7.status()["copy_refused"]))
+    # KS9 (review 13n4b L8) the ring's housekeeping never deletes a file inside an open event's window: a KEEP 1h made
+    # with a 10 min ring, housekeeping BEFORE the worker linked it -> its old files are still there for the link
+    root9 = os.path.join(tmp, "ks9")
+    os.makedirs(root9)
+    g9 = _KsGw(root9)
+    rec9 = Recorder({"segment_s": 60, "house_s": 1e12, "ring_min": 10}, g9)
+    rec9.ring_min = 10
+    d = rec9.ring_dir(CAM_NAMES[0])
+    os.makedirs(d, exist_ok=True)
+    for i in range(31):
+        t = now - (30 - i) * 60
+        with open(os.path.join(d, time.strftime("%Y%m%d-%H%M%S.ts", time.gmtime(t))), "wb") as f:
+            f.write(b"x" * 1000)
+    rec9.cams[CAM_NAMES[0]] = _KsCam(d)
+    ok9, _t9, eid9, _h9 = rec9.keep(60, who="x", now=now)
+    rec9.housekeeping(now)                                  # the race: housekeeping first
+    left = len(rec9.cams[CAM_NAMES[0]].segments())
+    rec9.tick(now + 0.5)
+    ev9 = _json.load(open(os.path.join(rec9.events_dir(), eid9, "event.json"), encoding="utf-8"))
+    kept = len(ev9["cameras"][CAM_NAMES[0]])
+    rec9.tick(now + 1e5)                                    # the KEEP finished: the ring is trimmed again
+    rec9.housekeeping(now + 1)
+    after = len(rec9.cams[CAM_NAMES[0]].segments())
+    report("KS9 (review 13n4b L8) housekeeping skips ring files inside an open SAVE / KEEP window (10 min ring, KEEP 1h "
+           "made just before): all 30 files still linked; once the event is done the ring is trimmed to its length",
+           ok9 and left == 31 and kept >= 30 and after <= 13,
+           "files left after housekeeping %d, linked %d, ring after the event %d" % (left, kept, after))
+    # KS10 (review 13n4b L10) "merged" only for a real merge into an open SAVE - a taken id ("-2" suffix) is not one
+    sid = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now + 2e5)) + "_save"
+    o1 = rec9.trigger("button", "SAVE 1", who="a", now=now + 2e5, eid=sid)
+    m1 = rec9.last_merged
+    o2 = rec9.trigger("button", "SAVE 2", who="b", now=now + 2e5 + 5, eid=sid + "x")
+    m2 = rec9.last_merged
+    rec9.tick(now + 3e5)                                    # both finished
+    o3 = rec9.trigger("button", "SAVE 3", who="c", now=now + 3e5, eid=sid)      # the id is taken: "-2"
+    m3 = rec9.last_merged
+    report("KS10 (review 13n4b L10) save_ack \"merged\" only for a real merge into an open camera event; an id that "
+           "was taken (\"-2\" suffix) is a new event, not a merge",
+           o1[0] and not m1 and o2[0] and m2 and o2[2] == o1[2] and o3[0] and not m3 and o3[2] == sid + "-2",
+           "first %s merged %s; second -> %s merged %s; taken id -> %s merged %s" % (o1[2], m1, o2[2], m2, o3[2], m3))
 
 
 def recorder_id_ok(eid):

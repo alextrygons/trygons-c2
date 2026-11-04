@@ -216,7 +216,9 @@ def build(parent, app):
     def play(i, lang):
         code, lv, tn, keys = rows[i]
         v = snd.sched.vol(lv if lv is not None else alerts.ADVISORY)
-        path, secs = snd.lib.clip(tn, keys, lang, v)
+        # review 13o M1: never wait on the Tk thread (a voice change remakes hundreds of sentences under the
+        # library's lock for minutes): a missing sentence = the tone now, made in the background, voiced next time
+        path, secs = snd.lib.clip(tn, keys, lang, v, block=False)
         snd.player.stop()
         snd.player.play(path)
         app.last_test_sound = (code, lang, path, secs)

@@ -850,8 +850,10 @@ class App:
         self.say(i18n.from_en(d.get("text", "")), GREEN if d.get("ok") else RED)
         self.event(T("cap.ev_video", text=i18n.from_en(d.get("text", ""))))
         ask, got = d.get("ask"), d.get("id")
-        if d.get("ok") and ask and got and got != ask:      # merged into an open camera event (review 13n4b LOW-4)
-            if self.scr.camera_id(ask, got):
+        if d.get("ok") and ask and got and got != ask:      # the cameras' event has another id (review 13n4b LOW-4)
+            # review L10: only a real merge into an open camera event says so; a "-2" name suffix (the id was taken)
+            # is recorded the same way but not called a merge (an older gateway without "merged": as before)
+            if self.scr.camera_id(ask, got) and d.get("merged", True):
                 self.event(T("scr.ev_merged", id=ask, cam=got))
 
     def shore_save_poll(self):

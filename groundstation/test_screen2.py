@@ -1745,6 +1745,15 @@ def s21_mode_bar(rig):
                 A.theme.WARN.lower()]
         # red = STANDBY and SAVE only (owner 2026-11-04: SAVE stays red; the active STANDBY on the bar is white)
         only_red = "standby" in reds and set(reds) <= {"standby", "save"}
+        # review 13n4b L7: SAVE (screen 1's bottom bar) really IS red - framed + text in the warning red
+        import hud as _hud
+        import types as _ty
+        _h = _hud.Hud()
+        _st = _ty.SimpleNamespace(t=None, night=False, declutter="FULL", video_scale="fill", ar_on=False, vision=None,
+                                  vision_cap=False, rec=None, scr=False, clock="12:00", mission=None, hail=None)
+        _save = [it for g in _h.bar_groups(_st) for it in g if it[0] == "save"]
+        save_red = len(_save) == 1 and str(_save[0][5]).lower() == A.theme.WARN.lower()
+        only_red = only_red and save_red
         auto_grey = not op(ap, "mode_AUTO")["enabled"]
         manual_grey = not op(ap, "mode_MANUAL")["enabled"]
         ap.msg_text = ""

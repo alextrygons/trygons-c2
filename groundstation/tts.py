@@ -26,6 +26,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import wave
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -119,7 +121,10 @@ _PS_SPEAK_SAPI = (
     "foreach ($l in (Get-Content -Encoding UTF8 '%s')) { $p = $l.Split([char]9); "
     "$s.SetOutputToWaveFile($p[0], $fmt); $s.Speak($p[1]) }; $s.SetOutputToNull()")
 
-_win = None
+_win = None                 # None = not looked up yet (or the lookup failed: tried again later)
+_win_retry_t = 0.0          # (review 13o L3) a failed lookup is tried again after this time, never in a loop
+_win_bg = None              # the background lookup thread (review 13o L1: never PowerShell on the Tk thread)
+WIN_RETRY_S = 60.0
 
 
 def _ps(script, timeout):
@@ -136,23 +141,41 @@ def _ps(script, timeout):
 def windows_voices():
     """{language 'el' / 'en': (kind 'rt' / 'sapi', voice name)} of the installed Windows voices; a modern
     (OneCore) voice wins over a classic SAPI one of the same language."""
-    global _win
+    global _win, _win_retry_t
     if _win is not None:
         return _win
-    _win = {}
     if os.name != "nt":
+        _win = {}
         return _win
+    if time.time() < _win_retry_t:
+        return {}                               # a lookup failed a moment ago: not known (yet), no PowerShell now
+    # review 13o L2: fill a LOCAL dict and publish it only when complete - windows_known() is never true for a
+    # half-filled (or empty because still running) answer
+    found_v = {}
     try:
         out = _ps(_PS_LIST, 30)
+        if out.returncode != 0:
+            raise OSError("PowerShell voice list: exit %s" % out.returncode)
         found = [line.strip().split("|", 2) for line in out.stdout.decode("utf-8", "replace").splitlines()
                  if line.count("|") >= 2]
         for kind in ("rt", "sapi"):
             for k, cult, name in found:
                 if k == kind:
-                    _win.setdefault(cult[:2].lower(), (kind, name))
+                    found_v.setdefault(cult[:2].lower(), (kind, name))
     except (OSError, subprocess.SubprocessError):
-        pass
+        _win_retry_t = time.time() + WIN_RETRY_S   # review 13o L3: unknown, NOT "no voices" - retried later
+        return {}
+    _win = found_v
     return _win
+
+
+def lookup_background():
+    """Look the Windows voices up in a helper thread (once at a time): the screens never wait for PowerShell."""
+    global _win_bg
+    if _win is not None or os.name != "nt" or (_win_bg is not None and _win_bg.is_alive()):
+        return
+    _win_bg = threading.Thread(target=windows_voices, daemon=True)
+    _win_bg.start()
 
 
 def windows_known():
@@ -165,13 +188,18 @@ def sapi_voices():
     return {lg: v[1] for lg, v in windows_voices().items()}
 
 
-def available(lang):
-    """The engines that can speak this language here."""
+def available(lang, wait=False):
+    """The engines that can speak this language here. wait=False (the screens, review 13o L1): the Windows voices
+    only when they are already known - otherwise they are looked up in the background and Windows does not count
+    yet (never a PowerShell run on the Tk thread)."""
     out = []
     if piper_bin() and piper_voice(lang):
         out.append("piper")
-    if lang in windows_voices():
-        out.append("windows")
+    if windows_known() or wait:
+        if lang in windows_voices():
+            out.append("windows")
+    else:
+        lookup_background()
     return out
 
 
@@ -263,7 +291,7 @@ def synth(lang, items, timeout=300, choice=None, piper_params=None, lead_ms=LEAD
                 f.write("%s\t%s\n" % (p, t.replace("\t", " ").replace("\n", " ")))
         tpl = _PS_SPEAK_RT if kind == "rt" else _PS_SPEAK_SAPI
         try:
-            _ps(tpl % (name.replace("'", "''"), lst), timeout)
+            _ps(tpl % (name.replace("'", "''"), lst.replace("'", "''")), timeout)   # (review 13o L4: a ' in the path)
         except (OSError, subprocess.SubprocessError):
             return 0
         finally:
