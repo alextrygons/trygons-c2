@@ -1,0 +1,499 @@
+"""Loudhailer + boat microphone (step 13r, owner 2026-11-02): the real gateway (loudhailer.py + its own audio
+process loudhailer_worker.py with the SIMULATED speaker / microphone) and real ground-station voice clients
+(groundstation/hailer.py) on the simulated AURIX.
+
+  LH1  PUSH-TO-TALK one at a time: the first station wins, the other is refused + sees who speaks (every station
+       gets the floor), a VIEWER never talks, the floor back on release
+  LH2  half duplex: the boat microphone is muted while someone talks (no frame to the listeners, no echo of the
+       horn), back after the release; LISTEN delivers the mic to a listening station only
+  LH3  recording: both directions in the ring (video/ring/AUDIO, 1-minute WAV) and inside a SAVE event + a KEEP 5'
+       (the shore's voice + the microphone on the camera timeline)
+  LH4  link priority: a weak link (round trip) / data saver -> voice off for that station with a note (talk refused,
+       no listen frames), the captain keeps it with the data saver; the voice counts with the captain's video so the
+       copilot's camera view drops first (cameras.update_priority)
+  LH5  no effect on driving: the same AURIX frame types with and without voice, the mode / alarms unchanged, no
+       loudhailer module sends to the AURIX, the event loop stays fast while voice flows
+  LH6  the audio process killed = OFFLINE notice only (no alarm, no GW_STATUS flag, the floor released), restarted
+  LH7  volume limit: never above volume_max_pct, only HELM / a station on the boat may set it
+  LH8  the floor ends by itself: no voice frames (frame gap), the talk time limit, the speaker leaving
+  LH9  sound signals (5 short / 1 prolonged) take the floor for their time; another station is refused meanwhile
+  LH10 bad packets: another session's key, an old seq, a stale time, a wrong size, frames of a non-speaker = dropped
+  LH11 ready message: spoken by the station (its voice; here injected samples) into the floor, then released
+
+Run:  python test_loudhailer.py      (exit code 0 = all passed)
+"""
+import ast
+import io
+import os
+import shutil
+import sys
+import tempfile
+import threading
+import time
+import wave
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+os.environ.setdefault("TRYGONS_LANG", "en")
+os.environ.setdefault("TRYGONS_SOUND", "off")
+os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(tempfile.mkdtemp(prefix="trygons_lh_set_"), "gs_settings.json")
+os.environ.setdefault("TRYGONS_TEST", "1")
+import test_gateway as tg  # noqa: E402  (Sim, GwRunner, gw_cfg_b, users)
+from common import proto, setup_logging  # noqa: E402
+sys.path.insert(0, os.path.join(HERE, "..", "groundstation"))
+from gwclient import GatewayLink  # noqa: E402
+import hailer  # noqa: E402
+import voicecodec as vc  # noqa: E402
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+results = []
+
+
+def report(name, ok, detail):
+    results.append(bool(ok))
+    print("[%s] %s - %s" % ("PASS" if ok else "FAIL", name, detail), flush=True)
+
+
+def until(cond, timeout, step=0.05, pump=()):
+    end = time.time() + timeout
+    while time.time() < end:
+        for p in pump:
+            p.pump()
+        v = cond()
+        if v:
+            return v
+        time.sleep(step)
+    return None
+
+
+class Station:
+    """A ground station: its gateway link + its loudhailer client (null sound devices: nothing on this PC's card)."""
+
+    def __init__(self, port, user, crew=None, local=False):
+        self.link = GatewayLink("127.0.0.1:%d" % port, user, password=tg.PW[user], station=user,
+                                local_addr="127.0.0.2" if local else "127.0.0.1", crew=crew)
+        self.welcome = self.link.start()
+        self.gw_status = None
+        self.said = []
+        self.msgs = []
+        self.hail = hailer.Hailer(self, backend="null")
+        self.hail.listen_local = True                  # (each station its own LISTEN switch in this one process)
+
+    def say(self, text, colour=None):
+        self.said.append(text)
+
+    def pump(self):
+        while True:
+            try:
+                kind, d = self.link.events.get_nowait()
+            except Exception:
+                break
+            if kind == "gw_status":
+                self.gw_status = d
+            elif kind in ("hail_floor", "ptt_ack", "hail", "hail_signal_ack", "hail_volume_ack"):
+                self.msgs.append((kind, d))
+                self.hail.on_msg(kind, d)
+        self.hail.tick()
+
+    def last(self, kind):
+        for k, d in reversed(self.msgs):
+            if k == kind:
+                return d
+        return None
+
+    def close(self):
+        self.hail.close()
+        self.link.stop()
+
+
+def wait(s, pumps):
+    """Sleep while every station keeps its link alive (hello / messages)."""
+    end = time.time() + s
+    while time.time() < end:
+        for p in pumps:
+            p.pump()
+        time.sleep(0.05)
+
+
+def wav_levels(path):
+    with wave.open(path, "rb") as w:
+        import array
+        a = array.array("h", w.readframes(w.getnframes()))
+    return [vc.level_db(a[i:i + vc.FRAME_N]) for i in range(0, len(a) - vc.FRAME_N, vc.FRAME_N)]
+
+
+def main():
+    setup_logging(30)
+    if not os.path.exists(tg.EXE):
+        print("build the simulator first: sim\\build_sim.bat")
+        return 2
+    print("\n=== Section LH: loudhailer + boat microphone (step 13r) ===", flush=True)
+    tmp = tempfile.mkdtemp(prefix="gwtest_lh_")
+    sim = gwr = None
+    st = {}
+    try:
+        sim = tg.Sim(2.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        cfg = tg.gw_cfg_b(sim, root, loudhailer={"enabled": True, "backend": "sim", "frame_gap_s": 0.8,
+                                                 "talk_max_s": 6.0, "volume_max_pct": 80, "restart_s": 1.0},
+                          recording={"segment_s": 4, "post_s": 2, "pre_s": 30})
+        gwr = tg.GwRunner(cfg)
+        g = gwr.gw
+        port = cfg["stations"]["port"]
+        time.sleep(0.8)
+        cap = st["cap"] = Station(port, "alice", crew="captain")
+        cop = st["cop"] = Station(port, "bob", crew="copilot", local=True)
+        vic = st["vic"] = Station(port, "vic")
+        pumps = list(st.values())
+        ready = until(lambda: all(s.gw_status and (s.gw_status.get("hail") or {}).get("state") == "ACTIVE"
+                                  for s in pumps), 15, pump=pumps)
+        if not ready:
+            report("LH0 the loudhailer comes up ACTIVE (simulated card)", False,
+                   "hail status %s" % ((cap.gw_status or {}).get("hail")))
+            return 1
+
+        # LH1 one at a time, the first wins
+        cap.hail.press()
+        got = until(lambda: cap.hail.mine and cop.hail.speaker, 3, pump=pumps)
+        local_ref = cop.hail.press() is None and "SPEAKING: CAPTAIN" in cop.hail.note   # refused here already
+        cop.link.send_msg({"t": "ptt", "on": True})        # ... and by the gateway (the first wins)
+        refused = until(lambda: cop.last("ptt_ack") and cop.last("ptt_ack").get("ok") is False, 3, pump=pumps)
+        cop_sees = cop.hail.view()
+        ref_ack = dict(cop.last("ptt_ack") or {})
+        vic.link.send_msg({"t": "ptt", "on": True})
+        vic_ref = until(lambda: vic.last("ptt_ack") and vic.last("ptt_ack").get("ok") is False, 3, pump=pumps)
+        floor1 = dict(g.hail.speaker() or {})
+        cap.hail.release()
+        free = until(lambda: g.hail.floor is None and cop.hail.speaker is None, 3, pump=pumps)
+        cop.hail.press()
+        cop_got = until(lambda: cop.hail.mine, 3, pump=pumps)
+        cap_sees = cap.hail.view()
+        cop.hail.release()
+        until(lambda: g.hail.floor is None, 3, pump=pumps)
+        report("LH1 PUSH-TO-TALK one at a time: the captain first wins, the copilot is refused and sees SPEAKING: "
+               "CAPTAIN (greyed), a VIEWER never; released = free; then the copilot speaks and the captain sees it",
+               got and local_ref and refused and "captain speaks" in ref_ack.get("text", "") and cop_sees["enabled"] is False and
+               "CAPTAIN" in cop_sees["text"] and vic_ref and "VIEWER" in (vic.last("ptt_ack") or {}).get("text", "") and
+               floor1.get("crew") == "captain" and free and cop_got and "COPILOT" in cap_sees["text"] and
+               not cap_sees["enabled"],
+               "captain granted %s; copilot refused %r, view %s; viewer %r; floor %s; free %s; copilot granted %s, "
+               "captain view %s" % (bool(got), ref_ack.get("text"), cop_sees,
+                                    (vic.last("ptt_ack") or {}).get("text"), floor1, bool(free), bool(cop_got),
+                                    cap_sees))
+
+        # LH2 half duplex: the mic is muted while talking; listen only to a listening station
+        cap.hail.set_listen(True)
+        vic.hail.set_listen(False)
+        wait(1.5, pumps)
+        for s in pumps:
+            s.pump()
+        n0, v0 = cap.hail.rx_frames, vic.hail.rx_frames
+        wait(1.0, pumps)
+        n1 = cap.hail.rx_frames
+        cop.hail.press()
+        until(lambda: cop.hail.mine, 3, pump=pumps)
+        wait(0.6, pumps)                                    # (the hang time + frames in flight)
+        n2, w2 = cap.hail.rx_frames, dict(g.hail.worker)
+        wait(1.5, pumps)
+        for s in pumps:
+            s.pump()
+        n3, w3 = cap.hail.rx_frames, dict(g.hail.worker)
+        cop.hail.release()
+        until(lambda: g.hail.floor is None, 3, pump=pumps)
+        wait(1.5, pumps)
+        n4 = cap.hail.rx_frames
+        report("LH2 half duplex: the boat microphone reaches a LISTENING station (~25 frames/s), NOTHING while the "
+               "copilot talks (the worker mutes the mic, the horn's echo never goes back), back after the release; a "
+               "station with LISTEN off gets nothing",
+               n1 - n0 >= 15 and n3 - n2 <= 1 and w3.get("mic_frames", 0) - w2.get("mic_frames", 0) <= 1 and
+               w3.get("played", 0) > w2.get("played", 0) and n4 - n3 >= 15 and vic.hail.rx_frames == v0,
+               "listening 1 s: %d frames; while talking 1.5 s: %d (worker mic frames +%d, played +%d); after: %d; "
+               "LISTEN off station: +%d" % (n1 - n0, n3 - n2, w3.get("mic_frames", 0) - w2.get("mic_frames", 0),
+                                             w3.get("played", 0) - w2.get("played", 0), n4 - n3,
+                                             vic.hail.rx_frames - v0))
+
+        # LH3 recording: the AUDIO track in the ring, a SAVE and a KEEP 5' hold it
+        ring = os.path.join(root, "video", "ring", "AUDIO")
+        loud = vc.tone(600, 1500, vol=0.7)
+        cap.hail.synth = lambda texts: loud
+        cap.hail.play_message(0)
+        until(lambda: g.hail.floor and g.hail.floor["what"] == "message", 3, pump=pumps)
+        until(lambda: g.hail.floor is None, 6, pump=pumps)
+        wait(4.5, pumps)                                     # the segment with the voice is finished
+        ok, text, eid = gwr.call(g.rec.trigger, "button", "SAVE test (alice)", "alice")
+        kok, ktext, keid, _have = gwr.call(g.rec.keep, 5, "alice")
+        ev = until(lambda: tg.event_json(g.rec, eid) if eid and (tg.event_json(g.rec, eid) or {}).get(
+            "state") == "complete" else None, 20)
+        kev = until(lambda: tg.event_json(g.rec, keid) if keid and (tg.event_json(g.rec, keid) or {}).get(
+            "state") == "complete" else None, 20)
+        files = sorted(os.listdir(ring)) if os.path.isdir(ring) else []
+        aud = (ev or {}).get("cameras", {}).get("AUDIO", [])
+        kaud = (kev or {}).get("cameras", {}).get("AUDIO", [])
+        levels = []
+        for fn in aud:
+            p = os.path.join(g.rec.events_dir(), eid, "AUDIO", fn)
+            if os.path.exists(p):
+                levels += wav_levels(p)
+        loud_n = sum(1 for x in levels if x > -12.0)        # the message (shore -> boat)
+        mic_n = sum(1 for x in levels if -60.0 < x < -25.0)  # the microphone's sea noise (boat -> shore)
+        report("LH3 recording: both directions in one track (1-minute WAV in video/ring/AUDIO): a SAVE event and a "
+               "KEEP 5' hold the AUDIO files next to the cameras, the shore's message (loud) and the boat microphone "
+               "(sea noise) are in them",
+               ok and kok and files and aud and kaud and loud_n >= 20 and mic_n >= 20 and
+               (cap.gw_status.get("hail") or {}).get("recording"),
+               "ring %s; SAVE %s AUDIO %s (%d loud frames, %d mic frames); KEEP %s AUDIO %s" % (
+                   files[-3:], eid, aud, loud_n, mic_n, keid, kaud))
+
+        # LH4 link priority
+        cop_st = gwr.call(lambda: g.stations.stations[cop.welcome["id"]])
+        import types
+        rtt_rule = g.hail.voice_ok(types.SimpleNamespace(rtt_ms=900.0, backlog=lambda: 0, tmode="full", tmode_why="",
+                                                         crew="copilot", single_op=False, id=99))
+        cop_st.backlog = lambda: 10 ** 6                    # its TCP link is full (the driving data waits)
+        cop.hail.info = {}
+        until(lambda: cop.hail.info.get("voice_ok") is False, 3, pump=pumps)
+        weak_view = cop.hail.view()
+        cop.hail.press()
+        weak_ref = until(lambda: "link busy" in (cop.last("ptt_ack") or {}).get("text", ""), 3, pump=pumps)
+        cop.hail.set_listen(True)
+        wait(1.2, pumps)
+        c0 = cop.hail.rx_frames
+        wait(1.0, pumps)
+        weak_rx = cop.hail.rx_frames - c0
+        del cop_st.backlog
+        saver = {"on": True}
+        real_saver = g.data_saver
+        g.data_saver = lambda: saver["on"]
+        wait(1.2, pumps)
+        a0, c0 = cap.hail.rx_frames, cop.hail.rx_frames
+        wait(1.0, pumps)
+        saver_cap, saver_cop = cap.hail.rx_frames - a0, cop.hail.rx_frames - c0
+        g.data_saver = real_saver
+        import types
+        from cameras import CameraManager
+        gwx = types.SimpleNamespace(cfg={}, telem2={}, net=types.SimpleNamespace(on_emergency=False),
+                                    data_saver=lambda: False, audit=lambda *a, **k: None,
+                                    stations=types.SimpleNamespace(stations={}),
+                                    hail=types.SimpleNamespace(kbps=lambda: 0.0))
+        cm = CameraManager({"copilot_budget_kbps": 6000}, gwx)
+        for sid, crew in ((2, "captain"), (3, "copilot")):
+            s_ = types.SimpleNamespace(id=sid, user="u", crew=crew, single_op=False, session="s", video_key="k",
+                                       sent=[])
+            s_.send = s_.sent.append
+            gwx.stations.stations[sid] = s_
+        cm.request(gwx.stations.stations[3], {"preset": "All off"})
+        cm.view_request(gwx.stations.stations[3], {"cam": "REAR-LEFT"})
+        cm.station_kbps, cm.total_kbps = {2: 3000, 3: 2970}, 5970
+        no_voice = cm.update_priority(1000.0)
+        gwx.hail.kbps = lambda: 45.0
+        with_voice = cm.update_priority(1001.0) and cm.views_reduced and "cam_rearleft_lo" not in cm.allowed_paths(3)
+        report("LH4 link priority: a weak link (round trip 900 ms; a full TCP link) = VOICE OFF for that station with a note (TALK "
+               "refused, no listen frames); the data saver keeps the voice for the captain only; the voice counts with "
+               "the captain's video: 5970 kbit/s video fits the 6000 budget, + 45 kbit/s voice -> the copilot's camera "
+               "view drops first",
+               rtt_rule[0] is False and "weak link" in rtt_rule[1] and
+               weak_view and "VOICE OFF" in weak_view["text"] and weak_ref and weak_rx == 0 and saver_cap >= 15 and
+               saver_cop == 0 and not no_voice and with_voice,
+               "weak: view %r, refused %s, listen frames %d; data saver: captain %d / copilot %d frames; camera view "
+               "reduced without voice %s, with voice %s" % (weak_view and weak_view["text"], bool(weak_ref), weak_rx,
+                                                            saver_cap, saver_cop, no_voice, with_voice))
+
+        # LH5 no effect on driving
+        sent = []
+        real_send = g.aurix.send
+
+        def spy(ftype, payload=b""):
+            sent.append((ftype, threading.current_thread().name))
+            return real_send(ftype, payload)
+        g.aurix.send = spy
+        t0 = cap.link.last_full or {}
+        time.sleep(3.0)
+        idle_types = {t for t, _ in sent}
+        n_idle = len(sent)
+        del sent[:]
+        lags = []
+        cap.hail.press()
+        until(lambda: cap.hail.mine, 3, pump=pumps)
+        for _ in range(15):
+            a = time.perf_counter()
+            gwr.call(lambda: None)
+            lags.append((time.perf_counter() - a) * 1000)
+            time.sleep(0.2)
+            cap.pump()
+        cap.hail.release()
+        talk_types = {t for t, _ in sent}
+        n_talk = len(sent)
+        g.aurix.send = real_send
+        for s in pumps:
+            s.pump()
+        t1 = cap.link.last_full or {}
+        bad_src = []
+        for fn in ("loudhailer.py", "loudhailer_worker.py", os.path.join("..", "groundstation", "voicecodec.py"),
+                   os.path.join("..", "groundstation", "audiodev.py"), os.path.join("..", "groundstation", "hailer.py")):
+            src = open(os.path.join(HERE, fn), encoding="utf-8").read()
+            tree = ast.parse(src)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in ("aurix", "T_GW_NAVREQ", "T_GW_RJOY") or \
+                        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and \
+                        node.func.attr == "send" and os.path.basename(fn) == "hailer.py":
+                    bad_src.append("%s:%d %s" % (fn, node.lineno, getattr(node, "attr", "send(")))
+        report("LH5 no effect on driving: the gateway sends the AURIX the same frame types at the same rate with and "
+               "without voice, the mode and the alarm bits stay, no loudhailer / voice module touches the AURIX (no "
+               "aurix / navreq / rjoy, the station never send()s a command), the event loop answers fast while voice "
+               "flows",
+               idle_types == talk_types and abs(n_talk - n_idle) <= max(4, n_idle // 3) and
+               t0.get("mode") == t1.get("mode") and t0.get("alarm_bits") == t1.get("alarm_bits") and not bad_src and
+               max(lags) < 150,
+               "idle %d frames %s, talking %d frames %s; mode %s -> %s, alarms %s -> %s; source hits %s; loop answer "
+               "max %.0f ms" % (n_idle, sorted(idle_types), n_talk, sorted(talk_types), t0.get("mode"), t1.get("mode"),
+                                t0.get("alarm_bits"), t1.get("alarm_bits"), bad_src, max(lags)))
+
+        # LH6 the audio process killed: a notice only, restarted
+        until(lambda: g.hail.floor is None, 3, pump=pumps)
+        cap.hail.press()
+        until(lambda: cap.hail.mine, 3, pump=pumps)
+        flags0 = g.status_flags()
+        alarms0 = (cap.link.last_full or {}).get("alarm_bits")
+        g.hail.proc.kill()
+        t_kill = time.time()
+        off = until(lambda: any(t >= t_kill and stt == "OFFLINE" for t, stt, _w in list(g.hail.history)), 5, pump=pumps)
+        floor_gone = until(lambda: g.hail.floor is None, 3, pump=pumps)
+        flags1 = g.status_flags()
+        cap.gw_status = dict(cap.gw_status, hail=dict(cap.gw_status["hail"], state="OFFLINE", out_ok=False))
+        view_off = cap.hail.view()                          # what the station shows with that status
+        back = until(lambda: (cap.gw_status.get("hail") or {}).get("state") == "ACTIVE", 10, pump=pumps)
+        cap.hail.release()
+        alarms1 = (cap.link.last_full or {}).get("alarm_bits")
+        audit = open(g.audit.path, encoding="utf-8").read() if getattr(g.audit, "path", None) else ""
+        report("LH6 the audio process killed = OFFLINE NOTICE only: the floor released, GW_STATUS flags and the boat's "
+               "alarm bits unchanged (never an alarm / mode change), LOUDHAILER OFF on the station, restarted -> ACTIVE",
+               off and floor_gone and flags0 == flags1 and alarms0 == alarms1 and view_off and
+               "LOUDHAILER OFF" in view_off["text"] and back and g.hail.starts >= 2,
+               "offline %s, floor released %s, flags %s -> %s, alarms %s -> %s, view %r, back %s (starts %d)%s" % (
+                   bool(off), bool(floor_gone), flags0, flags1, alarms0, alarms1, view_off and view_off["text"],
+                   bool(back), g.hail.starts, ", audit hail_state" if "hail_state" in audit else ""))
+
+        # LH7 volume limit
+        cop.link.send_msg({"t": "hail_volume", "pct": 150})
+        v_cop = until(lambda: cop.last("hail_volume_ack"), 3, pump=pumps)
+        cap.link.send_msg({"t": "hail_volume", "pct": 95})
+        v_cap = until(lambda: cap.last("hail_volume_ack"), 3, pump=pumps)
+        vic.link.send_msg({"t": "hail_volume", "pct": 10})
+        v_vic = until(lambda: vic.last("hail_volume_ack"), 3, pump=pumps)
+        wv = until(lambda: g.hail.worker.get("volume") == 80 and g.hail.worker, 4)
+        report("LH7 volume limit: a station on the boat asking 150 % gets the gateway's limit 80 %, the worker plays at "
+               "80 %; a shore station without HELM and a VIEWER are refused",
+               v_cop and v_cop["ok"] and v_cop["pct"] == 80 and v_cap and not v_cap["ok"] and v_vic and
+               not v_vic["ok"] and wv and g.hail.volume == 80,
+               "on board %s; captain (no HELM) %s; viewer %s; worker volume %s" % (
+                   v_cop, v_cap and v_cap["text"], v_vic and v_vic["text"], (wv or {}).get("volume")))
+
+        # LH8 the floor ends by itself
+        sent_frames = []
+        cap.hail._start_talk = lambda pcm: sent_frames.append("blocked")     # granted, but no voice frame is sent
+        cap.hail.press()
+        until(lambda: g.hail.floor is not None, 3, pump=pumps)
+        t_gap = until(lambda: g.hail.floor is None, 4, pump=[])
+        del cap.hail._start_talk
+        wait(0.5, pumps)                                    # (the release reached the station)
+        cap.hail.pressing = cap.hail.mine = False
+        cap.hail.press()
+        until(lambda: g.hail.floor is not None, 3, pump=pumps)
+        t_a = time.time()
+        t_max = until(lambda: g.hail.floor is None, 10, pump=pumps)
+        held_s = time.time() - t_a
+        cap.hail.release()
+        cop.hail.press()
+        until(lambda: g.hail.floor is not None and g.hail.floor["id"] == cop.welcome["id"], 3, pump=pumps)
+        st.pop("cop").close()
+        pumps.remove(cop)
+        t_left = until(lambda: g.hail.floor is None, 4, pump=pumps)
+        report("LH8 the floor ends by itself: no voice frame for frame_gap_s (0.8 s) = released, the talk time limit "
+               "(6 s) even while frames flow, the speaker's station leaving",
+               t_gap and t_max and 5.0 <= held_s <= 8.0 and t_left,
+               "gap release %s; limit release after %.1f s; left %s" % (bool(t_gap), held_s, bool(t_left)))
+
+        # LH9 sound signal
+        cap.hail.signal("long")
+        sig = until(lambda: g.hail.floor and g.hail.floor["what"] == "signal", 3, pump=pumps)
+        vic2_ok = cap.last("hail_signal_ack")
+        ps = st["cop2"] = Station(port, "bob", crew="copilot", local=True)
+        pumps.append(ps)
+        until(lambda: ps.gw_status, 4, pump=pumps)
+        ps.link.send_msg({"t": "ptt", "on": True})
+        ps_ref = until(lambda: ps.last("ptt_ack") and not ps.last("ptt_ack")["ok"], 3, pump=pumps)
+        t_s = time.time()
+        sig_end = until(lambda: g.hail.floor is None, 10, pump=pumps)
+        sig_s = time.time() - t_s
+        report("LH9 sound signal 1 prolonged blast: takes the floor (what = signal), another station is refused "
+               "meanwhile, released when it has played (~5 s)",
+               sig and vic2_ok and vic2_ok["ok"] and ps_ref and sig_end and sig_s < 8.0,
+               "signal floor %s, ack %s, other refused %r, released after %.1f s" % (
+                   bool(sig), vic2_ok, (ps.last("ptt_ack") or {}).get("text"), sig_s))
+
+        # LH10 bad packets
+        c0 = dict(g.hail.n)
+        cap_st = gwr.call(lambda: g.stations.stations[cap.welcome["id"]])
+        cap.hail.press()
+        until(lambda: cap.hail.mine, 3, pump=pumps)
+        sock, addr = cap.hail.sock, (cap.link.host, cap.link.port)
+        sess = vc.session_bytes(cap.welcome["sid"])
+        frame = vc.encode(vc.silence())
+        good_key = bytes.fromhex(cap.welcome["udp_key"])
+        q = cap.hail.seq + 200                              # (newer than the station's own frames)
+        sock.sendto(vc.pack(b"T", sess, q, cap.link.now(), frame, b"x" * 16), addr)               # wrong key
+        sock.sendto(vc.pack(b"T", sess, q + 1, cap.link.now() - 5.0, frame, good_key), addr)      # stale
+        sock.sendto(vc.pack(b"T", sess, q + 2, cap.link.now(), frame[:20], good_key), addr)       # wrong size
+        sock.sendto(vc.pack(b"T", sess, 1, cap.link.now(), frame, good_key), addr)                # old seq: ignored
+        psess = vc.session_bytes(ps.welcome["sid"])
+        sock.sendto(vc.pack(b"T", psess, 5, ps.link.now(), frame, bytes.fromhex(ps.welcome["udp_key"])), addr)
+        time.sleep(0.5)
+        c1 = dict(g.hail.n)
+        cap.hail.seq = (q + 10) & 0xFFFF                    # (the station's own counter past the test packets)
+        cap.hail.release()
+        d = {k: c1.get(k, 0) - c0.get(k, 0) for k in ("bad", "talk_stale", "talk_other")}
+        report("LH10 bad voice packets are dropped: a wrong key, a wrong size (bad), a stale time stamp, frames of a "
+               "station that does not hold the floor",
+               d["bad"] >= 2 and d["talk_stale"] >= 1 and d["talk_other"] >= 1 and cap_st is not None,
+               "counts %s" % d)
+
+        # LH11 ready message (the station's voice; injected samples here)
+        until(lambda: g.hail.floor is None and cap.hail.speaker is None and not cap.hail.mine, 3, pump=pumps)
+        p0 = g.hail.worker.get("played", 0)
+        cap.hail.synth = lambda texts: vc.tone(500, 1200) if [lg for lg, _t in texts] == ["el", "en"] else None
+        started = cap.hail.play_message(1)
+        as_msg = until(lambda: g.hail.floor and g.hail.floor["what"] == "message", 3, pump=pumps)
+        done = until(lambda: g.hail.floor is None and not cap.hail.msg_busy, 6, pump=pumps)
+        played = until(lambda: g.hail.worker.get("played", 0) - p0 >= 20 and g.hail.worker, 3)
+        until(lambda: cap.hail.speaker is None and not cap.hail.mine, 3, pump=pumps)
+        cap.hail.synth = lambda texts: None
+        no_voice = cap.hail.play_message(1)
+        until(lambda: not cap.hail.msg_busy, 3, pump=pumps)
+        report("LH11 ready message (Greek then English): one click asks the floor as a message, the spoken samples "
+               "play on the boat (~30 frames), the floor is given back at the end; no voice on this PC = a note, "
+               "nothing sent",
+               started and as_msg and done and played and no_voice and g.hail.floor is None and
+               "No offline voice" in cap.hail.note,
+               "started %s, floor as message %s, released %s, played +%s, no-voice note %r" % (
+                   started, bool(as_msg), bool(done), (played or {}).get("played", 0) - p0, cap.hail.note) +
+               " history %s starts %d busy %s" % (list(g.hail.history)[-3:], g.hail.starts, cap.hail.msg_busy))
+    finally:
+        for s in st.values():
+            try:
+                s.close()
+            except Exception:
+                pass
+        if gwr:
+            gwr.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+    bad = results.count(False)
+    print("\nLOUDHAILER TESTS: %d passed, %d failed" % (len(results) - bad, bad))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

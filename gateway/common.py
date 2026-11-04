@@ -123,6 +123,11 @@ DEFAULTS = {
     "vision": {                         # camera obstacle detection (eWaSR); all settings: gateway/vision/manager.py
         "enabled": True,                # STAGE 1 + 2 on, STAGE 3 (slows AUTO) OFF until after the sea trials
     },
+    "loudhailer": {                     # horn speaker + boat microphone (step 13r); all settings: gateway/loudhailer.py
+        "enabled": True,                # its own process; a failure = a notice only (never an alarm / mode change)
+        "backend": "auto",              # the USB sound card (Ubuntu: ALSA; "sim" = demo / tests)
+        "volume_max_pct": 80,           # the VOLUME LIMIT: no station can set the horn louder
+    },
     "avoid": {                          # collision avoidance (section D); see gateway/avoid.py
         "warn_nm": 0.5, "warn_min": 10.0, "danger_nm": 0.25, "danger_min": 6.0,
         "slow_factor": 0.5, "min_kn": 4.0, "recheck_s": 20.0, "safe_nm": 0.5, "clear_nm": 1.0,

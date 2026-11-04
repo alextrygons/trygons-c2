@@ -66,6 +66,7 @@ import mapview
 import mapwin
 import track as trackmod
 import screenrec
+import hailer
 import collections
 import json
 from tkinter import messagebox, simpledialog
@@ -255,6 +256,7 @@ class App:
         self.login = login              # (user, password) for "gw:" without asking (tests)
         self.place = place              # "shore" / "onboard" / None: in the window title
         self.link = None
+        self.hail = hailer.Hailer(self)  # the loudhailer + boat microphone (step 13r): display + voice, never driving
         self.t = None                   # latest telemetry
         self.t_rx = 0.0
         self.hist = []                  # (t_s, heading, target, outboard)
@@ -1807,6 +1809,7 @@ class App:
     def disconnect(self, why=None):
         if self.camview:
             self.camview_close(send=False)
+        self.hail.close()
         if self.link:
             self.link.stop()
             self.link = None
@@ -2610,6 +2613,8 @@ class App:
                     self.on_save_ack(d)
                 elif kind == "keep_ack":
                     self.on_keep_ack(d)
+                elif kind in ("hail_floor", "ptt_ack", "hail", "hail_signal_ack", "hail_volume_ack"):
+                    self.hail.on_msg(kind, d)           # the loudhailer (step 13r)
                 elif kind == "vision_ack":
                     self.say(T("cap.vis_msg", text=i18n.from_en(d.get("text", ""))), GREEN if d.get("ok") else RED)
                     self.event(T("cap.ev_vision", text=i18n.from_en(d.get("text", ""))))
@@ -3244,6 +3249,7 @@ class App:
         tab("tab.bench", self._build_bench)
         tab("tab.engine", self._build_engine)
         tab("tab.sound", self._build_sound)
+        tab("tab.loudhailer", lambda fr: hailer.build_page(fr, self))
         lg = tab("tab.events")
         self.events = tk.Listbox(lg, font=F_TXT, bg=C["panel"], fg=C["fg"], selectbackground=C["sel"])
         self.events.pack(fill="both", expand=True)
@@ -3396,6 +3402,10 @@ class App:
             self.render(force=True)
 
     def ov_tick(self):
+        try:
+            self.hail.tick()                        # the loudhailer: hello / floor / its page (step 13r)
+        except Exception as e:                      # never stops the screens
+            self.hail.note = str(e)[:80]
         try:
             self.mapwin.tick()
             self.render()
@@ -3605,7 +3615,11 @@ class App:
             out.append(("text", "nearest", self.nearest_ship_text(), None, False))
             out.append(("gap",))
             col = self.msg_col
-            out.append(("text", "message", self.msg_text or "", theme.CAUTION if col in (RED, ORANGE) else
+            hv = self.hail.view()
+            msg = self.msg_text or ""
+            if hv is not None and hv["other"]:                 # «ΜΙΛΑ: ΣΥΓΚΥΒΕΡΝΗΤΗΣ» first (13r): who has the loudhailer
+                msg, col = hv["text"] + ("  ·  " + msg if msg else ""), ORANGE
+            out.append(("text", "message", msg, theme.CAUTION if col in (RED, ORANGE) else
                         (C["ok_txt"] if col == GREEN else None), True))
             out.append(("gap",))
             out.append(("btn", "bar", T("ov.zoom_out"), lambda: self.mapwin.zoom(1 / 0.6), "normal", True, False))
@@ -3617,6 +3631,12 @@ class App:
             out.append(("btn", "tracks", T("track.b_tracks"), self.open_tracks, "normal", True, False))
             out.append(("btn", "track_new", T("track.b_new"), self.track_new, "normal", True, False))
             out.append(("gap",))
+            # the loudhailer (step 13r): «ΟΜΙΛΙΑ» press and hold (greyed + «ΜΙΛΑ: ...» while another station speaks),
+            # LISTEN (mute, volume, level meter) on the Tools page "Loudhailer" + screen 1's bar - only with a gateway
+            # that has a loudhailer
+            if hv is not None:
+                out.append(("btn", "ptt", hv["bar_label"], self.hail.press, "normal", hv["enabled"] or hv["talking"],
+                            hv["talking"], self.hail.release))
             # the recording group (step 13n4): SCR white while this PC records its screens, KEEP 5' / 1h
             rec = self.scr.recording()
             out.append(("btn", "scr", T("scr.btn_on") if rec else T("scr.btn"), self.scr_toggle, "normal", True, rec))
@@ -3876,12 +3896,13 @@ class App:
                 ov.ops.append({"k": "text", "r": (x, y0, x + min(w, f.measure(txt) + 4), y1), "panel": None,
                                "s": it[2], "tag": it[1], "colour": it[3], "bar": n, "cell": tr})
             else:
-                _k, tag, lab, act, kind, en, on = it
+                _k, tag, lab, act, kind, en, on = it[:7]
                 rr = (x, y0 + 1, x + w, y1 - 1)
-                self.ov_button(rr, lab, act, kind, "button", tag=tag, enabled=en, on=on)
+                self.ov_button(rr, lab, act, kind, "button", tag=tag, enabled=en, on=on,
+                               release=it[7] if len(it) > 7 else None)     # (13r: «ΟΜΙΛΙΑ» press and hold)
             x += w + gap
 
-    def ov_button(self, r, label, action, kind, level, tag=None, enabled=True, on=False):
+    def ov_button(self, r, label, action, kind, level, tag=None, enabled=True, on=False, release=None):
         """A drawn button outside the panels: a SQUARE frame (13n1); STANDBY red (SAVE too, owner 2026-11-04)."""
         ov, cv = self.ov, self.cv
         fs = ov.size(level)
@@ -3899,6 +3920,8 @@ class App:
                        "fill": fill})
         if enabled:
             ov.hits.append((r, action))
+            if release is not None:
+                ov.holds.append((r, release))       # press and hold: release() when the mouse button goes up
 
     def popup_tools(self):
         m = self.tools_menu(self.root)

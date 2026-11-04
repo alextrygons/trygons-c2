@@ -784,3 +784,31 @@ message `{"t": "academy_levels", "doc": ...}` -> `academy_levels_ack`). trainlev
    LOGIN only: a push never changes a logged-in station (never revoked mid-trip).
 
 Tests: test_gateway.py section AL (AL1-AL4), academy/test_academy.py AC17.
+
+## 23. Loudhailer + boat microphone (step 13r)
+
+The shore crew talks through a horn speaker on the boat and listens to a boat microphone (no VHF radio).
+Wiring / parts: WIRING.md 3G, PARTS.md. Code: `loudhailer.py` (in the gateway: push-to-talk floor, voice
+packets, link priority, health) + `loudhailer_worker.py` (its OWN process: the USB sound card, half duplex,
+the audio ring). Nothing in either sends to the AURIX; a failure is the notice "LOUDHAILER OFF" (never an
+alarm, never a GW_STATUS flag) and the process is restarted.
+
+gateway.json:
+
+```
+"loudhailer": {"enabled": true, "backend": "auto",            // Ubuntu: ALSA (arecord / aplay), Windows: waveIn/Out
+               "out_dev": "plughw:CARD=Device", "in_dev": "plughw:CARD=Device",   // the USB card (arecord -L)
+               "volume_max_pct": 80}                            // the VOLUME LIMIT: no station sets it louder
+```
+
+* Push-to-talk = a screen button on the stations (never the joystick); the first station wins, the others
+  see who speaks; a press ends after `talk_max_s` (120 s) or `frame_gap_s` (1 s) without voice.
+* Voice: 8 kHz IMA ADPCM, ~33 kbit/s (~45 kbit/s with headers), UDP on the station port, signed with the
+  station's session key (`groundstation/voicecodec.py`). Opus (16-24 kbit/s) is a later option once a codec
+  library is installed on both sides.
+* Link priority: voice to / from a station stops first when its round trip > `drop_rtt_ms` (400), its TCP link
+  is busy (> 64 KB backlog) or its telemetry is reduced for the link; with the data saver only the captain
+  keeps it. It counts with the captain's video in the camera budget (the copilot's camera view drops first).
+* Recording: `<ssd>/video/ring/AUDIO/YYYYMMDD-HHMMSS.wav` (1-minute files, UTC), both directions in one track
+  (the shore's voice while talking, else the microphone); every SAVE / KEEP event holds its `AUDIO` folder.
+* Test on the PC: `python test_loudhailer.py` (LH1-LH11, the simulated card); demo: `"backend": "sim"`.

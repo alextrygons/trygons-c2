@@ -36,6 +36,7 @@ from trainlevels import AcademyLevels
 from avoid import Avoider
 ALM_FENCE = 16                      # navreq alarm bit: outside the geofence (app/smallboat.h SB_NAV_ALM_FENCE)
 from vision.manager import VisionManager
+from loudhailer import Loudhailer
 import chart
 from cameras import CameraManager, path_name
 from channels import ChannelManager, PolicyDriver, RutosDriver, SimDriver, DEFAULT_CHANNELS
@@ -143,6 +144,12 @@ class Gateway:
         for k, fn in (("vision_stage", self._vision_stage), ("vision_clear", self._vision_clear),
                       ("vision_ack", self._vision_ack), ("vision_inject", self._vision_inject)):
             self.stations.ext[k] = fn
+        # loudhailer + microphone (step 13r, owner 2026-11-02): its own process, a notice only, never the AURIX
+        self.hail = Loudhailer(cfg.get("loudhailer"), self)
+        for k, fn in (("ptt", self.hail.ptt), ("hail_signal", self.hail.signal), ("hail_volume", self.hail.set_volume)):
+            self.stations.ext[k] = fn
+        if self.hail.track is not None and self.rec.enabled:
+            self.rec.cams["AUDIO"] = self.hail.track    # both directions into the ring + every SAVE / KEEP event
 
     def _on_telem(self, f):
         try:
@@ -626,6 +633,14 @@ class Gateway:
                 log.warning("recorder: %s", e)
             await asyncio.sleep(1.0)
 
+    async def hail_loop(self):
+        while True:
+            try:
+                self.hail.tick()
+            except Exception:                               # the loudhailer never stops the gateway
+                log.exception("loudhailer")
+            await asyncio.sleep(0.25)
+
     # --- the 1 Hz status to the AURIX (also its "gateway alive" heartbeat) ---------
     # --- internet channels (section C) ---------------------------------------------
     def may_change(self, st):
@@ -739,7 +754,8 @@ class Gateway:
                 "geofence": self.geofence.status(),
                 "academy": self.academy.status(),
                 "relays": self.stations.relay_status(),
-                "vision": self.vision.status(self.net.data_saver())}
+                "vision": self.vision.status(self.net.data_saver()),
+                "hail": self.hail.status()}
 
     async def run(self):
         self._stop = asyncio.Event()
@@ -749,12 +765,18 @@ class Gateway:
             self.cams.start("http://127.0.0.1:%d/mtxauth" % self.cfg.get("web_port", 8080))
         self.audit("gateway_start", boat=self.cfg.get("boat"))
         tasks = [asyncio.create_task(self.aurix.run()), asyncio.create_task(self.status_loop())]
+        rec_loop = False
         if self.cfg["cameras"].get("enabled", True):
             tasks.append(asyncio.create_task(self.camera_loop()))
             if self.rec.enabled:
                 self.rec.start(self.cfg["cameras"]["rtsp_port"],
                                {n: path_name(n, "HIGH") for n in self.cams.cams})
                 tasks.append(asyncio.create_task(self.recorder_loop()))
+                rec_loop = True
+        self.hail.start(asyncio.get_running_loop())
+        tasks.append(asyncio.create_task(self.hail_loop()))
+        if not rec_loop and "AUDIO" in self.rec.cams:
+            tasks.append(asyncio.create_task(self.recorder_loop()))     # the audio ring without cameras
         tasks.append(asyncio.create_task(self.sync.run()))
         tasks.append(asyncio.create_task(self.ais_loop()))
         tasks.append(asyncio.create_task(self.nav_loop()))
@@ -771,6 +793,7 @@ class Gateway:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             self.vision.stop()
+            self.hail.stop()
             await self.stations.stop()
             await self.web.stop()
             self.sync._close()
@@ -892,6 +915,7 @@ def main():
         extra = {"aurix": "tcp:127.0.0.1:5762", "set_clock": False,
                  "stations": {"listen": "127.0.0.1", "local_nets": ["127.0.0.1/32"]},
                  "channels": {"driver": "sim"}, "cameras": {"enabled": False}, "ais": {"enabled": False},
+                 "loudhailer": {"backend": "sim"},
                  "audit_fallback": os.path.abspath("gw_data/audit_fallback"),
                  "storage": {"root": os.path.abspath("gw_data"), "require_mount": False}}
         os.makedirs("gw_data", exist_ok=True)

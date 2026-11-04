@@ -471,6 +471,9 @@ class DriverScreen:
             a.video_save("driver")
         elif act == "scr":
             a.scr_toggle()                      # REC SCREEN of this PC (step 13n4): display only
+        elif act == "ptt":
+            if a.hail.press():                  # the loudhailer «ΟΜΙΛΙΑ» (step 13r): held until the mouse goes up
+                self.ptt_hold = True
         elif act in ("keep5", "keep60"):
             a.keep_save(int(act[4:]))           # KEEP the last 5 / 60 min: screens here + the boat's cameras
         elif act == "lang":
@@ -587,6 +590,9 @@ class DriverScreen:
         self.draw()
 
     def on_release(self, ev, child=None):
+        if getattr(self, "ptt_hold", False):
+            self.ptt_hold = False
+            self.app.hail.release()             # «ΟΜΙΛΙΑ» let go: the floor back (step 13r)
         n, self.relay_hold = getattr(self, "relay_hold", None), None
         if n is not None:
             self.app.relay_release(n)
@@ -761,6 +767,8 @@ class DriverScreen:
         s["rec"] = None if not (r and r.get("enabled")) else any(c["state"] == "REC" for c in r.get("cameras", []))
         scr = getattr(a, "scr", None)                         # REC SCREEN of this PC (step 13n4)
         s["scr"] = bool(scr is not None and scr.recording())
+        hl = getattr(a, "hail", None)                         # the loudhailer (step 13r): None = none on this link
+        s["hail"] = hl.view() if hl is not None else None
         s["clock"] = time.strftime("%H:%M:%S")
         if d is not None and d["mode"] != proto.MODE_STANDBY and self.mission_t0 is None:
             self.mission_t0 = now

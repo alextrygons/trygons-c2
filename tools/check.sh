@@ -229,6 +229,9 @@ grep -E "^\[FAIL\]|SCREEN RECORDING TESTS" "$TEMP/screenrec_tests.txt"
 echo "== YES / NO answers on the shore joystick (13p): trigger / thumb / stick Y / hat, 0.5 s guard, one press = one thing (station + gateway)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_yesno.py > "$TEMP/yesno_tests.txt" 2>&1 ) || { echo "YES / NO TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|YES / NO TESTS" "$TEMP/yesno_tests.txt"
+echo "== loudhailer on the station (13r): voice codec + signed packets, ΟΜΙΛΙΑ press-and-hold on both screens, not on the joystick, ready messages, Tools page, devices"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_hailer.py > "$TEMP/hailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER STATION TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|LOUDHAILER STATION TESTS" "$TEMP/hailer_tests.txt"
 echo "== ground station sound + voice tests"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sound.py > "$TEMP/sound_tests.txt" 2>&1 ) || { echo "SOUND TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A )\]|SOUND TESTS" "$TEMP/sound_tests.txt"
@@ -247,6 +250,9 @@ grep -E "^\[FAIL\]|ACADEMY TESTS" "$TEMP/academy_tests.txt"
 echo "== academy practical test (step 21): read only + CONFIRM_ONLY (changes nothing on the boat), no bypass of any safety rule"
 PYTHONIOENCODING=utf-8 "$PY" academy/practical/test_practical.py > "$TEMP/practical_tests.txt" 2>&1 || { echo "PRACTICAL TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|PRACTICAL TESTS" "$TEMP/practical_tests.txt"
+echo "== loudhailer on the gateway (13r): first speaker wins, half duplex, recording in SAVE / KEEP, link priority, no effect on driving, failure = notice"
+( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_loudhailer.py > "$TEMP/loudhailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|LOUDHAILER TESTS" "$TEMP/loudhailer_tests.txt"
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS" "$TEMP/gw_tests.txt"

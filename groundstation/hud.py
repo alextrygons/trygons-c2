@@ -958,8 +958,8 @@ class Hud:
 
     def bar_groups(self, s):
         """The ONE bottom bar of screen 1 (13n1, owner 2026-10-31 E1), in groups with small gaps:
-        [EL/EN · NIGHT · DECLUTTER · FILL/FIT · Aa] [AR · OBSTACLES AI] [LAYOUT] [REC · ●SCR · SAVE · ●5' · ●1h]
-        [clock + mission].
+        [EL/EN · NIGHT · DECLUTTER · FILL/FIT · Aa] [AR · OBSTACLES AI] [LAYOUT] [ΟΜΙΛΙΑ · who speaks (13r)]
+        [REC · ●SCR · SAVE · ●5' · ●1h] [clock + mission].
         -> [[(kind, label, action, tag, on, colour)]]; kind "btn" / "text" / "save"."""
         d = s.t
         g1 = [("btn", i18n.NAMES[i18n.other()], "lang", "ctl_lang", False, None),
@@ -976,6 +976,12 @@ class Hud:
             g3.append(("btn", T("hud.clear_slowdown"), "vision_clear", "ctl_vision_clear", True, self.pal["caution"]))
         if getattr(s, "slam_restore", False):           # the framed RESTORE POWER (step 13q4)
             g3.append(("btn", T("slam.btn"), "slam_restore", "ctl_slam_restore", True, self.pal["caution"]))
+        gh = []
+        hv = getattr(s, "hail", None)                    # the loudhailer (step 13r): «ΟΜΙΛΙΑ» press and hold, who speaks
+        if hv:
+            gh.append(("btn", hv["label"], "ptt", "ctl_ptt", bool(hv["talking"]),
+                       None if hv["enabled"] or hv["talking"] else self.pal["grey"]))
+            gh.append(("text", hv["text"], None, "hail_state", False, self.pal["caution"] if hv["caution"] else None))
         g4 = []
         rec = s.rec
         if rec is not None:
@@ -997,7 +1003,7 @@ class Hud:
             g5.append(("text", T("hud.gen", p="%d" % d.get("gen_pct", 0)), None, "gen", False, None))
         g5.append(("text", T("hud.clock", clock=s.clock or "--:--", mission=s.mission or "--:--"), None, "clock",
                    False, None))
-        return [g for g in (g1, g2, g3, g4, g5) if g]
+        return [g for g in (g1, g2, g3, gh, g4, g5) if g]
 
     def bottom(self, name, s):
         """The ONE thin full-width bottom bar (13n1). SAVE is never hidden (the bar is in ALWAYS)."""

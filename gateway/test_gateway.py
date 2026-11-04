@@ -128,6 +128,7 @@ def gw_cfg(sim, root, **extra):
     base = {"aurix": sim.gw_addr, "set_clock": False, "status_s": 1.0 / sim.speed,   # 1 Hz boat time
             "channels": {"driver": "sim", "starlink_status": False},
             "cameras": {"enabled": False}, "ais": {"enabled": False}, "vision": {"enabled": False},
+            "loudhailer": {"enabled": False},           # 13r: off here (never this PC's sound card); tests in test_loudhailer.py
             "storage": {"root": root, "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                         "full_free_gb": 0.0}}
     from common import deep_merge
@@ -5004,6 +5005,14 @@ def main():
     want = [a.upper() for a in sys.argv[1:]] or list(SECTIONS)
     if len(want) == 1:
         SECTIONS[want[0]]()
+        # W50 (found in step 13r with faulthandler): after every test of a section has passed, the interpreter's exit
+        # could hang for ever in BaseEventLoop.__del__ -> ProactorEventLoop.close -> _poll (an unclosed Windows
+        # proactor loop of a GwRunner / client waiting for an overlapped operation that never completes). The results
+        # are printed by now: leave at once with their exit code (nothing is left to clean up in this process)
+        bad = [n for n, ok in results if not ok]
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1 if bad else 0)
     else:
         # every section in its own process: timing tests must not feel the
         # threads / proxies of the sections before them

@@ -199,6 +199,8 @@ def gateway_config(mtx, charts):
         # obstacle detection: the real model on the sea video when both exist, else synthetic detections only;
         # DEMO_KAYAK.bat injects a kayak without AIS ahead
         "vision": vision_config(),
+        # the loudhailer (13r): the simulated horn + microphone on this PC (sea noise, a 'contact' answers now and then)
+        "loudhailer": {"backend": "sim", "sim_reply_s": 30.0},
         "audit_fallback": os.path.join(RUN, "audit_fallback"),
         "storage": {"root": os.path.join(RUN, "ssd"), "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                     "full_free_gb": 0.0},

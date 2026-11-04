@@ -315,6 +315,9 @@ class StationServer:
             cams = getattr(self.gw, "cams", None)
             if cams is not None and hasattr(cams, "station_cams"):
                 cams.station_cams.pop(st.id, None)      # its streams + camera view end with it (13n2)
+            hail = getattr(self.gw, "hail", None)
+            if hail is not None and hasattr(hail, "station_gone"):
+                hail.station_gone(st)                   # its loudhailer floor ends with it (13r)
             log.info("station %d (%s) %s", st.id, st.user, why)
             try:
                 st.writer.close()
@@ -851,4 +854,9 @@ class _Udp(asyncio.DatagramProtocol):
         self.server = server
 
     def datagram_received(self, data, addr):
+        if data[:2] == b"TV":                               # loudhailer voice (step 13r, voicecodec)
+            hail = getattr(self.server.gw, "hail", None)
+            if hail is not None:
+                hail.udp(data, addr)
+            return
         self.server.udp_packet(data)

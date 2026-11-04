@@ -37,7 +37,17 @@ why each part is needed: MANUAL.txt.
 - [ ] 12 V -> USB-C PD car charger, 65 W (USB-C PD 20 V, car/marine grade) + a 5 A-rated USB-C cable, fuse at the bank per the charger's manual - MODEL TBD. The laptop's built-in battery is the UPS; charge limit 80 % (TLP on Ubuntu / Lenovo Vantage on Windows).
 - [ ] 3.3 V TTL USB-UART adapter for the AURIX link: FTDI TTL-232R-3V3 cable (or an FT232R / FT231X / CP2102(N) board set to 3.3 V, 921600 baud) - NEVER RS232 (+-12 V destroys the AURIX pins), never 5 V TTL. Mounted inside the AURIX box, 2 x 100 Ohm resistors, shielded USB cable (3-5 m) with a ferrite to the PC.
 - [ ] USB 3 Gigabit Ethernet adapters (Realtek RTL8153 class) for the boat LAN and / or the camera network, as many as the laptop lacks RJ45 ports (one per network) - RJ45 / port count TBD (WAITING FOR OWNER W17).
-- [ ] Small powered USB 3 hub - only if the laptop's USB ports run out (adapter, AIS, Ethernet adapters).
+- [ ] Small powered USB 3 hub - only if the laptop's USB ports run out (adapter, AIS, Ethernet adapters, the loudhailer's sound card).
+
+## Loudhailer + boat microphone (step 13r, owner 2026-11-02; WIRING.md 3G) - nothing on the AURIX, never in a control path
+
+- [ ] Marine horn speaker / loudhailer, waterproof IP67, 25-40 W, 8 Ohm (or 4 Ohm to match the amplifier), stainless bracket - MODEL TBD. A "loudhailer with listen-back" (the horn also works as the microphone) is an alternative to the separate microphone below - then a talk / listen relay switches it (TBD).
+- [ ] 12 V class-D amplifier, 25-50 W into the horn's impedance, with a volume trimmer and a mute / enable input, fuse at the bank per its manual (typ. 5 A) - MODEL TBD. Set its trimmer so the gateway's volume limit (gateway.json loudhailer.volume_max_pct, default 80 %) is still safe for people close by.
+- [ ] Outdoor waterproof microphone with a wind shield (foam + fur "dead cat"), IP65+, mounted AWAY from the engine and the horn (no howl, less engine noise), shielded cable - MODEL TBD.
+- [ ] USB sound card for the GATEWAY PC (line / headphone out to the amplifier, mic in with bias if the microphone needs it), a class-compliant one (works on Ubuntu with ALSA and on Windows without drivers, e.g. a C-Media CM108 / CM119 based card) - MODEL TBD; its name goes into gateway.json loudhailer.out_dev / in_dev (Ubuntu "plughw:CARD=Device").
+- [ ] A ground-loop isolator on the line out to the amplifier (the 12 V bank and the laptop's USB ground) - if a hum is heard.
+- [ ] Ground stations: a headset (or speakers) and a microphone on every PC that talks / listens (any Windows / Ubuntu headset).
+- [ ] NO VHF radio (owner 2026-11-02).
 - [ ] Optional: external USB 3 SSD 1 TB (e.g. Samsung T7) if the 500 GB SSD is too small for the ring buffer + SAVEs.
 - [ ] A dry, ventilated mount for the laptop (not waterproof), held down against vibration; strain relief for every cable.
 - [ ] Later, optional (not implemented): a Luxonis OAK-D camera or a USB NPU to run the obstacle detection faster (gateway/vision/README.md).

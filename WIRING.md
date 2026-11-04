@@ -391,6 +391,33 @@ pulses per second at 1 kn (typical ~4.9 Hz per kn, `PADDLE_HZ_PER_KN` in hal_pin
   0 kn; pulses that stop at once from speed (cut cable, stuck wheel) or an implausible rate (> 40 kn)
   = NO DATA (the DR then uses its throttle table). `HAL_PADDLE_FITTED 1` in hal_pins.h once it is wired.
 
+### 3G. Loudhailer + boat microphone (step 13r, owner 2026-11-02) - hardware TBD, NOTHING on the AURIX
+
+The loudhailer is wired to the GATEWAY PC only (gateway/loudhailer.py + its own audio process). It is never
+in a control path: no AURIX pin, no relay of the boat, nothing it does can change the driving (MANUAL.txt
+"LOUDHAILER AND BOAT MICROPHONE").
+
+```
+ gateway PC --USB--> USB sound card --line out--> (ground-loop isolator) --> 12 V class-D amplifier --> horn speaker
+                                    <--mic in---- outdoor microphone (wind shield, away from engine + horn)
+ 12 V bank --fuse (amplifier's manual, typ. 5 A)--> amplifier +12 V / GND
+```
+
+| Part                 | Connection                                  | Note |
+|----------------------|---------------------------------------------|------|
+| USB sound card       | a USB port of the gateway PC (or the hub)   | class compliant; its ALSA name into gateway.json loudhailer.out_dev / in_dev |
+| Amplifier input      | the card's line / headphone out, shielded   | a ground-loop isolator if it hums |
+| Amplifier power      | 12 V bank, own fuse, own switch             | its mute / enable input: leave enabled (the software sends silence) |
+| Horn speaker         | amplifier output, marine cable              | 25-40 W IP67; point it forward / away from the crew area |
+| Microphone           | the card's mic in, shielded                 | wind shield, away from the engine and the horn (half duplex mutes it while talking anyway) |
+
+* Half duplex in the software: while anyone talks the microphone is not sent (no echo / howl to the shore).
+* Volume: the gateway never plays louder than loudhailer.volume_max_pct (default 80 %); set the amplifier's
+  trimmer so that 80 % is still safe for a swimmer close by (TO CONFIRM on the boat).
+* A loudhailer with listen-back (the horn is also the microphone): a talk / listen relay driven by the
+  sound card's PTT / GPIO or the amplifier's own switch - TBD (not the AURIX's relay board).
+* No VHF radio (owner 2026-11-02).
+
 ## 4. microSD card (log)
 
 A **microSD click** board (MikroElektronika MIKROE-924, 3.3 V) plugged into the

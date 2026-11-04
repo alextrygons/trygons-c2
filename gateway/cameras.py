@@ -339,10 +339,15 @@ class CameraManager:
         budget = float(self.cfg.get("copilot_budget_kbps", 6000) or 0)
         views = [sid for sid in self.station_cams if self.view_of(sid) and not self.is_priority(sid)]
         prio_kbps = sum(v for sid, v in self.station_kbps.items() if self.is_priority(sid))
+        # the loudhailer's voice (13r, owner 2026-11-02) ranks above the copilot's video: it counts with the captain's
+        # load, so the copilot's camera view drops first (only while the captain receives video)
+        hail = getattr(self.gw, "hail", None) if self.gw else None
+        voice = float(hail.kbps()) if hail is not None and hasattr(hail, "kbps") and prio_kbps > 0 else 0.0
+        prio_kbps += voice
         if not self.views_reduced:
-            if budget > 0 and views and prio_kbps > 0 and self.total_kbps > budget:
+            if budget > 0 and views and prio_kbps > 0 and self.total_kbps + voice > budget:
                 self.views_reduced, self.restore_since = True, None
-                self.reduced_kbps = max(0.0, self.total_kbps - prio_kbps)
+                self.reduced_kbps = max(0.0, self.total_kbps + voice - prio_kbps)
                 log.warning("cameras: video %d kbit/s over the budget %d - camera views reduced for the captain",
                             self.total_kbps, budget)
                 if self.gw:

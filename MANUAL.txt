@@ -2638,6 +2638,46 @@ N. OBSTACLE DETECTION WITH THE FRONT CAMERA (eWaSR, AI)
   Samples for an own Saronic dataset (picture + mask) can be switched on
   (vision.samples on the gateway PC); they use at most 500 MB.
 
+LOUDHAILER AND BOAT MICROPHONE (step 13r, owner 2026-11-02)
+  Talk with anyone near the boat - swimmers, fishing boats, divers, the coast
+  guard - through a horn speaker on the boat, and listen to its microphone.
+  There is NO VHF radio. The loudhailer is its own program on the gateway PC
+  (a USB sound card -> amplifier -> horn; an outdoor microphone): it NEVER
+  touches the AURIX, the driving or the alarms. If it fails you get a notice
+  ("LOUDHAILER OFF"), never an alarm or a mode change; it restarts by itself.
+  TALK (Greek ΟΜΙΛΙΑ): a framed SCREEN button - press and HOLD while you speak,
+    let go when you are done. It is on the bottom bar of screen 1, on bar 2 of
+    screen 2 (the copilot's PC too) and on Tools - Loudhailer. It is NOT on the
+    joystick. One person at a time: the gateway gives the horn to whoever
+    pressed FIRST; everybody else sees a grey TALK button and "SPEAKING:
+    CAPTAIN" (or COPILOT) - on screen 2 at the start of the message line.
+    While anyone talks the boat microphone is switched off (no echo / howling).
+    A press ends by itself after 2 minutes (a stuck button) or 1 s without
+    voice (a lost link).
+  LISTEN: the boat microphone plays on this PC's headset / speakers all the
+    time (Tools - Loudhailer: mute, volume here, a white level meter; screen 1
+    shows "BOAT MIC" and its level). It is silent while someone talks.
+  READY MESSAGES: one click = the message spoken in Greek, then in English
+    (this PC's offline voice, Tools - Sound), e.g. "Unmanned vessel - keep
+    clear". Edit the list on the Tools page (add / save / delete / back to the
+    default list); it is kept on this PC.
+  SOUND SIGNALS: "DANGER - 5 short blasts" and "1 prolonged blast", made on the
+    boat (they take the horn for their time).
+  VOLUME: the horn's volume can be set by the HELM station or a station on the
+    boat, never above the LIMIT on the gateway (gateway.json "loudhailer":
+    "volume_max_pct", default 80 %).
+  THE LINK: voice is small (~33 kbit/s, ~45 kbit/s on the wire). It ranks
+    above the copilot's camera view but below the captain's driving data and
+    video: on a weak / busy link the voice to that station stops first ("VOICE
+    OFF (weak link)"); with the data saver only the captain keeps it. The
+    latency is shown on the Tools page.
+  RECORDING: both directions are recorded on the gateway SSD together with the
+    cameras (video/ring/AUDIO, 1-minute WAV files) and are inside every SAVE,
+    5' and 1h (folder AUDIO next to the camera folders, same time window).
+  DEMO / SIMULATOR: a simulated horn + microphone (sea noise; a 'contact'
+    answers now and then) - nothing on this PC's sound card on the boat side.
+  Hardware: PARTS.md (loudhailer) and WIRING.md section 3G.
+
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
 -------------------------------------------------------------------------------
