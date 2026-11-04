@@ -102,7 +102,9 @@ def px(level, W, H, k=1.0):
 
 
 def rescale_tree(widget, ratio):
-    """After an "Aa" change: every tk widget's font in this window x ratio (the window keeps working)."""
+    """After an "Aa" change: every tk widget's font in this window x ratio (the window keeps working). The exact
+    (unrounded) size is kept per widget, so small / normal / large back and forth never drifts (13n1 review L1);
+    a font changed by the program meanwhile starts again from its new size."""
     import tkinter.font as tkf
     stack = [widget]
     while stack:
@@ -112,9 +114,15 @@ def rescale_tree(widget, ratio):
             if f:
                 a = tkf.Font(root=w, font=f).actual()
                 size = a["size"]
-                new = int(round(size * ratio)) if size > 0 else -int(round(-size * ratio))
-                if new != size and new != 0:
+                base = getattr(w, "_aa_size", None)
+                exact = base[0] if base is not None and base[1] == size else float(size)
+                exact *= ratio
+                new = int(round(exact))
+                if new == 0:
+                    new = 1 if exact > 0 else -1
+                if new != size:
                     w.configure(font=(a["family"], new, a["weight"]))
+                w._aa_size = (exact, new)
         except Exception:
             pass
         try:

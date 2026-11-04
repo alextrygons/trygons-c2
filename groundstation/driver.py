@@ -52,6 +52,8 @@ from alerts import can_roles  # noqa: E402  (DroneCAN, 11d)
 from alerts import link_time_text  # noqa: E402  (LINK TIME, step 13q1)
 from alerts import override_texts  # noqa: E402  (the shore stick override, step 13q3)
 
+_QSERIAL = 0                    # the question serial of every DriverScreen of this process (13n1 review L7)
+
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageTk
 except ImportError:                    # without Pillow: the canvas renderer
@@ -600,7 +602,10 @@ class DriverScreen:
         self.question = (text, on_yes, on_no, time.time() + timeout_s)
         # a serial number per question (13p review M1): app.open_question's token; id() of the tuple could be
         # reused by CPython when one question replaces another in the same callback
-        self.qserial = getattr(self, "qserial", 0) + 1
+        # (13n1 review L7: a module-level counter - a new DriverScreen never repeats an older screen's token)
+        global _QSERIAL
+        _QSERIAL += 1
+        self.qserial = _QSERIAL
         self.qtag = tag
         self.qshown = time.time()
         self.qhead.configure(text=head or T("drv.head_captain"))

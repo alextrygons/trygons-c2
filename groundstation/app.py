@@ -3014,9 +3014,10 @@ class App:
         self.render(force=True)
 
     def text_size_changed(self, ratio):
-        """"Aa" (13n1): the tk widgets of this station get the new text size, the panels redraw."""
-        for w in (self.root, self.tools):
-            theme.rescale_tree(w, ratio)
+        """"Aa" (13n1): the tk widgets of this station get the new text size, the panels redraw. Only the root:
+        the tools window, screen 1 and every dialog are Toplevels UNDER it, so they are rescaled once (13n1 review
+        M1: rescaling the tools window again scaled it twice = ratio squared)."""
+        theme.rescale_tree(self.root, ratio)
         self.render(force=True)
 
     # --- screen 2 panels (overlay.py) ---------------------------------------------------------------------

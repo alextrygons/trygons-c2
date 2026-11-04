@@ -56,6 +56,9 @@ academy in the station's theme, Desktop shortcuts, no console windows in the dem
        field, AUTHORISE above CANCEL, Cancel closes
   LK24 3 text sizes + Aa: every level = one of 3 sizes (widgets, drawn text, the HUD); Aa cycles small / normal /
        large, saved per PC, every window told; widgets rescaled; red = STANDBY only; square frames
+  LK25 (13n1 review M1 / L1 / L7) Aa: a widget in the tools window (a Toplevel under the root) is rescaled ONCE by
+       the station's text_size_changed (not ratio squared); small / normal / large many times = no size drift; the
+       question serial never repeats across two DriverScreens
 
 Run:  python test_look.py        (exit code 0 = all passed)
 """
@@ -1236,6 +1239,50 @@ def lk24():
                sorted(sizes), sorted(pxs), sorted(set(hs.values())), out, seen, s0, s1, sorted(red), square))
 
 
+def lk25():
+    """13n1 review: M1 the tools window scaled once; L1 no drift; L7 the question serial is per process."""
+    import types
+    import app as A
+    import driver as D
+    root = tk.Tk()
+    root.withdraw()
+    tools = tk.Toplevel(root)
+    tools.withdraw()
+    lab_root = tk.Label(root, text="x", font=(theme.FAMILY, 20, "normal"))
+    lab_tools = tk.Label(tools, text="x", font=(theme.FAMILY, 20, "normal"))
+    size = lambda w: tk.font.Font(root=root, font=w.cget("font")).actual()["size"]
+    fake = types.SimpleNamespace(root=root, tools=tools, render=lambda force=False: None)
+    A.App.text_size_changed(fake, 1.2)
+    once = size(lab_root) == 24 and size(lab_tools) == 24
+    got_once = (size(lab_root), size(lab_tools))
+    # back and forth 0.85 / 1 / 1.2 many times: back at the start size (no rounding drift)
+    lab = tk.Label(root, text="y", font=(theme.FAMILY, 11, "normal"))
+    seq = []
+    for _ in range(20):
+        for r in (1.2, 1 / 1.2 * 0.85, 1 / 0.85):
+            theme.rescale_tree(lab, r)
+        seq.append(size(lab))
+    no_drift = seq == [11] * 20
+    # a font the program set meanwhile starts again from its new size
+    lab.configure(font=(theme.FAMILY, 30, "normal"))
+    theme.rescale_tree(lab, 0.5)
+    reset = size(lab) == 15
+    root.destroy()
+    # L7: two DriverScreens (the method on fakes) never give the same serial
+    fakes = [types.SimpleNamespace() for _ in range(2)]
+    sers = []
+    for f in fakes:
+        D._QSERIAL += 1              # what ask() does, without a window
+        f.qserial = D._QSERIAL
+        sers.append(f.qserial)
+    src_ok = "global _QSERIAL" in src("groundstation", "driver.py") and         'getattr(self, "qserial", 0) + 1' not in src("groundstation", "driver.py")
+    report("LK25 (13n1 review M1 / L1 / L7) Aa: the tools window rescaled once (not ratio squared); no rounding drift "
+           "over 20 small / normal / large rounds; a new font restarts from its size; question serials per process",
+           once and no_drift and reset and sers[0] != sers[1] and src_ok,
+           "x1.2 of 20 pt: root / tools %s (want 24 / 24); 11 pt after each round %s; 30 pt x0.5 -> 15 %s; serials %s, "
+           "module counter %s" % (got_once, seq[:5], reset, sers, src_ok))
+
+
 def main():
     i18n.set_lang("el", save=False)
     lk1()
@@ -1265,6 +1312,7 @@ def main():
     lk22()
     lk23()
     lk24()
+    lk25()
     n = len(results)
     print("LOOK TESTS: %d/%d %s" % (sum(results), n, "PASS" if all(results) else "FAIL"))
     return 0 if all(results) else 1

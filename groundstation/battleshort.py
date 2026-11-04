@@ -8,7 +8,7 @@ There is NO code anywhere: no stored code, no hash, no comparison that could eve
 any text, any length - gives INVALID AUTHORISATION CODE (a red flash + a shake of the window). There is no
 lockout (the field stays usable), no function behind it and NO path to the boat or the gateway: this module
 imports nothing that talks to a link, and the only thing it does besides drawing is the station log line
-"battle short attempt" (the `log` function the station gives it). test_look.py LK10 proves all of it.
+"battle short attempt" (the `log` function the station gives it). test_look.py LK23 proves all of it.
 DISPLAY ONLY.
 """
 import tkinter as tk
