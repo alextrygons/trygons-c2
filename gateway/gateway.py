@@ -155,6 +155,10 @@ class Gateway:
         # process; a notice only, never the AURIX
         self.uav = UavManager(cfg.get("uav"), self)
         self.stations.ext["uav_register"] = self.uav.register_msg
+        # U3: routes -> missions, the launch sequence (the captain's YES / NO), STOP, the captain's HATCH CLOSE
+        for k, fn in (("uav_route", self.uav.route_msg), ("uav_launch_prepare", self.uav.prepare_msg),
+                      ("uav_launch_stop", self.uav.stop_msg), ("uav_hatch_close", self.uav.hatch_close_msg)):
+            self.stations.ext[k] = fn
 
     def _on_telem(self, f):
         try:

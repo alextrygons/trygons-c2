@@ -2702,6 +2702,35 @@ UAV MAGAZINE - REGISTRATION (step U2; launch, flight and video come in later ste
   the hatch opens). Any role but VIEWER may register. The UAV programs never
   touch the boat's driving or alarms; a failure is a notice only.
 
+UAV MAGAZINE - ROUTES AND LAUNCH (step U3)
+  Routes: draw the route on the map as usual and press "Send route". With a
+  UAV magazine a box asks WHERE TO: THE BOAT (the normal AUTO route), NEXT UAV
+  (slot n), a UAV in the magazine, or a FLYING UAV (it gets the new mission in
+  the air; if the gateway refuses it, the old one goes on). A right click on
+  the map: "Go here (the boat)" = a 2-point route from the boat to the point
+  (every AUTO rule as usual) and "Send a UAV here". Every UAV point flies at
+  50 m. The gateway checks every UAV route: altitude 10..120 m, radio range
+  (1500 m from the launch point and from the boat), battery with the landing
+  reserve, the air no-fly zones and the air geofence (files on the gateway,
+  not authoritative); a refusal says why. Each mission ends HOVERING over the
+  last point - never a landing.
+  Launch: Tools - UAV magazine - PREPARE LAUNCH (copilot or captain). The
+  CAPTAIN answers YES / NO on screen 1 (a single operator answers his own).
+  Only with the boat in STANDBY or DP SPOT / JOG below 2 kn, a trusted GPS, no
+  boat WARNING alarm, the relay board answering, a station holding HELM, the
+  hatch healthy. Then, strictly from the top slot: mission loaded and read
+  back, the hatch opens (its OPEN switch), GPS fix (no fix in 5 s: in STANDBY
+  it climbs straight up to 15 m and waits there for GPS; in DP the launch
+  stops), ARM, climb to 30 m (+5 m per slot), clear of the boat at 10 m, the
+  next one at least 15 s later; after the last the hatch closes.
+  ANY warning STOPS the launch: drones in the air go on with their missions,
+  no further drone is armed, the hatch stays as it is. A drone that armed but
+  did not climb is disarmed at once and the hatch stays OPEN: check the
+  magazine, then HATCH CLOSE (the captain's own button). STOP LAUNCH stops it
+  from any crew station. The hatch relay is shown as a lamp only - no station
+  can switch it. Without a station holding HELM nothing can switch it
+  ("HATCH NOT CLOSED - take HELM and close it").
+
 -------------------------------------------------------------------------------
 10. THE POWER LIMIT
 -------------------------------------------------------------------------------

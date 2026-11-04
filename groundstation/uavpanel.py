@@ -2,8 +2,11 @@
 only: the gateway checks every request again).
 
 Six slots, slot 1 = the top = the next out. Per slot: the owner's UAV picture (uavpics), the name, sysid / UID,
-ArduPilot firmware, battery, GPS, VTX channel, ELRS binding, mission (U3), the state (ready / NOT launchable + why /
-not registered / no drone) and REGISTER = {"t": "uav_register", "slot": n} to the gateway (read only on the drone).
+ArduPilot firmware, battery, GPS, VTX channel, ELRS binding, its route / mission / flight (U3), the state (ready /
+NOT launchable + why / not registered / no drone) and REGISTER = {"t": "uav_register", "slot": n} to the gateway
+(read only on the drone). Under the rows (U3): the hatch, the launch sequence, PREPARE LAUNCH (the captain's YES / NO
+on screen 1; a single operator his own), STOP (any crew station), HATCH CLOSE (the captain's own, after a stop) and
+the gateway's UAV notices.
 The data = gw_status "uav" (1 Hz); the answers = "uav_ack". Not connected / a boat without the magazine = one line.
 """
 import i18n
@@ -43,7 +46,15 @@ def row_view(s, next_slot):
     parts.append(T("uav.gps", fix=s.get("gps_fix") or 0, sats=s.get("sats") or 0) if s.get("present")
                  else T("uav.gps_none"))
     parts.append(T("uav.vtx", vtx=s.get("vtx") or "-", elrs=s.get("elrs") or "-"))
-    parts.append(T("uav.mission", m=T("uav.mission_no") if not s.get("mission") else s["mission"]))
+    if s.get("flying"):
+        m = T("uav.m_flying_" + s["flying"]) if i18n.has("uav.m_flying_" + s["flying"]) else s["flying"]
+    elif s.get("mission"):
+        m = T("uav.m_loaded", n=s.get("route") or 0)
+    elif s.get("route"):
+        m = T("uav.m_route", n=s["route"])
+    else:
+        m = T("uav.mission_no")
+    parts.append(T("uav.mission", m=m))
     a = s.get("assist")
     if not a:
         assist = T("uav.assist_never")
@@ -56,6 +67,33 @@ def row_view(s, next_slot):
     return {"head": head, "state": state, "kind": kind, "details": " · ".join(parts), "assist": assist,
             "can_register": bool(s.get("usb")) and not s.get("registering"),
             "problems": [_tr(p) for p in s.get("problems") or []]}
+
+
+def launch_view(st):
+    """The launch / hatch lines of the page (pure: tests UV5) -> dict(hatch, hatch_kind, seq, notices, can_prepare,
+    can_stop, can_close)."""
+    h = (st or {}).get("hatch") or {}
+    L = (st or {}).get("launch") or {}
+    hs = h.get("state") or "UNKNOWN"
+    hatch = T("uav.hatch", state=T("uav.hs_" + hs) if i18n.has("uav.hs_" + hs) else hs)
+    if h.get("why"):
+        hatch += " - " + _tr(h["why"])
+    if not h.get("relay"):
+        hatch += " - " + T("uav.no_hatch_relay")
+    state = L.get("state") or "IDLE"
+    seq = T("uav.seq_" + state) if i18n.has("uav.seq_" + state) else state
+    if state in ("RUN", "CLOSING") and L.get("cur"):
+        ph = L.get("phase") or ""
+        seq += " - " + T("uav.seq_cur", n=L["cur"], phase=T("uav.ph_" + ph) if i18n.has("uav.ph_" + ph) else ph)
+    if L.get("launched"):
+        seq += " - " + T("uav.seq_launched", lst=", ".join(str(x) for x in L["launched"]))
+    if L.get("why"):
+        seq += " - " + _tr(L["why"])
+    busy = state in ("ASK", "RUN", "CLOSING")
+    return {"hatch": hatch, "hatch_kind": "caution" if hs in ("FAULT", "UNKNOWN") or (hs == "OPEN" and not busy)
+            else "info", "seq": seq, "notices": [_tr(n.get("text")) for n in (st or {}).get("notices") or []][-3:],
+            "can_prepare": not busy and hs in ("CLOSED", "OPEN"), "can_stop": busy,
+            "can_close": not busy and hs != "CLOSED"}
 
 
 class Page:
@@ -93,6 +131,29 @@ class Page:
             i18n.bind(b, "uav.register")
             b.pack(side="right", padx=8)
             self.rows.append((labels, b))
+        # the launch (step U3): hatch, sequence, PREPARE LAUNCH (the captain answers YES / NO on screen 1), STOP,
+        # HATCH CLOSE (the captain's own, after a stop)
+        lf = tk.Frame(fr, bg=BG)
+        lf.pack(fill="x", padx=6, pady=(6, 0))
+        self.l_hatch = tk.Label(lf, font=theme.font("label"), bg=BG, fg=C["fg"], anchor="w", justify="left")
+        self.l_hatch.pack(fill="x")
+        self.l_seq = tk.Label(lf, font=theme.font("label"), bg=BG, fg=C["fg"], anchor="w", justify="left",
+                              wraplength=900)
+        self.l_seq.pack(fill="x")
+        bf = tk.Frame(lf, bg=BG)
+        bf.pack(fill="x", pady=(2, 0))
+        self.b_prep = tk.Button(bf, command=self.prepare, **theme.button_opts("ok"))
+        i18n.bind(self.b_prep, "uav.prepare")
+        self.b_prep.pack(side="left", padx=(0, 6))
+        self.b_stop = tk.Button(bf, command=self.stop, **theme.button_opts())
+        i18n.bind(self.b_stop, "uav.stop")
+        self.b_stop.pack(side="left", padx=(0, 6))
+        self.b_close = tk.Button(bf, command=self.hatch_close, **theme.button_opts())
+        i18n.bind(self.b_close, "uav.hatch_close")
+        self.b_close.pack(side="left")
+        self.l_notes = tk.Label(lf, font=theme.font("small"), bg=BG, fg=C["fg"], anchor="w", justify="left",
+                                wraplength=900)
+        self.l_notes.pack(fill="x")
         self.stats = tk.Label(fr, font=theme.font("small"), bg=BG, fg=C["fg"], anchor="w")
         self.stats.pack(fill="x", padx=6, pady=(4, 0))
         self.msg = tk.Label(fr, font=theme.font("label"), bg=BG, fg=C["fg"], anchor="w", justify="left",
@@ -119,6 +180,22 @@ class Page:
             return self.say(T("uav.not_connected"), False)
         self.app.link.send_msg({"t": "uav_register", "slot": slot})
         self.sel = slot
+
+    def prepare(self):
+        if not self.connected():
+            return self.say(T("uav.not_connected"), False)
+        msg = {"t": "uav_launch_prepare"}
+        if getattr(self.app, "single_op", False):
+            msg["confirm"] = "self"            # a single operator answers his own question (the gateway checks)
+        self.app.link.send_msg(msg)
+
+    def stop(self):
+        if self.connected():
+            self.app.link.send_msg({"t": "uav_launch_stop"})
+
+    def hatch_close(self):
+        if self.connected():
+            self.app.link.send_msg({"t": "uav_hatch_close"})
 
     def say(self, text, ok=None):
         col = theme.CAUTION if ok is False else theme.C["fg"]      # (green only on the video; amber = a caution)
@@ -154,6 +231,10 @@ class Page:
         if not st or not st.get("enabled"):
             self.head.configure(text=T("uav.router_off") if st else T("uav.not_connected"))
             self.stats.configure(text="")
+            for w in (self.l_hatch, self.l_seq, self.l_notes):
+                w.configure(text="")
+            for b in (self.b_prep, self.b_stop, self.b_close):
+                b.configure(state="disabled")
             for labels, b in self.rows:
                 for lb in labels.values():
                     lb.configure(text="")
@@ -166,6 +247,14 @@ class Page:
         r = (st.get("router") or {}).get("stats") or {}
         self.stats.configure(text=T("uav.stats", rx=r.get("rx", 0), tx=r.get("tx", 0), din=r.get("denied_in", 0),
                                     dout=r.get("denied_out", 0)))
+        lv = launch_view(st)
+        self.l_hatch.configure(text=lv["hatch"], fg=theme.CAUTION if lv["hatch_kind"] == "caution" else C["fg"])
+        self.l_seq.configure(text=lv["seq"])
+        self.l_notes.configure(text=chr(10).join(lv["notices"]))
+        on = st.get("state") == "ACTIVE"
+        self.b_prep.configure(state="normal" if on and lv["can_prepare"] else "disabled")
+        self.b_stop.configure(state="normal" if lv["can_stop"] else "disabled")
+        self.b_close.configure(state="normal" if lv["can_close"] else "disabled")
         slots = {s["slot"]: s for s in st.get("slots", [])}
         for i, (labels, b) in enumerate(self.rows):
             s = slots.get(i + 1)

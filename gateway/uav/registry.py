@@ -54,7 +54,7 @@ def wanted_params():
     """(required names, optional names) the registration reads."""
     req = [n for n, _r, need in FAILSAFE if need] + ["SERVO%d_FUNCTION" % i for i in SERVO_REQUIRED]
     opt = [n for n, _r, need in FAILSAFE if not need] + ["SERVO%d_FUNCTION" % i for i in SERVO_OPTIONAL]
-    opt += [n for n, _v in OFF_IF_PRESENT]
+    opt += [n for n, _v in OFF_IF_PRESENT] + ["BATT_CAPACITY"]     # (U3: the route energy check)
     return req, opt
 
 
@@ -144,7 +144,16 @@ def summary(reading):
             "battery_v": round(volt / 1000.0, 2) if volt and volt != 0xFFFF else None,
             "gps_fix": gps.get("fix_type", 0), "gps_sats": gps.get("satellites_visible", 0),
             "prearm": bool(ss.get("onboard_control_sensors_health", 0) & S_PREARM),
-            "prearm_text": list(reading.get("prearm", []))[-3:]}
+            "prearm_text": list(reading.get("prearm", []))[-3:],
+            "capacity_mah": _cap((reading.get("params") or {}).get("BATT_CAPACITY"))}
+
+
+def _cap(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if 100.0 <= v <= 100000.0 else None
 
 
 class Registry:

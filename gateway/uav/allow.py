@@ -9,8 +9,10 @@ refused; UA4 greps that no other module builds MAVLink frames.
 check_out(name, fields, ctx) -> (ok, why) before the router sends a frame to a drone; ctx = what the router knows:
   port      "usb" (the slot's USB cable) / "elrs" (the radio link)
   armed     the drone's last HEARTBEAT said armed
-  landed    on the ground / in its slot (not flying)
+  landed    on the ground: the drone's EXTENDED_SYS_STATE landed_state ON_GROUND, else a fresh relative altitude
+            < 0.5 m (U2 review LOW-4: never "a USB link is up")
   hatch_open  the hatch OPEN switch (U3; never ARM without it - storm I81)
+ctx is built by the ROUTER from the state it holds (U2 review LOW-3), never taken from a caller.
   battery_land  the battery rule of docs/uav_design.md 6.2 asks for LAND (the ONLY landing - storm I82)
 check_in(name) -> (ok, why) for a frame from a drone.
 """
@@ -21,7 +23,7 @@ FROM_DRONE = frozenset((
     "HEARTBEAT", "SYS_STATUS", "BATTERY_STATUS", "GLOBAL_POSITION_INT", "ATTITUDE", "VFR_HUD", "GPS_RAW_INT",
     "EKF_STATUS_REPORT", "STATUSTEXT", "HOME_POSITION", "MISSION_CURRENT", "MISSION_ITEM_REACHED",
     "MISSION_REQUEST_INT", "MISSION_ACK", "COMMAND_ACK", "PARAM_VALUE", "AUTOPILOT_VERSION", "TIMESYNC", "SYSTEM_TIME",
-    "RADIO_STATUS",
+    "RADIO_STATUS", "EXTENDED_SYS_STATE",         # landed_state = "on the ground" for DISARM (U2 review LOW-4)
     "MISSION_COUNT", "MISSION_ITEM_INT",          # the mission READ-BACK (U3: count + items compared with the upload)
 ))
 
@@ -63,6 +65,18 @@ FRAMES_BODY = frozenset((8, 9))                        # MAV_FRAME_BODY_NED / BO
 MASK_MUST_SET = 0x0007 | 0x01C0 | 0x0400               # position, acceleration and yaw ignored
 MASK_MUST_CLEAR = 0x0038 | 0x0200                      # velocity used, never "force"
 GPS_INJECT = frozenset(("GPS_RTCM_DATA", "GPS_INJECT_DATA"))
+# U2 review LOW-5: hard ceilings of the scope guard (the manager's own limits are lower) and no broadcasts
+MAX_ALT_M = 120.0                                      # NAV_TAKEOFF altitude / a mission item's z (W66)
+MAX_VXY_MS, MAX_VZ_MS, MAX_YAW_RATE = 15.0, 3.0, 2.0   # velocity setpoints (m/s, rad/s)
+# the messages with a target_system field: never 0 (= every system on the link: a broadcast)
+TARGETED = frozenset(("MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_CLEAR_ALL", "MISSION_SET_CURRENT",
+                      "MISSION_REQUEST_LIST", "MISSION_REQUEST_INT", "MISSION_ACK", "PARAM_REQUEST_READ",
+                      "PARAM_REQUEST_LIST", "SET_POSITION_TARGET_LOCAL_NED", "GPS_INJECT_DATA", "COMMAND_LONG",
+                      "COMMAND_INT"))
+# the messages with a mission_type field: only 0 = the mission (1 fence / 2 rally / 255 all are never touched:
+# a MISSION_CLEAR_ALL of type 1 / 255 would clear the drone's fence / rally points)
+TYPED = frozenset(("MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_CLEAR_ALL", "MISSION_REQUEST_LIST",
+                   "MISSION_REQUEST_INT", "MISSION_ACK"))
 
 
 def check_in(name):
@@ -94,6 +108,10 @@ def _command(cmd, p, ctx):
         if int(p[1]) not in MODES or int(p[0]) & 1 != 1:
             return False, "flight mode %s is not allowed (never RTL / SmartRTL / LAND)" % int(p[1])
         return True, ""
+    if cmd == CMD_NAV_TAKEOFF:
+        if not (0.0 < p[6] <= MAX_ALT_M):
+            return False, "take-off altitude out of range"
+        return True, ""
     if cmd == CMD_NAV_LAND:
         if not ctx.get("battery_land"):
             return False, "LAND only by the battery rule"
@@ -108,7 +126,7 @@ def _command(cmd, p, ctx):
         if name not in FROM_DRONE:
             return False, "message %d is not on the allow-list" % int(p[0])
         return True, ""
-    return True, ""                                   # TAKEOFF, MISSION_START
+    return True, ""                                   # MISSION_START
 
 
 def check_out(name, fields, ctx=None):
@@ -117,6 +135,10 @@ def check_out(name, fields, ctx=None):
     if name not in TO_DRONE:
         return False, "%s to a drone is not on the allow-list" % name
     f = fields
+    if name in TARGETED and int(f.get("target_system", 0) or 0) == 0:
+        return False, "%s without a target system (a broadcast) is never sent" % name
+    if name in TYPED and int(f.get("mission_type", 0) or 0) != 0:
+        return False, "only the mission (mission_type 0) - never the fence / rally points"
     if name == "COMMAND_LONG":
         p = [f.get("param%d" % i, 0.0) for i in range(1, 8)]
         if not _finite(*p):
@@ -139,6 +161,8 @@ def check_out(name, fields, ctx=None):
             return False, "a non-finite mission parameter"
         if cmd == CMD_DO_CHANGE_SPEED and not (0.0 < f.get("param2", 0.0) <= MAX_SPEED_MS):
             return False, "speed out of range"
+        if cmd != CMD_DO_CHANGE_SPEED and not (0.0 <= f.get("z", 0.0) <= MAX_ALT_M):
+            return False, "mission altitude out of range"
         return True, ""
     if name == "SET_POSITION_TARGET_LOCAL_NED":
         m = int(f.get("type_mask", 0))
@@ -148,6 +172,8 @@ def check_out(name, fields, ctx=None):
             return False, "setpoints: velocity + yaw rate only"
         if not _finite(f.get("vx", 0.0), f.get("vy", 0.0), f.get("vz", 0.0), f.get("yaw_rate", 0.0)):
             return False, "a non-finite setpoint"
+        if math.hypot(f.get("vx", 0.0), f.get("vy", 0.0)) > MAX_VXY_MS or abs(f.get("vz", 0.0)) > MAX_VZ_MS or                 abs(f.get("yaw_rate", 0.0)) > MAX_YAW_RATE:
+            return False, "setpoint above the speed ceiling"
         return True, ""
     if name in GPS_INJECT:
         if ctx.get("port") != "usb":

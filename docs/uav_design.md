@@ -169,6 +169,9 @@ Only these pass in either direction; everything else is dropped and counted (rou
   launch, sea level + deck height).
 - In flight: a new mission is uploaded and started from item 1 (the drone hovers in GUIDED / BRAKE while
   it uploads; a refused upload leaves the old mission running).
+  AS BUILT (U3): the drone keeps flying its OLD mission while the new one uploads over ELRS (a hover first would
+  leave it hovering after a refused upload); after the read-back MISSION START from seq 2 (the speed item: no second
+  take-off). Seq 0 = ArduPilot's home slot, never flown, not compared in the read-back.
 
 ### 5.2 UAV route checks (gateway/uav/uavcheck.py; NOT shallow water)
 Refused with a code (section 9) and the reason:
@@ -215,6 +218,13 @@ alarm, relay board silent, the captain's or copilot's STOP, the station of the c
 armed but did not climb (motor / prop fault in the hatch) = DISARM at once (it is on the ground), the
 sequence stops, the hatch stays OPEN (closing on a drone is worse) + notice "UAV n did not leave the
 hatch - check before closing", the close is then the captain's own button.
+
+AS BUILT (U3): gateway/uav/launch.py - CHECK, UPLOAD (USB), HATCH, GPS, CMDS (GUIDED, ARM, TAKEOFF with their
+COMMAND_ACKs), CLIMB (no climb in no_climb_s 6 s = DISARM), CLEAR (USB gone in usb_gone_s 6 s, MISSION START over
+ELRS), GAP (gap_s from the previous ARM); every failure / warning = STOPPED (an armed drone still on the ground is
+disarmed). The router owns the ELRS links too (gateway.json slot "radio") and builds allow.py's ctx itself from its
+own state (hatch OPEN from the manager's 4 Hz op, stale after 1 s; landed from EXTENDED_SYS_STATE / the relative
+altitude). The fallback drone is handed to the manager's catch-up (MISSION START once GPS + EKF are good).
 
 ### 5.4 Hatch + limit switches (gateway/uav/hatch.py)
 - Relay: ONE on / off relay (ON = open) in the EXISTING boat-file relay table, group "extra", type
@@ -264,6 +274,10 @@ hatch - check before closing", the close is then the captain's own button.
 - The USB laptop on board bypasses the gateway's refusal 125 (it is not behind the gateway): its relay panel
   treats the hatch relay as a LAMP too (no button) - the station knows the hatch relay from the boat file
   "uav" (U3; U1 review LOW).
+- AS BUILT (U3): the gateway's own HELM grant = the holder of the last T_HELM the AURIX accepted (take / hand-over),
+  else TELEM2's holder once it stayed 2 s; stations.helm_station() only when grant and TELEM2 agree; one retry within
+  5 s, else the notice. The gateway knows the hatch relay from gateway.json "uav" "hatch_relay"; the stations from
+  the boat file "uav" "hatch_relay" (boats.py validates both rules).
 - Owner question W72: should the hatch close by itself when the sequence stops with no drone in the hatch and
   HELM still held? (Default: no - the captain's own HATCH CLOSE.)
 
@@ -372,8 +386,9 @@ State files: state/uav_registry.json, state/uav_nofly.json, state/uav_geofence.j
 under the data folder (uav_logs/<name>/<date>.csv).
 
 Station <-> gateway messages (JSON, the existing station link; English in the protocol):
-uav_register {slot}, uav_route {target: "next" | sysid, wps: [{lat, lon, alt}]}, uav_launch_prepare,
-uav_launch_answer (the captain's YES / NO), uav_launch_stop, uav_hatch_close, uav_pilot {uav, take |
+uav_register {slot}, uav_route {target: "next" | slot (AS BUILT U3: the slot, not the sysid), wps: [{lat, lon, alt}]},
+uav_launch_prepare {count, confirm}, (the captain's YES / NO = AS BUILT U3 the existing screen-1 driver_ask /
+driver_answer, always on the captain's screen; no uav_launch_answer), uav_launch_stop, uav_hatch_close, uav_pilot {uav, take |
 give}, uav_ctl {uav, vx, vy, vz, yaw_rate, seq} (10 Hz), uav_hold {uav}, uav_view {uav}; from the
 gateway: gw_status "uav" (slots, hatch, sequence, pilots), uav_telem, uav_ack {code}.
 No new AURIX frame. No new app/proto.h define.

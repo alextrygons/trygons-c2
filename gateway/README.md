@@ -864,3 +864,25 @@ gateway.json (default `"enabled": false`):
   not practical on Windows (W67): the own simulator speaks the same MAVLink subset; pymavlink installs on Windows
   with pip but is LGPL-3.0 and not needed (only `test_uav.py` UA2 uses it to cross-check the codec, when present).
 * Tests: `python test_uav.py` (UA1-UA12), the station: `groundstation/test_uavui.py` (UV1-UV4).
+
+## 25. UAV magazine - routes, missions, the launch sequence, the hatch (step U3)
+
+* Config (`config.example.json` "uav"): each slot's `"radio"` = the serial name of its ELRS TX module (the router
+  owns it: telemetry + commands once the slot cable is gone); `"hatch_relay": n` = relay n of the boat's EXISTING
+  relay table (an extra on/off relay, power_up off, no pair - the boat file's `"uav": {"hatch_relay": n}` too; relays
+  1-7 are used, so a board with >= 8 channels, W57 b); `"hatch": {"port", "open_s", "close_s"}` = the FT232R breakout
+  of the two limit switches (CTS = OPEN, DSR = CLOSED, switch to GND, external pull-ups, W57 a) and the travel limits;
+  `"launch"` / `"check"` = the W59 numbers (TO CONFIRM). With `"sim": true` the hatch is simulated (moved by the
+  simulated AURIX's relay readback).
+* Routes (`uav_route`): checked by `uav/uavcheck.py` (123: altitude 10..120 m, radio range from the launch point and
+  the boat now, energy + landing reserve; 124: `state/uav_nofly.json` zones with altitude bands,
+  `state/uav_geofence.json`; a broken file refuses every route). A magazine drone's route is stored and uploaded +
+  read back at its launch; a flying drone's mission is replaced in flight (MISSION START from seq 2).
+* Launch (`uav_launch_prepare` -> the captain's YES / NO on screen 1 -> `uav/launch.py`; `uav_launch_stop`;
+  `uav_hatch_close` = the captain's own close after a stop): the state machine of docs/uav_design.md 5.3. The hatch
+  relay is a T_RELAY of the HELM station sent by the gateway only (`uavlink.py` -> `stations.uav_relay`, the
+  gateway's own HELM grant agreeing with TELEM2 - W55); a station's T_RELAY for it = 125. The AURIX code is
+  unchanged: it checks HELM, the table and FIRST TEST as for every relay.
+* Notices only (gw_status "uav" notices; audit `uav_notice` / `uav_hatch` / `uav_hatch_relay` / `uav_launch` /
+  `uav_route`); the station shows HATCH FAULT and "a drone left in the hatch" as a station-local caution.
+* Tests: `python test_uav.py` UA13-UA19, `groundstation/test_uavui.py` UV5-UV7.

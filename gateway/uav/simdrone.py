@@ -18,7 +18,8 @@ ignored like an unknown message - the gateway never sends it); REQUEST_MESSAGE /
 without a 3D fix in a GPS mode, never with motor_fail climbing), DISARM on the ground, modes GUIDED / AUTO / LOITER /
 ALT_HOLD / BRAKE / LAND / RTL (RTL only so a test can show the gateway never asks for it); TAKEOFF; the mission
 protocol (upload + read-back, items TAKEOFF / WAYPOINT / CHANGE_SPEED / LOITER_UNLIM); GUIDED velocity setpoints
-(stop after 3 s without a new one, like ArduPilot); battery (capacity, hover current, critical -> LAND = the
+(stop after 3 s without a new one, like ArduPilot); EXTENDED_SYS_STATE landed_state 1 Hz; MISSION_START from param1 (seq 0 =
+HOME is never flown); a take-off in ALT_HOLD only with param3 = 1 (ArduCopter's user take-off without GPS); battery (capacity, hover current, critical -> LAND = the
 BATT_FS_CRT_ACT backstop); GPS: no sky in the closed magazine, then a fix after ttf_cold / ttf_warm (MGA-INI time +
 position injected by GPS_RTCM_DATA) / ttf_hot (+ ephemeris); EKF failsafe without GPS in flight = ALT_HOLD (drifts).
 Faults: no_fix, motor_fail, link_loss (ELRS silent), silent (nothing at all), battery_low, bad_param (FS_GCS_ENABLE 1),
@@ -276,7 +277,9 @@ class Drone:
             else:
                 self.ack(link, cmd, 3)
         elif cmd == 22:                                      # TAKEOFF
-            if self.armed and self.landed and self.mode in (M_GUIDED, M_ALT_HOLD):
+            # ArduCopter: a user take-off in ALT_HOLD only with param3 = 1 ("horizontal navigation by the pilot
+            # acceptable", docs/uav_design.md 7: the GPS fallback climb)
+            if self.armed and self.landed and (self.mode == M_GUIDED or (self.mode == M_ALT_HOLD and p[2] == 1)):
                 self.target_alt = float(p[6])
                 self.ack(link, cmd, 0)
             else:
@@ -284,7 +287,7 @@ class Drone:
         elif cmd == 300:                                     # MISSION_START
             if self.mission and self.armed and self.fix >= 3:
                 self.set_mode(M_AUTO)
-                self.cur = 0
+                self.cur = max(1, int(p[0]))                 # seq 0 = HOME: never flown (ArduPilot)
                 self.ack(link, cmd, 0)
             else:
                 self.ack(link, cmd, 4)
@@ -438,6 +441,8 @@ class Drone:
         if name == "AUTOPILOT_VERSION":
             return {"capabilities": 0xFFFF, "flight_sw_version": FW, "uid": self.uid, "board_version": 1063,
                     "vendor_id": 0x1209, "product_id": 0x5741}
+        if name == "EXTENDED_SYS_STATE":
+            return {"vtol_state": 0, "landed_state": 1 if self.landed else 2}
         if name == "HOME_POSITION":
             return {"latitude": int(self.lat0 * 1e7), "longitude": int(self.lon0 * 1e7), "q": [1.0, 0, 0, 0]}
         return {}
@@ -448,7 +453,7 @@ class Drone:
         self.t = now
         with self.lock:
             self.step(dt)
-            for name, period in (("HEARTBEAT", 1.0), ("SYS_STATUS", 0.5), ("GLOBAL_POSITION_INT", 0.5),
+            for name, period in (("HEARTBEAT", 1.0), ("EXTENDED_SYS_STATE", 1.0), ("SYS_STATUS", 0.5), ("GLOBAL_POSITION_INT", 0.5),
                                  ("ATTITUDE", 0.5), ("VFR_HUD", 0.5), ("GPS_RAW_INT", 1.0), ("BATTERY_STATUS", 1.0),
                                  ("EKF_STATUS_REPORT", 1.0)):
                 if now - self.last.get(name, 0.0) >= period:
@@ -531,12 +536,13 @@ def main():
     ap.add_argument("--n", type=int, default=6)
     ap.add_argument("--origin", default="37.82,23.60")
     ap.add_argument("--fault", action="append", default=[], help="slot:name, e.g. 2:no_fix")
+    ap.add_argument("--ttf", default="30,12,3", help="GPS time to fix after the sky: cold,warm,hot (s)")
     ap.add_argument("--stdin-eof-exit", action="store_true",
                     help="end when stdin closes (started by the gateway: never left running after it)")
     a = ap.parse_args()
     lat, lon = (float(x) for x in a.origin.split(","))
     faults = [(int(f.split(":")[0]), f.split(":")[1]) for f in a.fault]
-    fl = Fleet(a.base_port, a.n, (lat, lon), faults=faults)
+    fl = Fleet(a.base_port, a.n, (lat, lon), ttf=tuple(float(x) for x in a.ttf.split(",")), faults=faults)
     print("simdrone ready: %d drones, USB udp %d.., ELRS udp %d.., control %d" % (
         a.n, a.base_port + 1, a.base_port + 11, a.base_port + 30), flush=True)
     if a.stdin_eof_exit:

@@ -34,6 +34,20 @@ parameter check + the MAVLink allow-list + the own codec + the GPS warm start + 
        AURIX untouched (same mode, no new alarm), the event loop never blocked, the router killed = OFFLINE notice
        + restarted (no alarm), no process left after the stop
   UA12 osdep: "usbloc:<port path>" = the slot's USB port (never the device's own id), shown by --list-serial
+  --- step U3 (route -> mission, the launch sequence, the hatch + its switches) ---
+  UA13 route -> mission (HOME slot, TAKEOFF to the slot altitude, speed cap, waypoints with their altitude,
+       LOITER_UNLIM at the end), all allow-listed; the read-back comparison
+  UA14 the UAV route checks: altitude window, radio range (launch point + the boat now), energy + landing reserve,
+       no GPS / unknown battery (123); no-fly zones with altitude bands, the air geofence, a broken file (124)
+  UA15 the hatch state + the two limit switches with the simulated hatch: normal travel, every FAULT case
+  UA16 the launch state machine (scripted magazine): order, gaps, upload before the hatch, ARM only OPEN, every stop
+       case, no climb = DISARM + hatch open, the GPS fallback climb (STANDBY only), a STOP with a drone on deck
+  UA17 the router process flying a launch: mission upload + read-back, ARM only with a fresh hatch OPEN held IN the
+       router (U2 review LOW-3), DISARM refused in the air (landed from the drone, LOW-4), ELRS link, MISSION START
+  UA18 the real gateway + the simulated AURIX relay board + hatch + drones: 125 for a station's hatch relay, routes,
+       the copilot's PREPARE -> the captain's YES -> 2 drones launched, the hatch relay through the AURIX, the boat
+       untouched; with no HELM nothing switches the hatch (notice) and a launch is refused
+  UA19 W55: the gateway's own HELM grant vs TELEM2 for the hatch relay command; 125 for a station's hatch relay
 
 Run:  python test_uav.py      (exit code 0 = all passed)
 """
@@ -234,6 +248,8 @@ def ua3_allow():
     bad = []
 
     def want(ok_expected, name, fields, ctx=None, label=""):
+        if name in allow.TARGETED and "target_system" not in fields:
+            fields = dict(fields, target_system=11)
         ok, why = allow.check_out(name, fields, ctx or {})
         if ok != ok_expected:
             bad.append("%s %s %s -> %s %s" % (label or name, fields.get("command", ""), ctx, ok, why))
@@ -253,7 +269,8 @@ def ua3_allow():
     allowed_cmds = []
     for cmd in range(65536):
         for nm in ("COMMAND_LONG", "COMMAND_INT"):
-            ok, _w = allow.check_out(nm, {"command": cmd, "param1": 1.0, "param2": 4.0},
+            ok, _w = allow.check_out(nm, {"command": cmd, "param1": 1.0, "param2": 4.0, "param7": 20.0, "z": 20.0,
+                                          "target_system": 11},
                                      {"hatch_open": True, "landed": True, "battery_land": True})
             if ok:
                 allowed_cmds.append(cmd)
@@ -262,7 +279,8 @@ def ua3_allow():
         bad.append("commands %s" % allowed_cmds)
     # every mission item command
     m_ok = sorted({c for c in range(65536) for fr in (2, 3, 6)
-                   if allow.check_out("MISSION_ITEM_INT", {"command": c, "frame": fr, "param2": 5.0})[0]})
+                   if allow.check_out("MISSION_ITEM_INT", {"command": c, "frame": fr, "param2": 5.0,
+                                                           "target_system": 11})[0]})
     if set(m_ok) != allow.MISSION_COMMANDS:
         bad.append("mission %s" % m_ok)
     for c in (183, 184, 181, 182, 211, 42600, 42601, 208, 205, 203, 206, 20, 21, 31010, 191, 3000):
@@ -301,6 +319,18 @@ def ua3_allow():
     want(False, "SET_POSITION_TARGET_LOCAL_NED", {"coordinate_frame": 8, "type_mask": vel | 0x38}, {}, "no velocity")
     want(False, "SET_POSITION_TARGET_LOCAL_NED", {"coordinate_frame": 8, "type_mask": vel, "vx": float("nan")}, {},
          "nan setpoint")
+    # U2 review LOW-5: no broadcast (target_system 0), only mission_type 0, ceilings
+    want(False, "COMMAND_LONG", {"command": 176, "param1": 1.0, "param2": 4.0, "target_system": 0}, {}, "broadcast")
+    want(False, "MISSION_CLEAR_ALL", {"target_system": 11, "mission_type": 1}, {}, "clear the fence")
+    want(False, "MISSION_CLEAR_ALL", {"target_system": 11, "mission_type": 255}, {}, "clear all")
+    want(True, "MISSION_CLEAR_ALL", {"target_system": 11})
+    want(False, "MISSION_COUNT", {"target_system": 11, "count": 3, "mission_type": 2}, {}, "rally upload")
+    want(False, "COMMAND_LONG", {"command": 22, "param7": 121.0}, {}, "takeoff too high")
+    want(False, "COMMAND_LONG", {"command": 22, "param7": 0.0}, {}, "takeoff to 0 m")
+    want(True, "COMMAND_LONG", {"command": 22, "param3": 1.0, "param7": 15.0})
+    want(False, "MISSION_ITEM_INT", {"command": 16, "frame": 3, "z": 500.0}, {}, "wp too high")
+    want(False, "SET_POSITION_TARGET_LOCAL_NED", {"coordinate_frame": 8, "type_mask": vel, "vx": 40.0}, {}, "fast")
+    want(False, "SET_POSITION_TARGET_LOCAL_NED", {"coordinate_frame": 8, "type_mask": vel, "vz": 5.0}, {}, "fast vz")
     # GPS injection
     for nm in ("GPS_RTCM_DATA", "GPS_INJECT_DATA"):
         want(True, nm, {}, {"port": "usb", "armed": False})
@@ -375,8 +405,19 @@ def ua5_no_aurix():
             if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and re.search(
                     r"payload|release|drop|grip|winch|strike|target|bomb|weapon|chute", node.name, re.I):
                 names.append("%s:%s" % (os.path.basename(p), node.name))
+    # U3 (storm I80 reserved): the ONE boat path = uavlink.hatch_relay -> stations.uav_relay (a T_RELAY of the HELM
+    # station); uavlink itself never touches the AURIX link, and the UAV code calls nothing else of uavlink
+    ul = open(os.path.join(HERE, "uavlink.py"), encoding="utf-8").read()
+    if "aurix" in re.sub(r"#.*|\"\"\"[\s\S]*?\"\"\"", "", ul) or "stations.uav_relay(" not in ul:
+        bad.append("uavlink.py touches the AURIX directly")
+    used = set()
+    for p in py_files([UAV_DIR]):
+        used |= set(re.findall(r"uavlink\.(\w+)\(", open(p, encoding="utf-8").read()))
+    if not used <= {"boat_state", "relay_on", "hatch_relay"}:
+        bad.append("gateway/uav uses uavlink.%s" % sorted(used))
     report("UA5 no UAV path to the AURIX (no gateway/uav module imports aurix / proto / stations or touches "
-           ".aurix) and no payload / release / target function anywhere in the UAV code", not bad and not names,
+           ".aurix; the only boat action = uavlink.hatch_relay -> stations.uav_relay) and no payload / release / "
+           "target function anywhere in the UAV code", not bad and not names,
            "%d files; AURIX paths %s; suspicious names %s" % (len(files), bad, names))
 
 
@@ -892,6 +933,716 @@ def ua12_osdep():
                r1, missing, r2, [ln for ln in lines if "usbloc" in ln][:1]))
 
 
+# ------------------------------------------------------------------------------------------------------ U3 ---------
+
+def ua13_mission():
+    from uav import mission
+    wps = [{"lat": 37.821, "lon": 23.601, "alt": 50.0}, {"lat": 37.822, "lon": 23.603, "alt": 70.0}]
+    it = mission.build(wps, (37.82, 23.60), mission.init_alt(3), 8.0)
+    cmds = [i["command"] for i in it]
+    allowed = all(allow.check_out("MISSION_ITEM_INT", dict(i, target_system=11))[0] for i in it)
+    ok_same = mission.same(it, [dict(i) for i in it]) == (True, "")
+    bad_alt = [dict(i) for i in it]
+    bad_alt[3]["z"] = 51.0
+    other = [dict(i) for i in it]
+    other[4]["command"] = 21
+    short = mission.same(it, it[:-1])
+    home_diff = [dict(i) for i in it]
+    home_diff[0]["x"] += 999                                     # the drone's own home in seq 0: not compared
+    try:
+        mission.build([], (0, 0), 30, 5)
+        empty = False
+    except ValueError:
+        empty = True
+    report("UA13 route -> mission: HOME slot, TAKEOFF to the slot-staggered altitude (30 + 5 m x (slot - 1)), the "
+           "speed cap, one WAYPOINT per point with ITS altitude, LOITER_UNLIM over the last point (never a landing); "
+           "every item passes the allow-list; the read-back comparison finds a changed altitude / command / a "
+           "missing item and ignores the drone's own home",
+           cmds == [16, 22, 178, 16, 16, 17] and it[1]["z"] == 40.0 and it[2]["param2"] == 8.0 and
+           it[3]["z"] == 50.0 and it[4]["z"] == 70.0 and it[5]["x"] == 378220000 and allowed and ok_same and
+           not mission.same(it, bad_alt)[0] and not mission.same(it, other)[0] and not short[0] and
+           mission.same(it, home_diff)[0] and empty,
+           "commands %s, take-off %.0f m, allowed %s, read-back ok %s, altitude %s, command %s, short %s" % (
+               cmds, it[1]["z"], allowed, ok_same, mission.same(it, bad_alt), mission.same(it, other)[1], short[1]))
+
+
+def ua14_checks():
+    from uav import nofly, uavcheck
+    boat = (37.82, 23.60)
+    start = (37.82, 23.60, 0.0)
+    cfg = dict(uavcheck.DEFAULTS)
+    batt = {"pct": 95, "capacity_mah": 5000}
+
+    def wp(dn, de, alt=50.0):
+        return {"lat": boat[0] + dn / 111320.0, "lon": boat[1] + de / (111320.0 * math.cos(math.radians(boat[0]))),
+                "alt": alt}
+    ok = uavcheck.check([wp(300, 200), wp(500, -100)], start, boat, cfg, batt, take_alt=30)
+    high = uavcheck.check([wp(300, 0, 150)], start, boat, cfg, batt)
+    low = uavcheck.check([wp(300, 0, 5)], start, boat, cfg, batt)
+    far = uavcheck.check([wp(1600, 0)], start, boat, cfg, batt)
+    boat_moved = uavcheck.check([wp(1000, 0)], start, (boat[0] - 1000 / 111320.0, boat[1]), cfg, batt)
+    weak = uavcheck.check([wp(1400, 0), wp(-1400, 0), wp(1400, 0)], start, boat, cfg, {"pct": 40,
+                          "capacity_mah": 3000})
+    nogps = uavcheck.check([wp(100, 0)], None, None, cfg, batt)
+    unknown_batt = uavcheck.check([wp(100, 0)], start, boat, cfg, {"pct": None})
+    route, reserve = uavcheck.energy_mah(start, [wp(0, 0, 100)], cfg)
+    try:
+        uavcheck.clean([{"lat": float("nan"), "lon": 1}], 50)
+        nan = False
+    except ValueError:
+        nan = True
+    cleaned = uavcheck.clean([{"lat": 37.8, "lon": 23.6}], 50)
+    tmp = tempfile.mkdtemp(prefix="uavtest_air_")
+    try:
+        z = {"zones": [{"name": "HELIPAD", "kind": "circle", "center": [boat[0] + 400 / 111320.0, boat[1]],
+                        "radius_m": 100, "floor_m": 0, "ceiling_m": 60},
+                       {"name": "PORT", "kind": "polygon", "poly": [[37.79, 23.55], [37.79, 23.56], [37.80, 23.56]],
+                        "floor_m": 0, "ceiling_m": 9999}]}
+        with open(os.path.join(tmp, "uav_nofly.json"), "w", encoding="utf-8") as f:
+            json.dump(z, f)
+        air = nofly.Airspace(tmp)
+        through = uavcheck.check([wp(800, 0, 50)], start, boat, cfg, batt, air)
+        above = uavcheck.check([wp(800, 0, 80)], start, boat, cfg, batt, air, take_alt=80)
+        climb_into = uavcheck.check([wp(800, 0, 80)], start, boat, cfg, batt, air, take_alt=30)
+        with open(os.path.join(tmp, "uav_geofence.json"), "w", encoding="utf-8") as f:
+            json.dump({"poly": [[boat[0] - 0.005, boat[1] - 0.005], [boat[0] - 0.005, boat[1] + 0.005],
+                                [boat[0] + 0.005, boat[1] + 0.005], [boat[0] + 0.005, boat[1] - 0.005]]}, f)
+        air._mt = (None, None)
+        air.reload()
+        out = uavcheck.check([wp(200, 900, 80)], start, boat, cfg, batt, air, take_alt=80)
+        inside_ok = uavcheck.check([wp(-200, 200, 80)], start, boat, cfg, batt, air, take_alt=80)
+        with open(os.path.join(tmp, "uav_nofly.json"), "w", encoding="utf-8") as f:
+            f.write("{broken")
+        air._mt = (None, None)
+        air.reload()
+        broken = uavcheck.check([wp(-200, 200, 80)], start, boat, cfg, batt, air, take_alt=80)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    report("UA14 UAV route checks (not shallow water): altitude window (10..120 m), radio range from the launch point "
+           "AND the boat now, energy with the landing reserve + wind margin above the drone's backstop, no trusted "
+           "boat GPS / unknown battery refused (123); air no-fly zones with their altitude band (a climb through the "
+           "floor counts), the AIR geofence, a broken airspace file = refused (124); a NaN point refused",
+           ok is None and high and high[0] == 123 and low and low[0] == 123 and far and "radio range" in far[1] and
+           boat_moved and "the boat" in boat_moved[1] and weak and "battery" in weak[1] and nogps and
+           unknown_batt and reserve > 0 and route > 0 and nan and cleaned[0]["alt"] == 50.0 and
+           through and through[0] == 124 and "HELIPAD" in through[1] and above is None and climb_into and
+           climb_into[0] == 124 and out and "air geofence" in out[1] and inside_ok is None and broken and
+           broken[0] == 124 and "unreadable" in broken[1],
+           "ok %s; high %s; far %s; boat moved %s; weak %s; zone %s; above it %s; climb into %s; fence %s; "
+           "broken %s" % (ok, high, far and far[1][:40], boat_moved and boat_moved[1][:40], weak and weak[1][:50],
+                          through, above, climb_into, out, broken))
+
+
+def ua15_hatch():
+    from uav import hatch, simhatch
+    out = {}
+
+    def run(fault=None, steps=(), travel=2.0, open_s=4.0):
+        """steps: [(t, relay_on, command)]; returns the hatch states seen (deduplicated) + the last."""
+        h = hatch.Hatch(open_s, open_s)
+        sh = simhatch.SimHatch(travel)
+        if fault:
+            sh.fault(fault)
+        seen, relay = [], False
+        t = 0.0
+        ev = dict((round(a, 2), (r, c)) for a, r, c in steps)
+        while t <= 12.0:
+            if round(t, 2) in ev:
+                relay, cmd = ev[round(t, 2)]
+                if cmd is not None:
+                    h.command(cmd, t)
+            sh.step(t, relay)
+            st = h.update(t, sh.read(t))
+            if not seen or seen[-1] != st:
+                seen.append(st)
+            t += 0.05
+        return seen, h
+    norm, h1 = run(steps=[(1.0, True, True), (6.0, False, False)])
+    out["normal"] = norm
+    stuck, h2 = run("stuck", steps=[(1.0, True, True)])
+    both, h3 = run("both")
+    nosw, h4 = run("closed_sw_broken")
+    unpl, h5 = run("unplugged")
+    broken_open, h6 = run("open_sw_broken", steps=[(1.0, True, True)])
+    selfclose, h7 = run(steps=[(1.0, True, True), (6.0, False, None)])       # relay OFF without a command (reboot)
+    why7 = h7.why
+    # a new command clears a latched FAULT
+    h7.command(False, 12.1)
+    cleared = h7.state != hatch.FAULT
+    report("UA15 the hatch + its two limit switches (the simulated hatch follows the relay): CLOSED -> OPENING -> OPEN "
+           "-> CLOSING -> CLOSED; FAULT for no switch change in time (stuck motor / a broken OPEN wire), BOTH switches, "
+           "NONE for longer than the travel time, the cable unplugged, a move WITHOUT a command (the relay switched "
+           "off by a board reboot closes the hatch); a new command clears the latched FAULT",
+           norm == ["CLOSED", "OPENING", "OPEN", "CLOSING", "CLOSED"] and stuck[-1] == "FAULT" and
+           "did not" in h2.why and both[-1] == "FAULT" and "both" in h3.why and nosw[-1] == "FAULT" and
+           "no hatch switch" in h4.why and unpl[-1] == "FAULT" and "unplugged" in h5.why and
+           broken_open[-1] == "FAULT" and "did not open" in h6.why and selfclose[-1] == "FAULT" and
+           "without a command" in why7 and cleared,
+           "normal %s; stuck %s (%s); both %s; no switch %s; unplugged %s; OPEN wire broken %s (%s); self-close %s "
+           "(%s); cleared %s" % (norm, stuck, h2.why, both, nosw, unpl, broken_open, h6.why, selfclose, why7,
+                                 cleared))
+
+
+class FakeIo:
+    """The manager seen by launch.Launch, with a scripted magazine (tests UA16)."""
+
+    def __init__(self, n=3, gps=True, climb=True, standby=True):
+        self.t = 0.0
+        self.drones = {s: {"usb_present": True, "battery_pct": 95, "gps_fix": 1, "ekf_flags": 0x07, "rel_alt": 0.0,
+                           "alt_age": 0.1, "landed": True, "armed": False} for s in range(1, n + 1)}
+        self.gps, self.climb = gps, climb
+        self.boat_d = {"launch_why": [], "standby": standby, "pos": (37.82, 23.60)}
+        self.hatch_st, self.hatch_cmd_open = "CLOSED", False
+        self.sent = []                     # (t, slot, what)
+        self.relay = []
+        self.notices = []
+        self.upload_ok = True
+        self.captain = True
+        self.sky = False
+        self.q = []
+
+    def now(self):
+        return self.t
+
+    def boat(self):
+        return self.boat_d
+
+    def hatch_state(self):
+        return self.hatch_st
+
+    def hatch_why(self):
+        return "test"
+
+    def hatch_open_s(self):
+        return 5.0
+
+    def hatch_commanded_open(self):
+        return self.hatch_cmd_open
+
+    def captain_ok(self, sid):
+        return self.captain
+
+    def slot(self, n):
+        return dict(self.drones[n])
+
+    def next_slot(self):
+        return next((s for s, d in sorted(self.drones.items()) if d["usb_present"]), None)
+
+    def check_drone(self, n):
+        return None if self.drones[n]["usb_present"] else "not on its slot USB cable"
+
+    def mission_items(self, n, pos, take):
+        return [{"seq": 0}], ""
+
+    def upload(self, n, items, via, cb):
+        self.sent.append((self.t, n, "upload " + via))
+        self.q.append(lambda: cb(self.upload_ok, "" if self.upload_ok else "read-back differs"))
+
+    def mission_loaded(self, n):
+        pass
+
+    def cmd(self, n, via, command, params, cb):
+        params = list(params) + [0] * 7
+        name = {176: "mode %d" % params[1], 400: "arm" if params[0] == 1 else "disarm", 22: "takeoff %g/%g" % (
+            params[2], params[6]), 300: "start"}.get(command, str(command))
+        self.sent.append((self.t, n, name))
+        d = self.drones[n]
+        res = 0
+        if command == 400 and params[0] == 1:
+            res = 0 if self.hatch_st == "OPEN" else 4               # the router's allow-list: ARM only OPEN
+            if res == 0:
+                d["armed"] = True
+        elif command == 400:
+            d["armed"] = False
+        self.q.append(lambda: cb(res, ""))
+
+    def armed(self, n):
+        pass
+
+    def on_mission(self, n):
+        pass
+
+    def catchup(self, n):
+        self.sent.append((self.t, n, "catchup"))
+
+    def hatch_cmd(self, on, cb):
+        self.relay.append((self.t, on))
+        self.hatch_cmd_open = on
+        self.hatch_t = self.t
+        self.q.append(lambda: cb(True, ""))
+
+    def notice(self, text, level="info"):
+        self.notices.append(text)
+
+    def world(self, dt):
+        """The simulated physics: the hatch moves 2 s, the GPS fix 1 s after the sky, an armed drone climbs."""
+        if self.hatch_cmd_open and self.hatch_st in ("CLOSED", "CLOSING") and self.t - self.hatch_t >= 2.0:
+            self.hatch_st = "OPEN"
+        if not self.hatch_cmd_open and self.hatch_st == "OPEN" and self.t - self.hatch_t >= 2.0:
+            self.hatch_st = "CLOSED"
+        for s, d in self.drones.items():
+            if self.hatch_st == "OPEN" and self.gps and d["usb_present"]:
+                d["gps_fix"], d["ekf_flags"] = 3, 0x1F
+            if d["armed"] and self.climb:
+                d["rel_alt"] += 2.5 * dt
+                d["landed"] = d["rel_alt"] < 0.3
+                if d["rel_alt"] > 0.3:
+                    d["usb_present"] = False
+
+
+def run_seq(io, seq, until_t, events=()):
+    ev = sorted(events)
+    while io.t < until_t:
+        while ev and ev[0][0] <= io.t:
+            ev.pop(0)[1]()
+        seq.tick(io.t)
+        while io.q:
+            io.q.pop(0)()
+        io.world(0.25)
+        io.t += 0.25
+        if seq.state in ("DONE", "STOPPED") and not ev:
+            break
+
+
+def ua16_launch():
+    from uav import launch
+    # 1) a normal 3-drone sequence
+    io = FakeIo(3)
+    seq = launch.Launch(io, {"gap_s": 15.0})
+    seq.prepare([1, 2, 3], 5, 0.0)
+    seq.approved(True, 7, 0.0)
+    run_seq(io, seq, 200.0)
+    order = [n for _t, n, w in io.sent if w == "arm"]
+    arm_t = [t for t, _n, w in io.sent if w == "arm"]
+    gaps = [b - a for a, b in zip(arm_t, arm_t[1:])]
+    up_first = all(any(w.startswith("upload") and n == k and t < arm_t[i] for t, n, w in io.sent)
+                   for i, k in enumerate(order))
+    opened_before_arm = io.relay and io.relay[0][1] is True and io.relay[0][0] < arm_t[0]
+    closed_after = io.relay[-1][1] is False and io.relay[-1][0] > arm_t[-1]
+    seq_ok = (seq.state == "DONE" and order == [1, 2, 3] and min(gaps) >= 15.0 and up_first and opened_before_arm and
+              closed_after and len(io.relay) == 2 and [w for _t, n, w in io.sent if n == 1][:4] ==
+              ["upload usb", "mode 4", "arm", "takeoff 0/30"])
+    # 2) the boat leaves STANDBY after the first drone: stop, no further drone, the hatch not switched
+    io2 = FakeIo(3)
+    seq2 = launch.Launch(io2, {"gap_s": 15.0})
+    seq2.prepare([1, 2, 3], 5, 0.0)
+    seq2.approved(True, 7, 0.0)
+
+    def leave():
+        io2.boat_d["launch_why"] = ["the boat is not in STANDBY or DP SPOT / JOG (MANUAL)"]
+    run_seq(io2, seq2, 200.0, [(10.0, leave)])
+    stop_ok = (seq2.state == "STOPPED" and "STANDBY" in seq2.why and
+               [n for _t, n, w in io2.sent if w == "arm"] == [1] and len(io2.relay) == 1)
+    # 3) a hatch FAULT while opening: never ARM
+    io3 = FakeIo(2)
+    seq3 = launch.Launch(io3)
+    seq3.prepare([1, 2], 5, 0.0)
+    seq3.approved(True, 7, 0.0)
+
+    def hfault():
+        io3.hatch_st = "FAULT"
+        io3.hatch_cmd_open = False                 # (the fake world stops moving it)
+    run_seq(io3, seq3, 60.0, [(1.0, hfault)])
+    hf_ok = seq3.state == "STOPPED" and "HATCH FAULT" in seq3.why and not any(w == "arm" for _t, _n, w in io3.sent)
+    # 4) armed but no climb (motor / prop fault): DISARM at once, stop, the hatch stays OPEN
+    io4 = FakeIo(2, climb=False)
+    seq4 = launch.Launch(io4)
+    seq4.prepare([1, 2], 5, 0.0)
+    seq4.approved(True, 7, 0.0)
+    run_seq(io4, seq4, 60.0)
+    nc = [w for _t, n, w in io4.sent if n == 1]
+    nc_ok = (seq4.state == "STOPPED" and "did not leave the hatch" in seq4.why and "disarm" in nc and seq4.keep_open
+             and io4.relay == [(io4.relay[0][0], True)] and not any(n == 2 and w == "arm" for _t, n, w in io4.sent))
+    # 5) no GPS: STANDBY = the climb fallback (ALT_HOLD + TAKEOFF param3 1, 15 m) -> catch-up; DP = stop, never ARM
+    io5 = FakeIo(1, gps=False)
+    seq5 = launch.Launch(io5)
+    seq5.prepare([1], 5, 0.0)
+    seq5.approved(True, 7, 0.0)
+    run_seq(io5, seq5, 80.0)
+    fb = [w for _t, n, w in io5.sent]
+    fb_ok = seq5.state == "DONE" and "mode 2" in fb and "takeoff 1/15" in fb and "catchup" in fb and "start" not in fb
+    io6 = FakeIo(1, gps=False, standby=False)
+    seq6 = launch.Launch(io6)
+    seq6.prepare([1], 5, 0.0)
+    seq6.approved(True, 7, 0.0)
+    run_seq(io6, seq6, 60.0)
+    dp_ok = seq6.state == "STOPPED" and "only in STANDBY" in seq6.why and not any(w == "arm" for _t, _n, w in io6.sent)
+    # 6) the read-back differs: stop, never armed; 7) the captain's station lost; 8) slot mismatch; 9) NO / no answer
+    io7 = FakeIo(1)
+    io7.upload_ok = False
+    seq7 = launch.Launch(io7)
+    seq7.prepare([1], 5, 0.0)
+    seq7.approved(True, 7, 0.0)
+    run_seq(io7, seq7, 30.0)
+    rb_ok = seq7.state == "STOPPED" and "read-back" in seq7.why and not io7.relay
+    io8 = FakeIo(2)
+    seq8 = launch.Launch(io8)
+    seq8.prepare([1, 2], 5, 0.0)
+    seq8.approved(True, 7, 0.0)
+
+    def gone():
+        io8.captain = False
+    run_seq(io8, seq8, 60.0, [(1.0, gone)])
+    cap_ok = seq8.state == "STOPPED" and "captain" in seq8.why and not any(w == "arm" for _t, _n, w in io8.sent)
+    io9 = FakeIo(3)
+    io9.drones[1]["usb_present"] = False                         # slot 1 empty: the top is slot 2
+    seq9 = launch.Launch(io9)
+    seq9.prepare([1, 2], 5, 0.0)
+    seq9.approved(True, 7, 0.0)
+    run_seq(io9, seq9, 10.0)
+    mm_ok = seq9.state == "STOPPED" and "mismatch" in seq9.why
+    io10 = FakeIo(1)
+    seq10 = launch.Launch(io10)
+    seq10.prepare([1], 5, 0.0)
+    seq10.approved(False, None, 0.0, "the captain said NO")
+    seq11 = launch.Launch(io10)
+    seq11.prepare([1], 5, 0.0)
+    run_seq(io10, seq11, 40.0)
+    no_ok = seq10.state == "STOPPED" and seq11.state == "STOPPED" and "no answer" in seq11.why and not io10.sent
+    # 10) a STOP while armed on deck (between ARM and the climb) = DISARM
+    io12 = FakeIo(1, climb=False)
+    seq12 = launch.Launch(io12)
+    seq12.prepare([1], 5, 0.0)
+    seq12.approved(True, 7, 0.0)
+    run_seq(io12, seq12, 30.0, [(4.5, lambda: seq12.stop("STOP by test", io12.t))])
+    deck = [w for _t, n, w in io12.sent]
+    deck_ok = seq12.state == "STOPPED" and "arm" in deck and deck[-1] == "disarm" and "STOP by test" in seq12.why
+    report("UA16 the launch sequence (state machine, scripted magazine): top slot first, strictly in series, the "
+           "mission uploaded + read back BEFORE the hatch, the hatch opened before the first ARM and closed after the "
+           "last, GUIDED -> ARM -> TAKEOFF to the slot altitude, >= 15 s between ARMs; ANY warning stops it (the boat "
+           "leaving STANDBY, a hatch FAULT, the captain's station lost, a slot mismatch, a bad read-back, NO / no "
+           "answer) with no further drone and the hatch not switched; armed without a climb = DISARM + the hatch "
+           "stays OPEN; no GPS in STANDBY = the ALT_HOLD climb fallback (TAKEOFF param3 1, 15 m) + catch-up, in DP = "
+           "stop; a STOP with a drone armed on deck disarms it",
+           seq_ok and stop_ok and hf_ok and nc_ok and fb_ok and dp_ok and rb_ok and cap_ok and mm_ok and no_ok and
+           deck_ok,
+           "normal %s (order %s, gaps %s, relay %s); boat leaves %s (%s); hatch fault %s; no climb %s (%s); fallback "
+           "%s (%s); DP %s; read-back %s; captain lost %s; mismatch %s; NO / timeout %s; deck stop %s (%s)" % (
+               seq_ok, order, [round(g) for g in gaps], io.relay, stop_ok, seq2.why, hf_ok, nc_ok, nc, fb_ok, fb,
+               dp_ok, rb_ok, cap_ok, mm_ok, no_ok, deck_ok, deck))
+
+
+def ua17_router_flight():
+    from uav import mission
+    base = free_base()
+    fl = simdrone.Fleet(base, 2, ttf=(2.0, 1.0, 0.5), origin=(37.82, 23.60)).start()
+    w = Worker()
+    try:
+        w.send({"op": "config", "slots": [{"slot": i, "usb": "udp:127.0.0.1:%d" % (base + i),
+                                           "elrs": "udp:127.0.0.1:%d" % (base + 10 + i), "sysid": 10 + i}
+                                          for i in (1, 2)]})
+        w.find(lambda e: e.get("ev") == "status" and e["links"].get("1", {}).get("present") and
+               e["radio"].get("1", {}).get("present"), 8)
+        seq = [0]
+
+        def req(op, **kw):
+            seq[0] += 1
+            w.send(dict(kw, op=op, id=seq[0]))
+            return w.find(lambda e, i=seq[0]: e.get("id") == i and e.get("ev") in ("mission", "cmd"), 15)
+        wps = [{"lat": 37.8205, "lon": 23.6005, "alt": 40.0}]
+        items = mission.build(wps, (37.82, 23.60), 30.0, 8.0)
+        up = req("mission", slot=1, via="usb", items=items)
+        on_drone = [int(i["command"]) for i in fl.drones[0].mission]
+        bad = [dict(i) for i in items]
+        bad[3]["command"] = 183                                       # DO_SET_SERVO: never leaves the router
+        up_bad = req("mission", slot=2, via="usb", items=bad)
+        for d in fl.drones:
+            d.sky = True
+        until(lambda: fl.drones[0].fix >= 3, 6)
+        mode = req("cmd", slot=1, via="usb", command=176, params=[1, 4])
+        arm_closed = req("cmd", slot=1, via="usb", command=400, params=[1, 0])        # no hatch op: refused here
+        armed_before = fl.drones[0].armed
+        stale = []
+        w.send({"op": "hatch", "open": True})
+        arm = req("cmd", slot=1, via="usb", command=400, params=[1, 0])
+        tko = req("cmd", slot=1, via="usb", command=22, params=[0, 0, 0, 0, 0, 0, 30])
+        up_alt = until(lambda: fl.drones[0].alt > 12.0, 12)
+        # in the air: the USB cable is gone, the ELRS link carries on; DISARM refused (the drone says "in air")
+        st = w.find(lambda e: e.get("ev") == "status" and not e["links"].get("1", {}).get("present") and
+                    (e["drones"].get("1") or {}).get("rel_alt", 0) > 10, 10)
+        disarm_air = req("cmd", slot=1, via="auto", command=400, params=[0, 0])
+        start = req("cmd", slot=1, via="elrs", command=300, params=[1, 0])
+        cur = fl.drones[0].cur
+        # the hatch op goes stale (the manager gone quiet) = ARM refused again
+        time.sleep(1.3)
+        arm2 = req("cmd", slot=2, via="usb", command=400, params=[1, 0])
+        stale.append(fl.drones[1].armed)
+        report("UA17 the router flies a launch (2 simulated drones, USB + ELRS links): mission upload + read-back over "
+               "USB (a DO_SET_SERVO item never leaves the router), ARM refused while the router holds no fresh hatch "
+               "OPEN, ARM / TAKEOFF with it, the USB link gone in the air and the ELRS link carrying the altitude, "
+               "DISARM refused in the air (landed = the drone's own EXTENDED_SYS_STATE / altitude - U2 review LOW-4), "
+               "MISSION START from seq 1 over ELRS, a stale hatch state refuses ARM again",
+               up and up["ok"] and on_drone == [16, 22, 178, 16, 17] and up_bad and not up_bad["ok"] and
+               not fl.drones[1].mission and mode and mode["result"] == 0 and arm_closed and
+               arm_closed["result"] is None and not armed_before and arm and arm["result"] == 0 and tko and
+               tko["result"] == 0 and up_alt and st is not None and disarm_air and disarm_air["result"] is None and
+               start and start["result"] == 0 and cur >= 1 and arm2 and arm2["result"] is None and not stale[0],
+               "upload %s (drone %s), bad item %s; mode %s, arm closed %s, arm %s, takeoff %s, climbed %s, ELRS "
+               "status %s, disarm in air %s, start %s (seq %s), stale-hatch arm %s" % (
+                   up and (up["ok"], up["why"]), on_drone, up_bad and up_bad["why"], mode and mode["result"],
+                   arm_closed and arm_closed["why"], arm and arm["result"], tko and tko["result"], bool(up_alt),
+                   st is not None, disarm_air and disarm_air["why"], start and start["result"], cur,
+                   arm2 and arm2["why"]))
+    finally:
+        w.close()
+        fl.stop()
+
+
+HATCH_N = 8
+UA_RELAYS = [{"n": 6, "name_el": "ΦΩΤΑ", "name_en": "NAV LIGHTS", "type": "onoff", "group": "extra", "pair": None,
+              "max_s": 0, "show_hud": False, "power_up": "keep", "role": None},
+             {"n": HATCH_N, "name_el": "ΚΑΤΑΠΑΚΤΗ UAV", "name_en": "UAV HATCH", "type": "onoff", "group": "extra",
+              "pair": None, "max_s": 0, "show_hud": False, "power_up": "off", "role": None}]
+
+
+def ua18_gateway_launch():
+    """The real gateway + the simulated AURIX (its relay board) + the simulated hatch + the simulated drones."""
+    import test_gateway as tg
+    import proto
+    if not os.path.exists(tg.EXE):
+        return report("UA18 the launch through the real gateway", False, "autopilot_sim not built")
+    tmp = tempfile.mkdtemp(prefix="uavtest_launch_")
+    sim = gw = None
+    clients, beat = [], None
+    try:
+        base = free_base()
+        sim = tg.Sim(1.0, "origin=37.82,23.60")
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        cfg = tg.gw_cfg_b(sim, root, stations={"driver_timeout_s": 8.0},
+                          uav={"enabled": True, "sim": True, "sim_base_port": base,
+                               "sim_args": ["--ttf", "2,1,0.5", "--origin", "37.82,23.60"], "assist_s": 30.0,
+                               "hatch_relay": HATCH_N, "hatch": {"sim_travel_s": 2.0, "open_s": 8.0, "close_s": 8.0},
+                               "launch": {"gap_s": 5.0}})
+        gw = tg.GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        link, _w = sim.station()
+        clients.append(link)
+        alice = tg.Client(sp, "alice", tg.PW["alice"], name="captain")
+        clients.append(alice)
+        alice.pump(1.0)
+        r_helm = alice.result(alice.cmd(proto.T_HELM, proto.p_helm(0)))
+        beat = tg.DriverBeat(alice)
+        bob = tg.Client(sp, "bob", tg.PW["bob"], name="copilot")
+        clients.append(bob)
+        bob.pump(1.0)
+        pay = proto.p_relay_cfg(UA_RELAYS)
+        r_cfg = alice.result(alice.cmd(proto.T_RELAY_CFG, pay))
+        time.sleep(0.5)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
+        time.sleep(0.3)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        active = until(lambda: g.telem2.get("relay_table") and g.telem2.get("relay_hash") ==
+                       proto.relay_table_hash(UA_RELAYS) and not g.telem2.get("relay_pending"), 10)
+        hatch_ok = until(lambda: g.stations.hatch_relay_ok(HATCH_N)[0] and g.uav.hatch.state == "CLOSED", 10)
+        tel0 = dict(g.telem or {})
+        # a station's relay command for the hatch relay = 125 (copilot and captain), another relay goes as before
+        r_h_cap = alice.result(alice.cmd(proto.T_RELAY, proto.p_relay(HATCH_N, proto.RELAY_CMD_ON)))
+        r_h_cop = bob.result(bob.cmd(proto.T_RELAY, proto.p_relay(HATCH_N, proto.RELAY_CMD_ON)))
+        r_light = bob.result(bob.cmd(proto.T_RELAY, proto.p_relay(6, proto.RELAY_CMD_ON), timeout=4.0))
+        up = until(lambda: g.uav.state == "ACTIVE" and all(
+            (g.uav.slot(s) or {}).get("usb_present") for s in (1, 2, 3)), 20)
+        acks = []
+
+        def uav_acks(c, what):
+            out = []
+            while True:
+                try:
+                    k, d = c.l.events.get_nowait()
+                except Exception:
+                    break
+                if k == "uav_ack":
+                    acks.append(d)
+                elif k == "ack":
+                    c.acks.append(d)
+            return [a for a in acks if a.get("what") == what]
+        for s in (1, 2, 3):
+            bob.l.send_msg({"t": "uav_register", "slot": s})
+        regs = until(lambda: (lambda l: l if len(l) >= 3 else None)(uav_acks(bob, "register")), 40) or []
+        # routes: the next UAV + slot 2 (copilot); one too far (123)
+        bob.l.send_msg({"t": "uav_route", "target": "next", "wps": [{"lat": 37.8215, "lon": 23.6010, "alt": 45}]})
+        bob.l.send_msg({"t": "uav_route", "target": 2, "wps": [{"lat": 37.8190, "lon": 23.5990}]})
+        bob.l.send_msg({"t": "uav_route", "target": 3, "wps": [{"lat": 37.90, "lon": 23.60}]})
+        routes = until(lambda: (lambda l: l if len(l) >= 3 else None)(uav_acks(bob, "route")), 10) or []
+        by_slot = {a.get("slot"): a for a in routes}
+        # the copilot prepares two drones; the captain's YES on screen 1
+        lat = []
+        bob.l.send_msg({"t": "uav_launch_prepare", "count": 2})
+        k, ask = tg.next_event(alice, ("driver_ask",), 8.0)
+        if ask:
+            alice.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": True})
+        relay_seen = set()
+        order, t_arm = [], {}
+
+        def watch():
+            if HATCH_N in (g.telem2.get("relay_on") or []):
+                relay_seen.add("on")
+            elif "on" in relay_seen:
+                relay_seen.add("off_after")
+            for s in (1, 2):
+                if (g.uav.flying.get(s) or {}) and s not in order:
+                    order.append(s)
+                    t_arm[s] = time.time()
+            t0 = time.time()
+            gw.call(lambda: None)
+            lat.append(time.time() - t0)
+            return g.uav.seq.state in ("DONE", "STOPPED")
+        end = until(watch, 120, step=0.2)
+        seq = g.uav.seq.status(time.time())
+        tel1 = dict(g.telem or {})
+        drones = [fl for fl in (g.uav.slot(1), g.uav.slot(2))]
+        report("UA18a the launch through the real gateway (simulated AURIX relay board, hatch, drones): a station's "
+               "T_RELAY for the hatch relay = 125 (captain and copilot; another relay still goes), the copilot's "
+               "routes (one too far = 123), PREPARE by the copilot -> the captain's YES on screen 1 -> slot 1 then "
+               "slot 2 launched, the hatch relay ON through the AURIX (TELEM2 readback) before the first ARM and OFF "
+               "after the last, the hatch CLOSED again, the boat untouched (STANDBY, no new alarm), the event loop "
+               "never blocked (max %.0f ms)" % (1000 * max(lat or [0])),
+               r_helm == 0 and r_cfg == 0 and active and hatch_ok and r_h_cap == 125 and r_h_cop == 125 and
+               r_light == 0 and up and len(regs) >= 3 and all(a["ok"] for a in regs) and
+               by_slot.get(1, {}).get("ok") and by_slot.get(2, {}).get("ok") and by_slot.get(3) and
+               by_slot[3]["code"] == 123 and ask is not None and "UAV LAUNCH" in ask.get("text", "") and end and
+               seq["state"] == "DONE" and seq["launched"] == [1, 2] and order == [1, 2] and
+               {"on", "off_after"} <= relay_seen and g.uav.hatch.state == "CLOSED" and
+               tel1.get("mode") == tel0.get("mode") == proto.MODE_STANDBY and
+               (tel1.get("alarm_bits", 0) & ~tel0.get("alarm_bits", 0)) == 0 and max(lat or [0]) < 0.25,
+               "HELM %s, table %s / active %s, hatch %s; hatch relay from the captain %s / copilot %s, lights %s; "
+               "regs %s; routes %s; ask %s; sequence %s (%s, launched %s, order %s), relay %s, hatch %s, mode %s -> %s, "
+               "alarms %s -> %s; drones %s" % (
+                   r_helm, r_cfg, bool(active), g.uav.hatch.status(), r_h_cap, r_h_cop, r_light,
+                   [(a["slot"], a["ok"]) for a in regs], {s: (a["ok"], a["code"], a["text"][:50])
+                                                          for s, a in by_slot.items()},
+                   ask and ask.get("text"), seq["state"], seq["why"], seq["launched"], order, relay_seen,
+                   g.uav.hatch.state, tel0.get("mode_name"), tel1.get("mode_name"), tel0.get("alarm_bits"),
+                   tel1.get("alarm_bits"), [(d.get("rel_alt"), d.get("mode")) for d in drones]))
+        # UA18b no HELM = nothing switches the hatch: HELM released, HATCH CLOSE / a new launch refused
+        r_rel = alice.result(alice.cmd(proto.T_HELM, proto.p_helm(1)))
+        until(lambda: not g.telem2.get("helm"), 5)
+        bob.l.send_msg({"t": "uav_route", "target": "next", "wps": [{"lat": 37.8212, "lon": 23.6012}]})
+        alice.l.send_msg({"t": "uav_hatch_close"})
+        bob.l.send_msg({"t": "uav_launch_prepare", "count": 1})
+        nores = until(lambda: (lambda c, p: (c, p) if c and p else None)(
+            [a for a in uav_acks(alice, "hatch_close")], [a for a in uav_acks(bob, "launch") if not a["ok"]]), 12)
+        hc, pr = nores or ([], [])
+        notice = any("HATCH NOT CLOSED" in n["text"] for n in g.uav.notices)
+        report("UA18b with NO station holding HELM nothing switches the hatch (the AURIX would refuse every T_RELAY): "
+               "the captain's HATCH CLOSE ends in the notice 'HATCH NOT CLOSED - take HELM and close it' after one "
+               "retry, a new launch is refused 125 'no station holds HELM'",
+               r_rel == 0 and hc and not hc[-1]["ok"] and "HELM" in hc[-1]["text"] and notice and pr and
+               pr[-1]["code"] == 125 and "HELM" in pr[-1]["text"],
+               "release %s; close %s; notice %s; prepare %s" % (r_rel, hc and hc[-1]["text"], notice,
+                                                               pr and pr[-1]["text"]))
+    finally:
+        if beat is not None:
+            beat.stop()
+        for c in clients:
+            try:
+                c.close() if hasattr(c, "close") else c.stop()
+            except Exception:
+                pass
+        if gw is not None:
+            gw.stop()
+        if sim is not None:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ua19_helm_grant():
+    """W55 (docs/uav_design.md 5.6): the hatch relay goes on the HELM station's behalf only while the gateway's OWN
+    HELM grant and TELEM2 agree; the grant follows an accepted T_HELM at once and TELEM2 only once it stayed 2 s."""
+    from common import proto
+    import stations as stmod
+
+    class A:
+        connected = True
+
+        def __init__(self):
+            self.sent, self.h = [], {}
+
+        def on(self, t, fn):
+            self.h[t] = fn
+
+        def send(self, t, p):
+            self.sent.append((t, p))
+
+    class F:
+        def __init__(self, payload, t=None):
+            self.payload, self.type = payload, t
+
+    class G:
+        def __init__(self):
+            self.aurix, self.telem2, self.storage = A(), {}, None
+            self.audits = []
+
+        def audit(self, kind, **kw):
+            self.audits.append(kind)
+
+    class W:
+        def __init__(self):
+            self.out = []
+
+        def write(self, b):
+            self.out.append(b)
+
+        def is_closing(self):
+            return False
+    g = G()
+    srv = stmod.StationServer(g, {})
+    a = stmod.Station(2, "alice", "HELM", False, "127.0.0.1", "captain", W())
+    b = stmod.Station(3, "bob", "HELM", False, "127.0.0.1", "copilot", W())
+    srv.stations = {2: a, 3: b}
+    srv.gw.uav = type("U", (), {"hatch_relay": HATCH_N})()
+
+    def t2(helm):
+        g.telem2 = {"helm": helm}
+        srv._on_t2(F(b""))
+    t2(None)
+    s0 = srv.helm_station()
+    # alice takes HELM: the ACK = the grant at once; TELEM2 still says nobody -> no hatch command yet
+    srv._forward(a, 1, proto.T_HELM, proto.p_helm(0), 0.0)
+    gseq = srv.gw_seq
+    srv._on_gw_ack(F(struct.pack("<BHBB", 2, gseq, proto.T_HELM, 0)))
+    s1 = srv.helm_station()
+    t2(2)
+    s2 = srv.helm_station()
+    res = []
+    srv.uav_relay(HATCH_N, True, lambda r, t: res.append((r, t)))
+    sent = [p for t, p in g.aurix.sent if t == proto.T_GW_CMD]
+    relay_frame = sent and sent[-1][4] == proto.T_RELAY and sent[-1][5:7] == bytes([HATCH_N, proto.RELAY_CMD_ON]) \
+        and sent[-1][0] == 2
+    # a role swap: HELM handed to bob (action 2) - TELEM2 lags with alice: they disagree = no hatch command
+    srv._forward(a, 2, proto.T_HELM, proto.p_helm_hand(3), 0.0)
+    srv._on_gw_ack(F(struct.pack("<BHBB", 2, srv.gw_seq, proto.T_HELM, 0)))
+    t2(2)
+    s3 = srv.helm_station()
+    n_before = len(g.aurix.sent)
+    srv.uav_relay(HATCH_N, False, lambda r, t: res.append((r, t)))
+    not_sent = len(g.aurix.sent) == n_before and res[-1][0] is None
+    t2(3)
+    s4 = srv.helm_station()
+    # HELM lost on the AURIX (no T_HELM): TELEM2 nobody for 2 s = the grant follows
+    t2(0)
+    srv.helm_t2_since -= 2.5
+    srv.helm_grant_t -= 2.5
+    t2(0)
+    s5 = srv.helm_station()
+    # a station's T_RELAY for the hatch relay = 125
+    srv.max_age = 99
+    a.last_seq, a.tokens = None, 10.0
+    srv.command(a, {"seq": 10, "ts": time.time(), "type": proto.T_RELAY, "sid": a.session,
+                    "p": proto.p_relay(HATCH_N, 1).hex()})
+    refused = any(b'"result":125' in x for x in a.writer.out)
+    report("UA19 W55: the gateway's own HELM grant - a hatch relay command goes only when it agrees with TELEM2 "
+           "(an accepted take = the grant at once, TELEM2 lagging = wait; a hand-over = wait until TELEM2 shows the new "
+           "holder; HELM lost on the AURIX = nobody after 2 s); it goes as the HELM station's T_RELAY; a station's "
+           "own T_RELAY for the hatch relay = refusal 125",
+           s0[0] is None and s1[0] is None and s2[0] is a and relay_frame and s3[0] is None and not_sent and
+           s4[0] is b and s5[0] is None and refused,
+           "nobody %s; after the ACK %s; TELEM2 agrees %s; frame %s; hand-over lagging %s (sent %s); agrees %s; lost "
+           "%s; 125 %s" % (s0[1], s1[1], s2[0] and s2[0].id, relay_frame, s3[1], not not_sent, s4[0] and s4[0].id,
+                           s5[1], refused))
+
+
 def watchdog():
     def fire():
         print("\nSTALLED: test_uav.py still running after %d s - killed" % LIMIT_S, flush=True)
@@ -904,7 +1655,9 @@ def watchdog():
 def main():
     watchdog()
     tests = [ua1_codec, ua2_pymavlink, ua3_allow, ua4_writer, ua5_no_aurix, ua6_check, ua7_registry, ua8_assist,
-             ua9_simdrone, ua10_router, ua11_gateway, ua12_osdep]
+             ua9_simdrone, ua10_router, ua11_gateway, ua12_osdep, ua13_mission, ua14_checks, ua15_hatch,
+             ua16_launch, ua17_router_flight,
+             ua18_gateway_launch, ua19_helm_grant]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

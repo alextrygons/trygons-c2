@@ -20,6 +20,9 @@ Format 2 (section L + the owner clarifications 2026-10-26):
                      INVALID too (the AURIX's rules follow the role, never the type or the name)
   thrusters          {"bow": {"max_pct", "run_s", "rest_s"}, "stern": {...}, "jog_m": 1.5, "spot_alarm_m": 15}
   length_m, draft_m  optional
+  uav                {"hatch_relay": n} (CLAUDE.md V, step U3): the UAV magazine hatch = relay n of "relays", an extra
+                     onoff relay, power_up off, not in a pair - shown as a LAMP only (no button on any screen, also
+                     not on the USB laptop: the gateway refuses a station's T_RELAY for it, 125)
 
 A new computer = clone the repository: the boats come with it.
 
@@ -174,6 +177,7 @@ class Boat:
         self.thrusters = _parse_thrusters(None)
         self.length_m = None
         self.draft_m = None
+        self.hatch_relay = None
         if error is None:
             try:
                 self._parse_v2(d)
@@ -181,6 +185,7 @@ class Boat:
                 self.error = str(e)
                 self.format, self.generator_max_pct, self.relays = 1, 0.0, []
                 self.thrusters = _parse_thrusters(None)
+                self.hatch_relay = None
 
     def _parse_v2(self, d):
         fmt = d.get("format", 1)
@@ -195,6 +200,19 @@ class Boat:
         self.generator_max_pct = _num(d.get("generator_max_pct", 0), 0.0, 100.0, "generator_max_pct")
         self.relays = _parse_relays(d.get("relays"))
         self.thrusters = _parse_thrusters(d.get("thrusters"))
+        u = d.get("uav")
+        if u is not None:
+            if not isinstance(u, dict) or "hatch_relay" not in u:
+                raise ValueError("uav must be {\"hatch_relay\": n}")
+            n = u["hatch_relay"]
+            r = self.relay(n) if isinstance(n, int) and not isinstance(n, bool) else None
+            if r is None:
+                raise ValueError("uav hatch_relay %r is not a relay of this file" % (n,))
+            if r["group"] != "extra" or r["type"] != "onoff" or r.get("pair") or r.get("power_up") != "off" or \
+                    r.get("show_hud"):
+                raise ValueError("uav hatch_relay %d must be an extra onoff relay, power_up off, not in a pair, "
+                                 "show_hud false" % n)
+            self.hatch_relay = n
 
     def ip_ok(self):
         """A real address (the placeholder "PLACEHOLDER-..." of a fresh file is not)."""

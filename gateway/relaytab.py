@@ -10,6 +10,7 @@ AURIX loaded from its data flash.
 """
 import json
 import os
+import struct
 
 import proto
 
@@ -20,6 +21,7 @@ class RelayTables:
     def __init__(self, path=None):
         self.path = path
         self.tables = {}                    # hash -> {n: group}  (insertion order = age)
+        self.details = {}                   # hash -> {n: {"type", "group", "pair", "power_up"}} (UAV hatch, U3)
         if path:
             try:
                 with open(path, encoding="utf-8") as f:
@@ -27,6 +29,8 @@ class RelayTables:
                 for h, g in (d.get("tables") or {}).items():
                     grp = {int(n): str(v) for n, v in g.items() if str(v) in proto.RELAY_GROUPS}
                     self.tables[int(h)] = grp
+                for h, g in (d.get("details") or {}).items():
+                    self.details[int(h)] = {int(n): dict(v) for n, v in g.items() if isinstance(v, dict)}
             except (OSError, ValueError, TypeError, AttributeError):
                 self.tables = {}
 
@@ -36,11 +40,14 @@ class RelayTables:
         if g is None:
             return None
         h = proto.crc16(payload)
-        if self.tables.get(h) == g:
+        det = details_of(payload)
+        if self.tables.get(h) == g and self.details.get(h) == det:
             return h
         self.tables.pop(h, None)
         self.tables[h] = g
+        self.details[h] = det
         while len(self.tables) > KEEP:
+            self.details.pop(next(iter(self.tables)), None)
             self.tables.pop(next(iter(self.tables)))
         self._save()
         return h
@@ -51,13 +58,36 @@ class RelayTables:
             return None
         return self.tables.get(int(telem2["relay_hash"]))
 
+    def detail(self, telem2, n):
+        """{"type", "group", "pair", "power_up"} of relay n in the table ACTIVE on the AURIX, None if not known."""
+        if self.active(telem2) is None:
+            return None
+        return (self.details.get(int(telem2["relay_hash"])) or {}).get(int(n))
+
     def _save(self):
         if not self.path:
             return
         try:
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"tables": {str(h): {str(n): v for n, v in g.items()} for h, g in self.tables.items()}}, f)
+                json.dump({"tables": {str(h): {str(n): v for n, v in g.items()} for h, g in self.tables.items()},
+                           "details": {str(h): {str(n): v for n, v in g.items()} for h, g in self.details.items()}},
+                          f)
             os.replace(tmp, self.path)
         except OSError:
             pass
+
+
+def details_of(payload):
+    """{n: {"type", "group", "pair", "power_up"}} of a PROTO_T_RELAY_CFG payload (proto.p_relay_cfg), {} if broken."""
+    out = {}
+    try:
+        for i in range(payload[0]):
+            n, ty, grp, pair, _ms, fl, role = struct.unpack_from("<BBBBHBB", payload, 1 + 8 * i)
+            out[n] = {"type": proto.RELAY_TYPES[ty] if ty < len(proto.RELAY_TYPES) else "?",
+                      "group": "engine" if role else (proto.RELAY_GROUPS[grp] if grp < len(proto.RELAY_GROUPS)
+                                                      else "?"),
+                      "pair": pair or None, "power_up": "on" if fl & 2 else ("keep" if fl & 4 else "off")}
+    except (IndexError, struct.error):
+        return {}
+    return out

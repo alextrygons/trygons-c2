@@ -21,8 +21,18 @@
   "uav": {
     "_help": "UAV magazine (CLAUDE.md V): false = no magazine on this boat. Each slot = the FIXED hub USB port of that slot (usbloc:<port path>, python gateway.py --list-serial), never the drone's own id; slot 1 = the top one",
     "enabled": false,
-    "slots": [{"usb": "usbloc:1-2.1", "vtx": "R1", "elrs": "tx1"}, {"usb": "usbloc:1-2.2", "vtx": "R2", "elrs": "tx2"},
-              {"usb": "usbloc:1-2.3", "vtx": "R3", "elrs": "tx3"}, {"usb": "usbloc:1-2.4", "vtx": "R4", "elrs": "tx4"},
-              {"usb": "usbloc:1-3.1", "vtx": "R5", "elrs": "tx5"}, {"usb": "usbloc:1-3.2", "vtx": "R6", "elrs": "tx6"}]
+    "_slots_help": "radio = the serial name of that drone's ELRS TX module (MAVLink mode, W70): the launch needs the drone's altitude once its slot cable is gone",
+    "slots": [{"usb": "usbloc:1-2.1", "radio": "usbloc:1-4.1", "vtx": "R1", "elrs": "tx1"},
+              {"usb": "usbloc:1-2.2", "radio": "usbloc:1-4.2", "vtx": "R2", "elrs": "tx2"},
+              {"usb": "usbloc:1-2.3", "radio": "usbloc:1-4.3", "vtx": "R3", "elrs": "tx3"},
+              {"usb": "usbloc:1-2.4", "radio": "usbloc:1-4.4", "vtx": "R4", "elrs": "tx4"},
+              {"usb": "usbloc:1-3.1", "radio": "usbloc:1-5.1", "vtx": "R5", "elrs": "tx5"},
+              {"usb": "usbloc:1-3.2", "radio": "usbloc:1-5.2", "vtx": "R6", "elrs": "tx6"}],
+    "_hatch_help": "U3: hatch_relay = n of the boat's EXISTING relay table (an extra onoff relay, power_up off, no pair; the boat file's \"uav\": {\"hatch_relay\": n} too: W57 b, relays 1-7 are used = a board with >= 8 channels). hatch port = the FT232R breakout of the two limit switches (CTS = OPEN, DSR = CLOSED, switch to GND, external pull-ups: W57 a); open_s / close_s = the travel time limits (TO CONFIRM with the actuator)",
+    "hatch_relay": 8,
+    "hatch": {"port": "usbloc:1-6", "open_s": 20.0, "close_s": 20.0},
+    "_launch_help": "W59 defaults (TO CONFIRM): launch_max_kn 2, gps_wait_s 5, fallback_alt_m 15, clear_alt_m 10, gap_s 15, init_alt_base_m 30 + init_alt_step_m 5 per slot; check: uav_max_alt_m 120, uav_rf_range_m 1500, uav_wp_alt_m 50, uav_land_margin_pct 30",
+    "launch": {},
+    "check": {}
   }
 }

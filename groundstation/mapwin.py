@@ -187,6 +187,10 @@ class MapView:
         if i is not None:
             self.pan_t = time.time()
             self.app.map_delete(self.edit, i)
+        elif self.view and not self.edit and getattr(self.app, "map_menu", None):
+            # step U3 (owner H2): «Πήγαινε εδώ» (the boat) / «Αποστολή UAV εδώ» at the clicked point
+            la, lo = self.P()[1](x, y)
+            self.app.map_menu(x, y, la, lo)
 
     # --- drawing ----------------------------------------------------------------------------------------
     def tick(self):

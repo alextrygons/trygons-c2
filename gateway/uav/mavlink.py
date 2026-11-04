@@ -109,6 +109,7 @@ MESSAGES = {
                                     ("pos_vert_variance", "f", 1), ("compass_variance", "f", 1),
                                     ("terrain_alt_variance", "f", 1), ("flags", "H", 1),
                                     ("airspeed_variance", "f", 1)]),
+    "EXTENDED_SYS_STATE": (245, 130, [("vtol_state", "B", 1), ("landed_state", "B", 1)]),
     "GPS_RTCM_DATA": (233, 35, [("flags", "B", 1), ("len", "B", 1), ("data", "B", 180)]),
     "HOME_POSITION": (242, 104, [("latitude", "i", 1), ("longitude", "i", 1), ("altitude", "i", 1), ("x", "f", 1),
                                  ("y", "f", 1), ("z", "f", 1), ("q", "f", 4), ("approach_x", "f", 1),

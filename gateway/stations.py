@@ -188,6 +188,12 @@ class StationServer:
         self.ping_id = 0
         self.ext = {}                       # message type -> handler(station, msg) (later sections)
         self.helm_seen = None
+        # the gateway's OWN HELM grant (W55 / docs/uav_design.md 5.6): the holder of the last T_HELM the AURIX
+        # accepted, else TELEM2's holder once it has stayed for HELM_STABLE_S. A command the GATEWAY itself sends on
+        # the HELM station's behalf (the UAV hatch relay) goes only while TELEM2 agrees with it.
+        self.helm_grant = None
+        self.helm_t2, self.helm_t2_since, self.helm_grant_t = None, 0.0, 0.0
+        self.helm_reqs = {}                 # gateway seq -> T_HELM payload (to learn the grant from its ACK)
         self.server = None
         self.ext["rjoy"] = self._rjoy
         self.ext["driver"] = self._driver_beat
@@ -502,6 +508,11 @@ class StationServer:
             # a copilot never takes HELM from the captain (that is the role swap); a licensed user may take a
             # FREE HELM and so becomes the captain
             return self.refuse(st, seq, ftype, 117)
+        hatch = getattr(getattr(self.gw, "uav", None), "hatch_relay", None)
+        if ftype == proto.T_RELAY and hatch and payload[:1] == bytes([hatch]):
+            # the UAV hatch relay (CLAUDE.md V): switched ONLY by the gateway's launch sequence / the captain's
+            # HATCH CLOSE (uav_hatch_close) - never a station's relay command
+            return self.refuse(st, seq, ftype, 125, ": the UAV hatch relay is switched by the launch sequence only")
         if self.prog_check and ftype in PROG_CHECK_TYPES:
             why = self.prog_check(st, ftype, payload)
             if why:
@@ -542,6 +553,57 @@ class StationServer:
             mode = (t or {}).get("mode")
             return mode is not None and mode not in (proto.MODE_REMOTE, proto.MODE_MANEUVER)
         return True
+
+    # --- the gateway's own commands on the HELM station's behalf (the UAV hatch, CLAUDE.md V / U3) ------------------
+    HELM_STABLE_S = 2.0
+
+    def helm_station(self):
+        """(station, why): the station holding HELM - only when the gateway's own grant and TELEM2 agree (W55)."""
+        h = (self.gw.telem2 or {}).get("helm")
+        if not h:
+            return None, "no station holds HELM"
+        st = self.stations.get(h)
+        if st is None or st.role == "VIEWER":
+            return None, "HELM is not held by a gateway station (%s)" % self.helm_name(h)
+        if self.helm_grant != h:
+            return None, "HELM is changing (TELEM2 %s, the gateway's grant %s)" % (h, self.helm_grant)
+        return st, ""
+
+    def uav_relay(self, n, on, done):
+        """The UAV hatch relay n ON (open) / OFF (close) as a T_RELAY of the HELM station (the AURIX checks HELM,
+        the table, FIRST TEST as always). done(result, text): result None = not sent (the reason)."""
+        st, why = self.helm_station()
+        if st is None:
+            return done(None, why)
+        self.gw.audit("uav_hatch_relay", relay=n, on=bool(on), helm=st.id)
+        self._forward(st, None, proto.T_RELAY, proto.p_relay(n, proto.RELAY_CMD_ON if on else proto.RELAY_CMD_OFF),
+                      0.0, env=st, done=lambda r: done(r, proto.RESULTS.get(r, "error %d" % r)))
+
+    def hatch_relay_ok(self, n):
+        """(ok, why): relay n is in the table ACTIVE on the AURIX as an extra onoff relay, power_up off, no pair."""
+        d = self.relay_tables.detail(self.gw.telem2, n) if n else None
+        if not n:
+            return False, "no hatch relay configured (gateway.json uav hatch_relay)"
+        if d is None:
+            return False, "the hatch relay %d is not in the active relay table (or the gateway does not know it)" % n
+        if d["group"] != "extra" or d["type"] != "onoff" or d["pair"] or d["power_up"] != "off":
+            return False, "relay %d is not an extra on/off relay with power_up off and no pair" % n
+        return True, ""
+
+    def ask_captain(self, st, m, what, action):
+        """A YES / NO for the CAPTAIN's screen 1 (the UAV launch approval, CLAUDE.md V): always asked there - also
+        when the captain prepared it himself; a single operator answers his own (m["confirm"] == "self")."""
+        if st.role == "VIEWER":
+            return action(False, 100)
+        if st.single_op:
+            if m.get("confirm") != "self":
+                return action(False, 113)
+            self.gw.audit("single_op_cmd", station=st.id, user=st.user, what=what)
+            return action(True, 0)
+        cap = self.captain()
+        if cap is None:
+            return action(False, 119)
+        self._ask_driver(st, None, None, b"", 0.0, what, action=action, target=cap)
 
     def relay_groups(self):
         """{n: group} of the relay table active on the AURIX, None if the gateway doesn't know it."""
@@ -656,6 +718,10 @@ class StationServer:
         now = time.time()
         self.gw_seq = (self.gw_seq + 1) & 0xFFFF
         self.pending[self.gw_seq] = (st.id, seq, ftype, now, age, env.id, done)
+        if ftype == proto.T_HELM:
+            self.helm_reqs[self.gw_seq] = (env.id, bytes(payload))
+            while len(self.helm_reqs) > 64:
+                self.helm_reqs.pop(next(iter(self.helm_reqs)))
         st.cmds += 1
         env = struct.pack("<BBHB", env.id, 1 if env.local else 0, self.gw_seq, ftype) + payload
         self.gw.aurix.send(proto.T_GW_CMD, env)
@@ -745,6 +811,12 @@ class StationServer:
         if p is None or p[5] != sid:
             return
         del self.pending[gseq]
+        hr = self.helm_reqs.pop(gseq, None)
+        if hr is not None and ftype == proto.T_HELM and result == 0:
+            holder, pay = hr
+            act = pay[0] if pay else 0
+            self.helm_grant = holder if act == 0 else (pay[1] if act == 2 and len(pay) > 1 else None)
+            self.helm_grant_t = time.time()
         if ftype == proto.T_PROG_COMMIT and hasattr(self.gw, "prog_committed"):
             self.gw.prog_committed(result)                   # the gateway's copy of the route (DP TRIP check)
         if p[6]:
@@ -774,6 +846,11 @@ class StationServer:
             if st.tmode == "full":
                 st.send({"t": "t2", "b": b})
         helm = self.gw.telem2.get("helm")
+        now = time.time()
+        if helm != self.helm_t2:
+            self.helm_t2, self.helm_t2_since = helm, now
+        elif helm != self.helm_grant and now - max(self.helm_t2_since, self.helm_grant_t) >= self.HELM_STABLE_S:
+            self.helm_grant = helm or None          # the AURIX's view, once it stayed (lost / a local take / start)
         if helm is not None and helm != self.helm_seen:
             if self.helm_seen is not None:
                 self.gw.audit("helm", holder=helm, holder_name=self.helm_name(helm))

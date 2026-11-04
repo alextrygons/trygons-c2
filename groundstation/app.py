@@ -68,6 +68,8 @@ import track as trackmod
 import screenrec
 import hailer
 import uavpanel
+import uavroute
+import uavpics
 import collections
 import json
 from tkinter import messagebox, simpledialog
@@ -473,6 +475,7 @@ class App:
         self.hist.clear()
         self.slam_hist.clear()
         self.lamps = alerts.MasterLamps()
+        self._uav_local = None
         if self.sound:
             self.sound.reset()
         if self.callouts is not None:
@@ -2610,6 +2613,7 @@ class App:
                     self.drv_proposal()
                     if getattr(self, "uav_page", None) is not None:
                         self.uav_page.update(d.get("uav"))    # the UAV magazine page (CLAUDE.md V, U2)
+                    self.uav_notices(d.get("uav"))
                     if self.callouts:
                         self.callouts.gw(d)
                 elif kind == "channel_ack":
@@ -4463,7 +4467,8 @@ class App:
                 state = "on" if r["n"] in on else "off"
             if r.get("role") == "starter" and state != "unknown":
                 state = "on" if d.get("eng_crank") == 1 else "off"
-            rows.append(dict(r, name=name, state=state, hold=r["type"] == "momentary" or r.get("role") == "starter"))
+            rows.append(dict(r, name=name, state=state, hold=r["type"] == "momentary" or r.get("role") == "starter",
+                             lamp=b.hatch_relay is not None and r["n"] == b.hatch_relay))
         return active, rows
 
     def relay_press(self, n):
@@ -4475,6 +4480,9 @@ class App:
         r = next((x for x in rows if x["n"] == n), None)
         if r is None:
             return
+        if r.get("lamp"):
+            # the UAV hatch relay (CLAUDE.md V): a lamp only - the launch sequence / HATCH CLOSE switch it
+            return self.say(T("uav.hatch_lamp_only"), RED)
         if not active:
             return self.say(T("ov.relay_not_active"), RED)
         if r.get("role") == "starter":
@@ -4560,6 +4568,11 @@ class App:
                    tag="relay_grp")
             last = grp
             for r in line:
+                if r.get("lamp"):
+                    # the UAV hatch relay: a LAMP, never a button (U3)
+                    p.text("%s %s" % ("●" if r["state"] == "on" else "○", T("uav.hatch_lamp", name=r["name"],
+                                      state=T("uav.hatch_" + r["state"]))), "small", tag="relay_%d" % r["n"])
+                    continue
                 p.button(r["name"], lambda n=r["n"]: self.relay_press(n),
                          "warn" if r.get("role") == "starter" else "normal", on=r["state"] == "on",
                          enabled=active and (r["state"] != "unknown" or r.get("role") == "starter" or
@@ -4966,7 +4979,82 @@ class App:
         self.render(force=True)
 
     def route_send(self):
-        """The route on the map -> the boat (a copilot's: after the captain's ACCEPT on screen 1)."""
+        """The route on the map -> the boat (a copilot's: after the captain's ACCEPT on screen 1), or - with a UAV
+        magazine on this boat (CLAUDE.md V, step U3) - first the target box: ΣΚΑΦΟΣ / ΕΠΟΜΕΝΟ UAV / a chosen UAV."""
+        uav = (self.gw_status or {}).get("uav")
+        if not uavroute.magazine_on(uav) or not isinstance(self.link, GatewayLink):
+            return self.prog_upload()
+        uavroute.TargetBox(self.root, uav, self.route_target)
+
+    def route_target(self, key):
+        if key == "boat":
+            return self.prog_upload()
+        wps = self.prog.get("wps") or []
+        if not wps:
+            return self.say(T("uavr.no_route"), RED)
+        self.uav_route(key, [(w["lat"], w["lon"]) for w in wps])
+
+    def uav_route(self, target, pts):
+        """A UAV route -> the gateway (it checks energy / range / altitude / no-fly + air geofence again)."""
+        if not isinstance(self.link, GatewayLink):
+            return self.say(T("uav.not_connected"), RED)
+        self.link.send_msg(uavroute.route_msg(target, pts))
+        self.say(T("uavr.sent", n=len(pts)))
+
+    def uav_notices(self, uav):
+        """The gateway's UAV notices (U3) -> this station's event log once; a HATCH FAULT / a drone left in the hatch
+        = a station-LOCAL caution (MasterLamps.set_local: never a boat alarm, acknowledged here = gone)."""
+        if not uav or not uav.get("enabled"):
+            self.lamps.set_local("uav_hatch", None)
+            return
+        seen = getattr(self, "_uav_seen", 0.0)
+        for n in uav.get("notices") or []:
+            if n.get("t", 0) > seen:
+                self.event(T("uav.msg", text=i18n.from_en(n.get("text", ""))))
+                self._uav_seen = n["t"]
+        h = uav.get("hatch") or {}
+        L = uav.get("launch") or {}
+        txt = None
+        if h.get("state") == "FAULT":
+            txt = T("uav.alarm_hatch_fault", why=i18n.from_en(h.get("why") or ""))
+        elif L.get("keep_open"):
+            txt = T("uav.alarm_left_in_hatch")
+        if txt != getattr(self, "_uav_local", None):
+            self._uav_local = txt
+            self.lamps.set_local("uav_hatch", txt)
+
+    def map_menu(self, x, y, lat, lon):
+        """The map's right-click menu (step U3, owner H2): «Πήγαινε εδώ» = the boat (a 2-point route from its
+        position through the normal upload + every AUTO rule), «Αποστολή UAV εδώ» = the next / a flying UAV."""
+        d = self.t or {}
+        boat = (d["est_lat"], d["est_lon"]) if d.get("pos_source") else None
+        items = uavroute.menu_items((self.gw_status or {}).get("uav"), boat)
+        if not items:
+            return
+        m = tk.Menu(self.root, tearoff=0)
+        self._menu_pics = []
+        for act, tgt, text, kind in items:
+            im = uavpics.photo(16, master=self.root) if kind == "uav" else None
+            self._menu_pics.append(im)
+            fn = (lambda la=lat, lo=lon: self.go_here(la, lo)) if act == "go_here" else                 (lambda t=tgt, la=lat, lo=lon: self.uav_route(t, [(la, lo)]))
+            if im is not None:
+                m.add_command(label=text, image=im, compound="left", command=fn)
+            else:
+                m.add_command(label=text, command=fn)
+        try:
+            m.tk_popup(self.cv.winfo_rootx() + int(x), self.cv.winfo_rooty() + int(y))
+        finally:
+            m.grab_release()
+
+    def go_here(self, lat, lon):
+        """«Πήγαινε εδώ»: a 2-point route from the boat's position to here -> the normal program upload."""
+        d = self.t or {}
+        if not d.get("pos_source"):
+            return self.say(T("map.no_position"), RED)
+        w = {"kn": self.new_wp["kn"], "radius": self.new_wp["radius"], "action": 0}
+        self.prog = {"final": 0, "wps": [dict(w, lat=d["est_lat"], lon=d["est_lon"]), dict(w, lat=lat, lon=lon)]}
+        self.route_dirty = True
+        self.prog_refresh()
         self.prog_upload()
 
     def maxkn_step(self, step):

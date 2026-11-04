@@ -1,4 +1,4 @@
-"""The UAV magazine on the ground station (CLAUDE.md V, step U2; DISPLAY + requests only).
+"""The UAV magazine on the ground station (CLAUDE.md V, steps U2 / U3; DISPLAY + requests only).
 
   UV1 the owner's UAV picture: assets/uav.png + the small sizes (tools/make_uav_icons.py: 16 / 24 / 32 / 48 / 64 px,
       square, transparent corners), uavpics picks the size, Tk loads it; the USV placeholder draws (W65)
@@ -8,6 +8,10 @@
       gw_status "uav", REGISTER sends {"t": "uav_register", "slot"} only (nothing to the AURIX), disabled while not
       connected / without the magazine; the station hooks gw_status "uav" + "uav_ack"
   UV4 uav_ack: the answer and every problem shown in the screen language (from_en templates gw.uav_*)
+  UV5 (U3) the launch on the page: hatch + sequence + notices in Greek, PREPARE / STOP / HATCH CLOSE enabled by state
+      and sending only their station messages; a row's route / mission / flight
+  UV6 (U3) "Send route": the vertical target box with the pictures, the map's right-click menu, uav_route
+  UV7 (U3) the boat file's uav hatch_relay (validated) = a LAMP on every relay panel, a press sends nothing
 
 Run:  python test_uavui.py      (exit code 0 = all passed)
 """
@@ -188,11 +192,196 @@ def uv3_4(rig):
         top.destroy()
 
 
+def u3_status(**launch):
+    st = status()
+    st["slots"][0].update(route=2, mission=True)
+    st["slots"][4].update(flying="mission")
+    st["hatch"] = {"state": "CLOSED", "why": "", "relay": 8, "open_sw": False, "closed_sw": True, "switch_ok": True}
+    st["launch"] = dict({"state": "IDLE", "why": "", "launched": [], "cur": None, "phase": ""}, **launch)
+    st["notices"] = [{"t": 1.0, "text": "UAV launch stopped: HATCH FAULT: both hatch switches closed",
+                      "level": "caution"}]
+    return st
+
+
+def uv5(rig):
+    """The launch part of the «ΜΑΓΓΕΜΑ UAV» page (U3): hatch + sequence + PREPARE / STOP / HATCH CLOSE requests."""
+    import tkinter as tk
+    i18n.set_lang("el", save=False)
+    idle = uavpanel.launch_view(u3_status())
+    run = uavpanel.launch_view(dict(u3_status(state="RUN", cur=2, phase="CLIMB", launched=[1])))
+    st_f = u3_status()
+    st_f["hatch"].update(state="FAULT", why="both hatch switches closed")
+    fault = uavpanel.launch_view(st_f)
+    st_o = u3_status(state="STOPPED", why="UAV 1 did not leave the hatch", keep_open=True)
+    st_o["hatch"].update(state="OPEN")
+    opened = uavpanel.launch_view(st_o)
+    eng = [w for v in (idle, run, fault, opened) for t in (v["hatch"], v["seq"]) for w in ts.english_words(t)]
+    top = tk.Toplevel(rig.root)
+    try:
+        fa = FakeApp()
+        pg = uavpanel.Page(tk.Frame(top), fa)
+        pg.update(u3_status())
+        b_idle = (pg.b_prep.cget("state"), pg.b_stop.cget("state"), pg.b_close.cget("state"))
+        pg.b_prep.invoke()
+        pg.update(u3_status(state="RUN", cur=1, phase="GPS"))
+        b_run = (pg.b_prep.cget("state"), pg.b_stop.cget("state"), pg.b_close.cget("state"))
+        pg.b_stop.invoke()
+        pg.update(st_o)
+        pg.b_close.invoke()
+        rows = [lb["details"].cget("text") for lb, _b in pg.rows]
+        sent = list(fa.link.sent)
+    finally:
+        top.destroy()
+    report("UV5 the launch on the «ΜΑΓΓΕΜΑ UAV» page: hatch state + sequence + the gateway's notices in Greek; PREPARE "
+           "LAUNCH only idle with the hatch CLOSED / OPEN, STOP only while it runs, HATCH CLOSE after a stop with the "
+           "hatch open; they send ONLY uav_launch_prepare / uav_launch_stop / uav_hatch_close (the gateway asks the "
+           "captain); a row shows its route / mission / flight",
+           "ΚΛΕΙΣΤΗ" in idle["hatch"] and idle["can_prepare"] and not idle["can_stop"] and not idle["can_close"] and
+           run["can_stop"] and not run["can_prepare"] and "UAV 2" in run["seq"] and "ΣΦΑΛΜΑ" in fault["hatch"] and
+           fault["hatch_kind"] == "caution" and not fault["can_prepare"] and opened["can_close"] and
+           "ΣΤΑΜΑΤΗΣΕ" in opened["seq"] and "σταμάτησε" in idle["notices"][0] and not eng and
+           b_idle == ("normal", "disabled", "disabled") and b_run == ("disabled", "normal", "disabled") and
+           sent == [{"t": "uav_launch_prepare"}, {"t": "uav_launch_stop"}, {"t": "uav_hatch_close"}] and
+           "αποστολή φορτωμένη" in rows[0] and "εκτελεί" in rows[4],
+           "idle %s; run %s; fault %s; stopped open %s; English %s; buttons %s / %s; sent %s; rows %s" % (
+               idle, run["seq"], fault["hatch"], opened["can_close"], eng, b_idle, b_run, sent, rows[0][-40:]))
+
+
+def uv6(rig):
+    """The "Send route" target box + the map's right-click menu (U3, owner H2)."""
+    import tkinter as tk
+    import uavroute
+    i18n.set_lang("el", save=False)
+    st = u3_status()
+    tg = uavroute.targets(st)
+    keys = [t["key"] for t in tg]
+    none = uavroute.targets(None)
+    menu = uavroute.menu_items(st, (37.82, 23.60))
+    menu_nopos = uavroute.menu_items(st, None)
+    msg = uavroute.route_msg("next", [(37.8211111111, 23.6), {"lat": 37.83, "lon": 23.61, "alt": 70}])
+    chosen = []
+    box = uavroute.TargetBox(rig.root, st, chosen.append)
+    rig.pump(0.2)
+    btns = [w for row in box.top.winfo_children() if isinstance(row, tk.Frame) for w in row.winfo_children()
+            if isinstance(w, tk.Button)]
+    pics = [w for row in box.top.winfo_children() if isinstance(row, tk.Frame) for w in row.winfo_children()
+            if isinstance(w, (tk.Label, tk.Canvas))]
+    texts = [b.cget("text") for b in btns]
+    btns[1].invoke()
+    # the real station: route_target sends the map route to the gateway, "boat" = the normal upload
+    ap = rig.ap
+    sent = []
+
+    class L:
+        connected = True
+
+        def send_msg(self, m):
+            sent.append(m)
+    old_link = ap.link
+    import gwclient
+
+    class GL(gwclient.GatewayLink):
+        def __init__(self):
+            pass
+        connected = True
+
+        def send_msg(self, m):
+            sent.append(m)
+    try:
+        ap.link = GL()
+        ap.prog = {"final": 0, "wps": [{"lat": 37.821, "lon": 23.601, "kn": 8, "radius": 25, "action": 0}]}
+        ap.route_target(2)
+    finally:
+        ap.link = old_link
+    src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
+    mw = open(os.path.join(HERE, "mapwin.py"), encoding="utf-8").read()
+    report("UV6 'Send route' with a UAV magazine: the vertical target box ΣΚΑΦΟΣ (the USV placeholder) / ΕΠΟΜΕΝΟ UAV "
+           "(θέση n) / a UAV in the magazine / a FLYING UAV (new mission), each with its picture; no magazine = the "
+           "boat only; the map's right click «Πήγαινε εδώ» (the boat, only with a position) + «Αποστολή UAV εδώ» "
+           "(the next / a flying one); uav_route = target + every point with its altitude (default 50 m)",
+           keys[:2] == ["boat", "next"] and 5 in keys and 2 in keys and len(none) == 1 and
+           [m[0] for m in menu][:2] == ["go_here", "uav_here"] and any(m[1] == 5 for m in menu) and
+           menu_nopos[0][0] == "uav_here" and msg == {"t": "uav_route", "target": "next", "wps": [
+               {"lat": 37.8211111, "lon": 23.6, "alt": 50.0}, {"lat": 37.83, "lon": 23.61, "alt": 70.0}]} and
+           texts[0] == "ΣΚΑΦΟΣ" and "ΕΠΟΜΕΝΟ UAV (θέση 1)" in texts[1] and len(pics) == len(btns) and
+           chosen == ["next"] and sent and sent[-1]["t"] == "uav_route" and sent[-1]["target"] == 2 and
+           "uavroute.TargetBox(" in src and "self.app.map_menu(" in mw and not rig.errors,
+           "targets %s; menu %s; box %s (%d pictures); chosen %s; sent %s" % (
+               keys, [(a, t) for a, t, _x, _k in menu], texts, len(pics), chosen, sent[-1:]))
+
+
+def uv7(rig):
+    """The UAV hatch relay = a LAMP on every relay panel (also the USB laptop's): never a button (U3)."""
+    import json as _json
+    import tempfile
+    import boats
+    i18n.set_lang("el", save=False)
+    d = _json.load(open(os.path.join(os.path.dirname(HERE), "boats", "rf49d.json"), encoding="utf-8"))
+    d["relays"].append({"n": 8, "name_el": "ΚΑΤΑΠΑΚΤΗ UAV", "name_en": "UAV HATCH", "type": "onoff",
+                        "group": "extra", "pair": None, "max_s": 0, "show_hud": False, "power_up": "off"})
+    tmp = tempfile.mkdtemp(prefix="uvtest_")
+    try:
+        def boat_with(uav, mod=None):
+            dd = _json.loads(_json.dumps(d))
+            dd["uav"] = uav
+            if mod:
+                mod(dd)
+            p = os.path.join(tmp, "b.json")
+            with open(p, "w", encoding="utf-8") as f:
+                _json.dump(dd, f)
+            return boats.load(tmp)[0]
+        good = boat_with({"hatch_relay": 8})
+        bad_engine = boat_with({"hatch_relay": 1})
+        bad_missing = boat_with({"hatch_relay": 9})
+        bad_hud = boat_with({"hatch_relay": 8}, lambda dd: dd["relays"][-1].update(show_hud=True))
+        bad_pu = boat_with({"hatch_relay": 8}, lambda dd: dd["relays"][-1].update(power_up="on"))
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+    import proto
+    ap = rig.ap
+    old = (ap.boat, ap.t)
+    said = []
+    old_say, old_cmd = ap.say, ap.cmd
+    cmds = []
+    try:
+        ap.boat = good
+        ap.t = dict(ap.t or {}, relay_table=True, relay_pending=False, relay_ok=True,
+                    relay_hash=proto.relay_table_hash(good.relays), relay_on=[8], relay_unknown=[])
+        active, rows = ap.relay_view()
+        lamp = [r for r in rows if r["n"] == 8]
+        ap.say = lambda text, colour=None: said.append(text)
+        ap.cmd = lambda *a: cmds.append(a)
+        ap.relay_press(8)
+        ap.relay_press(6)
+    finally:
+        ap.boat, ap.t = old
+        ap.say, ap.cmd = old_say, old_cmd
+    src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
+    report("UV7 the boat file's \"uav\": {\"hatch_relay\": n} = an extra onoff relay, power_up off, no pair, not on the "
+           "HUD (else the file is INVALID); the relay panels show it as a LAMP (never a button: a press only says why, "
+           "nothing is sent - also on the USB laptop, which is not behind the gateway's refusal 125)",
+           good.error is None and good.hatch_relay == 8 and bad_engine.error and bad_missing.error and
+           bad_hud.error and bad_pu.error and active and lamp and lamp[0]["lamp"] and lamp[0]["state"] == "on" and
+           said and "καταπακτή" in said[0].lower() and len(cmds) == 1 and cmds[0][1][0] == 6 and
+           'if r.get("lamp"):' in src,
+           "good %s / %s; bad: engine %s, missing %s, hud %s, power_up %s; lamp %s; said %s; sent %s" % (
+               good.error, good.hatch_relay, bad_engine.error, bad_missing.error, bad_hud.error, bad_pu.error,
+               lamp and lamp[0].get("state"), said, cmds))
+
+
 def main():
     uv1()
     uv2()
     rig = ts.Rig()
     try:
+        for fn in (uv5, uv6, uv7):
+            try:
+                fn(rig)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                report(fn.__name__, False, "crashed: %r" % e)
         try:
             uv3_4(rig)
         except Exception as e:

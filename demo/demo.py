@@ -202,7 +202,9 @@ def gateway_config(mtx, charts):
         # the loudhailer (13r): the simulated horn + microphone on this PC (sea noise, a 'contact' answers now and then)
         "loudhailer": {"backend": "sim", "sim_reply_s": 30.0},
         # the UAV magazine (CLAUDE.md V, step U2): six simulated drones (gateway/uav/simdrone.py) in the 6 slots
-        "uav": {"enabled": True, "sim": True},
+        # (U3: the simulated hatch + its two limit switches follow the simulated AURIX's relay 8; a launch needs a
+        # relay table with relay 8 = an extra onoff relay active on the AURIX - the demo boat has none = refused 125)
+        "uav": {"enabled": True, "sim": True, "hatch_relay": 8},
         "audit_fallback": os.path.join(RUN, "audit_fallback"),
         "storage": {"root": os.path.join(RUN, "ssd"), "require_mount": False, "check_s": 1, "low_free_gb": 0.0,
                     "full_free_gb": 0.0},

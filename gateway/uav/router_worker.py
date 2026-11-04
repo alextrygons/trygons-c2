@@ -2,20 +2,32 @@
 
     started by gateway/uav/manager.py: python router_worker.py      (JSON lines: commands on stdin, events on stdout)
 
-It owns every drone link (the 6 slot USB cables now; the 6 ELRS TX modules in U4) so no serial read / write ever
-runs in the gateway's event loop. Each link has a reader thread; this process's main loop (20 Hz) decodes, checks
-and answers. It ends by itself when the gateway closes its stdin (never a stray process).
+It owns every drone link - the slot's USB cable ("usb") and the drone's ELRS radio link ("elrs", step U3: the
+launch needs the drone's altitude once its USB cable is gone) - so no serial read / write ever runs in the gateway's
+event loop. Each link has a reader thread; this process's main loop (20 Hz) decodes, checks and answers. It ends by
+itself when the gateway closes its stdin (never a stray process).
 
   in   (MAVLink)  allow.check_in: not allow-listed = dropped + counted ("denied_in"); a frame from another sysid than
                   the slot's registered one = dropped + counted ("wrong_sysid"); bad CRC / unknown id = counted
   out  (MAVLink)  EVERY frame through tx() -> allow.check_out(name, fields, ctx) first: refused = not sent + counted
-                  ("denied_out"); tx() is the ONLY place that calls mavlink.encode (UA4)
+                  ("denied_out"); tx() is the ONLY place that calls mavlink.encode (UA4). ctx is built HERE from
+                  the state the router holds (U2 review LOW-3): armed / landed from the drone itself (HEARTBEAT,
+                  EXTENDED_SYS_STATE, the relative altitude - LOW-4), the hatch OPEN switch from the last "hatch"
+                  op (stale after HATCH_FRESH_S = not open), battery_land: nothing sets it yet (U4's battery rule
+                  lives here) = LAND is never sent
 
-Commands: {"op": "config", "slots": [{"slot", "usb", "sysid"}], "gcs": [sysid, compid]}
+Commands: {"op": "config", "slots": [{"slot", "usb", "elrs", "sysid"}], "gcs": [sysid, compid]}
           {"op": "register", "slot", "id"}       -> {"ev": "register", "id", "slot", "reading"}
           {"op": "assist", "slot", "utc", "pos": [lat, lon, acc] | null, "extra": hex}  -> {"ev": "assist", ...}
+          {"op": "hatch", "open": bool}          the hatch OPEN switch (manager, 4 Hz)
+          {"op": "mission", "slot", "id", "via": "usb" | "elrs" | "auto", "items": [...]}
+                                                 -> upload + read-back -> {"ev": "mission", "id", "slot", "ok", "why"}
+          {"op": "cmd", "slot", "id", "via", "command", "params": [7]}
+                                                 -> COMMAND_LONG -> {"ev": "cmd", "id", "slot", "command", "result",
+                                                    "why"} (result None = refused here / no answer)
           {"op": "stop"}
-Events:   {"ev": "status", "links": {slot: {...}}, "stats": {...}} once a second, {"ev": "log", "text"}
+Events:   {"ev": "status", "links": {slot: usb link}, "radio": {slot: elrs link}, "drones": {slot: state},
+          "stats": {...}} once a second (twice while a job runs), {"ev": "log", "text"}
 """
 import json
 import os
@@ -27,11 +39,19 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from uav import allow, gpsassist, mavlink, usbslots  # noqa: E402
+from uav import allow, gpsassist, mavlink, mission, usbslots  # noqa: E402
 
 TICK_S = 0.05
 RECONNECT_S = 2.0
 HB_LOST_S = 3.0
+HATCH_FRESH_S = 1.0          # the manager sends the hatch switch 4 x a second; older = NOT open
+ALT_FRESH_S = 2.0
+ON_GROUND = 1                # MAV_LANDED_STATE_ON_GROUND
+JOB_STEP_S = 1.5             # a mission step not answered -> asked again
+JOB_TRIES = 4
+JOB_TOTAL_S = 40.0
+CMD_RESEND_S = 1.5
+CMD_TOTAL_S = 4.0
 
 
 def out(obj):
@@ -79,7 +99,7 @@ class Link:
                 import serial                              # pyserial
                 import osdep
                 dev = osdep.resolve_serial(self.spec)
-                self.ser = serial.Serial(dev, 115200, timeout=0.2)
+                self.ser = serial.Serial(dev, 115200, timeout=0.2, write_timeout=0.2)
                 threading.Thread(target=self._ser_reader, args=(self.ser, gen), daemon=True).start()
             self.up, self.error = True, ""
         except Exception as e:                             # not plugged in / no such port: retried
@@ -105,6 +125,9 @@ class Link:
             if data:
                 self.rxq.put((self, data))
 
+    def present(self, now):
+        return self.up and self.hb_t > 0 and now - self.hb_t < HB_LOST_S
+
     def write(self, frame):
         try:
             if self.sock is not None:
@@ -128,25 +151,99 @@ class Link:
         self.sock = self.ser = None
 
 
+class Drone:
+    """What the router knows of the drone of one slot, from BOTH its links (the newest of each)."""
+
+    def __init__(self):
+        self.hb, self.hb_t = {}, 0.0
+        self.compid = 1
+        self.rel_alt = self.vz = self.lat = self.lon = None
+        self.alt_t = 0.0
+        self.landed_state, self.ext_t = None, 0.0
+        self.fix = self.sats = None
+        self.ekf_flags = None
+        self.batt_pct = self.batt_v = None
+
+    def armed(self):
+        return bool(self.hb.get("base_mode", 0) & 0x80)
+
+    def landed(self, now):
+        """On the ground (U2 review LOW-4): the drone says so (EXTENDED_SYS_STATE), else a fresh relative altitude
+        below 0.5 m; unknown = NOT landed (a DISARM is then refused: never a DISARM of a flying drone)."""
+        if self.landed_state is not None and now - self.ext_t < ALT_FRESH_S:
+            return self.landed_state == ON_GROUND
+        if self.rel_alt is not None and now - self.alt_t < ALT_FRESH_S:
+            return self.rel_alt < 0.5
+        return False
+
+    def view(self, now):
+        return {"mode": self.hb.get("custom_mode"), "armed": self.armed(), "hb_age": round(now - self.hb_t, 1)
+                if self.hb_t else None, "rel_alt": None if self.rel_alt is None else round(self.rel_alt, 1),
+                "vz": None if self.vz is None else round(self.vz, 2), "lat": self.lat, "lon": self.lon,
+                "alt_age": round(now - self.alt_t, 1) if self.alt_t else None, "landed": self.landed(now),
+                "gps_fix": self.fix, "sats": self.sats, "ekf_flags": self.ekf_flags, "batt_pct": self.batt_pct,
+                "batt_v": self.batt_v}
+
+
+class MissionJob:
+    """Mission upload + read-back on one link (MAVLink mission protocol): COUNT -> the drone asks every item ->
+    ACK -> REQUEST_LIST -> COUNT -> every item asked + compared (mission.same) -> ACK. Every step timed."""
+
+    def __init__(self, rid, slot, link, items, now):
+        self.id, self.slot, self.link, self.items = rid, slot, link, items
+        self.phase = "upload"
+        self.t0 = self.t_step = now
+        self.tries = 0
+        self.got = []
+        self.next_rb = 0
+        self.done = False
+        self.ok, self.why = False, ""
+
+
+class CmdJob:
+    def __init__(self, rid, slot, link, command, params, now):
+        self.id, self.slot, self.link, self.command, self.params = rid, slot, link, command, params
+        self.t0 = self.t_sent = now
+        self.sent = False
+
+
 class Router:
     def __init__(self):
         self.rxq = queue.Queue()
-        self.links = {}                                    # slot -> Link (USB)
+        self.links = {}                                    # (slot, kind) -> Link
+        self.drones = {}                                   # slot -> Drone
         self.expect = {}                                   # slot -> the registered sysid
         self.gcs = (usbslots.GCS_SYSID, usbslots.GCS_COMPID)
         self.probes = {}                                   # slot -> (SlotProbe, request id)
+        self.jobs = {}                                     # slot -> MissionJob
+        self.cmds = {}                                     # slot -> CmdJob
+        self.hatch_open, self.hatch_t = False, 0.0
+        self.battery_land = {}                             # slot -> True: U4's battery rule (nothing sets it in U3)
         self.stats = {"rx": 0, "tx": 0, "denied_in": 0, "denied_out": 0, "wrong_sysid": 0, "crc": 0, "unknown": 0}
         self.denied = {}                                   # name -> count (what was refused, both directions)
         self.next_status = 0.0
         self.next_hb = 0.0
 
-    # --- the ONLY sender ------------------------------------------------------------------------------------------
-    def ctx(self, link):
-        armed = bool(link.hb.get("base_mode", 0) & 0x80)
-        return {"port": link.kind, "armed": armed, "landed": link.kind == "usb" or not armed}
+    def link(self, slot, kind):
+        return self.links.get((slot, kind))
 
-    def tx(self, link, name, fields, ctx=None):
-        ok, why = allow.check_out(name, fields, self.ctx(link) if ctx is None else ctx)
+    def drone(self, slot):
+        d = self.drones.get(slot)
+        if d is None:
+            d = self.drones[slot] = Drone()
+        return d
+
+    # --- the ONLY sender ------------------------------------------------------------------------------------------
+    def ctx(self, link, now=None):
+        """What allow.check_out may know - from the router's OWN state only (U2 review LOW-3 / LOW-4)."""
+        now = now_s() if now is None else now
+        d = self.drone(link.slot)
+        return {"port": link.kind, "armed": d.armed(), "landed": d.landed(now),
+                "hatch_open": bool(self.hatch_open and now - self.hatch_t < HATCH_FRESH_S),
+                "battery_land": bool(self.battery_land.get(link.slot))}
+
+    def tx(self, link, name, fields):
+        ok, why = allow.check_out(name, fields, self.ctx(link))
         if not ok:
             self.stats["denied_out"] += 1
             self.denied["out " + name] = self.denied.get("out " + name, 0) + 1
@@ -158,6 +255,12 @@ class Router:
             self.stats["tx"] += 1
             return True
         return False
+
+    def tgt_of(self, slot):
+        exp = self.expect.get(slot)
+        lk = self.link(slot, "usb")
+        sysid = exp if exp is not None else (lk.sysid if lk is not None else None)
+        return {"target_system": sysid or 0, "target_component": self.drone(slot).compid or 1}
 
     # --- in -------------------------------------------------------------------------------------------------------
     def rx(self, link, data, now):
@@ -173,52 +276,155 @@ class Router:
                 self.denied["in " + m.name] = self.denied.get("in " + m.name, 0) + 1
                 continue
             exp = self.expect.get(link.slot)
-            pr = self.probes.get(link.slot)
+            pr = self.probes.get(link.slot) if link.kind == "usb" else None
             if exp is not None and m.sysid != exp and pr is None:
                 self.stats["wrong_sysid"] += 1
                 continue
-            if m.name == "HEARTBEAT" and m.fields.get("autopilot") != 8:
-                link.hb, link.hb_t, link.sysid = m.fields, now, m.sysid
+            if exp is None and link.kind == "elrs":
+                continue                                   # a radio link only for a registered drone
+            d = self.drone(link.slot)
+            f = m.fields
+            if m.name == "HEARTBEAT" and f.get("autopilot") != 8:
+                link.hb, link.hb_t, link.sysid = f, now, m.sysid
+                d.hb, d.hb_t, d.compid = f, now, m.compid
             elif m.name == "SYS_STATUS":
-                link.info["batt_pct"] = m.fields.get("battery_remaining")
-                link.info["batt_v"] = round(m.fields.get("voltage_battery", 0) / 1000.0, 2)
+                link.info["batt_pct"] = f.get("battery_remaining")
+                link.info["batt_v"] = round(f.get("voltage_battery", 0) / 1000.0, 2)
+                d.batt_pct, d.batt_v = link.info["batt_pct"], link.info["batt_v"]
             elif m.name == "GPS_RAW_INT":
-                link.info["gps_fix"] = m.fields.get("fix_type")
-                link.info["sats"] = m.fields.get("satellites_visible")
+                link.info["gps_fix"] = f.get("fix_type")
+                link.info["sats"] = f.get("satellites_visible")
+                d.fix, d.sats = f.get("fix_type"), f.get("satellites_visible")
+            elif m.name == "GLOBAL_POSITION_INT":
+                d.rel_alt, d.vz, d.alt_t = f.get("relative_alt", 0) / 1000.0, -f.get("vz", 0) / 100.0, now
+                d.lat, d.lon = f.get("lat", 0) / 1e7, f.get("lon", 0) / 1e7
+            elif m.name == "EXTENDED_SYS_STATE":
+                d.landed_state, d.ext_t = f.get("landed_state"), now
+            elif m.name == "EKF_STATUS_REPORT":
+                d.ekf_flags = f.get("flags")
             if pr is not None:
                 pr[0].feed(m)
+            self.job_rx(link, m, now)
         for k in ("crc", "unknown"):
             self.stats[k] += link.parser.n[k] - n0.get(k, 0)
 
+    def job_rx(self, link, m, now):
+        j = self.jobs.get(link.slot)
+        if j is not None and j.link is link and not j.done:
+            f = m.fields
+            if j.phase == "upload" and m.name == "MISSION_REQUEST_INT":
+                s = int(f.get("seq", -1))
+                if 0 <= s < len(j.items):
+                    if not self.tx(link, "MISSION_ITEM_INT", dict(j.items[s], **self.tgt_of(link.slot))):
+                        return self.job_end(j, False, "mission item %d refused by the allow-list" % s)
+                    j.t_step, j.tries = now, 0
+            elif j.phase == "upload" and m.name == "MISSION_ACK":
+                if int(f.get("type", 1)) != 0:
+                    self.job_end(j, False, "the drone refused the mission (MISSION_ACK %d)" % f.get("type", 1))
+                else:
+                    j.phase, j.t_step, j.tries = "count", now, 0
+                    self.tx(link, "MISSION_REQUEST_LIST", dict(self.tgt_of(link.slot), mission_type=0))
+            elif j.phase == "count" and m.name == "MISSION_COUNT":
+                j.got = [None] * int(f.get("count", 0))
+                j.phase, j.next_rb, j.t_step, j.tries = "items", 0, now, 0
+                self.rb_next(j)
+            elif j.phase == "items" and m.name == "MISSION_ITEM_INT":
+                s = int(f.get("seq", -1))
+                if 0 <= s < len(j.got):
+                    j.got[s] = dict(f)
+                    j.next_rb = s + 1
+                    j.t_step, j.tries = now, 0
+                    self.rb_next(j)
+        c = self.cmds.get(link.slot)
+        if c is not None and m.name == "COMMAND_ACK" and int(m.fields.get("command", -1)) == c.command:
+            del self.cmds[link.slot]
+            res = int(m.fields.get("result", 255))
+            out({"ev": "cmd", "id": c.id, "slot": c.slot, "command": c.command, "result": res,
+                 "why": "" if res == 0 else "MAV_RESULT %d" % res})
+
+    def rb_next(self, j):
+        if j.next_rb >= len(j.got):
+            self.tx(j.link, "MISSION_ACK", dict(self.tgt_of(j.slot), type=0, mission_type=0))
+            ok, why = mission.same(j.items, j.got)
+            self.job_end(j, ok, why)
+        else:
+            self.tx(j.link, "MISSION_REQUEST_INT", dict(self.tgt_of(j.slot), seq=j.next_rb, mission_type=0))
+
+    def job_end(self, j, ok, why):
+        j.done, j.ok, j.why = True, ok, why
+        self.jobs.pop(j.slot, None)
+        out({"ev": "mission", "id": j.id, "slot": j.slot, "ok": ok, "why": why, "via": j.link.kind})
+
     # --- commands -------------------------------------------------------------------------------------------------
+    def pick(self, slot, via, now):
+        if via in ("usb", "elrs"):
+            lk = self.link(slot, via)
+            return lk if lk is not None and lk.present(now) else None
+        for kind in ("usb", "elrs"):
+            lk = self.link(slot, kind)
+            if lk is not None and lk.present(now):
+                return lk
+        return None
+
     def command(self, c, now):
         op = c.get("op")
         if op == "config":
             self.gcs = tuple(c.get("gcs") or self.gcs)
-            want = {int(s["slot"]): s for s in c.get("slots", [])}
-            for slot in list(self.links):
-                if slot not in want or want[slot].get("usb") != self.links[slot].spec:
-                    self.links.pop(slot).close("removed")
-            for slot, s in want.items():
-                if slot not in self.links and s.get("usb"):
-                    self.links[slot] = Link(slot, "usb", s["usb"], self.rxq)
-                self.expect[slot] = s.get("sysid")
+            want = {}
+            for s in c.get("slots", []):
+                for kind in ("usb", "elrs"):
+                    if s.get(kind):
+                        want[(int(s["slot"]), kind)] = s[kind]
+                self.expect[int(s["slot"])] = s.get("sysid")
+            for key in list(self.links):
+                if key not in want or want[key] != self.links[key].spec:
+                    self.links.pop(key).close("removed")
+            for key, spec in want.items():
+                if key not in self.links:
+                    self.links[key] = Link(key[0], key[1], spec, self.rxq)
         elif op == "register":
             slot = int(c["slot"])
-            link = self.links.get(slot)
-            if link is None:
+            if self.link(slot, "usb") is None:
                 out({"ev": "register", "id": c.get("id"), "slot": slot,
                      "reading": {"slot": slot, "why": "no USB cable configured for this slot"}})
                 return
             self.probes[slot] = (usbslots.SlotProbe(slot, now), c.get("id"))
         elif op == "assist":
             self.assist(c)
+        elif op == "hatch":
+            self.hatch_open, self.hatch_t = bool(c.get("open")), now
+        elif op == "mission":
+            slot = int(c["slot"])
+            lk = self.pick(slot, c.get("via", "auto"), now)
+            if lk is None or slot in self.jobs:
+                return out({"ev": "mission", "id": c.get("id"), "slot": slot, "ok": False,
+                            "why": "no link to the drone" if lk is None else "an upload runs already"})
+            j = self.jobs[slot] = MissionJob(c.get("id"), slot, lk, list(c["items"]), now)
+            if not self.tx(lk, "MISSION_COUNT", dict(self.tgt_of(slot), count=len(j.items), mission_type=0)):
+                self.job_end(j, False, "refused by the allow-list")
+        elif op == "cmd":
+            slot = int(c["slot"])
+            lk = self.pick(slot, c.get("via", "auto"), now)
+            res = {"ev": "cmd", "id": c.get("id"), "slot": slot, "command": int(c["command"]), "result": None}
+            if lk is None:
+                return out(dict(res, why="no link to the drone"))
+            p = [float(x) for x in (list(c.get("params") or []) + [0.0] * 7)[:7]]
+            job = CmdJob(c.get("id"), slot, lk, int(c["command"]), p, now)
+            if not self.send_cmd(job):
+                return out(dict(res, why="refused by the allow-list"))
+            self.cmds[slot] = job
         elif op == "stop":
             raise SystemExit(0)
 
+    def send_cmd(self, j):
+        f = dict(self.tgt_of(j.slot), command=j.command, confirmation=1 if j.sent else 0,
+                 **{"param%d" % (i + 1): v for i, v in enumerate(j.params)})
+        j.sent = True
+        return self.tx(j.link, "COMMAND_LONG", f)
+
     def assist(self, c):
         slot = int(c["slot"])
-        link = self.links.get(slot)
+        link = self.link(slot, "usb")
         res = {"ev": "assist", "slot": slot, "ok": False, "what": "", "why": ""}
         if link is None or not link.up or link.sysid is None or now_s() - link.hb_t > HB_LOST_S:
             res["why"] = "no drone on the slot's USB cable"
@@ -236,6 +442,30 @@ class Router:
         out(res)
 
     # --- the loop -------------------------------------------------------------------------------------------------
+    def jobs_tick(self, now):
+        for j in list(self.jobs.values()):
+            if now - j.t0 > JOB_TOTAL_S:
+                self.job_end(j, False, "mission upload timed out")
+            elif now - j.t_step > JOB_STEP_S:
+                j.tries += 1
+                j.t_step = now
+                if j.tries > JOB_TRIES or not j.link.up:
+                    self.job_end(j, False, "no answer from the drone (%s)" % j.phase)
+                elif j.phase == "upload":
+                    self.tx(j.link, "MISSION_COUNT", dict(self.tgt_of(j.slot), count=len(j.items), mission_type=0))
+                elif j.phase == "count":
+                    self.tx(j.link, "MISSION_REQUEST_LIST", dict(self.tgt_of(j.slot), mission_type=0))
+                else:
+                    self.rb_next(j)
+        for slot, c in list(self.cmds.items()):
+            if now - c.t0 > CMD_TOTAL_S:
+                del self.cmds[slot]
+                out({"ev": "cmd", "id": c.id, "slot": slot, "command": c.command, "result": None,
+                     "why": "no COMMAND_ACK from the drone"})
+            elif now - c.t_sent > CMD_RESEND_S:
+                c.t_sent = now
+                self.send_cmd(c)
+
     def step(self, now):
         for link in self.links.values():
             link.open(now)
@@ -246,13 +476,14 @@ class Router:
                 break
             self.rx(link, data, now)
         for slot, (pr, rid) in list(self.probes.items()):
-            link = self.links.get(slot)
+            link = self.link(slot, "usb")
             for name, fields in pr.tick(now):
                 if link is not None and link.up:
                     self.tx(link, name, fields)
             if pr.done:
                 del self.probes[slot]
                 out({"ev": "register", "id": rid, "slot": slot, "reading": pr.result()})
+        self.jobs_tick(now)
         if now >= self.next_hb:
             self.next_hb = now + 1.0
             for link in self.links.values():
@@ -260,12 +491,22 @@ class Router:
                     self.tx(link, "HEARTBEAT", {"type": 6, "autopilot": 8, "base_mode": 0, "custom_mode": 0,
                                                 "system_status": 4, "mavlink_version": 3})
         if now >= self.next_status:
-            self.next_status = now + 1.0
-            out({"ev": "status", "stats": self.stats, "denied": self.denied, "probing": sorted(self.probes),
-                 "links": {str(s): {"up": l.up, "error": l.error, "present": l.up and now - l.hb_t < HB_LOST_S,
-                                    "sysid": l.sysid, "armed": bool(l.hb.get("base_mode", 0) & 0x80),
-                                    "mode": l.hb.get("custom_mode"), "hb_age": round(now - l.hb_t, 1) if l.hb_t
-                                    else None, **l.info} for s, l in self.links.items()}})
+            self.next_status = now + 0.5
+            self.status(now)
+
+    def status(self, now):
+        def lk(l):
+            return dict({"up": l.up, "error": l.error, "present": l.present(now), "sysid": l.sysid,
+                         "armed": bool(l.hb.get("base_mode", 0) & 0x80), "mode": l.hb.get("custom_mode"),
+                         "hb_age": round(now - l.hb_t, 1) if l.hb_t else None}, **l.info)
+        out({"ev": "status", "stats": self.stats, "denied": self.denied, "probing": sorted(self.probes),
+             "jobs": sorted(self.jobs), "hatch_open": self.ctx_hatch(now),
+             "links": {str(s): lk(l) for (s, k), l in self.links.items() if k == "usb"},
+             "radio": {str(s): lk(l) for (s, k), l in self.links.items() if k == "elrs"},
+             "drones": {str(s): d.view(now) for s, d in self.drones.items() if d.hb_t}})
+
+    def ctx_hatch(self, now):
+        return bool(self.hatch_open and now - self.hatch_t < HATCH_FRESH_S)
 
 
 def now_s():
