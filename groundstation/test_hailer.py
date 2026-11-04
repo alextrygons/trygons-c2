@@ -15,6 +15,8 @@ audiodev.py and the buttons on both screens. (The gateway side, end to end: gate
       horn volume + its limit, the sound signals clearly labelled
   HS7 sound devices: null / sim backends, an unknown / failing device = a null device + the reason (never raises);
       the worker's WAV ring file is readable while it is written (header every second)
+  HS8 (review 13r MED-2) a new gateway link (reconnect / a new login = a new session) starts the LISTEN sequence and
+      the jitter buffer again: the gateway's first frames after the reconnect are heard at once
 
 Run:  python test_hailer.py      (exit code 0 = all passed)
 """
@@ -320,8 +322,9 @@ def hs7():
     t0 = 1793000000.0
     for k in range(30):
         ring.write(vc.tone(300, 40), t0 + k * 0.04)
-    ring.write(vc.tone(300, 40), t0 + 1.3)               # the header is rewritten (1 s)
+    ring.write(vc.tone(300, 40), t0 + 30 * 0.04)         # the header is rewritten (1 s); no gap = no silence
     fn = os.listdir(folder)[0]
+    lead = int((t0 - t0 // 60 * 60) * vc.RATE)           # review 13r MED-3: silence from the file's minute to t0
     with wave.open(os.path.join(folder, fn), "rb") as w:
         mid = (w.getframerate(), w.getnframes())
     ring.close()
@@ -331,9 +334,63 @@ def hs7():
            "reason; the sim mic hears the horn (echo) and then only the sea; the WAV ring readable while written "
            "(%s), complete when closed, UTC name %s" % (mid, fn),
            auto == "null" and not e1 and not e2 and e3 and isinstance(bad, audiodev.NullOut) and i.read() is None and
-           echo and quiet and mid[0] == 8000 and mid[1] >= 25 * 320 and end == 31 * 320 and
+           echo and quiet and mid[0] == 8000 and mid[1] >= lead + 25 * 320 and end == lead + 31 * 320 and
            lw.seg_time(fn) == t0 // 60 * 60,
            "auto %s, unknown %r, echo %s quiet %s, frames mid %s end %s" % (auto, e3, echo, quiet, mid, end))
+
+
+def hs8():
+    import socket as _so
+    app = types.SimpleNamespace(gw_status={"hail": fake_hail()}, link=None)
+    h = hailer.Hailer(app, backend="null")
+    h.listen_local = True
+
+    def link(sid):
+        return types.SimpleNamespace(welcome={"id": 3, "sid": sid, "udp_key": "22" * 16}, host="127.0.0.1", port=9,
+                                     local_addr="127.0.0.1", now=time.time)
+    tx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+
+    def send_l(lk, seq):
+        pkt = vc.pack(b"L", vc.session_bytes(lk.welcome["sid"]), seq, time.time(), vc.encode(vc.tone(400, 40)),
+                      bytes.fromhex(lk.welcome["udp_key"]))
+        tx.sendto(pkt, h.sock.getsockname())
+    try:
+        app.link = l1 = link("aa" * 8)
+        b1 = h._bind()
+        for k in range(1, 101):                            # the first link's LISTEN reached seq 100
+            send_l(l1, k)
+        until_rx = time.time() + 3
+        while h.rx_frames < 100 and time.time() < until_rx:
+            time.sleep(0.02)
+        old_n = h.rx_frames
+        h.jbuf = [vc.silence()]
+        app.link = l2 = link("bb" * 8)                     # reconnect: a new GatewayLink, its seq starts at 1 again
+        b2 = h._bind()
+        reset = h.rx_seq is None and h.jbuf == []
+        for k in range(1, 6):
+            send_l(l2, k)
+        until_rx = time.time() + 3
+        while h.rx_frames < old_n + 5 and time.time() < until_rx:
+            time.sleep(0.02)
+        new_n = h.rx_frames - old_n
+        l2.welcome = dict(l2.welcome, sid="cc" * 8)        # the same link object, a new login (session)
+        sock2 = h.sock
+        b3 = h._bind()
+        rebound = h.sock is not sock2 and h.sess == vc.session_bytes("cc" * 8) and h.rx_seq is None
+        for k in range(1, 4):
+            send_l(l2, k)
+        until_rx = time.time() + 3
+        while h.rx_frames < old_n + new_n + 3 and time.time() < until_rx:
+            time.sleep(0.02)
+        third = h.rx_frames - old_n - new_n
+    finally:
+        h.close()
+        tx.close()
+    report("HS8 (review 13r MED-2) reconnect: the LISTEN sequence + jitter buffer start again with a new link / a new "
+           "session, so the gateway's first frames (seq 1..) are heard at once (before: dropped as old for ~20 min)",
+           b1 and b2 and b3 and old_n == 100 and reset and new_n == 5 and rebound and third == 3,
+           "first link %d frames; reset %s; after the reconnect %d of 5; same link new session: rebound %s, %d of 3" % (
+               old_n, reset, new_n, rebound, third))
 
 
 def main():
@@ -345,6 +402,7 @@ def main():
     hs4()
     hs5()
     hs7()
+    hs8()
     rig = ts.Rig()
     try:
         for fn in (hs2, hs3, hs6):

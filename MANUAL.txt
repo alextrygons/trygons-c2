@@ -2665,7 +2665,13 @@ LOUDHAILER AND BOAT MICROPHONE (step 13r, owner 2026-11-02)
     boat (they take the horn for their time).
   VOLUME: the horn's volume can be set by the HELM station or a station on the
     boat, never above the LIMIT on the gateway (gateway.json "loudhailer":
-    "volume_max_pct", default 80 %).
+    "volume_max_pct", default 80 %, 0..100). The % is a LINEAR gain of the
+    voice samples, not a loudness: set the real loudness with the amplifier's
+    trimmer so that 80 % is safe for a swimmer close to the boat.
+  SOUND CARD: the gateway uses ONLY the sound card named in gateway.json
+    "loudhailer": "out_dev" / "in_dev" - without them the loudhailer stays
+    OFF ("speaker / microphone not configured"), never the gateway PC's own
+    speaker or microphone. (The simulator / demo needs none.)
   THE LINK: voice is small (~33 kbit/s, ~45 kbit/s on the wire). It ranks
     above the copilot's camera view but below the captain's driving data and
     video: on a weak / busy link the voice to that station stops first ("VOICE

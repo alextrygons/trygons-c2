@@ -55,6 +55,7 @@ class WavRing:
         self.start = None
         self.n = 0
         self.last_hdr = 0.0
+        self.filled = 0                 # samples of silence written to stay on the clock (tests / status)
         self.error = ""
         os.makedirs(folder, exist_ok=True)
 
@@ -74,9 +75,19 @@ class WavRing:
         self.f.seek(0, 2)
 
     def write(self, pcm, now):
+        """One frame at the time now. Review 13r MED-3: the file stays on the clock - a gap (the worker's loop was
+        late / caught up, the file opened in the middle of its minute) is filled with silence up to now, so the
+        AUDIO track never drifts against the camera timeline (its name = the time of its first sample)."""
         try:
             if self.f is None or now >= self.start + self.seg_s:
                 self._open(now)
+            gap = int((now - self.start) * vc.RATE) - self.n       # samples missing before this frame
+            if gap >= 2 * vc.FRAME_N:
+                gap = min(gap, int(self.seg_s * vc.RATE) - self.n)
+                if gap > 0:
+                    self.f.write(bytes(2 * gap))
+                    self.n += gap
+                    self.filled += gap
             self.f.write(bytes(pcm))
             self.n += len(pcm)
             if now - self.last_hdr >= 1.0:
@@ -113,8 +124,17 @@ class Worker:
         self.out = out
         self.lock = threading.Lock()
         self.clock = clock
-        self.spk, e1 = audiodev.open_output(a.backend, a.out_dev)
-        self.mic, e2 = audiodev.open_input(a.backend, a.in_dev, speaker=self.spk, reply_every_s=a.sim_reply_s)
+        real = a.backend not in ("sim", "null")
+        # review 13r LOW-1: a real backend needs the sound card NAMED (gateway.json loudhailer out_dev / in_dev):
+        # never the PC's default device (the laptop's own speaker / microphone) silently
+        if real and a.out_dev is None:
+            self.spk, e1 = audiodev.NullOut(), "speaker not configured (loudhailer out_dev)"
+        else:
+            self.spk, e1 = audiodev.open_output(a.backend, a.out_dev)
+        if real and a.in_dev is None:
+            self.mic, e2 = audiodev.NullIn(), "microphone not configured (loudhailer in_dev)"
+        else:
+            self.mic, e2 = audiodev.open_input(a.backend, a.in_dev, speaker=self.spk, reply_every_s=a.sim_reply_s)
         self.err = "; ".join(e for e in (e1, e2) if e)
         self.ring = WavRing(a.ring, a.seg_s) if a.ring else None
         self.talk = False
@@ -188,20 +208,22 @@ class Worker:
             self.n_play += 1
             self.out_db = vc.level_db(out)
             self.mute_until = now + HANG_S
-            if self.ring:
-                self.ring.write(played, now)       # the shore's voice (before the horn's gain) into the ring
         if self.signal_kind and not self.signal:
             self.emit({"t": "signal_done", "kind": self.signal_kind})
             self.signal_kind = None
         mic = self.mic.read()
+        if mic is not None:
+            self.mic_db = vc.level_db(mic)
+        if self.ring:
+            # review 13r MED-3: ONE frame every 40 ms step, whatever happens: the shore's voice (before the horn's
+            # gain) when a frame played, else the microphone (also while it is muted for the shore: prebuffer,
+            # underrun, hang time), else silence - the track keeps the camera timeline
+            self.ring.write(played if played is not None else (mic if mic is not None else vc.silence()), now)
         if mic is None:
             return
-        self.mic_db = vc.level_db(mic)
         muted = self.talk or played is not None or now < self.mute_until
         if muted:
             return                                 # half duplex: never back to the shore while the horn speaks
-        if self.ring:
-            self.ring.write(mic, now)
         self.n_mic += 1
         put(self.out, self.lock_out, b"M", vc.encode(mic))
 
@@ -217,7 +239,7 @@ class Worker:
                 "volume_max": self.a.volume_max, "mic_db": round(self.mic_db, 1), "out_db": round(self.out_db, 1),
                 "mic_frames": self.n_mic, "played": self.n_play, "dropped": self.n_drop,
                 "playing": bool(self.queue or self.signal), "signal": self.signal_kind,
-                "ring": bool(self.ring), "ring_file": os.path.basename(self.ring.f.name) if self.ring and self.ring.f
+                "ring": bool(self.ring), "ring_filled_s": round(self.ring.filled / vc.RATE, 2) if self.ring else 0, "ring_file": os.path.basename(self.ring.f.name) if self.ring and self.ring.f
                 else None,
                 "sim_speaker_frames": getattr(self.spk, "frames", 0)}
 

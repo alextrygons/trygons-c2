@@ -140,9 +140,10 @@ class SyncClient:
             ev, keep = self._event_state(os.path.join(self.root, "video", "events", parts[2]))
             if ev in (None, "recording"):
                 return None                             # still being written
-            if keep and p.endswith(".ts"):
+            media = p.endswith((".ts", ".wav"))         # .wav = the loudhailer's AUDIO track (review 13r MED-1)
+            if keep and media:
                 return None                             # KEEP 5' / 1h (step 13n4): stays on the boat SSD, not uploaded
-            return 1 if parts[-1] == "event.json" else (4 if p.endswith(".ts") else None)
+            return 1 if parts[-1] == "event.json" else (4 if media else None)
         if p.startswith("video/ring/") and p.endswith(".ts"):
             return 5 if self.gw.rec.ring_sync else None
         return None

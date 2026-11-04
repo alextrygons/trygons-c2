@@ -19,6 +19,10 @@ process loudhailer_worker.py with the SIMULATED speaker / microphone) and real g
   LH9  sound signals (5 short / 1 prolonged) take the floor for their time; another station is refused meanwhile
   LH10 bad packets: another session's key, an old seq, a stale time, a wrong size, frames of a non-speaker = dropped
   LH11 ready message: spoken by the station (its voice; here injected samples) into the floor, then released
+  LH12 (review 13r MED-1) a SAVE's AUDIO .wav is uploaded like its .ts (sync class 4), a KEEP's is not
+  LH13 (review 13r MED-3) the AUDIO track keeps the clock (a frame every step, gaps filled with silence)
+  LH14 (review 13r LOW-1 / LOW-8 / LOW-4) no out_dev / in_dev = not configured; volume limit 0..100
+  LH15 (review 13r LOW-2 / LOW-3) the talk state resent to the worker; the first voice frame gets a slack
 
 Run:  python test_loudhailer.py      (exit code 0 = all passed)
 """
@@ -123,12 +127,143 @@ def wav_levels(path):
     return [vc.level_db(a[i:i + vc.FRAME_N]) for i in range(0, len(a) - vc.FRAME_N, vc.FRAME_N)]
 
 
+def lh12_15():
+    """Unit checks of the review fixes of 13r (no simulator)."""
+    import argparse
+    import types
+    import json as _json
+    import sync as syncmod
+    import recorder as recmod
+    import loudhailer as lhmod
+    import loudhailer_worker as lw
+    tmp = tempfile.mkdtemp(prefix="gwtest_lh12_")
+    try:
+        # LH12 the sync classes of a SAVE's / a KEEP's files
+        for eid, keep in (("20261104-100000_save", False), ("20261104-100500_keep5", True)):
+            os.makedirs(os.path.join(tmp, "video", "events", eid, "AUDIO"))
+            with open(os.path.join(tmp, "video", "events", eid, "event.json"), "w") as f:
+                _json.dump({"state": "complete", "keep": keep}, f)
+        sc = object.__new__(syncmod.SyncClient)
+        sc.root, sc._inc = tmp, {}
+        files = {"save_wav": "20261104-100000_save/AUDIO/20261104-100000.wav",
+                 "save_ts": "20261104-100000_save/FRONT-1/20261104-100000.ts",
+                 "keep_wav": "20261104-100500_keep5/AUDIO/20261104-100500.wav",
+                 "keep_json": "20261104-100500_keep5/event.json"}
+        cls = {k: sc.classify("video/events/" + v, None, None) for k, v in files.items()}
+        sv = os.path.join(tmp, "video", "events", "20261104-100000_save")
+        open(os.path.join(sv, "AUDIO", "20261104-100000.wav"), "wb").close()
+        before = recmod.event_synced(sv)
+        for rel in ("event.json", os.path.join("AUDIO", "20261104-100000.wav")):
+            open(os.path.join(sv, rel) + ".synced", "w").close()      # what the shore PC's confirmation writes
+        freed = recmod.event_synced(sv)
+        report("LH12 (review 13r MED-1) a SAVE's AUDIO .wav is uploaded like its video (class 4), a KEEP's stays on the "
+               "boat; once uploaded the SAVE counts as synced (the housekeeping may free it)",
+               cls == {"save_wav": 4, "save_ts": 4, "keep_wav": None, "keep_json": 1} and not before and freed,
+               "classes %s; synced before %s, after the upload %s" % (cls, before, freed))
+
+        # LH13 the AUDIO ring on the clock
+        clk = [1793000020.0]                               # 40 s into its minute (:59:40)
+        a = argparse.Namespace(backend="sim", out_dev=None, in_dev=None, ring=os.path.join(tmp, "ring"), seg_s=60,
+                               volume_max=80, volume=70, sim_reply_s=0.0)
+        w = lw.Worker(a, io.BytesIO(), clock=lambda: clk[0])
+        w.lock_out = threading.Lock()
+        w.control({"talk": True})                          # the floor is given: nothing arrived yet (prebuffer)
+        for _k in range(25):                               # 1 s with talk on and no frame played
+            w.step(clk[0])
+            clk[0] += 0.04
+        w.queue.append(vc.encode(vc.tone(500, 40)))        # one frame: below the prebuffer, still waiting
+        for _k in range(25):
+            w.step(clk[0])
+            clk[0] += 0.04
+        clk[0] += 2.0                                      # the loop was 2 s late (a busy PC)
+        for _k in range(25):
+            w.step(clk[0])
+            clk[0] += 0.04
+        w.ring.close()
+        fn_ = os.listdir(a.ring)[0]
+        with wave.open(os.path.join(a.ring, fn_), "rb") as wf:
+            n = wf.getnframes()
+        want = int((clk[0] - lw.seg_time(fn_)) * vc.RATE)
+        report("LH13 (review 13r MED-3) the AUDIO track keeps the clock: a frame every 40 ms step also while the voice "
+               "waits (prebuffer / underrun), a 2 s late loop filled with silence, a file opened 40 s into its minute "
+               "starts with 40 s of silence (name = its first sample's time)",
+               abs(n - want) <= vc.FRAME_N and w.ring.filled >= int(41.9 * vc.RATE) and
+               lw.seg_time(fn_) == 1793000020.0 // 60 * 60,
+               "file %s: %d samples, the clock says %d; silence filled %.2f s" % (fn_, n, want, w.ring.filled / vc.RATE))
+
+        # LH14 not configured / the volume limit / stop
+        b = argparse.Namespace(backend="winmm", out_dev=None, in_dev=None, ring=None, seg_s=60, volume_max=80,
+                               volume=70, sim_reply_s=0.0)
+        wr = lw.Worker(b, io.BytesIO())
+        st_ = wr.status()
+        h = lhmod.Loudhailer({"enabled": False, "volume_max_pct": 150}, types.SimpleNamespace(storage=None))
+        h2 = lhmod.Loudhailer({"enabled": False, "volume_max_pct": -5}, types.SimpleNamespace(storage=None))
+        h.worker = {"out_ok": True, "in_ok": True}
+        h.proc = types.SimpleNamespace(wait=lambda t: 0, poll=lambda: 0, kill=lambda: None)
+        h.stop()
+        report("LH14 (review 13r LOW-1 / LOW-8 / LOW-4) a real backend without out_dev / in_dev opens NO device (never "
+               "the PC's default speaker / mic): 'not configured', no speaker, no microphone; volume_max_pct clamped "
+               "0..100; stop() forgets the old worker's status",
+               isinstance(wr.spk, lw.audiodev.NullOut) and isinstance(wr.mic, lw.audiodev.NullIn) and
+               not st_["out_ok"] and not st_["in_ok"] and "speaker not configured" in st_["error"] and
+               "microphone not configured" in st_["error"] and h.cfg["volume_max_pct"] == 100 and
+               h2.cfg["volume_max_pct"] == 0 and h.worker == {},
+               "status %r; limits %s / %s; worker after stop %s" % (
+                   st_["error"], h.cfg["volume_max_pct"], h2.cfg["volume_max_pct"], h.worker))
+
+        # LH15 the control resend + the first-frame slack
+        sent = []
+        stn = types.SimpleNamespace(id=7, send=lambda m: sent.append(m))
+        fake_gw = types.SimpleNamespace(storage=None, stations=types.SimpleNamespace(stations={7: stn}),
+                                        audit=lambda *a_, **k_: None)
+        h = lhmod.Loudhailer({"enabled": True, "frame_gap_s": 1.0}, fake_gw)
+        p = object()
+        h.proc = p
+        h.next_start = h.next_info = 1e12
+        h.worker_t = time.time()
+        h.floor = {"id": 7, "user": "alice", "crew": "captain", "what": "talk", "t0": time.time(), "last": time.time()}
+        h._from_worker(p, b"J", _json.dumps({"t": "status", "talk": False, "volume": h.volume}).encode())
+        q = []
+        while not h.wq.empty():
+            q.append(h.wq.get_nowait())
+        resent = h.n["talk_resent"] == 1 and any(b'"talk": true' in x for x in q if x)
+        h._from_worker(p, b"J", _json.dumps({"t": "status", "talk": True, "volume": h.volume}).encode())
+        no_more = h.n["talk_resent"] == 1
+        h.proc = None                                      # (tick: no worker checks below)
+        now = time.time()
+        h.floor["last"] = now - 2.0                        # 2 s since the grant, no frame yet: within 1 + 1.5 s
+        h.tick(now)
+        kept = h.floor is not None
+        if h.floor:
+            h.floor["last"] = now - 2.6
+        h.tick(now)
+        gone_first = h.floor is None
+        h.floor = {"id": 7, "user": "alice", "crew": "captain", "what": "talk", "t0": now, "last": now - 1.2,
+                   "got": True}
+        h.tick(now)
+        gone_after = h.floor is None
+        report("LH15 (review 13r LOW-2 / LOW-3) the worker's talk state differing from the floor = sent again (once per "
+               "status); the first voice frame after the grant may take frame_gap_s + %.1f s, later frames "
+               "frame_gap_s" % lhmod.FIRST_FRAME_SLACK_S,
+               resent and no_more and kept and gone_first and gone_after,
+               "resent %s (once %s); 2.0 s before the first frame: kept %s, 2.6 s: released %s; 1.2 s after frames: "
+               "released %s" % (resent, no_more, kept, gone_first, gone_after))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     setup_logging(30)
     if not os.path.exists(tg.EXE):
         print("build the simulator first: sim\\build_sim.bat")
         return 2
     print("\n=== Section LH: loudhailer + boat microphone (step 13r) ===", flush=True)
+    try:
+        lh12_15()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        report("LH12-LH15 unit checks", False, "crashed: %r" % e)
     tmp = tempfile.mkdtemp(prefix="gwtest_lh_")
     sim = gwr = None
     st = {}

@@ -163,8 +163,8 @@ class Hailer:
             if self.link is not None:
                 self._unbind()
             return False
-        if lk is self.link and self.sock is not None:
-            return True
+        if lk is self.link and self.sock is not None and self.sess == vc.session_bytes(lk.welcome["sid"]):
+            return True                  # (a new login on the same link object = a new session: bound again)
         self._unbind()
         self.link = lk
         self.key = bytes.fromhex(lk.welcome["udp_key"])
@@ -175,6 +175,9 @@ class Hailer:
         else:
             s.bind(("0.0.0.0", 0))
         s.settimeout(0.5)
+        with self.lock:                  # review 13r MED-2: a new link = the gateway's LISTEN seq starts again
+            self.rx_seq = None
+            self.jbuf = []
         self.sock = s
         self.rx_th = threading.Thread(target=self._rx, args=(s,), daemon=True)
         self.rx_th.start()
@@ -190,7 +193,9 @@ class Hailer:
                 s.close()
             except OSError:
                 pass
-        self._close_out()
+        self._close_out()                # (clears the jitter buffer)
+        with self.lock:
+            self.rx_seq = None           # review 13r MED-2: never compare a new link's seq with the old one
         self.speaker = None
         self.info = {}
 

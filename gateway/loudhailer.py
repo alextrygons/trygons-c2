@@ -45,6 +45,7 @@ from common import log
 import voicecodec as vc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+FIRST_FRAME_SLACK_S = 1.5       # review 13r LOW-3: the first voice frame after the grant may take this much longer
 ACTIVE, DEGRADED, OFFLINE = "ACTIVE", "DEGRADED", "OFFLINE"
 
 DEFAULTS = {
@@ -52,7 +53,8 @@ DEFAULTS = {
     "backend": "auto",              # auto / alsa / winmm / sounddevice / sim (demo, tests) / null
     "out_dev": None, "in_dev": None,  # the USB sound card (ALSA "plughw:CARD=Device", a Windows device number)
     "python": None,                 # None = this Python
-    "volume_max_pct": 80,           # the gateway's VOLUME LIMIT (the horn is loud: hearing, neighbours)
+    "volume_max_pct": 80,           # the gateway's VOLUME LIMIT (the horn is loud: hearing, neighbours); a LINEAR
+                                    # gain of the samples - the real loudness is set by the amplifier's trimmer
     "volume_pct": 70,
     "talk_max_s": 120.0,            # one press at most this long (a stuck button / mouse)
     "frame_gap_s": 1.0,             # no voice frame this long while holding the floor -> released
@@ -105,6 +107,10 @@ class Loudhailer:
     def __init__(self, cfg, gw):
         from common import deep_merge
         self.cfg = deep_merge(DEFAULTS, cfg or {})
+        try:                                        # review 13r LOW-8: the limit is a percentage, 0..100
+            self.cfg["volume_max_pct"] = max(0, min(100, int(self.cfg["volume_max_pct"])))
+        except (TypeError, ValueError):
+            self.cfg["volume_max_pct"] = DEFAULTS["volume_max_pct"]
         self.gw = gw
         self.enabled = bool(self.cfg["enabled"])
         self.state, self.why = OFFLINE, "switched off" if not self.enabled else "starting"
@@ -239,12 +245,19 @@ class Loudhailer:
                 return
             if m.get("t") == "status":
                 self.worker, self.worker_t = m, time.time()
+                # review 13r LOW-2: a control frame lost (full queue) or a restarted worker: send the state again
+                if bool(m.get("talk")) != bool(self.floor):
+                    self.n["talk_resent"] += 1
+                    self.control({"talk": bool(self.floor)})
+                if m.get("volume") is not None and m.get("volume") != self.volume:
+                    self.control({"volume": self.volume})
             elif m.get("t") == "signal_done" and self.floor and self.floor.get("what") == "signal":
                 self._release("signal played")
 
     def stop(self, wait=True):
         """wait=False (from the event loop): never waits - a hung process is killed."""
         p, self.proc = self.proc, None
+        self.worker = {}                            # review 13r LOW-4: never a dead worker's last status
         if p is None:
             return
         try:
@@ -302,8 +315,8 @@ class Loudhailer:
             elif f["what"] == "signal":
                 if now - f["t0"] > f.get("max_s", 10.0):
                     self._release("signal time over")
-            elif now - f["last"] > float(self.cfg["frame_gap_s"]):
-                self._release("no voice for %.1f s" % float(self.cfg["frame_gap_s"]))
+            elif now - f["last"] > float(self.cfg["frame_gap_s"]) + (0.0 if f.get("got") else FIRST_FRAME_SLACK_S):
+                self._release("no voice for %.1f s" % float(self.cfg["frame_gap_s"]))   # (LOW-3: + slack before the first)
             elif now - f["t0"] > float(self.cfg["talk_max_s"]):
                 self._release("talk time limit %.0f s" % float(self.cfg["talk_max_s"]))
         for sid in [s for s in self.peers if s not in self.gw.stations.stations]:
@@ -484,6 +497,7 @@ class Loudhailer:
             self.n["talk_weak"] += 1
             return
         f["last"] = now
+        f["got"] = True
         self.bytes.append((now, len(data) + 28))
         if self.to_worker(b"A", payload):
             self.n["talk_in"] += 1

@@ -801,6 +801,14 @@ gateway.json:
                "volume_max_pct": 80}                            // the VOLUME LIMIT: no station sets it louder
 ```
 
+* `out_dev` / `in_dev` MUST name the USB card for a real backend (review 13r LOW-1): without them the worker opens
+  no device ("speaker / microphone not configured" = OFFLINE), never the PC's default speaker / microphone. The
+  `sim` / `null` backends need none. `volume_max_pct` (0..100) is a LINEAR gain of the samples; the real
+  loudness is set with the amplifier's trimmer.
+* The AUDIO ring keeps the clock: one 40 ms frame every worker step (the shore's voice, else the microphone,
+  else silence), gaps filled with silence, so the track never drifts against the cameras; a SAVE's AUDIO files
+  are uploaded like its video (a KEEP's stay on the SSD).
+
 * Push-to-talk = a screen button on the stations (never the joystick); the first station wins, the others
   see who speaks; a press ends after `talk_max_s` (120 s) or `frame_gap_s` (1 s) without voice.
 * Voice: 8 kHz IMA ADPCM, ~33 kbit/s (~45 kbit/s with headers), UDP on the station port, signed with the

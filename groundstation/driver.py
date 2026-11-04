@@ -764,7 +764,8 @@ class DriverScreen:
             s["vision"] = (txt, "good" if v["state"] == "ACTIVE" and v.get("cap_kn") is None else
                            "caution" if v["state"] in ("ACTIVE", "DEGRADED", "PAUSED") else "grey")
         r = gw.get("rec")
-        s["rec"] = None if not (r and r.get("enabled")) else any(c["state"] == "REC" for c in r.get("cameras", []))
+        s["rec"] = None if not (r and r.get("enabled")) else any(c["state"] == "REC" for c in r.get("cameras", [])
+                                                                    if c.get("name") != "AUDIO")   # 13r LOW-5
         scr = getattr(a, "scr", None)                         # REC SCREEN of this PC (step 13n4)
         s["scr"] = bool(scr is not None and scr.recording())
         hl = getattr(a, "hail", None)                         # the loudhailer (step 13r): None = none on this link
