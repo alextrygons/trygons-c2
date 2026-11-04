@@ -1712,6 +1712,7 @@ def section_ks():
         # KS2 KEEP 5: the station's id, pre 5 min, post 0, keep flag, never merged with a SAVE
         sid = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)) + "_keep5"
         ok, text, eid, have = rec.keep(5, who="alice", eid=sid, now=now)
+        rec.tick(now + 0.5)                         # the WORKER links the files (review 13n4 M1)
         ev = _json.load(open(os.path.join(rec.events_dir(), eid, "event.json"), encoding="utf-8"))
         files = ev["cameras"]["FRONT-1"]
         ok_s, _t, eid_s = rec.trigger("button", "SAVE (bob)", who="bob", now=now + 1)
@@ -1722,6 +1723,7 @@ def section_ks():
                "%s -> %s, %d files per camera, SAVE after it -> %s" % (sid, text, len(files), eid_s))
         # KS3 KEEP 60 with 20 min in the ring: what exists + "only 20 min"
         ok6, text6, eid6, have6 = rec.keep(60, who="alice", eid="bad id/../x", now=now + 2)
+        rec.tick(now + 2.5)
         ev6 = _json.load(open(os.path.join(rec.events_dir(), eid6, "event.json"), encoding="utf-8"))
         report("KS3 KEEP 1h with a 20 min ring: what exists is kept, the answer says how much; a bad id = the gateway's own",
                ok6 and 19.5 <= have6 <= 21.5 and "cameras: only" in text6 and len(ev6["cameras"]["REAR-LEFT"]) >= 20
@@ -1763,8 +1765,95 @@ def section_ks():
                kept_left and save_gone and ring_left <= len(CAM_NAMES) and len(files_left) >= 6 and cls == (None, 1, 4),
                "KEEP left %s (%d files), the synced SAVE deleted %s, ring files left %d; sync class of KEEP .ts / "
                "event.json / a SAVE .ts: %s" % (kept_left, len(files_left), save_gone, ring_left, cls))
+        ks_worker(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ks_worker(tmp):
+    """KS6 / KS7 (review 13n4 M1): the file work of a SAVE / KEEP is the worker's, never the event loop's."""
+    from recorder import Recorder
+    import threading
+    root = os.path.join(tmp, "ks6")
+    os.makedirs(root)
+    g = _KsGw(root)
+    rec = Recorder({"segment_s": 60, "house_s": 1e12}, g)
+    now = time.time()
+    for cam in CAM_NAMES:
+        d = rec.ring_dir(cam)
+        os.makedirs(d, exist_ok=True)
+        for i in range(61):                         # 60 min of finished files + the one being written
+            t = now - (60 - i) * 60
+            with open(os.path.join(d, time.strftime("%Y%m%d-%H%M%S.ts", time.gmtime(t))), "wb") as f:
+                f.write(b"x" * 1000)
+        rec.cams[cam] = _KsCam(d)
+    gate, order = threading.Event(), []
+
+    def slow_link(src, dst):                        # a drive that takes forever for every link
+        order.append(os.path.basename(src))
+        gate.wait(10)
+        os.link(src, dst)
+    rec.link_file = slow_link
+    t0 = time.time()
+    ok, _txt, eid, _have = rec.keep(60, who="alice", now=now)
+    t_keep = time.time() - t0
+    links_in_loop = len(order)
+    worker = threading.Thread(target=rec.tick, args=(now + 0.5,), daemon=True)
+    worker.start()
+    time.sleep(0.3)                                 # the worker is now stuck in its first link
+    t0 = time.time()
+    ok_s, _t, eid_s = rec.trigger("button", "SAVE (bob)", who="bob", now=now + 1)
+    ok2, _t2, eid2, _h2 = rec.keep(5, who="bob", now=now + 1.5)
+    st = rec.status()
+    t_loop = time.time() - t0
+    gate.set()
+    worker.join(30)
+    stuck = worker.is_alive()
+    first = list(order)                             # the worker's first step (the KEEP 1h)
+    rec.tick(now + 1e5)                             # the rest + every event finished
+    files = len(_json.load(open(os.path.join(rec.events_dir(), eid, "event.json"), encoding="utf-8"))["cameras"]
+                ["FRONT-1"])
+    oldest_first = bool(first) and first[:len(CAM_NAMES)] == [min(first)] * len(CAM_NAMES) and first == sorted(first)
+    report("KS6 a KEEP 1h / SAVE never does file work on the event loop: no link inside keep() / trigger(); with the "
+           "worker stuck in a link the loop's SAVE + KEEP + status answer at once; the worker links the oldest "
+           "files first",
+           ok and ok_s and ok2 and links_in_loop == 0 and t_keep < 0.5 and t_loop < 0.5 and files >= 59 and
+           oldest_first and not stuck,
+           "keep() %.3f s with %d links, SAVE + KEEP + status while the worker is blocked %.3f s; KEEP 1h files %d; "
+           "first links %s" % (t_keep, links_in_loop, t_loop, files, order[:3]))
+    # KS7 no hard links on the drive: a copy only while it leaves the free-space margin
+    root7 = os.path.join(tmp, "ks7")
+    os.makedirs(root7)
+    g7 = _KsGw(root7)
+    rec7 = Recorder({"segment_s": 60, "house_s": 1e12}, g7)
+    for cam in CAM_NAMES[:1]:
+        d = rec7.ring_dir(cam)
+        os.makedirs(d, exist_ok=True)
+        for i in range(6):
+            t = now - (5 - i) * 60
+            with open(os.path.join(d, time.strftime("%Y%m%d-%H%M%S.ts", time.gmtime(t))), "wb") as f:
+                f.write(b"x" * 1000)
+        rec7.cams[cam] = _KsCam(d)
+
+    def no_link(src, dst):
+        raise OSError("no hard links here")
+    rec7.link_file = no_link
+    g7.storage.low_b = g7.storage.free_now() + 1e9           # "no room": every copy refused
+    okf, _tf, eidf, _hf = rec7.keep(5, who="x", now=now)
+    rec7.tick(now + 0.5)
+    evf = _json.load(open(os.path.join(rec7.events_dir(), eidf, "event.json"), encoding="utf-8"))
+    refused = rec7.copy_refused
+    g7.storage.low_b = 0                                     # room: copied
+    okc, _tc, eidc, _hc = rec7.keep(5, who="x", now=now + 1)
+    rec7.tick(now + 1.5)
+    evc = _json.load(open(os.path.join(rec7.events_dir(), eidc, "event.json"), encoding="utf-8"))
+    copied = os.listdir(os.path.join(rec7.events_dir(), eidc, CAM_NAMES[0]))
+    report("KS7 no hard links on the drive: a copy only while it leaves the free-space margin (else nothing copied, "
+           "counted); with room the files are copied",
+           okf and evf["cameras"][CAM_NAMES[0]] == [] and refused >= 5 and okc and
+           len(evc["cameras"][CAM_NAMES[0]]) >= 5 and len(copied) >= 5,
+           "no room: %d listed, %d refused; room: %d copied" % (len(evf["cameras"][CAM_NAMES[0]]), refused,
+                                                                 len(copied)))
 
 
 def recorder_id_ok(eid):

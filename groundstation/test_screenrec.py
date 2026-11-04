@@ -17,6 +17,8 @@ station's buttons (app.py / driver.py / hud.py).
       camera ring «ΚΑΜΕΡΕΣ: μόνο 20 λεπτά διαθέσιμα», no gateway / no answer / refused; SAVE carries the id too
   SR7 the buttons: screen 1's bottom bar [REC · SCR · SAVE · 5' · 1h] (●SCR white while recording, hits), screen 2's
       bar 2 group SCR · 5' · 1h; the clicks reach the station; screenrec imports no link / protocol module
+  SR9 review 13n4b: -threads 2, UTC file-name check (+ fallback offset), a merged SAVE records the cameras' id,
+      the kill-on-close job, quit() always closes the recorder
   SR8 real ffmpeg (when installed): a Tk window recorded for a few seconds -> playable H.264 .ts files, kept by KEEP
 
 Run:  python test_screenrec.py        (exit code 0 = all passed)
@@ -66,7 +68,7 @@ class FakeProc:
 
 
 class Rig:
-    def __init__(self, free_gb=100.0, handles=None, encoder="libx264", ffmpeg=None):
+    def __init__(self, free_gb=100.0, handles=None, encoder="libx264", ffmpeg=None, names_check=False):
         self.root = tempfile.mkdtemp(prefix="trygons_sr_")
         self.free = free_gb * 1e9
         self.procs = []
@@ -78,7 +80,7 @@ class Rig:
             open(ff, "w").close()
         self.r = screenrec.ScreenRec({n: (lambda n=n: self.handles.get(n)) for n in screenrec.SCREENS}, root=self.root,
                                      ffmpeg=ff, encoder=encoder, popen=self.popen, free=lambda p: self.free,
-                                     clock=lambda: self.now)
+                                     clock=lambda: self.now, names_check=names_check)
 
     def popen(self, cmd, **kw):
         p = FakeProc(cmd, **kw)
@@ -404,6 +406,9 @@ def sr8():
         r.tick()
         time.sleep(0.1)
     segs = r.grabs["SCREEN-2"].segments()
+    names = (r.grabs["SCREEN-2"].names, r.grabs["SCREEN-2"].offset)
+    jobbed = r.job.assigned if os.name == "nt" else 1
+    utc_ok = bool(segs) and abs(segs[-1][0] - time.time()) < 90
     eid = screenrec.event_id(time.time(), "keep5")
     k_ok, _k, have = r.save(eid, 300.0, 0.0, "keep5", keep=True)
     r.stop()
@@ -419,14 +424,93 @@ def sr8():
         play = (len(q.stdout), "h264" in pr.stderr, "640x" in pr.stderr or "x360" in pr.stderr)
     root.destroy()
     report("SR8 real ffmpeg: a Tk window recorded (encoder %s) -> playable H.264 .ts files, kept by KEEP" % r.encoder,
-           ok and len(segs) >= 2 and play and play[0] > 0 and play[1] and k_ok and len(kept) >= 1,
+           ok and len(segs) >= 2 and play and play[0] > 0 and play[1] and k_ok and len(kept) >= 1 and
+           names == ("utc", 0) and utc_ok and jobbed >= 1,
            "start %s; %d files; first file: picture bytes %s, H.264 %s, window size %s; KEEP took %d files (have %s "
-           "min)" % (key, len(segs), play and play[0], play and play[1], play and play[2], len(kept), have))
+           "min); file names checked %s, newest name = UTC now %s; ffmpeg in the kill-on-close job %s" % (
+               key, len(segs), play and play[0], play and play[1], play and play[2], len(kept), have, names, utc_ok,
+               jobbed))
     shutil.rmtree(d, ignore_errors=True)
 
 
+def sr9():
+    """Review 13n4b LOW-1 / 2 / 4 / 7."""
+    # LOW-2 at most 2 ffmpeg threads per screen
+    cmd = screenrec.grab_cmd("ffmpeg", 0x10, "x", "libx264", platform="win32")
+    threads = "-threads" in cmd and cmd[cmd.index("-threads") + 1] == "2"
+    # LOW-1 the file names: UTC = no offset; local time / another quarter hour = read with that offset
+    now = 1793000000.0
+    loc = screenrec.local_offset_s(now)
+    a = screenrec.name_offset(now + 20, now)
+    b = screenrec.name_offset(now + 7200 + 20, now)
+    c = screenrec.name_offset(now - 3600 * 5 - 30, now)
+    rig = Rig(names_check=True)
+    rig.r.start()
+    g = rig.r.grabs["SCREEN-1"]
+    wall = time.time()
+    off = 7200 if loc != 7200 else 10800                # pretend ffmpeg named the files 2 h (3 h) ahead
+    p = rig.seg("SCREEN-1", wall + off)
+    rig.r.tick(force=True)
+    seen = (g.names, g.offset)
+    t_read = g.segments()[-1][0] if g.segments() else None
+    note = [k for k, _kw in rig.r.pop_notes()]
+    rig.done()
+    rig2 = Rig(names_check=True)
+    rig2.r.start()
+    rig2.seg("SCREEN-1", time.time())
+    rig2.r.tick(force=True)
+    utc = (rig2.r.grabs["SCREEN-1"].names, rig2.r.grabs["SCREEN-1"].offset)
+    rig2.done()
+    # LOW-4 a SAVE merged into an open camera event: the screen part records the cameras' id (open + on disk)
+    rig3 = Rig()
+    rig3.now = T0
+    rig3.r.start()
+    rig3.seg("SCREEN-1", T0 - 120)
+    rig3.seg("SCREEN-1", T0 - 60)
+    eid = screenrec.event_id(T0, "button")
+    rig3.r.save(eid, 600.0, 120.0, "save", now=T0)
+    open_ok = rig3.r.camera_id(eid, "20261026-075000_alarm")
+    j1 = ev_json(rig3, eid).get("camera_event")
+    rig3.now = T0 + 1e4
+    rig3.r.tick(force=True)                         # the event is finished (written to disk only)
+    disk_ok = rig3.r.camera_id(eid, "20261026-075000_alarm2")
+    j2 = ev_json(rig3, eid).get("camera_event")
+    bad = rig3.r.camera_id(eid, "../../x") or rig3.r.camera_id("nope", "20261026-075000_alarm")
+    rig3.done()
+    # LOW-7 Windows: a child process in the kill-on-close job dies with its job; quit() closes the recorder
+    job_ok = True
+    if os.name == "nt":
+        job = screenrec._Job()
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        added = job.add(child)
+        import ctypes
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(job.h))
+        try:
+            child.wait(10)
+            gone = True
+        except subprocess.TimeoutExpired:
+            child.kill()
+            gone = False
+        job_ok = added and gone
+    src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
+    q = src[src.index("    def quit(self, force=False):"):]
+    q = q[:q.index("\n    def ", 10)]
+    quit_ok = "finally:" in q and q.index("finally:") < q.index("self.scr.close()")
+    report("SR9 review 13n4b: ffmpeg -threads 2; file names checked against UTC (local-time names read with the "
+           "offset + a note); a SAVE merged into an open camera event records the cameras' id; ffmpeg in a "
+           "kill-on-close job; quit() closes the recorder even when something before it fails",
+           threads and a == (0, "utc") and (loc == 0 or b[1] in ("local", "other")) and c == (-18000, "other") and
+           seen[1] == off and t_read is not None and abs(t_read - wall) < 5 and "scr.names_offset" in note and
+           utc == ("utc", 0) and open_ok and j1 == "20261026-075000_alarm" and disk_ok and
+           j2 == "20261026-075000_alarm2" and not bad and job_ok and quit_ok,
+           "threads %s; offsets utc %s / +2 h %s / -5 h %s; a fake +%d h file -> %s, read at %s s from now, note %s; "
+           "real UTC -> %s; camera id open %s / on disk %s, bad refused %s; job %s; quit finally %s" % (
+               threads, a, b, c, off // 3600, seen, None if t_read is None else round(t_read - wall, 1), note, utc,
+               j1, j2, not bad, job_ok, quit_ok))
+
+
 def main():
-    for fn in (sr1, sr2, sr3, sr4, sr5, sr6_7, sr8):
+    for fn in (sr1, sr2, sr3, sr4, sr5, sr6_7, sr8, sr9):
         try:
             fn()
         except Exception as e:

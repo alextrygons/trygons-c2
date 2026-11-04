@@ -213,6 +213,8 @@ class Recorder:
         self.full = False
         self.state_path = None
         self.lock = threading.RLock()                   # events: the event loop (SAVE) + the worker (tick)
+        self.link_file = os.link                        # (a test swaps it for a slow one: review 13n4 M1)
+        self.copy_refused = 0                           # ring files not kept: no hard link + no room for a copy
         if self.storage.usable:
             self.state_path = os.path.join(self.storage.folder("state"), "recording.json")
             try:
@@ -335,8 +337,7 @@ class Recorder:
                   "triggers": [trig], "boat": self.snapshot(), "cameras": {n: [] for n in self.cams}, "bytes": 0}
             self.events.append(ev)
             self.saves += 1
-            self._link(ev)
-            self._write(ev)
+            self._write(ev)                             # the files are linked by the WORKER (review 13n4 M1)
             self.gw.audit("save_keep", id=eid, minutes=minutes, have_min=ev["have_min"], user=who)
             log.info("KEEP %s: %d min asked, %.1f min in the ring", eid, minutes, have / 60.0)
             short = have < pre - self.seg_s
@@ -373,8 +374,7 @@ class Recorder:
               "bytes": 0}
         self.events.append(ev)
         self.saves += 1
-        self._link(ev)
-        self._write(ev)
+        self._write(ev)                                 # the files are linked by the WORKER (review 13n4 M1)
         self.gw.audit("save", id=eid, trigger=kind, text=text, user=who)
         log.info("SAVE %s (%s)", eid, text)
         return True, "SAVE %s: %s before + %s after" % (eid, dur(pre), dur(self.post_s)), eid
@@ -405,34 +405,64 @@ class Recorder:
 
     # --- events ----------------------------------------------------------------------------
     def _link(self, ev):
-        """Hard-link every finished ring file inside the event window."""
+        """Hard-link every finished ring file inside the event window. Review 13n4 M1: called ONLY by the
+        worker (tick, run_in_executor) - never on the event loop (a KEEP 1h = ~240 links, a copy fallback GBs:
+        a stalled loop would stall the shore joystick + GW_STATUS = REMOTE DRIVING LINK LOST / GATEWAY LOST);
+        the file work runs WITHOUT self.lock (the loop's SAVE / KEEP never waits for it), the OLDEST files
+        first (the ring's own housekeeping runs after this in the same worker step); a copy (no hard links on
+        that drive) only while the copy leaves the storage policy's free-space margin."""
+        with self.lock:
+            start, end, eid = ev["start_t"], ev["end_t"], ev["id"]
+            have = {n: set(v) for n, v in ev["cameras"].items()}
         done = True
+        todo = []
         for name, c in self.cams.items():
             segs = c.segments()
-            have = set(ev["cameras"].setdefault(name, []))
             for i, (t, p) in enumerate(segs):
-                if t + self.seg_s < ev["start_t"] or t > ev["end_t"]:
+                if t + self.seg_s < start or t > end:
                     continue
                 if i == len(segs) - 1 and c.proc is not None and c.proc.poll() is None:
-                    if t <= ev["end_t"]:
+                    if t <= end:
                         done = False                    # still being written
                     continue
                 fn = os.path.basename(p)
-                if fn in have:
-                    continue
-                dst = os.path.join(ev["path"], name)
+                if fn not in have.get(name, ()):
+                    todo.append((t, name, p, fn))
+        todo.sort()                                     # the oldest first (they leave the ring first)
+        added = []
+        free = None
+        for _t, name, p, fn in todo:
+            dst = os.path.join(ev["path"], name)
+            try:
                 os.makedirs(dst, exist_ok=True)
+                size = os.path.getsize(p)
+            except OSError:
+                continue                                # gone from the ring meanwhile
+            try:
+                self.link_file(p, os.path.join(dst, fn))
+            except OSError:
+                if free is None:
+                    free = self.storage.free_now() if self.storage.usable else 0
+                if free - size < self.storage.low_b:
+                    self.copy_refused += 1
+                    log.warning("SAVE %s: %s not kept: no hard link on this drive and too little free space for "
+                                "a copy", eid, fn)
+                    continue
                 try:
-                    os.link(p, os.path.join(dst, fn))
-                except OSError:
-                    try:
-                        shutil.copy2(p, os.path.join(dst, fn))
-                    except OSError as e:
-                        log.warning("SAVE %s: %s not kept: %s", ev["id"], fn, e)
-                        continue
-                ev["cameras"][name].append(fn)
-                ev["bytes"] += os.path.getsize(p)
-            ev["cameras"][name].sort()
+                    shutil.copy2(p, os.path.join(dst, fn))
+                    free -= size
+                except OSError as e:
+                    log.warning("SAVE %s: %s not kept: %s", eid, fn, e)
+                    continue
+            added.append((name, fn, size))
+        with self.lock:
+            for name, fn, size in added:
+                lst = ev["cameras"].setdefault(name, [])
+                if fn not in lst:
+                    lst.append(fn)
+                    ev["bytes"] += size
+            for lst in ev["cameras"].values():
+                lst.sort()
         return done
 
     def _write(self, ev):
@@ -470,26 +500,33 @@ class Recorder:
         now = time.time() if now is None else now
         for c in self.cams.values():
             c.tick(now)
-        with self.lock:
-            self._tick_events(now)
+        self._tick_events(now)                          # takes self.lock only around the event bookkeeping
         if now - self.last_house >= self.cfg.get("house_s", 5.0):
             self.last_house = now
             self.housekeeping(now)
 
     def _tick_events(self, now):
-        for ev in list(self.events):
-            done = self._link(ev)
-            if now > ev["end_t"] and (done or now > ev["end_t"] + self.seg_s + 30):
-                ev["state"] = "complete" if done else "incomplete"
-                self._write(ev)
-                self.events.remove(ev)
-                self.recent = (self.recent + [{"id": ev["id"], "state": ev["state"], "mb": round(ev["bytes"] / 1e6, 1),
-                                               "keep": bool(ev.get("keep")),
-                                               "triggers": len(ev["triggers"]),
-                                               "text": ev["triggers"][0]["text"]}])[-5:]
-                log.info("SAVE %s %s (%.1f MB)", ev["id"], ev["state"], ev["bytes"] / 1e6)
-            else:
-                self._write(ev)
+        with self.lock:
+            evs = list(self.events)
+        for ev in evs:
+            done = self._link(ev)                       # file work without the lock
+            with self.lock:
+                if ev in self.events:
+                    self._finish(ev, done, now)
+
+    def _finish(self, ev, done, now):
+        """(under self.lock) close an event whose window is over, else write its event.json."""
+        if now > ev["end_t"] and (done or now > ev["end_t"] + self.seg_s + 30):
+            ev["state"] = "complete" if done else "incomplete"
+            self._write(ev)
+            self.events.remove(ev)
+            self.recent = (self.recent + [{"id": ev["id"], "state": ev["state"], "mb": round(ev["bytes"] / 1e6, 1),
+                                           "keep": bool(ev.get("keep")),
+                                           "triggers": len(ev["triggers"]),
+                                           "text": ev["triggers"][0]["text"]}])[-5:]
+            log.info("SAVE %s %s (%.1f MB)", ev["id"], ev["state"], ev["bytes"] / 1e6)
+        else:
+            self._write(ev)
 
     def _rm(self, p):
         for q in (p, p + ".synced"):

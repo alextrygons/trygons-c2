@@ -1800,3 +1800,6 @@ voice.sample_2 = Traffic, two o'clock, eight hundred metres.
 voice.sample_3 = Compass lost, the boat holds the course on the gyro.
 voice.sample_4 = Heading lock, two hundred and forty five degrees.
 voice.sample_5 = The STANDBY button on the boat always wins, in every mode.
+# --- review 13n4b: screen recording ---------------------------------------
+scr.names_offset = Screen recording {name}: ffmpeg names the files {h} h off UTC - read with that correction
+scr.ev_merged = SAVE {id}: the screens belong to the open camera event {cam}

@@ -19,7 +19,14 @@ deletes a kept event (the owner removes the folder by hand).
 
 Folder: TRYGONS_SCREENREC=<folder> (the tests: a temporary one); else groundstation/screenrec/ (not in git).
 REC SCREEN is off at every start unless this PC's setting "screen_rec" says it was on when the station closed.
+
+Review 13n4b: ffmpeg's file names must be UTC (TZ=UTC0); every start CHECKS the newest file's name against the
+clock (time.gmtime) and, when ffmpeg named it in local time (or any other whole quarter hour off), reads the
+names with that offset (note scr.names_offset) - a SAVE never takes the wrong hour. Each ffmpeg uses at most
+2 threads; on Windows it runs in a "kill on close" job object and an atexit hook stops it, so a station that
+dies never leaves an ffmpeg recording behind.
 """
+import atexit
 import calendar
 import json
 import os
@@ -38,6 +45,8 @@ SEG_S = 60
 RING_MIN = 60
 MIN_FREE_GB = 2.0
 RESTART_S = 5.0
+FF_THREADS = 2                                  # ffmpeg threads per screen (review 13n4b LOW-2)
+NAME_SLACK_S = 90.0                             # a fresh file's name time may be this far from the clock
 HOUSE_S = 5.0
 KEEP_CHOICES_MIN = (5, 60)
 SEG_RE = re.compile(r"^(\d{8})-(\d{6})\.ts$")
@@ -95,7 +104,7 @@ def grab_cmd(ffmpeg, handle, folder, enc, fps=FPS, width=WIDTH, seg_s=SEG_S, pla
                os.environ.get("DISPLAY", ":0")]
     scale = "scale='trunc(min(%d,iw)/2)*2':-2,format=yuv420p" % width
     return ([ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"] + src + ["-vf", scale] + encoder_args(enc) +
-            ["-an", "-f", "segment", "-segment_time", str(seg_s), "-segment_atclocktime", "1", "-strftime", "1",
+            ["-threads", str(FF_THREADS), "-an", "-f", "segment", "-segment_time", str(seg_s), "-segment_atclocktime", "1", "-strftime", "1",
              "-reset_timestamps", "1", "-segment_format", "mpegts", "-segment_format_options", "flush_packets=1",
              os.path.join(folder, "%Y%m%d-%H%M%S.ts")])
 
@@ -105,6 +114,78 @@ def low_priority():
     if os.name == "nt":
         return {"creationflags": 0x00004000 | 0x08000000}     # BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW
     return {"preexec_fn": lambda: os.nice(10)}
+
+
+def local_offset_s(now):
+    """Local time minus UTC at this moment, s (what a name in local time is ahead of UTC)."""
+    return calendar.timegm(time.localtime(now)) - int(now)
+
+
+def name_offset(name_t, now, slack=NAME_SLACK_S):
+    """-> (offset s to subtract from a fresh file's name time, how the names were read: "utc" / "local" / "other").
+    name_t = the newest file's name read as UTC, now = the clock when it was made."""
+    d = name_t - now
+    if abs(d) <= slack:
+        return 0, "utc"
+    loc = local_offset_s(now)
+    if loc and abs(d - loc) <= slack:
+        return loc, "local"
+    return int(round(d / 900.0)) * 900, "other"
+
+
+class _Job:
+    """Windows: a job object that kills its processes when this station's process ends (even a crash)."""
+
+    def __init__(self):
+        self.h = None
+        self.k32 = None
+        self.assigned = 0
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.CreateJobObjectW.restype = wintypes.HANDLE
+            k32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+            k32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+            k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+
+            class Basic(ctypes.Structure):
+                _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                            ("SchedulingClass", wintypes.DWORD)]
+
+            class Io(ctypes.Structure):
+                _fields_ = [(n, ctypes.c_uint64) for n in ("r", "w", "o", "rb", "wb", "ob")]
+
+            class Ext(ctypes.Structure):
+                _fields_ = [("Basic", Basic), ("Io", Io), ("ProcessMemoryLimit", ctypes.c_size_t),
+                            ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                            ("PeakJobMemoryUsed", ctypes.c_size_t)]
+            h = k32.CreateJobObjectW(None, None)
+            if not h:
+                return
+            info = Ext()
+            info.Basic.LimitFlags = 0x2000                          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not k32.SetInformationJobObject(h, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                return
+            self.h, self.k32 = h, k32
+        except (OSError, AttributeError, ValueError):
+            self.h = None
+
+    def add(self, proc):
+        handle = getattr(proc, "_handle", None)
+        if self.h is None or handle is None:
+            return False
+        try:
+            ok = bool(self.k32.AssignProcessToJobObject(self.h, int(handle)))
+        except (OSError, ValueError, TypeError):
+            ok = False
+        self.assigned += ok
+        return ok
 
 
 def probe_encoder(ffmpeg, timeout=8.0):
@@ -130,6 +211,9 @@ class Grab:
         self.state = "OFF"                  # REC / NO WINDOW / DOWN / OFF
         self.restarts = 0
         self.next_start = 0.0
+        self.offset = 0                     # s subtracted from the file names (0 = they are UTC, as asked)
+        self.names = None                   # None = not checked since this ffmpeg started / "utc" / "local" / "other"
+        self.started = 0.0
 
     def segments(self):
         out = []
@@ -137,7 +221,7 @@ class Grab:
             for n in os.listdir(self.folder):
                 t = seg_time(n)
                 if t is not None:
-                    out.append((t, os.path.join(self.folder, n)))
+                    out.append((t - self.offset, os.path.join(self.folder, n)))
         except OSError:
             pass
         out.sort()
@@ -161,7 +245,7 @@ class ScreenRec:
     """REC SCREEN + the screen part of SAVE / KEEP. sources: {SCREEN-n: callable -> native window id or None}."""
 
     def __init__(self, sources, root=None, ffmpeg=None, encoder=None, ring_min=RING_MIN, seg_s=SEG_S,
-                 min_free_gb=MIN_FREE_GB, popen=None, free=None, clock=None):
+                 min_free_gb=MIN_FREE_GB, popen=None, free=None, clock=None, names_check=True):
         self.sources = dict(sources)
         self.root = root or root_dir()
         self.ffmpeg = ffmpeg if ffmpeg is not None else ffmpeg_bin()
@@ -178,6 +262,16 @@ class ScreenRec:
         self.last_house = 0.0
         self.probing = False
         self.lock = threading.RLock()
+        self.job = _Job()
+        self.names_check = names_check                  # off only for the tests' fake ffmpeg (no real files)
+        atexit.register(self._atexit)
+
+    def _atexit(self):
+        try:
+            for g in self.grabs.values():
+                g.stop()
+        except Exception:
+            pass
 
     # --- folders --------------------------------------------------------------------------------
     def events_dir(self):
@@ -253,9 +347,33 @@ class ScreenRec:
                 self.housekeeping(now)
             self._tick_events(now)
 
+    def check_names(self, g, now):
+        """The newest file of a freshly started ffmpeg: is its name UTC? (else read the names with the offset)."""
+        if g.names is not None or not g.running():
+            return
+        best = None
+        try:
+            for n in os.listdir(g.folder):
+                t = seg_time(n)
+                if t is None:
+                    continue
+                m = os.path.getmtime(os.path.join(g.folder, n))
+                if m >= g.started - 2.0 and (best is None or t > best[0]):
+                    best = (t, m)
+        except OSError:
+            return
+        if best is None:
+            return
+        off, how = name_offset(best[0], best[1])
+        g.offset, g.names = off, how
+        if how != "utc":
+            self.note("scr.names_offset", name=g.name, h=round(off / 3600.0, 2))
+
     def _keep_running(self, g, now, force):
         if g.running():
             g.state = "REC"
+            if self.names_check:
+                self.check_names(g, now)
             return
         if g.proc is not None:                          # ffmpeg ended (window closed, error): try again later
             g.proc = None
@@ -278,6 +396,8 @@ class ScreenRec:
             g.proc = self.popen(grab_cmd(self.ffmpeg, h, g.folder, self.encoder, seg_s=self.seg_s),
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 env=env, **low_priority())
+            self.job.add(g.proc)
+            g.started, g.names = time.time(), None
             g.state = "REC"
         except (OSError, ValueError):
             g.proc = None
@@ -340,6 +460,29 @@ class ScreenRec:
             self._link(ev)
             self._write(ev)
             return True, "scr.saved", ev["have_min"]
+
+    def camera_id(self, eid, cam_eid):
+        """Review 13n4b LOW-4: the gateway put this station's SAVE into an OPEN camera event (a merge) - the screen
+        part records the cameras' id ("camera_event"), so both are found together. -> True when recorded."""
+        if not (isinstance(eid, str) and EVENT_ID_RE.match(eid)) or not isinstance(cam_eid, str) or \
+                not re.match(r"^[A-Za-z0-9_-]{1,60}$", cam_eid):
+            return False
+        with self.lock:
+            for ev in self.events:
+                if ev["id"] == eid:
+                    ev["camera_event"] = cam_eid
+                    self._write(ev)
+                    return True
+            p = os.path.join(self.events_dir(), eid, "event.json")
+            try:
+                with open(p, encoding="utf-8") as f:
+                    d = json.load(f)
+                d["camera_event"] = cam_eid
+                d["path"] = os.path.dirname(p)
+                self._write(d)
+                return True
+            except (OSError, ValueError):
+                return False
 
     def _link(self, ev):
         """Hard-link (else copy, when there is room) every finished ring file inside the window."""

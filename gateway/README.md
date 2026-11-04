@@ -614,7 +614,12 @@ MSYS2 `pacman -S mingw-w64-ucrt-x86_64-ffmpeg` or `ffmpeg.exe` on the PATH (gate
   `event.json` is). Delete them by hand when no longer needed. The ring is 60 min by default
   (`ring_min` 60, ~3.6 GB per hour of SSD for 4 cameras - far inside `low_free_gb` 20 GB on
   the ThinkPad's 500 GB SSD); a shorter ring = the KEEP holds what exists and the station says
-  how much ("CAMERAS: only 20 min available").
+  how much ("CAMERAS: only 20 min available"). A gateway installed before 13n4 keeps its saved
+  ring length (`state/recording.json`, often 10 min): set it to 60 min once (station: Tools -
+  Cameras - ring length). Review 13n4b: the files of a SAVE / KEEP are hard-linked by the
+  recorder's WORKER (`Recorder.tick`, `run_in_executor`), never on the asyncio loop, the oldest
+  first, without holding the event lock; without hard links (another file system) a file is
+  copied only while the copy leaves `low_free_gb` free (else not kept, `copy_refused`).
 * Settings: `recording` in gateway.json (segment_s, ring_min, post_s,
   pre_s, ring_sync, stall_s); `storage.low_free_gb` / `full_free_gb` /
   `quota_gb`.

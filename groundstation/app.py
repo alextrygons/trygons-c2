@@ -847,6 +847,10 @@ class App:
     def on_save_ack(self, d):
         self.say(i18n.from_en(d.get("text", "")), GREEN if d.get("ok") else RED)
         self.event(T("cap.ev_video", text=i18n.from_en(d.get("text", ""))))
+        ask, got = d.get("ask"), d.get("id")
+        if d.get("ok") and ask and got and got != ask:      # merged into an open camera event (review 13n4b LOW-4)
+            if self.scr.camera_id(ask, got):
+                self.event(T("scr.ev_merged", id=ask, cam=got))
 
     def shore_save_poll(self):
         """The SAVE button on this PC's USB joystick (any time, not only while driving)."""
@@ -3133,18 +3137,22 @@ class App:
         """Closing the station = leaving the boat: UNCREWED + moving + our HELM asks ONCE first (review 13n2 MED-1)."""
         if not force and self.leaving_moving():
             return self.leave_boat(lambda: self.quit(force=True))
-        if self._layout_job:
-            self.root.after_cancel(self._layout_job)
-        self.save_layout()
-        self.prober.stop()
-        if self.driver:
-            self.driver.destroy()
-            self.driver = None
-        if self.link:
-            self.link.stop()
-        self.tracks.close()
-        self.scr.close()
-        self.root.destroy()
+        try:
+            if self._layout_job:
+                self.root.after_cancel(self._layout_job)
+            self.save_layout()
+            self.prober.stop()
+            if self.driver:
+                self.driver.destroy()
+                self.driver = None
+            if self.link:
+                self.link.stop()
+            self.tracks.close()
+        finally:                                    # the screen recorder's ffmpegs stop whatever failed above
+            try:                                    # (review 13n4b LOW-7)
+                self.scr.close()
+            finally:
+                self.root.destroy()
 
     def window_title(self):
         """ "Trygons C2 – Σταθμός ξηράς – Πλοήγηση & έλεγχος" (step 13i: the same titles everywhere; the
@@ -3688,7 +3696,7 @@ class App:
         W, H = ov.W, ov.H
         g = 8 * theme.unit(W, H)
         self.draw_mode_bar(rects["top"])
-        # STANDBY - always visible, also with every panel / bar collapsed: the ONLY red button (13n1)
+        # STANDBY - always visible, also with every panel / bar collapsed: red (13n1; red buttons = STANDBY + SAVE, owner 2026-11-04)
         r = rects["standby"]
         self.ov_button(r, T("cap.btn_standby"), lambda: self.mode(proto.MODE_STANDBY), "standby", "title",
                        tag="standby")
@@ -3770,7 +3778,7 @@ class App:
             if it["active"]:
                 fill, fg, ol = theme.WHITE, theme.BLACK, theme.BLACK
             elif it["mode"] == proto.MODE_STANDBY:
-                fill, fg, ol = theme.WARN, theme.WHITE, C["fg"]          # STANDBY = the only red button
+                fill, fg, ol = theme.WARN, theme.WHITE, C["fg"]          # STANDBY red (red buttons: STANDBY + SAVE)
             elif it["enabled"]:
                 fill, fg, ol = C["btn"], C["btn_fg"], C["fg"]
             else:
@@ -3874,7 +3882,7 @@ class App:
             x += w + gap
 
     def ov_button(self, r, label, action, kind, level, tag=None, enabled=True, on=False):
-        """A drawn button outside the panels: a SQUARE frame (13n1); STANDBY the only red one."""
+        """A drawn button outside the panels: a SQUARE frame (13n1); STANDBY red (SAVE too, owner 2026-11-04)."""
         ov, cv = self.ov, self.cv
         fs = ov.size(level)
         fill = {"standby": theme.WARN, "warn": C["btn_warn"], "info": C["btn_info"]}.get(kind, C["btn"])

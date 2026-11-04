@@ -557,7 +557,11 @@ SCREEN 2 = THE MAP + FOUR CORNER PANELS
              the camera part on the boat's SSD (video\events\<id>\, not
              uploaded to the shore - it is big; copy it from the gateway PC
              when needed). Kept files leave the rings and are NEVER deleted
-             automatically (delete the folders by hand). The message says
+             automatically (delete the folders by hand). A SAVE that the
+             gateway adds to an already open camera event: the screen part
+             records the cameras' id ("camera_event" in its event.json). If
+             the station closes abruptly, the screen recording (ffmpeg)
+             stops with it. The message says
              what was kept: "SAVED – SCREENS + CAMERAS 5 MIN / 1 HOUR"; when
              a ring is shorter than asked, what exists is kept and the message
              says so ("CAMERAS: only 20 min available"); no gateway / a VIEWER
@@ -2310,6 +2314,12 @@ F. VIDEO RECORDING: RING BUFFER AND SAVE
   <id>\ ("keep": true in event.json): never deleted by the space rules
   below (also not once copied), the video NOT sent to the shore PC (only
   event.json). A shorter ring keeps what exists and says how much.
+  A gateway installed BEFORE step 13n4 keeps the ring length it saved
+  (state\recording.json, often 10 min): KEEP 1h then holds only 10 min -
+  set the ring to 60 min once (Tools - Cameras - ring length). The files
+  of a SAVE / KEEP are linked by the gateway's background worker (within a
+  second; never on its network loop, review 13n4b); on a drive without hard
+  links they are copied only while the copy leaves the free-space margin.
 
   SAVE keeps 10 minutes before it + 2 minutes after it (all
   cameras), with: time, position, speed, heading, mode, alarms, what
