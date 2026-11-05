@@ -53,7 +53,9 @@ DEFAULTS = {
     "edge_lookahead_s": 3.0,        # the geofence / no-fly clip looks this far ahead
     "edge_margin_m": 10.0,
     "loiter_after_s": 1.0,          # give back: BRAKE, LOITER this long after
-    "data_stale_s": 1.0,            # U5 review MED-2: the drone's data older than this = no motion (it holds)
+    "data_stale_s": 1.8,            # U5 review MED-2: the drone's data older than this = no motion (it holds); U6
+                                    # review L3: one lost GLOBAL_POSITION_INT (normal age up to ~1 s + a packet) is
+                                    # tolerated, two are not
 }
 R_EARTH = 6371000.0
 
@@ -86,7 +88,7 @@ def setpoint(stick, drone, cfg, airspace=None):
     no-fly zones (with their altitude bands) like a horizontal move."""
     db = float(cfg["deadband"])
     age = drone.get("alt_age")
-    if not _finite(age) or age > float(cfg.get("data_stale_s", 1.0)):
+    if not _finite(age) or age > float(cfg.get("data_stale_s", 1.8)):
         return dict(ZERO), ["drone data %s old - it holds" % ("unknown" if not _finite(age) else "%.1f s" % age)]
     age = max(0.0, age)
     x, y, z, r = (shape(stick.get(k, 0.0) or 0.0, db) for k in ("x", "y", "z", "r"))
@@ -117,15 +119,25 @@ def setpoint(stick, drone, cfg, airspace=None):
                 up = room
                 why.append("maximum altitude %.0f m" % hi)
     lat, lon, hdg = drone.get("lat"), drone.get("lon"), drone.get("hdg")
-    if _finite(lat, lon, hdg) and _finite(drone.get("gs")) and drone["gs"] > 0 and age > 0:
-        lat, lon = ahead(lat, lon, drone["gs"] * age, hdg)      # MED-2: moved on with its ground speed
+    if _finite(lat, lon) and _finite(drone.get("gs")) and drone["gs"] > 0 and age > 0:
+        # MED-2: moved on with its ground speed - U6 review L2: along its real COURSE over ground (GLOBAL_POSITION_INT
+        # vx / vy), the heading only when no course is known
+        cog = drone.get("cog") if _finite(drone.get("cog")) else hdg
+        if _finite(cog):
+            lat, lon = ahead(lat, lon, drone["gs"] * age, cog)
     look = float(cfg["edge_lookahead_s"])
     a = alt if _finite(alt) else 0.0
     if up and airspace is not None and _finite(lat, lon, alt):
         # MED-3: a climb / descent into a zone's altitude band (the margin in the direction of the move)
         a2 = a + up * look + math.copysign(float(cfg["edge_margin_m"]), up)
         here_bad = airspace.problem([(lat, lon, a)])
-        bad = airspace.problem([(lat, lon, a2)]) if here_bad else airspace.problem([(lat, lon, a), (lat, lon, a2)])
+        # U6 review L1: a vertical leg has no horizontal length - sample it every VERT_STEP_M so a thin altitude band
+        # between the two ends is seen
+        k = max(1, int(math.ceil(abs(a2 - a) / VERT_STEP_M)))
+        ups = [(lat, lon, a + (a2 - a) * i / k) for i in range(1, k + 1)]
+        bad = next((b for b in (airspace.problem([p]) for p in ups) if b), None)
+        if not bad and not here_bad:
+            bad = airspace.problem([(lat, lon, a), (lat, lon, a2)])
         if bad:
             up = 0.0
             why.append("air geofence / no-fly zone above / below: %s" % bad)
@@ -148,6 +160,7 @@ def setpoint(stick, drone, cfg, airspace=None):
 
 
 ZERO = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw_rate": 0.0}
+VERT_STEP_M = 2.0                       # U6 review L1: the vertical leg's sample step
 
 
 class Lock:

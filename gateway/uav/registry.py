@@ -251,11 +251,16 @@ class Registry:
                     return                              # a newer save already went to disk
                 self._written = gen
                 tmp = self.path + ".tmp"
-                try:
-                    with open(tmp, "w", encoding="utf-8") as f:
-                        f.write(data)
-                    os.replace(tmp, self.path)
-                    self.error = ""
-                except OSError as e:
-                    self.error = "registry not saved: %s" % str(e)[:60]
+                for k in range(10):
+                    # (U6 gate: on Windows os.replace fails while a reader holds the file open - a sharing
+                    # violation; retried for ~1 s, never a lost record)
+                    try:
+                        with open(tmp, "w", encoding="utf-8") as f:
+                            f.write(data)
+                        os.replace(tmp, self.path)
+                        self.error = ""
+                        break
+                    except OSError as e:
+                        self.error = "registry not saved: %s" % str(e)[:60]
+                        time.sleep(0.1 * (k + 1))
         threading.Thread(target=write, daemon=True).start()

@@ -73,6 +73,10 @@ parameter check + the MAVLink allow-list + the own codec + the GPS warm start + 
        AI core, the gateway's nav code UAV-free
   UA32 the router's "ctl" op flies a simulated drone (velocity + yaw rate), its own zero after 0.5 s, refused
        while landing for the battery
+  UA36 U6 review fixes: MED-3 a STOPPED launch lets an airborne drone go ("hold", the pilot may take it); L1 a thin
+       no-fly altitude band inside a climb is seen; L2 an old position moved along the course over ground; L3 one
+       lost position packet tolerated (data_stale_s 1.8 s); L4 SYS_STATUS battery_remaining -1 never refreshes the
+       battery time
   UA35 (step WA, owner W59) no boat mode / speed launch condition: boat_state in HDG LOCK / AUTO at 8 kn = no
        reason, high_speed above 5 kn; the manager's NON-blocking HIGH SPEED notice once per crossing while a launch is
        prepared / runs, gw_status high_speed, the captain's question says it, a prepare under way is NOT refused
@@ -537,7 +541,10 @@ def ua7_registry():
         a = r.register(1, good_reading(sysid=11), name="EAGLE")
         b = r.register(2, good_reading(sysid=12, params={"GRIP_ENABLE": 1}))
         c = r.register(3, good_reading(sysid=11))                    # duplicate sysid of slot 1
-        until(lambda: os.path.exists(path) and json.load(open(path, encoding="utf-8")).get("slots", {}).get("3"), 5)
+        def _slots():
+            with open(path, encoding="utf-8") as f:              # (closed at once: Windows replace / sharing)
+                return json.load(f).get("slots", {})
+        until(lambda: os.path.exists(path) and _slots().get("3"), 5)
         r2 = registry.Registry(path)
         l1 = r2.launchable(1, {"sysid": 11})
         l2 = r2.launchable(2)
@@ -3051,7 +3058,7 @@ def ua34_review_u5():
     class Fence:
         def problem(self, pts):
             return "outside" if any(p[0] > 37.8303 for p in pts) else None
-    old = pilot.setpoint({"y": 1.0}, dict(base, alt_age=1.5), cfg)
+    old = pilot.setpoint({"y": 1.0}, dict(base, alt_age=2.0), cfg)        # (U6 review L3: data_stale_s 1.8 s)
     unknown = pilot.setpoint({"y": 1.0}, dict(base, alt_age=None), cfg)
     fresh = pilot.setpoint({"y": 1.0}, dict(base, alt_age=0.0), cfg, Fence())
     moved = pilot.setpoint({"y": 1.0}, dict(base, alt_age=0.8), cfg, Fence())
@@ -3147,7 +3154,8 @@ def ua34_review_u5():
     r = st.sent[-1]
     m.catchup_tick(time.time())
     res["med1_mgr"] = (r.get("code") == pilot.ERR_PILOT and "by hand" in r.get("text", "") and not sent and
-                       m.pilot_block(3) and m.pilot_block(4) and m.pilot_block(2) and m.pilot_block(5) is None)
+                       m.pilot_block(3) and m.pilot_block(4) is None and m.pilot_block(2) and m.pilot_block(5) is None)
+    # (U6 review MED-3: "launching" blocks only while the sequence owns that drone - slot 4 is not seq.cur)
     # MED-1 in the launch: CLEAR with a pilot on the drone = no MISSION START
     io = FakeIo(1)
     io.pilot_locked = lambda n: True
@@ -3276,6 +3284,78 @@ def ua35_w59_speed():
            all(res.values()), "%s" % res)
 
 
+# ------------------------------------------------------------------------------------------- U6 review fixes -------
+
+def ua36_review_u6():
+    """U6 review fixes (review of f7aed5d): MED-3 + L1-L4."""
+    from uav import launch, manager as mgr, pilot, router_worker as rw
+    res = {}
+    # MED-3: a STOP while the drone climbs out -> launch_ended -> phase "hold": the pilot may take it
+    tmp = tempfile.mkdtemp(prefix="uavtest_u6_")
+    try:
+        g = _G(tmp)
+        m = mgr.UavManager({"enabled": True, "slots": [{"usb": "udp:127.0.0.1:1"}] * 6}, g)
+        m.boat = lambda: {"pos": (37.82, 23.60), "launch_why": []}
+        m.flying[1] = {"phase": "launching", "home": None, "t": 0.0}
+        m.seq.state, m.seq.cur, m.seq.armed_here = launch.RUN, 1, False
+        m.slot = lambda n: {"landed": False, "usb_present": False}
+        blocked_run = m.pilot_block(1)
+        m.seq.stop("STOP by test", 0.0)
+        res["med3"] = (blocked_run is not None and m.flying[1]["phase"] == "hold" and m.pilot_block(1) is None and
+                       not m.seq.busy())
+        m.flying[2] = {"phase": "launching"}
+        res["med3_old"] = m.pilot_block(2) is None                  # no sequence owns it: never blocked for ever
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    cfg = dict(pilot.DEFAULTS, uav_min_alt_m=10.0, uav_max_alt_m=120.0)
+
+    class Band:                                                 # a 1 m thick no-fly band at 51.0..52.0 m
+        def problem(self, pts):
+            if any(51.0 <= p[2] <= 52.0 for p in pts):
+                return "band"
+            return None
+    base = {"lat": 37.8, "lon": 23.6, "alt": 50.0, "hdg": 0.0, "gs": 0.0, "climb": 0.0, "alt_age": 0.1}
+    sp, why = pilot.setpoint({"z": 1.0}, base, cfg, Band())
+    res["l1"] = sp["vz"] == 0.0 and any("no-fly" in w for w in why)
+    # L2: heading north, flying EAST (course 90): the old position moves east, not north
+    moved = {}
+
+    class Spy:
+        def problem(self, pts):
+            moved.setdefault("p", pts[0])
+            return None
+    pilot.setpoint({"y": 1.0}, dict(base, gs=10.0, cog=90.0, alt_age=1.0), cfg, Spy())
+    p0 = moved.get("p")
+    res["l2"] = p0 is not None and p0[1] > 23.6 + 5e-5 and abs(p0[0] - 37.8) < 1e-6
+    # L3: 1.5 s old = moves (one lost packet); 2.0 s = holds
+    a = pilot.setpoint({"y": 1.0}, dict(base, alt_age=1.5), cfg)[0]
+    b = pilot.setpoint({"y": 1.0}, dict(base, alt_age=2.0), cfg)[0]
+    res["l3"] = a["vx"] > 0 and b == pilot.ZERO
+    # L4: battery_remaining -1 never refreshes the battery time
+    d = rw.Drone() if hasattr(rw, "Drone") else None
+    r = rw.Router()
+    lk = type("L", (), {})()
+    lk.slot, lk.kind, lk.info, lk.hbs = 1, "usb", {}, []
+    from uav import mavlink as mv
+    lk.parser = mv.Parser()
+    r.expect[1] = 11
+    real = rw.now_s
+    try:
+        r.rx(lk, mv.encode("SYS_STATUS", {"battery_remaining": 55, "voltage_battery": 15000, "current_battery": 1000},
+                           0, 11, 1), 100.0)
+        t1 = r.drone(1).batt_t
+        r.rx(lk, mv.encode("SYS_STATUS", {"battery_remaining": -1, "voltage_battery": 15000, "current_battery": 1000},
+                           1, 11, 1), 110.0)
+        t2, pct = r.drone(1).batt_t, r.drone(1).batt_pct
+    finally:
+        rw.now_s = real
+    res["l4"] = t1 == 100.0 and t2 == 100.0 and pct == 55
+    report("UA36 U6 review fixes: MED-3 a STOPPED launch lets the airborne drone go (hold, a pilot may take it; "
+           "'launching' never blocks without a sequence); L1 a 1 m no-fly band inside a climb stops it; L2 an old "
+           "position moved along the course over ground; L3 1.5 s old data still moves, 2 s holds; L4 battery_remaining "
+           "-1 never refreshes the battery time", all(res.values()), "%s" % res)
+
+
 def main():
     watchdog()
     tests = [ua1_codec, ua2_pymavlink, ua3_allow, ua4_writer, ua5_no_aurix, ua6_check, ua7_registry, ua8_assist,
@@ -3284,7 +3364,7 @@ def main():
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126,
-             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed]
+             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

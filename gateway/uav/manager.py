@@ -813,6 +813,13 @@ class UavManager:
         if n in self.flying:
             self.flying[n]["phase"] = "mission"
 
+    def launch_ended(self, n):
+        """U6 review MED-3: the launch sequence let go of slot n's drone without a MISSION START (a STOP while it
+        climbed out): it holds where it is (phase "hold") - never "launching" for ever (that blocked the pilot)."""
+        f = self.flying.get(n)
+        if f is not None and f.get("phase") == "launching":
+            f["phase"] = "hold"
+
     def catchup(self, n):
         if n in self.flying:
             self.flying[n].update(phase="catchup", next_try=0.0)
@@ -828,7 +835,9 @@ class UavManager:
         if self.seq.busy() and self.seq.cur == n:
             return "UAV %d is being launched (%s) - wait until it flies its mission" % (n, self.seq.phase or "-")
         ph = (self.flying.get(n) or {}).get("phase")
-        if ph in ("launching", "catchup"):
+        # U6 review MED-3: "launching" blocks only while the sequence still owns this drone (above); the climb
+        # fallback's catch-up keeps it until GPS + EKF are good
+        if ph == "catchup":
             return "UAV %d is still climbing out (%s) - wait until it flies its mission" % (n, ph)
         return None
 
@@ -938,7 +947,7 @@ class UavManager:
         rec = self.reg.recs.get(n) or {}
         out = {"slot": n, "name": rec.get("name") or "UAV %d" % n, "sysid": rec.get("sysid"),
                "lat": d.get("lat"), "lon": d.get("lon"), "alt": d.get("rel_alt"), "hdg": d.get("hdg"),
-               "gs": d.get("gs"), "climb": d.get("climb"), "batt": d.get("battery_pct"), "batt_v": d.get("batt_v"),
+               "gs": d.get("gs"), "cog": d.get("cog"), "climb": d.get("climb"), "batt": d.get("battery_pct"), "batt_v": d.get("batt_v"),
                "batt_a": d.get("batt_a"), "mode": COPTER_MODES.get(d.get("mode"), str(d.get("mode"))),
                "armed": bool(d.get("armed")), "landed": bool(d.get("landed")), "in_slot": bool(d.get("usb_present")),
                "flying": (self.flying.get(n) or {}).get("phase"),

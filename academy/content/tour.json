@@ -721,8 +721,8 @@
           ],
           "title_el": "Ο νόμος",
           "title_en": "The law",
-          "text_el": "Πτήση εκτός οπτικής επαφής είναι στην ειδική κατηγορία: άδεια λειτουργίας από την ΥΠΑ, εγγεγραμμένος φορέας, ικανός χειριστής ή χειρίστρια και άμεση απομακρυσμένη ταυτοποίηση. Την ευθύνη έχουν ο φορέας και ο χειριστής ή η χειρίστρια.",
-          "text_en": "Flight beyond visual line of sight is in the specific category: an authorisation from the civil aviation authority, a registered operator, a competent remote pilot and direct remote ID. The responsibility is the operator's and the remote pilot's."
+          "text_el": "Πτήση εκτός οπτικής επαφής είναι στην ειδική κατηγορία: άδεια λειτουργίας από την Αρχή Πολιτικής Αεροπορίας (ΑΠΑ), εγγεγραμμένος φορέας, ικανός χειριστής ή χειρίστρια, άμεση απομακρυσμένη ταυτοποίηση, οι γεωγραφικές ζώνες UAS και ασφάλιση. Την ευθύνη έχουν ο φορέας και ο χειριστής ή η χειρίστρια.",
+          "text_en": "Flight beyond visual line of sight is in the specific category: an authorisation from the civil aviation authority, a registered operator, a competent remote pilot, direct remote ID, the UAS geographical zones and insurance. The responsibility is the operator's and the remote pilot's."
         }
       ]
     }

@@ -3656,8 +3656,14 @@ HARDWARE
   +0.9 GB RAM and Quick Sync for the six video encoders).
 
 THE LAW (not legal advice)
-  EU Regulations 2019/947 and 2019/945 apply in Greece; the authority is the
-  Hellenic Civil Aviation Authority (HCAA, ΥΠΑ).
+  EU Regulations 2019/947 and 2019/945 apply in Greece; the authority for
+  drones is the Hellenic Civil Aviation Authority (HCAA, Greek: Αρχή Πολιτικής
+  Αεροπορίας - ΑΠΑ; check the current name and rules before you fly).
+  - UAS GEOGRAPHICAL ZONES (2019/947 Art. 15) and airspace: check the national
+    drone zones and NOTAMs before every flight; near airports, heliports,
+    military / restricted areas the flight needs the coordination / permission
+    those zones require (air traffic services). The gateway's no-fly file is
+    NOT the official map.
   - Flying beyond visual line of sight (BVLOS) is the SPECIFIC category: an
     operational authorisation from the HCAA (SORA, or a PDRA where one fits).
     Take-off from a moving vessel and flights near people / vessels must be
@@ -3666,7 +3672,9 @@ THE LAW (not legal advice)
   - DIRECT REMOTE ID broadcast (EU 2019/945, Delegated Regulation 2020/1058): a
     drone without a class mark needs an add-on Remote ID module, as the
     authorisation says.
-  - A remote pilot with the competency the authorisation requires; insurance.
+  - A remote pilot with the competency the authorisation requires.
+  - Third-party liability INSURANCE as the authorisation and Greek law require
+    (Regulation (EC) 785/2004 for 20 kg and more).
   - Radio limits: analog 5.8 GHz video 25 mW EIRP, 2.4 GHz 100 mW EIRP - they
     limit the range.
   - State / Navy operations are outside the EASA rules (Regulation 2018/1139

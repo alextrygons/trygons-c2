@@ -147,6 +147,7 @@ import re
 import socket
 import string
 import subprocess
+import shutil
 import sys
 import tempfile
 
@@ -219,6 +220,55 @@ def resolve(name, start_dir):
     return None
 
 
+def _file_of(base, parts):
+    p = os.path.join(base, *parts) if parts else base
+    if parts and os.path.isfile(p + ".py"):
+        return p + ".py"
+    if os.path.isfile(os.path.join(p, "__init__.py")):
+        return os.path.join(p, "__init__.py")
+    return None
+
+
+def submodules_of(path):
+    """U6 review MED-1: the project FILES a file imports beyond its top-level names - every submodule of
+    `from pkg import a, b` / `import pkg.sub` (pkg/a.py, pkg/b.py) and every relative import (`from . import x`,
+    `from .x import y`, `from .. import z`), resolved like Python does. -> [file paths]."""
+    tree = ast.parse(open(path, encoding="utf-8").read(), path)
+    here = os.path.dirname(path)
+    out = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                parts = a.name.split(".")
+                if len(parts) > 1:
+                    for d in [here] + SEARCH:
+                        for k in range(2, len(parts) + 1):
+                            f = _file_of(d, parts[:k])
+                            if f:
+                                out.append(f)
+        elif isinstance(n, ast.ImportFrom):
+            mod = (n.module or "").split(".") if n.module else []
+            if n.level:
+                base = here
+                for _k in range(n.level - 1):
+                    base = os.path.dirname(base)
+                bases = [base]
+            else:
+                bases = [here] + SEARCH
+            for b in bases:
+                pk = _file_of(b, mod)
+                if pk is None and mod:
+                    continue
+                if pk:
+                    out.append(pk)
+                for a in n.names:
+                    f = _file_of(b, mod + [a.name])
+                    if f:
+                        out.append(f)
+                break
+    return out
+
+
 def reaches_net(path, seen=None, chain=()):
     """The first import chain from this file to a NET module (through project modules), or None."""
     seen = set() if seen is None else seen
@@ -234,6 +284,12 @@ def reaches_net(path, seen=None, chain=()):
             r = reaches_net(p, seen, chain + (nm,))
             if r:
                 return r
+    for p in submodules_of(path):                      # U6 review MED-1: `from uav import launch`, `from . import x`
+        if os.path.dirname(p) == HERE and os.path.basename(p) == GUARD + ".py":
+            continue
+        r = reaches_net(p, seen, chain + (os.path.relpath(p, REPO).replace(os.sep, "/"),))
+        if r:
+            return r
     return None
 
 
@@ -248,6 +304,21 @@ def ac1():
         hit = sorted(names & NET)
         if hit or dyn:
             bad.append("%s: %s" % (name, ", ".join(hit + sorted(dyn))))
+    # U6 review MED-1: the gateway's UAV rule modules the academy runs IN its process (uavsim: from uav import ...,
+    # and their relative imports) are checked like academy modules
+    todo, done = [p for p in submodules_of(os.path.join(HERE, "uavsim.py")) if os.sep + "uav" + os.sep in p], set()
+    while todo:
+        p = todo.pop()
+        if p in done:
+            continue
+        done.add(p)
+        names, dyn = imports_of(p)
+        hit = sorted(names & NET)
+        if hit or dyn:
+            bad.append("%s: %s" % (os.path.relpath(p, REPO).replace(os.sep, "/"), ", ".join(hit + sorted(dyn))))
+        todo += [q for q in submodules_of(p) if os.sep + "uav" + os.sep in q]
+    if len(done) < 5:
+        bad.append("the UAV rule modules were not found (%d)" % len(done))
     report("AC1 no network / serial / process import outside simguard", not bad and len(mods) >= 5,
            "; ".join(bad) or "%d academy modules checked (%s)" % (len(mods), ", ".join(n for n, _ in mods)))
 
@@ -266,11 +337,32 @@ def ac2():
             r = reaches_net(p, chain=(nm,))
             if r:
                 bad.append("%s -> %s" % (name, " -> ".join(r)))
+        for p in submodules_of(path):                  # U6 review MED-1: submodules + relative imports too
+            if os.path.dirname(p) == HERE and os.path.basename(p) in (GUARD + ".py",):
+                continue
+            if os.sep + "practical" + os.sep in p:
+                continue
+            r = reaches_net(p, chain=(os.path.relpath(p, REPO).replace(os.sep, "/"),))
+            if r:
+                bad.append("%s -> %s" % (name, " -> ".join(r)))
     # the checker itself must catch the boat links (else AC2 proves nothing)
     probes = {}
     for nm in ("link", "gwclient", "boats", "aurix", "gateway"):
         p = resolve(nm, HERE)
         probes[nm] = bool(p and reaches_net(p, chain=(nm,)))
+    # ... and must follow `from uav import x` / relative imports (U6 review MED-1): a probe file in a temp package
+    tmp = tempfile.mkdtemp(prefix="trygons_ac2_")
+    try:
+        os.makedirs(os.path.join(tmp, "pk"))
+        for fn, txt in (("__init__.py", ""), ("inner.py", "from . import leaf\n"), ("leaf.py", "import socket\n"),
+                        ("top.py", "")):
+            with open(os.path.join(tmp, "pk", fn), "w", encoding="utf-8") as f:
+                f.write(txt)
+        with open(os.path.join(tmp, "user.py"), "w", encoding="utf-8") as f:
+            f.write("from pk import inner\n")
+        probes["from-pkg + relative"] = bool(reaches_net(os.path.join(tmp, "user.py"), chain=("user",)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     blind = [k for k, v in probes.items() if not v]
     report("AC2 no academy import leads to a boat link (transitive)", not bad and not blind,
            "; ".join(bad) or ("checker blind to %s" % blind if blind else
@@ -297,11 +389,30 @@ def ac3():
         import content
         for name, _p in academy_modules():
             importlib.import_module(name)
+        # U6 review MED-1: the gateway's UAV rule modules the academy drives (uavsim) are imported + RUN here too
+        for m in ("uav.launch", "uav.allow", "uav.battery", "uav.mission", "uav.uavcheck"):
+            importlib.import_module(m)
+        import uavlesson
+        _t = [0.0]
+        _sim = uavlesson.make_sim(lambda: _t[0])
+        _sim.register(1)
+        _sim.send_route("next")
+        _sim.set_boat("STANDBY", 0.0)
+        _sim.prepare(1)
+        _sim.answer(True)
+        for _k in range(240):
+            _sim.tick()
+            _t[0] += 0.25
         for f in content.files():
             content.check(content.load(f), f)
     finally:
         socket.socket.connect, socket.socket.connect_ex, socket.create_connection = orig
     loaded = set(sys.modules) - before
+    # U6 review MED-1: the gateway's UAV modules the academy runs hold no network / process module (runtime view)
+    import types as _types
+    uavnet = sorted("%s.%s" % (mn, k) for mn, mod in list(sys.modules.items()) if mn.startswith("uav.") and mod
+                    for k, v in vars(mod).items() if isinstance(v, _types.ModuleType) and v.__name__.split(".")[0] in NET)
+    attempts += ["%s (a network module in a UAV rule module)" % x for x in uavnet]
     boatlinks = sorted(loaded & {"link", "gwclient", "boats", "aurix", "gateway", "serial", "shorejoy",
                                  "syncrecv", "app", "stations"})
     report("AC3 loading the academy opens no connection", not attempts and not boatlinks,
@@ -4014,6 +4125,24 @@ def ac54():
         for k, v in text.load(lc).items():
             if k.startswith("uavl.") and SCOPE_WORDS.search(v):
                 wrong.append("%s %s: %r" % (lc, k, v))
+    neg = re.compile(u"\\b(no|not|never|nothing|without)\\b|ΧΩΡΙΣ|χωρίς|ποτέ|ΠΟΤΕ|δεν|ΔΕΝ|καμία|κανένα|όχι|ΟΧΙ", re.I)
+    for f, start, end in (("MANUAL.txt", "21. UAV MAGAZINE", "THE LAW"), ("MANUAL_EL.txt", "16. ΜΑΓΓΕΜΑ UAV", "Ο ΝΟΜΟΣ")):
+        src = open(os.path.join(REPO, f), encoding="utf-8").read()
+        i = src.find(start)
+        j = src.find(end, i + 1) if i >= 0 else -1
+        if i < 0 or j < 0:
+            wrong.append("%s: the UAV chapter not found" % f)
+            continue
+        for sent in re.split(u"[.;·:\\n]\\s", src[i:j]):
+            if SCOPE_WORDS.search(sent) and not neg.search(sent) and "HELM" not in sent and "e-stop" not in sent:
+                wrong.append("%s UAV chapter says %r" % (f, sent.strip()[:80]))
+    tour_doc = tour.load()
+    for c2 in [c for c in tour_doc["chapters"] if c["id"] == "uav"]:
+        for st in c2["stops"]:
+            for k in ("text_el", "text_en"):
+                for sent in re.split(u"[.;·]\\s", st.get(k, "")):
+                    if SCOPE_WORDS.search(sent) and not neg.search(sent):
+                        wrong.append("tour UAV stop says %r" % sent[:80])
     if "observation" not in uavsim.SCOPE:
         wrong.append("uavsim scope")
     doc = tour.load()
@@ -4023,7 +4152,7 @@ def ac54():
     if not ch or not need <= covered:
         wrong.append("tour UAV chapter misses %s" % sorted(need - covered))
     legal = [st for c2 in ch for st in c2["stops"] if "uav:legal" in st.get("covers", [])]
-    if not legal or u"ΥΠΑ" not in legal[0]["text_el"] or "authorisation" not in legal[0]["text_en"]:
+    if not legal or u"ΑΠΑ" not in legal[0]["text_el"] or "authorisation" not in legal[0]["text_en"]:
         wrong.append("the tour's legal stop")
     report("AC54 UAV scope: observation only + the tour's UAV chapter", not wrong, "; ".join(wrong[:6]) or
            "no payload / release / strike word or action in the UAV lesson, simulator or screen texts; the tour's UAV "

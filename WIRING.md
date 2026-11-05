@@ -437,14 +437,17 @@ Camera / observation drones only: no payload, release or other output on a drone
 | Slot cable n | hub A port n -> breakaway USB-C -> drone n | the hub PORT is the slot (gateway.json slots[n].usb = "usbloc:<port path>", --list-serial shows it); label every port |
 | ELRS TX n | hub B, its own port | gateway.json slots[n].radio; bound to drone n only |
 | VRX n + capture n | VRX composite out -> capture -> hub B | fixed channel per slot (W63); gateway.json uav.video.devices |
-| Hatch switches | FT232R CTS = OPEN, DSR = CLOSED; switch closes to GND; 10 kOhm pull-up to 3.3 V on each line | both lines high = no switch / broken wire = HATCH FAULT; gateway.json uav.hatch.port |
-| Hatch actuator | relay board channel n (>= 8), own fuse at the bank | a relay-board reboot switches it OFF = the hatch closes by itself (seen as HATCH FAULT, docs/uav_design.md 5.5) |
+| Hatch switches | FT232R CTS = OPEN, DSR = CLOSED; switch closes to GND; 10 kOhm pull-up to 3.3 V on each line | both lines high (no switch / a broken wire) is a HATCH FAULT only once it lasts longer than the hatch's travel time (open_s / close_s: while moving neither switch is closed); both closed = FAULT at once; gateway.json uav.hatch.port |
+| Hatch actuator | relay board channel n (>= 8), own fuse at the bank | ONE on/off relay can only give "power / no power": a motor actuator needs a CHANGEOVER (DPDT reversing) relay stage or a small actuator CONTROLLER with its own end stops that opens on "power" and closes (slowly, soft edge, owner W57) on "no power" - a spring / gas-strut return is the simplest; a relay-board reboot switches it OFF = the hatch closes by itself (seen as HATCH FAULT, docs/uav_design.md 5.5) |
 | Hubs | 12 V -> 5 V supply, own fuse | powered: never from the laptop's ports alone |
 
 * Antennas: 2.4 GHz (ELRS) and 5.8 GHz (video) groups apart (>= 0.5 m), clear of the 4G / Starlink antennas and the
   crew; EU limits 100 mW (2.4 GHz) / 25 mW (5.8 GHz video) set the range (uav_rf_range_m 1500 m TO CONFIRM).
 * Strain relief on every slot cable; the breakaway connector is the only part that may come apart.
 * Never connect a drone's FC to the AURIX, the boat LAN or the relay board: the magazine has no boat control path.
+* Relay channel >= 8: the DroneCAN relay board of section 3E has 6 channels (hardpoints 0-5) and CANNOT host the hatch
+  relay - the hatch needs the Modbus RS485 board option with 8 or more channels (RELAY_BUS MODBUS, section 3D) or a
+  bigger DroneCAN board (owner W57b).
 
 ## 4. microSD card (log)
 

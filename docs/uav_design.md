@@ -494,8 +494,10 @@ are gateway-side only).
 
 ## 11. Legal note (for MANUAL / MANUAL_EL in U6; not legal advice)
 
-EU Regulations 2019/947 and 2019/945 apply in Greece (competent authority: the Hellenic Civil Aviation
-Authority, ΥΠΑ). BVLOS flight is in the SPECIFIC category: an operational authorisation (SORA, or a PDRA
+EU Regulations 2019/947 and 2019/945 apply in Greece (competent authority for drones: the Hellenic Civil Aviation
+Authority, HCAA = Αρχή Πολιτικής Αεροπορίας, ΑΠΑ - U6 review L9: not the older ΥΠΑ; check the current name).
+UAS geographical zones (2019/947 Art. 15) + airspace coordination near airports / restricted areas; third-party
+liability insurance as the authorisation / Greek law require (Regulation (EC) 785/2004 for 20 kg and more). BVLOS flight is in the SPECIFIC category: an operational authorisation (SORA, or a PDRA
 where one fits), a registered UAS operator, a remote pilot with the required competency, insurance; take-off
 from a moving vessel and flights near people / vessels need to be covered by the authorisation. Radio:
 EU limits (analog 5.8 GHz video typically 25 mW EIRP, 2.4 GHz 100 mW EIRP) limit the range. State / Navy
@@ -531,6 +533,31 @@ button + the UAV screen parts + the legal note). MANUAL ch. 21 / MANUAL_EL ch. 1
 PARTS.md "UAV magazine" + WIRING.md 3H. Storm invariants I80-I84 in tests/acceptance/storm_gateway.py part "uav"
 (the router in this process with fake links + drones; the pilot lock + rjoy; the launch sequence + the hatch relay
 through uavlink / stations; a static scan). The gateway load numbers stay those of gateway/README.md section 26.
+
+## 11b. U6 review fixes (review of f7aed5d)
+- MED-1: academy test AC2 follows `from uav import x` submodules and relative imports (`from . import x`;
+  test_academy.submodules_of), AC1 checks the gateway/uav rule modules the academy runs in its process, AC3 imports + RUNS
+  them (a short UavSim launch) and fails on a network module inside them. Mutation: `import socket` in
+  gateway/uav/launch.py fails AC1, AC2 and AC3.
+- MED-2: storm I82 decides "may land" with its OWN battery formula (storm_gateway._own_land: the slowest landing rate,
+  30 A, the margin, x 1.5 tolerance, from what the fake drone told the router in the last 6 s) - never the router's
+  battery_land latch. Mutation: battery.judge "land" always fails I82 (952 fails in 100 episodes).
+- MED-3: a launch STOPPED while a drone climbs out lets it go (launch.stop -> io.launch_ended -> phase "hold"); a
+  "launching" phase blocks the pilot only while the sequence still owns that drone (seq.busy and seq.cur). Test UA36.
+- LOW: L1 a climb / descent samples the vertical leg every 2 m (a thin no-fly band is seen); L2 an old position is
+  moved along the course over ground (GLOBAL_POSITION_INT vx / vy -> cog), the heading only without one; L3
+  data_stale_s 1.8 s (one lost position packet tolerated, two are not); L4 SYS_STATUS battery_remaining -1 never
+  refreshes the battery time; L5 I83 uses the storm's own "drives the boat" test; L6 I81 also checks strictly in
+  series / once / never after a STOP, the I80 static scan relative imports + `.aurix` / getattr "aurix"; L8 WIRING 3H
+  (FAULT only after the travel time, a changeover / controller stage for the actuator, the 6-channel DroneCAN board
+  can't host relay 8); L9 the legal note: UAS geographical zones + airspace coordination, the authority = HCAA /
+  Αρχή Πολιτικής Αεροπορίας (ΑΠΑ, not the older ΥΠΑ), third-party liability insurance (EC 785/2004 from 20 kg); L10
+  AC54 also scans the tour's UAV chapter and the manuals' UAV chapters (a sentence that says what is excluded is the
+  scope statement).
+- NOT changed, recorded: L7 (asks of a HELM-holding copilot counted captain-like by refuse_asks_for vs the 126 rule):
+  pilot.captain_like (crew captain / single operator / the HELM holder) is used for BOTH the 126 refusal
+  (stations.uav_joy_refusal) and refuse_asks_for at the take, and asks target the HELM holder - no case found where
+  they disagree; to be reviewed again with the reviewer's exact case.
 
 ## 12. Open questions
 

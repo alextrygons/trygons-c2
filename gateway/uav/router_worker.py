@@ -202,6 +202,7 @@ class Drone:
         self.mission_cur, self.mcur_t = None, 0.0          # MISSION_CURRENT (U4 review LOW: set_current read-back)
         # step U4: the map / HUD values + the battery rule
         self.hdg = self.gs = self.climb = None
+        self.cog = None                                    # U6 review L2: course over ground (GLOBAL_POSITION_INT)
         self.batt_a = self.used_mah = None
         self.judge = None                                  # battery.judge() of the last second
         self.statustext = None                             # (severity, text) of the drone's newest STATUSTEXT
@@ -228,6 +229,7 @@ class Drone:
                 "gps_fix": self.fix, "sats": self.sats, "ekf_flags": self.ekf_flags, "batt_pct": self.batt_pct,
                 "batt_v": self.batt_v, "hdg": None if self.hdg is None else round(self.hdg, 1),
                 "gs": None if self.gs is None else round(self.gs, 1),
+                "cog": None if self.cog is None else round(self.cog, 1),
                 "climb": None if self.climb is None else round(self.climb, 1),
                 "batt_a": None if self.batt_a is None else round(self.batt_a, 1), "used_mah": self.used_mah,
                 "judge": self.judge, "text": self.statustext}
@@ -360,10 +362,13 @@ class Router:
             elif m.name == "SYS_STATUS":
                 link.info["batt_pct"] = f.get("battery_remaining")
                 link.info["batt_v"] = round(f.get("voltage_battery", 0) / 1000.0, 2)
-                d.batt_pct, d.batt_v = link.info["batt_pct"], link.info["batt_v"]
-                d.batt_t = now
-                if f.get("battery_remaining", -1) < 0:
-                    d.batt_pct = link.info["batt_pct"] = None          # -1 = the drone does not know
+                d.batt_v = link.info["batt_v"]
+                if f.get("battery_remaining", -1) is not None and f.get("battery_remaining", -1) >= 0:
+                    d.batt_pct, d.batt_t = link.info["batt_pct"], now
+                else:
+                    # -1 = the drone does not know: U6 review L4 - the battery time is NOT refreshed (the old % ages
+                    # into BATTERY DATA STALE, never judged as fresh)
+                    link.info["batt_pct"] = None
                 cb = f.get("current_battery", -1)
                 if cb is not None and cb >= 0:
                     d.batt_a = cb / 100.0                               # cA
@@ -384,6 +389,8 @@ class Router:
                 d.rel_alt, d.vz, d.alt_t = f.get("relative_alt", 0) / 1000.0, -f.get("vz", 0) / 100.0, now
                 d.lat, d.lon = f.get("lat", 0) / 1e7, f.get("lon", 0) / 1e7
                 d.gs = math.hypot(f.get("vx", 0), f.get("vy", 0)) / 100.0
+                # U6 review L2: the course over ground from the velocity (the pilot moves an old position along it)
+                d.cog = (math.degrees(math.atan2(f.get("vy", 0), f.get("vx", 0))) % 360.0) if d.gs > 0.2 else None
                 if f.get("hdg", 65535) != 65535:
                     d.hdg = f["hdg"] / 100.0
             elif m.name == "VFR_HUD":

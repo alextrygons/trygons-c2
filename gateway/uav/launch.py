@@ -107,6 +107,9 @@ class Launch:
         self.gen += 1                      # every answer still on its way is ignored
         was, self.state, self.why = self.state, STOPPED, why
         self.wait, self.cmdq = None, []
+        ended = getattr(self.io, "launch_ended", None)     # U6 review MED-3: the drone in the air is let go (holds)
+        if self.cur is not None and ended is not None:
+            ended(self.cur)
         if self.cur is not None and (self.armed_here or arm_out):
             n = self.cur
             if arm_out and hasattr(self.io, "cancel"):

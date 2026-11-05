@@ -511,7 +511,8 @@ def storm_uav_router(seed):
         r = rw.Router()
         n_slots = rng.randint(1, 6)
         hatch = [None]                                 # when the router got the last OPEN report
-        land_ok = set()                                # slots the battery rule (our own judge input) may land
+        land_ok = set()                                # U6 review MED-2: slots OUR OWN battery formula says may land
+        recent = {}                                    # slot -> [(t, alt, pct)] what the drone told the router (5 s)
         drone = {}
         for s in range(1, n_slots + 1):
             for kind in ("usb", "elrs"):
@@ -593,6 +594,8 @@ def storm_uav_router(seed):
                         if rng.random() < 0.05:
                             msgs.append(("PARAM_SET", {"param_value": 1.0}))       # never allow-listed in
                         data = b"".join(mavlink.encode(n, f, d["seq"] + i, sysid, 1) for i, (n, f) in enumerate(msgs))
+                        if sysid == 10 + s:
+                            recent.setdefault(s, []).append((now, d["alt"], d["pct"]))
                         d["seq"] = (d["seq"] + len(msgs)) & 0xFF
                         r.rx(lk, data, now)
                         drain(now)
@@ -633,13 +636,27 @@ def storm_uav_router(seed):
             # our own record of what the battery rule may land: battery_tick latches battery_land itself
             r.jobs_tick(now)
             r.ctl_tick(now)
-            before = dict(r.battery_land)
             r.battery_tick(now)
-            land_ok |= {s for s, v in r.battery_land.items() if v}
-            land_ok |= {s for s, v in before.items() if v}
+            for s in drone:
+                recent[s] = [x for x in recent.get(s, []) if now - x[0] <= 6.0]
+                if any(_own_land(alt, pct, r.capacity.get(s)) for _t, alt, pct in recent[s]):
+                    land_ok.add(s)                     # (latched: a landing goes on, LAND repeated every 2 s)
             drain(now)
     finally:
         rw.now_s, rw.out = real_now, real_out
+
+
+def _own_land(alt, pct, capacity_mah):
+    """U6 review MED-2: the storm's OWN battery-minimum formula (never battery.judge): the energy to descend from alt at
+    the slowest landing rate with the highest current the fake drones report (30 A) + the margin, vs the pack left,
+    with a 1.5 x tolerance (the router may hold a slightly older altitude / % and the two-stage landing time).
+    True = a LAND is allowed for this drone."""
+    from uav import uavcheck
+    c = uavcheck.DEFAULTS
+    cap = capacity_mah or float(c["uav_capacity_mah"])
+    rate = min(float(c["uav_land_ms"]), float(c.get("uav_land_final_ms") or c["uav_land_ms"]))
+    reserve = 30.0 * (max(0.0, alt) / max(0.1, rate)) / 3.6 * (1.0 + float(c["uav_land_margin_pct"]) / 100.0)
+    return cap * max(0, min(100, pct)) / 100.0 <= 1.5 * reserve
 
 
 class _UStation(object):
@@ -651,6 +668,12 @@ class _UStation(object):
 
     def send(self, m):
         self.sent.append(m)
+
+
+def _cap_like(st, gw):
+    """U6 review L5: the storm's OWN "this joystick drives the boat" (never pilot.captain_like): the crew captain, a
+    single operator or the HELM holder in TELEM2."""
+    return st is not None and (st.crew == "captain" or bool(st.single_op) or (gw.telem2 or {}).get("helm") == st.id)
 
 
 def storm_uav_pilot(seed):
@@ -749,14 +772,14 @@ def storm_uav_pilot(seed):
                 standby = gw.mode == P.MODE_STANDBY
                 for slot, lk in P_.locks.items():
                     holder = srv.stations.get(lk.sid)
-                    res("I83", standby or not P_.captain_like(holder), seed,
+                    res("I83", standby or not _cap_like(holder, gw), seed,
                         "captain-like station %s flies UAV %d with the boat in mode %s after a tick" % (
                             lk.sid, slot, gw.mode))
             for o in ops:
                 if o.get("op") == "ctl" and any(o.get(k, 0.0) for k in ("vx", "vy", "vz", "yaw_rate")):
                     lk = P_.locks.get(o["slot"])
                     holder = srv.stations.get(lk.sid) if lk else None
-                    if holder is not None and P_.captain_like(holder):
+                    if holder is not None and _cap_like(holder, gw):
                         res("I83", gw.mode == P.MODE_STANDBY, seed,
                             "a moving setpoint of the captain's joystick with the boat in mode %s" % gw.mode)
             del ops[:]
@@ -909,7 +932,10 @@ def storm_uav_launch(seed):
     seq.prepare(sorted(io.drones), st.id, io.t)
     seq.approved(rng.random() > 0.05, st.id, io.t)
     stop_at = rng.uniform(0, 200) if rng.random() < 0.3 else None
+    t_stopped = None
     while io.t < 400:
+        if t_stopped is None and seq.state == launch.STOPPED:
+            t_stopped = io.t
         if stop_at is not None and io.t >= stop_at:
             seq.stop("storm STOP", io.t)
             stop_at = None
@@ -922,9 +948,15 @@ def storm_uav_launch(seed):
         io.t += 0.25
         if seq.state in (launch.DONE, launch.STOPPED) and not io.q:
             break
+    armed_order = []
     for t, n, c, p, hs in io.sent:
         if c == allow.CMD_COMPONENT_ARM_DISARM and p[0] == 1:
             res("I81", hs == "OPEN" and p[1] == 0, seed, "UAV %d ARM asked at t=%.1f with the hatch %s" % (n, t, hs))
+            # U6 review L6: strictly in series from the top, each drone once, never after the sequence STOPPED
+            res("I81", n not in armed_order and (not armed_order or n > armed_order[-1]), seed,
+                "UAV %d ARM out of order / twice (before: %s)" % (n, armed_order))
+            res("I81", t_stopped is None or t < t_stopped, seed, "UAV %d ARM at t=%.1f after the STOP" % (n, t))
+            armed_order.append(n)
         res("I82", c != allow.CMD_NAV_LAND and not (c == allow.CMD_DO_SET_MODE and int(p[1]) in (6, 9, 21)),
             seed, "UAV %d: the launch asked for command %d %s" % (n, c, p[:2]))
     for t, env in gw.aurix.sent:
@@ -949,10 +981,16 @@ def storm_uav_static(seed):
         for n in ast.walk(tree):
             if isinstance(n, ast.Import):
                 names |= {a.name.split(".")[0] for a in n.names}
-            elif isinstance(n, ast.ImportFrom) and n.module and n.level == 0:
-                names.add(n.module.split(".")[0])
-            elif isinstance(n, ast.Attribute) and n.attr == "aurix":
+            elif isinstance(n, ast.ImportFrom):
+                # U6 review L6: relative imports (from .. import aurix / from ..stations import x) count too
+                if n.module:
+                    names |= set(n.module.split("."))
+                if n.level:
+                    names |= {a.name.split(".")[0] for a in n.names}
+            elif isinstance(n, ast.Attribute) and n.attr in ("aurix", "send_frame"):
                 names.add(".aurix")
+            elif isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value == "aurix":
+                names.add(".aurix")                    # getattr(x, "aurix") / importlib of a boat module
         res("I80", not names & {"aurix", "proto", "stations", ".aurix"}, seed, "gateway/uav/%s uses %s" % (
             f, sorted(names & {"aurix", "proto", "stations", ".aurix"})))
         enc = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and
