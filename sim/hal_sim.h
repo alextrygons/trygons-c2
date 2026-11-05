@@ -61,6 +61,11 @@ void     sim_hal_set_water_speed(bool fitted, float kn);
 
 /* Supply voltage of the 12 V bank (default: measured, 12.6 V). */
 void     sim_hal_set_supply(bool fitted, float volts);
+/* Stack high-water marks for BENCH_DIAG (step 13s): the PC has no TriCore stacks - fake values (the
+ * linker scripts' sizes, a fixed use, known; hal_diag_t.stack_board false). Tests set one stack;
+ * sim_hal_stack_default() puts the fake values back. */
+void     sim_hal_stack_set(unsigned i, uint32_t size, uint32_t used, bool known, bool overflow);
+void     sim_hal_stack_default(void);
 /* DP thrusters: what hal_set_thrusters got (0 after a trip), what really pushes (0 while the e-stop
  * contactor is open), calls so far, the bank sag (V per % of |bow| + |stern|, 0.006) */
 void     sim_hal_thrusters(float *bow_pct, float *stern_pct);

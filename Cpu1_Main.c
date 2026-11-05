@@ -45,6 +45,7 @@ static mon_t g_monitor;
 
 void core1_main(void)
 {
+    hal_stack_fill();               /* step 13s: CPU1's stack fill pattern (BENCH TEST high-water marks), microseconds */
     IfxCpu_enableInterrupts();
 
     /* CPU1 watchdog ON (100 ms), serviced by the monitor loop below. */

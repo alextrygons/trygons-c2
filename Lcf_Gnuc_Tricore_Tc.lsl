@@ -33,9 +33,12 @@ ENTRY(_START)
 
 __TRICORE_DERIVATE_MEMORY_MAP__ = 0x380;
 
-LCF_CSA0_SIZE = 8k;
-LCF_USTACK0_SIZE = 2k;
-LCF_ISTACK0_SIZE = 1k;
+/* step 13s (stack safety, tools/stackcheck.py + tools/mapreport.py): core 0's user stack 2k -> 4k, its interrupt
+ * stack 1k -> 4k (18 interrupts may nest), its CSA 8k -> 16k (deepest call chain + every interrupt nested);
+ * CPU1 and core 2 unchanged (CPU1 RAM <= 60 %, core 2 ~19 KB free). Same sizes in BOTH linker scripts. */
+LCF_CSA0_SIZE = 16k;
+LCF_USTACK0_SIZE = 4k;
+LCF_ISTACK0_SIZE = 4k;
 
 LCF_CSA1_SIZE = 8k;
 LCF_USTACK1_SIZE = 2k;

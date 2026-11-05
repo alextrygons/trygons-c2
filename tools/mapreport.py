@@ -20,6 +20,14 @@ report says FAIL and exits with code 2. The data shared between cores
 0's DSPR (never cached): --objects checks their section, an ADS map that
 none of them is at a cached LMU address (0x9...) - else FAIL, exit 2.
 
+The ADS map mode also checks the STACKS (step 13s, stack_map): the linker's estimate, its "recursive"
+flag (resolved with tools/stackcheck.py: a cycle only through function pointers is no recursion; --strict
+fails on the flag alone) and, per core, the deepest call chain / every interrupt nested / the CSA x 1.5
+inside what the map reserves - else FAIL, exit 2.
+
+    python tools/mapreport.py --strict "<map>"     the same, "recursive: yes" alone fails too
+    python tools/mapreport.py --selftest           the stack check on fixture map text (tools/check.sh)
+
 Build the project in ADS first (hammer icon) so the map is up to date.
 """
 import glob
@@ -65,7 +73,8 @@ def table(rows, top):
         print("  %-50s %10s  %s" % (name[:50], "%d B" % size, kind))
 
 
-SHARED = ["g_mon", "g_logq0", "g_logq1", "g_logq_gw", "s_q0", "s_q1", "s_qgw", "g_logstat", "g_timing"]
+SHARED = ["g_mon", "g_logq0", "g_logq1", "g_logq_gw", "s_q0", "s_q1", "s_qgw", "g_logstat", "g_timing",
+          "s_stack_filled"]      # step 13s: hal_tc375.c, each core says it filled its stacks
 
 
 def shared_objects(folder):
@@ -170,7 +179,7 @@ def objects(folder):
     return shared_objects(folder) and ok
 
 
-def tasking(path):
+def tasking(path, strict=False):
     txt = open(path, encoding="utf-8", errors="replace").read()
     rows = []
     for m in re.finditer(r"^\| mpe:(\S+)\s*\|\s*0x([0-9a-f]+) \|\s*0x([0-9a-f]+) \|\s*0x([0-9a-f]+) \|\s*0x([0-9a-f]+) \|"
@@ -194,7 +203,118 @@ def tasking(path):
     if st:
         print("\nStack (linker estimate):\n" + "\n".join("  " + l for l in st.group(1).splitlines()[:8]))
     ok = per_core(rows)
-    return shared_map(txt) and ok
+    ok = shared_map(txt) and ok
+    return stack_map(txt, strict) and ok
+
+
+def stack_map(txt, strict=False):
+    """Step 13s: the stacks of an ADS / TASKING map. FAIL (False) when
+      - the linker's estimate ("Estimated stack usage": one number per stack name, every root tree of the
+        call graph added up - all cores and every interrupt together) > all reserved user + interrupt stacks,
+      - the linker says "recursive: yes" and the call graph has a REAL cycle: the TASKING linker marks every
+        chain through __INDIRECT__ (= any call through a function pointer, which it links to EVERY function
+        whose address is taken - incl. core<n>_main and the iLLD start-up) as recursive; stackcheck resolves
+        each pointer call to its real targets (stackcheck.INDIRECT) and fails on any cycle left
+        (strict=True: "recursive: yes" alone fails too),
+      - per core (stackcheck.analyse on the map's own frame sizes): user / interrupt stack estimate x 1.5 >
+        reserved, the CSA, an unlisted pointer call, an interrupt of unknown core.
+    No call graph in the map (an older ADS setting) = FAIL: nothing proves the stacks."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import stackcheck
+    print("\nSTACK CHECK (step 13s)")
+    est = [(m.group(1).strip(), int(m.group(2), 16))
+           for m in re.finditer(r"^\|\s*(stack\s+\d+)\s*\|\s*0x([0-9a-f]+)\s*\|", txt, re.M)]
+    rec = re.search(r"^\|\s*recursive\s*\|\s*(\w+)\s*\|", txt, re.M)
+    recursive = bool(rec and rec.group(1).lower() == "yes")
+    reserved = {}
+    for m in re.finditer(r"\|\s*(ustack|istack|csa)_tc(\d) \(\d+\)\s*\|\s*0x([0-9a-f]+)", txt):
+        reserved["%s%s" % (m.group(1), m.group(2))] = int(m.group(3), 16)
+    problems = []
+    if not est:
+        problems.append("no \"Estimated stack usage\" table in the map")
+    total_res = sum(v for k, v in reserved.items() if not k.startswith("csa"))
+    total_est = sum(v for _n, v in est)
+    print("  linker estimate: %s; recursive: %s; all user + interrupt stacks reserved: %d B" % (
+        ", ".join("%s = %d B" % e for e in est) or "-", "yes" if recursive else "no", total_res))
+    if est and total_est > total_res:
+        problems.append("the linker's estimate %d B > %d B reserved for all stacks" % (total_est, total_res))
+    g = stackcheck.parse_map(txt)
+    if g is None:
+        problems.append("no Call Graph section in the map (nothing proves the stacks)")
+        ok_a = False
+    else:
+        memo = {}
+        traps = [stackcheck.worst(g, f, memo) for f in g.self_b if f.startswith("IfxCpu_Trap_")]
+        trap = (max(t[0] for t in traps), max(t[1] for t in traps)) if traps else None
+        direct = stackcheck.cycles(g)            # before resolving: only the calls the code really makes
+        for c in direct:
+            problems.append("DIRECT RECURSION: " + " -> ".join(c[:12]))
+        ok_a, lines, _ = stackcheck.analyse(g, reserved, stackcheck.isr_table(), trap=trap, label="TASKING map")
+        print("\n".join("  " + l for l in lines))
+        if recursive and ok_a and not direct:
+            print("  the linker's \"recursive: yes\" = only through __INDIRECT__ (function pointers): resolved, no cycle")
+            if strict:
+                problems.append("strict: the linker says recursive: yes")
+    for p in problems:
+        print("  FAIL: " + p)
+    ok = ok_a and not problems
+    print("STACK CHECK: %s" % ("OK" if ok else "FAILED"))
+    return ok
+
+
+def selftest():
+    """Fixture map text (the real TASKING format) for stack_map: tools/check.sh runs it."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import stackcheck
+    fails = []
+
+    def check(name, cond):
+        print("[%s] %s" % ("PASS" if cond else "FAIL", name))
+        if not cond:
+            fails.append(name)
+
+    def fixture(stack0=0x620, recursive="yes", extra_graph="", ustack0=0x1000):
+        head = ("* Estimated stack usage\n========================\n+-------------------------+\n"
+                "| Stack Name | Used       |\n|=========================|\n| stack   0  | 0x%08x |\n"
+                "|-------------------------|\n| recursive  | %s        |\n+-------------------------+\n\n" %
+                (stack0, recursive))
+        secs = "".join("| mpe:dsram%d | %s%d | %s_tc%d (1) | 0x%08x | 0x0 | 0x0 | 0x8 |\n" % (
+            c, k, c, k, c, size) for c, k, size in (
+                (0, "ustack", ustack0), (0, "istack", 0x1000), (1, "ustack", 0x800), (1, "istack", 0x400),
+                (2, "ustack", 0x800), (2, "istack", 0x400))) + "".join(
+            "| mpe:dsram%d |  | csa_tc%d (1) | 0x00004000 | 0x0 | 0x0 | 0x40 |\n" % (c, c) for c in range(3))
+        graph = stackcheck.MAP_FIXTURE.replace("\n\nNote:", "\n" + extra_graph + "\ncore1_main [s0:0,0]\n\n"
+                                               "core2_main [s0:0,0]\n\nNote:")
+        return head + secs + graph
+
+    import io
+    import contextlib
+
+    def run(txt, strict=False):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ok = stack_map(txt, strict)
+        return ok, out.getvalue()
+    ok, out = run(fixture())
+    check("MR1 a map whose \"recursive: yes\" is only __INDIRECT__ (pointer calls, C start-up) passes, resolved",
+          ok and "resolved, no cycle" in out)
+    ok, _ = run(fixture(), strict=True)
+    check("MR2 --strict: \"recursive: yes\" alone fails (exit 2)", not ok)
+    ok, out = run(fixture(stack0=0x4000))
+    check("MR3 the linker's estimate 16 KB > all reserved stacks = FAIL", not ok and "estimate" in out)
+    ok, out = run(fixture(extra_graph="*R smallboat.src:loop_a [s0:8,8]\n|\n+-- smallboat.src:loop_b [s0:8,8]\n"
+                                      "    |\n    +-- smallboat.src:loop_a *R\n"))
+    check("MR4 a direct recursion (a -> b -> a) = FAIL", not ok and "DIRECT RECURSION" in out)
+    ok, out = run(fixture(ustack0=0x800))
+    check("MR5 core 0's chain (816 + 520 + ... B) x 1.5 > a 2 KB user stack = FAIL", not ok and "user stack core 0" in out)
+    ok, out = run(fixture().replace("*R tc_fat32.src:read_block", "*R newdrv.src:read_block").replace(
+        "+-- tc_fat32.src:read_block *R", "+-- newdrv.src:read_block *R"))
+    check("MR6 a function-pointer call in a module stackcheck.INDIRECT does not list = FAIL",
+          not ok and "not in stackcheck.INDIRECT" in out)
+    ok, out = run(fixture().split("**  Call Graph  **")[0] + "\n")
+    check("MR7 no call graph in the map = FAIL", not ok)
+    print("MAPREPORT SELFTEST: %s" % ("PASS" if not fails else "FAIL (%d)" % len(fails)))
+    return not fails
 
 
 def gcc(elf):
@@ -239,6 +359,10 @@ if __name__ == "__main__":
         good = gcc(sys.argv[2])
     elif len(sys.argv) == 3 and sys.argv[1] == "--objects":
         good = objects(sys.argv[2])
+    elif len(sys.argv) == 2 and sys.argv[1] == "--selftest":
+        good = selftest()
+    elif len(sys.argv) == 3 and sys.argv[1] == "--strict":
+        good = tasking(sys.argv[2], strict=True)
     elif len(sys.argv) == 2:
         good = tasking(sys.argv[1])
     else:

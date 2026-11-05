@@ -25,6 +25,7 @@
 #include "can_act.h"
 #include "can_relay.h"
 #include "tc_pulse.h"     /* (hal/: the paddlewheel pulses, tests PW) */
+#include "tc_stack.h"     /* (hal/: the stack fill pattern + bounded scan, tests SK, step 13s) */
 #include "tc_rstcause.h"
 
 /* ------------------------------------------------------------ harness -- */
@@ -9083,6 +9084,131 @@ static void bench_tests(void)
                     forced && sb && r_again == PROTO_R_PRECOND && stays, d);
         sim_hal_unforce();
     }
+
+    /* BT7 (step 13s) the stack high-water marks in BENCH_DIAG: 6 stacks after the 86 sensor bytes (the PC's fake
+     * values, flag "measured on the board" off); a stack not measured yet = its known bit off; an overflow = its
+     * overflow bit; nothing else changes (still BENCH, outputs idle / neutral) */
+    {
+        static sbsim_t x;
+        static link_t usb;
+        btwatch_t b;
+        sbsim_init(&x, 958u, 0.0f, 0.0f, NULL);
+        link_init(&usb, &x.sb);
+        sbsim_run(&x, 3000u, NULL, NULL);
+        bt_watch_init(&b, &usb);
+        uint8_t r = bench_cmd(&x, &usb, SB_BENCH_ENTER, 0u);
+        sim_hal_stack_default();
+        uint8_t p1[PROTO_MAX_PAYLOAD], p2[PROTO_MAX_PAYLOAD];
+        uint8_t n1 = 0u, n2 = 0u;
+        for (int k = 0; k < 2; k++) {
+            if (k == 1) {
+                sim_hal_stack_set(HAL_STACK_I0, 4096u, 0u, false, false);       /* not measured yet */
+                sim_hal_stack_set(HAL_STACK_U2, 2048u, 2048u, true, true);      /* reached its end */
+            }
+            uint8_t *p = k ? p2 : p1;
+            uint8_t *n = k ? &n2 : &n1;
+            for (uint32_t t = 0; t < 400u; t += AP_PERIOD_MS) {
+                sbsim_run(&x, x.t + AP_PERIOD_MS, NULL, NULL);
+                link_step(&usb, &x.sb);
+                uint8_t out[1024];
+                uint32_t m;
+                while ((m = sim_hal_link_tx_pop(out, 256u)) > 0u) {
+                    proto_frame_t f;
+                    proto_rx_push(&b.rx, out, m);
+                    while (proto_rx_next(&b.rx, &f))
+                        if (f.type == PROTO_T_BENCH_DIAG) { memcpy(p, f.payload, f.len); *n = f.len; }
+                }
+            }
+        }
+        bool still = sb_mode(&x.sb) == MODE_BENCH && sim_hal_throttle() <= 0.0f &&
+                     sim_hal_gear_pwm() == x.sb.cfg.gear.pwm_n_us;
+        sim_hal_stack_default();
+        bench_cmd(&x, &usb, SB_BENCH_LEAVE, 0u);
+        const uint8_t *q = &p1[PROTO_BENCH_DIAG_STACK_OFF];
+        bool layout = n1 == PROTO_BENCH_DIAG_LEN && n2 == PROTO_BENCH_DIAG_LEN && q[0] == HAL_STACK_COUNT &&
+                      q[1] == 0u && q[2] == 0x3Fu && q[3] == 0u;
+        uint16_t u0_size = (uint16_t)(q[4] | (q[5] << 8)), u0_used = (uint16_t)(q[6] | (q[7] << 8));
+        const uint8_t *q2 = &p2[PROTO_BENCH_DIAG_STACK_OFF];
+        bool flags2 = q2[2] == (uint8_t)(0x3Fu & ~(1u << HAL_STACK_I0)) && q2[3] == (uint8_t)(1u << HAL_STACK_U2);
+        snprintf(d, sizeof d, "enter BENCH %u; BENCH_DIAG %u / %u bytes (want %u); stacks %u, flags %u, known 0x%02X, "
+                 "overflow 0x%02X; core 0 user %u of %u B; after the changes: known 0x%02X overflow 0x%02X; still BENCH "
+                 "at idle / neutral %s", r, n1, n2, PROTO_BENCH_DIAG_LEN, q[0], q[1], q[2], q[3], u0_used, u0_size,
+                 q2[2], q2[3], still ? "yes" : "NO");
+        test_report("BT7 BENCH_DIAG carries the stack high-water marks (6 stacks; unknown / overflow bits; simulated flag)",
+                    r == PROTO_R_OK && layout && u0_size == 4096u && u0_used == 1024u && flags2 && still, d);
+    }
+}
+
+/* ------------------------------------------------- stack high-water marks -- */
+
+/* SK1-SK5 (step 13s): the board's fill pattern + bounded scan (hal/tc_stack.c, the same code as on the AURIX) on
+ * an array that plays a stack: the deepest use found exactly, never more words per call than the budget, the mark
+ * only moves deeper, the lowest word written = overflow, an unfilled stack is never "known" */
+static void stack_tests(void)
+{
+    char d[600];
+    printf("\n=== STACK HIGH-WATER MARKS (fill pattern + bounded scan, hal/tc_stack.c) ===\n");
+    static uint32_t mem[1024];
+    stk_scan_t s;
+
+    /* SK1 + SK2 */
+    {
+        stk_fill(mem, 1024u);
+        for (uint32_t i = 1024u - 100u; i < 1024u; i++) mem[i] = i;     /* the top 100 words used */
+        stk_init(&s, mem, 1024u, true);
+        uint32_t calls = 0u, max_checked = 0u;
+        bool unknown_first = true;
+        while (!s.known && calls < 1000u) {
+            if (stk_used_bytes(&s) != 0u) unknown_first = false;
+            stk_scan(&s, 64u);
+            if (s.checked > max_checked) max_checked = s.checked;
+            calls++;
+        }
+        snprintf(d, sizeof d, "known after %u calls (want 15), deepest use %u B (want 400), at most %u words per call "
+                 "(budget 64), 0 B reported before it was known: %s", calls, stk_used_bytes(&s), max_checked,
+                 unknown_first ? "yes" : "NO");
+        test_report("SK1 stack scan: the deepest use found exactly, bounded (never more words per call than the budget)",
+                    s.known && stk_used_bytes(&s) == 400u && max_checked <= 64u && calls == 15u && !stk_overflow(&s), d);
+        stk_init(&s, mem, 1024u, true);
+        stk_scan(&s, 64u);
+        test_report("SK2 stack scan: not known before the first full pass", !s.known && stk_used_bytes(&s) == 0u,
+                    "after one slice of 64 words: unknown");
+    }
+    /* SK3 the mark only moves deeper */
+    {
+        stk_fill(mem, 1024u);
+        for (uint32_t i = 900u; i < 1024u; i++) mem[i] = 1u;
+        stk_init(&s, mem, 1024u, true);
+        for (int k = 0; k < 100; k++) stk_scan(&s, 32u);
+        uint32_t first = stk_used_bytes(&s);
+        mem[500] = 7u;                                                  /* a deeper call later */
+        for (uint32_t i = 900u; i < 1024u; i++) mem[i] = STK_PATTERN;   /* (a word that looks unused again) */
+        for (int k = 0; k < 100; k++) stk_scan(&s, 32u);
+        uint32_t second = stk_used_bytes(&s);
+        snprintf(d, sizeof d, "first %u B (want 496), after a deeper use %u B (want 2096)", first, second);
+        test_report("SK3 stack scan: a deeper use later is found; the mark never moves back up", first == 496u &&
+                    second == 2096u, d);
+    }
+    /* SK4 overflow */
+    {
+        stk_fill(mem, 256u);
+        mem[0] = 0u;
+        stk_init(&s, mem, 256u, true);
+        for (int k = 0; k < 10; k++) stk_scan(&s, 16u);
+        snprintf(d, sizeof d, "lowest word overwritten: overflow %s, used %u of %u B", stk_overflow(&s) ? "yes" : "NO",
+                 stk_used_bytes(&s), stk_size_bytes(&s));
+        test_report("SK4 stack scan: the lowest word overwritten = OVERFLOW (used = the whole stack)",
+                    stk_overflow(&s) && stk_used_bytes(&s) == 1024u, d);
+    }
+    /* SK5 not filled */
+    {
+        stk_init(&s, mem, 256u, false);
+        uint32_t checked = 0u;
+        for (int k = 0; k < 50; k++) { stk_scan(&s, 16u); checked += s.checked; }
+        snprintf(d, sizeof d, "never filled: known %s, words looked at %u", s.known ? "YES" : "no", checked);
+        test_report("SK5 stack scan: a stack that was never filled is never 'known' (reported unknown)",
+                    !s.known && checked == 0u && stk_used_bytes(&s) == 0u, d);
+    }
 }
 
 /* ---------------------------------------------------------------- all -- */
@@ -15306,6 +15432,13 @@ void sb_confirm_only_tests(void)
     confirm_only_tests();
 }
 
+/* only the BENCH TEST + stack high-water mark tests (debugging: `autopilot_sim bt`, step 13s) */
+void sb_bench_tests(void)
+{
+    bench_tests();
+    stack_tests();
+}
+
 /* only the paddlewheel pulse tests (debugging: `autopilot_sim pw`) */
 void sb_pulse_tests(void)
 {
@@ -18549,6 +18682,7 @@ void sb_tests(void)
     servo_clamp_tests();
     first_test_tests();
     bench_tests();
+    stack_tests();
     phase4();
     phase5();
     phase6();

@@ -43,6 +43,7 @@ static logger_t g_logger;
 
 void core2_main(void)
 {
+    hal_stack_fill();               /* step 13s: core 2's stack fill pattern, before its SD interrupts can run */
     IfxCpu_enableInterrupts();
 
     {

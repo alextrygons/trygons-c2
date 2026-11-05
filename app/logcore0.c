@@ -213,7 +213,7 @@ void logcore0_init(const sb_t *s, uint32_t boot_no)
 void logcore0_pc(uint32_t t_ms, uint8_t type, uint8_t seq, uint8_t result, const uint8_t *payload, uint8_t len,
                  uint8_t station)
 {
-    uint8_t pl[4 + 200 + 1];
+    static uint8_t pl[4 + 200 + 1];     /* step 13s: static scratch (core 0 only, never re-entered) */
     pl[0] = type; pl[1] = seq; pl[2] = result; pl[3] = len;
     if (len) memcpy(&pl[4], payload, len);
     pl[4 + len] = station;                      /* after the command: older readers ignore it */
@@ -474,7 +474,7 @@ static void changes(const sb_t *s)
 
 void logcore0_step(const sb_t *s)
 {
-    uint8_t pl[512];
+    static uint8_t pl[512];     /* step 13s: static, not on core 0's user stack (core 0 only, never re-entered) */
     changes(s);
     uint16_t n = data_sample(s, pl);
     uint16_t len = logrec_make(s_rec, LOGR_DATA, s->now_ms, pl, n);

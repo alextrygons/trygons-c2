@@ -1283,6 +1283,35 @@ static bool sd_flush(sd_file_t *f)
 
 bool hal_sd_present(void) { return s_sd_present; }
 
+/* Stack high-water marks (step 13s): fake on the PC (the board measures them: hal_tc375.c + tc_stack.c) */
+static hal_stack_t s_stack[HAL_STACK_COUNT];
+static bool s_stack_init;
+
+void sim_hal_stack_default(void)
+{
+    /* the linker scripts' sizes (Lcf_*_Tricore_Tc.lsl, step 13s), a fixed fake use */
+    static const uint32_t size[HAL_STACK_COUNT] = { 4096u, 4096u, 2048u, 1024u, 2048u, 1024u };
+    for (unsigned i = 0; i < HAL_STACK_COUNT; i++) {
+        s_stack[i].size = size[i];
+        s_stack[i].used = size[i] / 4u;
+        s_stack[i].known = true;
+        s_stack[i].overflow = false;
+    }
+    s_stack_init = true;
+}
+
+void sim_hal_stack_set(unsigned i, uint32_t size, uint32_t used, bool known, bool overflow)
+{
+    if (!s_stack_init) sim_hal_stack_default();
+    if (i >= HAL_STACK_COUNT) return;
+    s_stack[i].size = size;
+    s_stack[i].used = used;
+    s_stack[i].known = known;
+    s_stack[i].overflow = overflow;
+}
+
+void hal_stack_fill(void) { }                   /* nothing to fill on the PC */
+
 /* BENCH TEST screen: the simulated drivers */
 bool hal_get_diag(hal_diag_t *d)
 {
@@ -1297,6 +1326,9 @@ bool hal_get_diag(hal_diag_t *d)
     d->sd_mounted = s_sd_present;
     d->sd_state = s_sd_present ? 8u : 0u;
     d->sd_free_kb = s_sd_present ? 1000000u : 0xFFFFFFFFu;
+    if (!s_stack_init) sim_hal_stack_default();
+    memcpy(d->stack, s_stack, sizeof d->stack);
+    d->stack_board = false;                     /* simulated values, not a measurement */
     return true;
 }
 

@@ -898,6 +898,16 @@ bench.refuse_1 = at the end stop in that direction
 bench.refuse_2 = a pulse is running / too soon
 bench.refuse_3 = time out of range
 bench.servo = throttle D9: {thr} us (idle {idle})   gear D8: {gear} us (neutral {n})   50 Hz
+bench.stack_title = Stack use (deepest since the start)
+bench.stack_line = {core}  user {user}   interrupt {irq}
+bench.stack_val = {used} / {size} B ({pct} %)
+bench.stack_unknown = ? / {size} B (measuring)
+bench.stack_overflow = FULL / {size} B (OVERFLOW)
+bench.stack_core0 = core 0
+bench.stack_core1 = CPU1
+bench.stack_core2 = core 2
+bench.stack_sim = (simulated values - the PC has no AURIX stacks)
+bench.stack_none = no stack data (older AURIX firmware)
 # panel buttons
 btn.0 = STANDBY
 btn.1 = -1

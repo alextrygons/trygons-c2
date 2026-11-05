@@ -187,7 +187,7 @@ static bool nmea_line(char *s)
 /* --- byte stream ------------------------------------------------------------------- */
 bool gps_poll(hal_gps_t *fix)
 {
-    uint8_t in[256];
+    static uint8_t in[256];     /* step 13s: static, not on core 0's user stack (core 0 only, never re-entered) */
     uint32_t n;
     bool got = false;
     while ((n = uart_read(UART_GPS, in, sizeof in)) > 0u) {

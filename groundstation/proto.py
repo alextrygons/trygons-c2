@@ -303,6 +303,32 @@ def p_relay(n, action, ms=0):
 _BENCH = struct.Struct("<BBIH5f5B2ffBBBII4HB6B2HBbfBI")      # 86 bytes, link.c bench_diag()
 
 
+BENCH_DIAG_STACK_OFF = 86   # app/proto.h PROTO_BENCH_DIAG_STACK_OFF (step 13s)
+BENCH_DIAG_LEN = 114        # app/proto.h PROTO_BENCH_DIAG_LEN
+_BENCH_STK_HEAD = struct.Struct("<BBBB")    # count | flags (b0 measured on the board) | known mask | overflow mask
+_BENCH_STK = struct.Struct("<HH")           # per stack: reserved bytes, deepest use bytes
+STACK_NAMES = ["u0", "i0", "u1", "i1", "u2", "i2"]   # hal.h HAL_STACK_U0 .. HAL_STACK_I2 (user / interrupt x core)
+
+
+def decode_bench_stacks(payload: bytes):
+    """The stack high-water marks after the 86 bytes of sensors (step 13s; None from an older AURIX)."""
+    if len(payload) < BENCH_DIAG_STACK_OFF + _BENCH_STK_HEAD.size:
+        return None
+    n, flags, known, over = _BENCH_STK_HEAD.unpack_from(payload, BENCH_DIAG_STACK_OFF)
+    off = BENCH_DIAG_STACK_OFF + _BENCH_STK_HEAD.size
+    out = []
+    for i in range(n):
+        if off + _BENCH_STK.size > len(payload):
+            break
+        size, used = _BENCH_STK.unpack_from(payload, off)
+        off += _BENCH_STK.size
+        out.append({"name": STACK_NAMES[i] if i < len(STACK_NAMES) else "s%d" % i, "core": i // 2,
+                    "kind": "user" if i % 2 == 0 else "interrupt", "size": size,
+                    "used": used if known & (1 << i) else None, "known": bool(known & (1 << i)),
+                    "overflow": bool(over & (1 << i))})
+    return {"board": bool(flags & 1), "stacks": out}
+
+
 def decode_bench_diag(payload: bytes) -> dict:
     v = _BENCH.unpack_from(payload)
     (flags, acc, reports, resets, heading, yaw, roll, pitch, accz, fix_type, sats, spoof, jam, fixf, sog, cog,
@@ -323,7 +349,7 @@ def decode_bench_diag(payload: bytes) -> dict:
         "thr_us": thr_us, "gear_us": gear_us, "thr_idle_us": thr_idle_us, "gear_n_us": gear_n_us,
         "buttons_seen": seen, "button_counts": counts, "pulses": pulses, "refused": refused,
         "last_refuse": last_refuse, "pulse": pulse, "estimate": est, "mon_tripped": bool(mon),
-        "idle_left_s": idle_left / 1000.0,
+        "idle_left_s": idle_left / 1000.0, "stack": decode_bench_stacks(payload),
     }
 # DroneCAN (step 11d; app/link.c can_nodes, hal.h HAL_CAN_): bus states, node roles, why a node is lost
 CAN_STATES = ["off", "running", "error passive", "bus-off", "controller fault"]

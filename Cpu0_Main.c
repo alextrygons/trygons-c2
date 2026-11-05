@@ -59,7 +59,9 @@ IFX_ALIGN(4) IfxCpu_syncEvent cpuSyncEvent = 0;
 
 #ifdef BOAT_VARIANT_BIG
 static autopilot_t g_autopilot;
+static ap_config_t g_cfg;       /* step 13s: static, not on the user stack (core0_main runs once, never re-entered) */
 #else
+static sb_config_t g_cfg;       /* step 13s: ~0.8 KB - static, not on core 0's 2 KB user stack */
 static sb_t g_boat;
 static link_t g_link;       /* ground station (USB virtual COM) */
 static link_t g_gwlink;     /* Raspberry Pi gateway (UART ASCLIN1) */
@@ -77,13 +79,15 @@ void core0_main(void)
     monitor_publish_safe(&g_mon, 1000u, 1500u);         /* = monitor_publish_steering_only below */
     hal_can_servos_off();       /* no DroneCAN servos on the big boat (OD-12): no frame, not even CPU1's (step 13f) */
 #else
-    sb_config_t cfg;
-    sb_default_config(&cfg);
+    sb_default_config(&g_cfg);
 #ifdef FIRST_TEST
-    cfg.first_test = true;
+    g_cfg.first_test = true;
 #endif
-    monitor_publish_safe(&g_mon, cfg.servo.idle_us, cfg.gear.pwm_n_us);
+    monitor_publish_safe(&g_mon, g_cfg.servo.idle_us, g_cfg.gear.pwm_n_us);
 #endif
+    /* step 13s: the stack fill pattern (high-water marks on the BENCH TEST screen): core 0's free user stack +
+     * its interrupt stack, before hal_init configures any interrupt (a few microseconds) */
+    hal_stack_fill();
 
     /* Outputs to their safe state (servo pins low, relay open). NOT before the other cores start: CPU1 is
      * already running (it reads hal_servos_can() live until core 0's loop runs - step 13e, monitor.c). */
@@ -120,11 +124,10 @@ void core0_main(void)
     IfxCpu_emitEvent(&cpuSyncEvent);
     IfxCpu_waitEvent(&cpuSyncEvent, 1);
 #ifdef BOAT_VARIANT_BIG
-    ap_config_t cfg;
-    autopilot_default_config(&cfg);
-    autopilot_init(&g_autopilot, &cfg);
+    autopilot_default_config(&g_cfg);
+    autopilot_init(&g_autopilot, &g_cfg);
 #else
-    sb_init(&g_boat, &cfg);
+    sb_init(&g_boat, &g_cfg);
     (void)autopilot_load_calibration(&g_boat.ap);   /* saved TRAINING result, if any */
     link_init(&g_link, &g_boat);
     link_init_port(&g_gwlink, &g_boat, LINK_PORT_GW);

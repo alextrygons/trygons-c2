@@ -538,6 +538,22 @@ hal_reset_t hal_reset_reason(uint32_t *raw);
  * cores before anything written after (lock-free log queues). */
 void hal_mem_barrier(void);
 
+/* Stack use per core (step 13s, BENCH TEST screen only - never used for control) */
+#define HAL_STACK_COUNT      6u     /* user + interrupt stack of core 0, CPU1, core 2 */
+#define HAL_STACK_U0         0u
+#define HAL_STACK_I0         1u
+#define HAL_STACK_U1         2u
+#define HAL_STACK_I1         3u
+#define HAL_STACK_U2         4u
+#define HAL_STACK_I2         5u
+#define HAL_STACK_SCAN_WORDS 256u   /* words looked at per hal_get_diag() call, all stacks together */
+typedef struct {
+    uint32_t size;              /* bytes reserved (the linker script) */
+    uint32_t used;              /* deepest use since the start, bytes (valid when known) */
+    bool     known;             /* filled at the start + one full scan done */
+    bool     overflow;          /* the lowest word was overwritten: the stack reached its end (or ran past it) */
+} hal_stack_t;
+
 /* Driver diagnostics for the BENCH TEST screen (never used for control):
  * what only the drivers know. Returns false if not available. */
 typedef struct {
@@ -554,8 +570,17 @@ typedef struct {
     uint8_t  sd_state;          /* card start-up state (board: 0 no card .. 8 ready, 9 failed) */
     uint32_t sd_free_kb;        /* 0xFFFFFFFF = not known */
     uint32_t uart_errors;       /* all UARTs: parity / frame / overflow */
+    /* step 13s: stack high-water marks [HAL_STACK_U0, I0, U1, I1, U2, I2] (fill pattern, hal/tc_stack.c);
+     * each hal_get_diag() call scans a bounded slice (HAL_STACK_SCAN_WORDS words in all) */
+    hal_stack_t stack[HAL_STACK_COUNT];
+    bool     stack_board;       /* true = measured on the board; false = simulated values (the PC) */
 } hal_diag_t;
 bool hal_get_diag(hal_diag_t *d);
+
+/* Stack fill pattern (step 13s): the CALLING core writes the pattern into the free part of its user stack
+ * (below its stack pointer) and into its whole interrupt stack - the first statement of core<n>_main, before
+ * any interrupt of that core can run (core 0: before hal_init configures one). Nothing on the PC. */
+void hal_stack_fill(void);
 
 /* Supply voltage (battery), V. false if not measured. */
 bool hal_read_supply_voltage(float *volts);

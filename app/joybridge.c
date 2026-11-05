@@ -58,7 +58,7 @@ static uint32_t panel_buttons(const jsf_t *f, const joymap_t *m)
 void jb_step(jb_t *b, const joymap_t *m, uint32_t now_ms, joy_input_t *out)
 {
     const jb_config_t *c = &b->cfg;
-    uint8_t buf[128];
+    static uint8_t buf[128];    /* step 13s: static scratch, not on core 0's user stack (never re-entered) */
     uint32_t n;
     jsf_t f;
 

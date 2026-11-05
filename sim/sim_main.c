@@ -441,6 +441,7 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "df") == 0) { sb_nv_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "cn") == 0) { sb_can_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "pw") == 0) { sb_pulse_tests(); return 0; }
+    if (argc > 1 && strcmp(argv[1], "bt") == 0) { sb_bench_tests(); return g_fail ? 2 : 0; }
     if (argc > 1 && strcmp(argv[1], "ar") == 0) { sb_return_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "co") == 0) { sb_confirm_only_tests(); return 0; }
     if (argc > 1 && strcmp(argv[1], "ov") == 0) { sb_override_tests(); return 0; }

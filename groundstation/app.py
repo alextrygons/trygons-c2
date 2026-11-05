@@ -1387,6 +1387,9 @@ class App:
         lbl(left, "cap.bench_sensors", font=F_MED, bg=C["bg"]).pack(anchor="w")
         self.bench_sens = tk.Label(left, text="-", font=F_MONO, bg=C["bg"], justify="left", anchor="nw")
         self.bench_sens.pack(anchor="w", fill="x")
+        lbl(left, "bench.stack_title", font=F_MED, bg=C["bg"]).pack(anchor="w", pady=(8, 0))   # step 13s
+        self.bench_stack = tk.Label(left, text="-", font=F_MONO, bg=C["bg"], justify="left", anchor="nw")
+        self.bench_stack.pack(anchor="w", fill="x")
         lbl(left, "can.title", font=F_MED, bg=C["bg"]).pack(anchor="w", pady=(8, 0))      # DroneCAN node table (11d)
         self.bench_can = tk.Label(left, text=T("can.none"), font=F_MONO, bg=C["bg"], justify="left", anchor="nw")
         self.bench_can.pack(anchor="w", fill="x")
@@ -1513,7 +1516,8 @@ class App:
             T("bench.uart", n=d["uart_errors"]),
         ]
         self.bench_sens.configure(text="\n".join(lines))
-        run = {-1: T("bench.run_left"), 1: T("bench.run_right")}.get(d["pulse"], T("bench.stopped"))
+        self.draw_bench_stack(d.get("stack"))
+        run ={-1: T("bench.run_left"), 1: T("bench.run_right")}.get(d["pulse"], T("bench.stopped"))
         self.bench_pulse.configure(text=T("bench.pulse", run=run, est="%+.1f" % d["estimate"], n=d["pulses"],
                                           refused=d["refused"]) +
                                    (T("bench.last_refuse", why=T("bench.refuse_%d" % d["last_refuse"]))
@@ -1529,6 +1533,37 @@ class App:
                          text="%s%s" % (T("btn.%d" % b), (" x%d" % n) if n else ""))
         self.bench_servo.configure(text=T("bench.servo", thr="%4d" % d["thr_us"], idle=d["thr_idle_us"],
                                           gear="%4d" % d["gear_us"], n=d["gear_n_us"]))
+
+    def draw_bench_stack(self, st):
+        """Step 13s: the stack high-water marks per core (BENCH_DIAG; display only). Amber = less than 50 % margin
+        (used > 2/3 of the reserved stack), red = the lowest word was overwritten (the stack reached its end)."""
+        if not hasattr(self, "bench_stack"):
+            return
+        if not st or not st["stacks"]:
+            self.bench_stack.configure(text=T("bench.stack_none"), fg=C["dim"])
+            return
+
+        def val(x):
+            if x["overflow"]:
+                return T("bench.stack_overflow", size=x["size"])
+            if not x["known"]:
+                return T("bench.stack_unknown", size=x["size"])
+            return T("bench.stack_val", used=x["used"], size=x["size"],
+                     pct="%d" % round(100.0 * x["used"] / x["size"]) if x["size"] else "?")
+        lines, worst = [], 0
+        for core in range(3):
+            pair = [x for x in st["stacks"] if x["core"] == core]
+            if len(pair) == 2:
+                lines.append(T("bench.stack_line", core=T("bench.stack_core%d" % core), user=val(pair[0]),
+                               irq=val(pair[1])))
+            for x in pair:
+                if x["overflow"]:
+                    worst = 2
+                elif x["known"] and x["size"] and x["used"] * 3 > x["size"] * 2:
+                    worst = max(worst, 1)
+        if not st["board"]:
+            lines.append(T("bench.stack_sim"))
+        self.bench_stack.configure(text="\n".join(lines), fg=RED if worst == 2 else ORANGE if worst == 1 else C["fg"])
 
     # --- AIS ship list + collision avoidance (sections A / D / E2) ------------------
     AIS_COLS = (("name", "ais.col_ship", 200), ("cls", "ais.col_class", 50), ("dist", "ais.col_dist", 95),

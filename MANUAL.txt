@@ -1077,6 +1077,12 @@ WHAT IT DOES
   * Buzzer test 1 s.
   * Servo outputs: the throttle and gear pulse widths being sent (idle /
     neutral), to compare with a scope or a servo tester.
+  * Stack use (under the sensors): for core 0, CPU1 and core 2 the deepest
+    use of the user stack and of the interrupt stack since the power-up,
+    "used / reserved B (%)". "?" = still measuring (about 2 s). Amber = less
+    than 50 % margin, red = OVERFLOW (the stack reached its end): stop and
+    report. On the PC simulator the numbers are simulated (it says so).
+    Display only - it changes nothing on the boat.
   * Monitor trip test (asks first): the CPU1 safety monitor trips for real -
     idle + neutral forced by the monitor itself, steering driver asleep,
     relay open, buzzer, STANDBY, alarm MONITOR TRIP. It stays until the

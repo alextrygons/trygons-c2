@@ -61,7 +61,8 @@
 #include "can_relay.h"     /* step 11f: the relay board on DroneCAN (RELAY_BUS_DRONECAN) */
 #include "memplace.h"
 #include "tc_rstcause.h"
-#include "IfxFlash.h"      /* data flash command sequences (inline; Flash/Std built by ADS) */
+#include "tc_stack.h"      /* step 13s: stack fill pattern + bounded scan (pure C) */
+#include "IfxFlash.h"     /* data flash command sequences (inline; Flash/Std built by ADS) */
 
 #include <string.h>
 
@@ -69,6 +70,7 @@ static void nv_port_init(void);      /* below, with the data flash port */
 static void relay_port_init(void);   /* below, with the RS485 Modbus port */
 static void can_port_init(void);     /* below, with the DroneCAN bus */
 static void reset_latch(void);       /* below, with the reset reason */
+static void stack_report(hal_diag_t *d);   /* below, with the stack high-water marks (step 13s) */
 
 #define LINK_BAUD    921600.0f
 #define GW_BAUD      921600.0f
@@ -1315,7 +1317,74 @@ bool hal_get_diag(hal_diag_t *d)
     d->sd_free_kb = c->mounted ? (uint32_t)(((uint64_t)c->free_clusters * c->cluster_bytes) / 1024u) : 0xFFFFFFFFu;
     d->uart_errors = 0u;
     for (unsigned i = 0; i < (unsigned)UART_COUNT; i++) d->uart_errors += uart_stat((uart_id_t)i)->errors;
+    stack_report(d);
     return true;
+}
+
+/* --- stack high-water marks (step 13s, hal/tc_stack.c) ------------------------------------------------------
+ * The linker scripts' symbols: __USTACKn = the top of core n's user stack (its first stack pointer), __USTACKn_END
+ * = its lowest word; the same for the interrupt stack (ISTACK). Global addresses (DSPR n at 0x70 / 0x60 / 0x50...):
+ * core 0 reads CPU1's and core 2's stacks over the bus (read only, a bounded slice per call). Each core fills
+ * its OWN stacks (hal_stack_fill, the first statement of core<n>_main) and says so in s_stack_filled. */
+extern unsigned int __USTACK0[], __USTACK0_END[], __ISTACK0[], __ISTACK0_END[];
+extern unsigned int __USTACK1[], __USTACK1_END[], __ISTACK1[], __ISTACK1_END[];
+extern unsigned int __USTACK2[], __USTACK2_END[], __ISTACK2[], __ISTACK2_END[];
+static unsigned int * const k_stk_lo[HAL_STACK_COUNT] = { __USTACK0_END, __ISTACK0_END, __USTACK1_END,
+                                                          __ISTACK1_END, __USTACK2_END, __ISTACK2_END };
+static unsigned int * const k_stk_hi[HAL_STACK_COUNT] = { __USTACK0, __ISTACK0, __USTACK1, __ISTACK1,
+                                                          __USTACK2, __ISTACK2 };
+#define STACK_FILL_GAP_WORDS 64u        /* the user stack is filled up to 256 B below hal_stack_fill's own frame */
+
+SHARED_BEGIN()          /* each core writes its own flag, core 0 reads all three: not cached (memplace.h) */
+static volatile uint32 s_stack_filled[3];
+SHARED_END()
+static stk_scan_t s_stk[HAL_STACK_COUNT];  /* core 0 only (hal_get_diag) */
+static uint8 s_stk_next;                   /* core 0: the stack whose turn it is */
+
+void hal_stack_fill(void)
+{
+    volatile uint32 here = 0u;                          /* its address = (about) this core's stack pointer now */
+    uint32 core = (uint32)IfxCpu_getCoreIndex();
+    if (core > 2u) return;
+    volatile uint32 *ulo = (volatile uint32 *)k_stk_lo[core * 2u];
+    volatile uint32 *uhi = (volatile uint32 *)k_stk_hi[core * 2u];
+    volatile uint32 *sp = &here;
+    if (sp > ulo + STACK_FILL_GAP_WORDS && sp <= uhi) {
+        for (volatile uint32 *p = ulo; p < sp - STACK_FILL_GAP_WORDS; p++) *p = STK_PATTERN;
+        /* the interrupt stack is not in use: no interrupt of this core has run yet */
+        volatile uint32 *ilo = (volatile uint32 *)k_stk_lo[core * 2u + 1u];
+        volatile uint32 *ihi = (volatile uint32 *)k_stk_hi[core * 2u + 1u];
+        for (volatile uint32 *p = ilo; p < ihi; p++) *p = STK_PATTERN;
+        __dsync();
+        s_stack_filled[core] = 1u;
+    }
+    (void)here;
+}
+
+static void stack_report(hal_diag_t *d)
+{
+    uint32 budget = HAL_STACK_SCAN_WORDS;
+    for (unsigned i = 0; i < HAL_STACK_COUNT; i++) {
+        stk_scan_t *s = &s_stk[i];
+        if (!s->filled) {           /* (again) until that core said it filled its stacks */
+            uint32 words = (uint32)(k_stk_hi[i] - k_stk_lo[i]);
+            stk_init(s, (const volatile uint32_t *)k_stk_lo[i], words, s_stack_filled[i / 2u] != 0u);
+        }
+    }
+    /* one stack after the other, at most HAL_STACK_SCAN_WORDS words in all per call (never a long loop) */
+    for (unsigned k = 0; k < HAL_STACK_COUNT && budget > 0u; k++) {
+        stk_scan_t *s = &s_stk[s_stk_next];
+        stk_scan(s, budget);
+        budget = s->checked < budget ? budget - s->checked : 0u;
+        if (s->checked == 0u || s->known) s_stk_next = (uint8)((s_stk_next + 1u) % HAL_STACK_COUNT);
+    }
+    for (unsigned i = 0; i < HAL_STACK_COUNT; i++) {
+        d->stack[i].size = stk_size_bytes(&s_stk[i]);
+        d->stack[i].used = stk_used_bytes(&s_stk[i]);
+        d->stack[i].known = s_stk[i].known;
+        d->stack[i].overflow = stk_overflow(&s_stk[i]);
+    }
+    d->stack_board = true;
 }
 
 /* Ground station: ASCLIN0 = USB virtual COM of the on-board debugger, 921600. */

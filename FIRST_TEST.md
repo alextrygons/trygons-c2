@@ -30,6 +30,10 @@ You need: a multimeter, the laptop with the ground station, the USB cable,
 - [ ] Run the test gate in Git Bash: `sh tools/check.sh` -> ends with `GATE: OK`.
 - [ ] ADS: press F5 on the project, then *Project -> Clean*, then *Build*.
       No errors.
+- [ ] Stack check of THIS build (step 13s), Git Bash in the project folder:
+      `python tools/mapreport.py "TriCore Debug (TASKING)/TRYGONS_C2.map"` ->
+      `STACK CHECK: OK` (no recursion, every stack + CSA with >= 50 % margin;
+      exit code 0). Any FAIL: do not flash, report it.
 
 Not stored yet (no data flash driver): a TRAINING result is **lost at
 power-off** (do TRAINING again after every power-up before HDG LOCK) and the
@@ -97,6 +101,15 @@ Every 10 minutes without a bench command the board goes back to STANDBY.
       satellites > 6, SOG < 0.5 kn at rest, spoofing "none", jamming "ok".
 - [ ] **SD card**: "card yes, mounted yes", free space shown.
 - [ ] **Motor current**: about 0 A with the motor stopped.
+- [ ] **Stack use** (step 13s; section "Stack use" under the sensors): after
+      ~2 s every line shows numbers (no "?"), NOT "(simulated values)". Do
+      everything of section 3 (pulses, buttons, buzzer) and leave BENCH TEST
+      running 5 min: every stack stays **below 2/3** of its size (normal colour;
+      amber = less than 50 % margin, red = OVERFLOW). Write the six numbers in
+      the test log; amber or red = stop and report (the stack sizes are in
+      Lcf_Tasking_Tricore_Tc.lsl + Lcf_Gnuc_Tricore_Tc.lsl). The marks are the
+      deepest use since the power-up: a later check after a day on the water
+      (BENCH TEST at the dock) shows the real worst case.
 
 ### 3b. Steering motor in small pulses
 

@@ -116,6 +116,11 @@ static float *param_ptr(link_t *l, sb_t *s, uint8_t id)
 
 /* --- sending -------------------------------------------------------------- */
 
+/* LINK_SCRATCH (step 13s, stack safety): the big frame / payload buffers of this file are STATIC, not on core 0's
+ * user stack. Safe because no function here is ever active twice at once: no recursion (tools/stackcheck.py proves
+ * it for the whole firmware), only core 0 calls the link (never an interrupt, never another core; the PC sim has
+ * no threads), and each buffer is used only inside its own function call (filled first, never read from an earlier
+ * call). Both links (USB + gateway) run one after the other. */
 static uint32_t port_read(const link_t *l, uint8_t *buf, uint32_t max)
 {
     return (l->port == LINK_PORT_GW) ? hal_gw_read(buf, max) : hal_link_read(buf, max);
@@ -123,7 +128,7 @@ static uint32_t port_read(const link_t *l, uint8_t *buf, uint32_t max)
 
 static void send(link_t *l, uint8_t type, uint8_t seq, const uint8_t *payload, size_t len)
 {
-    uint8_t frame[PROTO_MAX_FRAME];
+    static uint8_t frame[PROTO_MAX_FRAME];      /* step 13s: static (see LINK_SCRATCH) */
     size_t n = proto_encode(frame, type, seq, payload, (uint8_t)len);
     bool ok = n != 0u && ((l->port == LINK_PORT_GW) ? hal_gw_write(frame, (uint32_t)n)
                                                      : hal_link_write(frame, (uint32_t)n));
@@ -271,7 +276,7 @@ static void send_prog_wp(link_t *l, const program_t *p, uint8_t i)
  */
 static void telemetry(link_t *l, sb_t *s)
 {
-    uint8_t buf[PROTO_MAX_PAYLOAD];
+    static uint8_t buf[PROTO_MAX_PAYLOAD];      /* step 13s: static (see LINK_SCRATCH) */
     proto_wr_t w;
     sb_status_t st = sb_status(s);
     const sb_auto_t *a = &s->autop;
@@ -987,7 +992,7 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
     }
     if (f->type == PROTO_T_GW_CMD && f->len >= 5u && f->payload[0] >= 2u && f->payload[0] != 0xFFu) {
         /* u8 station | u8 flags (b0 local) | u16 command seq | u8 type | payload */
-        proto_frame_t in;
+        static proto_frame_t in;                /* step 13s: static (see LINK_SCRATCH) */
         in.type = f->payload[4];
         in.seq = f->payload[2];
         in.len = (uint8_t)(f->len - 5u);
@@ -1074,7 +1079,7 @@ static void handle(link_t *l, sb_t *s, const proto_frame_t *f)
  */
 static void telemetry2(link_t *l, sb_t *s)
 {
-    uint8_t buf[PROTO_MAX_PAYLOAD];
+    static uint8_t buf[PROTO_MAX_PAYLOAD];      /* step 13s: static (see LINK_SCRATCH) */
     proto_wr_t w;
     const sb_gw_t *g = &s->gw;
     proto_wr_init(&w, buf, sizeof buf);
@@ -1333,7 +1338,7 @@ static void telemetry2(link_t *l, sb_t *s)
  *   u32 NodeStatus age ms (0xFFFFFFFF never) | u16 reboots | u32 NodeStatus received } */
 static void can_nodes(link_t *l, sb_t *s)
 {
-    uint8_t buf[PROTO_MAX_PAYLOAD];
+    static uint8_t buf[PROTO_MAX_PAYLOAD];      /* step 13s: static (see LINK_SCRATCH) */
     proto_wr_t w;
     const hal_can_bus_t *b = &s->can.bus;
     proto_wr_init(&w, buf, sizeof buf);
@@ -1368,9 +1373,9 @@ static void can_nodes(link_t *l, sb_t *s)
 
 static void bench_diag(link_t *l, sb_t *s)
 {
-    uint8_t buf[PROTO_MAX_PAYLOAD];
+    static uint8_t buf[PROTO_MAX_PAYLOAD];      /* step 13s: static (see LINK_SCRATCH) */
     proto_wr_t w;
-    hal_diag_t d;
+    static hal_diag_t d;
     memset(&d, 0, sizeof d);
     bool hd = hal_get_diag(&d);
     proto_wr_init(&w, buf, sizeof buf);
@@ -1412,6 +1417,23 @@ static void bench_diag(link_t *l, sb_t *s)
     proto_wr_u8(&w, s->mon_tripped ? 1u : 0u);
     uint32_t idle = s->now_ms - s->bench.last_cmd_ms;
     proto_wr_u32(&w, idle < s->cfg.bench_idle_ms ? s->cfg.bench_idle_ms - idle : 0u);
+    /* step 13s: stack high-water marks (u8 count | u8 flags b0 measured on the board | u8 known mask |
+     * u8 overflow mask | per stack u16 reserved bytes, u16 deepest use bytes) - display only */
+    {
+        uint8_t known = 0u, over = 0u;
+        for (unsigned i = 0; i < HAL_STACK_COUNT; i++) {
+            if (hd && d.stack[i].known) known |= (uint8_t)(1u << i);
+            if (hd && d.stack[i].overflow) over |= (uint8_t)(1u << i);
+        }
+        proto_wr_u8(&w, (uint8_t)HAL_STACK_COUNT);
+        proto_wr_u8(&w, (hd && d.stack_board) ? 1u : 0u);
+        proto_wr_u8(&w, known);
+        proto_wr_u8(&w, over);
+        for (unsigned i = 0; i < HAL_STACK_COUNT; i++) {
+            proto_wr_u16(&w, (uint16_t)(d.stack[i].size > 65535u ? 65535u : d.stack[i].size));
+            proto_wr_u16(&w, (uint16_t)(d.stack[i].used > 65535u ? 65535u : d.stack[i].used));
+        }
+    }
     if (!w.overflow) send(l, PROTO_T_BENCH_DIAG, l->tx_seq++, buf, w.n);
     else l->telem_overflows++;
 }
@@ -1544,9 +1566,9 @@ void link_init(link_t *l, sb_t *s)
 
 void link_step(link_t *l, sb_t *s)
 {
-    uint8_t buf[128];
+    static uint8_t buf[128];                    /* step 13s: static (see LINK_SCRATCH) */
     uint32_t n;
-    proto_frame_t f;
+    static proto_frame_t f;
 
     /* bounded work per step: at most 4 kB in */
     uint32_t got = 0u;

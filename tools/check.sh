@@ -50,17 +50,18 @@ cd ..
 
 echo "== TriCore compile"
 OUT="$TEMP/tricore_obj"; mkdir -p "$OUT"
+rm -f "$OUT"/*.ci "$TEMP"/tricore_obj_variants/*.ci "$TEMP"/cpu0_big.ci    # step 13s: call graphs of THIS build only
 # every include folder of .cproject (all configurations, each folder once, in ADS order)
 INC=$(grep -o 'ProjName}/[^&]*' .cproject | sed 's#}$##; s#ProjName}/#-I#; s#^-I$#-I.#' | awk '!seen[$0]++' | tr '\n' ' ')
 # the TriCore gcc of AURIX Development Studio: $TRICORE_BIN, else the newest ADS under C:\Infineon
 B=${TRICORE_BIN:-$(ls -d /c/Infineon/AURIX-Studio-*/tools/Compilers/tricore-gcc*/bin 2>/dev/null | sort -V | tail -1)}
 [ -x "$B/tricore-elf-gcc.exe" ] || { echo "TriCore gcc NOT FOUND (install ADS or set TRICORE_BIN)"; fail=1; }
 for f in app/*.c hal/*.c hal/libcanard/*.c Cpu0_Main.c Cpu1_Main.c Cpu2_Main.c; do
-    msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -I. $INC -c "$f" -o "$OUT/$(basename "$f" .c).o" 2>&1)
+    msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -fcallgraph-info=su -I. $INC -c "$f" -o "$OUT/$(basename "$f" .c).o" 2>&1)
     if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN $f"; echo "$msg" | head -20; fail=1; else echo "TriCore OK $f"; fi
 done
 # the big-boat build of core 0 (not linked with the rest, only compiled)
-msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -DBOAT_VARIANT_BIG -I. $INC -c Cpu0_Main.c -o "$TEMP/cpu0_big.o" 2>&1)
+msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -fcallgraph-info=su -DBOAT_VARIANT_BIG -I. $INC -c Cpu0_Main.c -o "$TEMP/cpu0_big.o" 2>&1)
 if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (big boat)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK Cpu0_Main.c (big boat)"; fi
 # the FIRST TEST build (steering only; empty value = same as "#define FIRST_TEST" in Cpu0_Main.c, no redefinition warning)
 msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -DFIRST_TEST= -I. $INC -c Cpu0_Main.c -o "$TEMP/cpu0_ft.o" 2>&1)
@@ -70,7 +71,7 @@ if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN Cpu0_Main.c (FIRS
 OUTV="$TEMP/tricore_obj_variants"; mkdir -p "$OUTV"
 for v in "can:-DHAL_CAN_FITTED=1 -DHAL_CAN_SERVOS=1 -DHAL_RELAY_FITTED=1 -DRELAY_BUS=2" "modbus:-DHAL_RELAY_FITTED=1 -DRELAY_BUS=1"; do
     name=${v%%:*}; defs=${v#*:}
-    msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 $defs -I. $INC -c hal/hal_tc375.c -o "$OUTV/hal_tc375_$name.o" 2>&1)
+    msg=$("$B/tricore-elf-gcc.exe" -mcpu=tc39xx -std=c99 -Wall -Wextra -O1 -fcallgraph-info=su $defs -I. $INC -c hal/hal_tc375.c -o "$OUTV/hal_tc375_$name.o" 2>&1)
     if [ $? -ne 0 ] || [ -n "$msg" ]; then echo "TriCore FAIL/WARN hal_tc375.c (relay board on $name, flags 1)"; echo "$msg" | head -20; fail=1; else echo "TriCore OK hal_tc375.c (relay board on $name, flags 1)"; fi
 done
 # step 13: the analog joystick + paddlewheel board paths (HAL_JOY_FITTED / HAL_PADDLE_FITTED stay 0 until wired)
@@ -182,6 +183,31 @@ if echo "$stop" | grep -q "servo_write(THR_BOW_TOM_CH, THR_STOP_US)" && echo "$s
     echo "thrusters_stop (board) writes both thruster shadow registers to the stop pulse"
 else
     echo "thrusters_stop (board) does NOT stop both thrusters"; fail=1
+fi
+
+# step 13s: stack safety from the TriCore objects' call graphs (GCC -fcallgraph-info): no recursion (every function-
+# pointer call resolved by tools/stackcheck.py INDIRECT), worst case per core x 1.5 inside the linker scripts' stacks
+# + CSA (both scripts the same); the small boat, the board with the DroneCAN servos + relay board, the big boat.
+# The ADS map's own check (TASKING's numbers) = tools/mapreport.py "<map>" after every ADS build (owner).
+echo "== stack check (call graph: recursion, pointer calls, worst case per core vs the linker scripts)"
+"$PY" tools/stackcheck.py --selftest > "$TEMP/stack_self.txt" 2>&1 || { echo "STACKCHECK SELFTEST FAILED"; grep FAIL "$TEMP/stack_self.txt"; fail=1; }
+tail -1 "$TEMP/stack_self.txt"
+"$PY" tools/mapreport.py --selftest > "$TEMP/map_self.txt" 2>&1 || { echo "MAPREPORT SELFTEST FAILED"; grep FAIL "$TEMP/map_self.txt"; fail=1; }
+tail -1 "$TEMP/map_self.txt"
+"$PY" tools/stackcheck.py "$OUT" > "$TEMP/stack_check.txt" 2>&1 || { echo "STACK CHECK FAILED (small boat)"; fail=1; }
+cat "$TEMP/stack_check.txt"
+canci=$(ls "$OUT"/*.ci | grep -v "/hal_tc375.ci$")
+"$PY" tools/stackcheck.py $canci "$OUTV/hal_tc375_can.ci" > "$TEMP/stack_check_can.txt" 2>&1 || { echo "STACK CHECK FAILED (DroneCAN servos + relay board)"; cat "$TEMP/stack_check_can.txt"; fail=1; }
+grep "STACK CHECK" "$TEMP/stack_check_can.txt" | sed 's/$/ (DroneCAN servos + relay board, flags 1)/'
+bigci=$(ls "$OUT"/*.ci | grep -v "/Cpu0_Main.ci$")
+"$PY" tools/stackcheck.py $bigci "$TEMP/cpu0_big.ci" > "$TEMP/stack_check_big.txt" 2>&1 || { echo "STACK CHECK FAILED (big boat)"; cat "$TEMP/stack_check_big.txt"; fail=1; }
+grep "STACK CHECK" "$TEMP/stack_check_big.txt" | sed 's/$/ (big boat)/'
+# BENCH_DIAG's length: app/proto.h = groundstation/proto.py (the stack block, step 13s)
+if [ "$(grep -o 'PROTO_BENCH_DIAG_LEN  *[0-9]*' app/proto.h | grep -o '[0-9]*$')" = "$(grep -o '^BENCH_DIAG_LEN = [0-9]*' groundstation/proto.py | grep -o '[0-9]*$')" ] &&
+   [ "$(grep -o 'PROTO_BENCH_DIAG_STACK_OFF  *[0-9]*' app/proto.h | grep -o '[0-9]*$')" = "$(grep -o '^BENCH_DIAG_STACK_OFF = [0-9]*' groundstation/proto.py | grep -o '[0-9]*$')" ]; then
+    echo "BENCH_DIAG stack block: app/proto.h = groundstation/proto.py"
+else
+    echo "BENCH_DIAG stack block: app/proto.h and groundstation/proto.py DIFFER"; fail=1
 fi
 
 # expected memory per core from the TriCore objects (CPU1 = safety monitor: max 60 %)

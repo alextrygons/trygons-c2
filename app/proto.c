@@ -75,7 +75,8 @@ bool proto_rx_next(proto_rx_t *r, proto_frame_t *f)
         uint32_t total = (uint32_t)len + PROTO_OVERHEAD;
         if (used < total) return false;         /* wait for the rest */
 
-        uint8_t tmp[PROTO_MAX_FRAME];
+        static uint8_t tmp[PROTO_MAX_FRAME];    /* step 13s: static scratch, not on the stack (core 0 only; no
+                                                 * recursion, filled before every use) */
         for (uint32_t i = 0; i < total; i++) tmp[i] = at(r, i);
         uint16_t crc = proto_crc16(&tmp[2], 3u + (size_t)len);
         if ((uint8_t)(crc & 0xFFu) != tmp[5u + len] || (uint8_t)(crc >> 8) != tmp[6u + len]) {
