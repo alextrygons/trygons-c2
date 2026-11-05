@@ -2322,6 +2322,13 @@ def s28_confirm_centre(rig):
         c_y = look("crewed_y", joy_x=0.0, joy_y=-0.5)
         c_unarmed = look("crewed_unarmed", joy_y=0.0, joy_status=1)
         c_centred = look("crewed_centred", joy_status=2)
+        # the strict 0.10 limit (alerts.CENTRE_TOL, `<`): 0.09 centred, 0.10 / 0.11 off centre
+        c_009 = look("crewed_x_0.09", joy_x=0.09)
+        c_010 = look("crewed_x_0.10", joy_x=0.10)
+        c_011 = look("crewed_y_0.11", joy_x=0.0, joy_y=-0.11)
+        c_fault = look("crewed_fault", joy_y=0.0, joy_status=3)                 # fault: clears after 2 s centred
+        c_nojoy = look("crewed_no_joystick", joy_status=0)                      # status 0: no hint
+        c_centred2 = look("crewed_centred_again", joy_status=2)
         no_confirm = look("no_confirm", confirm_kind=0, joy_x=0.6)
         # CREWED MANEUVER (step WB): this HELM station's shore stick X / Y counts, the lever not
         shore["v"] = {"x": 0.0, "y": 0.5, "lever": 0.5}
@@ -2343,6 +2350,13 @@ def s28_confirm_centre(rig):
         u_x = look("unc_x")
         shore["v"] = None
         u_none = look("unc_no_stick")
+        shore["v"] = {"x": 0.09, "y": -0.09, "lever": 0.5}
+        u_009 = look("unc_0.09")
+        shore["v"] = {"x": 0.0, "y": 0.10, "lever": 0.5}
+        u_010 = look("unc_y_0.10")
+        shore["v"] = {"x": -0.11, "y": 0.0, "lever": 0.5}
+        u_011 = look("unc_x_0.11")
+        shore["v"] = None
         fits = not layout_problems(ap)
         texts = {}
         for lang in ("el", "en"):
@@ -2360,16 +2374,18 @@ def s28_confirm_centre(rig):
         rig.extra.update(profile=proto.PROFILE_CREWED)
     ok = (c_off and s1_ok and c_y and c_unarmed and not c_centred and not no_confirm and mnv_y and not mnv_lever and
           not mnv_not_helm and not auto_shore and not u_centred and u_lever and u_x and not u_none and fits and
+          not c_009 and c_010 and c_011 and c_fault and not c_nojoy and not c_centred2 and not u_009 and u_010 and
+          u_011 and
           texts_ok and not sent and not rig.errors)
     report("S28 centre the joystick to confirm (W79): a pending CONFIRM + the counted stick off centre = the hint on "
-           "screen 2's message line + screen 1's notices (CREWED onboard X / Y / not armed, MANEUVER + the HELM "
-           "shore stick X / Y not the lever, UNCREWED the HELM shore stick + lever); none otherwise, nothing sent",
+           "screen 2's message line + screen 1's notices (CREWED onboard X / Y / not armed / fault, the 0.10 limit "
+           "strict, MANEUVER + the HELM shore stick X / Y not the lever, UNCREWED the HELM shore stick + lever); none otherwise, nothing sent",
            ok, "cases %s; screen 1 %s; fits %s; texts %s; sent %s; errors %s" % (rows, s1, fits, texts, sent,
                                                                                 rig.errors[:2]))
 
 
 def main():
-    exe =os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
+    exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
         print("build the simulator first: sim\\build_sim.bat")
         return 2

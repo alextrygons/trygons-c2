@@ -144,7 +144,9 @@ def confirm_centre_hint(d, shore=None, helm_here=False):
     is pending on the boat and the stick whose CONFIRM counts is not centred (the AURIX would refuse the press: only
     the onboard chirp says so). TELEM2 / TELEM carry no "CONFIRM refused" counter, so the station judges from what
     it has: CREWED = the onboard joystick (telemetry joy_status 1 = not armed / not centred, or joy_x / joy_y off
-    centre) + for a MANEUVER CONFIRM also this station's own shore stick X / Y when it holds HELM (step WB);
+    centre, 3 = joystick fault: it clears only after the stick was centred 2 s) + for a MANEUVER CONFIRM also this
+    station's own shore stick X / Y when it holds HELM (step WB); never for joy_status 0 (no joystick) alone.
+    CENTRE_TOL is a strict limit: |v| < 0.10 = centred.
     UNCREWED = this station's shore stick X / Y and the lever (neutral zone nz_lo..nz_hi) when it holds HELM.
     shore = this station's stick packet {"x", "y", "lever"?} (shorejoy.to_remote) or None. Returns the text or None."""
     if not d or not d.get("confirm_kind"):
@@ -168,7 +170,7 @@ def confirm_centre_hint(d, shore=None, helm_here=False):
         hint = shore_off(True)                          # the shore captain's CONFIRM: stick + lever
     else:
         js = d.get("joy_status", 0)
-        hint = js == 1 or (js == 2 and (off(d.get("joy_x", 0.0)) or off(d.get("joy_y", 0.0))))
+        hint = js in (1, 3) or (js == 2 and (off(d.get("joy_x", 0.0)) or off(d.get("joy_y", 0.0))))
         if d["confirm_kind"] == CONF_MANEUVER:          # step WB: the shore stick X AND Y too (not the lever)
             hint = hint or shore_off(False)
     return i18n.T("conf.centre") if hint else None

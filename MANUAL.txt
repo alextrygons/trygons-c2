@@ -1286,8 +1286,9 @@ USB lever has a few extra ones, chapter 8)
     raise). It counts only with the stick centred and the joystick armed.
     Nothing pending: nothing happens. It never changes the mode by itself.
     While a CONFIRM is pending and the stick that must confirm is not
-    centred (the onboard stick; UNCREWED / a CREWED MANEUVER: the captain's
-    shore stick, UNCREWED also the lever at neutral) both screens show
+    centred (the onboard stick; a CREWED MANEUVER: also the captain's shore
+    stick - both sticks centred; UNCREWED: the captain's shore stick and the
+    lever at neutral) both screens show
     "Centre the joystick to confirm" (screen 1 notices, screen 2 message
     line; display only, W79).
   * At power-up the stick must be centred, otherwise it is ignored and the

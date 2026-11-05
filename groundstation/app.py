@@ -3752,11 +3752,11 @@ class App:
             col = self.msg_col
             hv = self.hail.view()
             msg = self.msg_text or ""
-            if hv is not None and hv["other"]:                 # «ΜΙΛΑ: ΣΥΓΚΥΒΕΡΝΗΤΗΣ» first (13r): who has the loudhailer
-                msg, col = hv["text"] + ("  ·  " + msg if msg else ""), ORANGE
-            ch = self.confirm_hint()                       # W79: a CONFIRM pending, the stick off centre
+            ch = self.confirm_hint()                       # W79: a CONFIRM pending, the stick off centre (after 13r's)
             if ch:
                 msg, col = ch + ("  ·  " + msg if msg else ""), ORANGE
+            if hv is not None and hv["other"]:                 # «ΜΙΛΑ: ΣΥΓΚΥΒΕΡΝΗΤΗΣ» first (13r): who has the loudhailer
+                msg, col = hv["text"] + ("  ·  " + msg if msg else ""), ORANGE
             out.append(("text", "message", msg, theme.CAUTION if col in (RED, ORANGE) else
                         (C["ok_txt"] if col == GREEN else None), True))
             out.append(("gap",))
