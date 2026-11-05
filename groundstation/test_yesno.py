@@ -286,6 +286,14 @@ def yn7():
         st["select"](False)
         res["focus_no"] = foc[-1:] == ["no"]
         res["break"] = "break" in str(n.bind("<space>")) or bool(n.bind("<space>"))
+        # WA/U6 review 2 LOW: the focus moving to a button (Tab / a click) makes it the selection - the ring and
+        # the shown selection never disagree
+        st["select"](True)
+        st["focus_in"][1](None)                                    # (NO's <FocusIn> handler: Tk drops a synthetic one)
+        res["focusin_no"] = st["sel"] is False and int(str(n.cget("highlightthickness"))) == 4 and \
+            bool(n.bind("<FocusIn>")) and bool(y.bind("<FocusIn>"))
+        st["focus_in"][0](None)
+        res["focusin_yes"] = st["sel"] is True
         st["select"](True)
         st["done"](st["sel"])
         res["yes"] = st["answer"] is True

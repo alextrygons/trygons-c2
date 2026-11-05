@@ -68,6 +68,7 @@ def main():
     run = [0, 0.0, 0, 0, 0, 0, 0]
     fails_text = []
     i59_ret = 0         # step 13d: DP TRIP steps with an AUTO RETURN latched (I59's key case)
+    mnvc = 0            # WB review LOW-2: CREWED MANEUVER entries by the CONFIRM (I63's WB clause)
     for w in range(len(procs)):
         with open(os.path.join(OUT, "storm_worker_%d.txt" % w)) as f:
             for line in f:
@@ -82,6 +83,8 @@ def main():
                         d[3] = int(seed)
                 elif line.startswith("DATA_I59 "):
                     i59_ret += int(line.split()[1])
+                elif line.startswith("DATA_MNVC "):
+                    mnvc += int(line.split()[1])
                 elif line.startswith("DATA_RUN "):
                     v = line.split()[1:]
                     run[0] += int(v[0])
@@ -120,13 +123,18 @@ def main():
     lines += ["%s I59 key case: %d DP TRIP control steps with an AUTO RETURN latched%s" % (
         "FAIL" if i59_fail else ("NOTE" if i59_ret == 0 else "PASS"), i59_ret,
         " - NEVER REACHED, I59 not tested" if i59_ret == 0 else "")]
+    # WB review LOW-2: the same rule for I63's WB clause (a CREWED MANEUVER entered by the onboard CONFIRM)
+    mnvc_fail = mnvc == 0 and run[0] >= 1000
+    lines += ["%s I63 WB clause: %d CREWED MANEUVER entries by the CONFIRM checked%s" % (
+        "FAIL" if mnvc_fail else ("NOTE" if mnvc == 0 else "PASS"), mnvc,
+        " - NEVER REACHED, the WB clause not tested" if mnvc == 0 else "")]
     if fails_text:
         lines += ["", "Failing seeds (minimal reproductions):"] + fails_text[:200]
     text = "\n".join(lines)
     with open(os.path.join(OUT, "storm_report.txt"), "w", encoding="utf-8") as f:
         f.write(text + "\n")
     print(text)
-    return 0 if (bad == 0 and selftest_ok and not i59_fail) else 1
+    return 0 if (bad == 0 and selftest_ok and not i59_fail and not mnvc_fail) else 1
 
 
 if __name__ == "__main__":

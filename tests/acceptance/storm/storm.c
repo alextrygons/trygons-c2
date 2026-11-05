@@ -2458,6 +2458,8 @@ static void apply(const ev_t *e)
             S.rx_x = 0.0f;
             S.rx_y = 0.0f;
             S.rx_y_until = 0u;
+            S.rem_stream = true;                          /* (WB review LOW-2: the 30 Hz stream runs: one fresh */
+            S.rem_stale = false;                          /*  packet before the step that takes the press) */
         }
         if (s->confirm.kind == CONF_NONE && fabsf(S.jx) < 0.05f && fabsf(S.jy) < 0.05f) {
             C.confirm_free_t = S.t + 1u;
@@ -3286,6 +3288,7 @@ static void report(int episodes, double hours)
            (unsigned long)ST.slam_rises);
     printf("CREWED MANEUVER entries by the CONFIRM (step WB, I63: shore stick X + Y centred): %lu\n",
            (unsigned long)ST.mnv_crewed_conf);
+    printf("DATA_MNVC %lu\n", (unsigned long)ST.mnv_crewed_conf);   /* WB review LOW-2: run_storm.py checks it */
     printf("MANEUVER stick gear (step 13q5, I78): %lu stick-Y events, %lu F / R asks checked, %lu centre / other-way "
            "steps checked\n", (unsigned long)ST.mv_y, (unsigned long)ST.mv_asks, (unsigned long)ST.mv_n_checks);
     printf("MANEUVER packet timing (step 13q5c, I78 / I79): %lu jittered packets, %lu delayed packets; %lu UNCREWED HDG "
@@ -3761,5 +3764,9 @@ int main(int argc, char **argv)
         }
     }
     report(episodes, hours);
-    return failing ? 1 : 0;
+    /* WB review LOW-2: a run of >= 200 episodes that never entered a CREWED MANEUVER by the CONFIRM did not test
+     * I63's WB clause (a 200-episode run reaches ~45) */
+    bool mnvc_fail = episodes >= 200 && ST.mnv_crewed_conf == 0u;
+    if (mnvc_fail) printf("FAIL I63 coverage: no CREWED MANEUVER entered by the CONFIRM - the WB clause not tested\n");
+    return (failing || mnvc_fail) ? 1 : 0;
 }

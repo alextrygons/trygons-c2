@@ -552,6 +552,12 @@ class UavManager:
             self._health(OFFLINE, "the router process %s - restarting" % ("ended" if dead else "is silent"))
         if self.proc is None and now >= self.next_start:
             self._spawn_bg()
+        lost = getattr(self.reg, "lost", 0)
+        if lost != getattr(self, "_reg_lost_told", 0):
+            # WA/U6 review 2 LOW: a registry save that failed every try = said (a notice), never silent
+            self._reg_lost_told = lost
+            self.notice("UAV registry NOT saved (%s) - register again or check the gateway disk" %
+                        (self.reg.error or "write failed"), "caution")
         for rid, (sid, slot, t0) in list(self.pending.items()):
             if now - t0 > float(self.cfg["register_s"]):
                 del self.pending[rid]

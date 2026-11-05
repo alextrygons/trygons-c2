@@ -63,6 +63,17 @@ def build(parent, title, text, warn=False, default=False):
     st["select"] = select
     st["done"] = done
 
+    def focus_in(yes):
+        # WA/U6 review 2 LOW: the focus ring never shows another button than the selection (Tab / a click moving
+        # the focus = that button becomes the selection, so Enter / Space answer what is shown)
+        def h(_e):
+            if st["sel"] != yes:
+                select(yes)
+        return h
+    st["yes"].bind("<FocusIn>", focus_in(True))
+    st["no"].bind("<FocusIn>", focus_in(False))
+    st["focus_in"] = (focus_in(True), focus_in(False))      # (tests: Tk drops a synthetic <FocusIn>)
+
     def key(fn):
         def h(_e):
             fn()

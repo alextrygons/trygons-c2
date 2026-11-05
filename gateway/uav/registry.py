@@ -175,6 +175,12 @@ def _cap(v):
     return v if 100.0 <= v <= 100000.0 else None
 
 
+SAVE_TRIES = 10                         # a save's tries (Windows sharing violations)
+_sleep = time.sleep                     # (the tests count the waits)
+_replace = os.replace                   # (the tests fake a sharing violation)
+SAVE_WAIT_S = 0.1                       # the wait after try k = SAVE_WAIT_S x k (none after the last)
+
+
 class Registry:
     """The registry file (state/uav_registry.json). save() writes in a helper thread (never on the event loop)."""
 
@@ -184,6 +190,7 @@ class Registry:
         self.recs = {}
         self.lock = threading.Lock()
         self.error = ""
+        self.lost = 0                           # saves that failed every try (WA/U6 review 2 LOW)
         if path and os.path.exists(path):
             # U2 review MED-2: a wrongly shaped file (a list, "slots": [], odd keys) never stops the gateway
             try:
@@ -251,16 +258,21 @@ class Registry:
                     return                              # a newer save already went to disk
                 self._written = gen
                 tmp = self.path + ".tmp"
-                for k in range(10):
-                    # (U6 gate: on Windows os.replace fails while a reader holds the file open - a sharing
-                    # violation; retried for ~1 s, never a lost record)
+                # (U6 gate: on Windows os.replace fails while a reader holds the file open - a sharing violation;
+                # SAVE_TRIES tries with growing waits between them: 0.1 + 0.2 + ... + 0.9 s = 4.5 s in all, no wait
+                # after the last one. WA/U6 review 2 LOW: all failing = the record is NOT on disk - said, never
+                # silent: self.error + a lost count the manager turns into a notice)
+                for k in range(SAVE_TRIES):
                     try:
                         with open(tmp, "w", encoding="utf-8") as f:
                             f.write(data)
-                        os.replace(tmp, self.path)
+                        _replace(tmp, self.path)
                         self.error = ""
                         break
                     except OSError as e:
                         self.error = "registry not saved: %s" % str(e)[:60]
-                        time.sleep(0.1 * (k + 1))
+                        if k + 1 < SAVE_TRIES:
+                            _sleep(SAVE_WAIT_S * (k + 1))
+                else:
+                    self.lost += 1                      # (read by the manager's tick: notice "UAV registry NOT saved")
         threading.Thread(target=write, daemon=True).start()

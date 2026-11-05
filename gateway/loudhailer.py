@@ -240,6 +240,32 @@ class Loudhailer:
     def control(self, obj):
         return self.to_worker(b"J", json.dumps(obj).encode("utf-8"))
 
+    def flush_worker(self):
+        """The take-over flush (WA review L1) is never lost silently (WA/U6 review 2 LOW): a full queue to the worker =
+        its OLDEST frames are dropped (queued voice the flush would discard anyway; a dropped talk / volume control
+        is sent again by the next worker status, review 13r LOW-2) until the flush fits; counted."""
+        if self.control({"flush": True}):
+            return True
+        if self.proc is None:
+            return False
+        data = json.dumps({"flush": True}).encode("utf-8")
+        frame = b"J" + struct.pack("<I", len(data)) + data
+        for _k in range(self.wq.maxsize + 1 if self.wq.maxsize > 0 else 1):
+            try:
+                self.wq.get_nowait()
+                self.n["flush_made_room"] += 1
+            except queue.Empty:
+                pass
+            try:
+                self.wq.put_nowait(frame)
+                self.n["flush_forced"] += 1
+                return True
+            except queue.Full:
+                continue
+        self.n["flush_lost"] += 1
+        log.warning("loudhailer: the take-over flush could not reach the worker")
+        return False
+
     def _from_worker(self, p, kind, data):
         if p is not self.proc:
             return
@@ -443,7 +469,7 @@ class Loudhailer:
         self.n["ptt_taken"] += 1
         self.gw.audit("hail_taken", station=st.id, user=st.user, from_station=f["id"], from_user=f["user"])
         self._release("the captain took the horn", broadcast=False)   # (one hail_floor: the grant's - WA review L1)
-        self.control({"flush": True})                   # the displaced voice still queued is never played / recorded
+        self.flush_worker()                             # the displaced voice still queued is never played / recorded
         if old is not None:
             old.send({"t": "ptt_ack", "ok": False, "on": True, "taken": True, "text": "the captain took the horn",
                       "speaker": None})

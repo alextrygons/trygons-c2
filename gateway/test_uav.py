@@ -76,7 +76,9 @@ parameter check + the MAVLink allow-list + the own codec + the GPS warm start + 
   UA36 U6 review fixes: MED-3 a STOPPED launch lets an airborne drone go ("hold", the pilot may take it); L1 a thin
        no-fly altitude band inside a climb is seen; L2 an old position moved along the course over ground; L3 one
        lost position packet tolerated (data_stale_s 1.8 s); L4 SYS_STATUS battery_remaining -1 never refreshes the
-       battery time
+       battery time (review 2: also a 0.5 m band)
+  UA37 (WA L2, review 2) stations.helm_forward (the gateway's newer HELM grant, else TELEM2) + the copilot's 126
+       refusal following the captain the command is forwarded for
   UA35 (step WA, owner W59) no boat mode / speed launch condition: boat_state in HDG LOCK / AUTO at 8 kn = no
        reason, high_speed above 5 kn; the manager's NON-blocking HIGH SPEED notice once per crossing while a launch is
        prepared / runs, gw_status high_speed, the captain's question says it, a prepare under way is NOT refused
@@ -555,9 +557,42 @@ def ua7_registry():
         ok = (a["ok"] and not b["ok"] and not c["ok"] and r2.recs[1]["name"] == "EAGLE" and l1 == (True, "") and
               not l2[0] and "check failed" in l2[1] and not l3[0] and not l4[0] and l4[1] == "not registered" and
               not l5[0] and "unknown drone" in l5[1] and not l6[0] and "another UID" in l6[1])
+        # WA/U6 review 2 LOW: the save retry - a Windows sharing violation 3 times, then written (no loss); every try
+        # failing = lost counted + the manager's notice, no wait after the last try
+        real_replace, real_sleep, real_wait = registry._replace, registry._sleep, registry.SAVE_WAIT_S
+        fails, waits = [3], []
+
+        def flaky(src, dst):
+            if fails[0] != 0:
+                fails[0] -= 1
+                raise PermissionError(13, "sharing violation")
+            real_replace(src, dst)
+        registry._replace, registry._sleep, registry.SAVE_WAIT_S = flaky, waits.append, 0.0
+        try:
+            r2.register(5, good_reading(sysid=15), name="FIVE")
+            until(lambda: "5" in _slots(), 5)
+            retried = "5" in _slots() and r2.error == "" and r2.lost == 0 and len(waits) == 3
+            fails[0], waits[:] = -1, []                          # (-1 = fails for ever)
+            r2.register(6, good_reading(sysid=16), name="SIX")
+            until(lambda: r2.lost == 1, 5)
+            lost = r2.lost == 1 and "not saved" in r2.error and "6" not in _slots() and \
+                len(waits) == registry.SAVE_TRIES - 1
+        finally:
+            registry._replace, registry._sleep, registry.SAVE_WAIT_S = real_replace, real_sleep, real_wait
+        from uav import manager as mgr
+        m = mgr.UavManager({"enabled": True, "slots": [{"usb": "udp:127.0.0.1:1"}] * 6}, _G(tmp))
+        m.proc = type("P", (), {"poll": lambda _s: None})()
+        m.worker_t = time.time()
+        m.reg.lost, m.reg.error = 1, "registry not saved: sharing violation"
+        m.tick()
+        m.tick()
+        told = [n for n in m.notices if "registry NOT saved" in n["text"]]
+        ok = ok and retried and lost and len(told) == 1
         report("UA7 the registry file (state/uav_registry.json): saved + reloaded; launchable only registered + "
-               "checked + the same drone (sysid / UID) in the slot; a duplicate sysid never launchable", ok,
-               "slot 1 %s, 2 %s, 3 %s, 4 %s, unknown sysid %s, unknown UID %s" % (l1, l2, l3, l4, l5, l6))
+               "checked + the same drone (sysid / UID) in the slot; a duplicate sysid never launchable; a save retried "
+               "through sharing violations, all tries failing = counted + ONE notice (no wait after the last)", ok,
+               "slot 1 %s, 2 %s, 3 %s, 4 %s, unknown sysid %s, unknown UID %s; 3 failures then saved %s; always "
+               "failing: lost + %d waits %s, notice %d" % (l1, l2, l3, l4, l5, l6, retried, len(waits), lost, len(told)))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -3342,6 +3377,14 @@ def ua36_review_u6():
     base = {"lat": 37.8, "lon": 23.6, "alt": 50.0, "hdg": 0.0, "gs": 0.0, "climb": 0.0, "alt_age": 0.1}
     sp, why = pilot.setpoint({"z": 1.0}, base, cfg, Band())
     res["l1"] = sp["vz"] == 0.0 and any("no-fly" in w for w in why)
+
+    class Thin:                                                 # WA/U6 review 2 LOW: a 0.5 m band (52.6..53.1 m)
+        def problem(self, pts):
+            if any(52.6 <= p[2] <= 53.1 for p in pts):
+                return "thin band"
+            return None
+    sp2, why2 = pilot.setpoint({"z": 1.0}, base, cfg, Thin())
+    res["l1b"] = sp2["vz"] == 0.0 and any("no-fly" in w for w in why2) and pilot.VERT_STEP_M <= 0.5
     # L2: heading north, flying EAST (course 90): the old position moves east, not north
     moved = {}
 
@@ -3381,6 +3424,53 @@ def ua36_review_u6():
            "-1 never refreshes the battery time", all(res.values()), "%s" % res)
 
 
+def ua37_helm_forward():
+    """WA/U6 review 2 LOW (WA L2): stations.helm_forward = the gateway's own HELM grant while it is newer than TELEM2's
+    last HELM change and differs from it (the "B3 race"), else TELEM2's holder; uav_joy_refusal's copilot branch asks
+    the captain the command is FORWARDED for (a just-granted captain flying a UAV refuses the copilot's command 126
+    even while TELEM2 still shows the old holder)."""
+    import common  # noqa: F401
+    import proto
+    import stations as stm
+    gw = _PGw()
+    gw.aurix = _Aurix()
+    gw.storage = None
+    gw.uav = type("U", (), {})()
+    gw.uav.pilots = object()                                     # (a magazine exists: uav_joy_refusal looks)
+    ss = stm.StationServer(gw, {})
+    gw.stations = ss
+
+    def mk(sid, crew):
+        st = stm.Station(sid, "u%d" % sid, "HELM", False, "1.2.3.%d" % sid, "s%d" % sid, _Writer())
+        st.crew, st.licence = crew, True
+        ss.stations[sid] = st
+        return st
+    old, new, cop = mk(5, "captain"), mk(7, "captain"), mk(6, "copilot")
+    gw.telem2["helm"] = old.id
+    now = time.time()
+    res = {}
+    res["no_grant"] = ss.helm_forward() == 5
+    ss.helm_grant, ss.helm_grant_t, ss.helm_t2_since = 7, now, now - 5.0       # granted, TELEM2 not yet
+    res["grant_newer"] = ss.helm_forward() == 7
+    ss.helm_grant = 5
+    res["grant_same"] = ss.helm_forward() == 5
+    ss.helm_grant, ss.helm_t2_since = 7, now + 0.5                             # TELEM2 changed after the grant
+    res["t2_newer"] = ss.helm_forward() == 5
+    ss.helm_t2_since = now - 5.0
+    real = stm._uav_flying_captain
+    stm._uav_flying_captain = lambda _s, st: 2 if st is new else None          # the NEW captain flies UAV 2
+    try:
+        r_new = ss.uav_joy_refusal(cop, proto.T_SET_MODE, bytes([proto.MODE_HDG_LOCK]))
+        ss.helm_grant_t = 0.0                                                  # no grant: TELEM2's old holder
+        r_old = ss.uav_joy_refusal(cop, proto.T_SET_MODE, bytes([proto.MODE_HDG_LOCK]))
+    finally:
+        stm._uav_flying_captain = real
+    res["refusal_forwarded"] = r_new is not None and "UAV 2" in r_new and r_old is None
+    report("UA37 (WA L2, review 2) stations.helm_forward: the gateway's newer HELM grant, else TELEM2's holder; the "
+           "copilot's 126 refusal follows the captain the command is forwarded for", all(res.values()),
+           "%s (refusal %r / without the grant %r)" % (res, r_new, r_old))
+
+
 def main():
     watchdog()
     tests = [ua1_codec, ua2_pymavlink, ua3_allow, ua4_writer, ua5_no_aurix, ua6_check, ua7_registry, ua8_assist,
@@ -3388,7 +3478,7 @@ def main():
              ua16_launch, ua17_router_flight,
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
-             ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126,
+             ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126, ua37_helm_forward,
              ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:

@@ -131,8 +131,9 @@ def setpoint(stick, drone, cfg, airspace=None):
         # MED-3: a climb / descent into a zone's altitude band (the margin in the direction of the move)
         a2 = a + up * look + math.copysign(float(cfg["edge_margin_m"]), up)
         here_bad = airspace.problem([(lat, lon, a)])
-        # U6 review L1: a vertical leg has no horizontal length - sample it every VERT_STEP_M so a thin altitude band
-        # between the two ends is seen
+        # U6 review L1: a vertical leg has no horizontal length - sampled every VERT_STEP_M (0.5 m; WA/U6 review 2
+        # LOW: samples at most 0.5 m apart, so an altitude band at least 0.5 m thick between the two ends is always
+        # seen - a thinner band could fall between two samples)
         k = max(1, int(math.ceil(abs(a2 - a) / VERT_STEP_M)))
         ups = [(lat, lon, a + (a2 - a) * i / k) for i in range(1, k + 1)]
         bad = next((b for b in (airspace.problem([p]) for p in ups) if b), None)
@@ -160,7 +161,7 @@ def setpoint(stick, drone, cfg, airspace=None):
 
 
 ZERO = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw_rate": 0.0}
-VERT_STEP_M = 2.0                       # U6 review L1: the vertical leg's sample step
+VERT_STEP_M = 0.5                       # U6 review L1 (+ review 2): the vertical leg's sample step
 
 
 class Lock:

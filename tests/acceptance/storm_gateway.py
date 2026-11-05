@@ -512,7 +512,8 @@ def storm_uav_router(seed):
         n_slots = rng.randint(1, 6)
         hatch = [None]                                 # when the router got the last OPEN report
         land_ok = set()                                # U6 review MED-2: slots OUR OWN battery formula says may land
-        recent = {}                                    # slot -> [(t, alt, pct)] what the drone told the router (5 s)
+        recent = {}                                    # slot -> [(t, alt, pct, amps)] what the drone told the router
+        last_a = {}                                    # slot -> the last current the drone reported (A; as the router)
         drone = {}
         for s in range(1, n_slots + 1):
             for kind in ("usb", "elrs"):
@@ -576,12 +577,13 @@ def storm_uav_router(seed):
                     if rng.random() < 0.6:
                         lk = r.links[(s, kind)]
                         sysid = 10 + s if rng.random() < 0.9 else rng.randint(1, 250)
+                        cb = rng.choice([-1, 1800, 3000])      # (cA; -1 = not reported: the last value stays)
                         msgs = [("HEARTBEAT", {"type": 2, "autopilot": 3, "base_mode": 0x80 if d["armed"] else 0,
                                                "custom_mode": d["mode"], "system_status": 4, "mavlink_version": 3}),
                                 ("GLOBAL_POSITION_INT", {"relative_alt": int(d["alt"] * 1000), "lat": 378200000,
                                                          "lon": 236000000, "vz": rng.randint(-50, 50)}),
                                 ("SYS_STATUS", {"battery_remaining": d["pct"], "voltage_battery": 15000,
-                                                "current_battery": rng.choice([-1, 1800, 3000])})]
+                                                "current_battery": cb})]
                         if rng.random() < 0.3:
                             msgs.append(("EXTENDED_SYS_STATE", {"landed_state": 1 if d["alt"] < 0.3 else 2}))
                         if rng.random() < 0.4:
@@ -595,7 +597,9 @@ def storm_uav_router(seed):
                             msgs.append(("PARAM_SET", {"param_value": 1.0}))       # never allow-listed in
                         data = b"".join(mavlink.encode(n, f, d["seq"] + i, sysid, 1) for i, (n, f) in enumerate(msgs))
                         if sysid == 10 + s:
-                            recent.setdefault(s, []).append((now, d["alt"], d["pct"]))
+                            if cb >= 0:
+                                last_a[s] = cb / 100.0
+                            recent.setdefault(s, []).append((now, d["alt"], d["pct"], last_a.get(s)))
                         d["seq"] = (d["seq"] + len(msgs)) & 0xFF
                         r.rx(lk, data, now)
                         drain(now)
@@ -639,24 +643,31 @@ def storm_uav_router(seed):
             r.battery_tick(now)
             for s in drone:
                 recent[s] = [x for x in recent.get(s, []) if now - x[0] <= 6.0]
-                if any(_own_land(alt, pct, r.capacity.get(s)) for _t, alt, pct in recent[s]):
+                if any(_own_land(alt, pct, r.capacity.get(s), amps) for _t, alt, pct, amps in recent[s]):
                     land_ok.add(s)                     # (latched: a landing goes on, LAND repeated every 2 s)
             drain(now)
     finally:
         rw.now_s, rw.out = real_now, real_out
 
 
-def _own_land(alt, pct, capacity_mah):
-    """U6 review MED-2: the storm's OWN battery-minimum formula (never battery.judge): the energy to descend from alt at
-    the slowest landing rate with the highest current the fake drones report (30 A) + the margin, vs the pack left,
-    with a 1.5 x tolerance (the router may hold a slightly older altitude / % and the two-stage landing time).
+def _own_land(alt, pct, capacity_mah, amps=None):
+    """U6 review MED-2 / WA+U6 review 2 MED: the storm's OWN battery-minimum formula (never battery.judge): the energy
+    to descend from alt in the two stages (the last uav_land_final_m at uav_land_final_ms, the rest at uav_land_ms)
+    with the current the drone itself reported in that frame (the last one it sent, as the router keeps it; at least
+    the hover current) + the margin, vs the pack left, with a 1.2 x tolerance (rounding / the router holding a value
+    from a neighbouring frame of the recorded window). A router that lands 2 x early or more fails I82.
     True = a LAND is allowed for this drone."""
     from uav import uavcheck
     c = uavcheck.DEFAULTS
     cap = capacity_mah or float(c["uav_capacity_mah"])
-    rate = min(float(c["uav_land_ms"]), float(c.get("uav_land_final_ms") or c["uav_land_ms"]))
-    reserve = 30.0 * (max(0.0, alt) / max(0.1, rate)) / 3.6 * (1.0 + float(c["uav_land_margin_pct"]) / 100.0)
-    return cap * max(0, min(100, pct)) / 100.0 <= 1.5 * reserve
+    hover = float(c["uav_hover_a"])
+    draw = max(hover, amps) if amps is not None and amps > 0 else hover
+    a = max(0.0, alt)
+    low = min(a, float(c.get("uav_land_final_m", 0.0)))
+    t_down = (a - low) / max(0.1, float(c["uav_land_ms"])) + low / max(0.1, float(c.get("uav_land_final_ms") or
+                                                                                   c["uav_land_ms"]))
+    reserve = draw * t_down / 3.6 * (1.0 + float(c["uav_land_margin_pct"]) / 100.0)
+    return cap * max(0, min(100, pct)) / 100.0 <= 1.2 * reserve
 
 
 class _UStation(object):

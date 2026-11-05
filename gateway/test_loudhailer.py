@@ -29,13 +29,17 @@ process loudhailer_worker.py with the SIMULATED speaker / microphone) and real g
   LH18 (review of 38add4b LOW-2) the catch-up frames after a stall keep their real audio inside the stall
   LH19 (U2 review LOW-15) a file opened mid-minute: silence first, the first frame at its own time
   LH20 (step WA, owner W54) the captain's press takes the horn at once from anyone; the displaced station is told
+  LH21 (WA/U6 review 2 LOW) the take-over flush: the worker empties its play queue (also through its reader); a full
+       queue to the worker never loses the flush (oldest frames dropped to make room, counted)
 
 Run:  python test_loudhailer.py      (exit code 0 = all passed)
 """
 import ast
 import io
 import os
+import queue
 import shutil
+import struct
 import sys
 import tempfile
 import threading
@@ -408,6 +412,39 @@ def lh12_15():
                resent and no_more and kept and gone_first and gone_after,
                "resent %s (once %s); 2.0 s before the first frame: kept %s, 2.6 s: released %s; 1.2 s after frames: "
                "released %s" % (resent, no_more, kept, gone_first, gone_after))
+
+        # LH21 (WA/U6 review 2 LOW) the take-over flush, worker side + a full queue on the gateway side
+        a21 = argparse.Namespace(backend="sim", out_dev=None, in_dev=None, ring=None, seg_s=60, volume_max=80,
+                                 volume=70, sim_reply_s=0.0)
+        w21 = lw.Worker(a21, io.BytesIO())
+        w21.control({"talk": True})
+        w21.queue = [vc.encode(vc.tone(500, 40)) for _k in range(8)]
+        w21.started_play = True
+        w21.control({"flush": True})
+        direct = w21.queue == [] and not w21.started_play
+        w21.queue = [vc.encode(vc.tone(500, 40)) for _k in range(5)]
+        w21.started_play = True
+        body = _json.dumps({"flush": True}).encode()
+        w21.reader(io.BytesIO(b"J" + struct.pack("<I", len(body)) + body))       # (then EOF: the reader ends)
+        via_reader = w21.queue == [] and not w21.started_play
+        h21 = lhmod.Loudhailer({"enabled": True}, fake_gw)
+        h21.proc = object()
+        while True:
+            try:
+                h21.wq.put_nowait(b"A" + struct.pack("<I", 1) + b"x")
+            except queue.Full:
+                break
+        forced = h21.flush_worker()
+        items = []
+        while not h21.wq.empty():
+            items.append(h21.wq.get_nowait())
+        flush_in = any(x and x[:1] == b"J" and b'"flush"' in x for x in items)
+        report("LH21 (WA/U6 review 2 LOW) the take-over flush: the worker's play queue emptied (control + its reader); "
+               "a FULL queue to the worker still takes the flush (the oldest frame dropped, counted)",
+               direct and via_reader and forced and flush_in and h21.n["flush_forced"] == 1 and
+               h21.n["flush_made_room"] >= 1 and not h21.n["flush_lost"],
+               "worker: control %s, reader %s; full queue: flush %s (in the queue %s, made room %d, forced %d)" % (
+                   direct, via_reader, forced, flush_in, h21.n["flush_made_room"], h21.n["flush_forced"]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
