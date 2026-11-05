@@ -277,8 +277,16 @@ def yn7():
                            n.pack_info().get("fill") == "x")
         res["no_default"] = st["sel"] is False and int(str(n.cget("highlightthickness"))) == 4
         res["keys"] = all(w.bind(k) for k in ("<Up>", "<Down>", "<Return>", "<Escape>"))
+        foc = []
+        y.focus_set = lambda: foc.append("yes")                    # (the OS may not give this test window the
+        n.focus_set = lambda: foc.append("no")                     #  keyboard focus: the call itself is checked)
         st["select"](True)
         res["up"] = st["sel"] is True and int(str(y.cget("highlightthickness"))) == 4
+        res["focus_yes"] = foc[-1:] == ["yes"]                      # WA review L3 / L4: the focus follows
+        st["select"](False)
+        res["focus_no"] = foc[-1:] == ["no"]
+        res["break"] = "break" in str(n.bind("<space>")) or bool(n.bind("<space>"))
+        st["select"](True)
         st["done"](st["sel"])
         res["yes"] = st["answer"] is True
         w2, st2 = ynbox.build(root, "T", "Q")

@@ -8,8 +8,8 @@
   "runs_on": "sim",
   "title_el": "Εκτόξευση UAV και παρατήρηση",
   "title_en": "UAV launch and observation",
-  "intro_el": "Μαθαίνετε τη σειρά μιας εκτόξευσης από το μαγγέμα: καταχώριση, διαδρομή, σκάφος σε STANDBY, προετοιμασία από τον συγκυβερνήτη ή τη συγκυβερνήτρια, ΝΑΙ από τον κυβερνήτη ή την κυβερνήτρια, και μετά παρατήρηση από την κάμερα. Τα UAV είναι μόνο για παρατήρηση. Η μόνη προσγείωση είναι το ελάχιστο της μπαταρίας.",
-  "intro_en": "You learn the order of a launch from the magazine: register, route, boat in STANDBY, the copilot prepares, the captain says YES, then you observe through the camera. The drones are for observation only. The only landing is the battery minimum.",
+  "intro_el": "Μαθαίνετε τη σειρά μιας εκτόξευσης από το μαγγέμα: καταχώριση, διαδρομή, προετοιμασία από τον συγκυβερνήτη ή τη συγκυβερνήτρια, ΝΑΙ από τον κυβερνήτη ή την κυβερνήτρια, και μετά παρατήρηση από την κάμερα. Η εκτόξευση επιτρέπεται με κάθε ταχύτητα· πάνω από 5 κόμβους ο σταθμός δείχνει «ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση» (μόνο προειδοποίηση). Τα UAV είναι μόνο για παρατήρηση. Η μόνη προσγείωση είναι το ελάχιστο της μπαταρίας.",
+  "intro_en": "You learn the order of a launch from the magazine: register, route, the copilot prepares, the captain says YES, then you observe through the camera. A launch is allowed at any speed; above 5 knots the station shows «HIGH SPEED - take-off risk» (a notice only). The drones are for observation only. The only landing is the battery minimum.",
   "setup": [
     "magazine_full",
     "boat_moving"
@@ -42,27 +42,10 @@
       "hint_s": 20
     },
     {
-      "do_el": "Για ασφαλέστερη απογείωση: βάλτε το σκάφος σε STANDBY και περιμένετε να πέσει κάτω από 5 κόμβους.",
-      "do_en": "For a safer take-off: put the boat in STANDBY and wait until it is slower than 5 knots.",
-      "hint_el": "Η εκτόξευση επιτρέπεται με κάθε ταχύτητα, όταν το πει ο συγκυβερνήτης ή η συγκυβερνήτρια. Πάνω από 5 κόμβους ο σταθμός δείχνει «ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση».",
-      "hint_en": "A launch is allowed at any speed, when the copilot says so. Above 5 knots the station shows «HIGH SPEED - take-off risk».",
-      "check": [
-        {
-          "f": "boat_mode",
-          "eq": "STANDBY"
-        },
-        {
-          "f": "sog_kn",
-          "lt": 5.0
-        }
-      ],
-      "hint_s": 30
-    },
-    {
       "do_el": "Ως συγκυβερνήτης ή συγκυβερνήτρια: ΠΡΟΕΤΟΙΜΑΣΙΑ ΕΚΤΟΞΕΥΣΗΣ.",
       "do_en": "As the copilot: PREPARE LAUNCH.",
-      "hint_el": "Ο συγκυβερνήτης ή η συγκυβερνήτρια προετοιμάζει· δεν εκτοξεύει ποτέ μόνος ή μόνη.",
-      "hint_en": "The copilot prepares; a copilot never launches alone.",
+      "hint_el": "Ο συγκυβερνήτης ή η συγκυβερνήτρια προετοιμάζει· δεν εκτοξεύει ποτέ μόνος ή μόνη. Πάνω από 5 κόμβους εμφανίζεται η προειδοποίηση ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ - η εκτόξευση δεν απορρίπτεται· πιο αργά είναι ασφαλέστερο.",
+      "hint_en": "The copilot prepares; a copilot never launches alone. Above 5 knots the HIGH SPEED notice shows - the launch is not refused; slower is safer.",
       "check": [
         {
           "f": "launch",

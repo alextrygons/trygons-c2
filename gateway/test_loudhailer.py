@@ -486,20 +486,32 @@ def main():
         vic.link.send_msg({"t": "ptt", "on": True})
         vic_ref2 = until(lambda: vic.last("ptt_ack") and vic.last("ptt_ack").get("ok") is False, 3, pump=pumps)
         cop.msgs.clear()
+        ctl_calls = []
+        real_ctl = g.hail.control
+        g.hail.control = lambda o: (ctl_calls.append(dict(o)), real_ctl(o))[1]
         cap.hail.press()                                   # not refused locally (captain_here)
         took = until(lambda: cap.hail.mine and g.hail.floor and g.hail.floor["crew"] == "captain", 3, pump=pumps)
         seen = until(lambda: (cop.last("ptt_ack") or {}).get("taken"), 3, pump=pumps)
         cop_note = cop.hail.note
         cop_mine = cop.hail.mine
+        g.hail.control = real_ctl
+        until(lambda: any(k == "hail_floor" for k, _d in cop.msgs), 3, pump=pumps)
+        wait(0.5, pumps)                                   # (a second broadcast would have arrived by now)
+        floors = [d for k, d in cop.msgs if k == "hail_floor"]
+        # WA review L1: the worker's queue flushed at the take-over, ONE hail_floor (the captain's grant)
+        flush_ok = {"flush": True} in ctl_calls and len(floors) == 1 and (floors[0].get("speaker") or {}).get(
+            "crew") == "captain"
         audit_n = g.hail.n["ptt_taken"]
         cap.hail.release()
         until(lambda: g.hail.floor is None, 3, pump=pumps)
         cop.hail.release()
         report("LH20 (owner W54) the captain's TALK takes the horn AT ONCE from the copilot speaking: the floor is the "
                "captain's, the copilot gets 'taken' + THE CAPTAIN TOOK THE HORN and stops; others: first wins",
-               took and seen and "CAPTAIN TOOK THE HORN" in cop_note and not cop_mine and audit_n >= 1 and vic_ref2,
-               "took %s, copilot told %s (%r, mine %s), counter %s, viewer refused %s" % (
-                   bool(took), bool(seen), cop_note, cop_mine, audit_n, bool(vic_ref2)))
+               took and seen and "CAPTAIN TOOK THE HORN" in cop_note and not cop_mine and audit_n >= 1 and vic_ref2 and
+               flush_ok,
+               "took %s, copilot told %s (%r, mine %s), counter %s, viewer refused %s, flush + one floor %s (%s, %s)" % (
+                   bool(took), bool(seen), cop_note, cop_mine, audit_n, bool(vic_ref2), flush_ok, ctl_calls,
+                   len(floors)))
 
         # LH2 half duplex: the mic is muted while talking; listen only to a listening station
         cap.hail.set_listen(True)

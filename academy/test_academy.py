@@ -3893,7 +3893,7 @@ def ac49():
 
 
 # --- AC51 - AC54: the UAV magazine lesson (step U6) -------------------------------------------------------------------
-UAV_SCRIPT = {0: "register", 1: "route_next", 2: "standby", 3: "prepare", 4: "yes", 6: "video", 7: "ack"}
+UAV_SCRIPT = {0: "register", 1: "route_next", 2: "prepare", 3: "yes", 5: "video", 6: "ack"}   # (WA review M1)
 
 
 def _uav_run(script=UAV_SCRIPT, limit_s=400.0):
@@ -3961,7 +3961,7 @@ def ac51():
     if st["launched"] != 1 or st["hatch"] != "CLOSED" or st["landing"] != 1 or st["denied"]:
         wrong.append("simulated end state %s" % st)
     # a NO from the captain: nothing launches, the lesson does not pass that step
-    _run2, sim2, status2 = _uav_run({**UAV_SCRIPT, 4: "no"}, limit_s=120.0)
+    _run2, sim2, status2 = _uav_run({**UAV_SCRIPT, 3: "no"}, limit_s=120.0)
     if status2 == "done" or sim2.state()["launched"] or sim2.relay:
         wrong.append("a NO still launched (%s, relay %s)" % (sim2.state(), sim2.relay))
     report("AC51 UAV lesson content + model", not wrong, "; ".join(wrong) or

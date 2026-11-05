@@ -254,6 +254,12 @@ class Worker:
             pcm = vc.signal(m["signal"])
             if pcm is not None:
                 self.signal, self.signal_kind = vc.frames(pcm), m["signal"]
+        if m.get("flush"):
+            # WA review L1: the captain took the horn - the displaced station's buffered voice is never played /
+            # recorded after the take-over
+            with self.lock:
+                self.queue = []
+                self.started_play = False
         if m.get("stop"):
             self.running = False
 

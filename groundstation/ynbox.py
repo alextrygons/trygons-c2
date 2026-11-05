@@ -56,13 +56,26 @@ def build(parent, title, text, warn=False, default=False):
         st["sel"] = bool(yes)
         st["yes"].configure(**{k: v for k, v in theme.yn_opts(True, yes, "title").items() if k != "font"})
         st["no"].configure(**{k: v for k, v in theme.yn_opts(False, not yes, "title").items() if k != "font"})
+        try:
+            (st["yes"] if yes else st["no"]).focus_set()   # WA review L3: the focus follows the SHOWN selection
+        except tk.TclError:
+            pass
     st["select"] = select
     st["done"] = done
-    w.bind("<Up>", lambda e: select(True))
-    w.bind("<Down>", lambda e: select(False))
-    w.bind("<Return>", lambda e: done(st["sel"]))
-    w.bind("<space>", lambda e: done(st["sel"]))
-    w.bind("<Escape>", lambda e: done(False))
+
+    def key(fn):
+        def h(_e):
+            fn()
+            return "break"                               # (never also the button's own class binding)
+        return h
+    # WA review L3: Enter / Space answer the SHOWN selection (also on the buttons: Tk's own Button <space> would
+    # invoke the focused one), Up / Down select, Esc = NO
+    for wid in (w, st["yes"], st["no"]):
+        wid.bind("<Up>", key(lambda: select(True)))
+        wid.bind("<Down>", key(lambda: select(False)))
+        wid.bind("<Return>", key(lambda: done(st["sel"])))
+        wid.bind("<space>", key(lambda: done(st["sel"])))
+        wid.bind("<Escape>", key(lambda: done(False)))
     w.protocol("WM_DELETE_WINDOW", lambda: done(False))
     try:
         theme.style_tree(w)
@@ -80,6 +93,7 @@ def ask(parent, title, text, warn=False, default=False):
         return bool(AUTO)
     w, st = build(parent, title, text, warn, default)
     try:
+        w.wait_visibility()                              # WA review L3: a grab needs the window shown
         w.grab_set()
     except tk.TclError:
         pass

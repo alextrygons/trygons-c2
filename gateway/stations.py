@@ -592,7 +592,8 @@ class StationServer:
         if n is not None:
             return ": the captain's joystick flies UAV %d (STANDBY / AUTO PAUSE / DP STOP only)" % n
         if st.crew == "copilot" and not st.single_op:
-            cap = self.stations.get(self.gw.telem2.get("helm"))
+            hf = getattr(self, "helm_forward", None)          # WA review L2: the same holder the command goes for
+            cap = self.stations.get(hf() if hf is not None else self.gw.telem2.get("helm"))
             n = _uav_flying_captain(self, cap) if cap is not None and cap is not st else None
             if n is not None:
                 return ": the captain flies UAV %d - no ACCEPT can be asked now" % n

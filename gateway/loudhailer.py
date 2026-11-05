@@ -387,14 +387,15 @@ class Loudhailer:
         self.gw.audit("hail_talk", on=True, station=st.id, user=st.user, crew=self.floor["crew"], what=what)
         self._broadcast()
 
-    def _release(self, why):
+    def _release(self, why, broadcast=True):
         f, self.floor = self.floor, None
         if not f:
             return
         self.control({"talk": False})
         self.gw.audit("hail_talk", on=False, station=f["id"], user=f["user"], what=f["what"], why=why,
                       seconds=round(time.time() - f["t0"], 1))
-        self._broadcast()
+        if broadcast:
+            self._broadcast()
 
     def _may_talk(self, st):
         if st.role == "VIEWER":
@@ -441,7 +442,8 @@ class Loudhailer:
         old = self.gw.stations.stations.get(f["id"])
         self.n["ptt_taken"] += 1
         self.gw.audit("hail_taken", station=st.id, user=st.user, from_station=f["id"], from_user=f["user"])
-        self._release("the captain took the horn")
+        self._release("the captain took the horn", broadcast=False)   # (one hail_floor: the grant's - WA review L1)
+        self.control({"flush": True})                   # the displaced voice still queued is never played / recorded
         if old is not None:
             old.send({"t": "ptt_ack", "ok": False, "on": True, "taken": True, "text": "the captain took the horn",
                       "speaker": None})

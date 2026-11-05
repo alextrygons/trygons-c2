@@ -624,12 +624,16 @@ def b12_demo_boat():
     said = []
     fake = types.SimpleNamespace(boat_file=path, boat=None, boat_ok=False, say=lambda t, c=None: said.append(t))
     good = appmod.App.use_boat_file(fake, {"boat": "trygons-demo"})
-    f2 = types.SimpleNamespace(boat_file=path, boat=None, boat_ok=False, say=lambda t, c=None: said.append(t))
+    stopped = []
+    f2 = types.SimpleNamespace(boat_file=path, boat=None, boat_ok=False, say=lambda t, c=None: said.append(t),
+                               link=types.SimpleNamespace(stop=lambda: stopped.append(1)))
     wrong = appmod.App.use_boat_file(f2, {"boat": "RF49D"})
+    wrong = wrong if (stopped and f2.link is None and said) else "still connected (WA review L7)"
     tab = proto.relay_groups(proto.p_relay_cfg(bt.relays))
     ok = (not bt.error and bt.name == "trygons-demo" and [r["n"] for r in bt.relays] == [8] and
           bt.relays[0]["group"] == "extra" and bt.relays[0]["power_up"] == "off" and good is not None and
-          fake.boat_ok and wrong is None and not f2.boat_ok and (tab is None or tab.get(8) == "extra"))
+          fake.boat_ok and wrong is None and not f2.boat_ok and tab == {8: "extra"} and bt.hatch_relay == 8 and
+          bt.relays[0]["type"] == "onoff" and not bt.relays[0]["pair"])
     report("B12 (W76) the demo boat file: valid, named like the demo gateway, relay 8 = the UAV hatch (extra on/off, "
            "power_up off); the station's --boat-file only after the welcome name check (a wrong gateway = refused)",
            ok, "error %r, relays %s, accepted %s, wrong gateway %s, table %s" % (

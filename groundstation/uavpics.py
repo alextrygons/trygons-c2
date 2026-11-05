@@ -63,8 +63,8 @@ def draw_usv(canvas, x, y, px, colour=None, tag="usv"):
         canvas.create_image(x, y, image=im, tags=tag)
         refs = getattr(canvas, "_usv_pics", None)
         if refs is None:
-            refs = canvas._usv_pics = []
-        refs.append(im)                                  # (Tk drops an image nobody refers to)
+            refs = canvas._usv_pics = {}
+        refs[("usv", px)] = im                           # (Tk drops an image nobody refers to; ONE per kind + size)
         return tag
     c = colour or theme.C["fg"]
     w, h = px * 0.42, px * 0.92

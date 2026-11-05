@@ -2012,7 +2012,8 @@ class App:
                 w = self.link.start()
                 self.say(T("cap.logged_in", user=user, role=w["role"],
                            where=T("cap.on_board") if w["local"] else T("cap.remote")), GREEN)
-                self.use_boat_file(w)
+                if self.boat_file and self.use_boat_file(w) is None:
+                    return                              # (WA review L7: disconnected, the reason said)
             else:
                 self.link = Link(addr)
                 self.link.start()
@@ -2032,9 +2033,26 @@ class App:
                 bt = boats.Boat(self.boat_file, json.load(f))
         except (OSError, ValueError) as e:
             self.say(T("cap.cannot_connect", err=e), RED)
+            link = getattr(self, "link", None)
+            if link is not None:
+                try:
+                    link.stop()
+                except Exception:
+                    pass
+                self.link = None
             return None
         if bt.error or boats.check_welcome(bt, welcome):
-            self.say(T("cap.cannot_connect", err=i18n.from_en(bt.error or boats.check_welcome(bt, welcome))), RED)
+            # WA review L7: a wrong / invalid boat file = DISCONNECTED and said clearly (never driving with the
+            # wrong boat's settings, never a silent half-connection)
+            why = bt.error or boats.check_welcome(bt, welcome)
+            self.say(T("cap.cannot_connect", err=i18n.from_en(why)), RED)
+            link = getattr(self, "link", None)
+            if link is not None:
+                try:
+                    link.stop()
+                except Exception:
+                    pass
+                self.link = None
             return None
         self.boat, self.boat_ok = bt, True
         self.boat_pushed, self.boat_push_seq, self.boat_push_at = False, None, 0.0

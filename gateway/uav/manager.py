@@ -169,6 +169,15 @@ class UavManager:
         self.hs_on = False                       # W59: the HIGH SPEED notice was given for this crossing
         self.hs_now = False                      # W59: the boat is faster than high_speed_kn now
         self.relay_retry = None                  # [on, cb, until]: one retry of a hatch relay command (W55)
+        self.old_keys = [k for k in ("launch_max_kn",) if k in (self.cfg["launch"] or {})]
+        if self.old_keys:
+            # WA review M1: owner W59 removed the launch speed limit - an old gateway.json key is IGNORED, said once
+            log.warning("uav: gateway.json uav launch %s is IGNORED (owner W59: no launch speed limit; above "
+                        "high_speed_kn a notice only)", ", ".join(self.old_keys))
+            try:
+                self.notice("gateway.json: %s is ignored (no launch speed limit, W59)" % ", ".join(self.old_keys))
+            except Exception:
+                pass
         self.relay_busy = False
         self._load_extra()
         # --- U4: telemetry to the stations, the video worker, the UAV AI, the flight logs, the U4 notices ----------

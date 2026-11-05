@@ -442,7 +442,8 @@ No new AURIX frame. No new app/proto.h define.
 
 Gateway refusal codes (proto.py ERR, next free): 122 UAV not registered / check failed, 123 UAV route
 refused (energy / range / altitude), 124 UAV route in a no-fly zone / outside the air geofence,
-125 launch conditions not met (boat not slow / STANDBY, hatch, relay board, captain) - also the hatch
+125 launch conditions not met (boat telemetry / GPS / WARNING, hatch, relay board, captain - never the boat's speed
+or mode: owner W59) - also the hatch
 relay from a station, 126 the joystick is on a UAV (a driving command refused; STANDBY free), 127
 another pilot flies this UAV.
 
@@ -475,7 +476,7 @@ are gateway-side only).
 | relay board reboot during launch (relay OFF = hatch closes) | FAULT seen by the switches, stop, remaining drones disarmed; 5.5 |
 | drone health / parameter / pre-arm fail | not launchable (122), the sequence stops at that drone |
 | mission upload / read-back fails | stop, the drone stays disarmed |
-| no GPS fix in uav_gps_wait_s | STANDBY: fallback climb; otherwise stop |
+| no GPS fix in uav_gps_wait_s | the fallback climb (ALT_HOLD 15 m, then catch up) at any boat speed (W59) |
 | armed but no climb (motor / prop) | DISARM at once, stop, hatch stays OPEN, notice |
 | boat WARNING / telemetry stale during the sequence (W59: the boat's mode / speed = the HIGH SPEED notice only) | stop; flying drones go on |
 | ELRS link lost to a drone | it holds / follows its mission, ends hovering; notice UAV n LINK LOST |

@@ -807,8 +807,9 @@ QUESTIONS (step 13p, owner 2026-10-31): a copilot's action for the captain's
   answer = rejected. The single operator's own confirmation (a window on
   screen 2) has the same layout, and so have the station's settings questions
   (strict channel, emergency, monitor trip test, HELM release UNCREWED, single
-  operator on, crew swap; owner 2026-11-04): there NO is pre-selected, Up /
-  Down choose, Enter answers, Esc = NO. Answer with the mouse, or on the shore
+  operator on, crew swap; owner 2026-11-04): there NO is pre-selected; keys:
+  Up / Down choose (the framed, filled one is the choice), Enter or Space
+  answer with the choice shown, Esc or closing the window = NO. Answer with the mouse, or on the shore
   joystick (T.16000M stick + TWCS lever):
     TRIGGER (stick button 1)  = answer with the selected choice. YES is
                                 pre-selected, so the trigger alone = a fast

@@ -382,6 +382,9 @@ measured number in the blanks and in PROGRESS.md. A failed check = no flight unt
       50 m = ____ s (the gateway's battery minimum uses uav_land_ms / uav_land_final_m / _ms + 30 % margin: compare
       with uavcheck.DEFAULTS and set the measured numbers in gateway.json "uav" "check").
 - [ ] LANDING IN 60 s / 20 s / LANDING NOW on a simulated low battery (simdrone) appear on every station ____ .
+- [ ] The launch numbers (W75, gateway.json "uav" "launch"): a drone below min_batt_pct 60 % is not launched ____ ;
+      no climb within no_climb_s 6 s after the ARM = DISARM + the hatch stays open ____ (props on, tethered, motor
+      cut on purpose); clear of the boat (10 m) within clear_s 30 s ____ ; the slot USB gone within usb_gone_s 6 s ____ .
 
 ### 6e. Slot cable + ARM in the slot (W58)
 - [ ] The magnetic breakaway USB-C of each slot: pulled by a light upward tug, the drone free ____ .
@@ -406,6 +409,8 @@ measured number in the blanks and in PROGRESS.md. A failed check = no flight unt
       RC ignored, then switches to the mission once GPS + EKF are good ____ .
 
 ### 6h. Video channels (W63)
+- [ ] Antennas (W63): the 2.4 GHz ELRS group and the 5.8 GHz video group at least 0.5 m apart ____ m, both clear
+      of the 4G / Starlink antennas and the crew ____ .
 - [ ] 6 VRX on 6 Raceband channels with the widest spacing ____ ; all 6 pictures at once without desense ____ ;
       range with the 25 mW VTX ____ m; each capture stick in the ring + MediaMTX UAV-1..6 ____ .
 

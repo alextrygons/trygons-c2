@@ -1464,6 +1464,31 @@ def ua18_gateway_launch():
         bob = tg.Client(sp, "bob", tg.PW["bob"], name="copilot")
         clients.append(bob)
         bob.pump(1.0)
+        # WA review L4 (W76): the DEMO boat's relay table (demo.py -> the SHORE station's push) is taken after the
+        # onboard CONFIRM and makes the hatch relay launch-ready (no relay / hatch reason left for PREPARE LAUNCH)
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "demo"))
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "groundstation"))
+        import demo as demo_mod
+        import boats as boats_mod
+        d_tmp = os.path.join(tmp, "demo_run")
+        old_run, demo_mod.RUN = demo_mod.RUN, d_tmp
+        try:
+            d_path = demo_mod.demo_boat_file()
+        finally:
+            demo_mod.RUN = old_run
+        d_boat = boats_mod.Boat(d_path, json.load(open(d_path, encoding="utf-8")))
+        r_demo = alice.result(alice.cmd(proto.T_RELAY_CFG, proto.p_relay_cfg(d_boat.relays)))
+        time.sleep(0.5)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0, confirm=True))
+        time.sleep(0.3)
+        link.send(proto.T_SIM_JOYSTICK, proto.p_sim_joystick(True, 0.0, 0.0))
+        demo_active = until(lambda: g.telem2.get("relay_hash") == proto.relay_table_hash(d_boat.relays) and
+                            not g.telem2.get("relay_pending") and g.stations.hatch_relay_ok(HATCH_N)[0], 10)
+        demo_why = [w for w in (gw.call(g.uav.launch_conditions, [1]) or []) if "relay" in w or "hatch" in w]
+        demo_ok = r_demo == 0 and bool(demo_active) and not demo_why and d_boat.hatch_relay == HATCH_N
+        report("UA18d (W76) the demo boat file's relay table: sent by the HELM station, taken after the onboard "
+               "CONFIRM, the hatch relay launch-ready (no relay / hatch reason for PREPARE LAUNCH)", demo_ok,
+               "result %s, active %s, reasons %s" % (r_demo, bool(demo_active), demo_why))
         bad_t = [dict(r, power_up="on") if r["n"] == HATCH_N else r for r in UA_RELAYS]
         r_bad = alice.result(alice.cmd(proto.T_RELAY_CFG, proto.p_relay_cfg(bad_t)))     # U3 review L5
         pay = proto.p_relay_cfg(UA_RELAYS)
@@ -3274,8 +3299,8 @@ def ua35_w59_speed():
             tr = i18n.from_en(asked[0] if asked else "")
             res["greek"] = "ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση" in tr and "ΕΚΤΟΞΕΥΣΗ UAV" in tr
             i18n.set_lang("en", save=False)
-        except ImportError:
-            res["greek"] = True
+        except ImportError as e:
+            res["greek"] = "i18n not importable: %s" % e and False          # WA review L4: never a silent pass
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     report("UA35 (W59) a launch at any boat mode / speed: no speed / mode reason, high_speed above 5 kn, ONE "
