@@ -1,7 +1,7 @@
 """The UAV magazine on the ground station (CLAUDE.md V, steps U2 / U3; DISPLAY + requests only).
 
   UV1 the owner's UAV picture: assets/uav.png + the small sizes (tools/make_uav_icons.py: 16 / 24 / 32 / 48 / 64 px,
-      square, transparent corners), uavpics picks the size, Tk loads it; the USV placeholder draws (W65)
+      square, transparent corners), uavpics picks the size, Tk loads it; the drawn USV symbol (assets/usv*.png, W65)
   UV2 a slot row's texts (pure): no cable, empty, not registered, reading, ready, NOT launchable + the gateway's
       reason in Greek, ARMED, the NEXT marker on slot 1; no English word left in the Greek rows
   UV3 the Tools page «ΜΑΓΓΕΜΑ UAV» in the real station: the page exists, 6 slot rows with the picture, filled from
@@ -19,6 +19,7 @@
   UV12 (U5) uavfly.py: the stick -> x / y / z / r (lever neutral zone), take / give / answers, STANDBY rule
   UV13 (U5) the station flying a UAV: no rjoy, the selector without the stick, the banner on both screens, RETURN TO
        BOAT, the boat leaving STANDBY, the captain's takeover message (owner W61), the page's fly buttons
+  UV15 (step WA, W59) the NON-blocking HIGH SPEED line above 5 kn (PREPARE LAUNCH stays pressable)
   UV14 (U5) screen 1's UAV HUD (uavhud.py): green values, the arrow to the boat, the boat's instruments hidden
 
 Run:  python test_uavui.py      (exit code 0 = all passed)
@@ -85,14 +86,23 @@ def uv1():
         c = tk.Canvas(root, width=80, height=80)
         uavpics.draw_usv(c, 40, 40, 64)
         drawn = len(c.find_withtag("usv"))
+        usv_img = [c.type(i) for i in c.find_withtag("usv")] == ["image"]
+        usv_sizes = []
+        for s_ in uavpics.SIZES:
+            ui = Image.open(uavpics.path(s_, "usv")).convert("RGBA")
+            usv_sizes.append(ui.size == (s_, s_) and ui.getpixel((0, 0))[3] == 0)
+        usv_big = Image.open(uavpics.path(None, "usv")).size == (1024, 1024)
         ok_tk = ph is not None and ph.width() == 32
     finally:
         root.destroy()
     report("UV1 the owner's UAV picture (assets/uav.png %s) + 16 / 24 / 32 / 48 / 64 px (square, transparent), the "
-           "size chosen per use, loaded by Tk; the USV placeholder drawn (W65)",
+           "size chosen per use, loaded by Tk; the drawn USV symbol (owner W65: assets/usv.png + 16..64 px, transparent) "
+           "shown as a picture",
            all(sizes[s] == (s, s) for s in uavpics.SIZES) and transparent and big == (1024, 1024) and
-           pick == ["uav_16.png", "uav_24.png", "uav_32.png", "uav_48.png", "uav_64.png"] and ok_tk and drawn == 2,
-           "sizes %s, transparent corners %s, picks %s, Tk %s, USV items %d" % (sizes, transparent, pick, ok_tk, drawn))
+           pick == ["uav_16.png", "uav_24.png", "uav_32.png", "uav_48.png", "uav_64.png"] and ok_tk and drawn == 1 and
+           usv_img and all(usv_sizes) and usv_big,
+           "sizes %s, transparent corners %s, picks %s, Tk %s, USV items %d (picture %s, sizes %s, 1024 %s)" % (
+               sizes, transparent, pick, ok_tk, drawn, usv_img, usv_sizes, usv_big))
 
 
 def uv2():
@@ -314,7 +324,7 @@ def uv6(rig):
         ap.link = old_link
     src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
     mw = open(os.path.join(HERE, "mapwin.py"), encoding="utf-8").read()
-    report("UV6 'Send route' with a UAV magazine: the vertical target box ΣΚΑΦΟΣ (the USV placeholder) / ΕΠΟΜΕΝΟ UAV "
+    report("UV6 'Send route' with a UAV magazine: the vertical target box ΣΚΑΦΟΣ (the drawn USV symbol) / ΕΠΟΜΕΝΟ UAV "
            "(θέση n) / a UAV in the magazine / a FLYING UAV (new mission), each with its picture; no magazine = the "
            "boat only; the map's right click «Πήγαινε εδώ» (the boat, only with a position) + «Αποστολή UAV εδώ» "
            "(the next / a flying one); uav_route = target + every point with its altitude (default 50 m)",
@@ -776,10 +786,26 @@ def uv14():
                                                                arrows, [a for _r, a in hits][:10]))
 
 
+def uv15():
+    """Owner W59 (step WA): the boat faster than 5 kn = the NON-blocking line «ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην
+    απογείωση» on the page; PREPARE LAUNCH stays pressable (no speed limit any more)."""
+    i18n.set_lang("el", save=False)
+    st = u3_status()
+    st["high_speed"] = True
+    fast = uavpanel.launch_view(st)
+    slow = uavpanel.launch_view(u3_status())
+    note = "ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση"
+    ok = (fast["notices"] and note in fast["notices"][0] and fast["can_prepare"] and fast["high_speed"] and
+          not any(note in n for n in slow["notices"]) and
+          note in i18n.from_en("HIGH SPEED - take-off risk (7.5 kn)"))
+    report("UV15 (W59) above 5 kn the page shows ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση (a notice only: PREPARE "
+           "LAUNCH stays), the gateway's notice translated", ok, "fast %s / slow %s" % (fast["notices"], slow["notices"]))
+
+
 def main():
     uv1()
     uv2()
-    for fn in (uv12, uv14):
+    for fn in (uv12, uv14, uv15):
         try:
             fn()
         except Exception as e:

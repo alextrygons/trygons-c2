@@ -641,8 +641,8 @@
           ],
           "title_el": "Προετοιμασία εκτόξευσης",
           "title_en": "Preparing a launch",
-          "text_el": "Ο συγκυβερνήτης ή η συγκυβερνήτρια πατά ΠΡΟΕΤΟΙΜΑΣΙΑ ΕΚΤΟΞΕΥΣΗΣ και ο κυβερνήτης ή η κυβερνήτρια απαντά ΝΑΙ ή ΟΧΙ στην οθόνη 1. Μόνο σε STANDBY ή DP SPOT και κάτω από δύο κόμβους. Τα UAV βγαίνουν ένα ένα, από την πάνω θέση.",
-          "text_en": "The copilot presses PREPARE LAUNCH and the captain answers YES or NO on screen 1. Only in STANDBY or DP SPOT and below two knots. The drones go out one by one, from the top slot."
+          "text_el": "Ο συγκυβερνήτης ή η συγκυβερνήτρια πατά ΠΡΟΕΤΟΙΜΑΣΙΑ ΕΚΤΟΞΕΥΣΗΣ και ο κυβερνήτης ή η κυβερνήτρια απαντά ΝΑΙ ή ΟΧΙ στην οθόνη 1. Η εκτόξευση γίνεται με κάθε ταχύτητα· πάνω από πέντε κόμβους ο σταθμός προειδοποιεί για υψηλή ταχύτητα. Τα UAV βγαίνουν ένα ένα, από την πάνω θέση.",
+          "text_en": "The copilot presses PREPARE LAUNCH and the captain answers YES or NO on screen 1. A launch is allowed at any speed; above five knots the station warns of high speed. The drones go out one by one, from the top slot."
         },
         {
           "id": "uav.stop",

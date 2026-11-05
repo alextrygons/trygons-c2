@@ -203,7 +203,9 @@ def gateway_config(mtx, charts):
         "loudhailer": {"backend": "sim", "sim_reply_s": 30.0},
         # the UAV magazine (CLAUDE.md V, step U2): six simulated drones (gateway/uav/simdrone.py) in the 6 slots
         # (U3: the simulated hatch + its two limit switches follow the simulated AURIX's relay 8; a launch needs a
-        # relay table with relay 8 = an extra onoff relay active on the AURIX - the demo boat has none = refused 125)
+        # relay table with relay 8 = an extra onoff relay active on the AURIX. Owner W76 (step WA): the SHORE station
+        # gets the demo boat file demo_run/boat_demo.json (demo_boat_file: relay 8 = the UAV hatch) and pushes its
+        # relay table like any HELM station - the AURIX takes it after the onboard joystick CONFIRM, as always)
         # (U4: the simulated VRX test pictures - UAV 1's video runs all the time ("always": a bench view) so the camera
         # view of screen 2 shows UAV 1 in the demo; the others start when a drone flies)
         "uav": {"enabled": True, "sim": True, "hatch_relay": 8,
@@ -215,6 +217,28 @@ def gateway_config(mtx, charts):
     path = os.path.join(RUN, "gateway.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=1)
+    return path
+
+
+DEMO_RELAYS = [
+    {"n": 8, "name_el": "ΘΥΡΙΔΑ UAV", "name_en": "UAV HATCH", "type": "onoff", "group": "extra", "pair": None,
+     "max_s": 0, "show_hud": False, "power_up": "off"},
+]
+
+
+def demo_boat_file():
+    """Owner W76 (step WA): the demo boat's file (format 2, NO secrets): name "trygons-demo" (the demo gateway's own
+    name: the station's welcome check), relay 8 = the UAV hatch (an extra on/off relay, power_up off, no pair) and
+    "uav" hatch_relay 8. The SHORE station pushes this relay table (app.relay_push) once it holds HELM in STANDBY;
+    the simulated AURIX takes it only after the onboard joystick CONFIRM (the ON BOARD window), like every new
+    table. Then PREPARE LAUNCH works in the demo."""
+    doc = {"_help": "The demo boat (demo/demo.py, owner W76) - written at every demo start; not in git.",
+           "format": 2, "id": "trygons-demo", "name": "trygons-demo", "tailscale_ip": "127.0.0.1",
+           "gateway_port": 5761, "generator_max_pct": 0, "relays": DEMO_RELAYS, "uav": {"hatch_relay": 8}}
+    path = os.path.join(RUN, "boat_demo.json")
+    os.makedirs(RUN, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=1, ensure_ascii=False)
     return path
 
 
@@ -442,6 +466,7 @@ def _start(step, progress, pids):
            os.path.join(REPO, "groundstation"), pids)
     time.sleep(1.0)
     launch("shore", [py, gs, "gw:127.0.0.1:5761", "--login", "%s:%s" % (USER, PASSWORD), "--driver", "--cams", "Full",
+                     "--boat-file", demo_boat_file(),
                      "--place", "shore", "--charts", charts, "--no-splash", "--ready-file", ready_file("shore"),
                      "--layout", os.path.join(RUN, "layout_shore.json")],
            os.path.join(REPO, "groundstation"), pids)

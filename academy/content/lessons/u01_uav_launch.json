@@ -42,10 +42,10 @@
       "hint_s": 20
     },
     {
-      "do_el": "Βάλτε το σκάφος σε STANDBY και περιμένετε να πέσει κάτω από 2 κόμβους.",
-      "do_en": "Put the boat in STANDBY and wait until it is slower than 2 knots.",
-      "hint_el": "Εκτόξευση μόνο σε STANDBY ή DP SPOT / JOG και κάτω από 2 κόμβους. Σε κίνηση η προετοιμασία απορρίπτεται.",
-      "hint_en": "A launch only in STANDBY or DP SPOT / JOG and below 2 knots. Under way the preparation is refused.",
+      "do_el": "Για ασφαλέστερη απογείωση: βάλτε το σκάφος σε STANDBY και περιμένετε να πέσει κάτω από 5 κόμβους.",
+      "do_en": "For a safer take-off: put the boat in STANDBY and wait until it is slower than 5 knots.",
+      "hint_el": "Η εκτόξευση επιτρέπεται με κάθε ταχύτητα, όταν το πει ο συγκυβερνήτης ή η συγκυβερνήτρια. Πάνω από 5 κόμβους ο σταθμός δείχνει «ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση».",
+      "hint_en": "A launch is allowed at any speed, when the copilot says so. Above 5 knots the station shows «HIGH SPEED - take-off risk».",
       "check": [
         {
           "f": "boat_mode",
@@ -53,7 +53,7 @@
         },
         {
           "f": "sog_kn",
-          "lt": 2.0
+          "lt": 5.0
         }
       ],
       "hint_s": 30

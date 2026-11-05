@@ -13,6 +13,9 @@ Pure logic - no window, no boat (groundstation/yesno.py, shorejoy.controls, gate
       raw axis), the stick Y only at a lever station, a button sharing another's mapping is not used
   YN6 the gateway keeps a trigger back while it has a question open for that station (the captain's ACCEPT of a
       copilot action, an avoidance / vision proposal, the slamming restore) and until the press is released
+  YN7 (step WA, owner W53) the settings questions (strict channel, emergency, trip test, HELM release UNCREWED,
+      single operator, crew swap) = ynbox.ask in the vertical layout: question, YES on top, NO underneath, full width,
+      NO pre-selected, Up / Down / Enter / Esc; no OS message box left in the station's code
 """
 import os
 import sys
@@ -243,6 +246,57 @@ def yn6():
            "question %s; masked %d" % (free, ask, held, other, acked, other_st, st.rjoy_trig_masked))
 
 
+def yn7():
+    """Owner W53: the OS-native YES / NO boxes became the ONE vertical layout (ynbox.ask)."""
+    import re
+    import tkinter as tk
+    os.environ.setdefault("TRYGONS_LANG", "en")
+    import ynbox
+    left = []
+    for fn in sorted(os.listdir(HERE)):
+        if fn.endswith(".py") and not fn.startswith("test_"):
+            src = open(os.path.join(HERE, fn), encoding="utf-8").read()
+            if re.search(r"messagebox[.]ask(yesno|okcancel|question|yesnocancel)[(]", src):
+                left.append(fn)
+    app_src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
+    crew_src = open(os.path.join(HERE, "crewui.py"), encoding="utf-8").read()
+    calls = len(re.findall(r"ynbox[.]ask[(]", app_src)) + len(re.findall(r"ynbox[.]ask[(]", crew_src))
+    res = {}
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:
+        report("YN7 settings questions vertical (W53)", not left and calls >= 6, "no display (%s); OS boxes left %s, "
+               "ynbox calls %d" % (e, left, calls))
+        return
+    try:
+        root.withdraw()
+        w, st = ynbox.build(root, "Title", "A question?", warn=True)
+        w.update()
+        y, n = st["yes"], st["no"]
+        res["vertical"] = (y.master.pack_slaves() == [y, n] and y.pack_info().get("fill") == "x" and
+                           n.pack_info().get("fill") == "x")
+        res["no_default"] = st["sel"] is False and int(str(n.cget("highlightthickness"))) == 4
+        res["keys"] = all(w.bind(k) for k in ("<Up>", "<Down>", "<Return>", "<Escape>"))
+        st["select"](True)
+        res["up"] = st["sel"] is True and int(str(y.cget("highlightthickness"))) == 4
+        st["done"](st["sel"])
+        res["yes"] = st["answer"] is True
+        w2, st2 = ynbox.build(root, "T", "Q")
+        w2.update()
+        st2["select"](True)
+        st2["done"](False)                                  # Esc / NO / closing the window
+        res["esc"] = st2["answer"] is False
+        ynbox.AUTO = True
+        res["auto"] = ynbox.ask(root, "T", "Q") is True and ynbox.LAST.get("text") == "Q"
+        ynbox.AUTO = None
+    finally:
+        root.destroy()
+    report("YN7 (W53) the settings questions in the vertical layout: YES above NO, the same width, NO pre-selected, "
+           "Up selects YES, Enter answers the selection, Esc / closing = NO; no OS message box left in the station "
+           "(ynbox.ask calls: %d)" % calls, not left and calls >= 6 and all(res.values()),
+           "OS boxes left %s, %s" % (left, res))
+
+
 def main():
     yn1()
     yn2()
@@ -250,6 +304,7 @@ def main():
     yn4()
     yn5()
     yn6()
+    yn7()
     n = len(results)
     print("YES / NO TESTS: %d/%d %s" % (sum(results), n, "PASS" if all(results) else "FAIL"))
     return 0 if all(results) else 1

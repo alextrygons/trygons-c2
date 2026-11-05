@@ -12,8 +12,9 @@ drives the gateway's OWN pure rule modules, so a trainee meets exactly the rules
   gateway/uav/mission.py   route -> mission (HOME, TAKEOFF slot-staggered, speed cap, waypoints, LOITER_UNLIM)
   gateway/uav/battery.py   the battery minimum = the ONLY landing
 
-The boat's launch conditions are the gateway's (uavlink.boat_state): STANDBY or DP SPOT / JOG, slower than 2 kn,
-trusted GPS, no boat warning; else PREPARE LAUNCH is refused 125 with the reason. The captain approves (his YES / NO);
+The boat's launch conditions are the gateway's (uavlink.boat_state): trusted GPS, no boat warning; else PREPARE
+LAUNCH is refused 125 with the reason. Owner W59 (2026-11-04): NO boat mode / speed condition (a launch goes when the
+copilot says so); above 5 kn the NON-blocking notice "HIGH SPEED - take-off risk". The captain approves (his YES / NO);
 the copilot prepares. Camera / observation drones ONLY: there is no other output in this simulator.
 
 Trainee actions return (ok, code, text); state() = the fields a UAV lesson checks (uavlesson.FIELDS).
@@ -165,7 +166,12 @@ class UavSim(object):
         if why:
             return False, ERR_LAUNCH, "launch refused: " + "; ".join(why)
         self.launch.prepare(slots, "copilot", self.t)
+        if self.high_speed():                       # W59: a notice only, never a refusal
+            self.notice("HIGH SPEED - take-off risk (%.1f kn)" % self.bs["sog_kn"], "caution")
         return True, 0, "launch prepared (%s) - the captain answers YES / NO on screen 1" % slots
+
+    def high_speed(self):
+        return self.bs["sog_kn"] > launch.DEFAULTS["high_speed_kn"]
 
     def answer(self, yes):
         """The CAPTAIN's YES / NO (screen 1)."""
@@ -224,10 +230,6 @@ class UavSim(object):
 
     def launch_why(self):
         b, why = self.bs, []
-        if b["mode"] not in ("STANDBY", "DP_SPOT"):
-            why.append("the boat is in %s (STANDBY or DP SPOT / JOG only)" % b["mode"])
-        if b["sog_kn"] >= launch.DEFAULTS["launch_max_kn"]:
-            why.append("the boat makes %.1f kn (slower than %.0f kn)" % (b["sog_kn"], launch.DEFAULTS["launch_max_kn"]))
         if not b["gps"]:
             why.append("no trusted boat GPS")
         if b["warning"]:
@@ -441,5 +443,5 @@ class UavSim(object):
             "landing": sum(1 for d in ds if d.landing),
             "lost": sum(1 for d in ds if d.lost),
             "notices_open": sum(1 for n in self.notices if not n[3]),
-            "denied": len(self.denied), "ready": True,
+            "denied": len(self.denied), "ready": True, "high_speed": self.high_speed(),
         }

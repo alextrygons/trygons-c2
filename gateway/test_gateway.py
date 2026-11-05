@@ -517,7 +517,17 @@ def section_b():
         time.sleep(1.2)
         vic.pump(0.3)
         seen = vic.status["helm"]["name"] if vic.status else "?"
+        h_before = gw.gw.telem2.get("helm")
         r5 = bob_local.result(bob_local.cmd(proto.T_HELM, proto.p_helm(0)))
+        # W55: the gateway's own grant is used at once (helm_forward) - and B3 also waits for TELEM2 to agree
+        fwd_now = gw.gw.stations.helm_forward()
+        import types as _ty
+        _f = lambda g, gt, t2s: type(gw.gw.stations).helm_forward(_ty.SimpleNamespace(
+            gw=_ty.SimpleNamespace(telem2={"helm": 1}), helm_grant=g, helm_grant_t=gt, helm_t2_since=t2s))
+        unit_w55 = (_f(2, 10.0, 5.0), _f(2, 10.0, 11.0), _f(None, 10.0, 5.0), _f(1, 10.0, 5.0)) == (2, 1, None, 1)
+        t_w = time.time() + 3.0
+        while time.time() < t_w and gw.gw.telem2.get("helm") == h_before:
+            time.sleep(0.05)
         r6 = alice.result(alice.cmd(proto.T_ALARM_ACK, b""))
         r7 = bob_local.result(bob_local.cmd(proto.T_ALARM_ACK, b""))
         time.sleep(1.2)
@@ -525,11 +535,12 @@ def section_b():
         seen2 = alice.status["helm"]["name"] if alice.status else "?"
         report("B3 only the HELM station commands; one HELM; a local station takes it from a remote one; "
                "shown on every station",
-               (r1, r2, r3, r4, r5, r6, r7) == (21, 0, 0, 117, 0, 0, 0) and "alice" in seen and "bob on board" in seen2,
+               (r1, r2, r3, r4, r5, r6, r7) == (21, 0, 0, 117, 0, 0, 0) and "alice" in seen and "bob on board" in seen2
+               and fwd_now != h_before and fwd_now == gw.gw.telem2.get("helm") and unit_w55,
                "alice (captain) without HELM %s, takes %s, command %s; bob (remote copilot) takes %s (117: only the "
                "captain); viewer sees HELM = %s; bob on board takes %s (becomes the captain); alice now copilot: her "
-               "command runs on the captain's behalf %s; bob's command %s; alice sees HELM = %s" % (
-                   r1, r2, r3, r4, seen, r5, r6, r7, seen2))
+               "command runs on the captain's behalf %s; bob's command %s; alice sees HELM = %s; W55 forward-for %s at the "
+               "take ACK (TELEM2 had %s)" % (r1, r2, r3, r4, seen, r5, r6, r7, seen2, fwd_now, h_before))
         bob_local.cmd(proto.T_HELM, proto.p_helm(1))
 
         # B2b replay / duplicate / out of order / stale / future / rate / wrong session

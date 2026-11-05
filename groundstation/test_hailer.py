@@ -108,11 +108,17 @@ def hs2(rig):
         ap.ov.release()
         hold = calls == ["press", "release"]
         not_red = ptt["fill"].lower() != theme.WARN.lower()
-        # another station speaks: greyed, who speaks
+        # another station speaks: greyed, who speaks (this station NOT the captain: owner W54 - the captain's TALK
+        # stays pressable, it takes the horn)
+        real_cap = ap.hail_is_captain
+        ap.hail_is_captain = lambda: False
         h.speaker = {"id": 9, "crew": "copilot", "user": "bob", "what": "talk"}
         ap.render(force=True)
         g = ts.op(ap, "ptt")
         greyed = g and g.get("enabled") is False and g["s"] == "ΟΜΙΛΙΑ" and             ts.op(ap, "message")["s"].startswith("ΜΙΛΑ: ΣΥΓΚΥΒΕΡΝΗΤΗΣ")
+        ap.hail_is_captain = lambda: True
+        greyed = greyed and h.view()["enabled"] is True                 # W54: the captain may take it over
+        ap.hail_is_captain = real_cap
         h.speaker = None
         fits = []
         for W, H, dpi in ((1366, 768, 1.25), (1920, 1080, 1.0), (1366, 658, 1.5)):
@@ -177,12 +183,15 @@ def hs3(rig):
         bar = dv.hud.R("bottom")
         in_bar = bool(hits) and overlay.inside(hits[0], bar, 2.0)
         h.speaker = {"id": 9, "crew": "copilot", "what": "talk"}
+        real_cap = ap.hail_is_captain
+        ap.hail_is_captain = lambda: False                  # (a non-captain station: greyed; owner W54)
         s = types.SimpleNamespace(**dict(vars(types.SimpleNamespace()), t=None, night=False, declutter="FULL",
                                          video_scale="fill", ar_on=False, vision=None, vision_cap=False, rec=None,
                                          scr=False, clock="12:00", mission=None, hail=h.view()))
         groups = dv.hud.bar_groups(s)
         item = [it for g in groups for it in g if it[3] == "ctl_ptt"]
         grey = item and item[0][5] == dv.hud.pal["grey"]
+        ap.hail_is_captain = real_cap
         h.speaker = None
         shots = os.environ.get("TRYGONS_SHOT_DIR")
         if shots and dv.last_frame is not None:

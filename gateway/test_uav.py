@@ -41,7 +41,7 @@ parameter check + the MAVLink allow-list + the own codec + the GPS warm start + 
        no GPS / unknown battery (123); no-fly zones with altitude bands, the air geofence, a broken file (124)
   UA15 the hatch state + the two limit switches with the simulated hatch: normal travel, every FAULT case
   UA16 the launch state machine (scripted magazine): order, gaps, upload before the hatch, ARM only OPEN, every stop
-       case, no climb = DISARM + hatch open, the GPS fallback climb (STANDBY only), a STOP with a drone on deck
+       case, no climb = DISARM + hatch open, the GPS fallback climb (any boat speed, W59), a STOP with a drone on deck
   UA17 the router process flying a launch: mission upload + read-back, ARM only with a fresh hatch OPEN held IN the
        router (U2 review LOW-3), DISARM refused in the air (landed from the drone, LOW-4), ELRS link, MISSION START
   UA18 the real gateway + the simulated AURIX relay board + hatch + drones: 125 for a station's hatch relay, routes,
@@ -73,6 +73,9 @@ parameter check + the MAVLink allow-list + the own codec + the GPS warm start + 
        AI core, the gateway's nav code UAV-free
   UA32 the router's "ctl" op flies a simulated drone (velocity + yaw rate), its own zero after 0.5 s, refused
        while landing for the battery
+  UA35 (step WA, owner W59) no boat mode / speed launch condition: boat_state in HDG LOCK / AUTO at 8 kn = no
+       reason, high_speed above 5 kn; the manager's NON-blocking HIGH SPEED notice once per crossing while a launch is
+       prepared / runs, gw_status high_speed, the captain's question says it, a prepare under way is NOT refused
 
 Run:  python test_uav.py      (exit code 0 = all passed)
 """
@@ -1247,16 +1250,17 @@ def ua16_launch():
     seq_ok = (seq.state == "DONE" and order == [1, 2, 3] and min(gaps) >= 15.0 and up_first and opened_before_arm and
               closed_after and len(io.relay) == 2 and [w for _t, n, w in io.sent if n == 1][:4] ==
               ["upload usb", "mode 4", "arm", "takeoff 0/30"])
-    # 2) the boat leaves STANDBY after the first drone: stop, no further drone, the hatch not switched
+    # 2) the boat's GPS is lost after the first drone: stop, no further drone, the hatch not switched (W59: the boat's
+    #    mode / speed is NOT a launch condition any more - a launch goes when the copilot says so)
     io2 = FakeIo(3)
     seq2 = launch.Launch(io2, {"gap_s": 15.0})
     seq2.prepare([1, 2, 3], 5, 0.0)
     seq2.approved(True, 7, 0.0)
 
     def leave():
-        io2.boat_d["launch_why"] = ["the boat is not in STANDBY or DP SPOT / JOG (MANUAL)"]
+        io2.boat_d["launch_why"] = ["no trusted boat GPS"]
     run_seq(io2, seq2, 200.0, [(10.0, leave)])
-    stop_ok = (seq2.state == "STOPPED" and "STANDBY" in seq2.why and
+    stop_ok = (seq2.state == "STOPPED" and "GPS" in seq2.why and
                [n for _t, n, w in io2.sent if w == "arm"] == [1] and len(io2.relay) == 1)
     # 3) a hatch FAULT while opening: never ARM
     io3 = FakeIo(2)
@@ -1278,7 +1282,7 @@ def ua16_launch():
     nc = [w for _t, n, w in io4.sent if n == 1]
     nc_ok = (seq4.state == "STOPPED" and "did not leave the hatch" in seq4.why and "disarm" in nc and seq4.keep_open
              and io4.relay == [(io4.relay[0][0], True)] and not any(n == 2 and w == "arm" for _t, n, w in io4.sent))
-    # 5) no GPS: STANDBY = the climb fallback (ALT_HOLD + TAKEOFF param3 1, 15 m) -> catch-up; DP = stop, never ARM
+    # 5) no GPS: the climb fallback (ALT_HOLD + TAKEOFF param3 1, 15 m) -> catch-up - in STANDBY AND under way (W59)
     io5 = FakeIo(1, gps=False)
     seq5 = launch.Launch(io5)
     seq5.prepare([1], 5, 0.0)
@@ -1291,7 +1295,8 @@ def ua16_launch():
     seq6.prepare([1], 5, 0.0)
     seq6.approved(True, 7, 0.0)
     run_seq(io6, seq6, 60.0)
-    dp_ok = seq6.state == "STOPPED" and "only in STANDBY" in seq6.why and not any(w == "arm" for _t, _n, w in io6.sent)
+    fb6 = [w for _t, n, w in io6.sent]
+    dp_ok = seq6.state == "DONE" and "mode 2" in fb6 and "takeoff 1/15" in fb6 and "catchup" in fb6
     # 6) the read-back differs: stop, never armed; 7) the captain's station lost; 8) slot mismatch; 9) NO / no answer
     io7 = FakeIo(1)
     io7.upload_ok = False
@@ -1334,15 +1339,15 @@ def ua16_launch():
     deck_ok = seq12.state == "STOPPED" and "arm" in deck and deck[-1] == "disarm" and "STOP by test" in seq12.why
     report("UA16 the launch sequence (state machine, scripted magazine): top slot first, strictly in series, the "
            "mission uploaded + read back BEFORE the hatch, the hatch opened before the first ARM and closed after the "
-           "last, GUIDED -> ARM -> TAKEOFF to the slot altitude, >= 15 s between ARMs; ANY warning stops it (the boat "
-           "leaving STANDBY, a hatch FAULT, the captain's station lost, a slot mismatch, a bad read-back, NO / no "
+           "last, GUIDED -> ARM -> TAKEOFF to the slot altitude, >= 15 s between ARMs; ANY warning stops it (the boat's "
+           "GPS lost, a hatch FAULT, the captain's station lost, a slot mismatch, a bad read-back, NO / no "
            "answer) with no further drone and the hatch not switched; armed without a climb = DISARM + the hatch "
-           "stays OPEN; no GPS in STANDBY = the ALT_HOLD climb fallback (TAKEOFF param3 1, 15 m) + catch-up, in DP = "
-           "stop; a STOP with a drone armed on deck disarms it",
+           "stays OPEN; no GPS = the ALT_HOLD climb fallback (TAKEOFF param3 1, 15 m) + catch-up, in STANDBY and "
+           "under way (W59); a STOP with a drone armed on deck disarms it",
            seq_ok and stop_ok and hf_ok and nc_ok and fb_ok and dp_ok and rb_ok and cap_ok and mm_ok and no_ok and
            deck_ok,
            "normal %s (order %s, gaps %s, relay %s); boat leaves %s (%s); hatch fault %s; no climb %s (%s); fallback "
-           "%s (%s); DP %s; read-back %s; captain lost %s; mismatch %s; NO / timeout %s; deck stop %s (%s)" % (
+           "%s (%s); under way %s; read-back %s; captain lost %s; mismatch %s; NO / timeout %s; deck stop %s (%s)" % (
                seq_ok, order, [round(g) for g in gaps], io.relay, stop_ok, seq2.why, hf_ok, nc_ok, nc, fb_ok, fb,
                dp_ok, rb_ok, cap_ok, mm_ok, no_ok, deck_ok, deck))
 
@@ -3192,6 +3197,85 @@ def watchdog():
     t.start()
 
 
+# ------------------------------------------------------------------------------------------- step WA (owner W59) ---
+
+def ua35_w59_speed():
+    """Owner W59 (2026-11-04): a launch goes WHEN THE COPILOT SAYS SO - no boat mode / speed limit; above 5 kn a
+    NON-blocking notice «ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση»; the other conditions stay."""
+    import common  # noqa: F401
+    import proto
+    import uavlink
+    from uav import manager as mgr
+    res = {}
+
+    class GW:
+        def __init__(self, mode, sog, gps=1):
+            self.t = {"mode": mode, "mode_name": "X", "pos_source": gps, "est_lat": 37.8, "est_lon": 23.6,
+                      "est_sog": sog, "alarm_bits": 0, "alarm_bits2": 0}
+            self.telem2 = {"relay_ok": True, "alarm_bits2": 0}
+            self.stations = type("S", (), {"hatch_relay_ok": lambda _s, n: (True, ""),
+                                           "helm_station": lambda _s: (_St(1), ""), "captain": lambda _s: None})()
+
+        def telem_fresh(self):
+            return self.t
+    fast = uavlink.boat_state(GW(proto.MODE_HDG_LOCK, 8.0), 8)
+    auto = uavlink.boat_state(GW(proto.MODE_AUTO, 4.0), 8)
+    nogps = uavlink.boat_state(GW(proto.MODE_AUTO, 4.0, gps=0), 8)
+    res["state"] = (fast["launch_why"] == [] and fast["high_speed"] and auto["launch_why"] == [] and
+                    not auto["high_speed"] and any("GPS" in w for w in nogps["launch_why"]))
+    tmp = tempfile.mkdtemp(prefix="uavtest_w59_")
+    try:
+        g = _G(tmp)
+        m = mgr.UavManager({"enabled": True, "slots": [{"usb": "udp:127.0.0.1:1"}] * 6}, g)
+        boat = {"pos": (37.82, 23.60), "launch_why": [], "sog_kn": 8.0}
+        m.boat = lambda: boat
+        notes = lambda: [n["text"] for n in m.notices if "HIGH SPEED" in n["text"]]
+        m.high_speed_tick()
+        idle_none = notes() == [] and m.status()["high_speed"]          # not busy: the line, no notice
+        m.seq.state = "RUN"
+        m.high_speed_tick()
+        m.high_speed_tick()
+        once = len(notes()) == 1
+        boat["sog_kn"] = 4.8                                             # inside the 0.5 kn hysteresis: no new one
+        m.high_speed_tick()
+        boat["sog_kn"] = 6.0
+        m.high_speed_tick()
+        hyst = len(notes()) == 1
+        boat["sog_kn"] = 3.0
+        m.high_speed_tick()
+        slow = not m.status()["high_speed"]
+        boat["sog_kn"] = 7.0
+        m.high_speed_tick()
+        again = len(notes()) == 2
+        res["notice"] = idle_none and once and hyst and slow and again
+        # the prepare at 8 kn: NOT refused; the captain's question carries HIGH SPEED
+        m.seq.state = "IDLE"
+        m.launch_conditions = lambda slots: []
+        m.slot_status = lambda: [{"slot": 1, "present": True}]
+        m.routes = {1: [{"lat": 37.83, "lon": 23.6, "alt": 50.0}]}
+        asked = []
+        g.stations.ask_captain = lambda st, msg, what, cb: asked.append(what)
+        boat["sog_kn"] = 8.0
+        st = _St(3)
+        m.prepare_msg(st, {"t": "uav_launch_prepare"})
+        res["prepare"] = (bool(asked) and "HIGH SPEED - take-off risk (8.0 kn)" in asked[0] and
+                          m.seq.state == "ASK" and st.sent and st.sent[-1].get("ok"))
+        try:
+            import i18n
+            i18n.set_lang("el", save=False)
+            tr = i18n.from_en(asked[0] if asked else "")
+            res["greek"] = "ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση" in tr and "ΕΚΤΟΞΕΥΣΗ UAV" in tr
+            i18n.set_lang("en", save=False)
+        except ImportError:
+            res["greek"] = True
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    report("UA35 (W59) a launch at any boat mode / speed: no speed / mode reason, high_speed above 5 kn, ONE "
+           "non-blocking HIGH SPEED notice per crossing while a launch is prepared / runs (0.5 kn hysteresis), "
+           "gw_status high_speed, a prepare at 8 kn is asked (not refused) with HIGH SPEED in the captain's question",
+           all(res.values()), "%s" % res)
+
+
 def main():
     watchdog()
     tests = [ua1_codec, ua2_pymavlink, ua3_allow, ua4_writer, ua5_no_aurix, ua6_check, ua7_registry, ua8_assist,
@@ -3200,7 +3284,7 @@ def main():
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126,
-             ua32_router_ctl, ua33_review_u4, ua34_review_u5]
+             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

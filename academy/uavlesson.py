@@ -15,7 +15,8 @@ import uavsim
 
 LANGS = lesson.LANGS
 FIELDS = {"boat_mode", "sog_kn", "registered", "routes", "in_magazine", "launch", "phase", "why", "launched",
-          "flying", "hatch", "view", "landing", "lost", "notices_open", "denied", "ready"}
+          "flying", "hatch", "view", "landing", "lost", "notices_open", "denied", "ready",
+          "high_speed"}
 EVENTS = ("battery_low", "hatch_fault", "warning")
 SETUP = ("magazine_full", "boat_moving")
 ACTIONS = ("register", "route_next", "standby", "hdg_lock", "prepare", "yes", "no", "stop", "hatch_close",

@@ -28,6 +28,7 @@ process loudhailer_worker.py with the SIMULATED speaker / microphone) and real g
   LH17 (review of 13r-r MED-B / LOW-5) a restart mid-minute never truncates the file; the clock set back rolls
   LH18 (review of 38add4b LOW-2) the catch-up frames after a stall keep their real audio inside the stall
   LH19 (U2 review LOW-15) a file opened mid-minute: silence first, the first frame at its own time
+  LH20 (step WA, owner W54) the captain's press takes the horn at once from anyone; the displaced station is told
 
 Run:  python test_loudhailer.py      (exit code 0 = all passed)
 """
@@ -83,6 +84,7 @@ class Station:
         self.link = GatewayLink("127.0.0.1:%d" % port, user, password=tg.PW[user], station=user,
                                 local_addr="127.0.0.2" if local else "127.0.0.1", crew=crew)
         self.welcome = self.link.start()
+        self.crew = crew
         self.gw_status = None
         self.said = []
         self.msgs = []
@@ -91,6 +93,9 @@ class Station:
 
     def say(self, text, colour=None):
         self.said.append(text)
+
+    def hail_is_captain(self):                      # (app.hail_is_captain: crew captain / single operator)
+        return self.crew == "captain"
 
     def pump(self):
         while True:
@@ -463,15 +468,38 @@ def main():
         cop.hail.release()
         until(lambda: g.hail.floor is None, 3, pump=pumps)
         report("LH1 PUSH-TO-TALK one at a time: the captain first wins, the copilot is refused and sees SPEAKING: "
-               "CAPTAIN (greyed), a VIEWER never; released = free; then the copilot speaks and the captain sees it",
+               "CAPTAIN (greyed), a VIEWER never; released = free; then the copilot speaks and the captain sees it (his TALK "
+               "stays pressable: W54)",
                got and local_ref and refused and "captain speaks" in ref_ack.get("text", "") and cop_sees["enabled"] is False and
                "CAPTAIN" in cop_sees["text"] and vic_ref and "VIEWER" in (vic.last("ptt_ack") or {}).get("text", "") and
                floor1.get("crew") == "captain" and free and cop_got and "COPILOT" in cap_sees["text"] and
-               not cap_sees["enabled"],
+               cap_sees["enabled"],                    # (owner W54: the captain's TALK stays pressable - LH20)
                "captain granted %s; copilot refused %r, view %s; viewer %r; floor %s; free %s; copilot granted %s, "
                "captain view %s" % (bool(got), ref_ack.get("text"), cop_sees,
                                     (vic.last("ptt_ack") or {}).get("text"), floor1, bool(free), bool(cop_got),
                                     cap_sees))
+
+        # LH20 (owner W54) the captain's press takes the horn at once from the copilot; the copilot sees it; a VIEWER /
+        # another non-captain still first-wins
+        cop.hail.press()
+        until(lambda: cop.hail.mine, 3, pump=pumps)
+        vic.link.send_msg({"t": "ptt", "on": True})
+        vic_ref2 = until(lambda: vic.last("ptt_ack") and vic.last("ptt_ack").get("ok") is False, 3, pump=pumps)
+        cop.msgs.clear()
+        cap.hail.press()                                   # not refused locally (captain_here)
+        took = until(lambda: cap.hail.mine and g.hail.floor and g.hail.floor["crew"] == "captain", 3, pump=pumps)
+        seen = until(lambda: (cop.last("ptt_ack") or {}).get("taken"), 3, pump=pumps)
+        cop_note = cop.hail.note
+        cop_mine = cop.hail.mine
+        audit_n = g.hail.n["ptt_taken"]
+        cap.hail.release()
+        until(lambda: g.hail.floor is None, 3, pump=pumps)
+        cop.hail.release()
+        report("LH20 (owner W54) the captain's TALK takes the horn AT ONCE from the copilot speaking: the floor is the "
+               "captain's, the copilot gets 'taken' + THE CAPTAIN TOOK THE HORN and stops; others: first wins",
+               took and seen and "CAPTAIN TOOK THE HORN" in cop_note and not cop_mine and audit_n >= 1 and vic_ref2,
+               "took %s, copilot told %s (%r, mine %s), counter %s, viewer refused %s" % (
+                   bool(took), bool(seen), cop_note, cop_mine, audit_n, bool(vic_ref2)))
 
         # LH2 half duplex: the mic is muted while talking; listen only to a listening station
         cap.hail.set_listen(True)
@@ -649,7 +677,8 @@ def main():
         g.hail.proc.kill()
         t_kill = time.time()
         off = until(lambda: any(t >= t_kill and stt == "OFFLINE" for t, stt, _w in list(g.hail.history)), 5, pump=pumps)
-        floor_gone = until(lambda: g.hail.floor is None, 3, pump=pumps)
+        # (the station must also have GOT the release broadcast before its view is read - a race seen in step WA)
+        floor_gone = until(lambda: g.hail.floor is None and not cap.hail.mine, 3, pump=pumps)
         flags1 = g.status_flags()
         cap.gw_status = dict(cap.gw_status, hail=dict(cap.gw_status["hail"], state="OFFLINE", out_ok=False))
         view_off = cap.hail.view()                          # what the station shows with that status
@@ -708,6 +737,7 @@ def main():
         # LH9 sound signal
         cap.hail.signal("long")
         sig = until(lambda: g.hail.floor and g.hail.floor["what"] == "signal", 3, pump=pumps)
+        until(lambda: cap.last("hail_signal_ack"), 3, pump=pumps)   # (the ack may arrive a pump later: a race)
         vic2_ok = cap.last("hail_signal_ack")
         ps = st["cop2"] = Station(port, "bob", crew="copilot", local=True)
         pumps.append(ps)

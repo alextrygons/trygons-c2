@@ -4,7 +4,8 @@ microphone. NO VHF radio. Gateway side: gateway/loudhailer.py (+ its own audio p
 
   PUSH-TO-TALK = a framed SCREEN button «ΟΜΙΛΙΑ», press and hold: on the bottom bar of screen 1, on bar 2 of
   screen 2 (the copilot's station too) and on the Tools page "Loudhailer". NOT on the joystick (owner choice).
-  Half duplex, one speaker at a time: the gateway gives the floor to the FIRST station; the others see
+  Half duplex, one speaker at a time: the gateway gives the floor to the FIRST station (the captain's press takes it
+  at once from anyone: owner W54 - the displaced station sees «Ο ΚΥΒΕΡΝΗΤΗΣ ΠΗΡΕ ΤΟ ΜΕΓΑΦΩΝΟ»); the others see
   «ΜΙΛΑ: ΚΥΒΕΡΝΗΤΗΣ / ΣΥΓΚΥΒΕΡΝΗΤΗΣ» and a greyed button.
   LISTEN: the boat microphone plays continuously on this PC (mute + volume + a white level meter); it is muted
   on the boat while anyone talks.
@@ -227,7 +228,8 @@ class Hailer:
                 self.mine = False
                 self.pressing = False
                 self.talk_stop.set()
-                self.note = T("hail.refused", why=i18n.from_en(d.get("text", "")))
+                # owner W54: "taken" = the captain took the horn over from this station
+                self.note = T("hail.taken") if d.get("taken") else T("hail.refused", why=i18n.from_en(d.get("text", "")))
                 self.app.say(self.note, theme.CAUTION)
         elif kind == "hail":
             self.info = d
@@ -240,6 +242,15 @@ class Hailer:
                          None if d.get("ok") else theme.CAUTION)
 
     # --- PUSH-TO-TALK ------------------------------------------------------------------------------------------
+    def captain_here(self):
+        """Owner W54: the captain's press takes the horn at once from anyone (the gateway decides; a sound signal that
+        plays is never cut). Here only: do not refuse it locally."""
+        f = getattr(self.app, "hail_is_captain", None)
+        try:
+            return bool(f()) if f is not None else False
+        except Exception:
+            return False
+
     def other_speaks(self):
         return bool(self.speaker) and not self.mine
 
@@ -251,7 +262,7 @@ class Hailer:
         if not self.available():
             self.note = T("hail.offline", why=i18n.from_en((self.gw() or {}).get("why", "")))
             return self.app.say(self.note, theme.CAUTION)
-        if self.other_speaks():
+        if self.other_speaks() and not self.captain_here():
             self.note = T("hail.speaks", who=self.crew_text(self.speaker))
             return self.app.say(self.note, theme.CAUTION)
         self.pressing = True
@@ -478,7 +489,7 @@ class Hailer:
         return {"label": T("hail.ptt"), "talking": talking,
                 "other": other,
                 "bar_label": T("hail.ptt"),      # screen 2: greyed while another speaks; who = the message line
-                "listen_label": (T("hail.listen_btn") + " " + lvl).strip(), "enabled": self.available() and not self.other_speaks(),
+                "listen_label": (T("hail.listen_btn") + " " + lvl).strip(), "enabled": self.available() and (not self.other_speaks() or self.captain_here()),
                 "state": h.get("state"), "text": text, "level": vc.meter(self.rx_db), "listen": self.listen,
                 "caution": bool(self.other_speaks() or h.get("state") != "ACTIVE" or
                                 (self.info and not self.info.get("voice_ok", True)))}

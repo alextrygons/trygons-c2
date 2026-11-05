@@ -11,7 +11,7 @@ import time
 
 import proto
 
-SLOW_KN = 2.0
+HIGH_SPEED_KN = 5.0        # owner W59 (2026-11-04): above it a NON-blocking notice only - no boat-speed launch limit
 
 
 def warning_alarms(t):
@@ -33,12 +33,17 @@ def boat_mode(gw):
     return {"fresh": True, "standby": t.get("mode") == proto.MODE_STANDBY, "mode": t.get("mode")}
 
 
-def boat_state(gw, hatch_relay, max_kn=SLOW_KN):
-    """Everything the launch sequence asks of the boat. "launch_why" = [] when a launch may go on."""
+def boat_state(gw, hatch_relay, high_kn=HIGH_SPEED_KN):
+    """Everything the launch sequence asks of the boat. "launch_why" = [] when a launch may go on.
+
+    Owner W59 (2026-11-04): a launch goes WHEN THE COPILOT SAYS SO - no boat mode / speed condition (the old
+    "STANDBY or DP SPOT / JOG, < 2 kn" is gone); the captain's YES stays (W74). "high_speed" = the boat makes more
+    than high_kn (5 kn): the station shows a NON-blocking notice («ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση»).
+    The other conditions stay: fresh telemetry, trusted GPS, relay board OK, the hatch relay, HELM, no WARNING."""
     t = gw.telem_fresh() if hasattr(gw, "telem_fresh") else None
     t2 = getattr(gw, "telem2", None) or {}
     why = []
-    out = {"fresh": t is not None, "mode": None, "standby": False, "slow_mode": False, "sog_kn": None,
+    out = {"fresh": t is not None, "mode": None, "standby": False, "high_speed": False, "sog_kn": None,
            "gps": False, "pos": None, "helm": None, "captain": None, "launch_why": why, "relay_ok": False}
     if t is None:
         why.append("no fresh boat telemetry")
@@ -47,10 +52,6 @@ def boat_state(gw, hatch_relay, max_kn=SLOW_KN):
     out["mode"] = proto.MODE_NAMES[mode] if hasattr(proto, "MODE_NAMES") and isinstance(mode, int) and \
         mode < len(proto.MODE_NAMES) else t.get("mode_name")
     out["standby"] = mode == proto.MODE_STANDBY
-    dp_hold = mode == proto.MODE_DP and t2.get("dp_sub") in (proto.DP_SPOT, proto.DP_JOG)
-    out["slow_mode"] = out["standby"] or dp_hold
-    if not out["slow_mode"]:
-        why.append("the boat is not in STANDBY or DP SPOT / JOG (%s)" % (t.get("mode_name") or mode))
     gps = t.get("pos_source") == 1
     out["gps"] = gps
     if gps:
@@ -59,8 +60,7 @@ def boat_state(gw, hatch_relay, max_kn=SLOW_KN):
         why.append("no trusted boat GPS")
     sog = t.get("est_sog")
     out["sog_kn"] = sog
-    if sog is None or sog >= max_kn:
-        why.append("the boat is not slower than %.1f kn (%s)" % (max_kn, "-" if sog is None else "%.1f" % sog))
+    out["high_speed"] = sog is not None and sog > high_kn           # a notice only (W59), never a refusal
     # U3 review M2: BOTH alarm words - the second one (TELEM2 group L) from the newest TELEM2, not the copy merged into
     # the telemetry when it arrived
     tt = dict(t)

@@ -5,7 +5,8 @@ the choices and their reasons, the failure analysis and the open questions. Owne
 docs/owner_findings_2026-10-31.md section H (owner 2026-11-04). Steps U2-U6: PROGRESS.md.
 
 Everything marked TO CONFIRM is not known and is never guessed in code: the code uses the default named
-here and the owner confirms it (PROGRESS.md "WAITING FOR OWNER" W56-W72).
+here and the owner confirms it (PROGRESS.md "WAITING FOR OWNER"; the owner answered W52-W76 on 2026-11-04: section
+13 "Owner answers 2026-11-04 (step WA)").
 
 ## 0. Scope (binding)
 
@@ -103,8 +104,9 @@ against the drones' ArduPilot version in SITL / on the bench - W60):
   24 / 32 / 48 / 64.png, committed). Used wherever a vehicle is chosen or shown: the "Send route" target
   box, the map right-click menu, the magazine panel, the UAV list, the map symbol (turned with the drone's
   heading).
-- The USV picture: there is NO boat picture in assets/ yet -> a simple drawn placeholder (theme colours)
-  until the owner gives one (W65).
+- The USV picture (owner W65 2026-11-04: a drawn symbol, no owner picture): assets/usv.png + usv_16..64.png drawn
+  by tools/make_usv_icons.py - a simple boat seen from above, bow up, in the style of uav.png (dark grey hull, red
+  outboard, dark outline); groundstation/uavpics.py draw_usv shows it (a line drawing only if the file is missing).
 
 ## 4. Telemetry, router, MAVLink (H5, steps U2 / U4)
 
@@ -191,9 +193,11 @@ Refused with a code (section 9) and the reason:
   mixed with the boat's route / track.
 
 ### 5.3 Launch sequence (gateway/uav/launch.py: a state machine, one step per tick, every wait timed)
-Conditions to START (checked again before EACH drone): the boat in STANDBY, or in DP SPOT / JOG (the thrusters
-hold the spot) slower than uav_launch_max_kn (2 kn, TO CONFIRM) - "a mode that keeps it slow" means ONLY these
-(U1 review LOW): never AUTO (it speeds up by itself), DP CRUISE / TRIP, HDG LOCK, MANUAL, REMOTE or MANEUVER; fresh telemetry; trusted boat GPS;
+Conditions to START (checked again before EACH drone): OWNER W59 (2026-11-04) - a launch goes WHEN THE COPILOT SAYS
+SO: NO boat mode / speed condition (the earlier "STANDBY or DP SPOT / JOG below 2 kn" is REMOVED); above
+high_speed_kn 5 kn the gateway gives the NON-blocking notice «ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση» (once per
+crossing while a launch is prepared / runs, 0.5 kn hysteresis; gw_status uav high_speed = the line on the magazine
+page; the captain's YES / NO question says it) - never a refusal or a stop. The rest stays: fresh telemetry; trusted boat GPS;
 relay board OK + the hatch relay in the ACTIVE table; hatch switches healthy; no boat WARNING alarm;
 the drone registered + checked + a mission loaded. The COPILOT (or captain) prepares (registry, routes,
 "PREPARE LAUNCH"); the CAPTAIN approves it on screen 1 (the 13p vertical YES / NO box, trigger = YES);
@@ -203,8 +207,8 @@ Per drone (slot n, n = the top one still in the magazine):
 1. health check (registry + live pre-arm, battery, EKF, sensors);
 2. mission upload + read back (count + items);
 3. hatch OPEN (first drone only): relay ON, wait for the OPEN switch within hatch_open_s (TO CONFIRM);
-4. GPS ready (4.4 / section 7): good fix + EKF position within uav_gps_wait_s (5 s); else, ONLY with the
-   boat in STANDBY, the fallback "climb, then catch up";
+4. GPS ready (4.4 / section 7): good fix + EKF position within uav_gps_wait_s (5 s); else the fallback "climb,
+   then catch up" at ANY boat mode / speed (owner W59);
 5. ARM (only with the hatch FULLY OPEN by its switch);
 6. vertical climb (TAKEOFF / AUTO) to its initial altitude (slot-staggered, default 30 + 5 m x (n-1));
 7. "clear of the boat": relative altitude >= uav_clear_alt_m (10 m) AND climbing as commanded within
@@ -214,7 +218,7 @@ After the last one (or a stop with no drone still in the hatch): hatch CLOSE (re
 within hatch_close_s.
 
 ANY warning stops the sequence (drones already in the air go on with their missions): a failed check,
-the hatch fault, the boat leaving STANDBY / speeding up, boat link / telemetry stale, a boat WARNING
+the hatch fault, boat link / telemetry stale (NOT the boat's mode / speed: owner W59), a boat WARNING
 alarm, relay board silent, the captain's or copilot's STOP, the station of the captain lost. A drone that
 armed but did not climb (motor / prop fault in the hatch) = DISARM at once (it is on the ground), the
 sequence stops, the hatch stays OPEN (closing on a drone is worse) + notice "UAV n did not leave the
@@ -256,8 +260,8 @@ altitude). The fallback drone is handed to the manager's catch-up (MISSION START
   by itself, possibly onto a drone climbing out. Mitigations in the design: the sequence watches the
   switches every tick (closing without a command = FAULT, stop, hold the remaining drones disarmed); the
   hardware should close SLOWLY with a soft edge; the owner chooses the actuator (W57).
-- The open hatch lets spray / rain into the magazine: open only for the sequence, launch only slow /
-  STANDBY, closed at once after the last drone clear.
+- The open hatch lets spray / rain into the magazine: open only for the sequence, closed at once after the last
+  drone clear (owner W59: a launch at any speed - above 5 kn the HIGH SPEED notice; slow down when you can).
 
 ### 5.6 The hatch when HELM is gone (U1 review MED-2)
 - Every hatch relay command is a T_RELAY on the HELM station's behalf; the AURIX refuses it (NOT HELM) when no
@@ -368,7 +372,7 @@ the boat's own cameras only.
   "assist receiver" (MGA-DBD / EPH dump, near the magazine) [recommended, with (a) as fallback];
   (c) u-blox AssistNow Online / Offline cached when the gateway has internet (a u-blox token).
 - Note: the magazine top must not be metal (the drone may even get its own fix in the slot).
-- FALLBACK "climb, then catch up" (boat in STANDBY only): no good fix within uav_gps_wait_s -> ARM in
+- FALLBACK "climb, then catch up" (any boat mode / speed: owner W59 2026-11-04): no good fix within uav_gps_wait_s -> ARM in
   ALT_HOLD, climb vertically to uav_fallback_alt_m 15 m - the climb is the allow-listed MAV_CMD_NAV_TAKEOFF in
   ALT_HOLD with param3 = 1 ("horizontal navigation by the pilot acceptable": ArduCopter's ALT_HOLD user takeoff
   without position), NEVER a throttle / RC input (none is on the allow-list; the RC receiver is ignored, W68);
@@ -473,7 +477,7 @@ are gateway-side only).
 | mission upload / read-back fails | stop, the drone stays disarmed |
 | no GPS fix in uav_gps_wait_s | STANDBY: fallback climb; otherwise stop |
 | armed but no climb (motor / prop) | DISARM at once, stop, hatch stays OPEN, notice |
-| boat leaves STANDBY / speeds up / boat WARNING / telemetry stale during the sequence | stop; flying drones go on |
+| boat WARNING / telemetry stale during the sequence (W59: the boat's mode / speed = the HIGH SPEED notice only) | stop; flying drones go on |
 | ELRS link lost to a drone | it holds / follows its mission, ends hovering; notice UAV n LINK LOST |
 | video lost | notice; nothing else changes |
 | boat <-> shore link lost | the gateway keeps the drones holding / on mission; manual control -> hold |
@@ -530,4 +534,41 @@ through uavlink / stations; a static scan). The gateway load numbers stay those 
 
 ## 12. Open questions
 
-PROGRESS.md "WAITING FOR OWNER" W56-W72 (each with the steps it blocks and the recommended default).
+PROGRESS.md "WAITING FOR OWNER" (each with the steps it blocks and the recommended default). W52-W76 were answered
+by the owner on 2026-11-04 (section 13); W52b (CREWED MANEUVER entry, a firmware step) = step WB.
+
+## 13. Owner answers 2026-11-04 (step WA)
+
+All recommended defaults accepted, except where written. Recorded here (CLAUDE.md V follows):
+- W54 (loudhailer) CHANGED: the CAPTAIN's press (crew captain / single operator) takes the horn AT ONCE from anyone
+  talking (gateway/loudhailer.py floor_captain / _take_over: the displaced station gets ptt_ack "taken" = «Ο
+  ΚΥΒΕΡΝΗΤΗΣ ΠΗΡΕ ΤΟ ΜΕΓΑΦΩΝΟ»; audit hail_taken); a sound signal already playing (a few seconds) plays to its end;
+  the other stations: first wins, as built. Tests LH20 (LH1 updated).
+- W55: the gateway forwards a copilot's command for the HELM holder by its OWN grant while that is newer than
+  TELEM2's last HELM change (stations.helm_forward; the AURIX checks HELM again), and gateway test B3 waits for
+  TELEM2 to agree before the next command (the old race: a refusal 21 NOT HELM only, never a drive).
+- W56 (GPS warm start): (b) a small USB u-blox on the gateway NEAR THE MAGAZINE as the assist receiver (MGA-DBD /
+  ephemeris dump, gpsassist "assist_extra") + (a) time + position from telemetry as the fallback; the MGA injection
+  through the drones' ArduPilot is a BENCH check (FIRST_TEST.md 6g). Parts: PARTS.md "UAV magazine".
+- W57 (hatch): (a) the gateway reads the limit switches through an FT232R BREAKOUT (CTS = OPEN, DSR = CLOSED,
+  external pull-ups ~10 kOhm to 3.3 V, switches to GND) - not the TTL-232R cable (no DSR); (b) an 8+ channel relay
+  board (relay 8 = the hatch; the 6-channel DroneCAN board can't host it); (c) a SLOW, soft-edged actuator, and the
+  sequence closes the hatch only after the switches / the slot USB show the LAST drone gone. Bench: FIRST_TEST.md 6f.
+- W59 CHANGED: no boat-speed / mode launch condition (above, 5.3); the captain's YES stays (W74); the climb
+  fallback at any speed; the other W59 values as listed (clear 10 m, gap 15 s, 30 + 5 m per slot, 120 m, 1500 m,
+  50 m, 10 m/s + 2 m/s, min 10 m, landing margin 30 %, GPS wait 5 s, fallback climb 15 m). Tests UA35, UA16, AC52,
+  UV15.
+- W62: eWaSR on the UAV video as built (uavai.py); MEASURE it on real aerial clips at the first flights, decide on
+  an aerial model later. The boat's FRONT camera AI keeps its priority; UAV AI never gives a speed cap.
+- W65: the drawn USV symbol (3.3).
+- W66: the Specific category note of section 11 (MANUAL ch. 21 / MANUAL_EL ch. 16) is the legal frame.
+- W72: the captain's own HATCH CLOSE after a stop, as built (launch.py stop: the hatch switched by nothing;
+  manager.hatch_close_msg: the captain / a single operator / a station on the boat; tests UA16 / UA18).
+- W76: demo.py writes the demo boat file demo_run/boat_demo.json (relay 8 = the UAV hatch) and gives it to the
+  SHORE station (--boat-file, after the welcome name check); once it holds HELM in STANDBY it pushes the table and
+  the simulated AURIX takes it after the onboard joystick CONFIRM - then PREPARE LAUNCH works in the demo (test_boats
+  B12).
+- W58, W63, W68, W69, W70, W71, W75 (+ W52 (d) loudhailer card, W56 injection, W57 switches / actuator, the manual
+  flight's twist axis): BENCH checks before the first flight = FIRST_TEST.md section 6.
+- W60, W64, W67, W73, W74: as listed / as built. W53 (station): the OS-native settings questions are now the
+  vertical YES / NO layout (groundstation/ynbox.py, test_yesno YN7).

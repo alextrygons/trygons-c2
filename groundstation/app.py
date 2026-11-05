@@ -73,9 +73,10 @@ import uavmap
 import uavpanel
 import uavroute
 import uavpics
+import ynbox
 import collections
 import json
-from tkinter import messagebox, simpledialog
+from tkinter import simpledialog
 
 try:
     import winsound
@@ -255,7 +256,8 @@ def fit_columns(tree, cols, pad=24):
 
 class App:
     def __init__(self, root, address=None, login=None, charts_dir=None, open_driver=False, layout=None, cams=None,
-                 place=None):
+                 place=None, boat_file=None):
+        self.boat_file = boat_file      # a boat file for a "gw:" address (the demo, owner W76): its welcome check
         self.layout_path = layout or LAYOUT    # window places (gs_layout.json)
         self.auto_cams = cams           # camera preset to ask for once connected through the gateway (demo)
         self.root = root
@@ -1092,8 +1094,8 @@ class App:
     def chan_req(self, mode, channel=None, confirm=False):
         if not isinstance(self.link, GatewayLink):
             return self.say(T("cap.net_only_gw_short"), RED)
-        if mode == "MANUAL_STRICT" and not messagebox.askyesno(T("cap.net_strict_title"),
-                                                                 T("cap.net_strict_q", ch=channel)):
+        if mode == "MANUAL_STRICT" and not ynbox.ask(self.root, T("cap.net_strict_title"),
+                                                     T("cap.net_strict_q", ch=channel), warn=True):
             return
         self.link.send_msg({"t": "channel", "mode": mode, "channel": channel, "confirm": confirm})
         self.chan_last = (mode, channel)
@@ -1105,7 +1107,7 @@ class App:
 
     def on_channel_ack(self, d):
         if d.get("needs_confirm"):
-            if messagebox.askyesno(T("cap.emerg_title"), T("cap.emerg_q")):
+            if ynbox.ask(self.root, T("cap.emerg_title"), T("cap.emerg_q"), warn=True):
                 mode, ch = getattr(self, "chan_last", ("MANUAL", "STARLINK"))
                 self.chan_req(mode, ch, confirm=True)
             return
@@ -1440,8 +1442,7 @@ class App:
         self.cmd(proto.T_BENCH, proto.p_bench(action, arg), what)
 
     def bench_trip(self):
-        from tkinter import messagebox
-        if not messagebox.askyesno(T("cap.trip_title"), T("cap.trip_q")):
+        if not ynbox.ask(self.root, T("cap.trip_title"), T("cap.trip_q"), warn=True):
             return
         self.bench(proto.BENCH_TRIP, proto.BENCH_TRIP_CODE, TE("what.trip"))
 
@@ -2011,6 +2012,7 @@ class App:
                 w = self.link.start()
                 self.say(T("cap.logged_in", user=user, role=w["role"],
                            where=T("cap.on_board") if w["local"] else T("cap.remote")), GREEN)
+                self.use_boat_file(w)
             else:
                 self.link = Link(addr)
                 self.link.start()
@@ -2019,6 +2021,24 @@ class App:
             self.say(T("cap.cannot_connect", err=e), RED)
             return
         self._connected()
+
+    def use_boat_file(self, welcome):
+        """A boat file given for a "gw:" address (the demo, owner W76): after the same welcome name check as a boat of
+        the list it is THE boat - its relay table / settings are pushed like every HELM station's (boat_push)."""
+        if not self.boat_file:
+            return None
+        try:
+            with open(self.boat_file, encoding="utf-8") as f:
+                bt = boats.Boat(self.boat_file, json.load(f))
+        except (OSError, ValueError) as e:
+            self.say(T("cap.cannot_connect", err=e), RED)
+            return None
+        if bt.error or boats.check_welcome(bt, welcome):
+            self.say(T("cap.cannot_connect", err=i18n.from_en(bt.error or boats.check_welcome(bt, welcome))), RED)
+            return None
+        self.boat, self.boat_ok = bt, True
+        self.boat_pushed, self.boat_push_seq, self.boat_push_at = False, None, 0.0
+        return bt
 
     def _connected(self):
         self.conn_btn.configure(text=T("cap.disconnect"), **theme.button_opts("no"))
@@ -2055,8 +2075,7 @@ class App:
     def helm_release(self):
         """Releasing HELM: on an UNCREWED boat that is a LOST LINK (STANDBY, then the engine kill)."""
         if self.t and self.t.get("profile") == proto.PROFILE_UNCREWED:
-            from tkinter import messagebox
-            if not messagebox.askyesno(T("cap.helm_release"), T("crew.release_uncrewed"), parent=self.root):
+            if not ynbox.ask(self.root, T("cap.helm_release"), T("crew.release_uncrewed"), warn=True):
                 return
         self.cmd(proto.T_HELM, proto.p_helm(1), TE("what.release_helm"))
 
@@ -2142,7 +2161,7 @@ class App:
         if self.single_op:
             return self.link.send_msg({"t": "single_op", "on": False})
         if confirmed is None:
-            confirmed = messagebox.askyesno(T("cap.so_title"), T("cap.so_q"), icon="warning")
+            confirmed = ynbox.ask(self.root, T("cap.so_title"), T("cap.so_q"), warn=True)
         if confirmed:
             self.link.send_msg({"t": "single_op", "on": True})
 
@@ -5372,6 +5391,12 @@ class App:
     def uav_fly_slot(self):
         return self.uav_fly.slot
 
+    def hail_is_captain(self):
+        """The loudhailer (owner W54): this station's press takes the horn at once = the crew captain / a single
+        operator (the gateway decides again)."""
+        crew, _c, _l = crewui.crew_of(self)
+        return crew == "captain" or bool(self.single_op)
+
     def uav_captain_like(self):
         """This station's joystick drives the boat: the crew captain, a single operator, the HELM holder."""
         crew, _c, _l = crewui.crew_of(self)
@@ -5554,6 +5579,7 @@ def main():
     ap.add_argument("--cams", help="camera preset to start with (e.g. Full)")
     ap.add_argument("--no-splash", action="store_true", help="no start-up screen (the demo shows its own)")
     ap.add_argument("--ready-file", help="written once the window is open (the demo's start-up screen closes)")
+    ap.add_argument("--boat-file", help="the boat file for a gw: address (the demo: demo_run/boat_demo.json, W76)")
     a = ap.parse_args()
     login = tuple(a.login.split(":", 1)) if a.login and ":" in a.login else None
     theme.set_app_id()
@@ -5567,7 +5593,7 @@ def main():
         sp.step("splash.p_station")
     try:
         App(root, a.address, login=login, charts_dir=a.charts, open_driver=a.driver, layout=a.layout, cams=a.cams,
-            place=place)
+            place=place, boat_file=a.boat_file)
     except Exception as e:              # shown on the start-up screen (never a silent hang), then the traceback
         if sp is None:
             raise

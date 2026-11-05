@@ -604,12 +604,45 @@ def b6_dropdown(ap, pump, good):
                {k: v[1] for k, v in picked.items()}, st["none"][:2], menu))
 
 
+def b12_demo_boat():
+    """Owner W76 (step WA): demo.py writes the demo boat file (relay 8 = the UAV hatch, uav hatch_relay 8), a VALID
+    boat file named like the demo gateway; the station's --boat-file takes it only after the welcome name check, and
+    its relay table (pushed by app.relay_push) is the one with the hatch relay."""
+    import types
+    sys.path.insert(0, os.path.join(REPO, "demo"))
+    import demo
+    import proto
+    tmp = tempfile.mkdtemp(prefix="demo_boat_")
+    old = demo.RUN
+    demo.RUN = tmp
+    try:
+        path = demo.demo_boat_file()
+    finally:
+        demo.RUN = old
+    bt = boats.Boat(path, json.load(open(path, encoding="utf-8")))
+    import app as appmod
+    said = []
+    fake = types.SimpleNamespace(boat_file=path, boat=None, boat_ok=False, say=lambda t, c=None: said.append(t))
+    good = appmod.App.use_boat_file(fake, {"boat": "trygons-demo"})
+    f2 = types.SimpleNamespace(boat_file=path, boat=None, boat_ok=False, say=lambda t, c=None: said.append(t))
+    wrong = appmod.App.use_boat_file(f2, {"boat": "RF49D"})
+    tab = proto.relay_groups(proto.p_relay_cfg(bt.relays))
+    ok = (not bt.error and bt.name == "trygons-demo" and [r["n"] for r in bt.relays] == [8] and
+          bt.relays[0]["group"] == "extra" and bt.relays[0]["power_up"] == "off" and good is not None and
+          fake.boat_ok and wrong is None and not f2.boat_ok and (tab is None or tab.get(8) == "extra"))
+    report("B12 (W76) the demo boat file: valid, named like the demo gateway, relay 8 = the UAV hatch (extra on/off, "
+           "power_up off); the station's --boat-file only after the welcome name check (a wrong gateway = refused)",
+           ok, "error %r, relays %s, accepted %s, wrong gateway %s, table %s" % (
+               bt.error, bt.relays, good is not None, wrong, tab))
+
+
 def main():
     b1_repo_boats()
     b2_list_and_probe()
     b3_name_and_confirm()
     b7_file_formats()
     b4_app_end_to_end()
+    b12_demo_boat()
     bad = results.count(False)
     print("BOAT TESTS: %d passed, %d failed" % (len(results) - bad, bad))
     return 1 if bad else 0

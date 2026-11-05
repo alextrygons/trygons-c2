@@ -7,7 +7,7 @@ normal program upload and every AUTO rule.
   route_msg(target, pts)  {"t": "uav_route", "target": "next" | slot, "wps": [{"lat", "lon", "alt"}]}
   menu_items(uav, boat)   the right-click menu: «Πήγαινε εδώ» (the boat, a 2-point route from its position) and
                           «Αποστολή UAV εδώ» (the next UAV + every flying one)
-  TargetBox               the vertical box with the pictures (the owner's UAV picture; the USV placeholder, W65)
+  TargetBox               the vertical box with the pictures (the owner's UAV picture; the drawn USV symbol, W65)
 """
 import theme
 import uavpics

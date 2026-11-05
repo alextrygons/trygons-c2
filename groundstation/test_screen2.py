@@ -157,6 +157,8 @@ class Rig:
                            (simpledialog, ("askstring", "askinteger", "askfloat"))):
             for n in names:
                 setattr(mod, n, lambda *a, _n=n, **k: self.errors.append("dialog %s opened (blocking)" % _n))
+        import ynbox                       # (W53: the settings questions = ynbox.ask, modal too)
+        ynbox.ask = lambda *a, **k: self.errors.append("dialog ynbox opened (blocking)")
         self.ap = A.App(self.root, "tcp:127.0.0.1:%d" % self.port, layout=os.path.join(TMP, "layout.json"))
         self.root.state("normal")
         self.extra = {}

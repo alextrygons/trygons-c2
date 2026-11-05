@@ -166,6 +166,8 @@ class UavManager:
         self.flying = {}                         # slot -> {"phase": launching / catchup / mission, "home", "t"}
         self.cbs = {}                            # router request id -> callback
         self.notices = []                        # {"t", "text", "level"} (last 12)
+        self.hs_on = False                       # W59: the HIGH SPEED notice was given for this crossing
+        self.hs_now = False                      # W59: the boat is faster than high_speed_kn now
         self.relay_retry = None                  # [on, cb, until]: one retry of a hatch relay command (W55)
         self.relay_busy = False
         self._load_extra()
@@ -677,7 +679,20 @@ class UavManager:
         return time.time()
 
     def boat(self):
-        return uavlink.boat_state(self.gw, self.hatch_relay, float(self.seq.cfg["launch_max_kn"]))
+        return uavlink.boat_state(self.gw, self.hatch_relay, float(self.seq.cfg["high_speed_kn"]))
+
+    def high_speed_tick(self, boat=None):
+        """Owner W59 (2026-11-04): a launch goes at ANY boat speed; above high_speed_kn (5 kn) the NON-blocking notice
+        HIGH SPEED - take-off risk, once when a launch is prepared / runs and the boat crosses it (0.5 kn hysteresis).
+        A notice only - it never refuses, stops or slows anything."""
+        b = boat if boat is not None else self.boat()
+        kn, lim = b.get("sog_kn"), float(self.seq.cfg["high_speed_kn"])
+        fast = kn is not None and (kn > lim or (self.hs_on and kn > lim - 0.5))
+        if fast and not self.hs_on and self.seq.busy():
+            self.notice("HIGH SPEED - take-off risk (%.1f kn)" % kn, "caution")
+        self.hs_on = bool(fast) and (self.hs_on or self.seq.busy())
+        self.hs_now = kn is not None and kn > lim
+        return self.hs_now
 
     def hatch_state(self):
         return self.hatch.state
@@ -877,6 +892,7 @@ class UavManager:
             self.next_air = now + 10.0
             threading.Thread(target=self.airspace.reload, daemon=True).start()
         self.seq.tick(now)
+        self.high_speed_tick()
         self.catchup_tick(now)
 
     def _sim_sky(self, sky):
@@ -1191,7 +1207,11 @@ class UavManager:
                              problems=why)
         now = time.time()
         self.seq.prepare(slots, st.id, now)
-        what = "UAV LAUNCH: %s (slot %s first)" % (", ".join("UAV %d" % s for s in slots), slots[0])
+        what = "%s (slot %s first)" % (", ".join("UAV %d" % s for s in slots), slots[0])
+        self.hs_on = False
+        if self.high_speed_tick():                     # W59: the notice + the captain's question says it (never refused)
+            what = "HIGH SPEED - take-off risk (%.1f kn): %s" % (self.boat().get("sog_kn"), what)
+        what = "UAV LAUNCH: " + what
 
         gen = self.seq.gen
 
@@ -1230,7 +1250,7 @@ class UavManager:
         self._ack(st, "launch_stop", True, 0, "UAV launch stopped" if ok else "no launch runs")
 
     def hatch_close_msg(self, st, m):
-        """The captain's own HATCH CLOSE after a stop (docs 5.3 / 5.6; W72 default: never by itself)."""
+        """The captain's own HATCH CLOSE after a stop (docs 5.3 / 5.6; owner W72 2026-11-04: never by itself)."""
         if st.crew != "captain" and not st.single_op and not st.local:
             return self._ack(st, "hatch_close", False, 118, "HATCH CLOSE: the captain only")
         if self.seq.state in (launch.ASK, launch.RUN):
@@ -1280,6 +1300,7 @@ class UavManager:
                 "registry_error": self.reg.error,
                 "hatch": dict(self.hatch.status(), relay=self.hatch_relay, sim=self.simhatch is not None),
                 "launch": self.seq.status(time.time()), "notices": list(self.notices[-6:]),
+                "high_speed": bool(self.hs_now),          # W59: the station's non-blocking HIGH SPEED line
                 "airspace": self.airspace.status(),
                 "flying": {str(k): {"phase": v.get("phase")} for k, v in self.flying.items()},
                 # U4: the map / HUD (also via uav_telem 2 Hz), the video worker, the UAV AI, the flight logs

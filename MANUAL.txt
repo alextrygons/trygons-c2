@@ -805,7 +805,10 @@ QUESTIONS (step 13p, owner 2026-10-31): a copilot's action for the captain's
   VERTICAL layout: the question, [YES] on top, [NO] underneath (full width,
   framed; the selected one is filled = inverted), the countdown below; no
   answer = rejected. The single operator's own confirmation (a window on
-  screen 2) has the same layout. Answer with the mouse, or on the shore
+  screen 2) has the same layout, and so have the station's settings questions
+  (strict channel, emergency, monitor trip test, HELM release UNCREWED, single
+  operator on, crew swap; owner 2026-11-04): there NO is pre-selected, Up /
+  Down choose, Enter answers, Esc = NO. Answer with the mouse, or on the shore
   joystick (T.16000M stick + TWCS lever):
     TRIGGER (stick button 1)  = answer with the selected choice. YES is
                                 pre-selected, so the trigger alone = a fast
@@ -2652,6 +2655,9 @@ LOUDHAILER AND BOAT MICROPHONE (step 13r, owner 2026-11-02)
     joystick. One person at a time: the gateway gives the horn to whoever
     pressed FIRST; everybody else sees a grey TALK button and "SPEAKING:
     CAPTAIN" (or COPILOT) - on screen 2 at the start of the message line.
+    The CAPTAIN is the exception (owner 2026-11-04): the captain's TALK takes
+    the horn AT ONCE from anyone talking; that station sees THE CAPTAIN TOOK
+    THE HORN (a sound signal already playing still ends first).
     While anyone talks the boat microphone is switched off (no echo / howling).
     A press ends by itself after 2 minutes (a stuck button) or 1 s without
     voice (a lost link).
@@ -2717,12 +2723,14 @@ UAV MAGAZINE - ROUTES AND LAUNCH (step U3)
   last point - never a landing.
   Launch: Tools - UAV magazine - PREPARE LAUNCH (copilot or captain). The
   CAPTAIN answers YES / NO on screen 1 (a single operator answers his own).
-  Only with the boat in STANDBY or DP SPOT / JOG below 2 kn, a trusted GPS, no
-  boat WARNING alarm, the relay board answering, a station holding HELM, the
-  hatch healthy. Then, strictly from the top slot: mission loaded and read
-  back, the hatch opens (its OPEN switch), GPS fix (no fix in 5 s: in STANDBY
-  it climbs straight up to 15 m and waits there for GPS; in DP the launch
-  stops), ARM, climb to 30 m (+5 m per slot), clear of the boat at 10 m, the
+  The launch goes WHEN THE COPILOT SAYS SO, at any boat speed or mode (owner
+  2026-11-04); above 5 kn every station shows HIGH SPEED - take-off risk
+  (ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση): a warning only, slow down when
+  you can. It needs a trusted GPS, no boat WARNING alarm, the relay board
+  answering, a station holding HELM, the hatch healthy. Then, strictly from
+  the top slot: mission loaded and read back, the hatch opens (its OPEN
+  switch), GPS fix (no fix in 5 s: it climbs straight up to 15 m and waits
+  there for GPS, at any boat speed), ARM, climb to 30 m (+5 m per slot), clear of the boat at 10 m, the
   next one at least 15 s later; after the last the hatch closes.
   ANY warning STOPS the launch: drones in the air go on with their missions,
   no further drone is armed, the hatch stays as it is. A drone that armed but
@@ -3610,8 +3618,8 @@ A LAUNCH, STEP BY STEP
   1. Tools - UAV magazine: REGISTER the drones (read-only check).
   2. Send route -> NEXT UAV (or a slot): the gateway checks altitude 10..120 m,
      radio range, battery with the landing reserve, no-fly zones / air geofence.
-  3. The boat in STANDBY (or DP SPOT / JOG), slower than 2 kn, GPS trusted, no
-     boat WARNING alarm, relay board OK.
+  3. GPS trusted, no boat WARNING alarm, relay board OK. Any boat speed (above
+     5 kn: the HIGH SPEED warning - slower is safer for the take-off).
   4. PREPARE LAUNCH (copilot) -> the captain's YES on screen 1.
   5. The sequence: mission upload + read-back -> hatch OPEN -> GPS -> ARM (only
      with the OPEN switch) -> climb -> the slot cable breaks away -> the mission
@@ -3634,7 +3642,10 @@ TRAINING
   gateway, a drone or a boat). Steps: register, route, STANDBY, prepare, the
   captain's YES, watch the launch until the hatch closes, open the video,
   the battery minimum. The guided tour has a chapter "The UAV magazine".
-  Demo: START_DEMO.bat runs 6 simulated drones + the simulated hatch.
+  Demo: START_DEMO.bat runs 6 simulated drones + the simulated hatch. The
+  SHORE station has the demo boat file (relay 8 = the UAV hatch): once it holds
+  HELM in STANDBY it sends that relay table and the boat asks for the joystick
+  CONFIRM - press CONFIRM in the ON BOARD window once; then PREPARE LAUNCH works.
 
 HARDWARE
   PARTS.md "UAV magazine" and WIRING.md 3H: 6 ELRS TX modules (MAVLink), 6 VRX

@@ -3874,12 +3874,16 @@ def ac52():
     sim.register(1)
     r_noroute = sim.prepare(1)
     sim.send_route("next")
-    r_moving = sim.prepare(1)                                   # boat in HDG LOCK at 5 kn
+    sim.set_boat("HDG_LOCK", 8.0)
+    r_moving = sim.prepare(1)                                   # boat in HDG LOCK at 8 kn: allowed (owner W59)
+    hs_note = [n for n in sim.notices if "HIGH SPEED" in n[1]]
+    sim.stop()
     far = [{"lat": uavsim.ORIGIN[0] + 0.05, "lon": uavsim.ORIGIN[1], "alt": 50.0}]
     r_far = sim.send_route(1, far)
     r_high = sim.send_route(1, [{"lat": uavsim.ORIGIN[0] + 0.002, "lon": uavsim.ORIGIN[1], "alt": 300.0}])
-    if r_noroute[1] != 125 or r_moving[1] != 125 or "STANDBY" not in r_moving[2]:
-        wrong.append("launch not refused 125: no route %s, under way %s" % (r_noroute, r_moving))
+    if r_noroute[1] != 125 or not r_moving[0] or len(hs_note) != 1 or not sim.state()["high_speed"]:
+        wrong.append("no route not refused 125 %s, or under way (W59: allowed + HIGH SPEED notice) %s %s" % (
+            r_noroute, r_moving, hs_note))
     if r_far[1] != 123 or r_high[1] != 123:
         wrong.append("routes not refused 123: far %s, high %s" % (r_far, r_high))
     res = []
@@ -3924,7 +3928,8 @@ def ac52():
     if len(arms) != 1 or len(lands) != 1 or not sim3.drones[1].landing:
         wrong.append("lesson run: ARMs %s, LANDs %s" % (arms, lands))
     report("AC52 the UAV simulator uses the gateway's real rules", not wrong, "; ".join(wrong) or
-           "gateway/uav launch / allow / uavcheck / mission / battery; 125 without a route + under way, 123 far / "
+           "gateway/uav launch / allow / uavcheck / mission / battery; 125 without a route, under way allowed + HIGH "
+           "SPEED notice (W59), 123 far / "
            "high, ARM refused with the hatch closed, LAND / RTL / SmartRTL / servo / relay / gripper / force ARM "
            "refused, a hatch FAULT stops with no ARM; one ARM (OPEN switch) + one battery LAND in the lesson")
 

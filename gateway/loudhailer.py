@@ -9,7 +9,10 @@ sends a frame to it, nothing here is in a control path (tests LH9 / LH10).
   station <--(UDP, signed, "L")-- gateway <--(pipe)-- worker <-- boat microphone        (LISTEN)
 
 PUSH-TO-TALK, half duplex: {"t": "ptt", "on": true} asks for the floor - the FIRST station wins (this class
-decides); the others get "ptt_ack" ok false + who speaks, every station gets "hail_floor" (the current speaker
+decides) - EXCEPT the captain (owner W54, 2026-11-04): the captain's press (crew captain / single operator) takes the
+horn AT ONCE from anyone talking (the displaced station gets "ptt_ack" ok false, "taken" true, "the captain took the
+horn"; a sound signal already playing still plays to its end - a few seconds, a cut signal means nothing); the others
+get "ptt_ack" ok false + who speaks, every station gets "hail_floor" (the current speaker
 or nobody). While someone talks (and HANG_S after) the worker mutes the boat microphone. The floor ends with
 {"on": false}, the station leaving, no voice frame for frame_gap_s, or talk_max_s.
 Sound signals {"t": "hail_signal", "kind": "danger" (5 short) | "long" (1 prolonged)} take the floor for their
@@ -414,15 +417,34 @@ class Loudhailer:
                 self._release("released")
             return st.send({"t": "ptt_ack", "ok": True, "on": False, "speaker": self.speaker()})
         why = self._may_talk(st)
-        if why is None and self.floor and self.floor["id"] != st.id:
+        take = (why is None and self.floor is not None and self.floor["id"] != st.id and
+                self.floor["what"] != "signal" and self.floor_captain(st))
+        if why is None and self.floor and self.floor["id"] != st.id and not take:
             why = "%s speaks" % self.floor["crew"]
         if why:
             self.n["ptt_refused"] += 1
             self.gw.audit("hail_refused", station=st.id, user=st.user, why=why)
             return st.send({"t": "ptt_ack", "ok": False, "on": True, "text": why, "speaker": self.speaker()})
+        if take:                                         # owner W54: the captain takes the horn at once
+            self._take_over(st)
         if not self.floor:
             self._grant(st, what)
         st.send({"t": "ptt_ack", "ok": True, "on": True, "speaker": self.speaker()})
+
+    @staticmethod
+    def floor_captain(st):
+        """Owner W54 (2026-11-04): the captain (crew captain / a single operator) takes the horn over from anyone."""
+        return st.role != "VIEWER" and (st.crew == "captain" or bool(st.single_op))
+
+    def _take_over(self, st):
+        f = self.floor
+        old = self.gw.stations.stations.get(f["id"])
+        self.n["ptt_taken"] += 1
+        self.gw.audit("hail_taken", station=st.id, user=st.user, from_station=f["id"], from_user=f["user"])
+        self._release("the captain took the horn")
+        if old is not None:
+            old.send({"t": "ptt_ack", "ok": False, "on": True, "taken": True, "text": "the captain took the horn",
+                      "speaker": None})
 
     def signal(self, st, m):
         """{"t": "hail_signal", "kind": "danger" | "long"}: a sound signal through the horn (takes the floor)."""

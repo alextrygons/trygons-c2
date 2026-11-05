@@ -9,9 +9,9 @@ the router process (mission upload, commands) or through uavlink (the hatch rela
              battery, sensors, its route still passes uavcheck from the boat's position now
      UPLOAD  the mission over the slot's USB + its read-back (router: count + every item compared)
      HATCH   (first drone) relay ON -> the OPEN switch (hatch.py; its travel time = FAULT)
-     GPS     a 3D fix + EKF position within gps_wait_s; else ONLY in STANDBY the fallback "climb, then catch up"
-             (ALT_HOLD + TAKEOFF param3 = 1 to fallback_alt; the manager switches it to the mission once GPS + EKF
-             are good - it hovers until then, never lands); in DP: stop
+     GPS     a 3D fix + EKF position within gps_wait_s; else the fallback "climb, then catch up" at ANY boat mode /
+             speed (owner W59 2026-11-04) (ALT_HOLD + TAKEOFF param3 = 1 to fallback_alt; the manager switches it to
+             the mission once GPS + EKF are good - it hovers until then, never lands)
      CMDS    GUIDED -> ARM (the router's allow-list refuses ARM unless the hatch OPEN switch) -> TAKEOFF to the
              slot's initial altitude (30 + 5 m x (slot - 1)), each with its COMMAND_ACK
      CLIMB   relative altitude >= clear_alt within clear_s; NO climb within no_climb_s = DISARM at once (it is on the
@@ -21,10 +21,10 @@ the router process (mission upload, commands) or through uavlink (the hatch rela
              drone: handed to the manager's catch-up)
      GAP     the next drone not before gap_s after this one's ARM (and only once this one is clear)
   CLOSING   after the last drone: relay OFF -> the CLOSED switch -> DONE
-  STOPPED   ANY warning (a check, the hatch FAULT, the boat leaving STANDBY / DP SPOT-JOG or speeding up, stale boat
-             telemetry, a boat WARNING alarm, the relay board silent, HELM lost, the captain's station lost, a
-             station's STOP): no further drone, no ARM; drones in the air go on; an armed drone still on the ground
-             is DISARMED; the hatch is switched by NOTHING (W72 default: the captain's own HATCH CLOSE)
+  STOPPED   ANY warning (a check, the hatch FAULT, stale boat telemetry, a boat WARNING alarm, the relay board silent, HELM lost, the captain's station lost, a
+             station's STOP; NOT the boat's mode / speed: owner W59 - a launch goes when the copilot says so, above
+             5 kn a non-blocking notice): no further drone, no ARM; drones in the air go on; an armed drone still on the ground
+             is DISARMED; the hatch is switched by NOTHING (owner W72 2026-11-04: the captain's own HATCH CLOSE)
 Nothing here sends to the AURIX but the hatch relay through io.hatch_relay (uavlink -> stations.py).
 """
 from . import allow, mission
@@ -33,7 +33,7 @@ IDLE, ASK, RUN, CLOSING, DONE, STOPPED = "IDLE", "ASK", "RUN", "CLOSING", "DONE"
 EKF_POS = 0x08 | 0x10                     # EKF_STATUS_REPORT: horizontal position relative + absolute
 
 DEFAULTS = {
-    "launch_max_kn": 2.0,                 # W59
+    "high_speed_kn": 5.0,                 # W59 (owner 2026-11-04): above it a NON-blocking notice only, no speed limit
     "gps_wait_s": 5.0,                    # W59
     "fallback_alt_m": 15.0,               # W59
     "clear_alt_m": 10.0,                  # W59
@@ -277,9 +277,6 @@ class Launch:
                              ("TAKEOFF", allow.CMD_NAV_TAKEOFF, [0, 0, 0, 0, 0, 0, alt])]
                 self._phase("CMDS", now)
             elif now - self.t_phase > float(c["gps_wait_s"]):
-                if not boat.get("standby"):
-                    return self._fail("UAV %d: no GPS fix in %.0f s (the climb fallback only in STANDBY)" % (
-                        n, float(c["gps_wait_s"])), now)
                 self.fallback = True
                 self.io.notice("UAV %d: no GPS fix yet - climbs to %.0f m in ALT_HOLD and waits for GPS" % (
                     n, float(c["fallback_alt_m"])), "info")

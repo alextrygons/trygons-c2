@@ -558,7 +558,7 @@ class StationServer:
             if driving:
                 self.gw.audit("single_op_cmd", station=st.id, user=st.user, type=ftype, what=what)
             return self._forward(st, seq, ftype, payload, age)
-        helm = self.gw.telem2.get("helm")
+        helm = self.helm_forward()
         if st.crew == "copilot" and helm != st.id and ftype not in READ_ONLY and ftype != proto.T_HELM:
             # the copilot: on the captain's behalf; driving actions after the captain's ACCEPT
             cap = self.stations.get(helm)
@@ -614,6 +614,16 @@ class StationServer:
 
     # --- the gateway's own commands on the HELM station's behalf (the UAV hatch, CLAUDE.md V / U3) ------------------
     HELM_STABLE_S = 2.0
+
+    def helm_forward(self):
+        """The HELM holder a copilot's command is forwarded for (owner W55, step WA): the gateway's OWN grant while it
+        is newer than TELEM2's last HELM change (an accepted T_HELM take / hand-over the AURIX already ACKed, TELEM2
+        not yet showing it: up to one TELEM2 period - the old "B3 race", where a just-demoted captain's command went
+        under his own id and the AURIX refused it NOT HELM); else TELEM2's holder. The AURIX checks HELM again."""
+        h = (self.gw.telem2 or {}).get("helm")
+        if self.helm_grant_t and self.helm_grant_t > self.helm_t2_since and self.helm_grant != h:
+            return self.helm_grant
+        return h
 
     def helm_station(self):
         """(station, why): the station holding HELM - only when the gateway's own grant and TELEM2 agree (W55)."""

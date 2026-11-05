@@ -161,8 +161,8 @@ def crew_of(app):
 
 def ask_swap(app, d):
     """The other side asks for a role swap: yes / no."""
-    from tkinter import messagebox
-    yes = messagebox.askyesno(T("crew.swap_title"), T("crew.swap_ask", name=d.get("name", "?")), parent=app.root)
+    import ynbox                                   # owner W53: the vertical YES / NO layout
+    yes = ynbox.ask(app.root, T("crew.swap_title"), T("crew.swap_ask", name=d.get("name", "?")))
     app.link.send_msg({"t": "crew_swap_answer", "yes": bool(yes)})
     app.event(T("crew.swap_answered", yes=T("crew.yes") if yes else T("crew.no")))
 

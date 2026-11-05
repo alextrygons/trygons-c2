@@ -90,8 +90,11 @@ def launch_view(st):
     if L.get("why"):
         seq += " - " + _tr(L["why"])
     busy = state in ("ASK", "RUN", "CLOSING")
+    notes = [_tr(n.get("text")) for n in (st or {}).get("notices") or []][-3:]
+    if (st or {}).get("high_speed"):              # owner W59: a NON-blocking line (the launch is still allowed)
+        notes = [T("uav.high_speed")] + notes
     return {"hatch": hatch, "hatch_kind": "caution" if hs in ("FAULT", "UNKNOWN") or (hs == "OPEN" and not busy)
-            else "info", "seq": seq, "notices": [_tr(n.get("text")) for n in (st or {}).get("notices") or []][-3:],
+            else "info", "seq": seq, "notices": notes, "high_speed": bool((st or {}).get("high_speed")),
             "can_prepare": not busy and hs in ("CLOSED", "OPEN"), "can_stop": busy,
             "can_close": not busy and hs != "CLOSED"}
 

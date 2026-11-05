@@ -350,3 +350,72 @@ engine controls as normal, kill cord worn, hand near the STANDBY button) and
 - [ ] Before the normal (throttle) configuration: comment `#define FIRST_TEST`
       out again, rebuild, and do the full neutral-start / joystick checks
       (WIRING.md section 3, MANUAL).
+
+## 6. UAV magazine + loudhailer bench (BEFORE the first UAV flight; owner answers 2026-11-04, step WA)
+
+Gateway PC + the magazine on the bench, props OFF for every powered step until 6g. Nothing here touches the
+AURIX firmware: the only boat action is the hatch relay through the relay table (CLAUDE.md V). Write every
+measured number in the blanks and in PROGRESS.md. A failed check = no flight until it is fixed.
+
+### 6a. Slot USB names (W69)
+- [ ] A flight controller in each of the 6 hub ports in turn: `python gateway.py --list-serial` shows a
+      `usbloc:<path>` per port ____ ; put the 6 names into gateway.json "uav" "slots" (slot 1 = top).
+- [ ] Re-plug the hub and reboot the gateway PC: the 6 names are the SAME ____ .
+
+### 6b. Registration + the read-only parameter check (W60, W68 RC_OPTIONS)
+- [ ] REGISTER every slot (Tools -> «ΜΑΓΓΕΜΑ UAV»): the failsafes (FS_THR_ENABLE 0, FS_GCS_ENABLE 0,
+      FS_EKF_ACTION 2, FS_DR_ENABLE 0, FENCE_ACTION 0, BATT_FS_LOW_ACT 0, BATT_FS_CRT_ACT 1), RC_OPTIONS bit 0
+      ("Ignore RC Receiver") set, FRAME_CLASS 1, only SERVO 33-36, every release path 0 / -1 = registered ____ .
+      Clear RC_OPTIONS bit 0 on one drone: REGISTER refuses it ("the RC receiver is not ignored") ____ ; set it back.
+- [ ] RC ignored (W68): with the bit set, in LOITER / ALT_HOLD / GUIDED / AUTO (props off, armed on the bench with
+      the safety rules of the drone's manual) moving / unplugging the ELRS RC channels changes NOTHING ____ . If the
+      firmware needs another mechanism (RC_PROTOCOLS 0, an RCx_OPTION), write it here ____ .
+
+### 6c. ELRS MAVLink WITHOUT a handset (W70)
+- [ ] Each boat ELRS TX module in MAVLink mode, no handset: the drone's RC channel values seen in Mission Planner
+      ____ (they must not matter: 6b); telemetry + commands (mode, a mission upload, ARM refused in the slot without
+      the hatch OPEN switch) keep working at the chosen packet rate ____ Hz; link quality shown on the map ____ .
+
+### 6d. Battery backstop + landing times (W71, W75)
+- [ ] BATT_CRT_VOLT ____ V (proposal 3.4 V / cell under load) / BATT_CRT_MAH ____ set on every drone.
+- [ ] Measure: hover current ____ A, cruise current ____ A, real capacity ____ mAh, descent at 1 m/s from
+      50 m = ____ s (the gateway's battery minimum uses uav_land_ms / uav_land_final_m / _ms + 30 % margin: compare
+      with uavcheck.DEFAULTS and set the measured numbers in gateway.json "uav" "check").
+- [ ] LANDING IN 60 s / 20 s / LANDING NOW on a simulated low battery (simdrone) appear on every station ____ .
+
+### 6e. Slot cable + ARM in the slot (W58)
+- [ ] The magnetic breakaway USB-C of each slot: pulled by a light upward tug, the drone free ____ .
+- [ ] ArduPilot arms with the USB cable attached (props off; the hatch OPEN switch closed by hand) ____ ; the
+      launch's "USB gone within 6 s" sees the breakaway ____ .
+
+### 6f. Hatch switches + actuator (W57)
+- [ ] The FT232R breakout (CTS = OPEN switch, DSR = CLOSED switch, 10 kOhm pull-ups to 3.3 V, switches to GND):
+      `--list-serial` name in gateway.json "uav" "hatch" "port" ____ ; the page shows OPEN / CLOSED by hand ____ ;
+      a pulled wire = "not there" -> HATCH FAULT after the travel time ____ .
+- [ ] The 8+ channel relay board: relay 8 = the hatch relay (extra, on/off, power_up off, no pair) in the boat file
+      and ACTIVE on the AURIX (TELEM2 M hash) ____ .
+- [ ] The actuator is SLOW with a soft edge: open ____ s, close ____ s (gateway.json "uav" "hatch" open_s / close_s);
+      a hand in the way while closing is not hurt ____ ; a relay-board reboot (relay OFF = closing) is seen as FAULT ____ .
+- [ ] The sequence closes the hatch only after the switches / the USB show the LAST drone gone ____ .
+
+### 6g. GPS warm start (W56)
+- [ ] The USB u-blox on the gateway near the magazine (the assist receiver) has a fix ____ ; its MGA / ephemeris
+      bytes reach a drone in the slot (UBX-MGA injection through ArduPilot: the drone's time to a 3D fix with
+      assist ____ s, without ____ s). Fallback (a): telemetry time + position only ____ s.
+- [ ] ALT_HOLD climb fallback (TAKEOFF param3 1, 15 m) checked in SITL / tethered: it holds the altitude with the
+      RC ignored, then switches to the mission once GPS + EKF are good ____ .
+
+### 6h. Video channels (W63)
+- [ ] 6 VRX on 6 Raceband channels with the widest spacing ____ ; all 6 pictures at once without desense ____ ;
+      range with the 25 mW VTX ____ m; each capture stick in the ring + MediaMTX UAV-1..6 ____ .
+
+### 6i. Manual flight (U5)
+- [ ] The shore joystick: stick = direction / speed, TWCS lever = climb / descend, TWIST = yaw - the twist axis
+      turns the drone the right way ____ (else fix the axis sign in the station's joystick map); let go = hold.
+
+### 6j. Loudhailer with the real card (W52 (d))
+- [ ] The USB sound card + amplifier + horn + boat microphone: gateway.json loudhailer out_dev / in_dev set
+      (Ubuntu ALSA / Windows WinMM); TALK from a station is heard on the horn ____ ; LISTEN plays the boat mic ____ ;
+      the mic is muted while anyone talks (no echo) ____ ; the amplifier trimmer set so 80 % is safe for a swimmer
+      close by ____ ; the captain's TALK takes the horn at once from a copilot talking (W54) ____ ; the AUDIO track
+      is in a SAVE ____ .
