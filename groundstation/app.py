@@ -54,6 +54,7 @@ from i18n import T, TE
 from alerts import CAN_ROLE_KEYS, CAN_STATE_KEYS, CAN_WHY_KEYS, can_roles  # noqa: E402  (DroneCAN, 11d)
 from alerts import LINK_TIME_STEPS, link_time_text  # noqa: E402  (LINK TIME, step 13q1)
 from alerts import override_texts  # noqa: E402  (the shore stick override, step 13q3)
+from alerts import confirm_centre_hint  # noqa: E402  (W79: centre the joystick to confirm)
 from link import Link, list_ports
 from gwclient import GatewayLink
 import shorejoy
@@ -3718,6 +3719,9 @@ class App:
             msg = self.msg_text or ""
             if hv is not None and hv["other"]:                 # «ΜΙΛΑ: ΣΥΓΚΥΒΕΡΝΗΤΗΣ» first (13r): who has the loudhailer
                 msg, col = hv["text"] + ("  ·  " + msg if msg else ""), ORANGE
+            ch = self.confirm_hint()                       # W79: a CONFIRM pending, the stick off centre
+            if ch:
+                msg, col = ch + ("  ·  " + msg if msg else ""), ORANGE
             out.append(("text", "message", msg, theme.CAUTION if col in (RED, ORANGE) else
                         (C["ok_txt"] if col == GREEN else None), True))
             out.append(("gap",))
@@ -4876,6 +4880,25 @@ class App:
         else:
             txt = T("cap.prog_stored", n=d["prog_n"])
         return txt
+
+    def confirm_hint(self):
+        """W79 (owner 2026-11-05, DISPLAY ONLY): «Κεντράρετε το χειριστήριο για να επιβεβαιώσετε» while a CONFIRM is
+        pending and the stick whose CONFIRM counts is off centre (alerts.confirm_centre_hint); this station's own
+        shore stick read at most every 0.1 s. Shown on screen 1's notices + screen 2's message line."""
+        d = self.t
+        if not d or not d.get("confirm_kind"):
+            return None
+        now = time.time()
+        cache = getattr(self, "_ch_shore", None)
+        if cache is None or now - cache[0] > 0.1:
+            v = None
+            if getattr(self, "sj", None) is not None and not self.uav_fly.active():
+                try:
+                    v = shorejoy.to_remote(self.sj, self.sj_cfg)
+                except Exception:
+                    v = None
+            cache = self._ch_shore = (now, v)
+        return confirm_centre_hint(d, cache[1], self.helm_mine())
 
     def helm_mine(self):
         hid = (self.t or {}).get("helm")

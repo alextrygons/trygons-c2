@@ -133,6 +133,47 @@ def override_texts(d):
     return out
 
 
+# W79 (owner 2026-11-05): the AURIX's joystick centre tolerance (app/joystick.c center_tol default 0.10; the shore
+# stick uses the same value) - DISPLAY ONLY, the AURIX decides with its own setting
+CENTRE_TOL = 0.10
+CONF_MANEUVER = proto.CONFIRM_KINDS.index("MANEUVER")
+
+
+def confirm_centre_hint(d, shore=None, helm_here=False):
+    """W79 (owner 2026-11-05, DISPLAY ONLY): the hint «Κεντράρετε το χειριστήριο για να επιβεβαιώσετε» while a CONFIRM
+    is pending on the boat and the stick whose CONFIRM counts is not centred (the AURIX would refuse the press: only
+    the onboard chirp says so). TELEM2 / TELEM carry no "CONFIRM refused" counter, so the station judges from what
+    it has: CREWED = the onboard joystick (telemetry joy_status 1 = not armed / not centred, or joy_x / joy_y off
+    centre) + for a MANEUVER CONFIRM also this station's own shore stick X / Y when it holds HELM (step WB);
+    UNCREWED = this station's shore stick X / Y and the lever (neutral zone nz_lo..nz_hi) when it holds HELM.
+    shore = this station's stick packet {"x", "y", "lever"?} (shorejoy.to_remote) or None. Returns the text or None."""
+    if not d or not d.get("confirm_kind"):
+        return None
+
+    def off(v):
+        try:
+            return not abs(float(v)) < CENTRE_TOL
+        except (TypeError, ValueError):
+            return False
+
+    def shore_off(lever):
+        if not helm_here or not shore:
+            return False
+        if off(shore.get("x", 0.0)) or off(shore.get("y", 0.0)):
+            return True
+        lev = shore.get("lever") if lever else None
+        return lev is not None and not (d.get("nz_lo", 0.45) <= lev <= d.get("nz_hi", 0.55))
+
+    if d.get("profile") == proto.PROFILE_UNCREWED:
+        hint = shore_off(True)                          # the shore captain's CONFIRM: stick + lever
+    else:
+        js = d.get("joy_status", 0)
+        hint = js == 1 or (js == 2 and (off(d.get("joy_x", 0.0)) or off(d.get("joy_y", 0.0))))
+        if d["confirm_kind"] == CONF_MANEUVER:          # step WB: the shore stick X AND Y too (not the lever)
+            hint = hint or shore_off(False)
+    return i18n.T("conf.centre") if hint else None
+
+
 def bits_of(d):
     """Both alarm words of a telemetry dict (TELEM2 merged in) as one int: word 2 at bit << WORD2.
     Every alarm function here takes these combined bits; the ground station treats both words alike."""

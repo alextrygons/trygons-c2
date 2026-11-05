@@ -54,6 +54,8 @@
       by the background), a click on the line = time + speed there, NEW TRACK = YES / NO then <date>_<HHMM>_<boat> + a
       new line, one track per boat, the TRACKS list (show grey dashed + date / hide / remove - the file stays / GPX
       export + import, a bad file refused), the screen 1 mini map, nothing sent to the boat
+  S28 centre the joystick to confirm (W79, owner 2026-11-05): a pending CONFIRM + the counted stick off centre = the
+      hint on screen 2's message line + screen 1's notices; none otherwise; nothing sent to the boat
 (The captain's ACCEPT of a copilot's route / geofence through a real gateway: gateway test GF.)
 
 Run:  python test_screen2.py        (exit code 0 = all passed)
@@ -2270,8 +2272,104 @@ def s27_screenrec(rig):
                inside, label_off, label_on, off_again, msgs, sent, fits, rig.errors[:2]))
 
 
+def s28_confirm_centre(rig):
+    """W79 (owner 2026-11-05, DISPLAY ONLY): «Κεντράρετε το χειριστήριο για να επιβεβαιώσετε» / "Centre the joystick to
+    confirm" on screen 2's message line AND screen 1's notices while a CONFIRM is pending and the stick whose CONFIRM
+    counts is off centre: CREWED = the onboard stick (telemetry joy_status / joy_x / joy_y) + for MANEUVER this HELM
+    station's shore stick X / Y (step WB, not the lever); UNCREWED = this HELM station's shore stick + lever. Never
+    without a pending CONFIRM, never for another station's stick; nothing is sent to the boat."""
+    ap = rig.ap
+    rig.size(1366, 768, 1.0)
+    keys = ("confirm_kind", "confirm_left_ds", "joy_status", "joy_x", "joy_y", "profile")
+    sent = []
+    orig_cmd, orig_tr = ap.cmd, A.shorejoy.to_remote
+    orig_sj = getattr(ap, "sj", None)
+    shore = {"v": None}
+    helm = {"on": True}
+    ap.cmd = lambda f, p, w=None: sent.append((f, p))
+    A.shorejoy.to_remote = lambda js, cfg: dict(shore["v"]) if shore["v"] is not None else None
+    ap.helm_mine = lambda: helm["on"]
+    ap.sj = object()
+    hint = i18n.T("conf.centre")
+    rows = {}
+    try:
+        def look(name, **kw):
+            rig.extra.update(kw)
+            ap._ch_shore = None
+            rig.pump(0.4)
+            ap.render(force=True)
+            msg = [it[2] for it in ap.bar_items(2) if it[0] == "text" and it[1] == "message"]
+            on2 = bool(msg) and msg[0].startswith(hint)
+            rows[name] = on2
+            return on2
+
+        crewed = dict(profile=proto.PROFILE_CREWED, confirm_left_ds=80)
+        c_off = look("crewed_off", confirm_kind=1, joy_status=2, joy_x=0.3, joy_y=0.0, **crewed)
+        # screen 1: the same text in the notices (under the CONFIRM notice)
+        ap.open_driver()
+        dv = ap.driver
+        dv.w.geometry("1600x900+0+0")
+        rig.pump(1.0)
+        ap._ch_shore = None
+        s1 = [n for n in dv.notices(ap.t, ap.gw_status or {}) if n[0] == "conf_centre"]
+        s1_ok = s1 == [("conf_centre", hint, "caution")]
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots and dv.last_frame is not None:
+            dv.last_frame.save(os.path.join(shots, "driver_confirm_centre_el.png"))
+        ap.close_driver()
+        if shots:
+            canvaspic.save(ap.cv, os.path.join(shots, "screen2_confirm_centre_el.png"))
+        c_y = look("crewed_y", joy_x=0.0, joy_y=-0.5)
+        c_unarmed = look("crewed_unarmed", joy_y=0.0, joy_status=1)
+        c_centred = look("crewed_centred", joy_status=2)
+        no_confirm = look("no_confirm", confirm_kind=0, joy_x=0.6)
+        # CREWED MANEUVER (step WB): this HELM station's shore stick X / Y counts, the lever not
+        shore["v"] = {"x": 0.0, "y": 0.5, "lever": 0.5}
+        mnv_y = look("mnv_shore_y", confirm_kind=6, joy_x=0.0)
+        shore["v"] = {"x": 0.0, "y": 0.0, "lever": 0.95}
+        mnv_lever = look("mnv_lever_only")
+        shore["v"] = {"x": 0.4, "y": 0.0, "lever": 0.5}
+        helm["on"] = False
+        mnv_not_helm = look("mnv_not_helm")
+        helm["on"] = True
+        auto_shore = look("auto_shore_ignored", confirm_kind=1)             # CREWED AUTO: the shore stick not counted
+        # UNCREWED: the shore captain's stick + lever
+        unc = dict(profile=proto.PROFILE_UNCREWED, confirm_kind=1, joy_status=2, joy_x=0.8)
+        shore["v"] = {"x": 0.0, "y": 0.0, "lever": 0.5}
+        u_centred = look("unc_centred", **unc)                              # (the onboard stick ignored)
+        shore["v"] = {"x": 0.0, "y": 0.0, "lever": 0.9}
+        u_lever = look("unc_lever")
+        shore["v"] = {"x": -0.2, "y": 0.0, "lever": 0.5}
+        u_x = look("unc_x")
+        shore["v"] = None
+        u_none = look("unc_no_stick")
+        fits = not layout_problems(ap)
+        texts = {}
+        for lang in ("el", "en"):
+            with open(os.path.join(HERE, "lang", lang + ".txt"), encoding="utf-8") as f:
+                texts[lang] = [ln.split("=", 1)[1].strip() for ln in f if ln.startswith("conf.centre =")]
+        texts_ok = texts == {"el": ["Κεντράρετε το χειριστήριο για να επιβεβαιώσετε"],
+                             "en": ["Centre the joystick to confirm"]}
+    finally:
+        ap.cmd, A.shorejoy.to_remote = orig_cmd, orig_tr
+        ap.__dict__.pop("helm_mine", None)              # the class's own again
+        ap.sj = orig_sj
+        ap._ch_shore = None
+        for k in keys:
+            rig.extra.pop(k, None)
+        rig.extra.update(profile=proto.PROFILE_CREWED)
+    ok = (c_off and s1_ok and c_y and c_unarmed and not c_centred and not no_confirm and mnv_y and not mnv_lever and
+          not mnv_not_helm and not auto_shore and not u_centred and u_lever and u_x and not u_none and fits and
+          texts_ok and not sent and not rig.errors)
+    report("S28 centre the joystick to confirm (W79): a pending CONFIRM + the counted stick off centre = the hint on "
+           "screen 2's message line + screen 1's notices (CREWED onboard X / Y / not armed, MANEUVER + the HELM "
+           "shore stick X / Y not the lever, UNCREWED the HELM shore stick + lever); none otherwise, nothing sent",
+           ok, "cases %s; screen 1 %s; fits %s; texts %s; sent %s; errors %s" % (rows, s1, fits, texts, sent,
+                                                                                rig.errors[:2]))
+
+
 def main():
-    exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
+    exe =os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
         print("build the simulator first: sim\\build_sim.bat")
         return 2
@@ -2279,7 +2377,7 @@ def main():
     try:
         for fn in (s1_matrix, s2_collapsed, s3_roles, s4_maneuver, s5_map, s6_edit, s7_link, s8_boats, s9_look,
                    s10_tools, s11_greek, s12_alarms, s13_boat_line, s14_relays, s15_dp, s17_link_time, s18_uncrewed_hdg, s19_override, s20_slam_restore,
-                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s25_camview, s26_track, s27_screenrec, s16_silence):
+                   s21_mode_bar, s22_bars, s23_drag, s24_battle_short, s25_camview, s26_track, s27_screenrec, s28_confirm_centre, s16_silence):
             try:
                 fn(rig)
             except Exception as e:

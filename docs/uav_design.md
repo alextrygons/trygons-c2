@@ -496,7 +496,7 @@ are gateway-side only).
 ## 11. Legal note (for MANUAL / MANUAL_EL in U6; not legal advice)
 
 EU Regulations 2019/947 and 2019/945 apply in Greece (competent authority for drones: the Hellenic Civil Aviation
-Authority, HCAA = Αρχή Πολιτικής Αεροπορίας, ΑΠΑ - U6 review L9: not the older ΥΠΑ; check the current name).
+Authority, HCAA = Αρχή Πολιτικής Αεροπορίας, ΑΠΑ - U6 review L9: not the older ΥΠΑ; the current name confirmed by the owner 2026-11-05, W78).
 UAS geographical zones (2019/947 Art. 15) + airspace coordination near airports / restricted areas; third-party
 liability insurance as the authorisation / Greek law require (Regulation (EC) 785/2004 for 20 kg and more). BVLOS flight is in the SPECIFIC category: an operational authorisation (SORA, or a PDRA
 where one fits), a registered UAS operator, a remote pilot with the required competency, insurance; take-off

@@ -848,6 +848,9 @@ class DriverScreen:
             if d.get("confirm_kind"):
                 out.append(("confirm", T("cap.confirm_banner", what=T("confirm.%d" % min(
                     d["confirm_kind"], len(proto.CONFIRM_KINDS) - 1)), s="%.0f" % d["confirm_left_s"]), "caution"))
+                ch = a.confirm_hint() if hasattr(a, "confirm_hint") else None   # W79: the stick off centre
+                if ch:
+                    out.append(("conf_centre", ch, "caution"))
             if d.get("first_test"):
                 out.append(("first_test", T("drv.first_test"), theme.NOTICE["first_test"]))
             if d.get("nv_fault"):

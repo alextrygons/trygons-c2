@@ -278,6 +278,7 @@ cap.so_banner = SINGLE-OPERATOR MODE - you confirm your own driving actions
 cap.ft_banner = FIRST TEST - STEERING ONLY: throttle and gear disabled (drive the throttle by hand) - take over: STANDBY button or EMERGENCY STOP
 cap.ack_alarm = ACK ALARM\n(STANDBY)
 cap.confirm_banner = PRESS JOYSTICK CONFIRM - {what} - {s} s
+conf.centre = Centre the joystick to confirm
 cap.remote_lost_banner = REMOTE DRIVING LINK LOST - idle, neutral, holding heading
 cap.remote_banner = REMOTE DRIVING (shore joystick) - onboard joystick / STANDBY take over
 cap.alarm_banner = ALARM: {list}
