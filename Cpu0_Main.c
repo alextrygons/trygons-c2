@@ -86,7 +86,9 @@ void core0_main(void)
     monitor_publish_safe(&g_mon, g_cfg.servo.idle_us, g_cfg.gear.pwm_n_us);
 #endif
     /* step 13s: the stack fill pattern (high-water marks on the BENCH TEST screen): core 0's free user stack +
-     * its interrupt stack, before hal_init configures any interrupt (a few microseconds) */
+     * its interrupt stack, before hal_init configures any interrupt (a few microseconds; interrupts are
+     * enabled above, so hal_stack_fill disables them during the fill and restores them - 13s review LOW-1).
+     * After the safe pulses: the 13e rule "publish them first" stays first. */
     hal_stack_fill();
 
     /* Outputs to their safe state (servo pins low, relay open). NOT before the other cores start: CPU1 is

@@ -249,7 +249,8 @@ def stack_map(txt, strict=False):
         direct = stackcheck.cycles(g)            # before resolving: only the calls the code really makes
         for c in direct:
             problems.append("DIRECT RECURSION: " + " -> ".join(c[:12]))
-        ok_a, lines, _ = stackcheck.analyse(g, reserved, stackcheck.isr_table(), trap=trap, label="TASKING map")
+        ok_a, lines, _ = stackcheck.analyse(g, reserved, stackcheck.isr_table(), trap=trap, label="TASKING map",
+                                            source=stackcheck.source_indirect())
         print("\n".join("  " + l for l in lines))
         if recursive and ok_a and not direct:
             print("  the linker's \"recursive: yes\" = only through __INDIRECT__ (function pointers): resolved, no cycle")

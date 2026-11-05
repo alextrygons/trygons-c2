@@ -1339,7 +1339,7 @@ SHARED_BEGIN()          /* each core writes its own flag, core 0 reads all three
 static volatile uint32 s_stack_filled[3];
 SHARED_END()
 static stk_scan_t s_stk[HAL_STACK_COUNT];  /* core 0 only (hal_get_diag) */
-static uint8 s_stk_next;                   /* core 0: the stack whose turn it is */
+static uint32_t s_stk_next;                /* core 0: the stack whose turn it is (stk_round) */
 
 void hal_stack_fill(void)
 {
@@ -1350,20 +1350,24 @@ void hal_stack_fill(void)
     volatile uint32 *uhi = (volatile uint32 *)k_stk_hi[core * 2u];
     volatile uint32 *sp = &here;
     if (sp > ulo + STACK_FILL_GAP_WORDS && sp <= uhi) {
+        /* 13s review LOW-1: this core's interrupts OFF during the fill (core 0 calls it after
+         * IfxCpu_enableInterrupts): no interrupt routine can be on the interrupt stack while it is
+         * overwritten - this runs in core<n>_main (not an interrupt), so the interrupt stack is free.
+         * Restored to the caller's state after (a few microseconds). */
+        boolean ie = IfxCpu_disableInterrupts();
         for (volatile uint32 *p = ulo; p < sp - STACK_FILL_GAP_WORDS; p++) *p = STK_PATTERN;
-        /* the interrupt stack is not in use: no interrupt of this core has run yet */
         volatile uint32 *ilo = (volatile uint32 *)k_stk_lo[core * 2u + 1u];
         volatile uint32 *ihi = (volatile uint32 *)k_stk_hi[core * 2u + 1u];
         for (volatile uint32 *p = ilo; p < ihi; p++) *p = STK_PATTERN;
         __dsync();
         s_stack_filled[core] = 1u;
+        IfxCpu_restoreInterrupts(ie);
     }
     (void)here;
 }
 
 static void stack_report(hal_diag_t *d)
 {
-    uint32 budget = HAL_STACK_SCAN_WORDS;
     for (unsigned i = 0; i < HAL_STACK_COUNT; i++) {
         stk_scan_t *s = &s_stk[i];
         if (!s->filled) {           /* (again) until that core said it filled its stacks */
@@ -1371,13 +1375,8 @@ static void stack_report(hal_diag_t *d)
             stk_init(s, (const volatile uint32_t *)k_stk_lo[i], words, s_stack_filled[i / 2u] != 0u);
         }
     }
-    /* one stack after the other, at most HAL_STACK_SCAN_WORDS words in all per call (never a long loop) */
-    for (unsigned k = 0; k < HAL_STACK_COUNT && budget > 0u; k++) {
-        stk_scan_t *s = &s_stk[s_stk_next];
-        stk_scan(s, budget);
-        budget = s->checked < budget ? budget - s->checked : 0u;
-        if (s->checked == 0u || s->known) s_stk_next = (uint8)((s_stk_next + 1u) % HAL_STACK_COUNT);
-    }
+    /* one stack after the other, at most HAL_STACK_SCAN_WORDS words in all per call (tc_stack.c, PC-tested SK6 / SK7) */
+    stk_round(s_stk, HAL_STACK_COUNT, &s_stk_next, HAL_STACK_SCAN_WORDS);
     for (unsigned i = 0; i < HAL_STACK_COUNT; i++) {
         d->stack[i].size = stk_size_bytes(&s_stk[i]);
         d->stack[i].used = stk_used_bytes(&s_stk[i]);

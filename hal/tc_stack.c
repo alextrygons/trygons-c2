@@ -54,3 +54,17 @@ bool stk_overflow(const stk_scan_t *s)
 {
     return s->known && s->mark == 0u;
 }
+
+void stk_round(stk_scan_t *set, uint32_t n, uint32_t *next, uint32_t budget)
+{
+    if (set == 0 || next == 0 || n == 0u) return;
+    if (*next >= n) *next = 0u;
+    /* one stack after the other, at most `budget` words in all per call (never a long loop): a stack stays
+     * the current one while it is in the middle of its first pass; known / never filled = the next one */
+    for (uint32_t k = 0u; k < n && budget > 0u; k++) {
+        stk_scan_t *s = &set[*next];
+        stk_scan(s, budget);
+        budget = s->checked < budget ? budget - s->checked : 0u;
+        if (s->checked == 0u || s->known) *next = (*next + 1u) % n;
+    }
+}

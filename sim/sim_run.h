@@ -74,7 +74,7 @@ void sb_tests(void);
 void sb_usb_tests(void);
 void sb_gateway_tests(void);      /* gateway link, HELM, REMOTE, SAVE requests */
 void sb_can_tests(void);          /* CN: DroneCAN bus + node table (step 11d) */
-void sb_bench_tests(void);        /* only the BENCH TEST BT1-BT7 + stack SK1-SK5 tests (step 13s) */
+void sb_bench_tests(void);        /* only the BENCH TEST BT1-BT7 + stack SK1-SK7 tests (step 13s) */
 void sb_pulse_tests(void);        /* only the paddlewheel pulse tests PW1-PW6 */
 void sb_confirm_only_tests(void); /* only the CONFIRM_ONLY tests CO1-CO3 (academy practical test) */
 void sb_maneuver_tests(void);     /* only the MANEUVER stick-Y gear tests MV5-MV8 (step 13q5) */

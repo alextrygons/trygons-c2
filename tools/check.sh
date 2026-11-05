@@ -186,7 +186,7 @@ else
 fi
 
 # step 13s: stack safety from the TriCore objects' call graphs (GCC -fcallgraph-info): no recursion (every function-
-# pointer call resolved by tools/stackcheck.py INDIRECT), worst case per core x 1.5 inside the linker scripts' stacks
+# pointer call resolved by tools/stackcheck.py INDIRECT, the table proved against the source: 13s review MED-1), worst case per core x 1.5 inside the linker scripts' stacks
 # + CSA (both scripts the same); the small boat, the board with the DroneCAN servos + relay board, the big boat.
 # The ADS map's own check (TASKING's numbers) = tools/mapreport.py "<map>" after every ADS build (owner).
 echo "== stack check (call graph: recursion, pointer calls, worst case per core vs the linker scripts)"
@@ -255,6 +255,9 @@ grep -E "^\[FAIL\]|SCREEN RECORDING TESTS" "$TEMP/screenrec_tests.txt"
 echo "== YES / NO answers on the shore joystick (13p): trigger / thumb / stick Y / hat, 0.5 s guard, one press = one thing (station + gateway)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_yesno.py > "$TEMP/yesno_tests.txt" 2>&1 ) || { echo "YES / NO TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|YES / NO TESTS" "$TEMP/yesno_tests.txt"
+echo "== Bench tab stack use (13s review LOW-3): BENCH_DIAG stack block decoded + drawn (display only)"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_benchstack.py > "$TEMP/benchstack_tests.txt" 2>&1 ) || { echo "BENCH STACK TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|BENCH STACK TESTS" "$TEMP/benchstack_tests.txt"
 echo "== loudhailer on the station (13r): voice codec + signed packets, ΟΜΙΛΙΑ press-and-hold on both screens, not on the joystick, ready messages, Tools page, devices"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_hailer.py > "$TEMP/hailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER STATION TESTS" "$TEMP/hailer_tests.txt"

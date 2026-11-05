@@ -578,8 +578,10 @@ typedef struct {
 bool hal_get_diag(hal_diag_t *d);
 
 /* Stack fill pattern (step 13s): the CALLING core writes the pattern into the free part of its user stack
- * (below its stack pointer) and into its whole interrupt stack - the first statement of core<n>_main, before
- * any interrupt of that core can run (core 0: before hal_init configures one). Nothing on the PC. */
+ * (below its stack pointer) and into its whole interrupt stack, early in core<n>_main (CPU1 / core 2: the
+ * first statement; core 0: right after its safe pulses are published, the 13e rule, before hal_init configures
+ * an interrupt). It disables the calling core's interrupts during the fill and restores the previous state
+ * after (13s review LOW-1: core 0 has already called IfxCpu_enableInterrupts there). Nothing on the PC. */
 void hal_stack_fill(void);
 
 /* Supply voltage (battery), V. false if not measured. */

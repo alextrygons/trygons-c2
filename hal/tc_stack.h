@@ -1,7 +1,8 @@
 /*
  * tc_stack.h - Stack high-water marks (step 13s): the fill pattern + a bounded scan. Pure C (no iLLD):
  * the board (hal_tc375.c: every core fills its own stacks at the start of core<n>_main, core 0 scans
- * all six for the BENCH TEST screen) and the PC simulation (sim tests SK1-SK6 on an array) use it.
+ * all six for the BENCH TEST screen with stk_round; the board keeps only the addresses) and the PC
+ * simulation (sim tests SK1-SK7 on arrays) use it.
  *
  * A stack grows DOWN: from its top (highest address) toward lo (the lowest word, the end of the
  * reserved block). Every word below the stack pointer is written with STK_PATTERN at the start; the
@@ -39,5 +40,9 @@ void     stk_scan(stk_scan_t *s, uint32_t budget);
 uint32_t stk_size_bytes(const stk_scan_t *s);
 uint32_t stk_used_bytes(const stk_scan_t *s);   /* deepest use seen, bytes (0 until known) */
 bool     stk_overflow(const stk_scan_t *s);     /* the lowest word was overwritten */
+/* 13s review LOW-2: the scheduler over a set of n stacks (the board: 6, core 0's hal_get_diag): stk_scan on
+ * set[*next], then the next one, until `budget` words IN ALL were looked at this call (never more); *next
+ * keeps whose turn it is between calls (wraps; out of range = 0). n = 0 / NULL = nothing. */
+void     stk_round(stk_scan_t *set, uint32_t n, uint32_t *next, uint32_t budget);
 
 #endif /* TC_STACK_H */

@@ -1517,7 +1517,7 @@ class App:
         ]
         self.bench_sens.configure(text="\n".join(lines))
         self.draw_bench_stack(d.get("stack"))
-        run ={-1: T("bench.run_left"), 1: T("bench.run_right")}.get(d["pulse"], T("bench.stopped"))
+        run = {-1: T("bench.run_left"), 1: T("bench.run_right")}.get(d["pulse"], T("bench.stopped"))
         self.bench_pulse.configure(text=T("bench.pulse", run=run, est="%+.1f" % d["estimate"], n=d["pulses"],
                                           refused=d["refused"]) +
                                    (T("bench.last_refuse", why=T("bench.refuse_%d" % d["last_refuse"]))

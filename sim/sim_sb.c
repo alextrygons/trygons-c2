@@ -9141,7 +9141,7 @@ static void bench_tests(void)
 
 /* ------------------------------------------------- stack high-water marks -- */
 
-/* SK1-SK5 (step 13s): the board's fill pattern + bounded scan (hal/tc_stack.c, the same code as on the AURIX) on
+/* SK1-SK7 (step 13s; SK6 / SK7 = 13s review): the board's fill pattern + bounded scan (hal/tc_stack.c, the same code as on the AURIX) on
  * an array that plays a stack: the deepest use found exactly, never more words per call than the budget, the mark
  * only moves deeper, the lowest word written = overflow, an unfilled stack is never "known" */
 static void stack_tests(void)
@@ -9208,6 +9208,60 @@ static void stack_tests(void)
         snprintf(d, sizeof d, "never filled: known %s, words looked at %u", s.known ? "YES" : "no", checked);
         test_report("SK5 stack scan: a stack that was never filled is never 'known' (reported unknown)",
                     !s.known && checked == 0u && stk_used_bytes(&s) == 0u, d);
+    }
+    /* SK6 + SK7 (13s review LOW-2): the board's round-robin over its 6 stacks with ONE budget per call (stk_round,
+     * moved from hal_tc375.c into tc_stack.c): never more words in all per call than the budget, every filled
+     * stack becomes known with its exact mark, a never-filled one neither stalls the round nor becomes known */
+    {
+        static uint32_t m6[6][300];
+        stk_scan_t set[6];
+        const uint32_t sizes[6] = { 300u, 120u, 200u, 64u, 250u, 10u };
+        const uint32_t used[6]  = { 40u, 0u, 199u, 64u, 5u, 3u };        /* words used from the top */
+        for (uint32_t i = 0u; i < 6u; i++) {
+            stk_fill(m6[i], sizes[i]);
+            for (uint32_t w = sizes[i] - used[i]; w < sizes[i]; w++) m6[i][w] = w + 1u;
+            stk_init(&set[i], m6[i], sizes[i], i != 1u);                 /* stack 1: its core never filled it */
+        }
+        uint32_t next = 0u, calls = 0u, max_total = 0u, bad_next = 0u;
+        bool all = false;
+        while (!all && calls < 1000u) {
+            for (uint32_t i = 0u; i < 6u; i++) set[i].checked = 0u;    /* (an output only: this call's words) */
+            stk_round(set, 6u, &next, 64u);
+            uint32_t total = 0u;
+            for (uint32_t i = 0u; i < 6u; i++) total += set[i].checked;
+            if (total > max_total) max_total = total;
+            if (next >= 6u) bad_next++;
+            calls++;
+            all = true;
+            for (uint32_t i = 0u; i < 6u; i++) if (i != 1u && !set[i].known) all = false;
+        }
+        bool exact = true;
+        for (uint32_t i = 0u; i < 6u; i++)
+            if (i != 1u && stk_used_bytes(&set[i]) != used[i] * 4u) exact = false;
+        bool ovf = stk_overflow(&set[3]) && !stk_overflow(&set[0]);
+        snprintf(d, sizeof d, "every filled stack known after %u calls (budget 64 words in all: at most %u looked at "
+                 "in one call), marks exact %s, the never-filled stack known %s, stack 3 full = overflow %s, turn index "
+                 "out of range %u x", calls, max_total, exact ? "yes" : "NO", set[1].known ? "YES" : "no",
+                 ovf ? "yes" : "NO", bad_next);
+        test_report("SK6 stack round-robin (stk_round): bounded per call over all 6 stacks, every filled stack known + "
+                    "exact, the unfilled one skipped", all && exact && !set[1].known && max_total <= 64u && ovf &&
+                    bad_next == 0u, d);
+        /* SK7: n = 0 / an out-of-range turn index are safe; the budget is shared (a long first stack does not
+         * starve the others for ever: after its pass the next one gets its turn) */
+        uint32_t nx = 99u;
+        stk_round(set, 0u, &nx, 64u);
+        bool n0 = nx == 99u;
+        stk_round(NULL, 6u, &nx, 64u);
+        bool null_ok = nx == 99u;
+        for (uint32_t i = 0u; i < 6u; i++) stk_init(&set[i], m6[i], sizes[i], i != 1u);
+        stk_round(set, 6u, &nx, 64u);                                    /* 99 -> 0 */
+        bool wrapped = set[0].checked > 0u && nx < 6u;
+        uint32_t turns_seen = 0u;
+        for (int k = 0; k < 40; k++) { uint32_t before = nx; stk_round(set, 6u, &nx, 64u); if (nx != before) turns_seen++; }
+        snprintf(d, sizeof d, "n = 0 nothing %s, NULL nothing %s, index 99 -> stack 0 %s, the turn moved on %u x in 40 calls",
+                 n0 ? "yes" : "NO", null_ok ? "yes" : "NO", wrapped ? "yes" : "NO", turns_seen);
+        test_report("SK7 stack round-robin: n = 0 / NULL / an out-of-range index are safe, the turn moves on",
+                    n0 && null_ok && wrapped && turns_seen > 0u, d);
     }
 }
 
