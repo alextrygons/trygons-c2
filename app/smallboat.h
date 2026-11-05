@@ -437,6 +437,8 @@ typedef struct {
     /* step 13q2: UNCREWED entries without CONFIRM, refused because the shore stick / lever was not centred,
      * release attempts refused while driving (there is no release) */
     uint32_t direct, refused_centre, release_refused;
+    /* step WB (owner W52b): CREWED MANEUVER onboard CONFIRMs refused - the shore stick not centred (X / Y) / stale */
+    uint32_t conf_refused_stick;
     /* step 13q5 (owner 2026-10-31 C5): MANEUVER gear on the shore STICK Y (the lever is not used in MANEUVER):
      * full forward (>= SB_MNV_Y_FULL) held SB_MNV_HOLD_MS = FORWARD, centre = NEUTRAL at once (spring-centred: let
      * go = neutral), full back held = REVERSE; the stick the other way = NEUTRAL at once. The gear state machine
@@ -552,7 +554,8 @@ typedef struct {
     uint32_t rx_ms;             /* when (0 = never) */
     uint16_t age_ms;            /* data age on the gateway */
     bool     centred;           /* stick centred (and lever in its neutral zone) */
-    bool     confirm;           /* CONFIRM held */
+    bool     stick_centred;     /* step WB: the stick X AND Y centred (the lever not counted: unused in MANEUVER) */
+    bool     confirm;         /* CONFIRM held */
     bool     confirm_edge;      /* pressed since the last control step */
     uint32_t presses;
 } sb_shore_t;

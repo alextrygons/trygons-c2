@@ -6073,6 +6073,7 @@ static void crew_tests(void)
         power_full(&x);
         pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
         r.rj_on = true;
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);                     /* (WB: the shore stream runs before the CONFIRM) */
         uint8_t ask = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
         bool waits = sb_mode(&x.sb) == MODE_STANDBY;
         bool cf = onboard_confirm(&x, &r);
@@ -6146,6 +6147,7 @@ static void crew_tests(void)
         bool sb5 = sb_mode(&x.sb) == MODE_STANDBY;
         /* the onboard joystick takes over */
         r.rj_on = true;
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);                     /* (WB: the shore stream runs before the CONFIRM) */
         pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
         onboard_confirm(&x, &r);
         bool on2 = sb_mode(&x.sb) == MODE_MANEUVER;
@@ -6210,6 +6212,7 @@ static void crew_tests(void)
         crew_init(&x, &r, 1214u, true, NULL);
         pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
         r.rj_on = true;
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);                     /* (WB: the shore stream runs before the CONFIRM) */
         pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
         onboard_confirm(&x, &r);
         bool on = sb_mode(&x.sb) == MODE_MANEUVER;
@@ -6560,6 +6563,79 @@ static void maneuver_gear_tests(void)
                     "turned back to the old gear",
                     a == PROTO_R_OK && f && half && mv == PROTO_R_OK && in && nopkt && dem == GEAR_N && tgt == GEAR_N &&
                     !f_again && n, d);
+    }
+
+    /* MV11 (step WB, owner W52b 2026-11-04) CREWED MANEUVER: the onboard CONFIRM also needs the HELM station's shore
+     * stick centred, X AND Y, with fresh packets - else refused (chirp, nothing changes, the request stays pending
+     * until its deadline); then centred = accepted. (UNCREWED: the 13q2 rule at the request, MV3 / MV8.) */
+    {
+        static sbsim_t x;
+        static rjsim_t r;
+        const uint8_t TAKE = 0u, ASK = 0u;
+        crew_init(&x, &r, 1310u, true, NULL);
+        pi_cmd(&x, &r.p, 2u, false, PROTO_T_HELM, &TAKE, 1u);
+        r.rj_on = true;
+        r.x = 0.5f;                                              /* the shore stick X held to one side */
+        sbsim_run(&x, x.t + 300u, rj_hook, &r);
+        uint8_t ask = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        uint32_t ref0 = x.sb.remote.conf_refused_stick;
+        bool cx = onboard_confirm(&x, &r);
+        bool px = sb_mode(&x.sb) == MODE_STANDBY && x.sb.confirm.kind == CONF_MANEUVER &&
+                  x.sb.remote.conf_refused_stick == ref0 + 1u;
+        r.x = 0.0f;
+        r.y = 1.0f;                                              /* X centred, the stick Y held full forward */
+        sbsim_run(&x, x.t + 200u, rj_hook, &r);
+        bool cy = onboard_confirm(&x, &r);
+        bool py = sb_mode(&x.sb) == MODE_STANDBY && x.sb.confirm.kind == CONF_MANEUVER &&
+                  x.sb.remote.conf_refused_stick == ref0 + 2u;
+        r.y = -0.3f;                                             /* part back (outside the centre tolerance) */
+        sbsim_run(&x, x.t + 200u, rj_hook, &r);
+        bool cp = onboard_confirm(&x, &r);
+        r.y = 0.0f;                                              /* centred, but the packets stop */
+        sbsim_run(&x, x.t + 100u, rj_hook, &r);
+        r.rj_on = false;
+        sbsim_run(&x, x.t + 500u, rj_hook, &r);
+        bool cs = onboard_confirm(&x, &r);
+        bool ps = sb_mode(&x.sb) == MODE_STANDBY && x.sb.confirm.kind == CONF_MANEUVER;
+        r.rj_on = true;                                          /* packets again, but old on the gateway (900 ms) */
+        r.age_ms = 900u;
+        sbsim_run(&x, x.t + 200u, rj_hook, &r);
+        bool co = onboard_confirm(&x, &r);
+        bool po = sb_mode(&x.sb) == MODE_STANDBY && x.sb.confirm.kind == CONF_MANEUVER &&
+                  x.sb.remote.conf_refused_stick == ref0 + 5u;
+        float thr_max = sim_hal_throttle();
+        bool gn = gear_is(&x.sb.gear, GEAR_N);
+        r.age_ms = 60u;                                          /* fresh + centred: accepted */
+        sbsim_run(&x, x.t + 200u, rj_hook, &r);
+        bool acc = onboard_confirm(&x, &r);
+        bool on = sb_mode(&x.sb) == MODE_MANEUVER && x.sb.confirm.kind == CONF_NONE &&
+                  x.sb.remote.conf_refused_stick == ref0 + 5u;
+        /* the deadline: a request whose CONFIRMs were all refused ends after confirm_ms, a later CONFIRM does nothing */
+        press(&x, HAL_BTN_STANDBY);
+        sbsim_run(&x, x.t + 3000u, rj_hook, &r);
+        r.y = 1.0f;
+        sbsim_run(&x, x.t + 200u, rj_hook, &r);
+        uint8_t ask2 = pi_cmd(&x, &r.p, 2u, false, PROTO_T_MANEUVER, &ASK, 1u);
+        bool c2 = onboard_confirm(&x, &r);
+        r.y = 0.0f;
+        sbsim_run(&x, x.t + x.sb.cfg.confirm_ms + 200u, rj_hook, &r);
+        bool gone = x.sb.confirm.kind == CONF_NONE;
+        bool c3 = onboard_confirm(&x, &r);
+        bool late = !c3 && sb_mode(&x.sb) == MODE_STANDBY;
+        crew_plug();
+        snprintf(d, sizeof d, "CREWED: asked %u; onboard CONFIRM with the shore stick X 0.5: %s (still pending, STANDBY %s); "
+                 "Y full forward: %s (%s); Y part back: %s; packets stopped: %s (%s); packets 900 ms old: %s (%s), "
+                 "refused %u, throttle %.2f %%, gear N %s; fresh + centred: %s -> MANEUVER %s; again with Y held: asked %u, "
+                 "CONFIRM %s, after the deadline: request gone %s, CONFIRM then %s",
+                 ask, cx ? "ACCEPTED" : "refused", px ? "yes" : "NO", cy ? "ACCEPTED" : "refused", py ? "yes" : "NO",
+                 cp ? "ACCEPTED" : "refused", cs ? "ACCEPTED" : "refused", ps ? "yes" : "NO",
+                 co ? "ACCEPTED" : "refused", po ? "yes" : "NO", (unsigned)(x.sb.remote.conf_refused_stick - ref0),
+                 thr_max, gn ? "yes" : "NO", acc ? "accepted" : "NO", on ? "yes" : "NO", ask2, c2 ? "ACCEPTED" : "refused",
+                 gone ? "yes" : "NO", late ? "nothing" : "STARTED");
+        test_report("MV11 (WB, W52b) CREWED MANEUVER: the onboard CONFIRM needs the shore stick X and Y centred + fresh "
+                    "packets; refused = nothing changes, request pending until its deadline",
+                    ask == PROTO_R_OK && !cx && px && !cy && py && !cp && !cs && ps && !co && po && thr_max <= 0.01f && gn &&
+                    acc && on && ask2 == PROTO_R_OK && !c2 && gone && late, d);
     }
 }
 

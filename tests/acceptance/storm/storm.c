@@ -933,7 +933,7 @@ static const char *INV_NAMES[NINV] = { "",
     "I60 UNCREWED LINK TIME: the lost link comes no later than the detection time in force (3 s; the captain's LINK TIME only at open sea) + 1.5 s after the HELM station was last heard",
     "I61 UNCREWED LINK TIME: at open sea with the gateway's report the lost link never comes before the captain's LINK TIME (- 1.5 s)",
     "I62 LINK TIME always 3..60 s, 3 s after every reset and HELM grant, never in force near the shore / without shore information",
-    "I63 REMOTE / MANEUVER entry: UNCREWED only at once on the HELM station's request with its stick centred + lever neutral (fresh); CREWED never without the onboard CONFIRM",
+    "I63 REMOTE / MANEUVER entry: UNCREWED only at once on the HELM station's request with its stick centred + lever neutral (fresh); CREWED never without the onboard CONFIRM, a CREWED MANEUVER CONFIRM only with the shore stick X + Y centred (fresh, WB)",
     "I64 there is no release: a release (command / old flag) never ends REMOTE / MANEUVER, never changes the mode",
     "I65 AUTO RETURN never out of REMOTE / MANEUVER: refused there (nothing pending), never started from them",
     "I66 HDG LOCK straight from REMOTE / MANEUVER only UNCREWED by the HELM captain's command (fresh shore data, stick centred); CREWED never (the panel button only)",
@@ -970,6 +970,7 @@ typedef struct {
     uint32_t slam_acc, slam_rej, slam_refused, slam_rises, slam_asks; /* step 13q4 (I77) */
     uint32_t mv_y, mv_asks, mv_n_checks;                             /* step 13q5 (I78) */
     uint32_t mv_delayed, mv_jitter, uh_from_mnv, uh_mnv_stick_y;      /* step 13q5c (I78 / I79) */
+    uint32_t mnv_crewed_conf;                                         /* step WB (I63): CREWED MANEUVER CONFIRM entries */
     uint32_t engaged_ignored;       /* HDG LOCK / AUTO / REMOTE entered while the joystick is ignored (not centred) */
     uint32_t engaged_ignored_seed;
 } stats_t;
@@ -1640,8 +1641,20 @@ static void check_step(void)
         ST.remote_entries++;
         /* step 13q2: CREWED = the CONFIRM (I7); UNCREWED = at once on the request (I63, checked at the request) */
         if (C.rem_direct_t && S.t - C.rem_direct_t <= 100u) { ok(63); ST.remote_direct++; }
-        else if (C.confirm_t && S.t - C.confirm_t <= 200u) ok(7);
-        else fail(7, "REMOTE / MANEUVER entered without CONFIRM / direct request (mode before %.0f, now %.0f)",
+        else if (C.confirm_t && S.t - C.confirm_t <= 200u) {
+            ok(7);
+            /* step WB (owner W52b): a CREWED MANEUVER entered by the onboard CONFIRM = the HELM station's last shore
+             * packet (sent before this step) fresh with the stick X AND Y centred */
+            if (m == MODE_MANEUVER && s->profile == SB_PROFILE_CREWED) {
+                ST.mnv_crewed_conf++;
+                if (C.sent_t && C.sent_fresh && S.t - C.sent_t <= 300u && fabsf(C.sent_x) <= 0.10f &&
+                    fabsf(C.sent_y) <= 0.10f)
+                    ok(63);
+                else
+                    fail(63, "CREWED MANEUVER entered by the CONFIRM with the shore stick not centred / stale (x %.2f, "
+                         "y %.2f)", (double)C.sent_x, (double)C.sent_y);
+            }
+        } else fail(7, "REMOTE / MANEUVER entered without CONFIRM / direct request (mode before %.0f, now %.0f)",
                   (double)C.mode_prev, (double)m);
     }
 
@@ -2439,6 +2452,13 @@ static void apply(const ev_t *e)
     case E_TAKE: S.take_held = true; S.btn_release = S.t + 150u; joy_apply(); break;
     case E_AUTOBTN: S.auto_held = true; S.btn_release = S.t + 150u; C.autobtn_t = S.t; joy_apply(); break;
     case E_CONFIRM:
+        /* step WB (I63): a CREWED MANEUVER CONFIRM needs the shore stick X + Y centred - the shore captain mostly
+         * centres it first (no rng draw: the other draws stay what they were) */
+        if (!S.uncrewed && s->confirm.kind == CONF_MANEUVER && (S.t / AP_PERIOD_MS) % 10u < 7u) {
+            S.rx_x = 0.0f;
+            S.rx_y = 0.0f;
+            S.rx_y_until = 0u;
+        }
         if (s->confirm.kind == CONF_NONE && fabsf(S.jx) < 0.05f && fabsf(S.jy) < 0.05f) {
             C.confirm_free_t = S.t + 1u;
             C.confirm_free_mode = sb_mode(s);
@@ -3264,6 +3284,8 @@ static void report(int episodes, double hours)
            "nothing reduced), %lu REJECTs, %lu cap rises checked\n", (unsigned long)ST.slam_asks,
            (unsigned long)ST.slam_acc, (unsigned long)ST.slam_refused, (unsigned long)ST.slam_rej,
            (unsigned long)ST.slam_rises);
+    printf("CREWED MANEUVER entries by the CONFIRM (step WB, I63: shore stick X + Y centred): %lu\n",
+           (unsigned long)ST.mnv_crewed_conf);
     printf("MANEUVER stick gear (step 13q5, I78): %lu stick-Y events, %lu F / R asks checked, %lu centre / other-way "
            "steps checked\n", (unsigned long)ST.mv_y, (unsigned long)ST.mv_asks, (unsigned long)ST.mv_n_checks);
     printf("MANEUVER packet timing (step 13q5c, I78 / I79): %lu jittered packets, %lu delayed packets; %lu UNCREWED HDG "

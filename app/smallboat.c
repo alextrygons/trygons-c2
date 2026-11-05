@@ -1255,8 +1255,8 @@ void sb_shore_joy(sb_t *s, uint8_t station, uint16_t age_ms, float x, float y, f
     h->station = station;
     h->rx_ms = s->now_ms ? s->now_ms : 1u;
     h->age_ms = age_ms;
-    h->centred = isfinite(x) && isfinite(y) && fabsf(x) < tol && fabsf(y) < tol &&
-                 (!has_lever || (isfinite(lever) && joy_lever_neutral(&s->joy, lever)));
+    h->stick_centred = isfinite(x) && isfinite(y) && fabsf(x) < tol && fabsf(y) < tol;
+    h->centred = h->stick_centred && (!has_lever || (isfinite(lever) && joy_lever_neutral(&s->joy, lever)));
     if (confirm && !h->confirm) {
         h->confirm_edge = true;
         h->presses++;
@@ -3309,7 +3309,12 @@ static void confirm_step(sb_t *s)
         c->ignored++;                   /* nothing pending: does nothing */
         return;
     }
-    if (shore ? !(shore_ready(s) && s->shore.centred) : !joy_confirm(&s->joy)) {
+    /* step WB (owner W52b, 2026-11-04): a CREWED MANEUVER also needs the HELM station's shore stick centred, X AND Y
+     * (fresh packets), at the onboard CONFIRM - a held shore stick Y would ask a gear 0.3 s after the start. Refused
+     * like an off-centre onboard stick: nothing changes, the request stays pending until its deadline. */
+    bool shore_stick = shore || c->kind != CONF_MANEUVER || (shore_ready(s) && s->shore.stick_centred);
+    if (!shore_stick) s->remote.conf_refused_stick++;
+    if (!shore_stick || (shore ? !(shore_ready(s) && s->shore.centred) : !joy_confirm(&s->joy))) {
         c->last_kind = c->kind;
         c->refused++;                   /* stick not centred / not armed / faulted */
         if (is_raise(c->kind)) plim_log_attempt(&s->plim, c->kind == CONF_RAISE_REV, PLIM_ERR_NOT_CENTRED, s->now_ms);

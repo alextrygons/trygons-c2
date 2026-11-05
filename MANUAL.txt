@@ -1384,7 +1384,11 @@ MANEUVER (trailer, ramp, dock approach) - captain only
     of forward yet; step 13q5b).
   * Start: button MANEUVER (DOCK / TRAILER) on the captain's station (it
     must hold HELM and the user must hold a manual licence). CREWED: then
-    CONFIRM on the onboard joystick within 10 s. UNCREWED: at once, only
+    CONFIRM on the onboard joystick within 10 s - the boat takes that
+    CONFIRM only while the captain's shore stick is centred (sideways AND
+    forward / back) and its data is fresh (else a short chirp, nothing
+    changes; centre the shore stick and press CONFIRM again within the
+    10 s; step WB). UNCREWED: at once, only
     with the captain's stick centred and the lever at neutral. From
     STANDBY or REMOTE MANUAL (and back to REMOTE MANUAL the same way).
   * Ends: another mode chosen (STANDBY, AUTO, DP - there is no RELEASE),
