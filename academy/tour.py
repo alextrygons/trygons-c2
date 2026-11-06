@@ -229,7 +229,8 @@ def stops(lang, doc=None):
             if st["show"] == "alarm":                     # the screen's own words for the alarm
                 title = i18n.TL(lang, "alarm." + st["target"])
             out.append({"id": st["id"], "chapter": ch["id"], "chapter_title": ch["title_" + lang],
-                        "show": st["show"], "target": st.get("target", ""), "title": title,
+                        "show": st["show"], "target": st.get("target", ""), "covers": list(st.get("covers") or []),
+                        "title": title,
                         "text": st["text_" + lang], "level": lv,
                         "level_text": doc["levels"][lv]["text_" + lang] if lv else None})
     return out

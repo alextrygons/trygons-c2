@@ -1,5 +1,8 @@
 """The guided tour window (ACADEMY_SPEC B, step 17): screen 1, screen 2, tools, modes, alarms, lamps,
-joystick and panel buttons - one stop at a time on a DRAWING of the screen, next / back, Greek voice.
+joystick and panel buttons - one stop at a time, next / back, Greek voice. Screen 1, screen 2 and the tools
+pages are REAL screenshots of the ground station (step 13t: academy/tour_shots, made from the demo by
+tools/demo_screens.py --tour; the lit frame = the real place of the button / box, academy/tourshots.py); the
+modes, alarms, lamps, joystick and panel stops (and any stop without a picture) keep the DRAWINGS.
 
     python academy/tour_app.py [--lang el|en]       (or the academy window's "Guided tour" button,
                                                      or the ground station menu Academy -> Guided tour)
@@ -22,6 +25,7 @@ import simguard                                                         # noqa: 
 import text                                                             # noqa: E402
 import look                                                             # noqa: E402  (13i: the station's look)
 import tour                                                             # noqa: E402
+import tourshots                                                        # noqa: E402  (13t: the real pictures)
 from banner import banner_text                                          # noqa: E402
 from text import T                                                      # noqa: E402
 
@@ -42,7 +46,12 @@ except Exception:                                                       # pragma
     FAMILY = "Segoe UI"
 
 try:
-    import winsound                                                     # Windows only: plays a .wav file
+    from PIL import Image, ImageEnhance, ImageTk                        # the real screenshots (step 13t)
+except ImportError:                                                     # pragma: no cover - the drawings then
+    Image = None
+
+try:
+    import winsound                                                    # Windows only: plays a .wav file
 except ImportError:                                                     # pragma: no cover
     winsound = None
 
@@ -279,13 +288,18 @@ class Drawing(object):
 class TourWindow(Drawing):
     """The tour on a Tk root or Toplevel. index / show(i) / next() / back() / jump(chapter)."""
 
-    def __init__(self, root, lang=None, player=None, cache=None, doc=None):
+    def __init__(self, root, lang=None, player=None, cache=None, doc=None, shots=True):
         self.root = root
         self.lang = lang if lang in tour.LANGS else text.lang()
         self.player = player or default_player()
         self.cache = cache
         self.stops = tour.stops(self.lang, doc)
         self.index = 0
+        # step 13t: the REAL screenshots (academy/tour_shots, tools/demo_screens.py --tour); None = drawings only
+        self.shots = tourshots.load() if shots is True else (shots or None)
+        self.is_item = tourshots.screen_items(tour)
+        self._pics = {}
+        self.picture = None                 # the picture shown now (None = the drawing; the tests read it)
         self.voice_on = True
         self.voice_state = None             # "played" / "missing" / "off" (the tests read it)
         look.install(root)                  # the station's look (13i)
@@ -408,9 +422,50 @@ class TourWindow(Drawing):
         self.voice_state = "played"
         self.msg.configure(text="")
 
-    # --- the drawing
+    # --- the picture: a REAL screenshot (step 13t) when there is one for this stop, else the drawing
     def draw(self):
-        self.draw_stop(self.stops[self.index])
+        s = self.stops[self.index]
+        v = tourshots.view(s, self.lang, self.shots, self.is_item) if self.shots is not None else None
+        if v is not None and self.draw_picture(v):
+            self.picture = v["name"]
+            return
+        self.picture = None
+        self.draw_stop(s)
+
+    def draw_picture(self, v):
+        """The screenshot fitted into the canvas, everything outside the stop's frame dimmed, the frame in amber
+        (its place = the real widget / HUD hit box, academy/tourshots.py). False = no picture (no Pillow / file)."""
+        if Image is None:
+            return False
+        cv = self.cv
+        W, H = max(cv.winfo_width(), 320), max(cv.winfo_height(), 180)
+        try:
+            src = self._pics.get(v["file"])
+            if src is None:
+                with Image.open(v["file"]) as im:
+                    src = im.convert("RGB")
+                self._pics = {v["file"]: src}              # one picture kept (a stop changes it)
+        except (OSError, ValueError):
+            return False
+        k = min(W / float(src.width), H / float(src.height))
+        w, h = max(1, int(src.width * k)), max(1, int(src.height * k))
+        x0, y0 = (W - w) // 2, (H - h) // 2
+        im = src.resize((w, h), Image.LANCZOS if k < 1 else Image.BICUBIC)
+        fx, fy, fw, fh = v["frame"]
+        pad = 4
+        r = (int(fx * w) - pad, int(fy * h) - pad, int((fx + fw) * w) + pad, int((fy + fh) * h) + pad)
+        if (fw, fh) != (1.0, 1.0):
+            dim = ImageEnhance.Brightness(im).enhance(0.42)
+            box = (max(0, r[0]), max(0, r[1]), min(w, r[2]), min(h, r[3]))
+            dim.paste(im.crop(box), box[:2])
+            im = dim
+        self._photo = ImageTk.PhotoImage(im)
+        cv.delete("all")
+        self.frame = (x0, y0, w, h)
+        cv.create_image(x0, y0, image=self._photo, anchor="nw")
+        if (fw, fh) != (1.0, 1.0):
+            cv.create_rectangle(x0 + r[0], y0 + r[1], x0 + r[2], y0 + r[3], outline=CAUTION, width=4)
+        return True
 
 
 def main(argv=None):

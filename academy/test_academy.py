@@ -4159,6 +4159,114 @@ def ac54():
            "chapter covers %d UAV items incl. the legal note" % len(need))
 
 
+def ac55():
+    """Step 13t (owner queue 2026-11-05 3a): the tour's REAL screenshots. Every screen-1 / screen-2 / tools stop
+    (el + en) has its picture and every screen item it names (HUD box, HUD button, screen-2 panel / bar / button,
+    tools page, UAV page button) is IN the picture and INSIDE the stop's lit frame (the places = the real hit boxes
+    / widgets of the running ground station); the pictures belong to the code's current layout (signature); the
+    frames show something (not a blank area); the checker catches a missing / moved item and a stale signature;
+    the tour window shows the picture (the drawings stay for the other stops and without pictures)."""
+    import copy
+    import tour
+    import tourshots
+    wrong = []
+    man = tourshots.load()
+    probs = tourshots.check(tour, man)
+    wrong += probs[:8]
+    if man is not None and not probs:
+        try:
+            from PIL import Image, ImageStat
+        except ImportError:
+            Image = None
+        is_item = tourshots.screen_items(tour)
+        s1 = (man["shots"].get("s1_el") or {}).get("items") or {}
+        miss = [a for a in tour.hud_buttons() + ["save"] if "hudbtn:" + a not in s1]
+        if miss:
+            wrong.append("screen 1's picture lacks the buttons %s" % miss)
+        n = 0
+        for lc in tour.LANGS:
+            for ch in tour.load()["chapters"]:
+                for st in ch["stops"]:
+                    v = tourshots.view(st, lc, man, is_item)
+                    if v is None or Image is None:
+                        continue
+                    with Image.open(v["file"]) as im:
+                        if (im.width, im.height) != (v["w"], v["h"]):
+                            wrong.append("%s: %dx%d, the manifest says %dx%d" % (v["name"], im.width, im.height,
+                                                                                v["w"], v["h"]))
+                            continue
+                        fx, fy, fw, fh = v["frame"]
+                        box = (int(fx * im.width), int(fy * im.height), int((fx + fw) * im.width) + 1,
+                               int((fy + fh) * im.height) + 1)
+                        sd = ImageStat.Stat(im.convert("L").crop(box)).stddev[0]
+                        if sd < 3.0:
+                            wrong.append("%s %s: the frame %s is blank (stddev %.1f)" % (st["id"], lc, box, sd))
+                        n += 1
+        # the checker itself: a removed item, an item outside its frame, a stale signature
+        stops = {s["id"]: s for c in tour.load()["chapters"] for s in c["stops"]}
+        bad = copy.deepcopy(man)
+        del bad["shots"]["s1_el"]["items"]["hudbtn:night"]
+        if not any("hudbtn:night is NOT in the picture" in p for p in tourshots.check(tour, bad)):
+            wrong.append("checker: a missing button not caught")
+        bad = copy.deepcopy(man)
+        bad["shots"]["s1_el"]["items"]["hud:bottom"] = [0.0, 0.0, 0.01, 0.01]       # s1.bottom covers hud:bottom
+        if tourshots.view(stops["s1.bottom"], "el", bad, is_item)["frame"] != [0.0, 0.0, 0.01, 0.01]:
+            wrong.append("checker: the frame does not follow the item")
+        two = dict(stops["s1.save"], covers=["hudbtn:save", "hudbtn:night"])        # two places = one frame round both
+        f2 = tourshots.view(two, "el", man, is_item)["frame"]
+        its = man["shots"]["s1_el"]["items"]
+        if not (tourshots.inside(its["hudbtn:save"], f2) and tourshots.inside(its["hudbtn:night"], f2)):
+            wrong.append("checker: union frame")
+        bad = copy.deepcopy(man)
+        bad["signature"] = "0" * 16
+        if not any("STALE" in p for p in tourshots.check(tour, bad)):
+            wrong.append("checker: a stale signature not caught")
+        bad = copy.deepcopy(man)
+        bad["shots"]["s2_en"]["items"]["s2:modebar"] = [0.9, 0.9, 0.2, 0.2]
+        if not any("outside" in p for p in tourshots.check(tour, bad)):
+            wrong.append("checker: an item outside the picture not caught")
+        # the window: the picture for a screen stop, the drawing for an alarm stop / without pictures
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+        except Exception as e:
+            root = None
+            wrong_ui = "no display (%s)" % e
+        if root is not None:
+            import tour_app
+            try:
+                root.withdraw()
+                top = tk.Toplevel(root)
+                top.geometry("1180x760")
+                w = tour_app.TourWindow(top, "el", player=tour_app.NullPlayer(), cache=tempfile.mkdtemp())
+                top.update()
+                ids = [s["id"] for s in w.stops]
+                w.show(ids.index("s1.btn_night"))
+                top.update()
+                p1 = w.picture
+                w.show(ids.index("tools.uav"))
+                p2 = w.picture
+                w.jump("alarms")
+                p3 = w.picture
+                top.destroy()
+                top = tk.Toplevel(root)
+                w = tour_app.TourWindow(top, "en", player=tour_app.NullPlayer(), cache=tempfile.mkdtemp(), shots=None)
+                w.show([s["id"] for s in w.stops].index("s2.modebar"))
+                p4 = w.picture
+                top.destroy()
+                if (p1, p2, p3, p4) != ("s1_el", "tools_uav_el", None, None):
+                    wrong.append("tour window pictures %s" % ((p1, p2, p3, p4),))
+            finally:
+                root.destroy()
+            wrong_ui = "the window shows them"
+    else:
+        n, wrong_ui = 0, ""
+    report("AC55 tour: real screenshots", not wrong, "; ".join(wrong[:8]) or
+           "%d pictures (el + en), %d stop frames checked: every named screen item inside its picture + frame, "
+           "the frames not blank, the layout signature current, the checker catches missing / moved / stale; %s"
+           % (len((man or {}).get("shots") or {}), n, wrong_ui))
+
+
 SPEC_I_TESTS = {                         # spec I: "tests for all rules above" -> the tests that prove them
     "no boat link": ("ac1", "ac2", "ac3", "ac4", "ac5", "ac6", "ac7", "ac26", "ac35"),
     "no bypass (lessons, scenarios, the practical test apart)": ("ac14", "ac25", "ac32"),
@@ -4235,7 +4343,7 @@ if __name__ == "__main__":
     for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
               ac19, ac20, ac21, ac22, ac23, ac24, ac25, ac26, ac27, ac28, ac29,
               ac30, ac31, ac32, ac33, ac34, ac35, ac36, ac37, ac38, ac39, ac40, ac41, ac42, ac43,
-              ac44, ac45, ac46, ac47, ac48, ac49, ac50, ac51, ac52, ac53, ac54):
+              ac44, ac45, ac46, ac47, ac48, ac49, ac50, ac51, ac52, ac53, ac54, ac55):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run

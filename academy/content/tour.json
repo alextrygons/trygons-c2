@@ -685,8 +685,8 @@
         },
         {
           "id": "uav.fly",
-          "show": "s1",
-          "target": "center",
+          "show": "tools",
+          "target": "tab.uav",
           "covers": [
             "uav:fly",
             "uav:give",
