@@ -288,8 +288,9 @@ class Drawing(object):
 class TourWindow(Drawing):
     """The tour on a Tk root or Toplevel. index / show(i) / next() / back() / jump(chapter)."""
 
-    def __init__(self, root, lang=None, player=None, cache=None, doc=None, shots=True):
+    def __init__(self, root, lang=None, player=None, cache=None, doc=None, shots=True, rec_dir=None):
         self.root = root
+        self.rec_dir = rec_dir
         self.lang = lang if lang in tour.LANGS else text.lang()
         self.player = player or default_player()
         self.cache = cache
@@ -405,9 +406,26 @@ class TourWindow(Drawing):
         self._voice_label()
         self.speak()
 
+    def recorded(self, stop):
+        """The decoded .wav of the stop's recorded narration (Greek), or None -> the synthetic voice."""
+        ogg = tour.recording(self.lang, stop, self.rec_dir)
+        if not ogg:
+            return None
+        out = os.path.join(simguard.tourvoice_dir(), self.lang, os.path.splitext(os.path.basename(ogg))[0] + ".wav")
+        try:
+            return simguard.audio_to_wav(ogg, out)
+        except simguard.Refused:
+            return None
+
     def speak(self):
         if not self.voice_on:
             self.voice_state = "off"
+            self.msg.configure(text="")
+            return
+        rec = self.recorded(self.stops[self.index])
+        if rec:                                  # the owner's recorded Greek narration comes first
+            self.player.play(rec)
+            self.voice_state = "played"
             self.msg.configure(text="")
             return
         path = tour.voice_path(self.lang, tour.sentence(self.stops[self.index]), self.cache)

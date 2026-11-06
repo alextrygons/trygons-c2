@@ -1178,7 +1178,7 @@ def ac24():
         for lc in ("el", "en"):
             top = tk.Toplevel(root)
             pl = tour_app.NullPlayer()
-            w = tour_app.TourWindow(top, lc, player=pl, cache=tmp)
+            w = tour_app.TourWindow(top, lc, player=pl, cache=tmp, rec_dir=tmp)
             top.update()
             if top.pack_slaves()[0] is not w.banner or w.banner.cget("text") != banner.banner_text(lc) or \
                     w.banner.cget("bg").lower() != tour_app.CAUTION.lower():
@@ -4267,6 +4267,71 @@ def ac55():
            % (len((man or {}).get("shots") or {}), n, wrong_ui))
 
 
+def ac56():
+    """Recorded Greek tour narration (owner 2026-11-06): all 149 stops have a clip, it plays before the
+    synthetic voice (Greek only), a changed text / a missing clip falls back, the gateway PC plays nothing."""
+    import tour
+    import tour_app
+    import simguard
+    wrong = []
+    stops = tour.stops("el")
+    have = [st["id"] for st in stops if tour.recording("el", st)]
+    if len(have) != len(stops):
+        wrong.append("%d of %d stops have a clip" % (len(have), len(stops)))
+    if any(tour.recording("en", st) for st in tour.stops("en")):
+        wrong.append("English must use the synthetic voice")
+    stale = dict(stops[0], text=stops[0]["text"] + " x")
+    if tour.recording("el", stale) is not None:
+        wrong.append("a changed text still plays the old clip")
+    if tour.recording("el", stops[0], tempfile.mkdtemp()) is not None:
+        wrong.append("no manifest must give None")
+    if not shutil.which("ffmpeg") and not simguard.ffmpeg_exe():
+        report("AC56 tour: recorded narration", not wrong, "ffmpeg missing: play not tested; " + "; ".join(wrong))
+        return
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+    except Exception:
+        report("AC56 tour: recorded narration", not wrong, "no display: play not tested; " + "; ".join(wrong))
+        return
+    data = tempfile.mkdtemp()
+    os.environ["TRYGONS_ACADEMY_DATA"] = data
+    try:
+        pl = tour_app.NullPlayer()
+        top = tk.Toplevel(root)
+        w = tour_app.TourWindow(top, "el", player=pl, cache=tempfile.mkdtemp(), shots=None)
+        w.speak()
+        rec = pl.played[-1]
+        if w.voice_state != "played" or not rec or not rec.endswith(".wav") or not os.path.isfile(rec)                 or not rec.startswith(os.path.abspath(data)):
+            wrong.append("recording not decoded / played: %s %s" % (w.voice_state, rec))
+        elif os.path.getsize(rec) < 10000:
+            wrong.append("decoded clip too small")
+        top.destroy()
+        top = tk.Toplevel(root)
+        w = tour_app.TourWindow(top, "en", player=pl, cache=tempfile.mkdtemp(), shots=None)
+        w.speak()
+        if w.voice_state != "missing":
+            wrong.append("English played a recording: %s" % w.voice_state)
+        top.destroy()
+        top = tk.Toplevel(root)                                  # no clip -> the synthetic file is used
+        w = tour_app.TourWindow(top, "el", player=pl, cache=tempfile.mkdtemp(), shots=None, rec_dir=tempfile.mkdtemp())
+        path = tour.voice_path("el", tour.sentence(w.stops[0]), w.cache)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        import sound
+        sound.write_wav(path, sound._silence(50))
+        w.speak()
+        if pl.played[-1] != os.path.abspath(path):
+            wrong.append("no clip: synthetic voice not used")
+        top.destroy()
+    finally:
+        os.environ.pop("TRYGONS_ACADEMY_DATA", None)
+        root.destroy()
+    report("AC56 tour: recorded narration", not wrong, "; ".join(wrong[:6]) or
+           "%d of %d Greek stops play their recording (decoded on demand), English + stale + missing fall "
+           "back to the synthetic voice" % (len(have), len(stops)))
+
+
 SPEC_I_TESTS = {                         # spec I: "tests for all rules above" -> the tests that prove them
     "no boat link": ("ac1", "ac2", "ac3", "ac4", "ac5", "ac6", "ac7", "ac26", "ac35"),
     "no bypass (lessons, scenarios, the practical test apart)": ("ac14", "ac25", "ac32"),
@@ -4343,7 +4408,7 @@ if __name__ == "__main__":
     for t in (ac1, ac2, ac3, ac4, ac5, ac6, ac7, ac8, ac9, ac10, ac11, ac12, ac13, ac14, ac15, ac16, ac17, ac18,
               ac19, ac20, ac21, ac22, ac23, ac24, ac25, ac26, ac27, ac28, ac29,
               ac30, ac31, ac32, ac33, ac34, ac35, ac36, ac37, ac38, ac39, ac40, ac41, ac42, ac43,
-              ac44, ac45, ac46, ac47, ac48, ac49, ac50, ac51, ac52, ac53, ac54, ac55):
+              ac44, ac45, ac46, ac47, ac48, ac49, ac50, ac51, ac52, ac53, ac54, ac55, ac56):
         try:
             t()
         except Exception as e:                                  # a crash = a failure, the others still run

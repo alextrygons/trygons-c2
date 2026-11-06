@@ -262,6 +262,29 @@ def voice_path(lang, text, cache=None):
     return os.path.join(cache or voice_cache(), lang, "p_%s.wav" % h)
 
 
+REC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tour_voice")
+
+
+def recording(lang, stop, rec_dir=None):
+    """The recorded narration (Opus/OGG, owner 2026-11-06, tools/make_tour_voice.py) of a stop, or None.
+    Greek only (English = the synthetic voice). A clip counts only while the stop's spoken sentence is the one
+    it was recorded for (manifest sha): a changed tour text = stale = the synthetic voice."""
+    if lang != "el":
+        return None
+    d = os.path.join(rec_dir or REC_DIR, lang)
+    try:
+        with open(os.path.join(d, "manifest.json"), encoding="utf-8") as fh:
+            man = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    sha = hashlib.sha1(sentence(stop).encode("utf-8")).hexdigest()
+    for c in man.get("clips", []):
+        if c.get("id") == stop["id"]:
+            p = os.path.join(d, c.get("file", ""))
+            return p if c.get("sha") == sha and os.path.isfile(p) else None
+    return None
+
+
 def main():
     doc = load()
     probs, miss = check(doc), missing(doc)

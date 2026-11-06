@@ -45,7 +45,7 @@ SIM_PORTS = {5760: "sim", 5761: "demo gateway"}
 GATEWAY_PORTS = {5761}                         # a welcome name check is needed on these
 SIM_BOAT_NAMES = {"trygons-demo"}              # demo/demo.py gateway config "boat"
 LOOPBACK_NAMES = {"localhost"}
-RECORDING_EXT = (".tlg", ".csv", ".jsonl", ".json", ".mp4", ".mkv", ".ts", ".wav", ".log", ".txt")
+RECORDING_EXT = (".ogg", ".tlg", ".csv", ".jsonl", ".json", ".mp4", ".mkv", ".ts", ".wav", ".log", ".txt")
 TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
 
 
@@ -368,3 +368,40 @@ def video_copy(segments, start_s, dur_s, out_path, width=640, blur=None, run=Non
             os.remove(lst)
         except OSError:
             pass
+
+
+# --- tour narration (owner 2026-11-06): a recorded Opus/OGG clip -> a .wav the Windows player can play ----
+AUDIO_TIMEOUT_S = 30.0
+
+
+def tourvoice_dir(env=None):
+    """Where the decoded tour narration is cached: academy/data/tour_voice (gitignored)."""
+    env = os.environ if env is None else env
+    return os.path.join(env.get("TRYGONS_ACADEMY_DATA") or os.path.join(HERE, "data"), "tour_voice")
+
+
+def audio_to_wav(src, out_wav, run=None, env=None):
+    """Decode one recorded .ogg to out_wav (ffmpeg, local file only, output .wav only). Returns the path or
+    None if ffmpeg is missing / failed. An existing out_wav newer than src is reused."""
+    p = check_recording(src, env)
+    if not p.lower().endswith(".ogg") or not str(out_wav).lower().endswith(".wav"):
+        raise Refused("audio_to_wav: .ogg in, .wav out only")
+    if os.path.isfile(out_wav) and os.path.getmtime(out_wav) >= os.path.getmtime(p):
+        return os.path.abspath(out_wav)
+    exe = ffmpeg_exe()
+    if not exe:
+        return None
+    os.makedirs(os.path.dirname(os.path.abspath(out_wav)), exist_ok=True)
+    tmp = str(out_wav) + ".part.wav"
+    cmd = [exe, "-y", "-hide_banner", "-loglevel", "quiet"] + list(FFMPEG_WHITELIST) + ["-i", p, tmp]
+    try:
+        (run or subprocess.run)(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=AUDIO_TIMEOUT_S, check=True)
+        os.replace(tmp, out_wav)
+    except (OSError, subprocess.SubprocessError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return None
+    return os.path.abspath(out_wav)

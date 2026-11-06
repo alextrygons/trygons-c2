@@ -46,3 +46,6 @@ logs/
 groundstation/tracks/
 # the screen recordings of this PC (REC SCREEN, SAVE / KEEP screen part, step 13n4)
 groundstation/screenrec/
+
+# narration originals of the guided tour (local only; the Opus files are in academy/tour_voice/)
+voice_raw/

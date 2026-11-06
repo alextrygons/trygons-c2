@@ -1498,7 +1498,10 @@ THE GUIDED TOUR (menu Academy -> Guided tour)
   python tools/demo_screens.py --tour (tools/check.sh does it by itself
   when the layout changed; it stops and restarts the demo). Next / Back (or the arrow keys, space = next), the chapter list
   on the left jumps, "Say again" repeats the voice, "Voice: ON / OFF".
-  The voice (Greek, or English with the English screen) is made by this
+  The Greek voice is a RECORDED narration (academy/tour_voice/el, Opus; it
+  needs ffmpeg, which the demo uses too); a step without a recording, or
+  whose text was changed after the recording, uses the offline voice. The
+  English voice is the offline voice. The offline voice (Piper) is made by this
   station's offline voice (Piper) in the background the first time you open
   the tour from the menu - a few minutes; until then the tour shows the text
   only. The academy window's "Guided tour" button opens the same tour.

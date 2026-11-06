@@ -1,0 +1,1050 @@
+{
+ "format": 1,
+ "lang": "el",
+ "codec": "opus/ogg 64k mono",
+ "clips": [
+  {
+   "n": 1,
+   "id": "intro.welcome",
+   "file": "001_intro.welcome.ogg",
+   "sha": "5e833b21ac8c6bcfad097486f9e1bfc74b340072",
+   "dur_s": 23.92
+  },
+  {
+   "n": 2,
+   "id": "intro.safety",
+   "file": "002_intro.safety.ogg",
+   "sha": "61c4ea2a811e3a564b88ba45030d076ace99904b",
+   "dur_s": 31.98
+  },
+  {
+   "n": 3,
+   "id": "s1.overview",
+   "file": "003_s1.overview.ogg",
+   "sha": "311f5b34fc6b6911aefa969fe5bb68c9ffd38c47",
+   "dur_s": 19.46
+  },
+  {
+   "n": 4,
+   "id": "s1.status",
+   "file": "004_s1.status.ogg",
+   "sha": "006ccab368ca81869359d82428f64011bc48e797",
+   "dur_s": 26.95
+  },
+  {
+   "n": 5,
+   "id": "s1.master",
+   "file": "005_s1.master.ogg",
+   "sha": "1ae4756fc01cc11827df397f1d1f3d05ca23cd87",
+   "dur_s": 19.99
+  },
+  {
+   "n": 6,
+   "id": "s1.mirror_l",
+   "file": "006_s1.mirror_l.ogg",
+   "sha": "a9e88b5628dbed0849a0433ed6d2f3bf118a6893",
+   "dur_s": 17.48
+  },
+  {
+   "n": 7,
+   "id": "s1.mirror_r",
+   "file": "007_s1.mirror_r.ogg",
+   "sha": "1f792947a4073ec977b912dd3201f56eaca18b0f",
+   "dur_s": 13.17
+  },
+  {
+   "n": 8,
+   "id": "s1.alarms",
+   "file": "008_s1.alarms.ogg",
+   "sha": "04aee2ca4848585be3d51f513c04b109253dfcc3",
+   "dur_s": 23.94
+  },
+  {
+   "n": 9,
+   "id": "s1.notices",
+   "file": "009_s1.notices.ogg",
+   "sha": "09169a23e1f7c3b43f3779ea968a0d015995bade",
+   "dur_s": 16.13
+  },
+  {
+   "n": 10,
+   "id": "s1.throttle",
+   "file": "010_s1.throttle.ogg",
+   "sha": "70af451bbd3d14eb4756edb8fc3d70239dad91a9",
+   "dur_s": 23.04
+  },
+  {
+   "n": 11,
+   "id": "s1.speed",
+   "file": "011_s1.speed.ogg",
+   "sha": "884647264cbf79bc5382fe3f645e2e7c59c284b3",
+   "dur_s": 11.6
+  },
+  {
+   "n": 12,
+   "id": "s1.depth",
+   "file": "012_s1.depth.ogg",
+   "sha": "3ef172697a4112deae0263de3c590be79b0a309c",
+   "dur_s": 16.3
+  },
+  {
+   "n": 13,
+   "id": "s1.waypoint",
+   "file": "013_s1.waypoint.ogg",
+   "sha": "bba7fc9acea6ce73885bc3cf5fccfe73e80ff4f1",
+   "dur_s": 12.79
+  },
+  {
+   "n": 14,
+   "id": "s1.traffic",
+   "file": "014_s1.traffic.ogg",
+   "sha": "a15a267a0a2481d8bcddb9333dcedcf00b3beada",
+   "dur_s": 21.62
+  },
+  {
+   "n": 15,
+   "id": "s1.rot",
+   "file": "015_s1.rot.ogg",
+   "sha": "085b6600edd93a4e349795147332254672ec5cfe",
+   "dur_s": 11.52
+  },
+  {
+   "n": 16,
+   "id": "s1.gmeter",
+   "file": "016_s1.gmeter.ogg",
+   "sha": "7493d03ed87702687ca426b48a6efa63f96f59b7",
+   "dur_s": 11.82
+  },
+  {
+   "n": 17,
+   "id": "s1.minimap",
+   "file": "017_s1.minimap.ogg",
+   "sha": "41c782415c3e53f6d8d900c23128b87fc2b815f5",
+   "dur_s": 13.4
+  },
+  {
+   "n": 18,
+   "id": "s1.steer",
+   "file": "018_s1.steer.ogg",
+   "sha": "6166d1d49a5322772589a2f4990d6e10a4f25548",
+   "dur_s": 16.14
+  },
+  {
+   "n": 19,
+   "id": "s1.cdi",
+   "file": "019_s1.cdi.ogg",
+   "sha": "bfb69ec68a2d9941a620a7e6f27126dccc092671",
+   "dur_s": 26.47
+  },
+  {
+   "n": 20,
+   "id": "s1.relays",
+   "file": "020_s1.relays.ogg",
+   "sha": "9f247eb4d5ae3325722f6926a25a03ec120b7749",
+   "dur_s": 16.6
+  },
+  {
+   "n": 21,
+   "id": "s1.bottom",
+   "file": "021_s1.bottom.ogg",
+   "sha": "83105f9496a8ce9eb6850f68cdfa61610205f95d",
+   "dur_s": 33.08
+  },
+  {
+   "n": 22,
+   "id": "s1.save",
+   "file": "022_s1.save.ogg",
+   "sha": "6893c6fea5fd68881397cbf183b187c94fb50253",
+   "dur_s": 13.62
+  },
+  {
+   "n": 23,
+   "id": "s1.logo",
+   "file": "023_s1.logo.ogg",
+   "sha": "0ffd45db2a4444fb2289ef44adc033f92fb9855b",
+   "dur_s": 11.11
+  },
+  {
+   "n": 24,
+   "id": "s1.tape",
+   "file": "024_s1.tape.ogg",
+   "sha": "d640fe39fd4cf2d8a926d39a451d5adc30f39bef",
+   "dur_s": 16.65
+  },
+  {
+   "n": 25,
+   "id": "s1.btn_lang",
+   "file": "025_s1.btn_lang.ogg",
+   "sha": "edb8ca1f50edc0dbff98d97830e92bd0a3d78afa",
+   "dur_s": 12.09
+  },
+  {
+   "n": 26,
+   "id": "s1.btn_night",
+   "file": "026_s1.btn_night.ogg",
+   "sha": "4f9f58cbc7d92f87ad89e6cae5aa3198ade7912b",
+   "dur_s": 12.79
+  },
+  {
+   "n": 27,
+   "id": "s1.btn_declutter",
+   "file": "027_s1.btn_declutter.ogg",
+   "sha": "b8d4f5020e4a19bc4fc143c011942e4f420f042c",
+   "dur_s": 16.57
+  },
+  {
+   "n": 28,
+   "id": "s1.btn_scale",
+   "file": "028_s1.btn_scale.ogg",
+   "sha": "138ef05443faab3e94c122195739ba51f9db8386",
+   "dur_s": 13.74
+  },
+  {
+   "n": 29,
+   "id": "s1.btn_ar",
+   "file": "029_s1.btn_ar.ogg",
+   "sha": "eb37e4ceb271ea3d35ae898527e9b7b5d7d4fb2d",
+   "dur_s": 16.59
+  },
+  {
+   "n": 30,
+   "id": "s1.btn_layout",
+   "file": "030_s1.btn_layout.ogg",
+   "sha": "c677e5a217de47f5edec9dd7d6b7090610b80e06",
+   "dur_s": 25.98
+  },
+  {
+   "n": 31,
+   "id": "s1.btn_text_size",
+   "file": "031_s1.btn_text_size.ogg",
+   "sha": "c6fcf2110ab8b56b47c3cf740729c07563b3dc78",
+   "dur_s": 19.36
+  },
+  {
+   "n": 32,
+   "id": "s1.btn_scr",
+   "file": "032_s1.btn_scr.ogg",
+   "sha": "30ebfc252f7b7a74c15dfb8b04e62937ea53d24b",
+   "dur_s": 35.99
+  },
+  {
+   "n": 33,
+   "id": "s1.btn_ptt",
+   "file": "033_s1.btn_ptt.ogg",
+   "sha": "6f5e87d52db6133fa3c75db93445f647df7baa33",
+   "dur_s": 34.54
+  },
+  {
+   "n": 34,
+   "id": "s1.btn_obstacles",
+   "file": "034_s1.btn_obstacles.ogg",
+   "sha": "f241beb28835a7f62040e0d6d54fac4a946e9499",
+   "dur_s": 19.51
+  },
+  {
+   "n": 35,
+   "id": "s1.btn_clear_slowdown",
+   "file": "035_s1.btn_clear_slowdown.ogg",
+   "sha": "ccdbf4c40b35f4ac6baf07671a344c19898ba9ee",
+   "dur_s": 21.51
+  },
+  {
+   "n": 36,
+   "id": "s1.btn_slam_restore",
+   "file": "036_s1.btn_slam_restore.ogg",
+   "sha": "ce246d6e8199ce8b90ef51dcedd5fb799a772cbf",
+   "dur_s": 28.33
+  },
+  {
+   "n": 37,
+   "id": "s1.drive",
+   "file": "037_s1.drive.ogg",
+   "sha": "3846d111f629082c6e5a6e98b7d52d3171e80dd4",
+   "dur_s": 39.29
+  },
+  {
+   "n": 38,
+   "id": "s1.btn_maneuver",
+   "file": "038_s1.btn_maneuver.ogg",
+   "sha": "d6cc773b0d1aa92b5a545101aa55e7ffbfc02a36",
+   "dur_s": 37.19
+  },
+  {
+   "n": 39,
+   "id": "s1.accept",
+   "file": "039_s1.accept.ogg",
+   "sha": "edfcde76df9b8bf4b88d2946ca4e0a1cf5ed06f1",
+   "dur_s": 61.05
+  },
+  {
+   "n": 40,
+   "id": "s2.map",
+   "file": "040_s2.map.ogg",
+   "sha": "796aa54f596d93a8305464c9c48d4113bee1fd64",
+   "dur_s": 21.47
+  },
+  {
+   "n": 41,
+   "id": "s2.modebar",
+   "file": "041_s2.modebar.ogg",
+   "sha": "7b6b5ba76999d3f42e594035f37beaacd91c9ab3",
+   "dur_s": 35.38
+  },
+  {
+   "n": 42,
+   "id": "s2.battle_short",
+   "file": "042_s2.battle_short.ogg",
+   "sha": "953572d0950c5b81b1ed8bea482918ddde81b214",
+   "dur_s": 10.0
+  },
+  {
+   "n": 43,
+   "id": "s2.status",
+   "file": "043_s2.status.ogg",
+   "sha": "f3e4d27e38cba40e582a9ef755f8e12f774813e6",
+   "dur_s": 49.84
+  },
+  {
+   "n": 44,
+   "id": "s2.alarms",
+   "file": "044_s2.alarms.ogg",
+   "sha": "b9d7b16782fb2a0ff20271d1f26518314901488e",
+   "dur_s": 24.67
+  },
+  {
+   "n": 45,
+   "id": "s2.helm",
+   "file": "045_s2.helm.ogg",
+   "sha": "9770411d3f942d54e62b0f6e5fbd78bb1568d930",
+   "dur_s": 16.17
+  },
+  {
+   "n": 46,
+   "id": "s2.link",
+   "file": "046_s2.link.ogg",
+   "sha": "f887b744e863cdf1cba66ede1a5cc7fa001f0ac4",
+   "dur_s": 16.98
+  },
+  {
+   "n": 47,
+   "id": "s2.control",
+   "file": "047_s2.control.ogg",
+   "sha": "e2c4c3465f4b293645cc66e4b22dc74be4e2674b",
+   "dur_s": 17.56
+  },
+  {
+   "n": 48,
+   "id": "s2.standby",
+   "file": "048_s2.standby.ogg",
+   "sha": "445c00462b6ac82d4b9546dd809e0cd3f106aa8b",
+   "dur_s": 17.73
+  },
+  {
+   "n": 49,
+   "id": "s2.traffic",
+   "file": "049_s2.traffic.ogg",
+   "sha": "9da14504072be9ce17a7f2c2ae07fb7932c183e6",
+   "dur_s": 11.31
+  },
+  {
+   "n": 50,
+   "id": "s2.relays",
+   "file": "050_s2.relays.ogg",
+   "sha": "95427cecaa9a0a2fea465fcb8260c84a990514cb",
+   "dur_s": 17.35
+  },
+  {
+   "n": 51,
+   "id": "s2.banners",
+   "file": "051_s2.banners.ogg",
+   "sha": "33e1dac2c8e496c7c947170d92b8f2728d0e5f5e",
+   "dur_s": 16.68
+  },
+  {
+   "n": 52,
+   "id": "s2.bar1",
+   "file": "052_s2.bar1.ogg",
+   "sha": "97bb41d32c7c7b8774c01bfd854979de3171ce40",
+   "dur_s": 43.73
+  },
+  {
+   "n": 53,
+   "id": "s2.bar2",
+   "file": "053_s2.bar2.ogg",
+   "sha": "7d7da173faa9246bf1a28fa05bf2fe46ebf773c8",
+   "dur_s": 27.8
+  },
+  {
+   "n": 54,
+   "id": "s2.camview",
+   "file": "054_s2.camview.ogg",
+   "sha": "1cded9defd943cefe90d0b9c0e75e7bbc3875e6e",
+   "dur_s": 37.14
+  },
+  {
+   "n": 55,
+   "id": "s2.tracks",
+   "file": "055_s2.tracks.ogg",
+   "sha": "34883f67b3ef8dab2c71d1e02f666af990bafcdc",
+   "dur_s": 47.64
+  },
+  {
+   "n": 56,
+   "id": "s2.screenrec",
+   "file": "056_s2.screenrec.ogg",
+   "sha": "35f60f68bd5355de7aa0be0c9f4f266c25f943ff",
+   "dur_s": 31.79
+  },
+  {
+   "n": 57,
+   "id": "s2.loudhailer",
+   "file": "057_s2.loudhailer.ogg",
+   "sha": "8354677babe99c6ec0b3611f85b44c6fb45cd9b4",
+   "dur_s": 25.89
+  },
+  {
+   "n": 58,
+   "id": "s2.edit",
+   "file": "058_s2.edit.ogg",
+   "sha": "ee2ea14d7b75e6bb36f280518932a19fe26de529",
+   "dur_s": 17.78
+  },
+  {
+   "n": 59,
+   "id": "tools.connection",
+   "file": "059_tools.connection.ogg",
+   "sha": "4238c9ce125a07cfa83b151e5488d140220f6020",
+   "dur_s": 12.18
+  },
+  {
+   "n": 60,
+   "id": "tools.control",
+   "file": "060_tools.control.ogg",
+   "sha": "cce84a3386c369e8b710947ffc395f6ce7629ea4",
+   "dur_s": 12.83
+  },
+  {
+   "n": 61,
+   "id": "tools.program",
+   "file": "061_tools.program.ogg",
+   "sha": "1d29a446d4528477bec7aead00374e09e9000ac7",
+   "dur_s": 12.7
+  },
+  {
+   "n": 62,
+   "id": "tools.ais",
+   "file": "062_tools.ais.ogg",
+   "sha": "94b08120ea3dc528d832b525e076560c06f0b083",
+   "dur_s": 11.36
+  },
+  {
+   "n": 63,
+   "id": "tools.plot",
+   "file": "063_tools.plot.ogg",
+   "sha": "e22ee613ce01b88cc2fe04eb0785b503e5a5e279",
+   "dur_s": 9.69
+  },
+  {
+   "n": 64,
+   "id": "tools.config",
+   "file": "064_tools.config.ogg",
+   "sha": "28e0292b2e9faf7465f0b98a572b52384438b1a5",
+   "dur_s": 12.29
+  },
+  {
+   "n": 65,
+   "id": "tools.joystick",
+   "file": "065_tools.joystick.ogg",
+   "sha": "ced55982575fe66a57c4bb900ce700e79e72d7d9",
+   "dur_s": 11.3
+  },
+  {
+   "n": 66,
+   "id": "tools.cameras",
+   "file": "066_tools.cameras.ogg",
+   "sha": "5ed57df943bb332ef2dda5a87963e750c4aff360",
+   "dur_s": 8.92
+  },
+  {
+   "n": 67,
+   "id": "tools.remote",
+   "file": "067_tools.remote.ogg",
+   "sha": "4c6cddce9c7af1975d138b198d8d5d535c5dabf8",
+   "dur_s": 12.58
+  },
+  {
+   "n": 68,
+   "id": "tools.network",
+   "file": "068_tools.network.ogg",
+   "sha": "df8b408df206b04b37ef45e62a4c7d7afc08bb0c",
+   "dur_s": 10.65
+  },
+  {
+   "n": 69,
+   "id": "tools.system",
+   "file": "069_tools.system.ogg",
+   "sha": "5e7fe62b777c3bfaf7d86ed51d78314b60667e09",
+   "dur_s": 9.17
+  },
+  {
+   "n": 70,
+   "id": "tools.bench",
+   "file": "070_tools.bench.ogg",
+   "sha": "24dbaab8d6acfc08c105d7809ff60b8edf1d853a",
+   "dur_s": 14.19
+  },
+  {
+   "n": 71,
+   "id": "tools.engine",
+   "file": "071_tools.engine.ogg",
+   "sha": "fe2a8ed4f4e1e0bbe120968ed189bd46d73ef4b0",
+   "dur_s": 14.5
+  },
+  {
+   "n": 72,
+   "id": "tools.sound",
+   "file": "072_tools.sound.ogg",
+   "sha": "4cdbe80ccab325cf935d0f7368701ec35e41c4ba",
+   "dur_s": 27.24
+  },
+  {
+   "n": 73,
+   "id": "tools.loudhailer",
+   "file": "073_tools.loudhailer.ogg",
+   "sha": "9b3adb2e03d3eb9a2b22f7e36c4b3eeb8211facf",
+   "dur_s": 51.61
+  },
+  {
+   "n": 74,
+   "id": "tools.uav",
+   "file": "074_tools.uav.ogg",
+   "sha": "d5451fa90d1300e93fbd4d73d8e7c35a2f19ff68",
+   "dur_s": 33.08
+  },
+  {
+   "n": 75,
+   "id": "tools.events",
+   "file": "075_tools.events.ogg",
+   "sha": "65089d0b4538bb6ac129133e927e695e09b3b55e",
+   "dur_s": 8.89
+  },
+  {
+   "n": 76,
+   "id": "mode.standby",
+   "file": "076_mode.standby.ogg",
+   "sha": "b2fffd1879a3145258bcfcd5994f1433276a4553",
+   "dur_s": 15.5
+  },
+  {
+   "n": 77,
+   "id": "mode.manual",
+   "file": "077_mode.manual.ogg",
+   "sha": "5916e5484c3177437708f0a314c63f83547149a5",
+   "dur_s": 12.65
+  },
+  {
+   "n": 78,
+   "id": "mode.hdg_lock",
+   "file": "078_mode.hdg_lock.ogg",
+   "sha": "08a2b2d78547fd368d6dc479640972b003ba25cf",
+   "dur_s": 66.08
+  },
+  {
+   "n": 79,
+   "id": "mode.auto",
+   "file": "079_mode.auto.ogg",
+   "sha": "8b9de6d27735ab92ec6fd79b6ba8ab1edee7f860",
+   "dur_s": 50.11
+  },
+  {
+   "n": 80,
+   "id": "mode.training",
+   "file": "080_mode.training.ogg",
+   "sha": "ea512b76ef8494ad917a1c202fc84be480a0daee",
+   "dur_s": 10.33
+  },
+  {
+   "n": 81,
+   "id": "mode.remote",
+   "file": "081_mode.remote.ogg",
+   "sha": "f047f01016f66739ae9be437be122f50c181a9cd",
+   "dur_s": 20.15
+  },
+  {
+   "n": 82,
+   "id": "mode.bench",
+   "file": "082_mode.bench.ogg",
+   "sha": "c18ea99ae05a6c0776e04880f79d85fc0563634a",
+   "dur_s": 10.95
+  },
+  {
+   "n": 83,
+   "id": "mode.maneuver",
+   "file": "083_mode.maneuver.ogg",
+   "sha": "43fff37b079a23337a86b533f2571430f1f5dc1d",
+   "dur_s": 15.66
+  },
+  {
+   "n": 84,
+   "id": "mode.dp",
+   "file": "084_mode.dp.ogg",
+   "sha": "4c61227f46eadd977982478c7e547b98503b4e89",
+   "dur_s": 19.02
+  },
+  {
+   "n": 85,
+   "id": "lamp.warning",
+   "file": "085_lamp.warning.ogg",
+   "sha": "d9594700714ee7d502b2aa6dd335a7e42d8314e4",
+   "dur_s": 15.58
+  },
+  {
+   "n": 86,
+   "id": "lamp.caution",
+   "file": "086_lamp.caution.ogg",
+   "sha": "881d34d17eaa36d3d5ae3ffcf5b2116edf3f15bf",
+   "dur_s": 19.32
+  },
+  {
+   "n": 87,
+   "id": "alarm.compass_lost",
+   "file": "087_alarm.compass_lost.ogg",
+   "sha": "81b1a9f03ae2383eb4319e5bf0d3945449fd9d7f",
+   "dur_s": 19.64
+  },
+  {
+   "n": 88,
+   "id": "alarm.gps_lost",
+   "file": "088_alarm.gps_lost.ogg",
+   "sha": "4dfe26ea157548129575704481fed90e14f6ea2b",
+   "dur_s": 13.92
+  },
+  {
+   "n": 89,
+   "id": "alarm.gps_suspect",
+   "file": "089_alarm.gps_suspect.ogg",
+   "sha": "b4d9ad0145ef74855d74c302b77b8a4af7e29134",
+   "dur_s": 19.06
+  },
+  {
+   "n": 90,
+   "id": "alarm.dr_limit",
+   "file": "090_alarm.dr_limit.ogg",
+   "sha": "5ca97addfca4229299183d60ced87a878b1374ba",
+   "dur_s": 17.94
+  },
+  {
+   "n": 91,
+   "id": "alarm.arrival_uncertain",
+   "file": "091_alarm.arrival_uncertain.ogg",
+   "sha": "91571fc7f0b54b45a94f506965f51e68c4267996",
+   "dur_s": 14.6
+  },
+  {
+   "n": 92,
+   "id": "alarm.arrived",
+   "file": "092_alarm.arrived.ogg",
+   "sha": "830bbc169f53e26059142d82af18587330f3790c",
+   "dur_s": 8.95
+  },
+  {
+   "n": 93,
+   "id": "alarm.gear_fault",
+   "file": "093_alarm.gear_fault.ogg",
+   "sha": "b9bccf981889c8ee5c8b3648c0b43847f4981e03",
+   "dur_s": 15.15
+  },
+  {
+   "n": 94,
+   "id": "alarm.training",
+   "file": "094_alarm.training.ogg",
+   "sha": "861e36abbf8f0d4fbb5f5830bb4f3e6e6f73aa98",
+   "dur_s": 9.88
+  },
+  {
+   "n": 95,
+   "id": "alarm.joystick_fault",
+   "file": "095_alarm.joystick_fault.ogg",
+   "sha": "2378865c97f605d45976f326f515aee190235209",
+   "dur_s": 16.09
+  },
+  {
+   "n": 96,
+   "id": "alarm.joystick_not_centred",
+   "file": "096_alarm.joystick_not_centred.ogg",
+   "sha": "9d7d047d5534e5dcb1e3546a4e8f2b8e9ec1427a",
+   "dur_s": 17.83
+  },
+  {
+   "n": 97,
+   "id": "alarm.joystick_took_control",
+   "file": "097_alarm.joystick_took_control.ogg",
+   "sha": "42d8b4dca8c4e5d44f82e88d47045b7be46af036",
+   "dur_s": 12.37
+  },
+  {
+   "n": 98,
+   "id": "alarm.pc_link_lost",
+   "file": "098_alarm.pc_link_lost.ogg",
+   "sha": "3e5a184f6c170f27fff73450e8d3c28d2b2a2cde",
+   "dur_s": 14.68
+  },
+  {
+   "n": 99,
+   "id": "alarm.not_neutral_at_start",
+   "file": "099_alarm.not_neutral_at_start.ogg",
+   "sha": "567a0af88d0464e8c85a3974fb681b360dd0867f",
+   "dur_s": 16.68
+  },
+  {
+   "n": 100,
+   "id": "alarm.monitor_tripped",
+   "file": "100_alarm.monitor_tripped.ogg",
+   "sha": "f13803b765303a3956e49addbaa329a4a5de20e5",
+   "dur_s": 19.66
+  },
+  {
+   "n": 101,
+   "id": "alarm.loop_overrun",
+   "file": "101_alarm.loop_overrun.ogg",
+   "sha": "6743f78e6975170bf7c65fdc67fbc6224f3a3801",
+   "dur_s": 10.81
+  },
+  {
+   "n": 102,
+   "id": "alarm.log_failure",
+   "file": "102_alarm.log_failure.ogg",
+   "sha": "3a3d85886699f212514cef1ba531f3a323bd5a90",
+   "dur_s": 18.41
+  },
+  {
+   "n": 103,
+   "id": "alarm.gateway_lost",
+   "file": "103_alarm.gateway_lost.ogg",
+   "sha": "bf74670694656a9c8da9612c2629d3f2746a1d84",
+   "dur_s": 14.13
+  },
+  {
+   "n": 104,
+   "id": "alarm.gateway_storage",
+   "file": "104_alarm.gateway_storage.ogg",
+   "sha": "ab49b881e7166d5efbc6cf8b2c78946ecce28939",
+   "dur_s": 11.09
+  },
+  {
+   "n": 105,
+   "id": "alarm.remote_link_lost",
+   "file": "105_alarm.remote_link_lost.ogg",
+   "sha": "8cfff849e9c320b1454ab6ef420790f9815af21a",
+   "dur_s": 16.21
+  },
+  {
+   "n": 106,
+   "id": "alarm.channel_fallback",
+   "file": "106_alarm.channel_fallback.ogg",
+   "sha": "470cad4f4c44acd4d17485bf1812836cbdd55ade",
+   "dur_s": 9.9
+  },
+  {
+   "n": 107,
+   "id": "alarm.remote_driving_link_lost",
+   "file": "107_alarm.remote_driving_link_lost.ogg",
+   "sha": "db0327bb5ff25909e53a1eecc29aa970d486b0f7",
+   "dur_s": 20.7
+  },
+  {
+   "n": 108,
+   "id": "alarm.slamming",
+   "file": "108_alarm.slamming.ogg",
+   "sha": "27e71e44ca460f1f6bc619a944e13c7611fbd6af",
+   "dur_s": 26.54
+  },
+  {
+   "n": 109,
+   "id": "alarm.ais_silent",
+   "file": "109_alarm.ais_silent.ogg",
+   "sha": "8bd54f7a25e122948ecd4b1e9cc0d5eee16d3428",
+   "dur_s": 13.01
+  },
+  {
+   "n": 110,
+   "id": "alarm.collision_risk",
+   "file": "110_alarm.collision_risk.ogg",
+   "sha": "e7377751f88f13b75107a3ad46683e47df7c3902",
+   "dur_s": 17.91
+  },
+  {
+   "n": 111,
+   "id": "alarm.collision_decision",
+   "file": "111_alarm.collision_decision.ogg",
+   "sha": "89aa537eb820d440c0f23d1cc7e1687e53aa57ae",
+   "dur_s": 16.83
+  },
+  {
+   "n": 112,
+   "id": "alarm.shallow_water",
+   "file": "112_alarm.shallow_water.ogg",
+   "sha": "c108b3132619fe03fe2da4cc6800a0783bbd966e",
+   "dur_s": 12.81
+  },
+  {
+   "n": 113,
+   "id": "alarm.obstacle_ahead",
+   "file": "113_alarm.obstacle_ahead.ogg",
+   "sha": "3b68c678528609b31eec57b890dc83ac9fddeb34",
+   "dur_s": 13.26
+  },
+  {
+   "n": 114,
+   "id": "alarm.emergency_stop",
+   "file": "114_alarm.emergency_stop.ogg",
+   "sha": "57b0c95a4836fcd315d5805abcc8a36e097a4c19",
+   "dur_s": 16.72
+  },
+  {
+   "n": 115,
+   "id": "alarm.profile",
+   "file": "115_alarm.profile.ogg",
+   "sha": "d4e839b2e16bfb8b452ecbdc126939acde9066d0",
+   "dur_s": 16.51
+  },
+  {
+   "n": 116,
+   "id": "alarm.link_lost",
+   "file": "116_alarm.link_lost.ogg",
+   "sha": "6797293045a87852a9679add4b74bb4790e0d0b9",
+   "dur_s": 28.33
+  },
+  {
+   "n": 117,
+   "id": "alarm.engine_killed",
+   "file": "117_alarm.engine_killed.ogg",
+   "sha": "dcbdb1a0ff5b88b90ee0eff981e1a11ce315416a",
+   "dur_s": 18.02
+  },
+  {
+   "n": 118,
+   "id": "alarm.low_battery",
+   "file": "118_alarm.low_battery.ogg",
+   "sha": "361dd984ddd16fd559658869c4562f8fc53f2d3b",
+   "dur_s": 14.72
+  },
+  {
+   "n": 119,
+   "id": "alarm.relay_silent",
+   "file": "119_alarm.relay_silent.ogg",
+   "sha": "fd52730a1e9e4352d88fff1a368471df1e5c085a",
+   "dur_s": 13.71
+  },
+  {
+   "n": 120,
+   "id": "alarm.dp_heat",
+   "file": "120_alarm.dp_heat.ogg",
+   "sha": "ac945a01202747b328bcb291e9df863204e35267",
+   "dur_s": 14.11
+  },
+  {
+   "n": 121,
+   "id": "alarm.dp_offspot",
+   "file": "121_alarm.dp_offspot.ogg",
+   "sha": "1282781b51e2f701ce944eefce0855976c8e6bc3",
+   "dur_s": 17.03
+  },
+  {
+   "n": 122,
+   "id": "alarm.dp_overpower",
+   "file": "122_alarm.dp_overpower.ogg",
+   "sha": "7732ab081b9c6c8552cfaebe5f5257783dd320ab",
+   "dur_s": 14.81
+  },
+  {
+   "n": 123,
+   "id": "alarm.can_node",
+   "file": "123_alarm.can_node.ogg",
+   "sha": "402b1e545773e63bf3455dc80bacc747ee80559c",
+   "dur_s": 19.15
+  },
+  {
+   "n": 124,
+   "id": "alarm.can_bus",
+   "file": "124_alarm.can_bus.ogg",
+   "sha": "0cb631d2142ecba12fbede9f1400e1c8f2738599",
+   "dur_s": 16.1
+  },
+  {
+   "n": 125,
+   "id": "alarm.geofence",
+   "file": "125_alarm.geofence.ogg",
+   "sha": "c9ebb16e6a9754336b31aedc20a17334324db467",
+   "dur_s": 17.32
+  },
+  {
+   "n": 126,
+   "id": "alarm.no_data",
+   "file": "126_alarm.no_data.ogg",
+   "sha": "b861a023b3188d87762da87d6b58aab6db1302f8",
+   "dur_s": 15.12
+  },
+  {
+   "n": 127,
+   "id": "joy.x",
+   "file": "127_joy.x.ogg",
+   "sha": "be671fd63e503e9d6d48e84872546f82e7560091",
+   "dur_s": 16.11
+  },
+  {
+   "n": 128,
+   "id": "joy.y",
+   "file": "128_joy.y.ogg",
+   "sha": "9bab7208c70837d0339b427faadf05839a509cdd",
+   "dur_s": 19.3
+  },
+  {
+   "n": 129,
+   "id": "joy.take",
+   "file": "129_joy.take.ogg",
+   "sha": "6ca41dc22acd5c925c90013dafce0a30beafbc5d",
+   "dur_s": 11.89
+  },
+  {
+   "n": 130,
+   "id": "joy.auto",
+   "file": "130_joy.auto.ogg",
+   "sha": "506fb141f217fda1dc6a87a461febf7665439014",
+   "dur_s": 12.26
+  },
+  {
+   "n": 131,
+   "id": "joy.confirm",
+   "file": "131_joy.confirm.ogg",
+   "sha": "a0e57f9e9a8f463a9cf7e56fc776a9a4caa29b02",
+   "dur_s": 15.94
+  },
+  {
+   "n": 132,
+   "id": "joy.usb",
+   "file": "132_joy.usb.ogg",
+   "sha": "248844cd2e4b9a2b06390c6237166787a1afdd1e",
+   "dur_s": 21.75
+  },
+  {
+   "n": 133,
+   "id": "panel.standby",
+   "file": "133_panel.standby.ogg",
+   "sha": "bb8b224a45b6539246fd8c395b25b10f5200ef0e",
+   "dur_s": 17.4
+  },
+  {
+   "n": 134,
+   "id": "panel.hdg_lock",
+   "file": "134_panel.hdg_lock.ogg",
+   "sha": "f0fb49402c391975b525f770259c6e3f0004246b",
+   "dur_s": 12.05
+  },
+  {
+   "n": 135,
+   "id": "panel.minus1",
+   "file": "135_panel.minus1.ogg",
+   "sha": "3fd3ef66c3f379fb33e257c820f510192719c2bc",
+   "dur_s": 9.5
+  },
+  {
+   "n": 136,
+   "id": "panel.plus1",
+   "file": "136_panel.plus1.ogg",
+   "sha": "9aa369f1db4a1e011f21ca0c62cc8dd618fc190b",
+   "dur_s": 9.37
+  },
+  {
+   "n": 137,
+   "id": "panel.minus10",
+   "file": "137_panel.minus10.ogg",
+   "sha": "cc630c9c6133bc6de7256f925744811f131732d3",
+   "dur_s": 9.12
+  },
+  {
+   "n": 138,
+   "id": "panel.plus10",
+   "file": "138_panel.plus10.ogg",
+   "sha": "829ec617ca3c6cedb309185a80ee7246812b5ee1",
+   "dur_s": 13.48
+  },
+  {
+   "n": 139,
+   "id": "panel.estop",
+   "file": "139_panel.estop.ogg",
+   "sha": "0142183837e453cbc92ee662ed8811f8c69fc528",
+   "dur_s": 17.38
+  },
+  {
+   "n": 140,
+   "id": "uav.page",
+   "file": "140_uav.page.ogg",
+   "sha": "4f21a300c2bf6bf36357f7bb51f1eb5b9bc53427",
+   "dur_s": 23.38
+  },
+  {
+   "n": 141,
+   "id": "uav.scope",
+   "file": "141_uav.scope.ogg",
+   "sha": "4cfb83b4fa8ea1a37719587149f93c318d456ab2",
+   "dur_s": 19.28
+  },
+  {
+   "n": 142,
+   "id": "uav.route",
+   "file": "142_uav.route.ogg",
+   "sha": "9348413a861fbdcbf24c4201210224fe79db3487",
+   "dur_s": 31.76
+  },
+  {
+   "n": 143,
+   "id": "uav.launch",
+   "file": "143_uav.launch.ogg",
+   "sha": "e52e93018e173868994d3bc7142d50cc26365c7f",
+   "dur_s": 31.17
+  },
+  {
+   "n": 144,
+   "id": "uav.stop",
+   "file": "144_uav.stop.ogg",
+   "sha": "3647a80214b81baaa396024b67f157367adc6c8a",
+   "dur_s": 27.63
+  },
+  {
+   "n": 145,
+   "id": "uav.video",
+   "file": "145_uav.video.ogg",
+   "sha": "7eda42fc4cd1b46c28e9ff7a8625e0c114420662",
+   "dur_s": 27.93
+  },
+  {
+   "n": 146,
+   "id": "uav.battery",
+   "file": "146_uav.battery.ogg",
+   "sha": "b30cb3ac30e253f2d74d913c280253ba6508a455",
+   "dur_s": 24.26
+  },
+  {
+   "n": 147,
+   "id": "uav.fly",
+   "file": "147_uav.fly.ogg",
+   "sha": "cbed9cb2af9d30c5f91d62eb5ad2df36bd0b6fb7",
+   "dur_s": 31.41
+  },
+  {
+   "n": 148,
+   "id": "uav.logs",
+   "file": "148_uav.logs.ogg",
+   "sha": "01d0d6789c27514ba7e2900a4a002b171937116a",
+   "dur_s": 17.2
+  },
+  {
+   "n": 149,
+   "id": "uav.legal",
+   "file": "149_uav.legal.ogg",
+   "sha": "53d99455026eb5f950c70f080f18d34678252177",
+   "dur_s": 29.38
+  }
+ ]
+}
