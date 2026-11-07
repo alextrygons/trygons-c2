@@ -64,3 +64,36 @@ def gateway_config_paths(env=None):
 def on_gateway_pc(env=None):
     """True on a boat's gateway PC: the assistant never runs there (CLAUDE.md W)."""
     return any(os.path.isfile(p) for p in gateway_config_paths(env))
+
+
+# --- the language model (step AM4, tools/get_llm.py) ---------------------------------------------------------------
+# the model the AM4 comparison chose (docs/assistant_design.md 5b; = tools/get_llm.py CHOSEN); another one by
+# $TRYGONS_ASSISTANT_LLM = a model folder name under llm_root() or a local .gguf path
+LLM_DEFAULT = "llama3.2-3b"
+
+
+def llm_root():
+    return os.environ.get("TRYGONS_LLM_DIR") or os.path.join(bin_dir(), "assistant", "llm")
+
+
+def llm_py_dir():
+    """The folder with the llama.cpp Python bindings (pip --target, tools/get_llm.py), or None."""
+    d = os.path.join(llm_root(), "py")
+    return os.path.abspath(d) if os.path.isdir(os.path.join(d, "llama_cpp")) else None
+
+
+def llm_model(name=None):
+    """The local .gguf file of a language model (a folder name under llm_root(), or a .gguf path), or None."""
+    name = name or os.environ.get("TRYGONS_ASSISTANT_LLM") or LLM_DEFAULT
+    if name.endswith(".gguf"):
+        return os.path.abspath(name) if os.path.isfile(name) else None
+    d = os.path.join(llm_root(), name)
+    try:
+        g = sorted(f for f in os.listdir(d) if f.endswith(".gguf"))
+    except OSError:
+        return None
+    return os.path.abspath(os.path.join(d, g[0])) if len(g) == 1 else None
+
+
+def llm_installed():
+    return llm_py_dir() is not None and llm_model() is not None

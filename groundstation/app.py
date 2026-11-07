@@ -267,6 +267,7 @@ class AsstView:
     def __init__(self):
         self.horn = False                            # this station holds / asks for the horn (pushed, never pulled)
         self.heard = collections.deque(maxlen=8)     # (question, info), drained by App.ov_tick
+        self.answers = collections.deque(maxlen=8)   # (answer text, info) of the worker (AM4), drained by App.ov_tick
 
     def lang(self):
         return i18n.lang()
@@ -281,6 +282,9 @@ class AsstView:
 
     def on_heard(self, q, info):
         self.heard.append((q, info))
+
+    def on_answer(self, a, info):
+        self.answers.append((a, info))
 
 
 class App:
@@ -537,9 +541,14 @@ class App:
             pass
 
     def asst_on_heard(self, q, info):
-        """The recognised question (AM2: shown; the answer from the manual comes with AM3-AM5)."""
+        """The recognised question (AM2: shown; the answer follows from the worker, AM4)."""
         self.asst_heard = (q, time.time())
         self.say(T("asst.heard", q=q))
+
+    def asst_on_answer(self, a, info):
+        """The manual's answer (AM4): shown on screen 2's message line (text only; spoken from AM5)."""
+        cite = info.get("cite") or ""
+        self.say(T("asst.answer", a=a, cite=(" (%s)" % cite) if cite else ""))
 
     def ack_alarm(self):
         """Screen 2's ACK ALARM (step 13m): silences THIS PC first (MASTER lamps + the repeating sound, as screen
@@ -3608,6 +3617,9 @@ class App:
             hq = getattr(self.asst.view, "heard", None)
             while hq:
                 self.asst_on_heard(*hq.popleft())
+            aq = getattr(self.asst.view, "answers", None)
+            while aq:
+                self.asst_on_answer(*aq.popleft())
             n = self.asst.take_note()
             if n:                                   # plain information in the info style; a problem amber (LOW-4)
                 self.say(T(n[0], **n[1]), ORANGE if n[0] in asst_client.PROBLEM_NOTES else None)

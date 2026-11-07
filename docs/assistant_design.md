@@ -55,7 +55,7 @@ step on the owner's laptop and written here + in the manuals, never guessed in c
   models = the button greyed + "models not installed" on the Tools page (never an error box).
 - Speaking stays in the STATION process: the worker returns text only; the station speaks it through
   its own sound.py / tts.py, so the alarm priority lives in ONE scheduler (section 5).
-- Crash / hang (no answer in 30 s, process gone) = station-local notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» (the 13n1
+- Crash / hang (no answer in 30 s - AM4: 60 s -, process gone) = station-local notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» (the 13n1
   notice style, MasterLamps-free: never an alarm, never a sound) + restart after 5 s, at most 3 restarts
   in 10 min, then off until the station restarts (notice stays).
 
@@ -337,6 +337,142 @@ fallback). Too little free memory (MEASURE: model + 0.8 GB margin, because the s
 the HUD and the academy's 3D sim also use it) = run on the CPU; CPU too slow (first sentence > 8 s on
 the last 3 answers, MEASURE) = RETRIEVAL-ONLY mode: speak the best passage's shortest full sentence,
 show the passage. The panel shows the mode (GPU / CPU / retrieval only).
+
+### 5a. As built (step AM4)
+
+- Route: llama.cpp through its PYTHON BINDINGS inside the worker (llama-cpp-python 0.3.36, the CUDA 12.4 Windows
+  wheel of its GitHub release v0.3.36-cu124, 2026-10-01; size + sha256 = the release's own digest pinned in
+  tools/get_llm.py; installed with `pip --target tools/bin/assistant/llm/py --no-deps`, its 4 small dependencies
+  hash-locked in tools/assistant_requirements_llm.txt - the Whisper lock of section 10 is not touched). No exe, no
+  llama-cli, never llama-server, never a port: the bindings ran in this unattended session (the downloaded
+  whisper.cpp EXE of AM2 was not allowed to run; a DLL loaded by the already-used assistant Python was).
+  AS23 checks every assistant module: no llama-server / llama-cli / --port / --host string in code, no
+  llama_cpp.server / uvicorn / fastapi import, llama_cpp imported only in answer.py; AS2-style walk of the
+  bindings lists the network modules their code can reach (asyncio via jinja2, requests in the grammar helper,
+  urllib in the chat-format helper - never called by our path; the server sub-package needs uvicorn / fastapi,
+  not installed). AS24 = the real model answering with the Python blocker + the worker PID's netstat endpoints
+  (N/A when not downloaded).
+- Code: groundstation/assistant/answer.py (prompt, post-check, can't find, retrieval-only, StubLlm / LlamaLlm),
+  gpu.py (NVML through ctypes - the worker starts no process, so no nvidia-smi; a pure-Python GGUF header reader
+  for layers / KV heads; plan()), worker.py (init "llm", op "ask_text", "answer" after every "heard", the guard
+  before every answer), client.py (llm_cfg, stays THINKING until "answer", measures release -> answer text =
+  answer_ms; ANSWER_TIMEOUT_S 30 -> 60 s: a CPU-only model reads the passages for many seconds before its first
+  word), page.py (the answer line + where the model runs), app.py (AsstView.answers -> screen 2's message line).
+- Prompt: the fixed instruction in the question's language (answer ONLY from the passages, 1-2 short COMPLETE
+  sentences, names and numbers exactly as there, no chapter number, else exactly the can't-find sentence) + the top
+  3 passages numbered with chapter / heading + the question; temperature 0, top_k 1, seed 0, streamed, at most 160
+  tokens, stopped at 2 sentences, cut at MAX_GEN_S 10 s (= this answer in the retrieval form). The model never
+  names the chapter: the CODE cites the passage the answer's words come from (cite).
+- Post-check (answer.postcheck): names = words in capitals (+ runs: "HDG LOCK"), «quoted» / "quoted" spans and
+  the screens' 2-5-word capital lang values in plain form ("κλείσιμο καταπακτής" too); numbers = digits (a range
+  gives its unit to both ends) and number WORDS followed by a unit ("πέντε δευτερόλεπτα" = 5 s; a bare "ένα" is an
+  article), units folded to one form (kn / κόμβοι, s / δευτερόλεπτα, m / μέτρα, min / λεπτά, %, °, V ...); a
+  number WITH a unit must be in the passages with that unit, a bare number anywhere in them; a chapter the answer
+  names must be one of theirs. Any miss = the best passage's FIRST sentence (src "passage"), the model's text kept
+  in the log only. The model's can't-find sentence is accepted as it is.
+- GPU guard (gpu.plan): need = the GGUF file + the KV cache for 3072 tokens (from its header) + 450 MB compute;
+  free (NVML, AFTER Whisper is loaded) - MARGIN_MB 800 >= need = all layers on the GPU; else as many layers as fit
+  ("gpu+cpu"); none = CPU. Before every answer: less than LOW_MB 300 free = reloaded with a new plan (the CPU).
+  A failed GPU load is tried once on the CPU; a failed load at all = retrieval only (never a crash).
+- Retrieval-only (no model / not installed / setting `assistant_llm` "off" / 3 answers in a row > SLOW_S 8 s or
+  cut): the best passage's SHORTEST full sentence (>= 5 words, starts like a sentence, brackets balanced) as the
+  owner's rule says. MEASURED on the tuning part (no model needed): the question's must-mention term is in that
+  sentence for 21 / 96 Greek questions, in the FIRST sentence for 34 / 96, in the sentence sharing most words with
+  the question for 44 / 96 (English 4 / 10 / 16 of 33) - W98 asks whether to switch to the best-overlap sentence.
+
+### 5b. Model comparison (step AM4, measured 2026-11-07 on the owner's laptop: RTX A1000 6 GB, Windows 11)
+
+Method: tools/assistant_llm_eval.py `run` - the REAL worker (Whisper large-v3-turbo loaded first, as at the station,
+so the GPU guard sees the real free memory), typed questions (`ask_text`), the question list's TUNING part (the
+held-out part never used for a choice), every candidate Q4_K_M + "none" (no model = the retrieval form). Correct =
+the shown text holds the question's must-mention term and is not "can't find" (not-in-the-manual questions:
+correct only as "can't find"); "model's own" = correct with the model's own sentences (post-check passed);
+quality = an AUTOMATIC proxy only (Greek script / a Latin word only if in the passages, a complete sentence, <= 40
+words) - the owner's blind review is W99 (docs/assistant_llm_review.md); time = question in -> answer out of the
+worker (search + model; Whisper's ~0.9 s comes on top, see e2e below). CONDITIONS (stated honestly - the PC was in
+use): the free GPU memory at load varied 3181-4886 MB (another program held 0.5-1.6 GB at times), the two 3B runs
+overlapped a test_assistant run, qwen2.5-7b / llama3.1-8b ran only on the first 40 Greek + all 33 English tuning
+questions (time) and partly beside tools/check.sh. The speeds of the partly-offloaded models are therefore
+pessimistic; correctness does not depend on speed except through the 10 s cut.
+
+Tuning part, all questions (Greek 96 in the manual + 7 not, English 33 + 5):
+
+| model | lang | correct | model's own | post-check rejected | can't find right | false can't find | quality proxy | median / p90 ms | runs on (GPU layers) |
+|---|---|---|---|---|---|---|---|---|---|
+| none (retrieval form) | el | 21/96 = 22 % | - | - | 5/7 | 1 | - | 0 / 0 | - |
+| qwen2.5-3b | el | 12/96 = 12 % | 8 % | 4/41 | 7/7 | 37 | 49 % | 2371 / 10072 | gpu (all) |
+| llama3.2-3b | el | 21/96 = 22 % | 20 % | 4/49 | 7/7 | 40 | 87 % | 5187 / 9803 | gpu+cpu (23 of 28) |
+| meltemi-7b | el | 22/96 = 23 % | 14 % | 4/40 | 7/7 | 27 | 89 % | 6929 / 10198 | gpu+cpu (24 of 32) |
+| krikri-8b | el | 23/96 = 24 % | 17 % | 0/37 | 7/7 | 44 | 95 % | 7665 / 10214 | gpu+cpu (21 of 32) |
+| none (retrieval form) | en | 4/33 = 12 % | - | - | 3/5 | 0 | - | 0 / 1 | - |
+| qwen2.5-3b | en | 15/33 = 45 % | 42 % | 1/29 | 5/5 | 4 | 79 % | 3352 / 7098 | gpu (all) |
+| llama3.2-3b | en | 22/33 = 67 % | 64 % | 2/35 | 3/5 | 0 | 100 % | 3223 / 5277 | gpu+cpu (23 of 28) |
+| meltemi-7b | en | 13/33 = 39 % | 36 % | 3/21 | 4/5 | 1 | 89 % | 9499 / 10188 | gpu+cpu (24 of 32) |
+| krikri-8b | en | 15/33 = 45 % | 39 % | 1/20 | 5/5 | 11 | 100 % | 7051 / 10130 | gpu+cpu (21 of 32) |
+| qwen2.5-7b | en | 19/33 = 58 % | 58 % | 0/27 | 5/5 | 4 | 100 % | 5468 / 9416 | gpu+cpu (12 of 28) |
+| llama3.1-8b | en | 21/33 = 64 % | 64 % | 0/30 | 5/5 | 2 | 100 % | 6371 / 9583 | gpu+cpu (13 of 32) |
+
+The same first 40 Greek tuning questions for every model (39 in the manual + 1 not):
+
+| model | correct | model's own | false can't find | quality proxy | median ms |
+|---|---|---|---|---|---|
+| none | 11/39 = 28 % | - | 1 | - | 0 |
+| qwen2.5-3b | 6/39 = 15 % | 13 % | 14 | 65 % | 2070 |
+| llama3.2-3b | 10/39 = 26 % | 26 % | 16 | 84 % | 4920 |
+| meltemi-7b | 12/39 = 31 % | 18 % | 13 | 100 % | 6655 |
+| krikri-8b | 11/39 = 28 % | 21 % | 20 | 100 % | 8432 |
+| qwen2.5-7b | 12/39 = 31 % | 28 % | 8 | 30 % | 4687 |
+| llama3.1-8b | 8/39 = 21 % | 18 % | 5 | 88 % | 10079 |
+
+GPU memory: Whisper alone = ~1.1 GB (the "none" worker); the worker with a 3B model = 3.2-3.4 GB (Whisper + model +
+KV + compute); with a 7-8B model 4.6-4.7 GB at 12-24 of its layers on the GPU. A 7-8B model NEVER fits completely
+beside Whisper with the 800 MB margin on 6 GB (need 5.2-5.7 GB for the model alone, gpu.plan) - it always runs
+partly on the CPU = 2.3-3 tokens/s, median 5-10 s per answer, often cut at 10 s.
+
+FINDINGS: (1) English: a model clearly helps (llama3.2-3b 67 % vs the retrieval form's 12 %). (2) Greek: every
+model says "can't find" to 27-44 of the 96 answerable questions (the search found a passage; W101) - Greek
+correctness with any model is about the retrieval form's (22-31 %); the Greek-native models (Krikri, Meltemi) write
+the best Greek (proxy 89-95 %, no post-check rejection) but are 2-3x slower here. (3) The post-check rejected 0-15 %
+of the generated answers (a changed number / an invented name) - the guard works; it cannot catch a wrong but
+grounded sentence (e.g. "Ο ΚΥΒΕΡΝΗΤΗΣ απαντά ΝΑΙ" for "how do I stop a launch"). (4) qwen2.5-3b writes poor Greek
+(numbered lists, invented words: proxy 49 %).
+
+CHOICE (tools/get_llm.py CHOSEN = paths.LLM_DEFAULT): **llama3.2-3b** (Meta Llama 3.2 3B Instruct, Llama 3.2
+Community licence) - the only candidate that fits COMPLETELY on the GPU beside Whisper with the margin (need 2.7 GB;
+all 28 layers when >= 3.5 GB is free), best English, Greek correctness = the larger models' within the noise of this
+small list, and the only one inside the < 4 s target (e2e below). Krikri-8B (the best Greek wording) is the
+alternative for a PC with >= 8 GB of GPU memory (`TRYGONS_ASSISTANT_LLM=krikri-8b`); W99 (the owner's blind Greek
+review) may change the choice.
+
+HELD-OUT (measured ONCE after the choice; the same worker / conditions): 
+
+| model | lang | correct | model's own | post-check rejected | can't find right | false can't find | quality proxy | median / p90 ms | runs on |
+|---|---|---|---|---|---|---|---|---|---|
+| none (retrieval form) | el | 11/38 = 29 % | - | - | 4/4 | 1 | - | 1 / 2 | - |
+| llama3.2-3b (CHOSEN) | el | 8/38 = 21 % | 16 % | 3/23 | 4/4 | 15 | 90 % | 4946 / 9230 | gpu (all 28) |
+| krikri-8b | el | 10/38 = 26 % | 18 % | 0/16 | 4/4 | 12 | 94 % | 9408 / 10190 | gpu+cpu (12 of 32) |
+| none (retrieval form) | en | 2/9 = 22 % | - | - | 0/1 | 0 | - | 1 / 2 | - |
+| llama3.2-3b (CHOSEN) | en | 6/9 = 67 % | 67 % | 0/9 | 1/1 | 0 | 100 % | 3447 / 7102 | gpu (all 28) |
+| krikri-8b | en | 4/9 = 44 % | 44 % | 0/6 | 1/1 | 3 | 100 % | 6294 / 10100 | gpu+cpu (12 of 32) |
+
+(the held-out run overlapped the gateway test suite (CPU busy): its times are pessimistic - see e2e for the quiet
+times). The held-out confirms the tuning picture: English 67 % with the model vs 22 % without; Greek no better than
+the search's sentence (W102). The held-out set is small (38 + 9) and was part of the AM3 list (an upper bound,
+docs 4b) - AM6 needs a fresh set.
+
+End to end (`e2e`, release -> answer text, the real Whisper + llama3.2-3b, 10 Greek tuning questions spoken by the
+Windows voice into the simulated microphone): two runs on the quiet PC
+right after each other: run 2 = median **1.9 s**, max 2.6 s (Whisper 0.85-0.99 s of it; the model 0.7-1.7 s;
+4 of the 10 were "can't find" in 1.6-1.8 s); run 1 (directly after the heavy comparison runs, the GPU at 72 °C) =
+median 8.8 s, max 13.8 s - its first 6 questions took 8.5-13.8 s with Whisper alone at 4.1 s, its last 4 1.6-2.6 s.
+So the < 4 s target (to the answer TEXT; the voice of AM5 adds its first sentence) is met on a quiet, warm GPU and
+missed while the GPU is busy / throttled; AM5 measures again with the voice. GPU memory of the worker (Whisper +
+llama3.2-3b, all on the GPU): 3650 MB (nvidia-smi 1349 -> 4999 MB of 6144). Recognition of the Windows voice was
+imperfect ("καταβακτή", "εκτόξευσιντρόουν") - the search still found 6 of 10 (W84: real voices).
+Answers seen in the e2e run that are WRONG but passed the post-check (grounded words, wrong meaning): el013 "Η
+πύλη δίνει στο GPS του το UAV ..." (a launch-refusal question), el001 «ΚΑΤΑΠΑΚΤΗ» as a button name (the word is in
+the passages as an ordinary word): the post-check is a guard against invented names / numbers, not a judge of
+meaning - the chapter shown with every answer stays the operator's check (MANUAL ch. 22 / 17).
 
 ## 6. Speak (step AM5)
 

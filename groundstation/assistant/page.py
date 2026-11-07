@@ -1,5 +1,6 @@
 """The Tools page «Βοηθός» (step AM2): the talking manual's settings on THIS PC - on / off, its OWN microphone
-(separate from the loudhailer's devices), the push-to-talk key, the state, the last recognised question.
+(separate from the loudhailer's devices), the push-to-talk key, the state, the last recognised question, where it
+was found and (step AM4) the answer + where the language model runs (GPU / GPU+CPU / CPU / retrieval only).
 
 DISPLAY + per-PC SETTINGS ONLY: it gets the assistant client + the settings module, never `app`.
 """
@@ -57,6 +58,8 @@ class Page:
         self.models.pack(fill="x", padx=6)
         self.last = tk.Label(fr, font=F_TXT, bg=BG, fg=C["fg"], anchor="w", justify="left", wraplength=520)
         self.last.pack(fill="x", padx=6, pady=(6, 2))
+        self.ans = tk.Label(fr, font=F_TXT, bg=BG, fg=C["fg"], anchor="w", justify="left", wraplength=520)
+        self.ans.pack(fill="x", padx=6, pady=(2, 2))
         self._sig, self._t = None, 0.0
         self.fill_mics()
         i18n.on_change(self.lang_changed)
@@ -98,7 +101,8 @@ class Page:
 
     def _signature(self):
         a = self.a
-        return (a.state, a.device, id(a.last), a.key(), i18n.lang(), str(a.view_bar()), a.index_err)
+        return (a.state, a.device, id(a.last), id(a.answer), str(a.llm), a.key(), i18n.lang(), str(a.view_bar()),
+                a.index_err)
 
     def maybe_refresh(self):
         """From the station's 100 ms tick: refreshed only on a change, else once a second (AM2 review LOW-6)."""
@@ -116,6 +120,7 @@ class Page:
                 st += "  ·  " + T("asst.device", dev=a.device)
             self.state.configure(text=st, fg=theme.CAUTION if a.out_of_service() else theme.C["fg"])
             mt = T("asst.models_ok") if paths.models_installed() else T("asst.models_missing")
+            mt += "\n" + llm_line(a.llm, paths.llm_installed())
             if a.index_err:                     # AM3-r MED-1: a stale index is never searched
                 mt += "\n" + T("asst.n_index")
             self.models.configure(text=mt)
@@ -125,10 +130,27 @@ class Page:
             if h and h.get("q") and h.get("found"):
                 txt += "\n" + found_line(h["found"])
             self.last.configure(text=txt)
+            self.ans.configure(text=answer_line(a.answer) if a.answer and h and a.answer.get("q") == h.get("q")
+                               else "")
             v = a.view_bar()
             self.ask.configure(state="normal" if v and v["enabled"] else "disabled")
         except self.tk.TclError:
             pass
+
+
+def llm_line(info, installed):
+    """Where the language model runs (AM4): GPU / GPU+CPU / CPU / retrieval only, or not installed."""
+    if not info:
+        return T("asst.llm_ok") if installed else T("asst.llm_missing")
+    mode = info.get("mode") or "retrieval"
+    return T("asst.llm_mode." + mode.replace("+", "_"), name=info.get("name") or "-", why=info.get("why") or "")
+
+
+def answer_line(a):
+    """The answer to the last question (AM4: text; spoken from AM5) + where it comes from."""
+    cite = a.get("cite") or ""
+    return T("asst.answer_line", a=a.get("a", ""), src=T("asst.src." + (a.get("src") or "cant_find")),
+             cite=(" – " + cite) if cite else "", ms=a.get("answer_ms", a.get("ms", 0)))
 
 
 def found_line(f):

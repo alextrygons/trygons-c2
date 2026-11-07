@@ -5,6 +5,32 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 000000000. Talking manual - ANSWER (step AM4, 2026-11-07)
+
+Station / tools / tests / docs only (no app / hal / gateway change). llama.cpp in the assistant worker through its
+Python bindings (no exe, no server, no port); a grounded prompt; a post-check of every name and every number + unit
+(else the manual's first sentence); the model's "can't find"; a GPU memory guard (GPU / GPU+CPU / CPU) and a
+retrieval-only mode. Model comparison with `tools/assistant_llm_eval.py` through the real worker (Whisper loaded):
+the TUNING part for the choice, the HELD-OUT part measured once. Full tables + conditions: docs/assistant_design.md 5b.
+
+| tuning part | Greek correct (96) | Greek false "can't find" | English correct (33) | median ms (search + model) | runs on (6 GB GPU, Whisper loaded) |
+|---|---|---|---|---|---|
+| none (the search's sentence) | 22 % | 1 | 12 % | 0 | - |
+| qwen2.5-3b | 12 % | 37 | 45 % | 2371 / 3352 | GPU |
+| **llama3.2-3b (chosen)** | 22 % | 40 | 67 % | 5187 / 3223 (busy PC) | GPU+CPU 23/28 in that run (another program held GPU memory); all 28 with >= 3.5 GB free |
+| meltemi-7b | 23 % | 27 | 39 % | 6929 / 9499 | GPU+CPU 24/32 |
+| krikri-8b | 24 % | 44 | 45 % | 7665 / 7051 | GPU+CPU 21/32 |
+| qwen2.5-7b (first 40 el) | 31 % of 39 | 8 | 58 % | 4687 / 5468 | GPU+CPU 12/28 |
+| llama3.1-8b (first 40 el) | 21 % of 39 | 5 | 64 % | 10079 / 6371 | GPU+CPU 13/32 |
+
+HELD-OUT (once): llama3.2-3b Greek 8/38 = 21 % (the search's sentence 11/38 = 29 %), English 6/9 = 67 % (2/9);
+Krikri Greek 10/38, English 4/9. Not-in-the-manual questions: "can't find" 4/4 el, 1/1 en for the models.
+Post-check rejections: 0-15 % of the generated answers. End to end (release -> answer TEXT, real Whisper + llama3.2-3b,
+10 spoken Greek questions): median 1.9 s, max 2.6 s on a quiet PC (a first run right after the heavy runs: median
+8.8 s, max 13.8 s); worker GPU memory 3.65 GB. Tests: test_assistant AS19-AS24 (AS24 = the real model with the
+network blocked: PASS on this PC). Owner questions W98-W102 (retrieval sentence, blind Greek review
+docs/assistant_llm_review.md, the GPU margin, the Greek "can't find" rate, Greek with or without the model).
+
 ## 00000000. Talking manual - FIND, second review fixes (step AM3-r2, 2026-11-07) - REPLACES the AM3-r figures
 
 Tools / tests / docs only. A tour passage is now ALWAYS a "tour" hit (phrases in tour texts were counted as manual

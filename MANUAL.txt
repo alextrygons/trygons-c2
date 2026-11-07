@@ -3717,12 +3717,12 @@ THE LAW (not legal advice)
 ===============================================================================
 
 -------------------------------------------------------------------------------
-22. THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)
+22. THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM4)
 -------------------------------------------------------------------------------
 What it is: you ASK about the C2 by voice ("how do I close the hatch?") and
 the station shows (later also says) the answer from this manual. In this first
-part the station RECOGNISES the question, shows it and finds where it is in
-the manual; the answers come with the next steps.
+part the station RECOGNISES the question, shows it, finds where it is in the
+manual and shows a short CHECKED answer (step AM4); the voice comes next.
 
 It is READ-ONLY: it never sends anything to the boat or the gateway, never
 changes a mode, a setting or the layout, never presses anything. It works
@@ -3804,6 +3804,51 @@ WHERE IT FINDS IT IN THE MANUAL (step AM3)
       python tools\assistant_index.py eval
     (also in tools\check.sh). The next step (the language model answers ONLY
     from the passages, with a check) has to improve the refusals.
+
+THE ANSWER (step AM4)
+  * After the place, a small LOCAL language model (llama.cpp, on this PC, no
+    internet) turns the 3 best passages into 1-2 short sentences. It sees ONLY
+    those passages and your question, and it is told to answer only from them
+    or to say "I can't find that in the manual.".
+  * CHECKED before it is shown: every button / mode / screen / alarm name and
+    every number WITH its unit ("5 kn", "3 s", "50 m", "30 %") in the answer
+    must be in those passages. One miss = the answer is NOT used: the
+    manual's own first sentence of the best passage is shown instead. The
+    chapter shown after the answer is added by the program from the passage,
+    never by the model.
+  * The answer appears on screen 2's message line ("The assistant's answer:
+    ... (Chapter ...)") and on the Tools page «Βοηθός» / "Assistant" with
+    where it comes from: short answer from the manual / the manual's sentence
+    (the short answer failed the check) / the manual's sentence (search only)
+    / not found in the manual, and the time from letting go of the button to
+    the answer. It is NOT spoken yet (the voice comes with step AM5).
+  * Where the model runs (Tools page): on the graphics card (GPU), partly on
+    the graphics card and partly on the processor, or on the processor (CPU).
+    The assistant always leaves 800 MB of the graphics card's memory free for
+    the cameras' video, the HUD and the academy's 3D view; what does not fit
+    runs on the processor. If the graphics card gets short of memory while the
+    station runs, the model moves to the processor before the next answer.
+    Three slow answers in a row (more than 8 s each) = SEARCH ONLY: then the
+    manual's shortest whole sentence of the best passage is shown.
+  * Install: python tools\get_llm.py (once; the llama.cpp program library and
+    the chosen model into tools\bin\, every file checked with sha256; never
+    in git). Without it the assistant works in SEARCH ONLY mode. The Tools
+    page then says "Language model: not installed".
+  * Measured (step AM4, the owner's laptop, RTX A1000 6 GB): see the table in
+    docs\assistant_design.md section 5b. The chosen model is Llama 3.2 3B
+    (the only one that fits completely on the 6 GB graphics card beside the
+    speech recognition): about 3.6 GB of graphics memory for the whole
+    assistant; from letting go of the button to the answer text 1.9 s
+    (median of 10 spoken Greek questions, at most 2.6 s) on a quiet PC, up
+    to 14 s while the graphics card is busy. English answers: right 67 % of
+    the list's questions (without the model 12-22 %). GREEK: the model says
+    "I can't find" to about 4 in 10 questions that ARE in the manual, so in
+    Greek it is right only about 1 in 5 times, like the search alone (W101,
+    W102) - check the chapter, open the manual. Larger Greek models (Krikri,
+    Meltemi) write better Greek but take 7-10 s here.
+  * A wrong answer is still possible when the search picked a wrong passage
+    and the model's sentence uses only words of that passage: always check the
+    chapter shown with the answer.
 
 If it fails: the notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» / ASSISTANT OFF on both screens (a
 notice on THIS PC only, never an alarm, no sound); it restarts by itself after

@@ -14,10 +14,17 @@
     -> {"op": "find", "q", "lang"}  the manual search alone (step AM3) <- {"op": "found", "q", "lang", "ms",
                                     "cant_find", "why", "hits": [{id, ch, chapter, heading, term, score, cover, text}]}
     The "heard" answer carries "found" too (the same search on the recognised question, AM3).
+    AM4: init also takes "llm": {"kind": "llama" | "stub" | "none", "model": <local .gguf>, "py": <bindings folder>,
+        "device": "auto" | "cpu" | "cuda", "n_ctx", "reply" / "delay_s" (stub)}; ready carries "llm" (name, mode
+        gpu / gpu+cpu / cpu / retrieval, layers, why, free / need MB, load ms). After every "heard" with a question:
+    <- {"op": "answer", "q", "lang", "a", "src" (llm | passage | retrieval | cant_find), "mode", "cite", "id",
+        "problems", "ms", "gen_ms", "tokens", "found"}
+    -> {"op": "ask_text", "q", "lang"}  a typed question: the same search + answer (tests, tools/assistant_llm_eval.py)
 
 READ-ONLY + OFFLINE (CLAUDE.md W): it starts no process, opens no socket, writes no file (audio in RAM only,
 dropped after each question); models are local folder paths; it refuses to run on a gateway PC.
-AM3 added "find" (the manual index, read once at init: groundstation/assistant/index/); AM4 adds "answer".
+AM3 added "find" (the manual index, read once at init: groundstation/assistant/index/); AM4 the answer: llama.cpp
+runs IN this process through its Python bindings (answer.LlamaLlm) - no exe, no llama-cli / llama-server, no port.
 """
 import json
 import os
@@ -27,7 +34,7 @@ if __package__ in (None, ""):                     # run as a script by client.py
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "assistant"
 
-from assistant import index, mic, paths, stt   # noqa: E402
+from assistant import answer, gpu, index, mic, paths, stt   # noqa: E402
 
 
 def below_normal():
@@ -54,6 +61,9 @@ class Worker:
         self.inp = None                           # the microphone while listening
         self.search = {}                          # lang -> index.Searcher (the manual index, read once)
         self.search_err = {}                      # lang -> why that index is not used (missing / broken / stale)
+        self.ans = answer.Answerer(None)          # AM4: no model = retrieval only (until init loads one)
+        self.llm_cfg = {}
+        self.llm_info = {"mode": "retrieval", "why": "no language model"}
 
     def send(self, d):
         self.out.write(json.dumps(d) + "\n")      # ASCII escapes: the pipe's code page never matters
@@ -77,6 +87,9 @@ class Worker:
             return self.close_mic()
         if op == "find":
             return self.find(m.get("q") or "", m.get("lang") or self.cfg.get("lang") or "el")
+        if op == "ask_text":
+            q, lang = m.get("q") or "", m.get("lang") or self.cfg.get("lang") or "el"
+            return self.reply(q, lang, self.found(q, lang))
         return self.send({"op": "error", "why": "unknown op %r" % op})
 
     def init(self, m):
@@ -92,9 +105,86 @@ class Worker:
         except Exception as e:                    # a broken install: never a crash loop of tracebacks
             return self.send({"op": "error", "why": "speech recognition failed to load: %s" % str(e)[:120]})
         self.load_index()
+        self.load_llm(m.get("llm") or {})
         dev = self.stt.device + ("/" + self.stt.model_name if getattr(self.stt, "model_name", "") else "")
         self.send({"op": "ready", "device": dev, "ms": int((time.monotonic() - t0) * 1000),
-                   "index_err": self.index_problem()})
+                   "index_err": self.index_problem(), "llm": self.llm_info})
+
+    # --- the language model (AM4) ------------------------------------------------------------------------------
+    def load_llm(self, c, device=None):
+        """The answer step's model: a stub (tests), llama.cpp through its bindings (a LOCAL .gguf), or none (=
+        retrieval only). Where it runs = gpu.plan (the GPU guard); a failed GPU load is tried once on the CPU."""
+        import time
+        t0 = time.monotonic()
+        self.llm_cfg = dict(c)
+        old = getattr(self.ans, "llm", None)
+        if old is not None and hasattr(old, "close"):
+            old.close()
+        kind = c.get("kind") or "none"
+        terms = answer.lang_terms()
+        llm, info = None, {"mode": "retrieval", "why": "no language model", "name": ""}
+        if kind == "stub":
+            llm = answer.StubLlm(c.get("reply", "@first"), float(c.get("delay_s") or 0), mode=c.get("mode", "gpu"))
+            info = {"mode": llm.mode, "why": "stub", "name": "stub", "layers": -1}
+        elif kind == "llama":
+            try:
+                llm, info = self._llama(c, device or c.get("device") or "auto")
+            except Exception as e:                # missing bindings / file / out of memory: retrieval only
+                llm, info = None, {"mode": "retrieval", "why": "language model not loaded: %s" % str(e)[:160],
+                                   "name": os.path.basename(str(c.get("model") or ""))}
+        self.ans = answer.Answerer(llm, terms)
+        self.ans.stick = not c.get("measure")    # tools/assistant_llm_eval.py: never stuck in retrieval-only
+        if llm is None:
+            self.ans.why_ro = info["why"]
+        info["load_ms"] = int((time.monotonic() - t0) * 1000)
+        self.llm_info = info
+        return info
+
+    def _llama(self, c, device):
+        path = c.get("model")
+        answer.bindings_env(c.get("py"))
+        meta = gpu.gguf_meta(path)
+        free = gpu.free_mb()
+        n_ctx = int(c.get("n_ctx") or answer.N_CTX)
+        p = gpu.plan(meta, free, n_ctx, device=device)
+        info = {"name": meta.get("name") or os.path.basename(path), "file": os.path.basename(path),
+                "mode": p["mode"], "layers": p["layers"], "why": p["why"], "need_mb": p["need_mb"],
+                "free_mb": free[0] if free else None, "n_ctx": n_ctx}
+        try:
+            return answer.LlamaLlm(path, layers=p["layers"], n_ctx=n_ctx, mode=p["mode"]), info
+        except (RuntimeError, ValueError, MemoryError, OSError) as e:
+            if p["mode"] == "cpu" or not os.path.isfile(str(path)):
+                raise
+            info.update(mode="cpu", layers=0, why="the GPU load failed (%s) - the CPU" % str(e)[:80])
+            return answer.LlamaLlm(path, layers=0, n_ctx=n_ctx, mode="cpu"), info
+
+    def guard(self):
+        """Before every answer: the model on the GPU and less than gpu.LOW_MB free = the other programs on this PC
+        are short of GPU memory = the model is reloaded with a new plan (usually the CPU)."""
+        llm = getattr(self.ans, "llm", None)
+        if llm is None or getattr(llm, "mode", "cpu") == "cpu" or self.llm_cfg.get("kind") != "llama":
+            return None
+        free = gpu.free_mb()
+        if free is not None and free[0] >= gpu.LOW_MB:
+            return None
+        ro, why_ro, slow = self.ans.retrieval_only, self.ans.why_ro, self.ans.slow
+        info = self.load_llm(self.llm_cfg, device="cpu")
+        info["why"] = "GPU memory short before an answer (%s MB free) - reloaded on the CPU" % (
+            free[0] if free else "?")
+        if ro:
+            self.ans.retrieval_only, self.ans.why_ro, self.ans.slow = ro, why_ro, slow
+        return info
+
+    def reply(self, q, lang, found):
+        """The answer to one question (after "heard" / for "ask_text")."""
+        moved = self.guard()
+        r = self.ans.answer(q, lang, found)
+        r.update(op="answer", found=found)
+        if self.ans.retrieval_only and r["mode"] == "retrieval":
+            r["why_mode"] = self.ans.why_ro
+        if moved:
+            r["llm"] = moved
+        self.send(r)
 
     def load_index(self):
         """Both manual indexes, read once. A missing / broken index OR a STALE one (AM3-r MED-1: its manual / tour /
@@ -168,6 +258,8 @@ class Worker:
         if r["text"]:
             out["found"] = self.found(r["text"], r["lang"])
         self.send(out)
+        if r["text"]:
+            self.reply(r["text"], r["lang"], out["found"])
 
 
 def main():

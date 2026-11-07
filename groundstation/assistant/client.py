@@ -10,6 +10,12 @@ Push-to-talk (W83): ONLY the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom b
 "button" / "key" only: never the joystick. Release = ask; < MIN_S ignored, MAX_S = asked automatically.
 The loudhailer «ΟΜΙΛΙΑ» (AM1 review H1): its press aborts a capture AND stops the assistant's voice at once
 (horn_pressed()); while this station holds the horn nothing is captured and nothing is spoken (text only).
+
+The answer (step AM4): the worker runs llama.cpp IN its own process through the Python bindings (answer.py) - this
+module starts the worker and nothing else: no llama-cli, never llama-server, never a TCP port (CLAUDE.md W, AM1-r
+L4). After "heard" the worker sends "answer" (src llm / passage / retrieval / cant_find); the time from the
+release to the answer text is measured here (answer_ms). The answer is SHOWN (Tools page, screen 2's message line);
+it is spoken from step AM5.
 """
 import json
 import os
@@ -23,8 +29,9 @@ from . import hints, paths
 
 MIN_S = 0.4                     # a shorter press = ignored (a tap)
 MAX_S = 15.0                    # a longer one is asked automatically
-INIT_TIMEOUT_S = 90.0           # loading the models (the first start after boot reads ~1.6 GB)
-ANSWER_TIMEOUT_S = 30.0         # no answer = a hang: the worker is restarted
+INIT_TIMEOUT_S = 180.0          # loading the models (Whisper ~1.6 GB + the language model ~2-5 GB, AM4: 90 -> 180 s)
+ANSWER_TIMEOUT_S = 60.0         # no answer = a hang: the worker is restarted (AM4: 30 -> 60 s - a CPU-only model reads
+                                # the passages for up to ~20 s before its first word; retrieval-only follows if slow)
 RESTART_DELAY_S = 5.0
 RESTARTS_MAX = 3                # at most 3 restarts in RESTART_WINDOW_S, then off until the station restarts
 RESTART_WINDOW_S = 600.0
@@ -67,6 +74,9 @@ class Assistant:
         self.why = ""
         self.device = ""
         self.index_err = ""                      # the worker's manual index is stale / missing (AM3-r MED-1)
+        self.llm = {}                            # the worker's language model: name, mode (gpu / gpu+cpu / cpu / retrieval) ...
+        self.answer = None                       # the last "answer" (+ "answer_ms" = from the release to the text)
+        self.release_t = None
         self.pressed_t = None
         self.ask_t = None
         self.started_t = None
@@ -101,6 +111,20 @@ class Assistant:
         py = paths.assistant_python() if self.stt_kind == "faster" else (paths.assistant_python() or
                                                                            _this_python())
         return [py, os.path.join(paths.HERE, "worker.py")] if py else None
+
+    def llm_cfg(self):
+        """What the worker loads as the language model (AM4). $TRYGONS_ASSISTANT_LLM = "stub" / "none" (tests) or a
+        model folder name / .gguf path; gs_settings "assistant_llm" = "off" = retrieval only on this PC."""
+        env = os.environ.get("TRYGONS_ASSISTANT_LLM", "")
+        if env == "stub" or (self.stt_kind == "stub" and not env):
+            return {"kind": "stub", "reply": os.environ.get("TRYGONS_ASSISTANT_LLM_REPLY", "@first"),
+                    "delay_s": float(os.environ.get("TRYGONS_ASSISTANT_LLM_DELAY") or 0)}
+        if env == "none" or self._get("assistant_llm", "on") == "off":
+            return {"kind": "none"}
+        m = paths.llm_model()
+        if not m or not paths.llm_py_dir():
+            return {"kind": "none"}
+        return {"kind": "llama", "model": m, "py": paths.llm_py_dir(), "device": self._get("assistant_device", "auto")}
 
     def models_ok(self):
         if self.stt_kind == "stub":
@@ -142,7 +166,7 @@ class Assistant:
         self._send({"op": "init", "stt": self.stt_kind, "model": gpu or cpu, "cpu_model": cpu,
                     "device": self._get("assistant_device", "auto"), "mic_backend": self.mic_backend,
                     "mic": self.mic_device(), "lang": self.view.lang(), "stub_text": self.stub_text,
-                    "hints": {"el": hints.prompt("el"), "en": hints.prompt("en")}})
+                    "hints": {"el": hints.prompt("el"), "en": hints.prompt("en")}, "llm": self.llm_cfg()})
 
     def _reader(self, proc, gen):
         try:
@@ -238,7 +262,7 @@ class Assistant:
     def _ask(self):
         self.pressed_t = None
         if self._send({"op": "ask", "lang": self.view.lang()}):
-            self.ask_t = self.clock()
+            self.ask_t = self.release_t = self.clock()
             self._set(THINKING)
 
     def abort(self):
@@ -296,18 +320,33 @@ class Assistant:
         if op == "ready":
             self.device = m.get("device", "")
             self.index_err = m.get("index_err") or ""
+            self.llm = m.get("llm") or {}
             if self.index_err:                   # every search = can't find; the station says why once
                 self.note = ("asst.n_index", {})
             self._set(READY)
         elif op == "heard":
-            self.ask_t = None
             self.last = dict(m, t=time.time())
-            if self.state == THINKING:
-                self._set(READY)
-            if m.get("q"):
+            if m.get("q"):                       # the answer follows (AM4): still THINKING, the timeout runs on
                 self.view.on_heard(m["q"], m)
             else:
+                self.ask_t = None
+                if self.state == THINKING:
+                    self._set(READY)
                 self.note = ("asst.n_nothing", {})
+        elif op == "answer":
+            self.ask_t = None
+            a = dict(m, t=time.time())
+            if self.release_t is not None:
+                a["answer_ms"] = int((self.clock() - self.release_t) * 1000)
+            self.release_t = None
+            self.answer = a
+            if m.get("llm"):                     # the GPU guard moved the model (AM4)
+                self.llm = m["llm"]
+            if self.state == THINKING:
+                self._set(READY)
+            on = getattr(self.view, "on_answer", None)
+            if on is not None:
+                on(a.get("a", ""), a)
         elif op == "mic_error":
             self.note = ("asst.n_mic", {"err": m.get("why", "")})
         elif op == "refused":

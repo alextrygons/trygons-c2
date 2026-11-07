@@ -23,7 +23,7 @@ push-to-talk, its own microphone, term hints, the read-only proof.
   AS7 its OWN microphone setting (assistant_mic), separate from the loudhailer's devices; mic.py never imports
       audiodev; nothing writes sound to disk (the log folder holds text only)
   AS8 crash / hang: «ΒΟΗΘΟΣ ΕΚΤΟΣ» (a station-local notice on both screens, never an alarm), restart after 5 s,
-      at most 3 restarts in 10 minutes then off; a hang (no answer in 30 s) = restarted
+      at most 3 restarts in 10 minutes then off; a hang (no answer in 60 s, AM4) = restarted
   AS9 never on a gateway PC (client + worker refuse); a model NAME instead of a local folder is refused (AM1 review
       M2), the worker's environment is offline (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE)
   AS10 term hints from lang/el.txt + en.txt (mode bar, Tools pages, alarm names), within the prompt budget
@@ -45,6 +45,15 @@ push-to-talk, its own microphone, term hints, the read-only proof.
       every sender call in its window and diffs against the same window without the assistant (LOW-4); AS4
       also checks the worker PID's TCP / UDP endpoints (netstat) + reports the OS firewall rule (LOW-1);
       AS13 the install lock marker + --make-requirements needs TRYGONS_ASSISTANT_PYTHON (LOW-2 / LOW-3)
+  AM4 (the answer): AS19 the grounded prompt + the POST-CHECK (an invented name, an altered number "5 kn" ->
+      "15 kn", an altered unit "5 kn" -> "5 m", a number word with another unit, a bare number, a foreign chapter =
+      the passage's first sentence instead) + can't find (search or model); AS20 the GPU memory guard (a GGUF header
+      read, fake NVML numbers -> GPU / GPU+CPU / CPU, the margin, a reload on the CPU when the GPU gets short before
+      an answer, a model name / URL refused); AS21 retrieval-only (no model, a cut generation, 3 slow answers in a
+      row, a model error); AS22 the answer through the real worker (stub model; heard -> THINKING -> answer, the
+      release -> answer time, ask_text); AS23 tools/get_llm.py pins + no llama-server / llama-cli / port in any
+      assistant module (llama_cpp only in answer.py); AS24 the REAL language model with the network blocked (N/A -
+      never PASS - when it is not downloaded)
 
 Run:  python test_assistant.py      (exit code 0 = all passed; N/A lines do not fail)
 """
@@ -561,6 +570,7 @@ def as3_rig(rig, mutate=None, quiet=False):
         ap.asst_heard = None
         t0 = time.monotonic()
         every.clear()
+        a.answer = None
         a.start()
         out["ready"] = rig.pump(20, until=lambda: a.state == client.READY) is not False and a.state == client.READY
         ap.render(force=True)
@@ -572,8 +582,11 @@ def as3_rig(rig, mutate=None, quiet=False):
         rig.pump(1.0)
         ap.ov.release()
         rig.pump(20, until=lambda: ap.asst_heard is not None)
-        out["heard on the screens"] = bool(ap.asst_heard) and ap.asst_heard[0] == "πού κλείνω την καταπακτή" and \
-            "πού κλείνω την καταπακτή" in (ap.msg_text or "")
+        # AM4: the answer follows the question on screen 2's message line (the question stays on screen 1, 8 s)
+        rig.pump(20, until=lambda: a.answer is not None)
+        out["heard on the screens"] = bool(ap.asst_heard) and ap.asst_heard[0] == "πού κλείνω την καταπακτή"
+        out["the answer on screen 2's message line (AM4)"] = a.answer is not None and \
+            bool(a.answer.get("a")) and a.answer["a"] in (ap.msg_text or "")
         if mutate is not None:                          # a mutation run: sends the assistant must never make
             mutate(ap)
             rig.pump(0.5)
@@ -607,7 +620,7 @@ def as3_rig(rig, mutate=None, quiet=False):
         return ok, extra, list(sent)
     # AM2-r3 review MED: the mutation checks - sends through the method + payload kind the station ALSO sends most
     # often on its own in the baseline: (a) ONE scheduled by assistant code (root.after) = caught by the taint;
-    # (b) three more from a path the taint can't see (scheduled by plain code) = caught by the count comparison
+    # (b) four more (AM4; three before) from a path the taint can't see (scheduled by plain code) = caught by the count comparison
     common = max(without, key=without.get) if without else None
     m = {}
     if common is not None:
@@ -619,13 +632,15 @@ def as3_rig(rig, mutate=None, quiet=False):
             asst_sneak()
 
         def sneak_count(app_):
-            for i in range(3):
+            # AM4: 4 (was 3) - the window is longer now (it waits for the answer), so a periodic kind may land 2
+            # fewer times than in the busiest baseline window by its phase; 4 extra still shows above + ALLOW_PHASE
+            for i in range(4):
                 app_.root.after(10 + 20 * i, lambda: getattr(cls_, name_)(*x_, **k_))
         m_ok, _e, m_sent = as3_rig(rig, mutate=sneak_after, quiet=True)
         m["(a) scheduled by the assistant"] = (not m_ok and any(common in s and "scheduled" in s for s in m_sent),
                                                m_sent)
         m_ok, m_extra, _s = as3_rig(rig, mutate=sneak_count, quiet=True)
-        m["(b) 3 extra of a station kind"] = (not m_ok and common in m_extra, m_extra)
+        m["(b) 4 extra of a station kind"] = (not m_ok and common in m_extra, m_extra)
     out["mutation: a scheduled send via an already-used method + payload is caught"] = \
         bool(m) and all(v[0] for v in m.values())
     report("AS3b the real station wiring (ap.asst) with the AS3 traps", all(out.values()),
@@ -707,7 +722,7 @@ def as4_run(py):
     if any(s is None for *_x, s in audio):
         return report("AS4 real models, network blocked", None, "no offline voice (python tools/get_piper.py)")
     clk = Clock()
-    a = client.Assistant(View(), settings=Sets(), clock=clk, stt_kind="faster", mic_backend="sim")
+    a = client.Assistant(View(), settings=Sets(assistant_llm="off"), clock=clk, stt_kind="faster", mic_backend="sim")
     a.worker_cmd = lambda: blocked_cmd(py)
     n0 = len(MARKERS)
     got, snaps = [], []                               # AM2-r3 review LOW: netstat snapshots DURING the run
@@ -1276,15 +1291,21 @@ def as11(rig):
             for lg, q in (("el", "πού κλείνω την καταπακτή;"), ("en", "how do I close the hatch?")):
                 i18n.set_lang(lg, save=False)
                 a.last = {"q": q, "lang": lg, "audio_s": 2.1, "ms": 860, "found": wk.found(q, lg)}
+                # AM4: the answer (stub model = the passage's first sentence, post-checked) + where the model runs
+                wk.load_llm({"kind": "stub", "reply": "@first"})
+                a.answer = dict(wk.ans.answer(q, lg, a.last["found"]), answer_ms=2400)
+                a.llm = dict(wk.llm_info, name="Llama 3.2 3B Instruct", mode="gpu")
                 pg.refresh()
                 out["found line " + lg] = asst_page.found_line(a.last["found"]) in pg.last.cget("text") and \
                     not a.last["found"]["cant_find"]
+                out["answer line " + lg] = a.answer["src"] == "llm" and a.answer["a"] in pg.ans.cget("text") and \
+                    i18n.T("asst.src.llm") in pg.ans.cget("text") and "Llama 3.2 3B" in pg.models.cget("text")
                 if shots:                             # wide enough for the last question + its place (AM3)
                     geo, wl = ap.tools.geometry(), pg.note.cget("wraplength")
-                    ws = [w for w in (pg.note, pg.state, pg.models, pg.last) if "wraplength" in w.keys()]
+                    ws = [w for w in (pg.note, pg.state, pg.models, pg.last, pg.ans) if "wraplength" in w.keys()]
                     for w in ws:
                         w.configure(wraplength=900)
-                    ap.tools.geometry("1500x1600")
+                    ap.tools.geometry("1500x1760")
                     rig.pump(0.4)
                     ts.shot(ap.tools, os.path.join(shots, "tools_assistant_%s.png" % lg))
                     for w in ws:
@@ -1295,7 +1316,7 @@ def as11(rig):
             i18n.set_lang("el", save=False)
             pg.refresh()
             out["can't find line"] = i18n.T("asst.not_found") in pg.last.cget("text")
-            a.last = last0
+            a.last, a.answer, a.llm = last0, None, {}
             pg.refresh()
             if shots:
                 ap.tools.attributes("-topmost", False)
@@ -1709,13 +1730,406 @@ def as18():
     report("AS18 worker find", all(out.values()), "%s; %.1f ms per search" % (out, ms))
 
 
+# --- AM4: the answer --------------------------------------------------------------------------------------------
+HATCH = [{"id": "el:16:1", "ch": "16", "chapter": "Το μαγγέμα UAV", "heading": "Καταπακτή", "term": "",
+          "text": "Η καταπακτή κλείνει με το κουμπί «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ» μόνο από τον κυβερνήτη ή την κυβερνήτρια. "
+                  "Πάνω από 5 kn κάθε σταθμός δείχνει μια προειδοποίηση. Η κάθοδος γίνεται σε 3 s."},
+         {"id": "el:12:4", "ch": "12", "chapter": "Χαμένη σύνδεση", "heading": "", "term": "",
+          "text": "Κοντά στην ακτή (κάτω από 50 m) ο χρόνος σύνδεσης είναι πάντα 3 s."}]
+
+
+def as19():
+    """Grounded prompt + post-check (names AND every number + unit) + can't find - pure, with the stub model."""
+    from assistant import answer as A
+    terms = A.lang_terms()
+    found = {"cant_find": False, "why": "", "hits": HATCH}
+    out = {}
+    msgs = A.prompt("πού κλείνω την καταπακτή;", HATCH, "el")
+    body = msgs[1]["content"]
+    out["prompt: the instruction + the passages + the question only"] = msgs[0]["role"] == "system" and \
+        A.CANT["el"] in msgs[0]["content"] and all(h["text"] in body for h in HATCH) and \
+        body.rstrip().endswith("πού κλείνω την καταπακτή;") and len(msgs) == 2
+    out["prompt in the question's language"] = "Answer ONLY" in A.prompt("q", HATCH, "en")[0]["content"]
+
+    def run(reply, f=found, q="πού κλείνω την καταπακτή;"):
+        llm = A.StubLlm(reply)
+        r = A.Answerer(llm, terms).answer(q, "el", f)
+        return r, llm
+    good = "Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»: η κάθοδος γίνεται σε 3 s."
+    r, _ = run(good)
+    out["a grounded answer kept + its chapter cited by the code"] = r["src"] == "llm" and r["a"] == good and \
+        r["cite"] == "Κεφάλαιο 16 «Το μαγγέμα UAV»" and not r["problems"]
+    first = A.first_sentence(HATCH[0]["text"])
+    for label, bad in (("an invented button name", "Πατήστε «ΑΝΟΙΓΜΑ ΚΑΤΑΠΑΚΤΗΣ» στην οθόνη 1."),
+                       ("an invented name in capitals", "Πατήστε HATCH CLOSE στη σελίδα UAV."),
+                       ("an altered number 5 kn -> 15 kn", "Πάνω από 15 kn κάθε σταθμός δείχνει προειδοποίηση."),
+                       ("an altered unit 5 kn -> 5 m", "Πάνω από 5 m κάθε σταθμός δείχνει προειδοποίηση."),
+                       ("a number word with an altered unit", "Η κάθοδος γίνεται σε τρία λεπτά."),
+                       ("a bare number not in the passages", "Το κουμπί είναι το 7ο της μπάρας."),
+                       ("a chapter not among the passages", "Δείτε το κεφάλαιο 9 για την καταπακτή.")):
+        r, _ = run(bad)
+        out["post-check: %s -> the passage's first sentence" % label] = \
+            r["src"] == "passage" and r["a"] == first and r["problems"] and r["model_text"] == bad
+    r, _ = run("Η κάθοδος γίνεται σε τρία δευτερόλεπτα, πάνω από πέντε κόμβους μια προειδοποίηση.")
+    out["post-check: spoken numbers with the right unit pass"] = r["src"] == "llm"
+    r, _ = run("Κοντά στην ακτή κάτω από 50 μέτρα ο χρόνος είναι 3 δευτερόλεπτα.")
+    out["post-check: a unit said in words = the same unit (50 m, 3 s)"] = r["src"] == "llm"
+    r, _ = run("@cant")
+    out["the model's can't-find sentence accepted"] = r["src"] == "cant_find" and r["a"] == A.CANT["el"]
+    r, llm = run(good, f={"cant_find": True, "why": "score", "hits": []})
+    out["search can't find -> can't find, the model never asked"] = r["src"] == "cant_find" and not llm.calls
+    r, _ = run("**Απάντηση:** πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». Μετά περιμένετε. Και τρίτη πρόταση. Και τέταρτη.")
+    out["cleaned: no markdown / label, at most 2 sentences, a capital first"] = \
+        r["a"] == "Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». Μετά περιμένετε."
+    r = A.Answerer(A.StubLlm(good), terms).answer("how do I close the hatch?", "en",
+                                                   {"cant_find": True, "why": "", "hits": []})
+    out["English can't find"] = r["a"] == "I can't find that in the manual."
+    report("AS19 grounded prompt + post-check (names, numbers + units) + can't find", all(out.values()), out)
+
+
+def tiny_gguf(path, arch="llama", layers=32, heads=32, kv=8, embd=4096, pad_mb=4):
+    """A GGUF v3 header with the numbers gpu.plan reads (+ an array to skip) and pad_mb of zeros."""
+    import struct
+
+    def s(x):
+        b = x.encode()
+        return struct.pack("<Q", len(b)) + b
+    kvs = [(arch + ".block_count", 4, layers), (arch + ".attention.head_count", 4, heads),
+           (arch + ".attention.head_count_kv", 4, kv), (arch + ".embedding_length", 4, embd)]
+    body = s("general.architecture") + struct.pack("<I", 8) + s(arch)
+    body += s("tokenizer.ggml.scores") + struct.pack("<IIQ", 9, 6, 3) + struct.pack("<3f", 0, 1, 2)
+    body += s("tokenizer.ggml.tokens") + struct.pack("<IIQ", 9, 8, 2) + s("a") + s("bb")
+    for k, t, v in kvs:
+        body += s(k) + struct.pack("<I", t) + struct.pack("<I", v)
+    with open(path, "wb") as f:
+        f.write(b"GGUF" + struct.pack("<IQQ", 3, 0, len(kvs) + 3) + body + b"\0" * (pad_mb << 20))
+
+
+def as20():
+    """The GPU memory guard: fake NVML numbers -> GPU / GPU+CPU / CPU; the reload before an answer; CPU fallback."""
+    from assistant import answer as A, gpu, worker as W
+    out = {}
+    d = tempfile.mkdtemp(prefix="trygons_gguf_")
+    p = os.path.join(d, "m.gguf")
+    tiny_gguf(p, pad_mb=4)
+    meta = gpu.gguf_meta(p)
+    out["GGUF header read (layers, heads, kv heads)"] = (meta["arch"], meta["layers"], meta["heads"],
+                                                        meta["kv_heads"]) == ("llama", 32, 32, 8)
+    meta = dict(meta, file_mb=4900.0)                     # as an 8B Q4_K_M
+    kv = gpu.kv_mb(meta, 3072)
+    out["KV cache size (8B, 3072 tokens = 384 MB)"] = abs(kv - 384) < 1
+    big = gpu.plan(meta, (8000, 8192), 3072)
+    mid = gpu.plan(meta, (3700, 6144), 3072)
+    low = gpu.plan(meta, (900, 6144), 3072)
+    none = gpu.plan(meta, None, 3072)
+    cpu = gpu.plan(meta, (8000, 8192), 3072, device="cpu")
+    out["plenty free -> GPU (all layers)"] = big["mode"] == "gpu" and big["layers"] == -1
+    out["some free -> GPU+CPU (a part of the layers)"] = mid["mode"] == "gpu+cpu" and 1 <= mid["layers"] < 32
+    out["too little free -> CPU"] = low["mode"] == "cpu" and low["layers"] == 0
+    out["no NVIDIA GPU -> CPU"] = none["mode"] == "cpu"
+    out["setting CPU -> CPU"] = cpu["mode"] == "cpu"
+    out["the margin is kept free"] = gpu.plan(meta, (int(big["need_mb"] + gpu.MARGIN_MB - 1), 9000), 3072)[
+        "mode"] != "gpu" and gpu.plan(meta, (int(big["need_mb"] + gpu.MARGIN_MB + 1), 9000), 3072)["mode"] == "gpu"
+    old = os.environ.get("TRYGONS_ASSISTANT_FAKE_GPU")
+    try:
+        os.environ["TRYGONS_ASSISTANT_FAKE_GPU"] = "3700,6144"
+        out["fake NVML numbers read"] = gpu.free_mb() == (3700, 6144)
+        os.environ["TRYGONS_ASSISTANT_FAKE_GPU"] = "none"
+        out["fake: no GPU"] = gpu.free_mb() is None
+        # the worker: a model on the GPU, then the free memory drops below LOW_MB before an answer = reloaded
+        loads = []
+
+        def fake_llama(self, c, device):
+            loads.append(device)
+            mode = "cpu" if device == "cpu" else "gpu"
+            return A.StubLlm("@first", mode=mode), {"mode": mode, "layers": 0 if mode == "cpu" else -1,
+                                                    "why": device, "name": "fake"}
+        real = W.Worker._llama
+        W.Worker._llama = fake_llama
+        try:
+            sink = []
+            wk = W.Worker(out=types.SimpleNamespace(write=sink.append, flush=lambda: None))
+            os.environ["TRYGONS_ASSISTANT_FAKE_GPU"] = "4000,6144"
+            wk.load_llm({"kind": "llama", "model": p})
+            f = wk.found("πού κλείνω την καταπακτή;", "el")
+            wk.reply("πού κλείνω την καταπακτή;", "el", f)
+            on_gpu = wk.ans.llm.mode == "gpu" and loads == ["auto"]
+            os.environ["TRYGONS_ASSISTANT_FAKE_GPU"] = "%d,6144" % (gpu.LOW_MB - 50)
+            wk.reply("πού κλείνω την καταπακτή;", "el", f)
+            last = json.loads(sink[-1])
+            out["GPU memory short before an answer -> reloaded on the CPU, the answer still comes"] = on_gpu and \
+                loads == ["auto", "cpu"] and wk.ans.llm.mode == "cpu" and last["op"] == "answer" and \
+                last.get("llm", {}).get("mode") == "cpu" and last["src"] == "llm"
+            wk.reply("πού κλείνω την καταπακτή;", "el", f)
+            out["on the CPU: no more reloads"] = loads == ["auto", "cpu"]
+        finally:
+            W.Worker._llama = real
+        # a model that fails to load = retrieval only, never a crash; the real loader refuses a name / URL
+        wk2 = W.Worker(out=types.SimpleNamespace(write=lambda s: None, flush=lambda: None))
+        info = wk2.load_llm({"kind": "llama", "model": "qwen2.5-7b"})
+        out["a model NAME (not a local .gguf) = not loaded, retrieval only"] = info["mode"] == "retrieval" and \
+            wk2.ans.retrieval_only
+        refused = []
+        for bad in ("qwen2.5-7b", "https://huggingface.co/x/y.gguf", os.path.join(d, "missing.gguf"), "m.gguf"):
+            try:
+                A.LlamaLlm(bad)
+            except ValueError:
+                refused.append(bad)
+        out["LlamaLlm refuses a name / URL / missing / relative file (nothing downloaded)"] = len(refused) == 4
+    finally:
+        if old is None:
+            os.environ.pop("TRYGONS_ASSISTANT_FAKE_GPU", None)
+        else:
+            os.environ["TRYGONS_ASSISTANT_FAKE_GPU"] = old
+    shutil.rmtree(d, ignore_errors=True)
+    report("AS20 GPU memory guard + CPU fallback", all(out.values()), "%s; plans %s / %s / %s" % (
+        out, big, mid, low))
+
+
+def as21():
+    """Retrieval-only mode: no model, a too-slow model (cut), the CPU too slow 3 times in a row."""
+    from assistant import answer as A
+    out = {}
+    found = {"cant_find": False, "why": "", "hits": HATCH}
+    short = A.shortest_sentence(HATCH[0]["text"])
+    r = A.Answerer(None).answer("πού κλείνω την καταπακτή;", "el", found)
+    out["no model -> the best passage's shortest full sentence"] = r["src"] == "retrieval" and r["a"] == short \
+        and r["mode"] == "retrieval" and r["cite"].startswith("Κεφάλαιο 16")
+    out["shortest = a whole sentence (no fragment)"] = A.shortest_sentence(
+        "Η καταπακτή κλείνει μόνο από τον κυβερνήτη. Ποτέ gateway, UAV ή σκάφος). Η κάθοδος γίνεται σε 3 s.") == \
+        "Η κάθοδος γίνεται σε 3 s."
+    clk = Clock()
+
+    class Slow(A.StubLlm):
+        def generate(self, messages, max_tokens=A.MAX_TOKENS, max_s=A.MAX_GEN_S, clock=None):
+            clk.t += self.delay_s
+            cut = self.delay_s >= max_s
+            return {"text": self.reply if cut else "Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ».", "tokens": 9, "cut": cut}
+    a = A.Answerer(Slow("Πατήστε το κουμπί «ΚΛΕΙΣΙΜΟ", delay_s=A.MAX_GEN_S), clock=clk)
+    r = a.answer("πού κλείνω την καταπακτή;", "el", found)
+    out["a generation cut at MAX_GEN_S, no whole sentence -> the passage (retrieval form)"] = \
+        r["src"] == "retrieval" and r["a"] == short and not a.retrieval_only
+    a = A.Answerer(Slow("Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». Μετά η κάθοδος γίνεται σε", delay_s=A.MAX_GEN_S), clock=clk)
+    r = a.answer("πού κλείνω την καταπακτή;", "el", found)
+    out["a cut generation keeps its whole sentences (post-checked)"] = r["src"] == "llm" and \
+        r["a"] == "Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»."
+    r = A.decide("1. Κεφάλαιο 10 «ΣΥΝΑΓΕΡΜΟΙ» – ΡΗΧΑ ΝΕΡΑ 2.", HATCH, "el")
+    out["an echoed passage label / list number is no answer"] = r["src"] == "retrieval"
+    a = A.Answerer(Slow(delay_s=A.SLOW_S + 1), clock=clk)
+    srcs = [a.answer("πού κλείνω την καταπακτή;", "el", found)["src"] for _ in range(A.SLOW_N)]
+    r = a.answer("πού κλείνω την καταπακτή;", "el", found)
+    out["slower than SLOW_S %d times -> RETRIEVAL-ONLY from then on" % A.SLOW_N] = \
+        srcs == ["llm"] * A.SLOW_N and a.retrieval_only and r["src"] == "retrieval" and r["mode"] == "retrieval"
+    a = A.Answerer(Slow(delay_s=1.0), clock=clk)
+    for _ in range(5):
+        a.answer("πού κλείνω την καταπακτή;", "el", found)
+    out["fast answers stay with the model"] = not a.retrieval_only
+
+    class Boom(A.StubLlm):
+        def generate(self, *a, **k):
+            raise RuntimeError("CUDA error: out of memory")
+    r = A.Answerer(Boom()).answer("πού κλείνω την καταπακτή;", "el", found)
+    out["a model error -> the passage sentence, never no answer"] = r["src"] == "retrieval" and r["a"] == short
+    report("AS21 retrieval-only mode", all(out.values()), out)
+
+
+def as22():
+    """The answer through the REAL worker process (stub recogniser + stub model, network blocked): heard, then the
+    answer; the client stays THINKING until it, measures release -> answer, hands it to the view; ask_text."""
+    clk = Clock()
+    v = View()
+    v.answers = []
+    v.on_answer = lambda txt, info: v.answers.append((txt, info))
+    n = len(MARKERS)
+    os.environ["TRYGONS_ASSISTANT_LLM_DELAY"] = "1.0"       # the answer comes 1 s after "heard" (deterministic)
+    a = stub(view=v, clock=clk, py=sys.executable)
+    out = {}
+    try:
+        a.start()
+        ready = wait(a, lambda: a.state == client.READY)
+        out["ready with the model info"] = ready and a.llm.get("name") == "stub"
+        a.press("button")
+        a.inject(tone(1.0))
+        clk.t += 1.0
+        a.release()
+        wait(a, lambda: bool(v.heard))
+        out["heard -> still THINKING (the answer follows)"] = bool(v.heard) and a.state == client.THINKING
+        clk.t += 2.5
+        wait(a, lambda: bool(v.answers))
+        txt, info = v.answers[-1] if v.answers else ("", {})
+        out["the answer: the stub model's grounded sentence, post-checked"] = info.get("src") == "llm" and \
+            bool(txt) and info.get("cite", "").startswith(("Κεφάλαιο", "Ξενάγηση"))
+        out["release -> answer time measured by the client"] = info.get("answer_ms") == 2500
+        out["READY again"] = a.state == client.READY
+        a._send({"op": "ask_text", "q": "πες μου ένα ανέκδοτο", "lang": "el"})
+        wait(a, lambda: len(v.answers) > 1)
+        out["ask_text: not in the manual -> can't find"] = len(v.answers) > 1 and \
+            v.answers[-1][1].get("src") == "cant_find" and v.answers[-1][0] == "Δεν βρίσκω απάντηση στο εγχειρίδιο."
+    finally:
+        a.stop()
+        os.environ.pop("TRYGONS_ASSISTANT_LLM_DELAY", None)
+    tried = attempts(MARKERS[n:])
+    out["no network attempt in the worker"] = len(MARKERS) > n and not tried
+    report("AS22 worker answer (stub model)", all(out.values()), "%s; attempts %s" % (out, tried or "none"))
+
+
+def as23():
+    """tools/get_llm.py: every download pinned (revision + size + sha256), the bindings wheel pinned, its
+    dependencies hash-locked; llama.cpp runs IN the worker (bindings) - never llama-server / llama-cli / a port."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("get_llm", os.path.join(REPO, "tools", "get_llm.py"))
+    gl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gl)
+    out = {}
+    hexre = re.compile(r"^[0-9a-f]+$")
+    out["every model: a 40-hex revision, a size, a 64-hex sha256, a .gguf, a licence"] = all(
+        len(rev) == 40 and hexre.match(rev) and size > 1e9 and len(sha) == 64 and hexre.match(sha) and
+        fn.endswith(".gguf") and lic for repo, rev, fn, size, sha, lic, note in gl.MODELS.values())
+    out["the owner's candidates (Qwen2.5-7B, Meltemi, Krikri, Llama-3.1-8B, a 3B)"] = {
+        "qwen2.5-7b", "meltemi-7b", "krikri-8b", "llama3.1-8b", "qwen2.5-3b", "llama3.2-3b"} <= set(gl.MODELS)
+    out["the chosen model = the station's default"] = gl.CHOSEN == paths.LLM_DEFAULT and gl.CHOSEN in gl.MODELS
+    url, size, sha = gl.WHEEL
+    out["the bindings wheel: a release asset, size + sha256"] = url.startswith(
+        "https://github.com/abetlen/llama-cpp-python/releases/download/") and size > 1e8 and len(sha) == 64
+    with open(gl.REQ, encoding="utf-8") as f:
+        req = f.read()
+    reqs = [x for x in re.findall(r"^([A-Za-z0-9_.-]+)==(\S+)", req, re.M)]
+    out["dependencies: every one pinned + hashed"] = len(reqs) >= 4 and req.count("--hash=sha256:") >= len(reqs)
+    with open(os.path.join(REPO, "tools", "get_llm.py"), encoding="utf-8") as f:
+        src = f.read()
+    out["pip only --require-hashes --no-deps --only-binary into tools/bin"] = "--require-hashes" in src and \
+        "--no-deps" in src and '":all:"' in src and 'os.path.join(HERE, "bin", "assistant", "llm")' in src
+    out["downloads only into tools/bin (gitignored)"] = subprocess.run(
+        ["git", "check-ignore", "-q", "tools/bin/assistant/llm/x.gguf"], cwd=REPO).returncode == 0
+    # no assistant module may run llama.cpp as a server / a port / an exe (code strings + imports, not comments)
+    bad = []
+    for m in asst_modules():
+        pth = os.path.join(ASST, m + ".py")
+        with open(pth, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for nd in ast.walk(tree):
+            if isinstance(nd, ast.Constant) and isinstance(nd.value, str):
+                v = nd.value.lower()
+                for w in ("llama-server", "llama_cpp.server", "llama-cli", "--port", "--host", "uvicorn"):
+                    if w in v and not (isinstance(nd, ast.Constant) and _is_docstring(tree, nd)):
+                        bad.append((m, w))
+            if isinstance(nd, (ast.Import, ast.ImportFrom)):
+                names = [x.name for x in nd.names] + ([nd.module] if isinstance(nd, ast.ImportFrom) and nd.module
+                                                        else [])
+                for nm in names:
+                    if nm and (nm.startswith("llama_cpp.server") or nm.split(".")[0] in ("uvicorn", "fastapi",
+                                                                                         "sse_starlette")):
+                        bad.append((m, nm))
+                    if nm and nm.split(".")[0] == "llama_cpp" and m != "answer":
+                        bad.append((m, "llama_cpp outside answer.py"))
+    out["no llama-server / llama-cli / port / server import; llama_cpp only in answer.py"] = not bad
+    lp = paths.llm_py_dir()
+    net = "-"
+    if lp:
+        sys.path.insert(0, lp)
+        try:
+            net, nfiles = site_walk_dir(lp, ["llama_cpp"])
+            net = "%s (%d files)" % (net or "none", nfiles)
+        finally:
+            sys.path.remove(lp)
+    report("AS23 get_llm.py pins + llama.cpp in-process only", all(out.values()),
+           "%s; problems %s; the bindings' static import walk (information, like AS2) reaches the network "
+           "modules %s - the server sub-package needs uvicorn / fastapi, which are NOT installed" % (out, bad or "none",
+                                                                                                    net))
+
+
+def _is_docstring(tree, node):
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)) and n.body and \
+                isinstance(n.body[0], ast.Expr) and n.body[0].value is node:
+            return True
+    return False
+
+
+def site_walk_dir(site, roots, limit=4000):
+    """A static import walk inside one folder (the llama.cpp bindings) -> ({network module: importer}, files)."""
+    seen, todo, net, files = set(), [(r, "worker") for r in roots], {}, 0
+    while todo and files < limit:
+        mod, via = todo.pop()
+        if mod in seen:
+            continue
+        seen.add(mod)
+        top = mod.split(".")[0]
+        if top in NET_MODULES:
+            net.setdefault(top, via)
+        b = os.path.join(site, *mod.split("."))
+        p = next((x for x in (b + ".py", os.path.join(b, "__init__.py")) if os.path.isfile(x)), None)
+        if p is None:
+            continue
+        files += 1
+        pkg = mod if p.endswith("__init__.py") else mod.rpartition(".")[0]
+        with open(p, encoding="utf-8", errors="replace") as f:
+            tree = ast.parse(f.read())
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                todo += [(x.name, mod) for x in n.names]
+            elif isinstance(n, ast.ImportFrom):
+                if n.level:
+                    parts = pkg.split(".")
+                    m = ".".join(parts[:len(parts) - (n.level - 1)] if n.level > 1 else parts) + \
+                        ("." + n.module if n.module else "")
+                else:
+                    m = n.module or ""
+                if m:
+                    todo.append((m, mod))
+                    todo += [(m + "." + x.name, mod) for x in n.names if x.name != "*"]
+    return dict(sorted(net.items())), files
+
+
+def as24():
+    """The REAL language model answers with the network blocked (Python blocker + the worker PID's endpoints):
+    N/A (never PASS) when the model / bindings are not downloaded."""
+    py = paths.assistant_python()
+    name = "AS24 real language model, network blocked"
+    if not py or not paths.llm_installed() or not paths.models_installed():
+        return report(name, None, "language model not installed (python tools/get_llm.py) - N/A, never PASS")
+    v = View()
+    v.answers = []
+    v.on_answer = lambda txt, info: v.answers.append((txt, info))
+    a = client.Assistant(v, settings=Sets(), stt_kind="faster", mic_backend="null")
+    a.worker_cmd = lambda: blocked_cmd(py)
+    n0 = len(MARKERS)
+    snaps, out = [], {}
+    try:
+        a.start()
+        ready = wait(a, lambda: a.state == client.READY, 240)
+        out["ready, the model loaded"] = ready and a.llm.get("mode") in ("gpu", "gpu+cpu", "cpu")
+        if ready:
+            snaps.append(pid_endpoints(a.proc.pid))
+            for lang, q, must in (("el", "πού κλείνω την καταπακτή;", "καταπακτ"),
+                                  ("en", "how do I close the hatch?", "hatch")):
+                k = len(v.answers)
+                a._send({"op": "ask_text", "q": q, "lang": lang})
+                a.state, a.ask_t, a.release_t = client.THINKING, time.monotonic(), time.monotonic()
+                wait(a, lambda: len(v.answers) > k, 120)
+                snaps.append(pid_endpoints(a.proc.pid))
+                txt, info = v.answers[-1] if len(v.answers) > k else ("", {})
+                import unicodedata
+                pl = "".join(c for c in unicodedata.normalize("NFD", txt.lower()) if unicodedata.category(c) != "Mn")
+                out["%s answered (%s, %s ms gen)" % (lang, info.get("src"), info.get("gen_ms"))] = \
+                    info.get("src") in ("llm", "passage") and must in pl
+    finally:
+        a.stop()
+    tried = attempts(MARKERS[n0:])
+    eps = sorted({r for rows in snaps for r in (rows or [])})
+    out["no network attempt, no endpoint"] = len(MARKERS) > n0 and not tried and not eps and \
+        all(s is not None for s in snaps)
+    report(name, all(out.values()), "%s; model %s; attempts %s; endpoints %s; answers %s" % (
+        out, a.llm, tried or "none", eps or "none", [t[:80] for t, _i in v.answers]))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
         print("build the simulator first: sim\\build_sim.bat")
         return 2
-    for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13, as14, as15, as16, as17, as18) + \
-            (() if os.environ.get("AS_SKIP4") else (as4,)):
+    for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13, as14, as15, as16, as17, as18, as19, as20, as21,
+               as22, as23) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
         try:
             fn()
         except Exception as e:
