@@ -410,11 +410,15 @@ def as3():
             setattr(cls, name, orig)
     tried = attempts(MARKERS[n:])
     nc_ok, nc = blocker_selftest(sys.executable)
+    found = (a.view.heard[-1][1].get("found") or {}) if a.view.heard else {}   # AM3: the manual search, offline
+    top = (found.get("hits") or [{}])[0]
+    f_ok = not found.get("cant_find", True) and "ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ" in top.get("text", "")
     report("AS3 runtime: senders + network blocked", ready and q == "πού κλείνω την καταπακτή" and not sent and
-           len(MARKERS) > n and not tried and nc_ok,
+           len(MARKERS) > n and not tried and nc_ok and f_ok,
            "ready %s, heard %r, senders / sockets called %s, traps %d; worker network attempts %s; the blocker's "
-           "negative control (attempts caught by the script) recorded %s" % (ready, q, sent or "none", len(saved),
-                                                                             tried or "none", nc))
+           "negative control (attempts caught by the script) recorded %s; the manual search in the worker (AM3) "
+           "found %s %r" % (ready, q, sent or "none", len(saved), tried or "none", nc, top.get("id"),
+                            top.get("text", "")[:60]))
 
 
 def from_assistant():
@@ -1006,12 +1010,35 @@ def as11(rig):
             pg.refresh()
             # (+ "  ·  device" when a worker ran before: AS3b used the real ap.asst)
             out["page text"] = "F9" in pg.note.cget("text") and                 pg.state.cget("text").startswith(i18n.T("asst.state.ready"))
-            if shots:
-                for lg in ("el", "en"):
-                    i18n.set_lang(lg, save=False)
-                    pg.refresh()
+            # AM3: the last question's place in the manual (the worker's "found" on the "heard" answer)
+            from assistant import page as asst_page, worker as asst_worker
+            wk = asst_worker.Worker(out=open(os.devnull, "w", encoding="utf-8"))
+            last0 = a.last
+            for lg, q in (("el", "πού κλείνω την καταπακτή;"), ("en", "how do I close the hatch?")):
+                i18n.set_lang(lg, save=False)
+                a.last = {"q": q, "lang": lg, "audio_s": 2.1, "ms": 860, "found": wk.found(q, lg)}
+                pg.refresh()
+                out["found line " + lg] = asst_page.found_line(a.last["found"]) in pg.last.cget("text") and \
+                    not a.last["found"]["cant_find"]
+                if shots:                             # wide enough for the last question + its place (AM3)
+                    geo, wl = ap.tools.geometry(), pg.note.cget("wraplength")
+                    ws = [w for w in (pg.note, pg.state, pg.models, pg.last) if "wraplength" in w.keys()]
+                    for w in ws:
+                        w.configure(wraplength=900)
+                    ap.tools.geometry("1500x1600")
+                    rig.pump(0.4)
                     ts.shot(ap.tools, os.path.join(shots, "tools_assistant_%s.png" % lg))
-                i18n.set_lang("el", save=False)
+                    for w in ws:
+                        w.configure(wraplength=wl)
+                    ap.tools.geometry(geo)
+            a.last = {"q": "πες μου ένα ανέκδοτο", "lang": "el", "audio_s": 1.5, "ms": 700,
+                      "found": wk.found("πες μου ένα ανέκδοτο", "el")}
+            i18n.set_lang("el", save=False)
+            pg.refresh()
+            out["can't find line"] = i18n.T("asst.not_found") in pg.last.cget("text")
+            a.last = last0
+            pg.refresh()
+            if shots:
                 ap.tools.attributes("-topmost", False)
     finally:
         a.press, a.release = orig[0], orig[1]
@@ -1085,12 +1112,179 @@ def as13():
     report("AS13 hash-locked downloads", all(out.values()), "%s; %d packages" % (out, len(pinned)))
 
 
+# --- AS14 - AS18: FIND (step AM3) ------------------------------------------------------------------------------
+# the question list's measured first run (TEST_REPORT.md "Talking manual - FIND"): a later change may only keep or
+# raise these; lower = a FAIL (the index or the search got worse)
+FIND_MIN = {"el": {"top1": 0.60, "top3": 0.75}, "en": {"top1": 0.52, "top3": 0.78}}
+FIND_MAX_FALSE_CANT = {"el": 5, "en": 1}
+FIND_MIN_CANT_OK = {"el": 9, "en": 3}           # of the "not in the manual" questions (BM25 alone; AM4 adds more)
+I2_GROUPS = {"uav", "launch_hatch", "alarms", "modes", "lost_link", "recording", "loudhailer", "roles", "dp",
+             "engine", "power_limit"}
+
+
+def _tools_index():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("assistant_index_tool",
+                                                  os.path.join(REPO, "tools", "assistant_index.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def as14():
+    """The committed index = a fresh build of the manuals + tour (deterministic) and not stale; a changed source,
+    a wrong version or a missing file = stale; a CRLF checkout of a source = the same hash."""
+    from assistant import index
+    out = {}
+    with tempfile.TemporaryDirectory() as d:
+        for lang in ("el", "en"):
+            out["%s not stale" % lang] = index.stale(lang) == []
+            index.save(index.build(lang), d)
+            with open(index.index_path(lang, d), encoding="utf-8") as f:
+                fresh = f.read()
+            with open(index.index_path(lang), encoding="utf-8") as f:
+                out["%s committed = fresh build" % lang] = f.read() == fresh
+            idx = json.loads(fresh)
+            idx["sources"]["MANUAL_EL.txt" if lang == "el" else "MANUAL.txt"] = "0" * 64
+            index.save(idx, d)
+            out["%s changed manual = stale" % lang] = any("changed" in w for w in index.stale(lang, d))
+            idx["version"] = index.INDEX_VERSION + 1
+            index.save(idx, d)
+            out["%s version = stale" % lang] = any("version" in w for w in index.stale(lang, d))
+        out["missing = stale"] = bool(index.stale("el", os.path.join(d, "nothing")))
+        lf, crlf = os.path.join(d, "lf.txt"), os.path.join(d, "crlf.txt")
+        with open(lf, "wb") as f:
+            f.write("α\nβ\n".encode("utf-8"))
+        with open(crlf, "wb") as f:
+            f.write("α\r\nβ\r\n".encode("utf-8"))
+        out["CRLF = LF hash"] = index.sha_text(lf) == index.sha_text(crlf)
+    srcs = index.sources("el")
+    out["sources: manual + tour + lang files + parser"] = all(any(s.endswith(x) for s in srcs) for x in (
+        "MANUAL_EL.txt", "tour.json", "el.txt", "en.txt", "index.py"))
+    with open(os.path.join(REPO, "tools", "check.sh"), encoding="utf-8") as f:
+        sh = f.read()
+    out["check.sh rebuilds a stale index"] = "assistant_index.py build --if-stale" in sh
+    report("AS14 index build + stale check", all(out.values()), out)
+
+
+def as15():
+    """Normalisation: case, accents, diaeresis, final sigma, Greek look-alikes in a Latin name, stop words in both
+    languages, endings, the spoken synonyms (drone = UAV); no network / process module in index.py."""
+    from assistant import index
+    T = index.tokens
+    out = {
+        "case + accents + final sigma": T("ΚΑΤΑΠΑΚΤΗΣ", "el") == T("καταπακτής", "el") == T("Καταπακτης", "el"),
+        "diaeresis": T("προϊόν", "el") == T("προιον", "el"),
+        "noun forms": T("καταπακτή", "el") == T("καταπακτής", "el") and T("ΧΕΙΡΙΣΤΗΡΙΟΥ", "el") == T("χειριστήριο", "el"),
+        "verb forms": T("ξεκινάω", "el") == T("ξεκινά", "el") and T("κλείνω", "el") == T("κλείσιμο", "el"),
+        "HDG typed with a Greek Η": T("ΗDG", "el") == T("HDG", "el") == ["hdg"],
+        "stop words": T("πώς το κάνω;", "el") == [] and T("how do I do it", "en") == [],
+        "drone = UAV": T("drone", "el") == T("UAV", "el") == T("drones", "en"),
+        "joystick = χειριστήριο": T("joystick", "el") == T("χειριστήριο", "el"),
+        "numbers kept": "120" in T("120 m", "el") and "5" in T("5 s", "en"),
+        "pairs": index.with_pairs(["a", "b", "c"]) == ["a", "b", "c", "a_b", "b_c"],
+    }
+    imps = imports_of(os.path.join(ASST, "index.py"))
+    out["index.py: no network / process import"] = not (imps & (BANNED | PROCESS))
+    report("AS15 normalisation", all(out.values()), out)
+
+
+def as16():
+    """The manual -> passages: every chapter of the contents list, nothing from the contents itself, passage sizes,
+    line ranges, the alarm / mode lists split per term, the tour stops as "where is it" passages."""
+    from assistant import index
+    out = {}
+    for lang in ("el", "en"):
+        with open(os.path.join(REPO, index.MANUALS[lang]), encoding="utf-8") as f:
+            text = f.read()
+        lines = text.splitlines()
+        first = next(i for i, l in enumerate(lines) if index.CHAPTER_RE.match(l) and index.RULE_RE.match(lines[i - 1]))
+        toc = {l.split(".")[0].strip() for l in lines[:first] if l.strip()[:1].isdigit()}
+        ps = index.load(lang)["passages"]
+        man = [p for p in ps if p["kind"] == "manual"]
+        out[lang + " every chapter"] = toc - index.SKIP_CHAPTERS.get(lang, set()) <= {p["ch"] for p in man}
+        out[lang + " term table left out"] = not {p["ch"] for p in man} & index.SKIP_CHAPTERS.get(lang, set())
+        out[lang + " nothing from the contents"] = all(p["lines"][0] > first for p in man)
+        out[lang + " sizes"] = all(1 <= len(p["text"].split()) <= index.MAX_WORDS * 1.5 for p in ps)
+        out[lang + " line ranges"] = all(p["lines"][0] <= p["lines"][1] <= len(lines) for p in man)
+        terms = {p["term"] for p in man}
+        want = ({"ΑΠΩΛΕΙΑ ΠΥΞΙΔΑΣ", "ΧΑΜΗΛΗ ΜΠΑΤΑΡΙΑ", "ΧΤΥΠΗΜΑΤΑ (SLAMMING)", "STANDBY", "ΕΠΙΣΤΡΟΦΗ AUTO"}
+                if lang == "el" else {"GATEWAY LOST", "LOW BATTERY", "SLAMMING", "STANDBY", "HDG LOCK"})
+        out[lang + " terms " + "/".join(sorted(want))] = want <= terms
+        tour = json.load(open(os.path.join(REPO, index.TOUR), encoding="utf-8"))
+        n = sum(1 for c in tour["chapters"] for s in c["stops"] if s.get("text_" + lang))
+        out[lang + " tour stops"] = sum(1 for p in ps if p["kind"] == "tour") == n
+        out[lang + " ids unique"] = len({p["id"] for p in ps}) == len(ps)
+    report("AS16 manual -> passages", all(out.values()), out)
+
+
+def as17():
+    """The question list (tests/assistant/questions_*.json, owner spec I2) and the measured retrieval: top-1 /
+    top-3 at least the first run's numbers, most not-in-the-manual questions = can't find, few false can't-finds,
+    every expected phrase / tour stop exists (a manual edit that drops one fails here)."""
+    ai = _tools_index()
+    out, info = {}, {}
+    for lang in ("el", "en"):
+        qs = ai.load_questions(lang)
+        rows, t = ai.evaluate(lang, qs=qs)
+        n = t["in_manual"]
+        info[lang] = "top-1 %d/%d top-3 %d/%d false can't %d, can't find %d/%d" % (
+            t["top1"], n, t["top3"], n, t["false_cant_find"], t["cant_find_ok"], t["not_in_manual"])
+        out[lang + " no broken expectation"] = not t["broken"]
+        out[lang + " top-1"] = t["top1"] >= FIND_MIN[lang]["top1"] * n
+        out[lang + " top-3"] = t["top3"] >= FIND_MIN[lang]["top3"] * n
+        out[lang + " false can't find"] = t["false_cant_find"] <= FIND_MAX_FALSE_CANT[lang]
+        out[lang + " not in the manual = can't find"] = t["cant_find_ok"] >= FIND_MIN_CANT_OK[lang] and \
+            t["not_in_manual"] >= 5
+        out[lang + " every question has a must term"] = all(q.get("must") or not q.get("expect")
+                                                         for q in qs["questions"])
+        if lang == "el":
+            out["el 120-150 questions"] = 120 <= t["n"] <= 150
+            out["el every I2 group"] = I2_GROUPS <= {q["group"] for q in qs["questions"]}
+            out["el several phrasings"] = len({q["must"] for q in qs["questions"] if q["expect"]}) < n
+    report("AS17 retrieval on the question list", all(out.values()), "%s; %s" % (info, out))
+
+
+def as18():
+    """The worker's "find" (in-process, no model): a hit with its chapter + full passage text, the can't-find
+    reason for a question not in the manual, a missing index = can't find (never a crash), < 50 ms per search."""
+    import io
+    from assistant import worker
+    buf = io.StringIO()
+    w = worker.Worker(out=buf)
+    w.handle({"op": "find", "q": "πού κλείνω την καταπακτή;", "lang": "el"})
+    w.handle({"op": "find", "q": "what will the weather be tomorrow", "lang": "en"})
+    w.handle({"op": "find", "q": "πες μου ένα ανέκδοτο", "lang": "el"})
+    got = [json.loads(x) for x in buf.getvalue().splitlines()]
+    t0 = time.monotonic()
+    for _ in range(20):
+        w.found("τι σημαίνει χαμηλή μπαταρία", "el")
+    ms = (time.monotonic() - t0) * 1000 / 20
+    w2 = worker.Worker(out=io.StringIO())
+    from assistant import index
+    real = index.INDEX_DIR
+    try:
+        index.INDEX_DIR = os.path.join(tempfile.gettempdir(), "no_such_index_%d" % os.getpid())
+        miss = w2.found("καταπακτή", "el")
+    finally:
+        index.INDEX_DIR = real
+    h = got[0]["hits"][0] if got and got[0].get("hits") else {}
+    out = {"found": got and got[0]["op"] == "found" and not got[0]["cant_find"] and "ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ" in h.get("text", ""),
+           "chapter + place": bool(h.get("ch") and h.get("chapter") is not None and "lines" in h),
+           "weather = can't find": len(got) > 1 and got[1]["cant_find"] and bool(got[1]["why"]),
+           "joke = can't find": len(got) > 2 and got[2]["cant_find"],
+           "no index = can't find": miss["cant_find"] and "index" in miss["why"],
+           "fast": ms < 50}
+    report("AS18 worker find", all(out.values()), "%s; %.1f ms per search" % (out, ms))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
         print("build the simulator first: sim\\build_sim.bat")
         return 2
-    for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13) + (() if os.environ.get("AS_SKIP4") else (as4,)):
+    for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13, as14, as15, as16, as17, as18) + \
+            (() if os.environ.get("AS_SKIP4") else (as4,)):
         try:
             fn()
         except Exception as e:

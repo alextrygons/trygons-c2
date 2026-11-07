@@ -5,6 +5,33 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 000000. Talking manual - FIND (step AM3, 2026-11-07)
+
+Station only (no app / hal / gateway change). `python tools/assistant_index.py eval` (deterministic; also in
+tools/check.sh) on the question list v1 `tests/assistant/questions_el.json` + `questions_en.json` (written from the
+manuals + the tour; the owner reviews it = W89). A hit = a retrieved passage holding one of the question's expected
+manual phrases (or one of its accepted tour stops). BM25 alone, no language model, no embedding model.
+
+| | questions | in the manual | top-1 | top-3 | false "can't find" | not in the manual -> "can't find" |
+|---|---|---|---|---|---|---|
+| Greek | 145 | 134 | 82 (61 %) | 103 (77 %) | 4 | 9 / 11 |
+| English | 48 | 42 | 23 (55 %) | 34 (81 %) | 0 | 3 / 6 |
+
+Greek per group (in the manual: top-1 / top-3 of n): alarms 19 / 20 of 22, power limit 4 / 5 of 5, loudhailer 5 / 6
+of 7, joystick 7 / 8 of 10, launch + hatch 9 / 13 of 14, UAV 9 / 13 of 17, modes 12 / 16 of 20, recording 4 / 5 of 7,
+roles 3 / 3 of 5, lost link 3 / 3 of 6, DP 2 / 3 of 5, screens 3 / 5 of 9, engine 1 / 1 of 5, assistant 1 / 2 of 2.
+Search < 1 ms per question, index load 73 ms (554 Greek / 823 English passages incl. 151 tour stops).
+Not refused by BM25 (AM4's grounded answer + post-check must refuse them): "η καταπακτή κόλλησε στη μέση",
+"τι ώρα δύει ο ήλιος", "what does HATCH FAULT mean?", "how much does the boat cost", "what mode am I in right now".
+
+Manual gaps (the manual itself is silent - for the owner, W89): 6 entries, 4 topics
+- el015 / en005 "τι σημαίνει HATCH FAULT;" / "what does HATCH FAULT mean?": the HATCH FAULT notice (cause, what to
+  do) is not explained in MANUAL_EL / MANUAL (only "την καταπακτή υγιή" / "the hatch healthy").
+- el016 "η καταπακτή κόλλησε στη μέση": a stuck / half-open hatch (switch timeout) is not described for the operator.
+- el141 "πόσα λίτρα βενζίνη έχει το ρεζερβουάρ": fuel tank / range - nothing in the manual.
+- el144 / en048 "τι κάνω αν πέσει άνθρωπος στη θάλασσα" / "what do I do if someone falls overboard": no operator
+  procedure (a safety action - W86).
+
 ## 00000. Step 13b - review fixes for 11g + step 13 (2026-10-29)
 
 Two independent safety reviews each of commits 3ad1e95 (step 11g) and 1c0ddc6 (step 13); every finding verified in the

@@ -117,12 +117,27 @@ class Page:
             self.state.configure(text=st, fg=theme.CAUTION if a.out_of_service() else theme.C["fg"])
             self.models.configure(text=T("asst.models_ok") if paths.models_installed() else T("asst.models_missing"))
             h = a.last
-            self.last.configure(text=T("asst.last", q=h["q"], lang=h.get("lang", ""), audio=h.get("audio_s", 0),
-                                       ms=h.get("ms", 0)) if h and h.get("q") else T("asst.none"))
+            txt = T("asst.last", q=h["q"], lang=h.get("lang", ""), audio=h.get("audio_s", 0),
+                    ms=h.get("ms", 0)) if h and h.get("q") else T("asst.none")
+            if h and h.get("q") and h.get("found"):
+                txt += "\n" + found_line(h["found"])
+            self.last.configure(text=txt)
             v = a.view_bar()
             self.ask.configure(state="normal" if v and v["enabled"] else "disabled")
         except self.tk.TclError:
             pass
+
+
+def found_line(f):
+    """Where the manual search found the question (step AM3: the place only - the answer comes in AM4 / AM5)."""
+    hits = f.get("hits") or []
+    if f.get("cant_find") or not hits:
+        return T("asst.not_found")
+    h = hits[0]
+    where = " / ".join(x for x in (h.get("heading") or "", h.get("term") or "") if x)
+    if h.get("ch") == "tour":
+        return T("asst.found_tour", title=where or h.get("chapter", ""))
+    return T("asst.found", ch=h.get("ch", ""), chapter=h.get("chapter", ""), where=where or "-")
 
 
 def build_page(fr, asst, settings):

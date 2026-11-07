@@ -261,7 +261,12 @@ grep -E "^\[FAIL\]|BENCH STACK TESTS" "$TEMP/benchstack_tests.txt"
 echo "== loudhailer on the station (13r): voice codec + signed packets, ΟΜΙΛΙΑ press-and-hold on both screens, not on the joystick, ready messages, Tools page, devices"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_hailer.py > "$TEMP/hailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER STATION TESTS" "$TEMP/hailer_tests.txt"
-echo "== talking manual (AM2): read-only proof AS1-AS3, real models offline AS4 (N/A without them), push-to-talk + loudhailer wins, own mic, restarts, gateway PC, screens"
+echo "== talking manual index (AM3): groundstation/assistant/index/ rebuilt when a manual / the tour / a lang file / the parser changed; the question list (tests/assistant)"
+PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py build --if-stale > "$TEMP/asst_index.txt" 2>&1 || { echo "ASSISTANT INDEX FAILED (see $TEMP/asst_index.txt)"; fail=1; }
+cat "$TEMP/asst_index.txt"
+PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py eval > "$TEMP/asst_eval.txt" 2>&1 || { echo "ASSISTANT QUESTION LIST BROKEN (see $TEMP/asst_eval.txt)"; fail=1; }
+cat "$TEMP/asst_eval.txt"
+echo "== talking manual (AM2 + AM3): read-only proof AS1-AS3, real models offline AS4 (N/A without them), push-to-talk + loudhailer wins, own mic, restarts, gateway PC, screens; FIND AS14-AS18 (index, stale check, normalisation, passages, retrieval, worker find)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_assistant.py > "$TEMP/assistant_tests.txt" 2>&1 ) || { echo "ASSISTANT TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A)\]|ASSISTANT TESTS" "$TEMP/assistant_tests.txt"
 echo "== ground station sound + voice tests"

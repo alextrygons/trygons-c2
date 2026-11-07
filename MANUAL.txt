@@ -3717,12 +3717,12 @@ THE LAW (not legal advice)
 ===============================================================================
 
 -------------------------------------------------------------------------------
-22. THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, step AM2)
+22. THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)
 -------------------------------------------------------------------------------
 What it is: you ASK about the C2 by voice ("how do I close the hatch?") and
 the station shows (later also says) the answer from this manual. In this first
-part the station RECOGNISES the question and shows it; the answers from the
-manual come with the next steps.
+part the station RECOGNISES the question, shows it and finds where it is in
+the manual; the answers come with the next steps.
 
 It is READ-ONLY: it never sends anything to the boat or the gateway, never
 changes a mode, a setting or the layout, never presses anything. It works
@@ -3755,6 +3755,31 @@ Tools -> page «Βοηθός» / "Assistant"
     separate Python + the speech recognition into tools/bin/, ~3.5 GB, every
     download checked with sha256, the packages only from the hash-locked list
     tools/assistant_requirements*.txt; never in git).
+
+WHERE IT FINDS IT IN THE MANUAL (step AM3)
+  * Every recognised question is looked up at once in this manual (in Greek:
+    MANUAL_EL.txt) and in the guided tour's texts. The page «Βοηθός» /
+    "Assistant" shows under the last question where it was found ("In the
+    manual: chapter ... - ..." or "In the guided tour: ...") or "I can't find
+    that in the manual.". This step does not answer yet (text and voice come
+    with the next steps).
+  * The search compares words only: no accents, no capitals, the usual
+    endings and a few synonyms an operator says (drone = UAV, joystick =
+    χειριστήριο, μηχανή = κινητήρας). No model, no internet, under 1 ms per
+    question. It keeps the 3 best passages with their chapters; a weak match
+    = "I can't find that in the manual." - never a guess.
+  * The manual's index (groundstation\assistant\index\) is rebuilt by
+    tools\check.sh whenever a manual, the tour or a language file changed; by hand:
+    python tools\assistant_index.py build
+  * Try a typed question (no microphone, no station):
+      python tools\assistant_index.py ask "your question" --lang en
+  * Measured on the question list (tests\assistant\questions_en.json: 48
+    questions, 42 answered in the manual): the right passage first 55 %,
+    within the first 3 81 %; 3 of the 6 questions that are not in the manual
+    give "I can't find". Greek (145 questions, 134 in the manual): 61 % /
+    77 %, 9 of 11. Run it with  python tools\assistant_index.py eval  (also in
+    tools\check.sh). The next step (the language model answers ONLY from the
+    passages, with a check) improves the refusals.
 
 If it fails: the notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» / ASSISTANT OFF on both screens (a
 notice on THIS PC only, never an alarm, no sound); it restarts by itself after

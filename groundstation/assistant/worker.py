@@ -11,10 +11,13 @@
     -> {"op": "abort"}              capture dropped (the loudhailer was pressed, the station closes ...)
     -> {"op": "ping"}  <- {"op": "pong"}
     -> {"op": "inject", "samples"}  tests with mic_backend "sim" only
+    -> {"op": "find", "q", "lang"}  the manual search alone (step AM3) <- {"op": "found", "q", "lang", "ms",
+                                    "cant_find", "why", "hits": [{id, ch, chapter, heading, term, score, cover, text}]}
+    The "heard" answer carries "found" too (the same search on the recognised question, AM3).
 
 READ-ONLY + OFFLINE (CLAUDE.md W): it starts no process, opens no socket, writes no file (audio in RAM only,
 dropped after each question); models are local folder paths; it refuses to run on a gateway PC.
-AM3 / AM4 add "find" + "answer" to the same loop.
+AM3 added "find" (the manual index, read once at init: groundstation/assistant/index/); AM4 adds "answer".
 """
 import json
 import os
@@ -24,7 +27,7 @@ if __package__ in (None, ""):                     # run as a script by client.py
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "assistant"
 
-from assistant import mic, paths, stt          # noqa: E402
+from assistant import index, mic, paths, stt   # noqa: E402
 
 
 def below_normal():
@@ -49,6 +52,8 @@ class Worker:
         self.stt = None
         self.cfg = {}
         self.inp = None                           # the microphone while listening
+        self.search = {}                          # lang -> index.Searcher (the manual index, read once)
+        self.search_err = ""
 
     def send(self, d):
         self.out.write(json.dumps(d) + "\n")      # ASCII escapes: the pipe's code page never matters
@@ -70,6 +75,8 @@ class Worker:
             return self.ask(m.get("lang") or self.cfg.get("lang") or "el")
         if op == "abort":
             return self.close_mic()
+        if op == "find":
+            return self.find(m.get("q") or "", m.get("lang") or self.cfg.get("lang") or "el")
         return self.send({"op": "error", "why": "unknown op %r" % op})
 
     def init(self, m):
@@ -84,8 +91,36 @@ class Worker:
             return self.send({"op": "error", "why": str(e)})
         except Exception as e:                    # a broken install: never a crash loop of tracebacks
             return self.send({"op": "error", "why": "speech recognition failed to load: %s" % str(e)[:120]})
+        self.load_index()
         dev = self.stt.device + ("/" + self.stt.model_name if getattr(self.stt, "model_name", "") else "")
         self.send({"op": "ready", "device": dev, "ms": int((time.monotonic() - t0) * 1000)})
+
+    def load_index(self):
+        """Both manual indexes, read once (a missing / broken index = every search "can't find" + the reason)."""
+        self.search, self.search_err = {}, ""
+        for lang in ("el", "en"):
+            try:
+                self.search[lang] = index.Searcher(index.load(lang))
+            except (OSError, ValueError, KeyError) as e:
+                self.search_err = "manual index %s: %s" % (lang, str(e)[:100])
+
+    def found(self, q, lang):
+        import time
+        t0 = time.monotonic()
+        if not self.search and not self.search_err:
+            self.load_index()
+        s = self.search.get(lang if lang in self.search else "el") or next(iter(self.search.values()), None)
+        if s is None:
+            r = {"cant_find": True, "why": self.search_err or "no manual index", "hits": []}
+        else:
+            r = index.hit_summary(s.search(q))
+        r["ms"] = int((time.monotonic() - t0) * 1000)
+        return r
+
+    def find(self, q, lang):
+        r = self.found(q, lang)
+        r.update(op="found", q=q, lang=lang)
+        self.send(r)
 
     def listen(self):
         self.close_mic()
@@ -117,8 +152,11 @@ class Worker:
             return self.send({"op": "error", "why": "speech recognition failed: %s" % str(e)[:120]})
         finally:
             del samples                           # RAM only, dropped after the question
-        self.send({"op": "heard", "q": r["text"], "lang": r["lang"], "ms": r["ms"], "audio_s": round(audio_s, 2),
-                   "db": round(db, 1), "device": r["device"]})
+        out = {"op": "heard", "q": r["text"], "lang": r["lang"], "ms": r["ms"], "audio_s": round(audio_s, 2),
+               "db": round(db, 1), "device": r["device"]}
+        if r["text"]:
+            out["found"] = self.found(r["text"], r["lang"])
+        self.send(out)
 
 
 def main():

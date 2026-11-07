@@ -177,6 +177,36 @@ every existing binding (F11 / F12 / Space / A today).
 - Can't find: best BM25 score below a threshold (set on the question list's "not in the manual" items)
   = the can't-find answer, before any language model runs.
 
+### 4a. As built (step AM3, measured)
+
+- Code: groundstation/assistant/index.py (pure: parse, normalise, BM25, save / load / stale), tools/assistant_index.py
+  (`build [--if-stale]`, `check`, `ask "..." [--lang]`, `eval [-v] [--report] [--gaps]`), the worker op `find` and
+  `found` on every `heard`; the Tools page shows the best place (chapter / heading / term or the tour stop) or the
+  can't-find sentence under the last question. No answer / voice yet (AM4 / AM5).
+- Passages: el 554 (403 manual + 151 tour stops), en 823 (672 + 151). Units = paragraphs split at bullets and at
+  lines that start a definition list ("  TERM   text": modes, alarms with their level letter, the trouble table);
+  a TERM unit is its own passage and its term joins the heading path; other units are packed to MIN_WORDS 40,
+  split above MAX_WORDS 120; < 5 words dropped; MANUAL_EL chapter 14 (the term table) left out (a translation
+  list, it out-ranked the real answers).
+- Search terms: the folded words minus both languages' stop words, Greek / English endings stripped, stems cut to
+  6 (el) / 7 (en) characters, then the curated spoken-word table (index.SAID: what an operator SAYS -> the
+  manual's word, e.g. drone -> UAV, joystick -> χειριστήριο, μηχανή -> κινητήρας, σταματάω -> STOP; "σήμα" is
+  deliberately NOT mapped to "σύνδεση" because the manual's "σήμα AI" is the badge) + every pair of neighbouring
+  terms. BM25 K1 1.2, B 0.5; chapter + heading + term x3; tour stops x0.9 (short texts are favoured by BM25).
+  The parameters were chosen on the question list (a grid over MIN_WORDS / MAX_WORDS / HEAD_WEIGHT / B / STEM_LEN
+  / TOUR_FACTOR / K1); the list is small, so the numbers below are a first measurement, not a guarantee.
+- Can't find: best BM25 score < 3.0 OR the best passage covers < 35 % of the question's idf mass. The two do not
+  separate cleanly on BM25 alone (an everyday word of the question - "κόστος", "ώρα", "boat" - matches some
+  passage): the rest is AM4's job (the model answers only from the passages + the post-check).
+- Measured (tools/assistant_index.py eval, question list v1, deterministic): el 145 questions (134 in the
+  manual): top-1 82 = 61 %, top-3 103 = 77 %, false can't find 4; not in the manual: 9 / 11 can't find.
+  en 48 (42): top-1 23 = 55 %, top-3 34 = 81 %, false can't find 0; 3 / 6. Weakest groups: engine (1 / 5 top-1),
+  DP, screens, lost link; best: alarms (19 / 22), power limit. Search < 1 ms per question, index load 73 ms.
+- An embedding model (multilingual-e5-small) was NOT tried in AM3: BM25 first (this section); AM4 decides whether
+  the answer step needs better than top-3 77 % and measures an embedding model against these numbers then.
+- Manual gaps found by the list (TEST_REPORT.md "Talking manual - FIND"): HATCH FAULT not explained (el + en), a
+  stuck / half-open hatch, fuel tank / range, man overboard (el + en) = 6 entries, 4 topics.
+
 ## 5. Answer (step AM4)
 
 Candidates (Q4_K_M GGUF through llama.cpp; licences checked again at download time):
