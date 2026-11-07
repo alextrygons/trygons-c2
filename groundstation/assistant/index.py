@@ -22,7 +22,10 @@ import unicodedata
 
 from . import paths
 
-INDEX_VERSION = 2           # 2 (AM3-r): the assistant chapters left out, a line range per split part
+# 2 (AM3-r): the assistant chapters left out, a line range per split part. 3 (AM3-r3, W104): bumped because the
+# MEANING of stale() changed in AM3-r2 (it also compares the committed passages with a fresh build) without a bump -
+# rule: every change to what stale() judges = INDEX_VERSION + 1, the index rebuilt + committed
+INDEX_VERSION = 3
 INDEX_DIR = os.path.join(paths.HERE, "index")
 MANUALS = {"el": "MANUAL_EL.txt", "en": "MANUAL.txt"}
 TOUR = os.path.join("academy", "content", "tour.json")
@@ -41,8 +44,9 @@ K1, B = 1.2, 0.5
 # (tests/assistant/heldout.json) measured once after (AM3-r MED-2, TEST_REPORT.md)
 MIN_SCORE = 3.0
 # AM3-r: re-tuned on the TUNING part only (was 0.35, tuned on the whole list). AM3-r2 MED-2: per language - the
-# English 0.30 refused fewer out-of-manual questions (2 / 6) than 0.35 did (3 / 6); 0.33 = the middle of the flat
-# tuning range 0.32 .. 0.34 (en tuning: 3 / 5 refused right, no false can't find, top-1 / top-3 unchanged)
+# English 0.30 refused fewer out-of-manual questions (2 / 6) than 0.35 did (3 / 6); 0.33 lies inside the flat
+# tuning range 0.31 .. 0.34 (en tuning: 3 / 5 refused right, no false can't find, top-1 / top-3 unchanged; 0.30 =
+# 2 / 5; 0.35 = 3 / 5 but 1 FALSE can't find - AM3-r3 LOW-3, measured again)
 MIN_COVER = {"el": 0.30, "en": 0.33}
 
 CHAPTER_RE = re.compile(r"^(\d+[A-Z]?)\.\s+(\S.*)$")

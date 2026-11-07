@@ -45,6 +45,9 @@ push-to-talk, its own microphone, term hints, the read-only proof.
       every sender call in its window and diffs against the same window without the assistant (LOW-4); AS4
       also checks the worker PID's TCP / UDP endpoints (netstat) + reports the OS firewall rule (LOW-1);
       AS13 the install lock marker + --make-requirements needs TRYGONS_ASSISTANT_PYTHON (LOW-2 / LOW-3)
+  AM3-r3 (review of 25906e3): AS3b's +1 phase allowance only for a kind the station sends itself (baseline 0 =
+      none; mutation (c): one thread-sent send of a new kind is caught) (MED-1); AS6 asserts the gc walk's own
+      "todo ran empty" (LOW-1)
   AM4 (the answer): AS19 the grounded prompt + the POST-CHECK (an invented name, an altered number "5 kn" ->
       "15 kn", an altered unit "5 kn" -> "5 m", a number word with another unit, a bare number, a foreign chapter =
       the passage's first sentence instead) + can't find (search or model); AS20 the GPU memory guard (a GGUF header
@@ -68,6 +71,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import types
 import wave
@@ -78,6 +82,7 @@ sys.path.insert(0, HERE)
 import test_screen2 as ts  # noqa: E402  (temp settings, sound off, TRYGONS_TEST, the Rig on the simulator)
 import i18n  # noqa: E402
 import overlay  # noqa: E402
+import proto  # noqa: E402  (AS3b mutation (c): NEW_FTYPE is no frame type of the protocol)
 import settings  # noqa: E402
 from assistant import client, hints, mic, paths, stt  # noqa: E402
 
@@ -453,7 +458,8 @@ def from_assistant():
 
 
 BASE_RUNS = 3
-ALLOW_PHASE = 1                                       # AM2-r4: +1 per method + kind (phase)
+ALLOW_PHASE = 1                                       # AM2-r4: +1 per method + kind (phase); AM3-r3: only with a baseline > 0
+NEW_FTYPE = 0xFE                                      # AM3-r3 mutation (c): a frame type no protocol defines
 
 
 def call_key(cls, name, x, k):
@@ -480,7 +486,9 @@ def as3_rig(rig, mutate=None, quiet=False):
     (2) every sender call is counted per method + payload kind and compared with the MOST of BASE_RUNS windows
     without the assistant + ALLOW_PHASE (AM2-r4 MED-1: a periodic send may land once more in a window by its
     phase; so (2) alone can't see ONE or TWO extra periodic-kind sends - (1) does for scheduled ones; three are
-    caught by (2), mutation (b)). mutate(ap) = a mutation run (quiet)."""
+    caught by (2), mutation (b)). AM3-r3 (review of 25906e3 MED-1): the phase allowance exists ONLY for a method +
+    kind the station sends on its own (baseline > 0); a kind with a baseline of 0 has no phase, so ONE such send -
+    also from a thread the taint can't see - is caught by (2) (mutation (c)). mutate(ap) = a mutation run (quiet)."""
     import socket
     import tkinter
     import app as A
@@ -601,9 +609,13 @@ def as3_rig(rig, mutate=None, quiet=False):
             rig.pump(win)
             without |= collections.Counter(every)
         # AM2-r4 (review of 6ec6e0b MED-1): + ALLOW_PHASE per method + kind - a real-time pump may let a periodic
-        # send land once more by its phase; ONE send scheduled by assistant code is the taint's job (mutation (a))
-        extra = {k: (c, without.get(k, 0)) for k, c in with_asst.items() if c > without.get(k, 0) + ALLOW_PHASE}
-        out["no sender call above the station's own count + %d (vs runs without the assistant)" % ALLOW_PHASE] =             not extra
+        # send land once more by its phase; ONE send scheduled by assistant code is the taint's job (mutation (a)).
+        # AM3-r3 (review of 25906e3 MED-1): the phase allowance ONLY for a kind the station sends on its own
+        # (baseline > 0) - a method + kind with a baseline of 0 has no phase: ONE such send = FAIL (mutation (c))
+        extra = {k: (c, without.get(k, 0)) for k, c in with_asst.items()
+                 if c > without.get(k, 0) + (ALLOW_PHASE if without.get(k, 0) > 0 else 0)}
+        out["no sender call above the station's own count (+ %d only for a kind it sends itself; a kind with a "
+            "baseline of 0: none)" % ALLOW_PHASE] = not extra
     finally:
         a.stop()
         del a.worker_cmd                              # back to the class's own worker_cmd
@@ -641,8 +653,43 @@ def as3_rig(rig, mutate=None, quiet=False):
                                                m_sent)
         m_ok, m_extra, _s = as3_rig(rig, mutate=sneak_count, quiet=True)
         m["(b) 4 extra of a station kind"] = (not m_ok and common in m_extra, m_extra)
+
+        # AM3-r3 (review of 25906e3 MED-1): (c) ONE send of a method + payload kind the station NEVER sends on its
+        # own (baseline 0), made from a THREAD (no assistant frame, no tkinter taint): the +1 phase allowance never
+        # applies to a kind with a baseline of 0, so this single send shows above the count. The kind: the same
+        # method as (a) / (b) with the message "t" = "asst_mutation" or the frame type NEW_FTYPE (unknown to
+        # proto.py and app/proto.h - the simulator answers UNKNOWN, nothing changes)
+        x2, k2 = list(x_), dict(k_)
+        if len(x2) > 1 and isinstance(x2[1], dict):
+            x2[1] = dict(x2[1], t="asst_mutation")
+        elif len(x2) > 1 and isinstance(x2[1], int):
+            x2[1] = NEW_FTYPE
+        elif isinstance(k2.get("obj"), dict):
+            k2["obj"] = dict(k2["obj"], t="asst_mutation")
+        elif "ftype" in k2:
+            k2["ftype"] = NEW_FTYPE
+        else:
+            x2 = None                                   # no payload kind to change: (c) can't be made = FAIL below
+        new_key = call_key(cls_, name_, tuple(x2), k2) if x2 is not None else None
+
+        def sneak_thread(app_):
+            def go():
+                try:
+                    getattr(cls_, name_)(*x2, **k2)
+                except Exception:
+                    pass                                # the trap counted it before the real send (that may fail)
+            th = threading.Thread(target=go, daemon=True)
+            th.start()
+            th.join(5)
+        if new_key is not None and new_key not in without:
+            m_ok, m_extra, _s = as3_rig(rig, mutate=sneak_thread, quiet=True)
+            m["(c) 1 thread-sent send of a NEW kind %s (baseline 0)" % new_key] = (
+                not m_ok and m_extra.get(new_key) == (1, 0), m_extra)
+        else:
+            m["(c) 1 thread-sent send of a NEW kind"] = (False, "no new kind could be made from %s (%r)" % (common, new_key))
     out["mutation: a scheduled send via an already-used method + payload is caught"] = \
         bool(m) and all(v[0] for v in m.values())
+    out["NEW_FTYPE unknown to proto.py"] = NEW_FTYPE not in {v for n, v in vars(proto).items() if n.startswith("T_")}
     report("AS3b the real station wiring (ap.asst) with the AS3 traps", all(out.values()),
            "%s; senders %s, worker attempts %s, traps %d; sender calls per method + payload in the window %s vs the "
            "most of %d windows without the assistant %s (%.1f s each); above the baseline %s; mutations through %s: "
@@ -896,9 +943,11 @@ def as6(rig):
                                                       for v in vars(view).values())
     # AM2 review LOW-1 + AM2-r2 MED-b + AM2-r3 LOW: neither the view NOR the Assistant (ap.asst) holds the App - a
     # gc.get_referents walk from both never meets the App, a bound App method, the loudhailer object or the link
-    found, seen, stops = asst_gc_walk(ap, [view, ap.asst])
-    # AM2-r4 (review LOW-2): the walk must END by itself - hitting the limit would hide a reference past it
-    out["gc walk complete (below its limit)"] = len(seen) < GC_WALK_LIMIT
+    found, seen, stops, complete = asst_gc_walk(ap, [view, ap.asst])
+    # AM2-r4 (review LOW-2): the walk must END by itself - hitting the limit would hide a reference past it.
+    # AM3-r3 (review of 25906e3 LOW-1): the walk itself says whether its todo list ran EMPTY (len(seen) < limit
+    # alone could also mean a walk that stopped for another reason)
+    out["gc walk complete (its todo ran empty)"] = complete is True and len(seen) < GC_WALK_LIMIT
     out["AsstView + ap.asst hold no App (gc walk)"] = not found and len(seen) > 1
     # AM2 review LOW-3: a ready message and a sound signal stop the assistant too (as TALK does)
     for name, call in (("play_message", lambda: ap.hail.play_message(0)), ("signal", lambda: ap.hail.signal("short5"))):
@@ -937,7 +986,8 @@ def asst_gc_walk(ap, roots, limit=GC_WALK_LIMIT):
     """AM2-r3 review LOW: gc.get_referents walk from roots. It goes INTO types (their dicts, methods, closures) and
     into the modules of groundstation/assistant/; it STOPS (counted, reported) at the namespace of every other
     module - a function's __globals__ there is shared code reachable from everything (app.py's globals reach the
-    whole station by design), not a reference the assistant keeps. Returns (found, seen, stops)."""
+    whole station by design), not a reference the assistant keeps. Returns (found, seen, stops, complete):
+    complete = True only when the todo list ran EMPTY (the walk ended by itself, not at its limit - AM3-r3 LOW-1)."""
     import app as A
     import gc
     stop_ns = {}
@@ -966,7 +1016,7 @@ def asst_gc_walk(ap, roots, limit=GC_WALK_LIMIT):
                 stops["module"] += 1
                 continue
         todo += gc.get_referents(o)
-    return found, seen, dict(stops)
+    return found, seen, dict(stops), not todo
 
 
 # --- AS7 -------------------------------------------------------------------------------------------------------
@@ -1452,7 +1502,7 @@ def as13():
     try:
         out["exe path not expanded"] = "%TRYGONS_AM2R4_X%" in gw.winpath("C:/a%TRYGONS_AM2R4_X%b/python.exe") and             "%TRYGONS_AM2R4_X%" in " ".join(gw.firewall_args("C:/a%TRYGONS_AM2R4_X%b/python.exe"))
         out["read-back Program expanded"] = gw.rule_blocks(
-            [dict(row, Program="C:\%TRYGONS_AM2R4_X%\python.exe")], os.path.abspath("C:/y/python.exe"))
+            [dict(row, Program=r"C:\%TRYGONS_AM2R4_X%\python.exe")], os.path.abspath("C:/y/python.exe"))
     finally:
         os.environ.pop("TRYGONS_AM2R4_X", None)
     # AM2-r3 review LOW: stale / missing = installed AFRESH (no leftovers of a dropped package) + the marker only

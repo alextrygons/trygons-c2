@@ -105,8 +105,10 @@ step on the owner's laptop and written here + in the manuals, never guessed in c
   count above = FAIL (a periodic send may land once more in a window by its phase, so (2) alone can't
   see ONE extra send of a periodic kind - (1) does); mutation runs prove both: one send scheduled by
   assistant code through the station's own most frequent method + payload (caught by the taint) and
-  three more scheduled by plain code (caught by the count). The station's start-up reads settle
-  before the window.
+  four more scheduled by plain code (caught by the count). AM3-r3 (review of 25906e3 MED-1): the +1
+  phase allowance exists ONLY for a method + kind the station sends on its own (baseline > 0); a kind
+  with a baseline of 0 has no phase, so ONE send of a NEW kind - also from a thread the taint can't
+  see - is caught by the count (mutation (c)). The station's start-up reads settle before the window.
 - AM2-r2 LOW-1 (review of 25cb44f) - THE LIMIT of the runtime blocker, stated: it is PYTHON-level
   (socket patch + audit hook) and CANNOT see native code that opens sockets itself - CTranslate2
   (C++), hf_xet (Rust), any C extension calling the OS directly. Two OS-level checks therefore add to
@@ -286,8 +288,12 @@ every existing binding (F11 / F12 / Space / A today).
   manual" + "via a tour stop" apart (W95: recommended = reported separately, the floors stay on the total).
 - MED-2 the false-"can't find" safety: MIN_COVER is per language, {"el": 0.30, "en": 0.33}. The English 0.30 of
   AM3-r refused only 2 / 6 out-of-manual questions (0.35 refused 3); swept on the English TUNING part only:
-  0.32 .. 0.34 = 3 / 5 refused right, no false can't find, top-1 / top-3 unchanged -> 0.33 (the middle). AS17's
-  English can't-find floor is back to 3. BM25 is not the last guard: AM4's POST-CHECK (every name / number of the
+  0.31 .. 0.34 = 3 / 5 refused right, no false can't find, top-1 / top-3 unchanged -> 0.33 (inside the flat
+  range; AM3-r3 LOW-3 measured again: 0.30 = 2 / 5, 0.35 = 3 / 5 refused right BUT 1 false can't find). AS17's
+  English can't-find floor is back to 3 - NOTE (AM3-r3 LOW-4): this floor (FIND_MIN_CANT_OK en 3, checked on the
+  WHOLE list) EQUALS the measured 3 / 6: there is NO margin, by the owner's choice W96 (a false can't find is the
+  accepted price; a change to the English manual / index that loses ONE refusal fails AS17 at once and is looked
+  at, never absorbed). BM25 is not the last guard: AM4's POST-CHECK (every name / number of the
   answer in the retrieved passages, else the retrieval-only sentence / can't find) is the BACKSTOP for a wrong
   passage that BM25 did not refuse; a false "can't find" is the accepted price of fewer wrong answers (W96).
 - LOW: index.stale() also compares the committed passages with a fresh build (a hand-edited manual_*.json with the
@@ -304,6 +310,25 @@ every existing binding (F11 / F12 / Space / A today).
 
 - The held-out numbers stay an upper bound (the SAID table / parser were written with the AM3 list in view): AM6
   needs a FRESH question set never seen while tuning (the owner's own recorded questions, W84, are the best source).
+
+### 4d. Review fixes (step AM3-r3, review of 25906e3; tests / tools / docs only)
+
+- MED-1 AS3b's count comparison: the +1 phase allowance (ALLOW_PHASE) applied to EVERY method + payload kind, also
+  one the station never sends on its own (baseline 0) - so ONE send of a NEW kind from a path the taint can't see
+  (a thread, a socket callback) passed. Now the allowance exists only for a kind with a baseline > 0; a kind with a
+  baseline of 0 has no phase (one send = FAIL). Mutation (c) proves it: one send of a new kind (the station's most
+  frequent sender method with "t" = "asst_mutation" / frame type 0xFE, unknown to proto.py and app/proto.h) made
+  from a THREAD is caught by the count alone.
+- LOW-1 the AS6 gc walk returns whether its todo list ran EMPTY (complete); AS6 asserts that, not only
+  len(seen) < limit.
+- LOW-2 the read-back Program test string is a raw string (no SyntaxWarning for "\p").
+- LOW-3 the English MIN_COVER note: the flat tuning range is 0.31 .. 0.34 (not 0.32 .. 0.34) and 0.35 has 1 false
+  can't find (index.py + 4c corrected, measured again).
+- LOW-4 stated in 4c: the English can't-find floor 3 equals the measured 3 / 6 - no margin (W96).
+- LOW-5 tools/get_whisper.py rule_blocks docstring: a literal %X% in our exe path reports the rule MISSING =
+  fails safe.
+- W103 / W104 asked (PROGRESS.md): a manual-only top-1 floor beside the total; INDEX_VERSION bumped (2 -> 3) now
+  that stale()'s meaning changed in AM3-r2 (the passage comparison) without a bump - the index rebuilt + committed.
 
 ## 5. Answer (step AM4)
 

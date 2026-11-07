@@ -212,7 +212,11 @@ def firewall_rules(name=FW_RULE):
 def rule_blocks(rows, exe):
     """True when one rule is Enabled, Outbound, Block for exactly this program (path compared normalised).
     LIMIT (AM2-r4 LOW-6): the rule's Profile (Domain / Private / Public) is NOT checked - netsh adds the rule for
-    every profile ("any") by default; a rule narrowed to one profile by hand would still count as present."""
+    every profile ("any") by default; a rule narrowed to one profile by hand would still count as present.
+    Paths (AM2-r4 LOW-5 / AM3-r3 LOW-5): OUR exe path is taken literally (never env-expanded), the rule's Program
+    read back IS expanded (the firewall stores %SystemRoot%-style paths) - so an exe path of ours holding a literal
+    %X% can never equal the expanded Program: the rule is reported MISSING (AS4b N/A, the one netsh command printed),
+    never a false "present" = fails safe."""
     want = winpath(exe).lower()
     for x in rows or []:
         prog = str(x.get("Program") or "")
