@@ -20,29 +20,51 @@ You need: a multimeter, the laptop with the ground station, the USB cable,
 
 ## 0. Build the FIRST TEST firmware
 
-- [ ] In VS Code / ADS open `Cpu0_Main.c` and remove the comment marks around
-      `#define FIRST_TEST` so the line reads exactly `#define FIRST_TEST`.
-- [ ] In `hal/hal_pins.h`: `HAL_ESTOP_FITTED 1` (the e-stop contact is wired),
-      `HAL_LIMITS_FITTED 1`, `HAL_NEUTRAL_SW_FITTED 0`.
-- [ ] Check every pin marked CHECK in `hal/hal_pins.h` against the board's
-      silk screen / the Lite Kit user manual. Change the file, not the wiring,
-      if a pin is different.
-- [ ] Run the test gate in Git Bash: `sh tools/check.sh` -> ends with `GATE: OK`.
+The order matters (owner standing rule 2026-11-07, PROGRESS.md LOOP RULE 6(4)):
+the FIRST TEST configuration is **committed first**, the flash gate runs **on
+that commit**, **that commit** is tagged, and the board is built from it with
+a **clean tree**. A build with any uncommitted change is a different build
+than the tagged one and is never flashed. The same applies to **every later
+change of a hardware flag or pin** (3a `BNO_..._SIGN`, 3h `HAL_RELAY_FITTED`,
+3j `HAL_CAN_FITTED`, "After the test" FIRST_TEST off): a commit, the gate,
+a new tag - never an edit in the working tree before Build.
+
+- [ ] Configure IN GIT (one commit): in `Cpu0_Main.c` remove the comment marks
+      around `#define FIRST_TEST` so the line reads exactly `#define FIRST_TEST`;
+      in `hal/hal_pins.h`: `HAL_ESTOP_FITTED 1` (the e-stop contact is wired),
+      `HAL_LIMITS_FITTED 1`, `HAL_NEUTRAL_SW_FITTED 0`; check every pin marked
+      CHECK in `hal/hal_pins.h` against the board's silk screen / the Lite Kit
+      user manual (change the file, not the wiring, if a pin is different).
+      Git Bash: `sh tools/check.sh` -> ends with `GATE: OK`; then commit
+      ("FIRST TEST configuration: ...") and `git push`.
+- [ ] FLASH GATE on THAT commit (the loop does it, LOOP RULE 6(4)): a full deep
+      review of every FIRMWARE change (app/, hal/, Cpu*_Main.c, linker scripts,
+      .cproject) since the previous gate (flash-gate-1 = all of the firmware)
+      + a **full (not quick)** RUN_ACCEPTANCE + the storm + an ADS build of
+      that commit + `STACK CHECK: OK` (below), with every HIGH / MED finding
+      fixed first (a fix = a new commit = the gate on that one). Then the
+      ANNOTATED tag on that commit and the push of the tag:
+      `git tag -a flash-gate-N -m "flash gate N: <what>"`,
+      `git push origin flash-gate-N`.
+- [ ] At the bench, BEFORE Build (Git Bash in the project folder):
+      `git fetch --tags`; `git status --porcelain` prints **nothing** (ADS
+      compiles untracked .c files too - an untracked or changed file = not the
+      tagged build; stash or remove it); `git describe --tags --exact-match
+      --match "flash-gate-*"` prints `flash-gate-N` (or
+      `git tag --points-at HEAD -l "flash-gate-*"`); `git ls-remote --tags
+      origin flash-gate-N` shows the same commit as `git rev-parse flash-gate-N^{}`
+      (the tag is pushed). **Only commits tagged flash-gate-N are ever flashed
+      onto a real AURIX** - an untagged build is never flashed, whatever tests
+      it passed.
 - [ ] ADS: press F5 on the project, then *Project -> Clean*, then *Build*.
       No errors.
 - [ ] Stack check of THIS build (step 13s), Git Bash in the project folder:
       `python tools/mapreport.py "TriCore Debug (TASKING)/TRYGONS_C2.map"` ->
       `STACK CHECK: OK` (no recursion, every stack + CSA with >= 50 % margin;
       exit code 0). Any FAIL: do not flash, report it.
-- [ ] FLASH GATE (owner standing rule 2026-11-07, PROGRESS.md LOOP RULE 6): the
-      commit you build is TAGGED `flash-gate-N` (`git tag --points-at HEAD`
-      shows it; `git describe --tags --exact-match` must print `flash-gate-N`).
-      The tag is set only after a full deep review of every firmware change
-      since the previous gate + full RUN_ACCEPTANCE + the storm + an ADS build
-      + `STACK CHECK: OK`, with every HIGH / MED finding fixed. **Only commits
-      tagged flash-gate-N are ever flashed onto a real AURIX** - an untagged
-      build is never flashed, whatever tests it passed. Write the tag name in
-      the bench log.
+- [ ] Bench log, before flashing: the tag name, the commit hash
+      (`git rev-parse HEAD`) and the sha256 of the files you flash:
+      `sha256sum "TriCore Debug (TASKING)/TRYGONS_C2.elf" "TriCore Debug (TASKING)/TRYGONS_C2.hex"`.
 
 Not stored yet (no data flash driver): a TRAINING result is **lost at
 power-off** (do TRAINING again after every power-up before HDG LOCK) and the
@@ -102,7 +124,8 @@ Every 10 minutes without a bench command the board goes back to STANDBY.
       the BNO085) slowly **clockwise seen from above**: the heading goes up,
       the yaw rate is positive. Lift the bow side: pitch positive. Push the
       starboard side down: roll positive. (Wrong sign: flip `BNO_..._SIGN` in
-      hal/hal_pins.h, rebuild.)
+      hal/hal_pins.h - as a commit, then the flash gate + a new flash-gate-N
+      tag, then rebuild from the clean tree: item 0.)
 - [ ] **Compass calibration**: drive / turn slowly through two full circles;
       the accuracy goes to 2 or 3. Compare the heading with a hand-bearing
       compass: within 5 deg (else set `BNO_HEADING_OFFSET`).
@@ -370,8 +393,9 @@ engine controls as normal, kill cord worn, hand near the STANDBY button) and
 - [ ] Write down what you saw (heading error, any alarm, the TRAINING result)
       for the next session.
 - [ ] Before the normal (throttle) configuration: comment `#define FIRST_TEST`
-      out again, rebuild, and do the full neutral-start / joystick checks
-      (WIRING.md section 3, MANUAL).
+      out again AS A COMMIT, run the flash gate on that commit and tag it
+      flash-gate-N (item 0), rebuild from the clean tree, and do the full
+      neutral-start / joystick checks (WIRING.md section 3, MANUAL).
 
 ## 6. UAV magazine + loudhailer bench (BEFORE the first UAV flight; owner answers 2026-11-04, step WA)
 
