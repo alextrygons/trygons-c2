@@ -15,9 +15,11 @@ T = i18n.T
 
 
 class Page:
-    def __init__(self, fr, asst, settings):
+    def __init__(self, fr, asst, settings, actions=None):
         import tkinter as tk
         self.tk, self.a, self.settings = tk, asst, settings
+        self.actions = actions or {}            # AM5: "repeat" / "manual" (the station's display-only callbacks),
+        #                                         "voice" -> how the last answer was spoken (asstvoice.AsstVoice.status)
         C = theme.C
         BG = C["bg"]
         F_TXT, F_MED = theme.font("label"), theme.font("button")
@@ -60,6 +62,17 @@ class Page:
         self.last.pack(fill="x", padx=6, pady=(6, 2))
         self.ans = tk.Label(fr, font=F_TXT, bg=BG, fg=C["fg"], anchor="w", justify="left", wraplength=520)
         self.ans.pack(fill="x", padx=6, pady=(2, 2))
+        # AM5: how the last answer was spoken + [ΞΑΝΑ] / [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] (the same display-only actions as the panel)
+        self.voice = tk.Label(fr, font=F_TXT, bg=BG, fg=C["dim"], anchor="w", justify="left", wraplength=520)
+        self.voice.pack(fill="x", padx=6, pady=(0, 2))
+        row = tk.Frame(fr, bg=BG)
+        row.pack(anchor="w", padx=6, pady=(2, 6))
+        self.again = tk.Button(row, command=lambda: self._act("repeat"), **theme.button_opts())
+        i18n.bind(self.again, "asst.again")
+        self.again.pack(side="left", padx=(0, 6))
+        self.manual = tk.Button(row, command=lambda: self._act("manual"), **theme.button_opts("info"))
+        i18n.bind(self.manual, "asst.to_manual")
+        self.manual.pack(side="left")
         self._sig, self._t = None, 0.0
         self.fill_mics()
         i18n.on_change(self.lang_changed)
@@ -99,10 +112,26 @@ class Page:
         self.a.start()
         self.refresh()
 
+    def _act(self, what):
+        fn = self.actions.get(what)
+        if fn is not None:
+            try:
+                fn()
+            except Exception:
+                pass
+        self.refresh()
+
+    def _voice_why(self):
+        fn = self.actions.get("voice")
+        try:
+            return (fn() if fn is not None else "") or ""
+        except Exception:
+            return ""
+
     def _signature(self):
         a = self.a
         return (a.state, a.device, id(a.last), id(a.answer), str(a.llm), a.key(), i18n.lang(), str(a.view_bar()),
-                a.index_err)
+                a.index_err, self._voice_why())
 
     def maybe_refresh(self):
         """From the station's 100 ms tick: refreshed only on a change, else once a second (AM2 review LOW-6)."""
@@ -130,8 +159,14 @@ class Page:
             if h and h.get("q") and h.get("found"):
                 txt += "\n" + found_line(h["found"])
             self.last.configure(text=txt)
-            self.ans.configure(text=answer_line(a.answer) if a.answer and h and a.answer.get("q") == h.get("q")
-                               else "")
+            have = bool(a.answer and h and a.answer.get("q") == h.get("q"))
+            self.ans.configure(text=answer_line(a.answer) if have else "")
+            why = self._voice_why() if have else ""
+            self.voice.configure(text=T("asst.v_" + why) if why else "")
+            self.again.configure(state="normal" if have and self.actions.get("repeat") else "disabled")
+            from . import show
+            self.manual.configure(state="normal" if have and self.actions.get("manual") and
+                                  show.manual_place(a.answer) is not None else "disabled")
             v = a.view_bar()
             self.ask.configure(state="normal" if v and v["enabled"] else "disabled")
         except self.tk.TclError:
@@ -175,5 +210,5 @@ def found_line(f):
     return T("asst.found", ch=h.get("ch", ""), chapter=h.get("chapter", ""), where=where or "-")
 
 
-def build_page(fr, asst, settings):
-    return Page(fr, asst, settings)
+def build_page(fr, asst, settings, actions=None):
+    return Page(fr, asst, settings, actions)

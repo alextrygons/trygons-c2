@@ -2583,13 +2583,404 @@ def as24():
         out, a.llm, tried or "none", eps or "none", [t[:80] for t, _i in v.answers]))
 
 
+# --- AM5: speak + show ---------------------------------------------------------------------------------------------
+def as26():
+    """The speech normaliser (assistant/speech.py): capitals -> normal case (the passage's accent), acronyms as the
+    "say." lines spell them, numbers with spoken units, ranges / arrows / <= / ±, the chapter intro with every answer
+    (two chapters, a tour stop), a long pick = the intro-only sentence, can't find said as it is."""
+    from assistant import speech
+    out = {}
+    v = speech.vocab_from(["Η καταπακτή κλείνει με το κουμπί HATCH CLOSE του κυβερνήτη ή της κυβερνήτριας."])
+    t = speech.normalize("Πατήστε STANDBY: το GPS χάθηκε· 5 kn, 50 %, 10..120 m, HDG LOCK, ΚΑΤΑΠΑΚΤΗ -> F9, "
+                         "USB / PC, <= 3 s, ± 2 °, 4G, XYZ", "el", v)
+    gps = i18n.TL("el", "say.alarm.gps_lost")
+    out["GPS as the say. line"] = speech.SAID["GPS"][0] in gps and "τζι πι ες" in t
+    out["4G as the say. line"] = speech.SAID["4G"][0] in i18n.TL("el", "say.link.4g") and "τέσσερα τζι" in t
+    out["STANDBY as the say. line"] = speech.SAID["STANDBY"][0] in i18n.TL("el", "say.mode.standby") and "στάντμπάι" in t
+    out["capitals -> the passage's accented word"] = "καταπακτή" in t and "ΚΑΤΑΠΑΚΤΗ" not in t
+    out["units"] = "5 κόμβοι" in t and "50 τοις εκατό" in t and "120 μέτρα" in t and "3 δευτερόλεπτα" in t and \
+        "2 μοίρες" in t
+    out["range / arrow / <= / ±"] = "10 έως 120" in t and "προς εφ 9" in t and "το πολύ 3" in t and "πλην ή συν 2" in t
+    out["HDG LOCK spoken"] = "κλείδωμα πορείας" in t and "HDG" not in t
+    out["unknown Latin capitals spelt"] = "εξ γουάι ζετ" in t
+    out["/ = a pause"] = "γιου ες μπι, πι σι" in t
+    out["no capital word left"] = not re.search(r"(?<![\w])[A-ZΑ-Ω]{2,}(?![\w])", t)
+    e = speech.normalize("Press STANDBY: GPS lost; 5 kn, 50 %, 10..120 m, HDG LOCK, the HATCH -> F9, <= 3 s", "en")
+    out["English"] = "G P S" in e and "5 knots" in e and "50 per cent" in e and "10 to 120 metres" in e and \
+        "heading lock" in e and "hatch" in e and "at most 3 seconds" in e and "standby" in e
+    out["intro one chapter"] = speech.intro("Κεφάλαιο 10 «ΣΥΝΑΓΕΡΜΟΙ»", "el") == "Από το εγχειρίδιο, κεφάλαιο 10."
+    out["intro two chapters"] = speech.intro("Κεφάλαιο 10 «Α» + Κεφάλαιο 13A «Β»", "el") == \
+        "Από το εγχειρίδιο, κεφάλαια 10 και 13 A."
+    out["intro tour"] = speech.intro("Ξενάγηση: Βοηθός", "el") == "Από την ξενάγηση." and \
+        speech.intro("Tour: x", "en") == "From the guided tour."
+    out["intro en"] = speech.intro("Chapter 7 \"X\"", "en") == "From the manual, chapter 7."
+    info = {"a": "Η καταπακτή κλείνει με το κουμπί HATCH CLOSE.", "cite": "Κεφάλαιο 9 «UAV»", "src": "extract",
+            "passage": {"text": "Η καταπακτή κλείνει με το κουμπί HATCH CLOSE του κυβερνήτη."}, "lang": "el"}
+    txt, kind = speech.spoken(info)
+    out["spoken = intro + answer"] = kind == "answer" and txt.startswith("Από το εγχειρίδιο, κεφάλαιο 9. ") and \
+        "χατς" in txt.lower() or (kind == "answer" and txt.startswith("Από το εγχειρίδιο, κεφάλαιο 9. "))
+    long_a = " ".join(["λέξη"] * (speech.LONG_WORDS + 1)) + "."
+    txt, kind = speech.spoken(dict(info, a=long_a))
+    out["long pick = intro only"] = kind == "long" and txt == "Βρήκα την απάντηση στο κεφάλαιο 9 – δείτε το κείμενο." \
+        and "λέξη" not in txt
+    txt, kind = speech.spoken(dict(info, a=" ".join(["λέξη"] * speech.LONG_WORDS) + "."))
+    out["50 words still spoken"] = kind == "answer" and "λέξη" in txt
+    txt, kind = speech.spoken(dict(info, a=long_a, cite="Ξενάγηση: Βοηθός"))
+    out["long tour pick"] = kind == "long" and txt.startswith("Βρήκα την απάντηση στην ξενάγηση")
+    txt, kind = speech.spoken({"a": "Δεν βρίσκω απάντηση στο εγχειρίδιο.", "src": "cant_find", "cite": "Κεφάλαιο 9 «Α»",
+                               "lang": "el"})
+    out["can't find said alone (no chapter)"] = kind == "cant_find" and txt == "Δεν βρίσκω απάντηση στο εγχειρίδιο."
+    txt, kind = speech.spoken({"a": "Δεν βρίσκω απάντηση στο εγχειρίδιο.", "src": "passage", "cite": "Κεφάλαιο 9 «Α»",
+                               "passage": {"text": "x"}, "lang": "el"})
+    out["failed check = can't find said, never the passage"] = kind == "cant_find" and "x" not in txt.split()
+    out["nothing"] = speech.spoken({"a": "", "src": "extract", "cite": "Κεφάλαιο 1 «Α»"}) == ("", "")
+    out["en two chapters"] = speech.spoken({"a": "Yes.", "cite": "Chapter 2 \"A\" + Chapter 5 \"B\"", "src": "extract",
+                                            "lang": "en"})[0].startswith("From the manual, chapters 2 and 5. ")
+    report("AS26 speech normaliser", all(out.values()), "%s; el: %s" % (out, t[:120]))
+
+
+class FakeLamps:
+    def __init__(self):
+        self.warn = False
+
+    def on(self, lv):
+        import alerts
+        return self.warn and lv == alerts.WARNING
+
+    def unacked_codes(self, lv):
+        return ["compass_lost"] if self.on(lv) else []
+
+
+def fake_synth_factory(made):
+    import sound
+
+    def synth(lang, items, **kw):
+        for t, p in items:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            sound.write_wav(p, sound._silence(1000))        # a 1 s "voice"
+            made.append((lang, t, p))
+        return len(items)
+    return synth
+
+
+def as27():
+    """ALARM PRIORITY (CLAUDE.md W "ALARMS WIN", AM1-r M4) through sound.py + asstvoice.py with a recording player:
+    the assistant's level is the lowest, never queued; a WARNING / CAUTION sound or a callout stops it at once (the
+    rest dropped, [ΞΑΝΑ] replays); while a MASTER WARNING lamp is on / a callout is queued or sounding the answer is
+    TEXT ONLY (no voice started, no WAV made), also when the alarm comes between the TTS run and the play; speak =
+    False (the horn) / the horn held = never spoken; «ΟΜΙΛΙΑ» stops it at once; a long pick = the intro only; the
+    temporary WAV is in the system temp folder and deleted after it played; the local log holds text only."""
+    import alerts
+    import asstvoice
+    import sound
+    from assistant import qlog, show
+    clk = Clock()
+    player = sound.NullPlayer()
+    snd = sound.SoundSystem(player=player, clock=clk, library=sound.Library(cache=tempfile.mkdtemp()))
+    snd.sched.enabled = True
+    view = View()
+    app = types.SimpleNamespace(sound=snd, lamps=FakeLamps(), asst=types.SimpleNamespace(view=view, answer=None))
+    snd.app = app
+    made = []
+    vc = asstvoice.AsstVoice(app, synth=fake_synth_factory(made), clock=clk)
+    logdir = client.log_dir()
+    for fn in os.listdir(logdir):
+        if fn.endswith(".jsonl"):
+            os.remove(os.path.join(logdir, fn))
+    info = show.demo_answer("el") or {"a": "Η καταπακτή κλείνει με το κουμπί HATCH CLOSE.", "cite": "Κεφάλαιο 9 «UAV»",
+                                      "src": "extract", "lang": "el", "speak": True, "q": "πού κλείνω την καταπακτή;"}
+    info = dict(info, speak=True)
+    out = {}
+    out["lowest level"] = sound.ASSISTANT < sound.FEEDBACK < sound.ADVISORY < sound.CAUTION < sound.WARNING
+
+    def done(s=5.0):
+        end = time.time() + s
+        while time.time() < end:
+            if vc.pending is not None:
+                vc.tick()
+                return True
+            time.sleep(0.02)
+        return False
+    # (a) a plain answer is spoken: intro first, the WAV in the temp folder, deleted after its end
+    vc.speak(info)
+    out["TTS runs off the Tk thread"] = vc.why == "making"
+    done()
+    path = made[-1][2] if made else ""
+    out["spoken"] = vc.why == "spoken" and player.played and player.played[-1] == path and os.path.isfile(path)
+    out["the chapter first"] = made and made[-1][1].startswith("Από το εγχειρίδιο, κεφάλαιο ")
+    out["WAV in the system temp folder, not the log folder, not sound_cache"] = path.startswith(tempfile.gettempdir()) \
+        and not path.startswith(logdir) and "sound_cache" not in path
+    clk.t += 2.0
+    vc.tick()
+    out["WAV deleted after playing"] = not os.path.exists(path) and vc.tmp is None
+    # (b) a WARNING sound while speaking stops it AT ONCE: the player stopped, the rest dropped, nothing queued
+    vc.speak(info)
+    done()
+    n = len(player.played)
+    out["speaking again"] = vc.why == "spoken" and snd.assistant_playing()
+    snd.alarm("compass_lost", alerts.WARNING)
+    out["WARNING interrupts: player.stop then the warning"] = player.played[n] is None and \
+        player.played[n + 1] is not None and not snd.assistant_playing()
+    out["never queued"] = not any(q.code == snd.ASST_CODE for q in snd.sched.queue)
+    vc.tick()
+    out["panel says interrupted"] = vc.why == "interrupted"
+    clk.t += 10.0
+    snd.sched.tick(snd.warn_item)
+    # (c) a MASTER WARNING lamp on this PC = TEXT ONLY: no voice started, no WAV made
+    app.lamps.warn = True
+    m0 = len(made)
+    vc.speak(info)
+    out["lamp WARNING -> text only, no WAV"] = vc.why == "alarm" and len(made) == m0 and vc.pending is None
+    app.lamps.warn = False
+    # (d) [ΞΑΝΑ] later speaks it
+    vc.repeat()
+    done()
+    out["ΞΑΝΑ speaks it later"] = vc.why == "spoken" and len(made) == m0 + 1
+    snd.assistant_stop()
+    clk.t += 5.0
+    vc.tick()
+    # (e) a callout sounding = text only; a callout QUEUED = text only
+    snd.say("mode.auto")
+    out["callout sounds"] = snd.sched.playing()
+    vc.speak(info)
+    out["callout sounding -> text only"] = vc.why == "callout" and len(made) == m0 + 1
+    snd.say("mode.hdg_lock")                                   # queued behind the first
+    clk.t += 20.0
+    snd.sched.tick(snd.warn_item)                               # the first ended, the second starts
+    clk.t += 20.0
+    snd.sched.tick(snd.warn_item)
+    out["quiet again"] = not snd.sched.busy()
+    # (f) the alarm comes BETWEEN the TTS run and the play: still text only, the WAV removed
+    vc.speak(info)
+    end = time.time() + 5.0
+    while time.time() < end and vc.pending is None:
+        time.sleep(0.02)
+    p2 = vc.pending[1] if vc.pending else ""
+    snd.say("mode.standby")                                    # an advisory starts now
+    vc.tick()
+    out["alarm between TTS and play -> text only + WAV removed"] = vc.why == "callout" and p2 and \
+        not os.path.exists(p2)
+    clk.t += 20.0
+    snd.sched.tick(snd.warn_item)
+    # (g) speak False (the horn was pressed meanwhile) / the horn held = never spoken; «ΟΜΙΛΙΑ» stops at once
+    m1 = len(made)
+    vc.speak(dict(info, speak=False, no_speak_why="horn"))
+    out["speak False -> horn, nothing made"] = vc.why == "horn" and len(made) == m1
+    view.horn = True
+    vc.speak(info)
+    out["horn held -> text only"] = vc.why == "horn" and len(made) == m1
+    vc.repeat()
+    out["ΞΑΝΑ while the horn is held -> no"] = vc.why == "horn" and len(made) == m1
+    view.horn = False
+    vc.speak(info)
+    done()
+    out["spoken once the horn is free"] = vc.why == "spoken" and snd.assistant_playing()
+    p3 = vc.tmp
+    vc.stop()                                                  # = hailer._asst_horn -> asst_voice.stop()
+    out["ΟΜΙΛΙΑ stops at once + the WAV gone"] = vc.why == "stopped" and not snd.assistant_playing() and \
+        player.played[-1] is None and not os.path.exists(p3)
+    # (h) a long pick: the intro-only sentence is spoken, the text stays on the panel
+    long_info = dict(info, a=" ".join(["λέξη"] * 70) + ".")
+    vc.speak(long_info)
+    done()
+    out["long pick -> the intro only"] = vc.why == "long" and made[-1][1].startswith("Βρήκα την απάντηση στο κεφάλαιο") \
+        and "λέξη" not in made[-1][1]
+    vc.stop()
+    # (i) the sound setting off = text only (never a hidden voice)
+    snd.sched.enabled = False
+    vc.speak(info)
+    out["sound off -> text only"] = vc.why == "sound_off"
+    snd.sched.enabled = True
+    # (j) the local log: THIS PC's temp folder (TRYGONS_TEST), text only, the voice outcome per answer, no audio
+    files = [f for f in os.listdir(logdir) if f.endswith(".jsonl")]
+    rows = []
+    for f in files:
+        with open(os.path.join(logdir, f), encoding="utf-8") as fh:
+            rows += [json.loads(x) for x in fh if x.strip()]
+    whys = [r.get("voice") for r in rows]
+    out["log written (text, one line per answer)"] = bool(rows) and all(r.get("q") and r.get("a") and r.get("t")
+                                                                          for r in rows)
+    out["log holds the voice outcome"] = {"spoken", "alarm", "callout", "horn", "long", "sound_off"} <= set(whys)
+    out["log has no audio"] = not any(k in r for r in rows for k in ("samples", "wav", "audio", "pcm")) and \
+        not any(fn.endswith((".wav", ".ogg", ".mp3")) for fn in os.listdir(logdir))
+    out["log entry keeps passage + cite"] = all("passage_id" in r for r in rows if r.get("src") != "cant_find")
+    out["qlog.entry never copies the found texts"] = "text" not in json.dumps(qlog.entry(info))
+    report("AS27 alarm priority + voice rules + log", all(out.values()), "%s; made %d; played %s" % (
+        out, len(made), [os.path.basename(p) if p else None for p in player.played][-6:]))
+
+
+def as28(rig):
+    """Screen 2's panel "assistant" (AM5; the 13n1 look through overlay.py): the AI badge, the recognised question, the
+    answer (cut: a long pick never overflows), how it was spoken, the FULL passage + chapter (fold / open), [ΞΑΝΑ]
+    (the voice again), [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] (the manual at the passage's lines, read-only, highlighted); the panel in the
+    fit matrix; the message line cut; screen 1's 12 s notice; screenshots docs/screens/assistant."""
+    import manualwin
+    from assistant import show
+    ap = rig.ap
+    a = ap.asst
+    i18n.set_lang("el", save=False)
+    st0, last0, ans0 = a.state, a.last, a.answer
+    calls = []
+    orig_rep = ap.asst_voice.repeat
+    ap.asst_voice.repeat = lambda: calls.append("repeat") or True
+    out = {}
+    try:
+        # a clean screen 2 (the earlier tests left panels, alarms and a real question behind): the content checks run
+        # at 1920x1080 where the full passage is always shown; the fit matrix below fills everything again
+        ts.no_relay_boat(rig)
+        for k in ("alarm_bits", "alarm", "helm", "profile", "ll_state", "ll_flags", "power_raised", "coast_valid",
+                  "coast_dist_m", "ll_left_s", "near_shore"):
+            rig.extra.pop(k, None)
+        ap.gw_status = {}
+        ap.decisions.clear()
+        a.last, a.answer = None, None
+        ap.asst_passage_open, ap.asst_auto_fold, ap.asst_force_open = True, 0, False
+        a._set(client.READY)
+        rig.size(1920, 1080, 1.0)
+        ap.render(force=True)
+        out["no panel before a question"] = ts.op(ap, "asst_a") is None and not any(p.key == "assistant"
+                                                                                      for p in ap.ov.panels)
+        for lg in ("el", "en"):
+            i18n.set_lang(lg, save=False)
+            info = show.demo_answer(lg)
+            out["demo answer %s" % lg] = bool(info) and bool(info.get("passage", {}).get("text"))
+            a.last = {"q": info["q"], "lang": lg, "audio_s": 2.0, "ms": 800, "found": info["found"]}
+            a.answer = dict(info, speak=True, answer_ms=2100)
+            ap.asst_on_heard(info["q"], {})
+            ap.asst_on_answer(info["a"], a.answer)
+            ap.render(force=True)
+            pan = [p for p in ap.ov.panels if p.key == "assistant"]
+            out["panel drawn %s" % lg] = bool(pan) and ts.op(ap, "assistant") is not None
+            badge = ts.op(ap, "ai_badge_asst")
+            out["AI badge in the panel %s" % lg] = badge is not None and pan and overlay.inside(badge["r"], pan[0].r, 1.5)
+            q = ts.op(ap, "asst_q")
+            out["question shown %s" % lg] = q is not None and info["q"][:20] in q["s"]
+            an = ts.op(ap, "asst_a")
+            out["answer shown %s" % lg] = an is not None and an["s"].split()[0] in info["a"]
+            ps = ts.op(ap, "asst_passage")
+            out["full passage + chapter %s" % lg] = ps is not None and info["passage"]["text"][:40] in ps["s"] and \
+                info["cite"] in ps["s"]
+            for tag in ("asst_again", "asst_manual", "asst_text"):
+                out["button %s %s" % (tag, lg)] = ts.op(ap, tag) is not None and ts.op(ap, tag).get("enabled") is True
+            out["message line %s" % lg] = info["a"][:30] in ap.msg_text and len(ap.msg_text) < 400
+            shots = os.environ.get("TRYGONS_SHOT_DIR")
+            if shots:
+                import canvaspic
+                rig.pump(0.3)
+                canvaspic.save(ap.cv, os.path.join(shots, "screen2_answer_%s.png" % lg))
+        i18n.set_lang("el", save=False)
+        info = show.demo_answer("el")
+        a.last = {"q": info["q"], "lang": "el", "audio_s": 2.0, "ms": 800, "found": info["found"]}
+        a.answer = dict(info, speak=True, answer_ms=2100)
+        ap.asst_on_answer(info["a"], a.answer)
+        ap.render(force=True)
+        # [ΞΑΝΑ] -> the voice again; [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] -> the manual window at the passage's lines
+        r = ts.op(ap, "asst_again")["r"]
+        ap.ov.click((r[0] + r[2]) / 2, (r[1] + r[3]) / 2)
+        ap.ov.release()
+        out["ΞΑΝΑ -> repeat"] = calls == ["repeat"]
+        r = ts.op(ap, "asst_manual")["r"]
+        ap.ov.click((r[0] + r[2]) / 2, (r[1] + r[3]) / 2)
+        ap.ov.release()
+        rig.pump(0.5)
+        w = manualwin.current()
+        pl = show.manual_place(a.answer)
+        out["manual place from the passage's lines"] = pl is not None and pl[0] == "el" and 0 < pl[1] <= pl[2]
+        lines = show.manual_lines("el")
+        first = (info["passage"]["text"].split() or [""])[0]
+        out["ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ -> MANUAL_EL at the passage"] = w is not None and w.place == pl and \
+            any(first in ln for ln in lines[pl[1] - 1:pl[2]])
+        txt = w.txt.get("%d.0" % pl[1], "%d.0 lineend" % pl[2]) if w is not None else ""
+        out["the passage highlighted + read-only"] = w is not None and first in txt and \
+            w.txt.cget("state") == "disabled" and bool(w.txt.tag_ranges("hit"))
+        if w is not None:
+            w.withdraw()
+        # a tour hit has no manual place: the button greyed
+        a.answer = dict(a.answer, passage={"text": "x y z w", "cite": "Ξενάγηση: Βοηθός", "id": "tour:el:s1.btn_ask"},
+                        id="tour:el:s1.btn_ask", found={"hits": [{"id": "tour:el:s1.btn_ask", "ch": "tour",
+                                                                  "lines": [0, 0], "text": "x y z w"}]})
+        ap.render(force=True)
+        out["tour hit: no manual place"] = show.manual_place(a.answer) is None and \
+            ts.op(ap, "asst_manual").get("enabled") is False
+        # a LONG pick (AM4-r2 review MED-3): the answer cut on the panel + the message line, the full text in the passage
+        long_a = " ".join("λέξη%d" % i for i in range(120)) + "."
+        a.answer = dict(info, a=long_a, speak=True, passage=dict(info["passage"], text=long_a + " " + info["passage"]["text"]))
+        ap.asst_on_answer(long_a, a.answer)
+        ap.render(force=True)
+        an = ts.op(ap, "asst_a")
+        out["long pick cut on the panel"] = an is not None and len(an["s"]) <= show.PANEL_ANSWER_MAX + 1 and \
+            an["s"].endswith("…")
+        out["long pick cut on the message line"] = len(ap.msg_text) <= show.LINE_MAX + 60 and "…" in ap.msg_text
+        out["long pick: the passage still shows its start"] = "λέξη0" in (ts.op(ap, "asst_passage") or {}).get("s", "")
+        out["cut at a word"] = show.cut("alpha beta gamma delta", 12) == "alpha beta…" and \
+            show.cut("short", 12) == "short"
+        # fold / open the passage
+        r = ts.op(ap, "asst_text")["r"]
+        ap.ov.click((r[0] + r[2]) / 2, (r[1] + r[3]) / 2)
+        ap.ov.release()
+        ap.render(force=True)
+        out["ΚΕΙΜΕΝΟ folds the passage"] = ts.op(ap, "asst_passage") is None and ap.asst_passage_open is False
+        ap.asst_toggle_passage()
+        out["and opens it again"] = ts.op(ap, "asst_passage") is not None and ap.asst_passage_open is True
+        # the fit matrix with the panel + the passage (every panel filled, 3 sizes): the FULL passage whenever it fits,
+        # folded by the layout where it does not ([ΚΕΙΜΕΝΟ ▸] opens it) - never a panel that does not fit
+        a.answer = dict(info, speak=True)
+        ap.asst_passage_open = True
+        ap.asst_on_answer(info["a"], a.answer)
+        fits = []
+        for W, H, dpi in ((1366, 768, 1.25), (1920, 1080, 1.0), (1366, 658, 1.5)):
+            ts.fill_everything(rig)
+            ap.asst_auto_fold = 0
+            rig.size(W, H, dpi)
+            probs = ts.layout_problems(ap)
+            fits.append(((W, H, dpi), probs[:2], any(p.key == "assistant" for p in ap.ov.panels),
+                         "open" if ts.op(ap, "asst_passage") else "fold %d" % ap.asst_auto_fold))
+        out["fits with every panel"] = all(not p and drawn for _s, p, drawn, _o in fits)
+        out["the full passage open at 1920x1080"] = fits[1][3] == "open"
+        # 1366x658 at 150 % with every panel: folded by the layout, [ΚΕΙΜΕΝΟ ▸] shown while the panel is not collapsed
+        out["folded = ΚΕΙΜΕΝΟ ▸ offered or header only"] = fits[2][3] == "open" or ap.asst_auto_fold >= 3 or \
+            i18n.T("asst.text_open") in [o["s"] for o in ap.ov.ops if o.get("tag") == "asst_text"]
+        ap.asst_toggle_passage()                     # the operator opens it anyway: the whole passage (the text shrinks)
+        out["ΚΕΙΜΕΝΟ ▸ opens the passage (fold reset)"] = ap.asst_auto_fold == 0 and ap.asst_passage_open and \
+            ap.asst_force_open and ts.op(ap, "asst_passage") is not None
+        ap.asst_on_answer(info["a"], a.answer)       # a new answer: the layout decides again
+        out["a new answer resets the forced open"] = ap.asst_force_open is False
+        ts.no_relay_boat(rig)
+        rig.size(1366, 768, 1.0)
+        # screen 1: the answer 12 s on the notices (cut), the question line too
+        ap.asst_on_heard(info["q"], {})
+        ap.asst_on_answer(info["a"], a.answer)
+        ap.open_driver()
+        dv = ap.driver
+        dv.w.geometry("1600x900+0+0")
+        rig.pump(1.5)
+        dv.draw()
+        rig.pump(0.3)
+        tags = [t for t, _x, _c in dv.notices(ap.t, ap.gw_status or {})]
+        out["screen 1 notice: question + answer"] = "asst_q" in tags and "asst_a" in tags
+        shots = os.environ.get("TRYGONS_SHOT_DIR")
+        if shots and dv.last_frame is not None:
+            dv.last_frame.save(os.path.join(shots, "screen1_answer_el.png"))
+        ap.asst_shown = (ap.asst_shown[0], time.time() - 13.0)
+        tags = [t for t, _x, _c in dv.notices(ap.t, ap.gw_status or {})]
+        out["gone after 12 s"] = "asst_a" not in tags
+        ap.close_driver()
+    finally:
+        ap.asst_voice.repeat = orig_rep
+        a._set(st0)
+        a.last, a.answer = last0, ans0
+        i18n.set_lang("el", save=False)
+        ap.render(force=True)
+    report("AS28 panel + manual window + notices", all(out.values()), "%s; fits %s" % (out, fits if "fits" in dir() else "-"))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
         print("build the simulator first: sim\\build_sim.bat")
         return 2
     for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13, as14, as15, as16, as17, as18, as19, as20, as21,
-               as22, as23, as25) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
+               as22, as23, as25, as26, as27) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
         try:
             fn()
         except Exception as e:
@@ -2598,7 +2989,7 @@ def main():
             report(fn.__name__, False, "crashed: %r" % e)
     rig = ts.Rig()
     try:
-        for fn in (as6, as8, as3_rig, as11, as5_keys):
+        for fn in (as6, as8, as3_rig, as11, as5_keys, as28):
             try:
                 fn(rig)
             except Exception as e:

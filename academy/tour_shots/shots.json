@@ -1,8 +1,8 @@
 {
  "kind": "tour_shots",
  "_help": "Made by python tools/demo_screens.py --tour from the running demo (step 13t): the picture of every tour stop (s1 / s1q / s2 / tools_<page>, el + en) and the REAL place of every screen item in it, as fractions [x, y, w, h] of the picture. academy/tourshots.py reads it; 'signature' = the layout these pictures belong to (stale = make them again).",
- "made": "2026-11-07 07:52",
- "signature": "04b67cc24b084ee3",
+ "made": "2026-11-07 22:50",
+ "signature": "5706258e38ce49be",
  "shots": {
   "s1_el": {
    "file": "s1_el.jpg",
@@ -599,6 +599,12 @@
      0.16337,
      0.05413
     ],
+    "s2:assistant": [
+     0.00417,
+     0.42893,
+     0.24825,
+     0.33413
+    ],
     "s2:modebar": [
      0.2592,
      0.00741,
@@ -654,9 +660,9 @@
      0.02244
     ],
     "s2:banners": [
-     0.21921,
+     0.25658,
      0.04565,
-     0.48808,
+     0.45071,
      0.03056
     ],
     "s2:boat": [
@@ -3392,6 +3398,12 @@
      0.14087,
      0.05413
     ],
+    "s2:assistant": [
+     0.00417,
+     0.47893,
+     0.24762,
+     0.28413
+    ],
     "s2:modebar": [
      0.30045,
      0.00741,
@@ -3447,9 +3459,9 @@
      0.02244
     ],
     "s2:banners": [
-     0.21546,
+     0.25596,
      0.04565,
-     0.49233,
+     0.45183,
      0.03056
     ],
     "s2:boat": [

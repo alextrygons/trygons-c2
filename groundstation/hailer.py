@@ -277,6 +277,12 @@ class Hailer:
                 a.horn_pressed()
             except Exception:
                 pass
+        v = getattr(self.app, "asst_voice", None)    # AM5: the voice itself stops NOW (not at the next tick)
+        if v is not None:
+            try:
+                v.stop()
+            except Exception:
+                pass
 
     def press(self, what="talk"):
         """The «ΟΜΙΛΙΑ» button went down: ask the gateway for the floor (the first wins)."""

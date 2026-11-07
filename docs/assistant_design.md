@@ -48,8 +48,9 @@ step on the owner's laptop and written here + in the manuals, never guessed in c
     and most work runs on the GPU anyway; the station's windows keep normal priority.
   - `stt.py` (Whisper wrapper), `index.py` (manual -> sections, normalisation, BM25), `answer.py`
     (prompt, llama.cpp call, post-check, can't-find, retrieval-only), `speech.py` (speech normaliser),
-    `gpu.py` (free GPU memory guard), `panel.py` (the slim panel), `page.py` (Tools page «Βοηθός»),
-    `log.py` (local log).
+    `gpu.py` (free GPU memory guard), `show.py` (what the slim panel shows - the panel itself is drawn by app.py's
+    overlay, AM5), `page.py` (Tools page «Βοηθός»), `qlog.py` (local log); the voice lives OUTSIDE the package in
+    groundstation/asstvoice.py (sound.py reaches proto: the package must not import it, AS1 / AS2).
 - The worker loads the models ONCE at start (warm) and keeps them; it is started with the station when
   the setting `assistant` is on (default on for every station PC: W81) and the models exist; missing
   models = the button greyed + "models not installed" on the Tools page (never an error box).
@@ -748,6 +749,61 @@ Where this section differs from 5c / 5d, THIS wins.
 - Log on THIS PC only: groundstation/assistant/log/YYYY-MM-DD.jsonl (gitignored): question text,
   passage ids + scores, answer, mode, timings. Never audio, never sent anywhere (no gateway sync, no
   academy push).
+
+### 7a. As built (step AM5: speak + show; station / tools / tests / docs only, NO app / hal / gateway change)
+
+- Code (the station side; the worker is unchanged): `groundstation/assistant/speech.py` (pure: the speech
+  normaliser + `spoken(info, lang)` = the chapter intro + the normalised answer), `show.py` (pure: cut, the manual
+  place of a passage from its line range, `demo_answer` for pictures / tests), `qlog.py` (the local log),
+  `groundstation/asstvoice.py` (the station's voice: TTS off the Tk thread, sound.py at the lowest level, the
+  temporary WAV, the voice outcome), `groundstation/manualwin.py` ([ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ]: the manual read-only at the
+  lines), `sound.py` (level `ASSISTANT` = FEEDBACK - 1, `Scheduler.busy / stop_assistant`, `SoundSystem.assistant_*`),
+  `app.py` (`panel_assistant`, `asst_on_answer` speaks, `asst_repeat`, `asst_open_manual`, the auto-fold),
+  `page.py` ([ΞΑΝΑ] / [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] + the voice line), `hailer._asst_horn` (stops the voice directly),
+  `driver.py` (the answer 12 s on screen 1's notices). The assistant package still imports no sound / tts / app
+  module (AS1 / AS2): sound.py reaches proto through alerts, so the speaking stays in `asstvoice.py` outside the
+  package, which only CALLS `speech.spoken` and `qlog.write`.
+- The voice: `tts.synth` (Piper / the Windows voice per `voice_engine`) makes ONE WAV per answer in the system
+  temp folder (`trygons_asst_voice/`, never sound_cache/, never the log folder), at the sound setting's volume;
+  the Tk tick plays it through `SoundSystem.assistant_speak` and deletes it 0.5 s after its end (a file still
+  open is tried again at the next tick; a station crash's leftovers older than 1 h are removed at the next start).
+  The TTS run (a subprocess inside tts.py) is a helper thread; between its end and the play the alarm / callout /
+  horn checks run AGAIN (an alarm that came during the TTS = text only, the WAV removed unplayed).
+- Alarm priority as built: `Scheduler.request` at level ASSISTANT never queues (busy = "busy" -> text only), has no
+  repeat rule, never interrupts; any other request while it plays interrupts it (`_start(interrupt=True)` =
+  `player.stop()`), the item is never put back; `SoundSystem.assistant_blocked()` = "alarm" (lamps.on(WARNING) or
+  a repeating warning not acknowledged = `sched.active`) / "callout" (`sched.busy()`: something plays, waits or
+  is due). The panel's voice line says which: Ειπώθηκε / Μόνο κείμενο – ενεργός συναγερμός / ... φωνητική
+  ειδοποίηση / ... το μεγάφωνο / Η φωνή κόπηκε ... / Η φωνή σταμάτησε ... / χωρίς φωνή για τη γλώσσα / ο ήχος
+  κλειστός. `asstvoice.AsstVoice.repeat()` = [ΞΑΝΑ] (also an answer that was text only; never while the horn is
+  held).
+- Long picks (AM4-r2 review MED-3): above `speech.LONG_WORDS` 50 words the voice says only «Βρήκα την απάντηση
+  στο κεφάλαιο N – δείτε το κείμενο.» (kind "long"); the message line cuts the answer at `show.LINE_MAX` 160 minus
+  the cite's length (min 80), the panel's answer line at 320, screen 1's notice at 120, the panel's passage at 700
+  characters (a passage is <= 120 words, so nearly always whole); `show.cut` cuts at a word with "…".
+- The panel "assistant" (screen 2, `self.ov.panel`, corner tuple = placed by the fit test like the relays): appears
+  once a question was heard (also while THINKING), AI badge + question + answer (bold) + voice line with the cite +
+  the passage(s) with their chapters + [ΞΑΝΑ] [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] [ΚΕΙΜΕΝΟ ▾/▸]. AUTO-FOLD: when every panel is up on a
+  small window (test: 1366x768 @ 125 %, 1366x658 @ 150 % with fill_everything) the layout did not fit with the full
+  passage open - `App.render` then gives way step by step (`asst_auto_fold` 1 the passage folded, 2 the answer cut
+  short + no cite, 3 the header only) and lays out again until it fits (measured: 1366x768 @ 125 % = 1, 1366x658 @
+  150 % = 3, 1920x1080 = whole); [ΚΕΙΜΕΝΟ ▸] or a click on the collapsed header opens it anyway (`asst_force_open`:
+  the overlay then only shrinks the text), a new answer tries the whole panel again. The guided tour has
+  the stop s2.assistant (tools/demo_screens.py `force_assistant` puts a canned `show.demo_answer` on the station
+  for the picture: no model, no TTS).
+- [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ]: `show.manual_place(info)` = (lang, first line, last line) from the passage id matched in the
+  answer's `found.hits` (every manual passage carries its line range since AM3-r LOW-4; a tour stop has none ->
+  the button grey); `manualwin.open_at` = one Toplevel with a read-only Text of the whole manual, the lines
+  highlighted and scrolled into view.
+- The log `qlog.write(info, voice=why)`: one JSON line per answer (q, lang, a, src, cite, id, mode, ms, gen_ms,
+  answer_ms, problems, picked, passage_id / cite, the 3 hit ids + scores, the voice outcome); never the passage
+  texts or any audio. Written from `asstvoice` when the voice decision is final (spoken / long / alarm / callout /
+  horn / no_voice / sound_off / failed).
+- Not done (later items): lighting the named button through academy/tour_shots/shots.json (the optional idea of
+  I1.5), the W85 explicit-microphone rule and the W86 chapter list on a safety question (both still WAITING).
+- Tests: AS26 (the normaliser against the lang files' say-lines), AS27 (alarm priority + the voice rules + the WAV
+  + the log, with a recording player and a fake TTS), AS28 (the panel, the manual window, the fit matrix with the
+  auto-fold, the notices, the screenshots docs/screens/assistant/screen2_answer_*.png + screen1_answer_el.png).
 
 ## 8. PC load (owner's laptop: RTX A1000 6 GB laptop GPU, falls back to the CPU)
 

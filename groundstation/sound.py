@@ -35,6 +35,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RATE = 22050
 WARN_MIN_VOLUME = 60                    # % - warnings are never quieter than this
 WARNING, CAUTION, ADVISORY, FEEDBACK = alerts.WARNING, alerts.CAUTION, alerts.ADVISORY, alerts.FEEDBACK
+# the talking manual's voice (step AM5, CLAUDE.md W "ALARMS WIN"): the LOWEST level - below FEEDBACK and every callout.
+# Any other sound interrupts it (the player's stop, the rest dropped - never queued again); it is never queued
+# behind anything (busy = text only), never delays or mutes an alarm.
+ASSISTANT = FEEDBACK - 1
 QUEUE_MAX_AGE = {ADVISORY: 6.0, CAUTION: 20.0, FEEDBACK: 1.5, WARNING: 60.0}
 WARN_GAP_S = 3.0                        # pause between two repeats of a warning
 
@@ -436,6 +440,11 @@ class Scheduler:
             return self._note(item, "muted")
         if self.quiet and lv == ADVISORY and not item.keep_quiet:
             return self._note(item, "quiet")
+        if lv == ASSISTANT:                      # AM5: never queued, never over anything, no repeat rule
+            if self.busy(now):
+                return self._note(item, "busy")
+            self._start(item, now)
+            return "played"
         if lv not in (FEEDBACK, WARNING) and now - self.last.get(item.code, -1e9) < self.repeat_s:
             return self._note(item, "repeat")
         if self.current and self.current[1] > now:
@@ -449,6 +458,27 @@ class Scheduler:
     def _note(self, item, what):
         self.history.append((self.clock(), item.code, item.level, what))
         return what
+
+    def busy(self, now=None):
+        """AM5: something sounds, waits or is due (a callout playing / queued, a repeating WARNING not acknowledged):
+        the assistant's voice must not start now (text only)."""
+        now = self.clock() if now is None else now
+        return bool(self.current and self.current[1] > now) or bool(self.queue) or bool(self.active)
+
+    def playing(self, code=None):
+        now = self.clock()
+        if not (self.current and self.current[1] > now):
+            return False
+        return code is None or self.current[0].code == code
+
+    def stop_assistant(self):
+        """The assistant's voice stops at once (a new question, «ΟΜΙΛΙΑ», the station closes); nothing else."""
+        if self.current and self.current[0].level == ASSISTANT:
+            self.player.stop()
+            self.history.append((self.clock(), self.current[0].code, ASSISTANT, "stopped"))
+            self.current = None
+            return True
+        return False
 
     def _start(self, item, now, interrupt=False):
         if interrupt:
@@ -676,7 +706,39 @@ class SoundSystem:
             self.lib.pregenerate(lang)
 
     def build(self, item, vol):
+        if getattr(item, "path", None):          # the assistant's one-off WAV (AM5): made by asstvoice.py at its volume
+            return item.path, item.secs
         return self.lib.clip(item.tone, item.keys, self.voice_lang, vol, item.latency_ms, block=False)
+
+    # --- the talking manual's voice (step AM5): the LOWEST level ---------------------------------------------------
+    ASST_CODE = "assistant"
+
+    def assistant_blocked(self):
+        """Why the assistant must not speak now: "alarm" (a MASTER WARNING lamp on this PC / a repeating warning not
+        acknowledged), "callout" (a sound or voice callout plays or waits), else None. AM1-r M4: then the answer is
+        TEXT ONLY on the panel, no voice started at all."""
+        lamps = getattr(self.app, "lamps", None)
+        if (lamps is not None and lamps.on(WARNING)) or self.sched.active:
+            return "alarm"
+        if self.sched.busy():
+            return "callout"
+        return None
+
+    def assistant_speak(self, path, secs):
+        """Play the assistant's WAV at the lowest level -> "played", or why not ("busy" / "off")."""
+        it = Item(self.ASST_CODE, ASSISTANT, None, [], True)
+        it.path, it.secs = path, float(secs)
+        return self.sched.request(it)
+
+    def assistant_playing(self):
+        return self.sched.playing(self.ASST_CODE)
+
+    def assistant_stop(self):
+        return self.sched.stop_assistant()
+
+    def assistant_interrupted_since(self, n):
+        """True when the assistant's clip was interrupted by another sound after history index n."""
+        return any(c == self.ASST_CODE and w == "interrupted" for _t, c, _l, w in self.sched.history[n:])
 
     def say(self, code, keys=None, level=None, tone_name=None, keep_quiet=None, latency_ms=300):
         """A callout by its code (CALLOUTS) or an alarm code ("alarm.<code>")."""

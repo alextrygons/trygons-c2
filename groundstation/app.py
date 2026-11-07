@@ -71,6 +71,9 @@ import screenrec
 import hailer
 from assistant import client as asst_client     # the talking manual (step AM2): read-only
 from assistant import page as asst_page
+from assistant import show as asst_show         # AM5: what the panel / the lines show (pure)
+import asstvoice                                # AM5: the answer spoken through sound.py at the lowest level
+import manualwin                                # AM5: [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] = the manual at the passage, read-only
 import uavfly
 import uavhud
 import uavmap
@@ -268,6 +271,8 @@ class AsstView:
         self.horn = False                            # this station holds / asks for the horn (pushed, never pulled)
         self.heard = collections.deque(maxlen=8)     # (question, info), drained by App.ov_tick
         self.answers = collections.deque(maxlen=8)   # (answer text, info) of the worker (AM4), drained by App.ov_tick
+        self.stop_req = False                        # AM5: "stop the voice" asked (a new question, a crash), taken by
+        #                                              App.ov_tick -> asst_voice.stop(); «ΟΜΙΛΙΑ» stops it directly
 
     def lang(self):
         return i18n.lang()
@@ -277,8 +282,9 @@ class AsstView:
         return bool(self.horn)
 
     def voice_stop(self):
-        """The assistant's voice stops at once (AM5 speaks; nothing is spoken in AM2)."""
-        return None
+        """The assistant's voice stops (AM5): a flag the station takes in its next tick (the view holds no station
+        object); the loudhailer's press stops the voice directly (hailer._asst_horn -> asst_voice.stop)."""
+        self.stop_req = True
 
     def on_heard(self, q, info):
         self.heard.append((q, info))
@@ -301,6 +307,14 @@ class App:
         # the talking manual (step AM2, CLAUDE.md W): READ-ONLY, gets a narrow view - never this App
         self.asst = asst_client.Assistant(AsstView(), settings=settings)
         self.asst_heard = None          # (text, time) of the last recognised question (screen 1 notice 8 s)
+        self.asst_shown = None          # (answer text, time) of the last answer (screen 1 notice 12 s, AM5)
+        # AM5: the answer spoken by this PC's sound.py at the LOWEST level (alarms / callouts win, text only meanwhile)
+        self.asst_voice = asstvoice.AsstVoice(self)
+        self.asst_passage_open = bool(settings.get("asst_passage", True))   # the panel's full passage shown / folded
+        self.asst_auto_fold = 0         # the panel folded by the layout (0 whole, 1 passage folded, 2 answer cut,
+        #                                 3 header only); reset by a new answer (W114)
+        self.asst_force_open = False    # the operator opened it anyway ([ΚΕΙΜΕΝΟ ▸] / the header): the layout then
+        #                                 only shrinks the text; reset by a new answer
         self.t = None                   # latest telemetry
         self.t_rx = 0.0
         self.hist = []                  # (t_s, heading, target, outboard)
@@ -546,15 +560,101 @@ class App:
         self.say(T("asst.heard", q=q))
 
     def asst_on_answer(self, a, info):
-        """The manual's answer (AM4): shown on screen 2's message line (text only; spoken from AM5). AM4-r: a
-        model answer that failed the check = «Δεν βρίσκω ...» + "see chapter N" (the passage itself is on the
-        Tools page «Βοηθός»)."""
+        """The manual's answer (AM4): shown on screen 2's message line (cut: a long pick never overflows it - the full
+        text is on the panel), the panel "assistant", 12 s on screen 1's notices, and SPOKEN (AM5, asstvoice.py:
+        the chapter first; alarms / callouts win = text only; never with the horn). AM4-r: a model answer that failed
+        the check = «Δεν βρίσκω ...» + "see the passage" (the panel / the Tools page «Βοηθός» show it)."""
         cite = info.get("cite") or ""
-        # also a "can't find" below the extract score floor (AM4-r2, W112): the passage is shown on the Tools page
+        short = asst_show.cut(a, max(80, asst_show.LINE_MAX - len(cite)))
+        self.asst_shown = (asst_show.cut(a, asst_show.NOTICE_MAX), time.time())
+        self.asst_auto_fold, self.asst_force_open = 0, False
+        # also a "can't find" below the extract score floor (AM4-r2, W112): the passage is shown on the panel
         if cite and (info.get("src") == "passage" or (info.get("src") == "cant_find" and info.get("passage"))):
-            self.say(T("asst.answer_see", a=a, cite=cite))
+            self.say(T("asst.answer_see", a=short, cite=cite))
         else:
-            self.say(T("asst.answer", a=a, cite=(" (%s)" % cite) if cite else ""))
+            self.say(T("asst.answer", a=short, cite=(" (%s)" % cite) if cite else ""))
+        try:
+            self.asst_voice.speak(info)
+        except Exception:                           # the voice never stops the screens
+            pass
+
+    def asst_repeat(self):
+        """[ΞΑΝΑ] (AM5): the last answer spoken again (text only stays text only while an alarm / callout is on)."""
+        self.asst_voice.repeat()
+        self.render(force=True)
+
+    def asst_open_manual(self):
+        """[ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] (AM5): MANUAL_EL.txt / MANUAL.txt read-only at the answer's passage (its line range)."""
+        pl = asst_show.manual_place(self.asst.answer or {})
+        if pl is None:
+            return None
+        return manualwin.open_at(self.root, *pl)
+
+    def asst_toggle_passage(self):
+        if self.asst_auto_fold:                     # folded by the layout: [ΚΕΙΜΕΝΟ ▸] opens it (the text shrinks)
+            self.asst_auto_fold, self.asst_force_open = 0, True
+            self.asst_passage_open = True
+        else:
+            self.asst_passage_open = not self.asst_passage_open
+        settings.put("asst_passage", self.asst_passage_open)
+        self.render(force=True)
+
+    def asst_passage_shown(self):
+        return self.asst_passage_open and not self.asst_auto_fold
+
+    def panel_assistant(self):
+        """Screen 2's slim panel of the talking manual (AM5, CLAUDE.md W (5); the 13n1 look: draggable by the header,
+        collapsible, theme.py sizes): the RECOGNISED question (a mis-hearing is visible), the answer, how it was
+        spoken, the FULL passage with its chapter (folded with [ΚΕΙΜΕΝΟ]), [ΞΑΝΑ], [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ], the "AI" badge.
+        Only once a question was heard; placed by the fit test (never over the boat). DISPLAY ONLY."""
+        asst = self.asst
+        if not asst.enabled() or asst.state == asst_client.OFF:
+            return
+        last = asst.last or {}
+        q = last.get("q") or ""
+        if not q:
+            return
+        ans = asst.answer if asst.answer and asst.answer.get("q") == q else None
+        p = self.ov.panel("assistant", T("ov.assistant"), ("sw", "se", "nw", "ne"))
+        if self.asst_auto_fold >= 3:                # the layout's last resort (W114): the header only ...
+            if "assistant" in self.ov.collapsed:    # ... until the operator clicks the header: open, the text shrinks
+                self.ov.collapsed.discard("assistant")
+                self.asst_auto_fold, self.asst_force_open = 0, True
+            else:
+                p.collapsed = True
+        p.badge(theme.AI_BADGE["text"], theme.AI_BADGE["fill"], fg=theme.AI_BADGE["fg"], level="small",
+                tag="ai_badge_asst", outline=theme.BLACK)
+        p.text(T("asst.p_q", q=asst_show.cut(q, asst_show.PANEL_Q_MAX)), "small", colour=C["dim"], tag="asst_q",
+               wrap=0.24)
+        p.br()
+        if ans is None:
+            p.text(T("asst.state." + asst.state) if asst.state == asst_client.THINKING else T("asst.none_yet"),
+                   "small", tag="asst_a", wrap=0.24)
+            p.br()
+            return
+        amax = asst_show.PANEL_ANSWER_MAX if self.asst_auto_fold < 2 else asst_show.NOTICE_MAX
+        p.text(asst_show.cut(ans.get("a") or "", amax), "label", bold=True, tag="asst_a", wrap=0.24)
+        p.br()
+        why = self.asst_voice.status() if self.asst_voice.last is ans else "none"
+        cite = ans.get("cite") or ""
+        p.text(T(asst_show.status_key(why)) + ((" · " + cite) if cite and self.asst_auto_fold < 2 else ""), "small",
+               colour=C["dim"], tag="asst_voice", wrap=0.24)
+        p.br()
+        passages = [x for x in (ans.get("passage"), ans.get("passage2")) if x and x.get("text")]
+        if passages and self.asst_passage_shown():
+            for i, ps in enumerate(passages):
+                p.text(T("asst.p_passage", cite=ps.get("cite") or cite,
+                         text=asst_show.cut(ps["text"], asst_show.PANEL_PASSAGE_MAX)), "small", tag="asst_passage",
+                       wrap=0.24)
+                p.br()
+        p.button(T("asst.again"), self.asst_repeat, "normal", level="small", tag="asst_again",
+                 enabled=bool(ans.get("a")))
+        p.button(T("asst.to_manual"), self.asst_open_manual, "info", level="small", tag="asst_manual",
+                 enabled=asst_show.manual_place(ans) is not None)
+        if passages:
+            p.button(T("asst.text_fold" if self.asst_passage_shown() else "asst.text_open"), self.asst_toggle_passage,
+                     "normal", level="small", tag="asst_text")
+        p.br()
 
     def ack_alarm(self):
         """Screen 2's ACK ALARM (step 13m): silences THIS PC first (MASTER lamps + the repeating sound, as screen
@@ -3362,6 +3462,7 @@ class App:
                 self.link.stop()
             self.tracks.close()
             self.asst.stop()
+            self.asst_voice.close()                 # AM5: the voice stops, its temporary WAV is deleted
         finally:                                    # the screen recorder's ffmpegs stop whatever failed above
             try:                                    # (review 13n4b LOW-7)
                 self.scr.close()
@@ -3460,7 +3561,10 @@ class App:
         tab("tab.sound", self._build_sound)
         tab("tab.loudhailer", lambda fr: hailer.build_page(fr, self))
         tab("tab.uav", lambda fr: setattr(self, "uav_page", uavpanel.build_page(fr, self)))   # «ΜΑΓΓΕΜΑ UAV» (U2)
-        tab("tab.assistant", lambda fr: setattr(self, "asst_page", asst_page.build_page(fr, self.asst, settings)))
+        tab("tab.assistant", lambda fr: setattr(self, "asst_page", asst_page.build_page(
+            fr, self.asst, settings, {"repeat": self.asst_repeat, "manual": self.asst_open_manual,
+                                      "voice": lambda: self.asst_voice.status()
+                                      if self.asst_voice.last is self.asst.answer else ""})))
         lg = tab("tab.events")
         self.events = tk.Listbox(lg, font=F_TXT, bg=C["panel"], fg=C["fg"], selectbackground=C["sel"])
         self.events.pack(fill="both", expand=True)
@@ -3620,6 +3724,10 @@ class App:
         try:
             self.hail.push_horn()                   # the horn state as a plain bool into the assistant's view
             self.asst.tick()                       # the talking manual (step AM2): PTT, worker, restarts
+            if getattr(self.asst.view, "stop_req", False):      # AM5: a new question / a crash = the voice stops
+                self.asst.view.stop_req = False
+                self.asst_voice.stop()
+            self.asst_voice.tick()                  # AM5: a finished WAV plays (checks again), the file is deleted
             hq = getattr(self.asst.view, "heard", None)
             while hq:
                 self.asst_on_heard(*hq.popleft())
@@ -3673,6 +3781,16 @@ class App:
         self.ov.begin(W, H)
         self.build_panels(W, H)
         self.rects = self.ov.render(W, H, ko, self.extras_size, self.draw_extras)
+        # AM5: the assistant's FULL passage is shown whenever it fits; when the panels do not fit with it (a small
+        # window with every panel up) the panel gives way step by step - 1 the passage folded ([ΚΕΙΜΕΝΟ ▸] opens it),
+        # 2 the answer cut short, 3 the panel collapsed to its header - until everything fits; a new answer tries the
+        # whole panel again (W114)
+        while not self.ov.fits and self.asst_auto_fold < 3 and not self.asst_force_open and \
+                any(p.key == "assistant" for p in self.ov.panels):
+            self.asst_auto_fold += 1
+            self.ov.begin(W, H)
+            self.build_panels(W, H)
+            self.rects = self.ov.render(W, H, ko, self.extras_size, self.draw_extras)
         mid = self.rects.get("middle")
         if mid is not None:
             nb = self.note_box
@@ -4337,6 +4455,7 @@ class App:
         self.panel_link()
         self.panel_traffic(H)
         self.panel_relays()                 # placed by the fit test (CLAUDE.md O)
+        self.panel_assistant()              # the talking manual's answer (AM5), placed by the fit test
         self.panel_sub()                    # ROUTE / MAX SPEED / GEOFENCE above bar 1, only while used (13n1)
 
     def panel_alarms(self):

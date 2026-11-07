@@ -3717,12 +3717,13 @@ THE LAW (not legal advice)
 ===============================================================================
 
 -------------------------------------------------------------------------------
-22. THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM4)
+22. THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (steps AM2-AM5)
 -------------------------------------------------------------------------------
 What it is: you ASK about the C2 by voice ("how do I close the hatch?") and
-the station shows (later also says) the answer from this manual. In this first
-part the station RECOGNISES the question, shows it, finds where it is in the
-manual and shows a short CHECKED answer (step AM4); the voice comes next.
+the station SAYS and shows the answer from this manual. The station RECOGNISES
+the question, shows it, finds where it is in the manual, shows a short CHECKED
+answer with the full passage (step AM4) and speaks it, the chapter first
+(step AM5).
 
 It is READ-ONLY: it never sends anything to the boat or the gateway, never
 changes a mode, a setting or the layout, never presses anything. It works
@@ -3851,9 +3852,9 @@ THE ANSWER (step AM4)
     answer failed the check - read the passage below / the manual's sentence
     (search only) / not found in the manual, the manual passage it rests on
     with its chapter, and the time from letting go of the button to the
-    answer. It is NOT spoken yet (the voice comes with step AM5; it will say
-    "from the manual, chapter N" first). An answer whose question was
-    interrupted by the loudhailer «ΟΜΙΛΙΑ» is shown but will never be spoken.
+    answer. It is spoken too (step AM5 below: "from the manual, chapter N"
+    first). An answer whose question was interrupted by the loudhailer
+    «ΟΜΙΛΙΑ» is shown but never spoken.
   * Where the model runs (Tools page): on the graphics card (GPU), partly on
     the graphics card and partly on the processor, or on the processor (CPU).
     The assistant always leaves 800 MB of the graphics card's memory free for
@@ -3894,6 +3895,45 @@ THE ANSWER (step AM4)
   * A wrong answer is still possible when the search picked a wrong passage
     and the model's sentence uses only words of that passage: always check the
     chapter shown with the answer.
+
+THE VOICE AND THE PANEL (step AM5)
+  * Every answer is SPOKEN by this PC's own voice (Tools -> Sound -> Voice:
+    Piper or the Windows voice of the language) - the chapter first: "From the
+    manual, chapter 10." then the answer; two chapters when the sentences come
+    from two passages; "From the guided tour." for a tour stop. Capitals are
+    read as normal words, acronyms as the station's callouts say them (GPS =
+    "G P S"), numbers with their units ("5 kn" = "5 knots", "50 %" = "50 per
+    cent"). "I can't find that in the manual." is said as it is. A very long
+    manual sentence (more than 50 words) is NOT read out: the assistant says
+    only "I found the answer in chapter N - see the text" and the text is on
+    the panel.
+  * ALARMS WIN. The assistant's voice is the lowest sound of the station: any
+    alarm tone, caution chime or voice callout stops it at once (the rest is
+    dropped), it never delays or quietens an alarm. While a MASTER WARNING
+    lamp is on at this PC (an alarm not acknowledged here), or a callout
+    sounds or waits, the answer is shown as TEXT ONLY and not spoken at all;
+    [AGAIN] speaks it later. With the sound setting off it is text only too.
+  * The loudhailer: an answer whose question was interrupted by «ΟΜΙΛΙΑ» / TALK
+    is never spoken, nothing is spoken while you hold the loudhailer, and
+    pressing TALK stops the assistant's voice at once. The voice plays only on
+    this PC's speakers - it never goes into the horn.
+  * Screen 2 gets the slim panel «ΒΟΗΘΟΣ» / "ASSISTANT" (the "AI" badge; it
+    appears with the first question; like every panel: dragged by its header,
+    collapsed with a click on it, the three text sizes): the RECOGNISED
+    question (a mis-hearing is visible), the answer, how it was spoken
+    ("Spoken" / "Text only - an alarm is active" / "The voice was cut by an
+    alarm ..." / "Text only - the loudhailer was pressed" ...), the FULL
+    manual passage with its chapter (TEXT folds / opens it), and the buttons
+    [AGAIN] = the voice again, [IN THE MANUAL] = this manual opens in a
+    read-only window at the passage's lines (highlighted; grey for a tour
+    stop, which has no manual place). A long sentence is cut on the message
+    line and in the panel's answer line (…) - the passage below has it whole.
+    Screen 1 shows the answer for 12 s on its notices (cut too).
+  * The same [AGAIN] / [IN THE MANUAL] and the voice line are on the Tools
+    page "Assistant".
+  * A log on THIS PC only: groundstation\assistant\log\<date>.jsonl - the
+    question text, the passage (id + chapter), the answer, the times and how it
+    was spoken. Never the audio, never sent anywhere (not in git).
 
 If it fails: the notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» / ASSISTANT OFF on both screens (a
 notice on THIS PC only, never an alarm, no sound); it restarts by itself after

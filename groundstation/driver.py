@@ -914,6 +914,9 @@ class DriverScreen:
         h = getattr(a, "asst_heard", None)
         if h and time.time() - h[1] < 8.0:                         # AM2: the recognised question, 8 s
             out.append(("asst_q", T("asst.heard", q=h[0]), "main"))    # plain information: green (LOW-4)
+        s = getattr(a, "asst_shown", None)
+        if s and time.time() - s[1] < 12.0:                        # AM5: the answer (cut), 12 s; the panel has it all
+            out.append(("asst_a", T("asst.answer_short", a=s[0]), "main"))
         return out
 
     def draw(self):

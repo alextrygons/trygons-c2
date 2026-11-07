@@ -458,8 +458,36 @@ def force_banner(se):
     return lambda: setattr(ap, "banner_list", orig)
 
 
+def force_assistant(se):
+    """The talking manual's panel in the TOUR picture (step AM5): it appears only once a question was heard - here a
+    canned answer from the committed index (assistant/show.demo_answer: no model, no microphone, nothing spoken -
+    the sound is off in this process). Returns the undo."""
+    import assistant.show as show
+    ap = se.ap
+    a = ap.asst
+    orig = a.last, a.answer
+    sv = ap.asst_voice.speak
+    ap.asst_voice.speak = lambda info, user=False: False      # display only: no TTS run for the picture
+
+    def set_lang(lang):
+        info = show.demo_answer(lang)
+        if info:
+            a.last = {"q": info["q"], "lang": lang, "audio_s": 2.0, "ms": 800, "found": info["found"]}
+            a.answer = dict(info, speak=False, answer_ms=2100)
+            ap.asst_shown = None
+    se.asst_demo = set_lang
+
+    def undo():
+        a.last, a.answer = orig
+        ap.asst_voice.speak = sv
+        se.asst_demo = None
+    return undo
+
+
 def tour_s2(se, lang, man):
     ap = se.ap
+    if getattr(se, "asst_demo", None):
+        se.asst_demo(lang)
     ap.mapwin.redraw()
     ap.render(force=True)
     se.pump(1.5)
@@ -538,7 +566,7 @@ def tour_shots(se):
            "every screen item in it, as fractions [x, y, w, h] of the picture. academy/tourshots.py reads it; "
            "'signature' = the layout these pictures belong to (stale = make them again).",
            "made": time.strftime("%Y-%m-%d %H:%M"), "signature": tourshots.signature(tour), "shots": {}}
-    undo_hud, undo_ban = force_hud(se), force_banner(se)
+    undo_hud, undo_ban, undo_asst = force_hud(se), force_banner(se), force_assistant(se)
     try:
         for lang in ("el", "en"):
             se.i18n.set_lang(lang)
@@ -549,6 +577,7 @@ def tour_shots(se):
     finally:
         undo_hud()
         undo_ban()
+        undo_asst()
         se.i18n.set_lang("el")
     with open(os.path.join(TOUR_OUT, "shots.json"), "w", encoding="utf-8") as f:
         json.dump(man, f, indent=1, ensure_ascii=False)
