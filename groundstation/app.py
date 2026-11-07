@@ -68,6 +68,8 @@ import mapwin
 import track as trackmod
 import screenrec
 import hailer
+from assistant import client as asst_client     # the talking manual (step AM2): read-only
+from assistant import page as asst_page
 import uavfly
 import uavhud
 import uavmap
@@ -255,6 +257,33 @@ def fit_columns(tree, cols, pad=24):
             tree.column(c, width=need, minwidth=need)
 
 
+class AsstView:
+    """The NARROW view the talking manual gets (CLAUDE.md W, step AM2): the language, the horn state, a voice
+    stop and where a recognised question is shown. No sender, no link, never the App itself."""
+
+    def __init__(self, app):
+        self._lang = lambda: i18n.lang()
+        self._horn = lambda: bool(app.hail.pressing or app.hail.mine)
+        self._heard = app.asst_on_heard
+
+    def lang(self):
+        return self._lang()
+
+    def horn_held(self):
+        """This station holds / asks for the loudhailer: no capture, no assistant voice (AM1 review H1)."""
+        try:
+            return self._horn()
+        except Exception:
+            return False
+
+    def voice_stop(self):
+        """The assistant's voice stops at once (AM5 speaks; nothing is spoken in AM2)."""
+        return None
+
+    def on_heard(self, q, info):
+        self._heard(q, info)
+
+
 class App:
     def __init__(self, root, address=None, login=None, charts_dir=None, open_driver=False, layout=None, cams=None,
                  place=None, boat_file=None):
@@ -266,6 +295,9 @@ class App:
         self.place = place              # "shore" / "onboard" / None: in the window title
         self.link = None
         self.hail = hailer.Hailer(self)  # the loudhailer + boat microphone (step 13r): display + voice, never driving
+        # the talking manual (step AM2, CLAUDE.md W): READ-ONLY, gets a narrow view - never this App
+        self.asst = asst_client.Assistant(AsstView(self), settings=settings)
+        self.asst_heard = None          # (text, time) of the last recognised question (screen 1 notice 8 s)
         self.t = None                   # latest telemetry
         self.t_rx = 0.0
         self.hist = []                  # (t_s, heading, target, outboard)
@@ -414,6 +446,11 @@ class App:
         for k in ("<F12>", "<Control-Tab>"):
             root.bind(k, lambda e: self.swap_screens())
         root.bind("<F11>", lambda e: self.toggle_screen())
+        for k in asst_client.KEYS:      # the assistant's push-to-talk key (default F9; a foot pedal sends it)
+            root.bind_all("<KeyPress-%s>" % k, self.asst_key_down, add="+")
+            root.bind_all("<KeyRelease-%s>" % k, self.asst_key_up, add="+")
+        if not os.environ.get("TRYGONS_TEST"):
+            root.after(1500, self.asst.start)       # the worker loads its models in the background
         root.bind("<Escape>", lambda e: self.camview and self.camview_close())       # the camera view: back (13n2)
         root.bind("<Configure>", lambda e: self.layout_changed())
         monitors.bind_keys(root, self)
@@ -467,6 +504,43 @@ class App:
         except (tk.TclError, AttributeError):
             pass
         self.master_ack()
+
+    def _asst_key_ok(self, ev):
+        """The assistant's key: only the chosen one, never while typing into a text field (like key_ack)."""
+        if getattr(ev, "keysym", None) != self.asst.key():
+            return False
+        w = getattr(ev, "widget", None)
+        try:
+            if w is not None and w.winfo_class() in ("Entry", "TEntry", "Text", "Spinbox", "TSpinbox", "TCombobox"):
+                return False
+        except (tk.TclError, AttributeError):
+            pass
+        return True
+
+    def asst_key_down(self, ev=None):
+        if self._asst_key_ok(ev):
+            self._asst_key_t = time.monotonic()
+            self.asst.press("key")
+
+    def asst_key_up(self, ev=None):
+        """X11 key auto-repeat sends release + press pairs: the release counts only if no press follows at once."""
+        if not self._asst_key_ok(ev):
+            return
+        t = time.monotonic()
+        self._asst_key_t = t
+
+        def later():
+            if getattr(self, "_asst_key_t", None) == t:
+                self.asst.release()
+        try:
+            self.root.after(40, later)
+        except tk.TclError:
+            pass
+
+    def asst_on_heard(self, q, info):
+        """The recognised question (AM2: shown; the answer from the manual comes with AM3-AM5)."""
+        self.asst_heard = (q, time.time())
+        self.say(T("asst.heard", q=q))
 
     def ack_alarm(self):
         """Screen 2's ACK ALARM (step 13m): silences THIS PC first (MASTER lamps + the repeating sound, as screen
@@ -3273,6 +3347,7 @@ class App:
             if self.link:
                 self.link.stop()
             self.tracks.close()
+            self.asst.stop()
         finally:                                    # the screen recorder's ffmpegs stop whatever failed above
             try:                                    # (review 13n4b LOW-7)
                 self.scr.close()
@@ -3371,6 +3446,7 @@ class App:
         tab("tab.sound", self._build_sound)
         tab("tab.loudhailer", lambda fr: hailer.build_page(fr, self))
         tab("tab.uav", lambda fr: setattr(self, "uav_page", uavpanel.build_page(fr, self)))   # «ΜΑΓΓΕΜΑ UAV» (U2)
+        tab("tab.assistant", lambda fr: setattr(self, "asst_page", asst_page.build_page(fr, self.asst, settings)))
         lg = tab("tab.events")
         self.events = tk.Listbox(lg, font=F_TXT, bg=C["panel"], fg=C["fg"], selectbackground=C["sel"])
         self.events.pack(fill="both", expand=True)
@@ -3527,6 +3603,15 @@ class App:
             self.hail.tick()                        # the loudhailer: hello / floor / its page (step 13r)
         except Exception as e:                      # never stops the screens
             self.hail.note = str(e)[:80]
+        try:
+            self.asst.tick()                        # the talking manual (step AM2): PTT, worker, restarts
+            n = self.asst.take_note()
+            if n:
+                self.say(T(n[0], **n[1]), ORANGE)
+            if getattr(self, "asst_page", None) is not None:
+                self.asst_page.refresh()
+        except Exception:                           # never stops the screens
+            pass
         try:
             self.mapwin.tick()
             self.render()
@@ -3709,6 +3794,7 @@ class App:
                 else:
                     out.append(("btn", "uav_take", T("uavf.take", n=us), lambda us=us: self.uav_take(us), "normal",
                                 True, False))
+            self.asst_bar_item(out)
             out.append(("gap",))
             out.append(("btn", "cv_map", T("cv.map"), self.camview_close, "info", True, False))
             return out
@@ -3741,6 +3827,7 @@ class App:
                             can and d["lt_set"] > proto.LINK_TIME_MIN_S, False))
                 out.append(("btn", "lt_up", "+", lambda: self.link_time_step(1), "normal",
                             can and d["lt_set"] < proto.LINK_TIME_MAX_S, False))
+            self.asst_bar_item(out)
             if d.get("slam_restore_ok") and not d.get("slam_ask") and self.slam_restore_allowed():
                 # step 13q4: REJECT / no answer -> the reduction stays; the captain may still restore while it is calm
                 out.append(("gap",))
@@ -3789,6 +3876,16 @@ class App:
             out.append(("btn", "reset_layout", T("ov.reset_layout"), self.reset_layout, "normal", True, False))
         return out
 
+    def asst_bar_item(self, out):
+        """The talking manual (AM2): «ΕΡΩΤΗΣΗ» press and hold + the "AI" badge on bar 1 (also in the camera view,
+        where a UAV is flown). Its OWN button: never the loudhailer's, never the joystick. (Bar 2 has no room
+        beside «ΟΜΙΛΙΑ» at 1366x768 / 125 %: W83 asked for bar 2 - moved, see PROGRESS W83.)"""
+        av = self.asst.view_bar()
+        if av is not None:
+            out.append(("gap",))
+            out.append(("btn", "ask", T("asst.btn"), lambda: self.asst.press("button"), "normal",
+                        av["enabled"], av["on"], self.asst.release))
+
     def boat_dropdown_bar(self):
         """BOAT on bar 2: the same boat dropdown as the status panel's first line."""
         return self.boat_dropdown()
@@ -3800,7 +3897,10 @@ class App:
             return fs * 0.8
         if it[0] == "text":
             return 0.0 if it[4] else ov.measure(it[2], level, True)[0] + fs * 0.4
-        return ov.measure(it[2], level, True)[0] + 2 * fs * theme.BUTTON["pad_x"]
+        w = ov.measure(it[2], level, True)[0] + 2 * fs * theme.BUTTON["pad_x"]
+        if it[1] == "ask":                             # room for the "AI" badge (speech recognition)
+            w += ov.measure("AI", "small", True)[0] + fs * 0.9
+        return w
 
     def bar_width(self, items):
         gap = self.ov.size("button") * 0.35
@@ -4036,8 +4136,21 @@ class App:
             else:
                 _k, tag, lab, act, kind, en, on = it[:7]
                 rr = (x, y0 + 1, x + w, y1 - 1)
-                self.ov_button(rr, lab, act, kind, "button", tag=tag, enabled=en, on=on,
-                               release=it[7] if len(it) > 7 else None)     # (13r: «ΟΜΙΛΙΑ» press and hold)
+                if tag == "ask":                            # «ΕΡΩΤΗΣΗ»: the label right of the "AI" badge
+                    bw = ov.measure("AI", "small", True)[0] + fs * 0.5
+                    self.ov_button(rr, lab, act, kind, "button", tag=tag, enabled=en, on=on, release=it[7])
+                    cv.itemconfigure(cv.find_all()[-1], anchor="w")
+                    cv.coords(cv.find_all()[-1], rr[0] + bw + fs * 0.6, (rr[1] + rr[3]) / 2)
+                    br = (rr[0] + fs * 0.25, rr[1] + (rr[3] - rr[1]) * 0.2, rr[0] + fs * 0.25 + bw,
+                          rr[3] - (rr[3] - rr[1]) * 0.2)
+                    cv.create_rectangle(br[0], br[1], br[2], br[3], fill=theme.AI_BADGE["fill"], outline=theme.BLACK,
+                                        tags="ov")
+                    cv.create_text((br[0] + br[2]) / 2, (br[1] + br[3]) / 2, text=theme.AI_BADGE["text"],
+                                   fill=theme.AI_BADGE["fg"], font=ov.font(ov.size("small"), True), tags="ov")
+                    ov.ops.append({"k": "badge", "r": br, "panel": None, "s": "AI", "tag": "ai_badge_ask"})
+                else:
+                    self.ov_button(rr, lab, act, kind, "button", tag=tag, enabled=en, on=on,
+                                   release=it[7] if len(it) > 7 else None)     # (13r: «ΟΜΙΛΙΑ» press and hold)
             x += w + gap
 
     def ov_button(self, r, label, action, kind, level, tag=None, enabled=True, on=False, release=None):
@@ -4171,6 +4284,9 @@ class App:
             # U2 review LOW-12 (U4): the UAV router OFFLINE on the screens' notices (a notice, never an alarm)
             out.append(("uav_offline", T("uav.n_offline", why=i18n.from_en(u.get("why") or ""))) + B["pickup"] +
                        (None,))
+        if self.asst.out_of_service():
+            # the talking manual (AM2): a station-LOCAL notice, never an alarm, no sound
+            out.append(("asst_out", T("asst.out")) + B["pickup"] + (None,))
         if self.camview:
             ack = self.cam_ack or {}
             vs = self.vstreams.get(self.camview)

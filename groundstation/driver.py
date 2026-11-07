@@ -474,6 +474,9 @@ class DriverScreen:
         elif act == "ptt":
             if a.hail.press():                  # the loudhailer «ΟΜΙΛΙΑ» (step 13r): held until the mouse goes up
                 self.ptt_hold = True
+        elif act == "ask":
+            if a.asst.press("button"):          # the talking manual «ΕΡΩΤΗΣΗ» (AM2): held until the mouse goes up
+                self.ask_hold = True
         elif act in ("keep5", "keep60"):
             a.keep_save(int(act[4:]))           # KEEP the last 5 / 60 min: screens here + the boat's cameras
         elif act == "lang":
@@ -595,6 +598,9 @@ class DriverScreen:
         if getattr(self, "ptt_hold", False):
             self.ptt_hold = False
             self.app.hail.release()             # «ΟΜΙΛΙΑ» let go: the floor back (step 13r)
+        if getattr(self, "ask_hold", False):
+            self.ask_hold = False
+            self.app.asst.release()             # «ΕΡΩΤΗΣΗ» let go = ask (AM2)
         n, self.relay_hold = getattr(self, "relay_hold", None), None
         if n is not None:
             self.app.relay_release(n)
@@ -772,6 +778,8 @@ class DriverScreen:
         s["scr"] = bool(scr is not None and scr.recording())
         hl = getattr(a, "hail", None)                         # the loudhailer (step 13r): None = none on this link
         s["hail"] = hl.view() if hl is not None else None
+        asst = getattr(a, "asst", None)                       # the talking manual (AM2): None = setting off
+        s["asst"] = asst.view_bar() if asst is not None else None
         # step U5: this station's joystick flies a UAV - screen 1 = its video + its own HUD (uavhud.py)
         fly = a.uav_fly_slot() if hasattr(a, "uav_fly_slot") else None
         s["uav_fly"] = fly
@@ -900,6 +908,12 @@ class DriverScreen:
         if u.get("enabled") and u.get("state") == "OFFLINE":
             # U2 review LOW-12 (U4): the UAV router OFFLINE on screen 1's notices too (a notice, never an alarm)
             out.append(("uav_offline", T("uav.n_offline", why=i18n.from_en(u.get("why") or "")), "caution"))
+        asst = getattr(a, "asst", None)
+        if asst is not None and asst.out_of_service():
+            out.append(("asst_out", T("asst.out"), "caution"))    # AM2: a station-local notice, never an alarm
+        h = getattr(a, "asst_heard", None)
+        if h and time.time() - h[1] < 8.0:                         # AM2: the recognised question, 8 s
+            out.append(("asst_q", T("asst.heard", q=h[0]), "caution"))
         return out
 
     def draw(self):

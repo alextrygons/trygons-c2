@@ -256,6 +256,12 @@ class Hailer:
 
     def press(self, what="talk"):
         """The «ΟΜΙΛΙΑ» button went down: ask the gateway for the floor (the first wins)."""
+        a = getattr(self.app, "asst", None)      # the talking manual (AM1 review H1): its capture + voice stop
+        if a is not None:                        # at once - a question never goes out of the horn
+            try:
+                a.horn_pressed()
+            except Exception:
+                pass
         if not self._bind():
             self.note = T("hail.no_gateway")
             return self.app.say(self.note, theme.CAUTION)

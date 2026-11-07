@@ -4276,8 +4276,9 @@ def ac56():
     wrong = []
     stops = tour.stops("el")
     have = [st["id"] for st in stops if tour.recording("el", st)]
-    if len(have) != len(stops):
-        wrong.append("%d of %d stops have a clip" % (len(have), len(stops)))
+    pending = [st["id"] for st in stops if st.get("voice_pending")]      # new stops waiting for the owner's clip
+    if len(have) + len(pending) != len(stops) or set(have) & set(pending):
+        wrong.append("%d of %d stops have a clip (%d marked voice_pending)" % (len(have), len(stops), len(pending)))
     if any(tour.recording("en", st) for st in tour.stops("en")):
         wrong.append("English must use the synthetic voice")
     stale = dict(stops[0], text=stops[0]["text"] + " x")

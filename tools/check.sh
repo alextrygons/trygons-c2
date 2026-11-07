@@ -261,6 +261,9 @@ grep -E "^\[FAIL\]|BENCH STACK TESTS" "$TEMP/benchstack_tests.txt"
 echo "== loudhailer on the station (13r): voice codec + signed packets, ΟΜΙΛΙΑ press-and-hold on both screens, not on the joystick, ready messages, Tools page, devices"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_hailer.py > "$TEMP/hailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER STATION TESTS" "$TEMP/hailer_tests.txt"
+echo "== talking manual (AM2): read-only proof AS1-AS3, real models offline AS4 (N/A without them), push-to-talk + loudhailer wins, own mic, restarts, gateway PC, screens"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_assistant.py > "$TEMP/assistant_tests.txt" 2>&1 ) || { echo "ASSISTANT TESTS FAILED"; fail=1; }
+grep -E "^\[(FAIL|N/A)\]|ASSISTANT TESTS" "$TEMP/assistant_tests.txt"
 echo "== ground station sound + voice tests"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sound.py > "$TEMP/sound_tests.txt" 2>&1 ) || { echo "SOUND TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A )\]|SOUND TESTS" "$TEMP/sound_tests.txt"

@@ -990,6 +990,10 @@ class Hud:
             gh.append(("btn", hv["label"], "ptt", "ctl_ptt", bool(hv["talking"]),
                        None if hv["enabled"] or hv["talking"] else self.pal["grey"]))
             gh.append(("text", hv["text"], None, "hail_state", False, self.pal["caution"] if hv["caution"] else None))
+        av = getattr(s, "asst", None)                    # the talking manual (AM2): «ΕΡΩΤΗΣΗ» + "AI", press and hold
+        if av:
+            gh.append(("ai", T("asst.btn"), "ask", "ctl_ask", bool(av["on"]),
+                       None if av["enabled"] else self.pal["grey"]))
         g4 = []
         rec = s.rec
         if rec is not None:

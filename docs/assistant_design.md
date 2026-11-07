@@ -87,22 +87,52 @@ and a headset):
 | Initial prompt (term hints) | `initial_prompt` + `hotwords` | `--prompt` |
 | VAD | built-in Silero VAD | built-in VAD in recent builds |
 
-Plan: AM2 implements BOTH behind `stt.py` only far enough to measure (Greek WER on the 30 phrases,
-time from release to text for a 3-5 s question, VRAM, CPU fallback time) and KEEPS ONE (the other's
-download code removed). Expected: faster-whisper large-v3-turbo int8_float16 on the GPU (~1 GB VRAM,
-< 1 s for 5 s of speech); CPU fallback = `small` int8 (MEASURE). Language: the station language as a
-hint, Whisper's own detection decides (a Greek speaker may say an English button name).
+AM2 RESULT (2026-11-07, the owner's laptop: RTX A1000 6 GB, Windows 11). KEPT: faster-whisper
+(tools/get_whisper.py: the embeddable Python 3.12.10 + faster-whisper 1.2.1 + CTranslate2 4.6.2 + the CUDA 12
+cuBLAS 12.8.4.1 / cuDNN 9.8.0.87 wheels in tools/bin/assistant-python/; models at pinned Hugging Face
+revisions, every file sha256-checked: large-v3-turbo (CTranslate2, 1.6 GB, GPU, int8_float16) and small
+(0.48 GB, the CPU fallback, int8)). whisper.cpp was downloaded (b5130 cuBLAS 12.4 build + ggml
+large-v3-turbo q5_0) but its downloaded exe was NOT allowed to run in the unattended session (the
+permission guard), so it was NOT measured; it was deleted again and no download code for it was kept.
+faster-whisper already meets the budget below, so the decision does not depend on it; whisper.cpp stays
+an option if the CUDA wheels ever give trouble (it has no Python dependency).
 
-Term hints: built at worker start from lang/el.txt + lang/en.txt (mode names, the mode bar, screen 1
-bottom bar, screen 2 bars, panel titles, Tools page names: HDG LOCK, DP, AUTO, ΜΑΓΓΕΜΑ, ΚΑΤΑΠΑΚΤΗ,
-ΤΙΜΟΝΙ, ΣΧΕΣΗ ...) - the 200 most useful, as the initial prompt. Alarm names from alerts.py.
+Test speech = SYNTHETIC (no owner recordings yet): 20 Greek questions said by the Piper voice AND by the
+Windows voice "Stefanos" + 10 English (Piper), 16 kHz. Word error rate, accents / case ignored (a strict
+measure: one wrong ending = one error); time = from the release to the text, one question 1.5-3.5 s:
 
-Microphone: its OWN setting (gs_settings `assistant_mic`, Tools page «Βοηθός»; groundstation/audiodev.py
-lists the devices), separate from the loudhailer `in_dev` / `out_dev`. None chosen = the Windows default
+| Setting | el Piper | el Windows | en Piper | time per question |
+|---|---|---|---|---|
+| GPU large-v3-turbo, beam 1, hints in CAPITALS (first version) | 76 % | 52 % | 7 % | 1.2 s (first one 4.5 s: no warm-up) |
+| GPU, beam 5, no hints | 47 % | 20 % | 7 % | 0.86 s |
+| GPU, beam 5, hints in normal case (KEPT, as built in stt.py) | 45 % | 17 % | 7 % | 0.86 s (max 1.0 s) |
+| CPU small, beam 5, hints (KEPT for the CPU) | 58 % | 34 % | 7 % | 5.0 s |
+| CPU small, beam 1, hints | 54 % | 39 % | 10 % | 4.5 s (max 9.9 s with the el / en re-decode) |
+| CPU large-v3-turbo | stopped after 7 min for 50 questions: > 8 s each - never on the CPU | | | |
+
+Findings: (1) term hints written in CAPITALS (as the screens show them, without accents) make Whisper write
+and mis-hear in capitals - the hints are normal-case words with accents; (2) beam 5 costs nothing on the
+GPU and beam 1 saves only ~10 % on the CPU (and loses words): beam 5 everywhere; (3) a warm-up decode at load removes the slow first question; (4) Whisper's
+language detection once took a Greek question for Polish: only el / en are accepted (else decoded again as
+the likelier of the two); (5) the Piper Greek voice is hard to recognise (45 %) - a human voice is expected
+near the Windows-voice figure; MEASURE again with the owner's own recorded questions (W84). The GPU time
+(< 1 s) fits the 4 s budget of section 6; the CPU fallback does not (AM4's retrieval-only rule decides).
+Language: the station language is only the tie-break; Whisper's detection (el / en) decides.
+VRAM: the worker with large-v3-turbo loaded holds ~1 GB (nvidia-smi), nothing while it is stopped.
+
+Term hints (as built, groundstation/assistant/hints.py): the Latin acronyms (HDG LOCK, DP, AUTO, STANDBY,
+UAV ...), a short curated normal-case word list per language (καταπακτή, μάγγεμα, κλείδωμα πορείας, τιμόνι,
+σχέση, μεγάφωνο ...) and the normal-case texts of the lang files (Tools page names, bar buttons, panel
+words); the screens' all-capital Greek texts (mode bar, alarm titles) are NOT used (no accents, measured
+worse). At most 700 characters per language (Whisper reads ~220 tokens of it), sent by client.py at init.
+
+Microphone: its OWN setting (gs_settings `assistant_mic`, Tools page «Βοηθός»; groundstation/assistant/mic.py
+lists the devices and captures at 16 kHz - audiodev.py's 8 kHz loudhailer path is not used), separate from the loudhailer `in_dev` / `out_dev`. None chosen = the Windows default
 input ONLY for the assistant (it is not a boat function; the loudhailer's "never the default device"
 rule is about the horn). Audio is never written to disk (RAM only, dropped after the answer).
 
-PTT (W83 default): press-and-hold the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar, screen 2 bar 2,
+PTT (W83 default): press-and-hold the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar, screen 2 bar 1 - AM2: bar 2 has no
+room beside «ΟΜΙΛΙΑ» at 1366x768 / 125 %; bar 1 also exists in the camera view where a UAV is flown -,
 with the "AI" badge) or hold F9 (gs_settings `assistant_key`; a USB foot pedal that sends F9 works the
 same). Release = ask. Max 15 s per question (then asked automatically), < 0.4 s = ignored. NEVER on the
 joystick (every stick button is used while flying a UAV), NEVER shared with the loudhailer «ΟΜΙΛΙΑ»:

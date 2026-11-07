@@ -232,7 +232,9 @@ def stops(lang, doc=None):
                         "show": st["show"], "target": st.get("target", ""), "covers": list(st.get("covers") or []),
                         "title": title,
                         "text": st["text_" + lang], "level": lv,
-                        "level_text": doc["levels"][lv]["text_" + lang] if lv else None})
+                        "level_text": doc["levels"][lv]["text_" + lang] if lv else None,
+                        # a NEW stop whose recorded Greek clip the owner has not made yet: the synthetic voice
+                        "voice_pending": bool(st.get("voice_pending"))})
     return out
 
 

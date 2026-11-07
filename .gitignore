@@ -49,3 +49,5 @@ groundstation/screenrec/
 
 # narration originals of the guided tour (local only; the Opus files are in academy/tour_voice/)
 voice_raw/
+# the talking manual's local log + worker errors on this PC (step AM2+): text only, never sent anywhere
+groundstation/assistant/log/
