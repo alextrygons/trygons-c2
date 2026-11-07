@@ -34,6 +34,15 @@ You need: a multimeter, the laptop with the ground station, the USB cable,
       `python tools/mapreport.py "TriCore Debug (TASKING)/TRYGONS_C2.map"` ->
       `STACK CHECK: OK` (no recursion, every stack + CSA with >= 50 % margin;
       exit code 0). Any FAIL: do not flash, report it.
+- [ ] FLASH GATE (owner standing rule 2026-11-07, PROGRESS.md LOOP RULE 6): the
+      commit you build is TAGGED `flash-gate-N` (`git tag --points-at HEAD`
+      shows it; `git describe --tags --exact-match` must print `flash-gate-N`).
+      The tag is set only after a full deep review of every firmware change
+      since the previous gate + full RUN_ACCEPTANCE + the storm + an ADS build
+      + `STACK CHECK: OK`, with every HIGH / MED finding fixed. **Only commits
+      tagged flash-gate-N are ever flashed onto a real AURIX** - an untagged
+      build is never flashed, whatever tests it passed. Write the tag name in
+      the bench log.
 
 Not stored yet (no data flash driver): a TRAINING result is **lost at
 power-off** (do TRAINING again after every power-up before HDG LOCK) and the

@@ -354,6 +354,7 @@ Owner rules I0 (2026-11-06) are binding; the safety rules above always win. STAT
 
 ## Working rules
 - For long multi-part tasks, keep PROGRESS.md updated after every step so the work can resume in a new session.
+- Flash gate + parallel firmware reviews (owner standing rule 2026-11-07; PROGRESS.md LOOP RULE 6): (1) every step keeps all automated tests as today. (2) Firmware steps (app/, hal/): a SHORT independent review of the step's own diff against the safety rules, in PARALLEL with the next step; HIGH / MED = a fix step next. (3) EXCEPTION, a full SERIAL safety review at once: changes to STANDBY, the e-stop, the engine kill / latch, lost link, throttle / power / rate limits, the gear interlock, the CPU1 monitor, the watchdogs, the single-writer rules. (4) FLASH GATE before any build goes onto a real AURIX: a full deep review of ALL firmware changes since the last gate + full RUN_ACCEPTANCE + the storm + an ADS build + mapreport `STACK CHECK: OK`, every HIGH / MED fixed, then `git tag flash-gate-N`; ONLY a commit tagged flash-gate-N is ever flashed (FIRST_TEST.md 0). (5) Non-firmware steps: parallel reviews as now.
 
 ## About me
 - I know programming but I'm new to VS Code, git and AURIX. Explain steps simply.
