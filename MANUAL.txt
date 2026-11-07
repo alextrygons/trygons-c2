@@ -3773,19 +3773,37 @@ WHERE IT FINDS IT IN THE MANUAL (step AM3)
     endings and a few synonyms an operator says (drone = UAV, joystick =
     χειριστήριο, μηχανή = κινητήρας). No model, no internet, under 1 ms per
     question. It keeps the 3 best passages with their chapters; a weak match
-    = "I can't find that in the manual." - never a guess.
-  * The manual's index (groundstation\assistant\index\) is rebuilt by
-    tools\check.sh whenever a manual, the tour or a language file changed; by hand:
-    python tools\assistant_index.py build
+    = "I can't find that in the manual.". The search alone can still pick a
+    WRONG passage (see the numbers below): check the chapter it names.
+  * It searches only in the English manual for an English question and only
+    in the Greek manual for a Greek one (a missing index = "I can't find",
+    never the other language). This chapter itself (about the assistant) is
+    NOT searched; the button and screen names of the language files are not
+    searched either (they only help the speech recognition).
+  * The manual's index (groundstation\assistant\index\) is part of the
+    repository. After you change a manual or the tour, rebuild it and commit
+    it with your change:
+      python tools\assistant_index.py build
+    tools\check.sh FAILS while the committed index is out of date, and an
+    out-of-date index is never used: the assistant then answers "I can't find
+    that in the manual." to everything and shows the note "The manual index
+    is out of date ..." on the Tools page.
   * Try a typed question (no microphone, no station):
       python tools\assistant_index.py ask "your question" --lang en
-  * Measured on the question list (tests\assistant\questions_en.json: 48
-    questions, 42 answered in the manual): the right passage first 55 %,
-    within the first 3 81 %; 3 of the 6 questions that are not in the manual
-    give "I can't find". Greek (145 questions, 134 in the manual): 61 % /
-    77 %, 9 of 11. Run it with  python tools\assistant_index.py eval  (also in
-    tools\check.sh). The next step (the language model answers ONLY from the
-    passages, with a check) improves the refusals.
+  * Measured on the question list (tests\assistant\questions_en.json, 48
+    questions; step AM3-r, strict scoring: the passage must contain a
+    specific sentence of the answer). IN-SAMPLE = the questions the search
+    settings were tuned on; HELD-OUT = every 3rd question of each group, kept
+    apart and measured once (only 9 in English - a rough figure):
+      English in-sample: right passage first 45 %, within the first 3 73 %;
+      English held-out: 67 % / 89 %.
+      Greek (145 questions) in-sample 58 % / 78 %, held-out 63 % / 76 %.
+    About 1 in 6 Greek hits is a guided-tour stop, not a manual chapter.
+    Of the questions that are NOT in the manual 9 of 11 (Greek) and 2 of 6
+    (English) give "I can't find". Run it with
+      python tools\assistant_index.py eval
+    (also in tools\check.sh). The next step (the language model answers ONLY
+    from the passages, with a check) has to improve the refusals.
 
 If it fails: the notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» / ASSISTANT OFF on both screens (a
 notice on THIS PC only, never an alarm, no sound); it restarts by itself after

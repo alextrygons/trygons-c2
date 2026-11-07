@@ -52,6 +52,8 @@ import ast
 import array
 import collections
 import json
+import shutil
+import subprocess
 import math
 import os
 import sys
@@ -1231,11 +1233,15 @@ def as13():
 
 
 # --- AS14 - AS18: FIND (step AM3) ------------------------------------------------------------------------------
-# the question list's measured first run (TEST_REPORT.md "Talking manual - FIND"): a later change may only keep or
-# raise these; lower = a FAIL (the index or the search got worse)
-FIND_MIN = {"el": {"top1": 0.60, "top3": 0.75}, "en": {"top1": 0.52, "top3": 0.78}}
-FIND_MAX_FALSE_CANT = {"el": 5, "en": 1}
-FIND_MIN_CANT_OK = {"el": 9, "en": 3}           # of the "not in the manual" questions (BM25 alone; AM4 adds more)
+# AM3-r (review MED-2 / MED-3): measured with the STRICT labels (a specific phrase in the passage TEXT, a phrase in
+# >= 6 passages or a heading-only match = no hit) on the TUNING part (the thresholds were re-tuned there only) and
+# the frozen HELD-OUT part (tests/assistant/heldout.json, measured once): TEST_REPORT.md "Talking manual - FIND".
+# The floors sit just under those honest numbers; a later change may only keep or raise them (lower = FAIL).
+# el tuning 56/96 top-1, 75/96 top-3; el held-out 24/38, 29/38; en tuning 15/33, 24/33; en held-out 6/9, 8/9.
+FIND_MIN = {"tuning": {"el": {"top1": 0.55, "top3": 0.75}, "en": {"top1": 0.42, "top3": 0.70}},
+            "heldout": {"el": {"top1": 0.60, "top3": 0.73}, "en": {"top1": 0.55, "top3": 0.75}}}
+FIND_MAX_FALSE_CANT = {"el": 3, "en": 1}         # the whole list
+FIND_MIN_CANT_OK = {"el": 8, "en": 2}           # of the "not in the manual" questions (BM25 alone; AM4 adds more)
 I2_GROUPS = {"uav", "launch_hatch", "alarms", "modes", "lost_link", "recording", "loudhailer", "roles", "dp",
              "engine", "power_limit"}
 
@@ -1277,11 +1283,30 @@ def as14():
             f.write("α\r\nβ\r\n".encode("utf-8"))
         out["CRLF = LF hash"] = index.sha_text(lf) == index.sha_text(crlf)
     srcs = index.sources("el")
-    out["sources: manual + tour + lang files + parser"] = all(any(s.endswith(x) for s in srcs) for x in (
-        "MANUAL_EL.txt", "tour.json", "el.txt", "en.txt", "index.py"))
+    out["sources: manual + tour + parser"] = all(any(s.endswith(x) for s in srcs) for x in (
+        "MANUAL_EL.txt", "tour.json", "index.py"))
+    out["lang files no source (not indexed, LOW-1)"] = not any(s.endswith(("el.txt", "en.txt")) for s in srcs)
     with open(os.path.join(REPO, "tools", "check.sh"), encoding="utf-8") as f:
         sh = f.read()
-    out["check.sh rebuilds a stale index"] = "assistant_index.py build --if-stale" in sh
+    # AM3-r MED-1: the gate CHECKS the committed index (exit 1 = FAIL), it never rebuilds it quietly
+    out["check.sh fails on a stale index"] = ("tools/assistant_index.py check" in sh and
+                                              "\"$PY\" tools/assistant_index.py build" not in sh)
+    # mutation: the sources copied, a manual changed, NO rebuild -> `assistant_index.py check` exits 1 (STALE);
+    # the unchanged copy -> 0
+    tool = os.path.join(REPO, "tools", "assistant_index.py")
+    with tempfile.TemporaryDirectory() as d:
+        for rel in set(index.sources("el") + index.sources("en")):
+            os.makedirs(os.path.dirname(os.path.join(d, rel)) or d, exist_ok=True)
+            shutil.copyfile(os.path.join(REPO, rel), os.path.join(d, rel))
+        env = dict(os.environ, TRYGONS_ASSISTANT_SRC=d, PYTHONIOENCODING="utf-8")
+        same = subprocess.run([sys.executable, tool, "check"], env=env, capture_output=True, text=True,
+                              encoding="utf-8", timeout=120)
+        with open(os.path.join(d, "MANUAL_EL.txt"), "a", encoding="utf-8") as f:
+            f.write("\nμια νέα γραμμή χωρίς νέο ευρετήριο\n")
+        changed = subprocess.run([sys.executable, tool, "check"], env=env, capture_output=True, text=True,
+                                 encoding="utf-8", timeout=120)
+        out["check: unchanged copy = 0"] = same.returncode == 0
+        out["check: manual changed, no rebuild = exit 1 STALE"] = changed.returncode == 1 and             "STALE" in changed.stdout and "MANUAL_EL.txt changed" in changed.stdout
     report("AS14 index build + stale check", all(out.values()), out)
 
 
@@ -1325,6 +1350,13 @@ def as16():
         out[lang + " nothing from the contents"] = all(p["lines"][0] > first for p in man)
         out[lang + " sizes"] = all(1 <= len(p["text"].split()) <= index.MAX_WORDS * 1.5 for p in ps)
         out[lang + " line ranges"] = all(p["lines"][0] <= p["lines"][1] <= len(lines) for p in man)
+        # AM3-r LOW-4: every (split) passage's own range - its first word on its first line, its last on its last
+        out[lang + " range per split part"] = all(
+            p["text"].split()[0] in lines[p["lines"][0] - 1] and p["text"].split()[-1] in lines[p["lines"][1] - 1]
+            for p in man)
+        # AM3-r LOW-3: the assistant's own chapter is not indexed
+        out[lang + " assistant chapter left out"] = ("17" if lang == "el" else "22") in index.SKIP_CHAPTERS[lang] \
+            and ("17" if lang == "el" else "22") not in {p["ch"] for p in man}
         terms = {p["term"] for p in man}
         want = ({"ΑΠΩΛΕΙΑ ΠΥΞΙΔΑΣ", "ΧΑΜΗΛΗ ΜΠΑΤΑΡΙΑ", "ΧΤΥΠΗΜΑΤΑ (SLAMMING)", "STANDBY", "ΕΠΙΣΤΡΟΦΗ AUTO"}
                 if lang == "el" else {"GATEWAY LOST", "LOW BATTERY", "SLAMMING", "STANDBY", "HDG LOCK"})
@@ -1338,19 +1370,34 @@ def as16():
 
 def as17():
     """The question list (tests/assistant/questions_*.json, owner spec I2) and the measured retrieval: top-1 /
-    top-3 at least the first run's numbers, most not-in-the-manual questions = can't find, few false can't-finds,
-    every expected phrase / tour stop exists (a manual edit that drops one fails here)."""
+    top-3 on the TUNING and the HELD-OUT part at least the AM3-r numbers, most not-in-the-manual questions = can't
+    find, few false can't-finds, every question has a SPECIFIC expected phrase / real tour stop (a manual edit that
+    drops one fails here); the strict hit rule itself (MED-3): a heading-only match and a phrase in >= 6 passages
+    are no hit."""
     ai = _tools_index()
     out, info = {}, {}
+    ps = [{"id": "el:%d" % i, "kind": "manual", "heading": "ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ", "term": "",
+           "text": "κείμενο %d με το κουμπί STANDBY" % i} for i in range(6)]
+    ps.append({"id": "el:9", "kind": "manual", "heading": "Χ", "term": "", "text": "πατήστε ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ τώρα"})
+    out["strict: heading-only = no hit"] = ai.matches(ps[0], ["ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ"]) == "" and         ai.matches(ps[6], ["κλεισιμο καταπακτης"]) == "manual"
+    out["strict: a phrase in >= 6 passages is loose"] = ai.specific(ps, ["κουμπί STANDBY"]) == [] and         ai.specific(ps, ["ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ"]) == ["ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ"]
+    out["tour stop hits counted apart"] = ai.matches({"id": "tour:el:uav.stop", "kind": "tour", "text": "x"},
+                                                     [], ("uav.stop",)) == "tour"
     for lang in ("el", "en"):
         qs = ai.load_questions(lang)
         rows, t = ai.evaluate(lang, qs=qs)
         n = t["in_manual"]
         info[lang] = "top-1 %d/%d top-3 %d/%d false can't %d, can't find %d/%d" % (
             t["top1"], n, t["top3"], n, t["false_cant_find"], t["cant_find_ok"], t["not_in_manual"])
+        for part in ("tuning", "heldout"):
+            u = t[part]
+            info[lang + " " + part] = "top-1 %d/%d top-3 %d/%d" % (u["top1"], u["in_manual"], u["top3"], u["in_manual"])
+            out["%s %s top-1" % (lang, part)] = u["top1"] >= FIND_MIN[part][lang]["top1"] * u["in_manual"]
+            out["%s %s top-3" % (lang, part)] = u["top3"] >= FIND_MIN[part][lang]["top3"] * u["in_manual"]
+        held = ai.load_heldout(lang)
+        ids = [q["id"] for q in qs["questions"]]
+        out[lang + " held-out ids real + >= 20 %"] = held <= set(ids) and len(held) >= 0.2 * len(ids)
         out[lang + " no broken expectation"] = not t["broken"]
-        out[lang + " top-1"] = t["top1"] >= FIND_MIN[lang]["top1"] * n
-        out[lang + " top-3"] = t["top3"] >= FIND_MIN[lang]["top3"] * n
         out[lang + " false can't find"] = t["false_cant_find"] <= FIND_MAX_FALSE_CANT[lang]
         out[lang + " not in the manual = can't find"] = t["cant_find_ok"] >= FIND_MIN_CANT_OK[lang] and \
             t["not_in_manual"] >= 5
@@ -1386,6 +1433,39 @@ def as18():
         miss = w2.found("καταπακτή", "el")
     finally:
         index.INDEX_DIR = real
+    # AM3-r MED-1 / LOW-2: a STALE Greek index (the Greek manual changed, no rebuild) = every Greek question
+    # "can't find" + the reason + the station notice (ready "index_err"), and NEVER the English index instead;
+    # English (current) still finds
+    real_src = index.SRC_ROOT
+    with tempfile.TemporaryDirectory() as d:
+        for rel in set(index.sources("el") + index.sources("en")):
+            os.makedirs(os.path.dirname(os.path.join(d, rel)) or d, exist_ok=True)
+            shutil.copyfile(os.path.join(REPO, rel), os.path.join(d, rel))
+        with open(os.path.join(d, "MANUAL_EL.txt"), "a", encoding="utf-8") as f:
+            f.write("\nμια αλλαγή χωρίς νέο ευρετήριο\n")
+        try:
+            index.SRC_ROOT = d
+            b3 = io.StringIO()
+            w3 = worker.Worker(out=b3)
+            w3.handle({"op": "init", "stt": "stub", "lang": "el"})
+            st_el = w3.found("πού κλείνω την καταπακτή;", "el")
+            st_en = w3.found("how do I close the hatch?", "en")
+        finally:
+            index.SRC_ROOT = real_src
+    ready = [json.loads(x) for x in b3.getvalue().splitlines() if '"ready"' in x]
+    stale_out = {
+        "stale el = can't find": st_el["cant_find"] and "stale" in st_el["why"] and not st_el["hits"],
+        "stale el never answered from en": not st_el["hits"],
+        "en (current) still finds": not st_en["cant_find"] and bool(st_en["hits"]),
+        "ready carries the notice": bool(ready) and "stale" in ready[0].get("index_err", ""),
+    }
+    # the client turns it into the station notice asst.n_index (amber)
+    from assistant import client as aclient
+    c = aclient.Assistant.__new__(aclient.Assistant)
+    c.state, c.note, c.view, c.device, c.index_err = aclient.STARTING, "", None, "", ""
+    c._set = lambda st, *a: setattr(c, "state", st)
+    c._on({"op": "ready", "device": "stub", "index_err": "manual index el stale: MANUAL_EL.txt changed"})
+    stale_out["client notice asst.n_index"] = c.note == ("asst.n_index", {}) and "asst.n_index" in         aclient.PROBLEM_NOTES and bool(c.index_err)
     h = got[0]["hits"][0] if got and got[0].get("hits") else {}
     out = {"found": got and got[0]["op"] == "found" and not got[0]["cant_find"] and "ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ" in h.get("text", ""),
            "chapter + place": bool(h.get("ch") and h.get("chapter") is not None and "lines" in h),
@@ -1393,6 +1473,7 @@ def as18():
            "joke = can't find": len(got) > 2 and got[2]["cant_find"],
            "no index = can't find": miss["cant_find"] and "index" in miss["why"],
            "fast": ms < 50}
+    out.update(stale_out)
     report("AS18 worker find", all(out.values()), "%s; %.1f ms per search" % (out, ms))
 
 

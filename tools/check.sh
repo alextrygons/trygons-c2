@@ -261,12 +261,12 @@ grep -E "^\[FAIL\]|BENCH STACK TESTS" "$TEMP/benchstack_tests.txt"
 echo "== loudhailer on the station (13r): voice codec + signed packets, ΟΜΙΛΙΑ press-and-hold on both screens, not on the joystick, ready messages, Tools page, devices"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_hailer.py > "$TEMP/hailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER STATION TESTS" "$TEMP/hailer_tests.txt"
-echo "== talking manual index (AM3): groundstation/assistant/index/ rebuilt when a manual / the tour / a lang file / the parser changed; the question list (tests/assistant)"
-PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py build --if-stale > "$TEMP/asst_index.txt" 2>&1 || { echo "ASSISTANT INDEX FAILED (see $TEMP/asst_index.txt)"; fail=1; }
+echo "== talking manual index (AM3, AM3-r MED-1): the COMMITTED groundstation/assistant/index/ must match the manuals / the tour / the parser - a stale index FAILS (rebuild: python tools/assistant_index.py build, then commit it); the question list (tests/assistant: all, in-sample, HELD-OUT)"
+PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py check > "$TEMP/asst_index.txt" 2>&1 || { echo "ASSISTANT INDEX STALE - run: python tools/assistant_index.py build, then commit the index (see $TEMP/asst_index.txt)"; fail=1; }
 cat "$TEMP/asst_index.txt"
 PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py eval > "$TEMP/asst_eval.txt" 2>&1 || { echo "ASSISTANT QUESTION LIST BROKEN (see $TEMP/asst_eval.txt)"; fail=1; }
 cat "$TEMP/asst_eval.txt"
-echo "== talking manual (AM2 + AM3): read-only proof AS1-AS3, real models offline AS4 (N/A without them), push-to-talk + loudhailer wins, own mic, restarts, gateway PC, screens; FIND AS14-AS18 (index, stale check, normalisation, passages, retrieval, worker find)"
+echo "== talking manual (AM2 + AM3): read-only proof AS1-AS3, real models offline AS4 (N/A without them), push-to-talk + loudhailer wins, own mic, restarts, gateway PC, screens; FIND AS14-AS18 (index, stale check, normalisation, passages, retrieval in-sample + held-out, worker find + stale index)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_assistant.py > "$TEMP/assistant_tests.txt" 2>&1 ) || { echo "ASSISTANT TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A)\]|ASSISTANT TESTS" "$TEMP/assistant_tests.txt"
 echo "== ground station sound + voice tests"

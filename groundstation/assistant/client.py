@@ -34,7 +34,7 @@ ERR_MAX_BYTES = 1 << 20         # worker_err.txt is rotated to worker_err.1.txt 
 SOURCES = ("button", "key")     # never "joystick" (CLAUDE.md W)
 KEYS = ("F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9")     # F10 = the Windows menu key, F11 / F12 = the screens
 DEFAULT_KEY = "F9"
-PROBLEM_NOTES = ("asst.n_mic", "asst.n_error")    # amber on the message line; the other notes = plain info (LOW-4)
+PROBLEM_NOTES = ("asst.n_mic", "asst.n_error", "asst.n_index")    # amber on the message line; the other notes = plain info (LOW-4)
 
 # states
 OFF, IDLE, NO_MODELS, GATEWAY_PC, STARTING, READY, LISTENING, THINKING, DOWN, FAILED = (
@@ -66,6 +66,7 @@ class Assistant:
         self.state = IDLE if self.enabled() else OFF     # IDLE = on, not started yet
         self.why = ""
         self.device = ""
+        self.index_err = ""                      # the worker's manual index is stale / missing (AM3-r MED-1)
         self.pressed_t = None
         self.ask_t = None
         self.started_t = None
@@ -294,6 +295,9 @@ class Assistant:
         op = m.get("op")
         if op == "ready":
             self.device = m.get("device", "")
+            self.index_err = m.get("index_err") or ""
+            if self.index_err:                   # every search = can't find; the station says why once
+                self.note = ("asst.n_index", {})
             self._set(READY)
         elif op == "heard":
             self.ask_t = None

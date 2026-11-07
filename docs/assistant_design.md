@@ -177,11 +177,10 @@ every existing binding (F11 / F12 / Space / A today).
   MANUAL.txt: split by chapter (`N. TITLE`), sub-heading (`N.M` / upper-case lines / `---` rules) and
   paragraph; each passage = {id, chapter number + title, heading path, text, line range}. Passages
   60-250 words (long paragraphs split at sentences, short ones joined with the next under the same
-  heading). Plus small "where is it" passages from the tour texts (academy/content/tour.json) and the
-  lang files (a button name -> its screen / bar), marked as such.
-- Stale check: the index stores the sha256 of both manuals + tour.json + the lang files; tools/check.sh
-  rebuilds it when they changed (like `demo_screens.py --tour --if-stale`) and a test fails if the
-  committed index is stale.
+  heading). Plus small "where is it" passages from the tour texts (academy/content/tour.json), marked as
+  such (AM3-r LOW-1: the lang files are NOT indexed - term hints only).
+- Stale check: the index stores the sha256 of the manual + tour.json + the parser; tools/check.sh FAILS when
+  the committed index is stale (AM3-r MED-1: it no longer rebuilds it), the worker does not use a stale one.
 - Search: Greek normalisation (lower case, accents and diaeresis removed, final sigma, Greek-Latin
   look-alikes for button names, a small stemmer: common endings -ος/-ου/-ο/-α/-ες/-ων/-ει/-ουμε ...),
   BM25 over words + the heading path weighted x2. Top 3 passages with their chapter names. A small
@@ -219,6 +218,43 @@ every existing binding (F11 / F12 / Space / A today).
   the answer step needs better than top-3 77 % and measures an embedding model against these numbers then.
 - Manual gaps found by the list (TEST_REPORT.md "Talking manual - FIND"): HATCH FAULT not explained (el + en), a
   stuck / half-open hatch, fuel tank / range, man overboard (el + en) = 6 entries, 4 topics.
+- The AM3 figures above were IN-SAMPLE (every parameter chosen on the same list, loose labels): REPLACED by 4b.
+
+### 4b. Review fixes (step AM3-r, review of 0feb416)
+
+- MED-1 stale index: tools/check.sh runs `assistant_index.py check` (exit 1 = the gate FAILS; it never rebuilds
+  quietly - rebuild by hand with `build` and commit the index with the manual change). The worker checks
+  index.stale(lang) at init: a stale (or missing / broken) index is NOT loaded = every question of that language
+  "can't find" + the reason, the ready message carries `index_err` -> the station notice asst.n_index (amber, Tools
+  page line). Test AS14 (sources copied to a temp folder via TRYGONS_ASSISTANT_SRC, a manual changed, no rebuild ->
+  `check` exit 1 STALE; the unchanged copy -> 0) + AS18 (worker: stale el = can't find, en still finds, the notice).
+- MED-3 strict labels: a hit = a SPECIFIC expected phrase in the passage TEXT; a phrase found in >= 6 passages
+  (LOOSE_N) or only in a heading / term does not count (every part of a long section shares its heading). Labels
+  without a specific phrase were re-labelled from the manual text (el043 el060 el066 el070 el123 el134 el135, en001
+  en002 en009 en019 en023 en027 en028 en032 en043); `eval` lists such a question as BROKEN. Tour-stop hits are
+  counted apart (top-1 "via a tour stop"; whether they count as top-1 = W89).
+- MED-2 held-out: tests/assistant/heldout.json = every 3rd question of each group (file order), frozen: el 42, en 10.
+  The thresholds were re-tuned on the TUNING part only (grid MIN_SCORE 2..5 x MIN_COVER 0.25..0.5 x TOUR_FACTOR
+  0.8..1.0: MIN_COVER 0.35 -> 0.30, the rest unchanged), then the held-out part was measured ONCE. Caveat: the
+  held-out questions were part of the AM3 list, so the AM3 spoken-word table (SAID) and the parser were written
+  with them in view - the held-out numbers are an upper bound until a fresh set (AM6).
+- Measured (strict, deterministic):
+
+  | | top-1 | top-3 | false can't find | not in the manual -> can't find |
+  |---|---|---|---|---|
+  | el in-sample (tuning, 96 in the manual) | 56 = 58 % (10 tour) | 75 = 78 % | 1 | 5 / 7 |
+  | el HELD-OUT (38) | 24 = 63 % (4 tour) | 29 = 76 % | 1 | 4 / 4 |
+  | en in-sample (33) | 15 = 45 % (1 tour) | 24 = 73 % | 0 | 2 / 5 |
+  | en HELD-OUT (9) | 6 = 67 % | 8 = 89 % | 0 | 0 / 1 |
+
+  AS17 floors sit just under these (tuning el 55 / 75 %, en 42 / 70 %; held-out el 60 / 73 %, en 55 / 75 %). The
+  English held-out part is 9 questions: a rough figure.
+- LOW-1: the lang files are NOT indexed (button names reach Whisper as term hints only, hints.py) and are no
+  longer index sources. LOW-2: the worker searches only the question language's index (missing = can't find, never
+  the other language). LOW-3: the assistant chapters (MANUAL_EL 17, MANUAL 22) are left out of the index
+  (SKIP_CHAPTERS); the manuals no longer promise "never a guess" for the search alone (a wrong passage is
+  possible - AM4's post-check is the guard). LOW-4: every split part of a long section has its OWN line range
+  (per-word line numbers through the split), so [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] (AM5) opens at the part, not at the section start.
 
 ## 5. Answer (step AM4)
 

@@ -98,7 +98,7 @@ class Page:
 
     def _signature(self):
         a = self.a
-        return (a.state, a.device, id(a.last), a.key(), i18n.lang(), str(a.view_bar()))
+        return (a.state, a.device, id(a.last), a.key(), i18n.lang(), str(a.view_bar()), a.index_err)
 
     def maybe_refresh(self):
         """From the station's 100 ms tick: refreshed only on a change, else once a second (AM2 review LOW-6)."""
@@ -115,7 +115,10 @@ class Page:
             if a.device and a.state in (client.READY, client.LISTENING, client.THINKING):
                 st += "  ·  " + T("asst.device", dev=a.device)
             self.state.configure(text=st, fg=theme.CAUTION if a.out_of_service() else theme.C["fg"])
-            self.models.configure(text=T("asst.models_ok") if paths.models_installed() else T("asst.models_missing"))
+            mt = T("asst.models_ok") if paths.models_installed() else T("asst.models_missing")
+            if a.index_err:                     # AM3-r MED-1: a stale index is never searched
+                mt += "\n" + T("asst.n_index")
+            self.models.configure(text=mt)
             h = a.last
             txt = T("asst.last", q=h["q"], lang=h.get("lang", ""), audio=h.get("audio_s", 0),
                     ms=h.get("ms", 0)) if h and h.get("q") else T("asst.none")

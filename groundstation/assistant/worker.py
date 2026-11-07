@@ -53,7 +53,7 @@ class Worker:
         self.cfg = {}
         self.inp = None                           # the microphone while listening
         self.search = {}                          # lang -> index.Searcher (the manual index, read once)
-        self.search_err = ""
+        self.search_err = {}                      # lang -> why that index is not used (missing / broken / stale)
 
     def send(self, d):
         self.out.write(json.dumps(d) + "\n")      # ASCII escapes: the pipe's code page never matters
@@ -93,25 +93,36 @@ class Worker:
             return self.send({"op": "error", "why": "speech recognition failed to load: %s" % str(e)[:120]})
         self.load_index()
         dev = self.stt.device + ("/" + self.stt.model_name if getattr(self.stt, "model_name", "") else "")
-        self.send({"op": "ready", "device": dev, "ms": int((time.monotonic() - t0) * 1000)})
+        self.send({"op": "ready", "device": dev, "ms": int((time.monotonic() - t0) * 1000),
+                   "index_err": self.index_problem()})
 
     def load_index(self):
-        """Both manual indexes, read once (a missing / broken index = every search "can't find" + the reason)."""
-        self.search, self.search_err = {}, ""
+        """Both manual indexes, read once. A missing / broken index OR a STALE one (AM3-r MED-1: its manual / tour /
+        parser changed since it was built - it could point at text that is no longer there) = every search in
+        that language "can't find" + the reason; never the other language's index (LOW-2)."""
+        self.search, self.search_err = {}, {}
         for lang in ("el", "en"):
             try:
+                why = index.stale(lang)
+                if why:
+                    self.search_err[lang] = "manual index %s stale: %s" % (lang, "; ".join(why)[:100])
+                    continue
                 self.search[lang] = index.Searcher(index.load(lang))
             except (OSError, ValueError, KeyError) as e:
-                self.search_err = "manual index %s: %s" % (lang, str(e)[:100])
+                self.search_err[lang] = "manual index %s: %s" % (lang, str(e)[:100])
+
+    def index_problem(self):
+        """The text of the station notice for a stale / missing index ("" = both indexes usable)."""
+        return "; ".join(self.search_err[k] for k in sorted(self.search_err))
 
     def found(self, q, lang):
         import time
         t0 = time.monotonic()
         if not self.search and not self.search_err:
             self.load_index()
-        s = self.search.get(lang if lang in self.search else "el") or next(iter(self.search.values()), None)
+        s = self.search.get(lang)                 # only the question's language (AM3-r LOW-2)
         if s is None:
-            r = {"cant_find": True, "why": self.search_err or "no manual index", "hits": []}
+            r = {"cant_find": True, "why": self.search_err.get(lang) or "no manual index for %r" % lang, "hits": []}
         else:
             r = index.hit_summary(s.search(q))
         r["ms"] = int((time.monotonic() - t0) * 1000)

@@ -2179,6 +2179,7 @@ asst.n_short = Keep the button pressed while you speak
 asst.n_nothing = No question recognised – try again
 asst.n_mic = The assistant's microphone was not found
 asst.n_error = Assistant error (details in the log file)
+asst.n_index = The manual index is out of date – the assistant answers "I can't find that in the manual." until it is rebuilt
 asst.state.off = Assistant: off on this PC
 asst.state.no_models = Assistant: models not installed
 asst.state.gateway_pc = Assistant: does not run on a gateway PC

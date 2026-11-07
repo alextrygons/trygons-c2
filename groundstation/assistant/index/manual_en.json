@@ -87,7 +87,7 @@
 "kind": "manual",
 "lines": [
 77,
-93
+78
 ],
 "term": "app/",
 "text": "app/ The autopilot itself. Pure C, no hardware code. The same files run on the board and in the PC simulation."
@@ -99,7 +99,7 @@
 "id": "en:8",
 "kind": "manual",
 "lines": [
-77,
+79,
 93
 ],
 "term": "app/",
@@ -594,7 +594,7 @@
 "kind": "manual",
 "lines": [
 246,
-260
+252
 ],
 "term": "",
 "text": "* START_DEMO.bat now starts the demo with pythonw: no black console window. A full-screen dark start-up screen shows the logo, \"Trygons C2\", the version + commit and the progress (\"Starting simulator... gateway... cameras... stations...\"). It closes by itself when both ground stations are open (at most 30 s). If something fails it shows the message (and \"Close\" / Esc) instead of hanging; the same messages are in demo_run\\logs\\demo.log. Without pythonw the old console window is used."
@@ -606,7 +606,7 @@
 "id": "en:47",
 "kind": "manual",
 "lines": [
-246,
+253,
 260
 ],
 "term": "",
@@ -620,7 +620,7 @@
 "kind": "manual",
 "lines": [
 261,
-271
+267
 ],
 "term": "",
 "text": "* The ground station and the academy show the same start-up screen while they load (never over an open window, never \"always on top\"). After 30 s it turns into a small window \"The start is taking long\" until the window is ready (or shows the error). \"Open the academy\" from a running ground station opens the academy WITHOUT the start-up screen (it never covers a running station). The \"+dirty\" check gives up after half a second (then no mark)."
@@ -632,7 +632,7 @@
 "id": "en:49",
 "kind": "manual",
 "lines": [
-261,
+267,
 271
 ],
 "term": "",
@@ -815,7 +815,7 @@
 "kind": "manual",
 "lines": [
 371,
-385
+381
 ],
 "term": "",
 "text": "Screen 2 = NAVIGATION & CONTROL (Greek: \"Πλοήγηση & έλεγχος\"): the map fills the whole window, everything else lies on it in panels. Laptop + external monitor: screen 2 stays on the laptop's own (main) screen, screen 1 opens on the external monitor (F11 puts them back there). Only one monitor: F11 shows screen 1, F11 again screen 2 (a question for the captain brings screen 1 to the front by itself). F12 swaps the two windows between two monitors. There is no separate map window. Size: screen 2 fits from a 1366 x 768 screen up, at 100 - 150 % Windows scaling (the panel text gets a little smaller when it must; checked by groundstation\\test_screen2.py). High-DPI laptops (e.g."
@@ -827,7 +827,7 @@
 "id": "en:64",
 "kind": "manual",
 "lines": [
-371,
+381,
 385
 ],
 "term": "",
@@ -841,7 +841,7 @@
 "kind": "manual",
 "lines": [
 388,
-400
+396
 ],
 "term": "",
 "text": "The first line of STATUS is the boat dropdown: the boat's name with ▾, a lamp next to it and \"✓ name verified\". Click it: the list of the boats folder of the repository (boats\\rf49d.json, boats\\er69d.json - name + Tailscale address, no passwords), every boat by NAME with ONLINE / OFFLINE / IP NOT SET / INVALID FILE and its address only as a detail at the end, then \"Other address ...\" and \"Disconnect\". Choose a boat: the FIRST time in this session user name + password, \"captain\" or \"copilot\", CONNECT; after that changing boats is ONE move (dropdown -> the boat: the same login, kept in memory only, never saved)."
@@ -853,7 +853,7 @@
 "id": "en:66",
 "kind": "manual",
 "lines": [
-388,
+397,
 400
 ],
 "term": "",
@@ -958,7 +958,7 @@
 "kind": "manual",
 "lines": [
 444,
-471
+451
 ],
 "term": "",
 "text": "A file without \"format\" is the old v1: it still loads, with generator disabled, no relays and no thrusters. A file that fails the checks (wrong type, a pair that is not mutual, a momentary relay longer than 5 s, an engine relay with power_up on / keep, an engine relay without its role, an engine relay in a pair (SHUTOFF must never be blocked), a STARTER that is not momentary, a relay named STARTER / ΜΙΖΑ without the role \"starter\" ...) is listed as INVALID FILE with the reason and is never connected: fix the file."
@@ -970,8 +970,8 @@
 "id": "en:75",
 "kind": "manual",
 "lines": [
-444,
-471
+452,
+460
 ],
 "term": "",
 "text": "When this station holds HELM (in STANDBY) it pushes the file's settings to the boat (generator cap, the relay table, the DP thruster settings): the cap and the thruster settings are RAM only - a boat restart gets them again; the relay table is kept in the boat's data flash and a DIFFERENT one needs the joystick CONFIRM (chapter 7, RELAY BOARD). While a relay still has to be switched off (a TIMED relay running, an OFF the board has not confirmed yet, a pulse, a queued SHUTOFF) no new table is taken: the boat answers \"relay stop pending: the relay table changes after it\" and the station sends the table again (and asks for the CONFIRM) only after it."
@@ -983,8 +983,8 @@
 "id": "en:76",
 "kind": "manual",
 "lines": [
-444,
-471
+461,
+468
 ],
 "term": "",
 "text": "Screen 2's relays panel then says \"the relay table waits: a relay stop / timer is still pending\". There is NO time limit on this wait (a stop is never dropped): switch the timed relay OFF to end it early; an OFF the board must still confirm waits until a SILENT board answers again - a board that stays silent blocks the table change until it answers or the AURIX restarts. The event list shows \"boat file RF49D: generator max 25 %\" and \"boat file RF49D: DP thrusters, bow 100 %, stern 100 %\"."
@@ -996,7 +996,7 @@
 "id": "en:77",
 "kind": "manual",
 "lines": [
-444,
+469,
 471
 ],
 "term": "",
@@ -1010,7 +1010,7 @@
 "kind": "manual",
 "lines": [
 474,
-508
+480
 ],
 "term": "",
 "text": "The boat is ALWAYS in the centre and the map moves under it; north is always up (no course-up); the boat symbol turns with the heading. Zoom: \"Zoom +\" / \"Zoom −\" (bottom middle), the mouse wheel or + / -. A drag pans the map for a moment (e.g. to edit a far waypoint): it goes back to the boat by itself 10 s after the last touch, or at once with \"Back to boat\" (or the key B). The panels are see-through and never cover the boat or the area around it."
@@ -1022,8 +1022,8 @@
 "id": "en:79",
 "kind": "manual",
 "lines": [
-474,
-508
+481,
+490
 ],
 "term": "",
 "text": "A click on a panel's title folds it to the title (▸) or opens it again (▾); DRAG a panel's title to put the panel anywhere (it never goes over the boat or over the bars); both remembered on this PC; RESET TO DEFAULT (bar 2 or the tools window) puts every panel back. STANDBY (big red, bottom-left corner) is ALWAYS there, also with every panel folded. THE LOOK (step 13n1, owner 2026-10-31): red = alarms (WARNING) only, amber = CAUTION; the only red buttons are STANDBY and SAVE (owner 2026-11-04); other information is black or white by its background; the CONNECTED lamp is white. Everything you can press or type into has a square frame."
@@ -1035,8 +1035,8 @@
 "id": "en:80",
 "kind": "manual",
 "lines": [
-474,
-508
+490,
+501
 ],
 "term": "",
 "text": "Only 3 text sizes everywhere (very important / heading / information); \"Aa\" (bar 2, screen 1's bar, the tools window, the academy windows) = small / normal / large text, saved on this PC. MODE BAR (top middle, always there, can't be hidden): [STANDBY] [HDG LOCK] [AUTO] [REMOTE] [MANEUVER] [DP] [MANUAL] · [BATTLE SHORT] The current mode is inverted (white, black bold, a little bigger). A mode that is not allowed now is grey; a click on it says why (\"no route\", \"captain only\", \"MANUAL only with the joystick on board\" ...). A click on an allowed one changes the mode - the boat checks every request again with its own rules (HELM, licence, CONFIRM, the stick centred)."
@@ -1048,7 +1048,7 @@
 "id": "en:81",
 "kind": "manual",
 "lines": [
-474,
+501,
 508
 ],
 "term": "",
@@ -1062,7 +1062,7 @@
 "kind": "manual",
 "lines": [
 509,
-519
+517
 ],
 "term": "",
 "text": "TWO BARS at the bottom (between STANDBY and the logo; ▾ at the left end hides a bar to a slim handle, ⇅ moves both bars to the top under the mode bar and back): Bar 1 heading −10 −1 [target] +1 +10 · AUTO Pause / Resume / Skip · ROUTE · MAX SPEED · GEOFENCE (each opens its small panel just above the bar while you use it; the button again closes it) · LINK TIME − + (captain with HELM) · RESTORE POWER when offered Bar 2 the nearest AIS ship + CPA · the last message · Zoom − / Zoom + (/ Back to boat) · BOAT (the boat dropdown) · TRACKS ·"
@@ -1074,7 +1074,7 @@
 "id": "en:83",
 "kind": "manual",
 "lines": [
-509,
+517,
 519
 ],
 "term": "",
@@ -1088,7 +1088,7 @@
 "kind": "manual",
 "lines": [
 520,
-540
+528
 ],
 "term": "",
 "text": "TRACK (step 13n3): the boat's track is the WHITE line on the map (BLACK on a light map; dim red at night), also on screen 1's mini map. Every point is kept (time, position, speed, heading) - no limit - and written at once to this PC's disk (groundstation/tracks/): after a crash or a restart the track is there again and goes on. ONE track PER BOAT: another boat shows its own track, never a mix. Click on the line = the time and the speed there (on the line + the message bar; a click elsewhere removes it). NEW TRACK: a YES / NO question, then the current track is saved as <date>_<time>_<boat> (e.g."
@@ -1100,8 +1100,8 @@
 "id": "en:85",
 "kind": "manual",
 "lines": [
-520,
-540
+528,
+536
 ],
 "term": "",
 "text": "2026-10-31_0834_TRYGON-1, the time of its first point) and a new line starts. TRACKS: the list of the saved tracks (date, boat, duration, nm); select one or more (Ctrl / Shift + click) -> SHOW = on the map as a GREY DASHED line with its date, any day, any boat; HIDE; REMOVE FROM MAP (the file stays); EXPORT GPX (the selected ones) / CURRENT TRACK TO GPX / IMPORT GPX (GPX 1.1: Google Earth, OpenCPN, plotters; a file with a DTD, without track points, over 64 MB or with more than 200 000 points is refused). Two stations on one PC on the same boat: the first one writes the file, the other keeps its track in memory only."
@@ -1113,7 +1113,7 @@
 "id": "en:86",
 "kind": "manual",
 "lines": [
-520,
+536,
 540
 ],
 "term": "",
@@ -1127,7 +1127,7 @@
 "kind": "manual",
 "lines": [
 541,
-553
+548
 ],
 "term": "SCR",
 "text": "SCR records BOTH screens of THIS PC (screen 1 + screen 2, each its own window) at a lower resolution (at most 1280 wide, 5 pictures a second, H.264 - NVENC when the PC has an NVIDIA card, else x264) into 1-minute files; only the LAST 60 MINUTES are kept (a ring, about 0.3 GB per hour). The button shows ●SCR (white) while it records; press again to stop. It runs as its own low-priority program: it never slows the station and never affects driving. It starts again by itself at the next start if it was on."
@@ -1139,7 +1139,7 @@
 "id": "en:88",
 "kind": "manual",
 "lines": [
-541,
+548,
 553
 ],
 "term": "SCR",
@@ -1166,7 +1166,7 @@
 "kind": "manual",
 "lines": [
 556,
-572
+566
 ],
 "term": "",
 "text": "●5' ●1h KEEP PERMANENTLY the last 5 / 60 minutes of BOTH screens of this PC AND the boat's 4 cameras at FULL resolution (one event id / time): the screen part in groundstation\\screenrec\\events\\<id>\\, the camera part on the boat's SSD (video\\events\\<id>\\, not uploaded to the shore - it is big; copy it from the gateway PC when needed). Kept files leave the rings and are NEVER deleted automatically (delete the folders by hand). A SAVE that the gateway adds to an already open camera event: the screen part records the cameras' id (\"camera_event\" in its event.json). If the station closes abruptly, the screen recording (ffmpeg) stops with it."
@@ -1178,7 +1178,7 @@
 "id": "en:91",
 "kind": "manual",
 "lines": [
-556,
+566,
 572
 ],
 "term": "",
@@ -1192,7 +1192,7 @@
 "kind": "manual",
 "lines": [
 573,
-589
+579
 ],
 "term": "",
 "text": "CAMERA VIEW (step 13n2, for the copilot's PC above all): CAMERA on bar 2 shows one of the boat's cameras over the whole of screen 2. Bar 1 then holds FRONT-1 / FRONT-2 / REAR-L / REAR-R and MAP; MAP or Esc = back to the map. Green on the picture: the camera, the mode, heading, speed, throttle + gear. The mode bar, STANDBY and the alarm panel stay; the other panels give way; the map can't be edited under it. The camera is sent to this PC ONLY while the view is open."
@@ -1204,7 +1204,7 @@
 "id": "en:93",
 "kind": "manual",
 "lines": [
-573,
+579,
 589
 ],
 "term": "",
@@ -1231,7 +1231,7 @@
 "kind": "manual",
 "lines": [
 596,
-621
+605
 ],
 "term": "Top right",
 "text": "Top right ALARMS (always shown, also with every panel folded; no alarm = a one-line header): every active alarm, one per line, the most severe first; red = WARNING, amber = CAUTION, blue = advisory. An alarm not yet acknowledged ON THIS PC flashes (the same clock as the GENERAL lamps on screen 1; the text stays, only the fill blinks); acknowledged ones and advisories are steady. \"+N more\" when more are active than fit. ACK ALARM = first silences THIS PC (lamps + repeating sound, like the GENERAL lamp of screen 1), then the boat's acknowledge (clears only alarms whose cause is gone; from any station)."
@@ -1243,8 +1243,8 @@
 "id": "en:96",
 "kind": "manual",
 "lines": [
-596,
-621
+605,
+614
 ],
 "term": "Top right",
 "text": "Space / A on screen 2 = silence this PC only (also with screen 1 closed; not while you type in a field). Disconnected (or \"not this boat\"): the old data is dropped - no alarms, no sound, \"Not connected\"; after a new connection only that boat's alarms. Under it: HELM / ROLES: who holds HELM, your role (CAPTAIN / COPILOT, licence), the captain's name; Take HELM, Release (UNCREWED: releasing = a lost link, you are asked first), Role swap, Screen 1, Single operator."
@@ -1256,7 +1256,7 @@
 "id": "en:97",
 "kind": "manual",
 "lines": [
-596,
+615,
 621
 ],
 "term": "Top right",
@@ -1699,7 +1699,7 @@
 "kind": "manual",
 "lines": [
 772,
-784
+782
 ],
 "term": "Bottom bar",
 "text": "Bottom bar (step 13n1) ONE thin bar across the whole width, in groups with small gaps: [ΕΛ/EN · NIGHT · DECLUTTER · FILL / FIT · Aa] [AR · OBSTACLES with the white \"AI\" badge + the vision status] [LAYOUT (+ CLEAR SLOWDOWN / RESTORE POWER when offered)] [REC (red dot) or NOT RECORDING · SCR (●SCR white while this PC records its screens) · SAVE (framed, big enough to hit) · ●5' · ●1h (step 13n4, see screen 2's SCREEN RECORDING)] [battery, generator, clock + mission time (since the first mode other than STANDBY)]. The bar is never hidden (every declutter level); SAVE and the GENERAL WARNING / CAUTION lamps never go away."
@@ -1711,7 +1711,7 @@
 "id": "en:132",
 "kind": "manual",
 "lines": [
-772,
+783,
 784
 ],
 "term": "Bottom bar",
@@ -1803,7 +1803,7 @@
 "kind": "manual",
 "lines": [
 802,
-814
+808
 ],
 "term": "",
 "text": "QUESTIONS (step 13p, owner 2026-10-31): a copilot's action for the captain's ACCEPT, a collision-avoidance proposal, the slamming power restore, an obstacle note - appear in the LOWER part of screen 1, just above the bottom bar (never over the centre of the picture), always the same VERTICAL layout: the question, [YES] on top, [NO] underneath (full width, framed; the selected one is filled = inverted), the countdown below; no answer = rejected."
@@ -1815,7 +1815,7 @@
 "id": "en:140",
 "kind": "manual",
 "lines": [
-802,
+808,
 814
 ],
 "term": "",
@@ -1881,7 +1881,7 @@
 "kind": "manual",
 "lines": [
 828,
-842
+837
 ],
 "term": "",
 "text": "A station that drives with the stick's Y as the throttle (no lever: \"lever\" off in the Remote tab): the stick forward / back never selects there - use the hat (the Remote tab says which). ONE PRESS NEVER DOES TWO THINGS: while a question is open the trigger answers it and is NOT sent to the boat (also not the press that answered, until you let it go; the gateway keeps it back too). With no question open the trigger works as before (UNCREWED HDG LOCK steered by hand: the new locked heading, chapter 7). The CONFIRM button on the TWCS (the boat's CONFIRM for AUTO start, power raise ... in UNCREWED) is unchanged. There is NO release button."
@@ -1893,7 +1893,7 @@
 "id": "en:146",
 "kind": "manual",
 "lines": [
-828,
+837,
 842
 ],
 "term": "",
@@ -1907,7 +1907,7 @@
 "kind": "manual",
 "lines": [
 843,
-855
+850
 ],
 "term": "",
 "text": "MANUAL DRIVING STARTS HERE (the captain with the manual licence; also a single operator with the licence): REMOTE MANUAL and MANEUVER (the buttons above the bottom-left row). UNCREWED boat: ONE press - it starts at once, only with the shore stick centred and the TWCS lever at neutral at that moment (otherwise \"centre the joystick\", nothing starts). CREWED boat (someone on board): the person on board presses CONFIRM on the onboard joystick within 10 s. The one that runs is lit; the other one switches straight over (REMOTE MANUAL <-> MANEUVER)."
@@ -1919,7 +1919,7 @@
 "id": "en:148",
 "kind": "manual",
 "lines": [
-843,
+850,
 855
 ],
 "term": "",
@@ -1959,7 +1959,7 @@
 "kind": "manual",
 "lines": [
 868,
-879
+876
 ],
 "term": "",
 "text": "Horizon line + heel scale (pointer = heel, from the IMU), velocity vector (small circle with wings: where the boat really goes = course over ground; \"drift 5 deg STBD\"), waypoint diamond on the horizon with its distance (arrow at the edge when outside the picture), route ribbon on the water (fading with the distance), AIS ships boxed at their bearing (name, distance, CPA; red = threat; arrows at the edge for threats outside the picture), predicted path for 30 s and 60 s (speed + turn rate), water ahead shallower than the shallow limit tinted red (chart; no data = shallow), and the obstacle overlay of the camera detection (part N)."
@@ -1971,7 +1971,7 @@
 "id": "en:152",
 "kind": "manual",
 "lines": [
-868,
+877,
 879
 ],
 "term": "",
@@ -2297,7 +2297,7 @@
 "kind": "manual",
 "lines": [
 971,
-984
+979
 ],
 "term": "",
 "text": "VOICE CHOICE (step 13o): Tools - Sound - \"Voice\": Piper (AI, offline; the default) or the Windows voice (e.g. the Greek \"Microsoft Stefanos\": Windows Settings - Time & language - Speech - Add voices - Greek; the modern voices are found too, not only the old SAPI ones). No Windows voice for the language = Piper speaks (the page says so). Piper now runs with calmer settings (less \"wobble\" at the start of a sentence) and every sentence starts with a short silence. A new voice or new settings: every phrase AND the guided tour are deleted and made again by themselves in the background (a few minutes the first time: tones only meanwhile)."
@@ -2309,7 +2309,7 @@
 "id": "en:178",
 "kind": "manual",
 "lines": [
-971,
+979,
 987
 ],
 "term": "",
@@ -2583,7 +2583,7 @@
 "kind": "manual",
 "lines": [
 1109,
-1183
+1119
 ],
 "term": "HDG LOCK",
 "text": "HDG LOCK press HDG LOCK on the panel: the autopilot holds the heading the boat has now. -1/+1/-10/+10 (panel or PC) change it. The throttle stays on the stick (ahead and astern) - you stay in HDG LOCK. In reverse the outboard is held straight. Moving the stick sideways takes over (MANUAL). With people on board (CREWED) only the panel button starts it - never the PC. UNCREWED HDG LOCK (owner 2026-11-01): nobody on board, so the captain at the shore holding HELM (with the licence) chooses HDG LOCK on screen 2 (\"HDG LOCK\" in the control panel) - ONLY while REMOTE MANUAL or MANEUVER runs, with the shore stick centred (the lever may stay where it is)."
@@ -2595,8 +2595,8 @@
 "id": "en:200",
 "kind": "manual",
 "lines": [
-1109,
-1183
+1119,
+1129
 ],
 "term": "HDG LOCK",
 "text": "It starts at once (no CONFIRM) and locks the heading the boat has at that moment; +-1 / +-10 come from the station. THE THROTTLE: it stays at what it was when you switched (never more than the REMOTE limit of 20 %; from MANEUVER: idle) and can only come DOWN. The TWCS lever is a ceiling: pull it back and the boat slows down; push it forward again and it goes back up to the value it held - never above it. The lever never changes gear and never reverses. To get more power choose REMOTE MANUAL again. A station without a lever (stick Y as the throttle): the held value only."
@@ -2608,8 +2608,8 @@
 "id": "en:201",
 "kind": "manual",
 "lines": [
-1109,
-1183
+1130,
+1139
 ],
 "term": "HDG LOCK",
 "text": "What still acts (like in AUTO, but only by slowing down - it NEVER steers): shallow water / the shore ahead (slows down; closer than 100 m = STOP: idle + neutral until you choose another mode), an AIS ship on a collision course (slows down; no avoidance turn, no proposal), the camera obstacle detection (only if its stage 3 is ON). Outside the geofence: STANDBY (idle + neutral first) + alarm GEOFENCE. Shore joystick data older than 0.3 s: idle + neutral at once, STANDBY after 5 s (as in REMOTE). Compass lost: STANDBY. The lost-link rules are the usual ones (near the shore always 3 s, chapter 9 B)."
@@ -2621,8 +2621,8 @@
 "id": "en:202",
 "kind": "manual",
 "lines": [
-1109,
-1183
+1139,
+1149
 ],
 "term": "HDG LOCK",
 "text": "A copilot asking for HDG LOCK = a question on the captain's screen 1 (ACCEPT); STANDBY is always free. NO DATA = SHALLOW (step 13q2d): HDG LOCK is refused (like an AUTO start, code 114 / 6) when the gateway has no position, no depth charts, a position too uncertain (more than 100 m), or shallow water / the shore closer than 100 m ahead, and when the GPS is not trusted. If the charts, the position or the shore data from the gateway are lost while it runs: STOP (idle + neutral, alarm SHALLOW WATER) - the boat checks this itself, even if the gateway still answers."
@@ -2634,8 +2634,8 @@
 "id": "en:203",
 "kind": "manual",
 "lines": [
-1109,
-1183
+1149,
+1156
 ],
 "term": "HDG LOCK",
 "text": "GPS lost / suspect while it runs: like AUTO - it carries on by dead reckoning with the held throttle cut to 70 %; dead reckoning too uncertain (200 m) or longer than 10 min: STANDBY (idle + neutral first) + alarm. THE GATEWAY'S LOOK-AHEAD IS REQUIRED (step 13q2e): HDG LOCK is also refused (code 6) while the gateway's navigation check is not running (no fresh navigation request) and when the shore / shallow water is 100 m or closer in any direction."
@@ -2647,8 +2647,8 @@
 "id": "en:204",
 "kind": "manual",
 "lines": [
-1109,
-1183
+1156,
+1163
 ],
 "term": "HDG LOCK",
 "text": "While it runs: the gateway's navigation check stops arriving for 3 s (gateway fault, link trouble) = STOP (idle + neutral, alarm DRIVER DECISION) - with nobody on board the boat never carries on without the look-ahead (AUTO keeps its old rule: hold the heading at 4 kn). The shore / shallow water 100 m or closer in any direction (also beside or behind) = STOP (alarm SHALLOW WATER). The STOP lasts until you choose another mode."
@@ -2660,8 +2660,8 @@
 "id": "en:205",
 "kind": "manual",
 "lines": [
-1109,
-1183
+1164,
+1174
 ],
 "term": "HDG LOCK",
 "text": "STEERING BY HAND IN HDG LOCK (step 13q3, owner 2026-10-31): move the shore stick sideways (more than 15 %) and the boat turns with it, like REMOTE (same steering speed) - HDG LOCK stays, the throttle stays as it is (screen 1 / 2: \"MANUAL STEERING - HDG LOCK waiting\"). Let the stick go: 2 s later the boat turns back to the OLD locked heading. To keep the new course press the stick's TRIGGER (shore_joystick.json \"trigger_button\", default stick button 1) while you steer (or within the 2 s after letting go): the heading at that moment becomes the locked heading (\"NEW HEADING 245°\" for 3 s, the mark on the heading tape moves)."
@@ -2673,7 +2673,7 @@
 "id": "en:206",
 "kind": "manual",
 "lines": [
-1109,
+1174,
 1183
 ],
 "term": "HDG LOCK",
@@ -2687,7 +2687,7 @@
 "kind": "manual",
 "lines": [
 1184,
-1257
+1194
 ],
 "term": "AUTO",
 "text": "AUTO a waypoint program (up to 50 waypoints). Each waypoint has a leg speed, an arrival radius and an action: continue / slow down / stop in neutral. At the end: stop + alarm (or hold the heading slowly). AUTO starts only with the PC \"AUTO START\" AND the joystick CONFIRM within 10 s (stick centred). Pause, resume (+ CONFIRM) and skip from the PC. Line following, speed control, rough-water slow-down, dead reckoning without GPS, GPS integrity check: all as before. AUTO RETURN (\"Return\" in the control panel of screen 2): the boat drives the program BACKWARDS from the leg it is on to waypoint 1 and stops there in neutral (STANDBY + ARRIVED)."
@@ -2699,8 +2699,8 @@
 "id": "en:208",
 "kind": "manual",
 "lines": [
-1184,
-1257
+1195,
+1204
 ],
 "term": "AUTO",
 "text": "Each leg back at the speed of that leg, the waypoints keep their slow / stop actions. Like AUTO START it needs the joystick CONFIRM within 10 s (stick centred; UNCREWED: the shore joystick) - from STANDBY, HDG LOCK, MANUAL (stick centred) or AUTO itself (running, paused, stopped, finished). NEVER out of REMOTE MANUAL / MANEUVER (refused, code 7): the captain driving by hand chooses AUTO START or another mode. The copilot may ask for it WITHOUT the captain's ACCEPT (like AUTO pause) - except while the captain drives in REMOTE / MANEUVER: then it is a question on screen 1."
@@ -2712,8 +2712,8 @@
 "id": "en:209",
 "kind": "manual",
 "lines": [
-1184,
-1257
+1204,
+1210
 ],
 "term": "AUTO",
 "text": "The gateway checks the way back like a route: shallow water (114), the geofence (120); only a program the gateway checked itself (uploaded through it) can be driven back (121 otherwise: upload it again). The stored program is not changed: AUTO START afterwards drives it forward from waypoint 1 again; a new upload ends the return. The joystick still wins (MANUAL; RESUME + CONFIRM goes on back)."
@@ -2725,8 +2725,8 @@
 "id": "en:210",
 "kind": "manual",
 "lines": [
-1184,
-1257
+1211,
+1221
 ],
 "term": "AUTO",
 "text": "STEERING BY HAND IN AUTO - UNCREWED (step 13q3, owner 2026-10-31: \"In AUTO I can always drive by hand, except throttle up; to stop AUTO totally I choose another mode\"): the HELM captain moves the shore stick sideways (more than 15 %) and steers by hand with the REMOTE steering speed; AUTO stays the mode and keeps its speed (screen 1 / 2: \"MANUAL STEERING - AUTO waiting\"). Your steering wins over a collision avoidance turn while you hold the stick (the speed limits of the gateway still slow the boat). Let the stick go: 2 s later AUTO steers again and comes back to the line to the active waypoint (like after an avoidance turn)."
@@ -2738,8 +2738,8 @@
 "id": "en:211",
 "kind": "manual",
 "lines": [
-1184,
-1257
+1221,
+1227
 ],
 "term": "AUTO",
 "text": "Steering out of the geofence by hand = STANDBY + alarm GEOFENCE (while AUTO steers itself the geofence is its route check). Shore stick data older than 0.3 s while you steer by hand = idle + neutral at once, the heading held, alarm REMOTE DRIVING LINK LOST, STANDBY after 5 s (never back by itself); while you do not steer, AUTO does not need the stick."
@@ -2751,8 +2751,8 @@
 "id": "en:212",
 "kind": "manual",
 "lines": [
-1184,
-1257
+1228,
+1237
 ],
 "term": "AUTO",
 "text": "WHILE YOU STEER AUTO BY HAND the boat protects itself like in UNCREWED HDG LOCK (step 13q3b): your course was never checked like AUTO's route, so the boat STOPS (idle + neutral) when the shore / shallow water is 100 m or closer (alarm SHALLOW WATER), when the gateway has no chart / position data or the position is too uncertain, when the gateway's navigation check stops arriving (alarm DRIVER DECISION), when the GPS is not trusted, or when the gateway asks to stop. You keep steering by hand; let the stick go and AUTO steers again - at idle. The STOP lasts until you choose a mode again (AUTO START, REMOTE ...)."
@@ -2764,8 +2764,8 @@
 "id": "en:213",
 "kind": "manual",
 "lines": [
-1184,
-1257
+1238,
+1248
 ],
 "term": "AUTO",
 "text": "While AUTO steers itself nothing of this changes. A new HELM captain (role swap) never steers on with the old override: it ends at the swap and his stick must be seen centred first; the old captain's lever limit stays until the new captain moves his lever. THE TWCS LEVER IN AUTO (UNCREWED) = a power CEILING: it only takes power away, never adds. At the AUTO start it is in neutral and does nothing yet. It starts limiting when you PULL IT BACK (a real move down from where it was) - then it limits at once: in the neutral zone or further back = idle, AUTO steers at idle (still in forward gear)."
@@ -2777,7 +2777,7 @@
 "id": "en:214",
 "kind": "manual",
 "lines": [
-1184,
+1248,
 1257
 ],
 "term": "AUTO",
@@ -2947,7 +2947,7 @@
 "kind": "manual",
 "lines": [
 1343,
-1354
+1351
 ],
 "term": "UNCREWED",
 "text": "UNCREWED no onboard joystick at power-up (or it failed its self-check within 6 s). The onboard joystick is ignored completely: no MANUAL, no CONFIRM, no joystick buttons; the panel HDG LOCK and course buttons do nothing (nobody is on board). HDG LOCK comes only from the shore captain, out of REMOTE / MANEUVER, with the throttle held and only lowered (chapter 7, HDG LOCK). Every CONFIRM (power raise, AUTO start / resume / return, DP) is pressed on the shore captain's joystick instead: same rules - stick centred, within 10 s, only for a pending request."
@@ -2959,7 +2959,7 @@
 "id": "en:228",
 "kind": "manual",
 "lines": [
-1343,
+1351,
 1354
 ],
 "term": "UNCREWED",
@@ -2973,7 +2973,7 @@
 "kind": "manual",
 "lines": [
 1355,
-1364
+1363
 ],
 "term": "",
 "text": "Both profiles: the STANDBY button and the emergency stop always work. The profile is shown on every screen and in the log. It changes only in STANDBY with the boat stopped, and only one way: a joystick plugged in on board (and passing its self-check for 10 s) makes an UNCREWED boat CREWED. A CREWED boat whose joystick fails or is unplugged stays CREWED (that is a JOYSTICK FAULT: idle + neutral, STANDBY, alarm). UNCREWED needs a power-up without the joystick. A joystick that appears while an UNCREWED boat is driving is a fault: STANDBY + alarm PROFILE CHANGED."
@@ -2985,7 +2985,7 @@
 "id": "en:230",
 "kind": "manual",
 "lines": [
-1355,
+1363,
 1364
 ],
 "term": "",
@@ -3025,7 +3025,7 @@
 "kind": "manual",
 "lines": [
 1376,
-1393
+1384
 ],
 "term": "",
 "text": "- stick fully BACK and held ~0.3 s = REVERSE. A short flick asks nothing; half way asks nothing; pulling the other way than the gear asked = NEUTRAL at once (then hold it for the other gear). The ~0.3 s is counted on WHEN THE STATION SENT the stick positions, not on when they reached the boat: a packet delayed on the network never makes a short flick look like a hold (step 13q5c). Just after MANEUVER starts, before the first stick packet arrives, the gear goes to NEUTRAL. The TWCS throttle lever is NOT used in MANEUVER (it must be at neutral to start). The throttle is ALWAYS at idle - no rpm control at all."
@@ -3037,7 +3037,7 @@
 "id": "en:234",
 "kind": "manual",
 "lines": [
-1376,
+1385,
 1393
 ],
 "term": "",
@@ -3090,7 +3090,7 @@
 "kind": "manual",
 "lines": [
 1418,
-1437
+1427
 ],
 "term": "",
 "text": "Lost link = no working link to the captain's (HELM) shore station on any channel for the LINK TIME (below, 3 s unless the captain set more): the gateway measures how long it has not heard the HELM station and tells the AURIX once a second; the gateway itself lost (3 s) or nobody holding HELM any more (also a RELEASE of HELM - hand over with the role swap instead, chapter 9) count at once. LINK TIME (\"max time without connection\", owner 2026-10-31): screen 2, panel \"Control\", the geofence line, buttons - / + (3, 5, 10, 15, 20, 30, 45, 60 s). Only the captain holding HELM can change it (a copilot gets \"captain only\")."
@@ -3102,8 +3102,8 @@
 "id": "en:239",
 "kind": "manual",
 "lines": [
-1418,
-1437
+1427,
+1436
 ],
 "term": "",
 "text": "It is kept in the AURIX's memory for THIS session only: back to 3 s when the ground station is restarted, when HELM changes (another station, a role swap, HELM taken again after a drop) and after every AURIX reset. While it is above 3 s both screens show \"LINK TIME 30 s (OVERRIDE)\" all the time. It is NEVER used near the shore (closer than 50 m, or no shore information): there it is always 3 s (\"not in force now\"). REMOTE MANUAL keeps its own 0.3 s joystick-data check (neutral at once, STANDBY after 5 s) whatever the LINK TIME. Use it for a known short outage at open sea (e.g."
@@ -3115,7 +3115,7 @@
 "id": "en:240",
 "kind": "manual",
 "lines": [
-1418,
+1436,
 1437
 ],
 "term": "",
@@ -3155,7 +3155,7 @@
 "kind": "manual",
 "lines": [
 1447,
-1457
+1456
 ],
 "term": "",
 "text": "A killed engine stays killed (alarm ENGINE KILLED) until the AURIX is POWER CYCLED ON BOARD (a real power-off / power-on; a watchdog reset or a software reset of the AURIX keeps the kill) OR the HELM station sends RESTART (Tools -> Engine; next part: throttle idle, gear in neutral and the e-stop released are checked on the boat). A CREWED boat never kills the engine: it keeps the behaviour of chapter 9 (REMOTE LINK LOST, HELM to nobody, no mode change by itself). near_shore_m (50 m, owner 2026-10-31; never below 50) and lostlink_grace_s are parameters (Config tab) - the grace time is still TO CONFIRM."
@@ -3167,7 +3167,7 @@
 "id": "en:244",
 "kind": "manual",
 "lines": [
-1447,
+1456,
 1457
 ],
 "term": "",
@@ -3233,7 +3233,7 @@
 "kind": "manual",
 "lines": [
 1491,
-1514
+1498
 ],
 "term": "",
 "text": "A tour of everything on the station, one item at a time: screen 1 (every HUD box and button), screen 2 (the map and every corner panel), every page of the tools window, every mode, every alarm with its level, the MASTER lamps, the joystick and the panel buttons. Screen 1, screen 2 and the tools pages are REAL screenshots of the ground station (made from the demo); the item explained is framed in amber at its real place and the rest of the picture is dimmed. The modes, alarms, lamps, joystick and panel buttons are shown as drawings."
@@ -3245,8 +3245,8 @@
 "id": "en:250",
 "kind": "manual",
 "lines": [
-1491,
-1514
+1498,
+1507
 ],
 "term": "",
 "text": "(For the picture of screen 1 every button of the bottom bar is shown, also CLEAR SLOWDOWN / RESTORE POWER, which appear on the boat only in their situations.) After a change of the screens the pictures are made again by python tools/demo_screens.py --tour (tools/check.sh does it by itself when the layout changed; it stops and restarts the demo). Next / Back (or the arrow keys, space = next), the chapter list on the left jumps, \"Say again\" repeats the voice, \"Voice: ON / OFF\". The Greek voice is a RECORDED narration (academy/tour_voice/el, Opus; it needs ffmpeg, which the demo uses too); a step without a recording, or whose text was changed after the recording, uses the offline voice."
@@ -3258,7 +3258,7 @@
 "id": "en:251",
 "kind": "manual",
 "lines": [
-1491,
+1507,
 1514
 ],
 "term": "",
@@ -3272,7 +3272,7 @@
 "kind": "manual",
 "lines": [
 1517,
-1530
+1525
 ],
 "term": "",
 "text": "Hands-on lessons on the SIMULATOR of this PC - never a boat (banner at the top). Press \"Start the simulator\" (or have sim/autopilot_sim server 5760 running), pick a lesson (grouped by level) and press Start. You drive with the simulated panel buttons, the joystick pad (drag the knob; it springs back to the centre when you let go, unless \"Hold the stick\" is ticked), TAKE / CONFIRM (held while pressed) and the PC buttons (ask for a code, raise, lower the limit, acknowledge). Every step is checked from the simulated boat itself, not from your clicks; a hint shows after a while; a step with a time limit (e.g."
@@ -3284,7 +3284,7 @@
 "id": "en:253",
 "kind": "manual",
 "lines": [
-1517,
+1525,
 1530
 ],
 "term": "",
@@ -3311,7 +3311,7 @@
 "kind": "manual",
 "lines": [
 1542,
-1560
+1549
 ],
 "term": "",
 "text": "Emergencies on the SIMULATOR of this PC (same inputs as the lessons). A scenario first sets up a normal trip (e.g. HDG LOCK at speed), then something goes wrong - you are NOT told what to do: react as on the boat. Your reaction time is measured from the moment the emergency starts; full marks within the scenario's time, fewer points the later you react, failed when too late, when you do something dangerous (e.g. a turn to port in front of a ship from starboard) or when the boat gets too close to the hazard / runs aground."
@@ -3323,8 +3323,8 @@
 "id": "en:256",
 "kind": "manual",
 "lines": [
-1542,
-1560
+1549,
+1557
 ],
 "term": "",
 "text": "The ten scenarios: compass failure, GPS spoofing, slamming, joystick fault, power raise refused, a ship on a collision course (AIS), shallow water ahead, a swimmer / kayak near the beach (no AIS!), gateway lost, remote link lost. Compass, GPS, slamming, joystick and the refusal are REAL faults of the simulated boat (it reacts with its own safety rules); the ship, the shallows, the swimmer and the gateway / remote-link alarms are drawn by the academy in its small picture of the station (map, AIS list, depth, forward camera) - the academy never plays the gateway."
@@ -3336,7 +3336,7 @@
 "id": "en:257",
 "kind": "manual",
 "lines": [
-1542,
+1557,
 1560
 ],
 "term": "",
@@ -3350,7 +3350,7 @@
 "kind": "manual",
 "lines": [
 1563,
-1572
+1569
 ],
 "term": "",
 "text": "Lessons made from the boat's SAVED EVENTS (the SAVE recordings that the sync brings to the shore PC): the camera picture of a real trip with the station's HUD redrawn over it from the trip's log, in step with the video (switch cameras with the buttons under the picture, HUD on / off). The video stops at the decision points: a DECISION question (pick what you do) or SPOT THE HAZARD (click on the danger in the picture). After every answer the explanation; at the end the score (70 % to pass) goes to your logbook."
@@ -3362,7 +3362,7 @@
 "id": "en:259",
 "kind": "manual",
 "lines": [
-1563,
+1570,
 1572
 ],
 "term": "",
@@ -3506,7 +3506,7 @@
 "kind": "manual",
 "lines": [
 1651,
-1660
+1659
 ],
 "term": "",
 "text": "1. Examiner logs in; trainee, kind: practical test (one level up), check ride (CAPTAIN, every 24 months) or supervised refresher trip. 2. Type the wind (kn + the direction it comes FROM), tick: calm water, examiner on board, the wind is right. \"Check\" shows everything that is missing: test area set (never the placeholder) and the boat inside it, STANDBY, start power limit 30 / 5 %, calm water (sea state + slamming monitor), wind <= 12 kn and not strong (>= 8 kn) from the north or from the right side of the ramp, 08:00-19:00, the exam of the level passed + the lessons, fresh telemetry."
@@ -3518,7 +3518,7 @@
 "id": "en:271",
 "kind": "manual",
 "lines": [
-1651,
+1659,
 1660
 ],
 "term": "",
@@ -3636,7 +3636,7 @@
 "kind": "manual",
 "lines": [
 1723,
-1748
+1729
 ],
 "term": "",
 "text": "What it does: beep + notice GENERATOR STARTING, 10 s later the fast idle (gen_idle_pct 8 %), then +2 % every 30 s while the voltage (fast filter) still falls, hold when it stops falling (that throttle is remembered in the data flash and is the first step next time), -2 % every 30 s when the bank rises above 12.5 V. Never above min(gen_max_pct 25 %, 30 %, the power limit). Cycle: 20 min, then 1 min at idle and a rest-voltage check: still low -> again; recovered -> GENERATOR DONE (notice, auto stays on)."
@@ -3648,8 +3648,8 @@
 "id": "en:281",
 "kind": "manual",
 "lines": [
-1723,
-1748
+1730,
+1738
 ],
 "term": "",
 "text": "Every stop is idle FIRST (the throttle comes down at its normal rate and nothing opens it again until it is idle): the captain's OFF, the STANDBY button, a joystick deflection, any alarm, any mode / gear request (also a pending AUTO start waiting for CONFIRM), link lost (UNCREWED), e-stop, engine kill, no voltage data. GEAR FAULT: the neutral switch opens while it runs, or the boat speeds up (SOG + 0.5 kn within 20 s of a throttle rise) -> throttle idle at once (the fast STANDBY closing rate), alarm GEAR, generator auto OFF until it is switched on again (acknowledge the alarm first)."
@@ -3661,7 +3661,7 @@
 "id": "en:282",
 "kind": "manual",
 "lines": [
-1723,
+1739,
 1748
 ],
 "term": "",
@@ -3688,7 +3688,7 @@
 "kind": "manual",
 "lines": [
 1756,
-1770
+1763
 ],
 "term": "",
 "text": "* The relay TABLE (which channel is what) comes from the boat file: the HELM station sends it when it connects in STANDBY. The AURIX keeps it in its data flash. The same table as the stored one = taken at once. A DIFFERENT table is taken only in STANDBY and only after the joystick CONFIRM within 10 s (the banner \"CONFIRM: RELAY TABLE\"; CREWED: the onboard joystick, UNCREWED: the shore joystick) - until then the stored table stays in use (a wrong boat file must not move the STARTER out of the engine rules). No CONFIRM = the station offers it again later."
@@ -3700,7 +3700,7 @@
 "id": "en:285",
 "kind": "manual",
 "lines": [
-1756,
+1764,
 1770
 ],
 "term": "",
@@ -3727,7 +3727,7 @@
 "kind": "manual",
 "lines": [
 1779,
-1788
+1785
 ],
 "term": "",
 "text": "* Engine relays follow their ROLE (never the type or the name): the STARTER is never pulsed by a plain relay command - only the START button of the engine page (ENGINE CONTROLS below). IGNITION switches ON only with the engine conditions (throttle idle, gear neutral confirmed, e-stop released, no ENGINE KILL / monitor trip latched); SHUTOFF ON (= stop the engine) is ALWAYS allowed (also while driving, with the e-stop pressed or the kill latched: stopping is never refused); OFF always."
@@ -3739,7 +3739,7 @@
 "id": "en:288",
 "kind": "manual",
 "lines": [
-1779,
+1785,
 1788
 ],
 "term": "",
@@ -3844,7 +3844,7 @@
 "kind": "manual",
 "lines": [
 1830,
-1841
+1839
 ],
 "term": "",
 "text": "RELAY BUTTONS (the stations; requests only - the AURIX decides every time) * Screen 2: the panel \"RELAYS\" (collapsible; the station puts it in the corner with the most room, never over the boat) shows the boat file's relays by group: ENGINE (IGNITION, START (hold), SHUTOFF + RESTART), TRIM, EXTRA. An interlocked pair (TRIM UP / TRIM DOWN) is on one line. Lit = on, grey = state unknown (board silent, table not active yet): a grey button does nothing. onoff / latching / timed: a click switches it on / off. momentary \"(hold)\": press and HOLD - the relay runs while you hold it (a board-timed pulse of at most max_s) and goes off when you let go."
@@ -3856,7 +3856,7 @@
 "id": "en:297",
 "kind": "manual",
 "lines": [
-1830,
+1839,
 1841
 ],
 "term": "",
@@ -4117,7 +4117,7 @@
 "kind": "manual",
 "lines": [
 1967,
-1984
+1975
 ],
 "term": "",
 "text": "TELEM2 group N (sub-state, spot error ahead / to starboard, held heading, speeds, waypoint, why it ended); log event 28 DP (start / sub-state, JOG, TRIP end, stop + why). On the ground station (step 11): * Screen 2, the bottom-left control panel: with both thrusters set up (the boat file's thruster settings taken) a line \"DP:\" with SPOT / CRUISE / TRIP and the speed for CRUISE / TRIP (- / +, 0.5 .. 3 kn). While a start waits for the joystick CONFIRM the panel says so; DP STOP cancels it."
@@ -4129,8 +4129,8 @@
 "id": "en:318",
 "kind": "manual",
 "lines": [
-1967,
-1984
+1975,
+1983
 ],
 "term": "",
 "text": "In DP the mode buttons and the AUTO rows are replaced by: the DP state (sub-state + distance from the spot), DP STOP, the generator button; SPOT / CRUISE / TRIP (+ \"TRIP: continue\" after a STOP waypoint) and the speed (SET sends a new CRUISE / TRIP speed); in SPOT / JOG the JOG arrows (up = ahead, down = astern, left = port, right = starboard; one step = jog_m) and where the spot is (\"spot 2.0 m ahead, 1.5 m to port\", red when DP OFF SPOT). The panel's +1 / -1 / +10 / -10 turn the DP heading. The status panel shows the DP line (sub-state and the main number) and the held heading."
@@ -4142,7 +4142,7 @@
 "id": "en:319",
 "kind": "manual",
 "lines": [
-1967,
+1983,
 1984
 ],
 "term": "",
@@ -4169,7 +4169,7 @@
 "kind": "manual",
 "lines": [
 1991,
-2002
+1998
 ],
 "term": "",
 "text": "* The gateway checks a TRIP start like an AUTO start: across or near shallow water refused (code 114), out of the geofence refused (120) (also \"continue\": from the DP's next waypoint; the leg from the boat to the first waypoint and the geofence as it is NOW are checked). A program the gateway has not checked itself - loaded over the USB cable, from the boat's memory after a power-up, or before a gateway restart - can't start a TRIP (code 121 \"route not checked by the gateway\"): send the route again from screen 2 (\"Send route\")."
@@ -4181,7 +4181,7 @@
 "id": "en:322",
 "kind": "manual",
 "lines": [
-1991,
+1998,
 2005
 ],
 "term": "",
@@ -4403,7 +4403,7 @@
 "kind": "manual",
 "lines": [
 2128,
-2140
+2137
 ],
 "term": "",
 "text": "The gateway PC on the boat (a Lenovo ThinkPad L390 Yoga with Ubuntu 24.04 LTS or Windows 11) is the only way in from the internet. The AURIX is NEVER on the network: it talks only to the gateway PC, over a cable (UART, the same frames with checksum as the USB laptop link). The gateway PC sits on the boat LAN behind the Teltonika router; shore PCs and the iPhone reach it only through a VPN (Tailscale) that the boat opens itself - no open ports, works behind the 4G operator's CGNAT. The USB laptop, the onboard joystick and the STANDBY button work exactly as before, with or without the gateway PC. Setup step by step: gateway\\README.md."
@@ -4415,7 +4415,7 @@
 "id": "en:340",
 "kind": "manual",
 "lines": [
-2128,
+2138,
 2140
 ],
 "term": "",
@@ -4429,7 +4429,7 @@
 "kind": "manual",
 "lines": [
 2141,
-2172
+2147
 ],
 "term": "",
 "text": "(or, from a clone: sudo bash ~/trygons-c2/gateway/setup_all.sh). It asks only: the boat name, the gateway users and their passwords (not shown; stored as hashes in /etc/trygons/secrets.json, never in git or in the log), the Tailscale key (not shown), which Ethernet port goes to the router and which to the cameras (unplug / plug in the cable when it says so), the chart area and which USB adapter is the AURIX / the AIS receiver (an adapter that isn't plugged in stays \"TBD\": plug it in and run it again)."
@@ -4441,8 +4441,8 @@
 "id": "en:342",
 "kind": "manual",
 "lines": [
-2141,
-2172
+2147,
+2155
 ],
 "term": "",
 "text": "The AURIX adapter must be confirmed as a 3.3 V TTL USB-UART adapter (answer \"no\" = refused, TBD); one the list flags as probably RS232 is refused unless you answer an explicit yes (Enter = no). Then it installs and checks everything by itself and ends with a check list of OK / FAIL lines (service steady, AURIX link in the log of THIS run, MediaMTX, vision Python + model, charts, apt ...). \"ALL OK\" only when every line is OK AND no step failed. The upgrade never restarts services by itself (NEEDRESTART_MODE=l): the final reboot does. Tailscale name of the gateway PC: trygons-gw-<boat> (e.g. trygons-gw-rf49d)."
@@ -4454,8 +4454,8 @@
 "id": "en:343",
 "kind": "manual",
 "lines": [
-2141,
-2172
+2156,
+2163
 ],
 "term": "",
 "text": "The firewall (nftables.conf) is NOT applied by the script (gateway\\README.md section 8): the check list says so in a WARN line (not counted in ALL OK). Re-running it rewrites the gateway's service, lid and battery files and the UTC time zone (edit them in the repository, not on the PC). Safe to run again (Enter keeps what is there). --dry-run shows what it would do without changing anything; --lang en = English (Greek is the default); --checks = only the check list (after the reboot it asks for: all OK). It never opens the AURIX UART. Run it in harbour, the boat in STANDBY."
@@ -4467,7 +4467,7 @@
 "id": "en:344",
 "kind": "manual",
 "lines": [
-2141,
+2164,
 2172
 ],
 "term": "",
@@ -4780,7 +4780,7 @@
 "kind": "manual",
 "lines": [
 2303,
-2314
+2309
 ],
 "term": "",
 "text": "LINK PROBLEMS: joystick data older than 0.3 s, a gap of 0.3 s, or a link latency over 0.4 s -> at once: throttle to idle, neutral, the outboard holds the heading on the gyro, alarm REMOTE DRIVING LINK LOST. After 5 s without the link: STANDBY. It NEVER starts again by itself - a new REMOTE MANUAL (CREWED: + CONFIRM on board) is needed. The joystick packets travel by UDP (signed with a key the gateway gives at login): a lost packet is simply replaced by the next one 33 ms later."
@@ -4792,7 +4792,7 @@
 "id": "en:369",
 "kind": "manual",
 "lines": [
-2303,
+2310,
 2314
 ],
 "term": "",
@@ -4884,7 +4884,7 @@
 "kind": "manual",
 "lines": [
 2327,
-2339
+2334
 ],
 "term": "",
 "text": "Only what you asked for is sent over the internet. On STARLINK (or with data saver) only the front camera LOW is allowed - \"override\" works with data saver on 4G, never on STARLINK. Per camera: state (OK / FROZEN / DOWN), bitrate in and out, total. FRONT-1 frozen or gone (no new picture for 1 s) -> the front view switches to FRONT-2 by itself (\"FRONT-1 LOST - showing FRONT-2\"), and back when FRONT-1 has worked again for 2 s. A frozen picture always shows VIDEO FROZEN within 1 s. Remote driving warns if no front camera is live."
@@ -4896,7 +4896,7 @@
 "id": "en:377",
 "kind": "manual",
 "lines": [
-2327,
+2335,
 2339
 ],
 "term": "",
@@ -4923,7 +4923,7 @@
 "kind": "manual",
 "lines": [
 2348,
-2358
+2355
 ],
 "term": "",
 "text": "KEEP 5' / 1h (the ●5' / ●1h buttons of a station, step 13n4): the last 5 / 60 minutes of all 4 cameras kept PERMANENTLY in <SSD>\\video\\events\\ <id>\\ (\"keep\": true in event.json): never deleted by the space rules below (also not once copied), the video NOT sent to the shore PC (only event.json). A shorter ring keeps what exists and says how much. A gateway installed BEFORE step 13n4 keeps the ring length it saved (state\\recording.json, often 10 min): KEEP 1h then holds only 10 min - set the ring to 60 min once (Tools - Cameras - ring length)."
@@ -4935,7 +4935,7 @@
 "id": "en:380",
 "kind": "manual",
 "lines": [
-2348,
+2355,
 2358
 ],
 "term": "",
@@ -5118,7 +5118,7 @@
 "kind": "manual",
 "lines": [
 2436,
-2458
+2443
 ],
 "term": "",
 "text": "(60 = the throttle when the reduction began). ACCEPT = the power comes back gradually, at the normal throttle up rate; new impacts while it rises = it stops and is reduced again. REJECT, or no answer in 10 s = it stays reduced; a framed RESTORE POWER button stays in the screen 1 bottom bar and in the screen 2 control panel while the sea is calm, and the boat asks again after the next 2 minutes of calm water. Only the captain (or a single operator) can answer - a copilot can't (gateway code 118). In AUTO the boat gets its speed back only after the ACCEPT."
@@ -5130,8 +5130,8 @@
 "id": "en:395",
 "kind": "manual",
 "lines": [
-2436,
-2458
+2444,
+2454
 ],
 "term": "",
 "text": "After a reset there is no reduction (the boat starts in STANDBY with the startup power limit anyway). In AUTO, slamming also counts as rough water (the boat slows its target speed, chapter 7). OVERRIDE (only with the joystick on board, never the remote driver): \"kick-down\" - ease the throttle off (below 85 %), then push it to full and hold 1 s. The reduction is lifted (warning beep, \"OVERRIDE\" shown) until you go below the reduced value again. The power limit still applies. Staying at full throttle all the time never overrides. The limit: parameter slam_limit_g (1-8 g); the RED action: parameter slam_red_reset (0 = STEP, 1 = LIMIT_RESET)."
@@ -5143,7 +5143,7 @@
 "id": "en:396",
 "kind": "manual",
 "lines": [
-2436,
+2454,
 2458
 ],
 "term": "",
@@ -5157,7 +5157,7 @@
 "kind": "manual",
 "lines": [
 2460,
-2472
+2467
 ],
 "term": "",
 "text": "I. TWO MONITORS: CAPTAIN SCREEN AND DRIVER SCREEN The normal ground-station window is the CAPTAIN screen (everything). The button \"Driver screen\" (top bar) opens the DRIVER screen - put it on the second monitor (Windows menu or Ctrl+Shift+2) and make it full size (F11). It is the full-screen camera HUD of chapter 5B: the FRONT camera fills the window (FRONT-2 by itself if FRONT-1 is lost; VIDEO FROZEN within 1 s; \"NO FRONT CAMERA\" while driving remotely without a live front camera), everything else is drawn on top of it."
@@ -5169,7 +5169,7 @@
 "id": "en:398",
 "kind": "manual",
 "lines": [
-2460,
+2468,
 2472
 ],
 "term": "",
@@ -5235,7 +5235,7 @@
 "kind": "manual",
 "lines": [
 2479,
-2490
+2487
 ],
 "term": "",
 "text": "STANDBY, \"Lower now\", alarm ack and HELM never wait. SINGLE-OPERATOR MODE (one person alone at the station): button \"Single operator\" (screen 2, HELM / roles panel) -> a warning -> ON. A purple banner on both screens shows it; the gateway logs it. Every driving action then needs YOUR confirmation in a small window (SEND / Cancel, 10 s). It switches OFF by itself when this station disconnects (also after a crash); press the button again to switch it off. The USB laptop on the boat (no gateway) is the service link: there the driver window asks when it is open, otherwise the action goes directly."
@@ -5247,7 +5247,7 @@
 "id": "en:404",
 "kind": "manual",
 "lines": [
-2479,
+2488,
 2490
 ],
 "term": "",
@@ -5274,7 +5274,7 @@
 "kind": "manual",
 "lines": [
 2497,
-2518
+2507
 ],
 "term": "",
 "text": "* position reports Class A (big ships) and Class B (small craft), * name, size, type, destination (static data). Each ship shows its age; with no new position it becomes STALE after 3 min (Class A) / 6 min (Class B) and disappears after 15 min. Between reports the position is predicted from speed and course. Wrong data is ignored (bad checksum, impossible jumps). AIS RECEIVER SILENT (alarm, warning only): no AIS message for 5 minutes while at sea (moving or in a driving mode). Check the antenna cable and the receiver. It never changes the mode or the power limit. ONLINE AIS (AISHub, wider area): OFF by default; only on 4G / RF, NEVER on STARLINK."
@@ -5286,8 +5286,8 @@
 "id": "en:407",
 "kind": "manual",
 "lines": [
-2497,
-2518
+2507,
+2515
 ],
 "term": "",
 "text": "Ships seen by our own receiver keep our data when it is newer. SECOND GPS: if the AIS device has its own GPS (a future Class B transponder, or $GPRMC from the receiver), the gateway PC can send it to the AURIX as a second, independent GPS: setting ais.second_gps = true on the gateway PC AND parameter gps2_check_m (e.g. 30) on the boat. A main GPS more than that far from the second one is not trusted (spoofing). Tested: drags of 0.2 m/s and slower are NOT found by the other checks within 10 minutes, the second GPS finds them at 30 m. Both OFF by default."
@@ -5299,7 +5299,7 @@
 "id": "en:408",
 "kind": "manual",
 "lines": [
-2497,
+2516,
 2518
 ],
 "term": "",
@@ -5326,7 +5326,7 @@
 "kind": "manual",
 "lines": [
 2527,
-2542
+2538
 ],
 "term": "",
 "text": "Across the course nothing is relaxed: a GPS pulled sideways is never trusted again. AIS DOES NOT SHOW small boats, jet skis, swimmers, kayaks or anything without a transponder. The lookout on board and the cameras stay essential. K. DEPTH CHARTS AND SEA MARKS (OFFLINE) NOT FOR NAVIGATION - free data, may be inaccurate near the coast. This note is always on the map. Use the official charts and your eyes. Area: Saronic Gulf, the Attica coast around Sounion, the South Euboean Gulf, Kea / Makronisos, with a margin (charts\\areas.json - add more areas there). Depth: EMODnet Bathymetry (about 115 m grid, depth below the lowest tide), sea marks (buoys, beacons, lights, harbours): OpenSeaMap."
@@ -5338,7 +5338,7 @@
 "id": "en:411",
 "kind": "manual",
 "lines": [
-2527,
+2539,
 2542
 ],
 "term": "",
@@ -5404,7 +5404,7 @@
 "kind": "manual",
 "lines": [
 2569,
-2580
+2577
 ],
 "term": "",
 "text": "WHILE DRIVING (any mode): if the boat will be over shallow water within the next 30 s (at least 200 m ahead) -> \"SHALLOW WATER AHEAD\" on both screens. In AUTO the boat also slows to 4 kn and the SHALLOW WATER alarm sounds. In MANUAL / HDG LOCK / REMOTE it is a warning only: you steer. Every collision-avoidance route (part M) passes the same depth check. The charts are free data and NOT FOR NAVIGATION: near the coast, in harbours and where there is no data, \"no data\" counts as shallow. How AUTO is slowed: the gateway PC sends a \"navigation request\" twice a second (speed cap, avoidance heading, alarms) that the boat applies only in AUTO."
@@ -5416,7 +5416,7 @@
 "id": "en:417",
 "kind": "manual",
 "lines": [
-2569,
+2578,
 2580
 ],
 "term": "",
@@ -5547,7 +5547,7 @@
 "kind": "manual",
 "lines": [
 2617,
-2632
+2624
 ],
 "term": "",
 "text": "COLLISION RISK - DRIVER DECISION: the situation can't be solved safely by the gateway PC (two or more dangerous ships, a ship that is turning, old / stale AIS data, no safe route): in AUTO the boat slows to 4 kn and KEEPS ITS COURSE (never an unchecked route). YOU decide: take the joystick. The boat only applies what the gateway PC asks in AUTO (or after your ACCEPT in HDG LOCK), and only within all its own rules (power limit, joystick wins, STANDBY wins). If the gateway PC goes silent during an avoidance, the boat holds its heading, slows to 4 kn and sounds DRIVER DECISION."
@@ -5559,7 +5559,7 @@
 "id": "en:428",
 "kind": "manual",
 "lines": [
-2617,
+2625,
 2632
 ],
 "term": "",
@@ -5690,7 +5690,7 @@
 "kind": "manual",
 "lines": [
 2678,
-2695
+2685
 ],
 "term": "",
 "text": "Talk with anyone near the boat - swimmers, fishing boats, divers, the coast guard - through a horn speaker on the boat, and listen to its microphone. There is NO VHF radio. The loudhailer is its own program on the gateway PC (a USB sound card -> amplifier -> horn; an outdoor microphone): it NEVER touches the AURIX, the driving or the alarms. If it fails you get a notice (\"LOUDHAILER OFF\"), never an alarm or a mode change; it restarts by itself. TALK (Greek ΟΜΙΛΙΑ): a framed SCREEN button - press and HOLD while you speak, let go when you are done."
@@ -5702,8 +5702,8 @@
 "id": "en:439",
 "kind": "manual",
 "lines": [
-2678,
-2695
+2685,
+2693
 ],
 "term": "",
 "text": "It is on the bottom bar of screen 1, on bar 2 of screen 2 (the copilot's PC too) and on Tools - Loudhailer. It is NOT on the joystick. One person at a time: the gateway gives the horn to whoever pressed FIRST; everybody else sees a grey TALK button and \"SPEAKING: CAPTAIN\" (or COPILOT) - on screen 2 at the start of the message line. The CAPTAIN is the exception (owner 2026-11-04): the captain's TALK takes the horn AT ONCE from anyone talking; that station sees THE CAPTAIN TOOK THE HORN (a sound signal already playing still ends first). While anyone talks the boat microphone is switched off (no echo / howling)."
@@ -5715,7 +5715,7 @@
 "id": "en:440",
 "kind": "manual",
 "lines": [
-2678,
+2694,
 2695
 ],
 "term": "",
@@ -5794,7 +5794,7 @@
 "kind": "manual",
 "lines": [
 2728,
-2742
+2735
 ],
 "term": "",
 "text": "Six small camera drones are stacked in the boat under a hatch (slot 1 = the top one = the next out). OBSERVATION ONLY: no payload, no release - the gateway's MAVLink allow-list has no such command at all. Tools - UAV magazine shows the 6 slots with the UAV picture: name, sysid, ArduPilot version, battery, GPS, video channel, ELRS radio, and READY or NOT launchable with the reason. REGISTER reads the drone through the slot's USB cable and checks it - READ ONLY: the gateway never changes a drone setting (set them with Mission Planner)."
@@ -5806,7 +5806,7 @@
 "id": "en:447",
 "kind": "manual",
 "lines": [
-2728,
+2735,
 2742
 ],
 "term": "",
@@ -5820,7 +5820,7 @@
 "kind": "manual",
 "lines": [
 2745,
-2773
+2751
 ],
 "term": "",
 "text": "Routes: draw the route on the map as usual and press \"Send route\". With a UAV magazine a box asks WHERE TO: THE BOAT (the normal AUTO route), NEXT UAV (slot n), a UAV in the magazine, or a FLYING UAV (it gets the new mission in the air; if the gateway refuses it, the old one goes on). A right click on the map: \"Go here (the boat)\" = a 2-point route from the boat to the point (every AUTO rule as usual) and \"Send a UAV here\". Every UAV point flies at 50 m."
@@ -5832,8 +5832,8 @@
 "id": "en:449",
 "kind": "manual",
 "lines": [
-2745,
-2773
+2751,
+2757
 ],
 "term": "",
 "text": "The gateway checks every UAV route: altitude 10..120 m, radio range (1500 m from the launch point and from the boat), battery with the landing reserve, the air no-fly zones and the air geofence (files on the gateway, not authoritative); a refusal says why. Each mission ends HOVERING over the last point - never a landing. Launch: Tools - UAV magazine - PREPARE LAUNCH (copilot or captain). The CAPTAIN answers YES / NO on screen 1 (a single operator answers his own)."
@@ -5845,8 +5845,8 @@
 "id": "en:450",
 "kind": "manual",
 "lines": [
-2745,
-2773
+2758,
+2762
 ],
 "term": "",
 "text": "The launch goes WHEN THE COPILOT SAYS SO, at any boat speed or mode (owner 2026-11-04); above 5 kn every station shows HIGH SPEED - take-off risk (ΥΨΗΛΗ ΤΑΧΥΤΗΤΑ – κίνδυνος στην απογείωση): a warning only, slow down when you can. It needs a trusted GPS, no boat WARNING alarm, the relay board answering, a station holding HELM, the hatch healthy."
@@ -5858,8 +5858,8 @@
 "id": "en:451",
 "kind": "manual",
 "lines": [
-2745,
-2773
+2762,
+2768
 ],
 "term": "",
 "text": "Then, strictly from the top slot: mission loaded and read back, the hatch opens (its OPEN switch), GPS fix (no fix in 5 s: it climbs straight up to 15 m and waits there for GPS, at any boat speed), ARM, climb to 30 m (+5 m per slot), clear of the boat at 10 m, the next one at least 15 s later; after the last the hatch closes. ANY warning STOPS the launch: drones in the air go on with their missions, no further drone is armed, the hatch stays as it is."
@@ -5871,7 +5871,7 @@
 "id": "en:452",
 "kind": "manual",
 "lines": [
-2745,
+2768,
 2773
 ],
 "term": "",
@@ -5885,7 +5885,7 @@
 "kind": "manual",
 "lines": [
 2776,
-2806
+2781
 ],
 "term": "",
 "text": "Every flying UAV is on screen 2's map with its picture (turned with its heading), its own dashed track and a label: UAV n, altitude, battery %, link % (amber = battery below 30 %, the battery minimum near, or a weak link). A click on a UAV opens its VIDEO full screen on screen 2 (bar 1 also lists the UAVs with a video; MAP / Esc = back) with its own green values (altitude, speed, battery, link, heading, distance to the boat)."
@@ -5897,8 +5897,8 @@
 "id": "en:454",
 "kind": "manual",
 "lines": [
-2776,
-2806
+2781,
+2789
 ],
 "term": "",
 "text": "The gateway records every UAV video in its ring (in every SAVE / KEEP 5' / 1 h) and sends it only to a station that has it OPEN - on DATA SAVER / STARLINK there is NO UAV video for anyone, and when the link is busy the UAV video goes before the captain's cameras. AI: the same obstacle detection (\"AI\") looks at the UAV videos that are open on a screen, one after the other, slowly (0.5 pictures a second in all), and only when the boat's own front camera AI does not need the computer. It only draws boxes and gives a notice - it never slows or steers the boat."
@@ -5910,8 +5910,8 @@
 "id": "en:455",
 "kind": "manual",
 "lines": [
-2776,
-2806
+2789,
+2797
 ],
 "term": "",
 "text": "It was trained on views from a boat, not from the air: its boxes on a UAV picture may be poor. The ONLY landing: the battery minimum. The gateway watches every flying UAV: when the battery left is just enough to descend from where it is, it LANDS there (over the sea the drone is lost - the owner's rule). A CAUTION on every station 60 s and 20 s before (\"UAV n LANDING IN 60 s - battery minimum\") and at the landing. Lost radio link, no GPS or any warning = it holds / goes on with its mission, never a landing."
@@ -5923,7 +5923,7 @@
 "id": "en:456",
 "kind": "manual",
 "lines": [
-2776,
+2798,
 2806
 ],
 "term": "",
@@ -5937,7 +5937,7 @@
 "kind": "manual",
 "lines": [
 2809,
-2847
+2814
 ],
 "term": "",
 "text": "Who: the COPILOT may fly a UAV from his own station at any time (his joystick never drives the boat). The CAPTAIN only with the boat in STANDBY - while his joystick is on a UAV the boat gets nothing from it. How: open the UAV's video (a click on it on the map, or bar 1 of the camera view) and press FLY UAV n (also Tools - UAV magazine). CENTRE THE STICK first: until the gateway has seen it centred the UAV only holds."
@@ -5949,8 +5949,8 @@
 "id": "en:458",
 "kind": "manual",
 "lines": [
-2809,
-2847
+2814,
+2821
 ],
 "term": "",
 "text": "Then: stick forward / back / left / right = fly that way relative to the UAV's nose (up to 10 m/s), the TWCS lever = climb / descend (its middle 45-55 % = keep the altitude; a station without a lever keeps the altitude), the twist = turn. Let go = the UAV stops and holds its position. It never goes below 10 m or above 120 m, and it stops at the air geofence / a no-fly zone (\"held: ...\" on the screen). It is ASSISTED flying only - the joystick never works the drone's motors directly."
@@ -5962,8 +5962,8 @@
 "id": "en:459",
 "kind": "manual",
 "lines": [
-2809,
-2847
+2822,
+2828
 ],
 "term": "",
 "text": "The screens: \"JOYSTICK -> UAV n\" on both screens; screen 1 shows the UAV's video with its own green values (altitude, climb, speed, battery, link, heading, the distance + an ARROW to the boat) - the boat's mode, the MASTER lamps, the alarms and SAVE stay. RETURN TO BOAT (screen 1, bar 1 of the camera view, the UAV page) = the UAV hovers where it is and the joystick is back on the boat (it never means \"fly back\" - the drones never land on the boat)."
@@ -5975,8 +5975,8 @@
 "id": "en:460",
 "kind": "manual",
 "lines": [
-2809,
-2847
+2829,
+2837
 ],
 "term": "",
 "text": "While the captain flies: his driving commands and every copilot request that needs his ACCEPT are refused at once (\"the joystick is on a UAV\"); STANDBY, AUTO PAUSE and DP STOP always work. Questions on his screen are answered with the MOUSE only (the joystick buttons fly the drone). The boat leaving STANDBY ends it at once: the UAV hovers, the joystick is back on the boat. One pilot per UAV: the first one keeps it, another station is refused (\"another pilot flies this UAV\") - EXCEPT the CAPTAIN, who can take a UAV over from the copilot at once (owner decision): the copilot sees \"THE CAPTAIN TOOK CONTROL\" and the UAV holds during the hand-over."
@@ -5988,8 +5988,8 @@
 "id": "en:461",
 "kind": "manual",
 "lines": [
-2809,
-2847
+2837,
+2845
 ],
 "term": "",
 "text": "A copilot cannot take one from the captain. No joystick data for 0.5 s = the UAV holds; for 3 s (or the station disconnects) = manual control ends, the UAV hovers. Also: FLY is refused while the launch still owns the UAV (it climbs out of the hatch or waits for GPS) - wait until it flies its mission. While a UAV is flown by hand no new route is accepted for it (\"give it back first\"). When the UAV's own data is older than 1 s the stick moves nothing (it holds); a climb / descent into a no-fly zone's altitude band is stopped like a move towards its edge."
@@ -6001,7 +6001,7 @@
 "id": "en:462",
 "kind": "manual",
 "lines": [
-2809,
+2845,
 2847
 ],
 "term": "",
@@ -6340,7 +6340,7 @@
 "kind": "manual",
 "lines": [
 2953,
-2968
+2962
 ],
 "term": "CAN BUS FAULT",
 "text": "CAN BUS FAULT the CAN bus is off / error passive for more than 100 ms (cable, termination, every node unpowered, transceiver), the CAN controller did not start, or a frame FROM OUR OWN NODE ID 10 is on the bus: the old Pixhawk is still connected - it is node 10 too and must NEVER be on the bus with the AURIX (WIRING.md 3E). Same reaction as CAN NODE LOST; it clears 3 s after the last such frame. A node asking for a dynamic node ID (no fixed ID set) = a notice only - set its ID with the DroneCAN GUI Tool."
@@ -6352,7 +6352,7 @@
 "id": "en:489",
 "kind": "manual",
 "lines": [
-2953,
+2963,
 2968
 ],
 "term": "CAN BUS FAULT",
@@ -6379,7 +6379,7 @@
 "kind": "manual",
 "lines": [
 2975,
-2986
+2983
 ],
 "term": "",
 "text": "Every new alarm drops the power limit to 30 / 5 and starts a black-box file (except the navigation warnings SHALLOW WATER, COLLISION RISK, DRIVER DECISION, OBSTACLE AHEAD, AIS RECEIVER SILENT, LOW BATTERY, RELAY BOARD SILENT, DP OFF SPOT and DP OVERPOWER: they never change the power limit; RELAY BOARD SILENT doesn't sound the boat's buzzer and doesn't block a power raise either). Acknowledge: STANDBY button in STANDBY, or \"ACK ALARM\" in the ALARMS panel (top right of screen 2). Both screens list every active alarm in ONE place (screen 1: under the right mirror; screen 2: top right), one per line, most severe first; an alarm not yet acknowledged on THIS PC flashes, the others are steady."
@@ -6391,7 +6391,7 @@
 "id": "en:492",
 "kind": "manual",
 "lines": [
-2975,
+2984,
 2986
 ],
 "term": "",
@@ -7120,7 +7120,7 @@
 "kind": "manual",
 "lines": [
 3226,
-3275
+3229
 ],
 "term": "",
 "text": "Written (compiled, NOT yet tried on the board - FIRST_TEST.md): [x] timer (ms / us), alarm LED + buzzer, safe pin states at start-up, watchdogs, reset reason, monitor latch, memory barrier [x] throttle / gear servo PWM (GTM, 50 Hz) incl."
@@ -7132,8 +7132,8 @@
 "id": "en:549",
 "kind": "manual",
 "lines": [
-3226,
-3275
+3229,
+3246
 ],
 "term": "",
 "text": "the direct idle / neutral pulses in hal_safe_outputs() [x] BNO085 IMU (SPI): heading, yaw rate, roll / pitch, vertical acceleration; reset + \"no data\" after 0.5 s [x] u-blox MAX-M10S GPS (UART): UBX fix + spoofing / jamming flags, NMEA RMC fallback; \"no data\" after 3 s [x] Pololu G2 steering motor driver (PWM, DIR, SLP) + current (ADC) [x] limit switches, emergency stop contact, panel buttons (debounced) [x] USB link (ASCLIN0, 921600), gateway UART (ASCLIN1, 921600, TX buffer 8 KB = HAL_GW_TX_RING), USB joystick bridge (ASCLIN3, 230400) [x] microSD card: QSPI2 + own FAT32 writer (long file names; tested on PC disk images: tests/hal_pc/fat32_check.py) [x] data flash (DFLASH0, on the chip - nothing to wire): the TRAINING result, the joystick calibration + map, the AUTO program and the boot counter in an append-only record log (hal/tc_nv.c: two regions A / B of 32 KB, CRC-32 per record, wear levelling, a power loss during a write keeps the old record; tested on a PC flash image: tests/hal_pc/nv_check.py)."
@@ -7145,8 +7145,8 @@
 "id": "en:550",
 "kind": "manual",
 "lines": [
-3226,
-3275
+3246,
+3257
 ],
 "term": "",
 "text": "Written only in STANDBY, never a wait in the control loop (chapter 15). [x] supply voltage of the 12 V bank: EVADC channel on A2 / AN37 (tc_adc.c, the same group as the motor current), filtered in app/battery.c, LOW BATTERY advisory + NO VOLTAGE DATA notice. The divider and the pin are still TBD (WIRING.md 3B): HAL_SUPPLY_FITTED 0 until wired, so the boat shows NO VOLTAGE DATA [x] generator mode (app/generator.c, chapter 7): needs the neutral switch wired (HAL_NEUTRAL_SW_FITTED 1) and the voltage divider - until then it never starts (no switch = never, no data = never) [x] RS485 Modbus relay board driver (hal/tc_modbus.c, app/relays.c, chapter 7): relay table in data flash slot 7."
@@ -7158,8 +7158,8 @@
 "id": "en:551",
 "kind": "manual",
 "lines": [
-3226,
-3275
+3257,
+3268
 ],
 "term": "",
 "text": "The board, the transceiver, the ASCLIN4 pins and the DE pin are TBD (WIRING.md 3D): HAL_RELAY_FITTED 0 until wired - no relay can be switched then and there is no RELAY BOARD SILENT. FIRST_TEST.md 3h: a real watchdog reset must not read as power-on (no power_up), the RS485 DE line released right after the last stop bit. [x] engine controls + remote restart (app/engine.c, chapter 7): the STARTER through the relay board, the software reset after a trip (hal_system_reset = an application reset: TO CHECK on the kit that the servo / gear outputs and the safety relay go to their reset state at once and the reset reason reads \"application\"). No tacho input yet (TBD)."
@@ -7171,7 +7171,7 @@
 "id": "en:552",
 "kind": "manual",
 "lines": [
-3226,
+3269,
 3275
 ],
 "term": "",
@@ -7185,7 +7185,7 @@
 "kind": "manual",
 "lines": [
 3276,
-3289
+3284
 ],
 "term": "",
 "text": "Still stubs: [ ] analog joystick: the code is done (step 13: EVADC AN39 / AN38 = X / Y, buttons P02.0 / P02.1 / P10.4, hal_pins.h CHECK) - HAL_JOY_FITTED 0 until it is wired (the USB bridge works); neutral switch (input done, HAL_NEUTRAL_SW_FITTED 0); paddlewheel: the code is done (step 13: GPT12 T2 counts the pulses on T2INA = P00.7 TBD, hal/tc_pulse.c: stopped / cut cable / noise) - HAL_PADDLE_FITTED 0 until wired, K factor (pulses per second at 1 kn, PADDLE_HZ_PER_KN 4.9) TBD with the real sensor."
@@ -7197,7 +7197,7 @@
 "id": "en:554",
 "kind": "manual",
 "lines": [
-3276,
+3285,
 3289
 ],
 "term": "",
@@ -7211,7 +7211,7 @@
 "kind": "manual",
 "lines": [
 3292,
-3302
+3300
 ],
 "term": "",
 "text": "[ ] The watchdog timeout (100 ms) and that a watchdog timeout really resets the chip (SMU alarm configuration). [ ] That the black box chunks end up in DSPR2 + the 3 LMU blocks with TASKING (the pragmas are there, spelling UNVERIFIED): run tools\\mapreport.py on the map - \"CPU1 RAM check: OK\". [ ] Real CPU times (System tab): the PC needs 0.5 us per control step, the TC375 with a -O0 debug build will need much more; the budget is 50 ms. [ ] The QSPI2 / mikroBUS pin functions and the SD card speed."
@@ -7223,7 +7223,7 @@
 "id": "en:556",
 "kind": "manual",
 "lines": [
-3292,
+3301,
 3302
 ],
 "term": "",
@@ -7237,7 +7237,7 @@
 "kind": "manual",
 "lines": [
 3305,
-3318
+3312
 ],
 "term": "",
 "text": "[ ] The bridge firmware builds (done on this PC) but has NEVER run on a Teensy: try it with learn mode first, on the bench. [ ] The TWCS axis ranges and which axis is the main lever are NOT verified (bridge/src/devices.h). Run the bridge calibration ( c ), then \"Map buttons\" in the ground station. Check the lever direction (full forward must show near 100 % on the lever bar). [ ] The TWCS button numbers of the default map (AUTO = 1, HDG LOCK = 3, CONFIRM = 4) are guesses: put them where they make sense by hand."
@@ -7249,7 +7249,7 @@
 "id": "en:558",
 "kind": "manual",
 "lines": [
-3305,
+3313,
 3318
 ],
 "term": "",
@@ -8485,7 +8485,7 @@
 "kind": "manual",
 "lines": [
 3672,
-3681
+3678
 ],
 "term": "",
 "text": "Academy - \"UAV lesson\" = \"UAV launch and observation\": the academy's own UAV simulator inside the academy program (it uses the gateway's real launch, allow-list, route and battery rules with a simulated boat + magazine; never a gateway, a drone or a boat). Steps: register, route, STANDBY, prepare, the captain's YES, watch the launch until the hatch closes, open the video, the battery minimum. The guided tour has a chapter \"The UAV magazine\". Demo: START_DEMO.bat runs 6 simulated drones + the simulated hatch."
@@ -8497,7 +8497,7 @@
 "id": "en:654",
 "kind": "manual",
 "lines": [
-3672,
+3678,
 3681
 ],
 "term": "",
@@ -8567,188 +8567,6 @@
 ],
 "term": "",
 "text": "- Third-party liability INSURANCE as the authorisation and Greek law require (Regulation (EC) 785/2004 for 20 kg and more). - Radio limits: analog 5.8 GHz video 25 mW EIRP, 2.4 GHz 100 mW EIRP - they limit the range. - State / Navy operations are outside the EASA rules (Regulation 2018/1139 Art. 2(3)) and follow their own national rules. - Recordings of people: data protection (GDPR) applies. - The RESPONSIBILITY stays with the UAS operator and the remote pilot."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "",
-"id": "en:660",
-"kind": "manual",
-"lines": [
-3722,
-3725
-],
-"term": "",
-"text": "What it is: you ASK about the C2 by voice (\"how do I close the hatch?\") and the station shows (later also says) the answer from this manual. In this first part the station RECOGNISES the question, shows it and finds where it is in the manual; the answers come with the next steps."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "",
-"id": "en:661",
-"kind": "manual",
-"lines": [
-3727,
-3730
-],
-"term": "",
-"text": "It is READ-ONLY: it never sends anything to the boat or the gateway, never changes a mode, a setting or the layout, never presses anything. It works WITHOUT the internet (the models are files on this PC) and only on a station PC (never on the gateway PC, never on the boat). Sound is never written to disk."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "How to ask",
-"id": "en:662",
-"kind": "manual",
-"lines": [
-3733,
-3738
-],
-"term": "",
-"text": "* Press and HOLD the framed button «ΕΡΩΤΗΣΗ» / «ASK» with the \"AI\" badge (screen 1: the bottom bar, its own group right of the language / night / text-size buttons - far from «ΟΜΙΛΙΑ» / TALK; screen 2: the START (left end) of bar 1, also in the camera view - far from TALK, which is in the right part of bar 2), or hold the key F9 (or a USB foot pedal that sends F9). Speak, then let go = the question is asked."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "How to ask",
-"id": "en:663",
-"kind": "manual",
-"lines": [
-3739,
-3743
-],
-"term": "",
-"text": "* A tap shorter than 0.4 s is ignored; after 15 s the question is asked by itself. * The recognised question appears on screen 2's message line and for 8 s on screen 1's notices (\"Question to the assistant: ...\") - so a mis-hearing is visible."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "How to ask",
-"id": "en:664",
-"kind": "manual",
-"lines": [
-3744,
-3749
-],
-"term": "",
-"text": "* NEVER on the joystick (every stick button is used, e.g. when flying a UAV) and never the loudhailer: «ΟΜΙΛΙΑ» / TALK is a different button. Pressing TALK (or a ready message / a sound signal) stops the assistant at once, and while you hold the loudhailer the assistant does not listen (a question can never go out of the horn). * The key does nothing while you type in a text field."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "Tools -> page «Βοηθός» / \"Assistant\"",
-"id": "en:665",
-"kind": "manual",
-"lines": [
-3752,
-3754
-],
-"term": "",
-"text": "* on / off for this PC (default on), the assistant's OWN microphone (separate from the loudhailer's devices; default = the Windows default input), the ask key (F2..F9, default F9; F10 is the Windows menu key), the state, the last question with its times."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "Tools -> page «Βοηθός» / \"Assistant\"",
-"id": "en:666",
-"kind": "manual",
-"lines": [
-3755,
-3763
-],
-"term": "",
-"text": "* \"models not installed\": run python tools/get_whisper.py once (it puts a separate Python + the speech recognition into tools/bin/, ~3.5 GB, every download checked with sha256, the packages only from the hash-locked list tools/assistant_requirements*.txt; never in git). Run it ONCE as an administrator: it also adds a Windows Firewall rule that blocks the assistant's own Python from the network (a second, operating-system lock besides the program's own). Without the right it prints the ONE command to run in an administrator terminal (or later: python tools/get_whisper.py --firewall)."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "WHERE IT FINDS IT IN THE MANUAL (step AM3)",
-"id": "en:667",
-"kind": "manual",
-"lines": [
-3766,
-3771
-],
-"term": "",
-"text": "* Every recognised question is looked up at once in this manual (in Greek: MANUAL_EL.txt) and in the guided tour's texts. The page «Βοηθός» / \"Assistant\" shows under the last question where it was found (\"In the manual: chapter ... - ...\" or \"In the guided tour: ...\") or \"I can't find that in the manual.\". This step does not answer yet (text and voice come with the next steps)."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "WHERE IT FINDS IT IN THE MANUAL (step AM3)",
-"id": "en:668",
-"kind": "manual",
-"lines": [
-3772,
-3776
-],
-"term": "",
-"text": "* The search compares words only: no accents, no capitals, the usual endings and a few synonyms an operator says (drone = UAV, joystick = χειριστήριο, μηχανή = κινητήρας). No model, no internet, under 1 ms per question. It keeps the 3 best passages with their chapters; a weak match = \"I can't find that in the manual.\" - never a guess."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "WHERE IT FINDS IT IN THE MANUAL (step AM3)",
-"id": "en:669",
-"kind": "manual",
-"lines": [
-3777,
-3781
-],
-"term": "",
-"text": "* The manual's index (groundstation\\assistant\\index\\) is rebuilt by tools\\check.sh whenever a manual, the tour or a language file changed; by hand: python tools\\assistant_index.py build * Try a typed question (no microphone, no station): python tools\\assistant_index.py ask \"your question\" --lang en"
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "WHERE IT FINDS IT IN THE MANUAL (step AM3)",
-"id": "en:670",
-"kind": "manual",
-"lines": [
-3782,
-3785
-],
-"term": "",
-"text": "* Measured on the question list (tests\\assistant\\questions_en.json: 48 questions, 42 answered in the manual): the right passage first 55 %, within the first 3 81 %; 3 of the 6 questions that are not in the manual give \"I can't find\". Greek (145 questions, 134 in the manual): 61 % /"
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "WHERE IT FINDS IT IN THE MANUAL (step AM3)",
-"id": "en:671",
-"kind": "manual",
-"lines": [
-3786,
-3788
-],
-"term": "77 %, 9 of 11. Run it with",
-"text": "77 %, 9 of 11. Run it with python tools\\assistant_index.py eval (also in tools\\check.sh). The next step (the language model answers ONLY from the passages, with a check) improves the refusals."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "WHERE IT FINDS IT IN THE MANUAL (step AM3)",
-"id": "en:672",
-"kind": "manual",
-"lines": [
-3790,
-3793
-],
-"term": "",
-"text": "If it fails: the notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» / ASSISTANT OFF on both screens (a notice on THIS PC only, never an alarm, no sound); it restarts by itself after 5 s, at most 3 times in 10 minutes, then it stays off until the station is started again. Driving is never affected."
-},
-{
-"ch": "22",
-"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "WHERE IT FINDS IT IN THE MANUAL (step AM3)",
-"id": "en:673",
-"kind": "manual",
-"lines": [
-3795,
-3798
-],
-"term": "",
-"text": "Measured on the owner's laptop (RTX A1000 6 GB, step AM2; synthetic voices - to be measured again with real speech): recognition ~0.9 s for a 2-3 s question on the GPU (large-v3-turbo), the CPU fallback (small) slower - see docs/assistant_design.md section 3."
 },
 {
 "ch": "tour",
@@ -10715,11 +10533,9 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "23871a5f872170c1cdfea745e234bfd49290dc082af74c6e5d9dec85afa2581e",
+"MANUAL.txt": "31841eb8f46fbb92de235293b07cc3c1593dca05aaea1e4cdd7c301e6239f8a2",
 "academy/content/tour.json": "388b9ceec7b969d9117707a1686f0c33a09177447fe4a57646317081fc8ceb44",
-"groundstation/assistant/index.py": "a2a2ee77908855871147544d6b498d05e7c64dd309c8b44dab0ebc28f3aefca2",
-"groundstation/lang/el.txt": "961129124793d7bc2177020fde1191986426190a78cb66ff91facc082afd0fe8",
-"groundstation/lang/en.txt": "544bc2bbc60ee67db379088bce3f17237bb73544d49bd46387b0d3066df38689"
+"groundstation/assistant/index.py": "a3d092828882f77ba503d5cdc4ededbc9ced0ec206ea27133203a8b57b46e8e0"
 },
-"version": 1
+"version": 2
 }

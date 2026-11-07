@@ -2,15 +2,16 @@
 
     build(lang)            MANUAL_EL.txt / MANUAL.txt + the tour texts -> {"passages", "sources", ...}
     save(lang) / load(lang) groundstation/assistant/index/manual_<lang>.json (committed; rebuilt by
-                           tools/assistant_index.py build --if-stale, tools/check.sh)
+                           tools/assistant_index.py build; tools/check.sh FAILS on a stale one, AM3-r MED-1)
     stale(lang)            the reasons the committed index no longer matches its sources ([] = current)
     Searcher(idx).search(q, k=3) -> {"hits": [{passage, score, cover}], "cant_find": bool, "why"}
 
 Pure file reading + text work: no network, no process, never writes outside the index folder (and only when
 asked to save). A passage = {id, kind manual | tour, ch, chapter, heading, term, text, lines [a, b]}
 (term = the definition-list name of a mode / alarm / trouble, else ""; a tour stop has ch "tour", lines [0, 0]).
-Can't find = the best passage below the score / coverage thresholds (set on the question list's
-"not in the manual" items, tests/assistant/questions_*.json; docs/assistant_design.md section 4).
+Can't find = the best passage below the score / coverage thresholds (tuned on the TUNING part of the question
+list tests/assistant/questions_*.json, the held-out part tests/assistant/heldout.json only measured - AM3-r;
+docs/assistant_design.md section 4). The assistant's own manual chapter is not indexed (AM3-r LOW-3).
 """
 import hashlib
 import json
@@ -21,23 +22,25 @@ import unicodedata
 
 from . import paths
 
-INDEX_VERSION = 1
+INDEX_VERSION = 2           # 2 (AM3-r): the assistant chapters left out, a line range per split part
 INDEX_DIR = os.path.join(paths.HERE, "index")
 MANUALS = {"el": "MANUAL_EL.txt", "en": "MANUAL.txt"}
 TOUR = os.path.join("academy", "content", "tour.json")
-LANGS = (os.path.join("groundstation", "lang", "el.txt"), os.path.join("groundstation", "lang", "en.txt"))
 SELF = os.path.join("groundstation", "assistant", "index.py")   # a parser change = the index is stale too
 
 MIN_WORDS = 40              # a shorter piece is joined with the next one under the same heading
 MAX_WORDS = 120             # a longer one is split at sentences
 MIN_KEEP = 5                # a passage of fewer words is no answer ("Ε  ΕΚΜΑΘΗΣΗ") and is left out
-SKIP_CHAPTERS = {"el": {"14"}}   # MANUAL_EL 14 = the Greek - English term table: a translation list, no answer
+# MANUAL_EL 14 = the Greek - English term table: a translation list, no answer. MANUAL_EL 17 / MANUAL 22 = the
+# assistant's own chapter (AM3-r LOW-3): it describes the assistant, not the C2 - never an answer source
+SKIP_CHAPTERS = {"el": {"14", "17"}, "en": {"22"}}
 TOUR_FACTOR = 0.9           # a tour stop's score x this (short "where is it" texts; measured, AM3)
 HEAD_WEIGHT = 3             # the heading path (chapter, heading, term) counts three times
 K1, B = 1.2, 0.5
-# can't find: the best hit below EITHER threshold (measured on the question list, AM3: TEST_REPORT.md)
+# can't find: the best hit below EITHER threshold - tuned on the question list's TUNING part only, the HELD-OUT part
+# (tests/assistant/heldout.json) measured once after (AM3-r MED-2, TEST_REPORT.md)
 MIN_SCORE = 3.0
-MIN_COVER = 0.35
+MIN_COVER = 0.30          # AM3-r: re-tuned on the TUNING part only (was 0.35, tuned on the whole list)
 
 CHAPTER_RE = re.compile(r"^(\d+[A-Z]?)\.\s+(\S.*)$")
 RULE_RE = re.compile(r"^\s*([-=])\1{10,}\s*$")
@@ -91,8 +94,14 @@ SAID = {
 SYNONYMS = {}
 
 
+# where the SOURCES are read (the manuals, the tour, this parser): the repository; a test copies them to a temp
+# folder, changes one and points TRYGONS_ASSISTANT_SRC there (AM3-r MED-1 mutation test AS14). The index
+# itself always stays in INDEX_DIR.
+SRC_ROOT = os.environ.get("TRYGONS_ASSISTANT_SRC") or paths.REPO
+
+
 def repo_path(rel):
-    return os.path.join(paths.REPO, rel)
+    return os.path.join(SRC_ROOT, rel)
 
 
 def fold(text):
@@ -230,38 +239,41 @@ def parse_manual(text, lang):
     out = []
     ch = ch_title = None
     heading = ""
-    units = []                       # [(first line, last line, text, term)] of the current heading
+    units = []                       # [(text, term, the line number of every word)] of the current heading
 
     def flush():
-        acc, a, b = [], None, None
-        for (ua, ub, ut, term) in units:
+        acc, wl = [], []
+        for (ut, term, uwl) in units:
             if term:                                   # a defined term = its own passage
                 if acc:
-                    emit(a, b, " ".join(acc), "")
-                    acc, a = [], None
-                emit(ua, ub, ut, term)
+                    emit(" ".join(acc), "", wl)
+                    acc, wl = [], []
+                emit(ut, term, uwl)
                 continue
-            if a is None:
-                a = ua
             acc.append(ut)
-            b = ub
+            wl = wl + uwl
             if _words(" ".join(acc)) >= MIN_WORDS:
-                emit(a, b, " ".join(acc), "")
-                acc, a = [], None
+                emit(" ".join(acc), "", wl)
+                acc, wl = [], []
         if acc:
             last = out[-1] if out else None
             if last and last["ch"] == ch and last["heading"] == heading and not last["term"] and                     _words(last["text"]) + _words(" ".join(acc)) <= MAX_WORDS:
                 last["text"] += " " + " ".join(acc)
-                last["lines"][1] = b
+                last["lines"][1] = wl[-1]
             else:
-                emit(a, b, " ".join(acc), "")
+                emit(" ".join(acc), "", wl)
         del units[:]
 
-    def emit(a, b, t, term):
+    def emit(t, term, wl):
+        """wl = the manual line of every word of t: each split part gets its OWN line range (AM3-r LOW-4)."""
         if ch in SKIP_CHAPTERS.get(lang, ()):
             return
+        at = 0
         for part in _split_long(t):
-            if len(part.split()) < MIN_KEEP:
+            nw = len(part.split())
+            a, b = wl[at], wl[at + nw - 1]
+            at += nw
+            if nw < MIN_KEEP:
                 continue                                # "Ε  ΕΚΜΑΘΗΣΗ", "Περισσότερα: κεφάλαιο 18." = no answer
             out.append({"id": "%s:%d" % (lang, len(out) + 1), "kind": "manual", "ch": ch, "chapter": ch_title,
                         "heading": heading, "term": term, "text": part, "lines": [a, b]})
@@ -271,7 +283,7 @@ def parse_manual(text, lang):
 
     def end_unit():
         if cur:
-            units.append((cur[0][0], cur[-1][0], " ".join(t for _, t in cur), cur_term[0]))
+            units.append((" ".join(t for _, t in cur), cur_term[0], [ln for ln, t in cur for _ in t.split()]))
             del cur[:]
         cur_term[0] = ""
 
@@ -348,7 +360,9 @@ def tour_passages(lang, path=None):
 
 # --- sources, stale check, save / load -------------------------------------------------------------------------
 def sources(lang):
-    return [MANUALS[lang], TOUR] + list(LANGS) + [SELF]
+    """What the index is made from (AM3-r LOW-1: the lang files are NOT indexed - button names reach the
+    speech recognition as term hints only, hints.py - so they are no source of the index either)."""
+    return [MANUALS[lang], TOUR, SELF]
 
 
 def sha_text(rel):

@@ -5,6 +5,42 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 0000000. Talking manual - FIND, review fixes (step AM3-r, 2026-11-07) - REPLACES the AM3 figures below
+
+Station only (no app / hal / gateway change). The AM3 figures below were IN-SAMPLE (thresholds chosen on the same
+list) and used LOOSE labels (a phrase in many passages or a heading-only match counted as a hit). Now:
+- strict hit = a passage whose TEXT holds a SPECIFIC expected phrase (found in 1..5 passages; >= 6 = loose, a
+  heading / term match alone = no hit) or one of the question's accepted tour stops (counted apart). 16 labels
+  re-written from the manual text (el043 el060 el066 el070 el123 el134 el135, en001 en002 en009 en019 en023 en027
+  en028 en032 en043; el134 / el135 / en043 = tour stops only, because the assistant chapters are no longer indexed).
+- held-out set = tests/assistant/heldout.json (every 3rd question of each group, frozen before tuning). Re-tuned on
+  the TUNING part only (MIN_COVER 0.35 -> 0.30; MIN_SCORE 3.0, TOUR_FACTOR 0.9 kept), then held-out measured once.
+  Caveat: the held-out questions were in the AM3 list, so the spoken-word table SAID was written with them in view
+  = an upper bound until a fresh set (AM6). English held-out = 9 questions: rough.
+
+| `tools/assistant_index.py eval` | in the manual | top-1 (via a tour stop) | top-3 | false "can't find" | not in the manual -> "can't find" |
+|---|---|---|---|---|---|
+| Greek in-sample (tuning) | 96 | 56 = 58 % (10) | 75 = 78 % | 1 | 5 / 7 |
+| Greek HELD-OUT | 38 | 24 = 63 % (4) | 29 = 76 % | 1 | 4 / 4 |
+| Greek all | 134 | 80 = 60 % (14) | 104 = 78 % | 2 | 9 / 11 |
+| English in-sample (tuning) | 33 | 15 = 45 % (1) | 24 = 73 % | 0 | 2 / 5 |
+| English HELD-OUT | 9 | 6 = 67 % (0) | 8 = 89 % | 0 | 0 / 1 |
+| English all | 42 | 21 = 50 % (1) | 32 = 76 % | 0 | 2 / 6 |
+
+Manual chapters only (tour-stop hits not counted): Greek top-1 66 / 134 = 49 %, English 20 / 42 = 48 %.
+Greek per group (top-1 / top-3 of n): alarms 17 / 20 of 22, modes 11 / 15 of 20, UAV 9 / 13 of 17, launch + hatch
+9 / 13 of 14, joystick 7 / 8 of 10, screens 3 / 5 of 9, recording 4 / 5 of 7, loudhailer 5 / 6 of 7, lost link 4 / 4
+of 6, power limit 4 / 5 of 5, roles 3 / 3 of 5, DP 2 / 3 of 5, engine 1 / 2 of 5, assistant 1 / 2 of 2.
+Not refused by BM25 (AM4 must refuse them): "η καταπακτή κόλλησε στη μέση", "τι ώρα δύει ο ήλιος", "what does HATCH
+FAULT mean?", "how much does the boat cost", "what mode am I in right now", "what do I do if someone falls
+overboard". False can't find: "μπορεί το drone να ρίξει κάτι;", "ποιος μπορεί να κάνει μανούβρα".
+AS17 floors (just under the honest numbers): tuning el 55 / 75 %, en 42 / 70 %; held-out el 60 / 73 %, en 55 / 75 %;
+false can't find el <= 3, en <= 1; can't find right el >= 8, en >= 2.
+Other fixes: a stale committed index FAILS tools/check.sh (`assistant_index.py check`) and is never used by the
+worker (can't find + the notice asst.n_index; AS14 mutation: a manual changed, no rebuild -> exit 1); the question
+language's index only (LOW-2); the lang files no index source (LOW-1); the assistant chapters MANUAL_EL 17 / MANUAL
+22 not indexed (LOW-3); a line range per split part (LOW-4; 0 wrong ranges over 1048 manual passages).
+
 ## 000000. Talking manual - FIND (step AM3, 2026-11-07)
 
 Station only (no app / hal / gateway change). `python tools/assistant_index.py eval` (deterministic; also in
