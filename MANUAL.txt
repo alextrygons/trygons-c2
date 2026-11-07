@@ -1,6 +1,6 @@
 ===============================================================================
   TRYGONS C2 BOAT AUTOPILOT - USER MANUAL
-  State: 2026-10-25 (screen 2 = map + corner panels, one look for both screens, geofence)
+  State: 2026-11-06
   The same manual in Greek: MANUAL_EL.txt (kept in step with this one)
 ===============================================================================
 
@@ -714,7 +714,7 @@ analysis works the same whatever language the screens had.
 "Driver screen" (top bar) or Windows menu. The FRONT camera fills the whole
 window; everything else is drawn ON the video with a dark see-through
 backing and black-outlined text, readable over bright sea, sky and sun. One
-main colour (green or white, AR menu); RED = warning, AMBER = caution only.
+colour: all information on the video is GREEN (no white); RED = alarms only, AMBER = caution only; night mode = dim red.
 
   +----------+   MODE (+ target heading)    [GENERAL WARNING] +----------+
   | REAR-L   |   channel  latency  POWER    [GENERAL CAUTION] |  REAR-R  |
@@ -1046,9 +1046,12 @@ WHAT IS DIFFERENT
     ONLY", and in the telemetry (TELEM2 group I).
 
 EMERGENCY STOP (every configuration, not only the first test)
-  A mushroom switch that cuts the steering motor / actuator power itself;
-  its second contact tells the board (WIRING.md). Pressed: STANDBY at once,
-  alarm EMERGENCY STOP, nothing can leave STANDBY until it is released.
+  A mushroom switch. Pressed: STANDBY at once, alarm EMERGENCY STOP, and
+  nothing but STANDBY works until it is released. Its hard-wired contacts
+  stop the ENGINE through the kill circuit in EVERY profile (CREWED too) and
+  cut the DP thrusters' contactor. It does NOT cut the servo power (the
+  DroneCAN servo nodes stay powered); its second contact tells the board
+  (WIRING.md).
 
 -------------------------------------------------------------------------------
 6B. BENCH TEST: EVERY SENSOR AND OUTPUT ON THE DOCK
@@ -1084,8 +1087,8 @@ WHAT IT DOES
     report. On the PC simulator the numbers are simulated (it says so).
     Display only - it changes nothing on the boat.
   * Monitor trip test (asks first): the CPU1 safety monitor trips for real -
-    idle + neutral forced by the monitor itself, steering driver asleep,
-    relay open, buzzer, STANDBY, alarm MONITOR TRIP. It stays until the
+    idle + neutral forced by the monitor itself, steering held, engine kill
+    circuit opened (UNCREWED only), buzzer, STANDBY, alarm MONITOR TRIP. It stays until the
     board is powered off and on (that is the point: nothing can undo it).
 
 IT ENDS BY ITSELF (back to STANDBY, reason "bench test ended")
@@ -1097,7 +1100,7 @@ IT ENDS BY ITSELF (back to STANDBY, reason "bench test ended")
 7. HOW THE BOAT BEHAVES: MODES, BUTTONS, JOYSTICK
 -------------------------------------------------------------------------------
 MODES
-  STANDBY    engine idle, neutral, steering off. Power-up and after faults.
+  STANDBY    engine idle, neutral, steering held. Power-up and after faults.
   MANUAL     the joystick: stick left/right = outboard angle (full range),
              forward/back = throttle ahead/astern (centre = idle + neutral).
              Gear changes always go idle -> neutral -> gear, however fast
@@ -1297,7 +1300,7 @@ USB lever has a few extra ones, chapter 8)
     the course until idle + neutral, then the steering stops.
 
 THE STANDBY BUTTON ALWAYS WINS
-  Every mode -> STANDBY (idle + neutral first, then steering off). The
+  Every mode -> STANDBY (idle + neutral first, then steering held). The
   throttle is commanded to IDLE AT ONCE in STANDBY (no rate limit, step 11e;
   normal driving, a lowered power limit and a planned arrival stop come down
   at thr_dn_pc_s, 50 %/s). The gear goes to neutral once the throttle servo
@@ -1912,7 +1915,7 @@ DP THRUSTERS (the thrusters themselves; the DP mode is the next part)
   Log: event 28 DP (settings taken, thruster HOT, cooled down).
 
 DP MODE (SPOT / JOG / CRUISE / TRIP) - the thrusters hold or move the boat
-  While DP runs the OUTBOARD stays at idle in NEUTRAL with its steering off
+  While DP runs the OUTBOARD stays at idle in NEUTRAL with its steering held
   the whole time (only the generator may open its throttle in neutral, see
   GENERATOR MODE); the two thrusters do everything.
   * SPOT (Spot-Lock): the boat holds the GPS position where DP started and
@@ -2291,7 +2294,7 @@ D. REMOTE JOYSTICK DRIVING FROM A SHORE PC (mode REMOTE MANUAL)
        RELEASE (not on the screen, not on the joystick): a release by
        accident in the middle of a manoeuvre would be dangerous.
   STANDBY button while driving remotely: the shore stick is ignored at
-  once; the gyro holds the course until idle + neutral, then steering off.
+  once; the gyro holds the course until idle + neutral, then the steering is held.
   It also ends when: the onboard joystick moves or TAKE is pressed
   (-> MANUAL at once), STANDBY is pressed, any fault, a station on board
   takes HELM, the remote driver's link fails.
@@ -2720,7 +2723,7 @@ LOUDHAILER AND BOAT MICROPHONE (step 13r, owner 2026-11-02)
     answers now and then) - nothing on this PC's sound card on the boat side.
   Hardware: PARTS.md (loudhailer) and WIRING.md section 3G.
 
-UAV MAGAZINE - REGISTRATION (step U2; launch, flight and video come in later steps)
+UAV MAGAZINE - REGISTRATION
   Six small camera drones are stacked in the boat under a hatch (slot 1 = the
   top one = the next out). OBSERVATION ONLY: no payload, no release - the
   gateway's MAVLink allow-list has no such command at all.
@@ -2997,7 +3000,7 @@ UAV MAGAZINE - FLYING A UAV BY HAND (step U5)
 12. SAFETY RULES BUILT INTO THE SOFTWARE
 -------------------------------------------------------------------------------
   * Gear changes only at idle: idle -> wait -> neutral -> wait -> gear.
-  * Every fault / STANDBY: idle + neutral FIRST, then steering off (the
+  * Every fault / STANDBY: idle + neutral FIRST, then steering held (the
     DroneCAN position servo: HOLD). Idle is commanded AT ONCE; neutral once
     the throttle servo must be at idle (thr_trav_s); until idle +
     neutral the onboard stick (from MANUAL) or the gyro (from REMOTE, or a
@@ -3012,14 +3015,15 @@ UAV MAGAZINE - FLYING A UAV BY HAND (step U5)
     throttle is idle, neutral is confirmed (neutral switch if fitted) and
     the stick is centred - and the joystick must be there: no joystick
     seen (not plugged in, USB bridge not sending yet) = not armed, alarm
-    NOT NEUTRAL AT START. Until then: STANDBY only, safety relay open,
+    NOT NEUTRAL AT START. Until then: STANDBY only,
     alarm after 3 s.
   * WATCHDOGS on all three cores (100 ms on core 0). A stuck loop resets
     the chip: everything starts again in STANDBY at 30 %.
   * CPU1 SAFETY MONITOR: checks every 1 ms, on its own: throttle above the
     power limit, gear moving with the throttle open, core 0 silent for
-    200 ms. Then it forces idle + neutral + steering off + alarm + safety
-    relay open, and core 0 can't undo it until a reset. Reaction in the
+    200 ms. Then it forces idle + neutral + alarm, the steering servo HOLDS
+    its position, and P10.5 opens the engine kill circuit ONLY in UNCREWED;
+    core 0 can't undo it until a reset. Reaction in the
     simulator: 10-20 ms (one check), 220 ms for a frozen core 0.
   * Heading hold pauses (outboard held still) when there is no propulsion,
     so the angle estimate can't drift while you are stopped.
@@ -3037,7 +3041,7 @@ DRONECAN SERVOS (STEP 11e - THE CODE IS READY, THE BOARD STILL USES PWM)
   * Throttle UP is gentle (15 %/s), DOWN is faster (50 %/s); STANDBY, the
     e-stop, a lost link, a lost node, every fault and a monitor trip
     command IDLE AT ONCE (no rate limit - only the servo's own speed).
-  * "Idle" for every rule that waits for it (gear change, steering off,
+  * "Idle" for every rule that waits for it (gear change, steering hold,
     ENGINE KILL, STARTER, generator, DP, restart) = where the throttle servo
     MUST be by now: the software assumes the slowest servo (thr_trav_s,
     6 s from full to idle). The gear servo moves only after that. A longer
@@ -3341,7 +3345,7 @@ D) KNOWN LIMITATIONS / JUDGEMENT CALLS
      * USB lever: CONFIRM only needs the stick centred, not the lever.
      * USB joystick fault while driving: the stick that steered is gone,
        so the gyro holds the course while the throttle comes down at the
-       STANDBY rate, then neutral, then steering off - same as a broken
+       STANDBY rate, then neutral, then steering held - same as a broken
        wire on the analog stick.
      * While mapping buttons, the old map still works (TAKE takes over).
      * Core 2 RAM and the LMU blocks are 81-84 % full (the black box). Each
