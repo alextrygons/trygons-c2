@@ -5,7 +5,7 @@ the worker itself starts nothing.
 READ-ONLY (CLAUDE.md W): this module gets a narrow `view` from app.py (language, horn state, voice stop, a
 message line) - never `app` - and imports no link / gateway / proto / station module, no socket.
 
-Push-to-talk (W83): ONLY the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar, screen 2 bar 2) and the key
+Push-to-talk (W83): ONLY the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar, screen 2 bar 1) and the key
 (gs_settings "assistant_key", default F9; a USB foot pedal sends that key). press(source) accepts the sources
 "button" / "key" only: never the joystick. Release = ask; < MIN_S ignored, MAX_S = asked automatically.
 The loudhailer «ΟΜΙΛΙΑ» (AM1 review H1): its press aborts a capture AND stops the assistant's voice at once
@@ -28,9 +28,13 @@ ANSWER_TIMEOUT_S = 30.0         # no answer = a hang: the worker is restarted
 RESTART_DELAY_S = 5.0
 RESTARTS_MAX = 3                # at most 3 restarts in RESTART_WINDOW_S, then off until the station restarts
 RESTART_WINDOW_S = 600.0
+PING_S = 10.0                   # a ping every 10 s while READY / LISTENING (AM2 review LOW-5) ...
+PONG_TIMEOUT_S = 10.0           # ... no pong (no line at all) within 10 s = a hang: restarted (counts in the 3 / 10 min)
+ERR_MAX_BYTES = 1 << 20         # worker_err.txt is rotated to worker_err.1.txt above 1 MB (AM2 review LOW-6)
 SOURCES = ("button", "key")     # never "joystick" (CLAUDE.md W)
-KEYS = ("F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10")     # F11 / F12 belong to the screens
+KEYS = ("F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9")     # F10 = the Windows menu key, F11 / F12 = the screens
 DEFAULT_KEY = "F9"
+PROBLEM_NOTES = ("asst.n_mic", "asst.n_error")    # amber on the message line; the other notes = plain info (LOW-4)
 
 # states
 OFF, IDLE, NO_MODELS, GATEWAY_PC, STARTING, READY, LISTENING, THINKING, DOWN, FAILED = (
@@ -70,6 +74,8 @@ class Assistant:
         self.last = None                         # the last "heard" result
         self.note = ""                           # the last refusal / problem (screen language key + args)
         self.gen = 0                             # the worker generation (an old worker's lines are dropped)
+        self.heard_t = None                      # the last line from the worker (alive)
+        self.ping_t = None                       # an unanswered ping was sent at this time
 
     # --- settings ------------------------------------------------------------------------------------------------
     def _get(self, k, dflt):
@@ -116,16 +122,20 @@ class Assistant:
         kw = {}
         if os.name == "nt":
             kw["creationflags"] = 0x08000000 | 0x00004000          # CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
+        err = None
         try:
-            err = open(os.path.join(log_dir(), "worker_err.txt"), "a", encoding="utf-8")
+            err = open(_err_file(), "a", encoding="utf-8")
             self.proc = self.popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env,
                                    cwd=paths.GS, **kw)
-            err.close()
         except OSError as e:
             return self._crash("worker did not start: %s" % str(e)[:80])
+        finally:
+            if err is not None:                  # the child keeps its own handle; ours is closed (also on a failure)
+                err.close()
         self.gen += 1
         threading.Thread(target=self._reader, args=(self.proc, self.gen), daemon=True).start()
         self.started_t = self.clock()
+        self.heard_t, self.ping_t = self.started_t, None
         self._set(STARTING)
         gpu, cpu = paths.whisper_model(paths.MODEL_GPU), paths.whisper_model(paths.MODEL_CPU)
         self._send({"op": "init", "stt": self.stt_kind, "model": gpu or cpu, "cpu_model": cpu,
@@ -156,7 +166,7 @@ class Assistant:
     def stop(self):
         p, self.proc = self.proc, None
         self.gen += 1
-        self.pressed_t = self.ask_t = None
+        self.pressed_t = self.ask_t = self.heard_t = self.ping_t = None
         self._set(IDLE if self.enabled() else OFF)
         if p is not None:
             try:
@@ -254,6 +264,8 @@ class Assistant:
                 break
             if gen != self.gen:
                 continue                          # a line of an old worker
+            if m.get("op") != "_eof":
+                self.heard_t, self.ping_t = now, None     # any line = alive (a pong, or an answer after a busy ask)
             self._on(m)
         if self.state == LISTENING and now - self.pressed_t >= MAX_S:
             self._ask()
@@ -264,6 +276,12 @@ class Assistant:
         elif self.state == DOWN and now - self.down_t >= RESTART_DELAY_S:
             self.restarts.append(now)
             self.start()
+        elif self.state in (READY, LISTENING) and self.proc is not None:   # alive check (LOW-5); THINKING: timeout
+            if self.ping_t is not None and now - self.ping_t > PONG_TIMEOUT_S:
+                self._crash("no pong in %.0f s" % PONG_TIMEOUT_S)
+            elif self.ping_t is None and now - (self.heard_t or now) >= PING_S:
+                if self._send({"op": "ping"}):
+                    self.ping_t = now
         if self.proc is not None and self.state in (READY, LISTENING, THINKING, STARTING):
             try:
                 rc = self.proc.poll()
@@ -322,6 +340,17 @@ class Assistant:
     def inject(self, samples):
         """Tests (mic backend "sim"): samples as if spoken into the microphone."""
         return self._send({"op": "inject", "samples": list(samples)})
+
+
+def _err_file():
+    """The worker's stderr file in log_dir(), rotated once above ERR_MAX_BYTES (one old copy kept)."""
+    p = os.path.join(log_dir(), "worker_err.txt")
+    try:
+        if os.path.getsize(p) > ERR_MAX_BYTES:
+            os.replace(p, os.path.join(log_dir(), "worker_err.1.txt"))
+    except OSError:
+        pass
+    return p
 
 
 def _this_python():

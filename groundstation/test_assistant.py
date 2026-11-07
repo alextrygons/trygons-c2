@@ -6,7 +6,10 @@ push-to-talk, its own microphone, term hints, the read-only proof.
       hailer ...); only client.py may import subprocess (the ONE process door); worker / stt / mic / hints /
       paths start no process (no subprocess / multiprocessing / os.system / os.popen)
   AS2 the transitive import graph through groundstation/ (+ gateway/): nothing reached from an assistant module
-      is a link / gateway / protocol / station-sender module
+      is a link / gateway / protocol / station-sender module. LIMIT (AM2 review MED-3): third-party libraries
+      (faster-whisper -> huggingface_hub -> httpx ...) are NOT banned - network code by design; a static walk of
+      the assistant Python's site-packages LISTS the network modules reached. The no-network proof of the worker
+      rests on the runtime blocker (AS3 / AS4), local model folders and the offline environment (AS9)
   AS3 runtime: a whole question through the REAL worker process (stub recogniser, simulated microphone) with the
       station's senders (app.App send* / cmd, gwclient.GatewayLink.send*, link.Link.send) and socket patched to
       fail - in this process AND in the worker (socket blocked): the question still comes back, nothing was sent
@@ -28,6 +31,15 @@ push-to-talk, its own microphone, term hints, the read-only proof.
       still fits 1366x768 / 1920x1080 / 1366x658) and in screen 1's ONE bottom bar (press / release, inside the bar,
       not over the alarms / notices boxes); greyed while not ready; the Tools page «Βοηθός» (mic + key settings)
   AS12 log folder: a test run writes to a temp folder (TRYGONS_TEST), the real one is in .gitignore
+  AS13 hash-locked downloads (AM2 review MED-4): sha256 of the Python zip + get-pip.py (a commit), pip only from
+      tools/assistant_requirements*.txt with every line pinned + hashed and --require-hashes
+  AM2-r (review of fb97ac2): AS3 / AS4 FAIL on any network attempt the worker made - recorded by the blocker
+      (marker file + stderr, audit hook) even when a library caught the error; a negative control proves it
+      (MED-2). AS3b = the AS3 traps through the REAL station wiring (ap.asst, the screen-2 button, ov_tick)
+      (LOW-2). AS6: a gc.get_referents walk finds no App behind AsstView (LOW-1), a ready message / sound signal
+      stop the assistant (LOW-3). AS8: no pong in 10 s = restarted + counted (LOW-5), stderr closed on a Popen
+      failure + rotated (LOW-6). AS5: F10 is no PTT key (LOW-7). AS11 + test_driver I19: «ΕΡΩΤΗΣΗ» is
+      >= 2 bar heights from «ΟΜΙΛΙΑ» with other buttons between (MED-1)
 
 Run:  python test_assistant.py      (exit code 0 = all passed; N/A lines do not fail)
 """
@@ -142,7 +154,75 @@ def as2():
             if i not in seen:
                 todo.append((i, name))
     local = sorted(n for n in seen if resolve(n))
-    report("AS2 transitive import graph", not bad, "reached %s; banned %s" % (local, bad or "none"))
+    third = sorted(n for n in seen if not resolve(n) and not n.startswith("assistant.") and
+                   n.split(".")[0] not in sys.stdlib_module_names)
+    net, nfiles = site_walk(third)
+    report("AS2 transitive import graph", not bad,
+           "reached %s; banned %s. LIMIT (AM2 review MED-3): the third-party libraries %s are NOT banned - "
+           "faster-whisper's model download (huggingface_hub) is network code by design; a static walk of the "
+           "assistant Python's site-packages (%s files) reaches the network modules %s. So the no-network proof "
+           "for the worker rests on the RUNTIME blocker (AS3 / AS4: every attempt recorded, even a caught one) + "
+           "local model folders only + the offline environment (AS9)" % (local, bad or "none", third, nfiles,
+                                                                          net or "(not installed)"))
+
+
+NET_MODULES = {"socket", "ssl", "http", "urllib", "asyncio", "ftplib", "smtplib", "socketserver", "xmlrpc",
+               "requests", "urllib3", "httpx", "httpx2", "httpcore", "httpcore2", "aiohttp", "websockets", "hf_xet",
+               "h11", "anyio", "truststore"}
+
+
+def site_walk(roots, limit=8000):
+    """A static walk of the assistant Python's site-packages from the worker's third-party imports (every
+    import statement, also inside try / functions = an over-approximation) -> ({network module: an importer},
+    files read). ({}, 0) when the assistant Python is not installed."""
+    py = paths.assistant_python()
+    if not py:
+        return {}, 0
+    site = os.path.join(os.path.dirname(py), "Lib", "site-packages") if os.name == "nt" else None
+    if not site or not os.path.isdir(site):
+        return {}, 0
+
+    def find(mod):
+        b = os.path.join(site, *mod.split("."))
+        for p in (b + ".py", os.path.join(b, "__init__.py")):
+            if os.path.isfile(p):
+                return p
+        return None
+    seen, todo, net, files = set(), [(r, "worker") for r in roots], {}, 0
+    while todo and files < limit:
+        mod, via = todo.pop()
+        if mod in seen:
+            continue
+        seen.add(mod)
+        top = mod.split(".")[0]
+        if top in NET_MODULES:
+            net.setdefault(top, via)
+        if top in sys.stdlib_module_names:
+            continue
+        p = find(mod)
+        if p is None:
+            continue
+        files += 1
+        pkg = mod if p.endswith("__init__.py") else mod.rpartition(".")[0]
+        try:
+            with open(p, encoding="utf-8", errors="replace") as f:
+                tree = ast.parse(f.read())
+        except (SyntaxError, ValueError):
+            continue
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                todo += [(a.name, mod) for a in n.names]
+            elif isinstance(n, ast.ImportFrom):
+                if n.level:
+                    parts = pkg.split(".")
+                    base = ".".join(parts[:len(parts) - (n.level - 1)]) if n.level > 1 else pkg
+                    m = base + ("." + n.module if n.module else "")
+                else:
+                    m = n.module or ""
+                if m:
+                    todo.append((m, mod))
+                    todo += [(m + "." + a.name, mod) for a in n.names if a.name != "*"]
+    return dict(sorted(net.items())), files
 
 
 # --- a station-side view for the client tests -------------------------------------------------------------------
@@ -181,27 +261,79 @@ class Sets:
         return self.d.get(k, d)
 
 
-BLOCKER = '''import socket, sys, runpy
+# The worker-side network blocker (AM2 review MED-2): EVERY attempt is RECORDED (a line in the marker file + a
+# stderr line) before it is refused - a library that catches the OSError can't hide it: AS3 / AS4 fail when the
+# marker file has a line. An audit hook sees the C level too (socket.__new__ / connect / bind / getaddrinfo ...).
+BLOCKER = '''import os, socket, sys, runpy
+MARK = sys.argv[1]
+def _mark(what):
+    try:
+        with open(MARK, "a", encoding="utf-8") as f:
+            f.write(what + "\\n")
+        sys.stderr.write("NETWORK ATTEMPT (test_assistant): %s\\n" % what)
+    except Exception:
+        pass
+LOCAL = ("socket.gethostname",)    # a local OS query, no traffic (CTranslate2 / CUDA read it at load)
+def _hook(ev, args):
+    if ev in LOCAL:
+        return
+    if ev.startswith("socket.") or ev in ("urllib.Request", "http.client.connect", "ftplib.connect",
+                                         "smtplib.connect", "webbrowser.open"):
+        _mark(ev)
+        raise OSError("network blocked (test_assistant): " + ev)
+sys.addaudithook(_hook)
 class _Blocked(socket.socket):
     def __init__(self, *a, **k):
+        _mark("socket.socket")
         raise OSError("network blocked (test_assistant)")
 def _no(*a, **k):
+    _mark("socket call")
     raise OSError("network blocked (test_assistant)")
 socket.socket = _Blocked
 socket.create_connection = _no
 socket.getaddrinfo = _no
-w = sys.argv[1]
-sys.argv = [w]
+w = sys.argv[2]
+sys.argv = [w] + sys.argv[3:]
 runpy.run_path(w, run_name="__main__")
 '''
+MARKERS = []                                          # every marker file a blocked worker was given
 
 
-def blocked_cmd(py):
+def blocked_cmd(py, script=None):
     d = tempfile.mkdtemp(prefix="trygons_asst_")
     p = os.path.join(d, "blocked_worker.py")
     with open(p, "w", encoding="utf-8") as f:
         f.write(BLOCKER)
-    return [py, p, os.path.join(ASST, "worker.py")]
+    mark = os.path.join(d, "network_attempts.txt")
+    MARKERS.append(mark)
+    return [py, p, mark, script or os.path.join(ASST, "worker.py")]
+
+
+def attempts(marks):
+    """The network attempts recorded in these marker files (empty = none)."""
+    out = []
+    for m in marks:
+        if os.path.isfile(m):
+            with open(m, encoding="utf-8") as f:
+                out += [x.strip() for x in f if x.strip()]
+    return out
+
+
+def blocker_selftest(py):
+    """The blocker's negative control: a script that tries the network and CATCHES the error - the attempt must
+    still be in the marker file (else AS3 / AS4 could not see a hidden attempt)."""
+    import subprocess
+    d = tempfile.mkdtemp(prefix="trygons_asst_nc_")
+    s = os.path.join(d, "tries.py")
+    with open(s, "w", encoding="utf-8") as f:
+        f.write("import socket\ntry:\n    socket.create_connection(('127.0.0.1', 9))\nexcept OSError:\n    pass\n"
+                "try:\n    import _socket\n    _socket.socket()\nexcept OSError:\n    pass\nprint('caught')\n")
+    n = len(MARKERS)
+    cmd = blocked_cmd(py, s)
+    r = subprocess.run(cmd, capture_output=True, timeout=60)
+    got = attempts(MARKERS[n:])
+    del MARKERS[n:]
+    return b"caught" in r.stdout and len(got) >= 2, got
 
 
 def wait(a, until, s=20.0):
@@ -265,6 +397,7 @@ def as3():
     socket.socket = NoSock
     socket.create_connection = lambda *a, **k: sent.append("socket") or (_ for _ in ()).throw(OSError("blocked"))
     clk = Clock()
+    n = len(MARKERS)
     a = stub(clock=clk, py=sys.executable)
     try:
         a.start()
@@ -275,8 +408,102 @@ def as3():
         socket.socket, socket.create_connection = real_sock, real_cc
         for cls, name, orig in saved:
             setattr(cls, name, orig)
-    report("AS3 runtime: senders + network blocked", ready and q == "πού κλείνω την καταπακτή" and not sent,
-           "ready %s, heard %r, senders / sockets called %s, traps %d" % (ready, q, sent or "none", len(saved)))
+    tried = attempts(MARKERS[n:])
+    nc_ok, nc = blocker_selftest(sys.executable)
+    report("AS3 runtime: senders + network blocked", ready and q == "πού κλείνω την καταπακτή" and not sent and
+           len(MARKERS) > n and not tried and nc_ok,
+           "ready %s, heard %r, senders / sockets called %s, traps %d; worker network attempts %s; the blocker's "
+           "negative control (attempts caught by the script) recorded %s" % (ready, q, sent or "none", len(saved),
+                                                                             tried or "none", nc))
+
+
+def from_assistant():
+    """True when the current call stack runs assistant code (a file in groundstation/assistant/, AsstView, or the
+    App's asst_* glue) - the station's own periodic sends are not the assistant's."""
+    import inspect
+    import app as A
+    for fr in inspect.stack()[2:]:
+        f = os.path.abspath(fr.filename)
+        if f.startswith(ASST + os.sep) or fr.function.startswith("asst_") or \
+                isinstance(fr.frame.f_locals.get("self"), A.AsstView):
+            return True
+    return False
+
+
+def as3_rig(rig):
+    """AM2 review LOW-2: the same traps through the REAL station wiring - ap.asst (the App's own Assistant with
+    its AsstView), the screen-2 «ΕΡΩΤΗΣΗ» button, App.ov_tick draining the heard queue: no sender / socket is
+    called from an assistant code path, no network attempt in the worker, the question reaches the screens."""
+    import socket
+    import app as A
+    import gwclient
+    import link
+    ap = rig.ap
+    a = ap.asst
+    sent, saved = [], []
+
+    def trap(cls, name):
+        orig = getattr(cls, name)
+        saved.append((cls, name, orig))
+
+        def t(*x, **k):
+            if from_assistant():
+                sent.append("%s.%s" % (cls.__name__, name))
+                raise RuntimeError("a sender was called from the assistant")
+            return orig(*x, **k)
+        setattr(cls, name, t)
+    for cls in (gwclient.GatewayLink, link.Link, A.App):
+        for name in list(vars(cls)):
+            if name.startswith("send") or name == "cmd":
+                trap(cls, name)
+    real_sock, real_cc = socket.socket, socket.create_connection
+
+    class NoSock(real_sock):
+        def __init__(self, *x, **k):
+            if from_assistant():
+                sent.append("socket")
+                raise OSError("network blocked")
+            super().__init__(*x, **k)
+
+    def cc(*x, **k):
+        if from_assistant():
+            sent.append("socket")
+            raise OSError("network blocked")
+        return real_cc(*x, **k)
+    socket.socket, socket.create_connection = NoSock, cc
+    keep = a.stt_kind, a.stub_text, a.mic_backend
+    n = len(MARKERS)
+    out = {}
+    try:
+        a.stop()
+        a.stt_kind, a.stub_text, a.mic_backend = "stub", "πού κλείνω την καταπακτή", "sim"
+        a.worker_cmd = lambda: blocked_cmd(sys.executable)
+        ap.asst_heard = None
+        a.start()
+        out["ready"] = rig.pump(20, until=lambda: a.state == client.READY) is not False and a.state == client.READY
+        ap.render(force=True)
+        ask = ts.op(ap, "ask")
+        r = ask["r"]
+        ap.ov.click((r[0] + r[2]) / 2, (r[1] + r[3]) / 2)       # the real «ΕΡΩΤΗΣΗ» button on screen 2
+        out["listening"] = a.state == client.LISTENING
+        a.inject(tone(1.0))
+        rig.pump(1.0)
+        ap.ov.release()
+        rig.pump(20, until=lambda: ap.asst_heard is not None)
+        out["heard on the screens"] = bool(ap.asst_heard) and ap.asst_heard[0] == "πού κλείνω την καταπακτή" and \
+            "πού κλείνω την καταπακτή" in (ap.msg_text or "")
+    finally:
+        a.stop()
+        del a.worker_cmd                              # back to the class's own worker_cmd
+        a.stt_kind, a.stub_text, a.mic_backend = keep
+        socket.socket, socket.create_connection = real_sock, real_cc
+        for cls, name, orig in saved:
+            setattr(cls, name, orig)
+    tried = attempts(MARKERS[n:])
+    out["no sender / socket from the assistant"] = not sent
+    out["no network attempt in the worker"] = len(MARKERS) > n and not tried
+    report("AS3b the real station wiring (ap.asst) with the AS3 traps", all(out.values()),
+           "%s; senders %s, worker attempts %s, traps %d" % (out, sent or "none", tried or "none", len(saved)))
 
 
 # --- AS4 -------------------------------------------------------------------------------------------------------
@@ -320,6 +547,7 @@ def as4():
     clk = Clock()
     a = client.Assistant(View(), settings=Sets(), clock=clk, stt_kind="faster", mic_backend="sim")
     a.worker_cmd = lambda: blocked_cmd(py)
+    n0 = len(MARKERS)
     got = []
     try:
         a.start()
@@ -339,8 +567,12 @@ def as4():
             got.append((lang, h[0], h[1].get("ms"), must in plain))
     finally:
         a.stop()
-    report("AS4 real models, network blocked", ready and len(got) == 2 and all(g[3] for g in got),
-           "device %s, %s" % (a.device, got))
+    tried = attempts(MARKERS[n0:])
+    nc_ok, nc = blocker_selftest(py)                  # the negative control in the ASSISTANT Python too
+    report("AS4 real models, network blocked", ready and len(got) == 2 and all(g[3] for g in got) and
+           len(MARKERS) > n0 and not tried and nc_ok,
+           "device %s, %s; worker network attempts %s (a caught attempt counts too); negative control %s"
+           % (a.device, got, tried or "none", nc))
 
 
 # --- AS5 / AS6 -------------------------------------------------------------------------------------------------
@@ -383,6 +615,8 @@ def as5():
         with open(os.path.join(HERE, m + ".py"), encoding="utf-8") as f:
             calls += re.findall(r"asst\.press\(([^)]*)\)", f.read())
     out["only button / key"] = bool(calls) and all(c.strip() in ('"button"', '"key"') for c in calls)
+    out["F10 not a PTT key (Windows menu key, LOW-7)"] = "F10" not in client.KEYS and \
+        client.Assistant(View(), settings=Sets(assistant_key="F10")).key() == client.DEFAULT_KEY
     report("AS5 push-to-talk", all(out.values()), "%s, app presses %s" % (out, calls))
 
 
@@ -426,7 +660,35 @@ def as6(rig):
     out["AsstView.horn_held"] = view.horn_held() is True
     ap.hail.pressing = False
     out["AsstView no sender"] = not any(hasattr(view, n) for n in ("app", "send", "cmd", "link"))
-    report("AS6 loudhailer wins", all(out.values()), str(out))
+    # AM2 review LOW-1: the view holds NO App - a gc.get_referents walk from it (the loudhailer object is the one
+    # allowed station object: it is NOT walked into) never meets the App, a bound App method or the link
+    import app as A
+    import gc
+    found, seen, todo = [], set(), [view]
+    while todo and len(seen) < 20000:
+        o = todo.pop()
+        if id(o) in seen or isinstance(o, (type, types.ModuleType)):
+            continue
+        seen.add(id(o))
+        if isinstance(o, A.App) or getattr(o, "__self__", None) is ap or o is ap.link:
+            found.append(type(o).__name__)
+            continue
+        if o is ap.hail:
+            continue
+        todo += gc.get_referents(o)
+    out["AsstView holds no App (gc walk)"] = not found and len(seen) > 1
+    # AM2 review LOW-3: a ready message and a sound signal stop the assistant too (as TALK does)
+    for name, call in (("play_message", lambda: ap.hail.play_message(0)), ("signal", lambda: ap.hail.signal("short5"))):
+        calls.clear()
+        ap.asst.horn_pressed = lambda: calls.append("horn")
+        try:
+            call()
+        except Exception:
+            pass
+        finally:
+            ap.asst.horn_pressed = orig
+        out["Hailer.%s -> horn_pressed" % name] = calls[:1] == ["horn"]
+    report("AS6 loudhailer wins", all(out.values()), "%s; objects walked %d, App found %s" % (out, len(seen), found))
 
 
 # --- AS7 -------------------------------------------------------------------------------------------------------
@@ -497,6 +759,53 @@ def as8(rig):
     c.tick()
     out["hang -> restarted"] = c.state == client.DOWN
     c.stop()
+    # AM2 review LOW-5: a worker that answers init but never a ping = restarted, and it counts in the 3 / 10 min
+    deaf = "import sys, json\nfor l in sys.stdin:\n    m = json.loads(l)\n    if m.get('op') == 'init':\n" \
+           "        print(json.dumps({'op': 'ready', 'device': 'deaf'}), flush=True)\n"
+    e = client.Assistant(View(), settings=Sets(), clock=clk, stt_kind="stub", mic_backend="sim")
+    e.worker_cmd = lambda: [sys.executable, "-c", deaf]
+    e.start()
+    wait(e, lambda: e.state == client.READY, 10)
+    r0 = e.state == client.READY
+    clk.t += client.PING_S + 0.1
+    e.tick()
+    pinged = e.ping_t is not None
+    clk.t += client.PONG_TIMEOUT_S - 1
+    time.sleep(0.3)
+    e.tick()
+    still = e.state == client.READY
+    clk.t += 2
+    e.tick()
+    out["no pong -> restarted"] = r0 and pinged and still and e.state == client.DOWN
+    clk.t += client.RESTART_DELAY_S + 0.1
+    e.tick()
+    out["the restart counts"] = len(e.restarts) == 1
+    e.stop()
+    # a worker that answers its pings stays up (the real worker, stub recogniser)
+    f = stub(clock=clk, py=sys.executable)
+    f.start()
+    wait(f, lambda: f.state == client.READY)
+    for _ in range(3):
+        clk.t += client.PING_S + 0.1
+        f.tick()
+        wait(f, lambda: f.ping_t is None, 5)
+    out["pong keeps it up"] = f.state == client.READY and not f.restarts
+    f.stop()
+    # LOW-6: the stderr file is closed when Popen fails (Windows: it can be deleted) and rotated above 1 MB
+    errf = os.path.join(client.log_dir(), "worker_err.txt")
+    with open(errf, "w", encoding="utf-8") as fh:
+        fh.write("x" * (client.ERR_MAX_BYTES + 10))
+    g = client.Assistant(View(), settings=Sets(), clock=clk, stt_kind="stub", mic_backend="sim",
+                         popen=lambda *a_, **k_: (_ for _ in ()).throw(OSError("no such program")))
+    g.start()
+    rot = os.path.isfile(os.path.join(client.log_dir(), "worker_err.1.txt")) and os.path.getsize(errf) < 100
+    try:
+        os.remove(errf)
+        closed = True
+    except OSError:
+        closed = False
+    out["Popen fails -> DOWN, stderr file closed"] = g.state == client.DOWN and closed
+    out["stderr rotated above 1 MB"] = rot
     # the notice on both screens, never an alarm
     ap = rig.ap
     real = ap.asst
@@ -664,6 +973,20 @@ def as11(rig):
             not overlay.overlaps(hits[0], no)
         out["s1 AI badge"] = any(o.get("tag") == "ai_badge" and overlay.inside(o["r"], hits[0], 2.0)
                                  for o in dv.hud.ops if o.get("r")) if hits else False
+        # AM2 review MED-1: the real screen-1 snapshot with «ΟΜΙΛΙΑ» shown - «ΕΡΩΤΗΣΗ» far from it (other buttons
+        # between, >= ASK_PTT_MIN_GAP bar heights) at every size
+        import hud
+        gaps = []
+        for W, H in ((1600, 900), (1366, 768), (1024, 600)):
+            s1 = dv.snapshot()
+            s1["hail"] = {"label": "ΟΜΙΛΙΑ", "talking": False, "enabled": True, "text": "", "caution": False}
+            _o, hh = dv.hud.build(W, H, s1)
+            bh = dv.hud.R("bottom")
+            g = hud.ask_ptt_gap(hh)
+            gaps.append(((W, H), g and (round(g[0]), g[1]), bool(g) and g[0] >= hud.ASK_PTT_MIN_GAP * (bh[3] - bh[1])
+                         and g[1] >= 1))
+        out["s1 far from TALK"] = all(x[2] for x in gaps)
+        dv.draw()
         shots = os.environ.get("TRYGONS_SHOT_DIR")
         if shots and dv.last_frame is not None:
             ap.asst_on_heard("πού κλείνω την καταπακτή;", {})
@@ -681,7 +1004,8 @@ def as11(rig):
             out["key saved"] = settings.get("assistant_key") == "F8" and a.key() == "F8"
             pg.set_key("F9")
             pg.refresh()
-            out["page text"] = "F9" in pg.note.cget("text") and pg.state.cget("text") == i18n.T("asst.state.ready")
+            # (+ "  ·  device" when a worker ran before: AS3b used the real ap.asst)
+            out["page text"] = "F9" in pg.note.cget("text") and                 pg.state.cget("text").startswith(i18n.T("asst.state.ready"))
             if shots:
                 for lg in ("el", "en"):
                     i18n.set_lang(lg, save=False)
@@ -726,12 +1050,47 @@ def as5_keys(rig):
     report("AS5b the key", all(out.values()), str(out))
 
 
+def as13():
+    """AM2 review MED-4: tools/get_whisper.py checks the Python zip + get-pip.py by sha256 (a get-pip COMMIT) and
+    installs ONLY from the hash-locked requirements files (--require-hashes, wheels only, every line pinned)."""
+    import importlib.util
+    import re
+    spec = importlib.util.spec_from_file_location("get_whisper", os.path.join(REPO, "tools", "get_whisper.py"))
+    gw = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gw)
+    out = {"zip sha256": re.fullmatch(r"[0-9a-f]{64}", gw.PY_SHA) is not None,
+           "get-pip sha256": re.fullmatch(r"[0-9a-f]{64}", gw.GET_PIP_SHA) is not None,
+           "get-pip at a commit": gw.GET_PIP_COMMIT in gw.GET_PIP and "bootstrap.pypa.io" not in gw.GET_PIP}
+    with open(os.path.join(REPO, "tools", "get_whisper.py"), encoding="utf-8") as f:
+        src = f.read()
+    out["zip checked"] = "get(PY_URL.format(v=PY_VERSION), PY_SHA)" in src
+    out["get-pip checked"] = "get(GET_PIP, GET_PIP_SHA)" in src
+    cmd = gw.install_cmd("py", True)
+    out["install = requirements + --require-hashes"] = "--require-hashes" in cmd and ":all:" in cmd and \
+        cmd.count("-r") == 2 and not any("==" in c for c in cmd)
+    out["no other pip install"] = src.count('"install"') == 1
+    pinned = []
+    for path in (gw.REQ, gw.REQ_CUDA):
+        with open(path, encoding="utf-8") as f:
+            body = f.read()
+        reqs = re.split(r"\n(?=[A-Za-z])", "\n".join(x for x in body.splitlines() if not x.startswith("#")).strip())
+        for r in reqs:
+            name = r.split("==")[0]
+            pinned.append((name, bool(re.match(r"^[A-Za-z0-9_.\-]+==[^ \\]+ \\", r)) and
+                           len(re.findall(r"--hash=sha256:[0-9a-f]{64}", r)) >= 1))
+    names = {n.lower() for n, _ok in pinned}
+    out["every line pinned + hashed"] = bool(pinned) and all(ok for _n, ok in pinned)
+    out["top-level packages in the lock"] = all(p.split("==")[0].lower() in names
+                                                for p in gw.PACKAGES + gw.CUDA_PACKAGES)
+    report("AS13 hash-locked downloads", all(out.values()), "%s; %d packages" % (out, len(pinned)))
+
+
 def main():
     exe = os.path.join(HERE, "..", "sim", "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim")
     if not os.path.exists(exe):
         print("build the simulator first: sim\\build_sim.bat")
         return 2
-    for fn in (as1, as2, as3, as5, as7, as9, as10, as12) + (() if os.environ.get("AS_SKIP4") else (as4,)):
+    for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13) + (() if os.environ.get("AS_SKIP4") else (as4,)):
         try:
             fn()
         except Exception as e:
@@ -740,7 +1099,7 @@ def main():
             report(fn.__name__, False, "crashed: %r" % e)
     rig = ts.Rig()
     try:
-        for fn in (as6, as8, as11, as5_keys):
+        for fn in (as6, as8, as3_rig, as11, as5_keys):
             try:
                 fn(rig)
             except Exception as e:

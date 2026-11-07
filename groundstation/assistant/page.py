@@ -3,6 +3,8 @@
 
 DISPLAY + per-PC SETTINGS ONLY: it gets the assistant client + the settings module, never `app`.
 """
+import time
+
 import i18n
 import theme
 
@@ -55,6 +57,7 @@ class Page:
         self.models.pack(fill="x", padx=6)
         self.last = tk.Label(fr, font=F_TXT, bg=BG, fg=C["fg"], anchor="w", justify="left", wraplength=520)
         self.last.pack(fill="x", padx=6, pady=(6, 2))
+        self._sig, self._t = None, 0.0
         self.fill_mics()
         i18n.on_change(self.lang_changed)
         self.refresh()
@@ -93,8 +96,19 @@ class Page:
         self.a.start()
         self.refresh()
 
+    def _signature(self):
+        a = self.a
+        return (a.state, a.device, id(a.last), a.key(), i18n.lang(), str(a.view_bar()))
+
+    def maybe_refresh(self):
+        """From the station's 100 ms tick: refreshed only on a change, else once a second (AM2 review LOW-6)."""
+        now = time.monotonic()
+        if self._signature() != self._sig or now - self._t >= 1.0:
+            self.refresh()
+
     def refresh(self):
         a = self.a
+        self._sig, self._t = self._signature(), time.monotonic()
         try:
             self.note.configure(text=T("asst.note", k=a.key()))
             st = T("asst.state." + a.state)

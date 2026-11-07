@@ -280,6 +280,24 @@ def dynamic_keys():
         ["hud.scale_fill", "hud.scale_fit"]
 
 
+ASK_PTT_MIN_GAP = 2.0       # screen 1's bottom bar: «ΕΡΩΤΗΣΗ» >= 2 bar heights and other buttons away from «ΟΜΙΛΙΑ»
+
+
+def ask_ptt_gap(hits):
+    """(gap px, other buttons between) of the «ΕΡΩΤΗΣΗ» ("ask") and «ΟΜΙΛΙΑ» ("ptt") hit boxes in one row;
+    None when one of them is not drawn (AM2 review MED-1)."""
+    a = [r for r, act in hits if act == "ask"]
+    p = [r for r, act in hits if act == "ptt"]
+    if not a or not p:
+        return None
+    a, p = a[0], p[0]
+    lo, hi = (a, p) if a[0] < p[0] else (p, a)
+    mid = (a[1] + a[3]) / 2
+    between = [r for r, act in hits if act not in ("ask", "ptt") and r[0] >= lo[2] - 1 and r[2] <= hi[0] + 1
+               and r[1] <= mid <= r[3]]
+    return hi[0] - lo[2], len(between)
+
+
 # --- the snapshot: everything the HUD shows, worked out by the window ------------------------------------
 class Snapshot(dict):
     """t (telemetry or None), age_s, gw (gateway status), lamps (alerts.MasterLamps), settings ...
@@ -975,8 +993,16 @@ class Hud:
               ("btn", T("hud.decl_" + (s.declutter or "FULL")), "declutter", "ctl_declutter", False, None),
               ("btn", T("hud.scale_" + (s.video_scale or "fill")), "scale", "ctl_scale", False, None),
               ("btn", "Aa", "text_size", "ctl_text_size", False, None)]
+        # the talking manual (AM2): «ΕΡΩΤΗΣΗ» + "AI", press and hold - its OWN group LEFT of AR / OBSTACLES and
+        # LAYOUT, far from the loudhailer's «ΟΜΙΛΙΑ» (AM2 review MED-1: a mis-press must never send a question out
+        # of the horn); test_driver I19 + test_assistant AS11 check the gap (ask_ptt_gap, ASK_PTT_MIN_GAP)
+        ga = []
+        av = getattr(s, "asst", None)
+        if av:
+            ga.append(("ai", T("asst.btn"), "ask", "ctl_ask", bool(av["on"]),
+                       None if av["enabled"] else self.pal["grey"]))
         g2 = [("btn", T("hud.ar"), "ar_menu", "ctl_ar_menu", bool(s.ar_on), None)]
-        if s.vision:                                     # obstacle detection (eWaSR, a neural network): "AI"
+        if s.vision:                                    # obstacle detection (eWaSR, a neural network): "AI"
             g2.append(("ai", T("hud.obstacles"), "vis_overlay", "ctl_vis_overlay", s.vis_overlay is not False, None))
             g2.append(("text", s.vision[0], None, "vision", False, self.pal.get(s.vision[1], s.vision[1])))
         g3 = [("btn", T("hud.layout"), "edit", "ctl_edit", self.edit, None)]
@@ -990,10 +1016,6 @@ class Hud:
             gh.append(("btn", hv["label"], "ptt", "ctl_ptt", bool(hv["talking"]),
                        None if hv["enabled"] or hv["talking"] else self.pal["grey"]))
             gh.append(("text", hv["text"], None, "hail_state", False, self.pal["caution"] if hv["caution"] else None))
-        av = getattr(s, "asst", None)                    # the talking manual (AM2): «ΕΡΩΤΗΣΗ» + "AI", press and hold
-        if av:
-            gh.append(("ai", T("asst.btn"), "ask", "ctl_ask", bool(av["on"]),
-                       None if av["enabled"] else self.pal["grey"]))
         g4 = []
         rec = s.rec
         if rec is not None:
@@ -1015,7 +1037,7 @@ class Hud:
             g5.append(("text", T("hud.gen", p="%d" % d.get("gen_pct", 0)), None, "gen", False, None))
         g5.append(("text", T("hud.clock", clock=s.clock or "--:--", mission=s.mission or "--:--"), None, "clock",
                    False, None))
-        return [g for g in (g1, g2, g3, gh, g4, g5) if g]
+        return [g for g in (g1, ga, g2, g3, gh, g4, g5) if g]
 
     def bottom(self, name, s):
         """The ONE thin full-width bottom bar (13n1). SAVE is never hidden (the bar is in ALWAYS)."""

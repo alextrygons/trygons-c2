@@ -74,6 +74,22 @@ step on the owner's laptop and written here + in the manuals, never guessed in c
   AS3 runtime: a whole question through the stub worker with `socket.socket`, `app.send*`,
   `gwclient.*.send*`, `link.*` patched to raise - the answer still comes; AS4 the network blocked
   (socket patched to raise) while the REAL models answer (N/A when the models are not downloaded).
+- AM2-r (review of fb97ac2): MED-2 the worker-side blocker RECORDS every attempt (a line in a marker
+  file + stderr; Python audit hook = also C-level `socket.__new__` / connect / bind / getaddrinfo /
+  urllib / http.client) BEFORE refusing it, and AS3 / AS4 fail when the marker has a line - also when
+  the library caught the OSError; a negative control (a script that tries twice and catches) proves
+  the recording; `socket.gethostname` (a local OS query CTranslate2 makes at load, no traffic) is the
+  one event allowed. AS3b = the same traps through the REAL station wiring (ap.asst, the screen-2
+  button, App.ov_tick); traps there fire only for calls from an assistant code path (the station's
+  own periodic sends go on). MED-3 THE LIMIT of the static proof, stated honestly: AS1 / AS2 cover
+  groundstation/ + gateway/ only; the third-party libraries the worker imports (faster-whisper ->
+  huggingface_hub -> httpx2 / httpcore2 / hf_xet / requests ...) contain network code BY DESIGN (the
+  model download) and are not banned. AS2 walks the assistant Python's site-packages statically and
+  LISTS the network modules reached (information, not pass / fail). The no-network proof of the
+  worker therefore rests on the runtime blocker (AS3 / AS4), local model folders only (a name =
+  refused, AS9) and the offline environment (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE, AS9). LOW-1: the
+  view (app.AsstView) holds only the loudhailer object (horn state) + a heard-question queue that
+  App.ov_tick drains - never the App (AS6: a gc.get_referents walk).
 
 ## 3. Speech -> text (step AM2)
 
@@ -277,11 +293,24 @@ show the passage. The panel shows the mode (GPU / CPU / retrieval only).
   tools/bin/assistant/llm/. Both found through gateway/toolpaths.py (new functions
   `assistant_python()`, `whisper_model()`, `llm_model()`), env overrides like the others.
 - A download that fails its sha256 is deleted and reported; nothing is fetched at run time.
+- AM2-r MED-4 (supply chain): the embeddable Python zip (sha256; its md5 = python.org's) and get-pip.py
+  from a pinned pypa/get-pip COMMIT (sha256; never the moving bootstrap.pypa.io URL) are checked
+  before use; pip installs ONLY `--require-hashes --only-binary :all: -r tools/assistant_requirements.txt`
+  (+ `-r tools/assistant_requirements_cuda.txt`): every dependency pinned, every file hash of that
+  version (pip-compile --generate-hashes style). `get_whisper.py --make-requirements` regenerates them
+  from a working assistant Python (pip freeze --all + PyPI's sha256) - review the diff before a commit.
+  setuptools stays in the lock (CTranslate2 needs it); pip itself comes from the hash-checked
+  get-pip.py. Test AS13.
 
 ## 11. Open questions (PROGRESS.md WAITING FOR OWNER)
 
 - W81 which PCs get it - default every station PC (captain + copilot), setting `assistant` on.
 - W82 live telemetry answers - default NO (manual questions only).
+- W87 (AM2-r) screen 2: «ΕΡΩΤΗΣΗ» on bar 1 instead of bar 2 (no room beside «ΟΜΙΛΙΑ»; also in the
+  camera view) - recommended: accept. W88 (AM2-r): the S1 fit matrix with the button shown in IDLE
+  counts as the fit proof (the label / size never change with the state) - recommended: yes.
+  Screen 1 (AM2-r MED-1): «ΕΡΩΤΗΣΗ» = its own group right after the language / night / size group,
+  >= 2 bar heights + AR / LAYOUT away from «ΟΜΙΛΙΑ» (test_driver I19, AS11).
 - W83 push-to-talk - default the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar + screen 2 bar 2) +
   F9 (setting) + an optional USB foot pedal sending F9; never the joystick, never «ΟΜΙΛΙΑ».
 - W84 (AM2) the owner's own recorded questions + the 2 new tour clips.

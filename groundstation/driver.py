@@ -913,7 +913,7 @@ class DriverScreen:
             out.append(("asst_out", T("asst.out"), "caution"))    # AM2: a station-local notice, never an alarm
         h = getattr(a, "asst_heard", None)
         if h and time.time() - h[1] < 8.0:                         # AM2: the recognised question, 8 s
-            out.append(("asst_q", T("asst.heard", q=h[0]), "caution"))
+            out.append(("asst_q", T("asst.heard", q=h[0]), "main"))    # plain information: green (LOW-4)
         return out
 
     def draw(self):

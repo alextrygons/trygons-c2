@@ -918,6 +918,20 @@ def main():
         inside = all(box[0] <= o["xy"][0] <= box[2] and box[1] <= o["xy"][1] <= box[3] for o in many
                      if o["k"] == "text" and str(o.get("tag", "")).startswith("alarm_"))
         more_ok = shown_n >= 2 and more == [A.T("hud.more_alarms", n=9 - shown_n)] and inside
+        # AM2 review MED-1: the talking manual's «ΕΡΩΤΗΣΗ» never sits beside the loudhailer's «ΟΜΙΛΙΑ» (a mis-press
+        # = a question out of the horn): >= ASK_PTT_MIN_GAP bar heights apart with other buttons between them
+        gaps = []
+        for W_, H_, vis in ((1600, 900, None), (1366, 768, ("VISION ACTIVE", "main")), (1920, 1080, None),
+                            (1024, 600, ("VISION ACTIVE", "main"))):
+            s_ = hud.Snapshot(t=d, gw={}, lamps=lamps, declutter="FULL", vision=vis,
+                              hail={"label": "ΟΜΙΛΙΑ", "talking": False, "enabled": True, "text": "", "caution": False},
+                              asst={"on": False, "enabled": True, "busy": False})
+            _ops, hits_ = gh.build(W_, H_, s_)
+            bh = gh.layout.px("bottom", W_, H_)
+            g_ = hud.ask_ptt_gap(hits_)
+            gaps.append(((W_, H_), None if g_ is None else (round(g_[0]), g_[1]),
+                         g_ is not None and g_[0] >= hud.ASK_PTT_MIN_GAP * (bh[3] - bh[1]) and g_[1] >= 1))
+        ask_ok = all(g_[2] for g_ in gaps)
         # the real screen 1: the alarms drawn in their box (right column, top half), no old alarm bar
         app.on_telem = lambda d_: orig_t(dict(d_, alarm_bits=d_["alarm_bits"] | 0x001 | 0x002))
         pump(0.8)
@@ -947,14 +961,15 @@ def main():
         report("I19 alarms in ONE place: the alarms box under the right mirror (x > 0.75, top half), the notices "
                "under it, over no other box (drive, controls, logo, centre free); one alarm per line most severe "
                "first; unacknowledged = flashing (fill alternates, text stays), acknowledged / advisory steady; "
-               "\"+N\" when more than fit; shown at every declutter level; layout file migration",
+               "\"+N\" when more than fit; shown at every declutter level; layout file migration; ASK far from TALK",
                place_ok and not over and not in_centre and not col_over and every_level and order_ok and flash_ok
-               and steady_ok and more_ok and live_ok and migr_ok and not errors,
+               and steady_ok and more_ok and live_ok and migr_ok and ask_ok and not errors,
                "place %s; overlaps %s; in the centre %s; column overlaps %s; every level %s; order %s; flash %s "
-               "(filled lit %d / dark %d); steady %s; +N %s (%d shown, %s); live %s (box %s, %d texts); migration %s"
+               "(filled lit %d / dark %d); steady %s; +N %s (%d shown, %s); live %s (box %s, %d texts); migration %s; "
+               "ASK / TALK gap (px, buttons between) %s"
                % (place_ok, over, in_centre, col_over, every_level, order_ok, flash_ok, len(warn_fill_on),
                   len(warn_fill_off), steady_ok, more_ok, shown_n, more, live_ok,
-                  [round(v) for v in live_box], len(live), migr_ok))
+                  [round(v) for v in live_box], len(live), migr_ok, gaps))
 
         # I21 relays on screen 1 (CLAUDE.md O): the "relays" box, its place, MINIMAL, states, press-and-hold
         import boats

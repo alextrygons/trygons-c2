@@ -254,14 +254,19 @@ class Hailer:
     def other_speaks(self):
         return bool(self.speaker) and not self.mine
 
-    def press(self, what="talk"):
-        """The «ΟΜΙΛΙΑ» button went down: ask the gateway for the floor (the first wins)."""
-        a = getattr(self.app, "asst", None)      # the talking manual (AM1 review H1): its capture + voice stop
-        if a is not None:                        # at once - a question never goes out of the horn
+    def _asst_horn(self):
+        """The talking manual (AM1 review H1, AM2 review LOW-3): anything that may put sound into the horn - TALK,
+        a ready message, a sound signal - first drops the assistant's capture and stops its voice AT ONCE."""
+        a = getattr(self.app, "asst", None)
+        if a is not None:
             try:
                 a.horn_pressed()
             except Exception:
                 pass
+
+    def press(self, what="talk"):
+        """The «ΟΜΙΛΙΑ» button went down: ask the gateway for the floor (the first wins)."""
+        self._asst_horn()                        # a question never goes out of the horn
         if not self._bind():
             self.note = T("hail.no_gateway")
             return self.app.say(self.note, theme.CAUTION)
@@ -363,6 +368,7 @@ class Hailer:
 
     def play_message(self, i):
         """One click: the floor is asked, the message is spoken into it (made in a worker thread)."""
+        self._asst_horn()
         if self.msg_busy or self.mine or self.pressing:
             return False
         if not self._bind() or not self.available():
@@ -394,6 +400,7 @@ class Hailer:
         return True
 
     def signal(self, kind):
+        self._asst_horn()
         if not self._bind() or not self.available():
             self.app.say(T("hail.offline", why=i18n.from_en((self.gw() or {}).get("why", ""))), theme.CAUTION)
             return False

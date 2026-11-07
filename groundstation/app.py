@@ -28,6 +28,7 @@ Manual driving (REMOTE MANUAL) and MANEUVER are started from screen 1 by a user 
 licence (CLAUDE.md D); here only in single-operator mode by a licensed user.
 Everything is drawn locally (no internet needed): map, track, plot.
 """
+import collections
 import math
 import os
 import queue
@@ -77,7 +78,6 @@ import uavpanel
 import uavroute
 import uavpics
 import ynbox
-import collections
 import json
 from tkinter import simpledialog
 
@@ -259,20 +259,21 @@ def fit_columns(tree, cols, pad=24):
 
 class AsstView:
     """The NARROW view the talking manual gets (CLAUDE.md W, step AM2): the language, the horn state, a voice
-    stop and where a recognised question is shown. No sender, no link, never the App itself."""
+    stop and where a recognised question is shown. No sender, no link, never the App itself (AM2 review LOW-1:
+    it holds ONLY the loudhailer object - for its horn state - and a heard-question queue the App drains in
+    ov_tick; test_assistant AS6 walks gc.get_referents and finds no App)."""
 
-    def __init__(self, app):
-        self._lang = lambda: i18n.lang()
-        self._horn = lambda: bool(app.hail.pressing or app.hail.mine)
-        self._heard = app.asst_on_heard
+    def __init__(self, hail):
+        self._hail = hail
+        self.heard = collections.deque(maxlen=8)     # (question, info), drained by App.ov_tick
 
     def lang(self):
-        return self._lang()
+        return i18n.lang()
 
     def horn_held(self):
         """This station holds / asks for the loudhailer: no capture, no assistant voice (AM1 review H1)."""
         try:
-            return self._horn()
+            return bool(self._hail.pressing or self._hail.mine)
         except Exception:
             return False
 
@@ -281,7 +282,7 @@ class AsstView:
         return None
 
     def on_heard(self, q, info):
-        self._heard(q, info)
+        self.heard.append((q, info))
 
 
 class App:
@@ -296,7 +297,7 @@ class App:
         self.link = None
         self.hail = hailer.Hailer(self)  # the loudhailer + boat microphone (step 13r): display + voice, never driving
         # the talking manual (step AM2, CLAUDE.md W): READ-ONLY, gets a narrow view - never this App
-        self.asst = asst_client.Assistant(AsstView(self), settings=settings)
+        self.asst = asst_client.Assistant(AsstView(self.hail), settings=settings)
         self.asst_heard = None          # (text, time) of the last recognised question (screen 1 notice 8 s)
         self.t = None                   # latest telemetry
         self.t_rx = 0.0
@@ -3605,11 +3606,14 @@ class App:
             self.hail.note = str(e)[:80]
         try:
             self.asst.tick()                        # the talking manual (step AM2): PTT, worker, restarts
+            hq = getattr(self.asst.view, "heard", None)
+            while hq:
+                self.asst_on_heard(*hq.popleft())
             n = self.asst.take_note()
-            if n:
-                self.say(T(n[0], **n[1]), ORANGE)
+            if n:                                   # plain information in the info style; a problem amber (LOW-4)
+                self.say(T(n[0], **n[1]), ORANGE if n[0] in asst_client.PROBLEM_NOTES else None)
             if getattr(self, "asst_page", None) is not None:
-                self.asst_page.refresh()
+                self.asst_page.maybe_refresh()      # only on a change / once a second (LOW-6)
         except Exception:                           # never stops the screens
             pass
         try:

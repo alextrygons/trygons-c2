@@ -3731,8 +3731,9 @@ PC (never on the gateway PC, never on the boat). Sound is never written to disk.
 
 How to ask
   * Press and HOLD the framed button «ΕΡΩΤΗΣΗ» / «ASK» with the "AI" badge
-    (screen 1: the bottom bar; screen 2: the end of bar 1, also in the camera
-    view), or hold the key F9 (or a USB
+    (screen 1: the bottom bar, its own group right of the language / night /
+    text-size buttons - far from «ΟΜΙΛΙΑ» / TALK; screen 2: the end of bar 1,
+    also in the camera view), or hold the key F9 (or a USB
     foot pedal that sends F9). Speak, then let go = the question is asked.
   * A tap shorter than 0.4 s is ignored; after 15 s the question is asked by
     itself.
@@ -3741,17 +3742,19 @@ How to ask
     visible.
   * NEVER on the joystick (every stick button is used, e.g. when flying a UAV)
     and never the loudhailer: «ΟΜΙΛΙΑ» / TALK is a different button. Pressing
-    TALK stops the assistant at once, and while you hold the loudhailer the
+    TALK (or a ready message / a sound signal) stops the assistant at once,
+    and while you hold the loudhailer the
     assistant does not listen (a question can never go out of the horn).
   * The key does nothing while you type in a text field.
 
 Tools -> page «Βοηθός» / "Assistant"
   * on / off for this PC (default on), the assistant's OWN microphone (separate
     from the loudhailer's devices; default = the Windows default input), the
-    ask key (F2..F10, default F9), the state, the last question with its times.
+    ask key (F2..F9, default F9; F10 is the Windows menu key), the state, the last question with its times.
   * "models not installed": run  python tools/get_whisper.py  once (it puts a
-    separate Python + the speech recognition into tools/bin/, ~3.5 GB, checked
-    with sha256; never in git).
+    separate Python + the speech recognition into tools/bin/, ~3.5 GB, every
+    download checked with sha256, the packages only from the hash-locked list
+    tools/assistant_requirements*.txt; never in git).
 
 If it fails: the notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» / ASSISTANT OFF on both screens (a
 notice on THIS PC only, never an alarm, no sound); it restarts by itself after
