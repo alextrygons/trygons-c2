@@ -65,8 +65,10 @@ step on the owner's laptop and written here + in the manuals, never guessed in c
   `asyncio` network use, `serial`, `gwclient`, `link`, `proto` writers, `stations`, `app` (the panel gets
   a narrow `view` object from app.py: root, theme, language, sound - never `app`).
 - `client.py` may use `subprocess` (to start the worker) - the ONLY process door, like simguard.py;
-  `worker.py` may start NO process (llama.cpp / Whisper run in-process through their Python bindings;
-  if AM4 picks the llama.cpp server exe instead, it talks over a pipe / stdin, never a TCP port).
+  `worker.py` may start NO process (llama.cpp / Whisper run in-process through their Python bindings).
+  AM1-r L4: client.py is also the ONLY module that may start the llama.cpp process: if AM4 picks the
+  exe instead of the bindings, it is `llama-cli` started by client.py and spoken to over a pipe
+  (stdin / stdout) - NEVER a TCP port, NEVER `llama-server` (AM4 extends AS1 / AS2 to check both names).
 - Tests (AM2, extended every step): AS1 static imports of every assistant module; AS2 the transitive
   import graph through groundstation/ (nothing reaches link / gwclient / proto encoders / app.send);
   AS3 runtime: a whole question through the stub worker with `socket.socket`, `app.send*`,
@@ -180,8 +182,10 @@ in 1-2 short spoken sentences, name the chapter; if the passages do not answer t
 exactly: <can't-find sentence>." + the 3 passages + the question. Temperature 0, max 80 tokens.
 
 Post-check (before anything is spoken): every button / mode / screen / alarm name in the answer (found
-by the term list of section 3) must appear in the passages, and the chapter named must be one of them;
-else the answer is replaced by the best passage's first sentence (retrieval-only form). The can't-find
+by the term list of section 3) must appear in the passages, the chapter named must be one of them, and
+(AM1-r M3) every NUMBER in the answer together with its UNIT ("5 kn", "3 s", "50 m", "30 %", "120 m",
+"10 min"; digits compared after normalising "," / "." and spoken number words) must appear in the
+passages with that same unit; else the answer is replaced by the best passage's first sentence (retrieval-only form). The can't-find
 sentence from the model is accepted as is.
 
 GPU guard (gpu.py): before loading and before each answer, free GPU memory from NVML (nvidia-smi
@@ -197,6 +201,10 @@ show the passage. The panel shows the mode (GPU / CPU / retrieval only).
   voice at once (the player's stop) and the rest of the answer is dropped (the panel still shows it;
   [ΞΑΝΑ] replays it). An assistant answer never delays, queues ahead of or mutes an alarm. Tests in
   test_sound (AM5).
+- TEXT ONLY (AM1-r M4): an answer that arrives while this PC's MasterLamps show lamps.on(WARNING) or
+  while a voice callout is queued or sounding is NOT spoken at all - the panel shows it as text (the
+  mode line says "text only - alarm"), [ΞΑΝΑ] speaks it later when nothing of that is left. The
+  assistant never starts its voice into an active WARNING.
 - tts.py with gs_settings `voice_engine` (Piper or the Windows voice); answers are NOT cached in
   sound_cache/ (one-off sentences; temporary WAV in the station's temp folder, deleted after playing).
 - Speech normaliser (speech.py): upper-case words -> normal case ("ΚΑΤΑΠΑΚΤΗ" -> "καταπακτή"),
@@ -244,9 +252,13 @@ show the passage. The panel shows the mode (GPU / CPU / retrieval only).
 - AM3: index build + stale check, normalisation (accents, final sigma, case), retrieval top-1 / top-3 on
   the question list (thresholds set from the first measured run), can't-find on the "not in the manual"
   items.
-- AM4: prompt + post-check (an invented button name = replaced by the passage sentence), can't-find,
+- AM4: prompt + post-check (an invented button name = replaced by the passage sentence; AM1-r M3: an
+  answer whose number / unit was altered, e.g. the passage says "5 kn" and the answer "15 kn" or
+  "5 m", = replaced by the retrieval-only sentence), can't-find,
   GPU guard (fake NVML numbers), retrieval-only mode; model comparison = a report, not a pass / fail.
-- AM5: alarm priority (a WARNING / CAUTION / callout stops the answer at once, never waits behind it),
+- AM5: alarm priority (a WARNING / CAUTION / callout stops the answer at once, never waits behind it;
+  AM1-r M4: an answer arriving while lamps.on(WARNING) or a callout is queued / sounding = text on the
+  panel only, no voice started, [ΞΑΝΑ] speaks it once that is over),
   speech normaliser, panel fit (S1 matrix + screen 1 boxes), "AI" badge present, log written locally
   and never contains audio.
 - AM6: the full question list with the real models (N/A - never PASS - when the models are missing; the
@@ -272,3 +284,11 @@ show the passage. The panel shows the mode (GPU / CPU / retrieval only).
 - W82 live telemetry answers - default NO (manual questions only).
 - W83 push-to-talk - default the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar + screen 2 bar 2) +
   F9 (setting) + an optional USB foot pedal sending F9; never the joystick, never «ΟΜΙΛΙΑ».
+- W84 (AM2) the owner's own recorded questions + the 2 new tour clips.
+- W85 (AM1-r) the default microphone: AM2 uses the Windows default input when `assistant_mic` is
+  not set (mic.py WAVE_MAPPER), while the loudhailer rule is "never the PC's default speaker / mic".
+  Recommended: the assistant also needs an EXPLICIT choice - none chosen = OFFLINE "not configured"
+  (the button greyed, the Tools page says so).
+- W86 (AM1-r) a question about a SAFETY ACTION (STANDBY, e-stop, lost link, ...) with no manual hit:
+  only "I can't find that in the manual", or also point to where to look? Recommended: yes, the panel
+  also shows the chapter list of the manual (text only, never a guessed answer).
