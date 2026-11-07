@@ -277,6 +277,34 @@ every existing binding (F11 / F12 / Space / A today).
   possible - AM4's post-check is the guard). LOW-4: every split part of a long section has its OWN line range
   (per-word line numbers through the split), so [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] (AM5) opens at the part, not at the section start.
 
+### 4c. Review fixes (step AM3-r2, review of 9b12cd7)
+
+- MED-1 tour labels: a passage of kind "tour" is ALWAYS a "tour" hit - also when it matched through an expected
+  phrase in its text (el080, el109, en002 were counted as "manual" before). Expected phrases are counted on the
+  MANUAL passages only (phrase_count / specific() / LOOSE_N never see a tour text). A question whose only phrase is
+  in a tour text = a tour-only question (el135: expect [], its tour stop kept). `eval` reports top-1 as "from the
+  manual" + "via a tour stop" apart (W95: recommended = reported separately, the floors stay on the total).
+- MED-2 the false-"can't find" safety: MIN_COVER is per language, {"el": 0.30, "en": 0.33}. The English 0.30 of
+  AM3-r refused only 2 / 6 out-of-manual questions (0.35 refused 3); swept on the English TUNING part only:
+  0.32 .. 0.34 = 3 / 5 refused right, no false can't find, top-1 / top-3 unchanged -> 0.33 (the middle). AS17's
+  English can't-find floor is back to 3. BM25 is not the last guard: AM4's POST-CHECK (every name / number of the
+  answer in the retrieved passages, else the retrieval-only sentence / can't find) is the BACKSTOP for a wrong
+  passage that BM25 did not refuse; a false "can't find" is the accepted price of fewer wrong answers (W96).
+- LOW: index.stale() also compares the committed passages with a fresh build (a hand-edited manual_*.json with the
+  right hashes is stale; AS14); the tool's docstring no longer claims it reads the lang files; loose phrases next to
+  specific ones removed (el032 "ΕΠΟΜΕΝΟ UAV" in 4 passages, el069, el090).
+- Measured (strict, deterministic; tour hits now counted correctly):
+
+  | | top-1 (manual + tour) | top-3 | false can't find | not in the manual -> can't find |
+  |---|---|---|---|---|
+  | el in-sample (tuning, 96) | 56 = 58 % (45 + 11) | 75 = 78 % | 1 | 5 / 7 |
+  | el HELD-OUT (38) | 24 = 63 % (19 + 5) | 29 = 76 % | 1 | 4 / 4 |
+  | en in-sample (33) | 15 = 45 % (13 + 2) | 24 = 73 % | 0 | 3 / 5 |
+  | en HELD-OUT (9) | 6 = 67 % (6 + 0) | 8 = 89 % | 0 | 0 / 1 |
+
+- The held-out numbers stay an upper bound (the SAID table / parser were written with the AM3 list in view): AM6
+  needs a FRESH question set never seen while tuning (the owner's own recorded questions, W84, are the best source).
+
 ## 5. Answer (step AM4)
 
 Candidates (Q4_K_M GGUF through llama.cpp; licences checked again at download time):

@@ -40,7 +40,10 @@ K1, B = 1.2, 0.5
 # can't find: the best hit below EITHER threshold - tuned on the question list's TUNING part only, the HELD-OUT part
 # (tests/assistant/heldout.json) measured once after (AM3-r MED-2, TEST_REPORT.md)
 MIN_SCORE = 3.0
-MIN_COVER = 0.30          # AM3-r: re-tuned on the TUNING part only (was 0.35, tuned on the whole list)
+# AM3-r: re-tuned on the TUNING part only (was 0.35, tuned on the whole list). AM3-r2 MED-2: per language - the
+# English 0.30 refused fewer out-of-manual questions (2 / 6) than 0.35 did (3 / 6); 0.33 = the middle of the flat
+# tuning range 0.32 .. 0.34 (en tuning: 3 / 5 refused right, no false can't find, top-1 / top-3 unchanged)
+MIN_COVER = {"el": 0.30, "en": 0.33}
 
 CHAPTER_RE = re.compile(r"^(\d+[A-Z]?)\.\s+(\S.*)$")
 RULE_RE = re.compile(r"^\s*([-=])\1{10,}\s*$")
@@ -416,6 +419,14 @@ def stale(lang, folder=None):
         key = rel.replace("\\", "/")
         if have.get(key) != sha_text(rel):
             why.append("%s changed" % key)
+    # AM3-r2 LOW: the passages themselves = a fresh build (a hand-edited manual_*.json with the right hashes FAILS)
+    if not why:
+        try:
+            fresh = build(lang)["passages"]
+        except (OSError, ValueError) as e:
+            return ["sources not readable: %s" % e]
+        if idx.get("passages") != fresh:
+            why.append("passages differ from a fresh build (index edited by hand?)")
     return why
 
 
@@ -423,10 +434,11 @@ def stale(lang, folder=None):
 class Searcher:
     """BM25 over every passage (text + the heading path x HEAD_WEIGHT)."""
 
-    def __init__(self, idx, min_score=MIN_SCORE, min_cover=MIN_COVER):
+    def __init__(self, idx, min_score=MIN_SCORE, min_cover=None):
         self.lang = idx["lang"]
         self.passages = idx["passages"]
-        self.min_score, self.min_cover = min_score, min_cover
+        self.min_score = min_score
+        self.min_cover = MIN_COVER.get(self.lang, 0.35) if min_cover is None else min_cover
         self.docs = []
         df = {}
         for p in self.passages:

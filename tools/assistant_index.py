@@ -9,7 +9,8 @@
                                                          in-sample (tuning) part and the HELD-OUT part
                                                          (tests/assistant/heldout.json) separately
 
-Text only: reads the manuals, the tour and the lang files; writes only the index folder (build) and the
+Text only: reads the manuals, the tour and the index parser (index.sources(); the lang files are NOT read,
+AM3-r LOW-1); `check` also compares the committed passages with a fresh build (AM3-r2 LOW); writes only the index folder (build) and the
 files named on the command line (eval). No network, no process.
 """
 import argparse
@@ -93,23 +94,37 @@ def _texts(passages):
     return _NORMED[k][1]
 
 
+def manual_only(passages):
+    """The MANUAL passages (AM3-r2 MED-1: phrases are counted on these only - never on a tour text)."""
+    k = ("manual", id(passages))
+    if k not in _NORMED or _NORMED[k][0] is not passages:
+        _NORMED[k] = (passages, [p for p in passages if p.get("kind") != "tour"])
+    return _NORMED[k][1]
+
+
 def phrase_count(passages, phrase):
+    """In how many MANUAL passage texts the phrase is (tour stops never count, AM3-r2 MED-1)."""
     e = _norm(phrase)
-    return sum(1 for t in _texts(passages) if e in t)
+    return sum(1 for t in _texts(manual_only(passages)) if e in t)
 
 
 def specific(passages, expect):
-    """The expected phrases that are specific enough to judge a hit (1 .. LOOSE_N - 1 passages hold them)."""
+    """The expected phrases that are specific enough to judge a hit (1 .. LOOSE_N - 1 MANUAL passages hold them;
+    a phrase that is only in a tour text is not specific: that question is a tour-only one, AM3-r2 MED-1)."""
     return [e for e in expect if 0 < phrase_count(passages, e) < LOOSE_N]
 
 
 def matches(passage, expect, tour=()):
     """A hit: the passage TEXT holds one of the (specific) expected phrases, or it is one of the tour stops named
-    for it. Returns "manual" / "tour" / ""."""
-    if passage.get("kind") == "tour" and passage["id"].split(":", 2)[-1] in tour:
+    for it. Returns "manual" / "tour" / "". A tour passage is ALWAYS "tour" (AM3-r2 MED-1: a phrase found in a
+    tour text is a tour hit, reported apart from the manual hits)."""
+    is_tour = passage.get("kind") == "tour"
+    if is_tour and passage["id"].split(":", 2)[-1] in tour:
         return "tour"
     t = _norm(passage["text"])
-    return "manual" if any(_norm(e) in t for e in expect) else ""
+    if not any(_norm(e) in t for e in expect):
+        return ""
+    return "tour" if is_tour else "manual"
 
 
 def evaluate(lang, searcher=None, qs=None, heldout=None):
@@ -164,10 +179,10 @@ def pct(a, b):
 
 
 def line_of(name, t):
-    return ("%s %s: %d questions (%d in the manual, %d not): top-1 %d/%d = %.0f %% (%d via a tour stop), "
-            "top-3 %d/%d = %.0f %%, can't find wrongly %d, can't find right %d/%d"
+    return ("%s %s: %d questions (%d in the manual, %d not): top-1 %d/%d = %.0f %% (%d from the manual, %d via a "
+            "tour stop - reported apart), top-3 %d/%d = %.0f %%, can't find wrongly %d, can't find right %d/%d"
             % (t["lang"], name, t["n"], t["in_manual"], t["not_in_manual"], t["top1"], t["in_manual"],
-               pct(t["top1"], t["in_manual"]), t["top1_tour"], t["top3"], t["in_manual"],
+               pct(t["top1"], t["in_manual"]), t["top1"] - t["top1_tour"], t["top1_tour"], t["top3"], t["in_manual"],
                pct(t["top3"], t["in_manual"]), t["false_cant_find"], t["cant_find_ok"], t["not_in_manual"]))
 
 

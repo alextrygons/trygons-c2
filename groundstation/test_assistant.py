@@ -444,6 +444,7 @@ def from_assistant():
 
 
 BASE_RUNS = 3
+ALLOW_PHASE = 1                                       # AM2-r4: +1 per method + kind (phase)
 
 
 def call_key(cls, name, x, k):
@@ -464,10 +465,13 @@ def as3_rig(rig, mutate=None, quiet=False):
     its AsstView), the screen-2 «ΕΡΩΤΗΣΗ» button, App.ov_tick draining the heard queue: no sender / socket is
     called from an assistant code path, no network attempt in the worker, the question reaches the screens.
     AM2-r3 review MED: (1) a callback that assistant code SCHEDULES (tkinter after / after_idle) is tainted - a
-    sender reached from it counts as the assistant's, though no assistant frame is on the stack when it runs;
+    sender reached from it counts as the assistant's, though no assistant frame is on the stack when it runs.
+    LIMIT (AM2-r4 LOW-1): the taint covers ONLY tkinter after / after_idle - a thread, a socket callback or a
+    queue another component drains is not followed (the count comparison (2) is the net for those);
     (2) every sender call is counted per method + payload kind and compared with the MOST of BASE_RUNS windows
-    without the assistant (any count above = FAIL; a periodic send may land once more in a window by its phase,
-    so (2) alone can't see ONE extra periodic-kind send - (1) does). mutate(ap) = a mutation run (quiet)."""
+    without the assistant + ALLOW_PHASE (AM2-r4 MED-1: a periodic send may land once more in a window by its
+    phase; so (2) alone can't see ONE or TWO extra periodic-kind sends - (1) does for scheduled ones; three are
+    caught by (2), mutation (b)). mutate(ap) = a mutation run (quiet)."""
     import socket
     import tkinter
     import app as A
@@ -541,14 +545,17 @@ def as3_rig(rig, mutate=None, quiet=False):
         a.stop()
         # the station's own start-up reads (parameters, joystick map at connect) settle first: until two 1 s
         # slices send the same kinds (at most 20 s)
-        last = None
+        last, settled = None, False
         for _i in range(20):
             every.clear()
             rig.pump(1.0)
             now = set(every)
             if now == last:
+                settled = True
                 break
             last = now
+        # AM2-r4 (review MED-1): never a silent fall-through - a start-up that never settles is reported (FAIL)
+        out["start-up sends settled within 20 s"] = settled
         a.stt_kind, a.stub_text, a.mic_backend = "stub", "πού κλείνω την καταπακτή", "sim"
         a.worker_cmd = lambda: blocked_cmd(sys.executable)
         ap.asst_heard = None
@@ -580,8 +587,10 @@ def as3_rig(rig, mutate=None, quiet=False):
             every.clear()
             rig.pump(win)
             without |= collections.Counter(every)
-        extra = {k: (c, without.get(k, 0)) for k, c in with_asst.items() if c > without.get(k, 0)}
-        out["no sender call above the station's own count (vs runs without the assistant)"] = not extra
+        # AM2-r4 (review of 6ec6e0b MED-1): + ALLOW_PHASE per method + kind - a real-time pump may let a periodic
+        # send land once more by its phase; ONE send scheduled by assistant code is the taint's job (mutation (a))
+        extra = {k: (c, without.get(k, 0)) for k, c in with_asst.items() if c > without.get(k, 0) + ALLOW_PHASE}
+        out["no sender call above the station's own count + %d (vs runs without the assistant)" % ALLOW_PHASE] =             not extra
     finally:
         a.stop()
         del a.worker_cmd                              # back to the class's own worker_cmd
@@ -873,6 +882,8 @@ def as6(rig):
     # AM2 review LOW-1 + AM2-r2 MED-b + AM2-r3 LOW: neither the view NOR the Assistant (ap.asst) holds the App - a
     # gc.get_referents walk from both never meets the App, a bound App method, the loudhailer object or the link
     found, seen, stops = asst_gc_walk(ap, [view, ap.asst])
+    # AM2-r4 (review LOW-2): the walk must END by itself - hitting the limit would hide a reference past it
+    out["gc walk complete (below its limit)"] = len(seen) < GC_WALK_LIMIT
     out["AsstView + ap.asst hold no App (gc walk)"] = not found and len(seen) > 1
     # AM2 review LOW-3: a ready message and a sound signal stop the assistant too (as TALK does)
     for name, call in (("play_message", lambda: ap.hail.play_message(0)), ("signal", lambda: ap.hail.signal("short5"))):
@@ -885,7 +896,9 @@ def as6(rig):
         finally:
             ap.asst.horn_pressed = orig
         out["Hailer.%s -> horn_pressed" % name] = calls[:1] == ["horn"]
-    # AM2-r3 review LOW: every place that changes the horn state pushes it into the view (static check of hailer.py)
+    # AM2-r3 review LOW: every place that changes the horn state pushes it into the view (static check of hailer.py).
+    # LIMIT (AM2-r4 LOW-3): a TEXT check - the push_horn() call must be within the next 20 lines of the change in
+    # hailer.py; a change elsewhere (another module, an attribute set through a helper) is not seen
     with open(os.path.join(HERE, "hailer.py"), encoding="utf-8") as f:
         hl = f.read().splitlines()
     def func_of(i):
@@ -902,7 +915,10 @@ def as6(rig):
            % (out, len(seen), found, stops, unpushed or "none"))
 
 
-def asst_gc_walk(ap, roots, limit=200000):
+GC_WALK_LIMIT = 200000
+
+
+def asst_gc_walk(ap, roots, limit=GC_WALK_LIMIT):
     """AM2-r3 review LOW: gc.get_referents walk from roots. It goes INTO types (their dicts, methods, closures) and
     into the modules of groundstation/assistant/; it STOPS (counted, reported) at the namespace of every other
     module - a function's __globals__ there is shared code reachable from everything (app.py's globals reach the
@@ -1410,6 +1426,14 @@ def as13():
         gw.rule_blocks([dict(row, **ch)], exe) for ch in ({"Enabled": "False"}, {"Direction": "Inbound"},
                                                          {"Action": "Allow"}, {"Program": "C:/y/python.exe"},
                                                          {"Program": ""})) and not gw.rule_blocks([], exe)
+    # AM2-r4 (review LOW-5): our exe path is never env-expanded (a literal %X% folder stays); the Program read back is
+    os.environ["TRYGONS_AM2R4_X"] = "y"
+    try:
+        out["exe path not expanded"] = "%TRYGONS_AM2R4_X%" in gw.winpath("C:/a%TRYGONS_AM2R4_X%b/python.exe") and             "%TRYGONS_AM2R4_X%" in " ".join(gw.firewall_args("C:/a%TRYGONS_AM2R4_X%b/python.exe"))
+        out["read-back Program expanded"] = gw.rule_blocks(
+            [dict(row, Program="C:\%TRYGONS_AM2R4_X%\python.exe")], os.path.abspath("C:/y/python.exe"))
+    finally:
+        os.environ.pop("TRYGONS_AM2R4_X", None)
     # AM2-r3 review LOW: stale / missing = installed AFRESH (no leftovers of a dropped package) + the marker only
     # when pip freeze --all equals the lock
     pins = gw.locked_pins(True)
@@ -1433,7 +1457,9 @@ def as13():
 FIND_MIN = {"tuning": {"el": {"top1": 0.55, "top3": 0.75}, "en": {"top1": 0.42, "top3": 0.70}},
             "heldout": {"el": {"top1": 0.60, "top3": 0.73}, "en": {"top1": 0.55, "top3": 0.75}}}
 FIND_MAX_FALSE_CANT = {"el": 3, "en": 1}         # the whole list
-FIND_MIN_CANT_OK = {"el": 8, "en": 2}           # of the "not in the manual" questions (BM25 alone; AM4 adds more)
+# of the "not in the manual" questions (BM25 alone; AM4's post-check is the backstop). AM3-r2 MED-2: en back to 3
+# (= what MIN_COVER 0.35 refused) with the per-language MIN_COVER en 0.33 tuned on the TUNING part only
+FIND_MIN_CANT_OK = {"el": 8, "en": 3}
 I2_GROUPS = {"uav", "launch_hatch", "alarms", "modes", "lost_link", "recording", "loudhailer", "roles", "dp",
              "engine", "power_limit"}
 
@@ -1467,6 +1493,14 @@ def as14():
             idx["version"] = index.INDEX_VERSION + 1
             index.save(idx, d)
             out["%s version = stale" % lang] = any("version" in w for w in index.stale(lang, d))
+        # AM3-r2 LOW: a hand-edited passage with the right hashes and version = stale too
+        for lang in ("el", "en"):
+            idx = index.build(lang)
+            idx["passages"][0]["text"] += " ΧΕΡΙ"
+            index.save(idx, d)
+            out["%s hand-edited passages = stale" % lang] = any("passages differ" in w for w in index.stale(lang, d))
+            index.save(index.build(lang), d)
+            out["%s fresh build = current" % lang] = index.stale(lang, d) == []
         out["missing = stale"] = bool(index.stale("el", os.path.join(d, "nothing")))
         lf, crlf = os.path.join(d, "lf.txt"), os.path.join(d, "crlf.txt")
         with open(lf, "wb") as f:
@@ -1575,6 +1609,12 @@ def as17():
     out["strict: a phrase in >= 6 passages is loose"] = ai.specific(ps, ["κουμπί STANDBY"]) == [] and         ai.specific(ps, ["ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ"]) == ["ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ"]
     out["tour stop hits counted apart"] = ai.matches({"id": "tour:el:uav.stop", "kind": "tour", "text": "x"},
                                                      [], ("uav.stop",)) == "tour"
+    # AM3-r2 MED-1: a phrase found in ANY tour text = a "tour" hit; phrases are counted on manual passages only
+    tp = {"id": "tour:el:other", "kind": "tour", "heading": "", "term": "", "text": "γράφει ΒΟΗΘΟΣ ΕΚΤΟΣ εδώ"}
+    out["tour text phrase = tour hit"] = ai.matches(tp, ["ΒΟΗΘΟΣ ΕΚΤΟΣ"]) == "tour"
+    out["tour text never makes a phrase specific"] = ai.specific(ps + [tp], ["ΒΟΗΘΟΣ ΕΚΤΟΣ"]) == []
+    out["tour texts never count toward loose"] = ai.phrase_count(ps + [dict(tp, text="ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ")] * 9,
+                                                                 "ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ") == 1
     for lang in ("el", "en"):
         qs = ai.load_questions(lang)
         rows, t = ai.evaluate(lang, qs=qs)

@@ -10535,7 +10535,7 @@
 "sources": {
 "MANUAL.txt": "31841eb8f46fbb92de235293b07cc3c1593dca05aaea1e4cdd7c301e6239f8a2",
 "academy/content/tour.json": "388b9ceec7b969d9117707a1686f0c33a09177447fe4a57646317081fc8ceb44",
-"groundstation/assistant/index.py": "a3d092828882f77ba503d5cdc4ededbc9ced0ec206ea27133203a8b57b46e8e0"
+"groundstation/assistant/index.py": "0f0996839a52753c139afbe37b361814ad9cb016611b7a28000d8b14e197d741"
 },
 "version": 2
 }

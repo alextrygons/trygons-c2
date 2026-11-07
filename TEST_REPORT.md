@@ -5,6 +5,26 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 00000000. Talking manual - FIND, second review fixes (step AM3-r2, 2026-11-07) - REPLACES the AM3-r figures
+
+Tools / tests / docs only. A tour passage is now ALWAYS a "tour" hit (phrases in tour texts were counted as manual
+hits), phrases are counted on manual passages only (el135 = tour-only), MIN_COVER per language (el 0.30, en 0.33 -
+tuned on the English TUNING part only, so English out-of-manual questions are refused as often as at 0.35).
+
+| `tools/assistant_index.py eval` | in the manual | top-1 (manual + tour) | top-3 | false "can't find" | not in the manual -> "can't find" |
+|---|---|---|---|---|---|
+| Greek in-sample (tuning) | 96 | 56 = 58 % (45 + 11) | 75 = 78 % | 1 | 5 / 7 |
+| Greek HELD-OUT | 38 | 24 = 63 % (19 + 5) | 29 = 76 % | 1 | 4 / 4 |
+| Greek all | 134 | 80 = 60 % (64 + 16) | 104 = 78 % | 2 | 9 / 11 |
+| English in-sample (tuning) | 33 | 15 = 45 % (13 + 2) | 24 = 73 % | 0 | 3 / 5 |
+| English HELD-OUT | 9 | 6 = 67 % (6 + 0) | 8 = 89 % | 0 | 0 / 1 |
+| English all | 42 | 21 = 50 % (19 + 2) | 32 = 76 % | 0 | 3 / 6 |
+
+Manual chapters only: Greek top-1 64 / 134 = 48 %, English 19 / 42 = 45 %. Now refused in English: "what do I do if
+someone falls overboard". Still not refused by BM25 (AM4's post-check is the backstop): "η καταπακτή κόλλησε στη
+μέση", "τι ώρα δύει ο ήλιος", "what does HATCH FAULT mean?", "how much does the boat cost", "what mode am I in right
+now". AS17: can't find right el >= 8, en >= 3. A FRESH question set (never seen while tuning) is needed in AM6.
+
 ## 0000000. Talking manual - FIND, review fixes (step AM3-r, 2026-11-07) - REPLACES the AM3 figures below
 
 Station only (no app / hal / gateway change). The AM3 figures below were IN-SAMPLE (thresholds chosen on the same

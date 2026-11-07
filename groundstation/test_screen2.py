@@ -305,10 +305,12 @@ def fill_everything(rig):
 ASK_PTT_MIN_BARS = 2.0     # AM2-r2 review MED-a: «ΕΡΩΤΗΣΗ» and «ΟΜΙΛΙΑ» >= 2 bar heights apart (as screen 1's hud)
 
 
-def ask_ptt_apart(ap):
+def ask_ptt_apart(ap, dock=None):
     """AM2-r2 review MED-a: the talking manual's «ΕΡΩΤΗΣΗ» ("ask", bar 1) and the loudhailer «ΟΜΙΛΙΑ» ("ptt",
     bar 2) are >= ASK_PTT_MIN_BARS bar heights apart vertically OR horizontally (never one above the other).
-    Returns (ok, text); ok None = one of them is not drawn."""
+    AM2-r4 (review LOW-4): with dock "top" / "bottom" given, both bars must really be in that half of the window
+    (else the "top" case would only re-check the bottom layout). Returns (ok, text); ok None = one of them is not
+    drawn."""
     a, p = op(ap, "ask"), op(ap, "ptt")
     bars = [o["r"] for o in ap.ov.ops if o.get("tag") in ("bar1", "bar2")]
     if a is None or p is None or not bars:
@@ -318,7 +320,13 @@ def ask_ptt_apart(ap):
     dx = max(pr[0] - ar[2], ar[0] - pr[2])          # > 0 = apart in x (the gap)
     dy = max(pr[1] - ar[3], ar[1] - pr[3])
     ok = dx >= ASK_PTT_MIN_BARS * bh or dy >= ASK_PTT_MIN_BARS * bh
-    return ok, "dx %.0f dy %.0f px, bar %.0f px" % (dx, dy, bh)
+    where = ""
+    if dock is not None:
+        H = ap.cv.winfo_height()
+        half = all(r[3] <= H / 2.0 for r in bars) if dock == "top" else all(r[1] >= H / 2.0 for r in bars)
+        ok = ok and half
+        where = ", bars in the %s half %s" % (dock, half)
+    return ok, "dx %.0f dy %.0f px, bar %.0f px%s" % (dx, dy, bh, where)
 
 
 def s1_matrix(rig):
@@ -342,11 +350,11 @@ def s1_matrix(rig):
                     rig.size(W, H, dpi)
                     p = layout_problems(ap)
                     cases.append(((lang, W, H, dpi), ap.ov.k, len(ap.ov.panels), p))
-                    apart.append(((lang, W, H, dpi),) + ask_ptt_apart(ap))
+                    apart.append(((lang, W, H, dpi),) + ask_ptt_apart(ap, "bottom"))
                     # AM2-r3 (W92): the same distance with both bars docked at the TOP
                     settings.put("s2_bars", {"hidden": [], "dock": "top"})
                     ap.render(force=True)
-                    apart.append(((lang, W, H, dpi, "top"),) + ask_ptt_apart(ap))
+                    apart.append(((lang, W, H, dpi, "top"),) + ask_ptt_apart(ap, "top"))
                     settings.put("s2_bars", {"hidden": [], "dock": "bottom"})
                     ap.render(force=True)
     finally:
@@ -2044,8 +2052,9 @@ class ViewStream:
 
 def camview_ask_apart(rig):
     """AM2-r3 (W92): with the camera view open, «ΕΡΩΤΗΣΗ» and «ΟΜΙΛΙΑ» >= ASK_PTT_MIN_BARS bar heights apart at
-    1366x768 / 1920x1080 x 100-150 %, bars docked at the bottom AND at the top. Returns [(case, ok, text)];
-    ok None = one of them is not drawn there (nothing to collide)."""
+    1366x768 / 1920x1080 x 100-150 %, bars docked at the bottom AND at the top (really in that half, AM2-r4).
+    Returns [(case, ok, text)]; ok None = one of them is not drawn there = a FAIL in S25 (AM2-r4 LOW-4: both
+    buttons must be drawn in every case)."""
     import assistant.client as asst_client
     ap = rig.ap
     ap.gw_status["hail"] = {"enabled": True, "state": "ACTIVE", "why": "", "out_ok": True, "in_ok": True,
@@ -2063,7 +2072,7 @@ def camview_ask_apart(rig):
                 for dock in ("bottom", "top"):
                     settings.put("s2_bars", {"hidden": [], "dock": dock})
                     ap.render(force=True)
-                    got.append(((W, H, dpi, dock),) + ask_ptt_apart(ap))
+                    got.append(((W, H, dpi, dock),) + ask_ptt_apart(ap, dock))
     finally:
         settings.put("s2_bars", {"hidden": [], "dock": "bottom"})
         ap.asst._set(st0)
@@ -2171,7 +2180,7 @@ def s25_camview(rig):
            "AM2-r3 (W92): «ΕΡΩΤΗΣΗ» >= 2 bar heights from «ΟΜΙΛΙΑ» in the camera view (bars bottom + top)",
            opened and light and picture and kept and cams and hud_ok and fits and no_map and switched and reduced and
            novideo and back and esc and warn and no_warn and no_btn and not rig.errors and
-           bool(cv_apart) and all(c[1] is not False for c in cv_apart) and any(c[1] for c in cv_apart),
+           bool(cv_apart) and all(c[1] is True for c in cv_apart),       # AM2-r4 LOW-4: every case True
            "opened %s; light %s; picture %s; panels %s kept %s; cams %s; hud %s; fits %s; map press %s; switched %s; "
            "reduced %s; no video %s; back %s; esc %s; no-video warning %s / gone %s; no button without gateway %s; "
            "camera view ask / talk: %s; errors %s" % (

@@ -159,10 +159,14 @@ def install_state(cuda, dest=PYDEST):
     return "ok", ""
 
 
-def winpath(p):
+def winpath(p, expand=False):
     """The absolute path with backslashes (the firewall stores Windows paths; an MSYS Python's abspath keeps
-    forward slashes)."""
-    p = os.path.abspath(os.path.expandvars(p))
+    forward slashes). AM2-r4 (review LOW-5): environment variables are expanded ONLY with expand=True = the
+    Program value read back from the firewall (it may hold %SystemDrive% ...) - never the exe path we write
+    (a literal % / $ in a folder name must stay as it is)."""
+    if expand:
+        p = os.path.expandvars(p)
+    p = os.path.abspath(p)
     return p.replace("/", "\\") if os.name == "nt" else p
 
 
@@ -206,12 +210,14 @@ def firewall_rules(name=FW_RULE):
 
 
 def rule_blocks(rows, exe):
-    """True when one rule is Enabled, Outbound, Block for exactly this program (path compared normalised)."""
+    """True when one rule is Enabled, Outbound, Block for exactly this program (path compared normalised).
+    LIMIT (AM2-r4 LOW-6): the rule's Profile (Domain / Private / Public) is NOT checked - netsh adds the rule for
+    every profile ("any") by default; a rule narrowed to one profile by hand would still count as present."""
     want = winpath(exe).lower()
     for x in rows or []:
         prog = str(x.get("Program") or "")
         if str(x.get("Enabled")) == "True" and str(x.get("Direction")) == "Outbound" and \
-                str(x.get("Action")) == "Block" and prog and winpath(prog).lower() == want:
+                str(x.get("Action")) == "Block" and prog and winpath(prog, expand=True).lower() == want:
             return True
     return False
 
