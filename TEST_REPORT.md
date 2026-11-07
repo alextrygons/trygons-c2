@@ -5,6 +5,33 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 0000000000. Talking manual - ANSWER, review fixes (step AM4-r, 2026-11-07) - CORRECTS the AM4 figures below
+
+Station / tools / tests / docs only. The post-check of 3e1b1d3 could be bypassed (an unknown unit "50 feet", the sign
+"-3 s", number words "εβδομήντα δευτερόλεπτα", a number re-attached to another noun, a negation added / dropped, a
+Capitalised "Reset button", an answer in the other language): fixed (docs/assistant_design.md 5c; test AS19 = 42
+checks incl. every reviewer probe). A FAILED check now SAYS "can't find" and SHOWS the best passage with its chapter
+(W105). The stored AM4 tuning runs re-scored with the stricter check (llama3.2-3b, "generate"): rejected 37 % of the
+Greek / 26 % of the English generated answers (was 8 % / 6 %); correct Greek 17 % (was 22 %), English 48 % (was 67 %)
+- a rejected answer is now "can't find", and among the new rejections are real errors the old check let through.
+
+The review's extractive design, measured (5d; the same stricter post-check; the must-mention proxy is CIRCULAR -
+a verbatim sentence holding the question's words counts as correct even when it does not answer):
+
+| llama3.2-3b, tuning | lang | correct | answered | precision | false can't find | post-check rejected | median ms |
+|---|---|---|---|---|---|---|---|
+| generate | el | 17 % | 40 % | 42 % | 58 | 37 % | 5187 (busy PC) |
+| **extract** (DEFAULT now, W106) | el | 36 % | 91 % | 40 % | 9 | 8 % (text instead of a number) | 803 |
+| generate | en | 48 % | 76 % | 64 % | 8 | 26 % | 3223 |
+| **extract** | en | 48 % | 100 % | 48 % | 0 | 0 % | 427 |
+
+Latency, honestly (MED-4): AM4's "1.9 s median" was over 10 spoken questions of which 4 were "can't find"; over the 6
+answers the model ACTUALLY generated: 2.3 s median / 2.6 s max (quiet PC), 9.8 s / 13.8 s in the run right after the
+heavy comparison. Re-measured today (10 spoken Greek questions, real Whisper, another program holding 2.1 GB of the
+GPU = 17 of 28 layers on it): generate 3.04 s median / 3.48 s max over its 6 generated (2.34 s over all 10); extract
+1.86 s / 2.74 s over all 10 (every one generated). The model file's sha256 is verified before every load (1.8 s).
+Tests: test_assistant AS19-AS24 (AS24 = the real model, network blocked). Owner items W105-W109.
+
 ## 000000000. Talking manual - ANSWER (step AM4, 2026-11-07)
 
 Station / tools / tests / docs only (no app / hal / gateway change). llama.cpp in the assistant worker through its

@@ -1,22 +1,22 @@
 # Key of docs/assistant_llm_review.md
 
-- el001: A = qwen2.5-7b, B = meltemi-7b, C = llama3.2-3b, D = krikri-8b, E = llama3.1-8b, F = qwen2.5-3b
-- el008: A = llama3.1-8b, B = meltemi-7b, C = qwen2.5-7b, D = qwen2.5-3b, E = krikri-8b, F = llama3.2-3b
-- el013: A = krikri-8b, B = qwen2.5-7b, C = llama3.2-3b, D = meltemi-7b, E = llama3.1-8b, F = qwen2.5-3b
-- el017: A = krikri-8b, B = qwen2.5-7b, C = llama3.1-8b, D = qwen2.5-3b, E = meltemi-7b, F = llama3.2-3b
-- el018: A = llama3.2-3b, B = meltemi-7b, C = krikri-8b, D = qwen2.5-3b, E = qwen2.5-7b, F = llama3.1-8b
-- el020: A = krikri-8b, B = llama3.1-8b, C = qwen2.5-7b, D = llama3.2-3b, E = meltemi-7b, F = qwen2.5-3b
-- el023: A = qwen2.5-7b, B = llama3.1-8b, C = meltemi-7b, D = krikri-8b, E = qwen2.5-3b, F = llama3.2-3b
-- el024: A = krikri-8b, B = qwen2.5-3b, C = meltemi-7b, D = qwen2.5-7b, E = llama3.2-3b, F = llama3.1-8b
-- el029: A = qwen2.5-3b, B = meltemi-7b, C = llama3.1-8b, D = llama3.2-3b, E = qwen2.5-7b, F = krikri-8b
-- el030: A = llama3.1-8b, B = llama3.2-3b, C = krikri-8b, D = qwen2.5-7b, E = meltemi-7b, F = qwen2.5-3b
-- el033: A = qwen2.5-7b, B = llama3.1-8b, C = qwen2.5-3b, D = krikri-8b, E = meltemi-7b, F = llama3.2-3b
-- el034: A = krikri-8b, B = llama3.2-3b, C = llama3.1-8b, D = meltemi-7b, E = qwen2.5-3b, F = qwen2.5-7b
-- el037: A = meltemi-7b, B = qwen2.5-3b, C = llama3.1-8b, D = krikri-8b, E = llama3.2-3b, F = qwen2.5-7b
-- el042: A = llama3.2-3b, B = meltemi-7b, C = qwen2.5-7b, D = krikri-8b, E = qwen2.5-3b, F = llama3.1-8b
-- el043: A = meltemi-7b, B = krikri-8b, C = qwen2.5-3b, D = qwen2.5-7b, E = llama3.2-3b, F = llama3.1-8b
-- el046: A = llama3.1-8b, B = llama3.2-3b, C = krikri-8b, D = qwen2.5-3b, E = qwen2.5-7b, F = meltemi-7b
-- el048: A = qwen2.5-3b, B = llama3.1-8b, C = krikri-8b, D = llama3.2-3b, E = qwen2.5-7b, F = meltemi-7b
-- el052: A = krikri-8b, B = qwen2.5-7b, C = llama3.1-8b, D = meltemi-7b, E = llama3.2-3b, F = qwen2.5-3b
-- el056: A = qwen2.5-3b, B = llama3.2-3b, C = meltemi-7b, D = krikri-8b, E = qwen2.5-7b, F = llama3.1-8b
-- el058: A = llama3.2-3b, B = meltemi-7b, C = qwen2.5-3b, D = krikri-8b, E = qwen2.5-7b, F = llama3.1-8b
+- el001: A = qwen2.5-7b, B = llama3.2-3b+extract, C = llama3.2-3b, D = krikri-8b, E = llama3.1-8b, F = qwen2.5-3b, G = meltemi-7b
+- el008: A = llama3.1-8b, B = llama3.2-3b+extract, C = qwen2.5-7b, D = qwen2.5-3b, E = meltemi-7b, F = krikri-8b, G = llama3.2-3b
+- el013: A = krikri-8b, B = llama3.2-3b, C = qwen2.5-3b, D = qwen2.5-7b, E = llama3.2-3b+extract, F = llama3.1-8b, G = meltemi-7b
+- el017: A = llama3.1-8b, B = qwen2.5-3b, C = krikri-8b, D = qwen2.5-7b, E = llama3.2-3b, F = llama3.2-3b+extract, G = meltemi-7b
+- el018: A = meltemi-7b, B = qwen2.5-7b, C = llama3.2-3b+extract, D = llama3.2-3b, E = krikri-8b, F = llama3.1-8b, G = qwen2.5-3b
+- el020: A = llama3.1-8b, B = krikri-8b, C = meltemi-7b, D = qwen2.5-7b, E = llama3.2-3b+extract, F = qwen2.5-3b, G = llama3.2-3b
+- el023: A = llama3.2-3b, B = qwen2.5-7b, C = qwen2.5-3b, D = llama3.1-8b, E = llama3.2-3b+extract, F = meltemi-7b, G = krikri-8b
+- el024: A = qwen2.5-3b, B = llama3.1-8b, C = llama3.2-3b, D = meltemi-7b, E = krikri-8b, F = qwen2.5-7b, G = llama3.2-3b+extract
+- el029: A = krikri-8b, B = llama3.1-8b, C = meltemi-7b, D = llama3.2-3b+extract, E = qwen2.5-7b, F = qwen2.5-3b, G = llama3.2-3b
+- el030: A = llama3.1-8b, B = qwen2.5-3b, C = meltemi-7b, D = llama3.2-3b+extract, E = llama3.2-3b, F = qwen2.5-7b, G = krikri-8b
+- el033: A = qwen2.5-7b, B = meltemi-7b, C = llama3.1-8b, D = llama3.2-3b+extract, E = llama3.2-3b, F = qwen2.5-3b, G = krikri-8b
+- el034: A = qwen2.5-7b, B = meltemi-7b, C = llama3.1-8b, D = llama3.2-3b+extract, E = krikri-8b, F = llama3.2-3b, G = qwen2.5-3b
+- el037: A = llama3.2-3b, B = llama3.1-8b, C = qwen2.5-7b, D = qwen2.5-3b, E = llama3.2-3b+extract, F = krikri-8b, G = meltemi-7b
+- el042: A = krikri-8b, B = llama3.2-3b, C = meltemi-7b, D = llama3.2-3b+extract, E = qwen2.5-7b, F = qwen2.5-3b, G = llama3.1-8b
+- el043: A = qwen2.5-7b, B = qwen2.5-3b, C = llama3.2-3b, D = meltemi-7b, E = llama3.2-3b+extract, F = llama3.1-8b, G = krikri-8b
+- el046: A = krikri-8b, B = qwen2.5-7b, C = qwen2.5-3b, D = llama3.2-3b, E = meltemi-7b, F = llama3.2-3b+extract, G = llama3.1-8b
+- el048: A = meltemi-7b, B = qwen2.5-7b, C = krikri-8b, D = llama3.1-8b, E = llama3.2-3b+extract, F = qwen2.5-3b, G = llama3.2-3b
+- el052: A = llama3.2-3b, B = llama3.2-3b+extract, C = krikri-8b, D = meltemi-7b, E = qwen2.5-3b, F = qwen2.5-7b, G = llama3.1-8b
+- el056: A = llama3.2-3b+extract, B = krikri-8b, C = qwen2.5-3b, D = llama3.2-3b, E = llama3.1-8b, F = meltemi-7b, G = qwen2.5-7b
+- el058: A = krikri-8b, B = qwen2.5-7b, C = qwen2.5-3b, D = llama3.2-3b, E = meltemi-7b, F = llama3.2-3b+extract, G = llama3.1-8b

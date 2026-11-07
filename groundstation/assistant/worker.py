@@ -15,10 +15,13 @@
                                     "cant_find", "why", "hits": [{id, ch, chapter, heading, term, score, cover, text}]}
     The "heard" answer carries "found" too (the same search on the recognised question, AM3).
     AM4: init also takes "llm": {"kind": "llama" | "stub" | "none", "model": <local .gguf>, "py": <bindings folder>,
-        "device": "auto" | "cpu" | "cuda", "n_ctx", "reply" / "delay_s" (stub)}; ready carries "llm" (name, mode
-        gpu / gpu+cpu / cpu / retrieval, layers, why, free / need MB, load ms). After every "heard" with a question:
-    <- {"op": "answer", "q", "lang", "a", "src" (llm | passage | retrieval | cant_find), "mode", "cite", "id",
-        "problems", "ms", "gen_ms", "tokens", "found"}
+        "device": "auto" | "cpu" | "cuda", "n_ctx", "reply" / "delay_s" (stub), "answer_mode": "generate" |
+        "extract" (AM4-r), "allow_unpinned": bool (AM4-r LOW-2: a model file not in paths.LLM_PINNED)}; ready
+        carries "llm" (name, mode gpu / gpu+cpu / cpu / retrieval, layers, why, free / need MB, load ms, sha_ms).
+        After every "heard" with a question:
+    <- {"op": "answer", "q", "lang", "a", "src" (llm | extract | passage | retrieval | cant_find), "mode", "cite",
+        "id", "passage" {text, cite, id} (what the panel shows), "problems", "ms", "gen_ms", "first_ms", "tokens",
+        "found"}
     -> {"op": "ask_text", "q", "lang"}  a typed question: the same search + answer (tests, tools/assistant_llm_eval.py)
 
 READ-ONLY + OFFLINE (CLAUDE.md W): it starts no process, opens no socket, writes no file (audio in RAM only,
@@ -35,6 +38,8 @@ if __package__ in (None, ""):                     # run as a script by client.py
     __package__ = "assistant"
 
 from assistant import answer, gpu, index, mic, paths, stt   # noqa: E402
+
+GPU_RETRY_S = 120.0       # after a CPU reload by the guard: the GPU is tried again at most this often (AM4-r LOW-3)
 
 
 def below_normal():
@@ -64,6 +69,9 @@ class Worker:
         self.ans = answer.Answerer(None)          # AM4: no model = retrieval only (until init loads one)
         self.llm_cfg = {}
         self.llm_info = {"mode": "retrieval", "why": "no language model"}
+        self.cpu_forced_t = None                  # the guard moved the model to the CPU at this time (RAM only:
+        #                                           a worker restart plans afresh - nothing persists, AM4-r LOW-3)
+        self.gpu_retry_t = None                   # the last time the guard tried the GPU again
 
     def send(self, d):
         self.out.write(json.dumps(d) + "\n")      # ASCII escapes: the pipe's code page never matters
@@ -132,16 +140,25 @@ class Worker:
             except Exception as e:                # missing bindings / file / out of memory: retrieval only
                 llm, info = None, {"mode": "retrieval", "why": "language model not loaded: %s" % str(e)[:160],
                                    "name": os.path.basename(str(c.get("model") or ""))}
-        self.ans = answer.Answerer(llm, terms)
+        self.ans = answer.Answerer(llm, terms, mode=c.get("answer_mode") or "generate")
         self.ans.stick = not c.get("measure")    # tools/assistant_llm_eval.py: never stuck in retrieval-only
         if llm is None:
             self.ans.why_ro = info["why"]
         info["load_ms"] = int((time.monotonic() - t0) * 1000)
+        info["answer_mode"] = self.ans.mode
         self.llm_info = info
         return info
 
     def _llama(self, c, device):
+        import time
         path = c.get("model")
+        if not isinstance(path, str) or not os.path.isabs(path) or not os.path.isfile(path):
+            raise ValueError("the language model must be a local .gguf file: %r" % (path,))
+        t0 = time.monotonic()                     # AM4-r LOW-2: the file is loaded only after its sha256 matches
+        ok, why_sha = paths.llm_verify(path, allow_unpinned=bool(c.get("allow_unpinned")))
+        if not ok:
+            raise ValueError(why_sha)
+        sha_ms = int((time.monotonic() - t0) * 1000)
         answer.bindings_env(c.get("py"))
         meta = gpu.gguf_meta(path)
         free = gpu.free_mb()
@@ -149,7 +166,7 @@ class Worker:
         p = gpu.plan(meta, free, n_ctx, device=device)
         info = {"name": meta.get("name") or os.path.basename(path), "file": os.path.basename(path),
                 "mode": p["mode"], "layers": p["layers"], "why": p["why"], "need_mb": p["need_mb"],
-                "free_mb": free[0] if free else None, "n_ctx": n_ctx}
+                "free_mb": free[0] if free else None, "n_ctx": n_ctx, "sha_ms": sha_ms, "sha": why_sha}
         try:
             return answer.LlamaLlm(path, layers=p["layers"], n_ctx=n_ctx, mode=p["mode"]), info
         except (RuntimeError, ValueError, MemoryError, OSError) as e:
@@ -158,19 +175,45 @@ class Worker:
             info.update(mode="cpu", layers=0, why="the GPU load failed (%s) - the CPU" % str(e)[:80])
             return answer.LlamaLlm(path, layers=0, n_ctx=n_ctx, mode="cpu"), info
 
-    def guard(self):
+    def guard(self, now=None):
         """Before every answer: the model on the GPU and less than gpu.LOW_MB free = the other programs on this PC
-        are short of GPU memory = the model is reloaded with a new plan (usually the CPU)."""
+        are short of GPU memory = the model is reloaded with a new plan (usually the CPU). AM4-r LOW-3: once the
+        guard moved it to the CPU, the GPU is tried again when the memory is free again (the plan's need + the
+        margin), at most every GPU_RETRY_S; the user's own "cpu" setting is never overridden. All of it in RAM:
+        a worker restart plans afresh from the real free memory."""
+        import time
+        now = time.monotonic() if now is None else now
         llm = getattr(self.ans, "llm", None)
-        if llm is None or getattr(llm, "mode", "cpu") == "cpu" or self.llm_cfg.get("kind") != "llama":
+        if llm is None or self.llm_cfg.get("kind") != "llama":
             return None
         free = gpu.free_mb()
-        if free is not None and free[0] >= gpu.LOW_MB:
+        if getattr(llm, "mode", "cpu") != "cpu":
+            if free is not None and free[0] >= gpu.LOW_MB:
+                return None
+            info = self._reload("cpu")
+            info["why"] = "GPU memory short before an answer (%s MB free) - reloaded on the CPU" % (
+                free[0] if free else "?")
+            self.cpu_forced_t, self.gpu_retry_t = now, now
+            return info
+        if self.cpu_forced_t is None or free is None:
+            return None                           # the CPU by the plan / the setting / no GPU: nothing to retry
+        if now - self.gpu_retry_t < GPU_RETRY_S:
             return None
+        self.gpu_retry_t = now
+        need = (self.llm_info or {}).get("need_mb") or 0
+        if free[0] < need + gpu.MARGIN_MB:
+            return None
+        info = self._reload(self.llm_cfg.get("device") or "auto")
+        if info.get("mode") == "cpu":
+            return None                           # the plan still says CPU: nothing changed, no message
+        info["why"] = "GPU memory free again (%s MB) - %s" % (free[0], info.get("why") or "reloaded on the GPU")
+        self.cpu_forced_t = None
+        return info
+
+    def _reload(self, device):
+        """The model loaded again with another plan; the answerer's slow-mode state kept."""
         ro, why_ro, slow = self.ans.retrieval_only, self.ans.why_ro, self.ans.slow
-        info = self.load_llm(self.llm_cfg, device="cpu")
-        info["why"] = "GPU memory short before an answer (%s MB free) - reloaded on the CPU" % (
-            free[0] if free else "?")
+        info = self.load_llm(self.llm_cfg, device=device)
         if ro:
             self.ans.retrieval_only, self.ans.why_ro, self.ans.slow = ro, why_ro, slow
         return info

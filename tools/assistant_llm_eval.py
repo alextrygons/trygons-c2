@@ -125,11 +125,14 @@ class Worker:
             self.p.kill()
 
 
-def llm_cfg(name):
+def llm_cfg(name, answer_mode="generate"):
+    """name "none" = no model; "<model>+extract" = that model in answer mode "extract" (AM4-r)."""
     if name == "none":
         return {"kind": "none"}
+    if "+" in name:
+        name, answer_mode = name.split("+", 1)
     return {"kind": "llama", "model": paths.llm_model(name), "py": paths.llm_py_dir(), "device": "auto",
-            "measure": True}
+            "measure": True, "answer_mode": answer_mode}
 
 
 GREEK = re.compile(r"[α-ωά-ώϊϋΐΰ]", re.I)
@@ -158,20 +161,24 @@ def judge(q, r, searcher):
     a = r.get("a", "")
     src = r.get("src")
     if not in_manual:
-        return {"in_manual": False, "correct": src == "cant_find", "model_kept": False}
-    ok = src != "cant_find"
+        return {"in_manual": False, "correct": src in ("cant_find", "passage"), "model_kept": False,
+                "answered": src not in ("cant_find", "passage")}
+    ok = src not in ("cant_find", "passage")        # AM4-r: a failed post-check SAYS "can't find" = not an answer
     if ok and must:
         ok = must in answer.plain(a)
     elif ok:
         spec = ai.specific(searcher.passages, q.get("expect") or [])
         p = next((x for x in searcher.passages if x["id"] == r.get("id")), None)
         ok = bool(p) and bool(ai.matches(p, spec, q.get("tour") or ()))
-    return {"in_manual": True, "correct": ok, "model_kept": ok and src == "llm"}
+    return {"in_manual": True, "correct": ok, "model_kept": ok and src in ("llm", "extract"),
+            "answered": src not in ("cant_find", "passage")}
 
 
 def cmd_run(a):
     os.makedirs(OUT, exist_ok=True)
     models = a.models.split(",") if a.models else ["none"] + installed_models()
+    if a.answer == "extract":
+        models = [m if m == "none" or "+" in m else m + "+extract" for m in models]
     langs = a.lang.split(",")
     held = {lang: ai.load_heldout(lang) for lang in langs}
     for name in models:
@@ -217,12 +224,14 @@ def cmd_run(a):
                     row = {"id": q["id"], "q": q["q"], "group": q.get("group"), "must": q.get("must", ""),
                            "a": r.get("a"), "src": r.get("src"), "model_text": r.get("model_text", ""),
                            "problems": r.get("problems", []), "cite": r.get("cite"), "pid": r.get("id"),
-                           "ms": ms, "gen_ms": r.get("gen_ms"), "tokens": r.get("tokens"), "mode": r.get("mode"),
+                           "ms": ms, "gen_ms": r.get("gen_ms"), "first_ms": r.get("first_ms"),
+                           "tokens": r.get("tokens"), "mode": r.get("mode"), "answer_mode": r.get("answer_mode"),
+                           "passage": r.get("passage"),
                            "heldout": q["id"] in held[lang], "raw": r.get("raw", ""), "cut": r.get("cut", False),
                            "hits": [{k: h.get(k) for k in ("id", "ch", "chapter", "heading", "term", "text")}
                                     for h in hits[:answer.N_PASSAGES]], "search_cant": (r.get("found") or {}).get(
                                "cant_find", False), **j}
-                    if r.get("src") == "llm":
+                    if r.get("src") in ("llm", "extract"):
                         row["quality"] = quality(r["a"], " ".join(h.get("text", "") for h in hits[:3]), lang)
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
                     f.flush()
@@ -248,19 +257,26 @@ def pct(a, b):
 def summarise(head, rows):
     inm = [r for r in rows if r["in_manual"]]
     out = [r for r in rows if not r["in_manual"]]
-    gen = [r for r in rows if r["src"] in ("llm", "passage")]
+    gen = [r for r in rows if r["src"] in ("llm", "extract", "passage")]
     ms = sorted(r["ms"] for r in rows if r["src"] != "cant_find" or r.get("gen_ms"))
+    # AM4-r MED-4: the time over the answers the model ACTUALLY GENERATED (its own sentence / pick kept or
+    # rejected) - a "can't find" ends after a few tokens and pulls the median down
+    ms_gen = sorted(r["ms"] for r in gen)
     q = [r["quality"]["ok"] for r in rows if r.get("quality")]
     toks = [(r["tokens"], r["gen_ms"]) for r in rows if r.get("gen_ms")]
     tps = (sum(t for t, _g in toks) / (sum(g for _t, g in toks) / 1000.0)) if toks and sum(g for _t, g in toks) else 0
+    answered = [r for r in inm if r.get("answered", r["src"] not in ("cant_find", "passage"))]
     return {"n": len(rows), "correct": sum(r["correct"] for r in inm), "in_manual": len(inm),
             "model_kept": sum(r["model_kept"] for r in inm),
+            "answered": len(answered), "precision": sum(r["correct"] for r in answered),
             "rejected": sum(1 for r in gen if r["src"] == "passage"), "generated": len(gen),
             "cant_right": sum(r["correct"] for r in out), "not_in_manual": len(out),
-            "false_cant": sum(1 for r in inm if r["src"] == "cant_find"),
+            "false_cant": sum(1 for r in inm if r["src"] in ("cant_find", "passage")),
+            "false_cant_model": sum(1 for r in inm if r["src"] == "cant_find"),
             "quality": sum(q), "quality_n": len(q),
             "ms_med": int(statistics.median(ms)) if ms else 0,
-            "ms_p90": ms[min(len(ms) - 1, int(0.9 * len(ms)))] if ms else 0, "tok_s": round(tps, 1),
+            "ms_p90": ms[min(len(ms) - 1, int(0.9 * len(ms)))] if ms else 0,
+            "ms_gen_med": int(statistics.median(ms_gen)) if ms_gen else 0, "tok_s": round(tps, 1),
             "mode": (head.get("llm") or {}).get("mode"), "layers": (head.get("llm") or {}).get("layers"),
             "gpu_mb": (head["gpu_after"][0] - head["gpu_before"][0]) if head.get("gpu_after") and
             head.get("gpu_before") and head["gpu_before"][0] > 0 else None,
@@ -269,11 +285,14 @@ def summarise(head, rows):
 
 def summary_line(hr):
     s = summarise(*hr)
-    return ("correct %s (model's own answer %s), post-check rejected %s, can't find right %s, false can't find "
-            "%d, quality %s, %d ms median / %d ms p90, %.1f tok/s, %s, GPU +%s MB" % (
+    return ("correct %s (model's own answer %s), answered %s, precision %s, post-check rejected %s, can't find "
+            "right %s, false can't find %d (the model's own %d), quality %s, %d ms median / %d ms p90 (generated "
+            "answers only: %d ms median), %.1f tok/s, %s, GPU +%s MB" % (
                 pct(s["correct"], s["in_manual"]), pct(s["model_kept"], s["in_manual"]),
+                pct(s["answered"], s["in_manual"]), pct(s["precision"], s["answered"]),
                 pct(s["rejected"], s["generated"]), pct(s["cant_right"], s["not_in_manual"]), s["false_cant"],
-                pct(s["quality"], s["quality_n"]), s["ms_med"], s["ms_p90"], s["tok_s"], s["mode"], s["gpu_mb"]))
+                s["false_cant_model"], pct(s["quality"], s["quality_n"]), s["ms_med"], s["ms_p90"],
+                s["ms_gen_med"], s["tok_s"], s["mode"], s["gpu_mb"]))
 
 
 def cmd_rescore(a):
@@ -295,12 +314,13 @@ def cmd_rescore(a):
                                                               and not r.get("cut")):
                 new.append(r)
                 continue
-            d = answer.decide(r.get("raw", ""), r["hits"], head["lang"], terms, cut=r.get("cut"))
+            d = answer.decide(r.get("raw", ""), r["hits"], head["lang"], terms, cut=r.get("cut"),
+                              mode=r.get("answer_mode") or ("extract" if "+extract" in head["model"] else "generate"))
             r = dict(r, a=d["a"], src=d["src"], problems=d.get("problems", []), pid=d.get("id"),
-                     model_text=d.get("model_text", ""))
+                     model_text=d.get("model_text", ""), passage=d.get("passage"))
             r.update(judge(qs[r["id"]], {"a": r["a"], "src": r["src"], "id": r["pid"]}, searcher))
             r.pop("quality", None)
-            if r["src"] == "llm":
+            if r["src"] in ("llm", "extract"):
                 r["quality"] = quality(r["a"], " ".join(h.get("text", "") for h in r["hits"]), head["lang"])
             new.append(r)
         with open(path, "w", encoding="utf-8") as f:
@@ -314,9 +334,10 @@ def cmd_report(a):
     if not os.path.isdir(OUT):
         print("no runs yet")
         return 1
-    print("| model | lang | part | correct | model's own | post-check rejected | can't find right | false can't find "
-          "| quality | median / p90 ms | tok/s | runs on (GPU layers) | worker GPU MB | free MB at load | load s |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("| model | lang | part | correct | model's own | answered | precision | post-check rejected | can't find "
+          "right | false can't find (model's own) | quality | median / p90 ms (generated only) | tok/s | runs on "
+          "(GPU layers) | worker GPU MB | free MB at load | load s |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for fn in sorted(os.listdir(OUT)):
         if not fn.endswith(".jsonl"):
             continue
@@ -327,12 +348,15 @@ def cmd_report(a):
         if a.first:                                 # the same subset for every model (runs made with --limit N)
             rows = rows[:a.first]
         s = summarise(head, rows)
-        print("| %s | %s | %s | %s | %s | %s | %s | %d | %s | %d / %d | %s | %s (%s) | %s | %s | %s |" % (
-            head["model"], head["lang"], head["part"], pct(s["correct"], s["in_manual"]),
-            pct(s["model_kept"], s["in_manual"]), pct(s["rejected"], s["generated"]),
-            pct(s["cant_right"], s["not_in_manual"]), s["false_cant"], pct(s["quality"], s["quality_n"]),
-            s["ms_med"], s["ms_p90"], s["tok_s"], s["mode"], s["layers"], s["gpu_mb"] if s["gpu_mb"] is not None
-            else "?", s["free_mb"] if s["free_mb"] is not None else "-", s["load_s"]))
+        print("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %d (%d) | %s | %d / %d (%d) | %s | %s (%s) | %s | %s "
+              "| %s |" % (
+                  head["model"], head["lang"], head["part"], pct(s["correct"], s["in_manual"]),
+                  pct(s["model_kept"], s["in_manual"]), pct(s["answered"], s["in_manual"]),
+                  pct(s["precision"], s["answered"]), pct(s["rejected"], s["generated"]),
+                  pct(s["cant_right"], s["not_in_manual"]), s["false_cant"], s["false_cant_model"],
+                  pct(s["quality"], s["quality_n"]), s["ms_med"], s["ms_p90"], s["ms_gen_med"], s["tok_s"],
+                  s["mode"], s["layers"], s["gpu_mb"] if s["gpu_mb"] is not None else "?",
+                  s["free_mb"] if s["free_mb"] is not None else "-", s["load_s"]))
     return 0
 
 
@@ -368,8 +392,8 @@ def cmd_blind(a):
         lines += ["## %s  %s" % (qid, r0["q"]), ""]
         for i, n in enumerate(order):
             r = runs[n][qid]
-            t = r.get("model_text") or r.get("a") if r["src"] in ("llm", "passage") else "(" + r["src"] + ") " + \
-                r.get("a", "")
+            t = r.get("model_text") or r.get("a") if r["src"] in ("llm", "passage", "extract") else \
+                "(" + r["src"] + ") " + r.get("a", "")
             lines.append("- **%s** %s   rating: __  wrong: __" % (letters[i], t))
         lines.append("")
     with open(os.path.join(REPO, "docs", "assistant_llm_review.md"), "w", encoding="utf-8", newline="\n") as f:
@@ -430,13 +454,18 @@ def cmd_e2e(a):
               flush=True)
     w.close()
     ok = [r["answer_ms"] for r in rows if r.get("answer_ms")]
+    gen = [r["answer_ms"] for r in rows if r.get("answer_ms") and r.get("src") in ("llm", "extract", "passage")]
     res = {"model": name, "llm": info.get("llm"), "device": info.get("device"), "gpu_before": before,
            "gpu_after": after, "rows": rows, "median_ms": int(statistics.median(ok)) if ok else None,
-           "max_ms": max(ok) if ok else None, "n": len(ok)}
-    with open(os.path.join(OUT, "e2e_%s.json" % name), "w", encoding="utf-8") as f:
+           "max_ms": max(ok) if ok else None, "n": len(ok),
+           "generated_median_ms": int(statistics.median(gen)) if gen else None, "generated_n": len(gen),
+           "generated_max_ms": max(gen) if gen else None}
+    with open(os.path.join(OUT, "e2e_%s.json" % name.replace("+", "_")), "w", encoding="utf-8") as f:
         json.dump(res, f, ensure_ascii=False, indent=1)
-    print("e2e %s: release -> answer text median %s ms, max %s ms over %d spoken questions" % (
-        name, res["median_ms"], res["max_ms"], len(ok)))
+    print("e2e %s: release -> answer text median %s ms, max %s ms over %d spoken questions; over the %d answers the "
+          "model actually generated: median %s ms, max %s ms (AM4-r MED-4)" % (
+              name, res["median_ms"], res["max_ms"], len(ok), len(gen), res["generated_median_ms"],
+              res["generated_max_ms"]))
     return 0
 
 
@@ -448,6 +477,8 @@ def main(argv=None):
     r.add_argument("--part", default="tuning", choices=("tuning", "heldout", "all"))
     r.add_argument("--lang", default="el,en")
     r.add_argument("--limit", type=int, default=0)
+    r.add_argument("--answer", default="generate", choices=("generate", "extract"),
+                   help="the answer mode (AM4-r): extract = the model only picks passage sentences")
     r.add_argument("-v", "--verbose", action="store_true")
     rp = sub.add_parser("report")
     rp.add_argument("--first", type=int, default=0, help="only the first N questions of every run (a common subset)")
@@ -456,7 +487,7 @@ def main(argv=None):
     b = sub.add_parser("blind")
     b.add_argument("--n", type=int, default=20)
     e = sub.add_parser("e2e")
-    e.add_argument("--model", default="")
+    e.add_argument("--model", default="", help="a model name, or <model>+extract for the extract answer mode")
     e.add_argument("--n", type=int, default=10)
     a = ap.parse_args(argv)
     return {"run": cmd_run, "report": cmd_report, "rescore": cmd_rescore, "blind": cmd_blind, "e2e": cmd_e2e}[a.cmd](a)

@@ -1,7 +1,11 @@
 """Where the talking manual's files are (step AM2) - path helpers only, no logic, no network.
 
     assistant Python   $TRYGONS_ASSISTANT_PYTHON, <repo>/tools/bin/assistant-python/ (tools/get_whisper.py,
-                       Windows), else this Python (Ubuntu: pip install faster-whisper)
+                       Windows), else this Python (Ubuntu: pip install from tools/assistant_requirements.txt -
+                       faster-whisper==1.2.1 pinned + hashed; never an unpinned `pip install faster-whisper`)
+    language model     $TRYGONS_LLM_DIR, <repo>/tools/bin/assistant/llm/<name>/<file>.gguf (tools/get_llm.py);
+                       the worker loads a model file ONLY after its sha256 matches LLM_PINNED (AM4-r LOW-2) - an
+                       unpinned file needs the explicit per-PC setting assistant_llm_unpinned (W108)
     Whisper models     $TRYGONS_WHISPER_DIR, <repo>/tools/bin/assistant/whisper/<name>/ (tools/get_whisper.py)
     gateway PC         gateway.json in the gateway's config folder (gateway/osdep.py) = the assistant never runs
 
@@ -97,3 +101,46 @@ def llm_model(name=None):
 
 def llm_installed():
     return llm_py_dir() is not None and llm_model() is not None
+
+
+# the pinned model files (AM4-r LOW-2): file name -> (size, sha256) = tools/get_llm.py MODELS (test AS23 keeps the
+# two tables equal). The worker computes the sha256 of the file it is about to load (~2 GB = a few seconds, once per
+# start, in the below-normal worker) and refuses a mismatch; a file that is not in this table is refused too unless
+# the owner set assistant_llm_unpinned (a model of his own choice - W108).
+LLM_PINNED = {
+    "Qwen2.5-7B-Instruct-Q4_K_M.gguf": (4683074240, "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423"),
+    "Meltemi-7B-Instruct-v1.5.Q4_K_M.gguf": (4535764352, "15d0ad45f6c8911eadfae8f0c3a8a7f59b8053332bc99f76cf146f88f975ec14"),
+    "llama-krikri-8b-instruct-q4_k_m.gguf": (5041147264, "e3f93427fe0fcc016e31ed4bfbc1d10916fb97f6b2b3298445196490d315376f"),
+    "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf": (4920739232, "7b064f5842bf9532c91456deda288a1b672397a54fa729aa665952863033557c"),
+    "qwen2.5-3b-instruct-q4_k_m.gguf": (2104932768, "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"),
+    "Llama-3.2-3B-Instruct-Q4_K_M.gguf": (2019377696, "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff"),
+}
+
+
+def sha256_of(path, chunk=1 << 20):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(chunk), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def llm_verify(path, allow_unpinned=False):
+    """(ok, why) for a model file about to be loaded: a pinned file = size AND sha256 as in LLM_PINNED; an unpinned
+    file = refused unless allow_unpinned (then "unpinned" is said in why). Reads the whole file (seconds)."""
+    name = os.path.basename(str(path or ""))
+    pinned = LLM_PINNED.get(name)
+    if pinned is None:
+        return (True, "unpinned model file (assistant_llm_unpinned set): %s" % name) if allow_unpinned else \
+            (False, "model file not pinned in paths.LLM_PINNED: %s (set assistant_llm_unpinned to allow it)" % name)
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return False, "model file unreadable: %s" % str(e)[:80]
+    if size != pinned[0]:
+        return False, "model file size %d != pinned %d: %s" % (size, pinned[0], name)
+    got = sha256_of(path)
+    if got != pinned[1]:
+        return False, "model file sha256 %s... != pinned %s...: %s" % (got[:12], pinned[1][:12], name)
+    return True, "sha256 verified"

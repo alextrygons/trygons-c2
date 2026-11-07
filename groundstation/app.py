@@ -546,9 +546,14 @@ class App:
         self.say(T("asst.heard", q=q))
 
     def asst_on_answer(self, a, info):
-        """The manual's answer (AM4): shown on screen 2's message line (text only; spoken from AM5)."""
+        """The manual's answer (AM4): shown on screen 2's message line (text only; spoken from AM5). AM4-r: a
+        model answer that failed the check = «Δεν βρίσκω ...» + "see chapter N" (the passage itself is on the
+        Tools page «Βοηθός»)."""
         cite = info.get("cite") or ""
-        self.say(T("asst.answer", a=a, cite=(" (%s)" % cite) if cite else ""))
+        if info.get("src") == "passage" and cite:
+            self.say(T("asst.answer_see", a=a, cite=cite))
+        else:
+            self.say(T("asst.answer", a=a, cite=(" (%s)" % cite) if cite else ""))
 
     def ack_alarm(self):
         """Screen 2's ACK ALARM (step 13m): silences THIS PC first (MASTER lamps + the repeating sound, as screen

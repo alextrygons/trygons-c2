@@ -50,13 +50,24 @@ push-to-talk, its own microphone, term hints, the read-only proof.
       "todo ran empty" (LOW-1)
   AM4 (the answer): AS19 the grounded prompt + the POST-CHECK (an invented name, an altered number "5 kn" ->
       "15 kn", an altered unit "5 kn" -> "5 m", a number word with another unit, a bare number, a foreign chapter =
-      the passage's first sentence instead) + can't find (search or model); AS20 the GPU memory guard (a GGUF header
+      can't find said + the passage shown) + can't find (search or model); AS20 the GPU memory guard (a GGUF header
       read, fake NVML numbers -> GPU / GPU+CPU / CPU, the margin, a reload on the CPU when the GPU gets short before
       an answer, a model name / URL refused); AS21 retrieval-only (no model, a cut generation, 3 slow answers in a
       row, a model error); AS22 the answer through the real worker (stub model; heard -> THINKING -> answer, the
       release -> answer time, ask_text); AS23 tools/get_llm.py pins + no llama-server / llama-cli / port in any
       assistant module (llama_cpp only in answer.py); AS24 the REAL language model with the network blocked (N/A -
       never PASS - when it is not downloaded)
+  AM4-r (review of 3e1b1d3): AS19 the reviewer's bypass probes ("50 feet", "50 nautical miles", "3 milliseconds",
+      "3 hrs", "20 per cent", "-3 s", "eighty seconds", «εβδομήντα / τριακόσια δευτερόλεπτα» - MED-1), the
+      same-passage-SENTENCE rule for numbers + swapped numbers, a negation either way ("STANDBY never wins", "The PC
+      can override STANDBY"), "Reset button" / «κουμπί X» / "PC button" names (MED-2), the wrong language (LOW-1), a
+      failed check = can't find SAID + the passage SHOWN with its chapter (W105); AS20 the GPU tried again after a
+      CPU reload, rate-limited, never against the user's CPU setting, nothing persisted (LOW-3) + the model file's
+      sha256 (paths.llm_verify: unpinned refused unless allowed, a pinned name with other bytes refused) (LOW-2);
+      AS21 a generation stopped at max_tokens = cut (finish_reason "length"), the first token timed, a late first
+      token = cut (MED-3) + answer mode "extract" (the model only picks numbered passage sentences); AS22 an answer
+      whose question was interrupted by «ΟΜΙΛΙΑ» carries speak = False (LOW-3); AS23 paths.LLM_PINNED =
+      get_llm.MODELS + the worker verifies before it loads
 
 Run:  python test_assistant.py      (exit code 0 = all passed; N/A lines do not fail)
 """
@@ -1807,34 +1818,91 @@ def as19():
         return r, llm
     good = "Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»: η κάθοδος γίνεται σε 3 s."
     r, _ = run(good)
-    out["a grounded answer kept + its chapter cited by the code"] = r["src"] == "llm" and r["a"] == good and \
-        r["cite"] == "Κεφάλαιο 16 «Το μαγγέμα UAV»" and not r["problems"]
-    first = A.first_sentence(HATCH[0]["text"])
+    out["a grounded answer kept + its chapter cited by the code + the passage shown"] = r["src"] == "llm" and \
+        r["a"] == good and r["cite"] == "Κεφάλαιο 16 «Το μαγγέμα UAV»" and not r["problems"] and \
+        r["passage"]["text"] == HATCH[0]["text"] and r["passage"]["cite"] == r["cite"]
+    # a failed check (AM4-r, W105): «Δεν βρίσκω ...» is SAID, the best passage is SHOWN with its chapter - the
+    # passage's first sentence is no longer spoken
     for label, bad in (("an invented button name", "Πατήστε «ΑΝΟΙΓΜΑ ΚΑΤΑΠΑΚΤΗΣ» στην οθόνη 1."),
                        ("an invented name in capitals", "Πατήστε HATCH CLOSE στη σελίδα UAV."),
                        ("an altered number 5 kn -> 15 kn", "Πάνω από 15 kn κάθε σταθμός δείχνει προειδοποίηση."),
                        ("an altered unit 5 kn -> 5 m", "Πάνω από 5 m κάθε σταθμός δείχνει προειδοποίηση."),
                        ("a number word with an altered unit", "Η κάθοδος γίνεται σε τρία λεπτά."),
                        ("a bare number not in the passages", "Το κουμπί είναι το 7ο της μπάρας."),
-                       ("a chapter not among the passages", "Δείτε το κεφάλαιο 9 για την καταπακτή.")):
+                       ("a chapter not among the passages", "Δείτε το κεφάλαιο 9 για την καταπακτή."),
+                       # AM4-r MED-1: the reviewer's bypass probes (an unknown / other unit, the sign, number words)
+                       ("50 feet (an added unit)", "Κοντά στην ακτή κάτω από 50 feet ο χρόνος σύνδεσης είναι 3 s."),
+                       ("50 nautical miles", "Κοντά στην ακτή κάτω από 50 ναυτικά μίλια ο χρόνος σύνδεσης είναι 3 s."),
+                       ("3 milliseconds", "Η κάθοδος γίνεται σε 3 milliseconds."),
+                       ("3 hrs", "Η κάθοδος γίνεται σε 3 hrs."),
+                       ("20 per cent", "Πάνω από 20 τοις εκατό κάθε σταθμός δείχνει προειδοποίηση."),
+                       ("-3 s (the sign)", "Η κάθοδος γίνεται σε -3 s."),
+                       ("eighty seconds (a number word)", "Η κάθοδος γίνεται σε ογδόντα δευτερόλεπτα."),
+                       ("εβδομήντα δευτερόλεπτα", "Η κάθοδος γίνεται σε εβδομήντα δευτερόλεπτα."),
+                       ("τριακόσια δευτερόλεπτα", "Η κάθοδος γίνεται σε τριακόσια δευτερόλεπτα."),
+                       ("a number + a word not in the passages", "Η κάθοδος γίνεται σε 3 βήματα."),
+                       # AM4-r MED-2: a number tied to another thing than in the manual (a passage SENTENCE)
+                       ("5 kn tied to the link time", "Πάνω από 5 kn ο χρόνος σύνδεσης είναι 3 s."),
+                       # AM4-r MED-2: a negation the passage sentence does not have
+                       ("a negation not in the passage", "Η καταπακτή δεν κλείνει με «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»."),
+                       ("a Capitalised 'κουμπί X' name", "Πατήστε το κουμπί Reset για την καταπακτή."),
+                       ("an ungrounded sentence", "Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». Μετά περιμένετε."),
+                       # AM4-r LOW-1: the wrong language
+                       ("an English answer to a Greek question", "The hatch closes with «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ» "
+                                                                  "only by the captain.")):
         r, _ = run(bad)
-        out["post-check: %s -> the passage's first sentence" % label] = \
-            r["src"] == "passage" and r["a"] == first and r["problems"] and r["model_text"] == bad
+        out["post-check: %s -> can't find said + the passage shown" % label] = \
+            r["src"] == "passage" and r["a"] == A.CANT["el"] and r["problems"] and r["model_text"] == bad and \
+            r["passage"]["text"] == HATCH[0]["text"] and r["cite"] == "Κεφάλαιο 16 «Το μαγγέμα UAV»"
+    # the reviewer's English probes (swapped numbers, a negation either way, "X button" names, PC)
+    REM = [{"id": "en:8:1", "ch": "8", "chapter": "Remote", "heading": "", "term": "",
+            "text": "The remote cap is 20 % forward. Reverse is capped at 5 %. The STANDBY panel button always wins. "
+                    "The PC can never override it."}]
+    for label, bad in (("swapped numbers", "Reverse is capped at 20 % and forward at 5 %."),
+                       ("swapped numbers (the other way)", "Forward is capped at 20 % and reverse at 5 %."),
+                       ("'STANDBY never wins'", "STANDBY never wins."),
+                       ("'The PC can override STANDBY'", "The PC can override STANDBY."),
+                       ("'Reset button'", "Press the Reset button."),
+                       ("'PC button' when PC is not a name in the passages", "Press the PC button to stop.")):
+        if "PC button" in label:
+            hits = [dict(REM[0], text=REM[0]["text"].replace("The PC can never override it.", ""))]
+        else:
+            hits = REM
+        pr = A.postcheck(bad, hits, terms, "en")
+        out["post-check (en probe): %s refused" % label] = bool(pr)
+    out["post-check (en): the manual's own statement passes"] = not A.postcheck(
+        "The STANDBY panel button always wins.", REM, terms, "en") and not A.postcheck(
+        "The remote cap is 20 % forward and 5 % in reverse.", REM, terms, "en")
+    out["post-check (en): 'PC' in the passages used as a name passes"] = not A.postcheck(
+        "The PC can never override the STANDBY button.", REM, terms, "en")
     r, _ = run("Η κάθοδος γίνεται σε τρία δευτερόλεπτα, πάνω από πέντε κόμβους μια προειδοποίηση.")
     out["post-check: spoken numbers with the right unit pass"] = r["src"] == "llm"
     r, _ = run("Κοντά στην ακτή κάτω από 50 μέτρα ο χρόνος είναι 3 δευτερόλεπτα.")
     out["post-check: a unit said in words = the same unit (50 m, 3 s)"] = r["src"] == "llm"
+    out["number words -> digits (el + en, tens, hundreds, hyphenated, compounds; an article stays)"] = \
+        A.norm("εβδομήντα δευτερόλεπτα") == "70 δευτερολεπτα" and A.norm("τριακόσια πενήντα m") == "350 m" and \
+        A.norm("twenty-five knots") == "25 knots" and A.norm("one hundred and fifty metres") == "150 metres" and \
+        A.norm("εικοσιπέντε kn") == "25 kn" and A.norm("δεκατρία UAV") == "13 uav" and \
+        A.norm("ένα κουμπί") == "ενα κουμπι" and A.norm("ένα λεπτό") == "1 λεπτο" and \
+        A.norm("eighty seconds") == "80 seconds" and A.norm("δύο χιλιάδες m") == "2000 m"
+    out["units folded (feet, miles, hrs, ms, per cent, κόμβους, μίλια)"] = [n[:2] for n in A.numbers(
+        "50 feet, 50 miles, 3 hrs, 3 milliseconds, 20 per cent, 5 κόμβους, 2 ναυτικά μίλια, -3 s")] == [
+        (50.0, "ft"), (50.0, "mi"), (3.0, "h"), (3.0, "ms"), (20.0, "%"), (5.0, "kn"), (2.0, "nm"), (-3.0, "s")]
     r, _ = run("@cant")
     out["the model's can't-find sentence accepted"] = r["src"] == "cant_find" and r["a"] == A.CANT["el"]
     r, llm = run(good, f={"cant_find": True, "why": "score", "hits": []})
     out["search can't find -> can't find, the model never asked"] = r["src"] == "cant_find" and not llm.calls
-    r, _ = run("**Απάντηση:** πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». Μετά περιμένετε. Και τρίτη πρόταση. Και τέταρτη.")
-    out["cleaned: no markdown / label, at most 2 sentences, a capital first"] = \
-        r["a"] == "Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». Μετά περιμένετε."
+    out["cleaned: no markdown / label, at most 2 sentences, a capital first"] = A.clean(
+        "**Απάντηση:** πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». Μετά περιμένετε. Και τρίτη πρόταση. Και τέταρτη.") == \
+        "Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». Μετά περιμένετε."
     r = A.Answerer(A.StubLlm(good), terms).answer("how do I close the hatch?", "en",
                                                    {"cant_find": True, "why": "", "hits": []})
     out["English can't find"] = r["a"] == "I can't find that in the manual."
-    report("AS19 grounded prompt + post-check (names, numbers + units) + can't find", all(out.values()), out)
+    # the wrong language the other way (a Greek answer to an English question)
+    pr = A.postcheck("Το κουμπί STANDBY κερδίζει πάντα.", REM, terms, "en")
+    out["post-check (en): a Greek answer = the wrong language"] = any("language" in p for p in pr)
+    report("AS19 grounded prompt + post-check (names, numbers + units, sentences, negation, language) + can't find",
+           all(out.values()), {k: v for k, v in out.items() if not v} or "all %d checks" % len(out))
 
 
 def tiny_gguf(path, arch="llama", layers=32, heads=32, kv=8, embd=4096, pad_mb=4):
@@ -1911,7 +1979,31 @@ def as20():
                 loads == ["auto", "cpu"] and wk.ans.llm.mode == "cpu" and last["op"] == "answer" and \
                 last.get("llm", {}).get("mode") == "cpu" and last["src"] == "llm"
             wk.reply("πού κλείνω την καταπακτή;", "el", f)
-            out["on the CPU: no more reloads"] = loads == ["auto", "cpu"]
+            out["on the CPU: no more reloads while the GPU stays short"] = loads == ["auto", "cpu"]
+            # AM4-r LOW-3: the GPU memory is free again -> the GPU is tried again, but rate-limited (GPU_RETRY_S),
+            # and only when the plan's need + the margin fit; the user's own "cpu" setting is never overridden
+            os.environ["TRYGONS_ASSISTANT_FAKE_GPU"] = "5000,6144"
+            t = wk.gpu_retry_t
+            wk.guard(now=t + W.GPU_RETRY_S - 1)
+            out["GPU free again: no retry before GPU_RETRY_S"] = loads == ["auto", "cpu"] and wk.ans.llm.mode == "cpu"
+            moved = wk.guard(now=t + W.GPU_RETRY_S + 1)
+            out["GPU free again after GPU_RETRY_S: reloaded on the GPU + reported"] = loads == ["auto", "cpu", "auto"] \
+                and wk.ans.llm.mode == "gpu" and moved and moved.get("mode") == "gpu" and "free again" in moved["why"] \
+                and wk.cpu_forced_t is None
+            os.environ["TRYGONS_ASSISTANT_FAKE_GPU"] = "%d,6144" % (gpu.LOW_MB - 50)
+            wk.reply("πού κλείνω την καταπακτή;", "el", f)
+            os.environ["TRYGONS_ASSISTANT_FAKE_GPU"] = "%d,6144" % (gpu.MARGIN_MB - 100)
+            wk.guard(now=wk.gpu_retry_t + W.GPU_RETRY_S + 1)
+            out["GPU still too short for need + margin: stays on the CPU"] = loads == ["auto", "cpu", "auto", "cpu"] \
+                and wk.ans.llm.mode == "cpu"
+            wk2c = W.Worker(out=types.SimpleNamespace(write=sink.append, flush=lambda: None))
+            os.environ["TRYGONS_ASSISTANT_FAKE_GPU"] = "5000,6144"
+            wk2c.load_llm({"kind": "llama", "model": p, "device": "cpu"})
+            wk2c.guard(now=1e9)
+            out["the user's CPU setting: never moved to the GPU"] = loads[-1] == "cpu" and wk2c.ans.llm.mode == "cpu" \
+                and wk2c.cpu_forced_t is None
+            out["nothing persists: a new worker plans afresh"] = W.Worker().cpu_forced_t is None and \
+                W.Worker().gpu_retry_t is None
         finally:
             W.Worker._llama = real
         # a model that fails to load = retrieval only, never a crash; the real loader refuses a name / URL
@@ -1919,6 +2011,26 @@ def as20():
         info = wk2.load_llm({"kind": "llama", "model": "qwen2.5-7b"})
         out["a model NAME (not a local .gguf) = not loaded, retrieval only"] = info["mode"] == "retrieval" and \
             wk2.ans.retrieval_only
+        # AM4-r LOW-2: an UNPINNED file (our tiny gguf is not in paths.LLM_PINNED) is refused before any load ...
+        info = wk2.load_llm({"kind": "llama", "model": p})
+        out["an unpinned model file = refused (retrieval only, the reason named)"] = info["mode"] == "retrieval" and \
+            "not pinned" in info["why"] and "assistant_llm_unpinned" in info["why"]
+        # ... unless the owner's setting allows it (then the real loader runs: no bindings here = still retrieval,
+        # but the refusal is no longer the sha check)
+        info = wk2.load_llm({"kind": "llama", "model": p, "allow_unpinned": True})
+        out["allow_unpinned: the sha check lets it through"] = "not pinned" not in info["why"]
+        # a PINNED name with another content = sha256 mismatch = refused
+        pinned_name = sorted(paths.LLM_PINNED)[0]
+        fake = os.path.join(d, pinned_name)
+        shutil.copyfile(p, fake)
+        ok, why = paths.llm_verify(fake)
+        out["a pinned file name with other bytes = size / sha256 mismatch = refused"] = not ok and (
+            "size" in why or "sha256" in why)
+        info = wk2.load_llm({"kind": "llama", "model": fake, "allow_unpinned": True})
+        out["allow_unpinned never excuses a pinned file that fails its check"] = info["mode"] == "retrieval" and (
+            "size" in info["why"] or "sha256" in info["why"])
+        ok, why = paths.llm_verify(p, allow_unpinned=True)
+        out["llm_verify: unpinned + allowed = ok, said so"] = ok and "unpinned" in why
         refused = []
         for bad in ("qwen2.5-7b", "https://huggingface.co/x/y.gguf", os.path.join(d, "missing.gguf"), "m.gguf"):
             try:
@@ -1980,7 +2092,72 @@ def as21():
             raise RuntimeError("CUDA error: out of memory")
     r = A.Answerer(Boom()).answer("πού κλείνω την καταπακτή;", "el", found)
     out["a model error -> the passage sentence, never no answer"] = r["src"] == "retrieval" and r["a"] == short
-    report("AS21 retrieval-only mode", all(out.values()), out)
+    # AM4-r MED-3: a generation that stopped at max_tokens (finish_reason "length") is CUT: its unfinished last
+    # sentence is dropped, the whole ones are kept (post-checked); the time to the first token is reported
+    terms = A.lang_terms()
+    r = A.Answerer(A.StubLlm("Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». Η κάθοδος γίνεται σε 3 s αλλά", finish="length"),
+                   terms).answer("πού κλείνω την καταπακτή;", "el", found)
+    out["stopped at max_tokens = cut: the unfinished sentence dropped"] = r["cut"] and r["src"] == "llm" and \
+        r["a"] == "Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»." and "first_ms" in r
+    r = A.Answerer(A.StubLlm("Η κάθοδος γίνεται σε 3 s αλλά μετά", finish="length"), terms).answer(
+        "πού κλείνω την καταπακτή;", "el", found)
+    out["stopped at max_tokens with no whole sentence = the retrieval form"] = r["cut"] and r["src"] == "retrieval"
+
+    class Stream:
+        """A llama.cpp-like stream for LlamaLlm.generate: pieces, then a finish_reason."""
+        def __init__(self, pieces, finish, clk):
+            self.pieces, self.finish, self.clk = pieces, finish, clk
+
+        def create_chat_completion(self, **kw):
+            for i, p in enumerate(self.pieces):
+                self.clk.t += 0.5 if i == 0 else 0.01           # the first token after the prompt pass
+                yield {"choices": [{"delta": {"content": p}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {}, "finish_reason": self.finish}]}
+    ll = A.LlamaLlm.__new__(A.LlamaLlm)
+    clk2 = Clock()
+    ll.llm = Stream(["Πατήστε ", "«ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ». ", "Η κάθοδος ", "γίνεται"], "length", clk2)
+    g = ll.generate([], clock=clk2)
+    out["LlamaLlm: finish_reason length -> cut, first_ms = the time to the first token"] = g["cut"] and \
+        g["first_ms"] == 500 and g["text"].startswith("Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ».")
+    ll.llm = Stream(["Πατήστε ", "«ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»."], "stop", clk2)
+    g = ll.generate([], clock=clk2)
+    out["LlamaLlm: a normal stop is not cut"] = not g["cut"] and g["tokens"] == 2
+
+    class Late(Stream):
+        def create_chat_completion(self, **kw):
+            self.clk.t += A.MAX_GEN_S + 1                           # the prompt pass alone took too long
+            yield {"choices": [{"delta": {"content": "Πατήστε"}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {"content": " x."}, "finish_reason": "stop"}]}
+    ll.llm = Late([], "stop", clk2)
+    g = ll.generate([], clock=clk2)
+    out["LlamaLlm: a FIRST token later than MAX_GEN_S = cut (timed too)"] = g["cut"] and g["first_ms"] > A.MAX_GEN_S * 1000
+    # AM4-r: answer mode "extract" - the model only PICKS numbered passage sentences, said word for word
+    msgs = A.prompt_pick("πού κλείνω την καταπακτή;", HATCH, "el")
+    body = msgs[1]["content"]
+    picks = A.pick_sentences(HATCH)
+    out["extract: the prompt numbers every passage sentence (3 + 1) + the question"] = len(picks) == 4 and \
+        all(("%d. %s" % (i, s)) in body for i, (s, _h) in enumerate(picks, 1)) and "Ερώτηση" in body and \
+        "ΜΟΝΟ τους αριθμούς" in msgs[0]["content"]
+    r = A.Answerer(A.StubLlm("1, 3"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
+    out["extract: '1, 3' -> those two manual sentences word for word, src extract, chapter cited"] = \
+        r["src"] == "extract" and r["a"] == picks[0][0] + " " + picks[2][0] and r["picked"] == [1, 3] and \
+        r["cite"] == "Κεφάλαιο 16 «Το μαγγέμα UAV»" and r["answer_mode"] == "extract"
+    r = A.Answerer(A.StubLlm("4"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
+    out["extract: a sentence of the second passage cites that passage"] = r["src"] == "extract" and \
+        r["cite"].startswith("Κεφάλαιο 12")
+    r = A.Answerer(A.StubLlm("9"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
+    out["extract: a number outside the list = nothing guessed (can't find said, the passage shown)"] = \
+        r["src"] == "passage" and r["a"] == A.CANT["el"] and r["passage"]["text"] == HATCH[0]["text"]
+    r = A.Answerer(A.StubLlm("Η πρόταση 1 λέει ότι η καταπακτή κλείνει."), terms, mode="extract").answer(
+        "πού κλείνω την καταπακτή;", "el", found)
+    out["extract: the model wrote its own text = not a pick = can't find said"] = r["src"] == "passage" and \
+        r["a"] == A.CANT["el"]
+    r = A.Answerer(A.StubLlm("@cant"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
+    out["extract: the model's can't find accepted"] = r["src"] == "cant_find"
+    r = A.Answerer(A.StubLlm("1, 2, 3, 4"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
+    out["extract: at most 2 sentences"] = r["src"] == "extract" and r["picked"] == [1, 2]
+    report("AS21 retrieval-only mode + cut generations + answer mode extract", all(out.values()),
+           {k: v for k, v in out.items() if not v} or "all %d checks" % len(out))
 
 
 def as22():
@@ -2010,11 +2187,48 @@ def as22():
         out["the answer: the stub model's grounded sentence, post-checked"] = info.get("src") == "llm" and \
             bool(txt) and info.get("cite", "").startswith(("Κεφάλαιο", "Ξενάγηση"))
         out["release -> answer time measured by the client"] = info.get("answer_ms") == 2500
+        out["the answer may be spoken (the horn was not pressed)"] = info.get("speak") is True and \
+            "passage" in info and bool(info["passage"]["text"])
         out["READY again"] = a.state == client.READY
         a._send({"op": "ask_text", "q": "πες μου ένα ανέκδοτο", "lang": "el"})
         wait(a, lambda: len(v.answers) > 1)
         out["ask_text: not in the manual -> can't find"] = len(v.answers) > 1 and \
             v.answers[-1][1].get("src") == "cant_find" and v.answers[-1][0] == "Δεν βρίσκω απάντηση στο εγχειρίδιο."
+        # AM4-r LOW-3: «ΟΜΙΛΙΑ» pressed while the answer is on its way = the answer is shown with speak = False
+        # (AM5 enforces: never spoken); a later question without the horn speaks again
+        n2 = len(v.answers)
+        a.press("button")
+        a.inject(tone(1.0))
+        clk.t += 1.0
+        a.release()
+        wait(a, lambda: len(v.heard) > 1)
+        a.horn_pressed()
+        clk.t += 2.5
+        wait(a, lambda: len(v.answers) > n2)
+        info2 = v.answers[-1][1] if len(v.answers) > n2 else {}
+        out["horn pressed while answering -> speak False (shown, never spoken)"] = info2.get("speak") is False and \
+            info2.get("no_speak_why") == "horn" and info2.get("src") == "llm"
+        n3 = len(v.answers)
+        a.press("button")
+        a.inject(tone(1.0))
+        clk.t += 1.0
+        a.release()
+        clk.t += 2.5
+        wait(a, lambda: len(v.answers) > n3)
+        out["the next answer without the horn speaks again"] = len(v.answers) > n3 and \
+            v.answers[-1][1].get("speak") is True
+        # the horn HELD (not a fresh press) while answering = speak False too
+        n4 = len(v.answers)
+        a.press("button")
+        a.inject(tone(1.0))
+        clk.t += 1.0
+        a.release()
+        v.horn = True
+        clk.t += 2.5
+        wait(a, lambda: len(v.answers) > n4)
+        v.horn = False
+        out["the horn held while answering -> speak False"] = len(v.answers) > n4 and \
+            v.answers[-1][1].get("speak") is False
     finally:
         a.stop()
         os.environ.pop("TRYGONS_ASSISTANT_LLM_DELAY", None)
@@ -2038,6 +2252,13 @@ def as23():
     out["the owner's candidates (Qwen2.5-7B, Meltemi, Krikri, Llama-3.1-8B, a 3B)"] = {
         "qwen2.5-7b", "meltemi-7b", "krikri-8b", "llama3.1-8b", "qwen2.5-3b", "llama3.2-3b"} <= set(gl.MODELS)
     out["the chosen model = the station's default"] = gl.CHOSEN == paths.LLM_DEFAULT and gl.CHOSEN in gl.MODELS
+    # AM4-r LOW-2: the worker verifies the model file's sha256 against paths.LLM_PINNED = exactly get_llm's table
+    out["paths.LLM_PINNED = get_llm.MODELS (file -> size, sha256)"] = paths.LLM_PINNED == {
+        fn: (size, sha) for repo, rev, fn, size, sha, lic, note in gl.MODELS.values()}
+    with open(os.path.join(ASST, "worker.py"), encoding="utf-8") as f:
+        wsrc = f.read()
+    out["the worker calls paths.llm_verify before answer.LlamaLlm"] = wsrc.index("paths.llm_verify(") < \
+        wsrc.index("answer.LlamaLlm(path")
     url, size, sha = gl.WHEEL
     out["the bindings wheel: a release asset, size + sha256"] = url.startswith(
         "https://github.com/abetlen/llama-cpp-python/releases/download/") and size > 1e8 and len(sha) == 64
@@ -2160,9 +2381,13 @@ def as24():
                 snaps.append(pid_endpoints(a.proc.pid))
                 txt, info = v.answers[-1] if len(v.answers) > k else ("", {})
                 import unicodedata
-                pl = "".join(c for c in unicodedata.normalize("NFD", txt.lower()) if unicodedata.category(c) != "Mn")
-                out["%s answered (%s, %s ms gen)" % (lang, info.get("src"), info.get("gen_ms"))] = \
-                    info.get("src") in ("llm", "passage") and must in pl
+                shown = txt + " " + ((info.get("passage") or {}).get("text") or "")   # AM4-r: a failed check SHOWS
+                pl = "".join(c for c in unicodedata.normalize("NFD", shown.lower()) if unicodedata.category(c) != "Mn")
+                out["%s answered (%s, %s ms gen, first token %s ms, sha %s ms)" % (
+                    lang, info.get("src"), info.get("gen_ms"), info.get("first_ms"), a.llm.get("sha_ms"))] = \
+                    info.get("src") in ("llm", "extract", "passage") and must in pl
+                out["%s: the model file's sha256 was verified before the load" % lang] = \
+                    a.llm.get("sha") == "sha256 verified"
     finally:
         a.stop()
     tried = attempts(MARKERS[n0:])

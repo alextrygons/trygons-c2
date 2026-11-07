@@ -143,14 +143,24 @@ def llm_line(info, installed):
     if not info:
         return T("asst.llm_ok") if installed else T("asst.llm_missing")
     mode = info.get("mode") or "retrieval"
-    return T("asst.llm_mode." + mode.replace("+", "_"), name=info.get("name") or "-", why=info.get("why") or "")
+    txt = T("asst.llm_mode." + mode.replace("+", "_"), name=info.get("name") or "-", why=info.get("why") or "")
+    if mode != "retrieval" and info.get("answer_mode") in ("generate", "extract"):
+        txt += " – " + T("asst.answer_mode." + info["answer_mode"])
+    return txt
 
 
 def answer_line(a):
-    """The answer to the last question (AM4: text; spoken from AM5) + where it comes from."""
+    """The answer to the last question (AM4: text; spoken from AM5) + where it comes from + (AM4-r) the manual
+    passage it rests on, with its chapter - also when the model's answer failed the check (then «Δεν βρίσκω ...» is
+    the answer and the passage is what the operator reads)."""
     cite = a.get("cite") or ""
-    return T("asst.answer_line", a=a.get("a", ""), src=T("asst.src." + (a.get("src") or "cant_find")),
-             cite=(" – " + cite) if cite else "", ms=a.get("answer_ms", a.get("ms", 0)))
+    src = a.get("src") or "cant_find"
+    txt = T("asst.answer_line", a=a.get("a", ""), src=T("asst.src." + src),
+            cite=(" – " + cite) if cite and src != "passage" else "", ms=a.get("answer_ms", a.get("ms", 0)))
+    p = a.get("passage") or {}
+    if p.get("text"):
+        txt += "\n" + T("asst.passage", cite=p.get("cite") or cite, text=p["text"])
+    return txt
 
 
 def found_line(f):

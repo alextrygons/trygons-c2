@@ -499,6 +499,127 @@ Answers seen in the e2e run that are WRONG but passed the post-check (grounded w
 the passages as an ordinary word): the post-check is a guard against invented names / numbers, not a judge of
 meaning - the chapter shown with every answer stays the operator's check (MANUAL ch. 22 / 17).
 
+### 5c. Review fixes (step AM4-r, review of 3e1b1d3; station / tools / tests / docs only)
+
+Where this section differs from 5a, THIS wins.
+
+- MED-1 the post-check could be bypassed: a number followed by an UNKNOWN unit ("50 feet", "50 nautical miles",
+  "3 milliseconds", "3 hrs", "20 per cent") was checked as a bare number (its value is in the passages: pass), the
+  sign was dropped ("-3 s" = "3 s") and only a few number words were known ("eighty seconds", «εβδομήντα /
+  τριακόσια δευτερόλεπτα» passed). Now (answer.norm / digitize / numbers): every number word of both languages is
+  turned into digits first (2-19, the tens, the Greek hundreds διακόσια .. εννιακόσια, χίλια / thousand,
+  "hundred" multiplying, hyphenated "twenty-five", compounds "εικοσιπέντε"; a bare "ένα" / "μία" / "one" / "half" is
+  an article unless a known unit follows it); the sign is kept; the unit table has the review's spellings and more
+  (feet / ft / πόδια, miles / mi / μίλια, nmi / nautical / ναυτικά, hrs, msec / milliseconds, per cent / τοις εκατό,
+  cm, mm, kg, m/s, km/h, kph, mph, °/s ...; its keys in plain form - the earlier "κόμβους" never matched the
+  final-sigma-folded text); a number followed by a word that is NO known unit must stand with that word in the
+  passages ("50 fathoms" with "50 m" in the manual = refused: the stricter rule the review preferred, as a bigram so
+  "οθόνη 1 του κυβερνήτη" copied from the manual still passes); a number glued to letters is an ordinal ("7ο", "1η"
+  = a bare number) or an identifier ("13q2c", "v2": not a number); a date "2026-11-04" is not three numbers.
+- MED-2 numbers were a SET over the three passages. Now every number of the answer must be in ONE passage SENTENCE
+  together with the content word standing next to it in the answer (the nearest one on each side, stop words /
+  units skipped; stems compared by their first 5 letters): the review's swapped probe "Reverse is capped at 20 % and
+  forward at 5 %" is caught when the manual states the two caps in separate sentences ("The remote cap is 20 %
+  forward. Reverse is capped at 5 %.") - a swap inside ONE manual sentence is NOT caught (a lexical check cannot;
+  stated here and in the manuals; the extract mode of 5d makes it moot). Negation: an answer sentence with
+  never / not / no / cannot / without / δεν / μην / ποτέ / όχι / χωρίς / κανένα ... needs a negation in a TOP
+  supporting passage sentence (the one(s) sharing most content words); a plain answer sentence is refused when a
+  top supporting sentence negates the very word it shares (a negation word up to 2 tokens BEFORE a shared word:
+  "the PC can NEVER override it" vs "The PC can override STANDBY"; measured first with "anywhere in the sentence"
+  = 13 of 35 English answers refused, most of them wrongly - the manual's sentences are full of "no other mode",
+  "nothing else" clauses). An answer sentence with content words that shares none with any passage sentence is
+  "not grounded" (refused). Names: a Capitalised word standing as the name of a thing - "the Reset button", "PC
+  button", «κουμπί Reset», «σελίδα Κάμερες» (NAMED_RE / NAMED_EL_RE) - must be in the passages, and the
+  ALLOWED_CAPS words (PC, OK, C2, Trygons) get no exemption there ("PC button" with no PC in the passages = refused).
+- LOW-1 the language: the answer must be in the question's language - among its words that are NOT words of the
+  passages (names like HDG LOCK are), the Greek-script letter share must be >= 1/2 for a Greek question and <= 1/2
+  for an English one (an English answer to a Greek question = refused, never spoken).
+- The review's rule (W105, default yes): a FAILED check now SAYS «Δεν βρίσκω απάντηση στο εγχειρίδιο.» and SHOWS
+  the best passage with its chapter (every answer that rests on a passage carries `passage` {text, cite, id};
+  the Tools page prints it under the answer, screen 2's message line says "see the passage on the Assistant page
+  (chapter N)"); the passage's FIRST sentence is no longer spoken (it may not answer the question). The
+  retrieval-only mode (no model / too slow) keeps the owner's rule (the shortest whole sentence). AM5 will speak
+  "from the manual, chapter N" before every answer (the cite is the code's, never the model's).
+- MED-3 LlamaLlm.generate: a generation that stopped at max_tokens (finish_reason "length") is CUT = its unfinished
+  last sentence is dropped (decide keeps the whole ones, post-checked); the time to the FIRST token is measured
+  (first_ms, in the answer + the eval rows) and a first token later than MAX_GEN_S counts as cut. The bindings'
+  prompt pass cannot be interrupted from Python (the generator yields nothing until it is done): the client's
+  ANSWER_TIMEOUT_S 60 s bounds the worst case (worker restart). MAX_TOKENS 160 stays: AM4's longest KEPT answer was
+  72 tokens (Greek median 19), the 2-sentence stop ends every answer first; the 9 Greek cuts of the AM4 run were
+  the 10 s time cut on the partly-offloaded model, not the token limit.
+- MED-4 latency, honestly: the AM4 figure "median 1.9 s" was over ALL 10 spoken questions, 4 of which were "can't
+  find" (a few tokens). Over the 6 answers the model ACTUALLY generated in that quiet run: median 2.3 s, max 2.6 s;
+  the first run right after the heavy comparison: generated median 9.8 s, max 13.8 s. The comparison's medians
+  (3.2-5.2 s) were on a busy PC with the model partly on the CPU. `assistant_llm_eval.py report` and `e2e` now
+  print both medians (all / generated only). Re-measured 2026-11-07 after the fixes (10 spoken Greek tuning
+  questions, the real Whisper; CONDITION: another program held 2.1 GB of the GPU, so only 17 of 28 layers were on
+  the GPU - slower than AM4's all-28 run): generate: all 10 median 2.34 s, max 3.48 s; the 6 generated: median
+  3.04 s, max 3.48 s. extract (5d): all 10 generated, median 1.86 s, max 2.74 s (Whisper 0.84-1.08 s of it).
+- LOW-2 the model file: paths.LLM_PINNED (file name -> size, sha256 = tools/get_llm.py MODELS; AS23 keeps them
+  equal) + paths.llm_verify: the worker computes the sha256 of the .gguf it is about to load (1.8 s for the 2 GB
+  file, once per start, in the below-normal worker) and refuses a mismatch (size or digest) = retrieval only with
+  the reason on the Tools page; a file NOT in the table is refused unless the per-PC setting
+  `assistant_llm_unpinned` is true (W108); `get_llm.py --check --verify` checks every present file. The paths.py
+  docstring's Ubuntu hint names the pinned faster-whisper==1.2.1 (the hash lock), get_llm.py's Ubuntu hint the
+  pinned wheel version + the hash-locked requirements; the get_llm docstring's download size corrected (the chosen
+  model + the wheel = ~2.5 GB, not 5.3).
+- LOW-3 worker.guard: after the guard moved the model to the CPU (GPU short before an answer) it tries the GPU
+  again when the free memory covers the plan's need + MARGIN_MB, at most every GPU_RETRY_S 120 s, never when the
+  user's setting says "cpu"; all of it in RAM (cpu_forced_t / gpu_retry_t: a worker restart plans afresh from the
+  real free memory - nothing wrong can persist). The client marks an answer whose question was interrupted by
+  «ΟΜΙΛΙΑ» (pressed, or held while the answer was on its way) with `speak: False`, `no_speak_why: "horn"` - it is
+  SHOWN, AM5 must never speak it (test AS22).
+- Measured effect of the stricter post-check on the STORED AM4 tuning runs (rescore, llama3.2-3b, generate mode):
+  rejected 4/49 -> 18/49 = 37 % of the Greek and 2/35 -> 9/35 = 26 % of the English generated answers; Greek
+  correct 22 % -> 17 %, English 67 % -> 48 % (a rejected answer now counts as "can't find", not as the first
+  sentence's luck). Among the new rejections are REAL errors the old check let through («Ναι, η μηχανή σβήνει αν
+  είναι κάποιος στο σκάφος» - the manual says never in CREWED; «Ο μοχλός TWCS στο AUTO κάνει να αλλάξει το
+  τιμόνι» - the manual says it never adds power) and paraphrases ("the drones can fly up to 120 m" vs the manual's
+  "altitude 10..120 m"): W109.
+
+### 5d. Answer mode "extract" vs "generate" (step AM4-r; the review's design, evaluated)
+
+The review proposed: the model only PICKS passage sentences by number and they are spoken WORD FOR WORD. Built as
+the per-PC setting `assistant_answer_mode` (client.DEFAULT_ANSWER_MODE; env TRYGONS_ASSISTANT_ANSWER; the Tools page
+shows the mode): answer.prompt_pick numbers the WHOLE sentences (a capital / digit / quote first, brackets balanced,
+>= 4 words; no lower-case clause fragments of the manual's "·"-lists) of the top 3 passages (<= 30), the instruction
+says "write ONLY the numbers of the one or two sentences that answer, e.g. 4 or 4, 9, else exactly the can't-find
+sentence"; _decide_pick accepts "4" / "4, 9" / "4 και 9" / an echoed "4. <the sentence itself>"; any other text,
+or numbers outside the list, = nothing is guessed (can't find said + the passage shown); two sentences longer than
+MAX_PICK_WORDS 45 together = the first only; the post-check still runs as the backstop (a manual sentence's own "see
+chapter 9" is allowed). Compared on the TUNING part with the real worker (`assistant_llm_eval.py run --answer
+extract`; llama3.2-3b; the same stricter post-check for both; the held-out part untouched):
+
+| llama3.2-3b, tuning | lang | correct | answered | precision (correct of answered) | false can't find (the model's own) | post-check rejected | quality proxy | median ms (question -> text) |
+|---|---|---|---|---|---|---|---|---|
+| generate (AM4) | el | 16/96 = 17 % | 38/96 = 40 % | 16/38 = 42 % | 58 (40) | 18/49 = 37 % | 27/31 = 87 % | 5187 (AM4's busy run) |
+| **extract** | el | 35/96 = 36 % | 87/96 = 91 % | 35/87 = 40 % | 9 (1) | 8/97 = 8 % (the model wrote text instead of a number) | 79/89 = 89 % | 803 |
+| generate (AM4) | en | 16/33 = 48 % | 25/33 = 76 % | 16/25 = 64 % | 8 (0) | 9/35 = 26 % | 26/26 = 100 % | 3223 |
+| **extract** | en | 16/33 = 48 % | 33/33 = 100 % | 16/33 = 48 % | 0 (0) | 0/34 | 28/34 = 82 % (long sentences) | 427 |
+| none (the search's shortest sentence) | el / en | 21/96 = 22 % / 4/33 = 12 % | 96 / 33 | 22 % / 12 % | 1 / 0 | - | - | 0 |
+
+(extract ran with 17 of 28 layers on the GPU - another program held 2.1 GB; not-in-the-manual questions: extract
+said can't find 5/7 el, 4/5 en; generate 7/7, 4/5.)
+
+READ IT HONESTLY: "correct" = the must-mention term is in the spoken text, and the term is by construction in the
+passage the search found - a verbatim sentence that contains the question's words is "correct" even when it does
+not answer the question (CIRCULAR proxy; e.g. "πώς σταματάω την εκτόξευση" -> the picked sentence about the hatch
+relay lamp). The human-style judgement of the picked sentences is the owner's (W99's blind sheet regenerated with the
+extract answers as one more letter). What the numbers DO say: (1) extract never invents - a name, number, negation or
+language problem is impossible in a verbatim sentence (0 / 8 rejections were post-check problems; the 8 Greek ones
+were the model writing text instead of a number = can't find); (2) extract answers much more (91 / 100 %) and its
+false "can't find" are few (9 / 0 vs 58 / 8); (3) Greek correctness doubles (36 vs 17 %) at the same precision (40 vs
+42 %); English correctness is equal (48 %) at a LOWER precision (48 vs 64 %) - the model picks the keyword sentence,
+not the answer, and says so for every question; (4) 4-6x faster (7 tokens median: the number); (5) the quality
+proxy penalises only length (the manual's long sentences, > 40 words). Spoken, a manual sentence out of context can
+be long or oblique ("Η ξενάγηση έχει κεφάλαιο «Το μαγγέμα UAV».") - the chapter is always shown.
+
+CHOICE (W106 asks the owner to confirm): DEFAULT = "extract". Safer: nothing invented is possible, and it is the
+only mode in which the swap-in-one-sentence limit of 5c cannot bite. Not worse: Greek better, English equal on
+correctness (lower precision = more off-target true sentences, never a false fact). "generate" stays one setting
+away for a PC where English matters most. Krikri / Meltemi were not run in this mode (they do not fit beside
+Whisper on 6 GB: W107).
+
 ## 6. Speak (step AM5)
 
 - Through the station's own sound.py SoundSystem: a new level ASSISTANT below FEEDBACK, ADVISORY,
@@ -624,6 +745,9 @@ meaning - the chapter shown with every answer stays the operator's check (MANUAL
   not set (mic.py WAVE_MAPPER), while the loudhailer rule is "never the PC's default speaker / mic".
   Recommended: the assistant also needs an EXPLICIT choice - none chosen = OFFLINE "not configured"
   (the button greyed, the Tools page says so).
+- W105-W109 (AM4-r): a failed check = can't find said + the passage shown (default yes); the answer mode default
+  "extract" (5d; confirm); Krikri / Meltemi in the extract mode only on a >= 8 GB GPU; unpinned model files
+  refused unless `assistant_llm_unpinned`; the stricter number / negation rules' false "can't find" accepted.
 - W86 (AM1-r) a question about a SAFETY ACTION (STANDBY, e-stop, lost link, ...) with no manual hit:
   only "I can't find that in the manual", or also point to where to look? Recommended: yes, the panel
   also shows the chapter list of the manual (text only, never a guessed answer).

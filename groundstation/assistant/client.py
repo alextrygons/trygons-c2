@@ -13,9 +13,9 @@ The loudhailer «ΟΜΙΛΙΑ» (AM1 review H1): its press aborts a capture AND 
 
 The answer (step AM4): the worker runs llama.cpp IN its own process through the Python bindings (answer.py) - this
 module starts the worker and nothing else: no llama-cli, never llama-server, never a TCP port (CLAUDE.md W, AM1-r
-L4). After "heard" the worker sends "answer" (src llm / passage / retrieval / cant_find); the time from the
-release to the answer text is measured here (answer_ms). The answer is SHOWN (Tools page, screen 2's message line);
-it is spoken from step AM5.
+L4). After "heard" the worker sends "answer" (src llm / extract / passage / retrieval / cant_find); the time from
+the release to the answer text is measured here (answer_ms). The answer is SHOWN (Tools page, screen 2's message
+line); it is spoken from step AM5 - never when its "speak" flag is False (the horn was pressed meanwhile, AM4-r).
 """
 import json
 import os
@@ -42,6 +42,10 @@ SOURCES = ("button", "key")     # never "joystick" (CLAUDE.md W)
 KEYS = ("F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9")     # F10 = the Windows menu key, F11 / F12 = the screens
 DEFAULT_KEY = "F9"
 PROBLEM_NOTES = ("asst.n_mic", "asst.n_error", "asst.n_index")    # amber on the message line; the other notes = plain info (LOW-4)
+# how the model answers (AM4-r, docs/assistant_design.md 5d; gs_settings "assistant_answer_mode" / the environment
+# TRYGONS_ASSISTANT_ANSWER): "extract" = the model only PICKS manual sentences by number, said word for word;
+# "generate" = it writes 1-2 sentences from the passages (post-checked). The default follows the AM4-r measurement.
+DEFAULT_ANSWER_MODE = "extract"
 
 # states
 OFF, IDLE, NO_MODELS, GATEWAY_PC, STARTING, READY, LISTENING, THINKING, DOWN, FAILED = (
@@ -87,6 +91,8 @@ class Assistant:
         self.gen = 0                             # the worker generation (an old worker's lines are dropped)
         self.heard_t = None                      # the last line from the worker (alive)
         self.ping_t = None                       # an unanswered ping was sent at this time
+        self.horn_since_ask = False              # «ΟΜΙΛΙΑ» went down while a question was being answered (AM4-r
+        #                                          LOW-3: the answer then carries speak = False - AM5 enforces it)
 
     # --- settings ------------------------------------------------------------------------------------------------
     def _get(self, k, dflt):
@@ -118,13 +124,17 @@ class Assistant:
         env = os.environ.get("TRYGONS_ASSISTANT_LLM", "")
         if env == "stub" or (self.stt_kind == "stub" and not env):
             return {"kind": "stub", "reply": os.environ.get("TRYGONS_ASSISTANT_LLM_REPLY", "@first"),
-                    "delay_s": float(os.environ.get("TRYGONS_ASSISTANT_LLM_DELAY") or 0)}
+                    "delay_s": float(os.environ.get("TRYGONS_ASSISTANT_LLM_DELAY") or 0),
+                    "answer_mode": os.environ.get("TRYGONS_ASSISTANT_ANSWER") or "generate"}
         if env == "none" or self._get("assistant_llm", "on") == "off":
             return {"kind": "none"}
         m = paths.llm_model()
         if not m or not paths.llm_py_dir():
             return {"kind": "none"}
-        return {"kind": "llama", "model": m, "py": paths.llm_py_dir(), "device": self._get("assistant_device", "auto")}
+        mode = os.environ.get("TRYGONS_ASSISTANT_ANSWER") or self._get("assistant_answer_mode", DEFAULT_ANSWER_MODE)
+        return {"kind": "llama", "model": m, "py": paths.llm_py_dir(), "device": self._get("assistant_device", "auto"),
+                "answer_mode": mode if mode in ("generate", "extract") else DEFAULT_ANSWER_MODE,
+                "allow_unpinned": bool(self._get("assistant_llm_unpinned", False))}
 
     def models_ok(self):
         if self.stt_kind == "stub":
@@ -263,6 +273,7 @@ class Assistant:
         self.pressed_t = None
         if self._send({"op": "ask", "lang": self.view.lang()}):
             self.ask_t = self.release_t = self.clock()
+            self.horn_since_ask = False
             self._set(THINKING)
 
     def abort(self):
@@ -272,8 +283,10 @@ class Assistant:
             self._set(READY)
 
     def horn_pressed(self):
-        """The loudhailer «ΟΜΙΛΙΑ» went down (any source): capture dropped + the assistant's voice stopped AT ONCE."""
+        """The loudhailer «ΟΜΙΛΙΑ» went down (any source): capture dropped + the assistant's voice stopped AT ONCE;
+        an answer still on its way will not be spoken (speak = False)."""
         self.abort()
+        self.horn_since_ask = True
         self.view.voice_stop()
 
     # --- the Tk loop (every 100 ms) -----------------------------------------------------------------------------------
@@ -281,6 +294,7 @@ class Assistant:
         now = self.clock()
         if self.view.horn_held():                 # this station holds the horn: never capture, never speak
             self.abort()
+            self.horn_since_ask = True
             self.view.voice_stop()
         while True:
             try:
@@ -339,6 +353,10 @@ class Assistant:
             if self.release_t is not None:
                 a["answer_ms"] = int((self.clock() - self.release_t) * 1000)
             self.release_t = None
+            # AM4-r LOW-3: «ΟΜΙΛΙΑ» pressed / held since the question = this answer is SHOWN but must NOT be spoken
+            a["speak"] = not (self.horn_since_ask or self.view.horn_held())
+            if not a["speak"]:
+                a["no_speak_why"] = "horn"
             self.answer = a
             if m.get("llm"):                     # the GPU guard moved the model (AM4)
                 self.llm = m["llm"]

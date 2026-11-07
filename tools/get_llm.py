@@ -1,6 +1,7 @@
 """The talking manual's answer step (step AM4): llama.cpp's Python bindings + the local language models.
 
-    C:\\msys64\\ucrt64\\bin\\python.exe tools\\get_llm.py               (the bindings + the CHOSEN model, ~5.3 GB)
+    C:\\msys64\\ucrt64\\bin\\python.exe tools\\get_llm.py               (the bindings + the CHOSEN model: ~0.5 GB +
+                                                                      2.0 GB = ~2.5 GB)
     ... tools\\get_llm.py --all                                       (every candidate of the comparison, ~23 GB)
     ... tools\\get_llm.py --model qwen2.5-3b                          (one model by name)
     ... tools\\get_llm.py --list                                      (the candidates, their files and licences)
@@ -168,14 +169,21 @@ def get_model(name):
     return fetch(HF.format(repo=repo, rev=rev, f=fn), model_path(name), size, digest)
 
 
-def check():
+def check(verify=False):
+    """What is installed (size check; --verify also the sha256 of every present model = minutes for 23 GB)."""
     st, why = install_state()
     print("bindings: %s %s" % (st, why))
+    bad = 0
     for n in MODELS:
         p = model_path(n)
         ok = os.path.isfile(p) and os.path.getsize(p) == MODELS[n][3]
-        print("%-12s %s %s" % (n, "present" if ok else "missing", p if ok else ""))
-    return 0 if st == "ok" else 1
+        extra = ""
+        if ok and verify:
+            good = sha256(p) == MODELS[n][4]
+            extra = "  sha256 %s" % ("ok" if good else "MISMATCH")
+            bad += not good
+        print("%-12s %s %s%s" % (n, "present" if ok else "missing", p if ok else "", extra))
+    return 0 if st == "ok" and not bad else 1
 
 
 def main():
@@ -185,21 +193,25 @@ def main():
     ap.add_argument("--models-only", action="store_true", help="no bindings (Ubuntu: pip install llama-cpp-python)")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--verify", action="store_true", help="with --check: the sha256 of every present model too")
     a = ap.parse_args()
     if a.list:
         for n, (repo, rev, fn, size, digest, lic, note) in MODELS.items():
             print("%-12s %5.2f GB  %-22s %s%s" % (n, size / 1e9, lic, note, "   <- chosen" if n == CHOSEN else ""))
         return 0
     if a.check:
-        return check()
+        return check(a.verify)
     for n in a.model:
         if n not in MODELS:
             print("unknown model %r (known: %s)" % (n, ", ".join(MODELS)))
             return 2
     if not a.models_only:
         if os.name != "nt":
-            print("on Ubuntu: pip install llama-cpp-python==0.3.36 (CUDA build) in the assistant venv, then "
-                  "--models-only")
+            print("on Ubuntu: in the assistant venv install the SAME pinned versions - the wheel llama-cpp-python==%s "
+                  "(a CUDA 12.4 build of its release v0.3.36, not a plain `pip install llama-cpp-python`) and the "
+                  "hash-locked dependencies: pip install --require-hashes --only-binary :all: --no-deps -r %s; then "
+                  "--models-only (the model files are sha256-checked the same way)" % (
+                      "0.3.36", os.path.relpath(REQ, os.path.dirname(HERE))))
             return 1
         exe = os.environ.get("TRYGONS_ASSISTANT_PYTHON") or APY
         if not os.path.isfile(exe):
