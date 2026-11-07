@@ -3815,9 +3815,18 @@ THE ANSWER (step AM4)
     - "picks manual sentences (word for word)" - the DEFAULT: the model only
       chooses one or two of the numbered sentences of the three passages and
       exactly those manual sentences are shown (and spoken from step AM5).
-      Nothing can be invented: no name, number or "never" that the manual
-      does not have. A manual sentence out of its context can be long or
-      oblique - the chapter is always shown with it.
+      No word that the manual does not have can be said: no invented name,
+      number or "never". A sentence is WHOLE (step AM4-r2): it runs to its
+      full stop - a clause after a ";" or a Greek "·" stays with it, so a
+      "never / only" that follows is never cut off. When the two sentences
+      come from two different passages, both chapters are named and both
+      passages are shown. A manual sentence out of its context can be long
+      or oblique - the chapter is always shown with it. If the best passage
+      the search found matches the question only weakly (search score below
+      the setting assistant_extract_floor, 7.2), the model is not asked: the
+      assistant says "I can't find that in the manual." and shows the passage
+      anyway (a true sentence that does not answer the question would mislead
+      more than a "can't find"; 0 = no such floor).
     - "writes 1-2 sentences from the passages (checked)": the model writes
       its own short answer from the passages. CHECKED before it is shown:
       every button / mode / screen / alarm name (also "the Reset button"),

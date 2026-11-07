@@ -6,7 +6,10 @@
 src = what is said:
     "llm"        the model's answer passed the post-check
     "extract"    (answer mode "extract", AM4-r) the model only PICKED passage sentences by number; they are said
-                 word for word
+                 word for word (AM4-r2: a WHOLE sentence = up to . ! ? or the Greek question mark - an English ';'
+                 or a Greek '·' clause stays in its sentence, no clause fragment is ever offered: test AS25 over the
+                 whole index; two picks from different passages cite BOTH chapters (passage2); below EXTRACT_FLOOR
+                 (the best passage's search score, W112) nothing is picked - can't find said, the passage shown)
     "passage"    the model's answer FAILED the post-check (a name / number / negation not in the passages, the
                  wrong language) -> «Δεν βρίσκω απάντηση στο εγχειρίδιο.» is said and the best passage is SHOWN with
                  its chapter (AM4-r, the review's rule; W105; before AM4-r the passage's first sentence was said)
@@ -28,8 +31,12 @@ POST-CHECK before anything is used (docs/assistant_design.md 5c):
     to it in the answer (a swapped "20 % reverse / 5 % forward" is caught when the manual states them in separate
     sentences; in ONE manual sentence a swap is not caught - a lexical check, stated in the docs);
   - a negation (never / not / no / δεν / ποτέ / όχι / χωρίς ...) in an answer sentence must also be in the passage
-    sentence that supports it, and the other way round ("STANDBY never wins", "the PC can override STANDBY");
+    sentence that supports it, and the other way round ("STANDBY never wins", "the PC can override STANDBY" - AM4-r2
+    MED-2: the negation may stand up to NEG_MIN_SHARED content words before the shared word with stop words / "can" /
+    "μπορεί να το" between, and EVERY passage sentence about the same thing is checked, not only the best match);
     an answer sentence with content words that shares none with any passage sentence is not grounded;
+    LEXICAL: only the word next to a number and the negated word are checked - a wrong CLAIM made with the right
+    words is not caught (the extract mode, verbatim text, makes it moot);
   - the answer must be in the question's language (the Greek-script share of the words that are not names from
     the passages);
   - a chapter the answer names must be one of theirs.
@@ -90,11 +97,46 @@ def plain(text):
     return t.lower().replace("ς", "σ")
 
 
-SENT_RE = re.compile(r"(?<=[.!;·?])\s+(?=\S)")
+GREEK_RE = re.compile(r"[Ͱ-Ͽἀ-῿]")
+# AM4-r2 MED-1: a sentence ends at . ! ? - or at the GREEK question mark ';' (a Greek piece before it, a new sentence
+# after it). An English ';' and the Greek '·' (ano teleia) JOIN clauses: the clause after them stays in the sentence
+# ("TRAINING only from STANDBY by the PC; nothing but STANDBY until ..." is ONE sentence - before AM4-r2 the
+# pickable first half lost its "nothing but" clause, 452 such picks over both indexes). A piece after an
+# abbreviation ("e.g. the", "π.χ. το") that starts lower-case is joined too.
+_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+(?=\S)")
+_ABBREV = ("e.g.", "i.e.", "etc.", "vs.", "ch.", "approx.", "incl.", "resp.", "no.", "π.χ.", "δηλ.", "κεφ.", "σελ.",
+           "βλ.", "κ.λπ.", "κλπ.", "κ.ά.", "μεγ.", "μέγ.", "ελαχ.", "ελάχ.", "αυξ.", "αύξ.", "...")
+
+
+def _starts_sentence(s):
+    c = s.lstrip("«\"'([")[:1]
+    return bool(c) and (c.isupper() or c.isdigit())
+
+
+def _greekish(s):
+    """More Greek than Latin letters: the ';' at its end is the Greek question mark, not an English semicolon."""
+    g = len(GREEK_RE.findall(s))
+    return g > 0 and g >= len(re.findall(r"[A-Za-z]", s))
+
+
+def ends_sentence(s):
+    """The piece ends like a sentence (. ! ? or the Greek question mark) - a ';' / '·' clause end is none."""
+    s = (s or "").rstrip()
+    return s.endswith((".", "!", "?")) or (s.endswith(";") and _greekish(s))
 
 
 def sentences(text):
-    return [s.strip() for s in SENT_RE.split(" ".join((text or "").split())) if s.strip()]
+    parts = [p for p in _SPLIT_RE.split(" ".join((text or "").split())) if p.strip()]
+    out = []
+    for p in parts:
+        prev = out[-1] if out else None
+        if prev is not None and (
+                (prev.endswith(";") and not (_greekish(prev) and _starts_sentence(p))) or
+                (prev.lower().endswith(_ABBREV) and not _starts_sentence(p))):
+            out[-1] = prev + " " + p
+        else:
+            out.append(p)
+    return [s.strip() for s in out if s.strip()]
 
 
 def first_sentence(text):
@@ -238,13 +280,25 @@ DATE_RE = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
 
 
 def _tok_re(v):
-    """The number `v` as it may stand in a normed text: "0.5" or "0,5", not inside another number / a word."""
+    """The number `v` as it may stand in a normed text: "0.5" or "0,5", "1500" also as "1,500" / "1.500" (a
+    thousands group), not inside another number / a word."""
     s = "%g" % abs(v)
-    s = re.escape(s).replace(r"\.", "[.,]")
+    if s.isdigit() and len(s) > 3:
+        s = s[:-3] + "[.,]?" + s[-3:]
+    else:
+        s = re.escape(s).replace(r"\.", "[.,]")
     return re.compile(r"(?<!\w)(?<!\d[.,])-?" + s + r"(?!\d)(?![.,]\d)")
 
 
+_THOUSANDS_RE = re.compile(r"[1-9]\d{0,2}[.,]\d{3}")
+
+
 def _f(x):
+    """"1,500" / "1.500" = a THOUSANDS group (exactly 3 digits after the separator, the first part 1-3 digits not
+    starting with 0) = 1500, never 1.5 (AM4-r2 LOW-b: "1,500 m" against the manual's "1.5 m" is a mismatch); every
+    other form is a decimal with either separator."""
+    if _THOUSANDS_RE.fullmatch(x):
+        return float(x[:-4] + x[-3:])
     return float(x.replace(",", "."))
 
 
@@ -369,11 +423,12 @@ STOP = set("""ο η το οι τα του τησ των τον την τη το�
     before over under again further once per""".split()) | {"ο", "η", "το", "σε", "με", "να", "τη", "τα", "οι"}
 NEG_RE = re.compile(r"(?<![\w])(?:δεν|δε|μην|μη|ποτε|οχι|κανενα|κανενασ|καμια|καμμια|ουτε|χωρισ|τιποτα|κανεισ|"
                     r"not|never|no|cannot|without|none|nobody|nothing|nor|neither)(?![\w])|n't")
-GREEK_RE = re.compile(r"[\u0370-\u03ff\u1f00-\u1fff]")
 
 
 NEG_WORDS = set("δεν δε μην μη ποτε οχι κανενα κανενασ καμια καμμια ουτε χωρισ τιποτα κανεισ not never no cannot "
                 "without none nobody nothing nor neither".split())
+NEG_MIN_SHARED = 2        # a passage sentence "about the same thing" as a plain answer sentence (its negation counts):
+NEG_MIN_FRAC = 0.4        #   >= 2 shared content words AND >= 40 % of the answer's - or the best-matching one(s)
 
 
 def content_words(normed):
@@ -397,16 +452,25 @@ def has_negation(normed):
 
 
 def negated_shared(ps, shared, window=2):
-    """A negation word in the passage sentence `ps` standing up to `window` tokens BEFORE one of the `shared` content
-    words - the manual negates the very thing the answer states ("the PC can NEVER override it" vs "the PC can
-    override"; "ποτέ δεν προσθέτει" vs "προσθέτει"). Only before: Greek and English put the negation in front of
-    the verb / noun; a negation about something else in the same sentence is not held against the answer."""
+    """A negation word in the passage sentence `ps` standing BEFORE one of the `shared` content words, with at most
+    `window` CONTENT words between (stop words, units and other negations - "μπορεί", "να", "το", "can", "ποτέ" -
+    are skipped, AM4-r2 MED-2: "δεν μπορεί ποτέ να το παρακάμψει" negates "παρακάμψει"; "can never override it"
+    negates "override"): the manual negates the very thing the answer states. Only before: Greek and English put
+    the negation in front of the verb / noun; a negation about something else in the sentence is not held against
+    the answer."""
     toks = re.findall(r"[\w']+", ps)
     negs = [i for i, t in enumerate(toks) if t in NEG_WORDS or t.endswith("n't")]
     for i in negs:
-        for j in range(i + 1, min(len(toks), i + window + 1)):
-            if any(_same(toks[j], w) for w in shared):
+        seen = 0
+        for j in range(i + 1, len(toks)):
+            t = toks[j]
+            if t in STOP or t in UNITS or t in NEG_WORDS or t.endswith("n't") or len(t) < 2 or t.isdigit():
+                continue
+            if any(_same(t, w) for w in shared):
                 return True
+            seen += 1
+            if seen >= window:
+                break
     return False
 
 
@@ -450,10 +514,11 @@ def postcheck(ans, hits, terms=(), lang=None):
                       for h in hits)
     srcn = norm(src)
     sw = _wordy(srcn, normed=True)
+    sw_split = " " + " ".join(re.findall(r"[\w%°]+", srcn)) + " "   # "κίτρινο/πορτοκαλί" as two words too (AM4-r2)
     probs = []
     for n in sorted(names(ans, terms)):
         nw = " ".join(re.findall(r"[\w%°]+", norm(n)))
-        if nw and (" " + nw + " ") not in sw:
+        if nw and (" " + nw + " ") not in sw and (" " + nw + " ") not in sw_split:
             probs.append("name not in the passages: %s" % n)
     have = numbers(srcn, normed=True)
     with_unit = {(v, u) for v, u, _w, _p in have if u}
@@ -491,8 +556,12 @@ def postcheck(ans, hits, terms=(), lang=None):
             elif has_negation(sn):                   # a negated answer: a top passage sentence must negate too
                 if not any(has_negation(ps) for ps in best):
                     probs.append("negation not in the passage sentence: %s" % s[:60])
-            else:                                    # a plain answer: no top sentence may negate a shared word
-                for ps in best:
+            else:                                    # a plain answer: no passage sentence ABOUT THE SAME THING may
+                for sc, ps in scored:                #   negate a shared word - the best one(s), and (AM4-r2 MED-2)
+                    if sc <= 0:                      #   EVERY sentence sharing >= NEG_MIN_SHARED content words and
+                        continue                     #   >= NEG_MIN_FRAC of the answer's (measured: any sharing
+                    if sc < top and (sc < NEG_MIN_SHARED or sc < NEG_MIN_FRAC * len(cw)):   # sentence = 11 / 8
+                        continue                     #   good answers refused, this = 4 / 3, the probes refused)
                     shared = [w for w in cw if any(_same(w, o) for o in content_words(ps))]
                     if negated_shared(ps, shared):
                         probs.append("the passage sentence negates it: %s" % s[:60])
@@ -527,20 +596,27 @@ def prompt(q, hits, lang):
 
 def pick_sentences(hits, min_words=4):
     """Answer mode "extract": the numbered passage sentences the model may pick -> [(sentence, hit)]. Only WHOLE
-    sentences (a capital / digit / quote first, brackets balanced - no lower-case clause fragments of the manual's
-    "·"-lists) of at least min_words words."""
+    sentences: a capital / digit / quote first, brackets balanced, at least min_words words, and (AM4-r2 MED-1)
+    never a piece that ends in a ';' / '·' clause mark (sentences() keeps such clauses joined; a passage cut by the
+    index builder in the middle of a '·'-list can still end so - that last piece is not offered). The pieces that
+    start lower-case ("e.g." remnants, list items) are not offered either (test AS25 proves both over the whole
+    index)."""
     out = []
     for h in hits[:N_PASSAGES]:
         for s in sentences(h.get("text") or ""):
-            if len(s.split()) >= min_words and _whole(s):
+            s = _BULLET_RE.sub("", s)               # a list item IS a manual sentence: "* The ports must be free."
+            if len(s.split()) >= min_words and _whole(s) and not s.rstrip().endswith((";", "·")):
                 out.append((s, h))
     return out[:MAX_PICK_SENT]
+
+
+_BULLET_RE = re.compile(r"^[*\-•]\s+")
 
 
 def _ended(s):
     """A picked sentence spoken as one: a terminal mark at its end (the last sentence of a passage may lack it)."""
     s = s.strip()
-    return s if s.endswith((".", "!", ";", "·", "?", ":")) else s + "."
+    return s if (ends_sentence(s) or s.endswith(":")) else s.rstrip(";·") + "."
 
 
 def prompt_pick(q, hits, lang):
@@ -713,8 +789,8 @@ def decide(raw, hits, lang, terms=(), cut=False, err=None, mode="generate"):
     generation keeps its COMPLETE sentences (post-checked like any answer); nothing complete = the retrieval form.
     Pure: the model comparison re-scores its stored raw texts with exactly this (tools/assistant_llm_eval.py
     rescore). mode "extract": raw = the numbers of the picked passage sentences (pick_sentences)."""
-    if cut:
-        whole = [s for s in sentences(raw or "") if s.rstrip().endswith((".", "!", ";", "·", "?"))]
+    if cut and mode != "extract":                    # extract: a cut "1" IS the pick (AM4-r2 LOW-c)
+        whole = [s for s in sentences(raw or "") if ends_sentence(s)]
         raw_used = " ".join(whole)
     else:
         raw_used = raw or ""
@@ -782,19 +858,36 @@ def _decide_pick(raw, hits, lang, terms, out, err):
     txt = " ".join(_ended(picks[i - 1][0]) for i in ids)
     h = picks[ids[0] - 1][1]
     out["echoed"] = echoed
-    # verbatim manual sentences pass; kept as the backstop (a manual sentence's own "see chapter 9" is no problem)
-    probs = [p for p in postcheck(txt, hits[:N_PASSAGES], terms, lang) if not p.startswith("chapter not")]
+    # two picks from DIFFERENT passages: BOTH chapters are cited and both passages shown (AM4-r2 LOW-a: the second
+    # sentence's chapter was silent before)
+    h2 = picks[ids[1] - 1][1] if len(ids) == 2 and picks[ids[1] - 1][1] is not h else None
+    c = cite(h, lang) + ((" + " + cite(h2, lang)) if h2 is not None else "")
+    # verbatim manual sentences pass; kept as the backstop (a manual sentence's own "see chapter 9" is no problem, and
+    # ANOTHER manual sentence negating a word of it is none either - the sentence is the manual's own text; AM4-r2
+    # measured that rule refusing 6 / 34 English and 8 / 97 Greek TRUE manual sentences in this mode)
+    probs = [p for p in postcheck(txt, hits[:N_PASSAGES], terms, lang)
+             if not p.startswith(("chapter not", "the passage sentence negates"))]
     if probs:
         out.update(a=CANT[lang], src="passage", problems=probs, model_text=txt, id=h.get("id", ""),
                    cite=cite(h, lang), passage=passage_of(h, lang))
     else:
-        out.update(a=txt, src="extract", id=h.get("id", ""), cite=cite(h, lang), passage=passage_of(h, lang),
-                   model_text=txt, picked=ids)
+        out.update(a=txt, src="extract", id=h.get("id", ""), cite=c, passage=passage_of(h, lang),
+                   passage2=passage_of(h2, lang), model_text=txt, picked=ids)
     return out
 
 
+EXTRACT_FLOOR = 7.2       # answer mode "extract": the best passage's BM25 score must reach this before the model may
+#                           pick, else «Δεν βρίσκω ...» + the passage shown (0 = no floor). AM4-r2 / W112, measured
+#                           on the tuning part: the 3 off-manual questions extract still answered (el016 7.10, el143
+#                           6.07, en047 6.79) lie INSIDE the in-manual range (correct Greek answers from 5.31 up): 7.2
+#                           = just above the highest of the three - refuses all 3 at the cost of 3 of 41 correct Greek
+#                           answers (+ 5 wrong ones) and no English one; set on 3 cases (W112: the owner decides; the
+#                           per-PC setting assistant_extract_floor; the passage is still shown below the floor).
+
+
 class Answerer:
-    def __init__(self, llm=None, terms=(), clock=time.monotonic, retrieval_only=False, mode="generate"):
+    def __init__(self, llm=None, terms=(), clock=time.monotonic, retrieval_only=False, mode="generate",
+                 extract_floor=EXTRACT_FLOOR):
         self.llm = llm
         self.terms = set(terms)
         self.clock = clock
@@ -803,6 +896,10 @@ class Answerer:
         self.slow = []                                   # the last generation times (s)
         self.stick = True                                # False only for the model comparison (measures every answer)
         self.mode = mode if mode in MODES else "generate"
+        try:
+            self.extract_floor = max(0.0, float(extract_floor or 0.0))
+        except (TypeError, ValueError):
+            self.extract_floor = EXTRACT_FLOOR
 
     def answer(self, q, lang, found):
         t0 = self.clock()
@@ -812,6 +909,12 @@ class Answerer:
              "mode": "retrieval" if self.retrieval_only else getattr(self.llm, "mode", ""), "answer_mode": self.mode}
         if (found or {}).get("cant_find") or not hits:
             r.update(a=CANT[lang], src="cant_find")
+        elif self.mode == "extract" and not self.retrieval_only and self.extract_floor and \
+                hits[0].get("score") is not None and float(hits[0]["score"]) < self.extract_floor:
+            h = hits[0]                                  # below the floor: nothing picked, the passage still shown
+            r.update(a=CANT[lang], src="cant_find", id=h.get("id", ""), cite=cite(h, lang), cut=False,
+                     passage=passage_of(h, lang), floor=self.extract_floor,
+                     why="best passage score %.2f < the extract floor %.2f" % (float(h["score"]), self.extract_floor))
         elif self.retrieval_only:
             h = hits[0]
             r.update(a=shortest_sentence(h.get("text", "")), src="retrieval", id=h.get("id", ""), cite=cite(h, lang),

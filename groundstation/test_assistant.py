@@ -1875,6 +1875,31 @@ def as19():
         "The remote cap is 20 % forward and 5 % in reverse.", REM, terms, "en")
     out["post-check (en): 'PC' in the passages used as a name passes"] = not A.postcheck(
         "The PC can never override the STANDBY button.", REM, terms, "en")
+    # AM4-r2 MED-2: the negation farther than 2 tokens from the shared word ("δεν μπορεί ποτέ να το παρακάμψει",
+    # "can never override it" in a sentence that is NOT the best match) - the reviewer's probes
+    STB = [{"id": "el:9:1", "ch": "9", "chapter": "Λειτουργίες", "heading": "", "term": "",
+            "text": "Το κουμπί STANDBY του πίνακα κερδίζει πάντα. Ο υπολογιστής δεν μπορεί ποτέ να το παρακάμψει."}]
+    out["post-check (el probe): «Ο υπολογιστής μπορεί να παρακάμψει το STANDBY.» refused"] = any(
+        "negates" in p for p in A.postcheck("Ο υπολογιστής μπορεί να παρακάμψει το STANDBY.", STB, terms, "el"))
+    out["post-check (en probe): 'The STANDBY button always wins and the PC can override it.' refused"] = any(
+        "negates" in p for p in A.postcheck("The STANDBY button always wins and the PC can override it.", REM,
+                                            terms, "en"))
+    out["post-check (el): the manual's own negated statement passes"] = not A.postcheck(
+        "Ο υπολογιστής δεν μπορεί ποτέ να παρακάμψει το STANDBY.", STB, terms, "el")
+    out["negated_shared skips stop words / μπορ- / να / το, not content words"] = \
+        A.negated_shared(A.norm("ο υπολογιστής δεν μπορεί ποτέ να το παρακάμψει"), ["παρακαμψει"]) and \
+        A.negated_shared(A.norm("the PC can never override it"), ["override"]) and \
+        not A.negated_shared(A.norm("never press the hatch button while the boat moves"), ["moves"])
+    # AM4-r2 LOW-b: thousands separators - "1,500 m" / "1.500 m" are 1500 m, never 1.5 m
+    THS = [{"id": "en:5:1", "ch": "5", "chapter": "UAV", "heading": "", "term": "",
+            "text": "The radio range is 1,500 m from the boat. The hatch closes in 1.5 s."}]
+    out["thousands: 1,500 / 1.500 = 1500, 1.5 = 1.5, 0.125 = 0.125"] = [n[0] for n in A.numbers(
+        "1,500 m and 1.500 m and 1.5 s and 0.125 s and 12 %")] == [1500.0, 1500.0, 1.5, 0.125, 12.0]
+    out["thousands: '1,500 m' vs the manual's '1,500 m' passes, '1.5 m' / '1500 s' refused"] = \
+        not A.postcheck("The radio range is 1,500 m.", THS, terms, "en") and \
+        not A.postcheck("The radio range is 1500 m from the boat.", THS, terms, "en") and \
+        bool(A.postcheck("The radio range is 1.5 m.", THS, terms, "en")) and \
+        bool(A.postcheck("The hatch closes in 1,500 s.", THS, terms, "en"))
     r, _ = run("Η κάθοδος γίνεται σε τρία δευτερόλεπτα, πάνω από πέντε κόμβους μια προειδοποίηση.")
     out["post-check: spoken numbers with the right unit pass"] = r["src"] == "llm"
     r, _ = run("Κοντά στην ακτή κάτω από 50 μέτρα ο χρόνος είναι 3 δευτερόλεπτα.")
@@ -2156,6 +2181,85 @@ def as21():
     out["extract: the model's can't find accepted"] = r["src"] == "cant_find"
     r = A.Answerer(A.StubLlm("1, 2, 3, 4"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
     out["extract: at most 2 sentences"] = r["src"] == "extract" and r["picked"] == [1, 2]
+    # AM4-r2 LOW-e: garbage outputs = nothing guessed (can't find said, the passage shown), never a crash
+    for label, garbage in (("letters", "asdf"), ("a number outside the list", "7."), ("a wrong echo", "1. Something else."),
+                           ("words around a number", "I think 1 is right"), ("a number word", "one"),
+                           ("only punctuation", "..."), ("a fragment of a pick", picks[0][0][:20]),
+                           ("a number + text", "1 Πατήστε το κουμπί")):
+        r = A.Answerer(A.StubLlm(garbage), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
+        out["extract garbage (%s) -> can't find + the passage" % label] = r["src"] == "passage" and \
+            r["a"] == A.CANT["el"] and r["passage"]["text"] == HATCH[0]["text"]
+    r = A.Answerer(A.StubLlm(""), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
+    out["extract: an empty output = the retrieval form"] = r["src"] == "retrieval"
+    # AM4-r2 LOW-c: a CUT extract output "1" is the pick (no whole-sentence filter in extract mode)
+    r = A.Answerer(A.StubLlm("1", finish="length"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el",
+                                                                                 found)
+    out["extract: a cut '1' uses the pick, not the retrieval sentence"] = r["cut"] and r["src"] == "extract" and \
+        r["picked"] == [1]
+    # AM4-r2 LOW-a: two picks from DIFFERENT passages = both chapters cited, both passages shown
+    r = A.Answerer(A.StubLlm("1, 4"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
+    out["extract: a mixed pair cites both chapters + shows both passages"] = r["src"] == "extract" and \
+        r["cite"] == "Κεφάλαιο 16 «Το μαγγέμα UAV» + Κεφάλαιο 12 «Χαμένη σύνδεση»" and \
+        r["passage"]["text"] == HATCH[0]["text"] and r["passage2"]["text"] == HATCH[1]["text"]
+    r = A.Answerer(A.StubLlm("1, 3"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
+    out["extract: two picks of one passage = one chapter, no passage2"] = r["cite"] == "Κεφάλαιο 16 «Το μαγγέμα UAV»" \
+        and r.get("passage2") is None
+    from assistant import page
+    out["the Tools page prints both passages"] = page.answer_line({"a": "x", "src": "extract", "cite": "c", "ms": 1,
+                                                                   "passage": {"text": "P1", "cite": "c1"},
+                                                                   "passage2": {"text": "P2", "cite": "c2"}}).count(
+        "P1") == 1 and "P2" in page.answer_line({"a": "x", "src": "extract", "passage": {"text": "P1", "cite": "c1"},
+                                                "passage2": {"text": "P2", "cite": "c2"}})
+    # AM4-r2 MED-1: a ';' / '·' clause stays in its sentence - the pick holds the "nothing but" clause; the Greek
+    # question mark ';' still ends a sentence; abbreviations do not
+    FRAG = [{"id": "en:9:2", "ch": "9", "chapter": "Modes", "heading": "", "term": "",
+             "text": "Extra rules: only the joystick enters MANUAL; TRAINING only from STANDBY by the PC; nothing but "
+                     "STANDBY until the outputs are armed (chapter 12). Press e.g. the STANDBY button. Τι κάνει το "
+                     "STANDBY; Κερδίζει πάντα· ο υπολογιστής δεν το παρακάμπτει ποτέ. Το ίδιο π.χ. στο HDG LOCK."}]
+    ss = A.sentences(FRAG[0]["text"])
+    out["sentences(): ';' and '·' clauses joined, the Greek question mark ';' + '.' split, 'e.g.' / 'π.χ.' not"] = \
+        ss == ["Extra rules: only the joystick enters MANUAL; TRAINING only from STANDBY by the PC; nothing but STANDBY "
+               "until the outputs are armed (chapter 12).", "Press e.g. the STANDBY button.", "Τι κάνει το STANDBY;",
+               "Κερδίζει πάντα· ο υπολογιστής δεν το παρακάμπτει ποτέ.", "Το ίδιο π.χ. στο HDG LOCK."]
+    fp = [s for s, _h in A.pick_sentences(FRAG)]
+    out["picks: the whole ';'-sentence offered, no pick ends in ';' / '·', the question not offered"] = \
+        fp[0] == ss[0] and all(not s.endswith((";", "·")) for s in fp) and ss[2] not in fp and ss[3] in fp
+    out["ends_sentence: . ! ? + the Greek question mark; not an English ';' or '·'"] = \
+        A.ends_sentence("Τι κάνει;") and A.ends_sentence("Done.") and not A.ends_sentence("by the PC;") and \
+        not A.ends_sentence("πάντα·")
+    # AM4-r2 / W112: the extract score floor - below it nothing is picked, can't find said, the passage still shown
+    low = {"cant_find": False, "why": "", "hits": [dict(HATCH[0], score=5.0), dict(HATCH[1], score=4.0)]}
+    r = A.Answerer(A.StubLlm("1"), terms, mode="extract", extract_floor=7.2).answer("πού κλείνω την καταπακτή;", "el",
+                                                                                    low)
+    out["extract floor: best score 5.0 < 7.2 -> can't find + the passage shown, the model not asked"] = \
+        r["src"] == "cant_find" and r["a"] == A.CANT["el"] and r["passage"]["text"] == HATCH[0]["text"] and \
+        r["floor"] == 7.2 and r["gen_ms"] == 0
+    r = A.Answerer(A.StubLlm("1"), terms, mode="extract", extract_floor=7.2).answer(
+        "πού κλείνω την καταπακτή;", "el", {"cant_find": False, "why": "", "hits": [dict(HATCH[0], score=7.2)]})
+    out["extract floor: a score at the floor picks"] = r["src"] == "extract"
+    r = A.Answerer(A.StubLlm("1"), terms, mode="extract", extract_floor=0).answer("πού κλείνω την καταπακτή;", "el", low)
+    out["extract floor 0 = no floor"] = r["src"] == "extract"
+    out["the default floor is the measured one (client + answer agree)"] = A.EXTRACT_FLOOR == 7.2 and \
+        __import__("assistant.client", fromlist=["x"]).DEFAULT_EXTRACT_FLOOR == A.EXTRACT_FLOOR
+    r = A.Answerer(A.StubLlm("Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»."), terms, extract_floor=7.2).answer(
+        "πού κλείνω την καταπακτή;", "el", low)
+    out["the floor is extract's only (generate unchanged)"] = r["src"] == "llm"
+    # AM4-r2: a verbatim pick is never refused because ANOTHER manual sentence negates a word of it (measured: 6 / 34
+    # English + 8 / 97 Greek true manual sentences were), nor by a '/'-joined term ("κίτρινο/πορτοκαλί")
+    NEGP = [{"id": "el:16:3", "ch": "16", "chapter": "Το μαγγέμα UAV", "heading": "", "term": "",
+             "text": "Κρατήστε το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ. Χωρίς HELM κανείς δεν πατά το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ. "
+                     "Χρώματα: ΚΟΚΚΙΝΟ μόνο για συναγερμούς, ΚΙΤΡΙΝΟ/ΠΟΡΤΟΚΑΛΙ για προσοχή."}]
+    fnd = {"cant_find": False, "why": "", "hits": [dict(NEGP[0], score=9.0)]}
+    out["generate: 'Κρατήστε το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ.' is refused by the negating sentence (the lexical rule)"] = \
+        any("negates" in p for p in A.postcheck("Κρατήστε το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ.", NEGP, terms, "el"))
+    r = A.Answerer(A.StubLlm("1"), terms, mode="extract").answer("πώς κλείνω την καταπακτή;", "el", fnd)
+    out["extract: the same VERBATIM sentence passes (the negation rule is not a backstop for the manual's own text)"] = \
+        r["src"] == "extract" and r["a"] == "Κρατήστε το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ."
+    r = A.Answerer(A.StubLlm("3"), terms, mode="extract").answer("ποια χρώματα;", "el", fnd)
+    out["extract: a verbatim sentence with a '/'-joined capital term passes"] = r["src"] == "extract"
+    out["a bullet item is a pick without its bullet"] = [s for s, _h in A.pick_sentences(
+        [dict(FRAG[0], text="* The ports must be free. - Never start two demos.")])] == ["The ports must be free.",
+                                                                                         "Never start two demos."]
     report("AS21 retrieval-only mode + cut generations + answer mode extract", all(out.values()),
            {k: v for k, v in out.items() if not v} or "all %d checks" % len(out))
 
@@ -2259,6 +2363,37 @@ def as23():
         wsrc = f.read()
     out["the worker calls paths.llm_verify before answer.LlamaLlm"] = wsrc.index("paths.llm_verify(") < \
         wsrc.index("answer.LlamaLlm(path")
+    # AM4-r2 LOW-d: a file already verified (same path, size, mtime) is NOT hashed again by a guard reload; a changed
+    # file (size / mtime / content) is
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        fp = os.path.join(td, "pinned-test.gguf")
+        with open(fp, "wb") as f:
+            f.write(b"GGUF" + b"\0" * 1020)
+        sha = paths.sha256_of(fp)
+        saved = dict(paths.LLM_PINNED)
+        calls = []
+        real = paths.sha256_of
+        paths.LLM_PINNED["pinned-test.gguf"] = (1024, sha)
+        paths.sha256_of = lambda p, chunk=1 << 20: (calls.append(p), real(p, chunk))[1]
+        try:
+            cache = {}
+            r1 = paths.llm_verify(fp, cache=cache)
+            r2 = paths.llm_verify(fp, cache=cache)
+            n_after_two = len(calls)
+            with open(fp, "r+b") as f:
+                f.seek(10)
+                f.write(b"\1")
+            os.utime(fp, (time.time() + 5, time.time() + 5))
+            r3 = paths.llm_verify(fp, cache=cache)
+            r4 = paths.llm_verify(fp, cache=None)
+        finally:
+            paths.sha256_of = real
+            paths.LLM_PINNED.clear()
+            paths.LLM_PINNED.update(saved)
+        out["sha256 cache: verified once, the second call cached (no hash), a changed file hashed + refused, "
+            "cache=None hashes always"] = r1 == (True, "sha256 verified") and r2 == (True, "sha256 verified (cached)") \
+            and n_after_two == 1 and r3[0] is False and "sha256" in r3[1] and len(calls) == 3 and r4[0] is False
     url, size, sha = gl.WHEEL
     out["the bindings wheel: a release asset, size + sha256"] = url.startswith(
         "https://github.com/abetlen/llama-cpp-python/releases/download/") and size > 1e8 and len(sha) == 64
@@ -2352,6 +2487,54 @@ def site_walk_dir(site, roots, limit=4000):
     return dict(sorted(net.items())), files
 
 
+def as25():
+    """AM4-r2 MED-1, over the WHOLE committed index (both languages): no pickable sentence ends in ';' / '·', none
+    begins lower-case, and no pick is a CUT clause (its own piece did not end a sentence and a lower-case clause with
+    a negation / "only" followed it - what the old splitter did 452 times). The reviewer's example (MANUAL.txt
+    "TRAINING only from STANDBY by the PC; nothing but STANDBY ...") is ONE pick. Mutation: the old splitter makes
+    the check fail."""
+    from assistant import answer as A, index
+    ONLY = re.compile(r"(?<![\w])(?:only|μονο)(?![\w])")
+
+    def old_picks(hits):                   # the AM4-r pick list: whole pieces, a ';' / '·' end not excluded
+        return [(s, h) for h in hits for s in A.sentences(h["text"]) if len(s.split()) >= 4 and A._whole(s)]
+
+    def scan(pick_fn=A.pick_sentences):
+        n = {"picks": 0, "ends": 0, "lower": 0, "cut": 0, "example": 0}
+        for lang in ("el", "en"):
+            for p in index.load(lang)["passages"]:
+                pieces = [A._BULLET_RE.sub("", s) for s in A.sentences(p["text"])]
+                picks = [s for s, _h in pick_fn([p])]
+                n["picks"] += len(picks)
+                n["ends"] += sum(1 for s in picks if s.rstrip().endswith((";", "·")))
+                n["lower"] += sum(1 for s in picks if s.lstrip("«\"'([")[:1].islower())
+                n["example"] += sum(1 for s in picks if "TRAINING only from STANDBY by the PC" in s and
+                                    "nothing but STANDBY" in s)
+                for i, s in enumerate(pieces[:-1]):
+                    nxt = pieces[i + 1]
+                    if s in picks and not (A.ends_sentence(s) or s.endswith(":")) and \
+                            nxt.lstrip("«\"'([")[:1].islower() and (A.has_negation(A.norm(nxt)) or ONLY.search(
+                                A.norm(nxt))):
+                        n["cut"] += 1
+        return n
+    good = scan()
+    old_re, A._SPLIT_RE = A._SPLIT_RE, re.compile(r"(?<=[.!;·?])\s+(?=\S)")
+    old_end = A.ends_sentence
+    A.ends_sentence = lambda s: (s or "").rstrip().endswith((".", "!", "?"))      # the old splitter's view
+    try:
+        mutated = scan(old_picks)
+    finally:
+        A._SPLIT_RE, A.ends_sentence = old_re, old_end
+    out = {"%d picks over both indexes" % good["picks"]: good["picks"] > 2500,
+           "no pick ends in ';' / '·'": good["ends"] == 0, "no pick begins lower-case": good["lower"] == 0,
+           "no pick is a cut clause (a lower-case never / only / not clause followed it)": good["cut"] == 0,
+           "the reviewer's example is ONE pick with both clauses": good["example"] == 1,
+           "mutation: the old splitter (split on ; ·) fails the check (%d cut, %d ending in ;/·)" % (
+               mutated["cut"], mutated["ends"]): mutated["cut"] > 50 and mutated["ends"] > 50}
+    report("AS25 extract picks over the whole index: whole sentences, no clause fragments", all(out.values()),
+           {k: v for k, v in out.items() if not v} or "all %d checks; %s" % (len(out), good))
+
+
 def as24():
     """The REAL language model answers with the network blocked (Python blocker + the worker PID's endpoints):
     N/A (never PASS) when the model / bindings are not downloaded."""
@@ -2383,9 +2566,11 @@ def as24():
                 import unicodedata
                 shown = txt + " " + ((info.get("passage") or {}).get("text") or "")   # AM4-r: a failed check SHOWS
                 pl = "".join(c for c in unicodedata.normalize("NFD", shown.lower()) if unicodedata.category(c) != "Mn")
+                # AM4-r2 LOW-e: the model's OWN answer must pass (src llm / extract) - a "passage" fallback (a
+                # failed post-check / no pick) is no pass
                 out["%s answered (%s, %s ms gen, first token %s ms, sha %s ms)" % (
                     lang, info.get("src"), info.get("gen_ms"), info.get("first_ms"), a.llm.get("sha_ms"))] = \
-                    info.get("src") in ("llm", "extract", "passage") and must in pl
+                    info.get("src") in ("llm", "extract") and must in pl
                 out["%s: the model file's sha256 was verified before the load" % lang] = \
                     a.llm.get("sha") == "sha256 verified"
     finally:
@@ -2404,7 +2589,7 @@ def main():
         print("build the simulator first: sim\\build_sim.bat")
         return 2
     for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13, as14, as15, as16, as17, as18, as19, as20, as21,
-               as22, as23) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
+               as22, as23, as25) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
         try:
             fn()
         except Exception as e:

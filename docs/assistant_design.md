@@ -521,7 +521,12 @@ Where this section differs from 5a, THIS wins.
   units skipped; stems compared by their first 5 letters): the review's swapped probe "Reverse is capped at 20 % and
   forward at 5 %" is caught when the manual states the two caps in separate sentences ("The remote cap is 20 %
   forward. Reverse is capped at 5 %.") - a swap inside ONE manual sentence is NOT caught (a lexical check cannot;
-  stated here and in the manuals; the extract mode of 5d makes it moot). Negation: an answer sentence with
+  stated here and in the manuals; the extract mode of 5d makes it moot). AM4-r2 MED-3, said plainly: the number
+  check looks ONLY at the one content word on each side of the number - a LEXICAL check of word adjacency, not of
+  the claim: "the hatch closes in 3 s" and "the hatch opens in 3 s" both pass against a manual "the hatch closes in
+  3 s" ("hatch" stands next to the number in that sentence). The negation rule below is lexical the same way (the
+  negated WORD, not the meaning). In the extract mode (verbatim manual sentences) both are moot. Negation: an
+  answer sentence with
   never / not / no / cannot / without / δεν / μην / ποτέ / όχι / χωρίς / κανένα ... needs a negation in a TOP
   supporting passage sentence (the one(s) sharing most content words); a plain answer sentence is refused when a
   top supporting sentence negates the very word it shares (a negation word up to 2 tokens BEFORE a shared word:
@@ -582,7 +587,10 @@ Where this section differs from 5a, THIS wins.
 The review proposed: the model only PICKS passage sentences by number and they are spoken WORD FOR WORD. Built as
 the per-PC setting `assistant_answer_mode` (client.DEFAULT_ANSWER_MODE; env TRYGONS_ASSISTANT_ANSWER; the Tools page
 shows the mode): answer.prompt_pick numbers the WHOLE sentences (a capital / digit / quote first, brackets balanced,
->= 4 words; no lower-case clause fragments of the manual's "·"-lists) of the top 3 passages (<= 30), the instruction
+>= 4 words) of the top 3 passages (<= 30) [CORRECTED in AM4-r2, 5e: in AM4-r the splitter cut a sentence at every
+';' and '·' too, so a pick could be the FIRST HALF of a sentence whose "never / only / nothing but" clause followed
+the ';' - 452 such picks over both indexes; the lower-case second halves were not offered. Now a sentence ends only at
+. ! ? or the Greek question mark], the instruction
 says "write ONLY the numbers of the one or two sentences that answer, e.g. 4 or 4, 9, else exactly the can't-find
 sentence"; _decide_pick accepts "4" / "4, 9" / "4 και 9" / an echoed "4. <the sentence itself>"; any other text,
 or numbers outside the list, = nothing is guessed (can't find said + the passage shown); two sentences longer than
@@ -605,20 +613,107 @@ READ IT HONESTLY: "correct" = the must-mention term is in the spoken text, and t
 passage the search found - a verbatim sentence that contains the question's words is "correct" even when it does
 not answer the question (CIRCULAR proxy; e.g. "πώς σταματάω την εκτόξευση" -> the picked sentence about the hatch
 relay lamp). The human-style judgement of the picked sentences is the owner's (W99's blind sheet regenerated with the
-extract answers as one more letter). What the numbers DO say: (1) extract never invents - a name, number, negation or
-language problem is impossible in a verbatim sentence (0 / 8 rejections were post-check problems; the 8 Greek ones
-were the model writing text instead of a number = can't find); (2) extract answers much more (91 / 100 %) and its
+extract answers as one more letter). What the numbers DO say: (1) extract never invents a WORD - a name, number or
+negation word that is not in the manual cannot appear in a verbatim sentence (0 / 8 rejections were post-check
+problems; the 8 Greek ones were the model writing text instead of a number = can't find) - BUT (AM4-r2) a CUT clause
+can still mislead: in AM4-r the pick could be the first half of a "...; never ..." sentence (fixed, 5e), and an
+off-target true sentence can be the answer to a question the manual does not answer (3 of 12 off-manual tuning
+questions got one: W112, the score floor); (2) extract answers much more (91 / 100 %) and its
 false "can't find" are few (9 / 0 vs 58 / 8); (3) Greek correctness doubles (36 vs 17 %) at the same precision (40 vs
 42 %); English correctness is equal (48 %) at a LOWER precision (48 vs 64 %) - the model picks the keyword sentence,
 not the answer, and says so for every question; (4) 4-6x faster (7 tokens median: the number); (5) the quality
 proxy penalises only length (the manual's long sentences, > 40 words). Spoken, a manual sentence out of context can
 be long or oblique ("Η ξενάγηση έχει κεφάλαιο «Το μαγγέμα UAV».") - the chapter is always shown.
 
-CHOICE (W106 asks the owner to confirm): DEFAULT = "extract". Safer: nothing invented is possible, and it is the
-only mode in which the swap-in-one-sentence limit of 5c cannot bite. Not worse: Greek better, English equal on
-correctness (lower precision = more off-target true sentences, never a false fact). "generate" stays one setting
-away for a PC where English matters most. Krikri / Meltemi were not run in this mode (they do not fit beside
-Whisper on 6 GB: W107).
+CHOICE (W106 asks the owner to confirm): DEFAULT = "extract". Safer: no word that is not in the manual can be said,
+and the lexical limits of 5c (a swap inside one sentence, the adjacent-word number check, the negated-word check)
+cannot bite on verbatim text. Not worse: Greek better, English equal on correctness (lower precision = more
+off-target TRUE manual sentences - a true sentence that does not answer the question is still a wrong answer to
+the operator, which is why 5e adds a score floor). "generate" stays one setting away for a PC where English matters
+most. Krikri / Meltemi were not run in this mode (they do not fit beside Whisper on 6 GB: W107). [AM4-r2 corrected
+this paragraph: it said "nothing invented is possible" and "never a false fact" while the AM4-r picks could be a cut
+half-sentence - see 5e.]
+
+### 5e. Review fixes of AM4-r (step AM4-r2, review of 941755a; station / tools / tests / docs only)
+
+Where this section differs from 5c / 5d, THIS wins.
+
+- MED-1 CLAUSE FRAGMENTS. answer.sentences() split at ';' and '·' too, so a "whole" pick could be the FIRST HALF of a
+  manual sentence and the clause after the ';' - often the "never / only / nothing but" part - was dropped (its
+  lower-case start kept it out of the list): MANUAL.txt:1278 "TRAINING only from STANDBY by the PC;" lost "nothing
+  but STANDBY until the outputs are armed". Over BOTH committed indexes 452 pickable pieces (201 el / 251 en) ended in
+  ';' / '·'; 145 of them were followed by a lower-case clause with a negation or only / μόνο. Now a sentence ends ONLY
+  at . ! ? or the Greek question mark ';' (a piece with more Greek than Latin letters before it, a capital / digit /
+  quote after it); an English ';' and the Greek '·' (ano teleia) join the clause to its sentence; a piece after an
+  abbreviation ("e.g.", "π.χ.", "κεφ.", "μέγ.", "...") that starts lower-case is joined too. pick_sentences never
+  offers a piece that ends in ';' / '·' (a passage the index builder cut in the middle of a '·'-list), and offers a
+  "* bullet" item without its bullet (a list item IS a manual sentence; before, 252 of them were silently out).
+  Every ". ! ; · ?" test in the code (a cut generation's whole sentences, the spoken terminal mark) went through
+  ends_sentence(). Side effect, stated: passage sentences are LONGER now, so (a) the 5c "number in ONE passage
+  sentence with its neighbour" check is a little weaker across a former ';' (two clauses are one sentence), (b)
+  the eval's "quality" proxy (<= 40 words) drops for English (joined sentences). Test AS25 runs over the WHOLE
+  index: 3119 picks, none ends in ';' / '·', none starts lower-case, none is a cut clause (a pick whose piece did not
+  end a sentence followed by a lower-case never / only / not clause), the reviewer's example is ONE pick; the
+  mutation (the AM4-r splitter) fails it (hundreds). The split lives in answer.py, not in index.py - the index files
+  were rebuilt + committed in this step only because MANUAL.txt / MANUAL_EL.txt changed (the gate's first run caught
+  the stale index: every search "can't find").
+- MED-2 NEGATION WINDOW. negated_shared looked 2 raw tokens after the negation: «Ο υπολογιστής μπορεί να παρακάμψει
+  το STANDBY.» passed against «...δεν μπορεί ποτέ να το παρακάμψει» (μπορεί ποτέ να το = 4 tokens) and "The STANDBY
+  button always wins and the PC can override it." passed because only the BEST-matching passage sentence ("The
+  STANDBY panel button always wins.") was checked. Now the window counts CONTENT words (stop words, units, other
+  negations - "μπορεί", "να", "το", "can", "ποτέ" - are skipped; NEG_MIN_SHARED 2 content words), and EVERY passage
+  sentence ABOUT THE SAME THING is checked - the best match(es) as before, plus every sentence sharing >= 2 content
+  words AND >= NEG_MIN_FRAC 40 % of the answer sentence's. Measured on the stored llama3.2-3b generate runs (tuning):
+  "any sentence sharing one word" refused 11 English / 8 Greek answers the old rule kept, most of them TRUE ("Hold
+  the HATCH CLOSE button." vs "without a station holding HELM nothing can switch it"); the 2 + 40 % rule refuses 4 /
+  3 and both probes. Both probes are tests (AS19). Generate re-scored with it: el correct 17 % (16/96, as before),
+  rejected 20/49 = 41 % (37 %); en correct 13/33 = 39 % (48 %), answered 61 % (76 %), rejected 14/35 = 40 % (26 %) -
+  the honest price of the window + the longer sentences. In the EXTRACT mode a verbatim pick is EXEMPT from "another
+  passage sentence negates a shared word" (the pick IS the manual's text; the rule refused 6 / 34 English and 8 / 97
+  Greek true manual sentences in the first AM4-r2 run) - like the "see chapter 9" exemption; and a '/'-joined capital
+  term of the manual ("ΚΙΤΡΙΝΟ/ΠΟΡΤΟΚΑΛΙ") is now found in the passages (it refused a verbatim el sentence).
+- MED-3 docs: 5c now says the number / negation checks are LEXICAL (the adjacent word, not the claim).
+- LOW-a two picks from DIFFERENT passages: the cite names BOTH chapters ("Κεφάλαιο 16 «...» + Κεφάλαιο 12 «...»"),
+  the answer carries `passage2`, the Tools page prints both passages. LOW-b thousands separators: "1,500 m" /
+  "1.500 m" = 1500 m (a group of exactly 3 digits after the separator, 1-3 digits before, not "0."), never 1.5 m;
+  "1500" also matches "1,500" in a passage sentence; "0.125 s" stays a decimal. LOW-c a CUT extract output ("1" when
+  the generation stopped at max_tokens / the time) is the pick - the whole-sentence filter is for generate only.
+  LOW-d paths.llm_verify caches (abs path, size, mtime_ns) -> sha256 per process: the GPU guard's CPU / GPU reloads
+  hash nothing again ("sha256 verified (cached)"); a changed file is hashed (AS23). LOW-e AS24 requires the model's
+  OWN answer (src llm / extract; a "passage" fallback = FAIL); AS21 adds garbage outputs ("asdf", "7.", a wrong echo
+  "1. Something else.", "I think 1 is right", "one", "...", a fragment of a pick, "1 Πατήστε ...") = can't find + the
+  passage, an empty output = the retrieval form.
+- W106 RE-MEASURED (extract, llama3.2-3b, the real worker, the SAME stricter post-check; 17 of 28 layers on the GPU as
+  in 5d):
+
+| llama3.2-3b extract | part | correct | answered | precision | false can't find | post-check rejected | can't find right | quality (<= 40 words) | median ms |
+|---|---|---|---|---|---|---|---|---|---|
+| AM4-r (5d, cut clauses) | el tuning | 35/96 = 36 % | 91 % | 40 % | 9 | 8 % | 5/7 | 89 % | 803 |
+| **AM4-r2** | el tuning | 41/96 = 43 % | 90/96 = 94 % | 41/90 = 46 % | 6 (the model's own 1) | 5/97 = 5 % (text instead of a number) | 5/7 | 74/92 = 80 % | 828 |
+| AM4-r (5d) | en tuning | 16/33 = 48 % | 100 % | 48 % | 0 | 0 % | 4/5 | 82 % | 427 |
+| **AM4-r2** | en tuning | 15/33 = 45 % | 33/33 = 100 % | 45 % | 0 | 0 % | 4/5 | 24/34 = 71 % | 454 |
+| **AM4-r2 HELD-OUT, once** | el | 18/38 = 47 % | 34/38 = 89 % | 18/34 = 53 % | 4 (1) | 3/37 = 8 % | 4/4 | 29/34 = 85 % | 891 |
+| **AM4-r2 HELD-OUT, once** | en | 7/9 = 78 % | 9/9 | 78 % | 0 | 0 | 1/1 | 7/9 | 505 |
+
+  (The must-mention proxy is still circular - 5d. The Greek gain comes from the longer sentences holding more of the
+  question's words, not from a better model; the English loss (16 -> 15) is one question whose joined sentence
+  changed the pick. "quality" fell because joined sentences are longer than 40 words more often.)
+- W112 THE SCORE FLOOR. Extract still answered 3 of the 12 off-manual tuning questions with a true but off-target
+  sentence: el016 «η καταπακτή κόλλησε στη μέση» (a manual gap, best BM25 score 7.10), el143 (6.07), en047 "what mode
+  am I in right now" (6.79, live telemetry - W82). Their scores lie INSIDE the range of the correct answers (Greek
+  correct from 5.31 up, 10th percentile 7.78; English from 11.6): a floor is a weak separator. Built: EXTRACT_FLOOR
+  7.2 (answer.py; client.DEFAULT_EXTRACT_FLOOR; the per-PC setting `assistant_extract_floor`, 0 = off; the worker's
+  "extract_floor"; eval `run --floor`): below it nothing is picked, «Δεν βρίσκω ...» is said and the best passage is
+  STILL shown. Effect (computed from the stored scores, no re-run needed): tuning - refuses all 3 off-manual answers;
+  costs 3 of 41 correct Greek answers (and 5 wrong ones: 90 -> 82 answered), no English one; held-out (once) - the
+  off-manual questions were refused already; costs 0 Greek and 1 of 7 correct English answers (34 -> 32 / 9 -> 8
+  answered). Set just above the highest of 3 cases: W112 asks the owner (recommendation: ON at 7.2, the W102 rule;
+  re-tune on the W84 real questions). Floor table (tuning): 6.5 refuses 1 of 3, costs 3 el correct; 7.0 refuses 2,
+  costs 3; 7.2 refuses 3, costs 3; 8.0 refuses 3, costs 5 el.
+- test_driver "HUD not rendered in the rig" (AM4-r note): CAUSE FOUND in AM4-r2 - the 4 failures (I4 / I12 / I19 /
+  I23) appear when test_driver.py runs under a Python WITHOUT Pillow (the Windows Store `python` 3.15 on this PC has
+  no PIL: the HUD renderer needs it, so nothing is drawn); with the gate's C:\msys64\ucrt64\bin\python.exe (Pillow
+  installed) test_driver passed 24/24 today. Not a code problem.
 
 ## 6. Speak (step AM5)
 

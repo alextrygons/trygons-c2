@@ -125,14 +125,19 @@ class Worker:
             self.p.kill()
 
 
-def llm_cfg(name, answer_mode="generate"):
-    """name "none" = no model; "<model>+extract" = that model in answer mode "extract" (AM4-r)."""
+def llm_cfg(name, answer_mode="generate", floor=None):
+    """name "none" = no model; "<model>+extract" = that model in answer mode "extract" (AM4-r); floor = the extract
+    score floor (None = the code's answer.EXTRACT_FLOOR; rows record the best score, so another floor can be judged
+    from a stored run without the model: AM4-r2)."""
     if name == "none":
         return {"kind": "none"}
     if "+" in name:
         name, answer_mode = name.split("+", 1)
-    return {"kind": "llama", "model": paths.llm_model(name), "py": paths.llm_py_dir(), "device": "auto",
-            "measure": True, "answer_mode": answer_mode}
+    c = {"kind": "llama", "model": paths.llm_model(name), "py": paths.llm_py_dir(), "device": "auto",
+         "measure": True, "answer_mode": answer_mode}
+    if floor is not None:
+        c["extract_floor"] = floor
+    return c
 
 
 GREEK = re.compile(r"[α-ωά-ώϊϋΐΰ]", re.I)
@@ -184,7 +189,7 @@ def cmd_run(a):
     for name in models:
         before = gpu_used_mb()
         t0 = time.monotonic()
-        w = Worker(llm_cfg(name))
+        w = Worker(llm_cfg(name, floor=a.floor))
         if w.ready is None or w.ready[1].get("op") != "ready":
             print("%s: the worker did not get ready: %s" % (name, w.ready))
             w.close()
@@ -228,6 +233,8 @@ def cmd_run(a):
                            "tokens": r.get("tokens"), "mode": r.get("mode"), "answer_mode": r.get("answer_mode"),
                            "passage": r.get("passage"),
                            "heldout": q["id"] in held[lang], "raw": r.get("raw", ""), "cut": r.get("cut", False),
+                           "score": hits[0].get("score") if hits else None, "cover": hits[0].get("cover") if hits
+                           else None, "floor": r.get("floor"),
                            "hits": [{k: h.get(k) for k in ("id", "ch", "chapter", "heading", "term", "text")}
                                     for h in hits[:answer.N_PASSAGES]], "search_cant": (r.get("found") or {}).get(
                                "cant_find", False), **j}
@@ -304,7 +311,10 @@ def cmd_rescore(a):
             continue
         path = os.path.join(OUT, fn)
         head, rows = load_rows(path)
-        if head["model"] == "none":
+        if head["model"] == "none" or (a.only and head["model"] != a.only):
+            continue
+        if "+extract" in head["model"] and not a.only:
+            print("%s: skipped - an extract run's stored picks number the OLD sentence list (re-run it)" % fn)
             continue
         searcher = index.Searcher(index.load(head["lang"]))
         qs = {q["id"]: q for q in ai.load_questions(head["lang"])["questions"]}
@@ -479,11 +489,14 @@ def main(argv=None):
     r.add_argument("--limit", type=int, default=0)
     r.add_argument("--answer", default="generate", choices=("generate", "extract"),
                    help="the answer mode (AM4-r): extract = the model only picks passage sentences")
+    r.add_argument("--floor", type=float, default=None,
+                   help="the extract score floor (AM4-r2, W112; default = answer.EXTRACT_FLOOR; 0 = none)")
     r.add_argument("-v", "--verbose", action="store_true")
     rp = sub.add_parser("report")
     rp.add_argument("--first", type=int, default=0, help="only the first N questions of every run (a common subset)")
     rs = sub.add_parser("rescore")
     rs.add_argument("--heldout", action="store_true")
+    rs.add_argument("--only", default="", help="only the runs of this model name (e.g. llama3.2-3b)")
     b = sub.add_parser("blind")
     b.add_argument("--n", type=int, default=20)
     e = sub.add_parser("e2e")

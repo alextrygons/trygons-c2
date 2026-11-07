@@ -46,6 +46,11 @@ PROBLEM_NOTES = ("asst.n_mic", "asst.n_error", "asst.n_index")    # amber on the
 # TRYGONS_ASSISTANT_ANSWER): "extract" = the model only PICKS manual sentences by number, said word for word;
 # "generate" = it writes 1-2 sentences from the passages (post-checked). The default follows the AM4-r measurement.
 DEFAULT_ANSWER_MODE = "extract"
+# AM4-r2 (W112): in "extract" the best passage's search score must reach this before the model may pick, else "can't
+# find" + the passage shown; 0 = no floor. 7.2 = just above the 3 off-manual questions extract still answered on the
+# tuning part (6.07 / 6.79 / 7.10; costs 3 of 41 correct Greek answers, no English one - docs/assistant_design.md
+# 5e); gs_settings "assistant_extract_floor" (a number)
+DEFAULT_EXTRACT_FLOOR = 7.2
 
 # states
 OFF, IDLE, NO_MODELS, GATEWAY_PC, STARTING, READY, LISTENING, THINKING, DOWN, FAILED = (
@@ -134,7 +139,9 @@ class Assistant:
         mode = os.environ.get("TRYGONS_ASSISTANT_ANSWER") or self._get("assistant_answer_mode", DEFAULT_ANSWER_MODE)
         return {"kind": "llama", "model": m, "py": paths.llm_py_dir(), "device": self._get("assistant_device", "auto"),
                 "answer_mode": mode if mode in ("generate", "extract") else DEFAULT_ANSWER_MODE,
-                "allow_unpinned": bool(self._get("assistant_llm_unpinned", False))}
+                "allow_unpinned": bool(self._get("assistant_llm_unpinned", False)),
+                # AM4-r2 / W112: the search-score floor before "extract" may pick (0 = none, the measured default)
+                "extract_floor": self._get("assistant_extract_floor", DEFAULT_EXTRACT_FLOOR)}
 
     def models_ok(self):
         if self.stt_kind == "stub":

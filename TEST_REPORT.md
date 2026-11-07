@@ -5,6 +5,33 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 00000000000. Talking manual - review fixes of AM4-r (step AM4-r2, 2026-11-07) - CORRECTS the AM4-r extract figures below
+
+Station / tools / tests / docs only (docs/assistant_design.md 5e). The AM4-r "extract" picks were NOT always whole
+sentences: the splitter cut at ';' and '·' too, so a pick could be the first half of a manual sentence whose "never /
+only / nothing but" clause followed (452 such picks over both indexes, 145 with a negation / only clause after them).
+Fixed: a sentence ends only at . ! ? or the Greek question mark; test AS25 proves it over the WHOLE index (3119 picks,
+0 clause fragments; the old splitter fails the test). The negation check now skips stop words («δεν μπορεί ποτέ να
+το παρακάμψει») and looks at every passage sentence about the same thing (the reviewer's two probes are tests);
+thousands separators ("1,500 m" = 1500 m); two picks from two passages cite both chapters; a cut "1" is the pick;
+the model file's sha256 is cached per process (a guard reload hashes nothing again); AS24 requires the model's own
+answer. Re-measured (llama3.2-3b, extract, the same stricter check):
+
+| extract | part | correct | answered | precision | false can't find | can't find right | median ms |
+|---|---|---|---|---|---|---|---|
+| AM4-r2 | el tuning | 43 % (AM4-r 36 %) | 94 % | 46 % | 6 | 5/7 | 828 |
+| AM4-r2 | en tuning | 45 % (48 %) | 100 % | 45 % | 0 | 4/5 | 454 |
+| AM4-r2 HELD-OUT (once) | el | 47 % | 89 % | 53 % | 4 | 4/4 | 891 |
+| AM4-r2 HELD-OUT (once) | en | 78 % (7/9) | 100 % | 78 % | 0 | 1/1 | 505 |
+
+The proxy stays circular (a verbatim sentence holding the question's words is "correct"). Extract still answered 3 of 12
+off-manual tuning questions with a true but off-target sentence (best scores 6.07-7.10, inside the in-manual range):
+a SCORE FLOOR 7.2 (setting assistant_extract_floor; the passage is still shown below it) refuses all 3 at the cost of
+3 of 41 correct Greek tuning answers and 1 of 7 correct English held-out answers - W112 asks the owner (default ON).
+Generate mode re-scored with the stricter negation rule: el 17 % correct / 41 % rejected, en 39 % / 40 % (was 48 % /
+26 %). test_driver's "HUD not rendered" failures of the AM4-r gate: a Python without Pillow (the Windows Store
+python); with the gate's msys Python 24/24. Tests AS19 (48 checks), AS21 (45), AS23, AS24, AS25.
+
 ## 0000000000. Talking manual - ANSWER, review fixes (step AM4-r, 2026-11-07) - CORRECTS the AM4 figures below
 
 Station / tools / tests / docs only. The post-check of 3e1b1d3 could be bypassed (an unknown unit "50 feet", the sign

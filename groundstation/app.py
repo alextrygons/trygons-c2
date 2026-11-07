@@ -550,7 +550,8 @@ class App:
         model answer that failed the check = «Δεν βρίσκω ...» + "see chapter N" (the passage itself is on the
         Tools page «Βοηθός»)."""
         cite = info.get("cite") or ""
-        if info.get("src") == "passage" and cite:
+        # also a "can't find" below the extract score floor (AM4-r2, W112): the passage is shown on the Tools page
+        if cite and (info.get("src") == "passage" or (info.get("src") == "cant_find" and info.get("passage"))):
             self.say(T("asst.answer_see", a=a, cite=cite))
         else:
             self.say(T("asst.answer", a=a, cite=(" (%s)" % cite) if cite else ""))

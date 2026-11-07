@@ -126,21 +126,33 @@ def sha256_of(path, chunk=1 << 20):
     return h.hexdigest()
 
 
-def llm_verify(path, allow_unpinned=False):
+_VERIFIED = {}          # (abs path, size, mtime_ns) -> sha256: a guard reload re-hashes nothing (AM4-r2 LOW-d)
+
+
+def llm_verify(path, allow_unpinned=False, cache=_VERIFIED):
     """(ok, why) for a model file about to be loaded: a pinned file = size AND sha256 as in LLM_PINNED; an unpinned
-    file = refused unless allow_unpinned (then "unpinned" is said in why). Reads the whole file (seconds)."""
+    file = refused unless allow_unpinned (then "unpinned" is said in why). Reads the whole file (seconds) ONCE per
+    process: a file already hashed with the same path, size and mtime is not read again (the GPU guard's CPU / GPU
+    reloads; cache = None hashes always)."""
     name = os.path.basename(str(path or ""))
     pinned = LLM_PINNED.get(name)
     if pinned is None:
         return (True, "unpinned model file (assistant_llm_unpinned set): %s" % name) if allow_unpinned else \
             (False, "model file not pinned in paths.LLM_PINNED: %s (set assistant_llm_unpinned to allow it)" % name)
     try:
-        size = os.path.getsize(path)
+        st = os.stat(path)
+        size = st.st_size
     except OSError as e:
         return False, "model file unreadable: %s" % str(e)[:80]
     if size != pinned[0]:
         return False, "model file size %d != pinned %d: %s" % (size, pinned[0], name)
-    got = sha256_of(path)
+    key = (os.path.abspath(path), size, st.st_mtime_ns)
+    got = cache.get(key) if cache is not None else None
+    cached = got is not None
+    if got is None:
+        got = sha256_of(path)
     if got != pinned[1]:
         return False, "model file sha256 %s... != pinned %s...: %s" % (got[:12], pinned[1][:12], name)
-    return True, "sha256 verified"
+    if cache is not None:
+        cache[key] = got
+    return True, "sha256 verified" + (" (cached)" if cached else "")

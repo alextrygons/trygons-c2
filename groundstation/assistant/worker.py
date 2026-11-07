@@ -16,7 +16,8 @@
     The "heard" answer carries "found" too (the same search on the recognised question, AM3).
     AM4: init also takes "llm": {"kind": "llama" | "stub" | "none", "model": <local .gguf>, "py": <bindings folder>,
         "device": "auto" | "cpu" | "cuda", "n_ctx", "reply" / "delay_s" (stub), "answer_mode": "generate" |
-        "extract" (AM4-r), "allow_unpinned": bool (AM4-r LOW-2: a model file not in paths.LLM_PINNED)}; ready
+        "extract" (AM4-r), "allow_unpinned": bool (AM4-r LOW-2: a model file not in paths.LLM_PINNED),
+        "extract_floor": number (AM4-r2 / W112: the best passage's search score the extract mode needs)}; ready
         carries "llm" (name, mode gpu / gpu+cpu / cpu / retrieval, layers, why, free / need MB, load ms, sha_ms).
         After every "heard" with a question:
     <- {"op": "answer", "q", "lang", "a", "src" (llm | extract | passage | retrieval | cant_find), "mode", "cite",
@@ -140,7 +141,8 @@ class Worker:
             except Exception as e:                # missing bindings / file / out of memory: retrieval only
                 llm, info = None, {"mode": "retrieval", "why": "language model not loaded: %s" % str(e)[:160],
                                    "name": os.path.basename(str(c.get("model") or ""))}
-        self.ans = answer.Answerer(llm, terms, mode=c.get("answer_mode") or "generate")
+        self.ans = answer.Answerer(llm, terms, mode=c.get("answer_mode") or "generate",
+                                   extract_floor=c.get("extract_floor", answer.EXTRACT_FLOOR))
         self.ans.stick = not c.get("measure")    # tools/assistant_llm_eval.py: never stuck in retrieval-only
         if llm is None:
             self.ans.why_ro = info["why"]
