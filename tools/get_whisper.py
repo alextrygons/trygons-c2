@@ -9,9 +9,12 @@ Everything goes into tools/bin/ (not in git, nothing installed system-wide):
   tools/bin/assistant/whisper/<name>/  the CTranslate2 Whisper models at a pinned revision, sha256 checked
 
 An install lock marker tools/bin/assistant-python/trygons_install_lock.json records the sha256 of the requirements
-file(s) and of the bootstrap: a missing / different marker = pip again; another bootstrap = installed afresh (AM2-r2
-review LOW-2). A Windows Firewall outbound block rule for the assistant Python is added when allowed (an
-administrator), else the ONE command is printed; --firewall = only that step (AM2-r2 review LOW-1).
+file(s) and of the bootstrap: a missing / different marker or another bootstrap = installed AFRESH (AM2-r2 review
+LOW-2; AM2-r3: never pip over an old install - a package the new lock dropped would stay), and the marker is
+written only when `pip freeze --all` equals the locked set. A Windows Firewall outbound block rule for the
+assistant Python is added when allowed (an administrator; netsh with an argument list, no shell), else the ONE
+command is printed; --firewall = only that step (AM2-r2 review LOW-1). The rule is read back with
+Get-NetFirewallRule / Get-NetFirewallApplicationFilter (untranslated Enabled / Direction / Action values).
 A file that fails its sha256 is deleted and reported. Nothing is fetched at run time: the worker loads the
 models from these folders only (offline).
 
@@ -134,8 +137,8 @@ def lock_marker(cuda):
 
 def install_state(cuda, dest=PYDEST):
     """("ok" | "missing" | "stale" | "bootstrap", why): "bootstrap" = the existing install's get-pip.py / recorded
-    bootstrap sha256 differ from the pinned ones (= a fresh install from the checked zip); "stale" / "missing" =
-    the lock marker differs / is absent (= pip again from the hash-locked requirements)."""
+    bootstrap sha256 differ from the pinned ones; "stale" / "missing" = the lock marker differs / is absent.
+    Every state but "ok" = a fresh install from the checked zip + the hash-locked requirements (AM2-r3)."""
     exe = os.path.join(dest, "python.exe")
     if not os.path.exists(exe):
         return "missing", "no assistant Python"
@@ -156,24 +159,70 @@ def install_state(cuda, dest=PYDEST):
     return "ok", ""
 
 
+def winpath(p):
+    """The absolute path with backslashes (the firewall stores Windows paths; an MSYS Python's abspath keeps
+    forward slashes)."""
+    p = os.path.abspath(os.path.expandvars(p))
+    return p.replace("/", "\\") if os.name == "nt" else p
+
+
 def firewall_cmd(exe):
     """AM2-r2 review LOW-1: the OS-level outbound block for the assistant Python (Windows Firewall) - the
-    Python-level blocker cannot see native code (CTranslate2 C++, hf_xet Rust)."""
+    Python-level blocker cannot see native code (CTranslate2 C++, hf_xet Rust). The text shown to the owner."""
     return 'netsh advfirewall firewall add rule name="%s" dir=out action=block program="%s" enable=yes' % (
-        FW_RULE, os.path.abspath(exe))
+        FW_RULE, winpath(exe))
+
+
+def firewall_args(exe):
+    """AM2-r3 review LOW: the same rule as an ARGUMENT LIST (no shell: a path with a quote / & can't break it)."""
+    return ["netsh", "advfirewall", "firewall", "add", "rule", "name=%s" % FW_RULE, "dir=out", "action=block",
+            "program=%s" % winpath(exe), "enable=yes"]
+
+
+# AM2-r3 review LOW: read the rule through the NetSecurity cmdlets - their Enabled / Direction / Action values are
+# enum names (never translated, unlike netsh's "show rule" text on a Greek Windows); the program from its
+# application filter. The rule name goes in through an environment variable (no quoting into the script).
+FW_PS = ("$ErrorActionPreference='Stop'; $o=@(); "
+         "foreach($r in @(Get-NetFirewallRule -DisplayName $env:TRYGONS_FW_RULE -ErrorAction SilentlyContinue)){"
+         "$a=$r | Get-NetFirewallApplicationFilter; "
+         "$o+=[pscustomobject]@{Enabled=[string]$r.Enabled; Direction=[string]$r.Direction; "
+         "Action=[string]$r.Action; Program=[string]$a.Program}}; ConvertTo-Json -InputObject $o -Compress")
+
+
+def firewall_rules(name=FW_RULE):
+    """[{Enabled, Direction, Action, Program}] of the rules with that display name; None = can't tell."""
+    if os.name != "nt":
+        return None
+    env = dict(os.environ, TRYGONS_FW_RULE=name)
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", FW_PS], capture_output=True,
+                           text=True, timeout=60, errors="replace", env=env)
+        rows = json.loads(r.stdout.strip() or "null")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if r.returncode != 0 or rows is None:
+        return None
+    return [rows] if isinstance(rows, dict) else list(rows)
+
+
+def rule_blocks(rows, exe):
+    """True when one rule is Enabled, Outbound, Block for exactly this program (path compared normalised)."""
+    want = winpath(exe).lower()
+    for x in rows or []:
+        prog = str(x.get("Program") or "")
+        if str(x.get("Enabled")) == "True" and str(x.get("Direction")) == "Outbound" and \
+                str(x.get("Action")) == "Block" and prog and winpath(prog).lower() == want:
+            return True
+    return False
 
 
 def firewall_rule_present(exe):
-    """True / False = the block rule for exe is there / not; None = can't tell (not Windows, netsh failed)."""
-    if os.name != "nt":
+    """True / False = an enabled outbound block rule for exe is there / not; None = can't tell (not Windows,
+    PowerShell failed)."""
+    rows = firewall_rules()
+    if rows is None:
         return None
-    try:
-        out = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", "name=%s" % FW_RULE, "verbose"],
-                             capture_output=True, text=True, timeout=20, errors="replace").stdout
-    except (OSError, subprocess.SubprocessError):
-        return None
-    low = out.lower()
-    return os.path.abspath(exe).lower() in low and "block" in low
+    return rule_blocks(rows, exe)
 
 
 def firewall(exe):
@@ -185,7 +234,7 @@ def firewall(exe):
     if firewall_rule_present(exe):
         print("firewall: the outbound block rule for %s is there" % exe)
         return True
-    r = subprocess.run(firewall_cmd(exe), shell=True, capture_output=True, text=True, errors="replace")
+    r = subprocess.run(firewall_args(exe), capture_output=True, text=True, errors="replace")
     if r.returncode == 0 and firewall_rule_present(exe):
         print("firewall: outbound block rule added for %s" % exe)
         return True
@@ -194,18 +243,61 @@ def firewall(exe):
     return False
 
 
+def norm_pkg(name):
+    return name.strip().lower().replace("_", "-").replace(".", "-")
+
+
+def locked_pins(cuda):
+    """{normalised name: version} of the requirements file(s) (the install lock)."""
+    pins = {}
+    for path in req_files(cuda):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if s and not s.startswith("#") and not s.startswith("--") and "==" in s:
+                    name, ver = s.split("==", 1)
+                    pins[norm_pkg(name)] = ver.split()[0].rstrip("\\").strip()
+    return pins
+
+
+def freeze_diff(freeze_text, cuda):
+    """AM2-r3 review LOW: what `pip freeze --all` shows beyond / against the lock (pip / wheel aside):
+    [] = exactly the locked set; else "extra x==1", "missing y", "z 1 != 2" lines."""
+    want, have = locked_pins(cuda), {}
+    for line in freeze_text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if "==" not in s:
+            have[norm_pkg(s.split()[0])] = "?" + s
+            continue
+        name, ver = s.split("==", 1)
+        have[norm_pkg(name)] = ver.strip()
+    diff = []
+    for n in sorted(set(have) | set(want)):
+        if n in ("pip", "wheel"):
+            continue
+        if n not in want:
+            diff.append("extra %s==%s" % (n, have[n]))
+        elif n not in have:
+            diff.append("missing %s" % n)
+        elif have[n] != want[n]:
+            diff.append("%s %s != %s" % (n, have[n], want[n]))
+    return diff
+
+
 def get_python(cuda):
     exe = os.path.join(PYDEST, "python.exe")
     st, why = install_state(cuda)
-    if st == "bootstrap":                             # never trust an install made from another bootstrap
-        print("assistant Python: %s - installed again from the checked zip" % why)
-        import shutil
-        if os.path.abspath(PYDEST).startswith(os.path.join(HERE, "bin") + os.sep):
-            shutil.rmtree(PYDEST)
-    elif st == "ok":
+    if st == "ok":
         print("assistant Python: up to date (the lock marker matches the requirements)")
     else:
-        print("assistant Python: %s - pip from the hash-locked requirements" % why)
+        # AM2-r3 review LOW: stale / missing marker / another bootstrap = installed AFRESH from the checked zip
+        # (a pip over an old install would keep the packages the new lock dropped)
+        print("assistant Python: %s - installed afresh from the checked zip + the hash-locked requirements" % why)
+        import shutil
+        if os.path.isdir(PYDEST) and os.path.abspath(PYDEST).startswith(os.path.join(HERE, "bin") + os.sep):
+            shutil.rmtree(PYDEST)
     if not os.path.exists(exe):
         os.makedirs(PYDEST, exist_ok=True)
         with zipfile.ZipFile(io.BytesIO(get(PY_URL.format(v=PY_VERSION), PY_SHA))) as z:
@@ -228,6 +320,11 @@ def get_python(cuda):
     out = subprocess.check_output([exe, "-c", "import faster_whisper, ctranslate2; print(faster_whisper.__version__,"
                                    " ctranslate2.__version__, ctranslate2.get_cuda_device_count())"], text=True)
     if st != "ok":
+        frz = subprocess.check_output([exe, "-m", "pip", "freeze", "--all"], text=True)
+        bad = freeze_diff(frz, cuda)
+        if bad:                                       # never a marker over a set that is not the lock
+            raise SystemExit("FAILED: the installed packages are not the locked set: %s - no lock marker written"
+                             % "; ".join(bad))
         with open(LOCK, "w", encoding="utf-8") as f:
             json.dump(lock_marker(cuda), f, indent=1)
     print("assistant Python ready: %s (faster-whisper / CTranslate2 / CUDA devices: %s)" % (exe, out.strip()))

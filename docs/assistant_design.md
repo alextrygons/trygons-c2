@@ -91,18 +91,39 @@ step on the owner's laptop and written here + in the manuals, never guessed in c
   view (app.AsstView) holds only a heard-question queue that App.ov_tick drains - never the App (AS6:
   a gc.get_referents walk). AM2-r2 MED-b: not even the loudhailer object any more - the horn state is a
   plain bool `view.horn` PUSHED by hailer.Hailer.push_horn (press / release / floor messages / unbind)
-  and by App.ov_tick; the AS6 walk skips no edge.
+  and by App.ov_tick. AM2-r3 (review of 94ca987): the AS6 walk starts at the view AND at ap.asst (the
+  client), goes into types (their dicts, methods, closures) and into the modules of
+  groundstation/assistant/; it STOPS at the namespace of every OTHER module (counted in the test line):
+  a function's __globals__ there is shared code that reaches the whole station by design, not a
+  reference the assistant keeps - so the claim is "no App / loudhailer / link / Tk root reachable from
+  the assistant's own objects", not "no edge skipped". Every place in hailer.py that changes the horn
+  state (pressing / mine) calls push_horn() (AS6 static check; play_message's floor-not-given path was
+  missing it). AS3b (AM2-r3 MED): (1) a callback that assistant code SCHEDULES (tkinter after /
+  after_idle) is TAINTED - a sender reached from it counts as the assistant's, though no assistant
+  frame is on the stack when it runs; (2) every sender call is counted per method + payload kind (the
+  message's "t" / the frame type) and compared with the MOST of 3 windows without the assistant - any
+  count above = FAIL (a periodic send may land once more in a window by its phase, so (2) alone can't
+  see ONE extra send of a periodic kind - (1) does); mutation runs prove both: one send scheduled by
+  assistant code through the station's own most frequent method + payload (caught by the taint) and
+  three more scheduled by plain code (caught by the count). The station's start-up reads settle
+  before the window.
 - AM2-r2 LOW-1 (review of 25cb44f) - THE LIMIT of the runtime blocker, stated: it is PYTHON-level
   (socket patch + audit hook) and CANNOT see native code that opens sockets itself - CTranslate2
   (C++), hf_xet (Rust), any C extension calling the OS directly. Two OS-level checks therefore add to
   it: (1) AS4 lists every TCP / UDP endpoint the OS shows for the worker's PID (`netstat -ano`, no
-  psutil) while the real models are loaded and answering - any endpoint = FAIL; (2) a Windows Firewall
+  psutil) at ready, every ~1 s WHILE it answers and once AFTER the answers (AM2-r3) - any endpoint in
+  any snapshot = FAIL (a socket opened and closed between two snapshots stays unseen: that is what the
+  firewall rule is for); (2) a Windows Firewall
   OUTBOUND BLOCK rule for the assistant Python (rule "Trygons C2 assistant python - no network",
   program = tools/bin/assistant-python/python.exe), added by tools/get_whisper.py when run as an
-  administrator (or `get_whisper.py --firewall`); without the right it prints the ONE command for the
-  owner (`netsh advfirewall firewall add rule name="..." dir=out action=block program="..."
-  enable=yes`). Test AS4b reports the rule: present = PASS, absent = N/A with that command - never a
-  PASS without it (W91). Ubuntu: the OS firewall by hand (documented, N/A).
+  administrator (or `get_whisper.py --firewall`; netsh with an ARGUMENT LIST, no shell - AM2-r3);
+  without the right it prints the ONE command for the owner (`netsh advfirewall firewall add rule
+  name="..." dir=out action=block program="..." enable=yes`). The rule is read back with
+  Get-NetFirewallRule + Get-NetFirewallApplicationFilter (AM2-r3: their Enabled / Direction / Action
+  values are enum names, never translated - netsh's "show rule" text is localised on a Greek Windows):
+  PASS only for a rule that is Enabled, Outbound, Block for exactly that program. Test AS4b prints its
+  line also when the models are missing: present = PASS, absent = N/A with that command - never a PASS
+  without it (W91). Ubuntu: the OS firewall by hand (documented, AS4b N/A - W93).
 
 ## 3. Speech -> text (step AM2)
 
@@ -382,9 +403,10 @@ show the passage. The panel shows the mode (GPU / CPU / retrieval only).
   get-pip.py. Test AS13.
 - AM2-r2 LOW-2 / LOW-3: an install lock marker tools/bin/assistant-python/trygons_install_lock.json =
   the sha256 of the requirements file(s) + the cuda choice + the bootstrap (Python version, zip sha256,
-  get-pip.py sha256), written only after a successful install + import check; missing / different =
-  pip again from the hash-locked files; an existing install whose get-pip.py or recorded bootstrap
-  differs from the pinned ones = installed afresh from the checked zip. `--make-requirements` runs ONLY
+  get-pip.py sha256), written only after a successful install + import check; AM2-r3: missing /
+  different / another bootstrap = the assistant Python is installed AFRESH from the checked zip (never
+  pip over an old install: a package the new lock dropped would stay), and the marker is written only
+  when `pip freeze --all` equals the locked set (pip / wheel aside; else FAILED, no marker). `--make-requirements` runs ONLY
   with TRYGONS_ASSISTANT_PYTHON set (never this Python by accident). Test AS13.
 
 ## 11. Open questions (PROGRESS.md WAITING FOR OWNER)
@@ -402,6 +424,10 @@ show the passage. The panel shows the mode (GPU / CPU / retrieval only).
 - W90 (AM2-r2) screen 2's ask-to-talk minimum distance (>= 2 bar heights in x or y, S1) as part of
   W87 - recommended: yes. W91 (AM2-r2) the OS-level network block (firewall rule) wanted - recommended:
   yes, with the one-command fallback when the install has no administrator right.
+- W92 (AM2-r3) the ask-to-talk minimum distance also in the camera view and with the bars docked at
+  the top - recommended: yes (built as a test only: test_screen2 S1 checks both docks in all 24
+  layouts, S25 the camera view at 1366x768 / 1920x1080 x 100-150 % with both docks). W93 (AM2-r3) on
+  Ubuntu the OS firewall for the assistant Python stays manual and AS4b = N/A - recommended: accept.
 - W83 push-to-talk - default the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar + screen 2 bar 2) +
   F9 (setting) + an optional USB foot pedal sending F9; never the joystick, never «ΟΜΙΛΙΑ».
 - W84 (AM2) the owner's own recorded questions + the 2 new tour clips.

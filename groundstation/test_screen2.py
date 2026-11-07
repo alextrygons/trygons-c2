@@ -87,6 +87,7 @@ import overlay  # noqa: E402
 import canvaspic  # noqa: E402
 import proto  # noqa: E402
 import app as A  # noqa: E402
+import settings  # noqa: E402
 
 results = []
 
@@ -342,7 +343,14 @@ def s1_matrix(rig):
                     p = layout_problems(ap)
                     cases.append(((lang, W, H, dpi), ap.ov.k, len(ap.ov.panels), p))
                     apart.append(((lang, W, H, dpi),) + ask_ptt_apart(ap))
+                    # AM2-r3 (W92): the same distance with both bars docked at the TOP
+                    settings.put("s2_bars", {"hidden": [], "dock": "top"})
+                    ap.render(force=True)
+                    apart.append(((lang, W, H, dpi, "top"),) + ask_ptt_apart(ap))
+                    settings.put("s2_bars", {"hidden": [], "dock": "bottom"})
+                    ap.render(force=True)
     finally:
+        settings.put("s2_bars", {"hidden": [], "dock": "bottom"})
         ap.asst._set(st0)
         ap.link.welcome = welcome0
         ap.gw_status.pop("hail", None)
@@ -355,7 +363,7 @@ def s1_matrix(rig):
     far = [c for c in apart if c[1] is not True]
     report("S1 layout 1366x768 / 1920x1080 (+ maximised) at 100 / 125 / 150 %, Greek + English, every panel full: "
            "nothing clipped, STANDBY visible, the boat free, the logo under no panel; «ΕΡΩΤΗΣΗ» >= 2 bar heights "
-           "from «ΟΜΙΛΙΑ» (AM2-r2 MED-a)",
+           "from «ΟΜΙΛΙΑ» (AM2-r2 MED-a; AM2-r3: also with the bars docked at the top)",
            not bad and not far and all(c[2] == 8 for c in cases) and not rig.errors,
            "%d layouts checked (text size factors %s); problems: %s; ask / ptt apart: %d of %d (e.g. %s), "
            "too close %s; errors %s" % (
@@ -2034,6 +2042,43 @@ class ViewStream:
         return b"P6 %d %d 255\n" % (self.w, self.h) + self.frame
 
 
+def camview_ask_apart(rig):
+    """AM2-r3 (W92): with the camera view open, «ΕΡΩΤΗΣΗ» and «ΟΜΙΛΙΑ» >= ASK_PTT_MIN_BARS bar heights apart at
+    1366x768 / 1920x1080 x 100-150 %, bars docked at the bottom AND at the top. Returns [(case, ok, text)];
+    ok None = one of them is not drawn there (nothing to collide)."""
+    import assistant.client as asst_client
+    ap = rig.ap
+    ap.gw_status["hail"] = {"enabled": True, "state": "ACTIVE", "why": "", "out_ok": True, "in_ok": True,
+                            "volume": 70, "volume_max": 80, "speaker": None, "recording": True}
+    welcome0 = getattr(ap.link, "welcome", None)
+    if not welcome0:
+        ap.link.welcome = {"id": 3, "sid": "00" * 8, "udp_key": "11" * 16}
+    st0 = ap.asst.state
+    ap.asst._set(asst_client.READY)
+    got = []
+    try:
+        for W, H in ((1366, 768), (1920, 1080)):
+            for dpi in (1.0, 1.25, 1.5):
+                rig.size(W, H, dpi)
+                for dock in ("bottom", "top"):
+                    settings.put("s2_bars", {"hidden": [], "dock": dock})
+                    ap.render(force=True)
+                    got.append(((W, H, dpi, dock),) + ask_ptt_apart(ap))
+    finally:
+        settings.put("s2_bars", {"hidden": [], "dock": "bottom"})
+        ap.asst._set(st0)
+        ap.gw_status.pop("hail", None)
+        if not welcome0:
+            ap.link.welcome = welcome0
+        try:
+            ap.hail._unbind()
+        except Exception:
+            pass
+        rig.size(1366, 768, 1.0)
+        ap.render(force=True)
+    return got
+
+
 def s25_camview(rig):
     """Step 13n2 (owner 2026-10-31 E2): the copilot's camera view on screen 2."""
     ap = rig.ap
@@ -2074,6 +2119,7 @@ def s25_camview(rig):
         ap.cv_press(type("E", (), {"x": W // 2, "y": H // 2})())
         ap.cv_release(type("E", (), {"x": W // 2, "y": H // 2})())
         no_map = presses == []
+        cv_apart = camview_ask_apart(rig)                 # AM2-r3 (W92): ask / talk apart in the camera view too
         click_r(ap, op(ap, "cv_REAR-RIGHT")["r"])
         switched = ap.camview == "REAR-RIGHT" and cvm()[-1] == {"t": "cam_view", "cam": "REAR-RIGHT"}
         ap.on_cams_ack({"t": "cams_ack", "ok": True, "streams": {"FRONT-1": "cam_front1_lo"}, "levels": {},
@@ -2121,13 +2167,18 @@ def s25_camview(rig):
     report("S25 camera view (13n2): CAMERA on bar 2 asks the gateway, a copilot's view decoded lighter (960 x 540, "
            "10 fps), the picture under the bars; only the alarms panel + mode bar + STANDBY stay, the 4 cameras + MAP "
            "on bar 1, green HUD basics, no map editing under it, reduced / no-video banners, MAP = back (stream "
-           "closed), Esc bound; a dead front camera = the 'no video' warning only; no button without a gateway",
+           "closed), Esc bound; a dead front camera = the 'no video' warning only; no button without a gateway; "
+           "AM2-r3 (W92): «ΕΡΩΤΗΣΗ» >= 2 bar heights from «ΟΜΙΛΙΑ» in the camera view (bars bottom + top)",
            opened and light and picture and kept and cams and hud_ok and fits and no_map and switched and reduced and
-           novideo and back and esc and warn and no_warn and no_btn and not rig.errors,
+           novideo and back and esc and warn and no_warn and no_btn and not rig.errors and
+           bool(cv_apart) and all(c[1] is not False for c in cv_apart) and any(c[1] for c in cv_apart),
            "opened %s; light %s; picture %s; panels %s kept %s; cams %s; hud %s; fits %s; map press %s; switched %s; "
            "reduced %s; no video %s; back %s; esc %s; no-video warning %s / gone %s; no button without gateway %s; "
-           "errors %s" % (opened, light, picture, panels, kept, cams, hud[:5], fits, presses, switched, reduced,
-                          novideo, back, esc, warn, no_warn, no_btn, rig.errors[:2]))
+           "camera view ask / talk: %s; errors %s" % (
+               opened, light, picture, panels, kept, cams, hud[:5], fits, presses, switched, reduced, novideo, back,
+               esc, warn, no_warn, no_btn, [(c[0], c[1], c[2]) for c in cv_apart if c[1] is not True][:4] or
+               "%d of %d apart (e.g. %s)" % (sum(1 for c in cv_apart if c[1]), len(cv_apart),
+                                            cv_apart[0][2] if cv_apart else "-"), rig.errors[:2]))
 
 
 def s26_track(rig):

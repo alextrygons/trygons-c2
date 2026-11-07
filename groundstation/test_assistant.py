@@ -56,6 +56,7 @@ import shutil
 import subprocess
 import math
 import os
+import re
 import sys
 import tempfile
 import time
@@ -442,28 +443,54 @@ def from_assistant():
     return False
 
 
-def as3_rig(rig):
+BASE_RUNS = 3
+
+
+def call_key(cls, name, x, k):
+    """AM2-r3 review MED: a sender call as "Class.method:<what>" - the message's "t" (gateway JSON), the frame
+    type (USB / gateway frames), so a count per payload kind is compared, not just the method name."""
+    arg = x[1] if len(x) > 1 else (k.get("obj") or k.get("ftype"))
+    if isinstance(arg, dict):
+        what = "t=%s" % arg.get("t")
+    elif isinstance(arg, int):
+        what = "0x%02X" % arg
+    else:
+        what = type(arg).__name__
+    return "%s.%s:%s" % (cls.__name__, name, what)
+
+
+def as3_rig(rig, mutate=None, quiet=False):
     """AM2 review LOW-2: the same traps through the REAL station wiring - ap.asst (the App's own Assistant with
     its AsstView), the screen-2 «ΕΡΩΤΗΣΗ» button, App.ov_tick draining the heard queue: no sender / socket is
-    called from an assistant code path, no network attempt in the worker, the question reaches the screens."""
+    called from an assistant code path, no network attempt in the worker, the question reaches the screens.
+    AM2-r3 review MED: (1) a callback that assistant code SCHEDULES (tkinter after / after_idle) is tainted - a
+    sender reached from it counts as the assistant's, though no assistant frame is on the stack when it runs;
+    (2) every sender call is counted per method + payload kind and compared with the MOST of BASE_RUNS windows
+    without the assistant (any count above = FAIL; a periodic send may land once more in a window by its phase,
+    so (2) alone can't see ONE extra periodic-kind send - (1) does). mutate(ap) = a mutation run (quiet)."""
     import socket
+    import tkinter
     import app as A
     import gwclient
     import link
     ap = rig.ap
     a = ap.asst
     sent, saved = [], []
-    with_asst, without, win = collections.Counter(), collections.Counter(), 0.0
+    with_asst, without, win, extra = collections.Counter(), collections.Counter(), 0.0, {}
     every = []                                         # AM2-r2 LOW-4: EVERY sender call in the window (any caller)
+    samples = {}                                       # key -> (cls, name, args, kwargs) of one real call
+    tainted = [0]                                      # > 0 while a callback scheduled by assistant code runs
 
     def trap(cls, name):
         orig = getattr(cls, name)
         saved.append((cls, name, orig))
 
         def t(*x, **k):
-            every.append("%s.%s" % (cls.__name__, name))
-            if from_assistant():
-                sent.append("%s.%s" % (cls.__name__, name))
+            key = call_key(cls, name, x, k)               # AM2-r3 MED: method + WHAT it sends (t / frame type)
+            every.append(key)
+            samples.setdefault(key, (cls, name, x, k))
+            if tainted[0] or from_assistant():
+                sent.append(key + (" (scheduled by the assistant)" if tainted[0] else ""))
                 raise RuntimeError("a sender was called from the assistant")
             return orig(*x, **k)
         setattr(cls, name, t)
@@ -471,17 +498,38 @@ def as3_rig(rig):
         for name in list(vars(cls)):
             if name.startswith("send") or name == "cmd":
                 trap(cls, name)
+    real_after, real_idle = tkinter.Misc.after, tkinter.Misc.after_idle
+
+    def taint(func):
+        def run(*x):
+            tainted[0] += 1
+            try:
+                return func(*x)
+            finally:
+                tainted[0] -= 1
+        return run
+
+    def after(self_, ms, func=None, *x):
+        if func is not None and (tainted[0] or from_assistant()):
+            func = taint(func)
+        return real_after(self_, ms, func, *x)
+
+    def after_idle(self_, func, *x):
+        if tainted[0] or from_assistant():
+            func = taint(func)
+        return real_idle(self_, func, *x)
+    tkinter.Misc.after, tkinter.Misc.after_idle = after, after_idle
     real_sock, real_cc = socket.socket, socket.create_connection
 
     class NoSock(real_sock):
         def __init__(self, *x, **k):
-            if from_assistant():
+            if tainted[0] or from_assistant():
                 sent.append("socket")
                 raise OSError("network blocked")
             super().__init__(*x, **k)
 
     def cc(*x, **k):
-        if from_assistant():
+        if tainted[0] or from_assistant():
             sent.append("socket")
             raise OSError("network blocked")
         return real_cc(*x, **k)
@@ -491,6 +539,16 @@ def as3_rig(rig):
     out = {}
     try:
         a.stop()
+        # the station's own start-up reads (parameters, joystick map at connect) settle first: until two 1 s
+        # slices send the same kinds (at most 20 s)
+        last = None
+        for _i in range(20):
+            every.clear()
+            rig.pump(1.0)
+            now = set(every)
+            if now == last:
+                break
+            last = now
         a.stt_kind, a.stub_text, a.mic_backend = "stub", "πού κλείνω την καταπακτή", "sim"
         a.worker_cmd = lambda: blocked_cmd(sys.executable)
         ap.asst_heard = None
@@ -509,29 +567,63 @@ def as3_rig(rig):
         rig.pump(20, until=lambda: ap.asst_heard is not None)
         out["heard on the screens"] = bool(ap.asst_heard) and ap.asst_heard[0] == "πού κλείνω την καταπακτή" and \
             "πού κλείνω την καταπακτή" in (ap.msg_text or "")
+        if mutate is not None:                          # a mutation run: sends the assistant must never make
+            mutate(ap)
+            rig.pump(0.5)
         a.stop()
         win = max(2.0, time.monotonic() - t0)
         with_asst = collections.Counter(every)
-        # the same window WITHOUT the assistant (stopped, nothing pressed): the station's own periodic sends
-        every.clear()
-        rig.pump(win)
-        without = collections.Counter(every)
-        extra = sorted(set(with_asst) - set(without))
-        out["no sender call beyond the station's own (diff vs a run without the assistant)"] = not extra
+        # the same window WITHOUT the assistant (stopped, nothing pressed): the station's own periodic sends,
+        # compared by COUNT per method + payload kind (the old set comparison hid an extra send of a kind the
+        # station also sends on its own); the baseline = the MOST of BASE_RUNS such windows
+        for _r in range(BASE_RUNS):
+            every.clear()
+            rig.pump(win)
+            without |= collections.Counter(every)
+        extra = {k: (c, without.get(k, 0)) for k, c in with_asst.items() if c > without.get(k, 0)}
+        out["no sender call above the station's own count (vs runs without the assistant)"] = not extra
     finally:
         a.stop()
         del a.worker_cmd                              # back to the class's own worker_cmd
         a.stt_kind, a.stub_text, a.mic_backend = keep
         socket.socket, socket.create_connection = real_sock, real_cc
+        tkinter.Misc.after, tkinter.Misc.after_idle = real_after, real_idle
         for cls, name, orig in saved:
             setattr(cls, name, orig)
     tried = attempts(MARKERS[n:])
     out["no sender / socket from the assistant"] = not sent
     out["no network attempt in the worker"] = len(MARKERS) > n and not tried
+    ok = all(out.values())
+    if quiet:
+        return ok, extra, list(sent)
+    # AM2-r3 review MED: the mutation checks - sends through the method + payload kind the station ALSO sends most
+    # often on its own in the baseline: (a) ONE scheduled by assistant code (root.after) = caught by the taint;
+    # (b) three more from a path the taint can't see (scheduled by plain code) = caught by the count comparison
+    common = max(without, key=without.get) if without else None
+    m = {}
+    if common is not None:
+        cls_, name_, x_, k_ = samples[common]
+
+        def sneak_after(app_):
+            def asst_sneak():                          # an asst_* name = assistant glue at SCHEDULING time
+                app_.root.after(10, lambda: getattr(cls_, name_)(*x_, **k_))   # runs later: no assistant frame
+            asst_sneak()
+
+        def sneak_count(app_):
+            for i in range(3):
+                app_.root.after(10 + 20 * i, lambda: getattr(cls_, name_)(*x_, **k_))
+        m_ok, _e, m_sent = as3_rig(rig, mutate=sneak_after, quiet=True)
+        m["(a) scheduled by the assistant"] = (not m_ok and any(common in s and "scheduled" in s for s in m_sent),
+                                               m_sent)
+        m_ok, m_extra, _s = as3_rig(rig, mutate=sneak_count, quiet=True)
+        m["(b) 3 extra of a station kind"] = (not m_ok and common in m_extra, m_extra)
+    out["mutation: a scheduled send via an already-used method + payload is caught"] = \
+        bool(m) and all(v[0] for v in m.values())
     report("AS3b the real station wiring (ap.asst) with the AS3 traps", all(out.values()),
-           "%s; senders %s, worker attempts %s, traps %d; every sender call in the window %s vs the same window "
-           "without the assistant %s (%.1f s each)" % (out, sent or "none", tried or "none", len(saved),
-                                                        dict(with_asst), dict(without), win))
+           "%s; senders %s, worker attempts %s, traps %d; sender calls per method + payload in the window %s vs the "
+           "most of %d windows without the assistant %s (%.1f s each); above the baseline %s; mutations through %s: "
+           "%s" % (out, sent or "none", tried or "none", len(saved), dict(with_asst), BASE_RUNS, dict(without), win,
+                   extra or "none", common, m))
 
 
 # --- AS4 -------------------------------------------------------------------------------------------------------
@@ -592,6 +684,13 @@ def load_get_whisper():
 
 def as4():
     py = paths.assistant_python()
+    try:
+        as4_run(py)
+    finally:
+        as4b(py)                                      # AM2-r3 review LOW: its line also without the models
+
+
+def as4_run(py):
     if os.name == "nt" and not py or not paths.models_installed():
         return report("AS4 real models, network blocked", None, "models not installed (python tools/get_whisper.py)")
     qs = [("el", "Πού κλείνω την καταπακτή;", "πακτ"), ("en", "How do I close the hatch?", "hatch")]
@@ -602,12 +701,22 @@ def as4():
     a = client.Assistant(View(), settings=Sets(), clock=clk, stt_kind="faster", mic_backend="sim")
     a.worker_cmd = lambda: blocked_cmd(py)
     n0 = len(MARKERS)
-    got, eps = [], None
+    got, snaps = [], []                               # AM2-r3 review LOW: netstat snapshots DURING the run
+    import threading
+    halt = threading.Event()
+
+    def poll(pid):                                    # every ~1 s while the questions run (native code too)
+        while not halt.is_set():
+            snaps.append(("during", pid_endpoints(pid)))
+            halt.wait(1.0)
+    th = None
     try:
         a.start()
         ready = wait(a, lambda: a.state == client.READY, 120)
         if ready and a.proc is not None:
-            eps = pid_endpoints(a.proc.pid)
+            snaps.append(("ready", pid_endpoints(a.proc.pid)))
+            th = threading.Thread(target=poll, args=(a.proc.pid,), daemon=True)
+            th.start()
         for lang, t, must, s in audio:
             if not ready:
                 break
@@ -621,25 +730,44 @@ def as4():
             import unicodedata
             plain = "".join(c for c in unicodedata.normalize("NFD", h[0].lower()) if unicodedata.category(c) != "Mn")
             got.append((lang, h[0], h[1].get("ms"), must in plain))
+        halt.set()
+        if th is not None:
+            th.join(60)
+        if ready and a.proc is not None and a.proc.poll() is None:
+            snaps.append(("after the answers", pid_endpoints(a.proc.pid)))
     finally:
+        halt.set()
         a.stop()
+    eps = sorted({r for _w, rows in snaps for r in (rows or [])})
+    eps_ok = any(w == "ready" for w, _r in snaps) and any(w == "after the answers" for w, _r in snaps) and         all(rows is not None for _w, rows in snaps) and not eps
     tried = attempts(MARKERS[n0:])
     nc_ok, nc = blocker_selftest(py)                  # the negative control in the ASSISTANT Python too
     report("AS4 real models, network blocked", ready and len(got) == 2 and all(g[3] for g in got) and
-           len(MARKERS) > n0 and not tried and nc_ok and eps is not None and not eps,
+           len(MARKERS) > n0 and not tried and nc_ok and eps_ok,
            "device %s, %s; worker network attempts %s (a caught attempt counts too); negative control %s; the "
-           "worker PID's TCP / UDP endpoints (netstat, OS level - native code too) %s"
-           % (a.device, got, tried or "none", nc, "none" if eps == [] else eps))
-    # AM2-r2 review LOW-1: the OS-level block (Windows Firewall outbound rule for the assistant Python, added by
-    # tools/get_whisper.py when an administrator runs it) - absent = N/A with the one command, never PASS
+           "worker PID's TCP / UDP endpoints (netstat, OS level - native code too) in %d snapshots (at ready, "
+           "every ~1 s while asking, after the answers): %s"
+           % (a.device, got, tried or "none", nc, len(snaps), eps or "none"))
+
+
+def as4b(py):
+    """AM2-r2 review LOW-1: the OS-level block (Windows Firewall outbound rule for the assistant Python, added by
+    tools/get_whisper.py when an administrator runs it) - absent = N/A with the one command, never PASS. AM2-r3:
+    read with Get-NetFirewallRule (Enabled / Outbound / Block for that program), printed with or without models."""
+    if os.name != "nt":
+        return report("AS4b OS-level network block (firewall rule)", None,
+                      "not Windows - the OS firewall is set by hand (docs/assistant_design.md 2; W93)")
     gw = load_get_whisper()
-    have = gw.firewall_rule_present(py or sys.executable)
+    exe = py or os.path.join(gw.PYDEST, "python.exe")  # not installed yet: the place get_whisper.py puts it
+    have = gw.firewall_rule_present(exe)
     if have:
-        report("AS4b OS-level network block (firewall rule)", True, "outbound block rule %r for %s" % (gw.FW_RULE, py))
+        report("AS4b OS-level network block (firewall rule)", True,
+               "an enabled outbound block rule %r for %s" % (gw.FW_RULE, exe))
     else:
         report("AS4b OS-level network block (firewall rule)", None,
-               "no outbound block rule (needs an administrator) - the owner runs once: %s" % gw.firewall_cmd(
-                   py or sys.executable))
+               "%s - the owner runs once in an administrator terminal: %s"
+               % ("can't read the firewall (PowerShell NetSecurity)" if have is None else
+                  "no enabled outbound block rule for this program", gw.firewall_cmd(exe)))
 
 
 # --- AS5 / AS6 -------------------------------------------------------------------------------------------------
@@ -742,21 +870,10 @@ def as6(rig):
     out["AsstView no sender"] = not any(hasattr(view, n) for n in ("app", "send", "cmd", "link", "_hail", "hail"))
     out["AsstView keeps no station object"] = not any(v is ap.hail or v is ap or v is ap.link
                                                       for v in vars(view).values())
-    # AM2 review LOW-1 + AM2-r2 MED-b: the view holds NO App - a gc.get_referents walk from it with NO skipped edge
-    # never meets the App, a bound App method, the loudhailer object or the link
-    import app as A
-    import gc
-    found, seen, todo = [], set(), [view]
-    while todo and len(seen) < 20000:
-        o = todo.pop()
-        if id(o) in seen or isinstance(o, (type, types.ModuleType)):
-            continue
-        seen.add(id(o))
-        if isinstance(o, A.App) or getattr(o, "__self__", None) is ap or o is ap.link or o is ap.hail:
-            found.append(type(o).__name__)
-            continue
-        todo += gc.get_referents(o)
-    out["AsstView holds no App (gc walk)"] = not found and len(seen) > 1
+    # AM2 review LOW-1 + AM2-r2 MED-b + AM2-r3 LOW: neither the view NOR the Assistant (ap.asst) holds the App - a
+    # gc.get_referents walk from both never meets the App, a bound App method, the loudhailer object or the link
+    found, seen, stops = asst_gc_walk(ap, [view, ap.asst])
+    out["AsstView + ap.asst hold no App (gc walk)"] = not found and len(seen) > 1
     # AM2 review LOW-3: a ready message and a sound signal stop the assistant too (as TALK does)
     for name, call in (("play_message", lambda: ap.hail.play_message(0)), ("signal", lambda: ap.hail.signal("short5"))):
         calls.clear()
@@ -768,7 +885,57 @@ def as6(rig):
         finally:
             ap.asst.horn_pressed = orig
         out["Hailer.%s -> horn_pressed" % name] = calls[:1] == ["horn"]
-    report("AS6 loudhailer wins", all(out.values()), "%s; objects walked %d, App found %s" % (out, len(seen), found))
+    # AM2-r3 review LOW: every place that changes the horn state pushes it into the view (static check of hailer.py)
+    with open(os.path.join(HERE, "hailer.py"), encoding="utf-8") as f:
+        hl = f.read().splitlines()
+    def func_of(i):
+        for j in range(i, -1, -1):
+            m = re.match(r"\s*def (\w+)", hl[j])
+            if m:
+                return m.group(1)
+        return ""
+    unpushed = [i + 1 for i, s in enumerate(hl) if re.search(r"self\.(pressing|mine)\s*=[^=]", s) and
+                func_of(i) != "__init__" and not any("push_horn()" in x for x in hl[i:i + 20])]
+    out["every pressing / mine change pushes the horn"] = not unpushed
+    report("AS6 loudhailer wins", all(out.values()),
+           "%s; objects walked %d, App found %s; walk stops: %s; horn changes without push_horn at lines %s"
+           % (out, len(seen), found, stops, unpushed or "none"))
+
+
+def asst_gc_walk(ap, roots, limit=200000):
+    """AM2-r3 review LOW: gc.get_referents walk from roots. It goes INTO types (their dicts, methods, closures) and
+    into the modules of groundstation/assistant/; it STOPS (counted, reported) at the namespace of every other
+    module - a function's __globals__ there is shared code reachable from everything (app.py's globals reach the
+    whole station by design), not a reference the assistant keeps. Returns (found, seen, stops)."""
+    import app as A
+    import gc
+    stop_ns = {}
+    for m in list(sys.modules.values()):
+        f = os.path.abspath(getattr(m, "__file__", "") or "")
+        d = getattr(m, "__dict__", None)
+        if d is not None and not f.startswith(ASST + os.sep):
+            stop_ns[id(d)] = getattr(m, "__name__", "?")
+    found, seen, todo = [], set(), list(roots)
+    stops = collections.Counter()
+    while todo and len(seen) < limit:
+        o = todo.pop()
+        if id(o) in seen:
+            continue
+        seen.add(id(o))
+        if isinstance(o, A.App) or getattr(o, "__self__", None) is ap or o is ap.link or o is ap.hail or \
+                o is ap.root:
+            found.append(type(o).__name__)
+            continue
+        if id(o) in stop_ns:
+            stops["module namespace"] += 1
+            continue
+        if isinstance(o, types.ModuleType):
+            f = os.path.abspath(getattr(o, "__file__", "") or "")
+            if not f.startswith(ASST + os.sep):
+                stops["module"] += 1
+                continue
+        todo += gc.get_referents(o)
+    return found, seen, dict(stops)
 
 
 # --- AS7 -------------------------------------------------------------------------------------------------------
@@ -1229,6 +1396,31 @@ def as13():
     fc = gw.firewall_cmd("C:/x/python.exe")
     out["firewall rule = outbound block for the assistant Python"] = "dir=out" in fc and "action=block" in fc and \
         "program=" in fc and "firewall(exe)" in src
+    # AM2-r3 review LOW: added with an ARGUMENT LIST (no shell), read back with Get-NetFirewallRule /
+    # Get-NetFirewallApplicationFilter (untranslated values), Enabled + Outbound + Block for exactly that program
+    fa = gw.firewall_args("C:/x/python.exe")
+    out["firewall add = argument list, no shell"] = isinstance(fa, list) and fa[:5] == [
+        "netsh", "advfirewall", "firewall", "add", "rule"] and "dir=out" in fa and "action=block" in fa and \
+        "shell=True" not in src and "subprocess.run(firewall_args(exe)" in src
+    out["firewall read = NetSecurity cmdlets"] = "Get-NetFirewallRule" in gw.FW_PS and \
+        "Get-NetFirewallApplicationFilter" in gw.FW_PS and "netsh advfirewall firewall show" not in src
+    exe = os.path.abspath("C:/x/python.exe")
+    row = {"Enabled": "True", "Direction": "Outbound", "Action": "Block", "Program": exe}
+    out["rule judged: enabled outbound block for the program"] = gw.rule_blocks([row], exe) and not any(
+        gw.rule_blocks([dict(row, **ch)], exe) for ch in ({"Enabled": "False"}, {"Direction": "Inbound"},
+                                                         {"Action": "Allow"}, {"Program": "C:/y/python.exe"},
+                                                         {"Program": ""})) and not gw.rule_blocks([], exe)
+    # AM2-r3 review LOW: stale / missing = installed AFRESH (no leftovers of a dropped package) + the marker only
+    # when pip freeze --all equals the lock
+    pins = gw.locked_pins(True)
+    frz = "".join("%s==%s\n" % (k, v) for k, v in pins.items()) + "pip==26.3\n"
+    out["freeze = the lock -> no difference"] = gw.freeze_diff(frz, True) == []
+    out["a package the lock dropped is seen"] = any(d.startswith("extra oldpkg") for d in
+                                                    gw.freeze_diff(frz + "oldpkg==1.0\n", True))
+    gp_src = src[src.index("def get_python"):src.index("def install_cmd")]
+    out["not ok = installed afresh (rmtree first)"] = 'if st == "ok":' in gp_src and \
+        gp_src.index("shutil.rmtree(PYDEST)") < gp_src.index("install_cmd(exe, cuda)")
+    out["marker only after freeze == lock"] = gp_src.index("freeze_diff(") < gp_src.index("json.dump(lock_marker")
     report("AS13 hash-locked downloads", all(out.values()), "%s; %d packages" % (out, len(pinned)))
 
 

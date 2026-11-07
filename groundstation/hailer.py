@@ -411,6 +411,7 @@ class Hailer:
             if not self.mine:
                 self.msg_busy = False
                 self.pressing = False
+                self.push_horn()                 # AM2-r3 review LOW: the view's horn bool follows at once
                 return
             self._start_talk(pcm)
         threading.Thread(target=run, daemon=True).start()
