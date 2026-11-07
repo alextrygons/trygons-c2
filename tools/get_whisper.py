@@ -8,6 +8,10 @@ Everything goes into tools/bin/ (not in git, nothing installed system-wide):
                                        (faster-whisper, CTranslate2, and the CUDA 12 cuBLAS / cuDNN 9 wheels)
   tools/bin/assistant/whisper/<name>/  the CTranslate2 Whisper models at a pinned revision, sha256 checked
 
+An install lock marker tools/bin/assistant-python/trygons_install_lock.json records the sha256 of the requirements
+file(s) and of the bootstrap: a missing / different marker = pip again; another bootstrap = installed afresh (AM2-r2
+review LOW-2). A Windows Firewall outbound block rule for the assistant Python is added when allowed (an
+administrator), else the ONE command is printed; --firewall = only that step (AM2-r2 review LOW-1).
 A file that fails its sha256 is deleted and reported. Nothing is fetched at run time: the worker loads the
 models from these folders only (offline).
 
@@ -112,8 +116,96 @@ def fetch(url, path, size, digest):
     return True
 
 
+LOCK = os.path.join(PYDEST, "trygons_install_lock.json")
+FW_RULE = "Trygons C2 assistant python - no network"
+
+
+def req_files(cuda):
+    return [REQ] + ([REQ_CUDA] if cuda else [])
+
+
+def lock_marker(cuda):
+    """AM2-r2 review LOW-2: what the install was made from - the sha256 of the requirements file(s) used and of the
+    bootstrap (the embeddable zip, get-pip.py) - written after a successful install."""
+    return {"version": 1, "cuda": bool(cuda), "python": PY_VERSION, "py_zip_sha256": PY_SHA,
+            "get_pip_sha256": GET_PIP_SHA,
+            "requirements": {os.path.basename(f): sha256(f) for f in req_files(cuda)}}
+
+
+def install_state(cuda, dest=PYDEST):
+    """("ok" | "missing" | "stale" | "bootstrap", why): "bootstrap" = the existing install's get-pip.py / recorded
+    bootstrap sha256 differ from the pinned ones (= a fresh install from the checked zip); "stale" / "missing" =
+    the lock marker differs / is absent (= pip again from the hash-locked requirements)."""
+    exe = os.path.join(dest, "python.exe")
+    if not os.path.exists(exe):
+        return "missing", "no assistant Python"
+    gp = os.path.join(dest, "get-pip.py")
+    if not os.path.isfile(gp) or sha256(gp) != GET_PIP_SHA:
+        return "bootstrap", "get-pip.py missing or not the pinned one"
+    try:
+        with open(os.path.join(dest, os.path.basename(LOCK)), encoding="utf-8") as f:
+            have = json.load(f)
+    except (OSError, ValueError):
+        return "missing", "no install lock marker"
+    if have.get("py_zip_sha256") != PY_SHA or have.get("get_pip_sha256") != GET_PIP_SHA or \
+            have.get("python") != PY_VERSION:
+        return "bootstrap", "made from another Python zip / get-pip.py"
+    want = lock_marker(cuda)
+    if have.get("requirements") != want["requirements"] or have.get("cuda") != want["cuda"]:
+        return "stale", "the requirements changed since the install"
+    return "ok", ""
+
+
+def firewall_cmd(exe):
+    """AM2-r2 review LOW-1: the OS-level outbound block for the assistant Python (Windows Firewall) - the
+    Python-level blocker cannot see native code (CTranslate2 C++, hf_xet Rust)."""
+    return 'netsh advfirewall firewall add rule name="%s" dir=out action=block program="%s" enable=yes' % (
+        FW_RULE, os.path.abspath(exe))
+
+
+def firewall_rule_present(exe):
+    """True / False = the block rule for exe is there / not; None = can't tell (not Windows, netsh failed)."""
+    if os.name != "nt":
+        return None
+    try:
+        out = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", "name=%s" % FW_RULE, "verbose"],
+                             capture_output=True, text=True, timeout=20, errors="replace").stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    low = out.lower()
+    return os.path.abspath(exe).lower() in low and "block" in low
+
+
+def firewall(exe):
+    """Add the block rule when allowed (an administrator); else print the ONE command for the owner."""
+    if os.name != "nt":
+        print("firewall: not Windows - block the assistant Python's network with your OS firewall (docs/"
+              "assistant_design.md 2)")
+        return None
+    if firewall_rule_present(exe):
+        print("firewall: the outbound block rule for %s is there" % exe)
+        return True
+    r = subprocess.run(firewall_cmd(exe), shell=True, capture_output=True, text=True, errors="replace")
+    if r.returncode == 0 and firewall_rule_present(exe):
+        print("firewall: outbound block rule added for %s" % exe)
+        return True
+    print("firewall: NOT added (needs an administrator). Please run this ONE command in an administrator "
+          "terminal:\n  %s" % firewall_cmd(exe))
+    return False
+
+
 def get_python(cuda):
     exe = os.path.join(PYDEST, "python.exe")
+    st, why = install_state(cuda)
+    if st == "bootstrap":                             # never trust an install made from another bootstrap
+        print("assistant Python: %s - installed again from the checked zip" % why)
+        import shutil
+        if os.path.abspath(PYDEST).startswith(os.path.join(HERE, "bin") + os.sep):
+            shutil.rmtree(PYDEST)
+    elif st == "ok":
+        print("assistant Python: up to date (the lock marker matches the requirements)")
+    else:
+        print("assistant Python: %s - pip from the hash-locked requirements" % why)
     if not os.path.exists(exe):
         os.makedirs(PYDEST, exist_ok=True)
         with zipfile.ZipFile(io.BytesIO(get(PY_URL.format(v=PY_VERSION), PY_SHA))) as z:
@@ -129,10 +221,17 @@ def get_python(cuda):
         with open(gp, "wb") as f:
             f.write(get(GET_PIP, GET_PIP_SHA))
         subprocess.check_call([exe, gp, "--no-warn-script-location", "--no-setuptools", "--no-wheel"])
-    subprocess.check_call(install_cmd(exe, cuda))
+    if st != "ok":
+        if os.path.exists(LOCK):
+            os.remove(LOCK)                           # no marker while pip runs (a cut install = installed again)
+        subprocess.check_call(install_cmd(exe, cuda))
     out = subprocess.check_output([exe, "-c", "import faster_whisper, ctranslate2; print(faster_whisper.__version__,"
                                    " ctranslate2.__version__, ctranslate2.get_cuda_device_count())"], text=True)
+    if st != "ok":
+        with open(LOCK, "w", encoding="utf-8") as f:
+            json.dump(lock_marker(cuda), f, indent=1)
     print("assistant Python ready: %s (faster-whisper / CTranslate2 / CUDA devices: %s)" % (exe, out.strip()))
+    firewall(exe)
     return exe
 
 
@@ -184,11 +283,23 @@ def main():
     ap.add_argument("--cpu-only", action="store_true", help="no CUDA wheels, only the small model")
     ap.add_argument("--models-only", action="store_true", help="only the models (Ubuntu: your own venv)")
     ap.add_argument("--make-requirements", action="store_true",
-                    help="write tools/assistant_requirements*.txt from the installed assistant Python")
+                    help="write tools/assistant_requirements*.txt from the assistant Python named by "
+                         "TRYGONS_ASSISTANT_PYTHON (refused without it)")
+    ap.add_argument("--firewall", action="store_true",
+                    help="only add the Windows Firewall outbound block rule for the assistant Python (administrator)")
     a = ap.parse_args()
     if a.make_requirements:
-        return make_requirements(os.path.join(PYDEST, "python.exe") if os.name == "nt" else
-                                 os.environ.get("TRYGONS_ASSISTANT_PYTHON") or sys.executable)
+        # AM2-r2 review LOW-3: only from the assistant Python named explicitly (never this Python by accident)
+        exe = os.environ.get("TRYGONS_ASSISTANT_PYTHON")
+        if not exe:
+            print("REFUSED: --make-requirements needs TRYGONS_ASSISTANT_PYTHON = the WORKING assistant Python, e.g.\n"
+                  "  TRYGONS_ASSISTANT_PYTHON=tools/bin/assistant-python/python.exe python tools/get_whisper.py "
+                  "--make-requirements")
+            return 2
+        return make_requirements(exe)
+    if a.firewall:
+        exe = os.environ.get("TRYGONS_ASSISTANT_PYTHON") or os.path.join(PYDEST, "python.exe")
+        return 0 if firewall(exe) else 1
     if not a.models_only:
         if os.name != "nt":
             print("on Ubuntu: pip install --require-hashes -r %s in a venv, set TRYGONS_ASSISTANT_PYTHON, "

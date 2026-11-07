@@ -259,12 +259,13 @@ def fit_columns(tree, cols, pad=24):
 
 class AsstView:
     """The NARROW view the talking manual gets (CLAUDE.md W, step AM2): the language, the horn state, a voice
-    stop and where a recognised question is shown. No sender, no link, never the App itself (AM2 review LOW-1:
-    it holds ONLY the loudhailer object - for its horn state - and a heard-question queue the App drains in
-    ov_tick; test_assistant AS6 walks gc.get_referents and finds no App)."""
+    stop and where a recognised question is shown. No sender, no link, never the App itself and NO station
+    object (AM2-r2 review MED-b: the horn state is a plain bool `horn` PUSHED by hailer.Hailer.push_horn - on
+    press / release / floor changes - and by App.ov_tick; the heard-question queue is drained by App.ov_tick;
+    test_assistant AS6 walks gc.get_referents with no skipped edge and finds no App)."""
 
-    def __init__(self, hail):
-        self._hail = hail
+    def __init__(self):
+        self.horn = False                            # this station holds / asks for the horn (pushed, never pulled)
         self.heard = collections.deque(maxlen=8)     # (question, info), drained by App.ov_tick
 
     def lang(self):
@@ -272,10 +273,7 @@ class AsstView:
 
     def horn_held(self):
         """This station holds / asks for the loudhailer: no capture, no assistant voice (AM1 review H1)."""
-        try:
-            return bool(self._hail.pressing or self._hail.mine)
-        except Exception:
-            return False
+        return bool(self.horn)
 
     def voice_stop(self):
         """The assistant's voice stops at once (AM5 speaks; nothing is spoken in AM2)."""
@@ -297,7 +295,7 @@ class App:
         self.link = None
         self.hail = hailer.Hailer(self)  # the loudhailer + boat microphone (step 13r): display + voice, never driving
         # the talking manual (step AM2, CLAUDE.md W): READ-ONLY, gets a narrow view - never this App
-        self.asst = asst_client.Assistant(AsstView(self.hail), settings=settings)
+        self.asst = asst_client.Assistant(AsstView(), settings=settings)
         self.asst_heard = None          # (text, time) of the last recognised question (screen 1 notice 8 s)
         self.t = None                   # latest telemetry
         self.t_rx = 0.0
@@ -3605,7 +3603,8 @@ class App:
         except Exception as e:                      # never stops the screens
             self.hail.note = str(e)[:80]
         try:
-            self.asst.tick()                        # the talking manual (step AM2): PTT, worker, restarts
+            self.hail.push_horn()                   # the horn state as a plain bool into the assistant's view
+            self.asst.tick()                       # the talking manual (step AM2): PTT, worker, restarts
             hq = getattr(self.asst.view, "heard", None)
             while hq:
                 self.asst_on_heard(*hq.popleft())
@@ -3779,6 +3778,10 @@ class App:
         d = self.t or {}
         sub = getattr(self, "sub_open", None)
         out = []
+        if n == 1:
+            # the talking manual (AM2-r2 review MED-a): «ΕΡΩΤΗΣΗ» FIRST on bar 1 (left end, also in the camera view),
+            # far from the loudhailer «ΟΜΙΛΙΑ» at the right of bar 2 (test_screen2 S1: ask_ptt_apart)
+            self.asst_bar_item(out)
         if n == 1 and self.camview:
             # 13n2: the camera view - which camera, and MAP back (Esc too)
             for cam in self.CAMVIEW_CAMS:
@@ -3798,7 +3801,6 @@ class App:
                 else:
                     out.append(("btn", "uav_take", T("uavf.take", n=us), lambda us=us: self.uav_take(us), "normal",
                                 True, False))
-            self.asst_bar_item(out)
             out.append(("gap",))
             out.append(("btn", "cv_map", T("cv.map"), self.camview_close, "info", True, False))
             return out
@@ -3831,7 +3833,6 @@ class App:
                             can and d["lt_set"] > proto.LINK_TIME_MIN_S, False))
                 out.append(("btn", "lt_up", "+", lambda: self.link_time_step(1), "normal",
                             can and d["lt_set"] < proto.LINK_TIME_MAX_S, False))
-            self.asst_bar_item(out)
             if d.get("slam_restore_ok") and not d.get("slam_ask") and self.slam_restore_allowed():
                 # step 13q4: REJECT / no answer -> the reduction stays; the captain may still restore while it is calm
                 out.append(("gap",))
@@ -3881,14 +3882,15 @@ class App:
         return out
 
     def asst_bar_item(self, out):
-        """The talking manual (AM2): «ΕΡΩΤΗΣΗ» press and hold + the "AI" badge on bar 1 (also in the camera view,
-        where a UAV is flown). Its OWN button: never the loudhailer's, never the joystick. (Bar 2 has no room
-        beside «ΟΜΙΛΙΑ» at 1366x768 / 125 %: W83 asked for bar 2 - moved, see PROGRESS W83.)"""
+        """The talking manual (AM2): «ΕΡΩΤΗΣΗ» press and hold + the "AI" badge at the START of bar 1 (also in the
+        camera view, where a UAV is flown) - AM2-r2 MED-a: the bar's left end, away from «ΟΜΙΛΙΑ» (bar 2, right
+        part). Its OWN button: never the loudhailer's, never the joystick. (Bar 2 has no room beside «ΟΜΙΛΙΑ» at
+        1366x768 / 125 %: W83 asked for bar 2 - moved, see PROGRESS W83 / W87.)"""
         av = self.asst.view_bar()
         if av is not None:
-            out.append(("gap",))
             out.append(("btn", "ask", T("asst.btn"), lambda: self.asst.press("button"), "normal",
                         av["enabled"], av["on"], self.asst.release))
+            out.append(("gap",))
 
     def boat_dropdown_bar(self):
         """BOAT on bar 2: the same boat dropdown as the status panel's first line."""

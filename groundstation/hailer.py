@@ -188,6 +188,7 @@ class Hailer:
     def _unbind(self):
         self.talk_stop.set()
         self.mine = self.pressing = False
+        self.push_horn()
         s, self.sock, self.link = self.sock, None, None
         if s is not None:
             try:
@@ -233,6 +234,8 @@ class Hailer:
                 self.app.say(self.note, theme.CAUTION)
         elif kind == "hail":
             self.info = d
+        if kind in ("hail_floor", "ptt_ack"):
+            self.push_horn()
         elif kind == "hail_signal_ack" and not d.get("ok"):
             self.note = T("hail.refused", why=i18n.from_en(d.get("text", "")))
             self.app.say(self.note, theme.CAUTION)
@@ -253,6 +256,17 @@ class Hailer:
 
     def other_speaks(self):
         return bool(self.speaker) and not self.mine
+
+    def push_horn(self):
+        """AM2-r2 review MED-b: the horn state as a PLAIN bool into the assistant's view (view.horn); the view holds
+        no reference to this object. Called on press / release / floor changes and by App.ov_tick."""
+        a = getattr(self.app, "asst", None)
+        v = getattr(a, "view", None)
+        if v is not None:
+            try:
+                v.horn = bool(self.pressing or self.mine)
+            except Exception:
+                pass
 
     def _asst_horn(self):
         """The talking manual (AM1 review H1, AM2 review LOW-3): anything that may put sound into the horn - TALK,
@@ -277,6 +291,7 @@ class Hailer:
             self.note = T("hail.speaks", who=self.crew_text(self.speaker))
             return self.app.say(self.note, theme.CAUTION)
         self.pressing = True
+        self.push_horn()
         self.app.link.send_msg({"t": "ptt", "on": True, "what": what})
         return True
 
@@ -289,6 +304,7 @@ class Hailer:
         if self.app.link is not None and getattr(self.app.link, "welcome", None):
             self.app.link.send_msg({"t": "ptt", "on": False})
         self.mine = False
+        self.push_horn()
 
     def _start_talk(self, pcm):
         """pcm None = the microphone of this PC; else these samples (a ready message) at the real-time pace."""
@@ -387,6 +403,7 @@ class Hailer:
                 self.note = T("hail.no_voice")
                 return
             self.pressing = True
+            self.push_horn()
             self.app.link.send_msg({"t": "ptt", "on": True, "what": "message"})
             end = time.time() + 3.0
             while time.time() < end and not self.mine and self.pressing:

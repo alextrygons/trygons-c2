@@ -3732,8 +3732,9 @@ PC (never on the gateway PC, never on the boat). Sound is never written to disk.
 How to ask
   * Press and HOLD the framed button «ΕΡΩΤΗΣΗ» / «ASK» with the "AI" badge
     (screen 1: the bottom bar, its own group right of the language / night /
-    text-size buttons - far from «ΟΜΙΛΙΑ» / TALK; screen 2: the end of bar 1,
-    also in the camera view), or hold the key F9 (or a USB
+    text-size buttons - far from «ΟΜΙΛΙΑ» / TALK; screen 2: the START (left
+    end) of bar 1, also in the camera view - far from TALK, which is in the
+    right part of bar 2), or hold the key F9 (or a USB
     foot pedal that sends F9). Speak, then let go = the question is asked.
   * A tap shorter than 0.4 s is ignored; after 15 s the question is asked by
     itself.
@@ -3754,7 +3755,12 @@ Tools -> page «Βοηθός» / "Assistant"
   * "models not installed": run  python tools/get_whisper.py  once (it puts a
     separate Python + the speech recognition into tools/bin/, ~3.5 GB, every
     download checked with sha256, the packages only from the hash-locked list
-    tools/assistant_requirements*.txt; never in git).
+    tools/assistant_requirements*.txt; never in git). Run it ONCE as an
+    administrator: it also adds a Windows Firewall rule that blocks the
+    assistant's own Python from the network (a second, operating-system lock
+    besides the program's own). Without the right it prints the ONE command
+    to run in an administrator terminal (or later:
+    python tools/get_whisper.py --firewall).
 
 WHERE IT FINDS IT IN THE MANUAL (step AM3)
   * Every recognised question is looked up at once in this manual (in Greek:

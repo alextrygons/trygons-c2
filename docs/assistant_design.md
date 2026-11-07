@@ -88,8 +88,21 @@ step on the owner's laptop and written here + in the manuals, never guessed in c
   LISTS the network modules reached (information, not pass / fail). The no-network proof of the
   worker therefore rests on the runtime blocker (AS3 / AS4), local model folders only (a name =
   refused, AS9) and the offline environment (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE, AS9). LOW-1: the
-  view (app.AsstView) holds only the loudhailer object (horn state) + a heard-question queue that
-  App.ov_tick drains - never the App (AS6: a gc.get_referents walk).
+  view (app.AsstView) holds only a heard-question queue that App.ov_tick drains - never the App (AS6:
+  a gc.get_referents walk). AM2-r2 MED-b: not even the loudhailer object any more - the horn state is a
+  plain bool `view.horn` PUSHED by hailer.Hailer.push_horn (press / release / floor messages / unbind)
+  and by App.ov_tick; the AS6 walk skips no edge.
+- AM2-r2 LOW-1 (review of 25cb44f) - THE LIMIT of the runtime blocker, stated: it is PYTHON-level
+  (socket patch + audit hook) and CANNOT see native code that opens sockets itself - CTranslate2
+  (C++), hf_xet (Rust), any C extension calling the OS directly. Two OS-level checks therefore add to
+  it: (1) AS4 lists every TCP / UDP endpoint the OS shows for the worker's PID (`netstat -ano`, no
+  psutil) while the real models are loaded and answering - any endpoint = FAIL; (2) a Windows Firewall
+  OUTBOUND BLOCK rule for the assistant Python (rule "Trygons C2 assistant python - no network",
+  program = tools/bin/assistant-python/python.exe), added by tools/get_whisper.py when run as an
+  administrator (or `get_whisper.py --firewall`); without the right it prints the ONE command for the
+  owner (`netsh advfirewall firewall add rule name="..." dir=out action=block program="..."
+  enable=yes`). Test AS4b reports the rule: present = PASS, absent = N/A with that command - never a
+  PASS without it (W91). Ubuntu: the OS firewall by hand (documented, N/A).
 
 ## 3. Speech -> text (step AM2)
 
@@ -331,6 +344,12 @@ show the passage. The panel shows the mode (GPU / CPU / retrieval only).
   from a working assistant Python (pip freeze --all + PyPI's sha256) - review the diff before a commit.
   setuptools stays in the lock (CTranslate2 needs it); pip itself comes from the hash-checked
   get-pip.py. Test AS13.
+- AM2-r2 LOW-2 / LOW-3: an install lock marker tools/bin/assistant-python/trygons_install_lock.json =
+  the sha256 of the requirements file(s) + the cuda choice + the bootstrap (Python version, zip sha256,
+  get-pip.py sha256), written only after a successful install + import check; missing / different =
+  pip again from the hash-locked files; an existing install whose get-pip.py or recorded bootstrap
+  differs from the pinned ones = installed afresh from the checked zip. `--make-requirements` runs ONLY
+  with TRYGONS_ASSISTANT_PYTHON set (never this Python by accident). Test AS13.
 
 ## 11. Open questions (PROGRESS.md WAITING FOR OWNER)
 
@@ -340,7 +359,13 @@ show the passage. The panel shows the mode (GPU / CPU / retrieval only).
   camera view) - recommended: accept. W88 (AM2-r): the S1 fit matrix with the button shown in IDLE
   counts as the fit proof (the label / size never change with the state) - recommended: yes.
   Screen 1 (AM2-r MED-1): «ΕΡΩΤΗΣΗ» = its own group right after the language / night / size group,
-  >= 2 bar heights + AR / LAYOUT away from «ΟΜΙΛΙΑ» (test_driver I19, AS11).
+  >= 2 bar heights + AR / LAYOUT away from «ΟΜΙΛΙΑ» (test_driver I19, AS11). Screen 2 (AM2-r2 MED-a):
+  «ΕΡΩΤΗΣΗ» = the FIRST item of bar 1 (left end, also in the camera view); «ΟΜΙΛΙΑ» is in the right
+  part of bar 2; test_screen2 S1 checks in every layout of the matrix that they are >= 2 bar heights
+  apart in x or y (measured: 549 px apart in x at 1366x768). W90: the minimum distance as part of W87.
+- W90 (AM2-r2) screen 2's ask-to-talk minimum distance (>= 2 bar heights in x or y, S1) as part of
+  W87 - recommended: yes. W91 (AM2-r2) the OS-level network block (firewall rule) wanted - recommended:
+  yes, with the one-command fallback when the install has no administrator right.
 - W83 push-to-talk - default the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar + screen 2 bar 2) +
   F9 (setting) + an optional USB foot pedal sending F9; never the joystick, never «ΟΜΙΛΙΑ».
 - W84 (AM2) the owner's own recorded questions + the 2 new tour clips.

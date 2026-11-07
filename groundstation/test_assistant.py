@@ -40,11 +40,17 @@ push-to-talk, its own microphone, term hints, the read-only proof.
       stop the assistant (LOW-3). AS8: no pong in 10 s = restarted + counted (LOW-5), stderr closed on a Popen
       failure + rotated (LOW-6). AS5: F10 is no PTT key (LOW-7). AS11 + test_driver I19: «ΕΡΩΤΗΣΗ» is
       >= 2 bar heights from «ΟΜΙΛΙΑ» with other buttons between (MED-1)
+  AM2-r2 (review of 25cb44f): AS6 the horn state is a plain bool pushed into the view (Hailer.push_horn,
+      App.ov_tick), the view keeps no station object, the gc walk skips no edge (MED-b); AS3b also records
+      every sender call in its window and diffs against the same window without the assistant (LOW-4); AS4
+      also checks the worker PID's TCP / UDP endpoints (netstat) + reports the OS firewall rule (LOW-1);
+      AS13 the install lock marker + --make-requirements needs TRYGONS_ASSISTANT_PYTHON (LOW-2 / LOW-3)
 
 Run:  python test_assistant.py      (exit code 0 = all passed; N/A lines do not fail)
 """
 import ast
 import array
+import collections
 import json
 import math
 import os
@@ -445,12 +451,15 @@ def as3_rig(rig):
     ap = rig.ap
     a = ap.asst
     sent, saved = [], []
+    with_asst, without, win = collections.Counter(), collections.Counter(), 0.0
+    every = []                                         # AM2-r2 LOW-4: EVERY sender call in the window (any caller)
 
     def trap(cls, name):
         orig = getattr(cls, name)
         saved.append((cls, name, orig))
 
         def t(*x, **k):
+            every.append("%s.%s" % (cls.__name__, name))
             if from_assistant():
                 sent.append("%s.%s" % (cls.__name__, name))
                 raise RuntimeError("a sender was called from the assistant")
@@ -483,6 +492,8 @@ def as3_rig(rig):
         a.stt_kind, a.stub_text, a.mic_backend = "stub", "πού κλείνω την καταπακτή", "sim"
         a.worker_cmd = lambda: blocked_cmd(sys.executable)
         ap.asst_heard = None
+        t0 = time.monotonic()
+        every.clear()
         a.start()
         out["ready"] = rig.pump(20, until=lambda: a.state == client.READY) is not False and a.state == client.READY
         ap.render(force=True)
@@ -496,6 +507,15 @@ def as3_rig(rig):
         rig.pump(20, until=lambda: ap.asst_heard is not None)
         out["heard on the screens"] = bool(ap.asst_heard) and ap.asst_heard[0] == "πού κλείνω την καταπακτή" and \
             "πού κλείνω την καταπακτή" in (ap.msg_text or "")
+        a.stop()
+        win = max(2.0, time.monotonic() - t0)
+        with_asst = collections.Counter(every)
+        # the same window WITHOUT the assistant (stopped, nothing pressed): the station's own periodic sends
+        every.clear()
+        rig.pump(win)
+        without = collections.Counter(every)
+        extra = sorted(set(with_asst) - set(without))
+        out["no sender call beyond the station's own (diff vs a run without the assistant)"] = not extra
     finally:
         a.stop()
         del a.worker_cmd                              # back to the class's own worker_cmd
@@ -507,7 +527,9 @@ def as3_rig(rig):
     out["no sender / socket from the assistant"] = not sent
     out["no network attempt in the worker"] = len(MARKERS) > n and not tried
     report("AS3b the real station wiring (ap.asst) with the AS3 traps", all(out.values()),
-           "%s; senders %s, worker attempts %s, traps %d" % (out, sent or "none", tried or "none", len(saved)))
+           "%s; senders %s, worker attempts %s, traps %d; every sender call in the window %s vs the same window "
+           "without the assistant %s (%.1f s each)" % (out, sent or "none", tried or "none", len(saved),
+                                                        dict(with_asst), dict(without), win))
 
 
 # --- AS4 -------------------------------------------------------------------------------------------------------
@@ -540,6 +562,32 @@ def spoken(lang, text):
         return None
 
 
+def pid_endpoints(pid):
+    """AM2-r2 review LOW-1: every TCP / UDP endpoint the OS lists for pid (netstat -ano; no psutil) - sees native
+    code too (CTranslate2 C++, hf_xet Rust), which the Python-level blocker cannot. None = netstat failed."""
+    import subprocess
+    try:
+        out = subprocess.run(["netstat", "-ano"] if os.name == "nt" else ["netstat", "-anp"], capture_output=True,
+                             text=True, timeout=30, errors="replace").stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    rows = []
+    for line in out.splitlines():
+        f = line.split()
+        if f and f[0].upper() in ("TCP", "UDP", "TCP6", "UDP6") and \
+                (f[-1] == str(pid) or f[-1].startswith("%d/" % pid)):
+            rows.append(" ".join(f))
+    return rows
+
+
+def load_get_whisper():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("get_whisper", os.path.join(REPO, "tools", "get_whisper.py"))
+    gw = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gw)
+    return gw
+
+
 def as4():
     py = paths.assistant_python()
     if os.name == "nt" and not py or not paths.models_installed():
@@ -552,10 +600,12 @@ def as4():
     a = client.Assistant(View(), settings=Sets(), clock=clk, stt_kind="faster", mic_backend="sim")
     a.worker_cmd = lambda: blocked_cmd(py)
     n0 = len(MARKERS)
-    got = []
+    got, eps = [], None
     try:
         a.start()
         ready = wait(a, lambda: a.state == client.READY, 120)
+        if ready and a.proc is not None:
+            eps = pid_endpoints(a.proc.pid)
         for lang, t, must, s in audio:
             if not ready:
                 break
@@ -574,9 +624,20 @@ def as4():
     tried = attempts(MARKERS[n0:])
     nc_ok, nc = blocker_selftest(py)                  # the negative control in the ASSISTANT Python too
     report("AS4 real models, network blocked", ready and len(got) == 2 and all(g[3] for g in got) and
-           len(MARKERS) > n0 and not tried and nc_ok,
-           "device %s, %s; worker network attempts %s (a caught attempt counts too); negative control %s"
-           % (a.device, got, tried or "none", nc))
+           len(MARKERS) > n0 and not tried and nc_ok and eps is not None and not eps,
+           "device %s, %s; worker network attempts %s (a caught attempt counts too); negative control %s; the "
+           "worker PID's TCP / UDP endpoints (netstat, OS level - native code too) %s"
+           % (a.device, got, tried or "none", nc, "none" if eps == [] else eps))
+    # AM2-r2 review LOW-1: the OS-level block (Windows Firewall outbound rule for the assistant Python, added by
+    # tools/get_whisper.py when an administrator runs it) - absent = N/A with the one command, never PASS
+    gw = load_get_whisper()
+    have = gw.firewall_rule_present(py or sys.executable)
+    if have:
+        report("AS4b OS-level network block (firewall rule)", True, "outbound block rule %r for %s" % (gw.FW_RULE, py))
+    else:
+        report("AS4b OS-level network block (firewall rule)", None,
+               "no outbound block rule (needs an administrator) - the owner runs once: %s" % gw.firewall_cmd(
+                   py or sys.executable))
 
 
 # --- AS5 / AS6 -------------------------------------------------------------------------------------------------
@@ -660,12 +721,27 @@ def as6(rig):
         ap.asst.horn_pressed = orig
     out["Hailer.press -> horn_pressed"] = calls == ["horn"]
     view = ap.asst.view
+    # AM2-r2 review MED-b: the horn state is a plain bool PUSHED into the view (press / release / ov_tick)
     ap.hail.pressing = True
-    out["AsstView.horn_held"] = view.horn_held() is True
+    out["horn not pulled (no push yet)"] = view.horn_held() is False
+    ap.hail.push_horn()
+    out["AsstView.horn_held (pushed)"] = view.horn_held() is True and view.horn is True
     ap.hail.pressing = False
-    out["AsstView no sender"] = not any(hasattr(view, n) for n in ("app", "send", "cmd", "link"))
-    # AM2 review LOW-1: the view holds NO App - a gc.get_referents walk from it (the loudhailer object is the one
-    # allowed station object: it is NOT walked into) never meets the App, a bound App method or the link
+    ap.hail.mine = True
+    ap.root.after = lambda *a, **k: None              # one ov_tick only (no second 200 ms loop)
+    try:
+        ap.ov_tick()                                  # App.ov_tick pushes it too
+    finally:
+        del ap.root.after
+    out["ov_tick pushes the horn"] = view.horn is True
+    ap.hail.mine = False
+    ap.hail.push_horn()
+    out["horn released"] = view.horn_held() is False
+    out["AsstView no sender"] = not any(hasattr(view, n) for n in ("app", "send", "cmd", "link", "_hail", "hail"))
+    out["AsstView keeps no station object"] = not any(v is ap.hail or v is ap or v is ap.link
+                                                      for v in vars(view).values())
+    # AM2 review LOW-1 + AM2-r2 MED-b: the view holds NO App - a gc.get_referents walk from it with NO skipped edge
+    # never meets the App, a bound App method, the loudhailer object or the link
     import app as A
     import gc
     found, seen, todo = [], set(), [view]
@@ -674,10 +750,8 @@ def as6(rig):
         if id(o) in seen or isinstance(o, (type, types.ModuleType)):
             continue
         seen.add(id(o))
-        if isinstance(o, A.App) or getattr(o, "__self__", None) is ap or o is ap.link:
+        if isinstance(o, A.App) or getattr(o, "__self__", None) is ap or o is ap.link or o is ap.hail:
             found.append(type(o).__name__)
-            continue
-        if o is ap.hail:
             continue
         todo += gc.get_referents(o)
     out["AsstView holds no App (gc walk)"] = not found and len(seen) > 1
@@ -1080,11 +1154,8 @@ def as5_keys(rig):
 def as13():
     """AM2 review MED-4: tools/get_whisper.py checks the Python zip + get-pip.py by sha256 (a get-pip COMMIT) and
     installs ONLY from the hash-locked requirements files (--require-hashes, wheels only, every line pinned)."""
-    import importlib.util
     import re
-    spec = importlib.util.spec_from_file_location("get_whisper", os.path.join(REPO, "tools", "get_whisper.py"))
-    gw = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gw)
+    gw = load_get_whisper()
     out = {"zip sha256": re.fullmatch(r"[0-9a-f]{64}", gw.PY_SHA) is not None,
            "get-pip sha256": re.fullmatch(r"[0-9a-f]{64}", gw.GET_PIP_SHA) is not None,
            "get-pip at a commit": gw.GET_PIP_COMMIT in gw.GET_PIP and "bootstrap.pypa.io" not in gw.GET_PIP}
@@ -1109,6 +1180,53 @@ def as13():
     out["every line pinned + hashed"] = bool(pinned) and all(ok for _n, ok in pinned)
     out["top-level packages in the lock"] = all(p.split("==")[0].lower() in names
                                                 for p in gw.PACKAGES + gw.CUDA_PACKAGES)
+    # AM2-r2 review LOW-2: the install lock marker (sha256 of the requirements + the bootstrap)
+    import shutil
+    d = tempfile.mkdtemp(prefix="trygons_asst_lock_")
+    keep = gw.GET_PIP_SHA, gw.REQ, gw.REQ_CUDA
+    try:
+        out["no Python = missing"] = gw.install_state(True, d)[0] == "missing"
+        open(os.path.join(d, "python.exe"), "wb").close()
+        with open(os.path.join(d, "get-pip.py"), "w") as f:
+            f.write("# not the pinned get-pip.py\n")
+        out["other get-pip.py = bootstrap"] = gw.install_state(True, d)[0] == "bootstrap"
+        gw.GET_PIP_SHA = gw.sha256(os.path.join(d, "get-pip.py"))
+        for k in ("REQ", "REQ_CUDA"):
+            q = os.path.join(d, os.path.basename(getattr(gw, k)))
+            shutil.copy(getattr(gw, k), q)
+            setattr(gw, k, q)
+        out["no marker = missing"] = gw.install_state(True, d)[0] == "missing"
+        mk = os.path.join(d, os.path.basename(gw.LOCK))
+
+        def put(m):
+            with open(mk, "w", encoding="utf-8") as f:
+                json.dump(m, f)
+        put(gw.lock_marker(True))
+        out["marker matches = ok"] = gw.install_state(True, d) == ("ok", "")
+        out["cuda changed = stale"] = gw.install_state(False, d)[0] == "stale"
+        with open(gw.REQ, "a", encoding="utf-8") as f:
+            f.write("# changed\n")
+        out["requirements changed = stale"] = gw.install_state(True, d)[0] == "stale"
+        m = gw.lock_marker(True)
+        m["py_zip_sha256"] = "0" * 64
+        put(m)
+        out["another Python zip = bootstrap"] = gw.install_state(True, d)[0] == "bootstrap"
+    finally:
+        gw.GET_PIP_SHA, gw.REQ, gw.REQ_CUDA = keep
+        shutil.rmtree(d, ignore_errors=True)
+    out["pip only when not ok + marker after the check"] = 'if st != "ok":' in src and \
+        src.index("json.dump(lock_marker(cuda)") > src.index("import faster_whisper, ctranslate2")
+    # AM2-r2 review LOW-3: --make-requirements refuses without TRYGONS_ASSISTANT_PYTHON
+    import subprocess
+    env = dict(os.environ)
+    env.pop("TRYGONS_ASSISTANT_PYTHON", None)
+    r = subprocess.run([sys.executable, os.path.join(REPO, "tools", "get_whisper.py"), "--make-requirements"],
+                       capture_output=True, text=True, env=env, timeout=60, errors="replace")
+    out["--make-requirements refused without TRYGONS_ASSISTANT_PYTHON"] = r.returncode == 2 and "REFUSED" in r.stdout
+    # AM2-r2 review LOW-1: the OS-level rule's command
+    fc = gw.firewall_cmd("C:/x/python.exe")
+    out["firewall rule = outbound block for the assistant Python"] = "dir=out" in fc and "action=block" in fc and \
+        "program=" in fc and "firewall(exe)" in src
     report("AS13 hash-locked downloads", all(out.values()), "%s; %d packages" % (out, len(pinned)))
 
 

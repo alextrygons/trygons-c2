@@ -8602,10 +8602,10 @@
 "kind": "manual",
 "lines": [
 3733,
-3737
+3738
 ],
 "term": "",
-"text": "* Press and HOLD the framed button «ΕΡΩΤΗΣΗ» / «ASK» with the \"AI\" badge (screen 1: the bottom bar, its own group right of the language / night / text-size buttons - far from «ΟΜΙΛΙΑ» / TALK; screen 2: the end of bar 1, also in the camera view), or hold the key F9 (or a USB foot pedal that sends F9). Speak, then let go = the question is asked."
+"text": "* Press and HOLD the framed button «ΕΡΩΤΗΣΗ» / «ASK» with the \"AI\" badge (screen 1: the bottom bar, its own group right of the language / night / text-size buttons - far from «ΟΜΙΛΙΑ» / TALK; screen 2: the START (left end) of bar 1, also in the camera view - far from TALK, which is in the right part of bar 2), or hold the key F9 (or a USB foot pedal that sends F9). Speak, then let go = the question is asked."
 },
 {
 "ch": "22",
@@ -8614,8 +8614,8 @@
 "id": "en:663",
 "kind": "manual",
 "lines": [
-3738,
-3742
+3739,
+3743
 ],
 "term": "",
 "text": "* A tap shorter than 0.4 s is ignored; after 15 s the question is asked by itself. * The recognised question appears on screen 2's message line and for 8 s on screen 1's notices (\"Question to the assistant: ...\") - so a mis-hearing is visible."
@@ -8627,8 +8627,8 @@
 "id": "en:664",
 "kind": "manual",
 "lines": [
-3743,
-3748
+3744,
+3749
 ],
 "term": "",
 "text": "* NEVER on the joystick (every stick button is used, e.g. when flying a UAV) and never the loudhailer: «ΟΜΙΛΙΑ» / TALK is a different button. Pressing TALK (or a ready message / a sound signal) stops the assistant at once, and while you hold the loudhailer the assistant does not listen (a question can never go out of the horn). * The key does nothing while you type in a text field."
@@ -8640,24 +8640,24 @@
 "id": "en:665",
 "kind": "manual",
 "lines": [
-3751,
-3757
+3752,
+3754
 ],
 "term": "",
-"text": "* on / off for this PC (default on), the assistant's OWN microphone (separate from the loudhailer's devices; default = the Windows default input), the ask key (F2..F9, default F9; F10 is the Windows menu key), the state, the last question with its times. * \"models not installed\": run  python tools/get_whisper.py  once (it puts a separate Python + the speech recognition into tools/bin/, ~3.5 GB, every download checked with sha256, the packages only from the hash-locked list tools/assistant_requirements*.txt; never in git)."
+"text": "* on / off for this PC (default on), the assistant's OWN microphone (separate from the loudhailer's devices; default = the Windows default input), the ask key (F2..F9, default F9; F10 is the Windows menu key), the state, the last question with its times."
 },
 {
 "ch": "22",
 "chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
-"heading": "WHERE IT FINDS IT IN THE MANUAL (step AM3)",
+"heading": "Tools -> page «Βοηθός» / \"Assistant\"",
 "id": "en:666",
 "kind": "manual",
 "lines": [
-3760,
-3765
+3755,
+3763
 ],
 "term": "",
-"text": "* Every recognised question is looked up at once in this manual (in Greek: MANUAL_EL.txt) and in the guided tour's texts. The page «Βοηθός» / \"Assistant\" shows under the last question where it was found (\"In the manual: chapter ... - ...\" or \"In the guided tour: ...\") or \"I can't find that in the manual.\". This step does not answer yet (text and voice come with the next steps)."
+"text": "* \"models not installed\": run python tools/get_whisper.py once (it puts a separate Python + the speech recognition into tools/bin/, ~3.5 GB, every download checked with sha256, the packages only from the hash-locked list tools/assistant_requirements*.txt; never in git). Run it ONCE as an administrator: it also adds a Windows Firewall rule that blocks the assistant's own Python from the network (a second, operating-system lock besides the program's own). Without the right it prints the ONE command to run in an administrator terminal (or later: python tools/get_whisper.py --firewall)."
 },
 {
 "ch": "22",
@@ -8667,10 +8667,10 @@
 "kind": "manual",
 "lines": [
 3766,
-3770
+3771
 ],
 "term": "",
-"text": "* The search compares words only: no accents, no capitals, the usual endings and a few synonyms an operator says (drone = UAV, joystick = χειριστήριο, μηχανή = κινητήρας). No model, no internet, under 1 ms per question. It keeps the 3 best passages with their chapters; a weak match = \"I can't find that in the manual.\" - never a guess."
+"text": "* Every recognised question is looked up at once in this manual (in Greek: MANUAL_EL.txt) and in the guided tour's texts. The page «Βοηθός» / \"Assistant\" shows under the last question where it was found (\"In the manual: chapter ... - ...\" or \"In the guided tour: ...\") or \"I can't find that in the manual.\". This step does not answer yet (text and voice come with the next steps)."
 },
 {
 "ch": "22",
@@ -8679,11 +8679,11 @@
 "id": "en:668",
 "kind": "manual",
 "lines": [
-3771,
-3775
+3772,
+3776
 ],
 "term": "",
-"text": "* The manual's index (groundstation\\assistant\\index\\) is rebuilt by tools\\check.sh whenever a manual, the tour or a language file changed; by hand: python tools\\assistant_index.py build * Try a typed question (no microphone, no station): python tools\\assistant_index.py ask \"your question\" --lang en"
+"text": "* The search compares words only: no accents, no capitals, the usual endings and a few synonyms an operator says (drone = UAV, joystick = χειριστήριο, μηχανή = κινητήρας). No model, no internet, under 1 ms per question. It keeps the 3 best passages with their chapters; a weak match = \"I can't find that in the manual.\" - never a guess."
 },
 {
 "ch": "22",
@@ -8692,11 +8692,11 @@
 "id": "en:669",
 "kind": "manual",
 "lines": [
-3776,
-3779
+3777,
+3781
 ],
 "term": "",
-"text": "* Measured on the question list (tests\\assistant\\questions_en.json: 48 questions, 42 answered in the manual): the right passage first 55 %, within the first 3 81 %; 3 of the 6 questions that are not in the manual give \"I can't find\". Greek (145 questions, 134 in the manual): 61 % /"
+"text": "* The manual's index (groundstation\\assistant\\index\\) is rebuilt by tools\\check.sh whenever a manual, the tour or a language file changed; by hand: python tools\\assistant_index.py build * Try a typed question (no microphone, no station): python tools\\assistant_index.py ask \"your question\" --lang en"
 },
 {
 "ch": "22",
@@ -8705,11 +8705,11 @@
 "id": "en:670",
 "kind": "manual",
 "lines": [
-3780,
-3782
+3782,
+3785
 ],
-"term": "77 %, 9 of 11. Run it with",
-"text": "77 %, 9 of 11. Run it with python tools\\assistant_index.py eval (also in tools\\check.sh). The next step (the language model answers ONLY from the passages, with a check) improves the refusals."
+"term": "",
+"text": "* Measured on the question list (tests\\assistant\\questions_en.json: 48 questions, 42 answered in the manual): the right passage first 55 %, within the first 3 81 %; 3 of the 6 questions that are not in the manual give \"I can't find\". Greek (145 questions, 134 in the manual): 61 % /"
 },
 {
 "ch": "22",
@@ -8718,11 +8718,11 @@
 "id": "en:671",
 "kind": "manual",
 "lines": [
-3784,
-3787
+3786,
+3788
 ],
-"term": "",
-"text": "If it fails: the notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» / ASSISTANT OFF on both screens (a notice on THIS PC only, never an alarm, no sound); it restarts by itself after 5 s, at most 3 times in 10 minutes, then it stays off until the station is started again. Driving is never affected."
+"term": "77 %, 9 of 11. Run it with",
+"text": "77 %, 9 of 11. Run it with python tools\\assistant_index.py eval (also in tools\\check.sh). The next step (the language model answers ONLY from the passages, with a check) improves the refusals."
 },
 {
 "ch": "22",
@@ -8731,8 +8731,21 @@
 "id": "en:672",
 "kind": "manual",
 "lines": [
-3789,
-3792
+3790,
+3793
+],
+"term": "",
+"text": "If it fails: the notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» / ASSISTANT OFF on both screens (a notice on THIS PC only, never an alarm, no sound); it restarts by itself after 5 s, at most 3 times in 10 minutes, then it stays off until the station is started again. Driving is never affected."
+},
+{
+"ch": "22",
+"chapter": "THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (first part, steps AM2-AM3)",
+"heading": "WHERE IT FINDS IT IN THE MANUAL (step AM3)",
+"id": "en:673",
+"kind": "manual",
+"lines": [
+3795,
+3798
 ],
 "term": "",
 "text": "Measured on the owner's laptop (RTX A1000 6 GB, step AM2; synthetic voices - to be measured again with real speech): recognition ~0.9 s for a 2-3 s question on the GPU (large-v3-turbo), the CPU fallback (small) slower - see docs/assistant_design.md section 3."
@@ -10702,7 +10715,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "347045e0c01e986660b28661722fa731dce2ac9383f002b7e75072bf6719ae14",
+"MANUAL.txt": "23871a5f872170c1cdfea745e234bfd49290dc082af74c6e5d9dec85afa2581e",
 "academy/content/tour.json": "388b9ceec7b969d9117707a1686f0c33a09177447fe4a57646317081fc8ceb44",
 "groundstation/assistant/index.py": "a2a2ee77908855871147544d6b498d05e7c64dd309c8b44dab0ebc28f3aefca2",
 "groundstation/lang/el.txt": "961129124793d7bc2177020fde1191986426190a78cb66ff91facc082afd0fe8",

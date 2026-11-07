@@ -4,7 +4,9 @@
      taskbar / title / menu), Windows scaling 100 / 125 / 150 %, Greek and English, every panel
      full (boats, HELM, link, AIS, alarms, route, decisions): nothing clipped (every text,
      button and table cell inside its panel, every panel inside the window), STANDBY visible,
-     no panel over the boat, the logo under no panel, panels not over each other
+     no panel over the boat, the logo under no panel, panels not over each other; AM2-r2 MED-a: the
+     talking manual's «ΕΡΩΤΗΣΗ» (start of bar 1) >= 2 bar heights from the loudhailer «ΟΜΙΛΙΑ» (bar 2)
+     in x or y in every layout of the matrix (ask_ptt_apart)
   S2 every panel collapsed: STANDBY still visible and clickable; a header click opens the panel
   S3 roles: no MANUAL / MANEUVER on screen 2 (captain or copilot); single-operator + licence:
      shown; screen 1 shows REMOTE MANUAL / MANEUVER only for the captain with the licence
@@ -299,23 +301,66 @@ def fill_everything(rig):
     rig.pump(0.8)
 
 
+ASK_PTT_MIN_BARS = 2.0     # AM2-r2 review MED-a: «ΕΡΩΤΗΣΗ» and «ΟΜΙΛΙΑ» >= 2 bar heights apart (as screen 1's hud)
+
+
+def ask_ptt_apart(ap):
+    """AM2-r2 review MED-a: the talking manual's «ΕΡΩΤΗΣΗ» ("ask", bar 1) and the loudhailer «ΟΜΙΛΙΑ» ("ptt",
+    bar 2) are >= ASK_PTT_MIN_BARS bar heights apart vertically OR horizontally (never one above the other).
+    Returns (ok, text); ok None = one of them is not drawn."""
+    a, p = op(ap, "ask"), op(ap, "ptt")
+    bars = [o["r"] for o in ap.ov.ops if o.get("tag") in ("bar1", "bar2")]
+    if a is None or p is None or not bars:
+        return None, "ask %s ptt %s" % (a is not None, p is not None)
+    bh = max(r[3] - r[1] for r in bars)
+    ar, pr = a["r"], p["r"]
+    dx = max(pr[0] - ar[2], ar[0] - pr[2])          # > 0 = apart in x (the gap)
+    dy = max(pr[1] - ar[3], ar[1] - pr[3])
+    ok = dx >= ASK_PTT_MIN_BARS * bh or dy >= ASK_PTT_MIN_BARS * bh
+    return ok, "dx %.0f dy %.0f px, bar %.0f px" % (dx, dy, bh)
+
+
 def s1_matrix(rig):
     ap = rig.ap
     fill_everything(rig)
-    cases = []
-    for lang in ("el", "en"):
-        i18n.set_lang(lang, save=False)
-        for W, H in ((1366, 768), (1366, 658), (1920, 1080), (1920, 970)):
-            for dpi in (1.0, 1.25, 1.5):
-                rig.size(W, H, dpi)
-                p = layout_problems(ap)
-                cases.append(((lang, W, H, dpi), ap.ov.k, len(ap.ov.panels), p))
+    # AM2-r2 MED-a: the loudhailer «ΟΜΙΛΙΑ» (a gateway with a loudhailer) and the talking manual's «ΕΡΩΤΗΣΗ»
+    # (READY = its idle look, W88) are drawn in every layout of the matrix too
+    import assistant.client as asst_client
+    ap.gw_status["hail"] = {"enabled": True, "state": "ACTIVE", "why": "", "out_ok": True, "in_ok": True,
+                            "volume": 70, "volume_max": 80, "speaker": None, "recording": True}
+    welcome0 = getattr(ap.link, "welcome", None)
+    ap.link.welcome = {"id": 3, "sid": "00" * 8, "udp_key": "11" * 16}    # (no host: no socket is opened)
+    st0 = ap.asst.state
+    ap.asst._set(asst_client.READY)
+    cases, apart = [], []
+    try:
+        for lang in ("el", "en"):
+            i18n.set_lang(lang, save=False)
+            for W, H in ((1366, 768), (1366, 658), (1920, 1080), (1920, 970)):
+                for dpi in (1.0, 1.25, 1.5):
+                    rig.size(W, H, dpi)
+                    p = layout_problems(ap)
+                    cases.append(((lang, W, H, dpi), ap.ov.k, len(ap.ov.panels), p))
+                    apart.append(((lang, W, H, dpi),) + ask_ptt_apart(ap))
+    finally:
+        ap.asst._set(st0)
+        ap.link.welcome = welcome0
+        ap.gw_status.pop("hail", None)
+        try:
+            ap.hail._unbind()
+        except Exception:
+            pass
+        rig.pump(0.3)
     bad = [c for c in cases if c[3]]
+    far = [c for c in apart if c[1] is not True]
     report("S1 layout 1366x768 / 1920x1080 (+ maximised) at 100 / 125 / 150 %, Greek + English, every panel full: "
-           "nothing clipped, STANDBY visible, the boat free, the logo under no panel",
-           not bad and all(c[2] == 8 for c in cases) and not rig.errors,
-           "%d layouts checked (text size factors %s); problems: %s; errors %s" % (
+           "nothing clipped, STANDBY visible, the boat free, the logo under no panel; «ΕΡΩΤΗΣΗ» >= 2 bar heights "
+           "from «ΟΜΙΛΙΑ» (AM2-r2 MED-a)",
+           not bad and not far and all(c[2] == 8 for c in cases) and not rig.errors,
+           "%d layouts checked (text size factors %s); problems: %s; ask / ptt apart: %d of %d (e.g. %s), "
+           "too close %s; errors %s" % (
                len(cases), sorted({round(c[1], 2) for c in cases}), [(c[0], c[3][:3]) for c in bad][:4],
+               len(apart) - len(far), len(apart), apart[0][2] if apart else "-", far[:3],
                rig.errors[:2]))
     i18n.set_lang("el", save=False)
     rig.size(1366, 768, 1.25)
