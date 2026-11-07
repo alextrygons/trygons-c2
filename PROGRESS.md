@@ -61,7 +61,7 @@ OD-1..OD-12 (owner 2026-10-28, docs/dronecan_design.md 13); OA-1..OA-4 are recor
 
 | Step | What | State | Commit |
 |---|---|---|---|
-| AM1 | Design: CLAUDE.md section W + docs/assistant_design.md + steps + WAITING items (doc I0, I1) | TODO | |
+| AM1 | Design: CLAUDE.md section W + docs/assistant_design.md + steps + WAITING items (doc I0, I1) | DONE (docs only: CLAUDE.md section W "Talking manual" = the owner's I0 rules (read-only + proof tests AS1-AS4, manual-only source + can't-find + post-check, offline tools/bin, own below-normal worker on the station PC only, «ΒΟΗΘΟΣ ΕΚΤΟΣ» notice, own PTT «ΕΡΩΤΗΣΗ» + F9 + pedal never the joystick / «ΟΜΙΛΙΑ», alarms win = lowest sound level, AI badge, Greek default); docs/assistant_design.md = architecture (groundstation/assistant/ client + worker, JSON lines, speaking stays in the station's sound.py), Whisper comparison plan faster-whisper vs whisper.cpp (measured in AM2), index + BM25 (AM3), LLM candidates Qwen2.5-7B / Meltemi-7B / Krikri-8B / Llama-3.1-8B / a 3B with VRAM on the 6 GB RTX A1000 + grounded prompt + post-check + GPU guard / retrieval-only (AM4), speech normaliser + panel + local log (AM5), PC load budget, tests per step, downloads; W81-W83 kept with their defaults. No code change; gate tools/check.sh run (see the commit) | this commit |
 | AM2 | Voice in: tools/get_whisper.py, groundstation/assistant/ worker, PTT (button ΕΡΩΤΗΣΗ + F9 + pedal), mic setting, term hints, read-only proof test | TODO | |
 | AM3 | Find: manual index + search + stale check in tools/check.sh; question list I2 + retrieval tests | TODO | |
 | AM4 | Answer: tools/get_llm.py, llama.cpp worker, grounded prompt + post-check + can't-find + GPU guard; model comparison | TODO | |

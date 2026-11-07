@@ -1,0 +1,244 @@
+# Talking manual - design (step AM1, 2026-11-07)
+
+Source of truth for the rules: CLAUDE.md section W "Talking manual". This file holds the architecture,
+the choices and their reasons, the model comparison plan, the PC load budget and the tests. Owner spec:
+docs/owner_findings_2026-11-06.md section I (I0 ground rules, I1 pipeline, I2 question list). Steps
+AM2-AM6: PROGRESS.md. Open questions: PROGRESS.md "WAITING FOR OWNER" W81-W83.
+
+Everything marked TO CONFIRM is a default the owner still confirms; MEASURE = a number found in a later
+step on the owner's laptop and written here + in the manuals, never guessed in code.
+
+## 0. Scope (binding)
+
+- The operator (captain or copilot - e.g. while flying a UAV with both hands on the joystick) ASKS BY
+  VOICE about the C2 itself ("πού κλείνω την καταπακτή;", "τι σημαίνει HATCH FAULT;") and HEARS a short
+  answer (1-2 sentences) taken from the manual, with the full passage shown on the screen.
+- STATION ONLY: groundstation/ + tools/ + docs. NO app/, hal/, gateway/ logic or AURIX change, no new
+  frame, no gateway message, no TELEM field, no alarm bit.
+- READ-ONLY: it never sends anything to the boat or the gateway, never changes a mode / setting /
+  layout, never presses anything. It only listens (its own microphone), reads files, speaks and shows.
+- Manual questions only (W82 default): it does NOT read live telemetry ("what mode am I in?" = the
+  "can't find" answer or a pointer to the screen). Live answers = a possible later step with its own
+  review.
+- Fully OFFLINE: no internet, ever. Every model is a file in tools/bin/ (downloaded once by a pinned
+  tools/get_*.py with sha256, never in git).
+
+## 1. Architecture
+
+```
+ station process (tkinter, app.py)                     assistant worker (OWN process, below normal)
+ ---------------------------------                     ------------------------------------------
+ PTT: «ΕΡΩΤΗΣΗ» button / F9 / pedal (= F9)
+   press  -> {"op":"listen"}          ---- stdin ---->  mic capture (own device setting)
+   release-> {"op":"ask","lang"}      ---- JSON  ---->  1 STT  (Whisper)       -> question text
+                                                        2 FIND (index + BM25)  -> top 3 passages
+                                                        3 ANSWER (llama.cpp)   -> 1-2 sentences
+                                                        3b post-check          -> answer / passage / can't find
+ panel: question, answer, passage, chapter  <- stdout - {"op":"answer", "q", "a", "passages", "mode", "ms"}
+ 4 SPEAK: sound.py (assistant priority = lowest) -> tts.py (Piper / Windows voice) + speech normaliser
+ 6 LOG: groundstation/assistant/log/ (THIS PC only, text only)
+```
+
+- groundstation/assistant/ (package; groundstation/ is already excluded from the ADS build):
+  - `client.py` - the station side: starts / stops / restarts the worker, PTT state machine, JSON
+    lines, timeouts; the ONLY assistant module app.py imports.
+  - `worker.py` - the worker process main (like gateway/vision/worker.py: JSON lines on stdin /
+    stdout, ends when stdin closes, `low_priority()` = BELOW_NORMAL_PRIORITY_CLASS on Windows /
+    nice 10 on Linux, limited CPU threads). Below normal, not IDLE: the answer has a latency target
+    and most work runs on the GPU anyway; the station's windows keep normal priority.
+  - `stt.py` (Whisper wrapper), `index.py` (manual -> sections, normalisation, BM25), `answer.py`
+    (prompt, llama.cpp call, post-check, can't-find, retrieval-only), `speech.py` (speech normaliser),
+    `gpu.py` (free GPU memory guard), `panel.py` (the slim panel), `page.py` (Tools page «Βοηθός»),
+    `log.py` (local log).
+- The worker loads the models ONCE at start (warm) and keeps them; it is started with the station when
+  the setting `assistant` is on (default on for every station PC: W81) and the models exist; missing
+  models = the button greyed + "models not installed" on the Tools page (never an error box).
+- Speaking stays in the STATION process: the worker returns text only; the station speaks it through
+  its own sound.py / tts.py, so the alarm priority lives in ONE scheduler (section 5).
+- Crash / hang (no answer in 30 s, process gone) = station-local notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» (the 13n1
+  notice style, MasterLamps-free: never an alarm, never a sound) + restart after 5 s, at most 3 restarts
+  in 10 min, then off until the station restarts (notice stays).
+
+## 2. Read-only boundary (the proof, like academy AC1-AC3)
+
+- No assistant module imports a network / serial module or a station command sender: `socket`,
+  `asyncio` network use, `serial`, `gwclient`, `link`, `proto` writers, `stations`, `app` (the panel gets
+  a narrow `view` object from app.py: root, theme, language, sound - never `app`).
+- `client.py` may use `subprocess` (to start the worker) - the ONLY process door, like simguard.py;
+  `worker.py` may start NO process (llama.cpp / Whisper run in-process through their Python bindings;
+  if AM4 picks the llama.cpp server exe instead, it talks over a pipe / stdin, never a TCP port).
+- Tests (AM2, extended every step): AS1 static imports of every assistant module; AS2 the transitive
+  import graph through groundstation/ (nothing reaches link / gwclient / proto encoders / app.send);
+  AS3 runtime: a whole question through the stub worker with `socket.socket`, `app.send*`,
+  `gwclient.*.send*`, `link.*` patched to raise - the answer still comes; AS4 the network blocked
+  (socket patched to raise) while the REAL models answer (N/A when the models are not downloaded).
+
+## 3. Speech -> text (step AM2)
+
+Comparison (paper now, measured in AM2 on 30 recorded owner-style questions el + en, the laptop's mic
+and a headset):
+
+| | faster-whisper (CTranslate2) | whisper.cpp (ggml) |
+|---|---|---|
+| Form | Python package in its own env tools/bin/assistant-python/ (like vision-python) | one exe + .bin model, Python bindings or a pipe |
+| GPU | CUDA 12 + cuDNN 9 DLLs (~600 MB extra download) | CUDA / Vulkan build, small |
+| CPU fallback | int8, good | good (AVX2) |
+| Greek | same Whisper weights = same accuracy | same |
+| Initial prompt (term hints) | `initial_prompt` + `hotwords` | `--prompt` |
+| VAD | built-in Silero VAD | built-in VAD in recent builds |
+
+Plan: AM2 implements BOTH behind `stt.py` only far enough to measure (Greek WER on the 30 phrases,
+time from release to text for a 3-5 s question, VRAM, CPU fallback time) and KEEPS ONE (the other's
+download code removed). Expected: faster-whisper large-v3-turbo int8_float16 on the GPU (~1 GB VRAM,
+< 1 s for 5 s of speech); CPU fallback = `small` int8 (MEASURE). Language: the station language as a
+hint, Whisper's own detection decides (a Greek speaker may say an English button name).
+
+Term hints: built at worker start from lang/el.txt + lang/en.txt (mode names, the mode bar, screen 1
+bottom bar, screen 2 bars, panel titles, Tools page names: HDG LOCK, DP, AUTO, ΜΑΓΓΕΜΑ, ΚΑΤΑΠΑΚΤΗ,
+ΤΙΜΟΝΙ, ΣΧΕΣΗ ...) - the 200 most useful, as the initial prompt. Alarm names from alerts.py.
+
+Microphone: its OWN setting (gs_settings `assistant_mic`, Tools page «Βοηθός»; groundstation/audiodev.py
+lists the devices), separate from the loudhailer `in_dev` / `out_dev`. None chosen = the Windows default
+input ONLY for the assistant (it is not a boat function; the loudhailer's "never the default device"
+rule is about the horn). Audio is never written to disk (RAM only, dropped after the answer).
+
+PTT (W83 default): press-and-hold the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar, screen 2 bar 2,
+with the "AI" badge) or hold F9 (gs_settings `assistant_key`; a USB foot pedal that sends F9 works the
+same). Release = ask. Max 15 s per question (then asked automatically), < 0.4 s = ignored. NEVER on the
+joystick (every stick button is used while flying a UAV), NEVER shared with the loudhailer «ΟΜΙΛΙΑ»:
+the two use separate buttons, separate keys and separate devices, and while the horn is keyed by this
+station the assistant does not listen (a question can never go out of the horn). F9 checked against
+every existing binding (F11 / F12 / Space / A today).
+
+## 4. Find (step AM3)
+
+- Index = groundstation/assistant/index/manual_el.json + manual_en.json, built from MANUAL_EL.txt /
+  MANUAL.txt: split by chapter (`N. TITLE`), sub-heading (`N.M` / upper-case lines / `---` rules) and
+  paragraph; each passage = {id, chapter number + title, heading path, text, line range}. Passages
+  60-250 words (long paragraphs split at sentences, short ones joined with the next under the same
+  heading). Plus small "where is it" passages from the tour texts (academy/content/tour.json) and the
+  lang files (a button name -> its screen / bar), marked as such.
+- Stale check: the index stores the sha256 of both manuals + tour.json + the lang files; tools/check.sh
+  rebuilds it when they changed (like `demo_screens.py --tour --if-stale`) and a test fails if the
+  committed index is stale.
+- Search: Greek normalisation (lower case, accents and diaeresis removed, final sigma, Greek-Latin
+  look-alikes for button names, a small stemmer: common endings -ος/-ου/-ο/-α/-ες/-ων/-ει/-ουμε ...),
+  BM25 over words + the heading path weighted x2. Top 3 passages with their chapter names. A small
+  offline multilingual embedding model (e.g. multilingual-e5-small, ~120 MB) ONLY if it measurably
+  raises top-3 on the question list (AM3 measures BM25 alone first).
+- Can't find: best BM25 score below a threshold (set on the question list's "not in the manual" items)
+  = the can't-find answer, before any language model runs.
+
+## 5. Answer (step AM4)
+
+Candidates (Q4_K_M GGUF through llama.cpp; licences checked again at download time):
+
+| Model | File | VRAM (4k ctx) | Greek | Licence (to verify) |
+|---|---|---|---|---|
+| Qwen2.5-7B-Instruct | ~4.7 GB | ~5.5 GB (does NOT fit beside Whisper + the HUD on 6 GB: partial offload) | good | Apache-2.0 |
+| Meltemi-7B-Instruct (ILSP, Greek) | ~4.4 GB | ~5.2 GB (partial offload) | best Greek (made for it) | Apache-2.0 |
+| Llama-Krikri-8B-Instruct (ILSP, Greek) | ~4.9 GB | ~5.8 GB (partial offload) | very good Greek | Llama 3.1 community |
+| Llama-3.1-8B-Instruct | ~4.9 GB | ~5.8 GB | fair | Llama 3.1 community |
+| Qwen2.5-3B-Instruct / Llama-3.2-3B-Instruct (the 3B option) | ~2 GB | ~2.6 GB (fits) | fair | Qwen research / Llama 3.2 community |
+
+Comparison on the I2 question list (AM4): correctness (post-check pass + must-mention term present),
+Greek quality (the owner reviews 20 answers per model, blind), time to the first sentence, tokens/s,
+VRAM, the CPU-only time. The winner + its numbers go into this file and the manuals.
+
+Grounded prompt: system text (fixed, in the question's language): "Answer ONLY from the passages below,
+in 1-2 short spoken sentences, name the chapter; if the passages do not answer the question, reply
+exactly: <can't-find sentence>." + the 3 passages + the question. Temperature 0, max 80 tokens.
+
+Post-check (before anything is spoken): every button / mode / screen / alarm name in the answer (found
+by the term list of section 3) must appear in the passages, and the chapter named must be one of them;
+else the answer is replaced by the best passage's first sentence (retrieval-only form). The can't-find
+sentence from the model is accepted as is.
+
+GPU guard (gpu.py): before loading and before each answer, free GPU memory from NVML (nvidia-smi
+fallback). Too little free memory (MEASURE: model + 0.8 GB margin, because the station's video decode,
+the HUD and the academy's 3D sim also use it) = run on the CPU; CPU too slow (first sentence > 8 s on
+the last 3 answers, MEASURE) = RETRIEVAL-ONLY mode: speak the best passage's shortest full sentence,
+show the passage. The panel shows the mode (GPU / CPU / retrieval only).
+
+## 6. Speak (step AM5)
+
+- Through the station's own sound.py SoundSystem: a new level ASSISTANT below FEEDBACK, ADVISORY,
+  CAUTION, WARNING and every voice callout. Any alarm sound or callout request STOPS the assistant's
+  voice at once (the player's stop) and the rest of the answer is dropped (the panel still shows it;
+  [ΞΑΝΑ] replays it). An assistant answer never delays, queues ahead of or mutes an alarm. Tests in
+  test_sound (AM5).
+- tts.py with gs_settings `voice_engine` (Piper or the Windows voice); answers are NOT cached in
+  sound_cache/ (one-off sentences; temporary WAV in the station's temp folder, deleted after playing).
+- Speech normaliser (speech.py): upper-case words -> normal case ("ΚΑΤΑΠΑΚΤΗ" -> "καταπακτή"),
+  acronyms spoken as in the "say." lang lines (HDG LOCK, DP, AUTO, UAV, AIS, GPS ...), arrows /
+  symbols / units ("°", "kn", "%") spoken, chapter numbers as words.
+- Target: the answer starts < 4 s after the release on the owner's laptop. Budget (MEASURE in AM4 /
+  AM5): STT 0.8 s + find 0.05 s + LLM prompt 0.6 s + first sentence 1.2 s + TTS first sentence 0.4 s
+  = ~3 s; the first sentence is spoken while the second is still generated (streaming).
+
+## 7. Show + log (step AM5)
+
+- Panel (the 13n1 look: theme.py fonts / 3 text sizes / square frames, draggable by the header,
+  collapsible, position remembered in gs_settings): the RECOGNISED question (a mis-hearing is visible),
+  the answer, the FULL passage + its chapter, [ΞΑΝΑ] (repeat), [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] (opens MANUAL_EL.txt /
+  MANUAL.txt at that place in a read-only text window), the "AI" badge, the mode (GPU / CPU / retrieval
+  only). Screen 2: an overlay panel placed by the fit test (never over the boat keep-out circle, the
+  S1 matrix still passes); screen 1: a small box in the lower right, hidden in MINIMAL declutter, never
+  over the alarms / notices boxes or the centre. Later option: light the named button using
+  academy/tour_shots/shots.json.
+- Log on THIS PC only: groundstation/assistant/log/YYYY-MM-DD.jsonl (gitignored): question text,
+  passage ids + scores, answer, mode, timings. Never audio, never sent anywhere (no gateway sync, no
+  academy push).
+
+## 8. PC load (owner's laptop: RTX A1000 6 GB laptop GPU, falls back to the CPU)
+
+| Part | Idle (loaded) | While answering | Where |
+|---|---|---|---|
+| Whisper large-v3-turbo int8 | ~1 GB VRAM, ~0 CPU | GPU burst < 1 s | worker |
+| LLM 3B Q4 / 7B Q4 | 2.6 GB / partial offload | GPU burst 1-3 s | worker |
+| Index + BM25 | < 20 MB RAM | < 50 ms CPU | worker |
+| TTS (Piper) | - | 1 core < 0.5 s | station (existing) |
+
+- Idle = no CPU use (the worker blocks on stdin); the GPU memory stays allocated while the worker runs.
+- Measured in AM4 / AM5 with tools/gateway_load.py's station counterpart (the station's frame time with
+  4 camera views + the HUD, with and without an answer running): the screen-1 frame time must not grow
+  by more than 10 % during an answer (MEASURE; else fewer threads / CPU STT).
+- Never on the gateway PC (the worker refuses to start when gateway.json is present, like the academy),
+  never on the boat.
+
+## 9. Tests (per step; all in tools/check.sh)
+
+- AM2: AS1-AS4 (section 2), PTT state machine (press / release / too short / too long / F9 / button /
+  horn keyed = not listening), mic setting separate from the loudhailer, worker restart + «ΒΟΗΘΟΣ ΕΚΤΟΣ»
+  notice (stub worker), term hints built from the lang files.
+- AM3: index build + stale check, normalisation (accents, final sigma, case), retrieval top-1 / top-3 on
+  the question list (thresholds set from the first measured run), can't-find on the "not in the manual"
+  items.
+- AM4: prompt + post-check (an invented button name = replaced by the passage sentence), can't-find,
+  GPU guard (fake NVML numbers), retrieval-only mode; model comparison = a report, not a pass / fail.
+- AM5: alarm priority (a WARNING / CAUTION / callout stops the answer at once, never waits behind it),
+  speech normaliser, panel fit (S1 matrix + screen 1 boxes), "AI" badge present, log written locally
+  and never contains audio.
+- AM6: the full question list with the real models (N/A - never PASS - when the models are missing; the
+  fast tests use a stub model), results in TEST_REPORT.md, the manual-gaps list.
+- The question list tests/assistant/questions_el.json + _en.json (AM3 first version, AM6 full): 120-150
+  questions as an operator would say them, several phrasings per question, grouped by situation (UAV
+  flying, launch + hatch, alarms, modes, lost link, recording, loudhailer, roles, DP, engine, power
+  limit), each with the expected section(s) + a must-mention term; some NOT in the manual (expect
+  can't find). The owner reviews it (a W item in AM3).
+
+## 10. Downloads (tools/bin only, never git)
+
+- tools/get_whisper.py (AM2): the chosen Whisper runtime + model, pinned URL + sha256, into
+  tools/bin/assistant/whisper/; tools/get_llm.py (AM4): llama.cpp (Python bindings in
+  tools/bin/assistant-python/ or the pinned exe) + the chosen GGUF, pinned sha256, into
+  tools/bin/assistant/llm/. Both found through gateway/toolpaths.py (new functions
+  `assistant_python()`, `whisper_model()`, `llm_model()`), env overrides like the others.
+- A download that fails its sha256 is deleted and reported; nothing is fetched at run time.
+
+## 11. Open questions (PROGRESS.md WAITING FOR OWNER)
+
+- W81 which PCs get it - default every station PC (captain + copilot), setting `assistant` on.
+- W82 live telemetry answers - default NO (manual questions only).
+- W83 push-to-talk - default the framed «ΕΡΩΤΗΣΗ» button (screen 1 bottom bar + screen 2 bar 2) +
+  F9 (setting) + an optional USB foot pedal sending F9; never the joystick, never «ΟΜΙΛΙΑ».
