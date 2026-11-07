@@ -1,0 +1,34 @@
+## I. Talking manual - offline voice assistant (owner 2026-11-06) - steps AM1-AM6 - STATION ONLY (groundstation/ + tools/ + docs); NO app / hal / gateway / AURIX change
+Purpose: the operator (captain or copilot, e.g. while flying a UAV) ASKS BY VOICE about the C2 itself ("πού κλείνω την καταπακτή;", "τι σημαίνει HATCH FAULT;") and HEARS a short answer taken from the manual. Owner: "we mainly need the manual in a talking state". Fully OFFLINE (no internet ever).
+
+I0 Ground rules (write them into CLAUDE.md as section W "Talking manual")
+- READ-ONLY: it never sends anything to the boat or the gateway, never changes a mode / setting / layout, never presses anything. A test proves no assistant module imports or calls the station's command senders (app.send / stations / proto writers / link) - like academy AC1-AC3 (static imports + transitive graph + runtime with the senders patched to fail).
+- SOURCE = MANUAL_EL.txt + MANUAL.txt only (+ the tour texts and lang files for button names / where things are). Answers come ONLY from the retrieved manual passages. Nothing found / not sure = «Δεν βρίσκω απάντηση στο εγχειρίδιο.» / "I can't find that in the manual." - never a guess.
+- OFFLINE: every model in tools/bin (downloaded by a pinned tools/get_*.py with sha256, never in git), found through gateway/toolpaths.py; a test runs a question with the network blocked.
+- Runs on the STATION PC only, in its OWN low-priority process (like the vision worker): never slows the station's windows, never on the gateway, never on the boat. A crash = notice "ΒΟΗΘΟΣ ΕΚΤΟΣ" + restart; never an alarm.
+- PUSH-TO-TALK: its OWN control, NEVER shared with the loudhailer «ΟΜΙΛΙΑ» (a question must never go out of the horn) and NEVER on the joystick (all stick buttons are used when flying a UAV): a framed screen button «ΕΡΩΤΗΣΗ» (screen 1 bottom bar + screen 2 bar 2) + a keyboard key (default F9, setting) + optional USB foot pedal (it just sends that key). Press-and-hold to talk, release = ask. Its own microphone setting (separate from the loudhailer devices).
+- ALARMS WIN: a WARNING / CAUTION sound or a voice callout stops the assistant's voice at once (sound.py priority, below every alarm and callout); answers 1-2 sentences.
+- The "AI" badge (theme.ai_badge) on its button + panel (neural networks: speech recognition + language model). Never on the safety functions.
+- Greek default, English available (follows the station language; the question language detected).
+- Defaults TO CONFIRM (WAITING FOR OWNER): every station PC (captain + copilot); manual questions only (NO live telemetry answers yet - possible later step); PTT = screen button + F9.
+
+I1 Pipeline
+1. Speech -> text: Whisper (faster-whisper or whisper.cpp - compare in AM1), Greek + English, model size measured on the owner's laptop (RTX A1000 6 GB, falls back to CPU); a hint list of C2 terms (mode names, panel / button names from lang/el.txt + en.txt: HDG LOCK, DP, ΜΑΓΓΕΜΑ, ΚΑΤΑΠΑΚΤΗ, ΤΙΜΟΝΙ ...) as the initial prompt / vocabulary.
+2. Find: the manuals split into sections by their headings (chapter, sub-heading, paragraph) = an index rebuilt automatically when a manual changes (tools/check.sh stale check, like tour shots); search = accent / case-insensitive Greek normalisation + BM25 + (if it measurably helps) a small offline multilingual embedding model; top 3 passages with chapter names.
+3. Answer: a small LOCAL language model (llama.cpp; candidates Qwen2.5-7B-Instruct, Meltemi-7B (Greek, ILSP), Llama-3.1-8B, + a 3B option; Q4 quantisation; compared in AM1/AM4 on the owner's Greek questions: correctness, Greek quality, speed, GPU memory) that ONLY shortens / joins the retrieved passages into 1-2 spoken sentences and names the chapter. Post-check before speaking: every button / mode / screen name in the answer must appear in the passages (else: speak the passage's first sentence instead); no passage above the score threshold = the "can't find" answer. GPU memory guard: too little free GPU memory (HUD / video / 3D sim) = CPU, and if too slow = "retrieval only" mode (speak the best passage's shortest sentence).
+4. Speak: through the station's own voice engine (tts.py: Piper or the Windows voice, gs_settings voice_engine) with a speech normaliser (capitals -> normal case, acronyms spoken like the "say." lines). Target: answer starts < 4 s after release on the owner's laptop (measure, write the numbers in the manual).
+5. Show: a slim panel (the 13n1 look: draggable, collapsible, 3 text sizes) with the recognised question (so a mis-hearing is visible), the answer, the FULL manual passage + its chapter, [ΞΑΝΑ] (repeat) and [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] (opens MANUAL_EL at that place). Optional later: highlight the named button on screen using academy/tour_shots shots.json positions.
+6. Log on THIS PC only (question text, chosen passage, answer, time) for improving the index; never sent anywhere; never audio.
+
+I2 Question list = test set
+- tests/assistant/questions_el.json (+ _en): 120-150 questions as a real operator would say them (several phrasings of the same question, tired / short wording), grouped by situation (UAV flying, launch + hatch, alarms, modes, lost link, recording, loudhailer, roles, DP, engine, power limit), each with the expected manual section(s) and a "must mention" term; some deliberately NOT in the manual (expect "can't find"). Claude writes them from the manuals + tour; the owner only reviews (W item).
+- Measured: retrieval top-1 / top-3 hit rate, answer correctness (post-check + must-mention), "can't find" correct, latency; results in TEST_REPORT.md. Tests that need the big models = N/A when the models are not downloaded, never PASS (the fast tests use a stub model).
+- The run also lists questions where the MANUAL itself is thin (no clear operator sentence) -> a list for the owner (manual gaps).
+
+Steps (each its own commit + independent review; PROGRESS.md LOOP RULES; reviews in parallel - no firmware):
+AM1 design: CLAUDE.md section W + docs/assistant_design.md (architecture, model comparison plan, PC load, tests) + steps table + WAITING FOR OWNER items.
+AM2 voice in: tools/get_whisper.py, groundstation/assistant/ worker process, PTT (screen button «ΕΡΩΤΗΣΗ» + F9 + pedal), mic setting (Tools page "Βοηθός"), term hints; read-only proof test.
+AM3 find: the manual index + search + stale check in tools/check.sh; the question list I2 (first version) + retrieval tests.
+AM4 answer: tools/get_llm.py, llama.cpp worker, grounded prompt + post-check + "can't find" + GPU guard / retrieval-only mode; model comparison on the question list; numbers in docs.
+AM5 speak + show: tts + speech normaliser, the panel, alarm priority, "AI" badge, local log; screenshots docs/screens/assistant/.
+AM6 finish: full question-list run + TEST_REPORT, manual-gaps list, MANUAL.txt + MANUAL_EL.txt chapter, tour stop, PARTS.md (headset with mic recommended, optional USB foot pedal).
