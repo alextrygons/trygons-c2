@@ -68,6 +68,16 @@ push-to-talk, its own microphone, term hints, the read-only proof.
       token = cut (MED-3) + answer mode "extract" (the model only picks numbered passage sentences); AS22 an answer
       whose question was interrupted by «ΟΜΙΛΙΑ» carries speak = False (LOW-3); AS23 paths.LLM_PINNED =
       get_llm.MODELS + the worker verifies before it loads
+  AM5-r (review of 5f15787): AS1 / AS2 also scan the station-side asstvoice.py + manualwin.py (static imports, the
+      module-level transitive graph with proto = a checked codec, a static check of the voice's sound-system
+      surface; the function-level imports of sound.py listed as the limit) (MED-3); AS6 the voice's NARROW VoicePort
+      (the sound system weakly, the App-free view's horn / lang) + the gc walk from the voice (+ a negative control)
+      (MED-3); AS26 "<" / ">" / "%/s" spoken, N by its context, known Latin words as words, fwd / rev, a negative
+      range, negations survive (MED-2, LOW-1); AS27 under the sender traps: no WAV left behind - stop() in the gap, a
+      late TTS result after stop(), a failed delete retried, close() sweeps the folder (MED-1), a slow TTS = text only
+      + the late file removed (W121), a failed voice's reason logged (LOW-3), the gain / resampling breathe (LOW-4);
+      AS28 the manual window under the sender traps, the auto-fold ONE step per render (LOW-4); AS30 every pickable
+      sentence of both indexes with "<" / ">" / "%/s" is spoken with words; AS31 qlog size cap + 30-day retention
 
 Run:  python test_assistant.py      (exit code 0 = all passed; N/A lines do not fail)
 """
@@ -112,12 +122,26 @@ def report(name, ok, detail):
     print("[%s] %s - %s" % ("PASS" if ok else ("N/A" if ok is None else "FAIL"), name, detail), flush=True)
 
 
-def imports_of(path):
-    """Top-level module names imported by a file (absolute + the assistant's relative imports)."""
+def imports_of(path, top_only=False):
+    """Top-level module names imported by a file (absolute + the assistant's relative imports). top_only = only the
+    imports at MODULE level (incl. module-level if / try), not the ones inside functions (AM5-r MED-3: the station-side
+    walk lists those apart as its stated limit)."""
     with open(path, encoding="utf-8") as f:
         tree = ast.parse(f.read())
     out = set()
-    for n in ast.walk(tree):
+    if top_only:
+        nodes = []
+        todo = list(tree.body)
+        while todo:
+            n = todo.pop()
+            nodes.append(n)
+            if isinstance(n, (ast.If, ast.Try)):
+                todo += n.body + getattr(n, "orelse", []) + getattr(n, "finalbody", [])
+                for h in getattr(n, "handlers", []):
+                    todo += h.body
+    else:
+        nodes = ast.walk(tree)
+    for n in nodes:
         if isinstance(n, ast.Import):
             out |= {a.name.split(".")[0] for a in n.names}
         elif isinstance(n, ast.ImportFrom):
@@ -133,6 +157,53 @@ def imports_of(path):
 
 def asst_modules():
     return sorted(f[:-3] for f in os.listdir(ASST) if f.endswith(".py"))
+
+
+# AM5-r review MED-3: the assistant's station-side modules OUTSIDE the package (the voice, the manual window) are
+# read-only too and scanned like the package (AS1 static, AS2 transitive, AS6 the narrow view, AS27 / AS28 runtime)
+STATION_SIDE = ("asstvoice", "manualwin")
+# the one non-banned exception of the station-side graph: alerts.py (the alarm levels the sound system needs) reads
+# proto.py's alarm bit tables - proto is a pure CODEC (imports only `struct`: checked below), it opens nothing
+CODEC_OK = {"proto"}
+
+
+class SenderTraps:
+    """Every station sender (gwclient.GatewayLink / link.Link / app.App send* + cmd) and the socket raise and are
+    recorded while active (AS3's traps as a context manager: AS27 / AS28 run the voice + the manual window under it)."""
+
+    def __init__(self):
+        self.sent = []
+        self.saved = []
+
+    def __enter__(self):
+        import socket
+        import app as A
+        import gwclient
+        import link
+        self.socket = socket
+        for cls in (gwclient.GatewayLink, link.Link, A.App):
+            for name in list(vars(cls)):
+                if name.startswith("send") or name == "cmd":
+                    orig = getattr(cls, name)
+                    self.saved.append((cls, name, orig))
+                    setattr(cls, name, lambda *a, _n="%s.%s" % (cls.__name__, name), **k: self.sent.append(_n) or (
+                        _ for _ in ()).throw(RuntimeError("a sender was called")))
+        self.real = (socket.socket, socket.create_connection)
+        sent = self.sent
+
+        class NoSock(socket.socket):
+            def __init__(self, *a, **k):
+                sent.append("socket")
+                raise OSError("network blocked")
+        socket.socket = NoSock
+        socket.create_connection = lambda *a, **k: sent.append("socket") or (_ for _ in ()).throw(OSError("blocked"))
+        return self
+
+    def __exit__(self, *exc):
+        self.socket.socket, self.socket.create_connection = self.real
+        for cls, name, orig in self.saved:
+            setattr(cls, name, orig)
+        return False
 
 
 # --- AS1 / AS2 ------------------------------------------------------------------------------------------------
@@ -151,8 +222,26 @@ def as1():
         for pat in ("os.system", "os.popen", "os.startfile", "Popen(", "spawn"):
             if m != "client" and pat in src:
                 bad.append((m, pat))
-    report("AS1 static imports", not bad and len(asst_modules()) >= 7,
-           "modules %s; problems %s" % (asst_modules(), bad or "none"))
+    # AM5-r MED-3: the station-side modules (groundstation/asstvoice.py, manualwin.py) the same way
+    side = {}
+    for m in STATION_SIDE:
+        p = os.path.join(HERE, m + ".py")
+        if not os.path.isfile(p):
+            bad.append((m, "missing"))
+            continue
+        imps = {i for i in imports_of(p) if not i.startswith("assistant.")}
+        side[m] = sorted(imps)
+        if imps & BANNED:
+            bad.append((m, sorted(imps & BANNED)))
+        if imps & PROCESS:
+            bad.append((m, "starts a process: %s" % sorted(imps & PROCESS)))
+        with open(p, encoding="utf-8") as f:
+            src = f.read()
+        for pat in ("os.system", "os.popen", "os.startfile", "Popen(", "spawn", "import app", "from app"):
+            if pat in src:
+                bad.append((m, pat))
+    report("AS1 static imports", not bad and len(asst_modules()) >= 7 and len(side) == len(STATION_SIDE),
+           "modules %s; station side %s; problems %s" % (asst_modules(), side, bad or "none"))
 
 
 def resolve(name):
@@ -191,13 +280,66 @@ def as2():
     third = sorted(n for n in seen if not resolve(n) and not n.startswith("assistant.") and
                    n.split(".")[0] not in sys.stdlib_module_names)
     net, nfiles = site_walk(third)
-    report("AS2 transitive import graph", not bad,
+    # AM5-r MED-3: the station-side modules' graph (asstvoice -> sound / tts, manualwin -> theme / i18n / show):
+    # nothing banned but the one CODEC the sound system's alerts.py reads (proto: `struct` only, no I/O - checked);
+    # LIMIT: tts.py starts the TTS subprocess (Piper / PowerShell) by design - it is the station's voice, not the
+    # assistant's; it reaches no network / link module (checked here: its imports are stdlib + settings / i18n)
+    # The walk follows MODULE-level imports (the roots: every import); the FUNCTION-level imports of the reached
+    # station modules (sound.py's Callouts reach hud for its geometry, tour_texts reaches academymenu -> gwclient /
+    # subprocess: the station's own callouts and tour, never called by the voice) are listed as the LIMIT - the
+    # voice's RUNTIME calls are covered by AS27 (sender traps) and the static call check below (asstvoice.py uses
+    # only the sound system's `sched` + `assistant_*` methods)
+    side_seen, side_bad, side_proc, deferred = {}, [], [], {}
+    todo = [(m, None) for m in STATION_SIDE]
+    while todo:
+        name, via = todo.pop()
+        if name in side_seen:
+            continue
+        side_seen[name] = via
+        base = name.split(".")[-1] if name.startswith("assistant.") else name
+        if not name.startswith("assistant.") and base in BANNED and base not in CODEC_OK:
+            side_bad.append((name, "via", via))
+            continue
+        p = resolve(name)
+        if p is None:
+            continue
+        top = imports_of(p, top_only=name not in STATION_SIDE)
+        inner = imports_of(p) - top
+        if inner and resolve(name) and not name.startswith("assistant."):
+            deferred[name] = sorted(inner)
+        for i in top:
+            if i in PROCESS and name not in ("tts", "assistant.client"):
+                side_proc.append((name, i))
+            if i not in side_seen:
+                todo.append((i, name))
+    for c in CODEC_OK & set(side_seen):
+        ci = imports_of(resolve(c))
+        if ci & (BANNED | PROCESS | NET_MODULES) or any(resolve(x) for x in ci):
+            side_bad.append((c, "codec imports", sorted(ci)))
+    side_local = sorted(n for n in side_seen if resolve(n))
+    # the voice touches the sound system through its narrow surface only (a static check of asstvoice.py)
+    with open(os.path.join(HERE, "asstvoice.py"), encoding="utf-8") as f:
+        vsrc = f.read()
+    snd_uses = set(re.findall(r"\bsnd\.(\w+)", vsrc))
+    SND_OK = {"sched", "assistant_blocked", "assistant_speak", "assistant_playing", "assistant_stop",
+              "assistant_interrupted_since"}
+    if snd_uses - SND_OK:
+        side_bad.append(("asstvoice uses sound system attributes outside its narrow surface", sorted(snd_uses - SND_OK)))
+    if re.search(r"\b(app|hail|link|root)\.", vsrc.split('"""', 2)[-1]):
+        side_bad.append(("asstvoice names a station object", "app / hail / link / root"))
+    report("AS2 transitive import graph", not bad and not side_bad and not side_proc and snd_uses,
            "reached %s; banned %s. LIMIT (AM2 review MED-3): the third-party libraries %s are NOT banned - "
            "faster-whisper's model download (huggingface_hub) is network code by design; a static walk of the "
            "assistant Python's site-packages (%s files) reaches the network modules %s. So the no-network proof "
            "for the worker rests on the RUNTIME blocker (AS3 / AS4: every attempt recorded, even a caught one) + "
-           "local model folders only + the offline environment (AS9)" % (local, bad or "none", third, nfiles,
-                                                                          net or "(not installed)"))
+           "local model folders only + the offline environment (AS9). STATION SIDE (AM5-r MED-3) %s reach %s "
+           "(module-level imports); banned %s; a process outside tts %s; the voice's sound-system surface %s. "
+           "LIMIT: tts.py runs the TTS subprocess by design; proto = a codec reached through alerts (imports %s); "
+           "the FUNCTION-level imports of the reached station modules are not followed: %s (the station's own "
+           "callouts / tour, never called by the voice - AS27 runs the voice under the sender traps)" % (
+               local, bad or "none", third, nfiles, net or "(not installed)", STATION_SIDE, side_local,
+               side_bad or "none", side_proc or "none", sorted(snd_uses),
+               sorted(imports_of(resolve("proto"))) if "proto" in side_seen else "-", deferred or "none"))
 
 
 NET_MODULES = {"socket", "ssl", "http", "urllib", "asyncio", "ftplib", "smtplib", "socketserver", "xmlrpc",
@@ -954,12 +1096,31 @@ def as6(rig):
                                                       for v in vars(view).values())
     # AM2 review LOW-1 + AM2-r2 MED-b + AM2-r3 LOW: neither the view NOR the Assistant (ap.asst) holds the App - a
     # gc.get_referents walk from both never meets the App, a bound App method, the loudhailer object or the link
-    found, seen, stops, complete = asst_gc_walk(ap, [view, ap.asst])
+    # AM5-r review MED-3: the VOICE (asstvoice.AsstVoice) gets a NARROW view too - VoicePort: the horn + language
+    # callables of the App-free AsstView and the sound system through a WEAK reference (the SoundSystem holds the App
+    # for its lamps / telemetry; a weakref is no edge the gc walk can follow, and the voice can only call it) - never
+    # the App, the hailer, the link; the walk includes the voice
+    import weakref
+    port = ap.asst_voice.port
+    pv = list(vars(port).values()) + list(vars(ap.asst_voice).values())
+    out["voice: narrow view, never the App"] = not any(x is ap or x is ap.hail or x is ap.link or x is ap.sound or
+                                                       x is ap.root for x in pv) and \
+        not hasattr(ap.asst_voice, "app") and isinstance(port._snd, weakref.ref) and port.sound() is ap.sound and \
+        port.horn_held() == view.horn_held() and port.lang() == view.lang() and \
+        getattr(port.horn_held, "__self__", None) is view and getattr(port.lang, "__self__", None) is view
+    found, seen, stops, complete = asst_gc_walk(ap, [view, ap.asst, ap.asst_voice])
     # AM2-r4 (review LOW-2): the walk must END by itself - hitting the limit would hide a reference past it.
     # AM3-r3 (review of 25906e3 LOW-1): the walk itself says whether its todo list ran EMPTY (len(seen) < limit
     # alone could also mean a walk that stopped for another reason)
     out["gc walk complete (its todo ran empty)"] = complete is True and len(seen) < GC_WALK_LIMIT
-    out["AsstView + ap.asst hold no App (gc walk)"] = not found and len(seen) > 1
+    out["AsstView + ap.asst + the voice hold no App (gc walk)"] = not found and len(seen) > 1
+    # negative control: a STRONG reference to the sound system in the voice's view is found by the same walk
+    port._snd = lambda s=ap.sound: s
+    try:
+        f2, _s2, _st2, _c2 = asst_gc_walk(ap, [ap.asst_voice])
+    finally:
+        port.set_sound(ap.sound)
+    out["gc walk finds a strong sound reference (negative control)"] = bool(f2)
     # AM2 review LOW-3: a ready message and a sound signal stop the assistant too (as TALK does)
     for name, call in (("play_message", lambda: ap.hail.play_message(0)), ("signal", lambda: ap.hail.signal("short5"))):
         calls.clear()
@@ -2850,7 +3011,119 @@ def as26():
     out["nothing"] = speech.spoken({"a": "", "src": "extract", "cite": "Κεφάλαιο 1 «Α»"}) == ("", "")
     out["en two chapters"] = speech.spoken({"a": "Yes.", "cite": "Chapter 2 \"A\" + Chapter 5 \"B\"", "src": "extract",
                                             "lang": "en"})[0].startswith("From the manual, chapters 2 and 5. ")
+    # AM5-r MED-2: a plain "<" / ">" is spoken (the manuals' "< 250 ms", "> 1.5 kn", "> 30 %"), "%/s" is a unit
+    c = speech.normalize("πράσινο < 250 ms, κόκκινο > 600 ms· > 1.5 kn και > 30 %, <= 3 s, >= 2 kn, ≤ 1 m, 15 %/s", "el")
+    out["< > spoken (el)"] = "λιγότερο από 250 χιλιοστά" in c and "πάνω από 600" in c and "πάνω από 1.5 κόμβοι" in c \
+        and "πάνω από 30 τοις εκατό" in c and "το πολύ 3 δευτερόλεπτα" in c and "τουλάχιστον 2 κόμβοι" in c and \
+        "το πολύ 1 μέτρα" in c and "<" not in c and ">" not in c
+    out["%/s unit (el)"] = "15 τοις εκατό ανά δευτερόλεπτο" in c
+    ce = speech.normalize("green < 250 ms, red > 600 ms; up 15 %/s, down 50 %/s, > 30 %", "en")
+    out["< > spoken (en) + %/s"] = "less than 250 milliseconds" in ce and "more than 600" in ce and \
+        ce.count("percent per second") == 2 and "more than 30 per cent" in ce and "<" not in ce and ">" not in ce
+    out["-> and <= untouched by the < > rule"] = "προς εφ 9" in t and "το πολύ 3" in t
+    out["a <placeholder> is read as its word"] = "trygons-gw- σκάφος " in speech.normalize(
+        "Όνομα: trygons-gw-<σκάφος> (π.χ. x).", "el") and "<" not in speech.normalize("name trygons-gw-<boat>.", "en")
+    # AM5-r LOW-1: N by its context, known Latin words as words, fwd / rev, negative ranges, negations survive
+    n1 = speech.normalize("Η σχέση F / N / R. Το σκάφος στο 37.82 N 23.60 E. Η σχέση μένει N. Πορεία N. ΣΗΜΕΙΟ n/N.", "el")
+    out["N: gears / coordinate / gear sentence / compass / letter (el)"] = "εμπρός, νεκρά, όπισθεν" in n1 and \
+        "37.82 βόρεια" in n1 and "σχέση μένει νεκρά" in n1 and "Πορεία βόρεια" in n1 and "n/εν" in n1 and \
+        "νεκρά" not in n1.split("Πορεία")[1]
+    n2 = speech.normalize("Gear F / N / R. The boat at 37.82 N. The gear stays N. Heading N. Waypoint n/N.", "en")
+    out["N (en)"] = "forward, neutral, reverse" in n2 and "37.82 north" in n2 and "gear stays neutral" in n2 and \
+        "Heading north" in n2 and "n/N" in n2
+    out["N never 'neutral' outside a gear sentence"] = "νεκρά" not in speech.normalize("Το σκάφος στο 37.82 N.", "el") \
+        and "neutral" not in speech.normalize("Waypoint 3/N reached.", "en")
+    w = speech.normalize("Ο διακόπτης OFF και ON· NEVER σημαίνει ποτέ· ΔΕΝ είναι για ναυσιπλοΐα· RESET, WARNING, XYZ", "el")
+    out["known Latin words said as words (el)"] = " οφ " in w and " ον" in w and "ρισέτ" in w and "γουόρνινγκ" in w and \
+        "όου εφ εφ" not in w and "εν ι βι" not in w
+    out["negations survive"] = "ποτέ σημαίνει ποτέ" in w and "δεν είναι για ναυσιπλοΐα" in w and \
+        "never" in speech.normalize("NEVER out of REMOTE MANUAL.", "en") and \
+        "NOT" not in speech.normalize("It is NOT for navigation.", "en") and \
+        " not for navigation" in speech.normalize("It is NOT for navigation.", "en")
+    out["unknown Latin capitals still spelt (el)"] = "εξ γουάι ζετ" in w
+    f = speech.normalize("Raise fwd / Raise rev: 30 % fwd / 5 % rev; the range -10..-1 m; -3 s", "en")
+    out["fwd / rev + a negative range + a leading minus (en)"] = "Raise forward, Raise reverse" in f and \
+        "30 per cent forward, 5 per cent reverse" in f and "minus 10 to minus 1 metres" in f and "minus 3 seconds" in f
+    out["negative range (el)"] = "μείον 10 έως μείον 1 μέτρα" in speech.normalize("Εμβέλεια -10..-1 m.", "el") and \
+        "10 έως 20 μέτρα" in speech.normalize("Εμβέλεια 10-20 m.", "el")
     report("AS26 speech normaliser", all(out.values()), "%s; el: %s" % (out, t[:120]))
+
+
+def as30():
+    """AM5-r MED-2 over the WHOLE index (both languages): EVERY pickable sentence (answer.pick_sentences = what the
+    extract mode may say) that holds a plain "<" / ">" or the unit "%/s" is spoken with the words (λιγότερο από / πάνω
+    από / τοις εκατό ανά δευτερόλεπτο; less than / more than / percent per second) and no "<" / ">" character is left
+    in the spoken text (a "<placeholder>" = its word)."""
+    from assistant import answer as A, index, speech
+    sign = re.compile(r"(?<![<>=\-])[<>](?![<>=\-])")
+    n = {"el": 0, "en": 0}
+    bad, seen_words = [], {"el": set(), "en": set()}
+    for lang in ("el", "en"):
+        lt, gt = speech.LT_GT[lang]
+        pps = speech.UNITS["%/s"][0 if lang == "el" else 1]
+        for p in index.load(lang)["passages"]:
+            for s, _h in A.pick_sentences([p]):
+                plain = speech._PLACEHOLDER_RE.sub(" ", s)
+                if not (sign.search(plain) or "%/s" in s):
+                    continue
+                n[lang] += 1
+                out = speech.normalize(s, lang)
+                if "<" in out or ">" in out:
+                    bad.append((lang, "sign left", s[:70], out[:90]))
+                for sym, word in (("<", lt), (">", gt)):
+                    if re.search(r"(?<![<>=\-])" + re.escape(sym) + r"(?![<>=\-])", plain):
+                        seen_words[lang].add(word)
+                        if word not in out:
+                            bad.append((lang, "no '%s'" % word, s[:70], out[:90]))
+                if re.search(r"\d\s?%/s", s):
+                    seen_words[lang].add(pps)
+                    if pps not in out:
+                        bad.append((lang, "no '%s'" % pps, s[:70], out[:90]))
+    ok = not bad and n["el"] >= 5 and n["en"] >= 5 and all(len(v) >= 2 for v in seen_words.values())
+    report("AS30 every pickable sentence with < > %/s is spoken with words", ok,
+           "sentences el %d / en %d; words seen %s; problems %s" % (n["el"], n["en"],
+                                                                    {k: sorted(v) for k, v in seen_words.items()},
+                                                                    bad[:6] or "none"))
+
+
+def as31():
+    """AM5-r LOW-2 qlog: a day's file above the cap continues in a numbered part (_2, _3 ...), files older than
+    KEEP_DAYS (by the date in the name) are deleted at the next write, oldest first; other names are never touched; a
+    failed voice's reason ("detail") is in the line; a disk error returns ""."""
+    from assistant import qlog
+    d = tempfile.mkdtemp(prefix="trygons_qlog_")
+    info = {"q": "x", "a": "y" * 400, "lang": "el", "src": "extract", "cite": "Κεφάλαιο 1 «Α»", "passage": {"id": "el:1"}}
+    out = {}
+    today = time.strftime("%Y-%m-%d")
+    p1 = qlog.write(info, voice="spoken", folder=d, max_bytes=2000)
+    paths = {p1}
+    for _ in range(12):
+        paths.add(qlog.write(info, voice="spoken", folder=d, max_bytes=2000))
+    names = sorted(os.listdir(d))
+    out["a new part above the cap"] = os.path.basename(p1) == today + ".jsonl" and today + "_2.jsonl" in names and \
+        len(names) >= 3 and all(os.path.getsize(os.path.join(d, f)) < 2000 + 600 for f in names)
+    out["the parts fill in order"] = sorted(paths) == sorted(set(os.path.join(d, f) for f in names)) and \
+        qlog.current_path(d, today, 2000) == os.path.join(d, names[-1]) if os.path.getsize(
+            os.path.join(d, names[-1])) < 2000 else True
+    # retention: old names (30 + days by the name) go at the next write, newer ones and foreign names stay
+    old = time.strftime("%Y-%m-%d", time.localtime(time.time() - 40 * 86400))
+    old2 = time.strftime("%Y-%m-%d", time.localtime(time.time() - 31 * 86400))
+    keep = time.strftime("%Y-%m-%d", time.localtime(time.time() - 29 * 86400))
+    for fn in (old + ".jsonl", old + "_2.jsonl", old2 + ".jsonl", keep + ".jsonl", "notes.txt", "x.jsonl"):
+        with open(os.path.join(d, fn), "w") as f:
+            f.write("{}\n")
+    qlog.write(info, voice="failed", detail="tts made no file", folder=d)
+    names = set(os.listdir(d))
+    out["files older than 30 days deleted"] = not any(n.startswith((old, old2)) for n in names)
+    out["29-day-old file + foreign names kept"] = keep + ".jsonl" in names and "notes.txt" in names and "x.jsonl" in names
+    out["prune reports the names, oldest first"] = qlog.prune(d) == [] and qlog.log_files(d)[0][0] == keep
+    with open(qlog.current_path(d, today), encoding="utf-8") as f:
+        last = json.loads(f.read().strip().splitlines()[-1])
+    out["the failure reason is logged"] = last.get("voice") == "failed" and last.get("detail") == "tts made no file"
+    out["text only (no audio keys)"] = not any(k in last for k in ("samples", "wav", "audio", "pcm", "text"))
+    out["a disk error returns ''"] = qlog.write(info, folder=os.path.join(d, "x.jsonl", "nope")) == ""
+    shutil.rmtree(d, ignore_errors=True)
+    report("AS31 qlog size cap + retention", all(out.values()), "%s" % out)
 
 
 class FakeLamps:
@@ -2896,7 +3169,12 @@ def as27():
     app = types.SimpleNamespace(sound=snd, lamps=FakeLamps(), asst=types.SimpleNamespace(view=view, answer=None))
     snd.app = app
     made = []
-    vc = asstvoice.AsstVoice(app, synth=fake_synth_factory(made), clock=clk)
+    # AM5-r MED-3: the voice gets the NARROW VoicePort (the sound system weakly, the view's horn / lang), never the app;
+    # the whole test runs under the station's sender traps + a blocked socket (AS3's): nothing may be called
+    traps = SenderTraps()
+    traps.__enter__()
+    port = asstvoice.VoicePort(view.horn_held, view.lang, snd)
+    vc = asstvoice.AsstVoice(port, synth=fake_synth_factory(made), clock=clk)
     logdir = client.log_dir()
     for fn in os.listdir(logdir):
         if fn.endswith(".jsonl"):
@@ -3019,6 +3297,136 @@ def as27():
         not any(fn.endswith((".wav", ".ogg", ".mp3")) for fn in os.listdir(logdir))
     out["log entry keeps passage + cite"] = all("passage_id" in r for r in rows if r.get("src") != "cant_find")
     out["qlog.entry never copies the found texts"] = "text" not in json.dumps(qlog.entry(info))
+    # --- AM5-r review MED-1: no temporary WAV is ever left behind ---------------------------------------------------
+    folder = vc.folder
+    mine = lambda: sorted(f for f in os.listdir(folder) if f.startswith("asst_%d_" % os.getpid())) \
+        if os.path.isdir(folder) else []
+    # (k) stop() in the gap: the TTS thread finished (pending set) but the tick did not run yet - a new question /
+    # «ΟΜΙΛΙΑ» stops the voice: the finished WAV is deleted, nothing pending, nothing owed
+    vc.speak(info)
+    end = time.time() + 5.0
+    while time.time() < end and vc.pending is None:
+        time.sleep(0.02)
+    pk = vc.pending[1] if vc.pending else ""
+    vc.stop()
+    out["stop() in the gap deletes the finished WAV"] = bool(pk) and not os.path.exists(pk) and vc.pending is None \
+        and not vc.owed()
+    # (l) a thread that finishes AFTER stop() deletes its own file (a slow TTS, the operator asked again meanwhile)
+    gate = threading.Event()
+    slow_made = []
+
+    def slow_synth(lang, items, **kw):
+        gate.wait(5.0)
+        return fake_synth_factory(slow_made)(lang, items, **kw)
+    vc.synth = slow_synth
+    vc.speak(info)
+    ps = vc.making
+    vc.stop()                                                  # before the TTS delivered
+    gate.set()
+    end = time.time() + 5.0
+    while time.time() < end and not slow_made:
+        time.sleep(0.02)
+    time.sleep(0.2)
+    vc.tick()
+    out["a late TTS result after stop() is deleted by the thread"] = bool(ps) and slow_made and \
+        not os.path.exists(ps) and vc.pending is None and not vc.owed()
+    gate.clear()
+    # (m) a delete that FAILS (the player still holds the file) is kept on the list and tried again at the next tick -
+    # a new answer never loses the earlier file
+    vc.synth = fake_synth_factory(made)
+    vc.speak(info)
+    done()
+    pm = vc.tmp
+    real_remove = asstvoice.os.remove
+    fails = []
+
+    def remove_once(p):
+        if p == pm and not fails:
+            fails.append(p)
+            raise PermissionError("in use")
+        return real_remove(p)
+    asstvoice.os.remove = remove_once
+    try:
+        vc.stop()                                              # the remove fails once: the file stays owed
+        owed_after_fail = vc.owed()
+        exists_after_fail = os.path.exists(pm)
+        vc.speak(info)                                         # a new answer meanwhile (before: the old tmp was lost)
+        done()                                                 # ... its sweep retries the old file
+        vc.tick()
+    finally:
+        asstvoice.os.remove = real_remove
+    out["a failed delete is retried, never lost under a new answer"] = fails == [pm] and pm in owed_after_fail and \
+        exists_after_fail and not os.path.exists(pm) and vc.tmp is not None and vc.tmp != pm and vc.owed() == [vc.tmp]
+    vc.stop()
+    # (n) close() deletes every owed file AND every asst_<pid>_*.wav left in the folder (also a stray one)
+    stray = os.path.join(folder, "asst_%d_9999.wav" % os.getpid())
+    sound.write_wav(stray, sound._silence(100))
+    vc.speak(info)
+    done()
+    pc = vc.tmp
+    vc.close()
+    out["close() deletes the playing WAV + every asst_<pid> file"] = bool(pc) and not os.path.exists(pc) and \
+        not os.path.exists(stray) and not mine() and not vc.owed()
+    # (o) W121: a TTS run longer than TTS_MAX_S is dropped - text only ("slow"), the late file removed, logged
+    gate.clear()
+    vc.synth = slow_synth
+    slow_made.clear()
+    vc.speak(info)
+    clk.t += asstvoice.TTS_MAX_S + 0.1
+    vc.tick()
+    out["slow TTS -> text only 'slow'"] = vc.why == "slow" and vc.making is None and "8 s" in vc.detail
+    gate.set()
+    end = time.time() + 5.0
+    while time.time() < end and not slow_made:
+        time.sleep(0.02)
+    time.sleep(0.2)
+    vc.tick()
+    out["the late file of a slow TTS is removed"] = slow_made and not os.path.exists(slow_made[-1][2]) and \
+        not vc.owed() and vc.why == "slow"
+    gate.clear()
+    # (p) LOW-3: a failed voice logs its reason
+    vc.synth = lambda lang, items, **kw: 0
+    vc.speak(info)
+    done()
+    out["failed -> the reason in the panel state + the log"] = vc.why == "failed" and "no file" in vc.detail
+    # (q) LOW-4: the gain runs in chunks with a breathe between them (the TTS thread yields to Tk)
+    breaths = []
+    real_breathe = asstvoice._breathe
+    asstvoice._breathe = lambda: breaths.append(1)
+    long_made = []
+
+    def long_synth(lang, items, **kw):
+        for _t, p in items:                                    # a 16 kHz clip: read_wav resamples it in the thread
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with wave.open(p, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(array.array("h", [0]) * (16000 * 6))
+            long_made.append(p)
+        return len(items)
+    vc.synth = long_synth
+    try:
+        vc.speak(info)
+        done()
+    finally:
+        asstvoice._breathe = real_breathe
+    g = sound.gain(sound._silence(20000), 0.5, breathe=lambda: breaths.append(2), chunk=1000)
+    out["gain / read_wav breathe between chunks (also in the TTS thread)"] = breaths.count(1) >= 10 and \
+        breaths.count(2) >= 400 and len(g) == len(sound._silence(20000)) and sound.gain(g, 1.0) is g and \
+        vc.why in ("spoken", "long") and long_made
+    vc.stop()
+    # the log holds the details + the new outcomes; nothing was sent anywhere during the whole test
+    rows = []
+    for f in os.listdir(logdir):
+        if f.endswith(".jsonl"):
+            with open(os.path.join(logdir, f), encoding="utf-8") as fh:
+                rows += [json.loads(x) for x in fh if x.strip()]
+    out["log: slow + failed with their reasons"] = any(r.get("voice") == "slow" and "8 s" in r.get("detail", "")
+                                                       for r in rows) and \
+        any(r.get("voice") == "failed" and "no file" in r.get("detail", "") for r in rows)
+    traps.__exit__(None, None, None)
+    out["no sender / socket called by the voice"] = traps.sent == []
     report("AS27 alarm priority + voice rules + log", all(out.values()), "%s; made %d; played %s" % (
         out, len(made), [os.path.basename(p) if p else None for p in player.played][-6:]))
 
@@ -3107,6 +3515,11 @@ def as28(rig):
         txt = w.txt.get("%d.0" % pl[1], "%d.0 lineend" % pl[2]) if w is not None else ""
         out["the passage highlighted + read-only"] = w is not None and first in txt and \
             w.txt.cget("state") == "disabled" and bool(w.txt.tag_ranges("hit"))
+        # AM5-r MED-3: the manual window is read-only in the runtime sense too - opened under the station's sender
+        # traps + a blocked socket (a synchronous call, no pump): nothing is called
+        with SenderTraps() as tr:
+            w2 = manualwin.open_at(ap.root, "en", 10, 12)
+        out["manualwin under sender traps: nothing sent"] = tr.sent == [] and w2 is w and w2.place == ("en", 10, 12)
         if w is not None:
             w.withdraw()
         # a tour hit has no manual place: the button greyed
@@ -3146,11 +3559,22 @@ def as28(rig):
             ts.fill_everything(rig)
             ap.asst_auto_fold = 0
             rig.size(W, H, dpi)
+            rig.pump(0.4)                            # AM5-r LOW-4: one fold step per frame - the next frames finish it
             probs = ts.layout_problems(ap)
             fits.append(((W, H, dpi), probs[:2], any(p.key == "assistant" for p in ap.ov.panels),
                          "open" if ts.op(ap, "asst_passage") else "fold %d" % ap.asst_auto_fold))
         out["fits with every panel"] = all(not p and drawn for _s, p, drawn, _o in fits)
         out["the full passage open at 1920x1080"] = fits[1][3] == "open"
+        # AM5-r LOW-4: the auto-fold takes ONE step per render (one layout per frame; the follow-up in the next idle
+        # frame), never three layouts inside one render call; the frames after it reach the fit (1366x658 @ 150 %)
+        final_fold = ap.asst_auto_fold
+        ap.asst_auto_fold, ap.asst_force_open = 0, False
+        ap.render(force=True)
+        one = ap.asst_auto_fold
+        job = ap._fold_job
+        rig.pump(0.4)
+        out["one fold step per render, the rest in the next frames"] = final_fold >= 2 and one == 1 and \
+            job is not None and ap.asst_auto_fold == final_fold and not ts.layout_problems(ap) and ap._fold_job is None
         # 1366x658 at 150 % with every panel: folded by the layout, [ΚΕΙΜΕΝΟ ▸] shown while the panel is not collapsed
         out["folded = ΚΕΙΜΕΝΟ ▸ offered or header only"] = fits[2][3] == "open" or ap.asst_auto_fold >= 3 or \
             i18n.T("asst.text_open") in [o["s"] for o in ap.ov.ops if o.get("tag") == "asst_text"]
@@ -3194,7 +3618,7 @@ def main():
         print("build the simulator first: sim\\build_sim.bat")
         return 2
     for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13, as14, as15, as16, as17, as18, as19, as20, as21,
-               as22, as23, as25, as26, as27, as29) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
+               as22, as23, as25, as26, as27, as29, as30, as31) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
         try:
             fn()
         except Exception as e:

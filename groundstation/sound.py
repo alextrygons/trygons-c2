@@ -135,8 +135,13 @@ def write_wav(path, samples):
     os.replace(tmp, path)
 
 
-def read_wav(path):
-    """Any 8 / 16-bit mono / stereo WAV -> 16-bit mono samples at RATE."""
+CHUNK = 8192                    # samples per chunk between two `breathe()` calls (read_wav / gain, AM5-r LOW-4)
+
+
+def read_wav(path, breathe=None, chunk=CHUNK):
+    """Any 8 / 16-bit mono / stereo WAV -> 16-bit mono samples at RATE. `breathe` (AM5-r LOW-4: the assistant's TTS
+    thread passes time.sleep(0)) is called after every `chunk` samples of the pure-Python conversions, so a long clip
+    never holds the interpreter for the whole loop (the Tk thread gets its turns)."""
     with wave.open(path, "rb") as w:
         ch, sw, fr, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
         raw = w.readframes(n)
@@ -144,28 +149,49 @@ def read_wav(path):
         a = array.array("h")
         a.frombytes(raw)
     elif sw == 1:
-        a = array.array("h", ((b - 128) << 8 for b in raw))
+        a = array.array("h")
+        for s0 in range(0, len(raw), chunk):
+            a.extend((b - 128) << 8 for b in raw[s0:s0 + chunk])
+            if breathe:
+                breathe()
     else:
         raise ValueError("%d-byte samples" % sw)
     if ch > 1:
-        a = array.array("h", (sum(a[i:i + ch]) // ch for i in range(0, len(a), ch)))
+        mono = array.array("h")
+        step = chunk * ch
+        for s0 in range(0, len(a), step):
+            part = a[s0:s0 + step]
+            mono.extend(sum(part[i:i + ch]) // ch for i in range(0, len(part), ch))
+            if breathe:
+                breathe()
+        a = mono
     if fr != RATE and len(a) > 1:                   # linear resampling
         m = int(len(a) * RATE / fr)
         k = (len(a) - 1) / max(1, m - 1)
         out = array.array("h", [0]) * m
+        last = len(a) - 1
         for i in range(m):
             x = i * k
             j = int(x)
             f = x - j
-            out[i] = int(a[j] * (1 - f) + a[min(j + 1, len(a) - 1)] * f)
+            out[i] = int(a[j] * (1 - f) + a[min(j + 1, last)] * f)
+            if breathe and (i + 1) % chunk == 0:
+                breathe()
         a = out
     return a
 
 
-def gain(samples, vol):
+def gain(samples, vol, breathe=None, chunk=CHUNK):
+    """samples x vol (clipped). A FAST PATH at volume 1 (nothing copied); else in chunks of `chunk` samples with
+    `breathe()` between them (AM5-r LOW-4)."""
     if abs(vol - 1.0) < 1e-3:
         return samples
-    return array.array("h", (max(-32767, min(32767, int(s * vol))) for s in samples))
+    out = array.array("h")
+    for s0 in range(0, len(samples), chunk):
+        out.extend(max(-32767, min(32767, int(s * vol))) for s in samples[s0:s0 + chunk])
+        if breathe:
+            breathe()
+    return out
 
 
 # --- the phrase / clip library ----------------------------------------------------------------------------

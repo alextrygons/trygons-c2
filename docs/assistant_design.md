@@ -928,6 +928,62 @@ runs 0.8 / 0.45 s. The must-mention proxy stays circular (5d); the FRESH questio
   + the log, with a recording player and a fake TTS), AS28 (the panel, the manual window, the fit matrix with the
   auto-fold, the notices, the screenshots docs/screens/assistant/screen2_answer_*.png + screen1_answer_el.png).
 
+### 7b. Review fixes of AM5 (step AM5-r, review of 5f15787; station / tools / tests / docs only, NO app / hal / gateway logic change)
+
+- MED-1 (the temporary WAV leak, `asstvoice.py`): every WAV the station asks for is in `AsstVoice.files` from the
+  moment its name is chosen until it is really gone. `stop()` (a new question, «ΟΜΙΛΙΑ», the station closing) takes
+  a result the TTS thread already finished (the up-to-200 ms gap before the tick) and deletes it; a thread that
+  finishes AFTER a stop / close sees the changed generation and deletes its own file; a delete that failed (the
+  player still holds the file) stays on the list and is tried again at every tick - `_play` no longer overwrites
+  the one `tmp` slot (the old file was lost when its delete had failed); `close()` deletes every owed file AND every
+  `asst_<this pid>_*.wav` left in the folder; `_clean_stale` at the next start removes a crashed station's files
+  older than STALE_S = 300 s (was 1 h: a clip lives at most TTS_MAX_S + its length + 0.5 s; two stations on one PC
+  never share a name - the pid). Tests AS27 (k)-(n): stop in the gap, a late result after stop, a failed delete
+  retried under a new answer, close with a stray file.
+- MED-2 (`speech.py`): a plain "<" / ">" is spoken («λιγότερο από» / "less than", «πάνω από» / "more than"; the
+  manuals say "< 250 ms", "> 1.5 kn", "> 30 %"), "≤ ≥" like "<= >=", the unit "%/s" («τοις εκατό ανά
+  δευτερόλεπτο» / "percent per second"); a "<placeholder>" (trygons-gw-<σκάφος>) is read as its word. AS26 + the
+  new AS30: EVERY pickable sentence of both indexes (answer.pick_sentences = what extract may say) with a plain
+  "<" / ">" or "%/s" (el 6 / en 14) is spoken with the words and no "<" / ">" is left.
+- MED-3 (the read-only proof covers the station side): `asstvoice.py` + `manualwin.py` (groundstation/, outside the
+  package) are in AS1 (static imports: nothing banned, no process, never `import app`) and AS2 (the transitive
+  module-level graph: nothing banned but the codec `proto` that alerts.py reads - proto imports `struct` + `calendar`
+  only, checked; the function-level imports of the reached station modules - sound.py's Callouts -> hud, tour_texts
+  -> academymenu -> gwclient / subprocess - are listed as the LIMIT: the station's own callouts and tour, never
+  called by the voice; a static check that asstvoice.py touches the sound system only through `sched` +
+  `assistant_*`). Runtime: AS27 runs the whole voice cycle under the station's sender traps + a blocked socket
+  (nothing called), AS28 opens the manual window under them. The voice gets a NARROW view: `asstvoice.VoicePort`
+  (`horn_held()` / `lang()` = the App-free AsstView's bound methods, `sound()` = the SoundSystem through a
+  WEAK reference set by `App._build_sound`; the SoundSystem itself holds the App for its lamps / telemetry, so a
+  strong reference would reach it) instead of the App; AS6 walks gc.get_referents from the voice too (no App;
+  the negative control - a strong sound reference - is found).
+- LOW-1 (`speech.py`): the letter N by its context (never a fixed meaning): "F / N / R" = «εμπρός, νεκρά, όπισθεν»,
+  a lone N in a sentence about the gear («σχέση», gear, neutral, a lone F / R) = «νεκρά» / "neutral", after a
+  coordinate number («37.82 N») or in a compass / heading sentence = «βόρεια» / "north", else the letter («εν» /
+  "N"; "n/N" stays); KNOWN Latin capital words of the screens are said as words (SAID: OFF «οφ», ON, YES, NO, NEVER
+  «ποτέ», RESET, START, WARNING ... - never spelt letter by letter; unknown ones still are, XYZ); "fwd" / "rev" =
+  forward / reverse; a negative range "-10..-1 m" = «μείον 10 έως μείον 1 μέτρα», a leading minus = «μείον» /
+  "minus"; negations survive (ΔΕΝ -> δεν, NEVER -> «ποτέ» / "never", NOT -> "not"). AS26.
+- LOW-2 (`qlog.py`): a day's file above MAX_FILE_BYTES 5 MB continues in `YYYY-MM-DD_2.jsonl`, `_3` ...; files older
+  than KEEP_DAYS 30 (by the date in the name) are deleted at the next write, oldest first; only the log's own
+  `*.jsonl` names are touched. AS31.
+- LOW-3: the lang texts say what is true - the assistant never RECORDS the microphone to disk (the question stays in
+  memory), its own voice is a temporary clip deleted after playing; `asst.v_failed` points to the log and the log
+  line carries the reason (`detail`: "tts made no file (engine ..., lang ...)", an exception's type + message, "tts
+  run longer than 8 s"); the panel keeps it in `AsstVoice.detail`.
+- LOW-4: `sound.read_wav(path, breathe=None)` / `sound.gain(samples, vol, breathe=None)` run their pure-Python
+  loops (8-bit -> 16-bit, stereo -> mono, the linear resampling, the gain) in chunks of CHUNK 8192 samples and call
+  `breathe()` between them - the TTS thread passes time.sleep(0), so a long clip never holds the interpreter for
+  the whole loop (fast paths: a 16-bit mono clip at RATE is not touched, a gain of 1.0 returns the array itself).
+  The W114 auto-fold takes ONE step per `App.render` (one layout per frame): the next step runs in the following
+  idle frame (`_fold_render`, `after_idle`, never two queued), never three layouts inside one render call; unfold =
+  the next answer (`asst_on_answer` resets the fold), [ΚΕΙΜΕΝΟ ▸] or a click on the collapsed header. AS27 (q),
+  AS28 (one step per render, the frames after it reach the fit at 1366x658 @ 150 %).
+- Owner questions (PROGRESS.md): W119 the assistant speaks while only a CAUTION lamp is lit (recommended: yes -
+  only a WARNING lamp / a sounding or queued callout silence it, as built); W120 a temporary TTS WAV in %TEMP% under
+  "no audio persisted" (recommended: yes - deleted at once, stale cleanup 5 min); W121 the voice is dropped when
+  the TTS takes longer than TTS_MAX_S 8 s (built now: text only + [ΞΑΝΑ]).
+
 ## 8. PC load (owner's laptop: RTX A1000 6 GB laptop GPU, falls back to the CPU)
 
 | Part | Idle (loaded) | While answering | Where |

@@ -3728,7 +3728,10 @@ answer with the full passage (step AM4) and speaks it, the chapter first
 It is READ-ONLY: it never sends anything to the boat or the gateway, never
 changes a mode, a setting or the layout, never presses anything. It works
 WITHOUT the internet (the models are files on this PC) and only on a station
-PC (never on the gateway PC, never on the boat). Sound is never written to disk.
+PC (never on the gateway PC, never on the boat). The MICROPHONE is never
+recorded to disk (your question stays in memory only); the assistant's own
+VOICE is made as a temporary sound file in the PC's temp folder and deleted as
+soon as it was heard (step AM5-r, below).
 
 How to ask
   * Press and HOLD the framed button «ΕΡΩΤΗΣΗ» / «ASK» with the "AI" badge
@@ -3917,10 +3920,27 @@ THE VOICE AND THE PANEL (step AM5)
     from two passages; "From the guided tour." for a tour stop. Capitals are
     read as normal words, acronyms as the station's callouts say them (GPS =
     "G P S"), numbers with their units ("5 kn" = "5 knots", "50 %" = "50 per
-    cent"). "I can't find that in the manual." is said as it is. A very long
-    manual sentence (more than 50 words) is NOT read out: the assistant says
-    only "I found the answer in chapter N - see the text" and the text is on
-    the panel.
+    cent", "15 %/s" = "15 percent per second"), a plain "<" / ">" as "less
+    than" / "more than" ("< 250 ms", "> 1.5 kn"; "<=" / ">=" = "at most" / "at
+    least"), a minus as "minus" ("-10..-1 m" = "minus 10 to minus 1 metres"),
+    "fwd" / "rev" as "forward" / "reverse", the screens' capital words as words
+    (OFF, ON, RESET, NEVER ... - never spelt letter by letter), and the letter
+    N by its context: "F / N / R" = the gears, a lone N in a sentence about the
+    gear = "neutral", after a coordinate or in a compass context = "north",
+    else the letter (step AM5-r). "I can't find that in the manual." is said
+    as it is. A very long manual sentence (more than 50 words) is NOT read
+    out: the assistant says only "I found the answer in chapter N - see the
+    text" and the text is on the panel.
+  * The voice is a TEMPORARY sound file (the system temp folder,
+    trygons_asst_voice\, this PC only) made for that one answer at the sound
+    setting's volume and deleted as soon as it was heard (or at once when an
+    alarm came in between, when you asked again or pressed TALK meanwhile, or
+    when the station closes; a leftover of a crashed station older than 5
+    minutes is removed at the next start). The microphone is NEVER recorded to
+    disk. If the voice is not ready within 8 s (a slow PC), the answer stays
+    text only ("Text only - the voice took longer than 8 s"; [AGAIN] tries
+    once more); a voice that could not be made says so, with the reason in
+    the assistant's log file.
   * ALARMS WIN. The assistant's voice is the lowest sound of the station: any
     alarm tone, caution chime or voice callout stops it at once (the rest is
     dropped), it never delays or quietens an alarm. While a MASTER WARNING
@@ -3946,8 +3966,14 @@ THE VOICE AND THE PANEL (step AM5)
   * The same [AGAIN] / [IN THE MANUAL] and the voice line are on the Tools
     page "Assistant".
   * A log on THIS PC only: groundstation\assistant\log\<date>.jsonl - the
-    question text, the passage (id + chapter), the answer, the times and how it
-    was spoken. Never the audio, never sent anywhere (not in git).
+    question text, the passage (id + chapter), the answer, the times, how it
+    was spoken and why a voice failed. Never the audio, never sent anywhere
+    (not in git). A day's file above 5 MB continues in <date>_2.jsonl, _3 ...;
+    files older than 30 days are deleted at the next answer (oldest first).
+  * On a small window with every panel up the panel gives way step by step
+    (the passage folded, then the answer cut, then the header only) - one step
+    per screen frame; a new answer, [TEXT] or a click on the header opens it
+    again.
 
 If it fails: the notice «ΒΟΗΘΟΣ ΕΚΤΟΣ» / ASSISTANT OFF on both screens (a
 notice on THIS PC only, never an alarm, no sound); it restarts by itself after

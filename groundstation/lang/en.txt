@@ -2159,7 +2159,7 @@ gw.uav_no_mcur = the drone did not show the new current item (MISSION_CURRENT)
 tab.assistant = Assistant
 asst.btn = ASK
 asst.title = Assistant – talking manual
-asst.note = Ask about the C2 by voice: press and hold «ASK» (screen 1 bottom bar, screen 2 bar 1 - also in the camera view) or the key {k} (or a foot pedal that sends the same key) while you speak; let go to ask. In this version the recognised question is shown with the place in the manual where it was found and a short answer taken ONLY from that place (checked: every name and every number with its unit must be in the manual, else the manual's sentence is shown); the answer is SPOKEN by the station's voice (the chapter first) and shown with the whole manual passage in the "Assistant" panel of screen 2 ([AGAIN] = says it again, [IN THE MANUAL] = opens the manual at that place). Alarms and voice callouts win: they cut the assistant's voice at once and while an alarm is active the answer stays text only. The assistant never sends anything to the boat or the gateway, works without the internet, does not listen while you hold the loudhailer and never writes sound to disk.
+asst.note = Ask about the C2 by voice: press and hold «ASK» (screen 1 bottom bar, screen 2 bar 1 - also in the camera view) or the key {k} (or a foot pedal that sends the same key) while you speak; let go to ask. In this version the recognised question is shown with the place in the manual where it was found and a short answer taken ONLY from that place (checked: every name and every number with its unit must be in the manual, else the manual's sentence is shown); the answer is SPOKEN by the station's voice (the chapter first) and shown with the whole manual passage in the "Assistant" panel of screen 2 ([AGAIN] = says it again, [IN THE MANUAL] = opens the manual at that place). Alarms and voice callouts win: they cut the assistant's voice at once and while an alarm is active the answer stays text only. The assistant never sends anything to the boat or the gateway, works without the internet, does not listen while you hold the loudhailer and never RECORDS the microphone to disk (the question stays in memory only); its own voice is made as a temporary sound file in the PC's temp folder, deleted as soon as it was heard. A voice not ready within 8 s is dropped - the answer stays text only.
 asst.enable = Assistant on for this PC
 asst.mic = The assistant's microphone (separate from the loudhailer):
 asst.mic_default = Windows default
@@ -2226,7 +2226,8 @@ asst.v_no_voice = Text only – no voice for the language (Tools -> Sound)
 asst.v_sound_off = Text only – the sound is off on this PC
 asst.v_interrupted = The voice was cut by an alarm / callout – AGAIN to hear it
 asst.v_stopped = The voice was stopped (a new question or TALK) – AGAIN to hear it
-asst.v_failed = Text only – the voice could not be made (details in the log file)
+asst.v_failed = Text only – the voice could not be made (the reason is in the assistant's log file)
+asst.v_slow = Text only – the voice took longer than 8 s and was dropped (AGAIN to try once more)
 asst.v_making = Making the voice…
 asst.v_nothing = Nothing to say
 asst.v_none = 

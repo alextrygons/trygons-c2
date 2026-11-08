@@ -1,18 +1,25 @@
 """The talking manual's local log (step AM5, owner I1.6): THIS PC only - client.log_dir() (groundstation/assistant/log/,
 gitignored; a TRYGONS_TEST run = a temp folder), one JSON line per answer in YYYY-MM-DD.jsonl: the question text,
-the chosen passage (id + chapter), the answer, the times, how it was spoken. TEXT ONLY: never audio (no samples, no
-WAV), never sent anywhere (no gateway sync, no academy push - nothing reads it but the owner). A disk error is
-swallowed (the log never stops an answer)."""
+the chosen passage (id + chapter), the answer, the times, how it was spoken (and why it failed: AM5-r LOW-3
+"detail"). TEXT ONLY: never audio (no samples, no WAV), never sent anywhere (no gateway sync, no academy push -
+nothing reads it but the owner). A disk error is swallowed (the log never stops an answer).
+AM5-r LOW-2 size cap + retention: a day's file above MAX_FILE_BYTES (5 MB) continues in YYYY-MM-DD_2.jsonl, _3 ...;
+files older than KEEP_DAYS (30 days, by the date in their name) are deleted at the next write, oldest first (only
+the log's own *.jsonl names are touched)."""
 import json
 import os
+import re
 import time
 
 from . import client
 
 KEEP = ("q", "lang", "a", "src", "cite", "id", "mode", "ms", "gen_ms", "answer_ms", "problems", "picked")
+MAX_FILE_BYTES = 5 * 1024 * 1024    # a day's file above this continues in a numbered part
+KEEP_DAYS = 30                      # older files are deleted at the next write
+_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:_(\d+))?\.jsonl$")
 
 
-def entry(info, voice=None):
+def entry(info, voice=None, detail=None):
     """The log line of an answer (a dict): the texts and times only, never the audio."""
     e = {"t": time.strftime("%Y-%m-%dT%H:%M:%S")}
     for k in KEEP:
@@ -26,16 +33,67 @@ def entry(info, voice=None):
         e["hits"] = [{"id": h.get("id"), "score": h.get("score")} for h in hits[:3]]
     if voice is not None:
         e["voice"] = voice
+    if detail:
+        e["detail"] = str(detail)[:200]
     return e
 
 
-def write(info, voice=None, folder=None):
+def log_files(folder):
+    """[(date, part, name)] of the log's own files in the folder, oldest first."""
+    out = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return out
+    for fn in names:
+        m = _NAME_RE.match(fn)
+        if m:
+            out.append((m.group(1), int(m.group(2) or 1), fn))
+    out.sort()
+    return out
+
+
+def prune(folder, now=None, keep_days=KEEP_DAYS):
+    """Delete the log files older than keep_days (by the date in the name), oldest first. -> the names deleted."""
+    now = time.time() if now is None else now
+    gone = []
+    for date, _part, fn in log_files(folder):
+        try:
+            age_days = (now - time.mktime(time.strptime(date, "%Y-%m-%d"))) / 86400.0
+        except (ValueError, OverflowError):
+            continue
+        if age_days > keep_days:
+            try:
+                os.remove(os.path.join(folder, fn))
+                gone.append(fn)
+            except OSError:
+                pass
+    return gone
+
+
+def current_path(folder, day, max_bytes=MAX_FILE_BYTES):
+    """Today's file to append to: the highest part of the day; a new part when it is at / above the cap."""
+    parts = [(part, fn) for date, part, fn in log_files(folder) if date == day]
+    if not parts:
+        return os.path.join(folder, day + ".jsonl")
+    part, fn = max(parts)
+    p = os.path.join(folder, fn)
+    try:
+        if os.path.getsize(p) >= max_bytes:
+            return os.path.join(folder, "%s_%d.jsonl" % (day, part + 1))
+    except OSError:
+        pass
+    return p
+
+
+def write(info, voice=None, folder=None, detail=None, max_bytes=MAX_FILE_BYTES, keep_days=KEEP_DAYS):
     """Append one line; returns the file path ("" on a disk error)."""
     try:
         d = folder or client.log_dir()
-        p = os.path.join(d, time.strftime("%Y-%m-%d") + ".jsonl")
+        prune(d, keep_days=keep_days)
+        p = current_path(d, time.strftime("%Y-%m-%d"), max_bytes)
         with open(p, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry(info, voice), ensure_ascii=False) + "\n")
+            f.write(json.dumps(entry(info, voice, detail), ensure_ascii=False) + "\n")
         return p
     except (OSError, TypeError, ValueError):
         return ""

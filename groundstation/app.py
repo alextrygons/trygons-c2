@@ -308,8 +308,11 @@ class App:
         self.asst = asst_client.Assistant(AsstView(), settings=settings)
         self.asst_heard = None          # (text, time) of the last recognised question (screen 1 notice 8 s)
         self.asst_shown = None          # (answer text, time) of the last answer (screen 1 notice 12 s, AM5)
-        # AM5: the answer spoken by this PC's sound.py at the LOWEST level (alarms / callouts win, text only meanwhile)
-        self.asst_voice = asstvoice.AsstVoice(self)
+        # AM5: the answer spoken by this PC's sound.py at the LOWEST level (alarms / callouts win, text only meanwhile).
+        # AM5-r MED-3: the voice gets a NARROW view too (the horn + language from the App-free AsstView, the sound
+        # system through a weak reference set in _build_sound) - never this App
+        self.asst_voice = asstvoice.AsstVoice(asstvoice.VoicePort(self.asst.view.horn_held, self.asst.view.lang))
+        self._fold_job = None           # AM5-r LOW-4: the follow-up render of the panel's auto-fold (one per frame)
         self.asst_passage_open = bool(settings.get("asst_passage", True))   # the panel's full passage shown / folded
         self.asst_auto_fold = 0         # the panel folded by the layout (0 whole, 1 passage folded, 2 answer cut,
         #                                 3 header only); reset by a new answer (W114)
@@ -1441,6 +1444,7 @@ class App:
         except ImportError:
             return lbl(st, "cap.sound_missing", font=F_MED, bg=C["bg"]).pack(anchor="w", padx=6, pady=6)
         self.sound = sound.SoundSystem.for_app(self)
+        self.asst_voice.port.set_sound(self.sound)      # AM5-r MED-3: the voice's weak view of the sound system
         self.callouts = sound.Callouts(self.sound, self)
         soundtest.build(st, self)
 
@@ -3784,13 +3788,18 @@ class App:
         # AM5: the assistant's FULL passage is shown whenever it fits; when the panels do not fit with it (a small
         # window with every panel up) the panel gives way step by step - 1 the passage folded ([ΚΕΙΜΕΝΟ ▸] opens it),
         # 2 the answer cut short, 3 the panel collapsed to its header - until everything fits; a new answer tries the
-        # whole panel again (W114)
-        while not self.ov.fits and self.asst_auto_fold < 3 and not self.asst_force_open and \
+        # whole panel again (W114). AM5-r LOW-4: ONE step per render (one layout per frame) - the next step runs in
+        # the following idle frame, never three layouts inside one render call; unfold = the next answer
+        # (asst_on_answer resets the fold), [ΚΕΙΜΕΝΟ ▸] or a click on the collapsed header (asst_toggle_passage)
+        if not self.ov.fits and self.asst_auto_fold < 3 and not self.asst_force_open and \
                 any(p.key == "assistant" for p in self.ov.panels):
             self.asst_auto_fold += 1
-            self.ov.begin(W, H)
-            self.build_panels(W, H)
-            self.rects = self.ov.render(W, H, ko, self.extras_size, self.draw_extras)
+            self._render_t = 0.0
+            if self._fold_job is None:
+                try:
+                    self._fold_job = self.root.after_idle(self._fold_render)
+                except tk.TclError:
+                    self._fold_job = None
         mid = self.rects.get("middle")
         if mid is not None:
             nb = self.note_box
@@ -3798,6 +3807,14 @@ class App:
                 self.mapwin.note_box = nb
                 self.mapwin.redraw()
                 self.cv.tag_raise("ov")
+
+    def _fold_render(self):
+        """The auto-fold's follow-up layout (AM5-r LOW-4): one more render in the next idle frame."""
+        self._fold_job = None
+        try:
+            self.render(force=True)
+        except tk.TclError:
+            pass
 
     # --- the MODE BAR (top centre, always visible, never hideable - step 13n1, owner 2026-10-31 E1) ------------
     MODE_BAR = (("STANDBY", proto.MODE_STANDBY), ("HDG_LOCK", proto.MODE_HDG_LOCK), ("AUTO", proto.MODE_AUTO),

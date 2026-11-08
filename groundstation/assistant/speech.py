@@ -21,6 +21,14 @@ Rules (owner I1.4, docs/assistant_design.md 6):
     LONG_WORDS words only «Βρήκα την απάντηση στο κεφάλαιο 10 – δείτε το κείμενο.» is said and the panel shows
     the full text (kind "long");
   * «Δεν βρίσκω απάντηση στο εγχειρίδιο.» is said as it is (kind "cant_find"); no answer text = nothing (kind "").
+AM5-r (review of 5f15787): MED-2 a plain "<" / ">" is SPOKEN («λιγότερο από» / "less than", «πάνω από» / "more than":
+the manuals say "< 250 ms", "> 1.5 kn", "> 30 %"; "<=" / ">=" / "±" / "->" as before, "≤ ≥" too), the unit "%/s"
+(«τοις εκατό ανά δευτερόλεπτο» / "percent per second"); LOW-1 "N" by its CONTEXT - "F / N / R" = the gears, a lone
+N in a sentence about the gear («σχέση», gear, neutral, F, R) = «νεκρά» / "neutral", after a coordinate number or
+in a compass context («37.82 N», north) = «βόρεια» / "north", else the letter («εν» / "N"); KNOWN Latin capital
+words are said as words (OFF = «οφ», ON, YES, NO, NEVER, RESET, START ...; SAID), never spelt letter by letter;
+"fwd" / "rev" = «εμπρός» / «όπισθεν» ("forward" / "reverse"); a negative range "-10..-1 m" = «μείον 10 έως μείον 1
+μέτρα»; a leading minus = «μείον» / "minus". Negations survive untouched (ΔΕΝ -> δεν, NEVER -> «ποτέ» / "never").
 """
 import re
 import unicodedata
@@ -48,7 +56,7 @@ SAID = {
     "ENGINE KILL": ("έντζιν κιλ", "engine kill"), "SPOT": ("σποτ", "spot"), "JOG": ("τζογκ", "jog"),
     "CRUISE": ("κρουζ", "cruise"), "TRIP": ("τριπ", "trip"), "CLEAR SLOWDOWN": ("κλίαρ σλόουντάουν", "clear slowdown"),
     "RESTORE POWER": ("ριστόρ πάουερ", "restore power"), "TALK": ("τοκ", "talk"), "ASK": ("ασκ", "ask"),
-    "FWD": ("εμπρός", "forward"), "REV": ("όπισθεν", "reverse"), "N": ("νεκρά", "neutral"),
+    "FWD": ("εμπρός", "forward"), "REV": ("όπισθεν", "reverse"),
     "FTDI": ("εφ τι ντι άι", "F T D I"), "ELRS": ("ι ελ αρ ες", "E L R S"), "VRX": ("βι αρ εξ", "V R X"),
     "VTX": ("βι τι εξ", "V T X"), "MAVLINK": ("μάβλινκ", "MAVLink"), "LAND": ("λαντ", "land"), "RTL": ("αρ τι ελ", "R T L"),
     "GUIDED": ("γκάιντεντ", "guided"), "LOITER": ("λόιτερ", "loiter"), "EKF": ("ι κέι εφ", "E K F"),
@@ -61,7 +69,65 @@ SAID = {
     "FLY": ("φλάι", "fly"), "KPI": ("κέι πι άι", "K P I"), "GB": ("γκιγκαμπάιτ", "gigabytes"), "MB": ("μεγκαμπάιτ", "megabytes"),
     "CRC": ("σι αρ σι", "C R C"), "ADC": ("έι ντι σι", "A D C"), "CPU": ("σι πι γιου", "C P U"), "GPU": ("τζι πι γιου", "G P U"),
     "RAM": ("ραμ", "RAM"), "SSD": ("ες ες ντι", "S S D"), "LTE": ("ελ τι ι", "L T E"), "LAN": ("λαν", "LAN"), "WIFI": ("γουάι φάι", "wifi"),
+    # AM5-r LOW-1: KNOWN Latin capital WORDS of the screens are said as words, never spelt letter by letter
+    "OFF": ("οφ", "off"), "ON": ("ον", "on"), "YES": ("γιες", "yes"), "NO": ("νόου", "no"), "ACK": ("ακ", "ack"),
+    "NEVER": ("ποτέ", "never"), "NOT": ("νοτ", "not"), "ONLY": ("όνλι", "only"), "ALWAYS": ("όλγουεϊζ", "always"),
+    "WARNING": ("γουόρνινγκ", "warning"), "CAUTION": ("κόσιον", "caution"), "ADVISORY": ("αντβάιζορι", "advisory"),
+    "MASTER": ("μάστερ", "master"), "RESET": ("ρισέτ", "reset"), "START": ("σταρτ", "start"), "PAUSE": ("ποζ", "pause"),
+    "RESUME": ("ριζιούμ", "resume"), "SKIP": ("σκιπ", "skip"), "RETURN": ("ριτέρν", "return"), "HOLD": ("χολντ", "hold"),
+    "LOST": ("λοστ", "lost"), "LOW": ("λόου", "low"), "HIGH": ("χάι", "high"), "FULL": ("φουλ", "full"),
+    "IDLE": ("άινταλ", "idle"), "OPEN": ("όπεν", "open"), "CLOSE": ("κλόουζ", "close"), "HATCH": ("χατς", "hatch"),
+    "HOME": ("χόουμ", "home"), "MAP": ("μαπ", "map"), "TOOLS": ("τουλς", "tools"), "HELP": ("χελπ", "help"),
+    "VIEWER": ("βιούερ", "viewer"), "CREWED": ("κρουντ", "crewed"), "UNCREWED": ("ανκρούντ", "uncrewed"),
+    "GATEWAY": ("γκέιτγουεϊ", "gateway"), "STARTER": ("στάρτερ", "starter"), "IGNITION": ("ιγκνίσιον", "ignition"),
+    "SHUTOFF": ("σάταφ", "shutoff"), "TRIM": ("τριμ", "trim"), "UP": ("απ", "up"), "DOWN": ("ντάουν", "down"),
+    "KILL": ("κιλ", "kill"), "ARMED": ("αρμντ", "armed"), "ALARM": ("αλάρμ", "alarm"), "ALARMS": ("αλάρμς", "alarms"),
+    "NOTICE": ("νότις", "notice"), "SCREEN": ("σκριν", "screen"), "PANEL": ("πάνελ", "panel"), "TEXT": ("τεξτ", "text"),
+    "AGAIN": ("αγκέν", "again"), "SEND": ("σεντ", "send"), "ROUTE": ("ρουτ", "route"), "GEOFENCE": ("τζιοφένς", "geofence"),
+    "BATTLE SHORT": ("μπατλ σορτ", "battle short"), "DECLUTTER": ("ντικλάτερ", "declutter"), "FIT": ("φιτ", "fit"),
+    "FILL": ("φιλ", "fill"), "GPS2": ("τζι πι ες δύο", "G P S two"), "PTT": ("πι τι τι", "P T T"),
+    "GEAR": ("σχέση", "gear"), "FORWARD": ("εμπρός", "forward"), "REVERSE": ("όπισθεν", "reverse"),
+    "NEUTRAL": ("νεκρά", "neutral"), "LINK LOST": ("λινκ λοστ", "link lost"), "ENGINE KILLED": ("έντζιν κιλντ", "engine killed"),
+    "NOT ARMED": ("νοτ αρμντ", "not armed"), "NO DATA": ("νόου ντέιτα", "no data"), "NO VIDEO": ("νόου βίντεο", "no video"),
 }
+# AM5-r LOW-1: the letter "N" by its context (never a fixed meaning): the gears "F / N / R", a lone N in a sentence
+# about the gear = neutral, after a coordinate / in a compass context = north, else the letter
+_N_GEARS_RE = re.compile(r"(?<![\w])F\s*/\s*N\s*/\s*R(?![\w])")
+_N_NORTH_RE = re.compile(r"(\d(?:[.,]\d+)?\s?°?\s?)N(?![\w])")
+_N_LONE_RE = re.compile(r"(?<![\w])N(?![\w])")
+_N_GEAR_CTX = re.compile(r"(?i)(σχέσ|νεκρ|gear|neutral|(?<![\w])[FR](?![\w]))")
+_N_NORTH_CTX = re.compile(r"(?i)(βόρει|βορρ|north|πυξίδ|compass|πορεί|heading)")
+N_WORDS = {"gears": ("εμπρός, νεκρά, όπισθεν", "forward, neutral, reverse"), "neutral": ("νεκρά", "neutral"),
+           "north": ("βόρεια", "north"), "letter": ("εν", "N")}
+_SENT_RE = re.compile(r"(?<=[.!?;·])\s+")
+_PLACEHOLDER_RE = re.compile(r"<([^<>\s]{1,30})>")     # "<σκάφος>" / "<boat>" = a placeholder, read as its word
+_LT_RE = re.compile(r"(?<![<>=\-])<(?![<=\-])")       # a plain "<" (not "<=", "<-", "<<")
+_GT_RE = re.compile(r"(?<![<>=\-])>(?![>=])")          # a plain ">" (not ">=", "->", ">>")
+_MINUS_RE = re.compile(r"(?<![\w.,])-(?=\d)")           # a leading minus of a number
+_FWD_REV_RE = re.compile(r"(?<![\w])(fwd|rev)(?![\w])")
+LT_GT = {"el": ("λιγότερο από", "πάνω από"), "en": ("less than", "more than")}
+
+
+def _n_letters(t, i):
+    """The letter N by its context (see N_WORDS): the gears first, then a coordinate / compass N, then a lone N in a
+    sentence about the gear, else the letter."""
+    t = _N_GEARS_RE.sub(N_WORDS["gears"][i], t)
+    t = _N_NORTH_RE.sub(lambda m: m.group(1) + N_WORDS["north"][i], t)
+    if not _N_LONE_RE.search(t):
+        return t
+    out = []
+    for s in _SENT_RE.split(t):
+        if _N_LONE_RE.search(s):
+            rest = _N_LONE_RE.sub(" ", s)
+            if _N_GEAR_CTX.search(rest):
+                w = N_WORDS["neutral"][i]
+            elif _N_NORTH_CTX.search(rest):
+                w = N_WORDS["north"][i]
+            else:
+                w = N_WORDS["letter"][i]
+            s = _N_LONE_RE.sub(w, s)
+        out.append(s)
+    return " ".join(out)
 # the Greek names of the Latin letters (an unknown capital Latin word is spelt out)
 LETTERS_EL = {"A": "έι", "B": "μπι", "C": "σι", "D": "ντι", "E": "ι", "F": "εφ", "G": "τζι", "H": "έιτς", "I": "άι",
               "J": "τζέι", "K": "κέι", "L": "ελ", "M": "εμ", "N": "εν", "O": "όου", "P": "πι", "Q": "κιού", "R": "αρ",
@@ -75,10 +141,11 @@ UNITS = {"kn": ("κόμβοι", "knots"), "knots": ("κόμβοι", "knots"), "m
          "A": ("αμπέρ", "amperes"), "Hz": ("χερτζ", "hertz"), "kg": ("κιλά", "kilograms"), "cm": ("εκατοστά", "centimetres"),
          "mm": ("χιλιοστά", "millimetres"), "GB": ("γκιγκαμπάιτ", "gigabytes"), "MB": ("μεγκαμπάιτ", "megabytes"),
          "kbit/s": ("κιλομπίτ το δευτερόλεπτο", "kilobits per second"), "fps": ("καρέ το δευτερόλεπτο", "frames per second"),
-         "W": ("βατ", "watts"), "mAh": ("μιλιαμπερώρια", "milliampere hours")}
+         "W": ("βατ", "watts"), "mAh": ("μιλιαμπερώρια", "milliampere hours"),
+         "%/s": ("τοις εκατό ανά δευτερόλεπτο", "percent per second")}
 _UNIT_RE = re.compile(r"(?<![\w.,])(-?\d+(?:[.,]\d+)?)\s?(" + "|".join(sorted((re.escape(u) for u in UNITS), key=len,
                                                                             reverse=True)) + r")(?![\w/])")
-_RANGE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:\.\.\.?|…|–|-)\s*(\d+(?:[.,]\d+)?)(?=\s?(?:" +
+_RANGE_RE = re.compile(r"(-?\d+(?:[.,]\d+)?)\s*(?:\.\.\.?|…|–|-)\s*(-?\d+(?:[.,]\d+)?)(?=\s?(?:" +
                        "|".join(re.escape(u) for u in UNITS) + r")(?![\w/]))")
 _ACRO_RE = re.compile(r"(?<![\w])(" + "|".join(sorted((re.escape(k) for k in SAID), key=len, reverse=True)) +
                       r")(?![\w])")
@@ -127,7 +194,16 @@ def normalize(text, lang="el", vocab=None):
     t = t.replace("+-", "±").replace("±", " %s " % ("πλην ή συν" if i == 0 else "plus or minus"))
     t = t.replace("<=", " %s " % ("το πολύ" if i == 0 else "at most")).replace(">=", " %s " % (
         "τουλάχιστον" if i == 0 else "at least"))
+    t = t.replace("≤", " %s " % ("το πολύ" if i == 0 else "at most")).replace("≥", " %s " % (
+        "τουλάχιστον" if i == 0 else "at least"))
     t = t.replace("->", " %s " % ("προς" if i == 0 else "to")).replace("→", " %s " % ("προς" if i == 0 else "to"))
+    lg = "el" if i == 0 else "en"
+    t = _PLACEHOLDER_RE.sub(r" \1 ", t)                      # "trygons-gw-<σκάφος>" = the word inside, no comparison
+    t = _LT_RE.sub(" %s " % LT_GT[lg][0], t)                 # AM5-r MED-2: "< 250 ms" = «λιγότερο από 250 ...»
+    t = _GT_RE.sub(" %s " % LT_GT[lg][1], t)                 #               "> 1.5 kn" = «πάνω από 1.5 κόμβοι»
+    t = _MINUS_RE.sub("%s " % ("μείον" if i == 0 else "minus"), t)   # "-10..-1 m" = «μείον 10 έως μείον 1 μέτρα»
+    t = _FWD_REV_RE.sub(lambda m: SAID[m.group(1).upper()][i], t)   # fwd / rev = forward / reverse
+    t = _n_letters(t, i)                                     # AM5-r LOW-1: N by its context
     t = re.sub(r"\s/\s", ", ", t)
     t = _FKEY_RE.sub(lambda m: ("εφ %s" if i == 0 else "F %s") % m.group(1), t)
     t = _ACRO_RE.sub(lambda m: SAID[m.group(1)][i], t)
