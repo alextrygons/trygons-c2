@@ -137,12 +137,12 @@
       "q_en": "What happens first on every fault or STANDBY?",
       "choices": [
         {
-          "text_el": "Γκάζι στο ρελαντί και νεκρό, μετά σταματά το πηδάλιο",
-          "text_en": "Throttle idle and neutral, then the steering stops"
+          "text_el": "Γκάζι στο ρελαντί και νεκρό, μετά το τιμόνι (κρατά τη θέση του)",
+          "text_en": "Throttle idle and neutral, then the steering (it holds its position)"
         },
         {
-          "text_el": "Σταματά πρώτα το πηδάλιο",
-          "text_en": "The steering stops first"
+          "text_el": "Πρώτα το τιμόνι, μετά το γκάζι",
+          "text_en": "The steering first, then the throttle"
         },
         {
           "text_el": "Σβήνει η μηχανή",

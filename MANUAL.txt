@@ -1298,7 +1298,8 @@ USB lever has a few extra ones, chapter 8)
   * At power-up the stick must be centred, otherwise it is ignored and the
     outputs stay off (alarm) until you let go.
   * Broken wire while it drives: idle, neutral, STANDBY; the gyro holds
-    the course until idle + neutral, then the steering stops.
+    the course until idle + neutral, then the steering is held (the
+    position servo keeps its angle, OD-10).
 
 THE STANDBY BUTTON ALWAYS WINS
   Every mode -> STANDBY (idle + neutral first, then steering held). The
@@ -1309,7 +1310,7 @@ THE STANDBY BUTTON ALWAYS WINS
   neutral is reached the boat is still
   steered:
     * from MANUAL: your stick keeps steering the outboard (even if you
-      still hold it), then the steering stops;
+      still hold it), then the steering is held;
     * from REMOTE MANUAL: the shore stick is ignored at once, the gyro
       holds the course;
     * from HDG LOCK / AUTO: the heading is held (gyro if the compass is
@@ -2020,7 +2021,7 @@ WHAT IT IS
   fails - a plug, the hub, the Teensy, the wire - the boat sees JOYSTICK
   FAULT within 0.15-0.2 s, exactly like a broken wire on the analog stick:
   if the joystick was driving: throttle idle + neutral, STANDBY, alarm;
-  the gyro holds the course until idle + neutral, then the steering stops.
+  the gyro holds the course until idle + neutral, then the steering is held.
 
   The T.16000M and the TWCS are NOT waterproof: dry console only.
 
@@ -3771,8 +3772,8 @@ WHERE IT FINDS IT IN THE MANUAL (step AM3)
     MANUAL_EL.txt) and in the guided tour's texts. The page «Βοηθός» /
     "Assistant" shows under the last question where it was found ("In the
     manual: chapter ... - ..." or "In the guided tour: ...") or "I can't find
-    that in the manual.". This step does not answer yet (text and voice come
-    with the next steps).
+    that in the manual.". The answer itself (text and voice) is described
+    below (THE ANSWER, THE VOICE AND THE PANEL).
   * The search compares words only: no accents, no capitals, the usual
     endings and a few synonyms an operator says (drone = UAV, joystick =
     χειριστήριο, μηχανή = κινητήρας). No model, no internet, under 1 ms per
@@ -3806,8 +3807,8 @@ WHERE IT FINDS IT IN THE MANUAL (step AM3)
     Of the questions that are NOT in the manual 9 of 11 (Greek) and 2 of 6
     (English) give "I can't find". Run it with
       python tools\assistant_index.py eval
-    (also in tools\check.sh). The next step (the language model answers ONLY
-    from the passages, with a check) has to improve the refusals.
+    (also in tools\check.sh). The answer step below (the language model picks
+    ONLY from the passages, with a check) improves the refusals.
 
 THE ANSWER (step AM4)
   * After the place, a small LOCAL language model (llama.cpp, on this PC, no

@@ -87,8 +87,8 @@
         }
       ],
       "answer": 0,
-      "why_el": "STANDBY: ρελαντί, νεκρό, πηδάλιο σταματημένο. Οι έξοδοι οπλίζουν μόνο με ρελαντί, νεκρό και joystick στο κέντρο.",
-      "why_en": "STANDBY: idle, neutral, steering off. The outputs arm only with idle, neutral and the joystick centred."
+      "why_el": "STANDBY: ρελαντί, νεκρό, το τιμόνι κρατά τη θέση του. Οι έξοδοι οπλίζουν μόνο με ρελαντί, νεκρό και joystick στο κέντρο.",
+      "why_en": "STANDBY: idle, neutral, the steering holds. The outputs arm only with idle, neutral and the joystick centred."
     },
     {
       "q_el": "Στο HDG LOCK κινείτε το joystick στο πλάι. Τι γίνεται;",

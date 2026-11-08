@@ -110,7 +110,7 @@ connectors, which nothing else in this project uses.
 
 | Button   | Function                                   | Connector / pin       | TC375 pin |
 |----------|--------------------------------------------|-----------------------|-----------|
-| STANDBY  | idle + neutral + steering off, every mode; in STANDBY: acknowledge alarms | Shield2Go 1, pin 8 | P00.4 |
+| STANDBY  | idle + neutral first, then the steering held (position servo, OD-10) / the steering motor off, every mode; in STANDBY: acknowledge alarms | Shield2Go 1, pin 8 | P00.4 |
 | HDG LOCK | lock the current heading (MANUAL: stick centred) | Shield2Go 2, pin 8 | P10.8 |
 | -1       | heading -1 deg (HDG LOCK)                  | Shield2Go 1, pin 12   | P23.4 |
 | +1       | heading +1 deg                             | Shield2Go 2, pin 12   | P23.5 |
@@ -188,7 +188,8 @@ fail-safe** (one or more of these):
 3. The normal **kill cord (lanyard)** must stay fitted and worn. It works
    without any electronics.
 
-Recommended: 1 + 2 (servo power through the relay) + 3.
+Recommended BEFORE step 11e (PWM servos + steering motor): 1 + 2 (servo power
+through the relay) + 3. From step 11e the next paragraph applies instead.
 
 **From step 11e (DroneCAN position servos, owner decisions 2026-10-28, docs/dronecan_design.md
 section 13):** the servo power is NEVER cut (OD-2: a position servo without power freezes where it
@@ -205,7 +206,8 @@ UNCREWED boat (no onboard joystick at power-up, CLAUDE.md section B): when the
 link to the captain's shore station is lost, the AURIX first goes to STANDBY
 (idle + neutral), then stops the engine through a **relay in the outboard's
 kill-switch circuit** - at once near the shore (closer than `near_shore_m`,
-100 m, or no valid shore distance from the gateway), at open sea after
+50 m - owner 2026-10-31, the parameter's minimum -, or no valid shore distance
+from the gateway), at open sea after
 `lostlink_grace_s` (10 s) unless the link came back. Once killed it stays
 killed until the AURIX is **power cycled on board** (a watchdog or software
 reset keeps the kill: the latch is kept in RAM that the startup does not clear) or the HELM station
@@ -781,7 +783,8 @@ A red **mushroom switch with two normally closed contacts** (twist to release):
    GND at the board.
 
 The software sees "pressed" at once and STANDBY follows (throttle idle +
-neutral first, then steering off) with the EMERGENCY STOP alarm; every
+neutral first, then the steering held - OD-10 - or the steering motor off)
+with the EMERGENCY STOP alarm; every
 command except STANDBY is refused while it is pressed. After releasing: press
 STANDBY to acknowledge. `HAL_ESTOP_FITTED 0` in hal/hal_pins.h only for a
 bench without the switch.

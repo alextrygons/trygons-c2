@@ -70,8 +70,8 @@
     {
       "do_el": "Τελειώστε με STANDBY (το κόκκινο κουμπί του πίνακα).",
       "do_en": "Finish with STANDBY (the red panel button).",
-      "hint_el": "Το STANDBY κερδίζει πάντα: γκάζι στο ρελαντί, νεκρό σημείο, μετά σταματά το πηδάλιο.",
-      "hint_en": "STANDBY always wins: throttle idle, neutral, then the steering stops.",
+      "hint_el": "Το STANDBY κερδίζει πάντα: γκάζι στο ρελαντί, νεκρό σημείο, μετά το τιμόνι (κρατά τη θέση του).",
+      "hint_en": "STANDBY always wins: throttle idle, neutral, then the steering holds.",
       "check": [
         {
           "f": "mode_name",

@@ -111,6 +111,6 @@
   ],
   "right_el": "Αφήστε το γκάζι στο ρελαντί. Το σκάφος κρατά την πορεία με το γυροσκόπιο μέχρι ρελαντί + νεκρό και μετά πηγαίνει μόνο του σε STANDBY.",
   "right_en": "Bring the throttle to idle. The boat holds its course on the gyro until idle + neutral, then goes to STANDBY by itself.",
-  "debrief_el": "COMPASS LOST σε HDG LOCK: το σύστημα δεν ξέρει πια την πορεία με βεβαιότητα. Κρατά την κατεύθυνση με το γυροσκόπιο (ρυθμός στροφής 0), το γκάζι μένει σε εσάς. Μόλις φτάσει ρελαντί + νεκρό, κλείνει το τιμόνι και περνά σε STANDBY. Οδηγήστε μετά χειροκίνητα (MANUAL δεν χρειάζεται πυξίδα).",
-  "debrief_en": "COMPASS LOST in HDG LOCK: the system no longer knows the heading for sure. It holds the direction on the gyro (turn rate 0); the throttle stays with you. At idle + neutral it switches the steering off and goes to STANDBY. Then drive by hand (MANUAL does not need the compass)."
+  "debrief_el": "COMPASS LOST σε HDG LOCK: το σύστημα δεν ξέρει πια την πορεία με βεβαιότητα. Κρατά την κατεύθυνση με το γυροσκόπιο (ρυθμός στροφής 0), το γκάζι μένει σε εσάς. Μόλις φτάσει ρελαντί + νεκρό, το τιμόνι κρατά τη θέση του και περνά σε STANDBY. Οδηγήστε μετά χειροκίνητα (MANUAL δεν χρειάζεται πυξίδα).",
+  "debrief_en": "COMPASS LOST in HDG LOCK: the system no longer knows the heading for sure. It holds the direction on the gyro (turn rate 0); the throttle stays with you. At idle + neutral the steering holds its angle and it goes to STANDBY. Then drive by hand (MANUAL does not need the compass)."
 }
