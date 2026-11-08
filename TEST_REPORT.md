@@ -5,6 +5,59 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 00000000000000. Talking manual - review fixes of AM4-r4 (step AM4-r5, 2026-11-08) - the LAST fix round of the limit / pick logic
+
+Station / tools / tests / docs only (docs/assistant_design.md 5h). The AM4-r4 chain of limiting sentences ran on: every
+next limit was judged against the GROWING unit and the chain never stopped at a heading, so sections were glued (en:277
+HELM / role swap + the generator = 211 words) and 216 en / 190 el units (this step re-measured 212 / 192) fell over the
+60-word cap and were REFUSED - key safety statements among them (en:220 "CONFIRM only answers a request from the PC",
+en:185 "Only STANDBY, TRAINING and HEADING LOCK", en:299 "Only the HELM station's relay commands", en:235 the gear
+through NEUTRAL, el:122 «Ξεκινά ΜΟΝΟ με ΕΝΑΡΞΗ AUTO + CONFIRM»). Now every candidate limit is judged against the PICK +
+the ONE sentence before it, the chain stops at a heading (index.following: same chapter + heading + term; W126 = NO
+across a heading), a definition split over passages of the same term IS chained (the UNCREWED HDG LOCK block, SCR), and
+a chain over 60 words falls back to the statement + its FIRST limit marked "more" = «Υπάρχουν και άλλοι περιορισμοί –
+δείτε το εγχειρίδιο» spoken at the end + a line on the panel / Tools page (W126 = YES), else nothing (never a cut). A
+sentence that OPENS with a limiting word counts at ANY length, a pronoun limit counts two ahead too, a two-ahead limit
+must RESTRICT a shared word, a pronoun-opening sentence is never offered alone (LOW-2; 3 el / 65 en such picks gone).
+Measured over both indexes: offered picks 2014 -> 2070, joined units 76 / 127 -> 137 / 193, "more" units 40 el / 45 en,
+statements still refused (the statement + its first limit alone over 60 words) 192 / 212 -> 124 / 146; the curated list
+tests/assistant/limits_must.json (the reviewer's 23 sentences) 0 misses + 2 documented limits (en:189 across a heading,
+en:87 a pronoun with a pronoun antecedent). AS25 is a TRULY separate implementation now (own splitter / fold / lists /
+stemming / following rule, the following rule checked equal to index.following): 0 misses over both indexes; the AM4-r2
+list misses > 200, the AM4-r3 / AM4-r4 limit shape misses >= 8 of the curated list, the fallback off >= 3. The prompt
+example: letters "N or N, M" (the review's proposal) and digits the list cannot reach "40 or 40, 41" were MEASURED and
+are worse with the 3B model (Greek 0 % / 14 % correct: it copies them), no example 22 % (it writes text); the example
+"4 or 4, 9" stays and an EXACT echo of it is NO pick (the 5g "post-check rejected" of those rows = NO PICK, counted
+apart now; in AM4-r4 6 of 9 Greek echoes were ACCEPTED as confident picks, and the AM4-r4 English held-out "correct"
+en009 WAS such an echo). answer.sentences: an abbreviation only as a whole token ("much." is no "ch."), "e.g. 3840"
+and "1. black box" joined.
+
+RE-MEASURED (llama3.2-3b extract, 17 of 28 layers on the GPU, the floor 7.2; the tuning part FOUR times in this step
+for the prompt choice, the held-out part with the kept prompt once - but the two superseded prompt variants ran it too
+= the held-out set is now used SEVEN times in all, its numbers optimistic; the fresh AM6 set is the real measurement):
+
+| llama3.2-3b extract | part | correct | answered | precision | false can't find (floor / no pick / post-check) | post-check rejected | no pick (exact "4, 9" echoes) | can't find right | median ms |
+|---|---|---|---|---|---|---|---|---|---|
+| AM4-r5 (AM4-r4: 34 % / 83 % / 41 % / 16) | el tuning | 34 % (33/96) | 75 % | 46 % | 24 (10 / 14 / 0) | 0/86 | 14/86 (11) | 7/7 | 824 |
+| AM4-r5 (AM4-r4: 45 % / 94 % / 48 % / 2) | en tuning | 48 % (16/33) | 97 % | 50 % | 1 (1 / 0 / 0) | 0/32 | 0/32 | 5/5 | 451 |
+| AM4-r5 HELD-OUT (AM4-r4: 42 % / 84 % / 50 % / 6) | el | 42 % (16/38) | 87 % | 48 % | 5 (3 / 1 / 1) | 1/35 | 1/35 (0) | 4/4 | 821 |
+| AM4-r5 HELD-OUT (AM4-r4: 78 % / 89 % / 88 % / 1) | en | 67 % (6/9) | 78 % | 86 % | 2 (1 / 1 / 0) | 0/8 | 1/8 (1) | 1/1 | 487 |
+
+Per question vs the stored AM4-r4 rows: el tuning 6 lost / 6 gained (every one the model picking another sentence
+from a renumbered list), the 11 Greek echoes now say can't find (answered 83 -> 75 %, precision 41 -> 46 %); en tuning
++1; el held-out 1 / 1; en held-out -1 = the echo en009. The AM4-r3 -> AM4-r4 Greek loss (40 -> 34 %) is NOT explained by
+the echoes (<= 1 point): it is the run-to-run churn of a 3B model on renumbered lists (+-6 of 96 between runs of the
+same code). NEW FINDING (W128, for AM6): the example BIASES the pick - in every stored extract run the model's FIRST
+picked number is the example's "4" (AM4-r5 el tuning 66 of 86 rows = 76 %, 22 of the 33 "correct" answers among them;
+el held-out 71 %; en tuning 59 %; AM4-r3 / AM4-r4 the same 75-76 % in Greek): the circular proxy counts a positional
+pick "correct" when sentence 4 of the best passage happens to hold the must term, so it says little about the Greek
+picking quality of the 3B model; every alternative prompt measured here was worse (letters 0 %, 40/41 14 %, none 22 %)
+- AM6 decides on the fresh set (another wording / few-shot, a bigger Greek model, a non-positional judgement). Tests
+AS21 (89), AS25 (17, own rule + curated list), AS26 (+ the marker), AS32 (the coordinate rule over every manual
+sentence), AS24 (the Greek hatch question now echoes "4, 9" = an honest no pick accepted for it; a second Greek
+question proves the extract answer); test_lang 6/6; the index rebuilt + committed (index.py + the manuals changed; the
+floor gate unchanged 7 / 86 + 5 / 32). W126-W128.
+
 ## 0000000000000. Talking manual - review fixes of AM4-r3 (step AM4-r4, 2026-11-08) - CORRECTS the AM4-r3 reading of the held-out drop below
 
 Station / tools / tests / docs only (docs/assistant_design.md 5g). The "no pick leaves its limiting sentence out" rule

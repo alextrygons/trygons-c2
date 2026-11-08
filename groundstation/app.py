@@ -638,6 +638,9 @@ class App:
         amax = asst_show.PANEL_ANSWER_MAX if self.asst_auto_fold < 2 else asst_show.NOTICE_MAX
         p.text(asst_show.cut(ans.get("a") or "", amax), "label", bold=True, tag="asst_a", wrap=0.24)
         p.br()
+        if ans.get("more"):                     # AM4-r5: the pick was cut at the cap after its first limit
+            p.text(T("asst.more_limits"), "small", colour=C["dim"], tag="asst_more", wrap=0.24)
+            p.br()
         why = self.asst_voice.status() if self.asst_voice.last is ans else "none"
         cite = ans.get("cite") or ""
         p.text(T(asst_show.status_key(why)) + ((" · " + cite) if cite and self.asst_auto_fold < 2 else ""), "small",

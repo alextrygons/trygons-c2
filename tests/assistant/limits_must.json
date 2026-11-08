@@ -1,0 +1,46 @@
+{
+  "_help": [
+    "Talking manual, step AM4-r5 (the review of ed813ab, MED-1 / MED-2): manual sentences that MUST be offerable to the",
+    "extract mode (answer.pick_units over the passage + its following passages of the same heading, index.following)",
+    "AND must carry their limiting sentence in the SAME unit. Each entry: lang, id = the passage id of the committed",
+    "index (groundstation/assistant/index/manual_<lang>.json), pick = a substring of the statement, must = a substring",
+    "of the limit (null = the statement itself is the point), more = true when the unit may be the cap fallback (the",
+    "statement + its FIRST limit, marked 'more limits - see the manual'). Test AS25 checks every entry on the real",
+    "index; a passage id moves when the manual changes - then fix the id here (the pick text finds it: the test",
+    "prints the passage that holds the pick text).",
+    "known_limits = statements that are NOT joined with a later sentence BY DESIGN (W126): the limit stands under",
+    "another heading (the chain stops at a heading) or the pick opens with a pronoun (LOW-2: never offered alone). The",
+    "test asserts these stay as documented."
+  ],
+  "must": [
+    {"lang": "en", "id": "en:277", "pick": "ROLE SWAP: either side asks", "must": null},
+    {"lang": "en", "id": "en:220", "pick": "CONFIRM only answers a request from the PC", "must": "It counts only with the stick centred", "more": true},
+    {"lang": "en", "id": "en:185", "pick": "Only STANDBY, TRAINING and HEADING LOCK", "must": null},
+    {"lang": "en", "id": "en:299", "pick": "Only the HELM station's relay commands", "must": null},
+    {"lang": "en", "id": "en:235", "pick": "Gear changes go idle -> neutral -> gear", "must": "FORWARD <-> REVERSE always through NEUTRAL"},
+    {"lang": "el", "id": "el:122", "pick": "Ξεκινά ΜΟΝΟ με \"ΕΝΑΡΞΗ AUTO\"", "must": null},
+    {"lang": "el", "id": "el:147", "pick": "Κατευθείαν σε ΚΛΕΙΔΩΜΑ ΠΟΡΕΙΑΣ: ΜΟΝΟ χωρίς πλήρωμα", "must": null},
+    {"lang": "en", "id": "en:141", "pick": "TRIGGER (stick button 1) = answer with the selected choice", "must": "It counts only when the question has been shown"},
+    {"lang": "en", "id": "en:238", "pick": "LINK TIME (\"max time without connection\"", "must": "Only the captain holding HELM can change it", "more": true},
+    {"lang": "el", "id": "el:149", "pick": "Όσο είναι πάνω από 3 s", "must": "ΠΟΤΕ δεν ισχύει κοντά στην ακτή"},
+    {"lang": "en", "id": "en:154", "pick": "A copilot's question for the captain appears here", "must": null},
+    {"lang": "el", "id": "el:154", "pick": "Κάθε χρήστης στη βάση χρηστών του gateway", "must": "Μόνο αυτός μπορεί να ζητήσει ΤΗΛΕΧΕΙΡΙΣΜΟ"},
+    {"lang": "en", "id": "en:308", "pick": "The e-stop cuts the thruster power", "must": "Never in the FIRST TEST build"},
+    {"lang": "el", "id": "el:216", "pick": "Το κομβίο έκτακτης ανάγκης κόβει το ρεύμα τους", "must": "Ποτέ στην έκδοση ΠΡΩΤΗΣ ΔΟΚΙΜΗΣ"},
+    {"lang": "en", "id": "en:368", "pick": "After 5 s without the link: STANDBY.", "must": "It NEVER starts again by itself", "more": true},
+    {"lang": "en", "id": "en:392", "pick": "RED one impact harder than the limit", "must": null},
+    {"lang": "en", "id": "en:429", "pick": "Things sitting on the water", "must": "IT NEVER STEERS THE BOAT"},
+    {"lang": "en", "id": "en:188", "pick": "Pressed: STANDBY at once, alarm EMERGENCY STOP", "must": "It does NOT cut the servo power"},
+    {"lang": "el", "id": "el:178", "pick": "Είναι το μόνο κομμάτι της ακαδημίας", "must": "Δεν στέλνει ποτέ τίποτα που οδηγεί", "more": true},
+    {"lang": "el", "id": "el:267", "pick": "Ε ΧΑΜΗΛΗ ΜΠΑΤΑΡΙΑ η συστοιχία 12 V", "must": "ΜΟΝΟ ενημέρωση"},
+    {"lang": "el", "id": "el:269", "pick": "Ε ΠΛΑΚΕΤΑ ΡΕΛΕ ΣΙΩΠΗΛΗ", "must": "ΜΟΝΟ ενημέρωση"},
+    {"lang": "el", "id": "el:271", "pick": "Ε DP ΕΚΤΟΣ ΘΕΣΗΣ", "must": "ΜΟΝΟ ενημέρωση"},
+    {"lang": "en", "id": "en:88", "pick": "Not enough free disk (under 2 GB)", "must": null}
+  ],
+  "known_limits": [
+    {"lang": "en", "id": "en:189", "pick": "Ground station, tab \"Bench\".", "not_with": "Only the laptop on the USB cable",
+     "why": "the limit stands under the NEXT heading (WHO / WHEN): a statement and its limits never cross a heading (W126 default NO); the 'Only the laptop ...' sentence is offered on its own"},
+    {"lang": "en", "id": "en:87", "pick": "It starts again by itself at the next start if it was on.", "not_with": null,
+     "why": "opens with a pronoun: never offered alone (LOW-2); its antecedent is a pronoun sentence too, so no unit holds it"}
+  ]
+}

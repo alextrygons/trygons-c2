@@ -258,6 +258,10 @@ LONG = {"el": "Βρήκα την απάντηση στο κεφάλαιο %s –
         "en": "I found the answer in chapter %s – see the text."}
 LONG_TOUR = {"el": "Βρήκα την απάντηση στην ξενάγηση – δείτε το κείμενο.",
              "en": "I found the answer in the guided tour – see the text."}
+# AM4-r5 MED-1: a pick cut at the cap after its FIRST limit (answer "more" = True) ends with this marker - the manual
+# chapter holds further limits of the statement that are not read out (the panel shows the same line, asst.more_limits)
+MORE = {"el": "Υπάρχουν και άλλοι περιορισμοί – δείτε το εγχειρίδιο.",
+        "en": "There are more limits – see the manual."}
 
 
 def chapters_of(cite):
@@ -298,4 +302,5 @@ def spoken(info, lang=None):
         return (LONG[lg] % chs[0]) if chs else LONG_TOUR[lg], "long"
     texts = [(info.get("passage") or {}).get("text") or "", (info.get("passage2") or {}).get("text") or ""]
     texts += [h.get("text") or "" for h in ((info.get("found") or {}).get("hits") or [])]
-    return (intro(cite, lg) + " " + normalize(a, lg, vocab_from(texts))).strip(), "answer"
+    more = (" " + MORE[lg]) if info.get("more") else ""        # AM4-r5: "more limits - see the manual"
+    return (intro(cite, lg) + " " + normalize(a, lg, vocab_from(texts)) + more).strip(), "answer"

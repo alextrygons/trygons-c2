@@ -3834,8 +3834,30 @@ THE ANSWER (step AM4)
       before the pick begins it, and the search goes on into the NEXT passage
       of the same chapter - a pick that ends its passage comes with the
       limiting sentence that opens the next one, and then BOTH passages are
-      shown. A pick whose limit would make it longer than 60 words is not
-      offered at all (never cut). A long manual list glued into
+      shown. Step AM4-r5 (the review of AM4-r4) tightens the chain: every
+      further limiting sentence is judged against the picked sentence and
+      the ONE sentence before it (not against the whole growing text, which
+      had glued whole sections together and then refused them), the chain
+      never crosses a sub-heading (the next heading is another subject; a
+      definition split over passages IS followed), and when the statement
+      with all its limits would be longer than 60 words the assistant
+      offers the statement WITH ITS FIRST LIMIT only and adds "There are
+      more limits - see the manual" - spoken at the end of the answer and
+      shown as a line under it on the panel and the Tools page. Only when
+      the statement with its first limit is itself over 60 words is nothing
+      offered (never cut). A sentence that OPENS with "Only / Never / Not"
+      counts as a limit of the sentence before it whatever its length (step
+      AM4-r3 counted it only up to 10 words), a sentence opening with "It /
+      This / They" and carrying a "never / only" counts also two sentences
+      later, and a sentence that opens with "It / This ..." is never offered
+      on its own (its antecedent is in the same unit or it is not offered).
+      The model's instruction keeps its example "4 or 4, 9", but an EXACT
+      echo of it ("4, 9" and nothing else) is no pick any more: before, a
+      small model echoed the example and that was a confident wrong answer
+      when the list had 9 sentences (other examples were measured and were
+      worse: letters as placeholders or numbers the list cannot reach made
+      the model copy them for most Greek questions, no example at all made
+      it write its own text instead of a number). A long manual list glued into
       one "sentence" (bullet items without full stops) is offered item by
       item, so a short item can be read out instead of the whole list; a
       genuinely long sentence (over 50 words) is shown whole and the voice

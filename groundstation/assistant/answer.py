@@ -18,7 +18,13 @@ src = what is said:
                  limit ("It counts only ...") counts whatever the shared words, an "Except ..." before the pick
                  begins the unit, and the chain crosses the PASSAGE BOUNDARY into the following passage(s) of the
                  chapter (the hit's "after" from index.following; that passage is shown as passage2); the cap
-                 refuses the WHOLE unit, never a cut; a picked id already inside another chosen pick is dropped)
+                 refuses the WHOLE unit, never a cut; a picked id already inside another chosen pick is dropped;
+                 AM4-r5 MED-1 (the chain ran on transitively): every candidate limit is judged against the PICK
+                 and the ONE sentence before it only, the chain stops at a heading change (index.following), and a
+                 chain over PICK_JOIN_WORDS falls back to the statement + its FIRST limit with "more" = True = the
+                 marker «υπάρχουν και άλλοι περιορισμοί – δείτε το εγχειρίδιο» spoken + shown (else refused);
+                 MED-2: a sentence OPENING with a limiting word limits at ANY length, a pronoun limit counts two
+                 ahead too; LOW-2: a unit that opens with a pronoun is never offered without its antecedent)
     "passage"    the model's answer FAILED the post-check (a name / number / negation not in the passages, the
                  wrong language) -> «Δεν βρίσκω απάντηση στο εγχειρίδιο.» is said and the best passage is SHOWN with
                  its chapter (AM4-r, the review's rule; W105; before AM4-r the passage's first sentence was said)
@@ -75,12 +81,33 @@ MAX_PICK_SENT = 30        # answer mode "extract": at most this many numbered pa
 MAX_PICK_WORDS = 45       # ... and two picked sentences longer than this together = only the first is said
 # AM4-r3 MED-1: a sentence followed by a LIMITING sentence about the same thing is offered only together with it
 PICK_LIMIT_SHARED = 2     # ... "about the same thing" = the limiting sentence shares >= 2 content words with it,
-PICK_LIMIT_SHORT = 10     #     or it is a short one (<= 10 words) that OPENS with the limiting word («ΔΕΝ είναι ...»),
+#                           or it OPENS with the limiting word («ΔΕΝ είναι ...», "Only the laptop on the USB cable
+#                           ..."; AM4-r5 MED-2: at ANY length - AM4-r3 counted it only up to PICK_LIMIT_SHORT words),
 #                           or (AM4-r4 MED-1 b) it OPENS with a pronoun ("It counts only ...", «Αυτό δεν ...»)
+PICK_LIMIT_SHORT = 10     # (AM4-r3's length bound of the opener rule; kept for the AS25 mutation - no longer a rule)
 PICK_LIMIT_SHARED2 = 3    # AM4-r4 MED-1 (c): a limiting sentence TWO sentences later sharing this many content words
-#                           takes the sentence between along into the unit
-PICK_JOIN_WORDS = 60      # ... a joined unit longer than this is NOT offered (the limiting sentence alone still is);
-#                           50..60 words are shown but spoken as the chapter intro only (speech.LONG_WORDS 50, W113)
+#                           takes the sentence between along into the unit - AM4-r5: only when its limiting word
+#                           RESTRICTS one of the shared words (negated_shared / limited_shared: "the hatch relay is
+#                           NEVER switched ..." about "the hatch relay is switched ..."; not "HEADING LOCK and TRAINING
+#                           steer only while the GPS ..." about "Only STANDBY, TRAINING and HEADING LOCK ..."), or
+#                           it opens with a pronoun (MED-2: "It NEVER starts again by itself" two sentences later)
+PICK_JOIN_WORDS = 60      # ... a joined unit longer than this is NOT offered whole: AM4-r5 MED-1 - the statement +
+#                           its FIRST limit is offered instead when that fits (marked "more": the voice / panel say
+#                           «υπάρχουν και άλλοι περιορισμοί – δείτε το εγχειρίδιο»), else nothing (the limiting
+#                           sentence alone still is); 50..60 words are shown but spoken as the chapter intro only
+#                           (speech.LONG_WORDS 50, W113)
+PICK_FALLBACK = True      # the fallback above (False = the AM4-r4 rule: a chain over the cap refuses the whole unit;
+#                           the AS25 mutation)
+PICK_EXAMPLE_IDS = (4, 9)     # AM4-r5 LOW-1: the prompt's example "4 or 4, 9" (AM4-r4) - the 3B model sometimes
+#                           echoes it, and with >= 9 sentences in the list that was a CONFIDENT WRONG pick. Now an
+#                           EXACT echo of the example (the digits 4, 9 and nothing else) is NO pick (no_pick = True,
+#                           «Δεν βρίσκω» + the passage; a genuine "4, 9" pays that price). Measured on the TUNING part
+#                           in this step (docs/assistant_design.md 5h): example numbers the list cannot reach - letters
+#                           "N or N, M": the model wrote "N, M, N, 3 ..." for every Greek question (0 % answered);
+#                           "40 or 40, 41": echoed "40, 41, 42 ..." in 65 % of them (Greek 14 % correct); NO example:
+#                           it wrote "1. <its own text>" in 51 % (22 %); "4 or 4, 9" + the echo rule = kept.
+PICK_EXAMPLE = {"el": "%d ή %d, %d" % (PICK_EXAMPLE_IDS[0], PICK_EXAMPLE_IDS[0], PICK_EXAMPLE_IDS[1]),
+                "en": "%d or %d, %d" % (PICK_EXAMPLE_IDS[0], PICK_EXAMPLE_IDS[0], PICK_EXAMPLE_IDS[1])}
 LONG_PICK_WORDS = 50      # AM4-r3 MED-3 / LOW-a: a glued "* bullet" list longer than this is offered item by item
 #                           (= speech.LONG_WORDS: a longer pick is not read out - a shorter way is offered when one
 #                           exists; a genuinely long manual sentence stays one pick, shown + the intro-only line)
@@ -102,12 +129,12 @@ SYSTEM = {
 SYSTEM_PICK = {
     "el": ("Είσαι το ομιλούν εγχειρίδιο του σταθμού Trygons C2. Σου δίνονται αριθμημένες προτάσεις του εγχειριδίου "
            "και μια ερώτηση. Διάλεξε τη μία ή τις δύο προτάσεις που απαντούν στην ερώτηση και γράψε ΜΟΝΟ τους "
-           "αριθμούς τους, χωρισμένους με κόμμα (π.χ. 4 ή 4, 9). Μη γράψεις τίποτα άλλο. Αν καμία πρόταση δεν "
-           "απαντά στην ερώτηση, γράψε ακριβώς: " + CANT["el"]),
+           "αριθμούς τους, χωρισμένους με κόμμα (π.χ. " + PICK_EXAMPLE["el"] + "). Μη γράψεις τίποτα άλλο. Αν καμία "
+           "πρόταση δεν απαντά στην ερώτηση, γράψε ακριβώς: " + CANT["el"]),
     "en": ("You are the talking manual of the Trygons C2 station. You are given numbered manual sentences and a "
            "question. Pick the one or two sentences that answer the question and write ONLY their numbers, separated "
-           "by a comma (e.g. 4 or 4, 9). Write nothing else. If no sentence answers the question, reply exactly: "
-           + CANT["en"]),
+           "by a comma (e.g. " + PICK_EXAMPLE["en"] + "). Write nothing else. If no sentence answers the question, "
+           "reply exactly: " + CANT["en"]),
 }
 LABEL = {"el": ("Αποσπάσματα του εγχειριδίου", "Κεφάλαιο", "Ξενάγηση", "Ερώτηση", "Προτάσεις του εγχειριδίου"),
          "en": ("Manual passages", "Chapter", "Guided tour", "Question", "Manual sentences")}
@@ -149,14 +176,28 @@ def ends_sentence(s):
     return s.endswith((".", "!", "?")) or (s.endswith(";") and _greekish(s))
 
 
+_LIST_NO_RE = re.compile(r"(?:^|[\s(])\d{1,2}\.$")  # a bare list number "1." at the end of a piece
+_ABBREV_RE = re.compile(r"(?:^|[\s(«\"'])(?:" + "|".join(re.escape(a) for a in _ABBREV) + r")$")
+
+
+def _ends_abbrev(prev):
+    """The piece ends with a WHOLE abbreviation token (AM4-r5: "how much." / "each." are no "ch." - the plain
+    endswith() took them for one and glued the next sentence on)."""
+    return bool(_ABBREV_RE.search(prev.lower()))
+
+
 def sentences(text):
+    """AM4-r5: a piece after an abbreviation is joined also when it starts with a DIGIT ("(π.χ. 3840 x 2400): ..." is
+    no sentence end), and a bare list number "1." followed by a lower-case word is joined too ("In this order: 1.
+    black box ..." - before, "In this order: 1." was a 4-word pick of its own)."""
     parts = [p for p in _SPLIT_RE.split(" ".join((text or "").split())) if p.strip()]
     out = []
     for p in parts:
         prev = out[-1] if out else None
         if prev is not None and (
                 (prev.endswith(";") and not (_greekish(prev) and _starts_sentence(p))) or
-                (prev.lower().endswith(_ABBREV) and not _starts_sentence(p))):
+                (_ends_abbrev(prev) and (not _starts_sentence(p) or p.lstrip("«\"'([")[:1].isdigit())) or
+                (_LIST_NO_RE.search(prev) and not _starts_sentence(p))):
             out[-1] = prev + " " + p
         else:
             out.append(p)
@@ -471,11 +512,13 @@ EXCEPT_OPENERS = {"except", "unless", "εκτοσ"}
 # μόνο / πάντα" and the like are left in, so two sentences about the same thing share more words (AM4-r4 MED-1)
 LIMIT_STOP = set("""ο η το οι τα του τησ των τον την τη τουσ τισ και κι να θα σε στο στη στην στον στα στισ στουσ στησ
     στου με για απο που πωσ τι ποιο ποια ποιοσ ειναι αν οτι οταν αυτο αυτη αυτοσ αυτα μου σου μασ σασ πρεπει μπορει
-    μπορειτε μπορουν εχει εχουν ειχε μετα πριν ενω οσο ωσ εωσ οπωσ αλλα ομωσ επισησ τοτε σαν εαν
+    μπορειτε μπορουν εχει εχουν ειχε μετα πριν ενω οσο ωσ εωσ οπωσ αλλα ομωσ επισησ τοτε σαν εαν ενα ενασ μια μιασ
     a an the of to in on at for from by with and or is are was were be been being do does did it its this that
     these those what which who how when where why can could should would will shall may might must there here then
     than so if me us them they he she his her about into out up down get got have has had am any some just also
-    such as while after before over under again further once per""".split())
+    such as while after before over under again further once per itself himself herself themselves""".split())
+#   (AM4-r5: the Greek articles ένα / μία and "itself" are no content words - «ένα ζεύγος» / «ένα γκρι κουμπί» shared
+#   one "word" and made two unrelated sentences "about the same thing")
 # the clauses of an answer sentence (AM4-r3 MED-2: the negation rule is checked per clause - a true clause joined
 # by "and" / a comma to a false one must not carry it through)
 _CLAUSE_RE = re.compile(r"\s+(?:and|but|or|και|κι|αλλα|ομωσ)\s+|[;·]|,(?!\d)")
@@ -544,26 +587,47 @@ def limit_words(normed):
             w not in LIMIT_WORDS]
 
 
+def _opens_with(normed, words_set):
+    words = re.findall(r"[\w']+", normed)
+    return bool(words) and words[0] in words_set
+
+
 def limits(nxt_normed, unit_normed):
     """The next sentence LIMITS the unit: limiting words + >= PICK_LIMIT_SHARED content words shared with it, or a
-    SHORT sentence that OPENS with the limiting word («ΔΕΝ είναι για ναυσιπλοΐα.», "Never edit them.": no subject
-    of its own = it speaks about the sentence before it), or (AM4-r4 MED-1 b) a sentence that OPENS with a PRONOUN
-    ("It counts only when ...", «Αυτό δεν ...»: it speaks about the sentence before it, whatever words they share)."""
+    sentence that OPENS with the limiting word («ΔΕΝ είναι για ναυσιπλοΐα.», "Never edit them.", «Μόνο αυτός μπορεί
+    να ζητήσει ΤΗΛΕΧΕΙΡΙΣΜΟ ...», "Only the laptop on the USB cable ...": the restriction IS its subject = it speaks
+    about what stands before it - AM4-r5 MED-2: at ANY length, AM4-r3 counted only <= PICK_LIMIT_SHORT words), or
+    (AM4-r4 MED-1 b) a sentence that OPENS with a PRONOUN ("It counts only when ...", «Αυτό δεν ...»: it speaks
+    about the sentence before it, whatever words they share). `unit_normed` = what the candidate is judged against:
+    AM4-r5 MED-1 = the PICK + the one sentence before the candidate (never the whole grown chain)."""
     if not limiting(nxt_normed):
         return False
-    words = re.findall(r"[\w']+", nxt_normed)
-    if words and words[0] in LIMIT_WORDS and len(words) <= PICK_LIMIT_SHORT:
-        return True
-    if words and words[0] in PRONOUN_OPENERS:
+    if _opens_with(nxt_normed, LIMIT_WORDS) or _opens_with(nxt_normed, PRONOUN_OPENERS):
         return True
     return _shares(limit_words(nxt_normed), limit_words(unit_normed)) >= PICK_LIMIT_SHARED
 
 
 def limits2(nxt2_normed, unit_normed):
-    """A limiting sentence TWO sentences after the unit that is clearly about it (>= PICK_LIMIT_SHARED2 shared
-    content words) - the sentence between travels along (AM4-r4 MED-1 c)."""
-    return limiting(nxt2_normed) and \
-        _shares(limit_words(nxt2_normed), limit_words(unit_normed)) >= PICK_LIMIT_SHARED2
+    """A limiting sentence TWO sentences after the unit that is clearly about it - the sentence between travels
+    along (AM4-r4 MED-1 c): >= PICK_LIMIT_SHARED2 shared content words AND (AM4-r5) its limiting word RESTRICTS one of
+    the shared words (negated_shared / limited_shared - "The hatch relay is NEVER switched by a station" about "The
+    hatch relay is switched by the launch sequence"; "HEADING LOCK and TRAINING steer only while the GPS says ..." is
+    NOT about "Only STANDBY, TRAINING and HEADING LOCK ...": its "only" restricts "while the GPS says", shared words
+    or not - the AM4-r4 rule chained it and refused the whole unit over the cap), or it OPENS with a pronoun (AM4-r5
+    MED-2: "It NEVER starts again by itself" two sentences after "LINK PROBLEMS: ...")."""
+    if not limiting(nxt2_normed):
+        return False
+    if _opens_with(nxt2_normed, PRONOUN_OPENERS):
+        return True
+    uw = limit_words(unit_normed)
+    nw = limit_words(nxt2_normed)
+    if _shares(nw, uw) < PICK_LIMIT_SHARED2:
+        return False
+    shared = [w for w in nw if any(_same(w, u) for u in uw)]
+    # window 1 = the limiting word DIRECTLY before the shared word ("never switched", "ONLY the captain"); the generate
+    # check's window 2 let "had not shifted out of forward" count as negating "forward" (en:235) and "doesn't know =
+    # every relay" as negating "relay" (en:299) - and refused both statements over the cap
+    return negated_shared(nxt2_normed, shared, window=1) or limited_shared(nxt2_normed, shared)
 
 
 def excepts(prev_normed, cur_normed):
@@ -789,8 +853,11 @@ def pick_units(hits, min_words=4):
     too). AM4-r4 MED-1: the limit is looked for up to TWO sentences ahead (limits2: >= PICK_LIMIT_SHARED2 shared
     words takes the sentence between along), a pronoun-opening limit ("It counts only ...") counts whatever the
     shared words, an "Except ..." sentence right BEFORE the pick that is about it begins the unit (excepts), and the
-    chain crosses the passage boundary into the following passage(s) of the chapter; the cap PICK_JOIN_WORDS refuses
-    the WHOLE unit (never a cut). Test AS25 proves all of it over the whole index with its own rule."""
+    chain crosses the passage boundary into the following passage(s) of the chapter. AM4-r5: see _units - every limit
+    judged against the pick + the one sentence before it, the chain stops at a heading (index.following), over the
+    cap = the statement + its first limit with "more" = True (the marker spoken / shown) or nothing - never a cut;
+    a unit opening with a pronoun is never offered alone. Test AS25 proves all of it over the whole index with its
+    own rule + tests/assistant/limits_must.json."""
     out = []
     for h in hits[:N_PASSAGES]:
         own = " ".join((h.get("text") or "").split())
@@ -807,7 +874,7 @@ def pick_units(hits, min_words=4):
             pos = at + len(pc)
             n_own += at < len(own)
         pos = 0
-        for unit, joined in _units(pieces, min_words, " ", n_own):
+        for unit, joined, more in _units(pieces, min_words, " ", n_own):
             at = full.find(unit, pos)               # the units come in the order of their first piece
             at = at if at >= 0 else full.find(unit)
             pos = max(pos, at + 1) if at >= 0 else pos
@@ -815,16 +882,17 @@ def pick_units(hits, min_words=4):
             crossed = [a for a, st in zip(after, starts) if end > st] if at >= 0 else []
             if not joined and len(unit.split()) > LONG_PICK_WORDS and _ITEM_RE.search(unit):
                 ipos = max(at, 0)                   # a glued list cut by the passage boundary: only the items that
-                for item, _j in _units([p.strip() for p in _ITEM_RE.split(unit) if p.strip()], min_words, " * "):
+                for item, _j, imore in _units([p.strip() for p in _ITEM_RE.split(unit) if p.strip()], min_words,
+                                              " * "):
                     iat = full.find(item, ipos)     # START in this passage are its (the next passage offers the rest)
                     ipos = max(ipos, iat + 1) if iat >= 0 else ipos
                     if iat >= len(own):
                         continue
                     iend = iat + len(item)
-                    out.append({"text": item, "hit": h,
+                    out.append({"text": item, "hit": h, "more": imore,
                                 "after": [a for a, st in zip(after, starts) if iend > st] if iat >= 0 else []})
             else:
-                out.append({"text": unit, "hit": h, "after": crossed})
+                out.append({"text": unit, "hit": h, "after": crossed, "more": more})
     return out[:MAX_PICK_SENT]
 
 
@@ -835,10 +903,21 @@ def _cut(s):
 def _units(pieces, min_words, sep=" ", n_own=None):
     """pieces (the passage's sentences as they stand in the text, bullets included; AM4-r4: those of the following
     passages of the chapter appended - only the first n_own START in the passage and may begin a unit) ->
-    [(unit, joined)]: a whole piece alone, or joined with the following LIMITING piece(s) (limits(), limits2() two
-    ahead, excepts() before) by `sep` = the text between them, so a unit is always byte-identical consecutive
-    manual text (its own leading bullet taken off); a joined unit over PICK_JOIN_WORDS, or one whose limiting
-    piece ends in ';' / '·' (cut), is left out WHOLE (the statement is not offered alone either: never a cut unit)."""
+    [(unit, joined, more)]: a whole piece alone, or joined with the following LIMITING piece(s) (limits(), limits2()
+    two ahead, excepts() before) by `sep` = the text between them, so a unit is always byte-identical consecutive
+    manual text (its own leading bullet taken off).
+    AM4-r5 MED-1 (the AM4-r4 chain ran on: every next limit was judged against the GROWING unit, so one shared word
+    after another glued a section together - en:277 HELM / role swap + the generator = 211 words - and 216 en / 190 el
+    units then fell over the cap and were REFUSED, key safety sentences among them): a candidate limit is judged
+    against the PICK itself + the ONE sentence before the candidate only (the pick alone for the first); the chain
+    stops where a candidate does not limit that; a chain over PICK_JOIN_WORDS falls back to the statement + its
+    FIRST limit (a limits2 take = the sentence between + the limit) when that fits and the unit is marked more = True
+    (the voice / panel add «υπάρχουν και άλλοι περιορισμοί – δείτε το εγχειρίδιο»), else the statement is not offered
+    at all (never a cut unit; the limiting sentence alone still is). A limiting piece that ends in ';' / '·' (cut)
+    ends the chain the same way (the first limit cut = nothing, a later one = the fallback).
+    LOW-2: a piece that OPENS with a pronoun ("It never changes the mode by itself.", «Αυτό δεν ισχύει ...») is never
+    a unit of its own - without its antecedent it is out of context; it travels inside the unit of the sentence
+    before it (limits) or is not offered."""
     allp = list(pieces)
     stripped = [_BULLET_RE.sub("", p) for p in allp]
     normed = [norm(p) for p in stripped]
@@ -848,22 +927,36 @@ def _units(pieces, min_words, sep=" ", n_own=None):
         s = stripped[i]
         if not (len(s.split()) >= min_words and _whole(s) and not _cut(s)):
             continue
+        if _opens_with(normed[i], PRONOUN_OPENERS):
+            continue                                # LOW-2: a pronoun opener alone has no antecedent
         start = i
         if i > 0 and _whole(stripped[i - 1]) and not _cut(stripped[i - 1]) and excepts(normed[i - 1], normed[i]):
             start = i - 1                           # "Except ...": the unit begins with the sentence before
-        unit, un, j, cut = sep.join(allp[start:i + 1]), " ".join(normed[start:i + 1]), i + 1, False
+        unit, j, first, broken = sep.join(allp[start:i + 1]), i + 1, None, False
         while j < len(allp):
-            take = 1 if limits(normed[j], un) else (2 if j + 1 < len(allp) and limits2(normed[j + 1], un) else 0)
-            if not take:
+            ref = normed[i] + ((" " + normed[j - 1]) if j - 1 > i else "")   # the pick + the one sentence before
+            if limits(normed[j], ref):
+                take = 1
+            elif j + 1 < len(allp) and limits2(normed[j + 1], normed[i] + " " + normed[j]):
+                take = 2
+            else:
                 break
             if any(_cut(stripped[k]) for k in range(j, j + take)):
-                cut = True                          # the exception itself is a cut piece: the unit cannot be whole
+                broken = True                       # the exception itself is a cut piece: the unit cannot be whole
                 break
-            unit, un, j = unit + sep + sep.join(allp[j:j + take]), un + " " + " ".join(normed[j:j + take]), j + take
+            unit, j = unit + sep + sep.join(allp[j:j + take]), j + take
+            if first is None:
+                first = unit                        # the statement + its FIRST limit = the fallback
+            if len(unit.split()) > PICK_JOIN_WORDS:
+                broken = True
+                break
         joined = j > i + 1 or start < i
-        if cut or (joined and len(unit.split()) > PICK_JOIN_WORDS):
-            continue                                # a statement + its exception too long to offer: neither
-        out.append((_BULLET_RE.sub("", unit), joined))
+        more = False
+        if broken:
+            if not PICK_FALLBACK or first is None or len(first.split()) > PICK_JOIN_WORDS:
+                continue                            # a statement + its first exception too long to offer: neither
+            unit, joined, more = first, True, True   # the rest of the chain = "more limits - see the manual"
+        out.append((_BULLET_RE.sub("", unit), joined, more))
     return out
 
 
@@ -1107,10 +1200,14 @@ def _decide_pick(raw, hits, lang, terms, out, err):
     ids = ids[:MAX_SENT]
     letters = re.sub(r"(?<![\w])(?:και|and|η|or)(?![\w])", "", plain(body))
     letters = re.sub(r"[\d\s,.;:()\[\]-]+", "", letters)
-    if not ids or letters:
-        out.update(a=CANT[lang], src="passage", problems=["the model did not pick a sentence: %s" % raw[:60]],
-                   model_text=raw.strip(), id=hits[0].get("id", ""), cite=cite(hits[0], lang),
-                   passage=passage_of(hits[0], lang))
+    # AM4-r5 LOW-1: an EXACT echo of the prompt's example ("4, 9" and nothing else) is NO pick, never a confident
+    # wrong answer; the problem text says so (the eval counts "no pick" apart from a post-check rejection)
+    echo = not letters and [int(d) for d in re.findall(r"\d+", body)] == list(PICK_EXAMPLE_IDS)
+    if not ids or letters or echo:
+        out.update(a=CANT[lang], src="passage", model_text=raw.strip(), id=hits[0].get("id", ""),
+                   cite=cite(hits[0], lang), passage=passage_of(hits[0], lang), no_pick=True,
+                   problems=[("the model echoed the prompt's example: %s" if echo else
+                              "the model did not pick a sentence: %s") % raw[:60]])
         return out
     if len(ids) == 2:
         a, b = picks[ids[0] - 1][0], picks[ids[1] - 1][0]
@@ -1123,6 +1220,9 @@ def _decide_pick(raw, hits, lang, terms, out, err):
     txt = " ".join(_ended(picks[i - 1][0]) for i in ids)
     h = picks[ids[0] - 1][1]
     out["echoed"] = echoed
+    # AM4-r5 MED-1: a unit cut at the cap after its FIRST limit carries "more" - the voice and the panel add
+    # «υπάρχουν και άλλοι περιορισμοί – δείτε το εγχειρίδιο» (speech.MORE, lang asst.more_limits)
+    out["more"] = any(units[i - 1].get("more") for i in ids)
     # two picks from DIFFERENT passages: BOTH chapters are cited and both passages shown (AM4-r2 LOW-a: the second
     # sentence's chapter was silent before); AM4-r4 MED-1 a: a unit reaching into the FOLLOWING passage shows that
     # passage as passage2 (the same chapter: cited once)

@@ -10546,9 +10546,9 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "3db9b89c01dabd8c63dad7a4d7e12c3e1b6cdd2f643da1cae7cd54b4d6fe3435",
+"MANUAL.txt": "1c33e5f33b29d60ad2ebcfd2db2800b5fcb2bb8b6382dd78c9ed93184b456c14",
 "academy/content/tour.json": "70eef4bcb260b0e7abfae0bbda3700c99a3c1a8f6d8428b272ad24575f69831a",
-"groundstation/assistant/index.py": "5ac13f0830e940318c7701221679ba1ca2a054741b2523e0854cb65aa34071c7"
+"groundstation/assistant/index.py": "b40e12d9161886a1b837a62448dd97a313e199bf58924e454aacba759583d99d"
 },
 "version": 3
 }

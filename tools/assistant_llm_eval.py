@@ -229,6 +229,7 @@ def cmd_run(a):
                     row = {"id": q["id"], "q": q["q"], "group": q.get("group"), "must": q.get("must", ""),
                            "a": r.get("a"), "src": r.get("src"), "model_text": r.get("model_text", ""),
                            "problems": r.get("problems", []), "cite": r.get("cite"), "pid": r.get("id"),
+                           "no_pick": bool(r.get("no_pick")), "more": bool(r.get("more")),
                            "ms": ms, "gen_ms": r.get("gen_ms"), "first_ms": r.get("first_ms"),
                            "tokens": r.get("tokens"), "mode": r.get("mode"), "answer_mode": r.get("answer_mode"),
                            "passage": r.get("passage"),
@@ -276,7 +277,10 @@ def summarise(head, rows):
     return {"n": len(rows), "correct": sum(r["correct"] for r in inm), "in_manual": len(inm),
             "model_kept": sum(r["model_kept"] for r in inm),
             "answered": len(answered), "precision": sum(r["correct"] for r in answered),
-            "rejected": sum(1 for r in gen if r["src"] == "passage"), "generated": len(gen),
+            # AM4-r5 LOW-1: "rejected" = the POST-CHECK refused a real pick / answer; "no_pick" = the model wrote no
+            # usable pick at all (the prompt's example echoed, text, a number outside the list) - counted APART
+            "rejected": sum(1 for r in gen if r["src"] == "passage" and not _no_pick(r)), "generated": len(gen),
+            "no_pick": sum(1 for r in gen if r["src"] == "passage" and _no_pick(r)),
             "cant_right": sum(r["correct"] for r in out), "not_in_manual": len(out),
             "false_cant": sum(1 for r in inm if r["src"] in ("cant_find", "passage")),
             "false_cant_model": sum(1 for r in inm if r["src"] == "cant_find"),
@@ -290,15 +294,24 @@ def summarise(head, rows):
             "free_mb": (head.get("llm") or {}).get("free_mb"), "load_s": round(head.get("load_s", 0), 1)}
 
 
+def _no_pick(r):
+    """The row's "passage" result was NO PICK (the model echoed the prompt's example / wrote text / a number outside
+    the list), not a post-check rejection of a real pick (AM4-r5 LOW-1: the AM4-r4 table called both "rejected")."""
+    if r.get("no_pick"):
+        return True
+    return any(str(p).startswith(("the model did not pick", "the model echoed")) for p in (r.get("problems") or []))
+
+
 def summary_line(hr):
     s = summarise(*hr)
-    return ("correct %s (model's own answer %s), answered %s, precision %s, post-check rejected %s (of every row the "
-            "model generated for, off-manual questions included), can't find right %s, false can't find %d (the "
-            "model's own %d), quality %s, %d ms median / %d ms p90 (generated answers only: %d ms median), %.1f tok/s, "
-            "%s, GPU +%s MB" % (
+    return ("correct %s (model's own answer %s), answered %s, precision %s, post-check rejected %s + no pick %s (of "
+            "every row the model generated for, off-manual questions included), can't find right %s, false can't find "
+            "%d (the model's own %d), quality %s, %d ms median / %d ms p90 (generated answers only: %d ms median), "
+            "%.1f tok/s, %s, GPU +%s MB" % (
                 pct(s["correct"], s["in_manual"]), pct(s["model_kept"], s["in_manual"]),
                 pct(s["answered"], s["in_manual"]), pct(s["precision"], s["answered"]),
-                pct(s["rejected"], s["generated"]), pct(s["cant_right"], s["not_in_manual"]), s["false_cant"],
+                pct(s["rejected"], s["generated"]), pct(s["no_pick"], s["generated"]),
+                pct(s["cant_right"], s["not_in_manual"]), s["false_cant"],
                 s["false_cant_model"], pct(s["quality"], s["quality_n"]), s["ms_med"], s["ms_p90"],
                 s["ms_gen_med"], s["tok_s"], s["mode"], s["gpu_mb"]))
 
@@ -346,10 +359,10 @@ def cmd_report(a):
         print("no runs yet")
         return 1
     print("| model | lang | part | correct | model's own | answered | precision | post-check rejected (of every row the "
-          "model generated for, off-manual questions included) | can't find right | false can't find (model's own) | "
-          "quality | median / p90 ms (generated only) | tok/s | runs on (GPU layers) | worker GPU MB | free MB at load "
-          "| load s |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+          "model generated for, off-manual questions included) | no pick (example echoed / text) | can't find right | "
+          "false can't find (model's own) | quality | median / p90 ms (generated only) | tok/s | runs on (GPU layers) | "
+          "worker GPU MB | free MB at load | load s |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for fn in sorted(os.listdir(OUT)):
         if not fn.endswith(".jsonl"):
             continue
@@ -360,11 +373,12 @@ def cmd_report(a):
         if a.first:                                 # the same subset for every model (runs made with --limit N)
             rows = rows[:a.first]
         s = summarise(head, rows)
-        print("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %d (%d) | %s | %d / %d (%d) | %s | %s (%s) | %s | %s "
+        print("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %d (%d) | %s | %d / %d (%d) | %s | %s (%s) | %s | %s "
               "| %s |" % (
                   head["model"], head["lang"], head["part"], pct(s["correct"], s["in_manual"]),
                   pct(s["model_kept"], s["in_manual"]), pct(s["answered"], s["in_manual"]),
                   pct(s["precision"], s["answered"]), pct(s["rejected"], s["generated"]),
+                  pct(s["no_pick"], s["generated"]),
                   pct(s["cant_right"], s["not_in_manual"]), s["false_cant"], s["false_cant_model"],
                   pct(s["quality"], s["quality_n"]), s["ms_med"], s["ms_p90"], s["ms_gen_med"], s["tok_s"],
                   s["mode"], s["layers"], s["gpu_mb"] if s["gpu_mb"] is not None else "?",

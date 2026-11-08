@@ -194,6 +194,8 @@ def answer_line(a):
     src = a.get("src") or "cant_find"
     txt = T("asst.answer_line", a=a.get("a", ""), src=T("asst.src." + src),
             cite=(" – " + cite) if cite and src != "passage" else "", ms=a.get("answer_ms", a.get("ms", 0)))
+    if a.get("more"):                                               # AM4-r5: cut at the cap after its first limit
+        txt += "\n" + T("asst.more_limits")
     for p in (a.get("passage") or {}, a.get("passage2") or {}):     # passage2: a pick from a second passage (AM4-r2)
         if p.get("text"):
             txt += "\n" + T("asst.passage", cite=p.get("cite") or cite, text=p["text"])

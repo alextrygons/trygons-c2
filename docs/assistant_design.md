@@ -955,6 +955,150 @@ Where this section differs from 5c-5f, THIS wins.
   lists and the 3B model's echoes), gains 5 points on the (over-used) held-out part, keeps precision (41-50 %) and
   brings every following exception the reviewer found INTO the spoken text; the fresh AM6 set decides.
 
+### 5h. Review fixes of AM4-r4 (step AM4-r5, review of ed813ab; station / tools / tests / docs only) - the LAST fix round of the limit / pick logic
+
+Where this section differs from 5c-5g, THIS wins. After it the step AM6 follows; only HIGH / MED findings block, the
+remaining LOW items / limits go into the documented limits list below.
+
+- MED-1 THE CHAIN RAN ON. answer._units judged every next limit against the GROWING unit (`un += ...`) and
+  index.following stopped only at the chapter, never at a heading - so one shared word after another glued a section
+  together (en:277: the HELM / role swap sentence + the GENERATOR section = 211 words) and 216 en / 190 el units fell
+  over the cap and were REFUSED (median ~110 words); key safety statements were never offered: en:220 "CONFIRM only
+  answers a request from the PC", en:185 "Only STANDBY, TRAINING and HEADING LOCK", en:299 "Only the HELM station's
+  relay commands ...", en:235 the gear through NEUTRAL, el:122 «Ξεκινά ΜΟΝΟ με ΕΝΑΡΞΗ AUTO + CONFIRM», el:147 (this
+  step re-measured the AM4-r4 rule: 212 en / 192 el refused statements, 17 of the reviewer's 24 sentences missed).
+  REDESIGNED: (1) a candidate limit is judged against the PICK itself + the ONE sentence before the candidate (the
+  pick alone for the first; a limits2 take = the pick + the sentence between), never transitively against the grown
+  unit; (2) the chain STOPS at a heading change - index.following() now requires the same chapter AND the same
+  heading AND the same term (W126: a statement and its limits never cross a heading = NO); (3) the cap
+  PICK_JOIN_WORDS 60 stays, but a chain over it falls back to the statement + its FIRST limit when that fits (unit
+  "more" = True -> the answer carries `more`, speech.MORE adds «Υπάρχουν και άλλοι περιορισμοί – δείτε το εγχειρίδιο.»
+  / "There are more limits – see the manual." at the end of the spoken answer, the panel + the Tools page show the
+  line asst.more_limits under the answer; W126: YES), else nothing is offered (never a cut; PICK_FALLBACK False = the
+  AM4-r4 rule, for the mutation test). Also: limits2 (a limit TWO sentences later, >= 3 shared words) now needs the
+  limiting word to RESTRICT a shared word (negated_shared window 1 / limited_shared: "never switched" about "is
+  switched"; not "steer only while the GPS ..." about "Only STANDBY, TRAINING and HEADING LOCK" - that generic
+  3-word overlap chained en:185 / en:235 / en:299 to unrelated sentences and refused them over the cap), the Greek
+  articles ένα / μία and "itself" are no content words of the limit check (LIMIT_STOP), answer.sentences() joins a
+  piece after an abbreviation also when it starts with a digit ("(π.χ. 3840 x 2400): ..."), a bare list number "1."
+  followed by a lower-case word ("In this order: 1. black box ...") and takes an abbreviation only as a WHOLE token
+  ("how much." is no "ch."). MEASURED over both committed indexes (manual passages; the AM4-r4 rule in brackets):
+  offered picks el 829 / en 1241 = 2070 (767 / 1247 = 2014), joined units 137 / 193 (76 / 127), units carrying
+  "more" 40 / 45, units reaching into the following passage 45 / 51; statements NOT offered because the statement +
+  its first limit is itself over 60 words: el 124 / en 146 (192 / 212); every one of the reviewer's 24 sentences is
+  offerable again WITH its limit (tests/assistant/limits_must.json, 23 entries) except the two documented limits
+  below.
+- MED-2 INDEPENDENT-RULE MISSES. AS25's "independent" rule had the shape of answer.limits (an opener only up to 10
+  words, no pronoun two ahead) and shared its splitter / fold / following, so it could not see ~15-20 real misses:
+  en:141 the TRIGGER sentence without "It counts only when ... 0.5 s ... NEW press" two sentences later, en:238 /
+  el:149 LINK TIME without "It is NEVER used near the shore" / «ΠΟΤΕ δεν ισχύει κοντά στην ακτή» (> 10 words, < 2
+  shared words), en:154 / el:154 «Μόνο αυτός μπορεί να ζητήσει ΤΗΛΕΧΕΙΡΙΣΜΟ», en:308 / el:216 "Never in the FIRST
+  TEST build ...", en:368 "It NEVER starts again by itself", en:188, el:178, el:267 / 269 / 271 «ΜΟΝΟ ενημέρωση».
+  FIXED (together with MED-1, else the cap refusals grow): a sentence that OPENS with a limiting word limits the one
+  before it at ANY length (PICK_LIMIT_SHORT is no rule any more), a pronoun limit ("It NEVER ...", «Αυτό δεν ...»)
+  counts two sentences ahead too (limits2). AS25 REWRITTEN as a TRULY separate implementation: its own sentence
+  splitter (i_split), own fold + numeral table, own stop / limit / pronoun / unit lists, own stemming, own following
+  rule (checked EQUAL to index.following for every passage), own restriction check; nothing of answer.py is used but
+  the thing under test (pick_units) and index.load. It checks over the whole index: no limit left out by the own rule
+  (1-2 ahead, pronoun opener, "Except" before, across the passage boundary) unless the unit carries "more" (then it
+  must be joined and within the cap - and the own rule sees a left-out limit behind all 85 of them), no pick opens
+  with a pronoun, no joined unit over the cap, every pick byte-identical manual text, the own following rule =
+  index.following; PLUS the curated list tests/assistant/limits_must.json (23 "must" entries = the reviewer's
+  sentences: offerable WITH their limit, 0 misses; 2 "known_limits" entries kept as documented). REMAINING MISSES OF
+  THE OWN RULE: 0 (both languages; as25_misses.json stays unnecessary). Mutations: the AM4-r2 list (nothing joined)
+  misses > 200; the AM4-r3 / AM4-r4 limit shape (opener <= 10 words, no pronoun two ahead, no restriction check, no
+  fallback) misses >= 8 of the curated list; the fallback alone switched off misses >= 3 (every "more" unit gone).
+- MED-3 THE TERM STOP WAS TOO COARSE. index.following stopped at EVERY term passage, so a definition the index builder
+  split over consecutive passages of the same term (the UNCREWED HDG LOCK block en:199-205 / el:114-120, SCR en:87 ->
+  88 "Not enough free disk ...") was never chained. Now following() chains when the next passage has the SAME term
+  (and heading, chapter, lines following on); a DIFFERENT term is still never chained to (AM4-r4's two-definitions
+  gluing stays impossible). Test AS21 (the real index: en:199 -> en:200, en:201; en:87 -> en:88; el:147 -> [] = the
+  next heading).
+- LOW-1 THE PROMPT EXAMPLE. "(e.g. 4 or 4, 9)" made the 3B model echo "4, 9" - with >= 9 sentences in the list a
+  CONFIDENT WRONG answer, and the 5g table called it "post-check rejected". The example STAYS "4 ή 4, 9" / "4 or 4,
+  9" (PICK_EXAMPLE_IDS) and an EXACT echo of it (the digits 4, 9 and nothing else) is NO pick (answer `no_pick` =
+  True, problem "the model echoed the prompt's example"; a genuine "4, 9" pays that price; a lone "4" / a mixed
+  "9, 3" stays a pick). The reviewer's "numbers that cannot be ids" were MEASURED on the tuning part (llama3.2-3b,
+  the real worker; logs in test_results/assistant_llm/am4r5/*_superseded.log) and are worse with this model: (1)
+  literal letters "N ή N, M" / "N or N, M": the model wrote "N, M, N, 3, 4 ..." for EVERY Greek question - el 0 / 96
+  answered, en 21 / 33 (the held-out part of that run also ran before it was stopped); (2) digits above the list
+  "40 ή 40, 41": echoed "40, 41" / "40, 41, 42 ... 47" in 56 of 86 Greek rows (65 %) - el 14 % correct, en 39 %
+  (the held-out part ran too: el 11 %, en 6/9); (3) NO example at all: the model wrote "1. <its own text>" in 44 of
+  86 Greek rows (51 %, the pick parser accepts "1. <text>" only when the text IS sentence 1) - el 22 %, en 55 %; (4)
+  "4 ή 4, 9" + the exact-echo rule = kept (the table below). The format example is what keeps a 3B model writing
+  numbers; the echo is caught where it was a wrong answer. tools/assistant_llm_eval.py counts "no pick"
+  APART from "post-check rejected" (summary line + report column; the rows carry no_pick / more). The 5g sentence
+  "The REJECTIONS are now the model's" reads: those were NO PICKS (the example echoed / an unmatched echo), not
+  post-check rejections - 1 English verbatim pick (en030) was the only post-check rejection.
+- LOW-2 TAIL UNITS OUT OF CONTEXT. An over-cap refusal left "It never changes the mode by itself." offered alone. Now
+  a unit that OPENS with a pronoun (PRONOUN_OPENERS: It / This / They / Αυτό / Αυτή ...) is never offered on its own;
+  it travels inside the unit of its antecedent (limits) or is not offered. Cost: 3 el / 65 en pronoun-opening
+  sentences are no longer picks of their own (they were out of context: "It runs as its own low-priority program ...").
+- RULE QUESTIONS (W126, defaults in code + docs): one statement plus its limits ACROSS A HEADING = NO (the chain stops
+  at the heading: en:189 "Ground station, tab "Bench"." is NOT joined with the next heading's "Only the laptop on the
+  USB cable ..." - the 5g text claimed it fixed; the "Only the laptop ..." sentence is offered on its own); the cap
+  fallback = the statement + its first limit + the "more limits" marker = YES.
+- DOCUMENTED LIMITS (the list the remaining LOW items go into, for AM6): (a) a statement whose FIRST limit alone
+  pushes the pair over 60 words is not offered (el 124 / en 146 statements; the limit sentence itself usually is;
+  the passage is always shown); (b) a limit under the NEXT heading is never joined (W126); (c) a pronoun-opening
+  sentence whose antecedent is a pronoun sentence too (en:87 "It starts again by itself at the next start if it was
+  on.") is not offered at all; (d) the limit rules are LEXICAL (shared stems, limiting words): a bullet item opening
+  with "Only" / "Never" joins the previous bullet item as its "limit" (en:185 "Power-up needs NO joystick ... * Only
+  STANDBY, TRAINING ..." is one unit beside the standalone items - harmless, 36 words); (e) the two implementations
+  (answer.py vs AS25's own) agree on every pick today, but a manual change can make them disagree - then the miss is
+  listed + justified in tests/assistant/as25_misses.json or the rule is fixed.
+- RE-MEASURED (llama3.2-3b extract, the real worker, 17 of 28 layers on the GPU as in 5d-5g, the floor 7.2 in
+  force; the tuning part for the prompt choice above - FOUR tuning runs in this step: letters / 40-41 / no example /
+  the kept "4 or 4, 9" + echo rule -, the held-out part ONCE with the kept prompt). SAID PLAINLY about the held-out
+  set: the two superseded prompt variants ran the held-out part too before they were stopped (their numbers were
+  seen: letters el 0 %, 40-41 el 11 % / en 6/9), so this step touched the held-out set THREE times = seven times in
+  all (AM4-r4 counted four; the task's instruction was once = the fifth); its numbers are OPTIMISTIC and the fresh
+  AM6 set (W84 / W89) is the real measurement:
+
+| llama3.2-3b extract | part | correct | answered | precision | false can't find (floor / no pick / post-check) | post-check rejected | NO PICK (of them exact "4, 9" echoes) | can't find right | quality (<= 40 words) | median ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| AM4-r4 (5g) | el tuning | 33/96 = 34 % | 83 % | 41 % | 16 (10 / 3 / 3) | (both counted as 6/86) | 6 of 9 echoes were ACCEPTED picks | 7/7 | 79 % | 785 |
+| **AM4-r5** | el tuning | 33/96 = 34 % | 72/96 = 75 % | 33/72 = 46 % | 24 (10 / 14 / 0) | 0/86 | 14/86 = 16 % (11) | 7/7 | 52/72 = 72 % | 824 |
+| AM4-r4 (5g) | en tuning | 15/33 = 45 % | 94 % | 48 % | 2 (1 / 0 / 1) | 1/32 | 0 | 5/5 | 55 % | 447 |
+| **AM4-r5** | en tuning | 16/33 = 48 % | 32/33 = 97 % | 16/32 = 50 % | 1 (1 / 0 / 0) | 0/32 | 0/32 | 5/5 | 18/32 = 56 % | 451 |
+| AM4-r4 (5g) | el held-out | 16/38 = 42 % | 84 % | 50 % | 6 (3 / 3 / 0) | 3/35 (= the no picks) | 3 (1) | 4/4 | 88 % | 806 |
+| **AM4-r5** | el held-out | 16/38 = 42 % | 33/38 = 87 % | 16/33 = 48 % | 5 (3 / 1 / 1) | 1/35 = 3 % | 1/35 (0) | 4/4 | 30/33 = 91 % | 821 |
+| AM4-r4 (5g) | en held-out | 7/9 = 78 % | 89 % | 88 % | 1 (1 / 0 / 0) | 0/8 | 0 | 1/1 | 88 % | 476 |
+| **AM4-r5** | en held-out | 6/9 = 67 % | 7/9 = 78 % | 6/7 = 86 % | 2 (1 / 1 / 0) | 0/8 | 1/8 (1) | 1/1 | 6/7 = 86 % | 487 |
+
+  PER QUESTION against the stored AM4-r4 rows (test_results/assistant_llm/am4r4_rows): el tuning 33 -> 33 = 6 lost / 6
+  gained, EVERY one of them the model picking another sentence from a renumbered list (the pick lists changed: 2014
+  -> 2070 units); the 11 exact "4, 9" echoes are now «Δεν βρίσκω» + the passage (in AM4-r4 9 such echoes: 6 ACCEPTED
+  as confident picks of sentences 4 + 9 - 1 of them "correct" by the proxy - and 3 no-picks) = answered 83 -> 75 %
+  and precision 41 -> 46 %: the echo rule costs <= 1 point of the proxy and removes 5 confident wrong answers; en
+  tuning +1 (en030: the AM4-r4 post-check rejection of a verbatim pick is gone with the new sentence split; en033 LINK
+  TIME is now a "more" unit = correct; en038 another pick); el held-out 1 lost / 1 gained (el101 / el108, other
+  picks; el133 "4, 2" = the only post-check rejection, a wrong verbatim pair); en held-out -1 = en009: AM4-r4's
+  "correct" answer there WAS the echo "4, 9" (sentences 4 + 9 happened to hold the must term) - now no pick. Units
+  with the "more" marker in the answers: el 3 tuning + 4 held-out, en 1 + 0. DOES THE ECHO / SHORTER-LISTS EFFECT
+  EXPLAIN THE AM4-r3 -> AM4-r4 GREEK LOSS (40 -> 34 %)? Only in part: the echoes account for <= 1 point (one lucky
+  echo in AM4-r4, none in AM4-r5); the rest is the run-to-run CHURN of a 3B model on renumbered lists - 9 lost / 4
+  gained in AM4-r4, 6 / 6 here, every one a different sentence picked - i.e. +-6 points on 96 questions between two
+  runs of the SAME code. The Greek level on this circular proxy is 34-40 % and the difference between AM4-r3, AM4-r4
+  and AM4-r5 is inside that churn; English 45-48 % / held-out 6-7 of 9. Honest reading: the redesign brings 24 of the
+  reviewer's 24 sentences back (2 as documented limits), raises the Greek precision (41 -> 46 %) and English correct
+  (+1), removes every confident echo answer, costs 8 points of "answered" in Greek (the echoes now say can't find)
+  and keeps the circular "correct" proxy where it was; the fresh AM6 set decides.
+- THE EXAMPLE BIASES THE PICK TO SENTENCE 4 (found while checking the echo effect; W128 - a NEW finding that AM6 must
+  act on, not fixed here: every alternative prompt measured in this step was worse with this model). In EVERY stored
+  extract run the model's FIRST picked number is the example's "4": AM4-r5 el tuning 66 of 86 rows with numbers
+  (76 %; 22 of the 33 "correct" answers start with 4), el held-out 25 / 35 (71 %), en tuning 19 / 32 (59 %), en
+  held-out 3 / 8; AM4-r4 el 65 / 86 (75 %), en 21 / 32; AM4-r3 el 66 / 86 (76 %), en 23 / 32 (71 %). The exact "4,
+  9" echo (caught now) is only the tip: most Greek answers are "4, <others>" - the pick lists start at the top of the
+  best passage, so sentence 4 is often a sentence of the best passage and the proxy (the must term in the picked
+  text) counts it "correct" by position, and a renumbered list moves the count = the run-to-run churn above. The
+  circular proxy therefore says little about the Greek PICKING QUALITY of llama3.2-3b in extract mode; an operator
+  question gets, more often than not, sentences 4 (+ its neighbours) of the best passage read out. For AM6: (a) a
+  prompt WITHOUT digits that still keeps the format (measured here: "no example" made the model write text - another
+  wording / a few-shot pair with real sentences may do better), (b) a bigger model for Greek (5b: Krikri-8B / Meltemi)
+  or the retrieval-only sentence rule, (c) the fresh question set + a non-positional correctness judgement (the
+  owner's blind review W99) - decided on the fresh set, never on these rows.
+
 ## 6. Speak (step AM5)
 
 - Through the station's own sound.py SoundSystem: a new level ASSISTANT below FEEDBACK, ADVISORY,

@@ -501,17 +501,22 @@ FOLLOWING_N = 2
 
 
 def following(passages, i, n=FOLLOWING_N):
-    """The n MANUAL passages that FOLLOW passages[i] in the same chapter as consecutive manual text (the next ones
-    in the index, the same `ch`, their line range going on) - AM4-r4 MED-1 (a): a picked sentence that ends its
-    passage is offered together with the limiting sentence that OPENS the next passage (answer.pick_units)."""
+    """The n MANUAL passages that FOLLOW passages[i] as consecutive manual text UNDER THE SAME HEADING (the next
+    ones in the index, the same `ch`, the same `heading`, the same `term`, their line range going on) - AM4-r4 MED-1
+    (a): a picked sentence that ends its passage is offered together with the limiting sentence that OPENS the next
+    passage (answer.pick_units). AM4-r5 (W126): the chain STOPS at a heading change (a statement and its limits
+    never cross a heading - the next heading is another subject); MED-3: a defined TERM whose definition the index
+    builder split over consecutive passages (the same term, the lines following on: the UNCREWED HDG LOCK block,
+    SCR) IS chained - a DIFFERENT term is never chained to (two definitions would be glued into one "sentence")."""
     out = []
     p = passages[i] if 0 <= i < len(passages) else None
-    if not p or p.get("kind") != "manual" or p.get("term"):
-        return out                  # a defined TERM is its own unit (a definition-list line, often without a full
-    last = p                        # stop): gluing it to the next term would make one "sentence" of two definitions
+    if not p or p.get("kind") != "manual":
+        return out
+    last = p
     for q in passages[i + 1:i + 1 + n]:
-        if q.get("kind") != "manual" or q.get("term") or q.get("ch") != p.get("ch") or (q.get("lines") or [0])[0] < (
-                last.get("lines") or [0, 0])[1]:
+        if q.get("kind") != "manual" or q.get("ch") != p.get("ch") or (q.get("heading") or "") != (
+                p.get("heading") or "") or (q.get("term") or "") != (p.get("term") or "") or (
+                q.get("lines") or [0])[0] < (last.get("lines") or [0, 0])[1]:
             break
         out.append(q)
         last = q

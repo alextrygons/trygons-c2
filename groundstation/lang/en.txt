@@ -2220,6 +2220,7 @@ asst.answer_short = Assistant: {a}
 asst.manual_title = Manual ({lang})
 asst.v_spoken = Spoken
 asst.v_long = A long sentence: only the chapter was spoken – read the text
+asst.more_limits = There are more limits – see the manual chapter
 asst.v_alarm = Text only – the MASTER WARNING lamp is on (the assistant never speaks over an alarm; AGAIN later)
 asst.v_callout = Text only – a voice callout sounds or waits (AGAIN later)
 asst.v_horn = Text only – the loudhailer was pressed (AGAIN once you let go)
