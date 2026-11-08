@@ -61,7 +61,8 @@ def run(args, cwd, timeout=7200, stdin_null=True, tree=True):
             return -1, "TIMEOUT %s" % e, time.time() - t0
         except OSError as e:
             return -2, "cannot start %s: %s" % (args[0], e), time.time() - t0
-    before = {p.key() for p in strays.ours()}
+    procs0 = strays.processes()
+    before = {p.key() for p in strays.ours(procs0)} if procs0 is not None else None
     job = strays.Job()
     p = None
     try:
@@ -69,12 +70,26 @@ def run(args, cwd, timeout=7200, stdin_null=True, tree=True):
                       stdin=subprocess.DEVNULL if stdin_null else None)
         out, _ = p.communicate(timeout=timeout)
         rc, out = p.returncode, out or ""
-        left = [x for x in strays.ours() if x.key() not in before and x.key() not in strays.demo_keys()]
-        if left:
-            out += "\nLEFTOVER PROCESSES after this step (CL3): " + "; ".join(
-                "%s PID %d -- %s" % (x.name, x.pid, x.cmd[:120]) for x in left)
+        # CL3-r: a leftover = a project process PROVED to be this step's (in its job) and not a demo / station /
+        # gateway or a child of one; anything else new is a note; an unreadable process list = a loud failure
+        procs1 = strays.processes()
+        if before is None or procs1 is None:
+            out += "\nLEFTOVER CHECK NOT POSSIBLE after this step (CL3-r): the process list was not readable (%s)" % \
+                   strays.LAST_ERROR
             if rc == 0:
                 rc = -3
+        else:
+            left, keep_left, protected, unproven, _ = strays.classify(
+                strays.ours(procs1), procs1, before, strays.demo_keys(procs1) or set(), job.contains)
+            if left or keep_left:
+                out += "\nLEFTOVER PROCESSES after this step (CL3): " + "; ".join(
+                    "%s PID %d -- %s" % (x.name, x.pid, x.cmd[:120]) for x in left) + "; ".join(
+                    "%s PID %d (%s) -- %s" % (x.name, x.pid, why, x.cmd[:120]) for x, why in keep_left)
+                if rc == 0:
+                    rc = -3
+            if unproven or protected:
+                out += "\nnote: new project processes not started by this step (not counted, never stopped): " + \
+                       "; ".join("%s PID %d (%s)" % (x.name, x.pid, why) for x, why in unproven + protected)
         return rc, out, time.time() - t0
     except subprocess.TimeoutExpired as e:
         job.kill(p)

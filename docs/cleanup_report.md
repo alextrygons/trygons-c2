@@ -186,3 +186,126 @@ PC restarted). What follows was found by reading EVERY process-starting site of 
 - W11 (flaky test_driver I4 / I12 / I19 on this PC): CL3 removes the suspected cause (stray simulators / stations
   of an earlier run on the same ports / CPU); from now on the gate FAILS on a leftover, so a flaky run can no longer
   have an unseen stray behind it. The failure rates under load themselves = CL2 (next).
+
+## CL3-r - the gate never kills what it cannot prove (the opus review of c851218: two SAFETY MEDs)
+
+Test / tool code only: `git diff` of app/ and hal/ is EMPTY; gateway/, groundstation/, academy/, demo/ untouched. Files:
+tools/strays.py, tools/check.sh (the mark line + the state file name), tests/acceptance/run_acceptance.py (one argument),
+tests/acceptance/fresh_build.py (the leftover check of `run()`), this report, PROGRESS.md.
+
+### The two findings
+
+- MED-1 (SAFETY): CL3's `check` called every new project process that was not in the baseline or in
+  demo_run/pids.json a "leftover" and ended it with `taskkill /T /F`. During a 30+ minute gate that would have killed
+  (a) a ground station the owner opened meanwhile - a station that may hold HELM of a REAL boat (its loss = REMOTE
+  LINK LOST, in UNCREWED the lost-link procedure up to ENGINE KILL); (b) the demo restarted by the tour-pictures step
+  (`demo_screens.py --tour` restarts the owner's demo when it ran): pids.json names the simulator, gateway, world and
+  the two stations, but NOT the gateway's workers, MediaMTX, the ffmpeg cameras, piper, the assistant worker; (c) new
+  children of an OLDER station (the assistant worker, piper, the screen recorder's ffmpeg - started after the mark).
+- MED-2 (SAFETY): `processes()` returned `{}` on any error (the PowerShell time limit of 60 s on a loaded PC, a JSON
+  error, a WMI fault). `mark` then wrote an EMPTY baseline and the next `check` blamed every project process on that
+  suite and killed it - the owner's station included.
+
+### The rule now (tools/strays.py)
+
+The gate stops ONLY what it can PROVE a suite started, and never a station / gateway / demo:
+
+1. PROOF = a job object. `mark --begin --shell <winpid>` (tools/check.sh passes `cat /proc/$$/winpid` = the Windows
+   pid of the shell running check.sh) creates a named job `Local\trygons_gate_<repo tag>_<time>`, puts THAT shell into
+   it (nested jobs are allowed; verified in the Claude harness and in Git Bash) and starts a holder process
+   (`strays.py hold`) that keeps a handle - a named kernel object loses its name with its last handle, and `mark`
+   exits. Everything the shell starts from then on (the suites and their children) is in the job; `check` opens the
+   job by name and asks `IsProcessInJob`. Finding on the way: under MSYS bash / sh EVERY command's Windows parent is a
+   fresh fork copy of the shell that dies with the command (age 0, the same program as its parent), so `os.getppid()`
+   of `mark` is NOT the script shell - hence the explicit `--shell`; the fallback `gate_shell()` skips such wrappers
+   (same name as its parent, younger than 3 s) and takes the nearest stable ancestor, NEVER higher (the owner's
+   interactive shell in the job would make everything the owner starts later "provable"); a given pid must be an
+   ancestor (or the process itself: the selftest, a Python runner). run_acceptance.py and fresh_build.py prove with
+   their OWN per-suite `Job` (`Job.contains(pid)`; POSIX: the process group of `popen`). `report` ends the holder; the
+   holder also ends by itself when the shell is gone (and after 8 h).
+2. `classify(plist, procs, baseline, demo, prove)` splits the new processes, parents before children:
+   - LEFTOVER: proved (prove(pid) is True) and not protected -> printed, stopped (unless --keep), the gate FAILS;
+   - a LAUNCHER the suite started (command line groundstation/app.py, gateway/gateway.py or demo/demo.py, proved) ->
+     printed as "LEFTOVER ... NOT stopped by the gate - check it, then end it yourself (tools/strays.py stop)", the
+     gate FAILS, the process keeps running (a test's gateway / station is still a station: it is never force-killed);
+   - PROTECTED: the pids.json demo (listed as "demo, not a leftover"), every process whose PARENT CHAIN reaches a demo /
+     baseline / protected process (the gateway's workers, MediaMTX, ffmpeg, piper, a station's assistant worker), a
+     launcher that is not proved -> printed "not counted, never stopped (why)", never a failure;
+   - UNPROVEN: anything else (prove False = not in the job, or None = no proof possible) -> "NEW project process ...
+     reported only, NOT stopped, not counted".
+   The protection does not depend on "unproven": the selftest runs classify with a prover that says True for
+   everything and the demo tree / the stations are still never in `left`.
+3. Stopping: `stop_procs` re-reads the process list right before the kill and skips a pid whose creation time changed
+   (never a reused pid - the review's LOW); the gate kills per pid WITHOUT `/T` (a protected child under a leftover
+   parent survives; every provable child is in `left` itself); no fresh list = nothing killed.
+4. Loud failures (MED-2): `processes()` returns None on any error (one retry with a 180 s limit; a PowerShell exit
+   code, empty output, or a list without THIS process = an error) and `LAST_ERROR` says why. `mark` -> exit 3 and the
+   state marked `broken` (a later `check` refuses: "STATE BROKEN"); `check` -> "PROCESS LIST NOT READABLE after
+   <suite>: nothing stopped, the baseline unchanged - the check FAILS", exit 3, remembered in `read_failures`;
+   `report` FAILS for it. A missing / unreadable state file = exit 3 (check) / 1 (report), never an empty baseline.
+   On Windows the report also FAILS when a check ran without proof (the gate job could not be created / opened) -
+   "NO-LEFTOVERS CHECK WITHOUT PROOF": the gate does not silently lose its teeth. (POSIX: no job objects; new processes
+   are reported only and that is said, not a failure.)
+5. `stop` is the OWNER's command only: it lists what it would stop (a launcher tagged), asks "Stop these N
+   process(es)? [y/N]" (or `--yes`; without a terminal and without --yes nothing is stopped, exit 2), keeps the demo
+   TREE - pids.json processes AND their children (CL3 stopped the demo gateway's workers) - unless `--all`. The gate
+   never runs it.
+6. tools/check.sh: `strays_check` fails the gate on exit 1 (a leftover) and 3 (a check not possible); the mark line
+   fails it too; the state file is `trygons_strays_gate_<repo tag>.json` (`strays.py tag` = 8 hex of the repo path:
+   two clones no longer share a state file - the review's LOW).
+
+### Tests (the selftest in tools/check.sh; every item also run as a MUTATION that must FAIL)
+
+- (a) a demo-like tree started AFTER the mark inside the gate job - the parent in a pids.json (the selftest points
+  DEMO_PIDS at its own file), its child NOT - is neither stopped nor counted; the child is reported "a child of the
+  demo". (b) a ground-station command line (groundstation/app.py) the suite started: reported as a leftover NOT
+  stopped, the check exits 1, the process lives; (b2) a plain project process the prover does not prove: "reported
+  only", alive, exit unaffected; (b3) a station the prover says is not the suite's: "never stopped", not counted.
+  (c) a process started inside the gate job and left behind IS reported, stopped, exit 1; a baseline process is
+  untouched; the next check is clean; the report lists suite X "stopped" and the station "STILL RUNNING". (d)
+  `processes()` patched to None -> exit 3, "NOT READABLE", the leftover still alive, the baseline byte-identical;
+  PowerShell made to fail -> `processes()` None, never {}; a missing state file -> exit 3 / report 1. (e) the CL3
+  negative controls stay: a foreign python, a SIBLING folder (../review-wt, TRYGONS_C2_other), the child of a foreign
+  process are never matched. Plus: the real gate job (a process started after the mark is in it, one started before
+  is not), `Job.contains` (own child True, another process False), the holder ended by `report`, the kept / unproven
+  processes not blamed twice, `dies_with_parent` as before.
+- Mutations (run by hand with the selftest, all CAUGHT): the c851218 classify (every new process = a leftover) ->
+  fails (a), (b), (b2), (b3); proof without protection -> fails (a), (b); `processes()` returning {} on failure with
+  the old check behaviour -> fails (d).
+- A real gate flow through `sh` (a script with the sleeper + a fake station): the sim-path sleeper = LEFTOVER stopped,
+  the station = LEFTOVER NOT stopped + STILL RUNNING in the report, a clean second check, `list` empty afterwards.
+
+### LOW notes of the review (recorded; not all changed)
+
+- Two clones sharing the state file: FIXED (per-repo name, above). pid reuse in `stop_procs`: FIXED (re-verified
+  right before the kill).
+- `Job.popen` assignment gap: the child runs for a moment before `AssignProcessToJobObject`; a grandchild it starts in
+  that gap is outside the job. subprocess.Popen gives no thread handle, so CREATE_SUSPENDED + ResumeThread is not
+  available without reimplementing CreateProcess - NOT changed; the gap is microseconds and the suites start their
+  children much later. Stated in the docstring.
+- `Job.kill` when the assignment failed: FIXED - `popen` remembers the pids it could not assign and `kill(p)` ends
+  THEIR tree with `taskkill /T` (before: only the child).
+- tools/demo_screens.py: the Tk windows are not closed in the `except` branch of `_open()` (the demo is stopped; the
+  windows die with the process) - NOT changed (tools code, cosmetic; a leftover window never survives the process).
+- Design note: a process in the runner's OWN job (run_acceptance.py, fresh_build.py) still ends with the job
+  (KILL_ON_JOB_CLOSE) at the end of the suite / step - everything in it was provably started by that suite, and the
+  clone's demo steps run WITHOUT the job on purpose (CL3 row 2).
+
+### Results
+
+- tools/check.sh (full, on the working tree = this commit): the gate job was created on the script shell ("gate job
+  Local\trygons_gate_10d757f3_...: the shell PID ... is in it"), 25 suites checked, "NO LEFTOVER PROCESSES", no new
+  unproven / protected process was seen during the run (the owner's demo was not running). Everything passed (sim all /
+  --bridge / --can / --can-fast, TriCore + stack + memory, hal_pc, charts, lang, boats, screen 2, look, track,
+  screenrec incl. SR8 this time, yes / no, bench stack, hailer, assistant 36 + 1 N/A (AS4b, W91), sound, avoid, osdep,
+  setup, tour pictures current, academy, practical, UAV 42 + 15, gateway 155 - no stall) EXCEPT: (1) the strays
+  selftest itself failed ONCE in the gate on its check "(a) a demo process was counted as a leftover" while its
+  sibling checks "(a) not stopped" and "(a) reported as protected" passed - a false positive of the selftest's own
+  pid matching (`str(pid) in line` matched a demo pid as a substring of the station's PID / age in a LEFTOVER line);
+  fixed in this commit (`pidin()`: " PID n " exactly), then OK twice alone; (2) test_loudhailer LH2 + LH20 (the
+  known timing flakes under load, as in the task's list) - re-run alone per LOOP RULE 3: 22 / 22 PASS.
+- Mutations (above): all three CAUGHT. The real `sh` gate flow: as described.
+- RUN_ACCEPTANCE quick on this commit (ACCEPT_CLONE_URL = this folder): 8 / 8 PASS in 6 min - ADS excludes + iLLD,
+  the fresh build from the clone (13 steps PASS incl. START_DEMO / STOP_DEMO from the clone: no leftover, no unproven
+  note), storm 200 episodes 0 fails, time wrap, day at sea, gateway storm I80-I84, and the row "no leftover processes
+  (tools/strays.py)": NO LEFTOVER PROCESSES in 7 suites (the proof = each suite's own Job).

@@ -18,11 +18,14 @@ fail=0
 # mediamtx, ffmpeg, workers - by the repo folder in their command line, or a child of one; never another folder, never
 # the owner's other programs). What runs before the gate is listed and never blamed; after every suite what it LEFT
 # BEHIND is reported (name, PID, suite), stopped, and fails the gate at the end ("no leftover processes").
-STRAYS_STATE="$TEMP/trygons_strays_gate.json"
-strays_check() { "$PY" tools/strays.py check "$1" --state "$STRAYS_STATE" || { echo "LEFTOVER PROCESSES after: $1"; fail=1; }; }
+# CL3-r: `mark --begin` puts THIS shell into the gate's job object, so only a process the suites PROVABLY started (in
+# the job, not a demo / station / gateway or a child of one) is ever stopped; anything else new is reported only, and
+# a process list / state file that can't be read fails the check loudly (nothing stopped). State file per repo folder.
+STRAYS_STATE="$TEMP/trygons_strays_gate_$("$PY" tools/strays.py tag).json"
+strays_check() { "$PY" tools/strays.py check "$1" --state "$STRAYS_STATE" || { echo "LEFTOVER CHECK FAILED after: $1 (see the lines above)"; fail=1; }; }
 echo "== stray processes (CL3): selftest, what runs before the gate"
 "$PY" tools/strays.py selftest || { echo "STRAYS SELFTEST FAILED"; fail=1; }
-"$PY" tools/strays.py mark --begin --state "$STRAYS_STATE"
+"$PY" tools/strays.py mark --begin --shell "$(cat /proc/$$/winpid 2>/dev/null)" --state "$STRAYS_STATE" || { echo "STRAYS MARK FAILED"; fail=1; }
 
 echo "== sim build"
 out=$(cmd //c "sim\\build_sim.bat" 2>&1)

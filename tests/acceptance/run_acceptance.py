@@ -101,7 +101,9 @@ def main():
                     rc = -1
                     job.kill(p)             # the stalled suite with its children (a timeout is not a cleanup bug)
             found = []
-            if strays.cmd_check(strays_state, name, out=found.append):
+            # CL3-r: the proof that a process is this suite's = it is in the suite's job (job.contains); a new process
+            # outside it (the owner's station / demo) is reported only, never stopped; an unreadable list = FAIL
+            if strays.cmd_check(strays_state, name, out=found.append, job=job):
                 leftovers += found
                 for line in found:
                     print(line, flush=True)
