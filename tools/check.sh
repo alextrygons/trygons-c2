@@ -14,6 +14,16 @@ PY=${PYTHON:-/c/msys64/ucrt64/bin/python.exe}
 [ -x "$PY" ] || PY=python
 fail=0
 
+# CL3 (W10 / W11): no stray process. tools/strays.py knows THIS project's processes (python / pythonw, autopilot_sim,
+# mediamtx, ffmpeg, workers - by the repo folder in their command line, or a child of one; never another folder, never
+# the owner's other programs). What runs before the gate is listed and never blamed; after every suite what it LEFT
+# BEHIND is reported (name, PID, suite), stopped, and fails the gate at the end ("no leftover processes").
+STRAYS_STATE="$TEMP/trygons_strays_gate.json"
+strays_check() { "$PY" tools/strays.py check "$1" --state "$STRAYS_STATE" || { echo "LEFTOVER PROCESSES after: $1"; fail=1; }; }
+echo "== stray processes (CL3): selftest, what runs before the gate"
+"$PY" tools/strays.py selftest || { echo "STRAYS SELFTEST FAILED"; fail=1; }
+"$PY" tools/strays.py mark --begin --state "$STRAYS_STATE"
+
 echo "== sim build"
 out=$(cmd //c "sim\\build_sim.bat" 2>&1)
 echo "$out" | grep -v "^Run it\|^Compiling"
@@ -47,6 +57,7 @@ for v in can can-fast; do
     tail -1 "$TEMP/all_$v.txt"
 done
 cd ..
+strays_check "sim tests (all, --bridge, --can, --can-fast)"
 
 echo "== TriCore compile"
 OUT="$TEMP/tricore_obj"; mkdir -p "$OUT"
@@ -231,36 +242,47 @@ grep -E "^\[FAIL\]|NV TESTS|BUILD PROBLEM" "$TEMP/nv_tests.txt"
 echo "== DroneCAN layer of the board (dronecan.c + libcanard vs an independent encoder; driver state machine)"
 "$PY" tests/hal_pc/dronecan_check.py > "$TEMP/dronecan_tests.txt" 2>&1 || { echo "DRONECAN TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|DRONECAN TESTS|BUILD PROBLEM" "$TEMP/dronecan_tests.txt"
+strays_check "hal_pc checks (fat32, nv, dronecan)"
 echo "== chart tests"
 ( cd groundstation && "$PY" test_charts.py > "$TEMP/chart_tests.txt" 2>&1 ) || { echo "CHART TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|CHART TESTS" "$TEMP/chart_tests.txt"
+strays_check "test_charts"
 echo "== ground station language tests (el / en)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_lang.py > "$TEMP/lang_tests.txt" 2>&1 ) || { echo "LANGUAGE TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LANGUAGE TESTS" "$TEMP/lang_tests.txt"
+strays_check "test_lang"
 echo "== boats + two screens (boats/, automatic name check + HELM at once, one-move change + leave warning, F11, map in screen 2)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_boats.py > "$TEMP/boat_tests.txt" 2>&1 ) || { echo "BOAT TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|BOAT TESTS" "$TEMP/boat_tests.txt"
+strays_check "test_boats"
 echo "== screen 2 (navigation & control): layout 1366x768 / 1920x1080 at 100-150 %, roles, map editing, one look"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_screen2.py > "$TEMP/screen2_tests.txt" 2>&1 ) || { echo "SCREEN 2 TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|SCREEN 2 TESTS" "$TEMP/screen2_tests.txt"
+strays_check "test_screen2"
 echo "== professional look (13i): start-up screen, app icon, window titles, About, academy theme, shortcuts, no consoles"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_look.py > "$TEMP/look_tests.txt" 2>&1 ) || { echo "LOOK TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOOK TESTS" "$TEMP/look_tests.txt"
+strays_check "test_look"
 echo "== track (13n3): per boat, crash-safe on disk, no point limit, NEW TRACK, saved list, GPX export / import"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_track.py > "$TEMP/track_tests.txt" 2>&1 ) || { echo "TRACK TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|TRACK TESTS" "$TEMP/track_tests.txt"
+strays_check "test_track"
 echo "== screen recording + KEEP 5' / 1h (13n4): ring of both screens, SAVE / KEEP screen part, low disk, failures, buttons, real ffmpeg"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_screenrec.py > "$TEMP/screenrec_tests.txt" 2>&1 ) || { echo "SCREEN RECORDING TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|SCREEN RECORDING TESTS" "$TEMP/screenrec_tests.txt"
+strays_check "test_screenrec"
 echo "== YES / NO answers on the shore joystick (13p): trigger / thumb / stick Y / hat, 0.5 s guard, one press = one thing (station + gateway)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_yesno.py > "$TEMP/yesno_tests.txt" 2>&1 ) || { echo "YES / NO TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|YES / NO TESTS" "$TEMP/yesno_tests.txt"
+strays_check "test_yesno"
 echo "== Bench tab stack use (13s review LOW-3): BENCH_DIAG stack block decoded + drawn (display only)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_benchstack.py > "$TEMP/benchstack_tests.txt" 2>&1 ) || { echo "BENCH STACK TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|BENCH STACK TESTS" "$TEMP/benchstack_tests.txt"
+strays_check "test_benchstack"
 echo "== loudhailer on the station (13r): voice codec + signed packets, ΟΜΙΛΙΑ press-and-hold on both screens, not on the joystick, ready messages, Tools page, devices"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_hailer.py > "$TEMP/hailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER STATION TESTS" "$TEMP/hailer_tests.txt"
+strays_check "test_hailer"
 echo "== talking manual index (AM3, AM3-r MED-1): the COMMITTED groundstation/assistant/index/ must match the manuals / the tour / the parser - a stale index FAILS (rebuild: python tools/assistant_index.py build, then commit it); the question list (tests/assistant: all, in-sample, HELD-OUT)"
 PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py check > "$TEMP/asst_index.txt" 2>&1 || { echo "ASSISTANT INDEX STALE - run: python tools/assistant_index.py build, then commit the index (see $TEMP/asst_index.txt)"; fail=1; }
 cat "$TEMP/asst_index.txt"
@@ -269,41 +291,56 @@ cat "$TEMP/asst_eval.txt"
 echo "== talking manual extract score floor (AM4-r3 LOW-b, W112 / W117): the BM25 scores still separate what the floor was tuned on (tests/assistant/floor.json); moved = re-tune the floor on the TUNING part, then: python tools/assistant_index.py floor --write"
 PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py floor > "$TEMP/asst_floor.txt" 2>&1 || { echo "ASSISTANT EXTRACT FLOOR: THE SEARCH SCORES MOVED - re-tune it (see $TEMP/asst_floor.txt)"; fail=1; }
 cat "$TEMP/asst_floor.txt"
+strays_check "assistant index / eval / floor"
 echo "== talking manual (AM2 + AM3 + AM4): read-only proof AS1-AS3, real models offline AS4 + AS24 language model (N/A without them); ANSWER AS19-AS23 (post-check names + numbers, GPU guard, retrieval only, worker answer, get_llm pins, no llama-server), push-to-talk + loudhailer wins, own mic, restarts, gateway PC, screens; FIND AS14-AS18 (index, stale check, normalisation, passages, retrieval in-sample + held-out, worker find + stale index)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_assistant.py > "$TEMP/assistant_tests.txt" 2>&1 ) || { echo "ASSISTANT TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A)\]|ASSISTANT TESTS" "$TEMP/assistant_tests.txt"
+strays_check "test_assistant"
 echo "== ground station sound + voice tests"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sound.py > "$TEMP/sound_tests.txt" 2>&1 ) || { echo "SOUND TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A )\]|SOUND TESTS" "$TEMP/sound_tests.txt"
+strays_check "test_sound"
 echo "== avoidance planner tests"
 ( cd gateway && "$PY" test_avoid.py > "$TEMP/avoid_tests.txt" 2>&1 ) || { echo "AVOIDANCE TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|AVOIDANCE TESTS" "$TEMP/avoid_tests.txt"
+strays_check "test_avoid"
 echo "== gateway PC on Ubuntu + Windows (serial names, config, install files)"
 ( cd gateway && "$PY" test_osdep.py > "$TEMP/osdep_tests.txt" 2>&1 ) || { echo "OS TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|OS TESTS" "$TEMP/osdep_tests.txt"
+strays_check "test_osdep"
 echo "== gateway one-command setup (13j): setup_all.sh with fake answers + stubbed commands (nothing changes), shellcheck / bash -n, no secret in the log"
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_setup.py > "$TEMP/setup_tests.txt" 2>&1 ) || { echo "SETUP TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|^ST1: shellcheck|SETUP TESTS" "$TEMP/setup_tests.txt"
+strays_check "test_setup"
 echo "== guided tour pictures (13t): made again from the demo when the layout changed (tools/demo_screens.py --tour --if-stale)"
 PYTHONIOENCODING=utf-8 "$PY" tools/demo_screens.py --tour --if-stale > "$TEMP/tour_shots.txt" 2>&1 || { echo "TOUR PICTURES FAILED (see $TEMP/tour_shots.txt)"; fail=1; }
 grep -E "^tour pictures|TOUR PROBLEM" "$TEMP/tour_shots.txt"
+strays_check "tour pictures (demo_screens --tour --if-stale)"
 echo "== academy (step 15+): no boat link - only the simulator on this PC or recorded files; banner; content; ADS exclude"
 PYTHONIOENCODING=utf-8 "$PY" academy/test_academy.py > "$TEMP/academy_tests.txt" 2>&1 || { echo "ACADEMY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|ACADEMY TESTS" "$TEMP/academy_tests.txt"
+strays_check "test_academy"
 echo "== academy practical test (step 21): read only + CONFIRM_ONLY (changes nothing on the boat), no bypass of any safety rule"
 PYTHONIOENCODING=utf-8 "$PY" academy/practical/test_practical.py > "$TEMP/practical_tests.txt" 2>&1 || { echo "PRACTICAL TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|PRACTICAL TESTS" "$TEMP/practical_tests.txt"
+strays_check "test_practical"
 echo "== loudhailer on the gateway (13r): first speaker wins, half duplex, recording in SAVE / KEEP, link priority, no effect on driving, failure = notice"
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_loudhailer.py > "$TEMP/loudhailer_tests.txt" 2>&1 ) || { echo "LOUDHAILER TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|LOUDHAILER TESTS" "$TEMP/loudhailer_tests.txt"
+strays_check "test_loudhailer"
 echo "== UAV magazine on the gateway (U2): own MAVLink codec (+ pymavlink cross-check), ALLOW-list, writer check, no AURIX path, read-only registration check, registry, GPS warm start, simulated drones, router process, the real gateway"
 ( cd gateway && PYTHONIOENCODING=utf-8 "$PY" test_uav.py > "$TEMP/uav_tests.txt" 2>&1 ) || { echo "UAV TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A )\]|UAV TESTS|STALLED" "$TEMP/uav_tests.txt"
+strays_check "test_uav"
 echo "== UAV magazine on the station (U2): pictures, the Tools page «ΜΑΓΓΕΜΑ UAV», answers in the screen language"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_uavui.py > "$TEMP/uavui_tests.txt" 2>&1 ) || { echo "UAV STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|UAV STATION TESTS" "$TEMP/uavui_tests.txt"
+strays_check "test_uavui"
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS|STALLED|CRASHED" "$TEMP/gw_tests.txt"   # W50s: a stalled section is killed + named
+strays_check "test_gateway"
+echo "== stray processes (CL3): leftovers of this run"
+"$PY" tools/strays.py report --state "$STRAYS_STATE" || { echo "NO-LEFTOVERS CHECK FAILED (tools/strays.py report)"; fail=1; }
 [ $fail -eq 0 ] && echo "GATE: OK" || echo "GATE: FAILED"
 exit $fail

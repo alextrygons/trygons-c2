@@ -29,6 +29,8 @@ REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 OUT = os.path.join(REPO, "test_results")
 PY = sys.executable
 STORM = os.path.join(OUT, "storm.exe")
+sys.path.insert(0, os.path.join(REPO, "tools"))
+import strays  # noqa: E402  (CL3: every suite in a job object; leftover processes reported per suite)
 
 
 def plan(mode, short_soak=False):
@@ -78,22 +80,43 @@ def main():
         return 2
     t0 = time.time()
     res = []
+    # CL3: what runs before the run is never blamed on a suite; after every suite the project processes it left
+    # behind are reported (name, PID, suite), stopped, and fail the "no leftover processes" row at the end
+    strays_state = os.path.join(OUT, "strays_state.json")
+    strays.cmd_mark(strays_state, True)
+    leftovers = []
     for name, args, tmo in plan(mode, short_soak):
         print("\n######## %s" % name, flush=True)
         log = os.path.join(OUT, "acc_%s.txt" % "".join(c if c.isalnum() else "_" for c in name)[:40])
         t1 = time.time()
+        job = strays.Job()                  # the suite + everything it starts: a timeout ends the WHOLE tree
+        p = None
         try:
             with open(log, "w", encoding="utf-8") as f:
-                p = subprocess.run(args, cwd=OUT if args[0] == STORM else REPO, stdout=f, stderr=subprocess.STDOUT,
-                                   timeout=tmo, stdin=subprocess.DEVNULL)
-            rc = p.returncode
-        except subprocess.TimeoutExpired:
-            rc = -1
+                p = job.popen(args, cwd=OUT if args[0] == STORM else REPO, stdout=f, stderr=subprocess.STDOUT,
+                              stdin=subprocess.DEVNULL)
+                try:
+                    rc = p.wait(timeout=tmo)
+                except subprocess.TimeoutExpired:
+                    rc = -1
+                    job.kill(p)             # the stalled suite with its children (a timeout is not a cleanup bug)
+            found = []
+            if strays.cmd_check(strays_state, name, out=found.append):
+                leftovers += found
+                for line in found:
+                    print(line, flush=True)
+        finally:
+            job.kill(p)                     # whatever else is still in the job
+            job.close()
         dt = time.time() - t1
         tail = open(log, encoding="utf-8", errors="replace").read().strip().splitlines()[-3:]
         res.append((name, rc, dt, log, tail))
         print("%s  %s  (%.1f min)  log %s" % ("PASS" if rc == 0 else ("TIMEOUT" if rc == -1 else "FAIL"), name, dt / 60,
                                              os.path.relpath(log, REPO)), flush=True)
+    rep = []
+    strays.cmd_report(strays_state, rep.append)
+    res.append(("no leftover processes (tools/strays.py)", 1 if leftovers else 0, 0.0, strays_state, rep[:4]))
+    print("\n".join(rep), flush=True)
     lines = ["=== ACCEPTANCE TEST (%s%s), %.0f min, %s ===" % (mode, ", SHORTENED SOAK" if short_soak else "",
                                                           (time.time() - t0) / 60,
                                                           time.strftime("%Y-%m-%d %H:%M"))]

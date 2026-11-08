@@ -86,3 +86,103 @@ For the owner: each needs a new recording (el) when the text is changed. 7 stops
 
 Gate for this step: tools/check.sh (full) + tests\acceptance\RUN_ACCEPTANCE.bat quick (the step touches
 lang / docs / academy content) - results in PROGRESS.md row CL1.
+
+## CL3 - stray processes (W10 / W11): the paths, the fixes, tools/strays.py, the runner's "no leftovers" check
+
+Test / tool / launcher code only: `git diff` of app/ and hal/ is EMPTY; gateway/ and groundstation/ product code is
+unchanged (the one groundstation/ file touched is a test; academy/lesson_app.py + academy/simguard.py are the academy's
+LAUNCHER of the simulator). No test was weakened: every change ADDS a cleanup or a check.
+
+### Starting point
+
+No process of this project was running when CL3 started (`tools/strays.py list`: none; also no pythonw). The two
+pythonw of W10 (2026-10-27) could not be examined any more: they were gone before CL1 (the owner closed them or the
+PC restarted). What follows was found by reading EVERY process-starting site of the repo (`subprocess.Popen` /
+`.run` / `os.system` / `startfile`: 162 sites in 59 files) and by running the fixed gate.
+
+### Paths that could leave python(w).exe / autopilot_sim.exe / mediamtx / ffmpeg / gateway workers behind
+
+| # | Path | What stayed behind, when | Fix (test / tool / launcher code) |
+|---|---|---|---|
+| 1 | tests/acceptance/run_acceptance.py | `subprocess.run(timeout)` ends ONLY the suite's own python on a TIMEOUT: everything under it (fresh_build.py -> tools/check.sh -> autopilot_sim.exe + the python suites + their simulators; soak_system / day_at_sea's gateway with its vision / loudhailer / UAV workers, MediaMTX, ffmpeg cameras) kept running | every suite runs in a `strays.Job` (Windows job object, KILL_ON_JOB_CLOSE; POSIX: process group): a TIMEOUT ends the WHOLE tree; after EVERY suite `strays.cmd_check(suite)` reports what it left (name, PID, parent, age, command), stops it and remembers it; the summary gets the row "no leftover processes (tools/strays.py)" = FAIL when any suite left one |
+| 2 | tests/acceptance/fresh_build.py `run()` | the same (`subprocess.run(timeout)`): the clone's `sh tools/check.sh` (3 h limit), `autopilot_sim all`, the python suites | `run()` = a job per step: a TIMEOUT ends the tree; a project process still alive after a NORMAL end is written into the step's output ("LEFTOVER PROCESSES after this step", the step FAILS, rc -3) and then ended by the job. The two demo steps (`demo.py start` / `stop`) run WITHOUT the job (`tree=False`): the demo MUST outlive its starter (pids.json + STOP_DEMO end it) - what it leaves is the acceptance runner's check after the whole fresh-build suite |
+| 3 | tests/acceptance/coverage_run.py `sh()` | the same (`subprocess.run(timeout)`, 2 h limit per suite) | a job per suite |
+| 4 | tests/acceptance/run_storm.py | the storm.exe workers (4 parallel, up to 2000 episodes) outlive a KILLED runner (LOOP RULE 2 / 5: the 45 min kill) | `strays.dies_with_parent(p)` on every worker |
+| 5 | tools/demo_screens.py `Session.__init__` | `demo.start()` succeeded, then an exception BEFORE main()'s `try/finally` reached `Session.close()` (the ground station's construction, a dead gateway login, `kill_tree` ...) = the WHOLE demo stayed: autopilot_sim server 5760, the gateway 5761 with its workers, MediaMTX, the 4 ffmpeg test cameras + demo_world. tools/check.sh runs `demo_screens.py --tour --if-stale` (and restarts the owner's demo when it ran) | the part after `demo.start()` moved into `_open()` under `try/except BaseException: demo.stop(); (restart when it ran); raise`. `Session.close()` also ends a presentation Clip's ffmpeg cut short by an error |
+| 6 | academy/lesson_app.py (lessons + scenarios: scenario_app.py inherits it) | "Start the simulator" (`start_sim` -> `self.proc = simguard.start_simulator()`) - `close()` never stopped it: closing the lesson / scenario window left `autopilot_sim server 5760` running (the next lesson said "port busy"; a real leftover an operator makes without any test) | `close()` terminates `self.proc`; `simguard.start_simulator()` puts the simulator into the academy process's KILL_ON_JOB_CLOSE job (`_dies_with_us` -> groundstation/childproc.py): the simulator also dies when the window is killed by Task Manager / a crash. tools/academy_screens.py (terminate in finally) inherits it |
+| 7 | tests that `Popen` a simulator / worker without a job object: groundstation/test_e2e.py (2 simulators), test_driver.py, test_screen2.py; academy/test_academy.py `_TestSim` (AC28 / AC31 / AC43 ...), academy/practical/test_practical.py P7; gateway/test_uav.py `Worker` (router_worker.py, UA10 ...), UA24 (video_worker.py with its ffmpeg + MediaMTX) | the child stays when the TEST PROCESS is ended from outside (the coordinator's 45 min kill, Task Manager, a Tk crash) - `finally: kill()` never runs then | `childproc.dies_with_parent(sim)` (groundstation) / `strays.dies_with_parent(p)` (gateway test) right after each Popen. gateway/test_gateway.py already had it (W50s `_Job` + `_Leftovers`); test_look.py / test_screenrec.py kill their 60 s sleep probes in `finally` (a kill from outside leaves them for <= 60 s: not changed) |
+| 8 | the assistant (worker, ffmpeg, TTS) | examined, NO lasting leftover path: the worker (groundstation/assistant/worker.py) ends on stdin EOF - `client.stop()` closes stdin, waits 2 s, kills; `_crash()` kills; `App.quit` -> `asst.stop()`; a station killed hard = EOF -> the worker exits after its current op (a model load, an answer <= ANSWER_TIMEOUT_S); the TTS = `tts.synth(timeout=TTS_TIMEOUT_S)` Piper child; the academy's ffmpeg = `subprocess.run(timeout=AUDIO_TIMEOUT_S)`; the voice WAVs are files, not processes (AM5-r) | no change (product code; nothing proven). The gate's check after test_assistant (AS1-AS31 incl. the real worker of AS4 / AS24) is the empirical proof: see "Results" |
+| 9 | NOT changed, by design | demo/demo.py `launch()`: the demo processes MUST outlive START_DEMO (pythonw demo.py start exits; pids.json with pid + creation time, STOP_DEMO kills the trees); the gateway's own workers (vision, loudhailer, UAV router, video) end on stdin EOF when the gateway dies; groundstation/screenrec.py's ffmpeg has its own kill-on-close job + atexit (13n4b) | `strays.py list` shows a running demo as [DEMO] and `stop` keeps it unless `--all`; the gate never counts the demo as a leftover |
+
+### tools/strays.py (new)
+
+- `list` / `stop [--all]` / `mark --begin` / `check SUITE` / `report` / `selftest`; no third-party module (psutil is not
+  installed here): Windows = one PowerShell `Get-CimInstance Win32_Process` call (pid, parent, name, executable,
+  command line, creation time), Ubuntu = `ps`.
+- A process is OURS when its program is one the project starts (python / pythonw, autopilot_sim, storm, mediamtx,
+  ffmpeg / ffprobe, piper) AND its executable or command line is inside THIS repo folder (`C:\trygons\TRYGONS_C2`, both
+  slash styles, the MSYS `/c/trygons/trygons_c2` form; followed by a separator - `C:\trygons\TRYGONS_C2_other` is
+  NOT ours) or names a test folder of ours in the TEMP folder (`tempfile.mkdtemp` prefixes `trygons_` / `gwtest_`),
+  OR its parent is ours (a gateway worker, a test's simulator, an ffmpeg with no path in its command line). Never:
+  this process and its ancestors (the shell / runner), another folder (`../review-wt`, a clone next to the repo), the
+  owner's other Python programs (no marker, parent not ours). The demo (demo_run/pids.json, pid + creation time) is
+  shown as [DEMO], stopped only with `--all`, never a leftover.
+- Stopping = `taskkill /PID /T /F` per process, parents first, then a wait of up to 8 s with the creation time
+  re-checked (never a reused pid).
+- Library for the test / tool code: `Job()` (KILL_ON_JOB_CLOSE job: `popen` / `kill` / `close`), `dies_with_parent(p)`
+  (one job per process: the child ends with THIS process whatever ends it), `ours()` / `processes()`.
+- `selftest` (also in tools/check.sh): positive = a python with the repo folder in an argument, one with a
+  `%TEMP%\trygons_*` folder, the child of a project process; NEGATIVE CONTROLS = a foreign python (no marker, parent =
+  the excluded selftest process - like the owner's other Python programs), a python of the SIBLING folders
+  `..\review-wt` + `TRYGONS_C2_other`, the child of a foreign process - none may be matched; `in_repo` / `program`
+  table; `mark` -> a new project process -> `check "suite X"` names it, stops it, `check "suite Y"` is clean, `report`
+  lists suite X only; `dies_with_parent`: a grandchild in the job dies with its killed parent, WITHOUT the job it
+  survives (so the selftest proves the mechanism matters).
+
+### The runner's "no leftovers" check
+
+- tools/check.sh: `strays.py selftest` + `mark --begin` at the start (what already runs is listed as "already
+  running before this run (not a leftover of it)" and never blamed), `strays_check "<suite>"` after each of the 25
+  process-starting suites (sim tests, hal_pc checks, charts, lang, boats, screen 2, look, track, screenrec, yes / no,
+  bench stack, hailer, assistant index / tests, sound, avoid, osdep, setup, tour pictures, academy, practical,
+  loudhailer, UAV, UAV station, gateway) = "LEFTOVER after <suite>: <name> PID <pid> (parent) age <s> -- <command>",
+  stopped, `fail=1`; at the end `strays.py report` = "NO LEFTOVER PROCESSES: n suite(s) checked" or the list
+  (suite, name, PID, age, stopped / STILL RUNNING) -> GATE: FAILED.
+- tests/acceptance/run_acceptance.py: the job per suite + the same check after every suite + the summary row
+  "no leftover processes (tools/strays.py)" (PASS / FAIL; `test_results/strays_state.json` keeps the details).
+- fresh_build.py: per step (above).
+
+### Results of this run (the fixed gate on the working tree)
+
+- Before the gate: no project process running ("already running before this run": none).
+- `strays.py selftest`: OK (all positive cases matched, all three negative controls NOT matched, mark / check /
+  report, the job object: the grandchild dies with its parent only WITH the job).
+- Leftovers found per path by the gate's per-suite check: NONE - "NO LEFTOVER PROCESSES: 25 suite(s) checked"
+  (every suite incl. test_assistant with the real Whisper / language-model worker, test_uav with the router / video
+  worker / MediaMTX, test_gateway's 155 tests, the academy's real-simulator tests, the tour-picture check). So the
+  paths of rows 1-7 leave something behind only on the FAILURE branches (a timeout, a kill from outside, an exception
+  before the cleanup, a window closed): exactly the W10 situation, which a clean run never shows. They are fixed in
+  the code; the gate now catches any new one.
+- tools/check.sh: everything passed (sim all 385 / --bridge / --can / --can-fast, TriCore + stack + memory, hal_pc
+  25, charts 6, lang 6, boats 12, screen 2 28, look 26, track 12, yes / no 7, bench stack 7, hailer 8, assistant 36 +
+  1 N/A (AS4b firewall rule, W91), sound 17, avoid 15, osdep 12, setup 53, tour pictures current, academy 56,
+  practical 8, loudhailer 22, UAV 42 + 15, gateway 155 - no stall) EXCEPT the known environmental SR8 (test_screenrec
+  9 / 10: the real h264_nvenc recording makes 1 segment in 12 s on this PC - the same failure as in AM2 / AM6 / CL1,
+  identical alone; screenrec.py / test_screenrec.py untouched) - re-run alone per LOOP RULE 3: the same, recorded.
+- RUN_ACCEPTANCE quick (on the CL3 commit, ACCEPT_CLONE_URL = this folder): 8/8 PASS in 6 min - ADS excludes +
+  iLLD, fresh build from the clone (sim all / --bridge, MediaMTX, charts, planner, 3 gateway sections, test_driver,
+  START_DEMO / STOP_DEMO from the clone: no step left a process), storm 200 episodes 0 fails (I59 / I63 key cases),
+  time wrap, day at sea, gateway storm I80-I84, and the NEW row "no leftover processes (tools/strays.py)": NO LEFTOVER
+  PROCESSES in 7 suites.
+
+### W10 / W11
+
+- W10 (two pythonw running since 2026-10-27, "probably your ground stations"): they were gone before CL3 started
+  (no project process ran: `strays.py list`), so their origin is not proven. Everything a pythonw of this project
+  can be (START_DEMO's `demo.py start --splash`, the two demo ground stations, TOUR.bat's tour_app, the academy
+  windows) shows in `python tools/strays.py list` with its command line and age, and `python tools/strays.py stop`
+  ends them (the demo kept unless `--all`) - the owner no longer needs Task Manager for them. The one path found that
+  leaves a simulator behind WITHOUT any test (an academy lesson / scenario window closed) is fixed (row 6).
+- W11 (flaky test_driver I4 / I12 / I19 on this PC): CL3 removes the suspected cause (stray simulators / stations
+  of an earlier run on the same ports / CPU); from now on the gate FAILS on a leftover, so a flaky run can no longer
+  have an unseen stray behind it. The failure rates under load themselves = CL2 (next).

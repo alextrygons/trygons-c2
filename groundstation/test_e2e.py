@@ -26,6 +26,7 @@ os.environ.setdefault("TRYGONS_SOUND", "off")                    # silent: no so
 os.environ.setdefault("TRYGONS_GS_SETTINGS", os.path.join(__import__("tempfile").gettempdir(), "trygons_gs_test.json"))
 os.environ.setdefault("TRYGONS_TEST", "1")      # temp track folder (review 13n3 L7)
 sys.path.insert(0, HERE)
+import childproc  # noqa: E402
 import program  # noqa: E402
 import proto  # noqa: E402
 from link import Link, Waiter  # noqa: E402
@@ -67,6 +68,7 @@ def main():
     port = free_port()
     sim = subprocess.Popen([exe, "server", str(port), str(SPEED)], cwd=sim_dir,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    childproc.dies_with_parent(sim)             # CL3: a killed test never leaves its simulator behind
     log_dir = os.path.join(HERE, "logs", "e2e")
     link = None
     try:
@@ -212,6 +214,7 @@ def usb_part(exe, sim_dir, log_dir):
     port = free_port()
     sim = subprocess.Popen([exe, "server", str(port), str(SPEED)], cwd=sim_dir,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    childproc.dies_with_parent(sim)             # CL3: a killed test never leaves its simulator behind
     link = None
     try:
         for _ in range(50):

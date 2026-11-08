@@ -137,7 +137,6 @@ def window_image(widget):
 class Session:
     def __init__(self):
         import demo
-        import tkinter as tk
         self.demo = demo
         self.was_running = os.path.exists(demo.PIDS)     # start it again at the end only if it was running
         say("restarting the demo with the current code ...")
@@ -145,11 +144,25 @@ class Session:
         time.sleep(1.5)
         if demo.start() != 0:
             raise RuntimeError("the demo did not start")
+        try:
+            self._open()
+        except BaseException:
+            # CL3: from here on the demo runs; a failure before main()'s try/finally reaches close() left the whole
+            # demo (simulator, gateway, MediaMTX, the test cameras' ffmpeg) running - stop it (restart it when it ran)
+            demo.stop()
+            if self.was_running:
+                time.sleep(1.5)
+                demo.start()
+            raise
+
+    def _open(self):
+        demo = self.demo
         with open(demo.PIDS, encoding="utf-8") as f:
             pids = json.load(f)
         for name in ("shore", "onboard"):                 # this script is the ground station
             if name in pids:
                 demo.kill_tree(pids[name])
+        import tkinter as tk
         import app as A
         import i18n
         import proto
@@ -334,6 +347,16 @@ class Session:
         self.pump(2.0)
 
     def close(self):
+        if self.recorder is not None:                     # CL3: a clip cut short by an error: its ffmpeg ends here
+            try:
+                self.recorder.p.stdin.close()
+                self.recorder.p.wait(10)
+            except Exception:
+                try:
+                    self.recorder.p.kill()
+                except Exception:
+                    pass
+            self.recorder = None
         try:
             self.sim.stop()
         except Exception:

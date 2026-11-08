@@ -106,6 +106,8 @@ os.environ.setdefault("TRYGONS_LANG", "en")
 os.environ.setdefault("TRYGONS_SOUND", "off")
 os.environ.setdefault("TRYGONS_TEST", "1")
 from uav import allow, gpsassist, mavlink, registry, simdrone, usbslots  # noqa: E402
+sys.path.insert(1, os.path.join(os.path.dirname(HERE), "tools"))
+import strays  # noqa: E402  (CL3: the router / video worker / MediaMTX of a test die with the test)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -775,6 +777,7 @@ class Worker:
     def __init__(self):
         self.p = subprocess.Popen([sys.executable, os.path.join(UAV_DIR, "router_worker.py")], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=UAV_DIR)
+        strays.dies_with_parent(self.p)
         self.ev = []
         self.lock = threading.Lock()
         threading.Thread(target=self._read, daemon=True).start()
@@ -2147,6 +2150,7 @@ def ua24_video_worker():
             with open(conf, "w", encoding="utf-8") as f:
                 f.write(y)
             mp = subprocess.Popen([mtx, conf], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            strays.dies_with_parent(mp)
             time.sleep(1.0)
         ring = os.path.join(tmp, "ring")
         vp = subprocess.Popen([sys.executable, os.path.join(UAV_DIR, "video_worker.py"), "--ffmpeg", ff,
@@ -2154,6 +2158,7 @@ def ua24_video_worker():
                                "--seg-s", "3", "--w", "320", "--h", "240", "--fps", "10", "--kbps", "300",
                                "--encoder", "x264", "--stall-s", "3"],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=UAV_DIR)
+        strays.dies_with_parent(vp)
         ev = []
         lock = threading.Lock()
 

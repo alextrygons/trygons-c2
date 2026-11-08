@@ -203,7 +203,22 @@ def start_simulator(popen=None, env=None):
         popen = subprocess.Popen
     wd = sim_workdir(env)
     os.makedirs(wd, exist_ok=True)
-    return popen(sim_command(), cwd=wd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = popen(sim_command(), cwd=wd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _dies_with_us(proc)
+    return proc
+
+
+def _dies_with_us(proc):
+    """CL3: the simulator ends with the academy process whatever ends it (the window closed by Task Manager, a test
+    time limit) - Windows job object of groundstation/childproc.py (KILL_ON_JOB_CLOSE); nothing elsewhere."""
+    try:
+        gs = os.path.join(REPO, "groundstation")
+        if gs not in sys.path:
+            sys.path.append(gs)
+        import childproc
+        childproc.dies_with_parent(proc)
+    except Exception:
+        pass
 
 
 class SimLink(object):

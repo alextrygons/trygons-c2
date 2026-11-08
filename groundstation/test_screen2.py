@@ -81,6 +81,7 @@ os.environ["TRYGONS_HUD_LAYOUT"] = os.path.join(TMP, "hud_layout.json")
 os.environ["TRYGONS_SOUND"] = "off"
 os.environ["TRYGONS_SCREENREC"] = os.path.join(TMP, "screenrec")     # step 13n4: never this PC's real recordings
 os.environ.pop("TRYGONS_LANG", None)
+import childproc  # noqa: E402
 import i18n  # noqa: E402
 import theme  # noqa: E402
 import overlay  # noqa: E402
@@ -145,6 +146,7 @@ class Rig:
         self.sim = subprocess.Popen([os.path.join(sim_dir, "autopilot_sim.exe" if os.name == "nt" else "autopilot_sim"),
                                      "server", str(self.port), "1"], cwd=sim_dir, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
+        childproc.dies_with_parent(self.sim)        # CL3: a killed test never leaves its simulator behind
         for _ in range(50):
             try:
                 socket.create_connection(("127.0.0.1", self.port), timeout=0.2).close()

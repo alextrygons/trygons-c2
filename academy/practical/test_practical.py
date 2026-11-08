@@ -667,6 +667,11 @@ def p7():
     d = tempfile.mkdtemp(prefix="trygons_ptsim_")
     p = subprocess.Popen([exe, "server", str(port), "1"], cwd=d, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
+        import childproc                         # CL3 (groundstation/childproc.py, GS is on the path): a killed test
+        childproc.dies_with_parent(p)            # never leaves its simulator behind
+    except Exception:
+        pass
+    try:
         end = time.time() + 10
         while True:
             try:

@@ -27,6 +27,8 @@ OUT = os.path.join(REPO, "test_results")
 CLONE = os.path.join(OUT, "fresh_clone")
 PY = sys.executable                 # every suite of the clone runs with THIS Python (RUN_ACCEPTANCE.bat picks it)
 STEPS = []
+sys.path.insert(0, os.path.join(REPO, "tools"))
+import strays  # noqa: E402  (CL3: job object per step, leftover processes reported; the clone is inside this repo)
 
 # AM4-r3: the ground-station suites (test_driver.py, the screens) draw with Pillow - a Python without it fails them
 # with misleading HUD messages hours into the run. Fail EARLY and say which Python to use.
@@ -43,16 +45,45 @@ def step(name, ok, detail, dt):
     print("%s %-45s %6.0f s  %s" % ("PASS" if ok else "FAIL", name, dt, detail[:200]), flush=True)
 
 
-def run(args, cwd, timeout=7200, stdin_null=True):
+def run(args, cwd, timeout=7200, stdin_null=True, tree=True):
+    """One step. tree (CL3): the step runs in its own job object - a TIMEOUT ends the step AND everything it started
+    (tools/check.sh's simulators, a test's workers ...; subprocess.run's timeout alone kills only the direct child),
+    and a project process the step left behind after a NORMAL end is reported ("LEFTOVER PROCESSES", rc -3 = the
+    step fails) and then ended with the job. tree=False for demo.py start / stop: the demo MUST outlive its starter
+    (STOP_DEMO / demo.py stop ends it; what it leaves is the acceptance runner's leftover check)."""
     t0 = time.time()
+    if not tree:
+        try:
+            r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                               stdin=subprocess.DEVNULL if stdin_null else None)
+            return r.returncode, (r.stdout or "") + (r.stderr or ""), time.time() - t0
+        except subprocess.TimeoutExpired as e:
+            return -1, "TIMEOUT %s" % e, time.time() - t0
+        except OSError as e:
+            return -2, "cannot start %s: %s" % (args[0], e), time.time() - t0
+    before = {p.key() for p in strays.ours()}
+    job = strays.Job()
+    p = None
     try:
-        r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-                           stdin=subprocess.DEVNULL if stdin_null else None)
-        return r.returncode, (r.stdout or "") + (r.stderr or ""), time.time() - t0
+        p = job.popen(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                      stdin=subprocess.DEVNULL if stdin_null else None)
+        out, _ = p.communicate(timeout=timeout)
+        rc, out = p.returncode, out or ""
+        left = [x for x in strays.ours() if x.key() not in before and x.key() not in strays.demo_keys()]
+        if left:
+            out += "\nLEFTOVER PROCESSES after this step (CL3): " + "; ".join(
+                "%s PID %d -- %s" % (x.name, x.pid, x.cmd[:120]) for x in left)
+            if rc == 0:
+                rc = -3
+        return rc, out, time.time() - t0
     except subprocess.TimeoutExpired as e:
+        job.kill(p)
         return -1, "TIMEOUT %s" % e, time.time() - t0
     except OSError as e:                                    # e.g. the program was not built
         return -2, "cannot start %s: %s" % (args[0], e), time.time() - t0
+    finally:
+        job.kill(p)                                         # the reported leftovers end here (never stay behind)
+        job.close()
 
 
 def last(text, pat):
@@ -130,7 +161,7 @@ def main():
     if busy:
         step("START_DEMO.bat", False, "skipped: ports %s in use (another demo running?)" % busy, 0.0)
     else:
-        rc, out, dt = run([PY, os.path.join("demo", "demo.py"), "start"], CLONE, timeout=300)
+        rc, out, dt = run([PY, os.path.join("demo", "demo.py"), "start"], CLONE, timeout=300, tree=False)
         ok = rc == 0 and "The demo is running" in out
         time.sleep(15)
         up = []
@@ -139,7 +170,7 @@ def main():
             s.settimeout(0.5)
             up.append(s.connect_ex(("127.0.0.1", p)) == 0)
             s.close()
-        rc2, out2, dt2 = run([PY, os.path.join("demo", "demo.py"), "stop"], CLONE, timeout=120)
+        rc2, out2, dt2 = run([PY, os.path.join("demo", "demo.py"), "stop"], CLONE, timeout=120, tree=False)
         step("START_DEMO (demo.py start) from the clone", ok and all(up),
              "%s; ports up %s; %s" % (last(out, "charts|vision|started|did not|MISSING"), up, last(out2, "stopped")),
              dt + 15)

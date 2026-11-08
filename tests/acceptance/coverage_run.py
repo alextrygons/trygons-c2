@@ -25,6 +25,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 OUT = os.path.join(REPO, "test_results")
 COV = os.path.join(OUT, "cov")
+sys.path.insert(0, os.path.join(REPO, "tools"))
+import strays  # noqa: E402  (CL3)
 PY = sys.executable
 GCC = "gcc"
 
@@ -37,9 +39,18 @@ SAFETY_PY = ["gateway/stations.py", "gateway/avoid.py", "gateway/shallow.py", "g
 
 
 def sh(args, cwd=REPO, timeout=7200):
+    """CL3: in a job object - a timeout ends the suite AND everything it started (a suite's simulators), and a
+    process the suite left behind never outlives this step."""
     t0 = time.time()
-    r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    return r, time.time() - t0
+    job = strays.Job()
+    p = None
+    try:
+        p = job.popen(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out, err = p.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(args, p.returncode, out, err), time.time() - t0
+    finally:
+        job.kill(p)
+        job.close()
 
 
 # --------------------------------------------------------------------------- C --

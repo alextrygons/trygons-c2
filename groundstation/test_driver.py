@@ -92,6 +92,7 @@ TMP = __import__("tempfile").mkdtemp(prefix="trygons_drv_")
 os.environ["TRYGONS_GS_SETTINGS"] = os.path.join(TMP, "gs_settings.json")      # fresh HUD settings every run
 os.environ["TRYGONS_HUD_LAYOUT"] = os.path.join(TMP, "hud_layout.json")
 sys.path.insert(0, HERE)
+import childproc  # noqa: E402
 import app as A  # noqa: E402
 import driver  # noqa: E402
 import proto  # noqa: E402
@@ -151,6 +152,7 @@ def main():
     port = free_port()
     sim = subprocess.Popen([exe, "server", str(port), "1"], cwd=sim_dir, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
+    childproc.dies_with_parent(sim)             # CL3: a killed test never leaves its simulator behind
     root = None
     try:
         for _ in range(50):

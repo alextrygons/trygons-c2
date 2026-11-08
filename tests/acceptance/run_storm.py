@@ -17,6 +17,8 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+import strays  # noqa: E402  (CL3)
 OUT = os.path.join(REPO, "test_results")
 EXE = os.path.join(OUT, "storm.exe")
 NAMES = {}
@@ -59,8 +61,9 @@ def main():
         for f in os.listdir(wdir):
             if f.startswith("nv") and f.endswith(".bin"):
                 os.remove(os.path.join(wdir, f))
-        procs.append((subprocess.Popen([EXE, str(n), str(a.seed + w * per)], stdout=log, stderr=subprocess.STDOUT,
-                                       cwd=wdir), log))
+        p = subprocess.Popen([EXE, str(n), str(a.seed + w * per)], stdout=log, stderr=subprocess.STDOUT, cwd=wdir)
+        strays.dies_with_parent(p)            # CL3: a killed runner (time limit) takes its storm workers with it
+        procs.append((p, log))
     for p, log in procs:
         p.wait()
         log.close()

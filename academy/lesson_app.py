@@ -412,6 +412,12 @@ class LessonWindow(object):
                 self.sim.link.close()
             except Exception:
                 pass
+        if self.proc is not None:                # CL3: the simulator THIS window started ends with the window
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+            self.proc = None
         try:
             self.root.destroy()
         except tk.TclError:

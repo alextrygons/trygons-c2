@@ -1295,6 +1295,8 @@ class _TestSim(object):
         self.dir = tempfile.mkdtemp(prefix="trygons_acsim_")
         self.p = subprocess.Popen([exe, "server", str(self.port), "1"], cwd=self.dir, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
+        import simguard
+        simguard._dies_with_us(self.p)          # CL3: a killed test never leaves its simulator behind
         import time
         end = time.time() + 10
         while True:
