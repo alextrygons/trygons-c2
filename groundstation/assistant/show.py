@@ -34,19 +34,26 @@ def cut(text, n):
 MIN_STMT = 40             # the least a shortened STATEMENT keeps on a line (below it the short "has a restriction" line)
 
 
-def cut_answer(text, n, stmts=(), fallback=""):
+def cut_answer(text, n, stmts=(), fallback="", limited=None):
     """AM4-r6 MED-1 (review of a8bb45f): an answer that is a JOINED unit - a manual statement + the sentence(s) that
     LIMIT it («... είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα.») - is never END-cut on a line: the plain cut() dropped
     exactly the limiting sentence (196 of 330 joined units on screen 1's notice, 121 on screen 2's message line).
     `stmts` = the statement piece(s) (answer "stmts"): the text around them (the limits) is kept WHOLE and only the
     statement(s) are shortened in the middle of the line; when less than MIN_STMT characters would remain for a
     statement, `fallback` (the short «has a restriction - see the panel» line) is returned instead of a cut that
-    could lose a limit. Without `stmts` (a single sentence, a can't-find) = cut()."""
+    could lose a limit. Without `stmts`: a plain sentence = cut(); AM4-r9 (the opus review of 09d086c, safety MED-1):
+    a SINGLE limiting sentence (`limited`, default has_limit(text): a limiting word in it) is NEVER end-cut either -
+    the fallback, or the WHOLE text when there is no fallback - so no caller of this helper can lose a limit by
+    characters (the folded panel did: 102 en / 76 el index sentences lost their limit clause at NOTICE_MAX)."""
     t = " ".join((text or "").split())
     if len(t) <= n:
         return t
     sts = [" ".join(s.split()) for s in (stmts or ()) if s and " ".join(s.split()) in t]
     if not sts:
+        if limited is None:
+            limited = has_limit(t)
+        if limited:
+            return fallback or t
         return cut(t, n)
     # the line = fixed parts (the limits, kept whole) + the statements sharing what is left
     parts, rest = [], t
@@ -62,6 +69,18 @@ def cut_answer(text, n, stmts=(), fallback=""):
         return fallback or cut(t, n)
     out = "".join(p if k == "fixed" else cut(p, budget) for k, p in parts)
     return " ".join(out.split())
+
+
+def panel_answer(text, n, stmts=()):
+    """AM4-r9 (the opus review of 09d086c, safety MED-1): the answer text on screen 2's PANEL "assistant" - the one
+    place whose fallback lines point TO («... see the panel "Assistant"»), so it must never hide a limit itself. A
+    LIMITING answer (has_limit: a joined unit or a limiting word) is returned WHOLE at every fold step (the panel
+    wraps it; a window too small folds the passage or collapses the panel to its header - it never cuts the answer);
+    a plain answer is cut at n (PANEL_ANSWER_MAX, the folded panel NOTICE_MAX) with the ellipsis as before."""
+    t = " ".join((text or "").split())
+    if has_limit(t, stmts):
+        return t
+    return cut(t, n)
 
 
 def pixel_cut(text, room, measure):

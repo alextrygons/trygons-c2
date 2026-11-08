@@ -4122,7 +4122,10 @@ else)
     in pixels with the place's own font, never end-cut; a limiting answer is
     never shortened by characters first). The notice box of a 1366-pixel
     screen is narrow, so there you will mostly see that short line - the
-    panel has the full text.
+    panel has the full text. The panel itself shows an answer with a limit
+    WHOLE at every fold state (step AM4-r9: a small window folds the passage
+    or collapses the panel to its header, it never cuts the answer), and the
+    Tools window's line is re-fitted after a text-size ("Aa") change.
   * The small model's picks are partly positional. Since step AM4-r8 (the
     owner's decision W129, 2026-11-08) the instruction is the "worked
     example" one (one solved example with real manual sentences, no digit

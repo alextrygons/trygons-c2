@@ -4057,16 +4057,22 @@ def as34():
     out["the statement is shortened in the middle, the limit whole, within the length"] = c.endswith(lim) and \
         "…" in c and len(c) <= 160 and c.startswith("The relay is switched")
     out["too little room = the fallback line"] = show.cut_answer(a, len(lim) + 20, [st], "FALLBACK") == "FALLBACK"
-    out["without stmts = cut(), a short answer untouched"] = show.cut_answer(a, 100) == show.cut(a, 100) and \
+    # AM4-r9 MED-1: without stmts a PLAIN sentence = cut(); a single LIMITING sentence (has_limit) = the fallback, or
+    # the whole text when there is no fallback - never an end-cut (the old cut() lost the "NEVER" clause)
+    plain = "The map zooms with the wheel and the boat stays in the centre of the window " * 3 + "always."
+    out["without stmts: a plain sentence = cut(), a limiting one = the fallback / whole, a short answer untouched"] = \
+        show.cut_answer(plain, 100) == show.cut(plain, 100) and show.cut_answer(a, 100) == a and \
+        show.cut_answer(a, 100, (), "FALLBACK") == "FALLBACK" and lim not in show.cut(a, 100) and \
+        show.cut_answer(a, 100, (), "FALLBACK", limited=False) == show.cut(a, 100) and \
         show.cut_answer(a, 1000, [st], "F") == a and show.cut_answer("Short.", 50, ["Short."], "F") == "Short."
     two = show.cut_answer(a + " " + a, 330, [st, st], "FALLBACK")
     out["two statements share the budget, both limits whole"] = two.count(lim) == 2 and two.count("…") == 2 and \
         len(two) <= 332
     # the station wires it: both screen lines take cut_answer with stmts + the 'more' line, the panel too
     src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
-    out["app.py: message line + notice + panel use cut_answer(stmts) and add asst.more_limits"] = \
-        src.count("asst_show.cut_answer(") >= 2 and 'T("asst.more_limits")' in src and \
-        'T("asst.answer_limited")' in src and "asst_show.cut(a," not in src and \
+    out["app.py: the message line + notice use cut_answer, the panel show.panel_answer (AM4-r9), asst.more_limits"] = \
+        src.count("asst_show.cut_answer(") >= 1 and "asst_show.panel_answer(" in src and \
+        'T("asst.more_limits")' in src and 'T("asst.answer_limited")' in src and "asst_show.cut(a," not in src and \
         "self.asst_shown = (line(" in src and "short = line(" in src
     # ---- AM4-r7 (review of b1a0138, MED): the two ONE-LINE places cut by PIXELS, cut_answer by CHARACTERS - the HUD
     # notice box is 0.215 x W wide and draws at f_norm bold (hud_sizes(H)["norm"] x the "Aa" scale), the bar's message
@@ -4222,7 +4228,7 @@ def as34():
                     # bar as a cut line; the NEW line = the uncut sentence through fit_line (whole / fallback)
                     p8["long_single"] += 1
                     tail = a[-25:]
-                    old_short = show.cut_answer(a, max(80, show.LINE_MAX))
+                    old_short = show.cut(a, max(80, show.LINE_MAX))     # (the OLD line(): cut_answer = cut() then)
                     old_full = i18n.TL(lang, "asst.answer", a=old_short, cite="")
                     new_full = i18n.TL(lang, "asst.answer", a=a, cite="")
                     fbs = [i18n.TL(lang, "asst.answer", a=limited[lang], cite=""), limited[lang],
@@ -4277,8 +4283,72 @@ def as34():
         "if is_limited:\n                return a + more" in src and \
         'is_limited = info.get("src") not in ("cant_find", "passage") and asst_show.has_limit(a, stmts)' in src and \
         "return fallbacks[0] if limited else full" in dsrc
+    # ---- AM4-r9 (the opus review of 09d086c, safety MED-1): the PANEL - the place the one-line fallbacks point TO
+    # («... see the panel "Assistant"») - end-cut a SINGLE limiting sentence at its fold step 2 (cut_answer with no
+    # stmts = cut() at NOTICE_MAX 120) and could lose a long one at PANEL_ANSWER_MAX 320 too (MANUAL.txt 334-342 "...
+    # CONFIRM within 10 s" lost the UNCREWED no-CONFIRM clause; MANUAL_EL 803-815, 506-517). Sweep over EVERY pick of
+    # both indexes (joined units + single sentences) at both panel lengths: a limiting pick is shown WHOLE
+    # (show.panel_answer), a plain pick cut within the length; the mutation = the old panel path (cut() for a single
+    # sentence, cut_answer for a joined unit) loses the limit clause / shows the self-referential fallback
+    p9 = {"picks": 0, "limiting": 0, "checks": 0, "whole": 0, "plain_cut": 0, "lost": 0, "old_lost": 0,
+          "old_fallback_on_panel": 0, "over": 0}
+    p9bad = []
+    for lang in ("el", "en"):
+        ps = index.load(lang)["passages"]
+        for i, p in enumerate(ps):
+            for u in A.pick_units([dict(p, after=index.following(ps, i))]):
+                st = u.get("stmt")
+                a = A._ended(u["text"])
+                sts = [st] if st and a.startswith(st) else []
+                p9["picks"] += 1
+                lim_flag = show.has_limit(a, sts)
+                p9["limiting"] += lim_flag
+                limit = a[len(st):].strip() if sts else a[-25:]          # the limiting sentence(s) / the last clause
+                for nn in (show.NOTICE_MAX, show.PANEL_ANSWER_MAX):
+                    p9["checks"] += 1
+                    shown = show.panel_answer(a, nn, sts)
+                    old = show.cut_answer(a, nn, sts, limited[lang]) if sts else show.cut(a, nn)
+                    if lim_flag:
+                        if shown == show.one_line(a) and limit in shown:
+                            p9["whole"] += 1
+                        else:
+                            p9["lost"] += 1
+                            if len(p9bad) < 6:
+                                p9bad.append((lang, p["id"], nn, shown[:60]))
+                        if len(show.one_line(a)) > nn:
+                            if old == limited[lang]:
+                                p9["old_fallback_on_panel"] += 1
+                            elif limit not in old:
+                                p9["old_lost"] += 1
+                    else:
+                        if len(shown) <= nn + 1 and (shown == show.one_line(a) or shown.endswith("…")):
+                            p9["plain_cut"] += 1
+                        else:
+                            p9["over"] += 1
+                            if len(p9bad) < 6:
+                                p9bad.append((lang, p["id"], nn, "plain over the length", shown[:60]))
+    out["AM4-r9 MED-1: %d picks of both indexes (%d limiting) x NOTICE_MAX / PANEL_ANSWER_MAX = %d panel checks: every "
+        "limiting pick WHOLE on the panel (%d), every plain pick within the length (%d), lost %d, over %d" % (
+            p9["picks"], p9["limiting"], p9["checks"], p9["whole"], p9["plain_cut"], p9["lost"], p9["over"])] = \
+        p9["lost"] == 0 and p9["over"] == 0 and not p9bad and p9["limiting"] > 500 and p9["whole"] > 1000
+    out["AM4-r9 mutation: the old panel path loses the limit clause %d times (+ %d self-referential fallback lines "
+        "on the panel)" % (p9["old_lost"], p9["old_fallback_on_panel"])] = p9["old_lost"] > 100
+    # the pure helper: a limiting sentence whole at any n, a plain one cut; the station wires it (panel_answer in the
+    # panel, cut_answer keeps the fold-2 NOTICE_MAX for a plain answer only)
+    el_lim = "ΣΗΜΑΝΤΙΚΟ: οι χάρτες βάθους, το AIS, η κάμερα και οι επικαλύψεις AR είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα."
+    hst = "The relay is switched by the launch sequence " + "with many words in the statement " * 6 + "indeed."
+    hja = hst + " It is NEVER switched by a station."
+    out["panel_answer: a limiting sentence whole at 60 / 120 / 320, a plain one cut at a word, a joined unit whole"] = \
+        show.panel_answer(el_lim, 60) == el_lim and show.panel_answer(el_lim, 120) == el_lim and \
+        show.panel_answer(el_lim, 320) == el_lim and "ΔΕΝ είναι για ναυσιπλοΐα." not in show.cut(el_lim, 60) and \
+        show.panel_answer(plain, 100) == show.cut(plain, 100) and show.panel_answer(plain, 100).endswith("…") and \
+        show.panel_answer(hja, 100, [hst]) == hja
+    out["app.py: the panel draws show.panel_answer (never cut_answer / cut) at every fold step"] = \
+        "asst_show.panel_answer(ans.get(\"a\") or \"\", amax, ans.get(\"stmts\") or ())" in src and \
+        src.count("asst_show.cut_answer(") == 1
     report("AS34 no display cut loses a joined unit's limiting sentence (characters AND pixels)", all(out.values()),
-           "%s; %s; %s; %s; problems %s %s %s" % (out, n, px, p8, bad[:4] or "none", pbad or "none", p8bad[:6] or "none"))
+           "%s; %s; %s; %s; %s; problems %s %s %s %s" % (out, n, px, p8, p9, bad[:4] or "none", pbad or "none",
+                                                           p8bad[:6] or "none", p9bad or "none"))
 
 
 class FakeLamps:
@@ -5026,8 +5096,83 @@ def as28(rig):
         ap.asst_auto_fold = 2                                   # the folded panel (NOTICE_MAX): the limit still whole
         ap.render(force=True)
         an = ts.op(ap, "asst_a")
+        # AM4-r9 MED-1: a joined unit on the panel = WHOLE at every fold step, never the self-referential fallback
         out["joined unit: the folded panel keeps the limit (or the short restriction line)"] = an is not None and (
             lim in an["s"] or an["s"] == i18n.TL("el", "asst.answer_limited"))
+        out["joined unit: the folded panel shows the WHOLE unit (AM4-r9, never the 'see the panel' line)"] = \
+            an is not None and lim in an["s"] and an["s"] == show.one_line(ja)
+        # AM4-r9 MED-1 (the opus review of 09d086c): a SINGLE limiting sentence (no stmts) longer than NOTICE_MAX and
+        # PANEL_ANSWER_MAX: the panel shows it WHOLE at fold 0 and at the folded step 2 (before: cut_answer -> cut()
+        # end-cut it at 120 characters = the limit clause lost exactly where the one-line fallbacks send the operator)
+        single = "Το ρελέ της καταπακτής το ανοίγει μόνο η ακολουθία εκτόξευσης " + "με πολλές λέξεις στην πρόταση " * 12 + \
+                 "και ΠΟΤΕ δεν το ανοίγει σταθμός."
+        tail = "ΠΟΤΕ δεν το ανοίγει σταθμός."
+        a.answer = dict(info, a=single, speak=True, stmts=[])
+        ap.asst_on_answer(single, a.answer)
+        res = {}
+        for fold in (0, 2):
+            ap.asst_auto_fold = fold
+            ap.render(force=True)
+            an = ts.op(ap, "asst_a")
+            res[fold] = an is not None and tail in an["s"] and "…" not in an["s"] and an["s"] == show.one_line(single)
+        out["single limiting sentence > 320 chars: WHOLE on the panel at fold 0 and at fold 2 (AM4-r9); the old cut "
+            "lost its clause"] = all(res.values()) and len(single) > show.PANEL_ANSWER_MAX and \
+            tail not in show.cut(single, show.NOTICE_MAX) and tail not in show.cut(single, show.PANEL_ANSWER_MAX)
+        ap.asst_auto_fold = 0
+        a.answer = dict(info, a=ja, speak=True, stmts=[stmt], more=True)
+        ap.asst_on_answer(ja, a.answer)
+        ap.render(force=True)
+        # AM4-r9 MED-2 (the opus review of 09d086c): the Tools label is re-fitted after an "Aa" text-size change (its
+        # FONT grows, its width does not: no <Configure>) - a limiting answer line that fit WHOLE at normal size must
+        # become the fallback line at large, never stay as a line the label clips at its end; back at normal = whole
+        import tkinter.font as tkf
+        import theme
+        geo0, state0 = ap.tools.geometry(), ap.tools.state()
+        size0 = theme.text_size()
+        try:
+            theme.set_text_size("normal")
+            ex_el = ("ΣΗΜΑΝΤΙΚΟ: οι χάρτες βάθους, το AIS, η κάμερα και οι επικαλύψεις AR είναι βοηθήματα. "
+                     "ΔΕΝ είναι για ναυσιπλοΐα.")
+            ex_tail = "ΔΕΝ είναι για ναυσιπλοΐα."
+            a.answer = dict(info, a=ex_el, speak=True, stmts=[])
+            ap.asst_on_answer(ex_el, a.answer)
+            full_line = ap.asst_line["full"]
+            f_norm = tkf.Font(font=ap.tools_msg.cget("font"))
+            m_norm = f_norm.measure(full_line)
+            width = int(m_norm + 8 + min(40, m_norm * 0.05))      # fits at normal, not at large (x 1.2)
+            ap.tools.deiconify()
+            ap.tools.geometry("%dx%d+0+0" % (width, 500))
+            rig.pump(0.6, lambda: abs(ap.tools_msg.winfo_width() - width) <= 2)
+            room = ap.tools_msg.winfo_width() - 8
+            at_normal = ap.tools_msg.cget("text")
+            pre_ok = m_norm <= room and ex_tail in at_normal and at_normal == full_line
+            # the re-fit must NOT depend on a <Configure> reaching the label (Tk sends one here only because the
+            # line HEIGHT changes with the font; the same height / a theme change sends none): the binding is taken
+            # off for this check, so text_size_changed's own call is the only way the label can be re-fitted
+            ap.tools_msg.unbind("<Configure>")
+            theme.set_text_size("large")                   # -> App.text_size_changed -> rescale_tree + the re-fit
+            rig.pump(0.3)
+            f_large = tkf.Font(font=ap.tools_msg.cget("font"))
+            at_large = ap.tools_msg.cget("text")
+            room_l = ap.tools_msg.winfo_width() - 8
+            overflow = f_large.measure(full_line) > room_l          # the mutation: the old text would be clipped
+            large_ok = at_large != full_line and at_large in ap.asst_line["fallbacks"] + [show.pixel_cut(
+                ap.asst_line["fallbacks"][-1], room_l, f_large.measure)] and f_large.measure(at_large) <= room_l
+            theme.set_text_size("normal")
+            rig.pump(0.3)
+            back_ok = ap.tools_msg.cget("text") == full_line
+            out["Tools label after Aa large: the whole line at normal (%d px in %d), the fallback at large (the old "
+                "line would overflow: %s), whole again at normal" % (m_norm, room, overflow)] = \
+                pre_ok and overflow and large_ok and back_ok and f_large.measure(full_line) > m_norm
+        finally:
+            ap.tools_msg.bind("<Configure>", ap._tools_msg_resize)
+            theme.set_text_size(size0)
+            ap.tools.geometry(geo0)
+            if state0 == "withdrawn":
+                ap.tools.withdraw()
+        a.answer = dict(info, a=ja, speak=True, stmts=[stmt], more=True)
+        ap.asst_on_answer(ja, a.answer)
+        ap.render(force=True)
         ap.asst_auto_fold = 0
         out["cut at a word"] = show.cut("alpha beta gamma delta", 12) == "alpha beta…" and \
             show.cut("short", 12) == "short"

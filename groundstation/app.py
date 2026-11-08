@@ -504,6 +504,7 @@ class App:
         self.draw_ais()
         self.draw_vision()
         self.draw_network()
+        self._tools_msg_resize()                    # AM4-r9 MED-2: the answer line re-fitted after the switch too
         self.render(force=True)
 
     def set_lang(self, lang):
@@ -663,7 +664,12 @@ class App:
             p.br()
             return
         amax = asst_show.PANEL_ANSWER_MAX if self.asst_auto_fold < 2 else asst_show.NOTICE_MAX
-        p.text(asst_show.cut_answer(ans.get("a") or "", amax, ans.get("stmts") or (), T("asst.answer_limited")),
+        # AM4-r9 (the opus review of 09d086c, safety MED-1): a LIMITING answer is shown WHOLE on the panel at EVERY
+        # fold step (show.panel_answer) - the one-line places' fallback says «see the panel "Assistant"», so the
+        # panel must never hide the limit itself (the folded step 2 end-cut a single limiting sentence at NOTICE_MAX
+        # through cut_answer's cut() fallback). Fold step 2 ("the answer cut short") therefore shortens only a PLAIN
+        # answer; a limiting one that still does not fit goes on to step 3 (the header only, whole on a click).
+        p.text(asst_show.panel_answer(ans.get("a") or "", amax, ans.get("stmts") or ()),
                "label", bold=True, tag="asst_a", wrap=0.24)      # (AM4-r6 MED-1: the limit is never cut off)
         p.br()
         if ans.get("more"):                     # AM4-r5: the pick was cut at the cap after its first limit
@@ -3545,6 +3551,7 @@ class App:
             theme.style_tree(w)
         theme.apply_ttk(self.root)
         self.cv.configure(bg=C["bg"])
+        self._tools_msg_resize()                    # AM4-r9 MED-2: style_tree may change the label's font
         self.mapwin.redraw()
         self.render(force=True)
 
@@ -3830,6 +3837,10 @@ class App:
         the tools window, screen 1 and every dialog are Toplevels UNDER it, so they are rescaled once (13n1 review
         M1: rescaling the tools window again scaled it twice = ratio squared)."""
         theme.rescale_tree(self.root, ratio)
+        # AM4-r9 (the opus review of 09d086c, safety MED-2): the Tools label's FONT just changed but its width did not
+        # (no <Configure>), so the assistant's answer line fitted at the old size could now be clipped at its end =
+        # the limit lost; re-fit it with the new font at once (the same after a theme / language change below)
+        self._tools_msg_resize()
         self.render(force=True)
 
     # --- screen 2 panels (overlay.py) ---------------------------------------------------------------------

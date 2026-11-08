@@ -1261,6 +1261,57 @@ not hold on the real screen 2 in two cases, and the line it judged was already c
   gs_settings.json entry); AS34's prefix part uses the W79 hint and «ΜΙΛΑ» texts of the lang files directly (the
   real bar_items path is driven once in AS28 with a patched confirm_hint).
 
+### 5l. The panel itself and the Tools label after "Aa" (step AM4-r9, the opus review of 09d086c; station / tests / docs only, NO app / hal / gateway logic change) - the LAST display-safety fix (LOOP RULE 7)
+
+The review of 09d086c (AM4-r8) found TWO safety MEDs (no HIGH), both display places where a limit could still be hidden:
+
+- MED-1 THE PANEL END-CUT A SINGLE LIMITING SENTENCE: `app.panel_assistant` cut the answer with `cut_answer(a, amax,
+  stmts, limited)` - PANEL_ANSWER_MAX 320 whole, NOTICE_MAX 120 at the layout's fold step 2 - and cut_answer WITHOUT
+  stmts (a single sentence) fell back to the plain `cut()` = an END-cut: MANUAL.txt 334-342 "... CONFIRM within 10 s"
+  lost the UNCREWED no-CONFIRM clause, MANUAL_EL 803-815 and 506-517 the same way. The panel is the ONE place the
+  one-line fallbacks point TO («Απάντηση με περιορισμό – δείτε τον πίνακα «Βοηθός»»), so it must never hide a limit
+  itself; and the joined units' fold-2 fallback WAS that very «see the panel» line, drawn on the panel (self-
+  referential). FIX: `show.panel_answer(text, n, stmts)` = a LIMITING answer (has_limit: a joined unit or a limiting
+  word) is shown WHOLE at EVERY fold step - the panel wraps it; fold step 2 ("the answer cut short") shortens only a
+  PLAIN answer, a limiting one that still does not fit goes on to step 3 (the header only; a click opens it whole) -
+  a plain answer keeps the cut at n with the ellipsis. And `show.cut_answer` itself (the helper the lines use) takes
+  `limited` (default `has_limit(text)`): without stmts a limiting sentence returns the fallback, or the WHOLE text
+  when there is none - never `cut()` - so no caller can end-cut a limiting answer by characters any more (the lines'
+  `line()` already kept a limited answer uncut since AM4-r8; the helper now agrees with it).
+- MED-2 THE TOOLS LABEL AFTER AN "Aa" CHANGE: `app.text_size_changed` ran `theme.rescale_tree` (the label's FONT
+  grows) + render, but `_tools_msg_resize` ran only on the label's <Configure> - a limiting answer line fitted whole
+  at the normal size could be left on a label whose new font no longer holds it = clipped at its end. FIX: the re-fit
+  is called explicitly after rescale_tree (and after a theme change - style_tree may change the font - and a language
+  switch). HONEST NOTE: on this PC Tk DOES send a <Configure> when the font's line HEIGHT changes (the label grows),
+  so the old code was in practice re-fitted through that path for normal -> large; the explicit call removes the
+  dependency (the same line height, or a theme that keeps the size, sends none). AS28's check therefore takes the
+  <Configure> binding OFF the label for its measurement: text_size_changed's own call is then the only re-fit, and
+  the mutation (the old body: rescale + render) FAILS it - a mutation run WITH the binding on passed, which is how
+  the note above was found.
+- MEASURED (AS34, AM4-r9 part): 2751 picks of both indexes (1413 limiting) x the two panel lengths = 5502 panel
+  checks: every limiting pick WHOLE (2826), every plain pick within its length (2676), 0 lost; the OLD panel path
+  (cut() for a single sentence, cut_answer for a joined unit) lost the limit clause 435 times (NOTICE_MAX: el 180 /
+  en 210 single sentences; PANEL_ANSWER_MAX: el 20 / en 25) and drew the self-referential fallback 273 times (105 + 159
+  at NOTICE_MAX, 6 + 3 at PANEL_ANSWER_MAX). (The review's 102 en / 76 el counted the index sentences whose LAST
+  clause carries the limit; the sweep counts every limiting pick whose last 25 characters the cut dropped.) AS28 on
+  the real station: a 380-character single limiting sentence whole on the panel at fold 0 and fold 2 (the old cut
+  lost its clause at both lengths); the joined unit whole at fold 2 (never the «see the panel» line); the Tools label
+  with the reviewer's Greek example: whole at normal (1293 px in a 1333 px label), the fallback at large (the old line
+  would overflow), whole again at normal.
+- THE REVIEWER'S LOWs (notes, under the owner's cap - LOOP RULE 7; not fixed):
+  - L1 the fewshot default (W129) was measured on the TUNING part only (one run per prompt, the 3B churn +-6 of 96);
+    the fresh set ran once with the OLD prompt and is not re-run - the new default is measured on the W84 recordings
+    or a second fresh set when they come (said in 5k / 12 / TEST_REPORT).
+  - L2 the pixel measures (fit_line / fit_message / asst_tools_msg) compare the font's measure() with the room
+    EXACTLY: no safety margin for kerning / hinting differences between the measuring font object and the drawn text
+    (Tk measures with the same font it draws; Pillow's getlength for the HUD is the renderer's own) - a line that
+    measures 1 px under the room is shown whole.
+  - L3 the Tools label has no PREFIX: the W79 «Κεντράρετε το χειριστήριο» hint and the loudhailer's «ΜΙΛΑ: ...» are
+    drawn only on screen 2's bar (fit_message); the Tools label shows the bare message (fit_line) - stated, not a gap.
+- WHAT THE MANUALS SAY NOW (MANUAL ch. 22 / MANUAL_EL ch. 17): the panel «Βοηθός» shows an answer with a limit WHOLE
+  at every fold state (a small window folds the passage or collapses the panel to its header - it never cuts the
+  answer), and the Tools window's line is re-fitted after a text-size ("Aa") change.
+
 ## 6. Speak (step AM5)
 
 - Through the station's own sound.py SoundSystem: a new level ASSISTANT below FEEDBACK, ADVISORY,

@@ -1257,7 +1257,8 @@ def lk25():
     lab_root = tk.Label(root, text="x", font=(theme.FAMILY, 20, "normal"))
     lab_tools = tk.Label(tools, text="x", font=(theme.FAMILY, 20, "normal"))
     size = lambda w: tk.font.Font(root=root, font=w.cget("font")).actual()["size"]
-    fake = types.SimpleNamespace(root=root, tools=tools, render=lambda force=False: None)
+    fake = types.SimpleNamespace(root=root, tools=tools, render=lambda force=False: None,
+                                 _tools_msg_resize=lambda: None)      # (AM4-r9: the Tools label re-fit, a no-op here)
     A.App.text_size_changed(fake, 1.2)
     once = size(lab_root) == 24 and size(lab_tools) == 24
     got_once = (size(lab_root), size(lab_tools))
