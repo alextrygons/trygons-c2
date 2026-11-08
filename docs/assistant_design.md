@@ -781,10 +781,14 @@ Where this section differs from 5c / 5d / 5e, THIS wins.
   floor (answer.EXTRACT_FLOOR = client.DEFAULT_EXTRACT_FLOOR) = the tuned one in the file. A failure names the
   question that crossed and says how to re-tune (W117: `assistant_llm_eval.py run --answer extract --floor F` on
   the tuning part, set the two constants, `floor --write` freezes the new separation; never on the held-out
-  questions). Per-language floors are allowed by the file's shape but not needed today (one floor, the English
-  in-manual scores start at 7.0 - the W112 note stands). AS29 proves the four mutations fail.
+  questions). ONE floor for both languages (AM4-r4 LOW-2 corrected this paragraph: the file holds one "floor" and
+  the code one constant; per-language floors are NOT supported - the English in-manual scores start at 7.0, the W112
+  note stands; AS29 checks the file has no per-language floor). AS29 proves the four mutations fail.
 - LOW-c paths.llm_verify's cache key = (abs path, size, mtime_ns, st_ino, st_ctime_ns): a file replaced by another
-  of the same size and mtime (a copy with `cp -p`) has another inode / change time and is hashed again.
+  of the same size and mtime (a copy with `cp -p`) has another inode / change time and is hashed again. AM4-r4
+  LOW-5, stated: on Windows st_ctime_ns is the file's CREATION time (not the inode change time), so a file replaced
+  in place keeps it; the cache is per PROCESS (a dict in paths.py), so the first load of every worker start hashes
+  the file again anyway (~2 s) - the key only saves the GPU guard's reloads inside one run.
 - LOW-d "1.500 m" / "1,500 m" SPOKEN. 5e made the checker read "1.500" as 1500 (a thousands group), so an English
   generate answer "1.500 m" for the manual's "1500 m" passes - and the voice would have read "one point five
   hundred metres". speech.normalize now turns a thousands group (1-3 digits, a separator, EXACTLY 3 digits, no more
@@ -838,6 +842,118 @@ generate 5 % (2/38; 56 % of its generated answers rejected) - the lexical checks
 writes in Greek: one more reason for the extract default (W106). (5) Latency: the GPU was shared, as in 5e; the
 held-out Greek extract median 3.1 s came from a busy PC (the heavy generate run ended just before it), the tuning
 runs 0.8 / 0.45 s. The must-mention proxy stays circular (5d); the FRESH question set of AM6 is still needed.
+
+### 5g. Review fixes of AM4-r3 (step AM4-r4, review of f3b0964; station / tools / tests / docs only)
+
+Where this section differs from 5c-5f, THIS wins.
+
+- MED-1 THE LIMIT RULE WAS CIRCULAR AND INCOMPLETE. AS25 proved "no pick leaves its limiting sentence out" with the
+  SAME answer.limits() that builds the picks, inside ONE passage only. The reviewer counted what it missed: (a) the
+  PASSAGE BOUNDARY - a pick that ends its passage while the next passage of the same chapter opens with the limit
+  (19 en / 10 el; el:267 «... μετά από 5 s.» -> «όχι συναγερμός, τίποτα άλλο δεν αλλάζει.», en:189 "tab Bench." ->
+  "Only the laptop on the USB cable ..."); (b) a following sentence that opens with a PRONOUN and carries the limit
+  but shares < 2 content words (42 en; "YES is pre-selected, so the trigger alone = a fast ACCEPT." -> "It counts
+  only when ... shown >= 0.5 s and only as a NEW press"); (c) a limit TWO sentences later sharing >= 3 words (19 en /
+  23 el) and an "Except ..." sentence BEFORE the pick. Now answer.pick_units builds the units over the CHAPTER text:
+  index.following() gives every search hit its "after" = the next FOLLOWING_N 2 manual passages of the same chapter
+  (consecutive line ranges; the worker's found hits carry them, AS22), the passage and its following passages are
+  ONE text for the sentence split (so a sentence the index builder cut at the boundary - «... κρατά τη θέση του·»
+  + «για 3 s ...» - is WHOLE again, no cut piece any more) and the chain of limiting sentences runs on into the
+  next passage; a unit that reaches into it shows that passage as passage2 (the same chapter cited once; its text
+  counts for the post-check). answer.limits(): + a sentence opening with a PRONOUN (PRONOUN_OPENERS: it / this /
+  that / these / those / they / αυτό / αυτή / αυτός / αυτά ... / έτσι) that carries a limiting word limits the
+  sentence before it whatever the shared words; the shared-word count uses limit_words() = a SMALLER stop list
+  (LIMIT_STOP: "always / only / every / μόνο / πάντα" stay content words). limits2(): a limiting sentence TWO
+  sentences after the unit sharing >= PICK_LIMIT_SHARED2 3 content words takes the sentence between along.
+  excepts(): a sentence BEFORE the pick opening with except / unless / εκτός that shares >= 2 content words begins
+  the unit. The cap PICK_JOIN_WORDS 60 refuses the WHOLE unit (the statement is not offered alone - never a cut; the
+  limiting sentence alone still is). A defined TERM passage (a definition-list line, often without a full stop) is
+  never chained to (index.following stops at a term on either side): the first build of this step glued consecutive
+  alarm definitions into one "sentence" and the post-check then refused 3 verbatim picks (el054 / el089 / el098 in
+  the first re-measure run) - found and fixed before the final run. Measured over both committed indexes (manual
+  passages): 2178 picks with the AM4-r3 rules on the chapter text -> 2014 with the AM4-r4 rules (the look-ahead 2
+  alone costs 155 picks, the pronoun rule 7, the stop list 6, "Except" before 0); 205 joined units, 84 units
+  reaching into the following passage (among them the formerly CUT boundary sentences made whole: before, they
+  were not offered at all). AS25
+  now has its OWN wider rule (I_* inside the test: own fold / stop list / limit-word list / stemming; only the
+  numeral table answer.digitize is shared, so «Δύο σταθμοί» / «στις ΔΥΟ οθόνες» is not a shared content word), over
+  the chapter text, 1-2 sentences ahead, the pronoun opener, "Except" before: REMAINING MISSES = 0 (both languages;
+  a miss would have to be listed + justified in tests/assistant/as25_misses.json - an unlisted or stale entry
+  fails). The AM4-r2 list misses > 200, the AM4-r3 rules > 40 (the reviewer's cases) = the mutations fail. Tests
+  AS21 (the pronoun / look-ahead / "Except" / boundary / cut-at-'·' / cap / no-"after" / term-stop cases), AS25
+  (14 checks).
+- MED-2 THE 2-WORD CLAUSE RELAXATION. NEG_CLAUSE_MIN 3 (AM4-r3, for AS11's tour sentence) let "In AUTO the boat
+  follows the waypoint route ... of each leg and the PC overrides it." pass against "The PC, the gateway, the copilot
+  station and the shore station can never override it." (the 2-word clause "the PC overrides it" was not judged).
+  Now a 2-content-word clause IS judged when ALL its content words (100 %) are shared with a NEGATING passage
+  sentence; a clause ending in '?' is a question = no claim (the tour text's "such as: where do I close the hatch?"
+  stays: AS11). "The PC overrides it." stays refused. AS19 probes.
+- MED-3 THE HELD-OUT DROP, HONESTLY. 5f / TEST_REPORT attributed the Greek held-out drop 18 -> 14 correct and the
+  false can't-finds 4 -> 8 to the floor. Per question (the AM4-r2 run log vs the stored AM4-r3 rows, el held-out, 38
+  in-manual): 7 LOST, 3 GAINED. Of the 7 lost: 0 by the FLOOR (the 3 held-out questions under 7.2 - el063 5.20,
+  el066 2.88, el117 6.85 - were WRONG already in AM4-r2: the floor turned 2 wrong extract answers + 1 can't-find into
+  can't-finds, cost 0 correct); 1 by the JOINED PICKS / length cap (el080: the same first sentence, now a longer
+  unit, and the second pick dropped by MAX_PICK_WORDS 45 - the must term went with it); 2 by the POST-CHECK (el077,
+  el098: src passage - the model wrote text instead of a number); 4 by the MODEL RUN (el025, el101, el108, el122: a
+  different sentence picked from a renumbered list; the 3 gained - el003, el041, el050 - the same way). The false
+  can't-find rise 4 -> 8: the floor +2 (el063, el117), the post-check +2. So the drop was mostly run-to-run variance
+  of a 3B model on a renumbered list plus the length cap, NOT the floor. STATED PLAINLY: the held-out set has now
+  been used THREE times (the AM3-r choice check, the 5e floor choice / 5f reporting, and this step's re-measure):
+  its numbers are OPTIMISTIC and are no longer a held-out measurement; a FRESH set (the owner's W89 / W84 questions)
+  is for AM6.
+- LOW-1 `assistant_index.py floor --write` is REFUSED while any off-manual TUNING question scores >= the floor (they
+  are listed; floor_blockers); `--force` writes anyway and records them in floor.json "off_manual_over" (AS29: none
+  today, a floor 2 points lower would be refused).
+- LOW-2 one floor (above, 5f corrected). LOW-3 answer.floor_value / client._floor: a bool (True = 1.0 before), a
+  NEGATIVE number (max(0, -1) = 0 switched the floor off silently), NaN or garbage = the DEFAULT 7.2; only an
+  explicit 0 = off (AS21; MANUAL / MANUAL_EL). LOW-4 _decide_pick drops a picked id whose text is already INSIDE
+  another chosen pick (the model picked the joined unit AND its limiting sentence: the unit alone, never said
+  twice; AS21). LOW-5 above (5f LOW-c).
+- GENERATE MODE = BEST EFFORT, NON-DEFAULT. The reviewer's remaining bypasses (double negation, a negation after the
+  word, unless / only / μόνο, nominalised forms) cannot be made lexically airtight. Done where cheap: an answer
+  clause with only / unless / except / μόνο / εκτός needs a top supporting passage sentence with a limiting word
+  (like the negation rule), and the BEST passage sentence putting only / unless / except directly before a shared
+  content word (limited_shared: the first content word after it, never across a comma - «ΚΟΚΚΙΝΟ μόνο για
+  συναγερμούς, ΚΙΤΡΙΝΟ για προσοχή» restricts συναγερμούς, not κίτρινο) refuses a plain answer ("the captain closes
+  the hatch" vs "ONLY the captain closes the hatch"); in extract a verbatim pick is exempt from it like the negation
+  rule. The stored llama3.2-3b GENERATE tuning runs re-scored: el 17/96 = 18 % correct (as before), rejected 22/56
+  = 39 % (38 %); en 11/33 = 33 % (36 %), rejected 16/35 = 46 % (43 %) - one more TRUE English answer refused by the
+  lexical rule. DOCUMENTED as such: the Tools page shows a CAUTION line under the model while "generate" is chosen
+  (lang asst.answer_mode.generate_warn), MANUAL / MANUAL_EL say it is best effort and not the default; W122
+  recommends it stays off by default. The rule question "picks crossing passage boundaries" = YES (MED-1).
+- RE-MEASURED (llama3.2-3b extract, the real worker, 17 of 28 layers on the GPU as in 5d-5f, the floor 7.2 in
+  force; tuning part + held-out). Said plainly: this step ran the held-out part TWICE - the first run (test_results/
+  assistant_llm/am4r4/run_extract.log: el tuning 33 % / held-out 34 %) exposed the TERM-passage gluing bug (3
+  verbatim picks refused by the post-check) and was superseded by the final run after the fix; the held-out set has
+  therefore been used FOUR times in all (MED-3 counts the earlier two) and its numbers are optimistic:
+
+| llama3.2-3b extract | part | correct | answered | precision | false can't find (floor / post-check) | post-check rejected | can't find right | quality (<= 40 words) | median ms |
+|---|---|---|---|---|---|---|---|---|---|
+| AM4-r3 (5f) | el tuning | 38/96 = 40 % | 83 % | 48 % | 16 (10 / 6) | 6/86 = 7 % | 7/7 | 81 % | 820 |
+| **AM4-r4** | el tuning | 33/96 = 34 % | 80/96 = 83 % | 33/80 = 41 % | 16 (10 / 6) | 6/86 = 7 % | 7/7 | 63/80 = 79 % | 785 |
+| AM4-r3 (5f) | en tuning | 16/33 = 48 % | 97 % | 50 % | 1 (1 / 0) | 0/32 | 5/5 | 53 % | 446 |
+| **AM4-r4** | en tuning | 15/33 = 45 % | 31/33 = 94 % | 15/31 = 48 % | 2 (1 / 1) | 1/32 = 3 % | 5/5 | 17/31 = 55 % | 447 |
+| AM4-r3 (5f) | el held-out | 14/38 = 37 % | 79 % | 47 % | 8 (3 / 5) | 5/35 = 14 % | 4/4 | 87 % | 3089 (busy) |
+| **AM4-r4** | el held-out | 16/38 = 42 % | 32/38 = 84 % | 16/32 = 50 % | 6 (3 / 3) | 3/35 = 9 % | 4/4 | 28/32 = 88 % | 806 |
+| AM4-r3 (5f) | en held-out | 7/9 = 78 % | 89 % | 88 % | 1 (1 / 0) | 0/8 | 1/1 | 88 % | 487 |
+| **AM4-r4** | en held-out | 7/9 = 78 % | 8/9 = 89 % | 7/8 = 88 % | 1 (1 / 0) | 0/8 | 1/1 | 7/8 | 476 |
+
+  PER QUESTION against the stored AM4-r3 rows (test_results/assistant_llm/am4r3_bak): el tuning 38 -> 33 = 9 lost /
+  4 gained - of the 9 lost, 7 are the MODEL picking another sentence from a renumbered, shorter list (the proxy
+  counted the old pick "correct"), 2 the joined unit / the MAX_PICK_WORDS 45 cap (the same first sentence, a longer
+  unit, the second pick dropped), 0 the floor, 0 the post-check; the gains: 2 post-check rejections that are gone
+  (the term fix), 2 other picks. en tuning 16 -> 15 (2 lost: another pick / a changed unit; 1 gained). el held-out
+  14 -> 16 (3 gained: 2 post-check rejections gone, 1 another pick; 1 lost: an echo "1. <text>" the pick parser does
+  not accept). The REJECTIONS are now the model's, not the picks': 4 of the 6 Greek tuning rejections and 1 of the
+  3 held-out ones are the model echoing the prompt's EXAMPLE "4, 9" with a list shorter than 4 (shorter lists =
+  the cap's refusals; W123 c: AM6 may put example numbers inside the list's length - measured on the fresh set,
+  never here), the others an echoed "1. <text>" the parser could not match; ONE English verbatim pick (en030) was
+  refused by the lexical number rule - the manual's own list number "1." glued to the end of a sentence ("...
+  reverse 5 -> 10 -> 15): 1.") = the price of the backstop on a true sentence, stated. Latency unchanged (785 /
+  447 ms; held-out Greek 806 ms on a quiet PC vs 5f's 3089 ms on a busy one). Honest reading: the wider limit rule
+  costs 7.5 % of the picks and ~5 points of the circular Greek "correct" proxy on the tuning part (through shorter
+  lists and the 3B model's echoes), gains 5 points on the (over-used) held-out part, keeps precision (41-50 %) and
+  brings every following exception the reviewer found INTO the spoken text; the fresh AM6 set decides.
 
 ## 6. Speak (step AM5)
 
@@ -1078,6 +1194,13 @@ runs 0.8 / 0.45 s. The must-mention proxy stays circular (5d); the FRESH questio
 - W105-W109 (AM4-r): a failed check = can't find said + the passage shown (default yes); the answer mode default
   "extract" (5d; confirm); Krikri / Meltemi in the extract mode only on a >= 8 GB GPU; unpinned model files
   refused unless `assistant_llm_unpinned`; the stricter number / negation rules' false "can't find" accepted.
+- W122 (AM4-r4): the "generate" answer mode stays a best-effort, NON-default mode (a CAUTION line on the Tools page
+  while chosen; its lexical checks cannot be made airtight) - recommended: keep extract the default, generate off by
+  default. W123 (AM4-r4): the held-out question set has been used three times (choice check, floor choice /
+  reporting, the AM4-r4 re-measure) = optimistic numbers; the look-ahead-2 limit rule costs ~8 % of the manual picks
+  (2178 -> 2014) for the exceptions it brings in; with shorter lists the 3B model more often echoes the prompt's
+  example "4, 9" (= can't find) - accept, and judge both (and a prompt example inside the list's length) on the
+  FRESH AM6 set (W84 / W89)?
 - W86 (AM1-r) a question about a SAFETY ACTION (STANDBY, e-stop, lost link, ...) with no manual hit:
   only "I can't find that in the manual", or also point to where to look? Recommended: yes, the panel
   also shows the chapter list of the manual (text only, never a guessed answer).

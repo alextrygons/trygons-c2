@@ -298,10 +298,32 @@ def floor_check(frozen=None, code_floor=None):
     return not bad, lines
 
 
+def floor_blockers(floor):
+    """AM4-r4 LOW-1: the off-manual TUNING questions that score >= the floor TODAY, per language - a floor that does
+    not separate them must not be frozen by `floor --write` (it would be frozen as "fine" with them silently left
+    out of 'below')."""
+    out = {}
+    for lang in ("el", "en"):
+        rows, _t = evaluate(lang)
+        out[lang] = [(r["id"], r["top"][0][2]) for r in rows if not r["heldout"] and not r["in_manual"] and r["top"]
+                     and r["top"][0][2] >= floor]
+    return out
+
+
 def cmd_floor(a):
     if a.write:
         from assistant import answer
+        blockers = floor_blockers(answer.EXTRACT_FLOOR)
+        over = ["%s %s scores %.2f >= the floor %.2f" % (lg, i, s, answer.EXTRACT_FLOOR)
+                for lg in ("el", "en") for i, s in blockers[lg]]
+        if over and not a.force:
+            print("FLOOR --write REFUSED (AM4-r4 LOW-1): off-manual TUNING questions reach the floor %.2f - raise the "
+                  "floor (answer.EXTRACT_FLOOR + client.DEFAULT_EXTRACT_FLOOR) or, knowingly, --force (they are then "
+                  "listed in floor.json 'off_manual_over'):" % answer.EXTRACT_FLOOR)
+            print("\n".join("  " + x for x in over))
+            return 1
         snap = floor_snapshot(answer.EXTRACT_FLOOR)
+        snap["off_manual_over"] = over                 # [] normally; --force leaves the accepted ones on record
         with open(FLOOR_FILE, "w", encoding="utf-8", newline="\n") as f:
             json.dump(snap, f, ensure_ascii=False, indent=1)
             f.write("\n")
@@ -328,7 +350,10 @@ def main(argv=None):
     e.add_argument("-v", "--verbose", action="store_true")
     e.add_argument("--tuning", action="store_true", help="only the tuning part (never shows the held-out questions)")
     fl = sub.add_parser("floor")
-    fl.add_argument("--write", action="store_true", help="freeze the current separation (after a re-tune)")
+    fl.add_argument("--write", action="store_true", help="freeze the current separation (after a re-tune); REFUSED "
+                    "while an off-manual tuning question scores >= the floor (AM4-r4 LOW-1)")
+    fl.add_argument("--force", action="store_true", help="--write anyway, the off-manual questions over the floor "
+                    "listed in floor.json 'off_manual_over'")
     a = ap.parse_args(argv)
     return {"build": cmd_build, "check": cmd_check, "ask": cmd_ask, "eval": cmd_eval, "floor": cmd_floor}[a.cmd](a)
 

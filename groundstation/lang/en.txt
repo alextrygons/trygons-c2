@@ -2202,6 +2202,7 @@ asst.src.retrieval = the manual's sentence (search only)
 asst.src.cant_find = not found in the manual
 asst.answer_mode.generate = writes 1-2 sentences from the passages (checked)
 asst.answer_mode.extract = picks manual sentences (word for word)
+asst.answer_mode.generate_warn = CAUTION: "writes" is a best-effort mode, not the default – its checks compare words, not meaning (a wrong claim made with the manual's own words can pass). Recommended: "picks manual sentences".
 asst.llm_ok = Language model: installed (tools/bin)
 asst.llm_missing = Language model: not installed – search only (python tools/get_llm.py)
 asst.llm_mode.gpu = Language model {name}: on the graphics card (GPU)

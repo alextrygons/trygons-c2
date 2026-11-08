@@ -145,13 +145,17 @@ class Assistant:
                 "extract_floor": self._floor()}
 
     def _floor(self):
+        """AM4-r3 LOW-b / AM4-r4 LOW-3 (= answer.floor_value, kept apart: the client never imports answer.py): no
+        setting / "" / a bool / a negative number / garbage = the DEFAULT 7.2 (never silently off); only an
+        explicit 0 = no floor."""
         fl = self._get("assistant_extract_floor", DEFAULT_EXTRACT_FLOOR)
         if fl is None or fl == "" or isinstance(fl, bool):
             return DEFAULT_EXTRACT_FLOOR
         try:
-            return max(0.0, float(fl))
+            v = float(fl)
         except (TypeError, ValueError):
             return DEFAULT_EXTRACT_FLOOR
+        return DEFAULT_EXTRACT_FLOOR if (v != v or v < 0) else v
 
     def models_ok(self):
         if self.stt_kind == "stub":

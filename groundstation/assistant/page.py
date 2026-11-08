@@ -181,6 +181,8 @@ def llm_line(info, installed):
     txt = T("asst.llm_mode." + mode.replace("+", "_"), name=info.get("name") or "-", why=info.get("why") or "")
     if mode != "retrieval" and info.get("answer_mode") in ("generate", "extract"):
         txt += " – " + T("asst.answer_mode." + info["answer_mode"])
+        if info["answer_mode"] == "generate":        # AM4-r4: a best-effort, NON-default mode - said on the page
+            txt += "\n" + T("asst.answer_mode.generate_warn")
     return txt
 
 

@@ -14,7 +14,11 @@ src = what is said:
                  text, <= PICK_JOIN_WORDS words) or not at all; a glued "* bullet" list longer than LONG_PICK_WORDS
                  is offered item by item; two picks from different passages cite BOTH chapters (passage2); below
                  EXTRACT_FLOOR (the best passage's search score, W112) nothing is picked - can't find said, the
-                 passage shown)
+                 passage shown; AM4-r4 MED-1: the limit is looked for up to TWO sentences ahead, a pronoun-opening
+                 limit ("It counts only ...") counts whatever the shared words, an "Except ..." before the pick
+                 begins the unit, and the chain crosses the PASSAGE BOUNDARY into the following passage(s) of the
+                 chapter (the hit's "after" from index.following; that passage is shown as passage2); the cap
+                 refuses the WHOLE unit, never a cut; a picked id already inside another chosen pick is dropped)
     "passage"    the model's answer FAILED the post-check (a name / number / negation not in the passages, the
                  wrong language) -> «Δεν βρίσκω απάντηση στο εγχειρίδιο.» is said and the best passage is SHOWN with
                  its chapter (AM4-r, the review's rule; W105; before AM4-r the passage's first sentence was said)
@@ -71,7 +75,10 @@ MAX_PICK_SENT = 30        # answer mode "extract": at most this many numbered pa
 MAX_PICK_WORDS = 45       # ... and two picked sentences longer than this together = only the first is said
 # AM4-r3 MED-1: a sentence followed by a LIMITING sentence about the same thing is offered only together with it
 PICK_LIMIT_SHARED = 2     # ... "about the same thing" = the limiting sentence shares >= 2 content words with it,
-PICK_LIMIT_SHORT = 10     #     or it is a short one (<= 10 words) that OPENS with the limiting word («ΔΕΝ είναι ...»)
+PICK_LIMIT_SHORT = 10     #     or it is a short one (<= 10 words) that OPENS with the limiting word («ΔΕΝ είναι ...»),
+#                           or (AM4-r4 MED-1 b) it OPENS with a pronoun ("It counts only ...", «Αυτό δεν ...»)
+PICK_LIMIT_SHARED2 = 3    # AM4-r4 MED-1 (c): a limiting sentence TWO sentences later sharing this many content words
+#                           takes the sentence between along into the unit
 PICK_JOIN_WORDS = 60      # ... a joined unit longer than this is NOT offered (the limiting sentence alone still is);
 #                           50..60 words are shown but spoken as the chapter intro only (speech.LONG_WORDS 50, W113)
 LONG_PICK_WORDS = 50      # AM4-r3 MED-3 / LOW-a: a glued "* bullet" list longer than this is offered item by item
@@ -451,6 +458,24 @@ NEG_MIN_FRAC = 0.4        #   >= 2 shared content words AND >= 40 % of the claus
 LIMIT_WORDS = NEG_WORDS | {"only", "μονο", "μοναχα", "except", "unless", "εκτοσ", "exclusively", "solely",
                            "αποκλειστικα"}
 LIMIT_RE = re.compile(r"(?<![\w])(?:" + "|".join(sorted(LIMIT_WORDS, key=len, reverse=True)) + r")(?![\w])|n't")
+# only / unless / except ... WITHOUT the negations: the generate post-check's "the passage limits it" rule (AM4-r4)
+ONLY_WORDS = LIMIT_WORDS - NEG_WORDS
+# AM4-r4 MED-1 (b): a sentence that OPENS with one of these speaks about the sentence before it ("It counts only
+# when ...", «Αυτό δεν ισχύει ...»): with a limiting word in it, it limits that sentence whatever the shared words
+PRONOUN_OPENERS = set("it this that these those they αυτο αυτη αυτοσ αυτα αυτεσ αυτοι αυτην αυτον αυτου αυτησ "
+                      "αυτων αυτουσ ετσι".split())
+# AM4-r4 MED-1 (c): a sentence that OPENS with one of these and is about the NEXT one limits it from the front
+# ("Except in FIRST TEST, ...": the unit begins with it)
+EXCEPT_OPENERS = {"except", "unless", "εκτοσ"}
+# the content words of the LIMIT check (the pick units): a SMALLER stop list than STOP - "always / only / every /
+# μόνο / πάντα" and the like are left in, so two sentences about the same thing share more words (AM4-r4 MED-1)
+LIMIT_STOP = set("""ο η το οι τα του τησ των τον την τη τουσ τισ και κι να θα σε στο στη στην στον στα στισ στουσ στησ
+    στου με για απο που πωσ τι ποιο ποια ποιοσ ειναι αν οτι οταν αυτο αυτη αυτοσ αυτα μου σου μασ σασ πρεπει μπορει
+    μπορειτε μπορουν εχει εχουν ειχε μετα πριν ενω οσο ωσ εωσ οπωσ αλλα ομωσ επισησ τοτε σαν εαν
+    a an the of to in on at for from by with and or is are was were be been being do does did it its this that
+    these those what which who how when where why can could should would will shall may might must there here then
+    than so if me us them they he she his her about into out up down get got have has had am any some just also
+    such as while after before over under again further once per""".split())
 # the clauses of an answer sentence (AM4-r3 MED-2: the negation rule is checked per clause - a true clause joined
 # by "and" / a comma to a false one must not carry it through)
 _CLAUSE_RE = re.compile(r"\s+(?:and|but|or|και|κι|αλλα|ομωσ)\s+|[;·]|,(?!\d)")
@@ -485,7 +510,7 @@ def negated_shared(ps, shared, window=2):
     negates "override"; AM4-r3 MED-2: a comma INSERTION after the negation - "never allowed, in any mode or
     situation, to override it" - is skipped as a whole): the manual negates the very thing the answer states. Only
     before: Greek and English put the negation in front of the verb / noun; a negation about something else in the
-    sentence is not held against the answer."""
+    sentence is not held against the answer. (AM4-r4: the "only / unless" form of the rule = limited_shared.)"""
     toks = re.findall(r"[\w']+|,", ps)
     negs = [i for i, t in enumerate(toks) if t in NEG_WORDS or t.endswith("n't")]
     for i in negs:
@@ -512,16 +537,61 @@ def limiting(normed):
     return bool(LIMIT_RE.search(normed))
 
 
+def limit_words(normed):
+    """The content words of the LIMIT check (AM4-r4 MED-1): the smaller LIMIT_STOP list, no limiting words / units /
+    numbers, >= 2 letters."""
+    return [w for w in re.findall(r"[^\W\d_]{2,}", normed) if w not in LIMIT_STOP and w not in UNITS and
+            w not in LIMIT_WORDS]
+
+
 def limits(nxt_normed, unit_normed):
     """The next sentence LIMITS the unit: limiting words + >= PICK_LIMIT_SHARED content words shared with it, or a
     SHORT sentence that OPENS with the limiting word («ΔΕΝ είναι για ναυσιπλοΐα.», "Never edit them.": no subject
-    of its own = it speaks about the sentence before it)."""
+    of its own = it speaks about the sentence before it), or (AM4-r4 MED-1 b) a sentence that OPENS with a PRONOUN
+    ("It counts only when ...", «Αυτό δεν ...»: it speaks about the sentence before it, whatever words they share)."""
     if not limiting(nxt_normed):
         return False
     words = re.findall(r"[\w']+", nxt_normed)
     if words and words[0] in LIMIT_WORDS and len(words) <= PICK_LIMIT_SHORT:
         return True
-    return _shares(content_words(nxt_normed), content_words(unit_normed)) >= PICK_LIMIT_SHARED
+    if words and words[0] in PRONOUN_OPENERS:
+        return True
+    return _shares(limit_words(nxt_normed), limit_words(unit_normed)) >= PICK_LIMIT_SHARED
+
+
+def limits2(nxt2_normed, unit_normed):
+    """A limiting sentence TWO sentences after the unit that is clearly about it (>= PICK_LIMIT_SHARED2 shared
+    content words) - the sentence between travels along (AM4-r4 MED-1 c)."""
+    return limiting(nxt2_normed) and \
+        _shares(limit_words(nxt2_normed), limit_words(unit_normed)) >= PICK_LIMIT_SHARED2
+
+
+def excepts(prev_normed, cur_normed):
+    """The sentence BEFORE opens with except / unless / εκτός and is about the current one: it limits it from the
+    front (AM4-r4 MED-1 c) - the unit begins with it."""
+    words = re.findall(r"[\w']+", prev_normed)
+    return bool(words) and words[0] in EXCEPT_OPENERS and \
+        _shares(limit_words(prev_normed), limit_words(cur_normed)) >= PICK_LIMIT_SHARED
+
+
+def limited_shared(ps, shared):
+    """The "only" form of negated_shared (AM4-r4, generate mode, best effort): only / unless / except / μόνο / εκτός
+    in the passage sentence directly before a shared content word ("ONLY the captain closes it" vs the answer's
+    "the captain closes it") - the FIRST content word after it, never across a comma (the scope of "only" is
+    short: «ΚΟΚΚΙΝΟ μόνο για συναγερμούς, ΚΙΤΡΙΝΟ για προσοχή» restricts συναγερμούς, not κίτρινο)."""
+    toks = re.findall(r"[\w']+|,", ps)
+    for i, t in enumerate(toks):
+        if t not in ONLY_WORDS:
+            continue
+        for u in toks[i + 1:]:
+            if u == ",":
+                break
+            if u in STOP or u in UNITS or u in NEG_WORDS or len(u) < 2 or u.isdigit():
+                continue
+            if any(_same(u, w) for w in shared):
+                return True
+            break
+    return False
 
 
 def clauses(normed):
@@ -617,7 +687,18 @@ def postcheck(ans, hits, terms=(), lang=None):
             units = [sn]
             cls = clauses(sn)
             if len(cls) > 1:
-                units += [cl for cl in cls if len(content_words(cl)) >= NEG_CLAUSE_MIN]
+                # AM4-r4 MED-2: a 2-content-word clause IS judged when ALL its content words are shared with a
+                # NEGATING passage sentence ("... and the PC overrides it." vs "The PC ... can never override it.");
+                # a clause ending in '?' is a question, no claim (the tour text's "such as: where do I close the
+                # hatch?", AS11)
+                negs = [w for w, ps in pcw if has_negation(ps)]
+                for cl in cls:
+                    if cl.rstrip().endswith("?"):
+                        continue
+                    ccw = content_words(cl)
+                    if len(ccw) >= NEG_CLAUSE_MIN or (len(ccw) >= 2 and any(
+                            _shares(ccw, w) == len(ccw) for w in negs)):
+                        units.append(cl)
             for cl in units:
                 ccw = content_words(cl)
                 cscored = [(_shares(ccw, w), w, ps) for w, ps in pcw]
@@ -630,6 +711,14 @@ def postcheck(ans, hits, terms=(), lang=None):
                         probs.append("negation not in the passage sentence: %s" % cl[:60])
                         break
                     continue
+                if limiting(cl):                     # AM4-r4 (generate): an "only / unless / except" unit needs a
+                    if cl is sn and len(units) > 1:  #   top passage sentence with a limiting word too
+                        continue
+                    cbest = [ps for sc, _w, ps in cscored if sc == ctop and sc > 0]
+                    if cbest and not any(limiting(ps) for ps in cbest):
+                        probs.append("only / unless not in the passage sentence: %s" % cl[:60])
+                        break
+                    continue
                 for sc, w, ps in cscored:            # a plain unit: no passage sentence ABOUT THE SAME THING may
                     if sc <= 0:                      #   negate a shared word - the best one(s), and (AM4-r2 MED-2)
                         continue                     #   EVERY sentence sharing >= NEG_MIN_SHARED content words and
@@ -640,6 +729,11 @@ def postcheck(ans, hits, terms=(), lang=None):
                     shared = [x for x in ccw if any(_same(x, o) for o in w)]
                     if negated_shared(ps, shared):
                         probs.append("the passage sentence negates it: %s" % cl[:60])
+                        break
+                    # AM4-r4 (generate, best-effort): the BEST passage sentence restricts the very word with
+                    # only / unless / except / μόνο / εκτός - "ONLY the captain closes it" vs "the captain closes it"
+                    if sc == ctop and limited_shared(ps, shared):
+                        probs.append("the passage sentence limits it (only / unless / except): %s" % cl[:60])
                         break
                 else:
                     continue
@@ -673,7 +767,15 @@ def prompt(q, hits, lang):
 
 
 def pick_sentences(hits, min_words=4):
-    """Answer mode "extract": the numbered passage sentences the model may pick -> [(sentence, hit)]. Only WHOLE
+    """[(unit text, hit)] of pick_units() - the form the prompt and the tests use."""
+    return [(u["text"], u["hit"]) for u in pick_units(hits, min_words)]
+
+
+def pick_units(hits, min_words=4):
+    """Answer mode "extract": the numbered passage sentences the model may pick -> [{"text", "hit", "after"}]
+    ("after" = the following passage(s) of the same chapter the unit reaches into, AM4-r4 MED-1 a: a pick that
+    ends its passage is offered together with the limiting sentence that OPENS the next passage - the hit's
+    "after" list from index.following(); its passage is then shown as passage2). Only WHOLE
     sentences: a capital / digit / quote first, brackets balanced, at least min_words words, and (AM4-r2 MED-1)
     never a piece that ends in a ';' / '·' clause mark (sentences() keeps such clauses joined; a passage cut by the
     index builder in the middle of a '·'-list can still end so - that last piece is not offered). The pieces that
@@ -684,38 +786,84 @@ def pick_sentences(hits, min_words=4):
     consecutive manual text) when the unit stays within PICK_JOIN_WORDS, else not at all - the limiting sentence
     itself stays offered. AM4-r3 MED-3 / LOW-a: a single piece longer than LONG_PICK_WORDS that is a glued "* bullet"
     list is offered item by item (each item byte-identical manual text; the limiting rule applies among the items
-    too). Test AS25 proves all of it over the whole index."""
+    too). AM4-r4 MED-1: the limit is looked for up to TWO sentences ahead (limits2: >= PICK_LIMIT_SHARED2 shared
+    words takes the sentence between along), a pronoun-opening limit ("It counts only ...") counts whatever the
+    shared words, an "Except ..." sentence right BEFORE the pick that is about it begins the unit (excepts), and the
+    chain crosses the passage boundary into the following passage(s) of the chapter; the cap PICK_JOIN_WORDS refuses
+    the WHOLE unit (never a cut). Test AS25 proves all of it over the whole index with its own rule."""
     out = []
     for h in hits[:N_PASSAGES]:
-        for unit, joined in _units(sentences(h.get("text") or ""), min_words):
+        own = " ".join((h.get("text") or "").split())
+        after = [a for a in (h.get("after") or ()) if a.get("text")]   # (never a TERM passage: index.following)
+        # the passage AND its following passages as ONE text: a sentence the index builder cut at the boundary
+        # («... κρατά τη θέση του· για 3 s ...») is whole again, and the chain runs on into the next passage
+        full, starts = own, []
+        for a in after:
+            starts.append(len(full) + 1)
+            full += " " + " ".join(a["text"].split())
+        pieces, pos, n_own = sentences(full), 0, 0
+        for pc in pieces:
+            at = full.find(pc, pos)
+            pos = at + len(pc)
+            n_own += at < len(own)
+        pos = 0
+        for unit, joined in _units(pieces, min_words, " ", n_own):
+            at = full.find(unit, pos)               # the units come in the order of their first piece
+            at = at if at >= 0 else full.find(unit)
+            pos = max(pos, at + 1) if at >= 0 else pos
+            end = at + len(unit)
+            crossed = [a for a, st in zip(after, starts) if end > st] if at >= 0 else []
             if not joined and len(unit.split()) > LONG_PICK_WORDS and _ITEM_RE.search(unit):
+                ipos = max(at, 0)                   # a glued list cut by the passage boundary: only the items that
                 for item, _j in _units([p.strip() for p in _ITEM_RE.split(unit) if p.strip()], min_words, " * "):
-                    out.append((item, h))
+                    iat = full.find(item, ipos)     # START in this passage are its (the next passage offers the rest)
+                    ipos = max(ipos, iat + 1) if iat >= 0 else ipos
+                    if iat >= len(own):
+                        continue
+                    iend = iat + len(item)
+                    out.append({"text": item, "hit": h,
+                                "after": [a for a, st in zip(after, starts) if iend > st] if iat >= 0 else []})
             else:
-                out.append((unit, h))
+                out.append({"text": unit, "hit": h, "after": crossed})
     return out[:MAX_PICK_SENT]
 
 
-def _units(pieces, min_words, sep=" "):
-    """pieces (the passage's sentences as they stand in the text, bullets included) -> [(unit, joined)]: a whole
-    piece alone, or joined with the following LIMITING piece(s) (limits()) by `sep` = the text between them, so a
-    unit is always byte-identical consecutive manual text (its own leading bullet taken off); a joined unit over
-    PICK_JOIN_WORDS, or one whose limiting piece ends in ';' / '·' (cut), is left out."""
-    stripped = [_BULLET_RE.sub("", p) for p in pieces]
+def _cut(s):
+    return s.rstrip().endswith((";", "·"))
+
+
+def _units(pieces, min_words, sep=" ", n_own=None):
+    """pieces (the passage's sentences as they stand in the text, bullets included; AM4-r4: those of the following
+    passages of the chapter appended - only the first n_own START in the passage and may begin a unit) ->
+    [(unit, joined)]: a whole piece alone, or joined with the following LIMITING piece(s) (limits(), limits2() two
+    ahead, excepts() before) by `sep` = the text between them, so a unit is always byte-identical consecutive
+    manual text (its own leading bullet taken off); a joined unit over PICK_JOIN_WORDS, or one whose limiting
+    piece ends in ';' / '·' (cut), is left out WHOLE (the statement is not offered alone either: never a cut unit)."""
+    allp = list(pieces)
+    stripped = [_BULLET_RE.sub("", p) for p in allp]
     normed = [norm(p) for p in stripped]
+    n_own = len(pieces) if n_own is None else min(n_own, len(pieces))
     out = []
-    for i, s in enumerate(stripped):
-        if not (len(s.split()) >= min_words and _whole(s) and not s.rstrip().endswith((";", "·"))):
+    for i in range(n_own):
+        s = stripped[i]
+        if not (len(s.split()) >= min_words and _whole(s) and not _cut(s)):
             continue
-        unit, un, j, cut = pieces[i], normed[i], i + 1, False
-        while j < len(pieces) and limits(normed[j], un):
-            if stripped[j].rstrip().endswith((";", "·")):
+        start = i
+        if i > 0 and _whole(stripped[i - 1]) and not _cut(stripped[i - 1]) and excepts(normed[i - 1], normed[i]):
+            start = i - 1                           # "Except ...": the unit begins with the sentence before
+        unit, un, j, cut = sep.join(allp[start:i + 1]), " ".join(normed[start:i + 1]), i + 1, False
+        while j < len(allp):
+            take = 1 if limits(normed[j], un) else (2 if j + 1 < len(allp) and limits2(normed[j + 1], un) else 0)
+            if not take:
+                break
+            if any(_cut(stripped[k]) for k in range(j, j + take)):
                 cut = True                          # the exception itself is a cut piece: the unit cannot be whole
                 break
-            unit, un, j = unit + sep + pieces[j], un + " " + normed[j], j + 1
-        if cut or (j > i + 1 and len(unit.split()) > PICK_JOIN_WORDS):
+            unit, un, j = unit + sep + sep.join(allp[j:j + take]), un + " " + " ".join(normed[j:j + take]), j + take
+        joined = j > i + 1 or start < i
+        if cut or (joined and len(unit.split()) > PICK_JOIN_WORDS):
             continue                                # a statement + its exception too long to offer: neither
-        out.append((_BULLET_RE.sub("", unit), j > i + 1))
+        out.append((_BULLET_RE.sub("", unit), joined))
     return out
 
 
@@ -928,7 +1076,8 @@ def decide(raw, hits, lang, terms=(), cut=False, err=None, mode="generate"):
 
 
 def _decide_pick(raw, hits, lang, terms, out, err):
-    picks = pick_sentences(hits)
+    units = pick_units(hits)
+    picks = [(u["text"], u["hit"]) for u in units]
     if err or not (raw or "").strip():
         h = hits[0]
         out.update(a=shortest_sentence(h.get("text", "")), src="retrieval", id=h.get("id", ""), cite=cite(h, lang),
@@ -963,21 +1112,32 @@ def _decide_pick(raw, hits, lang, terms, out, err):
                    model_text=raw.strip(), id=hits[0].get("id", ""), cite=cite(hits[0], lang),
                    passage=passage_of(hits[0], lang))
         return out
+    if len(ids) == 2:
+        a, b = picks[ids[0] - 1][0], picks[ids[1] - 1][0]
+        if a in b:                                  # AM4-r4 LOW-4: a joined unit AND its own limiting sentence
+            ids = ids[1:]                           #   (already inside it) = the unit alone, never said twice
+        elif b in a:
+            ids = ids[:1]
     if len(ids) == 2 and len(picks[ids[0] - 1][0].split()) + len(picks[ids[1] - 1][0].split()) > MAX_PICK_WORDS:
         ids = ids[:1]                               # two long manual sentences are too much to hear at once
     txt = " ".join(_ended(picks[i - 1][0]) for i in ids)
     h = picks[ids[0] - 1][1]
     out["echoed"] = echoed
     # two picks from DIFFERENT passages: BOTH chapters are cited and both passages shown (AM4-r2 LOW-a: the second
-    # sentence's chapter was silent before)
+    # sentence's chapter was silent before); AM4-r4 MED-1 a: a unit reaching into the FOLLOWING passage shows that
+    # passage as passage2 (the same chapter: cited once)
     h2 = picks[ids[1] - 1][1] if len(ids) == 2 and picks[ids[1] - 1][1] is not h else None
-    c = cite(h, lang) + ((" + " + cite(h2, lang)) if h2 is not None else "")
+    crossed = [a for i in ids for a in units[i - 1]["after"]]
+    if h2 is None and crossed:
+        h2 = crossed[0]
+    c = cite(h, lang) + ((" + " + cite(h2, lang)) if h2 is not None and cite(h2, lang) != cite(h, lang) else "")
     # verbatim manual sentences pass; kept as the backstop (a manual sentence's own "see chapter 9" is no problem, and
     # ANOTHER manual sentence negating a word of it is none either - the sentence is the manual's own text; AM4-r2
     # measured that rule refusing 6 / 34 English and 8 / 97 Greek TRUE manual sentences in this mode; AM4-r3 MED-1:
     # the exception that FOLLOWS a pick is no longer left out either - pick_sentences offers the two together)
-    probs = [p for p in postcheck(txt, hits[:N_PASSAGES], terms, lang)
-             if not p.startswith(("chapter not", "the passage sentence negates"))]
+    # (AM4-r4: a unit reaching into the following passage is checked against that passage's text too)
+    probs = [p for p in postcheck(txt, hits[:N_PASSAGES] + crossed, terms, lang)
+             if not p.startswith(("chapter not", "the passage sentence negates", "the passage sentence limits"))]
     if probs:
         out.update(a=CANT[lang], src="passage", problems=probs, model_text=txt, id=h.get("id", ""),
                    cite=cite(h, lang), passage=passage_of(h, lang))
@@ -996,6 +1156,21 @@ EXTRACT_FLOOR = 7.2       # answer mode "extract": the best passage's BM25 score
 #                           per-PC setting assistant_extract_floor; the passage is still shown below the floor).
 
 
+def floor_value(x, default=EXTRACT_FLOOR):
+    """The extract floor from a setting (AM4-r3 LOW-b, AM4-r4 LOW-3): None / "" (no setting) = the DEFAULT; a bool
+    (True would be 1.0), a NEGATIVE number, NaN or garbage = the DEFAULT too (never silently off); ONLY an explicit
+    0 switches the floor off."""
+    if x is None or x == "" or isinstance(x, bool):
+        return default
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return default
+    if v != v or v < 0:
+        return default
+    return v
+
+
 class Answerer:
     def __init__(self, llm=None, terms=(), clock=time.monotonic, retrieval_only=False, mode="generate",
                  extract_floor=EXTRACT_FLOOR):
@@ -1007,12 +1182,7 @@ class Answerer:
         self.slow = []                                   # the last generation times (s)
         self.stick = True                                # False only for the model comparison (measures every answer)
         self.mode = mode if mode in MODES else "generate"
-        # AM4-r3 LOW-b: None / "" (no setting) = the DEFAULT floor; only an explicit 0 switches it off
-        try:
-            self.extract_floor = EXTRACT_FLOOR if extract_floor is None or extract_floor == "" else \
-                max(0.0, float(extract_floor))
-        except (TypeError, ValueError):
-            self.extract_floor = EXTRACT_FLOOR
+        self.extract_floor = floor_value(extract_floor)
 
     def answer(self, q, lang, found):
         t0 = self.clock()

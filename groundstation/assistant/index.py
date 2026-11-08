@@ -484,8 +484,8 @@ class Searcher:
                     s *= TOUR_FACTOR
                 scored.append((s, cov / total, i))
         scored.sort(key=lambda x: (-x[0], x[2]))
-        hits = [{"passage": self.passages[i], "score": round(s, 3), "cover": round(c, 3)}
-                for s, c, i in scored[:k]]
+        hits = [{"passage": self.passages[i], "score": round(s, 3), "cover": round(c, 3),
+                 "after": following(self.passages, i)} for s, c, i in scored[:k]]
         if not hits:
             return {"hits": [], "cant_find": True, "why": "no passage has any search word", "terms": qt}
         best = hits[0]
@@ -497,9 +497,35 @@ class Searcher:
         return {"hits": hits, "cant_find": bool(why), "why": why, "terms": qt}
 
 
+FOLLOWING_N = 2
+
+
+def following(passages, i, n=FOLLOWING_N):
+    """The n MANUAL passages that FOLLOW passages[i] in the same chapter as consecutive manual text (the next ones
+    in the index, the same `ch`, their line range going on) - AM4-r4 MED-1 (a): a picked sentence that ends its
+    passage is offered together with the limiting sentence that OPENS the next passage (answer.pick_units)."""
+    out = []
+    p = passages[i] if 0 <= i < len(passages) else None
+    if not p or p.get("kind") != "manual" or p.get("term"):
+        return out                  # a defined TERM is its own unit (a definition-list line, often without a full
+    last = p                        # stop): gluing it to the next term would make one "sentence" of two definitions
+    for q in passages[i + 1:i + 1 + n]:
+        if q.get("kind") != "manual" or q.get("term") or q.get("ch") != p.get("ch") or (q.get("lines") or [0])[0] < (
+                last.get("lines") or [0, 0])[1]:
+            break
+        out.append(q)
+        last = q
+    return out
+
+
+def _summary(p):
+    return {"id": p["id"], "ch": p["ch"], "chapter": p["chapter"], "heading": p["heading"], "term": p.get("term", ""),
+            "lines": p["lines"], "text": p["text"]}
+
+
 def hit_summary(res):
-    """The worker's / the Tools page's short form of a search (no full texts)."""
+    """The worker's / the Tools page's short form of a search (no full texts); "after" = the following passages of
+    the chapter (AM4-r4 MED-1 a, for the pick units)."""
     return {"cant_find": res["cant_find"], "why": res["why"],
-            "hits": [{"id": h["passage"]["id"], "ch": h["passage"]["ch"], "chapter": h["passage"]["chapter"],
-                      "heading": h["passage"]["heading"], "term": h["passage"].get("term", ""), "score": h["score"], "cover": h["cover"],
-                      "lines": h["passage"]["lines"], "text": h["passage"]["text"]} for h in res["hits"]]}
+            "hits": [dict(_summary(h["passage"]), score=h["score"], cover=h["cover"],
+                          after=[_summary(a) for a in h.get("after", ())]) for h in res["hits"]]}

@@ -5,6 +5,51 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 0000000000000. Talking manual - review fixes of AM4-r3 (step AM4-r4, 2026-11-08) - CORRECTS the AM4-r3 reading of the held-out drop below
+
+Station / tools / tests / docs only (docs/assistant_design.md 5g). The "no pick leaves its limiting sentence out" rule
+was circular (AS25 used the same answer.limits() that builds the picks) and incomplete (one passage only): the
+reviewer counted picks whose limit opens the NEXT passage of the chapter (19 en / 10 el), limits that open with a
+pronoun ("It counts only when ...": 42 en) and limits two sentences later (19 en / 23 el). Now the pick units are built
+over the CHAPTER text (the passage + its following passages = one text: a sentence the index builder cut at the
+boundary is whole again, the chain crosses the boundary and the following passage is shown as passage2), the limit is
+looked for up to TWO sentences ahead, a pronoun-opening limit counts whatever the shared words, an "Except ..." before
+the pick begins the unit; the cap refuses the whole unit. AS25 checks it with its OWN independent wider rule: 0
+remaining misses over both indexes (the AM4-r2 / AM4-r3 lists miss > 200 / > 40). Cost: 2178 -> 2014 manual picks
+offered (the look-ahead 2 = 155 of them), 84 units reach into the following passage; a TERM passage (a definition
+line) is never chained to. Generate: a 2-word clause fully shared
+with a negating sentence is judged ("... and the PC overrides it." refused), '?' clauses are no claim; only / unless /
+except added where cheap; generate is DOCUMENTED as a best-effort NON-default mode (a CAUTION line on the Tools page;
+W122). floor --write refused while an off-manual tuning question reaches the floor; one floor for both languages; a
+bool / negative floor setting = the default; a pick inside another chosen pick is dropped.
+
+THE HELD-OUT DROP OF AM4-r3, HONESTLY (el held-out, 38 in-manual, AM4-r2 18 correct -> AM4-r3 14): 7 lost, 3 gained.
+Lost by the FLOOR: 0 (the 3 held-out questions under 7.2 were wrong already); by the joined picks / length cap: 1;
+by the post-check: 2; by the MODEL RUN (another sentence picked from a renumbered list): 4 (the 3 gained the same
+way). The false can't-finds 4 -> 8: +2 the floor, +2 the post-check. The AM4-r3 text below ("the floor's cost") is
+corrected by this. THE HELD-OUT SET HAS NOW BEEN USED THREE TIMES (AM3-r check, AM4-r2 floor choice / AM4-r3
+reporting, this re-measure): its numbers are optimistic; the fresh AM6 set (W84 / W89) is the real measurement (W123).
+
+RE-MEASURED (llama3.2-3b extract, 17 of 28 layers on the GPU, the floor 7.2 in force; the held-out part was run TWICE
+in this step - the first run found the term-passage gluing bug and was superseded - so the set is now used FOUR times):
+
+| llama3.2-3b extract | part | correct | answered | precision | false can't find (floor / post-check) | rejected | can't find right | median ms |
+|---|---|---|---|---|---|---|---|---|
+| AM4-r4 (AM4-r3: 40 % / 83 % / 48 % / 16 / 7 %) | el tuning | 34 % (33/96) | 83 % | 41 % | 16 (10 / 6) | 6/86 = 7 % | 7/7 | 785 |
+| AM4-r4 (AM4-r3: 48 % / 97 % / 50 % / 1 / 0) | en tuning | 45 % (15/33) | 94 % | 48 % | 2 (1 / 1) | 1/32 = 3 % | 5/5 | 447 |
+| AM4-r4 HELD-OUT (AM4-r3: 37 % / 79 % / 47 % / 8 / 14 %) | el | 42 % (16/38) | 84 % | 50 % | 6 (3 / 3) | 3/35 = 9 % | 4/4 | 806 |
+| AM4-r4 HELD-OUT (AM4-r3: 78 % / 89 % / 88 % / 1 / 0) | en | 78 % (7/9) | 89 % | 88 % | 1 (1 / 0) | 0/8 | 1/1 | 476 |
+
+Per question (vs the stored AM4-r3 rows): el tuning 38 -> 33 = 9 lost (7 the model picking another sentence from a
+shorter renumbered list, 2 the joined unit / length cap, 0 the floor, 0 the post-check) / 4 gained; el held-out 14 -> 16
+(2 post-check rejections gone, 1 other pick; 1 lost). The rejections are now the MODEL's: 5 of 9 Greek ones are the
+prompt's example "4, 9" echoed back with a list shorter than 4 (W123 c), the rest an unmatched "1. <text>" echo; ONE
+English verbatim pick (en030) was refused by the lexical number rule (the manual's list number "1." glued to the end of
+the sentence). The wider limit rule costs 7.5 % of the picks and ~5 points of the circular Greek proxy on the tuning
+part, gains 5 on the over-used held-out part, keeps precision and brings every following exception into the spoken
+text. Generate (stored runs re-scored with the new clause / only rules): el 18 %, rejected 39 %; en 33 %, rejected
+46 % (one more true answer refused). Tests AS19 (60), AS21 (69), AS22 (+ after), AS25 (14, its own rule), AS29 (12).
+
 ## 000000000000. Talking manual - review fixes of AM4-r2 (step AM4-r3, 2026-11-08) - CORRECTS the AM4-r2 extract figures below
 
 Station / tools / tests / docs only (docs/assistant_design.md 5f). A verbatim pick could leave the NEXT manual sentence

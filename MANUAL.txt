@@ -3827,7 +3827,15 @@ THE ANSWER (step AM4)
       a rule -> "NEVER out of REMOTE MANUAL / MANEUVER") is only ever shown
       and spoken TOGETHER with that next sentence, exactly as the two stand
       in the manual (step AM4-r3; a pair longer than 60 words is not offered
-      at all - the passage is shown instead). A long manual list glued into
+      at all - the passage is shown instead). Step AM4-r4 widens this: the
+      limit is looked for up to TWO sentences ahead (the sentence between
+      travels along), a sentence that opens with "It / This ..." and carries
+      a "never / only" counts as such a limit, an "Except ..." sentence right
+      before the pick begins it, and the search goes on into the NEXT passage
+      of the same chapter - a pick that ends its passage comes with the
+      limiting sentence that opens the next one, and then BOTH passages are
+      shown. A pick whose limit would make it longer than 60 words is not
+      offered at all (never cut). A long manual list glued into
       one "sentence" (bullet items without full stops) is offered item by
       item, so a short item can be read out instead of the whole list; a
       genuinely long sentence (over 50 words) is shown whole and the voice
@@ -3837,7 +3845,8 @@ THE ANSWER (step AM4)
       can be long or oblique - the chapter is always shown with it. If the
       best passage the search found matches the question only weakly (search
       score below the setting assistant_extract_floor; the DEFAULT is 7.2 -
-      an empty / missing setting means 7.2, only an explicit 0 switches the
+      an empty / missing setting means 7.2, and so does a negative value or
+      a yes / no value (step AM4-r4); only an explicit 0 switches the
       floor off), the model is not asked: the assistant says "I can't find
       that in the manual." and shows the passage anyway (a true sentence that
       does not answer the question would mislead more than a "can't find").
@@ -3845,14 +3854,20 @@ THE ANSWER (step AM4)
       move when the manual changes: tools\check.sh (python
       tools\assistant_index.py floor) fails when they moved so far that the
       floor must be tuned again.
-    - "writes 1-2 sentences from the passages (checked)": the model writes
+    - "writes 1-2 sentences from the passages (checked)": a BEST-EFFORT mode,
+      NOT the default (step AM4-r4): when it is chosen the Tools page shows a
+      CAUTION line under the model, because its checks compare WORDS, not
+      meaning - a wrong claim made with the manual's own words can pass.
+      Recommended: leave the default above. The model writes
       its own short answer from the passages. CHECKED before it is shown:
       every button / mode / screen / alarm name (also "the Reset button"),
       every number WITH its unit ("5 kn", "3 s", "50 m", "30 %"; also said
       in words - "fifty metres", «εβδομήντα δευτερόλεπτα» -, with its sign,
       with the manual's unit - "50 feet" is not "50 m"), every number
       together with the word next to it in ONE manual sentence, every
-      "never / not / δεν / ποτέ" against the manual's sentence, and the
+      "never / not / δεν / ποτέ" against the manual's sentence (also clause
+      by clause: a true half-sentence cannot carry a false one through;
+      "only / unless / except" the same way, step AM4-r4), and the
       language of the answer must match the question. One miss = the answer
       is NOT used: the assistant says "I can't find that in the manual." and
       SHOWS the best passage with its chapter instead (before step AM4-r the

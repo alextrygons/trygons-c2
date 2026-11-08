@@ -85,6 +85,7 @@ import ast
 import array
 import collections
 import json
+import unicodedata
 import shutil
 import subprocess
 import math
@@ -2082,6 +2083,38 @@ def as19():
     out["negated_shared skips a comma insertion, not a plain list"] = A.negated_shared(
         A.norm("the PC is never allowed, in any mode or situation, to override it"), ["override"]) and \
         not A.negated_shared(A.norm("never press the hatch button while the boat moves"), ["moves"])
+    # AM4-r4 MED-2: a 2-content-word clause IS judged when ALL its content words are shared with a negating passage
+    # sentence ("... and the PC overrides it." vs "The PC, the gateway, ... can never override it."); a clause
+    # ending in '?' is a question, no claim (AS11's tour text); a true 2-word clause still passes
+    REM5 = [dict(REM3[0], text=REM3[0]["text"].replace("The PC can never override it.",
+                                                        "The PC, the gateway, the copilot station and the shore "
+                                                        "station can never override it."))]
+    out["post-check (en probe): '... of each leg and the PC overrides it.' refused (a 2-word clause, 100 % shared)"] = \
+        any("negates" in p for p in A.postcheck("In AUTO the boat follows the waypoint route at the cruise speed of "
+                                                "each leg and the PC overrides it.", REM5, terms, "en"))
+    out["post-check (en probe): 'The PC overrides it.' stays refused"] = any(
+        "negates" in p for p in A.postcheck("The PC overrides it.", REM5, terms, "en"))
+    out["post-check: a true 2-word clause passes; a '?' clause is no claim"] = not A.postcheck(
+        "The remote cap is 20 % forward and the STANDBY button wins.", REM5, terms, "en") and \
+        not A.postcheck("The STANDBY panel button always wins, such as: can the PC override it?", REM5, terms, "en")
+    # AM4-r4 (generate, best effort): only / unless / except in the BEST passage sentence right before the shared
+    # word = the answer dropped the restriction; an answer with "only" needs a limiting passage sentence; the
+    # manual's own "only" sentence passes; "only" before another word does not bite
+    ONL = [dict(REM[0], text="Only the captain closes the hatch. The hatch closes in 3 s. RED only for alarms, "
+                             "AMBER for caution.")]
+    out["post-check (en probe): 'The captain closes the hatch.' vs 'ONLY the captain closes the hatch.' refused"] = \
+        any("limits" in p for p in A.postcheck("The captain closes the hatch.", ONL, terms, "en"))
+    ONL2 = [dict(REM[0], text="The captain closes the hatch. The hatch closes in 3 s.")]
+    out["post-check (en): the manual's own 'Only the captain ...' passes, 'AMBER for caution' passes (only before "
+        "another word), an 'only' the passage does not have is refused (lexical: the word, not the subject)"] = \
+        not A.postcheck("Only the captain closes the hatch.", ONL, terms, "en") and \
+        not A.postcheck("AMBER is for caution.", ONL, terms, "en") and \
+        any("only / unless" in p for p in A.postcheck("Only the captain closes the hatch.", ONL2, terms, "en")) and \
+        not A.postcheck("Only the copilot closes the hatch in 3 s.", ONL, terms, "en")
+    out["limited_shared: the first content word after only, never across a comma"] = \
+        A.limited_shared(A.norm("only the captain closes the hatch"), ["captain", "closes"]) and \
+        not A.limited_shared(A.norm("red only for alarms, amber for caution"), ["amber", "caution"]) and \
+        not A.limited_shared(A.norm("the hatch closes in 3 s"), ["hatch"])
     # AM4-r2 LOW-b: thousands separators - "1,500 m" / "1.500 m" are 1500 m, never 1.5 m
     THS = [{"id": "en:5:1", "ch": "5", "chapter": "UAV", "heading": "", "term": "",
             "text": "The radio range is 1,500 m from the boat. The hatch closes in 1.5 s."}]
@@ -2515,6 +2548,107 @@ def as21():
             "The ports must be free. - Never start two demos.", "Never start two demos."] and \
         [s for s, _h in A.pick_sentences([dict(FRAG[0], text="* The ports must be free. - Start the demo twice.")])] \
         == ["The ports must be free.", "Start the demo twice."]
+    # AM4-r4 MED-1 (b): a limit that OPENS with a pronoun travels with the sentence before it whatever words they share
+    PRO = [dict(RET[0], text="YES is pre-selected, so the trigger alone = a fast ACCEPT. It counts only when the "
+                             "question was shown for 0.5 s and only as a NEW press. The map zooms with the wheel.")]
+    pp = [s for s, _h in A.pick_sentences(PRO)]
+    out["'It counts only when ...' (a pronoun opener, < 2 shared words) travels with the sentence before it"] = \
+        pp[0] == "YES is pre-selected, so the trigger alone = a fast ACCEPT. It counts only when the question was " \
+                 "shown for 0.5 s and only as a NEW press." and "The map zooms with the wheel." in pp and \
+        not any(s.startswith("YES is pre-selected, so the trigger alone = a fast ACCEPT.") and s.endswith("ACCEPT.")
+                for s in pp)
+    out["«Αυτό δεν ...» too; a pronoun sentence WITHOUT a limiting word does not"] = \
+        A.limits(A.norm("Αυτό δεν ισχύει στο AUTO."), A.norm("Το κουμπί κλείνει την καταπακτή.")) and \
+        not A.limits(A.norm("It opens the map."), A.norm("The button closes the hatch."))
+    # (c): a limit TWO sentences later that is clearly about the pick (>= 3 shared words) takes the sentence between
+    TWO = [dict(RET[0], text="The hatch relay is switched by the launch sequence. A lamp shows it. The hatch relay is "
+                             "never switched by a station's button or the launch page. The map zooms.")]
+    tp2 = [s for s, _h in A.pick_sentences(TWO)]
+    out["a limit two sentences later (>= 3 shared words) = the three travel together (the lamp sentence alone is "
+        "its own pick: the limit is not about it)"] = \
+        tp2[0] == "The hatch relay is switched by the launch sequence. A lamp shows it. The hatch relay is never " \
+                  "switched by a station's button or the launch page." and "A lamp shows it." in tp2 and \
+        "The hatch relay is never switched by a station's button or the launch page." in tp2 and \
+        "The hatch relay is switched by the launch sequence." not in tp2
+    out["limits2 needs 3 shared words (2 = no)"] = A.limits2(
+        A.norm("The hatch relay is never switched by a station."), A.norm("The hatch relay is switched by the sequence.")) \
+        and not A.limits2(A.norm("The relay is never switched by a station."), A.norm("The hatch relay is switched."))
+    # (c): an "Except ..." sentence right BEFORE the pick that is about it begins the unit
+    EXC = [dict(RET[0], text="Except in FIRST TEST, the hatch relay follows the launch sequence. The hatch relay is "
+                             "switched by the launch sequence. The map zooms with the wheel.")]
+    ep = [s for s, _h in A.pick_sentences(EXC)]
+    out["'Except ...' before the pick = the unit begins with it; the 'Except' sentence alone stays offered"] = \
+        "Except in FIRST TEST, the hatch relay follows the launch sequence. The hatch relay is switched by the " \
+        "launch sequence." in ep and "Except in FIRST TEST, the hatch relay follows the launch sequence." in ep and \
+        "The hatch relay is switched by the launch sequence." not in ep
+    # (a): the chain crosses the PASSAGE BOUNDARY - the hit's "after" (index.following) = the next passage(s) of the
+    # chapter; a pick that ends its passage comes with the limiting sentence that OPENS the next one, that passage is
+    # shown as passage2 (the same chapter: cited once), a sentence the index cut at the boundary is whole again
+    P1 = dict(RET[0], id="en:9:4", text="The charts are shown on screen 2. The charts are aids to the operator.",
+              after=[{"id": "en:9:5", "ch": "9", "chapter": "Modes", "heading": "", "term": "", "lines": [20, 22],
+                      "text": "They are NOT for navigation. The map zooms with the wheel."}])
+    bp = A.pick_units([P1])
+    cross = [u for u in bp if u["text"].startswith("The charts are aids")]
+    out["boundary: the pick + the limiting first sentence of the NEXT passage = one unit, after = that passage"] = \
+        len(cross) == 1 and cross[0]["text"] == "The charts are aids to the operator. They are NOT for navigation." \
+        and [a["id"] for a in cross[0]["after"]] == ["en:9:5"] and \
+        not any(u["text"] == "The charts are aids to the operator." for u in bp) and \
+        not any(u["text"].startswith("They are NOT") for u in bp)             # the next passage's own sentences are its
+    r = A.Answerer(A.StubLlm("2"), terms, mode="extract").answer("what are the charts?", "en",
+                                                               {"cant_find": False, "why": "", "hits": [P1]})
+    out["boundary: said with the exception, passage2 = the following passage, the chapter cited once"] = \
+        r["src"] == "extract" and r["a"] == "The charts are aids to the operator. They are NOT for navigation." \
+        and r["passage2"]["id"] == "en:9:5" and r["cite"] == "Chapter 9 «Modes»"
+    P2 = dict(P1, text="The hatch closes with the button. Any station can press it, the hatch then closes·",
+              after=[dict(P1["after"][0], text="never while a UAV is in it. The map zooms.")])
+    bp2 = [u["text"] for u in A.pick_units([P2])]
+    out["boundary: a sentence the index cut at a '·' is whole again (never a cut piece, never without its 'never')"] = \
+        "Any station can press it, the hatch then closes· never while a UAV is in it." in bp2 and \
+        not any(s.endswith("·") for s in bp2)
+    out["no 'after' (tests, old callers) = the passage alone, as before"] = [s for s, _h in A.pick_sentences(
+        [dict(P1, after=None)])] == ["The charts are shown on screen 2.", "The charts are aids to the operator."]
+    # index.following(): the next manual passages of the SAME chapter, consecutive lines, never a TERM passage (a
+    # definition line glued to the next definition would make one "sentence" of two alarms), never a tour stop
+    from assistant import index as IX
+    PS = [{"id": "x:1", "kind": "manual", "ch": "9", "term": "", "lines": [1, 3], "text": "a"},
+          {"id": "x:2", "kind": "manual", "ch": "9", "term": "", "lines": [4, 5], "text": "b"},
+          {"id": "x:3", "kind": "manual", "ch": "9", "term": "ALARM", "lines": [6, 6], "text": "c"},
+          {"id": "x:4", "kind": "manual", "ch": "9", "term": "", "lines": [7, 8], "text": "d"},
+          {"id": "x:5", "kind": "manual", "ch": "10", "term": "", "lines": [9, 9], "text": "e"},
+          {"id": "x:6", "kind": "tour", "ch": "tour", "term": "", "lines": [0, 0], "text": "f"}]
+    out["index.following: the same chapter's next passages, stops at a TERM / a chapter change / a tour stop"] = \
+        [p["id"] for p in IX.following(PS, 0)] == ["x:2"] and IX.following(PS, 2) == [] and \
+        [p["id"] for p in IX.following(PS, 3)] == [] and IX.following(PS, 5) == [] and \
+        [p["id"] for p in IX.following(PS, 1)] == []
+    ps_el = IX.load("el")["passages"]
+    out["index.following on the real index: never a term, never another chapter"] = all(
+        not a.get("term") and a["ch"] == p["ch"] and a["kind"] == "manual"
+        for i, p in enumerate(ps_el) for a in IX.following(ps_el, i))
+    # the cap refuses the WHOLE unit, never a cut: a pick whose limit is too far to fit is not offered at all
+    far = dict(RET[0], text="Routes are checked by the gateway. " + " ".join(["word"] * (A.PICK_JOIN_WORDS - 2)) +
+                            " about the gateway routes. Routes are never checked without the gateway. The end.")
+    fp2 = [s for s, _h in A.pick_sentences([far])]
+    out["cap: the statement + the far limit over PICK_JOIN_WORDS = refused whole (the limit alone offered)"] = \
+        not any(s.startswith("Routes are checked by the gateway.") for s in fp2) and \
+        "Routes are never checked without the gateway." in fp2
+    # AM4-r4 LOW-4: the model picks a joined unit AND its own limiting sentence = the unit alone (never twice)
+    r = A.Answerer(A.StubLlm("1, 2"), terms, mode="extract").answer("τι είναι οι χάρτες;", "el",
+                                                                  {"cant_find": False, "why": "", "hits": LIM})
+    out["LOW-4: '1, 2' = the unit + its limiting sentence (inside it) -> the unit alone, picked [1]"] = \
+        r["src"] == "extract" and r["a"] == "Οι χάρτες είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα." and r["picked"] == [1]
+    r = A.Answerer(A.StubLlm("2, 1"), terms, mode="extract").answer("τι είναι οι χάρτες;", "el",
+                                                                  {"cant_find": False, "why": "", "hits": LIM})
+    out["LOW-4: the other order too"] = r["src"] == "extract" and r["picked"] == [1]
+    # AM4-r4 LOW-3: a bool / negative / NaN floor setting = the DEFAULT (never silently off); only an explicit 0 = off
+    out["LOW-3: True / -1 / NaN / 'abc' = the default floor, 0 / '0' = off (answer + client)"] = \
+        A.floor_value(True) == A.EXTRACT_FLOOR and A.floor_value(-1) == A.EXTRACT_FLOOR and \
+        A.floor_value(float("nan")) == A.EXTRACT_FLOOR and A.floor_value("abc") == A.EXTRACT_FLOOR and \
+        A.floor_value(0) == 0.0 and A.floor_value("0") == 0.0 and A.floor_value(False) == A.EXTRACT_FLOOR and \
+        client.Assistant(View(), settings=Sets(assistant_extract_floor=True), stt_kind="stub")._floor() == \
+        client.DEFAULT_EXTRACT_FLOOR and \
+        client.Assistant(View(), settings=Sets(assistant_extract_floor=-3), stt_kind="stub")._floor() == \
+        client.DEFAULT_EXTRACT_FLOOR and \
+        A.Answerer(A.StubLlm("1"), mode="extract", extract_floor=-1).extract_floor == A.EXTRACT_FLOOR
     report("AS21 retrieval-only mode + cut generations + answer mode extract", all(out.values()),
            {k: v for k, v in out.items() if not v} or "all %d checks" % len(out))
 
@@ -2547,7 +2681,10 @@ def as22():
             bool(txt) and info.get("cite", "").startswith(("Κεφάλαιο", "Ξενάγηση"))
         out["release -> answer time measured by the client"] = info.get("answer_ms") == 2500
         out["the answer may be spoken (the horn was not pressed)"] = info.get("speak") is True and \
-            "passage" in info and bool(info["passage"]["text"])
+            bool((info.get("passage") or {}).get("text"))
+        # AM4-r4 MED-1 (a): the worker's search hits carry the following passages of the chapter ("after")
+        fh = ((info.get("found") or {}).get("hits") or [{}])[0]
+        out["the found hits carry 'after' (the following passages, a list)"] = isinstance(fh.get("after"), list)
         out["READY again"] = a.state == client.READY
         a._send({"op": "ask_text", "q": "πες μου ένα ανέκδοτο", "lang": "el"})
         wait(a, lambda: len(v.answers) > 1)
@@ -2750,9 +2887,69 @@ def as25():
     the check fail. AM4-r3 MED-1: NO pick is followed (in its passage) by a LIMITING sentence about the same thing
     (answer.limits: a negation / only / except ... sharing >= 2 content words) that is not part of the pick - every
     pick is byte-identical consecutive manual text; the AM4-r2 pick list (no joining) fails it (the reviewer
-    counted 105 el / 140 en). MED-3 / LOW-a: no pick over LONG_PICK_WORDS still holds a glued "* bullet" list."""
+    counted 105 el / 140 en). MED-3 / LOW-a: no pick over LONG_PICK_WORDS still holds a glued "* bullet" list.
+    AM4-r4 MED-1: the test's OWN limit rule (I_* below - a separate implementation, not answer.limits: its own
+    fold / stop list / limit words / stemming), WIDER than the AM4-r3 one, over the CHAPTER text (a passage + the
+    following passages of its chapter, index.following: a pick that ends its passage vs the sentence that opens the
+    next one), a pronoun-opening limit ("It counts only ...", «Αυτό δεν ...») whatever the shared words, a limit
+    TWO sentences later sharing >= 3 words, an "Except ..." sentence right before the pick: every pick with such a
+    limit left out = a MISS; the misses must be 0 or each one listed + justified in tests/assistant/as25_misses.json
+    (an unlisted miss or a stale entry = FAIL)."""
     from assistant import answer as A, index
     ONLY = re.compile(r"(?<![\w])(?:only|μονο)(?![\w])")
+    # --- the test's own limit rule (AM4-r4) ---------------------------------------------------------------------
+    I_STOP = set("""ο η το οι τα του τησ των τον την τη τουσ τισ και κι να θα σε στο στη στην στον στα στισ στουσ
+        στησ στου με για απο που πωσ τι ποιο ποια ποιοσ ειναι αν οτι οταν μου σου μασ σασ πρεπει μπορει μπορειτε
+        μπορουν εχει εχουν ειχε μετα πριν ενω οσο ωσ εωσ οπωσ αλλα ομωσ επισησ τοτε σαν εαν αυτο αυτη αυτοσ αυτα
+        a an the of to in on at for from by with and or is are was were be been being do does did it its this that
+        these those what which who how when where why can could should would will shall may might must there here
+        then than so if me us them they he she his her about into out up down get got have has had am any some just
+        also such as while after before over under again further once per""".split())
+    I_LIMIT = set("""δεν δε μην μη ποτε οχι κανενα κανενασ καμια καμμια ουτε χωρισ τιποτα κανεισ μονο μοναχα εκτοσ
+        αποκλειστικα not never no cannot without none nobody nothing nor neither only except unless exclusively
+        solely""".split())
+    I_PRON = set("it this that these those they αυτο αυτη αυτοσ αυτα αυτεσ αυτοι αυτην αυτον αυτου αυτησ αυτων "
+                 "αυτουσ ετσι".split())
+    I_EXC = {"except", "unless", "εκτοσ"}
+    I_UNITS = set(A.UNITS)              # the unit spellings only (a table, not a rule)
+
+    def i_fold(s):
+        """Own normalisation; number words -> digits through answer.digitize (a table of numerals, not the rule:
+        «Δύο σταθμοί» / «στις ΔΥΟ οθόνες» must not count as a shared content word)."""
+        t = unicodedata.normalize("NFD", s)
+        return A.digitize("".join(c for c in t if unicodedata.category(c) != "Mn").lower().replace("ς", "σ"))
+
+    def i_toks(s):
+        return re.findall(r"[\w']+", i_fold(s))
+
+    def i_has_limit(s):
+        return any(t in I_LIMIT or t.endswith("n't") for t in i_toks(s))
+
+    def i_cwords(s):
+        return [w for w in re.findall(r"[^\W\d_]{2,}", i_fold(s)) if w not in I_STOP and w not in I_LIMIT and
+                w not in I_UNITS]
+
+    def i_same(a, b):
+        return a == b or (len(a) >= 5 and len(b) >= 5 and a[:5] == b[:5]) or (
+            min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a)))
+
+    def i_shares(a, b):
+        return sum(1 for w in a if any(i_same(w, o) for o in b))
+
+    def i_limits(nxt, unit):
+        if not i_has_limit(nxt):
+            return False
+        t = i_toks(nxt)
+        if t and ((t[0] in I_LIMIT and len(t) <= 10) or t[0] in I_PRON):
+            return True
+        return i_shares(i_cwords(nxt), i_cwords(unit)) >= 2
+
+    def i_limits2(nxt2, unit):
+        return i_has_limit(nxt2) and i_shares(i_cwords(nxt2), i_cwords(unit)) >= 3
+
+    def i_excepts(prev, cur):
+        t = i_toks(prev)
+        return bool(t) and t[0] in I_EXC and i_shares(i_cwords(prev), i_cwords(cur)) >= 2
 
     def old_picks(hits):                   # the AM4-r pick list: whole pieces, a ';' / '·' end not excluded
         return [(s, h) for h in hits for s in A.sentences(h["text"]) if len(s.split()) >= 4 and A._whole(s)]
@@ -2765,6 +2962,16 @@ def as25():
                 if len(s.split()) >= 4 and A._whole(s) and not s.rstrip().endswith((";", "·")):
                     out.append((s, h))
         return out
+
+    def r3_picks(hits):                    # the AM4-r3 pick list: the next sentence of the SAME passage only, the
+        saved = (A.limit_words, A.PRONOUN_OPENERS, A.limits2, A.excepts)        # old stop list, no pronoun rule
+        A.limit_words, A.PRONOUN_OPENERS = A.content_words, set()
+        A.limits2 = lambda a, b: False
+        A.excepts = lambda a, b: False
+        try:
+            return A.pick_sentences([dict(h, after=[]) for h in hits])
+        finally:
+            A.limit_words, A.PRONOUN_OPENERS, A.limits2, A.excepts = saved
 
     def atoms_of(text):
         """[(offset, atom)]: the passage's sentence pieces (bullets taken off), a long glued bullet list as its
@@ -2785,14 +2992,38 @@ def as25():
 
     def scan(pick_fn=A.pick_sentences):
         n = {"picks": 0, "ends": 0, "lower": 0, "cut": 0, "example": 0, "limited": 0, "not_text": 0, "joined": 0,
-             "long": 0, "long_list": 0, "example_limit": 0}
+             "long": 0, "long_list": 0, "example_limit": 0, "crossing": 0, "misses": []}
         for lang in ("el", "en"):
-            for p in index.load(lang)["passages"]:
-                text = p["text"]
+            ps = index.load(lang)["passages"]
+            for pi, p in enumerate(ps):
+                after = index.following(ps, pi)           # AM4-r4: the chapter goes on in the next passage(s)
+                hit = dict(p, after=after)
+                own = p["text"]
+                text = " ".join([own] + [a["text"] for a in after])
                 pieces = [A._BULLET_RE.sub("", s) for s in A.sentences(text)]
                 atoms = atoms_of(text)
-                picks = [s for s, _h in pick_fn([p])]
+                picks = [s for s, _h in pick_fn([hit])]
                 n["picks"] += len(picks)
+                # the test's OWN wider rule: a limit after the pick (1-2 sentences, across the passage boundary) or
+                # an "Except ..." before it that the pick leaves out = a miss
+                for s in picks:
+                    at = text.find(s)
+                    if at < 0 or at >= len(own):
+                        n["misses"].append((lang, p["id"], s[:90], "pick does not START in its passage"))
+                        continue
+                    end = at + len(s)
+                    n["crossing"] += end > len(own)
+                    nxt = [a for o, a in atoms if o >= end]
+                    prev = [a for o, a in atoms if o + len(a) <= at]
+                    why = ""
+                    if nxt and i_limits(nxt[0], s):
+                        why = "the next sentence limits it: " + nxt[0][:80]
+                    elif len(nxt) > 1 and i_limits2(nxt[1], s):
+                        why = "the second next sentence limits it: " + nxt[1][:80]
+                    elif prev and i_excepts(prev[-1], s):
+                        why = "an 'Except ...' before it is about it: " + prev[-1][:80]
+                    if why:
+                        n["misses"].append((lang, p["id"], s[:90], why))
                 n["ends"] += sum(1 for s in picks if s.rstrip().endswith((";", "·")))
                 n["lower"] += sum(1 for s in picks if s.lstrip("«\"'([")[:1].islower())
                 n["example"] += sum(1 for s in picks if "TRAINING only from STANDBY by the PC" in s and
@@ -2823,6 +3054,7 @@ def as25():
         return n
     good = scan()
     r2 = scan(r2_picks)
+    r3 = scan(r3_picks)
     old_re, A._SPLIT_RE = A._SPLIT_RE, re.compile(r"(?<=[.!;·?])\s+(?=\S)")
     old_end = A.ends_sentence
     A.ends_sentence = lambda s: (s or "").rstrip().endswith((".", "!", "?"))      # the old splitter's view
@@ -2844,10 +3076,29 @@ def as25():
                "example_limit"]: good["example_limit"] >= 1,
            "mutation: the AM4-r2 pick list (nothing joined) leaves %d exceptions out (reviewer: 105 el + 140 en)" % r2[
                "limited"]: r2["limited"] > 200,
-           "no pick over %d words is a glued bullet list (%d long picks stay: real long sentences)" % (
-               A.LONG_PICK_WORDS, good["long"]): good["long_list"] == 0 and good["long"] < 120}
+           "no pick over %d words is a glued bullet list (%d long picks stay: real long sentences; AM4-r4: + the "
+           "ones made whole across a passage boundary)" % (
+               A.LONG_PICK_WORDS, good["long"]): good["long_list"] == 0 and good["long"] < 150}
+    # AM4-r4 MED-1: the test's own wider rule over the chapter text - 0 misses, or each one listed + justified
+    mf = os.path.join(HERE, "..", "tests", "assistant", "as25_misses.json")
+    listed = []
+    if os.path.exists(mf):
+        with open(mf, encoding="utf-8") as f:
+            listed = [(m["lang"], m["id"], m["pick"]) for m in json.load(f).get("misses", [])]
+    found = [(lg, i, s) for lg, i, s, _w in good["misses"]]
+    unlisted = [m for m in good["misses"] if (m[0], m[1], m[2]) not in listed]
+    stale = [m for m in listed if m not in found]
+    out["the test's OWN wider rule (chapter text, 1-2 sentences ahead, pronoun opener, 'Except' before): %d misses, "
+        "every one listed + justified (%d), none stale (%d)" % (len(good["misses"]), len(listed), len(stale))] = \
+        not unlisted and not stale
+    out["picks cross the passage boundary into the following passage (%d)" % good["crossing"]] = good["crossing"] > 50
+    out["mutation: the AM4-r2 / AM4-r3 pick lists (no chapter text, next sentence only) miss many (%d / %d)" % (
+        len(r2["misses"]), len(r3["misses"]))] = len(r2["misses"]) > 200 and len(r3["misses"]) > 40
     report("AS25 extract picks over the whole index: whole sentences, no clause fragments, exceptions included",
-           all(out.values()), {k: v for k, v in out.items() if not v} or "all %d checks; %s" % (len(out), good))
+           all(out.values()), {k: v for k, v in out.items() if not v} or "all %d checks; %s" % (
+               len(out), {k: v for k, v in good.items() if k != "misses"}))
+    for m in unlisted[:20]:
+        print("   AS25 unlisted miss:", m)
 
 
 def as29():
@@ -2893,6 +3144,17 @@ def as29():
     out["mutation: floor.json re-tuned, code not = FAIL"] = not ok5
     out["a failure says how to re-tune (W112 / W117, floor --write)"] = all(
         any("re-tune" in x and "floor --write" in x for x in ls) for ls in (l1, l2, l3, l4, l5))
+    # AM4-r4 LOW-1: `floor --write` is REFUSED while an off-manual tuning question scores >= the floor (they are
+    # listed); today none does; a lower floor would be refused; --force writes them on record (off_manual_over)
+    bl = ai.floor_blockers(A.EXTRACT_FLOOR)
+    low = ai.floor_blockers(A.EXTRACT_FLOOR - 2.0)
+    out["floor_blockers: none at the tuned floor, some at floor - 2 (the --write refusal)"] = \
+        not bl["el"] and not bl["en"] and (low["el"] or low["en"]) and all(
+            s >= A.EXTRACT_FLOOR - 2.0 for lg in ("el", "en") for _i, s in low[lg])
+    out["floor.json records 'off_manual_over' = [] (nothing forced)"] = frozen.get("off_manual_over") == []
+    out["LOW-2: ONE floor for both languages (no per-language floor in the file)"] = isinstance(
+        frozen["floor"], (int, float)) and not any(isinstance(frozen[lg].get("floor"), (int, float))
+                                                    for lg in ("el", "en"))
     report("AS29 extract score floor gate (floor.json holds; mutations fail)", all(out.values()),
            {k: v for k, v in out.items() if not v} or "all %d checks; %s" % (len(out), lines))
 
