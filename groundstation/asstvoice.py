@@ -31,6 +31,13 @@ bounded (tts.synth timeout TTS_TIMEOUT_S = TTS_MAX_S + 2 s); LOW-3 `making` is c
 when it is done (a stop / a slow drop never deletes a file under its writer), close() / _clean_stale also remove
 '*.wav.tmp' (sound.write_wav's half-written file); LOW-4 the pending result, the generation and `making` change
 under ONE lock (the thread's "is this still wanted + hand it over" and the Tk thread's "take it / drop it" are atomic).
+AM5-r3 (review of 19db2ff, MED-1 - the SWEEP RACE): tick() takes the pending result FIRST and sweeps LAST; a TTS thread
+that finished in between (pending set, `making` cleared) left its clip in `files` with nothing protecting it - the
+sweep deleted the clip the NEXT tick would play (the answer was silently lost, "sound_off"). _live() now reads
+`pending` and `making` under the lock and protects the pending clip too, with every file's SIBLINGS (`<path>.tmp` of
+sound.write_wav and `<path>.lead.wav` of tts.lead_in); a swept / dropped clip takes its siblings along; close() never
+deletes under the writer (the thread removes its own files when it finds the generation moved). Test AS27 (v) replays
+the race through the real tick() and proves the AM5-r2 _live() loses the clip (negative control).
 DISPLAY + sound only: nothing here sends anything.
 """
 import glob
@@ -50,6 +57,9 @@ STALE_S = 300.0           # a WAV of a crashed station older than this is remove
 TTS_MAX_S = 8.0           # W121: the TTS run must deliver within this, else the answer stays text only ("slow")
 TTS_TIMEOUT_S = TTS_MAX_S + 2.0   # AM5-r2 LOW-2: the TTS subprocess itself is killed by tts.synth after this
 TMP_SUFFIXES = (".wav", ".wav.tmp")   # sound.write_wav writes <path>.tmp first (AM5-r2 LOW-3: cleaned too)
+SIBLINGS = (".tmp", ".lead.wav")      # AM5-r3: <path>.tmp (sound.write_wav), <path>.lead.wav (tts.lead_in) - live and
+#                                       swept together with their clip
+TTS_THREAD_NAME = "asst-tts"          # the ONE TTS thread (AS27 counts the alive threads of this name)
 WHYS = ("spoken", "long", "alarm", "callout", "horn", "no_voice", "sound_off", "interrupted", "stopped", "failed",
         "slow", "making", "nothing")
 
@@ -151,7 +161,7 @@ class AsstVoice:
         self.queued = None
         with self._lock:
             self.making = job[3]
-        self.thread = threading.Thread(target=self._make, args=job, daemon=True)
+        self.thread = threading.Thread(target=self._make, args=job, daemon=True, name=TTS_THREAD_NAME)
         self.thread.start()
 
     def _make(self, gen, lang, text, path, vol):
@@ -176,8 +186,7 @@ class AsstVoice:
             if self.making == path:              # the writer itself says it is done (nothing else clears it)
                 self.making = None
         if not mine:                             # stopped / dropped / closed meanwhile: nothing to play, the file goes
-            self._remove(path)                   # (it stays in `files` until a tick / close() sees it gone)
-            self._remove(path + ".tmp")
+            self._remove_all(path)               # (it stays in `files` until a tick / close() sees it gone)
 
     def tick(self):
         """From App.ov_tick (every 200 ms): play a finished WAV (after the checks again; a result taken later than
@@ -254,14 +263,19 @@ class AsstVoice:
 
     def close(self):
         """The station closes: the voice stops and EVERY file this process made is deleted (also one a late TTS
-        thread wrote after stop(), and a half-written '.wav.tmp'); a file still being written is caught by the next
-        start's _clean_stale."""
+        thread wrote after stop(), and a half-written '.wav.tmp') - except the file the TTS thread writes NOW and its
+        siblings (AM5-r3: never under the writer; that thread removes them itself when it finds the generation moved;
+        a thread killed with the process leaves them to the next start's _clean_stale)."""
         self.stop()
         self._sweep()
-        try:
+        with self._lock:
+            making = self.making
+        writer = {making + s for s in ("",) + SIBLINGS} if making else set()   # AM5-r3: never under the writer -
+        try:                                                                   # the thread deletes its own (gen moved)
             for suf in TMP_SUFFIXES:
                 for p in glob.glob(os.path.join(glob.escape(self.folder), "asst_%d_*%s" % (os.getpid(), suf))):
-                    self._remove(p)
+                    if p not in writer:
+                        self._remove(p)
         except OSError:
             pass
 
@@ -273,14 +287,20 @@ class AsstVoice:
         return False
 
     def _live(self):
-        """The files that must NOT be deleted now: the clip playing, the one the TTS thread writes."""
+        """The files that must NOT be deleted now: the clip playing, the one the TTS thread writes AND a finished result
+        not yet taken by tick() (AM5-r3 MED-1: the thread may finish between tick()'s take and its sweep) - each with
+        its siblings (<path>.tmp, <path>.lead.wav)."""
         snd = self.port.sound()
         live = set()
         if self.tmp is not None and (self.clock() < self.tmp_until or (snd is not None and snd.assistant_playing())):
             live.add(self.tmp)
-        if self.making is not None:
-            live.add(self.making)
-            live.add(self.making + ".tmp")
+        with self._lock:
+            making = self.making
+            pending = self.pending[1] if self.pending is not None else None
+        for base in (making, pending):
+            if base:
+                live.add(base)
+                live.update(base + s for s in SIBLINGS)
         return live
 
     def _sweep(self):
@@ -288,8 +308,15 @@ class AsstVoice:
         for p in list(self.files):
             if p in live:
                 continue
-            if self._remove(p):
+            if self._remove_all(p):
                 self.files.discard(p)
+
+    def _remove_all(self, path):
+        """A clip and its siblings (AM5-r3) -> True when the clip itself is gone (a sibling that stays is caught by
+        close() / _clean_stale: it never holds the clip on the list)."""
+        for s in SIBLINGS:
+            self._remove(path + s)
+        return self._remove(path)
 
     def owed(self):
         """The WAV paths not yet deleted (tests)."""

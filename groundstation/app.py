@@ -568,8 +568,18 @@ class App:
         the chapter first; alarms / callouts win = text only; never with the horn). AM4-r: a model answer that failed
         the check = «Δεν βρίσκω ...» + "see the passage" (the panel / the Tools page «Βοηθός» show it)."""
         cite = info.get("cite") or ""
-        short = asst_show.cut(a, max(80, asst_show.LINE_MAX - len(cite)))
-        self.asst_shown = (asst_show.cut(a, asst_show.NOTICE_MAX), time.time())
+        # AM4-r6 MED-1: a joined unit (a statement + its limiting sentence(s)) is never END-cut on a line - the
+        # statement is shortened, the limit(s) stay whole (show.cut_answer; too little room = the short "has a
+        # restriction - see the panel" line) - and a unit cut at the cap ("more") carries the "more limits" line too
+        more = (" " + T("asst.more_limits")) if info.get("more") else ""
+        limited = T("asst.answer_limited")
+        stmts = info.get("stmts") or ()
+
+        def line(n):                                # the short "has a restriction" line already sends to the panel
+            s = asst_show.cut_answer(a, n, stmts, limited)
+            return s if s == limited else s + more
+        short = line(max(80, asst_show.LINE_MAX - len(cite) - len(more)))
+        self.asst_shown = (line(max(60, asst_show.NOTICE_MAX - len(more))), time.time())
         self.asst_auto_fold, self.asst_force_open = 0, False
         # also a "can't find" below the extract score floor (AM4-r2, W112): the passage is shown on the panel
         if cite and (info.get("src") == "passage" or (info.get("src") == "cant_find" and info.get("passage"))):
@@ -636,7 +646,8 @@ class App:
             p.br()
             return
         amax = asst_show.PANEL_ANSWER_MAX if self.asst_auto_fold < 2 else asst_show.NOTICE_MAX
-        p.text(asst_show.cut(ans.get("a") or "", amax), "label", bold=True, tag="asst_a", wrap=0.24)
+        p.text(asst_show.cut_answer(ans.get("a") or "", amax, ans.get("stmts") or (), T("asst.answer_limited")),
+               "label", bold=True, tag="asst_a", wrap=0.24)      # (AM4-r6 MED-1: the limit is never cut off)
         p.br()
         if ans.get("more"):                     # AM4-r5: the pick was cut at the cap after its first limit
             p.text(T("asst.more_limits"), "small", colour=C["dim"], tag="asst_more", wrap=0.24)

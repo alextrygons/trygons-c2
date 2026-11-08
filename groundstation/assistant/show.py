@@ -29,6 +29,39 @@ def cut(text, n):
     return c.rstrip(" ,;:·-–") + "…"
 
 
+MIN_STMT = 40             # the least a shortened STATEMENT keeps on a line (below it the short "has a restriction" line)
+
+
+def cut_answer(text, n, stmts=(), fallback=""):
+    """AM4-r6 MED-1 (review of a8bb45f): an answer that is a JOINED unit - a manual statement + the sentence(s) that
+    LIMIT it («... είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα.») - is never END-cut on a line: the plain cut() dropped
+    exactly the limiting sentence (196 of 330 joined units on screen 1's notice, 121 on screen 2's message line).
+    `stmts` = the statement piece(s) (answer "stmts"): the text around them (the limits) is kept WHOLE and only the
+    statement(s) are shortened in the middle of the line; when less than MIN_STMT characters would remain for a
+    statement, `fallback` (the short «has a restriction - see the panel» line) is returned instead of a cut that
+    could lose a limit. Without `stmts` (a single sentence, a can't-find) = cut()."""
+    t = " ".join((text or "").split())
+    if len(t) <= n:
+        return t
+    sts = [" ".join(s.split()) for s in (stmts or ()) if s and " ".join(s.split()) in t]
+    if not sts:
+        return cut(t, n)
+    # the line = fixed parts (the limits, kept whole) + the statements sharing what is left
+    parts, rest = [], t
+    for s in sts:                                    # (in the order they stand in the text)
+        i = rest.find(s)
+        parts.append(("fixed", rest[:i]))
+        parts.append(("stmt", s))
+        rest = rest[i + len(s):]
+    parts.append(("fixed", rest))
+    fixed = sum(len(p) for k, p in parts if k == "fixed")
+    budget = (n - fixed) // len(sts)
+    if budget < MIN_STMT:
+        return fallback or cut(t, n)
+    out = "".join(p if k == "fixed" else cut(p, budget) for k, p in parts)
+    return " ".join(out.split())
+
+
 def manual_file(lang):
     return os.path.join(paths.REPO, MANUALS.get(lang, MANUALS["en"]))
 

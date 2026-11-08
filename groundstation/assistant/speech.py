@@ -35,6 +35,12 @@ coordinate followed by N and then a longitude with E / W or ° ("37.82 N 23.60 E
 right after the word north / βόρεια; "group N" / «ομάδα N» = the letter; a gear sentence = «νεκρά» / "neutral"; else
 the letter («εν» / "N"). "heading" / «πορεία» / a compass word are no north context (W124). AS26 + AS32 (every
 pickable sentence of both indexes with a lone N).
+AM5-r3 (review of 19db2ff, LOW): the gear context also knows fwd / rev / forward / reverse / εμπρός / όπισθεν / πίσω /
+μπροστά (any case, whole words - "review" / "prevent" are no gear) and an N between bars ("REV | N | FWD", «ΠΙΣΩ | N |
+ΜΠΡΟΣΤΑ») = neutral; the coordinate rule (a) takes only a REAL pair (latitude <= 90, longitude <= 180) and is skipped
+in a gear sentence ("Gear pulses 19.00 N 15.00 E" is never north); the thousands rule "1.500 m" = 1500 runs AFTER the
+coordinate rule and never on a number followed by N / E / W / ° (or their spoken words): "37.820 N 23.600 E" stays
+37.820 north 23.600 east, never 37820.
 """
 import re
 import unicodedata
@@ -106,12 +112,17 @@ _N_GEARS_RE = re.compile(r"(?<![\w])F\s*/\s*N\s*/\s*R(?![\w])")
 _DEG = r"(?:°|μοίρες|degrees)"                     # the unit may already be spoken (UNITS runs before _n_letters)
 _N_COORD_RE = re.compile(r"(\d+[.,]\d+\s?" + _DEG + r"?\s?)N(\s*,?\s*)(-?\d+[.,]\d+\s?" + _DEG + r"?\s?)([EW])(?![\w])")
 #                                                                                                 (a) lat N lon E / W
-_N_COORD_DEG_RE = re.compile(r"(\d+[.,]\d+\s?" + _DEG + r"?\s?)N(?![\w])(?=\s*,?\s*-?\d+[.,]\d+\s?" + _DEG + r")")
+_N_COORD_DEG_RE = re.compile(r"(\d+[.,]\d+\s?" + _DEG + r"?\s?)N(?![\w])(?=\s*,?\s*(-?\d+[.,]\d+)\s?" + _DEG + r")")
 #                                                                                                 (a) lat N lon °
 _N_AFTER_NORTH_RE = re.compile(r"(?i)(?<![\w])(north|βόρεια|βορράς?)(\s*\(?\s*)N(?![\w])")          # (b) "north (N)"
 _N_LONE_RE = re.compile(r"(?<![\w])N(?![\w])")
 _N_GROUP_RE = re.compile(r"(?i)((?<![\w])(?:group|ομάδας?)\s+)N(?![\w])")                          # "group N" = the letter
-_N_GEAR_CTX = re.compile(r"(?i)(σχέσ|νεκρ|gear|neutral|(?-i:(?<![\w])[FR](?![\w]))|γκάζ|throttle|ρελαντί|idle|παλμ|puls|shift)")
+# AM5-r3 LOW: + fwd / rev / forward / reverse / εμπρός / όπισθεν / πίσω / μπροστά as WHOLE words in any case (a
+# "review" / "prevent" / "revision" is no gear); the Greek ones with or without their accent (the screens' capitals)
+_N_GEAR_CTX = re.compile(r"(?i)(σχέσ|νεκρ|gear|neutral|(?-i:(?<![\w])[FR](?![\w]))|γκάζ|throttle|ρελαντί|idle|παλμ|puls|shift"
+                         r"|(?<![\w])(?:fwd|rev|forward|reverse|εμπρ[οό]ς|[οό]πισθεν|π[ιί]σω|μπροστ[αά])(?![\w]))")
+_N_PIPE_RE = re.compile(r"\|\s*N\s*\|")                                                             # "REV | N | FWD" = the gear
+MAX_LAT, MAX_LON = 90.0, 180.0                                                                      # AM5-r3: a REAL pair only
 N_WORDS = {"gears": ("εμπρός, νεκρά, όπισθεν", "forward, neutral, reverse"), "neutral": ("νεκρά", "neutral"),
            "north": ("βόρεια", "north"), "east": ("ανατολικά", "east"), "west": ("δυτικά", "west"), "letter": ("εν", "N")}
 _SENT_RE = re.compile(r"(?<=[.!?;·])\s+")
@@ -123,18 +134,54 @@ _FWD_REV_RE = re.compile(r"(?<![\w])(fwd|rev)(?![\w])")
 LT_GT = {"el": ("λιγότερο από", "πάνω από"), "en": ("less than", "more than")}
 
 
+_NUM_RE = re.compile(r"-?\d+[.,]\d+")
+
+
+def _real_pair(lat_s, lon_s):
+    """AM5-r3 LOW: rule (a) holds only for a REAL coordinate pair - |latitude| <= 90, |longitude| <= 180 (a Greek decimal
+    comma allowed); "95.00 N 23.60 E" / "37.82 N 190.00 W" are no coordinates (the N stays the letter)."""
+    try:
+        lat = float(_NUM_RE.search(lat_s).group(0).replace(",", "."))
+        lon = float(_NUM_RE.search(lon_s).group(0).replace(",", "."))
+    except (AttributeError, ValueError):
+        return False
+    return abs(lat) <= MAX_LAT and abs(lon) <= MAX_LON
+
+
+def _coord_sentence(s):
+    """A sentence with a REAL coordinate pair (rule (a)) that is NOT a gear sentence (AM5-r3: a gear sentence never
+    carries a north - "Gear pulses 19.00 N 15.00 E" is neutral)."""
+    if _N_GEAR_CTX.search(s) or _N_PIPE_RE.search(s):
+        return False
+    for m in _N_COORD_RE.finditer(s):
+        if _real_pair(m.group(1), m.group(3)):
+            return True
+    for m in _N_COORD_DEG_RE.finditer(s):
+        if _real_pair(m.group(1), m.group(2)):
+            return True
+    return False
+
+
 def has_coordinate(text):
     """True when the text holds a coordinate pair whose N the voice says as north (rule (a)); tests (AS32)."""
-    return bool(_N_COORD_RE.search(text or "") or _N_COORD_DEG_RE.search(text or ""))
+    return any(_coord_sentence(s) for s in _SENT_RE.split(text or ""))
 
 
 def _n_coords(t, i):
     """North case (a): a decimal coordinate pair "37.82 N 23.60 E" / "37.82° N, 23.60°" - the N = north, the E / W =
-    east / west. Runs BEFORE the unit step of normalize() (a "W" would otherwise already be "watts"); the ° may be
-    raw here or already spoken when called later (_DEG)."""
-    t = _N_COORD_RE.sub(lambda m: m.group(1) + N_WORDS["north"][i] + m.group(2) + m.group(3) +
-                        N_WORDS["east" if m.group(4) == "E" else "west"][i], t)
-    return _N_COORD_DEG_RE.sub(lambda m: m.group(1) + N_WORDS["north"][i], t)
+    east / west. Runs BEFORE the unit step of normalize() (a "W" would otherwise already be "watts") and BEFORE the
+    thousands rule (AM5-r3: "37.820 N" is a latitude, never 37820); the ° may be raw here or already spoken when
+    called later (_DEG). Sentence by sentence: only a REAL pair (_real_pair), never in a gear sentence."""
+    out = []
+    for s in _SENT_RE.split(t):
+        if _coord_sentence(s):
+            s = _N_COORD_RE.sub(lambda m: (m.group(1) + N_WORDS["north"][i] + m.group(2) + m.group(3) +
+                                           N_WORDS["east" if m.group(4) == "E" else "west"][i])
+                                if _real_pair(m.group(1), m.group(3)) else m.group(0), s)
+            s = _N_COORD_DEG_RE.sub(lambda m: (m.group(1) + N_WORDS["north"][i])
+                                    if _real_pair(m.group(1), m.group(2)) else m.group(0), s)
+        out.append(s)
+    return " ".join(out)
 
 
 def _n_letters(t, i):
@@ -152,7 +199,8 @@ def _n_letters(t, i):
             s = _N_GROUP_RE.sub(lambda m: m.group(1) + N_WORDS["letter"][i], s)   # "group N" = the letter, first
             if _N_LONE_RE.search(s):
                 rest = _N_LONE_RE.sub(" ", s)
-                w = N_WORDS["neutral"][i] if _N_GEAR_CTX.search(rest) else N_WORDS["letter"][i]
+                gear = _N_GEAR_CTX.search(rest) or _N_PIPE_RE.search(s)      # AM5-r3: "REV | N | FWD" = the gear
+                w = N_WORDS["neutral"][i] if gear else N_WORDS["letter"][i]
                 s = _N_LONE_RE.sub(w, s)
         out.append(s)
     return " ".join(out)
@@ -180,7 +228,10 @@ _ACRO_RE = re.compile(r"(?<![\w])(" + "|".join(sorted((re.escape(k) for k in SAI
 _CAP_LATIN_RE = re.compile(r"(?<![\w])([A-Z]{2,6})(?![\w])")
 _CAP_GREEK_RE = re.compile(r"(?<![\w])([Α-ΩΆΈΉΊΌΎΏΪΫ]{2,})(?![\w])")
 _FKEY_RE = re.compile(r"(?<![\w])F(\d{1,2})(?![\w])")
-_THOUSANDS_RE = re.compile(r"(?<![\w.,])([1-9]\d{0,2})[.,](\d{3})(?![\d.,])")   # exactly 3 digits after the separator
+# exactly 3 digits after the separator - and (AM5-r3 LOW) never a number followed by N / E / W / ° or their spoken words:
+# "37.820 N 23.600 E" is a coordinate pair (37.820 north), "1.500 m" is 1500 metres
+_THOUSANDS_RE = re.compile(r"(?<![\w.,])([1-9]\d{0,2})[.,](\d{3})(?![\d.,])"
+                           r"(?!\s?(?:[NEW](?![\w])|°|μοίρες|degrees|βόρεια|ανατολικά|δυτικά|north|east|west))")
 GREEK_RE = re.compile(r"[Ͱ-Ͽἀ-῿]")
 
 
@@ -215,8 +266,9 @@ def normalize(text, lang="el", vocab=None):
     t = (text or "").replace("«", " ").replace("»", " ").replace("\"", " ").replace("*", " ").replace("_", " ")
     t = t.replace("…", "...")
     t = re.sub(r"\[\d+\]", " ", t)
-    t = _THOUSANDS_RE.sub(r"\1\2", t)            # "1.500 m" / "1,500 m" = 1500 (as answer._f reads it), spoken so
     t = _n_coords(t, i)                          # AM5-r2 MED-1: "37.82 N 23.60 E" = north / east, before "W" = watts
+    t = _THOUSANDS_RE.sub(r"\1\2", t)            # "1.500 m" / "1,500 m" = 1500 (as answer._f reads it), spoken so
+    #                                              (AM5-r3: AFTER the coordinates, never on "37.820 N")
     # ranges before the unit, then the unit itself
     t = _RANGE_RE.sub(lambda m: "%s %s %s" % (m.group(1), "έως" if i == 0 else "to", m.group(2)), t)
     t = _UNIT_RE.sub(lambda m: "%s %s" % (m.group(1), UNITS[m.group(2)][i]), t)

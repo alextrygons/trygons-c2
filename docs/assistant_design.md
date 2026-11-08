@@ -1098,6 +1098,58 @@ remaining LOW items / limits go into the documented limits list below.
   wording / a few-shot pair with real sentences may do better), (b) a bigger model for Greek (5b: Krikri-8B / Meltemi)
   or the retrieval-only sentence rule, (c) the fresh question set + a non-positional correctness judgement (the
   owner's blind review W99) - decided on the fresh set, never on these rows.
+- NOTE (AM4-r6, the opus review of a8bb45f MED-3; under the owner's cap of 2026-11-08 - LOOP RULE 7 - not a fix step):
+  the example-"4" bias above stands as a documented limit of the Greek extract figures until AM6 (the fresh question
+  set, another prompt / a bigger Greek model). Nothing in this step changed the prompt or the pick scoring.
+- NOTE (AM4-r6, the same review): AS25's OWN rule shares the POLICY THRESHOLDS with the code (the cap 60 words, 2 / 3
+  shared content words, the stop / limit / pronoun word lists, "one or two sentences ahead", the heading stop) - it is
+  an independent IMPLEMENTATION of the same policy, so its "0 misses" shows that the code and the rule AGREE, not that
+  the policy finds every limit a reader would (the exception words of 5i were missing from BOTH lists until the opus
+  review read the manual). The curated list tests/assistant/limits_must.json (now with "never_alone") is the only
+  check that does not share them: it is written from the manual by hand.
+
+### 5i. Review fixes of AM4-r5 (step AM4-r6, the opus review of a8bb45f; station / tests / docs only, NO app / hal / gateway logic change)
+
+The owner's cap (2026-11-08, PROGRESS.md LOOP RULE 7): AM4 is past two fix rounds - only the review's two SAFETY-relevant
+MEDs are fixed here, MED-3 is the NOTE above.
+
+- MED-1 (a LIMIT HIDDEN ON SCREEN): a joined unit always ENDS with its limiting sentence(s) (5f / 5g / 5h), and every
+  screen line END-cut the answer with `show.cut()` - screen 2's message line (LINE_MAX 160 - the cite), screen 1's
+  notice (NOTICE_MAX 120) and the folded panel (NOTICE_MAX): the cut dropped exactly the limit («... είναι βοηθήματα.
+  ΔΕΝ είναι για ναυσιπλοΐα.» showed as «... είναι βοηθήματα…»). Measured over both indexes (AS34): 416 joined units,
+  1069 line cuts, EVERY one of them lost the limiting sentence with the old cut. Fix: `answer._units` returns the
+  STATEMENT piece of a joined unit (`stmt`; `pick_units` carries it; the answer dict gets `stmts` = the statement of
+  each joined pick, [] for a single sentence / a can't-find), `show.cut_answer(text, n, stmts, fallback)` keeps the text
+  around the statements (the limits) WHOLE and shortens the statement(s) in the middle of the line (two picks share
+  the budget); when less than MIN_STMT 40 characters would remain for a statement it returns `fallback` = the short
+  line asst.answer_limited («Η απάντηση έχει περιορισμό – διαβάστε ολόκληρο το κείμενο στον πίνακα «Βοηθός»» / "The
+  answer has a restriction – read the whole text on the "Assistant" panel"); app.asst_on_answer uses it for both
+  screen lines (the budget minus the cite and minus the "more" line) and adds asst.more_limits to BOTH lines for a
+  "more" unit (the panel had it since 5h); the panel's answer (also folded) goes through cut_answer too. Result (AS34):
+  0 of the 1069 cuts loses a limit; 843 of them are the fallback line (a limiting sentence of 60-120 characters leaves
+  no room for a statement on a 120-character notice: the operator reads the panel - the point of the fix is that the
+  statement is never shown ALONE). AS28 drives a joined "more" answer through the station (message line, notice, panel
+  open and folded).
+- MED-2 (an EXCEPTION not recognised as a limit): LIMIT_WORDS had negations, only, except, unless ... but not the word
+  EXCEPTION itself: «Μιλά ένα άτομο κάθε φορά: η πύλη δίνει το μεγάφωνο σε όποιον πάτησε ΠΡΩΤΟΣ» (el:296) was offered
+  WITHOUT «Εξαίρεση ο ΚΥΒΕΡΝΗΤΗΣ ... παίρνει το μεγάφωνο ΑΜΕΣΩΣ από όποιον μιλά» (the owner's W54 rule), "One person at
+  a time: the gateway gives the horn to whoever pressed FIRST" (en:439) without "The CAPTAIN is the exception" - a
+  wrong answer about who holds the horn. Fix: LIMIT_WORDS + εξαίρεση / εξαιρέσεις / εξαιρείται / εξαιρούνται /
+  exception / exceptions / however / ωστόσο, and LIMIT_OPENERS «Όμως» / "But" = a limit when it is the FIRST word of
+  the next sentence only (a "but" inside a sentence is none); AS25's own rule (I_LIMIT / I_OPEN) gets the same words -
+  the review found the blind spot in BOTH (the NOTE above). Outcome for the two sentences: statement + exception =
+  ~70 words > the cap 60 (W116) = the statement is NOT offered at all (the exception sentence alone still is; the
+  passage is shown when retrieved); tests/assistant/limits_must.json "never_alone" asserts for both that no offered
+  unit holds the statement without its exception and that the own rule sees the exception as a limit; the mutation
+  (LIMIT_WORDS without the exception words) offers both alone. Counts (AS25): picks 2070 -> 2051, joined units
+  (> 1 sentence inside) 335, "more" 86; AS34 counts 416 units with a statement piece (incl. the "Except ..."-before
+  units and bullet items).
+- LOW (cheap, allowed by the cap): `_decide_pick`'s post-check branch (a can't-find with the passage shown) clears
+  "more" and "stmts" (before: a can't-find could carry the "more limits" marker of the refused pick); `_cut()` also
+  refuses a piece ending in ':' as a pick or a limit (a list header - "The conditions are:" - says nothing alone; 29
+  such pieces were offerable); the example echoed WITH its repeat ("4 or 4, 9" = digits 4, 4, 9, «4 ή 4, 9») is no
+  pick either (the digits without repeats compared with the example, or the example string itself); "9, 4" stays a
+  real pick. Tests AS21 (+ 9 checks), AS25 (+ 2), AS28 (+ 4), AS34 new.
 
 ## 6. Speak (step AM5)
 
@@ -1287,6 +1339,53 @@ remaining LOW items / limits go into the documented limits list below.
   after "north"; recommended: confirm); W125 the lang text asst.note / asst.v_alarm now say exactly what the code
   does - the MASTER WARNING lamp («ΓΕΝΙΚΟΣ ΣΥΝΑΓΕΡΜΟΣ») and a sounding / queued callout make the answer text only,
   a MASTER CAUTION alone does not (W119's answer, nothing new decided; the manuals said WARNING already).
+
+### 7d. Review fixes of AM5-r2 (step AM5-r3, review of 19db2ff; station / tools / tests / docs only, NO app / hal / gateway logic change)
+
+Under the owner's cap of 2026-11-08 (LOOP RULE 7) AM5 is past two fix rounds too; MED-2 is safety-relevant (the
+read-only proof) and MED-1 was cheap - both fixed; the LOWs were cheap and are in.
+
+- MED-1 (THE SWEEP RACE, `asstvoice.py`): `tick()` takes `pending` FIRST (under the lock) and runs `_sweep()` LAST. A
+  TTS thread that finished in between set `pending` and cleared `making` - the finished clip was in `files` with
+  nothing in `_live()` protecting it (the AM5-r2 `_live()` knew only `tmp` and `making`), so that sweep DELETED the clip
+  the next tick would play: the answer was silently lost (the player got a missing file). `_live()` now reads
+  `pending` and `making` under the lock and protects the pending clip too, and every protected clip with its SIBLINGS
+  (`SIBLINGS` = `<path>.tmp` of sound.write_wav and `<path>.lead.wav` of tts.lead_in - the review's second point: the
+  lead-in's intermediate file was unprotected under the writer); `_remove_all()` takes the siblings along when a clip
+  is swept or dropped; `close()` deletes nothing under the writer (the thread removes its own files when it finds the
+  generation moved - stated before, now true for the lead file too). AS27 (v) replays the race through the REAL
+  `tick()`: a one-shot hook on `port.sound()` (the first call after the take) lets the gated TTS thread finish right
+  there, before the sweep; the fixed code keeps the clip and plays it at the next tick, the AM5-r2 `_live()` (installed
+  as the instance's `_live` for the negative control) loses it. AS27 (w): the siblings created under the writer survive
+  `_sweep()` and `close()` and are removed by the thread. `TTS_THREAD_NAME` "asst-tts" names the one TTS thread.
+- MED-2 (the module check was VACUOUS): AS27 compared `sys.modules` before / after the voice cycle in the TEST
+  process, where hud / gwclient / academymenu were imported long before (by app.py, the rig) - the check could never
+  fail. Now `voice_cycle_fresh()` runs the WHOLE cycle (speak -> a WAV made -> tick -> played -> deleted, [ΞΑΝΑ], the
+  horn, stop, close) in a FRESH interpreter (`python -I`: no site, no PYTHONPATH, nothing pre-imported) and reports
+  which BANNED modules (the AS1 list minus the codec proto: hud, gwclient, academymenu, app, link, stations, aurix,
+  driver, socket, asyncio ...) are in ITS `sys.modules`: none; the mutation (the same cycle followed by `import hud`)
+  is caught by the same check. The thread-count assertion (`n_threads >= 1` - always true) became: exactly ONE alive
+  thread named "asst-tts" while the first TTS run blocks and the third request waits, and the mutation (`_busy` always
+  False -> a second thread starts) is SEEN as 2.
+- LOW (`speech.py`): `_N_GEAR_CTX` + fwd / rev / forward / reverse / εμπρός / όπισθεν / πίσω / μπροστά as WHOLE words
+  in any case (with or without the accent: the screens' capitals), and an N between bars (`_N_PIPE_RE`: "REV | N |
+  FWD", «ΠΙΣΩ | N | ΜΠΡΟΣΤΑ») = the gear; "review" / "prevent" / "revision" / "Forwarded" are no gear (AS26). A
+  "group N" stays the letter FIRST whatever else the sentence says (AS32: «TELEM2 ομάδα N (... σφάλμα θέσης μπροστά
+  ...)» is the letter). `_n_coords` takes only a REAL pair (`_real_pair`: |latitude| <= MAX_LAT 90, |longitude| <=
+  MAX_LON 180, a Greek decimal comma allowed - "95.00 N 23.60 E" / "37.82 N 190.00 W" stay the letter) and runs
+  sentence by sentence, skipping a gear sentence ("Gear pulses 19.00 N 15.00 E" = neutral, never north;
+  `has_coordinate` says the same). The thousands rule ("1.500 m" = 1500) runs AFTER the coordinates and never on a
+  number followed by N / E / W / ° or their spoken words: "37.820 N 23.600 E" is spoken 37.820 north 23.600 east (the
+  decimals kept - AS32 checks every coordinate sentence's decimals), "1.500 m" is still 1500 metres. Known cost: a
+  DP sentence with «μπροστά» (ahead) and a lone N that is not a "group N" is read as neutral - the review's asked
+  direction, the group rule wins where it applies.
+- LOW (`tts.py`, test only): AS33 proves the kill-on-timeout of `tts.synth` with a stand-in TTS program that writes
+  its own pid and sleeps 30 s (Windows: the "windows" engine with a stand-in PowerShell template; POSIX: a stand-in
+  piper shell script): `subprocess.run(timeout=4)` kills it, synth returns 0 with no file, the pid is GONE (tasklist /
+  kill -0 = no orphan; PowerShell speaks in-process and Piper is one exe, so the direct child is the whole TTS program)
+  and the temporary list / script files are removed by the `finally` blocks.
+- Owner wording: W124 extended with the gear-context tokens and the lat / lon range (PROGRESS.md); MANUAL ch. 22 /
+  MANUAL_EL ch. 17 (the N rule) - the index rebuilt + committed.
 
 ## 8. PC load (owner's laptop: RTX A1000 6 GB laptop GPU, falls back to the CPU)
 

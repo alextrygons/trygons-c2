@@ -10,7 +10,13 @@
     "prints the passage that holds the pick text).",
     "known_limits = statements that are NOT joined with a later sentence BY DESIGN (W126): the limit stands under",
     "another heading (the chain stops at a heading) or the pick opens with a pronoun (LOW-2: never offered alone). The",
-    "test asserts these stay as documented."
+    "test asserts these stay as documented.",
+    "never_alone (step AM4-r6, review of a8bb45f MED-2): statements whose EXCEPTION follows (an 'exception' / 'however' /",
+    "«Εξαίρεση» / «ωστόσο» sentence, or one opening with «Όμως» / 'But') are NEVER offered without it: joined within the",
+    "cap, or (statement + exception over 60 words) not offered at all - the exception sentence itself may stand alone.",
+    "Fields: lang, id, pick = a substring of the statement, limit = a substring of the exception sentence. Test AS25",
+    "asserts no offered unit holds pick without limit and that its own rule sees the exception as a limit (mutation:",
+    "without the exception words both statements are offered alone)."
   ],
   "must": [
     {"lang": "en", "id": "en:277", "pick": "ROLE SWAP: either side asks", "must": null},
@@ -42,5 +48,11 @@
      "why": "the limit stands under the NEXT heading (WHO / WHEN): a statement and its limits never cross a heading (W126 default NO); the 'Only the laptop ...' sentence is offered on its own"},
     {"lang": "en", "id": "en:87", "pick": "It starts again by itself at the next start if it was on.", "not_with": null,
      "why": "opens with a pronoun: never offered alone (LOW-2); its antecedent is a pronoun sentence too, so no unit holds it"}
+  ],
+  "never_alone": [
+    {"lang": "el", "id": "el:296", "pick": "Μιλά ένα άτομο κάθε φορά: η πύλη δίνει το μεγάφωνο", "limit": "Εξαίρεση ο ΚΥΒΕΡΝΗΤΗΣ ή η ΚΥΒΕΡΝΗΤΡΙΑ",
+     "why": "the horn: 'first wins' has the captain's take-over as its exception (owner W54) - said alone it is wrong; statement + exception = ~70 words > the cap 60 = the statement is not offered (W116), the exception alone is"},
+    {"lang": "en", "id": "en:439", "pick": "One person at a time: the gateway gives the horn", "limit": "The CAPTAIN is the exception",
+     "why": "the same statement in the English manual; statement + exception over the cap = not offered, the exception alone is"}
   ]
 }

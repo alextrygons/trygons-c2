@@ -497,8 +497,16 @@ NEG_MIN_FRAC = 0.4        #   >= 2 shared content words AND >= 40 % of the claus
 #                           content words (AM4-r3 MED-2) - or the best-matching one(s)
 # AM4-r3 MED-1: the words that make a sentence LIMIT the one before it (a negation, only / except / unless ...)
 LIMIT_WORDS = NEG_WORDS | {"only", "μονο", "μοναχα", "except", "unless", "εκτοσ", "exclusively", "solely",
-                           "αποκλειστικα"}
+                           "αποκλειστικα",
+                           # AM4-r6 MED-2 (review of a8bb45f): an EXCEPTION sentence limits the one before it too -
+                           # «Εξαίρεση ο ΚΥΒΕΡΝΗΤΗΣ ... παίρνει το μεγάφωνο ΑΜΕΣΩΣ» after "one person at a time"
+                           # (el:296), "The CAPTAIN is the exception" (en:439), "however" / «ωστόσο»
+                           "εξαιρεση", "εξαιρεσεισ", "εξαιρειται", "εξαιρουνται", "exception", "exceptions",
+                           "however", "ωστοσο"}
 LIMIT_RE = re.compile(r"(?<![\w])(?:" + "|".join(sorted(LIMIT_WORDS, key=len, reverse=True)) + r")(?![\w])|n't")
+# AM4-r6 MED-2: a sentence that OPENS with «Όμως» / "But" turns against the one before it - a limit only as the
+# FIRST word (a "but" in the middle of a sentence is no limit of the sentence before)
+LIMIT_OPENERS = {"ομωσ", "but"}
 # only / unless / except ... WITHOUT the negations: the generate post-check's "the passage limits it" rule (AM4-r4)
 ONLY_WORDS = LIMIT_WORDS - NEG_WORDS
 # AM4-r4 MED-1 (b): a sentence that OPENS with one of these speaks about the sentence before it ("It counts only
@@ -600,6 +608,8 @@ def limits(nxt_normed, unit_normed):
     (AM4-r4 MED-1 b) a sentence that OPENS with a PRONOUN ("It counts only when ...", «Αυτό δεν ...»: it speaks
     about the sentence before it, whatever words they share). `unit_normed` = what the candidate is judged against:
     AM4-r5 MED-1 = the PICK + the one sentence before the candidate (never the whole grown chain)."""
+    if _opens_with(nxt_normed, LIMIT_OPENERS):      # AM4-r6 MED-2: «Όμως ...» / "But ..." = a limit from its first word
+        return True
     if not limiting(nxt_normed):
         return False
     if _opens_with(nxt_normed, LIMIT_WORDS) or _opens_with(nxt_normed, PRONOUN_OPENERS):
@@ -874,7 +884,7 @@ def pick_units(hits, min_words=4):
             pos = at + len(pc)
             n_own += at < len(own)
         pos = 0
-        for unit, joined, more in _units(pieces, min_words, " ", n_own):
+        for unit, joined, more, stmt in _units(pieces, min_words, " ", n_own):
             at = full.find(unit, pos)               # the units come in the order of their first piece
             at = at if at >= 0 else full.find(unit)
             pos = max(pos, at + 1) if at >= 0 else pos
@@ -882,22 +892,25 @@ def pick_units(hits, min_words=4):
             crossed = [a for a, st in zip(after, starts) if end > st] if at >= 0 else []
             if not joined and len(unit.split()) > LONG_PICK_WORDS and _ITEM_RE.search(unit):
                 ipos = max(at, 0)                   # a glued list cut by the passage boundary: only the items that
-                for item, _j, imore in _units([p.strip() for p in _ITEM_RE.split(unit) if p.strip()], min_words,
-                                              " * "):
+                for item, _j, imore, istmt in _units([p.strip() for p in _ITEM_RE.split(unit) if p.strip()],
+                                                     min_words, " * "):
                     iat = full.find(item, ipos)     # START in this passage are its (the next passage offers the rest)
                     ipos = max(ipos, iat + 1) if iat >= 0 else ipos
                     if iat >= len(own):
                         continue
                     iend = iat + len(item)
-                    out.append({"text": item, "hit": h, "more": imore,
+                    out.append({"text": item, "hit": h, "more": imore, "stmt": istmt,
                                 "after": [a for a, st in zip(after, starts) if iend > st] if iat >= 0 else []})
             else:
-                out.append({"text": unit, "hit": h, "after": crossed, "more": more})
+                out.append({"text": unit, "hit": h, "after": crossed, "more": more, "stmt": stmt})
     return out[:MAX_PICK_SENT]
 
 
 def _cut(s):
-    return s.rstrip().endswith((";", "·"))
+    """A piece that is no whole statement: it ends in a ';' / '·' clause mark (the rest of the list is cut off) or in
+    a ':' (AM4-r6 LOW: "The conditions are:" announces a list that follows - alone it says nothing, as a limit it is
+    incomplete)."""
+    return s.rstrip().endswith((";", "·", ":"))
 
 
 def _units(pieces, min_words, sep=" ", n_own=None):
@@ -956,7 +969,9 @@ def _units(pieces, min_words, sep=" ", n_own=None):
             if not PICK_FALLBACK or first is None or len(first.split()) > PICK_JOIN_WORDS:
                 continue                            # a statement + its first exception too long to offer: neither
             unit, joined, more = first, True, True   # the rest of the chain = "more limits - see the manual"
-        out.append((_BULLET_RE.sub("", unit), joined, more))
+        # AM4-r6 MED-1: the STATEMENT piece of a joined unit (what a display line may shorten - its limiting
+        # sentence(s) are never cut off the end: show.cut_answer); None for a unit of one piece
+        out.append((_BULLET_RE.sub("", unit), joined, more, s if joined else None))
     return out
 
 
@@ -1202,7 +1217,12 @@ def _decide_pick(raw, hits, lang, terms, out, err):
     letters = re.sub(r"[\d\s,.;:()\[\]-]+", "", letters)
     # AM4-r5 LOW-1: an EXACT echo of the prompt's example ("4, 9" and nothing else) is NO pick, never a confident
     # wrong answer; the problem text says so (the eval counts "no pick" apart from a post-check rejection)
-    echo = not letters and [int(d) for d in re.findall(r"\d+", body)] == list(PICK_EXAMPLE_IDS)
+    digits = []                                     # AM4-r6 LOW: the digits WITHOUT repeats - "4 or 4, 9" ([4, 4, 9])
+    for d in re.findall(r"\d+", body):              # is the example echoed as it stands, no pick either
+        if int(d) not in digits:
+            digits.append(int(d))
+    echo = not letters and (digits == list(PICK_EXAMPLE_IDS) or
+                            plain(body).strip().rstrip(".") in {plain(e) for e in PICK_EXAMPLE.values()})
     if not ids or letters or echo:
         out.update(a=CANT[lang], src="passage", model_text=raw.strip(), id=hits[0].get("id", ""),
                    cite=cite(hits[0], lang), passage=passage_of(hits[0], lang), no_pick=True,
@@ -1223,6 +1243,9 @@ def _decide_pick(raw, hits, lang, terms, out, err):
     # AM4-r5 MED-1: a unit cut at the cap after its FIRST limit carries "more" - the voice and the panel add
     # «υπάρχουν και άλλοι περιορισμοί – δείτε το εγχειρίδιο» (speech.MORE, lang asst.more_limits)
     out["more"] = any(units[i - 1].get("more") for i in ids)
+    # AM4-r6 MED-1: the STATEMENT piece of every joined pick - a display line that must shorten the answer cuts the
+    # statement, never the limiting sentence(s) that follow it (show.cut_answer); [] = nothing joined
+    out["stmts"] = [units[i - 1]["stmt"] for i in ids if units[i - 1].get("stmt")]
     # two picks from DIFFERENT passages: BOTH chapters are cited and both passages shown (AM4-r2 LOW-a: the second
     # sentence's chapter was silent before); AM4-r4 MED-1 a: a unit reaching into the FOLLOWING passage shows that
     # passage as passage2 (the same chapter: cited once)
@@ -1240,7 +1263,8 @@ def _decide_pick(raw, hits, lang, terms, out, err):
              if not p.startswith(("chapter not", "the passage sentence negates", "the passage sentence limits"))]
     if probs:
         out.update(a=CANT[lang], src="passage", problems=probs, model_text=txt, id=h.get("id", ""),
-                   cite=cite(h, lang), passage=passage_of(h, lang))
+                   cite=cite(h, lang), passage=passage_of(h, lang), more=False, stmts=[])
+        #          (AM4-r6 LOW: a can't-find carries no "more limits" marker and no statement to shorten)
     else:
         out.update(a=txt, src="extract", id=h.get("id", ""), cite=c, passage=passage_of(h, lang),
                    passage2=passage_of(h2, lang), model_text=txt, picked=ids)

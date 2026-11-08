@@ -3963,12 +3963,13 @@ THE VOICE AND THE PANEL (step AM5)
     "fwd" / "rev" as "forward" / "reverse", the screens' capital words as words
     (OFF, ON, RESET, NEVER ... - never spelt letter by letter), and the letter
     N by its context, conservatively (step AM5-r2): "F / N / R" = the gears, a
-    lone N in a sentence about the gear (gear, neutral, a lone F / R, the
-    throttle / idle beside it, servo pulses) = "neutral", "group N" = the
-    letter, and "north" ONLY for a decimal coordinate pair ("37.82 N 23.60 E"
-    - the E / W spoken too) or right after the word "north" - never from a
-    heading / compass word; everything else = the letter N ("key N", "part
-    N"). "I can't find that in the manual." is said
+    lone N in a sentence about the gear (gear, neutral, a lone F / R, forward /
+    reverse / fwd / rev, "REV | N | FWD", the throttle / idle beside it, servo
+    pulses) = "neutral", "group N" = the letter, and "north" ONLY for a real
+    decimal coordinate pair (latitude up to 90, longitude up to 180: "37.82 N
+    23.60 E" - the E / W spoken too, never in a gear sentence) or right after
+    the word "north" - never from a heading / compass word; everything else =
+    the letter N ("key N", "part N"). "I can't find that in the manual." is said
     as it is. A very long manual sentence (more than 50 words) is NOT read
     out: the assistant says only "I found the answer in chapter N - see the
     text" and the text is on the panel.

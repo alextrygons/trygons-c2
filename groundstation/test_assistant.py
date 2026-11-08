@@ -2749,6 +2749,52 @@ def as21():
     r = A.Answerer(A.StubLlm("1"), terms, mode="extract").answer("πού κλείνω την καταπακτή;", "el", found)
     out["a real pick carries no_pick False / more False"] = r["src"] == "extract" and not r.get("no_pick") and \
         r.get("more") is False
+    # --- AM4-r6 (review of a8bb45f) LOW ------------------------------------------------------------------------------
+    # the example echoed WITH its repeat ("4 or 4, 9", "4, 4, 9", «4 ή 4, 9») is no pick either (the digits without
+    # repeats = the example); "4, 9, 4" / "9, 4" are real picks (another order = a choice)
+    for echo in ("%d or %d, %d" % (e1, e1, e2), "%d, %d, %d" % (e1, e1, e2), "%d ή %d, %d" % (e1, e1, e2),
+                 "%d or %d, %d." % (e1, e1, e2)):
+        r = A.Answerer(A.StubLlm(echo), terms, mode="extract").answer("which sentence?", "en", lfound)
+        out["AM4-r6: the example with its repeat %r = no pick ('echoed')" % echo] = r["src"] == "passage" and \
+            r.get("no_pick") is True and any("echoed" in p for p in r["problems"])
+    r = A.Answerer(A.StubLlm("%d, %d" % (e2, e1)), terms, mode="extract").answer("which sentence?", "en", lfound)
+    out["AM4-r6: '%d, %d' (the other order) is a real pick" % (e2, e1)] = r["src"] == "extract" and r["picked"] == [e2, e1]
+    # a piece ending in ':' announces a list - never a pick of its own, never a limit; a joined unit carries its
+    # STATEMENT in "stmts" (what a display line may shorten), a single sentence / a can't-find carries none
+    JP = [dict(RET[0], text="The hatch relay is switched by the launch sequence with the OPEN switch. It is never switched "
+                            "by a station. The copilot prepares the launch and the captain approves it. "
+                            "The conditions for a launch with a trusted boat GPS are:")]
+    units = A.pick_units(JP)
+    texts = [u["text"] for u in units]
+    out["AM4-r6: a piece ending in ':' is no pick"] = not any(t.rstrip().endswith(":") for t in texts) and \
+        A._cut("The conditions are:") and not any("conditions for a launch" in t for t in texts) and len(texts) == 2
+    joined = [u for u in units if u.get("stmt")]
+    out["AM4-r6: a joined unit = statement + its limit, stmt = the statement piece"] = len(joined) == 1 and \
+        joined[0]["text"].startswith("The hatch relay is switched") and "never switched by a station" in joined[0]["text"] \
+        and joined[0]["stmt"] == "The hatch relay is switched by the launch sequence with the OPEN switch." and \
+        all(u.get("stmt") is None for u in units if u is not joined[0])
+    jfound = {"cant_find": False, "why": "", "hits": JP}
+    r = A.Answerer(A.StubLlm("1"), terms, mode="extract").answer("who switches the hatch relay?", "en", jfound)
+    out["AM4-r6: the answer of a joined pick carries stmts = [the statement]"] = r["src"] == "extract" and \
+        r.get("stmts") == [joined[0]["stmt"]] and r["a"].startswith(joined[0]["stmt"])
+    r = A.Answerer(A.StubLlm("%d" % len(texts)), terms, mode="extract").answer("who approves?", "en", jfound)
+    out["AM4-r6: a single-sentence pick carries stmts = []"] = r["src"] == "extract" and r.get("stmts") == []
+    r = A.Answerer(A.StubLlm("asdf"), terms, mode="extract").answer("who approves?", "en", jfound)
+    out["AM4-r6: a can't-find (no pick) carries no 'more' and no stmts"] = r["src"] == "passage" and \
+        not r.get("more") and not r.get("stmts")
+    # the exception words ARE limits (MED-2): "The CAPTAIN is the exception ..." / «Εξαίρεση ο ΚΥΒΕΡΝΗΤΗΣ ...» and an
+    # opening "But" / «Όμως»; a "but" in the middle of a sentence is none
+    out["AM4-r6 MED-2: exception / however / «Εξαίρεση» / «ωστόσο» limit; an opening But / Όμως limits"] = \
+        A.limits(A.norm("The CAPTAIN is the exception: the captain's TALK takes the horn at once."),
+                 A.norm("One person at a time: the gateway gives the horn to whoever pressed FIRST; the others see "
+                        "SPEAKING: CAPTAIN.")) and \
+        A.limits(A.norm("Εξαίρεση ο ΚΥΒΕΡΝΗΤΗΣ: η ΟΜΙΛΙΑ του κυβερνήτη παίρνει το μεγάφωνο ΑΜΕΣΩΣ."),
+                 A.norm("Μιλά ένα άτομο κάθε φορά: η πύλη δίνει το μεγάφωνο σε όποιον πάτησε ΠΡΩΤΟΣ.")) and \
+        A.limits(A.norm("However, the captain takes the horn at once."), A.norm("The first press gets the horn.")) and \
+        A.limits(A.norm("Ωστόσο ο κυβερνήτης παίρνει το μεγάφωνο αμέσως."), A.norm("Το πρώτο πάτημα παίρνει το μεγάφωνο.")) and \
+        A.limits(A.norm("But the captain takes it at once."), A.norm("The first press gets the horn.")) and \
+        A.limits(A.norm("Όμως ο κυβερνήτης το παίρνει αμέσως."), A.norm("Το πρώτο πάτημα παίρνει το μεγάφωνο.")) and \
+        not A.limits(A.norm("The horn is loud but clear."), A.norm("The first press gets the horn."))
     # index.following (AM4-r5): stops at a HEADING change (W126), chains a TERM split over passages (MED-3)
     PS2 = [{"id": "y:1", "kind": "manual", "ch": "7", "heading": "A", "term": "", "lines": [1, 3], "text": "a"},
            {"id": "y:2", "kind": "manual", "ch": "7", "heading": "B", "term": "", "lines": [4, 5], "text": "b"},
@@ -3025,7 +3071,11 @@ def as25():
         also such as while after before over under again further once per ενα ενασ μια μιασ itself""".split())
     I_LIMIT = set("""δεν δε μην μη ποτε οχι κανενα κανενασ καμια καμμια ουτε χωρισ τιποτα κανεισ μονο μοναχα εκτοσ
         αποκλειστικα not never no cannot without none nobody nothing nor neither only except unless exclusively
-        solely""".split())
+        solely εξαιρεση εξαιρεσεισ εξαιρειται εξαιρουνται exception exceptions however ωστοσο""".split())
+    # AM4-r6 MED-2: the opus review of a8bb45f found the SAME blind spot in this rule and in the code (an exception
+    # sentence - «Εξαίρεση ο ΚΥΒΕΡΝΗΤΗΣ ...», "The CAPTAIN is the exception" - was no limit): both lists carry the
+    # exception words now, and a sentence OPENING with «Όμως» / "But" turns against the one before it
+    I_OPEN = {"ομωσ", "but"}
     I_PRON = set("it this that these those they αυτο αυτη αυτοσ αυτα αυτεσ αυτοι αυτην αυτον αυτου αυτησ αυτων "
                  "αυτουσ ετσι".split())
     I_EXC = {"except", "unless", "εκτοσ"}
@@ -3098,6 +3148,8 @@ def as25():
         return bool(t) and t[0] in words
 
     def i_limits(nxt, ref):
+        if i_opens(nxt, I_OPEN):                   # «Όμως ...» / "But ..." (AM4-r6)
+            return True
         if not i_has_limit(nxt):
             return False
         return i_opens(nxt, I_LIMIT) or i_opens(nxt, I_PRON) or i_shares(i_cwords(nxt), i_cwords(ref)) >= 2
@@ -3163,7 +3215,7 @@ def as25():
         for h in hits:
             for s in A.sentences(h["text"]):
                 s = A._BULLET_RE.sub("", s)
-                if len(s.split()) >= 4 and A._whole(s) and not s.rstrip().endswith((";", "·")):
+                if len(s.split()) >= 4 and A._whole(s) and not s.rstrip().endswith((";", "·", ":")):
                     out.append({"text": s, "hit": h, "more": False})
         return out
 
@@ -3197,7 +3249,7 @@ def as25():
                     n["joined"] += len(inside) > 1
                     n["more"] += more
                     n["crossing"] += end > len(own)
-                    n["ends"] += s.rstrip().endswith((";", "·"))
+                    n["ends"] += s.rstrip().endswith((";", "·", ":"))     # (AM4-r6 LOW: a ':' = a list follows)
                     n["lower"] += s.lstrip("«\"'([")[:1].islower()
                     n["pronoun"] += i_opens(s, I_PRON)
                     n["over_cap"] += len(inside) > 1 and len(s.split()) > I_CAP
@@ -3262,12 +3314,46 @@ def as25():
                 bad.append((e["id"], "joined with the sentence it must not be joined with"))
         return bad
 
+    def never_alone_bad(spec):
+        """AM4-r6 MED-2: statements whose EXCEPTION follows (el:296 «Μιλά ένα άτομο κάθε φορά» -> «Εξαίρεση ο
+        ΚΥΒΕΡΝΗΤΗΣ ...», en:439 "One person at a time" -> "The CAPTAIN is the exception") are NEVER offered without
+        it - joined (within the cap) or not offered at all; the exception sentence itself may stand alone."""
+        bad = []
+        for e in spec.get("never_alone", []):
+            ps = index.load(e["lang"])["passages"]
+            pi = next((i for i, p in enumerate(ps) if p["id"] == e["id"]), None)
+            if pi is None or e["pick"] not in ps[pi]["text"] or e["limit"] not in ps[pi]["text"]:
+                bad.append((e["id"], "pick / limit text not in the passage"))
+                continue
+            units = A.pick_units([dict(ps[pi], after=index.following(ps, pi))])
+            alone = [u["text"][:60] for u in units if e["pick"] in u["text"] and e["limit"] not in u["text"]]
+            if alone:
+                bad.append((e["id"], "offered WITHOUT its exception: %s" % alone))
+            # the OWN rule agrees: the (whole) exception sentence limits the (whole) statement sentence
+            sents = i_split(ps[pi]["text"])
+            full_pick = next((s for s in sents if e["pick"] in s), e["pick"])
+            full_lim = next((s for s in sents if e["limit"] in s), e["limit"])
+            if not i_limits(full_lim, full_pick):
+                bad.append((e["id"], "the own rule does not see the exception as a limit"))
+        return bad
+
     with open(os.path.join(HERE, "..", "tests", "assistant", "limits_must.json"), encoding="utf-8") as f:
         spec = json.load(f)
     good = scan()
     r2 = scan(r2_picks)
     mm = must_misses(spec)
     kn = known_ok(spec)
+    na = never_alone_bad(spec)
+    # mutation C (AM4-r6 MED-2): without the exception words the statements of never_alone ARE offered alone
+    try:
+        saved_lw = A.LIMIT_WORDS
+        A.LIMIT_WORDS = A.LIMIT_WORDS - {"εξαιρεση", "εξαιρεσεισ", "εξαιρειται", "εξαιρουνται", "exception",
+                                         "exceptions", "however", "ωστοσο"}
+        A.LIMIT_RE = re.compile(r"(?<![\w])(?:" + "|".join(sorted(A.LIMIT_WORDS, key=len, reverse=True)) + r")(?![\w])|n't")
+        mut_exc = [b for b in never_alone_bad(spec) if "WITHOUT" in b[1]]
+    finally:
+        A.LIMIT_WORDS = saved_lw
+        A.LIMIT_RE = re.compile(r"(?<![\w])(?:" + "|".join(sorted(A.LIMIT_WORDS, key=len, reverse=True)) + r")(?![\w])|n't")
     # mutation A: the AM4-r3 / AM4-r4 limit SHAPE (an opener counts only up to 10 words, no pronoun two ahead, no
     # restriction check, no fallback) -> the curated list is missed
     saved = (A.limits, A.limits2, A.PICK_FALLBACK)
@@ -3325,6 +3411,10 @@ def as25():
            "the curated list tests/assistant/limits_must.json: every statement offerable WITH its limit (%d entries, "
            "%d misses)" % (len(spec["must"]), len(mm)): not mm,
            "known_limits stay as documented (across a heading = not joined; a pronoun opener = not alone)": not kn,
+           "AM4-r6 never_alone: a statement with a following EXCEPTION is never offered without it (%d entries)" % len(
+               spec.get("never_alone", [])): not na and len(spec.get("never_alone", [])) >= 2,
+           "mutation: without the exception words %d never_alone statements are offered alone" % len(mut_exc):
+               len(mut_exc) >= 2,
            "mutation: the AM4-r2 pick list (nothing joined) misses %d" % len(r2["misses"]): len(r2["misses"]) > 200,
            "mutation: the AM4-r3 / AM4-r4 limit shape (opener <= 10 words, no pronoun two ahead, no fallback) misses "
            "%d of the curated list" % len(mut_shape): len(mut_shape) >= 8,
@@ -3339,6 +3429,8 @@ def as25():
         print("   AS25 curated miss:", e["id"], e["pick"][:40], "->", why[:160])
     for k in kn:
         print("   AS25 known_limits broken:", k)
+    for k in na:
+        print("   AS25 never_alone broken:", k)
 
 
 def as29():
@@ -3572,6 +3664,48 @@ def as26():
         "βόρεια βόρεια" in speech.normalize("βόρεια N", "el")
     out["has_coordinate"] = speech.has_coordinate("37.82 N 23.60 E") and speech.has_coordinate("37.82° N, 23.60°") and \
         not speech.has_coordinate("The boat at 37.82 N.") and not speech.has_coordinate("group N")
+    # --- AM5-r3 (review of 19db2ff, LOW): the gear context + the coordinate range + the thousands order ----------------
+    g3 = {"en REV | N | FWD lamps.": "reverse | neutral | forward",
+          "en Lever fwd, N, rev.": "forward, neutral, reverse",
+          "en forward / N / reverse": "forward, neutral, reverse",
+          "en Forward, then N, then Reverse.": "Forward, then neutral, then Reverse",
+          "en FWD and REV lit, N dark.": "neutral dark",
+          "el ΠΙΣΩ | N | ΜΠΡΟΣΤΑ": "πισω | νεκρά | μπροστα",
+          "el εμπρός, N, όπισθεν": "εμπρός, νεκρά, όπισθεν",
+          "el ΕΜΠΡΟΣ N ΟΠΙΣΘΕΝ": "εμπρος νεκρά οπισθεν",
+          "el Το μοχλό πίσω, N στη μέση.": "νεκρά στη μέση",
+          "el Μπροστά ή N.": "Μπροστά ή νεκρά"}
+    for key, want in g3.items():
+        lg, s = key[:2], key[3:]
+        o = speech.normalize(s, lg)
+        out["gear ctx fwd / rev / forward / reverse / εμπρός / όπισθεν / πίσω / μπροστά / | N |: %s -> neutral" % s] = \
+            want in o and "north" not in o and "βόρεια" not in o
+    # whole words only: a "review" / "prevent" / "revision" is no gear context (the N stays the letter)
+    for s in ("The review of N.", "Prevent N here.", "Revision N of the file.", "Forwarded N."):
+        o = speech.normalize(s, "en")
+        out["no gear ctx inside a word: %s -> the letter" % s] = "neutral" not in o and " N" in o
+    # the coordinate rule takes only a REAL pair (|lat| <= 90, |lon| <= 180) and never a gear sentence
+    out["coords: lat > 90 / lon > 180 = no coordinate (the letter)"] = \
+        "βόρεια" not in speech.normalize("Στο 95.00 N 23.60 E.", "el") and \
+        "north" not in speech.normalize("At 37.82 N 190.00 W.", "en") and \
+        "north" not in speech.normalize("Position 91.0° N, 23.6°.", "en") and \
+        not speech.has_coordinate("95.00 N 23.60 E") and not speech.has_coordinate("37.82 N 190.00 W")
+    out["coords: the boundary 90 / 180 is a coordinate"] = "90.00 north 180.00 west" in \
+        speech.normalize("At 90.00 N 180.00 W.", "en") and "38,0 βόρεια 23,5 ανατολικά" in \
+        speech.normalize("Στο 38,0 N 23,5 E.", "el")
+    out["coords: never in a gear sentence"] = "north" not in speech.normalize("Gear pulses 19.00 N 15.00 E.", "en") and \
+        "neutral" in speech.normalize("Gear pulses 19.00 N 15.00 E.", "en") and \
+        not speech.has_coordinate("Gear pulses 19.00 N 15.00 E.") and \
+        "βόρεια" not in speech.normalize("Σχέση 19.00 N 15.00 E.", "el") and \
+        "north" not in speech.normalize("REV | N | FWD at 37.82 N 23.60 E.", "en")
+    # the thousands rule runs AFTER the coordinates and never on a number followed by N / E / W / °: a 3-decimal
+    # coordinate stays a coordinate (37.820 north), "1.500 m" is still 1500
+    t3 = speech.normalize("Στο 37.820 N 23.600 E. Εμβέλεια 1.500 m. Στο 37.820 N.", "el")
+    out["thousands after the coordinates: 37.820 N 23.600 E stays a coordinate, 1.500 m = 1500"] = \
+        "37.820 βόρεια 23.600 ανατολικά" in t3 and "1500 μέτρα" in t3 and "37820" not in t3 and "37.820 εν" in t3
+    t4 = speech.normalize("Position 37.820° N, 23.600° E; 1,500 m away; 2.345 W", "en")
+    out["thousands (en): a ° / N / E / W number is never a thousands group"] = "37.820 degrees north" in t4 and \
+        "23.600 degrees east" in t4 and "1500 metres" in t4 and "2.345 watts" in t4 and "37820" not in t4
     w = speech.normalize("Ο διακόπτης OFF και ON· NEVER σημαίνει ποτέ· ΔΕΝ είναι για ναυσιπλοΐα· RESET, WARNING, XYZ", "el")
     out["known Latin words said as words (el)"] = " οφ " in w and " ον" in w and "ρισέτ" in w and "γουόρνινγκ" in w and \
         "όου εφ εφ" not in w and "εν ι βι" not in w
@@ -3701,7 +3835,7 @@ def as32():
     north = re.compile(r"(?i)north|βορει|βορρ")
     fold = lambda s: speech.strip_accents(s or "").lower()
     n = {"el": 0, "en": 0}
-    bad, seen = [], {"group": 0, "gear": 0, "coord": 0}
+    bad, seen = [], {"group": 0, "gear": 0, "coord": 0, "dir": 0}
     for lang in ("el", "en"):
         ps = index.load(lang)["passages"]
         # AM4-r5: the coordinate rule (a) is checked over EVERY manual sentence - the one Saronic Gulf sentence ("It
@@ -3713,6 +3847,11 @@ def as32():
                     o = speech.normalize(s, lang)
                     if len(north.findall(fold(o))) - len(north.findall(fold(s))) < 1:
                         bad.append((lang, "coordinate not north", s[:80], o[:100]))
+                    # AM5-r3: every decimal of the coordinate sentence is spoken as it stands (the thousands rule
+                    # never turns "37.820" into 37820)
+                    for num in re.findall(r"\d+[.,]\d+", s):
+                        if num not in o:
+                            bad.append((lang, "coordinate decimal changed", num, o[:100]))
         for p in ps:
             for s, _h in A.pick_sentences([p]):
                 if not lone.search(s):
@@ -3731,10 +3870,161 @@ def as32():
                     seen["gear"] += 1
                     if speech.N_WORDS["neutral"][0 if lang == "el" else 1] not in o:
                         bad.append((lang, "gear N not neutral", s[:80], o[:100]))
+                # AM5-r3: a lone N beside a gear DIRECTION word (fwd / rev / forward / reverse / εμπρός / όπισθεν / πίσω /
+                # μπροστά as whole words) or between bars is the gear = neutral
+                # (a "group N" / «ομάδα N» is the letter FIRST, whatever else the sentence says - «σφάλμα θέσης μπροστά»)
+                is_group = bool(re.search(r"(?i)(?<![\w])(group|ομάδας?) N(?![\w])", s))
+                if not is_group and (re.search(r"(?i)(?<![\w])(fwd|rev|forward|reverse|εμπρ[οό]ς|[οό]πισθεν|π[ιί]σω|"
+                                               r"μπροστ[αά])(?![\w])", s) or re.search(r"\|\s*N\s*\|", s)):
+                    seen["dir"] += 1
+                    if speech.N_WORDS["neutral"][0 if lang == "el" else 1] not in o:
+                        bad.append((lang, "N beside a gear direction word not neutral", s[:80], o[:100]))
                 del low
-    ok = not bad and n["el"] >= 8 and n["en"] >= 8 and seen["group"] >= 2 and seen["gear"] >= 3 and seen["coord"] >= 1
+    ok = not bad and n["el"] >= 8 and n["en"] >= 8 and seen["group"] >= 2 and seen["gear"] >= 3 and seen["coord"] >= 1 \
+        and seen["dir"] >= 1
     report("AS32 every pickable sentence with a lone N: never north without a coordinate", ok,
            "sentences el %d / en %d; checked by content %s; problems %s" % (n["el"], n["en"], seen, bad[:6] or "none"))
+
+
+def _pid_alive(pid):
+    """Is this process still there? (tasklist on Windows, kill -0 elsewhere)"""
+    if os.name == "nt":
+        r = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH", "/FO", "CSV"], capture_output=True, timeout=30)
+        return ('"%d"' % pid) in r.stdout.decode("utf-8", "replace")
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def as33():
+    """AM5-r3 (review of 19db2ff, LOW): tts.synth's kill-on-timeout - the TTS program (PowerShell on Windows, Piper
+    elsewhere) that does not finish within `timeout` is KILLED by subprocess.run, synth returns 0 (no file), NO orphan
+    process is left (the program's own PID, written by it, is gone) and the temporary list / script files are removed.
+    Windows: the "windows" engine with a stand-in script template (writes $PID, sleeps 30 s); POSIX: a stand-in
+    piper binary (a shell script: its own pid, sleep 30)."""
+    import tts
+    d = tempfile.mkdtemp(prefix="trygons_as33_")
+    pidfile = os.path.join(d, "pid.txt")
+    wav = os.path.join(d, "out.wav")
+    out = {}
+    temps = []
+    real_mkstemp = tts.tempfile.mkstemp
+
+    def mkstemp_rec(*a, **kw):
+        fd, p = real_mkstemp(*a, **kw)
+        temps.append(p)
+        return fd, p
+    saved = (tts._win, tts._PS_SPEAK_SAPI, tts.piper_bin, tts.piper_voice)
+    tts.tempfile.mkstemp = mkstemp_rec
+    t0 = time.time()
+    try:
+        if os.name == "nt":
+            tts._win = {"en": ("sapi", "StandIn")}
+            # the template keeps its two %s (voice name, list file) and sleeps far longer than the timeout
+            tts._PS_SPEAK_SAPI = ("Set-Content -Path '%s' -Value $PID; Start-Sleep -Seconds 30; "
+                                  "$null = '%%s'; $null = '%%s'") % pidfile.replace("'", "''")
+            n = tts.synth("en", [("hello", wav)], timeout=4.0, choice="windows")
+        else:
+            binp = os.path.join(d, "piper")
+            with open(binp, "w") as f:
+                f.write("#!/bin/sh\necho $$ > '%s'\nsleep 30\n" % pidfile)
+            os.chmod(binp, 0o755)
+            tts.piper_bin = lambda: binp
+            tts.piper_voice = lambda lang: binp
+            n = tts.synth("en", [("hello", wav)], timeout=4.0, choice="piper")
+    finally:
+        tts.tempfile.mkstemp = real_mkstemp
+        tts._win, tts._PS_SPEAK_SAPI, tts.piper_bin, tts.piper_voice = saved
+    took = time.time() - t0
+    pid = 0
+    try:
+        with open(pidfile) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        pass
+    alive = _pid_alive(pid) if pid else None
+    if alive:
+        time.sleep(1.0)
+        alive = _pid_alive(pid)
+    out["the TTS program ran (wrote its pid)"] = pid > 0
+    out["synth returned 0 after the timeout, no file"] = n == 0 and not os.path.exists(wav)
+    out["the timeout was enforced (killed, not waited for 30 s)"] = took < 20.0
+    out["no orphan: the TTS program's pid is gone"] = alive is False
+    out["the temporary list / script files are removed"] = not any(os.path.exists(p) for p in temps)
+    shutil.rmtree(d, ignore_errors=True)
+    report("AS33 tts.synth kill-on-timeout leaves no orphan process", all(out.values()),
+           "%s; pid %d, took %.1f s, temps %d" % (out, pid, took, len(temps)))
+
+
+def as34():
+    """AM4-r6 MED-1 (review of a8bb45f): a JOINED unit (a manual statement + the sentence(s) that LIMIT it) is never
+    END-cut on a screen line - over BOTH indexes, for every joined unit answer.pick_units offers, every display cut
+    (screen 2's message line LINE_MAX - cite - the 'more' line, screen 1's notice NOTICE_MAX - 'more', the folded panel
+    NOTICE_MAX) keeps the limiting part WHOLE or shows the short «has a restriction» line; the mutation = the plain
+    end-cut show.cut() loses the limit of hundreds of units. Also: cut_answer without stmts = cut(), a short answer
+    untouched, two statements share the budget, the fallback below MIN_STMT."""
+    from assistant import answer as A, index, show
+    more = {"el": " " + i18n.TL("el", "asst.more_limits"), "en": " " + i18n.TL("en", "asst.more_limits")}
+    limited = {"el": i18n.TL("el", "asst.answer_limited"), "en": i18n.TL("en", "asst.answer_limited")}
+    n = {"joined": 0, "cut": 0, "fallback": 0, "lost_old": 0, "lost_new": 0, "more": 0}
+    bad = []
+    for lang in ("el", "en"):
+        ps = index.load(lang)["passages"]
+        for i, p in enumerate(ps):
+            for u in A.pick_units([dict(p, after=index.following(ps, i))]):
+                st = u.get("stmt")
+                if not st:
+                    continue
+                n["joined"] += 1
+                n["more"] += bool(u.get("more"))
+                a = A._ended(u["text"])
+                if not a.startswith(st):
+                    bad.append((lang, p["id"], "the statement is not the start of the unit", a[:80]))
+                    continue
+                limit = a[len(st):].strip()                   # the limiting sentence(s): must stay whole
+                mtxt = more[lang] if u.get("more") else ""
+                cite = A.cite(dict(p, after=[]), lang)
+                for nn in (max(80, show.LINE_MAX - len(cite) - len(mtxt)), max(60, show.NOTICE_MAX - len(mtxt)),
+                           show.NOTICE_MAX):
+                    c = show.cut_answer(a, nn, [st], limited[lang])
+                    if len(a) > nn:
+                        n["cut"] += 1
+                        if show.cut(a, nn) and limit not in show.cut(a, nn):
+                            n["lost_old"] += 1                 # the mutation: the plain end-cut loses the limit
+                    if c == limited[lang]:
+                        n["fallback"] += 1
+                    elif limit not in c:
+                        n["lost_new"] += 1
+                        bad.append((lang, p["id"], "limit lost at %d" % nn, c[:90]))
+                    elif len(c) > nn + 2 and c != a:
+                        bad.append((lang, p["id"], "over the length %d" % nn, c[:90]))
+    out = {"%d joined units over both indexes (%d with 'more')" % (n["joined"], n["more"]): n["joined"] > 150,
+           "%d line cuts: NO joined unit loses its limiting sentence (fallback line %d times)" % (
+               n["cut"], n["fallback"]): n["lost_new"] == 0 and not bad and n["cut"] > 100,
+           "mutation: the plain end-cut loses the limit %d times" % n["lost_old"]: n["lost_old"] > 100}
+    # the pure helper
+    st = "The relay is switched by the launch sequence " + "with many words in the statement " * 6 + "indeed."
+    lim = "It is NEVER switched by a station."
+    a = st + " " + lim
+    c = show.cut_answer(a, 160, [st], "FALLBACK")
+    out["the statement is shortened in the middle, the limit whole, within the length"] = c.endswith(lim) and \
+        "…" in c and len(c) <= 160 and c.startswith("The relay is switched")
+    out["too little room = the fallback line"] = show.cut_answer(a, len(lim) + 20, [st], "FALLBACK") == "FALLBACK"
+    out["without stmts = cut(), a short answer untouched"] = show.cut_answer(a, 100) == show.cut(a, 100) and \
+        show.cut_answer(a, 1000, [st], "F") == a and show.cut_answer("Short.", 50, ["Short."], "F") == "Short."
+    two = show.cut_answer(a + " " + a, 330, [st, st], "FALLBACK")
+    out["two statements share the budget, both limits whole"] = two.count(lim) == 2 and two.count("…") == 2 and \
+        len(two) <= 332
+    # the station wires it: both screen lines take cut_answer with stmts + the 'more' line, the panel too
+    src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
+    out["app.py: message line + notice + panel use cut_answer(stmts) and add asst.more_limits"] = \
+        src.count("asst_show.cut_answer(") >= 2 and 'T("asst.more_limits")' in src and \
+        'T("asst.answer_limited")' in src and "asst_show.cut(a," not in src and \
+        "self.asst_shown = (line(" in src and "short = line(" in src
+    report("AS34 no display cut loses a joined unit's limiting sentence", all(out.values()),
+           "%s; %s; problems %s" % (out, n, bad[:4] or "none"))
 
 
 class FakeLamps:
@@ -3759,6 +4049,87 @@ def fake_synth_factory(made):
             made.append((lang, t, p))
         return len(items)
     return synth
+
+
+def tts_threads():
+    """The alive TTS threads of asstvoice (named asstvoice.TTS_THREAD_NAME) - AM5-r3 MED-2: a real count."""
+    import asstvoice
+    return [t for t in threading.enumerate() if t.name == asstvoice.TTS_THREAD_NAME and t.is_alive()]
+
+
+# AM5-r3 MED-2: the WHOLE voice cycle in a FRESH interpreter (python -I: no site, no PYTHONPATH, nothing imported by this
+# test process beforehand) - then the forbidden modules are looked for in ITS sys.modules. The in-process check of
+# AM5-r2 was vacuous: hud / gwclient / academymenu were already imported by the test process before the cycle ran.
+VOICE_CYCLE_SCRIPT = r'''
+import json, os, sys, tempfile, time
+sys.path.insert(0, sys.argv[1])
+forbid = set(json.loads(sys.argv[2]))
+import asstvoice, sound                                     # the voice + the sound system (module level)
+clk = [1000.0]
+snd = sound.SoundSystem(player=sound.NullPlayer(), clock=lambda: clk[0], library=sound.Library(cache=tempfile.mkdtemp()))
+snd.sched.enabled = True
+class V:
+    horn = False
+    def horn_held(self):
+        return self.horn
+    def lang(self):
+        return "el"
+v = V()
+port = asstvoice.VoicePort(v.horn_held, v.lang, snd)
+made = []
+def synth(lang, items, **kw):
+    for t, p in items:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        sound.write_wav(p, sound._silence(1000))
+        made.append(p)
+    return len(items)
+vc = asstvoice.AsstVoice(port, synth=synth, clock=lambda: clk[0])
+info = {"a": "Η καταπακτή κλείνει με το κουμπί HATCH CLOSE.", "cite": "Κεφάλαιο 9 «UAV»", "src": "extract", "lang": "el",
+        "speak": True, "q": "πού κλείνω την καταπακτή;", "passage": {"id": "el:1", "text": "Η καταπακτή κλείνει."}}
+whys = []
+def run():
+    end = time.time() + 5.0
+    while time.time() < end and vc.pending is None:
+        time.sleep(0.02)
+    vc.tick()
+    whys.append(vc.why)
+    clk[0] += 2.0
+    vc.tick()
+vc.speak(info); run()
+vc.repeat(); run()
+vc.speak(dict(info, speak=False)); whys.append(vc.why)
+vc.stop(); vc.close()
+if os.environ.get("TRYGONS_AS27_MUTATE"):
+    import hud                                              # the mutation: a forbidden module reached by the cycle
+print(json.dumps({"whys": whys, "made": len(made), "owed": vc.owed(),
+                  "forbidden": sorted(m for m in sys.modules if m.split(".")[0] in forbid)}))
+'''
+
+
+def voice_cycle_fresh(mutate=False):
+    """-> the JSON the fresh interpreter printed (or {"error": ...})."""
+    d = tempfile.mkdtemp(prefix="trygons_as27_")
+    script = os.path.join(d, "voice_cycle.py")
+    with open(script, "w", encoding="utf-8") as f:
+        f.write(VOICE_CYCLE_SCRIPT)
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    if mutate:
+        env["TRYGONS_AS27_MUTATE"] = "1"
+    else:
+        env.pop("TRYGONS_AS27_MUTATE", None)
+    forbid = sorted(BANNED - CODEC_OK)
+    try:
+        r = subprocess.run([sys.executable, "-I", script, HERE, json.dumps(forbid)], capture_output=True, timeout=120,
+                           env=env, cwd=d)
+        line = (r.stdout.decode("utf-8", "replace").strip().splitlines() or [""])[-1]
+        res = json.loads(line) if line.startswith("{") else {"error": "no json", "rc": r.returncode}
+        res["stderr"] = r.stderr.decode("utf-8", "replace")[-400:]
+        return res
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        return {"error": repr(e)}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def as27():
@@ -4078,7 +4449,9 @@ def as27():
     queued = vc.queued
     out["LOW-2: one TTS thread at a time, the newest request waits"] = th_a is th_after and th_a.is_alive() and \
         queued is not None and queued[0] == vc.gen and queued[3] != vc.making and vc.why == "making"
-    n_threads = sum(1 for t in threading.enumerate() if t.name.startswith("Thread") and t is not threading.main_thread())
+    # AM5-r3 MED-2: the thread count is a REAL one - the alive threads named asstvoice.TTS_THREAD_NAME: exactly ONE
+    # while A blocks and the third request waits (the mutation below proves the count sees a second one)
+    n_threads = len(tts_threads())
     gate.set()                                                 # A ends: its result is dropped (gen), then the waiting job runs
     th_a.join(3.0)
     end = time.time() + 5.0
@@ -4088,8 +4461,105 @@ def as27():
             break
         time.sleep(0.02)
     out["LOW-2: the waiting job runs after the thread ended, once, spoken"] = vc.why == "spoken" and vc.queued is None \
-        and vc.thread is not th_a and len(slow_made) == 2 and vc.owed() == [vc.tmp] and n_threads >= 1
+        and vc.thread is not th_a and len(slow_made) == 2 and vc.owed() == [vc.tmp] and n_threads == 1
     vc.stop()
+    # MUTATION (AM5-r3 MED-2): the one-thread rule switched off (_busy always False) -> a second request starts a second
+    # TTS thread, and the count SEES two (= the check above is not vacuous)
+    gate.clear()
+    slow_made.clear()
+    vc.speak(info)
+    th1 = vc.thread
+    vc._busy = lambda: False
+    try:
+        vc.speak(info)
+    finally:
+        del vc._busy
+    th2 = vc.thread
+    n_mut = len(tts_threads())
+    gate.set()
+    th1.join(3.0)
+    th2.join(3.0)
+    end = time.time() + 5.0
+    while time.time() < end and vc.why == "making":
+        vc.tick()
+        time.sleep(0.02)
+    vc.stop()
+    vc.tick()
+    out["MED-2 mutation: without the one-thread rule the count sees 2 TTS threads"] = th1 is not th2 and n_mut == 2 \
+        and len(tts_threads()) == 0 and not vc.owed()
+    # --- AM5-r3 review (19db2ff) MED-1: the SWEEP RACE ------------------------------------------------------------------
+    # (v) the TTS thread finishes INSIDE tick() - after the take of `pending` (still None) and before the sweep: the
+    # finished clip is in `files`, `making` is cleared, and nothing but `pending` points at it; the sweep must leave it
+    # (the next tick plays it). Replayed through the REAL tick(): port.sound() is the first call after the take, the
+    # hook lets the thread finish there.
+    def race(live_fn=None):
+        gate.clear()
+        slow_made.clear()
+        vc.synth = slow_synth
+        vc.speak(info)
+        th = vc.thread
+        real_sound, hook = port.sound, []
+
+        def sound_hook():
+            if not hook:
+                hook.append(1)
+                gate.set()
+                th.join(5.0)                                   # finished: pending set, making None - BEFORE the sweep
+            return real_sound()
+        port.sound = sound_hook
+        if live_fn is not None:
+            vc._live = live_fn                                 # (an instance attribute shadows the method)
+        try:
+            vc.tick()                                          # the take (None), the hook, the sweep
+        finally:
+            port.sound = real_sound
+            if live_fn is not None:
+                del vc._live
+        p = vc.pending[1] if vc.pending else ""
+        kept = bool(p) and os.path.exists(p)                   # the clip survived the sweep?
+        vc.tick()                                              # the next tick: plays it (or finds it gone)
+        why = vc.why
+        clk.t += 2.0
+        vc.tick()
+        vc.stop()
+        return hook == [1] and bool(p), kept, why
+    ran, kept, why = race()
+    out["MED-1: a result finished between the take and the sweep survives the sweep and is played"] = ran and kept \
+        and why == "spoken" and not vc.owed()
+
+    def live_am5r2():                                          # the AM5-r2 _live(): tmp + making only, never `pending`
+        snd_ = vc.port.sound()
+        live = set()
+        if vc.tmp is not None and (vc.clock() < vc.tmp_until or (snd_ is not None and snd_.assistant_playing())):
+            live.add(vc.tmp)
+        if vc.making is not None:
+            live.add(vc.making)
+            live.add(vc.making + ".tmp")
+        return live
+    ran2, kept2, _why2 = race(live_am5r2)
+    out["MED-1 negative control: the AM5-r2 _live() loses the clip (swept before the next tick could play it)"] = \
+        ran2 and not kept2
+    # (w) the siblings of the file being written - <path>.tmp (sound.write_wav) and <path>.lead.wav (tts.lead_in) - are
+    # live too: neither the sweep nor close() touches them under the writer; the thread removes them with its own clip
+    gate.clear()
+    slow_made.clear()
+    vc.synth = slow_synth
+    vc.speak(info)
+    pw = vc.making
+    sibs = [pw + s for s in asstvoice.SIBLINGS]
+    for s in sibs:
+        with open(s, "wb") as f:
+            f.write(b"RIFF")
+    vc._sweep()
+    sweep_kept = all(os.path.exists(s) for s in sibs)
+    vc.close()                                                 # stop() moved the gen: the thread's result is not wanted
+    close_kept = all(os.path.exists(s) for s in sibs) and vc.making == pw
+    gate.set()
+    vc.thread.join(3.0)
+    out["MED-1: <path>.tmp + <path>.lead.wav live under the writer (sweep + close), removed by the thread"] = \
+        ".lead.wav" in asstvoice.SIBLINGS and sweep_kept and close_kept and not any(os.path.exists(s) for s in sibs) \
+        and not os.path.exists(pw) and vc.making is None
+    vc.synth = fake_synth_factory(made)
     # (t) LOW-3: a half-written '<path>.tmp' (sound.write_wav's name) is cleaned by close() and by _clean_stale
     tmp_stray = os.path.join(folder, "asst_%d_9998.wav.tmp" % os.getpid())
     with open(tmp_stray, "wb") as f:
@@ -4112,10 +4582,20 @@ def as27():
         len(gen_lines) >= 3 and all(lines[k - 1] == "with self._lock:" for k in gen_lines)
     traps.__exit__(None, None, None)
     out["no sender / socket called by the voice"] = traps.sent == []
-    new_mods = set(sys.modules) - mods0
-    out["the voice cycle imported no hud / gwclient / academymenu"] = not ({"hud", "gwclient", "academymenu"} & new_mods)
-    report("AS27 alarm priority + voice rules + log", all(out.values()), "%s; made %d; played %s" % (
-        out, len(made), [os.path.basename(p) if p else None for p in player.played][-6:]))
+    # AM5-r3 MED-2: the module check in a FRESH interpreter (python -I) - the voice cycle (speak / tick / repeat / stop /
+    # close with a WAV made + played) imports none of the BANNED modules (hud, gwclient, academymenu, the senders app /
+    # link / stations / aurix ..., socket); the mutation (the cycle followed by `import hud`) is caught by the same check
+    fresh = voice_cycle_fresh()
+    out["fresh process: the voice cycle ran (spoken twice, horn once, nothing owed)"] = fresh.get("whys") == \
+        ["spoken", "spoken", "horn"] and fresh.get("made") == 2 and fresh.get("owed") == []
+    out["fresh process: no forbidden module imported by the voice cycle"] = fresh.get("forbidden") == [] and \
+        "error" not in fresh
+    mut = voice_cycle_fresh(mutate=True)
+    out["fresh process mutation: a forbidden import IS caught"] = "hud" in (mut.get("forbidden") or [])
+    del mods0
+    report("AS27 alarm priority + voice rules + log", all(out.values()), "%s; made %d; played %s; fresh %s" % (
+        out, len(made), [os.path.basename(p) if p else None for p in player.played][-6:],
+        {k: fresh.get(k) for k in ("whys", "forbidden", "error", "stderr") if fresh.get(k)}))
 
 
 def as28(rig):
@@ -4226,6 +4706,33 @@ def as28(rig):
             an["s"].endswith("…")
         out["long pick cut on the message line"] = len(ap.msg_text) <= show.LINE_MAX + 60 and "…" in ap.msg_text
         out["long pick: the passage still shows its start"] = "λέξη0" in (ts.op(ap, "asst_passage") or {}).get("s", "")
+        # AM4-r6 MED-1: a JOINED unit (statement + its limit) with "more" through the station: the message line and
+        # screen 1's notice keep the limiting sentence whole (the statement is shortened) and carry the "more limits" line
+        stmt = "Το ρελέ της καταπακτής το ανοίγει η ακολουθία εκτόξευσης " + "με πολλές λέξεις στη δήλωση " * 6 + "πράγματι."
+        lim = "ΠΟΤΕ δεν το ανοίγει σταθμός."
+        ja = stmt + " " + lim
+        a.answer = dict(info, a=ja, speak=True, stmts=[stmt], more=True)
+        ap.asst_on_answer(ja, a.answer)
+        more_el = i18n.TL("el", "asst.more_limits")
+        out["joined unit: the message line keeps the limit whole + the 'more' line, the statement shortened"] = \
+            lim in ap.msg_text and more_el in ap.msg_text and "…" in ap.msg_text and \
+            len(ap.msg_text) <= show.LINE_MAX + len(info["cite"]) + 60
+        # (the notice: 120 characters minus the 'more' line leave no 40 for the statement beside this limit = the short
+        # «has a restriction» line, which already sends the operator to the panel - then without the 'more' line)
+        limited_el = i18n.TL("el", "asst.answer_limited")
+        out["joined unit: screen 1's notice = the limit whole + 'more', or the short restriction line"] = (
+            (lim in ap.asst_shown[0] and more_el in ap.asst_shown[0] and "…" in ap.asst_shown[0])
+            or ap.asst_shown[0] == limited_el) and len(ap.asst_shown[0]) <= show.NOTICE_MAX + 2 and \
+            lim not in show.cut(ja, show.NOTICE_MAX)             # (the old end-cut lost the limit here)
+        ap.render(force=True)
+        an = ts.op(ap, "asst_a")
+        out["joined unit: the panel answer keeps the limit"] = an is not None and lim in an["s"]
+        ap.asst_auto_fold = 2                                   # the folded panel (NOTICE_MAX): the limit still whole
+        ap.render(force=True)
+        an = ts.op(ap, "asst_a")
+        out["joined unit: the folded panel keeps the limit (or the short restriction line)"] = an is not None and (
+            lim in an["s"] or an["s"] == i18n.TL("el", "asst.answer_limited"))
+        ap.asst_auto_fold = 0
         out["cut at a word"] = show.cut("alpha beta gamma delta", 12) == "alpha beta…" and \
             show.cut("short", 12) == "short"
         # fold / open the passage
@@ -4305,7 +4812,8 @@ def main():
         print("build the simulator first: sim\\build_sim.bat")
         return 2
     for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13, as14, as15, as16, as17, as18, as19, as20, as21,
-               as22, as23, as25, as26, as27, as29, as30, as31, as32) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
+               as22, as23, as25, as26, as27, as29, as30, as31, as32, as33, as34) + \
+            (() if os.environ.get("AS_SKIP4") else (as4, as24)):
         try:
             fn()
         except Exception as e:
