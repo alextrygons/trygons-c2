@@ -1151,6 +1151,51 @@ MEDs are fixed here, MED-3 is the NOTE above.
   pick either (the digits without repeats compared with the example, or the example string itself); "9, 4" stays a
   real pick. Tests AS21 (+ 9 checks), AS25 (+ 2), AS28 (+ 4), AS34 new.
 
+### 5j. The pixel rule of the one-line places (step AM4-r7, the opus review of b1a0138; station / tests / docs only, NO app / hal / gateway logic change)
+
+The review of b1a0138 found ONE safety MED (no HIGH): the AM4-r6 display fix did not hold on the REAL screens -
+`show.cut_answer` counted CHARACTERS, but both one-line displays cut by PIXELS: screen 2's bar renderer end-cut the
+message with `f.measure` to the bar's free flex width (a few hundred px; the prefix «Απάντηση του βοηθού: » was not in
+the budget), and screen 1's notice (hud.list_rows, max_w = the box width - 16) shrank the font to 8 px and then
+`_paste_clip` cropped at the window edge. Example: MANUAL_EL.txt:79-80 «ΣΗΜΑΝΤΙΚΟ: οι χάρτες βάθους, το AIS, η κάμερα
+και οι επικαλύψεις AR είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα.» (~111 characters) passed cut_answer unchanged and
+lost «ΔΕΝ είναι για ναυσιπλοΐα.» on both screens; the same class: a single long pick with an in-sentence limit clause
+(MANUAL.txt:1076-1078 "... refused toward an end stop whose switch is open" lost on the 120-character notice).
+
+- FIX (display only): `show.fit_line(full, room, measure, limited, fallbacks)` = the rule of the two ONE-LINE places:
+  the WHOLE line as it is drawn (prefix + answer + cite) is shown only when the renderer's own pixel measure says it
+  fits the real room; a `limited` answer - a JOINED unit (stmts) OR any answer with a limiting word (`show.has_limit`:
+  answer.LIMIT_RE over the folded text) - that does not fit shows the first FALLBACK that fits (the «has a restriction -
+  see the panel» line with its prefix, without it, then the NEW short line asst.answer_limited_short «Απάντηση με
+  περιορισμό – δείτε τον πίνακα «Βοηθός»» / "Answer with a restriction – see the "Assistant" panel", the last one
+  pixel-cut: it holds no claim), NEVER an end-cut; a plain answer keeps the pixel end-cut (`show.pixel_cut`, whole words
+  + "…"). Wiring: app.asst_on_answer records `asst_line` = {full, limited, fallbacks} of the message it said; the bar
+  renderer (draw_bar's flex text item) applies fit_line with `f.measure` and the item's width when the message IS that
+  line; driver.asst_notice_line measures at the HUD's notice font (hud.f_norm bold, `driver.measure`) against the
+  "notices" box (hud.R, width - 16) - before the first frame (no box size yet) the text is left to the HUD. The
+  character cut (cut_answer) stays as the first step (the panel's folded line keeps it).
+- MEASURED (AS34, pixel part): the HUD notice box is 0.215 x W = 278 px at 1366x768 (398 px at 1920x1080) and draws at
+  f_norm = max(11, int(H x 0.022 x the "Aa" scale)) px bold = ~30-40 characters: of 3780 pixel checks (416 joined units
+  + the two reviewer examples, at 1366x768 + 1920x1080 x the 3 text sizes + three bar widths 300 / 450 / 700 px) only
+  20 lines fit WHOLE, 3760 show a fallback line (2930 of them the short fallback pixel-cut to «Απάντηση με
+  περιορισμό…»), 0 lose the limit; the mutation = the AM4-r6 character cut measured in pixels overflows the real room
+  1370 times (= the font shrink + the crop = the limit lost). Honest consequence: on screen 1 a limiting answer nearly
+  always reads «Απάντηση με περιορισμό – δείτε τον πίνακα «Βοηθός»» (or its pixel-cut start) - the operator reads the
+  panel; the point of the fix is that a statement is never shown without its limit. MANUAL ch. 22 / MANUAL_EL ch. 17
+  say so.
+- THE REVIEWER'S LOWs (notes, under the owner's cap - LOOP RULE 7; not fixed):
+  - L1 speech.py: the thousands rule skips a number followed by W / E / N / ° (the coordinate rule of AM5-r3), so
+    "1.500 W" meaning WATTS is read as a coordinate-style number, not as 1500 watts (no such sentence is in the
+    manuals today: AS32 / AS30 pass; a manual sentence with a power in watts would need the unit list extended).
+  - L2 LIMIT_OPENERS («Όμως» / "But") adds JOINS only: a statement followed by an "Όμως ..." sentence is offered only
+    with it, and when the pair exceeds the cap it is REFUSED (never offered alone) - the opener never creates a new
+    pick; the cost is counted in the refused statements (124 el / 146 en).
+  - L3 cut_answer splits the character budget EVENLY between two statements (`(n - fixed) // len(sts)`), so a short
+    + a long statement trigger the fallback earlier than a proportional split would; with the pixel rule above the
+    fallback is the common case anyway.
+  - L5 the AM4-r6 "display guarantee" was character-based (the sentence in 5i "0 of the 1069 cuts loses a limit" held
+    for the character cut only); this section replaces it with the pixel rule + AS34's pixel part.
+
 ## 6. Speak (step AM5)
 
 - Through the station's own sound.py SoundSystem: a new level ASSISTANT below FEEDBACK, ADVISORY,
@@ -1491,3 +1536,94 @@ read-only proof) and MED-1 was cheap - both fixed; the LOWs were cheap and are i
 - W86 (AM1-r) a question about a SAFETY ACTION (STANDBY, e-stop, lost link, ...) with no manual hit:
   only "I can't find that in the manual", or also point to where to look? Recommended: yes, the panel
   also shows the chapter list of the manual (text only, never a guessed answer).
+- W129 (AM6, section 12): switch the extract prompt DEFAULT to "fewshot"? Measured on the TUNING part with
+  llama3.2-3b: el 45 % / en 61 % correct (default 34 % / 48 %), answered 86 % / 97 %, precision 52 % / 62 %,
+  NO "no pick" rows, first pick = 4 in 3 % (default 76 %) - but the fresh set ran ONCE with the default prompt,
+  so a switch needs a new fresh set for honest numbers. Built as the per-PC setting `assistant_prompt`
+  ("default" | "fewshot"; client.DEFAULT_PROMPT "default"). Recommended: yes, switch - and write a second fresh set
+  (or use the owner's W84 recordings) to measure the new default once. STILL OPEN: W84 (recorded questions), W89
+  (the question list review), W97 (the firewall command), W99 (the blind answer review).
+
+## 12. AM6 - the finish: the FRESH question set measured ONCE, the W128 prompt variants, the manual gaps
+
+- THE FRESH SET (W123 / W128; tests/assistant/fresh_el.json 76 questions = 68 in the manual + 8 not, fresh_en.json 31 =
+  25 + 6): written on 2026-11-08 by Claude from MANUAL_EL.txt / MANUAL.txt + the tour in an operator's words, on
+  topics and phrasings NOT in questions_<lang>.json (start-up, the modes' details, lost link, licence / roles, the
+  generator, relays / engine, DP, the power limit, the joystick, alarms, safety rules, screens, recording, the
+  loudhailer, UAV, the academy; 8 + 6 deliberately off the manual incl. 2 live-telemetry questions = W82), AFTER every
+  tuning choice (the search factors, index.SAID, MIN_COVER, the floor 7.2, the prompt). Only label repairs were
+  allowed after the retrieval check (`assistant_index.py eval --set fresh`: 0 BROKEN labels - none needed); nothing
+  of the search / floor / prompt was changed after it. `tools/assistant_index.py eval --set fresh` and
+  `tools/assistant_llm_eval.py run --set fresh` read it (one part named "fresh", no tuning / held-out split).
+- MEASURED ONCE (the owner's laptop, RTX A1000 6 GB, Windows 11; llama3.2-3b, answer mode "extract", the default
+  prompt, floor 7.2; the real worker with Whisper loaded first; this run the WHOLE model fitted on the GPU (-1
+  layers, 3651 MB used, 4886 MB free at the load) - 5d-5h ran with 17 of 28 layers):
+
+| fresh set | questions | SEARCH top-1 (manual / tour) | top-3 | search can't find right / false | ANSWER correct | answered | precision | can't find right | false can't find (model's own / no pick / post-check) | first pick = 4 | median ms (p90 / max) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| el | 68 + 8 | 38/68 = 56 % (38 / 0) | 55/68 = 81 % | 5/8 / 1 | 28/68 = 41 % | 55/68 = 81 % | 28/55 = 51 % | 7/8 | 13 (4 / 9 / 0) | 7/36 = 19 % (top: 1 x10, 4 x7) | 481 (826 / 3406) |
+| en | 25 + 6 | 9/25 = 36 % (9 / 0) | 16/25 = 64 % | 2/6 / 0 | 13/25 = 52 % | 20/25 = 80 % | 13/20 = 65 % | 6/6 | 5 (2 / 0 / 2) | 1/10 = 10 % | 272 (389 / 421) |
+
+  Reading: compared with the (optimistic) held-out figures of AM4-r5 (el 42 % / 87 % / 48 %, en 6/9) the Greek
+  level holds (41 %, precision 51 %) and the English falls (52 %, 13 of 25 - the English fresh set is small and its
+  search top-1 is only 36 %); the fresh search top-1 (56 % el) is BELOW the tuning / held-out retrieval figures (59 /
+  63 %) as expected of unseen questions. The circular proxy is still the measure ("correct" = the picked text holds
+  the question's must term), so these are honest about the pipeline but not a human judgement of the picks: a
+  NON-positional, human judgement = the owner's blind review (W99, open). The 27 wrong Greek answers are true manual
+  sentences from the right chapter that do not answer (e.g. fr_el012 "how many waypoints" -> a sentence about
+  hand-steering in AUTO; fr_el044 "the reverse limit" -> "Arming only at idle, neutral ..."); 9 of the 13 false
+  can't-finds are NO PICK rows (the model wrote something unusable - with the default prompt), 0 by the floor, 0 by
+  the post-check. The 3-second outliers (fr_el053 3.4 s, fr_el067 2.8 s) are long pick lists (the CAN / safety
+  chapters). The W128 POSITION BIAS on this set: 19 % of the Greek first picks are 4 (the tuning runs: 71-76 %) -
+  the fresh lists are shorter / different, the top first number is 1 (10 of 36); still a positional prior, not a
+  reading of the question.
+- THE W128 VARIANTS, on the TUNING part only (never the fresh set - the task's rule; the owner's W128 answer "then
+  try the few-shot prompt + Krikri-8B on it" is therefore answered on the tuning part, and the fresh set stays a
+  one-run measurement of the default):
+  (a) PROMPT "fewshot" (answer.SYSTEM_PICK_FEWSHOT + FEWSHOT_EXAMPLE: the same instruction WITHOUT the digit example
+  "4 or 4, 9", plus ONE worked example as a prior chat turn - three REAL manual sentences of chapter 9 / 10 "THE POWER
+  LIMIT" and the question «με πόσο όριο ισχύος ξεκινά το σκάφος;» -> "2"; the exact-echo rule does not apply to it;
+  Answerer(prompt_variant), worker "prompt_variant", eval `--prompt fewshot`, the run name "<model>+extract~fewshot";
+  the client's per-PC setting `assistant_prompt`, DEFAULT "default"):
+
+| llama3.2-3b extract, TUNING part | correct | answered | precision | post-check rejected | no pick | can't find right | false can't find (model's own) | quality | median ms | first pick = 4 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| default prompt (AM4-r5, 5h) | el 33/96 = 34 % | 75 % | 46 % | 0/86 | 14/86 = 16 % | 7/7 | 24 (10) | 72 % | 824 | 66/86 = 76 % |
+| **fewshot** (this step) | el 43/96 = 45 % | 83/96 = 86 % | 43/83 = 52 % | 2/85 | 0/85 | 7/7 | 13 (11) | 65/83 = 78 % | 571 | 1/38 = 3 % (top: 1 x6, 30 x6, 10 x5) |
+| default prompt (AM4-r5) | en 16/33 = 48 % | 97 % | 50 % | 0/32 | 0/32 | 5/5 | 1 (1) | 56 % | 451 | 19/32 = 59 % |
+| **fewshot** (this step) | en 20/33 = 61 % | 32/33 = 97 % | 20/32 = 62 % | 0/32 | 0/32 | 5/5 | 1 (1) | 20/32 = 62 % | 319 | 0/16 = 0 % |
+
+  The few-shot prompt is better on EVERY count on the tuning part: +11 points Greek / +13 English correct, the
+  "no pick" rows gone (the model always writes numbers now), the position bias gone (first pick 4: 76 -> 3 %; the top
+  first numbers are spread), 30 % faster (shorter output). CAVEAT: the tuning part is the part the AM3-AM5 choices
+  were made on (its figures are optimistic for both prompts alike), the comparison is one run per prompt (the 3B
+  model's run-to-run churn is +-6 of 96, 5h), and the fresh set has NOT seen this prompt. Decision: NOT switched in
+  this step (the fresh measurement above is of the default; a switch = W129 + a new fresh set); built as the setting.
+  (b) A BIGGER GREEK MODEL, Krikri-8B (ilsp, Q4_K_M) in extract mode, tuning part, 21 of 32 layers on the GPU
+  (4629 MB used; gpu+cpu), the default prompt: el 49/96 = 51 % correct (the best Greek figure of any run), answered
+  75/96 = 78 %, precision 49/75 = 65 %, no pick 2/77, can't find right 7/7, false can't find 21 (19 the model's own
+  «Δεν βρίσκω» - the W101 pattern of the bigger Greek models), quality 71 %, 1048 ms median / 1569 ms p90 (4.5
+  tok/s), first pick = 4 in 2/35 = 6 % (top: 2 x6, 1 x5); en 19/33 = 58 %, answered 88 %, precision 66 %, 950 ms.
+  Reading: Krikri picks more precisely (65 % vs 46-52 %) and refuses more (22 % false can't find); it takes 4.6 GB of
+  the 6 GB card beside Whisper (the GPU guard's margin 800 MB holds, but the cameras' video / the HUD get nothing)
+  and runs at twice the time; on this laptop the 3B model with the few-shot prompt (45 % / 52 % / 571 ms) is the
+  better trade - Krikri stays an option for a station with a >= 8 GB GPU (W107, accepted).
+- THE MANUAL GAPS (for the owner; `assistant_index.py eval -v` prints them; W89 stays open): the 6 of the AM3 list
+  - el015 / en005 "τι σημαίνει HATCH FAULT;" (the alarm text exists on the screens, the MANUAL does not explain it),
+  el016 "η καταπακτή κόλλησε στη μέση" (a stuck / half-open hatch: nothing for the operator), el141 "πόσα λίτρα
+  βενζίνη έχει το ρεζερβουάρ" (fuel: nothing), el144 / en048 "άνθρωπος στη θάλασσα" (man overboard: no procedure in
+  the manual) - and 5 from the fresh set: fr_el071 engine maintenance (oil, service intervals), fr_el075 camera care /
+  cleaning (salt), fr_en026 fuel consumption figures, fr_el076 / fr_en030 live readings (engine temperature / hours:
+  W82 by design, but the manual could say WHERE such readings would be shown if a sensor existed). THIN places seen
+  in the wrong answers (the manual has the fact only as a dense table line or deep inside a long paragraph, so the
+  search / pick misses it): "what does the boat do in STANDBY" (a mode-table line only), "the reverse power limit
+  steps" (one bracket in chapter 9), "the hat switch" (one clause of the default-buttons line), "ΑΒΕΒΑΙΗ ΑΦΙΞΗ" (an
+  alarm-table line), the generator's first step / cycle (deep inside the GENERATOR paragraph), "what is the dead-man"
+  (chapter 12's DroneCAN block). A short "in one sentence" line at the top of those paragraphs would help the
+  operator and the assistant alike.
+- WHAT THE MANUALS NOW SAY (MANUAL ch. 22 / MANUAL_EL ch. 17 "WHAT IT CAN AND CANNOT DO"): the can / cannot list,
+  the fresh figures above in plain words, the headset + foot-pedal advice (PARTS.md "Shore PC"), the PTT key, privacy
+  (no audio to disk, the 30-day text log), and the documented limits of 5h / 5i / 5j / 7d in plain words. The tour's
+  three assistant stops (s1.btn_ask, s2.assistant, tools.assistant) exist since AM2 / AM5 with voice_pending (W84).
+- NOT DONE / OPEN: real speech (W84); the human judgement of the picks (W99); the question-list review (W89); the
+  prompt default (W129); a second fresh set for whichever default the owner chooses.

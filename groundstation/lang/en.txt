@@ -2194,6 +2194,7 @@ asst.state.idle = Assistant: not started
 asst.answer = The assistant's answer: {a}{cite}
 asst.answer_see = The assistant's answer: {a} See the manual passage on the "Assistant" page ({cite}).
 asst.answer_limited = The answer has a restriction – read the whole text on the "Assistant" panel
+asst.answer_limited_short = Answer with a restriction – see the "Assistant" panel
 asst.answer_line = Answer: {a}{cite}  [{src}, {ms} ms from the question]
 asst.passage = Manual passage ({cite}): {text}
 asst.src.llm = short answer from the manual

@@ -5,6 +5,63 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 000000000000000. Talking manual - the FINISH (step AM6, 2026-11-08) + the pixel display fix (step AM4-r7) - the FRESH question set measured ONCE
+
+Station / tools / tests / docs only (docs/assistant_design.md 12 + 5j; no app / hal / gateway logic change). The figures of
+AM3-AM5 below were all seen while tuning (the held-out set seven times) and are optimistic; THESE are the honest ones.
+
+THE FRESH SET: tests/assistant/fresh_el.json (76 operator questions: 68 in the manual + 8 not) and fresh_en.json (31: 25 + 6),
+written on 2026-11-08 after every tuning choice (search factors, synonyms, MIN_COVER, the floor 7.2, the prompt) on topics and
+phrasings not in questions_<lang>.json; 0 broken labels at the retrieval check, nothing tuned after it; run ONCE end to end
+through the real worker (`assistant_llm_eval.py run --set fresh --answer extract`; llama3.2-3b, the DEFAULT prompt, floor 7.2;
+the whole model on the GPU this time: 3651 MB).
+
+| fresh set | SEARCH top-1 | top-3 | search can't find right / false | ANSWER correct | answered | precision | can't find right | false can't find (model's own / no pick / post-check) | first pick = 4 | median ms (p90 / max) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| el (68 + 8) | 38/68 = 56 % | 55/68 = 81 % | 5/8 / 1 | 28/68 = 41 % | 55/68 = 81 % | 28/55 = 51 % | 7/8 | 13 (4 / 9 / 0) | 7/36 = 19 % | 481 (826 / 3406) |
+| en (25 + 6) | 9/25 = 36 % | 16/25 = 64 % | 2/6 / 0 | 13/25 = 52 % | 20/25 = 80 % | 13/20 = 65 % | 6/6 | 5 (2 / 0 / 2) | 1/10 = 10 % | 272 (389 / 421) |
+
+Reading: Greek holds the (optimistic) held-out level (41 % correct, precision 51 % = half of the answers given are a true manual
+sentence of the right chapter that does not answer; the "correct" proxy = the picked text holds the question's term, circular,
+no human judgement - W99 open), English falls to 52 % on a small set whose search top-1 is only 36 %; 9 of the 13 Greek false
+can't-finds are NO PICK rows of the default prompt, 0 by the floor / post-check; latency 0.5 s / 0.3 s median from the typed
+question to the answer text (the speech recognition ~1 s and the voice ~1 s come on top: 2-3 s to the first spoken word on a
+quiet PC, MANUAL ch. 22). W128 position bias on this set: 19 % of the Greek first picks are the example's 4 (the tuning runs
+71-76 %); the top first number here is 1.
+
+THE W128 VARIANTS (TUNING part only, never the fresh set): (a) the prompt "fewshot" (no digit example; one worked example turn
+with real manual sentences; setting `assistant_prompt`, default still "default" = W129): llama3.2-3b el 43/96 = 45 % correct /
+answered 86 % / precision 52 % / no pick 0 / false can't find 13 / 571 ms / first pick = 4 in 3 % (the default prompt in AM4-r5:
+34 % / 75 % / 46 % / 14 of 86 / 24 / 824 ms / 76 %); en 20/33 = 61 % / 97 % / 62 % / 0 / 1 / 319 ms / 0 % (48 % / 97 % / 50 % /
+0 / 1 / 451 ms / 59 %) - better on every count, one run each, the 3B churn is +-6 of 96. (b) Krikri-8B extract (21 of 32 layers
+on the GPU, 4629 MB, the default prompt): el 49/96 = 51 % / 78 % / 65 % / no pick 2 / false can't find 21 (19 the model's own) /
+1048 ms (p90 1569) / first pick 4 in 6 %; en 19/33 = 58 % / 88 % / 66 % / 950 ms - more precise, refuses more, twice the time
+and 4.6 GB of the 6 GB card: an option for a >= 8 GB GPU only (W107).
+
+AM4-r7 (the opus review of b1a0138, ONE safety MED, no HIGH): the AM4-r6 limit-keeping cut counted CHARACTERS while both
+one-line displays cut by PIXELS (the bar's f.measure to the flex width, the HUD's font shrink to 8 px + the window-edge crop):
+«... είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα.» (111 characters) lost its limit on both screens. Fix: show.fit_line = the whole
+line only when the renderer's own pixel measure says it fits, else (a joined unit or any answer with a limiting word) the
+fallback line (new short lang key asst.answer_limited_short), never an end-cut; plain answers keep a pixel end-cut
+(show.pixel_cut); app.asst_line + draw_bar (screen 2) and driver.asst_notice_line (screen 1, hud.R("notices") at f_norm).
+AS34 pixel part: 3780 checks (416 joined units + the 2 review examples; 1366x768 + 1920x1080 x 3 text sizes + 3 bar widths): 0
+lose the limit, 20 fit whole, 3760 show a fallback (2930 the short one pixel-cut: the 1366-px notice box is ~278 px); the
+mutation (the character cut) overflows the real room 1370 times. The reviewer's LOWs L1 / L2 / L3 / L5 = notes in docs 5j (the cap).
+
+MANUAL GAPS for the owner (docs/assistant_design.md 12; W89 open): HATCH FAULT not explained, a stuck / half-open hatch, fuel
+(tank / consumption), man overboard, engine maintenance (oil / service), camera care (salt), live readings (engine temperature /
+hours: W82 by design); thin places (a table line or a long paragraph only): what STANDBY does, the reverse power-limit steps,
+the hat switch, ΑΒΕΒΑΙΗ ΑΦΙΞΗ, the generator's first step / cycle, the dead-man relay.
+
+Deliverables of AM6: MANUAL ch. 22 / MANUAL_EL ch. 17 "WHAT IT CAN AND CANNOT DO" (can / cannot, the figures above in plain
+words, headset + foot pedal, the PTT key, privacy, the limits list), PARTS.md "Shore PC" (headset with a boom microphone
+recommended, optional USB foot pedal sending F9), the tour stops s1.btn_ask / s2.assistant / tools.assistant (exist, voice_pending
+= W84), `assistant_index.py eval --set fresh`, `assistant_llm_eval.py run --set fresh --prompt fewshot` (+ the first-pick
+statistic in every summary). Tests: AS34 (pixel part + fit_line + the station wiring), test_lang 6/6 (the new lang key); the
+index rebuilt + committed (the manuals changed; the floor gate unchanged 7 / 86 + 5 / 32; the main list's eval unchanged el 60 /
+78 %, en 50 / 76 %). Gate tools/check.sh: all suites passed except SR8 (screen recording, 9/10: 1 NVENC segment in 12 s; the same on the pristine HEAD b1a0138 in a temporary worktree = environmental); RUN_ACCEPTANCE quick: 7/7 PASS (ADS excludes + iLLD, fresh build from the clone incl. START_DEMO and MediaMTX this time, storm 200 episodes 0 fails incl. the I59 / I63 key cases, time wrap, day at sea, gateway storm I80-I84). OPEN for the owner: W84, W89, W97, W99 (his four), W129 (the prompt
+default).
+
 ## 00000000000000. Talking manual - review fixes of AM4-r4 (step AM4-r5, 2026-11-08) - the LAST fix round of the limit / pick logic
 
 Station / tools / tests / docs only (docs/assistant_design.md 5h). The AM4-r4 chain of limiting sentences ran on: every

@@ -3717,7 +3717,7 @@ THE LAW (not legal advice)
 ===============================================================================
 
 -------------------------------------------------------------------------------
-22. THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (steps AM2-AM5)
+22. THE ASSISTANT (TALKING MANUAL) - ASKING BY VOICE (steps AM2-AM6)
 -------------------------------------------------------------------------------
 What it is: you ASK about the C2 by voice ("how do I close the hatch?") and
 the station SAYS and shows the answer from this manual. The station RECOGNISES
@@ -4029,4 +4029,103 @@ Measured on the owner's laptop (RTX A1000 6 GB, step AM2; synthetic voices -
 to be measured again with real speech): recognition ~0.9 s for a 2-3 s
 question on the GPU (large-v3-turbo), the CPU fallback (small) slower - see
 docs/assistant_design.md section 3.
+
+WHAT IT CAN AND CANNOT DO (step AM6 - the finish; read this part if nothing
+else)
+  CAN
+  * Find the place in THIS manual (and in the guided tour's texts) for a
+    spoken question about the C2 and read the manual's own sentence(s) out,
+    the chapter first; the full passage is on the panel.
+  * Say "I can't find that in the manual." when the question is not in it.
+  * Work with no internet, on the station PC only; nothing of it ever
+    reaches the boat or the gateway (it is read-only, see above).
+  CANNOT
+  * Answer about the boat's state NOW (the mode, the speed, the battery, the
+    engine hours): it reads the manual, not the telemetry (owner default
+    W82) - look at the screens for that.
+  * Answer what the manual does not say (fuel, oil changes, insurance, the
+    weather, tides, anchorages ...): "I can't find ..." is the right answer
+    there.
+  * Judge a situation or advise: it never says what you SHOULD do beyond the
+    manual's words. In an emergency act first (STANDBY, the e-stop), ask
+    later.
+  * Guarantee that the sentence it picks is the one that answers: about half
+    of its Greek answers on the fresh question set were a true manual
+    sentence that did NOT answer the question (the numbers below). Always
+    check the chapter it names and read the passage on the panel when it
+    matters.
+  MEASURED (step AM6: a FRESH set of 76 Greek + 31 English operator
+  questions written after every tuning choice and run ONCE; the owner's
+  laptop, RTX A1000 6 GB; Llama 3.2 3B, "picks manual sentences";
+  tests\assistant\fresh_el.json / fresh_en.json, docs\assistant_design.md 12):
+  * the search alone (no model): the right passage first 56 % Greek / 36 %
+    English, within the first 3 passages 81 % / 64 %; of the questions NOT
+    in the manual 5 of 8 Greek / 2 of 6 English are refused by the search.
+  * the answer: counted correct (the picked sentence holds the term the
+    question is about - a rough, partly circular measure) 41 % Greek (28 of
+    68) / 52 % English (13 of 25); an answer was given to 81 % / 80 % of the
+    questions and of those answers 51 % / 65 % were correct; "I can't find"
+    was right for 7 of 8 / 6 of 6 off-manual questions; a false "I can't
+    find" 13 / 5 times (Greek: 9 of them because the model wrote no usable
+    pick, 4 its own "can't find").
+  * speed: from the typed question to the answer text 0.5 s median Greek /
+    0.3 s English (p90 0.8 s / 0.4 s, worst 3.4 s) with the whole model on
+    the graphics card; the speech recognition adds about 1 s (step AM2,
+    synthetic voices) and the voice starts about a second after the text:
+    count on 2-3 s from letting go to the first spoken word on a quiet PC,
+    and up to 10-15 s when the graphics card is busy or the model runs on
+    the processor.
+  * the earlier figures of steps AM3-AM5 (tuning / held-out parts) were seen
+    while tuning and are optimistic; these are the honest ones. Real speech
+    (your recorded questions, W84) is still to be measured.
+  MICROPHONE / HEADSET
+  * Use a HEADSET with a boom microphone (any USB or 3.5 mm headset; the
+    loudhailer's LISTEN plays on it too) rather than the laptop's built-in
+    microphone: wind, the engine and other people talking are heard less and
+    the recognised question (shown on the screen) is right more often.
+    Choose it on the Tools page "Assistant" - its OWN setting, not the
+    loudhailer's devices.
+  * Hold the button / F9 a moment BEFORE you start speaking and let go a
+    moment after; say the names as the screens show them (STANDBY, HDG LOCK,
+    DP, UAV).
+  * A USB foot pedal that sends the F9 key (a programmable "HID keyboard"
+    pedal, PARTS.md "Shore PC") frees both hands, e.g. while you fly a UAV
+    with the joystick. The key is changed on the Tools page (F2..F9).
+  PRIVACY
+  * The microphone is never recorded to disk. The question text, the
+    passage and the answer go into this PC's log only
+    (groundstation\assistant\log\, deleted after 30 days); nothing is sent
+    anywhere; the models are files on this PC (tools\bin\).
+  LIMITS (by design, documented in docs\assistant_design.md 5h / 5i / 7d /
+  12):
+  * It answers from the 3 best passages the search found: a question matched
+    to the wrong passage gets a true but wrong sentence, or "I can't find".
+  * A manual statement whose NEXT sentence limits it ("... are aids. They
+    are NOT for navigation.") is only ever given together with that limit;
+    when the statement with its first limit alone is longer than 60 words it
+    is not given at all (124 Greek / 146 English statements) and the passage
+    is shown instead.
+  * A limit under the NEXT sub-heading is never joined; a sentence that opens
+    with "It / This ..." is never read alone; the limit rules compare WORDS,
+    not meaning: a limit phrased without the usual words (never, not, only,
+    except, unless, exception, however, but) is not recognised.
+  * Only one or two whole manual sentences are read; a sentence over 50
+    words is shown but not read out ("I found the answer in chapter N - see
+    the text").
+  * On the two one-line places (screen 1's notice, screen 2's message line)
+    an answer that carries a limit is shown WHOLE or replaced by "Answer with
+    a restriction - see the Assistant panel" (step AM4-r7: the line is
+    measured in pixels, never end-cut). The notice box of a 1366-pixel
+    screen is narrow, so there you will mostly see that short line - the
+    panel has the full text.
+  * The small model's picks are positional: with the standard instruction it
+    often picks the sentence numbered 4 (the instruction's example) - 71-76 %
+    of its first picks on the tuning questions, 19 % on the fresh set. A
+    few-shot instruction and a bigger Greek model were measured (section 12
+    of the design document); the default stays what measured best on this
+    6 GB card.
+  * The voice reads the letter N as "north" only beside a real coordinate
+    pair and as "neutral" in a gear sentence, else as the letter (AM5-r2).
+  * Alarms always win: while a MASTER WARNING lamp is on at this PC the
+    answer is text only; any alarm sound or callout cuts the voice.
 ===============================================================================

@@ -108,3 +108,10 @@ registration refuses a drone with any configured output but its 4 motors.
 - [ ] A second monitor for the DRIVER screen (MANUAL chapter 9 part I).
 - [ ] USB joystick for remote driving (Thrustmaster T.16000M + TWCS recommended).
 - [ ] Tailscale account (free) for the VPN.
+- [ ] Talking manual (the assistant, CLAUDE.md W, MANUAL chapter 22 / MANUAL_EL 17 - step AM6): a HEADSET WITH A BOOM
+      MICROPHONE on every station PC (any class-compliant USB or 3.5 mm headset; the loudhailer's LISTEN plays on it
+      too) - recommended over the laptop's built-in microphone (wind, the engine, other people talking); chosen on the
+      Tools page "Assistant" (its OWN setting, never the loudhailer's devices). OPTIONAL: a USB foot pedal that sends
+      the F9 key (a programmable "HID keyboard" single-pedal switch, e.g. a PCsensor / Scythe / Infinity-type USB foot
+      switch; set it to the plain key F9, no modifier) = push-to-talk with both hands on the joystick. Nothing of it
+      touches the boat or the gateway.

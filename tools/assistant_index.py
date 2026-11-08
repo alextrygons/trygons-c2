@@ -71,8 +71,12 @@ def cmd_ask(a):
     return 0
 
 
-def load_questions(lang):
-    with open(os.path.join(QDIR, "questions_%s.json" % lang), encoding="utf-8") as f:
+def load_questions(lang, qset="main"):
+    """The question list of a language: "main" = tests/assistant/questions_<lang>.json (the AM3 list: tuning +
+    held-out parts); another name = tests/assistant/<name>_<lang>.json - "fresh" = the AM6 set written AFTER every
+    tuning choice, measured ONCE and never tuned on (every id in it is its own part)."""
+    fn = "questions_%s.json" % lang if qset == "main" else "%s_%s.json" % (qset, lang)
+    with open(os.path.join(QDIR, fn), encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -199,11 +203,17 @@ NAMES = {"all": "all", "tuning": "in-sample (tuning)", "heldout": "HELD-OUT"}
 
 def cmd_eval(a):
     lines, gaps, bad = [], [], 0
+    qset = getattr(a, "set", "main") or "main"
     parts = ("tuning",) if a.tuning else ("all", "tuning", "heldout")
+    if qset != "main":                      # AM6: a separate set (fresh) is ONE part - no tuning / held-out split
+        parts = ("all",)
     for lang in ("el", "en"):
-        rows, t = evaluate(lang)
+        if qset == "main":
+            rows, t = evaluate(lang)
+        else:
+            rows, t = evaluate(lang, qs=load_questions(lang, qset), heldout=())
         for name in parts:
-            lines.append(line_of(NAMES[name], t[name]))
+            lines.append(line_of(NAMES[name] if qset == "main" else qset.upper(), t[name]))
         if t["broken"]:
             lines.append("  BROKEN (no specific expected phrase in any passage text, or a missing tour stop): %s"
                          % ", ".join(t["broken"]))
@@ -349,6 +359,8 @@ def main(argv=None):
     e.add_argument("--gaps")
     e.add_argument("-v", "--verbose", action="store_true")
     e.add_argument("--tuning", action="store_true", help="only the tuning part (never shows the held-out questions)")
+    e.add_argument("--set", default="main", help="the question set: main (questions_<lang>.json, the gate) or the "
+                   "name of tests/assistant/<name>_<lang>.json - 'fresh' = the AM6 set, measured ONCE, never tuned on")
     fl = sub.add_parser("floor")
     fl.add_argument("--write", action="store_true", help="freeze the current separation (after a re-tune); REFUSED "
                     "while an off-manual tuning question scores >= the floor (AM4-r4 LOW-1)")

@@ -308,6 +308,7 @@ class App:
         self.asst = asst_client.Assistant(AsstView(), settings=settings)
         self.asst_heard = None          # (text, time) of the last recognised question (screen 1 notice 8 s)
         self.asst_shown = None          # (answer text, time) of the last answer (screen 1 notice 12 s, AM5)
+        self.asst_line = None           # AM4-r7: {"full", "limited", "fallbacks"} of the last answer's message line
         # AM5: the answer spoken by this PC's sound.py at the LOWEST level (alarms / callouts win, text only meanwhile).
         # AM5-r MED-3: the voice gets a NARROW view too (the horn + language from the App-free AsstView, the sound
         # system through a weak reference set in _build_sound) - never this App
@@ -583,9 +584,15 @@ class App:
         self.asst_auto_fold, self.asst_force_open = 0, False
         # also a "can't find" below the extract score floor (AM4-r2, W112): the passage is shown on the panel
         if cite and (info.get("src") == "passage" or (info.get("src") == "cant_find" and info.get("passage"))):
-            self.say(T("asst.answer_see", a=short, cite=cite))
+            msg = T("asst.answer_see", a=short, cite=cite)
         else:
-            self.say(T("asst.answer", a=short, cite=(" (%s)" % cite) if cite else ""))
+            msg = T("asst.answer", a=short, cite=(" (%s)" % cite) if cite else "")
+        # AM4-r7 (review of b1a0138, MED): the two one-line places cut by PIXELS - the bar renderer (draw_bar) and
+        # screen 1's notices (driver.py) show this line WHOLE or, for a joined / limiting answer, the short "has a
+        # restriction" line - never an end-cut that drops «ΔΕΝ είναι για ναυσιπλοΐα.» (show.fit_line)
+        self.asst_line = {"full": msg, "limited": asst_show.has_limit(a, stmts),
+                          "fallbacks": [T("asst.answer", a=limited, cite=""), limited, T("asst.answer_limited_short")]}
+        self.say(msg)
         try:
             self.asst_voice.speak(info)
         except Exception:                           # the voice never stops the screens
@@ -4300,8 +4307,12 @@ class App:
                 txt = it[2]
                 if it[4]:                                   # the message: one line, cut to the room it has
                     txt = txt.replace("\n", "  ")
-                    while txt and f.measure(txt) > w - 4:
-                        txt = txt[:-2] + "…" if len(txt) > 2 else ""
+                    al = getattr(self, "asst_line", None)
+                    if al and txt == al.get("full"):        # AM4-r7: the assistant's answer by the PIXEL rule
+                        txt = asst_show.fit_line(txt, w - 4, f.measure, al.get("limited"), al.get("fallbacks"))
+                    else:
+                        while txt and f.measure(txt) > w - 4:
+                            txt = txt[:-2] + "…" if len(txt) > 2 else ""
                 tr = (x, y0, x + max(w, 1.0), y1)
                 cv.create_text(x + 2, (y0 + y1) / 2, text=txt, anchor="w", fill=it[3] or C["fg"], font=f, tags="ov")
                 ov.ops.append({"k": "text", "r": (x, y0, x + min(w, f.measure(txt) + 4), y1), "panel": None,

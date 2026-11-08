@@ -51,6 +51,7 @@ from i18n import T
 from alerts import can_roles  # noqa: E402  (DroneCAN, 11d)
 from alerts import link_time_text  # noqa: E402  (LINK TIME, step 13q1)
 from alerts import override_texts  # noqa: E402  (the shore stick override, step 13q3)
+from assistant import show as asst_show  # noqa: E402  (AM4-r7: the assistant notice's pixel rule; pure helpers)
 
 _QSERIAL = 0                    # the question serial of every DriverScreen of this process (13n1 review L7)
 
@@ -831,6 +832,28 @@ class DriverScreen:
         return wp, hud.xte(d["est_lat"], d["est_lon"], start[0], start[1], d["wp_lat"], d["wp_lon"]), \
             max(50.0, 2.0 * radius)
 
+    def asst_notice_line(self, answer_text):
+        """AM4-r7 (review of b1a0138, MED): the assistant's one-line notice by PIXELS - the HUD draws a notice row
+        at f_norm bold in the "notices" box (hud.list_rows: max_w = the box width - 16, then the font shrinks to 8 px
+        and the window edge crops): the WHOLE line only when it fits at the box's normal font, else for a joined /
+        limiting answer the short «has a restriction - see the panel» line, never an end-cut (show.fit_line). Before
+        the first frame (no box size yet) the text is left to the HUD."""
+        a = self.app
+        full = T("asst.answer_short", a=answer_text)
+        al = getattr(a, "asst_line", None)
+        try:
+            x0, _y0, x1, _y1 = self.hud.R("notices")
+            room = (x1 - x0) - 16
+            size = int(getattr(self.hud, "f_norm", 0) or 0)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return full
+        if room < 50 or size <= 0:
+            return full
+        fallbacks = [T("asst.answer_short", a=T("asst.answer_limited")), T("asst.answer_limited"),
+                     T("asst.answer_limited_short")]              # (the last one pixel-cut when even it is too wide)
+        return asst_show.fit_line(full, room, lambda z: measure(z, size, True), bool(al and al.get("limited")),
+                                  fallbacks)
+
     def notices(self, d, gw):
         """Banners under the alarm bar: [(tag, text, colour key)]."""
         a = self.app
@@ -916,7 +939,7 @@ class DriverScreen:
             out.append(("asst_q", T("asst.heard", q=h[0]), "main"))    # plain information: green (LOW-4)
         s = getattr(a, "asst_shown", None)
         if s and time.time() - s[1] < 12.0:                        # AM5: the answer (cut), 12 s; the panel has it all
-            out.append(("asst_a", T("asst.answer_short", a=s[0]), "main"))
+            out.append(("asst_a", self.asst_notice_line(s[0]), "main"))
         return out
 
     def draw(self):

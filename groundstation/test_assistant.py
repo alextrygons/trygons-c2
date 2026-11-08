@@ -4023,8 +4023,95 @@ def as34():
         src.count("asst_show.cut_answer(") >= 2 and 'T("asst.more_limits")' in src and \
         'T("asst.answer_limited")' in src and "asst_show.cut(a," not in src and \
         "self.asst_shown = (line(" in src and "short = line(" in src
-    report("AS34 no display cut loses a joined unit's limiting sentence", all(out.values()),
-           "%s; %s; problems %s" % (out, n, bad[:4] or "none"))
+    # ---- AM4-r7 (review of b1a0138, MED): the two ONE-LINE places cut by PIXELS, cut_answer by CHARACTERS - the HUD
+    # notice box is 0.215 x W wide and draws at f_norm bold (hud_sizes(H)["norm"] x the "Aa" scale), the bar's message
+    # has the bar's free flex width: show.fit_line shows the WHOLE line or (joined / limiting answer) the short «has a
+    # restriction» line, never an end-cut. Rendered room at 1366x768 + 1920x1080 x the 3 text sizes; over every
+    # joined unit + the reviewer's two single-sentence examples; the mutation = the AM4-r6 character cut measured in
+    # pixels overflows the room (-> the HUD shrank the font to 8 px and cropped at the window edge = the limit lost)
+    import driver
+    import hud
+    import theme
+    px = {"joined": 0, "checks": 0, "fallback": 0, "fb_cut": 0, "whole": 0, "lost": 0, "old_overflow": 0, "examples": 0}
+    pbad = []
+    try:
+        pillow = driver.Image is not None
+    except AttributeError:
+        pillow = False
+    examples = {"el": ("ΣΗΜΑΝΤΙΚΟ: οι χάρτες βάθους, το AIS, η κάμερα και οι επικαλύψεις AR είναι βοηθήματα. ΔΕΝ είναι για "
+                       "ναυσιπλοΐα.", "ΔΕΝ είναι για ναυσιπλοΐα."),
+                "en": ("<< LEFT / RIGHT >>: the steering motor runs 100, 200 or 300 ms. At most one pulse every 0.2 s; "
+                       "never past the estimated maximum angle; refused toward an end stop whose switch is open (\"at "
+                       "the end stop\").", "refused toward an end stop whose switch is open")}
+    box_w = hud.DEFAULT_LAYOUT["notices"][2] if isinstance(hud.DEFAULT_LAYOUT.get("notices"), tuple) else 0.215
+    rooms = []
+    for (W, H) in ((1366, 768), (1920, 1080)):
+        for k in (0.85, 1.0, 1.2):
+            size = max(11, int(H * 0.022 * k))                   # theme.hud_sizes(H)["norm"] x the Aa scale
+            rooms.append(("hud %dx%d x%.2f" % (W, H, k), box_w * W - 16, size))
+    for name, room, size in (("bar 300 px", 300, 14), ("bar 450 px", 450, 14), ("bar 700 px", 700, 16)):
+        rooms.append((name, room, size))               # screen 2's message line: typical free widths of bar 2
+
+    def check(lang, pid, a, st, limit, fallback_line, prefix_key):
+        for name, room, size in rooms:
+            meas = lambda z, s=size: driver.measure(z, s, True)
+            char_line = show.cut_answer(a, max(60, show.NOTICE_MAX), [st] if st else (), limited[lang])
+            full = i18n.TL(lang, prefix_key, a=char_line if char_line != limited[lang] else limited[lang])
+            fbs = [i18n.TL(lang, prefix_key, a=limited[lang]), limited[lang], i18n.TL(lang, "asst.answer_limited_short")]
+            drawn = show.fit_line(full, room, meas, show.has_limit(a, [st] if st else ()), fbs)
+            px["checks"] += 1
+            if meas(full) > room and char_line != limited[lang]:
+                px["old_overflow"] += 1                  # the mutation: the character cut did not fit the pixels
+            # a fallback line, or (the HUD box is ~280 px at 1366x768) the SHORT fallback pixel-cut - it holds no claim
+            if drawn in fbs or drawn == fallback_line or (drawn.endswith("…") and any(
+                    f.startswith(drawn[:-1].rstrip(" ,;:·-–")) for f in fbs)):
+                px["fallback"] += 1
+                px["fb_cut"] += drawn.endswith("…") and drawn not in fbs
+            elif limit in drawn and meas(drawn) <= room + 0.5:
+                px["whole"] += 1
+            else:
+                px["lost"] += 1
+                if len(pbad) < 6:
+                    pbad.append((lang, pid, name, drawn[:80]))
+
+    for lang in ("el", "en"):
+        ps = index.load(lang)["passages"]
+        for i, p in enumerate(ps):
+            for u in A.pick_units([dict(p, after=index.following(ps, i))]):
+                st = u.get("stmt")
+                if not st:
+                    continue
+                a = A._ended(u["text"])
+                if not a.startswith(st):
+                    continue
+                px["joined"] += 1
+                check(lang, p["id"], a, st, a[len(st):].strip(), limited[lang], "asst.answer_short")
+        ex, lim = examples[lang]
+        px["examples"] += 1
+        check(lang, "example", ex, "", lim, limited[lang], "asst.answer_short")
+        check(lang, "example", ex, "", lim, limited[lang], "asst.answer")
+    out["AM4-r7: %d pixel checks over %d joined units + %d examples: the limit is in the DRAWN line or the "
+        "fallback line is drawn (whole %d, fallback %d of them the short fallback pixel-cut %d, lost %d%s)" % (
+            px["checks"], px["joined"], px["examples"], px["whole"], px["fallback"], px["fb_cut"], px["lost"],
+            "" if pillow else "; no Pillow: the width estimate")] = px["lost"] == 0 and not pbad and px["checks"] > 1000
+    out["AM4-r7 mutation: the AM4-r6 character cut overflows the real pixel room %d times" % px["old_overflow"]] = \
+        px["old_overflow"] > 100
+    # the pure helper + the station wiring
+    meas = lambda z: len(z) * 7.0
+    out["fit_line: whole when it fits, the fallback for a limiting answer, the pixel end-cut for a plain one"] = \
+        show.fit_line("short line", 200, meas, True, ["FB"]) == "short line" and \
+        show.fit_line("a long limiting line " * 5, 200, meas, True, ["a fallback line", "FB"]) == "a fallback line" and \
+        show.fit_line("a long limiting line " * 5, 60, meas, True, ["a fallback line", "FB"]) == "FB" and \
+        show.fit_line("a long plain line " * 5, 100, meas, False, ["FB"]).endswith("…") and \
+        meas(show.fit_line("a long plain line " * 5, 100, meas, False, ["FB"])) <= 100 and \
+        show.has_limit("ΔΕΝ είναι για ναυσιπλοΐα.") and show.has_limit("x", ["x"]) and \
+        not show.has_limit("The map zooms with the wheel.")
+    dsrc = open(os.path.join(HERE, "driver.py"), encoding="utf-8").read()
+    out["driver.py + app.py: the notice and the bar message go through fit_line (asst_line: limited + fallbacks)"] = \
+        "asst_show.fit_line(" in dsrc and 'self.hud.R("notices")' in dsrc and "asst_notice_line" in dsrc and \
+        "asst_show.fit_line(" in src and 'self.asst_line = {"full": msg, "limited": asst_show.has_limit(a, stmts)' in src
+    report("AS34 no display cut loses a joined unit's limiting sentence (characters AND pixels)", all(out.values()),
+           "%s; %s; %s; problems %s %s" % (out, n, px, bad[:4] or "none", pbad or "none"))
 
 
 class FakeLamps:

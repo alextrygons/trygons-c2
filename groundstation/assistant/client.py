@@ -51,6 +51,12 @@ DEFAULT_ANSWER_MODE = "extract"
 # tuning part (6.07 / 6.79 / 7.10; costs 3 of 41 correct Greek answers, no English one - docs/assistant_design.md
 # 5e); gs_settings "assistant_extract_floor" (a number)
 DEFAULT_EXTRACT_FLOOR = 7.2
+# AM6 (W128 / W129): the extract PROMPT variant - "default" = the AM4-r instruction with the digit example "4 or 4, 9";
+# "fewshot" = no digit example, one worked example turn with real manual sentences (answer.PROMPT_VARIANTS). Measured
+# on the TUNING part (docs/assistant_design.md 12): fewshot el 45 % / en 61 % correct vs 34 % / 48 %, first pick = 4
+# in 3 % vs 76 %, no "no pick" rows - but the fresh set (measured ONCE) ran with "default"; the DEFAULT stays "default"
+# until the owner answers W129 (a switch needs a new fresh set for honest numbers). gs_settings "assistant_prompt".
+DEFAULT_PROMPT = "default"
 
 # states
 OFF, IDLE, NO_MODELS, GATEWAY_PC, STARTING, READY, LISTENING, THINKING, DOWN, FAILED = (
@@ -140,6 +146,8 @@ class Assistant:
         return {"kind": "llama", "model": m, "py": paths.llm_py_dir(), "device": self._get("assistant_device", "auto"),
                 "answer_mode": mode if mode in ("generate", "extract") else DEFAULT_ANSWER_MODE,
                 "allow_unpinned": bool(self._get("assistant_llm_unpinned", False)),
+                "prompt_variant": self._get("assistant_prompt", DEFAULT_PROMPT) if self._get(
+                    "assistant_prompt", DEFAULT_PROMPT) in ("default", "fewshot") else DEFAULT_PROMPT,
                 # AM4-r2 / W112: the search-score floor before "extract" may pick: the DEFAULT is 7.2 (the measured
                 # one); the setting replaces it; an explicit 0 = no floor; AM4-r3 LOW-b: null / missing = the default
                 "extract_floor": self._floor()}

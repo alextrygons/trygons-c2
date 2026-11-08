@@ -2,6 +2,8 @@
 screen 1's notice and the [ΣΤΟ ΕΓΧΕΙΡΙΔΙΟ] place. No tkinter, no sound, no file written.
 
   cut(text, n)            a text cut at a word with "…" (long picks: AM4-r2 review MED-3 - never an overflowing line)
+  cut_answer(...)         the character cut that keeps a joined unit's LIMIT whole (AM4-r6)
+  fit_line(...)           the PIXEL rule of the two one-line places (AM4-r7): the whole line or the fallback
   manual_place(info)      (lang, first line, last line) of the answer's passage in MANUAL_EL.txt / MANUAL.txt, or None
   demo_answer(lang)       a canned answer from the committed index (the tour picture / screenshots: no model runs)
 """
@@ -60,6 +62,53 @@ def cut_answer(text, n, stmts=(), fallback=""):
         return fallback or cut(t, n)
     out = "".join(p if k == "fixed" else cut(p, budget) for k, p in parts)
     return " ".join(out.split())
+
+
+def pixel_cut(text, room, measure):
+    """An END-cut by PIXELS (AM4-r7): whole words + "…" that measure() says fit in `room`, then characters."""
+    t = " ".join((text or "").split())
+    if not t or measure(t) <= room:
+        return t
+    words = t.split(" ")
+    while len(words) > 1:
+        words.pop()
+        c = " ".join(words).rstrip(" ,;:·-–") + "…"
+        if measure(c) <= room:
+            return c
+    c = t
+    while len(c) > 1 and measure(c + "…") > room:
+        c = c[:-1]
+    return (c.rstrip(" ,;:·-–") + "…") if c else ""
+
+
+def has_limit(text, stmts=()):
+    """AM4-r7 (review of b1a0138, MED): an answer whose one-line display must never be END-cut - a JOINED unit
+    (stmts) OR any answer with a limiting word in it (answer.LIMIT_RE: never / not / only / except / unless /
+    exception ...: «... είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα.», "... refused toward an end stop whose switch is
+    open"). A plain answer may keep the ellipsis."""
+    from . import answer                              # (lazy: show.py stays light for the panel helpers)
+    return bool(stmts) or bool(answer.LIMIT_RE.search(answer.plain(text or "")))
+
+
+def fit_line(full, room, measure, limited, fallbacks=()):
+    """AM4-r7 (review of b1a0138, MED): the two ONE-LINE places (screen 1's notice, screen 2's message line) cut
+    by PIXELS, but cut_answer() counted CHARACTERS - a 111-character joined answer passed it unchanged and the
+    renderer's pixel cut (f.measure to the bar's free width; the HUD's font shrink to 8 px then the window-edge
+    crop) still dropped the limiting sentence. Rule: the WHOLE line (`full` = prefix + answer + cite, as it is
+    drawn) is shown only when measure(full) <= room; a `limited` answer (has_limit) that does not fit shows the
+    first of `fallbacks` that fits (the short «has a restriction - see the panel» line, with / without its
+    prefix; the last one pixel-cut: it holds no claim), never an end-cut; a plain answer keeps the pixel end-cut
+    with the ellipsis. `measure` = the renderer's own pixel measure of the font it draws with."""
+    t = " ".join((full or "").split())
+    if not t or measure(t) <= room:
+        return t
+    if limited:
+        fbs = [" ".join(f.split()) for f in (fallbacks or ()) if f and f.strip()]
+        for fb in fbs:
+            if measure(fb) <= room:
+                return fb
+        return pixel_cut(fbs[-1] if fbs else t, room, measure)
+    return pixel_cut(t, room, measure)
 
 
 def manual_file(lang):

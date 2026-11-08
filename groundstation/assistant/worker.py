@@ -142,7 +142,8 @@ class Worker:
                 llm, info = None, {"mode": "retrieval", "why": "language model not loaded: %s" % str(e)[:160],
                                    "name": os.path.basename(str(c.get("model") or ""))}
         self.ans = answer.Answerer(llm, terms, mode=c.get("answer_mode") or "generate",
-                                   extract_floor=c.get("extract_floor", answer.EXTRACT_FLOOR))
+                                   extract_floor=c.get("extract_floor", answer.EXTRACT_FLOOR),
+                                   prompt_variant=c.get("prompt_variant") or "default")   # AM6 (W128): the eval only
         self.ans.stick = not c.get("measure")    # tools/assistant_llm_eval.py: never stuck in retrieval-only
         if llm is None:
             self.ans.why_ro = info["why"]

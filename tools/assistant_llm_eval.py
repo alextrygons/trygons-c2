@@ -22,6 +22,7 @@ Correct = the final text (whatever is shown / spoken) holds the question's must-
 question is correct only as "can't find".
 """
 import argparse
+import collections
 import json
 import os
 import re
@@ -125,16 +126,18 @@ class Worker:
             self.p.kill()
 
 
-def llm_cfg(name, answer_mode="generate", floor=None):
-    """name "none" = no model; "<model>+extract" = that model in answer mode "extract" (AM4-r); floor = the extract
-    score floor (None = the code's answer.EXTRACT_FLOOR; rows record the best score, so another floor can be judged
-    from a stored run without the model: AM4-r2)."""
+def llm_cfg(name, answer_mode="generate", floor=None, prompt="default"):
+    """name "none" = no model; "<model>+extract" = that model in answer mode "extract" (AM4-r); "<...>~fewshot" = the
+    prompt variant (AM6, W128); floor = the extract score floor (None = the code's answer.EXTRACT_FLOOR; rows record
+    the best score, so another floor can be judged from a stored run without the model: AM4-r2)."""
     if name == "none":
         return {"kind": "none"}
+    if "~" in name:
+        name, prompt = name.split("~", 1)
     if "+" in name:
         name, answer_mode = name.split("+", 1)
     c = {"kind": "llama", "model": paths.llm_model(name), "py": paths.llm_py_dir(), "device": "auto",
-         "measure": True, "answer_mode": answer_mode}
+         "measure": True, "answer_mode": answer_mode, "prompt_variant": prompt}
     if floor is not None:
         c["extract_floor"] = floor
     return c
@@ -184,8 +187,13 @@ def cmd_run(a):
     models = a.models.split(",") if a.models else ["none"] + installed_models()
     if a.answer == "extract":
         models = [m if m == "none" or "+" in m else m + "+extract" for m in models]
+    prompt = getattr(a, "prompt", "default") or "default"
+    if prompt != "default":                     # AM6 (W128): the variant is part of the run's name
+        models = [m if m == "none" or "~" in m else m + "~" + prompt for m in models]
+    qset = getattr(a, "set", "main") or "main"
+    part = a.part if qset == "main" else qset     # a separate set = one part named after it ("fresh")
     langs = a.lang.split(",")
-    held = {lang: ai.load_heldout(lang) for lang in langs}
+    held = {lang: (ai.load_heldout(lang) if qset == "main" else set()) for lang in langs}
     for name in models:
         before = gpu_used_mb()
         t0 = time.monotonic()
@@ -207,16 +215,17 @@ def cmd_run(a):
             info.get("why")), flush=True)
         for lang in langs:
             searcher = index.Searcher(index.load(lang))
-            qs = ai.load_questions(lang)["questions"]
-            if a.part == "tuning":
+            qs = ai.load_questions(lang, qset)["questions"]
+            if qset == "main" and a.part == "tuning":
                 qs = [q for q in qs if q["id"] not in held[lang]]
-            elif a.part == "heldout":
+            elif qset == "main" and a.part == "heldout":
                 qs = [q for q in qs if q["id"] in held[lang]]
             if a.limit:
                 qs = qs[:a.limit]
-            path = os.path.join(OUT, "%s_%s_%s.jsonl" % (name, lang, a.part))
+            path = os.path.join(OUT, "%s_%s_%s.jsonl" % (name, lang, part))
             with open(path, "w", encoding="utf-8") as f:
-                f.write(json.dumps({"model": name, "lang": lang, "part": a.part, "llm": info, "load_s": load_s,
+                f.write(json.dumps({"model": name, "lang": lang, "part": part, "set": qset, "prompt": prompt,
+                                    "llm": info, "load_s": load_s,
                                     "gpu_before": before, "gpu_after": after, "worker_device": w.ready[1].get("device"),
                                     "t": time.strftime("%Y-%m-%d %H:%M")}, ensure_ascii=False) + "\n")
                 for i, q in enumerate(qs):
@@ -246,7 +255,7 @@ def cmd_run(a):
                     if a.verbose:
                         print("  %s %-9s %5d ms %s | %s" % (q["id"], r.get("src"), ms,
                                                            "OK " if j["correct"] else "-- ", r.get("a", "")[:110]))
-            print("  %s %s: %s" % (lang, a.part, summary_line(load_rows(path))), flush=True)
+            print("  %s %s: %s" % (lang, part, summary_line(load_rows(path))), flush=True)
         w.close()
         time.sleep(2)
     return 0
@@ -274,7 +283,16 @@ def summarise(head, rows):
     toks = [(r["tokens"], r["gen_ms"]) for r in rows if r.get("gen_ms")]
     tps = (sum(t for t, _g in toks) / (sum(g for _t, g in toks) / 1000.0)) if toks and sum(g for _t, g in toks) else 0
     answered = [r for r in inm if r.get("answered", r["src"] not in ("cant_find", "passage"))]
+    # AM6 (W128): the POSITION bias - the FIRST number the model wrote, over every row it wrote numbers for
+    # (the default prompt's example is "4 or 4, 9": first4 = how often that first number is 4)
+    firsts = []
+    for r in gen:
+        m = re.search(r"\d+", r.get("model_text") or r.get("raw") or "")
+        if m:
+            firsts.append(int(m.group(0)))
+    hist = collections.Counter(firsts).most_common(3)
     return {"n": len(rows), "correct": sum(r["correct"] for r in inm), "in_manual": len(inm),
+            "first_n": len(firsts), "first4": sum(1 for x in firsts if x == 4), "first_hist": hist,
             "model_kept": sum(r["model_kept"] for r in inm),
             "answered": len(answered), "precision": sum(r["correct"] for r in answered),
             # AM4-r5 LOW-1: "rejected" = the POST-CHECK refused a real pick / answer; "no_pick" = the model wrote no
@@ -307,13 +325,14 @@ def summary_line(hr):
     return ("correct %s (model's own answer %s), answered %s, precision %s, post-check rejected %s + no pick %s (of "
             "every row the model generated for, off-manual questions included), can't find right %s, false can't find "
             "%d (the model's own %d), quality %s, %d ms median / %d ms p90 (generated answers only: %d ms median), "
-            "%.1f tok/s, %s, GPU +%s MB" % (
+            "%.1f tok/s, %s, GPU +%s MB; first pick = 4 in %s (top first numbers %s)" % (
                 pct(s["correct"], s["in_manual"]), pct(s["model_kept"], s["in_manual"]),
                 pct(s["answered"], s["in_manual"]), pct(s["precision"], s["answered"]),
                 pct(s["rejected"], s["generated"]), pct(s["no_pick"], s["generated"]),
                 pct(s["cant_right"], s["not_in_manual"]), s["false_cant"],
                 s["false_cant_model"], pct(s["quality"], s["quality_n"]), s["ms_med"], s["ms_p90"],
-                s["ms_gen_med"], s["tok_s"], s["mode"], s["gpu_mb"]))
+                s["ms_gen_med"], s["tok_s"], s["mode"], s["gpu_mb"], pct(s["first4"], s["first_n"]),
+                s["first_hist"]))
 
 
 def cmd_rescore(a):
@@ -331,7 +350,7 @@ def cmd_rescore(a):
             print("%s: skipped - an extract run's stored picks number the OLD sentence list (re-run it)" % fn)
             continue
         searcher = index.Searcher(index.load(head["lang"]))
-        qs = {q["id"]: q for q in ai.load_questions(head["lang"])["questions"]}
+        qs = {q["id"]: q for q in ai.load_questions(head["lang"], head.get("set") or "main")["questions"]}
         new = []
         for r in rows:
             if r.get("search_cant") or not r.get("hits") or (r.get("src") == "retrieval" and not r.get("raw")
@@ -507,6 +526,11 @@ def main(argv=None):
                    help="the answer mode (AM4-r): extract = the model only picks passage sentences")
     r.add_argument("--floor", type=float, default=None,
                    help="the extract score floor (AM4-r2, W112; default = answer.EXTRACT_FLOOR; 0 = none)")
+    r.add_argument("--set", default="main", help="the question set: main (questions_<lang>.json: --part tuning / "
+                   "heldout / all) or 'fresh' = tests/assistant/fresh_<lang>.json (AM6: one part, measured ONCE)")
+    r.add_argument("--prompt", default="default", choices=answer.PROMPT_VARIANTS,
+                   help="AM6 (W128): the extract prompt variant - 'fewshot' = no digit example, one worked example "
+                        "turn with real manual sentences; compared on the TUNING part only")
     r.add_argument("-v", "--verbose", action="store_true")
     rp = sub.add_parser("report")
     rp.add_argument("--first", type=int, default=0, help="only the first N questions of every run (a common subset)")

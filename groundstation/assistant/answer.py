@@ -136,6 +136,30 @@ SYSTEM_PICK = {
            "by a comma (e.g. " + PICK_EXAMPLE["en"] + "). Write nothing else. If no sentence answers the question, "
            "reply exactly: " + CANT["en"]),
 }
+# AM6 (W128): the prompt VARIANT measured against the default on the TUNING part only - "fewshot" = the same
+# instruction WITHOUT the digit example "4 or 4, 9" (the example biased the 3B model's first pick to 4 in 71-76 % of
+# the Greek answers, docs/assistant_design.md 5h) and instead ONE worked example as a prior chat turn with REAL
+# manual sentences (a 3-sentence list + a question -> "2"). Never the default unless the measurement says so.
+PROMPT_VARIANTS = ("default", "fewshot")
+SYSTEM_PICK_FEWSHOT = {
+    "el": ("Είσαι το ομιλούν εγχειρίδιο του σταθμού Trygons C2. Σου δίνονται αριθμημένες προτάσεις του εγχειριδίου "
+           "και μια ερώτηση. Διάλεξε τη μία ή τις δύο προτάσεις που απαντούν στην ερώτηση και γράψε ΜΟΝΟ τους "
+           "αριθμούς τους, χωρισμένους με κόμμα. Μη γράψεις τίποτα άλλο. Αν καμία πρόταση δεν απαντά στην ερώτηση, "
+           "γράψε ακριβώς: " + CANT["el"]),
+    "en": ("You are the talking manual of the Trygons C2 station. You are given numbered manual sentences and a "
+           "question. Pick the one or two sentences that answer the question and write ONLY their numbers, separated "
+           "by a comma. Write nothing else. If no sentence answers the question, reply exactly: " + CANT["en"]),
+}
+FEWSHOT_EXAMPLE = {
+    "el": ("Προτάσεις του εγχειριδίου:\n\n(Κεφάλαιο 9 «ΤΟ ΟΡΙΟ ΙΣΧΥΟΣ»)\n1. Το όριο εφαρμόζεται στο κατώτερο επίπεδο "
+           "(servo.c) και το ελέγχει ξανά ο επιτηρητής ασφαλείας (CPU1).\n2. Μετά από ΚΑΘΕ εκκίνηση: 30 % πρόσω, 5 % "
+           "όπισθεν.\n3. \"Όριο ισχύος\" λέει η φωνή όταν σπρώχνετε το γκάζι πάνω στο όριο.\n\nΕρώτηση: με πόσο "
+           "όριο ισχύος ξεκινά το σκάφος;", "2"),
+    "en": ("Manual sentences:\n\n(Chapter 10 \"THE POWER LIMIT\")\n1. The clamp lives in the lowest layer (servo.c) and "
+           "the safety monitor (CPU1) checks it again.\n2. After EVERY power-up or reset: 30 % forward, 5 % reverse.\n"
+           "3. The voice says \"Power limit\" when you push the throttle against it.\n\nQuestion: what power limit does "
+           "the boat start with?", "2"),
+}
 LABEL = {"el": ("Αποσπάσματα του εγχειριδίου", "Κεφάλαιο", "Ξενάγηση", "Ερώτηση", "Προτάσεις του εγχειριδίου"),
          "en": ("Manual passages", "Chapter", "Guided tour", "Question", "Manual sentences")}
 
@@ -985,7 +1009,7 @@ def _ended(s):
     return s if (ends_sentence(s) or s.endswith(":")) else s.rstrip(";·") + "."
 
 
-def prompt_pick(q, hits, lang):
+def prompt_pick(q, hits, lang, variant="default"):
     lab = LABEL.get(lang, LABEL["en"])
     picks = pick_sentences(hits)
     rows, last = [], None
@@ -995,6 +1019,11 @@ def prompt_pick(q, hits, lang):
             last = h
         rows.append("%d. %s" % (i, s))
     user = "%s:\n\n%s\n\n%s: %s" % (lab[4], "\n".join(rows), lab[3], q.strip())
+    if variant == "fewshot":                      # AM6 (W128): no digit example; one worked example turn instead
+        ex_u, ex_a = FEWSHOT_EXAMPLE.get(lang, FEWSHOT_EXAMPLE["en"])
+        return [{"role": "system", "content": SYSTEM_PICK_FEWSHOT.get(lang, SYSTEM_PICK_FEWSHOT["en"])},
+                {"role": "user", "content": ex_u}, {"role": "assistant", "content": ex_a},
+                {"role": "user", "content": user}]
     return [{"role": "system", "content": SYSTEM_PICK.get(lang, SYSTEM_PICK["en"])}, {"role": "user", "content": user}]
 
 
@@ -1150,7 +1179,7 @@ class LlamaLlm:
 
 
 # --- the answer ---------------------------------------------------------------------------------------------------
-def decide(raw, hits, lang, terms=(), cut=False, err=None, mode="generate"):
+def decide(raw, hits, lang, terms=(), cut=False, err=None, mode="generate", variant="default"):
     """The model's raw text -> what is said: {"a", "src", "id", "cite", "passage", "problems", "raw", ...}. A cut
     generation keeps its COMPLETE sentences (post-checked like any answer); nothing complete = the retrieval form.
     Pure: the model comparison re-scores its stored raw texts with exactly this (tools/assistant_llm_eval.py
@@ -1162,7 +1191,7 @@ def decide(raw, hits, lang, terms=(), cut=False, err=None, mode="generate"):
         raw_used = raw or ""
     out = {"raw": raw or "", "problems": [], "cut": bool(cut), "answer_mode": mode}
     if mode == "extract":
-        return _decide_pick(raw_used, hits, lang, terms, out, err)
+        return _decide_pick(raw_used, hits, lang, terms, out, err, variant=variant)
     txt = clean(raw_used)
     if not txt or err:
         h = hits[0]
@@ -1183,7 +1212,7 @@ def decide(raw, hits, lang, terms=(), cut=False, err=None, mode="generate"):
     return out
 
 
-def _decide_pick(raw, hits, lang, terms, out, err):
+def _decide_pick(raw, hits, lang, terms, out, err, variant="default"):
     units = pick_units(hits)
     picks = [(u["text"], u["hit"]) for u in units]
     if err or not (raw or "").strip():
@@ -1221,8 +1250,8 @@ def _decide_pick(raw, hits, lang, terms, out, err):
     for d in re.findall(r"\d+", body):              # is the example echoed as it stands, no pick either
         if int(d) not in digits:
             digits.append(int(d))
-    echo = not letters and (digits == list(PICK_EXAMPLE_IDS) or
-                            plain(body).strip().rstrip(".") in {plain(e) for e in PICK_EXAMPLE.values()})
+    echo = variant == "default" and not letters and (     # (the fewshot prompt has no digit example to echo)
+        digits == list(PICK_EXAMPLE_IDS) or plain(body).strip().rstrip(".") in {plain(e) for e in PICK_EXAMPLE.values()})
     if not ids or letters or echo:
         out.update(a=CANT[lang], src="passage", model_text=raw.strip(), id=hits[0].get("id", ""),
                    cite=cite(hits[0], lang), passage=passage_of(hits[0], lang), no_pick=True,
@@ -1297,8 +1326,9 @@ def floor_value(x, default=EXTRACT_FLOOR):
 
 class Answerer:
     def __init__(self, llm=None, terms=(), clock=time.monotonic, retrieval_only=False, mode="generate",
-                 extract_floor=EXTRACT_FLOOR):
+                 extract_floor=EXTRACT_FLOOR, prompt_variant="default"):
         self.llm = llm
+        self.prompt_variant = prompt_variant if prompt_variant in PROMPT_VARIANTS else "default"
         self.terms = set(terms)
         self.clock = clock
         self.retrieval_only = retrieval_only or llm is None
@@ -1329,7 +1359,8 @@ class Answerer:
         else:
             g0 = self.clock()
             try:
-                msgs = prompt_pick(q, hits, lang) if self.mode == "extract" else prompt(q, hits, lang)
+                msgs = prompt_pick(q, hits, lang, self.prompt_variant) if self.mode == "extract" else \
+                    prompt(q, hits, lang)
                 g = self.llm.generate(msgs)
             except Exception as e:                       # a broken model never leaves the question unanswered
                 g = {"text": "", "tokens": 0, "cut": True, "err": str(e)[:120]}
@@ -1337,7 +1368,8 @@ class Answerer:
             r["gen_ms"], r["tokens"], r["first_ms"] = int(gen_s * 1000), g.get("tokens", 0), g.get("first_ms")
             self._timing(gen_s, g.get("cut"))
             r.update(decide(g.get("text", ""), hits, lang, self.terms, cut=g.get("cut"), err=g.get("err"),
-                            mode=self.mode))
+                            mode=self.mode, variant=self.prompt_variant))
+            r["prompt_variant"] = self.prompt_variant
         r["ms"] = int((self.clock() - t0) * 1000)
         return r
 
