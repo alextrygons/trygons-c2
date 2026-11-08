@@ -3285,16 +3285,45 @@ def as26():
     out["-> and <= untouched by the < > rule"] = "προς εφ 9" in t and "το πολύ 3" in t
     out["a <placeholder> is read as its word"] = "trygons-gw- σκάφος " in speech.normalize(
         "Όνομα: trygons-gw-<σκάφος> (π.χ. x).", "el") and "<" not in speech.normalize("name trygons-gw-<boat>.", "en")
-    # AM5-r LOW-1: N by its context, known Latin words as words, fwd / rev, negative ranges, negations survive
+    # AM5-r LOW-1 / AM5-r2 MED-1 (the CONSERVATIVE N rule): N by its context, known Latin words as words, fwd / rev,
+    # negative ranges, negations survive
     n1 = speech.normalize("Η σχέση F / N / R. Το σκάφος στο 37.82 N 23.60 E. Η σχέση μένει N. Πορεία N. ΣΗΜΕΙΟ n/N.", "el")
-    out["N: gears / coordinate / gear sentence / compass / letter (el)"] = "εμπρός, νεκρά, όπισθεν" in n1 and \
-        "37.82 βόρεια" in n1 and "σχέση μένει νεκρά" in n1 and "Πορεία βόρεια" in n1 and "n/εν" in n1 and \
+    out["N: gears / coordinate pair / gear sentence / letter (el)"] = "εμπρός, νεκρά, όπισθεν" in n1 and \
+        "37.82 βόρεια 23.60 ανατολικά" in n1 and "σχέση μένει νεκρά" in n1 and "n/εν" in n1 and \
         "νεκρά" not in n1.split("Πορεία")[1]
-    n2 = speech.normalize("Gear F / N / R. The boat at 37.82 N. The gear stays N. Heading N. Waypoint n/N.", "en")
-    out["N (en)"] = "forward, neutral, reverse" in n2 and "37.82 north" in n2 and "gear stays neutral" in n2 and \
-        "Heading north" in n2 and "n/N" in n2
+    out["«Πορεία N» = the letter, never north (el)"] = "Πορεία εν" in n1 and n1.count("βόρεια") == 1
+    n2 = speech.normalize("Gear F / N / R. The boat at 37.82 N 23.60 W. The gear stays N. Heading N. Waypoint n/N.", "en")
+    out["N (en)"] = "forward, neutral, reverse" in n2 and "37.82 north 23.60 west" in n2 and "gear stays neutral" in n2 \
+        and "Heading N" in n2 and "north" not in n2.split("Heading")[1] and "n/N" in n2
     out["N never 'neutral' outside a gear sentence"] = "νεκρά" not in speech.normalize("Το σκάφος στο 37.82 N.", "el") \
         and "neutral" not in speech.normalize("Waypoint 3/N reached.", "en")
+    # the AM5-r2 review's REAL sentences (a safety misreading: a gear N / a group N was spoken as NORTH)
+    rv = {"en Gear pulses F 1900 N 1500 R 1100.": ("neutral 1500", "north"),
+          "en Throttle demand 0 N every step.": ("0 neutral every", "north"),
+          "el Γκάζι 0, N, πορεία σταθερή.": ("0, νεκρά, πορεία", "βόρεια"),
+          "en Set N before the heading turn.": ("Set N before", "north"),
+          "en TELEM2 group N (sub-state).": ("group N (", "north"),
+          "el TELEM2 ομάδα N (υπο-κατάσταση).": ("ομάδα εν (", "βόρεια"),
+          "en Gear servo pulses F 1900 us, N 1500 us, R 1100 us": ("neutral 1500", "north"),
+          "en KEYS: Space / A acknowledge N night D declutter": ("acknowledge N night", "north"),
+          "el ΝΥΧΤΑ (οθόνη 1, πλήκτρο N) = σκούρο κόκκινο.": ("πλήκτρο εν)", "βόρεια"),
+          "en OBSTACLE AHEAD (part N, STAGE 2 / 3).": ("part N,", "north"),
+          "en The boat at 37.82 N.": ("37.82 N.", "north"),                 # a lone latitude = the letter
+          "el Πορεία N, πυξίδα N, heading N.": ("Πορεία εν, πυξίδα εν, heading εν", "βόρεια")}
+    for key, (want, never) in rv.items():
+        lg, s = key[:2], key[3:]
+        o = speech.normalize(s, lg)
+        out["review: %s -> %s, never %s" % (s[:38], want, never)] = want in o and never not in o
+    # the ONLY two north cases: (a) a decimal coordinate pair (also with the ° already spoken), (b) after the word north
+    out["north (a): coordinate pairs"] = "37.82 βόρεια 23.60 ανατολικά" in speech.normalize("Στο 37.82 N 23.60 E.", "el") \
+        and "37.82 degrees north, 23.60 degrees east" in speech.normalize("Position 37.82° N, 23.60° E.", "en") and \
+        "37.82 north 23.60 degrees" in speech.normalize("lat 37.82 N 23.60°", "en") and \
+        "38.0 north 23.5 west" in speech.normalize("At 38.0 N 23.5 W.", "en") and \
+        "north" not in speech.normalize("lat 37.82 N lon 23.60°", "en")      # a word between = not adjacent = the letter
+    out["north (b): right after the word north"] = "north (north)" in speech.normalize("north (N) is up.", "en") and \
+        "βόρεια βόρεια" in speech.normalize("βόρεια N", "el")
+    out["has_coordinate"] = speech.has_coordinate("37.82 N 23.60 E") and speech.has_coordinate("37.82° N, 23.60°") and \
+        not speech.has_coordinate("The boat at 37.82 N.") and not speech.has_coordinate("group N")
     w = speech.normalize("Ο διακόπτης OFF και ON· NEVER σημαίνει ποτέ· ΔΕΝ είναι για ναυσιπλοΐα· RESET, WARNING, XYZ", "el")
     out["known Latin words said as words (el)"] = " οφ " in w and " ον" in w and "ρισέτ" in w and "γουόρνινγκ" in w and \
         "όου εφ εφ" not in w and "εν ι βι" not in w
@@ -3384,8 +3413,60 @@ def as31():
     out["the failure reason is logged"] = last.get("voice") == "failed" and last.get("detail") == "tts made no file"
     out["text only (no audio keys)"] = not any(k in last for k in ("samples", "wav", "audio", "pcm", "text"))
     out["a disk error returns ''"] = qlog.write(info, folder=os.path.join(d, "x.jsonl", "nope")) == ""
+    # AM5-r2 LOW-5: a prune run deletes at most MAX_PRUNE_PER_RUN of the oldest files (a PC clock jumped ahead never
+    # empties the log in one run); the next runs go on, oldest first
+    olds = [time.strftime("%Y-%m-%d", time.localtime(time.time() - (40 + k) * 86400)) + ".jsonl" for k in range(8)]
+    for fn in olds:
+        with open(os.path.join(d, fn), "w") as f:
+            f.write("{}\n")
+    g1 = qlog.prune(d)
+    g2 = qlog.prune(d)
+    out["prune: at most %d per run, the oldest first, the rest at the next run" % qlog.MAX_PRUNE_PER_RUN] = \
+        g1 == sorted(olds)[:qlog.MAX_PRUNE_PER_RUN] and g2 == sorted(olds)[qlog.MAX_PRUNE_PER_RUN:] and \
+        keep + ".jsonl" in os.listdir(d) and qlog.MAX_PRUNE_PER_RUN <= 5
     shutil.rmtree(d, ignore_errors=True)
     report("AS31 qlog size cap + retention", all(out.values()), "%s" % out)
+
+
+def as32():
+    """AM5-r2 MED-1 over the WHOLE index (both languages): EVERY pickable sentence (answer.pick_sentences = what the
+    extract mode may say) with a standalone N is spoken WITHOUT a north / βόρεια word the sentence itself does not have -
+    unless the sentence holds a coordinate pair (speech.has_coordinate); the known manual sentences are checked by
+    content (TELEM2 group N = the letter in both languages, the gear pulses / REV | N | FWD = neutral, the demo's
+    Saronic Gulf coordinates = north + east)."""
+    from assistant import answer as A, index, speech
+    lone = re.compile(r"(?<![\w])N(?![\w])")
+    north = re.compile(r"(?i)north|βορει|βορρ")
+    fold = lambda s: speech.strip_accents(s or "").lower()
+    n = {"el": 0, "en": 0}
+    bad, seen = [], {"group": 0, "gear": 0, "coord": 0}
+    for lang in ("el", "en"):
+        for p in index.load(lang)["passages"]:
+            for s, _h in A.pick_sentences([p]):
+                if not lone.search(s):
+                    continue
+                n[lang] += 1
+                o = speech.normalize(s, lang)
+                extra = len(north.findall(fold(o))) - len(north.findall(fold(s)))
+                if extra > 0 and not speech.has_coordinate(s):
+                    bad.append((lang, "north without a coordinate", s[:80], o[:100]))
+                if speech.has_coordinate(s):
+                    seen["coord"] += 1
+                    if extra < 1:
+                        bad.append((lang, "coordinate not north", s[:80], o[:100]))
+                low = fold(s)
+                if re.search(r"(?<![\w])(group|ομαδα) N(?![\w])", s) or "ομάδα N" in s:
+                    seen["group"] += 1
+                    if speech.N_WORDS["neutral"][0 if lang == "el" else 1] in o or extra > 0:
+                        bad.append((lang, "group N not the letter", s[:80], o[:100]))
+                if re.search(r"(?<![\w])[FR] \d{4}|\| N \||servo at N|σχέσης στο N", s):
+                    seen["gear"] += 1
+                    if speech.N_WORDS["neutral"][0 if lang == "el" else 1] not in o:
+                        bad.append((lang, "gear N not neutral", s[:80], o[:100]))
+                del low
+    ok = not bad and n["el"] >= 8 and n["en"] >= 8 and seen["group"] >= 2 and seen["gear"] >= 3 and seen["coord"] >= 1
+    report("AS32 every pickable sentence with a lone N: never north without a coordinate", ok,
+           "sentences el %d / en %d; checked by content %s; problems %s" % (n["el"], n["en"], seen, bad[:6] or "none"))
 
 
 class FakeLamps:
@@ -3455,6 +3536,7 @@ def as27():
                 return True
             time.sleep(0.02)
         return False
+    mods0 = set(sys.modules)          # AM5-r2: the whole voice cycle must import no hud / gwclient / academymenu
     # (a) a plain answer is spoken: intro first, the WAV in the temp folder, deleted after its end
     vc.speak(info)
     out["TTS runs off the Tk thread"] = vc.why == "making"
@@ -3584,14 +3666,19 @@ def as27():
     vc.speak(info)
     ps = vc.making
     vc.stop()                                                  # before the TTS delivered
+    making_after_stop = vc.making                              # AM5-r2 LOW-3: still the writer's until it is done
+    vc.tick()
+    swept_under_writer = ps not in vc.owed()                   # the sweep must NOT touch the file being written
     gate.set()
     end = time.time() + 5.0
     while time.time() < end and not slow_made:
         time.sleep(0.02)
-    time.sleep(0.2)
+    vc.thread.join(2.0)
     vc.tick()
     out["a late TTS result after stop() is deleted by the thread"] = bool(ps) and slow_made and \
         not os.path.exists(ps) and vc.pending is None and not vc.owed()
+    out["LOW-3: stop() leaves `making` to the writer, the thread clears it when done"] = making_after_stop == ps and \
+        not swept_under_writer and vc.making is None
     gate.clear()
     # (m) a delete that FAILS (the player still holds the file) is kept on the list and tried again at the next tick -
     # a new answer never loses the earlier file
@@ -3634,17 +3721,19 @@ def as27():
     vc.synth = slow_synth
     slow_made.clear()
     vc.speak(info)
+    po = vc.making
     clk.t += asstvoice.TTS_MAX_S + 0.1
     vc.tick()
-    out["slow TTS -> text only 'slow'"] = vc.why == "slow" and vc.making is None and "8 s" in vc.detail
+    out["slow TTS -> text only 'slow' (making stays the writer's: LOW-3)"] = vc.why == "slow" and vc.making == po \
+        and "8 s" in vc.detail
     gate.set()
     end = time.time() + 5.0
     while time.time() < end and not slow_made:
         time.sleep(0.02)
-    time.sleep(0.2)
+    vc.thread.join(2.0)
     vc.tick()
     out["the late file of a slow TTS is removed"] = slow_made and not os.path.exists(slow_made[-1][2]) and \
-        not vc.owed() and vc.why == "slow"
+        not vc.owed() and vc.why == "slow" and vc.making is None
     gate.clear()
     # (p) LOW-3: a failed voice logs its reason
     vc.synth = lambda lang, items, **kw: 0
@@ -3687,8 +3776,76 @@ def as27():
     out["log: slow + failed with their reasons"] = any(r.get("voice") == "slow" and "8 s" in r.get("detail", "")
                                                        for r in rows) and \
         any(r.get("voice") == "failed" and "no file" in r.get("detail", "") for r in rows)
+    # --- AM5-r2 review (9516ecb) LOW-1..LOW-4 -----------------------------------------------------------------------
+    # (r) LOW-1: a RESULT taken later than TTS_MAX_S after the request (the Tk thread stalled) is dropped too - "slow",
+    # nothing played, the file gone
+    kw_seen = []
+
+    def kw_synth(lang, items, **kw):
+        kw_seen.append(dict(kw))
+        return fake_synth_factory(made)(lang, items)
+    vc.synth = kw_synth
+    n_played = len(player.played)
+    vc.speak(info)
+    end = time.time() + 5.0
+    while time.time() < end and vc.pending is None:
+        time.sleep(0.02)
+    pr = vc.pending[1] if vc.pending else ""
+    clk.t += asstvoice.TTS_MAX_S + 0.1                         # the tick comes late
+    vc.tick()
+    out["LOW-1: a late-taken result is not played ('slow'), the file gone"] = bool(pr) and vc.why == "slow" and \
+        len(player.played) == n_played and not os.path.exists(pr) and not vc.owed() and vc.tmp is None
+    # (s) LOW-2: the TTS subprocess is bounded (tts.synth timeout = TTS_MAX_S + 2 s) and ONE TTS thread at a time: a
+    # new question while one runs waits (the newest only), never a second thread / a pile-up
+    out["LOW-2: synth called with timeout TTS_MAX_S + 2"] = kw_seen and kw_seen[-1].get("timeout") == \
+        asstvoice.TTS_MAX_S + 2.0 == asstvoice.TTS_TIMEOUT_S
+    gate.clear()
+    slow_made.clear()
+    vc.synth = slow_synth
+    vc.speak(info)                                             # thread A, blocked on the gate
+    th_a = vc.thread
+    vc.speak(info)                                             # a second question meanwhile -> queued, no thread B
+    vc.speak(info)                                             # a third one replaces the waiting second
+    th_after = vc.thread
+    queued = vc.queued
+    out["LOW-2: one TTS thread at a time, the newest request waits"] = th_a is th_after and th_a.is_alive() and \
+        queued is not None and queued[0] == vc.gen and queued[3] != vc.making and vc.why == "making"
+    n_threads = sum(1 for t in threading.enumerate() if t.name.startswith("Thread") and t is not threading.main_thread())
+    gate.set()                                                 # A ends: its result is dropped (gen), then the waiting job runs
+    th_a.join(3.0)
+    end = time.time() + 5.0
+    while time.time() < end:
+        vc.tick()
+        if vc.why in ("spoken", "long"):
+            break
+        time.sleep(0.02)
+    out["LOW-2: the waiting job runs after the thread ended, once, spoken"] = vc.why == "spoken" and vc.queued is None \
+        and vc.thread is not th_a and len(slow_made) == 2 and vc.owed() == [vc.tmp] and n_threads >= 1
+    vc.stop()
+    # (t) LOW-3: a half-written '<path>.tmp' (sound.write_wav's name) is cleaned by close() and by _clean_stale
+    tmp_stray = os.path.join(folder, "asst_%d_9998.wav.tmp" % os.getpid())
+    with open(tmp_stray, "wb") as f:
+        f.write(b"RIFF")
+    vc.close()
+    out["LOW-3: close() removes a stray .wav.tmp"] = not os.path.exists(tmp_stray)
+    old_tmp = os.path.join(folder, "asst_1_1.wav.tmp")
+    with open(old_tmp, "wb") as f:
+        f.write(b"RIFF")
+    os.utime(old_tmp, (time.time() - 400, time.time() - 400))
+    asstvoice.AsstVoice(port, synth=fake_synth_factory(made), clock=clk)    # a new start cleans the stale files
+    out["LOW-3: _clean_stale removes an old .wav.tmp"] = not os.path.exists(old_tmp)
+    # (u) LOW-4: the result hand-over is atomic - one lock, used by the thread and by every taker
+    src = open(asstvoice.__file__, encoding="utf-8").read()
+    lines = [ln.strip() for ln in src.splitlines()]
+    gen_lines = [k for k, ln in enumerate(lines) if ln.startswith("self.gen += 1")]
+    out["LOW-4: pending / gen change under the lock"] = isinstance(vc._lock, type(threading.Lock())) and bool(
+        re.search(r"with self\._lock:\s*\n\s*mine = gen == self\.gen\s*\n\s*if mine:\s*\n\s*self\.pending = res", src)) \
+        and bool(re.search(r"with self\._lock:\s*\n\s*p, self\.pending = self\.pending, None", src)) and \
+        len(gen_lines) >= 3 and all(lines[k - 1] == "with self._lock:" for k in gen_lines)
     traps.__exit__(None, None, None)
     out["no sender / socket called by the voice"] = traps.sent == []
+    new_mods = set(sys.modules) - mods0
+    out["the voice cycle imported no hud / gwclient / academymenu"] = not ({"hud", "gwclient", "academymenu"} & new_mods)
     report("AS27 alarm priority + voice rules + log", all(out.values()), "%s; made %d; played %s" % (
         out, len(made), [os.path.basename(p) if p else None for p in player.played][-6:]))
 
@@ -3880,7 +4037,7 @@ def main():
         print("build the simulator first: sim\\build_sim.bat")
         return 2
     for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13, as14, as15, as16, as17, as18, as19, as20, as21,
-               as22, as23, as25, as26, as27, as29, as30, as31) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
+               as22, as23, as25, as26, as27, as29, as30, as31, as32) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
         try:
             fn()
         except Exception as e:

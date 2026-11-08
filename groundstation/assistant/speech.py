@@ -29,6 +29,12 @@ in a compass context («37.82 N», north) = «βόρεια» / "north", else the
 words are said as words (OFF = «οφ», ON, YES, NO, NEVER, RESET, START ...; SAID), never spelt letter by letter;
 "fwd" / "rev" = «εμπρός» / «όπισθεν» ("forward" / "reverse"); a negative range "-10..-1 m" = «μείον 10 έως μείον 1
 μέτρα»; a leading minus = «μείον» / "minus". Negations survive untouched (ΔΕΝ -> δεν, NEVER -> «ποτέ» / "never").
+AM5-r2 (review of 9516ecb, MED-1 - a SAFETY misreading: «Γκάζι 0, N» / "TELEM2 group N" / "Set N before the heading
+turn" were read as NORTH): the CONSERVATIVE N rule - a lone N is NEVER «βόρεια» / "north" except (a) a decimal
+coordinate followed by N and then a longitude with E / W or ° ("37.82 N 23.60 E" - the E / W spoken too) and (b)
+right after the word north / βόρεια; "group N" / «ομάδα N» = the letter; a gear sentence = «νεκρά» / "neutral"; else
+the letter («εν» / "N"). "heading" / «πορεία» / a compass word are no north context (W124). AS26 + AS32 (every
+pickable sentence of both indexes with a lone N).
 """
 import re
 import unicodedata
@@ -90,15 +96,24 @@ SAID = {
     "NEUTRAL": ("νεκρά", "neutral"), "LINK LOST": ("λινκ λοστ", "link lost"), "ENGINE KILLED": ("έντζιν κιλντ", "engine killed"),
     "NOT ARMED": ("νοτ αρμντ", "not armed"), "NO DATA": ("νόου ντέιτα", "no data"), "NO VIDEO": ("νόου βίντεο", "no video"),
 }
-# AM5-r LOW-1: the letter "N" by its context (never a fixed meaning): the gears "F / N / R", a lone N in a sentence
-# about the gear = neutral, after a coordinate / in a compass context = north, else the letter
+# AM5-r LOW-1 / AM5-r2 MED-1: the letter "N" by its context - the CONSERVATIVE rule (the AM5-r2 review found
+# «Γκάζι 0, N» / "TELEM2 group N" / "Set N before the heading turn" read as NORTH): a lone N is NEVER "north" except
+# (a) a DECIMAL COORDINATE followed by N and then a longitude with E / W or ° ("37.82 N 23.60 E") and (b) right after
+# the word north / βόρεια; everything else sentence by sentence: "group N" / «ομάδα N» = the letter, a sentence about
+# the gear (σχέση, gear, neutral, a lone F / R, the throttle / idle beside it, servo pulses) = «νεκρά» / "neutral",
+# else the letter («εν» / "N"). "heading" / «πορεία» / a compass are NO north context any more.
 _N_GEARS_RE = re.compile(r"(?<![\w])F\s*/\s*N\s*/\s*R(?![\w])")
-_N_NORTH_RE = re.compile(r"(\d(?:[.,]\d+)?\s?°?\s?)N(?![\w])")
+_DEG = r"(?:°|μοίρες|degrees)"                     # the unit may already be spoken (UNITS runs before _n_letters)
+_N_COORD_RE = re.compile(r"(\d+[.,]\d+\s?" + _DEG + r"?\s?)N(\s*,?\s*)(-?\d+[.,]\d+\s?" + _DEG + r"?\s?)([EW])(?![\w])")
+#                                                                                                 (a) lat N lon E / W
+_N_COORD_DEG_RE = re.compile(r"(\d+[.,]\d+\s?" + _DEG + r"?\s?)N(?![\w])(?=\s*,?\s*-?\d+[.,]\d+\s?" + _DEG + r")")
+#                                                                                                 (a) lat N lon °
+_N_AFTER_NORTH_RE = re.compile(r"(?i)(?<![\w])(north|βόρεια|βορράς?)(\s*\(?\s*)N(?![\w])")          # (b) "north (N)"
 _N_LONE_RE = re.compile(r"(?<![\w])N(?![\w])")
-_N_GEAR_CTX = re.compile(r"(?i)(σχέσ|νεκρ|gear|neutral|(?<![\w])[FR](?![\w]))")
-_N_NORTH_CTX = re.compile(r"(?i)(βόρει|βορρ|north|πυξίδ|compass|πορεί|heading)")
+_N_GROUP_RE = re.compile(r"(?i)((?<![\w])(?:group|ομάδας?)\s+)N(?![\w])")                          # "group N" = the letter
+_N_GEAR_CTX = re.compile(r"(?i)(σχέσ|νεκρ|gear|neutral|(?-i:(?<![\w])[FR](?![\w]))|γκάζ|throttle|ρελαντί|idle|παλμ|puls|shift)")
 N_WORDS = {"gears": ("εμπρός, νεκρά, όπισθεν", "forward, neutral, reverse"), "neutral": ("νεκρά", "neutral"),
-           "north": ("βόρεια", "north"), "letter": ("εν", "N")}
+           "north": ("βόρεια", "north"), "east": ("ανατολικά", "east"), "west": ("δυτικά", "west"), "letter": ("εν", "N")}
 _SENT_RE = re.compile(r"(?<=[.!?;·])\s+")
 _PLACEHOLDER_RE = re.compile(r"<([^<>\s]{1,30})>")     # "<σκάφος>" / "<boat>" = a placeholder, read as its word
 _LT_RE = re.compile(r"(?<![<>=\-])<(?![<=\-])")       # a plain "<" (not "<=", "<-", "<<")
@@ -108,24 +123,37 @@ _FWD_REV_RE = re.compile(r"(?<![\w])(fwd|rev)(?![\w])")
 LT_GT = {"el": ("λιγότερο από", "πάνω από"), "en": ("less than", "more than")}
 
 
+def has_coordinate(text):
+    """True when the text holds a coordinate pair whose N the voice says as north (rule (a)); tests (AS32)."""
+    return bool(_N_COORD_RE.search(text or "") or _N_COORD_DEG_RE.search(text or ""))
+
+
+def _n_coords(t, i):
+    """North case (a): a decimal coordinate pair "37.82 N 23.60 E" / "37.82° N, 23.60°" - the N = north, the E / W =
+    east / west. Runs BEFORE the unit step of normalize() (a "W" would otherwise already be "watts"); the ° may be
+    raw here or already spoken when called later (_DEG)."""
+    t = _N_COORD_RE.sub(lambda m: m.group(1) + N_WORDS["north"][i] + m.group(2) + m.group(3) +
+                        N_WORDS["east" if m.group(4) == "E" else "west"][i], t)
+    return _N_COORD_DEG_RE.sub(lambda m: m.group(1) + N_WORDS["north"][i], t)
+
+
 def _n_letters(t, i):
-    """The letter N by its context (see N_WORDS): the gears first, then a coordinate / compass N, then a lone N in a
-    sentence about the gear, else the letter."""
+    """The letter N by its context (see N_WORDS, the conservative AM5-r2 rule): the gears "F / N / R" first, the north
+    case (b) - an N right after the word north / βόρεια - (case (a), the coordinate pair, ran earlier in _n_coords),
+    then sentence by sentence: "group N" = the letter, a sentence about the gear = neutral, else the letter. Never north
+    from a heading / compass / πορεία word."""
     t = _N_GEARS_RE.sub(N_WORDS["gears"][i], t)
-    t = _N_NORTH_RE.sub(lambda m: m.group(1) + N_WORDS["north"][i], t)
+    t = _N_AFTER_NORTH_RE.sub(lambda m: m.group(1) + m.group(2) + N_WORDS["north"][i], t)
     if not _N_LONE_RE.search(t):
         return t
     out = []
     for s in _SENT_RE.split(t):
         if _N_LONE_RE.search(s):
-            rest = _N_LONE_RE.sub(" ", s)
-            if _N_GEAR_CTX.search(rest):
-                w = N_WORDS["neutral"][i]
-            elif _N_NORTH_CTX.search(rest):
-                w = N_WORDS["north"][i]
-            else:
-                w = N_WORDS["letter"][i]
-            s = _N_LONE_RE.sub(w, s)
+            s = _N_GROUP_RE.sub(lambda m: m.group(1) + N_WORDS["letter"][i], s)   # "group N" = the letter, first
+            if _N_LONE_RE.search(s):
+                rest = _N_LONE_RE.sub(" ", s)
+                w = N_WORDS["neutral"][i] if _N_GEAR_CTX.search(rest) else N_WORDS["letter"][i]
+                s = _N_LONE_RE.sub(w, s)
         out.append(s)
     return " ".join(out)
 # the Greek names of the Latin letters (an unknown capital Latin word is spelt out)
@@ -188,6 +216,7 @@ def normalize(text, lang="el", vocab=None):
     t = t.replace("…", "...")
     t = re.sub(r"\[\d+\]", " ", t)
     t = _THOUSANDS_RE.sub(r"\1\2", t)            # "1.500 m" / "1,500 m" = 1500 (as answer._f reads it), spoken so
+    t = _n_coords(t, i)                          # AM5-r2 MED-1: "37.82 N 23.60 E" = north / east, before "W" = watts
     # ranges before the unit, then the unit itself
     t = _RANGE_RE.sub(lambda m: "%s %s %s" % (m.group(1), "έως" if i == 0 else "to", m.group(2)), t)
     t = _UNIT_RE.sub(lambda m: "%s %s" % (m.group(1), UNITS[m.group(2)][i]), t)

@@ -5,7 +5,12 @@ the chosen passage (id + chapter), the answer, the times, how it was spoken (and
 nothing reads it but the owner). A disk error is swallowed (the log never stops an answer).
 AM5-r LOW-2 size cap + retention: a day's file above MAX_FILE_BYTES (5 MB) continues in YYYY-MM-DD_2.jsonl, _3 ...;
 files older than KEEP_DAYS (30 days, by the date in their name) are deleted at the next write, oldest first (only
-the log's own *.jsonl names are touched)."""
+the log's own *.jsonl names are touched). AM5-r2 LOW-5 limits: there is NO limit on the number of parts per day
+(a day of non-stop questions makes as many 5 MB parts as it needs - the retention bounds the whole); prune TRUSTS
+the PC clock (the date in a file's name is compared with "now"): a clock stepped far ahead (> 31 days, e.g. a PC
+without its battery whose time was set wrong) makes every file look old, so a single run deletes at most
+MAX_PRUNE_PER_RUN of the oldest files - a wrong clock loses a few files per answer, never the whole log at once (a
+limit, not a protection: with the clock still wrong the next writes go on)."""
 import json
 import os
 import re
@@ -16,6 +21,7 @@ from . import client
 KEEP = ("q", "lang", "a", "src", "cite", "id", "mode", "ms", "gen_ms", "answer_ms", "problems", "picked")
 MAX_FILE_BYTES = 5 * 1024 * 1024    # a day's file above this continues in a numbered part
 KEEP_DAYS = 30                      # older files are deleted at the next write
+MAX_PRUNE_PER_RUN = 5               # AM5-r2 LOW-5: at most this many (the oldest) files go per prune run / write
 _NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:_(\d+))?\.jsonl$")
 
 
@@ -53,11 +59,14 @@ def log_files(folder):
     return out
 
 
-def prune(folder, now=None, keep_days=KEEP_DAYS):
-    """Delete the log files older than keep_days (by the date in the name), oldest first. -> the names deleted."""
+def prune(folder, now=None, keep_days=KEEP_DAYS, max_per_run=MAX_PRUNE_PER_RUN):
+    """Delete the log files older than keep_days (by the date in the name), oldest first, at most max_per_run of them
+    (AM5-r2 LOW-5: a PC clock jumped ahead never empties the log in one run). -> the names deleted."""
     now = time.time() if now is None else now
     gone = []
     for date, _part, fn in log_files(folder):
+        if len(gone) >= max_per_run:
+            break
         try:
             age_days = (now - time.mktime(time.strptime(date, "%Y-%m-%d"))) / 86400.0
         except (ValueError, OverflowError):

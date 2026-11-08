@@ -24,6 +24,13 @@ and the language from the assistant's own App-free AsstView) - never the App (te
 reason of a failed voice is logged (qlog "detail"). LOW-4 the WAV's gain / resampling run in the TTS thread in
 small chunks with a sleep(0) between them (sound.read_wav / gain `breathe`), so the Tk thread is not starved.
 W121: a voice not made within TTS_MAX_S is dropped - the answer stays text only ("slow"), the late file deleted.
+AM5-r2 (review of 9516ecb): LOW-1 the TTS_MAX_S rule also when a RESULT is taken (the Tk thread stalled: a clip
+finished late is never played, "slow"); LOW-2 ONE TTS thread at a time (a new question while one runs waits in
+`queued` - the newest request only, an older waiting one is replaced, never a pile-up) and the TTS subprocess is
+bounded (tts.synth timeout TTS_TIMEOUT_S = TTS_MAX_S + 2 s); LOW-3 `making` is cleared ONLY by the TTS thread itself
+when it is done (a stop / a slow drop never deletes a file under its writer), close() / _clean_stale also remove
+'*.wav.tmp' (sound.write_wav's half-written file); LOW-4 the pending result, the generation and `making` change
+under ONE lock (the thread's "is this still wanted + hand it over" and the Tk thread's "take it / drop it" are atomic).
 DISPLAY + sound only: nothing here sends anything.
 """
 import glob
@@ -41,6 +48,8 @@ TMP_SUB = "trygons_asst_voice"
 STALE_S = 300.0           # a WAV of a crashed station older than this is removed at the next start (a clip lives
 #                           at most TTS_MAX_S + its length + 0.5 s; two stations on one PC never share a name: the pid)
 TTS_MAX_S = 8.0           # W121: the TTS run must deliver within this, else the answer stays text only ("slow")
+TTS_TIMEOUT_S = TTS_MAX_S + 2.0   # AM5-r2 LOW-2: the TTS subprocess itself is killed by tts.synth after this
+TMP_SUFFIXES = (".wav", ".wav.tmp")   # sound.write_wav writes <path>.tmp first (AM5-r2 LOW-3: cleaned too)
 WHYS = ("spoken", "long", "alarm", "callout", "horn", "no_voice", "sound_off", "interrupted", "stopped", "failed",
         "slow", "making", "nothing")
 
@@ -81,9 +90,13 @@ class AsstVoice:
         self.text = ""               # the last spoken text (tests)
         self.pending = None          # (gen, path, secs, detail) made by the TTS thread, played on the Tk thread
         self.gen = 0                 # a stop / a new answer drops the older TTS result
+        self._lock = threading.Lock()   # AM5-r2 LOW-4: pending / gen / making change only under it
         self.files = set()           # every WAV owed a delete (AM5-r MED-1): named -> made -> played -> removed
-        self.making = None           # the WAV the TTS thread writes now (never deleted under it)
-        self.make_t0 = 0.0           # when that TTS run began (TTS_MAX_S)
+        self.making = None           # the WAV the TTS thread writes now (never deleted under it; AM5-r2 LOW-3: cleared
+        #                              ONLY by that thread when it is done - a stop / slow drop leaves it)
+        self.make_t0 = 0.0           # when the voice was asked for (speak): TTS_MAX_S counts from here (LOW-1 too)
+        self.thread = None           # the ONE TTS thread (AM5-r2 LOW-2: never two at once)
+        self.queued = None           # a (gen, lang, text, path, vol) job waiting for that thread to end - the newest only
         self.tmp = None              # the WAV playing now (deleted after its end)
         self.tmp_until = 0.0
         self.hist_n = 0              # sound history index when the clip started (interrupt detection)
@@ -116,23 +129,38 @@ class AsstVoice:
         if tts.engine(lang) is None:
             return self._why("no_voice", info)
         self.kind, self.text = kind, text
-        self.gen += 1
-        gen = self.gen
+        with self._lock:
+            self.gen += 1
+            gen = self.gen
         vol = snd.sched.vol(sound.ASSISTANT)
         path = os.path.join(self.folder, "asst_%d_%d.wav" % (os.getpid(), gen))
         self.files.add(path)                     # owed from now on, whatever happens to the TTS run
-        self.making, self.make_t0 = path, self.clock()
+        self.make_t0 = self.clock()
         self.why, self.detail = "making", ""
-        th = threading.Thread(target=self._make, args=(gen, lang, text, path, vol), daemon=True)
-        th.start()
+        job = (gen, lang, text, path, vol)
+        if self._busy():
+            self.queued = job                    # AM5-r2 LOW-2: one TTS thread at a time - the running one ends first
+        else:                                    # (its result is dropped by the gen), this is the ONLY waiting job
+            self._start(job)
         return True
 
+    def _busy(self):
+        return self.thread is not None and self.thread.is_alive()
+
+    def _start(self, job):
+        self.queued = None
+        with self._lock:
+            self.making = job[3]
+        self.thread = threading.Thread(target=self._make, args=job, daemon=True)
+        self.thread.start()
+
     def _make(self, gen, lang, text, path, vol):
-        """The TTS run (a subprocess inside tts.py: Piper or PowerShell) off the Tk thread; the gain / resampling in
-        chunks (sound `breathe` = sleep(0) between them)."""
+        """The TTS run (a subprocess inside tts.py: Piper or PowerShell, bounded by TTS_TIMEOUT_S) off the Tk thread;
+        the gain / resampling in chunks (sound `breathe` = sleep(0) between them). The hand-over of the result and the
+        "done" of `making` happen under the lock (AM5-r2 LOW-3 / LOW-4)."""
         try:
             os.makedirs(self.folder, exist_ok=True)
-            n = self.synth(lang, [(text, path)])
+            n = self.synth(lang, [(text, path)], timeout=TTS_TIMEOUT_S)
             if not n or not os.path.exists(path):
                 res = (gen, None, 0.0, "tts made no file (engine %s, lang %s)" % (tts.engine(lang), lang))
             else:
@@ -141,28 +169,44 @@ class AsstVoice:
                 res = (gen, path, len(samples) / float(sound.RATE), "")
         except Exception as e:
             res = (gen, None, 0.0, "%s: %s" % (type(e).__name__, str(e)[:160]))
-        if gen != self.gen:                      # stopped / dropped / closed meanwhile: nothing to play, the file goes
+        with self._lock:
+            mine = gen == self.gen
+            if mine:
+                self.pending = res
+            if self.making == path:              # the writer itself says it is done (nothing else clears it)
+                self.making = None
+        if not mine:                             # stopped / dropped / closed meanwhile: nothing to play, the file goes
             self._remove(path)                   # (it stays in `files` until a tick / close() sees it gone)
-            return
-        self.pending = res
+            self._remove(path + ".tmp")
 
     def tick(self):
-        """From App.ov_tick (every 200 ms): play a finished WAV (after the checks again), drop a TTS run that takes
-        too long, notice an interruption, delete every owed file that is neither playing nor being made."""
-        p, self.pending = self.pending, None
+        """From App.ov_tick (every 200 ms): play a finished WAV (after the checks again; a result taken later than
+        TTS_MAX_S after the request is dropped too - AM5-r2 LOW-1), drop a TTS run that takes too long, start the
+        waiting job once the one TTS thread ended, notice an interruption, delete every owed file that is neither
+        playing nor being made."""
+        with self._lock:
+            p, self.pending = self.pending, None
+            gen_now = self.gen
         if p is not None:
             gen, path, secs, detail = p
-            if gen != self.gen or path is None:
-                if gen == self.gen:
-                    self.making = None
-                    self._why("failed", self.last, detail)
+            if gen != gen_now:
+                pass                             # dropped meanwhile: the sweep removes the file
+            elif path is None:
+                self._why("failed", self.last, detail)
+            elif self.clock() - self.make_t0 > TTS_MAX_S:
+                self._why("slow", self.last, "tts result after %.0f s (not played)" % TTS_MAX_S)
             else:
-                self.making = None
                 self._play(path, secs)
-        elif self.why == "making" and self.making is not None and self.clock() - self.make_t0 > TTS_MAX_S:
-            self.gen += 1                        # the late result is dropped by the thread / the next tick
-            self.making = None
+        elif self.why == "making" and self.clock() - self.make_t0 > TTS_MAX_S:
+            with self._lock:
+                self.gen += 1                    # the late result is dropped by the thread itself (its file too)
+            self.queued = None                   # a job still waiting is dropped as well (never started late)
             self._why("slow", self.last, "tts run longer than %.0f s" % TTS_MAX_S)
+        if self.queued is not None and not self._busy():
+            if self.queued[0] == self.gen:
+                self._start(self.queued)
+            else:
+                self.queued = None
         snd = self.port.sound()
         if self.tmp is not None:
             if self.why == "spoken" and snd is not None and snd.assistant_interrupted_since(self.hist_n):
@@ -194,9 +238,12 @@ class AsstVoice:
     def stop(self, keep_why=True):
         """At once: the voice stops, a TTS result on its way is dropped (a new question, «ΟΜΙΛΙΑ», the station closes);
         a result the thread already finished is deleted here, not left behind (AM5-r MED-1)."""
-        self.gen += 1
-        self.pending = None
-        self.making = None                       # the thread sees the new gen and removes its own file
+        with self._lock:
+            self.gen += 1
+            self.pending = None                  # (AM5-r2 LOW-4: atomic with the thread's hand-over)
+        self.queued = None
+        # `making` is NOT cleared here (AM5-r2 LOW-3): the thread still writes that file - it sees the new gen when it
+        # is done and removes its own file; until then _live() keeps the sweep off it
         snd = self.port.sound()
         stopped = bool(snd is not None and snd.assistant_stop())
         if stopped and keep_why:
@@ -207,12 +254,14 @@ class AsstVoice:
 
     def close(self):
         """The station closes: the voice stops and EVERY file this process made is deleted (also one a late TTS
-        thread wrote after stop()); a file still being written is caught by the next start's _clean_stale."""
+        thread wrote after stop(), and a half-written '.wav.tmp'); a file still being written is caught by the next
+        start's _clean_stale."""
         self.stop()
         self._sweep()
         try:
-            for p in glob.glob(os.path.join(glob.escape(self.folder), "asst_%d_*.wav" % os.getpid())):
-                self._remove(p)
+            for suf in TMP_SUFFIXES:
+                for p in glob.glob(os.path.join(glob.escape(self.folder), "asst_%d_*%s" % (os.getpid(), suf))):
+                    self._remove(p)
         except OSError:
             pass
 
@@ -231,6 +280,7 @@ class AsstVoice:
             live.add(self.tmp)
         if self.making is not None:
             live.add(self.making)
+            live.add(self.making + ".tmp")
         return live
 
     def _sweep(self):
@@ -262,7 +312,7 @@ class AsstVoice:
             now = time.time()
             for fn in os.listdir(self.folder):
                 p = os.path.join(self.folder, fn)
-                if fn.endswith(".wav") and now - os.path.getmtime(p) > STALE_S:
+                if fn.endswith(TMP_SUFFIXES) and now - os.path.getmtime(p) > STALE_S:
                     self._remove(p)
         except OSError:
             pass

@@ -1100,6 +1100,50 @@ Where this section differs from 5c-5f, THIS wins.
   "no audio persisted" (recommended: yes - deleted at once, stale cleanup 5 min); W121 the voice is dropped when
   the TTS takes longer than TTS_MAX_S 8 s (built now: text only + [ΞΑΝΑ]).
 
+### 7c. Review fixes of AM5-r (step AM5-r2, review of 9516ecb; station / tools / tests / docs only, NO app / hal / gateway logic change)
+
+- MED-1 (SAFETY MISREADING, `speech.py`): the AM5-r rule ran the "digit N = north" regex BEFORE the gear context and
+  took "heading" / «πορεία» as a north context, so REAL manual sentences were spoken wrong: "Gear pulses F 1900 N 1500
+  R 1100" -> "F 1900 north 1500", "Throttle demand 0 N every step" -> "north", «Γκάζι 0, N, πορεία σταθερή.» ->
+  «βόρεια», "Set N before the heading turn" -> north, "TELEM2 group N" -> north in both languages. The CONSERVATIVE
+  rule now (owner-recommended, W124): a lone N is NEVER «βόρεια» / "north" except (a) a DECIMAL coordinate followed
+  by N and then a longitude with E / W or ° (`_N_COORD_RE` / `_N_COORD_DEG_RE`: "37.82 N 23.60 E" - the E / W is
+  spoken too, «ανατολικά» / "east"; the ° may already be the spoken unit) and (b) an N right after the word north /
+  βόρεια (`_N_AFTER_NORTH_RE`); then sentence by sentence (`_SENT_RE`): "group N" / «ομάδα N» = the letter FIRST
+  (`_N_GROUP_RE`), a sentence about the gear (`_N_GEAR_CTX`: σχέση / νεκρά / gear / neutral / a lone CAPITAL F or R /
+  γκάζι / throttle / ρελαντί / idle / παλμοί / pulses / shift) = «νεκρά» / "neutral", else the letter («εν» / "N").
+  "heading" / «πορεία» / compass / πυξίδα are NO north context any more (`_N_NORTH_CTX` is gone). Measured over
+  EVERY pickable sentence of both indexes with a lone N (el 12 / en 14): only the one coordinate sentence (the demo's
+  Saronic Gulf) says north; "TELEM2 group N" is the letter in both languages, the gear pulses / REV | N | FWD / «ΠΙΣΩ
+  | N | ΜΠΡΟΣΤΑ» / "the gear servo at N" are neutral, "key N" / "part N" / "record N" the letter. Tests: AS26 (every
+  reviewer sentence + the two north exceptions + «Πορεία N» = the letter), the new AS32 over the whole index: the
+  spoken text of a sentence with a lone N has no more north / βόρεια words than the sentence itself unless
+  `speech.has_coordinate` holds, and the named sentences are checked by content.
+- LOW-1 (`asstvoice.py`): the TTS_MAX_S rule also when a RESULT is taken - `tick()` drops a finished clip whose
+  request is older than TTS_MAX_S (the Tk thread stalled, the TTS thread delivered late): "slow", nothing played,
+  the file swept. `make_t0` = when the voice was asked for (speak()), not when the thread began.
+- LOW-2: ONE TTS thread at a time (`thread` / `_busy()`): a new question while a TTS run is alive puts its job in
+  `queued` (the newest only - an older waiting job is replaced; the running one's result is dropped by the
+  generation); `tick()` starts the waiting job once the thread ended (or drops it when the generation moved or its
+  8 s passed). The TTS subprocess itself is bounded: `tts.synth(..., timeout=TTS_TIMEOUT_S)` = TTS_MAX_S + 2 s
+  (Piper / PowerShell killed by subprocess.run's timeout) - a hung voice program can no longer hold the thread for
+  tts.synth's default 300 s. Never a pile-up of TTS processes.
+- LOW-3: `making` (the file the TTS thread writes) is cleared ONLY by that thread itself when it is done (under the
+  lock) - `stop()` and the slow drop leave it, so `_live()` keeps the sweep off a file still being written (and off
+  its `<path>.tmp`, sound.write_wav's half-written name); `close()` and `_clean_stale` remove `*.wav.tmp` too.
+- LOW-4: `_lock` - the thread's "is this generation still wanted + hand the result over" and the Tk thread's "take
+  the result" / "drop it (stop, slow)" are atomic; `gen` changes only under it.
+- LOW-5 (`qlog.py`): the docstring states the limits (no limit on the parts per day; prune trusts the PC clock) and
+  `prune` deletes at most MAX_PRUNE_PER_RUN 5 of the oldest files per run (a clock jumped > 31 days ahead loses a
+  few files per answer, never the whole log at once - a limit, not a protection). AS31.
+- Nit: the Greek voice lines write «ΞΑΝΑ» / «ΟΜΙΛΙΑ» with the guillemets (asst.v_slow and the other asst.v_* lines).
+- AS27 asserts that the whole voice cycle imports no `hud` / `gwclient` / `academymenu` (sys.modules before / after:
+  the function-level imports of sound.py listed as AS2's limit are really never reached by the voice).
+- Owner questions (PROGRESS.md): W124 the conservative N rule (a lone N is the letter unless a coordinate pair /
+  after "north"; recommended: confirm); W125 the lang text asst.note / asst.v_alarm now say exactly what the code
+  does - the MASTER WARNING lamp («ΓΕΝΙΚΟΣ ΣΥΝΑΓΕΡΜΟΣ») and a sounding / queued callout make the answer text only,
+  a MASTER CAUTION alone does not (W119's answer, nothing new decided; the manuals said WARNING already).
+
 ## 8. PC load (owner's laptop: RTX A1000 6 GB laptop GPU, falls back to the CPU)
 
 | Part | Idle (loaded) | While answering | Where |

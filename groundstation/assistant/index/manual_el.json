@@ -7036,7 +7036,7 @@
 }
 ],
 "sources": {
-"MANUAL_EL.txt": "5c7e0bd1da9ad506c8a6c2e686915a7fa4c7ffc500a77b3f1f0030a6fbb82acb",
+"MANUAL_EL.txt": "5b7bbfddb58fe5b9a6db9fd87cf32cc8a4a32b10d2c305ba03abfb09ef194ac4",
 "academy/content/tour.json": "70eef4bcb260b0e7abfae0bbda3700c99a3c1a8f6d8428b272ad24575f69831a",
 "groundstation/assistant/index.py": "5ac13f0830e940318c7701221679ba1ca2a054741b2523e0854cb65aa34071c7"
 },
