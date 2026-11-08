@@ -126,7 +126,9 @@ def sha256_of(path, chunk=1 << 20):
     return h.hexdigest()
 
 
-_VERIFIED = {}          # (abs path, size, mtime_ns) -> sha256: a guard reload re-hashes nothing (AM4-r2 LOW-d)
+_VERIFIED = {}          # (abs path, size, mtime_ns, inode, ctime_ns) -> sha256: a guard reload re-hashes nothing
+#                         (AM4-r2 LOW-d; AM4-r3 LOW-c: a file replaced by another with the same size + mtime has
+#                         another inode / change time and is hashed again)
 
 
 def llm_verify(path, allow_unpinned=False, cache=_VERIFIED):
@@ -146,7 +148,7 @@ def llm_verify(path, allow_unpinned=False, cache=_VERIFIED):
         return False, "model file unreadable: %s" % str(e)[:80]
     if size != pinned[0]:
         return False, "model file size %d != pinned %d: %s" % (size, pinned[0], name)
-    key = (os.path.abspath(path), size, st.st_mtime_ns)
+    key = (os.path.abspath(path), size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns)
     got = cache.get(key) if cache is not None else None
     cached = got is not None
     if got is None:

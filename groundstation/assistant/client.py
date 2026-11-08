@@ -140,8 +140,18 @@ class Assistant:
         return {"kind": "llama", "model": m, "py": paths.llm_py_dir(), "device": self._get("assistant_device", "auto"),
                 "answer_mode": mode if mode in ("generate", "extract") else DEFAULT_ANSWER_MODE,
                 "allow_unpinned": bool(self._get("assistant_llm_unpinned", False)),
-                # AM4-r2 / W112: the search-score floor before "extract" may pick (0 = none, the measured default)
-                "extract_floor": self._get("assistant_extract_floor", DEFAULT_EXTRACT_FLOOR)}
+                # AM4-r2 / W112: the search-score floor before "extract" may pick: the DEFAULT is 7.2 (the measured
+                # one); the setting replaces it; an explicit 0 = no floor; AM4-r3 LOW-b: null / missing = the default
+                "extract_floor": self._floor()}
+
+    def _floor(self):
+        fl = self._get("assistant_extract_floor", DEFAULT_EXTRACT_FLOOR)
+        if fl is None or fl == "" or isinstance(fl, bool):
+            return DEFAULT_EXTRACT_FLOOR
+        try:
+            return max(0.0, float(fl))
+        except (TypeError, ValueError):
+            return DEFAULT_EXTRACT_FLOOR
 
     def models_ok(self):
         if self.stt_kind == "stub":

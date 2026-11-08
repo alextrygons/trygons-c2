@@ -73,6 +73,15 @@ import sys
 import time
 import tkinter as tk
 
+# AM4-r3: the HUD renderer needs Pillow - a Python without it draws NOTHING and I4 / I12 / I19 / I23 fail with
+# misleading messages (the AM4-r gate: the Windows Store python). Fail EARLY and say why.
+try:
+    import PIL  # noqa: F401
+except ImportError:
+    sys.exit("test_driver.py: this Python (%s) has no Pillow (PIL) - the HUD cannot be drawn. Run it with a Python "
+             "that has Pillow, e.g. C:\\msys64\\ucrt64\\bin\\python.exe (tools/check.sh) or `pip install pillow`."
+             % sys.executable)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 # the ground station in English with a throw-away settings file (never the user's language / HUD settings)
 os.environ.setdefault("TRYGONS_LANG", "en")

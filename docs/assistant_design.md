@@ -716,6 +716,129 @@ Where this section differs from 5c / 5d, THIS wins.
   no PIL: the HUD renderer needs it, so nothing is drawn); with the gate's C:\msys64\ucrt64\bin\python.exe (Pillow
   installed) test_driver passed 24/24 today. Not a code problem.
 
+### 5f. Review fixes of AM4-r2 (step AM4-r3, review of 0ef4bc4; station / tools / tests / docs only)
+
+Where this section differs from 5c / 5d / 5e, THIS wins.
+
+- MED-1 THE EXCEPTION THAT FOLLOWS. A verbatim pick is the manual's own words but could leave the NEXT sentence
+  out - the one that limits it: «... είναι βοηθήματα.» -> «ΔΕΝ είναι για ναυσιπλοΐα.», the AUTO RETURN conditions
+  -> "NEVER out of REMOTE MANUAL / MANEUVER", "... the files." -> "NEVER edit them." (the reviewer counted 105 el /
+  140 en such picks; with this step's own definition 128 / 158). Now answer.pick_sentences offers such a sentence
+  only TOGETHER with the limiting sentence(s) that follow it - one unit of byte-identical CONSECUTIVE manual text
+  (answer._units: the pieces are joined with the text between them, a leading bullet taken off the unit only) - or
+  not at all: answer.limits() = the next sentence has a LIMITING word (NEG_WORDS + only / μόνο / except / unless /
+  εκτός / exclusively / solely, LIMIT_RE) AND shares >= PICK_LIMIT_SHARED 2 content words with the unit, OR is a
+  SHORT one (<= PICK_LIMIT_SHORT 10 words) that OPENS with the limiting word («ΔΕΝ είναι για ναυσιπλοΐα.», "Never
+  edit them.": no subject of its own = it speaks about the sentence before). The joining continues while the next
+  sentence limits the growing unit; a unit over PICK_JOIN_WORDS 60 words is NOT offered (neither the statement nor
+  the pair - the limiting sentence alone stays offered; the passage is shown anyway), a limiting piece that is
+  itself cut (ends in ';' / '·') makes the unit impossible = not offered. Measured over both committed indexes:
+  186 el / 189 en pickable statements are followed by a limiting sentence (this definition, the short-opener rule
+  included); at cap 60: 116 / 119 joined units offered (21 / 34 of them longer than speech.LONG_WORDS 50 = shown
+  whole, spoken as the chapter intro only - W113), 70 / 70 statements NOT offered (the pair too long); cap 45: 86 /
+  73 joined, 100 / 116 not offered; cap 100: 164 / 181 joined (69 / 96 over 50 words), 22 / 8 not offered; no cap:
+  175 / 189 joined (80 / 104 over 50), 11 / 0 not offered (cut pieces) - W116 asks the owner about the cap.
+  The exemption of 5e ("a verbatim pick is not refused because ANOTHER manual sentence negates a word of it") is
+  KEPT - the exception that follows is now INSIDE the pick, so the exemption no longer hides it; the exemption
+  still protects a true sentence from an unrelated negated one elsewhere in the passage. Test AS25 runs over the
+  WHOLE index: every pick is a byte-identical substring of its passage, NO pick is followed by a limiting sentence
+  about the same thing that it leaves out (0 of 2987 picks), the reviewer's «... είναι βοηθήματα. ΔΕΝ είναι για
+  ναυσιπλοΐα.» is one pick; the mutation (the AM4-r2 pick list, nothing joined) leaves 290 exceptions out = FAILS.
+  Unit tests AS21: the pair, the chain, the cap, the short «ΔΕΝ ...», an unrelated negation that does NOT travel,
+  the same verbatim sentence of 5e now comes WITH its following «Χωρίς HELM κανείς δεν πατά ...».
+- MED-2 THE "SAME THING" RULE PER CLAUSE (generate mode). "In AUTO the boat follows the waypoint route at the cruise
+  speed of each leg and the PC can override the STANDBY button." passed: the 40 % was measured against the WHOLE
+  sentence's 12 content words, so the negating "The PC can never override it." (2 shared) was not "about the same
+  thing"; and "The PC is never allowed, in any mode or situation, to override it." escaped the 2-content-word
+  window. Now answer.postcheck judges the whole sentence AND each of its CLAUSES with >= NEG_CLAUSE_MIN 3 content
+  words (answer.clauses: split at and / but / or / και / κι / αλλά / όμως and at , ; · - never inside "1,500"; a
+  2-word fragment like "such as: where do I close the hatch?" is no claim of its own and is judged only as part of
+  its sentence - the first try judged every clause and refused the tour text's own first sentence, AS11): a passage
+  sentence is about the same thing when it shares >= NEG_MIN_SHARED 2 content words that are >= NEG_MIN_FRAC 40 %
+  of the unit's content words OR of the NEGATING passage sentence's own; a negated clause needs a negated top
+  passage sentence of its own; and negated_shared skips a comma INSERTION after the negation (", in any mode or
+  situation," = one hop; a comma without a closing comma is not skipped). The reviewer's probes (el + en, the joined
+  sentence, the insertion, both together) are AS19 tests; true two-clause sentences pass. The stored llama3.2-3b
+  GENERATE tuning runs re-scored (`rescore`) with the final rule: el correct 17/96 = 18 % (5e: 17 %), rejected 21/49
+  -> 21/56 = 38 % of the generated rows (5e: 41 %); en correct 12/33 = 36 % (5e: 39 %), rejected 15/35 = 43 % (40 %)
+  - one more TRUE English answer refused by the lexical rule, one Greek one back (the W109 price; moot in the
+  default extract mode). The checks stay LEXICAL (5c).
+- MED-3 / LOW-a LONG PICKS. AM5 made a pick over speech.LONG_WORDS 50 intro-only when SPOKEN (W113). Now a SHORTER
+  way is OFFERED where one exists: a single piece longer than LONG_PICK_WORDS 50 that is a GLUED "* bullet" list
+  (the manual's list items have no full stops, so the index builder's sentence split kept them as one "sentence")
+  is offered item by item (answer._ITEM_RE, each item byte-identical manual text, the limiting rule applies among
+  the items, items joined with their " * " between them); a genuinely long sentence (the 112-word HUD description,
+  comma lists) stays ONE pick - shown whole, spoken as the intro. Before: 55 el / 83 en single picks over 50
+  words; now 35 / 61 (+ the joined units over 50 of MED-1), 0 of them a glued list (AS25).
+- LOW-b THE FLOOR SETTING + A GATE. client.py's comment said "0 = none, the measured default" (read as "0 is the
+  default"): the DEFAULT is 7.2; a `null` / missing `assistant_extract_floor` = the default (client._floor,
+  answer.Answerer: None / "" = EXTRACT_FLOOR), only an explicit 0 switches the floor off (MANUAL / MANUAL_EL say
+  so). The floor was tuned on BM25 scores that MOVE with every manual / parser change (the IDF of every word): a
+  new gate `python tools/assistant_index.py floor` (tools/check.sh after the eval; test AS29) keeps the frozen
+  separation of tests/assistant/floor.json - on the TUNING part only: the known off-manual questions under the
+  floor (el 7 / en 5 ids), the known in-manual questions at least FLOOR_MARGIN 0.5 over it (83 / 31 ids), the
+  COUNT of in-manual tuning questions over it (86 / 32; a fall by more than FLOOR_DRIFT 2 fails), and the code's
+  floor (answer.EXTRACT_FLOOR = client.DEFAULT_EXTRACT_FLOOR) = the tuned one in the file. A failure names the
+  question that crossed and says how to re-tune (W117: `assistant_llm_eval.py run --answer extract --floor F` on
+  the tuning part, set the two constants, `floor --write` freezes the new separation; never on the held-out
+  questions). Per-language floors are allowed by the file's shape but not needed today (one floor, the English
+  in-manual scores start at 7.0 - the W112 note stands). AS29 proves the four mutations fail.
+- LOW-c paths.llm_verify's cache key = (abs path, size, mtime_ns, st_ino, st_ctime_ns): a file replaced by another
+  of the same size and mtime (a copy with `cp -p`) has another inode / change time and is hashed again.
+- LOW-d "1.500 m" / "1,500 m" SPOKEN. 5e made the checker read "1.500" as 1500 (a thousands group), so an English
+  generate answer "1.500 m" for the manual's "1500 m" passes - and the voice would have read "one point five
+  hundred metres". speech.normalize now turns a thousands group (1-3 digits, a separator, EXACTLY 3 digits, no more
+  digits) into the plain digits "1500" before the TTS, in both languages and both answer modes (the Greek manual's
+  own "1.500 m" is read right too); "0.125 s" / "1.5 s" / "2,5 s" stay decimals (AS26).
+- LOW-e AS24 (the real model, network blocked) no longer depends on the floor: it asserts first that each question
+  scores >= EXTRACT_FLOOR + 2 (14.9 el / 12.8 en today) - a floor "can't find" can never look like a model failure.
+- PILLOW EARLY. groundstation/test_driver.py and tests/acceptance/fresh_build.py stop at once with "this Python has
+  no Pillow - run with C:\msys64\ucrt64\bin\python.exe (tools/check.sh) / set PYTHON=... (RUN_ACCEPTANCE.bat)" when
+  PIL is missing (the AM4-r gate lost hours to misleading HUD failures; fresh_build runs every clone suite with
+  sys.executable).
+- THE "REJECTED" DIVISORS 97 / 37 vs 96 / 38 (5e's table): explained, not a mistake - "post-check rejected" is
+  counted over EVERY row the model actually generated for (src llm / extract / passage), the off-manual questions
+  INCLUDED (the model answered 2 of the 7 off-manual Greek tuning questions = 95 in-manual + 2 = 97; held-out: 37 of
+  the 38 in-manual rows generated + 0 of the 4 off-manual = 37), while "correct" / "answered" count the in-manual
+  questions (96 / 38). The report's column says so now.
+- OWNER QUESTIONS of the review -> W116 (the join cap 60 / the verbatim exemption kept with the exception inside the
+  pick), W117 (who re-tunes the floor = the gate above, on the tuning part; recommended default: the step that
+  changes a manual re-tunes when the gate fails), W118 (a 100+ word sentence as a spoken answer = NO: intro only,
+  as AM5 built it - W113 keeps the 50).
+
+#### Re-measured (AM4-r3, llama3.2-3b, the real worker; tuning part for both modes, held-out ONCE at the end)
+
+The real worker (`assistant_llm_eval.py run`), 17 of 28 layers on the GPU (another program held 2.1 GB, as in 5d /
+5e), the floor 7.2 IN FORCE for extract (5e's AM4-r2 row was measured without it and the floor's cost computed from
+the stored scores), the joined picks of MED-1, the per-clause check of MED-2 for generate; "rejected" = of every row
+the model generated for, off-manual questions included:
+
+| llama3.2-3b | part | correct | answered | precision | false can't find (model's own) | post-check rejected | can't find right | quality (<= 40 words) | median ms |
+|---|---|---|---|---|---|---|---|---|---|
+| **extract** (5e AM4-r2: 43 % / 94 % / 46 % / 6 / 5 % / 5/7) | el tuning | 38/96 = 40 % | 80/96 = 83 % | 38/80 = 48 % | 16 (10) | 6/86 = 7 % | 7/7 | 65/80 = 81 % | 820 |
+| **extract** (5e: 45 % / 100 % / 45 % / 0 / 0 / 4/5) | en tuning | 16/33 = 48 % | 32/33 = 97 % | 16/32 = 50 % | 1 (1) | 0/32 | 5/5 | 17/32 = 53 % | 446 |
+| generate (5e re-scored: 17 % / rejected 41 %) | el tuning | 16/96 = 17 % | 36/96 = 38 % | 16/36 = 44 % | 60 (39) | 21/56 = 38 % | 7/7 | 31/35 = 89 % | 1313 |
+| generate (5e re-scored: 39 % / 40 %) | en tuning | 12/33 = 36 % | 19/33 = 58 % | 12/19 = 63 % | 14 (0) | 15/35 = 43 % | 4/5 | 20/20 | 1200 |
+| **extract HELD-OUT, once** (5e: 47 % / 89 % / 53 % / 4 / 8 % / 4/4) | el | 14/38 = 37 % | 30/38 = 79 % | 14/30 = 47 % | 8 (3) | 5/35 = 14 % | 4/4 | 26/30 = 87 % | 3089 (the PC busy) |
+| **extract HELD-OUT, once** (5e: 7/9) | en | 7/9 = 78 % | 8/9 = 89 % | 7/8 = 88 % | 1 (1) | 0/8 | 1/1 | 7/8 | 487 |
+| generate HELD-OUT, once | el | 2/38 = 5 % | 11/38 = 29 % | 2/11 = 18 % | 27 (13) | 14/25 = 56 % | 4/4 | 10/11 | 1347 |
+| generate HELD-OUT, once | en | 5/9 = 56 % | 8/9 = 89 % | 5/8 = 62 % | 1 (0) | 1/9 | 1/1 | 8/8 | 3425 |
+
+READ IT HONESTLY: (1) the floor now REALLY refuses every off-manual tuning question (7/7 el, 5/5 en; 5e: 5/7, 4/5)
+and costs what 5e computed - Greek extract correct 43 -> 40 % on the tuning part, answered 94 -> 83 %, false
+"can't find" 6 -> 16 (the floor's 10 + the model's own); held-out Greek 47 -> 37 % (34 -> 30 answered, false can't
+find 4 -> 8): the floor was set on 3 cases and takes true answers with it (W112 stands: re-tune on the W84 real
+questions; the gate of LOW-b keeps the separation it was tuned on). (2) The joined picks did not lower precision
+(48 / 50 % vs 46 / 45 %) but the "quality" proxy (<= 40 words) fell for English (71 -> 53 %): a statement + its
+exception is longer; 30 of the 112 kept picks (both languages, tuning) are over 40 words - the voice says the
+chapter intro for those over 50 (W113 / W118). (3) The post-check rejected 6 Greek extract picks (7 %):
+the model wrote text instead of a number, as before - not a problem of the picks. (4) Generate with the per-clause
+rule: Greek 17 % (as before), English 36 % (5e re-scored 39 %; 5d 48 %), rejected 38 / 43 %; held-out Greek
+generate 5 % (2/38; 56 % of its generated answers rejected) - the lexical checks refuse most of what a 3B model
+writes in Greek: one more reason for the extract default (W106). (5) Latency: the GPU was shared, as in 5e; the
+held-out Greek extract median 3.1 s came from a busy PC (the heavy generate run ended just before it), the tuning
+runs 0.8 / 0.45 s. The must-mention proxy stays circular (5d); the FRESH question set of AM6 is still needed.
+
 ## 6. Speak (step AM5)
 
 - Through the station's own sound.py SoundSystem: a new level ASSISTANT below FEEDBACK, ADVISORY,

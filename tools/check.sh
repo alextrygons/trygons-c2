@@ -266,6 +266,9 @@ PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py check > "$TEMP/asst_index.
 cat "$TEMP/asst_index.txt"
 PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py eval > "$TEMP/asst_eval.txt" 2>&1 || { echo "ASSISTANT QUESTION LIST BROKEN (see $TEMP/asst_eval.txt)"; fail=1; }
 cat "$TEMP/asst_eval.txt"
+echo "== talking manual extract score floor (AM4-r3 LOW-b, W112 / W117): the BM25 scores still separate what the floor was tuned on (tests/assistant/floor.json); moved = re-tune the floor on the TUNING part, then: python tools/assistant_index.py floor --write"
+PYTHONIOENCODING=utf-8 "$PY" tools/assistant_index.py floor > "$TEMP/asst_floor.txt" 2>&1 || { echo "ASSISTANT EXTRACT FLOOR: THE SEARCH SCORES MOVED - re-tune it (see $TEMP/asst_floor.txt)"; fail=1; }
+cat "$TEMP/asst_floor.txt"
 echo "== talking manual (AM2 + AM3 + AM4): read-only proof AS1-AS3, real models offline AS4 + AS24 language model (N/A without them); ANSWER AS19-AS23 (post-check names + numbers, GPU guard, retrieval only, worker answer, get_llm pins, no llama-server), push-to-talk + loudhailer wins, own mic, restarts, gateway PC, screens; FIND AS14-AS18 (index, stale check, normalisation, passages, retrieval in-sample + held-out, worker find + stale index)"
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_assistant.py > "$TEMP/assistant_tests.txt" 2>&1 ) || { echo "ASSISTANT TESTS FAILED"; fail=1; }
 grep -E "^\[(FAIL|N/A)\]|ASSISTANT TESTS" "$TEMP/assistant_tests.txt"

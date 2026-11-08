@@ -8,10 +8,18 @@
                                                          top-1 / top-3, can't find, the manual gaps - all, the
                                                          in-sample (tuning) part and the HELD-OUT part
                                                          (tests/assistant/heldout.json) separately
+    python tools/assistant_index.py floor [--write]      AM4-r3 LOW-b: the extract SCORE FLOOR (answer.EXTRACT_FLOOR,
+                                                         W112) still separates what it was tuned on - the known
+                                                         off-manual TUNING questions score under it, the known
+                                                         in-manual ones over it, the code's floor = the tuned one
+                                                         (tests/assistant/floor.json); exit 1 = the BM25 scores
+                                                         moved (a manual / parser change): re-tune the floor on the
+                                                         TUNING part (tools/assistant_llm_eval.py, docs 5e), then
+                                                         `floor --write` freezes the new separation (tools/check.sh)
 
 Text only: reads the manuals, the tour and the index parser (index.sources(); the lang files are NOT read,
 AM3-r LOW-1); `check` also compares the committed passages with a fresh build (AM3-r2 LOW); writes only the index folder (build) and the
-files named on the command line (eval). No network, no process.
+files named on the command line (eval), `floor --write` tests/assistant/floor.json. No network, no process.
 """
 import argparse
 import json
@@ -226,6 +234,85 @@ def cmd_eval(a):
     return 1 if bad else 0
 
 
+# --- the extract score floor gate (AM4-r3 LOW-b) ------------------------------------------------------------------
+FLOOR_FILE = os.path.join(QDIR, "floor.json")
+FLOOR_MARGIN = 0.5          # an in-manual question is frozen as "above" only when it clears the floor by this much
+FLOOR_DRIFT = 2             # the number of in-manual tuning questions over the floor may fall by at most this
+
+
+def floor_snapshot(floor, margin=FLOOR_MARGIN):
+    """What the floor separates TODAY on the TUNING part (never the held-out one): per language the off-manual
+    questions under it, the in-manual ones at least `margin` over it, and how many in-manual ones are over it."""
+    snap = {"_help": "AM4-r3 LOW-b (W112 / W117): the extract score floor's frozen separation on the TUNING part. "
+                     "`python tools/assistant_index.py floor` fails when the BM25 scores moved so that a 'below' "
+                     "question reaches the floor, an 'above' one falls under it, fewer than above_n - %d in-manual "
+                     "tuning questions clear it, or the code's floor (answer.EXTRACT_FLOOR = client."
+                     "DEFAULT_EXTRACT_FLOOR) differs from 'floor'. Then re-tune the floor on the tuning part "
+                     "(tools/assistant_llm_eval.py run --answer extract, docs/assistant_design.md 5e) and run "
+                     "`floor --write`. Never tune on the held-out questions." % FLOOR_DRIFT,
+            "floor": floor, "margin": margin}
+    for lang in ("el", "en"):
+        rows, _t = evaluate(lang)
+        tun = [r for r in rows if not r["heldout"]]
+        best = {r["id"]: (r["top"][0][2] if r["top"] else 0.0) for r in tun}
+        snap[lang] = {"below": [r["id"] for r in tun if not r["in_manual"] and best[r["id"]] < floor],
+                      "above": [r["id"] for r in tun if r["in_manual"] and best[r["id"]] >= floor + margin],
+                      "above_n": sum(1 for r in tun if r["in_manual"] and best[r["id"]] >= floor)}
+    return snap
+
+
+def floor_check(frozen=None, code_floor=None):
+    """(ok, lines): the frozen separation (tests/assistant/floor.json) still holds with the current index + code."""
+    from assistant import answer, client
+    if frozen is None:
+        with open(FLOOR_FILE, encoding="utf-8") as f:
+            frozen = json.load(f)
+    floor = float(frozen["floor"])
+    lines, bad = [], []
+    code = answer.EXTRACT_FLOOR if code_floor is None else code_floor
+    if abs(code - floor) > 1e-9 or abs(client.DEFAULT_EXTRACT_FLOOR - code) > 1e-9:
+        bad.append("the code's floor (answer.EXTRACT_FLOOR %s, client.DEFAULT_EXTRACT_FLOOR %s) != the tuned one %s "
+                   "in tests/assistant/floor.json" % (code, client.DEFAULT_EXTRACT_FLOOR, floor))
+    for lang in ("el", "en"):
+        fr = frozen.get(lang) or {}
+        rows, _t = evaluate(lang)
+        tun = {r["id"]: r for r in rows if not r["heldout"]}
+        best = {i: (r["top"][0][2] if r["top"] else 0.0) for i, r in tun.items()}
+        for i in fr.get("below", ()):
+            if i in best and best[i] >= floor:
+                bad.append("%s %s (off-manual) now scores %.2f >= the floor %.2f" % (lang, i, best[i], floor))
+        for i in fr.get("above", ()):
+            if i in best and best[i] < floor:
+                bad.append("%s %s (in-manual) now scores %.2f < the floor %.2f" % (lang, i, best[i], floor))
+        n = sum(1 for i, r in tun.items() if r["in_manual"] and best[i] >= floor)
+        if n < int(fr.get("above_n", 0)) - FLOOR_DRIFT:
+            bad.append("%s: only %d in-manual tuning questions clear the floor (frozen %d)" % (lang, n, fr["above_n"]))
+        lines.append("extract floor %.2f %s: %d off-manual tuning questions under it, %d in-manual over it (frozen "
+                     "%d / %d)" % (floor, lang, sum(1 for i, r in tun.items() if not r["in_manual"] and
+                                                     best[i] < floor), n, len(fr.get("below", ())), fr.get("above_n", 0)))
+    if bad:
+        lines += ["FLOOR CHECK FAILED - the search scores moved (a manual / parser change?): re-tune the extract floor "
+                  "on the TUNING part (W112 / W117: tools/assistant_llm_eval.py run --answer extract --floor F, docs/"
+                  "assistant_design.md 5e), set it in answer.EXTRACT_FLOOR + client.DEFAULT_EXTRACT_FLOOR, then "
+                  "python tools/assistant_index.py floor --write"] + ["  " + b for b in bad]
+    return not bad, lines
+
+
+def cmd_floor(a):
+    if a.write:
+        from assistant import answer
+        snap = floor_snapshot(answer.EXTRACT_FLOOR)
+        with open(FLOOR_FILE, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(snap, f, ensure_ascii=False, indent=1)
+            f.write("\n")
+        print("wrote %s: floor %s, el %d below / %d above (%d over), en %d / %d (%d)" % (
+            os.path.relpath(FLOOR_FILE, REPO), snap["floor"], len(snap["el"]["below"]), len(snap["el"]["above"]),
+            snap["el"]["above_n"], len(snap["en"]["below"]), len(snap["en"]["above"]), snap["en"]["above_n"]))
+    ok, lines = floor_check()
+    print("\n".join(lines))
+    return 0 if ok else 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -240,8 +327,10 @@ def main(argv=None):
     e.add_argument("--gaps")
     e.add_argument("-v", "--verbose", action="store_true")
     e.add_argument("--tuning", action="store_true", help="only the tuning part (never shows the held-out questions)")
+    fl = sub.add_parser("floor")
+    fl.add_argument("--write", action="store_true", help="freeze the current separation (after a re-tune)")
     a = ap.parse_args(argv)
-    return {"build": cmd_build, "check": cmd_check, "ask": cmd_ask, "eval": cmd_eval}[a.cmd](a)
+    return {"build": cmd_build, "check": cmd_check, "ask": cmd_ask, "eval": cmd_eval, "floor": cmd_floor}[a.cmd](a)
 
 
 if __name__ == "__main__":

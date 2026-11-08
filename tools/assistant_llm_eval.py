@@ -292,9 +292,10 @@ def summarise(head, rows):
 
 def summary_line(hr):
     s = summarise(*hr)
-    return ("correct %s (model's own answer %s), answered %s, precision %s, post-check rejected %s, can't find "
-            "right %s, false can't find %d (the model's own %d), quality %s, %d ms median / %d ms p90 (generated "
-            "answers only: %d ms median), %.1f tok/s, %s, GPU +%s MB" % (
+    return ("correct %s (model's own answer %s), answered %s, precision %s, post-check rejected %s (of every row the "
+            "model generated for, off-manual questions included), can't find right %s, false can't find %d (the "
+            "model's own %d), quality %s, %d ms median / %d ms p90 (generated answers only: %d ms median), %.1f tok/s, "
+            "%s, GPU +%s MB" % (
                 pct(s["correct"], s["in_manual"]), pct(s["model_kept"], s["in_manual"]),
                 pct(s["answered"], s["in_manual"]), pct(s["precision"], s["answered"]),
                 pct(s["rejected"], s["generated"]), pct(s["cant_right"], s["not_in_manual"]), s["false_cant"],
@@ -344,9 +345,10 @@ def cmd_report(a):
     if not os.path.isdir(OUT):
         print("no runs yet")
         return 1
-    print("| model | lang | part | correct | model's own | answered | precision | post-check rejected | can't find "
-          "right | false can't find (model's own) | quality | median / p90 ms (generated only) | tok/s | runs on "
-          "(GPU layers) | worker GPU MB | free MB at load | load s |")
+    print("| model | lang | part | correct | model's own | answered | precision | post-check rejected (of every row the "
+          "model generated for, off-manual questions included) | can't find right | false can't find (model's own) | "
+          "quality | median / p90 ms (generated only) | tok/s | runs on (GPU layers) | worker GPU MB | free MB at load "
+          "| load s |")
     print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for fn in sorted(os.listdir(OUT)):
         if not fn.endswith(".jsonl"):

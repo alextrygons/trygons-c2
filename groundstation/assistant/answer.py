@@ -8,8 +8,13 @@ src = what is said:
     "extract"    (answer mode "extract", AM4-r) the model only PICKED passage sentences by number; they are said
                  word for word (AM4-r2: a WHOLE sentence = up to . ! ? or the Greek question mark - an English ';'
                  or a Greek '·' clause stays in its sentence, no clause fragment is ever offered: test AS25 over the
-                 whole index; two picks from different passages cite BOTH chapters (passage2); below EXTRACT_FLOOR
-                 (the best passage's search score, W112) nothing is picked - can't find said, the passage shown)
+                 whole index; AM4-r3 MED-1: a sentence whose NEXT sentence LIMITS it - a negation / only / except
+                 ... sharing >= PICK_LIMIT_SHARED content words, «... είναι βοηθήματα.» -> «ΔΕΝ είναι για
+                 ναυσιπλοΐα.» - is offered only TOGETHER with that sentence (both, byte-identical consecutive manual
+                 text, <= PICK_JOIN_WORDS words) or not at all; a glued "* bullet" list longer than LONG_PICK_WORDS
+                 is offered item by item; two picks from different passages cite BOTH chapters (passage2); below
+                 EXTRACT_FLOOR (the best passage's search score, W112) nothing is picked - can't find said, the
+                 passage shown)
     "passage"    the model's answer FAILED the post-check (a name / number / negation not in the passages, the
                  wrong language) -> «Δεν βρίσκω απάντηση στο εγχειρίδιο.» is said and the best passage is SHOWN with
                  its chapter (AM4-r, the review's rule; W105; before AM4-r the passage's first sentence was said)
@@ -33,7 +38,11 @@ POST-CHECK before anything is used (docs/assistant_design.md 5c):
   - a negation (never / not / no / δεν / ποτέ / όχι / χωρίς ...) in an answer sentence must also be in the passage
     sentence that supports it, and the other way round ("STANDBY never wins", "the PC can override STANDBY" - AM4-r2
     MED-2: the negation may stand up to NEG_MIN_SHARED content words before the shared word with stop words / "can" /
-    "μπορεί να το" between, and EVERY passage sentence about the same thing is checked, not only the best match);
+    "μπορεί να το" between, and EVERY passage sentence about the same thing is checked, not only the best match;
+    AM4-r3 MED-2: checked PER CLAUSE - the answer sentence is split at and / και / , / ; / · - and "about the same
+    thing" = >= 2 shared content words that are >= NEG_MIN_FRAC of the CLAUSE's or of the NEGATING passage
+    sentence's content words, so a true clause cannot carry a false one past the check, and a comma insertion in
+    the passage sentence ("never allowed, in any mode or situation, to override it") is skipped);
     an answer sentence with content words that shares none with any passage sentence is not grounded;
     LEXICAL: only the word next to a number and the negated word are checked - a wrong CLAIM made with the right
     words is not caught (the extract mode, verbatim text, makes it moot);
@@ -60,6 +69,14 @@ N_PASSAGES = 3
 N_CTX = 3072              # 3 passages of <= 120 words + the instruction + the answer fit with room (Greek ~3 tokens / word)
 MAX_PICK_SENT = 30        # answer mode "extract": at most this many numbered passage sentences are offered
 MAX_PICK_WORDS = 45       # ... and two picked sentences longer than this together = only the first is said
+# AM4-r3 MED-1: a sentence followed by a LIMITING sentence about the same thing is offered only together with it
+PICK_LIMIT_SHARED = 2     # ... "about the same thing" = the limiting sentence shares >= 2 content words with it,
+PICK_LIMIT_SHORT = 10     #     or it is a short one (<= 10 words) that OPENS with the limiting word («ΔΕΝ είναι ...»)
+PICK_JOIN_WORDS = 60      # ... a joined unit longer than this is NOT offered (the limiting sentence alone still is);
+#                           50..60 words are shown but spoken as the chapter intro only (speech.LONG_WORDS 50, W113)
+LONG_PICK_WORDS = 50      # AM4-r3 MED-3 / LOW-a: a glued "* bullet" list longer than this is offered item by item
+#                           (= speech.LONG_WORDS: a longer pick is not read out - a shorter way is offered when one
+#                           exists; a genuinely long manual sentence stays one pick, shown + the intro-only line)
 MODES = ("generate", "extract")
 
 SYSTEM = {
@@ -427,8 +444,18 @@ NEG_RE = re.compile(r"(?<![\w])(?:δεν|δε|μην|μη|ποτε|οχι|καν
 
 NEG_WORDS = set("δεν δε μην μη ποτε οχι κανενα κανενασ καμια καμμια ουτε χωρισ τιποτα κανεισ not never no cannot "
                 "without none nobody nothing nor neither".split())
-NEG_MIN_SHARED = 2        # a passage sentence "about the same thing" as a plain answer sentence (its negation counts):
-NEG_MIN_FRAC = 0.4        #   >= 2 shared content words AND >= 40 % of the answer's - or the best-matching one(s)
+NEG_MIN_SHARED = 2        # a passage sentence "about the same thing" as a plain answer CLAUSE (its negation counts):
+NEG_MIN_FRAC = 0.4        #   >= 2 shared content words AND >= 40 % of the clause's OR of the negating sentence's
+#                           content words (AM4-r3 MED-2) - or the best-matching one(s)
+# AM4-r3 MED-1: the words that make a sentence LIMIT the one before it (a negation, only / except / unless ...)
+LIMIT_WORDS = NEG_WORDS | {"only", "μονο", "μοναχα", "except", "unless", "εκτοσ", "exclusively", "solely",
+                           "αποκλειστικα"}
+LIMIT_RE = re.compile(r"(?<![\w])(?:" + "|".join(sorted(LIMIT_WORDS, key=len, reverse=True)) + r")(?![\w])|n't")
+# the clauses of an answer sentence (AM4-r3 MED-2: the negation rule is checked per clause - a true clause joined
+# by "and" / a comma to a false one must not carry it through)
+_CLAUSE_RE = re.compile(r"\s+(?:and|but|or|και|κι|αλλα|ομωσ)\s+|[;·]|,(?!\d)")
+NEG_CLAUSE_MIN = 3        # a clause is judged on its own only with this many content words (a 2-word fragment is not
+#                           a claim of its own: it is judged as part of its sentence)
 
 
 def content_words(normed):
@@ -455,15 +482,21 @@ def negated_shared(ps, shared, window=2):
     """A negation word in the passage sentence `ps` standing BEFORE one of the `shared` content words, with at most
     `window` CONTENT words between (stop words, units and other negations - "μπορεί", "να", "το", "can", "ποτέ" -
     are skipped, AM4-r2 MED-2: "δεν μπορεί ποτέ να το παρακάμψει" negates "παρακάμψει"; "can never override it"
-    negates "override"): the manual negates the very thing the answer states. Only before: Greek and English put
-    the negation in front of the verb / noun; a negation about something else in the sentence is not held against
-    the answer."""
-    toks = re.findall(r"[\w']+", ps)
+    negates "override"; AM4-r3 MED-2: a comma INSERTION after the negation - "never allowed, in any mode or
+    situation, to override it" - is skipped as a whole): the manual negates the very thing the answer states. Only
+    before: Greek and English put the negation in front of the verb / noun; a negation about something else in the
+    sentence is not held against the answer."""
+    toks = re.findall(r"[\w']+|,", ps)
     negs = [i for i, t in enumerate(toks) if t in NEG_WORDS or t.endswith("n't")]
     for i in negs:
-        seen = 0
-        for j in range(i + 1, len(toks)):
+        seen, j = 0, i + 1
+        while j < len(toks):
             t = toks[j]
+            if t == ",":
+                close = toks.index(",", j + 1) if "," in toks[j + 1:] else -1
+                j = close + 1 if close > 0 else j + 1          # ", in any mode or situation," = one insertion
+                continue
+            j += 1
             if t in STOP or t in UNITS or t in NEG_WORDS or t.endswith("n't") or len(t) < 2 or t.isdigit():
                 continue
             if any(_same(t, w) for w in shared):
@@ -472,6 +505,28 @@ def negated_shared(ps, shared, window=2):
             if seen >= window:
                 break
     return False
+
+
+def limiting(normed):
+    """The (normed) sentence limits what stands before it: a negation, only, except, unless ... (AM4-r3 MED-1)."""
+    return bool(LIMIT_RE.search(normed))
+
+
+def limits(nxt_normed, unit_normed):
+    """The next sentence LIMITS the unit: limiting words + >= PICK_LIMIT_SHARED content words shared with it, or a
+    SHORT sentence that OPENS with the limiting word («ΔΕΝ είναι για ναυσιπλοΐα.», "Never edit them.": no subject
+    of its own = it speaks about the sentence before it)."""
+    if not limiting(nxt_normed):
+        return False
+    words = re.findall(r"[\w']+", nxt_normed)
+    if words and words[0] in LIMIT_WORDS and len(words) <= PICK_LIMIT_SHORT:
+        return True
+    return _shares(content_words(nxt_normed), content_words(unit_normed)) >= PICK_LIMIT_SHARED
+
+
+def clauses(normed):
+    """The clauses of a normed answer sentence that carry content words (AM4-r3 MED-2)."""
+    return [c.strip() for c in _CLAUSE_RE.split(normed) if c and content_words(c)]
 
 
 def _passage_sentences(hits):
@@ -548,24 +603,47 @@ def postcheck(ans, hits, terms=(), lang=None):
                         v, u or word or "", " ".join(near)))
         cw = content_words(sn)
         if cw:
-            scored = [(_shares(cw, content_words(ps)), ps) for ps, _h in psents]
+            pcw = [(content_words(ps), ps) for ps, _h in psents]
+            scored = [(_shares(cw, w), ps) for w, ps in pcw]
             top = max((sc for sc, _ps in scored), default=0)
             best = [ps for sc, ps in scored if sc == top and sc > 0]
             if not best:
                 probs.append("sentence not grounded in any passage sentence: %s" % s[:60])
-            elif has_negation(sn):                   # a negated answer: a top passage sentence must negate too
-                if not any(has_negation(ps) for ps in best):
-                    probs.append("negation not in the passage sentence: %s" % s[:60])
-            else:                                    # a plain answer: no passage sentence ABOUT THE SAME THING may
-                for sc, ps in scored:                #   negate a shared word - the best one(s), and (AM4-r2 MED-2)
-                    if sc <= 0:                      #   EVERY sentence sharing >= NEG_MIN_SHARED content words and
-                        continue                     #   >= NEG_MIN_FRAC of the answer's (measured: any sharing
-                    if sc < top and (sc < NEG_MIN_SHARED or sc < NEG_MIN_FRAC * len(cw)):   # sentence = 11 / 8
-                        continue                     #   good answers refused, this = 4 / 3, the probes refused)
-                    shared = [w for w in cw if any(_same(w, o) for o in content_words(ps))]
-                    if negated_shared(ps, shared):
-                        probs.append("the passage sentence negates it: %s" % s[:60])
+                continue
+            # AM4-r3 MED-2: the whole sentence AND each of its clauses with >= NEG_CLAUSE_MIN content words ("In AUTO
+            # the boat follows the route ... and the PC can override the STANDBY button." - the true clause's words
+            # must not carry the false one past the check; a 2-word fragment like "such as: where do I close the
+            # hatch?" is judged only as part of its sentence)
+            units = [sn]
+            cls = clauses(sn)
+            if len(cls) > 1:
+                units += [cl for cl in cls if len(content_words(cl)) >= NEG_CLAUSE_MIN]
+            for cl in units:
+                ccw = content_words(cl)
+                cscored = [(_shares(ccw, w), w, ps) for w, ps in pcw]
+                ctop = max((sc for sc, _w, _ps in cscored), default=0)
+                if has_negation(cl):                 # a negated unit: a top passage sentence must negate too
+                    if cl is sn and len(units) > 1:  # (a mixed sentence: its negation is judged clause by clause)
+                        continue
+                    cbest = [ps for sc, _w, ps in cscored if sc == ctop and sc > 0]
+                    if cbest and not any(has_negation(ps) for ps in cbest):
+                        probs.append("negation not in the passage sentence: %s" % cl[:60])
                         break
+                    continue
+                for sc, w, ps in cscored:            # a plain unit: no passage sentence ABOUT THE SAME THING may
+                    if sc <= 0:                      #   negate a shared word - the best one(s), and (AM4-r2 MED-2)
+                        continue                     #   EVERY sentence sharing >= NEG_MIN_SHARED content words and
+                    same = sc >= NEG_MIN_SHARED and (sc >= NEG_MIN_FRAC * len(ccw) or   # >= NEG_MIN_FRAC of the
+                                                     sc >= NEG_MIN_FRAC * len(w))       # unit's or ITS own words
+                    if sc < ctop and not same:
+                        continue
+                    shared = [x for x in ccw if any(_same(x, o) for o in w)]
+                    if negated_shared(ps, shared):
+                        probs.append("the passage sentence negates it: %s" % cl[:60])
+                        break
+                else:
+                    continue
+                break
         elif has_negation(sn):
             probs.append("negation without a supporting passage sentence: %s" % s[:60])
     if lang in CANT and wrong_language(ans, lang, set(re.findall(r"[^\W\d_]+", plain(src)))):
@@ -599,18 +677,50 @@ def pick_sentences(hits, min_words=4):
     sentences: a capital / digit / quote first, brackets balanced, at least min_words words, and (AM4-r2 MED-1)
     never a piece that ends in a ';' / '·' clause mark (sentences() keeps such clauses joined; a passage cut by the
     index builder in the middle of a '·'-list can still end so - that last piece is not offered). The pieces that
-    start lower-case ("e.g." remnants, list items) are not offered either (test AS25 proves both over the whole
-    index)."""
+    start lower-case ("e.g." remnants, list items) are not offered either. AM4-r3 MED-1: a sentence whose NEXT
+    sentence LIMITS it (limits(): a negation / only / except ... sharing >= PICK_LIMIT_SHARED content words -
+    «... είναι βοηθήματα.» -> «ΔΕΝ είναι για ναυσιπλοΐα.», "the AUTO RETURN conditions" -> "NEVER out of REMOTE
+    MANUAL / MANEUVER") is offered only TOGETHER with it (and with every further limiting sentence, as one unit of
+    consecutive manual text) when the unit stays within PICK_JOIN_WORDS, else not at all - the limiting sentence
+    itself stays offered. AM4-r3 MED-3 / LOW-a: a single piece longer than LONG_PICK_WORDS that is a glued "* bullet"
+    list is offered item by item (each item byte-identical manual text; the limiting rule applies among the items
+    too). Test AS25 proves all of it over the whole index."""
     out = []
     for h in hits[:N_PASSAGES]:
-        for s in sentences(h.get("text") or ""):
-            s = _BULLET_RE.sub("", s)               # a list item IS a manual sentence: "* The ports must be free."
-            if len(s.split()) >= min_words and _whole(s) and not s.rstrip().endswith((";", "·")):
-                out.append((s, h))
+        for unit, joined in _units(sentences(h.get("text") or ""), min_words):
+            if not joined and len(unit.split()) > LONG_PICK_WORDS and _ITEM_RE.search(unit):
+                for item, _j in _units([p.strip() for p in _ITEM_RE.split(unit) if p.strip()], min_words, " * "):
+                    out.append((item, h))
+            else:
+                out.append((unit, h))
     return out[:MAX_PICK_SENT]
 
 
+def _units(pieces, min_words, sep=" "):
+    """pieces (the passage's sentences as they stand in the text, bullets included) -> [(unit, joined)]: a whole
+    piece alone, or joined with the following LIMITING piece(s) (limits()) by `sep` = the text between them, so a
+    unit is always byte-identical consecutive manual text (its own leading bullet taken off); a joined unit over
+    PICK_JOIN_WORDS, or one whose limiting piece ends in ';' / '·' (cut), is left out."""
+    stripped = [_BULLET_RE.sub("", p) for p in pieces]
+    normed = [norm(p) for p in stripped]
+    out = []
+    for i, s in enumerate(stripped):
+        if not (len(s.split()) >= min_words and _whole(s) and not s.rstrip().endswith((";", "·"))):
+            continue
+        unit, un, j, cut = pieces[i], normed[i], i + 1, False
+        while j < len(pieces) and limits(normed[j], un):
+            if stripped[j].rstrip().endswith((";", "·")):
+                cut = True                          # the exception itself is a cut piece: the unit cannot be whole
+                break
+            unit, un, j = unit + sep + pieces[j], un + " " + normed[j], j + 1
+        if cut or (j > i + 1 and len(unit.split()) > PICK_JOIN_WORDS):
+            continue                                # a statement + its exception too long to offer: neither
+        out.append((_BULLET_RE.sub("", unit), j > i + 1))
+    return out
+
+
 _BULLET_RE = re.compile(r"^[*\-•]\s+")
+_ITEM_RE = re.compile(r"\s+\*\s+")                  # the "* item" bullets glued inside one long piece
 
 
 def _ended(s):
@@ -864,7 +974,8 @@ def _decide_pick(raw, hits, lang, terms, out, err):
     c = cite(h, lang) + ((" + " + cite(h2, lang)) if h2 is not None else "")
     # verbatim manual sentences pass; kept as the backstop (a manual sentence's own "see chapter 9" is no problem, and
     # ANOTHER manual sentence negating a word of it is none either - the sentence is the manual's own text; AM4-r2
-    # measured that rule refusing 6 / 34 English and 8 / 97 Greek TRUE manual sentences in this mode)
+    # measured that rule refusing 6 / 34 English and 8 / 97 Greek TRUE manual sentences in this mode; AM4-r3 MED-1:
+    # the exception that FOLLOWS a pick is no longer left out either - pick_sentences offers the two together)
     probs = [p for p in postcheck(txt, hits[:N_PASSAGES], terms, lang)
              if not p.startswith(("chapter not", "the passage sentence negates"))]
     if probs:
@@ -896,8 +1007,10 @@ class Answerer:
         self.slow = []                                   # the last generation times (s)
         self.stick = True                                # False only for the model comparison (measures every answer)
         self.mode = mode if mode in MODES else "generate"
+        # AM4-r3 LOW-b: None / "" (no setting) = the DEFAULT floor; only an explicit 0 switches it off
         try:
-            self.extract_floor = max(0.0, float(extract_floor or 0.0))
+            self.extract_floor = EXTRACT_FLOOR if extract_floor is None or extract_floor == "" else \
+                max(0.0, float(extract_floor))
         except (TypeError, ValueError):
             self.extract_floor = EXTRACT_FLOOR
 

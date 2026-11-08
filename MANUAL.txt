@@ -3819,15 +3819,29 @@ THE ANSWER (step AM4)
       No word that the manual does not have can be said: no invented name,
       number or "never". A sentence is WHOLE (step AM4-r2): it runs to its
       full stop - a clause after a ";" or a Greek "·" stays with it, so a
-      "never / only" that follows is never cut off. When the two sentences
-      come from two different passages, both chapters are named and both
-      passages are shown. A manual sentence out of its context can be long
-      or oblique - the chapter is always shown with it. If the best passage
-      the search found matches the question only weakly (search score below
-      the setting assistant_extract_floor, 7.2), the model is not asked: the
-      assistant says "I can't find that in the manual." and shows the passage
-      anyway (a true sentence that does not answer the question would mislead
-      more than a "can't find"; 0 = no such floor).
+      "never / only" that follows is never cut off. A sentence whose NEXT
+      sentence limits it ("... are aids." -> "They are NOT for navigation.",
+      a rule -> "NEVER out of REMOTE MANUAL / MANEUVER") is only ever shown
+      and spoken TOGETHER with that next sentence, exactly as the two stand
+      in the manual (step AM4-r3; a pair longer than 60 words is not offered
+      at all - the passage is shown instead). A long manual list glued into
+      one "sentence" (bullet items without full stops) is offered item by
+      item, so a short item can be read out instead of the whole list; a
+      genuinely long sentence (over 50 words) is shown whole and the voice
+      says only "I found the answer in chapter N - see the text". When the
+      two sentences come from two different passages, both chapters are
+      named and both passages are shown. A manual sentence out of its context
+      can be long or oblique - the chapter is always shown with it. If the
+      best passage the search found matches the question only weakly (search
+      score below the setting assistant_extract_floor; the DEFAULT is 7.2 -
+      an empty / missing setting means 7.2, only an explicit 0 switches the
+      floor off), the model is not asked: the assistant says "I can't find
+      that in the manual." and shows the passage anyway (a true sentence that
+      does not answer the question would mislead more than a "can't find").
+      The floor was tuned on the search scores of the test questions, which
+      move when the manual changes: tools\check.sh (python
+      tools\assistant_index.py floor) fails when they moved so far that the
+      floor must be tuned again.
     - "writes 1-2 sentences from the passages (checked)": the model writes
       its own short answer from the passages. CHECKED before it is shown:
       every button / mode / screen / alarm name (also "the Reset button"),

@@ -1890,6 +1890,37 @@ def as19():
         A.negated_shared(A.norm("ο υπολογιστής δεν μπορεί ποτέ να το παρακάμψει"), ["παρακαμψει"]) and \
         A.negated_shared(A.norm("the PC can never override it"), ["override"]) and \
         not A.negated_shared(A.norm("never press the hatch button while the boat moves"), ["moves"])
+    # AM4-r3 MED-2: the "same thing" rule PER CLAUSE - a long sentence joining a TRUE clause (many content words) to a
+    # FALSE one escaped (the 40 % was measured against the whole sentence); and a comma insertion after the negation
+    # ("never allowed, in any mode or situation, to override it") escaped the 2-word window
+    REM3 = [dict(REM[0], text="The remote cap is 20 % forward. Reverse is capped at 5 %. In AUTO the boat follows the "
+                              "waypoint route at the cruise speed of each leg. The STANDBY panel button always wins. "
+                              "The PC can never override it.")]
+    REM4 = [dict(REM3[0], text=REM3[0]["text"].replace("The PC can never override it.",
+                                                        "The PC is never allowed, in any mode or situation, to override it."))]
+    STB2 = [dict(STB[0], text="Στο AUTO το σκάφος ακολουθεί τη διαδρομή με την ταχύτητα κάθε σκέλους. " + STB[0]["text"])]
+    joined = ("In AUTO the boat follows the waypoint route at the cruise speed of each leg and the PC can override the "
+              "STANDBY button.")
+    out["post-check (en probe): a true clause 'and' a false one = refused per clause"] = any(
+        "negates" in p for p in A.postcheck(joined, REM3, terms, "en"))
+    out["post-check (en probe): 'never allowed, in any mode or situation, to override it' negates 'can override'"] = \
+        any("negates" in p for p in A.postcheck("The PC can override the STANDBY button.", REM4, terms, "en")) and \
+        any("negates" in p for p in A.postcheck(joined, REM4, terms, "en"))
+    out["post-check (el probe): «... ακολουθεί τη διαδρομή και ο υπολογιστής μπορεί να παρακάμψει το STANDBY» refused"] = \
+        any("negates" in p for p in A.postcheck(
+            "Στο AUTO το σκάφος ακολουθεί τη διαδρομή και ο υπολογιστής μπορεί να παρακάμψει το STANDBY.", STB2, terms, "el"))
+    out["post-check: a true two-clause sentence passes (en + el)"] = not A.postcheck(
+        "The remote cap is 20 % forward and the STANDBY panel button always wins.", REM3, terms, "en") and \
+        not A.postcheck("Reverse is capped at 5 %, the remote cap is 20 % forward.", REM3, terms, "en") and \
+        not A.postcheck("Το κουμπί STANDBY του πίνακα κερδίζει πάντα και ο υπολογιστής δεν μπορεί ποτέ να το παρακάμψει.",
+                        STB2, terms, "el") and not A.postcheck("The PC can never override the STANDBY button.", REM4,
+                                                               terms, "en")
+    out["clauses(): split at and / και / , ; · - not inside 1,500"] = A.clauses(A.norm(
+        "In AUTO the boat follows the route and the PC can override the STANDBY button, within 1,500 m.")) == [
+        "in auto the boat follows the route", "the pc can override the standby button", "within 1,500 m."]
+    out["negated_shared skips a comma insertion, not a plain list"] = A.negated_shared(
+        A.norm("the PC is never allowed, in any mode or situation, to override it"), ["override"]) and \
+        not A.negated_shared(A.norm("never press the hatch button while the boat moves"), ["moves"])
     # AM4-r2 LOW-b: thousands separators - "1,500 m" / "1.500 m" are 1500 m, never 1.5 m
     THS = [{"id": "en:5:1", "ch": "5", "chapter": "UAV", "heading": "", "term": "",
             "text": "The radio range is 1,500 m from the boat. The hatch closes in 1.5 s."}]
@@ -2244,6 +2275,65 @@ def as21():
     r = A.Answerer(A.StubLlm("Πατήστε «ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ»."), terms, extract_floor=7.2).answer(
         "πού κλείνω την καταπακτή;", "el", low)
     out["the floor is extract's only (generate unchanged)"] = r["src"] == "llm"
+    # AM4-r3 LOW-b: no setting (None / "") = the DEFAULT floor; only an explicit 0 is off - in answer.py AND client.py
+    out["floor None / '' = the default, 0 = off, garbage = the default (answer.Answerer)"] = \
+        A.Answerer(A.StubLlm("1"), mode="extract", extract_floor=None).extract_floor == A.EXTRACT_FLOOR and \
+        A.Answerer(A.StubLlm("1"), mode="extract", extract_floor="").extract_floor == A.EXTRACT_FLOOR and \
+        A.Answerer(A.StubLlm("1"), mode="extract", extract_floor=0).extract_floor == 0.0 and \
+        A.Answerer(A.StubLlm("1"), mode="extract", extract_floor="x").extract_floor == A.EXTRACT_FLOOR and \
+        A.Answerer(A.StubLlm("1"), mode="extract", extract_floor="5.5").extract_floor == 5.5
+    cl = client.Assistant(View(), settings=Sets(assistant_extract_floor=None), stt_kind="stub")
+    cl0 = client.Assistant(View(), settings=Sets(assistant_extract_floor=0), stt_kind="stub")
+    cl5 = client.Assistant(View(), settings=Sets(assistant_extract_floor=5), stt_kind="stub")
+    out["client: a null setting = the default floor, 0 = off, 5 = 5"] = cl._floor() == client.DEFAULT_EXTRACT_FLOOR \
+        and cl0._floor() == 0.0 and cl5._floor() == 5.0 and \
+        client.Assistant(View(), settings=Sets(), stt_kind="stub")._floor() == client.DEFAULT_EXTRACT_FLOOR
+    # AM4-r3 MED-1: a pick followed by a LIMITING sentence about the same thing is offered only together with it
+    LIM = [{"id": "el:9:3", "ch": "9", "chapter": "Χάρτες", "heading": "", "term": "",
+            "text": "Οι χάρτες είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα. Η καταπακτή κλείνει με το κουμπί. "
+                    "Ο καιρός αλλάζει γρήγορα στο Σαρωνικό."}]
+    lp = [s for s, _h in A.pick_sentences(LIM)]
+    out["pick + its limiting sentence = ONE unit (both, consecutive manual text); the limiting one alone too"] = \
+        lp == ["Οι χάρτες είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα.", "ΔΕΝ είναι για ναυσιπλοΐα.",
+               "Η καταπακτή κλείνει με το κουμπί.", "Ο καιρός αλλάζει γρήγορα στο Σαρωνικό."]
+    r = A.Answerer(A.StubLlm("1"), terms, mode="extract").answer("τι είναι οι χάρτες;", "el",
+                                                               {"cant_find": False, "why": "", "hits": LIM})
+    out["the joined unit is said word for word (the exception included)"] = r["src"] == "extract" and \
+        r["a"] == "Οι χάρτες είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα."
+    RET = [{"id": "en:9:4", "ch": "9", "chapter": "Modes", "heading": "", "term": "",
+            "text": "AUTO RETURN drives the route back to waypoint 1 under the AUTO START conditions. The way back is "
+                    "NEVER started out of REMOTE MANUAL or MANEUVER. The hatch closes in 3 s. The boat files are never "
+                    "edited by hand on the gateway PC by anyone. Never edit them."}]
+    rp = [s for s, _h in A.pick_sentences(RET)]
+    out["'NEVER out of REMOTE MANUAL / MANEUVER' travels with the AUTO RETURN sentence; an unrelated negation does "
+        "not; a short 'Never ...' (no subject) travels with the sentence before it"] = \
+        rp[0] == "AUTO RETURN drives the route back to waypoint 1 under the AUTO START conditions. The way back is " \
+                 "NEVER started out of REMOTE MANUAL or MANEUVER." and "The hatch closes in 3 s." in rp and \
+        not any("The hatch closes in 3 s. The boat" in s for s in rp) and \
+        "The boat files are never edited by hand on the gateway PC by anyone. Never edit them." in rp
+    longs = " ".join(["word"] * (A.PICK_JOIN_WORDS - 5)) + " about the route."
+    TOO = [dict(RET[0], text="Routes " + longs + " Never leave the route without a word about it. The end is here.")]
+    tp = [s for s, _h in A.pick_sentences(TOO)]
+    out["a statement + exception over PICK_JOIN_WORDS = neither the statement nor the pair is offered"] = \
+        not any(s.startswith("Routes word") for s in tp) and "Never leave the route without a word about it." in tp
+    out["limits(): limiting words + >= 2 shared content words"] = A.limits(A.norm("ΔΕΝ είναι για ναυσιπλοΐα, οι "
+                                                                                  "χάρτες."), A.norm("Οι χάρτες είναι βοηθήματα ναυσιπλοΐας.")) \
+        and not A.limits(A.norm("The boat files are never edited by hand on the gateway."), A.norm("The hatch closes in 3 s.")) \
+        and not A.limits(A.norm("The charts are shown on screen 2."), A.norm("The charts are aids.")) and \
+        A.limits(A.norm("Only the captain closes the hatch."), A.norm("The hatch closes with the button, captain.")) \
+        and A.limits(A.norm("ΔΕΝ είναι για ναυσιπλοΐα."), A.norm("Οι χάρτες είναι βοηθήματα.")) and \
+        not A.limits(A.norm("Never in any of the twelve modes is the hatch relay switched by a station."),
+                     A.norm("The charts are aids."))
+    # AM4-r3 MED-3 / LOW-a: a glued "* bullet" list longer than LONG_PICK_WORDS is offered item by item
+    items = ["* Item %d of the list with a few words in it number %d" % (i, i) for i in range(1, 8)]
+    LIST = [dict(RET[0], text="The list: " + " ".join(items) + " The end.")]
+    ip = [s for s, _h in A.pick_sentences(LIST)]
+    out["a long glued bullet list = its items (each byte-identical manual text), not one 80-word pick"] = \
+        "Item 1 of the list with a few words in it number 1" in ip and len([s for s in ip if s.startswith("Item")]) == 7 \
+        and not any(len(s.split()) > A.LONG_PICK_WORDS for s in ip) and all(s in LIST[0]["text"] for s in ip)
+    short_list = [dict(RET[0], text="The list: * Item one here now * Item two here now and more words to say.")]
+    out["a short bullet list stays one sentence (no shorter way needed)"] = [s for s, _h in A.pick_sentences(
+        short_list)] == ["The list: * Item one here now * Item two here now and more words to say."]
     # AM4-r2: a verbatim pick is never refused because ANOTHER manual sentence negates a word of it (measured: 6 / 34
     # English + 8 / 97 Greek true manual sentences were), nor by a '/'-joined term ("κίτρινο/πορτοκαλί")
     NEGP = [{"id": "el:16:3", "ch": "16", "chapter": "Το μαγγέμα UAV", "heading": "", "term": "",
@@ -2253,13 +2343,17 @@ def as21():
     out["generate: 'Κρατήστε το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ.' is refused by the negating sentence (the lexical rule)"] = \
         any("negates" in p for p in A.postcheck("Κρατήστε το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ.", NEGP, terms, "el"))
     r = A.Answerer(A.StubLlm("1"), terms, mode="extract").answer("πώς κλείνω την καταπακτή;", "el", fnd)
-    out["extract: the same VERBATIM sentence passes (the negation rule is not a backstop for the manual's own text)"] = \
-        r["src"] == "extract" and r["a"] == "Κρατήστε το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ."
+    out["extract: the same VERBATIM sentence passes (the negation rule is not a backstop for the manual's own text) "
+        "- AM4-r3 MED-1: WITH the limiting sentence that follows it"] = r["src"] == "extract" and \
+        r["a"] == "Κρατήστε το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ. Χωρίς HELM κανείς δεν πατά το κουμπί ΚΛΕΙΣΙΜΟ ΚΑΤΑΠΑΚΤΗΣ."
     r = A.Answerer(A.StubLlm("3"), terms, mode="extract").answer("ποια χρώματα;", "el", fnd)
     out["extract: a verbatim sentence with a '/'-joined capital term passes"] = r["src"] == "extract"
-    out["a bullet item is a pick without its bullet"] = [s for s, _h in A.pick_sentences(
-        [dict(FRAG[0], text="* The ports must be free. - Never start two demos.")])] == ["The ports must be free.",
-                                                                                         "Never start two demos."]
+    out["a bullet item is a pick without its bullet; a short limiting item travels with the one before (its own "
+        "bullet kept = consecutive manual text)"] = [s for s, _h in A.pick_sentences(
+            [dict(FRAG[0], text="* The ports must be free. - Never start two demos.")])] == [
+            "The ports must be free. - Never start two demos.", "Never start two demos."] and \
+        [s for s, _h in A.pick_sentences([dict(FRAG[0], text="* The ports must be free. - Start the demo twice.")])] \
+        == ["The ports must be free.", "Start the demo twice."]
     report("AS21 retrieval-only mode + cut generations + answer mode extract", all(out.values()),
            {k: v for k, v in out.items() if not v} or "all %d checks" % len(out))
 
@@ -2492,32 +2586,82 @@ def as25():
     begins lower-case, and no pick is a CUT clause (its own piece did not end a sentence and a lower-case clause with
     a negation / "only" followed it - what the old splitter did 452 times). The reviewer's example (MANUAL.txt
     "TRAINING only from STANDBY by the PC; nothing but STANDBY ...") is ONE pick. Mutation: the old splitter makes
-    the check fail."""
+    the check fail. AM4-r3 MED-1: NO pick is followed (in its passage) by a LIMITING sentence about the same thing
+    (answer.limits: a negation / only / except ... sharing >= 2 content words) that is not part of the pick - every
+    pick is byte-identical consecutive manual text; the AM4-r2 pick list (no joining) fails it (the reviewer
+    counted 105 el / 140 en). MED-3 / LOW-a: no pick over LONG_PICK_WORDS still holds a glued "* bullet" list."""
     from assistant import answer as A, index
     ONLY = re.compile(r"(?<![\w])(?:only|μονο)(?![\w])")
 
     def old_picks(hits):                   # the AM4-r pick list: whole pieces, a ';' / '·' end not excluded
         return [(s, h) for h in hits for s in A.sentences(h["text"]) if len(s.split()) >= 4 and A._whole(s)]
 
+    def r2_picks(hits):                    # the AM4-r2 pick list: whole sentences, nothing joined
+        out = []
+        for h in hits:
+            for s in A.sentences(h["text"]):
+                s = A._BULLET_RE.sub("", s)
+                if len(s.split()) >= 4 and A._whole(s) and not s.rstrip().endswith((";", "·")):
+                    out.append((s, h))
+        return out
+
+    def atoms_of(text):
+        """[(offset, atom)]: the passage's sentence pieces (bullets taken off), a long glued bullet list as its
+        items, in text order with where each one starts in the text."""
+        out, pos = [], 0
+        for s in A.sentences(text):
+            raw_at = text.find(s, pos)
+            pos = raw_at + len(s)
+            s = A._BULLET_RE.sub("", s)
+            parts = [p.strip() for p in A._ITEM_RE.split(s) if p.strip()] \
+                if len(s.split()) > A.LONG_PICK_WORDS and A._ITEM_RE.search(s) else [s]
+            at = raw_at
+            for part in parts:
+                at = text.find(part, at)
+                out.append((at, part))
+                at += len(part)
+        return out
+
     def scan(pick_fn=A.pick_sentences):
-        n = {"picks": 0, "ends": 0, "lower": 0, "cut": 0, "example": 0}
+        n = {"picks": 0, "ends": 0, "lower": 0, "cut": 0, "example": 0, "limited": 0, "not_text": 0, "joined": 0,
+             "long": 0, "long_list": 0, "example_limit": 0}
         for lang in ("el", "en"):
             for p in index.load(lang)["passages"]:
-                pieces = [A._BULLET_RE.sub("", s) for s in A.sentences(p["text"])]
+                text = p["text"]
+                pieces = [A._BULLET_RE.sub("", s) for s in A.sentences(text)]
+                atoms = atoms_of(text)
                 picks = [s for s, _h in pick_fn([p])]
                 n["picks"] += len(picks)
                 n["ends"] += sum(1 for s in picks if s.rstrip().endswith((";", "·")))
                 n["lower"] += sum(1 for s in picks if s.lstrip("«\"'([")[:1].islower())
                 n["example"] += sum(1 for s in picks if "TRAINING only from STANDBY by the PC" in s and
                                     "nothing but STANDBY" in s)
+                n["example_limit"] += sum(1 for s in picks if "είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα." in s)
                 for i, s in enumerate(pieces[:-1]):
                     nxt = pieces[i + 1]
                     if s in picks and not (A.ends_sentence(s) or s.endswith(":")) and \
                             nxt.lstrip("«\"'([")[:1].islower() and (A.has_negation(A.norm(nxt)) or ONLY.search(
                                 A.norm(nxt))):
                         n["cut"] += 1
+                # AM4-r3 MED-1: every pick = consecutive text of its passage (bullets taken off at its start only);
+                # the atom AFTER it must not limit it. MED-3: a long SINGLE-atom pick is never a glued bullet list
+                for s in picks:
+                    at = text.find(s)
+                    if at < 0:
+                        n["not_text"] += 1
+                        continue
+                    end = at + len(s)
+                    inside = [i for i, (o, _a) in enumerate(atoms) if at <= o < end]
+                    after = [a for o, a in atoms if o >= end]
+                    n["joined"] += len(inside) > 1
+                    if after and A.limits(A.norm(after[0]), A.norm(s)):
+                        n["limited"] += 1
+                    if len(inside) <= 1 and len(s.split()) > A.LONG_PICK_WORDS:
+                        n["long"] += 1
+                        n["long_list"] += bool(A._ITEM_RE.search(s))
         return n
     good = scan()
+    r2 = scan(r2_picks)
     old_re, A._SPLIT_RE = A._SPLIT_RE, re.compile(r"(?<=[.!;·?])\s+(?=\S)")
     old_end = A.ends_sentence
     A.ends_sentence = lambda s: (s or "").rstrip().endswith((".", "!", "?"))      # the old splitter's view
@@ -2530,9 +2674,66 @@ def as25():
            "no pick is a cut clause (a lower-case never / only / not clause followed it)": good["cut"] == 0,
            "the reviewer's example is ONE pick with both clauses": good["example"] == 1,
            "mutation: the old splitter (split on ; ·) fails the check (%d cut, %d ending in ;/·)" % (
-               mutated["cut"], mutated["ends"]): mutated["cut"] > 50 and mutated["ends"] > 50}
-    report("AS25 extract picks over the whole index: whole sentences, no clause fragments", all(out.values()),
-           {k: v for k, v in out.items() if not v} or "all %d checks; %s" % (len(out), good))
+               mutated["cut"], mutated["ends"]): mutated["cut"] > 50 and mutated["ends"] > 50,
+           # AM4-r3
+           "every pick is byte-identical consecutive manual text (%d joined units)" % good["joined"]:
+               good["not_text"] == 0 and good["joined"] > 50,
+           "no pick is followed by a limiting sentence about the same thing that it leaves out": good["limited"] == 0,
+           "the reviewer's example «... είναι βοηθήματα. ΔΕΝ είναι για ναυσιπλοΐα.» travels together (%d)" % good[
+               "example_limit"]: good["example_limit"] >= 1,
+           "mutation: the AM4-r2 pick list (nothing joined) leaves %d exceptions out (reviewer: 105 el + 140 en)" % r2[
+               "limited"]: r2["limited"] > 200,
+           "no pick over %d words is a glued bullet list (%d long picks stay: real long sentences)" % (
+               A.LONG_PICK_WORDS, good["long"]): good["long_list"] == 0 and good["long"] < 120}
+    report("AS25 extract picks over the whole index: whole sentences, no clause fragments, exceptions included",
+           all(out.values()), {k: v for k, v in out.items() if not v} or "all %d checks; %s" % (len(out), good))
+
+
+def as29():
+    """AM4-r3 LOW-b: the extract score floor's gate (tools/assistant_index.py floor, tools/check.sh): the frozen
+    separation (tests/assistant/floor.json: the known off-manual TUNING questions under the floor, the known
+    in-manual ones over it, the count over it, the code's floor = the tuned one) holds today; mutations: a frozen
+    "below" question that now clears the floor, an "above" one under it, a code floor that differs, a count that
+    fell = FAIL with the re-tune message."""
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import assistant_index as ai
+    from assistant import answer as A
+    out = {}
+    ok, lines = ai.floor_check()
+    out["the committed floor.json holds (el + en, the code's floor = the tuned one)"] = ok and len(lines) == 2
+    with open(ai.FLOOR_FILE, encoding="utf-8") as f:
+        frozen = json.load(f)
+    out["floor.json = the code's floor, every language has below / above / above_n, nothing held-out in it"] = \
+        frozen["floor"] == A.EXTRACT_FLOOR and all(
+            frozen[lg]["below"] and frozen[lg]["above"] and frozen[lg]["above_n"] >= len(frozen[lg]["above"])
+            for lg in ("el", "en")) and not any(
+            i in ai.load_heldout(lg) for lg in ("el", "en") for i in frozen[lg]["below"] + frozen[lg]["above"])
+    snap = ai.floor_snapshot(A.EXTRACT_FLOOR)
+    out["floor --write would write the same separation (deterministic)"] = all(
+        snap[lg] == frozen[lg] for lg in ("el", "en")) and snap["floor"] == frozen["floor"]
+    # mutations
+    m1 = json.loads(json.dumps(frozen))
+    m1["el"]["below"].append(frozen["el"]["above"][0])          # an "off-manual" id that scores over the floor
+    ok1, l1 = ai.floor_check(m1)
+    m2 = json.loads(json.dumps(frozen))
+    m2["en"]["above"].append(frozen["en"]["below"][0])          # an "in-manual" id under the floor
+    ok2, l2 = ai.floor_check(m2)
+    ok3, l3 = ai.floor_check(frozen, code_floor=A.EXTRACT_FLOOR + 1.0)
+    m4 = json.loads(json.dumps(frozen))
+    m4["el"]["above_n"] = frozen["el"]["above_n"] + ai.FLOOR_DRIFT + 1
+    ok4, l4 = ai.floor_check(m4)
+    m5 = json.loads(json.dumps(frozen))
+    m5["floor"] = 9.0                                            # a re-tuned file without the code change
+    ok5, l5 = ai.floor_check(m5)
+    out["mutation: a frozen below-question over the floor = FAIL"] = not ok1 and any("now scores" in x for x in l1)
+    out["mutation: a frozen above-question under the floor = FAIL"] = not ok2 and any("now scores" in x for x in l2)
+    out["mutation: the code's floor differs from the tuned one = FAIL"] = not ok3 and any("code's floor" in x for x in l3)
+    out["mutation: fewer in-manual questions clear the floor = FAIL"] = not ok4 and any("only" in x for x in l4)
+    out["mutation: floor.json re-tuned, code not = FAIL"] = not ok5
+    out["a failure says how to re-tune (W112 / W117, floor --write)"] = all(
+        any("re-tune" in x and "floor --write" in x for x in ls) for ls in (l1, l2, l3, l4, l5))
+    report("AS29 extract score floor gate (floor.json holds; mutations fail)", all(out.values()),
+           {k: v for k, v in out.items() if not v} or "all %d checks; %s" % (len(out), lines))
 
 
 def as24():
@@ -2555,8 +2756,15 @@ def as24():
         out["ready, the model loaded"] = ready and a.llm.get("mode") in ("gpu", "gpu+cpu", "cpu")
         if ready:
             snaps.append(pid_endpoints(a.proc.pid))
+            from assistant import answer as AN, index as IX
             for lang, q, must in (("el", "πού κλείνω την καταπακτή;", "καταπακτ"),
                                   ("en", "how do I close the hatch?", "hatch")):
+                # AM4-r3 LOW-e: this test never depends on the extract floor - the question must score WELL above it
+                # (asserted explicitly; a floor "can't find" would otherwise look like a model failure)
+                sc = IX.Searcher(IX.load(lang)).search(q)["hits"]
+                sc = sc[0]["score"] if sc else 0.0
+                out["%s: the question scores %.1f >= the extract floor %.1f + 2 (the test is floor-independent)" % (
+                    lang, sc, AN.EXTRACT_FLOOR)] = sc >= AN.EXTRACT_FLOOR + 2.0
                 k = len(v.answers)
                 a._send({"op": "ask_text", "q": q, "lang": lang})
                 a.state, a.ask_t, a.release_t = client.THINKING, time.monotonic(), time.monotonic()
@@ -2608,6 +2816,12 @@ def as26():
     e = speech.normalize("Press STANDBY: GPS lost; 5 kn, 50 %, 10..120 m, HDG LOCK, the HATCH -> F9, <= 3 s", "en")
     out["English"] = "G P S" in e and "5 knots" in e and "50 per cent" in e and "10 to 120 metres" in e and \
         "heading lock" in e and "hatch" in e and "at most 3 seconds" in e and "standby" in e
+    # AM4-r3 LOW-d: a thousands group is read as the number the checker took it for (1500), never "one point five
+    # hundred"; a decimal stays a decimal
+    th = speech.normalize("The range is 1,500 m or 1.500 m; 0.125 s; 1.5 s; 12,345 kn; 2,5 s", "en")
+    out["thousands '1,500 m' / '1.500 m' spoken as 1500 metres, decimals kept"] = th.count("1500 metres") == 2 and \
+        "0.125 seconds" in th and "1.5 seconds" in th and "12345 knots" in th and "2,5 seconds" in th
+    out["thousands (el)"] = "1500 μέτρα" in speech.normalize("Εμβέλεια 1.500 m από το σκάφος.", "el")
     out["intro one chapter"] = speech.intro("Κεφάλαιο 10 «ΣΥΝΑΓΕΡΜΟΙ»", "el") == "Από το εγχειρίδιο, κεφάλαιο 10."
     out["intro two chapters"] = speech.intro("Κεφάλαιο 10 «Α» + Κεφάλαιο 13A «Β»", "el") == \
         "Από το εγχειρίδιο, κεφάλαια 10 και 13 A."
@@ -2980,7 +3194,7 @@ def main():
         print("build the simulator first: sim\\build_sim.bat")
         return 2
     for fn in (as1, as2, as3, as5, as7, as9, as10, as12, as13, as14, as15, as16, as17, as18, as19, as20, as21,
-               as22, as23, as25, as26, as27) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
+               as22, as23, as25, as26, as27, as29) + (() if os.environ.get("AS_SKIP4") else (as4, as24)):
         try:
             fn()
         except Exception as e:

@@ -25,8 +25,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 OUT = os.path.join(REPO, "test_results")
 CLONE = os.path.join(OUT, "fresh_clone")
-PY = sys.executable
+PY = sys.executable                 # every suite of the clone runs with THIS Python (RUN_ACCEPTANCE.bat picks it)
 STEPS = []
+
+# AM4-r3: the ground-station suites (test_driver.py, the screens) draw with Pillow - a Python without it fails them
+# with misleading HUD messages hours into the run. Fail EARLY and say which Python to use.
+try:
+    import PIL  # noqa: F401
+except ImportError:
+    sys.exit("fresh_build.py: this Python (%s) has no Pillow (PIL) - the ground-station suites cannot draw. Run with "
+             "a Python that has Pillow, e.g. set PYTHON=C:\\msys64\\ucrt64\\bin\\python.exe (RUN_ACCEPTANCE.bat) or "
+             "`pip install pillow`." % PY)
 
 
 def step(name, ok, detail, dt):

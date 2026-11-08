@@ -5,6 +5,40 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 000000000000. Talking manual - review fixes of AM4-r2 (step AM4-r3, 2026-11-08) - CORRECTS the AM4-r2 extract figures below
+
+Station / tools / tests / docs only (docs/assistant_design.md 5f). A verbatim pick could leave the NEXT manual sentence
+out - the one that limits it («... είναι βοηθήματα.» -> «ΔΕΝ είναι για ναυσιπλοΐα.»; 186 el / 189 en pickable
+statements are followed by such a sentence): now it is offered only TOGETHER with it (one unit of consecutive manual
+text, chained; over 60 words = not offered; test AS25 over the WHOLE index: 0 of 2987 picks leave one out, the AM4-r2
+list leaves 290 out = FAIL). The generate post-check's negation rule works PER CLAUSE and skips a comma insertion
+(the reviewer's "In AUTO ... and the PC can override the STANDBY button" / "never allowed, in any mode or situation,
+to override it" are AS19 tests). A glued "* bullet" list over 50 words is offered item by item (single picks over 50
+words 55 el / 83 en -> 35 / 61). A null `assistant_extract_floor` = the default 7.2 (only 0 = off) and a GATE
+(`tools/assistant_index.py floor`, check.sh, AS29) fails when the BM25 scores move away from the separation the floor
+was tuned on (tests/assistant/floor.json). "1.500 m" is spoken as 1500. AS24 asserts its questions score >= floor + 2.
+test_driver.py / fresh_build.py fail early without Pillow. Re-measured (llama3.2-3b, the floor 7.2 IN FORCE - the
+AM4-r2 row below was measured without it; "rejected" = of every row the model generated for, off-manual included):
+
+| llama3.2-3b | part | correct | answered | precision | false can't find | rejected | can't find right | median ms |
+|---|---|---|---|---|---|---|---|---|
+| extract (AM4-r2: 43 % / 94 % / 46 % / 6 / 5/7) | el tuning | 40 % (38/96) | 83 % | 48 % | 16 | 6/86 = 7 % | 7/7 | 820 |
+| extract (AM4-r2: 45 % / 100 % / 45 % / 0 / 4/5) | en tuning | 48 % (16/33) | 97 % | 50 % | 1 | 0 | 5/5 | 446 |
+| generate | el tuning | 17 % | 38 % | 44 % | 60 | 21/56 = 38 % | 7/7 | 1313 |
+| generate | en tuning | 36 % | 58 % | 63 % | 14 | 15/35 = 43 % | 4/5 | 1200 |
+| extract HELD-OUT (once; AM4-r2 47 % / 89 % / 53 % / 4) | el | 37 % (14/38) | 79 % | 47 % | 8 | 5/35 = 14 % | 4/4 | 3089 (busy PC) |
+| extract HELD-OUT (once) | en | 78 % (7/9) | 89 % | 88 % | 1 | 0 | 1/1 | 487 |
+| generate HELD-OUT (once) | el | 5 % (2/38) | 29 % | 18 % | 27 | 14/25 = 56 % | 4/4 | 1347 |
+| generate HELD-OUT (once) | en | 56 % (5/9) | 89 % | 62 % | 1 | 1/9 | 1/1 | 3425 |
+
+Honestly: the floor now refuses EVERY off-manual tuning question (7/7, 5/5) and takes true Greek answers with it
+(tuning 43 -> 40 %, held-out 47 -> 37 %, false can't find 6 -> 16 / 4 -> 8) - set on 3 cases (W112: re-tune on the
+real questions; the new gate keeps the tuned separation). The joined picks kept precision (48 / 50 %) but are longer
+(English <= 40-word proxy 71 -> 53 %; the voice says the chapter intro above 50 words, W113 / W118). Generate stays
+far behind in Greek (17 % / held-out 5 %: the lexical checks refuse most of a 3B model's Greek). The AM4-r2 divisors
+97 / 37 vs 96 / 38 were the off-manual rows the model answered (explained, not an error). Tests AS19 (54), AS21 (54),
+AS25 (11), AS26, AS29.
+
 ## 00000000000. Talking manual - review fixes of AM4-r (step AM4-r2, 2026-11-07) - CORRECTS the AM4-r extract figures below
 
 Station / tools / tests / docs only (docs/assistant_design.md 5e). The AM4-r "extract" picks were NOT always whole

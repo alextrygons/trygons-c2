@@ -12,7 +12,8 @@ Rules (owner I1.4, docs/assistant_design.md 6):
     Greek and lower-cased in English;
   * numbers keep their digits (the voices read them), their UNITS are spoken ("5 kn" = «5 κόμβοι», "50 %" =
     «50 τοις εκατό», "120 m" = «120 μέτρα»), ranges "10..120 m" = «10 έως 120 μέτρα», "->" = «προς», "<=" = «το
-    πολύ», ">=" = «τουλάχιστον», "±" = «πλην ή συν», a " / " = a pause;
+    πολύ», ">=" = «τουλάχιστον», "±" = «πλην ή συν», a " / " = a pause; a THOUSANDS group "1.500 m" / "1,500 m"
+    (AM4-r3 LOW-d: the checker takes it as 1500, answer._f) is read as "1500 m", never as "one point five hundred";
   * the chapter is spoken with EVERY answer: «Από το εγχειρίδιο, κεφάλαιο 10.» / "From the manual, chapter 10.";
     two chapters (a pick from two passages, AM4-r2 LOW-a) = «κεφάλαια 10 και 12»; a tour stop = «Από την
     ξενάγηση.»;
@@ -84,6 +85,7 @@ _ACRO_RE = re.compile(r"(?<![\w])(" + "|".join(sorted((re.escape(k) for k in SAI
 _CAP_LATIN_RE = re.compile(r"(?<![\w])([A-Z]{2,6})(?![\w])")
 _CAP_GREEK_RE = re.compile(r"(?<![\w])([Α-ΩΆΈΉΊΌΎΏΪΫ]{2,})(?![\w])")
 _FKEY_RE = re.compile(r"(?<![\w])F(\d{1,2})(?![\w])")
+_THOUSANDS_RE = re.compile(r"(?<![\w.,])([1-9]\d{0,2})[.,](\d{3})(?![\d.,])")   # exactly 3 digits after the separator
 GREEK_RE = re.compile(r"[Ͱ-Ͽἀ-῿]")
 
 
@@ -118,6 +120,7 @@ def normalize(text, lang="el", vocab=None):
     t = (text or "").replace("«", " ").replace("»", " ").replace("\"", " ").replace("*", " ").replace("_", " ")
     t = t.replace("…", "...")
     t = re.sub(r"\[\d+\]", " ", t)
+    t = _THOUSANDS_RE.sub(r"\1\2", t)            # "1.500 m" / "1,500 m" = 1500 (as answer._f reads it), spoken so
     # ranges before the unit, then the unit itself
     t = _RANGE_RE.sub(lambda m: "%s %s %s" % (m.group(1), "έως" if i == 0 else "to", m.group(2)), t)
     t = _UNIT_RE.sub(lambda m: "%s %s" % (m.group(1), UNITS[m.group(2)][i]), t)
