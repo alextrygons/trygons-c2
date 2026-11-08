@@ -111,6 +111,27 @@ def fit_line(full, room, measure, limited, fallbacks=()):
     return pixel_cut(t, room, measure)
 
 
+MIN_ANSWER_ROOM = 60      # AM4-r8: below this many pixels beside a prefix no answer line is drawn (the prefix alone)
+
+
+def fit_message(prefix, full, room, measure, limited, fallbacks=()):
+    """AM4-r8 (the opus review of 37d85dd, safety MED): the message line of screen 2 can carry a PREFIX before the
+    assistant's answer - the W79 «Κεντράρετε το χειριστήριο για να επιβεβαιώσετε» hint or the loudhailer's «ΜΙΛΑ:
+    ...» - joined with "  ·  " (app.bar_items); AM4-r7's fit_line was applied only when the drawn text WAS the answer
+    line, so with a prefix the renderer fell back to the old END-cut and the limit was lost again. Rule: the prefix
+    (with its separator) is kept WHOLE at the start (as the old cut did), the answer line goes through fit_line in the
+    room that is left: whole / the fallback (limited) / the pixel end-cut (plain). Less than MIN_ANSWER_ROOM beside
+    the prefix = the prefix alone (pixel-cut): the answer is on the panel and on screen 1 anyway, and an unfinished
+    answer line beside a hint is worse than none. No prefix = fit_line."""
+    p = (prefix or "").replace("\n", " ")
+    if not p.strip():
+        return fit_line(full, room, measure, limited, fallbacks)
+    pw = measure(p)
+    if room - pw < MIN_ANSWER_ROOM:
+        return pixel_cut(p.strip(), room, measure)
+    return p + fit_line(full, room - pw, measure, limited, fallbacks)
+
+
 def manual_file(lang):
     return os.path.join(paths.REPO, MANUALS.get(lang, MANUALS["en"]))
 

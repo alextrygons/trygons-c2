@@ -2759,6 +2759,51 @@ def as21():
             r.get("no_pick") is True and any("echoed" in p for p in r["problems"])
     r = A.Answerer(A.StubLlm("%d, %d" % (e2, e1)), terms, mode="extract").answer("which sentence?", "en", lfound)
     out["AM4-r6: '%d, %d' (the other order) is a real pick" % (e2, e1)] = r["src"] == "extract" and r["picked"] == [e2, e1]
+    # --- AM4-r8 (W129 accepted by the owner 2026-11-08): "fewshot" is the DEFAULT prompt; the worked example has its
+    # own ECHO rule (reviewer L3 of 37d85dd): its answer "2" alone / its sentence or question written back / "2" +
+    # its figures 30 and 5 = NO pick (can't find + the passage, "echoed the worked example"); "2, 3", "3" and the
+    # model's "2. <the REAL sentence 2>" are real picks. Mutation = the old gate (the rule only for the default
+    # prompt): under variant "default" the lone "2" IS a pick - so the fewshot gate is what refuses it.
+    out["AM4-r8: client.DEFAULT_PROMPT is 'fewshot' (W129) and a known variant"] = \
+        client.DEFAULT_PROMPT == "fewshot" and "fewshot" in A.PROMPT_VARIANTS
+    csrc = open(os.path.join(HERE, "assistant", "client.py"), encoding="utf-8").read()
+    out["AM4-r8: the client's llm_cfg sends the setting assistant_prompt or DEFAULT_PROMPT (a wrong value = the default)"] = \
+        '"prompt_variant": self._get("assistant_prompt", DEFAULT_PROMPT)' in csrc and \
+        'in ("default", "fewshot") else DEFAULT_PROMPT' in csrc
+    for lg in ("el", "en"):
+        fm = A.prompt_pick("q", HATCH, lg, "fewshot")
+        fe = A.FEWSHOT_ECHO[lg]
+        out["AM4-r8: the fewshot prompt %s = system (no digit example) + the worked example turn + the question" % lg] = \
+            [m["role"] for m in fm] == ["system", "user", "assistant", "user"] and \
+            A.PICK_EXAMPLE[lg] not in fm[0]["content"] and fm[1]["content"] == A.FEWSHOT_EXAMPLE[lg][0] and \
+            fm[2]["content"] == A.FEWSHOT_EXAMPLE[lg][1] and fe["ids"] == [int(A.FEWSHOT_EXAMPLE[lg][1])] and \
+            fe["sentence"] in fm[1]["content"] and fe["question"] in fm[1]["content"] and fe["figures"] == [30, 5]
+    LONG32 = [dict(RET[0], text=" ".join("Sentence number %d is about the hatch relay switch." % i for i in range(1, 33)))]
+    l32 = {"cant_find": False, "why": "", "hits": LONG32}
+    fe = A.FEWSHOT_ECHO["en"]
+    for echo in ("2", "2.", "2\n", "2, 30, 5", "2. " + fe["sentence"], fe["sentence"], fe["question"]):
+        r = A.Answerer(A.StubLlm(echo), terms, mode="extract", prompt_variant="fewshot").answer("which?", "en", l32)
+        out["AM4-r8: fewshot echo %r (32 sentences in the list) = no pick, can't find + the passage, 'echoed the "
+            "worked example'" % echo[:40]] = r["src"] == "passage" and r["a"] == A.CANT["en"] and \
+            r.get("no_pick") is True and any("echoed the worked example" in p for p in r["problems"]) and \
+            r["passage"]["text"] == LONG32[0]["text"]
+    for real, ids in (("2, 3", [2, 3]), ("3", [3]), ("2. Sentence number 2 is about the hatch relay switch.", [2]),
+                      ("2, 5", [2, 5]), ("12", [12])):
+        r = A.Answerer(A.StubLlm(real), terms, mode="extract", prompt_variant="fewshot").answer("which?", "en", l32)
+        out["AM4-r8: fewshot %r is a REAL pick %s (only the example's own echo is refused)" % (real[:30], ids)] = \
+            r["src"] == "extract" and r["picked"] == ids and not r.get("no_pick")
+    r = A.Answerer(A.StubLlm("2"), terms, mode="extract", prompt_variant="default").answer("which?", "en", l32)
+    out["AM4-r8 mutation (the old gate = the default prompt's rule only): '2' under variant 'default' is a pick, "
+        "so the fewshot gate is what refuses the echo"] = r["src"] == "extract" and r["picked"] == [2]
+    r = A.Answerer(A.StubLlm("4, 9"), terms, mode="extract", prompt_variant="fewshot").answer("which?", "en", l32)
+    out["AM4-r8: '4, 9' under fewshot is a real pick (the digit example is not in that prompt)"] = \
+        r["src"] == "extract" and r["picked"] == [4, 9]
+    # the example's sentence IN the offered list (a real power-limit question): the normal echoed-line rule judges it
+    PL = [dict(RET[0], text="The power limit protects the engine. " + fe["sentence"] + " Raising it needs the code.")]
+    r = A.Answerer(A.StubLlm("2. " + fe["sentence"]), terms, mode="extract", prompt_variant="fewshot").answer(
+        "what power limit at the start?", "en", {"cant_find": False, "why": "", "hits": PL})
+    out["AM4-r8: the example's sentence offered in the REAL list and written back as '2. <it>' = a reading, a pick"] = \
+        r["src"] == "extract" and r["picked"] == [2] and r.get("echoed") is True
     # a piece ending in ':' announces a list - never a pick of its own, never a limit; a joined unit carries its
     # STATEMENT in "stmts" (what a display line may shorten), a single sentence / a can't-find carries none
     JP = [dict(RET[0], text="The hatch relay is switched by the launch sequence with the OPEN switch. It is never switched "
@@ -4109,9 +4154,131 @@ def as34():
     dsrc = open(os.path.join(HERE, "driver.py"), encoding="utf-8").read()
     out["driver.py + app.py: the notice and the bar message go through fit_line (asst_line: limited + fallbacks)"] = \
         "asst_show.fit_line(" in dsrc and 'self.hud.R("notices")' in dsrc and "asst_notice_line" in dsrc and \
-        "asst_show.fit_line(" in src and 'self.asst_line = {"full": msg, "limited": asst_show.has_limit(a, stmts)' in src
+        "asst_show.fit_message(" in src and 'self.asst_line = {"full": msg, "limited": is_limited' in src
+    # ---- AM4-r8 (the opus review of 37d85dd, safety MED): (1) a PREFIX before the answer on the bar (the W79 hint
+    # «Κεντράρετε το χειριστήριο ...», the loudhailer's «ΜΙΛΑ: ...»): AM4-r7's rule applied only when the drawn text
+    # WAS the answer line, so with a prefix the renderer end-cut the whole line and the limit was lost again - now
+    # show.fit_message keeps the prefix whole and fits the answer in the room left (whole / fallback), the mutation =
+    # the old end-cut of prefix + line; also WIDE rooms (a 1300 px bar, the flex of a 2560 px window) where a short
+    # answer line fits whole beside the prefix. (3) MED-2: the message was built from the CHARACTER-cut answer
+    # (cut_answer -> an END-cut of a single limiting sentence over LINE_MAX), and a wide bar showed that cut line
+    # "whole": now a limiting answer reaches the one-line places UNCUT and fit_line decides - over every pickable
+    # single sentence of both indexes with a limiting word and more than LINE_MAX characters.
+    p8 = {"prefix_checks": 0, "whole": 0, "fallback": 0, "lost": 0, "old_lost": 0, "long_single": 0, "m2_checks": 0,
+          "m2_old_fits_cut": 0, "m2_lost": 0, "m2_whole": 0, "m2_fallback": 0, "tools": 0}
+    p8bad = []
+    wide = [("bar 1300 px", 1300.0, 16), ("bar 2560-px window flex", 2560 - 560.0, 18)]
+    prefixes = {"el": [i18n.TL("el", "conf.centre"), i18n.TL("el", "hail.speaks", who="ΣΥΓΚΥΒΕΡΝΗΤΗΣ"),
+                       i18n.TL("el", "hail.speaks", who="ΣΥΓΚΥΒΕΡΝΗΤΗΣ") + "  ·  " + i18n.TL("el", "conf.centre")],
+                "en": [i18n.TL("en", "conf.centre"), i18n.TL("en", "hail.speaks", who="COPILOT")]}
+
+    def old_end_cut(t, room, meas):                     # draw_bar's fallback cut before AM4-r8 (characters, 2 at a time)
+        while t and meas(t) > room:
+            t = t[:-2] + "…" if len(t) > 2 else ""
+        return t
+
+    def check8(lang, pid, a, st, limit):
+        lim_flag = show.has_limit(a, [st] if st else ())
+        fbs = [i18n.TL(lang, "asst.answer", a=limited[lang], cite=""), limited[lang],
+               i18n.TL(lang, "asst.answer_limited_short")]
+        full = i18n.TL(lang, "asst.answer", a=a, cite="")          # AM4-r8: the UNCUT answer line
+        for name, room, size in rooms[-3:] + wide:
+            meas = lambda z, s=size: driver.measure(z, s, True)
+            for pre in prefixes[lang]:
+                pre_sep = pre + "  ·  "
+                drawn = show.fit_message(pre_sep, full, room, meas, lim_flag, fbs)
+                p8["prefix_checks"] += 1
+                old = old_end_cut(pre_sep + full, room, meas)
+                if limit not in old:
+                    p8["old_lost"] += 1
+                no_room = meas(pre_sep) > room - show.MIN_ANSWER_ROOM
+                rest = drawn[len(pre_sep):] if drawn.startswith(pre_sep) else None
+                is_fb = rest is not None and (rest in fbs or (rest.endswith("…") and any(
+                    f.startswith(rest[:-1].rstrip(" ,;:·-–")) for f in fbs)))
+                if meas(drawn) > room + 0.5:
+                    p8["lost"] += 1
+                    p8bad.append((lang, pid, name, "over the room", drawn[:60]))
+                elif limit in drawn and drawn.startswith(pre_sep):
+                    p8["whole"] += 1                              # the prefix whole + the whole answer line
+                elif no_room and drawn[:5] == pre.strip()[:5] and limit not in drawn:
+                    p8["fallback"] += 1                           # no room beside the prefix: the prefix alone
+                elif is_fb:
+                    p8["fallback"] += 1                           # the prefix whole + a fallback line (maybe pixel-cut)
+                else:
+                    p8["lost"] += 1
+                    p8bad.append((lang, pid, name, "neither whole nor fallback", drawn[:60]))
+
+    for lang in ("el", "en"):
+        ps = index.load(lang)["passages"]
+        for i, p in enumerate(ps):
+            for u in A.pick_units([dict(p, after=index.following(ps, i))]):
+                st = u.get("stmt")
+                a = A._ended(u["text"])
+                if st and a.startswith(st):
+                    check8(lang, p["id"], a, st, a[len(st):].strip())
+                elif not st and show.has_limit(a) and len(a) > show.LINE_MAX:
+                    # MED-2: a single limiting sentence over LINE_MAX - the OLD line() end-cut it by characters and the
+                    # limit (the clause with the limiting word, taken as the sentence's last 25 characters) fit a wide
+                    # bar as a cut line; the NEW line = the uncut sentence through fit_line (whole / fallback)
+                    p8["long_single"] += 1
+                    tail = a[-25:]
+                    old_short = show.cut_answer(a, max(80, show.LINE_MAX))
+                    old_full = i18n.TL(lang, "asst.answer", a=old_short, cite="")
+                    new_full = i18n.TL(lang, "asst.answer", a=a, cite="")
+                    fbs = [i18n.TL(lang, "asst.answer", a=limited[lang], cite=""), limited[lang],
+                           i18n.TL(lang, "asst.answer_limited_short")]
+                    for name, room, size in rooms[-3:] + wide:
+                        meas = lambda z, s=size: driver.measure(z, s, True)
+                        p8["m2_checks"] += 1
+                        if meas(old_full) <= room and tail not in old_full:
+                            p8["m2_old_fits_cut"] += 1            # the mutation: the cut line "fit" without its end
+                        drawn = show.fit_line(new_full, room, meas, True, fbs)
+                        if tail in drawn and meas(drawn) <= room + 0.5:
+                            p8["m2_whole"] += 1
+                        elif drawn in fbs or (drawn.endswith("…") and any(f.startswith(drawn[:-1].rstrip(" ,;:·-–"))
+                                                                          for f in fbs)):
+                            p8["m2_fallback"] += 1
+                        else:
+                            p8["m2_lost"] += 1
+                            p8bad.append((lang, p["id"], name, "MED-2", drawn[:60]))
+        ex, lim = examples[lang]
+        check8(lang, "example", ex, "", lim)
+    out["AM4-r8 (1): %d prefix checks (W79 hint / «ΜΙΛΑ» / both, 300..1300 px + a 2560-px window): the prefix whole "
+        "and the limit in the drawn line (%d) or a fallback line (%d), lost %d" % (
+            p8["prefix_checks"], p8["whole"], p8["fallback"], p8["lost"])] = \
+        p8["lost"] == 0 and p8["prefix_checks"] > 2000 and p8["whole"] > 0
+    out["AM4-r8 (1) mutation: the old end-cut of prefix + line loses the limit %d times" % p8["old_lost"]] = \
+        p8["old_lost"] > 500
+    out["AM4-r8 (3) MED-2: %d single limiting sentences over LINE_MAX in both indexes, %d checks: the uncut line whole "
+        "(%d) or the fallback (%d), lost %d" % (p8["long_single"], p8["m2_checks"], p8["m2_whole"], p8["m2_fallback"],
+                                                 p8["m2_lost"])] = p8["m2_lost"] == 0 and p8["long_single"] > 20
+    out["AM4-r8 (3) mutation: the character-cut line 'fit' a wide bar without its last clause %d times" %
+        p8["m2_old_fits_cut"]] = p8["m2_old_fits_cut"] > 20
+    # the pure helpers: fit_message with / without a prefix, no room beside the prefix = the prefix alone
+    meas7 = lambda z: len(z) * 7.0
+    out["fit_message: no prefix = fit_line; the prefix whole + the whole line / the fallback / the pixel end-cut; "
+        "no room beside the prefix = the prefix alone"] = \
+        show.fit_message("", "short line", 200, meas7, True, ["FB"]) == "short line" and \
+        show.fit_message("P  ·  ", "short line", 200, meas7, True, ["FB"]) == "P  ·  short line" and \
+        show.fit_message("P  ·  ", "a long limiting line " * 5, 200, meas7, True, ["a fallback", "FB"]) == "P  ·  a fallback" and \
+        show.fit_message("P  ·  ", "a long plain line " * 5, 200, meas7, False, ["FB"]).startswith("P  ·  a long") and \
+        show.fit_message("P  ·  ", "a long plain line " * 5, 200, meas7, False, ["FB"]).endswith("…") and \
+        meas7(show.fit_message("P  ·  ", "a long plain line " * 5, 200, meas7, False, ["FB"])) <= 200 and \
+        show.fit_message("a prefix of some length  ·  ", "a long limiting line " * 5, 220, meas7, True, ["FB"]) == \
+        "a prefix of some length ·" and \
+        show.fit_message("a prefix of some length that is far too long for the room  ·  ", "x", 200, meas7, True,
+                         ["FB"]).endswith("…")
+    out["app.py: the bar keeps the prefix apart (msg_prefix) and draws prefix + line through fit_message; the Tools "
+        "label goes through asst_tools_msg (+ re-fit on <Configure>); a limiting answer is never character-cut "
+        "(line() returns the uncut answer); a can't find is not 'limited'"] = \
+        "self.msg_prefix = (prefix" in src and 'txt == pre + al.get("full", "")' in src and \
+        "def asst_tools_msg" in src and "def _tools_msg_resize" in src and \
+        'self.tools_msg.bind("<Configure>", self._tools_msg_resize)' in src and \
+        "if is_limited:\n                return a + more" in src and \
+        'is_limited = info.get("src") not in ("cant_find", "passage") and asst_show.has_limit(a, stmts)' in src and \
+        "return fallbacks[0] if limited else full" in dsrc
     report("AS34 no display cut loses a joined unit's limiting sentence (characters AND pixels)", all(out.values()),
-           "%s; %s; %s; problems %s %s" % (out, n, px, bad[:4] or "none", pbad or "none"))
+           "%s; %s; %s; %s; problems %s %s %s" % (out, n, px, p8, bad[:4] or "none", pbad or "none", p8bad[:6] or "none"))
 
 
 class FakeLamps:
@@ -4801,16 +4968,58 @@ def as28(rig):
         a.answer = dict(info, a=ja, speak=True, stmts=[stmt], more=True)
         ap.asst_on_answer(ja, a.answer)
         more_el = i18n.TL("el", "asst.more_limits")
-        out["joined unit: the message line keeps the limit whole + the 'more' line, the statement shortened"] = \
-            lim in ap.msg_text and more_el in ap.msg_text and "…" in ap.msg_text and \
-            len(ap.msg_text) <= show.LINE_MAX + len(info["cite"]) + 60
-        # (the notice: 120 characters minus the 'more' line leave no 40 for the statement beside this limit = the short
-        # «has a restriction» line, which already sends the operator to the panel - then without the 'more' line)
         limited_el = i18n.TL("el", "asst.answer_limited")
-        out["joined unit: screen 1's notice = the limit whole + 'more', or the short restriction line"] = (
-            (lim in ap.asst_shown[0] and more_el in ap.asst_shown[0] and "…" in ap.asst_shown[0])
-            or ap.asst_shown[0] == limited_el) and len(ap.asst_shown[0]) <= show.NOTICE_MAX + 2 and \
-            lim not in show.cut(ja, show.NOTICE_MAX)             # (the old end-cut lost the limit here)
+        short_el = i18n.TL("el", "asst.answer_limited_short")
+        fbs_el = [i18n.TL("el", "asst.answer", a=limited_el, cite=""), limited_el, short_el]
+
+        def fb_or_whole(drawn, pre=""):              # the drawn one-line text = prefix + (whole line | a fallback line)
+            if not drawn.startswith(pre):
+                return False
+            rest = drawn[len(pre):]
+            return (lim in rest and more_el in rest) or rest in fbs_el or (
+                rest.endswith("…") and any(f.startswith(rest[:-1].rstrip(" ,;:·-–")) for f in fbs_el))
+        # AM4-r8 MED-2: a limiting answer reaches the message line UNCUT (no character cut), the bar decides by pixels
+        out["joined unit: the message line carries the limit whole + the 'more' line, uncut (AM4-r8)"] = \
+            lim in ap.msg_text and more_el in ap.msg_text and "…" not in ap.msg_text and ap.asst_line["limited"] is True
+        ap.render(force=True)
+        mo = ts.op(ap, "message")
+        out["joined unit: the bar DRAWS the whole line or a fallback line, never an end-cut"] = \
+            mo is not None and fb_or_whole(mo["drawn"]) and lim not in show.cut(ja, show.NOTICE_MAX)
+        # AM4-r8 (1): with a PREFIX on the bar (the W79 hint «Κεντράρετε το χειριστήριο ...»; the loudhailer's «ΜΙΛΑ»
+        # takes the same way) the prefix is drawn whole and the answer line behind it is whole or a fallback line -
+        # before AM4-r8 the renderer end-cut prefix + line and the limit was lost
+        hint = i18n.TL("el", "conf.centre")
+        orig_hint = ap.confirm_hint
+        ap.confirm_hint = lambda: hint
+        try:
+            ap.render(force=True)
+            mo = ts.op(ap, "message")
+            out["joined unit + the W79 prefix: the prefix whole, then the whole line or a fallback (AM4-r8)"] = \
+                mo is not None and ap.msg_prefix == hint + "  ·  " and fb_or_whole(mo["drawn"], ap.msg_prefix)
+        finally:
+            ap.confirm_hint = orig_hint
+        ap.render(force=True)
+        out["the prefix is gone with the hint"] = ap.msg_prefix == "" and fb_or_whole(ts.op(ap, "message")["drawn"])
+        # AM4-r8 (2): the Tools window's message label = the third one-line place: whole or a fallback line at every
+        # width (300 px, a 1300 px window, a 2560 px window), never the label's clip; width unknown = the fallback
+        tl = ap.tools_msg.cget("text")
+        out["Tools label: whole or a fallback line"] = fb_or_whole(tl)
+        tw = {w: ap.asst_tools_msg(ap.msg_text, width=w) for w in (300, 1300, 2560)}
+        out["Tools label at 300 / 1300 / 2560 px: whole or a fallback line; width unknown = the fallback; another "
+            "message untouched"] = all(fb_or_whole(t) for t in tw.values()) and lim not in tw[300] and \
+            ap.asst_tools_msg(ap.msg_text, width=0) == fbs_el[0] and \
+            ap.asst_tools_msg("another message", width=300) == "another message"
+        # AM4-r8 LOW: a "can't find" («Δεν βρίσκω» holds «δεν») is not an "answer with a restriction"
+        from assistant import answer as AN
+        cant = AN.CANT["el"]
+        a.answer = dict(info, a=cant, src="passage", speak=False, stmts=[])
+        ap.asst_on_answer(cant, a.answer)
+        out["can't find + the passage = not 'limited'"] = ap.asst_line["limited"] is False and cant in ap.msg_text
+        a.answer = dict(info, a=ja, speak=True, stmts=[stmt], more=True)
+        ap.asst_on_answer(ja, a.answer)
+        # (the notice: the uncut answer; screen 1 fits it by pixels - driver.asst_notice_line, checked below)
+        out["joined unit: screen 1's notice text = the uncut answer + 'more' (the HUD fits it by pixels)"] = \
+            ap.asst_shown[0] == ja + " " + more_el and lim not in show.cut(ja, show.NOTICE_MAX)   # (the old end-cut)
         ap.render(force=True)
         an = ts.op(ap, "asst_a")
         out["joined unit: the panel answer keeps the limit"] = an is not None and lim in an["s"]

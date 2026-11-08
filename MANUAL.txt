@@ -4104,7 +4104,8 @@ else)
   * A manual statement whose NEXT sentence limits it ("... are aids. They
     are NOT for navigation.") is only ever given together with that limit;
     when the statement with its first limit alone is longer than 60 words it
-    is not given at all (124 Greek / 146 English statements) and the passage
+    is not given at all (124 Greek / 146 English statements, counted on
+    2026-11-08 - the figure moves with every manual change) and the passage
     is shown instead.
   * A limit under the NEXT sub-heading is never joined; a sentence that opens
     with "It / This ..." is never read alone; the limit rules compare WORDS,
@@ -4113,18 +4114,28 @@ else)
   * Only one or two whole manual sentences are read; a sentence over 50
     words is shown but not read out ("I found the answer in chapter N - see
     the text").
-  * On the two one-line places (screen 1's notice, screen 2's message line)
-    an answer that carries a limit is shown WHOLE or replaced by "Answer with
-    a restriction - see the Assistant panel" (step AM4-r7: the line is
-    measured in pixels, never end-cut). The notice box of a 1366-pixel
+  * On the three one-line places (screen 1's notice, screen 2's message
+    line - also behind the "Centre the joystick" hint or the loudhailer's
+    "SPEAKING: ..." -, the Tools window's message line) an answer that
+    carries a limit is shown WHOLE or replaced by "Answer with a restriction
+    - see the Assistant panel" (steps AM4-r7 / AM4-r8: the line is measured
+    in pixels with the place's own font, never end-cut; a limiting answer is
+    never shortened by characters first). The notice box of a 1366-pixel
     screen is narrow, so there you will mostly see that short line - the
     panel has the full text.
-  * The small model's picks are positional: with the standard instruction it
-    often picks the sentence numbered 4 (the instruction's example) - 71-76 %
-    of its first picks on the tuning questions, 19 % on the fresh set. A
-    few-shot instruction and a bigger Greek model were measured (section 12
-    of the design document); the default stays what measured best on this
-    6 GB card.
+  * The small model's picks are partly positional. Since step AM4-r8 (the
+    owner's decision W129, 2026-11-08) the instruction is the "worked
+    example" one (one solved example with real manual sentences, no digit
+    example): on the tuning questions it answered 45 % Greek / 61 % English
+    correctly (the old instruction 34 % / 48 %) and the pull to the sentence
+    numbered 4 is gone (3 % of the first picks, before 71-76 %). The fresh-set
+    figures above were measured with the OLD instruction and are not re-run:
+    the new one is measured on the owner's recorded questions (W84) when they
+    come. An echo of the solved example ("2" alone, or its sentence) is
+    treated as "no pick" = "I can't find", never read out. A bigger Greek
+    model (Krikri-8B) measured better still but needs a >= 8 GB graphics
+    card (section 12 of the design document). The old instruction can be
+    chosen back per PC (gs_settings.json "assistant_prompt": "default").
   * The voice reads the letter N as "north" only beside a real coordinate
     pair and as "neutral" in a gear sentence, else as the letter (AM5-r2).
   * Alarms always win: while a MASTER WARNING lamp is on at this PC the

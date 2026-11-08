@@ -5,6 +5,47 @@ Date: 2026-10-23. Code under test: commit `e385f86` (Parts 0–3), tested with t
 Rule for this test: no product code was changed – findings are reported with a reproduction and a
 proposed fix. Big outputs (logs, coverage pages, soak data) are in `test_results/` (not in git).
 
+## 0000000000000000. Talking manual - the prompt default (W129, step AM4-r8, 2026-11-08) + the prefix / Tools-label fix of the one-line places
+
+Station / tools / tests / docs only (docs/assistant_design.md 5k; no app / hal / gateway logic change).
+
+W129 (the owner's YES of 2026-11-08): the extract prompt DEFAULT is "fewshot" now (client.DEFAULT_PROMPT; the per-PC setting
+`assistant_prompt` stays as the override). NOT RE-MEASURED: the fresh set below ran ONCE with the OLD default and is not re-run
+(the task's rule) - the fewshot figures stay the TUNING-part ones (el 45 % / en 61 % correct, no "no pick" rows, first pick = 4 in
+3 %); the new default is measured once on the owner's W84 recordings (or a second fresh set) when they come. The reviewer's L3: the
+worked example had no echo rule - answer.FEWSHOT_ECHO: an echo of the worked example ("2" and nothing else, its sentence / question
+written back without that text in the offered list, "2" + its figures 30 and 5) = NO pick («Δεν βρίσκω» + the passage, "echoed the
+worked example"); "2, 3" / "3" / "2. <the real sentence 2>" / "4, 9" stay picks. Cost on the stored fewshot tuning runs: 0 of 115
+outputs were a lone "2" (first pick = 2 in 11 / 83 el + 2 / 32 en, the same share as the default prompt's 7 / 72 + 2 / 32).
+
+The opus review of 37d85dd (ONE safety MED in two parts + MED-2, no HIGH): (1) with a PREFIX on screen 2's message line (the W79
+hint «Κεντράρετε το χειριστήριο ...», the loudhailer's «ΜΙΛΑ: ...») draw_bar did not recognise the answer line and fell back to the
+OLD end-cut = the limit lost exactly while a hint was on - fixed by show.fit_message (the prefix kept apart in app.msg_prefix and
+drawn whole, the answer line whole / the fallback / a plain answer's pixel end-cut in the room left; < 60 px beside the prefix = the
+prefix alone); (2) the Tools window's message label was a THIRD one-line place that clipped - app.asst_tools_msg (the label's own
+font vs its width, re-fitted on <Configure>, width unknown = the fallback when limited); MED-2: the message was built from the
+CHARACTER-cut answer first (a single limiting sentence over 160 characters lost its last clause by characters and a wide bar then
+showed the cut line "whole") - a limiting answer now reaches the one-line places UNCUT and the pixel rule decides. LOWs: a can't-find
+is not "limited" («Δεν βρίσκω» holds «δεν»), driver.asst_notice_line before the first frame = the fallback when limited, the 124 / 146
+refused-statement figures dated (AM4-r5, 2026-11-08). The manuals' claim "a limiting answer is never end-cut" is now TRUE for all
+THREE one-line places (ch. 22 / 17 say so). Measured (AS34 AM4-r8 part): 5085 prefix checks (416 joined units + 2 reviewer examples x
+W79 / «ΜΙΛΑ» / both x 300 / 450 / 700 / 1300 px + the 2560-px window flex): the limit in the drawn line 389, a fallback 4696, 0
+lost; the mutation (the old end-cut of prefix + line) loses the limit 4696 times. MED-2: 239 single limiting sentences > 160
+characters x 5 rooms = 1195 checks: whole 74 / fallback 1121 / 0 lost; the mutation (the character-cut line) "fit" a wide bar without
+its last clause 243 times. AS28 drives the real station (the bar's drawn text with / without the W79 prefix, the Tools label at 300 /
+1300 / 2560 px and with no width, a can't find not limited); AS21 the 4-message fewshot prompt + every echo form + the mutation (under
+variant "default" the lone "2" IS a pick). Gate tools/check.sh: everything passed (sim all 386 / bridge 385 / can 378 x 2, TriCore, stack, memory, FAT32 2/2, NV 4/4,
+DroneCAN 19/19, charts 6/6, lang 6/6, boats 12/12, screen 2 28/28, tracks 12/12, loudhailer 22 + 8, index current + floor gate 7 /
+86 + 5 / 32, assistant 36 passed 0 failed 1 N/A (AS4b, W91) incl. AS4 / AS24 real models with the NEW default prompt, sound 17,
+avoidance 15, OS 12, setup 53/53, UAV 42 + 15, gateway 155/155) EXCEPT screen recording SR8 (9/10): the real-ffmpeg h264_nvenc
+recording made 1 segment in 12 s again - re-run alone: the same; the SAME environmental failure as in AM6 (screenrec.py /
+test_screenrec.py untouched since d96295e; NVENC on this PC today), not this commit. RUN_ACCEPTANCE quick (a local clone of this
+commit): 6/7 PASS (ADS excludes + iLLD, storm 200 episodes 0 fails incl. the I59 / I63 key cases, time wrap, day at sea, gateway
+storm I80-I84); the fresh build itself: every sub-step PASS (MediaMTX, START_DEMO from the clone, no PC paths) except
+groundstation\test_driver.py ONCE 23 of 24 (the acceptance log keeps only the summary line, not the test's name) - re-run alone
+in the SAME clone and in the worktree (LOOP RULE 3): 24 / 24 both = a one-off flake of that run (test_driver.py is untouched by
+this commit), not this commit.
+
 ## 000000000000000. Talking manual - the FINISH (step AM6, 2026-11-08) + the pixel display fix (step AM4-r7) - the FRESH question set measured ONCE
 
 Station / tools / tests / docs only (docs/assistant_design.md 12 + 5j; no app / hal / gateway logic change). The figures of

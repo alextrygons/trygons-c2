@@ -309,6 +309,7 @@ class App:
         self.asst_heard = None          # (text, time) of the last recognised question (screen 1 notice 8 s)
         self.asst_shown = None          # (answer text, time) of the last answer (screen 1 notice 12 s, AM5)
         self.asst_line = None           # AM4-r7: {"full", "limited", "fallbacks"} of the last answer's message line
+        self.msg_prefix = ""            # AM4-r8: what bar 2 draws BEFORE the message (W79 hint / «ΜΙΛΑ: ...» + "  ·  ")
         # AM5: the answer spoken by this PC's sound.py at the LOWEST level (alarms / callouts win, text only meanwhile).
         # AM5-r MED-3: the voice gets a NARROW view too (the horn + language from the App-free AsstView, the sound
         # system through a weak reference set in _build_sound) - never this App
@@ -575,10 +576,18 @@ class App:
         more = (" " + T("asst.more_limits")) if info.get("more") else ""
         limited = T("asst.answer_limited")
         stmts = info.get("stmts") or ()
+        # AM4-r8 (the opus review of 37d85dd, LOW): a "can't find" («Δεν βρίσκω ...» holds the limiting word «δεν»)
+        # or the can't-find-with-the-passage is NOT an "answer with a restriction" - `limited` only for a real answer
+        is_limited = info.get("src") not in ("cant_find", "passage") and asst_show.has_limit(a, stmts)
 
-        def line(n):                                # the short "has a restriction" line already sends to the panel
-            s = asst_show.cut_answer(a, n, stmts, limited)
-            return s if s == limited else s + more
+        def line(n):
+            # AM4-r8 MED-2: a LIMITING answer is never cut by CHARACTERS here (cut_answer end-cut a single limiting
+            # sentence longer than LINE_MAX, and a wide bar then showed that cut line "whole"): the one-line places
+            # get the UNCUT answer and decide by PIXELS (show.fit_line: whole or the fallback line, never an end-cut);
+            # a plain answer keeps the character cut (the pixel end-cut follows in the renderer)
+            if is_limited:
+                return a + more
+            return asst_show.cut_answer(a, n)
         short = line(max(80, asst_show.LINE_MAX - len(cite) - len(more)))
         self.asst_shown = (line(max(60, asst_show.NOTICE_MAX - len(more))), time.time())
         self.asst_auto_fold, self.asst_force_open = 0, False
@@ -589,8 +598,9 @@ class App:
             msg = T("asst.answer", a=short, cite=(" (%s)" % cite) if cite else "")
         # AM4-r7 (review of b1a0138, MED): the two one-line places cut by PIXELS - the bar renderer (draw_bar) and
         # screen 1's notices (driver.py) show this line WHOLE or, for a joined / limiting answer, the short "has a
-        # restriction" line - never an end-cut that drops «ΔΕΝ είναι για ναυσιπλοΐα.» (show.fit_line)
-        self.asst_line = {"full": msg, "limited": asst_show.has_limit(a, stmts),
+        # restriction" line - never an end-cut that drops «ΔΕΝ είναι για ναυσιπλοΐα.» (show.fit_line); AM4-r8: the
+        # Tools window's message label too (asst_tools_msg), and with a prefix on the bar (show.fit_message)
+        self.asst_line = {"full": msg, "limited": is_limited,
                           "fallbacks": [T("asst.answer", a=limited, cite=""), limited, T("asst.answer_limited_short")]}
         self.say(msg)
         try:
@@ -2828,13 +2838,41 @@ class App:
         self._evlog = (getattr(self, "_evlog", []) + [text])[-200:]
         self.msg_text, self.msg_col = text, color
         try:
-            self.tools_msg.configure(text=text, bg=color or C["head"],
+            self.tools_msg.configure(text=self.asst_tools_msg(text), bg=color or C["head"],
                                      fg=theme.BLACK if color in (GREEN, ORANGE, BLUE) else
                                      (theme.WHITE if color == RED else C["fg"]))
         except (AttributeError, tk.TclError):
             pass
         if hasattr(self, "ov"):
             self.render(force=True)
+
+    def asst_tools_msg(self, text, width=None):
+        """AM4-r8 (the opus review of 37d85dd, safety MED (2)): the Tools window's one-line message label is the THIRD
+        one-line place - a limiting answer there is shown WHOLE (the label's own font measure against its width) or
+        replaced by the fallback line, never left to the label's clip (show.fit_line); a plain answer gets the pixel
+        end-cut; any other message is left as it is. Width unknown (not mapped yet) = the fallback when limited."""
+        al = getattr(self, "asst_line", None)
+        if not al or text != al.get("full"):
+            return text
+        try:
+            import tkinter.font as tkf
+            f = tkf.Font(font=self.tools_msg.cget("font"))
+            room = (width if width is not None else self.tools_msg.winfo_width()) - 8
+            measure = f.measure
+        except (AttributeError, tk.TclError, RuntimeError):
+            room, measure = 0, None
+        if room < 50 or measure is None:
+            return (al.get("fallbacks") or [text])[0] if al.get("limited") else text
+        return asst_show.fit_line(text, room, measure, al.get("limited"), al.get("fallbacks"))
+
+    def _tools_msg_resize(self, _e=None):
+        """The Tools message label re-fitted at its new width (the assistant's answer line: AM4-r8)."""
+        al = getattr(self, "asst_line", None)
+        if al and (self.msg_text or "") == al.get("full"):
+            try:
+                self.tools_msg.configure(text=self.asst_tools_msg(self.msg_text))
+            except (AttributeError, tk.TclError):
+                pass
 
     def ev_texts(self):
         """Recent event / message texts (tests)."""
@@ -3595,6 +3633,7 @@ class App:
         self.events.pack(fill="both", expand=True)
         self.tools_msg = tk.Label(w, text="", font=F_TXT, bg=C["head"], fg=C["fg"], anchor="w")
         self.tools_msg.pack(fill="x", side="bottom", before=nb.side)
+        self.tools_msg.bind("<Configure>", self._tools_msg_resize)      # AM4-r8: the answer line re-fitted on resize
         self.fit_tables()
         theme.style_tree(w)
 
@@ -4018,11 +4057,17 @@ class App:
             col = self.msg_col
             hv = self.hail.view()
             msg = self.msg_text or ""
+            # AM4-r8 (the opus review of 37d85dd, safety MED): the PREFIX before the message (the W79 hint, the
+            # loudhailer's «ΜΙΛΑ: ...») is kept APART (self.msg_prefix) so that draw_bar can still apply the pixel
+            # rule to the assistant's answer behind it (show.fit_message) - the drawn text = prefix + message
+            prefix = ""
             ch = self.confirm_hint()                       # W79: a CONFIRM pending, the stick off centre (after 13r's)
             if ch:
-                msg, col = ch + ("  ·  " + msg if msg else ""), ORANGE
+                prefix, col = ch, ORANGE
             if hv is not None and hv["other"]:                 # «ΜΙΛΑ: ΣΥΓΚΥΒΕΡΝΗΤΗΣ» first (13r): who has the loudhailer
-                msg, col = hv["text"] + ("  ·  " + msg if msg else ""), ORANGE
+                prefix, col = hv["text"] + ("  ·  " + prefix if prefix else ""), ORANGE
+            self.msg_prefix = (prefix + "  ·  ") if prefix and msg else prefix
+            msg = self.msg_prefix + msg
             out.append(("text", "message", msg, theme.CAUTION if col in (RED, ORANGE) else
                         (C["ok_txt"] if col == GREEN else None), True))
             out.append(("gap",))
@@ -4308,15 +4353,20 @@ class App:
                 if it[4]:                                   # the message: one line, cut to the room it has
                     txt = txt.replace("\n", "  ")
                     al = getattr(self, "asst_line", None)
-                    if al and txt == al.get("full"):        # AM4-r7: the assistant's answer by the PIXEL rule
-                        txt = asst_show.fit_line(txt, w - 4, f.measure, al.get("limited"), al.get("fallbacks"))
+                    pre = getattr(self, "msg_prefix", "") or ""
+                    if al and txt == pre + al.get("full", ""):   # AM4-r7: the assistant's answer by the PIXEL rule
+                        # AM4-r8: also behind a prefix (the W79 hint / «ΜΙΛΑ: ...»): the prefix whole, the answer
+                        # line whole or the fallback in the room left - never the old end-cut (show.fit_message)
+                        txt = asst_show.fit_message(pre, al["full"], w - 4, f.measure, al.get("limited"),
+                                                    al.get("fallbacks"))
                     else:
                         while txt and f.measure(txt) > w - 4:
                             txt = txt[:-2] + "…" if len(txt) > 2 else ""
                 tr = (x, y0, x + max(w, 1.0), y1)
                 cv.create_text(x + 2, (y0 + y1) / 2, text=txt, anchor="w", fill=it[3] or C["fg"], font=f, tags="ov")
                 ov.ops.append({"k": "text", "r": (x, y0, x + min(w, f.measure(txt) + 4), y1), "panel": None,
-                               "s": it[2], "tag": it[1], "colour": it[3], "bar": n, "cell": tr})
+                               "s": it[2], "tag": it[1], "colour": it[3], "bar": n, "cell": tr,
+                               "drawn": txt})                 # AM4-r8: what the bar really shows (tests)
             else:
                 _k, tag, lab, act, kind, en, on = it[:7]
                 rr = (x, y0 + 1, x + w, y1 - 1)

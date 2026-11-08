@@ -530,7 +530,9 @@ def main(argv=None):
                    "heldout / all) or 'fresh' = tests/assistant/fresh_<lang>.json (AM6: one part, measured ONCE)")
     r.add_argument("--prompt", default="default", choices=answer.PROMPT_VARIANTS,
                    help="AM6 (W128): the extract prompt variant - 'fewshot' = no digit example, one worked example "
-                        "turn with real manual sentences; compared on the TUNING part only")
+                        "turn with real manual sentences; compared on the TUNING part only. NOTE (AM4-r8, W129): the "
+                        "STATION's default is 'fewshot' (client.DEFAULT_PROMPT); this tool keeps 'default' so that "
+                        "the stored run names stay true ('<model>+extract' = the default prompt, '~fewshot' = fewshot)")
     r.add_argument("-v", "--verbose", action="store_true")
     rp = sub.add_parser("report")
     rp.add_argument("--first", type=int, default=0, help="only the first N questions of every run (a common subset)")

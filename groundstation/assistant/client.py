@@ -54,9 +54,11 @@ DEFAULT_EXTRACT_FLOOR = 7.2
 # AM6 (W128 / W129): the extract PROMPT variant - "default" = the AM4-r instruction with the digit example "4 or 4, 9";
 # "fewshot" = no digit example, one worked example turn with real manual sentences (answer.PROMPT_VARIANTS). Measured
 # on the TUNING part (docs/assistant_design.md 12): fewshot el 45 % / en 61 % correct vs 34 % / 48 %, first pick = 4
-# in 3 % vs 76 %, no "no pick" rows - but the fresh set (measured ONCE) ran with "default"; the DEFAULT stays "default"
-# until the owner answers W129 (a switch needs a new fresh set for honest numbers). gs_settings "assistant_prompt".
-DEFAULT_PROMPT = "default"
+# in 3 % vs 76 %, no "no pick" rows. AM4-r8: the OWNER ACCEPTED W129 (2026-11-08) - "fewshot" IS the default now; the
+# fresh set (AM6) was measured ONCE with "default" and is NOT re-run: the new default is measured on the owner's W84
+# recordings (or a second fresh set) when they come (docs/assistant_design.md 5k / 12). gs_settings "assistant_prompt"
+# ("default" / "fewshot") stays as the per-PC override.
+DEFAULT_PROMPT = "fewshot"
 
 # states
 OFF, IDLE, NO_MODELS, GATEWAY_PC, STARTING, READY, LISTENING, THINKING, DOWN, FAILED = (

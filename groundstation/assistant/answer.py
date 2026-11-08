@@ -160,6 +160,22 @@ FEWSHOT_EXAMPLE = {
            "3. The voice says \"Power limit\" when you push the throttle against it.\n\nQuestion: what power limit does "
            "the boat start with?", "2"),
 }
+# AM4-r8 (W129 accepted 2026-11-08: "fewshot" is the DEFAULT prompt; reviewer L3 of 37d85dd): the worked example has
+# its OWN echo rule, like the default prompt's "4, 9" (PICK_EXAMPLE_IDS). An ECHO OF THE WORKED EXAMPLE = NO pick
+# («Δεν βρίσκω» + the passage shown, no_pick, "echoed"): (a) the example's answer "2" and NOTHING else (a genuine lone
+# pick of sentence 2 pays that price - the same price the default prompt paid for a genuine "4, 9"; measured on the
+# stored fewshot tuning runs: 0 of 115 outputs were a lone "2", first pick = 2 in 11 / 83 el + 2 / 32 en = no pull to
+# 2); (b) the example's SENTENCE («Μετά από ΚΑΘΕ εκκίνηση: 30 % πρόσω, 5 % όπισθεν.») or its QUESTION written back
+# when no offered sentence holds that text (a real pick list about the power limit may hold the very sentence: then it
+# is a reading of the list, judged by the normal echoed-line rule); (c) "2" followed by the example's figures 30 and 5.
+# A model that writes "2. <the real sentence 2>" (the echoed-line path) is a reading, never the example echo.
+FEWSHOT_ECHO = {}
+for _lg, (_u, _a) in FEWSHOT_EXAMPLE.items():
+    _sent = next((ln.split(". ", 1)[1] for ln in _u.splitlines() if ln.startswith(_a + ". ")), "")
+    _q = _u.rsplit("\n", 1)[-1].split(": ", 1)[-1]
+    FEWSHOT_ECHO[_lg] = {"ids": [int(_a)], "sentence": _sent, "question": _q,
+                         "figures": [int(x) for x in re.findall(r"(\d+) %", _sent)]}
+del _lg, _u, _a, _sent, _q
 LABEL = {"el": ("Αποσπάσματα του εγχειριδίου", "Κεφάλαιο", "Ξενάγηση", "Ερώτηση", "Προτάσεις του εγχειριδίου"),
          "en": ("Manual passages", "Chapter", "Guided tour", "Question", "Manual sentences")}
 
@@ -1252,10 +1268,21 @@ def _decide_pick(raw, hits, lang, terms, out, err, variant="default"):
             digits.append(int(d))
     echo = variant == "default" and not letters and (     # (the fewshot prompt has no digit example to echo)
         digits == list(PICK_EXAMPLE_IDS) or plain(body).strip().rstrip(".") in {plain(e) for e in PICK_EXAMPLE.values()})
-    if not ids or letters or echo:
+    # AM4-r8: the fewshot prompt's WORKED EXAMPLE echoed (FEWSHOT_ECHO: its answer "2" alone, its sentence / question
+    # written back without that text in the offered list, "2" + its figures) = no pick either
+    fe = FEWSHOT_ECHO.get(lang, FEWSHOT_ECHO["en"])
+    praw = plain(raw)
+    ex_sent = plain(fe["sentence"])[:40]
+    echo_fs = variant == "fewshot" and not echoed and (
+        (not letters and digits == fe["ids"]) or
+        (not letters and digits[:1] == fe["ids"] and set(fe["figures"]) <= set(digits)) or
+        (ex_sent and ex_sent in praw and not any(ex_sent in plain(p) for p, _h in picks)) or
+        (plain(fe["question"]).rstrip(";?") in praw))
+    if not ids or letters or echo or echo_fs:
         out.update(a=CANT[lang], src="passage", model_text=raw.strip(), id=hits[0].get("id", ""),
                    cite=cite(hits[0], lang), passage=passage_of(hits[0], lang), no_pick=True,
                    problems=[("the model echoed the prompt's example: %s" if echo else
+                              "the model echoed the worked example: %s" if echo_fs else
                               "the model did not pick a sentence: %s") % raw[:60]])
         return out
     if len(ids) == 2:

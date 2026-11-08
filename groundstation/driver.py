@@ -841,18 +841,20 @@ class DriverScreen:
         a = self.app
         full = T("asst.answer_short", a=answer_text)
         al = getattr(a, "asst_line", None)
+        limited = bool(al and al.get("limited"))
+        fallbacks = [T("asst.answer_short", a=T("asst.answer_limited")), T("asst.answer_limited"),
+                     T("asst.answer_limited_short")]              # (the last one pixel-cut when even it is too wide)
         try:
             x0, _y0, x1, _y1 = self.hud.R("notices")
             room = (x1 - x0) - 16
             size = int(getattr(self.hud, "f_norm", 0) or 0)
         except (AttributeError, KeyError, TypeError, ValueError):
-            return full
+            room, size = 0, 0
         if room < 50 or size <= 0:
-            return full
-        fallbacks = [T("asst.answer_short", a=T("asst.answer_limited")), T("asst.answer_limited"),
-                     T("asst.answer_limited_short")]              # (the last one pixel-cut when even it is too wide)
-        return asst_show.fit_line(full, room, lambda z: measure(z, size, True), bool(al and al.get("limited")),
-                                  fallbacks)
+            # AM4-r8 LOW: no box size yet (before the first frame) - a limiting answer is never left to the HUD's own
+            # end-cut: the fallback line; a plain answer as it is
+            return fallbacks[0] if limited else full
+        return asst_show.fit_line(full, room, lambda z: measure(z, size, True), limited, fallbacks)
 
     def notices(self, d, gw):
         """Banners under the alarm bar: [(tag, text, colour key)]."""

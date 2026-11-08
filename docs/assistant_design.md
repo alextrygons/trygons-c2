@@ -1189,12 +1189,77 @@ lost «ΔΕΝ είναι για ναυσιπλοΐα.» on both screens; the sam
     manuals today: AS32 / AS30 pass; a manual sentence with a power in watts would need the unit list extended).
   - L2 LIMIT_OPENERS («Όμως» / "But") adds JOINS only: a statement followed by an "Όμως ..." sentence is offered only
     with it, and when the pair exceeds the cap it is REFUSED (never offered alone) - the opener never creates a new
-    pick; the cost is counted in the refused statements (124 el / 146 en).
+    pick; the cost is counted in the refused statements (124 el / 146 en, measured in AM4-r5 on 2026-11-08 - the
+    figure moves with every manual / index change and is not re-counted at every step).
   - L3 cut_answer splits the character budget EVENLY between two statements (`(n - fixed) // len(sts)`), so a short
     + a long statement trigger the fallback earlier than a proportional split would; with the pixel rule above the
     fallback is the common case anyway.
   - L5 the AM4-r6 "display guarantee" was character-based (the sentence in 5i "0 of the 1069 cuts loses a limit" held
     for the character cut only); this section replaces it with the pixel rule + AS34's pixel part.
+
+### 5k. The prefix, the Tools label and the uncut line (step AM4-r8, the opus review of 37d85dd; station / tests / docs only, NO app / hal / gateway logic change) + the prompt default (W129)
+
+The review of 37d85dd (AM6 + AM4-r7) found ONE safety MED in two parts and a MED-2 (no HIGH): the AM4-r7 pixel rule did
+not hold on the real screen 2 in two cases, and the line it judged was already cut by characters.
+
+- MED (1) THE PREFIX: app.bar_items builds the message as `prefix + "  ·  " + msg_text` when the W79 hint
+  «Κεντράρετε το χειριστήριο για να επιβεβαιώσετε» (a CONFIRM pending, the stick off centre) or the loudhailer's
+  «ΜΙΛΑ: ΣΥΓΚΥΒΕΡΝΗΤΗΣ» is on, and draw_bar applied fit_line only when the drawn text WAS `asst_line["full"]` - with a
+  prefix it fell back to the OLD end-cut (2 characters at a time + "…") and the limit was lost exactly in the moment a
+  hint was on. FIX: bar_items keeps the prefix APART (`app.msg_prefix`, with its separator; the drawn text is still
+  prefix + message, nothing else changes) and draw_bar recognises `prefix + full`; the new `show.fit_message(prefix,
+  full, room, measure, limited, fallbacks)` keeps the prefix WHOLE at the start (as the old cut did) and runs
+  fit_line on the answer line in the room that is left (whole / the fallback / the pixel end-cut for a plain
+  answer); less than MIN_ANSWER_ROOM 60 px beside the prefix = the prefix alone, pixel-cut (the answer is on the panel
+  and on screen 1; an unfinished answer line beside a hint is worse than none).
+- MED (2) THE TOOLS LABEL: `app.say` also writes the message into the Tools window's one-line label (tools_msg), a
+  THIRD one-line place that clipped the text at its width. FIX: `app.asst_tools_msg(text, width)` = the same rule
+  with the label's own font (tkinter.font.Font(font=label.cget("font")).measure) against winfo_width() - 8; width
+  unknown (not mapped yet, < 50 px) = the fallback line when limited; re-fitted on the label's <Configure>; any other
+  message is left as it is.
+- MED-2 THE CHARACTER CUT BEFORE THE PIXEL CHECK: asst_on_answer built the message from `cut_answer(a, n, stmts,
+  limited)` - for a SINGLE limiting sentence (no stmts) that is cut() = an END-cut at LINE_MAX 160 characters, so a
+  long limiting sentence lost its last clause by characters, and a wide bar (1300 px; the flex of a 2560-px window)
+  then found that cut line fitting and showed it "whole". FIX: a LIMITED answer (has_limit) is never cut by characters
+  any more: `line()` returns the UNCUT answer (+ the "more limits" line), `asst_line["full"]` is the uncut line, and
+  the three one-line places decide by pixels (whole or the fallback); a plain answer keeps the character cut + the
+  pixel end-cut. (The joined units lose the AM4-r6 "statement shortened in the middle" form on the lines: AS34 had
+  measured that it fit whole only 20 of 3780 times anyway; the panel's folded line keeps cut_answer.)
+- LOWs done because cheap: `limited` is False for a can't-find / the can't-find-with-the-passage («Δεν βρίσκω ...»
+  holds the limiting word «δεν» - it is no "answer with a restriction"); driver.asst_notice_line before the first
+  frame (no box size) returns the fallback line when limited instead of leaving the text to the HUD's own cut; the
+  124 / 146 refused-statement figures are dated (AM4-r5, 2026-11-08) in 5j and the manuals.
+- MEASURED (AS34, AM4-r8 part; driver.measure = Pillow's getlength at the HUD / bar sizes): 5085 prefix checks (416
+  joined units + the 2 reviewer examples x the W79 hint / «ΜΙΛΑ» / both x 300 / 450 / 700 / 1300 px + the 2560-px
+  window flex): the prefix whole and the limit in the drawn line 389 times, a fallback line 4696 times, 0 lost; the
+  mutation (the old end-cut of prefix + line) loses the limit 4696 times. MED-2: 239 single limiting sentences over
+  160 characters in both indexes x 5 rooms = 1195 checks: the uncut line whole 74, the fallback 1121, 0 lost; the
+  mutation (the character-cut line) "fit" a wide bar without its last clause 243 times. AS28 drives the real station:
+  the bar's drawn text (ops "drawn") with and without the W79 prefix, the Tools label at 300 / 1300 / 2560 px and
+  with no width, a can't-find not limited.
+- WHAT THE MANUALS SAY NOW (MANUAL ch. 22 / MANUAL_EL ch. 17): "on the THREE one-line places (screen 1's notice,
+  screen 2's message line - also behind a hint -, the Tools window's message line) an answer with a limit is shown
+  whole or replaced by the short line, never end-cut" - true since this step for all three (AM4-r7 claimed it for
+  two and it did not hold with a prefix).
+- THE PROMPT DEFAULT (W129, the owner's YES of 2026-11-08): client.DEFAULT_PROMPT = "fewshot" (the per-PC setting
+  `assistant_prompt` "default" / "fewshot" stays as the override; a wrong value = the default). The reviewer's L3:
+  the worked example had NO echo rule - answer.FEWSHOT_ECHO (derived from FEWSHOT_EXAMPLE: the answer "2", the
+  picked sentence, the question, the figures 30 / 5) = an echo of the worked example is NO pick («Δεν βρίσκω» + the
+  passage, no_pick, problem "the model echoed the worked example"): (a) "2" and nothing else (a genuine lone pick of
+  sentence 2 pays that price, as a genuine "4, 9" did under the default prompt; on the stored fewshot tuning runs 0
+  of 115 outputs were a lone "2" and the first pick was 2 in 11 / 83 el + 2 / 32 en - the same share as the default
+  prompt's 7 / 72 + 2 / 32: no pull to 2), (b) the example's sentence or question written back when no offered
+  sentence holds that text (the power-limit sentence IN a real list, written back as "2. <it>", is a reading: the
+  echoed-line rule, a pick), (c) "2" followed by the example's figures 30 and 5. "2, 3", "3", "4, 9" stay real picks
+  under fewshot. Tests AS21 (the 4-message prompt, every echo form, the real picks, the mutation = under variant
+  "default" the lone "2" IS a pick). NOT RE-MEASURED: the fresh set (12) ran ONCE with the default prompt and is not
+  re-run (the task's rule); the fewshot figures stay the TUNING-part ones of 12 (a) - the new default is measured on
+  the owner's W84 recordings (or a second fresh set) when they come. tools/assistant_llm_eval.py keeps `--prompt
+  default` as its own default (the stored run names "<model>+extract" mean the default prompt; a fewshot run is named
+  "~fewshot"); the eval and the station are two different defaults on purpose, said in its help.
+- NOTES (the reviewer's LOWs, under the cap): the Tools page «Βοηθός» has no control for `assistant_prompt` (a
+  gs_settings.json entry); AS34's prefix part uses the W79 hint and «ΜΙΛΑ» texts of the lang files directly (the
+  real bar_items path is driven once in AS28 with a patched confirm_hint).
 
 ## 6. Speak (step AM5)
 
@@ -1536,13 +1601,13 @@ read-only proof) and MED-1 was cheap - both fixed; the LOWs were cheap and are i
 - W86 (AM1-r) a question about a SAFETY ACTION (STANDBY, e-stop, lost link, ...) with no manual hit:
   only "I can't find that in the manual", or also point to where to look? Recommended: yes, the panel
   also shows the chapter list of the manual (text only, never a guessed answer).
-- W129 (AM6, section 12): switch the extract prompt DEFAULT to "fewshot"? Measured on the TUNING part with
-  llama3.2-3b: el 45 % / en 61 % correct (default 34 % / 48 %), answered 86 % / 97 %, precision 52 % / 62 %,
-  NO "no pick" rows, first pick = 4 in 3 % (default 76 %) - but the fresh set ran ONCE with the default prompt,
-  so a switch needs a new fresh set for honest numbers. Built as the per-PC setting `assistant_prompt`
-  ("default" | "fewshot"; client.DEFAULT_PROMPT "default"). Recommended: yes, switch - and write a second fresh set
-  (or use the owner's W84 recordings) to measure the new default once. STILL OPEN: W84 (recorded questions), W89
-  (the question list review), W97 (the firewall command), W99 (the blind answer review).
+- W129 (AM6, section 12) - ACCEPTED by the owner 2026-11-08 (YES): the extract prompt DEFAULT is "fewshot" since
+  step AM4-r8 (client.DEFAULT_PROMPT; the per-PC setting `assistant_prompt` "default" | "fewshot" stays as the
+  override; the worked example got its own echo rule, 5k). Measured on the TUNING part with llama3.2-3b: el 45 % /
+  en 61 % correct (default 34 % / 48 %), answered 86 % / 97 %, precision 52 % / 62 %, NO "no pick" rows, first pick
+  = 4 in 3 % (default 76 %). The fresh set ran ONCE with the default prompt and was NOT re-run: the new default is
+  measured once on the owner's W84 recordings (or a second fresh set) when they come. STILL OPEN: W84 (recorded
+  questions), W89 (the question list review), W97 (the firewall command), W99 (the blind answer review).
 
 ## 12. AM6 - the finish: the FRESH question set measured ONCE, the W128 prompt variants, the manual gaps
 
@@ -1625,5 +1690,6 @@ read-only proof) and MED-1 was cheap - both fixed; the LOWs were cheap and are i
   the fresh figures above in plain words, the headset + foot-pedal advice (PARTS.md "Shore PC"), the PTT key, privacy
   (no audio to disk, the 30-day text log), and the documented limits of 5h / 5i / 5j / 7d in plain words. The tour's
   three assistant stops (s1.btn_ask, s2.assistant, tools.assistant) exist since AM2 / AM5 with voice_pending (W84).
-- NOT DONE / OPEN: real speech (W84); the human judgement of the picks (W99); the question-list review (W89); the
-  prompt default (W129); a second fresh set for whichever default the owner chooses.
+- NOT DONE / OPEN: real speech (W84); the human judgement of the picks (W99); the question-list review (W89); a
+  second fresh set (or the W84 recordings) for the NEW default prompt. W129 was answered YES on 2026-11-08 (step
+  AM4-r8, 5k): the default IS "fewshot" now - the fresh figures above are of the OLD default and are not re-run.
