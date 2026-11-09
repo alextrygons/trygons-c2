@@ -27,6 +27,9 @@ echo "== stray processes (CL3): selftest, what runs before the gate"
 "$PY" tools/strays.py selftest || { echo "STRAYS SELFTEST FAILED"; fail=1; }
 "$PY" tools/strays.py mark --begin --shell "$(cat /proc/$$/winpid 2>/dev/null)" --state "$STRAYS_STATE" || { echo "STRAYS MARK FAILED"; fail=1; }
 
+echo "== progress archive (CL4a)"
+"$PY" tools/check_progress_archive.py || { echo "PROGRESS ARCHIVE CHECK FAILED"; fail=1; }
+
 echo "== sim build"
 out=$(cmd //c "sim\\build_sim.bat" 2>&1)
 echo "$out" | grep -v "^Run it\|^Compiling"
