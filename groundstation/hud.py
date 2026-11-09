@@ -1017,6 +1017,9 @@ class Hud:
                        None if hv["enabled"] or hv["talking"] else self.pal["grey"]))
             gh.append(("text", hv["text"], None, "hail_state", False, self.pal["caution"] if hv["caution"] else None))
         g4 = []
+        # man overboard (PF3): the framed MOB button beside the REC group; red only while a MOB alarm is open
+        g4.append(("btn", T("mob.btn"), "mob", "ctl_mob", bool(getattr(s, "mob", False)),
+                   self.pal["warn"] if getattr(s, "mob", False) else None))
         rec = s.rec
         if rec is not None:
             g4.append(("text", T("hud.rec") if rec else T("hud.not_rec"), None, "rec", bool(rec),

@@ -470,6 +470,8 @@ class DriverScreen:
             a.master_ack()
         elif act == "save":
             a.video_save("driver")
+        elif act == "mob":
+            a.mob_press("button")               # man overboard (PF3): marker + alarm + SAVE + offers; requests only
         elif act == "scr":
             a.scr_toggle()                      # REC SCREEN of this PC (step 13n4): display only
         elif act == "ptt":
@@ -777,6 +779,7 @@ class DriverScreen:
                                                                     if c.get("name") != "AUDIO")   # 13r LOW-5
         scr = getattr(a, "scr", None)                         # REC SCREEN of this PC (step 13n4)
         s["scr"] = bool(scr is not None and scr.recording())
+        s["mob"] = bool(hasattr(a, "mob_active") and a.mob_active())
         hl = getattr(a, "hail", None)                         # the loudhailer (step 13r): None = none on this link
         s["hail"] = hl.view() if hl is not None else None
         asst = getattr(a, "asst", None)                       # the talking manual (AM2): None = setting off
@@ -860,6 +863,8 @@ class DriverScreen:
         """Banners under the alarm bar: [(tag, text, colour key)]."""
         a = self.app
         out = []
+        for mt in (a.mob_lines() if hasattr(a, "mob_lines") else []):
+            out.append(("mob", mt, "warn"))             # the MOB line: top of the notices (PF3)
         if a.single_op:
             out.append(("singleop", T("drv.single_op"), theme.NOTICE["single_op"]))
         if d is not None:

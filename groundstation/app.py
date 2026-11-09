@@ -69,6 +69,9 @@ import mapwin
 import track as trackmod
 import screenrec
 import hailer
+import mob
+import sar as sarmod
+import sar_geo
 from assistant import client as asst_client     # the talking manual (step AM2): read-only
 from assistant import page as asst_page
 from assistant import show as asst_show         # AM5: what the panel / the lines show (pure)
@@ -366,6 +369,16 @@ class App:
         self.wiz = None                 # guided button-mapping routine
         self.sim_usb = {"x": 0.0, "lever": 0.5, "stick": True, "throttle": True, "fault": 0}
         self.driver = None              # screen 1 (driving), section I
+        # man overboard (step PF3, CLAUDE.md X): this station's own markers (no gateway needed), DISPLAY + requests only
+        self.sar = sarmod.LocalSar()
+        self.mob_have = None            # the last telemetry position {lat, lon, unc_m, sog, t, fresh}
+        self.mob_alarmed = set()        # marker ids whose WARNING this station raised
+        self.mob_queue = []             # the offers still to ask (return, uav, search)
+        self.mob_marker = None          # the marker the offers are about
+        self.mob_auto_until = 0.0       # after a return route is stored: AUTO START (its normal CONFIRM rules)
+        self.mob_search_ok = False      # PF2's search panel exists (the hook: mob_do("search"))
+        self.mob_sar_rev = None         # the gateway's marker list revision this station has
+        self.mob_sync_t = 0.0
         self.charts = chart.Charts(charts_dir)  # offline depth charts (tools/chartprep.py -> charts/), section B
         self.chartview = mapview.ChartView(self.charts)
         self.single_op = False          # SINGLE-OPERATOR mode as the GATEWAY has it (section F1)
@@ -468,6 +481,7 @@ class App:
         for k in ("<F12>", "<Control-Tab>"):
             root.bind(k, lambda e: self.swap_screens())
         root.bind("<F11>", lambda e: self.toggle_screen())
+        root.bind_all("<KeyPress>", self.mob_key_press, add="+")       # MOB key (default M), never in a text field
         for k in asst_client.KEYS:      # the assistant's push-to-talk key (default F9; a foot pedal sends it)
             root.bind_all("<KeyPress-%s>" % k, self.asst_key_down, add="+")
             root.bind_all("<KeyRelease-%s>" % k, self.asst_key_up, add="+")
@@ -984,7 +998,7 @@ class App:
         """SAVE: the gateway keeps its window before + 2 min after (all cameras); this PC keeps the screen part
         under the same event id (step 13n4: pre + post like the cameras)."""
         now = time.time()
-        eid = screenrec.event_id(now, "button")
+        eid = screenrec.event_id(now, "mob" if source == "mob" else "button")
         rs = (self.gw_status or {}).get("rec") or {}
         pre, post = float(rs.get("pre_s") or 600), float(rs.get("post_s") or 120)
         ok, key, _have = self.scr.save(eid, pre, post, "save", now=now)
@@ -994,6 +1008,212 @@ class App:
         self.link.send_msg({"t": "save", "source": source, "id": eid})
         if self.sound:
             self.sound.feedback("fb.shutter")
+
+    # --- MAN OVERBOARD (step PF3, CLAUDE.md X, docs/sar_design.md 2) - DISPLAY + REQUESTS ONLY -----------------
+    def mob_active(self):
+        return bool(self.sar.open_mobs())
+
+    def mob_boat(self):
+        d = self.t or {}
+        return (d["est_lat"], d["est_lon"]) if d.get("pos_source") else None
+
+    def mob_key_name(self):
+        k = settings.get("mob_key")
+        return k if isinstance(k, str) and len(k) == 1 and k.isalnum() else mob.MOB_KEY_DEFAULT
+
+    def mob_key_press(self, ev=None):
+        """The MOB key: only the chosen one, never while typing into a text field, never on the joystick."""
+        if str(getattr(ev, "keysym", "")).lower() != self.mob_key_name().lower():
+            return
+        if getattr(ev, "state", 0) & 0x4:                 # Ctrl+M is not MOB
+            return
+        w = getattr(ev, "widget", None)
+        try:
+            if w is not None and w.winfo_class() in ("Entry", "TEntry", "Text", "Spinbox", "TSpinbox", "TCombobox"):
+                return
+        except (tk.TclError, AttributeError):
+            pass
+        self.mob_press("key")
+
+    def mob_press(self, source="button", now=None):
+        """MOB: the marker at the position of THIS moment (the newest telemetry sample - a later one never moves it),
+        a WARNING + voice on this station, an automatic SAVE, then the offers. The alarm never waits for the gateway."""
+        now = time.time() if now is None else now
+        pos = mob.capture(dict(self.mob_have) if self.mob_have else None, now)
+        uncrewed = bool(self.t and self.t.get("profile") == proto.PROFILE_UNCREWED)
+        n = 1 + max([int(m.get("n") or 0) for m in self.sar.view() if m.get("kind") == "mob"] or [0])
+        if pos is None:                                    # never a position: the alarm + the SAVE still happen
+            code = "mob_nopos_%d" % n
+            self.mob_alarm(code, T("mob.alarm_nopos"), n)
+            self.video_save("mob")
+            self.say(T("mob.nopos"), RED)
+            self.event(T("mob.ev_nopos"))
+            return None
+        mid = mob.marker_id(now, n)
+        m = mob.new_marker(mid, n, pos, now, getattr(self.link, "user", "") or "", mob.current_of(self.t),
+                           station=getattr(self.link, "station", None))
+        self.sar.add(m)
+        self.mob_alarm("mob_" + mid, T("mob.alarm_unc" if uncrewed else "mob.alarm", n=n), n)
+        self.mob_alarmed.add(mid)
+        self.mob_send(m)
+        self.video_save("mob")
+        self.event(T("mob.ev_press", n=n, lat="%.5f" % m["lat"], lon="%.5f" % m["lon"]))
+        self.say(T("mob.pressed", n=n), RED)
+        self.mob_offer_start(m)
+        self.render(force=True)
+        return m
+
+    def mob_alarm(self, code, text, n):
+        self.lamps.set_local(code, text, alerts.WARNING)
+        if self.sound:
+            self.sound.say("sar.mob")
+
+    def mob_send(self, m):
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "sar_mark", "op": "add", "m": m})
+
+    def mob_sync(self, st):
+        """The gateway's marker revision (gw_status "sar"): ask for the list when it differs, hand in the markers made
+        here while it was away (the same id is idempotent there)."""
+        if not isinstance(self.link, GatewayLink) or not isinstance(st, dict):
+            return
+        now = time.time()
+        if now - self.mob_sync_t < 5.0:
+            return
+        if st.get("rev") != self.mob_sar_rev:
+            self.mob_sync_t = now
+            self.link.send_msg({"t": "sar_get"})
+        for m in self.sar.unsent():
+            self.mob_sync_t = now
+            self.mob_send(m)
+
+    def on_sar_markers(self, d):
+        self.mob_sar_rev = d.get("rev")
+        self.sar.merge(d.get("list"))
+        for m in self.sar.view():
+            if m.get("kind") != "mob":
+                continue
+            code = "mob_" + m["id"]
+            if m.get("closed"):
+                self.lamps.set_local(code, None)
+            elif m["id"] not in self.mob_alarmed:          # another station's MOB: the same WARNING here
+                self.mob_alarmed.add(m["id"])
+                self.mob_alarm(code, T("mob.alarm", n=m["n"]), m["n"])
+                self.event(T("mob.ev_remote", n=m["n"]))
+        self.render(force=True)
+
+    def on_sar_ack(self, d):
+        if d.get("ok"):
+            self.sar.mark_sent(d.get("id"))
+        else:
+            self.say(T("mob.refused", why=alerts.result_text({"result": d.get("code", 0), "ok": False})), RED)
+
+    def mob_found(self, mid=None):
+        """«ΒΡΕΘΗΚΕ»: closes the marker (the time is kept), the alarm clears here and on every station."""
+        ms = self.sar.open_mobs()
+        m = self.sar.get(mid) if mid else (ms[-1] if ms else None)
+        if m is None:
+            return
+        closed = {"t_utc": sarmod.utc_stamp(), "by": "", "why": "found"}
+        self.sar.change(m["id"], closed=closed)
+        self.lamps.set_local("mob_" + m["id"], None)
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "sar_mark", "op": "close", "m": {"id": m["id"], "why": "found",
+                                                                       "t_utc": closed["t_utc"]}})
+        self.event(T("mob.ev_found", n=m["n"]))
+        self.mob_queue = []
+        self.render(force=True)
+
+    def mob_lines(self):
+        now = time.time()
+        return [mob.line(m, self.mob_boat(), now) for m in self.sar.open_mobs()]
+
+    # the offers: one vertical YES / NO at a time, the captain answers (screen 1; else the settings-style box)
+    def mob_offer_start(self, m):
+        self.mob_marker = m["id"]
+        self.mob_queue = mob.offers(m, self.mob_boat(), (self.gw_status or {}).get("uav"), self.mob_search_ok)
+        self.root.after(300, self.mob_next_offer)
+
+    def mob_next_offer(self):
+        if not self.mob_queue:
+            return
+        m = self.sar.get(self.mob_marker)
+        if m is None or m.get("closed"):
+            self.mob_queue = []
+            return
+        if self.driver is not None and self.driver.question:      # never replace another question (a copilot's ACCEPT)
+            self.root.after(2000, self.mob_next_offer)
+            return
+        key = self.mob_queue.pop(0)
+
+        def nxt():
+            self.root.after(400, self.mob_next_offer)
+
+        def yes(k=key, mm=m):
+            try:
+                self.mob_do(k, mm)
+            finally:
+                nxt()
+        text = T("mob.offer_" + key, n=m["n"])
+        if self.driver is not None:
+            self.driver.ask(text, yes, nxt, 60.0, tag=("mob", key), head=T("mob.head"))
+        elif ynbox.ask(self.root, T("mob.head"), text):
+            yes()
+        else:
+            nxt()
+
+    def mob_do(self, key, m):
+        if key == "return":
+            return self.mob_return(m)
+        if key == "uav":
+            return self.mob_uav(m)
+        if key == "search" and self.mob_search_ok:
+            return self.mob_search(m)
+
+    def mob_search(self, m):
+        """The hook for PF2 (search patterns): opens the pattern panel with the MOB as datum. Nothing yet."""
+        self.say(T("mob.no_search"), ORANGE)
+
+    def mob_return(self, m):
+        """«ΕΠΙΣΤΡΟΦΗ ΣΤΟ MOB»: the stand-off route through the NORMAL program upload (the same checks as a hand route),
+        then AUTO START with its normal CONFIRM rules. Never AT the person: the last point is D metres before."""
+        boat = self.mob_boat()
+        if boat is None:
+            return self.say(T("map.no_position"), RED)
+        cfg = {"standoff_m": float(settings.get("sar_standoff_m") or sar_geo.DEFAULTS["standoff_m"]),
+               "approach_kn": float(settings.get("sar_approach_kn") or sar_geo.DEFAULTS["approach_kn"])}
+        r = sar_geo.standoff_route(boat, (m["lat"], m["lon"]), mob.current_of(self.t), cfg)
+        if r.get("why"):
+            self.say(T("mob.inside", d="%d" % r["standoff_m"]), ORANGE)
+            self.event(T("mob.ev_inside"))
+            return None
+        self.prog = sar_geo.to_program(r)
+        self.route_dirty = True
+        self.prog_refresh()
+        self.mob_auto_until = time.time() + 30.0
+        self.say(T("mob.route", d="%d" % r["standoff_m"], kn="%g" % r["kn"]), ORANGE)
+        self.prog_upload(final=sar_geo.PROG_END_STOP)
+        return r
+
+    def mob_route_stored(self):
+        """The return route is on the boat (a copilot's: after the captain's ACCEPT) -> AUTO START."""
+        if self.mob_auto_until and time.time() <= self.mob_auto_until:
+            self.mob_auto_until = 0.0
+            self.auto_start()
+
+    def mob_uav(self, m):
+        """«UAV ΠΑΝΩ ΑΠΟ ΤΟ MOB»: the next UAV (or a flying one) to the point through the normal uav_route + launch rules."""
+        uav = (self.gw_status or {}).get("uav") or {}
+        flying = [s["slot"] for s in uav.get("slots") or [] if s.get("flying")]
+        target = "next" if uav.get("next") else (flying[0] if flying else None)
+        if target is None or not isinstance(self.link, GatewayLink):
+            return self.say(T("uav.not_connected"), RED)
+        self.uav_route(target, [(m["lat"], m["lon"])], alt=30.0)
+        if target == "next":                                 # a magazine drone: the normal launch preparation
+            msg = {"t": "uav_launch_prepare", "count": 1}
+            if self.single_op:
+                msg["confirm"] = "self"
+            self.link.send_msg(msg)
 
     # --- REC SCREEN + KEEP 5' / 1h (step 13n4, owner 2026-10-31 E4) - DISPLAY ONLY ---------------------------
     @staticmethod
@@ -2063,8 +2283,8 @@ class App:
         self.prog = program.new_program()
         self.prog_refresh()
 
-    def prog_upload(self):
-        self.prog["final"] = max(0, self.final_cb.current())
+    def prog_upload(self, final=None):
+        self.prog["final"] = max(0, self.final_cb.current()) if final is None else int(final)
         problems = program.check(self.prog)
         if problems:
             return self.say(T("cap.pg_problems", list="; ".join(i18n.from_en(p) for p in problems[:3])), RED)
@@ -2911,6 +3131,7 @@ class App:
                     self.on_decision_ack(d)
                     if d["cmd"] == proto.T_PROG_COMMIT and d["ok"]:
                         self.route_dirty = False
+                        self.mob_route_stored()
                     if d["cmd"] == proto.T_PARAM_GET and d["result"] == 10:
                         continue                # "Read all" probes past the last id
                     if d["cmd"] == proto.T_PARAM_SET and d["ok"]:
@@ -2965,6 +3186,7 @@ class App:
                     if getattr(self, "uav_page", None) is not None:
                         self.uav_page.update(d.get("uav"))    # the UAV magazine page (CLAUDE.md V, U2)
                     self.uav_notices(d.get("uav"))
+                    self.mob_sync(d.get("sar"))
                     if self.callouts:
                         self.callouts.gw(d)
                 elif kind == "channel_ack":
@@ -2975,6 +3197,10 @@ class App:
                     self.on_save_ack(d)
                 elif kind == "keep_ack":
                     self.on_keep_ack(d)
+                elif kind == "sar_markers":
+                    self.on_sar_markers(d)
+                elif kind == "sar_ack":
+                    self.on_sar_ack(d)
                 elif kind in ("hail_floor", "ptt_ack", "hail", "hail_signal_ack", "hail_volume_ack"):
                     self.hail.on_msg(kind, d)           # the loudhailer (step 13r)
                 elif kind == "uav_ack":
@@ -3075,6 +3301,9 @@ class App:
             self.boat_pushed = False        # its RAM-only boat file settings are gone: push them again
             self.relay_push_at = 0.0        # (the relay table is in its data flash: sent only if it differs)
         self.boat_push(d)
+        if d.get("pos_source"):
+            self.mob_have = {"lat": d["est_lat"], "lon": d["est_lon"], "unc_m": d.get("unc_m"),
+                             "sog": d.get("est_sog"), "t": self.t_rx, "fresh": True}
         self.draw_engine(d)
         self.draw_steer(d)
         self.hist.append((ts, d["heading"], d["target"], d["outboard"]))
@@ -3944,6 +4173,10 @@ class App:
                     act = lambda: self.dp_start(proto.DP_SPOT)
             out.append({"tag": "mode_" + name, "label": T("mb." + name), "mode": m, "active": cur == m,
                         "enabled": act is not None, "why": why, "action": act})
+        # MAN OVERBOARD (PF3): in the always-drawn top bar (never hidden, never in a bar that can overflow); a
+        # request + an alarm only - it is not a mode; red only while a MOB alarm is open
+        out.append({"tag": "mob", "label": T("mob.btn"), "mode": None, "active": False, "enabled": True, "why": None,
+                    "action": lambda: self.mob_press("button"), "alarm": self.mob_active()})
         return out
 
     def mode_bar_click(self, it):
@@ -4271,7 +4504,7 @@ class App:
             rr = (x, yy0, x + w, yy1)
             if it["active"]:
                 fill, fg, ol = theme.WHITE, theme.BLACK, theme.BLACK
-            elif it["mode"] == proto.MODE_STANDBY:
+            elif it["mode"] == proto.MODE_STANDBY or it.get("alarm"):
                 fill, fg, ol = theme.WARN, theme.WHITE, C["fg"]          # STANDBY red (red buttons: STANDBY + SAVE)
             elif it["enabled"]:
                 fill, fg, ol = C["btn"], C["btn_fg"], C["fg"]
@@ -4441,6 +4674,8 @@ class App:
         d = self.t
         B = theme.BANNERS
         # the alarms (and NO DATA) are in the top-right "alarms" panel (panel_alarms), not a banner
+        for mt in self.mob_lines():
+            out.append(("mob", mt) + B["lost"] + (None,))
         if d is not None:
             ll = d.get("ll_state", 0)
             if ll:
@@ -5508,11 +5743,11 @@ class App:
             return self.say(T("uavr.no_route"), RED)
         self.uav_route(key, [(w["lat"], w["lon"]) for w in wps])
 
-    def uav_route(self, target, pts):
+    def uav_route(self, target, pts, alt=None):
         """A UAV route -> the gateway (it checks energy / range / altitude / no-fly + air geofence again)."""
         if not isinstance(self.link, GatewayLink):
             return self.say(T("uav.not_connected"), RED)
-        self.link.send_msg(uavroute.route_msg(target, pts))
+        self.link.send_msg(uavroute.route_msg(target, pts) if alt is None else uavroute.route_msg(target, pts, alt))
         self.say(T("uavr.sent", n=len(pts)))
 
     def uav_notices(self, uav):

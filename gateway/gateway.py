@@ -32,6 +32,7 @@ from audit import Audit
 from ais import AisTargets, OnlineFeed
 from shallow import Shallow
 from geofence import Geofence
+from sarstore import SarStore
 from trainlevels import AcademyLevels
 from avoid import Avoider
 ALM_FENCE = 16                      # navreq alarm bit: outside the geofence (app/smallboat.h SB_NAV_ALM_FENCE)
@@ -135,6 +136,11 @@ class Gateway:
                                  if self.storage.usable else None)
         self.stations.ext["geofence"] = self._geofence_msg
         self.stations.ext["academy_levels"] = self._academy_msg
+        # search and rescue markers (CLAUDE.md X, step PF3): bookkeeping only, never the boat
+        self.sar = SarStore(os.path.join(self.storage.folder("state"), "sar_markers.json")
+                            if self.storage.usable else None)
+        self.stations.ext["sar_mark"] = self._sar_mark
+        self.stations.ext["sar_get"] = self._sar_get
         # collision avoidance (section D): every decision into the audit log
         self.avoider = Avoider(cfg.get("avoid"), self.shallow,
                                log=lambda text, **kw: self.audit("avoid", text=text, **kw))
@@ -448,6 +454,28 @@ class Gateway:
             st.send({"t": "geofence_ack", "ok": ok2, "code": code, "text": text})
         self.stations.ask_local(st, m, what, done)
 
+    def _sar_list_msg(self):
+        return {"t": "sar_markers", "rev": self.sar.rev, "list": self.sar.list()}
+
+    def _sar_get(self, st, m):
+        st.send(self._sar_list_msg())
+
+    def _sar_mark(self, st, m):
+        """A station's marker change (PF3). Any crew role (captain, copilot), never a VIEWER (128). It changes no
+        driving, so no ACCEPT. The answer goes to the sender, the list to every station."""
+        mk = m.get("m") if isinstance(m.get("m"), dict) else {}
+        if st.role == "VIEWER":
+            return st.send({"t": "sar_ack", "ok": False, "id": mk.get("id"), "code": 128, "text": "SAR: not allowed"})
+        op = str(m.get("op") or "")
+        ok, mid, text = self.sar.apply(op, mk, st.user)
+        self.audit("sar", station=st.id, user=st.user, op=op, id=mid, ok=ok, text=text,
+                   lat=mk.get("lat"), lon=mk.get("lon"))
+        st.send({"t": "sar_ack", "ok": ok, "id": mid, "code": 0 if ok else 108, "text": text})
+        if ok and text != "same":
+            msg = self._sar_list_msg()
+            for s_ in list(self.stations.stations.values()):
+                s_.send(msg)
+
     def _academy_msg(self, st, m):
         """Academy levels from a station (CLAUDE.md S, step 16): the file is signed by the shore PC's academy
         (trainlevels.py checks it); only a HELM-role user's station may hand it in; known users only; it
@@ -625,7 +653,8 @@ class Gateway:
         if st.role == "VIEWER":
             return st.send({"t": "save_ack", "ok": False, "text": "VIEWER: no SAVE"})
         src = str(m.get("source", "button"))[:20]
-        ok, text, eid = self.rec.trigger("button", "SAVE %s (%s)" % (src, st.user), who=st.user, eid=m.get("id"))
+        ok, text, eid = self.rec.trigger("mob" if src == "mob" else "button", "SAVE %s (%s)" % (src, st.user),
+                                         who=st.user, eid=m.get("id"))
         # "merged" (review 13n4b L10): the station's id joined an OPEN camera event - not just a "-2" name suffix
         st.send({"t": "save_ack", "ok": ok, "text": text, "id": eid, "ask": m.get("id"),
                  "merged": bool(ok and self.rec.last_merged)})
@@ -794,7 +823,7 @@ class Gateway:
                 "relays": self.stations.relay_status(),
                 "vision": self.vision.status(self.net.data_saver()),
                 "hail": self.hail.status(),
-                "uav": self.uav.status()}
+                "uav": self.uav.status(), "sar": self.sar.status()}
 
     async def run(self):
         self._stop = asyncio.Event()

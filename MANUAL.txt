@@ -34,6 +34,7 @@ CONTENTS
   20. Academy - for trainees and instructors (incl. the 3D simulator interface)
   21. UAV magazine - overview, training and the law (camera / observation only)
   22. The assistant (talking manual) - asking by voice (first part)
+  23. Man overboard (MOB) - search and rescue tools
 
 
 -------------------------------------------------------------------------------
@@ -4143,4 +4144,62 @@ else)
     pair and as "neutral" in a gear sentence, else as the letter (AM5-r2).
   * Alarms always win: while a MASTER WARNING lamp is on at this PC the
     answer is text only; any alarm sound or callout cuts the voice.
+===============================================================================
+
+-------------------------------------------------------------------------------
+23. MAN OVERBOARD (MOB) - search and rescue tools (step PF3)
+-------------------------------------------------------------------------------
+If someone falls overboard, press MOB (or the key M) at once.
+What it is: one button that marks the place where a person went into the
+water, raises the alarm, saves the video and offers the next steps. It only
+creates a marker, a warning and REQUESTS. It never drives the boat by itself:
+a route to the person is an ordinary AUTO route (all the normal checks) and a
+UAV over the point follows the normal launch rules.
+
+How to press it:
+  * The framed MOB button: on screen 2 at the end of the mode bar at the
+    top (always drawn), on screen 1 in the bottom bar beside the REC group. Captain, copilot and single operator
+    may press it; it needs no ACCEPT because it changes no driving.
+  * The key M of the station (setting mob_key). It does nothing while you type
+    into a text field, and it is never a joystick button.
+
+What happens at once:
+  1. The marker MOB n is put at the boat position of the moment of the press
+     (the newest position sample - a later sample never moves it). A position
+     older than 2 seconds is shown as POSITION UNCERTAIN: the circle grows with
+     the age and the speed. With no position at all the alarm and the SAVE
+     still happen, only no marker is made.
+  2. A red WARNING "MAN OVERBOARD" with the voice callout "Man overboard" on
+     this station. The same warning appears on every other station when the
+     marker reaches it. ACK silences this PC; the marker stays.
+  3. SAVE: the cameras and both screens are kept like the SAVE button does.
+  4. The MOB line (top of the notices on screen 1, a banner on screen 2):
+     MOB number, distance, bearing and the time since the press.
+  5. Without a gateway the marker, the alarm and the sound still work; the
+     marker goes to the gateway when it is back.
+
+Drift estimate: only when the boat has learned a trustworthy sea current, the
+screen draws a dashed line and circle marked ESTIMATE - not for navigation.
+There is NO wind data on the boat, so the wind is not included; the screen
+says "no wind". Without a trusted current it says "no drift estimate".
+
+Offers (one vertical YES / NO box at a time, the captain answers):
+  * RETURN TO THE MOB: a route of two points that ENDS 30 m before the person
+    (never at the person), at most 5 kn, final action STOP (idle, neutral and
+    STANDBY at the end). On the down-current side when the current is known,
+    else on the line from the boat. It goes through the normal route upload:
+    shallow water and geofence checks, a copilot's route waits for the
+    captain's ACCEPT, AUTO START needs the joystick CONFIRM as always.
+  * UAV OVER THE MOB: the next UAV (or a flying one) goes to the point at 30 m
+    altitude through the normal UAV route checks and launch approval.
+  * SEARCH PATTERN: offered when the search pattern panel exists.
+  No answer means nothing happens. While another question is open on screen 1
+  the offer waits.
+
+DANGER FROM THE PROPELLER - the final approach to a person is always by hand,
+with the engine in neutral near the person. Inside the safe distance (30 m) no
+route is made at all; the screen says so.
+
+FOUND: when the person is recovered the marker is closed (the time stays in
+the log) and the alarm clears on every station.
 ===============================================================================

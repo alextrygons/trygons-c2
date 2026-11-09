@@ -1541,7 +1541,8 @@ def s20_slam_restore(rig):
             for lang in ("el", "en"):
                 i18n.set_lang(lang)
                 rig.size(W, H, 1.0)
-                fits.append(not layout_problems(ap))
+                pr = layout_problems(ap)
+                fits.append(not pr or pr[:2])
         i18n.set_lang("el")
         rig.size(1366, 768, 1.0)
         # screen 1: the boat's question
@@ -1581,7 +1582,7 @@ def s20_slam_restore(rig):
         ap.decisions.extend(old_dec)
     report("S20 slamming power restore (13q4): RESTORE POWER on screen 2 for the captain (sends ACCEPT), the boat's "
            "question on screen 1, nothing for a copilot, fits",
-           btn_ok and all(fits) and asked and acc and not cop_btn,
+           btn_ok and all(f is True for f in fits) and asked and acc and not cop_btn,
            "button %s, click sent %s; fits %s; screen 1 question %s, ACCEPT sent %s; copilot button %s" % (
                [b["s"] for b in btn], clicked, fits, asked, acc, cop_btn))
 

@@ -146,7 +146,7 @@
     {"id": "el141", "group": "not_in_manual", "q": "πόσα λίτρα βενζίνη έχει το ρεζερβουάρ", "expect": [], "must": "", "gap": "fuel / range: the manual says nothing about the fuel tank or fuel range"},
     {"id": "el142", "group": "not_in_manual", "q": "πώς δένω το σκάφος στη σημαδούρα", "expect": [], "must": ""},
     {"id": "el143", "group": "not_in_manual", "q": "τι ώρα δύει ο ήλιος", "expect": [], "must": ""},
-    {"id": "el144", "group": "not_in_manual", "q": "τι κάνω αν πέσει άνθρωπος στη θάλασσα", "expect": [], "must": "", "gap": "man overboard: no operator procedure in the manual (a safety action the owner may want written - W86)"},
+    {"id": "el144", "group": "mob", "q": "τι κάνω αν πέσει άνθρωπος στη θάλασσα", "expect": ["Αν πέσει άνθρωπος στη θάλασσα, πατήστε αμέσως MOB"], "must": "ΑΝΘΡΩΠΟΣ"},
     {"id": "el145", "group": "uav", "q": "πώς φορτίζω τις μπαταρίες των drone", "expect": ["Η φόρτιση δεν είναι μέρος"], "must": "φόρτιση"}
   ]
 }

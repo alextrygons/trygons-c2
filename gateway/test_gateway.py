@@ -3987,6 +3987,145 @@ def section_gf():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------------------------------ section SA --
+
+def section_sa():
+    """Search and rescue markers + the MOB return route (CLAUDE.md X, step PF3): the gateway's marker store (add /
+    move / close / delete, idempotent, kept on the SSD), a VIEWER refused (128), every station gets the list, and the
+    stand-off route to a person goes through the SAME checks as a hand route (shallow 114, a copilot's ACCEPT)."""
+    print("\n=== Section SA: SAR markers, the MOB stand-off route through the normal checks ===", flush=True)
+    import sarstore as SAR
+    import sar_geo
+    tmp = tempfile.mkdtemp(prefix="gwtest_sa_")
+    sim = gw = None
+    clients = []
+    try:
+        path = os.path.join(tmp, "state", "sar_markers.json")
+        st = SAR.SarStore(path)
+        mk = {"id": "mob_20261109-100000_1", "kind": "mob", "lat": 60.0, "lon": 25.0, "t_utc": "2026-11-09T10:00:00Z",
+              "r_m": 5.0}
+        a1 = st.apply("add", mk, "alice")
+        a2 = st.apply("add", mk, "alice")                      # the same id again = idempotent
+        rev1 = st.rev
+        a3 = st.apply("add", dict(mk, id="mob_b", n=None), "bob")
+        bad = [st.apply("add", dict(mk, id="x y"), "a")[0], st.apply("add", dict(mk, id="c1", lat=95), "a")[0],
+               st.apply("add", dict(mk, id="c2", lon=float("nan")), "a")[0],
+               st.apply("add", dict(mk, id="c3", kind="bomb"), "a")[0], st.apply("move", {"id": "nope"}, "a")[0]]
+        mv = st.apply("move", {"id": mk["id"], "lat": 60.001, "lon": 25.001}, "alice")
+        cl = st.apply("close", {"id": mk["id"], "why": "found", "t_utc": "2026-11-09T10:05:00Z"}, "alice")
+        cl2 = st.apply("close", {"id": mk["id"]}, "alice")
+        st.flush()
+        again = SAR.SarStore(path)
+        kept = [m for m in again.list() if m["id"] == mk["id"]]
+        n_b = st.markers["mob_b"]["n"]
+        dl = st.apply("delete", {"id": "mob_b"}, "bob")
+        report("SA1 marker store: add (idempotent: the same id changes nothing), numbered per kind, bad id / position / "
+               "kind refused, move, close (time + who kept, closing twice harmless), delete; a restart keeps the file",
+               a1 == (True, mk["id"], "added") and a2[2] == "same" and st.rev >= rev1 and a3[0] and
+               n_b == 2 and not any(bad) and mv[0] and cl[2] == "closed" and cl2[2] == "same" and
+               len(kept) == 1 and abs(kept[0]["lat"] - 60.001) < 1e-9 and kept[0]["closed"]["why"] == "found" and
+               kept[0]["closed"]["by"] == "alice" and dl[2] == "deleted",
+               "add %s; again %s; bad %s; close %s; kept %s; rev %s/%s" % (a1, a2[2], bad, cl, bool(kept), again.rev,
+                                                                           st.rev))
+
+        sim = Sim(1.0)
+        root = os.path.join(tmp, "ssd")
+        os.makedirs(root)
+        charts = os.path.join(tmp, "charts")
+        sim_chart(charts)
+        cfg = gw_cfg_b(sim, root, charts_dir=charts, stations={"driver_timeout_s": 6.0},
+                       shallow={"draft_m": 0.8, "margin_m": 1.0, "shallow_m": 3.0, "clearance_m": 50.0})
+        gw = GwRunner(cfg)
+        g = gw.gw
+        sp = cfg["stations"]["port"]
+        link, w = sim.station()
+        alice = Client(sp, "alice", PW["alice"], name="captain")
+        clients.append(alice)
+        alice.pump(1.0)
+        alice.cmd(proto.T_HELM, proto.p_helm(0))
+        beat = DriverBeat(alice)
+        bob = Client(sp, "bob", PW["bob"], name="copilot")
+        vic = Client(sp, "vic", PW["vic"], name="viewer")
+        clients += [bob, vic]
+        bob.pump(1.0)
+        vic.pump(0.5)
+
+        # SA2 a crew station adds a marker: acknowledged, every station gets the list, audited, in the status; a
+        # VIEWER is refused (128); sar_get gives the list again; no ACCEPT is asked (it changes no driving)
+        m1 = {"id": "mob_20261109-101500_1", "kind": "mob", "lat": SIM_LAT + 0.0004, "lon": SIM_LON, "r_m": 4.0,
+              "t_utc": "2026-11-09T10:15:00Z", "person": True}
+        bob.l.send_msg({"t": "sar_mark", "op": "add", "m": m1})
+        k1, ack = next_event(bob, ("sar_ack",), 4.0)
+        k2, lst_a = next_event(alice, ("sar_markers",), 4.0)
+        k3, lst_b = next_event(bob, ("sar_markers",), 4.0)
+        vic.l.send_msg({"t": "sar_mark", "op": "add", "m": dict(m1, id="mob_viewer")})
+        k4, nack = next_event(vic, ("sar_ack",), 4.0)
+        alice.l.send_msg({"t": "sar_get"})
+        k5, lst_c = next_event(alice, ("sar_markers",), 4.0)
+        alice.pump(1.5)
+        asked = next_event(alice, ("driver_ask",), 0.3)[1]
+        sar_st = (alice.status or {}).get("sar") or {}
+        aud = [e for e in g.audit.recent if e["kind"] == "sar"]
+        report("SA2 a marker from a copilot: acknowledged, every station gets the list, audited (kind sar), in the "
+               "status; a VIEWER is refused (128) and changes nothing; sar_get; no captain's ACCEPT is asked",
+               ack and ack["ok"] and lst_a and lst_b and lst_a["list"][0]["id"] == m1["id"] and
+               lst_b["rev"] == lst_a["rev"] and nack and not nack["ok"] and nack["code"] == 128 and
+               "mob_viewer" not in g.sar.markers and lst_c and len(lst_c["list"]) == 1 and asked is None and
+               sar_st.get("n_open") == 1 and aud and aud[-1]["user"] == "bob" and aud[-1]["op"] == "add",
+               "ack %s; alice %s; bob %s; viewer %s; sar_get %s; asked %s; status %s; audit %s" % (
+                   ack and ack["text"], lst_a and len(lst_a["list"]), lst_b and len(lst_b["list"]),
+                   nack and nack["code"], lst_c and len(lst_c["list"]), asked, sar_st, len(aud)))
+
+        # SA3 the stand-off route to the person = a hand route to the checks: deep water accepted (last point D before
+        # the person, PROG_END_STOP), toward the shoal refused (114), a copilot's waits for the captain's ACCEPT (110)
+        def route_frames(marker_m, north=0.0):
+            boat = (SIM_LAT, SIM_LON)
+            mark = east_of(marker_m, north)
+            r = sar_geo.standoff_route(boat, mark, None, {"standoff_m": 30.0, "approach_kn": 5.0})
+            return r, mark, progmod.upload_frames(sar_geo.to_program(r))
+        r_ok, mark_ok, fr_ok = route_frames(600.0)
+        for t_, p_ in fr_ok[:-1]:
+            alice.l.send(t_, p_)
+        alice.pump(0.3)
+        a_ok = alice.cmd(fr_ok[-1][0], fr_ok[-1][1])
+        d_end = sar_geo.distance_bearing(r_ok["end"], mark_ok)[0]
+        r_sh, mark_sh, fr_sh = route_frames(2000.0)
+        for t_, p_ in fr_sh[:-1]:
+            alice.l.send(t_, p_)
+        alice.pump(0.3)
+        a_sh = alice.cmd(fr_sh[-1][0], fr_sh[-1][1])
+        r_cp, mark_cp, fr_cp = route_frames(500.0, 100.0)
+        for t_, p_ in fr_cp[:-1]:
+            bob.l.send(t_, p_)
+        bob.pump(0.3)
+        seq = bob.l.send(fr_cp[-1][0], fr_cp[-1][1], what="program upload (2 waypoints)")
+        k6, ask = next_event(alice, ("driver_ask",), 4.0)
+        if ask:
+            alice.l.send_msg({"t": "driver_answer", "id": ask["id"], "yes": False})
+        r_no = bob.result(bob.wait_ack(seq, 6.0))
+        inside = sar_geo.standoff_route((SIM_LAT, SIM_LON), east_of(25.0), None, {"standoff_m": 30.0})
+        res_ok, res_sh = alice.result(a_ok), alice.result(a_sh)
+        report("SA3 the MOB stand-off route goes through the NORMAL checks: deep water accepted (the last point 30 m "
+               "before the person, final action STOP), a person on the shoal refused (114), a copilot's waits for the "
+               "captain's ACCEPT (rejected -> 110); inside the stand-off distance = no route at all",
+               res_ok == 0 and abs(d_end - 30.0) < 0.5 and r_ok["final"] == 0 and res_sh == 114 and ask is not None
+               and r_no == 110 and inside.get("why") == "inside" and "wps" not in inside,
+               "deep %s (end %.1f m before); shoal %s; copilot asked %s -> %s; inside %s" % (
+                   res_ok, d_end, res_sh, bool(ask), r_no, inside.get("why")))
+        beat.on = False
+    finally:
+        for c_ in clients:
+            try:
+                c_.close()
+            except Exception:
+                pass
+        if gw:
+            gw.stop()
+        if sim:
+            sim.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ------------------------------------------------------------------ section RL --
 RL_TABLE = [
     {"n": 1, "name_el": "ΑΝΑΦΛΕΞΗ", "name_en": "IGNITION", "type": "onoff", "group": "engine", "pair": None,
@@ -5128,7 +5267,7 @@ def section_cv():
 
 SECTIONS = {"F1": section_f1, "CR": section_cr, "AIS": section_ais, "SH": section_sh, "CA": section_ca, "VI": section_vi, "VR": section_vr, "A": section_a, "B": section_b, "C": section_c, "D": section_d, "E": section_e, "F": section_f,
             "G": section_g, "GF": section_gf, "RL": section_rl, "DP": section_dp, "AR": section_ar,
-            "AL": section_al, "UH": section_uh, "CV": section_cv, "KS": section_ks}
+            "AL": section_al, "UH": section_uh, "CV": section_cv, "KS": section_ks, "SA": section_sa}
 
 
 def section_stall_selftest():

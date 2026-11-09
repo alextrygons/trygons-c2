@@ -583,6 +583,7 @@ CALLOUTS = {
     "link.latency": (CAUTION, "rising", [], True),
     "power.limit": (ADVISORY, "advisory", ["say.power.limit"], False),
     "sea.rough": (CAUTION, "caution", ["say.sea.rough"], True),
+    "sar.mob": (WARNING, "warning", ["say.sar.mob"], True),
     "fb.shutter": (FEEDBACK, "shutter", [], True),
     "fb.chirp2": (FEEDBACK, "chirp2", [], True),
     "fb.confirm": (FEEDBACK, "confirm", [], True),

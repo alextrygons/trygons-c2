@@ -50,6 +50,6 @@
     {"id": "en045", "group": "not_in_manual", "q": "tell me a joke", "expect": [], "must": ""},
     {"id": "en046", "group": "not_in_manual", "q": "how much does the boat cost", "expect": [], "must": ""},
     {"id": "en047", "group": "not_in_manual", "q": "what mode am I in right now", "expect": [], "must": "", "_note": "live telemetry: NOT answered (W82)"},
-    {"id": "en048", "group": "not_in_manual", "q": "what do I do if someone falls overboard", "expect": [], "must": "", "gap": "man overboard: no operator procedure in the manual (W86)"}
+    {"id": "en048", "group": "mob", "q": "what do I do if someone falls overboard", "expect": ["If someone falls overboard, press MOB"], "must": "MAN OVERBOARD"}
   ]
 }

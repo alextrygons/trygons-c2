@@ -265,6 +265,8 @@ class MapView:
         if getattr(a, "uav_store", None) is not None:
             import uavmap
             uavmap.draw(c, P, a.uav_store, th, f_small, k=max(1.0, theme.unit(w, h)))
+        if getattr(a, "sar", None) is not None:
+            self.draw_sar(c, P, th, f_small)
         pk = getattr(a, "track_pick", None)
         if pk:
             x, y = P(pk["lat"], pk["lon"])
@@ -335,6 +337,29 @@ class MapView:
                 c.create_line(bx, by, bx + L * math.sin(cg), by - L * math.cos(cg), fill=th["own"], width=2,
                               arrow="last", tags="boat")
         self._tag(mark)
+
+    def draw_sar(self, c, P, th, font):
+        """Open MOB markers (PF3): a cross + label, the drift ESTIMATE (dashed line + circle, said to be an estimate).
+        Red only because a MOB is a WARNING alarm (the colour code)."""
+        import mob
+        a = self.app
+        now = time.time()
+        col = th["warn"]
+        for m in a.sar.open_mobs():
+            x, y = P(m["lat"], m["lon"])
+            c.create_line(x - 9, y - 9, x + 9, y + 9, fill=col, width=3, tags=("sar", "sar_mob"))
+            c.create_line(x - 9, y + 9, x + 9, y - 9, fill=col, width=3, tags=("sar", "sar_mob"))
+            c.create_text(x + 12, y - 10, text=mob.line(m, a.mob_boat(), now), anchor="sw", fill=col, font=font,
+                          tags=("sar", "sar_label"))
+            est = mob.drift_estimate(m, now)
+            if est:
+                ex, ey = P(est["lat"], est["lon"])
+                rpx = abs(P(est["lat"] + est["r_m"] / 111320.0, est["lon"])[1] - ey)
+                c.create_line(x, y, ex, ey, fill=col, width=2, dash=(5, 4), tags=("sar", "sar_drift"))
+                c.create_oval(ex - rpx, ey - rpx, ex + rpx, ey + rpx, outline=col, width=2, dash=(5, 4),
+                              tags=("sar", "sar_drift"))
+                c.create_text(ex + 6, ey + rpx + 4, text=T("mob.estimate"), anchor="nw", fill=col, font=font,
+                              tags=("sar", "sar_drift"))
 
     def _tag(self, mark):
         """Everything drawn after `mark` belongs to the map (below the panels)."""

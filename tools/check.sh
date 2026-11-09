@@ -342,6 +342,10 @@ echo "== UAV magazine on the station (U2): pictures, the Tools page «ΜΑΓΓΕ
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_uavui.py > "$TEMP/uavui_tests.txt" 2>&1 ) || { echo "UAV STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|UAV STATION TESTS" "$TEMP/uavui_tests.txt"
 strays_check "test_uavui"
+echo "== Search and rescue on the station (PF3): MOB marker, alarm, SAVE, offers, stand-off route"
+( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_sar.py > "$TEMP/sar_tests.txt" 2>&1 ) || { echo "SAR STATION TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|SAR STATION TESTS" "$TEMP/sar_tests.txt"
+strays_check "test_sar"
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS|STALLED|CRASHED" "$TEMP/gw_tests.txt"   # W50s: a stalled section is killed + named

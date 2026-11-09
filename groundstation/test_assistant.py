@@ -1703,7 +1703,7 @@ FIND_MIN = {"tuning": {"el": {"top1": 0.55, "top3": 0.75}, "en": {"top1": 0.42, 
 FIND_MAX_FALSE_CANT = {"el": 3, "en": 1}         # the whole list
 # of the "not in the manual" questions (BM25 alone; AM4's post-check is the backstop). AM3-r2 MED-2: en back to 3
 # (= what MIN_COVER 0.35 refused) with the per-language MIN_COVER en 0.33 tuned on the TUNING part only
-FIND_MIN_CANT_OK = {"el": 8, "en": 3}
+FIND_MIN_CANT_OK = {"el": 8, "en": 2}   # en 3 -> 2 in step PF3: the man-overboard gap (en048) is written (manual ch. 23), 5 off-manual left
 I2_GROUPS = {"uav", "launch_hatch", "alarms", "modes", "lost_link", "recording", "loudhailer", "roles", "dp",
              "engine", "power_limit"}
 
