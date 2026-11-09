@@ -72,6 +72,7 @@ import hailer
 import mob
 import sar as sarmod
 import sar_geo
+import sarpanel
 from assistant import client as asst_client     # the talking manual (step AM2): read-only
 from assistant import page as asst_page
 from assistant import show as asst_show         # AM5: what the panel / the lines show (pure)
@@ -376,7 +377,10 @@ class App:
         self.mob_queue = []             # the offers still to ask (return, uav, search)
         self.mob_marker = None          # the marker the offers are about
         self.mob_auto_until = 0.0       # after a return route is stored: AUTO START (its normal CONFIRM rules)
-        self.mob_search_ok = False      # PF2's search panel exists (the hook: mob_do("search"))
+        self.mob_search_ok = True       # PF2's search pattern panel (the hook: mob_do("search"))
+        self.sar_ctl = sarpanel.PatternCtl(self)    # search patterns (PF2): the logic; the window opens on demand
+        self.sar_panel = None
+        self.sar_preview = None         # the plan drawn on the map before it is sent
         self.mob_sar_rev = None         # the gateway's marker list revision this station has
         self.mob_sync_t = 0.0
         self.charts = chart.Charts(charts_dir)  # offline depth charts (tools/chartprep.py -> charts/), section B
@@ -1171,8 +1175,12 @@ class App:
             return self.mob_search(m)
 
     def mob_search(self, m):
-        """The hook for PF2 (search patterns): opens the pattern panel with the MOB as datum. Nothing yet."""
-        self.say(T("mob.no_search"), ORANGE)
+        """«ΜΟΤΙΒΟ ΕΡΕΥΝΑΣ» (PF2): opens the pattern panel with the MOB as the datum. Nothing is sent from here."""
+        sarpanel.open_panel(self, (m["lat"], m["lon"]), "mob")
+        return self.sar_ctl
+
+    def gw_is_gateway(self):
+        return isinstance(self.link, GatewayLink)
 
     def mob_return(self, m):
         """«ΕΠΙΣΤΡΟΦΗ ΣΤΟ MOB»: the stand-off route through the NORMAL program upload (the same checks as a hand route),
@@ -5786,10 +5794,9 @@ class App:
         d = self.t or {}
         boat = (d["est_lat"], d["est_lon"]) if d.get("pos_source") else None
         items = uavroute.menu_items((self.gw_status or {}).get("uav"), boat)
-        if not items:
-            return
         m = tk.Menu(self.root, tearoff=0)
         self._menu_pics = []
+        m.add_command(label=T("pat.menu_here"), command=lambda la=lat, lo=lon: sarpanel.open_panel(self, (la, lo), "map"))
         for act, tgt, text, kind in items:
             im = uavpics.photo(16, master=self.root) if kind == "uav" else None
             self._menu_pics.append(im)

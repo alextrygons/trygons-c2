@@ -267,6 +267,7 @@ class MapView:
             uavmap.draw(c, P, a.uav_store, th, f_small, k=max(1.0, theme.unit(w, h)))
         if getattr(a, "sar", None) is not None:
             self.draw_sar(c, P, th, f_small)
+            self.draw_pattern(c, P, th, f_small)
         pk = getattr(a, "track_pick", None)
         if pk:
             x, y = P(pk["lat"], pk["lon"])
@@ -360,6 +361,24 @@ class MapView:
                               tags=("sar", "sar_drift"))
                 c.create_text(ex + 6, ey + rpx + 4, text=T("mob.estimate"), anchor="nw", fill=col, font=font,
                               tags=("sar", "sar_drift"))
+
+    def draw_pattern(self, c, P, th, font):
+        """The search pattern being prepared (PF2): numbered legs, the datum; CAUTION colour = not sent yet."""
+        pl = getattr(self.app, "sar_preview", None)
+        if not pl:
+            return
+        col = theme.CAUTION
+        pts = [P(la, lo) for la, lo in pl["wps"]]
+        if len(pts) >= 2:
+            c.create_line(*[v for p in pts for v in p], fill=col, width=2, dash=(6, 3), tags=("sar", "sar_pat"))
+        for i, (a, b) in enumerate(zip(pts, pts[1:])):
+            mx, my = (a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0
+            c.create_text(mx, my, text=str(i + 1), fill=col, font=font, tags=("sar", "sar_pat"))
+        for x, y in pts[:1]:
+            c.create_oval(x - 7, y - 7, x + 7, y + 7, outline=col, width=3, tags=("sar", "sar_pat"))
+        if pts:
+            c.create_text(pts[0][0] + 10, pts[0][1] - 10, text=T("pat.draw_note"), anchor="sw", fill=col, font=font,
+                          tags=("sar", "sar_pat"))
 
     def _tag(self, mark):
         """Everything drawn after `mark` belongs to the map (below the panels)."""

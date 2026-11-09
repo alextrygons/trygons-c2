@@ -18,6 +18,19 @@
   MB9  the screens: the MOB button on screen 2's bar 1 and screen 1's bottom bar, the MOB line at the top of the
        notices and as a banner; Greek and English texts; red only as the WARNING alarm
 
+  PS1  PF2 geometry against the IAMSAR formulas: expanding square (leg lengths ceil(k/2) S, 90 degree turns, total
+       length), sector (9 legs of R, 120 degree turns, corners on the circle), parallel track (2n points, spacing S,
+       total n (Lg - S) + (n - 1) S), creeping line (legs across, advance along the course), port = mirror image
+  PS2  the 50-waypoint rule: a boat pattern above 50 is REFUSED with the count and the leg (nothing sent, nothing cut
+       silently); CUT AT 50 is the operator's explicit choice; a UAV mission is not limited to 50
+  PS3  the boat route is the SAME kind of program as a hand-made one: program.check passes / fails alike, the normal
+       prog_upload is used (final HOLD), the speed / radius limits stay
+  PS4  nothing is sent without the YES (screen 1's vertical box or the station's own); a UAV mission goes through
+       uav_route with an altitude per waypoint; NO = nothing; without a gateway a UAV target is refused
+  PS5  the MOB offer «ΜΟΤΙΒΟ ΕΡΕΥΝΑΣ»: the MOB is the datum, the preview is drawn, nothing is sent
+  PS6  the panel: opens, switches the pattern, takes typed values, shows the plan numbers and the >50 note, closes
+       and clears the preview; Greek and English texts exist
+
 Run:  python test_sar.py      (exit code 0 = all passed)
 """
 import math
@@ -36,6 +49,9 @@ import mob  # noqa: E402
 import proto  # noqa: E402
 import sar as sarmod  # noqa: E402
 import sar_geo  # noqa: E402
+import sar_pattern as sp  # noqa: E402
+import sarpanel  # noqa: E402
+import program  # noqa: E402
 import settings  # noqa: E402
 import theme  # noqa: E402
 import ynbox  # noqa: E402
@@ -115,6 +131,9 @@ class Env:
         ap.mob_auto_until = 0.0
         ap.mob_sar_rev = None
         ap.mob_sync_t = 0.0
+        ap.mob_search_ok = False                     # PF3's tests are about return / UAV; PF2's tests switch it on
+        ap.sar_ctl = sarpanel.PatternCtl(ap)
+        ap.sar_preview = None
         for k in list(ap.lamps.local):
             ap.lamps.set_local(k, None)
 
@@ -502,15 +521,298 @@ def mb9(env):
     env.reset()
 
 
+def _angle_diff(a, b):
+    return (b - a + 180.0) % 360.0 - 180.0
+
+
+def ps1():
+    d = (60.0, 25.0)
+    ok = True
+    notes = []
+    # expanding square: leg k = ceil(k/2) S, right turns of 90 degrees, total = the closed formula
+    for S, C, n in ((50.0, 0.0, 9), (100.0, 37.0, 16), (200.0, 270.0, 25)):
+        pl = sp.plan("ss", d, {"S": S, "C": C, "legs": n, "kn": 5})
+        lens = [l["m"] for l in pl["legs"]]
+        brgs = [l["brg"] for l in pl["legs"]]
+        want = [math.ceil((k + 1) / 2.0) * S for k in range(n)]
+        turns = [_angle_diff(brgs[i], brgs[i + 1]) for i in range(n - 1)]
+        good = (all(abs(a - b) < 0.5 for a, b in zip(lens, want)) and all(abs(t - 90.0) < 0.3 for t in turns) and
+                abs(brgs[0] - C) < 0.3 and abs(pl["total_m"] - sp.expanding_total(S, n)) < 1.0 and pl["n"] == n + 1)
+        ok &= good
+        notes.append("SS S%g n%d %s" % (S, n, good))
+    pl = sp.plan("ss", d, {"S": 100.0, "C": 0.0, "legs": 9, "kn": 5, "turn": "port"})
+    brgs = [l["brg"] for l in pl["legs"]]
+    port = all(abs(_angle_diff(brgs[i], brgs[i + 1]) + 90.0) < 0.3 for i in range(8))
+    h = sp.plan("ss", d, {"S": 100.0, "C": 0.0, "R": 450.0, "kn": 5})
+    half = len(h["legs"]) == 2 * 4 + 1
+    ok &= port and half
+    notes.append("SS port %s half-side %s" % (port, half))
+    # sector: 9 legs of R, 120 degree turns, the corner points on the circle at C, C+60 ... C+300, 10 waypoints
+    for R, C in ((300.0, 0.0), (1000.0, 45.0)):
+        pl = sp.plan("vs", d, {"S": 100.0, "C": C, "R": R, "kn": 5})
+        lens = [l["m"] for l in pl["legs"]]
+        brgs = [l["brg"] for l in pl["legs"]]
+        turns = [_angle_diff(brgs[i], brgs[i + 1]) for i in range(8)]
+        w = pl["wps"]
+        corners = [w[1], w[2], w[4], w[5], w[7], w[8]]
+        angs = [(C + a) % 360.0 for a in (0, 60, 240, 300, 120, 180)]
+        on_circle = all(abs(sar_geo.distance_bearing(d, c)[0] - R) < 0.5 and
+                        abs(_angle_diff(sar_geo.distance_bearing(d, c)[1], a)) < 0.3 for c, a in zip(corners, angs))
+        good = (pl["n"] == 10 and len(lens) == 9 and all(abs(x - R) < 0.5 for x in lens) and on_circle and
+                abs(pl["total_m"] - 9 * R) < 1.0 and abs(turns[0] - 120.0) < 0.3 and abs(turns[1] - 120.0) < 0.3 and
+                abs(w[3][0] - d[0]) < 1e-9 and abs(w[9][1] - d[1]) < 1e-9)
+        ok &= good
+        notes.append("VS R%g %s" % (R, good))
+    # parallel track: 2n points, search legs Lg - S, cross legs S, spacing S, total n (Lg - S) + (n - 1) S
+    for S, W, Lg, C in ((100.0, 500.0, 1000.0, 45.0), (80.0, 330.0, 900.0, 200.0)):
+        pl = sp.plan("ps", d, {"S": S, "C": C, "W": W, "Lg": Lg, "kn": 5})
+        n = int(math.ceil(W / S))
+        lens = [l["m"] for l in pl["legs"]]
+        search, cross = lens[0::2], lens[1::2]
+        brgs = [l["brg"] for l in pl["legs"]]
+        along = all(abs(_angle_diff(brgs[i], (C + (0 if (i // 2) % 2 == 0 else 180)) % 360.0)) < 0.3
+                    for i in range(0, len(brgs), 2))
+        good = (pl["n"] == 2 * n and all(abs(x - (Lg - S)) < 0.5 for x in search) and
+                all(abs(x - S) < 0.5 for x in cross) and abs(pl["total_m"] - sp.parallel_total(S, W, Lg)) < 1.0 and
+                abs(pl["total_m"] - (n * (Lg - S) + (n - 1) * S)) < 1.0 and along and
+                all(abs(_angle_diff(b, (C + 90.0) % 360.0)) < 0.3 for b in brgs[1::2]))
+        ok &= good
+        notes.append("PS S%g %s" % (S, good))
+    # creeping line: the legs run across (C - 90 / C + 90), the search advances along C
+    pl = sp.plan("cs", d, {"S": 100.0, "C": 45.0, "W": 500.0, "Lg": 1000.0, "kn": 5})
+    brgs = [l["brg"] for l in pl["legs"]]
+    good = (all(min(abs(_angle_diff(b, 315.0)), abs(_angle_diff(b, 135.0))) < 0.3 for b in brgs[0::2]) and
+            all(abs(_angle_diff(b, 45.0)) < 0.3 for b in brgs[1::2]) and abs(pl["total_m"] - 4900.0) < 1.0)
+    ok &= good
+    notes.append("CS %s" % good)
+    pl = sp.plan("ss", d, {"S": 100.0, "C": 0.0, "legs": 9, "kn": 6})
+    tm = abs(pl["time_s"] - pl["total_m"] / (6 * 1852.0 / 3600.0)) < 0.5 and abs(pl["area_m2"] - pl["total_m"] * 100.0) < 1
+    bad = [sp.plan("ss", d, {"S": 0.0, "legs": 9}), sp.plan("ss", d, {"S": float("nan"), "legs": 9}),
+           sp.plan("ps", d, {"S": 100.0, "W": 500.0, "Lg": 50.0}), sp.plan("vs", d, {"S": 100.0, "R": 2.0}),
+           sp.plan("xx", d, {"S": 100.0}), sp.plan("ss", (95.0, 0.0), {"S": 100.0, "legs": 9})]
+    nobad = all(b.get("why") and "wps" not in b for b in bad)
+    ok &= tm and nobad
+    report("PS1 geometry against the IAMSAR formulas: expanding square (leg lengths, 90 degree turns, total, port "
+           "mirror, half-side rule), sector (9 legs of R, 120 degree turns, corners on the circle, total 9R), parallel "
+           "track (2n points, spacing S, total n(Lg-S)+(n-1)S), creeping line, time / area; bad input = no plan",
+           ok, "; ".join(notes) + "; time/area %s; bad input %s" % (tm, nobad))
+
+
+def _pat_ap(env, kind="ss", **p):
+    ap = env.ap
+    ctl = ap.sar_ctl
+    ctl.kind = kind
+    for k, v in p.items():
+        ctl.p[k] = v
+    ctl.set_datum(LAT, LON, "typed")
+    return ctl
+
+
+def _yes(env):
+    ynbox.ask = lambda parent, title, text, **k: (env.asked.append(text), True)[1]
+
+
+def ps2(env):
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    ctl = _pat_ap(env, "ss", S=50.0, R=1500.0)                      # 61 legs = 62 waypoints
+    pl = ctl.plan
+    chk = sp.boat_check(pl)
+    n_big = pl["n"]
+    ctl.choose("boat")
+    refused = not env.uploads and not env.asked and "62" in ap.msg_text and "50" in ap.msg_text
+    full = len(pl["wps"]) == n_big                                    # nothing was cut by the refusal
+    ctl.cut = True
+    _yes(env)
+    ctl.choose("boat")
+    up = env.uploads[-1] if env.uploads else (None, [])
+    cut_ok = len(up[1]) == 50 and abs(up[1][49]["lat"] - pl["wps"][49][0]) < 1e-9
+    env.reset()
+    ap.gw_status = {"uav": {"enabled": True, "next": 1, "slots": []}}
+    ctl = _pat_ap(env, "ss", S=50.0, R=1500.0)
+    _yes(env)
+    ctl.choose("next")
+    ur = [m for m in env.sent if isinstance(m, dict) and m.get("t") == "uav_route"]
+    uav_ok = len(ur) == 1 and len(ur[0]["wps"]) == n_big
+    report("PS2 the 50-waypoint rule: 62 waypoints for the boat = REFUSED with the count (nothing sent, nothing cut "
+           "silently), CUT AT 50 is the operator's choice (ends on leg 49, 50 waypoints uploaded), a UAV mission "
+           "keeps all %d" % n_big,
+           chk and chk["n"] == 62 and chk["cut_leg"] == 49 and refused and full and cut_ok and uav_ok,
+           "check %s; refused %s; uncut %s; cut %s; uav %s" % (chk, refused, full, cut_ok, uav_ok))
+    env.reset()
+
+
+def ps3(env):
+    ap = env.ap
+    ctl = _pat_ap(env, "ps", S=100.0, W=500.0, Lg=1000.0, C=45.0)
+    pl = ctl.plan
+    prog = sp.to_boat_program(pl)
+    problems = program.check(prog)
+    hand = {"final": 1, "wps": [{"lat": LAT, "lon": LON, "kn": 5.0, "radius": 25.0, "action": 0},
+                                {"lat": LAT + 0.01, "lon": LON, "kn": 5.0, "radius": 25.0, "action": 0}]}
+    same_ok = not problems and not program.check(hand)
+    fast = sp.plan("ps", (LAT, LON), {"S": 100.0, "W": 500.0, "Lg": 1000.0, "C": 45.0, "kn": 40.0})
+    fast_prog = sp.to_boat_program(fast)
+    hand_fast = dict(hand, wps=[dict(w, kn=40.0) for w in hand["wps"]])
+    fast_same = bool(program.check(fast_prog)) and bool(program.check(hand_fast))
+    tiny = sp.to_boat_program(sp.plan("ps", (LAT, LON), {"S": 8.0, "W": 40.0, "Lg": 100.0, "C": 0.0, "kn": 5.0}))
+    radius_ok = all(5.0 <= w["radius"] <= 500.0 for w in tiny["wps"]) and not program.check(tiny)
+    _yes(env)
+    ctl.choose("boat")
+    f, wps = env.uploads[-1] if env.uploads else (None, [])
+    used = (f == 1 and len(wps) == pl["n"] and abs(wps[0]["lat"] - pl["wps"][0][0]) < 1e-9 and
+            ap.route_dirty and ap.prog["wps"][0]["kn"] == 5.0)
+    report("PS3 the boat route is the same kind of program as a hand-made one: program.check passes / fails alike "
+           "(a 40 kn pattern fails like a 40 kn hand route), small spacing keeps the radius legal, the normal "
+           "prog_upload is used with the final action HOLD and the pattern's first point first",
+           same_ok and fast_same and radius_ok and used,
+           "problems %s; same %s; fast %s; radius %s; used %s (final %s, %d wps)" % (
+               problems, same_ok, fast_same, radius_ok, used, f, len(wps)))
+    env.reset()
+
+
+def ps4(env):
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    dr = FakeDriver()
+    dr.w = env.rig.root
+    ap.driver = dr
+    ap.gw_status = {"uav": {"enabled": True, "next": 2, "slots": [{"slot": 2, "registered": True, "present": True}]}}
+    ctl = _pat_ap(env, "vs", R=400.0)
+    boxes = []
+    old_box = sarpanel.uavroute.TargetBox
+    sarpanel.uavroute.TargetBox = lambda master, uav, cb: boxes.append(cb)
+    try:
+        ctl.send()
+    finally:
+        sarpanel.uavroute.TargetBox = old_box
+    target_box = len(boxes) == 1 and not env.sent and not env.uploads
+    boxes[0]("boat")
+    ask = dr.asks[-1] if dr.asks else None
+    before = (not env.uploads) and not [k for k in kinds(env.sent) if k]
+    ask_ok = ask is not None and ask["tag"] == ("pat", "send") and ask["timeout"] == 60.0 and "Sector" in ask["text"]
+    ask["no"]()
+    after_no = not env.uploads and not [k for k in kinds(env.sent) if k]
+    boxes[0]("2")
+    ask2 = dr.asks[-1]
+    before2 = not [k for k in kinds(env.sent) if k]
+    ask2["yes"]()
+    ur = [m for m in env.sent if isinstance(m, dict) and m.get("t") == "uav_route"]
+    uav_ok = (len(ur) == 1 and ur[0]["target"] == "2" and len(ur[0]["wps"]) == 10 and
+              all(w["alt"] == 50.0 for w in ur[0]["wps"]) and not env.uploads)
+    n_asks = len(dr.asks)
+    boxes[0]("boat")
+    dr.asks[-1]["yes"]()
+    boat_ok = len(env.uploads) == 1 and len(dr.asks) == n_asks + 1
+    env.reset()
+    ap.gw_status = {"uav": {"enabled": True, "next": 1, "slots": []}}
+    ctl = _pat_ap(env, "vs", R=400.0)
+    ctl.set_alt(80)
+    _yes(env)
+    ctl.choose("next")
+    ur2 = [m for m in env.sent if isinstance(m, dict) and m.get("t") == "uav_route"]
+    alt_ok = len(ur2) == 1 and all(w["alt"] == 80.0 for w in ur2[0]["wps"])
+    env.reset()
+    ctl = _pat_ap(env, "vs", R=400.0)
+    _yes(env)
+    env.rig.gateway_like(False)
+    ctl.choose("next")
+    nogw = not env.asked and not env.sent and not env.uploads
+    env.rig.gateway_like(True)
+    report("PS4 nothing is sent without the YES: SEND opens the target box (nothing sent), the choice asks the "
+           "vertical YES / NO on screen 1 (60 s, tag pat); NO = nothing; a UAV YES = uav_route with an altitude per "
+           "waypoint (typed altitude kept); a boat YES = the normal upload; a UAV target without a gateway is refused",
+           target_box and before and ask_ok and after_no and before2 and uav_ok and boat_ok and alt_ok and nogw,
+           "box %s; before %s; ask %s; no %s; before2 %s; uav %s; boat %s; alt %s; nogw %s" % (
+               target_box, before, ask_ok, after_no, before2, uav_ok, boat_ok, alt_ok, nogw))
+    env.reset()
+
+
+def ps5(env):
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    env.position()
+    ap.mob_search_ok = True
+    m = mob.new_marker("mob_t6", 1, {"lat": LAT + 0.002, "lon": LON, "r_m": 3.0, "uncertain": False}, time.time(), "a")
+    ap.sar.add(m)
+    offers = mob.offers(m, None, None, ap.mob_search_ok)
+    env.sent.clear()
+    ap.mob_do("search", m)
+    ctl = ap.sar_ctl
+    datum_ok = ctl.datum == (m["lat"], m["lon"]) and ctl.datum_src == "mob"
+    preview = ap.sar_preview is not None and ap.sar_preview["wps"][0] == ctl.datum
+    quiet = not env.uploads and not [k for k in kinds(env.sent) if k not in ("save", "sar_mark")] and not env.asked
+    panel = ap.sar_panel is not None
+    if ap.sar_panel is not None:
+        ap.sar_panel.close()
+    cleared = ap.sar_preview is None and ap.sar_panel is None
+    report("PS5 the MOB offer «ΜΟΤΙΒΟ ΕΡΕΥΝΑΣ»: the MOB is the datum, the plan is drawn on the map as a preview, the "
+           "panel opens, nothing is sent; closing the panel clears the preview",
+           "search" in offers and datum_ok and preview and quiet and panel and cleared,
+           "offers %s; datum %s; preview %s; quiet %s; panel %s; cleared %s" % (
+               offers, datum_ok, preview, quiet, panel, cleared))
+    env.reset()
+
+
+def ps6(env):
+    import re
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    ctl = ap.sar_ctl
+    sarpanel.open_panel(ap, (LAT, LON), "map")
+    pn = ap.sar_panel
+    env.rig.pump(0.2)
+    ok_open = pn is not None and ctl.plan is not None and ctl.kind == "ss"
+    pn.kind_var.set("ps")
+    pn.on_kind()
+    kind_ok = ctl.kind == "ps" and "W" in pn.fields and "Lg" in pn.fields and "R" not in pn.fields
+    for k, v in (("S", "100"), ("W", "500"), ("Lg", "1000")):
+        pn.fields[k].set(v)
+        pn.on_field(k)
+    shown = "length" in pn.sum.cget("text") and ctl.plan is not None and ctl.plan["n"] == 10
+    pn.kind_var.set("ss")
+    pn.on_kind()
+    for k, v in (("S", "50"), ("R", "1500")):
+        pn.fields[k].set(v)
+        pn.on_field(k)
+    txt = pn.sum.cget("text")
+    big_note = ("50" in txt and str(ctl.plan["n"]) in txt and str(pn.cut_btn.cget("state")) == "normal")
+    pn.fields["S"].set("abc")
+    pn.on_field("S")
+    bad_input = ctl.plan is None and ctl.why == "input"
+    pn.close()
+    cleared = ap.sar_preview is None and ap.sar_panel is None
+    ks = set(k for k in re.findall(r"T\(\"(pat\.[a-z_A-Z0-9]+)\"", open(os.path.join(HERE, "sarpanel.py"),
+                                                                       encoding="utf-8").read()) if not k.endswith("_"))
+    ks |= {"pat.title", "pat.menu_here", "pat.draw_note", "pat.why_datum", "pat.why_input", "pat.why_size",
+           "pat.why_kind", "pat.summary", "pat.boat_over", "pat.cut_note", "pat.ask_boat", "pat.ask_uav"}
+    ks |= {"pat.n_" + k for k in sp.KINDS} | {"pat.k_" + k for k in sp.KINDS}
+    ks |= {"pat.src_" + k for k in ("map", "mob", "boat", "typed")}
+    missing = []
+    for lg in ("el", "en"):
+        t = open(os.path.join(HERE, "lang", lg + ".txt"), encoding="utf-8").read()
+        for k in sorted(ks):
+            if not re.search(r"^" + re.escape(k) + r" =", t, re.M):
+                missing.append((lg, k))
+    report("PS6 the panel: opens with the datum, switches the pattern and its fields, takes typed values, shows the "
+           "plan numbers, the >50 note and the CUT AT 50 button, refuses bad input, closes and clears the preview; "
+           "every text in Greek and English",
+           ok_open and kind_ok and shown and big_note and bad_input and cleared and not missing,
+           "open %s; kind %s; shown %s; note %s; bad %s; cleared %s; missing %s" % (
+               ok_open, kind_ok, shown, big_note, bad_input, cleared, missing[:4]))
+    env.reset()
+
+
 def main():
     import tempfile
     tmp = tempfile.mkdtemp(prefix="trygons_sar_")
     mb8()
+    ps1()
     rig = ts.Rig()
     env = None
     try:
         env = Env(rig, tmp)
-        for fn in (mb1, mb2, mb3, mb4, mb5, mb6, mb7, mb9):
+        for fn in (mb1, mb2, mb3, mb4, mb5, mb6, mb7, mb9, ps2, ps3, ps4, ps5, ps6):
             try:
                 fn(env)
             except Exception as e:

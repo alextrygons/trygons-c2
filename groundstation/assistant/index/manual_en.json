@@ -8667,10 +8667,10 @@
 "kind": "manual",
 "lines": [
 4193,
-4197
+4196
 ],
 "term": "",
-"text": "* UAV OVER THE MOB: the next UAV (or a flying one) goes to the point at 30 m altitude through the normal UAV route checks and launch approval. * SEARCH PATTERN: offered when the search pattern panel exists. No answer means nothing happens. While another question is open on screen 1 the offer waits."
+"text": "* UAV OVER THE MOB: the next UAV (or a flying one) goes to the point at 30 m altitude through the normal UAV route checks and launch approval. * SEARCH PATTERN: opens the search pattern panel with the MOB as the datum (see SEARCH PATTERNS below)."
 },
 {
 "ch": "23",
@@ -8679,11 +8679,102 @@
 "id": "en:668",
 "kind": "manual",
 "lines": [
-4199,
-4204
+4197,
+4205
 ],
 "term": "",
-"text": "DANGER FROM THE PROPELLER - the final approach to a person is always by hand, with the engine in neutral near the person. Inside the safe distance (30 m) no route is made at all; the screen says so. FOUND: when the person is recovered the marker is closed (the time stays in the log) and the alarm clears on every station."
+"text": "No answer means nothing happens. While another question is open on screen 1 the offer waits. DANGER FROM THE PROPELLER - the final approach to a person is always by hand, with the engine in neutral near the person. Inside the safe distance (30 m) no route is made at all; the screen says so. FOUND: when the person is recovered the marker is closed (the time stays in the log) and the alarm clears on every station."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "SEARCH PATTERNS (step PF2)",
+"id": "en:669",
+"kind": "manual",
+"lines": [
+4210,
+4213
+],
+"term": "",
+"text": "Panel \"SEARCH PATTERNS\": opens from the MOB offer \"SEARCH PATTERN\" (the MOB is the datum) or from the map's right-click menu \"Search pattern here\" (the clicked point is the datum). The datum can also be set by a click on the map, the MOB point or the boat position. Patterns (IAMSAR Volume II):"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "SEARCH PATTERNS (step PF2)",
+"id": "en:670",
+"kind": "manual",
+"lines": [
+4214,
+4217
+],
+"term": "",
+"text": "* Expanding square (SS): the first leg has length S, then S, 2S, 2S, 3S, 3S ...; every turn is 90 degrees to starboard. Size = the half side. * Sector (VS): nine legs of the radius R with 120 degree turns, three arms through the datum."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "SEARCH PATTERNS (step PF2)",
+"id": "en:671",
+"kind": "manual",
+"lines": [
+4218,
+4221
+],
+"term": "",
+"text": "* Parallel track (PS): a rectangle of width W and length Lg along the first course, the datum at the corner, tracks spaced S, the first S/2 inside. * Creeping line (CS): like PS, but the tracks run across the direction of advance."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "SEARCH PATTERNS (step PF2)",
+"id": "en:672",
+"kind": "manual",
+"lines": [
+4222,
+4231
+],
+"term": "",
+"text": "Inputs: track spacing S, first leg course, size, speed, UAV altitude (default 50 m), turns to starboard or port. The pattern is DRAWN on the map before anything is sent, in the caution colour with the note PREVIEW - not sent: numbered legs, and on the panel the number of waypoints and legs, the total length, the time at the chosen speed and the area covered (length x spacing). SEND asks for the target (the same box as \"Send route\": BOAT / NEXT UAV / a UAV) and then for a YES in the vertical YES / NO box: the captain on screen 1, or the single operator. Nothing is sent without that YES."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "SEARCH PATTERNS (step PF2)",
+"id": "en:673",
+"kind": "manual",
+"lines": [
+4231,
+4232
+],
+"term": "",
+"text": "A copilot prepares the pattern; for the boat the captain's ACCEPT is still asked by the gateway as for every route, and a UAV mission is only stored"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "SEARCH PATTERNS (step PF2)",
+"id": "en:674",
+"kind": "manual",
+"lines": [
+4233,
+4239
+],
+"term": "",
+"text": "- the launch needs its own approval. * BOAT: the pattern becomes a normal route through the normal route upload (shallow water and geofence checks, speed limit) with the final action HOLD. The boat takes at most 50 waypoints. A pattern with more is REFUSED with a message that says the number; nothing is cut by itself. Split the pattern (a smaller size or a larger spacing) or press CUT AT 50: the route then ends on leg 49. AUTO START follows the normal rules."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "SEARCH PATTERNS (step PF2)",
+"id": "en:675",
+"kind": "manual",
+"lines": [
+4240,
+4245
+],
+"term": "",
+"text": "* UAV: a mission with the altitude on every waypoint; it passes the UAV route checks (energy, range, altitude, no-fly zones) and ends in a hover over the last point. The search pattern is a tool to plan a search. It is no guarantee that the person is found: wind and current move the datum, and the screen does not know the wind."
 },
 {
 "ch": "tour",
@@ -10676,7 +10767,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "eb793e6ae147bd8dd316367fff17f905b97a5ea61facdf07144e1adbb15e1bd7",
+"MANUAL.txt": "cdfc65d2704f5f079fc6a0fa0376c2009f0f559d8265a8167be8c0e42080ff2d",
 "academy/content/tour.json": "3405a9151d9c13b14bd7a626de84c0a7c7eabc932425b83e5cf69aef4f5a01af",
 "groundstation/assistant/index.py": "b40e12d9161886a1b837a62448dd97a313e199bf58924e454aacba759583d99d"
 },

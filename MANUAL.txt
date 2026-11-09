@@ -4192,7 +4192,8 @@ Offers (one vertical YES / NO box at a time, the captain answers):
     captain's ACCEPT, AUTO START needs the joystick CONFIRM as always.
   * UAV OVER THE MOB: the next UAV (or a flying one) goes to the point at 30 m
     altitude through the normal UAV route checks and launch approval.
-  * SEARCH PATTERN: offered when the search pattern panel exists.
+  * SEARCH PATTERN: opens the search pattern panel with the MOB as the datum (see SEARCH
+    PATTERNS below).
   No answer means nothing happens. While another question is open on screen 1
   the offer waits.
 
@@ -4202,4 +4203,44 @@ route is made at all; the screen says so.
 
 FOUND: when the person is recovered the marker is closed (the time stays in
 the log) and the alarm clears on every station.
+==========================================================================
+
+SEARCH PATTERNS (step PF2)
+
+Panel "SEARCH PATTERNS": opens from the MOB offer "SEARCH PATTERN" (the MOB is
+the datum) or from the map's right-click menu "Search pattern here" (the
+clicked point is the datum). The datum can also be set by a click on the map,
+the MOB point or the boat position. Patterns (IAMSAR Volume II):
+  * Expanding square (SS): the first leg has length S, then S, 2S, 2S, 3S, 3S
+    ...; every turn is 90 degrees to starboard. Size = the half side.
+  * Sector (VS): nine legs of the radius R with 120 degree turns, three arms
+    through the datum.
+  * Parallel track (PS): a rectangle of width W and length Lg along the first
+    course, the datum at the corner, tracks spaced S, the first S/2 inside.
+  * Creeping line (CS): like PS, but the tracks run across the direction of
+    advance.
+Inputs: track spacing S, first leg course, size, speed, UAV altitude (default
+50 m), turns to starboard or port.
+
+The pattern is DRAWN on the map before anything is sent, in the caution colour
+with the note PREVIEW - not sent: numbered legs, and on the panel the number of
+waypoints and legs, the total length, the time at the chosen speed and the area
+covered (length x spacing). SEND asks for the target (the same box as "Send
+route": BOAT / NEXT UAV / a UAV) and then for a YES in the vertical YES / NO
+box: the captain on screen 1, or the single operator. Nothing is sent without
+that YES. A copilot prepares the pattern; for the boat the captain's ACCEPT is
+still asked by the gateway as for every route, and a UAV mission is only stored
+- the launch needs its own approval.
+  * BOAT: the pattern becomes a normal route through the normal route upload
+    (shallow water and geofence checks, speed limit) with the final action
+    HOLD. The boat takes at most 50 waypoints. A pattern with more is REFUSED
+    with a message that says the number; nothing is cut by itself. Split the
+    pattern (a smaller size or a larger spacing) or press CUT AT 50: the route
+    then ends on leg 49. AUTO START follows the normal rules.
+  * UAV: a mission with the altitude on every waypoint; it passes the UAV route
+    checks (energy, range, altitude, no-fly zones) and ends in a hover over the
+    last point.
+The search pattern is a tool to plan a search. It is no guarantee that the
+person is found: wind and current move the datum, and the screen does not know
+the wind.
 ===============================================================================
