@@ -354,6 +354,10 @@ echo "== ADS-B on the station (PF5): map, notices, voice, the proposal asked onc
 ( cd groundstation && PYTHONIOENCODING=utf-8 "$PY" test_adsbui.py > "$TEMP/adsbui_tests.txt" 2>&1 ) || { echo "ADS-B STATION TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|ADS-B STATION TESTS" "$TEMP/adsbui_tests.txt"
 strays_check "test_adsbui"
+echo "== SAR demo guide (PF6): progress model, receive-only, ADS-B cue, simulated person, launcher"
+( PYTHONIOENCODING=utf-8 "$PY" demo/test_sar_demo.py > "$TEMP/sardemo_tests.txt" 2>&1 ) || { echo "SAR DEMO TESTS FAILED"; fail=1; }
+grep -E "^\[FAIL\]|SAR DEMO TESTS" "$TEMP/sardemo_tests.txt"
+strays_check "test_sar_demo"
 echo "== gateway tests"
 ( cd gateway && "$PY" test_gateway.py > "$TEMP/gw_tests.txt" 2>&1 ) || { echo "GATEWAY TESTS FAILED"; fail=1; }
 grep -E "^\[FAIL\]|GATEWAY TESTS|STALLED|CRASHED" "$TEMP/gw_tests.txt"   # W50s: a stalled section is killed + named

@@ -1334,6 +1334,8 @@ LESSON_SCRIPTS = {
                          lambda s: s.stick(y=0.0)],
     "l04_alarm_reaction": [lambda s: s.button("hdg_lock"), None, lambda s: s.button("standby"), "ack"],
     "l05_power_raise": [lambda s: s.power_code(), _code, "confirm", lambda s: s.power_lower()],
+    "l06_mob_search": [lambda s: s.button("hdg_lock"), lambda s: s.stick(y=0.6), lambda s: s.button("standby"),
+                       lambda s: s.stick(y=0.0)],
 }
 # the spec C list -> the lesson that teaches it
 SPEC_C = {"HDG LOCK": "l01_hdg_lock", "course +10": "l01_hdg_lock", "takeover": "l02_takeover",
@@ -1948,6 +1950,7 @@ SCENARIO_SCRIPTS = {
     "s08_swimmer_kayak": {"prep": _GO, "react": _sb("standby")},
     "s09_gateway_lost": {"prep": _GO, "react": _sstick(y=0.0)},
     "s10_remote_link_lost": {"prep": _GO, "react": _sstick(x=0.6)},
+    "s11_mob_search": {"prep": _GO, "react": _sb("standby")},
 }
 # the spec E list -> the scenario that trains it
 SPEC_E = {"remote link lost": "s10_remote_link_lost", "compass failure": "s01_compass_fail",

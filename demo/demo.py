@@ -43,6 +43,8 @@ EXE = os.path.join(REPO, "sim", "autopilot_sim.exe" if os.name == "nt" else "aut
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0     # CREATE_NO_WINDOW: no black console window (13i)
 READY_WAIT_S = 25.0                 # the start-up screen waits this long for the stations' windows
 STATIONS = ("onboard", "shore")
+SAR_MODE = False                    # `start --sar` (DEMO_SAR.bat, step PF6): + the SAR demo guide, a simulated person
+                                    # in UAV 1's picture and a helicopter that starts on the guide's cue
 _said = []                          # the last messages: an error on the start-up screen
 
 
@@ -472,6 +474,9 @@ def _start(step, progress, pids):
                      "--place", "shore", "--charts", charts, "--no-splash", "--ready-file", ready_file("shore"),
                      "--layout", os.path.join(RUN, "layout_shore.json")],
            os.path.join(REPO, "groundstation"), pids)
+    if SAR_MODE:                       # PF6: the presenter's guide window (listens only; sar_demo.py)
+        launch("sardemo", [py, os.path.join(HERE, "sar_demo.py")], HERE, pids)
+        say("started  SAR demo guide window (demo/sar_demo.py)")
     say("started  ground stations: SHORE (captain + driver screen) and ON BOARD\n\n"
         "The demo is running. MANUAL.txt chapter 'DEMO' says what to try.\n"
         "A ferry on a collision course: DEMO_SHIP.bat.   Stop everything: STOP_DEMO.bat.")
@@ -627,7 +632,18 @@ def kayak():
 
 
 def main():
+    global SAR_MODE
     cmd = sys.argv[1] if len(sys.argv) > 1 else "start"
+    if cmd == "start" and "--sar" in sys.argv[2:]:
+        SAR_MODE = True
+        cue = os.path.join(RUN, "adsb_cue")
+        os.makedirs(RUN, exist_ok=True)
+        try:
+            os.remove(cue)
+        except OSError:
+            pass
+        os.environ["TRYGONS_SIM_ADSB_CUE"] = cue          # inherited by the gateway and its ADS-B worker
+        os.environ["TRYGONS_SIM_PERSON"] = "1"            # inherited by the UAV video worker
     if cmd == "start":
         return start_splash() if "--splash" in sys.argv[2:] else start()
     if cmd == "stop":

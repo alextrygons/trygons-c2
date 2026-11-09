@@ -208,6 +208,8 @@ mark from the UAV video (simcam draws a figure at a known point) -> simulated he
 CAUTION / WARNING, the HOLD proposal answered by the presenter). Every YES waits. Academy lesson +
 scenario "MOB and search" (simulator only, academy/uavsim + the boat sim; simguard rules).
 
+AS BUILT (PF6): DEMO_SAR.bat -> demo.py start --sar; the guide window demo/sar_demo.py only listens (read-only gateway user) and never answers a question: the presenter does. The helicopter starts on the guide's cue (simadsb, TRYGONS_SIM_ADSB_CUE); the "second person" is a disc in UAV 1's simulated picture (TRYGONS_SIM_PERSON). Academy: l06_mob_search, s11_mob_search. Tests demo/test_sar_demo.py SD1-SD5.
+
 ## 8. Tests per step
 
 - PF3 MOB (groundstation/test_sar.py MB1..): marker = the boat position of the PRESS sample (a later

@@ -103,6 +103,11 @@ registration refuses a drone with any configured output but its 4 motors.
 - [ ] Coax: RG-58 (up to 5 m) or RG-8X / LMR-240 (longer) with the right connectors (BNC / SMA / PL-259), self-amalgamating tape.
 - [ ] Radar reflector (we are NOT visible on AIS): e.g. Echomax EM230 or Tri-Lens, mounted high.
 
+## Search and rescue (step PF6; CLAUDE.md X) - the software needs NO new hardware
+
+- [ ] The SAR tools use parts listed elsewhere: a UAV with a FIXED camera mount (gateway.json uav slots[].camera, for the mark from the UAV video), the boat cameras (calibrated), the ADS-B receiver below. Nothing was missing in the list for the demo (it is all simulated: DEMO_SAR.bat).
+- [ ] Rescue equipment on board is OUTSIDE the software and is the operator's job: a lifebuoy with a light and a line, a MOB pole / flag, a boarding ladder or rescue sling, a throw bag - MODEL TBD. The tools never replace them.
+
 ## ADS-B receiver (receive only, step PF5; CLAUDE.md X K4) - manned aircraft near the UAVs; nothing on the AURIX
 
 - [ ] RTL-SDR dongle for 1090 MHz (RTL-SDR Blog V4 or a 1090 MHz ADS-B-specific one with a built-in LNA / filter) on a USB port of the gateway PC - MODEL TBD. Decoder: readsb (Ubuntu package) or dump1090 - tools/get_readsb.py / gateway.json "adsb".

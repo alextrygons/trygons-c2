@@ -8,9 +8,12 @@
 
 The scripted helicopter (HELICOPTER, default): 400 ft, 75 kn, crosses the origin (= where the UAVs fly) from the east
 to the west, 4 km each side, then starts again from the east after a pause. Stand-alone for `autopilot_sim server` use:
+With the environment variable TRYGONS_SIM_ADSB_CUE=<file> the helicopter starts only when that file exists (it is
+deleted at the start): demo/sar_demo.py's "send the helicopter" button.
     python simadsb.py [--port 30003] [--lat 37.82 --lon 23.60] [--no-heli]
 """
 import math
+import os
 import socket
 import threading
 import time
@@ -104,7 +107,13 @@ class AdsbSim:
         """One simulation step (the thread calls it; tests may call it directly)."""
         with self.lock:
             if self.heli_on and self.origin is not None:
-                if self.heli is None and self.pause <= 0:
+                cue = os.environ.get("TRYGONS_SIM_ADSB_CUE")      # the SAR demo (PF6): the helicopter starts on cue
+                if self.heli is None and self.pause <= 0 and (not cue or os.path.exists(cue)):
+                    if cue:
+                        try:
+                            os.remove(cue)
+                        except OSError:
+                            pass
                     self._start_heli()
                 elif self.heli is not None and dist(self.heli, self.origin) > max(4200.0, self.start_m + 200.0) and self.heli.lon < self.origin[1]:
                     self.ac.pop(self.heli.icao, None)

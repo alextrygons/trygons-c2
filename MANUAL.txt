@@ -35,6 +35,8 @@ CONTENTS
   21. UAV magazine - overview, training and the law (camera / observation only)
   22. The assistant (talking manual) - asking by voice (first part)
   23. Man overboard (MOB) - search and rescue tools
+  24. Aircraft near the UAVs (ADS-B) - receive only
+  25. The SAR demo - a scripted search-and-rescue show (DEMO_SAR.bat)
 
 
 -------------------------------------------------------------------------------
@@ -4388,4 +4390,49 @@ sea level the difference is small and the limits carry it.
 DEMO. The demo shows a simulated helicopter at 400 ft crossing the area. A
 real receiver needs a decoder (readsb or dump1090) and an antenna: see
 PARTS.md.
+===============================================================================
+
+-------------------------------------------------------------------------------
+25. THE SAR DEMO - a scripted search-and-rescue show (step PF6)
+-------------------------------------------------------------------------------
+What it is: a presentation of the search-and-rescue tools (chapters 23 and 24)
+and the UAV magazine on ONE PC with no boat and no hardware. Start it with
+DEMO_SAR.bat (next to START_DEMO.bat); STOP_DEMO.bat stops everything. It is
+the normal demo plus a small always-on-top window, the PRESENTER'S GUIDE
+(Greek / English button), that shows the next step and ticks it off when it
+sees it happen. It starts the same two ground stations as the normal demo.
+
+The guide only LISTENS (it is a read-only user of the gateway). It never
+answers a YES / NO question, never presses a boat button and never sends a
+command. Every decision is yours: with the mouse or with the shore stick's
+trigger on the question box. Nothing moves until you answer. The only thing it
+can do is the button "Send the helicopter": it moves a SIMULATED aircraft in
+the simulated ADS-B receiver. Nothing else, no rule is bypassed.
+
+The presenter's steps:
+  1. The boat in AUTO: screen 2, Program, "Load file" demo\demo_mission.json,
+     AUTO START, confirm with the joystick of the station that has it.
+  2. Press MOB (button or key M). The position is marked and you hear
+     "Man overboard".
+  3. The return route is offered (it ends 30 m BEFORE the person). Look at it
+     on the map and answer YES in the question box. Then press "Done".
+  4. "UAV over the spot": YES to the route, YES to the launch approval (the
+     captain). The hatch opens and UAV 1 flies over the marker.
+  5. A second person: right-click on the map, "Search pattern here", Expanding
+     square, target UAV, YES. The pattern is drawn before it is sent. Press
+     "Done".
+  6. Open the UAV 1 video (screen 2 camera view). The bright disc is the
+     simulated person. Click it (or press K): an ESTIMATED position with an
+     uncertainty circle is marked.
+  7. Press "Send the helicopter" in the guide window. It appears on the map
+     (ADS-B) and the station says "Aircraft near UAV 1".
+  8. The question "HOLD / DESCEND UAV 1" appears. You answer YES or NO. Nothing
+     happens by itself. Press "Done". The demo is finished.
+If a step does not show as done, press "Done". The guide window can be closed
+at any time; closing it changes nothing in the demo.
+
+NOT FOR REAL USE: positions marked this way are estimates and not for
+navigation; the simulated person, helicopter and UAVs exist only in the demo.
+The academy has the lesson "Man overboard and search" and the scenario "Man
+overboard (MOB)" (simulator only).
 ===============================================================================

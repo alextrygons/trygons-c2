@@ -6,6 +6,7 @@ made here (H.264, like the camera) and sends them by RTSP to MediaMTX.
 The picture carries a time code (26 black / white squares = the send time in
 ms), so a viewer can measure the real video latency: decode_ts(frame).
 """
+import os
 import subprocess
 import threading
 import time
@@ -89,6 +90,9 @@ class SimCamera:
     stop = unplug
 
 
+PERSON_AT = (0.30, 0.72)        # the demo "person" in UAV 1's picture (share of width / height), TRYGONS_SIM_PERSON=1
+
+
 def aerial_frame(w, h, k, slot=1):
     """A simulated VRX picture (step U4: the UAV video in the demo / tests, no real VRX needed), grey w x h: the sea
     seen from above (bands drifting with k), a light hull crossing the picture, the slot number as small bars on the
@@ -105,6 +109,12 @@ def aerial_frame(w, h, k, slot=1):
             if x1 > x0:
                 row[x0:x1] = b"\xd2" * (x1 - x0)
         rows.append(row)
+    if os.environ.get("TRYGONS_SIM_PERSON") and slot == 1:   # SAR demo (PF6): a "person in the water" at a known spot
+        px, py = int(w * PERSON_AT[0]), int(h * PERSON_AT[1])
+        for y in range(max(0, py - 4), min(h, py + 5)):
+            x0, x1 = max(0, px - 4), min(w, px + 5)
+            ring = y in (py - 4, py + 4)
+            rows[y][x0:x1] = bytes([0x20 if ring else 0xFF]) * (x1 - x0)
     for i in range(max(1, int(slot))):                        # the slot: n bars on the right
         x0 = w - 10 - i * 8
         for y in range(Y0, Y0 + SQ * 2):
