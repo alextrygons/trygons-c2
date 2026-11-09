@@ -932,6 +932,7 @@ class UavManager:
 
     def catchup_tick(self, now):
         """A drone of the climb fallback hovers in ALT_HOLD until GPS + EKF are good, then its mission starts."""
+        self.pend_expire_tick()
         for n, f in list(self.flying.items()):
             if f.get("phase") != "catchup" or f.get("busy") or now < f.get("next_try", 0.0):
                 continue
@@ -1173,7 +1174,15 @@ class UavManager:
                         return go(result, w)
                     self.cmd(slot, "elrs", allow.CMD_MISSION_START, [mission.FLY_FROM, 0], go)
                 self.set_current(slot, mission.FLY_FROM, "elrs", cur)
-            return self.upload(slot, items, "elrs", up)
+
+            def apply_now():
+                self.upload(slot, items, "elrs", up)
+            # PF2-u (owner 2026-11-09): applying a mission to a FLYING drone needs the captain's YES - the captain's own
+            # route applies directly; a copilot's / a single operator's is PENDING until the YES on screen 1 (a copilot
+            # may still STORE a route for a drone in the magazine: preparation, no YES)
+            if st.crew == "captain" and not st.single_op:
+                return apply_now()
+            return self._route_pending(st, m, slot, f, wps, apply_now)
         if self.seq.busy() and self.seq.cur == slot and self.seq.phase not in ("CHECK", ""):
             return self._ack(st, "route", False, ERR_LAUNCH, "UAV %d is being launched now" % slot, slot=slot)
         pos = boat.get("pos")
@@ -1186,6 +1195,40 @@ class UavManager:
         self.routes[slot], self.loaded[slot] = wps, False
         self._ack(st, "route", True, 0, "UAV %d: route of %d points stored (uploaded + read back at the launch)" % (
             slot, len(wps)), slot=slot)
+
+    def _route_pending(self, st, m, slot, f, wps, apply_now):
+        """PF2-u: a route for a FLYING drone from a copilot / single operator waits for the captain's YES (the
+        launch approval's ask_captain). NO / timeout / station gone / a newer route / the drone landed or a pilot took
+        it = nothing changes, the old mission keeps flying."""
+        pend = self.__dict__.setdefault("pend_routes", {})
+        old = pend.get(slot)
+        if old is not None:
+            self.gw.audit("uav_route_pending_replaced", slot=slot, station=old["station"])
+        gen = pend[slot] = {"station": st.id, "user": st.user, "wps": wps, "f": f, "t": time.time()}
+        what = "UAV ROUTE: change the mission of the flying UAV %d (%d points)" % (slot, len(wps))
+
+        def answer(ok, code):
+            if pend.get(slot) is not gen:              # a newer route replaced this question: it approves nothing
+                return
+            pend.pop(slot, None)
+            if not ok:
+                return self._ack(st, "route", False, code or ERR_UAV, "UAV %d: the new mission was not approved (%s) "
+                                 "- the old one goes on" % (slot, code), slot=slot)
+            if self.flying.get(slot) is not f or self.pilot_locked(slot):
+                return self._ack(st, "route", False, uavcheck.ERR_ROUTE, "UAV %d: no longer flying its mission "
+                                 "(landed / flown by hand) - the route was dropped" % slot, slot=slot)
+            apply_now()
+        self._ack(st, "route", True, 0, "UAV %d: route of %d points pending the captain's YES (the old mission "
+                  "goes on)" % (slot, len(wps)), slot=slot, pending=True)
+        self.gw.stations.ask_captain(st, m, what, answer)
+
+    def pend_expire_tick(self):
+        """PF2-u: a pending route is dropped when its drone is not flying its mission any more or a pilot took it."""
+        pend = self.__dict__.get("pend_routes")
+        for slot, g in list((pend or {}).items()):
+            if self.flying.get(slot) is not g["f"] or self.pilot_locked(slot):
+                pend.pop(slot, None)
+                self.gw.audit("uav_route_pending_dropped", slot=slot, station=g["station"])
 
     def launch_conditions(self, slots):
         """[] = a launch of these slots may start now, else the reasons (125 / 122)."""

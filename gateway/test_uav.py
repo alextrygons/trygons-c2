@@ -2601,7 +2601,7 @@ def ua29_review_router():
         m.upload = lambda n, items, via, cb: calls.append("upload") or cb(True, "")
         m.set_current = lambda n, s, via, cb: calls.append("set_current %d" % s) or cb(0, "")
         m.cmd = lambda n, via, c, p, cb: calls.append("cmd %d" % c) or cb(0, "")
-        st = _St(3)
+        st = _St(3, crew="captain")                     # PF2-u: only the captain's own route applies at once
         m.route_msg(st, {"t": "uav_route", "target": 1, "wps": [{"lat": 37.8215, "lon": 23.6005, "alt": 40}]})
         report("UA29 U3 review M1 / M6 (router + simulated drone): one command job per slot (the older one answered "
                "'replaced'), a cancel answers the pending command, a drone in AUTO ignores MISSION_START's first item "
@@ -2617,6 +2617,100 @@ def ua29_review_router():
     finally:
         w.close()
         fl.stop()
+
+
+def ua37_pf2u_flying_route_needs_yes():
+    """PF2-u (owner 2026-11-09): a route for a FLYING drone from a copilot / single operator is PENDING until the
+    captain's YES (ask_captain, as the launch approval); the captain's own applies at once; NO / timeout / replaced /
+    landed / pilot = nothing changes; a drone in the magazine still STORES a copilot's route; a pilot lock = 127."""
+    from uav import manager as mgr, pilot
+    res = {}
+
+    def build():
+        g = _G()
+        asks = []
+        g.stations = type("X", (), {"stations": {}, "ask_captain": lambda _s, st, m, what, act: asks.append(
+            (st, m, what, act))})()
+        mm = mgr.UavManager({"enabled": True, "slots": [{"usb": "udp:127.0.0.1:1"}] * 6}, g)
+        calls = []
+        mm.proc = type("P", (), {"poll": lambda _s: None})()
+        mm.worker = {"links": {"1": {"present": False}}, "radio": {"1": {"present": True}},
+                     "drones": {"1": {"armed": True, "hb_age": 0.2, "lat": 37.8205, "lon": 23.6, "rel_alt": 40.0,
+                                      "batt_pct": 90}}}
+        mm.worker_t = time.time()
+        mm.flying[1] = {"phase": "mission", "home": (37.82, 23.60)}
+        mm.boat = lambda: {"pos": (37.82, 23.60), "launch_why": []}
+        mm.upload = lambda n, items, via, cb: calls.append("upload") or cb(True, "")
+        mm.set_current = lambda n, s, via, cb: calls.append("set_current") or cb(0, "")
+        mm.cmd = lambda n, via, c, p, cb: calls.append("start") or cb(0, "")
+        return mm, asks, calls
+    msg = {"t": "uav_route", "target": 1, "wps": [{"lat": 37.8215, "lon": 23.6005, "alt": 40}]}
+    # copilot: pending, nothing sent to the drone until the YES
+    mm, asks, calls = build()
+    cop = _St(3)
+    mm.route_msg(cop, dict(msg))
+    res["pending"] = (not calls and len(asks) == 1 and cop.sent[-1].get("ok") and cop.sent[-1].get("pending") and
+                      "pending the captain" in cop.sent[-1]["text"] and mm.routes.get(1) is None)
+    asks[0][3](True, 0)
+    res["yes"] = calls == ["upload", "set_current", "start"] and cop.sent[-1]["ok"] and "started" in cop.sent[-1]["text"]
+    # NO / timeout (code) = unchanged, the copilot is told
+    mm, asks, calls = build()
+    cop = _St(3)
+    mm.route_msg(cop, dict(msg))
+    asks[0][3](False, 112)
+    res["no"] = not calls and not cop.sent[-1]["ok"] and "old one goes on" in cop.sent[-1]["text"] and 1 not in mm.routes
+    # a newer route replaces the older question: the old answer approves nothing
+    mm, asks, calls = build()
+    cop = _St(3)
+    mm.route_msg(cop, dict(msg))
+    mm.route_msg(cop, dict(msg))
+    asks[0][3](True, 0)
+    res["replaced"] = not calls
+    asks[1][3](True, 0)
+    res["replaced"] = res["replaced"] and calls == ["upload", "set_current", "start"]
+    # landed / pilot took it before the YES = dropped
+    mm, asks, calls = build()
+    cop = _St(3)
+    mm.route_msg(cop, dict(msg))
+    mm.flying.pop(1)
+    mm.pend_expire_tick()
+    asks[0][3](True, 0)
+    res["landed"] = not calls and not mm.pend_routes
+    mm, asks, calls = build()
+    mm.route_msg(cop, dict(msg))
+    mm.pilots = type("PL", (), {"locks": {1: pilot.Lock(9, "anna", time.time())}})()
+    asks[-1][3](True, 0)
+    res["pilot"] = not calls and not cop.sent[-1]["ok"]
+    # the captain's own route applies at once, no question
+    mm, asks, calls = build()
+    cap = _St(4, crew="captain")
+    mm.route_msg(cap, dict(msg))
+    res["captain"] = calls == ["upload", "set_current", "start"] and not asks
+    # a single operator asks his own question (ask_captain, confirm self)
+    mm, asks, calls = build()
+    so = _St(5, crew="captain")
+    so.single_op = True
+    mm.route_msg(so, dict(msg, confirm="self"))
+    res["single"] = not calls and len(asks) == 1 and asks[0][1].get("confirm") == "self"
+    asks[0][3](True, 0)
+    res["single"] = res["single"] and calls == ["upload", "set_current", "start"]
+    # a pilot-locked drone stays refused 127, before any question
+    mm, asks, calls = build()
+    mm.pilots = type("PL", (), {"locks": {1: pilot.Lock(9, "anna", time.time())}})()
+    cop = _St(3)
+    mm.route_msg(cop, dict(msg))
+    res["127"] = not asks and not calls and cop.sent[-1]["code"] == pilot.ERR_PILOT
+    # a drone in the magazine: a copilot only STORES the route (preparation, no YES)
+    mm, asks, calls = build()
+    mm.flying.clear()
+    mm.worker["links"]["1"] = {"present": True}
+    cop = _St(3)
+    mm.route_msg(cop, dict(msg))
+    res["store"] = not asks and not calls and cop.sent[-1]["ok"] and "stored" in cop.sent[-1]["text"]         or (not asks and not calls and cop.sent[-1].get("ok") is not None and 1 in mm.routes)
+    report("UA37 PF2-u: a route for a FLYING UAV from a copilot / single operator is pending the captain's YES "
+           "(nothing sent to the drone before it; NO / timeout / replaced / landed / pilot = the old mission goes on), "
+           "the captain's own applies at once, a pilot lock stays 127, a magazine drone still stores a copilot's route",
+           all(res.values()), str(res))
 
 
 # ------------------------------------------------------------------------------------------------------ U5 ---------
@@ -3484,7 +3578,7 @@ def main():
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126, ua37_helm_forward,
-             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6]
+             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

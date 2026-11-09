@@ -5821,7 +5821,10 @@ class App:
         """A UAV route -> the gateway (it checks energy / range / altitude / no-fly + air geofence again)."""
         if not isinstance(self.link, GatewayLink):
             return self.say(T("uav.not_connected"), RED)
-        self.link.send_msg(uavroute.route_msg(target, pts) if alt is None else uavroute.route_msg(target, pts, alt))
+        msg = uavroute.route_msg(target, pts) if alt is None else uavroute.route_msg(target, pts, alt)
+        if self.single_op:
+            msg["confirm"] = "self"                  # PF2-u: a flying UAV's new mission asks the operator's own YES
+        self.link.send_msg(msg)
         self.say(T("uavr.sent", n=len(pts)))
 
     def uav_notices(self, uav):
