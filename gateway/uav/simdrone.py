@@ -436,7 +436,8 @@ class Drone:
                     "alt": int(self.alt * 1000), "relative_alt": int(self.alt * 1000), "vx": int(self.vn * 100),
                     "vy": int(self.ve * 100), "vz": int(-self.vz * 100), "hdg": int(math.degrees(self.yaw) % 360 * 100)}
         if name == "ATTITUDE":
-            return {"time_boot_ms": int(self.clock() * 1000) & 0xFFFFFFFF, "yaw": self.yaw}
+            return {"time_boot_ms": int(self.clock() * 1000) & 0xFFFFFFFF, "yaw": self.yaw,
+                    "roll": 0.0, "pitch": 0.0}          # PF4: a level simulated hover
         if name == "VFR_HUD":
             return {"groundspeed": math.hypot(self.vn, self.ve), "alt": self.alt, "climb": self.vz,
                     "heading": int(math.degrees(self.yaw) % 360), "throttle": 50 if self.armed else 0}

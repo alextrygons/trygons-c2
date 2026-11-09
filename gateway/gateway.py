@@ -141,6 +141,7 @@ class Gateway:
                             if self.storage.usable else None)
         self.stations.ext["sar_mark"] = self._sar_mark
         self.stations.ext["sar_get"] = self._sar_get
+        self.stations.ext["sar_still"] = self._sar_still
         # collision avoidance (section D): every decision into the audit log
         self.avoider = Avoider(cfg.get("avoid"), self.shallow,
                                log=lambda text, **kw: self.audit("avoid", text=text, **kw))
@@ -472,9 +473,49 @@ class Gateway:
                    lat=mk.get("lat"), lon=mk.get("lon"))
         st.send({"t": "sar_ack", "ok": ok, "id": mid, "code": 0 if ok else 108, "text": text})
         if ok and text != "same":
+            try:
+                self.recorder.note_sar({"op": op, "id": mid, "lat": mk.get("lat"), "lon": mk.get("lon"),
+                                        "kind": mk.get("kind"), "by": st.user})
+            except Exception:
+                pass
             msg = self._sar_list_msg()
             for s_ in list(self.stations.stations.values()):
                 s_.send(msg)
+
+    def _sar_still(self, st, m):
+        """PF4: the small still image (<= 40 KB JPEG: one station line is 64 KB) of a point marked from the video -> <data>/sar/<id>.jpg, linked to
+        the marker and to every open SAVE event. Any crew role, never a VIEWER (128). Bookkeeping only."""
+        import base64
+        mid = str(m.get("id") or "")
+        res = {"t": "sar_ack", "what": "still", "id": mid}
+        if st.role == "VIEWER":
+            return st.send(dict(res, ok=False, code=128, text="SAR: not allowed"))
+        try:
+            jpg = base64.b64decode(str(m.get("jpg_b64") or ""), validate=True)
+        except (ValueError, TypeError):
+            jpg = b""
+        if not jpg or len(jpg) > 40 * 1024 or jpg[:2] != b"\xff\xd8":
+            return st.send(dict(res, ok=False, code=108, text="bad still image"))
+        if not any(mk["id"] == mid for mk in self.sar.list()):
+            return st.send(dict(res, ok=False, code=108, text="no such marker"))
+        name = mid + ".jpg"
+        try:
+            folder = self.storage.folder("sar") if self.storage is not None and self.storage.usable else None
+            if folder:
+                with open(os.path.join(folder, name), "wb") as f:
+                    f.write(jpg)
+        except OSError as e:
+            return st.send(dict(res, ok=False, code=108, text="still not stored: %s" % e))
+        self.sar.set_still(mid, name)
+        self.audit("sar", station=st.id, user=st.user, op="still", id=mid, ok=True, bytes=len(jpg))
+        try:
+            self.recorder.note_sar({"op": "still", "id": mid, "file": "sar_" + name, "by": st.user}, jpg, name)
+        except Exception:
+            pass
+        st.send(dict(res, ok=True, code=0, text="still stored"))
+        msg = self._sar_list_msg()
+        for s_ in list(self.stations.stations.values()):
+            s_.send(msg)
 
     def _academy_msg(self, st, m):
         """Academy levels from a station (CLAUDE.md S, step 16): the file is signed by the shore PC's academy

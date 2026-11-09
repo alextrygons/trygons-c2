@@ -32,7 +32,7 @@ from video, PF5 ADS-B, PF6 demo) build from. Defaults marked TO CONFIRM are PROG
   "SAR: not allowed" (stations.GW_RESULTS + lang result.128).
   The gateway answers `sar_ack {ok, id, code}` and sends `sar_markers {rev, list}` to every station
   on every change + on login; gw_status "sar" {rev, n_open} lets a station re-ask (`sar_get {}`).
-- NEW `sar_still {id, jpg_b64}` (<= 200 KB, the station's crop of the clicked spot) -> stored in
+- NEW `sar_still {id, jpg_b64}` (<= 40 KB because one station line is 64 KB; the station's crop of the clicked spot) -> stored in
   <data>/sar/<id>.jpg, kept with the SAVE event of that moment (recorder event folder link).
 - No gateway / link down: the station keeps a LOCAL marker (groundstation/sar.py LocalSar, RAM +
   the file groundstation/sar/local.jsonl, gitignored; TRYGONS_TEST = a temp folder) and sends it as "add" when the gateway
@@ -140,8 +140,22 @@ speed, (UAV) altitude. Turns to STARBOARD (IAMSAR standard) unless "port" is cho
   Defaults: sigma_att 1.0 deg boat / 2.0 deg UAV, sigma_cal 0.5 deg, sigma_hdg 2 deg, sigma_pix
   1.5 px at the video's resolution.
 - Refused (with the reason, nothing made): alpha <= 0.3 deg (at / above the horizon), d > max_range
-  (boat 1000 m, UAV 1500 m), sigma_d / d > 0.5 («πολύ αβέβαιο»), no calibration, attitude data older
+  (boat 1000 m, UAV 1500 m), sigma_d / d > 0.35 («πολύ αβέβαιο»), no calibration, attitude data older
   than 1 s, no position.
+- PF4 AS BUILT (measured refinements of the formulas above, groundstation/sar_mark.py): sigma_alpha^2 also holds
+  the roll error x the click's sideways offset (sigma_att^2 (1 + x^2), x = (u - 0.5) / fx: big in a 120 deg UAV
+  view); sigma_d = half of h / tan(alpha - s) - h / tan(alpha + s) (equal to h / sin^2 alpha x s for small s,
+  honest when s is a large part of alpha); the refusal limit is sigma_d / d > 0.35 (was 0.5 here: at 0.5 the
+  true place was inside the circle in only 52-75 % of the far UAV cases, selection bias at the edge). Measured
+  (test_sar MK4, 12000 trials, bands = the ESTIMATED range): boat 10-20 m error 2 m / circle 5 m / inside 97 %,
+  20-35 m 4 / 12 / 86 %, 35-50 m 9 / 25 / 88 %; UAV at 50 m 50-150 m 8 / 21 / 93 %, 150-400 m 47 / 132 / 84 %,
+  400-900 m 133 / 281 / 81 %. A boat camera (3 m high) gives a useful position only to about 50 m.
+- PF4 AS BUILT, data: the router adds roll / pitch / att_age to the drone record (ATTITUDE, router_worker.py only;
+  allow.py unchanged), the manager adds the fixed mount "camera" per slot; station message sar_still {id, jpg_b64}
+  (<= 40 KB: one station line is 64 KB) -> <data>/sar/<id>.jpg + marker "still" + every OPEN SAVE event's
+  event.json "sar" list (recorder.note_sar, also every marker change); sar_ack {what "still"}. Click = screen 1's
+  free video (driver.mark_at) / screen 2's camera view / the key `mark_key` (K) under the mouse; the menu on a marker
+  asks a vertical YES / NO before route / UAV / delete; a point deleted on another station disappears here.
 - Result = `sar_mark add` kind "point" (est true, r_m, src) + `sar_still` (a 160 x 120 crop around
   the click). Actions on the marker: route there (stand-off if "person"), UAV there, PF2 datum,
   rename, delete. Accuracy measured in the sim on known points (numbers into MANUAL).

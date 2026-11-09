@@ -175,6 +175,8 @@ class MapView:
         if p is None or grabbed or abs(x - p[0]) + abs(y - p[1]) > 4 or not self.view:
             return
         la, lo = self.P()[1](x, y)
+        if not self.edit and getattr(self.app, "sar_map_hit", None) and self.app.sar_map_hit(x, y):
+            return                                  # a marked point: its menu (step PF4)
         if not self.edit and getattr(self.app, "uav_map_hit", None) and self.app.uav_map_hit(x, y):
             return                                  # a UAV symbol: its video (step U4)
         if self.edit:
@@ -267,6 +269,7 @@ class MapView:
             uavmap.draw(c, P, a.uav_store, th, f_small, k=max(1.0, theme.unit(w, h)))
         if getattr(a, "sar", None) is not None:
             self.draw_sar(c, P, th, f_small)
+            self.draw_points(c, P, th, f_small)
             self.draw_pattern(c, P, th, f_small)
         pk = getattr(a, "track_pick", None)
         if pk:
@@ -361,6 +364,26 @@ class MapView:
                               tags=("sar", "sar_drift"))
                 c.create_text(ex + 6, ey + rpx + 4, text=T("mob.estimate"), anchor="nw", fill=col, font=font,
                               tags=("sar", "sar_drift"))
+
+    def draw_points(self, c, P, th, font):
+        """Points marked from the video (PF4): a diamond, the name, the dashed uncertainty circle (the radius grows with
+        the range) and ALWAYS the ESTIMATE text. A person in the water gets the extra note (not red: it is no alarm)."""
+        a = self.app
+        col = theme.CAUTION
+        for m in a.mark_points():
+            x, y = P(m["lat"], m["lon"])
+            r_m = float(m.get("r_m") or 0.0)
+            rpx = max(0.0, abs(P(m["lat"] + r_m / 111320.0, m["lon"])[1] - y))
+            if rpx > 3:
+                c.create_oval(x - rpx, y - rpx, x + rpx, y + rpx, outline=col, width=2, dash=(5, 4),
+                              tags=("sar", "sar_point"))
+            c.create_polygon(x, y - 8, x + 8, y, x, y + 8, x - 8, y, outline=col, fill="", width=3,
+                             tags=("sar", "sar_point"))
+            name = m.get("name") or T("mark.name", n=m.get("n"))
+            c.create_text(x + 12, y - 10, text=T("mark.label", name=name, r="%d" % round(r_m)), anchor="sw",
+                          fill=col, font=font, tags=("sar", "sar_label"))
+            note = T("mark.estimate") + ("  ·  " + T("mark.person_note") if m.get("person") else "")
+            c.create_text(x + 12, y + 8, text=note, anchor="nw", fill=col, font=font, tags=("sar", "sar_label"))
 
     def draw_pattern(self, c, P, th, font):
         """The search pattern being prepared (PF2): numbered legs, the datum; CAUTION colour = not sent yet."""

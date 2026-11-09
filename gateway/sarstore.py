@@ -88,6 +88,17 @@ class SarStore:
     def status(self):
         return {"rev": self.rev, "n_open": self.n_open()}
 
+    def set_still(self, mid, name):
+        """PF4: the small still image of a marked point is stored (file name only; the bytes are in <data>/sar/)."""
+        with self._lock:
+            cur = self.markers.get(mid)
+            if cur is None:
+                return False
+            cur["still"] = str(name)[:80]
+            self.rev += 1
+            self._save()
+            return True
+
     def _next_n(self, kind):
         return 1 + max([int(m.get("n") or 0) for m in self.markers.values() if m.get("kind") == kind] or [0])
 

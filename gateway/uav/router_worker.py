@@ -202,6 +202,8 @@ class Drone:
         self.mission_cur, self.mcur_t = None, 0.0          # MISSION_CURRENT (U4 review LOW: set_current read-back)
         # step U4: the map / HUD values + the battery rule
         self.hdg = self.gs = self.climb = None
+        self.roll = self.pitch = None                      # PF4: ATTITUDE roll / pitch (deg), for marking a point from video
+        self.att_t = 0.0
         self.cog = None                                    # U6 review L2: course over ground (GLOBAL_POSITION_INT)
         self.batt_a = self.used_mah = None
         self.judge = None                                  # battery.judge() of the last second
@@ -230,6 +232,9 @@ class Drone:
                 "batt_v": self.batt_v, "hdg": None if self.hdg is None else round(self.hdg, 1),
                 "gs": None if self.gs is None else round(self.gs, 1),
                 "cog": None if self.cog is None else round(self.cog, 1),
+                "roll": None if self.roll is None else round(self.roll, 2),
+                "pitch": None if self.pitch is None else round(self.pitch, 2),
+                "att_age": round(now - self.att_t, 2) if self.att_t else None,
                 "climb": None if self.climb is None else round(self.climb, 1),
                 "batt_a": None if self.batt_a is None else round(self.batt_a, 1), "used_mah": self.used_mah,
                 "judge": self.judge, "text": self.statustext}
@@ -400,6 +405,8 @@ class Router:
             elif m.name == "ATTITUDE":
                 if f.get("yaw") is not None and math.isfinite(f["yaw"]):
                     d.hdg = math.degrees(f["yaw"]) % 360.0
+                if all(f.get(k) is not None and math.isfinite(f[k]) for k in ("roll", "pitch")):
+                    d.roll, d.pitch, d.att_t = math.degrees(f["roll"]), math.degrees(f["pitch"]), now
             elif m.name == "RADIO_STATUS":
                 link.radio = {"rssi": f.get("rssi"), "remrssi": f.get("remrssi"), "rxerrors": f.get("rxerrors"),
                               "t": now}

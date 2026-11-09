@@ -28,6 +28,19 @@
   PS4  nothing is sent without the YES (screen 1's vertical box or the station's own); a UAV mission goes through
        uav_route with an altitude per waypoint; NO = nothing; without a gateway a UAV target is refused
   PS5  the MOB offer «ΜΟΤΙΒΟ ΕΡΕΥΝΑΣ»: the MOB is the datum, the preview is drawn, nothing is sent
+  MK1  mark from the video, the boat's calibrated camera: a known point (the AR overlay's own forward model) is marked back
+       within centimetres, with roll / pitch; the circle grows with the range
+  MK2  a UAV's fixed camera: altitude + attitude + heading + mount, round trip, farther than the boat
+  MK3  refusals with their reason: horizon, too uncertain, no calibration, no / old attitude, no / old position, a UAV
+       too low, beyond the range, NaN / outside the picture, a bad camera mount
+  MK4  accuracy with the stated noise (12000 trials): error and circle per range band, inside the circle >= 78 %
+  MK5  the station: a click = ONE marker (point, ESTIMATE, r_m, camera) to the gateway, nothing else sent; refusals
+  MK6  the small still image (160 x 120), sent once after the marker's acknowledgement
+  MK7  a UAV video click; old attitude / no gateway refused
+  MK8  the actions need the YES (route, stand-off route for a person, UAV, delete); pattern datum; rename / person shared
+  MK9  screen 2's camera view click + the key K, screen 1's click, the map drawing, a click on a marker
+  MK10 texts: Greek and English keys, the ESTIMATE wording, the manuals
+
   PS6  the panel: opens, switches the pattern, takes typed values, shows the plan numbers and the >50 note, closes
        and clears the preview; Greek and English texts exist
 
@@ -50,6 +63,7 @@ import mob  # noqa: E402
 import proto  # noqa: E402
 import sar as sarmod  # noqa: E402
 import sar_geo  # noqa: E402
+import sar_mark  # noqa: E402
 import sar_pattern as sp  # noqa: E402
 import sarpanel  # noqa: E402
 import program  # noqa: E402
@@ -1013,16 +1027,535 @@ def ps7(env):
     env.reset()
 
 
+# --------------------------------------------------------------------------------------------- PF4: mark a point ----
+
+CAL = {"height_m": 3.0, "tilt_down_deg": 5.0, "hfov_deg": 80.0, "vfov_deg": 45.0, "yaw_deg": 0.0}
+UCAM = {"tilt_down_deg": 30.0, "hfov_deg": 120.0, "vfov_deg": 90.0}
+RES = (640, 360)
+
+
+def _hudar():
+    import hudar
+    return hudar
+
+
+def _project_boat(cal, roll, pitch, heading, boat, true_pt):
+    """The forward model (hudar.Cam, the AR overlay's own): a known point -> its place in the picture."""
+    hudar = _hudar()
+    e, n = hudar.enu(boat[0], boat[1], true_pt[0], true_pt[1])
+    fwd, right = hudar.to_boat(e, n, heading)
+    return hudar.Cam(cal, roll, pitch).project(fwd, right)
+
+
+def _project_uav(alt, roll, pitch, heading, pos, true_pt, mount=UCAM):
+    hudar = _hudar()
+    cal = dict(mount, height_m=alt, yaw_deg=0.0)
+    e, n = hudar.enu(pos[0], pos[1], true_pt[0], true_pt[1])
+    fwd, right = hudar.to_boat(e, n, heading)
+    return hudar.Cam(cal, roll, pitch).project(fwd, right)
+
+
+def _telem(boat, heading, roll, pitch, unc=2.0):
+    return {"est_lat": boat[0], "est_lon": boat[1], "pos_source": 1, "unc_m": unc, "heading": heading,
+            "att_roll": roll, "att_pitch": pitch}
+
+
+def mk1():
+    """The boat's calibrated camera: a known point (forward model of the AR overlay) is marked back at its place within
+    centimetres without noise; the uncertainty circle grows with the range; a heeling, pitching boat is handled."""
+    import sar_mark
+    boat, heading = (LAT, LON), 40.0
+    worst, rs = 0.0, []
+    for roll, pitch in ((0.0, 0.0), (4.0, 0.0), (-6.0, 2.0), (3.0, -3.0)):
+        rs_this = []
+        for d, b in ((12, -25), (20, 0), (30, 15), (45, 30), (60, -10)):
+            tp = sar_geo.dest(boat, (heading + b) % 360.0, d)
+            uv = _project_boat(CAL, roll, pitch, heading, boat, tp)
+            if uv is None or not (0 <= uv[0] <= 1 and 0 <= uv[1] <= 1):
+                continue
+            r = sar_mark.locate_boat(CAL, _telem(boat, heading, roll, pitch), uv[0], uv[1], RES, 0.2)
+            if r.get("why"):
+                rs_this.append(("refused", d, r["why"]))
+                continue
+            err = sar_geo.distance_bearing((r["lat"], r["lon"]), tp)[0]
+            worst = max(worst, err)
+            if roll == 0.0 and pitch == 0.0:
+                rs.append((d, r["r_m"]))
+    grows = all(b[1] > a[1] for a, b in zip(rs, rs[1:])) and len(rs) >= 3
+    report("MK1 the boat's calibrated camera: a known point marked back within %.2f m (no noise), also with roll / "
+           "pitch; the uncertainty circle grows with the range %s" % (worst, [(d, round(r)) for d, r in rs]),
+           worst < 0.5 and grows, "worst error %.3f m; r_m by range %s" % (worst, [(d, round(r, 1)) for d, r in rs]))
+
+
+def mk2():
+    """A UAV's fixed camera: altitude + attitude + heading + mount; the forward model round trip, farther than the boat."""
+    import sar_mark
+    pos, heading, alt = (LAT, LON), 200.0, 50.0
+    worst, rs = 0.0, []
+    for roll, pitch in ((0.0, 0.0), (5.0, -3.0), (-4.0, 4.0)):
+        for d, b in ((40, 0), (100, -20), (250, 25), (500, 5), (900, -10)):
+            tp = sar_geo.dest(pos, (heading + b) % 360.0, d)
+            uv = _project_uav(alt, roll, pitch, heading, pos, tp)
+            if uv is None or not (0 <= uv[0] <= 1 and 0 <= uv[1] <= 1):
+                continue
+            drone = {"lat": pos[0], "lon": pos[1], "alt": alt, "hdg": heading, "roll": roll, "pitch": pitch,
+                     "att_age": 0.3, "alt_age": 0.4, "camera": dict(UCAM)}
+            r = sar_mark.locate_uav(drone, uv[0], uv[1], RES)
+            if r.get("why"):
+                continue
+            err = sar_geo.distance_bearing((r["lat"], r["lon"]), tp)[0]
+            worst = max(worst, err)
+            if roll == 0.0 and pitch == 0.0:
+                rs.append((d, r["r_m"]))
+    grows = len(rs) >= 3 and all(b[1] > a[1] for a, b in zip(rs, rs[1:]))
+    report("MK2 a UAV's fixed camera (50 m, 30 deg down, 120 x 90): a known point marked back within %.2f m, to 900 m "
+           "(the boat's camera gives up at about 60 m: sigma_d/d > 0.5); the circle grows with the range" % worst,
+           worst < 1.0 and grows, "worst %.3f m; r_m by range %s" % (worst, [(d, round(r)) for d, r in rs]))
+
+
+def mk3():
+    """Refusals: at / above the horizon, beyond the range, too uncertain, no calibration, old / missing attitude, no
+    position, a UAV too low, NaN / out of picture - each with its reason, nothing made."""
+    import sar_mark
+    boat = (LAT, LON)
+    t = _telem(boat, 40.0, 0.0, 0.0)
+    hz = sar_mark.locate_boat(CAL, t, 0.5, 0.30, RES, 0.2)             # above the horizon line
+    far = sar_mark.locate_boat(CAL, t, 0.5, 0.41, RES, 0.2)            # a few pixels below it: 2 degrees too uncertain
+    nocal = sar_mark.locate_boat(None, t, 0.5, 0.8, RES, 0.2)
+    noatt = sar_mark.locate_boat(CAL, dict(t, att_roll=None), 0.5, 0.8, RES, 0.2)
+    nopos = sar_mark.locate_boat(CAL, dict(t, pos_source=0), 0.5, 0.8, RES, 0.2)
+    old = sar_mark.locate_boat(CAL, t, 0.5, 0.8, RES, 9.0)
+    nan = sar_mark.locate_boat(CAL, t, float("nan"), 0.8, RES, 0.2)
+    off = sar_mark.locate_boat(CAL, t, 1.2, 0.8, RES, 0.2)
+    ok = sar_mark.locate_boat(CAL, t, 0.5, 0.8, RES, 0.2)
+    dr = {"lat": LAT, "lon": LON, "alt": 50.0, "hdg": 10.0, "roll": 0.0, "pitch": 0.0, "att_age": 0.3, "alt_age": 0.3}
+    u_hz = sar_mark.locate_uav(dr, 0.5, 0.05, RES)                     # 30 deg down, 45 deg half FOV: the top is 15 deg
+    u_ok = sar_mark.locate_uav(dr, 0.5, 0.6, RES)
+    u_low = sar_mark.locate_uav(dict(dr, alt=2.0), 0.5, 0.6, RES)
+    u_old = sar_mark.locate_uav(dict(dr, att_age=3.0), 0.5, 0.6, RES)
+    u_none = sar_mark.locate_uav(dict(dr, roll=None), 0.5, 0.6, RES)
+    u_pos = sar_mark.locate_uav(dict(dr, lat=None), 0.5, 0.6, RES)
+    u_range = sar_mark.locate_uav(dict(dr, alt=120.0), 0.5, 0.505, RES, dict(sar_mark.DEFAULTS, max_range_uav=200.0))
+    u_cam = sar_mark.locate_uav(dict(dr, camera={"tilt_down_deg": 30, "hfov_deg": 0, "vfov_deg": 90}), 0.5, 0.6, RES)
+    report("MK3 refusals with their reason (nothing made): horizon, too uncertain, no calibration, no / old attitude, "
+           "no position, old position, NaN / outside the picture; UAV: horizon, too low, old attitude, no position, "
+           "beyond the range, bad camera mount",
+           hz.get("why") == "horizon" and far.get("why") == "uncertain" and nocal.get("why") == "nocal" and
+           noatt.get("why") == "noatt" and nopos.get("why") == "nopos" and old.get("why") == "old" and
+           nan.get("why") == "bad" and off.get("why") == "bad" and not ok.get("why") and u_hz.get("why") == "horizon"
+           and not u_ok.get("why") and u_low.get("why") == "low" and u_old.get("why") == "noatt" and
+           u_none.get("why") == "noatt" and u_pos.get("why") == "nopos" and u_range.get("why") == "range" and
+           u_cam.get("why") == "nocal",
+           "%s" % [x.get("why") for x in (hz, far, nocal, noatt, nopos, old, nan, off, ok, u_hz, u_ok, u_low, u_old,
+                                          u_none, u_pos, u_range, u_cam)])
+
+
+def mk4():
+    """Accuracy with known points and the stated noise (attitude 1 / 2 deg, calibration 0.5 deg, heading 2 deg,
+    1.5 pixels, position): how far off the estimate is and how often the true place is inside the circle. These numbers
+    are in the manual (chapter 23 / 18)."""
+    import random
+    import sar_mark
+    rnd = random.Random(20261109)
+    cfg = sar_mark.DEFAULTS
+    rows = []
+    # the bands are the ESTIMATED range (what the operator sees); the true point is drawn from the whole range
+    trials = {}
+    for kind, span in (("boat", (6.0, 80.0)), ("uav", (30.0, 1100.0))):
+        for _ in range(6000):
+            d, b = rnd.uniform(*span), rnd.uniform(-25, 25)
+            heading = rnd.uniform(0, 360)
+            roll, pitch = rnd.uniform(-5, 5), rnd.uniform(-3, 3)
+            base = (LAT + rnd.uniform(-0.01, 0.01), LON + rnd.uniform(-0.01, 0.01))
+            tp = sar_geo.dest(base, (heading + b) % 360.0, d)
+            s_att = cfg["sigma_att_boat" if kind == "boat" else "sigma_att_uav"]
+            n_roll, n_pitch = roll + rnd.gauss(0, s_att), pitch + rnd.gauss(0, s_att)
+            n_hdg = heading + rnd.gauss(0, cfg["sigma_hdg"])
+            unc = 2.0 if kind == "boat" else cfg["uav_pos_unc_m"]
+            dn, de = rnd.gauss(0, unc / 1.414), rnd.gauss(0, unc / 1.414)
+            n_pos = (base[0] + dn / 111320.0, base[1] + de / (111320.0 * math.cos(math.radians(base[0]))))
+            if kind == "boat":
+                uv = _project_boat(CAL, roll, pitch, heading, base, tp)
+            else:
+                uv = _project_uav(50.0, roll, pitch, heading, base, tp)
+            if uv is None or not (0.02 <= uv[0] <= 0.98 and 0.02 <= uv[1] <= 0.98):
+                continue
+            u = uv[0] + rnd.gauss(0, cfg["sigma_pix"]) / RES[0]
+            v = uv[1] + rnd.gauss(0, cfg["sigma_pix"]) / RES[1]
+            cal_err = rnd.gauss(0, cfg["sigma_cal"])
+            if kind == "boat":
+                cal = dict(CAL, tilt_down_deg=CAL["tilt_down_deg"] + cal_err)
+                r = sar_mark.locate_boat(cal, _telem(n_pos, n_hdg, n_roll, n_pitch, unc), u, v, RES, 0.2)
+            else:
+                drone = {"lat": n_pos[0], "lon": n_pos[1], "alt": 50.0, "hdg": n_hdg, "roll": n_roll,
+                         "pitch": n_pitch, "att_age": 0.3, "alt_age": 0.3,
+                         "camera": dict(UCAM, tilt_down_deg=UCAM["tilt_down_deg"] + cal_err)}
+                r = sar_mark.locate_uav(drone, u, v, RES)
+            if r.get("why"):
+                continue
+            err = sar_geo.distance_bearing((r["lat"], r["lon"]), tp)[0]
+            trials.setdefault(kind, []).append((r["d_m"], err, r["r_m"]))
+    rows = []
+    for kind, bands in (("boat", ((10, 20), (20, 35), (35, 50))), ("uav", ((50, 150), (150, 400), (400, 900)))):
+        for lo, hi in bands:
+            sel = [t for t in trials.get(kind, []) if lo <= t[0] < hi]
+            n = len(sel)
+            if n >= 30:
+                errs = sorted(t[1] for t in sel)
+                rr = sorted(t[2] for t in sel)
+                rows.append((kind, lo, hi, n, errs[n // 2], errs[int(n * 0.9)], rr[n // 2],
+                             100.0 * sum(1 for t in sel if t[1] <= t[2]) / n))
+    ok = bool(rows) and all(r[7] >= 78.0 for r in rows) and len(rows) == 6
+    for r in rows:
+        print("    MK4 %s %4d-%4d m: n %3d  median error %6.1f m  90 %% %6.1f m  median circle %6.1f m  inside %5.1f %%" % r)
+    report("MK4 accuracy with known points + the stated noise (12000 trials): the true place is inside the circle in at "
+           "least 78 %% of the cases in every band by the ESTIMATED range (80-97 %% measured, the further the less; the circle is 2 sigma of a linear model)",
+           ok, "; ".join("%s %d-%d: err %.1f / circle %.1f / %.0f %%" % (r[0], r[1], r[2], r[4], r[6], r[7])
+                         for r in rows))
+
+
+def _setup_boat(env, **kw):
+    ap = env.ap
+    boat = (LAT, LON)
+    env.position(LAT, LON)                              # a real telemetry sample (the screens render from it)
+    t = dict(ap.t)
+    t.update({"est_lat": boat[0], "est_lon": boat[1], "pos_source": 1, "unc_m": 2.0, "heading": 40.0,
+              "att_roll": 0.0, "att_pitch": 0.0})
+    t.update(kw)
+    ap.t, ap.t_rx = t, time.time()
+    ap.gw_status = {"vision": {"camera": dict(CAL)}}
+    ap.mark_last = 0.0
+    return boat
+
+
+def _img(w=640, h=360):
+    from PIL import Image
+    return Image.new("RGB", (w, h), (30, 90, 160))
+
+
+def mk5(env):
+    """The station: a click on the video makes ONE marker (kind point, ESTIMATE, r_m, source camera, time) shared through
+    the gateway; the event log + message say it; a refusal makes nothing and says why; nothing else is sent."""
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    boat = _setup_boat(env)
+    tp = sar_geo.dest(boat, 40.0 + 10.0, 30.0)
+    uv = _project_boat(CAL, 0.0, 0.0, 40.0, boat, tp)
+    env.sent.clear()
+    m = ap.mark_from_video("FRONT-1", uv[0], uv[1], _img())
+    add = [x for x in env.sent if isinstance(x, dict) and x.get("t") == "sar_mark"]
+    err = sar_geo.distance_bearing((m["lat"], m["lon"]), tp)[0] if m else 99.0
+    again = ap.mark_from_video("FRONT-1", uv[0], uv[1], _img())          # a double click within 1 s = the same press
+    others = [k for k in kinds(env.sent) if k != "sar_mark"] + [f for f in env.frames if f in FORBIDDEN]
+    ap.mark_last = 0.0
+    n_before = len(env.sent)
+    hz = ap.mark_from_video("FRONT-1", 0.5, 0.30, _img())                # above the horizon
+    rear = ap.mark_from_video("REAR-LEFT", 0.5, 0.8, _img())             # an uncalibrated camera
+    sent_after = len(env.sent) - n_before
+    ap.mark_last = 0.0
+    ap.gw_status = {}
+    nocal = ap.mark_from_video("FRONT-1", 0.5, 0.8, _img())
+    msg = ap._evlog[-1] if ap._evlog else ""
+    ap.mark_last = 0.0
+    _setup_boat(env, att_roll=None)
+    noatt = ap.mark_from_video("FRONT-1", uv[0], uv[1], _img())
+    report("MK5 a click on the video = ONE marker (point, ESTIMATE, r_m, camera, time) to the gateway, nothing else sent; "
+           "a double click is the same press; above the horizon / an uncalibrated camera / no calibration / no attitude "
+           "= refused with the reason, no marker, nothing sent",
+           m and err < 0.5 and m["kind"] == "point" and m["est"] is True and m["r_m"] > 0 and m["person"] is False and
+           m["src"]["camera"] == "FRONT-1" and m["name"] == "POINT 1" and len(add) == 1 and add[0]["op"] == "add" and
+           add[0]["m"]["id"] == m["id"] and again is None and not others and hz is None and rear is None and
+           sent_after == 0 and nocal is None and noatt is None and len(ap.mark_points()) == 1 and
+           "calibrat" in msg.lower(),
+           "marker %s err %.2f m; sends %s; refusals %s; last event %r" % (
+               m and (m["name"], m["r_m"]), err, kinds(add), [hz, rear, nocal, noatt], msg[:70]))
+    env.reset()
+
+
+def mk6(env):
+    """The small still image: 160 x 120 around the click, kept on this PC, sent to the gateway only after the marker was
+    acknowledged (once); a refused still never refuses the marker."""
+    import base64
+    ap = env.ap
+    boat = _setup_boat(env)
+    tp = sar_geo.dest(boat, 45.0, 25.0)
+    uv = _project_boat(CAL, 0.0, 0.0, 40.0, boat, tp)
+    env.sent.clear()
+    m = ap.mark_from_video("FRONT-1", uv[0], uv[1], _img())
+    held = m["id"] in ap.mark_stills and 0 < len(ap.mark_stills[m["id"]]) <= 40 * 1024
+    from PIL import Image
+    import io
+    im = Image.open(io.BytesIO(ap.mark_stills[m["id"]]))
+    size_ok = im.size == (160, 120)
+    box_ok = sar_mark_box_ok()
+    before = [x for x in env.sent if isinstance(x, dict) and x.get("t") == "sar_still"]
+    ap.on_sar_ack({"ok": True, "id": m["id"], "code": 0, "text": "added"})
+    st = [x for x in env.sent if isinstance(x, dict) and x.get("t") == "sar_still"]
+    ap.on_sar_ack({"ok": True, "id": m["id"], "code": 0, "text": "added"})
+    st2 = [x for x in env.sent if isinstance(x, dict) and x.get("t") == "sar_still"]
+    jpg_ok = st and base64.b64decode(st[0]["jpg_b64"])[:2] == b"\xff\xd8" and st[0]["id"] == m["id"]
+    ap.on_sar_ack({"ok": False, "what": "still", "id": m["id"], "code": 108, "text": "bad still image"})
+    kept = ap.sar.get(m["id"]) is not None and m["id"] not in ap.sar.refused
+    on_disk = os.path.exists(os.path.join(ap.sar.folder, "stills", m["id"] + ".jpg"))
+    report("MK6 the small still image: 160 x 120 around the click (inside the picture at the edges), kept on this PC, sent "
+           "to the gateway ONCE and only after the marker was acknowledged; a refused still never refuses the marker",
+           held and size_ok and box_ok and not before and len(st) == 1 and len(st2) == 1 and jpg_ok and kept and on_disk,
+           "held %s size %s box %s before %d sent %d/%d jpg %s kept %s disk %s" % (
+               held, im.size, box_ok, len(before), len(st), len(st2), bool(jpg_ok), kept, on_disk))
+    env.reset()
+
+
+def sar_mark_box_ok():
+    import sar_mark
+    a = sar_mark.still_box(0.0, 0.0, 640, 360)
+    b = sar_mark.still_box(1.0, 1.0, 640, 360)
+    c = sar_mark.still_box(0.5, 0.5, 640, 360)
+    d = sar_mark.still_box(0.5, 0.5, 100, 80)
+    return a == (0, 0, 160, 120) and b == (480, 240, 640, 360) and c == (240, 120, 400, 240) and d == (0, 0, 100, 80)
+
+
+def mk7(env):
+    """A UAV's video: the drone's altitude + attitude + heading + mount -> the marker; a UAV picture needs the gateway;
+    no fresh attitude = refused; the UAV code never reads anything of the boat's attitude."""
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    _setup_boat(env, att_roll=None, att_pitch=None)                     # the boat's attitude is NOT used for a UAV
+    pos = (LAT + 0.002, LON + 0.002)
+    tp = sar_geo.dest(pos, 130.0, 180.0)
+    uv = _project_uav(60.0, 3.0, -2.0, 100.0, pos, tp)
+    ap.uav_store.drones[2] = {"slot": 2, "lat": pos[0], "lon": pos[1], "alt": 60.0, "hdg": 100.0, "roll": 3.0,
+                              "pitch": -2.0, "att_age": 0.4, "alt_age": 0.5, "camera": dict(UCAM), "in_slot": False}
+    ap.mark_last = 0.0
+    env.sent.clear()
+    m = ap.mark_from_video("UAV-2", uv[0], uv[1], _img())
+    err = sar_geo.distance_bearing((m["lat"], m["lon"]), tp)[0] if m else 99.0
+    ap.mark_last = 0.0
+    ap.uav_store.drones[2]["att_age"] = 5.0
+    old = ap.mark_from_video("UAV-2", uv[0], uv[1], _img())
+    ap.uav_store.drones[2]["att_age"] = 0.4
+    ap.mark_last = 0.0
+    env.rig.gateway_like(False)
+    nogw = ap.mark_from_video("UAV-2", uv[0], uv[1], _img())
+    env.rig.gateway_like(True)
+    ap.link.send_msg = lambda mm: env.sent.append(mm)
+    report("MK7 a click on a UAV video: marked from the drone's altitude + attitude + heading + camera mount (error %.2f "
+           "m), source UAV-2; the boat's own attitude is not needed; an old drone attitude and a missing gateway are "
+           "refused" % err,
+           m and err < 1.0 and m["src"]["camera"] == "UAV-2" and m["est"] and old is None and nogw is None,
+           "marker %s; old %s; no gateway %s" % (m and m["r_m"], old, nogw))
+    env.reset()
+
+
+def mk8(env):
+    """The actions of a marker: nothing moves before the YES; route there (a plain point = the normal route, a person =
+    the stand-off route ending 30 m before it with STOP), UAV there (uav_route + the launch preparation), search pattern
+    here (the datum, nothing sent), person / rename / delete shared."""
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    boat = _setup_boat(env)
+    ap.t["est_lat"], ap.t["est_lon"] = boat
+    dr = FakeDriver()
+    dr.w = env.rig.root
+    ap.driver = dr
+    ap.gw_status = {"uav": {"enabled": True, "next": 1, "slots": []}}
+    ap.mob_have = {"lat": LAT, "lon": LON, "unc_m": 2.0, "sog": 0.0, "t": time.time(), "fresh": True}
+    tp = sar_geo.dest(boat, 60.0, 400.0)
+    m = {"id": "pt_t_1", "kind": "point", "n": 1, "name": "POINT 1", "lat": tp[0], "lon": tp[1], "r_m": 12.0,
+         "est": True, "person": False, "t_utc": "2026-11-09T12:00:00Z", "src": {"camera": "FRONT-1"}, "closed": None}
+    ap.sar.add(m)
+    env.sent.clear()
+    env.uploads.clear()
+    ap.mark_ask("route", m)
+    quiet = not env.uploads and len(dr.asks) == 1
+    q1 = dr.asks[0]
+    dr.asks.clear()
+    q1["no"]()
+    no_ok = not env.uploads
+    ap.mark_ask("route", m)
+    dr.asks.pop(0)["yes"]()
+    plain = len(env.uploads) == 1 and len(env.uploads[0][1]) == 2
+    abs_end = (env.uploads[0][1][-1]["lat"], env.uploads[0][1][-1]["lon"]) if env.uploads else None
+    plain_end_ok = abs_end and sar_geo.distance_bearing(abs_end, tp)[0] < 0.5
+    env.uploads.clear()
+    ap.mark_person(m["id"], True)
+    person_msg = [x for x in env.sent if isinstance(x, dict) and x.get("op") == "person"]
+    ap.mark_ask("route", ap.sar.get(m["id"]))
+    q2 = dr.asks.pop(0)
+    txt2 = q2["text"]
+    q2["yes"]()
+    stand = len(env.uploads) == 1 and env.uploads[0][0] == sar_geo.PROG_END_STOP
+    d_end = sar_geo.distance_bearing((env.uploads[0][1][-1]["lat"], env.uploads[0][1][-1]["lon"]), tp)[0] \
+        if env.uploads else 0
+    env.sent.clear()
+    ap.mark_ask("uav", ap.sar.get(m["id"]))
+    quiet_uav = not [x for x in env.sent if isinstance(x, dict) and x.get("t") in ("uav_route", "uav_launch_prepare")]
+    dr.asks.pop(0)["yes"]()
+    ur = [x for x in env.sent if isinstance(x, dict) and x.get("t") == "uav_route"]
+    up = [x for x in env.sent if isinstance(x, dict) and x.get("t") == "uav_launch_prepare"]
+    env.sent.clear()
+    ap.mark_ask("delete", ap.sar.get(m["id"]))
+    still_there = ap.sar.get(m["id"]) is not None
+    dr.asks.pop(0)["yes"]()
+    dele = [x for x in env.sent if isinstance(x, dict) and x.get("op") == "delete"]
+    ap.sar.add(dict(m, id="pt_t_2", n=2))
+    ap.mark_rename("pt_t_2", "Life ring")
+    ren = [x for x in env.sent if isinstance(x, dict) and x.get("op") == "rename"]
+    sarpanel_ok = True
+    env.uploads.clear()
+    env.sent.clear()
+    sarpanel.open_panel(ap, (m["lat"], m["lon"]), "mark")
+    sarpanel_ok = ap.sar_ctl.datum_src == "mark" and not env.uploads and not env.sent
+    if ap.sar_panel is not None:
+        ap.sar_panel.close()
+    # a point deleted on another station goes here too (the gateway's list no longer holds it); a MOB never does
+    ap.sar.mark_sent("pt_t_2")
+    ap.sar.add({"id": "mob_keep", "kind": "mob", "n": 1, "lat": LAT, "lon": LON, "t_utc": "2026-11-09T12:00:00Z",
+                "closed": None})
+    ap.sar.mark_sent("mob_keep")
+    ap.on_sar_markers({"rev": 9, "list": []})
+    merged = ap.sar.get("pt_t_2") is None and ap.sar.get("mob_keep") is not None
+    report("MK8 the actions: NOTHING moves before the YES (NO = nothing); route there = a 2-point route to a plain point; "
+           "a person = the stand-off route ending %.0f m before it with STOP; UAV there = uav_route + the launch "
+           "preparation; search pattern = the datum only; person / rename / delete are shared; a point deleted elsewhere "
+           "disappears here, a MOB never does" % d_end,
+           quiet and no_ok and plain and plain_end_ok and person_msg and "DANGER FROM THE PROPELLER" in txt2 and stand
+           and abs(d_end - 30.0) < 0.6 and quiet_uav and len(ur) == 1 and len(up) == 1 and ur[0]["target"] == "next" and
+           still_there and len(dele) == 1 and ren and ren[0]["m"]["name"] == "Life ring" and sarpanel_ok and merged,
+           "quiet %s no %s plain %s/%s person %s stand %s %.1f uav %s %d %d delete %s/%s rename %s panel %s merged %s" % (
+               quiet, no_ok, plain, plain_end_ok, bool(person_msg), stand, d_end, quiet_uav, len(ur), len(up),
+               still_there, len(dele), bool(ren), sarpanel_ok, merged))
+    ap.driver = None
+    env.reset()
+
+
+def mk9(env):
+    """The screens: screen 2's camera view click and the key K (not in a text field, not with Ctrl, only the chosen key),
+    screen 1's click on the free video, the map drawing (ESTIMATE text, circle) and a click on the marker finds it."""
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    boat = _setup_boat(env)
+    tp = sar_geo.dest(boat, 40.0, 30.0)
+    uv = _project_boat(CAL, 0.0, 0.0, 40.0, boat, tp)
+    # --- screen 2's camera view
+    ap.camview = "FRONT-1"
+    ap.mark_rect = (100.0, 50.0, 640.0, 360.0)
+    ap.camview_frame = lambda: _img()
+    x, y = 100.0 + uv[0] * 640.0, 50.0 + uv[1] * 360.0
+    outside = ap.camview_mark(10.0, 10.0)
+    m = ap.camview_mark(x, y)
+    ap.mark_last = 0.0
+    # --- the key K
+    ap.mark_cursor = (time.time(), None, x, y)
+    ev = types.SimpleNamespace(keysym="k", state=0, widget=None)
+    ap.mark_key_press(ev)
+    n_key = len(ap.mark_points())
+    ap.mark_last = 0.0
+    ap.mark_key_press(types.SimpleNamespace(keysym="k", state=0x4, widget=None))          # Ctrl+K
+    ap.mark_key_press(types.SimpleNamespace(keysym="m", state=0, widget=None))            # another key
+    entry = types.SimpleNamespace(winfo_class=lambda: "Entry")
+    ap.mark_key_press(types.SimpleNamespace(keysym="k", state=0, widget=entry))           # typing into a field
+    n_same = len(ap.mark_points())
+    ap.mark_last = 0.0
+    ap.mark_cursor = None
+    ap.mark_key_press(ev)                                                                  # no video under the mouse
+    hint = len(ap.mark_points()) == n_same
+    ap.camview = None
+    # --- screen 1's click on the free video (the driver's own mark_at, a stand-in window)
+    import driver as drv
+    calls = []
+    stub = types.SimpleNamespace(pic=(10.0, 20.0, 800.0, 450.0), front_use="FRONT-2",
+                                 app=types.SimpleNamespace(mark_from_video=lambda cam, u, v, img: calls.append((cam, u, v))
+                                                           or "ok"),
+                                 frame_of=lambda cam: None)
+    r1 = drv.DriverScreen.mark_at(stub, 10.0 + 400.0, 20.0 + 225.0)
+    r2 = drv.DriverScreen.mark_at(stub, 5.0, 5.0)
+    click_ok = r1 == "ok" and calls and calls[0][0] == "FRONT-2" and abs(calls[0][1] - 0.5) < 1e-9 and \
+        abs(calls[0][2] - 0.5) < 1e-9 and r2 is None
+    # --- the map
+    class Cv:
+        def __init__(self):
+            self.items = []
+
+        def create_oval(self, *a, **k):
+            self.items.append(("oval", k.get("tags")))
+
+        def create_polygon(self, *a, **k):
+            self.items.append(("poly", k.get("tags")))
+
+        def create_text(self, *a, **k):
+            self.items.append(("text", k.get("text")))
+    cv = Cv()
+    ap.mapwin.draw_points(cv, lambda la, lo: (400 + (lo - LON) * 1e5, 300 - (la - LAT) * 1e5), {}, None)
+    texts = [i[1] for i in cv.items if i[0] == "text"]
+    drawn = any(i[0] == "oval" for i in cv.items) and any(i[0] == "poly" for i in cv.items) and \
+        any("ESTIMATE" in t for t in texts) and any("POINT 1" in t for t in texts)
+    ap.mapwin.view = (LAT, LON, 800, 600)
+    P = lambda la, lo: (400 + (lo - LON) * 1e5, 300 - (la - LAT) * 1e5)   # noqa: E731
+    ap.mapwin.P = lambda: (P, None)
+    mk_ = ap.mark_points()[0]
+    px, py = P(mk_["lat"], mk_["lon"])
+    menus = []
+    ap.mark_menu = lambda x, y, mm: menus.append(mm["id"])
+    hit = ap.sar_map_hit(px + 3, py - 2)
+    miss = ap.sar_map_hit(px + 80, py + 80)
+    del ap.mapwin.P
+    del ap.mark_menu
+    report("MK9 screen 2: a click on the camera view marks (outside the picture nothing), the key K marks under the mouse "
+           "and is ignored with Ctrl / in a text field / for another key / without a video under the mouse; screen 1's "
+           "click on the free video asks for the point under it; the map draws diamond + circle + ESTIMATE text and a "
+           "click on a marker finds it",
+           outside is None and m and n_key == 2 and n_same == n_key and hint and click_ok and drawn and hit and
+           menus == [mk_["id"]] and not miss,
+           "outside %s marker %s keys %d/%d click %s drawn %s hit %s miss %s" % (
+               outside, bool(m), n_key, n_same, click_ok, drawn, hit, miss))
+    env.reset()
+
+
+def mk10():
+    """Texts: every mark.* key in Greek AND English, the Greek ESTIMATE wording, the same placeholders; the design / the
+    manuals state the numbers; no app / hal / allow.py change."""
+    import re
+    root = os.path.dirname(HERE)
+
+    def keys(lang):
+        out = {}
+        with open(os.path.join(HERE, "lang", lang + ".txt"), encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("mark."):
+                    k, _, v = line.rstrip("\r\n").partition(" = ")
+                    out[k] = v
+        return out
+    en, el = keys("en"), keys("el")
+    same = set(en) == set(el) and len(en) >= 35
+    ph = all(sorted(re.findall(r"\{(\w+)\}", en[k])) == sorted(re.findall(r"\{(\w+)\}", el[k])) for k in en if k in el)
+    est = el.get("mark.estimate") == "ΕΚΤΙΜΗΣΗ – όχι για ναυσιπλοΐα" and en.get("mark.estimate") == \
+        "ESTIMATE - not for navigation"
+    man = ""
+    for f in ("MANUAL.txt", "MANUAL_EL.txt"):
+        with open(os.path.join(root, f), encoding="utf-8") as fh:
+            man += fh.read()
+    manual_ok = "MARK A POINT" in man and "ΣΗΜΑΝΣΗ ΣΗΜΕΙΟΥ" in man
+    report("MK10 the texts: every mark.* key in Greek and English with the same placeholders, the ESTIMATE wording, both "
+           "manuals have the chapter", same and ph and est and manual_ok,
+           "keys %d/%d placeholders %s estimate %s manuals %s" % (len(en), len(el), ph, est, manual_ok))
+
+
 def main():
     import tempfile
     tmp = tempfile.mkdtemp(prefix="trygons_sar_")
     mb8()
     ps1()
+    mk1()
+    mk2()
+    mk3()
+    mk4()
+    mk10()
     rig = ts.Rig()
     env = None
     try:
         env = Env(rig, tmp)
-        for fn in (mb1, mb2, mb3, mb4, mb5, mb6, mb7, mb9, mb10, ps2, ps3, ps4, ps5, ps6, ps7):
+        keep_t = (rig.ap.t, rig.ap.t_rx)
+        for fn in (mb1, mb2, mb3, mb4, mb5, mb6, mb7, mb9, mb10, ps2, ps3, ps4, ps5, ps6, ps7, mk5, mk6, mk7, mk8, mk9):
             try:
                 fn(env)
             except Exception as e:
@@ -1037,6 +1570,7 @@ def main():
     finally:
         if env:
             env.restore()
+            rig.ap.t, rig.ap.t_rx = keep_t
         rig.close()
     bad = results.count(False)
     print("SAR STATION TESTS: %d passed, %d failed" % (len(results) - bad, bad))

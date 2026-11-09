@@ -291,6 +291,22 @@ class Recorder:
         with self.lock:
             return self._trigger(kind, text, who, now, eid)
 
+    def note_sar(self, entry, jpg=None, name=None):
+        """PF4 (docs/sar_design.md 1): a search-and-rescue marker change goes into every OPEN SAVE event (event.json
+        "sar" list); a marker's still image is copied into the event folder. Never blocks (small writes), never raises."""
+        with self.lock:
+            for ev in self.events:
+                if ev.get("keep") or ev.get("state") == "closed":
+                    continue
+                try:
+                    ev.setdefault("sar", []).append(dict(entry, utc=self.gw.clock.stamp()))
+                    if jpg and name:
+                        with open(os.path.join(ev["path"], "sar_" + name), "wb") as f:
+                            f.write(jpg)
+                    self._write(ev)
+                except Exception as e:                  # a bookkeeping error never stops anything
+                    log.warning("SAVE %s: sar note: %s", ev.get("id"), e)
+
     def ring_have_s(self, now=None):
         """How far back the ring reaches now (the longest camera), s."""
         now = time.time() if now is None else now

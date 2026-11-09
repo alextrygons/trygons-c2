@@ -8803,6 +8803,214 @@
 "text": "* UAV: a mission with the altitude on every waypoint; it passes the UAV route checks (energy, range, altitude, no-fly zones) and ends in a hover over the last point. A UAV takes at most 20 waypoints: the panel shows the count and the limit and refuses before the YES. The search pattern is a tool to plan a search. It is no guarantee that the person is found: wind and current move the datum, and the screen does not know the wind."
 },
 {
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:678",
+"kind": "manual",
+"lines": [
+4261,
+4265
+],
+"term": "",
+"text": "What it is: you see something on the water in a camera picture (a person, a float, a boat) and want to put it on the map. Click on it. The station works out where it is from the camera and makes a marker \"POINT n\". The marker is an ESTIMATE - not for navigation: it is drawn with a dashed circle that shows how sure the position is. It only makes a marker; it never moves the boat or a UAV."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:679",
+"kind": "manual",
+"lines": [
+4267,
+4272
+],
+"term": "",
+"text": "How to mark: * Click on the picture: on screen 1 on the free video (not on a button or a box of the HUD), on screen 2 in the camera view (also a UAV video). * Or move the mouse over the picture and press the key K (setting mark_key). The key does nothing while you type into a text field, and it is never a joystick button."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:680",
+"kind": "manual",
+"lines": [
+4273,
+4278
+],
+"term": "",
+"text": "* Which cameras: the calibrated front camera of the boat (FRONT-1 / FRONT-2, the same calibration as the AR overlays) and the camera of a UAV. The rear cameras have no calibration and are refused. * It needs the boat's roll, pitch and heading not older than 1 second (for a UAV: its own attitude and height above the water) and a position. If anything is missing the screen says which and NO marker is made."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:681",
+"kind": "manual",
+"lines": [
+4280,
+4283
+],
+"term": "",
+"text": "How the place is worked out: the picture point gives an angle below the horizon; with the height of the camera above the water that gives the distance, and the direction comes from the heading plus the sideways angle in the picture. The boat's roll and pitch are taken into account."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:682",
+"kind": "manual",
+"lines": [
+4285,
+4289
+],
+"term": "",
+"text": "The uncertainty circle (the radius is about 2 sigma) grows with the range. It includes the attitude error (boat 1 degree, UAV 2 degrees), the calibration (0.5 degree), the heading (2 degrees), 1.5 pixels of the click and the position error of the boat or the UAV. Measured in the simulator with known points and these errors (12000 trials; the bands are the estimated range):"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:683",
+"kind": "manual",
+"lines": [
+4290,
+4290
+],
+"term": "boat camera",
+"text": "boat camera 10-20 m: typical error 2 m, circle 5 m, true place inside 97 %"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:684",
+"kind": "manual",
+"lines": [
+4291,
+4291
+],
+"term": "boat camera",
+"text": "boat camera 20-35 m: typical error 4 m, circle 12 m, inside 86 %"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:685",
+"kind": "manual",
+"lines": [
+4292,
+4292
+],
+"term": "boat camera",
+"text": "boat camera 35-50 m: typical error 9 m, circle 25 m, inside 88 %"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:686",
+"kind": "manual",
+"lines": [
+4293,
+4293
+],
+"term": "UAV at 50 m",
+"text": "UAV at 50 m 50-150 m: typical error 8 m, circle 21 m, inside 93 %"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:687",
+"kind": "manual",
+"lines": [
+4294,
+4294
+],
+"term": "UAV at 50 m",
+"text": "UAV at 50 m 150-400 m: typical error 47 m, circle 132 m, inside 84 %"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:688",
+"kind": "manual",
+"lines": [
+4295,
+4295
+],
+"term": "UAV at 50 m",
+"text": "UAV at 50 m 400-900 m: typical error 133 m, circle 281 m, inside 81 %"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:689",
+"kind": "manual",
+"lines": [
+4296,
+4299
+],
+"term": "",
+"text": "The further the point, the less sure: a boat camera is low on the water, so it gives a useful position only to about 50 m. For anything further use a UAV. When the click is REFUSED (with the reason on the screen, nothing is made):"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:690",
+"kind": "manual",
+"lines": [
+4300,
+4303
+],
+"term": "",
+"text": "* at or above the horizon - click on the water; * too far (boat 1000 m, UAV 1500 m) or too uncertain at that distance (the error would be more than a third of the distance); * no calibration, no fresh attitude, no position, a UAV too low (below 5 m)."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:691",
+"kind": "manual",
+"lines": [
+4305,
+4310
+],
+"term": "",
+"text": "The marker: the name POINT n, the dashed circle, the text ESTIMATE - not for navigation, the time, the camera, and a small still image (160 x 120 pixels around the click) kept for the debrief. All stations see it (through the gateway); without a gateway it stays on this PC and goes to the gateway later. It is in the station log, the gateway audit log and in the event of a SAVE that is open at that moment."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:692",
+"kind": "manual",
+"lines": [
+4312,
+4317
+],
+"term": "",
+"text": "Click on the marker on the map for its menu: * Go there: a route through the normal route upload (all checks). Every action first asks a vertical YES / NO; nothing moves without the captain. If you set the marker as \"Person in the water\", the route ENDS 30 m before it with the final action STOP (idle, neutral, STANDBY) and the final approach is by hand: DANGER FROM THE PROPELLER."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "MARK A POINT FROM THE VIDEO (step PF4)",
+"id": "en:693",
+"kind": "manual",
+"lines": [
+4318,
+4322
+],
+"term": "",
+"text": "* UAV there: the next UAV flies over the point at 30 m (normal checks and launch approval). * Search pattern here: the point is the datum of the search pattern panel. * Person in the water / Not a person, Rename, Delete the marker (all stations). The estimate is no guarantee: the thing may have moved since the picture."
+},
+{
 "ch": "tour",
 "chapter": "Welcome",
 "heading": "The guided tour",
@@ -10793,7 +11001,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "62dffbdb02e3c03fd4bad8cb4e29e084bbaacf129491d6490cdba924118e4254",
+"MANUAL.txt": "3f444e3ea3b3594aa229b1e4ee1dfbe45bf549ee3119f5a8192636869e43a07e",
 "academy/content/tour.json": "3405a9151d9c13b14bd7a626de84c0a7c7eabc932425b83e5cf69aef4f5a01af",
 "groundstation/assistant/index.py": "b40e12d9161886a1b837a62448dd97a313e199bf58924e454aacba759583d99d"
 },

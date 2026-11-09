@@ -38,7 +38,10 @@ class LocalSar:
                         rec = json.loads(line)
                     except ValueError:
                         continue                      # a cut last line
-                    if rec.get("op") == "put" and isinstance(rec.get("m"), dict) and rec["m"].get("id"):
+                    if rec.get("op") == "del":
+                        self.markers.pop(rec.get("id"), None)
+                        self.sent.discard(rec.get("id"))
+                    elif rec.get("op") == "put" and isinstance(rec.get("m"), dict) and rec["m"].get("id"):
                         self.markers[rec["m"]["id"]] = rec["m"]
                         if rec.get("sent"):
                             self.sent.add(rec["m"]["id"])
@@ -70,6 +73,20 @@ class LocalSar:
         self._log(m, mid in self.sent)
         return m
 
+    def remove(self, mid):
+        """PF4: a deleted marker (the file keeps a tombstone line so a restart does not bring it back)."""
+        m = self.markers.pop(mid, None)
+        self.sent.discard(mid)
+        self.refused.discard(mid)
+        if m is not None:
+            try:
+                os.makedirs(self.folder, exist_ok=True)
+                with open(self.path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"op": "del", "id": mid}) + chr(10))
+            except OSError as e:
+                self.err = str(e)
+        return m
+
     def mark_sent(self, mid):
         self.sent.add(mid)
 
@@ -87,6 +104,10 @@ class LocalSar:
     def merge(self, remote):
         """The gateway's list wins for every id it holds (it is the shared copy); local-only ones stay. -> new ids."""
         new = []
+        have = {m.get("id") for m in remote or [] if isinstance(m, dict)}
+        for mid in [i for i, m in self.markers.items() if m.get("kind") == "point" and i in self.sent and i not in have]:
+            self.markers.pop(mid, None)                   # PF4: a point deleted on another station goes here too
+            self.sent.discard(mid)
         for m in remote or []:
             if not isinstance(m, dict) or not m.get("id"):
                 continue

@@ -973,12 +973,30 @@ class UavManager:
                "stage": self._stage(n, battery.stage(j.get("eta_s"), bool(d.get("landing"))),
                                     bool(d.get("armed") and not d.get("landed"))),
                "gps_fix": d.get("gps_fix"), "text": d.get("text"), "video": self.video_state(n),
-               "alt_age": d.get("alt_age")}           # U5 review MED-2: pilot.setpoint holds on old data
+               "alt_age": d.get("alt_age"),           # U5 review MED-2: pilot.setpoint holds on old data
+               "roll": d.get("roll"), "pitch": d.get("pitch"), "att_age": d.get("att_age"),   # PF4: mark from video
+               "camera": self._camera(n)}
         if d.get("lat") is not None and (d["lat"], d.get("lon")) == (0.0, 0.0):
             out["lat"] = out["lon"] = None                              # no position yet
         if boat_pos and out["lat"] is not None:
             out["dist_m"] = round(uavcheck.dist_m(boat_pos, (out["lat"], out["lon"])))
         return out
+
+    def _camera(self, n):
+        """PF4: slot n's FIXED camera mount from gateway.json uav slots[].camera {tilt_down_deg, hfov_deg, vfov_deg}
+        (W133: no gimbal command anywhere), or None = the station's default."""
+        try:
+            cam = (self.cfg["slots"][n - 1] or {}).get("camera")
+        except (IndexError, KeyError, TypeError):
+            return None
+        if not isinstance(cam, dict):
+            return None
+        out = {}
+        for k in ("tilt_down_deg", "hfov_deg", "vfov_deg"):
+            v = cam.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) < 1e4:
+                out[k] = float(v)
+        return out or None
 
     def _stage(self, n, raw, air):
         """U4 review LOW: the battery stage latched per flight (the most severe reached), cleared on the ground."""

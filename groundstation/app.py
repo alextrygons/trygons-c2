@@ -72,6 +72,8 @@ import hailer
 import mob
 import sar as sarmod
 import sar_geo
+import hudar
+import sar_mark
 import sarpanel
 from assistant import client as asst_client     # the talking manual (step AM2): read-only
 from assistant import page as asst_page
@@ -388,6 +390,10 @@ class App:
         self.mob_last_press = 0.0       # PF3-r: a second MOB within REPEAT_S is the same press (auto-repeat / double click)
         self.mob_keys_down = {}         # key -> time of its last KeyPress while it is held (a KeyRelease clears it)
         self.mob_refused = {}           # marker id -> code (the gateway refused it: shown once, not resent)
+        self.mark_last = 0.0            # PF4: mark a point from the video (REPEAT_S guard)
+        self.mark_cursor = None         # (time, owner, x, y): where the mouse was last over a video (the key K)
+        self.mark_rect = None           # screen 2's camera view: (x0, y0, w, h) of the picture on the canvas
+        self.mark_stills = {}           # marker id -> the small JPEG still, until the gateway has it
         self.charts = chart.Charts(charts_dir)  # offline depth charts (tools/chartprep.py -> charts/), section B
         self.chartview = mapview.ChartView(self.charts)
         self.single_op = False          # SINGLE-OPERATOR mode as the GATEWAY has it (section F1)
@@ -492,6 +498,7 @@ class App:
         root.bind("<F11>", lambda e: self.toggle_screen())
         root.bind_all("<KeyRelease>", self.mob_key_release, add="+")   # auto-repeat guard of the MOB key (PF3-r)
         root.bind_all("<KeyPress>", self.mob_key_press, add="+")       # MOB key (default M), never in a text field
+        root.bind_all("<KeyPress>", self.mark_key_press, add="+")      # PF4: mark-a-point key (default K)
         for k in asst_client.KEYS:      # the assistant's push-to-talk key (default F9; a foot pedal sends it)
             root.bind_all("<KeyPress-%s>" % k, self.asst_key_down, add="+")
             root.bind_all("<KeyRelease-%s>" % k, self.asst_key_up, add="+")
@@ -1125,6 +1132,7 @@ class App:
     def on_sar_markers(self, d):
         self.mob_sar_rev = d.get("rev")
         self.sar.merge(d.get("list"))
+        self.mark_send_stills()
         for m in self.sar.view():
             if m.get("kind") != "mob":
                 continue
@@ -1142,8 +1150,11 @@ class App:
         self.render(force=True)
 
     def on_sar_ack(self, d):
+        if d.get("what") == "still":                       # PF4: the small still image (never refuses the marker)
+            return None if d.get("ok") else self.event(T("mark.refused", why=i18n.from_en(d.get("text", ""))))
         if d.get("ok"):
             self.sar.mark_sent(d.get("id"))
+            self.mark_send_stills()
         else:                                              # PF3-r: refused = not sent again (one message per marker)
             mid = d.get("id")
             if mid and mid not in self.mob_refused:
@@ -1283,6 +1294,244 @@ class App:
             if self.single_op:
                 msg["confirm"] = "self"
             self.link.send_msg(msg)
+
+    # --- MARK A POINT FROM THE VIDEO (step PF4, CLAUDE.md X K3, docs/sar_design.md 5) - DISPLAY + REQUESTS ONLY -----
+    def mark_key_name(self):
+        k = settings.get("mark_key")
+        return k if isinstance(k, str) and len(k) == 1 and k.isalnum() else sar_mark.MARK_KEY_DEFAULT
+
+    def mark_cfg(self):
+        return sar_mark.cfg_of(settings.get("sar_mark"))
+
+    def mark_key_press(self, ev=None, now=None):
+        """The mark key (default K): marks the point under the mouse on the video it was last over; never while typing
+        into a text field, never with Ctrl. Nothing happens on the boat."""
+        if str(getattr(ev, "keysym", "")).lower() != self.mark_key_name().lower() or getattr(ev, "state", 0) & 0x4:
+            return
+        w = getattr(ev, "widget", None)
+        try:
+            if w is not None and w.winfo_class() in ("Entry", "TEntry", "Text", "Spinbox", "TSpinbox", "TCombobox"):
+                return
+        except (tk.TclError, AttributeError):
+            pass
+        now = time.time() if now is None else now
+        cur = self.mark_cursor
+        if not cur or now - cur[0] > 10.0:
+            return self.say(T("mark.why_cursor", k=self.mark_key_name().upper()), ORANGE)
+        if cur[1] is not None:
+            return cur[1].mark_at(cur[2], cur[3])
+        return self.camview_mark(cur[2], cur[3])
+
+    def camview_mark(self, x, y):
+        """A click (or the key) on screen 2's camera view: the picture's place -> (u, v)."""
+        r = self.mark_rect
+        if not self.camview or not r or r[2] <= 0 or r[3] <= 0:
+            return None
+        u, v = (x - r[0]) / r[2], (y - r[1]) / r[3]
+        if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+            return None
+        return self.mark_from_video(self.camview, u, v, self.camview_frame())
+
+    def mark_drone(self, slot):
+        return dict(self.uav_store.drones.get(int(slot)) or {})
+
+    def mark_from_video(self, cam, u, v, img=None, now=None):
+        """A click on a camera picture -> an ESTIMATED marker (kind "point") with its uncertainty circle; refusals say why
+        and make nothing. -> the marker or None. The marker is shared through the gateway like a MOB marker."""
+        now = time.time() if now is None else now
+        if now - self.mark_last < sar_mark.REPEAT_S:
+            return None
+        self.mark_last = now
+        cfg = self.mark_cfg()
+        res = (img.width, img.height) if img is not None else (640, 360)
+        slot = self.uav_slot_of(cam)
+        if slot is not None:
+            if not isinstance(self.link, GatewayLink):
+                return self.mark_refuse(cam, "nogw")
+            loc = sar_mark.locate_uav(self.mark_drone(slot), u, v, res, cfg)
+        elif cam in ("FRONT-1", "FRONT-2"):
+            loc = sar_mark.locate_boat(hudar.calibration(self.gw_status), self.t, u, v, res,
+                                       now - (self.t_rx or 0.0) if self.t else None, cfg)
+        else:
+            loc = {"why": "nocal"}                               # the rear cameras have no calibration
+        if loc.get("why"):
+            return self.mark_refuse(cam, loc["why"], loc)
+        n = 1 + max([int(m.get("n") or 0) for m in self.sar.view() if m.get("kind") == "point"] or [0])
+        station = getattr(self.link, "station", None)
+        mid = sar_mark.marker_id(now, n, station)
+        m = sar_mark.new_marker(mid, n, loc, cam, u, v, now, getattr(self.link, "user", "") or "", station,
+                                T("mark.name", n=n))
+        self.sar.add(m)
+        self.mob_send(m)
+        self.mark_still(m, img, u, v)
+        self.event(T("mark.ev_done", n=n, cam=cam, lat="%.5f" % m["lat"], lon="%.5f" % m["lon"],
+                     r="%d" % round(m["r_m"])))
+        self.say(T("mark.done", n=n, d="%d" % round(loc["d_m"]), b="%03.0f" % loc["brg"], r="%d" % round(m["r_m"])),
+                 ORANGE)
+        if self.sound:
+            self.sound.feedback("fb.shutter")
+        self.mapwin.redraw()
+        return m
+
+    def mark_refuse(self, cam, why, loc=None):
+        txt = T("mark.why_" + why, d="%d" % round(float((loc or {}).get("d_m") or self.mark_cfg()["max_range_boat"])),
+                k=self.mark_key_name().upper())
+        self.say(T("mark.refused", why=txt), ORANGE)
+        self.event(T("mark.ev_refused", cam=cam, why=txt))
+        return None
+
+    def mark_still(self, m, img, u, v):
+        """The small still image (160 x 120 around the click) kept with the marker for the debrief: stored on this PC and
+        sent to the gateway once the marker is acknowledged (it has to exist there first)."""
+        if img is None:
+            return
+        try:
+            import io
+            x0, y0, x1, y1 = sar_mark.still_box(u, v, img.width, img.height)
+            buf = io.BytesIO()
+            img.crop((x0, y0, x1, y1)).convert("RGB").save(buf, "JPEG", quality=70)
+            jpg = buf.getvalue()
+            if len(jpg) > sar_mark.STILL_MAX_BYTES:
+                return
+            self.mark_stills[m["id"]] = jpg
+            folder = os.path.join(self.sar.folder, "stills")
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, m["id"] + ".jpg"), "wb") as f:
+                f.write(jpg)
+        except Exception as e:                      # the still is a bonus; the marker stays
+            print("mark still:", e)
+
+    def mark_send_stills(self):
+        if not isinstance(self.link, GatewayLink):
+            return
+        for mid, jpg in list(self.mark_stills.items()):
+            if mid in self.sar.sent:
+                import base64
+                self.link.send_msg({"t": "sar_still", "id": mid, "jpg_b64": base64.b64encode(jpg).decode()})
+                self.mark_stills.pop(mid, None)
+
+    def mark_points(self):
+        return [m for m in self.sar.view() if m.get("kind") == "point" and not m.get("closed")]
+
+    def sar_map_hit(self, x, y):
+        """A click on a point marker on the map: its menu (True = taken)."""
+        mw = self.mapwin
+        if not mw.view:
+            return False
+        P = mw.P()[0]
+        best = None
+        for m in self.mark_points():
+            px, py = P(m["lat"], m["lon"])
+            dd = math.hypot(px - x, py - y)
+            if dd <= 14 and (best is None or dd < best[1]):
+                best = (m, dd)
+        if best is None:
+            return False
+        self.mark_menu(x, y, best[0])
+        return True
+
+    def mark_menu(self, x, y, m):
+        menu = tk.Menu(self.root, tearoff=0)
+        d = float(settings.get("sar_standoff_m") or sar_geo.DEFAULTS["standoff_m"])
+        menu.add_command(label=T("mark.menu_route_person", d="%g" % d) if m.get("person") else T("mark.menu_route"),
+                         command=lambda: self.mark_ask("route", m))
+        menu.add_command(label=T("mark.menu_uav"), command=lambda: self.mark_ask("uav", m))
+        menu.add_command(label=T("mark.menu_pattern"),
+                         command=lambda: sarpanel.open_panel(self, (m["lat"], m["lon"]), "mark"))
+        menu.add_separator()
+        menu.add_command(label=T("mark.menu_noperson") if m.get("person") else T("mark.menu_person"),
+                         command=lambda: self.mark_person(m["id"], not m.get("person")))
+        menu.add_command(label=T("mark.menu_rename"), command=lambda: self.mark_rename_open(m["id"]))
+        menu.add_command(label=T("mark.menu_delete"), command=lambda: self.mark_ask("delete", m))
+        try:
+            menu.tk_popup(self.cv.winfo_rootx() + int(x), self.cv.winfo_rooty() + int(y))
+        finally:
+            menu.grab_release()
+
+    def mark_ask(self, what, m):
+        """Route there / UAV there / delete: ONE vertical YES / NO first (screen 1's box, else the station's own) -
+        nothing moves without it; the YES then uses the normal paths (mob_return = the stand-off route through the normal
+        upload + AUTO START rules; go_here; mob_uav = uav_route + the launch approval)."""
+        if what == "route":
+            d = float(settings.get("sar_standoff_m") or sar_geo.DEFAULTS["standoff_m"])
+            text = T("mark.q_route_person", n=m["n"], d="%g" % d) if m.get("person") else T("mark.q_route", n=m["n"])
+        else:
+            text = T("mark.q_" + what, n=m["n"])
+
+        def yes(mm=m):
+            self.mark_do(what, mm)
+        head = T("mark.name", n=m["n"])
+        if self.driver is not None and not self.driver.question:
+            self.driver.ask(text, yes, lambda: None, 60.0, tag=("mark", what), head=head)
+        elif self.driver is None and ynbox.ask(self.root, head, text):
+            yes()
+
+    def mark_do(self, what, m):
+        cur = self.sar.get(m["id"]) or m
+        if what == "route":
+            if cur.get("person"):
+                return self.mob_return(cur)
+            self.go_here(cur["lat"], cur["lon"])
+            return self.say(T("mark.sent_route", n=cur["n"]))
+        if what == "uav":
+            return self.mob_uav(cur)
+        if what == "delete":
+            return self.mark_delete(cur["id"])
+
+    def mark_person(self, mid, on):
+        m = self.sar.change(mid, person=bool(on))
+        if m is None:
+            return
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "sar_mark", "op": "person", "m": {"id": mid, "person": bool(on)}})
+        self.event(T("mark.ev_person", n=m["n"], on="1" if on else "0"))
+        self.mapwin.redraw()
+
+    def mark_rename(self, mid, name):
+        name = str(name or "").strip()[:40]
+        m = self.sar.change(mid, name=name) if name else None
+        if m is None:
+            return
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "sar_mark", "op": "rename", "m": {"id": mid, "name": name}})
+        self.event(T("mark.ev_rename", n=m["n"], name=name))
+        self.mapwin.redraw()
+
+    def mark_delete(self, mid):
+        m = self.sar.remove(mid)
+        if m is None:
+            return
+        self.mark_stills.pop(mid, None)
+        if isinstance(self.link, GatewayLink):
+            self.link.send_msg({"t": "sar_mark", "op": "delete", "m": {"id": mid}})
+        self.event(T("mark.ev_delete", n=m["n"]))
+        self.mapwin.redraw()
+
+    def mark_rename_open(self, mid):
+        m = self.sar.get(mid)
+        if m is None:
+            return
+        C = theme.C
+        top = tk.Toplevel(self.root, bg=C["bg"])
+        top.title(i18n.W("mark.rename_title"))
+        try:
+            top.transient(self.root)
+        except tk.TclError:
+            pass
+        var = tk.StringVar(value=m.get("name") or "")
+        e = tk.Entry(top, textvariable=var, width=30, font=theme.font("value"))
+        e.pack(padx=12, pady=(12, 6))
+        e.focus_set()
+
+        def ok(_e=None):
+            self.mark_rename(mid, var.get())
+            top.destroy()
+        bb = tk.Frame(top, bg=C["bg"])
+        bb.pack(fill="x", padx=12, pady=(0, 12))
+        tk.Button(bb, text=T("mark.ok"), command=ok, **theme.button_opts()).pack(side="left", padx=(0, 6))
+        tk.Button(bb, text=T("mark.cancel"), command=top.destroy, **theme.button_opts()).pack(side="left")
+        e.bind("<Return>", ok)
+        e.bind("<Escape>", lambda _e: top.destroy())
 
     # --- REC SCREEN + KEEP 5' / 1h (step 13n4, owner 2026-10-31 E4) - DISPLAY ONLY ---------------------------
     @staticmethod
@@ -4064,6 +4313,8 @@ class App:
             self.render(force=True)
         elif not self.camview:
             self.mapwin.press(e.x, e.y)
+        else:
+            self.camview_mark(e.x, e.y)             # PF4: a click on the camera view marks a point
 
     def cv_motion(self, e):
         if self._press_ov:
@@ -4081,6 +4332,8 @@ class App:
         self._press_ov = False
 
     def cv_hover(self, e):
+        if self.camview:
+            self.mark_cursor = (time.time(), None, e.x, e.y)      # PF4: the key K marks where the mouse is
         r = next((o["r"] for o in self.ov.ops if o.get("tag") == "battle_short"), None)
         on = bool(r and r[0] <= e.x <= r[2] and r[1] <= e.y <= r[3])
         if on != getattr(self, "bs_hover", False):
@@ -6082,6 +6335,7 @@ class App:
                     ph_img = big
                 self._cv_photo = ph_img
                 c.create_image(W / 2, H / 2, image=ph_img, anchor="c", tags="camview")
+                self.mark_rect = (W / 2 - pw * zoom / 2.0, H / 2 - ph * zoom / 2.0, pw * zoom, ph * zoom)
                 us = self.uav_slot_of(self.camview)
                 if us is not None:
                     # U4: the UAV AI's boxes (eWaSR, boxes only - never a boat action), tagged "AI"

@@ -4112,6 +4112,45 @@ def section_sa():
                and r_no == 110 and inside.get("why") == "inside" and "wps" not in inside,
                "deep %s (end %.1f m before); shoal %s; copilot asked %s -> %s; inside %s" % (
                    res_ok, d_end, res_sh, bool(ask), r_no, inside.get("why")))
+        # SA4 (PF4) a point marked from the video: the marker (kind point, ESTIMATE, uncertainty, source camera) is shared
+        # to every station, its small still image (<= 40 KB JPEG) is stored on the SSD and linked to the marker, a
+        # VIEWER / a bad image / an unknown marker / an oversize image is refused, and it asks nobody
+        import base64
+        pt = {"id": "pt_20261109-103000_1_ab12cd", "kind": "point", "n": 1, "lat": SIM_LAT + 0.0003, "lon": SIM_LON,
+              "r_m": 22.5, "est": True, "t_utc": "2026-11-09T10:30:00Z", "person": False,
+              "src": {"station": 2, "camera": "FRONT-1", "u": 0.5, "v": 0.6, "range_m": 120.0, "brg": 10.0}}
+        bob.l.send_msg({"t": "sar_mark", "op": "add", "m": pt})
+        k7, ack_pt = next_event(bob, ("sar_ack",), 4.0)
+        jpg = b"\xff\xd8\xff\xe0" + b"x" * 3000 + b"\xff\xd9"
+        bob.l.send_msg({"t": "sar_still", "id": pt["id"], "jpg_b64": base64.b64encode(jpg).decode()})
+        k8, ack_st = next_event(bob, ("sar_ack",), 4.0)
+        k9, lst_s = next_event(alice, ("sar_markers",), 4.0)
+        while lst_s and not any(x.get("still") for x in lst_s["list"]):
+            k9, lst_s = next_event(alice, ("sar_markers",), 2.0)
+        vic.l.send_msg({"t": "sar_still", "id": pt["id"], "jpg_b64": base64.b64encode(jpg).decode()})
+        k10, v_st = next_event(vic, ("sar_ack",), 4.0)
+        bob.l.send_msg({"t": "sar_still", "id": pt["id"], "jpg_b64": base64.b64encode(b"GIF89a" + b"x" * 50).decode()})
+        k11, bad_st = next_event(bob, ("sar_ack",), 4.0)
+        bob.l.send_msg({"t": "sar_still", "id": "pt_unknown", "jpg_b64": base64.b64encode(jpg).decode()})
+        k12, unk_st = next_event(bob, ("sar_ack",), 4.0)
+        big = b"\xff\xd8" + b"x" * (40 * 1024 + 5)
+        bob.l.send_msg({"t": "sar_still", "id": pt["id"], "jpg_b64": base64.b64encode(big).decode()})
+        k13, big_st = next_event(bob, ("sar_ack",), 6.0)
+        stored = os.path.join(root, "sar", pt["id"] + ".jpg")
+        got = open(stored, "rb").read() if os.path.exists(stored) else b""
+        mk_pt = [x for x in g.sar.list() if x["id"] == pt["id"]]
+        asked2 = next_event(alice, ("driver_ask",), 0.3)[1]
+        report("SA4 a point marked from the video: the marker (point, ESTIMATE, r_m, source camera) is shared, its small "
+               "still image is stored on the SSD and linked to the marker; a VIEWER (128), a non-JPEG, an unknown "
+               "marker and an oversize image are refused; nobody is asked",
+               ack_pt and ack_pt["ok"] and ack_st and ack_st["ok"] and got == jpg and mk_pt and
+               mk_pt[0]["still"] == pt["id"] + ".jpg" and mk_pt[0]["est"] is True and mk_pt[0]["r_m"] == 22.5 and
+               mk_pt[0]["src"]["camera"] == "FRONT-1" and lst_s and v_st and v_st["code"] == 128 and bad_st and
+               not bad_st["ok"] and unk_st and not unk_st["ok"] and big_st and not big_st["ok"] and asked2 is None,
+               "add %s; still %s; stored %s B; marker %s; viewer %s; gif %s; unknown %s; big %s" % (
+                   ack_pt and ack_pt["ok"], ack_st and ack_st["text"], len(got), mk_pt and mk_pt[0]["still"],
+                   v_st and v_st["code"], bad_st and bad_st["text"], unk_st and unk_st["text"],
+                   big_st and big_st["text"]))
         beat.on = False
     finally:
         for c_ in clients:

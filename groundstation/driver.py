@@ -427,6 +427,8 @@ class DriverScreen:
         self.cv.bind("<ButtonPress-1>", self.on_press)
         self.cv.bind("<B1-Motion>", self.on_motion)
         self.cv.bind("<ButtonRelease-1>", self.on_release)
+        self.cv.bind("<Motion>", self.on_hover)
+        self.map.bind("<Motion>", lambda e: self.on_hover(e, child=self.map))
         self.map.bind("<ButtonPress-1>", lambda e: self.on_press(e, child=self.map))
         self.map.bind("<B1-Motion>", lambda e: self.on_motion(e, child=self.map))
         self.map.bind("<ButtonRelease-1>", lambda e: self.on_release(e, child=self.map))
@@ -586,6 +588,24 @@ class DriverScreen:
         for r, act in reversed(self.hits):
             if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
                 return self.action(act, ev)
+        if not self.question:
+            self.mark_at(x, y)                  # PF4: a click on the free video marks a point (an ESTIMATE, no boat action)
+
+    def on_hover(self, ev, child=None):
+        """Where the mouse is over the picture (the key K of PF4 marks there)."""
+        x, y = self.mouse_xy(ev, child)
+        self.app.mark_cursor = (time.time(), self, x, y)
+
+    def mark_at(self, x, y):
+        """PF4: the picture point under (x, y) -> app.mark_from_video (the camera shown: FRONT-1 / FRONT-2 are the
+        calibrated ones, a UAV's own video while this station's stick flies it)."""
+        pic, cam = self.pic, getattr(self, "front_use", None)
+        if not pic or not cam or pic[2] <= 0 or pic[3] <= 0:
+            return None
+        u, v = (x - pic[0]) / pic[2], (y - pic[1]) / pic[3]
+        if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+            return None
+        return self.app.mark_from_video(cam, u, v, self.frame_of(cam) if Image is not None else None)
 
     def on_motion(self, ev, child=None):
         if not (self.hud.edit and self.drag):
@@ -992,6 +1012,7 @@ class DriverScreen:
             iw, ih = (fvs.w, fvs.h) if fvs is not None and hasattr(fvs, "w") else (16, 9)
             pic = scale_rect(iw, ih, W, H, scale)
         self.pic = pic
+        self.front_use = use
         if self.front_live and fly is None:
             under += self.vision_ops(pic)
         if hudar is not None and a.t is not None and s.declutter != "MINIMAL" and fly is None:

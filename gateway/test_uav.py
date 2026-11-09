@@ -2713,6 +2713,27 @@ def ua37_pf2u_flying_route_needs_yes():
            all(res.values()), str(res))
 
 
+def ua38_pf4_attitude_and_camera():
+    """PF4: the router's drone record carries the ATTITUDE roll / pitch (deg) + its age for marking a point from the
+    video, the manager passes the slot's fixed camera mount (gateway.json uav slots[].camera, only numbers), and the
+    simulated drone sends a level ATTITUDE."""
+    from uav import manager as mgr, router_worker as rw
+    d = rw.Drone()
+    v0 = d.view(time.time())
+    d.roll, d.pitch, d.att_t = 3.0, -2.0, time.time() - 0.4
+    v1 = d.view(time.time())
+    m = object.__new__(mgr.UavManager)
+    m.cfg = {"slots": [{"camera": {"tilt_down_deg": 45, "hfov_deg": 100.5, "vfov_deg": "x", "gimbal": 9}}, {}, {"camera": 7}]}
+    ok_cam = m._camera(1) == {"tilt_down_deg": 45.0, "hfov_deg": 100.5} and m._camera(2) is None and         m._camera(3) is None and m._camera(9) is None
+    sd = simdrone.SimDrone.__dict__ if hasattr(simdrone, "SimDrone") else {}
+    src = open(os.path.join(HERE, "uav", "simdrone.py"), encoding="utf-8").read()
+    report("UA38 PF4: the drone record has roll / pitch / att_age (none before the first ATTITUDE), the slot's fixed "
+           "camera mount passes only numbers (no gimbal key), the simulated drone sends a level ATTITUDE",
+           v0["roll"] is None and v0["att_age"] is None and v1["roll"] == 3.0 and v1["pitch"] == -2.0 and
+           0.3 < v1["att_age"] < 0.6 and ok_cam and '"roll": 0.0, "pitch": 0.0' in src,
+           "%s %s %s" % (v0.get("roll"), v1.get("roll"), ok_cam))
+
+
 # ------------------------------------------------------------------------------------------------------ U5 ---------
 
 class _PilotMgr:
@@ -3578,7 +3599,7 @@ def main():
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126, ua37_helm_forward,
-             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes]
+             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes, ua38_pf4_attitude_and_camera]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:
