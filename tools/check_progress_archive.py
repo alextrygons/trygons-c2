@@ -10,6 +10,9 @@ try:
     p = open(os.path.join(root, "PROGRESS.md"), "rb").read()
 except OSError as e:
     print("progress archive: %s" % e); sys.exit(1)
+# CRLF checkout (core.autocrlf) must not change the result: judge the LF text
+a = a.replace(b"\r\n", b"\n")
+p = p.replace(b"\r\n", b"\n")
 mark = b"--- BEGIN MOVED TEXT ---\n"
 if mark not in a:
     err.append("archive marker missing")
