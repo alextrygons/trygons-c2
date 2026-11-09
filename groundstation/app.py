@@ -383,6 +383,11 @@ class App:
         self.sar_preview = None         # the plan drawn on the map before it is sent
         self.mob_sar_rev = None         # the gateway's marker list revision this station has
         self.mob_sync_t = 0.0
+        self.mob_auto_arm = False       # PF3-r: the next PROG_COMMIT sent is the return route's own
+        self.mob_auto_seq = None
+        self.mob_last_press = 0.0       # PF3-r: a second MOB within REPEAT_S is the same press (auto-repeat / double click)
+        self.mob_keys_down = {}         # key -> time of its last KeyPress while it is held (a KeyRelease clears it)
+        self.mob_refused = {}           # marker id -> code (the gateway refused it: shown once, not resent)
         self.charts = chart.Charts(charts_dir)  # offline depth charts (tools/chartprep.py -> charts/), section B
         self.chartview = mapview.ChartView(self.charts)
         self.single_op = False          # SINGLE-OPERATOR mode as the GATEWAY has it (section F1)
@@ -485,6 +490,7 @@ class App:
         for k in ("<F12>", "<Control-Tab>"):
             root.bind(k, lambda e: self.swap_screens())
         root.bind("<F11>", lambda e: self.toggle_screen())
+        root.bind_all("<KeyRelease>", self.mob_key_release, add="+")   # auto-repeat guard of the MOB key (PF3-r)
         root.bind_all("<KeyPress>", self.mob_key_press, add="+")       # MOB key (default M), never in a text field
         for k in asst_client.KEYS:      # the assistant's push-to-talk key (default F9; a foot pedal sends it)
             root.bind_all("<KeyPress-%s>" % k, self.asst_key_down, add="+")
@@ -1025,9 +1031,23 @@ class App:
         k = settings.get("mob_key")
         return k if isinstance(k, str) and len(k) == 1 and k.isalnum() else mob.MOB_KEY_DEFAULT
 
-    def mob_key_press(self, ev=None):
-        """The MOB key: only the chosen one, never while typing into a text field, never on the joystick."""
-        if str(getattr(ev, "keysym", "")).lower() != self.mob_key_name().lower():
+    def mob_found_key_name(self):
+        k = settings.get("mob_found_key")
+        return k if isinstance(k, str) and len(k) == 1 and k.isalnum() else mob.FOUND_KEY_DEFAULT
+
+    def mob_key_release(self, ev=None):
+        self.mob_keys_down.pop(str(getattr(ev, "keysym", "")).lower(), None)
+
+    def mob_key_press(self, ev=None, now=None):
+        """The MOB key (and the FOUND key): only the chosen ones, never while typing into a text field, never on the
+        joystick. PF3-r: a held key (auto-repeat = KeyPress again and again) is ONE press: it counts only after a
+        KeyRelease (or when no repeat was seen for KEY_STALE_S - a lost release)."""
+        ks = str(getattr(ev, "keysym", "")).lower()
+        if ks == self.mob_key_name().lower():
+            which = "mob"
+        elif ks == self.mob_found_key_name().lower():
+            which = "found"
+        else:
             return
         if getattr(ev, "state", 0) & 0x4:                 # Ctrl+M is not MOB
             return
@@ -1037,12 +1057,23 @@ class App:
                 return
         except (tk.TclError, AttributeError):
             pass
-        self.mob_press("key")
+        now = time.time() if now is None else now
+        last = self.mob_keys_down.get(ks)
+        self.mob_keys_down[ks] = now
+        if last is not None and now - last < mob.KEY_STALE_S:
+            return                                         # still held: the same press
+        if which == "mob":
+            self.mob_press("key")
+        else:
+            self.mob_found_ask()
 
     def mob_press(self, source="button", now=None):
         """MOB: the marker at the position of THIS moment (the newest telemetry sample - a later one never moves it),
         a WARNING + voice on this station, an automatic SAVE, then the offers. The alarm never waits for the gateway."""
         now = time.time() if now is None else now
+        if now - self.mob_last_press < mob.REPEAT_S:      # PF3-r: a double click / a held key = ONE MOB
+            return None
+        self.mob_last_press = now
         pos = mob.capture(dict(self.mob_have) if self.mob_have else None, now)
         uncrewed = bool(self.t and self.t.get("profile") == proto.PROFILE_UNCREWED)
         n = 1 + max([int(m.get("n") or 0) for m in self.sar.view() if m.get("kind") == "mob"] or [0])
@@ -1053,7 +1084,7 @@ class App:
             self.say(T("mob.nopos"), RED)
             self.event(T("mob.ev_nopos"))
             return None
-        mid = mob.marker_id(now, n)
+        mid = mob.marker_id(now, n, getattr(self.link, "station", None))
         m = mob.new_marker(mid, n, pos, now, getattr(self.link, "user", "") or "", mob.current_of(self.t),
                            station=getattr(self.link, "station", None))
         self.sar.add(m)
@@ -1104,13 +1135,21 @@ class App:
                 self.mob_alarmed.add(m["id"])
                 self.mob_alarm(code, T("mob.alarm", n=m["n"]), m["n"])
                 self.event(T("mob.ev_remote", n=m["n"]))
+        for mid in self.sar.take_reclose():              # closed here, the gateway still has it open: say it again
+            if isinstance(self.link, GatewayLink):
+                self.link.send_msg({"t": "sar_mark", "op": "close", "m": {
+                    "id": mid, "why": "found", "t_utc": (self.sar.get(mid).get("closed") or {}).get("t_utc", "")}})
         self.render(force=True)
 
     def on_sar_ack(self, d):
         if d.get("ok"):
             self.sar.mark_sent(d.get("id"))
-        else:
-            self.say(T("mob.refused", why=alerts.result_text({"result": d.get("code", 0), "ok": False})), RED)
+        else:                                              # PF3-r: refused = not sent again (one message per marker)
+            mid = d.get("id")
+            if mid and mid not in self.mob_refused:
+                self.mob_refused[mid] = d.get("code", 0)
+                self.sar.refuse(mid)
+                self.say(T("mob.refused", why=alerts.result_text({"result": d.get("code", 0), "ok": False})), RED)
 
     def mob_found(self, mid=None):
         """«ΒΡΕΘΗΚΕ»: closes the marker (the time is kept), the alarm clears here and on every station."""
@@ -1118,15 +1157,33 @@ class App:
         m = self.sar.get(mid) if mid else (ms[-1] if ms else None)
         if m is None:
             return
-        closed = {"t_utc": sarmod.utc_stamp(), "by": "", "why": "found"}
+        closed = {"t_utc": sarmod.utc_stamp(), "by": getattr(self.link, "user", "") or "", "why": "found"}
         self.sar.change(m["id"], closed=closed)
         self.lamps.set_local("mob_" + m["id"], None)
         if isinstance(self.link, GatewayLink):
             self.link.send_msg({"t": "sar_mark", "op": "close", "m": {"id": m["id"], "why": "found",
                                                                        "t_utc": closed["t_utc"]}})
+        self.mob_alarmed.add(m["id"])
         self.event(T("mob.ev_found", n=m["n"]))
+        self.say(T("mob.found_done", n=m["n"]), GREEN)
         self.mob_queue = []
         self.render(force=True)
+
+    def mob_found_ask(self, mid=None):
+        """«ΒΡΕΘΗΚΕ» (PF3-r): ONE vertical YES / NO (screen 1 when no other question is open, else the settings-style
+        box); the captain or the copilot, no ACCEPT - a marker is no driving. YES = mob_found."""
+        ms = self.sar.open_mobs()
+        m = self.sar.get(mid) if mid else (ms[-1] if ms else None)
+        if m is None or m.get("closed"):
+            return self.say(T("mob.found_none"), ORANGE)
+        text = T("mob.found_q", n=m["n"])
+
+        def yes(mm=m):
+            self.mob_found(mm["id"])
+        if self.driver is not None and not self.driver.question:
+            self.driver.ask(text, yes, lambda: None, 60.0, tag=("mob", "found"), head=T("mob.head"))
+        elif ynbox.ask(self.root, T("mob.head"), text):
+            yes()
 
     def mob_lines(self):
         now = time.time()
@@ -1199,14 +1256,18 @@ class App:
         self.route_dirty = True
         self.prog_refresh()
         self.mob_auto_until = time.time() + 30.0
+        self.mob_auto_arm, self.mob_auto_seq = True, None
         self.say(T("mob.route", d="%d" % r["standoff_m"], kn="%g" % r["kn"]), ORANGE)
         self.prog_upload(final=sar_geo.PROG_END_STOP)
         return r
 
-    def mob_route_stored(self):
-        """The return route is on the boat (a copilot's: after the captain's ACCEPT) -> AUTO START."""
-        if self.mob_auto_until and time.time() <= self.mob_auto_until:
+    def mob_route_stored(self, seq=None):
+        """The return route is on the boat (a copilot's: after the captain's ACCEPT) -> AUTO START. PF3-r: only the
+        ACK of the route's OWN PROG_COMMIT (its seq) starts it - never an unrelated upload within the 30 s."""
+        if (self.mob_auto_until and time.time() <= self.mob_auto_until and self.mob_auto_seq is not None and
+                seq == self.mob_auto_seq):
             self.mob_auto_until = 0.0
+            self.mob_auto_seq = None
             self.auto_start()
 
     def mob_uav(self, m):
@@ -2810,6 +2871,8 @@ class App:
         else:
             seq = self.link.send(ftype, payload)
         self.pending[seq] = what
+        if self.mob_auto_arm and ftype == proto.T_PROG_COMMIT:     # the return route's own commit (PF3-r)
+            self.mob_auto_arm, self.mob_auto_seq = False, seq
         self.event("> " + i18n.from_en(what))
         return seq
 
@@ -3139,7 +3202,7 @@ class App:
                     self.on_decision_ack(d)
                     if d["cmd"] == proto.T_PROG_COMMIT and d["ok"]:
                         self.route_dirty = False
-                        self.mob_route_stored()
+                        self.mob_route_stored(d["seq"])
                     if d["cmd"] == proto.T_PARAM_GET and d["result"] == 10:
                         continue                # "Read all" probes past the last id
                     if d["cmd"] == proto.T_PARAM_SET and d["ok"]:
@@ -4185,6 +4248,9 @@ class App:
         # request + an alarm only - it is not a mode; red only while a MOB alarm is open
         out.append({"tag": "mob", "label": T("mob.btn"), "mode": None, "active": False, "enabled": True, "why": None,
                     "action": lambda: self.mob_press("button"), "alarm": self.mob_active()})
+        if self.mob_active():                                # PF3-r: «ΒΡΕΘΗΚΕ» closes the newest open MOB (YES / NO)
+            out.append({"tag": "mob_found", "label": T("mob.found_btn"), "mode": None, "active": False,
+                        "enabled": True, "why": None, "action": lambda: self.mob_found_ask()})
         return out
 
     def mode_bar_click(self, it):

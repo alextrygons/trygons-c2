@@ -35,6 +35,7 @@ Run:  python test_sar.py      (exit code 0 = all passed)
 """
 import math
 import os
+import re
 import sys
 import time
 import types
@@ -116,19 +117,32 @@ class Env:
         self.sent = []
         self.rig.gateway_like(True)                  # the real tcp link looks like a gateway link; nothing leaves it
         ap.link.send_msg = lambda m: self.sent.append(m)
-        ap.link.send = lambda t, *a, **k: (self.frames.append(t), 1)[1]
+        self.seq = 0
+
+        def _send(t, *a, **k):
+            self.frames.append(t)
+            self.seq += 1
+            return self.seq
+        ap.link.send = _send
         self.frames.clear()
         self.asked.clear()
         ynbox.ask = lambda parent, title, text, **k: (self.asked.append(text), False)[1]    # NO unless a test says
         ap.driver = None
         self.uploads, self.starts = [], []
-        ap.prog_upload = lambda final=None: self.uploads.append((final, [dict(w) for w in ap.prog["wps"]]))
+        def _upload(final=None):
+            self.uploads.append((final, [dict(w) for w in ap.prog["wps"]]))
+            ap._send_cmd(proto.T_PROG_COMMIT, b"", "program upload")      # the real commit goes through _send_cmd
+        ap.prog_upload = _upload
         ap.auto_start = lambda: self.starts.append(time.time())
         ap.single_op = False
         ap.gw_status = {}
         ap.mob_alarmed = set()
         ap.mob_queue = []
         ap.mob_auto_until = 0.0
+        ap.mob_auto_arm, ap.mob_auto_seq = False, None
+        ap.mob_last_press = 0.0
+        ap.mob_keys_down = {}
+        ap.mob_refused = {}
         ap.mob_sar_rev = None
         ap.mob_sync_t = 0.0
         ap.mob_search_ok = False                     # PF3's tests are about return / UAV; PF2's tests switch it on
@@ -246,6 +260,7 @@ def mb3(env):
     again = [x for x in env.sent if isinstance(x, dict) and x.get("op") == "add"]
     # no position at all: the alarm + SAVE still, no marker
     ap.mob_have = None
+    ap.mob_last_press = 0.0                           # (PF3-r: a second MOB within 2 s would be the same press)
     ap.t_rx = ap.t_rx
     ap.sar = sarmod.LocalSar(os.path.join(env.tmp, "nopos%d" % time.time_ns()))
     ap.lamps.local.clear()
@@ -327,8 +342,12 @@ def mb5(env):
     d_end = sar_geo.distance_bearing(end, mark)[0] if wps else -1
     armed = ap.mob_auto_until > time.time()
     s0 = len(env.starts)
+    seq = ap.mob_auto_seq
+    ap.mob_route_stored(seq + 5)                                        # PF3-r: an unrelated upload's ACK starts nothing
     ap.mob_route_stored()
-    ap.mob_route_stored()                                               # a second ACK does not start twice
+    unrelated = len(env.starts) - s0
+    ap.mob_route_stored(seq)
+    ap.mob_route_stored(seq)                                            # a second ACK does not start twice
     started = len(env.starts) - s0
     # inside the stand-off distance: no route at all, and the propeller warning
     n_up = len(env.uploads)
@@ -356,7 +375,7 @@ def mb5(env):
            "route); inside the stand-off distance = no route + the propeller warning; no position = nothing; a trusted "
            "current moves the approach to the down-current side",
            f == sar_geo.PROG_END_STOP and len(wps) == 2 and abs(d_end - 30.0) < 0.5 and wps[-1]["action"] == 1 and
-           all(w["kn"] <= 5.0 for w in wps) and armed and started == 1 and no_route and nopos and east_of_marker and
+           all(w["kn"] <= 5.0 for w in wps) and armed and seq is not None and unrelated == 0 and started == 1 and no_route and nopos and east_of_marker and
            abs(wps[0]["lat"] - boat[0]) < 1e-9,
            "final %s; end %.1f m before; last action %s; armed %s; starts %d; inside no route %s; no position %s; "
            "current -> east side %s" % (f, d_end, wps and wps[-1]["action"], armed, started, no_route, nopos,
@@ -395,27 +414,36 @@ def mb6(env):
     def ev(keysym="m", widget=None, state=0):
         return types.SimpleNamespace(keysym=keysym, widget=widget, state=state)
     try:
-        ap.mob_key_press(ev("m"))
-        ap.mob_key_press(ev("M"))
-        ap.mob_key_press(ev("m", ent))                      # typing into a field
-        ap.mob_key_press(ev("m", None, 0x4))                # Ctrl+M
-        ap.mob_key_press(ev("k"))
+        ap.mob_key_press(ev("m"), now=100.0)
+        for i in range(1, 25):                              # PF3-r: auto-repeat = KeyPress again and again, no release
+            ap.mob_key_press(ev("m"), now=100.0 + 0.03 * i)
+        n_repeat = len(calls)
+        ap.mob_key_release(ev("m"))
+        ap.mob_key_press(ev("M"), now=101.0)                # a real second press after the release
+        n_after_release = len(calls)
+        ap.mob_key_press(ev("m"), now=103.5)                # held, but no repeat for > KEY_STALE_S (a lost release)
+        n_stale = len(calls)
+        ap.mob_key_press(ev("m", ent), now=200.0)           # typing into a field
+        ap.mob_key_press(ev("m", None, 0x4), now=200.0)     # Ctrl+M
+        ap.mob_key_press(ev("k"), now=200.0)
         n_default = len(calls)
         settings.put("mob_key", "k")
-        ap.mob_key_press(ev("k"))
-        ap.mob_key_press(ev("m"))
+        ap.mob_key_press(ev("k"), now=300.0)
+        ap.mob_key_press(ev("m"), now=300.0)
         n_custom = len(calls) - n_default
         settings.put("mob_key", None)
     finally:
         ap.mob_press = orig
         ent.destroy()
     src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
-    report("MB6 the MOB key (default M, setting mob_key): works from the station window, not in a text field, not with "
+    report("MB6 the MOB key (default M, setting mob_key): works from the station window (a held key = ONE press, a release or 1 s without a repeat re-arms it), not in a text field, not with "
            "Ctrl, only the chosen key; it is a keyboard key of the station, never a joystick button",
-           n_default == 2 and n_custom == 1 and calls == ["key"] * 3 and
+           n_repeat == 1 and n_after_release == 2 and n_stale == 3 and n_default == 3 and n_custom == 1 and
+           calls == ["key"] * 4 and
            "root.bind_all(\"<KeyPress>\", self.mob_key_press" in src and "mob" not in open(
                os.path.join(HERE, "shorejoy.py"), encoding="utf-8").read().lower().replace("mobile", ""),
-           "default presses %d, custom %d, calls %s" % (n_default, n_custom, calls))
+           "after 25 repeats %d, after release %d, stale %d; default presses %d, custom %d, calls %s" % (
+               n_repeat, n_after_release, n_stale, n_default, n_custom, calls))
     env.reset()
 
 
@@ -444,6 +472,80 @@ def mb7(env):
            ap.sar.get(m["id"])["closed"]["why"] == "found" and ("mob_" + m["id"]) not in ap.lamps.local and
            len(cl) == 1 and cl[0]["m"]["why"] == "found" and not ap.sar.open_mobs(),
            "lamp %s; said %d/%d; cleared %s; close msgs %d" % (lamp, said1, said2, gone, len(cl)))
+    env.reset()
+
+
+def sarmod_id_ok(i):
+    return bool(re.match(r"^[A-Za-z0-9_.\-]{1,48}$", i))
+
+
+def mb10(env):
+    """PF3-r: MED-1 FOUND (button + key, YES / NO, log time, nothing re-opened), MED-2 double click / auto-repeat,
+    LOW-5 refused markers not resent, LOW-6 unique ids across stations."""
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    env.position()
+    t0 = time.time()
+    m1 = ap.mob_press("button", now=t0)
+    again = [ap.mob_press("button", now=t0 + 0.2 * i) for i in range(1, 8)]
+    later = ap.mob_press("button", now=t0 + 2.5)
+    one = m1 is not None and all(x is None for x in again) and later is not None and len(ap.sar.open_mobs()) == 2
+    ids = {mob.marker_id(t0, 1, st) for st in ("s1", "s2")}
+    same_station = mob.marker_id(t0, 1, "s1") != mob.marker_id(t0, 1, "s1")
+    uniq = len(ids) == 2 and same_station and all(sarmod_id_ok(i) for i in ids)
+    items = [it for it in ap.mode_bar_items() if it["tag"] == "mob_found"]
+    ynbox.ask = lambda parent, title, text, **k: (env.asked.append(text), False)[1]
+    if items:
+        items[0]["action"]()
+    no_close = len(ap.sar.open_mobs()) == 2
+    _yes(env)
+    env.sent.clear()
+    if items:
+        items[0]["action"]()
+    one_closed = len(ap.sar.open_mobs()) == 1 and ap.sar.get(later["id"])["closed"]["why"] == "found"
+    cl = [x for x in env.sent if isinstance(x, dict) and x.get("op") == "close"]
+    asked_yn = bool(env.asked) and "MOB 2" in env.asked[-1]
+    lamp_clear = ("mob_" + later["id"]) not in ap.lamps.local and ("mob_" + m1["id"]) in ap.lamps.local
+    reload = sarmod.LocalSar(ap.sar.folder)
+    stays = reload.get(later["id"])["closed"]["t_utc"].endswith("Z") and later["id"] not in [
+        x["id"] for x in reload.open_mobs()]
+    stale = dict(later, closed=None)
+    env.sent.clear()
+    ap.on_sar_markers({"rev": 9, "list": [stale]})
+    kept = ap.sar.get(later["id"])["closed"] is not None and ("mob_" + later["id"]) not in ap.lamps.local
+    resent = [x for x in env.sent if isinstance(x, dict) and x.get("op") == "close" and x["m"]["id"] == later["id"]]
+    cm = {"id": "mob_other_9", "kind": "mob", "n": 9, "lat": LAT, "lon": LON, "t_utc": "2026-11-09T12:00:00Z",
+          "r_m": 1.0, "est": False, "person": True, "drift": None,
+          "closed": {"t_utc": "2026-11-09T12:05:00Z", "by": "x", "why": "found"}}
+    said = ap.sound.said.count("sar.mob")
+    ap.on_sar_markers({"rev": 10, "list": [cm]})
+    no_realarm = ap.sound.said.count("sar.mob") == said and ("mob_" + cm["id"]) not in ap.lamps.local
+    env.asked.clear()
+    ap.mob_key_press(types.SimpleNamespace(keysym="f", widget=None, state=0), now=500.0)
+    ap.mob_key_press(types.SimpleNamespace(keysym="f", widget=None, state=0), now=500.05)
+    key_q = sum(1 for t in env.asked if t.startswith("MOB 1"))
+    env.reset()
+    env.position()
+    mm = ap.mob_press("button", now=time.time())
+    env.sent.clear()
+    ap.on_sar_ack({"ok": False, "id": mm["id"], "code": 128})
+    msg1 = ap.msg_text
+    ap.msg_text = ""
+    for _ in range(3):
+        ap.mob_sync_t = 0.0
+        ap.mob_sync({"rev": 5, "n_open": 0})
+    adds = [x for x in env.sent if isinstance(x, dict) and x.get("op") == "add"]
+    ap.on_sar_ack({"ok": False, "id": mm["id"], "code": 128})
+    once = ap.msg_text == "" and not adds and msg1 != ""
+    report("MB10 PF3-r: a double click / burst of presses = ONE MOB; marker ids differ across stations; FOUND (mode "
+           "bar button + key F) asks a YES / NO, NO closes nothing, YES closes the newest (time in the log, not "
+           "reopened by a reload or the gateway's stale list, the close is said again, no new WARNING for a closed "
+           "one); a refused marker is reported once and not resent",
+           one and uniq and bool(items) and no_close and one_closed and len(cl) == 1 and asked_yn and lamp_clear and
+           stays and kept and len(resent) == 1 and no_realarm and key_q == 1 and once,
+           "one %s uniq %s button %s no_close %s closed %s close msgs %d asked %s lamp %s reload %s kept %s resent %d "
+           "no_realarm %s key questions %d once %s" % (one, uniq, bool(items), no_close, one_closed, len(cl), asked_yn,
+                                                       lamp_clear, stays, kept, len(resent), no_realarm, key_q, once))
     env.reset()
 
 
@@ -631,12 +733,19 @@ def ps2(env):
     ap.gw_status = {"uav": {"enabled": True, "next": 1, "slots": []}}
     ctl = _pat_ap(env, "ss", S=50.0, R=1500.0)
     _yes(env)
+    env.asked.clear()
+    asked62 = ctl.choose("next")
+    ur = [m for m in env.sent if isinstance(m, dict) and m.get("t") == "uav_route"]
+    uav_refused = asked62 is False and not ur and not env.asked and "20" in ap.msg_text      # PF2-r MED-2
+    ctl = _pat_ap(env, "ss", S=50.0, R=500.0)                         # 21 legs = 22 > 20 ... use 19 legs = 20 points
+    ctl.p["legs"] = 19
+    ctl.set_datum(LAT, LON, "typed")
     ctl.choose("next")
     ur = [m for m in env.sent if isinstance(m, dict) and m.get("t") == "uav_route"]
-    uav_ok = len(ur) == 1 and len(ur[0]["wps"]) == n_big
+    uav_ok = uav_refused and ctl.plan and ctl.plan["n"] == 20 and len(ur) == 1 and len(ur[0]["wps"]) == 20
     report("PS2 the 50-waypoint rule: 62 waypoints for the boat = REFUSED with the count (nothing sent, nothing cut "
            "silently), CUT AT 50 is the operator's choice (ends on leg 49, 50 waypoints uploaded), a UAV mission "
-           "keeps all %d" % n_big,
+           "over the gateway's 20-waypoint limit is refused before the YES, 20 points go (the %d-point plan stays a boat / split matter)" % n_big,
            chk and chk["n"] == 62 and chk["cut_leg"] == 49 and refused and full and cut_ok and uav_ok,
            "check %s; refused %s; uncut %s; cut %s; uav %s" % (chk, refused, full, cut_ok, uav_ok))
     env.reset()
@@ -660,11 +769,11 @@ def ps3(env):
     _yes(env)
     ctl.choose("boat")
     f, wps = env.uploads[-1] if env.uploads else (None, [])
-    used = (f == 1 and len(wps) == pl["n"] and abs(wps[0]["lat"] - pl["wps"][0][0]) < 1e-9 and
+    used = (f == sar_geo.PROG_END_STOP and prog["final"] == 0 and len(wps) == pl["n"] and abs(wps[0]["lat"] - pl["wps"][0][0]) < 1e-9 and
             ap.route_dirty and ap.prog["wps"][0]["kn"] == 5.0)
     report("PS3 the boat route is the same kind of program as a hand-made one: program.check passes / fails alike "
            "(a 40 kn pattern fails like a 40 kn hand route), small spacing keeps the radius legal, the normal "
-           "prog_upload is used with the final action HOLD and the pattern's first point first",
+           "prog_upload is used with the final action STOP (PF2-r: arrive and stop, never HOLD) and the pattern's first point first",
            same_ok and fast_same and radius_ok and used,
            "problems %s; same %s; fast %s; radius %s; used %s (final %s, %d wps)" % (
                problems, same_ok, fast_same, radius_ok, used, f, len(wps)))
@@ -803,6 +912,107 @@ def ps6(env):
     env.reset()
 
 
+def ps7(env):
+    """PF2-r: MED-1 STOP final (also cut at 50), MED-2 the UAV waypoint limit before the YES, LOW-1 non-finite input,
+    LOW-4 radius vs leg length + short legs, the design text; PF3 with mob_search_ok True (the production default)."""
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    env.position()
+    # MED-1: the program's final action is STOP, also for a route cut at 50, and the YES text says it
+    big = sp.plan("ss", (LAT, LON), {"S": 50.0, "legs": 61, "C": 0.0, "kn": 5.0})
+    cut = sp.cut_at_limit(big)
+    prog_cut = sp.to_boat_program(cut)
+    ctl = _pat_ap(env, "ps", S=100.0, W=500.0, Lg=1000.0, C=45.0)
+    _yes(env)
+    env.asked.clear()
+    ctl.choose("boat")
+    final_ok = (prog_cut["final"] == sar_geo.PROG_END_STOP == 0 and env.uploads and env.uploads[-1][0] == 0 and
+                ap.prog["final"] == 0 and bool(env.asked) and "STOPS" in env.asked[-1])
+    el_text = open(os.path.join(HERE, "lang", "el.txt"), encoding="utf-8").read()
+    says_stop = "σταματά" in [l for l in el_text.splitlines() if l.startswith("pat.ask_boat")][0]
+    # MED-2: 30 waypoints go to the boat but a UAV is told the limit BEFORE the YES
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "gateway"))
+    from uav import mission as uav_mission
+    ctl2 = _pat_ap(env, "ss", S=100.0, legs=29, C=0.0)
+    n_wps = ctl2.plan["n"]
+    env.asked.clear()
+    ap.gw_status = {"uav": {"enabled": True, "next": 1, "slots": []}}
+    sent_before = len(env.sent)
+    asked = ctl2.choose(3)
+    line = ctl2.lines()
+    uav_ok = (sp.UAV_MAX_WPS == uav_mission.MAX_WPS and n_wps == 30 and asked is False and not env.asked and
+              "20" in line and "30" in line and not [m for m in env.sent[sent_before:] if m.get("t") == "uav_route"])
+    small = _pat_ap(env, "ss", S=100.0, legs=10, C=0.0)
+    small_ok = sp.uav_check(small.plan) is None
+    # LOW-1: non-finite input is rejected, never raises
+    bad = []
+    for kind, p in (("ss", {"S": 100.0, "R": float("inf")}), ("ss", {"S": 100.0, "legs": float("inf")}),
+                    ("vs", {"S": 100.0, "R": float("nan")}), ("ps", {"S": 100.0, "W": float("inf"), "Lg": 500.0}),
+                    ("cs", {"S": 100.0, "W": 500.0, "Lg": float("inf")}), ("ss", {"S": float("inf"), "R": 500.0}),
+                    ("ss", {"S": 100.0, "R": 10 ** 400})):
+        try:
+            r = sp.plan(kind, (LAT, LON), dict(p, C=0.0, kn=5.0))
+            bad.append("why" in r)
+        except Exception as e:
+            bad.append(repr(e))
+    finite_ok = all(b is True for b in bad)
+    # LOW-4: the radius never exceeds the shortest leg; legs under the AURIX's 10 m are said before the YES
+    tiny = sp.plan("ps", (LAT, LON), {"S": 8.0, "W": 40.0, "Lg": 100.0, "C": 0.0, "kn": 5.0})
+    chk = sp.boat_check(tiny)
+    mid = sp.plan("ps", (LAT, LON), {"S": 30.0, "W": 120.0, "Lg": 300.0, "C": 0.0, "kn": 5.0})
+    pm = sp.to_boat_program(mid)
+    short_leg = min(l["m"] for l in mid["legs"])
+    radius_ok = all(w["radius"] <= short_leg for w in pm["wps"]) and not program.check(pm) and sp.boat_check(mid) is None
+    ctl3 = _pat_ap(env, "ps", S=8.0, W=40.0, Lg=100.0, C=0.0)
+    env.asked.clear()
+    n_up = len(env.uploads)
+    asked3 = ctl3.choose("boat")
+    leg_ok = chk and chk["why"] == "short_leg" and asked3 is False and len(env.uploads) == n_up and not env.asked
+    # the design text: STOP, and the creeping line's real direction
+    dsg = open(os.path.join(os.path.dirname(HERE), "docs", "sar_design.md"), encoding="utf-8").read()
+    design_ok = "final_action PROG_END_STOP" in dsg and "PROG_END_HOLD (search" not in dsg and "legs along C - 90" in dsg
+    # a creeping line really runs its legs along C - 90 and advances along C
+    cl = sp.plan("cs", (LAT, LON), {"S": 100.0, "C": 45.0, "W": 500.0, "Lg": 1000.0, "kn": 5.0})
+    brg = cl["legs"][0]["brg"]
+    cs_ok = min(abs(_angle_diff(brg, 45.0 - 90.0)), abs(_angle_diff(brg, 45.0 + 90.0))) < 0.5
+    # PF3 with the production default mob_search_ok True: all three offers, in order, the search one opens the panel
+    env.reset()
+    ap.mob_search_ok = True
+    env.position()
+    ap.gw_status = {"uav": {"enabled": True, "next": 2, "slots": []}}
+    dr = FakeDriver()
+    dr.w = env.rig.root
+    ap.driver = dr
+    ap.mob_press("button")
+    env.rig.pump(0.8, lambda: dr.asks)
+    tags = []
+    for _ in range(3):
+        if not dr.asks:
+            break
+        a = dr.asks.pop(0)
+        tags.append(a["tag"])
+        env.sent.clear()
+        if a["tag"] == ("mob", "search"):
+            a["yes"]()
+            break
+        a["no"]()
+        env.rig.pump(2.8, lambda: dr.asks)
+    panel = ap.sar_panel is not None and ap.sar_ctl.datum_src == "mob"
+    quiet = not env.uploads and not [k for k in kinds(env.sent) if k not in ("save", "sar_mark")]
+    if ap.sar_panel is not None:
+        ap.sar_panel.close()
+    ap.driver = None
+    report("PS7 PF2-r: the pattern route ends with STOP (also cut at 50; the YES text says so), a UAV pattern over "
+           "20 waypoints is refused before the YES with the count and the limit (= gateway MAX_WPS), inf / NaN / huge "
+           "input is a clear 'no plan', the radius never exceeds the shortest leg and legs under 10 m are refused "
+           "before the YES, the design text matches; PF3 with search ON offers return, UAV, search in order",
+           final_ok and says_stop and uav_ok and small_ok and finite_ok and radius_ok and leg_ok and design_ok and
+           cs_ok and tags == [("mob", "return"), ("mob", "uav"), ("mob", "search")] and panel and quiet,
+           "final %s stop-text %s uav %s/%s finite %s radius %s leg %s design %s cs %s offers %s panel %s quiet %s" % (
+               final_ok, says_stop, uav_ok, small_ok, bad, radius_ok, leg_ok, design_ok, cs_ok, tags, panel, quiet))
+    env.reset()
+
+
 def main():
     import tempfile
     tmp = tempfile.mkdtemp(prefix="trygons_sar_")
@@ -812,7 +1022,7 @@ def main():
     env = None
     try:
         env = Env(rig, tmp)
-        for fn in (mb1, mb2, mb3, mb4, mb5, mb6, mb7, mb9, ps2, ps3, ps4, ps5, ps6):
+        for fn in (mb1, mb2, mb3, mb4, mb5, mb6, mb7, mb9, mb10, ps2, ps3, ps4, ps5, ps6, ps7):
             try:
                 fn(env)
             except Exception as e:

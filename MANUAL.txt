@@ -4161,7 +4161,9 @@ How to press it:
     top (always drawn), on screen 1 in the bottom bar beside the REC group. Captain, copilot and single operator
     may press it; it needs no ACCEPT because it changes no driving.
   * The key M of the station (setting mob_key). It does nothing while you type
-    into a text field, and it is never a joystick button.
+    into a text field, and it is never a joystick button. A held key (the
+    keyboard repeating) is ONE press: release it to press again. Two presses
+    within 2 seconds (a double click, a bounce) also make only ONE MOB.
 
 What happens at once:
   1. The marker MOB n is put at the boat position of the moment of the press
@@ -4201,8 +4203,14 @@ DANGER FROM THE PROPELLER - the final approach to a person is always by hand,
 with the engine in neutral near the person. Inside the safe distance (30 m) no
 route is made at all; the screen says so.
 
-FOUND: when the person is recovered the marker is closed (the time stays in
-the log) and the alarm clears on every station.
+FOUND: when the person is recovered press FOUND (the button at the end of the
+mode bar on screen 2, shown while a MOB is open; or the key F of the station,
+setting mob_found_key). A vertical YES / NO asks "MOB n: FOUND?"; the captain or
+the copilot may answer it, no ACCEPT is needed. YES closes the newest open MOB:
+the time stays in the log, the red button, the map cross and the MOB line clear
+and the alarm clears on every station; a closed MOB is never opened again, not
+by a restart and not by the gateway's list. NO changes nothing. With several open
+MOBs press FOUND once for each.
 ==========================================================================
 
 SEARCH PATTERNS (step PF2)
@@ -4233,13 +4241,16 @@ still asked by the gateway as for every route, and a UAV mission is only stored
 - the launch needs its own approval.
   * BOAT: the pattern becomes a normal route through the normal route upload
     (shallow water and geofence checks, speed limit) with the final action
-    HOLD. The boat takes at most 50 waypoints. A pattern with more is REFUSED
+    STOP: at the last waypoint the boat arrives and STOPS (idle, neutral,
+    STANDBY) - the YES question says so. A leg shorter than 10 m is refused
+    before the YES (use a larger spacing). The boat takes at most 50 waypoints. A pattern with more is REFUSED
     with a message that says the number; nothing is cut by itself. Split the
     pattern (a smaller size or a larger spacing) or press CUT AT 50: the route
     then ends on leg 49. AUTO START follows the normal rules.
   * UAV: a mission with the altitude on every waypoint; it passes the UAV route
     checks (energy, range, altitude, no-fly zones) and ends in a hover over the
-    last point.
+    last point. A UAV takes at most 20 waypoints: the panel shows the count and
+    the limit and refuses before the YES.
 The search pattern is a tool to plan a search. It is no guarantee that the
 person is found: wind and current move the datum, and the screen does not know
 the wind.

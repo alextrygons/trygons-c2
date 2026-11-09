@@ -120,6 +120,9 @@ class PatternCtl:
         s = sar_pattern.summary(self.plan)
         t = T("pat.summary", n=s["n"], legs=s["nlegs"], nm="%.2f" % s["nm"], m="%d" % round(s["m"]),
               min="%d" % round(s["min"]), area="%.2f" % s["area_nm2"])
+        uc = sar_pattern.uav_check(self.plan)
+        if uc:
+            t += " " + T("pat.uav_over", n=uc["n"], max=uc["max"])
         if self.plan["n"] > sar_pattern.MAX_BOAT_WP:
             t += " " + T("pat.cut_note" if self.cut else "pat.boat_over", n=self.plan["n"],
                          max=sar_pattern.MAX_BOAT_WP, leg=sar_pattern.MAX_BOAT_WP - 1)
@@ -149,6 +152,11 @@ class PatternCtl:
             if chk and self.cut:
                 pl = sar_pattern.cut_at_limit(pl)           # the operator's explicit choice, said on the panel
                 chk = None
+            if chk and chk["why"] == "short_leg":
+                a.say(T("pat.short_leg", m="%d" % chk["m"], min="%d" % chk["min"]), ORANGE)
+                a.event(T("pat.ev_refused", n=pl["n"]))
+                self.why = "short_leg"
+                return False
             if chk:
                 a.say(T("pat.too_many", n=chk["n"], max=chk["max"], leg=chk["cut_leg"]), ORANGE)
                 a.event(T("pat.ev_refused", n=chk["n"]))
@@ -157,6 +165,13 @@ class PatternCtl:
         elif not a.gw_is_gateway():
             a.say(T("uav.not_connected"), RED)
             return False
+        else:
+            uc = sar_pattern.uav_check(pl)                  # PF2-r MED-2: the limit is said BEFORE the YES
+            if uc:
+                a.say(T("pat.uav_over", n=uc["n"], max=uc["max"]), ORANGE)
+                a.event(T("pat.ev_refused", n=uc["n"]))
+                self.why = "uav_too_many"
+                return False
         self.pending = (target, pl)
         text = T("pat.ask_" + ("boat" if target == "boat" else "uav"), kind=T(KIND_NAMES[pl["kind"]]),
                  n=pl["n"], nm="%.2f" % (pl["total_m"] / sar_pattern.M_PER_NM),

@@ -106,15 +106,16 @@ speed, (UAV) altitude. Turns to STARBOARD (IAMSAR standard) unless "port" is cho
 - Parallel track (PS) over a W (across) x Lg (along C) rectangle, corner start: tracks n = ceil(W/S),
   the first S/2 inside the edge; search legs along C of length Lg - S (S/2 in from each end),
   cross legs of length S, alternating C / C+180. Waypoints 2n. Total = n (Lg - S) + (n - 1) S.
-- Creeping line (CS) = parallel track with the search legs ACROSS the long side (legs along C+90,
-  advance along C) - same formulas with W and Lg swapped (cheap: PF2 if time allows).
+- Creeping line (CS) = parallel track with the search legs ACROSS the long side (legs along C - 90
+  for a starboard turn, C + 90 for port - as built, PF2-r; advance along C) - same formulas with W and Lg swapped (cheap: PF2 if time allows).
 - Shown before sending: numbered legs, total length, time = total / speed, area covered ~ total x S,
   waypoint count. Boat: > 50 waypoints = refused «σπάστε το» with the count + the option "cut at 50"
   (says which leg it ends on); never silently cut. UAV: alt per waypoint (default 50 m), end =
   LOITER_UNLIM over the last point (mission.py, unchanged); uavcheck decides.
 - Target box (the "Send route" box, uavroute.py): ΣΚΑΦΟΣ / ΕΠΟΜΕΝΟ UAV / a specific UAV.
-- Boat route through prog_upload with final_action PROG_END_HOLD (search continues in heading hold
-  at approach speed + the arrival alarm) unless the datum is a person and the pattern ends at it
+- Boat route through prog_upload with final_action PROG_END_STOP (PF2-r: the boat arrives at the last
+  waypoint and STOPS - idle + neutral + STANDBY; HOLD was dropped: it keeps the last course with no end
+  point, so a route cut at 50 could run on; the YES text says it) unless the datum is a person and the pattern ends at it
   (SS ends far away; VS ends AT the datum -> the last point replaced by the stand-off point, section 3).
 
 ## 5. Mark a point from the video (K3, step PF4)

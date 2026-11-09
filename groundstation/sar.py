@@ -26,6 +26,8 @@ class LocalSar:
         self.markers = {}               # id -> marker (this station's view: local + the gateway's)
         self.sent = set()               # ids the gateway has acknowledged
         self.err = None
+        self.refused = set()            # ids the gateway refused (VIEWER ...): not sent again (PF3-r)
+        self.reclose = set()            # closed here while the gateway's copy was still open: say it again
         self._load()
 
     def _load(self):
@@ -72,7 +74,15 @@ class LocalSar:
         self.sent.add(mid)
 
     def unsent(self):
-        return [m for i, m in self.markers.items() if i not in self.sent]
+        return [m for i, m in self.markers.items() if i not in self.sent and i not in self.refused]
+
+    def refuse(self, mid):
+        self.refused.add(mid)
+
+    def take_reclose(self):
+        out = sorted(self.reclose)
+        self.reclose.clear()
+        return out
 
     def merge(self, remote):
         """The gateway's list wins for every id it holds (it is the shared copy); local-only ones stay. -> new ids."""
@@ -82,7 +92,12 @@ class LocalSar:
                 continue
             if m["id"] not in self.markers:
                 new.append(m["id"])
-            self.markers[m["id"]] = dict(m)
+            loc = self.markers.get(m["id"])
+            keep = dict(m)
+            if loc and loc.get("closed") and not m.get("closed"):
+                keep["closed"] = loc["closed"]           # a close the gateway has not seen yet is never undone (PF3-r)
+                self.reclose.add(m["id"])
+            self.markers[m["id"]] = keep
             self.sent.add(m["id"])
         return new
 

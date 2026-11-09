@@ -8602,10 +8602,10 @@
 "kind": "manual",
 "lines": [
 4163,
-4171
+4166
 ],
 "term": "",
-"text": "* The key M of the station (setting mob_key). It does nothing while you type into a text field, and it is never a joystick button. What happens at once: 1. The marker MOB n is put at the boat position of the moment of the press (the newest position sample - a later sample never moves it). A position older than 2 seconds is shown as POSITION UNCERTAIN: the circle grows with the age and the speed. With no position at all the alarm and the SAVE still happen, only no marker is made."
+"text": "* The key M of the station (setting mob_key). It does nothing while you type into a text field, and it is never a joystick button. A held key (the keyboard repeating) is ONE press: release it to press again. Two presses within 2 seconds (a double click, a bounce) also make only ONE MOB."
 },
 {
 "ch": "23",
@@ -8614,11 +8614,11 @@
 "id": "en:663",
 "kind": "manual",
 "lines": [
-4172,
-4175
+4168,
+4173
 ],
 "term": "",
-"text": "2. A red WARNING \"MAN OVERBOARD\" with the voice callout \"Man overboard\" on this station. The same warning appears on every other station when the marker reaches it. ACK silences this PC; the marker stays. 3. SAVE: the cameras and both screens are kept like the SAVE button does."
+"text": "What happens at once: 1. The marker MOB n is put at the boat position of the moment of the press (the newest position sample - a later sample never moves it). A position older than 2 seconds is shown as POSITION UNCERTAIN: the circle grows with the age and the speed. With no position at all the alarm and the SAVE still happen, only no marker is made."
 },
 {
 "ch": "23",
@@ -8627,11 +8627,11 @@
 "id": "en:664",
 "kind": "manual",
 "lines": [
-4176,
-4179
+4174,
+4177
 ],
 "term": "",
-"text": "4. The MOB line (top of the notices on screen 1, a banner on screen 2): MOB number, distance, bearing and the time since the press. 5. Without a gateway the marker, the alarm and the sound still work; the marker goes to the gateway when it is back."
+"text": "2. A red WARNING \"MAN OVERBOARD\" with the voice callout \"Man overboard\" on this station. The same warning appears on every other station when the marker reaches it. ACK silences this PC; the marker stays. 3. SAVE: the cameras and both screens are kept like the SAVE button does."
 },
 {
 "ch": "23",
@@ -8640,11 +8640,11 @@
 "id": "en:665",
 "kind": "manual",
 "lines": [
-4181,
-4184
+4178,
+4181
 ],
 "term": "",
-"text": "Drift estimate: only when the boat has learned a trustworthy sea current, the screen draws a dashed line and circle marked ESTIMATE - not for navigation. There is NO wind data on the boat, so the wind is not included; the screen says \"no wind\". Without a trusted current it says \"no drift estimate\"."
+"text": "4. The MOB line (top of the notices on screen 1, a banner on screen 2): MOB number, distance, bearing and the time since the press. 5. Without a gateway the marker, the alarm and the sound still work; the marker goes to the gateway when it is back."
 },
 {
 "ch": "23",
@@ -8653,11 +8653,11 @@
 "id": "en:666",
 "kind": "manual",
 "lines": [
-4186,
-4192
+4183,
+4186
 ],
 "term": "",
-"text": "Offers (one vertical YES / NO box at a time, the captain answers): * RETURN TO THE MOB: a route of two points that ENDS 30 m before the person (never at the person), at most 5 kn, final action STOP (idle, neutral and STANDBY at the end). On the down-current side when the current is known, else on the line from the boat. It goes through the normal route upload: shallow water and geofence checks, a copilot's route waits for the captain's ACCEPT, AUTO START needs the joystick CONFIRM as always."
+"text": "Drift estimate: only when the boat has learned a trustworthy sea current, the screen draws a dashed line and circle marked ESTIMATE - not for navigation. There is NO wind data on the boat, so the wind is not included; the screen says \"no wind\". Without a trusted current it says \"no drift estimate\"."
 },
 {
 "ch": "23",
@@ -8666,11 +8666,11 @@
 "id": "en:667",
 "kind": "manual",
 "lines": [
-4193,
-4196
+4188,
+4194
 ],
 "term": "",
-"text": "* UAV OVER THE MOB: the next UAV (or a flying one) goes to the point at 30 m altitude through the normal UAV route checks and launch approval. * SEARCH PATTERN: opens the search pattern panel with the MOB as the datum (see SEARCH PATTERNS below)."
+"text": "Offers (one vertical YES / NO box at a time, the captain answers): * RETURN TO THE MOB: a route of two points that ENDS 30 m before the person (never at the person), at most 5 kn, final action STOP (idle, neutral and STANDBY at the end). On the down-current side when the current is known, else on the line from the boat. It goes through the normal route upload: shallow water and geofence checks, a copilot's route waits for the captain's ACCEPT, AUTO START needs the joystick CONFIRM as always."
 },
 {
 "ch": "23",
@@ -8679,37 +8679,37 @@
 "id": "en:668",
 "kind": "manual",
 "lines": [
-4197,
-4205
+4195,
+4198
 ],
 "term": "",
-"text": "No answer means nothing happens. While another question is open on screen 1 the offer waits. DANGER FROM THE PROPELLER - the final approach to a person is always by hand, with the engine in neutral near the person. Inside the safe distance (30 m) no route is made at all; the screen says so. FOUND: when the person is recovered the marker is closed (the time stays in the log) and the alarm clears on every station."
+"text": "* UAV OVER THE MOB: the next UAV (or a flying one) goes to the point at 30 m altitude through the normal UAV route checks and launch approval. * SEARCH PATTERN: opens the search pattern panel with the MOB as the datum (see SEARCH PATTERNS below)."
 },
 {
 "ch": "23",
 "chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
-"heading": "SEARCH PATTERNS (step PF2)",
+"heading": "",
 "id": "en:669",
 "kind": "manual",
 "lines": [
-4210,
-4213
+4199,
+4204
 ],
 "term": "",
-"text": "Panel \"SEARCH PATTERNS\": opens from the MOB offer \"SEARCH PATTERN\" (the MOB is the datum) or from the map's right-click menu \"Search pattern here\" (the clicked point is the datum). The datum can also be set by a click on the map, the MOB point or the boat position. Patterns (IAMSAR Volume II):"
+"text": "No answer means nothing happens. While another question is open on screen 1 the offer waits. DANGER FROM THE PROPELLER - the final approach to a person is always by hand, with the engine in neutral near the person. Inside the safe distance (30 m) no route is made at all; the screen says so."
 },
 {
 "ch": "23",
 "chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
-"heading": "SEARCH PATTERNS (step PF2)",
+"heading": "",
 "id": "en:670",
 "kind": "manual",
 "lines": [
-4214,
-4217
+4206,
+4213
 ],
 "term": "",
-"text": "* Expanding square (SS): the first leg has length S, then S, 2S, 2S, 3S, 3S ...; every turn is 90 degrees to starboard. Size = the half side. * Sector (VS): nine legs of the radius R with 120 degree turns, three arms through the datum."
+"text": "FOUND: when the person is recovered press FOUND (the button at the end of the mode bar on screen 2, shown while a MOB is open; or the key F of the station, setting mob_found_key). A vertical YES / NO asks \"MOB n: FOUND?\"; the captain or the copilot may answer it, no ACCEPT is needed. YES closes the newest open MOB: the time stays in the log, the red button, the map cross and the MOB line clear and the alarm clears on every station; a closed MOB is never opened again, not by a restart and not by the gateway's list. NO changes nothing. With several open MOBs press FOUND once for each."
 },
 {
 "ch": "23",
@@ -8722,7 +8722,7 @@
 4221
 ],
 "term": "",
-"text": "* Parallel track (PS): a rectangle of width W and length Lg along the first course, the datum at the corner, tracks spaced S, the first S/2 inside. * Creeping line (CS): like PS, but the tracks run across the direction of advance."
+"text": "Panel \"SEARCH PATTERNS\": opens from the MOB offer \"SEARCH PATTERN\" (the MOB is the datum) or from the map's right-click menu \"Search pattern here\" (the clicked point is the datum). The datum can also be set by a click on the map, the MOB point or the boat position. Patterns (IAMSAR Volume II):"
 },
 {
 "ch": "23",
@@ -8732,10 +8732,10 @@
 "kind": "manual",
 "lines": [
 4222,
-4231
+4225
 ],
 "term": "",
-"text": "Inputs: track spacing S, first leg course, size, speed, UAV altitude (default 50 m), turns to starboard or port. The pattern is DRAWN on the map before anything is sent, in the caution colour with the note PREVIEW - not sent: numbered legs, and on the panel the number of waypoints and legs, the total length, the time at the chosen speed and the area covered (length x spacing). SEND asks for the target (the same box as \"Send route\": BOAT / NEXT UAV / a UAV) and then for a YES in the vertical YES / NO box: the captain on screen 1, or the single operator. Nothing is sent without that YES."
+"text": "* Expanding square (SS): the first leg has length S, then S, 2S, 2S, 3S, 3S ...; every turn is 90 degrees to starboard. Size = the half side. * Sector (VS): nine legs of the radius R with 120 degree turns, three arms through the datum."
 },
 {
 "ch": "23",
@@ -8744,11 +8744,11 @@
 "id": "en:673",
 "kind": "manual",
 "lines": [
-4231,
-4232
+4226,
+4229
 ],
 "term": "",
-"text": "A copilot prepares the pattern; for the boat the captain's ACCEPT is still asked by the gateway as for every route, and a UAV mission is only stored"
+"text": "* Parallel track (PS): a rectangle of width W and length Lg along the first course, the datum at the corner, tracks spaced S, the first S/2 inside. * Creeping line (CS): like PS, but the tracks run across the direction of advance."
 },
 {
 "ch": "23",
@@ -8757,11 +8757,11 @@
 "id": "en:674",
 "kind": "manual",
 "lines": [
-4233,
+4230,
 4239
 ],
 "term": "",
-"text": "- the launch needs its own approval. * BOAT: the pattern becomes a normal route through the normal route upload (shallow water and geofence checks, speed limit) with the final action HOLD. The boat takes at most 50 waypoints. A pattern with more is REFUSED with a message that says the number; nothing is cut by itself. Split the pattern (a smaller size or a larger spacing) or press CUT AT 50: the route then ends on leg 49. AUTO START follows the normal rules."
+"text": "Inputs: track spacing S, first leg course, size, speed, UAV altitude (default 50 m), turns to starboard or port. The pattern is DRAWN on the map before anything is sent, in the caution colour with the note PREVIEW - not sent: numbered legs, and on the panel the number of waypoints and legs, the total length, the time at the chosen speed and the area covered (length x spacing). SEND asks for the target (the same box as \"Send route\": BOAT / NEXT UAV / a UAV) and then for a YES in the vertical YES / NO box: the captain on screen 1, or the single operator. Nothing is sent without that YES."
 },
 {
 "ch": "23",
@@ -8770,11 +8770,37 @@
 "id": "en:675",
 "kind": "manual",
 "lines": [
-4240,
-4245
+4239,
+4240
 ],
 "term": "",
-"text": "* UAV: a mission with the altitude on every waypoint; it passes the UAV route checks (energy, range, altitude, no-fly zones) and ends in a hover over the last point. The search pattern is a tool to plan a search. It is no guarantee that the person is found: wind and current move the datum, and the screen does not know the wind."
+"text": "A copilot prepares the pattern; for the boat the captain's ACCEPT is still asked by the gateway as for every route, and a UAV mission is only stored"
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "SEARCH PATTERNS (step PF2)",
+"id": "en:676",
+"kind": "manual",
+"lines": [
+4241,
+4249
+],
+"term": "",
+"text": "- the launch needs its own approval. * BOAT: the pattern becomes a normal route through the normal route upload (shallow water and geofence checks, speed limit) with the final action STOP: at the last waypoint the boat arrives and STOPS (idle, neutral, STANDBY) - the YES question says so. A leg shorter than 10 m is refused before the YES (use a larger spacing). The boat takes at most 50 waypoints. A pattern with more is REFUSED with a message that says the number; nothing is cut by itself. Split the pattern (a smaller size or a larger spacing) or press CUT AT 50: the route then ends on leg 49. AUTO START follows the normal rules."
+},
+{
+"ch": "23",
+"chapter": "MAN OVERBOARD (MOB) - search and rescue tools (step PF3)",
+"heading": "SEARCH PATTERNS (step PF2)",
+"id": "en:677",
+"kind": "manual",
+"lines": [
+4250,
+4256
+],
+"term": "",
+"text": "* UAV: a mission with the altitude on every waypoint; it passes the UAV route checks (energy, range, altitude, no-fly zones) and ends in a hover over the last point. A UAV takes at most 20 waypoints: the panel shows the count and the limit and refuses before the YES. The search pattern is a tool to plan a search. It is no guarantee that the person is found: wind and current move the datum, and the screen does not know the wind."
 },
 {
 "ch": "tour",
@@ -10767,7 +10793,7 @@
 }
 ],
 "sources": {
-"MANUAL.txt": "cdfc65d2704f5f079fc6a0fa0376c2009f0f559d8265a8167be8c0e42080ff2d",
+"MANUAL.txt": "62dffbdb02e3c03fd4bad8cb4e29e084bbaacf129491d6490cdba924118e4254",
 "academy/content/tour.json": "3405a9151d9c13b14bd7a626de84c0a7c7eabc932425b83e5cf69aef4f5a01af",
 "groundstation/assistant/index.py": "b40e12d9161886a1b837a62448dd97a313e199bf58924e454aacba759583d99d"
 },

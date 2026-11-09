@@ -14,12 +14,16 @@ launch rules. The final approach to a person is always by hand (sar_geo.standoff
 """
 import calendar
 import math
+import random
 import time
 
 import sar_geo
 from i18n import T
 
 MOB_KEY_DEFAULT = "m"
+FOUND_KEY_DEFAULT = "f"             # PF3-r: «ΒΡΕΘΗΚΕ» (found) on the keyboard (screen 1 has no button for it)
+REPEAT_S = 2.0                      # a second MOB press within this is the same press (double click / auto-repeat)
+KEY_STALE_S = 1.0                   # a held key repeats faster than this; longer without a repeat = a lost KeyRelease
 FRESH_S = 2.0                        # a telemetry sample older than this is an estimate (link trouble)
 CONF_MIN = 0.5                       # the learned current is trusted from here (current_conf)
 SIGMA_MIN_KN = 0.1                   # docs/sar_design.md 2 (6): sigma_v = max(0.1 kn, 0.5 |v_c|)
@@ -59,8 +63,12 @@ def new_marker(mid, n, pos, now, who, drift=None, station=None):
             "still": None, "closed": None, "drift": drift, "by": who}
 
 
-def marker_id(now, n):
-    return "mob_%s_%d" % (time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)), n)
+def marker_id(now, n, station=None, rnd=None):
+    """Unique across stations (PF3-r): the time, the number AND the station id + a random part, so two presses in the
+    same second on two stations never merge."""
+    r = rnd if rnd is not None else "%06x" % random.getrandbits(24)
+    st = "".join(ch for ch in str(station if station is not None else "") if ch.isalnum())[:6]
+    return "mob_%s_%d_%s%s" % (time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)), n, st, r)
 
 
 def t_of(marker):

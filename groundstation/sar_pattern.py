@@ -19,6 +19,8 @@ KINDS = ("ss", "vs", "ps", "cs")
 MAX_BOAT_WP = 50            # program.MAX_WP / PROG_MAX_WP on the AURIX
 M_PER_NM = 1852.0
 MAX_LEGS = 200              # a sanity bound
+UAV_MAX_WPS = 20            # gateway/uav/mission.py MAX_WPS (the test compares them); more = refused 123 by the gateway
+MIN_BOAT_LEG_M = 10.0       # app smallboat.c prog min_leg_m: a shorter leg is refused by the AURIX
 
 
 def _sgn(turn):
@@ -100,7 +102,7 @@ def plan(kind, datum, p):
         C = float(p.get("C", 0.0)) % 360.0
         kn = float(p.get("kn", 5.0))
         datum = (float(datum[0]), float(datum[1]))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return {"why": "input"}
     turn = "port" if p.get("turn") == "port" else "starboard"
     if not all(math.isfinite(v) for v in (S, C, kn, datum[0], datum[1])) or not (-90 < datum[0] < 90) \
@@ -108,6 +110,14 @@ def plan(kind, datum, p):
         return {"why": "input"}
     if not (1.0 <= S <= 20000.0) or not (0.5 <= kn <= 60.0):
         return {"why": "input"}
+    for k in ("R", "legs", "W", "Lg"):                  # PF2-r LOW-1: inf / NaN never reach the geometry
+        v = p.get(k)
+        if v is not None:
+            try:
+                if not math.isfinite(float(v)):
+                    return {"why": "input"}
+            except (TypeError, ValueError, OverflowError):
+                return {"why": "input"}
     try:
         if kind == "ss":
             legs = p.get("legs")
@@ -134,7 +144,7 @@ def plan(kind, datum, p):
             pts = (parallel_track if kind == "ps" else creeping_line)(datum, S, C, W, Lg, turn)
         else:
             return {"why": "kind"}
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return {"why": "size"}
     legs_l = _legs(pts)
     total = sum(l["m"] for l in legs_l)
@@ -145,9 +155,20 @@ def plan(kind, datum, p):
 def boat_check(pl):
     """None when the plan fits the AURIX's route (<= 50 waypoints), else {"why": "too_many", "n", "cut_leg", "max"}:
     the first 50 waypoints end on leg `cut_leg`. The caller shows it; nothing is ever cut silently."""
-    if pl["n"] <= MAX_BOAT_WP:
-        return None
-    return {"why": "too_many", "n": pl["n"], "cut_leg": MAX_BOAT_WP - 1, "max": MAX_BOAT_WP}
+    if pl["n"] > MAX_BOAT_WP:
+        return {"why": "too_many", "n": pl["n"], "cut_leg": MAX_BOAT_WP - 1, "max": MAX_BOAT_WP}
+    short = min([l["m"] for l in pl["legs"]] or [MIN_BOAT_LEG_M])
+    if short < MIN_BOAT_LEG_M:                       # the AURIX would refuse the route (leg too short): say it first
+        return {"why": "short_leg", "m": short, "min": MIN_BOAT_LEG_M}
+    return None
+
+
+def uav_check(pl):
+    """None, or {"why": "uav_too_many", "n", "max"}: the gateway refuses a UAV mission over UAV_MAX_WPS points (123)
+    - said BEFORE the YES (PF2-r MED-2)."""
+    if pl["n"] > UAV_MAX_WPS:
+        return {"why": "uav_too_many", "n": pl["n"], "max": UAV_MAX_WPS}
+    return None
 
 
 def cut_at_limit(pl):
@@ -159,10 +180,13 @@ def cut_at_limit(pl):
                 time_s=total / (pl["kn"] * M_PER_NM / 3600.0), area_m2=total * pl["S"])
 
 
-def to_boat_program(pl, radius_m=None, final=1):
+def to_boat_program(pl, radius_m=None, final=sar_geo.PROG_END_STOP):
     """A plan (<= 50 waypoints) -> the program dict of the map's route (the normal upload + every check). final =
-    PROG_END_HOLD (1): the search goes on in heading hold at the approach speed + the arrival alarm."""
-    r = float(radius_m) if radius_m is not None else max(5.0, min(25.0, pl["S"] / 4.0))
+    PROG_END_STOP (0, PF2-r MED-1): at the LAST waypoint the boat arrives and STOPS (idle + neutral + STANDBY) - never
+    HOLD (1), which keeps the last course with no end point (a route cut at 50 would run on). The waypoint radius is
+    never larger than 40 % of the shortest leg (but at least the program's 5 m)."""
+    short = min([l["m"] for l in pl.get("legs") or []] or [1e9])
+    r = float(radius_m) if radius_m is not None else max(5.0, min(25.0, pl["S"] / 4.0, 0.4 * short))
     return {"final": int(final),
             "wps": [{"lat": la, "lon": lo, "kn": float(pl["kn"]), "radius": r, "action": 0} for la, lo in pl["wps"]]}
 
