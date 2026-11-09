@@ -2368,7 +2368,7 @@ adsb.head = AIRCRAFT NEAR A UAV
 adsb.caution = Aircraft {cs} near UAV {n} ({dh} m, height {dv})
 adsb.warning = AIRCRAFT {cs} VERY CLOSE TO UAV {n} ({dh} m, height {dv})
 adsb.offer_hold = Aircraft {cs} near UAV {n}. HOLD the UAV where it is? This is only a proposal - nothing happens without your YES. Look with your eyes too.
-adsb.offer_descend = Aircraft {cs} near UAV {n}. DESCEND the UAV to {alt} m over its position? This is only a proposal - nothing happens without your YES. Look with your eyes too.
+adsb.offer_descend = Aircraft {cs} near UAV {n}. DESCEND the UAV to {alt} m over its position? This REPLACES its observation mission (it then hovers there). This is only a proposal - nothing happens without your YES. Look with your eyes too.
 adsb.sent_hold = ADS-B: UAV {n} holds (answer to the proposal)
 adsb.sent_descend = ADS-B: UAV {n} descends to {alt} m (answer to the proposal)
 adsb.gone = ADS-B: the proposal for UAV {n} no longer stands - nothing was sent
@@ -2379,3 +2379,14 @@ say.adsb.uav3 = Aircraft near UAV 3
 say.adsb.uav4 = Aircraft near UAV 4
 say.adsb.uav5 = Aircraft near UAV 5
 say.adsb.uav6 = Aircraft near UAV 6
+
+# --- PF4-r: pending UAV routes (the question shows the route), a busy screen 1 ---
+gw.uav_route_fly = UAV ROUTE: change the mission of the flying UAV {n} ({k} points, {km} km, last point {pos}, {alt} m)
+gw.uav_route_seq = UAV ROUTE: change the route of UAV {n} in the launch sequence ({k} points, {km} km, last point {pos}, {alt} m)
+gw.uav_route_mine = UAV ROUTE: change the mission of the flying UAV {n} ({k} points)
+gw.uav_route_replaced = UAV {n}: your pending route was {why} - it will not be applied
+uavr.ask_note = WAITS FOR APPROVAL – UAV {n}
+mark.q_busy = Another question is open on screen 1 - answer it first, then choose again.
+gw.uav_why_newer = replaced by a newer route
+gw.uav_why_captain = replaced by the captain's own route
+adsb.uav_alt_unknown = ADS-B: UAV {n} unknown altitude - aircraft near it are judged CAUTION only

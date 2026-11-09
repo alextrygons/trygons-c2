@@ -463,7 +463,8 @@ class Gateway:
         self.stations.ask_local(st, m, what, done)
 
     def _sar_list_msg(self):
-        return {"t": "sar_markers", "rev": self.sar.rev, "list": self.sar.list()}
+        return {"t": "sar_markers", "rev": self.sar.rev, "list": self.sar.list(),
+                "deleted": list(getattr(self.sar, "deleted", []))}
 
     def _sar_get(self, st, m):
         st.send(self._sar_list_msg())
@@ -506,23 +507,42 @@ class Gateway:
         if not any(mk["id"] == mid for mk in self.sar.list()):
             return st.send(dict(res, ok=False, code=108, text="no such marker"))
         name = mid + ".jpg"
+        # PF4-r MED-5 (the 13n4b rule): the file is written by a HELPER THREAD, never on the asyncio loop; the marker /
+        # audit / answers follow on the loop once it is written
         try:
-            folder = self.storage.folder("sar") if self.storage is not None and self.storage.usable else None
-            if folder:
-                with open(os.path.join(folder, name), "wb") as f:
-                    f.write(jpg)
-        except OSError as e:
-            return st.send(dict(res, ok=False, code=108, text="still not stored: %s" % e))
-        self.sar.set_still(mid, name)
-        self.audit("sar", station=st.id, user=st.user, op="still", id=mid, ok=True, bytes=len(jpg))
-        try:
-            self.recorder.note_sar({"op": "still", "id": mid, "file": "sar_" + name, "by": st.user}, jpg, name)
-        except Exception:
-            pass
-        st.send(dict(res, ok=True, code=0, text="still stored"))
-        msg = self._sar_list_msg()
-        for s_ in list(self.stations.stations.values()):
-            s_.send(msg)
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        def done(err):
+            if err:
+                return st.send(dict(res, ok=False, code=108, text="still not stored: %s" % err))
+            self.sar.set_still(mid, name)
+            self.audit("sar", station=st.id, user=st.user, op="still", id=mid, ok=True, bytes=len(jpg))
+            try:
+                self.recorder.note_sar({"op": "still", "id": mid, "file": "sar_" + name, "by": st.user}, jpg, name)
+            except Exception:
+                pass
+            st.send(dict(res, ok=True, code=0, text="still stored"))
+            msg = self._sar_list_msg()
+            for s_ in list(self.stations.stations.values()):
+                s_.send(msg)
+
+        def write():
+            err = None
+            try:
+                folder = self.storage.folder("sar") if self.storage is not None and self.storage.usable else None
+                if folder:
+                    with open(os.path.join(folder, name), "wb") as f:
+                        f.write(jpg)
+            except OSError as e:
+                err = str(e) or "OSError"
+            if loop is not None:
+                loop.call_soon_threadsafe(done, err)
+            else:
+                done(err)
+        self.sar_still_writes = getattr(self, "sar_still_writes", 0) + 1
+        threading.Thread(target=write, name="sar-still", daemon=True).start()
 
     def _academy_msg(self, st, m):
         """Academy levels from a station (CLAUDE.md S, step 16): the file is signed by the shore PC's academy

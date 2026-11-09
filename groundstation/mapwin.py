@@ -274,6 +274,7 @@ class MapView:
             self.draw_sar(c, P, th, f_small)
             self.draw_points(c, P, th, f_small)
             self.draw_pattern(c, P, th, f_small)
+        self.draw_asked_routes(c, P, th, f_small)
         pk = getattr(a, "track_pick", None)
         if pk:
             x, y = P(pk["lat"], pk["lon"])
@@ -405,6 +406,21 @@ class MapView:
         if pts:
             c.create_text(pts[0][0] + 10, pts[0][1] - 10, text=T("pat.draw_note"), anchor="sw", fill=col, font=font,
                           tags=("sar", "sar_pat"))
+
+    def draw_asked_routes(self, c, P, th, font):
+        """PF4-r MED-2c: a UAV route that waits for the captain's YES (driver_ask "uav_route") is DRAWN while the
+        question is open: CAUTION dashed, numbered points, «ΖΗΤΕΙΤΑΙ ΕΓΚΡΙΣΗ – UAV n» (display only)."""
+        for r in list((getattr(self.app, "ask_routes", None) or {}).values()):
+            col = theme.CAUTION
+            pts = [P(w[0], w[1]) for w in r.get("wps") or [] if len(w) >= 2]
+            if len(pts) >= 2:
+                c.create_line(*[v for p in pts for v in p], fill=col, width=2, dash=(3, 3), tags=("ask_route",))
+            for i, (x, y) in enumerate(pts):
+                c.create_oval(x - 5, y - 5, x + 5, y + 5, outline=col, width=2, tags=("ask_route",))
+                c.create_text(x + 8, y + 8, text=str(i + 1), anchor="nw", fill=col, font=font, tags=("ask_route",))
+            if pts:
+                c.create_text(pts[-1][0] + 10, pts[-1][1] - 10, text=T("uavr.ask_note", n=r.get("slot", "?")),
+                              anchor="sw", fill=col, font=font, tags=("ask_route",))
 
     def _tag(self, mark):
         """Everything drawn after `mark` belongs to the map (below the panels)."""

@@ -64,6 +64,10 @@ def _num(s, conv=float):
 
 
 # --- SBS (BaseStation) -------------------------------------------------------------------------------------------
+MAX_AIRCRAFT = 2000                 # PF5-r LOW: the aircraft table never grows without a limit
+UAV_MAX_AGE_S = 5.0                 # PF5-r MED-2: a UAV record older than this = its altitude / speed are unknown
+
+
 def parse_sbs(line):
     """MSG,<type>,sess,aircraft,<hex>,flight,date,time,date,time,<callsign>,<alt>,<gs>,<trk>,<lat>,<lon>,<vs>,<sq>,
     alert,emerg,spi,<onground>. Types 1 (callsign) 3 (position + altitude) 4 (speed, track, vertical rate) 5 / 6 / 7
@@ -101,8 +105,12 @@ def parse_sbs(line):
             d["lat"], d["lon"] = la, lo
     if t == 4 and _num(g(16)) is not None:
         d["vs_fpm"] = _num(g(16))
-    if t in (2, 8) and g(21).strip() in ("0", "-1", "1"):
+    # PF5-r MED-1: the on-ground flag is read on EVERY type that carries it (not only 2 / 8), and an airborne
+    # position (type 3) without the flag clears it - an aircraft that took off is never skipped for ever
+    if g(21).strip() in ("0", "-1", "1"):
         d["gnd"] = g(21).strip() in ("-1", "1")
+    elif t == 3 and "lat" in d:
+        d["gnd"] = False
     if len(d) == 1:
         return None
     return d
@@ -311,6 +319,9 @@ class AdsbTargets:
         for k in ("cs", "alt_ft", "gs_kn", "trk", "vs_fpm", "gnd"):
             if k in d:
                 a[k] = d[k]
+        # PF5-r MED-1: a positive altitude / speed without an on-ground flag in the same report = airborne again
+        if "gnd" not in d and a["gnd"] and ((d.get("alt_ft") or 0) > 0 or (d.get("gs_kn") or 0) > 0):
+            a["gnd"] = False
         if "lat" in d and "lon" in d:
             a["lat"], a["lon"], a["t_pos"] = d["lat"], d["lon"], now
             tr = a["track"]
@@ -321,10 +332,19 @@ class AdsbTargets:
         a["t_seen"] = now
         self.frames += 1
         self.t_last = now
+        if len(self.ac) > MAX_AIRCRAFT:
+            self.cap()
 
     def tick(self, now):
         for k in [k for k, a in self.ac.items() if now - a["t_seen"] > self.cfg["remove_s"]]:
             del self.ac[k]
+        self.cap()
+
+    def cap(self):
+        """PF5-r LOW: at most MAX_AIRCRAFT aircraft are kept (a flood of fake / far ICAOs) - the oldest go first."""
+        if len(self.ac) > MAX_AIRCRAFT:
+            for k in sorted(self.ac, key=lambda k: self.ac[k]["t_seen"])[:len(self.ac) - MAX_AIRCRAFT]:
+                del self.ac[k]
 
     def snapshot(self, now, max_n=60):
         """The aircraft with a position (a plain list: the worker sends it, the manager filters it)."""
@@ -338,6 +358,15 @@ class AdsbTargets:
                         "track": [(round(p[0], 5), round(p[1], 5)) for p in list(a["track"])[-30:]]})
         out.sort(key=lambda r: r["age"])
         return out[:max_n]
+
+
+def _fin(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _f0(v):
+    """A UAV velocity part: missing / non-finite = 0 (standing still) - never a NaN that silences every warning."""
+    return float(v) if _fin(v) else 0.0
 
 
 def dist_m(a, b):
@@ -374,18 +403,21 @@ def cpa(ac, uav, cfg=None):
     avz = (ac.get("vs_fpm") or 0.0) * FPM
     ux, uy = _enu((uav["lat"], uav["lon"]), (ac["lat"], ac["lon"]))
     rx, ry = ux + avx * age, uy + avy * age
-    ug = float(uav.get("gs") or 0.0)
-    uc = math.radians(uav.get("cog") or 0.0)
+    ug = _f0(uav.get("gs"))
+    uc = math.radians(_f0(uav.get("cog")))
     uvx, uvy = ug * math.sin(uc), ug * math.cos(uc)
-    uvz = float(uav.get("climb") or 0.0)
+    uvz = _f0(uav.get("climb"))
     vx, vy, vz = avx - uvx, avy - uvy, avz - uvz
     v2 = vx * vx + vy * vy
     t = 0.0
     if v2 > 0.01:
         t = min(300.0, max(0.0, -(rx * vx + ry * vy) / v2))
     alt_m = None if ac.get("alt_ft") is None else ac["alt_ft"] * FT + avz * age
-    uz = float(uav.get("alt") or 0.0)
-    rz = None if alt_m is None else alt_m - uz
+    # PF5-r MED-2: an UNKNOWN UAV altitude is never sea level (0 m): no vertical separation is claimed (CAUTION at
+    # most, like an aircraft without an altitude)
+    uz = uav.get("alt")
+    uz = float(uz) if _fin(uz) else None
+    rz = None if alt_m is None or uz is None else alt_m - uz
 
     def at(tt):
         return (math.hypot(rx + vx * tt, ry + vy * tt), None if rz is None else abs(rz + vz * tt))
@@ -411,25 +443,41 @@ def level_of(c, cfg):
 def proposal_kind(c, cfg):
     """What to PROPOSE for a UAV near an aircraft: DESCEND (to alt_safe_m) when the aircraft is not clearly below the
     UAV and the UAV is well above the safe height, else HOLD (hover where it is). Never a command."""
-    ac, uz = c.get("ac_alt_m"), c.get("uav_alt_m") or 0.0
+    ac, uz = c.get("ac_alt_m"), c.get("uav_alt_m")
+    if uz is None:
+        return "hold"                                  # PF5-r MED-2: unknown height = never "descend to 30 m"
     if ac is not None and ac >= uz - 15.0 and uz > cfg["alt_safe_m"] + 10.0 and ac > cfg["alt_safe_m"] + 30.0:
         return "descend"
     return "hold"
 
 
-def evaluate(aircraft, drones, cfg, now_refs=()):
+def evaluate(aircraft, drones, cfg, now_refs=(), unknown_out=None):
     """aircraft = snapshot list, drones = {slot: record of the UAV manager's drone_view} (only drones IN THE AIR are
     judged: armed, not landed, a position, not in the slot, a fresh position) -> (list of events worst first,
     list of the flying slots). An event: {icao, cs, slot, level, t, d_h, d_v, ac_alt_m, uav_alt_m, kind}."""
     cfg = merged(cfg) if "caution_h_m" not in cfg else cfg
-    air = {}
+    cfg = dict(cfg)
+    cfg.setdefault("uav_max_age_s", UAV_MAX_AGE_S)
+    air, unknown = {}, []
     for s, d in (drones or {}).items():
         try:
             n = int(s)
         except (TypeError, ValueError):
             continue
-        if d.get("lat") is None or d.get("lon") is None or d.get("in_slot") or not d.get("armed") or d.get("landed"):
+        if d.get("in_slot") or not d.get("armed") or d.get("landed"):
             continue
+        if not _fin(d.get("lat")) or not _fin(d.get("lon")):
+            unknown.append(n)                          # PF5-r MED-2 / LOW: in the air, no usable position
+            continue
+        d = dict(d)
+        age = d.get("alt_age")
+        if not _fin(d.get("alt")) or (age is not None and (not _fin(age) or age > cfg["uav_max_age_s"])):
+            # PF5-r MED-2: altitude missing / non-finite / stale (a lost link keeps the old record): judged with an
+            # UNKNOWN altitude (CAUTION at most) and, stale, standing at its last place - never a silent 0 m
+            d["alt"] = None
+            unknown.append(n)
+        if age is not None and (not _fin(age) or age > cfg["uav_max_age_s"]):
+            d["gs"] = d["climb"] = 0.0
         air[n] = d
     out = []
     for ac in aircraft:
@@ -445,6 +493,9 @@ def evaluate(aircraft, drones, cfg, now_refs=()):
             out.append({"icao": ac["icao"], "cs": ac.get("cs") or "", "slot": n, "level": lv, "t": round(t, 1),
                         "d_h": round(c["d_h"]), "d_v": None if c["d_v"] is None else round(c["d_v"]),
                         "d_h0": round(c["d_h0"]), "ac_alt_m": None if c["ac_alt_m"] is None else round(c["ac_alt_m"]),
-                        "uav_alt_m": round(c["uav_alt_m"], 1), "kind": proposal_kind(c, cfg)})
+                        "uav_alt_m": None if c["uav_alt_m"] is None else round(c["uav_alt_m"], 1),
+                        "kind": proposal_kind(c, cfg)})
     out.sort(key=lambda e: (-e["level"], e["t"]))
+    if unknown_out is not None:                        # PF5-r MED-2: the UAVs without a known altitude / position
+        unknown_out.extend(sorted(set(unknown)))
     return out, sorted(air)

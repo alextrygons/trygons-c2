@@ -252,6 +252,37 @@ def av6(env):
            ok, "sends %s, other commands %s" % (sorted(set(sends)), cmds))
 
 
+def av7(env):
+    """PF5-r: a UAV without a known altitude (gateway "uav_unknown") = a station-local CAUTION + the event line
+    «ADS-B: UAV n unknown altitude», gone with it; a UAV flown by hand by ANOTHER station's pilot is not offered to the
+    captain (his HOLD would only meet the pilot lock, 127); the DESCEND offer says it replaces the mission."""
+    ap = env.ap
+    i18n.set_lang("en", save=False)
+    dr = TS.FakeDriver()
+    dr.w = env.rig.root
+    ap.driver = dr
+    fly(env)
+    captain(env)
+    st = state()
+    st["uav_unknown"] = [3]
+    ap.adsb_sync(st)
+    lamp = ap.lamps.local.get("adsb_unk_3")
+    said = [e for e in ap._evlog[-5:] if "UAV 3 unknown altitude" in e] if getattr(ap, "_evlog", None) else []
+    ap.adsb_sync(state())
+    gone = "adsb_unk_3" not in ap.lamps.local
+    n0 = len(dr.asks)
+    captain(env, pilots={"3": {"station": 9}})                  # a copilot (station 9) flies UAV 3 by hand
+    ap.adsb_sync(state(props=[prop("adsb9", 3)], warn=[warn(1)]))
+    env.rig.pump(1.0)
+    cap_asked = len(dr.asks) - n0
+    txt = T("adsb.offer_descend", cs="X", n=3, alt="30")
+    ok = bool(lamp) and bool(said) and gone and cap_asked == 0 and "REPLACES" in txt
+    report("AV7 PF5-r: an unknown UAV altitude = a local CAUTION + event (gone with it); a UAV flown by another "
+           "station's pilot is not offered to the captain; DESCEND says it replaces the mission", ok,
+           "lamp %r, said %s, gone %s, captain asked %d, text %r" % (lamp, said, gone, cap_asked, txt[:80]))
+    ap.driver = None
+
+
 def main():
     import tempfile
     tmp = tempfile.mkdtemp(prefix="trygons_adsb_")
@@ -262,7 +293,7 @@ def main():
     try:
         env = TS.Env(rig, tmp)
         keep_t = (rig.ap.t, rig.ap.t_rx)
-        for fn in (av1, av2, av3, av4, av5, av6):
+        for fn in (av1, av2, av3, av4, av5, av6, av7):
             try:
                 env.reset()
                 fn(env)

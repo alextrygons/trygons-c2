@@ -204,7 +204,7 @@ class PatternCtl:
             a.event(T("pat.ev_boat", kind=T(KIND_NAMES[pl["kind"]]), n=pl["n"]))
             a.prog_upload(final=a.prog["final"])
         else:
-            a.uav_route(target, sar_pattern.uav_points(pl, self.alt))
+            a.uav_route(target, sar_pattern.uav_points(pl, self.alt), yes=True)     # after the YES above
             a.event(T("pat.ev_uav", kind=T(KIND_NAMES[pl["kind"]]), n=pl["n"], who=str(target)))
 
 

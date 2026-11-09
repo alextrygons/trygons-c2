@@ -26,10 +26,14 @@ def _num(v, lo, hi):
     return v if math.isfinite(v) and lo <= v <= hi else None
 
 
+MAX_DELETED = 500
+
+
 class SarStore:
     def __init__(self, path=None):
         self.path = path
         self.markers = {}
+        self.deleted = []                           # PF4-r LOW: ids deleted here (newest last, kept MAX_DELETED)
         self.rev = 0
         self._lock = threading.RLock()
         self._file_lock = threading.Lock()          # one writer of the file at a time (the helper thread + flush())
@@ -47,6 +51,7 @@ class SarStore:
                 if isinstance(m, dict) and ID_RE.match(str(m.get("id", ""))):
                     self.markers[m["id"]] = m
             self.rev = int(doc.get("rev") or 0)
+            self.deleted = [str(i) for i in (doc.get("deleted") or []) if ID_RE.match(str(i))][-MAX_DELETED:]
         except (OSError, ValueError, TypeError, AttributeError):
             self.markers, self.rev = {}, 0          # a damaged file = no markers (the stations keep theirs, local)
 
@@ -65,7 +70,7 @@ class SarStore:
 
     def flush(self):
         with self._lock:
-            doc = {"rev": self.rev, "list": self.list()}
+            doc = {"rev": self.rev, "list": self.list(), "deleted": list(self.deleted)}
         with self._file_lock:
             try:
                 os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -158,5 +163,8 @@ class SarStore:
             return True, mid, "closed"
         if op == "delete":
             del self.markers[mid]
+            # PF4-r LOW: a delete is said EXPLICITLY to the stations (sar_markers "deleted") - a station never takes
+            # a point missing from the list for a deleted one (an empty / restarted gateway list deletes nothing)
+            self.deleted = [i for i in self.deleted if i != mid][-(MAX_DELETED - 1):] + [mid]
             return True, mid, "deleted"
         return False, mid, "bad operation"

@@ -101,13 +101,18 @@ class LocalSar:
         self.reclose.clear()
         return out
 
-    def merge(self, remote):
-        """The gateway's list wins for every id it holds (it is the shared copy); local-only ones stay. -> new ids."""
+    def merge(self, remote, deleted=None):
+        """The gateway's list wins for every id it holds (it is the shared copy); local-only ones stay. -> new ids.
+        PF4-r LOW: a point goes here ONLY when the gateway says it was deleted (`deleted` = sar_markers "deleted"); a
+        sent point that is simply missing (an empty / restarted gateway, a lost state file) is NOT deleted - it is
+        marked unsent so this station hands it in again."""
         new = []
         have = {m.get("id") for m in remote or [] if isinstance(m, dict)}
+        gone = {str(i) for i in (deleted or [])}
         for mid in [i for i, m in self.markers.items() if m.get("kind") == "point" and i in self.sent and i not in have]:
-            self.markers.pop(mid, None)                   # PF4: a point deleted on another station goes here too
-            self.sent.discard(mid)
+            if mid in gone:
+                self.markers.pop(mid, None)               # PF4: a point deleted on another station goes here too
+            self.sent.discard(mid)                        # else: unsent = handed in again (never lost silently)
         for m in remote or []:
             if not isinstance(m, dict) or not m.get("id"):
                 continue

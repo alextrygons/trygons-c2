@@ -402,6 +402,7 @@ class App:
         self.chartview = mapview.ChartView(self.charts)
         self.single_op = False          # SINGLE-OPERATOR mode as the GATEWAY has it (section F1)
         self.gw_asks = {}               # driver questions from the gateway: id -> text
+        self.ask_routes = {}            # PF4-r: driver question id -> the pending UAV route to draw on the map
         self.cconf = None               # captain's own confirmation (single-operator mode)
         self.confirm_timeout_s = 10.0   # the driver must accept a captain action within this
         self.slam_hist = collections.deque(maxlen=300)   # (t, slamming peak g) from the telemetry
@@ -744,6 +745,7 @@ class App:
         self.t = None
         self.t_rx = 0.0
         self.gw_status = None
+        self.ask_routes = {}
         if getattr(self, "uav_page", None) is not None:
             self.uav_page.update(None)
         self.hist.clear()
@@ -1137,7 +1139,7 @@ class App:
 
     def on_sar_markers(self, d):
         self.mob_sar_rev = d.get("rev")
-        self.sar.merge(d.get("list"))
+        self.sar.merge(d.get("list"), d.get("deleted"))
         self.mark_send_stills()
         for m in self.sar.view():
             if m.get("kind") != "mob":
@@ -1294,7 +1296,7 @@ class App:
         target = "next" if uav.get("next") else (flying[0] if flying else None)
         if target is None or not isinstance(self.link, GatewayLink):
             return self.say(T("uav.not_connected"), RED)
-        self.uav_route(target, [(m["lat"], m["lon"])], alt=30.0)
+        self.uav_route(target, [(m["lat"], m["lon"])], alt=30.0, yes=True)     # after the offer's / marker's YES
         if target == "next":                                 # a magazine drone: the normal launch preparation
             msg = {"t": "uav_launch_prepare", "count": 1}
             if self.single_op:
@@ -1338,8 +1340,13 @@ class App:
             return None
         return self.mark_from_video(self.camview, u, v, self.camview_frame())
 
-    def mark_drone(self, slot):
-        return dict(self.uav_store.drones.get(int(slot)) or {})
+    def mark_drone(self, slot, now=None):
+        """The drone record for marking + rx_age = how old it is HERE (PF4-r MED-3: added to its att_age / alt_age)."""
+        now = time.time() if now is None else now
+        d = dict(self.uav_store.drones.get(int(slot)) or {})
+        t = self.uav_store.t.get(int(slot))
+        d["rx_age"] = max(0.0, now - t) if t is not None else float("inf")
+        return d
 
     def mark_from_video(self, cam, u, v, img=None, now=None):
         """A click on a camera picture -> an ESTIMATED marker (kind "point") with its uncertainty circle; refusals say why
@@ -1354,7 +1361,7 @@ class App:
         if slot is not None:
             if not isinstance(self.link, GatewayLink):
                 return self.mark_refuse(cam, "nogw")
-            loc = sar_mark.locate_uav(self.mark_drone(slot), u, v, res, cfg)
+            loc = sar_mark.locate_uav(self.mark_drone(slot, now), u, v, res, cfg)
         elif cam in ("FRONT-1", "FRONT-2"):
             loc = sar_mark.locate_boat(hudar.calibration(self.gw_status), self.t, u, v, res,
                                        now - (self.t_rx or 0.0) if self.t else None, cfg)
@@ -1469,7 +1476,9 @@ class App:
         head = T("mark.name", n=m["n"])
         if self.driver is not None and not self.driver.question:
             self.driver.ask(text, yes, lambda: None, 60.0, tag=("mark", what), head=head)
-        elif self.driver is None and ynbox.ask(self.root, head, text):
+        elif self.driver is not None:
+            self.say(T("mark.q_busy"), RED)          # PF4-r LOW: never a silent no-op while another question is open
+        elif ynbox.ask(self.root, head, text):
             yes()
 
     def mark_do(self, what, m):
@@ -3005,6 +3014,13 @@ class App:
             self.show_screen(1)                     # one monitor: the question must be seen
         i = d["id"]
         self.gw_asks[i] = d["text"]
+        r = d.get("uav_route")
+        if isinstance(r, dict) and isinstance(r.get("wps"), list):
+            # PF4-r MED-2c: the pending UAV route is drawn on the map while its question is open
+            self.ask_routes = getattr(self, "ask_routes", None) or {}
+            self.ask_routes[i] = r
+            if getattr(self, "mapwin", None) is not None:
+                self.mapwin.redraw()
         send = lambda yes: isinstance(self.link, GatewayLink) and self.link.send_msg(
             {"t": "driver_answer", "id": i, "yes": yes})
         self.driver.ask(T("drv.ask_from", what=i18n.from_en(d["text"]), who=d.get("from", "?")),
@@ -3039,6 +3055,9 @@ class App:
 
     def on_driver_ask_done(self, d):
         self.gw_asks.pop(d.get("id"), None)
+        gone = (getattr(self, "ask_routes", None) or {}).pop(d.get("id"), None)
+        if gone is not None and getattr(self, "mapwin", None) is not None:
+            self.mapwin.redraw()
         if self.driver:
             self.driver.cancel(d.get("id"))
 
@@ -6077,15 +6096,42 @@ class App:
             return self.say(T("uavr.no_route"), RED)
         self.uav_route(key, [(w["lat"], w["lon"]) for w in wps])
 
-    def uav_route(self, target, pts, alt=None):
-        """A UAV route -> the gateway (it checks energy / range / altitude / no-fly + air geofence again)."""
+    def uav_target_flying(self, target):
+        """True when the route target is a UAV in the air (gw_status uav slots[].flying); "next" = the magazine."""
+        uav = (self.gw_status or {}).get("uav") or {}
+        L = uav.get("launch") or {}
+        if L.get("state") in ("ASK", "RUN", "CLOSING") and (target == "next" or str(target) in
+                                                             [str(x) for x in L.get("slots") or []]):
+            return True                              # PF4-r MED-2d: a drone of an asked / running launch = the YES too
+        if target == "next":
+            return False
+        for s in uav.get("slots") or []:
+            if str(s.get("slot")) == str(target):
+                return bool(s.get("flying"))
+        return True                                  # unknown = treated as flying (asks the YES: fail safe)
+
+    def uav_route(self, target, pts, alt=None, yes=False):
+        """A UAV route -> the gateway (it checks energy / range / altitude / no-fly + air geofence again).
+        PF4-r MED-1: a SINGLE OPERATOR's route for a FLYING UAV changes its mission in flight - the operator answers
+        his OWN YES / NO first (captain_confirm, like the U3 M3 launch rule) and only then it goes with confirm "self";
+        yes=True = the caller already asked that explicit YES for this route (the MOB / marker / pattern / ADS-B
+        questions). A magazine drone's route is only stored (no confirm needed)."""
         if not isinstance(self.link, GatewayLink):
             return self.say(T("uav.not_connected"), RED)
         msg = uavroute.route_msg(target, pts) if alt is None else uavroute.route_msg(target, pts, alt)
-        if self.single_op:
-            msg["confirm"] = "self"                  # PF2-u: a flying UAV's new mission asks the operator's own YES
-        self.link.send_msg(msg)
-        self.say(T("uavr.sent", n=len(pts)))
+
+        def send(m=msg):
+            if not isinstance(self.link, GatewayLink):
+                return self.say(T("uav.not_connected"), RED)
+            self.link.send_msg(m)
+            self.say(T("uavr.sent", n=len(pts)))
+        if self.single_op and self.uav_target_flying(target):
+            if yes:
+                msg["confirm"] = "self"
+                return send()
+            what = "UAV ROUTE: change the mission of the flying UAV %s (%d points)" % (target, len(pts))
+            return self.captain_confirm(what, lambda m=msg: (m.__setitem__("confirm", "self"), send(m)))
+        send()
 
     def uav_notices(self, uav):
         """The gateway's UAV notices (U3) -> this station's event log once; a HATCH FAULT / a drone left in the hatch
@@ -6148,6 +6194,14 @@ class App:
                 self.event(text)
                 if self.sound and 1 <= int(e.get("slot") or 0) <= 6:
                     self.sound.say("adsb.%s%d" % ("w" if lv == 2 else "c", int(e["slot"])))
+        for slot in st.get("uav_unknown") or []:
+            # PF5-r MED-2: a UAV in the air without a known (fresh) altitude / position: judged CAUTION at most - said
+            code = "adsb_unk_%s" % slot
+            live.add(code)
+            if code not in self.lamps.local:
+                text = T("adsb.uav_alt_unknown", n=slot)
+                self.lamps.set_local(code, text, alerts.CAUTION)
+                self.event(text)
         for key in [k for k in self.adsb_said if "adsb_%s_%s" % k not in live]:
             del self.adsb_said[key]
         for code in [c for c in self.lamps.local if c.startswith("adsb_") and c not in live]:
@@ -6161,11 +6215,13 @@ class App:
         if not isinstance(self.link, GatewayLink):
             return False
         crew = crewui.crew_of(self)[0]
-        if crew == "captain" or self.single_op:
-            return True
         gw = self.gw_status or {}
         pil = ((gw.get("uav") or {}).get("pilots") or {}).get(str(p.get("slot"))) or {}
-        return bool(pil) and pil.get("station") == gw.get("you")
+        if pil:
+            # PF5-r LOW: a UAV flown by hand is answered by ITS pilot only (the captain's HOLD would only meet the pilot
+            # lock - 127); the captain sees the warning and can take the drone over (W61)
+            return pil.get("station") == gw.get("you")
+        return crew == "captain" or self.single_op
 
     def adsb_offer(self, p):
         """ONE vertical YES / NO: HOLD or DESCEND. Asked once per proposal; the answer is a normal UAV command
@@ -6198,7 +6254,7 @@ class App:
             if d.get("lat") is None:
                 return self.say(T("uav.not_connected"), RED)
             self.event(T("adsb.sent_descend", n=n, alt="%d" % round(p.get("alt_safe_m") or 30)))
-            return self.uav_route(n, [(d["lat"], d["lon"])], alt=float(p.get("alt_safe_m") or 30.0))
+            return self.uav_route(n, [(d["lat"], d["lon"])], alt=float(p.get("alt_safe_m") or 30.0), yes=True)
         if isinstance(self.link, GatewayLink):
             self.event(T("adsb.sent_hold", n=n))
             self.link.send_msg({"t": "uav_hold", "uav": n})

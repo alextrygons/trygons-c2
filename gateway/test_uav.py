@@ -2713,6 +2713,116 @@ def ua37_pf2u_flying_route_needs_yes():
            all(res.values()), str(res))
 
 
+def ua39_pf4r_pending_races():
+    """PF4-r MED-2 (review of 2de2437): (a) the captain's own direct route clears the slot's pending copilot route AND
+    closes its question (an older YES can never overwrite the newer mission); (b) a replaced question closes on screen 1
+    and its copilot is told; (c) the question SHOWS the route (points, length, last point, altitude + the points for
+    screen 1 / the map); (d) while a launch sequence is asked / runs, a copilot's route for ANY slot of it is pending
+    the captain's YES (not stored at once), the captain's own is stored; LOW: the copilot gone = dropped + closed."""
+    from uav import manager as mgr, launch
+    res = {}
+
+    class Sts:
+        def __init__(self):
+            self.stations, self.asks, self.cancelled, self.n = {}, {}, [], 0
+
+        def ask_captain(self, st, m, what, act, extra=None):
+            self.n += 1
+            self.asks[self.n] = (st, m, what, act, extra)
+            return self.n
+
+        def cancel_ask(self, aid, code=None):
+            self.cancelled.append(aid)
+            return self.asks.pop(aid, None) is not None
+
+    def build(flying=True):
+        g = _G()
+        g.stations = Sts()
+        mm = mgr.UavManager({"enabled": True, "slots": [{"usb": "udp:127.0.0.1:1"}] * 6}, g)
+        calls = []
+        mm.proc = type("P", (), {"poll": lambda _s: None})()
+        mm.worker = {"links": {"1": {"present": not flying}}, "radio": {"1": {"present": True}},
+                     "drones": {"1": {"armed": flying, "hb_age": 0.2, "lat": 37.8205, "lon": 23.6, "rel_alt": 40.0,
+                                      "batt_pct": 90}}}
+        mm.worker_t = time.time()
+        if flying:
+            mm.flying[1] = {"phase": "mission", "home": (37.82, 23.60)}
+        mm.boat = lambda: {"pos": (37.82, 23.60), "launch_why": []}
+        mm.upload = lambda n, items, via, cb: calls.append(("upload", items[-1].get("x") if isinstance(
+            items[-1], dict) else None)) or cb(True, "")
+        mm.set_current = lambda n, s_, via, cb: calls.append("set_current") or cb(0, "")
+        mm.cmd = lambda n, via, c, p, cb: calls.append("start") or cb(0, "")
+        return mm, g.stations, calls
+    w_a = [{"lat": 37.8215, "lon": 23.6005, "alt": 40}, {"lat": 37.8225, "lon": 23.6015, "alt": 40}]
+    w_b = [{"lat": 37.8230, "lon": 23.6020, "alt": 60}]
+    # (a) a copilot's pending route, then the captain's own: the question is closed, the old YES approves nothing
+    mm, sts, calls = build()
+    cop, cap = _St(3), _St(4, crew="captain")
+    sts.stations = {3: cop, 4: cap}
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_a})
+    aid = max(sts.asks)
+    old_act = sts.asks[aid][3]
+    mm.route_msg(cap, {"t": "uav_route", "target": 1, "wps": w_b})
+    n_cap = len(calls)
+    old_act(True, 0)                                         # the older question's YES arriving late
+    res["a"] = (aid in sts.cancelled and n_cap == 3 and len(calls) == 3 and not mm.pend_routes and
+                any(x.get("replaced") and not x["ok"] for x in cop.sent))
+    # (b) a newer copilot route replaces the older question: closed on screen 1, the copilot told
+    mm, sts, calls = build()
+    cop = _St(3)
+    sts.stations = {3: cop}
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_a})
+    a1 = max(sts.asks)
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_b})
+    a2 = max(sts.asks)
+    res["b"] = a1 in sts.cancelled and a2 != a1 and a2 in sts.asks and any(x.get("replaced") for x in cop.sent) and \
+        not calls
+    # (c) the question shows the route
+    what, extra = sts.asks[a2][2], sts.asks[a2][4]
+    res["c"] = ("1 points" in what and "last point 37.82300 23.60200" in what and "60 m" in what and extra and
+                extra["uav_route"]["slot"] == 1 and extra["uav_route"]["wps"] == [[37.8230, 23.6020, 60]])
+    q2 = mgr.route_question(1, w_a)
+    res["c"] = res["c"] and "2 points" in q2 and "0.1 km" in q2 and "40 m" in q2
+    # (d) a drone of an asked / running launch sequence (not the current one): a copilot's route is PENDING
+    for state in (launch.ASK, launch.RUN):
+        mm, sts, calls = build(flying=False)
+        cop, cap = _St(3), _St(4, crew="captain")
+        sts.stations = {3: cop, 4: cap}
+        mm.seq.state, mm.seq.slots, mm.seq.cur, mm.seq.phase = state, [2, 1], 2, "CLIMB"
+        mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_a})
+        pend = sts.asks and cop.sent[-1].get("pending") and mm.routes.get(1) is None
+        sts.asks[max(sts.asks)][3](True, 0)
+        stored_after_yes = mm.routes.get(1) == uavcheck_clean(w_a)
+        mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_b})
+        mm.route_msg(cap, {"t": "uav_route", "target": 1, "wps": w_a})
+        cap_ok = cap.sent[-1]["ok"] and "stored" in cap.sent[-1]["text"] and not mm.pend_routes
+        res["d_" + state] = bool(pend and stored_after_yes and cap_ok)
+    # not in a sequence: a copilot still STORES a magazine route (preparation)
+    mm, sts, calls = build(flying=False)
+    cop = _St(3)
+    sts.stations = {3: cop}
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_a})
+    res["store"] = not sts.asks and mm.routes.get(1) is not None
+    # LOW: the copilot disconnects -> the pending route dropped and its question closed
+    mm, sts, calls = build()
+    cop = _St(3)
+    sts.stations = {3: cop}
+    mm.route_msg(cop, {"t": "uav_route", "target": 1, "wps": w_a})
+    a3 = max(sts.asks)
+    sts.stations = {}
+    mm.pend_expire_tick()
+    res["gone"] = not mm.pend_routes and a3 in sts.cancelled
+    report("UA39 PF4-r MED-2: the captain's own route clears a pending copilot route + closes its question (a late YES "
+           "approves nothing), a replaced question closes + its copilot is told, the question SHOWS the route, a "
+           "copilot's route for ANY drone of an asked / running launch sequence is pending the captain's YES, the "
+           "requesting station gone = dropped", all(res.values()), str(res))
+
+
+def uavcheck_clean(wps):
+    from uav import uavcheck
+    return uavcheck.clean(wps, 50.0)
+
+
 def ua38_pf4_attitude_and_camera():
     """PF4: the router's drone record carries the ATTITUDE roll / pitch (deg) + its age for marking a point from the
     video, the manager passes the slot's fixed camera mount (gateway.json uav slots[].camera, only numbers), and the
@@ -3599,7 +3709,7 @@ def main():
              ua18_gateway_launch, ua19_helm_grant, ua20_registry_path, ua21_fixed,
              ua22_battery, ua23_notices_flightlog, ua24_video_worker, ua25_uav_streams, ua26_uav_ai,
              ua27_gateway_video, ua28_review_u3, ua29_review_router, ua30_pilot, ua31_stations_126, ua37_helm_forward,
-             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes, ua38_pf4_attitude_and_camera]
+             ua32_router_ctl, ua33_review_u4, ua34_review_u5, ua35_w59_speed, ua36_review_u6, ua37_pf2u_flying_route_needs_yes, ua38_pf4_attitude_and_camera, ua39_pf4r_pending_races]
     want = [a.upper() for a in sys.argv[1:]]
     for t in tests:
         if want and t.__name__.split("_")[0].upper() not in want:

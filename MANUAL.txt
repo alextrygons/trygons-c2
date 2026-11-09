@@ -2755,6 +2755,14 @@ UAV MAGAZINE - ROUTES AND LAUNCH (step U3)
   reserve, the air no-fly zones and the air geofence (files on the gateway,
   not authoritative); a refusal says why. Each mission ends HOVERING over the
   last point - never a landing.
+  A new mission for a FLYING UAV needs the CAPTAIN's YES: the captain's own
+  goes at once; a copilot's WAITS for the captain's YES on screen 1 (the box
+  says the points, length, last point and height, and the route is drawn on
+  the map dashed with "WAITS FOR APPROVAL - UAV n"); a single operator answers
+  his own YES / NO first - nothing leaves the station before it. The same for a
+  drone of a launch that is asked or running. A newer route, the captain's own
+  route for that UAV, or the copilot leaving closes the older question (the
+  copilot is told) - an old YES can never overwrite a newer mission.
   Launch: Tools - UAV magazine - PREPARE LAUNCH (copilot or captain). The
   CAPTAIN answers YES / NO on screen 1 (a single operator answers his own).
   The launch goes WHEN THE COPILOT SAYS SO, at any boat speed or mode (owner
@@ -4282,17 +4290,28 @@ with the height of the camera above the water that gives the distance, and the
 direction comes from the heading plus the sideways angle in the picture. The
 boat's roll and pitch are taken into account.
 
-The uncertainty circle (the radius is about 2 sigma) grows with the range. It
-includes the attitude error (boat 1 degree, UAV 2 degrees), the calibration (0.5
+The uncertainty circle grows with the range. It includes the attitude error
+(boat 1 degree, UAV 2 degrees; the roll error also counts by how far the click is
+from the centre of the picture, sideways AND up / down), the calibration (0.5
 degree), the heading (2 degrees), 1.5 pixels of the click and the position error
-of the boat or the UAV. Measured in the simulator with known points and these
-errors (12000 trials; the bands are the estimated range):
-    boat camera  10-20 m: typical error 2 m, circle 5 m, true place inside 97 %
-    boat camera  20-35 m: typical error 4 m, circle 12 m, inside 86 %
-    boat camera  35-50 m: typical error 9 m, circle 25 m, inside 88 %
-    UAV at 50 m   50-150 m: typical error 8 m, circle 21 m, inside 93 %
-    UAV at 50 m  150-400 m: typical error 47 m, circle 132 m, inside 84 %
-    UAV at 50 m  400-900 m: typical error 133 m, circle 281 m, inside 81 %
+of the boat or the UAV. Its radius is 4 x the 1-sigma error: set so that, IN THE
+MODEL, the true place is inside the circle about 95 % of the time. These numbers
+are from a MODEL with these assumed errors (12000 trials over the whole picture,
+the bands are the estimated range) - NOT measured on a real lens or a real boat:
+    boat camera  10-20 m: typical error 2 m, circle 11 m, true place inside 100 %
+    boat camera  20-35 m: typical error 5 m, circle 24 m, inside 98 %
+    boat camera  35-50 m: typical error 8 m, circle 49 m, inside 99 %
+    UAV at 50 m   50-150 m: typical error 9 m, circle 49 m, inside 100 %
+    UAV at 50 m  150-300 m: typical error 34 m, circle 193 m, inside 97 %
+    UAV at 50 m  300-900 m: typical error 82 m, circle 414 m, inside 93 %
+A real camera lens, a wrong calibration or a moving boat can be worse: treat the
+circle as a guide, not a guarantee.
+Timing: the attitude used is the newest one when you CLICK (its age at this PC
+counted: telemetry age + attitude age, or the UAV record's age + its attitude
+age, must be under 1 second). The VIDEO itself reaches the screen later
+(typically 0.2-0.5 s, more on a slow link) and that delay is not known to the
+station: in a rolling sea the picture you click shows the boat / UAV as it was a
+moment before. Click when the picture is steady; mark again if in doubt.
 The further the point, the less sure: a boat camera is low on the water, so it
 gives a useful position only to about 50 m. For anything further use a UAV.
 
@@ -4345,13 +4364,20 @@ point of approach with each aircraft, horizontally and vertically:
   * CAUTION: closer than 1000 m horizontally AND 150 m vertically within
     120 s. Voice: "Aircraft near UAV 3".
   * WARNING: closer than 500 m AND 100 m within 60 s (red, voice again).
-An aircraft without an altitude can only give a CAUTION. The warnings are
+An aircraft without an altitude can only give a CAUTION. The same for a UAV
+whose own height is not known (no fresh height from it, a lost link): the
+notice "ADS-B: UAV n unknown altitude" says so, and aircraft near it give a
+CAUTION (never taken as "far below", never as sea level). An aircraft that was
+reported on the ground is watched again as soon as it reports flying. The
+warnings are
 notices on THIS station only (like the UAV battery notices). They are never a
 boat alarm, never go to the autopilot and never change a mode or the throttle.
 
-PROPOSAL. The UAV's pilot, or the captain, gets one vertical YES / NO box:
-HOLD the UAV where it is, or DESCEND it to 30 m over its position (when the
-aircraft is above it and the UAV is high). NOTHING happens by itself: without
+PROPOSAL. The UAV's pilot, or the captain, gets one vertical YES / NO box
+(a UAV flown by hand: only its pilot): HOLD the UAV where it is, or DESCEND it
+to 30 m over its position (when the aircraft is above it and the UAV is high;
+DESCEND REPLACES its observation mission - it then hovers there). NOTHING
+happens by itself: without
 your YES nothing is sent. YES sends the normal UAV command (hold, or a route
 change - a copilot's route change for a flying UAV still waits for the
 captain's YES, and a UAV flown by someone else is refused as always). A

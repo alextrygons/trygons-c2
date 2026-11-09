@@ -3989,6 +3989,96 @@ def section_gf():
 
 # ------------------------------------------------------------------ section SA --
 
+def sa5_no_file_work_on_loop():
+    """SA5 (PF4-r MED-5, the 13n4b rule): the gateway's sar_still writes its file in a HELPER THREAD (never on the
+    calling = asyncio loop thread) and Recorder.note_sar only QUEUES (returns at once even while Recorder.lock is held
+    by the worker); the worker's drain adds the note to the open event and writes the copy WITHOUT holding the lock."""
+    import base64
+    import builtins
+    import gateway as G
+    import recorder as R
+    tmp = tempfile.mkdtemp(prefix="gwtest_sa5_")
+    seen = []
+    real_open = builtins.open
+    lock = threading.Lock()
+
+    def spy(path, *a, **kw):
+        if str(path).endswith(".jpg"):
+            seen.append((threading.current_thread().name, lock.locked()))
+        return real_open(path, *a, **kw)
+    try:
+        mid = "pt_20261109-103000_9_ab12cd"
+
+        class St:
+            id, user, role, name = 7, "bob", "HELM", "bob"
+            sent = []
+
+            def send(self, o):
+                self.sent.append(o)
+
+        class Fake:
+            storage = type("S", (), {"usable": True, "folder": lambda _s, n: tmp})()
+            sar = type("M", (), {"list": lambda _s: [{"id": mid}], "set_still": lambda _s, i, n: None})()
+            recorder = type("Rc", (), {"note_sar": lambda _s, *a: None})()
+            stations = type("X", (), {"stations": {}})()
+
+            def audit(self, *a, **kw):
+                pass
+
+            def _sar_list_msg(self):
+                return {"t": "sar_markers", "list": []}
+        st = St()
+        jpg = b"\xff\xd8\xff\xe0" + b"x" * 500 + b"\xff\xd9"
+        builtins.open = spy
+        try:
+            G.Gateway._sar_still(Fake(), st, {"id": mid, "jpg_b64": base64.b64encode(jpg).decode()})
+            t0 = time.time()
+            while not st.sent and time.time() - t0 < 3.0:
+                time.sleep(0.02)
+            gw_threads = [n for n, _l in seen]
+            # Recorder.note_sar while the worker holds the lock: it must return at once (a queue, no file work)
+            seen.clear()
+            fr = type("FR", (), {})()
+            fr.lock = lock
+            fr.gw = type("GW", (), {"clock": type("C", (), {"stamp": lambda _s: "2026-11-09T10:30:00Z"})()})()
+            os.makedirs(os.path.join(tmp, "ev"), exist_ok=True)
+            ev = {"id": "e1", "path": os.path.join(tmp, "ev"), "state": "open"}
+            fr.events = [ev]
+            lock.acquire()
+            th = threading.Thread(target=R.Recorder.note_sar, args=(fr, {"op": "still", "id": mid}, jpg, mid + ".jpg"))
+            t1 = time.time()
+            th.start()
+            th.join(1.0)
+            quick = not th.is_alive() and time.time() - t1 < 0.5 and not seen
+            lock.release()
+            th.join(2.0)
+            R.Recorder._drain_sar(fr)
+            drained = (len(ev.get("sar") or []) == 1 and os.path.exists(os.path.join(ev["path"], "sar_" + mid + ".jpg"))
+                       and seen and not any(locked for _n, locked in seen))
+        finally:
+            builtins.open = real_open
+        report("SA5 PF4-r MED-5: sar_still writes its file in a helper thread (never on the loop's thread), the ack "
+               "follows; Recorder.note_sar only queues (returns at once with Recorder.lock held), the worker's drain "
+               "adds it to the open SAVE event and writes the copy without the lock",
+               st.sent and st.sent[-1].get("ok") and gw_threads and threading.current_thread().name not in gw_threads
+               and "sar-still" in gw_threads and quick and drained,
+               "ack %s; file written by %s; note_sar quick %s; drained %s" % (
+                   st.sent[-1:] if st.sent else None, gw_threads, quick, ev.get("sar")))
+        # PF4-r LOW: a delete is said explicitly (the stations never take a missing point for a deleted one)
+        import sarstore as SAR
+        ss = SAR.SarStore(os.path.join(tmp, "state", "sar.json"))
+        ss.apply("add", {"id": "pt_x_1", "kind": "point", "lat": 60.0, "lon": 25.0}, "a")
+        ss.apply("delete", {"id": "pt_x_1"}, "a")
+        ss.flush()
+        ss2 = SAR.SarStore(os.path.join(tmp, "state", "sar.json"))
+        report("SA6 PF4-r LOW: a deleted marker is listed in the store's \"deleted\" list (kept in the state file) - "
+               "sar_markers says it, a station deletes ONLY those", ss.deleted == ["pt_x_1"] and ss2.deleted == ["pt_x_1"]
+               and "deleted" in G.Gateway._sar_list_msg(type("F", (), {"sar": ss})()), "deleted %s / reloaded %s" % (
+                   ss.deleted, ss2.deleted))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def section_sa():
     """Search and rescue markers + the MOB return route (CLAUDE.md X, step PF3): the gateway's marker store (add /
     move / close / delete, idempotent, kept on the SSD), a VIEWER refused (128), every station gets the list, and the
@@ -4151,6 +4241,7 @@ def section_sa():
                    ack_pt and ack_pt["ok"], ack_st and ack_st["text"], len(got), mk_pt and mk_pt[0]["still"],
                    v_st and v_st["code"], bad_st and bad_st["text"], unk_st and unk_st["text"],
                    big_st and big_st["text"]))
+        sa5_no_file_work_on_loop()
         beat.on = False
     finally:
         for c_ in clients:

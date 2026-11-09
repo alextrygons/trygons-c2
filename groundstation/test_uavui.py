@@ -8,6 +8,7 @@
       gw_status "uav", REGISTER sends {"t": "uav_register", "slot"} only (nothing to the AURIX), disabled while not
       connected / without the magazine; the station hooks gw_status "uav" + "uav_ack"
   UV4 uav_ack: the answer and every problem shown in the screen language (from_en templates gw.uav_*)
+  UV16 (PF4-r) a single operator's in-flight UAV route waits for his own YES
   UV5 (U3) the launch on the page: hatch + sequence + notices in Greek, PREPARE / STOP / HATCH CLOSE enabled by state
       and sending only their station messages; a row's route / mission / flight
   UV6 (U3) "Send route": the vertical target box with the pictures, the map's right-click menu, uav_route
@@ -802,6 +803,67 @@ def uv15():
            "LAUNCH stays), the gateway's notice translated", ok, "fast %s / slow %s" % (fast["notices"], slow["notices"]))
 
 
+def uv16(rig):
+    """PF4-r MED-1: a SINGLE OPERATOR's route for a FLYING UAV (route box, the map's «Αποστολή UAV εδώ») leaves the
+    station ONLY after his own YES (captain_confirm), then with confirm "self"; NO = nothing sent. A magazine drone's
+    route goes at once (stored, nothing flies) without confirm; a caller that already asked its own YES (yes=True:
+    MOB / marker / pattern / ADS-B questions) sends with confirm; a captain (not single operator) never adds it."""
+    import app as appmod
+    ap = rig.ap
+
+    class FL(appmod.GatewayLink):
+        connected, station, user = True, 1, "op"
+
+        def __init__(self):
+            self.sent = []
+
+        def send_msg(self, obj):
+            self.sent.append(obj)
+    old = (ap.link, ap.single_op, ap.gw_status, ap.captain_confirm)
+    asked = []
+    res = {}
+    try:
+        ap.link = FL()
+        ap.gw_status = {"uav": {"enabled": True, "slots": [{"slot": 1, "flying": True}, {"slot": 2, "flying": False}]}}
+        ap.single_op = True
+        ap.captain_confirm = lambda what, on_yes: asked.append((what, on_yes))
+        routes = lambda: [m for m in ap.link.sent if m.get("t") == "uav_route"]
+        ap.uav_route(1, [(37.82, 23.60), (37.83, 23.61)])          # the route box path
+        res["held"] = not routes() and len(asked) == 1 and "flying UAV 1" in asked[0][0]
+        asked[0][1]()                                              # his YES
+        res["after_yes"] = len(routes()) == 1 and routes()[0].get("confirm") == "self"
+        ap.link.sent.clear()
+        asked.clear()
+        ap.uav_route(1, [(37.84, 23.62)])                          # the map's «Αποστολή UAV εδώ» (same call)
+        res["no"] = not routes() and len(asked) == 1               # NO = on_yes never called = nothing sent
+        asked.clear()
+        ap.uav_route(2, [(37.84, 23.62)])                          # a magazine drone: stored only
+        ap.uav_route("next", [(37.84, 23.62)])
+        res["magazine"] = len(routes()) == 2 and not asked and all("confirm" not in m for m in routes())
+        ap.link.sent.clear()
+        ap.uav_route(1, [(37.84, 23.62)], yes=True)               # after the caller's own YES question
+        res["asked_before"] = len(routes()) == 1 and routes()[0].get("confirm") == "self" and not asked
+        ap.link.sent.clear()
+        ap.uav_route(9, [(37.84, 23.62)])                          # unknown slot = treated as flying (asks)
+        res["unknown"] = not routes() and len(asked) == 1
+        asked.clear()
+        ap.gw_status["uav"]["launch"] = {"state": "RUN", "slots": [1, 2]}
+        ap.uav_route(2, [(37.84, 23.62)])                          # a magazine drone of a RUNNING launch: asks too
+        res["in_launch"] = not routes() and len(asked) == 1
+        ap.gw_status["uav"].pop("launch")
+        asked.clear()
+        ap.single_op = False
+        ap.uav_route(1, [(37.84, 23.62)])                          # the captain: the gateway applies it directly
+        res["captain"] = len(routes()) == 1 and "confirm" not in routes()[0] and not asked
+        src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
+        res["static"] = 'msg["confirm"] = "self"                  # PF2-u' not in src
+    finally:
+        ap.link, ap.single_op, ap.gw_status, ap.captain_confirm = old
+    report("UV16 PF4-r MED-1: a single operator's route for a FLYING UAV leaves the station only after his OWN YES "
+           "(then confirm self), NO = nothing; a magazine drone's route goes without confirm; a caller's own YES "
+           "counts; an unknown slot asks; a captain never adds confirm", all(res.values()), str(res))
+
+
 def main():
     uv1()
     uv2()
@@ -814,7 +876,7 @@ def main():
             report(fn.__name__, False, "crashed: %r" % e)
     rig = ts.Rig()
     try:
-        for fn in (uv5, uv6, uv7, uv8, uv9, uv10, uv11, uv13):
+        for fn in (uv5, uv6, uv7, uv8, uv9, uv10, uv11, uv13, uv16):
             try:
                 fn(rig)
             except Exception as e:

@@ -115,6 +115,24 @@ DEFAULTS = {
 }
 
 
+def route_question(slot, wps, flying=True):
+    """PF4-r MED-2c: the captain's question SHOWS the route: points, length, altitudes, the last point (English; the
+    station translates it with the lang templates what.uav_route_fly / what.uav_route_seq)."""
+    import math
+    km = 0.0
+    for a, b in zip(wps, wps[1:]):
+        dy = (b["lat"] - a["lat"]) * 111320.0
+        dx = (b["lon"] - a["lon"]) * 111320.0 * math.cos(math.radians(a["lat"]))
+        km += math.hypot(dx, dy) / 1000.0
+    alts = [float(w.get("alt") or 0.0) for w in wps]
+    last = wps[-1]
+    alt = "%d" % round(alts[0]) if min(alts) == max(alts) else "%d-%d" % (round(min(alts)), round(max(alts)))
+    tpl = ("UAV ROUTE: change the mission of the flying UAV %d (%d points, %.1f km, last point %.5f %.5f, %s m)" if
+           flying else "UAV ROUTE: change the route of UAV %d in the launch sequence (%d points, %.1f km, last point "
+           "%.5f %.5f, %s m)")
+    return tpl % (slot, len(wps), km, last["lat"], last["lon"], alt)
+
+
 class UavManager:
     def __init__(self, cfg, gw):
         self.cfg = deep_merge(DEFAULTS, cfg or {})
@@ -1199,6 +1217,7 @@ class UavManager:
             # route applies directly; a copilot's / a single operator's is PENDING until the YES on screen 1 (a copilot
             # may still STORE a route for a drone in the magazine: preparation, no YES)
             if st.crew == "captain" and not st.single_op:
+                self._pend_cancel(slot, "replaced by the captain's own route")   # PF4-r MED-2a: never an older YES later
                 return apply_now()
             return self._route_pending(st, m, slot, f, wps, apply_now)
         if self.seq.busy() and self.seq.cur == slot and self.seq.phase not in ("CHECK", ""):
@@ -1210,20 +1229,34 @@ class UavManager:
                               "capacity_mah": rec.get("capacity_mah")}, self.airspace, take)
         if bad:
             return self._ack(st, "route", False, bad[0], "UAV %d route refused: %s" % (slot, bad[1]), slot=slot)
-        self.routes[slot], self.loaded[slot] = wps, False
-        self._ack(st, "route", True, 0, "UAV %d: route of %d points stored (uploaded + read back at the launch)" % (
-            slot, len(wps)), slot=slot)
+
+        def store():
+            if self.flying.get(slot) is not None or (self.seq.busy() and self.seq.cur == slot and
+                                                     self.seq.phase not in ("CHECK", "")):
+                return self._ack(st, "route", False, ERR_LAUNCH, "UAV %d is being launched now - the route was "
+                                 "dropped" % slot, slot=slot)
+            self.routes[slot], self.loaded[slot] = wps, False
+            self._ack(st, "route", True, 0, "UAV %d: route of %d points stored (uploaded + read back at the launch)" % (
+                slot, len(wps)), slot=slot)
+        # PF4-r MED-2d: a drone of an asked / running launch sequence (ANY slot of seq.slots, the ASK phase too) is
+        # not re-routed by a copilot / single operator without the captain's YES - the pending rule as in flight
+        if self.seq.busy() and slot in (self.seq.slots or []) and not (st.crew == "captain" and not st.single_op):
+            return self._route_pending(st, m, slot, None, wps, store)
+        if st.crew == "captain" and not st.single_op:
+            self._pend_cancel(slot, "replaced by the captain's own route")
+        store()
 
     def _route_pending(self, st, m, slot, f, wps, apply_now):
-        """PF2-u: a route for a FLYING drone from a copilot / single operator waits for the captain's YES (the
-        launch approval's ask_captain). NO / timeout / station gone / a newer route / the drone landed or a pilot took
-        it = nothing changes, the old mission keeps flying."""
+        """PF2-u: a route for a FLYING drone (or, PF4-r MED-2d, a drone of a launch sequence that is asked / running)
+        from a copilot / single operator waits for the captain's YES (the launch approval's ask_captain). NO / timeout
+        / a newer route / the captain's own route / the requesting station gone / the drone landed or a pilot took it =
+        nothing changes, the old mission keeps flying. The question SHOWS the route (text: points, length, last point,
+        altitudes + the points themselves for screen 1 / the map: PF4-r MED-2c)."""
         pend = self.__dict__.setdefault("pend_routes", {})
-        old = pend.get(slot)
-        if old is not None:
-            self.gw.audit("uav_route_pending_replaced", slot=slot, station=old["station"])
-        gen = pend[slot] = {"station": st.id, "user": st.user, "wps": wps, "f": f, "t": time.time()}
-        what = "UAV ROUTE: change the mission of the flying UAV %d (%d points)" % (slot, len(wps))
+        self._pend_cancel(slot, "replaced by a newer route")          # PF4-r MED-2b: its question closes, its station told
+        gen = pend[slot] = {"station": st.id, "user": st.user, "wps": wps, "f": f, "t": time.time(), "ask": None,
+                            "st": st}
+        what = route_question(slot, wps, f is not None)
 
         def answer(ok, code):
             if pend.get(slot) is not gen:              # a newer route replaced this question: it approves nothing
@@ -1238,15 +1271,44 @@ class UavManager:
             apply_now()
         self._ack(st, "route", True, 0, "UAV %d: route of %d points pending the captain's YES (the old mission "
                   "goes on)" % (slot, len(wps)), slot=slot, pending=True)
-        self.gw.stations.ask_captain(st, m, what, answer)
+        extra = {"uav_route": {"slot": slot, "wps": [[w["lat"], w["lon"], w.get("alt")] for w in wps]}}
+        try:
+            aid = self.gw.stations.ask_captain(st, m, what, answer, extra=extra)
+        except TypeError:                                            # a test double without "extra"
+            aid = self.gw.stations.ask_captain(st, m, what, answer)
+        if pend.get(slot) is gen and isinstance(aid, int) and not isinstance(aid, bool):
+            gen["ask"] = aid
+
+    def _pend_cancel(self, slot, why):
+        """PF4-r MED-2a/b: drop the pending route of this slot: its open question closes on screen 1 (never answered
+        later) and the station that asked is told."""
+        pend = self.__dict__.get("pend_routes") or {}
+        g = pend.pop(slot, None)
+        if g is None:
+            return
+        self.gw.audit("uav_route_pending_replaced", slot=slot, station=g["station"], why=why)
+        cancel = getattr(self.gw.stations, "cancel_ask", None)
+        if g.get("ask") is not None and cancel is not None:
+            cancel(g["ask"])
+        st = g.get("st")
+        if st is not None and (self.gw.stations.stations or {}).get(g["station"]) is st:
+            self._ack(st, "route", False, ERR_UAV, "UAV %d: your pending route was %s - it will not be applied" % (
+                slot, why), slot=slot, replaced=True)
 
     def pend_expire_tick(self):
-        """PF2-u: a pending route is dropped when its drone is not flying its mission any more or a pilot took it."""
+        """PF2-u: a pending route is dropped when its drone is not flying its mission any more or a pilot took it;
+        PF4-r LOW: also when the station that asked for it disconnected (its question closes on screen 1)."""
         pend = self.__dict__.get("pend_routes")
         for slot, g in list((pend or {}).items()):
-            if self.flying.get(slot) is not g["f"] or self.pilot_locked(slot):
+            sts = self.gw.stations.stations or {}
+            gone = g.get("st") is not None and sts.get(g["station"]) is not g["st"]
+            if self.flying.get(slot) is not g["f"] or self.pilot_locked(slot) or gone:
                 pend.pop(slot, None)
-                self.gw.audit("uav_route_pending_dropped", slot=slot, station=g["station"])
+                self.gw.audit("uav_route_pending_dropped", slot=slot, station=g["station"],
+                              why="station gone" if gone else "not flying its mission / flown by hand")
+                cancel = getattr(self.gw.stations, "cancel_ask", None)
+                if g.get("ask") is not None and cancel is not None:
+                    cancel(g["ask"])
 
     def launch_conditions(self, slots):
         """[] = a launch of these slots may start now, else the reasons (125 / 122)."""

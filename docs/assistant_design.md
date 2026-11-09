@@ -1312,6 +1312,27 @@ The review of 09d086c (AM4-r8) found TWO safety MEDs (no HIGH), both display pla
   at every fold state (a small window folds the passage or collapses the panel to its header - it never cuts the
   answer), and the Tools window's line is re-fitted after a text-size ("Aa") change.
 
+### 5m. The floor after the SAR manual chapters (PF4-r + PF5-r, 2026-11-09; the floor NOT changed again)
+- PF5 raised EXTRACT_FLOOR 7.2 -> 7.25 for ONE question (el016 at 7.21). The review of 5ad0912 found that el111
+  («πώς αλλάζουμε ρόλους με τον συγκυβερνήτη», in-manual, tuning part) had left floor.json's "above" list (83 vs 84
+  after PF4's el011 -> el111 swap). Re-measured after the PF4-r / PF5-r manual edits (index rebuilt): el111 scores
+  7.75 (7.746) - OVER the floor 7.25 (it is answered, not refused), but under floor + margin 7.75, so it is not
+  frozen as "above"; el011 7.61 (the same). `assistant_index.py floor`: el 7 off-manual under / 86 in-manual over
+  (frozen 7 / 86), en 4 / 33 (4 / 33) = PASS. The floor stays 7.25 - NOT changed again for a single question (the
+  real re-tune = the owner's W84 recordings).
+- The tuning measurement re-run ONCE honestly with the station's default (llama3.2-3b, extract, the fewshot prompt,
+  floor 7.25): el correct 43/96 = 45 % (AM6: 45 %), answered 86 %, precision 52 %, can't find right 7/7, false can't
+  find 13 (11 the model's own), 597 ms median; en 18/34 = 53 % (AM6: 61 %), answered 97 %, precision 55 %, can't
+  find right 4/4, false can't find 1, 311 ms. The English drop (-3 questions of 34) came with the new SAR / ADS-B
+  manual chapters (more passages compete in BM25; the 3B model's run-to-run churn is +-2); it is REPORTED, not tuned
+  away (W84 / W99).
+- FINDING (AS17, not tuned away): the PF4-r manual text moved the off-manual el140 «σε ποια λειτουργία είμαι τώρα;»
+  (a LIVE-state question, W82) from 2.993 to 3.003 = just OVER the search's MIN_SCORE 3.0, so the Greek "can't find
+  right" fell 8/10 -> 7/10 under AS17's floor 8. Measured hunk by hunk: no single paragraph does it, the BM25 length
+  statistics of the longer chapter do (+0.004 each from the route and the mark paragraphs); a shortened Greek text
+  only reached 3.000 and cost 2 top-1 hits, so the full text was kept. Neither MIN_SCORE nor the AS17 floor was
+  changed (no tuning for one question): the owner decides with the real re-tune (W84 / W89).
+
 ## 6. Speak (step AM5)
 
 - Through the station's own sound.py SoundSystem: a new level ASSISTANT below FEEDBACK, ADVISORY,

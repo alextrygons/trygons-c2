@@ -18,9 +18,15 @@ Uncertainty (1 sigma; the circle drawn at 2 sigma):
     sigma_alpha^2 = sigma_att^2 (1 + x^2) + sigma_cal^2 + (sigma_pix / fy_px)^2   (rad; x = the click's sideways
                     offset in the picture, tan(azimuth): the roll error enters by it)
     sigma_d       = (h / sin^2 alpha) x sigma_alpha  (small sigma); exactly: half of h / tan(alpha - s) - h / tan(alpha + s)
-    sigma_psi^2   = sigma_hdg^2 + sigma_cal^2 + (sigma_pix / fx_px)^2
+    sigma_psi^2   = sigma_hdg^2 + sigma_cal^2 + sigma_att^2 y^2 + (sigma_pix / fx_px)^2   (PF4-r MED-4: y = the
+                    click's vertical offset, tan of the elevation in the picture - the roll error turns it sideways)
     sigma_lat     = d x sigma_psi
-    r_m           = 2 x sqrt(sigma_d^2 + sigma_lat^2 + unc_pos^2)
+    r_m           = circle_k x sqrt(sigma_d^2 + sigma_lat^2 + unc_pos^2)   (circle_k 4.0, from 2.45 = the 95 % radius of
+                    a round 2-D normal, set so the MODEL holds ~95 % - test_sar MK4 - not measured on a real lens)
+Freshness (PF4-r MED-3): the boat's attitude age = the telemetry sample's age at the station + its own att_age_ms;
+the UAV's = the gateway's att_age + the age of the record at the station (rx_age): > att_max_age_s 1 s = refused.
+The VIDEO's own delay (camera -> gateway -> station, typ. 0.2-0.5 s) is NOT known here: the attitude at the click is
+used, not the attitude of the shown frame (stated in the manuals).
 """
 import calendar
 import math
@@ -32,12 +38,13 @@ import sar_geo
 DEFAULTS = {
     "sigma_att_boat": 1.0, "sigma_att_uav": 2.0, "sigma_cal": 0.5, "sigma_hdg": 2.0, "sigma_pix": 1.5,
     "min_alpha_deg": 0.3, "max_range_boat": 1000.0, "max_range_uav": 1500.0, "max_rel_sigma": 0.35,
-    "att_max_age_s": 1.0, "pos_max_age_s": 5.0, "uav_pos_unc_m": 3.0, "uav_min_alt_m": 5.0,
+    "att_max_age_s": 1.0, "pos_max_age_s": 5.0, "circle_k": 4.0, "uav_pos_unc_m": 3.0, "uav_min_alt_m": 5.0,
     # W133 (TO CONFIRM): a 7" FPV camera on a fixed mount, 30 deg down, 120 x 90 deg
     "uav_camera": {"tilt_down_deg": 30.0, "hfov_deg": 120.0, "vfov_deg": 90.0},
 }
 STILL_W, STILL_H = 160, 120
-STILL_MAX_BYTES = 200 * 1024
+STILL_MAX_BYTES = 40 * 1024        # PF4-r LOW: the same cap as the gateway (one station line is 64 KB)
+TILT_MIN_DEG, TILT_MAX_DEG = -30.0, 90.0
 MARK_KEY_DEFAULT = "k"
 REPEAT_S = 1.0                      # a second mark within this is the same press (double click / key repeat)
 
@@ -101,12 +108,13 @@ def locate(cam, roll, pitch, heading, pos, u, v, res, kind, cfg=None, unc_pos=0.
     if alpha <= s_alpha:
         return {"why": "uncertain", "d_m": d}
     s_d = 0.5 * (h / math.tan(alpha - s_alpha) - h / math.tan(alpha + s_alpha))
+    y_off = abs((v - 0.5) / fy)
     s_psi = math.sqrt(math.radians(c["sigma_hdg"]) ** 2 + math.radians(c["sigma_cal"]) ** 2 +
-                      (c["sigma_pix"] / (fx * w_px)) ** 2)
+                      math.radians(s_att) ** 2 * y_off ** 2 + (c["sigma_pix"] / (fx * w_px)) ** 2)
     s_lat = d * s_psi
     if s_d / d > c["max_rel_sigma"]:
         return {"why": "uncertain", "d_m": d}
-    r_m = 2.0 * math.sqrt(s_d ** 2 + s_lat ** 2 + float(unc_pos) ** 2)
+    r_m = float(c.get("circle_k", 2.45)) * math.sqrt(s_d ** 2 + s_lat ** 2 + float(unc_pos) ** 2)
     brg = (float(heading) + yaw_cam + math.degrees(az)) % 360.0
     la, lo = sar_geo.dest((pos[0], pos[1]), brg, d)
     return {"lat": la, "lon": lo, "r_m": r_m, "d_m": d, "brg": brg, "alpha_deg": math.degrees(alpha),
@@ -126,6 +134,11 @@ def locate_boat(cal, telem, u, v, res, age_s=0.0, cfg=None):
         return {"why": "old"}
     if t.get("att_roll") is None or t.get("att_pitch") is None or t.get("heading") is None:
         return {"why": "noatt"}
+    # PF4-r MED-3: the attitude's real age = the sample's age here + its own age in the sample
+    att_ms = t.get("att_age_ms")
+    att_age = (float(att_ms) / 1000.0) if _fin(att_ms) else 0.0
+    if not _fin(age_s) or float(age_s) + att_age > c["att_max_age_s"]:
+        return {"why": "noatt"}
     cam = {"height_m": cal["height_m"], "tilt_down_deg": cal["tilt_down_deg"], "hfov_deg": cal["hfov_deg"],
            "vfov_deg": cal["vfov_deg"]}
     r = locate(cam, t["att_roll"], t["att_pitch"], t["heading"], (t["est_lat"], t["est_lon"]), u, v, res, "boat", c,
@@ -143,11 +156,14 @@ def locate_uav(drone, u, v, res, cfg=None):
     alt = d.get("alt")
     if not _fin(alt) or alt < c["uav_min_alt_m"]:
         return {"why": "low"}
-    if d.get("alt_age") is not None and d["alt_age"] > c["att_max_age_s"]:
+    rx = d.get("rx_age", 0.0)                                   # PF4-r MED-3: the record's age at this station
+    if not _fin(rx) or rx < 0:
+        return {"why": "old"}
+    if d.get("alt_age") is not None and (not _fin(d["alt_age"]) or d["alt_age"] + rx > c["att_max_age_s"]):
         return {"why": "old"}
     age = d.get("att_age")
-    if d.get("roll") is None or d.get("pitch") is None or d.get("hdg") is None or age is None or \
-            age > c["att_max_age_s"]:
+    if d.get("roll") is None or d.get("pitch") is None or d.get("hdg") is None or not _fin(age) or \
+            age + rx > c["att_max_age_s"]:
         return {"why": "noatt"}
     mount = d.get("camera") if isinstance(d.get("camera"), dict) else c["uav_camera"]
     cam = {"height_m": float(alt)}
@@ -156,7 +172,8 @@ def locate_uav(drone, u, v, res, cfg=None):
             val = float(mount.get(k, c["uav_camera"][k]))
         except (TypeError, ValueError):
             return {"why": "nocal"}
-        if not math.isfinite(val) or (k != "tilt_down_deg" and not 5.0 <= val <= 170.0):
+        if not math.isfinite(val) or (k != "tilt_down_deg" and not 5.0 <= val <= 170.0) or \
+                (k == "tilt_down_deg" and not TILT_MIN_DEG <= val <= TILT_MAX_DEG):     # PF4-r LOW: range-checked
             return {"why": "nocal"}
         cam[k] = val
     r = locate(cam, d["roll"], d["pitch"], d["hdg"], (d["lat"], d["lon"]), u, v, res, "uav", c,

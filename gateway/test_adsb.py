@@ -420,8 +420,75 @@ def ab10():
            ok, "hits %s, gw.uav calls %s" % (hits[:4], sorted(uav_calls)))
 
 
+def ab11():
+    """PF5-r MED-1: an aircraft reported ON THE GROUND that then takes off is judged again: the flag is read on every
+    SBS type that carries it, an airborne position (type 3) without the flag clears it, and a positive altitude /
+    speed without a flag clears it -> a WARNING for a departing aircraft near a UAV."""
+    la, lo = ll(2000, 0)
+    t = adsb.AdsbTargets()
+    t.update(adsb.parse_sbs(sbs(2, "ABC777", lat=la, lon=lo, gs=0, gnd=-1)), 1.0)     # on the ground (surface)
+    on_gnd = t.ac["ABC777"]["gnd"]
+    t.update(adsb.parse_sbs(sbs(4, "ABC777", gs=80, trk=270)), 2.0)                    # speed: a positive speed
+    t.update(adsb.parse_sbs(sbs(3, "ABC777", alt=330, lat=la, lon=lo)), 3.0)           # airborne position, no flag
+    air = not t.ac["ABC777"]["gnd"]
+    ev, _f = adsb.evaluate(t.snapshot(3.0), {"1": uav(alt=100.0)}, CFG)
+    warned = bool(ev) and ev[0]["level"] == adsb.LEVEL_WARNING
+    # the flag on another type (5) counts too, and an explicit "0" on type 5 clears it
+    t2 = adsb.AdsbTargets()
+    t2.update(adsb.parse_sbs(sbs(5, "ABC778", alt=0, gnd=-1)), 1.0)
+    g5 = t2.ac["ABC778"]["gnd"]
+    t2.update(adsb.parse_sbs(sbs(5, "ABC778", alt=500, gnd=0)), 2.0)
+    g5b = t2.ac["ABC778"]["gnd"]
+    # a positive altitude alone (type 7, no flag) clears a stale ground flag
+    t3 = adsb.AdsbTargets()
+    t3.update(adsb.parse_sbs(sbs(8, "ABC779", gnd=-1)), 1.0)
+    t3.update(adsb.parse_sbs(sbs(7, "ABC779", alt=800)), 2.0)
+    report("AB11 PF5-r MED-1: an aircraft on the ground that takes off is warned for (flag on every type, a type 3 "
+           "position / positive altitude or speed clears it)", on_gnd and air and warned and g5 and not g5b and
+           not t3.ac["ABC779"]["gnd"], "ground %s -> air %s, warned %s, type5 %s/%s, alt-only %s" % (
+               on_gnd, air, ev[:1], g5, g5b, t3.ac["ABC779"]["gnd"]))
+
+
+def ab12():
+    """PF5-r MED-2 + LOW: a UAV with an UNKNOWN altitude (None / NaN / stale record) is never taken as 0 m - it is
+    judged with no vertical separation (CAUTION at most, HOLD proposal) and listed as unknown; a stale record = its
+    last place, standing still; non-finite speed / course / climb = standing still, never a NaN that silences the
+    warning; non-finite position = not judged, listed unknown."""
+    a = ac(2000, 0, 330 + 700, 80, 270)            # 213 m ABOVE a UAV at 100 m: no conflict when the height is known
+    known, _f = adsb.evaluate([a], {"1": uav(alt=100.0)}, CFG)
+    # at an unknown height the same aircraft MAY be at its level: CAUTION (before: alt None = 0 m = "317 m apart")
+    res = {}
+    for name, d in (("none", dict(uav(), alt=None)), ("nan", dict(uav(), alt=float("nan"))),
+                    ("stale", dict(uav(alt=100.0), alt_age=12.0)), ("age_nan", dict(uav(alt=100.0), alt_age=float("nan")))):
+        unk = []
+        ev, fl = adsb.evaluate([a], {"1": d}, CFG, unknown_out=unk)
+        res[name] = bool(ev) and ev[0]["level"] == adsb.LEVEL_CAUTION and ev[0]["d_v"] is None and \
+            ev[0]["uav_alt_m"] is None and ev[0]["kind"] == "hold" and unk == [1] and fl == [1]
+    # a head-on aircraft at the UAV's level with NaN speed / course / climb on the UAV still WARNS
+    w = ac(2000, 0, 330, 80, 270)
+    ev, _f = adsb.evaluate([w], {"1": dict(uav(alt=100.0), gs=float("nan"), cog=float("inf"), climb=float("nan"))}, CFG)
+    res["nan_speed"] = bool(ev) and ev[0]["level"] == adsb.LEVEL_WARNING
+    unk = []
+    ev, fl = adsb.evaluate([w], {"1": dict(uav(alt=100.0), lat=float("nan"))}, CFG, unknown_out=unk)
+    res["nan_pos"] = not ev and unk == [1]
+    res["known_clear"] = not known
+    # the manager's status lists the unknown UAV (the stations' notice «ADS-B: UAV n unknown altitude»)
+    m = mgr()
+    m.judge(10.0, aircraft=[a], drones={"1": dict(uav(), alt=None)}, state="RX")
+    res["status"] = getattr(m, "uav_unknown", None) == [1]
+    # LOW: the aircraft table is capped (the oldest go first)
+    t = adsb.AdsbTargets()
+    for i in range(adsb.MAX_AIRCRAFT + 50):
+        t.update({"icao": "%06X" % (0x100000 + i), "alt_ft": 1000.0}, float(i))
+    res["cap"] = len(t.ac) == adsb.MAX_AIRCRAFT and "%06X" % 0x100000 not in t.ac and "%06X" % (
+        0x100000 + adsb.MAX_AIRCRAFT + 49) in t.ac
+    report("AB12 PF5-r MED-2: an unknown / NaN / stale UAV altitude = CAUTION with no vertical separation + HOLD + listed "
+           "unknown (never sea level); NaN UAV speed still warns; a NaN position is listed unknown; the aircraft table is "
+           "capped at %d" % adsb.MAX_AIRCRAFT, all(res.values()), str(res))
+
+
 def main():
-    for f in (ab1, ab2, ab3, ab4, ab5, ab6, ab7, ab8, ab9, ab10):
+    for f in (ab1, ab2, ab3, ab4, ab5, ab6, ab7, ab8, ab9, ab10, ab11, ab12):
         try:
             f()
         except Exception as e:                              # a crash is a failure, with its reason

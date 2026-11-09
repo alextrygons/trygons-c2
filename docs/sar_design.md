@@ -124,8 +124,9 @@ speed, (UAV) altitude. Turns to STARBOARD (IAMSAR standard) unless "port" is cho
   default K with the cursor on the video) -> `groundstation/sar_mark.py`:
   boat camera = gateway vision.camera (height_m, tilt_down_deg, hfov / vfov, yaw_deg; the same
   calibration hudar.py uses, from gw_status vision "camera") + TELEM2 group H roll / pitch +
-  heading + the boat position; geometry = gateway/vision/geometry.py locate() (imported, not copied:
-  station + gateway share the module through the existing path) -> bearing rel + distance d.
+  heading + the boat position; geometry -> bearing rel + distance d. AS BUILT (PF4-r LOW): the geometry is a
+  SEPARATE exact inverse of the AR overlay's pinhole model hudar.Cam.project (groundstation/sar_mark.py
+  inverse()), NOT gateway/vision/geometry.py locate() - the planned import was not used.
   UAV camera = the drone's altitude above the water h (relative alt), its ATTITUDE roll / pitch / yaw
   (router_worker.py adds roll / pitch to the drone record next to hdg - router only, NOT allow.py)
   and its camera mount: gateway.json uav slots[].camera {tilt_down_deg, hfov_deg, vfov_deg}
@@ -150,6 +151,20 @@ speed, (UAV) altitude. Turns to STARBOARD (IAMSAR standard) unless "port" is cho
   (test_sar MK4, 12000 trials, bands = the ESTIMATED range): boat 10-20 m error 2 m / circle 5 m / inside 97 %,
   20-35 m 4 / 12 / 86 %, 35-50 m 9 / 25 / 88 %; UAV at 50 m 50-150 m 8 / 21 / 93 %, 150-400 m 47 / 132 / 84 %,
   400-900 m 133 / 281 / 81 %. A boat camera (3 m high) gives a useful position only to about 50 m.
+- PF4-r AS BUILT (review of d34ab45, MED-3 / MED-4): sigma_psi^2 also holds the roll error x the click's VERTICAL
+  offset (sigma_att^2 y^2, y = (v - 0.5) / fy: the roll turns an off-centre point sideways); r_m = circle_k x the
+  1-sigma (circle_k 4.0, was 2): measured in the MODEL over the WHOLE field of view (MK4: boat +-40 deg, UAV
+  +-60 deg, 12000 trials) the true place is inside in 93-100 % per band (boat 10-20 / 20-35 / 35-50 m: 100 / 98 /
+  99 %, circle 11 / 24 / 49 m; UAV at 50 m 50-150 / 150-300 / 300-900 m: 100 / 97 / 93 %, circle 49 / 193 / 414 m;
+  MK4 requires >= 92 %). MODEL only - not a real lens (said in MANUAL ch. 23 / MANUAL_EL ch. 18). Freshness: the
+  boat's attitude age = the telemetry sample's age at the station + att_age_ms, the UAV's = att_age / alt_age + the
+  record's age at the station (uav_store receive time), > 1 s = refused (MK11); the VIDEO delay (0.2-0.5 s typ.) is
+  not known to the station: the attitude at the click is used (stated in the manuals). tilt_down_deg of a UAV mount
+  range-checked -30..90; the still cap 40 KB on both sides. The gateway's sar_still writes in a helper thread, and
+  Recorder.note_sar only queues - the recorder worker adds it to the open events and copies the still without
+  Recorder.lock (13n4b; SA5). A delete is said explicitly (sar_markers "deleted", SarStore.deleted, kept in the
+  state file): a station deletes a sent point ONLY then - a point missing from an empty / restarted gateway list is
+  handed in again (SA6, MK8).
 - PF4 AS BUILT, data: the router adds roll / pitch / att_age to the drone record (ATTITUDE, router_worker.py only;
   allow.py unchanged), the manager adds the fixed mount "camera" per slot; station message sar_still {id, jpg_b64}
   (<= 40 KB: one station line is 64 KB) -> <data>/sar/<id>.jpg + marker "still" + every OPEN SAVE event's

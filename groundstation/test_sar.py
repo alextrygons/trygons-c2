@@ -1163,7 +1163,8 @@ def mk4():
     trials = {}
     for kind, span in (("boat", (6.0, 80.0)), ("uav", (30.0, 1100.0))):
         for _ in range(6000):
-            d, b = rnd.uniform(*span), rnd.uniform(-25, 25)
+            half = (CAL if kind == "boat" else UCAM)["hfov_deg"] / 2.0     # PF4-r MED-4: the WHOLE field of view
+            d, b = rnd.uniform(*span), rnd.uniform(-half, half)
             heading = rnd.uniform(0, 360)
             roll, pitch = rnd.uniform(-5, 5), rnd.uniform(-3, 3)
             base = (LAT + rnd.uniform(-0.01, 0.01), LON + rnd.uniform(-0.01, 0.01))
@@ -1196,7 +1197,7 @@ def mk4():
             err = sar_geo.distance_bearing((r["lat"], r["lon"]), tp)[0]
             trials.setdefault(kind, []).append((r["d_m"], err, r["r_m"]))
     rows = []
-    for kind, bands in (("boat", ((10, 20), (20, 35), (35, 50))), ("uav", ((50, 150), (150, 400), (400, 900)))):
+    for kind, bands in (("boat", ((10, 20), (20, 35), (35, 50))), ("uav", ((50, 150), (150, 300), (300, 900)))):
         for lo, hi in bands:
             sel = [t for t in trials.get(kind, []) if lo <= t[0] < hi]
             n = len(sel)
@@ -1205,13 +1206,45 @@ def mk4():
                 rr = sorted(t[2] for t in sel)
                 rows.append((kind, lo, hi, n, errs[n // 2], errs[int(n * 0.9)], rr[n // 2],
                              100.0 * sum(1 for t in sel if t[1] <= t[2]) / n))
-    ok = bool(rows) and all(r[7] >= 78.0 for r in rows) and len(rows) == 6
+    ok = bool(rows) and all(r[7] >= 92.0 for r in rows) and len(rows) == 6       # PF4-r MED-4: ~95 % in the MODEL
     for r in rows:
         print("    MK4 %s %4d-%4d m: n %3d  median error %6.1f m  90 %% %6.1f m  median circle %6.1f m  inside %5.1f %%" % r)
-    report("MK4 accuracy with known points + the stated noise (12000 trials): the true place is inside the circle in at "
-           "least 78 %% of the cases in every band by the ESTIMATED range (80-97 %% measured, the further the less; the circle is 2 sigma of a linear model)",
+    report("MK4 accuracy with known points + the stated noise over the WHOLE field of view (12000 trials, PF4-r MED-4): "
+           "the true place is inside the circle in at least 92 %% of the cases in every band by the ESTIMATED range "
+           "(93-100 %% measured; circle_k 4.0 x the 1 sigma; this is the MODEL, not a real lens)",
            ok, "; ".join("%s %d-%d: err %.1f / circle %.1f / %.0f %%" % (r[0], r[1], r[2], r[4], r[6], r[7])
                          for r in rows))
+
+
+def mk11():
+    """PF4-r MED-3: the attitude's REAL age counts - the boat: the telemetry sample's age at the station + its own
+    att_age_ms > 1 s = refused; the UAV: the gateway's att_age / alt_age + the record's age at the station (rx_age)
+    > 1 s = refused (a missing / non-finite rx_age = old). LOW: a UAV mount's tilt_down_deg out of -30..90 = refused.
+    LOW: the still image cap is 40 KB on the station too (= the gateway's)."""
+    import sar_mark
+    boat = (LAT, LON)
+    tp = sar_geo.dest(boat, 40.0, 25.0)
+    uv = _project_boat(CAL, 0.0, 0.0, 40.0, boat, tp)
+    t = dict(_telem(boat, 40.0, 0.0, 0.0), att_age_ms=600)
+    ok_fresh = not sar_mark.locate_boat(CAL, t, uv[0], uv[1], RES, 0.3).get("why")
+    old_sum = sar_mark.locate_boat(CAL, t, uv[0], uv[1], RES, 0.5).get("why")          # 0.5 + 0.6 > 1 s
+    old_sample = sar_mark.locate_boat(CAL, _telem(boat, 40.0, 0.0, 0.0), uv[0], uv[1], RES, 1.2).get("why")
+    pos = (LAT + 0.002, LON + 0.002)
+    tpu = sar_geo.dest(pos, 130.0, 180.0)
+    uvu = _project_uav(60.0, 0.0, 0.0, 100.0, pos, tpu)
+    dr = {"lat": pos[0], "lon": pos[1], "alt": 60.0, "hdg": 100.0, "roll": 0.0, "pitch": 0.0, "att_age": 0.4,
+          "alt_age": 0.4, "camera": dict(UCAM)}
+    u_ok = not sar_mark.locate_uav(dict(dr, rx_age=0.3), uvu[0], uvu[1], RES).get("why")
+    u_old = sar_mark.locate_uav(dict(dr, rx_age=0.7), uvu[0], uvu[1], RES).get("why")
+    u_inf = sar_mark.locate_uav(dict(dr, rx_age=float("inf")), uvu[0], uvu[1], RES).get("why")
+    tilt = [sar_mark.locate_uav(dict(dr, camera=dict(UCAM, tilt_down_deg=x)), uvu[0], uvu[1], RES).get("why")
+            for x in (-45.0, 120.0)]
+    ok = (ok_fresh and old_sum == "noatt" and old_sample == "noatt" and u_ok and u_old in ("old", "noatt") and
+          u_inf == "old" and tilt == ["nocal", "nocal"] and sar_mark.STILL_MAX_BYTES == 40 * 1024)
+    report("MK11 PF4-r: the attitude's real age (sample age + att_age_ms for the boat, att_age + the age at the station "
+           "for a UAV) over 1 s = refused; a UAV mount tilt out of -30..90 deg = refused; the still cap is 40 KB here "
+           "too", ok, "boat fresh %s / sum %s / sample %s; uav %s / %s / inf %s; tilt %s; still %d" % (
+               ok_fresh, old_sum, old_sample, u_ok, u_old, u_inf, tilt, sar_mark.STILL_MAX_BYTES))
 
 
 def _setup_boat(env, **kw):
@@ -1325,6 +1358,7 @@ def mk7(env):
     uv = _project_uav(60.0, 3.0, -2.0, 100.0, pos, tp)
     ap.uav_store.drones[2] = {"slot": 2, "lat": pos[0], "lon": pos[1], "alt": 60.0, "hdg": 100.0, "roll": 3.0,
                               "pitch": -2.0, "att_age": 0.4, "alt_age": 0.5, "camera": dict(UCAM), "in_slot": False}
+    ap.uav_store.t[2] = time.time()                                     # received just now (as uav_store.update does)
     ap.mark_last = 0.0
     env.sent.clear()
     m = ap.mark_from_video("UAV-2", uv[0], uv[1], _img())
@@ -1412,12 +1446,16 @@ def mk8(env):
     ap.sar.add({"id": "mob_keep", "kind": "mob", "n": 1, "lat": LAT, "lon": LON, "t_utc": "2026-11-09T12:00:00Z",
                 "closed": None})
     ap.sar.mark_sent("mob_keep")
+    # PF4-r LOW: an EMPTY / restarted gateway list deletes nothing - the sent point is kept and handed in again
     ap.on_sar_markers({"rev": 9, "list": []})
-    merged = ap.sar.get("pt_t_2") is None and ap.sar.get("mob_keep") is not None
+    kept = ap.sar.get("pt_t_2") is not None and any(x["id"] == "pt_t_2" for x in ap.sar.unsent())
+    ap.sar.mark_sent("pt_t_2")
+    ap.on_sar_markers({"rev": 10, "list": [], "deleted": ["pt_t_2", "mob_keep"]})
+    merged = kept and ap.sar.get("pt_t_2") is None and ap.sar.get("mob_keep") is not None
     report("MK8 the actions: NOTHING moves before the YES (NO = nothing); route there = a 2-point route to a plain point; "
            "a person = the stand-off route ending %.0f m before it with STOP; UAV there = uav_route + the launch "
            "preparation; search pattern = the datum only; person / rename / delete are shared; a point deleted elsewhere "
-           "disappears here, a MOB never does" % d_end,
+           "(the gateway's \"deleted\" list) disappears here, a MOB never does, an empty list deletes nothing" % d_end,
            quiet and no_ok and plain and plain_end_ok and person_msg and "DANGER FROM THE PROPELLER" in txt2 and stand
            and abs(d_end - 30.0) < 0.6 and quiet_uav and len(ur) == 1 and len(up) == 1 and ur[0]["target"] == "next" and
            still_there and len(dele) == 1 and ren and ren[0]["m"]["name"] == "Life ring" and sarpanel_ok and merged,
@@ -1549,6 +1587,7 @@ def main():
     mk2()
     mk3()
     mk4()
+    mk11()
     mk10()
     rig = ts.Rig()
     env = None

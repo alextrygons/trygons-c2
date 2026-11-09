@@ -667,20 +667,38 @@ class StationServer:
             return False, "relay %d is not an extra on/off relay with power_up off and no pair" % n
         return True, ""
 
-    def ask_captain(self, st, m, what, action):
+    def ask_captain(self, st, m, what, action, extra=None):
         """A YES / NO for the CAPTAIN's screen 1 (the UAV launch approval, CLAUDE.md V): always asked there - also
         when the captain prepared it himself; a single operator answers his own (m["confirm"] == "self")."""
         if st.role == "VIEWER":
-            return action(False, 100)
+            action(False, 100)
+            return None
         if st.single_op:
             if m.get("confirm") != "self":
-                return action(False, 113)
+                action(False, 113)
+                return None
             self.gw.audit("single_op_cmd", station=st.id, user=st.user, what=what)
-            return action(True, 0)
+            action(True, 0)
+            return None
         cap = self.captain()
         if cap is None:
-            return action(False, 119)
-        self._ask_driver(st, None, None, b"", 0.0, what, action=action, target=cap)
+            action(False, 119)
+            return None
+        # PF4-r: -> the ask id (cancel_ask closes it); extra = more for screen 1 (e.g. the UAV route to show)
+        return self._ask_driver(st, None, None, b"", 0.0, what, action=action, target=cap, extra=extra)
+
+    def cancel_ask(self, aid, code=None):
+        """PF4-r MED-2a/b: close an open question (screen 1's box goes) - it is never answered later. code None = its
+        action is NOT run (the caller tells the station itself), else action(False, code). -> True if it was open."""
+        a = self.asks.pop(aid, None) if aid is not None else None
+        if a is None:
+            return False
+        for d in self.drivers():
+            d.send({"t": "driver_ask_done", "id": a["id"]})
+        self.gw.audit("driver_ask_cancelled", id=a["id"], what=a["what"])
+        if code is not None and a.get("action"):
+            a["action"](False, code)
+        return True
 
     def relay_groups(self):
         """{n: group} of the relay table active on the AURIX, None if the gateway doesn't know it."""
@@ -703,7 +721,7 @@ class StationServer:
         """The screen 1 that answers: the target station's (the captain), if it is open."""
         return [s for s in self.drivers() if target is not None and s is target]
 
-    def _ask_driver(self, st, seq, ftype, payload, age, what, action=None, target=None):
+    def _ask_driver(self, st, seq, ftype, payload, age, what, action=None, target=None, extra=None):
         target = target if target is not None else self.captain()
         if _uav_flying_captain(self, target) is not None:
             # step U5: the captain flies a UAV - no question is queued for his ACCEPT (126 at once)
@@ -721,7 +739,9 @@ class StationServer:
         self.asks[a["id"]] = a
         self.gw.audit("driver_ask", station=st.id, user=st.user, what=what, id=a["id"], captain=target.id)
         for d in drv:
-            d.send({"t": "driver_ask", "id": a["id"], "text": what, "from": st.name, "timeout_s": self.driver_timeout})
+            d.send(dict({"t": "driver_ask", "id": a["id"], "text": what, "from": st.name,
+                         "timeout_s": self.driver_timeout}, **(extra or {})))
+        return a["id"]
 
     def ask_local(self, st, m, what, action):
         """A GATEWAY setting that affects the driving (e.g. vision STAGE 3 on): the same rule as the

@@ -221,8 +221,10 @@ class AdsbManager:
         dr = self.drones() if drones is None else drones
         if st != RX:
             ac = []              # a receiver that is not receiving gives no judgement (and the station says so)
-        events, flying = adsb.evaluate(ac, dr, self.lim)
+        unknown = []
+        events, flying = adsb.evaluate(ac, dr, self.lim, unknown_out=unknown)
         self.events, self.flying = events, flying
+        self.uav_unknown = unknown              # PF5-r MED-2: notice «ADS-B: UAV n unknown altitude» on the stations
         hold = float(self.cfg["hold_s"])
         for e in events:
             k = (e["icao"], e["slot"])
@@ -270,4 +272,5 @@ class AdsbManager:
                 "warn": [{k: e[k] for k in ("icao", "cs", "slot", "level", "t", "d_h", "d_v", "kind")}
                          for e in warn],
                 "proposals": [dict(p) for p in self.props.values()], "flying": list(self.flying),
+                "uav_unknown": list(getattr(self, "uav_unknown", [])),
                 "limits": {"max_alt_ft": self.lim["max_alt_ft"], "max_km": self.lim["max_km"]}}
